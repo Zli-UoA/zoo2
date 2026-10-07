@@ -1,5 +1,5 @@
 {
-  description = "Zoo - Zli cOmmunication tOol";
+  description = "Zoo2 - Zli cOmmunication tOol";
 
   inputs = {
     nixpkgs.url = "github:nixos/nixpkgs/nixpkgs-unstable";
@@ -28,19 +28,12 @@
             gcc
             gnumake
             nodejs_22
-            nodePackages.prisma
             openssl.dev
             pkg-config
             rust-analyzer
-            prisma-engines
           ];
           RUST_SRC_PATH = "${pkgs.rust.packages.stable.rustPlatform.rustLibSrc}";
           shellHook = with pkgs; ''
-            export PRISMA_SCHEMA_ENGINE_BINARY="${prisma-engines}/bin/schema-engine"
-            export PRISMA_QUERY_ENGINE_BINARY="${prisma-engines}/bin/query-engine"
-            export PRISMA_QUERY_ENGINE_LIBRARY="${prisma-engines}/lib/libquery_engine.node"
-            export PRISMA_INTROSPECTION_ENGINE_BINARY="${prisma-engines}/bin/introspection-engine"
-            export PRISMA_FMT_BINARY="${prisma-engines}/bin/prisma-fmt"
           '';
         };
       }
