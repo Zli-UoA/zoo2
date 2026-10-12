@@ -1,10 +1,20 @@
-.PHONY: migrate generate-entities db-up db-down db-restart db-reset
+.PHONY: migrate migrate-diff migrate-validate migrate-status db-up db-down db-restart db-reset
 
 migrate:
-	$(MAKE) -C backend migrate
+	$(MAKE) -C infra migrate
 
-generate-entities:
-	$(MAKE) -C backend generate-entities
+migrate-diff:
+	@if [ "$(origin name)" != "command line" ] || [ -z "$(name)" ]; then \
+		echo "name is required (example: make migrate-diff name=add_example)" >&2; \
+		exit 1; \
+	fi
+	$(MAKE) -C infra migrate-diff name=$(name)
+
+migrate-validate:
+	$(MAKE) -C infra migrate-validate
+
+migrate-status:
+	$(MAKE) -C infra migrate-status
 
 db-up:
 	$(MAKE) -C infra db-up
