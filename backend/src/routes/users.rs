@@ -48,7 +48,7 @@ async fn create_user(
 ) -> Result<Json<UserResponse>, AppError> {
     let mut db = state.db.clone();
     let id = payload.id.unwrap_or_else(|| Uuid::new_v4().to_string());
-    let now = jiff::Zoned::now().datetime();
+    let now = crate::models::now_utc_millis();
 
     let user = toasty::create!(User {
         id: id.as_str(),
@@ -65,7 +65,10 @@ async fn create_user(
 
 async fn list_users(State(state): State<AppState>) -> Result<Json<Vec<UserResponse>>, AppError> {
     let mut db = state.db.clone();
-    let users = User::all().exec(&mut db).await?;
+    let users = User::all()
+        .order_by(User::fields().created_at().asc())
+        .exec(&mut db)
+        .await?;
     let res = users.into_iter().map(UserResponse::from).collect();
     Ok(Json(res))
 }
@@ -75,9 +78,11 @@ async fn get_user_by_id(
     Path(id): Path<String>,
 ) -> Result<Json<UserResponse>, AppError> {
     let mut db = state.db.clone();
-    let user = User::get_by_id(&mut db, id.as_str())
-        .await
-        .map_err(|_| AppError::NotFound(format!("User not found with id: {id}")))?;
-
-    Ok(Json(UserResponse::from(user)))
+    match User::get_by_id(&mut db, id.as_str()).await {
+        Ok(user) => Ok(Json(UserResponse::from(user))),
+        Err(err) if err.is_record_not_found() => {
+            Err(AppError::NotFound(format!("User not found with id: {id}")))
+        }
+        Err(err) => Err(AppError::Database(err)),
+    }
 }

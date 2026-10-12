@@ -56,7 +56,7 @@ async fn create_message(
 ) -> Result<Json<MessageResponse>, AppError> {
     let mut db = state.db.clone();
     let id = payload.id.unwrap_or_else(|| Uuid::new_v4().to_string());
-    let now = jiff::Zoned::now().datetime();
+    let now = crate::models::now_utc_millis();
 
     let message = toasty::create!(Message {
         id: id.as_str(),
@@ -80,10 +80,14 @@ async fn list_messages(
     let mut db = state.db.clone();
     let messages = if let Some(channel_id) = query.channel_id {
         Message::filter(Message::fields().channel_id().eq(channel_id.as_str()))
+            .order_by(Message::fields().created_at().asc())
             .exec(&mut db)
             .await?
     } else {
-        Message::all().exec(&mut db).await?
+        Message::all()
+            .order_by(Message::fields().created_at().asc())
+            .exec(&mut db)
+            .await?
     };
 
     let res = messages.into_iter().map(MessageResponse::from).collect();

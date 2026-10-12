@@ -23,7 +23,11 @@ async fn main() -> anyhow::Result<()> {
 
     // 設定読み込み
     let config = Config::from_env();
-    tracing::info!("Starting backend service with config: {:?}", config);
+    tracing::info!(
+        host = %config.host,
+        port = %config.port,
+        "Starting backend service"
+    );
 
     // データベース接続初期化 (Toasty ORM)
     let db = init_db(&config.database_url).await?;

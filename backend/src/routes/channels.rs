@@ -58,7 +58,7 @@ async fn create_channel(
 ) -> Result<Json<ChannelResponse>, AppError> {
     let mut db = state.db.clone();
     let id = payload.id.unwrap_or_else(|| Uuid::new_v4().to_string());
-    let now = jiff::Zoned::now().datetime();
+    let now = crate::models::now_utc_millis();
 
     let channel = toasty::create!(Channel {
         id: id.as_str(),
@@ -81,7 +81,10 @@ async fn list_channels(
     State(state): State<AppState>,
 ) -> Result<Json<Vec<ChannelResponse>>, AppError> {
     let mut db = state.db.clone();
-    let channels = Channel::all().exec(&mut db).await?;
+    let channels = Channel::all()
+        .order_by(Channel::fields().created_at().asc())
+        .exec(&mut db)
+        .await?;
     let res = channels.into_iter().map(ChannelResponse::from).collect();
     Ok(Json(res))
 }
@@ -91,9 +94,11 @@ async fn get_channel_by_id(
     Path(id): Path<String>,
 ) -> Result<Json<ChannelResponse>, AppError> {
     let mut db = state.db.clone();
-    let channel = Channel::get_by_id(&mut db, id.as_str())
-        .await
-        .map_err(|_| AppError::NotFound(format!("Channel not found with id: {id}")))?;
-
-    Ok(Json(ChannelResponse::from(channel)))
+    match Channel::get_by_id(&mut db, id.as_str()).await {
+        Ok(channel) => Ok(Json(ChannelResponse::from(channel))),
+        Err(err) if err.is_record_not_found() => Err(AppError::NotFound(format!(
+            "Channel not found with id: {id}"
+        ))),
+        Err(err) => Err(AppError::Database(err)),
+    }
 }

@@ -1,10 +1,20 @@
-use std::env;
+use std::{env, fmt};
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct Config {
     pub database_url: String,
     pub host: String,
     pub port: u16,
+}
+
+impl fmt::Debug for Config {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Config")
+            .field("host", &self.host)
+            .field("port", &self.port)
+            .field("database_url", &"[REDACTED]")
+            .finish()
+    }
 }
 
 impl Config {
@@ -33,5 +43,24 @@ impl Config {
             host,
             port,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_config_debug_redacts_database_url() {
+        let config = Config {
+            database_url: "postgresql://user:super_secret_password@localhost:5432/zoo".to_string(),
+            host: "127.0.0.1".to_string(),
+            port: 8080,
+        };
+        let debug_str = format!("{config:?}");
+        assert!(!debug_str.contains("super_secret_password"));
+        assert!(!debug_str.contains("user"));
+        assert!(debug_str.contains("[REDACTED]"));
+        assert!(debug_str.contains("8080"));
     }
 }
