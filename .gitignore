@@ -3,4 +3,6 @@
 .codex/
 .env
 
+target/
+.target/
 .idea/
