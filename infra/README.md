@@ -19,6 +19,8 @@ infra/
 | PostgreSQL 16 | `localhost:5432` | アプリケーションDB |
 | ElectricSQL 1.8.1 | `http://localhost:3000` | PostgreSQLの変更をShape APIで配信 |
 
+どちらのポートもホストのloopback interfaceだけに公開されます。ElectricSQLはローカル開発用のinsecureモードで動作するため、この構成をそのまま本番環境では使用しないでください。
+
 ## 必要なもの
 
 - Docker Engine
@@ -60,11 +62,11 @@ cp .env.example .env
 make db-up
 ```
 
-PostgreSQLがhealthyになった後でElectricSQLが起動します。状態とログはDocker Composeで確認できます。
+PostgreSQLがhealthyになった後でElectricSQLが起動します。状態とログはDocker Composeで確認できます。Docker Composeを直接実行する場合は、先に`.env`を作成してください。
 
 ```bash
-docker compose -f infra/compose.yml ps
-docker compose -f infra/compose.yml logs -f
+docker compose --env-file .env -f infra/compose.yml ps
+docker compose --env-file .env -f infra/compose.yml logs -f
 ```
 
 ElectricSQLのhealth endpointは次のコマンドで確認できます。
@@ -91,6 +93,12 @@ make migrate
 
 ```bash
 make migrate-status
+```
+
+migrationファイルの整合性を検証するには次を実行します。
+
+```bash
+make migrate-validate
 ```
 
 スキーマを変更するときは`infra/db/schema.sql`を編集し、名前を指定してmigrationを生成します。

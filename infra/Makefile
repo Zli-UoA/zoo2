@@ -1,4 +1,4 @@
-.PHONY: migrate migrate-diff migrate-status db-up db-down db-restart db-reset
+.PHONY: migrate migrate-diff migrate-validate migrate-status db-up db-down db-restart db-reset
 
 -include ../.env
 
@@ -18,7 +18,14 @@ migrate:
 	atlas migrate apply --config file://db/atlas.hcl --env local
 
 migrate-diff:
+	@if [ "$(origin name)" != "command line" ] || [ -z "$(name)" ]; then \
+		echo "name is required (example: make migrate-diff name=add_example)" >&2; \
+		exit 1; \
+	fi
 	atlas migrate diff --config file://db/atlas.hcl --env local $(name)
+
+migrate-validate:
+	atlas migrate validate --config file://db/atlas.hcl --env local
 
 migrate-status:
 	atlas migrate status --config file://db/atlas.hcl --env local
