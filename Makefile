@@ -1,7 +1,13 @@
-.PHONY: migrate generate-entities db-up db-down db-restart db-reset
+.PHONY: migrate migrate-diff migrate-status generate-entities db-up db-down db-restart db-reset
 
 migrate:
-	$(MAKE) -C backend migrate
+	$(MAKE) -C infra migrate
+
+migrate-diff:
+	$(MAKE) -C infra migrate-diff name=$(name)
+
+migrate-status:
+	$(MAKE) -C infra migrate-status
 
 generate-entities:
 	$(MAKE) -C backend generate-entities

@@ -1,25 +1,21 @@
-PHONY: db-up db-down db-restart db-reset
+.PHONY: migrate migrate-diff migrate-status db-up db-down db-restart db-reset
 
-include ../backend/.env
+-include ../.env
+
+export POSTGRES_USER POSTGRES_PASSWORD POSTGRES_DB DATABASE_URL
+
+migrate:
+	atlas migrate apply --config file://db/atlas.hcl --env local
+
+migrate-diff:
+	atlas migrate diff --config file://db/atlas.hcl --env local $(name)
+
+migrate-status:
+	atlas migrate status --config file://db/atlas.hcl --env local
 
 db-up:
-	docker run \
-		-d \
-		--rm \
-		--name zoo-postgres \
-		--env POSTGRES_USER=$(DB_USER) \
-		--env POSTGRES_PASSWORD=$(DB_PASSWORD) \
-		--env POSTGRES_DB=$(DB_NAME) \
-		-p 5432:5432 \
-		--mount type=volume,source=zoo-postgres-data,target=/var/lib/postgresql/data \
-		postgres:16
-
 db-down:
-	docker stop zoo-postgres
 
 db-restart:
-	docker restart zoo-postgres
 
 db-reset:
-	docker rm -f zoo-postgres
-	docker volume rm zoo-postgres-data
