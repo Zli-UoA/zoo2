@@ -2,7 +2,10 @@ name: zoo2-stg
 
 services:
   backend:
-    image: ${BACKEND_IMAGE:?BACKEND_IMAGE is required}
+    image: ${BACKEND_IMAGE:-zoo-backend:stg}
+    build:
+      context: ..
+      dockerfile: infra/Dockerfile-backend-deploy
     restart: unless-stopped
     environment:
       DATABASE_URL: postgresql://${POSTGRES_USER:-zoo}:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}@postgres:5432/${POSTGRES_DB:-zoo}?sslmode=disable
