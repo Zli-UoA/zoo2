@@ -229,6 +229,7 @@ dependencies = [
  "toasty",
  "toasty-driver-postgresql",
  "tokio",
+ "tokio-postgres",
  "tower",
  "tower-http",
  "tracing",

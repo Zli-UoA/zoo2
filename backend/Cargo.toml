@@ -19,6 +19,7 @@ dotenvy = "0.15"
 anyhow = "1"
 thiserror = "2"
 uuid = { version = "1", features = ["v4", "serde"] }
+tokio-postgres = "0.7"
 
 [[bin]]
 name = "zoo_backend"

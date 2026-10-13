@@ -17,7 +17,8 @@ pub fn now_utc_millis() -> jiff::civil::DateTime {
     let now = jiff::Timestamp::now()
         .to_zoned(jiff::tz::TimeZone::UTC)
         .datetime();
-    now.round(jiff::Unit::Millisecond).unwrap()
+    now.round(jiff::Unit::Millisecond)
+        .expect("rounding to millisecond on civil::DateTime is guaranteed to succeed")
 }
 
 #[cfg(test)]

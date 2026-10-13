@@ -59,5 +59,19 @@ jobs:
         run: |
           rsync -vhz /tmp/${{ github.sha }}.tar server:~/
           
-          ssh server 'docker load --input ${{ github.sha }}.tar && rm ${{ github.sha }}.tar && docker update --restart=no $(docker ps -q) && docker stop $(docker ps -q) && docker run -d --restart always -p 8000:8000 ${{ steps.docker-meta.outputs.tags }}'
+          ssh server '
+            docker load --input ${{ github.sha }}.tar && rm ${{ github.sha }}.tar
+            CONTAINERS=$(docker ps -q)
+            if [ -n "$CONTAINERS" ]; then
+              docker update --restart=no $CONTAINERS
+              docker stop $CONTAINERS
+            fi
+            ENV_ARGS=""
+            if [ -f ~/.env ]; then
+              ENV_ARGS="--env-file ~/.env"
+            elif [ -f .env ]; then
+              ENV_ARGS="--env-file .env"
+            fi
+            docker run -d --restart always -p 8000:8000 $ENV_ARGS ${{ steps.docker-meta.outputs.tags }}
+          '
           

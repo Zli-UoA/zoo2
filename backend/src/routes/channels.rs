@@ -99,6 +99,6 @@ async fn get_channel_by_id(
         Err(err) if err.is_record_not_found() => Err(AppError::NotFound(format!(
             "Channel not found with id: {id}"
         ))),
-        Err(err) => Err(AppError::Database(err)),
+        Err(err) => Err(err.into()),
     }
 }
