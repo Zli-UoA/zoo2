@@ -23,6 +23,8 @@ pub fn create_router(state: AppState) -> Router {
             axum::http::HeaderName::from_static("electric-offset"),
             axum::http::HeaderName::from_static("electric-schema"),
             axum::http::HeaderName::from_static("electric-cursor"),
+            axum::http::HeaderName::from_static("electric-up-to-date"),
+            axum::http::HeaderName::from_static("electric-chunk-last-offset"),
         ]);
 
     Router::new()

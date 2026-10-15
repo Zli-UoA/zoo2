@@ -8,6 +8,7 @@ use tower::ServiceExt;
 use backend::{config::Config, db::init_db, routes::create_router, state::AppState};
 
 #[tokio::test]
+#[ignore = "requires running PostgreSQL and ElectricSQL containers"]
 async fn test_shape_proxy_and_authorization() -> anyhow::Result<()> {
     dotenvy::dotenv().ok();
     dotenvy::from_filename("../.env").ok();
@@ -66,38 +67,25 @@ async fn test_shape_proxy_and_authorization() -> anyhow::Result<()> {
 
     let resp = app.clone().oneshot(req).await?;
     println!("Users shape response status: {:?}", resp.status());
-    // Electric サーバーが起動していれば 200 OK、electric-handle ヘッダが含まれる
     assert_eq!(resp.status(), StatusCode::OK);
     assert!(
         resp.headers().contains_key("electric-handle"),
         "electric-handle header must be present"
     );
 
-    // 4. Shape プロキシの認可テスト: Bob (未参加) が Alice のプライベートチャンネルの messages を取得 -> 403 Forbidden
+    // 4. Shape プロキシの認可テスト: Bob (未参加) が Alice のプライベートチャンネルの messages を取得 -> 404 Not Found (存在隠蔽)
     let req = Request::builder()
         .method("GET")
-        .uri(format!("/api/shapes/messages?channel_id={private_channel_id}&offset=-1"))
+        .uri(format!(
+            "/api/shapes/messages?channel_id={private_channel_id}&offset=-1"
+        ))
         .header("X-Dev-User", &bob_id)
         .body(Body::empty())?;
 
     let resp = app.clone().oneshot(req).await?;
-    assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+    assert_eq!(resp.status(), StatusCode::NOT_FOUND);
 
-    // 5. Shape プロキシの認可テスト: Alice (参加済み) がプライベートチャンネルの messages を取得 -> 200 OK
-    let req = Request::builder()
-        .method("GET")
-        .uri(format!("/api/shapes/messages?channel_id={private_channel_id}&offset=-1"))
-        .header("X-Dev-User", &alice_id)
-        .body(Body::empty())?;
-
-    let resp = app.clone().oneshot(req).await?;
-    assert_eq!(resp.status(), StatusCode::OK);
-    assert!(
-        resp.headers().contains_key("electric-handle"),
-        "electric-handle header must be present"
-    );
-
-    // 6. Bob がチャンネルに参加後、messages を取得 -> 200 OK
+    // 5. Bob がプライベートチャンネルに直接 join しようとすると 403 Forbidden
     let req = Request::builder()
         .method("POST")
         .uri(format!("/api/channels/{private_channel_id}/join"))
@@ -105,18 +93,35 @@ async fn test_shape_proxy_and_authorization() -> anyhow::Result<()> {
         .body(Body::empty())?;
 
     let resp = app.clone().oneshot(req).await?;
+    assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+
+    // 6. Alice (オーナー) が Bob をプライベートチャンネルに追加
+    let add_user_payload = json!({
+        "user_id": bob_id,
+    });
+    let req = Request::builder()
+        .method("POST")
+        .uri(format!("/api/channels/{private_channel_id}/users"))
+        .header("content-type", "application/json")
+        .header("X-Dev-User", &alice_id)
+        .body(Body::from(serde_json::to_vec(&add_user_payload)?))?;
+
+    let resp = app.clone().oneshot(req).await?;
     assert_eq!(resp.status(), StatusCode::OK);
 
+    // 7. 追加後、Bob が messages を取得 -> 200 OK
     let req = Request::builder()
         .method("GET")
-        .uri(format!("/api/shapes/messages?channel_id={private_channel_id}&offset=-1"))
+        .uri(format!(
+            "/api/shapes/messages?channel_id={private_channel_id}&offset=-1"
+        ))
         .header("X-Dev-User", &bob_id)
         .body(Body::empty())?;
 
     let resp = app.clone().oneshot(req).await?;
     assert_eq!(resp.status(), StatusCode::OK);
 
-    // 7. Channels Shape の確認
+    // 8. Channels Shape の確認
     let req = Request::builder()
         .method("GET")
         .uri("/api/shapes/channels?offset=-1")

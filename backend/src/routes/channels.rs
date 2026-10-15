@@ -30,6 +30,11 @@ pub struct UpdateChannelRequest {
     pub is_private: Option<bool>,
 }
 
+#[derive(Debug, Deserialize)]
+pub struct AddChannelUserRequest {
+    pub user_id: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ChannelResponse {
     pub id: String,
@@ -93,6 +98,7 @@ pub fn router() -> Router<AppState> {
         )
         .route("/api/channels/{id}/join", post(join_channel))
         .route("/api/channels/{id}/leave", post(leave_channel))
+        .route("/api/channels/{id}/users", post(add_channel_user))
 }
 
 async fn create_channel(
@@ -101,9 +107,8 @@ async fn create_channel(
     Json(payload): Json<CreateChannelRequest>,
 ) -> Result<Json<ApiResponse<ChannelResponse>>, AppError> {
     let id = payload.id.unwrap_or_else(|| Uuid::new_v4().to_string());
-    Uuid::parse_str(&id).map_err(|_| {
-        AppError::BadRequest(format!("channel id is not a valid UUID: {id}"))
-    })?;
+    Uuid::parse_str(&id)
+        .map_err(|_| AppError::BadRequest(format!("channel id is not a valid UUID: {id}")))?;
 
     let mut db = state.db.clone();
     let mut tx = db.transaction().await?;
@@ -144,9 +149,8 @@ async fn update_channel(
     Path(id): Path<String>,
     Json(payload): Json<UpdateChannelRequest>,
 ) -> Result<Json<ApiResponse<ChannelResponse>>, AppError> {
-    Uuid::parse_str(&id).map_err(|_| {
-        AppError::BadRequest(format!("channel id is not a valid UUID: {id}"))
-    })?;
+    Uuid::parse_str(&id)
+        .map_err(|_| AppError::BadRequest(format!("channel id is not a valid UUID: {id}")))?;
 
     let mut db = state.db.clone();
     let mut tx = db.transaction().await?;
@@ -162,7 +166,9 @@ async fn update_channel(
         })?;
 
     if channel.deleted_at.is_some() {
-        return Err(AppError::BadRequest("Cannot edit a deleted channel".into()));
+        return Err(AppError::NotFound(format!(
+            "Channel not found with id: {id}"
+        )));
     }
 
     if channel.created_user_id != auth_user.id {
@@ -201,9 +207,8 @@ async fn delete_channel(
     auth_user: AuthUser,
     Path(id): Path<String>,
 ) -> Result<Json<ApiResponse<ChannelResponse>>, AppError> {
-    Uuid::parse_str(&id).map_err(|_| {
-        AppError::BadRequest(format!("channel id is not a valid UUID: {id}"))
-    })?;
+    Uuid::parse_str(&id)
+        .map_err(|_| AppError::BadRequest(format!("channel id is not a valid UUID: {id}")))?;
 
     let mut db = state.db.clone();
     let mut tx = db.transaction().await?;
@@ -218,6 +223,12 @@ async fn delete_channel(
             }
         })?;
 
+    if channel.deleted_at.is_some() {
+        return Err(AppError::NotFound(format!(
+            "Channel not found with id: {id}"
+        )));
+    }
+
     if channel.created_user_id != auth_user.id {
         return Err(AppError::Forbidden(
             "Only the channel creator can delete this channel".into(),
@@ -227,6 +238,7 @@ async fn delete_channel(
     let now = crate::models::now_utc_millis();
     Channel::update_by_id(id.as_str())
         .deleted_at(Some(now))
+        .updated_at(Some(now))
         .exec(&mut tx)
         .await?;
 
@@ -245,9 +257,8 @@ async fn join_channel(
     auth_user: AuthUser,
     Path(id): Path<String>,
 ) -> Result<Json<ApiResponse<ChannelUserResponse>>, AppError> {
-    Uuid::parse_str(&id).map_err(|_| {
-        AppError::BadRequest(format!("channel id is not a valid UUID: {id}"))
-    })?;
+    Uuid::parse_str(&id)
+        .map_err(|_| AppError::BadRequest(format!("channel id is not a valid UUID: {id}")))?;
 
     let mut db = state.db.clone();
     let mut tx = db.transaction().await?;
@@ -263,7 +274,17 @@ async fn join_channel(
         })?;
 
     if channel.deleted_at.is_some() {
-        return Err(AppError::BadRequest("Cannot join a deleted channel".into()));
+        return Err(AppError::NotFound(format!(
+            "Channel not found with id: {id}"
+        )));
+    }
+
+    // プライベートチャンネルへの直接 join は禁止 (作成者または招待による追加のみ)
+    if channel.is_private {
+        return Err(AppError::Forbidden(
+            "Cannot join a private channel directly. You must be added by the channel owner."
+                .into(),
+        ));
     }
 
     let existing = ChannelUser::filter(
@@ -298,17 +319,118 @@ async fn join_channel(
     )))
 }
 
+async fn add_channel_user(
+    State(state): State<AppState>,
+    auth_user: AuthUser,
+    Path(id): Path<String>,
+    Json(payload): Json<AddChannelUserRequest>,
+) -> Result<Json<ApiResponse<ChannelUserResponse>>, AppError> {
+    Uuid::parse_str(&id)
+        .map_err(|_| AppError::BadRequest(format!("channel id is not a valid UUID: {id}")))?;
+    Uuid::parse_str(&payload.user_id).map_err(|_| {
+        AppError::BadRequest(format!("user_id is not a valid UUID: {}", payload.user_id))
+    })?;
+
+    let mut db = state.db.clone();
+    let mut tx = db.transaction().await?;
+
+    let channel = Channel::get_by_id(&mut tx, id.as_str())
+        .await
+        .map_err(|err| {
+            if err.is_record_not_found() {
+                AppError::NotFound(format!("Channel not found with id: {id}"))
+            } else {
+                AppError::from(err)
+            }
+        })?;
+
+    if channel.deleted_at.is_some() {
+        return Err(AppError::NotFound(format!(
+            "Channel not found with id: {id}"
+        )));
+    }
+
+    // プライベートチャンネルの場合、作成者のみがメンバーを追加可能
+    if channel.is_private && channel.created_user_id != auth_user.id {
+        return Err(AppError::Forbidden(
+            "Only the channel creator can add members to a private channel".into(),
+        ));
+    }
+
+    let existing = ChannelUser::filter(
+        ChannelUser::fields()
+            .channel_id()
+            .eq(id.as_str())
+            .and(ChannelUser::fields().user_id().eq(payload.user_id.as_str())),
+    )
+    .first()
+    .exec(&mut tx)
+    .await?;
+
+    let channel_user = if let Some(cu) = existing {
+        cu
+    } else {
+        let now = crate::models::now_utc_millis();
+        toasty::create!(ChannelUser {
+            user_id: payload.user_id.as_str(),
+            channel_id: id.as_str(),
+            joined_at: now,
+        })
+        .exec(&mut tx)
+        .await?
+    };
+
+    let txid = get_current_txid(&mut tx).await?;
+    tx.commit().await?;
+
+    Ok(Json(ApiResponse::new(
+        ChannelUserResponse::from(channel_user),
+        txid,
+    )))
+}
+
 async fn leave_channel(
     State(state): State<AppState>,
     auth_user: AuthUser,
     Path(id): Path<String>,
 ) -> Result<Json<ApiResponse<LeaveChannelResponse>>, AppError> {
-    Uuid::parse_str(&id).map_err(|_| {
-        AppError::BadRequest(format!("channel id is not a valid UUID: {id}"))
-    })?;
+    Uuid::parse_str(&id)
+        .map_err(|_| AppError::BadRequest(format!("channel id is not a valid UUID: {id}")))?;
 
     let mut db = state.db.clone();
     let mut tx = db.transaction().await?;
+
+    let channel = Channel::get_by_id(&mut tx, id.as_str())
+        .await
+        .map_err(|err| {
+            if err.is_record_not_found() {
+                AppError::NotFound(format!("Channel not found with id: {id}"))
+            } else {
+                AppError::from(err)
+            }
+        })?;
+
+    if channel.deleted_at.is_some() {
+        return Err(AppError::NotFound(format!(
+            "Channel not found with id: {id}"
+        )));
+    }
+
+    let existing = ChannelUser::filter(
+        ChannelUser::fields()
+            .channel_id()
+            .eq(id.as_str())
+            .and(ChannelUser::fields().user_id().eq(auth_user.id.as_str())),
+    )
+    .first()
+    .exec(&mut tx)
+    .await?;
+
+    if existing.is_none() {
+        return Err(AppError::NotFound(format!(
+            "You are not a member of channel: {id}"
+        )));
+    }
 
     ChannelUser::filter(
         ChannelUser::fields()
@@ -339,9 +461,10 @@ async fn list_channels(
     let mut db = state.db.clone();
 
     // ユーザーが参加しているチャンネル ID リストを取得
-    let memberships = ChannelUser::filter(ChannelUser::fields().user_id().eq(auth_user.id.as_str()))
-        .exec(&mut db)
-        .await?;
+    let memberships =
+        ChannelUser::filter(ChannelUser::fields().user_id().eq(auth_user.id.as_str()))
+            .exec(&mut db)
+            .await?;
     let joined_channel_ids: Vec<String> = memberships.into_iter().map(|m| m.channel_id).collect();
 
     let all_channels = Channel::filter(Channel::fields().deleted_at().is_none())
@@ -375,7 +498,9 @@ async fn get_channel_by_id(
         })?;
 
     if channel.deleted_at.is_some() {
-        return Err(AppError::NotFound(format!("Channel not found with id: {id}")));
+        return Err(AppError::NotFound(format!(
+            "Channel not found with id: {id}"
+        )));
     }
 
     if channel.is_private {
@@ -390,10 +515,11 @@ async fn get_channel_by_id(
         .await?
         .is_some();
 
+        // 存在推測攻撃を防ぐため 403 ではなく 404 を返却
         if !is_member {
-            return Err(AppError::Forbidden(
-                "You do not have access to this private channel".into(),
-            ));
+            return Err(AppError::NotFound(format!(
+                "Channel not found with id: {id}"
+            )));
         }
     }
 

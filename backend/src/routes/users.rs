@@ -50,9 +50,8 @@ async fn create_user(
     Json(payload): Json<CreateUserRequest>,
 ) -> Result<Json<ApiResponse<UserResponse>>, AppError> {
     let id = payload.id.unwrap_or_else(|| Uuid::new_v4().to_string());
-    Uuid::parse_str(&id).map_err(|_| {
-        AppError::BadRequest(format!("user id is not a valid UUID: {id}"))
-    })?;
+    Uuid::parse_str(&id)
+        .map_err(|_| AppError::BadRequest(format!("user id is not a valid UUID: {id}")))?;
 
     let mut db = state.db.clone();
     let mut tx = db.transaction().await?;
