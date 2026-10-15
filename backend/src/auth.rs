@@ -6,20 +6,21 @@ use crate::error::AppError;
 pub const DEFAULT_DEV_USER_ID: &str = "00000000-0000-0000-0000-000000000001";
 
 /// 環境変数の値とビルド種別から Dev Auth が有効かどうかを判定する純粋関数
-pub fn is_dev_auth_enabled_pure(
+pub(crate) fn is_dev_auth_enabled_pure(
     dev_auth_env: Option<&str>,
     environment_env: Option<&str>,
     is_test_build: bool,
 ) -> bool {
+    // 本番環境 (ENVIRONMENT=production) では DEV_AUTH_ENABLED の指定に関わらず常に無効 (fail-closed)
+    if environment_env == Some("production") {
+        return false;
+    }
+
     if let Some(val) = dev_auth_env {
         return val == "true" || val == "1";
     }
 
-    if is_test_build {
-        environment_env.unwrap_or_default() != "production"
-    } else {
-        false
-    }
+    is_test_build
 }
 
 /// 開発用認証 (Dev Auth) が有効かどうかを判定
@@ -42,7 +43,7 @@ pub fn dev_auth_enabled() -> bool {
 ///
 /// Dev Auth が有効な環境のみ、開発用認証方式 (Bearer <UUID>, X-Dev-User, デフォルトユーザー) を許可。
 /// dev_auth_enabled が false (本番など) の場合は、Bearer や X-Dev-User が渡されても 403 Forbidden となる。
-pub fn resolve_auth_user(
+pub(crate) fn resolve_auth_user(
     dev_auth_enabled: bool,
     auth_header: Option<&str>,
     x_dev_user_header: Option<&str>,
@@ -99,6 +100,11 @@ where
     type Rejection = AppError;
 
     async fn from_request_parts(parts: &mut Parts, _state: &S) -> Result<Self, Self::Rejection> {
+        let is_dev_enabled = dev_auth_enabled();
+        if !is_dev_enabled {
+            return Err(AppError::Forbidden("Authentication required".to_string()));
+        }
+
         let auth_header = parts
             .headers
             .get("Authorization")
@@ -115,7 +121,7 @@ where
         let default_id = std::env::var("DEV_DEFAULT_USER_ID").ok();
 
         resolve_auth_user(
-            dev_auth_enabled(),
+            is_dev_enabled,
             auth_header,
             x_dev_user,
             default_id.as_deref(),
@@ -149,7 +155,17 @@ mod tests {
         assert!(is_dev_auth_enabled_pure(None, None, true));
         assert!(is_dev_auth_enabled_pure(None, Some("development"), true));
         assert!(is_dev_auth_enabled_pure(None, Some("test"), true));
-        // ENVIRONMENT=production のときはテストビルドでも false
+        // ENVIRONMENT=production のときは DEV_AUTH_ENABLED が設定されていても常に false (fail-closed)
+        assert!(!is_dev_auth_enabled_pure(
+            Some("true"),
+            Some("production"),
+            false
+        ));
+        assert!(!is_dev_auth_enabled_pure(
+            Some("true"),
+            Some("production"),
+            true
+        ));
         assert!(!is_dev_auth_enabled_pure(None, Some("production"), true));
     }
 

@@ -26,7 +26,7 @@ pub fn router() -> Router<AppState> {
 }
 
 /// クライアントから送信されたクエリパラメータのうち、Electric プロトコルで許可されたものを転送
-pub fn filter_electric_params(raw_query: &HashMap<String, String>) -> Vec<(String, String)> {
+pub(crate) fn filter_electric_params(raw_query: &HashMap<String, String>) -> Vec<(String, String)> {
     let allowed_prefixes = ["subset__"];
     let allowed_keys = [
         "live",
@@ -52,7 +52,7 @@ pub fn filter_electric_params(raw_query: &HashMap<String, String>) -> Vec<(Strin
 }
 
 /// Channels Shape の where 句とパラメータの純粋組み立て
-pub fn channels_shape_where(user_id: &str) -> (String, Vec<(&'static str, &str)>) {
+pub(crate) fn channels_shape_where(user_id: &str) -> (String, Vec<(&'static str, &str)>) {
     (
         "is_private = false OR id IN (SELECT channel_id FROM channel_user WHERE user_id = $1)"
             .to_string(),
@@ -61,7 +61,7 @@ pub fn channels_shape_where(user_id: &str) -> (String, Vec<(&'static str, &str)>
 }
 
 /// Messages Shape の where 句とパラメータの純粋組み立て
-pub fn messages_shape_where(channel_id: &str) -> (String, Vec<(&'static str, &str)>) {
+pub(crate) fn messages_shape_where(channel_id: &str) -> (String, Vec<(&'static str, &str)>) {
     (
         "channel_id = $1".to_string(),
         vec![("params[1]", channel_id)],
@@ -69,7 +69,7 @@ pub fn messages_shape_where(channel_id: &str) -> (String, Vec<(&'static str, &st
 }
 
 /// Channel Users Shape の where 句とパラメータの純粋組み立て
-pub fn channel_users_shape_where<'a>(
+pub(crate) fn channel_users_shape_where<'a>(
     channel_id: Option<&'a str>,
     user_id: &'a str,
 ) -> (String, Vec<(&'static str, &'a str)>) {
@@ -80,34 +80,6 @@ pub fn channel_users_shape_where<'a>(
             "channel_id IN (SELECT id FROM channels WHERE is_private = false AND deleted_at IS NULL) OR channel_id IN (SELECT channel_id FROM channel_user WHERE user_id = $1)".to_string(),
             vec![("params[1]", user_id)],
         )
-    }
-}
-
-/// 各テーブル向けの Electric Shape `where` 句および追加パラメータを組み立てる純粋関数
-pub fn shape_where<'a>(
-    table: &str,
-    user_id: &'a str,
-    channel_id: Option<&'a str>,
-) -> (Option<String>, Vec<(&'static str, &'a str)>) {
-    match table {
-        "channels" => {
-            let (w, p) = channels_shape_where(user_id);
-            (Some(w), p)
-        }
-        "messages" => {
-            if let Some(ch_id) = channel_id {
-                let (w, p) = messages_shape_where(ch_id);
-                (Some(w), p)
-            } else {
-                (None, vec![])
-            }
-        }
-        "channel_user" | "channel_users" => {
-            let (w, p) = channel_users_shape_where(channel_id, user_id);
-            (Some(w), p)
-        }
-        "users" => (None, vec![]),
-        _ => (None, vec![]),
     }
 }
 
@@ -413,41 +385,5 @@ mod tests {
         assert!(clause.contains("WHERE is_private = false AND deleted_at IS NULL"));
         assert!(clause.contains("WHERE user_id = $1"));
         assert_eq!(params, vec![("params[1]", "user-123")]);
-    }
-
-    #[test]
-    fn test_shape_where_unified() {
-        let user_id = "user-123";
-        let channel_id = "channel-456";
-
-        // channels
-        let (w, p) = shape_where("channels", user_id, None);
-        assert!(w.is_some());
-        assert_eq!(p, vec![("params[1]", user_id)]);
-
-        // messages (channel_id あり)
-        let (w, p) = shape_where("messages", user_id, Some(channel_id));
-        assert_eq!(w.as_deref(), Some("channel_id = $1"));
-        assert_eq!(p, vec![("params[1]", channel_id)]);
-
-        // messages (channel_id なし)
-        let (w, p) = shape_where("messages", user_id, None);
-        assert!(w.is_none());
-        assert!(p.is_empty());
-
-        // channel_user
-        let (w, p) = shape_where("channel_user", user_id, Some(channel_id));
-        assert_eq!(w.as_deref(), Some("channel_id = $1"));
-        assert_eq!(p, vec![("params[1]", channel_id)]);
-
-        // users
-        let (w, p) = shape_where("users", user_id, None);
-        assert!(w.is_none());
-        assert!(p.is_empty());
-
-        // unknown table
-        let (w, p) = shape_where("unknown", user_id, None);
-        assert!(w.is_none());
-        assert!(p.is_empty());
     }
 }

@@ -91,7 +91,7 @@ pub struct LeaveChannelResponse {
 /// - 作成者は常に追加可能
 /// - プライベートチャンネル: 作成者のみ追加可能
 /// - パブリックチャンネル: 作成者または既存メンバーが追加可能
-pub fn can_add_member(
+pub(crate) fn can_add_member(
     is_private: bool,
     channel_creator_id: &str,
     actor_id: &str,
@@ -106,20 +106,20 @@ pub fn can_add_member(
 /// チャンネル直接参加 (join) の純粋判定ロジック:
 /// - パブリックチャンネル: 誰でも直接 join 可能
 /// - プライベートチャンネル: 直接 join 不可 (オーナーによる追加のみ)
-pub fn can_join(is_private: bool) -> bool {
+pub(crate) fn can_join(is_private: bool) -> bool {
     !is_private
 }
 
 /// チャンネル更新・削除権限の純粋判定ロジック:
 /// - 作成者のみ変更・削除可能
-pub fn can_modify_channel(channel_creator_id: &str, actor_id: &str) -> bool {
+pub(crate) fn can_modify_channel(channel_creator_id: &str, actor_id: &str) -> bool {
     channel_creator_id == actor_id
 }
 
 /// チャンネル閲覧権限の純粋判定ロジック:
 /// - パブリックチャンネル: 誰でも閲覧可能
 /// - プライベートチャンネル: メンバーのみ閲覧可能
-pub fn is_channel_visible(is_private: bool, is_member: bool) -> bool {
+pub(crate) fn is_channel_visible(is_private: bool, is_member: bool) -> bool {
     !is_private || is_member
 }
 
