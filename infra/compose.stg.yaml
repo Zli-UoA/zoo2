@@ -1,0 +1,44 @@
+name: zoo2-stg
+
+services:
+  backend:
+    image: ${BACKEND_IMAGE:-zoo-backend:stg}
+    build:
+      context: .
+      dockerfile: infra/Dockerfile-backend-deploy
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-zoo}:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}@postgres:5432/${POSTGRES_DB:-zoo}?sslmode=disable
+      ELECTRIC_URL: http://electric:3000
+      PORT: ${PORT:-8000}
+    ports:
+      - "127.0.0.1:${PORT:-8000}:${PORT:-8000}"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      electric:
+        condition: service_healthy
+
+  postgres:
+    extends:
+      file: infra/db/compose.yml
+      service: postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-zoo}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
+    ports: !reset []
+    healthcheck:
+      start_period: 10s
+
+  electric:
+    extends:
+      file: infra/db/compose.yml
+      service: electric
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-zoo}:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}@postgres:5432/${POSTGRES_DB:-zoo}?sslmode=disable
+    ports: !reset []
+
+volumes:
+  postgres-data:

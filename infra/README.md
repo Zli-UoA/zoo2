@@ -6,9 +6,10 @@ PostgreSQL、ElectricSQL、Atlas migrationを管理します。
 
 ```text
 infra/
-├── compose.yml              # PostgreSQLとElectricSQL
+├── compose.stg.yaml         # ステージング構成
 ├── Makefile                 # DB操作とmigration操作
 └── db/
+    ├── compose.yml          # PostgreSQLとElectricSQL
     ├── atlas.hcl            # Atlas設定
     ├── schema.sql           # 期待するデータベーススキーマ
     └── migrations/          # バージョン管理されたmigration
@@ -65,8 +66,8 @@ make db-up
 PostgreSQLがhealthyになった後でElectricSQLが起動します。状態とログはDocker Composeで確認できます。Docker Composeを直接実行する場合は、先に`.env`を作成してください。
 
 ```bash
-docker compose --env-file .env -f infra/compose.yml ps
-docker compose --env-file .env -f infra/compose.yml logs -f
+docker compose --env-file .env -f infra/db/compose.yml ps
+docker compose --env-file .env -f infra/db/compose.yml logs -f
 ```
 
 ElectricSQLのhealth endpointは次のコマンドで確認できます。
@@ -146,3 +147,15 @@ make test       # 両方
 ```
 
 CI (`.github/workflows/ci-backend.yaml`) では `unit-test` ジョブ (DB 不要) と `e2e` ジョブ (上記と同じ手順) に分けて実行します。
+
+## ステージング
+
+DBサービスは `db/compose.yml` を `extends` で共有し、ステージングではDBのホスト側ポート公開を解除します。`!reset` を利用できる Docker Composeが必要です。
+
+リポジトリルートで `--project-directory .` を指定してください。`POSTGRES_PASSWORD` は必須です。
+
+```bash
+POSTGRES_PASSWORD=staging-test-password docker compose --project-directory . -f infra/compose.stg.yaml up -d --build --wait
+```
+
+`PORT` はバックエンドの待受ポートとホスト側の公開ポートに使われます（デフォルト: 8000）。
