@@ -25,3 +25,6 @@ minimumReleaseAgeExclude:
   - "@tanstack/router-utils@1.162.4"
   - "@tanstack/start-plugin-core@1.171.53"
   - "@tanstack/start-server-core@1.169.43"
+  - "@tanstack/db@0.15.0"
+  - "@tanstack/electric-db-collection@0.6.1"
+  - "@tanstack/react-db@0.5.10"
