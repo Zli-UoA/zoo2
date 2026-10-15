@@ -13,6 +13,7 @@ use crate::{
     models::{Channel, ChannelUser, Message},
     routes::response::ApiResponse,
     state::AppState,
+    validation::validate_message_content,
 };
 
 #[derive(Debug, Deserialize)]
@@ -27,9 +28,16 @@ pub struct UpdateMessageRequest {
     pub content: String,
 }
 
+fn default_limit() -> i64 {
+    50
+}
+
 #[derive(Debug, Deserialize)]
 pub struct ListMessagesQuery {
     pub channel_id: String,
+    pub before: Option<jiff::civil::DateTime>,
+    #[serde(default = "default_limit")]
+    pub limit: i64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -71,6 +79,8 @@ async fn create_message(
     auth_user: AuthUser,
     Json(payload): Json<CreateMessageRequest>,
 ) -> Result<Json<ApiResponse<MessageResponse>>, AppError> {
+    validate_message_content(&payload.content)?;
+
     Uuid::parse_str(&payload.channel_id).map_err(|_| {
         AppError::BadRequest(format!(
             "channel_id is not a valid UUID: {}",
@@ -150,6 +160,8 @@ async fn update_message(
     Path(id): Path<String>,
     Json(payload): Json<UpdateMessageRequest>,
 ) -> Result<Json<ApiResponse<MessageResponse>>, AppError> {
+    validate_message_content(&payload.content)?;
+
     Uuid::parse_str(&id)
         .map_err(|_| AppError::BadRequest(format!("message id is not a valid UUID: {id}")))?;
 
@@ -293,15 +305,22 @@ async fn list_messages(
         }
     }
 
-    let messages = Message::filter(
-        Message::fields()
-            .channel_id()
-            .eq(query.channel_id.as_str())
-            .and(Message::fields().deleted_at().is_none()),
-    )
-    .order_by(Message::fields().created_at().asc())
-    .exec(&mut db)
-    .await?;
+    let limit = query.limit.clamp(1, 100);
+
+    let mut filter = Message::fields()
+        .channel_id()
+        .eq(query.channel_id.as_str())
+        .and(Message::fields().deleted_at().is_none());
+
+    if let Some(before) = query.before {
+        filter = filter.and(Message::fields().created_at().lt(before));
+    }
+
+    let messages = Message::filter(filter)
+        .order_by(Message::fields().created_at().desc())
+        .limit(limit as usize)
+        .exec(&mut db)
+        .await?;
 
     let res = messages.into_iter().map(MessageResponse::from).collect();
     Ok(Json(res))

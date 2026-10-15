@@ -42,6 +42,8 @@ CREATE TABLE messages (
     ON UPDATE CASCADE ON DELETE RESTRICT
 );
 
+CREATE INDEX idx_messages_channel_id_created_at ON messages (channel_id, created_at DESC);
+
 CREATE TABLE channel_user (
   user_id text NOT NULL,
   channel_id text NOT NULL,
