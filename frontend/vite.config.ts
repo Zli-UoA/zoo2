@@ -15,6 +15,10 @@ const config = defineConfig({
   },
   resolve: { tsconfigPaths: true },
   plugins: lazyPlugins(() => [devtools(), tailwindcss(), tanstackStart(), viteReact()]),
+  test: {
+    environment: "node",
+    include: ["src/**/*.test.ts"],
+  },
 });
 
 export default config;
