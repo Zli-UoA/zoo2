@@ -1,7 +1,7 @@
 .PHONY: migrate migrate-diff migrate-validate migrate-status db-up db-down db-restart db-reset backend-dev backend-build
 
 backend-dev:
-	cd backend && cargo run
+	cd backend && DEV_AUTH_ENABLED=true cargo run
 
 backend-build:
 	cd backend && cargo build --release
