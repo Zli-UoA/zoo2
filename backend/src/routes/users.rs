@@ -7,8 +7,12 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::{
-    db::get_current_txid, error::AppError, models::User, routes::response::ApiResponse,
+    db::get_current_txid,
+    error::AppError,
+    models::User,
+    routes::response::ApiResponse,
     state::AppState,
+    validation::{validate_display_name, validate_user_name},
 };
 
 #[derive(Debug, Deserialize)]
@@ -49,6 +53,9 @@ async fn create_user(
     State(state): State<AppState>,
     Json(payload): Json<CreateUserRequest>,
 ) -> Result<Json<ApiResponse<UserResponse>>, AppError> {
+    validate_user_name(&payload.user_name)?;
+    validate_display_name(&payload.display_name)?;
+
     let id = payload.id.unwrap_or_else(|| Uuid::new_v4().to_string());
     Uuid::parse_str(&id)
         .map_err(|_| AppError::BadRequest(format!("user id is not a valid UUID: {id}")))?;
@@ -87,6 +94,9 @@ async fn get_user_by_id(
     State(state): State<AppState>,
     Path(id): Path<String>,
 ) -> Result<Json<UserResponse>, AppError> {
+    Uuid::parse_str(&id)
+        .map_err(|_| AppError::BadRequest(format!("user id is not a valid UUID: {id}")))?;
+
     let mut db = state.db.clone();
     match User::get_by_id(&mut db, id.as_str()).await {
         Ok(user) => Ok(Json(UserResponse::from(user))),

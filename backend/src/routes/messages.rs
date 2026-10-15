@@ -13,6 +13,7 @@ use crate::{
     models::{Channel, ChannelUser, Message},
     routes::response::ApiResponse,
     state::AppState,
+    validation::validate_message_content,
 };
 
 #[derive(Debug, Deserialize)]
@@ -71,6 +72,8 @@ async fn create_message(
     auth_user: AuthUser,
     Json(payload): Json<CreateMessageRequest>,
 ) -> Result<Json<ApiResponse<MessageResponse>>, AppError> {
+    validate_message_content(&payload.content)?;
+
     Uuid::parse_str(&payload.channel_id).map_err(|_| {
         AppError::BadRequest(format!(
             "channel_id is not a valid UUID: {}",
@@ -150,6 +153,8 @@ async fn update_message(
     Path(id): Path<String>,
     Json(payload): Json<UpdateMessageRequest>,
 ) -> Result<Json<ApiResponse<MessageResponse>>, AppError> {
+    validate_message_content(&payload.content)?;
+
     Uuid::parse_str(&id)
         .map_err(|_| AppError::BadRequest(format!("message id is not a valid UUID: {id}")))?;
 

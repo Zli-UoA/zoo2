@@ -13,6 +13,7 @@ use crate::{
     models::{Channel, ChannelUser},
     routes::response::ApiResponse,
     state::AppState,
+    validation::{validate_channel_description, validate_channel_name},
 };
 
 #[derive(Debug, Deserialize)]
@@ -142,6 +143,9 @@ async fn create_channel(
     auth_user: AuthUser,
     Json(payload): Json<CreateChannelRequest>,
 ) -> Result<Json<ApiResponse<ChannelResponse>>, AppError> {
+    validate_channel_name(&payload.channel_name)?;
+    validate_channel_description(payload.description.as_deref())?;
+
     let id = payload.id.unwrap_or_else(|| Uuid::new_v4().to_string());
     Uuid::parse_str(&id)
         .map_err(|_| AppError::BadRequest(format!("channel id is not a valid UUID: {id}")))?;
@@ -185,6 +189,13 @@ async fn update_channel(
     Path(id): Path<String>,
     Json(payload): Json<UpdateChannelRequest>,
 ) -> Result<Json<ApiResponse<ChannelResponse>>, AppError> {
+    if let Some(ref name) = payload.channel_name {
+        validate_channel_name(name)?;
+    }
+    if let Some(ref desc) = payload.description {
+        validate_channel_description(Some(desc))?;
+    }
+
     Uuid::parse_str(&id)
         .map_err(|_| AppError::BadRequest(format!("channel id is not a valid UUID: {id}")))?;
 
@@ -552,6 +563,9 @@ async fn get_channel_by_id(
     auth_user: AuthUser,
     Path(id): Path<String>,
 ) -> Result<Json<ChannelResponse>, AppError> {
+    Uuid::parse_str(&id)
+        .map_err(|_| AppError::BadRequest(format!("channel id is not a valid UUID: {id}")))?;
+
     let mut db = state.db.clone();
     let channel = Channel::get_by_id(&mut db, id.as_str())
         .await
