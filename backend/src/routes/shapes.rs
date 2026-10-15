@@ -26,7 +26,7 @@ pub fn router() -> Router<AppState> {
 }
 
 /// クライアントから送信されたクエリパラメータのうち、Electric プロトコルで許可されたものを転送
-fn filter_electric_params(raw_query: &HashMap<String, String>) -> Vec<(String, String)> {
+pub fn filter_electric_params(raw_query: &HashMap<String, String>) -> Vec<(String, String)> {
     let allowed_prefixes = ["subset__"];
     let allowed_keys = [
         "live",
@@ -49,6 +49,66 @@ fn filter_electric_params(raw_query: &HashMap<String, String>) -> Vec<(String, S
         })
         .map(|(k, v)| (k.clone(), v.clone()))
         .collect()
+}
+
+/// Channels Shape の where 句とパラメータの純粋組み立て
+pub fn channels_shape_where(user_id: &str) -> (String, Vec<(&'static str, &str)>) {
+    (
+        "is_private = false OR id IN (SELECT channel_id FROM channel_user WHERE user_id = $1)"
+            .to_string(),
+        vec![("params[1]", user_id)],
+    )
+}
+
+/// Messages Shape の where 句とパラメータの純粋組み立て
+pub fn messages_shape_where(channel_id: &str) -> (String, Vec<(&'static str, &str)>) {
+    (
+        "channel_id = $1".to_string(),
+        vec![("params[1]", channel_id)],
+    )
+}
+
+/// Channel Users Shape の where 句とパラメータの純粋組み立て
+pub fn channel_users_shape_where<'a>(
+    channel_id: Option<&'a str>,
+    user_id: &'a str,
+) -> (String, Vec<(&'static str, &'a str)>) {
+    if let Some(ch_id) = channel_id {
+        ("channel_id = $1".to_string(), vec![("params[1]", ch_id)])
+    } else {
+        (
+            "channel_id IN (SELECT id FROM channels WHERE is_private = false AND deleted_at IS NULL) OR channel_id IN (SELECT channel_id FROM channel_user WHERE user_id = $1)".to_string(),
+            vec![("params[1]", user_id)],
+        )
+    }
+}
+
+/// 各テーブル向けの Electric Shape `where` 句および追加パラメータを組み立てる純粋関数
+pub fn shape_where<'a>(
+    table: &str,
+    user_id: &'a str,
+    channel_id: Option<&'a str>,
+) -> (Option<String>, Vec<(&'static str, &'a str)>) {
+    match table {
+        "channels" => {
+            let (w, p) = channels_shape_where(user_id);
+            (Some(w), p)
+        }
+        "messages" => {
+            if let Some(ch_id) = channel_id {
+                let (w, p) = messages_shape_where(ch_id);
+                (Some(w), p)
+            } else {
+                (None, vec![])
+            }
+        }
+        "channel_user" | "channel_users" => {
+            let (w, p) = channel_users_shape_where(channel_id, user_id);
+            (Some(w), p)
+        }
+        "users" => (None, vec![]),
+        _ => (None, vec![]),
+    }
 }
 
 /// Electric へのストリーミング Shape プロキシ実行
@@ -139,14 +199,12 @@ async fn channels_shape(
     auth_user: AuthUser,
     Query(raw_query): Query<HashMap<String, String>>,
 ) -> Result<Response, AppError> {
-    let where_clause =
-        "is_private = false OR id IN (SELECT channel_id FROM channel_user WHERE user_id = $1)";
-    let extra_params = [("params[1]", auth_user.id.as_str())];
+    let (where_clause, extra_params) = channels_shape_where(auth_user.id.as_str());
 
     proxy_shape(
         &state,
         "channels",
-        Some(where_clause),
+        Some(&where_clause),
         &extra_params,
         &raw_query,
         true,
@@ -206,12 +264,11 @@ async fn messages_shape(
         }
     }
 
-    let where_clause = "channel_id = $1";
-    let extra_params = [("params[1]", channel_id.as_str())];
+    let (where_clause, extra_params) = messages_shape_where(channel_id.as_str());
     proxy_shape(
         &state,
         "messages",
-        Some(where_clause),
+        Some(&where_clause),
         &extra_params,
         &raw_query,
         channel.is_private,
@@ -234,11 +291,7 @@ async fn channel_users_shape(
     auth_user: AuthUser,
     Query(raw_query): Query<HashMap<String, String>>,
 ) -> Result<Response, AppError> {
-    let (where_clause, extra_params, is_private): (String, Vec<(&str, &str)>, bool) = if let Some(
-        channel_id,
-    ) =
-        raw_query.get("channel_id")
-    {
+    let (channel_id_opt, is_private) = if let Some(channel_id) = raw_query.get("channel_id") {
         Uuid::parse_str(channel_id).map_err(|_| {
             AppError::BadRequest(format!("channel_id is not a valid UUID: {channel_id}"))
         })?;
@@ -278,21 +331,13 @@ async fn channel_users_shape(
                 )));
             }
         }
-        (
-            "channel_id = $1".to_string(),
-            vec![("params[1]", channel_id.as_str())],
-            channel.is_private,
-        )
+        (Some(channel_id.as_str()), channel.is_private)
     } else {
-        // channel_id 未指定の場合: 公開チャンネルまたは所属チャンネルのメンバー情報
-        // サブクエリを使うことで、公開チャンネル作成時や参加チャンネル変更時に
-        // 全ユーザーの shape が 409 でフルリシンクされるのを防止
-        (
-                "channel_id IN (SELECT id FROM channels WHERE is_private = false AND deleted_at IS NULL) OR channel_id IN (SELECT channel_id FROM channel_user WHERE user_id = $1)".to_string(),
-                vec![("params[1]", auth_user.id.as_str())],
-                true,
-            )
+        (None, true)
     };
+
+    let (where_clause, extra_params) =
+        channel_users_shape_where(channel_id_opt, auth_user.id.as_str());
 
     proxy_shape(
         &state,
@@ -303,4 +348,106 @@ async fn channel_users_shape(
         is_private,
     )
     .await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_filter_electric_params() {
+        let mut raw = HashMap::new();
+        raw.insert("live".to_string(), "true".to_string());
+        raw.insert("handle".to_string(), "12345".to_string());
+        raw.insert("offset".to_string(), "-1".to_string());
+        raw.insert("subset__tags".to_string(), "foo".to_string());
+        // 許可外パラメータ (除外されるべき)
+        raw.insert("table".to_string(), "users".to_string());
+        raw.insert("where".to_string(), "1=1".to_string());
+        raw.insert("token".to_string(), "secret".to_string());
+
+        let filtered = filter_electric_params(&raw);
+        let keys: Vec<String> = filtered.into_iter().map(|(k, _)| k).collect();
+
+        assert!(keys.contains(&"live".to_string()));
+        assert!(keys.contains(&"handle".to_string()));
+        assert!(keys.contains(&"offset".to_string()));
+        assert!(keys.contains(&"subset__tags".to_string()));
+
+        assert!(!keys.contains(&"table".to_string()));
+        assert!(!keys.contains(&"where".to_string()));
+        assert!(!keys.contains(&"token".to_string()));
+    }
+
+    #[test]
+    fn test_channels_shape_where() {
+        let user_id = "user-123";
+        let (clause, params) = channels_shape_where(user_id);
+
+        assert!(clause.contains("is_private = false"));
+        assert!(clause.contains("SELECT channel_id FROM channel_user WHERE user_id = $1"));
+        assert_eq!(params, vec![("params[1]", "user-123")]);
+    }
+
+    #[test]
+    fn test_messages_shape_where() {
+        let channel_id = "channel-456";
+        let (clause, params) = messages_shape_where(channel_id);
+
+        assert_eq!(clause, "channel_id = $1");
+        assert_eq!(params, vec![("params[1]", "channel-456")]);
+    }
+
+    #[test]
+    fn test_channel_users_shape_where() {
+        let user_id = "user-123";
+        let channel_id = "channel-456";
+
+        // channel_id 指定時
+        let (clause, params) = channel_users_shape_where(Some(channel_id), user_id);
+        assert_eq!(clause, "channel_id = $1");
+        assert_eq!(params, vec![("params[1]", "channel-456")]);
+
+        // channel_id 未指定時
+        let (clause, params) = channel_users_shape_where(None, user_id);
+        assert!(clause.contains("WHERE is_private = false AND deleted_at IS NULL"));
+        assert!(clause.contains("WHERE user_id = $1"));
+        assert_eq!(params, vec![("params[1]", "user-123")]);
+    }
+
+    #[test]
+    fn test_shape_where_unified() {
+        let user_id = "user-123";
+        let channel_id = "channel-456";
+
+        // channels
+        let (w, p) = shape_where("channels", user_id, None);
+        assert!(w.is_some());
+        assert_eq!(p, vec![("params[1]", user_id)]);
+
+        // messages (channel_id あり)
+        let (w, p) = shape_where("messages", user_id, Some(channel_id));
+        assert_eq!(w.as_deref(), Some("channel_id = $1"));
+        assert_eq!(p, vec![("params[1]", channel_id)]);
+
+        // messages (channel_id なし)
+        let (w, p) = shape_where("messages", user_id, None);
+        assert!(w.is_none());
+        assert!(p.is_empty());
+
+        // channel_user
+        let (w, p) = shape_where("channel_user", user_id, Some(channel_id));
+        assert_eq!(w.as_deref(), Some("channel_id = $1"));
+        assert_eq!(p, vec![("params[1]", channel_id)]);
+
+        // users
+        let (w, p) = shape_where("users", user_id, None);
+        assert!(w.is_none());
+        assert!(p.is_empty());
+
+        // unknown table
+        let (w, p) = shape_where("unknown", user_id, None);
+        assert!(w.is_none());
+        assert!(p.is_empty());
+    }
 }
