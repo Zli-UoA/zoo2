@@ -11,46 +11,48 @@ export interface AppConfig {
 }
 
 export const DEFAULT_CONFIG: AppConfig = {
-  shapeMode: "direct",
+  shapeMode: "proxy",
   electricShapeUrl: "http://localhost:3000/v1/shape",
   apiBaseUrl: "http://localhost:8000",
   shapeProxyPath: "/api/shapes",
   devUserId: null,
 };
 
-export type ConfigEnv = Partial<
-  Record<
-    | "VITE_SHAPE_MODE"
-    | "VITE_ELECTRIC_SHAPE_URL"
-    | "VITE_API_BASE_URL"
-    | "VITE_SHAPE_PROXY_PATH"
-    | "VITE_DEV_USER_ID",
-    string | undefined
-  >
->;
+export interface ConfigEnv {
+  DEV?: boolean;
+  VITE_SHAPE_MODE?: string;
+  VITE_ELECTRIC_SHAPE_URL?: string;
+  VITE_API_BASE_URL?: string;
+  VITE_SHAPE_PROXY_PATH?: string;
+  VITE_DEV_USER_ID?: string;
+}
 
 function readEnv(): ConfigEnv {
-  const env = (import.meta.env ?? {}) as Record<string, string | undefined>;
-  return {
-    VITE_SHAPE_MODE: env.VITE_SHAPE_MODE,
-    VITE_ELECTRIC_SHAPE_URL: env.VITE_ELECTRIC_SHAPE_URL,
-    VITE_API_BASE_URL: env.VITE_API_BASE_URL,
-    VITE_SHAPE_PROXY_PATH: env.VITE_SHAPE_PROXY_PATH,
-    VITE_DEV_USER_ID: env.VITE_DEV_USER_ID,
-  };
+  return (import.meta.env ?? {}) as ConfigEnv;
+}
+
+function resolveShapeMode(configured: string | undefined, isDev: boolean): ShapeMode {
+  if (configured === "direct" || configured === "proxy") {
+    return configured;
+  }
+  if (configured) {
+    throw new Error(`Invalid VITE_SHAPE_MODE "${configured}": expected "direct" or "proxy"`);
+  }
+  return isDev ? "direct" : "proxy";
 }
 
 export function resolveConfig(
   env: ConfigEnv = readEnv(),
   overrides: Partial<AppConfig> = {},
 ): AppConfig {
+  const isDev = env.DEV === true;
   return {
     ...DEFAULT_CONFIG,
-    shapeMode: env.VITE_SHAPE_MODE === "proxy" ? "proxy" : "direct",
+    shapeMode: resolveShapeMode(env.VITE_SHAPE_MODE, isDev),
     electricShapeUrl: env.VITE_ELECTRIC_SHAPE_URL ?? DEFAULT_CONFIG.electricShapeUrl,
     apiBaseUrl: env.VITE_API_BASE_URL ?? DEFAULT_CONFIG.apiBaseUrl,
     shapeProxyPath: env.VITE_SHAPE_PROXY_PATH ?? DEFAULT_CONFIG.shapeProxyPath,
-    devUserId: env.VITE_DEV_USER_ID ?? null,
+    devUserId: isDev ? (env.VITE_DEV_USER_ID ?? null) : null,
     ...overrides,
   };
 }
