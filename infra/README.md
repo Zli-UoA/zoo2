@@ -137,10 +137,12 @@ make db-reset
 
 ## テスト (E2E)
 
-PostgreSQL と ElectricSQL を起動し、migration を適用したうえで `cargo test` を実行します (Docker と atlas が必要)。
+E2E (`backend/tests/`) は PostgreSQL と ElectricSQL を起動し、migration を適用したうえで実行します (Docker と atlas が必要)。
 
 ```bash
-make test
+make test-unit  # ユニットテスト (DB 不要)
+make test-e2e   # E2E
+make test       # 両方
 ```
 
 CI (`.github/workflows/ci-backend.yaml`) の `test` ジョブでも同じ手順を実行します。

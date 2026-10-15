@@ -51,7 +51,28 @@ jobs:
         run: |
           cargo fmt --check
 
-  test:
+  unit-test:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: ./backend
+    steps:
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Restore Cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: backend
+
+      - name: unit test
+        run: |
+          cargo test --lib
+
+  e2e:
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -81,13 +102,13 @@ jobs:
           DATABASE_URL: postgres://root:password@localhost:5432/zoo?sslmode=disable
         run: atlas migrate apply --config file://db/atlas.hcl --env local
 
-      - name: test
+      - name: e2e test
         env:
           DATABASE_URL: postgres://root:password@localhost:5432/zoo?sslmode=disable
           ELECTRIC_URL: http://localhost:3000
           DEV_AUTH_ENABLED: "true"
         run: |
-          cargo test
+          cargo test --test '*'
 
       - name: Show container logs
         if: failure()
