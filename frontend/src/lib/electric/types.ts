@@ -2,15 +2,15 @@ import type { TimestampString } from "../timestamps";
 
 export type TableName = "users" | "channels" | "messages" | "channel_user";
 
-export interface UserRow {
+export type UserRow = {
   id: string;
   user_name: string;
   display_name: string;
   created_at: TimestampString;
   updated_at: TimestampString | null;
-}
+};
 
-export interface ChannelRow {
+export type ChannelRow = {
   id: string;
   channel_name: string;
   description: string | null;
@@ -20,9 +20,9 @@ export interface ChannelRow {
   updated_at: TimestampString | null;
   archive_at: TimestampString | null;
   deleted_at: TimestampString | null;
-}
+};
 
-export interface MessageRow {
+export type MessageRow = {
   id: string;
   user_id: string;
   channel_id: string;
@@ -30,17 +30,17 @@ export interface MessageRow {
   created_at: TimestampString;
   updated_at: TimestampString | null;
   deleted_at: TimestampString | null;
-}
+};
 
-export interface ChannelUserRow {
+export type ChannelUserRow = {
   user_id: string;
   channel_id: string;
   joined_at: TimestampString;
-}
+};
 
-export interface TableRowMap {
+export type TableRowMap = {
   users: UserRow;
   channels: ChannelRow;
   messages: MessageRow;
   channel_user: ChannelUserRow;
-}
+};
