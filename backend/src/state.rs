@@ -4,10 +4,23 @@ use crate::config::Config;
 pub struct AppState {
     pub db: toasty::Db,
     pub config: Config,
+    pub http_client: reqwest::Client,
 }
 
 impl AppState {
     pub fn new(db: toasty::Db, config: Config) -> Self {
-        Self { db, config }
+        Self {
+            db,
+            config,
+            http_client: reqwest::Client::new(),
+        }
+    }
+
+    pub fn with_client(db: toasty::Db, config: Config, http_client: reqwest::Client) -> Self {
+        Self {
+            db,
+            config,
+            http_client,
+        }
     }
 }

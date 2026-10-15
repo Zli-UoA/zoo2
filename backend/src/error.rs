@@ -20,6 +20,9 @@ pub enum AppError {
     #[error("Conflict: {0}")]
     Conflict(String),
 
+    #[error("Forbidden: {0}")]
+    Forbidden(String),
+
     #[error("Internal server error: {0}")]
     Internal(#[from] anyhow::Error),
 }
@@ -82,6 +85,7 @@ impl IntoResponse for AppError {
     fn into_response(self) -> Response {
         let (status, message) = match &self {
             AppError::Conflict(msg) => (StatusCode::CONFLICT, msg.clone()),
+            AppError::Forbidden(msg) => (StatusCode::FORBIDDEN, msg.clone()),
             AppError::BadRequest(msg) => (StatusCode::BAD_REQUEST, msg.clone()),
             AppError::NotFound(msg) => (StatusCode::NOT_FOUND, msg.clone()),
             AppError::Database(_) => (
@@ -119,5 +123,8 @@ mod tests {
 
         let conflict = AppError::Conflict("duplicate".into()).into_response();
         assert_eq!(conflict.status(), StatusCode::CONFLICT);
+
+        let forbidden = AppError::Forbidden("access denied".into()).into_response();
+        assert_eq!(forbidden.status(), StatusCode::FORBIDDEN);
     }
 }

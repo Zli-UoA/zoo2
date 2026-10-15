@@ -20,6 +20,12 @@ anyhow = "1"
 thiserror = "2"
 uuid = { version = "1", features = ["v4", "serde"] }
 tokio-postgres = "0.7"
+reqwest = { version = "0.12", features = ["stream"] }
+futures-util = "0.3"
+
+[lib]
+name = "backend"
+path = "src/lib.rs"
 
 [[bin]]
 name = "zoo_backend"

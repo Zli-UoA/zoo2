@@ -6,7 +6,10 @@ use axum::{
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use crate::{error::AppError, models::User, state::AppState};
+use crate::{
+    db::get_current_txid, error::AppError, models::User, routes::response::ApiResponse,
+    state::AppState,
+};
 
 #[derive(Debug, Deserialize)]
 pub struct CreateUserRequest {
@@ -15,7 +18,7 @@ pub struct CreateUserRequest {
     pub display_name: String,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct UserResponse {
     pub id: String,
     pub user_name: String,
@@ -45,9 +48,14 @@ pub fn router() -> Router<AppState> {
 async fn create_user(
     State(state): State<AppState>,
     Json(payload): Json<CreateUserRequest>,
-) -> Result<Json<UserResponse>, AppError> {
-    let mut db = state.db.clone();
+) -> Result<Json<ApiResponse<UserResponse>>, AppError> {
     let id = payload.id.unwrap_or_else(|| Uuid::new_v4().to_string());
+    Uuid::parse_str(&id).map_err(|_| {
+        AppError::BadRequest(format!("user id is not a valid UUID: {id}"))
+    })?;
+
+    let mut db = state.db.clone();
+    let mut tx = db.transaction().await?;
     let now = crate::models::now_utc_millis();
 
     let user = toasty::create!(User {
@@ -57,10 +65,13 @@ async fn create_user(
         created_at: now,
         updated_at: None,
     })
-    .exec(&mut db)
+    .exec(&mut tx)
     .await?;
 
-    Ok(Json(UserResponse::from(user)))
+    let txid = get_current_txid(&mut tx).await?;
+    tx.commit().await?;
+
+    Ok(Json(ApiResponse::new(UserResponse::from(user), txid)))
 }
 
 async fn list_users(State(state): State<AppState>) -> Result<Json<Vec<UserResponse>>, AppError> {
