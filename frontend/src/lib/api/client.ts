@@ -44,6 +44,24 @@ export interface ApiClientOptions {
   fetch?: FetchLike;
 }
 
+export interface AuthHeadersSource {
+  getToken?: TokenProvider;
+  devUserId?: string | null;
+}
+
+export async function buildAuthHeaders(source: AuthHeadersSource = {}): Promise<Headers> {
+  const getToken = source.getToken ?? defaultGetToken;
+  const headers = new Headers();
+  const token = await getToken();
+  if (token) {
+    headers.set("Authorization", `Bearer ${token}`);
+  }
+  if (source.devUserId) {
+    headers.set("X-Dev-User", source.devUserId);
+  }
+  return headers;
+}
+
 export interface RequestOptions {
   method?: string;
   body?: unknown;
@@ -82,17 +100,11 @@ export function createApiClient(options: ApiClientOptions = {}): ApiClient {
     hasBody: boolean,
   ): Promise<Headers> {
     const headers = new Headers(explicit);
+    const authHeaders = await buildAuthHeaders({ getToken: tokenProvider, devUserId });
+    authHeaders.forEach((value, key) => headers.set(key, value));
     headers.set("Accept", "application/json");
     if (hasBody) {
       headers.set("Content-Type", "application/json");
-    }
-
-    const token = await tokenProvider();
-    if (token) {
-      headers.set("Authorization", `Bearer ${token}`);
-    }
-    if (devUserId) {
-      headers.set("X-Dev-User", devUserId);
     }
 
     return headers;

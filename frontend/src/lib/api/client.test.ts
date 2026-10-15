@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vite-plus/test";
 
 import {
   ApiError,
+  buildAuthHeaders,
   createApiClient,
   createConfiguredApiClient,
   unwrapEnvelope,
@@ -16,6 +17,20 @@ function jsonResponse(body: unknown, init: ResponseInit = {}): Response {
     ...init,
   });
 }
+
+describe("buildAuthHeaders", () => {
+  it("adds Bearer and X-Dev-User when provided", async () => {
+    const headers = await buildAuthHeaders({ getToken: () => "token-abc", devUserId: "dev-1" });
+    expect(headers.get("Authorization")).toBe("Bearer token-abc");
+    expect(headers.get("X-Dev-User")).toBe("dev-1");
+  });
+
+  it("returns no auth headers without credentials", async () => {
+    const headers = await buildAuthHeaders({ getToken: () => null });
+    expect(headers.has("Authorization")).toBe(false);
+    expect(headers.has("X-Dev-User")).toBe(false);
+  });
+});
 
 describe("unwrapEnvelope", () => {
   it("extracts data and txid", () => {
