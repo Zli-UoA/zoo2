@@ -3,6 +3,9 @@ on:
   push:
     paths:
       - "backend/**"
+      - "infra/db/migrations/**"
+      - "infra/compose.yml"
+      - ".github/workflows/ci-backend.yaml"
   workflow_dispatch:
 jobs:
   build:
@@ -65,7 +68,34 @@ jobs:
         with:
           workspaces: backend
 
+      - name: Start PostgreSQL and Electric
+        working-directory: .
+        run: docker compose -f infra/compose.yml up -d --wait
+
+      - name: Setup Atlas
+        uses: ariga/setup-atlas@v0
+
+      - name: Apply migrations
+        working-directory: ./infra
+        env:
+          DATABASE_URL: postgres://root:password@localhost:5432/zoo?sslmode=disable
+        run: atlas migrate apply --config file://db/atlas.hcl --env local
+
       - name: test
+        env:
+          DATABASE_URL: postgres://root:password@localhost:5432/zoo?sslmode=disable
+          ELECTRIC_URL: http://localhost:3000
+          DEV_AUTH_ENABLED: "true"
         run: |
           cargo test
+
+      - name: Show container logs
+        if: failure()
+        working-directory: .
+        run: docker compose -f infra/compose.yml logs
+
+      - name: Stop containers
+        if: always()
+        working-directory: .
+        run: docker compose -f infra/compose.yml down -v
 
