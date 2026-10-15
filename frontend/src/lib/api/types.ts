@@ -1,9 +1,40 @@
-import type { ChannelRow, ChannelUserRow, MessageRow, UserRow } from "../electric/types";
+import type { TimestampString } from "../timestamps";
 
-export type UserResponse = UserRow;
-export type ChannelResponse = ChannelRow;
-export type MessageResponse = MessageRow;
-export type ChannelUserResponse = ChannelUserRow;
+export interface UserResponse {
+  id: string;
+  user_name: string;
+  display_name: string;
+  created_at: TimestampString;
+  updated_at: TimestampString | null;
+}
+
+export interface ChannelResponse {
+  id: string;
+  channel_name: string;
+  description: string | null;
+  created_user_id: string;
+  is_private: boolean;
+  created_at: TimestampString;
+  updated_at: TimestampString | null;
+  archive_at: TimestampString | null;
+  deleted_at: TimestampString | null;
+}
+
+export interface MessageResponse {
+  id: string;
+  user_id: string;
+  channel_id: string;
+  content: string;
+  created_at: TimestampString;
+  updated_at: TimestampString | null;
+  deleted_at: TimestampString | null;
+}
+
+export interface ChannelUserResponse {
+  user_id: string;
+  channel_id: string;
+  joined_at: TimestampString;
+}
 
 export interface CreateUserRequest {
   id?: string;

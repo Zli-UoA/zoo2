@@ -1,6 +1,4 @@
-export type IsoTimestamp = string;
-
-export type IntegerAsString = string;
+import type { TimestampString } from "../timestamps";
 
 export type TableName = "users" | "channels" | "messages" | "channel_user";
 
@@ -8,8 +6,8 @@ export interface UserRow {
   id: string;
   user_name: string;
   display_name: string;
-  created_at: IsoTimestamp;
-  updated_at: IsoTimestamp | null;
+  created_at: TimestampString;
+  updated_at: TimestampString | null;
 }
 
 export interface ChannelRow {
@@ -18,10 +16,10 @@ export interface ChannelRow {
   description: string | null;
   created_user_id: string;
   is_private: boolean;
-  created_at: IsoTimestamp;
-  updated_at: IsoTimestamp | null;
-  archive_at: IsoTimestamp | null;
-  deleted_at: IsoTimestamp | null;
+  created_at: TimestampString;
+  updated_at: TimestampString | null;
+  archive_at: TimestampString | null;
+  deleted_at: TimestampString | null;
 }
 
 export interface MessageRow {
@@ -29,15 +27,15 @@ export interface MessageRow {
   user_id: string;
   channel_id: string;
   content: string;
-  created_at: IsoTimestamp;
-  updated_at: IsoTimestamp | null;
-  deleted_at: IsoTimestamp | null;
+  created_at: TimestampString;
+  updated_at: TimestampString | null;
+  deleted_at: TimestampString | null;
 }
 
 export interface ChannelUserRow {
   user_id: string;
   channel_id: string;
-  joined_at: IsoTimestamp;
+  joined_at: TimestampString;
 }
 
 export interface TableRowMap {
@@ -46,5 +44,3 @@ export interface TableRowMap {
   messages: MessageRow;
   channel_user: ChannelUserRow;
 }
-
-export type AnyRow = TableRowMap[TableName];

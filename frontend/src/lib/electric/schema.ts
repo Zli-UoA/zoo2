@@ -27,10 +27,8 @@ export type ElectricType =
 export const NUMERIC_ELECTRIC_TYPES: ReadonlySet<ElectricType> = new Set<ElectricType>([
   "int2",
   "int4",
-  "int8",
   "float4",
   "float8",
-  "numeric",
 ]);
 
 export type ShapeName = "channels" | "messages" | "users" | "channelUsers";

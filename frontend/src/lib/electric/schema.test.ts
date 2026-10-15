@@ -14,14 +14,18 @@ describe("coerceElectricValue", () => {
   it("converts numeric-as-string values to numbers", () => {
     expect(coerceElectricValue("int2", "1")).toBe(1);
     expect(coerceElectricValue("int4", "42")).toBe(42);
-    expect(coerceElectricValue("int8", "1000000")).toBe(1000000);
+    expect(coerceElectricValue("float4", "1.5")).toBe(1.5);
     expect(coerceElectricValue("float8", "1.5")).toBe(1.5);
-    expect(coerceElectricValue("numeric", "0.25")).toBe(0.25);
   });
 
-  it("keeps timestamp values as ISO strings", () => {
-    expect(coerceElectricValue("timestamp", "2026-10-15T13:32:55.123")).toBe(
-      "2026-10-15T13:32:55.123",
+  it("leaves int8 and numeric as strings to avoid precision loss", () => {
+    expect(coerceElectricValue("int8", "9007199254740993")).toBe("9007199254740993");
+    expect(coerceElectricValue("numeric", "0.25")).toBe("0.25");
+  });
+
+  it("keeps timestamp values as strings", () => {
+    expect(coerceElectricValue("timestamp", "2026-10-15 13:32:55.123")).toBe(
+      "2026-10-15 13:32:55.123",
     );
   });
 
