@@ -28,6 +28,7 @@
             gcc
             gnumake
             nodejs_22
+            pnpm
             openssl.dev
             pkg-config
             rust-analyzer

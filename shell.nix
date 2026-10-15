@@ -15,6 +15,7 @@ in
       rustup
       gnumake
       nodejs_22
+      pnpm
     ];
     RUSTC_VERSION = overrides.toolchain.channel;
     # https://github.com/rust-lang/rust-bindgen#environment-variables
