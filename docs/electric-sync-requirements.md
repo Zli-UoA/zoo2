@@ -14,9 +14,10 @@
 先行開発時の経路では、ローカルの Electric（`infra/compose.yml` の `http://localhost:3000/v1/shape`、`ELECTRIC_INSECURE=true`）に直接接続します。
 
 ### 必要な Shape（現行スキーマ基準・粒度は要相談）
-- `Channel`: 公開チャンネル（`is_private = false`）および自分が参加しているプライベートチャンネル
-- `Message`: 指定した `channel_id` のメッセージ一覧
-- `ChannelUser` / `User`: メンバー一覧・プロフィール表示用
+- `Channel`: 公開チャンネルは全認証ユーザーが閲覧できます（後述の単一テナント構成）。プライベートチャンネルは `ChannelUser` に登録されたユーザーのみ閲覧できます。
+- `Message`: 指定した `channel_id` のメッセージ一覧。
+- `User`: 全ユーザー。メッセージの投稿者表示をクライアント側で結合するために購読します（非正規化はしません）。
+- `ChannelUser`: メンバー一覧・参加状態の表示用。
 
 ### クエリパラメータとレスポンスヘッダの転送
 Electric クライアントが送信する以下のプロトコル用・ページング（subset）用クエリパラメータを、プロキシから Electric へそのまま転送してください。
@@ -26,41 +27,46 @@ Electric クライアントが送信する以下のプロトコル用・ペー�
 
 また、Electric が返す `electric-handle`, `electric-offset`, `electric-schema`, `electric-cursor` 等のヘッダをクライアントへそのまま返してください（HTTP クライアントが自動展開する `content-encoding` や `content-length` は除きます）。
 
+### SSE とストリーミング転送
+`live=true` や `live_sse=true` の応答は Server-Sent Events です。プロキシ側でレスポンスをバッファリングせず、チャンクのままクライアントへ透過的に流してください。応答全体を一度に読み込む実装（`bytes()` 等でまとめて取得する方式）は、SSE では応答が返らず停止するため使えません。
+
 ### `WHERE` 句のサブクエリに関する注意点
-プライベートチャンネルの認可などで `WHERE` 句内のサブクエリ（例: `id IN (SELECT channel_id FROM "ChannelUser" WHERE user_id = ...)`）を使う場合、プレースホルダ（`$1` 等）をサブクエリ内に置くと Electric 側でエラーになる既知の挙動があります（`electric#3143`）。サーバ側で検証済みの ID をリテラルとして埋め込む形で回避してください。
+プライベートチャンネルの認可などで `WHERE` 句内のサブクエリ（例: `id IN (SELECT channel_id FROM channel_user WHERE user_id = ...)`）を使う場合、プレースホルダ（`$1` 等）をサブクエリ内に置くと Electric 側でエラーになる既知の挙動があります（`electric#3143`）。サーバ側で検証済みの値をリテラルとして埋め込む形で回避してください。
 
-### JOIN 不可に伴う非正規化と数値型の扱い
-Electric の Shape は単一テーブル単位で配信され、テーブル間の JOIN ができません。メッセージ一覧の表示に必要な投稿者情報（`author_name`、必要に応じてアイコン URL 等）を `Message` テーブルに非正規化して持たせるか、`User` Shape を別途購読してクライアント側で結合するかを決める必要があります。
+なお、現行スキーマの主キーは `text` 型であり、UUID ではありません。UUID 前提の形式検証はそのまま適用できないため、主キーの型（`text` のままか UUID にするか）は「7. 要検討事項」とし、リテラルを埋め込む際はインジェクションを防ぐ検証を必ず行ってください。
 
-また、Electric は integer 等の数値カラムを文字列（例: `"1"`）として配信する場合があります。フロントエンド側で `Number()` による変換を行うため、API レスポンスと Shape のスキーマ定義でカラム名を揃えておけば問題ありません。
+### JOIN 不可に伴うクライアント側結合
+Electric の Shape は単一テーブル単位で配信され、テーブル間の JOIN ができません。投稿者名などの関連情報は、`Message` テーブルへ非正規化せず、`User` Shape を別途購読して TanStack DB の live query でクライアント側結合する方針とします。
+
+非正規化しない理由は、ユーザーが表示名やアイコンを変更した際に過去ログを一括更新する必要がなく、クライアント側結合なら変更が即座に全メッセージへ反映されるためです。
+
+このとき、`User` Shape のスコープは「表示しうる全メッセージの投稿者」を必ず含むようにしてください。単一テナント構成では全ユーザーを同期対象にするため、この条件は満たされます。
+
+### 数値型の扱い
+Electric は integer 等の数値カラムを文字列（例: `"1"`）として配信する場合があります。フロントエンド側で `Number()` による変換を行うため、API レスポンスと Shape のスキーマ定義でカラム名を揃えておけば問題ありません。
 
 ## 2. 書き込み（REST API と楽観的更新の `txid` ハンドシェイク）
 
 ### 同一トランザクションでの `txid` 返却
 Electric は読み取り専用のため、作成・更新・削除はすべてバックエンドの REST API 経由で行います。フロントエンドはローカルのコレクションを楽観的に更新し、API レスポンスに含まれるトランザクション ID（`txid`）が Electric のストリームから流れてくるまで楽観状態を保持します（`collection.utils.awaitTxId(txid)`）。
 
-そのため、すべての書き込み系エンドポイント（POST / PATCH / DELETE）は、**データの書き込みと同一の PostgreSQL トランザクション内**で以下の SQL を実行し、取得した `txid` をレスポンス JSON に含めて返してください。
+そのため、すべての書き込み系エンドポイント（POST / PATCH / DELETE）は、**データの書き込みと同一の PostgreSQL トランザクション内**で以下の SQL を実行し、取得した `txid` をレスポンスに含めて返してください。
 
 ```sql
 SELECT pg_current_xact_id()::xid::text
 ```
 
-レスポンスは以下の形式を想定しています。
+書き込みと別のトランザクションで `pg_current_xact_id()` を呼ぶと `txid` が一致せず、フロントエンドの `awaitTxId` がタイムアウトします。
 
-```json
-{
-  "id": "...",
-  "content": "hello",
-  "txid": "12345"
-}
-```
-
-書き込みと別のトランザクションで `pg_current_xact_id()` を呼ぶと `txid` が一致せず、フロントエンドの `awaitTxId` がタイムアウトします。現在バックエンドで採用している Toasty ORM（`0.11`）で同一トランザクション内の raw SQL 実行や `txid` 取得が可能か、あるいは書き込みトランザクションで `tokio-postgres` 等を併用するかの確認が必要です。
+現行の Toasty ORM（`0.11`）で、書き込みトランザクション内からこの SQL を実行できるかを確認する必要があります。実行できる場合は Toasty のトランザクション経由で取得します。実行できない場合は、書き込み本体を `tokio-postgres` の明示的なコネクションに寄せ、1 文（例: `INSERT ... RETURNING ..., pg_current_xact_id()::xid::text AS txid`）で書き込みと `txid` 取得を完結させます。ただしこの場合は書き込み経路が Toasty と `tokio-postgres` の二系統になり、Toasty の役割が読み取り中心に縮むことを許容するかの判断が必要です（「7. 要検討事項」）。
 
 ### 想定される書き込みエンドポイントとトランザクション分離
 現行の `/api/users`, `/api/channels`, `/api/messages` をベースに、少なくともメッセージの送信（`POST /api/messages`）、編集（`PATCH /api/messages/{id}`）、論理削除（`DELETE /api/messages/{id}`）、およびチャンネルの作成・更新・参加（`ChannelUser` 追加）・退出の各操作で `txid` の返却が必要です。
 
 なお、将来スレッドの返信数（`reply_count` 等）のように「子レコードの追加と同時に親レコードの集計値を更新する」処理を実装する場合、行の追加と親レコードのカウンタ更新は別トランザクションに分けてください（同一 `txid` だとクライアント側の別クエリで更新が取りこぼされる事象があるため）。
+
+### `txid` レスポンスの形式
+各エンドポイントのレスポンスは、共通エンベロープ（例: `{ "data": ..., "txid": "..." }`）に統一することを推します。フロントエンドはアダプタで `data` と `txid` を取り出すため、行をそのまま返す形式（`{ ...row, "txid": "..." }`）でも実装コストは変わりませんが、一覧取得や削除など形の異なるレスポンスでも扱いを揃えられる点でエンベロープが扱いやすいです。最終的な形式は実装開始時に確定させてください。
 
 ## 3. データベース・スキーマ要件
 
@@ -68,15 +74,21 @@ SELECT pg_current_xact_id()::xid::text
 Electric が UPDATE や DELETE の変更を正しく配信するには、対象テーブルに `REPLICA IDENTITY FULL` が設定されている必要があります。未設定の場合、INSERT は配信されますが UPDATE / DELETE が正しく同期されません。現行の `infra/db/schema.sql`（および初期マイグレーション `20261008000000_initial.sql`）には含まれていないため、以下の追加が必要です。
 
 ```sql
-ALTER TABLE "User" REPLICA IDENTITY FULL;
-ALTER TABLE "Channel" REPLICA IDENTITY FULL;
-ALTER TABLE "Message" REPLICA IDENTITY FULL;
-ALTER TABLE "ChannelUser" REPLICA IDENTITY FULL;
+ALTER TABLE users REPLICA IDENTITY FULL;
+ALTER TABLE channels REPLICA IDENTITY FULL;
+ALTER TABLE messages REPLICA IDENTITY FULL;
+ALTER TABLE channel_user REPLICA IDENTITY FULL;
 ```
 
-### テーブル名のケースと論理削除
-現行スキーマは `"User"`, `"Channel"`, `"Message"` のように PascalCase（ダブルクォート付き識別子）で定義されています。Electric の Shape API に指定する `table` パラメータ（例: `table="Message"`）との兼ね合いを確認し、このまま PascalCase で統一するか、snake_case に変更するかを早期に確定させたいです。
+Atlas は宣言的スキーマでの `REPLICA IDENTITY` の差分検知を標準でサポートしていない場合があるため、`infra/db/migrations/` に手動のマイグレーションファイルを作成して適用する運用とします。
 
+### テーブル名は `snake_case` に統一
+現行スキーマは `"User"`, `"Channel"`, `"Message"` のように PascalCase（ダブルクォート付き識別子）で定義されていますが、`snake_case`（`users`, `channels`, `messages`, `channel_user`, `role`, `user_role`）へ統一します。ダブルクォート付きの識別子は、PostgreSQL の自動小文字化の影響で、Electric の `table` パラメータ指定・Atlas の差分検知・生 SQL のいずれでもクォート漏れを起こしやすいためです。本番運用前の現時点で統一します。
+
+### 主キーの型（要検討）
+現行の主キーは `text` です。サブクエリへリテラルを埋め込む際の安全性検証や、API と Shape 間の型の一貫性を考えると、UUID（`uuid` 型）に寄せる選択肢もあります。どちらに統一するかは「7. 要検討事項」とします。
+
+### 論理削除の扱い
 `Channel.deleted_at` や `Message.deleted_at` による論理削除は、そのまま Shape で配信し、フロントエンドのクエリ側で除外する方針で対応可能です。
 
 ## 4. 認証・認可と CORS 設定
@@ -91,13 +103,20 @@ ALTER TABLE "ChannelUser" REPLICA IDENTITY FULL;
 
 1. `make db-up && make migrate` でローカルの PostgreSQL と Electric を起動する。
 2. フロントエンドのデータ取得設定をアダプタ化し、開発初期は Electric のエンドポイント（`http://localhost:3000/v1/shape`）を直接参照する。
-3. 書き込みは既存の REST API（`POST /api/channels`, `POST /api/messages` 等）またはシードデータを利用し、`txid` ハンドシェイクが実装されるまでは楽観的更新の待機をスキップ（またはモック）する。
-4. バックエンド側で Shape プロキシと `txid` 返却が実装された段階で、接続先 URL を `http://localhost:8000/api/shapes/...` に切り替え、`awaitTxId` を有効化する。
+3. `Message` と `User` の Shape を購読し、TanStack DB の live query でクライアント側結合して投稿者を表示する。
+4. 書き込みは既存の REST API（`POST /api/channels`, `POST /api/messages` 等）またはシードデータを利用し、`txid` ハンドシェイクが実装されるまでは楽観的更新の待機をスキップ（またはモック）する。
+5. バックエンド側で Shape プロキシと `txid` 返却が実装された段階で、接続先 URL を `http://localhost:8000/api/shapes/...` に切り替え、`awaitTxId` を有効化する。
 
-## 6. バックエンド・プロダクト側と合意したい未決事項
+## 6. 決定事項
 
-- [ ] Workspace（サーバー）概念の有無: 現行スキーマは Workspace テーブルを持たない単一テナント構成になっているため、このまま単一テナントとして UI を設計してよいか
-- [ ] 初期スコープの機能範囲: リアクション機能やスレッド機能、チャンネル内のロール管理をどのフェーズでスキーマに追加するか
-- [ ] メッセージの投稿者表示: `Message` テーブルに `author_name` 等を非正規化して持たせるか、フロントエンドで `User` テーブルの Shape と結合するか
-- [ ] テーブル名のケース: PascalCase（`"User"` 等）のまま進めるか、snake_case に変更するか
-- [ ] Toasty ORM での `txid` 取得方法: 書き込みトランザクション内で `pg_current_xact_id()` を取得する実装方針
+- 単一テナント（Workspace なし）で進める。公開チャンネルは全認証ユーザーが閲覧でき、プライベートチャンネルは `ChannelUser` に登録されたユーザーのみ閲覧できる。
+- 初期スコープはチャンネルの作成・一覧・参加・退出と、メッセージの送受信・編集・論理削除とする。スレッドは集計カラムの `txid` 分離問題があるため Phase 2 とする。リアクションは集計を持たず他の書き込みと同じ `txid` ハンドシェイクで扱えるため、必要なら前倒しできる。
+- 投稿者表示は非正規化せず、`User` Shape を購読してクライアント側で結合する。
+- テーブル名は `snake_case` に統一する。
+- `REPLICA IDENTITY FULL` は Atlas の手動マイグレーションで追加する。
+
+## 7. 要検討事項
+
+- [ ] 書き込み処理の `txid` 取得方法: Toasty のトランザクション API で生 SQL を実行できるかを確認する。実行できない場合、書き込み本体を `tokio-postgres` に寄せて Toasty を読み取り中心にする方針を許容するか。
+- [ ] 主キーの型: `text` のまま進めるか、UUID に変更するか。
+- [ ] `txid` レスポンスの形式: 共通エンベロープ（`{ data, txid }`）か、行に `txid` を足す形式か。
