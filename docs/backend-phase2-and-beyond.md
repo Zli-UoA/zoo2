@@ -1,6 +1,10 @@
 # バックエンド Phase 2 以降の開発ロードマップ
 
-本ドキュメントは、バックエンドの初期実装（Phase 1: コア品質・バリデーション・ページネーション・ElectricSQL Shape プロキシ基盤）完了後に行う、Phase 2 以降の機能拡張および本番運用の設計・実装計画をまとめたものです。
+本ドキュメントは、バックエンドの初期実装（Phase 1: コア品質・Slack 準拠バリデーション・ElectricSQL Shape プロキシ基盤）完了後に行う、Phase 2 以降の機能拡張および本番運用の設計・実装計画をまとめたものです。
+
+> [!NOTE]
+> **読み取りと書き込みの責務分離方針:**
+> 本システムでは `docs/electric-sync-requirements.md` に従い、データの読み取り・リアルタイム同期・過去ログのページングはすべて **ElectricSQL Shape プロキシ (`GET /api/shapes/*`)** とその `subset__*` パラメータ（`subset__limit`, `subset__offset`, `subset__where` 等）に一本化します。REST API は書き込み（楽観更新のための `txid` ハンドシェイク）に特化し、REST 側での重複したカーソルページネーション二重管理は行いません。
 
 ---
 
@@ -108,7 +112,7 @@ flowchart TD
 ### 3.1 本番 IdP / JWT / OIDC 検証基盤
 - **現状**: `DEV_AUTH_ENABLED=true` ガードによる開発用認証（`X-Dev-User` / `Bearer <UUID>`）のみ実装されており、本番環境 (`ENVIRONMENT=production`) ではすべて `403 Forbidden` となる fail-closed 設計。
 - **実装内容**:
-  - OIDC / JWT プロバイダ（Clerk, Supabase Auth, Auth0, Firebase 等）の検証ロジックを [auth.rs](file:///Users/noharu/workspace/zoo/backend/src/auth.rs) に実装。
+  - OIDC / JWT プロバイダ（Clerk, Supabase Auth, Auth0, Firebase 等）の検証ロジックを [auth.rs](../backend/src/auth.rs) に実装。
   - JWKS (JSON Web Key Set) エンドポイントから公開鍵を取得し、メモリキャッシュ。
   - JWT の署名、有効期限（`exp`）、発行者（`iss`）、オーディエンス（`aud`）の検証。
   - 抽出した `sub` クレームを内部ユーザー ID として解決。
@@ -159,7 +163,7 @@ flowchart TD
 ### 5.1 GHCR 自動ビルド & Compose デプロイ
 - **背景**: PR #3 のレビュー指摘事項。
 - **実装内容**:
-  - GitHub Actions で [Dockerfile-backend-deploy](file:///Users/noharu/workspace/zoo/infra/Dockerfile-backend-deploy) をビルドし、GitHub Container Registry (`ghcr.io/zli-uoa/zoo-backend:${TAG}`) に push。
+  - GitHub Actions で [Dockerfile-backend-deploy](../infra/Dockerfile-backend-deploy) をビルドし、GitHub Container Registry (`ghcr.io/zli-uoa/zoo-backend:${TAG}`) に push。
   - 本番用 Docker Compose / 環境設定（`/etc/zoo/backend.env`）のテンプレート作成とデプロイ自動化。
 
 ### 5.2 構造化ログ & メトリクス

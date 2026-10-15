@@ -563,6 +563,9 @@ async fn get_channel_by_id(
     auth_user: AuthUser,
     Path(id): Path<String>,
 ) -> Result<Json<ChannelResponse>, AppError> {
+    Uuid::parse_str(&id)
+        .map_err(|_| AppError::BadRequest(format!("channel id is not a valid UUID: {id}")))?;
+
     let mut db = state.db.clone();
     let channel = Channel::get_by_id(&mut db, id.as_str())
         .await

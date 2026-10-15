@@ -104,7 +104,7 @@ pub fn validate_display_name(name: &str) -> Result<(), AppError> {
         ));
     }
 
-    if name.chars().count() > MAX_DISPLAY_NAME_LENGTH {
+    if trimmed.chars().count() > MAX_DISPLAY_NAME_LENGTH {
         return Err(AppError::BadRequest(format!(
             "Display name cannot exceed {MAX_DISPLAY_NAME_LENGTH} characters"
         )));
@@ -200,6 +200,12 @@ mod tests {
         assert!(validate_display_name("   ").is_err());
         let too_long = "a".repeat(81);
         assert!(validate_display_name(&too_long).is_err());
+        // 前後に空白があってもトリム後が80文字ならOK
+        let exact_with_spaces = format!("  {}  ", "a".repeat(80));
+        assert!(validate_display_name(&exact_with_spaces).is_ok());
+        // トリム後が81文字ならNG
+        let too_long_with_spaces = format!("  {}  ", "a".repeat(81));
+        assert!(validate_display_name(&too_long_with_spaces).is_err());
     }
 
     #[test]
