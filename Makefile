@@ -1,4 +1,16 @@
-.PHONY: migrate migrate-diff migrate-validate migrate-status db-up db-down db-restart db-reset backend-dev backend-build frontend-install frontend-dev frontend-build frontend-check
+.PHONY: migrate migrate-diff migrate-validate migrate-status db-up db-down db-restart db-reset backend-dev backend-build test test-unit test-e2e frontend-install frontend-dev frontend-build frontend-check
+
+test: test-unit test-e2e
+
+# ユニットテスト (DB 不要)
+test-unit:
+	cd backend && cargo test --lib
+
+# E2E: 本物の PostgreSQL + Electric を起動し、migration 適用後に tests/ を実行する (Docker / atlas 必須)
+test-e2e:
+	$(MAKE) -C infra db-up
+	$(MAKE) -C infra migrate
+	cd backend && DEV_AUTH_ENABLED=true cargo test --test '*'
 
 backend-dev:
 	cd backend && DEV_AUTH_ENABLED=true cargo run

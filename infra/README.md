@@ -134,3 +134,15 @@ make db-reset
 ```
 
 `db-reset`はローカルの全データを削除し、復元できません。再作成後は`make db-up`と`make migrate`を実行してください。
+
+## テスト (E2E)
+
+E2E (`backend/tests/`) は PostgreSQL と ElectricSQL を起動し、migration を適用したうえで実行します (Docker と atlas が必要)。
+
+```bash
+make test-unit  # ユニットテスト (DB 不要)
+make test-e2e   # E2E
+make test       # 両方
+```
+
+CI (`.github/workflows/ci-backend.yaml`) では `unit-test` ジョブ (DB 不要) と `e2e` ジョブ (上記と同じ手順) に分けて実行します。
