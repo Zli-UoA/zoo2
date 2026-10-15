@@ -91,7 +91,7 @@ jobs:
 
       - name: Start PostgreSQL and Electric
         working-directory: .
-        run: docker compose -f infra/compose.yml up -d --wait
+        run: docker compose -f infra/db/compose.yml up -d --wait
 
       - name: Setup Atlas
         uses: ariga/setup-atlas@v0
@@ -113,10 +113,10 @@ jobs:
       - name: Show container logs
         if: failure()
         working-directory: .
-        run: docker compose -f infra/compose.yml logs
+        run: docker compose -f infra/db/compose.yml logs
 
       - name: Stop containers
         if: always()
         working-directory: .
-        run: docker compose -f infra/compose.yml down -v
+        run: docker compose -f infra/db/compose.yml down -v
 
