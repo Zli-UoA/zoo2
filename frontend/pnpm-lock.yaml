@@ -228,7 +228,7 @@ importers:
         specifier: 0.8.5
         version: 0.8.5(@emnapi/core@1.11.3)(@emnapi/runtime@1.11.3)(@voidzero-dev/vite-plus-core@1.1.0(@types/node@22.20.5)(jiti@2.7.0)(typescript@6.0.3))
       '@tanstack/router-cli':
-        specifier: ^1.132.0
+        specifier: 1.167.43
         version: 1.167.43
       '@types/node':
         specifier: ^22.10.2

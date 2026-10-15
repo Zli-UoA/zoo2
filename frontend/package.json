@@ -9,7 +9,9 @@
     "dev": "vp dev --port 5173",
     "generate-routes": "tsr generate",
     "build": "vp build",
-    "preview": "vp preview"
+    "preview": "vp preview",
+    "check": "vp check",
+    "lint": "vp lint"
   },
   "dependencies": {
     "@base-ui/react": "^1.9.0",
@@ -30,7 +32,7 @@
   },
   "devDependencies": {
     "@tanstack/devtools-vite": "0.8.5",
-    "@tanstack/router-cli": "^1.132.0",
+    "@tanstack/router-cli": "1.167.43",
     "@types/node": "^22.10.2",
     "@types/react": "^19.2.0",
     "@types/react-dom": "^19.2.0",
@@ -43,7 +45,7 @@
     "packageManager": {
       "name": "pnpm",
       "version": "12.11.2",
-      "onFail": "download"
+      "onFail": "warn"
     }
   }
 }
