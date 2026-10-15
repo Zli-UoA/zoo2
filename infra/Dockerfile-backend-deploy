@@ -16,3 +16,4 @@ USER nonroot
 COPY --chown=nonroot:nonroot --from=build-env /app/target/release/zoo_backend  /home/nonroot/
 
 CMD ["/home/nonroot/zoo_backend"]
+
