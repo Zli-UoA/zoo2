@@ -9,8 +9,7 @@ infra/
 ├── compose.stg.yaml         # ステージング構成
 ├── Makefile                 # DB操作とmigration操作
 └── db/
-    ├── compose.base.yml     # PostgreSQLとElectricSQLの共通定義 (ポート公開なし)
-    ├── compose.yml          # ローカル用 (共通定義 + ホスト側ポート公開)
+    ├── compose.yml          # PostgreSQLとElectricSQL
     ├── atlas.hcl            # Atlas設定
     ├── schema.sql           # 期待するデータベーススキーマ
     └── migrations/          # バージョン管理されたmigration
@@ -151,7 +150,7 @@ CI (`.github/workflows/ci-backend.yaml`) では `unit-test` ジョブ (DB 不要
 
 ## ステージング
 
-DBサービスは、ポート公開を含まない `db/compose.base.yml` を `extends` で共有します。ローカル用の `db/compose.yml` はこれにホスト側ポート公開だけを足し、ステージングは公開しません。Coolify が `!reset` などのカスタムタグを解釈できないため、`!reset` は使いません。
+DBサービスは Coolify が `extends` や `!reset` を扱えないため、`compose.stg.yaml` に展開して定義しています（ホスト側ポート公開なし）。`db/compose.yml` を変更したら、こちらも合わせて更新してください。
 
 リポジトリルートで `--project-directory .` を指定してください。`POSTGRES_PASSWORD` は必須です。
 

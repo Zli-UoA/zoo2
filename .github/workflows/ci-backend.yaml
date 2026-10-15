@@ -5,7 +5,6 @@ on:
       - "backend/**"
       - "infra/db/migrations/**"
       - "infra/db/compose.yml"
-      - "infra/db/compose.base.yml"
       - ".github/workflows/ci-backend.yaml"
   workflow_dispatch:
 jobs:
