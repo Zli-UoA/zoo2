@@ -51,17 +51,20 @@ const messages: MessageRow[] = [
   },
 ];
 
+let collectionSeq = 0;
+
 function makeCollections(messageRows: MessageRow[], userRows: UserRow[]) {
+  const seq = collectionSeq++;
   const messagesCollection = createCollection(
     localOnlyCollectionOptions<MessageRow>({
-      id: "test-messages",
+      id: `test-messages-${seq}`,
       getKey: (row) => row.id,
       initialData: messageRows,
     }),
   );
   const usersCollection = createCollection(
     localOnlyCollectionOptions<UserRow>({
-      id: "test-users",
+      id: `test-users-${seq}`,
       getKey: (row) => row.id,
       initialData: userRows,
     }),
