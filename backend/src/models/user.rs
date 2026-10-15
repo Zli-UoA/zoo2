@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 use toasty::Model;
 
 #[derive(Debug, Clone, Model, Serialize, Deserialize)]
-#[table = "User"]
+#[table = "users"]
 pub struct User {
     #[key]
     pub id: String,
