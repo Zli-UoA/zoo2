@@ -125,9 +125,3 @@ export function getCollections(config: AppConfig = defaultConfig()): Collections
   };
   return bundle;
 }
-
-/** テストや設定差し替え用にキャッシュを破棄する。 */
-export function resetCollections(): void {
-  bundle = null;
-  resolvedConfig = null;
-}
