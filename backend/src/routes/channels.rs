@@ -350,11 +350,32 @@ async fn add_channel_user(
         )));
     }
 
-    // プライベートチャンネルの場合、作成者のみがメンバーを追加可能
-    if channel.is_private && channel.created_user_id != auth_user.id {
-        return Err(AppError::Forbidden(
-            "Only the channel creator can add members to a private channel".into(),
-        ));
+    // メンバー追加権限のチェック:
+    // - プライベートチャンネル: チャンネル作成者のみ追加可能
+    // - パブリックチャンネル: チャンネル作成者または既存メンバーのみ追加可能
+    if channel.is_private {
+        if channel.created_user_id != auth_user.id {
+            return Err(AppError::Forbidden(
+                "Only the channel creator can add members to a private channel".into(),
+            ));
+        }
+    } else if channel.created_user_id != auth_user.id {
+        let is_member = ChannelUser::filter(
+            ChannelUser::fields()
+                .channel_id()
+                .eq(id.as_str())
+                .and(ChannelUser::fields().user_id().eq(auth_user.id.as_str())),
+        )
+        .first()
+        .exec(&mut tx)
+        .await?
+        .is_some();
+
+        if !is_member {
+            return Err(AppError::Forbidden(
+                "You must be a member or creator of the channel to add other users".into(),
+            ));
+        }
     }
 
     let existing = ChannelUser::filter(

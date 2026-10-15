@@ -56,6 +56,7 @@ async fn proxy_shape(
     state: &AppState,
     table: &str,
     where_clause: Option<&str>,
+    extra_params: &[(&str, &str)],
     raw_query: &HashMap<String, String>,
     is_user_scoped: bool,
 ) -> Result<Response, AppError> {
@@ -63,6 +64,9 @@ async fn proxy_shape(
     params.push(("table".to_string(), table.to_string()));
     if let Some(w) = where_clause {
         params.push(("where".to_string(), w.to_string()));
+    }
+    for (k, v) in extra_params {
+        params.push((k.to_string(), v.to_string()));
     }
 
     let url = format!(
@@ -127,31 +131,27 @@ async fn proxy_shape(
 }
 
 /// Channels Shape
+///
+/// サブクエリと params[1] を使用することで、Electric が channel_user の変更に応じて
+/// リアルタイムに行の move-in / move-out を配信できる (メンバーシップ変更時の 409 再取得を防止)。
 async fn channels_shape(
     State(state): State<AppState>,
     auth_user: AuthUser,
     Query(raw_query): Query<HashMap<String, String>>,
 ) -> Result<Response, AppError> {
-    let mut db = state.db.clone();
+    let where_clause =
+        "is_private = false OR id IN (SELECT channel_id FROM channel_user WHERE user_id = $1)";
+    let extra_params = [("params[1]", auth_user.id.as_str())];
 
-    // サブクエリフラグ未有効の Electric でも動作するよう、参加中チャンネル ID をインメモリ展開
-    let memberships =
-        ChannelUser::filter(ChannelUser::fields().user_id().eq(auth_user.id.as_str()))
-            .exec(&mut db)
-            .await?;
-
-    let where_clause = if memberships.is_empty() {
-        "is_private = false".to_string()
-    } else {
-        let in_list = memberships
-            .iter()
-            .map(|m| format!("'{}'", m.channel_id))
-            .collect::<Vec<_>>()
-            .join(", ");
-        format!("is_private = false OR id IN ({in_list})")
-    };
-
-    proxy_shape(&state, "channels", Some(&where_clause), &raw_query, true).await
+    proxy_shape(
+        &state,
+        "channels",
+        Some(where_clause),
+        &extra_params,
+        &raw_query,
+        true,
+    )
+    .await
 }
 
 /// Messages Shape (channel_id 必須)
@@ -206,11 +206,13 @@ async fn messages_shape(
         }
     }
 
-    let where_clause = format!("channel_id = '{channel_id}'");
+    let where_clause = "channel_id = $1";
+    let extra_params = [("params[1]", channel_id.as_str())];
     proxy_shape(
         &state,
         "messages",
-        Some(&where_clause),
+        Some(where_clause),
+        &extra_params,
         &raw_query,
         channel.is_private,
     )
@@ -223,7 +225,7 @@ async fn users_shape(
     _auth_user: AuthUser,
     Query(raw_query): Query<HashMap<String, String>>,
 ) -> Result<Response, AppError> {
-    proxy_shape(&state, "users", None, &raw_query, false).await
+    proxy_shape(&state, "users", None, &[], &raw_query, false).await
 }
 
 /// Channel Users Shape (メンバー一覧)
@@ -232,13 +234,16 @@ async fn channel_users_shape(
     auth_user: AuthUser,
     Query(raw_query): Query<HashMap<String, String>>,
 ) -> Result<Response, AppError> {
-    let mut db = state.db.clone();
-
-    let (where_clause, is_private) = if let Some(channel_id) = raw_query.get("channel_id") {
+    let (where_clause, extra_params, is_private): (String, Vec<(&str, &str)>, bool) = if let Some(
+        channel_id,
+    ) =
+        raw_query.get("channel_id")
+    {
         Uuid::parse_str(channel_id).map_err(|_| {
             AppError::BadRequest(format!("channel_id is not a valid UUID: {channel_id}"))
         })?;
 
+        let mut db = state.db.clone();
         let channel = Channel::get_by_id(&mut db, channel_id.as_str())
             .await
             .map_err(|err| {
@@ -274,49 +279,26 @@ async fn channel_users_shape(
             }
         }
         (
-            Some(format!("channel_id = '{channel_id}'")),
+            "channel_id = $1".to_string(),
+            vec![("params[1]", channel_id.as_str())],
             channel.is_private,
         )
     } else {
-        // channel_id 未指定の場合、公開チャンネルまたは所属チャンネルのメンバーのみ (サブクエリなしで展開)
-        let public_channels = Channel::filter(
-            Channel::fields()
-                .is_private()
-                .eq(false)
-                .and(Channel::fields().deleted_at().is_none()),
-        )
-        .exec(&mut db)
-        .await?;
-
-        let memberships =
-            ChannelUser::filter(ChannelUser::fields().user_id().eq(auth_user.id.as_str()))
-                .exec(&mut db)
-                .await?;
-
-        let mut allowed_ids: Vec<String> = public_channels.into_iter().map(|c| c.id).collect();
-        for m in memberships {
-            if !allowed_ids.contains(&m.channel_id) {
-                allowed_ids.push(m.channel_id);
-            }
-        }
-
-        let clause = if allowed_ids.is_empty() {
-            "1=0".to_string()
-        } else {
-            let in_list = allowed_ids
-                .iter()
-                .map(|id| format!("'{id}'"))
-                .collect::<Vec<_>>()
-                .join(", ");
-            format!("channel_id IN ({in_list})")
-        };
-        (Some(clause), true)
+        // channel_id 未指定の場合: 公開チャンネルまたは所属チャンネルのメンバー情報
+        // サブクエリを使うことで、公開チャンネル作成時や参加チャンネル変更時に
+        // 全ユーザーの shape が 409 でフルリシンクされるのを防止
+        (
+                "channel_id IN (SELECT id FROM channels WHERE is_private = false AND deleted_at IS NULL) OR channel_id IN (SELECT channel_id FROM channel_user WHERE user_id = $1)".to_string(),
+                vec![("params[1]", auth_user.id.as_str())],
+                true,
+            )
     };
 
     proxy_shape(
         &state,
         "channel_user",
-        where_clause.as_deref(),
+        Some(&where_clause),
+        &extra_params,
         &raw_query,
         is_private,
     )

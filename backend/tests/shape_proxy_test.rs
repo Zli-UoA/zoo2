@@ -121,11 +121,33 @@ async fn test_shape_proxy_and_authorization() -> anyhow::Result<()> {
     let resp = app.clone().oneshot(req).await?;
     assert_eq!(resp.status(), StatusCode::OK);
 
-    // 8. Channels Shape の確認
+    // 8. Channels Shape の確認 (Alice)
     let req = Request::builder()
         .method("GET")
         .uri("/api/shapes/channels?offset=-1")
         .header("X-Dev-User", &alice_id)
+        .body(Body::empty())?;
+
+    let resp = app.clone().oneshot(req).await?;
+    assert_eq!(resp.status(), StatusCode::OK);
+    assert!(resp.headers().contains_key("electric-handle"));
+
+    // 9. Channels Shape の確認 (Bob: 参加チャンネルがサブクエリ経由で反映されること)
+    let req = Request::builder()
+        .method("GET")
+        .uri("/api/shapes/channels?offset=-1")
+        .header("X-Dev-User", &bob_id)
+        .body(Body::empty())?;
+
+    let resp = app.clone().oneshot(req).await?;
+    assert_eq!(resp.status(), StatusCode::OK);
+    assert!(resp.headers().contains_key("electric-handle"));
+
+    // 10. Channel Users Shape の確認 (全体取得: サブクエリ経由で公開+所属チャンネルメンバーが取得できること)
+    let req = Request::builder()
+        .method("GET")
+        .uri("/api/shapes/channel_users?offset=-1")
+        .header("X-Dev-User", &bob_id)
         .body(Body::empty())?;
 
     let resp = app.clone().oneshot(req).await?;
