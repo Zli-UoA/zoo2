@@ -1,14 +1,7 @@
-pub mod config;
-pub mod db;
-pub mod error;
-pub mod models;
-pub mod routes;
-pub mod state;
-
 use std::net::SocketAddr;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
-use crate::{config::Config, db::init_db, routes::create_router, state::AppState};
+use backend::{config::Config, db::init_db, routes::create_router, state::AppState};
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {

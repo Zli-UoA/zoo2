@@ -5,6 +5,8 @@ pub struct Config {
     pub database_url: String,
     pub host: String,
     pub port: u16,
+    pub electric_url: String,
+    pub electric_secret: Option<String>,
 }
 
 impl fmt::Debug for Config {
@@ -12,6 +14,11 @@ impl fmt::Debug for Config {
         f.debug_struct("Config")
             .field("host", &self.host)
             .field("port", &self.port)
+            .field("electric_url", &self.electric_url)
+            .field(
+                "electric_secret",
+                &self.electric_secret.as_ref().map(|_| "[REDACTED]"),
+            )
             .field("database_url", &"[REDACTED]")
             .finish()
     }
@@ -38,10 +45,20 @@ impl Config {
             .and_then(|p| p.parse().ok())
             .unwrap_or(8000);
 
+        let electric_url = env::var("ELECTRIC_URL").unwrap_or_else(|_| {
+            let host = env::var("ELECTRIC_HOST").unwrap_or_else(|_| "127.0.0.1".to_string());
+            let port = env::var("ELECTRIC_PORT").unwrap_or_else(|_| "3000".to_string());
+            format!("http://{host}:{port}")
+        });
+
+        let electric_secret = env::var("ELECTRIC_SECRET").ok().filter(|s| !s.is_empty());
+
         Self {
             database_url,
             host,
             port,
+            electric_url,
+            electric_secret,
         }
     }
 }
@@ -56,9 +73,12 @@ mod tests {
             database_url: "postgresql://user:super_secret_password@localhost:5432/zoo".to_string(),
             host: "127.0.0.1".to_string(),
             port: 8080,
+            electric_url: "http://127.0.0.1:3000".to_string(),
+            electric_secret: Some("secret123".to_string()),
         };
         let debug_str = format!("{config:?}");
         assert!(!debug_str.contains("super_secret_password"));
+        assert!(!debug_str.contains("secret123"));
         assert!(!debug_str.contains("user"));
         assert!(debug_str.contains("[REDACTED]"));
         assert!(debug_str.contains("8080"));

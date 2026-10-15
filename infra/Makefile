@@ -31,7 +31,7 @@ migrate-status:
 	atlas migrate status --config file://db/atlas.hcl --env local
 
 db-up:
-	docker compose -f db/compose.yml up -d
+	docker compose -f compose.yml up -d --wait
 
 db-down:
 	docker compose -f db/compose.yml down

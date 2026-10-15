@@ -28,11 +28,17 @@ services:
     environment:
       DATABASE_URL: postgresql://${POSTGRES_USER:-root}:${POSTGRES_PASSWORD:-password}@postgres:5432/${POSTGRES_DB:-zoo}?sslmode=disable
       ELECTRIC_INSECURE: "true"
+      ELECTRIC_FEATURE_FLAGS: "allow_subqueries"
     ports:
       - "127.0.0.1:${ELECTRIC_PORT:-3000}:3000"
     depends_on:
       postgres:
         condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:3000/v1/health"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
 
 volumes:
   postgres-data:

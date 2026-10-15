@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 use toasty::Model;
 
 #[derive(Debug, Clone, Model, Serialize, Deserialize)]
-#[table = "Channel"]
+#[table = "channels"]
 pub struct Channel {
     #[key]
     pub id: String,
