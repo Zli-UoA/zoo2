@@ -18,7 +18,7 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
         
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
       - name: Restore Cache
         uses: Swatinem/rust-cache@v2
         with:
@@ -37,7 +37,7 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
         
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Restore Cache
         uses: Swatinem/rust-cache@v2
@@ -61,7 +61,7 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
 
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Restore Cache
         uses: Swatinem/rust-cache@v2
@@ -82,7 +82,7 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
         
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Restore Cache
         uses: Swatinem/rust-cache@v2
