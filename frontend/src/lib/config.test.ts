@@ -22,6 +22,17 @@ describe("resolveConfig", () => {
     expect(resolveConfig({ VITE_SHAPE_MODE: "bogus" }).shapeMode).toBe("direct");
   });
 
+  it("reads the Electric URL, proxy path, and dev user from the environment", () => {
+    const config = resolveConfig({
+      VITE_ELECTRIC_SHAPE_URL: "http://electric.test:3000/v1/shape",
+      VITE_SHAPE_PROXY_PATH: "/shapes",
+      VITE_DEV_USER_ID: "dev-user-1",
+    });
+    expect(config.electricShapeUrl).toBe("http://electric.test:3000/v1/shape");
+    expect(config.shapeProxyPath).toBe("/shapes");
+    expect(config.devUserId).toBe("dev-user-1");
+  });
+
   it("lets explicit overrides win over the environment", () => {
     const config = resolveConfig(
       { VITE_SHAPE_MODE: "direct" },
@@ -66,5 +77,12 @@ describe("buildShapeUrl", () => {
   it("keeps proxy URLs relative when no API base URL is configured", () => {
     const config = resolveConfig({ VITE_SHAPE_MODE: "proxy" }, { apiBaseUrl: "" });
     expect(buildShapeUrl("users", config)).toBe("/api/shapes/users");
+  });
+
+  it("appends protocol parameters in proxy mode", () => {
+    const config = resolveConfig({ VITE_SHAPE_MODE: "proxy" }, { apiBaseUrl: "" });
+    expect(buildShapeUrl("messages", config, { offset: -1, live: "true" })).toBe(
+      "/api/shapes/messages?offset=-1&live=true",
+    );
   });
 });
