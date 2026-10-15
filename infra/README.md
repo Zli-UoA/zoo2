@@ -150,7 +150,7 @@ CI (`.github/workflows/ci-backend.yaml`) では `unit-test` ジョブ (DB 不要
 
 ## ステージング
 
-DBサービスは `db/compose.yml` を `extends` で共有し、ステージングではDBのホスト側ポート公開を解除します。`!reset` を利用できる Docker Composeが必要です。
+DBサービスは Coolify が `extends` や `!reset` を扱えないため、`compose.stg.yaml` に展開して定義しています（ホスト側ポート公開なし）。`db/compose.yml` を変更したら、こちらも合わせて更新してください。
 
 リポジトリルートで `--project-directory .` を指定してください。`POSTGRES_PASSWORD` は必須です。
 
