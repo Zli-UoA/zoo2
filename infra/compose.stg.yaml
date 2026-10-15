@@ -21,24 +21,22 @@ services:
 
   postgres:
     extends:
-      file: infra/db/compose.yml
+      file: infra/db/compose.base.yml
       service: postgres
     restart: unless-stopped
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-zoo}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
-    ports: !reset []
     healthcheck:
       start_period: 10s
 
   electric:
     extends:
-      file: infra/db/compose.yml
+      file: infra/db/compose.base.yml
       service: electric
     restart: unless-stopped
     environment:
       DATABASE_URL: postgresql://${POSTGRES_USER:-zoo}:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}@postgres:5432/${POSTGRES_DB:-zoo}?sslmode=disable
-    ports: !reset []
 
 volumes:
   postgres-data:

@@ -1,44 +1,20 @@
 name: zoo2
 
+# ローカル開発用。共通定義 (compose.base.yml) にホスト側ポート公開だけを足す。
 services:
   postgres:
-    image: postgres:16-alpine
-    environment:
-      POSTGRES_USER: ${POSTGRES_USER:-root}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-password}
-      POSTGRES_DB: ${POSTGRES_DB:-zoo}
-    command:
-      - postgres
-      - -c
-      - wal_level=logical
+    extends:
+      file: compose.base.yml
+      service: postgres
     ports:
       - "127.0.0.1:${POSTGRES_PORT:-5432}:5432"
-    volumes:
-      - postgres-data:/var/lib/postgresql/data
-    healthcheck:
-      test:
-        - CMD-SHELL
-        - pg_isready -U "$${POSTGRES_USER}" -d "$${POSTGRES_DB}"
-      interval: 5s
-      timeout: 5s
-      retries: 10
 
   electric:
-    image: electricsql/electric:${ELECTRIC_VERSION:-1.8.1}
-    environment:
-      DATABASE_URL: postgresql://${POSTGRES_USER:-root}:${POSTGRES_PASSWORD:-password}@postgres:5432/${POSTGRES_DB:-zoo}?sslmode=disable
-      ELECTRIC_INSECURE: "true"
-      ELECTRIC_FEATURE_FLAGS: "allow_subqueries"
+    extends:
+      file: compose.base.yml
+      service: electric
     ports:
       - "127.0.0.1:${ELECTRIC_PORT:-3000}:3000"
-    depends_on:
-      postgres:
-        condition: service_healthy
-    healthcheck:
-      test: ["CMD", "curl", "-fsS", "http://localhost:3000/v1/health"]
-      interval: 5s
-      timeout: 5s
-      retries: 20
 
 volumes:
   postgres-data:
