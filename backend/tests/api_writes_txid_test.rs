@@ -8,7 +8,6 @@ use tower::ServiceExt;
 use backend::{config::Config, db::init_db, routes::create_router, state::AppState};
 
 #[tokio::test]
-#[ignore = "requires running PostgreSQL container and applied migrations"]
 async fn test_create_user_and_message_returns_txid() -> anyhow::Result<()> {
     dotenvy::dotenv().ok();
     dotenvy::from_filename("../.env").ok();

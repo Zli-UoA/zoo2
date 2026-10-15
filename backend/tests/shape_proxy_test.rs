@@ -8,7 +8,6 @@ use tower::ServiceExt;
 use backend::{config::Config, db::init_db, routes::create_router, state::AppState};
 
 #[tokio::test]
-#[ignore = "requires running PostgreSQL and ElectricSQL containers"]
 async fn test_shape_proxy_and_authorization() -> anyhow::Result<()> {
     dotenvy::dotenv().ok();
     dotenvy::from_filename("../.env").ok();
