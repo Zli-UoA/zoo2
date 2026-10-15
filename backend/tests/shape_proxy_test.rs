@@ -11,6 +11,9 @@ use backend::{config::Config, db::init_db, routes::create_router, state::AppStat
 async fn test_shape_proxy_and_authorization() -> anyhow::Result<()> {
     dotenvy::dotenv().ok();
     dotenvy::from_filename("../.env").ok();
+    unsafe {
+        std::env::set_var("DEV_AUTH_ENABLED", "true");
+    }
 
     let config = Config::from_env();
     let db = init_db(&config.database_url).await?;

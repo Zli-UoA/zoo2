@@ -87,6 +87,42 @@ pub struct LeaveChannelResponse {
     pub channel_id: String,
 }
 
+/// メンバー追加権限の純粋判定ロジック:
+/// - 作成者は常に追加可能
+/// - プライベートチャンネル: 作成者のみ追加可能
+/// - パブリックチャンネル: 作成者または既存メンバーが追加可能
+pub(crate) fn can_add_member(
+    is_private: bool,
+    channel_creator_id: &str,
+    actor_id: &str,
+    is_actor_member: bool,
+) -> bool {
+    if channel_creator_id == actor_id {
+        return true;
+    }
+    if is_private { false } else { is_actor_member }
+}
+
+/// チャンネル直接参加 (join) の純粋判定ロジック:
+/// - パブリックチャンネル: 誰でも直接 join 可能
+/// - プライベートチャンネル: 直接 join 不可 (オーナーによる追加のみ)
+pub(crate) fn can_join(is_private: bool) -> bool {
+    !is_private
+}
+
+/// チャンネル更新・削除権限の純粋判定ロジック:
+/// - 作成者のみ変更・削除可能
+pub(crate) fn can_modify_channel(channel_creator_id: &str, actor_id: &str) -> bool {
+    channel_creator_id == actor_id
+}
+
+/// チャンネル閲覧権限の純粋判定ロジック:
+/// - パブリックチャンネル: 誰でも閲覧可能
+/// - プライベートチャンネル: メンバーのみ閲覧可能
+pub(crate) fn is_channel_visible(is_private: bool, is_member: bool) -> bool {
+    !is_private || is_member
+}
+
 pub fn router() -> Router<AppState> {
     Router::new()
         .route("/api/channels", post(create_channel).get(list_channels))
@@ -171,7 +207,7 @@ async fn update_channel(
         )));
     }
 
-    if channel.created_user_id != auth_user.id {
+    if !can_modify_channel(&channel.created_user_id, &auth_user.id) {
         return Err(AppError::Forbidden(
             "Only the channel creator can update this channel".into(),
         ));
@@ -229,7 +265,7 @@ async fn delete_channel(
         )));
     }
 
-    if channel.created_user_id != auth_user.id {
+    if !can_modify_channel(&channel.created_user_id, &auth_user.id) {
         return Err(AppError::Forbidden(
             "Only the channel creator can delete this channel".into(),
         ));
@@ -280,7 +316,7 @@ async fn join_channel(
     }
 
     // プライベートチャンネルへの直接 join は禁止 (作成者または招待による追加のみ)
-    if channel.is_private {
+    if !can_join(channel.is_private) {
         return Err(AppError::Forbidden(
             "Cannot join a private channel directly. You must be added by the channel owner."
                 .into(),
@@ -353,14 +389,11 @@ async fn add_channel_user(
     // メンバー追加権限のチェック:
     // - プライベートチャンネル: チャンネル作成者のみ追加可能
     // - パブリックチャンネル: チャンネル作成者または既存メンバーのみ追加可能
-    if channel.is_private {
-        if channel.created_user_id != auth_user.id {
-            return Err(AppError::Forbidden(
-                "Only the channel creator can add members to a private channel".into(),
-            ));
-        }
-    } else if channel.created_user_id != auth_user.id {
-        let is_member = ChannelUser::filter(
+    let is_creator = channel.created_user_id == auth_user.id;
+    let is_actor_member = if is_creator {
+        true
+    } else if !channel.is_private {
+        ChannelUser::filter(
             ChannelUser::fields()
                 .channel_id()
                 .eq(id.as_str())
@@ -369,13 +402,25 @@ async fn add_channel_user(
         .first()
         .exec(&mut tx)
         .await?
-        .is_some();
+        .is_some()
+    } else {
+        false
+    };
 
-        if !is_member {
-            return Err(AppError::Forbidden(
-                "You must be a member or creator of the channel to add other users".into(),
-            ));
-        }
+    if !can_add_member(
+        channel.is_private,
+        &channel.created_user_id,
+        &auth_user.id,
+        is_actor_member,
+    ) {
+        return Err(AppError::Forbidden(
+            if channel.is_private {
+                "Only the channel creator can add members to a private channel"
+            } else {
+                "You must be a member or creator of the channel to add other users"
+            }
+            .into(),
+        ));
     }
 
     let existing = ChannelUser::filter(
@@ -495,7 +540,7 @@ async fn list_channels(
 
     let visible_channels: Vec<ChannelResponse> = all_channels
         .into_iter()
-        .filter(|c| !c.is_private || joined_channel_ids.contains(&c.id))
+        .filter(|c| is_channel_visible(c.is_private, joined_channel_ids.contains(&c.id)))
         .map(ChannelResponse::from)
         .collect();
 
@@ -537,7 +582,7 @@ async fn get_channel_by_id(
         .is_some();
 
         // 存在推測攻撃を防ぐため 403 ではなく 404 を返却
-        if !is_member {
+        if !is_channel_visible(channel.is_private, is_member) {
             return Err(AppError::NotFound(format!(
                 "Channel not found with id: {id}"
             )));
@@ -545,4 +590,62 @@ async fn get_channel_by_id(
     }
 
     Ok(Json(ChannelResponse::from(channel)))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_can_add_member() {
+        let creator_id = "creator-user-id";
+        let member_id = "member-user-id";
+        let non_member_id = "non-member-user-id";
+
+        // 1. プライベートチャンネル
+        // - 作成者は追加可能
+        assert!(can_add_member(true, creator_id, creator_id, true));
+        assert!(can_add_member(true, creator_id, creator_id, false));
+        // - メンバーであっても非作成者は追加不可
+        assert!(!can_add_member(true, creator_id, member_id, true));
+        // - 未参加ユーザーは追加不可
+        assert!(!can_add_member(true, creator_id, non_member_id, false));
+
+        // 2. パブリックチャンネル
+        // - 作成者は常に追加可能
+        assert!(can_add_member(false, creator_id, creator_id, true));
+        assert!(can_add_member(false, creator_id, creator_id, false));
+        // - 既存メンバーは追加可能
+        assert!(can_add_member(false, creator_id, member_id, true));
+        // - 未参加の非作成者は追加不可 (公開チャンネルに他人を勝手に追加できない)
+        assert!(!can_add_member(false, creator_id, non_member_id, false));
+    }
+
+    #[test]
+    fn test_can_join() {
+        // パブリックチャンネルなら直接参加可能
+        assert!(can_join(false));
+        // プライベートチャンネルなら直接参加不可
+        assert!(!can_join(true));
+    }
+
+    #[test]
+    fn test_can_modify_channel() {
+        let creator_id = "creator-user-id";
+        let other_id = "other-user-id";
+
+        assert!(can_modify_channel(creator_id, creator_id));
+        assert!(!can_modify_channel(creator_id, other_id));
+    }
+
+    #[test]
+    fn test_is_channel_visible() {
+        // パブリックチャンネルは誰でも閲覧可能
+        assert!(is_channel_visible(false, true));
+        assert!(is_channel_visible(false, false));
+
+        // プライベートチャンネルはメンバーのみ閲覧可能
+        assert!(is_channel_visible(true, true));
+        assert!(!is_channel_visible(true, false));
+    }
 }
