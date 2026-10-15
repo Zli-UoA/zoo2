@@ -1,0 +1,27 @@
+# Dependency build-script allowlist. `allowBuilds` supersedes `onlyBuiltDependencies`,
+# which was removed in pnpm v11.
+allowBuilds:
+  esbuild: true
+  lightningcss: true
+
+catalog:
+  vite: npm:@voidzero-dev/vite-plus-core@1.1.0
+  vite-plus: 1.1.0
+overrides:
+  vite@*: "catalog:"
+peerDependencyRules:
+  allowAny:
+    - vite
+  allowedVersions:
+    vite: "*"
+# Bypasses the minimum release age guard for freshly released @tanstack packages
+# pinned here. Scaffold-generated; remove entries once they are old enough.
+minimumReleaseAgeExclude:
+  - "@tanstack/react-start-rsc@0.1.63"
+  - "@tanstack/react-start-server@1.167.50"
+  - "@tanstack/react-start@1.169.2"
+  - "@tanstack/router-generator@1.167.44"
+  - "@tanstack/router-plugin@1.168.46"
+  - "@tanstack/router-utils@1.162.4"
+  - "@tanstack/start-plugin-core@1.171.53"
+  - "@tanstack/start-server-core@1.169.43"

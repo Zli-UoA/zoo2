@@ -1,4 +1,4 @@
-.PHONY: migrate migrate-diff migrate-validate migrate-status db-up db-down db-restart db-reset backend-dev backend-build test test-unit test-e2e
+.PHONY: migrate migrate-diff migrate-validate migrate-status db-up db-down db-restart db-reset backend-dev backend-build test test-unit test-e2e frontend-install frontend-dev frontend-build frontend-check
 
 test: test-unit test-e2e
 
@@ -17,6 +17,18 @@ backend-dev:
 
 backend-build:
 	cd backend && cargo build --release
+
+frontend-install:
+	cd frontend && pnpm install
+
+frontend-dev:
+	cd frontend && pnpm dev
+
+frontend-build:
+	cd frontend && pnpm build
+
+frontend-check:
+	cd frontend && pnpm check
 
 migrate:
 	$(MAKE) -C infra migrate
