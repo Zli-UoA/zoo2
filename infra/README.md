@@ -145,4 +145,4 @@ make test-e2e   # E2E
 make test       # 両方
 ```
 
-CI (`.github/workflows/ci-backend.yaml`) の `test` ジョブでも同じ手順を実行します。
+CI (`.github/workflows/ci-backend.yaml`) では `unit-test` ジョブ (DB 不要) と `e2e` ジョブ (上記と同じ手順) に分けて実行します。
