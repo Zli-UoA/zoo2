@@ -1,0 +1,99 @@
+import { describe, expect, it } from "vite-plus/test";
+
+import { DEFAULT_CONFIG, buildShapeUrl, joinUrl, resolveConfig } from "./config";
+
+describe("resolveConfig", () => {
+  it("defaults to direct mode against the local Electric endpoint in development", () => {
+    const config = resolveConfig({ DEV: true });
+    expect(config).toEqual({ ...DEFAULT_CONFIG, shapeMode: "direct", devUserId: null });
+  });
+
+  it("defaults to proxy mode outside development", () => {
+    expect(resolveConfig({ DEV: false }).shapeMode).toBe("proxy");
+    expect(resolveConfig({}).shapeMode).toBe("proxy");
+  });
+
+  it("switches to proxy mode from the environment", () => {
+    const config = resolveConfig({
+      DEV: true,
+      VITE_SHAPE_MODE: "proxy",
+      VITE_API_BASE_URL: "http://localhost:8000",
+    });
+    expect(config.shapeMode).toBe("proxy");
+    expect(config.apiBaseUrl).toBe("http://localhost:8000");
+  });
+
+  it("throws on an unrecognized shape mode instead of falling back", () => {
+    expect(() => resolveConfig({ VITE_SHAPE_MODE: "bogus" })).toThrow(/VITE_SHAPE_MODE/);
+  });
+
+  it("reads the Electric URL and proxy path from the environment", () => {
+    const config = resolveConfig({
+      VITE_ELECTRIC_SHAPE_URL: "http://electric.test:3000/v1/shape",
+      VITE_SHAPE_PROXY_PATH: "/shapes",
+    });
+    expect(config.electricShapeUrl).toBe("http://electric.test:3000/v1/shape");
+    expect(config.shapeProxyPath).toBe("/shapes");
+  });
+
+  it("only honors VITE_DEV_USER_ID in development", () => {
+    expect(resolveConfig({ DEV: true, VITE_DEV_USER_ID: "dev-user-1" }).devUserId).toBe(
+      "dev-user-1",
+    );
+    expect(resolveConfig({ DEV: false, VITE_DEV_USER_ID: "dev-user-1" }).devUserId).toBeNull();
+    expect(resolveConfig({ VITE_DEV_USER_ID: "dev-user-1" }).devUserId).toBeNull();
+  });
+
+  it("lets explicit overrides win over the environment", () => {
+    const config = resolveConfig(
+      { DEV: true, VITE_SHAPE_MODE: "direct" },
+      { shapeMode: "proxy", apiBaseUrl: "" },
+    );
+    expect(config.shapeMode).toBe("proxy");
+    expect(config.apiBaseUrl).toBe("");
+  });
+});
+
+describe("joinUrl", () => {
+  it("joins without duplicating slashes", () => {
+    expect(joinUrl("http://localhost:8000/", "/api/messages")).toBe(
+      "http://localhost:8000/api/messages",
+    );
+  });
+
+  it("keeps the path relative when the base is empty", () => {
+    expect(joinUrl("", "/api/messages")).toBe("/api/messages");
+  });
+});
+
+describe("buildShapeUrl", () => {
+  it("builds direct Electric URLs with the table parameter", () => {
+    const config = resolveConfig({ DEV: true });
+    expect(buildShapeUrl("messages", config, { channel_id: "channel-1" })).toBe(
+      "http://localhost:3000/v1/shape?table=messages&channel_id=channel-1",
+    );
+  });
+
+  it("builds proxy URLs under /api/shapes with the proxy path", () => {
+    const config = resolveConfig({
+      VITE_SHAPE_MODE: "proxy",
+      VITE_API_BASE_URL: "http://localhost:8000",
+    });
+    expect(buildShapeUrl("channelUsers", config)).toBe(
+      "http://localhost:8000/api/shapes/channel_users",
+    );
+    expect(buildShapeUrl("channels", config)).toBe("http://localhost:8000/api/shapes/channels");
+  });
+
+  it("keeps proxy URLs relative when no API base URL is configured", () => {
+    const config = resolveConfig({ VITE_SHAPE_MODE: "proxy" }, { apiBaseUrl: "" });
+    expect(buildShapeUrl("users", config)).toBe("/api/shapes/users");
+  });
+
+  it("appends protocol parameters in proxy mode", () => {
+    const config = resolveConfig({ VITE_SHAPE_MODE: "proxy" }, { apiBaseUrl: "" });
+    expect(buildShapeUrl("messages", config, { offset: -1, live: "true" })).toBe(
+      "/api/shapes/messages?offset=-1&live=true",
+    );
+  });
+});
