@@ -4,7 +4,7 @@ on:
     paths:
       - "backend/**"
       - "infra/db/migrations/**"
-      - "infra/compose.yml"
+      - "infra/db/compose.yml"
       - ".github/workflows/ci-backend.yaml"
   workflow_dispatch:
 jobs:

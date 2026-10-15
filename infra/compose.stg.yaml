@@ -10,45 +10,35 @@ services:
     environment:
       DATABASE_URL: postgresql://${POSTGRES_USER:-zoo}:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}@postgres:5432/${POSTGRES_DB:-zoo}?sslmode=disable
       ELECTRIC_URL: http://electric:3000
+      PORT: ${PORT:-8000}
     ports:
       - "127.0.0.1:${PORT:-8000}:${PORT:-8000}"
     depends_on:
       postgres:
         condition: service_healthy
       electric:
-        condition: service_started
+        condition: service_healthy
 
   postgres:
-    image: postgres:16-alpine
+    extends:
+      file: infra/db/compose.yml
+      service: postgres
     restart: unless-stopped
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-zoo}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
-      POSTGRES_DB: ${POSTGRES_DB:-zoo}
-    command:
-      - postgres
-      - -c
-      - wal_level=logical
-    volumes:
-      - postgres-data:/var/lib/postgresql/data
+    ports: !reset []
     healthcheck:
-      test:
-        - CMD-SHELL
-        - pg_isready -U "$${POSTGRES_USER}" -d "$${POSTGRES_DB}"
-      interval: 5s
-      timeout: 5s
-      retries: 10
       start_period: 10s
 
   electric:
-    image: electricsql/electric:${ELECTRIC_VERSION:-1.8.1}
+    extends:
+      file: infra/db/compose.yml
+      service: electric
     restart: unless-stopped
     environment:
       DATABASE_URL: postgresql://${POSTGRES_USER:-zoo}:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}@postgres:5432/${POSTGRES_DB:-zoo}?sslmode=disable
-      ELECTRIC_INSECURE: "true"
-    depends_on:
-      postgres:
-        condition: service_healthy
+    ports: !reset []
 
 volumes:
   postgres-data:
