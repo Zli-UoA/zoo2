@@ -11,6 +11,7 @@
 import { Route as rootRouteImport } from './routes/__root'
 import { Route as IndexRouteImport } from './routes/index'
 import { Route as RealtimeRouteImport } from './routes/realtime'
+import { Route as ChannelsChannelIdRouteImport } from './routes/channels/$channelId'
 
 const IndexRoute = IndexRouteImport.update({
   id: '/',
@@ -22,31 +23,40 @@ const RealtimeRoute = RealtimeRouteImport.update({
   path: '/realtime',
   getParentRoute: () => rootRouteImport,
 } as any)
+const ChannelsChannelIdRoute = ChannelsChannelIdRouteImport.update({
+  id: '/channels/$channelId',
+  path: '/channels/$channelId',
+  getParentRoute: () => rootRouteImport,
+} as any)
 
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
   '/realtime': typeof RealtimeRoute
+  '/channels/$channelId': typeof ChannelsChannelIdRoute
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
   '/realtime': typeof RealtimeRoute
+  '/channels/$channelId': typeof ChannelsChannelIdRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/': typeof IndexRoute
   '/realtime': typeof RealtimeRoute
+  '/channels/$channelId': typeof ChannelsChannelIdRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
-  fullPaths: '/' | '/realtime'
+  fullPaths: '/' | '/realtime' | '/channels/$channelId'
   fileRoutesByTo: FileRoutesByTo
-  to: '/' | '/realtime'
-  id: '__root__' | '/' | '/realtime'
+  to: '/' | '/realtime' | '/channels/$channelId'
+  id: '__root__' | '/' | '/realtime' | '/channels/$channelId'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
   RealtimeRoute: typeof RealtimeRoute
+  ChannelsChannelIdRoute: typeof ChannelsChannelIdRoute
 }
 
 declare module '@tanstack/react-router' {
@@ -65,12 +75,20 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof RealtimeRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/channels/$channelId': {
+      id: '/channels/$channelId'
+      path: '/channels/$channelId'
+      fullPath: '/channels/$channelId'
+      preLoaderRoute: typeof ChannelsChannelIdRouteImport
+      parentRoute: typeof rootRouteImport
+    }
   }
 }
 
 const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
   RealtimeRoute: RealtimeRoute,
+  ChannelsChannelIdRoute: ChannelsChannelIdRoute,
 }
 export const routeTree = rootRouteImport
   ._addFileChildren(rootRouteChildren)
