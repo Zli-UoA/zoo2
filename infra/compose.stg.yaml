@@ -17,7 +17,10 @@ services:
       - --entrypoints.web.address=:8080
       - --entrypoints.web.forwardedheaders.trustedips=${PROXY_TRUSTED_IPS:-127.0.0.1/32}
       - --entrypoints.web.transport.respondingtimeouts.readtimeout=120s
-      - --entrypoints.web.transport.respondingtimeouts.writetimeout=120s
+      # writeTimeout はリクエスト開始から応答を書き終えるまでの期限で、長く続く
+      # Shape のストリーム (SSE など) を打ち切るため無効にする。バックエンドの
+      # 応答待ちは routes.yaml の long-poll.responseHeaderTimeout が担う。
+      - --entrypoints.web.transport.respondingtimeouts.writetimeout=0s
       - --entrypoints.health.address=:8082
       - --ping.entrypoint=health
       - --providers.file.filename=/etc/traefik/routes.yaml

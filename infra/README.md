@@ -170,7 +170,7 @@ POSTGRES_PASSWORD=staging-test-password BFF_VERIFY_SECRET=staging-test-verify-se
 
 [Issue #23 の決定](https://github.com/Zli-UoA/zoo2/issues/23#issuecomment-6220232883)に従い、ブラウザは同一オリジンの Cookie でアクセスします。Compose のフロントビルドでは `VITE_API_BASE_URL` を空文字に固定し、`/api/*`（Shape を含む）をプロキシから Rust へ直接転送します。それ以外の画面・ログイン・コールバックはフロントへ転送します。BFF は REST・Shape の本文を中継しません。
 
-`/api/*` の転送前に BFF の verify を呼び、応答の `Authorization` を Rust へのリクエストに設定します。ブラウザの `Authorization`・`X-Dev-User` と認証判定を偽装できる forwarded ヘッダは除去します。API の応答は `Cache-Control: private, no-cache` とし、Authorization をブラウザに返しません。Shape の `electric-*`・`Vary` ヘッダは維持し、レスポンスを即時フラッシュします。プロキシと Rust 間の応答待ち時間は 120 秒です。Electric の long-poll 設定を延長する場合は、この設定と外側の Coolify プロキシも合わせて見直してください。
+`/api/*` の転送前に BFF の verify を呼び、応答の `Authorization` を Rust へのリクエストに設定します。ブラウザの `Authorization`・`X-Dev-User` と認証判定を偽装できる forwarded ヘッダは除去します。API の応答は `Cache-Control: private, no-cache` とし、Authorization をブラウザに返しません。Shape の `electric-*`・`Vary` ヘッダは維持し、レスポンスを即時フラッシュします。プロキシと Rust 間の応答待ち時間（応答ヘッダが返るまで）は 120 秒です。Electric の long-poll 設定を延長する場合は、この設定と外側の Coolify プロキシも合わせて見直してください。応答を書き終えるまでの期限（entrypoint の `writeTimeout`）は設けていないので、SSE など長く続くストリームも切れません。
 
 このインフラ構成の verify 接続先は `http://frontend:3000/auth/verify` です。パスは `BFF_VERIFY_PATH` で変更でき、公開入口からは同じパスとその配下へのアクセスを拒否します。これは BFF 実装との接続用の既定値で、Issue #23 ではパス名自体は未確定です。BFF が別のパスを採用する場合は環境変数を合わせてください。verify を `/api/` 配下に置く場合も、この拒否ルールが優先されます。
 
