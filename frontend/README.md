@@ -122,7 +122,7 @@ cd frontend && pnpm dev           # http://localhost:5173
 主要なデータ変換と書き込みフローを vitest で担保し、`vp check`（format / lint / typecheck）とテストを CI で回します。
 
 - ユニットテスト（vitest / `src/**/*.test.ts`）… 数値・真偽値の文字列変換（`schema.test.ts`）、timestamp 正規化（`timestamps.test.ts`）、設定解決（`config.test.ts`）、REST アダプタ `{ data, txid }` の注入と剥がし・エラー化（`api/client.test.ts`）、`txid` ハンドシェイク（`txid.test.ts` / `writes.test.ts`）、Shape の URL / ヘッダ / live query（`electric/*.test.ts`）。
-- CI … `.github/workflows/ci-frontend.yaml`。`frontend/**` の変更で `pnpm check` と `pnpm test` を実行します（バックエンドの CI とは別ワークフロー）。
+- CI … `.github/workflows/ci-frontend.yaml`。`frontend/**` の変更（`main` への push / PR）で `pnpm check`・`pnpm build`・`pnpm test` を実行します（バックエンドの CI とは別ワークフロー）。
 - スモーク（Playwright / `e2e/smoke.spec.ts`）… 起動 → チャンネル作成 → メッセージ送信 → Electric 反映までを実ブラウザで確認します。`pnpm test` には含めず `pnpm test:e2e` で明示実行します。前提として DB + Electric + バックエンドが必要です。
 
 ```bash
