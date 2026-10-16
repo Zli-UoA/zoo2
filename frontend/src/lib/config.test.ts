@@ -1,6 +1,13 @@
 import { describe, expect, it } from "vite-plus/test";
 
-import { DEFAULT_CONFIG, buildShapeUrl, joinUrl, resolveConfig } from "./config";
+import {
+  DEFAULT_CONFIG,
+  TXID_MODES,
+  buildShapeUrl,
+  joinUrl,
+  resolveConfig,
+  resolveTxidMode,
+} from "./config";
 
 describe("resolveConfig", () => {
   it("defaults to direct mode against the local Electric endpoint in development", () => {
@@ -51,6 +58,30 @@ describe("resolveConfig", () => {
     );
     expect(config.shapeMode).toBe("proxy");
     expect(config.apiBaseUrl).toBe("");
+  });
+});
+
+describe("resolveTxidMode", () => {
+  it("defaults to awaitTxId", () => {
+    expect(DEFAULT_CONFIG.txidMode).toBe("awaitTxId");
+    expect(resolveConfig({ DEV: true }).txidMode).toBe("awaitTxId");
+  });
+
+  it("reads a supported mode from the environment", () => {
+    expect(TXID_MODES).toEqual(["awaitTxId", "awaitMatch", "skip"]);
+    expect(resolveConfig({ VITE_TXID_MODE: "awaitMatch" }).txidMode).toBe("awaitMatch");
+    expect(resolveConfig({ VITE_TXID_MODE: "skip" }).txidMode).toBe("skip");
+  });
+
+  it("throws on an unrecognized txid mode instead of falling back", () => {
+    expect(() => resolveTxidMode("bogus")).toThrow(/VITE_TXID_MODE/);
+    expect(() => resolveConfig({ VITE_TXID_MODE: "bogus" })).toThrow(/VITE_TXID_MODE/);
+  });
+
+  it("lets explicit overrides win over the environment", () => {
+    expect(resolveConfig({ VITE_TXID_MODE: "skip" }, { txidMode: "awaitTxId" }).txidMode).toBe(
+      "awaitTxId",
+    );
   });
 });
 

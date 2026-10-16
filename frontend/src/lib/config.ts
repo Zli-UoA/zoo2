@@ -2,8 +2,21 @@ import { SHAPE_META, type ShapeName } from "./electric/schema";
 
 export type ShapeMode = "direct" | "proxy";
 
+/**
+ * 書き込み後に楽観状態を Electric のストリームと突き合わせる方法。
+ *
+ * - `awaitTxId`: REST レスポンスの `txid` を Electric が配信するまで待つ。
+ * - `awaitMatch`: `txid` を返さない環境向け。operation と行 id が一致する
+ *   change message が届くまで待つ。
+ * - `skip`: 待機せず即座に解決する（ハンドシェイク未対応環境の暫定）。
+ */
+export type TxidMode = "awaitTxId" | "awaitMatch" | "skip";
+
+export const TXID_MODES: readonly TxidMode[] = ["awaitTxId", "awaitMatch", "skip"];
+
 export interface AppConfig {
   shapeMode: ShapeMode;
+  txidMode: TxidMode;
   electricShapeUrl: string;
   apiBaseUrl: string;
   shapeProxyPath: string;
@@ -12,6 +25,7 @@ export interface AppConfig {
 
 export const DEFAULT_CONFIG: AppConfig = {
   shapeMode: "proxy",
+  txidMode: "awaitTxId",
   electricShapeUrl: "http://localhost:3000/v1/shape",
   apiBaseUrl: "http://localhost:8000",
   shapeProxyPath: "/api/shapes",
@@ -21,6 +35,7 @@ export const DEFAULT_CONFIG: AppConfig = {
 export interface ConfigEnv {
   DEV?: boolean;
   VITE_SHAPE_MODE?: string;
+  VITE_TXID_MODE?: string;
   VITE_ELECTRIC_SHAPE_URL?: string;
   VITE_API_BASE_URL?: string;
   VITE_SHAPE_PROXY_PATH?: string;
@@ -41,6 +56,18 @@ function resolveShapeMode(configured: string | undefined, isDev: boolean): Shape
   return isDev ? "direct" : "proxy";
 }
 
+export function resolveTxidMode(configured: string | undefined): TxidMode {
+  if (!configured) {
+    return DEFAULT_CONFIG.txidMode;
+  }
+  if (TXID_MODES.includes(configured as TxidMode)) {
+    return configured as TxidMode;
+  }
+  throw new Error(
+    `Invalid VITE_TXID_MODE "${configured}": expected "awaitTxId", "awaitMatch", or "skip"`,
+  );
+}
+
 export function resolveConfig(
   env: ConfigEnv = readEnv(),
   overrides: Partial<AppConfig> = {},
@@ -49,6 +76,7 @@ export function resolveConfig(
   return {
     ...DEFAULT_CONFIG,
     shapeMode: resolveShapeMode(env.VITE_SHAPE_MODE, isDev),
+    txidMode: resolveTxidMode(env.VITE_TXID_MODE),
     electricShapeUrl: env.VITE_ELECTRIC_SHAPE_URL ?? DEFAULT_CONFIG.electricShapeUrl,
     apiBaseUrl: env.VITE_API_BASE_URL ?? DEFAULT_CONFIG.apiBaseUrl,
     shapeProxyPath: env.VITE_SHAPE_PROXY_PATH ?? DEFAULT_CONFIG.shapeProxyPath,
