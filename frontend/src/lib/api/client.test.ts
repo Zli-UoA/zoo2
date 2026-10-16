@@ -45,6 +45,10 @@ describe("unwrapEnvelope", () => {
     expect(() => unwrapEnvelope({ txid: "1" })).toThrow();
     expect(() => unwrapEnvelope(null)).toThrow();
   });
+
+  it("rejects an envelope whose txid is not a string", () => {
+    expect(() => unwrapEnvelope({ data: {}, txid: 1 })).toThrow();
+  });
 });
 
 describe("createApiClient", () => {
@@ -92,6 +96,47 @@ describe("createApiClient", () => {
     const headers = new Headers(init?.headers);
     expect(headers.has("Authorization")).toBe(false);
     expect(headers.has("X-Dev-User")).toBe(false);
+  });
+
+  it("uses PATCH and DELETE and unwraps the envelope for each", async () => {
+    const fetchMock = vi.fn<FetchLike>(async () => jsonResponse({ data: { ok: true }, txid: "7" }));
+    const client = createApiClient({ baseUrl: "http://localhost:8000", fetch: fetchMock });
+
+    await expect(client.patch("/api/messages/m1", { content: "edited" })).resolves.toEqual({
+      data: { ok: true },
+      txid: "7",
+    });
+    await expect(client.delete("/api/messages/m1")).resolves.toEqual({
+      data: { ok: true },
+      txid: "7",
+    });
+
+    expect(fetchMock.mock.calls[0]?.[1]?.method).toBe("PATCH");
+    expect(fetchMock.mock.calls[1]?.[1]?.method).toBe("DELETE");
+  });
+
+  it("returns null for an empty read body", async () => {
+    const fetchMock = vi.fn<FetchLike>(async () => new Response("", { status: 200 }));
+    const client = createApiClient({ baseUrl: "http://localhost:8000", fetch: fetchMock });
+
+    await expect(client.get("/api/ping")).resolves.toBeNull();
+  });
+
+  it("keeps a non-JSON error body as text", async () => {
+    const fetchMock = vi.fn<FetchLike>(async () => new Response("boom", { status: 500 }));
+    const client = createApiClient({ baseUrl: "http://localhost:8000", fetch: fetchMock });
+
+    await expect(client.get("/api/boom")).rejects.toMatchObject({ status: 500, body: "boom" });
+  });
+
+  it("forwards the abort signal", async () => {
+    const controller = new AbortController();
+    const fetchMock = vi.fn<FetchLike>(async () => jsonResponse({ data: {}, txid: "1" }));
+    const client = createApiClient({ baseUrl: "http://localhost:8000", fetch: fetchMock });
+
+    await client.post("/api/messages", {}, { signal: controller.signal });
+
+    expect(fetchMock.mock.calls[0]?.[1]?.signal).toBe(controller.signal);
   });
 
   it("throws ApiError with the status and body on failure", async () => {
