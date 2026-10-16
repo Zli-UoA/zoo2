@@ -7,7 +7,7 @@ on:
       - "infra/Dockerfile-frontend-deploy*"
       - "infra/Dockerfile-proxy-deploy*"
       - "infra/proxy/**"
-      - "infra/compose.stg.yaml"
+      - "infra/compose.stg*.yaml"
       - ".github/workflows/ci-frontend.yaml"
   pull_request:
     paths:
@@ -15,7 +15,7 @@ on:
       - "infra/Dockerfile-frontend-deploy*"
       - "infra/Dockerfile-proxy-deploy*"
       - "infra/proxy/**"
-      - "infra/compose.stg.yaml"
+      - "infra/compose.stg*.yaml"
       - ".github/workflows/ci-frontend.yaml"
   workflow_dispatch:
 jobs:

@@ -7,6 +7,7 @@
 ```text
 infra/
 ├── compose.stg.yaml         # ステージング構成
+├── compose.stg.local.yaml   # ローカル確認用のホストポート公開
 ├── proxy/                   # Traefik のルーティング・forward-auth と検証
 ├── Makefile                 # DB操作とmigration操作
 └── db/
@@ -157,10 +158,11 @@ DBサービスは Coolify が `extends` や `!reset` を扱えないため、`co
 
 ```bash
 POSTGRES_PASSWORD=staging-test-password \
-  docker compose --project-directory . -f infra/compose.stg.yaml up -d --build --wait
+  docker compose --project-directory . -f infra/compose.stg.yaml -f infra/compose.stg.local.yaml \
+  up -d --build --wait
 ```
 
-公開入口は Traefik の `proxy` サービスです。ホスト側は `127.0.0.1:8080`（`PROXY_PORT` で変更可能）、コンテナ内は `8080` で待ち受けます。フロント・Rust・PostgreSQL・Electric のホスト側ポートは公開しません。`PORT` は Rust のコンテナ内の待受ポートです（既定 `8000`）。
+公開入口は Traefik の `proxy` サービスで、コンテナ内は `8080` で待ち受けます。`compose.stg.yaml` はどのサービスもホスト側ポートを公開しません。Coolify 標準の `coolify-proxy` がホストの `8080` を使うため、公開すると衝突します。ローカルでは `compose.stg.local.yaml` を重ねると、`127.0.0.1:8080`（`PROXY_PORT` で変更可能）で proxy にアクセスできます。`PORT` は Rust のコンテナ内の待受ポートです（既定 `8000`）。
 
 フロントは TanStack Start を Nitro の Node.js サーバーとしてビルドし、非 root ユーザーで実行します。コンテナ内は `3000` で待ち受けます。フロントとプロキシのイメージ名は `FRONTEND_IMAGE`・`PROXY_IMAGE` で変更できます。フロントのヘルスチェックは `/` の HTTP 200、プロキシは内部専用の ping エンドポイントを確認します。
 
