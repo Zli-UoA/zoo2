@@ -11,11 +11,10 @@ use backend::{config::Config, db::init_db, routes::create_router, state::AppStat
 async fn test_shape_proxy_and_authorization() -> anyhow::Result<()> {
     dotenvy::dotenv().ok();
     dotenvy::from_filename("../.env").ok();
-    unsafe {
-        std::env::set_var("DEV_AUTH_ENABLED", "true");
-    }
 
-    let config = Config::from_env();
+    let mut config = Config::from_env();
+    // 環境変数ではなく Config へ直接注入する (テスト間の env 競合を避ける)
+    config.dev_auth_enabled = true;
     let db = init_db(&config.database_url).await?;
     let state = AppState::new(db, config);
     let app = create_router(state);
@@ -155,6 +154,87 @@ async fn test_shape_proxy_and_authorization() -> anyhow::Result<()> {
     let resp = app.clone().oneshot(req).await?;
     assert_eq!(resp.status(), StatusCode::OK);
     assert!(resp.headers().contains_key("electric-handle"));
+
+    Ok(())
+}
+
+/// #46: CORS は allowlist のみ許可し、未許可オリジンには ACAO を返さない
+#[tokio::test]
+async fn test_cors_allowlist() -> anyhow::Result<()> {
+    dotenvy::dotenv().ok();
+    dotenvy::from_filename("../.env").ok();
+
+    let mut config = Config::from_env();
+    // 環境変数ではなく Config へ直接注入する (テスト間の env 競合を避ける)
+    config.dev_auth_enabled = true;
+    config.cors_allowed_origins = vec!["http://localhost:5173".to_string()];
+    let db = init_db(&config.database_url).await?;
+    let state = AppState::new(db, config);
+    let app = create_router(state);
+
+    // 許可オリジンの preflight は成功し、メソッド/ヘッダを許可する
+    let req = Request::builder()
+        .method("OPTIONS")
+        .uri("/api/shapes/users")
+        .header("Origin", "http://localhost:5173")
+        .header("Access-Control-Request-Method", "GET")
+        .header("Access-Control-Request-Headers", "authorization,x-dev-user")
+        .body(Body::empty())?;
+
+    let resp = app.clone().oneshot(req).await?;
+    assert_eq!(resp.status(), StatusCode::OK);
+    assert_eq!(
+        resp.headers()
+            .get("access-control-allow-origin")
+            .and_then(|v| v.to_str().ok()),
+        Some("http://localhost:5173")
+    );
+    let allow_headers = resp
+        .headers()
+        .get("access-control-allow-headers")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or_default()
+        .to_lowercase();
+    assert!(allow_headers.contains("authorization"));
+    assert!(allow_headers.contains("x-dev-user"));
+
+    // 許可オリジンの実リクエストは electric-* を expose する
+    let req = Request::builder()
+        .method("GET")
+        .uri("/api/shapes/users?offset=-1")
+        .header("Origin", "http://localhost:5173")
+        .header("X-Dev-User", "00000000-0000-0000-0000-000000000001")
+        .body(Body::empty())?;
+    let resp = app.clone().oneshot(req).await?;
+    assert_eq!(resp.status(), StatusCode::OK);
+    assert_eq!(
+        resp.headers()
+            .get("access-control-allow-origin")
+            .and_then(|v| v.to_str().ok()),
+        Some("http://localhost:5173"),
+    );
+    let expose = resp
+        .headers()
+        .get("access-control-expose-headers")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or_default()
+        .to_lowercase();
+    assert!(expose.contains("electric-handle"));
+    assert!(expose.contains("electric-offset"));
+
+    // 未許可オリジンには ACAO を返さない (ブラウザ側でブロックされる)
+    let req = Request::builder()
+        .method("OPTIONS")
+        .uri("/api/shapes/users")
+        .header("Origin", "http://evil.example.com")
+        .header("Access-Control-Request-Method", "GET")
+        .body(Body::empty())?;
+
+    let resp = app.clone().oneshot(req).await?;
+    assert!(
+        resp.headers().get("access-control-allow-origin").is_none(),
+        "disallowed origin must not receive Access-Control-Allow-Origin"
+    );
 
     Ok(())
 }

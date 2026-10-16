@@ -19,6 +19,8 @@
 - `User`: 全ユーザー。メッセージの投稿者表示をクライアント側で結合するために購読します（非正規化はしません）。
 - `ChannelUser`: メンバー一覧・参加状態の表示用。
 
+現在ユーザー（内部 `users.id`）の解決は Shape ではなく、認証済みユーザーに限定したセッション確認 `GET /api/users/me`（未認証は 401）で行います。クライアントは返却された `id` を `currentUserId` として採用します（`/api/me` は作りません）。`user_identities` のように PK でない `user_id` で絞る Shape は `REPLICA IDENTITY FULL` が無いと UPDATE/DELETE/CASCADE の同期が崩れやすく、自分の id を知るためだけに常時接続を増やすのは過剰なためです。
+
 ### クエリパラメータとレスポンスヘッダの転送
 Electric クライアントが送信する以下のプロトコル用・ページング（subset）用クエリパラメータを、プロキシから Electric へそのまま転送してください。
 
@@ -97,7 +99,7 @@ Atlas は宣言的スキーマでの `REPLICA IDENTITY` の差分検知を標準
 
 フロントエンド側は認証プロバイダを差し替えられるよう、トークン取得関数（`getToken()`）のみを持つアダプタ層を設けます。ローカル開発時は IdP なしでも動作するよう、開発用認証モード（デフォルトのローカルユーザーとして扱う、または `X-Dev-User` ヘッダでユーザーを切り替えられる仕組み）があるとフロントエンド・バックエンド双方の検証が容易になります。Shape プロキシ（読み取り）と REST API（書き込み）の両方で同じ認証ヘッダを受け付けるようにしてください。
 
-また、ローカル開発ではフロントエンド（例: `http://localhost:3000` または `:5173`）からバックエンド（`http://localhost:8000`）へリクエストを送るため、CORS で `Authorization` 等のヘッダとオリジンを許可してください。本番・ステージング環境では `ELECTRIC_INSECURE` を無効化し、`ELECTRIC_SECRET` をバックエンドと Electric 間で共有する構成を想定しています。
+また、ローカル開発ではフロントエンド（既定: `http://localhost:5173`）からバックエンド（`http://localhost:8000`）へリクエストを送るため、CORS で許可する**オリジンの allowlist** が必要です。バックエンドは環境変数 `CORS_ALLOWED_ORIGINS`（カンマ区切り）で許可オリジンを設定し、`ENVIRONMENT=production` 以外で未設定なら dev の `http://localhost:5173` と `http://127.0.0.1:5173` を既定許可します。本番（`ENVIRONMENT=production`）は同一オリジン配信のため外部オリジンは不要で、未設定なら**空リスト**（全クロスオリジン拒否）を既定とし、明示的に設定したオリジンのみ許可します。許可メソッドは REST 用の `GET`/`POST`/`PATCH`/`DELETE`（および preflight の `OPTIONS`）、許可ヘッダは `Authorization`/`X-Dev-User`/`Content-Type`/`Accept` に限定します。本番・ステージング環境では `ELECTRIC_INSECURE` を無効化し、`ELECTRIC_SECRET` をバックエンドと Electric 間で共有する構成を想定しています。
 
 ## 5. フロントエンドの先行開発方針
 
