@@ -12,6 +12,7 @@ use crate::{
 };
 
 pub mod oidc;
+pub mod rbac;
 
 pub const DEFAULT_DEV_USER_ID: &str = "00000000-0000-0000-0000-000000000001";
 const JIT_CACHE_TTL: Duration = Duration::from_secs(300); // 5分

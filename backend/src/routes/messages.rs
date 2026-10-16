@@ -7,7 +7,10 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::{
-    auth::AuthUser,
+    auth::{
+        AuthUser,
+        rbac::{can_delete_message, is_workspace_admin},
+    },
     db::get_current_txid,
     error::AppError,
     models::{Channel, ChannelUser, Message, MessageReaction},
@@ -255,9 +258,48 @@ async fn update_message(
         return Err(AppError::NotFound(format!("Message not found: {id}")));
     }
 
+    let channel = Channel::get_by_id(&mut tx, message.channel_id.as_str())
+        .await
+        .map_err(|err| {
+            if err.is_record_not_found() {
+                AppError::NotFound(format!("Channel not found: {}", message.channel_id))
+            } else {
+                AppError::from(err)
+            }
+        })?;
+
+    if channel.deleted_at.is_some() {
+        return Err(AppError::NotFound(format!(
+            "Channel not found: {}",
+            message.channel_id
+        )));
+    }
+
+    if channel.is_private {
+        let membership = ChannelUser::filter(
+            ChannelUser::fields()
+                .channel_id()
+                .eq(message.channel_id.as_str())
+                .and(ChannelUser::fields().user_id().eq(auth_user.id.as_str())),
+        )
+        .first()
+        .exec(&mut tx)
+        .await?;
+
+        if membership.is_none() {
+            return Err(AppError::NotFound(format!("Message not found: {id}")));
+        }
+    }
+
     if message.user_id != auth_user.id {
         return Err(AppError::Forbidden(
             "Only the message author can edit this message".into(),
+        ));
+    }
+
+    if channel.archive_at.is_some() {
+        return Err(AppError::BadRequest(
+            "Cannot edit message in an archived channel".into(),
         ));
     }
 
@@ -304,9 +346,58 @@ async fn delete_message(
         return Err(AppError::NotFound(format!("Message not found: {id}")));
     }
 
-    if message.user_id != auth_user.id {
+    let channel = Channel::get_by_id(&mut tx, message.channel_id.as_str())
+        .await
+        .map_err(|err| {
+            if err.is_record_not_found() {
+                AppError::NotFound(format!("Channel not found: {}", message.channel_id))
+            } else {
+                AppError::from(err)
+            }
+        })?;
+
+    if channel.deleted_at.is_some() {
+        return Err(AppError::NotFound(format!(
+            "Channel not found: {}",
+            message.channel_id
+        )));
+    }
+
+    let is_admin =
+        is_workspace_admin(&mut tx, &auth_user.id, state.config.dev_auth_enabled).await?;
+
+    if channel.is_private {
+        let membership = ChannelUser::filter(
+            ChannelUser::fields()
+                .channel_id()
+                .eq(message.channel_id.as_str())
+                .and(ChannelUser::fields().user_id().eq(auth_user.id.as_str())),
+        )
+        .first()
+        .exec(&mut tx)
+        .await?;
+
+        // ワークスペース管理者でもなくメンバーでもない場合は存在隠蔽 (404)
+        if membership.is_none() && !is_admin {
+            return Err(AppError::NotFound(format!("Message not found: {id}")));
+        }
+    }
+
+    if !can_delete_message(
+        &message.user_id,
+        &channel.created_user_id,
+        &auth_user.id,
+        is_admin,
+    ) {
         return Err(AppError::Forbidden(
-            "Only the message author can delete this message".into(),
+            "You do not have permission to delete this message".into(),
+        ));
+    }
+
+    // アーカイブ中の削除制限: 管理者およびチャンネル作成者は例外として強制削除を許可
+    if channel.archive_at.is_some() && !is_admin && auth_user.id != channel.created_user_id {
+        return Err(AppError::BadRequest(
+            "Cannot delete message in an archived channel".into(),
         ));
     }
 
