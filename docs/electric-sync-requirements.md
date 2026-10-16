@@ -31,9 +31,11 @@ Electric クライアントが送信する以下のプロトコル用・ペー�
 `live=true` や `live_sse=true` の応答は Server-Sent Events です。プロキシ側でレスポンスをバッファリングせず、チャンクのままクライアントへ透過的に流してください。応答全体を一度に読み込む実装（`bytes()` 等でまとめて取得する方式）は、SSE では応答が返らず停止するため使えません。
 
 ### `WHERE` 句のサブクエリに関する注意点
-プライベートチャンネルの認可などで `WHERE` 句内のサブクエリ（例: `id IN (SELECT channel_id FROM channel_user WHERE user_id = ...)`）を使う場合、プレースホルダ（`$1` 等）をサブクエリ内に置くと Electric 側でエラーになる既知の挙動があります（`electric#3143`）。サーバ側で検証済みの値をリテラルとして埋め込む形で回避してください。
+プライベートチャンネルの認可などで `WHERE` 句内のサブクエリ（例: `id IN (SELECT channel_id FROM channel_user WHERE user_id = $1)`）を使います。
 
-なお、現行スキーマの主キーは `text` 型であり、UUID ではありません。UUID 前提の形式検証はそのまま適用できないため、主キーの型（`text` のままか UUID にするか）は「7. 要検討事項」とし、リテラルを埋め込む際はインジェクションを防ぐ検証を必ず行ってください。
+以前は、プレースホルダ（`$1` 等）をサブクエリ内に置くと Electric 側でエラーになる既知の挙動（`electric#3143`）があったため、サーバ側で検証済みの値をリテラルとして埋め込む回避策が必要とされていました。Phase 5（#17）で Electric 1.8.1 を `ELECTRIC_FEATURE_FLAGS=allow_subqueries` 付きで動かして再確認したところ、`params[1]` 付きのサブクエリがそのまま通り、依存 Shape によりチャンネル参加/退出が move-in / move-out として配信されることを実測しました（`infra/db/compose.yml` / `infra/compose.stg.yaml` で `allow_subqueries` を設定済み）。そのため現状はリテラルを埋め込む回避策を入れておらず、バックエンドの `routes/shapes.rs` もプレースホルダのままで実装しています。`allow_subqueries` を無効化する構成へ変える場合は、この前提を再確認してください。
+
+なお、現行スキーマの主キーは `text` 型であり、UUID ではありません。主キーの型（`text` のままか UUID にするか）は「7. 要検討事項」とします。`allow_subqueries` が使える前提では値はプレースホルダで渡すため、リテラル埋め込み時のインジェクション検証は不要です。
 
 ### JOIN 不可に伴うクライアント側結合
 Electric の Shape は単一テーブル単位で配信され、テーブル間の JOIN ができません。投稿者名などの関連情報は、`Message` テーブルへ非正規化せず、`User` Shape を別途購読して TanStack DB の live query でクライアント側結合する方針とします。

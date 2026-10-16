@@ -216,10 +216,10 @@ export function createChannelWrites({ client, txidMode }: WriteDependencies) {
  * channel_user の参加・退出・メンバー追加。
  *
  * 参加/追加は INSERT、退出は DELETE として扱い、いずれも channel_user
- * コレクションで `txid` を待つ。direct モードの channels Shape は全チャンネルを
- * 配信しメンバーシップで絞り込まないため、参加/退出で channels 側の行は動かない。
- * 将来 proxy で channels をメンバーシップで絞る（join/leave が move-in/out になる）
- * 構成に切り替える場合は、channels コレクション側でも待つ必要がある。
+ * コレクションで `txid` を待つ。既定の proxy では channels Shape をバックエンドが
+ * メンバーシップで絞るため、参加/退出に応じて channels 側の行が move-in / move-out
+ * する（同じトランザクションの `txid` で配信される）。ここで待つのは channel_user
+ * 側の `txid` で、チャンネル一覧は続けて更新される。
  *
  * なお join / add は同じ行が既にあるとサーバは既存行を返すだけで Electric に変更が
  * 流れず、`awaitTxId` がタイムアウトする。呼び出し側で重複追加を避けること。

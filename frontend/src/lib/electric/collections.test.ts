@@ -12,7 +12,9 @@ describe("collections", () => {
 
 describe("shapeAuthSource", () => {
   it("disables auth headers in direct mode", () => {
-    expect(shapeAuthSource(resolveConfig({ DEV: true }))).toEqual({ auth: false });
+    expect(shapeAuthSource(resolveConfig({ DEV: true, VITE_SHAPE_MODE: "direct" }))).toEqual({
+      auth: false,
+    });
   });
 
   it("forwards the dev user in proxy mode", () => {

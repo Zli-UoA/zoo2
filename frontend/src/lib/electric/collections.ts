@@ -72,12 +72,14 @@ function usersCollection(config: AppConfig) {
 }
 
 /**
- * メンバー一覧用の channel_user。今は `channel_id` を指定せず全件購読し、
+ * メンバー一覧用の channel_user。今は `channel_id` を指定せず購読し、
  * `useChannelMembers` がチャンネル単位で絞り込む。`shapeQueryParams` の
  * `channelUsers` + `channelId` 分岐は、将来チャンネル単位で購読する場合用。
  *
  * proxy で `channel_id` なしの場合、バックエンドは channel_user のサブクエリ経路を
- * 使うため、proxy に切り替えるときに別途確認する（docs/electric-sync-requirements.md §1）。
+ * 使う（`channel_id IN (SELECT ...)`）。`ELECTRIC_FEATURE_FLAGS=allow_subqueries`
+ * の Electric 1.8.1 で `params[1]` 付きでも通ることは Phase 5 で確認済み
+ * （docs/electric-sync-requirements.md §1）。
  */
 function channelUsersCollection(config: AppConfig, dependencies: WriteDependencies) {
   const writes = createChannelUserWrites(dependencies);
@@ -146,29 +148,32 @@ function defaultConfig(): AppConfig {
  * client コンポーネント / フックから呼び出す。messages だけは channel_id 単位で
  * 遅延生成してキャッシュする。
  */
-export function getCollections(config: AppConfig = defaultConfig()): CollectionsBundle {
+export function getCollections(config?: AppConfig): CollectionsBundle {
   if (!isBrowser()) {
     throw new Error("Electric collections can only be created in the browser");
   }
-  if (bundle && bundle.config === config) {
+  // ブラウザ判定の後で設定を解決する。dev 用の必須項目（VITE_DEV_USER_ID）が
+  // 未設定でも、SSR / テストでは設定エラーではなく「ブラウザ専用」を返す。
+  const resolved = config ?? defaultConfig();
+  if (bundle && bundle.config === resolved) {
     return bundle;
   }
 
   const messageCache = new Map<string, MessagesCollection>();
   const dependencies: WriteDependencies = {
-    client: createConfiguredApiClient(config),
-    txidMode: config.txidMode,
-    currentUserId: config.devUserId,
+    client: createConfiguredApiClient(resolved),
+    txidMode: resolved.txidMode,
+    currentUserId: resolved.devUserId,
   };
   bundle = {
-    config,
-    channels: channelsCollection(config, dependencies),
-    users: usersCollection(config),
-    channelUsers: channelUsersCollection(config, dependencies),
+    config: resolved,
+    channels: channelsCollection(resolved, dependencies),
+    users: usersCollection(resolved),
+    channelUsers: channelUsersCollection(resolved, dependencies),
     messages: (channelId) => {
       let collection = messageCache.get(channelId);
       if (!collection) {
-        collection = messagesCollection(channelId, config, dependencies);
+        collection = messagesCollection(channelId, resolved, dependencies);
         messageCache.set(channelId, collection);
       }
       return collection;
