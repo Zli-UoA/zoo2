@@ -21,9 +21,16 @@ export function snapshot(ids: string[]): ScrollSnapshot {
  * - `append`: 末尾に追加（新規受信）。atBottom のときだけ追従する。
  * - `prepend`: 先頭に追加（古いページ）。スクロール位置を補正して維持する。
  * - `replace`: 先頭も末尾も変わった（チャンネル切替など）。最新へ移動する。
- * - `none`: 変化なし、または中央の更新のみ。
+ * - `none`: 変化なし、中央の更新、または末尾が消えただけ（論理削除）。
+ *
+ * `nextIds` は今回のリストの id 集合。末尾だけが変わったときに、その変化が
+ * 「追加」なのか「末尾の削除」なのかを、直前の末尾 id がまだ残っているかで見分ける。
  */
-export function classifyScrollChange(previous: ScrollSnapshot, next: ScrollSnapshot): ScrollChange {
+export function classifyScrollChange(
+  previous: ScrollSnapshot,
+  next: ScrollSnapshot,
+  nextIds: ReadonlySet<string>,
+): ScrollChange {
   if (previous.firstId === null && previous.lastId === null) {
     return next.firstId === null && next.lastId === null ? "none" : "initial";
   }
@@ -34,7 +41,9 @@ export function classifyScrollChange(previous: ScrollSnapshot, next: ScrollSnaps
     return "none";
   }
   if (next.firstId === previous.firstId) {
-    return "append";
+    // 直前の末尾がまだ残っているときだけ「新規追加」とみなす。
+    // 末尾が論理削除などで消えただけの場合は append にしない。
+    return previous.lastId !== null && nextIds.has(previous.lastId) ? "append" : "none";
   }
   if (next.lastId === previous.lastId) {
     return "prepend";

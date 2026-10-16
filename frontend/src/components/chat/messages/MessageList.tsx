@@ -101,15 +101,18 @@ export function MessageList({
   const snapshotRef = useRef<ScrollSnapshot>({ firstId: null, lastId: null });
   const previousScrollHeightRef = useRef(0);
 
-  const scrollToBottom = useCallback((behavior: ScrollBehavior = "auto") => {
-    const element = scrollRef.current;
-    if (!element) {
-      return;
-    }
-    element.scrollTo({ top: element.scrollHeight, behavior });
-    atBottomRef.current = true;
-    setHasNewBelow(false);
-  }, []);
+  const scrollToBottom = useCallback(
+    (behavior: ScrollBehavior = "auto") => {
+      atBottomRef.current = true;
+      setHasNewBelow(false);
+      if (items.length === 0) {
+        return;
+      }
+      // 行の実測高さに追従して最下部へ合わせる（scrollHeight 直指定より安定）。
+      virtualizer.scrollToIndex(items.length - 1, { align: "end", behavior });
+    },
+    [items.length, virtualizer],
+  );
 
   const handleScroll = useCallback(() => {
     const element = scrollRef.current;
@@ -128,8 +131,9 @@ export function MessageList({
     if (!element) {
       return;
     }
-    const next = snapshot(items.map((item) => item.message.id));
-    const change = classifyScrollChange(snapshotRef.current, next);
+    const ids = items.map((item) => item.message.id);
+    const next = snapshot(ids);
+    const change = classifyScrollChange(snapshotRef.current, next, new Set(ids));
 
     if (change === "prepend") {
       const delta = element.scrollHeight - previousScrollHeightRef.current;
@@ -138,13 +142,19 @@ export function MessageList({
       }
     } else if (shouldStickToBottom(change, atBottomRef.current)) {
       requestAnimationFrame(() => scrollToBottom());
-    } else if (change === "append" && !atBottomRef.current) {
-      setHasNewBelow(true);
+    } else if (change === "append") {
+      // 自分の送信は、上にスクロールしていても最下部へ追従する。
+      const appended = items[items.length - 1];
+      if (appended && appended.message.user_id === currentUserId) {
+        requestAnimationFrame(() => scrollToBottom());
+      } else {
+        setHasNewBelow(true);
+      }
     }
 
     snapshotRef.current = next;
     previousScrollHeightRef.current = element.scrollHeight;
-  }, [items, scrollToBottom]);
+  }, [items, currentUserId, scrollToBottom]);
 
   // 編集の開始・終了で行の高さが変わるため測り直す。
   useEffect(() => {

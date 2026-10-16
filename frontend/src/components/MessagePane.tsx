@@ -49,10 +49,11 @@ export function MessagePane({ channelId }: { channelId: string }) {
   }, [error, setError]);
 
   const handleSend = useCallback(
-    async (content: string) => {
+    async (content: string): Promise<boolean> => {
+      const id = crypto.randomUUID();
       await run(() =>
         messagesCollection.insert({
-          id: crypto.randomUUID(),
+          id,
           user_id: currentUserId ?? "",
           channel_id: channelId,
           content,
@@ -61,6 +62,9 @@ export function MessagePane({ channelId }: { channelId: string }) {
           deleted_at: null,
         }),
       );
+      // `run` は失敗を握ってロールバックするため、確定後に楽観行が残っているかで
+      // 成否を判定する（Composer が失敗時に下書きを復元できるようにする）。
+      return messagesCollection.get(id) !== undefined;
     },
     [run, messagesCollection, currentUserId, channelId],
   );

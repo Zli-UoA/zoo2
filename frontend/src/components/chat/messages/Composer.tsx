@@ -7,13 +7,14 @@ import { Textarea } from "../../ui/textarea";
 const MAX_COMPOSER_HEIGHT = 200;
 
 interface ComposerProps {
-  onSend: (content: string) => void;
+  /** 送信を実行し、成功したかを返す。false なら下書きを復元する。 */
+  onSend: (content: string) => Promise<boolean>;
   disabled?: boolean;
 }
 
 /**
  * メッセージ入力。複数行 autosize、Enter 送信 / Shift+Enter 改行。
- * 送信は楽観更新に任せ、入力欄は即座にクリアする。
+ * 送信は楽観更新に任せ、入力欄は即座にクリアする。確定に失敗したら下書きを戻す。
  */
 export function Composer({ onSend, disabled = false }: ComposerProps) {
   const [value, setValue] = useState("");
@@ -29,13 +30,22 @@ export function Composer({ onSend, disabled = false }: ComposerProps) {
     element.style.overflowY = element.scrollHeight > MAX_COMPOSER_HEIGHT ? "auto" : "hidden";
   }, [value]);
 
-  function submit() {
+  async function submit() {
     const content = value.trim();
     if (!content || disabled) {
       return;
     }
     setValue("");
-    onSend(content);
+    let sent = false;
+    try {
+      sent = await onSend(content);
+    } catch {
+      sent = false;
+    }
+    if (!sent) {
+      // 失敗時は下書きを戻す。ただし待っている間に次の入力を始めていたら邪魔しない。
+      setValue((current) => (current.length > 0 ? current : content));
+    }
   }
 
   return (
@@ -43,7 +53,7 @@ export function Composer({ onSend, disabled = false }: ComposerProps) {
       className="border-t px-3 py-3"
       onSubmit={(event) => {
         event.preventDefault();
-        submit();
+        void submit();
       }}
     >
       <div className="flex items-end gap-2 rounded-xl border border-input bg-background p-1.5 transition-colors focus-within:border-ring focus-within:ring-3 focus-within:ring-ring/30 dark:bg-input/30">
@@ -59,7 +69,7 @@ export function Composer({ onSend, disabled = false }: ComposerProps) {
           onKeyDown={(event) => {
             if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) {
               event.preventDefault();
-              submit();
+              void submit();
             }
           }}
         />
