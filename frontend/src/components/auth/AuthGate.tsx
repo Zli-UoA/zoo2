@@ -89,13 +89,19 @@ export function AuthGate({ children }: { children: ReactNode }) {
     if (client.isCallbackUrl()) {
       client
         .handleCallback()
-        .then(({ returnTo }) => {
+        .then(async ({ returnTo }) => {
           if (cancelled) {
             return;
           }
           clearLoggedOut(window.sessionStorage);
-          setPhase("ready");
           router.history.replace(returnTo);
+          // 復帰先のルート解決を待ってから描画する（コールバック URL の
+          // notFound が一瞬描画されるのを防ぐ）。
+          await router.load().catch(() => {});
+          if (cancelled) {
+            return;
+          }
+          setPhase("ready");
         })
         .catch((cause: unknown) => {
           if (cancelled) {
