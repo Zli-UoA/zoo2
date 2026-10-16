@@ -166,6 +166,8 @@ POSTGRES_PASSWORD=staging-test-password BFF_VERIFY_SECRET=staging-test-verify-se
 
 フロントは TanStack Start を Nitro の Node.js サーバーとしてビルドし、非 root ユーザーで実行します。コンテナ内は `3000` で待ち受けます。フロントとプロキシのイメージ名は `FRONTEND_IMAGE`・`PROXY_IMAGE` で変更できます。フロントのヘルスチェックは `/` の HTTP 200、プロキシは内部専用の ping エンドポイントを確認します。
 
+フロントの `HOST`・`PORT` と、Nitro が優先する `NITRO_HOST`・`NITRO_PORT` は `0.0.0.0:3000` に揃えています。Coolify で共有の `PORT` をバックエンド用に設定していても、フロントの待受ポートは変えません。Coolify 側でこのサービスの待受設定やヘルスチェックを上書きする場合も、接続先を `3000` に合わせてください。
+
 ### 認証とルーティング
 
 [Issue #23 の決定](https://github.com/Zli-UoA/zoo2/issues/23#issuecomment-6220232883)に従い、ブラウザは同一オリジンの Cookie でアクセスします。Compose のフロントビルドでは `VITE_API_BASE_URL` を空文字に固定し、`/api/*`（Shape を含む）をプロキシから Rust へ直接転送します。それ以外の画面・ログイン・コールバックはフロントへ転送します。BFF は REST・Shape の本文を中継しません。

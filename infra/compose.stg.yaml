@@ -49,6 +49,12 @@ services:
     restart: unless-stopped
     environment:
       BFF_VERIFY_SECRET: ${BFF_VERIFY_SECRET:?BFF_VERIFY_SECRET is required}
+      # Keep frontend, healthcheck and proxy on the same internal address.
+      # PORT at the project level configures Rust, not this service.
+      HOST: 0.0.0.0
+      PORT: "3000"
+      NITRO_HOST: 0.0.0.0
+      NITRO_PORT: "3000"
     networks:
       - frontend
 
