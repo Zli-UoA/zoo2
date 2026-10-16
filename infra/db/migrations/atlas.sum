@@ -1,3 +1,4 @@
-h1:Vr3q89ZriVtJmmyKExakPcnjG9zwTHs13rTDEUbF2Po=
+h1:Fjr4yrBWyjPrt1OMdTCvT8DKEi6ZKHCl/Rml80Z4xMY=
 20261008000000_initial.sql h1:v3rZATh+MriHOzHYMS+oLMrabKMd7J8aLKuEYdsKNfc=
 20261015110156_snake_case_and_replica_identity.sql h1:gWKFhGTel2djLDzitJiG+ufrbKEjusudna0EhabxkZU=
+20261016154154_add_oidc_and_affiliation_to_users.sql h1:EqbpZEZaKwHQ7f+ixsyAnGe0fiYUOtBGDWmZYzAzGf0=

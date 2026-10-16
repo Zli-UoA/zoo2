@@ -4,8 +4,12 @@ CREATE TABLE users (
   display_name varchar(255) NOT NULL,
   created_at timestamp(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at timestamp(3),
+  oidc_iss text,
+  oidc_sub text,
+  affiliation varchar(32) NOT NULL DEFAULT 'unknown',
   PRIMARY KEY (id),
-  CONSTRAINT users_user_name_key UNIQUE (user_name)
+  CONSTRAINT users_user_name_key UNIQUE (user_name),
+  CONSTRAINT users_oidc_iss_sub_key UNIQUE (oidc_iss, oidc_sub)
 );
 
 CREATE TABLE channels (
