@@ -10,3 +10,7 @@ dist-ssr
 .output
 .vinxi
 __unconfig*
+
+# Playwright (smoke test)
+test-results
+playwright-report

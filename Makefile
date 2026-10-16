@@ -1,4 +1,4 @@
-.PHONY: migrate migrate-diff migrate-validate migrate-status db-up db-down db-restart db-reset backend-dev backend-build test test-unit test-e2e frontend-install frontend-dev frontend-build frontend-check frontend-test
+.PHONY: migrate migrate-diff migrate-validate migrate-status db-up db-down db-restart db-reset backend-dev backend-build test test-unit test-e2e frontend-install frontend-dev frontend-build frontend-check frontend-test frontend-e2e
 
 test: test-unit test-e2e
 
@@ -32,6 +32,10 @@ frontend-check:
 
 frontend-test:
 	cd frontend && pnpm test
+
+# E2E スモーク: PostgreSQL + Electric + バックエンドを起動しておく (起動→送信→反映)
+frontend-e2e:
+	cd frontend && pnpm test:e2e
 
 migrate:
 	$(MAKE) -C infra migrate
