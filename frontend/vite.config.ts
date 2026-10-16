@@ -7,7 +7,12 @@ import { tanstackStart } from "@tanstack/react-start/plugin/vite";
 import viteReact from "@vitejs/plugin-react";
 import tailwindcss from "@tailwindcss/vite";
 
-const config = defineConfig(({ mode }) => ({
+// Nitro はビルドと本番サーバー用。テスト中に有効にすると、Nitro の SSR 環境が
+// React の CJS を読み込み、`ReferenceError: module is not defined` を出すので外す。
+// `mode` は `--mode` で変わり得るため、テストランナー自身が設定する VITEST で判定する。
+const isVitest = process.env.VITEST === "true";
+
+const config = defineConfig({
   fmt: {},
   lint: {
     jsPlugins: [{ name: "vite-plus", specifier: "vite-plus/oxlint-plugin" }],
@@ -19,13 +24,13 @@ const config = defineConfig(({ mode }) => ({
     devtools(),
     tailwindcss(),
     tanstackStart(),
-    ...(mode === "test" ? [] : [nitro({ preset: "node-server" })]),
+    ...(isVitest ? [] : [nitro({ preset: "node-server" })]),
     viteReact(),
   ]),
   test: {
     environment: "node",
     include: ["src/**/*.test.ts"],
   },
-}));
+});
 
 export default config;
