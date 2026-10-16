@@ -4,11 +4,12 @@ test("起動 → チャンネル作成 → メッセージ送信 → 反映", as
   const channelName = `smoke-${Date.now()}`;
   const message = `hello ${channelName}`;
 
-  // 起動: トップ画面（チャンネル一覧）が表示される。
+  // 起動: サイドバー（チャンネル一覧）が表示される。
   await page.goto("/");
-  await expect(page.getByRole("heading", { name: "チャンネル" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "チャンネル", exact: true })).toBeVisible();
 
-  // チャンネルを作成し、一覧に反映される。
+  // 作成ダイアログを開いてチャンネルを作成し、一覧に反映される。
+  await page.getByRole("button", { name: "チャンネルを作成" }).click();
   await page.getByPlaceholder("新しいチャンネル名").fill(channelName);
   await page.getByRole("button", { name: "チャンネル作成" }).click();
 

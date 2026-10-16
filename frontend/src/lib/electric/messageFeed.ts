@@ -1,10 +1,15 @@
-import { type CollectionImpl, type InitialQueryBuilder, eq, isNull } from "@tanstack/react-db";
+import { type Collection, type InitialQueryBuilder, eq, isNull } from "@tanstack/react-db";
 
 import type { MessageRow, UserRow } from "./types";
 
+/**
+ * `createCollection` と Electric コレクションが返す公開型 `Collection` に合わせる。
+ * `CollectionImpl`（実装クラス）は `tsc` では構造的に一致するが、型チェッカ間で
+ * 解決が揺れて誤検知の原因になるため、公開 API の型注釈には使わない。
+ */
 export interface MessageFeedSources {
-  messages: CollectionImpl<MessageRow, string | number>;
-  users: CollectionImpl<UserRow, string | number>;
+  messages: Collection<MessageRow, string | number>;
+  users: Collection<UserRow, string | number>;
 }
 
 /**
