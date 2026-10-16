@@ -14,6 +14,21 @@ export type TxidMode = "awaitTxId" | "awaitMatch" | "skip";
 
 export const TXID_MODES: readonly TxidMode[] = ["awaitTxId", "awaitMatch", "skip"];
 
+/**
+ * SPA が OIDC PKCE で利用する設定。未設定なら従来どおり dev（X-Dev-User）で動く。
+ * Kanidm の確定値は #50 で差し替えられるよう、すべて環境変数で注入する。
+ */
+export interface OidcSettings {
+  issuer: string;
+  clientId: string;
+  /** 未設定なら `${origin}/auth/callback` を実行時に組み立てる。 */
+  redirectUri: string | null;
+  scope: string;
+  postLogoutRedirectUri: string | null;
+}
+
+export const DEFAULT_OIDC_SCOPE = "openid profile email";
+
 export interface AppConfig {
   shapeMode: ShapeMode;
   txidMode: TxidMode;
@@ -21,6 +36,7 @@ export interface AppConfig {
   apiBaseUrl: string;
   shapeProxyPath: string;
   devUserId: string | null;
+  oidc: OidcSettings | null;
 }
 
 export const DEFAULT_CONFIG: AppConfig = {
@@ -30,6 +46,7 @@ export const DEFAULT_CONFIG: AppConfig = {
   apiBaseUrl: "http://localhost:8000",
   shapeProxyPath: "/api/shapes",
   devUserId: null,
+  oidc: null,
 };
 
 export interface ConfigEnv {
@@ -40,6 +57,11 @@ export interface ConfigEnv {
   VITE_API_BASE_URL?: string;
   VITE_SHAPE_PROXY_PATH?: string;
   VITE_DEV_USER_ID?: string;
+  VITE_OIDC_ISSUER?: string;
+  VITE_OIDC_CLIENT_ID?: string;
+  VITE_OIDC_REDIRECT_URI?: string;
+  VITE_OIDC_SCOPE?: string;
+  VITE_OIDC_POST_LOGOUT_REDIRECT_URI?: string;
 }
 
 function readEnv(): ConfigEnv {
@@ -67,13 +89,17 @@ function resolveShapeMode(configured: string | undefined): ShapeMode {
  * `VITE_DEV_USER_ID` を必須にする。未設定だと現在ユーザーが分からず、参加/退出や
  * 自分のメッセージの編集・削除ができない（Phase 4 からの申し送り）。direct は
  * 認可なしの開発専用経路なので未設定を許す。本番ビルドでは常に null（トークンを使う）。
+ *
+ * OIDC を設定した場合は Bearer で認証するため `X-Dev-User` は送らない。dev でも
+ * `VITE_DEV_USER_ID` を要求しない（staging の IdP に繋いで確認するため）。
  */
 function resolveDevUserId(
   mode: ShapeMode,
   isDev: boolean,
   configured: string | undefined,
+  oidcConfigured: boolean,
 ): string | null {
-  if (!isDev) {
+  if (!isDev || oidcConfigured) {
     return null;
   }
   if (configured) {
@@ -85,6 +111,31 @@ function resolveDevUserId(
     );
   }
   return null;
+}
+
+/**
+ * OIDC 設定を環境変数から解決する。issuer と client ID は必ず対で設定する。
+ * どちらも未設定なら null（従来の dev 動作）。片方だけの設定はタイポを黙って
+ * 無視しないようエラーにする。
+ */
+function resolveOidc(env: ConfigEnv): OidcSettings | null {
+  const issuer = env.VITE_OIDC_ISSUER?.trim();
+  const clientId = env.VITE_OIDC_CLIENT_ID?.trim();
+  if (!issuer && !clientId) {
+    return null;
+  }
+  if (!issuer || !clientId) {
+    throw new Error(
+      "VITE_OIDC_ISSUER and VITE_OIDC_CLIENT_ID must be set together to enable OIDC login",
+    );
+  }
+  return {
+    issuer,
+    clientId,
+    redirectUri: env.VITE_OIDC_REDIRECT_URI?.trim() || null,
+    scope: env.VITE_OIDC_SCOPE?.trim() || DEFAULT_OIDC_SCOPE,
+    postLogoutRedirectUri: env.VITE_OIDC_POST_LOGOUT_REDIRECT_URI?.trim() || null,
+  };
 }
 
 export function resolveTxidMode(configured: string | undefined): TxidMode {
@@ -105,6 +156,7 @@ export function resolveConfig(
 ): AppConfig {
   const isDev = env.DEV === true;
   const shapeMode = resolveShapeMode(env.VITE_SHAPE_MODE);
+  const oidc = resolveOidc(env);
   return {
     ...DEFAULT_CONFIG,
     shapeMode,
@@ -112,7 +164,8 @@ export function resolveConfig(
     electricShapeUrl: env.VITE_ELECTRIC_SHAPE_URL ?? DEFAULT_CONFIG.electricShapeUrl,
     apiBaseUrl: env.VITE_API_BASE_URL ?? DEFAULT_CONFIG.apiBaseUrl,
     shapeProxyPath: env.VITE_SHAPE_PROXY_PATH ?? DEFAULT_CONFIG.shapeProxyPath,
-    devUserId: resolveDevUserId(shapeMode, isDev, env.VITE_DEV_USER_ID),
+    devUserId: resolveDevUserId(shapeMode, isDev, env.VITE_DEV_USER_ID, oidc !== null),
+    oidc,
     ...overrides,
   };
 }

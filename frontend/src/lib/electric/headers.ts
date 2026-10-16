@@ -1,4 +1,11 @@
-import { getToken as defaultGetToken, type TokenProvider } from "../auth";
+import {
+  getToken as defaultGetToken,
+  notifyAuthorized,
+  notifyUnauthorized,
+  type AuthorizedHandler,
+  type TokenProvider,
+  type UnauthorizedHandler,
+} from "../auth";
 
 export interface ShapeFetchSource {
   getToken?: TokenProvider;
@@ -10,6 +17,10 @@ export interface ShapeFetchSource {
    * `authorization` / `X-Dev-User` を許可していないため false にする。
    */
   auth?: boolean;
+  /** Shape の 401 を再ログイン導線へ渡す。既定は `auth.notifyUnauthorized`。 */
+  onUnauthorized?: UnauthorizedHandler;
+  /** Shape の成功通知（再ログイン試行カウンタの消去用）。既定は `auth.notifyAuthorized`。 */
+  onAuthorized?: AuthorizedHandler;
   fetch?: typeof fetch;
 }
 
@@ -26,6 +37,8 @@ export interface ShapeFetchSource {
 export function createShapeFetch(source: ShapeFetchSource = {}): typeof fetch {
   const auth = source.auth ?? true;
   const getToken = source.getToken ?? defaultGetToken;
+  const onUnauthorized = source.onUnauthorized ?? notifyUnauthorized;
+  const onAuthorized = source.onAuthorized ?? notifyAuthorized;
   const baseFetch: typeof fetch = source.fetch ?? ((input, init) => fetch(input, init));
   const devUserId = source.devUserId ?? null;
 
@@ -40,6 +53,14 @@ export function createShapeFetch(source: ShapeFetchSource = {}): typeof fetch {
         headers.set("Authorization", `Bearer ${token}`);
       }
     }
-    return baseFetch(input, { ...init, headers });
+    const response = await baseFetch(input, { ...init, headers });
+    if (auth) {
+      if (response.status === 401) {
+        onUnauthorized();
+      } else if (response.ok) {
+        onAuthorized();
+      }
+    }
+    return response;
   };
 }

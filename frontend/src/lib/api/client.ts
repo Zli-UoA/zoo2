@@ -1,4 +1,11 @@
-import { getToken as defaultGetToken, type TokenProvider } from "../auth";
+import {
+  getToken as defaultGetToken,
+  notifyAuthorized,
+  notifyUnauthorized,
+  type AuthorizedHandler,
+  type TokenProvider,
+  type UnauthorizedHandler,
+} from "../auth";
 import { joinUrl, type AppConfig } from "../config";
 
 export interface ApiEnvelope<T> {
@@ -41,6 +48,10 @@ export interface ApiClientOptions {
   baseUrl?: string;
   devUserId?: string | null;
   getToken?: TokenProvider;
+  /** 401 時の再ログイン導線。既定は `auth.notifyUnauthorized`。 */
+  onUnauthorized?: UnauthorizedHandler;
+  /** 成功時の通知（再ログイン試行カウンタの消去用）。既定は `auth.notifyAuthorized`。 */
+  onAuthorized?: AuthorizedHandler;
   fetch?: FetchLike;
 }
 
@@ -93,6 +104,8 @@ export function createApiClient(options: ApiClientOptions = {}): ApiClient {
   const baseUrl = options.baseUrl ?? "";
   const devUserId = options.devUserId ?? null;
   const tokenProvider = options.getToken ?? defaultGetToken;
+  const onUnauthorized = options.onUnauthorized ?? notifyUnauthorized;
+  const onAuthorized = options.onAuthorized ?? notifyAuthorized;
   const doFetch: FetchLike = options.fetch ?? ((input, init) => fetch(input, init));
 
   async function buildHeaders(
@@ -123,12 +136,16 @@ export function createApiClient(options: ApiClientOptions = {}): ApiClient {
 
     const body = parseBody(await response.text());
     if (!response.ok) {
+      if (response.status === 401) {
+        onUnauthorized();
+      }
       throw new ApiError(
         response.status,
         `Request to ${path} failed with status ${response.status}`,
         body,
       );
     }
+    onAuthorized();
     return body as T;
   }
 

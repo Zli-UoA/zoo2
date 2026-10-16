@@ -177,6 +177,16 @@ POSTGRES_PASSWORD=staging-test-password \
 
 Rust は `ENVIRONMENT=production`・`DEV_AUTH_ENABLED=false` で起動し、受け取った Bearer トークンを JWKS で検証します。また、Shape の初回同期では複数リクエストが重なるため、Traefik にパス一律の `rateLimit` は設けていません。レート制限は前段の Cloudflare 等で扱います。
 
+#### フロントの OIDC PKCE ログイン
+
+SPA は `VITE_OIDC_ISSUER`・`VITE_OIDC_CLIENT_ID`・`VITE_OIDC_REDIRECT_URI`（既定 `${origin}/auth/callback`）・`VITE_OIDC_SCOPE`（既定 `openid profile email`）・`VITE_OIDC_POST_LOGOUT_REDIRECT_URI` をビルド時に埋め込み、Authorization Code + PKCE (S256) でログインします。未設定（空）なら従来どおり dev の `X-Dev-User` で動きます。値は `infra/compose.stg.yaml` の frontend の build args に渡します。`state` / `nonce` / `code_verifier` は `sessionStorage` に一時保存し、コールバックで使い切りにします。トークン本体はメモリのみに置きます。
+
+リロード後は IdP セッションを使って authorize へ再リダイレクトし（サイレント再ログイン）、期限前には refresh_token で更新します。Kanidm は refresh_token の再利用でセッションを失効させるため、同時更新は 1 リクエストに集約し、更新後の refresh_token に置き換えます。401 と refresh 失敗は再ログインに倒します。ログアウトはメモリのトークン破棄までで、Kanidm は RP-initiated logout（`end_session_endpoint`）を公開していないため、Kanidm セッション自体を終えるには Kanidm 側でログアウトしてください。
+
+SPA は IdP の Discovery / token エンドポイントをブラウザから直接叩くため、IdP 側で SPA のオリジンに CORS を許可する必要があります（Kanidm は OAuth2 クライアントに設定した redirect origin に応じて CORS を返します）。`Content-Security-Policy` の `connect-src` は Kanidm の確定後に #50 で設定します。
+
+> **注意:** 現在ユーザーの解決（`/api/users/me` を使う #49）が入るまで、ステージングや本番で `VITE_OIDC_*` を有効にしないでください。`config.devUserId` が null になり、自分のメッセージの編集・削除、参加 / 退出、メンバー追加の表示条件、チャンネル作成時の `created_user_id` が動きません（退出ガードは書き込みを拒否します）。
+
 ### Coolify
 
 [Single Resource Tunnel の手順](https://coolify.io/docs/integrations/networking/cloudflare/tunnels/single-resource)を使います。Coolify の cloudflared テンプレートは `network_mode: host` なので、ホストの loopback ポートへ接続できます。

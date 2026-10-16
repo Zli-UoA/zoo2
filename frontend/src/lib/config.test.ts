@@ -70,6 +70,59 @@ describe("resolveConfig", () => {
     expect(config.shapeMode).toBe("proxy");
     expect(config.apiBaseUrl).toBe("");
   });
+
+  it("leaves OIDC unset so the dev X-Dev-User flow is unchanged", () => {
+    expect(resolveConfig({ DEV: true, VITE_DEV_USER_ID: "dev-user-1" }).oidc).toBeNull();
+    expect(DEFAULT_CONFIG.oidc).toBeNull();
+  });
+
+  it("reads OIDC settings from the environment", () => {
+    const config = resolveConfig({
+      VITE_OIDC_ISSUER: "https://id.example/oauth2/openid/zoo",
+      VITE_OIDC_CLIENT_ID: "zoo",
+    });
+    expect(config.oidc).toEqual({
+      issuer: "https://id.example/oauth2/openid/zoo",
+      clientId: "zoo",
+      redirectUri: null,
+      scope: "openid profile email",
+      postLogoutRedirectUri: null,
+    });
+  });
+
+  it("overrides scope, redirect, and post-logout redirect", () => {
+    const config = resolveConfig({
+      VITE_OIDC_ISSUER: "https://id.example/oauth2/openid/zoo/",
+      VITE_OIDC_CLIENT_ID: "zoo",
+      VITE_OIDC_REDIRECT_URI: "https://app.example/auth/callback",
+      VITE_OIDC_SCOPE: "openid profile offline_access",
+      VITE_OIDC_POST_LOGOUT_REDIRECT_URI: "https://app.example/logged-out",
+    });
+    expect(config.oidc).toMatchObject({
+      redirectUri: "https://app.example/auth/callback",
+      scope: "openid profile offline_access",
+      postLogoutRedirectUri: "https://app.example/logged-out",
+    });
+  });
+
+  it("requires issuer and client ID together", () => {
+    expect(() => resolveConfig({ VITE_OIDC_ISSUER: "https://id.example" })).toThrow(
+      /VITE_OIDC_ISSUER and VITE_OIDC_CLIENT_ID/,
+    );
+    expect(() => resolveConfig({ VITE_OIDC_CLIENT_ID: "zoo" })).toThrow(
+      /VITE_OIDC_ISSUER and VITE_OIDC_CLIENT_ID/,
+    );
+  });
+
+  it("does not require a dev user once OIDC is configured", () => {
+    const config = resolveConfig({
+      DEV: true,
+      VITE_OIDC_ISSUER: "https://id.example/oauth2/openid/zoo",
+      VITE_OIDC_CLIENT_ID: "zoo",
+      VITE_DEV_USER_ID: "dev-user-1",
+    });
+    expect(config.devUserId).toBeNull();
+  });
 });
 
 describe("resolveTxidMode", () => {
