@@ -1,0 +1,238 @@
+import { useVirtualizer } from "@tanstack/react-virtual";
+import { ArrowDownIcon } from "lucide-react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+
+import { Button } from "../../ui/button";
+import { Skeleton } from "../../ui/skeleton";
+import type { FeedMessage } from "./messageFormat";
+import { buildMessageItems } from "./messageGrouping";
+import { MessageRow } from "./MessageRow";
+import {
+  classifyScrollChange,
+  isNearBottom,
+  shouldStickToBottom,
+  snapshot,
+  type ScrollSnapshot,
+} from "./messageScroll";
+
+const ESTIMATED_ROW_HEIGHT = 64;
+const SKELETON_ROWS = [0, 1, 2, 3, 4, 5];
+
+interface MessageListProps {
+  messages: FeedMessage[];
+  isLoading: boolean;
+  isError: boolean;
+  currentUserId: string | null;
+  editingId: string | null;
+  editingText: string;
+  onEditingTextChange: (value: string) => void;
+  onStartEdit: (id: string, content: string) => void;
+  onCancelEdit: () => void;
+  onSaveEdit: () => void;
+  onRequestDelete: (id: string) => void;
+}
+
+function MessageSkeleton() {
+  return (
+    <div className="flex flex-col gap-4 p-4" aria-hidden="true">
+      {SKELETON_ROWS.map((row) => (
+        <div key={row} className="flex gap-3">
+          <Skeleton className="size-9 shrink-0 rounded-full" />
+          <div className="flex flex-1 flex-col gap-2">
+            <Skeleton className="h-3 w-28" />
+            <Skeleton className="h-4 w-full max-w-md" />
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function MessageState({
+  title,
+  description,
+  destructive = false,
+}: {
+  title: string;
+  description: string;
+  destructive?: boolean;
+}) {
+  return (
+    <div className="flex h-full flex-col items-center justify-center gap-1 p-6 text-center">
+      <p className={destructive ? "text-sm font-medium text-destructive" : "text-sm font-medium"}>
+        {title}
+      </p>
+      <p className="text-xs text-muted-foreground">{description}</p>
+    </div>
+  );
+}
+
+/**
+ * メッセージ一覧。日付区切りと連投グルーピングを描き、`@tanstack/react-virtual`
+ * で可視行のみ DOM 化する。新規受信は atBottom のときだけ追従し、古いページの
+ * 追加ではスクロール位置を補正して維持する。
+ */
+export function MessageList({
+  messages,
+  isLoading,
+  isError,
+  currentUserId,
+  editingId,
+  editingText,
+  onEditingTextChange,
+  onStartEdit,
+  onCancelEdit,
+  onSaveEdit,
+  onRequestDelete,
+}: MessageListProps) {
+  const items = useMemo(() => buildMessageItems(messages), [messages]);
+  const scrollRef = useRef<HTMLDivElement>(null);
+
+  const virtualizer = useVirtualizer({
+    count: items.length,
+    getScrollElement: () => scrollRef.current,
+    estimateSize: () => ESTIMATED_ROW_HEIGHT,
+    overscan: 8,
+    getItemKey: (index) => items[index]?.message.id ?? index,
+  });
+
+  const atBottomRef = useRef(true);
+  const [hasNewBelow, setHasNewBelow] = useState(false);
+  const snapshotRef = useRef<ScrollSnapshot>({ firstId: null, lastId: null });
+  const previousScrollHeightRef = useRef(0);
+
+  const scrollToBottom = useCallback(
+    (behavior: ScrollBehavior = "auto") => {
+      atBottomRef.current = true;
+      setHasNewBelow(false);
+      if (items.length === 0) {
+        return;
+      }
+      // 行の実測高さに追従して最下部へ合わせる（scrollHeight 直指定より安定）。
+      virtualizer.scrollToIndex(items.length - 1, { align: "end", behavior });
+    },
+    [items.length, virtualizer],
+  );
+
+  const handleScroll = useCallback(() => {
+    const element = scrollRef.current;
+    if (!element) {
+      return;
+    }
+    const near = isNearBottom(element.scrollTop, element.scrollHeight, element.clientHeight);
+    atBottomRef.current = near;
+    if (near) {
+      setHasNewBelow(false);
+    }
+  }, []);
+
+  useLayoutEffect(() => {
+    const element = scrollRef.current;
+    if (!element) {
+      return;
+    }
+    const ids = items.map((item) => item.message.id);
+    const next = snapshot(ids);
+    const change = classifyScrollChange(snapshotRef.current, next, new Set(ids));
+
+    if (change === "prepend") {
+      const delta = element.scrollHeight - previousScrollHeightRef.current;
+      if (delta > 0) {
+        element.scrollTop += delta;
+      }
+    } else if (shouldStickToBottom(change, atBottomRef.current)) {
+      requestAnimationFrame(() => scrollToBottom());
+    } else if (change === "append") {
+      // 自分の送信は、上にスクロールしていても最下部へ追従する。
+      const appended = items[items.length - 1];
+      if (appended && appended.message.user_id === currentUserId) {
+        requestAnimationFrame(() => scrollToBottom());
+      } else {
+        setHasNewBelow(true);
+      }
+    }
+
+    snapshotRef.current = next;
+    previousScrollHeightRef.current = element.scrollHeight;
+  }, [items, currentUserId, scrollToBottom]);
+
+  // 編集の開始・終了で行の高さが変わるため測り直す。
+  useEffect(() => {
+    virtualizer.measure();
+  }, [editingId, virtualizer]);
+
+  const showSkeleton = isLoading && items.length === 0;
+  const showError = isError && items.length === 0;
+  const showEmpty = !isLoading && !isError && items.length === 0;
+
+  return (
+    <div className="relative min-h-0 flex-1">
+      {showSkeleton ? (
+        <MessageSkeleton />
+      ) : showError ? (
+        <MessageState
+          destructive
+          title="メッセージの取得に失敗しました"
+          description="接続を確認して、もう一度お試しください。"
+        />
+      ) : showEmpty ? (
+        <MessageState
+          title="まだメッセージがありません"
+          description="最初のメッセージを送ってみましょう。"
+        />
+      ) : (
+        <div
+          ref={scrollRef}
+          onScroll={handleScroll}
+          className="h-full overflow-y-auto overscroll-contain px-2 py-3"
+        >
+          <div
+            role="list"
+            className="relative w-full"
+            style={{ height: virtualizer.getTotalSize() }}
+          >
+            {virtualizer.getVirtualItems().map((virtualRow) => {
+              const item = items[virtualRow.index];
+              if (!item) {
+                return null;
+              }
+              return (
+                <div
+                  key={virtualRow.key}
+                  ref={virtualizer.measureElement}
+                  data-index={virtualRow.index}
+                  role="listitem"
+                  className="absolute left-0 top-0 w-full"
+                  style={{ transform: `translateY(${virtualRow.start}px)` }}
+                >
+                  <MessageRow
+                    item={item}
+                    isOwn={!!currentUserId && item.message.user_id === currentUserId}
+                    isEditing={editingId === item.message.id}
+                    editingText={editingText}
+                    onEditingTextChange={onEditingTextChange}
+                    onStartEdit={() => onStartEdit(item.message.id, item.message.content)}
+                    onCancelEdit={onCancelEdit}
+                    onSaveEdit={onSaveEdit}
+                    onRequestDelete={() => onRequestDelete(item.message.id)}
+                  />
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
+
+      {hasNewBelow ? (
+        <Button
+          size="sm"
+          className="absolute bottom-3 left-1/2 -translate-x-1/2 rounded-full shadow-md"
+          onClick={() => scrollToBottom("smooth")}
+        >
+          <ArrowDownIcon />
+          新着メッセージ
+        </Button>
+      ) : null}
+    </div>
+  );
+}

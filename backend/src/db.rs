@@ -1,4 +1,4 @@
-use crate::models::{Channel, ChannelUser, Message, Role, User, UserRole};
+use crate::models::{Channel, ChannelUser, Message, Role, User, UserIdentity, UserRole};
 
 pub async fn init_db(database_url: &str) -> Result<toasty::Db, toasty::Error> {
     tracing::info!("Connecting to PostgreSQL via Toasty ORM...");
@@ -6,6 +6,7 @@ pub async fn init_db(database_url: &str) -> Result<toasty::Db, toasty::Error> {
     let db = toasty::Db::builder()
         .models(toasty::models!(
             User,
+            UserIdentity,
             Channel,
             Message,
             ChannelUser,

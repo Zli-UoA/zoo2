@@ -16,6 +16,11 @@ async fn main() -> anyhow::Result<()> {
 
     // 設定読み込み
     let config = Config::from_env();
+    if let Err(err) = config.validate() {
+        tracing::error!("Configuration validation error: {err}");
+        anyhow::bail!("Configuration error: {err}");
+    }
+
     tracing::info!(
         host = %config.host,
         port = %config.port,
