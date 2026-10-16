@@ -10,10 +10,10 @@ use crate::{
     auth::AuthUser,
     db::get_current_txid,
     error::AppError,
-    models::{Channel, ChannelUser, Message},
+    models::{Channel, ChannelUser, Message, MessageReaction},
     routes::response::ApiResponse,
     state::AppState,
-    validation::validate_message_content,
+    validation::{normalize_and_validate_emoji, validate_message_content},
 };
 
 #[derive(Debug, Deserialize)]
@@ -31,6 +31,17 @@ pub struct UpdateMessageRequest {
 #[derive(Debug, Deserialize)]
 pub struct ListMessagesQuery {
     pub channel_id: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct AddReactionRequest {
+    pub id: Option<String>,
+    pub emoji: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct DeleteReactionQuery {
+    pub emoji: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -58,12 +69,37 @@ impl From<Message> for MessageResponse {
     }
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ReactionResponse {
+    pub id: String,
+    pub message_id: String,
+    pub user_id: String,
+    pub emoji: String,
+    pub created_at: String,
+}
+
+impl From<MessageReaction> for ReactionResponse {
+    fn from(r: MessageReaction) -> Self {
+        Self {
+            id: r.id,
+            message_id: r.message_id,
+            user_id: r.user_id,
+            emoji: r.emoji,
+            created_at: r.created_at.to_string(),
+        }
+    }
+}
+
 pub fn router() -> Router<AppState> {
     Router::new()
         .route("/api/messages", post(create_message).get(list_messages))
         .route(
             "/api/messages/{id}",
             patch(update_message).delete(delete_message),
+        )
+        .route(
+            "/api/messages/{id}/reactions",
+            post(add_reaction).delete(delete_reaction),
         )
 }
 
@@ -104,6 +140,12 @@ async fn create_message(
             "Channel not found: {}",
             payload.channel_id
         )));
+    }
+
+    if channel.archive_at.is_some() {
+        return Err(AppError::BadRequest(
+            "Cannot post message to an archived channel".into(),
+        ));
     }
 
     // プライベートチャンネルの場合、所属していなければ 404 で存在を隠蔽
@@ -310,4 +352,278 @@ async fn list_messages(
 
     let res = messages.into_iter().map(MessageResponse::from).collect();
     Ok(Json(res))
+}
+
+async fn add_reaction(
+    State(state): State<AppState>,
+    auth_user: AuthUser,
+    Path(id): Path<String>,
+    Json(payload): Json<AddReactionRequest>,
+) -> Result<Json<ApiResponse<ReactionResponse>>, AppError> {
+    Uuid::parse_str(&id)
+        .map_err(|_| AppError::BadRequest(format!("message id is not a valid UUID: {id}")))?;
+
+    let normalized_emoji = normalize_and_validate_emoji(&payload.emoji)?;
+
+    let mut db = state.db.clone();
+    let mut tx = db.transaction().await?;
+
+    let message = Message::get_by_id(&mut tx, id.as_str())
+        .await
+        .map_err(|err| {
+            if err.is_record_not_found() {
+                AppError::NotFound(format!("Message not found: {id}"))
+            } else {
+                AppError::from(err)
+            }
+        })?;
+
+    if message.deleted_at.is_some() {
+        return Err(AppError::NotFound(format!("Message not found: {id}")));
+    }
+
+    let channel = Channel::get_by_id(&mut tx, message.channel_id.as_str())
+        .await
+        .map_err(|err| {
+            if err.is_record_not_found() {
+                AppError::NotFound(format!("Channel not found: {}", message.channel_id))
+            } else {
+                AppError::from(err)
+            }
+        })?;
+
+    if channel.deleted_at.is_some() {
+        return Err(AppError::NotFound(format!(
+            "Channel not found: {}",
+            message.channel_id
+        )));
+    }
+
+    if channel.archive_at.is_some() {
+        return Err(AppError::BadRequest(
+            "Cannot add reaction in an archived channel".into(),
+        ));
+    }
+
+    if channel.is_private {
+        let membership = ChannelUser::filter(
+            ChannelUser::fields()
+                .channel_id()
+                .eq(message.channel_id.as_str())
+                .and(ChannelUser::fields().user_id().eq(auth_user.id.as_str())),
+        )
+        .first()
+        .exec(&mut tx)
+        .await?;
+
+        if membership.is_none() {
+            return Err(AppError::NotFound(format!("Message not found: {id}")));
+        }
+    }
+
+    let reaction_id = if let Some(req_id) = payload.id {
+        Uuid::parse_str(&req_id).map_err(|_| {
+            AppError::BadRequest(format!("reaction id is not a valid UUID: {req_id}"))
+        })?;
+        req_id
+    } else {
+        Uuid::new_v4().to_string()
+    };
+
+    // 重複チェック
+    let existing = MessageReaction::filter(
+        MessageReaction::fields()
+            .message_id()
+            .eq(id.as_str())
+            .and(
+                MessageReaction::fields()
+                    .user_id()
+                    .eq(auth_user.id.as_str()),
+            )
+            .and(
+                MessageReaction::fields()
+                    .emoji()
+                    .eq(normalized_emoji.as_str()),
+            ),
+    )
+    .first()
+    .exec(&mut tx)
+    .await?;
+
+    if let Some(reaction) = existing {
+        // no-op: WAL 書き込みがないため txid: None を返却
+        return Ok(Json(ApiResponse::new(
+            ReactionResponse::from(reaction),
+            None,
+        )));
+    }
+
+    let now = crate::models::now_utc_millis();
+
+    let created_res = toasty::create!(MessageReaction {
+        id: reaction_id.as_str(),
+        message_id: id.as_str(),
+        user_id: auth_user.id.as_str(),
+        emoji: normalized_emoji.as_str(),
+        created_at: now,
+    })
+    .exec(&mut tx)
+    .await;
+
+    let reaction = match created_res {
+        Ok(r) => r,
+        Err(err) => {
+            // UNIQUE制約違反等でトランザクションがabortされた場合、ロールバックして新しいtxで取得
+            let _ = tx.rollback().await;
+            let mut retry_tx = db.transaction().await?;
+            let check = MessageReaction::filter(
+                MessageReaction::fields()
+                    .message_id()
+                    .eq(id.as_str())
+                    .and(
+                        MessageReaction::fields()
+                            .user_id()
+                            .eq(auth_user.id.as_str()),
+                    )
+                    .and(
+                        MessageReaction::fields()
+                            .emoji()
+                            .eq(normalized_emoji.as_str()),
+                    ),
+            )
+            .first()
+            .exec(&mut retry_tx)
+            .await?;
+
+            if let Some(r) = check {
+                return Ok(Json(ApiResponse::new(ReactionResponse::from(r), None)));
+            }
+
+            // 指定された reaction_id が既に存在する場合は PK 衝突として 409 Conflict を返す
+            let pk_check =
+                MessageReaction::filter(MessageReaction::fields().id().eq(reaction_id.as_str()))
+                    .first()
+                    .exec(&mut retry_tx)
+                    .await?;
+            if pk_check.is_some() {
+                return Err(AppError::Conflict(format!(
+                    "Reaction with ID '{reaction_id}' already exists"
+                )));
+            }
+
+            tracing::error!(?err, "Failed to create reaction");
+            return Err(AppError::Internal(anyhow::anyhow!(
+                "Failed to create reaction: {err}"
+            )));
+        }
+    };
+
+    let txid = get_current_txid(&mut tx).await?;
+    tx.commit().await?;
+
+    Ok(Json(ApiResponse::new(
+        ReactionResponse::from(reaction),
+        txid,
+    )))
+}
+
+async fn delete_reaction(
+    State(state): State<AppState>,
+    auth_user: AuthUser,
+    Path(id): Path<String>,
+    Query(query): Query<DeleteReactionQuery>,
+) -> Result<Json<ApiResponse<ReactionResponse>>, AppError> {
+    Uuid::parse_str(&id)
+        .map_err(|_| AppError::BadRequest(format!("message id is not a valid UUID: {id}")))?;
+
+    let normalized_emoji = normalize_and_validate_emoji(&query.emoji)?;
+
+    let mut db = state.db.clone();
+    let mut tx = db.transaction().await?;
+
+    let message = Message::get_by_id(&mut tx, id.as_str())
+        .await
+        .map_err(|err| {
+            if err.is_record_not_found() {
+                AppError::NotFound(format!("Message not found: {id}"))
+            } else {
+                AppError::from(err)
+            }
+        })?;
+
+    if message.deleted_at.is_some() {
+        return Err(AppError::NotFound(format!("Message not found: {id}")));
+    }
+
+    let channel = Channel::get_by_id(&mut tx, message.channel_id.as_str())
+        .await
+        .map_err(|err| {
+            if err.is_record_not_found() {
+                AppError::NotFound(format!("Channel not found: {}", message.channel_id))
+            } else {
+                AppError::from(err)
+            }
+        })?;
+
+    if channel.deleted_at.is_some() {
+        return Err(AppError::NotFound(format!(
+            "Channel not found: {}",
+            message.channel_id
+        )));
+    }
+
+    if channel.archive_at.is_some() {
+        return Err(AppError::BadRequest(
+            "Cannot remove reaction in an archived channel".into(),
+        ));
+    }
+
+    if channel.is_private {
+        let membership = ChannelUser::filter(
+            ChannelUser::fields()
+                .channel_id()
+                .eq(message.channel_id.as_str())
+                .and(ChannelUser::fields().user_id().eq(auth_user.id.as_str())),
+        )
+        .first()
+        .exec(&mut tx)
+        .await?;
+
+        if membership.is_none() {
+            return Err(AppError::NotFound(format!("Message not found: {id}")));
+        }
+    }
+
+    let reaction = MessageReaction::filter(
+        MessageReaction::fields()
+            .message_id()
+            .eq(id.as_str())
+            .and(
+                MessageReaction::fields()
+                    .user_id()
+                    .eq(auth_user.id.as_str()),
+            )
+            .and(
+                MessageReaction::fields()
+                    .emoji()
+                    .eq(normalized_emoji.as_str()),
+            ),
+    )
+    .first()
+    .exec(&mut tx)
+    .await?
+    .ok_or_else(|| AppError::NotFound(format!("Reaction not found: {}", query.emoji)))?;
+
+    MessageReaction::filter(MessageReaction::fields().id().eq(reaction.id.as_str()))
+        .delete()
+        .exec(&mut tx)
+        .await?;
+
+    let txid = get_current_txid(&mut tx).await?;
+    tx.commit().await?;
+
+    Ok(Json(ApiResponse::new(
+        ReactionResponse::from(reaction),
+        txid,
+    )))
 }

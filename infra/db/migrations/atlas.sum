@@ -1,4 +1,5 @@
-h1:dtKqg3nIhhERcMRbSY5Q4x/3LBuvCugQtwu/6phNV28=
+h1:aDztFG/uLL2oAr6ejBmGl2C2YFKPOHwsImHdo4DqWB0=
 20261008000000_initial.sql h1:v3rZATh+MriHOzHYMS+oLMrabKMd7J8aLKuEYdsKNfc=
 20261015110156_snake_case_and_replica_identity.sql h1:gWKFhGTel2djLDzitJiG+ufrbKEjusudna0EhabxkZU=
 20261016171538_create_user_identities.sql h1:h8btCK61sRc0EaVuiKnON59nR594VVKdLtl8nes3KKc=
+20261017043000_create_message_reactions.sql h1:OllskFZXZlZIihqLpdqBn/tV72on9+tuThLXK0xJoTw=
