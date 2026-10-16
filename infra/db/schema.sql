@@ -4,12 +4,8 @@ CREATE TABLE users (
   display_name varchar(255) NOT NULL,
   created_at timestamp(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at timestamp(3),
-  oidc_iss text,
-  oidc_sub text,
-  affiliation varchar(32) NOT NULL DEFAULT 'unknown',
   PRIMARY KEY (id),
-  CONSTRAINT users_user_name_key UNIQUE (user_name),
-  CONSTRAINT users_oidc_iss_sub_key UNIQUE (oidc_iss, oidc_sub)
+  CONSTRAINT users_user_name_key UNIQUE (user_name)
 );
 
 CREATE TABLE channels (
@@ -76,3 +72,18 @@ CREATE TABLE user_role (
     FOREIGN KEY (role_id) REFERENCES role (id)
     ON UPDATE CASCADE ON DELETE RESTRICT
 );
+
+CREATE TABLE user_identities (
+  id text NOT NULL,
+  user_id text NOT NULL,
+  iss text NOT NULL,
+  sub text NOT NULL,
+  created_at timestamp(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at timestamp(3),
+  PRIMARY KEY (id),
+  CONSTRAINT user_identities_user_id_fkey
+    FOREIGN KEY (user_id) REFERENCES users (id)
+    ON UPDATE CASCADE ON DELETE CASCADE,
+  CONSTRAINT user_identities_iss_sub_key UNIQUE (iss, sub)
+);
+

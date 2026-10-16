@@ -11,7 +11,4 @@ pub struct User {
     pub display_name: String,
     pub created_at: jiff::civil::DateTime,
     pub updated_at: Option<jiff::civil::DateTime>,
-    pub oidc_iss: Option<String>,
-    pub oidc_sub: Option<String>,
-    pub affiliation: String,
 }

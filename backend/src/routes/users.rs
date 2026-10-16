@@ -35,8 +35,6 @@ pub struct UserResponse {
     pub display_name: String,
     pub created_at: String,
     pub updated_at: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub affiliation: Option<String>,
 }
 
 impl From<User> for UserResponse {
@@ -47,7 +45,6 @@ impl From<User> for UserResponse {
             display_name: user.display_name,
             created_at: user.created_at.to_string(),
             updated_at: user.updated_at.map(|t| t.to_string()),
-            affiliation: Some(user.affiliation),
         }
     }
 }
@@ -131,9 +128,6 @@ async fn create_user(
         display_name: payload.display_name.as_str(),
         created_at: now,
         updated_at: None,
-        oidc_iss: None,
-        oidc_sub: None,
-        affiliation: "student",
     })
     .exec(&mut tx)
     .await?;
@@ -144,7 +138,10 @@ async fn create_user(
     Ok(Json(ApiResponse::new(UserResponse::from(user), txid)))
 }
 
-async fn list_users(State(state): State<AppState>) -> Result<Json<Vec<UserResponse>>, AppError> {
+async fn list_users(
+    State(state): State<AppState>,
+    _auth_user: AuthUser,
+) -> Result<Json<Vec<UserResponse>>, AppError> {
     let mut db = state.db.clone();
     let users = User::all()
         .order_by(User::fields().created_at().asc())
@@ -156,6 +153,7 @@ async fn list_users(State(state): State<AppState>) -> Result<Json<Vec<UserRespon
 
 async fn get_user_by_id(
     State(state): State<AppState>,
+    _auth_user: AuthUser,
     Path(id): Path<String>,
 ) -> Result<Json<UserResponse>, AppError> {
     Uuid::parse_str(&id)

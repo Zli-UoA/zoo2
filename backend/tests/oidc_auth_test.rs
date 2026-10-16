@@ -13,7 +13,7 @@ use wiremock::{
 use backend::{
     config::{Config, OidcConfig},
     db::init_db,
-    models::User,
+    models::{User, UserIdentity},
     routes::create_router,
     state::AppState,
 };
@@ -101,6 +101,43 @@ fn key2_jwk() -> Value {
 }
 
 #[allow(clippy::too_many_arguments)]
+fn generate_token_with_typ(
+    pem: &str,
+    kid: &str,
+    typ: Option<&str>,
+    iss: &str,
+    aud: &str,
+    sub: &str,
+    preferred_username: Option<&str>,
+    name: Option<&str>,
+    scope: Option<&str>,
+    exp_offset_sec: i64,
+    nbf_offset_sec: Option<i64>,
+) -> String {
+    let mut header = Header::new(Algorithm::RS256);
+    header.kid = Some(kid.to_string());
+    header.typ = typ.map(|t| t.to_string());
+
+    let now = jiff::Timestamp::now().as_second();
+    let exp = (now + exp_offset_sec) as u64;
+    let nbf = nbf_offset_sec.map(|off| (now + off) as u64);
+
+    let claims = json!({
+        "iss": iss,
+        "aud": aud,
+        "sub": sub,
+        "exp": exp,
+        "nbf": nbf,
+        "preferred_username": preferred_username,
+        "name": name,
+        "scope": scope,
+    });
+
+    let enc_key = EncodingKey::from_rsa_pem(pem.as_bytes()).unwrap();
+    encode(&header, &claims, &enc_key).unwrap()
+}
+
+#[allow(clippy::too_many_arguments)]
 fn generate_token(
     pem: &str,
     kid: &str,
@@ -112,41 +149,40 @@ fn generate_token(
     scope: Option<&str>,
     exp_offset_sec: i64,
 ) -> String {
-    let mut header = Header::new(Algorithm::RS256);
-    header.kid = Some(kid.to_string());
-
-    let now = jiff::Timestamp::now().as_second();
-    let exp = (now + exp_offset_sec) as u64;
-
-    let claims = json!({
-        "iss": iss,
-        "aud": aud,
-        "sub": sub,
-        "exp": exp,
-        "preferred_username": preferred_username,
-        "name": name,
-        "scope": scope,
-    });
-
-    let enc_key = EncodingKey::from_rsa_pem(pem.as_bytes()).unwrap();
-    encode(&header, &claims, &enc_key).unwrap()
+    generate_token_with_typ(
+        pem,
+        kid,
+        Some("at+jwt"),
+        iss,
+        aud,
+        sub,
+        preferred_username,
+        name,
+        scope,
+        exp_offset_sec,
+        None,
+    )
 }
 
-async fn setup_test_app(mock_server: &MockServer) -> (axum::Router, AppState, OidcConfig) {
+async fn setup_test_app(
+    mock_server: &MockServer,
+    explicit_jwks: bool,
+) -> (axum::Router, AppState, OidcConfig) {
     dotenvy::dotenv().ok();
     dotenvy::from_filename("../.env").ok();
 
     let issuer = mock_server.uri();
     let audience = "zoo-client-test".to_string();
-    let jwks_url = format!("{}/.well-known/jwks.json", mock_server.uri());
+    let jwks_url = if explicit_jwks {
+        Some(format!("{}/.well-known/jwks.json", mock_server.uri()))
+    } else {
+        None
+    };
 
     let oidc_config = OidcConfig {
         issuer: issuer.clone(),
         audience: audience.clone(),
         jwks_url,
-        scope_student: "student".to_string(),
-        scope_freshman: "freshman".to_string(),
-        scope_alumni: "alumni".to_string(),
     };
 
     let mut config = Config::from_env();
@@ -171,7 +207,7 @@ async fn test_oidc_jit_provisioning_and_user_profile_flow() -> anyhow::Result<()
         .mount(&mock_server)
         .await;
 
-    let (app, _state, oidc_cfg) = setup_test_app(&mock_server).await;
+    let (app, state, oidc_cfg) = setup_test_app(&mock_server, true).await;
 
     let sub_1 = format!("kanidm-sub-{}", uuid::Uuid::new_v4().simple());
     let username = format!("alice_{}", &uuid::Uuid::new_v4().simple().to_string()[..6]);
@@ -183,7 +219,7 @@ async fn test_oidc_jit_provisioning_and_user_profile_flow() -> anyhow::Result<()
         &sub_1,
         Some(&username),
         Some("Alice In Wonderland"),
-        Some("openid profile student"),
+        Some("openid profile"),
         3600,
     );
 
@@ -202,9 +238,21 @@ async fn test_oidc_jit_provisioning_and_user_profile_flow() -> anyhow::Result<()
     let user_id = user_json["id"].as_str().expect("id must be string");
     assert_eq!(user_json["user_name"], username);
     assert_eq!(user_json["display_name"], "Alice In Wonderland");
-    assert_eq!(user_json["affiliation"], "student");
 
-    // 2. 再ログインで同じ内部ユーザー ID に解決されること
+    // DB に user_identities が正しく登録されていることの検証 (users テーブルには IdP 識別子が保持されていないこと)
+    let mut db = state.db.clone();
+    let identities = UserIdentity::filter(
+        UserIdentity::fields()
+            .iss()
+            .eq(&oidc_cfg.issuer)
+            .and(UserIdentity::fields().sub().eq(&sub_1)),
+    )
+    .exec(&mut db)
+    .await?;
+    assert_eq!(identities.len(), 1);
+    assert_eq!(identities[0].user_id, user_id);
+
+    // 2. 再ログインで同じ内部ユーザー ID に解決されること (キャッシュ経由)
     let req2 = Request::builder()
         .method("GET")
         .uri("/api/users/me")
@@ -217,33 +265,7 @@ async fn test_oidc_jit_provisioning_and_user_profile_flow() -> anyhow::Result<()
     let user_json2: Value = serde_json::from_slice(&body2)?;
     assert_eq!(user_json2["id"].as_str(), Some(user_id));
 
-    // 3. 区分変更の反映 (student -> alumni)
-    let updated_token = generate_token(
-        TEST_KEY1_PEM,
-        "test-key-1",
-        &oidc_cfg.issuer,
-        &oidc_cfg.audience,
-        &sub_1,
-        Some(&username),
-        Some("Alice In Wonderland"),
-        Some("openid profile alumni"),
-        3600,
-    );
-
-    let req3 = Request::builder()
-        .method("GET")
-        .uri("/api/users/me")
-        .header("Authorization", format!("Bearer {updated_token}"))
-        .body(Body::empty())?;
-
-    let resp3 = app.clone().oneshot(req3).await?;
-    assert_eq!(resp3.status(), StatusCode::OK);
-    let body3 = to_bytes(resp3.into_body(), usize::MAX).await?;
-    let user_json3: Value = serde_json::from_slice(&body3)?;
-    assert_eq!(user_json3["id"].as_str(), Some(user_id));
-    assert_eq!(user_json3["affiliation"], "alumni");
-
-    // 4. PATCH /api/users/me (プロフィールの本人限定更新と txid 返却)
+    // 3. PATCH /api/users/me (プロフィールの本人限定更新と txid 返却)
     let patch_payload = json!({
         "display_name": "Alice The Graduate",
     });
@@ -251,7 +273,7 @@ async fn test_oidc_jit_provisioning_and_user_profile_flow() -> anyhow::Result<()
         .method("PATCH")
         .uri("/api/users/me")
         .header("content-type", "application/json")
-        .header("Authorization", format!("Bearer {updated_token}"))
+        .header("Authorization", format!("Bearer {token}"))
         .body(Body::from(serde_json::to_vec(&patch_payload)?))?;
 
     let resp_patch = app.clone().oneshot(req_patch).await?;
@@ -262,16 +284,166 @@ async fn test_oidc_jit_provisioning_and_user_profile_flow() -> anyhow::Result<()
     let txid = patch_json["txid"].as_str().expect("txid required");
     assert!(!txid.is_empty());
 
-    // 5. GET /api/users/me で更新が反映されていること
+    // 4. GET /api/users/me で更新が反映されていること
     let req_get = Request::builder()
         .method("GET")
         .uri("/api/users/me")
-        .header("Authorization", format!("Bearer {updated_token}"))
+        .header("Authorization", format!("Bearer {token}"))
         .body(Body::empty())?;
     let resp_get = app.clone().oneshot(req_get).await?;
     let body_get = to_bytes(resp_get.into_body(), usize::MAX).await?;
     let json_get: Value = serde_json::from_slice(&body_get)?;
     assert_eq!(json_get["display_name"], "Alice The Graduate");
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_rfc9068_typ_validation() -> anyhow::Result<()> {
+    let mock_server = MockServer::start().await;
+    let jwks_body = json!({ "keys": [key1_jwk()] });
+    Mock::given(method("GET"))
+        .and(path("/.well-known/jwks.json"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(&jwks_body))
+        .mount(&mock_server)
+        .await;
+
+    let (app, _state, oidc_cfg) = setup_test_app(&mock_server, true).await;
+
+    // 1. typ ヘッダなし (ID トークンやレガシー JWT の場合) -> 401 Unauthorized
+    let token_no_typ = generate_token_with_typ(
+        TEST_KEY1_PEM,
+        "test-key-1",
+        None,
+        &oidc_cfg.issuer,
+        &oidc_cfg.audience,
+        "sub-no-typ",
+        Some("user_no_typ"),
+        Some("No Typ"),
+        None,
+        3600,
+        None,
+    );
+    let req = Request::builder()
+        .uri("/api/users/me")
+        .header("Authorization", format!("Bearer {token_no_typ}"))
+        .body(Body::empty())?;
+    let resp = app.clone().oneshot(req).await?;
+    assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+
+    // 2. typ: "JWT" (一般的な ID トークン) -> 401 Unauthorized
+    let token_jwt_typ = generate_token_with_typ(
+        TEST_KEY1_PEM,
+        "test-key-1",
+        Some("JWT"),
+        &oidc_cfg.issuer,
+        &oidc_cfg.audience,
+        "sub-jwt-typ",
+        Some("user_jwt_typ"),
+        Some("JWT Typ"),
+        None,
+        3600,
+        None,
+    );
+    let req = Request::builder()
+        .uri("/api/users/me")
+        .header("Authorization", format!("Bearer {token_jwt_typ}"))
+        .body(Body::empty())?;
+    let resp = app.clone().oneshot(req).await?;
+    assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+
+    // 3. typ: "at+jwt" (RFC 9068 適合) -> 200 OK
+    let token_at_jwt = generate_token_with_typ(
+        TEST_KEY1_PEM,
+        "test-key-1",
+        Some("at+jwt"),
+        &oidc_cfg.issuer,
+        &oidc_cfg.audience,
+        "sub-at-jwt",
+        Some("user_at_jwt"),
+        Some("At JWT"),
+        None,
+        3600,
+        None,
+    );
+    let req = Request::builder()
+        .uri("/api/users/me")
+        .header("Authorization", format!("Bearer {token_at_jwt}"))
+        .body(Body::empty())?;
+    let resp = app.clone().oneshot(req).await?;
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    // 4. typ: "application/at+jwt" (大文字小文字無視) -> 200 OK
+    let token_app_at_jwt = generate_token_with_typ(
+        TEST_KEY1_PEM,
+        "test-key-1",
+        Some("application/at+jwt"),
+        &oidc_cfg.issuer,
+        &oidc_cfg.audience,
+        "sub-app-at-jwt",
+        Some("user_app_at_jwt"),
+        Some("App At JWT"),
+        None,
+        3600,
+        None,
+    );
+    let req = Request::builder()
+        .uri("/api/users/me")
+        .header("Authorization", format!("Bearer {token_app_at_jwt}"))
+        .body(Body::empty())?;
+    let resp = app.clone().oneshot(req).await?;
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_openid_discovery_resolution() -> anyhow::Result<()> {
+    let mock_server = MockServer::start().await;
+
+    // Discovery エンドポイントと JWKS エンドポイントのモック
+    let custom_jwks_path = "/oauth2/openid/zoo-client/public_key.jwk";
+    let discovery_body = json!({
+        "issuer": mock_server.uri(),
+        "jwks_uri": format!("{}{custom_jwks_path}", mock_server.uri())
+    });
+
+    Mock::given(method("GET"))
+        .and(path("/.well-known/openid-configuration"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(&discovery_body))
+        .mount(&mock_server)
+        .await;
+
+    let jwks_body = json!({ "keys": [key1_jwk()] });
+    Mock::given(method("GET"))
+        .and(path(custom_jwks_path))
+        .respond_with(ResponseTemplate::new(200).set_body_json(&jwks_body))
+        .mount(&mock_server)
+        .await;
+
+    // jwks_url を未設定 (None) にして Discovery を自動解決
+    let (app, _state, oidc_cfg) = setup_test_app(&mock_server, false).await;
+    assert!(oidc_cfg.jwks_url.is_none());
+
+    let token = generate_token(
+        TEST_KEY1_PEM,
+        "test-key-1",
+        &oidc_cfg.issuer,
+        &oidc_cfg.audience,
+        "sub-discovery-user",
+        Some("discovery_user"),
+        Some("Discovery User"),
+        None,
+        3600,
+    );
+
+    let req = Request::builder()
+        .uri("/api/users/me")
+        .header("Authorization", format!("Bearer {token}"))
+        .body(Body::empty())?;
+
+    let resp = app.oneshot(req).await?;
+    assert_eq!(resp.status(), StatusCode::OK);
 
     Ok(())
 }
@@ -287,7 +459,7 @@ async fn test_oidc_token_validation_failures() -> anyhow::Result<()> {
         .mount(&mock_server)
         .await;
 
-    let (app, _state, oidc_cfg) = setup_test_app(&mock_server).await;
+    let (app, _state, oidc_cfg) = setup_test_app(&mock_server, true).await;
 
     // 1. 署名不正 (key2 で署名したトークンを、key1 しか登録されていない JWKS に対して送信)
     let invalid_sig_token = generate_token(
@@ -327,7 +499,28 @@ async fn test_oidc_token_validation_failures() -> anyhow::Result<()> {
     let resp = app.clone().oneshot(req).await?;
     assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
 
-    // 3. Issuer 不一致
+    // 3. nbf が未来 (nbf > now)
+    let nbf_future_token = generate_token_with_typ(
+        TEST_KEY1_PEM,
+        "test-key-1",
+        Some("at+jwt"),
+        &oidc_cfg.issuer,
+        &oidc_cfg.audience,
+        "sub-nbf-future",
+        Some("bob"),
+        Some("Bob"),
+        None,
+        3600,
+        Some(300), // 300秒未来
+    );
+    let req = Request::builder()
+        .uri("/api/users/me")
+        .header("Authorization", format!("Bearer {nbf_future_token}"))
+        .body(Body::empty())?;
+    let resp = app.clone().oneshot(req).await?;
+    assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+
+    // 4. Issuer 不一致
     let wrong_iss_token = generate_token(
         TEST_KEY1_PEM,
         "test-key-1",
@@ -346,7 +539,7 @@ async fn test_oidc_token_validation_failures() -> anyhow::Result<()> {
     let resp = app.clone().oneshot(req).await?;
     assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
 
-    // 4. Audience 不一致
+    // 5. Audience 不一致
     let wrong_aud_token = generate_token(
         TEST_KEY1_PEM,
         "test-key-1",
@@ -365,14 +558,6 @@ async fn test_oidc_token_validation_failures() -> anyhow::Result<()> {
     let resp = app.clone().oneshot(req).await?;
     assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
 
-    // 5. トークン欠落
-    let req = Request::builder()
-        .uri("/api/users/me")
-        .body(Body::empty())?;
-    // Dev Auth が有効なテスト環境ではデフォルト開発ユーザーになるが、
-    // ENVIRONMENT=production のときは 401 になる (テスト 4 で確認)
-    let _ = app.clone().oneshot(req).await?;
-
     Ok(())
 }
 
@@ -388,7 +573,7 @@ async fn test_oidc_key_rotation() -> anyhow::Result<()> {
         .mount(&mock_server)
         .await;
 
-    let (app, _state, oidc_cfg) = setup_test_app(&mock_server).await;
+    let (app, _state, oidc_cfg) = setup_test_app(&mock_server, true).await;
 
     // key2 で署名された新しいトークン
     let carol_username = format!("carol_{}", &uuid::Uuid::new_v4().simple().to_string()[..6]);
@@ -400,7 +585,7 @@ async fn test_oidc_key_rotation() -> anyhow::Result<()> {
         &format!("sub-rotation-{}", uuid::Uuid::new_v4().simple()),
         Some(&carol_username),
         Some("Carol"),
-        Some("openid profile freshman"),
+        None,
         3600,
     );
 
@@ -415,7 +600,6 @@ async fn test_oidc_key_rotation() -> anyhow::Result<()> {
     let body = to_bytes(resp.into_body(), usize::MAX).await?;
     let user_json: Value = serde_json::from_slice(&body)?;
     assert_eq!(user_json["user_name"], carol_username);
-    assert_eq!(user_json["affiliation"], "freshman");
 
     Ok(())
 }
@@ -435,7 +619,7 @@ async fn test_production_environment_fail_closed_guards() -> anyhow::Result<()> 
         .mount(&mock_server)
         .await;
 
-    let (app, _state, oidc_cfg) = setup_test_app(&mock_server).await;
+    let (app, _state, oidc_cfg) = setup_test_app(&mock_server, true).await;
 
     let test_uuid = "44444444-4444-4444-4444-444444444444";
 
@@ -455,14 +639,26 @@ async fn test_production_environment_fail_closed_guards() -> anyhow::Result<()> 
     let resp2 = app.clone().oneshot(req2).await?;
     assert_eq!(resp2.status(), StatusCode::UNAUTHORIZED);
 
-    // 3. 本番でヘッダなしは拒否
+    // 3. 本番でヘッダなしは拒否 (GET /api/users/me)
     let req3 = Request::builder()
         .uri("/api/users/me")
         .body(Body::empty())?;
     let resp3 = app.clone().oneshot(req3).await?;
     assert_eq!(resp3.status(), StatusCode::UNAUTHORIZED);
 
-    // 4. 本番で POST /api/users (直接作成) は拒否
+    // 4. 本番で GET /api/users (ユーザー一覧) も未認証アクセス拒否
+    let req_list = Request::builder().uri("/api/users").body(Body::empty())?;
+    let resp_list = app.clone().oneshot(req_list).await?;
+    assert_eq!(resp_list.status(), StatusCode::UNAUTHORIZED);
+
+    // 5. 本番で GET /api/users/{id} (特定ユーザー情報) も未認証アクセス拒否
+    let req_get_id = Request::builder()
+        .uri(format!("/api/users/{test_uuid}"))
+        .body(Body::empty())?;
+    let resp_get_id = app.clone().oneshot(req_get_id).await?;
+    assert_eq!(resp_get_id.status(), StatusCode::UNAUTHORIZED);
+
+    // 6. 本番で POST /api/users (直接作成) は拒否
     let payload = json!({
         "user_name": "direct_user",
         "display_name": "Direct User",
@@ -475,7 +671,7 @@ async fn test_production_environment_fail_closed_guards() -> anyhow::Result<()> 
     let resp4 = app.clone().oneshot(req4).await?;
     assert_eq!(resp4.status(), StatusCode::FORBIDDEN);
 
-    // 5. 正規の OIDC Bearer Token なら本番でもアクセス成功
+    // 7. 正規の OIDC Bearer Token なら本番でもアクセス成功
     let valid_token = generate_token(
         TEST_KEY1_PEM,
         "test-key-1",
@@ -484,7 +680,7 @@ async fn test_production_environment_fail_closed_guards() -> anyhow::Result<()> 
         &format!("sub-prod-{}", uuid::Uuid::new_v4().simple()),
         Some("prod_user"),
         Some("Prod User"),
-        Some("openid profile student"),
+        None,
         3600,
     );
     let req5 = Request::builder()
@@ -512,7 +708,7 @@ async fn test_oidc_jit_concurrent_requests_no_conflict() -> anyhow::Result<()> {
         .mount(&mock_server)
         .await;
 
-    let (app, state, oidc_cfg) = setup_test_app(&mock_server).await;
+    let (app, state, oidc_cfg) = setup_test_app(&mock_server, true).await;
 
     let shared_sub = format!("concurrent-sub-{}", uuid::Uuid::new_v4().simple());
     let token = generate_token(
@@ -523,7 +719,7 @@ async fn test_oidc_jit_concurrent_requests_no_conflict() -> anyhow::Result<()> {
         &shared_sub,
         Some("concurrent_user"),
         Some("Concurrent User"),
-        Some("openid profile student"),
+        None,
         3600,
     );
 
@@ -547,18 +743,28 @@ async fn test_oidc_jit_concurrent_requests_no_conflict() -> anyhow::Result<()> {
         assert_eq!(resp.status(), StatusCode::OK);
     }
 
-    // users テーブル内に shared_sub を持つユーザーがちょうど 1 人だけ存在することを確認
+    // user_identities テーブル内に (issuer, shared_sub) のレコードがちょうど 1 件だけ存在することを確認
     let mut db = state.db.clone();
-    let users = User::filter(
-        User::fields()
-            .oidc_iss()
-            .eq(Some(oidc_cfg.issuer.clone()))
-            .and(User::fields().oidc_sub().eq(Some(shared_sub.clone()))),
+    let identities = UserIdentity::filter(
+        UserIdentity::fields()
+            .iss()
+            .eq(&oidc_cfg.issuer)
+            .and(UserIdentity::fields().sub().eq(&shared_sub)),
     )
     .exec(&mut db)
     .await?;
 
-    assert_eq!(users.len(), 1, "Exactly one user should be provisioned");
+    assert_eq!(
+        identities.len(),
+        1,
+        "Exactly one user identity should be provisioned"
+    );
+
+    // users テーブルにも対応するユーザーがちょうど 1 人だけ存在することを確認
+    let users = User::filter(User::fields().id().eq(&identities[0].user_id))
+        .exec(&mut db)
+        .await?;
+    assert_eq!(users.len(), 1, "Exactly one user record should exist");
 
     Ok(())
 }

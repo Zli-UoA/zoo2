@@ -1,17 +1,20 @@
+use std::time::Duration;
+
 use axum::{extract::FromRequestParts, http::request::Parts};
 use uuid::Uuid;
 
 use crate::{
-    auth::oidc::{Affiliation, OidcClaims},
+    auth::oidc::OidcClaims,
     error::AppError,
-    models::User,
-    state::AppState,
+    models::{User, UserIdentity},
+    state::{AppState, UserResolutionCache},
     validation::{MAX_DISPLAY_NAME_LENGTH, MAX_USER_NAME_LENGTH, RESERVED_USER_NAMES},
 };
 
 pub mod oidc;
 
 pub const DEFAULT_DEV_USER_ID: &str = "00000000-0000-0000-0000-000000000001";
+const JIT_CACHE_TTL: Duration = Duration::from_secs(300); // 5分
 
 /// ユーザー名用のサニタイズ関数
 pub(crate) fn sanitize_for_user_name(candidate: &str, fallback_uuid: &str) -> String {
@@ -33,7 +36,7 @@ pub(crate) fn sanitize_for_user_name(candidate: &str, fallback_uuid: &str) -> St
     }
 }
 
-/// 表示名用のサニタイズ関数
+/// 表示名用のサニタイズ関数 (マルチバイト文字境界を意識した安全なスライス)
 pub(crate) fn sanitize_for_display_name(candidate: &str, fallback: &str) -> String {
     let trimmed = candidate.trim();
     if trimmed.is_empty() {
@@ -76,53 +79,49 @@ pub fn dev_auth_enabled() -> bool {
 /// JIT (Just-In-Time) ユーザー解決および自動プロビジョニング
 pub async fn resolve_or_provision_user(
     db: &toasty::Db,
+    user_cache: &UserResolutionCache,
     claims: &OidcClaims,
-    affiliation: Affiliation,
 ) -> Result<AuthUser, AppError> {
+    // 1. インメモリキャッシュの確認 (全リクエストでの DB 問い合わせ負荷を低減)
+    if let Some(cached_user) = user_cache.get(&claims.iss, &claims.sub).await {
+        return Ok(cached_user);
+    }
+
     let mut db_client = db.clone();
 
-    // 1. (oidc_iss, oidc_sub) による既存ユーザーの検索
-    let existing = User::filter(
-        User::fields()
-            .oidc_iss()
-            .eq(Some(claims.iss.clone()))
-            .and(User::fields().oidc_sub().eq(Some(claims.sub.clone()))),
+    // 2. user_identities テーブルによる既存ユーザーの検索
+    let existing_identity = UserIdentity::filter(
+        UserIdentity::fields()
+            .iss()
+            .eq(&claims.iss)
+            .and(UserIdentity::fields().sub().eq(&claims.sub)),
     )
     .first()
     .exec(&mut db_client)
     .await?;
 
-    if let Some(user) = existing {
-        // 区分 (affiliation) の更新が必要か確認
-        let current_affil = user.affiliation.as_str();
-        if current_affil != affiliation.as_str() {
-            let mut tx = db_client.transaction().await?;
-            let now = crate::models::now_utc_millis();
-            let affil_str = affiliation.as_str();
-            User::update_by_id(user.id.as_str())
-                .affiliation(affil_str)
-                .updated_at(Some(now))
-                .exec(&mut tx)
-                .await?;
-            tx.commit().await?;
+    if let Some(identity) = existing_identity {
+        let user = User::get_by_id(&mut db_client, &identity.user_id).await?;
 
-            return Ok(AuthUser {
-                id: user.id,
-                user_name: user.user_name,
-                display_name: user.display_name,
-                affiliation: affil_str.to_string(),
-            });
-        }
-
-        return Ok(AuthUser {
+        let auth_user = AuthUser {
             id: user.id,
             user_name: user.user_name,
             display_name: user.display_name,
-            affiliation: user.affiliation,
-        });
+        };
+
+        user_cache
+            .insert(
+                claims.iss.clone(),
+                claims.sub.clone(),
+                auth_user.clone(),
+                JIT_CACHE_TTL,
+            )
+            .await;
+
+        return Ok(auth_user);
     }
 
-    // 2. 新規ユーザー作成 (JIT プロビジョニング)
+    // 3. 新規ユーザーおよび Identity の作成 (JIT プロビジョニング)
     let new_user_id = Uuid::new_v4().to_string();
     let preferred_name = claims
         .preferred_username
@@ -136,7 +135,7 @@ pub async fn resolve_or_provision_user(
         &base_username,
     );
 
-    // 衝突時のリトライループ (usernameの重複や、並行リクエストによる (iss, sub) の同時作成)
+    // 衝突時のリトライループ (usernameの重複や、並行リクエストによる同一 (iss, sub) の同時作成)
     let mut attempt = 0;
     loop {
         attempt += 1;
@@ -144,61 +143,124 @@ pub async fn resolve_or_provision_user(
             base_username.clone()
         } else {
             let suffix = &Uuid::new_v4().simple().to_string()[..6];
-            format!(
-                "{}_{}",
-                &base_username[..base_username.len().min(70)],
-                suffix
-            )
+            let truncated: String = base_username.chars().take(70).collect();
+            format!("{truncated}_{suffix}")
         };
 
+        let identity_id = Uuid::new_v4().to_string();
         let mut tx = db_client.transaction().await?;
         let now = crate::models::now_utc_millis();
-        let affil_str = affiliation.as_str();
 
-        let create_res = toasty::create!(User {
+        let create_user_res = toasty::create!(User {
             id: new_user_id.as_str(),
             user_name: candidate_username.as_str(),
             display_name: display_name.as_str(),
             created_at: now,
             updated_at: None,
-            oidc_iss: Some(claims.iss.clone()),
-            oidc_sub: Some(claims.sub.clone()),
-            affiliation: affil_str,
         })
         .exec(&mut tx)
         .await;
 
-        match create_res {
-            Ok(created_user) => {
-                tx.commit().await?;
-                return Ok(AuthUser {
-                    id: created_user.id,
-                    user_name: created_user.user_name,
-                    display_name: created_user.display_name,
-                    affiliation: created_user.affiliation,
-                });
-            }
+        let created_user = match create_user_res {
+            Ok(user) => user,
             Err(err) => {
                 let _ = tx.rollback().await;
 
-                // (iss, sub) が並行リクエストにより作成された可能性を確認
-                let check_existing = User::filter(
-                    User::fields()
-                        .oidc_iss()
-                        .eq(Some(claims.iss.clone()))
-                        .and(User::fields().oidc_sub().eq(Some(claims.sub.clone()))),
+                // 並行リクエストにより既に作成されたか確認
+                let check_existing = UserIdentity::filter(
+                    UserIdentity::fields()
+                        .iss()
+                        .eq(&claims.iss)
+                        .and(UserIdentity::fields().sub().eq(&claims.sub)),
                 )
                 .first()
                 .exec(&mut db_client)
                 .await?;
 
-                if let Some(user) = check_existing {
-                    return Ok(AuthUser {
+                if let Some(identity) = check_existing {
+                    let user = User::get_by_id(&mut db_client, &identity.user_id).await?;
+                    let auth_user = AuthUser {
                         id: user.id,
                         user_name: user.user_name,
                         display_name: user.display_name,
-                        affiliation: user.affiliation,
-                    });
+                    };
+                    user_cache
+                        .insert(
+                            claims.iss.clone(),
+                            claims.sub.clone(),
+                            auth_user.clone(),
+                            JIT_CACHE_TTL,
+                        )
+                        .await;
+                    return Ok(auth_user);
+                }
+
+                if attempt >= 5 {
+                    return Err(AppError::from(err));
+                }
+                continue;
+            }
+        };
+
+        let create_identity_res = toasty::create!(UserIdentity {
+            id: identity_id.as_str(),
+            user_id: created_user.id.as_str(),
+            iss: claims.iss.as_str(),
+            sub: claims.sub.as_str(),
+            created_at: now,
+            updated_at: None,
+        })
+        .exec(&mut tx)
+        .await;
+
+        match create_identity_res {
+            Ok(_) => {
+                tx.commit().await?;
+                let auth_user = AuthUser {
+                    id: created_user.id,
+                    user_name: created_user.user_name,
+                    display_name: created_user.display_name,
+                };
+                user_cache
+                    .insert(
+                        claims.iss.clone(),
+                        claims.sub.clone(),
+                        auth_user.clone(),
+                        JIT_CACHE_TTL,
+                    )
+                    .await;
+                return Ok(auth_user);
+            }
+            Err(err) => {
+                let _ = tx.rollback().await;
+
+                // 並行リクエストで UserIdentity の (iss, sub) 重複が起きたか確認
+                let check_existing = UserIdentity::filter(
+                    UserIdentity::fields()
+                        .iss()
+                        .eq(&claims.iss)
+                        .and(UserIdentity::fields().sub().eq(&claims.sub)),
+                )
+                .first()
+                .exec(&mut db_client)
+                .await?;
+
+                if let Some(identity) = check_existing {
+                    let user = User::get_by_id(&mut db_client, &identity.user_id).await?;
+                    let auth_user = AuthUser {
+                        id: user.id,
+                        user_name: user.user_name,
+                        display_name: user.display_name,
+                    };
+                    user_cache
+                        .insert(
+                            claims.iss.clone(),
+                            claims.sub.clone(),
+                            auth_user.clone(),
+                            JIT_CACHE_TTL,
+                        )
+                        .await;
+                    return Ok(auth_user);
                 }
 
                 if attempt >= 5 {
@@ -226,7 +288,6 @@ pub(crate) fn resolve_auth_user(
                 id: uuid.to_string(),
                 user_name: "dev_user".to_string(),
                 display_name: "Dev User".to_string(),
-                affiliation: "student".to_string(),
             });
         }
 
@@ -240,7 +301,6 @@ pub(crate) fn resolve_auth_user(
                 id: uuid.to_string(),
                 user_name: "dev_user".to_string(),
                 display_name: "Dev User".to_string(),
-                affiliation: "student".to_string(),
             });
         }
 
@@ -256,7 +316,6 @@ pub(crate) fn resolve_auth_user(
             id: uuid.to_string(),
             user_name: "dev_user".to_string(),
             display_name: "Dev User".to_string(),
-            affiliation: "student".to_string(),
         });
     }
 
@@ -269,7 +328,6 @@ pub struct AuthUser {
     pub id: String,
     pub user_name: String,
     pub display_name: String,
-    pub affiliation: String,
 }
 
 impl FromRequestParts<AppState> for AuthUser {
@@ -305,15 +363,13 @@ impl FromRequestParts<AppState> for AuthUser {
                         id: uuid.to_string(),
                         user_name: "dev_user".to_string(),
                         display_name: "Dev User".to_string(),
-                        affiliation: "student".to_string(),
                     });
                 }
 
                 // (b) UUID 形式でない場合、OIDC 設定があれば OIDC トークンとして検証
                 if let Some(ref oidc_config) = state.config.oidc {
-                    let (claims, affiliation) =
-                        state.jwks_verifier.verify_token(token, oidc_config).await?;
-                    return resolve_or_provision_user(&state.db, &claims, affiliation).await;
+                    let claims = state.jwks_verifier.verify_token(token, oidc_config).await?;
+                    return resolve_or_provision_user(&state.db, &state.user_cache, &claims).await;
                 }
             }
 
@@ -342,9 +398,9 @@ impl FromRequestParts<AppState> for AuthUser {
                 AppError::Internal(anyhow::anyhow!("OIDC configuration is missing"))
             })?;
 
-        let (claims, affiliation) = state.jwks_verifier.verify_token(token, oidc_config).await?;
+        let claims = state.jwks_verifier.verify_token(token, oidc_config).await?;
 
-        resolve_or_provision_user(&state.db, &claims, affiliation).await
+        resolve_or_provision_user(&state.db, &state.user_cache, &claims).await
     }
 }
 

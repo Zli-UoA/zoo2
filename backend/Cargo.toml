@@ -20,7 +20,7 @@ anyhow = "1"
 thiserror = "2"
 uuid = { version = "1", features = ["v4", "serde"] }
 tokio-postgres = "0.7"
-reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "stream"] }
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "stream", "json"] }
 futures-util = "0.3"
 jsonwebtoken = "9"
 

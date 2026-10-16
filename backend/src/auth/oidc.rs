@@ -10,39 +10,13 @@ use tokio::sync::RwLock;
 
 use crate::{config::OidcConfig, error::AppError};
 
-/// ユーザー区分
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum Affiliation {
-    Freshman,
-    Student,
-    Alumni,
-    Unknown,
+/// OpenID Provider Configuration (.well-known/openid-configuration)
+#[derive(Debug, Deserialize)]
+struct OpenIdConfiguration {
+    jwks_uri: String,
 }
 
-impl Affiliation {
-    pub fn as_str(&self) -> &'static str {
-        match self {
-            Self::Freshman => "freshman",
-            Self::Student => "student",
-            Self::Alumni => "alumni",
-            Self::Unknown => "unknown",
-        }
-    }
-}
-
-impl From<&str> for Affiliation {
-    fn from(s: &str) -> Self {
-        match s {
-            "freshman" => Self::Freshman,
-            "student" => Self::Student,
-            "alumni" => Self::Alumni,
-            _ => Self::Unknown,
-        }
-    }
-}
-
-/// OIDC トークンのクレーム定義
+/// OIDC トークンのクレーム定義 (RFC 9068 適合)
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OidcClaims {
     pub sub: String,
@@ -54,39 +28,7 @@ pub struct OidcClaims {
     pub preferred_username: Option<String>,
     pub name: Option<String>,
     pub email: Option<String>,
-    /// scope はスペース区切りの文字列または文字列配列
     pub scope: Option<serde_json::Value>,
-}
-
-impl OidcClaims {
-    /// scope をトークンから抽出してリスト化
-    pub fn extract_scopes(&self) -> Vec<String> {
-        match &self.scope {
-            Some(serde_json::Value::String(s)) => {
-                s.split_whitespace().map(|x| x.to_string()).collect()
-            }
-            Some(serde_json::Value::Array(arr)) => arr
-                .iter()
-                .filter_map(|v| v.as_str().map(|s| s.to_string()))
-                .collect(),
-            _ => Vec::new(),
-        }
-    }
-
-    /// OidcConfig に基づき Affiliation を解決
-    pub fn resolve_affiliation(&self, config: &OidcConfig) -> Affiliation {
-        let scopes = self.extract_scopes();
-
-        if scopes.iter().any(|s| s == &config.scope_student) {
-            Affiliation::Student
-        } else if scopes.iter().any(|s| s == &config.scope_freshman) {
-            Affiliation::Freshman
-        } else if scopes.iter().any(|s| s == &config.scope_alumni) {
-            Affiliation::Alumni
-        } else {
-            Affiliation::Unknown
-        }
-    }
 }
 
 /// JWKS キャッシュ
@@ -130,29 +72,59 @@ impl JwksVerifier {
         }
     }
 
-    /// JWKS をエンドポイントから取得してキャッシュを更新
-    async fn refresh_jwks(&self, jwks_url: &str) -> Result<(), AppError> {
-        let resp = self
-            .http_client
-            .get(jwks_url)
-            .send()
-            .await
-            .map_err(|e| AppError::Unauthorized(format!("Failed to fetch JWKS: {e}")))?;
-
-        if !resp.status().is_success() {
-            return Err(AppError::Unauthorized(format!(
-                "JWKS endpoint returned status {}",
-                resp.status()
-            )));
+    /// JWKS URL の解決 (明示設定がある場合はそれを使い、未設定の場合は OpenID Discovery を使用)
+    async fn resolve_jwks_url(&self, config: &OidcConfig) -> Result<String, AppError> {
+        if let Some(ref url) = config.jwks_url {
+            return Ok(url.clone());
         }
 
-        let body = resp
-            .text()
-            .await
-            .map_err(|e| AppError::Unauthorized(format!("Failed to read JWKS body: {e}")))?;
+        let discovery_url = format!(
+            "{}/.well-known/openid-configuration",
+            config.issuer.trim_end_matches('/')
+        );
 
-        let jwks: JwkSet = serde_json::from_str(&body)
-            .map_err(|e| AppError::Unauthorized(format!("Failed to parse JWKS JSON: {e}")))?;
+        let resp = self
+            .http_client
+            .get(&discovery_url)
+            .send()
+            .await
+            .map_err(|e| {
+                tracing::warn!("Failed to fetch OpenID discovery from {discovery_url}: {e}");
+                AppError::Unauthorized("Failed to verify token".to_string())
+            })?;
+
+        if !resp.status().is_success() {
+            tracing::warn!(
+                "OpenID discovery endpoint {discovery_url} returned status {}",
+                resp.status()
+            );
+            return Err(AppError::Unauthorized("Failed to verify token".to_string()));
+        }
+
+        let openid_config: OpenIdConfiguration = resp.json().await.map_err(|e| {
+            tracing::warn!("Failed to parse OpenID discovery JSON: {e}");
+            AppError::Unauthorized("Failed to verify token".to_string())
+        })?;
+
+        Ok(openid_config.jwks_uri)
+    }
+
+    /// JWKS をエンドポイントから取得してキャッシュを更新
+    async fn refresh_jwks(&self, jwks_url: &str) -> Result<(), AppError> {
+        let resp = self.http_client.get(jwks_url).send().await.map_err(|e| {
+            tracing::warn!("Failed to fetch JWKS from {jwks_url}: {e}");
+            AppError::Unauthorized("Failed to verify token".to_string())
+        })?;
+
+        if !resp.status().is_success() {
+            tracing::warn!("JWKS endpoint {jwks_url} returned status {}", resp.status());
+            return Err(AppError::Unauthorized("Failed to verify token".to_string()));
+        }
+
+        let jwks: JwkSet = resp.json().await.map_err(|e| {
+            tracing::warn!("Failed to parse JWKS JSON: {e}");
+            AppError::Unauthorized("Failed to verify token".to_string())
+        })?;
 
         let mut new_keys = HashMap::new();
         for key in jwks.keys {
@@ -178,21 +150,43 @@ impl JwksVerifier {
         Ok(())
     }
 
-    /// Bearer トークンを検証し、クレームとユーザー区分を返却
+    /// Bearer トークンを検証し、クレームを返却 (RFC 9068 準拠)
     pub async fn verify_token(
         &self,
         token: &str,
         config: &OidcConfig,
-    ) -> Result<(OidcClaims, Affiliation), AppError> {
+    ) -> Result<OidcClaims, AppError> {
         // 1. ヘッダのデコード
-        let header = decode_header(token)
-            .map_err(|e| AppError::Unauthorized(format!("Invalid token header: {e}")))?;
+        let header = decode_header(token).map_err(|e| {
+            tracing::warn!("Failed to decode token header: {e}");
+            AppError::Unauthorized("Invalid token header".to_string())
+        })?;
 
-        let kid = header
-            .kid
-            .ok_or_else(|| AppError::Unauthorized("Token header is missing 'kid'".to_string()))?;
+        // 2. RFC 9068 Section 2.1 による typ: at+jwt の検証 (IDトークンとの混同防止)
+        let is_valid_typ = header
+            .typ
+            .as_deref()
+            .map(|t| {
+                t.eq_ignore_ascii_case("at+jwt") || t.eq_ignore_ascii_case("application/at+jwt")
+            })
+            .unwrap_or(false);
 
-        // 2. キャッシュからキーを検索 (TTL超過時は再取得)
+        if !is_valid_typ {
+            tracing::warn!(
+                "Token rejected: header typ is {:?}, required 'at+jwt' (RFC 9068)",
+                header.typ
+            );
+            return Err(AppError::Unauthorized(
+                "Invalid token type (RFC 9068 at+jwt required)".to_string(),
+            ));
+        }
+
+        let kid = header.kid.ok_or_else(|| {
+            tracing::warn!("Token header is missing 'kid'");
+            AppError::Unauthorized("Invalid token header".to_string())
+        })?;
+
+        // 3. キャッシュからキーを検索 (TTL超過時は再取得)
         let cached = {
             let cache = self.cache.read().await;
             let is_expired = match cache.last_fetched_at {
@@ -206,95 +200,43 @@ impl JwksVerifier {
             }
         };
 
-        let (decoding_key, alg) =
-            match cached {
-                Some(key_pair) => key_pair,
-                None => {
-                    let need_refresh = {
-                        let cache = self.cache.read().await;
-                        match cache.last_fetched_at {
-                            Some(t) => t.elapsed() >= self.min_fetch_interval,
-                            None => true,
-                        }
-                    };
-
-                    if need_refresh {
-                        self.refresh_jwks(&config.jwks_url).await?;
-                    }
-
+        let (decoding_key, alg) = match cached {
+            Some(key_pair) => key_pair,
+            None => {
+                let need_refresh = {
                     let cache = self.cache.read().await;
-                    cache.keys.get(&kid).cloned().ok_or_else(|| {
-                        AppError::Unauthorized(format!("Unknown key id (kid): {kid}"))
-                    })?
-                }
-            };
+                    match cache.last_fetched_at {
+                        Some(t) => t.elapsed() >= self.min_fetch_interval,
+                        None => true,
+                    }
+                };
 
-        // 3. Validation 設定
+                if need_refresh {
+                    let jwks_url = self.resolve_jwks_url(config).await?;
+                    self.refresh_jwks(&jwks_url).await?;
+                }
+
+                let cache = self.cache.read().await;
+                cache.keys.get(&kid).cloned().ok_or_else(|| {
+                    tracing::warn!("Key id (kid) '{kid}' not found in JWKS");
+                    AppError::Unauthorized("Invalid token signature".to_string())
+                })?
+            }
+        };
+
+        // 4. Validation 設定 (RFC 9068, iss, aud, exp, nbf の検証)
         let mut validation = Validation::new(alg);
         validation.set_issuer(&[&config.issuer]);
         validation.set_audience(&[&config.audience]);
         validation.validate_exp = true;
+        validation.validate_nbf = true;
 
-        // 4. トークンのデコードと署名・期限検証
-        let token_data = decode::<OidcClaims>(token, &decoding_key, &validation)
-            .map_err(|e| AppError::Unauthorized(format!("Token validation failed: {e}")))?;
+        // 5. トークンのデコードと署名・期限検証
+        let token_data = decode::<OidcClaims>(token, &decoding_key, &validation).map_err(|e| {
+            tracing::warn!("Token validation failed: {e}");
+            AppError::Unauthorized("Invalid token".to_string())
+        })?;
 
-        let claims = token_data.claims;
-        let affiliation = claims.resolve_affiliation(config);
-
-        Ok((claims, affiliation))
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_affiliation_resolution() {
-        let config = OidcConfig {
-            issuer: "https://idp.example.com".to_string(),
-            audience: "zoo-app".to_string(),
-            jwks_url: "https://idp.example.com/jwks".to_string(),
-            scope_student: "student".to_string(),
-            scope_freshman: "freshman".to_string(),
-            scope_alumni: "alumni".to_string(),
-        };
-
-        // 1. Student
-        let claims = OidcClaims {
-            sub: "user-1".into(),
-            iss: "https://idp.example.com".into(),
-            aud: serde_json::json!("zoo-app"),
-            exp: 9999999999,
-            nbf: None,
-            iat: None,
-            preferred_username: Some("alice".into()),
-            name: Some("Alice".into()),
-            email: None,
-            scope: Some(serde_json::json!("openid profile student")),
-        };
-        assert_eq!(claims.resolve_affiliation(&config), Affiliation::Student);
-
-        // 2. Freshman
-        let claims = OidcClaims {
-            scope: Some(serde_json::json!(["openid", "freshman"])),
-            ..claims.clone()
-        };
-        assert_eq!(claims.resolve_affiliation(&config), Affiliation::Freshman);
-
-        // 3. Alumni
-        let claims = OidcClaims {
-            scope: Some(serde_json::json!("alumni")),
-            ..claims.clone()
-        };
-        assert_eq!(claims.resolve_affiliation(&config), Affiliation::Alumni);
-
-        // 4. Unknown
-        let claims = OidcClaims {
-            scope: Some(serde_json::json!("openid other")),
-            ..claims.clone()
-        };
-        assert_eq!(claims.resolve_affiliation(&config), Affiliation::Unknown);
+        Ok(token_data.claims)
     }
 }

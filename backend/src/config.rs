@@ -4,10 +4,7 @@ use std::{env, fmt};
 pub struct OidcConfig {
     pub issuer: String,
     pub audience: String,
-    pub jwks_url: String,
-    pub scope_student: String,
-    pub scope_freshman: String,
-    pub scope_alumni: String,
+    pub jwks_url: Option<String>,
 }
 
 impl fmt::Debug for OidcConfig {
@@ -16,9 +13,6 @@ impl fmt::Debug for OidcConfig {
             .field("issuer", &self.issuer)
             .field("audience", &self.audience)
             .field("jwks_url", &self.jwks_url)
-            .field("scope_student", &self.scope_student)
-            .field("scope_freshman", &self.scope_freshman)
-            .field("scope_alumni", &self.scope_alumni)
             .finish()
     }
 }
@@ -83,23 +77,12 @@ impl Config {
             env::var("OIDC_AUDIENCE").or_else(|_| env::var("OIDC_CLIENT_ID")),
         ) {
             (Ok(issuer), Ok(audience)) => {
-                let jwks_url = env::var("OIDC_JWKS_URL").unwrap_or_else(|_| {
-                    format!("{}/.well-known/jwks.json", issuer.trim_end_matches('/'))
-                });
-                let scope_student =
-                    env::var("OIDC_SCOPE_STUDENT").unwrap_or_else(|_| "student".to_string());
-                let scope_freshman =
-                    env::var("OIDC_SCOPE_FRESHMAN").unwrap_or_else(|_| "freshman".to_string());
-                let scope_alumni =
-                    env::var("OIDC_SCOPE_ALUMNI").unwrap_or_else(|_| "alumni".to_string());
+                let jwks_url = env::var("OIDC_JWKS_URL").ok().filter(|s| !s.is_empty());
 
                 Some(OidcConfig {
                     issuer,
                     audience,
                     jwks_url,
-                    scope_student,
-                    scope_freshman,
-                    scope_alumni,
                 })
             }
             _ => None,
@@ -131,10 +114,7 @@ mod tests {
             oidc: Some(OidcConfig {
                 issuer: "https://idp.example.com".to_string(),
                 audience: "zoo-client".to_string(),
-                jwks_url: "https://idp.example.com/jwks".to_string(),
-                scope_student: "student".to_string(),
-                scope_freshman: "freshman".to_string(),
-                scope_alumni: "alumni".to_string(),
+                jwks_url: Some("https://idp.example.com/jwks".to_string()),
             }),
         };
         let debug_str = format!("{config:?}");
