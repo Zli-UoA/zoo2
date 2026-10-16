@@ -5,7 +5,7 @@ import { useWriteRunner } from "../hooks/useWriteRunner";
 import { getCollections } from "../lib/electric/collections";
 import { normalizeUtcTimestamp } from "../lib/timestamps";
 import { Button } from "./ui/button";
-import { inputClassName } from "./ui/input";
+import { inputClassName } from "./ui/input-styles";
 
 interface MessageFeedRow {
   id: string;

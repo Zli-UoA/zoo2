@@ -5,7 +5,7 @@ import { useWriteRunner } from "../hooks/useWriteRunner";
 import { getCollections } from "../lib/electric/collections";
 import type { ChannelUserWriteMetadata } from "../lib/electric/writes";
 import { Button } from "./ui/button";
-import { inputClassName } from "./ui/input";
+import { inputClassName } from "./ui/input-styles";
 
 function nowIso(): string {
   return new Date().toISOString();

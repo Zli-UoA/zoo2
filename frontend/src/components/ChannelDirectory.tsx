@@ -7,7 +7,7 @@ import { getCollections } from "../lib/electric/collections";
 import { ChannelMemberPanel } from "./ChannelMemberPanel";
 import { SyncStatus } from "./SyncStatus";
 import { Button } from "./ui/button";
-import { inputClassName } from "./ui/input";
+import { inputClassName } from "./ui/input-styles";
 
 function nowIso(): string {
   return new Date().toISOString();
