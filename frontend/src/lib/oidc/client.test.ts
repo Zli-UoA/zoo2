@@ -156,6 +156,7 @@ async function completeLogin(harness: Harness) {
 describe("sanitizeReturnTo", () => {
   it("keeps same-origin relative paths only", () => {
     expect(sanitizeReturnTo("/channels/abc?x=1")).toBe("/channels/abc?x=1");
+    expect(sanitizeReturnTo("/channels/abc#top")).toBe("/channels/abc#top");
     expect(sanitizeReturnTo("https://evil.example")).toBe("/");
     expect(sanitizeReturnTo("//evil.example")).toBe("/");
     expect(sanitizeReturnTo("/\\evil.example")).toBe("/");
@@ -163,6 +164,8 @@ describe("sanitizeReturnTo", () => {
     expect(sanitizeReturnTo(undefined)).toBe("/");
     expect(sanitizeReturnTo(DEFAULT_CALLBACK_PATH)).toBe("/");
     expect(sanitizeReturnTo(`${DEFAULT_CALLBACK_PATH}?code=x`)).toBe("/");
+    expect(sanitizeReturnTo(`${DEFAULT_CALLBACK_PATH}#x`)).toBe("/");
+    expect(sanitizeReturnTo(`${DEFAULT_CALLBACK_PATH}/`)).toBe("/");
   });
 });
 
@@ -251,7 +254,7 @@ describe("OidcClient.handleCallback", () => {
     expect(result.returnTo).toBe("/channels/abc");
   });
 
-  it("requires an id_token on the code exchange when openid is requested", async () => {
+  it("requires an id_token on the code exchange", async () => {
     const harness = createHarness({
       token: () => ({ access_token: "access-1", expires_in: 300 }),
     });
@@ -260,7 +263,7 @@ describe("OidcClient.handleCallback", () => {
     savePending(harness.storage, pending);
     await expect(
       harness.client.handleCallback(`${CALLBACK_URL}?code=c&state=${pending.state}`),
-    ).rejects.toMatchObject({ code: "invalid_token_response" });
+    ).rejects.toMatchObject({ code: "invalid_id_token" });
     expect(harness.client.hasSession).toBe(false);
   });
 
@@ -386,6 +389,31 @@ describe("OidcClient.getAccessToken", () => {
     expect(second).toBe("access-2");
     expect(harness.refreshCalls()).toHaveLength(1);
     expect(harness.refreshCalls()[0]?.get("refresh_token")).toBe("refresh-1");
+  });
+
+  it("keeps the previous id_token when the refresh response omits it", async () => {
+    const harness = createHarness({
+      token: (body, nonce) => {
+        if (body.get("grant_type") === "refresh_token") {
+          return { access_token: "access-2", refresh_token: "refresh-2", expires_in: 300 };
+        }
+        return {
+          access_token: "access-1",
+          refresh_token: "refresh-1",
+          id_token: idToken({ nonce }),
+          expires_in: 120,
+        };
+      },
+    });
+    await completeLogin(harness);
+
+    harness.advance(70_000);
+    await expect(harness.client.getAccessToken()).resolves.toBe("access-2");
+
+    harness.assigned.length = 0;
+    await harness.client.logout();
+    const url = new URL(harness.assigned[0]!);
+    expect(url.searchParams.get("id_token_hint")).not.toBeNull();
   });
 
   it("drops the session when the refresh fails", async () => {

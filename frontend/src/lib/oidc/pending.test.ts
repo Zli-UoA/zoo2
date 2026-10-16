@@ -9,6 +9,8 @@ import {
   clearRedirectAttempts,
   isLoggedOut,
   markLoggedOut,
+  markRedirectStarted,
+  readLastRedirectAt,
   recordRedirectAttempt,
   savePending,
   takePending,
@@ -102,5 +104,18 @@ describe("redirect attempts", () => {
   it("recovers from malformed state", () => {
     storage.setItem("zoo.oidc.redirectAttempts", "{not json");
     expect(recordRedirectAttempt(storage, 1_000)).toBe(1);
+  });
+});
+
+describe("last redirect", () => {
+  it("records and reads the redirect start time", () => {
+    expect(readLastRedirectAt(storage)).toBeNull();
+    markRedirectStarted(storage, 1_234);
+    expect(readLastRedirectAt(storage)).toBe(1_234);
+  });
+
+  it("treats malformed values as absent", () => {
+    storage.setItem("zoo.oidc.lastRedirectAt", "not-a-number");
+    expect(readLastRedirectAt(storage)).toBeNull();
   });
 });

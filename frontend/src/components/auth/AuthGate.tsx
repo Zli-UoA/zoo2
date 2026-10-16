@@ -9,6 +9,8 @@ import {
   clearLoggedOut,
   clearRedirectAttempts,
   isLoggedOut,
+  markRedirectStarted,
+  readLastRedirectAt,
   recordRedirectAttempt,
 } from "../../lib/oidc/pending";
 import { getOidcClient } from "../../lib/oidc/session";
@@ -17,14 +19,15 @@ import { Button } from "../ui/button";
 
 type AuthPhase = "checking" | "ready" | "disabled" | "loggedOut" | "error";
 
-/** 同一ページ内での再ログイン連打を防ぐクールダウン。 */
+/**
+ * リダイレクト直後の 401 を再ログインせずエラーにする猶予。
+ * ページをまたぐため sessionStorage の時刻で判定する。
+ */
 const REDIRECT_COOLDOWN_MS = 10_000;
 
 /** バックエンドが 401 を返し続けたときのエラーメッセージ。 */
 const UNAUTHORIZED_LOOP_MESSAGE =
   "API が 401 を返し続けたため、再ログインを停止しました。OIDC の設定（audience / typ / JWKS）とバックエンドのログを確認してください。";
-
-let lastRedirectAt = 0;
 
 function currentReturnTo(): string {
   if (typeof window === "undefined") {
@@ -58,11 +61,7 @@ export function AuthGate({ children }: { children: ReactNode }) {
   const clientRef = useRef<OidcClient | null>(null);
 
   const startLogin = useCallback((client: OidcClient, returnTo: string) => {
-    const now = Date.now();
-    if (now - lastRedirectAt < REDIRECT_COOLDOWN_MS) {
-      return;
-    }
-    lastRedirectAt = now;
+    markRedirectStarted(window.sessionStorage, Date.now());
     void client.login(returnTo).catch((cause: unknown) => {
       setError(describeError(cause));
       setPhase("error");
@@ -92,13 +91,19 @@ export function AuthGate({ children }: { children: ReactNode }) {
       clearRedirectAttempts(window.sessionStorage);
     });
     setUnauthorizedHandler(() => {
-      if (Date.now() - lastRedirectAt < REDIRECT_COOLDOWN_MS) {
+      const storage = window.sessionStorage;
+      const now = Date.now();
+      // リダイレクト直後の 401 は「IdP では通るのにバックエンドが拒否する」
+      // 設定不一致の典型。再ログインせずエラー画面へ倒してループを止める。
+      const lastRedirectAt = readLastRedirectAt(storage);
+      if (lastRedirectAt !== null && now - lastRedirectAt < REDIRECT_COOLDOWN_MS) {
+        setError(UNAUTHORIZED_LOOP_MESSAGE);
+        setPhase("error");
         return;
       }
-      clearLoggedOut(window.sessionStorage);
+      clearLoggedOut(storage);
       client.resetSession();
-      // リダイレクトをまたいでも残るよう試行回数を sessionStorage に記録する。
-      const attempts = recordRedirectAttempt(window.sessionStorage, Date.now());
+      const attempts = recordRedirectAttempt(storage, now);
       if (attempts > MAX_REDIRECT_ATTEMPTS) {
         setError(UNAUTHORIZED_LOOP_MESSAGE);
         setPhase("error");
@@ -128,6 +133,10 @@ export function AuthGate({ children }: { children: ReactNode }) {
           if (cancelled) {
             return;
           }
+          // code / error を含むコールバック URL を残すと、リロードのたびに
+          // 同じ失敗を繰り返すため、エラー画面へ移る前に置き換える。
+          router.history.replace("/");
+          void router.load().catch(() => {});
           setError(describeError(cause));
           setPhase("error");
         });
@@ -162,7 +171,6 @@ export function AuthGate({ children }: { children: ReactNode }) {
     clearLoggedOut(window.sessionStorage);
     // 明示的な再試行なので、自動リダイレクトの試行カウンタも仕切り直す。
     clearRedirectAttempts(window.sessionStorage);
-    lastRedirectAt = 0;
     setError(null);
     setPhase("checking");
     startLogin(client, "/");

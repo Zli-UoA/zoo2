@@ -23,6 +23,7 @@ export interface PendingAuthorization {
 const PENDING_KEY = "zoo.oidc.pending";
 const LOGGED_OUT_KEY = "zoo.oidc.loggedOut";
 const REDIRECT_ATTEMPTS_KEY = "zoo.oidc.redirectAttempts";
+const LAST_REDIRECT_KEY = "zoo.oidc.lastRedirectAt";
 
 /**
  * 401 を契機にした再ログインの試行制限。
@@ -114,6 +115,23 @@ export function recordRedirectAttempt(storage: AuthStorage, now: number = Date.n
 
 export function clearRedirectAttempts(storage: AuthStorage): void {
   storage.removeItem(REDIRECT_ATTEMPTS_KEY);
+}
+
+/**
+ * 直近のリダイレクト開始時刻。リダイレクト直後の 401 は設定不一致による
+ * ループの兆候なので、ページをまたいで検知できるよう sessionStorage に残す。
+ */
+export function markRedirectStarted(storage: AuthStorage, now: number = Date.now()): void {
+  storage.setItem(LAST_REDIRECT_KEY, String(now));
+}
+
+export function readLastRedirectAt(storage: AuthStorage): number | null {
+  const raw = storage.getItem(LAST_REDIRECT_KEY);
+  if (!raw) {
+    return null;
+  }
+  const parsed = Number(raw);
+  return Number.isFinite(parsed) ? parsed : null;
 }
 
 function readRedirectAttempts(storage: AuthStorage, now: number): number[] {

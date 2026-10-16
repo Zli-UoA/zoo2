@@ -86,22 +86,35 @@ export function createBrowserEnvironment(): OidcEnvironment {
   };
 }
 
+const RETURN_TO_BASE = "http://localhost";
+
 /**
  * 復帰先は同一オリジンの相対パスだけを許可する（オープンリダイレクト防止）。
+ * ダミー origin で解決して origin / pathname を検証し、`//host` や
+ * `/\host`（URL パーサはスキーム相対として扱う）も弾く。
  * コールバック自身に戻すとループするためルートへ倒す。
  */
 export function sanitizeReturnTo(
   value: string | null | undefined,
   callbackPath: string = DEFAULT_CALLBACK_PATH,
 ): string {
-  // WHATWG URL は `\` を `/` として扱うため、`/\evil.com` のような値も弾く。
-  if (!value || !value.startsWith("/") || value.startsWith("//") || value.includes("\\")) {
+  if (!value || !value.startsWith("/") || value.includes("\\")) {
     return "/";
   }
-  if (value === callbackPath || value.startsWith(`${callbackPath}?`)) {
+  let resolved: URL;
+  try {
+    resolved = new URL(value, RETURN_TO_BASE);
+  } catch {
     return "/";
   }
-  return value;
+  if (resolved.origin !== RETURN_TO_BASE) {
+    return "/";
+  }
+  const normalize = (path: string) => (path.length > 1 ? path.replace(/\/+$/, "") : path);
+  if (normalize(resolved.pathname) === normalize(callbackPath)) {
+    return "/";
+  }
+  return `${resolved.pathname}${resolved.search}${resolved.hash}`;
 }
 
 interface TokenResponse {
@@ -298,10 +311,11 @@ export class OidcClient {
       code_verifier: pending.verifier,
     });
     const responseBody = await this.requestToken(body);
-    // openid を要求している以上、コード交換では ID トークンを必須にして
-    // nonce の検証を必ず通す。
-    const requireIdToken = this.scope.split(/\s+/).includes("openid");
-    this.tokens = this.parseTokens(responseBody, pending.nonce, null, requireIdToken);
+    // nonce を検証できるよう、コード交換では ID トークンを必須にする。
+    this.tokens = this.parseTokens(responseBody, pending.nonce, {
+      refreshToken: null,
+      idToken: null,
+    });
     clearLoggedOut(this.environment.storage);
     return { returnTo: sanitizeReturnTo(pending.returnTo, new URL(this.redirectUri).pathname) };
   }
@@ -359,7 +373,12 @@ export class OidcClient {
       client_id: this.clientId,
     });
     const responseBody = await this.requestToken(body);
-    const tokens = this.parseTokens(responseBody, null, refreshToken, false);
+    // refresh 応答に id_token が無い IdP でも、logout の id_token_hint 用に
+    // 前回の値を引き継ぐ。
+    const tokens = this.parseTokens(responseBody, null, {
+      refreshToken,
+      idToken: current?.idToken ?? null,
+    });
     if (this.generation !== generation) {
       // 更新中にログアウト等でセッションが破棄された。新しいトークンは捨てる。
       throw new OidcError("session_reset", "セッションが破棄されました");
@@ -432,16 +451,16 @@ export class OidcClient {
   private parseTokens(
     body: TokenResponse,
     expectedNonce: string | null,
-    previousRefreshToken: string | null,
-    requireIdToken: boolean,
+    previous: { refreshToken: string | null; idToken: string | null },
   ): OidcTokens {
     const accessToken = body.access_token;
     if (typeof accessToken !== "string" || accessToken.length === 0) {
       throw new OidcError("invalid_token_response", "access_token がありません");
     }
     const idToken = typeof body.id_token === "string" ? body.id_token : null;
-    if (!idToken && requireIdToken) {
-      throw new OidcError("invalid_token_response", "id_token がありません");
+    if (!idToken && expectedNonce !== null) {
+      // nonce を要求したコード交換で ID トークンが無い応答は受け付けない。
+      throw new OidcError("invalid_id_token", "id_token がありません");
     }
     if (idToken) {
       this.validateIdToken(idToken, expectedNonce);
@@ -453,8 +472,8 @@ export class OidcClient {
     return {
       accessToken,
       refreshToken:
-        typeof body.refresh_token === "string" ? body.refresh_token : previousRefreshToken,
-      idToken,
+        typeof body.refresh_token === "string" ? body.refresh_token : previous.refreshToken,
+      idToken: idToken ?? previous.idToken,
       expiresAt: this.environment.now() + expiresIn * 1000,
     };
   }
