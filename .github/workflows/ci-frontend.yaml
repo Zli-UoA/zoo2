@@ -1,0 +1,65 @@
+name: CI Frontend
+on:
+  push:
+    paths:
+      - "frontend/**"
+      - ".github/workflows/ci-frontend.yaml"
+  pull_request:
+    paths:
+      - "frontend/**"
+      - ".github/workflows/ci-frontend.yaml"
+  workflow_dispatch:
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: ./frontend
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 12.11.2
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: frontend/pnpm-lock.yaml
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: format / lint / typecheck
+        run: pnpm check
+
+  unit-test:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: ./frontend
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 12.11.2
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: frontend/pnpm-lock.yaml
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: unit test
+        run: pnpm test
