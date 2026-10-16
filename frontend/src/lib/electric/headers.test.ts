@@ -1,12 +1,12 @@
-import { describe, expect, it } from "vite-plus/test";
+import { describe, expect, it, vi } from "vite-plus/test";
 
 import { createShapeFetch } from "./headers";
 
-function captureFetch() {
+function captureFetch(status = 200) {
   const calls: RequestInit[] = [];
   const fetchImpl: typeof fetch = async (_input, init) => {
     calls.push(init ?? {});
-    return new Response();
+    return new Response(null, { status });
   };
   return { calls, fetchImpl };
 }
@@ -74,5 +74,33 @@ describe("createShapeFetch", () => {
 
     expect(headerValue(calls[0], "Authorization")).toBeNull();
     expect(headerValue(calls[0], "X-Dev-User")).toBeNull();
+  });
+
+  it("notifies the unauthorized handler on a 401 response", async () => {
+    const onUnauthorized = vi.fn();
+    const { fetchImpl } = captureFetch(401);
+    const shapeFetch = createShapeFetch({
+      getToken: () => "token-123",
+      onUnauthorized,
+      fetch: fetchImpl,
+    });
+
+    await shapeFetch("http://localhost:8000/api/shapes/users");
+
+    expect(onUnauthorized).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not notify on other statuses", async () => {
+    const onUnauthorized = vi.fn();
+    const { fetchImpl } = captureFetch(200);
+    const shapeFetch = createShapeFetch({
+      getToken: () => "token-123",
+      onUnauthorized,
+      fetch: fetchImpl,
+    });
+
+    await shapeFetch("http://localhost:8000/api/shapes/users");
+
+    expect(onUnauthorized).not.toHaveBeenCalled();
   });
 });

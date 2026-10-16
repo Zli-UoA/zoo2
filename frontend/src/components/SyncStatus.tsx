@@ -15,7 +15,12 @@ export function SyncStatus() {
     <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
       <StatusItem label="Shape" value={config.shapeMode} />
       <StatusItem label="txid" value={config.txidMode} />
-      <StatusItem label="ユーザー" value={config.devUserId ?? "（未設定: VITE_DEV_USER_ID）"} />
+      <StatusItem
+        label="ユーザー"
+        value={
+          config.oidc ? "OIDC ログイン中" : (config.devUserId ?? "（未設定: VITE_DEV_USER_ID）")
+        }
+      />
     </div>
   );
 }

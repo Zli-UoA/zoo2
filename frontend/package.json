@@ -14,7 +14,8 @@
     "check": "vp check",
     "lint": "vp lint",
     "test": "vp test",
-    "test:e2e": "playwright test"
+    "test:e2e": "playwright test",
+    "test:e2e:oidc": "playwright test --config playwright.oidc.config.ts"
   },
   "dependencies": {
     "@base-ui/react": "^1.9.0",

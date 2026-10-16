@@ -1,9 +1,16 @@
-import { afterEach, describe, expect, it } from "vite-plus/test";
+import { afterEach, describe, expect, it, vi } from "vite-plus/test";
 
-import { getToken, resetTokenProvider, setTokenProvider } from "./auth";
+import {
+  getToken,
+  notifyUnauthorized,
+  resetTokenProvider,
+  setTokenProvider,
+  setUnauthorizedHandler,
+} from "./auth";
 
 afterEach(() => {
   resetTokenProvider();
+  setUnauthorizedHandler(null);
 });
 
 describe("getToken", () => {
@@ -25,5 +32,18 @@ describe("getToken", () => {
     setTokenProvider(() => "token-123");
     resetTokenProvider();
     expect(await getToken()).toBeNull();
+  });
+});
+
+describe("notifyUnauthorized", () => {
+  it("invokes the registered handler", () => {
+    const handler = vi.fn();
+    setUnauthorizedHandler(handler);
+    notifyUnauthorized();
+    expect(handler).toHaveBeenCalledTimes(1);
+  });
+
+  it("does nothing without a handler", () => {
+    expect(() => notifyUnauthorized()).not.toThrow();
   });
 });

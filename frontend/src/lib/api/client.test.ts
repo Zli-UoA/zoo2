@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from "vite-plus/test";
+import { afterEach, describe, expect, it, vi } from "vite-plus/test";
 
 import {
   ApiError,
@@ -8,7 +8,12 @@ import {
   unwrapEnvelope,
   type FetchLike,
 } from "./client";
+import { setUnauthorizedHandler } from "../auth";
 import { resolveConfig } from "../config";
+
+afterEach(() => {
+  setUnauthorizedHandler(null);
+});
 
 function jsonResponse(body: unknown, init: ResponseInit = {}): Response {
   return new Response(JSON.stringify(body), {
@@ -151,6 +156,42 @@ describe("createApiClient", () => {
       body: { error: "forbidden" },
     });
     await expect(client.get("/api/secrets")).rejects.toBeInstanceOf(ApiError);
+  });
+
+  it("routes 401 responses to the default unauthorized handler", async () => {
+    const handler = vi.fn();
+    setUnauthorizedHandler(handler);
+    const fetchMock = vi.fn<FetchLike>(async () => new Response("", { status: 401 }));
+    const client = createApiClient({ baseUrl: "http://localhost:8000", fetch: fetchMock });
+
+    await expect(client.get("/api/users/me")).rejects.toMatchObject({ status: 401 });
+    expect(handler).toHaveBeenCalledTimes(1);
+  });
+
+  it("accepts an explicit unauthorized handler", async () => {
+    const onUnauthorized = vi.fn();
+    const fetchMock = vi.fn<FetchLike>(async () => new Response("", { status: 401 }));
+    const client = createApiClient({
+      baseUrl: "http://localhost:8000",
+      onUnauthorized,
+      fetch: fetchMock,
+    });
+
+    await expect(client.get("/api/users/me")).rejects.toMatchObject({ status: 401 });
+    expect(onUnauthorized).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not notify on non-401 failures", async () => {
+    const onUnauthorized = vi.fn();
+    const fetchMock = vi.fn<FetchLike>(async () => new Response("", { status: 403 }));
+    const client = createApiClient({
+      baseUrl: "http://localhost:8000",
+      onUnauthorized,
+      fetch: fetchMock,
+    });
+
+    await expect(client.get("/api/secrets")).rejects.toMatchObject({ status: 403 });
+    expect(onUnauthorized).not.toHaveBeenCalled();
   });
 });
 
