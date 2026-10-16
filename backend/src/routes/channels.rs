@@ -194,16 +194,36 @@ async fn update_channel(
         )));
     }
 
-    if channel.archive_at.is_some() {
-        return Err(AppError::BadRequest(
-            "Cannot update an archived channel".into(),
-        ));
+    let is_admin =
+        is_workspace_admin(&mut tx, &auth_user.id, state.config.dev_auth_enabled).await?;
+
+    if channel.is_private {
+        let membership = ChannelUser::filter(
+            ChannelUser::fields()
+                .channel_id()
+                .eq(id.as_str())
+                .and(ChannelUser::fields().user_id().eq(auth_user.id.as_str())),
+        )
+        .first()
+        .exec(&mut tx)
+        .await?;
+
+        if membership.is_none() && !is_admin {
+            return Err(AppError::NotFound(format!(
+                "Channel not found with id: {id}"
+            )));
+        }
     }
 
-    let is_admin = is_workspace_admin(&mut tx, &auth_user.id).await?;
     if !can_manage_channel(&channel.created_user_id, &auth_user.id, is_admin) {
         return Err(AppError::Forbidden(
             "Only the channel creator or a workspace admin can update this channel".into(),
+        ));
+    }
+
+    if channel.archive_at.is_some() {
+        return Err(AppError::BadRequest(
+            "Cannot update an archived channel".into(),
         ));
     }
 
@@ -259,7 +279,27 @@ async fn delete_channel(
         )));
     }
 
-    let is_admin = is_workspace_admin(&mut tx, &auth_user.id).await?;
+    let is_admin =
+        is_workspace_admin(&mut tx, &auth_user.id, state.config.dev_auth_enabled).await?;
+
+    if channel.is_private {
+        let membership = ChannelUser::filter(
+            ChannelUser::fields()
+                .channel_id()
+                .eq(id.as_str())
+                .and(ChannelUser::fields().user_id().eq(auth_user.id.as_str())),
+        )
+        .first()
+        .exec(&mut tx)
+        .await?;
+
+        if membership.is_none() && !is_admin {
+            return Err(AppError::NotFound(format!(
+                "Channel not found with id: {id}"
+            )));
+        }
+    }
+
     if !can_manage_channel(&channel.created_user_id, &auth_user.id, is_admin) {
         return Err(AppError::Forbidden(
             "Only the channel creator or a workspace admin can delete this channel".into(),
@@ -387,13 +427,27 @@ async fn add_channel_user(
         )));
     }
 
-    if channel.archive_at.is_some() {
-        return Err(AppError::BadRequest(
-            "Cannot add members to an archived channel".into(),
-        ));
+    let is_admin =
+        is_workspace_admin(&mut tx, &auth_user.id, state.config.dev_auth_enabled).await?;
+
+    if channel.is_private {
+        let membership = ChannelUser::filter(
+            ChannelUser::fields()
+                .channel_id()
+                .eq(id.as_str())
+                .and(ChannelUser::fields().user_id().eq(auth_user.id.as_str())),
+        )
+        .first()
+        .exec(&mut tx)
+        .await?;
+
+        if membership.is_none() && !is_admin && channel.created_user_id != auth_user.id {
+            return Err(AppError::NotFound(format!(
+                "Channel not found with id: {id}"
+            )));
+        }
     }
 
-    let is_admin = is_workspace_admin(&mut tx, &auth_user.id).await?;
     let is_creator = channel.created_user_id == auth_user.id;
     let is_actor_member = if is_creator {
         true
@@ -426,6 +480,12 @@ async fn add_channel_user(
                 "You must be a member, creator, or workspace admin of the channel to add other users"
             }
             .into(),
+        ));
+    }
+
+    if channel.archive_at.is_some() {
+        return Err(AppError::BadRequest(
+            "Cannot add members to an archived channel".into(),
         ));
     }
 
@@ -548,10 +608,32 @@ async fn archive_channel(
         })?;
 
     if channel.deleted_at.is_some() {
-        return Err(AppError::NotFound(format!("Channel not found with id: {id}")));
+        return Err(AppError::NotFound(format!(
+            "Channel not found with id: {id}"
+        )));
     }
 
-    let is_admin = is_workspace_admin(&mut tx, &auth_user.id).await?;
+    let is_admin =
+        is_workspace_admin(&mut tx, &auth_user.id, state.config.dev_auth_enabled).await?;
+
+    if channel.is_private {
+        let membership = ChannelUser::filter(
+            ChannelUser::fields()
+                .channel_id()
+                .eq(id.as_str())
+                .and(ChannelUser::fields().user_id().eq(auth_user.id.as_str())),
+        )
+        .first()
+        .exec(&mut tx)
+        .await?;
+
+        if membership.is_none() && !is_admin {
+            return Err(AppError::NotFound(format!(
+                "Channel not found with id: {id}"
+            )));
+        }
+    }
+
     if !can_manage_channel(&channel.created_user_id, &auth_user.id, is_admin) {
         return Err(AppError::Forbidden(
             "Only the channel creator or a workspace admin can archive this channel".into(),
@@ -599,10 +681,32 @@ async fn unarchive_channel(
         })?;
 
     if channel.deleted_at.is_some() {
-        return Err(AppError::NotFound(format!("Channel not found with id: {id}")));
+        return Err(AppError::NotFound(format!(
+            "Channel not found with id: {id}"
+        )));
     }
 
-    let is_admin = is_workspace_admin(&mut tx, &auth_user.id).await?;
+    let is_admin =
+        is_workspace_admin(&mut tx, &auth_user.id, state.config.dev_auth_enabled).await?;
+
+    if channel.is_private {
+        let membership = ChannelUser::filter(
+            ChannelUser::fields()
+                .channel_id()
+                .eq(id.as_str())
+                .and(ChannelUser::fields().user_id().eq(auth_user.id.as_str())),
+        )
+        .first()
+        .exec(&mut tx)
+        .await?;
+
+        if membership.is_none() && !is_admin {
+            return Err(AppError::NotFound(format!(
+                "Channel not found with id: {id}"
+            )));
+        }
+    }
+
     if !can_manage_channel(&channel.created_user_id, &auth_user.id, is_admin) {
         return Err(AppError::Forbidden(
             "Only the channel creator or a workspace admin can unarchive this channel".into(),
@@ -658,21 +762,34 @@ async fn kick_channel_user(
         })?;
 
     if channel.deleted_at.is_some() {
-        return Err(AppError::NotFound(format!("Channel not found with id: {id}")));
+        return Err(AppError::NotFound(format!(
+            "Channel not found with id: {id}"
+        )));
     }
 
-    if channel.archive_at.is_some() {
-        return Err(AppError::BadRequest(
-            "Cannot kick member in an archived channel".into(),
-        ));
+    let actor_is_admin =
+        is_workspace_admin(&mut tx, &auth_user.id, state.config.dev_auth_enabled).await?;
+
+    if channel.is_private {
+        let membership = ChannelUser::filter(
+            ChannelUser::fields()
+                .channel_id()
+                .eq(id.as_str())
+                .and(ChannelUser::fields().user_id().eq(auth_user.id.as_str())),
+        )
+        .first()
+        .exec(&mut tx)
+        .await?;
+
+        if membership.is_none() && !actor_is_admin {
+            return Err(AppError::NotFound(format!(
+                "Channel not found with id: {id}"
+            )));
+        }
     }
 
-    if user_id == channel.created_user_id {
-        return Err(AppError::BadRequest("Cannot kick the channel creator".into()));
-    }
-
-    let actor_is_admin = is_workspace_admin(&mut tx, &auth_user.id).await?;
-    let target_is_admin = is_workspace_admin(&mut tx, &user_id).await?;
+    let target_is_admin =
+        is_workspace_admin(&mut tx, &user_id, state.config.dev_auth_enabled).await?;
 
     if !can_kick_member(
         &channel.created_user_id,
@@ -683,6 +800,18 @@ async fn kick_channel_user(
     ) {
         return Err(AppError::Forbidden(
             "You do not have permission to kick this member".into(),
+        ));
+    }
+
+    if channel.archive_at.is_some() {
+        return Err(AppError::BadRequest(
+            "Cannot kick member in an archived channel".into(),
+        ));
+    }
+
+    if user_id == channel.created_user_id {
+        return Err(AppError::BadRequest(
+            "Cannot kick the channel creator".into(),
         ));
     }
 
@@ -810,7 +939,13 @@ mod tests {
         // - メンバーであっても非作成者は追加不可
         assert!(!can_add_member(true, creator_id, member_id, true, false));
         // - 未参加ユーザーは追加不可
-        assert!(!can_add_member(true, creator_id, non_member_id, false, false));
+        assert!(!can_add_member(
+            true,
+            creator_id,
+            non_member_id,
+            false,
+            false
+        ));
 
         // 2. パブリックチャンネル
         // - 作成者は常に追加可能
@@ -819,7 +954,13 @@ mod tests {
         // - 既存メンバーは追加可能
         assert!(can_add_member(false, creator_id, member_id, true, false));
         // - 未参加の非作成者は追加不可 (公開チャンネルに他人を勝手に追加できない)
-        assert!(!can_add_member(false, creator_id, non_member_id, false, false));
+        assert!(!can_add_member(
+            false,
+            creator_id,
+            non_member_id,
+            false,
+            false
+        ));
     }
 
     #[test]

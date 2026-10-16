@@ -1,15 +1,13 @@
-use crate::{
-    error::AppError,
-    models::{Role, UserRole},
-};
+use crate::{error::AppError, models::UserRole};
 
 /// ユーザーがワークスペース管理者 (admin ロール) かどうかを判定
 pub async fn is_workspace_admin(
     tx: &mut toasty::Transaction<'_>,
     user_id: &str,
+    dev_auth_enabled: bool,
 ) -> Result<bool, AppError> {
     // 開発環境かつ固定開発ユーザーの場合は常に管理者として扱う (テスト・ローカル環境の便宜)
-    if user_id == crate::auth::DEFAULT_DEV_USER_ID && crate::auth::dev_auth_enabled() {
+    if dev_auth_enabled && user_id == crate::auth::DEFAULT_DEV_USER_ID {
         return Ok(true);
     }
 
@@ -19,11 +17,6 @@ pub async fn is_workspace_admin(
 
     for ur in user_roles {
         if ur.role_id == "role_admin" || ur.role_id == "admin" {
-            return Ok(true);
-        }
-        if let Ok(role) = Role::get_by_id(tx, ur.role_id.as_str()).await
-            && role.role_name == "admin"
-        {
             return Ok(true);
         }
     }
@@ -63,17 +56,13 @@ pub fn can_add_member(
     if is_admin || channel_creator_id == actor_id {
         return true;
     }
-    if is_private {
-        false
-    } else {
-        is_actor_member
-    }
+    if is_private { false } else { is_actor_member }
 }
 
 /// メンバーキック権限 (チャンネルからユーザーを除外)
 /// - 自身を指定した場合はキック不可 (leave を使うべき)
 /// - チャンネル作成者をキックすることは不可
-/// - ワークスペース管理者を非管理者の作成者がキックすることは不可
+/// - ワークスペース管理者をキックすることは不可 (管理者同士のキックも保護)
 /// - 実行者: チャンネル作成者 OR ワークスペース管理者
 pub fn can_kick_member(
     channel_creator_id: &str,
@@ -90,8 +79,8 @@ pub fn can_kick_member(
     if target_user_id == channel_creator_id {
         return false;
     }
-    // ワークスペース管理者を一般作成者がキックすることは不可
-    if target_is_admin && !actor_is_admin {
+    // ワークスペース管理者はキック不可 (管理者同士のキックも保護)
+    if target_is_admin {
         return false;
     }
     // 実行者はチャンネル作成者またはワークスペース管理者であること
@@ -158,7 +147,13 @@ mod tests {
         // 管理者が一般メンバーをキック -> 可
         assert!(can_kick_member(creator, admin, normal_user, true, false));
         // 一般メンバーが他者をキック -> 不可
-        assert!(!can_kick_member(creator, normal_user, "charlie", false, false));
+        assert!(!can_kick_member(
+            creator,
+            normal_user,
+            "charlie",
+            false,
+            false
+        ));
         // 自身を指定 -> 不可
         assert!(!can_kick_member(creator, creator, creator, false, false));
         assert!(!can_kick_member(creator, admin, admin, true, true));
@@ -166,7 +161,7 @@ mod tests {
         assert!(!can_kick_member(creator, admin, creator, true, false));
         // チャンネル作成者がワークスペース管理者をキック -> 不可
         assert!(!can_kick_member(creator, creator, admin, false, true));
-        // ワークスペース管理者が別のワークスペース管理者をキック -> 可
-        assert!(can_kick_member(creator, admin, "other_admin", true, true));
+        // ワークスペース管理者が別のワークスペース管理者をキック -> 不可 (管理者キック保護)
+        assert!(!can_kick_member(creator, admin, "other_admin", true, true));
     }
 }

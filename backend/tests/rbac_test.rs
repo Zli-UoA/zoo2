@@ -6,11 +6,7 @@ use serde_json::{Value, json};
 use tower::ServiceExt;
 
 use backend::{
-    config::Config,
-    db::init_db,
-    models::UserRole,
-    routes::create_router,
-    state::AppState,
+    config::Config, db::init_db, models::UserRole, routes::create_router, state::AppState,
 };
 
 #[tokio::test]
@@ -154,7 +150,11 @@ async fn test_admin_privileges_and_message_force_delete() -> anyhow::Result<()> 
     let admin_id = uuid::Uuid::new_v4().to_string();
 
     // 1. ユーザー作成
-    for (id, name) in [(&alice_id, "alice"), (&bob_id, "bob"), (&admin_id, "admin_user")] {
+    for (id, name) in [
+        (&alice_id, "alice"),
+        (&bob_id, "bob"),
+        (&admin_id, "admin_user"),
+    ] {
         let user_payload = json!({
             "id": id,
             "user_name": format!("{}_{}", name, uuid::Uuid::new_v4().simple()),
@@ -233,10 +233,43 @@ async fn test_admin_privileges_and_message_force_delete() -> anyhow::Result<()> 
     assert!(json["data"]["deleted_at"].is_string());
     assert!(json["txid"].is_string());
 
-    // 6. Admin が Alice 作成チャンネルをアーカイブ -> 200 OK
+    // 6. メッセージ2 を作成
+    let message_id_2 = uuid::Uuid::new_v4().to_string();
+    let req = Request::builder()
+        .method("POST")
+        .uri("/api/messages")
+        .header("content-type", "application/json")
+        .header("X-Dev-User", &alice_id)
+        .body(Body::from(serde_json::to_vec(&json!({
+            "id": message_id_2,
+            "channel_id": channel_id,
+            "content": "Alice's second message",
+        }))?))?;
+    let resp = app.clone().oneshot(req).await?;
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    // 7. Admin が Alice 作成チャンネルをアーカイブ -> 200 OK
     let req = Request::builder()
         .method("POST")
         .uri(format!("/api/channels/{channel_id}/archive"))
+        .header("X-Dev-User", &admin_id)
+        .body(Body::empty())?;
+    let resp = app.clone().oneshot(req).await?;
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    // 8. アーカイブ済みチャンネルで、一般ユーザー Bob が Alice のメッセージを削除試行 -> 403 Forbidden (認可先行)
+    let req = Request::builder()
+        .method("DELETE")
+        .uri(format!("/api/messages/{message_id_2}"))
+        .header("X-Dev-User", &bob_id)
+        .body(Body::empty())?;
+    let resp = app.clone().oneshot(req).await?;
+    assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+
+    // 9. アーカイブ済みチャンネルで、Admin は不適切メッセージを強制削除可能 -> 200 OK
+    let req = Request::builder()
+        .method("DELETE")
+        .uri(format!("/api/messages/{message_id_2}"))
         .header("X-Dev-User", &admin_id)
         .body(Body::empty())?;
     let resp = app.clone().oneshot(req).await?;
@@ -260,7 +293,11 @@ async fn test_member_kick_and_access_revocation() -> anyhow::Result<()> {
     let bob_id = uuid::Uuid::new_v4().to_string();
     let charlie_id = uuid::Uuid::new_v4().to_string();
 
-    for (id, name) in [(&alice_id, "alice"), (&bob_id, "bob"), (&charlie_id, "charlie")] {
+    for (id, name) in [
+        (&alice_id, "alice"),
+        (&bob_id, "bob"),
+        (&charlie_id, "charlie"),
+    ] {
         let user_payload = json!({
             "id": id,
             "user_name": format!("{}_{}", name, uuid::Uuid::new_v4().simple()),
@@ -297,18 +334,20 @@ async fn test_member_kick_and_access_revocation() -> anyhow::Result<()> {
         .uri(format!("/api/channels/{channel_id}/users"))
         .header("content-type", "application/json")
         .header("X-Dev-User", &alice_id)
-        .body(Body::from(serde_json::to_vec(&json!({ "user_id": bob_id }))?))?;
+        .body(Body::from(serde_json::to_vec(
+            &json!({ "user_id": bob_id }),
+        )?))?;
     let resp = app.clone().oneshot(req).await?;
     assert_eq!(resp.status(), StatusCode::OK);
 
-    // 3. 一般非メンバー Charlie が Bob をキック試行 -> 403 Forbidden
+    // 3. 一般非メンバー Charlie がプライベートチャンネルのメンバーをキック試行 -> 404 Not Found (非公開チャンネル存在隠蔽)
     let req = Request::builder()
         .method("DELETE")
         .uri(format!("/api/channels/{channel_id}/users/{bob_id}"))
         .header("X-Dev-User", &charlie_id)
         .body(Body::empty())?;
     let resp = app.clone().oneshot(req).await?;
-    assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+    assert_eq!(resp.status(), StatusCode::NOT_FOUND);
 
     // 4. Alice (自身) をキック試行 -> 400 Bad Request
     let req = Request::builder()
@@ -319,16 +358,71 @@ async fn test_member_kick_and_access_revocation() -> anyhow::Result<()> {
     let resp = app.clone().oneshot(req).await?;
     assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
 
-    // 5. Bob がチャンネル作成者 Alice をキック試行 -> 400 Bad Request
+    // 5. 一般メンバー Bob がキック試行 -> 403 Forbidden (キック権限なし)
     let req = Request::builder()
         .method("DELETE")
         .uri(format!("/api/channels/{channel_id}/users/{alice_id}"))
         .header("X-Dev-User", &bob_id)
         .body(Body::empty())?;
     let resp = app.clone().oneshot(req).await?;
-    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(resp.status(), StatusCode::FORBIDDEN);
 
-    // 6. 作成者 Alice が Bob をキック実行 -> 200 OK + txid
+    // 6. 管理者 Admin ユーザー作成
+    let admin_id = uuid::Uuid::new_v4().to_string();
+    let user_payload = json!({
+        "id": admin_id,
+        "user_name": format!("admin_{}", uuid::Uuid::new_v4().simple()),
+        "display_name": "Admin User",
+    });
+    let req = Request::builder()
+        .method("POST")
+        .uri("/api/users")
+        .header("content-type", "application/json")
+        .body(Body::from(serde_json::to_vec(&user_payload)?))?;
+    let resp = app.clone().oneshot(req).await?;
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    let mut db_tx = db.clone();
+    let mut tx = db_tx.transaction().await?;
+    toasty::create!(UserRole {
+        user_id: admin_id.as_str(),
+        role_id: "role_admin",
+    })
+    .exec(&mut tx)
+    .await?;
+    tx.commit().await?;
+
+    // Alice が Admin をチャンネルに追加
+    let req = Request::builder()
+        .method("POST")
+        .uri(format!("/api/channels/{channel_id}/users"))
+        .header("content-type", "application/json")
+        .header("X-Dev-User", &alice_id)
+        .body(Body::from(serde_json::to_vec(
+            &json!({ "user_id": admin_id }),
+        )?))?;
+    let resp = app.clone().oneshot(req).await?;
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    // 7. 管理者 Admin であってもチャンネル作成者 Alice をキック不可 -> 403 Forbidden (作成者キック保護)
+    let req = Request::builder()
+        .method("DELETE")
+        .uri(format!("/api/channels/{channel_id}/users/{alice_id}"))
+        .header("X-Dev-User", &admin_id)
+        .body(Body::empty())?;
+    let resp = app.clone().oneshot(req).await?;
+    assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+
+    // 8. 作成者 Alice がワークスペース管理者 Admin をキック試行 -> 403 Forbidden (管理者キック保護)
+    let req = Request::builder()
+        .method("DELETE")
+        .uri(format!("/api/channels/{channel_id}/users/{admin_id}"))
+        .header("X-Dev-User", &alice_id)
+        .body(Body::empty())?;
+    let resp = app.clone().oneshot(req).await?;
+    assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+
+    // 8. 作成者 Alice が Bob をキック実行 -> 200 OK + txid
     let req = Request::builder()
         .method("DELETE")
         .uri(format!("/api/channels/{channel_id}/users/{bob_id}"))
@@ -342,10 +436,12 @@ async fn test_member_kick_and_access_revocation() -> anyhow::Result<()> {
     assert_eq!(json["data"]["user_id"], bob_id);
     assert!(json["txid"].is_string());
 
-    // 7. キックされた Bob がプライベートチャンネルのメッセージ Shape にアクセス -> 404 (アクセス権喪失)
+    // 9. キックされた Bob がプライベートチャンネルのメッセージ Shape にアクセス -> 404 (アクセス権喪失)
     let req = Request::builder()
         .method("GET")
-        .uri(format!("/api/shapes/messages?channel_id={channel_id}&offset=-1"))
+        .uri(format!(
+            "/api/shapes/messages?channel_id={channel_id}&offset=-1"
+        ))
         .header("X-Dev-User", &bob_id)
         .body(Body::empty())?;
     let resp = app.clone().oneshot(req).await?;
