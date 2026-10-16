@@ -60,4 +60,19 @@ describe("createShapeFetch", () => {
 
     expect(headerValue(calls[0], "Cache-Control")).toBe("no-cache");
   });
+
+  it("omits all auth headers when auth is disabled (direct mode)", async () => {
+    const { calls, fetchImpl } = captureFetch();
+    const shapeFetch = createShapeFetch({
+      auth: false,
+      getToken: () => "token-123",
+      devUserId: "dev-user-1",
+      fetch: fetchImpl,
+    });
+
+    await shapeFetch("http://localhost:3000/v1/shape?table=channels");
+
+    expect(headerValue(calls[0], "Authorization")).toBeNull();
+    expect(headerValue(calls[0], "X-Dev-User")).toBeNull();
+  });
 });

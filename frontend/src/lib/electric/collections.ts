@@ -2,15 +2,30 @@ import { BasicIndex, createCollection } from "@tanstack/react-db";
 import { electricCollectionOptions } from "@tanstack/electric-db-collection";
 
 import { resolveConfig, type AppConfig } from "../config";
-import { createShapeFetch } from "./headers";
+import { createShapeFetch, type ShapeFetchSource } from "./headers";
 import { buildShapeRequestUrl, type ShapeQueryOptions } from "./query";
 import type { ShapeName } from "./schema";
 import type { ChannelRow, ChannelUserRow, MessageRow, UserRow } from "./types";
 
+/**
+ * Shape 購読に付与する認証情報を決める。
+ *
+ * direct（Electric 直結）は認可なしの開発専用経路で、Electric の CORS は
+ * `authorization` / `X-Dev-User` を許可していないため、認証ヘッダを一切付けない
+ * （付けると preflight で全リクエストが失敗する）。proxy はバックエンドが REST と
+ * 同じヘッダを受け付けるため、`X-Dev-User` をそのまま渡す。
+ */
+export function shapeAuthSource(config: AppConfig): ShapeFetchSource {
+  if (config.shapeMode === "proxy") {
+    return { devUserId: config.devUserId };
+  }
+  return { auth: false };
+}
+
 function shapeOptions(shape: ShapeName, config: AppConfig, options: ShapeQueryOptions = {}) {
   return {
     url: buildShapeRequestUrl(shape, config, options),
-    fetchClient: createShapeFetch({ devUserId: config.devUserId }),
+    fetchClient: createShapeFetch(shapeAuthSource(config)),
   };
 }
 
@@ -41,6 +56,14 @@ function usersCollection(config: AppConfig) {
   return collection;
 }
 
+/**
+ * メンバー一覧用の channel_user。今は `channel_id` を指定せず全件購読し、
+ * `useChannelMembers` がチャンネル単位で絞り込む。`shapeQueryParams` の
+ * `channelUsers` + `channelId` 分岐は、将来チャンネル単位で購読する場合用。
+ *
+ * proxy で `channel_id` なしの場合、バックエンドは channel_user のサブクエリ経路を
+ * 使うため、proxy に切り替えるときに別途確認する（docs/electric-sync-requirements.md §1）。
+ */
 function channelUsersCollection(config: AppConfig) {
   const collection = createCollection(
     electricCollectionOptions<ChannelUserRow>({
@@ -50,7 +73,8 @@ function channelUsersCollection(config: AppConfig) {
       shapeOptions: shapeOptions("channelUsers", config),
     }),
   );
-  collection.createIndex((row) => row.user_id);
+  // channel_id 単位に絞り込む `useChannelMembers` の述語に合わせて索引を張る。
+  collection.createIndex((row) => row.channel_id);
   return collection;
 }
 

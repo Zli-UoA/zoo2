@@ -16,6 +16,9 @@ export type ShapeQueryParams = Record<string, string | number>;
  * - proxy（バックエンド経由）: プロキシが `table` / `where` を確定させるため、
  *   ルーティングに必要な `channel_id` だけを渡す。
  *
+ * なお `channelUsers` を `channelId` 付きで呼ぶ経路は現状未使用（コレクションは
+ * 全件購読）。チャンネル単位で購読する場合に使えるよう汎用化してある。
+ *
  * いずれも `deleted_at` の除外はクエリ側（live query）で行う。
  */
 export function shapeQueryParams(
