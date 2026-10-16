@@ -24,7 +24,10 @@ services:
       - --entrypoints.health.address=:8082
       - --ping.entrypoint=health
       - --providers.file.filename=/etc/traefik/routes.yaml
-    # ホスト側ポートは公開しない。ローカル確認は infra/compose.stg.local.yaml を重ねる。
+    # Coolify Single Resource Tunnel (cloudflared uses host networking).
+    # Avoid Coolify's own 8080; expose only the ingress on host loopback.
+    ports:
+      - "127.0.0.1:${PROXY_PORT:-18080}:8080"
     networks:
       - frontend
       - backend

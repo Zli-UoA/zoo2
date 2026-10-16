@@ -3,8 +3,12 @@ import { execFileSync } from 'node:child_process';
 const config = JSON.parse(execFileSync('docker', ['compose', '--project-directory', '.',
   '-f', 'infra/compose.stg.yaml', 'config', '--format', 'json'], { encoding: 'utf8' }));
 for (const [name, service] of Object.entries(config.services)) {
-  assert.equal(service.ports, undefined, `${name} must not publish ports`);
+  if (name !== 'proxy') assert.equal(service.ports, undefined, `${name} must not publish ports`);
 }
+assert.equal(config.services.proxy.ports.length, 1);
+assert.equal(config.services.proxy.ports[0].host_ip, '127.0.0.1');
+assert.equal(config.services.proxy.ports[0].target, 8080);
+assert.equal(config.services.proxy.ports[0].published, String(process.env.PROXY_PORT || 18080));
 assert.equal(config.services.frontend.build.args.VITE_API_BASE_URL, '');
 assert.equal(config.services.backend.environment.ENVIRONMENT, 'production');
 assert.equal(config.services.backend.environment.DEV_AUTH_ENABLED, 'false');

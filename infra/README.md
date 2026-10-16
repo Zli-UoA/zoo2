@@ -7,7 +7,7 @@
 ```text
 infra/
 ├── compose.stg.yaml         # ステージング構成
-├── compose.stg.local.yaml   # ローカル確認用のホストポート公開
+├── compose.stg.local.yaml   # 既存のローカル起動コマンド用 override
 ├── proxy/                   # Traefik のルーティング・forward-auth と検証
 ├── Makefile                 # DB操作とmigration操作
 └── db/
@@ -158,11 +158,11 @@ DBサービスは Coolify が `extends` や `!reset` を扱えないため、`co
 
 ```bash
 POSTGRES_PASSWORD=staging-test-password BFF_VERIFY_SECRET=staging-test-verify-secret \
-  docker compose --project-directory . -f infra/compose.stg.yaml -f infra/compose.stg.local.yaml \
+  docker compose --project-directory . -f infra/compose.stg.yaml \
   up -d --build --wait
 ```
 
-公開入口は Traefik の `proxy` サービスで、コンテナ内は `8080` で待ち受けます。`compose.stg.yaml` はどのサービスもホスト側ポートを公開しません。Coolify 標準の `coolify-proxy` がホストの `8080` を使うため、公開すると衝突します。ローカルでは `compose.stg.local.yaml` を重ねると、`127.0.0.1:8080`（`PROXY_PORT` で変更可能）で proxy にアクセスできます。`PORT` は Rust のコンテナ内の待受ポートです（既定 `8000`）。
+公開入口は Traefik の `proxy` サービスで、コンテナ内の `8080` をホストの `127.0.0.1:18080` にマッピングします。ホスト側は `PROXY_PORT` で変更できます。Coolify 自身が使う `8080` とは分けています。フロント・Rust・DB・Electric のホストポートは公開しません。`PORT` は Rust のコンテナ内の待受ポートです（既定 `8000`）。既存の `compose.stg.local.yaml` を重ねた起動コマンドも、同じマッピングで引き続き利用できます。
 
 フロントは TanStack Start を Nitro の Node.js サーバーとしてビルドし、非 root ユーザーで実行します。コンテナ内は `3000` で待ち受けます。フロントとプロキシのイメージ名は `FRONTEND_IMAGE`・`PROXY_IMAGE` で変更できます。フロントのヘルスチェックは `/` の HTTP 200、プロキシは内部専用の ping エンドポイントを確認します。
 
@@ -192,11 +192,19 @@ BFF のセッションストアは未確定です。`frontend` は非 internal �
 
 ### Coolify
 
-Coolify のドメインは **`proxy` サービスの `8080` 番ポートだけ**に割り当てます。TLS は Coolify 側で終端します。`frontend`・`backend` にドメインや外部ネットワークを追加しないでください。Rust は内部ネットワークでプロキシ・DB・Electric と通信し、Kanidm Discovery/JWKS 向けに専用の outbound ネットワークにも参加します。
+[Single Resource Tunnel の手順](https://coolify.io/docs/integrations/networking/cloudflare/tunnels/single-resource)を使います。Coolify の cloudflared テンプレートは `network_mode: host` なので、ホストの loopback ポートへ接続できます。
 
-`PROXY_TRUSTED_IPS` には、接続元となる Coolify の TLS プロキシの IP/CIDR を指定してください。既定値は `127.0.0.1/32` で、Docker の Coolify プロキシは含みません。実際のネットワークを確認して限定した値を設定し、`0.0.0.0/0` は指定しないでください。この範囲から来た forwarded ヘッダだけを入口で信頼して、HTTPS の scheme を BFF に渡します。BFF の公開オリジン・redirect URI は公開 HTTPS URL に合わせます。外側のプロキシにも、long-poll より長いタイムアウトとバッファリングしない設定が必要です。
+- Coolify のサービスの Domains は空にします。Tunnel が直接アプリのプロキシへ接続するため、Coolify 標準プロキシのドメインルーティングは使いません。
+- Compose の `proxy` のポートマッピングは `127.0.0.1:18080:8080` です。Compose が定義しているため、Coolify 側で同じマッピングを重複追加する必要はありません。
+- Cloudflare の公開ホスト名には利用するドメインを設定し、Path は空、Service は **HTTP / `127.0.0.1:18080`** にします。`PROXY_PORT` を変更した場合は接続先も合わせます。
+- この接続先は HTTP なので Origin Server Name は不要です。ルーティングはパスで行い、HTTP Host Header の上書きも不要です。ブラウザからの公開 URL は HTTPS を使います。
+- `frontend`・`backend` にドメインやホストポートを追加しないでください。Rust は内部ネットワークと Kanidm Discovery/JWKS 用の outbound ネットワークだけに参加します。
 
-デプロイ後は Coolify が生成したネットワーク・ルーティング設定を確認し、Rust にプロキシ以外の公開経路がないこと、ブラウザから verify に直接アクセスできないことを確認してください。
+`PROXY_TRUSTED_IPS` には、アプリのプロキシから見える cloudflared の接続元 IP/CIDR を指定してください。ホストから Docker の公開ポートを経由するため、接続元が Docker ネットワークのゲートウェイ IP になる場合があります。既定の `127.0.0.1/32` でよいとは限りません。実際の接続元を確認して限定した値を設定し、`0.0.0.0/0` は指定しないでください。この範囲から来た forwarded ヘッダだけを信頼して、公開 HTTPS の scheme を BFF に渡します。BFF の公開オリジン・redirect URI も公開 HTTPS URL に合わせます。
+
+Tunnel からオリジンへの通信は HTTP です。認証実装時は BFF の Secure Cookie・公開 URL の扱いを確認し、オリジンまで TLS を使う場合は Coolify の [Full TLS 手順](https://coolify.io/docs/integrations/networking/cloudflare/tunnels/full-tls)に合わせて TLS の待受と証明書を別途設定します。
+
+デプロイ後はホストで `curl -f http://127.0.0.1:18080/` を実行し、次に Tunnel の公開 URL から画面を確認します。Rust にプロキシ以外の公開経路がないこと、ブラウザから verify に直接アクセスできないことも確認してください。
 
 フロントだけをビルド・起動確認する場合:
 

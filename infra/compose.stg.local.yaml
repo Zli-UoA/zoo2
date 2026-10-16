@@ -1,7 +1,5 @@
-# ローカル確認用 override。Coolify では使わない。
-# Coolify はネットワーク経由で proxy:8080 にルーティングするため、ホスト側ポートは公開しない
-# (Coolify 標準の coolify-proxy がホストの 8080 を使うため衝突する)。
+# 既存のローカル起動コマンド用。通常は compose.stg.yaml だけで同じポートを公開する。
 services:
   proxy:
     ports:
-      - "127.0.0.1:${PROXY_PORT:-8080}:8080"
+      - "127.0.0.1:${PROXY_PORT:-18080}:8080"
