@@ -47,7 +47,7 @@ pnpm generate-routes  # ルートツリーを再生成
 
 Electric の Shape 購読と REST 書き込みを分離し、接続先を設定だけで切り替えられるようにしています。
 
-- `src/lib/config.ts` … `resolveConfig()` / `buildShapeUrl()`。`VITE_SHAPE_MODE` が `direct` なら Electric（`VITE_ELECTRIC_SHAPE_URL`）、`proxy` ならバックエンドの Shape プロキシ（`VITE_API_BASE_URL` + `VITE_SHAPE_PROXY_PATH`）を参照します。未設定時は開発で `direct`、それ以外は `proxy`。不正な値は例外にします。**`direct` は Electric を認可なしで直接叩く開発専用**で、プライベートチャンネルのフィルタも効きません。プロキシ経由の検証や本番では `proxy` を使ってください。
+- `src/lib/config.ts` … `resolveConfig()` / `buildShapeUrl()`。`VITE_SHAPE_MODE` が `direct` なら Electric（`VITE_ELECTRIC_SHAPE_URL`）、`proxy` ならバックエンドの Shape プロキシ（`VITE_API_BASE_URL` + `VITE_SHAPE_PROXY_PATH`）を参照します。**既定は `proxy`**（開発・本番とも）。不正な値は例外にします。開発で `proxy` を使うときは現在ユーザー（`X-Dev-User`）が必要なため `VITE_DEV_USER_ID` を必須にします（未設定は起動時エラー）。**`direct` は Electric を認可なしで直接叩く開発専用**で、プライベートチャンネルのフィルタも効きません。
 - `src/lib/auth.ts` … `getToken()` のみのアダプタ。`setTokenProvider()` で IdP を差し替えられます（既定は未認証で `null`）。`buildAuthHeaders()`（`api/client.ts`）を使うと REST 側の fetch に同じ `Bearer` / `X-Dev-User` を渡せます。
 - `src/lib/api/client.ts` … REST クライアント。`Bearer`（`getToken()`）と `X-Dev-User`（`VITE_DEV_USER_ID`、開発時のみ）を注入し、書き込み系の `{ data, txid }` エンベロープを取り出します（`unwrapEnvelope()`）。書き込みは Phase 3 以降で、Phase 2 の読み取りは Shape 購読のみを使います。
 - `src/lib/electric/` … 行型とスキーマ定義。integer は文字列で届く前提で `coerceElectricRow()` が `Number()` 変換します（`int8` / `numeric` は精度のため文字列のまま）。timestamp は Shape が `2026-10-15 14:32:44.183`（空白区切り）、REST が `T` 区切りの文字列で、どちらも UTC の naive 値です。`normalizeUtcTimestamp()` / `parseUtcTimestamp()` で UTC の ISO 文字列・`Date` に正規化できます。
@@ -56,7 +56,7 @@ Electric の Shape 購読と REST 書き込みを分離し、接続先を設定�
 
 ## リアルタイム購読（Phase 2）
 
-`make db-up && make migrate` の後、開発サーバ（既定 `direct`）で開くと、チャンネル・メッセージ・投稿者名がリアルタイム表示されます。表示は Phase 4 の画面（`/` と `/channels/$channelId`）で行います。
+`make db-up && make migrate` の後、開発サーバ（既定 `proxy`。バックエンドと `VITE_DEV_USER_ID` を用意。下記 Phase 5）で開くと、チャンネル・メッセージ・投稿者名がリアルタイム表示されます。表示は Phase 4 の画面（`/` と `/channels/$channelId`）で行います。
 
 - `@tanstack/electric-db-collection` で Electric Shape を購読し、`@tanstack/react-db` の `useLiveQuery` で表示します。書き込みと楽観更新は Phase 3、画面は Phase 4（いずれも下記）です。
 - `src/lib/electric/collections.ts` … `channels` / `users` / `channel_user` / `messages` のコレクション。`messages` は `channel_id` 単位で生成してキャッシュします。ShapeStream はブラウザ API に依存するため、モジュール直下では作らず client コンポーネント / フックから `getCollections()` を呼びます（SSR では購読しません）。
@@ -75,7 +75,7 @@ Electric の Shape 購読と REST 書き込みを分離し、接続先を設定�
   - channels: 作成 `POST /api/channels`、更新 `PATCH /api/channels/{id}`。
   - channel_user: 参加 `POST /api/channels/{id}/join`、メンバー追加 `POST /api/channels/{id}/users`、退出 `POST /api/channels/{id}/leave`。`/leave` は認証ユーザー自身の行しか消せないため、現在のユーザー（`config.devUserId`）以外の行の削除は throw して楽観状態を戻します（メンバー削除 API ができるまでの暫定）。
 - 論理削除は Electric 上では `update`（`deleted_at` の更新）として流れます。そのため楽観更新も `update(deleted_at)` に揃え、`delete→insert` の再出現（ちらつき）を避けています。コレクションは全行を持ち、`messageFeedQuery` が `deleted_at` を除外します。
-- channel_user の書き込みは channel_user コレクションで `txid` を待ちます。direct モードの channels Shape は全チャンネルを配信しメンバーシップで絞らないため、参加/退出で channels 側の行は動きません。proxy で channels をメンバーシップで絞る（join/leave が move-in/out になる）構成に切り替える際は channels 側での待機も検討してください。
+- channel_user の書き込みは channel_user コレクションで `txid` を待ちます。proxy の channels Shape はバックエンドがメンバーシップで絞るため、参加/退出（join/leave）に応じて channels 側の行が move-in / move-out します。move-in / move-out 自体は同じトランザクションの `txid` で配信されますが、書き込みハンドラが待つのは channel_user コレクションの `txid` です（チャンネル一覧は続けて更新されます）。
 - `awaitTxId` は対象コレクションが live query で購読されている必要があります（画面に出しておく）。未購読だとタイムアウトします。なお `awaitTxId` / `awaitMatch` のタイムアウトでも楽観状態はロールバックされ、UI には操作失敗と出ますが、サーバ側の書き込みは成功しているため少し遅れて Electric から同じ行が届き表示は戻ります。「同期待ち」と「失敗」を分けた表示は今後の課題です。
 - `src/lib/electric/collections.ts` … ShapeStream の `transformer` で Electric の行を型へ正規化します（integer は number、boolean は `"true"` / `"false"` 文字列を真偽値へ）。`"false"` が truthy になるのを防ぎます。
 
@@ -87,12 +87,35 @@ shadcn（Base UI）のテーマのみで最小の画面を組んでいます。�
 - ルート `/channels/$channelId` … メッセージ一覧・送信・編集・論理削除・投稿者表示（`src/routes/channels/$channelId.tsx` → `src/components/MessagePane.tsx`）。
 - ルート `/realtime` … 検証 UI は上記の実ルートへ移行しました。ここは接続モード（Shape / txid / 開発ユーザー）を表示する最小画面です（`src/components/SyncStatus.tsx`）。
 - `src/hooks/useWriteRunner.ts` … `collection.insert()` などの楽観更新トランザクションを `when("settled")` まで待ち、失敗を UI のエラーメッセージにまとめます。
-- 編集・削除は自分のメッセージにのみ表示します（バックエンドは投稿者のみ許可するため）。`VITE_DEV_USER_ID` が未設定だと現在のユーザーが分からず、参加/退出や自分のメッセージの編集・削除は表示されません。開発時は `frontend/.env.example` の例にならい設定してください。
-- 非公開チャンネルは参加者だけに説明・メンバー・メッセージを表示します。direct モードの Shape は認可せず全件配信するため、UI 側でも `isMember` で隠します（proxy 切替後も同じ）。`/channels/$channelId` を URL 直開きしても未参加ならメッセージは出しません。説明の表示はメンバーパネル側で行います。
+- 編集・削除は自分のメッセージにのみ表示します（バックエンドは投稿者のみ許可するため）。開発で `proxy` モードを使うときは `VITE_DEV_USER_ID` が必須です（未設定は起動時エラー）。`frontend/.env.example` の例にならい設定してください。
+- 非公開チャンネルは参加者だけに説明・メンバー・メッセージを表示します。`proxy` の Shape はバックエンドが認可で絞るため未参加者には届きませんが、UI 側でも `isMember` で隠します。`direct` は認可せず全件配信するため UI 側のガードだけが頼りです。`/channels/$channelId` を URL 直開きしても未参加ならメッセージは出しません。説明の表示はメンバーパネル側で行います。
 - メンバー追加フォームはバックエンドの `add_channel_user` と同じ条件（作成者は常に、非公開は作成者のみ、公開は作成者またはメンバー）でのみ表示します。
 - `ChannelMemberPanel` はチャンネルごとに置きますが、`channel_user` の Shape は `getCollections()` が 1 本だけ作り、パネルはそのコレクションを購読します。`users` は全パネルで同一クエリのため TanStack DB 内部でプール共有されます。同じ channel の `useChannelMembers`（画面とパネル）もプールされ共有されるため、購読はチャンネル数に対して増えません。
 - 既存のガードを踏襲します。重複メンバーの追加は UI 側で弾き、現在のユーザー以外の退出は書き込みハンドラが throw してロールバックします。メンバー読み込み中は重複判定が効かないため参加/追加ボタンを無効化します。
 
+## バックエンド経由への切替（Phase 5）
+
+Shape の接続先をバックエンドの Shape プロキシ（`/api/shapes/*`）に切り替え、`awaitTxId` を既定で有効にしました（`VITE_TXID_MODE=awaitTxId`）。既定の `VITE_SHAPE_MODE` は `proxy`（開発・本番とも）です。
+
+### セットアップ
+
+```bash
+make db-up && make migrate        # PostgreSQL + Electric
+make backend-dev                  # DEV_AUTH_ENABLED=true cargo run (http://localhost:8000)
+cp frontend/.env.example frontend/.env
+cd frontend && pnpm dev           # http://localhost:5173
+```
+
+`frontend/.env` では `VITE_SHAPE_MODE=proxy` と `VITE_DEV_USER_ID`（現在ユーザー。`X-Dev-User` として送信）を設定します。開発で `proxy` のときに `VITE_DEV_USER_ID` が無いと起動時エラーになります。バックエンドの既定ユーザーは `DEV_DEFAULT_USER_ID`（既定 `00000000-0000-0000-0000-000000000001`）で、`X-Dev-User` が無いときはこのユーザーとして扱われます。
+
+### 経路とポイント
+
+- 読み取り: `proxy` は `VITE_API_BASE_URL` + `VITE_SHAPE_PROXY_PATH`（既定 `/api/shapes`）を購読します。バックエンドが `table` / `where` を確定し、サーバ側で `ELECTRIC_SECRET` を付けて Electric へ転送します。`messages` / `channel_users` はクエリで `channel_id` を渡します。
+- 認証: REST と Shape の両方で同じ `X-Dev-User`（と `Authorization`）を受け付けます。バックエンドは `DEV_AUTH_ENABLED=true` のときだけこのヘッダを受け付け、それ以外は 403 です。CORS はバックエンドが任意オリジン・任意ヘッダを許可し、`electric-*` を公開します。`direct` は Electric の CORS が `X-Dev-User` / `Authorization` を許可しないため認証ヘッダを付けません（`collections.ts` の `shapeAuthSource`）。
+- 認可: バックエンドの channels Shape は `is_private = false OR id IN (SELECT channel_id FROM channel_user WHERE user_id = ...)` でメンバーシップに絞ります。未参加の非公開チャンネルは Shape・メッセージのどちらも届きません（存在隠蔽のため 404）。参加/退出で channels 側の行が move-in / move-out します。
+- `channel_users` のサブクエリ経路（`electric#3143`）: Electric 1.8.1 を `ELECTRIC_FEATURE_FLAGS=allow_subqueries` で動かしており、`WHERE ... IN (SELECT ... WHERE user_id = $1)` の形がそのまま通ることを実測しました（`params[1]` により move-in / move-out も配信）。`$1` をリテラルへ埋め込む回避策は不要でした。
+- 書き込み: すべて REST（`{ data, txid }`）で行い、`txid` を `awaitTxId` で Electric の配信と突き合わせます。失敗時は楽観状態がロールバックします。
+
 ## 現状
 
-Phase 0（足場）・Phase 1（型・データアクセス層）・Phase 2（読み取り・live query）・Phase 3（書き込み・楽観更新）・Phase 4（UI: shadcn テーマのみ）完了。バックエンド経由への切替は Phase 5、テスト・品質は Phase 6 です（トラッキング: #19）。
+Phase 0（足場）・Phase 1（型・データアクセス層）・Phase 2（読み取り・live query）・Phase 3（書き込み・楽観更新）・Phase 4（UI: shadcn テーマのみ）・Phase 5（バックエンド経由への切替）完了。テスト・品質は Phase 6 です（トラッキング: #19）。
