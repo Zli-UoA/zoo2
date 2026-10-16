@@ -78,10 +78,10 @@ flowchart TD
   ```
 - **REST API (書き込み)**:
   - `POST /api/messages/{id}/reactions`: リアクション追加 + `txid` 返却
-  - `DELETE /api/messages/{id}/reactions/{emoji}`: リアクション削除 + `txid` 返却
+  - `DELETE /api/messages/{id}/reactions?emoji={emoji}`: リアクション削除 + `txid` 返却
 - **ElectricSQL Shape プロキシ (読み取り)**:
   - `GET /api/shapes/message_reactions?channel_id=...`:
-    指定チャンネルのメッセージに紐づくリアクションを購読（サブクエリ `message_id IN (SELECT id FROM messages WHERE channel_id = $1)` を利用）。
+    指定チャンネルのメッセージに紐づくリアクションを購読（サブクエリ `message_id IN (SELECT id FROM messages WHERE channel_id = $1 AND deleted_at IS NULL)` を利用）。
 
 ### 2.2 スレッド返信機能 (Thread / Replies)
 - **概要**: 特定のメッセージに対する返信（スレッド）の投稿・閲覧。
@@ -92,8 +92,8 @@ flowchart TD
     2. 返信数や最終返信時刻は、フロントエンドの TanStack DB live query（クライアント側集約）で解決する。
 - **データベース変更**:
   ```sql
-  ALTER TABLE messages ADD COLUMN parent_id text REFERENCES messages(id) ON DELETE CASCADE;
-  CREATE INDEX idx_messages_parent_id ON messages (parent_id) WHERE parent_id IS NOT NULL;
+  ALTER TABLE messages ADD COLUMN parent_id text REFERENCES messages(id) ON DELETE RESTRICT;
+  CREATE INDEX idx_messages_parent_id ON messages (parent_id);
   ```
 - **API**:
   - メッセージ送信 `POST /api/messages` に `parent_id: Option<String>` を追加。

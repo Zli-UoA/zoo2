@@ -136,7 +136,7 @@ pub fn validate_message_content(content: &str) -> Result<(), AppError> {
 
 /// 絵文字のバリデーションと正規化:
 /// 1. ショートコード形式 (:thumbsup:, :+1:, :party_parrot:) -> 標準ショートコードは fully-qualified な絵文字に解決、その他は小文字ショートコードとして保持
-/// 2. Emoji Kitchen 形式 (kitchen:1f600_1f431, kitchen:😀_🐱) -> コードポイント順にソートして一意化
+/// 2. Emoji Kitchen 形式 (kitchen:1f600_1f431, kitchen:😀_🐱) -> 実在する絵文字 2 要素のみを受け付け、コードポイント順にソートして一意化
 /// 3. Unicode 絵文字: emojis クレートを用いて emoji-test.txt 準拠の fully-qualified な形に正規化
 pub fn normalize_and_validate_emoji(raw: &str) -> Result<String, AppError> {
     let trimmed = raw.trim();
@@ -165,61 +165,27 @@ pub fn normalize_and_validate_emoji(raw: &str) -> Result<String, AppError> {
     }
 
     // 2. Emoji Kitchen 形式 (例: kitchen:1f600_1f431, kitchen:😀_🐱)
+    // 必ずアンダースコア区切りの 2 要素であり、両方が実在する絵文字に解決できる必要がある
     if let Some(rest) = trimmed.strip_prefix("kitchen:") {
         let parts: Vec<&str> = rest.split('_').collect();
-        if parts.len() == 2 && !parts[0].is_empty() && !parts[1].is_empty() {
-            let part1_hex = parse_emoji_or_hex_codepoint(parts[0])?;
-            let part2_hex = parse_emoji_or_hex_codepoint(parts[1])?;
-            let (first, second) = if part1_hex <= part2_hex {
-                (part1_hex, part2_hex)
-            } else {
-                (part2_hex, part1_hex)
-            };
-            return Ok(format!("kitchen:{first}_{second}"));
-        } else if !rest.is_empty()
-            && rest
-                .chars()
-                .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-' || c == '+')
-        {
-            return Ok(format!("kitchen:{}", rest.to_ascii_lowercase()));
+        if parts.len() != 2 || parts[0].is_empty() || parts[1].is_empty() {
+            return Err(AppError::BadRequest(
+                "Emoji Kitchen must consist of exactly 2 emojis separated by an underscore (e.g. kitchen:1f600_1f431)"
+                    .to_string(),
+            ));
         }
+        let part1_hex = parse_emoji_or_hex_codepoint(parts[0])?;
+        let part2_hex = parse_emoji_or_hex_codepoint(parts[1])?;
+        let (first, second) = if part1_hex <= part2_hex {
+            (part1_hex, part2_hex)
+        } else {
+            (part2_hex, part1_hex)
+        };
+        return Ok(format!("kitchen:{first}_{second}"));
     }
 
     // 3. Unicode 絵文字 (fully-qualified 照合)
-    if let Some(emoji) = emojis::get(trimmed) {
-        return Ok(emoji.as_str().to_string());
-    }
-
-    // VS16 (\u{FE0F}) 付加によるフォールバック (例: ❤ -> ❤️)
-    let candidate_with_vs16 = format!("{trimmed}\u{FE0F}");
-    if let Some(emoji) = emojis::get(&candidate_with_vs16) {
-        return Ok(emoji.as_str().to_string());
-    }
-
-    // キーキャップで VS16 が抜けている場合 (例: "1\u{20E3}" -> "1\u{FE0F}\u{20E3}")
-    if trimmed.ends_with('\u{20E3}') && !trimmed.contains('\u{FE0F}') {
-        let keycap_cand = format!(
-            "{}\u{FE0F}\u{20E3}",
-            &trimmed[..trimmed.len() - '\u{20E3}'.len_utf8()]
-        );
-        if let Some(emoji) = emojis::get(&keycap_cand) {
-            return Ok(emoji.as_str().to_string());
-        }
-    }
-
-    // emojis::iter() で VS15/VS16 を無視して一致する canonical 絵文字を検索
-    let stripped_trimmed: String = trimmed
-        .chars()
-        .filter(|&c| c != '\u{FE0E}' && c != '\u{FE0F}')
-        .collect();
-    if let Some(emoji) = emojis::iter().find(|e| {
-        let stripped_e: String = e
-            .as_str()
-            .chars()
-            .filter(|&c| c != '\u{FE0E}' && c != '\u{FE0F}')
-            .collect();
-        stripped_e == stripped_trimmed
-    }) {
+    if let Some(emoji) = resolve_unicode_emoji(trimmed) {
         return Ok(emoji.as_str().to_string());
     }
 
@@ -229,31 +195,52 @@ pub fn normalize_and_validate_emoji(raw: &str) -> Result<String, AppError> {
     ))
 }
 
-fn parse_emoji_or_hex_codepoint(part: &str) -> Result<String, AppError> {
-    let lower = part.to_ascii_lowercase();
-    if lower.chars().all(|c| c.is_ascii_hexdigit()) && (1..=8).contains(&lower.len()) {
-        return Ok(lower);
+/// Unicode 文字列から実在する canonical 絵文字 (&'static emojis::Emoji) を解決する
+fn resolve_unicode_emoji(input: &str) -> Option<&'static emojis::Emoji> {
+    if let Some(emoji) = emojis::get(input) {
+        return Some(emoji);
     }
-    if let Some(emoji) = emojis::get(part) {
-        let hexes: Vec<String> = emoji
-            .as_str()
-            .chars()
-            .map(|c| format!("{:x}", c as u32))
-            .collect();
-        return Ok(hexes.join("-"));
+
+    // VS16 (\u{FE0F}) 付加によるフォールバック (例: ❤ -> ❤️)
+    let candidate_with_vs16 = format!("{input}\u{FE0F}");
+    if let Some(emoji) = emojis::get(&candidate_with_vs16) {
+        return Some(emoji);
     }
-    let stripped: String = part
+
+    // キーキャップで VS16 が抜けている場合 (例: "1\u{20E3}" -> "1\u{FE0F}\u{20E3}")
+    if input.ends_with('\u{20E3}') && !input.contains('\u{FE0F}') {
+        let keycap_cand = format!(
+            "{}\u{FE0F}\u{20E3}",
+            &input[..input.len() - '\u{20E3}'.len_utf8()]
+        );
+        if let Some(emoji) = emojis::get(&keycap_cand) {
+            return Some(emoji);
+        }
+    }
+
+    // emojis::iter() で VS15/VS16 を無視して一致する canonical 絵文字を検索
+    let stripped_input: String = input
         .chars()
         .filter(|&c| c != '\u{FE0E}' && c != '\u{FE0F}')
         .collect();
-    if let Some(emoji) = emojis::iter().find(|e| {
+    if stripped_input.is_empty() {
+        return None;
+    }
+    emojis::iter().find(|e| {
         let stripped_e: String = e
             .as_str()
             .chars()
             .filter(|&c| c != '\u{FE0E}' && c != '\u{FE0F}')
             .collect();
-        stripped_e == stripped
-    }) {
+        stripped_e == stripped_input
+    })
+}
+
+/// Emoji Kitchen の 1 コンポーネントを検証し、正規化された hex 表記に解決する。
+/// 絵文字そのもの、またはハイフン区切りの hex コードポイントを受け付け、実在する絵文字でなければエラーとする。
+fn parse_emoji_or_hex_codepoint(part: &str) -> Result<String, AppError> {
+    // 1. 絵文字そのものとして解決できる場合
+    if let Some(emoji) = resolve_unicode_emoji(part) {
         let hexes: Vec<String> = emoji
             .as_str()
             .chars()
@@ -261,8 +248,43 @@ fn parse_emoji_or_hex_codepoint(part: &str) -> Result<String, AppError> {
             .collect();
         return Ok(hexes.join("-"));
     }
+
+    // 2. hex 表記 (例: "1f600" や "1f1fa-1f1f8") のパースと実在検証
+    let hex_tokens: Vec<&str> = part.split('-').collect();
+    if !hex_tokens.is_empty()
+        && hex_tokens.iter().all(|t| {
+            !t.is_empty() && (1..=8).contains(&t.len()) && t.chars().all(|c| c.is_ascii_hexdigit())
+        })
+    {
+        let mut chars = String::new();
+        for token in hex_tokens {
+            if let Ok(cp) = u32::from_str_radix(token, 16) {
+                if let Some(c) = char::from_u32(cp) {
+                    chars.push(c);
+                } else {
+                    return Err(AppError::BadRequest(format!(
+                        "Invalid Unicode codepoint in Emoji Kitchen component: {part}"
+                    )));
+                }
+            } else {
+                return Err(AppError::BadRequest(format!(
+                    "Invalid hex in Emoji Kitchen component: {part}"
+                )));
+            }
+        }
+
+        if let Some(emoji) = resolve_unicode_emoji(&chars) {
+            let hexes: Vec<String> = emoji
+                .as_str()
+                .chars()
+                .map(|c| format!("{:x}", c as u32))
+                .collect();
+            return Ok(hexes.join("-"));
+        }
+    }
+
     Err(AppError::BadRequest(format!(
-        "Invalid emoji kitchen component: {part}"
+        "Emoji Kitchen component '{part}' is not a valid emoji or emoji codepoint"
     )))
 }
 
@@ -319,6 +341,14 @@ mod tests {
             normalize_and_validate_emoji("kitchen:😀_🐱").unwrap(),
             "kitchen:1f431_1f600".to_string()
         );
+
+        // 不正な Emoji Kitchen (2要素でない、実在しない絵文字)
+        assert!(normalize_and_validate_emoji("kitchen:hello").is_err());
+        assert!(normalize_and_validate_emoji("kitchen:a_b_c").is_err());
+        assert!(normalize_and_validate_emoji("kitchen:0_1").is_err());
+        assert!(normalize_and_validate_emoji("kitchen:hello_world").is_err());
+        assert!(normalize_and_validate_emoji("kitchen:_1f600").is_err());
+        assert!(normalize_and_validate_emoji("kitchen:1f600_").is_err());
 
         // 不正な値
         assert!(normalize_and_validate_emoji("").is_err());

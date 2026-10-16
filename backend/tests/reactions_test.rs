@@ -644,3 +644,122 @@ async fn test_reaction_on_deleted_message() -> anyhow::Result<()> {
 
     Ok(())
 }
+
+#[tokio::test]
+async fn test_reaction_kitchen_validation_and_pk_conflict() -> anyhow::Result<()> {
+    dotenvy::dotenv().ok();
+    dotenvy::from_filename("../.env").ok();
+
+    let mut config = Config::from_env();
+    config.dev_auth_enabled = true;
+    let db = init_db(&config.database_url).await?;
+    let state = AppState::new(db.clone(), config);
+    let app = create_router(state);
+
+    let user_id = uuid::Uuid::new_v4().to_string();
+    let channel_id = uuid::Uuid::new_v4().to_string();
+    let message_id = uuid::Uuid::new_v4().to_string();
+
+    // ユーザー作成
+    let req = Request::builder()
+        .method("POST")
+        .uri("/api/users")
+        .header("content-type", "application/json")
+        .body(Body::from(serde_json::to_vec(&json!({
+            "id": user_id,
+            "user_name": format!("user_{}", uuid::Uuid::new_v4().simple()),
+            "display_name": "User",
+        }))?))?;
+    let resp = app.clone().oneshot(req).await?;
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    // 公開チャンネル作成
+    let req = Request::builder()
+        .method("POST")
+        .uri("/api/channels")
+        .header("content-type", "application/json")
+        .header("X-Dev-User", &user_id)
+        .body(Body::from(serde_json::to_vec(&json!({
+            "id": channel_id,
+            "channel_name": format!("pub_{}", uuid::Uuid::new_v4().simple()),
+            "is_private": false,
+        }))?))?;
+    let resp = app.clone().oneshot(req).await?;
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    // メッセージ作成
+    let req = Request::builder()
+        .method("POST")
+        .uri("/api/messages")
+        .header("content-type", "application/json")
+        .header("X-Dev-User", &user_id)
+        .body(Body::from(serde_json::to_vec(&json!({
+            "id": message_id,
+            "channel_id": channel_id,
+            "content": "Emoji kitchen & PK conflict test message",
+        }))?))?;
+    let resp = app.clone().oneshot(req).await?;
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    // 1. 不正な Emoji Kitchen 形式はすべて 400 Bad Request
+    let invalid_kitchens = [
+        "kitchen:hello",
+        "kitchen:a_b_c",
+        "kitchen:0_1",
+        "kitchen:hello_world",
+        "kitchen:_1f600",
+        "kitchen:1f600_",
+    ];
+    for invalid in invalid_kitchens {
+        let req = Request::builder()
+            .method("POST")
+            .uri(format!("/api/messages/{message_id}/reactions"))
+            .header("content-type", "application/json")
+            .header("X-Dev-User", &user_id)
+            .body(Body::from(serde_json::to_vec(&json!({
+                "emoji": invalid
+            }))?))?;
+        let resp = app.clone().oneshot(req).await?;
+        assert_eq!(
+            resp.status(),
+            StatusCode::BAD_REQUEST,
+            "Expected 400 Bad Request for {invalid}"
+        );
+    }
+
+    // 2. 正当な Emoji Kitchen は 200 OK で正規化されて保存
+    let reaction_id_1 = uuid::Uuid::new_v4().to_string();
+    let req = Request::builder()
+        .method("POST")
+        .uri(format!("/api/messages/{message_id}/reactions"))
+        .header("content-type", "application/json")
+        .header("X-Dev-User", &user_id)
+        .body(Body::from(serde_json::to_vec(&json!({
+            "id": reaction_id_1,
+            "emoji": "kitchen:1f600_1f431"
+        }))?))?;
+    let resp = app.clone().oneshot(req).await?;
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = to_bytes(resp.into_body(), usize::MAX).await?;
+    let res_json: Value = serde_json::from_slice(&body)?;
+    assert_eq!(res_json["data"]["emoji"], "kitchen:1f431_1f600");
+
+    // 3. 既存の reaction_id_1 と同じ ID を指定して別の絵文字で POST を試みる -> 409 Conflict
+    let req = Request::builder()
+        .method("POST")
+        .uri(format!("/api/messages/{message_id}/reactions"))
+        .header("content-type", "application/json")
+        .header("X-Dev-User", &user_id)
+        .body(Body::from(serde_json::to_vec(&json!({
+            "id": reaction_id_1,
+            "emoji": "👍"
+        }))?))?;
+    let resp = app.clone().oneshot(req).await?;
+    assert_eq!(
+        resp.status(),
+        StatusCode::CONFLICT,
+        "Expected 409 Conflict on PK collision"
+    );
+
+    Ok(())
+}

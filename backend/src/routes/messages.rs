@@ -498,6 +498,19 @@ async fn add_reaction(
             if let Some(r) = check {
                 return Ok(Json(ApiResponse::new(ReactionResponse::from(r), None)));
             }
+
+            // 指定された reaction_id が既に存在する場合は PK 衝突として 409 Conflict を返す
+            let pk_check =
+                MessageReaction::filter(MessageReaction::fields().id().eq(reaction_id.as_str()))
+                    .first()
+                    .exec(&mut retry_tx)
+                    .await?;
+            if pk_check.is_some() {
+                return Err(AppError::Conflict(format!(
+                    "Reaction with ID '{reaction_id}' already exists"
+                )));
+            }
+
             tracing::error!(?err, "Failed to create reaction");
             return Err(AppError::Internal(anyhow::anyhow!(
                 "Failed to create reaction: {err}"
