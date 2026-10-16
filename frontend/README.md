@@ -21,6 +21,7 @@ Vite+ の `vp` をそのまま使います（`package.json` の scripts も同�
 ```bash
 pnpm dev              # 開発サーバ (http://localhost:5173)
 pnpm build            # 本番ビルド
+pnpm start            # 本番サーバ (.output、先に pnpm build)
 pnpm preview          # ビルドのプレビュー
 pnpm check            # format / lint / typecheck
 pnpm lint             # lint のみ
@@ -32,6 +33,8 @@ pnpm generate-routes  # ルートツリーを再生成
 ルートの Makefile からも実行できます: `make frontend-dev` / `frontend-build` / `frontend-check` / `frontend-test` / `frontend-e2e`。
 
 開発サーバは Electric（ポート 3000）と衝突しないよう **5173** で起動します。
+
+本番ビルドは Nitro の Node.js サーバーを `.output/` に生成します。コンテナでの起動と Coolify の設定は [インフラの README](../infra/README.md#ステージング) を参照してください。
 
 ## 構成
 

@@ -152,10 +152,27 @@ CI (`.github/workflows/ci-backend.yaml`) では `unit-test` ジョブ (DB 不要
 
 DBサービスは Coolify が `extends` や `!reset` を扱えないため、`compose.stg.yaml` に展開して定義しています（ホスト側ポート公開なし）。`db/compose.yml` を変更したら、こちらも合わせて更新してください。
 
-リポジトリルートで `--project-directory .` を指定してください。`POSTGRES_PASSWORD` は必須です。
+リポジトリルートで `--project-directory .` を指定してください。`POSTGRES_PASSWORD` と `VITE_API_BASE_URL` は必須です。
 
 ```bash
-POSTGRES_PASSWORD=staging-test-password docker compose --project-directory . -f infra/compose.stg.yaml up -d --build --wait
+POSTGRES_PASSWORD=staging-test-password VITE_API_BASE_URL=http://localhost:8000 \
+  docker compose --project-directory . -f infra/compose.stg.yaml up -d --build --wait
 ```
 
 `PORT` はバックエンドの待受ポートとホスト側の公開ポートに使われます（デフォルト: 8000）。
+
+フロントは TanStack Start を Nitro の Node.js サーバーとしてビルドし、非 root ユーザーで実行します。コンテナ内は `3000`、ホスト側は `127.0.0.1:5173` で待ち受けます。ホスト側ポートは `FRONTEND_PORT`、イメージ名は `FRONTEND_IMAGE` で変更できます。ヘルスチェックはフロントの `/` が HTTP 200 を返すことを確認します。
+
+`VITE_API_BASE_URL` には、**ブラウザからアクセスできるバックエンドの URL** を指定してください。上の `localhost` は同じマシンで動作確認する場合の例です。ステージングでは `https://api.example.com` のような公開 URL を使います。`http://backend:8000` のような Docker 内のサービス名はブラウザから解決できません。
+
+Coolify ではフロントのドメインを `frontend` サービスの `3000` 番ポートに割り当て、バックエンドにも公開 URL を設定します。フロントを HTTPS で公開する場合は API の URL も HTTPS にしてください。`VITE_API_BASE_URL` はビルド時に埋め込まれるため、変更後はイメージの再ビルドが必要です。Shape はバックエンドの `/api/shapes` 経由です。
+
+フロントだけをビルド・起動確認する場合:
+
+```bash
+POSTGRES_PASSWORD=staging-test-password VITE_API_BASE_URL=http://localhost:8000 \
+  docker compose --project-directory . -f infra/compose.stg.yaml up -d --build --wait frontend
+curl -f http://localhost:5173/
+```
+
+フロントのヘルスチェックは画面の配信を確認するもので、認証・API・Electric の疎通は別途確認が必要です。現在のフロントの認証アダプターは既定で未認証です。本番ビルドでは `VITE_DEV_USER_ID` は使われないため、ログインとデータ操作には認証実装・設定が必要です。

@@ -3,6 +3,17 @@ name: zoo2-stg
 # Coolify は `extends` や `!reset` などを正しく扱えないため、DB 定義はこのファイルに展開している。
 # ローカル用の infra/db/compose.yml と内容を合わせること (ホスト側ポート公開は行わない)。
 services:
+  frontend:
+    image: ${FRONTEND_IMAGE:-zoo-frontend:stg}
+    build:
+      context: .
+      dockerfile: infra/Dockerfile-frontend-deploy
+      args:
+        VITE_API_BASE_URL: ${VITE_API_BASE_URL:?VITE_API_BASE_URL must be the browser-accessible backend URL}
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:${FRONTEND_PORT:-5173}:3000"
+
   backend:
     image: ${BACKEND_IMAGE:-zoo-backend:stg}
     build:

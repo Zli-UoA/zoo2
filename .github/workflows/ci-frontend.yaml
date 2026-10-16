@@ -4,13 +4,42 @@ on:
     branches: [main]
     paths:
       - "frontend/**"
+      - "infra/Dockerfile-frontend-deploy*"
+      - "infra/compose.stg.yaml"
       - ".github/workflows/ci-frontend.yaml"
   pull_request:
     paths:
       - "frontend/**"
+      - "infra/Dockerfile-frontend-deploy*"
+      - "infra/compose.stg.yaml"
       - ".github/workflows/ci-frontend.yaml"
   workflow_dispatch:
 jobs:
+  container:
+    runs-on: ubuntu-latest
+    env:
+      POSTGRES_PASSWORD: container-test
+      VITE_API_BASE_URL: http://localhost:8000
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Build and start frontend
+        run: docker compose --project-directory . -f infra/compose.stg.yaml up -d --build --wait --wait-timeout 60 frontend
+
+      - name: Check SSR routes
+        run: |
+          curl --fail http://localhost:5173/ -o /dev/null
+          curl --fail http://localhost:5173/channels/container-test -o /dev/null
+
+      - name: Container logs
+        if: failure()
+        run: docker compose --project-directory . -f infra/compose.stg.yaml logs frontend
+
+      - name: Stop frontend
+        if: always()
+        run: docker compose --project-directory . -f infra/compose.stg.yaml down
+
   check:
     runs-on: ubuntu-latest
     defaults:

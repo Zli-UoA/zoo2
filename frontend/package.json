@@ -9,6 +9,7 @@
     "dev": "vp dev --port 5173",
     "generate-routes": "tsr generate",
     "build": "vp build",
+    "start": "node .output/server/index.mjs",
     "preview": "vp preview",
     "check": "vp check",
     "lint": "vp lint",
@@ -43,6 +44,7 @@
     "@types/react": "^19.2.0",
     "@types/react-dom": "^19.2.0",
     "@vitejs/plugin-react": "^6.0.1",
+    "nitro": "3.0.260903-beta",
     "typescript": "^6.0.2",
     "vite": "catalog:",
     "vite-plus": "catalog:"
