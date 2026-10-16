@@ -25,10 +25,11 @@ pnpm preview          # ビルドのプレビュー
 pnpm check            # format / lint / typecheck
 pnpm lint             # lint のみ
 pnpm test             # vitest (Vite+ 内蔵)
+pnpm test:e2e         # Playwright スモーク (要: DB + Electric + バックエンド)
 pnpm generate-routes  # ルートツリーを再生成
 ```
 
-ルートの Makefile からも実行できます: `make frontend-dev` / `frontend-build` / `frontend-check`。
+ルートの Makefile からも実行できます: `make frontend-dev` / `frontend-build` / `frontend-check` / `frontend-test` / `frontend-e2e`。
 
 開発サーバは Electric（ポート 3000）と衝突しないよう **5173** で起動します。
 
@@ -116,6 +117,22 @@ cd frontend && pnpm dev           # http://localhost:5173
 - `channel_users` のサブクエリ経路（`electric#3143`）: Electric 1.8.1 を `ELECTRIC_FEATURE_FLAGS=allow_subqueries` で動かしており、`WHERE ... IN (SELECT ... WHERE user_id = $1)` の形がそのまま通ることを実測しました（`params[1]` により move-in / move-out も配信）。`$1` をリテラルへ埋め込む回避策は不要でした。
 - 書き込み: すべて REST（`{ data, txid }`）で行い、`txid` を `awaitTxId` で Electric の配信と突き合わせます。失敗時は楽観状態がロールバックします。
 
+## テスト・品質（Phase 6）
+
+主要なデータ変換と書き込みフローを vitest で担保し、`vp check`（format / lint / typecheck）とテストを CI で回します。
+
+- ユニットテスト（vitest / `src/**/*.test.ts`）… 数値・真偽値の文字列変換（`schema.test.ts`）、timestamp 正規化（`timestamps.test.ts`）、設定解決（`config.test.ts`）、REST アダプタ `{ data, txid }` の注入と剥がし・エラー化（`api/client.test.ts`）、`txid` ハンドシェイク（`txid.test.ts` / `writes.test.ts`）、Shape の URL / ヘッダ / live query（`electric/*.test.ts`）。
+- CI … `.github/workflows/ci-frontend.yaml`。`frontend/**` の変更で `pnpm check` と `pnpm test` を実行します（バックエンドの CI とは別ワークフロー）。
+- スモーク（Playwright / `e2e/smoke.spec.ts`）… 起動 → チャンネル作成 → メッセージ送信 → Electric 反映までを実ブラウザで確認します。`pnpm test` には含めず `pnpm test:e2e` で明示実行します。前提として DB + Electric + バックエンドが必要です。
+
+```bash
+make db-up && make migrate        # PostgreSQL + Electric
+make backend-dev                  # DEV_AUTH_ENABLED=true (http://localhost:8000)
+cd frontend && pnpm test:e2e      # 起動 → 送信 → 反映
+```
+
+`pnpm test:e2e` はフロントエンド（proxy モード）だけを起動し、バックエンドは既存のものを再利用します。現在ユーザー（`VITE_DEV_USER_ID`、既定 `...0001`）が未作成なら `POST /api/users` でスモーク用に作成します。
+
 ## 現状
 
-Phase 0（足場）・Phase 1（型・データアクセス層）・Phase 2（読み取り・live query）・Phase 3（書き込み・楽観更新）・Phase 4（UI: shadcn テーマのみ）・Phase 5（バックエンド経由への切替）完了。テスト・品質は Phase 6 です（トラッキング: #19）。
+Phase 0（足場）・Phase 1（型・データアクセス層）・Phase 2（読み取り・live query）・Phase 3（書き込み・楽観更新）・Phase 4（UI: shadcn テーマのみ）・Phase 5（バックエンド経由への切替）・Phase 6（テスト・品質）完了（トラッキング: #19）。
