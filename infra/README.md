@@ -186,6 +186,8 @@ verify の実装には次の契約が必要です。
 
 現在のブランチには BFF の verify・OIDC ログインと Rust の JWT 検証が未実装です。API は利用可能になりません。今回のプロキシ検証ではモックを使い、実際の Kanidm ログイン・refresh・CSRF 実装の検証は Issue #23 の実装後に行います。Rust は `ENVIRONMENT=production`・`DEV_AUTH_ENABLED=false` で起動します。
 
+BFF のセッションストアは未確定です。`frontend` は非 internal の `frontend` ネットワークにだけ参加しているので、internal な `backend` ネットワーク上の Postgres には到達できません。セッションを Postgres に置く場合は、`frontend` を `backend` に入れないでください（Rust・Electric にも直接到達できてしまいます）。代わりに BFF 専用の internal ネットワークを作り、`frontend` と `postgres` だけを参加させてください。専用のストア（Redis など）を使う場合も、同じように BFF 専用のネットワークに置きます。
+
 ### Coolify
 
 Coolify のドメインは **`proxy` サービスの `8080` 番ポートだけ**に割り当てます。TLS は Coolify 側で終端します。`frontend`・`backend` にドメインや外部ネットワークを追加しないでください。Rust は内部ネットワークでプロキシ・DB・Electric と通信し、Kanidm Discovery/JWKS 向けに専用の outbound ネットワークにも参加します。
