@@ -5,3 +5,4 @@
 !infra/db/schema.sql
 !infra/db/migrations/
 !infra/db/migrations/**
+infra/db/compose.yml
