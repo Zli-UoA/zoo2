@@ -214,6 +214,9 @@ export function createChannelWrites({ client, txidMode }: WriteDependencies) {
  * 配信しメンバーシップで絞り込まないため、参加/退出で channels 側の行は動かない。
  * 将来 proxy で channels をメンバーシップで絞る（join/leave が move-in/out になる）
  * 構成に切り替える場合は、channels コレクション側でも待つ必要がある。
+ *
+ * なお join / add は同じ行が既にあるとサーバは既存行を返すだけで Electric に変更が
+ * 流れず、`awaitTxId` がタイムアウトする。呼び出し側で重複追加を避けること。
  */
 export function createChannelUserWrites({ client, txidMode }: WriteDependencies) {
   async function onInsert({ transaction, collection }: ChannelUserInsertParams): Promise<void> {

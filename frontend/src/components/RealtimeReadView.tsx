@@ -179,6 +179,12 @@ export function RealtimeReadView() {
     event.preventDefault();
     const user_id = memberId.trim();
     if (!activeId || !user_id) return;
+    if (members.some((member) => member.user_id === user_id)) {
+      // 既存メンバーの追加はサーバ側で既存行を返すだけで Electric に変更が流れず、
+      // awaitTxId がタイムアウトする。UI 側で弾く。
+      setError(`既にメンバーです: ${user_id}`);
+      return;
+    }
     const channelId = activeId;
     setMemberId("");
     await run(() =>

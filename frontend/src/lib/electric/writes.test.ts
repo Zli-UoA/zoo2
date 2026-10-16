@@ -4,7 +4,7 @@ import type { ApiClient } from "../api/client";
 import type { ChannelRow, ChannelUserRow, MessageRow } from "./types";
 import { createChannelUserWrites, createChannelWrites, createMessageWrites } from "./writes";
 
-const TXID = "18446744073709551615";
+const TXID = "4242";
 
 function makeClient() {
   const post = vi.fn(async () => ({ data: {}, txid: TXID }));
