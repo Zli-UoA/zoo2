@@ -1,9 +1,10 @@
 import { Link } from "@tanstack/react-router";
-import { useState, type FormEvent } from "react";
+import { useMemo, useState, type FormEvent } from "react";
 
-import { useActiveChannels } from "../hooks/useRealtime";
+import { useActiveChannels, useAllChannelMembers, useUsers } from "../hooks/useRealtime";
 import { useWriteRunner } from "../hooks/useWriteRunner";
 import { getCollections } from "../lib/electric/collections";
+import type { ChannelUserRow } from "../lib/electric/types";
 import { ChannelMemberPanel } from "./ChannelMemberPanel";
 import { SyncStatus } from "./SyncStatus";
 import { Button } from "./ui/button";
@@ -17,11 +18,35 @@ function nowIso(): string {
 export function ChannelDirectory() {
   const { channels: channelsCollection, config } = getCollections();
   const channelsQuery = useActiveChannels();
+  const membersQuery = useAllChannelMembers();
+  const usersQuery = useUsers();
   const channels = channelsQuery.data ?? [];
   const currentUserId = config.devUserId;
   const { error, run } = useWriteRunner();
   const [newChannelName, setNewChannelName] = useState("");
   const [newChannelPrivate, setNewChannelPrivate] = useState(false);
+
+  const userNames = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const user of usersQuery.data ?? []) {
+      map.set(user.id, user.display_name || user.user_name);
+    }
+    return map;
+  }, [usersQuery.data]);
+
+  // channel_user を 1 回だけ購読し、チャンネル単位にまとめて各パネルへ渡す。
+  const membersByChannel = useMemo(() => {
+    const map = new Map<string, ChannelUserRow[]>();
+    for (const member of membersQuery.data ?? []) {
+      const list = map.get(member.channel_id);
+      if (list) {
+        list.push(member);
+      } else {
+        map.set(member.channel_id, [member]);
+      }
+    }
+    return map;
+  }, [membersQuery.data]);
 
   async function createChannel(event: FormEvent) {
     event.preventDefault();
@@ -79,35 +104,49 @@ export function ChannelDirectory() {
       ) : null}
 
       <ul className="flex flex-col gap-4">
-        {channels.map((channel) => (
-          <li key={channel.id} className="flex flex-col gap-3 rounded-lg border p-4">
-            <div className="flex flex-wrap items-baseline justify-between gap-2">
-              <Link
-                to="/channels/$channelId"
-                params={{ channelId: channel.id }}
-                className="text-lg font-medium underline-offset-4 hover:underline"
-              >
-                {channel.is_private ? "🔒 " : "# "}
-                {channel.channel_name}
-              </Link>
-              <Link
-                to="/channels/$channelId"
-                params={{ channelId: channel.id }}
-                className="text-xs text-muted-foreground underline-offset-4 hover:underline"
-              >
-                メッセージを開く
-              </Link>
-            </div>
-            {channel.description ? (
-              <p className="text-sm text-muted-foreground">{channel.description}</p>
-            ) : null}
-            <ChannelMemberPanel
-              channelId={channel.id}
-              isPrivate={channel.is_private}
-              createdUserId={channel.created_user_id}
-            />
-          </li>
-        ))}
+        {channels.map((channel) => {
+          const members = membersByChannel.get(channel.id) ?? [];
+          const isMember = currentUserId
+            ? members.some((member) => member.user_id === currentUserId)
+            : false;
+          // 非公開チャンネルの説明・メンバーは参加者にだけ表示する。
+          const canViewMembers = !channel.is_private || isMember;
+          return (
+            <li key={channel.id} className="flex flex-col gap-3 rounded-lg border p-4">
+              <div className="flex flex-wrap items-baseline justify-between gap-2">
+                <Link
+                  to="/channels/$channelId"
+                  params={{ channelId: channel.id }}
+                  className="text-lg font-medium underline-offset-4 hover:underline"
+                >
+                  {channel.is_private ? "🔒 " : "# "}
+                  {channel.channel_name}
+                </Link>
+                {canViewMembers ? (
+                  <Link
+                    to="/channels/$channelId"
+                    params={{ channelId: channel.id }}
+                    className="text-xs text-muted-foreground underline-offset-4 hover:underline"
+                  >
+                    メッセージを開く
+                  </Link>
+                ) : null}
+              </div>
+              {channel.description && canViewMembers ? (
+                <p className="text-sm text-muted-foreground">{channel.description}</p>
+              ) : null}
+              <ChannelMemberPanel
+                channelId={channel.id}
+                isPrivate={channel.is_private}
+                createdUserId={channel.created_user_id}
+                members={members}
+                isMember={isMember}
+                userNames={userNames}
+                isLoading={membersQuery.isLoading}
+              />
+            </li>
+          );
+        })}
       </ul>
     </section>
   );

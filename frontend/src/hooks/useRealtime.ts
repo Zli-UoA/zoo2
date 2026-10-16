@@ -40,3 +40,13 @@ export function useChannelMembers(channelId: string | null) {
       : undefined,
   );
 }
+
+/**
+ * 全チャンネルの参加メンバー（channel_user）を 1 回だけ購読する。
+ * 一覧画面のように複数チャンネルを表示する画面で、チャンネルごとに購読して
+ * live query が増えるのを避け、親で channel_id ごとに絞り込んで子へ渡す。
+ */
+export function useAllChannelMembers() {
+  const { channelUsers } = getCollections();
+  return useLiveQuery((q) => q.from({ channelUsers }));
+}
