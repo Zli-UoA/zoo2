@@ -111,6 +111,7 @@ export function ChannelSidebar({
                   {hasCurrentUser ? (
                     isJoined ? (
                       <span
+                        role="img"
                         title="参加中"
                         aria-label="参加中"
                         className="size-1.5 shrink-0 rounded-full bg-brand"

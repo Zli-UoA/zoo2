@@ -75,7 +75,7 @@ export function ChannelScreen({ channelId }: { channelId: string }) {
     <div className="flex h-full min-h-0 flex-col">
       <ChannelHeader
         channel={channel}
-        memberCount={membersQuery.isLoading ? null : members.length}
+        memberCount={canRead ? (membersQuery.isLoading ? null : members.length) : undefined}
       />
       <div className="flex min-h-0 flex-1 flex-col">
         {membershipPending ? (

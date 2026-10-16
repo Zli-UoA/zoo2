@@ -10,7 +10,8 @@ export function ChannelHeader({
   memberCount,
 }: {
   channel: ChannelRow;
-  memberCount: number | null;
+  /** 数値=人数、`null`=読み込み中、`undefined`=非表示（非公開で未参加）。 */
+  memberCount?: number | null;
 }) {
   const shell = useShell();
 
@@ -46,9 +47,11 @@ export function ChannelHeader({
       >
         <UsersIcon />
         <span className="hidden sm:inline">メンバー</span>
-        <span className="tabular-nums text-muted-foreground">
-          {memberCount === null ? "…" : memberCount}
-        </span>
+        {memberCount === undefined ? null : (
+          <span className="tabular-nums text-muted-foreground">
+            {memberCount === null ? "…" : memberCount}
+          </span>
+        )}
       </Button>
     </header>
   );
