@@ -29,6 +29,13 @@ describe("coerceElectricValue", () => {
     );
   });
 
+  it("parses boolean strings so that 'false' is not truthy", () => {
+    expect(coerceElectricValue("bool", "true")).toBe(true);
+    expect(coerceElectricValue("bool", "t")).toBe(true);
+    expect(coerceElectricValue("bool", "false")).toBe(false);
+    expect(coerceElectricValue("bool", "f")).toBe(false);
+  });
+
   it("passes through null, undefined, and non-numeric values", () => {
     expect(coerceElectricValue("int4", null)).toBeNull();
     expect(coerceElectricValue("int4", undefined)).toBeUndefined();
