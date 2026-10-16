@@ -158,6 +158,7 @@ export function getCollections(config: AppConfig = defaultConfig()): Collections
   const dependencies: WriteDependencies = {
     client: createConfiguredApiClient(config),
     txidMode: config.txidMode,
+    currentUserId: config.devUserId,
   };
   bundle = {
     config,

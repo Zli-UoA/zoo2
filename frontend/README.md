@@ -73,10 +73,10 @@ Electric の Shape 購読と REST 書き込みを分離し、接続先を設定�
 - `src/lib/electric/writes.ts` … コレクションごとの `onInsert` / `onUpdate` / `onDelete`。REST を呼び、失敗時は throw して TanStack DB に楽観状態をロールバックさせます。
   - messages: 送信 `POST /api/messages`、編集 `PATCH /api/messages/{id}`、論理削除 `DELETE /api/messages/{id}`。
   - channels: 作成 `POST /api/channels`、更新 `PATCH /api/channels/{id}`。
-  - channel_user: 参加 `POST /api/channels/{id}/join`、メンバー追加 `POST /api/channels/{id}/users`、退出 `POST /api/channels/{id}/leave`。
+  - channel_user: 参加 `POST /api/channels/{id}/join`、メンバー追加 `POST /api/channels/{id}/users`、退出 `POST /api/channels/{id}/leave`。`/leave` は認証ユーザー自身の行しか消せないため、現在のユーザー（`config.devUserId`）以外の行の削除は throw して楽観状態を戻します（メンバー削除 API ができるまでの暫定）。
 - 論理削除は Electric 上では `update`（`deleted_at` の更新）として流れます。そのため楽観更新も `update(deleted_at)` に揃え、`delete→insert` の再出現（ちらつき）を避けています。コレクションは全行を持ち、`messageFeedQuery` が `deleted_at` を除外します。
 - channel_user の書き込みは channel_user コレクションで `txid` を待ちます。direct モードの channels Shape は全チャンネルを配信しメンバーシップで絞らないため、参加/退出で channels 側の行は動きません。proxy で channels をメンバーシップで絞る（join/leave が move-in/out になる）構成に切り替える際は channels 側での待機も検討してください。
-- `awaitTxId` は対象コレクションが live query で購読されている必要があります（画面に出しておく）。未購読だとタイムアウトします。
+- `awaitTxId` は対象コレクションが live query で購読されている必要があります（画面に出しておく）。未購読だとタイムアウトします。なお `awaitTxId` / `awaitMatch` のタイムアウトでも楽観状態はロールバックされ、UI には操作失敗と出ますが、サーバ側の書き込みは成功しているため少し遅れて Electric から同じ行が届き表示は戻ります。検証用画面ではこの扱いのままにし、本格 UI では「同期待ち」と「失敗」を分けて表示する想定です。
 - `src/lib/electric/collections.ts` … ShapeStream の `transformer` で Electric の行を型へ正規化します（integer は number、boolean は `"true"` / `"false"` 文字列を真偽値へ）。`"false"` が truthy になるのを防ぎます。
 
 ## 現状

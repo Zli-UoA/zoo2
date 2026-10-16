@@ -20,6 +20,12 @@ import type { ChannelRow, ChannelUserRow, MessageRow } from "./types";
 export interface WriteDependencies {
   client: ApiClient;
   txidMode: TxidMode;
+  /**
+   * 認証中のユーザー id。今は `config.devUserId`（将来はトークンの主体）。
+   * `leave_channel` は認証ユーザー自身の行しか消せないため、channel_user の
+   * 削除ハンドラで本人確認に使う。
+   */
+  currentUserId: string | null;
 }
 
 type MessageInsertParams = InsertMutationFnParams<
@@ -217,8 +223,14 @@ export function createChannelWrites({ client, txidMode }: WriteDependencies) {
  *
  * なお join / add は同じ行が既にあるとサーバは既存行を返すだけで Electric に変更が
  * 流れず、`awaitTxId` がタイムアウトする。呼び出し側で重複追加を避けること。
+ *
+ * 退出も同様に制約がある。`DELETE /api/channels/{id}/leave` は「認証ユーザー自身」の
+ * 行を消すエンドポイントで、他メンバーの行を指定して消す手段はない。したがって
+ * 現在のユーザー以外の行を削除しようとしたら throw して楽観状態を戻す（他人を
+ * 退出させたように見せかけつつ実際は自分が抜ける、という取り違えを防ぐ）。
+ * メンバー削除 API ができたらここを差し替える。
  */
-export function createChannelUserWrites({ client, txidMode }: WriteDependencies) {
+export function createChannelUserWrites({ client, txidMode, currentUserId }: WriteDependencies) {
   async function onInsert({ transaction, collection }: ChannelUserInsertParams): Promise<void> {
     for (const mutation of transaction.mutations) {
       const row = mutation.modified;
@@ -243,6 +255,11 @@ export function createChannelUserWrites({ client, txidMode }: WriteDependencies)
   async function onDelete({ transaction, collection }: ChannelUserDeleteParams): Promise<void> {
     for (const mutation of transaction.mutations) {
       const row = mutation.original;
+      if (row.user_id !== currentUserId) {
+        throw new Error(
+          `/leave only removes the current user's membership; refusing to leave for user ${row.user_id}`,
+        );
+      }
       const { txid } = await client.post<ChannelUserRow>(`/api/channels/${row.channel_id}/leave`);
       await waitForChannelUserSync("delete", row, collection.utils, txid, txidMode);
     }

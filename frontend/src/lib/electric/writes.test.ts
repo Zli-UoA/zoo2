@@ -5,6 +5,7 @@ import type { ChannelRow, ChannelUserRow, MessageRow } from "./types";
 import { createChannelUserWrites, createChannelWrites, createMessageWrites } from "./writes";
 
 const TXID = "4242";
+const CURRENT_USER = "u1";
 
 function makeClient() {
   const post = vi.fn(async () => ({ data: {}, txid: TXID }));
@@ -68,7 +69,11 @@ const membership: ChannelUserRow = {
 describe("message writes", () => {
   it("POSTs the message and awaits the numeric txid", async () => {
     const { client, post } = makeClient();
-    const writes = createMessageWrites({ client, txidMode: "awaitTxId" });
+    const writes = createMessageWrites({
+      client,
+      txidMode: "awaitTxId",
+      currentUserId: CURRENT_USER,
+    });
     const { collection, awaitTxId, awaitMatch } = makeCollection();
 
     await writes.onInsert(params(collection, [insertMutation(message)]));
@@ -84,7 +89,11 @@ describe("message writes", () => {
 
   it("PATCHes content edits", async () => {
     const { client, patch } = makeClient();
-    const writes = createMessageWrites({ client, txidMode: "awaitTxId" });
+    const writes = createMessageWrites({
+      client,
+      txidMode: "awaitTxId",
+      currentUserId: CURRENT_USER,
+    });
     const { collection } = makeCollection();
 
     await writes.onUpdate(
@@ -96,7 +105,11 @@ describe("message writes", () => {
 
   it("routes a deleted_at update to DELETE as a logical delete", async () => {
     const { client, del, patch } = makeClient();
-    const writes = createMessageWrites({ client, txidMode: "awaitTxId" });
+    const writes = createMessageWrites({
+      client,
+      txidMode: "awaitTxId",
+      currentUserId: CURRENT_USER,
+    });
     const { collection, awaitTxId } = makeCollection();
 
     await writes.onUpdate(
@@ -110,7 +123,11 @@ describe("message writes", () => {
 
   it("treats onDelete as a logical delete via DELETE", async () => {
     const { client, del } = makeClient();
-    const writes = createMessageWrites({ client, txidMode: "awaitTxId" });
+    const writes = createMessageWrites({
+      client,
+      txidMode: "awaitTxId",
+      currentUserId: CURRENT_USER,
+    });
     const { collection, awaitTxId } = makeCollection();
 
     await writes.onDelete(params(collection, [deleteMutation(message)]));
@@ -122,7 +139,11 @@ describe("message writes", () => {
   it("propagates REST failures so TanStack DB rolls back the optimistic state", async () => {
     const { client, post } = makeClient();
     post.mockRejectedValueOnce(new Error("403 forbidden"));
-    const writes = createMessageWrites({ client, txidMode: "awaitTxId" });
+    const writes = createMessageWrites({
+      client,
+      txidMode: "awaitTxId",
+      currentUserId: CURRENT_USER,
+    });
     const { collection, awaitTxId } = makeCollection();
 
     await expect(writes.onInsert(params(collection, [insertMutation(message)]))).rejects.toThrow(
@@ -133,7 +154,7 @@ describe("message writes", () => {
 
   it("skips the handshake in skip mode", async () => {
     const { client } = makeClient();
-    const writes = createMessageWrites({ client, txidMode: "skip" });
+    const writes = createMessageWrites({ client, txidMode: "skip", currentUserId: CURRENT_USER });
     const { collection, awaitTxId, awaitMatch } = makeCollection();
 
     await writes.onInsert(params(collection, [insertMutation(message)]));
@@ -144,7 +165,11 @@ describe("message writes", () => {
 
   it("waits via awaitMatch with an insert matcher in awaitMatch mode", async () => {
     const { client } = makeClient();
-    const writes = createMessageWrites({ client, txidMode: "awaitMatch" });
+    const writes = createMessageWrites({
+      client,
+      txidMode: "awaitMatch",
+      currentUserId: CURRENT_USER,
+    });
     const { collection, awaitTxId, awaitMatch } = makeCollection();
 
     await writes.onInsert(params(collection, [insertMutation(message)]));
@@ -165,7 +190,11 @@ describe("message writes", () => {
 describe("channel writes", () => {
   it("POSTs the channel and awaits the txid", async () => {
     const { client, post } = makeClient();
-    const writes = createChannelWrites({ client, txidMode: "awaitTxId" });
+    const writes = createChannelWrites({
+      client,
+      txidMode: "awaitTxId",
+      currentUserId: CURRENT_USER,
+    });
     const { collection, awaitTxId } = makeCollection();
 
     await writes.onInsert(params(collection, [insertMutation(channel)]));
@@ -181,7 +210,11 @@ describe("channel writes", () => {
 
   it("PATCHes only the changed channel fields", async () => {
     const { client, patch } = makeClient();
-    const writes = createChannelWrites({ client, txidMode: "awaitTxId" });
+    const writes = createChannelWrites({
+      client,
+      txidMode: "awaitTxId",
+      currentUserId: CURRENT_USER,
+    });
     const { collection } = makeCollection();
 
     await writes.onUpdate(
@@ -195,7 +228,11 @@ describe("channel writes", () => {
 describe("channel_user writes", () => {
   it("POSTs /join by default", async () => {
     const { client, post } = makeClient();
-    const writes = createChannelUserWrites({ client, txidMode: "awaitTxId" });
+    const writes = createChannelUserWrites({
+      client,
+      txidMode: "awaitTxId",
+      currentUserId: CURRENT_USER,
+    });
     const { collection, awaitTxId } = makeCollection();
 
     await writes.onInsert(params(collection, [insertMutation(membership)]));
@@ -206,7 +243,11 @@ describe("channel_user writes", () => {
 
   it("POSTs /users when the insert metadata asks to add a member", async () => {
     const { client, post } = makeClient();
-    const writes = createChannelUserWrites({ client, txidMode: "awaitTxId" });
+    const writes = createChannelUserWrites({
+      client,
+      txidMode: "awaitTxId",
+      currentUserId: CURRENT_USER,
+    });
     const { collection } = makeCollection();
 
     await writes.onInsert(
@@ -218,14 +259,34 @@ describe("channel_user writes", () => {
     expect(post).toHaveBeenCalledWith("/api/channels/c1/users", { user_id: "u1" });
   });
 
-  it("POSTs /leave on delete", async () => {
+  it("POSTs /leave on delete of the current user's own row", async () => {
     const { client, post } = makeClient();
-    const writes = createChannelUserWrites({ client, txidMode: "awaitTxId" });
+    const writes = createChannelUserWrites({
+      client,
+      txidMode: "awaitTxId",
+      currentUserId: CURRENT_USER,
+    });
     const { collection, awaitTxId } = makeCollection();
 
     await writes.onDelete(params(collection, [deleteMutation(membership)]));
 
     expect(post).toHaveBeenCalledWith("/api/channels/c1/leave");
     expect(awaitTxId).toHaveBeenCalledWith(Number(TXID), undefined);
+  });
+
+  it("refuses to leave another member's row so the optimistic state rolls back", async () => {
+    const { client, post } = makeClient();
+    const writes = createChannelUserWrites({
+      client,
+      txidMode: "awaitTxId",
+      currentUserId: CURRENT_USER,
+    });
+    const { collection, awaitTxId } = makeCollection();
+
+    await expect(
+      writes.onDelete(params(collection, [deleteMutation({ ...membership, user_id: "u2" })])),
+    ).rejects.toThrow(/current user/);
+    expect(post).not.toHaveBeenCalled();
+    expect(awaitTxId).not.toHaveBeenCalled();
   });
 });
