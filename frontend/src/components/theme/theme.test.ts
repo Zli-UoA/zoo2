@@ -1,3 +1,5 @@
+import { runInNewContext } from "node:vm";
+
 import { describe, expect, it } from "vite-plus/test";
 
 import {
@@ -105,4 +107,36 @@ describe("themeInitScript", () => {
   it("reads the shared storage key", () => {
     expect(themeInitScript).toContain(THEME_STORAGE_KEY);
   });
+
+  // スクリプトは isTheme / resolveTheme を文字列で書き直しているため、
+  // applyThemeClass と同じ結果になることを実行して確認する（ドリフト検知）。
+  const cases: Array<{ stored: string | null; prefersDark: boolean }> = [
+    { stored: "dark", prefersDark: false },
+    { stored: "dark", prefersDark: true },
+    { stored: "light", prefersDark: true },
+    { stored: "light", prefersDark: false },
+    { stored: "system", prefersDark: true },
+    { stored: "system", prefersDark: false },
+    { stored: null, prefersDark: true },
+    { stored: null, prefersDark: false },
+    { stored: "bogus", prefersDark: true },
+  ];
+
+  for (const testCase of cases) {
+    const { stored, prefersDark } = testCase;
+    it(`matches applyThemeClass for stored=${String(stored)} prefersDark=${prefersDark}`, () => {
+      const expected = fakeRoot();
+      applyThemeClass(expected, resolveTheme(readStoredTheme(fakeStorage(stored)), prefersDark));
+
+      const root = fakeRoot();
+      runInNewContext(themeInitScript, {
+        localStorage: fakeStorage(stored),
+        window: { matchMedia: () => ({ matches: prefersDark }) },
+        document: { documentElement: root },
+      });
+
+      expect(root.style.colorScheme).toBe(expected.style.colorScheme);
+      expect([...root.classes]).toEqual([...expected.classes]);
+    });
+  }
 });
