@@ -167,7 +167,7 @@ POSTGRES_PASSWORD=staging-test-password \
 
 公開入口は Traefik の `proxy` サービスで、コンテナ内の `8080` をホストの `127.0.0.1:18080` にマッピングします。ホスト側は `PROXY_PORT` で変更できます。Coolify 自身が使う `8080` とは分けています。フロント・Rust・DB・Electric のホストポートは公開しません。`PORT` は Rust のコンテナ内の待受ポートです（既定 `8000`）。既存の `compose.stg.local.yaml` を重ねた起動コマンドも、同じマッピングで引き続き利用できます。
 
-フロントは TanStack Start の SPA モードでビルドした静的ファイル（`dist/client`）を `nginxinc/nginx-unprivileged` で配信します。コンテナ内は非 root ユーザーで `3000` 番ポートを待ち受けます。設定は `infra/frontend-nginx.conf` です。未知のパスは `/index.html` にフォールバックしますが、`/assets/` 配下の存在しないファイルは 404 を返します（デプロイ後に古いタブが削除済みの chunk を読み込んだとき、HTML を返さないため）。`/assets/` のハッシュ付きファイルは `immutable` で長期キャッシュし、`index.html` は `no-cache` で毎回再検証させます。フロントとプロキシのイメージ名は `FRONTEND_IMAGE`・`PROXY_IMAGE` で変更できます。フロントのヘルスチェックは `/` の HTTP 200、プロキシは内部専用の ping エンドポイントを確認します。
+フロントは TanStack Start の SPA モードでビルドした静的ファイル（`dist/client`）を `nginxinc/nginx-unprivileged:1.30.6-alpine` で配信します。コンテナ内は非 root ユーザーで `3000` 番ポートを待ち受けます。設定は `infra/frontend-nginx.conf` です。未知のパスは `/index.html` にフォールバックしますが、`/assets/` 配下の存在しないファイルは 404 を返します（デプロイ後に古いタブが削除済みの chunk を読み込んだとき、HTML を返さないため）。`/assets/` のハッシュ付きファイルは `immutable` で長期キャッシュし、`index.html` は `no-cache` で毎回再検証させます。あわせて `X-Content-Type-Options: nosniff`・`Referrer-Policy: strict-origin-when-cross-origin`・`X-Frame-Options: DENY` を付与します（`Content-Security-Policy` は OIDC PKCE 実装時に Kanidm への `connect-src` 等が確定した段階で設定します）。フロントとプロキシのイメージ名は `FRONTEND_IMAGE`・`PROXY_IMAGE` で変更できます。フロントのヘルスチェックは `/` の HTTP 200、プロキシは内部専用の ping エンドポイントを確認します。
 
 ### 認証とルーティング
 
@@ -186,6 +186,7 @@ Rust は `ENVIRONMENT=production`・`DEV_AUTH_ENABLED=false` で起動し、受�
 - Cloudflare の公開ホスト名には利用するドメインを設定し、Path は空、Service は **HTTP / `127.0.0.1:18080`** にします。`PROXY_PORT` を変更した場合は接続先も合わせます。
 - この接続先は HTTP なので Origin Server Name は不要です。ルーティングはパスで行い、HTTP Host Header の上書きも不要です。ブラウザからの公開 URL は HTTPS を使います。
 - `frontend`・`backend` にドメインやホストポートを追加しないでください。`frontend` は `frontend` ネットワークにだけ参加します（proxy のホストポート公開に使うため、このネットワークは `internal` にしていません）。Rust は内部ネットワークと Kanidm Discovery/JWKS 用の outbound ネットワークだけに参加します。
+- 現在は Traefik・Rust ともに `X-Forwarded-*` ヘッダを認証やルーティングに使わないため、`forwardedHeaders.trustedIPs` は設定していません。将来、監査ログや IP 単位のレート制限などでクライアント IP を参照する必要が出た場合は、`proxy` の command に `--entrypoints.web.forwardedheaders.trustedips` を追加し、`proxy` から見える cloudflared の接続元 IP/CIDR（Docker ブリッジのゲートウェイ IP 等、`0.0.0.0/0` は不可）に限定して設定してください。
 
 デプロイ後はホストで `curl -f http://127.0.0.1:18080/` を実行し、次に Tunnel の公開 URL から画面を確認します。Rust にプロキシ以外の公開経路がないことも確認してください。
 

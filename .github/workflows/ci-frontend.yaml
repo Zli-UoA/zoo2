@@ -32,11 +32,15 @@ jobs:
       - name: Build and start frontend
         run: docker compose --project-directory . -f infra/compose.stg.yaml up -d --build --wait --wait-timeout 60 frontend
 
-      - name: Check SPA routes
+      - name: Check SPA routes and security headers
         run: |
           for path in "/" "/channels/container-test"; do
-            docker compose --project-directory . -f infra/compose.stg.yaml exec -T frontend \
-              wget -q -O - "http://127.0.0.1:3000${path}" | grep -q "<html"
+            headers=$(docker compose --project-directory . -f infra/compose.stg.yaml exec -T frontend \
+              wget -S -O - "http://127.0.0.1:3000${path}" 2>&1)
+            printf "%s" "$headers" | grep -q "<html"
+            printf "%s" "$headers" | grep -qi "X-Content-Type-Options: nosniff"
+            printf "%s" "$headers" | grep -qi "Referrer-Policy: strict-origin-when-cross-origin"
+            printf "%s" "$headers" | grep -qi "X-Frame-Options: DENY"
           done
 
       - name: Missing assets must not fall back to index.html
