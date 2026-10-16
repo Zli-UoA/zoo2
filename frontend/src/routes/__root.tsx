@@ -2,6 +2,12 @@ import { HeadContent, Scripts, createRootRoute } from "@tanstack/react-router";
 import { TanStackRouterDevtoolsPanel } from "@tanstack/react-router-devtools";
 import { TanStackDevtools } from "@tanstack/react-devtools";
 
+import { ModeToggle } from "@/components/theme/ModeToggle";
+import { ThemeProvider } from "@/components/theme/ThemeProvider";
+import { themeInitScript } from "@/components/theme/theme";
+import { Toaster } from "@/components/ui/sonner";
+import { TooltipProvider } from "@/components/ui/tooltip";
+
 import appCss from "../styles.css?url";
 
 export const Route = createRootRoute({
@@ -30,12 +36,21 @@ export const Route = createRootRoute({
 
 function RootDocument({ children }: { children: React.ReactNode }) {
   return (
-    <html lang="ja">
+    <html lang="ja" suppressHydrationWarning>
       <head>
         <HeadContent />
+        <script dangerouslySetInnerHTML={{ __html: themeInitScript }} />
       </head>
       <body>
-        {children}
+        <ThemeProvider>
+          <TooltipProvider>
+            <div className="fixed top-3 right-3 z-50">
+              <ModeToggle />
+            </div>
+            {children}
+            <Toaster />
+          </TooltipProvider>
+        </ThemeProvider>
         <TanStackDevtools
           config={{
             position: "bottom-right",

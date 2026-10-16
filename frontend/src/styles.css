@@ -53,6 +53,10 @@ body {
   --color-card: var(--card);
   --color-foreground: var(--foreground);
   --color-background: var(--background);
+  --color-brand: var(--brand);
+  --color-brand-foreground: var(--brand-foreground);
+  --color-brand-muted: var(--brand-muted);
+  --color-brand-muted-foreground: var(--brand-muted-foreground);
   --radius-sm: calc(var(--radius) * 0.6);
   --radius-md: calc(var(--radius) * 0.8);
   --radius-lg: var(--radius);
@@ -78,6 +82,10 @@ body {
   --accent: oklch(0.97 0 0);
   --accent-foreground: oklch(0.205 0 0);
   --destructive: oklch(0.577 0.245 27.325);
+  --brand: oklch(0.52 0.14 158);
+  --brand-foreground: oklch(0.985 0.01 158);
+  --brand-muted: oklch(0.95 0.04 158);
+  --brand-muted-foreground: oklch(0.44 0.1 158);
   --border: oklch(0.922 0 0);
   --input: oklch(0.922 0 0);
   --ring: oklch(0.708 0 0);
@@ -113,6 +121,10 @@ body {
   --accent: oklch(0.269 0 0);
   --accent-foreground: oklch(0.985 0 0);
   --destructive: oklch(0.704 0.191 22.216);
+  --brand: oklch(0.72 0.14 158);
+  --brand-foreground: oklch(0.16 0.03 158);
+  --brand-muted: oklch(0.3 0.05 158);
+  --brand-muted-foreground: oklch(0.86 0.05 158);
   --border: oklch(1 0 0 / 10%);
   --input: oklch(1 0 0 / 15%);
   --ring: oklch(0.556 0 0);
