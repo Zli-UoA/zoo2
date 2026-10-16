@@ -116,6 +116,16 @@ export function coerceElectricValue(type: ElectricType, value: unknown): unknown
   if (NUMERIC_ELECTRIC_TYPES.has(type) && typeof value === "string") {
     return toNumber(value);
   }
+  // Electric は boolean も文字列（"true" / "false"、稀に "t" / "f"）で配信する。
+  // 文字列のまま扱うと "false" が truthy になり、真偽の判定を誤る。
+  if (type === "bool" && typeof value === "string") {
+    if (value === "true" || value === "t") {
+      return true;
+    }
+    if (value === "false" || value === "f") {
+      return false;
+    }
+  }
   return value;
 }
 

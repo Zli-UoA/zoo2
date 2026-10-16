@@ -1,11 +1,18 @@
 import { BasicIndex, createCollection } from "@tanstack/react-db";
 import { electricCollectionOptions } from "@tanstack/electric-db-collection";
 
+import { createConfiguredApiClient } from "../api/client";
 import { resolveConfig, type AppConfig } from "../config";
 import { createShapeFetch, type ShapeFetchSource } from "./headers";
 import { buildShapeRequestUrl, type ShapeQueryOptions } from "./query";
-import type { ShapeName } from "./schema";
+import { SHAPE_META, coerceElectricRow, type ShapeName } from "./schema";
 import type { ChannelRow, ChannelUserRow, MessageRow, UserRow } from "./types";
+import {
+  createChannelUserWrites,
+  createChannelWrites,
+  createMessageWrites,
+  type WriteDependencies,
+} from "./writes";
 
 /**
  * Shape 購読に付与する認証情報を決める。
@@ -23,19 +30,27 @@ export function shapeAuthSource(config: AppConfig): ShapeFetchSource {
 }
 
 function shapeOptions(shape: ShapeName, config: AppConfig, options: ShapeQueryOptions = {}) {
+  const table = SHAPE_META[shape].table;
   return {
     url: buildShapeRequestUrl(shape, config, options),
     fetchClient: createShapeFetch(shapeAuthSource(config)),
+    // Electric は integer を文字列、boolean を "true" / "false" で配信する。
+    // そのままだと `"false"` が truthy になるなど型が崩れるため、Shape ごとの
+    // スキーマで行を正規化してから TanStack DB に渡す。
+    transformer: (row: Record<string, unknown>) => coerceElectricRow(table, row),
   };
 }
 
-function channelsCollection(config: AppConfig) {
+function channelsCollection(config: AppConfig, dependencies: WriteDependencies) {
+  const writes = createChannelWrites(dependencies);
   const collection = createCollection(
     electricCollectionOptions<ChannelRow>({
       id: "channels",
       getKey: (row) => row.id,
       defaultIndexType: BasicIndex,
       shapeOptions: shapeOptions("channels", config),
+      onInsert: writes.onInsert,
+      onUpdate: writes.onUpdate,
     }),
   );
   collection.createIndex((row) => row.id);
@@ -64,13 +79,16 @@ function usersCollection(config: AppConfig) {
  * proxy で `channel_id` なしの場合、バックエンドは channel_user のサブクエリ経路を
  * 使うため、proxy に切り替えるときに別途確認する（docs/electric-sync-requirements.md §1）。
  */
-function channelUsersCollection(config: AppConfig) {
+function channelUsersCollection(config: AppConfig, dependencies: WriteDependencies) {
+  const writes = createChannelUserWrites(dependencies);
   const collection = createCollection(
     electricCollectionOptions<ChannelUserRow>({
       id: "channel_user",
       getKey: (row) => `${row.user_id}:${row.channel_id}`,
       defaultIndexType: BasicIndex,
       shapeOptions: shapeOptions("channelUsers", config),
+      onInsert: writes.onInsert,
+      onDelete: writes.onDelete,
     }),
   );
   // channel_id 単位に絞り込む `useChannelMembers` の述語に合わせて索引を張る。
@@ -78,13 +96,17 @@ function channelUsersCollection(config: AppConfig) {
   return collection;
 }
 
-function messagesCollection(channelId: string, config: AppConfig) {
+function messagesCollection(channelId: string, config: AppConfig, dependencies: WriteDependencies) {
+  const writes = createMessageWrites(dependencies);
   const collection = createCollection(
     electricCollectionOptions<MessageRow>({
       id: `messages:${channelId}`,
       getKey: (row) => row.id,
       defaultIndexType: BasicIndex,
       shapeOptions: shapeOptions("messages", config, { channelId }),
+      onInsert: writes.onInsert,
+      onUpdate: writes.onUpdate,
+      onDelete: writes.onDelete,
     }),
   );
   collection.createIndex((row) => row.id);
@@ -133,15 +155,20 @@ export function getCollections(config: AppConfig = defaultConfig()): Collections
   }
 
   const messageCache = new Map<string, MessagesCollection>();
+  const dependencies: WriteDependencies = {
+    client: createConfiguredApiClient(config),
+    txidMode: config.txidMode,
+    currentUserId: config.devUserId,
+  };
   bundle = {
     config,
-    channels: channelsCollection(config),
+    channels: channelsCollection(config, dependencies),
     users: usersCollection(config),
-    channelUsers: channelUsersCollection(config),
+    channelUsers: channelUsersCollection(config, dependencies),
     messages: (channelId) => {
       let collection = messageCache.get(channelId);
       if (!collection) {
-        collection = messagesCollection(channelId, config);
+        collection = messagesCollection(channelId, config, dependencies);
         messageCache.set(channelId, collection);
       }
       return collection;

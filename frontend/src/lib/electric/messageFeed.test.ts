@@ -81,6 +81,27 @@ describe("messageFeedQuery", () => {
     expect(result.find((row) => row.id === "message-2")).toBeUndefined();
   });
 
+  it("drops a message from the feed after a logical delete update", async () => {
+    const { messages: messagesCollection, users: usersCollection } = makeCollections(
+      messages,
+      users,
+    );
+
+    const before = await queryOnce((q) =>
+      messageFeedQuery(q, { messages: messagesCollection, users: usersCollection }),
+    );
+    expect(before.map((row) => row.id)).toContain("message-1");
+
+    messagesCollection.update("message-1", (draft) => {
+      draft.deleted_at = "2026-01-02 12:00:00.000";
+    });
+
+    const after = await queryOnce((q) =>
+      messageFeedQuery(q, { messages: messagesCollection, users: usersCollection }),
+    );
+    expect(after.map((row) => row.id)).not.toContain("message-1");
+  });
+
   it("keeps messages whose author has not synced yet (left join)", async () => {
     const orphan: MessageRow = {
       id: "message-9",
