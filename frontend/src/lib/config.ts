@@ -81,7 +81,7 @@ function resolveDevUserId(
   }
   if (mode === "proxy") {
     throw new Error(
-      "VITE_DEV_USER_ID is required when VITE_SHAPE_MODE=proxy in development (sent as X-Dev-User)",
+      "VITE_DEV_USER_ID is required in development with the Shape proxy (VITE_SHAPE_MODE=proxy, the default); it is sent as the X-Dev-User header",
     );
   }
   return null;

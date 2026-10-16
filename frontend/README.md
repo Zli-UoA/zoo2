@@ -106,7 +106,7 @@ cp frontend/.env.example frontend/.env
 cd frontend && pnpm dev           # http://localhost:5173
 ```
 
-`frontend/.env` では `VITE_SHAPE_MODE=proxy` と `VITE_DEV_USER_ID`（現在ユーザー。`X-Dev-User` として送信）を設定します。開発で `proxy` のときに `VITE_DEV_USER_ID` が無いと起動時エラーになります。バックエンドの既定ユーザーは `DEV_DEFAULT_USER_ID`（既定 `00000000-0000-0000-0000-000000000001`）で、`X-Dev-User` が無いときはこのユーザーとして扱われます。
+`frontend/.env` では `VITE_SHAPE_MODE=proxy` と `VITE_DEV_USER_ID`（現在ユーザー。`X-Dev-User` として送信。DB の `users` に存在する id）を設定します。開発で `proxy` のときに `VITE_DEV_USER_ID` が無いと起動時エラーになります。バックエンドの既定ユーザーは `DEV_DEFAULT_USER_ID`（既定 `00000000-0000-0000-0000-000000000001`）で、`X-Dev-User` が無いときはこのユーザーとして扱われます。
 
 ### 経路とポイント
 
