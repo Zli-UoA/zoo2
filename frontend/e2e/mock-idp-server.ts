@@ -1,4 +1,4 @@
-import { startMockIdp } from "../src/lib/oidc/mock-idp.ts";
+import { startMockIdp } from "./mock-idp.ts";
 
 /**
  * 開発・E2E 用のモック IdP を単体起動する（外部依存なし）。

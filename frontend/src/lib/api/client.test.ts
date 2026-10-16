@@ -8,11 +8,12 @@ import {
   unwrapEnvelope,
   type FetchLike,
 } from "./client";
-import { setUnauthorizedHandler } from "../auth";
+import { setAuthorizedHandler, setUnauthorizedHandler } from "../auth";
 import { resolveConfig } from "../config";
 
 afterEach(() => {
   setUnauthorizedHandler(null);
+  setAuthorizedHandler(null);
 });
 
 function jsonResponse(body: unknown, init: ResponseInit = {}): Response {
@@ -183,15 +184,29 @@ describe("createApiClient", () => {
 
   it("does not notify on non-401 failures", async () => {
     const onUnauthorized = vi.fn();
+    const onAuthorized = vi.fn();
     const fetchMock = vi.fn<FetchLike>(async () => new Response("", { status: 403 }));
     const client = createApiClient({
       baseUrl: "http://localhost:8000",
       onUnauthorized,
+      onAuthorized,
       fetch: fetchMock,
     });
 
     await expect(client.get("/api/secrets")).rejects.toMatchObject({ status: 403 });
     expect(onUnauthorized).not.toHaveBeenCalled();
+    expect(onAuthorized).not.toHaveBeenCalled();
+  });
+
+  it("notifies the default authorized handler on success", async () => {
+    const handler = vi.fn();
+    setAuthorizedHandler(handler);
+    const fetchMock = vi.fn<FetchLike>(async () => new Response("", { status: 200 }));
+    const client = createApiClient({ baseUrl: "http://localhost:8000", fetch: fetchMock });
+
+    await client.get("/api/ping");
+
+    expect(handler).toHaveBeenCalledTimes(1);
   });
 });
 

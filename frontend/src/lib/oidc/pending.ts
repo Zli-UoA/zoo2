@@ -22,6 +22,18 @@ export interface PendingAuthorization {
 
 const PENDING_KEY = "zoo.oidc.pending";
 const LOGGED_OUT_KEY = "zoo.oidc.loggedOut";
+const REDIRECT_ATTEMPTS_KEY = "zoo.oidc.redirectAttempts";
+
+/**
+ * 401 を契機にした再ログインの試行制限。
+ *
+ * リダイレクトをまたぐとモジュール変数のクールダウンはリセットされるため、
+ * 「IdP ではログインできるがバックエンドが 401 を返す」設定不一致で
+ * authorize と 401 を無限に往復し得る。試行を sessionStorage に残して
+ * 上限を超えたらエラー画面に切り替える。
+ */
+export const REDIRECT_ATTEMPT_WINDOW_MS = 60_000;
+export const MAX_REDIRECT_ATTEMPTS = 3;
 
 /** 認可リクエストの許容滞留時間。これを過ぎたコールバックは無効として破棄する。 */
 export const PENDING_TTL_MS = 10 * 60 * 1000;
@@ -87,4 +99,38 @@ export function clearLoggedOut(storage: AuthStorage): void {
 
 export function isLoggedOut(storage: AuthStorage): boolean {
   return storage.getItem(LOGGED_OUT_KEY) === "1";
+}
+
+/**
+ * 401 起点の再ログイン試行を記録し、直近ウィンドウ内の回数を返す。
+ * バックエンドで認証が通って 200 が返れば `clearRedirectAttempts` で消す。
+ */
+export function recordRedirectAttempt(storage: AuthStorage, now: number = Date.now()): number {
+  const attempts = readRedirectAttempts(storage, now);
+  attempts.push(now);
+  storage.setItem(REDIRECT_ATTEMPTS_KEY, JSON.stringify(attempts));
+  return attempts.length;
+}
+
+export function clearRedirectAttempts(storage: AuthStorage): void {
+  storage.removeItem(REDIRECT_ATTEMPTS_KEY);
+}
+
+function readRedirectAttempts(storage: AuthStorage, now: number): number[] {
+  const raw = storage.getItem(REDIRECT_ATTEMPTS_KEY);
+  if (!raw) {
+    return [];
+  }
+  try {
+    const parsed = JSON.parse(raw) as unknown;
+    if (!Array.isArray(parsed)) {
+      return [];
+    }
+    return parsed.filter(
+      (value): value is number =>
+        typeof value === "number" && now - value <= REDIRECT_ATTEMPT_WINDOW_MS,
+    );
+  } catch {
+    return [];
+  }
 }

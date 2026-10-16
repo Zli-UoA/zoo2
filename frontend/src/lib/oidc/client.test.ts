@@ -92,7 +92,11 @@ function createHarness(options: HarnessOptions = {}): Harness {
     const body = new URLSearchParams(init?.body as string);
     tokenCalls.push(body);
     if (!options.token) {
-      return jsonResponse({ access_token: "access-1", expires_in: 300 });
+      return jsonResponse({
+        access_token: "access-1",
+        id_token: idToken({ nonce: lastNonce }),
+        expires_in: 300,
+      });
     }
     const result = await options.token(body, lastNonce);
     if (result instanceof Response) {
@@ -154,6 +158,8 @@ describe("sanitizeReturnTo", () => {
     expect(sanitizeReturnTo("/channels/abc?x=1")).toBe("/channels/abc?x=1");
     expect(sanitizeReturnTo("https://evil.example")).toBe("/");
     expect(sanitizeReturnTo("//evil.example")).toBe("/");
+    expect(sanitizeReturnTo("/\\evil.example")).toBe("/");
+    expect(sanitizeReturnTo("/channels\\abc")).toBe("/");
     expect(sanitizeReturnTo(undefined)).toBe("/");
     expect(sanitizeReturnTo(DEFAULT_CALLBACK_PATH)).toBe("/");
     expect(sanitizeReturnTo(`${DEFAULT_CALLBACK_PATH}?code=x`)).toBe("/");
@@ -238,10 +244,24 @@ describe("OidcClient.handleCallback", () => {
     await harness.client.login("/channels/abc");
     const pending = takePending(harness.storage, 1_000_000)!;
     savePending(harness.storage, pending);
+    harness.setNonce(pending.nonce);
     const result = await harness.client.handleCallback(
       `${CALLBACK_URL}?code=code-1&state=${pending.state}`,
     );
     expect(result.returnTo).toBe("/channels/abc");
+  });
+
+  it("requires an id_token on the code exchange when openid is requested", async () => {
+    const harness = createHarness({
+      token: () => ({ access_token: "access-1", expires_in: 300 }),
+    });
+    await harness.client.login();
+    const pending = takePending(harness.storage, 1_000_000)!;
+    savePending(harness.storage, pending);
+    await expect(
+      harness.client.handleCallback(`${CALLBACK_URL}?code=c&state=${pending.state}`),
+    ).rejects.toMatchObject({ code: "invalid_token_response" });
+    expect(harness.client.hasSession).toBe(false);
   });
 
   it("processes the same callback URL only once", async () => {
@@ -249,6 +269,7 @@ describe("OidcClient.handleCallback", () => {
     await harness.client.login();
     const pending = takePending(harness.storage, 1_000_000)!;
     savePending(harness.storage, pending);
+    harness.setNonce(pending.nonce);
     const callback = `${CALLBACK_URL}?code=code-1&state=${pending.state}`;
 
     const [first, second] = await Promise.all([

@@ -1,11 +1,15 @@
 import { beforeEach, describe, expect, it } from "vite-plus/test";
 
 import {
+  MAX_REDIRECT_ATTEMPTS,
   PENDING_TTL_MS,
+  REDIRECT_ATTEMPT_WINDOW_MS,
   clearLoggedOut,
   clearPending,
+  clearRedirectAttempts,
   isLoggedOut,
   markLoggedOut,
+  recordRedirectAttempt,
   savePending,
   takePending,
   type AuthStorage,
@@ -71,5 +75,32 @@ describe("logged out flag", () => {
     expect(isLoggedOut(storage)).toBe(true);
     clearLoggedOut(storage);
     expect(isLoggedOut(storage)).toBe(false);
+  });
+});
+
+describe("redirect attempts", () => {
+  it("counts attempts within the window", () => {
+    expect(recordRedirectAttempt(storage, 1_000)).toBe(1);
+    expect(recordRedirectAttempt(storage, 2_000)).toBe(2);
+    expect(recordRedirectAttempt(storage, 3_000)).toBe(3);
+  });
+
+  it("prunes attempts older than the window", () => {
+    recordRedirectAttempt(storage, 1_000);
+    recordRedirectAttempt(storage, 2_000);
+    expect(recordRedirectAttempt(storage, 2_000 + REDIRECT_ATTEMPT_WINDOW_MS + 1)).toBe(1);
+  });
+
+  it("can be cleared after a successful authenticated request", () => {
+    for (let index = 0; index <= MAX_REDIRECT_ATTEMPTS; index += 1) {
+      recordRedirectAttempt(storage, 1_000 + index);
+    }
+    clearRedirectAttempts(storage);
+    expect(recordRedirectAttempt(storage, 2_000)).toBe(1);
+  });
+
+  it("recovers from malformed state", () => {
+    storage.setItem("zoo.oidc.redirectAttempts", "{not json");
+    expect(recordRedirectAttempt(storage, 1_000)).toBe(1);
   });
 });

@@ -2,8 +2,10 @@ import { afterEach, describe, expect, it, vi } from "vite-plus/test";
 
 import {
   getToken,
+  notifyAuthorized,
   notifyUnauthorized,
   resetTokenProvider,
+  setAuthorizedHandler,
   setTokenProvider,
   setUnauthorizedHandler,
 } from "./auth";
@@ -11,6 +13,7 @@ import {
 afterEach(() => {
   resetTokenProvider();
   setUnauthorizedHandler(null);
+  setAuthorizedHandler(null);
 });
 
 describe("getToken", () => {
@@ -45,5 +48,18 @@ describe("notifyUnauthorized", () => {
 
   it("does nothing without a handler", () => {
     expect(() => notifyUnauthorized()).not.toThrow();
+  });
+});
+
+describe("notifyAuthorized", () => {
+  it("invokes the registered handler", () => {
+    const handler = vi.fn();
+    setAuthorizedHandler(handler);
+    notifyAuthorized();
+    expect(handler).toHaveBeenCalledTimes(1);
+  });
+
+  it("does nothing without a handler", () => {
+    expect(() => notifyAuthorized()).not.toThrow();
   });
 });

@@ -103,4 +103,28 @@ describe("createShapeFetch", () => {
 
     expect(onUnauthorized).not.toHaveBeenCalled();
   });
+
+  it("notifies the authorized handler on success", async () => {
+    const onAuthorized = vi.fn();
+    const { fetchImpl } = captureFetch(200);
+    const shapeFetch = createShapeFetch({
+      getToken: () => "token-123",
+      onAuthorized,
+      fetch: fetchImpl,
+    });
+
+    await shapeFetch("http://localhost:8000/api/shapes/users");
+
+    expect(onAuthorized).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not notify the authorized handler when auth is disabled", async () => {
+    const onAuthorized = vi.fn();
+    const { fetchImpl } = captureFetch(200);
+    const shapeFetch = createShapeFetch({ auth: false, onAuthorized, fetch: fetchImpl });
+
+    await shapeFetch("http://localhost:3000/v1/shape?table=users");
+
+    expect(onAuthorized).not.toHaveBeenCalled();
+  });
 });

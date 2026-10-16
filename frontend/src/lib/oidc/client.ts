@@ -94,7 +94,8 @@ export function sanitizeReturnTo(
   value: string | null | undefined,
   callbackPath: string = DEFAULT_CALLBACK_PATH,
 ): string {
-  if (!value || !value.startsWith("/") || value.startsWith("//")) {
+  // WHATWG URL は `\` を `/` として扱うため、`/\evil.com` のような値も弾く。
+  if (!value || !value.startsWith("/") || value.startsWith("//") || value.includes("\\")) {
     return "/";
   }
   if (value === callbackPath || value.startsWith(`${callbackPath}?`)) {
@@ -297,7 +298,10 @@ export class OidcClient {
       code_verifier: pending.verifier,
     });
     const responseBody = await this.requestToken(body);
-    this.tokens = this.parseTokens(responseBody, pending.nonce, null);
+    // openid を要求している以上、コード交換では ID トークンを必須にして
+    // nonce の検証を必ず通す。
+    const requireIdToken = this.scope.split(/\s+/).includes("openid");
+    this.tokens = this.parseTokens(responseBody, pending.nonce, null, requireIdToken);
     clearLoggedOut(this.environment.storage);
     return { returnTo: sanitizeReturnTo(pending.returnTo, new URL(this.redirectUri).pathname) };
   }
@@ -355,7 +359,7 @@ export class OidcClient {
       client_id: this.clientId,
     });
     const responseBody = await this.requestToken(body);
-    const tokens = this.parseTokens(responseBody, null, refreshToken);
+    const tokens = this.parseTokens(responseBody, null, refreshToken, false);
     if (this.generation !== generation) {
       // 更新中にログアウト等でセッションが破棄された。新しいトークンは捨てる。
       throw new OidcError("session_reset", "セッションが破棄されました");
@@ -429,12 +433,16 @@ export class OidcClient {
     body: TokenResponse,
     expectedNonce: string | null,
     previousRefreshToken: string | null,
+    requireIdToken: boolean,
   ): OidcTokens {
     const accessToken = body.access_token;
     if (typeof accessToken !== "string" || accessToken.length === 0) {
       throw new OidcError("invalid_token_response", "access_token がありません");
     }
     const idToken = typeof body.id_token === "string" ? body.id_token : null;
+    if (!idToken && requireIdToken) {
+      throw new OidcError("invalid_token_response", "id_token がありません");
+    }
     if (idToken) {
       this.validateIdToken(idToken, expectedNonce);
     }

@@ -1,7 +1,7 @@
 import { afterAll, beforeAll, describe, expect, it } from "vite-plus/test";
 
 import { OidcClient, type OidcEnvironment } from "./client";
-import { startMockIdp, type MockIdp } from "./mock-idp";
+import { startMockIdp, type MockIdp } from "../../../e2e/mock-idp.ts";
 import { takePending, type AuthStorage } from "./pending";
 
 function memoryStorage(): AuthStorage {

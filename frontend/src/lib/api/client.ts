@@ -1,6 +1,8 @@
 import {
   getToken as defaultGetToken,
+  notifyAuthorized,
   notifyUnauthorized,
+  type AuthorizedHandler,
   type TokenProvider,
   type UnauthorizedHandler,
 } from "../auth";
@@ -48,6 +50,8 @@ export interface ApiClientOptions {
   getToken?: TokenProvider;
   /** 401 時の再ログイン導線。既定は `auth.notifyUnauthorized`。 */
   onUnauthorized?: UnauthorizedHandler;
+  /** 成功時の通知（再ログイン試行カウンタの消去用）。既定は `auth.notifyAuthorized`。 */
+  onAuthorized?: AuthorizedHandler;
   fetch?: FetchLike;
 }
 
@@ -101,6 +105,7 @@ export function createApiClient(options: ApiClientOptions = {}): ApiClient {
   const devUserId = options.devUserId ?? null;
   const tokenProvider = options.getToken ?? defaultGetToken;
   const onUnauthorized = options.onUnauthorized ?? notifyUnauthorized;
+  const onAuthorized = options.onAuthorized ?? notifyAuthorized;
   const doFetch: FetchLike = options.fetch ?? ((input, init) => fetch(input, init));
 
   async function buildHeaders(
@@ -140,6 +145,7 @@ export function createApiClient(options: ApiClientOptions = {}): ApiClient {
         body,
       );
     }
+    onAuthorized();
     return body as T;
   }
 

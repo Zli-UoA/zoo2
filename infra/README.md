@@ -185,6 +185,8 @@ SPA は `VITE_OIDC_ISSUER`・`VITE_OIDC_CLIENT_ID`・`VITE_OIDC_REDIRECT_URI`（
 
 SPA は IdP の Discovery / token エンドポイントをブラウザから直接叩くため、IdP 側で SPA のオリジンに CORS を許可する必要があります（Kanidm は OAuth2 クライアントに設定した redirect origin に応じて CORS を返します）。`Content-Security-Policy` の `connect-src` は Kanidm の確定後に #50 で設定します。
 
+> **注意:** 現在ユーザーの解決（`/api/users/me` を使う #49）が入るまで、ステージングや本番で `VITE_OIDC_*` を有効にしないでください。`config.devUserId` が null になり、自分のメッセージの編集・削除、参加 / 退出、メンバー追加の表示条件、チャンネル作成時の `created_user_id` が動きません（退出ガードは書き込みを拒否します）。
+
 ### Coolify
 
 [Single Resource Tunnel の手順](https://coolify.io/docs/integrations/networking/cloudflare/tunnels/single-resource)を使います。Coolify の cloudflared テンプレートは `network_mode: host` なので、ホストの loopback ポートへ接続できます。

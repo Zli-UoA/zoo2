@@ -1,18 +1,28 @@
 import { useRouter } from "@tanstack/react-router";
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 
-import { setTokenProvider, setUnauthorizedHandler } from "../../lib/auth";
+import { setAuthorizedHandler, setTokenProvider, setUnauthorizedHandler } from "../../lib/auth";
 import { resolveConfig, type AppConfig } from "../../lib/config";
 import { OidcClient, OidcError } from "../../lib/oidc/client";
-import { clearLoggedOut, isLoggedOut } from "../../lib/oidc/pending";
+import {
+  MAX_REDIRECT_ATTEMPTS,
+  clearLoggedOut,
+  clearRedirectAttempts,
+  isLoggedOut,
+  recordRedirectAttempt,
+} from "../../lib/oidc/pending";
 import { getOidcClient } from "../../lib/oidc/session";
 import { ShellSkeleton } from "../layout/ShellSkeleton";
 import { Button } from "../ui/button";
 
 type AuthPhase = "checking" | "ready" | "disabled" | "loggedOut" | "error";
 
-/** 認証エラー時の再ログイン連打・リダイレクトループを防ぐクールダウン。 */
+/** 同一ページ内での再ログイン連打を防ぐクールダウン。 */
 const REDIRECT_COOLDOWN_MS = 10_000;
+
+/** バックエンドが 401 を返し続けたときのエラーメッセージ。 */
+const UNAUTHORIZED_LOOP_MESSAGE =
+  "API が 401 を返し続けたため、再ログインを停止しました。OIDC の設定（audience / typ / JWKS）とバックエンドのログを確認してください。";
 
 let lastRedirectAt = 0;
 
@@ -77,12 +87,23 @@ export function AuthGate({ children }: { children: ReactNode }) {
     }
     clientRef.current = client;
     setTokenProvider(() => client.getAccessToken());
+    setAuthorizedHandler(() => {
+      // バックエンドがトークンを受け付けたら試行カウンタを戻す。
+      clearRedirectAttempts(window.sessionStorage);
+    });
     setUnauthorizedHandler(() => {
       if (Date.now() - lastRedirectAt < REDIRECT_COOLDOWN_MS) {
         return;
       }
       clearLoggedOut(window.sessionStorage);
       client.resetSession();
+      // リダイレクトをまたいでも残るよう試行回数を sessionStorage に記録する。
+      const attempts = recordRedirectAttempt(window.sessionStorage, Date.now());
+      if (attempts > MAX_REDIRECT_ATTEMPTS) {
+        setError(UNAUTHORIZED_LOOP_MESSAGE);
+        setPhase("error");
+        return;
+      }
       startLogin(client, currentReturnTo());
     });
 
@@ -121,6 +142,7 @@ export function AuthGate({ children }: { children: ReactNode }) {
     return () => {
       cancelled = true;
       setUnauthorizedHandler(null);
+      setAuthorizedHandler(null);
     };
   }, [router, startLogin]);
 
@@ -138,6 +160,8 @@ export function AuthGate({ children }: { children: ReactNode }) {
       return;
     }
     clearLoggedOut(window.sessionStorage);
+    // 明示的な再試行なので、自動リダイレクトの試行カウンタも仕切り直す。
+    clearRedirectAttempts(window.sessionStorage);
     lastRedirectAt = 0;
     setError(null);
     setPhase("checking");
