@@ -1,4 +1,6 @@
 **
+!infra/
+!infra/frontend-nginx.conf
 !frontend/
 !frontend/**
 frontend/node_modules

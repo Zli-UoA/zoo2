@@ -5,6 +5,7 @@ on:
     paths:
       - "frontend/**"
       - "infra/Dockerfile-frontend-deploy*"
+      - "infra/frontend-nginx.conf"
       - "infra/Dockerfile-proxy-deploy*"
       - "infra/proxy/**"
       - "infra/compose.stg*.yaml"
@@ -13,6 +14,7 @@ on:
     paths:
       - "frontend/**"
       - "infra/Dockerfile-frontend-deploy*"
+      - "infra/frontend-nginx.conf"
       - "infra/Dockerfile-proxy-deploy*"
       - "infra/proxy/**"
       - "infra/compose.stg*.yaml"
@@ -36,6 +38,14 @@ jobs:
             docker compose --project-directory . -f infra/compose.stg.yaml exec -T frontend \
               wget -q -O - "http://127.0.0.1:3000${path}" | grep -q "<html"
           done
+
+      - name: Missing assets must not fall back to index.html
+        run: |
+          if docker compose --project-directory . -f infra/compose.stg.yaml exec -T frontend \
+            wget -q -O /dev/null http://127.0.0.1:3000/assets/missing-container-test.js; then
+            echo "missing asset returned a successful response" >&2
+            exit 1
+          fi
 
       - name: Container logs
         if: failure()
