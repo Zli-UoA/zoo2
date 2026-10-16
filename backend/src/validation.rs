@@ -1,3 +1,6 @@
+use std::collections::HashMap;
+use std::sync::LazyLock;
+
 use crate::error::AppError;
 
 pub const MAX_CHANNEL_NAME_LENGTH: usize = 80;
@@ -195,6 +198,23 @@ pub fn normalize_and_validate_emoji(raw: &str) -> Result<String, AppError> {
     ))
 }
 
+/// VS15 (\u{FE0E}) および VS16 (\u{FE0F}) を除去した文字列から canonical な絵文字へのマッピングテーブル。
+/// 起動時/初回アクセス時に 1 回だけ構築され、以降は O(1) でルックアップ可能（全件走査 DoS の防止）。
+static STRIPPED_EMOJI_MAP: LazyLock<HashMap<String, &'static emojis::Emoji>> =
+    LazyLock::new(|| {
+        let mut map = HashMap::new();
+        for emoji in emojis::iter() {
+            let stripped: String = emoji
+                .as_str()
+                .chars()
+                .filter(|&c| c != '\u{FE0E}' && c != '\u{FE0F}')
+                .collect();
+            // 最初の fully-qualified な canonical 絵文字を登録
+            map.entry(stripped).or_insert(emoji);
+        }
+        map
+    });
+
 /// Unicode 文字列から実在する canonical 絵文字 (&'static emojis::Emoji) を解決する
 fn resolve_unicode_emoji(input: &str) -> Option<&'static emojis::Emoji> {
     if let Some(emoji) = emojis::get(input) {
@@ -218,7 +238,7 @@ fn resolve_unicode_emoji(input: &str) -> Option<&'static emojis::Emoji> {
         }
     }
 
-    // emojis::iter() で VS15/VS16 を無視して一致する canonical 絵文字を検索
+    // 事前構築されたマップを用いて VS15/VS16 を無視した canonical 絵文字を O(1) で検索
     let stripped_input: String = input
         .chars()
         .filter(|&c| c != '\u{FE0E}' && c != '\u{FE0F}')
@@ -226,14 +246,7 @@ fn resolve_unicode_emoji(input: &str) -> Option<&'static emojis::Emoji> {
     if stripped_input.is_empty() {
         return None;
     }
-    emojis::iter().find(|e| {
-        let stripped_e: String = e
-            .as_str()
-            .chars()
-            .filter(|&c| c != '\u{FE0E}' && c != '\u{FE0F}')
-            .collect();
-        stripped_e == stripped_input
-    })
+    STRIPPED_EMOJI_MAP.get(&stripped_input).copied()
 }
 
 /// Emoji Kitchen の 1 コンポーネントを検証し、正規化された hex 表記に解決する。
