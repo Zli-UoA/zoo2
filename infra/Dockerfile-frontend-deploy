@@ -4,8 +4,15 @@ WORKDIR /app
 
 COPY frontend/package.json frontend/pnpm-lock.yaml frontend/pnpm-workspace.yaml ./
 # pnpm のバージョンは package.json の devEngines に揃える（corepack は devEngines を読まない）。
-RUN npm install --global "pnpm@$(node -p 'require("./package.json").devEngines.packageManager.version')" \
-  && pnpm install --frozen-lockfile
+# フィールドが無いと pnpm@undefined を入れようとして分かりにくく失敗するため、先に検証する。
+RUN set -eu; \
+  version="$(node -p 'const pm = require("./package.json").devEngines?.packageManager; pm?.name === "pnpm" && pm.version ? pm.version : ""')"; \
+  if [ -z "$version" ]; then \
+    echo "package.json must set devEngines.packageManager to pnpm with a version" >&2; \
+    exit 1; \
+  fi; \
+  npm install --global "pnpm@$version"; \
+  pnpm install --frozen-lockfile
 
 COPY frontend/ ./
 ARG VITE_API_BASE_URL=""
