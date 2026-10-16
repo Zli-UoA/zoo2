@@ -20,9 +20,11 @@ function nowIso(): string {
 export function ChannelMemberPanel({
   channelId,
   isPrivate,
+  createdUserId,
 }: {
   channelId: string;
   isPrivate: boolean;
+  createdUserId: string;
 }) {
   const { channelUsers, config } = getCollections();
   const membersQuery = useChannelMembers(channelId);
@@ -43,6 +45,10 @@ export function ChannelMemberPanel({
   const isMember = currentUserId
     ? members.some((member) => member.user_id === currentUserId)
     : false;
+  // バックエンドの add_channel_user と同じ条件。作成者は常に追加可、非公開は
+  // 作成者のみ、公開は作成者または既存メンバーが追加可。権限がないときは
+  // 常に 403 になるフォームを出さない。
+  const canAddMember = currentUserId === createdUserId || (!isPrivate && isMember);
 
   async function joinChannel() {
     if (!currentUserId) return;
@@ -112,17 +118,19 @@ export function ChannelMemberPanel({
           : "なし"}
       </p>
 
-      <form className="flex flex-wrap items-center gap-2" onSubmit={addMember}>
-        <input
-          className={inputClassName()}
-          placeholder="追加するユーザー ID"
-          value={memberId}
-          onChange={(event) => setMemberId(event.target.value)}
-        />
-        <Button type="submit" variant="outline" size="sm">
-          メンバー追加
-        </Button>
-      </form>
+      {canAddMember ? (
+        <form className="flex flex-wrap items-center gap-2" onSubmit={addMember}>
+          <input
+            className={inputClassName()}
+            placeholder="追加するユーザー ID"
+            value={memberId}
+            onChange={(event) => setMemberId(event.target.value)}
+          />
+          <Button type="submit" variant="outline" size="sm">
+            メンバー追加
+          </Button>
+        </form>
+      ) : null}
 
       {error ? <p className="text-xs text-destructive">操作失敗: {error}</p> : null}
     </div>

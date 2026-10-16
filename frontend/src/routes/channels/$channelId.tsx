@@ -68,7 +68,11 @@ function ChannelScreen({ channelId }: { channelId: string }) {
 
       {channel ? (
         <>
-          <ChannelMemberPanel channelId={channelId} isPrivate={channel.is_private} />
+          <ChannelMemberPanel
+            channelId={channelId}
+            isPrivate={channel.is_private}
+            createdUserId={channel.created_user_id}
+          />
           <MessagePane channelId={channelId} />
         </>
       ) : null}

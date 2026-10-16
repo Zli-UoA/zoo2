@@ -101,7 +101,11 @@ export function ChannelDirectory() {
             {channel.description ? (
               <p className="text-sm text-muted-foreground">{channel.description}</p>
             ) : null}
-            <ChannelMemberPanel channelId={channel.id} isPrivate={channel.is_private} />
+            <ChannelMemberPanel
+              channelId={channel.id}
+              isPrivate={channel.is_private}
+              createdUserId={channel.created_user_id}
+            />
           </li>
         ))}
       </ul>
