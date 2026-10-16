@@ -23,6 +23,12 @@ pub enum AppError {
     #[error("Forbidden: {0}")]
     Forbidden(String),
 
+    #[error("Unauthorized: {0}")]
+    Unauthorized(String),
+
+    #[error("Bad gateway: {0}")]
+    BadGateway(String),
+
     #[error("Internal server error: {0}")]
     Internal(#[from] anyhow::Error),
 }
@@ -84,6 +90,8 @@ impl From<toasty::Error> for AppError {
 impl IntoResponse for AppError {
     fn into_response(self) -> Response {
         let (status, message) = match &self {
+            AppError::Unauthorized(msg) => (StatusCode::UNAUTHORIZED, msg.clone()),
+            AppError::BadGateway(msg) => (StatusCode::BAD_GATEWAY, msg.clone()),
             AppError::Conflict(msg) => (StatusCode::CONFLICT, msg.clone()),
             AppError::Forbidden(msg) => (StatusCode::FORBIDDEN, msg.clone()),
             AppError::BadRequest(msg) => (StatusCode::BAD_REQUEST, msg.clone()),
@@ -115,6 +123,12 @@ mod tests {
 
     #[test]
     fn test_error_status_codes() {
+        let unauthorized = AppError::Unauthorized("invalid token".into()).into_response();
+        assert_eq!(unauthorized.status(), StatusCode::UNAUTHORIZED);
+
+        let bad_gateway = AppError::BadGateway("upstream down".into()).into_response();
+        assert_eq!(bad_gateway.status(), StatusCode::BAD_GATEWAY);
+
         let not_found = AppError::NotFound("item 123".into()).into_response();
         assert_eq!(not_found.status(), StatusCode::NOT_FOUND);
 

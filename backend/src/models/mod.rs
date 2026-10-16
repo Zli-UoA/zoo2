@@ -3,6 +3,7 @@ pub mod channel_user;
 pub mod message;
 pub mod role;
 pub mod user;
+pub mod user_identity;
 pub mod user_role;
 
 pub use channel::Channel;
@@ -10,6 +11,7 @@ pub use channel_user::ChannelUser;
 pub use message::Message;
 pub use role::Role;
 pub use user::User;
+pub use user_identity::UserIdentity;
 pub use user_role::UserRole;
 
 /// 常に UTC 基準かつミリ秒精度（PostgreSQL timestamp(3) 適合）の現在日時を返す

@@ -7,7 +7,8 @@ pub const MAX_DISPLAY_NAME_LENGTH: usize = 80;
 pub const MAX_MESSAGE_CONTENT_LENGTH: usize = 40_000;
 
 const RESERVED_CHANNEL_NAMES: &[&str] = &["all", "channel", "everyone", "here", "general"];
-const RESERVED_USER_NAMES: &[&str] = &["all", "channel", "everyone", "here", "slackbot", "admin"];
+pub(crate) const RESERVED_USER_NAMES: &[&str] =
+    &["all", "channel", "everyone", "here", "slackbot", "admin"];
 
 /// チャンネル名のバリデーション (Slack 準拠):
 /// - 1 文字以上 80 文字以下
