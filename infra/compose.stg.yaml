@@ -81,7 +81,30 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
       electric:
+        condition: service_healthy
+
+  migrate:
+    image: ${MIGRATE_IMAGE:-zoo-migrate:stg}
+    build:
+      context: .
+      dockerfile: infra/Dockerfile-migrate-deploy
+    restart: "no"
+    networks:
+      - backend
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-zoo}:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}@postgres:5432/${POSTGRES_DB:-zoo}?sslmode=disable
+    command:
+      - migrate
+      - apply
+      - --config
+      - file:///db/atlas.hcl
+      - --env
+      - local
+    depends_on:
+      postgres:
         condition: service_healthy
 
   postgres:
@@ -120,6 +143,8 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
     healthcheck:
       test: ["CMD", "curl", "-fsS", "http://localhost:3000/v1/health"]
       interval: 5s

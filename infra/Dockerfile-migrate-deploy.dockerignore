@@ -1,0 +1,7 @@
+**
+!infra/
+!infra/db/
+!infra/db/atlas.hcl
+!infra/db/schema.sql
+!infra/db/migrations/
+!infra/db/migrations/**
