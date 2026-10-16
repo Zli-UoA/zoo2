@@ -134,10 +134,10 @@ pub fn validate_message_content(content: &str) -> Result<(), AppError> {
     Ok(())
 }
 
-/// 絵文字の正規化とバリデーション:
-/// 1. ショートコード形式: `:thumbsup:`, `:+1:`, `:-1:` (`:[a-z0-9_+-]{1,64}:`)
-/// 2. Emoji Kitchen 形式: `kitchen:<codepoints>`
-/// 3. Unicode 絵文字: 単一または合成絵文字。VS15 (\u{FE0E}) / VS16 (\u{FE0F}) をストリップして一貫したバイナリに正規化。
+/// 絵文字のバリデーションと正規化:
+/// 1. ショートコード形式 (:thumbsup:, :+1:, :party_parrot:) -> 標準ショートコードは fully-qualified な絵文字に解決、その他は小文字ショートコードとして保持
+/// 2. Emoji Kitchen 形式 (kitchen:1f600_1f431, kitchen:😀_🐱) -> コードポイント順にソートして一意化
+/// 3. Unicode 絵文字: emojis クレートを用いて emoji-test.txt 準拠の fully-qualified な形に正規化
 pub fn normalize_and_validate_emoji(raw: &str) -> Result<String, AppError> {
     let trimmed = raw.trim();
     if trimmed.is_empty() {
@@ -154,78 +154,116 @@ pub fn normalize_and_validate_emoji(raw: &str) -> Result<String, AppError> {
         let inner = &trimmed[1..trimmed.len() - 1];
         if inner.len() <= 64
             && inner.chars().all(|c| {
-                c.is_ascii_lowercase()
-                    || c.is_ascii_digit()
-                    || c == '_'
-                    || c == '-'
-                    || c == '+'
+                c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_' || c == '-' || c == '+'
             })
         {
+            if let Some(emoji) = emojis::get_by_shortcode(inner) {
+                return Ok(emoji.as_str().to_string());
+            }
             return Ok(trimmed.to_ascii_lowercase());
         }
     }
 
-    // 2. Emoji Kitchen 形式 (例: kitchen:1f600_1f431)
+    // 2. Emoji Kitchen 形式 (例: kitchen:1f600_1f431, kitchen:😀_🐱)
     if let Some(rest) = trimmed.strip_prefix("kitchen:") {
-        if !rest.is_empty()
-            && rest.chars().all(|c| {
-                c.is_ascii_alphanumeric() || c == '_' || c == '-' || c == '+'
-            })
+        let parts: Vec<&str> = rest.split('_').collect();
+        if parts.len() == 2 && !parts[0].is_empty() && !parts[1].is_empty() {
+            let part1_hex = parse_emoji_or_hex_codepoint(parts[0])?;
+            let part2_hex = parse_emoji_or_hex_codepoint(parts[1])?;
+            let (first, second) = if part1_hex <= part2_hex {
+                (part1_hex, part2_hex)
+            } else {
+                (part2_hex, part1_hex)
+            };
+            return Ok(format!("kitchen:{first}_{second}"));
+        } else if !rest.is_empty()
+            && rest
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-' || c == '+')
         {
             return Ok(format!("kitchen:{}", rest.to_ascii_lowercase()));
         }
     }
 
-    // 3. Unicode 絵文字: VS15 (\u{FE0E}) と VS16 (\u{FE0F}) をストリップして正規化
-    let normalized: String = trimmed
+    // 3. Unicode 絵文字 (fully-qualified 照合)
+    if let Some(emoji) = emojis::get(trimmed) {
+        return Ok(emoji.as_str().to_string());
+    }
+
+    // VS16 (\u{FE0F}) 付加によるフォールバック (例: ❤ -> ❤️)
+    let candidate_with_vs16 = format!("{trimmed}\u{FE0F}");
+    if let Some(emoji) = emojis::get(&candidate_with_vs16) {
+        return Ok(emoji.as_str().to_string());
+    }
+
+    // キーキャップで VS16 が抜けている場合 (例: "1\u{20E3}" -> "1\u{FE0F}\u{20E3}")
+    if trimmed.ends_with('\u{20E3}') && !trimmed.contains('\u{FE0F}') {
+        let keycap_cand = format!(
+            "{}\u{FE0F}\u{20E3}",
+            &trimmed[..trimmed.len() - '\u{20E3}'.len_utf8()]
+        );
+        if let Some(emoji) = emojis::get(&keycap_cand) {
+            return Ok(emoji.as_str().to_string());
+        }
+    }
+
+    // emojis::iter() で VS15/VS16 を無視して一致する canonical 絵文字を検索
+    let stripped_trimmed: String = trimmed
         .chars()
         .filter(|&c| c != '\u{FE0E}' && c != '\u{FE0F}')
         .collect();
-
-    if normalized.is_empty() {
-        return Err(AppError::BadRequest("Emoji is invalid".to_string()));
+    if let Some(emoji) = emojis::iter().find(|e| {
+        let stripped_e: String = e
+            .as_str()
+            .chars()
+            .filter(|&c| c != '\u{FE0E}' && c != '\u{FE0F}')
+            .collect();
+        stripped_e == stripped_trimmed
+    }) {
+        return Ok(emoji.as_str().to_string());
     }
 
-    let is_valid_emoji = normalized.chars().all(is_emoji_codepoint);
-    let has_actual_emoji = normalized.chars().any(is_primary_emoji_codepoint);
+    Err(AppError::BadRequest(
+        "Emoji must be a valid Unicode emoji, shortcode (e.g. :thumbsup:), or Emoji Kitchen format"
+            .to_string(),
+    ))
+}
 
-    if !is_valid_emoji || !has_actual_emoji {
-        return Err(AppError::BadRequest(
-            "Emoji must be a valid Unicode emoji, shortcode (e.g. :thumbsup:), or Emoji Kitchen format"
-                .to_string(),
-        ));
+fn parse_emoji_or_hex_codepoint(part: &str) -> Result<String, AppError> {
+    let lower = part.to_ascii_lowercase();
+    if lower.chars().all(|c| c.is_ascii_hexdigit()) && (1..=8).contains(&lower.len()) {
+        return Ok(lower);
     }
-
-    Ok(normalized)
-}
-
-fn is_emoji_codepoint(c: char) -> bool {
-    is_primary_emoji_codepoint(c)
-        || matches!(
-            c,
-            '\u{200D}' // ZWJ
-            | '\u{1F3FB}'..='\u{1F3FF}' // Skin tone modifiers
-        )
-}
-
-fn is_primary_emoji_codepoint(c: char) -> bool {
-    matches!(
-        c,
-        '\u{1F000}'..='\u{1FAFF}'
-            | '\u{2600}'..='\u{27BF}'
-            | '\u{2300}'..='\u{23FF}'
-            | '\u{2B50}'
-            | '\u{2B55}'
-            | '\u{203C}'
-            | '\u{2049}'
-            | '\u{2194}'..='\u{21AA}'
-            | '\u{25A0}'..='\u{25FF}'
-            | '\u{2934}'..='\u{2935}'
-            | '\u{3030}'
-            | '\u{303D}'
-            | '\u{3297}'
-            | '\u{3299}'
-    )
+    if let Some(emoji) = emojis::get(part) {
+        let hexes: Vec<String> = emoji
+            .as_str()
+            .chars()
+            .map(|c| format!("{:x}", c as u32))
+            .collect();
+        return Ok(hexes.join("-"));
+    }
+    let stripped: String = part
+        .chars()
+        .filter(|&c| c != '\u{FE0E}' && c != '\u{FE0F}')
+        .collect();
+    if let Some(emoji) = emojis::iter().find(|e| {
+        let stripped_e: String = e
+            .as_str()
+            .chars()
+            .filter(|&c| c != '\u{FE0E}' && c != '\u{FE0F}')
+            .collect();
+        stripped_e == stripped
+    }) {
+        let hexes: Vec<String> = emoji
+            .as_str()
+            .chars()
+            .map(|c| format!("{:x}", c as u32))
+            .collect();
+        return Ok(hexes.join("-"));
+    }
+    Err(AppError::BadRequest(format!(
+        "Invalid emoji kitchen component: {part}"
+    )))
 }
 
 #[cfg(test)]
@@ -247,27 +285,39 @@ mod tests {
             normalize_and_validate_emoji(without_vs16).unwrap()
         );
 
+        // キーキャップや記号絵文字
+        assert!(normalize_and_validate_emoji("1️⃣").is_ok());
+        assert!(normalize_and_validate_emoji("©️").is_ok());
+
         // スキントーン修飾子付き絵文字
         assert!(normalize_and_validate_emoji("👍🏽").is_ok());
 
-        // ショートコード
+        // ショートコード (標準絵文字は絵文字に解決、カスタム絵文字は保持)
         assert_eq!(
             normalize_and_validate_emoji(":thumbsup:").unwrap(),
-            ":thumbsup:".to_string()
+            "👍".to_string()
         );
         assert_eq!(
             normalize_and_validate_emoji(":+1:").unwrap(),
-            ":+1:".to_string()
+            "👍".to_string()
         );
         assert_eq!(
-            normalize_and_validate_emoji(":-1:").unwrap(),
-            ":-1:".to_string()
+            normalize_and_validate_emoji(":party_parrot:").unwrap(),
+            ":party_parrot:".to_string()
         );
 
-        // Emoji Kitchen
+        // Emoji Kitchen (ソートされて一意化されること)
         assert_eq!(
             normalize_and_validate_emoji("kitchen:1f600_1f431").unwrap(),
-            "kitchen:1f600_1f431".to_string()
+            "kitchen:1f431_1f600".to_string()
+        );
+        assert_eq!(
+            normalize_and_validate_emoji("kitchen:1f431_1f600").unwrap(),
+            "kitchen:1f431_1f600".to_string()
+        );
+        assert_eq!(
+            normalize_and_validate_emoji("kitchen:😀_🐱").unwrap(),
+            "kitchen:1f431_1f600".to_string()
         );
 
         // 不正な値
@@ -276,6 +326,7 @@ mod tests {
         assert!(normalize_and_validate_emoji("a").is_err());
         assert!(normalize_and_validate_emoji("hello").is_err());
         assert!(normalize_and_validate_emoji("123").is_err());
+        assert!(normalize_and_validate_emoji("■").is_err());
         assert!(normalize_and_validate_emoji(":invalid with spaces:").is_err());
     }
 

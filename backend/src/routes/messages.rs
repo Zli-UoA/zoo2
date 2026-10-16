@@ -421,13 +421,30 @@ async fn add_reaction(
         }
     }
 
+    let reaction_id = if let Some(req_id) = payload.id {
+        Uuid::parse_str(&req_id).map_err(|_| {
+            AppError::BadRequest(format!("reaction id is not a valid UUID: {req_id}"))
+        })?;
+        req_id
+    } else {
+        Uuid::new_v4().to_string()
+    };
+
     // 重複チェック
     let existing = MessageReaction::filter(
         MessageReaction::fields()
             .message_id()
             .eq(id.as_str())
-            .and(MessageReaction::fields().user_id().eq(auth_user.id.as_str()))
-            .and(MessageReaction::fields().emoji().eq(normalized_emoji.as_str())),
+            .and(
+                MessageReaction::fields()
+                    .user_id()
+                    .eq(auth_user.id.as_str()),
+            )
+            .and(
+                MessageReaction::fields()
+                    .emoji()
+                    .eq(normalized_emoji.as_str()),
+            ),
     )
     .first()
     .exec(&mut tx)
@@ -441,13 +458,6 @@ async fn add_reaction(
         )));
     }
 
-    let reaction_id = if let Some(req_id) = payload.id {
-        Uuid::parse_str(&req_id)
-            .map_err(|_| AppError::BadRequest(format!("reaction id is not a valid UUID: {req_id}")))?;
-        req_id
-    } else {
-        Uuid::new_v4().to_string()
-    };
     let now = crate::models::now_utc_millis();
 
     let created_res = toasty::create!(MessageReaction {
@@ -462,7 +472,7 @@ async fn add_reaction(
 
     let reaction = match created_res {
         Ok(r) => r,
-        Err(_) => {
+        Err(err) => {
             // UNIQUE制約違反等でトランザクションがabortされた場合、ロールバックして新しいtxで取得
             let _ = tx.rollback().await;
             let mut retry_tx = db.transaction().await?;
@@ -470,8 +480,16 @@ async fn add_reaction(
                 MessageReaction::fields()
                     .message_id()
                     .eq(id.as_str())
-                    .and(MessageReaction::fields().user_id().eq(auth_user.id.as_str()))
-                    .and(MessageReaction::fields().emoji().eq(normalized_emoji.as_str())),
+                    .and(
+                        MessageReaction::fields()
+                            .user_id()
+                            .eq(auth_user.id.as_str()),
+                    )
+                    .and(
+                        MessageReaction::fields()
+                            .emoji()
+                            .eq(normalized_emoji.as_str()),
+                    ),
             )
             .first()
             .exec(&mut retry_tx)
@@ -480,8 +498,9 @@ async fn add_reaction(
             if let Some(r) = check {
                 return Ok(Json(ApiResponse::new(ReactionResponse::from(r), None)));
             }
+            tracing::error!(?err, "Failed to create reaction");
             return Err(AppError::Internal(anyhow::anyhow!(
-                "Failed to create reaction"
+                "Failed to create reaction: {err}"
             )));
         }
     };
@@ -566,8 +585,16 @@ async fn delete_reaction(
         MessageReaction::fields()
             .message_id()
             .eq(id.as_str())
-            .and(MessageReaction::fields().user_id().eq(auth_user.id.as_str()))
-            .and(MessageReaction::fields().emoji().eq(normalized_emoji.as_str())),
+            .and(
+                MessageReaction::fields()
+                    .user_id()
+                    .eq(auth_user.id.as_str()),
+            )
+            .and(
+                MessageReaction::fields()
+                    .emoji()
+                    .eq(normalized_emoji.as_str()),
+            ),
     )
     .first()
     .exec(&mut tx)

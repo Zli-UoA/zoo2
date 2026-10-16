@@ -21,7 +21,10 @@ pub fn router() -> Router<AppState> {
     Router::new()
         .route("/api/shapes/channels", get(channels_shape))
         .route("/api/shapes/messages", get(messages_shape))
-        .route("/api/shapes/message_reactions", get(message_reactions_shape))
+        .route(
+            "/api/shapes/message_reactions",
+            get(message_reactions_shape),
+        )
         .route("/api/shapes/users", get(users_shape))
         .route("/api/shapes/channel_users", get(channel_users_shape))
 }

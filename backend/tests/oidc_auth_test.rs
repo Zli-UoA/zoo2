@@ -311,13 +311,18 @@ async fn test_preferred_username_spn_format() -> anyhow::Result<()> {
 
     // Kanidm の SPN 形式 (name@realm.org)
     let sub = format!("spn-sub-{}", uuid::Uuid::new_v4().simple());
+    let expected_name = format!(
+        "kanidm_user_{}",
+        &uuid::Uuid::new_v4().simple().to_string()[..6]
+    );
+    let spn = format!("{expected_name}@idm.example.org");
     let token = generate_token(
         TEST_KEY1_PEM,
         "test-key-1",
         &oidc_cfg.issuer,
         &oidc_cfg.audience,
         &sub,
-        Some("kanidm_user@idm.example.org"),
+        Some(&spn),
         Some("Kanidm User"),
         None,
         3600,
@@ -334,7 +339,7 @@ async fn test_preferred_username_spn_format() -> anyhow::Result<()> {
     let body = to_bytes(resp.into_body(), usize::MAX).await?;
     let user_json: Value = serde_json::from_slice(&body)?;
     // @ より前がユーザー名として採用されること
-    assert_eq!(user_json["user_name"], "kanidm_user");
+    assert_eq!(user_json["user_name"], expected_name);
 
     Ok(())
 }
