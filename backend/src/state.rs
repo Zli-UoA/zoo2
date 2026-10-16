@@ -1,10 +1,11 @@
-use crate::config::Config;
+use crate::{auth::oidc::JwksVerifier, config::Config};
 
 #[derive(Clone)]
 pub struct AppState {
     pub db: toasty::Db,
     pub config: Config,
     pub http_client: reqwest::Client,
+    pub jwks_verifier: JwksVerifier,
 }
 
 impl AppState {
@@ -15,18 +16,37 @@ impl AppState {
             .build()
             .unwrap_or_else(|_| reqwest::Client::new());
 
+        let jwks_verifier = JwksVerifier::new(http_client.clone());
+
         Self {
             db,
             config,
             http_client,
+            jwks_verifier,
         }
     }
 
     pub fn with_client(db: toasty::Db, config: Config, http_client: reqwest::Client) -> Self {
+        let jwks_verifier = JwksVerifier::new(http_client.clone());
         Self {
             db,
             config,
             http_client,
+            jwks_verifier,
+        }
+    }
+
+    pub fn with_verifier(
+        db: toasty::Db,
+        config: Config,
+        http_client: reqwest::Client,
+        jwks_verifier: JwksVerifier,
+    ) -> Self {
+        Self {
+            db,
+            config,
+            http_client,
+            jwks_verifier,
         }
     }
 }

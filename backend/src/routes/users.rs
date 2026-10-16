@@ -7,6 +7,7 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::{
+    auth::AuthUser,
     db::get_current_txid,
     error::AppError,
     models::User,
@@ -22,6 +23,11 @@ pub struct CreateUserRequest {
     pub display_name: String,
 }
 
+#[derive(Debug, Deserialize)]
+pub struct UpdateMeRequest {
+    pub display_name: Option<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct UserResponse {
     pub id: String,
@@ -29,6 +35,8 @@ pub struct UserResponse {
     pub display_name: String,
     pub created_at: String,
     pub updated_at: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub affiliation: Option<String>,
 }
 
 impl From<User> for UserResponse {
@@ -39,6 +47,7 @@ impl From<User> for UserResponse {
             display_name: user.display_name,
             created_at: user.created_at.to_string(),
             updated_at: user.updated_at.map(|t| t.to_string()),
+            affiliation: Some(user.affiliation),
         }
     }
 }
@@ -46,13 +55,65 @@ impl From<User> for UserResponse {
 pub fn router() -> Router<AppState> {
     Router::new()
         .route("/api/users", post(create_user).get(list_users))
+        .route("/api/users/me", get(get_me).patch(update_me))
         .route("/api/users/{id}", get(get_user_by_id))
+}
+
+async fn get_me(
+    State(state): State<AppState>,
+    auth_user: AuthUser,
+) -> Result<Json<UserResponse>, AppError> {
+    let mut db = state.db.clone();
+    match User::get_by_id(&mut db, auth_user.id.as_str()).await {
+        Ok(user) => Ok(Json(UserResponse::from(user))),
+        Err(err) if err.is_record_not_found() => Err(AppError::NotFound(format!(
+            "User not found with id: {}",
+            auth_user.id
+        ))),
+        Err(err) => Err(err.into()),
+    }
+}
+
+async fn update_me(
+    State(state): State<AppState>,
+    auth_user: AuthUser,
+    Json(payload): Json<UpdateMeRequest>,
+) -> Result<Json<ApiResponse<UserResponse>>, AppError> {
+    if let Some(ref display_name) = payload.display_name {
+        validate_display_name(display_name)?;
+    }
+
+    let mut db = state.db.clone();
+    let mut tx = db.transaction().await?;
+    let now = crate::models::now_utc_millis();
+
+    let mut update_stmt = User::update_by_id(auth_user.id.as_str()).updated_at(Some(now));
+    if let Some(ref display_name) = payload.display_name {
+        update_stmt = update_stmt.display_name(display_name.as_str());
+    }
+
+    update_stmt.exec(&mut tx).await?;
+    let updated_user = User::get_by_id(&mut tx, auth_user.id.as_str()).await?;
+    let txid = get_current_txid(&mut tx).await?;
+    tx.commit().await?;
+
+    Ok(Json(ApiResponse::new(
+        UserResponse::from(updated_user),
+        txid,
+    )))
 }
 
 async fn create_user(
     State(state): State<AppState>,
     Json(payload): Json<CreateUserRequest>,
 ) -> Result<Json<ApiResponse<UserResponse>>, AppError> {
+    if !crate::auth::dev_auth_enabled() {
+        return Err(AppError::Forbidden(
+            "Direct user creation is disabled in production. Users are automatically provisioned via OIDC login."
+                .to_string(),
+        ));
+    }
+
     validate_user_name(&payload.user_name)?;
     validate_display_name(&payload.display_name)?;
 
@@ -70,6 +131,9 @@ async fn create_user(
         display_name: payload.display_name.as_str(),
         created_at: now,
         updated_at: None,
+        oidc_iss: None,
+        oidc_sub: None,
+        affiliation: "student",
     })
     .exec(&mut tx)
     .await?;

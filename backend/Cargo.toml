@@ -22,6 +22,10 @@ uuid = { version = "1", features = ["v4", "serde"] }
 tokio-postgres = "0.7"
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "stream"] }
 futures-util = "0.3"
+jsonwebtoken = "9"
+
+[dev-dependencies]
+wiremock = "0.6"
 
 [lib]
 name = "backend"
