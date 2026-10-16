@@ -120,13 +120,18 @@ async fn test_reaction_flow_and_txid() -> anyhow::Result<()> {
     assert_eq!(json["data"]["id"], alice_reaction_id);
     assert!(json["txid"].is_null(), "txid must be null on duplicate add");
 
-    // 6. Bob が同一メッセージに 👍 リアクションを追加 (別ユーザーによる追加)
+    // 6. Bob が同一メッセージに 👍 リアクションをクライアント指定 ID で追加
+    let client_reaction_id = uuid::Uuid::new_v4().to_string();
+    let bob_reaction_payload = json!({
+        "id": client_reaction_id,
+        "emoji": "👍"
+    });
     let req = Request::builder()
         .method("POST")
         .uri(format!("/api/messages/{message_id}/reactions"))
         .header("content-type", "application/json")
         .header("X-Dev-User", &bob_id)
-        .body(Body::from(serde_json::to_vec(&reaction_payload)?))?;
+        .body(Body::from(serde_json::to_vec(&bob_reaction_payload)?))?;
 
     let resp = app.clone().oneshot(req).await?;
     assert_eq!(resp.status(), StatusCode::OK);
@@ -134,7 +139,7 @@ async fn test_reaction_flow_and_txid() -> anyhow::Result<()> {
     let body = to_bytes(resp.into_body(), usize::MAX).await?;
     let json: Value = serde_json::from_slice(&body)?;
     assert_eq!(json["data"]["user_id"], bob_id);
-    assert_ne!(json["data"]["id"], alice_reaction_id);
+    assert_eq!(json["data"]["id"], client_reaction_id);
     assert!(json["txid"].is_string());
 
     // 7. Alice が 👍 リアクションを削除 (クエリパラメータ形式)

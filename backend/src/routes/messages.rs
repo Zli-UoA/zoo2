@@ -35,6 +35,7 @@ pub struct ListMessagesQuery {
 
 #[derive(Debug, Deserialize)]
 pub struct AddReactionRequest {
+    pub id: Option<String>,
     pub emoji: String,
 }
 
@@ -440,7 +441,13 @@ async fn add_reaction(
         )));
     }
 
-    let reaction_id = Uuid::new_v4().to_string();
+    let reaction_id = if let Some(req_id) = payload.id {
+        Uuid::parse_str(&req_id)
+            .map_err(|_| AppError::BadRequest(format!("reaction id is not a valid UUID: {req_id}")))?;
+        req_id
+    } else {
+        Uuid::new_v4().to_string()
+    };
     let now = crate::models::now_utc_millis();
 
     let created_res = toasty::create!(MessageReaction {
@@ -456,7 +463,9 @@ async fn add_reaction(
     let reaction = match created_res {
         Ok(r) => r,
         Err(_) => {
-            // 並行実行で競合した場合は既存レコードをフェッチして txid: None を返却
+            // UNIQUE制約違反等でトランザクションがabortされた場合、ロールバックして新しいtxで取得
+            let _ = tx.rollback().await;
+            let mut retry_tx = db.transaction().await?;
             let check = MessageReaction::filter(
                 MessageReaction::fields()
                     .message_id()
@@ -465,7 +474,7 @@ async fn add_reaction(
                     .and(MessageReaction::fields().emoji().eq(normalized_emoji.as_str())),
             )
             .first()
-            .exec(&mut tx)
+            .exec(&mut retry_tx)
             .await?;
 
             if let Some(r) = check {
