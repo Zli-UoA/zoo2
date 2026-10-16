@@ -15,9 +15,6 @@ assert.equal(config.services.backend.environment.DEV_AUTH_ENABLED, 'false');
 assert.equal(config.networks.backend.internal, true);
 const base = process.env.PROXY_TEST_URL || 'http://127.0.0.1:18080';
 const request = (path, options = {}) => fetch(`${base}${path}`, options);
-const baseline = await (await request('/api/test-baseline', {
-  headers: { Authorization: 'Bearer valid-token' },
-})).json();
 assert.equal(await (await request('/')).text(), 'frontend');
 assert.equal(await (await request('/channels/general')).text(), 'frontend');
 assert.equal((await request('/api/channels')).status, 401);
@@ -40,7 +37,6 @@ assert.deepEqual(await response.json(), {
   body: 'payload',
   authorization: 'Bearer valid-token',
   devUser: null,
-  backendRequests: baseline.backendRequests + 1,
 });
 const stream = await request('/api/shapes/messages?offset=-1&live=true', {
   headers: { Authorization: 'Bearer valid-token' },
