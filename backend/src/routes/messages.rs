@@ -7,7 +7,10 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::{
-    auth::AuthUser,
+    auth::{
+        AuthUser,
+        rbac::{can_delete_message, is_workspace_admin},
+    },
     db::get_current_txid,
     error::AppError,
     models::{Channel, ChannelUser, Message, MessageReaction},
@@ -255,6 +258,22 @@ async fn update_message(
         return Err(AppError::NotFound(format!("Message not found: {id}")));
     }
 
+    let channel = Channel::get_by_id(&mut tx, message.channel_id.as_str())
+        .await
+        .map_err(|err| {
+            if err.is_record_not_found() {
+                AppError::NotFound(format!("Channel not found: {}", message.channel_id))
+            } else {
+                AppError::from(err)
+            }
+        })?;
+
+    if channel.archive_at.is_some() {
+        return Err(AppError::BadRequest(
+            "Cannot edit message in an archived channel".into(),
+        ));
+    }
+
     if message.user_id != auth_user.id {
         return Err(AppError::Forbidden(
             "Only the message author can edit this message".into(),
@@ -304,9 +323,32 @@ async fn delete_message(
         return Err(AppError::NotFound(format!("Message not found: {id}")));
     }
 
-    if message.user_id != auth_user.id {
+    let channel = Channel::get_by_id(&mut tx, message.channel_id.as_str())
+        .await
+        .map_err(|err| {
+            if err.is_record_not_found() {
+                AppError::NotFound(format!("Channel not found: {}", message.channel_id))
+            } else {
+                AppError::from(err)
+            }
+        })?;
+
+    if channel.archive_at.is_some() {
+        return Err(AppError::BadRequest(
+            "Cannot delete message in an archived channel".into(),
+        ));
+    }
+
+    let is_admin = is_workspace_admin(&mut tx, &auth_user.id).await?;
+
+    if !can_delete_message(
+        &message.user_id,
+        &channel.created_user_id,
+        &auth_user.id,
+        is_admin,
+    ) {
         return Err(AppError::Forbidden(
-            "Only the message author can delete this message".into(),
+            "You do not have permission to delete this message".into(),
         ));
     }
 

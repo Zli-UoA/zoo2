@@ -1,13 +1,19 @@
 use axum::{
     Json, Router,
     extract::{Path, State},
-    routing::{get, post},
+    routing::{delete, get, post},
 };
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::{
-    auth::AuthUser,
+    auth::{
+        AuthUser,
+        rbac::{
+            can_add_member, can_join, can_kick_member, can_manage_channel, is_channel_visible,
+            is_workspace_admin,
+        },
+    },
     db::get_current_txid,
     error::AppError,
     models::{Channel, ChannelUser},
@@ -88,42 +94,6 @@ pub struct LeaveChannelResponse {
     pub channel_id: String,
 }
 
-/// メンバー追加権限の純粋判定ロジック:
-/// - 作成者は常に追加可能
-/// - プライベートチャンネル: 作成者のみ追加可能
-/// - パブリックチャンネル: 作成者または既存メンバーが追加可能
-pub(crate) fn can_add_member(
-    is_private: bool,
-    channel_creator_id: &str,
-    actor_id: &str,
-    is_actor_member: bool,
-) -> bool {
-    if channel_creator_id == actor_id {
-        return true;
-    }
-    if is_private { false } else { is_actor_member }
-}
-
-/// チャンネル直接参加 (join) の純粋判定ロジック:
-/// - パブリックチャンネル: 誰でも直接 join 可能
-/// - プライベートチャンネル: 直接 join 不可 (オーナーによる追加のみ)
-pub(crate) fn can_join(is_private: bool) -> bool {
-    !is_private
-}
-
-/// チャンネル更新・削除権限の純粋判定ロジック:
-/// - 作成者のみ変更・削除可能
-pub(crate) fn can_modify_channel(channel_creator_id: &str, actor_id: &str) -> bool {
-    channel_creator_id == actor_id
-}
-
-/// チャンネル閲覧権限の純粋判定ロジック:
-/// - パブリックチャンネル: 誰でも閲覧可能
-/// - プライベートチャンネル: メンバーのみ閲覧可能
-pub(crate) fn is_channel_visible(is_private: bool, is_member: bool) -> bool {
-    !is_private || is_member
-}
-
 pub fn router() -> Router<AppState> {
     Router::new()
         .route("/api/channels", post(create_channel).get(list_channels))
@@ -135,7 +105,13 @@ pub fn router() -> Router<AppState> {
         )
         .route("/api/channels/{id}/join", post(join_channel))
         .route("/api/channels/{id}/leave", post(leave_channel))
+        .route("/api/channels/{id}/archive", post(archive_channel))
+        .route("/api/channels/{id}/unarchive", post(unarchive_channel))
         .route("/api/channels/{id}/users", post(add_channel_user))
+        .route(
+            "/api/channels/{id}/users/{user_id}",
+            delete(kick_channel_user),
+        )
 }
 
 async fn create_channel(
@@ -218,9 +194,16 @@ async fn update_channel(
         )));
     }
 
-    if !can_modify_channel(&channel.created_user_id, &auth_user.id) {
+    if channel.archive_at.is_some() {
+        return Err(AppError::BadRequest(
+            "Cannot update an archived channel".into(),
+        ));
+    }
+
+    let is_admin = is_workspace_admin(&mut tx, &auth_user.id).await?;
+    if !can_manage_channel(&channel.created_user_id, &auth_user.id, is_admin) {
         return Err(AppError::Forbidden(
-            "Only the channel creator can update this channel".into(),
+            "Only the channel creator or a workspace admin can update this channel".into(),
         ));
     }
 
@@ -276,9 +259,10 @@ async fn delete_channel(
         )));
     }
 
-    if !can_modify_channel(&channel.created_user_id, &auth_user.id) {
+    let is_admin = is_workspace_admin(&mut tx, &auth_user.id).await?;
+    if !can_manage_channel(&channel.created_user_id, &auth_user.id, is_admin) {
         return Err(AppError::Forbidden(
-            "Only the channel creator can delete this channel".into(),
+            "Only the channel creator or a workspace admin can delete this channel".into(),
         ));
     }
 
@@ -324,6 +308,12 @@ async fn join_channel(
         return Err(AppError::NotFound(format!(
             "Channel not found with id: {id}"
         )));
+    }
+
+    if channel.archive_at.is_some() {
+        return Err(AppError::BadRequest(
+            "Cannot join an archived channel".into(),
+        ));
     }
 
     // プライベートチャンネルへの直接 join は禁止 (作成者または招待による追加のみ)
@@ -397,9 +387,13 @@ async fn add_channel_user(
         )));
     }
 
-    // メンバー追加権限のチェック:
-    // - プライベートチャンネル: チャンネル作成者のみ追加可能
-    // - パブリックチャンネル: チャンネル作成者または既存メンバーのみ追加可能
+    if channel.archive_at.is_some() {
+        return Err(AppError::BadRequest(
+            "Cannot add members to an archived channel".into(),
+        ));
+    }
+
+    let is_admin = is_workspace_admin(&mut tx, &auth_user.id).await?;
     let is_creator = channel.created_user_id == auth_user.id;
     let is_actor_member = if is_creator {
         true
@@ -423,12 +417,13 @@ async fn add_channel_user(
         &channel.created_user_id,
         &auth_user.id,
         is_actor_member,
+        is_admin,
     ) {
         return Err(AppError::Forbidden(
             if channel.is_private {
-                "Only the channel creator can add members to a private channel"
+                "Only the channel creator or a workspace admin can add members to a private channel"
             } else {
-                "You must be a member or creator of the channel to add other users"
+                "You must be a member, creator, or workspace admin of the channel to add other users"
             }
             .into(),
         ));
@@ -531,6 +526,196 @@ async fn leave_channel(
     )))
 }
 
+async fn archive_channel(
+    State(state): State<AppState>,
+    auth_user: AuthUser,
+    Path(id): Path<String>,
+) -> Result<Json<ApiResponse<ChannelResponse>>, AppError> {
+    Uuid::parse_str(&id)
+        .map_err(|_| AppError::BadRequest(format!("channel id is not a valid UUID: {id}")))?;
+
+    let mut db = state.db.clone();
+    let mut tx = db.transaction().await?;
+
+    let channel = Channel::get_by_id(&mut tx, id.as_str())
+        .await
+        .map_err(|err| {
+            if err.is_record_not_found() {
+                AppError::NotFound(format!("Channel not found with id: {id}"))
+            } else {
+                AppError::from(err)
+            }
+        })?;
+
+    if channel.deleted_at.is_some() {
+        return Err(AppError::NotFound(format!("Channel not found with id: {id}")));
+    }
+
+    let is_admin = is_workspace_admin(&mut tx, &auth_user.id).await?;
+    if !can_manage_channel(&channel.created_user_id, &auth_user.id, is_admin) {
+        return Err(AppError::Forbidden(
+            "Only the channel creator or a workspace admin can archive this channel".into(),
+        ));
+    }
+
+    if channel.archive_at.is_some() {
+        // no-op: WAL 書き込みがないため txid: None を返却
+        return Ok(Json(ApiResponse::new(ChannelResponse::from(channel), None)));
+    }
+
+    let now = crate::models::now_utc_millis();
+    Channel::update_by_id(id.as_str())
+        .archive_at(Some(now))
+        .updated_at(Some(now))
+        .exec(&mut tx)
+        .await?;
+
+    let updated = Channel::get_by_id(&mut tx, id.as_str()).await?;
+    let txid = get_current_txid(&mut tx).await?;
+    tx.commit().await?;
+
+    Ok(Json(ApiResponse::new(ChannelResponse::from(updated), txid)))
+}
+
+async fn unarchive_channel(
+    State(state): State<AppState>,
+    auth_user: AuthUser,
+    Path(id): Path<String>,
+) -> Result<Json<ApiResponse<ChannelResponse>>, AppError> {
+    Uuid::parse_str(&id)
+        .map_err(|_| AppError::BadRequest(format!("channel id is not a valid UUID: {id}")))?;
+
+    let mut db = state.db.clone();
+    let mut tx = db.transaction().await?;
+
+    let channel = Channel::get_by_id(&mut tx, id.as_str())
+        .await
+        .map_err(|err| {
+            if err.is_record_not_found() {
+                AppError::NotFound(format!("Channel not found with id: {id}"))
+            } else {
+                AppError::from(err)
+            }
+        })?;
+
+    if channel.deleted_at.is_some() {
+        return Err(AppError::NotFound(format!("Channel not found with id: {id}")));
+    }
+
+    let is_admin = is_workspace_admin(&mut tx, &auth_user.id).await?;
+    if !can_manage_channel(&channel.created_user_id, &auth_user.id, is_admin) {
+        return Err(AppError::Forbidden(
+            "Only the channel creator or a workspace admin can unarchive this channel".into(),
+        ));
+    }
+
+    if channel.archive_at.is_none() {
+        // no-op: WAL 書き込みがないため txid: None を返却
+        return Ok(Json(ApiResponse::new(ChannelResponse::from(channel), None)));
+    }
+
+    let now = crate::models::now_utc_millis();
+    Channel::update_by_id(id.as_str())
+        .archive_at(None)
+        .updated_at(Some(now))
+        .exec(&mut tx)
+        .await?;
+
+    let updated = Channel::get_by_id(&mut tx, id.as_str()).await?;
+    let txid = get_current_txid(&mut tx).await?;
+    tx.commit().await?;
+
+    Ok(Json(ApiResponse::new(ChannelResponse::from(updated), txid)))
+}
+
+async fn kick_channel_user(
+    State(state): State<AppState>,
+    auth_user: AuthUser,
+    Path((id, user_id)): Path<(String, String)>,
+) -> Result<Json<ApiResponse<ChannelUserResponse>>, AppError> {
+    Uuid::parse_str(&id)
+        .map_err(|_| AppError::BadRequest(format!("channel id is not a valid UUID: {id}")))?;
+    Uuid::parse_str(&user_id)
+        .map_err(|_| AppError::BadRequest(format!("user_id is not a valid UUID: {user_id}")))?;
+
+    if auth_user.id == user_id {
+        return Err(AppError::BadRequest(
+            "Cannot kick yourself; use leave endpoint instead".into(),
+        ));
+    }
+
+    let mut db = state.db.clone();
+    let mut tx = db.transaction().await?;
+
+    let channel = Channel::get_by_id(&mut tx, id.as_str())
+        .await
+        .map_err(|err| {
+            if err.is_record_not_found() {
+                AppError::NotFound(format!("Channel not found with id: {id}"))
+            } else {
+                AppError::from(err)
+            }
+        })?;
+
+    if channel.deleted_at.is_some() {
+        return Err(AppError::NotFound(format!("Channel not found with id: {id}")));
+    }
+
+    if channel.archive_at.is_some() {
+        return Err(AppError::BadRequest(
+            "Cannot kick member in an archived channel".into(),
+        ));
+    }
+
+    if user_id == channel.created_user_id {
+        return Err(AppError::BadRequest("Cannot kick the channel creator".into()));
+    }
+
+    let actor_is_admin = is_workspace_admin(&mut tx, &auth_user.id).await?;
+    let target_is_admin = is_workspace_admin(&mut tx, &user_id).await?;
+
+    if !can_kick_member(
+        &channel.created_user_id,
+        &auth_user.id,
+        &user_id,
+        actor_is_admin,
+        target_is_admin,
+    ) {
+        return Err(AppError::Forbidden(
+            "You do not have permission to kick this member".into(),
+        ));
+    }
+
+    let existing = ChannelUser::filter(
+        ChannelUser::fields()
+            .channel_id()
+            .eq(id.as_str())
+            .and(ChannelUser::fields().user_id().eq(user_id.as_str())),
+    )
+    .first()
+    .exec(&mut tx)
+    .await?
+    .ok_or_else(|| AppError::NotFound(format!("User is not a member of channel: {id}")))?;
+
+    ChannelUser::filter(
+        ChannelUser::fields()
+            .channel_id()
+            .eq(id.as_str())
+            .and(ChannelUser::fields().user_id().eq(user_id.as_str())),
+    )
+    .delete()
+    .exec(&mut tx)
+    .await?;
+
+    let txid = get_current_txid(&mut tx).await?;
+    tx.commit().await?;
+
+    Ok(Json(ApiResponse::new(
+        ChannelUserResponse::from(existing),
+        txid,
+    )))
+}
+
 async fn list_channels(
     State(state): State<AppState>,
     auth_user: AuthUser,
@@ -618,21 +803,23 @@ mod tests {
 
         // 1. プライベートチャンネル
         // - 作成者は追加可能
-        assert!(can_add_member(true, creator_id, creator_id, true));
-        assert!(can_add_member(true, creator_id, creator_id, false));
+        assert!(can_add_member(true, creator_id, creator_id, true, false));
+        assert!(can_add_member(true, creator_id, creator_id, false, false));
+        // - 管理者は追加可能
+        assert!(can_add_member(true, creator_id, "admin-id", false, true));
         // - メンバーであっても非作成者は追加不可
-        assert!(!can_add_member(true, creator_id, member_id, true));
+        assert!(!can_add_member(true, creator_id, member_id, true, false));
         // - 未参加ユーザーは追加不可
-        assert!(!can_add_member(true, creator_id, non_member_id, false));
+        assert!(!can_add_member(true, creator_id, non_member_id, false, false));
 
         // 2. パブリックチャンネル
         // - 作成者は常に追加可能
-        assert!(can_add_member(false, creator_id, creator_id, true));
-        assert!(can_add_member(false, creator_id, creator_id, false));
+        assert!(can_add_member(false, creator_id, creator_id, true, false));
+        assert!(can_add_member(false, creator_id, creator_id, false, false));
         // - 既存メンバーは追加可能
-        assert!(can_add_member(false, creator_id, member_id, true));
+        assert!(can_add_member(false, creator_id, member_id, true, false));
         // - 未参加の非作成者は追加不可 (公開チャンネルに他人を勝手に追加できない)
-        assert!(!can_add_member(false, creator_id, non_member_id, false));
+        assert!(!can_add_member(false, creator_id, non_member_id, false, false));
     }
 
     #[test]
@@ -644,12 +831,13 @@ mod tests {
     }
 
     #[test]
-    fn test_can_modify_channel() {
+    fn test_can_manage_channel() {
         let creator_id = "creator-user-id";
         let other_id = "other-user-id";
 
-        assert!(can_modify_channel(creator_id, creator_id));
-        assert!(!can_modify_channel(creator_id, other_id));
+        assert!(can_manage_channel(creator_id, creator_id, false));
+        assert!(can_manage_channel(creator_id, other_id, true));
+        assert!(!can_manage_channel(creator_id, other_id, false));
     }
 
     #[test]
