@@ -1,8 +1,9 @@
 # File-provider Go templates are expanded by Traefik at startup.
+{{- $verifyPath := regexReplaceAll "/+$" (env "BFF_VERIFY_PATH") "" }}
 http:
   routers:
     verify-internal-only:
-      rule: 'Path(`{{ env "BFF_VERIFY_PATH" }}`) || PathPrefix(`{{ env "BFF_VERIFY_PATH" }}/`)'
+      rule: 'Path(`{{ $verifyPath }}`) || PathPrefix(`{{ $verifyPath }}/`)'
       priority: 1000
       entryPoints: [web]
       service: noop@internal
@@ -46,7 +47,7 @@ http:
           X-Verify-Secret: ""
     session-auth:
       forwardAuth:
-        address: 'http://frontend:3000{{ env "BFF_VERIFY_PATH" }}'
+        address: 'http://frontend:3000{{ $verifyPath }}'
         # EntryPoint strips forwarded headers from untrusted peers. Keep the
         # HTTPS scheme supplied by the explicitly trusted Coolify TLS proxy.
         trustForwardHeader: true

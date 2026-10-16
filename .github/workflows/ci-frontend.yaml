@@ -60,10 +60,14 @@ jobs:
 
   proxy:
     runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        verify-path: ["/auth/verify", "/auth/verify/"]
     env:
       POSTGRES_PASSWORD: proxy-test
       BFF_VERIFY_SECRET: proxy-test-verify-secret
       PROXY_PORT: 18080
+      BFF_VERIFY_PATH: ${{ matrix.verify-path }}
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-node@v4

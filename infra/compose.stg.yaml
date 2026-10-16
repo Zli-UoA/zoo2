@@ -37,6 +37,7 @@ services:
       backend:
         condition: service_started
     healthcheck:
+      # Keep health entrypoint name/address in sync with command above.
       test: ["CMD", "traefik", "healthcheck", "--ping", "--ping.entrypoint=health", "--entrypoints.health.address=:8082"]
       interval: 10s
       timeout: 5s
@@ -73,6 +74,12 @@ services:
       PORT: ${PORT:-8000}
       ENVIRONMENT: production
       DEV_AUTH_ENABLED: "false"
+      # Pass through configured OIDC values; keep missing keys unset so Rust's
+      # production validation and OIDC_CLIENT_ID fallback still apply.
+      OIDC_ISSUER:
+      OIDC_AUDIENCE:
+      OIDC_CLIENT_ID:
+      OIDC_JWKS_URL:
     networks:
       - backend
       - backend-egress

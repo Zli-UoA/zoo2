@@ -23,8 +23,10 @@ const baseline = await (await request('/api/test-baseline', {
 assert.equal(await (await request('/')).text(), 'frontend');
 assert.equal(await (await request('/', { headers: spoofed })).text(), 'frontend');
 assert.equal((await request('/api/channels', { headers: spoofed })).status, 401);
-assert.equal((await request('/auth/verify', { headers: { Cookie: 'session=valid' } })).status, 418);
-assert.equal((await request('/auth/verify/')).status, 418);
+for (const path of ['/auth/verify', '/auth/verify/', '/auth/verify/child']) {
+  assert.equal((await request(path, { headers: { Cookie: 'session=valid' } })).status, 418,
+    `Public verify path must be blocked: ${path}`);
+}
 assert.equal((await request('/api/channels', { headers: { Cookie: 'session=unavailable' } })).status, 503);
 assert.equal((await request('/api/channels', { method: 'POST', headers: {
   Cookie: 'session=valid', Origin: 'https://attacker.example',

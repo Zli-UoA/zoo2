@@ -156,6 +156,8 @@ DBサービスは Coolify が `extends` や `!reset` を扱えないため、`co
 
 リポジトリルートで `--project-directory .` を指定してください。`POSTGRES_PASSWORD` と `BFF_VERIFY_SECRET` は必須です。
 
+Rust の本番起動には `OIDC_ISSUER` と `OIDC_AUDIENCE`（未設定なら `OIDC_CLIENT_ID`）も必要です。既存の Kanidm クライアントに合わせて Coolify の環境変数に設定してください。`OIDC_JWKS_URL` は任意で、未設定なら Discovery を使います。OIDC 設定を省略すると Rust は起動を拒否します。フロント単体とモックを使ったプロキシテストには不要です。
+
 ```bash
 POSTGRES_PASSWORD=staging-test-password BFF_VERIFY_SECRET=staging-test-verify-secret \
   docker compose --project-directory . -f infra/compose.stg.yaml \
@@ -178,6 +180,8 @@ POSTGRES_PASSWORD=staging-test-password BFF_VERIFY_SECRET=staging-test-verify-se
 
 `BFF_VERIFY_SECRET` はプロキシとフロント（BFF）で共有するランダムな値です。Coolify では両サービスに同じ値を設定してください。Traefik の設定テンプレートに埋め込むため、英数字のみ（例: `openssl rand -hex 32`）にしてください。
 
+`BFF_VERIFY_PATH` の末尾の `/` はプロキシ内で除去し、認証先の URL と公開アクセスの拒否ルールに同じ正規化済みパスを使います。
+
 verify の実装には次の契約が必要です。
 
 - Cookie からサーバ側セッションを解決し、必要な refresh をセッション単位で直列化した後、2xx と `Authorization: Bearer <access token>` を返す。本文やトークンをブラウザへ返さない。
@@ -186,7 +190,7 @@ verify の実装には次の契約が必要です。
 - `X-Verify-Secret` が `BFF_VERIFY_SECRET` と一致しないリクエストは拒否する（定数時間で比較する）。プロキシは verify へのサブリクエストにだけこのヘッダを付け、クライアントから来た同名ヘッダや Rust・フロントへのリクエストからは除去する。パスの拒否ルールと解釈がずれた場合でも、ブラウザからの直接アクセスでトークンを返さないための多層防御です。
 - 書き込みでは BFF が設定済みの公開オリジンと `Origin` を照合するか、CSRF トークンを検証する。Cookie の `SameSite=Lax` だけを認可根拠にしない。Cookie は `HttpOnly`・`Secure` とする。
 
-現在のブランチには BFF の verify・OIDC ログインと Rust の JWT 検証が未実装です。API は利用可能になりません。今回のプロキシ検証ではモックを使い、実際の Kanidm ログイン・refresh・CSRF 実装の検証は Issue #23 の実装後に行います。Rust は `ENVIRONMENT=production`・`DEV_AUTH_ENABLED=false` で起動します。
+Rust の JWT 検証・JIT は実装済みですが、BFF の verify・OIDC ログインは未実装です。ブラウザから API は利用可能になりません。今回のプロキシ検証ではモックを使い、実際の Kanidm ログイン・refresh・CSRF 実装の検証は BFF 実装後に行います。Rust は `ENVIRONMENT=production`・`DEV_AUTH_ENABLED=false` で起動します。
 
 BFF のセッションストアは未確定です。`frontend` は非 internal の `frontend` ネットワークにだけ参加しているので、internal な `backend` ネットワーク上の Postgres には到達できません。セッションを Postgres に置く場合は、`frontend` を `backend` に入れないでください（Rust・Electric にも直接到達できてしまいます）。代わりに BFF 専用の internal ネットワークを作り、`frontend` と `postgres` だけを参加させてください。専用のストア（Redis など）を使う場合も、同じように BFF 専用のネットワークに置きます。
 
@@ -201,6 +205,8 @@ BFF のセッションストアは未確定です。`frontend` は非 internal �
 - `frontend`・`backend` にドメインやホストポートを追加しないでください。Rust は内部ネットワークと Kanidm Discovery/JWKS 用の outbound ネットワークだけに参加します。
 
 `PROXY_TRUSTED_IPS` には、アプリのプロキシから見える cloudflared の接続元 IP/CIDR を指定してください。ホストから Docker の公開ポートを経由するため、接続元が Docker ネットワークのゲートウェイ IP になる場合があります。既定の `127.0.0.1/32` でよいとは限りません。実際の接続元を確認して限定した値を設定し、`0.0.0.0/0` は指定しないでください。この範囲から来た forwarded ヘッダだけを信頼して、公開 HTTPS の scheme を BFF に渡します。BFF の公開オリジン・redirect URI も公開 HTTPS URL に合わせます。
+
+`X-Forwarded-Proto` を維持できるのは、信頼対象の cloudflared（Coolify 標準プロキシを経由させる構成ではそのプロキシ）が、ブラウザ由来の値を上書きして実際の公開 scheme を渡すことが前提です。その上流での上書きと、接続元が `PROXY_TRUSTED_IPS` に限定されていることの両方を確認してください。BFF の CSRF 判定では forwarded 値だけから許可オリジンを組み立てず、設定済みの公開オリジンを基準にします。
 
 Tunnel からオリジンへの通信は HTTP です。認証実装時は BFF の Secure Cookie・公開 URL の扱いを確認し、オリジンまで TLS を使う場合は Coolify の [Full TLS 手順](https://coolify.io/docs/integrations/networking/cloudflare/tunnels/full-tls)に合わせて TLS の待受と証明書を別途設定します。
 
