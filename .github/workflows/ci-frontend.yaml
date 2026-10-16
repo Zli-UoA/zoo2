@@ -5,6 +5,7 @@ on:
     paths:
       - "frontend/**"
       - "infra/Dockerfile-frontend-deploy*"
+      - "infra/frontend-nginx.conf"
       - "infra/Dockerfile-proxy-deploy*"
       - "infra/proxy/**"
       - "infra/compose.stg*.yaml"
@@ -13,6 +14,7 @@ on:
     paths:
       - "frontend/**"
       - "infra/Dockerfile-frontend-deploy*"
+      - "infra/frontend-nginx.conf"
       - "infra/Dockerfile-proxy-deploy*"
       - "infra/proxy/**"
       - "infra/compose.stg*.yaml"
@@ -23,7 +25,6 @@ jobs:
     runs-on: ubuntu-latest
     env:
       POSTGRES_PASSWORD: container-test
-      BFF_VERIFY_SECRET: container-test-verify-secret
     steps:
       - name: Checkout
         uses: actions/checkout@v7
@@ -31,21 +32,24 @@ jobs:
       - name: Build and start frontend
         run: docker compose --project-directory . -f infra/compose.stg.yaml up -d --build --wait --wait-timeout 60 frontend
 
-      - name: Check SSR routes
+      - name: Check SPA routes and security headers
         run: |
-          docker compose --project-directory . -f infra/compose.stg.yaml exec -T frontend node --input-type=module -e '
-            for (const path of ["/", "/channels/container-test"]) {
-              const response = await fetch(`http://localhost:3000${path}`);
-              if (response.status !== 200) process.exit(1);
-            }
-          '
+          for path in "/" "/channels/container-test"; do
+            headers=$(docker compose --project-directory . -f infra/compose.stg.yaml exec -T frontend \
+              wget -S -O - "http://127.0.0.1:3000${path}" 2>&1)
+            printf "%s" "$headers" | grep -q "<html"
+            printf "%s" "$headers" | grep -qi "X-Content-Type-Options: nosniff"
+            printf "%s" "$headers" | grep -qi "Referrer-Policy: strict-origin-when-cross-origin"
+            printf "%s" "$headers" | grep -qi "X-Frame-Options: DENY"
+          done
 
-      - name: Shared HOST/PORT must not change the frontend listener
+      - name: Missing assets must not fall back to index.html
         run: |
-          docker compose --project-directory . -f infra/compose.stg.yaml run --rm --no-deps \
-            -e HOST=127.0.0.1 -e PORT=18000 \
-            -v "$PWD/infra/proxy/test/frontend-port.mjs:/test/frontend-port.mjs:ro" \
-            frontend node /test/frontend-port.mjs
+          if docker compose --project-directory . -f infra/compose.stg.yaml exec -T frontend \
+            wget -q -O /dev/null http://127.0.0.1:3000/assets/missing-container-test.js; then
+            echo "missing asset returned a successful response" >&2
+            exit 1
+          fi
 
       - name: Container logs
         if: failure()
@@ -60,14 +64,9 @@ jobs:
 
   proxy:
     runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        verify-path: ["/auth/verify", "/auth/verify/"]
     env:
       POSTGRES_PASSWORD: proxy-test
-      BFF_VERIFY_SECRET: proxy-test-verify-secret
       PROXY_PORT: 18080
-      BFF_VERIFY_PATH: ${{ matrix.verify-path }}
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-node@v4
@@ -75,9 +74,9 @@ jobs:
           node-version: 22
       - name: Build proxy
         run: docker compose --project-directory . -f infra/compose.stg.yaml build proxy
-      - name: Start proxy with mock BFF and Rust
+      - name: Start proxy with mock frontend and Rust
         run: docker compose --project-directory . -f infra/compose.stg.yaml -f infra/proxy/test/compose.yaml up -d --no-build --no-deps --wait frontend backend proxy
-      - name: Check auth boundary and streaming
+      - name: Check routing, header stripping, and streaming
         run: node infra/proxy/test/check.mjs
       - name: Logs
         if: failure()

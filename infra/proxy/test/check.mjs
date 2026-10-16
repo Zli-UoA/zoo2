@@ -15,34 +15,31 @@ assert.equal(config.services.backend.environment.DEV_AUTH_ENABLED, 'false');
 assert.equal(config.networks.backend.internal, true);
 const base = process.env.PROXY_TEST_URL || 'http://127.0.0.1:18080';
 const request = (path, options = {}) => fetch(`${base}${path}`, options);
-const spoofed = { Authorization: 'Bearer attacker', 'X-Dev-User': 'attacker',
-  'X-Verify-Secret': 'attacker' };
-const baseline = await (await request('/api/test-baseline', {
-  headers: { Cookie: 'session=valid' },
-})).json();
 assert.equal(await (await request('/')).text(), 'frontend');
-assert.equal(await (await request('/', { headers: spoofed })).text(), 'frontend');
-assert.equal((await request('/api/channels', { headers: spoofed })).status, 401);
-for (const path of ['/auth/verify', '/auth/verify/', '/auth/verify/child']) {
-  assert.equal((await request(path, { headers: { Cookie: 'session=valid' } })).status, 418,
-    `Public verify path must be blocked: ${path}`);
-}
-assert.equal((await request('/api/channels', { headers: { Cookie: 'session=unavailable' } })).status, 503);
-assert.equal((await request('/api/channels', { method: 'POST', headers: {
-  Cookie: 'session=valid', Origin: 'https://attacker.example',
-  'X-Forwarded-Method': 'GET', 'X-Forwarded-Host': 'attacker.example',
-} })).status, 403);
-const response = await request('/api/channels?limit=1', { method: 'POST',
-  headers: { ...spoofed, Cookie: 'session=valid', Origin: base,
-    'X-Forwarded-Proto': 'https', 'X-Forwarded-Host': 'attacker.example' }, body: 'payload' });
+assert.equal(await (await request('/channels/general')).text(), 'frontend');
+assert.equal((await request('/api/channels')).status, 401);
+assert.equal((await request('/api/channels', {
+  headers: { 'X-Dev-User': 'attacker' },
+})).status, 401);
+const response = await request('/api/channels?limit=1', {
+  method: 'POST',
+  headers: {
+    Authorization: 'Bearer valid-token',
+    'X-Dev-User': 'attacker',
+  },
+  body: 'payload',
+});
 assert.equal(response.status, 200);
-assert.equal(response.headers.get('authorization'), null);
 assert.equal(response.headers.get('cache-control'), 'private, no-cache');
-assert.deepEqual(await response.json(), { method: 'POST', url: '/api/channels?limit=1',
-  body: 'payload', authorization: 'Bearer verified-token', devUser: null,
-  backendRequests: baseline.backendRequests + 1 });
+assert.deepEqual(await response.json(), {
+  method: 'POST',
+  url: '/api/channels?limit=1',
+  body: 'payload',
+  authorization: 'Bearer valid-token',
+  devUser: null,
+});
 const stream = await request('/api/shapes/messages?offset=-1&live=true', {
-  headers: { Cookie: 'session=valid' },
+  headers: { Authorization: 'Bearer valid-token' },
 });
 assert.equal(stream.headers.get('electric-offset'), '42_0');
 assert.equal(stream.headers.get('electric-handle'), 'test-handle');
@@ -58,4 +55,5 @@ while (true) {
   tail += new TextDecoder().decode(chunk.value);
 }
 assert.equal(tail, '{"last":true}]');
-console.log('PASS: routing, fail-closed auth, spoof stripping, CSRF metadata, body forwarding, streaming and Electric headers');
+console.log('PASS: routing, Bearer forwarding, X-Dev-User stripping, body forwarding, streaming and Electric headers');
+

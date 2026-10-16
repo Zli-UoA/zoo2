@@ -11,11 +11,8 @@ services:
     restart: unless-stopped
     environment:
       BACKEND_PORT: ${PORT:-8000}
-      BFF_VERIFY_PATH: ${BFF_VERIFY_PATH:-/auth/verify}
-      BFF_VERIFY_SECRET: ${BFF_VERIFY_SECRET:?BFF_VERIFY_SECRET is required}
     command:
       - --entrypoints.web.address=:8080
-      - --entrypoints.web.forwardedheaders.trustedips=${PROXY_TRUSTED_IPS:-127.0.0.1/32}
       - --entrypoints.web.transport.respondingtimeouts.readtimeout=120s
       # writeTimeout はリクエスト開始から応答を書き終えるまでの期限で、長く続く
       # Shape のストリーム (SSE など) を打ち切るため無効にする。バックエンドの
@@ -51,14 +48,6 @@ services:
       args:
         VITE_API_BASE_URL: ""
     restart: unless-stopped
-    environment:
-      BFF_VERIFY_SECRET: ${BFF_VERIFY_SECRET:?BFF_VERIFY_SECRET is required}
-      # Keep frontend, healthcheck and proxy on the same internal address.
-      # PORT at the project level configures Rust, not this service.
-      HOST: 0.0.0.0
-      PORT: "3000"
-      NITRO_HOST: 0.0.0.0
-      NITRO_PORT: "3000"
     networks:
       - frontend
 

@@ -1,10 +1,10 @@
 **
+!infra/
+!infra/frontend-nginx.conf
 !frontend/
 !frontend/**
 frontend/node_modules
 frontend/.env*
-frontend/.output
-frontend/.nitro
 frontend/.tanstack
 frontend/dist
 frontend/dist-ssr
