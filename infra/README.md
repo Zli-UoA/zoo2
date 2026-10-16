@@ -8,6 +8,7 @@
 infra/
 ├── compose.stg.yaml         # ステージング構成
 ├── compose.stg.local.yaml   # 既存のローカル起動コマンド用 override
+├── frontend-nginx.conf      # フロントの静的配信 (nginx) の設定
 ├── proxy/                   # Traefik のルーティングと検証
 ├── Makefile                 # DB操作とmigration操作
 └── db/
@@ -166,7 +167,7 @@ POSTGRES_PASSWORD=staging-test-password \
 
 公開入口は Traefik の `proxy` サービスで、コンテナ内の `8080` をホストの `127.0.0.1:18080` にマッピングします。ホスト側は `PROXY_PORT` で変更できます。Coolify 自身が使う `8080` とは分けています。フロント・Rust・DB・Electric のホストポートは公開しません。`PORT` は Rust のコンテナ内の待受ポートです（既定 `8000`）。既存の `compose.stg.local.yaml` を重ねた起動コマンドも、同じマッピングで引き続き利用できます。
 
-フロントは TanStack Start の SPA モードでビルドした静的ファイル（`dist/client`）を `nginxinc/nginx-unprivileged` で配信します。コンテナ内は非 root ユーザーで `3000` 番ポートを待ち受け、未知のパスは `/index.html` にフォールバックします。フロントとプロキシのイメージ名は `FRONTEND_IMAGE`・`PROXY_IMAGE` で変更できます。フロントのヘルスチェックは `/` の HTTP 200、プロキシは内部専用の ping エンドポイントを確認します。
+フロントは TanStack Start の SPA モードでビルドした静的ファイル（`dist/client`）を `nginxinc/nginx-unprivileged` で配信します。コンテナ内は非 root ユーザーで `3000` 番ポートを待ち受けます。設定は `infra/frontend-nginx.conf` です。未知のパスは `/index.html` にフォールバックしますが、`/assets/` 配下の存在しないファイルは 404 を返します（デプロイ後に古いタブが削除済みの chunk を読み込んだとき、HTML を返さないため）。`/assets/` のハッシュ付きファイルは `immutable` で長期キャッシュし、`index.html` は `no-cache` で毎回再検証させます。フロントとプロキシのイメージ名は `FRONTEND_IMAGE`・`PROXY_IMAGE` で変更できます。フロントのヘルスチェックは `/` の HTTP 200、プロキシは内部専用の ping エンドポイントを確認します。
 
 ### 認証とルーティング
 
@@ -184,9 +185,7 @@ Rust は `ENVIRONMENT=production`・`DEV_AUTH_ENABLED=false` で起動し、受�
 - Compose の `proxy` のポートマッピングは `127.0.0.1:18080:8080` です。Compose が定義しているため、Coolify 側で同じマッピングを重複追加する必要はありません。
 - Cloudflare の公開ホスト名には利用するドメインを設定し、Path は空、Service は **HTTP / `127.0.0.1:18080`** にします。`PROXY_PORT` を変更した場合は接続先も合わせます。
 - この接続先は HTTP なので Origin Server Name は不要です。ルーティングはパスで行い、HTTP Host Header の上書きも不要です。ブラウザからの公開 URL は HTTPS を使います。
-- `frontend`・`backend` にドメインやホストポートを追加しないでください。`frontend` は内部の `frontend` ネットワークのみに参加し、Rust は内部ネットワークと Kanidm Discovery/JWKS 用の outbound ネットワークだけに参加します。
-
-`PROXY_TRUSTED_IPS` には、アプリのプロキシから見える cloudflared の接続元 IP/CIDR を指定してください。ホストから Docker の公開ポートを経由するため、接続元が Docker ネットワークのゲートウェイ IP になる場合があります。既定の `127.0.0.1/32` でよいとは限りません。実際の接続元を確認して限定した値を設定し、`0.0.0.0/0` は指定しないでください。
+- `frontend`・`backend` にドメインやホストポートを追加しないでください。`frontend` は `frontend` ネットワークにだけ参加します（proxy のホストポート公開に使うため、このネットワークは `internal` にしていません）。Rust は内部ネットワークと Kanidm Discovery/JWKS 用の outbound ネットワークだけに参加します。
 
 デプロイ後はホストで `curl -f http://127.0.0.1:18080/` を実行し、次に Tunnel の公開 URL から画面を確認します。Rust にプロキシ以外の公開経路がないことも確認してください。
 
