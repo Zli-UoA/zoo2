@@ -1,0 +1,5 @@
+# 既存のローカル起動コマンド用。通常は compose.stg.yaml だけで同じポートを公開する。
+services:
+  proxy:
+    ports:
+      - "127.0.0.1:${PROXY_PORT:-18080}:8080"

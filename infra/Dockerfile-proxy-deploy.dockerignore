@@ -1,0 +1,4 @@
+**
+!infra/
+!infra/proxy/
+!infra/proxy/routes.yaml

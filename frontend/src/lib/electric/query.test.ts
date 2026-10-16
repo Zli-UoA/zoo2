@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vite-plus/test";
 
 import { resolveConfig } from "../config";
-import { buildShapeRequestUrl, shapeQueryParams } from "./query";
+import { buildShapeRequestUrl, resolveShapeUrl, shapeQueryParams } from "./query";
 
 const directConfig = resolveConfig({ DEV: true, VITE_SHAPE_MODE: "direct" });
 const proxyConfig = resolveConfig(
@@ -63,6 +63,22 @@ describe("buildShapeRequestUrl", () => {
   it("builds a proxy channels URL without query parameters", () => {
     expect(buildShapeRequestUrl("channels", proxyConfig)).toBe(
       "http://localhost:8000/api/shapes/channels",
+    );
+  });
+});
+
+describe("resolveShapeUrl", () => {
+  it("resolves same-origin proxy URLs against the page URL", () => {
+    const config = resolveConfig({ VITE_SHAPE_MODE: "proxy", VITE_API_BASE_URL: "" });
+    const url = buildShapeRequestUrl("messages", config, { channelId: "channel-1" });
+    expect(resolveShapeUrl(url, "https://zoo.example/channels/channel-1")).toBe(
+      "https://zoo.example/api/shapes/messages?channel_id=channel-1",
+    );
+  });
+
+  it("keeps absolute URLs unchanged", () => {
+    expect(resolveShapeUrl("http://localhost:8000/api/shapes/users", "https://zoo.example/")).toBe(
+      "http://localhost:8000/api/shapes/users",
     );
   });
 });

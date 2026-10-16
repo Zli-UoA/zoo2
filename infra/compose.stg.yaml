@@ -3,6 +3,65 @@ name: zoo2-stg
 # Coolify は `extends` や `!reset` などを正しく扱えないため、DB 定義はこのファイルに展開している。
 # ローカル用の infra/db/compose.yml と内容を合わせること (ホスト側ポート公開は行わない)。
 services:
+  proxy:
+    image: ${PROXY_IMAGE:-zoo-proxy:stg}
+    build:
+      context: .
+      dockerfile: infra/Dockerfile-proxy-deploy
+    restart: unless-stopped
+    environment:
+      BACKEND_PORT: ${PORT:-8000}
+      BFF_VERIFY_PATH: ${BFF_VERIFY_PATH:-/auth/verify}
+      BFF_VERIFY_SECRET: ${BFF_VERIFY_SECRET:?BFF_VERIFY_SECRET is required}
+    command:
+      - --entrypoints.web.address=:8080
+      - --entrypoints.web.forwardedheaders.trustedips=${PROXY_TRUSTED_IPS:-127.0.0.1/32}
+      - --entrypoints.web.transport.respondingtimeouts.readtimeout=120s
+      # writeTimeout はリクエスト開始から応答を書き終えるまでの期限で、長く続く
+      # Shape のストリーム (SSE など) を打ち切るため無効にする。バックエンドの
+      # 応答待ちは routes.yaml の long-poll.responseHeaderTimeout が担う。
+      - --entrypoints.web.transport.respondingtimeouts.writetimeout=0s
+      - --entrypoints.health.address=:8082
+      - --ping.entrypoint=health
+      - --providers.file.filename=/etc/traefik/routes.yaml
+    # Coolify Single Resource Tunnel (cloudflared uses host networking).
+    # Avoid Coolify's own 8080; expose only the ingress on host loopback.
+    ports:
+      - "127.0.0.1:${PROXY_PORT:-18080}:8080"
+    networks:
+      - frontend
+      - backend
+    depends_on:
+      frontend:
+        condition: service_healthy
+      backend:
+        condition: service_started
+    healthcheck:
+      # Keep health entrypoint name/address in sync with command above.
+      test: ["CMD", "traefik", "healthcheck", "--ping", "--ping.entrypoint=health", "--entrypoints.health.address=:8082"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+
+  frontend:
+    image: ${FRONTEND_IMAGE:-zoo-frontend:stg}
+    build:
+      context: .
+      dockerfile: infra/Dockerfile-frontend-deploy
+      args:
+        VITE_API_BASE_URL: ""
+    restart: unless-stopped
+    environment:
+      BFF_VERIFY_SECRET: ${BFF_VERIFY_SECRET:?BFF_VERIFY_SECRET is required}
+      # Keep frontend, healthcheck and proxy on the same internal address.
+      # PORT at the project level configures Rust, not this service.
+      HOST: 0.0.0.0
+      PORT: "3000"
+      NITRO_HOST: 0.0.0.0
+      NITRO_PORT: "3000"
+    networks:
+      - frontend
+
   backend:
     image: ${BACKEND_IMAGE:-zoo-backend:stg}
     build:
@@ -13,8 +72,17 @@ services:
       DATABASE_URL: postgresql://${POSTGRES_USER:-zoo}:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}@postgres:5432/${POSTGRES_DB:-zoo}?sslmode=disable
       ELECTRIC_URL: http://electric:3000
       PORT: ${PORT:-8000}
-    ports:
-      - "127.0.0.1:${PORT:-8000}:${PORT:-8000}"
+      ENVIRONMENT: production
+      DEV_AUTH_ENABLED: "false"
+      # Pass through configured OIDC values; keep missing keys unset so Rust's
+      # production validation and OIDC_CLIENT_ID fallback still apply.
+      OIDC_ISSUER:
+      OIDC_AUDIENCE:
+      OIDC_CLIENT_ID:
+      OIDC_JWKS_URL:
+    networks:
+      - backend
+      - backend-egress
     depends_on:
       postgres:
         condition: service_healthy
@@ -24,6 +92,8 @@ services:
   postgres:
     image: postgres:16-alpine
     restart: unless-stopped
+    networks:
+      - backend
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-zoo}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
@@ -46,6 +116,8 @@ services:
   electric:
     image: electricsql/electric:${ELECTRIC_VERSION:-1.8.1}
     restart: unless-stopped
+    networks:
+      - backend
     environment:
       DATABASE_URL: postgresql://${POSTGRES_USER:-zoo}:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}@postgres:5432/${POSTGRES_DB:-zoo}?sslmode=disable
       ELECTRIC_INSECURE: "true"
@@ -61,3 +133,10 @@ services:
 
 volumes:
   postgres-data:
+
+networks:
+  frontend:
+  backend:
+    internal: true
+  # Rust needs outbound HTTPS for Kanidm Discovery/JWKS.
+  backend-egress:
