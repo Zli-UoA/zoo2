@@ -6,43 +6,16 @@ createServer(async (req, res) => {
   let body = '';
   for await (const chunk of req) body += chunk;
   if (role === 'frontend') {
-    if (req.url !== '/auth/verify') {
-      if (req.headers.authorization || req.headers['x-dev-user'] || req.headers['x-verify-secret']) {
-        res.writeHead(400);
-        return res.end('client auth headers reached frontend');
-      }
-      return res.end('frontend');
-    }
-    if (req.headers['x-verify-secret'] !== process.env.BFF_VERIFY_SECRET) {
-      res.writeHead(403);
-      return res.end('verify secret mismatch');
-    }
-    if (req.headers.authorization || req.headers['x-dev-user'] || body) {
-      res.writeHead(400);
-      return res.end('untrusted auth or request body reached verify');
-    }
-    if (req.headers.cookie === 'session=unavailable') {
-      res.writeHead(503);
-      return res.end('session store unavailable');
-    }
-    if (req.headers.cookie !== 'session=valid') {
-      res.writeHead(401);
-      return res.end('unauthenticated');
-    }
-    if (req.headers['x-forwarded-method'] !== 'GET' &&
-        req.headers.origin !== `${req.headers['x-forwarded-proto']}://${req.headers['x-forwarded-host']}`) {
-      res.writeHead(403);
-      return res.end('CSRF rejected');
-    }
-    res.setHeader('Authorization', 'Bearer verified-token');
-    res.setHeader('X-Verify-Method', req.headers['x-forwarded-method']);
-    return res.end();
+    return res.end('frontend');
   }
   backendRequests++;
-  if (req.headers.authorization !== 'Bearer verified-token' || req.headers['x-dev-user'] ||
-      req.headers['x-verify-secret']) {
+  if (req.headers['x-dev-user']) {
+    res.writeHead(400);
+    return res.end('untrusted X-Dev-User header reached backend');
+  }
+  if (req.headers.authorization !== 'Bearer valid-token') {
     res.writeHead(401);
-    return res.end('invalid upstream identity');
+    return res.end('unauthenticated');
   }
   if (req.url.startsWith('/api/shapes/')) {
     res.writeHead(200, { 'Content-Type': 'application/json', 'electric-offset': '42_0',
@@ -55,3 +28,4 @@ createServer(async (req, res) => {
     authorization: req.headers.authorization, devUser: req.headers['x-dev-user'] ?? null,
     backendRequests }));
 }).listen(role === 'frontend' ? 3000 : Number(process.env.PORT || 8000), '0.0.0.0');
+
