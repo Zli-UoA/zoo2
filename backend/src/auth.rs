@@ -126,6 +126,7 @@ pub async fn resolve_or_provision_user(
     let preferred_name = claims
         .preferred_username
         .as_deref()
+        .and_then(|u| u.split('@').next())
         .or_else(|| claims.email.as_deref().and_then(|e| e.split('@').next()))
         .unwrap_or("user");
 
@@ -337,7 +338,7 @@ impl FromRequestParts<AppState> for AuthUser {
         parts: &mut Parts,
         state: &AppState,
     ) -> Result<Self, Self::Rejection> {
-        let is_dev_enabled = dev_auth_enabled();
+        let is_dev_enabled = state.config.dev_auth_enabled;
 
         let auth_header = parts
             .headers

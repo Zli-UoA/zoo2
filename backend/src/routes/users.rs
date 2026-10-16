@@ -104,7 +104,7 @@ async fn create_user(
     State(state): State<AppState>,
     Json(payload): Json<CreateUserRequest>,
 ) -> Result<Json<ApiResponse<UserResponse>>, AppError> {
-    if !crate::auth::dev_auth_enabled() {
+    if !state.config.dev_auth_enabled {
         return Err(AppError::Forbidden(
             "Direct user creation is disabled in production. Users are automatically provisioned via OIDC login."
                 .to_string(),

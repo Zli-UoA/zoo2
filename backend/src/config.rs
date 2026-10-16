@@ -25,6 +25,8 @@ pub struct Config {
     pub electric_url: String,
     pub electric_secret: Option<String>,
     pub oidc: Option<OidcConfig>,
+    pub dev_auth_enabled: bool,
+    pub environment: String,
 }
 
 impl fmt::Debug for Config {
@@ -39,6 +41,8 @@ impl fmt::Debug for Config {
             )
             .field("database_url", &"[REDACTED]")
             .field("oidc", &self.oidc)
+            .field("dev_auth_enabled", &self.dev_auth_enabled)
+            .field("environment", &self.environment)
             .finish()
     }
 }
@@ -88,6 +92,19 @@ impl Config {
             _ => None,
         };
 
+        let environment = env::var("ENVIRONMENT").unwrap_or_else(|_| "development".to_string());
+        let dev_auth_env = env::var("DEV_AUTH_ENABLED").ok();
+        #[cfg(test)]
+        let is_test_build = true;
+        #[cfg(not(test))]
+        let is_test_build = false;
+
+        let dev_auth_enabled = crate::auth::is_dev_auth_enabled_pure(
+            dev_auth_env.as_deref(),
+            Some(&environment),
+            is_test_build,
+        );
+
         Self {
             database_url,
             host,
@@ -95,7 +112,20 @@ impl Config {
             electric_url,
             electric_secret,
             oidc,
+            dev_auth_enabled,
+            environment,
         }
+    }
+
+    /// 設定値の整合性検証 (本番環境での OIDC 設定必須化など)
+    pub fn validate(&self) -> Result<(), String> {
+        if self.environment == "production" && self.oidc.is_none() {
+            return Err(
+                "OIDC configuration (OIDC_ISSUER and OIDC_AUDIENCE) is required when ENVIRONMENT is 'production'"
+                    .to_string(),
+            );
+        }
+        Ok(())
     }
 }
 
@@ -116,6 +146,8 @@ mod tests {
                 audience: "zoo-client".to_string(),
                 jwks_url: Some("https://idp.example.com/jwks".to_string()),
             }),
+            dev_auth_enabled: false,
+            environment: "production".to_string(),
         };
         let debug_str = format!("{config:?}");
         assert!(!debug_str.contains("super_secret_password"));
@@ -124,5 +156,39 @@ mod tests {
         assert!(debug_str.contains("[REDACTED]"));
         assert!(debug_str.contains("8080"));
         assert!(debug_str.contains("https://idp.example.com"));
+    }
+
+    #[test]
+    fn test_config_validate_in_production() {
+        // 本番環境で OIDC 設定なしはエラー
+        let prod_no_oidc = Config {
+            database_url: "test".to_string(),
+            host: "127.0.0.1".to_string(),
+            port: 8080,
+            electric_url: "test".to_string(),
+            electric_secret: None,
+            oidc: None,
+            dev_auth_enabled: false,
+            environment: "production".to_string(),
+        };
+        assert!(prod_no_oidc.validate().is_err());
+
+        // 開発環境なら OIDC 設定なしでも OK
+        let dev_no_oidc = Config {
+            environment: "development".to_string(),
+            ..prod_no_oidc.clone()
+        };
+        assert!(dev_no_oidc.validate().is_ok());
+
+        // 本番環境でも OIDC 設定があれば OK
+        let prod_with_oidc = Config {
+            oidc: Some(OidcConfig {
+                issuer: "https://idp.example.com".to_string(),
+                audience: "zoo-client".to_string(),
+                jwks_url: None,
+            }),
+            ..prod_no_oidc
+        };
+        assert!(prod_with_oidc.validate().is_ok());
     }
 }

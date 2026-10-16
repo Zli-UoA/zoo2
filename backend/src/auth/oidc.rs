@@ -13,7 +13,8 @@ use crate::{config::OidcConfig, error::AppError};
 /// OpenID Provider Configuration (.well-known/openid-configuration)
 #[derive(Debug, Deserialize)]
 struct OpenIdConfiguration {
-    jwks_uri: String,
+    pub issuer: String,
+    pub jwks_uri: String,
 }
 
 /// OIDC トークンのクレーム定義 (RFC 9068 適合)
@@ -90,7 +91,7 @@ impl JwksVerifier {
             .await
             .map_err(|e| {
                 tracing::warn!("Failed to fetch OpenID discovery from {discovery_url}: {e}");
-                AppError::Unauthorized("Failed to verify token".to_string())
+                AppError::BadGateway("Failed to connect to OpenID discovery endpoint".to_string())
             })?;
 
         if !resp.status().is_success() {
@@ -98,13 +99,28 @@ impl JwksVerifier {
                 "OpenID discovery endpoint {discovery_url} returned status {}",
                 resp.status()
             );
-            return Err(AppError::Unauthorized("Failed to verify token".to_string()));
+            return Err(AppError::BadGateway(format!(
+                "OpenID discovery endpoint returned status {}",
+                resp.status()
+            )));
         }
 
         let openid_config: OpenIdConfiguration = resp.json().await.map_err(|e| {
             tracing::warn!("Failed to parse OpenID discovery JSON: {e}");
-            AppError::Unauthorized("Failed to verify token".to_string())
+            AppError::BadGateway("Failed to parse OpenID discovery JSON".to_string())
         })?;
+
+        // OIDC Discovery 仕様に基づく issuer の照合 (末尾スラッシュの差異を許容)
+        if openid_config.issuer.trim_end_matches('/') != config.issuer.trim_end_matches('/') {
+            tracing::warn!(
+                "OpenID discovery issuer mismatch: expected '{}', got '{}'",
+                config.issuer,
+                openid_config.issuer
+            );
+            return Err(AppError::BadGateway(
+                "OpenID discovery issuer mismatch".to_string(),
+            ));
+        }
 
         Ok(openid_config.jwks_uri)
     }
@@ -113,17 +129,20 @@ impl JwksVerifier {
     async fn refresh_jwks(&self, jwks_url: &str) -> Result<(), AppError> {
         let resp = self.http_client.get(jwks_url).send().await.map_err(|e| {
             tracing::warn!("Failed to fetch JWKS from {jwks_url}: {e}");
-            AppError::Unauthorized("Failed to verify token".to_string())
+            AppError::BadGateway("Failed to fetch JWKS from identity provider".to_string())
         })?;
 
         if !resp.status().is_success() {
             tracing::warn!("JWKS endpoint {jwks_url} returned status {}", resp.status());
-            return Err(AppError::Unauthorized("Failed to verify token".to_string()));
+            return Err(AppError::BadGateway(format!(
+                "JWKS endpoint returned status {}",
+                resp.status()
+            )));
         }
 
         let jwks: JwkSet = resp.json().await.map_err(|e| {
             tracing::warn!("Failed to parse JWKS JSON: {e}");
-            AppError::Unauthorized("Failed to verify token".to_string())
+            AppError::BadGateway("Failed to parse JWKS response from identity provider".to_string())
         })?;
 
         let mut new_keys = HashMap::new();
@@ -135,7 +154,14 @@ impl JwksVerifier {
                     Some(jsonwebtoken::jwk::KeyAlgorithm::RS384) => Algorithm::RS384,
                     Some(jsonwebtoken::jwk::KeyAlgorithm::ES384) => Algorithm::ES384,
                     Some(jsonwebtoken::jwk::KeyAlgorithm::RS512) => Algorithm::RS512,
-                    _ => Algorithm::RS256,
+                    _ => match key.algorithm {
+                        // Kanidm の既定は ES256 (alg 省略時も kty/parameters から推論)
+                        jsonwebtoken::jwk::AlgorithmParameters::EllipticCurve(_) => {
+                            Algorithm::ES256
+                        }
+                        jsonwebtoken::jwk::AlgorithmParameters::RSA(_) => Algorithm::RS256,
+                        _ => Algorithm::RS256,
+                    },
                 };
                 if let Ok(decoding_key) = DecodingKey::from_jwk(&key) {
                     new_keys.insert(kid.clone(), (decoding_key, alg));
@@ -148,6 +174,28 @@ impl JwksVerifier {
         cache.last_fetched_at = Some(Instant::now());
 
         Ok(())
+    }
+
+    /// トークンのデコードと検証処理
+    fn decode_and_validate(
+        &self,
+        token: &str,
+        decoding_key: &DecodingKey,
+        alg: Algorithm,
+        config: &OidcConfig,
+    ) -> Result<OidcClaims, AppError> {
+        let mut validation = Validation::new(alg);
+        validation.set_issuer(&[&config.issuer]);
+        validation.set_audience(&[&config.audience]);
+        validation.validate_exp = true;
+        validation.validate_nbf = true;
+
+        let token_data = decode::<OidcClaims>(token, decoding_key, &validation).map_err(|e| {
+            tracing::warn!("Token validation failed: {e}");
+            AppError::Unauthorized("Invalid token".to_string())
+        })?;
+
+        Ok(token_data.claims)
     }
 
     /// Bearer トークンを検証し、クレームを返却 (RFC 9068 準拠)
@@ -186,23 +234,19 @@ impl JwksVerifier {
             AppError::Unauthorized("Invalid token header".to_string())
         })?;
 
-        // 3. キャッシュからキーを検索 (TTL超過時は再取得)
-        let cached = {
+        // 3. キャッシュからキーを検索 (TTL超過時は再取得、失敗時は stale キャッシュへフォールバック)
+        let (cached, is_expired) = {
             let cache = self.cache.read().await;
-            let is_expired = match cache.last_fetched_at {
+            let expired = match cache.last_fetched_at {
                 Some(t) => t.elapsed() >= self.cache_ttl,
                 None => true,
             };
-            if is_expired {
-                None
-            } else {
-                cache.keys.get(&kid).cloned()
-            }
+            (cache.keys.get(&kid).cloned(), expired)
         };
 
         let (decoding_key, alg) = match cached {
-            Some(key_pair) => key_pair,
-            None => {
+            Some(key_pair) if !is_expired => key_pair,
+            cached_stale => {
                 let need_refresh = {
                     let cache = self.cache.read().await;
                     match cache.last_fetched_at {
@@ -212,8 +256,27 @@ impl JwksVerifier {
                 };
 
                 if need_refresh {
-                    let jwks_url = self.resolve_jwks_url(config).await?;
-                    self.refresh_jwks(&jwks_url).await?;
+                    match self.resolve_jwks_url(config).await {
+                        Ok(jwks_url) => {
+                            if let Err(err) = self.refresh_jwks(&jwks_url).await {
+                                tracing::warn!("JWKS refresh failed: {err}");
+                                if let Some(stale) = cached_stale {
+                                    tracing::warn!("Falling back to stale JWKS key for kid: {kid}");
+                                    return self
+                                        .decode_and_validate(token, &stale.0, stale.1, config);
+                                }
+                                return Err(err);
+                            }
+                        }
+                        Err(err) => {
+                            tracing::warn!("OpenID Discovery failed: {err}");
+                            if let Some(stale) = cached_stale {
+                                tracing::warn!("Falling back to stale JWKS key for kid: {kid}");
+                                return self.decode_and_validate(token, &stale.0, stale.1, config);
+                            }
+                            return Err(err);
+                        }
+                    }
                 }
 
                 let cache = self.cache.read().await;
@@ -224,19 +287,7 @@ impl JwksVerifier {
             }
         };
 
-        // 4. Validation 設定 (RFC 9068, iss, aud, exp, nbf の検証)
-        let mut validation = Validation::new(alg);
-        validation.set_issuer(&[&config.issuer]);
-        validation.set_audience(&[&config.audience]);
-        validation.validate_exp = true;
-        validation.validate_nbf = true;
-
-        // 5. トークンのデコードと署名・期限検証
-        let token_data = decode::<OidcClaims>(token, &decoding_key, &validation).map_err(|e| {
-            tracing::warn!("Token validation failed: {e}");
-            AppError::Unauthorized("Invalid token".to_string())
-        })?;
-
-        Ok(token_data.claims)
+        // 4. トークンのデコードと検証
+        self.decode_and_validate(token, &decoding_key, alg, config)
     }
 }

@@ -199,7 +199,6 @@ async fn setup_test_app(
 async fn test_oidc_jit_provisioning_and_user_profile_flow() -> anyhow::Result<()> {
     let mock_server = MockServer::start().await;
 
-    // JWKS モック (key1 のみ)
     let jwks_body = json!({ "keys": [key1_jwk()] });
     Mock::given(method("GET"))
         .and(path("/.well-known/jwks.json"))
@@ -294,6 +293,48 @@ async fn test_oidc_jit_provisioning_and_user_profile_flow() -> anyhow::Result<()
     let body_get = to_bytes(resp_get.into_body(), usize::MAX).await?;
     let json_get: Value = serde_json::from_slice(&body_get)?;
     assert_eq!(json_get["display_name"], "Alice The Graduate");
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_preferred_username_spn_format() -> anyhow::Result<()> {
+    let mock_server = MockServer::start().await;
+    let jwks_body = json!({ "keys": [key1_jwk()] });
+    Mock::given(method("GET"))
+        .and(path("/.well-known/jwks.json"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(&jwks_body))
+        .mount(&mock_server)
+        .await;
+
+    let (app, _state, oidc_cfg) = setup_test_app(&mock_server, true).await;
+
+    // Kanidm の SPN 形式 (name@realm.org)
+    let sub = format!("spn-sub-{}", uuid::Uuid::new_v4().simple());
+    let token = generate_token(
+        TEST_KEY1_PEM,
+        "test-key-1",
+        &oidc_cfg.issuer,
+        &oidc_cfg.audience,
+        &sub,
+        Some("kanidm_user@idm.example.org"),
+        Some("Kanidm User"),
+        None,
+        3600,
+    );
+
+    let req = Request::builder()
+        .uri("/api/users/me")
+        .header("Authorization", format!("Bearer {token}"))
+        .body(Body::empty())?;
+
+    let resp = app.oneshot(req).await?;
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    let body = to_bytes(resp.into_body(), usize::MAX).await?;
+    let user_json: Value = serde_json::from_slice(&body)?;
+    // @ より前がユーザー名として採用されること
+    assert_eq!(user_json["user_name"], "kanidm_user");
 
     Ok(())
 }
@@ -401,7 +442,6 @@ async fn test_rfc9068_typ_validation() -> anyhow::Result<()> {
 async fn test_openid_discovery_resolution() -> anyhow::Result<()> {
     let mock_server = MockServer::start().await;
 
-    // Discovery エンドポイントと JWKS エンドポイントのモック
     let custom_jwks_path = "/oauth2/openid/zoo-client/public_key.jwk";
     let discovery_body = json!({
         "issuer": mock_server.uri(),
@@ -421,7 +461,6 @@ async fn test_openid_discovery_resolution() -> anyhow::Result<()> {
         .mount(&mock_server)
         .await;
 
-    // jwks_url を未設定 (None) にして Discovery を自動解決
     let (app, _state, oidc_cfg) = setup_test_app(&mock_server, false).await;
     assert!(oidc_cfg.jwks_url.is_none());
 
@@ -444,6 +483,85 @@ async fn test_openid_discovery_resolution() -> anyhow::Result<()> {
 
     let resp = app.oneshot(req).await?;
     assert_eq!(resp.status(), StatusCode::OK);
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_openid_discovery_issuer_mismatch_bad_gateway() -> anyhow::Result<()> {
+    let mock_server = MockServer::start().await;
+
+    // Discovery の issuer が設定と異なる悪意ある/誤設定のケース
+    let discovery_body = json!({
+        "issuer": "https://malicious-idp.example.com",
+        "jwks_uri": format!("{}/jwks", mock_server.uri())
+    });
+
+    Mock::given(method("GET"))
+        .and(path("/.well-known/openid-configuration"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(&discovery_body))
+        .mount(&mock_server)
+        .await;
+
+    let (app, _state, oidc_cfg) = setup_test_app(&mock_server, false).await;
+
+    let token = generate_token(
+        TEST_KEY1_PEM,
+        "test-key-1",
+        &oidc_cfg.issuer,
+        &oidc_cfg.audience,
+        "sub-mismatch",
+        Some("user"),
+        Some("User"),
+        None,
+        3600,
+    );
+
+    let req = Request::builder()
+        .uri("/api/users/me")
+        .header("Authorization", format!("Bearer {token}"))
+        .body(Body::empty())?;
+
+    let resp = app.oneshot(req).await?;
+    // 上流 IdP の設定不一致は 502 Bad Gateway
+    assert_eq!(resp.status(), StatusCode::BAD_GATEWAY);
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_upstream_idp_outage_returns_bad_gateway() -> anyhow::Result<()> {
+    let mock_server = MockServer::start().await;
+
+    // Discovery エンドポイントが 500 エラーを返す
+    Mock::given(method("GET"))
+        .and(path("/.well-known/openid-configuration"))
+        .respond_with(ResponseTemplate::new(500))
+        .mount(&mock_server)
+        .await;
+
+    let (app, _state, oidc_cfg) = setup_test_app(&mock_server, false).await;
+
+    let token = generate_token(
+        TEST_KEY1_PEM,
+        "test-key-1",
+        &oidc_cfg.issuer,
+        &oidc_cfg.audience,
+        "sub-outage",
+        Some("user"),
+        Some("User"),
+        None,
+        3600,
+    );
+
+    let req = Request::builder()
+        .uri("/api/users/me")
+        .header("Authorization", format!("Bearer {token}"))
+        .body(Body::empty())?;
+
+    let resp = app.oneshot(req).await?;
+    // IdP 障害は 401 ではなく 502 Bad Gateway
+    assert_eq!(resp.status(), StatusCode::BAD_GATEWAY);
 
     Ok(())
 }
@@ -565,7 +683,6 @@ async fn test_oidc_token_validation_failures() -> anyhow::Result<()> {
 async fn test_oidc_key_rotation() -> anyhow::Result<()> {
     let mock_server = MockServer::start().await;
 
-    // 最初は key1 と key2 の両方をエンドポイントで返却できるようにする
     let jwks_body = json!({ "keys": [key1_jwk(), key2_jwk()] });
     Mock::given(method("GET"))
         .and(path("/.well-known/jwks.json"))
@@ -606,11 +723,9 @@ async fn test_oidc_key_rotation() -> anyhow::Result<()> {
 
 #[tokio::test]
 async fn test_production_environment_fail_closed_guards() -> anyhow::Result<()> {
-    unsafe {
-        std::env::set_var("ENVIRONMENT", "production");
-        std::env::remove_var("DEV_AUTH_ENABLED");
-    }
-
+    // 【重要】プロセス全体の環境変数を書き換えるのではなく、
+    // Config の dev_auth_enabled = false / environment = "production" を直接注入してテスト。
+    // 他の並行テストへの影響や flake を完全に排除。
     let mock_server = MockServer::start().await;
     let jwks_body = json!({ "keys": [key1_jwk()] });
     Mock::given(method("GET"))
@@ -619,7 +734,15 @@ async fn test_production_environment_fail_closed_guards() -> anyhow::Result<()> 
         .mount(&mock_server)
         .await;
 
-    let (app, _state, oidc_cfg) = setup_test_app(&mock_server, true).await;
+    let (_default_app, base_state, oidc_cfg) = setup_test_app(&mock_server, true).await;
+
+    let mut prod_config = base_state.config.clone();
+    prod_config.dev_auth_enabled = false;
+    prod_config.environment = "production".to_string();
+    assert!(prod_config.validate().is_ok());
+
+    let prod_state = AppState::new(base_state.db.clone(), prod_config);
+    let app = create_router(prod_state);
 
     let test_uuid = "44444444-4444-4444-4444-444444444444";
 
@@ -689,11 +812,6 @@ async fn test_production_environment_fail_closed_guards() -> anyhow::Result<()> 
         .body(Body::empty())?;
     let resp5 = app.clone().oneshot(req5).await?;
     assert_eq!(resp5.status(), StatusCode::OK);
-
-    // クリーンアップ
-    unsafe {
-        std::env::remove_var("ENVIRONMENT");
-    }
 
     Ok(())
 }
