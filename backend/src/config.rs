@@ -17,6 +17,36 @@ impl fmt::Debug for OidcConfig {
     }
 }
 
+/// 開発用の既定 CORS 許可オリジン
+///
+/// dev はフロント (`:5173`) からバックエンド (`:8000`) へのクロスオリジンになるため、
+/// localhost / 127.0.0.1 の両表記を既定で許可する。本番は同一オリジン配信のため
+/// 外部オリジンは不要で、`CORS_ALLOWED_ORIGINS` で明示的に上書きする。
+pub(crate) const DEFAULT_CORS_ALLOWED_ORIGINS: &[&str] =
+    &["http://localhost:5173", "http://127.0.0.1:5173"];
+
+/// `CORS_ALLOWED_ORIGINS` (カンマ区切り) をパースする純粋関数
+///
+/// - 設定済みならカンマ区切りをパースする (空要素は無視、空文字なら空リスト)。
+/// - 未設定なら dev 用の既定オリジンを返す。ただし `ENVIRONMENT=production` では
+///   本番に dev オリジン (`localhost:5173` / `127.0.0.1:5173`) を残さないため
+///   空リストを既定とする (本番は同一オリジン配信で外部オリジン不要)。
+pub(crate) fn parse_cors_allowed_origins(raw: Option<&str>, environment: &str) -> Vec<String> {
+    match raw {
+        Some(value) => value
+            .split(',')
+            .map(str::trim)
+            .filter(|origin| !origin.is_empty())
+            .map(str::to_string)
+            .collect(),
+        None if environment == "production" => Vec::new(),
+        None => DEFAULT_CORS_ALLOWED_ORIGINS
+            .iter()
+            .map(|origin| origin.to_string())
+            .collect(),
+    }
+}
+
 #[derive(Clone)]
 pub struct Config {
     pub database_url: String,
@@ -27,6 +57,7 @@ pub struct Config {
     pub oidc: Option<OidcConfig>,
     pub dev_auth_enabled: bool,
     pub environment: String,
+    pub cors_allowed_origins: Vec<String>,
 }
 
 impl fmt::Debug for Config {
@@ -43,6 +74,7 @@ impl fmt::Debug for Config {
             .field("oidc", &self.oidc)
             .field("dev_auth_enabled", &self.dev_auth_enabled)
             .field("environment", &self.environment)
+            .field("cors_allowed_origins", &self.cors_allowed_origins)
             .finish()
     }
 }
@@ -93,6 +125,12 @@ impl Config {
         };
 
         let environment = env::var("ENVIRONMENT").unwrap_or_else(|_| "development".to_string());
+
+        let cors_allowed_origins = parse_cors_allowed_origins(
+            env::var("CORS_ALLOWED_ORIGINS").ok().as_deref(),
+            &environment,
+        );
+
         let dev_auth_env = env::var("DEV_AUTH_ENABLED").ok();
         #[cfg(test)]
         let is_test_build = true;
@@ -114,6 +152,7 @@ impl Config {
             oidc,
             dev_auth_enabled,
             environment,
+            cors_allowed_origins,
         }
     }
 
@@ -148,6 +187,7 @@ mod tests {
             }),
             dev_auth_enabled: false,
             environment: "production".to_string(),
+            cors_allowed_origins: vec!["https://zoo.example.com".to_string()],
         };
         let debug_str = format!("{config:?}");
         assert!(!debug_str.contains("super_secret_password"));
@@ -170,6 +210,7 @@ mod tests {
             oidc: None,
             dev_auth_enabled: false,
             environment: "production".to_string(),
+            cors_allowed_origins: vec![],
         };
         assert!(prod_no_oidc.validate().is_err());
 
@@ -190,5 +231,58 @@ mod tests {
             ..prod_no_oidc
         };
         assert!(prod_with_oidc.validate().is_ok());
+    }
+
+    #[test]
+    fn test_parse_cors_allowed_origins_defaults_to_dev() {
+        // development で未設定なら dev オリジンを含む
+        let origins = parse_cors_allowed_origins(None, "development");
+        assert!(origins.contains(&"http://localhost:5173".to_string()));
+        assert!(origins.contains(&"http://127.0.0.1:5173".to_string()));
+        assert_eq!(origins.len(), DEFAULT_CORS_ALLOWED_ORIGINS.len());
+    }
+
+    #[test]
+    fn test_parse_cors_allowed_origins_defaults_empty_in_production() {
+        // 本番で未設定なら dev オリジンを残さない (空リスト)
+        assert!(parse_cors_allowed_origins(None, "production").is_empty());
+    }
+
+    #[test]
+    fn test_parse_cors_allowed_origins_from_env() {
+        // 設定済みなら環境に関わらずパースされる (本番でも明示オリジンは許可)
+        let origins = parse_cors_allowed_origins(
+            Some("https://zoo.example.com, https://app.example.com "),
+            "production",
+        );
+        assert_eq!(
+            origins,
+            vec![
+                "https://zoo.example.com".to_string(),
+                "https://app.example.com".to_string(),
+            ]
+        );
+
+        // カンマ区切り・前後空白を除去
+        let origins = parse_cors_allowed_origins(
+            Some("https://zoo.example.com, https://app.example.com "),
+            "development",
+        );
+        assert_eq!(
+            origins,
+            vec![
+                "https://zoo.example.com".to_string(),
+                "https://app.example.com".to_string(),
+            ]
+        );
+
+        // 空要素は無視
+        let origins =
+            parse_cors_allowed_origins(Some("https://zoo.example.com,, ,"), "development");
+        assert_eq!(origins, vec!["https://zoo.example.com".to_string()]);
+
+        // 空文字はクロスオリジン無効 (空リスト)
+        assert!(parse_cors_allowed_origins(Some(""), "development").is_empty());
+        assert!(parse_cors_allowed_origins(Some(""), "production").is_empty());
     }
 }

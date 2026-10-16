@@ -5,26 +5,48 @@ pub mod response;
 pub mod shapes;
 pub mod users;
 
-use axum::Router;
-use tower_http::{
-    cors::{Any, CorsLayer},
-    trace::TraceLayer,
+use axum::{
+    Router,
+    http::{HeaderName, HeaderValue, Method, header},
 };
+use tower_http::{cors::CorsLayer, trace::TraceLayer};
 
 use crate::state::AppState;
 
 pub fn create_router(state: AppState) -> Router {
+    // 環境変数 `CORS_ALLOWED_ORIGINS` 由来の許可リストのみ受け付ける。
+    // 不正な値は無視し、許可リストが空ならクロスオリジンは一切許可しない。
+    let allowed_origins: Vec<HeaderValue> = state
+        .config
+        .cors_allowed_origins
+        .iter()
+        .filter_map(|origin| HeaderValue::from_bytes(origin.as_bytes()).ok())
+        .collect();
+
     let cors = CorsLayer::new()
-        .allow_origin(Any)
-        .allow_methods(Any)
-        .allow_headers(Any)
+        .allow_origin(allowed_origins)
+        // REST (GET/POST/PATCH/DELETE) と Shape の SSE (GET) のみ
+        .allow_methods([
+            Method::GET,
+            Method::POST,
+            Method::PATCH,
+            Method::DELETE,
+            Method::OPTIONS,
+        ])
+        // dev の `X-Dev-User`, Bearer の `Authorization`, JSON 書き込みの `Content-Type`
+        .allow_headers([
+            header::AUTHORIZATION,
+            header::CONTENT_TYPE,
+            header::ACCEPT,
+            HeaderName::from_static("x-dev-user"),
+        ])
         .expose_headers([
-            axum::http::HeaderName::from_static("electric-handle"),
-            axum::http::HeaderName::from_static("electric-offset"),
-            axum::http::HeaderName::from_static("electric-schema"),
-            axum::http::HeaderName::from_static("electric-cursor"),
-            axum::http::HeaderName::from_static("electric-up-to-date"),
-            axum::http::HeaderName::from_static("electric-chunk-last-offset"),
+            HeaderName::from_static("electric-handle"),
+            HeaderName::from_static("electric-offset"),
+            HeaderName::from_static("electric-schema"),
+            HeaderName::from_static("electric-cursor"),
+            HeaderName::from_static("electric-up-to-date"),
+            HeaderName::from_static("electric-chunk-last-offset"),
         ]);
 
     Router::new()

@@ -117,7 +117,7 @@ cd frontend && pnpm dev           # http://localhost:5173
 ### 経路とポイント
 
 - 読み取り: `proxy` は `VITE_API_BASE_URL` + `VITE_SHAPE_PROXY_PATH`（既定 `/api/shapes`）を購読します。バックエンドが `table` / `where` を確定し、サーバ側で `ELECTRIC_SECRET` を付けて Electric へ転送します。`messages` / `channel_users` はクエリで `channel_id` を渡します。
-- 認証: REST と Shape の両方で同じ `X-Dev-User`（と `Authorization`）を受け付けます。バックエンドは `DEV_AUTH_ENABLED=true` のときだけこのヘッダを受け付け、それ以外は 403 です。CORS はバックエンドが任意オリジン・任意ヘッダを許可し、`electric-*` を公開します。`direct` は Electric の CORS が `X-Dev-User` / `Authorization` を許可しないため認証ヘッダを付けません（`collections.ts` の `shapeAuthSource`）。
+- 認証: REST と Shape の両方で同じ `X-Dev-User`（と `Authorization`）を受け付けます。バックエンドは `DEV_AUTH_ENABLED=true` のときだけこのヘッダを受け付け、それ以外は 403 です。CORS はバックエンドが `CORS_ALLOWED_ORIGINS` の許可オリジンに限定し（`ENVIRONMENT=production` 以外で未設定なら `http://localhost:5173`, `http://127.0.0.1:5173`、本番で未設定なら空）、メソッドとヘッダも既知のものだけを許可しつつ `electric-*` を公開します。`direct` は Electric の CORS が `X-Dev-User` / `Authorization` を許可しないため認証ヘッダを付けません（`collections.ts` の `shapeAuthSource`）。
 - 認可: バックエンドの channels Shape は `is_private = false OR id IN (SELECT channel_id FROM channel_user WHERE user_id = ...)` でメンバーシップに絞ります。未参加の非公開チャンネルは Shape・メッセージのどちらも届きません（存在隠蔽のため 404）。参加/退出で channels 側の行が move-in / move-out します。
 - `channel_users` のサブクエリ経路（`electric#3143`）: Electric 1.8.1 を `ELECTRIC_FEATURE_FLAGS=allow_subqueries` で動かしており、`WHERE ... IN (SELECT ... WHERE user_id = $1)` の形がそのまま通ることを実測しました（`params[1]` により move-in / move-out も配信）。`$1` をリテラルへ埋め込む回避策は不要でした。
 - 書き込み: すべて REST（`{ data, txid }`）で行い、`txid` を `awaitTxId` で Electric の配信と突き合わせます。失敗時は楽観状態がロールバックします。
