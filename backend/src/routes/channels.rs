@@ -208,7 +208,7 @@ async fn update_channel(
         .exec(&mut tx)
         .await?;
 
-        if membership.is_none() && !is_admin {
+        if membership.is_none() && !is_admin && channel.created_user_id != auth_user.id {
             return Err(AppError::NotFound(format!(
                 "Channel not found with id: {id}"
             )));
@@ -293,7 +293,7 @@ async fn delete_channel(
         .exec(&mut tx)
         .await?;
 
-        if membership.is_none() && !is_admin {
+        if membership.is_none() && !is_admin && channel.created_user_id != auth_user.id {
             return Err(AppError::NotFound(format!(
                 "Channel not found with id: {id}"
             )));
@@ -627,7 +627,7 @@ async fn archive_channel(
         .exec(&mut tx)
         .await?;
 
-        if membership.is_none() && !is_admin {
+        if membership.is_none() && !is_admin && channel.created_user_id != auth_user.id {
             return Err(AppError::NotFound(format!(
                 "Channel not found with id: {id}"
             )));
@@ -700,7 +700,7 @@ async fn unarchive_channel(
         .exec(&mut tx)
         .await?;
 
-        if membership.is_none() && !is_admin {
+        if membership.is_none() && !is_admin && channel.created_user_id != auth_user.id {
             return Err(AppError::NotFound(format!(
                 "Channel not found with id: {id}"
             )));
@@ -781,7 +781,7 @@ async fn kick_channel_user(
         .exec(&mut tx)
         .await?;
 
-        if membership.is_none() && !actor_is_admin {
+        if membership.is_none() && !actor_is_admin && channel.created_user_id != auth_user.id {
             return Err(AppError::NotFound(format!(
                 "Channel not found with id: {id}"
             )));
@@ -806,12 +806,6 @@ async fn kick_channel_user(
     if channel.archive_at.is_some() {
         return Err(AppError::BadRequest(
             "Cannot kick member in an archived channel".into(),
-        ));
-    }
-
-    if user_id == channel.created_user_id {
-        return Err(AppError::BadRequest(
-            "Cannot kick the channel creator".into(),
         ));
     }
 

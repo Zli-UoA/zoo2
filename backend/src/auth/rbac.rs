@@ -16,7 +16,7 @@ pub async fn is_workspace_admin(
         .await?;
 
     for ur in user_roles {
-        if ur.role_id == "role_admin" || ur.role_id == "admin" {
+        if ur.role_id == "role_admin" {
             return Ok(true);
         }
     }
