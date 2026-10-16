@@ -56,6 +56,16 @@ describe("syncTxid", () => {
     expect(awaitMatch).not.toHaveBeenCalled();
   });
 
+  it("forwards the timeout to awaitTxId and awaitMatch", async () => {
+    const { target, awaitTxId, awaitMatch } = makeTarget();
+
+    await syncTxid({ mode: "awaitTxId", txid: "42", target, match: () => true, timeout: 5000 });
+    await syncTxid({ mode: "awaitMatch", txid: "42", target, match: () => true, timeout: 6000 });
+
+    expect(awaitTxId).toHaveBeenCalledWith(42, 5000);
+    expect(awaitMatch).toHaveBeenCalledWith(expect.any(Function), 6000);
+  });
+
   it("uses the match predicate in awaitMatch mode", async () => {
     const { target, awaitTxId, awaitMatch } = makeTarget();
     const match = changeMessageMatcher<MessageRow>("insert", (value) => value.id === "m1");
