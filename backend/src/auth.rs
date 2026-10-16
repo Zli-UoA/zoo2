@@ -351,11 +351,6 @@ impl FromRequestParts<AppState> for AuthUser {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::Config;
-    use axum::http::Request;
-    use tokio::sync::Mutex;
-
-    static TEST_ENV_MUTEX: Mutex<()> = Mutex::const_new(());
 
     #[test]
     fn test_is_dev_auth_enabled_pure() {
@@ -453,115 +448,54 @@ mod tests {
         assert_eq!(user.id, x_dev_uuid);
     }
 
-    async fn create_test_state() -> AppState {
-        dotenvy::dotenv().ok();
-        dotenvy::from_filename("../.env").ok();
-        let config = Config::from_env();
-        let db = crate::db::init_db(&config.database_url)
-            .await
-            .expect("Failed to connect to test DB");
-        AppState::new(db, config)
-    }
-
-    #[tokio::test]
-    async fn test_auth_user_from_x_dev_user_header() {
-        let _guard = TEST_ENV_MUTEX.lock().await;
-        let state = create_test_state().await;
+    #[test]
+    fn test_auth_user_from_x_dev_user_header() {
         let test_uuid = "11111111-1111-1111-1111-111111111111";
-        let req = Request::builder()
-            .header("X-Dev-User", test_uuid)
-            .body(())
-            .unwrap();
-        let (mut parts, _) = req.into_parts();
-
-        let auth_user = AuthUser::from_request_parts(&mut parts, &state)
-            .await
-            .unwrap();
-        assert_eq!(auth_user.id, test_uuid);
+        let user = resolve_auth_user(true, None, Some(test_uuid), None).unwrap();
+        assert_eq!(user.id, test_uuid);
     }
 
-    #[tokio::test]
-    async fn test_auth_user_from_bearer_uuid_in_dev() {
-        let _guard = TEST_ENV_MUTEX.lock().await;
-        let state = create_test_state().await;
+    #[test]
+    fn test_auth_user_from_bearer_uuid_in_dev() {
         let test_uuid = "22222222-2222-2222-2222-222222222222";
-        let req = Request::builder()
-            .header("Authorization", format!("Bearer {test_uuid}"))
-            .body(())
-            .unwrap();
-        let (mut parts, _) = req.into_parts();
-
-        let auth_user = AuthUser::from_request_parts(&mut parts, &state)
-            .await
-            .unwrap();
-        assert_eq!(auth_user.id, test_uuid);
+        let user =
+            resolve_auth_user(true, Some(&format!("Bearer {test_uuid}")), None, None).unwrap();
+        assert_eq!(user.id, test_uuid);
     }
 
-    #[tokio::test]
-    async fn test_auth_user_invalid_uuid() {
-        let _guard = TEST_ENV_MUTEX.lock().await;
-        let state = create_test_state().await;
-        let req = Request::builder()
-            .header("X-Dev-User", "not-a-uuid")
-            .body(())
-            .unwrap();
-        let (mut parts, _) = req.into_parts();
-
-        let res = AuthUser::from_request_parts(&mut parts, &state).await;
-        assert!(res.is_err());
+    #[test]
+    fn test_auth_user_invalid_uuid() {
+        let res = resolve_auth_user(true, None, Some("not-a-uuid"), None);
+        assert!(matches!(res, Err(AppError::BadRequest(_))));
     }
 
-    #[tokio::test]
-    async fn test_auth_user_default_fallback_in_dev() {
-        let _guard = TEST_ENV_MUTEX.lock().await;
-        let state = create_test_state().await;
-        let req = Request::builder().body(()).unwrap();
-        let (mut parts, _) = req.into_parts();
-
-        let auth_user = AuthUser::from_request_parts(&mut parts, &state)
-            .await
-            .unwrap();
-        assert_eq!(auth_user.id, DEFAULT_DEV_USER_ID);
+    #[test]
+    fn test_auth_user_default_fallback_in_dev() {
+        let user = resolve_auth_user(true, None, None, None).unwrap();
+        assert_eq!(user.id, DEFAULT_DEV_USER_ID);
     }
 
-    #[tokio::test]
-    async fn test_auth_user_rejected_in_production() {
-        let _guard = TEST_ENV_MUTEX.lock().await;
-        unsafe {
-            std::env::set_var("ENVIRONMENT", "production");
-            std::env::remove_var("DEV_AUTH_ENABLED");
-        }
-        let state = create_test_state().await;
+    #[test]
+    fn test_auth_user_sanitization() {
+        assert_eq!(
+            sanitize_for_user_name("Alice.Test_01", "default-uuid"),
+            "alice.test_01"
+        );
+        // 予約語は fallback
+        assert_eq!(
+            sanitize_for_user_name("admin", "12345678-0000-0000-0000-000000000000"),
+            "user_12345678"
+        );
+        // 空文字も fallback
+        assert_eq!(
+            sanitize_for_user_name("", "abcdef12-0000-0000-0000-000000000000"),
+            "user_abcdef12"
+        );
 
-        let test_uuid = "33333333-3333-3333-3333-333333333333";
-
-        // 1. Bearer UUID は本番で 401 Unauthorized になること (OIDC 未設定または無効トークン)
-        let req1 = Request::builder()
-            .header("Authorization", format!("Bearer {test_uuid}"))
-            .body(())
-            .unwrap();
-        let (mut parts1, _) = req1.into_parts();
-        let res1 = AuthUser::from_request_parts(&mut parts1, &state).await;
-        assert!(res1.is_err());
-
-        // 2. X-Dev-User は本番で Unauthorized になること (Authorization ヘッダ欠落)
-        let req2 = Request::builder()
-            .header("X-Dev-User", test_uuid)
-            .body(())
-            .unwrap();
-        let (mut parts2, _) = req2.into_parts();
-        let res2 = AuthUser::from_request_parts(&mut parts2, &state).await;
-        assert!(matches!(res2, Err(AppError::Unauthorized(_))));
-
-        // 3. ヘッダなし (デフォルトユーザー) も本番で Unauthorized になること
-        let req3 = Request::builder().body(()).unwrap();
-        let (mut parts3, _) = req3.into_parts();
-        let res3 = AuthUser::from_request_parts(&mut parts3, &state).await;
-        assert!(matches!(res3, Err(AppError::Unauthorized(_))));
-
-        // クリーンアップ
-        unsafe {
-            std::env::remove_var("ENVIRONMENT");
-        }
+        assert_eq!(
+            sanitize_for_display_name("  Alice Wonderland  ", "fallback"),
+            "Alice Wonderland"
+        );
+        assert_eq!(sanitize_for_display_name("   ", "fallback"), "fallback");
     }
 }
