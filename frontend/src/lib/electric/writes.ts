@@ -224,7 +224,7 @@ export function createChannelWrites({ client, txidMode }: WriteDependencies) {
  * なお join / add は同じ行が既にあるとサーバは既存行を返すだけで Electric に変更が
  * 流れず、`awaitTxId` がタイムアウトする。呼び出し側で重複追加を避けること。
  *
- * 退出も同様に制約がある。`DELETE /api/channels/{id}/leave` は「認証ユーザー自身」の
+ * 退出も同様に制約がある。`POST /api/channels/{id}/leave` は「認証ユーザー自身」の
  * 行を消すエンドポイントで、他メンバーの行を指定して消す手段はない。したがって
  * 現在のユーザー以外の行を削除しようとしたら throw して楽観状態を戻す（他人を
  * 退出させたように見せかけつつ実際は自分が抜ける、という取り違えを防ぐ）。
