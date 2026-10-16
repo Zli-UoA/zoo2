@@ -9,13 +9,13 @@
 // Additionally, you should also exclude this file from your linter and/or formatter to prevent it from being checked or modified.
 
 import { Route as rootRouteImport } from './routes/__root'
-import { Route as IndexRouteImport } from './routes/index'
+import { Route as ShellRouteImport } from './routes/_shell'
 import { Route as RealtimeRouteImport } from './routes/realtime'
-import { Route as ChannelsChannelIdRouteImport } from './routes/channels/$channelId'
+import { Route as ShellIndexRouteImport } from './routes/_shell.index'
+import { Route as ShellChannelsChannelIdRouteImport } from './routes/_shell.channels.$channelId'
 
-const IndexRoute = IndexRouteImport.update({
-  id: '/',
-  path: '/',
+const ShellRoute = ShellRouteImport.update({
+  id: '/_shell',
   getParentRoute: () => rootRouteImport,
 } as any)
 const RealtimeRoute = RealtimeRouteImport.update({
@@ -23,49 +23,59 @@ const RealtimeRoute = RealtimeRouteImport.update({
   path: '/realtime',
   getParentRoute: () => rootRouteImport,
 } as any)
-const ChannelsChannelIdRoute = ChannelsChannelIdRouteImport.update({
+const ShellIndexRoute = ShellIndexRouteImport.update({
+  id: '/',
+  path: '/',
+  getParentRoute: () => ShellRoute,
+} as any)
+const ShellChannelsChannelIdRoute = ShellChannelsChannelIdRouteImport.update({
   id: '/channels/$channelId',
   path: '/channels/$channelId',
-  getParentRoute: () => rootRouteImport,
+  getParentRoute: () => ShellRoute,
 } as any)
 
 export interface FileRoutesByFullPath {
-  '/': typeof IndexRoute
+  '/': typeof ShellIndexRoute
   '/realtime': typeof RealtimeRoute
-  '/channels/$channelId': typeof ChannelsChannelIdRoute
+  '/channels/$channelId': typeof ShellChannelsChannelIdRoute
 }
 export interface FileRoutesByTo {
-  '/': typeof IndexRoute
   '/realtime': typeof RealtimeRoute
-  '/channels/$channelId': typeof ChannelsChannelIdRoute
+  '/': typeof ShellIndexRoute
+  '/channels/$channelId': typeof ShellChannelsChannelIdRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
-  '/': typeof IndexRoute
+  '/_shell': typeof ShellRouteWithChildren
   '/realtime': typeof RealtimeRoute
-  '/channels/$channelId': typeof ChannelsChannelIdRoute
+  '/_shell/': typeof ShellIndexRoute
+  '/_shell/channels/$channelId': typeof ShellChannelsChannelIdRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
   fullPaths: '/' | '/realtime' | '/channels/$channelId'
   fileRoutesByTo: FileRoutesByTo
-  to: '/' | '/realtime' | '/channels/$channelId'
-  id: '__root__' | '/' | '/realtime' | '/channels/$channelId'
+  to: '/realtime' | '/' | '/channels/$channelId'
+  id:
+    | '__root__'
+    | '/_shell'
+    | '/realtime'
+    | '/_shell/'
+    | '/_shell/channels/$channelId'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
-  IndexRoute: typeof IndexRoute
+  ShellRoute: typeof ShellRouteWithChildren
   RealtimeRoute: typeof RealtimeRoute
-  ChannelsChannelIdRoute: typeof ChannelsChannelIdRoute
 }
 
 declare module '@tanstack/react-router' {
   interface FileRoutesByPath {
-    '/': {
-      id: '/'
-      path: '/'
+    '/_shell': {
+      id: '/_shell'
+      path: ''
       fullPath: '/'
-      preLoaderRoute: typeof IndexRouteImport
+      preLoaderRoute: typeof ShellRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/realtime': {
@@ -75,20 +85,38 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof RealtimeRouteImport
       parentRoute: typeof rootRouteImport
     }
-    '/channels/$channelId': {
-      id: '/channels/$channelId'
+    '/_shell/': {
+      id: '/_shell/'
+      path: '/'
+      fullPath: '/'
+      preLoaderRoute: typeof ShellIndexRouteImport
+      parentRoute: typeof ShellRoute
+    }
+    '/_shell/channels/$channelId': {
+      id: '/_shell/channels/$channelId'
       path: '/channels/$channelId'
       fullPath: '/channels/$channelId'
-      preLoaderRoute: typeof ChannelsChannelIdRouteImport
-      parentRoute: typeof rootRouteImport
+      preLoaderRoute: typeof ShellChannelsChannelIdRouteImport
+      parentRoute: typeof ShellRoute
     }
   }
 }
 
+interface ShellRouteChildren {
+  ShellIndexRoute: typeof ShellIndexRoute
+  ShellChannelsChannelIdRoute: typeof ShellChannelsChannelIdRoute
+}
+
+const ShellRouteChildren: ShellRouteChildren = {
+  ShellIndexRoute: ShellIndexRoute,
+  ShellChannelsChannelIdRoute: ShellChannelsChannelIdRoute,
+}
+
+const ShellRouteWithChildren = ShellRoute._addFileChildren(ShellRouteChildren)
+
 const rootRouteChildren: RootRouteChildren = {
-  IndexRoute: IndexRoute,
+  ShellRoute: ShellRouteWithChildren,
   RealtimeRoute: RealtimeRoute,
-  ChannelsChannelIdRoute: ChannelsChannelIdRoute,
 }
 export const routeTree = rootRouteImport
   ._addFileChildren(rootRouteChildren)

@@ -2,7 +2,7 @@ import { getCollections } from "../lib/electric/collections";
 
 function StatusItem({ label, value }: { label: string; value: string }) {
   return (
-    <span className="rounded bg-muted px-2 py-1">
+    <span className="max-w-full rounded bg-muted px-2 py-1 break-all">
       {label}: {value}
     </span>
   );
