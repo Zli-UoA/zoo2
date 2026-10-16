@@ -5,12 +5,16 @@ on:
     paths:
       - "frontend/**"
       - "infra/Dockerfile-frontend-deploy*"
+      - "infra/Dockerfile-proxy-deploy*"
+      - "infra/proxy/**"
       - "infra/compose.stg.yaml"
       - ".github/workflows/ci-frontend.yaml"
   pull_request:
     paths:
       - "frontend/**"
       - "infra/Dockerfile-frontend-deploy*"
+      - "infra/Dockerfile-proxy-deploy*"
+      - "infra/proxy/**"
       - "infra/compose.stg.yaml"
       - ".github/workflows/ci-frontend.yaml"
   workflow_dispatch:
@@ -19,7 +23,6 @@ jobs:
     runs-on: ubuntu-latest
     env:
       POSTGRES_PASSWORD: container-test
-      VITE_API_BASE_URL: http://localhost:8000
     steps:
       - name: Checkout
         uses: actions/checkout@v7
@@ -29,8 +32,12 @@ jobs:
 
       - name: Check SSR routes
         run: |
-          curl --fail http://localhost:5173/ -o /dev/null
-          curl --fail http://localhost:5173/channels/container-test -o /dev/null
+          docker compose --project-directory . -f infra/compose.stg.yaml exec -T frontend node --input-type=module -e '
+            for (const path of ["/", "/channels/container-test"]) {
+              const response = await fetch(`http://localhost:3000${path}`);
+              if (response.status !== 200) process.exit(1);
+            }
+          '
 
       - name: Container logs
         if: failure()
@@ -39,6 +46,29 @@ jobs:
       - name: Stop frontend
         if: always()
         run: docker compose --project-directory . -f infra/compose.stg.yaml down
+
+  proxy:
+    runs-on: ubuntu-latest
+    env:
+      POSTGRES_PASSWORD: proxy-test
+      PROXY_PORT: 18080
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Build proxy
+        run: docker compose --project-directory . -f infra/compose.stg.yaml build proxy
+      - name: Start proxy with mock BFF and Rust
+        run: docker compose --project-directory . -f infra/compose.stg.yaml -f infra/proxy/test/compose.yaml up -d --no-build --no-deps --wait frontend backend proxy
+      - name: Check auth boundary and streaming
+        run: node infra/proxy/test/check.mjs
+      - name: Logs
+        if: failure()
+        run: docker compose --project-directory . -f infra/compose.stg.yaml -f infra/proxy/test/compose.yaml logs
+      - name: Stop containers
+        if: always()
+        run: docker compose --project-directory . -f infra/compose.stg.yaml -f infra/proxy/test/compose.yaml down
 
   check:
     runs-on: ubuntu-latest

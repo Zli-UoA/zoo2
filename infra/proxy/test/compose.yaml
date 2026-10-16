@@ -1,0 +1,18 @@
+# Test-only overrides: use mock BFF/Rust, with the real staging proxy config.
+services:
+  frontend:
+    image: node:22-bookworm-slim
+    entrypoint: [node, /test/mock.mjs, frontend]
+    volumes:
+      - ./infra/proxy/test/mock.mjs:/test/mock.mjs:ro
+    healthcheck:
+      test: [CMD, node, -e, "fetch('http://localhost:3000/').then(r=>process.exit(r.ok?0:1))"]
+      interval: 1s
+      timeout: 5s
+      retries: 20
+  backend:
+    image: node:22-bookworm-slim
+    entrypoint: [node, /test/mock.mjs, backend]
+    volumes:
+      - ./infra/proxy/test/mock.mjs:/test/mock.mjs:ro
+    depends_on: !reset {}

@@ -1,0 +1,2 @@
+FROM traefik:v3.7.14
+COPY infra/proxy/routes.yaml /etc/traefik/routes.yaml

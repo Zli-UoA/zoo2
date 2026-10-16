@@ -1,0 +1,64 @@
+# File-provider Go templates are expanded by Traefik at startup.
+http:
+  routers:
+    verify-internal-only:
+      rule: 'Path(`{{ env "BFF_VERIFY_PATH" }}`) || PathPrefix(`{{ env "BFF_VERIFY_PATH" }}/`)'
+      priority: 1000
+      entryPoints: [web]
+      service: noop@internal
+    api:
+      rule: 'Path(`/api`) || PathPrefix(`/api/`)'
+      priority: 100
+      entryPoints: [web]
+      middlewares: [private-response, strip-client-auth, session-auth]
+      service: backend
+    frontend:
+      rule: 'PathPrefix(`/`)'
+      priority: 1
+      entryPoints: [web]
+      middlewares: [strip-client-auth]
+      service: frontend
+
+  middlewares:
+    strip-client-auth:
+      headers:
+        customRequestHeaders:
+          Authorization: ""
+          X-Dev-User: ""
+          X-Forwarded-Method: ""
+          X-Forwarded-Uri: ""
+          X-Forwarded-Host: ""
+          X-Forwarded-Prefix: ""
+    session-auth:
+      forwardAuth:
+        address: 'http://frontend:3000{{ env "BFF_VERIFY_PATH" }}'
+        # EntryPoint strips forwarded headers from untrusted peers. Keep the
+        # HTTPS scheme supplied by the explicitly trusted Coolify TLS proxy.
+        trustForwardHeader: true
+        authRequestHeaders: [Cookie, Origin, Sec-Fetch-Site, X-CSRF-Token]
+        authResponseHeaders: [Authorization]
+        forwardBody: false
+    private-response:
+      headers:
+        customResponseHeaders:
+          Cache-Control: "private, no-cache"
+          Authorization: ""
+
+  services:
+    frontend:
+      loadBalancer:
+        servers:
+          - url: http://frontend:3000
+    backend:
+      loadBalancer:
+        servers:
+          - url: 'http://backend:{{ env "BACKEND_PORT" }}'
+        serversTransport: long-poll
+        responseForwarding:
+          flushInterval: -1ms
+  serversTransports:
+    long-poll:
+      forwardingTimeouts:
+        dialTimeout: 10s
+        responseHeaderTimeout: 120s
+        idleConnTimeout: 120s

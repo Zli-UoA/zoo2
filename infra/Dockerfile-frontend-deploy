@@ -7,8 +7,7 @@ COPY frontend/package.json frontend/pnpm-lock.yaml frontend/pnpm-workspace.yaml 
 RUN pnpm install --frozen-lockfile
 
 COPY frontend/ ./
-ARG VITE_API_BASE_URL
-RUN test -n "$VITE_API_BASE_URL"
+ARG VITE_API_BASE_URL=""
 ENV VITE_API_BASE_URL=$VITE_API_BASE_URL
 ENV VITE_SHAPE_MODE=proxy
 RUN pnpm build
