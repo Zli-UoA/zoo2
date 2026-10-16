@@ -21,6 +21,7 @@ pub struct CreateMessageRequest {
     pub id: Option<String>,
     pub channel_id: String,
     pub content: String,
+    pub parent_id: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -53,6 +54,7 @@ pub struct MessageResponse {
     pub created_at: String,
     pub updated_at: Option<String>,
     pub deleted_at: Option<String>,
+    pub parent_id: Option<String>,
 }
 
 impl From<Message> for MessageResponse {
@@ -65,6 +67,7 @@ impl From<Message> for MessageResponse {
             created_at: m.created_at.to_string(),
             updated_at: m.updated_at.map(|t| t.to_string()),
             deleted_at: m.deleted_at.map(|t| t.to_string()),
+            parent_id: m.parent_id,
         }
     }
 }
@@ -168,6 +171,40 @@ async fn create_message(
         }
     }
 
+    // スレッド親メッセージ検証
+    if let Some(ref parent_id) = payload.parent_id {
+        Uuid::parse_str(parent_id).map_err(|_| {
+            AppError::BadRequest(format!("parent_id is not a valid UUID: {parent_id}"))
+        })?;
+
+        let parent = Message::get_by_id(&mut tx, parent_id.as_str())
+            .await
+            .map_err(|err| {
+                if err.is_record_not_found() {
+                    AppError::NotFound(format!("Parent message not found: {parent_id}"))
+                } else {
+                    AppError::from(err)
+                }
+            })?;
+
+        if parent.deleted_at.is_some()
+            || parent.channel_id != payload.channel_id
+            || parent_id == &id
+        {
+            return Err(AppError::NotFound(format!(
+                "Parent message not found: {parent_id}"
+            )));
+        }
+
+        // Slack 準拠: スレッド返信に対する再返信（木構造ネスト）は禁止
+        if parent.parent_id.is_some() {
+            return Err(AppError::BadRequest(
+                "Nested thread replies are not supported; reply to the parent message directly"
+                    .into(),
+            ));
+        }
+    }
+
     let now = crate::models::now_utc_millis();
 
     // 投稿者は必ず認証済みユーザー (auth_user.id) を強制
@@ -179,6 +216,7 @@ async fn create_message(
         created_at: now,
         updated_at: None,
         deleted_at: None,
+        parent_id: payload.parent_id,
     })
     .exec(&mut tx)
     .await?;

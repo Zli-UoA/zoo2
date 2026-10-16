@@ -33,12 +33,16 @@ CREATE TABLE messages (
   created_at timestamp(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at timestamp(3),
   deleted_at timestamp(3),
+  parent_id text,
   PRIMARY KEY (id),
   CONSTRAINT messages_user_id_fkey
     FOREIGN KEY (user_id) REFERENCES users (id)
     ON UPDATE CASCADE ON DELETE RESTRICT,
   CONSTRAINT messages_channel_id_fkey
     FOREIGN KEY (channel_id) REFERENCES channels (id)
+    ON UPDATE CASCADE ON DELETE RESTRICT,
+  CONSTRAINT messages_parent_id_fkey
+    FOREIGN KEY (parent_id) REFERENCES messages (id)
     ON UPDATE CASCADE ON DELETE RESTRICT
 );
 
@@ -105,6 +109,7 @@ CREATE TABLE message_reactions (
 );
 
 CREATE INDEX idx_messages_channel_id ON messages (channel_id);
+CREATE INDEX idx_messages_parent_id ON messages (parent_id);
 CREATE INDEX idx_message_reactions_message_id ON message_reactions (message_id);
 CREATE INDEX idx_message_reactions_user_id ON message_reactions (user_id);
 
