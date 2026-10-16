@@ -47,3 +47,12 @@ export function buildShapeRequestUrl(
 ): string {
   return buildShapeUrl(shape, config, shapeQueryParams(shape, config, options));
 }
+
+/**
+ * Electric の `ShapeStream` は購読 URL を base なしの `new URL()` で解釈するため、
+ * 相対 URL（同一オリジン構成で `VITE_API_BASE_URL` が空のとき）を渡すと
+ * `Invalid URL` で失敗する。ページの URL を基準に絶対 URL へ解決してから渡す。
+ */
+export function resolveShapeUrl(url: string, baseHref: string): string {
+  return new URL(url, baseHref).toString();
+}

@@ -4,7 +4,7 @@ import { electricCollectionOptions } from "@tanstack/electric-db-collection";
 import { createConfiguredApiClient } from "../api/client";
 import { resolveConfig, type AppConfig } from "../config";
 import { createShapeFetch, type ShapeFetchSource } from "./headers";
-import { buildShapeRequestUrl, type ShapeQueryOptions } from "./query";
+import { buildShapeRequestUrl, resolveShapeUrl, type ShapeQueryOptions } from "./query";
 import { SHAPE_META, coerceElectricRow, type ShapeName } from "./schema";
 import type { ChannelRow, ChannelUserRow, MessageRow, UserRow } from "./types";
 import {
@@ -32,7 +32,7 @@ export function shapeAuthSource(config: AppConfig): ShapeFetchSource {
 function shapeOptions(shape: ShapeName, config: AppConfig, options: ShapeQueryOptions = {}) {
   const table = SHAPE_META[shape].table;
   return {
-    url: buildShapeRequestUrl(shape, config, options),
+    url: resolveShapeUrl(buildShapeRequestUrl(shape, config, options), window.location.href),
     fetchClient: createShapeFetch(shapeAuthSource(config)),
     // Electric は integer を文字列、boolean を "true" / "false" で配信する。
     // そのままだと `"false"` が truthy になるなど型が崩れるため、Shape ごとの
