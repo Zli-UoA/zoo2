@@ -187,16 +187,13 @@ async fn create_message(
                 }
             })?;
 
-        if parent.deleted_at.is_some() {
+        if parent.deleted_at.is_some()
+            || parent.channel_id != payload.channel_id
+            || parent_id == &id
+        {
             return Err(AppError::NotFound(format!(
                 "Parent message not found: {parent_id}"
             )));
-        }
-
-        if parent.channel_id != payload.channel_id {
-            return Err(AppError::BadRequest(
-                "Parent message belongs to a different channel".into(),
-            ));
         }
 
         // Slack 準拠: スレッド返信に対する再返信（木構造ネスト）は禁止

@@ -5,12 +5,7 @@ use axum::{
 use serde_json::{Value, json};
 use tower::ServiceExt;
 
-use backend::{
-    config::Config,
-    db::init_db,
-    routes::create_router,
-    state::AppState,
-};
+use backend::{config::Config, db::init_db, routes::create_router, state::AppState};
 
 #[tokio::test]
 async fn test_thread_reply_creation_and_validation() -> anyhow::Result<()> {
@@ -129,7 +124,7 @@ async fn test_thread_reply_creation_and_validation() -> anyhow::Result<()> {
     let resp = app.clone().oneshot(req).await?;
     assert_eq!(resp.status(), StatusCode::OK);
 
-    // 7. チャンネル 2 でチャンネル 1 の root_message_id を指定して投稿試行 -> 400 Bad Request
+    // 7. チャンネル 2 でチャンネル 1 の root_message_id を指定して投稿試行 -> 404 Not Found (非公開メッセージの存在漏洩防止)
     let cross_channel_payload = json!({
         "channel_id": channel_id_2,
         "content": "Cross channel reply",
@@ -142,9 +137,41 @@ async fn test_thread_reply_creation_and_validation() -> anyhow::Result<()> {
         .header("X-Dev-User", &alice_id)
         .body(Body::from(serde_json::to_vec(&cross_channel_payload)?))?;
     let resp = app.clone().oneshot(req).await?;
+    assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+
+    // 8. parent_id が不正な UUID の場合 -> 400 Bad Request
+    let invalid_uuid_payload = json!({
+        "channel_id": channel_id_1,
+        "content": "Invalid parent UUID",
+        "parent_id": "not-a-valid-uuid",
+    });
+    let req = Request::builder()
+        .method("POST")
+        .uri("/api/messages")
+        .header("content-type", "application/json")
+        .header("X-Dev-User", &alice_id)
+        .body(Body::from(serde_json::to_vec(&invalid_uuid_payload)?))?;
+    let resp = app.clone().oneshot(req).await?;
     assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
 
-    // 8. 親メッセージを論理削除
+    // 9. 自メッセージ自身を親として指定した場合 (id == parent_id) -> 404 Not Found
+    let self_id = uuid::Uuid::new_v4().to_string();
+    let self_parent_payload = json!({
+        "id": self_id,
+        "channel_id": channel_id_1,
+        "content": "Self parent message",
+        "parent_id": self_id,
+    });
+    let req = Request::builder()
+        .method("POST")
+        .uri("/api/messages")
+        .header("content-type", "application/json")
+        .header("X-Dev-User", &alice_id)
+        .body(Body::from(serde_json::to_vec(&self_parent_payload)?))?;
+    let resp = app.clone().oneshot(req).await?;
+    assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+
+    // 10. 親メッセージを論理削除
     let req = Request::builder()
         .method("DELETE")
         .uri(format!("/api/messages/{root_message_id}"))
@@ -153,7 +180,7 @@ async fn test_thread_reply_creation_and_validation() -> anyhow::Result<()> {
     let resp = app.clone().oneshot(req).await?;
     assert_eq!(resp.status(), StatusCode::OK);
 
-    // 9. 削除済み親メッセージへの返信投稿試行 -> 404 Not Found
+    // 11. 削除済み親メッセージへの返信投稿試行 -> 404 Not Found
     let reply_to_deleted_payload = json!({
         "channel_id": channel_id_1,
         "content": "Reply to deleted parent",
