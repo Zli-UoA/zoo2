@@ -134,9 +134,150 @@ pub fn validate_message_content(content: &str) -> Result<(), AppError> {
     Ok(())
 }
 
+/// 絵文字の正規化とバリデーション:
+/// 1. ショートコード形式: `:thumbsup:`, `:+1:`, `:-1:` (`:[a-z0-9_+-]{1,64}:`)
+/// 2. Emoji Kitchen 形式: `kitchen:<codepoints>`
+/// 3. Unicode 絵文字: 単一または合成絵文字。VS15 (\u{FE0E}) / VS16 (\u{FE0F}) をストリップして一貫したバイナリに正規化。
+pub fn normalize_and_validate_emoji(raw: &str) -> Result<String, AppError> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return Err(AppError::BadRequest("Emoji cannot be empty".to_string()));
+    }
+    if trimmed.len() > 256 {
+        return Err(AppError::BadRequest(
+            "Emoji is too long (max 256 bytes)".to_string(),
+        ));
+    }
+
+    // 1. ショートコード形式
+    if trimmed.starts_with(':') && trimmed.ends_with(':') && trimmed.len() >= 3 {
+        let inner = &trimmed[1..trimmed.len() - 1];
+        if inner.len() <= 64
+            && inner.chars().all(|c| {
+                c.is_ascii_lowercase()
+                    || c.is_ascii_digit()
+                    || c == '_'
+                    || c == '-'
+                    || c == '+'
+            })
+        {
+            return Ok(trimmed.to_ascii_lowercase());
+        }
+    }
+
+    // 2. Emoji Kitchen 形式 (例: kitchen:1f600_1f431)
+    if let Some(rest) = trimmed.strip_prefix("kitchen:") {
+        if !rest.is_empty()
+            && rest.chars().all(|c| {
+                c.is_ascii_alphanumeric() || c == '_' || c == '-' || c == '+'
+            })
+        {
+            return Ok(format!("kitchen:{}", rest.to_ascii_lowercase()));
+        }
+    }
+
+    // 3. Unicode 絵文字: VS15 (\u{FE0E}) と VS16 (\u{FE0F}) をストリップして正規化
+    let normalized: String = trimmed
+        .chars()
+        .filter(|&c| c != '\u{FE0E}' && c != '\u{FE0F}')
+        .collect();
+
+    if normalized.is_empty() {
+        return Err(AppError::BadRequest("Emoji is invalid".to_string()));
+    }
+
+    let is_valid_emoji = normalized.chars().all(is_emoji_codepoint);
+    let has_actual_emoji = normalized.chars().any(is_primary_emoji_codepoint);
+
+    if !is_valid_emoji || !has_actual_emoji {
+        return Err(AppError::BadRequest(
+            "Emoji must be a valid Unicode emoji, shortcode (e.g. :thumbsup:), or Emoji Kitchen format"
+                .to_string(),
+        ));
+    }
+
+    Ok(normalized)
+}
+
+fn is_emoji_codepoint(c: char) -> bool {
+    is_primary_emoji_codepoint(c)
+        || matches!(
+            c,
+            '\u{200D}' // ZWJ
+            | '\u{1F3FB}'..='\u{1F3FF}' // Skin tone modifiers
+        )
+}
+
+fn is_primary_emoji_codepoint(c: char) -> bool {
+    matches!(
+        c,
+        '\u{1F000}'..='\u{1FAFF}'
+            | '\u{2600}'..='\u{27BF}'
+            | '\u{2300}'..='\u{23FF}'
+            | '\u{2B50}'
+            | '\u{2B55}'
+            | '\u{203C}'
+            | '\u{2049}'
+            | '\u{2194}'..='\u{21AA}'
+            | '\u{25A0}'..='\u{25FF}'
+            | '\u{2934}'..='\u{2935}'
+            | '\u{3030}'
+            | '\u{303D}'
+            | '\u{3297}'
+            | '\u{3299}'
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_normalize_and_validate_emoji() {
+        // Unicode 絵文字
+        assert_eq!(
+            normalize_and_validate_emoji("👍").unwrap(),
+            "👍".to_string()
+        );
+        // VS16 付きのハートと付いていないハートが同じ文字列に正規化されること
+        let with_vs16 = "❤️"; // \u{2764}\u{FE0F}
+        let without_vs16 = "❤"; // \u{2764}
+        assert_eq!(
+            normalize_and_validate_emoji(with_vs16).unwrap(),
+            normalize_and_validate_emoji(without_vs16).unwrap()
+        );
+
+        // スキントーン修飾子付き絵文字
+        assert!(normalize_and_validate_emoji("👍🏽").is_ok());
+
+        // ショートコード
+        assert_eq!(
+            normalize_and_validate_emoji(":thumbsup:").unwrap(),
+            ":thumbsup:".to_string()
+        );
+        assert_eq!(
+            normalize_and_validate_emoji(":+1:").unwrap(),
+            ":+1:".to_string()
+        );
+        assert_eq!(
+            normalize_and_validate_emoji(":-1:").unwrap(),
+            ":-1:".to_string()
+        );
+
+        // Emoji Kitchen
+        assert_eq!(
+            normalize_and_validate_emoji("kitchen:1f600_1f431").unwrap(),
+            "kitchen:1f600_1f431".to_string()
+        );
+
+        // 不正な値
+        assert!(normalize_and_validate_emoji("").is_err());
+        assert!(normalize_and_validate_emoji("   ").is_err());
+        assert!(normalize_and_validate_emoji("a").is_err());
+        assert!(normalize_and_validate_emoji("hello").is_err());
+        assert!(normalize_and_validate_emoji("123").is_err());
+        assert!(normalize_and_validate_emoji(":invalid with spaces:").is_err());
+    }
 
     #[test]
     fn test_validate_channel_name() {

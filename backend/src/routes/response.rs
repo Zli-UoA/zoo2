@@ -4,11 +4,14 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ApiResponse<T> {
     pub data: T,
-    pub txid: String,
+    pub txid: Option<String>,
 }
 
 impl<T> ApiResponse<T> {
-    pub fn new(data: T, txid: String) -> Self {
-        Self { data, txid }
+    pub fn new(data: T, txid: impl Into<Option<String>>) -> Self {
+        Self {
+            data,
+            txid: txid.into(),
+        }
     }
 }

@@ -58,7 +58,8 @@ CREATE TABLE channel_user (
 CREATE TABLE role (
   id text NOT NULL,
   role_name varchar(255) NOT NULL,
-  PRIMARY KEY (id)
+  PRIMARY KEY (id),
+  CONSTRAINT role_role_name_key UNIQUE (role_name)
 );
 
 CREATE TABLE user_role (
@@ -86,4 +87,24 @@ CREATE TABLE user_identities (
     ON UPDATE CASCADE ON DELETE CASCADE,
   CONSTRAINT user_identities_iss_sub_key UNIQUE (iss, sub)
 );
+
+CREATE TABLE message_reactions (
+  id text NOT NULL,
+  message_id text NOT NULL,
+  user_id text NOT NULL,
+  emoji text NOT NULL,
+  created_at timestamp(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (id),
+  CONSTRAINT message_reactions_unique UNIQUE (message_id, user_id, emoji),
+  CONSTRAINT message_reactions_message_id_fkey
+    FOREIGN KEY (message_id) REFERENCES messages (id)
+    ON UPDATE CASCADE ON DELETE CASCADE,
+  CONSTRAINT message_reactions_user_id_fkey
+    FOREIGN KEY (user_id) REFERENCES users (id)
+    ON UPDATE CASCADE ON DELETE RESTRICT
+);
+
+CREATE INDEX idx_messages_channel_id ON messages (channel_id);
+CREATE INDEX idx_message_reactions_message_id ON message_reactions (message_id);
+CREATE INDEX idx_message_reactions_user_id ON message_reactions (user_id);
 

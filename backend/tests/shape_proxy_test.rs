@@ -155,6 +155,32 @@ async fn test_shape_proxy_and_authorization() -> anyhow::Result<()> {
     assert_eq!(resp.status(), StatusCode::OK);
     assert!(resp.headers().contains_key("electric-handle"));
 
+    // 11. Message Reactions Shape の確認 (非メンバー Charlie は 404)
+    let charlie_id = uuid::Uuid::new_v4().to_string();
+    let req = Request::builder()
+        .method("GET")
+        .uri(format!(
+            "/api/shapes/message_reactions?channel_id={private_channel_id}&offset=-1"
+        ))
+        .header("X-Dev-User", &charlie_id)
+        .body(Body::empty())?;
+
+    let resp = app.clone().oneshot(req).await?;
+    assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+
+    // 12. Message Reactions Shape の確認 (メンバー Bob は 200 OK)
+    let req = Request::builder()
+        .method("GET")
+        .uri(format!(
+            "/api/shapes/message_reactions?channel_id={private_channel_id}&offset=-1"
+        ))
+        .header("X-Dev-User", &bob_id)
+        .body(Body::empty())?;
+
+    let resp = app.clone().oneshot(req).await?;
+    assert_eq!(resp.status(), StatusCode::OK);
+    assert!(resp.headers().contains_key("electric-handle"));
+
     Ok(())
 }
 
