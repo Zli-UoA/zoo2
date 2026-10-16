@@ -154,10 +154,10 @@ CI (`.github/workflows/ci-backend.yaml`) では `unit-test` ジョブ (DB 不要
 
 DBサービスは Coolify が `extends` や `!reset` を扱えないため、`compose.stg.yaml` に展開して定義しています（ホスト側ポート公開なし）。`db/compose.yml` を変更したら、こちらも合わせて更新してください。
 
-リポジトリルートで `--project-directory .` を指定してください。`POSTGRES_PASSWORD` は必須です。
+リポジトリルートで `--project-directory .` を指定してください。`POSTGRES_PASSWORD` と `BFF_VERIFY_SECRET` は必須です。
 
 ```bash
-POSTGRES_PASSWORD=staging-test-password \
+POSTGRES_PASSWORD=staging-test-password BFF_VERIFY_SECRET=staging-test-verify-secret \
   docker compose --project-directory . -f infra/compose.stg.yaml -f infra/compose.stg.local.yaml \
   up -d --build --wait
 ```
@@ -174,11 +174,14 @@ POSTGRES_PASSWORD=staging-test-password \
 
 このインフラ構成の verify 接続先は `http://frontend:3000/auth/verify` です。パスは `BFF_VERIFY_PATH` で変更でき、公開入口からは同じパスとその配下へのアクセスを拒否します。これは BFF 実装との接続用の既定値で、Issue #23 ではパス名自体は未確定です。BFF が別のパスを採用する場合は環境変数を合わせてください。verify を `/api/` 配下に置く場合も、この拒否ルールが優先されます。
 
+`BFF_VERIFY_SECRET` はプロキシとフロント（BFF）で共有するランダムな値です。Coolify では両サービスに同じ値を設定してください。Traefik の設定テンプレートに埋め込むため、英数字のみ（例: `openssl rand -hex 32`）にしてください。
+
 verify の実装には次の契約が必要です。
 
 - Cookie からサーバ側セッションを解決し、必要な refresh をセッション単位で直列化した後、2xx と `Authorization: Bearer <access token>` を返す。本文やトークンをブラウザへ返さない。
 - 未認証・セッション無効は 401、検証不能・ストア障害は非 2xx とする。プロキシは非 2xx や接続失敗を Rust に転送しない。
 - verify は GET のサブリクエストとして呼ばれる。元のメソッド・URL は `X-Forwarded-Method`・`X-Forwarded-Uri`、Cookie・Origin・Sec-Fetch-Site・X-CSRF-Token はリクエストヘッダで渡される。元の本文は渡されない。
+- `X-Verify-Secret` が `BFF_VERIFY_SECRET` と一致しないリクエストは拒否する（定数時間で比較する）。プロキシは verify へのサブリクエストにだけこのヘッダを付け、クライアントから来た同名ヘッダや Rust・フロントへのリクエストからは除去する。パスの拒否ルールと解釈がずれた場合でも、ブラウザからの直接アクセスでトークンを返さないための多層防御です。
 - 書き込みでは BFF が設定済みの公開オリジンと `Origin` を照合するか、CSRF トークンを検証する。Cookie の `SameSite=Lax` だけを認可根拠にしない。Cookie は `HttpOnly`・`Secure` とする。
 
 現在のブランチには BFF の verify・OIDC ログインと Rust の JWT 検証が未実装です。API は利用可能になりません。今回のプロキシ検証ではモックを使い、実際の Kanidm ログイン・refresh・CSRF 実装の検証は Issue #23 の実装後に行います。Rust は `ENVIRONMENT=production`・`DEV_AUTH_ENABLED=false` で起動します。
@@ -194,9 +197,9 @@ Coolify のドメインは **`proxy` サービスの `8080` 番ポートだけ**
 フロントだけをビルド・起動確認する場合:
 
 ```bash
-POSTGRES_PASSWORD=staging-test-password \
+POSTGRES_PASSWORD=staging-test-password BFF_VERIFY_SECRET=staging-test-verify-secret \
   docker compose --project-directory . -f infra/compose.stg.yaml up -d --build --wait frontend
-POSTGRES_PASSWORD=staging-test-password \
+POSTGRES_PASSWORD=staging-test-password BFF_VERIFY_SECRET=staging-test-verify-secret \
   docker compose --project-directory . -f infra/compose.stg.yaml exec -T frontend \
   node -e "fetch('http://localhost:3000/').then(r => process.exit(r.status === 200 ? 0 : 1))"
 ```
@@ -206,7 +209,7 @@ POSTGRES_PASSWORD=staging-test-password \
 実際の Traefik とモックの BFF・Rust を使い、未認証・認証サービス障害・ヘッダ偽装・CSRF 判定用メタデータ・本文転送・Shape のストリーミングを確認します。テスト用の override は Coolify では使いません。
 
 ```bash
-export POSTGRES_PASSWORD=proxy-test PROXY_PORT=18080
+export POSTGRES_PASSWORD=proxy-test BFF_VERIFY_SECRET=proxy-test-verify-secret PROXY_PORT=18080
 docker compose --project-directory . -f infra/compose.stg.yaml build proxy
 docker compose --project-directory . -f infra/compose.stg.yaml -f infra/proxy/test/compose.yaml \
   up -d --no-build --no-deps --wait frontend backend proxy

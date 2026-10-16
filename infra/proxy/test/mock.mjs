@@ -6,7 +6,17 @@ createServer(async (req, res) => {
   let body = '';
   for await (const chunk of req) body += chunk;
   if (role === 'frontend') {
-    if (req.url !== '/auth/verify') return res.end('frontend');
+    if (req.url !== '/auth/verify') {
+      if (req.headers.authorization || req.headers['x-dev-user'] || req.headers['x-verify-secret']) {
+        res.writeHead(400);
+        return res.end('client auth headers reached frontend');
+      }
+      return res.end('frontend');
+    }
+    if (req.headers['x-verify-secret'] !== process.env.BFF_VERIFY_SECRET) {
+      res.writeHead(403);
+      return res.end('verify secret mismatch');
+    }
     if (req.headers.authorization || req.headers['x-dev-user'] || body) {
       res.writeHead(400);
       return res.end('untrusted auth or request body reached verify');
@@ -29,7 +39,8 @@ createServer(async (req, res) => {
     return res.end();
   }
   backendRequests++;
-  if (req.headers.authorization !== 'Bearer verified-token' || req.headers['x-dev-user']) {
+  if (req.headers.authorization !== 'Bearer verified-token' || req.headers['x-dev-user'] ||
+      req.headers['x-verify-secret']) {
     res.writeHead(401);
     return res.end('invalid upstream identity');
   }

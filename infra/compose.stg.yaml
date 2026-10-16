@@ -12,6 +12,7 @@ services:
     environment:
       BACKEND_PORT: ${PORT:-8000}
       BFF_VERIFY_PATH: ${BFF_VERIFY_PATH:-/auth/verify}
+      BFF_VERIFY_SECRET: ${BFF_VERIFY_SECRET:?BFF_VERIFY_SECRET is required}
     command:
       - --entrypoints.web.address=:8080
       - --entrypoints.web.forwardedheaders.trustedips=${PROXY_TRUSTED_IPS:-127.0.0.1/32}
@@ -43,6 +44,8 @@ services:
       args:
         VITE_API_BASE_URL: ""
     restart: unless-stopped
+    environment:
+      BFF_VERIFY_SECRET: ${BFF_VERIFY_SECRET:?BFF_VERIFY_SECRET is required}
     networks:
       - frontend
 

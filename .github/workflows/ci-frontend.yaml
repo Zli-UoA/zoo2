@@ -23,6 +23,7 @@ jobs:
     runs-on: ubuntu-latest
     env:
       POSTGRES_PASSWORD: container-test
+      BFF_VERIFY_SECRET: container-test-verify-secret
     steps:
       - name: Checkout
         uses: actions/checkout@v7
@@ -51,6 +52,7 @@ jobs:
     runs-on: ubuntu-latest
     env:
       POSTGRES_PASSWORD: proxy-test
+      BFF_VERIFY_SECRET: proxy-test-verify-secret
       PROXY_PORT: 18080
     steps:
       - uses: actions/checkout@v7

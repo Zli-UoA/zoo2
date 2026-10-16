@@ -10,7 +10,7 @@ http:
       rule: 'Path(`/api`) || PathPrefix(`/api/`)'
       priority: 100
       entryPoints: [web]
-      middlewares: [private-response, strip-client-auth, session-auth]
+      middlewares: [private-response, strip-client-auth, verify-secret, session-auth, strip-verify-secret]
       service: backend
     frontend:
       rule: 'PathPrefix(`/`)'
@@ -22,20 +22,35 @@ http:
   middlewares:
     strip-client-auth:
       headers:
+        # X-Forwarded-Host is dropped even from the trusted Coolify proxy: it
+        # passes the Host through, and the BFF must use its configured public
+        # origin instead of forwarded host headers.
         customRequestHeaders:
           Authorization: ""
           X-Dev-User: ""
+          X-Verify-Secret: ""
           X-Forwarded-Method: ""
           X-Forwarded-Uri: ""
           X-Forwarded-Host: ""
           X-Forwarded-Prefix: ""
+    # Defense in depth for verify-internal-only: the BFF rejects verify
+    # requests without this secret, so a path-normalization mismatch between
+    # Traefik and the BFF router cannot expose the access token.
+    verify-secret:
+      headers:
+        customRequestHeaders:
+          X-Verify-Secret: '{{ env "BFF_VERIFY_SECRET" }}'
+    strip-verify-secret:
+      headers:
+        customRequestHeaders:
+          X-Verify-Secret: ""
     session-auth:
       forwardAuth:
         address: 'http://frontend:3000{{ env "BFF_VERIFY_PATH" }}'
         # EntryPoint strips forwarded headers from untrusted peers. Keep the
         # HTTPS scheme supplied by the explicitly trusted Coolify TLS proxy.
         trustForwardHeader: true
-        authRequestHeaders: [Cookie, Origin, Sec-Fetch-Site, X-CSRF-Token]
+        authRequestHeaders: [Cookie, Origin, Sec-Fetch-Site, X-CSRF-Token, X-Verify-Secret]
         authResponseHeaders: [Authorization]
         forwardBody: false
     private-response:

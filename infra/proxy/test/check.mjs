@@ -11,11 +11,13 @@ assert.equal(config.services.backend.environment.DEV_AUTH_ENABLED, 'false');
 assert.equal(config.networks.backend.internal, true);
 const base = process.env.PROXY_TEST_URL || 'http://127.0.0.1:18080';
 const request = (path, options = {}) => fetch(`${base}${path}`, options);
-const spoofed = { Authorization: 'Bearer attacker', 'X-Dev-User': 'attacker' };
+const spoofed = { Authorization: 'Bearer attacker', 'X-Dev-User': 'attacker',
+  'X-Verify-Secret': 'attacker' };
 const baseline = await (await request('/api/test-baseline', {
   headers: { Cookie: 'session=valid' },
 })).json();
 assert.equal(await (await request('/')).text(), 'frontend');
+assert.equal(await (await request('/', { headers: spoofed })).text(), 'frontend');
 assert.equal((await request('/api/channels', { headers: spoofed })).status, 401);
 assert.equal((await request('/auth/verify', { headers: { Cookie: 'session=valid' } })).status, 418);
 assert.equal((await request('/auth/verify/')).status, 418);
