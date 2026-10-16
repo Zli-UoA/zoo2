@@ -1,5 +1,6 @@
 # File-provider Go templates are expanded by Traefik at startup.
-{{- $verifyPath := regexReplaceAll "/+$" (env "BFF_VERIFY_PATH") "" }}
+{{- $rawVerifyPath := regexReplaceAll "/+$" (env "BFF_VERIFY_PATH") "" }}
+{{- $verifyPath := or $rawVerifyPath "/auth/verify" }}
 http:
   routers:
     verify-internal-only:
