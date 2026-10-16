@@ -46,14 +46,45 @@ function readEnv(): ConfigEnv {
   return (import.meta.env ?? {}) as ConfigEnv;
 }
 
-function resolveShapeMode(configured: string | undefined, isDev: boolean): ShapeMode {
+/**
+ * Shape モードを決める。既定は常に `proxy`（バックエンドの Shape プロキシ経由）。
+ * `direct`（Electric 直結）は明示したときだけ使う、認可を迂回する開発専用の経路。
+ */
+function resolveShapeMode(configured: string | undefined): ShapeMode {
   if (configured === "direct" || configured === "proxy") {
     return configured;
   }
   if (configured) {
     throw new Error(`Invalid VITE_SHAPE_MODE "${configured}": expected "direct" or "proxy"`);
   }
-  return isDev ? "direct" : "proxy";
+  return "proxy";
+}
+
+/**
+ * 開発時の現在ユーザー（X-Dev-User）を決める。
+ *
+ * proxy モードはバックエンドが `X-Dev-User` でユーザーを識別するため、開発時は
+ * `VITE_DEV_USER_ID` を必須にする。未設定だと現在ユーザーが分からず、参加/退出や
+ * 自分のメッセージの編集・削除ができない（Phase 4 からの申し送り）。direct は
+ * 認可なしの開発専用経路なので未設定を許す。本番ビルドでは常に null（トークンを使う）。
+ */
+function resolveDevUserId(
+  mode: ShapeMode,
+  isDev: boolean,
+  configured: string | undefined,
+): string | null {
+  if (!isDev) {
+    return null;
+  }
+  if (configured) {
+    return configured;
+  }
+  if (mode === "proxy") {
+    throw new Error(
+      "VITE_DEV_USER_ID is required when VITE_SHAPE_MODE=proxy in development (sent as X-Dev-User)",
+    );
+  }
+  return null;
 }
 
 export function resolveTxidMode(configured: string | undefined): TxidMode {
@@ -73,14 +104,15 @@ export function resolveConfig(
   overrides: Partial<AppConfig> = {},
 ): AppConfig {
   const isDev = env.DEV === true;
+  const shapeMode = resolveShapeMode(env.VITE_SHAPE_MODE);
   return {
     ...DEFAULT_CONFIG,
-    shapeMode: resolveShapeMode(env.VITE_SHAPE_MODE, isDev),
+    shapeMode,
     txidMode: resolveTxidMode(env.VITE_TXID_MODE),
     electricShapeUrl: env.VITE_ELECTRIC_SHAPE_URL ?? DEFAULT_CONFIG.electricShapeUrl,
     apiBaseUrl: env.VITE_API_BASE_URL ?? DEFAULT_CONFIG.apiBaseUrl,
     shapeProxyPath: env.VITE_SHAPE_PROXY_PATH ?? DEFAULT_CONFIG.shapeProxyPath,
-    devUserId: isDev ? (env.VITE_DEV_USER_ID ?? null) : null,
+    devUserId: resolveDevUserId(shapeMode, isDev, env.VITE_DEV_USER_ID),
     ...overrides,
   };
 }

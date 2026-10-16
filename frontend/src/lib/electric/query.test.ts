@@ -3,7 +3,7 @@ import { describe, expect, it } from "vite-plus/test";
 import { resolveConfig } from "../config";
 import { buildShapeRequestUrl, shapeQueryParams } from "./query";
 
-const directConfig = resolveConfig({ DEV: true });
+const directConfig = resolveConfig({ DEV: true, VITE_SHAPE_MODE: "direct" });
 const proxyConfig = resolveConfig(
   { VITE_SHAPE_MODE: "proxy", VITE_API_BASE_URL: "http://localhost:8000" },
   {},

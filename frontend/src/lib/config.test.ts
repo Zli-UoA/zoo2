@@ -10,9 +10,9 @@ import {
 } from "./config";
 
 describe("resolveConfig", () => {
-  it("defaults to direct mode against the local Electric endpoint in development", () => {
-    const config = resolveConfig({ DEV: true });
-    expect(config).toEqual({ ...DEFAULT_CONFIG, shapeMode: "direct", devUserId: null });
+  it("defaults to proxy mode in development when a dev user is configured", () => {
+    const config = resolveConfig({ DEV: true, VITE_DEV_USER_ID: "dev-user-1" });
+    expect(config).toEqual({ ...DEFAULT_CONFIG, shapeMode: "proxy", devUserId: "dev-user-1" });
   });
 
   it("defaults to proxy mode outside development", () => {
@@ -20,13 +20,20 @@ describe("resolveConfig", () => {
     expect(resolveConfig({}).shapeMode).toBe("proxy");
   });
 
-  it("switches to proxy mode from the environment", () => {
+  it("requires VITE_DEV_USER_ID for proxy mode in development", () => {
+    expect(() => resolveConfig({ DEV: true })).toThrow(/VITE_DEV_USER_ID/);
+    expect(() => resolveConfig({ DEV: true, VITE_SHAPE_MODE: "proxy" })).toThrow(
+      /VITE_DEV_USER_ID/,
+    );
+  });
+
+  it("switches to direct mode from the environment", () => {
     const config = resolveConfig({
       DEV: true,
-      VITE_SHAPE_MODE: "proxy",
+      VITE_SHAPE_MODE: "direct",
       VITE_API_BASE_URL: "http://localhost:8000",
     });
-    expect(config.shapeMode).toBe("proxy");
+    expect(config.shapeMode).toBe("direct");
     expect(config.apiBaseUrl).toBe("http://localhost:8000");
   });
 
@@ -41,6 +48,10 @@ describe("resolveConfig", () => {
     });
     expect(config.electricShapeUrl).toBe("http://electric.test:3000/v1/shape");
     expect(config.shapeProxyPath).toBe("/shapes");
+  });
+
+  it("does not require a dev user in direct mode", () => {
+    expect(resolveConfig({ DEV: true, VITE_SHAPE_MODE: "direct" }).devUserId).toBeNull();
   });
 
   it("only honors VITE_DEV_USER_ID in development", () => {
@@ -64,7 +75,7 @@ describe("resolveConfig", () => {
 describe("resolveTxidMode", () => {
   it("defaults to awaitTxId", () => {
     expect(DEFAULT_CONFIG.txidMode).toBe("awaitTxId");
-    expect(resolveConfig({ DEV: true }).txidMode).toBe("awaitTxId");
+    expect(resolveConfig({ DEV: true, VITE_DEV_USER_ID: "dev-user-1" }).txidMode).toBe("awaitTxId");
   });
 
   it("reads a supported mode from the environment", () => {
@@ -99,7 +110,7 @@ describe("joinUrl", () => {
 
 describe("buildShapeUrl", () => {
   it("builds direct Electric URLs with the table parameter", () => {
-    const config = resolveConfig({ DEV: true });
+    const config = resolveConfig({ DEV: true, VITE_SHAPE_MODE: "direct" });
     expect(buildShapeUrl("messages", config, { channel_id: "channel-1" })).toBe(
       "http://localhost:3000/v1/shape?table=messages&channel_id=channel-1",
     );
