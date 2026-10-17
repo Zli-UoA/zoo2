@@ -121,7 +121,7 @@ async fn proxy_shape(
         state.config.electric_url.trim_end_matches('/')
     );
 
-    let mut req = state.http_client.get(&url).query(&params);
+    let mut req = state.electric_client.get(&url).query(&params);
 
     if let Some(ref secret) = state.config.electric_secret {
         req = req.bearer_auth(secret);

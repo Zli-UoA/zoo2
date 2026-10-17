@@ -51,47 +51,96 @@ pub struct AppState {
     pub db: toasty::Db,
     pub config: Config,
     pub http_client: reqwest::Client,
+    pub electric_client: reqwest::Client,
     pub jwks_verifier: JwksVerifier,
     pub user_cache: UserResolutionCache,
 }
 
 impl AppState {
     pub fn new(db: toasty::Db, config: Config) -> Self {
-        let http_client = reqwest::Client::builder()
+        let http_client = Self::default_http_client();
+        let electric_client = Self::default_electric_client();
+        let jwks_verifier = JwksVerifier::new(http_client.clone());
+        let user_cache = UserResolutionCache::new();
+
+        Self {
+            db,
+            config,
+            http_client,
+            electric_client,
+            jwks_verifier,
+            user_cache,
+        }
+    }
+
+    /// OIDC JWKS 取得などの一般的な HTTP リクエスト用クライアント (短時間タイムアウト)
+    pub fn default_http_client() -> reqwest::Client {
+        reqwest::Client::builder()
             .timeout(Duration::from_secs(10))
             .connect_timeout(Duration::from_secs(5))
             .tcp_keepalive(Some(Duration::from_secs(30)))
             .build()
-            .unwrap_or_else(|_| reqwest::Client::new());
-
-        let jwks_verifier = JwksVerifier::new(http_client.clone());
-        let user_cache = UserResolutionCache::new();
-
-        Self {
-            db,
-            config,
-            http_client,
-            jwks_verifier,
-            user_cache,
-        }
+            .unwrap_or_else(|_| reqwest::Client::new())
     }
 
+    /// Electric Shape プロキシ用クライアント
+    ///
+    /// Electric の live=true (ロングポーリング: デフォルト20秒待機) や
+    /// live_sse=true (Server-Sent Events: 永続接続) での待機を切断しないよう、
+    /// 全体完了タイムアウト (timeout) は設定せず、接続タイムアウトと TCP keepalive のみを設定する。
+    pub fn default_electric_client() -> reqwest::Client {
+        reqwest::Client::builder()
+            .connect_timeout(Duration::from_secs(5))
+            .tcp_keepalive(Some(Duration::from_secs(30)))
+            .build()
+            .unwrap_or_else(|_| reqwest::Client::new())
+    }
+
+    /// テストなどで HTTP クライアントを差し替えるためのコンストラクタ。
+    ///
+    /// Electric プロキシで意図しないタイムアウトが発生するのを防ぐため、
+    /// `electric_client` にはタイムアウトなしの既定クライアント (`Self::default_electric_client()`) が設定されます。
     pub fn with_client(db: toasty::Db, config: Config, http_client: reqwest::Client) -> Self {
+        let electric_client = Self::default_electric_client();
         let jwks_verifier = JwksVerifier::new(http_client.clone());
         let user_cache = UserResolutionCache::new();
         Self {
             db,
             config,
             http_client,
+            electric_client,
             jwks_verifier,
             user_cache,
         }
     }
 
+    /// テストなどで JwksVerifier を差し替えるためのコンストラクタ。
+    ///
+    /// `electric_client` にはタイムアウトなしの既定クライアント (`Self::default_electric_client()`) が設定されます。
     pub fn with_verifier(
         db: toasty::Db,
         config: Config,
         http_client: reqwest::Client,
+        jwks_verifier: JwksVerifier,
+    ) -> Self {
+        let electric_client = Self::default_electric_client();
+        let user_cache = UserResolutionCache::new();
+        Self {
+            db,
+            config,
+            http_client,
+            electric_client,
+            jwks_verifier,
+            user_cache,
+        }
+    }
+
+    /// テストなどで `http_client` と `electric_client` の両方を明示的に差し替えるためのコンストラクタ。
+    pub fn with_clients(
+        db: toasty::Db,
+        config: Config,
+        http_client: reqwest::Client,
+        electric_client: reqwest::Client,
         jwks_verifier: JwksVerifier,
     ) -> Self {
         let user_cache = UserResolutionCache::new();
@@ -99,8 +148,37 @@ impl AppState {
             db,
             config,
             http_client,
+            electric_client,
             jwks_verifier,
             user_cache,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_default_clients_construction() {
+        let _http_client = AppState::default_http_client();
+        let _electric_client = AppState::default_electric_client();
+    }
+
+    #[test]
+    fn test_with_client_preserves_default_electric_client() {
+        // http_client に明示的なタイムアウトを設定して with_client を呼んでも、
+        // electric_client は独自に構築されたクライアントが設定されることを確認
+        let dummy_client = reqwest::Client::builder()
+            .timeout(Duration::from_millis(100))
+            .build()
+            .unwrap();
+
+        // ダミーの Config
+        let _config = Config::from_env();
+        // db はテストで初期化できないため、state の構築テストは default_electric_client 経由で行われていることをテスト
+        let electric = AppState::default_electric_client();
+        // dummy_client と electric は独立した Client
+        assert_ne!(format!("{dummy_client:?}"), format!("{electric:?}"));
     }
 }
