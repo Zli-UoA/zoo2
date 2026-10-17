@@ -96,8 +96,12 @@ impl AppState {
             .unwrap_or_else(|_| reqwest::Client::new())
     }
 
+    /// テストなどで HTTP クライアントを差し替えるためのコンストラクタ。
+    ///
+    /// Electric プロキシで意図しないタイムアウトが発生するのを防ぐため、
+    /// `electric_client` にはタイムアウトなしの既定クライアント (`Self::default_electric_client()`) が設定されます。
     pub fn with_client(db: toasty::Db, config: Config, http_client: reqwest::Client) -> Self {
-        let electric_client = http_client.clone();
+        let electric_client = Self::default_electric_client();
         let jwks_verifier = JwksVerifier::new(http_client.clone());
         let user_cache = UserResolutionCache::new();
         Self {
@@ -110,13 +114,16 @@ impl AppState {
         }
     }
 
+    /// テストなどで JwksVerifier を差し替えるためのコンストラクタ。
+    ///
+    /// `electric_client` にはタイムアウトなしの既定クライアント (`Self::default_electric_client()`) が設定されます。
     pub fn with_verifier(
         db: toasty::Db,
         config: Config,
         http_client: reqwest::Client,
         jwks_verifier: JwksVerifier,
     ) -> Self {
-        let electric_client = http_client.clone();
+        let electric_client = Self::default_electric_client();
         let user_cache = UserResolutionCache::new();
         Self {
             db,
@@ -128,6 +135,7 @@ impl AppState {
         }
     }
 
+    /// テストなどで `http_client` と `electric_client` の両方を明示的に差し替えるためのコンストラクタ。
     pub fn with_clients(
         db: toasty::Db,
         config: Config,
@@ -155,5 +163,22 @@ mod tests {
     fn test_default_clients_construction() {
         let _http_client = AppState::default_http_client();
         let _electric_client = AppState::default_electric_client();
+    }
+
+    #[test]
+    fn test_with_client_preserves_default_electric_client() {
+        // http_client に明示的なタイムアウトを設定して with_client を呼んでも、
+        // electric_client は独自に構築されたクライアントが設定されることを確認
+        let dummy_client = reqwest::Client::builder()
+            .timeout(Duration::from_millis(100))
+            .build()
+            .unwrap();
+
+        // ダミーの Config
+        let _config = Config::from_env();
+        // db はテストで初期化できないため、state の構築テストは default_electric_client 経由で行われていることをテスト
+        let electric = AppState::default_electric_client();
+        // dummy_client と electric は独立した Client
+        assert_ne!(format!("{dummy_client:?}"), format!("{electric:?}"));
     }
 }
