@@ -1,10 +1,9 @@
 import { useMemo } from "react";
 
-import { useActiveChannels, useChannelMembers } from "../../hooks/useRealtime";
-import { getCollections } from "../../lib/electric/collections";
-import { MessagePane } from "../MessagePane";
+import { useActiveChannels, useChannelAccess } from "../../hooks/useRealtime";
 import { Skeleton } from "../ui/skeleton";
 import { ChannelHeader } from "./ChannelHeader";
+import { MessagePane } from "./messages/MessagePane";
 
 const LOADING_ROWS = [0, 1, 2, 3];
 
@@ -29,24 +28,15 @@ function ChannelLoading() {
 
 /** チャンネルルート。ヘッダとメッセージ（非公開は参加者だけ）を出す。 */
 export function ChannelScreen({ channelId }: { channelId: string }) {
-  const { config } = getCollections();
   const channelsQuery = useActiveChannels();
-  const membersQuery = useChannelMembers(channelId);
   const channels = channelsQuery.data ?? [];
   const channel = useMemo(
     () => channels.find((candidate) => candidate.id === channelId) ?? null,
     [channels, channelId],
   );
-
-  const members = membersQuery.data ?? [];
-  const currentUserId = config.devUserId;
-  const isMember = currentUserId
-    ? members.some((member) => member.user_id === currentUserId)
-    : false;
-  // 非公開チャンネルは参加者だけにメッセージを表示する。direct モードの Shape は
-  // 認可せず全件配信するため、UI 側でも隠す（proxy 切替後も同じ）。
-  const canRead = channel ? !channel.is_private || isMember : false;
-  const membershipPending = !!channel?.is_private && membersQuery.isLoading;
+  // 権限判定（閲覧可否・参加状態）は `useChannelAccess` に集約する。
+  const access = useChannelAccess(channel);
+  const membershipPending = !!channel?.is_private && access.isLoading;
 
   if (!channel) {
     if (channelsQuery.isLoading) {
@@ -75,14 +65,14 @@ export function ChannelScreen({ channelId }: { channelId: string }) {
     <div className="flex h-full min-h-0 flex-col">
       <ChannelHeader
         channel={channel}
-        memberCount={canRead ? (membersQuery.isLoading ? null : members.length) : undefined}
+        memberCount={access.canRead ? (access.isLoading ? null : access.members.length) : undefined}
       />
       <div className="flex min-h-0 flex-1 flex-col">
         {membershipPending ? (
           <div className="flex flex-1 items-center justify-center">
             <p className="text-sm text-muted-foreground">読み込み中…</p>
           </div>
-        ) : canRead ? (
+        ) : access.canRead ? (
           <MessagePane channelId={channelId} />
         ) : (
           <div className="flex flex-1 items-center justify-center p-6">
