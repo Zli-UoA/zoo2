@@ -225,6 +225,24 @@ export async function startMockIdp(options: MockIdpOptions = {}): Promise<MockId
       return;
     }
 
+    // テスト専用: E2E から sub を切り替えて別ユーザーとしてログインし直す。
+    if (url.pathname === "/__mock/user" && request.method === "POST") {
+      let patch: Partial<MockIdpUser>;
+      try {
+        patch = JSON.parse(await readBody(request)) as Partial<MockIdpUser>;
+      } catch {
+        sendJson(response, 400, { error: "invalid_json" });
+        return;
+      }
+      if (typeof patch.sub === "string") user.sub = patch.sub;
+      if (typeof patch.preferredUsername === "string")
+        user.preferredUsername = patch.preferredUsername;
+      if (typeof patch.name === "string") user.name = patch.name;
+      if (typeof patch.email === "string") user.email = patch.email;
+      sendJson(response, 200, { sub: user.sub });
+      return;
+    }
+
     if (path === "/.well-known/openid-configuration") {
       sendJson(response, 200, {
         issuer,
