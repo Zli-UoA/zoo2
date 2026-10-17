@@ -129,9 +129,12 @@ export function ChannelSidebar({
         </div>
       </ScrollArea>
 
-      <div className="border-t px-3 py-2">
-        <SyncStatus />
-      </div>
+      {/* 接続状態の表示は開発時の確認用。本番ビルドでは出さない。 */}
+      {import.meta.env.DEV ? (
+        <div className="border-t px-3 py-2">
+          <SyncStatus />
+        </div>
+      ) : null}
 
       <CreateChannelDialog open={createOpen} onOpenChange={setCreateOpen} />
     </aside>

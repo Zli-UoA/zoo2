@@ -1,22 +1,33 @@
-import { useEffect, useState } from "react";
+import { useCallback, useSyncExternalStore } from "react";
+
+function matchesQuery(query: string): boolean {
+  if (typeof window === "undefined" || typeof window.matchMedia !== "function") {
+    return false;
+  }
+  return window.matchMedia(query).matches;
+}
 
 /**
- * CSS メディアクエリの一致を購読する。SSR と初回クライアント描画は `false` を
- * 返し、マウント後に実際の値を反映する（ハイドレーションのずれを避ける）。
+ * CSS メディアクエリの一致を購読する。SSR では `false` を返し、クライアントでは
+ * 初回描画から実際の値を使う（`false` で描画しておいて直後に反転すると、初期表示が
+ * ちらつくため）。
  */
 export function useMediaQuery(query: string): boolean {
-  const [matches, setMatches] = useState(false);
+  const subscribe = useCallback(
+    (onStoreChange: () => void) => {
+      if (typeof window === "undefined" || typeof window.matchMedia !== "function") {
+        return () => {};
+      }
+      const mediaQuery = window.matchMedia(query);
+      mediaQuery.addEventListener("change", onStoreChange);
+      return () => mediaQuery.removeEventListener("change", onStoreChange);
+    },
+    [query],
+  );
 
-  useEffect(() => {
-    if (typeof window === "undefined" || typeof window.matchMedia !== "function") {
-      return;
-    }
-    const mediaQuery = window.matchMedia(query);
-    const update = () => setMatches(mediaQuery.matches);
-    update();
-    mediaQuery.addEventListener("change", update);
-    return () => mediaQuery.removeEventListener("change", update);
-  }, [query]);
-
-  return matches;
+  return useSyncExternalStore(
+    subscribe,
+    () => matchesQuery(query),
+    () => false,
+  );
 }
