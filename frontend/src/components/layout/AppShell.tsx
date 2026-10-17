@@ -13,12 +13,14 @@ import { useMediaQuery } from "./useMediaQuery";
 /**
  * 3ペインのアプリシェル。左レール＋サイドバー / メイン / 右メンバー。
  *
- * 表示の切り替えは CSS のブレークポイントに任せ、JS は状態だけを持つ:
+ * レイアウトの表示は CSS のブレークポイントに任せ、JS は狭幅のペイン状態と
+ * メンバーの開閉・マウントだけを持つ:
  *
  * - `md` (768px) 未満: `pane` に従ってサイドバーとチャットを切り替える。
  * - `md` 以上: サイドバーとチャットを並べる（`md:flex`）。
- * - `lg` (1024px) 以上: メンバーペインを `lg:flex` で出し、狭幅では CSS で隠す。
- *   ポータルで出る `MembersDialog` だけは CSS で切り替えられないため `isWide` を見る。
+ * - `lg` (1024px) 以上: メンバーペインを `lg:flex` で出す。狭幅ではペインを
+ *   マウントせず、ポータルで出る `MembersDialog` へ切り替える（ポータルは CSS で
+ *   切り替えられないため `isWide` を見る）。
  *
  * メンバーの既定は閉じ。このコンポーネントは Electric のコレクションを触るため、
  * ルート側でマウント後の一度だけレンダリングする（SSR では呼ばない）。
@@ -92,7 +94,9 @@ export function AppShell({ children }: { children: ReactNode }) {
         <main className={cn("min-w-0 flex-1 flex-col", showChat ? "flex" : "hidden md:flex")}>
           {children}
         </main>
-        {membersOpen && selectedChannel ? (
+        {/* 表示は CSS（`hidden lg:flex`）が決める。狭幅でダイアログと二重に
+            マウントしないよう、マウントだけ `isWide` で抑える。 */}
+        {isWide && membersOpen && selectedChannel ? (
           <MembersPanel
             channel={selectedChannel}
             className="hidden w-72 shrink-0 border-l lg:flex xl:w-80"
