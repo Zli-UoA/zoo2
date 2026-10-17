@@ -157,4 +157,3 @@ mod tests {
         let _electric_client = AppState::default_electric_client();
     }
 }
-
