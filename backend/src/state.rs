@@ -51,19 +51,15 @@ pub struct AppState {
     pub db: toasty::Db,
     pub config: Config,
     pub http_client: reqwest::Client,
+    pub electric_client: reqwest::Client,
     pub jwks_verifier: JwksVerifier,
     pub user_cache: UserResolutionCache,
 }
 
 impl AppState {
     pub fn new(db: toasty::Db, config: Config) -> Self {
-        let http_client = reqwest::Client::builder()
-            .timeout(Duration::from_secs(10))
-            .connect_timeout(Duration::from_secs(5))
-            .tcp_keepalive(Some(Duration::from_secs(30)))
-            .build()
-            .unwrap_or_else(|_| reqwest::Client::new());
-
+        let http_client = Self::default_http_client();
+        let electric_client = Self::default_electric_client();
         let jwks_verifier = JwksVerifier::new(http_client.clone());
         let user_cache = UserResolutionCache::new();
 
@@ -71,18 +67,44 @@ impl AppState {
             db,
             config,
             http_client,
+            electric_client,
             jwks_verifier,
             user_cache,
         }
     }
 
+    /// OIDC JWKS 取得などの一般的な HTTP リクエスト用クライアント (短時間タイムアウト)
+    pub fn default_http_client() -> reqwest::Client {
+        reqwest::Client::builder()
+            .timeout(Duration::from_secs(10))
+            .connect_timeout(Duration::from_secs(5))
+            .tcp_keepalive(Some(Duration::from_secs(30)))
+            .build()
+            .unwrap_or_else(|_| reqwest::Client::new())
+    }
+
+    /// Electric Shape プロキシ用クライアント
+    ///
+    /// Electric の live=true (ロングポーリング: デフォルト20秒待機) や
+    /// live_sse=true (Server-Sent Events: 永続接続) での待機を切断しないよう、
+    /// 全体完了タイムアウト (timeout) は設定せず、接続タイムアウトと TCP keepalive のみを設定する。
+    pub fn default_electric_client() -> reqwest::Client {
+        reqwest::Client::builder()
+            .connect_timeout(Duration::from_secs(5))
+            .tcp_keepalive(Some(Duration::from_secs(30)))
+            .build()
+            .unwrap_or_else(|_| reqwest::Client::new())
+    }
+
     pub fn with_client(db: toasty::Db, config: Config, http_client: reqwest::Client) -> Self {
+        let electric_client = http_client.clone();
         let jwks_verifier = JwksVerifier::new(http_client.clone());
         let user_cache = UserResolutionCache::new();
         Self {
             db,
             config,
             http_client,
+            electric_client,
             jwks_verifier,
             user_cache,
         }
@@ -94,13 +116,45 @@ impl AppState {
         http_client: reqwest::Client,
         jwks_verifier: JwksVerifier,
     ) -> Self {
+        let electric_client = http_client.clone();
         let user_cache = UserResolutionCache::new();
         Self {
             db,
             config,
             http_client,
+            electric_client,
+            jwks_verifier,
+            user_cache,
+        }
+    }
+
+    pub fn with_clients(
+        db: toasty::Db,
+        config: Config,
+        http_client: reqwest::Client,
+        electric_client: reqwest::Client,
+        jwks_verifier: JwksVerifier,
+    ) -> Self {
+        let user_cache = UserResolutionCache::new();
+        Self {
+            db,
+            config,
+            http_client,
+            electric_client,
             jwks_verifier,
             user_cache,
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_default_clients_construction() {
+        let _http_client = AppState::default_http_client();
+        let _electric_client = AppState::default_electric_client();
+    }
+}
+
