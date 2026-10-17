@@ -57,7 +57,10 @@ export function LeftRail() {
       </div>
       <Separator className="my-1 w-6" />
       <RailLink to="/" icon={HashIcon} label="チャンネル" exact />
-      <RailLink to="/realtime" icon={ActivityIcon} label="同期の状態" exact />
+      {/* 同期の状態（/realtime）は開発時の確認用。本番ビルドでは出さない。 */}
+      {import.meta.env.DEV ? (
+        <RailLink to="/realtime" icon={ActivityIcon} label="同期の状態" exact />
+      ) : null}
 
       <div className="mt-auto flex flex-col items-center gap-2">
         <ModeToggle />
