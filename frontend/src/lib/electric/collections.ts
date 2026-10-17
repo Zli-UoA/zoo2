@@ -3,6 +3,7 @@ import { electricCollectionOptions } from "@tanstack/electric-db-collection";
 
 import { createConfiguredApiClient } from "../api/client";
 import { resolveConfig, type AppConfig } from "../config";
+import { getCurrentUserStore } from "../currentUser";
 import { createShapeFetch, type ShapeFetchSource } from "./headers";
 import { buildShapeRequestUrl, resolveShapeUrl, type ShapeQueryOptions } from "./query";
 import { SHAPE_META, coerceElectricRow, type ShapeName } from "./schema";
@@ -160,10 +161,14 @@ export function getCollections(config?: AppConfig): CollectionsBundle {
   }
 
   const messageCache = new Map<string, MessagesCollection>();
+  // 現在ユーザーは `useCurrentUser` と同じストアから引く（OIDC では
+  // `/api/users/me` の解決後に値が入る）。退出の本人確認は書き込み時に
+  // getCurrentUserId() で最新値を読む。
+  const currentUserStore = getCurrentUserStore(resolved);
   const dependencies: WriteDependencies = {
     client: createConfiguredApiClient(resolved),
     txidMode: resolved.txidMode,
-    currentUserId: resolved.devUserId,
+    getCurrentUserId: () => currentUserStore.getState().currentUserId,
   };
   bundle = {
     config: resolved,

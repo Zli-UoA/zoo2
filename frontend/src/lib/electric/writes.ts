@@ -21,11 +21,12 @@ export interface WriteDependencies {
   client: ApiClient;
   txidMode: TxidMode;
   /**
-   * 認証中のユーザー id。今は `config.devUserId`（将来はトークンの主体）。
+   * 認証中のユーザー id を返す。`useCurrentUser` と同じストアを参照し、OIDC では
+   * `/api/users/me` の解決後（dev では `VITE_DEV_USER_ID`）の値を返す。
    * `leave_channel` は認証ユーザー自身の行しか消せないため、channel_user の
-   * 削除ハンドラで本人確認に使う。
+   * 削除ハンドラで本人確認に使う（解決前は null なので拒否される）。
    */
-  currentUserId: string | null;
+  getCurrentUserId: () => string | null;
 }
 
 type MessageInsertParams = InsertMutationFnParams<
@@ -230,7 +231,7 @@ export function createChannelWrites({ client, txidMode }: WriteDependencies) {
  * 退出させたように見せかけつつ実際は自分が抜ける、という取り違えを防ぐ）。
  * メンバー削除 API ができたらここを差し替える。
  */
-export function createChannelUserWrites({ client, txidMode, currentUserId }: WriteDependencies) {
+export function createChannelUserWrites({ client, txidMode, getCurrentUserId }: WriteDependencies) {
   async function onInsert({ transaction, collection }: ChannelUserInsertParams): Promise<void> {
     for (const mutation of transaction.mutations) {
       const row = mutation.modified;
@@ -255,6 +256,7 @@ export function createChannelUserWrites({ client, txidMode, currentUserId }: Wri
   async function onDelete({ transaction, collection }: ChannelUserDeleteParams): Promise<void> {
     for (const mutation of transaction.mutations) {
       const row = mutation.original;
+      const currentUserId = getCurrentUserId();
       if (row.user_id !== currentUserId) {
         throw new Error(
           `/leave only removes the current user's membership; refusing to leave for user ${row.user_id}`,

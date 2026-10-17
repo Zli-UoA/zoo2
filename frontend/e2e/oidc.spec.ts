@@ -1,8 +1,12 @@
 import { expect, test } from "@playwright/test";
 
+const mockIdpPort = process.env.MOCK_IDP_PORT ?? "4100";
+const mockIdpOrigin = `http://127.0.0.1:${mockIdpPort}`;
+
 /**
  * モック IdP を使った OIDC PKCE の通し確認:
  *   未ログイン → モック IdP → ログイン → Bearer で API/Shape → チャンネル作成 → 送信
+ *   → 自分のメッセージだけに編集/削除が出る → ログアウト → 別ユーザーでログイン
  *
  * Rust は `OIDC_ISSUER` を同じモック IdP に向けて起動しておくこと
  * （`playwright.oidc.config.ts` のコメント参照）。既定のスモークとは別設定。
@@ -13,6 +17,16 @@ test("OIDC PKCE ログイン後に API と Shape が Bearer で通る", async ({
     if (request.url().includes("/api/")) {
       bearerRequests.push(request.headers()["authorization"] ?? "");
     }
+  });
+
+  // 前回の実行が残した sub に依存しないよう、ログイン前にユーザー A を固定する。
+  await page.request.post(`${mockIdpOrigin}/__mock/user`, {
+    data: {
+      sub: "user-a",
+      preferredUsername: "smoke",
+      name: "Smoke User",
+      email: "smoke@example.com",
+    },
   });
 
   // 未ログインではアプリを描画せず、モック IdP のログイン画面へリダイレクトする。
@@ -44,4 +58,70 @@ test("OIDC PKCE ログイン後に API と Shape が Bearer で通る", async ({
 
   // REST / Shape いずれも Bearer が載っていること。
   expect(bearerRequests.some((header) => header.startsWith("Bearer "))).toBe(true);
+
+  // 現在ユーザー（/api/users/me）が解決され、自分のメッセージには編集/削除が出る。
+  const ownRow = page.getByRole("listitem").filter({ hasText: message });
+  await ownRow.hover();
+  await expect(ownRow.getByRole("button", { name: "編集" })).toBeVisible();
+  await expect(ownRow.getByRole("button", { name: "削除" })).toBeVisible();
+  await page.screenshot({ path: testInfo.outputPath("04-own-message-controls.png") });
+
+  // ダークテーマでも操作群が出る（証跡用）。以降の画面はライトに戻す。
+  await page.getByRole("button", { name: "テーマを切り替える" }).click();
+  await page.getByRole("menuitemradio", { name: "ダーク" }).click();
+  await expect(page.locator("html")).toHaveClass(/dark/);
+  await expect(page.getByRole("menuitemradio", { name: "ダーク" })).toBeHidden();
+  await ownRow.hover();
+  await page.screenshot({ path: testInfo.outputPath("05-own-message-controls-dark.png") });
+  await page.getByRole("button", { name: "テーマを切り替える" }).click();
+  await page.getByRole("menuitemradio", { name: "ライト" }).click();
+  await expect(page.locator("html")).not.toHaveClass(/dark/);
+  await expect(page.getByRole("menuitemradio", { name: "ライト" })).toBeHidden();
+
+  // 別ユーザーへ切り替えてログアウト → 再ログインする。
+  await page.request.post(`${mockIdpOrigin}/__mock/user`, {
+    data: { sub: "user-b", preferredUsername: "bee", name: "Bee", email: "bee@example.com" },
+  });
+  await page.getByRole("button", { name: "ログアウト" }).click();
+  await expect(page.getByRole("heading", { name: "ログアウトしました" })).toBeVisible();
+  await page.screenshot({ path: testInfo.outputPath("06-logged-out.png") });
+
+  await page.getByRole("button", { name: "ログイン", exact: true }).click();
+  await expect(page.getByRole("heading", { name: "Mock IdP" })).toBeVisible();
+  await page.getByRole("button", { name: "ログイン" }).click();
+  await expect(page.getByRole("heading", { name: "チャンネル", exact: true })).toBeVisible();
+
+  // 同じ公開チャンネルを開くと、他人のメッセージには編集/削除が出ない。
+  await page.getByRole("link", { name: new RegExp(channelName) }).click();
+  await expect(page.getByRole("heading", { name: "メッセージ" })).toBeVisible();
+  const otherRow = page.getByRole("listitem").filter({ hasText: message });
+  await expect(otherRow).toBeVisible();
+  await otherRow.hover();
+  await expect(otherRow.getByRole("button", { name: "編集" })).toHaveCount(0);
+  await expect(otherRow.getByRole("button", { name: "削除" })).toHaveCount(0);
+  await page.screenshot({ path: testInfo.outputPath("07-other-users-message.png") });
+
+  // 自分のメッセージには改めて編集/削除が出る。
+  const ownMessage = `hello from bee ${channelName}`;
+  await page.getByPlaceholder("メッセージを送信").fill(ownMessage);
+  await page.getByRole("button", { name: "送信" }).click();
+  const beeRow = page.getByRole("listitem").filter({ hasText: ownMessage });
+  await beeRow.hover();
+  await expect(beeRow.getByRole("button", { name: "編集" })).toBeVisible();
+  await expect(beeRow.getByRole("button", { name: "削除" })).toBeVisible();
+  await page.screenshot({ path: testInfo.outputPath("08-own-message-second-user.png") });
+
+  // 参加 / 退出: 退出の本人確認は /api/users/me で解決した id で行われる（#49）。
+  // dev ビルドの TanStack Devtools 起動ボタンがメンバーペイン下部のボタンに重なるため、
+  // この E2E では非表示にする（アプリ本体の挙動確認には影響しない）。
+  await page.addStyleTag({
+    content: 'button[aria-label="Open TanStack Devtools"]{display:none !important}',
+  });
+  await page.getByRole("button", { name: "参加", exact: true }).click();
+  await expect(page.getByRole("button", { name: "退出", exact: true })).toBeVisible();
+  await expect(page.getByText("あなた", { exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "退出", exact: true }).click();
+  await expect(page.getByRole("button", { name: "参加", exact: true })).toBeVisible();
+  await expect(page.getByText("あなた", { exact: true })).toHaveCount(0);
+  await page.screenshot({ path: testInfo.outputPath("09-join-leave.png") });
 });
