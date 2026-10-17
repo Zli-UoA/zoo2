@@ -33,7 +33,7 @@ export function MembersPanel({ channel, className }: { channel: ChannelRow; clas
   const { channelUsers } = getCollections();
   const membersQuery = useChannelMembers(channel.id);
   const usersQuery = useUsers();
-  const { currentUserId } = useCurrentUser();
+  const { currentUserId, isLoading: currentUserLoading } = useCurrentUser();
   const { error, setError, run } = useWriteRunner();
   const [memberId, setMemberId] = useState("");
 
@@ -167,9 +167,9 @@ export function MembersPanel({ channel, className }: { channel: ChannelRow; clas
             ) : null}
             <div className="flex items-center justify-between gap-2">
               <span className="text-xs text-muted-foreground">
-                {isMember ? "参加中" : "未参加"}
+                {currentUserLoading ? "確認中…" : isMember ? "参加中" : "未参加"}
               </span>
-              {currentUserId ? (
+              {!currentUserLoading && currentUserId ? (
                 isMember ? (
                   <Button variant="outline" size="sm" onClick={leaveChannel} disabled={busy}>
                     退出

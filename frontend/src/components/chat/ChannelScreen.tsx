@@ -29,7 +29,7 @@ function ChannelLoading() {
 
 /** チャンネルルート。ヘッダとメッセージ（非公開は参加者だけ）を出す。 */
 export function ChannelScreen({ channelId }: { channelId: string }) {
-  const { currentUserId } = useCurrentUser();
+  const { currentUserId, isLoading: currentUserLoading } = useCurrentUser();
   const channelsQuery = useActiveChannels();
   const membersQuery = useChannelMembers(channelId);
   const channels = channelsQuery.data ?? [];
@@ -45,7 +45,9 @@ export function ChannelScreen({ channelId }: { channelId: string }) {
   // 非公開チャンネルは参加者だけにメッセージを表示する。direct モードの Shape は
   // 認可せず全件配信するため、UI 側でも隠す（proxy 切替後も同じ）。
   const canRead = channel ? !channel.is_private || isMember : false;
-  const membershipPending = !!channel?.is_private && membersQuery.isLoading;
+  // 非公開チャンネルの参加判定は、メンバー一覧と現在ユーザーの両方が
+  // 解決するまで保留する（解決前に「非公開です」を出すのを避ける）。
+  const membershipPending = !!channel?.is_private && (membersQuery.isLoading || currentUserLoading);
 
   if (!channel) {
     if (channelsQuery.isLoading) {

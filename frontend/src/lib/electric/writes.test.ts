@@ -72,7 +72,7 @@ describe("message writes", () => {
     const writes = createMessageWrites({
       client,
       txidMode: "awaitTxId",
-      currentUserId: CURRENT_USER,
+      getCurrentUserId: () => CURRENT_USER,
     });
     const { collection, awaitTxId, awaitMatch } = makeCollection();
 
@@ -92,7 +92,7 @@ describe("message writes", () => {
     const writes = createMessageWrites({
       client,
       txidMode: "awaitTxId",
-      currentUserId: CURRENT_USER,
+      getCurrentUserId: () => CURRENT_USER,
     });
     const { collection } = makeCollection();
 
@@ -108,7 +108,7 @@ describe("message writes", () => {
     const writes = createMessageWrites({
       client,
       txidMode: "awaitTxId",
-      currentUserId: CURRENT_USER,
+      getCurrentUserId: () => CURRENT_USER,
     });
     const { collection, awaitTxId } = makeCollection();
 
@@ -126,7 +126,7 @@ describe("message writes", () => {
     const writes = createMessageWrites({
       client,
       txidMode: "awaitTxId",
-      currentUserId: CURRENT_USER,
+      getCurrentUserId: () => CURRENT_USER,
     });
     const { collection, awaitTxId } = makeCollection();
 
@@ -142,7 +142,7 @@ describe("message writes", () => {
     const writes = createMessageWrites({
       client,
       txidMode: "awaitTxId",
-      currentUserId: CURRENT_USER,
+      getCurrentUserId: () => CURRENT_USER,
     });
     const { collection, awaitTxId } = makeCollection();
 
@@ -154,7 +154,11 @@ describe("message writes", () => {
 
   it("skips the handshake in skip mode", async () => {
     const { client } = makeClient();
-    const writes = createMessageWrites({ client, txidMode: "skip", currentUserId: CURRENT_USER });
+    const writes = createMessageWrites({
+      client,
+      txidMode: "skip",
+      getCurrentUserId: () => CURRENT_USER,
+    });
     const { collection, awaitTxId, awaitMatch } = makeCollection();
 
     await writes.onInsert(params(collection, [insertMutation(message)]));
@@ -168,7 +172,7 @@ describe("message writes", () => {
     const writes = createMessageWrites({
       client,
       txidMode: "awaitMatch",
-      currentUserId: CURRENT_USER,
+      getCurrentUserId: () => CURRENT_USER,
     });
     const { collection, awaitTxId, awaitMatch } = makeCollection();
 
@@ -193,7 +197,7 @@ describe("channel writes", () => {
     const writes = createChannelWrites({
       client,
       txidMode: "awaitTxId",
-      currentUserId: CURRENT_USER,
+      getCurrentUserId: () => CURRENT_USER,
     });
     const { collection, awaitTxId } = makeCollection();
 
@@ -213,7 +217,7 @@ describe("channel writes", () => {
     const writes = createChannelWrites({
       client,
       txidMode: "awaitTxId",
-      currentUserId: CURRENT_USER,
+      getCurrentUserId: () => CURRENT_USER,
     });
     const { collection } = makeCollection();
 
@@ -231,7 +235,7 @@ describe("channel_user writes", () => {
     const writes = createChannelUserWrites({
       client,
       txidMode: "awaitTxId",
-      currentUserId: CURRENT_USER,
+      getCurrentUserId: () => CURRENT_USER,
     });
     const { collection, awaitTxId } = makeCollection();
 
@@ -246,7 +250,7 @@ describe("channel_user writes", () => {
     const writes = createChannelUserWrites({
       client,
       txidMode: "awaitTxId",
-      currentUserId: CURRENT_USER,
+      getCurrentUserId: () => CURRENT_USER,
     });
     const { collection } = makeCollection();
 
@@ -264,7 +268,7 @@ describe("channel_user writes", () => {
     const writes = createChannelUserWrites({
       client,
       txidMode: "awaitTxId",
-      currentUserId: CURRENT_USER,
+      getCurrentUserId: () => CURRENT_USER,
     });
     const { collection, awaitTxId } = makeCollection();
 
@@ -279,7 +283,7 @@ describe("channel_user writes", () => {
     const writes = createChannelUserWrites({
       client,
       txidMode: "awaitTxId",
-      currentUserId: CURRENT_USER,
+      getCurrentUserId: () => CURRENT_USER,
     });
     const { collection, awaitTxId } = makeCollection();
 
@@ -288,5 +292,27 @@ describe("channel_user writes", () => {
     ).rejects.toThrow(/current user/);
     expect(post).not.toHaveBeenCalled();
     expect(awaitTxId).not.toHaveBeenCalled();
+  });
+
+  it("reads the current user at delete time so OIDC can resolve it after collection setup", async () => {
+    const { client, post } = makeClient();
+    let currentUserId: string | null = null;
+    const writes = createChannelUserWrites({
+      client,
+      txidMode: "awaitTxId",
+      getCurrentUserId: () => currentUserId,
+    });
+    const { collection } = makeCollection();
+
+    // 解決前（null）は本人確認できないため拒否する。
+    await expect(writes.onDelete(params(collection, [deleteMutation(membership)]))).rejects.toThrow(
+      /current user/,
+    );
+    expect(post).not.toHaveBeenCalled();
+
+    // /api/users/me の解決後に押された退出は通る。
+    currentUserId = CURRENT_USER;
+    await writes.onDelete(params(collection, [deleteMutation(membership)]));
+    expect(post).toHaveBeenCalledWith("/api/channels/c1/leave");
   });
 });

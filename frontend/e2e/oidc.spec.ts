@@ -110,4 +110,18 @@ test("OIDC PKCE ログイン後に API と Shape が Bearer で通る", async ({
   await expect(beeRow.getByRole("button", { name: "編集" })).toBeVisible();
   await expect(beeRow.getByRole("button", { name: "削除" })).toBeVisible();
   await page.screenshot({ path: testInfo.outputPath("08-own-message-second-user.png") });
+
+  // 参加 / 退出: 退出の本人確認は /api/users/me で解決した id で行われる（#49）。
+  // dev ビルドの TanStack Devtools 起動ボタンがメンバーペイン下部のボタンに重なるため、
+  // この E2E では非表示にする（アプリ本体の挙動確認には影響しない）。
+  await page.addStyleTag({
+    content: 'button[aria-label="Open TanStack Devtools"]{display:none !important}',
+  });
+  await page.getByRole("button", { name: "参加", exact: true }).click();
+  await expect(page.getByRole("button", { name: "退出", exact: true })).toBeVisible();
+  await expect(page.getByText("あなた", { exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "退出", exact: true }).click();
+  await expect(page.getByRole("button", { name: "参加", exact: true })).toBeVisible();
+  await expect(page.getByText("あなた", { exact: true })).toHaveCount(0);
+  await page.screenshot({ path: testInfo.outputPath("09-join-leave.png") });
 });

@@ -1,13 +1,9 @@
 import { afterEach, describe, expect, it, vi } from "vite-plus/test";
 
-import type { FetchLike } from "../lib/api/client";
-import { resetTokenProvider, setTokenProvider, setUnauthorizedHandler } from "../lib/auth";
-import { resolveConfig } from "../lib/config";
-import {
-  createCurrentUserStore,
-  resolveCurrentUser,
-  type CurrentUserState,
-} from "./useCurrentUser";
+import type { FetchLike } from "./api/client";
+import { resetTokenProvider, setTokenProvider, setUnauthorizedHandler } from "./auth";
+import { resolveConfig } from "./config";
+import { createCurrentUserStore, resolveCurrentUser, type CurrentUserState } from "./currentUser";
 
 const DEV_CONFIG = resolveConfig({
   DEV: true,
@@ -104,5 +100,34 @@ describe("createCurrentUserStore", () => {
     expect(fetchMock).toHaveBeenCalledTimes(1);
     expect(store.getState()).toEqual({ currentUserId: "user-1", isLoading: false, error: null });
     expect(states.at(-1)?.currentUserId).toBe("user-1");
+  });
+
+  it("retries on the next ensureLoaded after a transient failure", async () => {
+    setTokenProvider(() => "token-123");
+    const fetchMock = vi
+      .fn<FetchLike>()
+      .mockResolvedValueOnce(jsonResponse({ error: "boom" }, 500))
+      .mockResolvedValueOnce(jsonResponse(userResponse("user-1")));
+    const store = createCurrentUserStore(OIDC_CONFIG, { fetch: fetchMock });
+
+    await store.ensureLoaded();
+    expect(store.getState().currentUserId).toBeNull();
+    expect(store.getState().error).toMatch(/500/);
+
+    await store.ensureLoaded();
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(store.getState()).toEqual({ currentUserId: "user-1", isLoading: false, error: null });
+  });
+
+  it("does not retry after a 401 (AuthGate re-login owns that path)", async () => {
+    setTokenProvider(() => "token-123");
+    const fetchMock = vi.fn<FetchLike>(async () => jsonResponse({ error: "unauthorized" }, 401));
+    const store = createCurrentUserStore(OIDC_CONFIG, { fetch: fetchMock });
+
+    await store.ensureLoaded();
+    await store.ensureLoaded();
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(store.getState()).toEqual({ currentUserId: null, isLoading: false, error: null });
   });
 });

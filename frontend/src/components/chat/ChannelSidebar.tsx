@@ -30,7 +30,7 @@ export function ChannelSidebar({
 }) {
   const shell = useShell();
   const { channelUsers } = getCollections();
-  const { currentUserId } = useCurrentUser();
+  const { currentUserId, isLoading: currentUserLoading } = useCurrentUser();
   const [createOpen, setCreateOpen] = useState(false);
 
   // 一覧の各チャンネルについて現在ユーザーの参加状態を出す。`channel_user` の
@@ -46,7 +46,9 @@ export function ChannelSidebar({
     }
     return joined;
   }, [membershipsQuery.data, currentUserId]);
-  const hasCurrentUser = currentUserId !== null;
+  // 解決前は参加状態を出さない（OIDC では /api/users/me の応答待ちの間、
+  // 一瞬「未参加」に見えるのを避ける）。
+  const hasCurrentUser = !currentUserLoading && currentUserId !== null;
 
   return (
     <aside

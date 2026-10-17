@@ -26,7 +26,7 @@ export function CreateChannelDialog({
   onOpenChange: (open: boolean) => void;
 }) {
   const { channels } = getCollections();
-  const { currentUserId } = useCurrentUser();
+  const { currentUserId, isLoading: currentUserLoading } = useCurrentUser();
   const [name, setName] = useState("");
   const [isPrivate, setIsPrivate] = useState(false);
   const [submitting, setSubmitting] = useState(false);
@@ -101,7 +101,10 @@ export function CreateChannelDialog({
             <Button type="button" variant="outline" onClick={() => handleOpenChange(false)}>
               キャンセル
             </Button>
-            <Button type="submit" disabled={submitting || name.trim().length === 0}>
+            <Button
+              type="submit"
+              disabled={submitting || currentUserLoading || name.trim().length === 0}
+            >
               {submitting ? "作成中…" : "チャンネル作成"}
             </Button>
           </DialogFooter>
