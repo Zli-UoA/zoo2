@@ -4,7 +4,7 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } fr
 
 import { Button } from "../../ui/button";
 import { Skeleton } from "../../ui/skeleton";
-import type { FeedMessage } from "./messageFormat";
+import { newMessageAnnouncement, type FeedMessage } from "./messageFormat";
 import { buildMessageItems } from "./messageGrouping";
 import { MessageRow } from "./MessageRow";
 import {
@@ -70,7 +70,8 @@ function MessageState({
 /**
  * メッセージ一覧。日付区切りと連投グルーピングを描き、`@tanstack/react-virtual`
  * で可視行のみ DOM 化する。新規受信は atBottom のときだけ追従し、古いページの
- * 追加ではスクロール位置を補正して維持する。
+ * 追加ではスクロール位置を補正して維持する。最下部にいないときの新着は
+ * 「新着メッセージ」ボタンに加えて `aria-live` でも読み上げる。
  */
 export function MessageList({
   messages,
@@ -98,6 +99,9 @@ export function MessageList({
 
   const atBottomRef = useRef(true);
   const [hasNewBelow, setHasNewBelow] = useState(false);
+  // 最下部にいないとき届いた新着を `aria-live` で読み上げる（「新着メッセージ」
+  // ボタンと同じ条件）。最下部へ戻ったら空にして、同文の連投も再度読み上げられる。
+  const [liveAnnouncement, setLiveAnnouncement] = useState("");
   const snapshotRef = useRef<ScrollSnapshot>({ firstId: null, lastId: null });
   const previousScrollHeightRef = useRef(0);
 
@@ -149,6 +153,9 @@ export function MessageList({
         requestAnimationFrame(() => scrollToBottom());
       } else {
         setHasNewBelow(true);
+        if (appended) {
+          setLiveAnnouncement(newMessageAnnouncement(appended.message));
+        }
       }
     }
 
@@ -160,6 +167,12 @@ export function MessageList({
   useEffect(() => {
     virtualizer.measure();
   }, [editingId, virtualizer]);
+
+  useEffect(() => {
+    if (!hasNewBelow) {
+      setLiveAnnouncement("");
+    }
+  }, [hasNewBelow]);
 
   const showSkeleton = isLoading && items.length === 0;
   const showError = isError && items.length === 0;
@@ -233,6 +246,10 @@ export function MessageList({
           新着メッセージ
         </Button>
       ) : null}
+
+      <p role="status" aria-live="polite" aria-atomic="true" className="sr-only">
+        {liveAnnouncement}
+      </p>
     </div>
   );
 }
