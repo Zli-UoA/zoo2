@@ -1,7 +1,12 @@
 import { describe, expect, it } from "vite-plus/test";
 
 import type { ChannelUserRow, UserRow } from "../../lib/electric/types";
-import { filterMemberCandidates, MEMBER_CANDIDATE_LIMIT, userLabel } from "./memberCandidates";
+import {
+  filterMemberCandidates,
+  MEMBER_CANDIDATE_LIMIT,
+  sortUsersByLabel,
+  userLabel,
+} from "./memberCandidates";
 
 function user(id: string, user_name: string, display_name = ""): UserRow {
   return {
@@ -24,6 +29,15 @@ describe("userLabel", () => {
   });
 });
 
+describe("sortUsersByLabel", () => {
+  it("sorts by label and leaves the input untouched", () => {
+    const input = [user("u1", "carol", "Carol"), user("u2", "alice", "Alice"), user("u3", "bob")];
+    const sorted = sortUsersByLabel(input);
+    expect(sorted.map((entry) => entry.id)).toEqual(["u2", "u3", "u1"]);
+    expect(input.map((entry) => entry.id)).toEqual(["u1", "u2", "u3"]);
+  });
+});
+
 describe("filterMemberCandidates", () => {
   const users = [
     user("u1", "alice", "Alice"),
@@ -32,13 +46,18 @@ describe("filterMemberCandidates", () => {
     user("u4", "dave"),
   ];
 
-  it("returns users in name order, limited to the default count", () => {
+  it("keeps the given order, limited to the default count", () => {
     expect(filterMemberCandidates({ users, members: [], query: "" })).toEqual([
       users[0],
       users[1],
       users[2],
       users[3],
     ]);
+    expect(
+      filterMemberCandidates({ users: [...users].reverse(), members: [], query: "a" }).map(
+        (entry) => entry.id,
+      ),
+    ).toEqual(["u4", "u3", "u1"]);
   });
 
   it("excludes existing members", () => {

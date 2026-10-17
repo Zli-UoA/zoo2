@@ -143,6 +143,19 @@ describe("messageTextSegments", () => {
       text(">"),
     ]);
   });
+
+  it("requires a host part after the scheme", () => {
+    expect(messageTextSegments("https://.")).toEqual([text("https://.")]);
+    expect(messageTextSegments("https://?q")).toEqual([text("https://?q")]);
+    expect(messageTextSegments("https:///path")).toEqual([text("https:///path")]);
+    expect(messageTextSegments("https://)")).toEqual([text("https://)")]);
+    expect(messageTextSegments("詳細: https://。")).toEqual([text("詳細: https://。")]);
+    // ホスト部があるものは今までどおりリンクにする。
+    expect(messageTextSegments("https://[::1]:3000/a")).toEqual([link("https://[::1]:3000/a")]);
+    expect(messageTextSegments("https://localhost:3000/")).toEqual([
+      link("https://localhost:3000/"),
+    ]);
+  });
 });
 
 describe("newMessageAnnouncement", () => {

@@ -8,7 +8,18 @@ export function userLabel(user: Pick<UserRow, "display_name" | "user_name">): st
   return user.display_name || user.user_name;
 }
 
+/**
+ * ラベル順（ja ロケール）に並べた新しい配列を返す。
+ *
+ * キー入力のたびに全ユーザーを並べ替えないよう、`MembersPanel` 側でユーザー一覧に
+ * 対して一度だけ適用し、`filterMemberCandidates` は並びを保ったまま絞り込む。
+ */
+export function sortUsersByLabel(users: UserRow[]): UserRow[] {
+  return [...users].sort((a, b) => userLabel(a).localeCompare(userLabel(b), "ja"));
+}
+
 export interface MemberCandidateFilter {
+  /** `sortUsersByLabel` などで表示順を整えたユーザー一覧。 */
   users: UserRow[];
   members: ChannelUserRow[];
   query: string;
@@ -21,7 +32,7 @@ export interface MemberCandidateFilter {
  * - 既にメンバーのユーザーは出さない（重複追加はサーバが変更を返さず `awaitTxId`
  *   がタイムアウトするため、`MembersPanel` 側のガードと二重で防ぐ）。
  * - 表示名 / ユーザー名の部分一致（大文字小文字を無視）で絞る。
- * - 空クエリでは名前順の先頭 `limit` 件を出す。
+ * - 並べ替えは行わず、渡された順のまま先頭 `limit` 件を返す。
  */
 export function filterMemberCandidates({
   users,
@@ -42,6 +53,5 @@ export function filterMemberCandidates({
         user.user_name.toLowerCase().includes(needle)
       );
     })
-    .sort((a, b) => userLabel(a).localeCompare(userLabel(b), "ja"))
     .slice(0, limit);
 }

@@ -14,7 +14,7 @@ import { inputClassName } from "../ui/input-styles";
 import { ScrollArea } from "../ui/scroll-area";
 import { Skeleton } from "../ui/skeleton";
 import { initials } from "./format";
-import { filterMemberCandidates, userLabel } from "./memberCandidates";
+import { filterMemberCandidates, sortUsersByLabel, userLabel } from "./memberCandidates";
 
 const SKELETON_ROWS = [0, 1, 2];
 
@@ -54,9 +54,11 @@ export function MembersPanel({ channel, className }: { channel: ChannelRow; clas
     return map;
   }, [usersQuery.data]);
 
+  // 並べ替えはユーザー一覧が変わったときだけ行い、キー入力ごとには絞り込みだけを行う。
+  const sortedUsers = useMemo(() => sortUsersByLabel(usersQuery.data ?? []), [usersQuery.data]);
   const candidates = useMemo(
-    () => filterMemberCandidates({ users: usersQuery.data ?? [], members, query }),
-    [usersQuery.data, members, query],
+    () => filterMemberCandidates({ users: sortedUsers, members, query }),
+    [sortedUsers, members, query],
   );
 
   const isMember = currentUserId
