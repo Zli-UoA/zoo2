@@ -2,6 +2,7 @@ import { cn } from "cn";
 import { UserPlusIcon } from "lucide-react";
 import { useMemo, useState, type FormEvent } from "react";
 
+import { useCurrentUser } from "../../hooks/useCurrentUser";
 import { useChannelMembers, useUsers } from "../../hooks/useRealtime";
 import { useWriteRunner } from "../../hooks/useWriteRunner";
 import { getCollections } from "../../lib/electric/collections";
@@ -29,9 +30,10 @@ function nowIso(): string {
  * メンバー、退出は本人のみ）。
  */
 export function MembersPanel({ channel, className }: { channel: ChannelRow; className?: string }) {
-  const { channelUsers, config } = getCollections();
+  const { channelUsers } = getCollections();
   const membersQuery = useChannelMembers(channel.id);
   const usersQuery = useUsers();
+  const { currentUserId } = useCurrentUser();
   const { error, setError, run } = useWriteRunner();
   const [memberId, setMemberId] = useState("");
 
@@ -44,7 +46,6 @@ export function MembersPanel({ channel, className }: { channel: ChannelRow; clas
     return map;
   }, [usersQuery.data]);
 
-  const currentUserId = config.devUserId;
   const isMember = currentUserId
     ? members.some((member) => member.user_id === currentUserId)
     : false;

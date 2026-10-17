@@ -1,5 +1,6 @@
 import { useState, type FormEvent } from "react";
 
+import { useCurrentUser } from "../../hooks/useCurrentUser";
 import { getCollections } from "../../lib/electric/collections";
 import { Button } from "../ui/button";
 import {
@@ -24,7 +25,8 @@ export function CreateChannelDialog({
   open: boolean;
   onOpenChange: (open: boolean) => void;
 }) {
-  const { channels, config } = getCollections();
+  const { channels } = getCollections();
+  const { currentUserId } = useCurrentUser();
   const [name, setName] = useState("");
   const [isPrivate, setIsPrivate] = useState(false);
   const [submitting, setSubmitting] = useState(false);
@@ -53,7 +55,7 @@ export function CreateChannelDialog({
         id: crypto.randomUUID(),
         channel_name,
         description: null,
-        created_user_id: config.devUserId ?? "",
+        created_user_id: currentUserId ?? "",
         is_private: isPrivate,
         created_at: new Date().toISOString(),
         updated_at: null,

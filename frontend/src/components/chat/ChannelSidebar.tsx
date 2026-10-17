@@ -4,6 +4,7 @@ import { cn } from "cn";
 import { HashIcon, LockIcon, PlusIcon } from "lucide-react";
 import { useMemo, useState } from "react";
 
+import { useCurrentUser } from "../../hooks/useCurrentUser";
 import { getCollections } from "../../lib/electric/collections";
 import type { ChannelRow } from "../../lib/electric/types";
 import { SyncStatus } from "../SyncStatus";
@@ -28,7 +29,8 @@ export function ChannelSidebar({
   className?: string;
 }) {
   const shell = useShell();
-  const { channelUsers, config } = getCollections();
+  const { channelUsers } = getCollections();
+  const { currentUserId } = useCurrentUser();
   const [createOpen, setCreateOpen] = useState(false);
 
   // 一覧の各チャンネルについて現在ユーザーの参加状態を出す。`channel_user` の
@@ -38,13 +40,13 @@ export function ChannelSidebar({
   const joinedChannelIds = useMemo(() => {
     const joined = new Set<string>();
     for (const membership of membershipsQuery.data ?? []) {
-      if (membership.user_id === config.devUserId) {
+      if (membership.user_id === currentUserId) {
         joined.add(membership.channel_id);
       }
     }
     return joined;
-  }, [membershipsQuery.data, config.devUserId]);
-  const hasCurrentUser = config.devUserId !== null;
+  }, [membershipsQuery.data, currentUserId]);
+  const hasCurrentUser = currentUserId !== null;
 
   return (
     <aside

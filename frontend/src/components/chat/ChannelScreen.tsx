@@ -1,7 +1,7 @@
 import { useMemo } from "react";
 
+import { useCurrentUser } from "../../hooks/useCurrentUser";
 import { useActiveChannels, useChannelMembers } from "../../hooks/useRealtime";
-import { getCollections } from "../../lib/electric/collections";
 import { MessagePane } from "../MessagePane";
 import { Skeleton } from "../ui/skeleton";
 import { ChannelHeader } from "./ChannelHeader";
@@ -29,7 +29,7 @@ function ChannelLoading() {
 
 /** チャンネルルート。ヘッダとメッセージ（非公開は参加者だけ）を出す。 */
 export function ChannelScreen({ channelId }: { channelId: string }) {
-  const { config } = getCollections();
+  const { currentUserId } = useCurrentUser();
   const channelsQuery = useActiveChannels();
   const membersQuery = useChannelMembers(channelId);
   const channels = channelsQuery.data ?? [];
@@ -39,7 +39,6 @@ export function ChannelScreen({ channelId }: { channelId: string }) {
   );
 
   const members = membersQuery.data ?? [];
-  const currentUserId = config.devUserId;
   const isMember = currentUserId
     ? members.some((member) => member.user_id === currentUserId)
     : false;
