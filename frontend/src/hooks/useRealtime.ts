@@ -43,12 +43,23 @@ export function useChannelMembers(channelId: string | null) {
   );
 }
 
+/**
+ * 現在ユーザー ID を返す。
+ *
+ * OIDC 対応（`useCurrentUser()` への集約、#66）がマージされるまでは dev 用の
+ * `config.devUserId` を返す。マージ後はこの関数の中身を `useCurrentUser()` に
+ * 差し替えるだけで、両フックが `/api/users/me` の解決に追従する。
+ */
+function useCurrentUserId(): string | null {
+  return getCollections().config.devUserId;
+}
+
 export interface MyChannelMemberships {
   /** 現在ユーザーが参加している channel_user 行。 */
   memberships: ChannelUserRow[];
   /** 参加中チャンネル ID の集合（一覧の参加バッジ判定用）。 */
   joinedChannelIds: ReadonlySet<string>;
-  /** 開発ユーザーが解決できているか。false なら参加状態を表示しない。 */
+  /** 現在ユーザーが解決できているか。false なら参加状態を表示しない。 */
   hasCurrentUser: boolean;
 }
 
@@ -60,8 +71,8 @@ export interface MyChannelMemberships {
  * コレクションのため、絞り込みは live query の述語に押し込まず購読後に走査する。
  */
 export function useMyChannelMemberships(): MyChannelMemberships {
-  const { channelUsers, config } = getCollections();
-  const currentUserId = config.devUserId;
+  const { channelUsers } = getCollections();
+  const currentUserId = useCurrentUserId();
   const membershipsQuery = useLiveQuery((q) => q.from({ channelUsers }));
   const memberships = useMemo(
     () => (membershipsQuery.data ?? []).filter((row) => row.user_id === currentUserId),
@@ -97,10 +108,9 @@ export interface ChannelAccess {
  * 必要（proxy 切替後も同じ）。`channel` が未解決の間は購読せず、判定はすべて false。
  */
 export function useChannelAccess(channel: ChannelRow | null): ChannelAccess {
-  const { config } = getCollections();
+  const currentUserId = useCurrentUserId();
   const membersQuery = useChannelMembers(channel?.id ?? null);
   const members = membersQuery.data ?? [];
-  const currentUserId = config.devUserId;
   const isMember = currentUserId
     ? members.some((member) => member.user_id === currentUserId)
     : false;
