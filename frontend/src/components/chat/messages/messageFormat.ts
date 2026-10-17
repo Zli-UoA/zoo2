@@ -28,10 +28,14 @@ export function authorLabel(message: FeedMessage): string {
 export type MessageTextSegment = { kind: "text" | "link"; value: string };
 
 /**
- * `http(s)` URL の候補。`<` `>` と引用符・空白で終端し、`javascript:` などは
- * そもそも開始スキームが合わないため拾わない。`\b` で語中（`foohttps://`）を防ぐ。
+ * `http(s)` URL の候補。ホスト部の先頭 1 文字を要求して `https://.` のような
+ * 断片を拾わない。`<` `>` と引用符・空白で終端し、`javascript:` などはそもそも
+ * 開始スキームが合わないため拾わない。`\b` で語中（`foohttps://`）を防ぐ。
  */
-const URL_PATTERN = /\bhttps?:\/\/[^\s<>"'`]+/gi;
+const URL_PATTERN = /\bhttps?:\/\/[^\s<>"'`/.?#][^\s<>"'`]*/gi;
+
+/** 約物だけが残って `https://` になった断片を弾く（ホスト部が 1 文字以上ある）。 */
+const URL_HAS_HOST = /^https?:\/\/./i;
 
 /** URL 末尾に紛れ込みやすい約物（日本語の句読点を含む）。 */
 const TRAILING_PUNCTUATION = /[.,;:!?、。！？…]+$/;
@@ -85,7 +89,7 @@ export function messageTextSegments(content: string): MessageTextSegment[] {
   for (const match of content.matchAll(URL_PATTERN)) {
     const start = match.index ?? 0;
     const url = trimUrlEnd(match[0]);
-    if (!url) {
+    if (!url || !URL_HAS_HOST.test(url)) {
       continue;
     }
     if (start > cursor) {
