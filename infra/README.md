@@ -192,7 +192,7 @@ SPA は `VITE_OIDC_ISSUER`・`VITE_OIDC_CLIENT_ID`・`VITE_OIDC_REDIRECT_URI`（
 
 SPA は IdP の Discovery / token エンドポイントをブラウザから直接叩くため、IdP 側で SPA のオリジンに CORS を許可する必要があります（Kanidm は OAuth2 クライアントに設定した redirect origin に応じて CORS を返します）。`Content-Security-Policy` の `connect-src` は Kanidm の確定後に #50 で設定します。
 
-> **注意:** 現在ユーザーの解決（`/api/users/me` を使う #49）が入るまで、ステージングや本番で `VITE_OIDC_*` を有効にしないでください。`config.devUserId` が null になり、自分のメッセージの編集・削除、参加 / 退出、メンバー追加の表示条件、チャンネル作成時の `created_user_id` が動きません（退出ガードは書き込みを拒否します）。
+> **メモ:** 現在ユーザー（内部 `users.id`）は SPA が起動時に `GET /api/users/me`（Bearer）で解決し、自分の投稿判定・参加状態・メンバー表示・退出の本人確認に使います（#49）。解決できるまでは参加状態や作成・退出の操作を出さず、解決に失敗した場合は再読み込みまたは画面遷移で再試行します。`VITE_OIDC_*` を有効にする際は、この解決と Shape / REST の Bearer がバックエンドで通ることをステージングで確認してください（#50）。
 
 ### Coolify
 

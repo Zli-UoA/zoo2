@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { toast } from "sonner";
 
+import { useCurrentUser } from "../hooks/useCurrentUser";
 import { useMessageFeed } from "../hooks/useRealtime";
 import { useWriteRunner } from "../hooks/useWriteRunner";
 import { getCollections } from "../lib/electric/collections";
@@ -28,11 +29,11 @@ function nowIso(): string {
  * `useWriteRunner`（楽観更新の確定待ち）をそのまま使い、表示だけを作り込む。
  */
 export function MessagePane({ channelId }: { channelId: string }) {
-  const { messages, config } = getCollections();
+  const { messages } = getCollections();
   const messagesCollection = messages(channelId);
   const messagesQuery = useMessageFeed(channelId);
   const feed = messagesQuery.data ?? [];
-  const currentUserId = config.devUserId;
+  const { currentUserId } = useCurrentUser();
   const { error, setError, run } = useWriteRunner();
 
   const [editingId, setEditingId] = useState<string | null>(null);

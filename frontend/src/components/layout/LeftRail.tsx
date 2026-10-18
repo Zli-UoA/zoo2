@@ -1,11 +1,14 @@
 import { Link } from "@tanstack/react-router";
-import { ActivityIcon, HashIcon, type LucideIcon, PawPrintIcon } from "lucide-react";
 import { cn } from "cn";
+import { ActivityIcon, HashIcon, LogOutIcon, type LucideIcon, PawPrintIcon } from "lucide-react";
 
+import { useCurrentUser } from "../../hooks/useCurrentUser";
 import { useUsers } from "../../hooks/useRealtime";
 import { getCollections } from "../../lib/electric/collections";
+import { getOidcClient } from "../../lib/oidc/session";
 import { ModeToggle } from "../theme/ModeToggle";
 import { Avatar, AvatarFallback } from "../ui/avatar";
+import { Button } from "../ui/button";
 import { Separator } from "../ui/separator";
 import { initials } from "../chat/format";
 
@@ -39,9 +42,20 @@ function RailLink({
  */
 export function LeftRail() {
   const { config } = getCollections();
+  const { currentUserId } = useCurrentUser();
   const usersQuery = useUsers();
-  const me = (usersQuery.data ?? []).find((user) => user.id === config.devUserId);
-  const meLabel = me ? me.display_name || me.user_name : (config.devUserId ?? "?");
+  const me = (usersQuery.data ?? []).find((user) => user.id === currentUserId);
+  const meLabel = me ? me.display_name || me.user_name : (currentUserId ?? "?");
+
+  // OIDC セッションの破棄（トークンのクリアとログアウト画面への遷移）。
+  // dev（OIDC 未設定）ではログアウト UI を出さない。
+  const handleLogout = () => {
+    const client = getOidcClient(config);
+    if (!client) {
+      return;
+    }
+    void client.logout();
+  };
 
   return (
     <nav
@@ -65,6 +79,17 @@ export function LeftRail() {
         <Avatar size="sm" title={meLabel}>
           <AvatarFallback>{initials(meLabel)}</AvatarFallback>
         </Avatar>
+        {config.oidc ? (
+          <Button
+            variant="ghost"
+            size="icon-sm"
+            aria-label="ログアウト"
+            title="ログアウト"
+            onClick={handleLogout}
+          >
+            <LogOutIcon />
+          </Button>
+        ) : null}
       </div>
     </nav>
   );
