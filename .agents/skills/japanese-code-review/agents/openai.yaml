@@ -1,0 +1,6 @@
+interface:
+  display_name: "日本語コードレビュー"
+  short_description: "差分を日本語でレビューし、yomiyasuで意味を保ちながら文章を整えます"
+  default_prompt: "$japanese-code-review を使って、変更内容を日本語でレビューしてください。指摘は重要度順に、該当箇所・発生条件・影響・修正方針を示し、報告前に $yomiyasu で日本語を推敲してください。"
+policy:
+  allow_implicit_invocation: true
