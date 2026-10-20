@@ -126,8 +126,8 @@ export function ChannelSidebar({
                   {channel.archive_at ? (
                     <span
                       role="img"
-                      title="アーカイブ済み"
-                      aria-label="アーカイブ済み"
+                      title={t("moderation.archived")}
+                      aria-label={t("moderation.archived")}
                       className="shrink-0 text-muted-foreground/70"
                     >
                       <ArchiveIcon className="size-3" aria-hidden="true" />

@@ -84,7 +84,7 @@ export function ChannelScreen({ channelId }: { channelId: string }) {
             <div className="flex min-h-0 flex-1 flex-col">
               <div className="flex items-start gap-2 border-b bg-muted/40 px-4 py-2 text-xs text-muted-foreground">
                 <ArchiveIcon className="mt-0.5 size-3.5 shrink-0" aria-hidden="true" />
-                <span>アーカイブ済みのチャンネルです。メッセージは読み取り専用です。</span>
+                <span>{t("moderation.archivedReadOnly")}</span>
               </div>
               <MessageList
                 key={`archived-${channelId}`}

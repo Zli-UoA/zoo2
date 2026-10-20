@@ -1,3 +1,5 @@
+import type { TFunction } from "i18next";
+import { useTranslation } from "react-i18next";
 import { useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 
@@ -25,22 +27,22 @@ export interface ChannelAdmin {
 }
 
 /**
- * API のエラーをユーザー向けの日本語文言にする。
+ * API のエラーを現在の言語のユーザー向け文言にする。
  *
  * バックエンドの `AppError` は英語の説明的メッセージを返すため、権限・存在・
- * 状態のエラーは既知の日本語を優先する。それ以外はレスポンスの `error` を
+ * 状態のエラーは既知の翻訳を優先する。それ以外はレスポンスの `error` を
  * そのまま使う（詳細なバリデーション理由など）。
  */
-export function describeApiError(cause: unknown): string {
+export function describeApiError(cause: unknown, t: TFunction): string {
   if (cause instanceof ApiError) {
     if (cause.status === 403) {
-      return "この操作を行う権限がありません。";
+      return t("moderation.forbidden");
     }
     if (cause.status === 404) {
-      return "対象が見つかりませんでした。";
+      return t("moderation.notFound");
     }
     if (cause.status === 400) {
-      return "この操作は現在の状態では実行できません。";
+      return t("moderation.invalidState");
     }
     const body = cause.body;
     if (body && typeof body === "object" && "error" in body) {
@@ -64,6 +66,7 @@ export function describeApiError(cause: unknown): string {
  * 戻り値で確認ダイアログを閉じるか判断する。
  */
 export function useChannelAdmin(channel: ChannelRow | null): ChannelAdmin {
+  const { t } = useTranslation();
   const access = useChannelAccess(channel);
   const collections = useMemo(() => getCollections(), []);
   const client = useMemo(() => createConfiguredApiClient(collections.config), [collections]);
@@ -98,8 +101,8 @@ export function useChannelAdmin(channel: ChannelRow | null): ChannelAdmin {
       toast.success(successMessage);
       return true;
     } catch (cause) {
-      toast.error("操作に失敗しました", {
-        description: describeApiError(cause),
+      toast.error(t("common.writeError"), {
+        description: describeApiError(cause, t),
         id: `channel-admin-${action}`,
       });
       return false;
@@ -138,7 +141,7 @@ export function useChannelAdmin(channel: ChannelRow | null): ChannelAdmin {
             }),
           );
         },
-        archived ? "チャンネルをアーカイブしました" : "アーカイブを解除しました",
+        archived ? t("moderation.archiveSuccess") : t("moderation.unarchiveSuccess"),
       );
     },
     kickMember: async (userId) => {
@@ -165,7 +168,7 @@ export function useChannelAdmin(channel: ChannelRow | null): ChannelAdmin {
             }),
           );
         },
-        "メンバーをキックしました",
+        t("moderation.kickSuccess"),
       );
     },
     deleteMessage: async (messageId) => {
@@ -191,7 +194,7 @@ export function useChannelAdmin(channel: ChannelRow | null): ChannelAdmin {
             }),
           );
         },
-        "メッセージを削除しました",
+        t("moderation.deleteSuccess"),
       );
     },
   };

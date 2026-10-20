@@ -88,7 +88,7 @@ export function ChannelHeader({
           <h2 className="truncate text-sm font-semibold">{channel.channel_name}</h2>
           {isArchived ? (
             <span className="shrink-0 rounded bg-muted px-1.5 py-0.5 text-[0.65rem] text-muted-foreground">
-              アーカイブ済み
+              {t("moderation.archived")}
             </span>
           ) : null}
         </div>
@@ -114,8 +114,8 @@ export function ChannelHeader({
         {canManage ? (
           <DropdownMenu>
             <DropdownMenuTrigger
-              aria-label="チャンネルの管理"
-              title="チャンネルの管理"
+              aria-label={t("moderation.manageChannel")}
+              title={t("moderation.manageChannel")}
               className={buttonVariants({ variant: "ghost", size: "icon-sm" })}
             >
               <MoreHorizontalIcon />
@@ -124,17 +124,17 @@ export function ChannelHeader({
               {isArchived ? (
                 <DropdownMenuItem onClick={() => setConfirmAction("unarchive")}>
                   <ArchiveRestoreIcon />
-                  アンアーカイブ
+                  {t("moderation.unarchive")}
                 </DropdownMenuItem>
               ) : (
                 <DropdownMenuItem onClick={() => setConfirmAction("archive")}>
                   <ArchiveIcon />
-                  アーカイブ
+                  {t("moderation.archive")}
                 </DropdownMenuItem>
               )}
               <DropdownMenuItem onClick={() => setMessageAdminOpen(true)}>
                 <ShieldAlertIcon />
-                メッセージ管理
+                {t("moderation.messageAdmin")}
               </DropdownMenuItem>
             </DropdownMenuContent>
           </DropdownMenu>
@@ -153,23 +153,25 @@ export function ChannelHeader({
           <AlertDialogHeader>
             <AlertDialogTitle>
               {confirmAction === "archive"
-                ? "チャンネルをアーカイブしますか？"
-                : "アーカイブを解除しますか？"}
+                ? t("moderation.archiveTitle")
+                : t("moderation.unarchiveTitle")}
             </AlertDialogTitle>
             <AlertDialogDescription>
               {confirmAction === "archive"
-                ? "アーカイブすると、メンバーはメッセージを閲覧できますが、新しい投稿や参加はできなくなります。"
-                : "アーカイブを解除すると、メンバーは再び投稿できるようになります。"}
+                ? t("moderation.archiveDescription")
+                : t("moderation.unarchiveDescription")}
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
-            <AlertDialogCancel>取消</AlertDialogCancel>
+            <AlertDialogCancel>{t("common.cancelShort")}</AlertDialogCancel>
             <AlertDialogAction
               variant={confirmAction === "archive" ? "destructive" : "default"}
               disabled={admin.pending !== null}
               onClick={() => void confirmArchive()}
             >
-              {admin.pending === "archive" || admin.pending === "unarchive" ? "実行中…" : "実行"}
+              {admin.pending === "archive" || admin.pending === "unarchive"
+                ? t("moderation.executing")
+                : t("moderation.execute")}
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>
@@ -201,6 +203,7 @@ function MessageAdminDialog({
   pending: boolean;
   onDelete: (messageId: string) => Promise<boolean>;
 }) {
+  const { t } = useTranslation();
   const messagesQuery = useMessageFeed(channel.id);
   const messages = messagesQuery.data ?? [];
   const [target, setTarget] = useState<FeedMessage | null>(null);
@@ -220,22 +223,18 @@ function MessageAdminDialog({
       <Dialog open={open} onOpenChange={onOpenChange}>
         <DialogContent className="flex max-h-[85dvh] flex-col gap-0 overflow-hidden p-0 sm:max-w-lg">
           <DialogHeader className="border-b px-4 py-3">
-            <DialogTitle>メッセージ管理</DialogTitle>
-            <DialogDescription>
-              チャンネル内のメッセージを管理者として強制削除できます。
-            </DialogDescription>
+            <DialogTitle>{t("moderation.messageAdmin")}</DialogTitle>
+            <DialogDescription>{t("moderation.messageAdminDescription")}</DialogDescription>
           </DialogHeader>
           <ScrollArea className="min-h-0 flex-1">
             <ul className="flex flex-col gap-1 p-2">
               {messagesQuery.isLoading ? (
                 [0, 1, 2].map((row) => <Skeleton key={row} className="h-16 w-full rounded-lg" />)
               ) : messagesQuery.isError ? (
-                <li className="px-2 py-3 text-xs text-destructive">
-                  メッセージ取得に失敗しました。
-                </li>
+                <li className="px-2 py-3 text-xs text-destructive">{t("messages.fetchError")}</li>
               ) : messages.length === 0 ? (
                 <li className="px-2 py-3 text-xs text-muted-foreground">
-                  メッセージがありません。
+                  {t("moderation.noMessages")}
                 </li>
               ) : (
                 messages.map((message) => (
@@ -261,8 +260,10 @@ function MessageAdminDialog({
                     <Button
                       variant="ghost"
                       size="icon-xs"
-                      aria-label={`${authorLabel(message)} のメッセージを削除`}
-                      title="強制削除"
+                      aria-label={t("moderation.deleteMessageLabel", {
+                        author: authorLabel(message),
+                      })}
+                      title={t("moderation.forceDelete")}
                       className="mt-0.5 shrink-0 text-destructive hover:bg-destructive/10 hover:text-destructive"
                       disabled={pending}
                       onClick={() => setTarget(message)}
@@ -287,21 +288,21 @@ function MessageAdminDialog({
       >
         <AlertDialogContent>
           <AlertDialogHeader>
-            <AlertDialogTitle>メッセージを強制削除しますか？</AlertDialogTitle>
+            <AlertDialogTitle>{t("moderation.forceDeleteTitle")}</AlertDialogTitle>
             <AlertDialogDescription>
               {target
-                ? `${authorLabel(target)} さんのメッセージを削除します。この操作は取り消せません。`
+                ? t("moderation.forceDeleteDescription", { author: authorLabel(target) })
                 : ""}
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
-            <AlertDialogCancel>取消</AlertDialogCancel>
+            <AlertDialogCancel>{t("common.cancelShort")}</AlertDialogCancel>
             <AlertDialogAction
               variant="destructive"
               disabled={pending}
               onClick={() => void confirmDelete()}
             >
-              {pending ? "削除中…" : "削除"}
+              {pending ? t("moderation.deleting") : t("messages.delete")}
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>

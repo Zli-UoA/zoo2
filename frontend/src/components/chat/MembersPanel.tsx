@@ -213,7 +213,7 @@ export function MembersPanel({ channel, className }: { channel: ChannelRow; clas
         <>
           {isArchived ? (
             <p className="border-b bg-muted/40 px-4 py-2 text-xs text-muted-foreground">
-              アーカイブ済みのため、メンバーの追加・キック・参加はできません。
+              {t("moderation.archivedMembersHelp")}
             </p>
           ) : null}
           <ScrollArea className="min-h-0 flex-1">
@@ -261,8 +261,8 @@ export function MembersPanel({ channel, className }: { channel: ChannelRow; clas
                             variant="ghost"
                             size="icon-xs"
                             className="shrink-0 text-destructive hover:bg-destructive/10 hover:text-destructive"
-                            aria-label={`${label} をキック`}
-                            title="キック"
+                            aria-label={t("moderation.kickLabel", { name: label })}
+                            title={t("moderation.kick")}
                             disabled={busy}
                             onClick={() => setKickTarget({ userId: member.user_id, label })}
                           >
@@ -374,7 +374,7 @@ export function MembersPanel({ channel, className }: { channel: ChannelRow; clas
                   : isMember
                     ? t("members.joined")
                     : isArchived
-                      ? "アーカイブ済み"
+                      ? t("moderation.archived")
                       : t("members.notJoined")}
               </span>
               {!currentUserLoading && currentUserId ? (
@@ -410,19 +410,19 @@ export function MembersPanel({ channel, className }: { channel: ChannelRow; clas
       >
         <AlertDialogContent>
           <AlertDialogHeader>
-            <AlertDialogTitle>メンバーをキックしますか？</AlertDialogTitle>
+            <AlertDialogTitle>{t("moderation.kickTitle")}</AlertDialogTitle>
             <AlertDialogDescription>
-              {kickTarget ? `${kickTarget.label} さんをこのチャンネルからキックします。` : ""}
+              {kickTarget ? t("moderation.kickDescription", { name: kickTarget.label }) : ""}
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
-            <AlertDialogCancel>取消</AlertDialogCancel>
+            <AlertDialogCancel>{t("common.cancelShort")}</AlertDialogCancel>
             <AlertDialogAction
               variant="destructive"
               disabled={busy}
               onClick={() => void confirmKick()}
             >
-              {admin.pending === "kick" ? "実行中…" : "キック"}
+              {admin.pending === "kick" ? t("moderation.executing") : t("moderation.kick")}
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>
