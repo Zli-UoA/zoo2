@@ -6,7 +6,7 @@ use toasty::Model;
 pub struct Channel {
     #[key]
     pub id: String,
-    #[unique]
+    pub tenant_id: String,
     pub channel_name: String,
     pub description: Option<String>,
     pub created_user_id: String,

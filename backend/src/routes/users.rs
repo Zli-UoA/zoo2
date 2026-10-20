@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::{
-    auth::AuthUser,
+    auth::{AuthUser, DEFAULT_TENANT_ID},
     db::get_current_txid,
     error::AppError,
     models::User,
@@ -31,6 +31,7 @@ pub struct UpdateMeRequest {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct UserResponse {
     pub id: String,
+    pub tenant_id: String,
     pub user_name: String,
     pub display_name: String,
     pub created_at: String,
@@ -41,6 +42,7 @@ impl From<User> for UserResponse {
     fn from(user: User) -> Self {
         Self {
             id: user.id,
+            tenant_id: user.tenant_id,
             user_name: user.user_name,
             display_name: user.display_name,
             created_at: user.created_at.to_string(),
@@ -62,7 +64,15 @@ async fn get_me(
 ) -> Result<Json<UserResponse>, AppError> {
     let mut db = state.db.clone();
     match User::get_by_id(&mut db, auth_user.id.as_str()).await {
-        Ok(user) => Ok(Json(UserResponse::from(user))),
+        Ok(user) => {
+            if user.tenant_id != auth_user.tenant_id {
+                return Err(AppError::NotFound(format!(
+                    "User not found with id: {}",
+                    auth_user.id
+                )));
+            }
+            Ok(Json(UserResponse::from(user)))
+        }
         Err(err) if err.is_record_not_found() => Err(AppError::NotFound(format!(
             "User not found with id: {}",
             auth_user.id
@@ -124,6 +134,7 @@ async fn create_user(
 
     let user = toasty::create!(User {
         id: id.as_str(),
+        tenant_id: DEFAULT_TENANT_ID,
         user_name: payload.user_name.as_str(),
         display_name: payload.display_name.as_str(),
         created_at: now,
@@ -140,10 +151,10 @@ async fn create_user(
 
 async fn list_users(
     State(state): State<AppState>,
-    _auth_user: AuthUser,
+    auth_user: AuthUser,
 ) -> Result<Json<Vec<UserResponse>>, AppError> {
     let mut db = state.db.clone();
-    let users = User::all()
+    let users = User::filter(User::fields().tenant_id().eq(auth_user.tenant_id.as_str()))
         .order_by(User::fields().created_at().asc())
         .exec(&mut db)
         .await?;
@@ -153,7 +164,7 @@ async fn list_users(
 
 async fn get_user_by_id(
     State(state): State<AppState>,
-    _auth_user: AuthUser,
+    auth_user: AuthUser,
     Path(id): Path<String>,
 ) -> Result<Json<UserResponse>, AppError> {
     Uuid::parse_str(&id)
@@ -161,7 +172,12 @@ async fn get_user_by_id(
 
     let mut db = state.db.clone();
     match User::get_by_id(&mut db, id.as_str()).await {
-        Ok(user) => Ok(Json(UserResponse::from(user))),
+        Ok(user) => {
+            if user.tenant_id != auth_user.tenant_id {
+                return Err(AppError::NotFound(format!("User not found with id: {id}")));
+            }
+            Ok(Json(UserResponse::from(user)))
+        }
         Err(err) if err.is_record_not_found() => {
             Err(AppError::NotFound(format!("User not found with id: {id}")))
         }

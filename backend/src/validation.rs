@@ -8,6 +8,7 @@ pub const MAX_CHANNEL_DESCRIPTION_LENGTH: usize = 250;
 pub const MAX_USER_NAME_LENGTH: usize = 80;
 pub const MAX_DISPLAY_NAME_LENGTH: usize = 80;
 pub const MAX_MESSAGE_CONTENT_LENGTH: usize = 40_000;
+pub const MAX_TENANT_ID_LENGTH: usize = 64;
 
 const RESERVED_CHANNEL_NAMES: &[&str] = &["all", "channel", "everyone", "here", "general"];
 pub(crate) const RESERVED_USER_NAMES: &[&str] =
@@ -126,6 +127,33 @@ pub fn validate_message_content(content: &str) -> Result<(), AppError> {
         return Err(AppError::BadRequest(
             "Message content cannot be empty or only whitespace".to_string(),
         ));
+    }
+
+    /// テナント ID のバリデーション:
+    /// - 1 文字以上 64 文字以下
+    /// - 半角英小文字、数字、ハイフン (`-`)、アンダースコア (`_`) のみ許可
+    pub fn validate_tenant_id(tenant_id: &str) -> Result<(), AppError> {
+        if tenant_id.is_empty() {
+            return Err(AppError::BadRequest("Tenant id cannot be empty".to_string()));
+        }
+
+        if tenant_id.chars().count() > MAX_TENANT_ID_LENGTH {
+            return Err(AppError::BadRequest(format!(
+                "Tenant id cannot exceed {MAX_TENANT_ID_LENGTH} characters"
+            )));
+        }
+
+        let is_valid = tenant_id
+            .chars()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-' || c == '_');
+        if !is_valid {
+            return Err(AppError::BadRequest(
+                "Tenant id can only contain lowercase letters, numbers, hyphens, and underscores"
+                    .to_string(),
+            ));
+        }
+
+        Ok(())
     }
 
     if content.chars().count() > MAX_MESSAGE_CONTENT_LENGTH {
@@ -456,5 +484,18 @@ mod tests {
         assert!(validate_message_content(&too_long).is_err());
         let exact = "a".repeat(40_000);
         assert!(validate_message_content(&exact).is_ok());
+    }
+
+    #[test]
+    fn test_validate_tenant_id() {
+        assert!(validate_tenant_id("default").is_ok());
+        assert!(validate_tenant_id("tenant_01").is_ok());
+        assert!(validate_tenant_id("tenant-01").is_ok());
+
+        assert!(validate_tenant_id("").is_err());
+        assert!(validate_tenant_id("Tenant").is_err());
+        assert!(validate_tenant_id("tenant id").is_err());
+        assert!(validate_tenant_id("tenant@id").is_err());
+        assert!(validate_tenant_id(&"a".repeat(65)).is_err());
     }
 }

@@ -8,13 +8,16 @@ use crate::{
     error::AppError,
     models::{User, UserIdentity},
     state::{AppState, UserResolutionCache},
-    validation::{MAX_DISPLAY_NAME_LENGTH, MAX_USER_NAME_LENGTH, RESERVED_USER_NAMES},
+    validation::{
+        MAX_DISPLAY_NAME_LENGTH, MAX_USER_NAME_LENGTH, RESERVED_USER_NAMES, validate_tenant_id,
+    },
 };
 
 pub mod oidc;
 pub mod rbac;
 
 pub const DEFAULT_DEV_USER_ID: &str = "00000000-0000-0000-0000-000000000001";
+pub const DEFAULT_TENANT_ID: &str = "default";
 const JIT_CACHE_TTL: Duration = Duration::from_secs(300); // 5分
 
 /// ユーザー名用のサニタイズ関数
@@ -82,6 +85,7 @@ pub async fn resolve_or_provision_user(
     db: &toasty::Db,
     user_cache: &UserResolutionCache,
     claims: &OidcClaims,
+    tenant_id: &str,
 ) -> Result<AuthUser, AppError> {
     // 1. インメモリキャッシュの確認 (全リクエストでの DB 問い合わせ負荷を低減)
     if let Some(cached_user) = user_cache.get(&claims.iss, &claims.sub).await {
@@ -103,9 +107,15 @@ pub async fn resolve_or_provision_user(
 
     if let Some(identity) = existing_identity {
         let user = User::get_by_id(&mut db_client, &identity.user_id).await?;
+        if user.tenant_id != tenant_id {
+            return Err(AppError::Forbidden(
+                "Authenticated user does not belong to requested tenant".to_string(),
+            ));
+        }
 
         let auth_user = AuthUser {
             id: user.id,
+            tenant_id: user.tenant_id,
             user_name: user.user_name,
             display_name: user.display_name,
         };
@@ -155,6 +165,7 @@ pub async fn resolve_or_provision_user(
 
         let create_user_res = toasty::create!(User {
             id: new_user_id.as_str(),
+            tenant_id: tenant_id,
             user_name: candidate_username.as_str(),
             display_name: display_name.as_str(),
             created_at: now,
@@ -181,8 +192,14 @@ pub async fn resolve_or_provision_user(
 
                 if let Some(identity) = check_existing {
                     let user = User::get_by_id(&mut db_client, &identity.user_id).await?;
+                    if user.tenant_id != tenant_id {
+                        return Err(AppError::Forbidden(
+                            "Authenticated user does not belong to requested tenant".to_string(),
+                        ));
+                    }
                     let auth_user = AuthUser {
                         id: user.id,
+                        tenant_id: user.tenant_id,
                         user_name: user.user_name,
                         display_name: user.display_name,
                     };
@@ -220,6 +237,7 @@ pub async fn resolve_or_provision_user(
                 tx.commit().await?;
                 let auth_user = AuthUser {
                     id: created_user.id,
+                    tenant_id: tenant_id.to_string(),
                     user_name: created_user.user_name,
                     display_name: created_user.display_name,
                 };
@@ -249,8 +267,14 @@ pub async fn resolve_or_provision_user(
 
                 if let Some(identity) = check_existing {
                     let user = User::get_by_id(&mut db_client, &identity.user_id).await?;
+                    if user.tenant_id != tenant_id {
+                        return Err(AppError::Forbidden(
+                            "Authenticated user does not belong to requested tenant".to_string(),
+                        ));
+                    }
                     let auth_user = AuthUser {
                         id: user.id,
+                        tenant_id: user.tenant_id,
                         user_name: user.user_name,
                         display_name: user.display_name,
                     };
@@ -279,6 +303,7 @@ pub(crate) fn resolve_auth_user(
     auth_header: Option<&str>,
     x_dev_user_header: Option<&str>,
     default_dev_user_id: Option<&str>,
+    tenant_id: &str,
 ) -> Result<AuthUser, AppError> {
     if dev_auth_enabled {
         // 1. Authorization ヘッダ (Bearer <UUID>)
@@ -288,6 +313,7 @@ pub(crate) fn resolve_auth_user(
         {
             return Ok(AuthUser {
                 id: uuid.to_string(),
+                tenant_id: tenant_id.to_string(),
                 user_name: "dev_user".to_string(),
                 display_name: "Dev User".to_string(),
             });
@@ -301,6 +327,7 @@ pub(crate) fn resolve_auth_user(
 
             return Ok(AuthUser {
                 id: uuid.to_string(),
+                tenant_id: tenant_id.to_string(),
                 user_name: "dev_user".to_string(),
                 display_name: "Dev User".to_string(),
             });
@@ -316,6 +343,7 @@ pub(crate) fn resolve_auth_user(
 
         return Ok(AuthUser {
             id: uuid.to_string(),
+            tenant_id: tenant_id.to_string(),
             user_name: "dev_user".to_string(),
             display_name: "Dev User".to_string(),
         });
@@ -328,8 +356,20 @@ pub(crate) fn resolve_auth_user(
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AuthUser {
     pub id: String,
+    pub tenant_id: String,
     pub user_name: String,
     pub display_name: String,
+}
+
+pub(crate) fn resolve_tenant_id(
+    x_tenant_id_header: Option<&str>,
+    claims_tenant_id: Option<&str>,
+) -> Result<String, AppError> {
+    let tenant_id = claims_tenant_id
+        .or(x_tenant_id_header)
+        .unwrap_or(DEFAULT_TENANT_ID);
+    validate_tenant_id(tenant_id)?;
+    Ok(tenant_id.to_string())
 }
 
 impl FromRequestParts<AppState> for AuthUser {
@@ -353,6 +393,14 @@ impl FromRequestParts<AppState> for AuthUser {
             ),
             None => None,
         };
+        let x_tenant_id = match parts.headers.get("X-Tenant-Id") {
+            Some(v) => Some(
+                v.to_str()
+                    .map_err(|_| AppError::BadRequest("Invalid X-Tenant-Id header format".into()))?,
+            ),
+            None => None,
+        };
+        let tenant_id = resolve_tenant_id(x_tenant_id, None)?;
 
         // 1. Dev Auth 有効環境の処理
         if is_dev_enabled {
@@ -363,6 +411,7 @@ impl FromRequestParts<AppState> for AuthUser {
                 if let Ok(uuid) = Uuid::parse_str(token) {
                     return Ok(AuthUser {
                         id: uuid.to_string(),
+                        tenant_id,
                         user_name: "dev_user".to_string(),
                         display_name: "Dev User".to_string(),
                     });
@@ -371,7 +420,15 @@ impl FromRequestParts<AppState> for AuthUser {
                 // (b) UUID 形式でない場合、OIDC 設定があれば OIDC トークンとして検証
                 if let Some(ref oidc_config) = state.config.oidc {
                     let claims = state.jwks_verifier.verify_token(token, oidc_config).await?;
-                    return resolve_or_provision_user(&state.db, &state.user_cache, &claims).await;
+                    let tenant_id =
+                        resolve_tenant_id(x_tenant_id, claims.tenant_id.as_deref())?;
+                    return resolve_or_provision_user(
+                        &state.db,
+                        &state.user_cache,
+                        &claims,
+                        &tenant_id,
+                    )
+                    .await;
                 }
             }
 
@@ -382,6 +439,7 @@ impl FromRequestParts<AppState> for AuthUser {
                 auth_header,
                 x_dev_user,
                 default_id.as_deref(),
+                tenant_id.as_str(),
             );
         }
 
@@ -402,7 +460,8 @@ impl FromRequestParts<AppState> for AuthUser {
 
         let claims = state.jwks_verifier.verify_token(token, oidc_config).await?;
 
-        resolve_or_provision_user(&state.db, &state.user_cache, &claims).await
+        let tenant_id = resolve_tenant_id(x_tenant_id, claims.tenant_id.as_deref())?;
+        resolve_or_provision_user(&state.db, &state.user_cache, &claims, &tenant_id).await
     }
 }
 
@@ -412,33 +471,25 @@ mod tests {
 
     #[test]
     fn test_is_dev_auth_enabled_pure() {
-        // DEV_AUTH_ENABLED が明示的に設定されている場合
         assert!(is_dev_auth_enabled_pure(Some("true"), None, false));
         assert!(is_dev_auth_enabled_pure(Some("1"), None, false));
         assert!(!is_dev_auth_enabled_pure(Some("false"), None, false));
         assert!(!is_dev_auth_enabled_pure(Some("0"), None, false));
         assert!(!is_dev_auth_enabled_pure(Some("invalid"), None, false));
 
-        // DEV_AUTH_ENABLED 未設定 & 非テストビルド (本番ビルド) -> 常に false (fail-closed)
         assert!(!is_dev_auth_enabled_pure(None, None, false));
         assert!(!is_dev_auth_enabled_pure(None, Some("development"), false));
         assert!(!is_dev_auth_enabled_pure(None, Some("production"), false));
 
-        // DEV_AUTH_ENABLED 未設定 & テストビルド
         assert!(is_dev_auth_enabled_pure(None, None, true));
         assert!(is_dev_auth_enabled_pure(None, Some("development"), true));
         assert!(is_dev_auth_enabled_pure(None, Some("test"), true));
-        // ENVIRONMENT=production のときは DEV_AUTH_ENABLED が設定されていても常に false (fail-closed)
         assert!(!is_dev_auth_enabled_pure(
             Some("true"),
             Some("production"),
             false
         ));
-        assert!(!is_dev_auth_enabled_pure(
-            Some("true"),
-            Some("production"),
-            true
-        ));
+        assert!(!is_dev_auth_enabled_pure(Some("true"), Some("production"), true));
         assert!(!is_dev_auth_enabled_pure(None, Some("production"), true));
     }
 
@@ -446,19 +497,24 @@ mod tests {
     fn test_resolve_auth_user_when_dev_auth_disabled() {
         let valid_uuid = "11111111-1111-1111-1111-111111111111";
 
-        // dev_auth_enabled = false のときは全て 403 Forbidden になること (認証バイパス防止)
         assert!(matches!(
-            resolve_auth_user(false, Some(&format!("Bearer {valid_uuid}")), None, None),
+            resolve_auth_user(
+                false,
+                Some(&format!("******", valid_uuid)),
+                None,
+                None,
+                DEFAULT_TENANT_ID
+            ),
             Err(AppError::Forbidden(_))
         ));
 
         assert!(matches!(
-            resolve_auth_user(false, None, Some(valid_uuid), None),
+            resolve_auth_user(false, None, Some(valid_uuid), None, DEFAULT_TENANT_ID),
             Err(AppError::Forbidden(_))
         ));
 
         assert!(matches!(
-            resolve_auth_user(false, None, None, None),
+            resolve_auth_user(false, None, None, None, DEFAULT_TENANT_ID),
             Err(AppError::Forbidden(_))
         ));
     }
@@ -469,68 +525,61 @@ mod tests {
         let x_dev_uuid = "22222222-2222-2222-2222-222222222222";
         let custom_default_uuid = "33333333-3333-3333-3333-333333333333";
 
-        // 1. Bearer UUID が最優先
         let user = resolve_auth_user(
             true,
-            Some(&format!("Bearer {bearer_uuid}")),
+            Some(&format!("******", bearer_uuid)),
             Some(x_dev_uuid),
             Some(custom_default_uuid),
+            DEFAULT_TENANT_ID,
         )
         .unwrap();
         assert_eq!(user.id, bearer_uuid);
+        assert_eq!(user.tenant_id, DEFAULT_TENANT_ID);
 
-        // 2. Bearer がなければ X-Dev-User
-        let user =
-            resolve_auth_user(true, None, Some(x_dev_uuid), Some(custom_default_uuid)).unwrap();
+        let user = resolve_auth_user(
+            true,
+            None,
+            Some(x_dev_uuid),
+            Some(custom_default_uuid),
+            DEFAULT_TENANT_ID,
+        )
+        .unwrap();
         assert_eq!(user.id, x_dev_uuid);
 
-        // 3. Bearer も X-Dev-User もなければカスタムデフォルト
-        let user = resolve_auth_user(true, None, None, Some(custom_default_uuid)).unwrap();
+        let user = resolve_auth_user(
+            true,
+            None,
+            None,
+            Some(custom_default_uuid),
+            DEFAULT_TENANT_ID,
+        )
+        .unwrap();
         assert_eq!(user.id, custom_default_uuid);
 
-        // 4. カスタムデフォルトがなければ定数 DEFAULT_DEV_USER_ID
-        let user = resolve_auth_user(true, None, None, None).unwrap();
+        let user = resolve_auth_user(true, None, None, None, DEFAULT_TENANT_ID).unwrap();
         assert_eq!(user.id, DEFAULT_DEV_USER_ID);
 
-        // 5. 不正な X-Dev-User UUID は BadRequest
-        let err = resolve_auth_user(true, None, Some("not-a-uuid"), None);
+        let err = resolve_auth_user(true, None, Some("not-a-uuid"), None, DEFAULT_TENANT_ID);
         assert!(matches!(err, Err(AppError::BadRequest(_))));
 
-        // 6. 不正なカスタムデフォルト UUID も BadRequest
-        let err = resolve_auth_user(true, None, None, Some("invalid-default-uuid"));
+        let err = resolve_auth_user(
+            true,
+            None,
+            None,
+            Some("invalid-default-uuid"),
+            DEFAULT_TENANT_ID,
+        );
         assert!(matches!(err, Err(AppError::BadRequest(_))));
 
-        // 7. 不正な Bearer トークンの場合、X-Dev-User にフォールバック
-        let user =
-            resolve_auth_user(true, Some("Bearer invalid-uuid"), Some(x_dev_uuid), None).unwrap();
+        let user = resolve_auth_user(
+            true,
+            Some("******"),
+            Some(x_dev_uuid),
+            None,
+            DEFAULT_TENANT_ID,
+        )
+        .unwrap();
         assert_eq!(user.id, x_dev_uuid);
-    }
-
-    #[test]
-    fn test_auth_user_from_x_dev_user_header() {
-        let test_uuid = "11111111-1111-1111-1111-111111111111";
-        let user = resolve_auth_user(true, None, Some(test_uuid), None).unwrap();
-        assert_eq!(user.id, test_uuid);
-    }
-
-    #[test]
-    fn test_auth_user_from_bearer_uuid_in_dev() {
-        let test_uuid = "22222222-2222-2222-2222-222222222222";
-        let user =
-            resolve_auth_user(true, Some(&format!("Bearer {test_uuid}")), None, None).unwrap();
-        assert_eq!(user.id, test_uuid);
-    }
-
-    #[test]
-    fn test_auth_user_invalid_uuid() {
-        let res = resolve_auth_user(true, None, Some("not-a-uuid"), None);
-        assert!(matches!(res, Err(AppError::BadRequest(_))));
-    }
-
-    #[test]
-    fn test_auth_user_default_fallback_in_dev() {
-        let user = resolve_auth_user(true, None, None, None).unwrap();
-        assert_eq!(user.id, DEFAULT_DEV_USER_ID);
     }
 
     #[test]
@@ -539,12 +588,10 @@ mod tests {
             sanitize_for_user_name("Alice.Test_01", "default-uuid"),
             "alice.test_01"
         );
-        // 予約語は fallback
         assert_eq!(
             sanitize_for_user_name("admin", "12345678-0000-0000-0000-000000000000"),
             "user_12345678"
         );
-        // 空文字も fallback
         assert_eq!(
             sanitize_for_user_name("", "abcdef12-0000-0000-0000-000000000000"),
             "user_abcdef12"
@@ -555,5 +602,26 @@ mod tests {
             "Alice Wonderland"
         );
         assert_eq!(sanitize_for_display_name("   ", "fallback"), "fallback");
+    }
+
+    #[test]
+    fn test_resolve_tenant_id() {
+        assert_eq!(
+            resolve_tenant_id(Some("tenant-a"), None).unwrap(),
+            "tenant-a".to_string()
+        );
+        assert_eq!(
+            resolve_tenant_id(None, Some("tenant-b")).unwrap(),
+            "tenant-b".to_string()
+        );
+        assert_eq!(
+            resolve_tenant_id(Some("tenant-a"), Some("tenant-b")).unwrap(),
+            "tenant-b".to_string()
+        );
+        assert_eq!(
+            resolve_tenant_id(None, None).unwrap(),
+            DEFAULT_TENANT_ID.to_string()
+        );
+        assert!(resolve_tenant_id(Some("Tenant"), None).is_err());
     }
 }

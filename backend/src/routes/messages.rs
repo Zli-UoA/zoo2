@@ -141,7 +141,7 @@ async fn create_message(
             }
         })?;
 
-    if channel.deleted_at.is_some() {
+    if channel.tenant_id != auth_user.tenant_id || channel.deleted_at.is_some() {
         return Err(AppError::NotFound(format!(
             "Channel not found: {}",
             payload.channel_id
@@ -268,7 +268,7 @@ async fn update_message(
             }
         })?;
 
-    if channel.deleted_at.is_some() {
+    if channel.tenant_id != auth_user.tenant_id || channel.deleted_at.is_some() {
         return Err(AppError::NotFound(format!(
             "Channel not found: {}",
             message.channel_id
@@ -356,7 +356,7 @@ async fn delete_message(
             }
         })?;
 
-    if channel.deleted_at.is_some() {
+    if channel.tenant_id != auth_user.tenant_id || channel.deleted_at.is_some() {
         return Err(AppError::NotFound(format!(
             "Channel not found: {}",
             message.channel_id
@@ -443,7 +443,7 @@ async fn list_messages(
             }
         })?;
 
-    if channel.deleted_at.is_some() {
+    if channel.tenant_id != auth_user.tenant_id || channel.deleted_at.is_some() {
         return Err(AppError::NotFound(format!(
             "Channel not found: {}",
             query.channel_id
@@ -521,7 +521,7 @@ async fn add_reaction(
             }
         })?;
 
-    if channel.deleted_at.is_some() {
+    if channel.tenant_id != auth_user.tenant_id || channel.deleted_at.is_some() {
         return Err(AppError::NotFound(format!(
             "Channel not found: {}",
             message.channel_id
@@ -694,7 +694,7 @@ async fn delete_reaction(
             }
         })?;
 
-    if channel.deleted_at.is_some() {
+    if channel.tenant_id != auth_user.tenant_id || channel.deleted_at.is_some() {
         return Err(AppError::NotFound(format!(
             "Channel not found: {}",
             message.channel_id

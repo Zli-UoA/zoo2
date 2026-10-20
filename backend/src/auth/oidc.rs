@@ -29,6 +29,8 @@ pub struct OidcClaims {
     pub preferred_username: Option<String>,
     pub name: Option<String>,
     pub email: Option<String>,
+    #[serde(alias = "tid", alias = "tenant")]
+    pub tenant_id: Option<String>,
     pub scope: Option<serde_json::Value>,
 }
 

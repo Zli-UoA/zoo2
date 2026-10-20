@@ -56,11 +56,14 @@ pub(crate) fn filter_electric_params(raw_query: &HashMap<String, String>) -> Vec
 }
 
 /// Channels Shape の where 句とパラメータの純粋組み立て
-pub(crate) fn channels_shape_where(user_id: &str) -> (String, Vec<(&'static str, &str)>) {
+pub(crate) fn channels_shape_where(
+    tenant_id: &str,
+    user_id: &str,
+) -> (String, Vec<(&'static str, &str)>) {
     (
-        "is_private = false OR id IN (SELECT channel_id FROM channel_user WHERE user_id = $1)"
+        "tenant_id = $1 AND (is_private = false OR id IN (SELECT channel_id FROM channel_user WHERE user_id = $2))"
             .to_string(),
-        vec![("params[1]", user_id)],
+        vec![("params[1]", tenant_id), ("params[2]", user_id)],
     )
 }
 
@@ -75,25 +78,31 @@ pub(crate) fn messages_shape_where(channel_id: &str) -> (String, Vec<(&'static s
 /// Message Reactions Shape の where 句とパラメータの純粋組み立て
 pub(crate) fn message_reactions_shape_where(
     channel_id: &str,
+    tenant_id: &str,
 ) -> (String, Vec<(&'static str, &str)>) {
     (
-        "message_id IN (SELECT id FROM messages WHERE channel_id = $1 AND deleted_at IS NULL)"
+        "message_id IN (SELECT m.id FROM messages m JOIN channels c ON c.id = m.channel_id WHERE m.channel_id = $1 AND c.tenant_id = $2 AND m.deleted_at IS NULL)"
             .to_string(),
-        vec![("params[1]", channel_id)],
+        vec![("params[1]", channel_id), ("params[2]", tenant_id)],
     )
 }
 
 /// Channel Users Shape の where 句とパラメータの純粋組み立て
 pub(crate) fn channel_users_shape_where<'a>(
     channel_id: Option<&'a str>,
+    tenant_id: &'a str,
     user_id: &'a str,
 ) -> (String, Vec<(&'static str, &'a str)>) {
     if let Some(ch_id) = channel_id {
-        ("channel_id = $1".to_string(), vec![("params[1]", ch_id)])
+        (
+            "channel_id = $1 AND channel_id IN (SELECT id FROM channels WHERE tenant_id = $2)"
+                .to_string(),
+            vec![("params[1]", ch_id), ("params[2]", tenant_id)],
+        )
     } else {
         (
-            "channel_id IN (SELECT id FROM channels WHERE is_private = false AND deleted_at IS NULL) OR channel_id IN (SELECT channel_id FROM channel_user WHERE user_id = $1)".to_string(),
-            vec![("params[1]", user_id)],
+            "channel_id IN (SELECT id FROM channels WHERE tenant_id = $1 AND is_private = false AND deleted_at IS NULL) OR channel_id IN (SELECT channel_id FROM channel_user WHERE user_id = $2)".to_string(),
+            vec![("params[1]", tenant_id), ("params[2]", user_id)],
         )
     }
 }
@@ -159,7 +168,7 @@ async fn proxy_shape(
     if is_user_scoped {
         headers.insert(
             HeaderName::from_static("vary"),
-            HeaderValue::from_static("Authorization, X-Dev-User"),
+            HeaderValue::from_static("Authorization, X-Dev-User, X-Tenant-Id"),
         );
         headers.insert(
             HeaderName::from_static("cache-control"),
@@ -186,7 +195,8 @@ async fn channels_shape(
     auth_user: AuthUser,
     Query(raw_query): Query<HashMap<String, String>>,
 ) -> Result<Response, AppError> {
-    let (where_clause, extra_params) = channels_shape_where(auth_user.id.as_str());
+    let (where_clause, extra_params) =
+        channels_shape_where(auth_user.tenant_id.as_str(), auth_user.id.as_str());
 
     proxy_shape(
         &state,
@@ -225,7 +235,7 @@ async fn messages_shape(
             }
         })?;
 
-    if channel.deleted_at.is_some() {
+    if channel.tenant_id != auth_user.tenant_id || channel.deleted_at.is_some() {
         return Err(AppError::NotFound(format!(
             "Channel not found with id: {channel_id}"
         )));
@@ -289,7 +299,7 @@ async fn message_reactions_shape(
             }
         })?;
 
-    if channel.deleted_at.is_some() {
+    if channel.tenant_id != auth_user.tenant_id || channel.deleted_at.is_some() {
         return Err(AppError::NotFound(format!(
             "Channel not found with id: {channel_id}"
         )));
@@ -315,7 +325,8 @@ async fn message_reactions_shape(
         }
     }
 
-    let (where_clause, extra_params) = message_reactions_shape_where(channel_id.as_str());
+    let (where_clause, extra_params) =
+        message_reactions_shape_where(channel_id.as_str(), auth_user.tenant_id.as_str());
     proxy_shape(
         &state,
         "message_reactions",
@@ -330,10 +341,19 @@ async fn message_reactions_shape(
 /// Users Shape (全ユーザー同期)
 async fn users_shape(
     State(state): State<AppState>,
-    _auth_user: AuthUser,
+    auth_user: AuthUser,
     Query(raw_query): Query<HashMap<String, String>>,
 ) -> Result<Response, AppError> {
-    proxy_shape(&state, "users", None, &[], &raw_query, false).await
+    let params = [("params[1]", auth_user.tenant_id.as_str())];
+    proxy_shape(
+        &state,
+        "users",
+        Some("tenant_id = $1"),
+        &params,
+        &raw_query,
+        true,
+    )
+    .await
 }
 
 /// Channel Users Shape (メンバー一覧)
@@ -358,7 +378,7 @@ async fn channel_users_shape(
                 }
             })?;
 
-        if channel.deleted_at.is_some() {
+        if channel.tenant_id != auth_user.tenant_id || channel.deleted_at.is_some() {
             return Err(AppError::NotFound(format!(
                 "Channel not found with id: {channel_id}"
             )));
@@ -388,7 +408,11 @@ async fn channel_users_shape(
     };
 
     let (where_clause, extra_params) =
-        channel_users_shape_where(channel_id_opt, auth_user.id.as_str());
+        channel_users_shape_where(
+            channel_id_opt,
+            auth_user.tenant_id.as_str(),
+            auth_user.id.as_str(),
+        );
 
     proxy_shape(
         &state,
@@ -432,12 +456,14 @@ mod tests {
 
     #[test]
     fn test_channels_shape_where() {
+        let tenant_id = "tenant-1";
         let user_id = "user-123";
-        let (clause, params) = channels_shape_where(user_id);
+        let (clause, params) = channels_shape_where(tenant_id, user_id);
 
+        assert!(clause.contains("tenant_id = $1"));
         assert!(clause.contains("is_private = false"));
-        assert!(clause.contains("SELECT channel_id FROM channel_user WHERE user_id = $1"));
-        assert_eq!(params, vec![("params[1]", "user-123")]);
+        assert!(clause.contains("SELECT channel_id FROM channel_user WHERE user_id = $2"));
+        assert_eq!(params, vec![("params[1]", "tenant-1"), ("params[2]", "user-123")]);
     }
 
     #[test]
@@ -451,30 +477,38 @@ mod tests {
 
     #[test]
     fn test_channel_users_shape_where() {
+        let tenant_id = "tenant-1";
         let user_id = "user-123";
         let channel_id = "channel-456";
 
         // channel_id 指定時
-        let (clause, params) = channel_users_shape_where(Some(channel_id), user_id);
-        assert_eq!(clause, "channel_id = $1");
-        assert_eq!(params, vec![("params[1]", "channel-456")]);
+        let (clause, params) = channel_users_shape_where(Some(channel_id), tenant_id, user_id);
+        assert_eq!(
+            clause,
+            "channel_id = $1 AND channel_id IN (SELECT id FROM channels WHERE tenant_id = $2)"
+        );
+        assert_eq!(
+            params,
+            vec![("params[1]", "channel-456"), ("params[2]", "tenant-1")]
+        );
 
         // channel_id 未指定時
-        let (clause, params) = channel_users_shape_where(None, user_id);
-        assert!(clause.contains("WHERE is_private = false AND deleted_at IS NULL"));
-        assert!(clause.contains("WHERE user_id = $1"));
-        assert_eq!(params, vec![("params[1]", "user-123")]);
+        let (clause, params) = channel_users_shape_where(None, tenant_id, user_id);
+        assert!(clause.contains("WHERE tenant_id = $1 AND is_private = false AND deleted_at IS NULL"));
+        assert!(clause.contains("WHERE user_id = $2"));
+        assert_eq!(params, vec![("params[1]", "tenant-1"), ("params[2]", "user-123")]);
     }
 
     #[test]
     fn test_message_reactions_shape_where() {
+        let tenant_id = "tenant-1";
         let channel_id = "channel-456";
-        let (clause, params) = message_reactions_shape_where(channel_id);
+        let (clause, params) = message_reactions_shape_where(channel_id, tenant_id);
 
         assert_eq!(
             clause,
-            "message_id IN (SELECT id FROM messages WHERE channel_id = $1 AND deleted_at IS NULL)"
+            "message_id IN (SELECT m.id FROM messages m JOIN channels c ON c.id = m.channel_id WHERE m.channel_id = $1 AND c.tenant_id = $2 AND m.deleted_at IS NULL)"
         );
-        assert_eq!(params, vec![("params[1]", "channel-456")]);
+        assert_eq!(params, vec![("params[1]", "channel-456"), ("params[2]", "tenant-1")]);
     }
 }

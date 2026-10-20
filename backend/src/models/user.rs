@@ -6,7 +6,7 @@ use toasty::Model;
 pub struct User {
     #[key]
     pub id: String,
-    #[unique]
+    pub tenant_id: String,
     pub user_name: String,
     pub display_name: String,
     pub created_at: jiff::civil::DateTime,

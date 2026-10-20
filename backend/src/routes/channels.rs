@@ -16,7 +16,7 @@ use crate::{
     },
     db::get_current_txid,
     error::AppError,
-    models::{Channel, ChannelUser},
+    models::{Channel, ChannelUser, User},
     routes::response::ApiResponse,
     state::AppState,
     validation::{validate_channel_description, validate_channel_name},
@@ -45,6 +45,7 @@ pub struct AddChannelUserRequest {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ChannelResponse {
     pub id: String,
+    pub tenant_id: String,
     pub channel_name: String,
     pub description: Option<String>,
     pub created_user_id: String,
@@ -59,6 +60,7 @@ impl From<Channel> for ChannelResponse {
     fn from(c: Channel) -> Self {
         Self {
             id: c.id,
+            tenant_id: c.tenant_id,
             channel_name: c.channel_name,
             description: c.description,
             created_user_id: c.created_user_id,
@@ -132,6 +134,7 @@ async fn create_channel(
 
     let channel = toasty::create!(Channel {
         id: id.as_str(),
+        tenant_id: auth_user.tenant_id.as_str(),
         channel_name: payload.channel_name.as_str(),
         description: payload.description,
         created_user_id: auth_user.id.as_str(),
@@ -188,7 +191,7 @@ async fn update_channel(
             }
         })?;
 
-    if channel.deleted_at.is_some() {
+    if channel.tenant_id != auth_user.tenant_id || channel.deleted_at.is_some() {
         return Err(AppError::NotFound(format!(
             "Channel not found with id: {id}"
         )));
@@ -273,7 +276,7 @@ async fn delete_channel(
             }
         })?;
 
-    if channel.deleted_at.is_some() {
+    if channel.tenant_id != auth_user.tenant_id || channel.deleted_at.is_some() {
         return Err(AppError::NotFound(format!(
             "Channel not found with id: {id}"
         )));
@@ -344,7 +347,7 @@ async fn join_channel(
             }
         })?;
 
-    if channel.deleted_at.is_some() {
+    if channel.tenant_id != auth_user.tenant_id || channel.deleted_at.is_some() {
         return Err(AppError::NotFound(format!(
             "Channel not found with id: {id}"
         )));
@@ -421,7 +424,7 @@ async fn add_channel_user(
             }
         })?;
 
-    if channel.deleted_at.is_some() {
+    if channel.tenant_id != auth_user.tenant_id || channel.deleted_at.is_some() {
         return Err(AppError::NotFound(format!(
             "Channel not found with id: {id}"
         )));
@@ -446,6 +449,19 @@ async fn add_channel_user(
                 "Channel not found with id: {id}"
             )));
         }
+    }
+
+    let target_user = User::get_by_id(&mut tx, payload.user_id.as_str())
+        .await
+        .map_err(|err| {
+            if err.is_record_not_found() {
+                AppError::NotFound(format!("User not found with id: {}", payload.user_id))
+            } else {
+                AppError::from(err)
+            }
+        })?;
+    if target_user.tenant_id != auth_user.tenant_id {
+        return Err(AppError::NotFound(format!("User not found with id: {}", payload.user_id)));
     }
 
     let is_creator = channel.created_user_id == auth_user.id;
@@ -542,7 +558,7 @@ async fn leave_channel(
             }
         })?;
 
-    if channel.deleted_at.is_some() {
+    if channel.tenant_id != auth_user.tenant_id || channel.deleted_at.is_some() {
         return Err(AppError::NotFound(format!(
             "Channel not found with id: {id}"
         )));
@@ -607,7 +623,7 @@ async fn archive_channel(
             }
         })?;
 
-    if channel.deleted_at.is_some() {
+    if channel.tenant_id != auth_user.tenant_id || channel.deleted_at.is_some() {
         return Err(AppError::NotFound(format!(
             "Channel not found with id: {id}"
         )));
@@ -680,7 +696,7 @@ async fn unarchive_channel(
             }
         })?;
 
-    if channel.deleted_at.is_some() {
+    if channel.tenant_id != auth_user.tenant_id || channel.deleted_at.is_some() {
         return Err(AppError::NotFound(format!(
             "Channel not found with id: {id}"
         )));
@@ -761,7 +777,7 @@ async fn kick_channel_user(
             }
         })?;
 
-    if channel.deleted_at.is_some() {
+    if channel.tenant_id != auth_user.tenant_id || channel.deleted_at.is_some() {
         return Err(AppError::NotFound(format!(
             "Channel not found with id: {id}"
         )));
@@ -852,7 +868,12 @@ async fn list_channels(
             .await?;
     let joined_channel_ids: Vec<String> = memberships.into_iter().map(|m| m.channel_id).collect();
 
-    let all_channels = Channel::filter(Channel::fields().deleted_at().is_none())
+    let all_channels = Channel::filter(
+        Channel::fields()
+            .tenant_id()
+            .eq(auth_user.tenant_id.as_str())
+            .and(Channel::fields().deleted_at().is_none()),
+    )
         .order_by(Channel::fields().created_at().asc())
         .exec(&mut db)
         .await?;
@@ -885,7 +906,7 @@ async fn get_channel_by_id(
             }
         })?;
 
-    if channel.deleted_at.is_some() {
+    if channel.tenant_id != auth_user.tenant_id || channel.deleted_at.is_some() {
         return Err(AppError::NotFound(format!(
             "Channel not found with id: {id}"
         )));
