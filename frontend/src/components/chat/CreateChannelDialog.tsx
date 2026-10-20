@@ -3,6 +3,7 @@ import { useState, type FormEvent } from "react";
 
 import { useCurrentUser } from "../../hooks/useCurrentUser";
 import { getCollections } from "../../lib/electric/collections";
+import { localizeApiError } from "../../lib/i18n/apiError";
 import { Button } from "../ui/button";
 import {
   Dialog,
@@ -13,10 +14,6 @@ import {
   DialogTitle,
 } from "../ui/dialog";
 import { inputClassName } from "../ui/input-styles";
-
-function describeError(cause: unknown): string {
-  return cause instanceof Error ? cause.message : String(cause);
-}
 
 /** チャンネル作成フォーム。`channels` コレクションへの insert で writers を通す。 */
 export function CreateChannelDialog({
@@ -32,13 +29,14 @@ export function CreateChannelDialog({
   const [name, setName] = useState("");
   const [isPrivate, setIsPrivate] = useState(false);
   const [submitting, setSubmitting] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  // 言語を切り替えても文言が追従するよう、翻訳前の原因を保持する。
+  const [errorCause, setErrorCause] = useState<{ cause: unknown } | null>(null);
 
   function handleOpenChange(next: boolean) {
     if (!next) {
       setName("");
       setIsPrivate(false);
-      setError(null);
+      setErrorCause(null);
       setSubmitting(false);
     }
     onOpenChange(next);
@@ -51,7 +49,7 @@ export function CreateChannelDialog({
       return;
     }
     setSubmitting(true);
-    setError(null);
+    setErrorCause(null);
     try {
       const transaction = channels.insert({
         id: crypto.randomUUID(),
@@ -67,7 +65,7 @@ export function CreateChannelDialog({
       await transaction.when("settled");
       handleOpenChange(false);
     } catch (cause) {
-      setError(describeError(cause));
+      setErrorCause({ cause });
       setSubmitting(false);
     }
   }
@@ -96,8 +94,12 @@ export function CreateChannelDialog({
             />
             {t("channels.makePrivate")}
           </label>
-          {error ? (
-            <p className="text-xs text-destructive">{t("common.writeErrorDetail", { error })}</p>
+          {errorCause ? (
+            <p className="text-xs text-destructive">
+              {t("common.writeErrorDetail", {
+                error: localizeApiError(errorCause.cause, t),
+              })}
+            </p>
           ) : null}
           <DialogFooter>
             <Button type="button" variant="outline" onClick={() => handleOpenChange(false)}>

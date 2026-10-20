@@ -9,6 +9,7 @@
     "empty": "No channels yet.",
     "createAction": "Create one",
     "notFound": "Channel not found.",
+    "duplicateName": "A channel with this name already exists.",
     "privateMessages": "This channel is private. You can view messages once you are invited.",
     "back": "Back to channels",
     "noDescription": "No description yet",
@@ -115,7 +116,18 @@
     "save": "Save",
     "writeError": "The action failed",
     "close": "Close",
-    "writeErrorDetail": "Action failed: {{error}}"
+    "writeErrorDetail": "Action failed: {{error}}",
+    "errors": {
+      "badRequest": "Check the information you entered.",
+      "unauthorized": "Your session has expired. Log in again.",
+      "forbidden": "You do not have permission to do this.",
+      "notFound": "The target was not found.",
+      "conflict": "The action conflicted with the latest state. Refresh and try again.",
+      "rateLimited": "Too many requests. Wait a moment and try again.",
+      "server": "The server encountered an error. Wait a moment and try again.",
+      "network": "Could not connect to the server. Check your connection and try again.",
+      "unexpected": "The action failed. Try again."
+    }
   },
   "welcome": {
     "title": "Welcome to Zoo",
@@ -146,7 +158,8 @@
     "title": "Thread",
     "close": "Close thread",
     "open": "Open thread",
-    "openWithCount": "Open thread ({{count}} replies)",
+    "openWithCount_one": "Open thread ({{count}} reply)",
+    "openWithCount_other": "Open thread ({{count}} replies)",
     "replyCount_one": "{{count}} reply",
     "replyCount_other": "{{count}} replies",
     "loading": "Loading…",
@@ -196,7 +209,8 @@
   "composer": {
     "mac": "⌘ (Cmd)+Enter to send / Enter for a new line",
     "ctrl": "Ctrl+Enter to send / Enter for a new line",
-    "other": "Cmd / Ctrl+Enter to send / Enter for a new line"
+    "other": "Cmd / Ctrl+Enter to send / Enter for a new line",
+    "touch": "Use the send button to send"
   },
   "notifications": {
     "label": "Notifications",

@@ -9,6 +9,7 @@
     "empty": "尚無頻道。",
     "createAction": "建立頻道",
     "notFound": "找不到頻道。",
+    "duplicateName": "同名頻道已存在。",
     "privateMessages": "此頻道為私人頻道，受邀後即可查看訊息。",
     "back": "返回頻道列表",
     "noDescription": "尚無說明",
@@ -115,7 +116,18 @@
     "save": "儲存",
     "writeError": "操作失敗",
     "close": "關閉",
-    "writeErrorDetail": "操作失敗：{{error}}"
+    "writeErrorDetail": "操作失敗：{{error}}",
+    "errors": {
+      "badRequest": "請確認輸入內容。",
+      "unauthorized": "登入已過期，請重新登入。",
+      "forbidden": "你沒有執行此操作的權限。",
+      "notFound": "找不到目標。",
+      "conflict": "操作與最新狀態衝突。請重新整理後再試。",
+      "rateLimited": "請求過於頻繁。請稍後再試。",
+      "server": "伺服器發生錯誤。請稍後再試。",
+      "network": "無法連線到伺服器。請檢查網路後再試。",
+      "unexpected": "操作失敗。請再試一次。"
+    }
   },
   "welcome": {
     "title": "歡迎使用 Zoo",
@@ -146,7 +158,8 @@
     "title": "子討論",
     "close": "關閉子討論",
     "open": "開啟子討論",
-    "openWithCount": "開啟子討論（{{count}} 則回覆）",
+    "openWithCount_one": "開啟子討論（{{count}} 則回覆）",
+    "openWithCount_other": "開啟子討論（{{count}} 則回覆）",
     "replyCount_one": "{{count}} 則回覆",
     "replyCount_other": "{{count}} 則回覆",
     "loading": "載入中…",
@@ -196,7 +209,8 @@
   "composer": {
     "mac": "⌘（Cmd）+Enter 傳送 / Enter 換行",
     "ctrl": "Ctrl+Enter 傳送 / Enter 換行",
-    "other": "Cmd / Ctrl+Enter 傳送 / Enter 換行"
+    "other": "Cmd / Ctrl+Enter 傳送 / Enter 換行",
+    "touch": "使用傳送按鈕傳送"
   },
   "notifications": {
     "label": "通知",

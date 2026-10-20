@@ -9,6 +9,7 @@
     "empty": "暂无频道。",
     "createAction": "创建频道",
     "notFound": "找不到频道。",
+    "duplicateName": "同名频道已存在。",
     "privateMessages": "此频道为私密频道，受邀后即可查看消息。",
     "back": "返回频道列表",
     "noDescription": "暂无描述",
@@ -115,7 +116,18 @@
     "save": "保存",
     "writeError": "操作失败",
     "close": "关闭",
-    "writeErrorDetail": "操作失败：{{error}}"
+    "writeErrorDetail": "操作失败：{{error}}",
+    "errors": {
+      "badRequest": "请检查输入内容。",
+      "unauthorized": "登录已过期，请重新登录。",
+      "forbidden": "你没有执行此操作的权限。",
+      "notFound": "未找到目标。",
+      "conflict": "操作与最新状态冲突。请刷新后重试。",
+      "rateLimited": "请求过于频繁。请稍后再试。",
+      "server": "服务器发生错误。请稍后再试。",
+      "network": "无法连接到服务器。请检查网络后重试。",
+      "unexpected": "操作失败。请重试。"
+    }
   },
   "welcome": {
     "title": "欢迎使用 Zoo",
@@ -146,7 +158,8 @@
     "title": "子线程",
     "close": "关闭子线程",
     "open": "打开子线程",
-    "openWithCount": "打开子线程（{{count}} 条回复）",
+    "openWithCount_one": "打开子线程（{{count}} 条回复）",
+    "openWithCount_other": "打开子线程（{{count}} 条回复）",
     "replyCount_one": "{{count}} 条回复",
     "replyCount_other": "{{count}} 条回复",
     "loading": "加载中…",
@@ -196,7 +209,8 @@
   "composer": {
     "mac": "⌘（Cmd）+Enter 发送 / Enter 换行",
     "ctrl": "Ctrl+Enter 发送 / Enter 换行",
-    "other": "Cmd / Ctrl+Enter 发送 / Enter 换行"
+    "other": "Cmd / Ctrl+Enter 发送 / Enter 换行",
+    "touch": "使用发送按钮发送"
   },
   "notifications": {
     "label": "通知",

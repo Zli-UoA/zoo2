@@ -3,6 +3,7 @@ import { useLayoutEffect, useRef, useState } from "react";
 import { SendIcon } from "lucide-react";
 
 import type { TFunction } from "i18next";
+import { useMediaQuery } from "../../layout/useMediaQuery";
 import { Button } from "../../ui/button";
 import { Textarea } from "../../ui/textarea";
 
@@ -62,7 +63,15 @@ export function canSubmitComposer(value: string, disabled: boolean): boolean {
   return !disabled && value.trim().length > 0;
 }
 
-export function composerSendHint(platform: ComposerPlatform, t: TFunction): string {
+/** キーボード操作を案内できないタッチ環境では送信ボタンを案内する。 */
+export function composerSendHint(
+  platform: ComposerPlatform,
+  t: TFunction,
+  isTouch = false,
+): string {
+  if (isTouch) {
+    return t("composer.touch");
+  }
   if (platform === "mac") {
     return t("composer.mac");
   }
@@ -90,6 +99,8 @@ export function Composer({ onSend, disabled = false, placeholder, ariaLabel }: C
   const resolvedAriaLabel = ariaLabel ?? t("messages.compose");
   const [value, setValue] = useState("");
   const [platform] = useState(() => detectComposerPlatform());
+  // タッチ端末には Ctrl / Cmd が無いため、キーボードショートカットを案内しない。
+  const isTouch = useMediaQuery("(hover: none)");
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
   useLayoutEffect(() => {
@@ -167,7 +178,7 @@ export function Composer({ onSend, disabled = false, placeholder, ariaLabel }: C
         </Button>
       </div>
       <p className="mt-1.5 px-1 text-[11px] text-muted-foreground">
-        {composerSendHint(platform, t)}
+        {composerSendHint(platform, t, isTouch)}
       </p>
     </form>
   );
