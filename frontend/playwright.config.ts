@@ -20,9 +20,9 @@ const devUserId = process.env.VITE_DEV_USER_ID ?? "00000000-0000-0000-0000-00000
  */
 export default defineConfig({
   testDir: "./e2e",
-  // OIDC と i18n は専用設定で実行するため、既定のスモークからは除外する。
-  // `pnpm test:e2e:oidc` / `pnpm test:e2e:i18n` を参照。
-  testIgnore: /(oidc|i18n)\.spec\.ts/,
+  // OIDC・i18n・nginx CSP は専用設定で実行するため、既定のスモークからは除外する。
+  // `pnpm test:e2e:oidc` / `pnpm test:e2e:i18n` / `pnpm test:e2e:csp` を参照。
+  testIgnore: /(oidc|i18n|csp)\.spec\.ts/,
   fullyParallel: false,
   forbidOnly: Boolean(process.env.CI),
   retries: process.env.CI ? 1 : 0,
