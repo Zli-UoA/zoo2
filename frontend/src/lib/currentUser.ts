@@ -3,7 +3,8 @@ import type { UserResponse } from "./api/types";
 import type { AppConfig } from "./config";
 
 /**
- * バックエンドの開発用固定管理者。`DEV_DEFAULT_USER_ID` の既定値と同じ。
+ * バックエンドの開発用固定管理者。`backend/src/auth.rs` の
+ * `DEFAULT_DEV_USER_ID`（環境変数 `DEV_DEFAULT_USER_ID` の既定値）と同じ。
  * `/api/users/me` が失敗したときのフォールバックにだけ使う。
  */
 const DEFAULT_DEV_ADMIN_ID = "00000000-0000-0000-0000-000000000001";
