@@ -1,0 +1,6 @@
+interface:
+  display_name: "日本語コードレビュー"
+  short_description: "差分の問題を根拠・影響・修正方針とともに、読みやすい日本語でレビューします"
+  default_prompt: "$japanese-code-review を使って、変更内容を日本語でレビューしてください。指摘は重要度順に、該当箇所・発生条件・影響・修正方針を示してください。"
+policy:
+  allow_implicit_invocation: true
