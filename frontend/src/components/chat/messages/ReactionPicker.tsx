@@ -1,3 +1,4 @@
+import { useTranslation } from "react-i18next";
 import { useState } from "react";
 
 import { useKitchenCatalog } from "../../../hooks/useKitchenCatalog";
@@ -23,6 +24,7 @@ export function ReactionPicker({
   onOpenChange: (open: boolean) => void;
   onSelect: (emoji: string) => void;
 }) {
+  const { t } = useTranslation();
   const { catalog, error, retry } = useKitchenCatalog(open);
   const [left, setLeft] = useState("1f600");
   const [right, setRight] = useState("1f431");
@@ -37,10 +39,8 @@ export function ReactionPicker({
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="max-h-[calc(100dvh-2rem)] overflow-y-auto">
         <DialogHeader>
-          <DialogTitle>リアクションを追加</DialogTitle>
-          <DialogDescription>
-            絵文字を選ぶか、Emoji Kitchenで2つの絵文字を組み合わせます。
-          </DialogDescription>
+          <DialogTitle>{t("reactions.add")}</DialogTitle>
+          <DialogDescription>{t("reactions.kitchenDescription")}</DialogDescription>
         </DialogHeader>
         <div className="flex flex-wrap gap-2">
           {QUICK_EMOJI.map((emoji) => (
@@ -55,22 +55,22 @@ export function ReactionPicker({
             </Button>
           ))}
         </div>
-        <h3 className="font-medium">Emoji Kitchen</h3>
+        <h3 className="font-medium">{t("reactions.kitchen")}</h3>
         {error ? (
           <div role="alert">
-            絵文字の一覧を読み込めませんでした。
+            {t("reactions.kitchenLoadError")}
             <Button variant="outline" size="sm" onClick={retry}>
-              再試行
+              {t("reactions.retry")}
             </Button>
           </div>
         ) : !catalog ? (
-          <p role="status">絵文字を読み込み中…</p>
+          <p role="status">{t("reactions.kitchenLoading")}</p>
         ) : (
           <>
             <div className="flex items-end gap-2">
               {[
-                { label: "1つ目の絵文字", value: left, set: setLeft },
-                { label: "2つ目の絵文字", value: right, set: setRight },
+                { label: t("reactions.firstEmoji"), value: left, set: setLeft },
+                { label: t("reactions.secondEmoji"), value: right, set: setRight },
               ].map((field) => (
                 <label key={field.label} className="flex min-w-0 flex-1 flex-col gap-1 text-xs">
                   {field.label}
@@ -97,7 +97,7 @@ export function ReactionPicker({
                   <img
                     key={url}
                     src={url}
-                    alt="組み合わせのプレビュー"
+                    alt={t("reactions.previewAlt")}
                     width={80}
                     height={80}
                     referrerPolicy="no-referrer"
@@ -108,17 +108,15 @@ export function ReactionPicker({
                     onError={() => setImageState({ url, loaded: false })}
                   />
                   {imageState?.url !== url ? (
-                    <span role="status">プレビューを読み込み中…</span>
+                    <span role="status">{t("reactions.previewLoading")}</span>
                   ) : !imageState.loaded ? (
-                    <span role="alert">
-                      画像を読み込めませんでした。別の組み合わせをお試しください。
-                    </span>
+                    <span role="alert">{t("reactions.previewError")}</span>
                   ) : null}
                 </>
               ) : (
                 <>
                   <ReactionEmoji emoji={value} catalog={catalog} />
-                  <span>この組み合わせは未対応です。</span>
+                  <span>{t("reactions.unsupported")}</span>
                 </>
               )}
             </div>
@@ -126,13 +124,11 @@ export function ReactionPicker({
               disabled={!url || imageState?.url !== url || !imageState.loaded}
               onClick={() => select(value)}
             >
-              この組み合わせを追加
+              {t("reactions.addCombination")}
             </Button>
           </>
         )}
-        <p className="text-xs text-muted-foreground">
-          Emoji Kitchenの画像はGoogleから読み込みます。
-        </p>
+        <p className="text-xs text-muted-foreground">{t("reactions.kitchenImageNotice")}</p>
       </DialogContent>
     </Dialog>
   );

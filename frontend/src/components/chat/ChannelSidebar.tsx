@@ -1,3 +1,4 @@
+import { useTranslation } from "react-i18next";
 import { Link } from "@tanstack/react-router";
 import { useLiveQuery } from "@tanstack/react-db";
 import { cn } from "cn";
@@ -28,6 +29,7 @@ export function ChannelSidebar({
   error: boolean;
   className?: string;
 }) {
+  const { t } = useTranslation();
   const shell = useShell();
   const { channelUsers } = getCollections();
   const { currentUserId, isLoading: currentUserLoading } = useCurrentUser();
@@ -59,7 +61,9 @@ export function ChannelSidebar({
     >
       <div className="flex items-center justify-between gap-2 px-3 py-3">
         <div className="flex items-baseline gap-2">
-          <h1 className="font-heading text-sm font-semibold tracking-tight">チャンネル</h1>
+          <h1 className="font-heading text-sm font-semibold tracking-tight">
+            {t("channels.title")}
+          </h1>
           <span className="text-xs tabular-nums text-muted-foreground">
             {loading ? "…" : channels.length}
           </span>
@@ -67,7 +71,7 @@ export function ChannelSidebar({
         <Button
           variant="ghost"
           size="icon-sm"
-          aria-label="チャンネルを作成"
+          aria-label={t("channels.createTitle")}
           onClick={() => setCreateOpen(true)}
         >
           <PlusIcon />
@@ -79,13 +83,13 @@ export function ChannelSidebar({
           {loading ? (
             SKELETON_ROWS.map((row) => <Skeleton key={row} className="h-9 w-full rounded-lg" />)
           ) : error ? (
-            <p className="px-2 py-1 text-xs text-destructive">チャンネル取得に失敗しました。</p>
+            <p className="px-2 py-1 text-xs text-destructive">{t("channels.loadError")}</p>
           ) : channels.length === 0 ? (
             <div className="flex flex-col items-start gap-2 px-2 py-4">
-              <p className="text-sm text-muted-foreground">チャンネルがありません。</p>
+              <p className="text-sm text-muted-foreground">{t("channels.empty")}</p>
               <Button variant="outline" size="sm" onClick={() => setCreateOpen(true)}>
                 <PlusIcon />
-                作成する
+                {t("channels.createAction")}
               </Button>
             </div>
           ) : (
@@ -116,13 +120,13 @@ export function ChannelSidebar({
                     isJoined ? (
                       <span
                         role="img"
-                        title="参加中"
-                        aria-label="参加中"
+                        title={t("members.joined")}
+                        aria-label={t("members.joined")}
                         className="size-1.5 shrink-0 rounded-full bg-brand"
                       />
                     ) : (
                       <span className="shrink-0 text-[0.65rem] text-muted-foreground/70">
-                        未参加
+                        {t("members.notJoined")}
                       </span>
                     )
                   ) : null}

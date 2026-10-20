@@ -1,3 +1,4 @@
+import { useTranslation } from "react-i18next";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 
@@ -30,6 +31,7 @@ import { MessageList } from "./MessageList";
  * `useWriteRunner`（楽観更新の確定待ち）をそのまま使い、表示だけを作り込む。
  */
 export function MessagePane({ channelId }: { channelId: string }) {
+  const { t } = useTranslation();
   const { messages, reactions } = getCollections();
   const reactionsCollection = reactions(channelId);
   const reactionsQuery = useMessageReactions(channelId);
@@ -96,9 +98,9 @@ export function MessagePane({ channelId }: { channelId: string }) {
     if (!error) {
       return;
     }
-    toast.error("操作に失敗しました", { description: error, id: "message-write-error" });
+    toast.error(t("common.writeError"), { description: error, id: "message-write-error" });
     setError(null);
-  }, [error, setError]);
+  }, [error, setError, t]);
 
   const handleSend = useCallback(
     async (content: string): Promise<boolean> => {
@@ -164,15 +166,15 @@ export function MessagePane({ channelId }: { channelId: string }) {
   return (
     <section className="flex h-full min-h-0 flex-col">
       <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1 border-b px-4 py-2">
-        <h2 className="text-sm font-semibold">メッセージ</h2>
+        <h2 className="text-sm font-semibold">{t("messages.title")}</h2>
         <span className="rounded bg-muted px-2 py-0.5 text-xs tabular-nums text-muted-foreground">
-          {messagesQuery.isLoading ? "…" : `${feed.length} 件`}
+          {messagesQuery.isLoading ? "…" : t("messages.count", { count: feed.length })}
         </span>
         {reactionsQuery.isError ? (
-          <span className="text-xs text-destructive">リアクション取得に失敗しました</span>
+          <span className="text-xs text-destructive">{t("reactions.fetchError")}</span>
         ) : null}
         {messagesQuery.isError ? (
-          <span className="text-xs text-destructive">メッセージ取得に失敗しました</span>
+          <span className="text-xs text-destructive">{t("messages.fetchError")}</span>
         ) : null}
       </div>
 
@@ -217,15 +219,13 @@ export function MessagePane({ channelId }: { channelId: string }) {
       >
         <AlertDialogContent>
           <AlertDialogHeader>
-            <AlertDialogTitle>メッセージを削除しますか？</AlertDialogTitle>
-            <AlertDialogDescription>
-              この操作は取り消せません。削除したメッセージはチャンネルのメンバーからも見えなくなります。
-            </AlertDialogDescription>
+            <AlertDialogTitle>{t("messages.deleteTitle")}</AlertDialogTitle>
+            <AlertDialogDescription>{t("messages.deleteDescription")}</AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
-            <AlertDialogCancel>取消</AlertDialogCancel>
+            <AlertDialogCancel>{t("common.cancelShort")}</AlertDialogCancel>
             <AlertDialogAction variant="destructive" onClick={handleConfirmDelete}>
-              削除
+              {t("messages.delete")}
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>

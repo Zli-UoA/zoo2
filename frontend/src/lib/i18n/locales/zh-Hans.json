@@ -1,0 +1,158 @@
+{
+  "nav": {
+    "main": "主导航"
+  },
+  "channels": {
+    "title": "频道",
+    "createTitle": "创建频道",
+    "loadError": "无法加载频道。",
+    "empty": "暂无频道。",
+    "createAction": "创建频道",
+    "notFound": "找不到频道。",
+    "privateMessages": "此频道为私密频道，受邀后即可查看消息。",
+    "back": "返回频道列表",
+    "noDescription": "暂无描述",
+    "visibilityHelp": "任何人都可以加入公开频道。私密频道仅限创建者邀请的人加入。",
+    "newName": "新频道名称",
+    "makePrivate": "设为私密频道",
+    "creating": "创建中…",
+    "create": "创建频道"
+  },
+  "sync": {
+    "title": "同步状态",
+    "user": "用户",
+    "oidc": "已通过 OIDC 登录",
+    "unset": "（未设置 VITE_DEV_USER_ID）",
+    "browserLoading": "正在浏览器中加载…",
+    "back": "前往频道列表",
+    "description": "Electric Shape 订阅与 REST 写入的测试界面已移至首页和频道页面。此处仅显示连接设置。"
+  },
+  "auth": {
+    "logout": "退出登录",
+    "loggedOut": "您已退出登录",
+    "loggedOutHelp": "Kanidm 会话仍有效，请重新登录以继续。",
+    "login": "登录",
+    "failed": "无法登录",
+    "retry": "重新登录",
+    "unauthorizedLoop": "API 持续返回 401，已停止自动重新登录。请检查 OIDC 设置（audience / typ / JWKS）与后端日志。",
+    "errorWithCode": "{{message}} ({{code}})",
+    "oidcErrors": {
+      "discovery_failed": "OpenID Discovery 返回 {{status}}",
+      "issuer_mismatch": "Discovery 的 issuer 与设置不符",
+      "invalid_discovery": "Discovery 缺少必要的端点",
+      "authorization_failed": "授权失败",
+      "invalid_callback": "回调缺少 code 或 state",
+      "missing_pending_request": "找不到已保存的授权请求，无法验证 state 和 nonce",
+      "state_mismatch": "授权的 state 不符",
+      "no_refresh_token": "没有 refresh_token",
+      "session_reset": "会话已清除",
+      "invalid_token_response": "令牌响应无效或缺少 access_token",
+      "token_request_failed": "令牌端点返回 {{status}}",
+      "invalid_id_token": "缺少 ID 令牌或无法解码",
+      "id_token_issuer_mismatch": "ID 令牌的 iss 不符",
+      "id_token_audience_mismatch": "ID 令牌的 aud 不符",
+      "id_token_expired": "ID 令牌已过期",
+      "nonce_mismatch": "ID 令牌的 nonce 不符"
+    }
+  },
+  "members": {
+    "joined": "已加入",
+    "notJoined": "尚未加入",
+    "title": "成员",
+    "creator": "创建者",
+    "you": "你",
+    "empty": "暂无成员。",
+    "loadError": "无法加载成员。",
+    "checking": "确认中…",
+    "leave": "离开",
+    "join": "加入",
+    "private": "此为私密频道，需要创建者邀请才能加入。",
+    "already": "已是成员：{{userId}}",
+    "search": "搜索姓名以添加",
+    "addLabel": "添加成员",
+    "candidates": "成员建议",
+    "usersLoading": "正在加载用户…",
+    "usersError": "无法加载用户。",
+    "usersEmpty": "找不到匹配的用户。"
+  },
+  "common": {
+    "loading": "加载中…",
+    "cancel": "取消",
+    "cancelShort": "取消",
+    "save": "保存",
+    "writeError": "操作失败",
+    "close": "关闭",
+    "writeErrorDetail": "操作失败：{{error}}"
+  },
+  "welcome": {
+    "title": "欢迎使用 Zoo",
+    "description": "从左侧列表选择频道，即可查看对话。"
+  },
+  "messages": {
+    "compose": "输入消息",
+    "send": "发送",
+    "edit": "编辑",
+    "delete": "删除",
+    "more": "更多操作",
+    "editLabel": "编辑消息",
+    "loadError": "无法加载消息",
+    "retryHelp": "请检查连接后重试。",
+    "empty": "暂无消息",
+    "first": "发送第一条消息吧。",
+    "new": "新消息",
+    "title": "消息",
+    "fetchError": "无法加载消息",
+    "deleteTitle": "要删除此消息吗？",
+    "deleteDescription": "此操作无法撤销。删除后，其他频道成员也将无法查看此消息。",
+    "count_one": "{{count}} 条消息",
+    "count_other": "{{count}} 条消息",
+    "announcement": "{{author}} 的新消息：“{{excerpt}}”",
+    "announcementAuthor": "{{author}} 的新消息"
+  },
+  "reactions": {
+    "add": "添加表情回应",
+    "picker": "表情回应",
+    "select": "用 {{emoji}} 回应",
+    "groupLabel": "表情回应",
+    "chip": "{{emoji}} {{count}}",
+    "chipMine": "{{emoji}} {{count}}（你已回应）",
+    "fetchError": "无法加载表情回应",
+    "kitchen": "Emoji Kitchen",
+    "kitchenDescription": "选择一个表情，或用 Emoji Kitchen 组合两个表情。",
+    "kitchenLoadError": "无法加载表情列表。",
+    "retry": "重试",
+    "kitchenLoading": "正在加载表情…",
+    "firstEmoji": "第一个表情",
+    "secondEmoji": "第二个表情",
+    "previewAlt": "组合预览",
+    "previewLoading": "正在加载预览…",
+    "previewError": "无法加载图片。请尝试其他组合。",
+    "unsupported": "不支持此组合。",
+    "addCombination": "添加此组合",
+    "kitchenImageNotice": "Emoji Kitchen 的图片从 Google 加载。"
+  },
+  "theme": {
+    "switch": "切换主题",
+    "title": "主题",
+    "light": "浅色",
+    "dark": "深色",
+    "system": "系统"
+  },
+  "language": {
+    "switch": "切换语言",
+    "title": "语言"
+  },
+  "dates": {
+    "today": "今天",
+    "yesterday": "昨天"
+  },
+  "composer": {
+    "mac": "⌘（Cmd）+Enter 发送 / Enter 换行",
+    "ctrl": "Ctrl+Enter 发送 / Enter 换行",
+    "other": "Cmd / Ctrl+Enter 发送 / Enter 换行"
+  },
+  "notifications": {
+    "label": "通知",
+    "close": "关闭通知"
+  }
+}

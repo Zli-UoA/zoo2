@@ -1,5 +1,7 @@
 import { expect, test } from "@playwright/test";
 
+test.use({ locale: "ja-JP" });
+
 test("起動 → チャンネル作成 → メッセージ送信 → 反映", async ({ page }) => {
   const channelName = `smoke-${Date.now()}`;
   const message = `hello ${channelName}`;

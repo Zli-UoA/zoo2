@@ -8,6 +8,8 @@ import {
   type ReactNode,
 } from "react";
 
+import { subscribeStorage, writeStorageValue } from "../../lib/storage";
+
 import {
   DEFAULT_THEME,
   THEME_STORAGE_KEY,
@@ -45,7 +47,7 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
   const resolvedTheme = resolveTheme(theme, systemPrefersDark);
 
   useEffect(() => {
-    setThemeState(readStoredTheme(window.localStorage));
+    setThemeState(readStoredTheme());
     setSystemPrefersDark(prefersDark());
     setHydrated(true);
 
@@ -53,16 +55,13 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
     const handleChange = (event: MediaQueryListEvent) => {
       setSystemPrefersDark(event.matches);
     };
-    const handleStorage = (event: StorageEvent) => {
-      if (event.key === THEME_STORAGE_KEY) {
-        setThemeState(readStoredTheme(window.localStorage));
-      }
-    };
+    const unsubscribe = subscribeStorage(THEME_STORAGE_KEY, () => {
+      setThemeState(readStoredTheme());
+    });
     query.addEventListener("change", handleChange);
-    window.addEventListener("storage", handleStorage);
     return () => {
       query.removeEventListener("change", handleChange);
-      window.removeEventListener("storage", handleStorage);
+      unsubscribe();
     };
   }, []);
 
@@ -75,11 +74,7 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
 
   const setTheme = useCallback((next: Theme) => {
     setThemeState(next);
-    try {
-      window.localStorage.setItem(THEME_STORAGE_KEY, next);
-    } catch {
-      // localStorage が使えない環境ではセッション内のみ反映する。
-    }
+    writeStorageValue(THEME_STORAGE_KEY, next);
   }, []);
 
   const value = useMemo<ThemeContextValue>(

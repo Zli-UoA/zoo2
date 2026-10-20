@@ -1,3 +1,4 @@
+import { useTranslation } from "react-i18next";
 import { cn } from "cn";
 import { SearchIcon } from "lucide-react";
 import { useId, useMemo, useState, type ChangeEvent, type KeyboardEvent } from "react";
@@ -8,6 +9,7 @@ import { useWriteRunner } from "../../hooks/useWriteRunner";
 import { getCollections } from "../../lib/electric/collections";
 import type { ChannelUserWriteMetadata } from "../../lib/electric/writes";
 import type { ChannelRow, UserRow } from "../../lib/electric/types";
+import { useLocale } from "../i18n/LocaleProvider";
 import { Avatar, AvatarFallback } from "../ui/avatar";
 import { Button } from "../ui/button";
 import { inputClassName } from "../ui/input-styles";
@@ -35,6 +37,8 @@ function nowIso(): string {
  * `channel_user` に追加する（重複ガードは既存どおり残す）。
  */
 export function MembersPanel({ channel, className }: { channel: ChannelRow; className?: string }) {
+  const { t } = useTranslation();
+  const { locale } = useLocale();
   const { channelUsers } = getCollections();
   const membersQuery = useChannelMembers(channel.id);
   const usersQuery = useUsers();
@@ -55,7 +59,10 @@ export function MembersPanel({ channel, className }: { channel: ChannelRow; clas
   }, [usersQuery.data]);
 
   // 並べ替えはユーザー一覧が変わったときだけ行い、キー入力ごとには絞り込みだけを行う。
-  const sortedUsers = useMemo(() => sortUsersByLabel(usersQuery.data ?? []), [usersQuery.data]);
+  const sortedUsers = useMemo(
+    () => sortUsersByLabel(usersQuery.data ?? [], locale),
+    [usersQuery.data, locale],
+  );
   const candidates = useMemo(
     () => filterMemberCandidates({ users: sortedUsers, members, query }),
     [sortedUsers, members, query],
@@ -157,7 +164,7 @@ export function MembersPanel({ channel, className }: { channel: ChannelRow; clas
     if (members.some((member) => member.user_id === user.id)) {
       // 既存メンバーの追加はサーバが既存行を返すだけで Electric に変更が流れず、
       // awaitTxId がタイムアウトする。UI 側で弾く（Phase 3 のガードを踏襲）。
-      setError(`既にメンバーです: ${userLabel(user)}`);
+      setError(t("members.already", { userId: userLabel(user) }));
       return;
     }
     setQuery("");
@@ -173,7 +180,7 @@ export function MembersPanel({ channel, className }: { channel: ChannelRow; clas
   return (
     <div className={cn("min-h-0 flex-col bg-background", className)}>
       <header className="flex items-center justify-between gap-2 border-b px-4 py-3">
-        <h3 className="text-sm font-semibold">メンバー</h3>
+        <h3 className="text-sm font-semibold">{t("members.title")}</h3>
         <span className="rounded bg-muted px-2 py-0.5 text-xs tabular-nums text-muted-foreground">
           {!canViewMembers ? "—" : membersQuery.isLoading ? "…" : members.length}
         </span>
@@ -205,12 +212,12 @@ export function MembersPanel({ channel, className }: { channel: ChannelRow; clas
                         <span className="min-w-0 flex-1 truncate text-sm">{label}</span>
                         {isCreator ? (
                           <span className="shrink-0 rounded bg-muted px-1.5 py-0.5 text-[0.65rem] text-muted-foreground">
-                            作成者
+                            {t("members.creator")}
                           </span>
                         ) : null}
                         {isMe ? (
                           <span className="shrink-0 rounded bg-brand-muted px-1.5 py-0.5 text-[0.65rem] text-brand-muted-foreground">
-                            あなた
+                            {t("members.you")}
                           </span>
                         ) : null}
                       </li>
@@ -218,10 +225,10 @@ export function MembersPanel({ channel, className }: { channel: ChannelRow; clas
                   })}
             </ul>
             {!membersQuery.isLoading && members.length === 0 ? (
-              <p className="px-4 py-3 text-xs text-muted-foreground">メンバーがいません。</p>
+              <p className="px-4 py-3 text-xs text-muted-foreground">{t("members.empty")}</p>
             ) : null}
             {membersQuery.isError ? (
-              <p className="px-4 py-3 text-xs text-destructive">メンバー取得に失敗しました。</p>
+              <p className="px-4 py-3 text-xs text-destructive">{t("members.loadError")}</p>
             ) : null}
           </ScrollArea>
 
@@ -234,7 +241,7 @@ export function MembersPanel({ channel, className }: { channel: ChannelRow; clas
                 />
                 <input
                   className={cn(inputClassName(), "w-full pl-8")}
-                  placeholder="名前で検索して追加"
+                  placeholder={t("members.search")}
                   value={query}
                   onChange={handleQueryChange}
                   onKeyDown={handleQueryKeyDown}
@@ -242,7 +249,7 @@ export function MembersPanel({ channel, className }: { channel: ChannelRow; clas
                   onBlur={closeCandidateList}
                   disabled={busy}
                   role="combobox"
-                  aria-label="メンバーを追加"
+                  aria-label={t("members.addLabel")}
                   aria-expanded={isCandidateListOpen}
                   aria-controls={candidateListId}
                   aria-autocomplete="list"
@@ -257,20 +264,20 @@ export function MembersPanel({ channel, className }: { channel: ChannelRow; clas
                   <ul
                     id={candidateListId}
                     role="listbox"
-                    aria-label="メンバー候補"
+                    aria-label={t("members.candidates")}
                     className="absolute inset-x-0 bottom-full z-20 mb-1 max-h-64 overflow-y-auto rounded-lg border bg-popover p-1 shadow-md"
                   >
                     {usersQuery.isLoading ? (
                       <li role="presentation" className="px-2 py-1.5 text-xs text-muted-foreground">
-                        ユーザーを読み込み中…
+                        {t("members.usersLoading")}
                       </li>
                     ) : usersQuery.isError ? (
                       <li role="presentation" className="px-2 py-1.5 text-xs text-destructive">
-                        ユーザー取得に失敗しました。
+                        {t("members.usersError")}
                       </li>
                     ) : candidates.length === 0 ? (
                       <li role="presentation" className="px-2 py-1.5 text-xs text-muted-foreground">
-                        該当するユーザーがいません。
+                        {t("members.usersEmpty")}
                       </li>
                     ) : (
                       candidates.map((user, index) => {
@@ -313,28 +320,32 @@ export function MembersPanel({ channel, className }: { channel: ChannelRow; clas
             ) : null}
             <div className="flex items-center justify-between gap-2">
               <span className="text-xs text-muted-foreground">
-                {currentUserLoading ? "確認中…" : isMember ? "参加中" : "未参加"}
+                {currentUserLoading
+                  ? t("members.checking")
+                  : isMember
+                    ? t("members.joined")
+                    : t("members.notJoined")}
               </span>
               {!currentUserLoading && currentUserId ? (
                 isMember ? (
                   <Button variant="outline" size="sm" onClick={leaveChannel} disabled={busy}>
-                    退出
+                    {t("members.leave")}
                   </Button>
                 ) : (
                   <Button size="sm" onClick={joinChannel} disabled={busy}>
-                    参加
+                    {t("members.join")}
                   </Button>
                 )
               ) : null}
             </div>
-            {error ? <p className="text-xs text-destructive">操作失敗: {error}</p> : null}
+            {error ? (
+              <p className="text-xs text-destructive">{t("common.writeErrorDetail", { error })}</p>
+            ) : null}
           </div>
         </>
       ) : (
         <div className="flex flex-1 items-center justify-center p-6">
-          <p className="text-center text-xs text-muted-foreground">
-            非公開チャンネルです。参加には作成者からの招待が必要です。
-          </p>
+          <p className="text-center text-xs text-muted-foreground">{t("members.private")}</p>
         </div>
       )}
     </div>

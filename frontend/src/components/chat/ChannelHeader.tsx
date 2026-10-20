@@ -1,3 +1,4 @@
+import { useTranslation } from "react-i18next";
 import { ArrowLeftIcon, HashIcon, LockIcon, UsersIcon } from "lucide-react";
 
 import type { ChannelRow } from "../../lib/electric/types";
@@ -13,6 +14,7 @@ export function ChannelHeader({
   /** 数値=人数、`null`=読み込み中、`undefined`=非表示（非公開で未参加）。 */
   memberCount?: number | null;
 }) {
+  const { t } = useTranslation();
   const shell = useShell();
 
   return (
@@ -21,7 +23,7 @@ export function ChannelHeader({
         variant="ghost"
         size="icon-sm"
         className="md:hidden"
-        aria-label="チャンネル一覧へ戻る"
+        aria-label={t("channels.back")}
         onClick={shell.showSidebar}
       >
         <ArrowLeftIcon />
@@ -36,7 +38,7 @@ export function ChannelHeader({
       <div className="min-w-0 flex-1">
         <h2 className="truncate text-sm font-semibold">{channel.channel_name}</h2>
         <p className="truncate text-xs text-muted-foreground">
-          {channel.description ?? "説明はまだありません"}
+          {channel.description ?? t("channels.noDescription")}
         </p>
       </div>
       <Button
@@ -46,7 +48,7 @@ export function ChannelHeader({
         aria-expanded={shell.membersOpen}
       >
         <UsersIcon />
-        <span className="hidden sm:inline">メンバー</span>
+        <span className="hidden sm:inline">{t("members.title")}</span>
         {memberCount === undefined ? null : (
           <span className="tabular-nums text-muted-foreground">
             {memberCount === null ? "…" : memberCount}

@@ -1,3 +1,4 @@
+import { useTranslation } from "react-i18next";
 import { useState, type FormEvent } from "react";
 
 import { useCurrentUser } from "../../hooks/useCurrentUser";
@@ -26,6 +27,7 @@ export function CreateChannelDialog({
   onOpenChange: (open: boolean) => void;
 }) {
   const { channels } = getCollections();
+  const { t } = useTranslation();
   const { currentUserId, isLoading: currentUserLoading } = useCurrentUser();
   const [name, setName] = useState("");
   const [isPrivate, setIsPrivate] = useState(false);
@@ -74,18 +76,16 @@ export function CreateChannelDialog({
     <Dialog open={open} onOpenChange={handleOpenChange}>
       <DialogContent>
         <DialogHeader>
-          <DialogTitle>チャンネルを作成</DialogTitle>
-          <DialogDescription>
-            公開チャンネルは誰でも参加できます。非公開は作成者が招待した人だけが参加できます。
-          </DialogDescription>
+          <DialogTitle>{t("channels.createTitle")}</DialogTitle>
+          <DialogDescription>{t("channels.visibilityHelp")}</DialogDescription>
         </DialogHeader>
         <form className="flex flex-col gap-3" onSubmit={submit}>
           <input
             className={inputClassName()}
-            placeholder="新しいチャンネル名"
+            placeholder={t("channels.newName")}
             value={name}
             onChange={(event) => setName(event.target.value)}
-            aria-label="新しいチャンネル名"
+            aria-label={t("channels.newName")}
             autoFocus
           />
           <label className="flex items-center gap-2 text-sm">
@@ -94,18 +94,20 @@ export function CreateChannelDialog({
               checked={isPrivate}
               onChange={(event) => setIsPrivate(event.target.checked)}
             />
-            非公開にする
+            {t("channels.makePrivate")}
           </label>
-          {error ? <p className="text-xs text-destructive">操作失敗: {error}</p> : null}
+          {error ? (
+            <p className="text-xs text-destructive">{t("common.writeErrorDetail", { error })}</p>
+          ) : null}
           <DialogFooter>
             <Button type="button" variant="outline" onClick={() => handleOpenChange(false)}>
-              キャンセル
+              {t("common.cancel")}
             </Button>
             <Button
               type="submit"
               disabled={submitting || currentUserLoading || name.trim().length === 0}
             >
-              {submitting ? "作成中…" : "チャンネル作成"}
+              {submitting ? t("channels.creating") : t("channels.create")}
             </Button>
           </DialogFooter>
         </form>

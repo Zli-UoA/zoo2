@@ -1,3 +1,4 @@
+import { useTranslation } from "react-i18next";
 import { useMemo } from "react";
 
 import { useActiveChannels, useChannelAccess } from "../../hooks/useRealtime";
@@ -28,6 +29,7 @@ function ChannelLoading() {
 
 /** チャンネルルート。ヘッダとメッセージ（非公開は参加者だけ）を出す。 */
 export function ChannelScreen({ channelId }: { channelId: string }) {
+  const { t } = useTranslation();
   const channelsQuery = useActiveChannels();
   const channels = channelsQuery.data ?? [];
   const channel = useMemo(
@@ -52,9 +54,7 @@ export function ChannelScreen({ channelId }: { channelId: string }) {
             channelsQuery.isError ? "text-sm text-destructive" : "text-sm text-muted-foreground"
           }
         >
-          {channelsQuery.isError
-            ? "チャンネル取得に失敗しました。"
-            : "チャンネルが見つかりません。"}
+          {channelsQuery.isError ? t("channels.loadError") : t("channels.notFound")}
         </p>
       </div>
     );
@@ -69,14 +69,14 @@ export function ChannelScreen({ channelId }: { channelId: string }) {
       <div className="flex min-h-0 flex-1 flex-col">
         {access.isMembershipPending ? (
           <div className="flex flex-1 items-center justify-center">
-            <p className="text-sm text-muted-foreground">読み込み中…</p>
+            <p className="text-sm text-muted-foreground">{t("common.loading")}</p>
           </div>
         ) : access.canRead ? (
           <MessagePane key={channelId} channelId={channelId} />
         ) : (
           <div className="flex flex-1 items-center justify-center p-6">
             <p className="max-w-sm text-center text-sm text-muted-foreground">
-              このチャンネルは非公開です。招待されるとメッセージを表示できます。
+              {t("channels.privateMessages")}
             </p>
           </div>
         )}
