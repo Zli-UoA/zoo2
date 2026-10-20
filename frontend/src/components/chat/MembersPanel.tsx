@@ -1,3 +1,4 @@
+import { useTranslation } from "react-i18next";
 import { cn } from "cn";
 import { UserPlusIcon } from "lucide-react";
 import { useMemo, useState, type FormEvent } from "react";
@@ -30,6 +31,7 @@ function nowIso(): string {
  * メンバー、退出は本人のみ）。
  */
 export function MembersPanel({ channel, className }: { channel: ChannelRow; className?: string }) {
+  const { t } = useTranslation();
   const { channelUsers } = getCollections();
   const membersQuery = useChannelMembers(channel.id);
   const usersQuery = useUsers();
@@ -81,7 +83,7 @@ export function MembersPanel({ channel, className }: { channel: ChannelRow; clas
     if (members.some((member) => member.user_id === user_id)) {
       // 既存メンバーの追加はサーバが既存行を返すだけで Electric に変更が流れず、
       // awaitTxId がタイムアウトする。UI 側で弾く（Phase 3 のガードを踏襲）。
-      setError(`既にメンバーです: ${user_id}`);
+      setError(t("members.already", { userId: user_id }));
       return;
     }
     setMemberId("");
@@ -96,7 +98,7 @@ export function MembersPanel({ channel, className }: { channel: ChannelRow; clas
   return (
     <div className={cn("min-h-0 flex-col bg-background", className)}>
       <header className="flex items-center justify-between gap-2 border-b px-4 py-3">
-        <h3 className="text-sm font-semibold">メンバー</h3>
+        <h3 className="text-sm font-semibold">{t("members.title")}</h3>
         <span className="rounded bg-muted px-2 py-0.5 text-xs tabular-nums text-muted-foreground">
           {!canViewMembers ? "—" : membersQuery.isLoading ? "…" : members.length}
         </span>
@@ -128,12 +130,12 @@ export function MembersPanel({ channel, className }: { channel: ChannelRow; clas
                         <span className="min-w-0 flex-1 truncate text-sm">{label}</span>
                         {isCreator ? (
                           <span className="shrink-0 rounded bg-muted px-1.5 py-0.5 text-[0.65rem] text-muted-foreground">
-                            作成者
+                            {t("members.creator")}
                           </span>
                         ) : null}
                         {isMe ? (
                           <span className="shrink-0 rounded bg-brand-muted px-1.5 py-0.5 text-[0.65rem] text-brand-muted-foreground">
-                            あなた
+                            {t("members.you")}
                           </span>
                         ) : null}
                       </li>
@@ -141,10 +143,10 @@ export function MembersPanel({ channel, className }: { channel: ChannelRow; clas
                   })}
             </ul>
             {!membersQuery.isLoading && members.length === 0 ? (
-              <p className="px-4 py-3 text-xs text-muted-foreground">メンバーがいません。</p>
+              <p className="px-4 py-3 text-xs text-muted-foreground">{t("members.empty")}</p>
             ) : null}
             {membersQuery.isError ? (
-              <p className="px-4 py-3 text-xs text-destructive">メンバー取得に失敗しました。</p>
+              <p className="px-4 py-3 text-xs text-destructive">{t("members.loadError")}</p>
             ) : null}
           </ScrollArea>
 
@@ -153,42 +155,46 @@ export function MembersPanel({ channel, className }: { channel: ChannelRow; clas
               <form className="flex items-center gap-2" onSubmit={addMember}>
                 <input
                   className={cn(inputClassName(), "min-w-0 flex-1")}
-                  placeholder="追加するユーザー ID"
+                  placeholder={t("members.userId")}
                   value={memberId}
                   onChange={(event) => setMemberId(event.target.value)}
                   disabled={busy}
-                  aria-label="追加するユーザー ID"
+                  aria-label={t("members.userId")}
                 />
                 <Button type="submit" variant="outline" size="sm" disabled={busy}>
                   <UserPlusIcon />
-                  追加
+                  {t("members.add")}
                 </Button>
               </form>
             ) : null}
             <div className="flex items-center justify-between gap-2">
               <span className="text-xs text-muted-foreground">
-                {currentUserLoading ? "確認中…" : isMember ? "参加中" : "未参加"}
+                {currentUserLoading
+                  ? t("members.checking")
+                  : isMember
+                    ? t("members.joined")
+                    : t("members.notJoined")}
               </span>
               {!currentUserLoading && currentUserId ? (
                 isMember ? (
                   <Button variant="outline" size="sm" onClick={leaveChannel} disabled={busy}>
-                    退出
+                    {t("members.leave")}
                   </Button>
                 ) : (
                   <Button size="sm" onClick={joinChannel} disabled={busy}>
-                    参加
+                    {t("members.join")}
                   </Button>
                 )
               ) : null}
             </div>
-            {error ? <p className="text-xs text-destructive">操作失敗: {error}</p> : null}
+            {error ? (
+              <p className="text-xs text-destructive">{t("common.writeErrorDetail", { error })}</p>
+            ) : null}
           </div>
         </>
       ) : (
         <div className="flex flex-1 items-center justify-center p-6">
-          <p className="text-center text-xs text-muted-foreground">
-            非公開チャンネルです。参加には作成者からの招待が必要です。
-          </p>
+          <p className="text-center text-xs text-muted-foreground">{t("members.private")}</p>
         </div>
       )}
     </div>

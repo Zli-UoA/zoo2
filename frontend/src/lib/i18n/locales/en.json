@@ -1,0 +1,111 @@
+{
+  "nav": {
+    "main": "Main navigation"
+  },
+  "channels": {
+    "title": "Channels",
+    "createTitle": "Create a channel",
+    "loadError": "Failed to load channels.",
+    "empty": "No channels yet.",
+    "createAction": "Create one",
+    "notFound": "Channel not found.",
+    "privateMessages": "This channel is private. You can view messages once you are invited.",
+    "back": "Back to channels",
+    "noDescription": "No description yet",
+    "visibilityHelp": "Anyone can join a public channel. Private channels are invite-only.",
+    "newName": "New channel name",
+    "makePrivate": "Make private",
+    "creating": "Creating…",
+    "create": "Create channel"
+  },
+  "sync": {
+    "title": "Sync status",
+    "user": "User",
+    "oidc": "Logged in with OIDC",
+    "unset": "(VITE_DEV_USER_ID is not set)",
+    "browserLoading": "Loading in the browser…",
+    "back": "Go to channels",
+    "description": "The Electric Shape and REST write test UI has moved to the home and channel screens. This page displays connection settings."
+  },
+  "auth": {
+    "logout": "Log out",
+    "loggedOut": "You have been logged out",
+    "loggedOutHelp": "Your Kanidm session is still active. Log in again to continue.",
+    "login": "Log in",
+    "failed": "Unable to log in",
+    "retry": "Log in again",
+    "unauthorizedLoop": "Automatic login stopped because the API repeatedly returned 401. Check the OIDC settings (audience / typ / JWKS) and backend logs."
+  },
+  "members": {
+    "joined": "Joined",
+    "notJoined": "Not joined",
+    "title": "Members",
+    "creator": "Creator",
+    "you": "You",
+    "empty": "No members yet.",
+    "loadError": "Failed to load members.",
+    "userId": "User ID to add",
+    "add": "Add",
+    "checking": "Checking…",
+    "leave": "Leave",
+    "join": "Join",
+    "private": "This channel is private. Ask its creator for an invitation.",
+    "already": "Already a member: {{userId}}"
+  },
+  "common": {
+    "loading": "Loading…",
+    "cancel": "Cancel",
+    "cancelShort": "Cancel",
+    "save": "Save",
+    "writeError": "The action failed",
+    "close": "Close",
+    "writeErrorDetail": "Action failed: {{error}}"
+  },
+  "welcome": {
+    "title": "Welcome to Zoo",
+    "description": "Select a channel from the list to view the conversation."
+  },
+  "messages": {
+    "compose": "Write a message",
+    "send": "Send",
+    "edit": "Edit",
+    "delete": "Delete",
+    "more": "More actions",
+    "editLabel": "Edit message",
+    "loadError": "Failed to load messages",
+    "retryHelp": "Check your connection and try again.",
+    "empty": "No messages yet",
+    "first": "Send the first message.",
+    "new": "New messages",
+    "title": "Messages",
+    "fetchError": "Failed to load messages",
+    "deleteTitle": "Delete this message?",
+    "deleteDescription": "This cannot be undone. The message will also disappear for other channel members.",
+    "count_one": "{{count}} message",
+    "count_other": "{{count}} messages"
+  },
+  "theme": {
+    "switch": "Switch theme",
+    "title": "Theme",
+    "light": "Light",
+    "dark": "Dark",
+    "system": "System"
+  },
+  "language": {
+    "switch": "Switch language",
+    "title": "Language"
+  },
+  "dates": {
+    "today": "Today",
+    "yesterday": "Yesterday"
+  },
+  "composer": {
+    "mac": "⌘ (Cmd)+Enter to send / Enter for a new line",
+    "ctrl": "Ctrl+Enter to send / Enter for a new line",
+    "other": "Cmd / Ctrl+Enter to send / Enter for a new line"
+  },
+  "notifications": {
+    "label": "Notifications",
+    "close": "Dismiss notification"
+  }
+}

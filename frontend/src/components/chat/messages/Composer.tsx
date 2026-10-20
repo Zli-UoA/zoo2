@@ -1,6 +1,10 @@
+import { useTranslation } from "react-i18next";
 import { useLayoutEffect, useRef, useState } from "react";
 import { SendIcon } from "lucide-react";
 
+import { getTranslator } from "../../../lib/i18n";
+import { DEFAULT_LOCALE, type Locale } from "../../../lib/i18n/locale";
+import { useLocale } from "../../i18n/LocaleProvider";
 import { Button } from "../../ui/button";
 import { Textarea } from "../../ui/textarea";
 
@@ -60,14 +64,18 @@ export function canSubmitComposer(value: string, disabled: boolean): boolean {
   return !disabled && value.trim().length > 0;
 }
 
-export function composerSendHint(platform: ComposerPlatform): string {
+export function composerSendHint(
+  platform: ComposerPlatform,
+  locale: Locale = DEFAULT_LOCALE,
+): string {
+  const t = getTranslator(locale);
   if (platform === "mac") {
-    return "⌘（Cmd）+Enter で送信 / Enter で改行";
+    return t("composer.mac");
   }
   if (platform === "windows" || platform === "linux") {
-    return "Ctrl+Enter で送信 / Enter で改行";
+    return t("composer.ctrl");
   }
-  return "Cmd / Ctrl+Enter で送信 / Enter で改行";
+  return t("composer.other");
 }
 
 interface ComposerProps {
@@ -81,6 +89,8 @@ interface ComposerProps {
  * 送信は楽観更新に任せ、入力欄は即座にクリアする。確定に失敗したら下書きを戻す。
  */
 export function Composer({ onSend, disabled = false }: ComposerProps) {
+  const { t } = useTranslation();
+  const { locale } = useLocale();
   const [value, setValue] = useState("");
   const [platform] = useState(() => detectComposerPlatform());
   const textareaRef = useRef<HTMLTextAreaElement>(null);
@@ -127,8 +137,8 @@ export function Composer({ onSend, disabled = false }: ComposerProps) {
           rows={1}
           value={value}
           disabled={disabled}
-          placeholder="メッセージを送信"
-          aria-label="メッセージを送信"
+          placeholder={t("messages.compose")}
+          aria-label={t("messages.compose")}
           className="min-h-9 resize-none border-0 bg-transparent px-2 py-1.5 text-sm shadow-none [field-sizing:fixed] focus-visible:ring-0 dark:bg-transparent"
           onChange={(event) => setValue(event.target.value)}
           onKeyDown={(event) => {
@@ -153,13 +163,15 @@ export function Composer({ onSend, disabled = false }: ComposerProps) {
           type="submit"
           size="icon-sm"
           disabled={!canSubmitComposer(value, disabled)}
-          aria-label="送信"
-          title="送信"
+          aria-label={t("messages.send")}
+          title={t("messages.send")}
         >
           <SendIcon />
         </Button>
       </div>
-      <p className="mt-1.5 px-1 text-[11px] text-muted-foreground">{composerSendHint(platform)}</p>
+      <p className="mt-1.5 px-1 text-[11px] text-muted-foreground">
+        {composerSendHint(platform, locale)}
+      </p>
     </form>
   );
 }

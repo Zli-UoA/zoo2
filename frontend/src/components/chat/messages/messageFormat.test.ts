@@ -63,3 +63,13 @@ describe("formatRelativeDay", () => {
     expect(formatRelativeDay(new Date(2026, 5, 10), now)).toBe("2026年6月10日(水)");
   });
 });
+
+describe("localized dates", () => {
+  const now = new Date(2026, 5, 15, 20);
+  it("localizes relative labels and older dates", () => {
+    expect(formatRelativeDay(now, now, "en")).toBe("Today");
+    expect(formatRelativeDay(new Date(2026, 5, 14), now, "yue")).toBe("尋日");
+    expect(formatRelativeDay(new Date(2026, 5, 10), now, "en")).toBe("Wed, June 10, 2026");
+    expect(formatRelativeDay(new Date(2026, 5, 10), now, "zh-Hans")).toBe("2026年6月10日周三");
+  });
+});

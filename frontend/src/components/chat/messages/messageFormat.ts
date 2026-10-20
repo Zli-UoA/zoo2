@@ -1,3 +1,5 @@
+import { getTranslator } from "../../../lib/i18n";
+import { DEFAULT_LOCALE, INTL_LOCALES, type Locale } from "../../../lib/i18n/locale";
 import { normalizeUtcTimestamp, parseUtcTimestamp } from "../../../lib/timestamps";
 
 /**
@@ -13,8 +15,6 @@ export interface FeedMessage {
   display_name?: string | null;
 }
 
-const WEEKDAYS = ["日", "月", "火", "水", "木", "金", "土"];
-
 function pad(value: number): string {
   return value.toString().padStart(2, "0");
 }
@@ -25,18 +25,22 @@ export function authorLabel(message: FeedMessage): string {
 }
 
 /** `Date` を時計表示（HH:mm）に整える。 */
-export function formatClock(date: Date): string {
-  return `${pad(date.getHours())}:${pad(date.getMinutes())}`;
+export function formatClock(date: Date, locale: Locale = DEFAULT_LOCALE): string {
+  return new Intl.DateTimeFormat(INTL_LOCALES[locale], {
+    hour: "2-digit",
+    minute: "2-digit",
+    hourCycle: "h23",
+  }).format(date);
 }
 
 /** Electric の naive UTC 文字列を端末ローカルの HH:mm に変換する。 */
-export function formatTime(value: string): string {
-  return formatClock(parseUtcTimestamp(value));
+export function formatTime(value: string, locale: Locale = DEFAULT_LOCALE): string {
+  return formatClock(parseUtcTimestamp(value), locale);
 }
 
 /** タイトル属性向けの完全な日時。 */
-export function fullTimestamp(value: string): string {
-  return new Date(normalizeUtcTimestamp(value)).toLocaleString("ja-JP");
+export function fullTimestamp(value: string, locale: Locale = DEFAULT_LOCALE): string {
+  return new Date(normalizeUtcTimestamp(value)).toLocaleString(INTL_LOCALES[locale]);
 }
 
 /** 端末ローカルの暦日が同じか。 */
@@ -57,21 +61,29 @@ export function localDayKey(date: Date): string {
  * 日付区切りのラベル。今日/昨日は相対表記、それ以前は「2026年6月10日(水)」。
  * `now` を渡せるようにしてテストを端末タイムゾーンから切り離す。
  */
-export function formatRelativeDay(date: Date, now: Date): string {
+export function formatRelativeDay(date: Date, now: Date, locale: Locale = DEFAULT_LOCALE): string {
+  const t = getTranslator(locale);
   if (isSameLocalDay(date, now)) {
-    return "今日";
+    return t("dates.today");
   }
   const yesterday = new Date(now);
   yesterday.setDate(now.getDate() - 1);
   if (isSameLocalDay(date, yesterday)) {
-    return "昨日";
+    return t("dates.yesterday");
   }
-  return `${date.getFullYear()}年${date.getMonth() + 1}月${date.getDate()}日(${
-    WEEKDAYS[date.getDay()]
-  })`;
+  return new Intl.DateTimeFormat(INTL_LOCALES[locale], {
+    year: "numeric",
+    month: "long",
+    day: "numeric",
+    weekday: "short",
+  }).format(date);
 }
 
 /** メッセージの日付区切りラベル。 */
-export function formatDateSeparator(value: string, now: Date = new Date()): string {
-  return formatRelativeDay(parseUtcTimestamp(value), now);
+export function formatDateSeparator(
+  value: string,
+  now: Date = new Date(),
+  locale: Locale = DEFAULT_LOCALE,
+): string {
+  return formatRelativeDay(parseUtcTimestamp(value), now, locale);
 }

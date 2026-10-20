@@ -8,6 +8,8 @@ import { themeInitScript } from "@/components/theme/theme";
 import { Toaster } from "@/components/ui/sonner";
 import { TooltipProvider } from "@/components/ui/tooltip";
 
+import { LocaleProvider } from "../components/i18n/LocaleProvider";
+
 import appCss from "../styles.css?url";
 
 export const Route = createRootRoute({
@@ -42,12 +44,14 @@ function RootDocument({ children }: { children: React.ReactNode }) {
         <script dangerouslySetInnerHTML={{ __html: themeInitScript }} />
       </head>
       <body>
-        <ThemeProvider>
-          <TooltipProvider>
-            <AuthGate>{children}</AuthGate>
-            <Toaster />
-          </TooltipProvider>
-        </ThemeProvider>
+        <LocaleProvider>
+          <ThemeProvider>
+            <TooltipProvider>
+              <AuthGate>{children}</AuthGate>
+              <Toaster />
+            </TooltipProvider>
+          </ThemeProvider>
+        </LocaleProvider>
         <TanStackDevtools
           config={{
             position: "bottom-right",

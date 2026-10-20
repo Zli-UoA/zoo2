@@ -1,3 +1,4 @@
+import { useTranslation } from "react-i18next";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { ArrowDownIcon } from "lucide-react";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
@@ -85,6 +86,7 @@ export function MessageList({
   onSaveEdit,
   onRequestDelete,
 }: MessageListProps) {
+  const { t } = useTranslation();
   const items = useMemo(() => buildMessageItems(messages), [messages]);
   const scrollRef = useRef<HTMLDivElement>(null);
 
@@ -172,14 +174,11 @@ export function MessageList({
       ) : showError ? (
         <MessageState
           destructive
-          title="メッセージの取得に失敗しました"
-          description="接続を確認して、もう一度お試しください。"
+          title={t("messages.loadError")}
+          description={t("messages.retryHelp")}
         />
       ) : showEmpty ? (
-        <MessageState
-          title="まだメッセージがありません"
-          description="最初のメッセージを送ってみましょう。"
-        />
+        <MessageState title={t("messages.empty")} description={t("messages.first")} />
       ) : (
         <div
           ref={scrollRef}
@@ -230,7 +229,7 @@ export function MessageList({
           onClick={() => scrollToBottom("smooth")}
         >
           <ArrowDownIcon />
-          新着メッセージ
+          {t("messages.new")}
         </Button>
       ) : null}
     </div>

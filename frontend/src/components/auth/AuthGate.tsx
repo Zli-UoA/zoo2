@@ -1,3 +1,4 @@
+import { useTranslation } from "react-i18next";
 import { useRouter } from "@tanstack/react-router";
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 
@@ -14,6 +15,7 @@ import {
   recordRedirectAttempt,
 } from "../../lib/oidc/pending";
 import { getOidcClient } from "../../lib/oidc/session";
+import { LanguageToggle } from "../i18n/LanguageToggle";
 import { ShellSkeleton } from "../layout/ShellSkeleton";
 import { Button } from "../ui/button";
 
@@ -26,8 +28,7 @@ type AuthPhase = "checking" | "ready" | "disabled" | "loggedOut" | "error";
 const REDIRECT_COOLDOWN_MS = 10_000;
 
 /** バックエンドが 401 を返し続けたときのエラーメッセージ。 */
-const UNAUTHORIZED_LOOP_MESSAGE =
-  "API が 401 を返し続けたため、再ログインを停止しました。OIDC の設定（audience / typ / JWKS）とバックエンドのログを確認してください。";
+const UNAUTHORIZED_LOOP_MESSAGE = "unauthorized-loop";
 
 function currentReturnTo(): string {
   if (typeof window === "undefined") {
@@ -55,6 +56,7 @@ function describeError(error: unknown): string {
  * authorize へ再リダイレクトする（サイレント再ログイン）。
  */
 export function AuthGate({ children }: { children: ReactNode }) {
+  const { t } = useTranslation();
   const router = useRouter();
   const [phase, setPhase] = useState<AuthPhase>("checking");
   const [error, setError] = useState<string | null>(null);
@@ -179,19 +181,20 @@ export function AuthGate({ children }: { children: ReactNode }) {
   return (
     <div className="flex h-dvh w-full items-center justify-center bg-background p-6 text-foreground">
       <div className="flex max-w-md flex-col items-center gap-4 text-center">
+        <LanguageToggle />
         {phase === "loggedOut" ? (
           <>
-            <h1 className="text-lg font-semibold">ログアウトしました</h1>
-            <p className="text-sm text-muted-foreground">
-              Kanidm のセッションは残っているため、続けるには再度ログインしてください。
-            </p>
-            <Button onClick={retry}>ログイン</Button>
+            <h1 className="text-lg font-semibold">{t("auth.loggedOut")}</h1>
+            <p className="text-sm text-muted-foreground">{t("auth.loggedOutHelp")}</p>
+            <Button onClick={retry}>{t("auth.login")}</Button>
           </>
         ) : (
           <>
-            <h1 className="text-lg font-semibold">ログインできませんでした</h1>
-            <p className="text-sm break-words text-muted-foreground">{error}</p>
-            <Button onClick={retry}>再ログイン</Button>
+            <h1 className="text-lg font-semibold">{t("auth.failed")}</h1>
+            <p className="text-sm break-words text-muted-foreground">
+              {error === UNAUTHORIZED_LOOP_MESSAGE ? t("auth.unauthorizedLoop") : error}
+            </p>
+            <Button onClick={retry}>{t("auth.retry")}</Button>
           </>
         )}
       </div>

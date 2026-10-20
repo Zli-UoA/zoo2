@@ -1,3 +1,4 @@
+import { useTranslation } from "react-i18next";
 import { MonitorIcon, MoonIcon, SunIcon } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
@@ -16,9 +17,9 @@ import { useTheme } from "./ThemeProvider";
 import { isTheme, type Theme } from "./theme";
 
 const OPTIONS = [
-  { value: "light", label: "ライト", icon: SunIcon },
-  { value: "dark", label: "ダーク", icon: MoonIcon },
-  { value: "system", label: "システム", icon: MonitorIcon },
+  { value: "light", label: "theme.light", icon: SunIcon },
+  { value: "dark", label: "theme.dark", icon: MoonIcon },
+  { value: "system", label: "theme.system", icon: MonitorIcon },
 ] as const satisfies readonly {
   value: Theme;
   label: string;
@@ -33,18 +34,19 @@ function TriggerIcon({ theme }: { theme: Theme }) {
 
 /** ライト/ダーク/システムを切り替えるメニュー。 */
 export function ModeToggle() {
+  const { t } = useTranslation();
   const { theme, setTheme } = useTheme();
 
   return (
     <DropdownMenu>
       <DropdownMenuTrigger
-        render={<Button variant="ghost" size="icon" aria-label="テーマを切り替える" />}
+        render={<Button variant="ghost" size="icon" aria-label={t("theme.switch")} />}
       >
         <TriggerIcon theme={theme} />
       </DropdownMenuTrigger>
       <DropdownMenuContent align="end">
         <DropdownMenuGroup>
-          <DropdownMenuLabel>テーマ</DropdownMenuLabel>
+          <DropdownMenuLabel>{t("theme.title")}</DropdownMenuLabel>
           <DropdownMenuSeparator />
           <DropdownMenuRadioGroup
             value={theme}
@@ -59,7 +61,7 @@ export function ModeToggle() {
               return (
                 <DropdownMenuRadioItem key={option.value} value={option.value} closeOnClick>
                   <Icon aria-hidden="true" />
-                  {option.label}
+                  {t(option.label)}
                 </DropdownMenuRadioItem>
               );
             })}
