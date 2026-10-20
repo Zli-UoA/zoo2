@@ -2,6 +2,7 @@ import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vite-plus/test";
 
+import { LocaleProvider } from "../../i18n/LocaleProvider";
 import { MessageRow } from "./MessageRow";
 import type { MessageItem } from "./messageGrouping";
 
@@ -26,16 +27,18 @@ function noop() {}
 
 function render(item: MessageItem, isOwn = false): string {
   return renderToStaticMarkup(
-    createElement(MessageRow, {
-      item,
-      isOwn,
-      isEditing: false,
-      editingText: "",
-      onEditingTextChange: noop,
-      onStartEdit: noop,
-      onCancelEdit: noop,
-      onSaveEdit: noop,
-      onRequestDelete: noop,
+    createElement(LocaleProvider, {
+      children: createElement(MessageRow, {
+        item,
+        isOwn,
+        isEditing: false,
+        editingText: "",
+        onEditingTextChange: noop,
+        onStartEdit: noop,
+        onCancelEdit: noop,
+        onSaveEdit: noop,
+        onRequestDelete: noop,
+      }),
     }),
   );
 }

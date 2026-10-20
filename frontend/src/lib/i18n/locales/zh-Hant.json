@@ -1,0 +1,136 @@
+{
+  "nav": {
+    "main": "主導覽"
+  },
+  "channels": {
+    "title": "頻道",
+    "createTitle": "建立頻道",
+    "loadError": "無法載入頻道。",
+    "empty": "尚無頻道。",
+    "createAction": "建立頻道",
+    "notFound": "找不到頻道。",
+    "privateMessages": "此頻道為私人頻道，受邀後即可查看訊息。",
+    "back": "返回頻道列表",
+    "noDescription": "尚無說明",
+    "visibilityHelp": "任何人都可以加入公開頻道。私人頻道僅限建立者邀請的人加入。",
+    "newName": "新頻道名稱",
+    "makePrivate": "設為私人頻道",
+    "creating": "建立中…",
+    "create": "建立頻道"
+  },
+  "sync": {
+    "title": "同步狀態",
+    "user": "使用者",
+    "oidc": "已透過 OIDC 登入",
+    "unset": "（未設定 VITE_DEV_USER_ID）",
+    "browserLoading": "正在瀏覽器中載入…",
+    "back": "前往頻道列表",
+    "description": "Electric Shape 訂閱與 REST 寫入的測試介面已移至首頁和頻道畫面。此處僅顯示連線設定。"
+  },
+  "auth": {
+    "logout": "登出",
+    "loggedOut": "您已登出",
+    "loggedOutHelp": "Kanidm 工作階段仍有效，請重新登入以繼續。",
+    "login": "登入",
+    "failed": "無法登入",
+    "retry": "重新登入",
+    "unauthorizedLoop": "API 持續回傳 401，已停止自動重新登入。請檢查 OIDC 設定（audience / typ / JWKS）與後端日誌。",
+    "errorWithCode": "{{message}} ({{code}})",
+    "oidcErrors": {
+      "discovery_failed": "OpenID Discovery 回傳 {{status}}",
+      "issuer_mismatch": "Discovery 的 issuer 與設定不符",
+      "invalid_discovery": "Discovery 缺少必要的端點",
+      "authorization_failed": "授權失敗",
+      "invalid_callback": "回呼缺少 code 或 state",
+      "missing_pending_request": "找不到已儲存的授權請求，無法驗證 state 和 nonce",
+      "state_mismatch": "授權的 state 不符",
+      "no_refresh_token": "沒有 refresh_token",
+      "session_reset": "工作階段已清除",
+      "invalid_token_response": "權杖回應無效或缺少 access_token",
+      "token_request_failed": "權杖端點回傳 {{status}}",
+      "invalid_id_token": "缺少 ID 權杖或無法解碼",
+      "id_token_issuer_mismatch": "ID 權杖的 iss 不符",
+      "id_token_audience_mismatch": "ID 權杖的 aud 不符",
+      "id_token_expired": "ID 權杖已過期",
+      "nonce_mismatch": "ID 權杖的 nonce 不符"
+    }
+  },
+  "members": {
+    "joined": "已加入",
+    "notJoined": "尚未加入",
+    "title": "成員",
+    "creator": "建立者",
+    "you": "您",
+    "empty": "尚無成員。",
+    "loadError": "無法載入成員。",
+    "checking": "確認中…",
+    "leave": "離開",
+    "join": "加入",
+    "private": "此為私人頻道，需要建立者邀請才能加入。",
+    "already": "已是成員：{{userId}}",
+    "search": "搜尋姓名以新增",
+    "addLabel": "新增成員",
+    "candidates": "成員建議",
+    "usersLoading": "正在載入使用者…",
+    "usersError": "無法載入使用者。",
+    "usersEmpty": "找不到符合的使用者。"
+  },
+  "common": {
+    "loading": "載入中…",
+    "cancel": "取消",
+    "cancelShort": "取消",
+    "save": "儲存",
+    "writeError": "操作失敗",
+    "close": "關閉",
+    "writeErrorDetail": "操作失敗：{{error}}"
+  },
+  "welcome": {
+    "title": "歡迎使用 Zoo",
+    "description": "從左側列表選擇頻道，即可查看對話。"
+  },
+  "messages": {
+    "compose": "輸入訊息",
+    "send": "傳送",
+    "edit": "編輯",
+    "delete": "刪除",
+    "more": "更多操作",
+    "editLabel": "編輯訊息",
+    "loadError": "無法載入訊息",
+    "retryHelp": "請檢查連線後再試一次。",
+    "empty": "尚無訊息",
+    "first": "傳送第一則訊息吧。",
+    "new": "新訊息",
+    "title": "訊息",
+    "fetchError": "無法載入訊息",
+    "deleteTitle": "要刪除此訊息嗎？",
+    "deleteDescription": "此操作無法復原。刪除後，其他頻道成員也將無法查看此訊息。",
+    "count_one": "{{count}} 則訊息",
+    "count_other": "{{count}} 則訊息",
+    "announcement": "{{author}} 的新訊息：「{{excerpt}}」",
+    "announcementAuthor": "{{author}} 的新訊息"
+  },
+  "theme": {
+    "switch": "切換佈景主題",
+    "title": "佈景主題",
+    "light": "淺色",
+    "dark": "深色",
+    "system": "系統"
+  },
+  "language": {
+    "switch": "切換語言",
+    "title": "語言"
+  },
+  "dates": {
+    "today": "今天",
+    "yesterday": "昨天"
+  },
+  "composer": {
+    "mac": "⌘（Cmd）+Enter 傳送 / Enter 換行",
+    "ctrl": "Ctrl+Enter 傳送 / Enter 換行",
+    "other": "Cmd / Ctrl+Enter 傳送 / Enter 換行"
+  },
+  "notifications": {
+    "label": "通知",
+    "close": "關閉通知"
+  }
+}

@@ -1,7 +1,9 @@
+import { useTranslation } from "react-i18next";
 import { cn } from "cn";
 import { MoreHorizontalIcon, PencilIcon, TrashIcon } from "lucide-react";
 import { Fragment } from "react";
 
+import { useLocale } from "../../i18n/LocaleProvider";
 import { Avatar, AvatarFallback } from "../../ui/avatar";
 import { Button, buttonVariants } from "../../ui/button";
 import {
@@ -61,15 +63,17 @@ function MessageBody({ content }: { content: string }) {
 }
 
 function DateSeparator({ value }: { value: string }) {
+  const { t } = useTranslation();
+  const { locale } = useLocale();
   return (
     <div
       className="flex items-center gap-3 py-2"
       role="separator"
-      aria-label={formatDateSeparator(value)}
+      aria-label={formatDateSeparator(value, t, locale)}
     >
       <span className="h-px flex-1 bg-border" />
       <span className="rounded-full border bg-background/80 px-2.5 py-0.5 text-[11px] font-medium text-muted-foreground">
-        {formatDateSeparator(value)}
+        {formatDateSeparator(value, t, locale)}
       </span>
       <span className="h-px flex-1 bg-border" />
     </div>
@@ -93,6 +97,8 @@ export function MessageRow({
   onSaveEdit,
   onRequestDelete,
 }: MessageRowProps) {
+  const { t } = useTranslation();
+  const { locale } = useLocale();
   const { message } = item;
 
   return (
@@ -114,9 +120,9 @@ export function MessageRow({
             <time
               className="hidden text-[10px] text-muted-foreground tabular-nums group-hover/row:inline group-focus-within/row:inline"
               dateTime={message.created_at}
-              title={fullTimestamp(message.created_at)}
+              title={fullTimestamp(message.created_at, locale)}
             >
-              {formatTime(message.created_at)}
+              {formatTime(message.created_at, locale)}
             </time>
           </div>
         )}
@@ -128,9 +134,9 @@ export function MessageRow({
               <time
                 className="shrink-0 text-[11px] text-muted-foreground tabular-nums"
                 dateTime={message.created_at}
-                title={fullTimestamp(message.created_at)}
+                title={fullTimestamp(message.created_at, locale)}
               >
-                {formatTime(message.created_at)}
+                {formatTime(message.created_at, locale)}
               </time>
             </div>
           ) : null}
@@ -147,7 +153,7 @@ export function MessageRow({
                 value={editingText}
                 autoFocus
                 rows={1}
-                aria-label="メッセージを編集"
+                aria-label={t("messages.editLabel")}
                 className="min-h-9 resize-none text-sm"
                 onChange={(event) => onEditingTextChange(event.target.value)}
                 onKeyDown={(event) => {
@@ -159,10 +165,10 @@ export function MessageRow({
               />
               <div className="flex justify-end gap-2">
                 <Button type="button" variant="ghost" size="sm" onClick={onCancelEdit}>
-                  取消
+                  {t("common.cancelShort")}
                 </Button>
                 <Button type="submit" size="sm" disabled={!editingText.trim()}>
-                  保存
+                  {t("common.save")}
                 </Button>
               </div>
             </form>
@@ -179,8 +185,8 @@ export function MessageRow({
               <Button
                 variant="ghost"
                 size="icon-xs"
-                aria-label="編集"
-                title="編集"
+                aria-label={t("messages.edit")}
+                title={t("messages.edit")}
                 onClick={onStartEdit}
               >
                 <PencilIcon />
@@ -188,8 +194,8 @@ export function MessageRow({
               <Button
                 variant="ghost"
                 size="icon-xs"
-                aria-label="削除"
-                title="削除"
+                aria-label={t("messages.delete")}
+                title={t("messages.delete")}
                 className="text-destructive hover:bg-destructive/10 hover:text-destructive"
                 onClick={onRequestDelete}
               >
@@ -198,8 +204,8 @@ export function MessageRow({
             </div>
             <DropdownMenu>
               <DropdownMenuTrigger
-                aria-label="その他の操作"
-                title="その他の操作"
+                aria-label={t("messages.more")}
+                title={t("messages.more")}
                 className={buttonVariants({
                   variant: "ghost",
                   size: "icon-xs",
@@ -214,11 +220,11 @@ export function MessageRow({
               <DropdownMenuContent align="end">
                 <DropdownMenuItem onClick={onStartEdit}>
                   <PencilIcon />
-                  編集
+                  {t("messages.edit")}
                 </DropdownMenuItem>
                 <DropdownMenuItem variant="destructive" onClick={onRequestDelete}>
                   <TrashIcon />
-                  削除
+                  {t("messages.delete")}
                 </DropdownMenuItem>
               </DropdownMenuContent>
             </DropdownMenu>

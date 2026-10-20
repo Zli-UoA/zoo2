@@ -1,3 +1,5 @@
+import { useTranslation } from "react-i18next";
+
 import type { CSSProperties } from "react";
 import { Toaster as Sonner, type ToasterProps } from "sonner";
 
@@ -8,11 +10,14 @@ import { useTheme } from "@/components/theme/ThemeProvider";
  * 色は shadcn トークンへ合わせる。
  */
 function Toaster(props: ToasterProps) {
+  const { t } = useTranslation();
   const { resolvedTheme } = useTheme();
 
   return (
     <Sonner
       theme={resolvedTheme}
+      containerAriaLabel={t("notifications.label")}
+      toastOptions={{ closeButtonAriaLabel: t("notifications.close") }}
       className="toaster group"
       style={
         {

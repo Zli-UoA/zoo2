@@ -1,3 +1,4 @@
+import { useTranslation } from "react-i18next";
 import { Link } from "@tanstack/react-router";
 import { cn } from "cn";
 import { ActivityIcon, HashIcon, LogOutIcon, type LucideIcon, PawPrintIcon } from "lucide-react";
@@ -6,6 +7,7 @@ import { useCurrentUser } from "../../hooks/useCurrentUser";
 import { useUsers } from "../../hooks/useRealtime";
 import { getCollections } from "../../lib/electric/collections";
 import { getOidcClient } from "../../lib/oidc/session";
+import { LanguageToggle } from "../i18n/LanguageToggle";
 import { ModeToggle } from "../theme/ModeToggle";
 import { Avatar, AvatarFallback } from "../ui/avatar";
 import { Button } from "../ui/button";
@@ -41,6 +43,7 @@ function RailLink({
  * 画面幅に関わらず表示し、狭幅でも操作の入口を保つ。
  */
 export function LeftRail() {
+  const { t } = useTranslation();
   const { config } = getCollections();
   const { currentUserId } = useCurrentUser();
   const usersQuery = useUsers();
@@ -59,7 +62,7 @@ export function LeftRail() {
 
   return (
     <nav
-      aria-label="メインナビゲーション"
+      aria-label={t("nav.main")}
       className={cn(
         "flex w-14 shrink-0 flex-col items-center gap-1 border-r bg-sidebar py-3",
         "md:w-16",
@@ -70,13 +73,14 @@ export function LeftRail() {
         <span className="sr-only">Zoo</span>
       </div>
       <Separator className="my-1 w-6" />
-      <RailLink to="/" icon={HashIcon} label="チャンネル" exact />
+      <RailLink to="/" icon={HashIcon} label={t("channels.title")} exact />
       {/* 同期の状態（/realtime）は開発時の確認用。本番ビルドでは出さない。 */}
       {import.meta.env.DEV ? (
-        <RailLink to="/realtime" icon={ActivityIcon} label="同期の状態" exact />
+        <RailLink to="/realtime" icon={ActivityIcon} label={t("sync.title")} exact />
       ) : null}
 
       <div className="mt-auto flex flex-col items-center gap-2">
+        <LanguageToggle />
         <ModeToggle />
         <Separator className="w-6" />
         <Avatar size="sm" title={meLabel}>
@@ -86,8 +90,8 @@ export function LeftRail() {
           <Button
             variant="ghost"
             size="icon-sm"
-            aria-label="ログアウト"
-            title="ログアウト"
+            aria-label={t("auth.logout")}
+            title={t("auth.logout")}
             onClick={handleLogout}
           >
             <LogOutIcon />

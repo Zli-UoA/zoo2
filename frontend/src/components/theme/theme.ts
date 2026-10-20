@@ -1,3 +1,5 @@
+import { readStorageValue } from "../../lib/storage";
+
 /**
  * テーマの保存・解決ロジック。React に依存しない純粋な部分をここへ置き、
  * `ThemeProvider` と FOUC 防止スクリプトの双方から同じ定義を使う。
@@ -15,16 +17,9 @@ export function isTheme(value: unknown): value is Theme {
 /**
  * localStorage から保存済みテーマを読む。未保存・不正値・storage 不可の場合は既定値。
  */
-export function readStoredTheme(storage: Pick<Storage, "getItem"> | null | undefined): Theme {
-  if (!storage) {
-    return DEFAULT_THEME;
-  }
-  try {
-    const raw = storage.getItem(THEME_STORAGE_KEY);
-    return isTheme(raw) ? raw : DEFAULT_THEME;
-  } catch {
-    return DEFAULT_THEME;
-  }
+export function readStoredTheme(storage?: Pick<Storage, "getItem"> | null): Theme {
+  const raw = readStorageValue(THEME_STORAGE_KEY, storage);
+  return isTheme(raw) ? raw : DEFAULT_THEME;
 }
 
 /**

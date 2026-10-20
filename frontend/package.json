@@ -16,6 +16,7 @@
     "test": "vp test",
     "test:e2e": "playwright test",
     "test:e2e:oidc": "playwright test --config playwright.oidc.config.ts",
+    "test:e2e:i18n": "playwright test --config playwright.i18n.config.ts",
     "test:e2e:csp": "playwright test --config playwright.csp.config.ts"
   },
   "dependencies": {
@@ -31,9 +32,11 @@
     "@tanstack/react-virtual": "^3.14.20",
     "class-variance-authority": "^0.7.1",
     "cn": "^0.4.0",
+    "i18next": "^26.5.2",
     "lucide-react": "^1.57.0",
     "react": "^19.2.0",
     "react-dom": "^19.2.0",
+    "react-i18next": "^17.1.0",
     "shadcn": "^4.21.5",
     "sonner": "^2.0.8",
     "tailwindcss": "^4.1.18",
@@ -47,6 +50,7 @@
     "@types/react": "^19.2.0",
     "@types/react-dom": "^19.2.0",
     "@vitejs/plugin-react": "^6.0.1",
+    "happy-dom": "^21.0.3",
     "typescript": "^6.0.2",
     "vite": "catalog:",
     "vite-plus": "catalog:"

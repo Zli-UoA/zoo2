@@ -1,0 +1,218 @@
+name: Publish images
+on:
+  push:
+    branches: [main]
+  pull_request:
+    types: [opened, synchronize, reopened]
+  workflow_dispatch:
+permissions:
+  contents: read
+# Serialize runs per branch or PR only. Cleanup defers untagged deletion while any run is active.
+concurrency:
+  group: ghcr-images-${{ github.event.pull_request.number && format('pr-{0}', github.event.pull_request.number) || github.ref }}
+  queue: max
+jobs:
+  plan:
+    if: github.event_name != 'workflow_dispatch' || github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      matrix: ${{ steps.plan.outputs.matrix }}
+      sha: ${{ steps.plan.outputs.sha }}
+      tags: ${{ steps.plan.outputs.tags }}
+      has_images: ${{ steps.plan.outputs.has_images }}
+      enabled: ${{ steps.plan.outputs.enabled }}
+    steps:
+      - uses: actions/checkout@v7
+      - name: Test image planning and retention
+        run: node .github/scripts/images.test.mjs
+      - id: plan
+        if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+        uses: actions/github-script@v8
+        with:
+          script: |
+            const {default: plan} = await import(`${process.env.GITHUB_WORKSPACE}/.github/scripts/image-plan.mjs`);
+            await plan({github, context, core});
+  build:
+    needs: plan
+    if: needs.plan.outputs.enabled == 'true' && needs.plan.outputs.has_images == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.plan.outputs.sha }}
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      # Immutable tags are never rewritten; a rerun for the same commit reuses what was already published.
+      - name: Check existing immutable tags
+        id: existing
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          IMAGE: ghcr.io/zli-uoa/zoo2-${{ matrix.component }}
+          TAG: ${{ fromJSON(needs.plan.outputs.tags)[matrix.component] }}
+          PREVIEW_TAG: ${{ matrix.component == 'frontend' && github.event_name != 'pull_request' && format('preview-{0}', needs.plan.outputs.sha) || '' }}
+        run: |
+          # A missing tag reports "not found"; a package that does not exist yet may be refused instead.
+          exists() {
+            local out
+            if out=$(docker buildx imagetools inspect "$1" 2>&1); then echo true
+            elif grep -qi 'not found' <<<"$out"; then echo false
+            elif gh api "orgs/Zli-UoA/packages/container/${IMAGE##*/}" --silent 2>&1 | grep -q 'HTTP 404'; then echo false
+            else echo "$out" >&2; return 1
+            fi
+          }
+          image=$(exists "$IMAGE:$TAG")
+          preview=false
+          if [ -n "$PREVIEW_TAG" ]; then preview=$(exists "$IMAGE:$PREVIEW_TAG"); fi
+          [ "$image" = false ] || echo "::notice::$IMAGE:$TAG already exists; not rebuilding"
+          [ "$preview" = false ] || echo "::notice::$IMAGE:$PREVIEW_TAG already exists; not rebuilding"
+          echo "image=$image" >> "$GITHUB_OUTPUT"
+          echo "preview=$preview" >> "$GITHUB_OUTPUT"
+      - name: Validate production OIDC configuration
+        if: matrix.component == 'frontend' && github.event_name != 'pull_request' && steps.existing.outputs.image == 'false'
+        env:
+          ISSUER: ${{ vars.VITE_OIDC_ISSUER }}
+          CLIENT_ID: ${{ vars.VITE_OIDC_CLIENT_ID }}
+        run: |
+          test -n "${ISSUER//[[:space:]]/}" || { echo 'Set VITE_OIDC_ISSUER repository variable'; exit 1; }
+          test -n "${CLIENT_ID//[[:space:]]/}" || { echo 'Set VITE_OIDC_CLIENT_ID repository variable'; exit 1; }
+      # Save once per dependency set; a per-commit key would evict the buildx layer caches.
+      - name: Restore Rust cache mounts
+        id: rust-cache
+        if: matrix.component == 'backend' && steps.existing.outputs.image == 'false'
+        uses: actions/cache@v4
+        with:
+          path: .buildkit-cache
+          key: rust-image-${{ runner.os }}-${{ hashFiles('backend/Cargo.lock', 'infra/Dockerfile-backend-deploy') }}
+          # Start a new dependency set from the previous one instead of a cold build.
+          restore-keys: |
+            rust-image-${{ runner.os }}-
+      - name: Inject Rust cache mounts
+        if: matrix.component == 'backend' && steps.existing.outputs.image == 'false'
+        uses: reproducible-containers/buildkit-cache-dance@v3
+        with:
+          skip-extraction: ${{ steps.rust-cache.outputs.cache-hit }}
+          cache-map: |
+            {
+              ".buildkit-cache/registry": "/usr/local/cargo/registry",
+              ".buildkit-cache/git": "/usr/local/cargo/git",
+              ".buildkit-cache/target": "/app/target"
+            }
+      - name: Build and publish immutable image
+        id: image
+        if: steps.existing.outputs.image == 'false'
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: infra/Dockerfile-${{ matrix.component }}-deploy
+          push: true
+          platforms: linux/amd64
+          tags: ghcr.io/zli-uoa/zoo2-${{ matrix.component }}:${{ fromJSON(needs.plan.outputs.tags)[matrix.component] }}
+          labels: |
+            org.opencontainers.image.source=https://github.com/Zli-UoA/zoo2
+            org.opencontainers.image.revision=${{ needs.plan.outputs.sha }}
+          cache-from: type=gha,scope=${{ matrix.component }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.component }}
+          build-args: |
+            VITE_API_BASE_URL=
+            VITE_OIDC_ISSUER=${{ github.event_name != 'pull_request' && vars.VITE_OIDC_ISSUER || '' }}
+            VITE_OIDC_CLIENT_ID=${{ github.event_name != 'pull_request' && vars.VITE_OIDC_CLIENT_ID || '' }}
+            VITE_OIDC_REDIRECT_URI=${{ github.event_name != 'pull_request' && vars.VITE_OIDC_REDIRECT_URI || '' }}
+            VITE_OIDC_SCOPE=${{ github.event_name != 'pull_request' && vars.VITE_OIDC_SCOPE || '' }}
+            VITE_OIDC_POST_LOGOUT_REDIRECT_URI=${{ github.event_name != 'pull_request' && vars.VITE_OIDC_POST_LOGOUT_REDIRECT_URI || '' }}
+      - name: Build and publish shared preview frontend
+        if: steps.existing.outputs.preview == 'false' && matrix.component == 'frontend' && github.event_name != 'pull_request'
+        id: preview
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: infra/Dockerfile-frontend-deploy
+          push: true
+          platforms: linux/amd64
+          tags: ghcr.io/zli-uoa/zoo2-frontend:preview-${{ needs.plan.outputs.sha }}
+          labels: |
+            org.opencontainers.image.source=https://github.com/Zli-UoA/zoo2
+            org.opencontainers.image.revision=${{ needs.plan.outputs.sha }}
+          cache-from: type=gha,scope=frontend-preview
+          cache-to: type=gha,mode=max,scope=frontend-preview
+          build-args: |
+            VITE_API_BASE_URL=
+            VITE_OIDC_ISSUER=
+            VITE_OIDC_CLIENT_ID=
+            VITE_OIDC_REDIRECT_URI=
+            VITE_OIDC_SCOPE=
+            VITE_OIDC_POST_LOGOUT_REDIRECT_URI=
+  # Promote all components together, only after every build succeeded, so aliases never mix commits.
+  promote:
+    needs: [plan, build]
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Promote current main images
+        uses: actions/github-script@v8
+        env:
+          IMAGE_SHA: ${{ needs.plan.outputs.sha }}
+          MATRIX: ${{ needs.plan.outputs.matrix }}
+        with:
+          script: |
+            const {data} = await github.rest.repos.getBranch({...context.repo, branch: 'main'});
+            const sha = process.env.IMAGE_SHA;
+            if (data.commit.sha !== sha) {
+              core.notice('Newer main exists; keeping immutable tags without promoting aliases');
+              return;
+            }
+            const aliases = JSON.parse(process.env.MATRIX).include.flatMap(({component}) => {
+              const image = `ghcr.io/zli-uoa/zoo2-${component}`;
+              return [[image, 'latest', sha], ...(component === 'frontend' ? [[image, 'preview', `preview-${sha}`]] : [])];
+            });
+            // Tags cannot move atomically across packages; roll back on failure so aliases do not stay mixed.
+            // Only a missing alias (first promotion) may lack a previous digest; any other failure stops before promoting.
+            const previous = [];
+            for (const [image, alias] of aliases) {
+              const {exitCode, stdout, stderr} = await exec.getExecOutput('docker', ['buildx', 'imagetools', 'inspect', `${image}:${alias}`, '--format', '{{json .Manifest}}'], {ignoreReturnCode: true, silent: true});
+              if (exitCode === 0) previous.push(JSON.parse(stdout).digest);
+              else if (/not found/i.test(stderr)) previous.push(null);
+              else throw new Error(`Cannot inspect ${image}:${alias} before promotion: ${stderr.trim()}`);
+            }
+            let done = 0;
+            try {
+              for (const [image, alias, source] of aliases) {
+                await exec.exec('docker', ['buildx', 'imagetools', 'create', '-t', `${image}:${alias}`, `${image}:${source}`]);
+                done++;
+              }
+            } catch (error) {
+              // Attempt every restore, then report the promotion failure together with any restore failures.
+              const failed = [];
+              for (let i = done - 1; i >= 0; i--) {
+                const [image, alias] = aliases[i];
+                if (!previous[i]) { core.warning(`${image}:${alias} did not exist before promotion; left on the new commit`); continue; }
+                try {
+                  await exec.exec('docker', ['buildx', 'imagetools', 'create', '-t', `${image}:${alias}`, `${image}@${previous[i]}`]);
+                } catch (restoreError) {
+                  failed.push(`${image}:${alias} (${restoreError.message})`);
+                }
+              }
+              if (failed.length) core.error(`Rollback failed; aliases are mixed: ${failed.join(', ')}`);
+              throw error;
+            }
