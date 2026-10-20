@@ -1,8 +1,10 @@
 import { useTranslation } from "react-i18next";
 import { cn } from "cn";
-import { SearchIcon } from "lucide-react";
+import { SearchIcon, UserMinusIcon } from "lucide-react";
 import { useId, useMemo, useState, type ChangeEvent, type KeyboardEvent } from "react";
 
+import { canKickChannelMember } from "../../hooks/channelPermissions";
+import { useChannelAdmin } from "../../hooks/useChannelAdmin";
 import { useCurrentUser } from "../../hooks/useCurrentUser";
 import { useChannelMembers, useUsers } from "../../hooks/useRealtime";
 import { useWriteRunner } from "../../hooks/useWriteRunner";
@@ -10,6 +12,16 @@ import { getCollections } from "../../lib/electric/collections";
 import type { ChannelUserWriteMetadata } from "../../lib/electric/writes";
 import type { ChannelRow, UserRow } from "../../lib/electric/types";
 import { useLocale } from "../i18n/LocaleProvider";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "../ui/alert-dialog";
 import { Avatar, AvatarFallback } from "../ui/avatar";
 import { Button } from "../ui/button";
 import { inputClassName } from "../ui/input-styles";
@@ -44,9 +56,13 @@ export function MembersPanel({ channel, className }: { channel: ChannelRow; clas
   const usersQuery = useUsers();
   const { currentUserId, isLoading: currentUserLoading } = useCurrentUser();
   const { error, setError, run } = useWriteRunner();
+  const admin = useChannelAdmin(channel);
+  const isArchived = admin.access.isArchived;
+  const canManage = admin.access.canManageChannel;
   const [query, setQuery] = useState("");
   const [isCandidateListOpen, setCandidateListOpen] = useState(false);
   const [activeIndex, setActiveIndex] = useState(-1);
+  const [kickTarget, setKickTarget] = useState<{ userId: string; label: string } | null>(null);
   const candidateListId = useId();
 
   const members = membersQuery.data ?? [];
@@ -71,10 +87,9 @@ export function MembersPanel({ channel, className }: { channel: ChannelRow; clas
   const isMember = currentUserId
     ? members.some((member) => member.user_id === currentUserId)
     : false;
-  const canAddMember =
-    currentUserId === channel.created_user_id || (!channel.is_private && isMember);
+  const canAddMember = admin.access.canAddMember && !isArchived;
   const canViewMembers = !channel.is_private || isMember;
-  const busy = membersQuery.isLoading;
+  const busy = membersQuery.isLoading || admin.pending !== null;
 
   function candidateOptionId(userId: string): string {
     return `${candidateListId}-option-${userId}`;
@@ -159,6 +174,14 @@ export function MembersPanel({ channel, className }: { channel: ChannelRow; clas
     );
   }
 
+  async function confirmKick() {
+    if (!kickTarget) return;
+    const succeeded = await admin.kickMember(kickTarget.userId);
+    if (succeeded) {
+      setKickTarget(null);
+    }
+  }
+
   async function addMember(user: UserRow) {
     if (busy) return;
     if (members.some((member) => member.user_id === user.id)) {
@@ -188,6 +211,11 @@ export function MembersPanel({ channel, className }: { channel: ChannelRow; clas
 
       {canViewMembers ? (
         <>
+          {isArchived ? (
+            <p className="border-b bg-muted/40 px-4 py-2 text-xs text-muted-foreground">
+              {t("moderation.archivedMembersHelp")}
+            </p>
+          ) : null}
           <ScrollArea className="min-h-0 flex-1">
             <ul className="flex flex-col gap-0.5 p-2">
               {membersQuery.isLoading
@@ -201,6 +229,14 @@ export function MembersPanel({ channel, className }: { channel: ChannelRow; clas
                     const label = userNames.get(member.user_id) ?? member.user_id;
                     const isCreator = member.user_id === channel.created_user_id;
                     const isMe = member.user_id === currentUserId;
+                    const canKick =
+                      !isArchived &&
+                      canKickChannelMember({
+                        actorId: currentUserId,
+                        actorCanManage: canManage,
+                        channelCreatorId: channel.created_user_id,
+                        targetUserId: member.user_id,
+                      });
                     return (
                       <li
                         key={member.user_id}
@@ -219,6 +255,19 @@ export function MembersPanel({ channel, className }: { channel: ChannelRow; clas
                           <span className="shrink-0 rounded bg-brand-muted px-1.5 py-0.5 text-[0.65rem] text-brand-muted-foreground">
                             {t("members.you")}
                           </span>
+                        ) : null}
+                        {canKick ? (
+                          <Button
+                            variant="ghost"
+                            size="icon-xs"
+                            className="shrink-0 text-destructive hover:bg-destructive/10 hover:text-destructive"
+                            aria-label={t("moderation.kickLabel", { name: label })}
+                            title={t("moderation.kick")}
+                            disabled={busy}
+                            onClick={() => setKickTarget({ userId: member.user_id, label })}
+                          >
+                            <UserMinusIcon />
+                          </Button>
                         ) : null}
                       </li>
                     );
@@ -324,14 +373,16 @@ export function MembersPanel({ channel, className }: { channel: ChannelRow; clas
                   ? t("members.checking")
                   : isMember
                     ? t("members.joined")
-                    : t("members.notJoined")}
+                    : isArchived
+                      ? t("moderation.archived")
+                      : t("members.notJoined")}
               </span>
               {!currentUserLoading && currentUserId ? (
                 isMember ? (
                   <Button variant="outline" size="sm" onClick={leaveChannel} disabled={busy}>
                     {t("members.leave")}
                   </Button>
-                ) : (
+                ) : isArchived ? null : (
                   <Button size="sm" onClick={joinChannel} disabled={busy}>
                     {t("members.join")}
                   </Button>
@@ -348,6 +399,34 @@ export function MembersPanel({ channel, className }: { channel: ChannelRow; clas
           <p className="text-center text-xs text-muted-foreground">{t("members.private")}</p>
         </div>
       )}
+
+      <AlertDialog
+        open={kickTarget !== null}
+        onOpenChange={(open) => {
+          if (!open) {
+            setKickTarget(null);
+          }
+        }}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>{t("moderation.kickTitle")}</AlertDialogTitle>
+            <AlertDialogDescription>
+              {kickTarget ? t("moderation.kickDescription", { name: kickTarget.label }) : ""}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>{t("common.cancelShort")}</AlertDialogCancel>
+            <AlertDialogAction
+              variant="destructive"
+              disabled={busy}
+              onClick={() => void confirmKick()}
+            >
+              {admin.pending === "kick" ? t("moderation.executing") : t("moderation.kick")}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   );
 }

@@ -1,12 +1,16 @@
 import { useTranslation } from "react-i18next";
+import { ArchiveIcon } from "lucide-react";
 import { useMemo } from "react";
 
-import { useActiveChannels, useChannelAccess } from "../../hooks/useRealtime";
+import { useActiveChannels, useChannelAccess, useMessageFeed } from "../../hooks/useRealtime";
 import { Skeleton } from "../ui/skeleton";
 import { ChannelHeader } from "./ChannelHeader";
+import { MessageList } from "./messages/MessageList";
 import { MessagePane } from "./messages/MessagePane";
 
 const LOADING_ROWS = [0, 1, 2, 3];
+
+function noop() {}
 
 function ChannelLoading() {
   return (
@@ -38,6 +42,10 @@ export function ChannelScreen({ channelId }: { channelId: string }) {
   );
   // 権限判定（閲覧可否・参加状態・保留中）は `useChannelAccess` に集約する。
   const access = useChannelAccess(channel);
+  // アーカイブ済みは Composer を出さず、MessageList を読み取り専用で描く。
+  const archivedFeedQuery = useMessageFeed(
+    channel && access.isArchived && access.canRead ? channelId : null,
+  );
 
   if (!channel) {
     if (channelsQuery.isLoading) {
@@ -71,6 +79,35 @@ export function ChannelScreen({ channelId }: { channelId: string }) {
           <div className="flex flex-1 items-center justify-center">
             <p className="text-sm text-muted-foreground">{t("common.loading")}</p>
           </div>
+        ) : access.isArchived ? (
+          access.canRead ? (
+            <div className="flex min-h-0 flex-1 flex-col">
+              <div className="flex items-start gap-2 border-b bg-muted/40 px-4 py-2 text-xs text-muted-foreground">
+                <ArchiveIcon className="mt-0.5 size-3.5 shrink-0" aria-hidden="true" />
+                <span>{t("moderation.archivedReadOnly")}</span>
+              </div>
+              <MessageList
+                key={`archived-${channelId}`}
+                messages={archivedFeedQuery.data ?? []}
+                isLoading={archivedFeedQuery.isLoading}
+                isError={archivedFeedQuery.isError}
+                currentUserId={null}
+                editingId={null}
+                editingText=""
+                onEditingTextChange={noop}
+                onStartEdit={noop}
+                onCancelEdit={noop}
+                onSaveEdit={noop}
+                onRequestDelete={noop}
+              />
+            </div>
+          ) : (
+            <div className="flex flex-1 items-center justify-center p-6">
+              <p className="max-w-sm text-center text-sm text-muted-foreground">
+                {t("channels.privateMessages")}
+              </p>
+            </div>
+          )
         ) : access.canRead ? (
           <MessagePane key={channelId} channelId={channelId} />
         ) : (

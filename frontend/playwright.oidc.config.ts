@@ -7,11 +7,13 @@ import { defineConfig, devices } from "@playwright/test";
  *   DEV_AUTH_ENABLED=false ENVIRONMENT=production \
  *     OIDC_ISSUER=http://127.0.0.1:4100/oauth2/openid/zoo OIDC_AUDIENCE=zoo \
  *     CORS_ALLOWED_ORIGINS=http://localhost:5173 \
- *     DATABASE_URL=... ELECTRIC_URL=http://localhost:3000 \
+ *     DATABASE_URL=... ELECTRIC_URL=http://127.0.0.1:3000 \
  *     cargo run   # backend
  *   cd frontend && pnpm test:e2e:oidc
  *
  * モック IdP とフロントの dev サーバは Playwright が起動する。
+ * CI（.github/workflows/ci-frontend-auth-e2e.yaml）では同じ手順で
+ * PostgreSQL + Electric + 本番同等設定の Rust を起動してから実行する。
  */
 const baseURL = process.env.E2E_BASE_URL ?? "http://localhost:5173";
 const apiBaseUrl = process.env.VITE_API_BASE_URL ?? "http://localhost:8000";
@@ -24,8 +26,8 @@ export default defineConfig({
   fullyParallel: false,
   forbidOnly: Boolean(process.env.CI),
   retries: 0,
-  reporter: "list",
-  timeout: 60_000,
+  reporter: process.env.CI ? "github" : "list",
+  timeout: 90_000,
   use: {
     baseURL,
     trace: "on-first-retry",
