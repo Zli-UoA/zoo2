@@ -5,6 +5,7 @@ const prTag = new RegExp(`^pr-([1-9][0-9]*)-(${SHA})$`);
 export const tagsOf = v => v.metadata?.container?.tags ?? [];
 
 // A version can carry multiple tags. Delete only if EVERY tag is disposable.
+// openPRs maps open PR numbers to head SHAs; the current head image is kept regardless of age.
 export function candidates(versions, openPRs, {closedPR = null, now = Date.now()} = {}) {
   const sorted = [...versions].sort((a, b) => Date.parse(b.created_at) - Date.parse(a.created_at) || b.id - a.id);
   const keep = new Set();
@@ -14,6 +15,7 @@ export function candidates(versions, openPRs, {closedPR = null, now = Date.now()
       if (mainTag.test(t)) return ['main'];
       if (previewTag.test(t)) return ['preview'];
       const match = t.match(prTag);
+      if (match && openPRs.get(Number(match[1])) === match[2]) keep.add(v.id);
       return match && openPRs.has(Number(match[1])) ? [`pr-${match[1]}`] : [];
     }));
     for (const group of groups) {
@@ -53,8 +55,13 @@ export default async function cleanup({github, context, core}) {
   const owner = context.repo.owner;
   const closedPR = context.eventName === 'pull_request_target' ? context.payload.pull_request.number : null;
   const dryRun = process.env.DRY_RUN !== 'false';
-  const listOpen = async () => new Set((await github.paginate(github.rest.pulls.list, {...context.repo, state: 'open', per_page: 100})).map(p => p.number));
-  const isOpen = async number => (await github.rest.pulls.get({...context.repo, pull_number: number})).data.state === 'open';
+  let open;
+  const listOpen = async () => new Map((await github.paginate(github.rest.pulls.list, {...context.repo, state: 'open', per_page: 100})).map(p => [p.number, p.head.sha]));
+  // A PR tag must stay if its PR was reopened or it became the current head (e.g. force-push back).
+  const stillNeeded = async (number, tagSha) => {
+    const {data} = await github.rest.pulls.get({...context.repo, pull_number: number});
+    return data.state === 'open' && (!open.has(number) || data.head.sha === tagSha);
+  };
   // A running build may put an old untagged digest into a new index, so untagged deletion waits for it.
   const publishing = async () => {
     for (const status of ['in_progress', 'queued']) {
@@ -70,7 +77,7 @@ export default async function cleanup({github, context, core}) {
       const params = {org: owner, package_type: 'container', package_name};
       const versions = await ignoreMissing(() => github.paginate(github.rest.packages.getAllPackageVersionsForPackageOwnedByOrg, {...params, per_page: 100}));
       if (versions === null) { core.notice(`${package_name}: not found`); continue; }
-      const open = await listOpen();
+      open = await listOpen();
       const selected = candidates(versions, open, {closedPR});
       if (!selected.length) continue;
       const selectedIDs = new Set(selected.map(v => v.id));
@@ -106,11 +113,12 @@ export default async function cleanup({github, context, core}) {
           await skip(version, 'tags changed during cleanup');
           continue;
         }
-        const closedPRs = [...new Set(tagsOf(version).map(t => Number(t.match(prTag)?.[1])).filter(n => n && !open.has(n)))];
-        let reopened = false;
-        for (const number of closedPRs) reopened ||= await isOpen(number);
-        if (reopened) {
-          await skip(version, 'PR reopened during cleanup');
+        let needed = false;
+        for (const [, number, tagSha] of tagsOf(version).map(t => t.match(prTag)).filter(Boolean)) {
+          needed ||= await stillNeeded(Number(number), tagSha);
+        }
+        if (needed) {
+          await skip(version, 'PR reopened or moved to this head during cleanup');
           continue;
         }
         // Untagged versions are sorted last.

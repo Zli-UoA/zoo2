@@ -91,7 +91,9 @@ jobs:
           push: true
           platforms: linux/amd64
           tags: ghcr.io/zli-uoa/zoo2-${{ matrix.component }}:${{ fromJSON(needs.plan.outputs.tags)[matrix.component] }}
-          labels: org.opencontainers.image.source=https://github.com/Zli-UoA/zoo2
+          labels: |
+            org.opencontainers.image.source=https://github.com/Zli-UoA/zoo2
+            org.opencontainers.image.revision=${{ needs.plan.outputs.sha }}
           cache-from: type=gha,scope=${{ matrix.component }}
           cache-to: type=gha,mode=max,scope=${{ matrix.component }}
           build-args: |
@@ -111,7 +113,9 @@ jobs:
           push: true
           platforms: linux/amd64
           tags: ghcr.io/zli-uoa/zoo2-frontend:preview-${{ needs.plan.outputs.sha }}
-          labels: org.opencontainers.image.source=https://github.com/Zli-UoA/zoo2
+          labels: |
+            org.opencontainers.image.source=https://github.com/Zli-UoA/zoo2
+            org.opencontainers.image.revision=${{ needs.plan.outputs.sha }}
           cache-from: type=gha,scope=frontend-preview
           cache-to: type=gha,mode=max,scope=frontend-preview
           build-args: |
@@ -149,10 +153,27 @@ jobs:
               core.notice('Newer main exists; keeping immutable tags without promoting aliases');
               return;
             }
-            for (const {component} of JSON.parse(process.env.MATRIX).include) {
+            const aliases = JSON.parse(process.env.MATRIX).include.flatMap(({component}) => {
               const image = `ghcr.io/zli-uoa/zoo2-${component}`;
-              await exec.exec('docker', ['buildx', 'imagetools', 'create', '-t', `${image}:latest`, `${image}:${sha}`]);
-              if (component === 'frontend') {
-                await exec.exec('docker', ['buildx', 'imagetools', 'create', '-t', `${image}:preview`, `${image}:preview-${sha}`]);
+              return [[image, 'latest', sha], ...(component === 'frontend' ? [[image, 'preview', `preview-${sha}`]] : [])];
+            });
+            // Tags cannot move atomically across packages; roll back on failure so aliases do not stay mixed.
+            const previous = [];
+            for (const [image, alias] of aliases) {
+              const {exitCode, stdout} = await exec.getExecOutput('docker', ['buildx', 'imagetools', 'inspect', `${image}:${alias}`, '--format', '{{json .Manifest}}'], {ignoreReturnCode: true, silent: true});
+              previous.push(exitCode === 0 ? JSON.parse(stdout).digest : null);
+            }
+            let done = 0;
+            try {
+              for (const [image, alias, source] of aliases) {
+                await exec.exec('docker', ['buildx', 'imagetools', 'create', '-t', `${image}:${alias}`, `${image}:${source}`]);
+                done++;
               }
+            } catch (error) {
+              for (let i = done - 1; i >= 0; i--) {
+                const [image, alias] = aliases[i];
+                if (previous[i]) await exec.exec('docker', ['buildx', 'imagetools', 'create', '-t', `${image}:${alias}`, `${image}@${previous[i]}`]);
+                else core.warning(`${image}:${alias} had no previous digest to restore`);
+              }
+              throw error;
             }

@@ -16,23 +16,25 @@ test('component filters and common inputs', () => {
 });
 test('retain 15 main and preview versions, two open PR generations', () => {
   const versions = Array.from({length: 17}, (_, i) => version(i + 1, [sha(i + 1)]));
-  assert.deepEqual(candidates(versions, new Set()).map(v => v.id), [16, 17]);
-  assert.deepEqual(candidates(versions.map(v => version(v.id, [`preview-${sha(v.id)}`])), new Set()).map(v => v.id), [16, 17]);
-  assert.deepEqual(candidates([1, 2, 3].map(i => version(i, [`pr-7-${sha(i)}`])), new Set([7])).map(v => v.id), [3]);
+  assert.deepEqual(candidates(versions, new Map()).map(v => v.id), [16, 17]);
+  assert.deepEqual(candidates(versions.map(v => version(v.id, [`preview-${sha(v.id)}`])), new Map()).map(v => v.id), [16, 17]);
+  assert.deepEqual(candidates([1, 2, 3].map(i => version(i, [`pr-7-${sha(i)}`])), new Map([[7, sha(99)]])).map(v => v.id), [3]);
+  // A force-push back to an older SHA keeps that head image even beyond two generations.
+  assert.deepEqual(candidates([1, 2, 3].map(i => version(i, [`pr-7-${sha(i)}`])), new Map([[7, sha(3)]])), []);
 });
 test('closed PR, exact PR boundary, protected and unknown tags', () => {
   const versions = [version(1, [`pr-7-${sha(1)}`]), version(2, [`pr-70-${sha(2)}`]), version(3, [`pr-7-${sha(3)}`, 'latest']), version(4, ['custom']), version(5, ['preview'])];
-  assert.deepEqual(candidates(versions, new Set(), {closedPR: 7}).map(v => v.id), [1]);
-  assert.deepEqual(candidates(versions, new Set([7]), {closedPR: 7}), []);
-  assert.deepEqual(candidates(versions, new Set()).map(v => v.id), [1, 2]);
+  assert.deepEqual(candidates(versions, new Map(), {closedPR: 7}).map(v => v.id), [1]);
+  assert.deepEqual(candidates(versions, new Map([[7, sha(99)]]), {closedPR: 7}), []);
+  assert.deepEqual(candidates(versions, new Map()).map(v => v.id), [1, 2]);
 });
 test('multiple tags preserve version if any tag is retained', () => {
   const versions = Array.from({length: 17}, (_, i) => version(i + 1, [sha(i + 1)]));
   versions[16].metadata.container.tags.push(`pr-9-${sha(17)}`);
-  assert.deepEqual(candidates(versions, new Set([9])).map(v => v.id), [16]);
+  assert.deepEqual(candidates(versions, new Map([[9, sha(99)]])).map(v => v.id), [16]);
 });
 test('untagged grace period', () => {
-  assert.deepEqual(candidates([version(1, [], 0.5), version(2, [], 2)], new Set()).map(v => v.id), [2]);
+  assert.deepEqual(candidates([version(1, [], 0.5), version(2, [], 2)], new Map()).map(v => v.id), [2]);
 });
 test('OCI indexes recursively protect shared platform and attestation manifests', async () => {
   const manifests = {root: {manifests: [{digest: 'platform'}, {digest: 'attestation'}]}, platform: {}, attestation: {}};
@@ -105,7 +107,7 @@ function cleanupFixture({dryRun = false, changedTags = false, denied = false, re
   const calls = {pulls: 0};
   const github = {
     rest: {
-      pulls: {list: 'pulls', get: async ({pull_number}) => ({data: {state: reopened && pull_number === 7 ? 'open' : 'closed'}})},
+      pulls: {list: 'pulls', get: async ({pull_number}) => ({data: {state: reopened && pull_number === 7 ? 'open' : 'closed', head: {sha: sha(50)}}})},
       actions: {listWorkflowRuns: async ({workflow_id, status}) => {
         assert.equal(workflow_id, 'cd-images.yaml');
         return {data: {total_count: publishing && status === 'in_progress' ? 1 : 0}};
