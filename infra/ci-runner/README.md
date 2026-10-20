@@ -7,8 +7,8 @@ The runner starts as root to install build prerequisites, then runs jobs as UID 
 Jobs can control the privileged Docker daemon: only trusted repository code belongs
 on this runner. Pull request workflows select disposable GitHub-hosted runners.
 
-The namespace has a 3000Mi memory / 2 CPU quota; other workloads currently reserve
-500Mi / 250m. This Pod limits runner and Docker memory to 1200Mi each and CPU to
+The reference environment has a 3000Mi memory / 2 CPU quota; its other workloads
+reserve 500Mi / 250m. Check and adapt these values for your own namespace. This Pod limits runner and Docker memory to 1200Mi each and CPU to
 1 and 500m respectively. Only **one** such Pod fits. Do not scale beyond one without
 increasing quota or changing the resource allocation. Rust compilation uses one
 build job to reduce memory pressure. Docker Compose jobs and Rust builds share the
@@ -43,4 +43,5 @@ Update only while idle. Deployment uses Recreate to stay within quota. Scaling
 down or updating can cancel running jobs; there is no automatic busy-aware drain.
 Normal termination attempts registration removal; forced termination may leave a
 stale registration that must be removed in GitHub Settings → Actions → Runners.
+The runner includes zstd for Actions cache compression.
 Update runner/Docker images regularly; image tags currently track upstream updates.
