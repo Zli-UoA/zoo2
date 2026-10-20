@@ -106,6 +106,7 @@ export function ChannelScreen({ channelId }: { channelId: string }) {
                 onPickReaction={noop}
                 replyCounts={new Map()}
                 onOpenThread={noop}
+                emptyDescription={t("moderation.archivedReadOnly")}
               />
             </div>
           ) : (

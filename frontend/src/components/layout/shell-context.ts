@@ -15,6 +15,11 @@ export interface ShellContextValue {
   membersOpen: boolean;
   setMembersOpen: (open: boolean) => void;
   toggleMembers: () => void;
+  /** ワイド画面で開いているスレッドのルートメッセージ id（未表示なら null）。 */
+  threadRootId: string | null;
+  /** スレッドを開く。メンバーパネルとは排他にする。 */
+  openThread: (rootId: string) => void;
+  closeThread: () => void;
   /** 現在選択中のチャンネル id（未選択なら null）。 */
   selectedChannelId: string | null;
 }

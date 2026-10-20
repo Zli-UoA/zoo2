@@ -11,6 +11,7 @@ import { getCollections } from "../../../lib/electric/collections";
 import { groupReactions } from "../../../lib/emoji/reactions";
 import { reactionKey } from "../../../lib/emoji/kitchen";
 import { nowIso } from "../../../lib/time";
+import { useShell } from "../../layout/shell-context";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -99,7 +100,7 @@ export function MessagePane({ channelId }: { channelId: string }) {
 
   const replyCounts = useReplyCounts(channelId);
 
-  const [threadRootId, setThreadRootId] = useState<string | null>(null);
+  const { threadRootId, openThread, closeThread } = useShell();
   const threadQuery = useThreadFeed(channelId, threadRootId);
   const threadReplies = threadQuery.data ?? [];
   const threadRoot = useMemo(
@@ -111,10 +112,12 @@ export function MessagePane({ channelId }: { channelId: string }) {
   const [editingText, setEditingText] = useState("");
   const [pendingDeleteId, setPendingDeleteId] = useState<string | null>(null);
 
-  // チャンネルを移動したら開いていたスレッドは閉じる。
+  // チャンネルを移動したら開いていたスレッドは閉じる。スレッドの状態は
+  // メンバーパネルとの排他を管理する AppShell が持つため、離脱時にも閉じる。
   useEffect(() => {
-    setThreadRootId(null);
-  }, [channelId]);
+    closeThread();
+  }, [channelId, closeThread]);
+  useEffect(() => closeThread, [closeThread]);
 
   // ルートが（他ユーザーの操作などで）見えなくなったらスレッドも閉じる。
   // 論理削除なら、返信が残っていることを利用者に伝えてから閉じる。
@@ -123,11 +126,11 @@ export function MessagePane({ channelId }: { channelId: string }) {
       return;
     }
     const rootRow = messagesCollection.get(threadRootId);
-    setThreadRootId(null);
+    closeThread();
     if (rootRow?.deleted_at) {
       toast.info(t("threads.rootDeleted"), { id: "thread-root-deleted" });
     }
-  }, [threadRootId, threadRoot, messagesQuery.isLoading, messagesCollection, t]);
+  }, [threadRootId, threadRoot, messagesQuery.isLoading, messagesCollection, closeThread, t]);
 
   // 書き込み失敗は sonner で通知する（既存の `useWriteRunner` の error を監視）。
   useEffect(() => {
@@ -259,7 +262,7 @@ export function MessagePane({ channelId }: { channelId: string }) {
           onReaction={handleReaction}
           onPickReaction={setReactionMessageId}
           replyCounts={replyCounts}
-          onOpenThread={setThreadRootId}
+          onOpenThread={openThread}
         />
 
         <Composer onSend={handleSend} />
@@ -285,7 +288,7 @@ export function MessagePane({ channelId }: { channelId: string }) {
           onSaveEdit={handleSaveEdit}
           onRequestDelete={setPendingDeleteId}
           onSendReply={handleSendReply}
-          onClose={() => setThreadRootId(null)}
+          onClose={closeThread}
         />
       ) : null}
 

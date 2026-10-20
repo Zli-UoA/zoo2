@@ -1,6 +1,6 @@
 import { useRouterState } from "@tanstack/react-router";
 import { cn } from "cn";
-import { useEffect, useMemo, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
 
 import { useActiveChannels } from "../../hooks/useRealtime";
 import { ChannelSidebar } from "../chat/ChannelSidebar";
@@ -28,6 +28,7 @@ import { useMediaQuery } from "./useMediaQuery";
 export function AppShell({ children }: { children: ReactNode }) {
   const [pane, setPane] = useState<ShellPane>("sidebar");
   const [membersOpen, setMembersOpen] = useState(false);
+  const [threadRootId, setThreadRootId] = useState<string | null>(null);
   const isWide = useMediaQuery("(min-width: 1024px)");
 
   const channelsQuery = useActiveChannels();
@@ -65,6 +66,23 @@ export function AppShell({ children }: { children: ReactNode }) {
     }
   }
 
+  // メンバーとスレッドは右ペインを奪い合うため排他にする。スレッドを開いた
+  // ときに閉じる処理は `openThread` が行い、メンバーを開いたときはここで
+  // スレッドを閉じる（レンダー中に反映して一瞬の同時表示を避ける）。
+  const [prevMembersOpen, setPrevMembersOpen] = useState(membersOpen);
+  if (prevMembersOpen !== membersOpen) {
+    setPrevMembersOpen(membersOpen);
+    if (membersOpen) {
+      setThreadRootId(null);
+    }
+  }
+
+  const openThread = useCallback((rootId: string) => {
+    setThreadRootId(rootId);
+    setMembersOpen(false);
+  }, []);
+  const closeThread = useCallback(() => setThreadRootId(null), []);
+
   const value = useMemo<ShellContextValue>(
     () => ({
       pane,
@@ -73,9 +91,12 @@ export function AppShell({ children }: { children: ReactNode }) {
       membersOpen,
       setMembersOpen,
       toggleMembers: () => setMembersOpen((open) => !open),
+      threadRootId,
+      openThread,
+      closeThread,
       selectedChannelId,
     }),
-    [pane, membersOpen, selectedChannelId],
+    [pane, membersOpen, threadRootId, openThread, closeThread, selectedChannelId],
   );
 
   const showSidebar = pane === "sidebar";

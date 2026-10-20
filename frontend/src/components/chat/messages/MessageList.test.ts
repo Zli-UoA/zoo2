@@ -1,6 +1,7 @@
 // @vitest-environment happy-dom
 import { act, createElement } from "react";
 import { createRoot } from "react-dom/client";
+import { renderToStaticMarkup } from "react-dom/server";
 import { expect, it, vi } from "vite-plus/test";
 
 import { LocaleProvider, useLocale } from "../../i18n/LocaleProvider";
@@ -87,4 +88,35 @@ it("announces each new message in its arrival language without repeating it on a
     localStorage.clear();
     vi.unstubAllGlobals();
   }
+});
+
+it("shows the provided empty description instead of the first-message prompt", () => {
+  const noop = () => {};
+  const html = renderToStaticMarkup(
+    createElement(LocaleProvider, {
+      children: createElement(MessageList, {
+        messages: [],
+        isLoading: false,
+        isError: false,
+        currentUserId: null,
+        editingId: null,
+        editingText: "",
+        onEditingTextChange: noop,
+        onStartEdit: noop,
+        onCancelEdit: noop,
+        onSaveEdit: noop,
+        onRequestDelete: noop,
+        reactions: new Map(),
+        kitchenCatalog: null,
+        canReact: false,
+        onReaction: noop,
+        onPickReaction: noop,
+        replyCounts: new Map(),
+        onOpenThread: noop,
+        emptyDescription: "アーカイブ済みのため送信できません",
+      }),
+    }),
+  );
+  expect(html).toContain("アーカイブ済みのため送信できません");
+  expect(html).not.toContain("最初のメッセージを送ってみましょう。");
 });
