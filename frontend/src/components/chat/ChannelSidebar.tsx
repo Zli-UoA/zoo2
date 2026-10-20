@@ -2,7 +2,7 @@ import { useTranslation } from "react-i18next";
 import { Link } from "@tanstack/react-router";
 import { useLiveQuery } from "@tanstack/react-db";
 import { cn } from "cn";
-import { HashIcon, LockIcon, PlusIcon } from "lucide-react";
+import { ArchiveIcon, HashIcon, LockIcon, PlusIcon } from "lucide-react";
 import { useMemo, useState } from "react";
 
 import { useCurrentUser } from "../../hooks/useCurrentUser";
@@ -115,7 +115,24 @@ export function ChannelSidebar({
                   ) : (
                     <HashIcon className="size-4 shrink-0 opacity-60" aria-hidden="true" />
                   )}
-                  <span className="min-w-0 flex-1 truncate">{channel.channel_name}</span>
+                  <span
+                    className={cn(
+                      "min-w-0 flex-1 truncate",
+                      channel.archive_at ? "text-muted-foreground" : null,
+                    )}
+                  >
+                    {channel.channel_name}
+                  </span>
+                  {channel.archive_at ? (
+                    <span
+                      role="img"
+                      title="アーカイブ済み"
+                      aria-label="アーカイブ済み"
+                      className="shrink-0 text-muted-foreground/70"
+                    >
+                      <ArchiveIcon className="size-3" aria-hidden="true" />
+                    </span>
+                  ) : null}
                   {hasCurrentUser ? (
                     isJoined ? (
                       <span

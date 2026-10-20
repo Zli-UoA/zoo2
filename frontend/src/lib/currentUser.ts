@@ -2,16 +2,33 @@ import { ApiError, createConfiguredApiClient, type FetchLike } from "./api/clien
 import type { UserResponse } from "./api/types";
 import type { AppConfig } from "./config";
 
+/**
+ * バックエンドの開発用固定管理者。`DEV_DEFAULT_USER_ID` の既定値と同じ。
+ * `/api/users/me` が失敗したときのフォールバックにだけ使う。
+ */
+const DEFAULT_DEV_ADMIN_ID = "00000000-0000-0000-0000-000000000001";
+
+/**
+ * `GET /api/users/me` のレスポンス。既存の `UserResponse` に `is_admin` が
+ * 加わった形（古いバックエンドでは欠落しうるので optional）。
+ */
+interface MeResponse extends UserResponse {
+  is_admin?: boolean;
+}
+
 /** 現在ユーザーの解決結果。プロフィールの最新値は `users` Shape から別途引く。 */
 export interface CurrentUserState {
   currentUserId: string | null;
   isLoading: boolean;
+  /** ワークスペース管理者かどうか（RBAC UI の出し分け用）。 */
+  isAdmin: boolean;
   /** 401 以外で解決に失敗したときの理由（表示・調査用）。 */
   error: string | null;
 }
 
 export interface CurrentUserResolution {
   currentUserId: string | null;
+  isAdmin: boolean;
   error: string | null;
 }
 
@@ -22,29 +39,39 @@ function describeError(cause: unknown): string {
 /**
  * 現在ユーザーを解決する。
  *
- * - OIDC 未設定（dev の X-Dev-User）: `VITE_DEV_USER_ID` をそのまま使う。
- * - OIDC 設定済み: `GET /api/users/me` の `id` を採用する。Bearer は既存の API
- *   クライアントが `getToken()`（#60 の PKCE セッション）経由で載せる。
+ * `GET /api/users/me` から `id` と `is_admin` を取る。Bearer は既存の API
+ * クライアントが `getToken()`（#60 の PKCE セッション）経由で載せ、dev では
+ * `VITE_DEV_USER_ID` を `X-Dev-User` として送る。
  *
- * 401 の再ログインは `ApiClient` → `notifyUnauthorized` → `AuthGate` の導線に
- * 委ねる。ここは null を返すだけでよい。
+ * dev で `/me` が失敗した場合は従来どおり `VITE_DEV_USER_ID` にフォールバック
+ * する（バックエンドの開発用固定管理者だけ `is_admin` を true にする）。
+ * OIDC の 401 再ログインは `ApiClient` → `notifyUnauthorized` → `AuthGate` の
+ * 導線に委ねる。ここは null を返すだけでよい。
  */
 export async function resolveCurrentUser(
   config: AppConfig,
   options: { fetch?: FetchLike } = {},
 ): Promise<CurrentUserResolution> {
-  if (!config.oidc) {
-    return { currentUserId: config.devUserId, error: null };
+  // direct モードの dev は現在ユーザーを特定しない（従来どおり null）。
+  if (!config.oidc && !config.devUserId) {
+    return { currentUserId: null, isAdmin: false, error: null };
   }
   const client = createConfiguredApiClient(config, options);
   try {
-    const user = await client.get<UserResponse>("/api/users/me");
-    return { currentUserId: user.id, error: null };
+    const me = await client.get<MeResponse>("/api/users/me");
+    return { currentUserId: me.id, isAdmin: me.is_admin === true, error: null };
   } catch (cause) {
-    if (cause instanceof ApiError && cause.status === 401) {
-      return { currentUserId: null, error: null };
+    if (!config.oidc) {
+      return {
+        currentUserId: config.devUserId,
+        isAdmin: config.devUserId === DEFAULT_DEV_ADMIN_ID,
+        error: null,
+      };
     }
-    return { currentUserId: null, error: describeError(cause) };
+    if (cause instanceof ApiError && cause.status === 401) {
+      return { currentUserId: null, isAdmin: false, error: null };
+    }
+    return { currentUserId: null, isAdmin: false, error: describeError(cause) };
   }
 }
 
@@ -65,8 +92,13 @@ export function createCurrentUserStore(
   options: { fetch?: FetchLike } = {},
 ): CurrentUserStore {
   let state: CurrentUserState = config.oidc
-    ? { currentUserId: null, isLoading: true, error: null }
-    : { currentUserId: config.devUserId, isLoading: false, error: null };
+    ? { currentUserId: null, isLoading: true, isAdmin: false, error: null }
+    : {
+        currentUserId: config.devUserId,
+        isLoading: false,
+        isAdmin: config.devUserId === DEFAULT_DEV_ADMIN_ID,
+        error: null,
+      };
   let inflight: Promise<void> | null = null;
   const listeners = new Set<() => void>();
 
@@ -86,15 +118,15 @@ export function createCurrentUserStore(
       };
     },
     ensureLoaded: () => {
-      if (!config.oidc) {
-        return Promise.resolve();
-      }
       if (!inflight) {
-        setState({ currentUserId: null, isLoading: true, error: null });
+        if (config.oidc) {
+          setState({ currentUserId: null, isLoading: true, isAdmin: false, error: null });
+        }
         inflight = resolveCurrentUser(config, options).then((resolved) => {
           setState({
             currentUserId: resolved.currentUserId,
             isLoading: false,
+            isAdmin: resolved.isAdmin,
             error: resolved.error,
           });
           if (resolved.error !== null) {
