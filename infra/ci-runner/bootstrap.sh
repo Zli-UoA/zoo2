@@ -2,7 +2,7 @@
 set -euo pipefail
 export DEBIAN_FRONTEND=noninteractive
 apt-get update -qq
-apt-get install -y --no-install-recommends build-essential pkg-config libssl-dev docker-compose-v2 ca-certificates
+apt-get install -y --no-install-recommends build-essential pkg-config libssl-dev docker-compose-v2 ca-certificates zstd
 # The DinD socket is shared only with this Pod and accessible by the runner group.
 for attempt in $(seq 1 90); do
   if [[ -S /var/run/docker/docker.sock ]]; then
