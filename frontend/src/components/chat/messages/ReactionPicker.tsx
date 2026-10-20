@@ -13,7 +13,32 @@ import {
 } from "../../ui/dialog";
 import { ReactionEmoji } from "./ReactionEmoji";
 
-const QUICK_EMOJI = ["👍", "❤️", "😂", "🎉", "👀", "🙏"];
+const QUICK_EMOJI = [
+  "👍",
+  "❤️",
+  "😄",
+  "🎉",
+  "🙌",
+  "🔥",
+  "👀",
+  "🚀",
+  "✅",
+  "🙏",
+  "💯",
+  "🤔",
+  "😂",
+  "🥳",
+  "👏",
+  "💪",
+  "😢",
+  "😮",
+  "🐛",
+  "☕",
+  "🍕",
+  "🌱",
+  "⚡",
+  "✨",
+];
 
 export function ReactionPicker({
   open,
