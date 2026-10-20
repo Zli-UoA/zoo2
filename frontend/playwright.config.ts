@@ -20,9 +20,9 @@ const devUserId = process.env.VITE_DEV_USER_ID ?? "00000000-0000-0000-0000-00000
  */
 export default defineConfig({
   testDir: "./e2e",
-  // OIDC の通し確認はモック IdP と Rust を別途起動する必要があるため、
-  // 既定のスモークからは除外する（`pnpm test:e2e:oidc` を参照）。
-  testIgnore: /oidc\.spec\.ts/,
+  // OIDC の通し確認と nginx CSP の検証は別途起動が必要なため、既定のスモークからは除外する。
+  // `pnpm test:e2e:oidc` / `pnpm test:e2e:csp` を参照。
+  testIgnore: [/oidc\.spec\.ts/, /csp\.spec\.ts/],
   fullyParallel: false,
   forbidOnly: Boolean(process.env.CI),
   retries: process.env.CI ? 1 : 0,

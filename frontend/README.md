@@ -28,6 +28,7 @@ pnpm lint             # lint のみ
 pnpm test             # vitest (Vite+ 内蔵)
 pnpm test:e2e         # Playwright スモーク (要: DB + Electric + バックエンド)
 pnpm test:e2e:oidc    # OIDC PKCE E2E (モック IdP + 本番同等設定のバックエンド)
+pnpm test:e2e:csp     # nginx の本番 CSP をブラウザで検証 (要: ビルド済みフロントコンテナ)
 pnpm generate-routes  # ルートツリーを再生成
 ```
 
@@ -162,7 +163,18 @@ cd frontend && pnpm test:e2e:oidc
 - モック IdP は起動のたびに署名鍵を生成します。テストを再実行する際は、古い JWKS キャッシュが残らないようバックエンドも再起動してください。
 - CI では `.github/workflows/ci-frontend-auth-e2e.yaml` が PostgreSQL + Electric + Atlas migration + Rust を起動して同じテストを実行します。重いため `pnpm test` / `pnpm test:e2e` からは分離しています。
 
-CSP は `infra/frontend-nginx.conf`（コンテナ起動時に envsubst）で設定します。`script-src` はビルド時のインライン script ハッシュ、`connect-src` は同一オリジン + `CSP_CONNECT_SRC`（Kanidm のオリジン）です。ステージングでの設定・確認手順は [インフラの README](../infra/README.md#csp) を参照してください。
+CSP は `infra/frontend-nginx.conf`（コンテナ起動時に envsubst）で設定します。`script-src` はビルド時のインライン script ハッシュ、`connect-src` は同一オリジン + `CSP_CONNECT_SRC`（Kanidm のオリジン）、`img-src` は Emoji Kitchen 用の `https://www.gstatic.com` を含みます。ステージングでの設定・確認手順は [インフラの README](../infra/README.md#csp) を参照してください。
+
+`pnpm test:e2e:csp` は、nginx が配信するビルド済みのフロントに対して Playwright を 1 本実行し、`securitypolicyviolation` が 0 件であること、テーマ初期化 script が実行されること（`<html>` の `colorScheme`）を確認します。既定では `http://127.0.0.1:3100` を見るため、CI の `container` ジョブと同じようにイメージを起動してから実行してください。
+
+```bash
+# リポジトリルートで
+docker build -f infra/Dockerfile-frontend-deploy -t zoo-frontend:stg .
+docker run --rm -d --name zoo-frontend-csp-test -p 127.0.0.1:3100:3000 zoo-frontend:stg
+cd frontend
+E2E_BASE_URL=http://127.0.0.1:3100 pnpm test:e2e:csp
+docker rm -f zoo-frontend-csp-test
+```
 
 ## 現状
 

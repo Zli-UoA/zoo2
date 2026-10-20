@@ -35,6 +35,26 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v7
 
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 12.11.2
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: frontend/pnpm-lock.yaml
+
+      - name: Install dependencies
+        working-directory: ./frontend
+        run: pnpm install --frozen-lockfile
+
+      - name: Install Playwright browser
+        working-directory: ./frontend
+        run: pnpm exec playwright install --with-deps chromium
+
       - name: Build and start frontend
         run: docker compose --project-directory . -f infra/compose.stg.yaml up -d --build --wait --wait-timeout 60 frontend
 
@@ -51,6 +71,8 @@ jobs:
             # script はビルド時のインライン script ハッシュで許可し、unsafe-inline は使わない。
             printf "%s" "$headers" | grep -q "script-src 'self' 'sha256-"
             printf "%s" "$headers" | grep -q "connect-src 'self' https://id.example"
+            # Emoji Kitchen の合成画像（#82）を許可する。
+            printf "%s" "$headers" | grep -q "img-src 'self' data: https://www.gstatic.com"
           done
 
       - name: Missing assets must not fall back to index.html
@@ -61,16 +83,40 @@ jobs:
             exit 1
           fi
 
+      # compose はホストにポートを公開しないため、検証用に同じイメージを 3100 で起動する。
+      - name: Start frontend for CSP browser test
+        run: |
+          docker run --rm -d --name zoo-frontend-csp-test \
+            -p 127.0.0.1:3100:3000 -e CSP_CONNECT_SRC=https://id.example \
+            "${FRONTEND_IMAGE:-zoo-frontend:stg}"
+          for _ in $(seq 1 30); do
+            if curl -fsS http://127.0.0.1:3100/ > /dev/null; then
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "frontend for CSP test did not become ready" >&2
+          exit 1
+
+      - name: CSP browser test
+        working-directory: ./frontend
+        env:
+          E2E_BASE_URL: http://127.0.0.1:3100
+        run: pnpm test:e2e:csp
+
       - name: Container logs
         if: failure()
         run: |
           docker compose --project-directory . -f infra/compose.stg.yaml logs frontend
+          docker logs zoo-frontend-csp-test 2>/dev/null || true
           docker compose --project-directory . -f infra/compose.stg.yaml ps -aq frontend |
             xargs -r docker inspect --format '{{json .State.Health}}'
 
       - name: Stop frontend
         if: always()
-        run: docker compose --project-directory . -f infra/compose.stg.yaml down
+        run: |
+          docker rm -f zoo-frontend-csp-test 2>/dev/null || true
+          docker compose --project-directory . -f infra/compose.stg.yaml down
 
   proxy:
     runs-on: ubuntu-latest
