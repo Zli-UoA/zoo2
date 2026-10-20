@@ -13,6 +13,10 @@ import {
   type MessageTextSegment,
 } from "./messageFormat";
 
+import { createI18n } from "../../../lib/i18n";
+
+const t = createI18n().t;
+
 function message(overrides: Partial<FeedMessage> = {}): FeedMessage {
   return {
     id: "message-1",
@@ -58,12 +62,12 @@ describe("formatRelativeDay", () => {
   const now = new Date(2026, 5, 15, 20, 0);
 
   it("labels today and yesterday", () => {
-    expect(formatRelativeDay(new Date(2026, 5, 15, 9, 0), now)).toBe("今日");
-    expect(formatRelativeDay(new Date(2026, 5, 14, 9, 0), now)).toBe("昨日");
+    expect(formatRelativeDay(new Date(2026, 5, 15, 9, 0), now, t, "ja")).toBe("今日");
+    expect(formatRelativeDay(new Date(2026, 5, 14, 9, 0), now, t, "ja")).toBe("昨日");
   });
 
   it("formats older days with the weekday", () => {
-    expect(formatRelativeDay(new Date(2026, 5, 10), now)).toBe("2026年6月10日(水)");
+    expect(formatRelativeDay(new Date(2026, 5, 10), now, t, "ja")).toBe("2026年6月10日(水)");
   });
 });
 
@@ -160,34 +164,40 @@ describe("messageTextSegments", () => {
 
 describe("newMessageAnnouncement", () => {
   it("summarizes the author and the collapsed content", () => {
-    expect(newMessageAnnouncement(message({ content: " line1\n\nline2 " }))).toBe(
+    expect(newMessageAnnouncement(message({ content: " line1\n\nline2 " }), t)).toBe(
       "新着メッセージ: Alice「line1 line2」",
     );
   });
 
   it("truncates long content by code points", () => {
-    const announcement = newMessageAnnouncement(message({ content: "あ".repeat(10) }), 4);
+    const announcement = newMessageAnnouncement(message({ content: "あ".repeat(10) }), t, 4);
     expect(announcement).toBe("新着メッセージ: Alice「ああああ…」");
   });
 
   it("falls back to the author only when there is no content", () => {
-    expect(newMessageAnnouncement(message({ content: "   " }))).toBe("新着メッセージ: Alice");
+    expect(newMessageAnnouncement(message({ content: "   " }), t)).toBe("新着メッセージ: Alice");
   });
 });
 
 describe("localized dates", () => {
   const now = new Date(2026, 5, 15, 20);
   it("localizes relative labels and older dates", () => {
-    expect(formatRelativeDay(now, now, "en")).toBe("Today");
-    expect(formatRelativeDay(new Date(2026, 5, 14), now, "yue")).toBe("尋日");
-    expect(formatRelativeDay(new Date(2026, 5, 10), now, "en")).toBe("Wed, June 10, 2026");
-    expect(formatRelativeDay(new Date(2026, 5, 10), now, "zh-Hans")).toBe("2026年6月10日周三");
+    expect(formatRelativeDay(now, now, createI18n("en").t, "en")).toBe("Today");
+    expect(formatRelativeDay(new Date(2026, 5, 14), now, createI18n("yue").t, "yue")).toBe("尋日");
+    expect(formatRelativeDay(new Date(2026, 5, 10), now, createI18n("en").t, "en")).toBe(
+      "Wed, June 10, 2026",
+    );
+    expect(formatRelativeDay(new Date(2026, 5, 10), now, createI18n("zh-Hans").t, "zh-Hans")).toBe(
+      "2026年6月10日周三",
+    );
   });
 });
 
 it("localizes new message announcements without translating user content", () => {
-  expect(newMessageAnnouncement(message({ content: "hello" }), 80, "en")).toBe(
+  expect(newMessageAnnouncement(message({ content: "hello" }), createI18n("en").t)).toBe(
     "New message from Alice: “hello”",
   );
-  expect(newMessageAnnouncement(message({ content: "" }), 80, "yue")).toBe("Alice 傳咗新訊息");
+  expect(newMessageAnnouncement(message({ content: "" }), createI18n("yue").t)).toBe(
+    "Alice 傳咗新訊息",
+  );
 });

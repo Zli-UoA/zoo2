@@ -2,9 +2,7 @@ import { useTranslation } from "react-i18next";
 import { useLayoutEffect, useRef, useState } from "react";
 import { SendIcon } from "lucide-react";
 
-import { getTranslator } from "../../../lib/i18n";
-import { DEFAULT_LOCALE, type Locale } from "../../../lib/i18n/locale";
-import { useLocale } from "../../i18n/LocaleProvider";
+import type { TFunction } from "i18next";
 import { Button } from "../../ui/button";
 import { Textarea } from "../../ui/textarea";
 
@@ -64,11 +62,7 @@ export function canSubmitComposer(value: string, disabled: boolean): boolean {
   return !disabled && value.trim().length > 0;
 }
 
-export function composerSendHint(
-  platform: ComposerPlatform,
-  locale: Locale = DEFAULT_LOCALE,
-): string {
-  const t = getTranslator(locale);
+export function composerSendHint(platform: ComposerPlatform, t: TFunction): string {
   if (platform === "mac") {
     return t("composer.mac");
   }
@@ -90,7 +84,6 @@ interface ComposerProps {
  */
 export function Composer({ onSend, disabled = false }: ComposerProps) {
   const { t } = useTranslation();
-  const { locale } = useLocale();
   const [value, setValue] = useState("");
   const [platform] = useState(() => detectComposerPlatform());
   const textareaRef = useRef<HTMLTextAreaElement>(null);
@@ -170,7 +163,7 @@ export function Composer({ onSend, disabled = false }: ComposerProps) {
         </Button>
       </div>
       <p className="mt-1.5 px-1 text-[11px] text-muted-foreground">
-        {composerSendHint(platform, locale)}
+        {composerSendHint(platform, t)}
       </p>
     </form>
   );

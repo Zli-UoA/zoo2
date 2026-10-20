@@ -34,7 +34,26 @@
     "login": "登录",
     "failed": "无法登录",
     "retry": "重新登录",
-    "unauthorizedLoop": "API 持续返回 401，已停止自动重新登录。请检查 OIDC 设置（audience / typ / JWKS）与后端日志。"
+    "unauthorizedLoop": "API 持续返回 401，已停止自动重新登录。请检查 OIDC 设置（audience / typ / JWKS）与后端日志。",
+    "errorWithCode": "{{message}} ({{code}})",
+    "oidcErrors": {
+      "discovery_failed": "OpenID Discovery 返回 {{status}}",
+      "issuer_mismatch": "Discovery 的 issuer 与设置不符",
+      "invalid_discovery": "Discovery 缺少必要的端点",
+      "authorization_failed": "授权失败",
+      "invalid_callback": "回调缺少 code 或 state",
+      "missing_pending_request": "找不到已保存的授权请求，无法验证 state 和 nonce",
+      "state_mismatch": "授权的 state 不符",
+      "no_refresh_token": "没有 refresh_token",
+      "session_reset": "会话已清除",
+      "invalid_token_response": "令牌响应无效或缺少 access_token",
+      "token_request_failed": "令牌端点返回 {{status}}",
+      "invalid_id_token": "缺少 ID 令牌或无法解码",
+      "id_token_issuer_mismatch": "ID 令牌的 iss 不符",
+      "id_token_audience_mismatch": "ID 令牌的 aud 不符",
+      "id_token_expired": "ID 令牌已过期",
+      "nonce_mismatch": "ID 令牌的 nonce 不符"
+    }
   },
   "members": {
     "joined": "已加入",
@@ -44,8 +63,6 @@
     "you": "你",
     "empty": "暂无成员。",
     "loadError": "无法加载成员。",
-    "userId": "要添加的用户 ID",
-    "add": "添加",
     "checking": "确认中…",
     "leave": "离开",
     "join": "加入",

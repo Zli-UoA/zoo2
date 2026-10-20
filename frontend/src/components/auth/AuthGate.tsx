@@ -4,7 +4,7 @@ import { useCallback, useEffect, useRef, useState, type ReactNode } from "react"
 
 import { setAuthorizedHandler, setTokenProvider, setUnauthorizedHandler } from "../../lib/auth";
 import { resolveConfig, type AppConfig } from "../../lib/config";
-import { OidcClient, OidcError } from "../../lib/oidc/client";
+import { OidcClient } from "../../lib/oidc/client";
 import {
   MAX_REDIRECT_ATTEMPTS,
   clearLoggedOut,
@@ -19,6 +19,8 @@ import { LanguageToggle } from "../i18n/LanguageToggle";
 import { ShellSkeleton } from "../layout/ShellSkeleton";
 import { Button } from "../ui/button";
 
+import { describeAuthError, formatAuthError, type AuthError } from "./authError";
+
 type AuthPhase = "checking" | "ready" | "disabled" | "loggedOut" | "error";
 
 /**
@@ -27,25 +29,12 @@ type AuthPhase = "checking" | "ready" | "disabled" | "loggedOut" | "error";
  */
 const REDIRECT_COOLDOWN_MS = 10_000;
 
-/** バックエンドが 401 を返し続けたときのエラーメッセージ。 */
-const UNAUTHORIZED_LOOP_MESSAGE = "unauthorized-loop";
-
 function currentReturnTo(): string {
   if (typeof window === "undefined") {
     return "/";
   }
   const { pathname, search, hash } = window.location;
   return `${pathname}${search}${hash}`;
-}
-
-function describeError(error: unknown): string {
-  if (error instanceof OidcError) {
-    return `${error.message}（${error.code}）`;
-  }
-  if (error instanceof Error) {
-    return error.message;
-  }
-  return String(error);
 }
 
 /**
@@ -59,13 +48,13 @@ export function AuthGate({ children }: { children: ReactNode }) {
   const { t } = useTranslation();
   const router = useRouter();
   const [phase, setPhase] = useState<AuthPhase>("checking");
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState<AuthError | null>(null);
   const clientRef = useRef<OidcClient | null>(null);
 
   const startLogin = useCallback((client: OidcClient, returnTo: string) => {
     markRedirectStarted(window.sessionStorage, Date.now());
     void client.login(returnTo).catch((cause: unknown) => {
-      setError(describeError(cause));
+      setError(describeAuthError(cause));
       setPhase("error");
     });
   }, []);
@@ -76,7 +65,7 @@ export function AuthGate({ children }: { children: ReactNode }) {
     try {
       config = resolveConfig();
     } catch (cause) {
-      setError(describeError(cause));
+      setError(describeAuthError(cause));
       setPhase("error");
       return;
     }
@@ -99,7 +88,7 @@ export function AuthGate({ children }: { children: ReactNode }) {
       // 設定不一致の典型。再ログインせずエラー画面へ倒してループを止める。
       const lastRedirectAt = readLastRedirectAt(storage);
       if (lastRedirectAt !== null && now - lastRedirectAt < REDIRECT_COOLDOWN_MS) {
-        setError(UNAUTHORIZED_LOOP_MESSAGE);
+        setError({ kind: "unauthorizedLoop" });
         setPhase("error");
         return;
       }
@@ -107,7 +96,7 @@ export function AuthGate({ children }: { children: ReactNode }) {
       client.resetSession();
       const attempts = recordRedirectAttempt(storage, now);
       if (attempts > MAX_REDIRECT_ATTEMPTS) {
-        setError(UNAUTHORIZED_LOOP_MESSAGE);
+        setError({ kind: "unauthorizedLoop" });
         setPhase("error");
         return;
       }
@@ -139,7 +128,7 @@ export function AuthGate({ children }: { children: ReactNode }) {
           // 同じ失敗を繰り返すため、エラー画面へ移る前に置き換える。
           router.history.replace("/");
           void router.load().catch(() => {});
-          setError(describeError(cause));
+          setError(describeAuthError(cause));
           setPhase("error");
         });
     } else if (client.hasSession) {
@@ -191,9 +180,7 @@ export function AuthGate({ children }: { children: ReactNode }) {
         ) : (
           <>
             <h1 className="text-lg font-semibold">{t("auth.failed")}</h1>
-            <p className="text-sm break-words text-muted-foreground">
-              {error === UNAUTHORIZED_LOOP_MESSAGE ? t("auth.unauthorizedLoop") : error}
-            </p>
+            <p className="text-sm break-words text-muted-foreground">{formatAuthError(error, t)}</p>
             <Button onClick={retry}>{t("auth.retry")}</Button>
           </>
         )}

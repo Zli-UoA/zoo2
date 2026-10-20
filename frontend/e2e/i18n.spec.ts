@@ -108,3 +108,14 @@ test("can switch language when storage reads and writes fail", async ({ page }) 
   await expect(page.locator("html")).toHaveAttribute("lang", "yue");
   await expect(page.getByRole("heading", { name: "歡迎嚟到 Zoo" })).toBeVisible();
 });
+
+test("sets the saved language before hydration without displaying Japanese content", async ({
+  page,
+}) => {
+  await page.addInitScript(() => localStorage.setItem("zoo-locale", "yue"));
+  await page.route(/\/assets\/.*\.js(?:\?.*)?$/, (route) => route.abort());
+  await page.goto("/");
+  await expect(page.locator("html")).toHaveAttribute("lang", "yue");
+  await expect(page.locator("body")).not.toContainText("チャンネル");
+  await expect(page.locator("body")).not.toContainText("ようこそ");
+});

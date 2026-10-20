@@ -34,7 +34,26 @@
     "login": "登入",
     "failed": "無法登入",
     "retry": "重新登入",
-    "unauthorizedLoop": "API 持續回傳 401，已停止自動重新登入。請檢查 OIDC 設定（audience / typ / JWKS）與後端日誌。"
+    "unauthorizedLoop": "API 持續回傳 401，已停止自動重新登入。請檢查 OIDC 設定（audience / typ / JWKS）與後端日誌。",
+    "errorWithCode": "{{message}} ({{code}})",
+    "oidcErrors": {
+      "discovery_failed": "OpenID Discovery 回傳 {{status}}",
+      "issuer_mismatch": "Discovery 的 issuer 與設定不符",
+      "invalid_discovery": "Discovery 缺少必要的端點",
+      "authorization_failed": "授權失敗",
+      "invalid_callback": "回呼缺少 code 或 state",
+      "missing_pending_request": "找不到已儲存的授權請求，無法驗證 state 和 nonce",
+      "state_mismatch": "授權的 state 不符",
+      "no_refresh_token": "沒有 refresh_token",
+      "session_reset": "工作階段已清除",
+      "invalid_token_response": "權杖回應無效或缺少 access_token",
+      "token_request_failed": "權杖端點回傳 {{status}}",
+      "invalid_id_token": "缺少 ID 權杖或無法解碼",
+      "id_token_issuer_mismatch": "ID 權杖的 iss 不符",
+      "id_token_audience_mismatch": "ID 權杖的 aud 不符",
+      "id_token_expired": "ID 權杖已過期",
+      "nonce_mismatch": "ID 權杖的 nonce 不符"
+    }
   },
   "members": {
     "joined": "已加入",
@@ -44,8 +63,6 @@
     "you": "您",
     "empty": "尚無成員。",
     "loadError": "無法載入成員。",
-    "userId": "要新增的使用者 ID",
-    "add": "新增",
     "checking": "確認中…",
     "leave": "離開",
     "join": "加入",

@@ -37,9 +37,3 @@ export function createI18n(locale: Locale = DEFAULT_LOCALE) {
   });
   return instance;
 }
-
-// Read-only fixed translators for pure formatting helpers; never change its language.
-const formatterI18n = createI18n();
-export function getTranslator(locale: Locale) {
-  return formatterI18n.getFixedT(locale);
-}

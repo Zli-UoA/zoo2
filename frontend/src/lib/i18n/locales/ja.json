@@ -34,7 +34,26 @@
     "login": "ログイン",
     "failed": "ログインできませんでした",
     "retry": "再ログイン",
-    "unauthorizedLoop": "API が 401 を返し続けたため、再ログインを停止しました。OIDC の設定（audience / typ / JWKS）とバックエンドのログを確認してください。"
+    "unauthorizedLoop": "API が 401 を返し続けたため、再ログインを停止しました。OIDC の設定（audience / typ / JWKS）とバックエンドのログを確認してください。",
+    "errorWithCode": "{{message}}（{{code}}）",
+    "oidcErrors": {
+      "discovery_failed": "OpenID Discovery が {{status}} を返しました",
+      "issuer_mismatch": "Discovery の issuer が設定と一致しません",
+      "invalid_discovery": "Discovery に必須エンドポイントがありません",
+      "authorization_failed": "認可に失敗しました",
+      "invalid_callback": "コールバックに code / state がありません",
+      "missing_pending_request": "保存された認可リクエストが無いため state / nonce を検証できません",
+      "state_mismatch": "state が一致しません",
+      "no_refresh_token": "refresh_token がありません",
+      "session_reset": "セッションが破棄されました",
+      "invalid_token_response": "トークン応答の形式が不正、または access_token がありません",
+      "token_request_failed": "トークンエンドポイントが {{status}} を返しました",
+      "invalid_id_token": "ID トークンが無いか、デコードできません",
+      "id_token_issuer_mismatch": "ID トークンの iss が一致しません",
+      "id_token_audience_mismatch": "ID トークンの aud が一致しません",
+      "id_token_expired": "ID トークンが期限切れです",
+      "nonce_mismatch": "ID トークンの nonce が一致しません"
+    }
   },
   "members": {
     "joined": "参加中",
@@ -44,8 +63,6 @@
     "you": "あなた",
     "empty": "メンバーがいません。",
     "loadError": "メンバー取得に失敗しました。",
-    "userId": "追加するユーザー ID",
-    "add": "追加",
     "checking": "確認中…",
     "leave": "退出",
     "join": "参加",

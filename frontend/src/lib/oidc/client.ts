@@ -24,11 +24,25 @@ const TOKEN_TIMEOUT_MS = 10_000;
 
 export class OidcError extends Error {
   readonly code: string;
+  readonly source: "client" | "provider";
+  readonly reason: string;
+  readonly status?: number;
 
-  constructor(code: string, message: string) {
+  constructor(
+    code: string,
+    message: string,
+    options: {
+      source?: "client" | "provider";
+      reason?: string;
+      status?: number;
+    } = {},
+  ) {
     super(message);
     this.name = "OidcError";
     this.code = code;
+    this.source = options.source ?? "client";
+    this.reason = options.reason ?? code;
+    this.status = options.status;
   }
 }
 
@@ -212,6 +226,7 @@ export class OidcClient {
       throw new OidcError(
         "discovery_failed",
         `OpenID Discovery が ${response.status} を返しました`,
+        { status: response.status },
       );
     }
     const body = (await response.json()) as Record<string, unknown>;
@@ -285,7 +300,11 @@ export class OidcClient {
     const error = params.get("error");
     if (error) {
       clearPending(this.environment.storage);
-      throw new OidcError(error, params.get("error_description") ?? `認可エラー: ${error}`);
+      const description = params.get("error_description");
+      throw new OidcError(error, description ?? `認可エラー: ${error}`, {
+        source: description !== null ? "provider" : "client",
+        reason: "authorization_failed",
+      });
     }
     const code = params.get("code");
     const state = params.get("state");
@@ -443,7 +462,11 @@ export class OidcClient {
         typeof parsedBody.error_description === "string"
           ? parsedBody.error_description
           : `トークンエンドポイントが ${response.status} を返しました`;
-      throw new OidcError(code, description);
+      throw new OidcError(code, description, {
+        source: typeof parsedBody.error_description === "string" ? "provider" : "client",
+        reason: "token_request_failed",
+        status: response.status,
+      });
     }
     return parsedBody;
   }

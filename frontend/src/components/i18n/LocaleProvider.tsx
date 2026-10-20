@@ -1,52 +1,79 @@
-import { createContext, useContext, useEffect, useState, type ReactNode } from "react";
+import {
+  createContext,
+  useCallback,
+  useContext,
+  useEffect,
+  useMemo,
+  useState,
+  useSyncExternalStore,
+  type ReactNode,
+} from "react";
 import { I18nextProvider } from "react-i18next";
 
 import { createI18n } from "../../lib/i18n";
 import {
   DEFAULT_LOCALE,
   LOCALE_STORAGE_KEY,
+  isLocale,
   readBrowserLocale,
   type Locale,
 } from "../../lib/i18n/locale";
+import { subscribeStorage, writeStorageValue } from "../../lib/storage";
 
 const LocaleContext = createContext<{ locale: Locale; setLocale: (locale: Locale) => void } | null>(
   null,
 );
 
 export function LocaleProvider({ children }: { children: ReactNode }) {
-  const [instance] = useState(createI18n);
-  const [locale, setLocaleState] = useState<Locale>(DEFAULT_LOCALE);
+  const [instance] = useState(() =>
+    createI18n(typeof window === "undefined" ? DEFAULT_LOCALE : readBrowserLocale()),
+  );
+  // i18next is the sole source for translations and Intl formatting alike.
+  const subscribe = useCallback(
+    (onChange: () => void) => {
+      instance.on("languageChanged", onChange);
+      return () => {
+        instance.off("languageChanged", onChange);
+      };
+    },
+    [instance],
+  );
+  const getLocale = useCallback(
+    () => (isLocale(instance.language) ? instance.language : DEFAULT_LOCALE),
+    [instance],
+  );
+  const locale = useSyncExternalStore(subscribe, getLocale, getLocale);
+
+  const apply = useCallback(
+    (next: Locale) => {
+      // All resources are bundled, so changeLanguage completes synchronously.
+      document.documentElement.lang = next;
+      void instance.changeLanguage(next);
+    },
+    [instance],
+  );
 
   useEffect(() => {
-    const apply = () => setLocaleState(readBrowserLocale());
-    apply();
-    const onStorage = (event: StorageEvent) => {
-      if (event.key === LOCALE_STORAGE_KEY || event.key === null) apply();
-    };
-    window.addEventListener("storage", onStorage);
-    window.addEventListener("languagechange", apply);
+    const refresh = () => apply(readBrowserLocale());
+    const unsubscribe = subscribeStorage(LOCALE_STORAGE_KEY, refresh);
+    window.addEventListener("languagechange", refresh);
     return () => {
-      window.removeEventListener("storage", onStorage);
-      window.removeEventListener("languagechange", apply);
+      unsubscribe();
+      window.removeEventListener("languagechange", refresh);
     };
-  }, []);
+  }, [apply]);
 
-  useEffect(() => {
-    void instance.changeLanguage(locale);
-    document.documentElement.lang = locale;
-  }, [instance, locale]);
-
-  const setLocale = (next: Locale) => {
-    setLocaleState(next);
-    try {
-      window.localStorage.setItem(LOCALE_STORAGE_KEY, next);
-    } catch {
-      // Keep the selection for this session when storage is blocked.
-    }
-  };
+  const setLocale = useCallback(
+    (next: Locale) => {
+      apply(next);
+      writeStorageValue(LOCALE_STORAGE_KEY, next);
+    },
+    [apply],
+  );
+  const value = useMemo(() => ({ locale, setLocale }), [locale, setLocale]);
 
   return (
-    <LocaleContext.Provider value={{ locale, setLocale }}>
+    <LocaleContext.Provider value={value}>
       <I18nextProvider i18n={instance}>{children}</I18nextProvider>
     </LocaleContext.Provider>
   );

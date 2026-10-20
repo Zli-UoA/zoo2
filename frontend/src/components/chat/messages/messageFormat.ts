@@ -1,4 +1,4 @@
-import { getTranslator } from "../../../lib/i18n";
+import type { TFunction } from "i18next";
 import { DEFAULT_LOCALE, INTL_LOCALES, type Locale } from "../../../lib/i18n/locale";
 import { normalizeUtcTimestamp, parseUtcTimestamp } from "../../../lib/timestamps";
 
@@ -108,17 +108,12 @@ export function messageTextSegments(content: string): MessageTextSegment[] {
  * スクリーンリーダーへ `aria-live` で読み上げる新着メッセージの要約。
  * 改行・連続空白は 1 つに畳み、長文は `maxLength` 文字（コードポイント単位）で切る。
  */
-export function newMessageAnnouncement(
-  message: FeedMessage,
-  maxLength = 80,
-  locale: Locale = DEFAULT_LOCALE,
-): string {
+export function newMessageAnnouncement(message: FeedMessage, t: TFunction, maxLength = 80): string {
   const collapsed = message.content.replace(/\s+/g, " ").trim();
   const characters = Array.from(collapsed);
   const excerpt =
     characters.length > maxLength ? `${characters.slice(0, maxLength).join("")}…` : collapsed;
   const author = authorLabel(message);
-  const t = getTranslator(locale);
   return excerpt
     ? t("messages.announcement", { author, excerpt })
     : t("messages.announcementAuthor", { author });
@@ -161,8 +156,7 @@ export function localDayKey(date: Date): string {
  * 日付区切りのラベル。今日/昨日は相対表記、それ以前は「2026年6月10日(水)」。
  * `now` を渡せるようにしてテストを端末タイムゾーンから切り離す。
  */
-export function formatRelativeDay(date: Date, now: Date, locale: Locale = DEFAULT_LOCALE): string {
-  const t = getTranslator(locale);
+export function formatRelativeDay(date: Date, now: Date, t: TFunction, locale: Locale): string {
   if (isSameLocalDay(date, now)) {
     return t("dates.today");
   }
@@ -182,8 +176,9 @@ export function formatRelativeDay(date: Date, now: Date, locale: Locale = DEFAUL
 /** メッセージの日付区切りラベル。 */
 export function formatDateSeparator(
   value: string,
+  t: TFunction,
+  locale: Locale,
   now: Date = new Date(),
-  locale: Locale = DEFAULT_LOCALE,
 ): string {
-  return formatRelativeDay(parseUtcTimestamp(value), now, locale);
+  return formatRelativeDay(parseUtcTimestamp(value), now, t, locale);
 }

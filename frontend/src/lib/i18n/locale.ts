@@ -1,3 +1,5 @@
+import { readStorageValue } from "../storage";
+
 export const DEFAULT_LOCALE = "ja";
 export const LOCALE_STORAGE_KEY = "zoo-locale";
 export const LOCALES = ["ja", "en", "zh-Hant", "zh-Hans", "yue"] as const;
@@ -45,14 +47,12 @@ export function resolveLocale(stored: unknown, languages: readonly string[]): Lo
 }
 
 export function readBrowserLocale(): Locale {
-  let stored: string | null = null;
-  try {
-    stored = window.localStorage.getItem(LOCALE_STORAGE_KEY);
-  } catch {
-    // Browser language still works when storage is unavailable.
-  }
+  const stored = readStorageValue(LOCALE_STORAGE_KEY);
   return resolveLocale(
     stored,
     navigator.languages.length ? navigator.languages : [navigator.language],
   );
 }
+
+/** Runs before hydration. matchLocale is self-contained so its bundled source is safe to serialize. */
+export const localeInitScript = `!function(){var stored=null;try{stored=localStorage.getItem(${JSON.stringify(LOCALE_STORAGE_KEY)})}catch(e){}var languages=navigator.languages.length?navigator.languages:[navigator.language];document.documentElement.lang=${JSON.stringify(LOCALES)}.includes(stored)?stored:languages.map(${matchLocale.toString()}).find(Boolean)||${JSON.stringify(DEFAULT_LOCALE)}}();`;

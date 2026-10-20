@@ -1,7 +1,8 @@
+import { runInNewContext } from "node:vm";
 import { describe, expect, it, vi } from "vite-plus/test";
 
-import { LOCALES, matchLocale, readBrowserLocale, resolveLocale } from "./locale";
-import { createI18n, getTranslator, resources } from "./index";
+import { LOCALES, localeInitScript, matchLocale, readBrowserLocale, resolveLocale } from "./locale";
+import { createI18n, resources } from "./index";
 
 function flatten(value: object, prefix = ""): Record<string, string> {
   return Object.fromEntries(
@@ -65,12 +66,12 @@ describe("translations", () => {
   });
 
   it("handles English plurals and interpolation", () => {
-    const t = getTranslator("en");
+    const t = createI18n("en").t;
     expect(t("messages.count", { count: 0 })).toBe("0 messages");
     expect(t("messages.count", { count: 1 })).toBe("1 message");
     expect(t("messages.count", { count: 2 })).toBe("2 messages");
     expect(t("members.already", { userId: "alice" })).toBe("Already a member: alice");
-    expect(getTranslator("yue")("dates.yesterday")).toBe("尋日");
+    expect(createI18n("yue").t("dates.yesterday")).toBe("尋日");
   });
 
   it("isolates instances and falls back to Japanese", async () => {
@@ -81,5 +82,39 @@ describe("translations", () => {
     expect(second.t("welcome.title")).toBe("歡迎嚟到 Zoo");
     await first.changeLanguage("unsupported");
     expect(first.t("channels.title")).toBe("チャンネル");
+  });
+});
+
+describe("pre-hydration language initialization", () => {
+  it.each([
+    [null, ["en-US"], "en"],
+    ["yue", ["en-US"], "yue"],
+    ["invalid", ["fr", "zh-TW"], "zh-Hant"],
+    [null, ["zh-Hans-HK"], "zh-Hans"],
+    [null, ["yue-HK"], "yue"],
+    [null, ["fr"], "ja"],
+  ])(
+    "sets html.lang before React for stored=%s and languages=%j",
+    (stored, languages, expected) => {
+      const document = { documentElement: { lang: "ja" } };
+      runInNewContext(localeInitScript, {
+        localStorage: { getItem: () => stored },
+        navigator: { languages, language: languages[0] },
+        document,
+      });
+      expect(document.documentElement.lang).toBe(expected);
+    },
+  );
+
+  it("uses the browser language when reading storage throws", () => {
+    const document = { documentElement: { lang: "ja" } };
+    runInNewContext(localeInitScript, {
+      get localStorage() {
+        throw new Error("blocked");
+      },
+      navigator: { languages: ["en"], language: "en" },
+      document,
+    });
+    expect(document.documentElement.lang).toBe("en");
   });
 });

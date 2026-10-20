@@ -34,7 +34,26 @@
     "login": "Log in",
     "failed": "Unable to log in",
     "retry": "Log in again",
-    "unauthorizedLoop": "Automatic login stopped because the API repeatedly returned 401. Check the OIDC settings (audience / typ / JWKS) and backend logs."
+    "unauthorizedLoop": "Automatic login stopped because the API repeatedly returned 401. Check the OIDC settings (audience / typ / JWKS) and backend logs.",
+    "errorWithCode": "{{message}} ({{code}})",
+    "oidcErrors": {
+      "discovery_failed": "OpenID Discovery returned {{status}}",
+      "issuer_mismatch": "The discovery issuer does not match the configuration",
+      "invalid_discovery": "Required endpoints are missing from discovery",
+      "authorization_failed": "Authorization failed",
+      "invalid_callback": "The callback is missing code or state",
+      "missing_pending_request": "No saved authorization request was found to verify state and nonce",
+      "state_mismatch": "The authorization state does not match",
+      "no_refresh_token": "No refresh token is available",
+      "session_reset": "The session was cleared",
+      "invalid_token_response": "The token response is invalid or is missing an access token",
+      "token_request_failed": "The token endpoint returned {{status}}",
+      "invalid_id_token": "The ID token is missing or cannot be decoded",
+      "id_token_issuer_mismatch": "The ID token issuer does not match",
+      "id_token_audience_mismatch": "The ID token audience does not match",
+      "id_token_expired": "The ID token has expired",
+      "nonce_mismatch": "The ID token nonce does not match"
+    }
   },
   "members": {
     "joined": "Joined",
@@ -44,8 +63,6 @@
     "you": "You",
     "empty": "No members yet.",
     "loadError": "Failed to load members.",
-    "userId": "User ID to add",
-    "add": "Add",
     "checking": "Checking…",
     "leave": "Leave",
     "join": "Join",

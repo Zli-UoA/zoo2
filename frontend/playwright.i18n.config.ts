@@ -5,11 +5,12 @@ import base from "./playwright.config";
 export default defineConfig({
   ...base,
   globalSetup: undefined,
+  use: { ...base.use, baseURL: "http://localhost:4174" },
   testMatch: "i18n.spec.ts",
   testIgnore: /oidc\.spec\.ts/,
   webServer: {
-    command: "pnpm build && pnpm preview --port 5173",
-    url: "http://localhost:5173",
+    command: process.env.CI ? "pnpm preview --port 4174" : "pnpm build && pnpm preview --port 4174",
+    url: "http://localhost:4174",
     reuseExistingServer: false,
     timeout: 120_000,
     env: {

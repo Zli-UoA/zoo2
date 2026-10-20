@@ -1,4 +1,4 @@
-import { HeadContent, Scripts, createRootRoute } from "@tanstack/react-router";
+import { ClientOnly, HeadContent, Scripts, createRootRoute } from "@tanstack/react-router";
 import { TanStackRouterDevtoolsPanel } from "@tanstack/react-router-devtools";
 import { TanStackDevtools } from "@tanstack/react-devtools";
 
@@ -8,6 +8,8 @@ import { themeInitScript } from "@/components/theme/theme";
 import { Toaster } from "@/components/ui/sonner";
 import { TooltipProvider } from "@/components/ui/tooltip";
 
+import { ShellSkeleton } from "../components/layout/ShellSkeleton";
+import { localeInitScript } from "../lib/i18n/locale";
 import { LocaleProvider } from "../components/i18n/LocaleProvider";
 
 import appCss from "../styles.css?url";
@@ -40,18 +42,21 @@ function RootDocument({ children }: { children: React.ReactNode }) {
   return (
     <html lang="ja" suppressHydrationWarning>
       <head>
+        <script dangerouslySetInnerHTML={{ __html: localeInitScript }} />
         <HeadContent />
         <script dangerouslySetInnerHTML={{ __html: themeInitScript }} />
       </head>
       <body>
-        <LocaleProvider>
-          <ThemeProvider>
-            <TooltipProvider>
-              <AuthGate>{children}</AuthGate>
-              <Toaster />
-            </TooltipProvider>
-          </ThemeProvider>
-        </LocaleProvider>
+        <ClientOnly fallback={<ShellSkeleton />}>
+          <LocaleProvider>
+            <ThemeProvider>
+              <TooltipProvider>
+                <AuthGate>{children}</AuthGate>
+                <Toaster />
+              </TooltipProvider>
+            </ThemeProvider>
+          </LocaleProvider>
+        </ClientOnly>
         <TanStackDevtools
           config={{
             position: "bottom-right",

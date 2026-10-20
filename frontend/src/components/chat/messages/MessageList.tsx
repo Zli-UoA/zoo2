@@ -3,7 +3,6 @@ import { useVirtualizer } from "@tanstack/react-virtual";
 import { ArrowDownIcon } from "lucide-react";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 
-import { useLocale } from "../../i18n/LocaleProvider";
 import { Button } from "../../ui/button";
 import { Skeleton } from "../../ui/skeleton";
 import { newMessageAnnouncement, type FeedMessage } from "./messageFormat";
@@ -89,7 +88,6 @@ export function MessageList({
   onRequestDelete,
 }: MessageListProps) {
   const { t } = useTranslation();
-  const { locale } = useLocale();
   const items = useMemo(() => buildMessageItems(messages), [messages]);
   const scrollRef = useRef<HTMLDivElement>(null);
 
@@ -105,7 +103,7 @@ export function MessageList({
   const [hasNewBelow, setHasNewBelow] = useState(false);
   // 最下部にいないとき届いた新着を `aria-live` で読み上げる（「新着メッセージ」
   // ボタンと同じ条件）。最下部へ戻ったら空にして、同文の連投も再度読み上げられる。
-  const [liveAnnouncement, setLiveAnnouncement] = useState<FeedMessage | null>(null);
+  const [liveAnnouncement, setLiveAnnouncement] = useState("");
   const snapshotRef = useRef<ScrollSnapshot>({ firstId: null, lastId: null });
   const previousScrollHeightRef = useRef(0);
 
@@ -158,14 +156,14 @@ export function MessageList({
       } else {
         setHasNewBelow(true);
         if (appended) {
-          setLiveAnnouncement(appended.message);
+          setLiveAnnouncement(newMessageAnnouncement(appended.message, t));
         }
       }
     }
 
     snapshotRef.current = next;
     previousScrollHeightRef.current = element.scrollHeight;
-  }, [items, currentUserId, scrollToBottom]);
+  }, [items, currentUserId, scrollToBottom, t]);
 
   // 編集の開始・終了で行の高さが変わるため測り直す。
   useEffect(() => {
@@ -174,7 +172,7 @@ export function MessageList({
 
   useEffect(() => {
     if (!hasNewBelow) {
-      setLiveAnnouncement(null);
+      setLiveAnnouncement("");
     }
   }, [hasNewBelow]);
 
@@ -249,7 +247,7 @@ export function MessageList({
       ) : null}
 
       <p role="status" aria-live="polite" aria-atomic="true" className="sr-only">
-        {liveAnnouncement ? newMessageAnnouncement(liveAnnouncement, 80, locale) : ""}
+        {liveAnnouncement}
       </p>
     </div>
   );
