@@ -27,12 +27,21 @@ export function shapeQueryParams(
   options: ShapeQueryOptions = {},
 ): ShapeQueryParams {
   if (config.shapeMode === "proxy") {
-    if ((shape === "messages" || shape === "channelUsers") && options.channelId) {
+    if (
+      (shape === "messages" || shape === "channelUsers" || shape === "messageReactions") &&
+      options.channelId
+    ) {
       return { channel_id: options.channelId };
     }
     return {};
   }
 
+  if (shape === "messageReactions" && options.channelId) {
+    return {
+      where: "message_id IN (SELECT id FROM messages WHERE channel_id = $1 AND deleted_at IS NULL)",
+      "params[1]": options.channelId,
+    };
+  }
   if ((shape === "messages" || shape === "channelUsers") && options.channelId) {
     return { where: "channel_id = $1", "params[1]": options.channelId };
   }

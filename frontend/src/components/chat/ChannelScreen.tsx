@@ -84,7 +84,7 @@ export function ChannelScreen({ channelId }: { channelId: string }) {
             <p className="text-sm text-muted-foreground">読み込み中…</p>
           </div>
         ) : canRead ? (
-          <MessagePane channelId={channelId} />
+          <MessagePane key={channelId} channelId={channelId} />
         ) : (
           <div className="flex flex-1 items-center justify-center p-6">
             <p className="max-w-sm text-center text-sm text-muted-foreground">

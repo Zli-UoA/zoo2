@@ -7,11 +7,12 @@ import { getCurrentUserStore } from "../currentUser";
 import { createShapeFetch, type ShapeFetchSource } from "./headers";
 import { buildShapeRequestUrl, resolveShapeUrl, type ShapeQueryOptions } from "./query";
 import { SHAPE_META, coerceElectricRow, type ShapeName } from "./schema";
-import type { ChannelRow, ChannelUserRow, MessageRow, UserRow } from "./types";
+import type { ChannelRow, ChannelUserRow, MessageRow, MessageReactionRow, UserRow } from "./types";
 import {
   createChannelUserWrites,
   createChannelWrites,
   createMessageWrites,
+  createReactionWrites,
   type WriteDependencies,
 } from "./writes";
 
@@ -116,6 +117,26 @@ function messagesCollection(channelId: string, config: AppConfig, dependencies: 
   return collection;
 }
 
+function reactionsCollection(
+  channelId: string,
+  config: AppConfig,
+  dependencies: WriteDependencies,
+) {
+  const writes = createReactionWrites(dependencies);
+  const collection = createCollection(
+    electricCollectionOptions<MessageReactionRow>({
+      id: `message_reactions:${channelId}`,
+      getKey: (row) => row.id,
+      defaultIndexType: BasicIndex,
+      shapeOptions: shapeOptions("messageReactions", config, { channelId }),
+      onInsert: writes.onInsert,
+      onDelete: writes.onDelete,
+    }),
+  );
+  collection.createIndex((row) => row.message_id);
+  return collection;
+}
+
 export type ChannelsCollection = ReturnType<typeof channelsCollection>;
 export type UsersCollection = ReturnType<typeof usersCollection>;
 export type ChannelUsersCollection = ReturnType<typeof channelUsersCollection>;
@@ -128,6 +149,7 @@ export interface CollectionsBundle {
   channelUsers: ChannelUsersCollection;
   /** `channel_id` 単位で生成しキャッシュした messages コレクションを返す。 */
   messages: (channelId: string) => MessagesCollection;
+  reactions: (channelId: string) => ReturnType<typeof reactionsCollection>;
 }
 
 export function isBrowser(): boolean {
@@ -161,6 +183,7 @@ export function getCollections(config?: AppConfig): CollectionsBundle {
   }
 
   const messageCache = new Map<string, MessagesCollection>();
+  const reactionCache = new Map<string, ReturnType<typeof reactionsCollection>>();
   // 現在ユーザーは `useCurrentUser` と同じストアから引く（OIDC では
   // `/api/users/me` の解決後に値が入る）。退出の本人確認は書き込み時に
   // getCurrentUserId() で最新値を読む。
@@ -175,6 +198,14 @@ export function getCollections(config?: AppConfig): CollectionsBundle {
     channels: channelsCollection(resolved, dependencies),
     users: usersCollection(resolved),
     channelUsers: channelUsersCollection(resolved, dependencies),
+    reactions: (channelId) => {
+      let collection = reactionCache.get(channelId);
+      if (!collection) {
+        collection = reactionsCollection(channelId, resolved, dependencies);
+        reactionCache.set(channelId, collection);
+      }
+      return collection;
+    },
     messages: (channelId) => {
       let collection = messageCache.get(channelId);
       if (!collection) {

@@ -34,7 +34,8 @@ export default defineConfig({
   },
   projects: [{ name: "chromium", use: { ...devices["Desktop Chrome"] } }],
   webServer: {
-    command: "pnpm dev",
+    // Devtools のボタンの重なりと、複数ブラウザ間のログ転送による干渉を避ける。
+    command: "pnpm dev --mode production",
     url: baseURL,
     reuseExistingServer: !process.env.CI,
     timeout: 120_000,

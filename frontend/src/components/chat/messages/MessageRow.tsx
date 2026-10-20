@@ -1,6 +1,10 @@
 import { cn } from "cn";
-import { MoreHorizontalIcon, PencilIcon, TrashIcon } from "lucide-react";
+import { MoreHorizontalIcon, PencilIcon, TrashIcon, SmilePlusIcon } from "lucide-react";
 
+import type { KitchenCatalog } from "../../../lib/emoji/kitchen";
+import { kitchenLabel, reactionKey } from "../../../lib/emoji/kitchen";
+import type { ReactionGroup } from "../../../lib/emoji/reactions";
+import { ReactionEmoji } from "./ReactionEmoji";
 import { Avatar, AvatarFallback } from "../../ui/avatar";
 import { Button, buttonVariants } from "../../ui/button";
 import {
@@ -24,6 +28,11 @@ interface MessageRowProps {
   onCancelEdit: () => void;
   onSaveEdit: () => void;
   onRequestDelete: () => void;
+  reactions: ReactionGroup[];
+  kitchenCatalog: KitchenCatalog | null;
+  canReact: boolean;
+  onReaction: (emoji: string) => void;
+  onPickReaction: () => void;
 }
 
 function DateSeparator({ value }: { value: string }) {
@@ -57,6 +66,11 @@ export function MessageRow({
   onCancelEdit,
   onSaveEdit,
   onRequestDelete,
+  reactions,
+  kitchenCatalog,
+  canReact,
+  onReaction,
+  onPickReaction,
 }: MessageRowProps) {
   const { message } = item;
 
@@ -136,6 +150,42 @@ export function MessageRow({
               {message.content}
             </p>
           )}
+          {!isEditing ? (
+            <div
+              className="flex flex-wrap items-center gap-1 py-1"
+              role="group"
+              aria-label="リアクション"
+            >
+              {reactions.map((reaction) => (
+                <button
+                  key={reactionKey(reaction.emoji)}
+                  type="button"
+                  className={cn(
+                    "inline-flex min-h-8 items-center gap-1 rounded-full border px-2 text-xs hover:bg-muted disabled:opacity-50",
+                    reaction.ownId && "border-primary bg-primary/10",
+                  )}
+                  aria-pressed={!!reaction.ownId}
+                  disabled={!canReact}
+                  aria-label={`${kitchenLabel(reaction.emoji)} ${reaction.count}件${reaction.ownId ? "（解除）" : "（追加）"}`}
+                  title={kitchenLabel(reaction.emoji)}
+                  onClick={() => onReaction(reaction.emoji)}
+                >
+                  <ReactionEmoji emoji={reaction.emoji} catalog={kitchenCatalog} />
+                  <span>{reaction.count}</span>
+                </button>
+              ))}
+              <Button
+                variant="ghost"
+                size="icon-xs"
+                aria-label="リアクションを追加"
+                title="リアクションを追加"
+                disabled={!canReact}
+                onClick={onPickReaction}
+              >
+                <SmilePlusIcon />
+              </Button>
+            </div>
+          ) : null}
         </div>
 
         {isOwn && !isEditing ? (

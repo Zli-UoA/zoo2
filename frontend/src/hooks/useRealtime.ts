@@ -40,3 +40,9 @@ export function useChannelMembers(channelId: string | null) {
       : undefined,
   );
 }
+
+/** チャンネル内のメッセージへのリアクションを購読する。 */
+export function useMessageReactions(channelId: string) {
+  const { reactions } = getCollections();
+  return useLiveQuery((q) => q.from({ reactions: reactions(channelId) }));
+}

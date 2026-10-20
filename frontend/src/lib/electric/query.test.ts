@@ -82,3 +82,19 @@ describe("resolveShapeUrl", () => {
     );
   });
 });
+
+describe("reaction shapes", () => {
+  it("requires the channel filter on the proxy and filters through messages in direct mode", () => {
+    expect(buildShapeRequestUrl("messageReactions", proxyConfig, { channelId: "channel-1" })).toBe(
+      "http://localhost:8000/api/shapes/message_reactions?channel_id=channel-1",
+    );
+    const params = paramsOf(
+      buildShapeRequestUrl("messageReactions", directConfig, { channelId: "channel-1" }),
+    );
+    expect(params.get("table")).toBe("message_reactions");
+    expect(params.get("where")).toBe(
+      "message_id IN (SELECT id FROM messages WHERE channel_id = $1 AND deleted_at IS NULL)",
+    );
+    expect(params.get("params[1]")).toBe("channel-1");
+  });
+});

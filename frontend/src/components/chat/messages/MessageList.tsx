@@ -2,6 +2,8 @@ import { useVirtualizer } from "@tanstack/react-virtual";
 import { ArrowDownIcon } from "lucide-react";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 
+import type { KitchenCatalog } from "../../../lib/emoji/kitchen";
+import type { ReactionGroup } from "../../../lib/emoji/reactions";
 import { Button } from "../../ui/button";
 import { Skeleton } from "../../ui/skeleton";
 import type { FeedMessage } from "./messageFormat";
@@ -30,6 +32,11 @@ interface MessageListProps {
   onCancelEdit: () => void;
   onSaveEdit: () => void;
   onRequestDelete: (id: string) => void;
+  reactions: Map<string, ReactionGroup[]>;
+  kitchenCatalog: KitchenCatalog | null;
+  canReact: boolean;
+  onReaction: (messageId: string, emoji: string) => void;
+  onPickReaction: (messageId: string) => void;
 }
 
 function MessageSkeleton() {
@@ -84,6 +91,11 @@ export function MessageList({
   onCancelEdit,
   onSaveEdit,
   onRequestDelete,
+  reactions,
+  kitchenCatalog,
+  canReact,
+  onReaction,
+  onPickReaction,
 }: MessageListProps) {
   const items = useMemo(() => buildMessageItems(messages), [messages]);
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -207,6 +219,11 @@ export function MessageList({
                 >
                   <MessageRow
                     item={item}
+                    reactions={reactions.get(item.message.id) ?? []}
+                    kitchenCatalog={kitchenCatalog}
+                    canReact={canReact}
+                    onReaction={(emoji) => onReaction(item.message.id, emoji)}
+                    onPickReaction={() => onPickReaction(item.message.id)}
                     isOwn={!!currentUserId && item.message.user_id === currentUserId}
                     isEditing={editingId === item.message.id}
                     editingText={editingText}
