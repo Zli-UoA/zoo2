@@ -2,6 +2,7 @@ import type {
   ChannelRow,
   ChannelUserRow,
   MessageRow,
+  MessageReactionRow,
   TableName,
   TableRowMap,
   UserRow,
@@ -31,7 +32,7 @@ export const NUMERIC_ELECTRIC_TYPES: ReadonlySet<ElectricType> = new Set<Electri
   "float8",
 ]);
 
-export type ShapeName = "channels" | "messages" | "users" | "channelUsers";
+export type ShapeName = "channels" | "messages" | "users" | "channelUsers" | "messageReactions";
 
 export interface ShapeMeta {
   table: TableName;
@@ -39,6 +40,7 @@ export interface ShapeMeta {
 }
 
 export const SHAPE_META: Record<ShapeName, ShapeMeta> = {
+  messageReactions: { table: "message_reactions", proxyPath: "message_reactions" },
   channels: { table: "channels", proxyPath: "channels" },
   messages: { table: "messages", proxyPath: "messages" },
   users: { table: "users", proxyPath: "users" },
@@ -103,6 +105,16 @@ export const SHAPE_SCHEMAS: { [K in TableName]: ShapeSchema<TableRowMap[K]> } = 
   channels: CHANNEL_SCHEMA,
   messages: MESSAGE_SCHEMA,
   channel_user: CHANNEL_USER_SCHEMA,
+  message_reactions: {
+    table: "message_reactions",
+    columns: {
+      id: "text",
+      message_id: "text",
+      user_id: "text",
+      emoji: "text",
+      created_at: "timestamp",
+    },
+  } satisfies ShapeSchema<MessageReactionRow>,
 };
 
 export function toNumber(value: number | string): number {

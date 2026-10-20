@@ -45,6 +45,12 @@ export function useChannelMembers(channelId: string | null) {
   );
 }
 
+/** チャンネル内のメッセージへのリアクションを購読する。 */
+export function useMessageReactions(channelId: string) {
+  const { reactions } = getCollections();
+  return useLiveQuery((q) => q.from({ reactions: reactions(channelId) }));
+}
+
 export interface MyChannelMemberships {
   /** 現在ユーザーが参加している channel_user 行。 */
   memberships: ChannelUserRow[];

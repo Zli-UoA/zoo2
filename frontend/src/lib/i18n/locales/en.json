@@ -142,6 +142,28 @@
     "announcement": "New message from {{author}}: “{{excerpt}}”",
     "announcementAuthor": "New message from {{author}}"
   },
+  "reactions": {
+    "add": "Add a reaction",
+    "picker": "Reactions",
+    "select": "React with {{emoji}}",
+    "groupLabel": "Reactions",
+    "chip": "{{emoji}} {{count}}",
+    "chipMine": "{{emoji}} {{count}} (you reacted)",
+    "fetchError": "Failed to load reactions",
+    "kitchen": "Emoji Kitchen",
+    "kitchenDescription": "Pick an emoji, or combine two emojis with Emoji Kitchen.",
+    "kitchenLoadError": "Failed to load the emoji list.",
+    "retry": "Try again",
+    "kitchenLoading": "Loading emojis…",
+    "firstEmoji": "First emoji",
+    "secondEmoji": "Second emoji",
+    "previewAlt": "Combination preview",
+    "previewLoading": "Loading preview…",
+    "previewError": "Could not load the image. Try another combination.",
+    "unsupported": "This combination is not supported.",
+    "addCombination": "Add this combination",
+    "kitchenImageNotice": "Emoji Kitchen images are loaded from Google."
+  },
   "theme": {
     "switch": "Switch theme",
     "title": "Theme",

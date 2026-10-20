@@ -38,6 +38,11 @@ function render(item: MessageItem, isOwn = false): string {
         onCancelEdit: noop,
         onSaveEdit: noop,
         onRequestDelete: noop,
+        reactions: [],
+        kitchenCatalog: null,
+        canReact: false,
+        onReaction: noop,
+        onPickReaction: noop,
       }),
     }),
   );

@@ -142,6 +142,28 @@
     "announcement": "{{author}} 的新消息：“{{excerpt}}”",
     "announcementAuthor": "{{author}} 的新消息"
   },
+  "reactions": {
+    "add": "添加表情回应",
+    "picker": "表情回应",
+    "select": "用 {{emoji}} 回应",
+    "groupLabel": "表情回应",
+    "chip": "{{emoji}} {{count}}",
+    "chipMine": "{{emoji}} {{count}}（你已回应）",
+    "fetchError": "无法加载表情回应",
+    "kitchen": "Emoji Kitchen",
+    "kitchenDescription": "选择一个表情，或用 Emoji Kitchen 组合两个表情。",
+    "kitchenLoadError": "无法加载表情列表。",
+    "retry": "重试",
+    "kitchenLoading": "正在加载表情…",
+    "firstEmoji": "第一个表情",
+    "secondEmoji": "第二个表情",
+    "previewAlt": "组合预览",
+    "previewLoading": "正在加载预览…",
+    "previewError": "无法加载图片。请尝试其他组合。",
+    "unsupported": "不支持此组合。",
+    "addCombination": "添加此组合",
+    "kitchenImageNotice": "Emoji Kitchen 的图片从 Google 加载。"
+  },
   "theme": {
     "switch": "切换主题",
     "title": "主题",

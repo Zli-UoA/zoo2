@@ -142,6 +142,28 @@
     "announcement": "新着メッセージ: {{author}}「{{excerpt}}」",
     "announcementAuthor": "新着メッセージ: {{author}}"
   },
+  "reactions": {
+    "add": "リアクションを追加",
+    "picker": "リアクション",
+    "select": "{{emoji}} でリアクション",
+    "groupLabel": "リアクション",
+    "chip": "{{emoji}} {{count}} 件",
+    "chipMine": "{{emoji}} {{count}} 件（自分もリアクション済み）",
+    "fetchError": "リアクション取得に失敗しました",
+    "kitchen": "Emoji Kitchen",
+    "kitchenDescription": "絵文字を選ぶか、Emoji Kitchenで2つの絵文字を組み合わせます。",
+    "kitchenLoadError": "絵文字の一覧を読み込めませんでした。",
+    "retry": "再試行",
+    "kitchenLoading": "絵文字を読み込み中…",
+    "firstEmoji": "1つ目の絵文字",
+    "secondEmoji": "2つ目の絵文字",
+    "previewAlt": "組み合わせのプレビュー",
+    "previewLoading": "プレビューを読み込み中…",
+    "previewError": "画像を読み込めませんでした。別の組み合わせをお試しください。",
+    "unsupported": "この組み合わせは未対応です。",
+    "addCombination": "この組み合わせを追加",
+    "kitchenImageNotice": "Emoji Kitchenの画像はGoogleから読み込みます。"
+  },
   "theme": {
     "switch": "テーマを切り替える",
     "title": "テーマ",

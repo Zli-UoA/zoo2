@@ -1,9 +1,13 @@
 import { useTranslation } from "react-i18next";
 import { cn } from "cn";
-import { MoreHorizontalIcon, PencilIcon, TrashIcon } from "lucide-react";
+import { MoreHorizontalIcon, PencilIcon, TrashIcon, SmilePlusIcon } from "lucide-react";
 import { Fragment } from "react";
 
 import { useLocale } from "../../i18n/LocaleProvider";
+import type { KitchenCatalog } from "../../../lib/emoji/kitchen";
+import { kitchenLabel, reactionKey } from "../../../lib/emoji/kitchen";
+import type { ReactionGroup } from "../../../lib/emoji/reactions";
+import { ReactionEmoji } from "./ReactionEmoji";
 import { Avatar, AvatarFallback } from "../../ui/avatar";
 import { Button, buttonVariants } from "../../ui/button";
 import {
@@ -33,6 +37,11 @@ interface MessageRowProps {
   onCancelEdit: () => void;
   onSaveEdit: () => void;
   onRequestDelete: () => void;
+  reactions: ReactionGroup[];
+  kitchenCatalog: KitchenCatalog | null;
+  canReact: boolean;
+  onReaction: (emoji: string) => void;
+  onPickReaction: () => void;
 }
 
 /**
@@ -40,7 +49,7 @@ interface MessageRowProps {
  * 別タブで開き、`noopener noreferrer` で開いた側から `window.opener` を触らせない。
  * メンション装飾は将来対応（今回はやらない）。
  */
-function MessageBody({ content }: { content: string }) {
+export function MessageBody({ content }: { content: string }) {
   return (
     <p className="whitespace-pre-wrap break-words text-sm leading-relaxed">
       {messageTextSegments(content).map((segment, index) =>
@@ -96,6 +105,11 @@ export function MessageRow({
   onCancelEdit,
   onSaveEdit,
   onRequestDelete,
+  reactions,
+  kitchenCatalog,
+  canReact,
+  onReaction,
+  onPickReaction,
 }: MessageRowProps) {
   const { t } = useTranslation();
   const { locale } = useLocale();
@@ -175,6 +189,52 @@ export function MessageRow({
           ) : (
             <MessageBody content={message.content} />
           )}
+          {!isEditing ? (
+            <div
+              className="flex flex-wrap items-center gap-1 py-1"
+              role="group"
+              aria-label={t("reactions.groupLabel")}
+            >
+              {reactions.map((reaction) => (
+                <button
+                  key={reactionKey(reaction.emoji)}
+                  type="button"
+                  className={cn(
+                    "inline-flex min-h-8 items-center gap-1 rounded-full border px-2 text-xs hover:bg-muted disabled:opacity-50",
+                    reaction.ownId && "border-primary bg-primary/10",
+                  )}
+                  aria-pressed={!!reaction.ownId}
+                  disabled={!canReact}
+                  aria-label={
+                    reaction.ownId
+                      ? t("reactions.chipMine", {
+                          emoji: kitchenLabel(reaction.emoji),
+                          count: reaction.count,
+                        })
+                      : t("reactions.chip", {
+                          emoji: kitchenLabel(reaction.emoji),
+                          count: reaction.count,
+                        })
+                  }
+                  title={kitchenLabel(reaction.emoji)}
+                  onClick={() => onReaction(reaction.emoji)}
+                >
+                  <ReactionEmoji emoji={reaction.emoji} catalog={kitchenCatalog} />
+                  <span>{reaction.count}</span>
+                </button>
+              ))}
+              <Button
+                variant="ghost"
+                size="icon-xs"
+                aria-label={t("reactions.add")}
+                title={t("reactions.add")}
+                disabled={!canReact}
+                onClick={onPickReaction}
+              >
+                <SmilePlusIcon />
+              </Button>
+            </div>
+          ) : null}
         </div>
 
         {isOwn && !isEditing ? (

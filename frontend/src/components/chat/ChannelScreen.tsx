@@ -99,6 +99,11 @@ export function ChannelScreen({ channelId }: { channelId: string }) {
                 onCancelEdit={noop}
                 onSaveEdit={noop}
                 onRequestDelete={noop}
+                reactions={new Map()}
+                kitchenCatalog={null}
+                canReact={false}
+                onReaction={noop}
+                onPickReaction={noop}
               />
             </div>
           ) : (
@@ -109,7 +114,7 @@ export function ChannelScreen({ channelId }: { channelId: string }) {
             </div>
           )
         ) : access.canRead ? (
-          <MessagePane channelId={channelId} />
+          <MessagePane key={channelId} channelId={channelId} />
         ) : (
           <div className="flex flex-1 items-center justify-center p-6">
             <p className="max-w-sm text-center text-sm text-muted-foreground">

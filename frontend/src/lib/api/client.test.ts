@@ -52,7 +52,14 @@ describe("unwrapEnvelope", () => {
     expect(() => unwrapEnvelope(null)).toThrow();
   });
 
-  it("rejects an envelope whose txid is not a string", () => {
+  it("accepts a no-op response with a null txid", () => {
+    expect(unwrapEnvelope({ data: { id: "existing" }, txid: null })).toEqual({
+      data: { id: "existing" },
+      txid: null,
+    });
+  });
+
+  it("rejects an envelope whose txid is neither a string nor null", () => {
     expect(() => unwrapEnvelope({ data: {}, txid: 1 })).toThrow();
   });
 });

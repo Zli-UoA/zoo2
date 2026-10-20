@@ -10,7 +10,8 @@ import { joinUrl, type AppConfig } from "../config";
 
 export interface ApiEnvelope<T> {
   data: T;
-  txid: string;
+  /** null means an idempotent no-op without a replicated database write. */
+  txid: string | null;
 }
 
 export class ApiError extends Error {
@@ -31,7 +32,7 @@ export function isApiEnvelope(value: unknown): value is ApiEnvelope<unknown> {
     value !== null &&
     "data" in value &&
     "txid" in value &&
-    typeof (value as { txid: unknown }).txid === "string"
+    (value.txid === null || typeof value.txid === "string")
   );
 }
 

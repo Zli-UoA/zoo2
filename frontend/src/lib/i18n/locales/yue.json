@@ -142,6 +142,28 @@
     "announcement": "{{author}} 傳咗新訊息：「{{excerpt}}」",
     "announcementAuthor": "{{author}} 傳咗新訊息"
   },
+  "reactions": {
+    "add": "加個表情回應",
+    "picker": "表情回應",
+    "select": "用 {{emoji}} 回應",
+    "groupLabel": "表情回應",
+    "chip": "{{emoji}} {{count}}",
+    "chipMine": "{{emoji}} {{count}}（你都回應咗）",
+    "fetchError": "載入唔到表情回應",
+    "kitchen": "Emoji Kitchen",
+    "kitchenDescription": "揀一個表情，或者用 Emoji Kitchen 組合兩個表情。",
+    "kitchenLoadError": "載入唔到表情清單。",
+    "retry": "再試",
+    "kitchenLoading": "載入緊表情…",
+    "firstEmoji": "第一個表情",
+    "secondEmoji": "第二個表情",
+    "previewAlt": "組合預覽",
+    "previewLoading": "載入緊預覽…",
+    "previewError": "載入唔到圖片。試下其他組合。",
+    "unsupported": "唔支援呢個組合。",
+    "addCombination": "加呢個組合",
+    "kitchenImageNotice": "Emoji Kitchen 嘅圖片會由 Google 載入。"
+  },
   "theme": {
     "switch": "切換主題",
     "title": "主題",

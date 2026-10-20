@@ -13,9 +13,10 @@ import type {
   UpdateChannelRequest,
   UpdateMessageRequest,
 } from "../api/types";
+import { reactionKey } from "../emoji/kitchen";
 import type { TxidMode } from "../config";
 import { changeMessageMatcher, syncTxid } from "./txid";
-import type { ChannelRow, ChannelUserRow, MessageRow } from "./types";
+import type { ChannelRow, ChannelUserRow, MessageRow, MessageReactionRow } from "./types";
 
 export interface WriteDependencies {
   client: ApiClient;
@@ -274,7 +275,7 @@ async function waitForChannelUserSync(
   operation: "insert" | "delete",
   row: ChannelUserRow,
   target: ElectricCollectionUtils<ChannelUserRow>,
-  txid: string,
+  txid: string | null,
   txidMode: TxidMode,
 ): Promise<void> {
   await syncTxid({
@@ -286,4 +287,66 @@ async function waitForChannelUserSync(
       (value) => value.user_id === row.user_id && value.channel_id === row.channel_id,
     ),
   });
+}
+
+/** リアクションの追加・解除。REST の正規化後の値で同期を照合する。 */
+export function createReactionWrites({ client, txidMode, getCurrentUserId }: WriteDependencies) {
+  async function onInsert({
+    transaction,
+    collection,
+  }: InsertMutationFnParams<
+    MessageReactionRow,
+    string | number,
+    ElectricCollectionUtils<MessageReactionRow>
+  >): Promise<void> {
+    for (const mutation of transaction.mutations) {
+      const row = mutation.modified;
+      if (!getCurrentUserId() || row.user_id !== getCurrentUserId())
+        throw new Error("自分のリアクションだけ追加できます");
+      const { data, txid } = await client.post<MessageReactionRow>(
+        `/api/messages/${row.message_id}/reactions`,
+        { id: row.id, emoji: row.emoji },
+      );
+      // A concurrent tab may have added this reaction already. In that case the
+      // API returns the existing row without a new INSERT or replicated txid.
+      if (data.id !== row.id) continue;
+      await syncTxid({
+        mode: txidMode,
+        txid,
+        target: collection.utils,
+        match: changeMessageMatcher<MessageReactionRow>("insert", (value) => value.id === data.id),
+      });
+    }
+  }
+  async function onDelete({
+    transaction,
+    collection,
+  }: DeleteMutationFnParams<
+    MessageReactionRow,
+    string | number,
+    ElectricCollectionUtils<MessageReactionRow>
+  >): Promise<void> {
+    for (const mutation of transaction.mutations) {
+      const row = mutation.original;
+      if (!getCurrentUserId() || row.user_id !== getCurrentUserId())
+        throw new Error("自分のリアクションだけ解除できます");
+      const { txid } = await client.delete<MessageReactionRow>(
+        `/api/messages/${row.message_id}/reactions?${new URLSearchParams({ emoji: row.emoji })}`,
+      );
+      await syncTxid({
+        mode: txidMode,
+        txid,
+        target: collection.utils,
+        match: changeMessageMatcher<MessageReactionRow>(
+          "delete",
+          (value) =>
+            value.id === row.id ||
+            (value.message_id === row.message_id &&
+              value.user_id === row.user_id &&
+              reactionKey(value.emoji) === reactionKey(row.emoji)),
+        ),
+      });
+    }
+  }
+  return { onInsert, onDelete };
 }

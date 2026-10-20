@@ -1,8 +1,13 @@
 import { describe, expect, it, vi } from "vite-plus/test";
 
-import type { ApiClient } from "../api/client";
+import { createApiClient, type ApiClient } from "../api/client";
 import type { ChannelRow, ChannelUserRow, MessageRow } from "./types";
-import { createChannelUserWrites, createChannelWrites, createMessageWrites } from "./writes";
+import {
+  createChannelUserWrites,
+  createChannelWrites,
+  createMessageWrites,
+  createReactionWrites,
+} from "./writes";
 
 const TXID = "4242";
 const CURRENT_USER = "u1";
@@ -314,5 +319,108 @@ describe("channel_user writes", () => {
     currentUserId = CURRENT_USER;
     await writes.onDelete(params(collection, [deleteMutation(membership)]));
     expect(post).toHaveBeenCalledWith("/api/channels/c1/leave");
+  });
+});
+
+describe("reaction writes", () => {
+  const reaction = {
+    id: "r1",
+    message_id: "m1",
+    user_id: CURRENT_USER,
+    emoji: "kitchen:1f431_1f600",
+    created_at: "now",
+  };
+  it("sends a stable id and waits for its INSERT in awaitMatch mode", async () => {
+    const { client, post } = makeClient();
+    post.mockResolvedValueOnce({ data: reaction, txid: TXID });
+    const { collection, awaitMatch } = makeCollection();
+    const writes = createReactionWrites({
+      client,
+      txidMode: "awaitMatch",
+      getCurrentUserId: () => CURRENT_USER,
+    });
+    await writes.onInsert(params(collection, [insertMutation(reaction)]));
+    expect(post).toHaveBeenCalledWith("/api/messages/m1/reactions", {
+      id: "r1",
+      emoji: reaction.emoji,
+    });
+    const matcher = awaitMatch.mock.calls[0][0];
+    expect(
+      matcher({
+        key: "reaction-key",
+        headers: { operation: "insert" },
+        value: reaction,
+      }),
+    ).toBe(true);
+    expect(
+      matcher({
+        key: "reaction-key",
+        headers: { operation: "insert" },
+        value: { ...reaction, id: "someone-else" },
+      }),
+    ).toBe(false);
+  });
+  it("does not wait for a nonexistent INSERT when another tab added the reaction", async () => {
+    const { client, post } = makeClient();
+    post.mockResolvedValueOnce({ data: { ...reaction, id: "existing-id" }, txid: TXID });
+    const { collection, awaitTxId, awaitMatch } = makeCollection();
+    const writes = createReactionWrites({
+      client,
+      txidMode: "awaitTxId",
+      getCurrentUserId: () => CURRENT_USER,
+    });
+    await writes.onInsert(params(collection, [insertMutation(reaction)]));
+    expect(awaitTxId).not.toHaveBeenCalled();
+    expect(awaitMatch).not.toHaveBeenCalled();
+  });
+  it("accepts the backend's null txid through the real API client for a duplicate reaction", async () => {
+    const client = createApiClient({
+      getToken: () => null,
+      fetch: async () =>
+        new Response(JSON.stringify({ data: { ...reaction, id: "existing-id" }, txid: null }), {
+          headers: { "Content-Type": "application/json" },
+        }),
+    });
+    const { collection, awaitTxId, awaitMatch } = makeCollection();
+    const writes = createReactionWrites({
+      client,
+      txidMode: "awaitTxId",
+      getCurrentUserId: () => CURRENT_USER,
+    });
+    await writes.onInsert(params(collection, [insertMutation(reaction)]));
+    expect(awaitTxId).not.toHaveBeenCalled();
+    expect(awaitMatch).not.toHaveBeenCalled();
+  });
+
+  it("encodes the emoji when removing my reaction and waits for the txid", async () => {
+    const { client, del } = makeClient();
+    const { collection, awaitTxId } = makeCollection();
+    const writes = createReactionWrites({
+      client,
+      txidMode: "awaitTxId",
+      getCurrentUserId: () => CURRENT_USER,
+    });
+    await writes.onDelete(params(collection, [deleteMutation(reaction)]));
+    expect(del).toHaveBeenCalledWith("/api/messages/m1/reactions?emoji=kitchen%3A1f431_1f600");
+    expect(awaitTxId).toHaveBeenCalledWith(Number(TXID), undefined);
+  });
+  it("rejects another person's removal and propagates HTTP errors for rollback", async () => {
+    const { client, del, post } = makeClient();
+    const { collection } = makeCollection();
+    const writes = createReactionWrites({
+      client,
+      txidMode: "awaitTxId",
+      getCurrentUserId: () => CURRENT_USER,
+    });
+    await expect(
+      writes.onDelete(
+        params(collection, [deleteMutation({ ...reaction, user_id: "someone-else" })]),
+      ),
+    ).rejects.toThrow("自分のリアクション");
+    expect(del).not.toHaveBeenCalled();
+    post.mockRejectedValueOnce(new Error("403 forbidden"));
+    await expect(writes.onInsert(params(collection, [insertMutation(reaction)]))).rejects.toThrow(
+      "403 forbidden",
+    );
   });
 });
