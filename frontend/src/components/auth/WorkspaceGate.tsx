@@ -3,7 +3,12 @@ import { useEffect, useState, type FormEvent, type ReactNode } from "react";
 import { ApiError, createConfiguredApiClient } from "../../lib/api/client";
 import { getOidcClient } from "../../lib/oidc/session";
 import { resolveConfig } from "../../lib/config";
-import { getSelectedTenantId, saveSelectedTenantId, switchTenant } from "../../lib/tenant";
+import {
+  DEFAULT_TENANT_ID,
+  getSelectedTenantId,
+  saveSelectedTenantId,
+  switchTenant,
+} from "../../lib/tenant";
 import { Button } from "../ui/button";
 import { ShellSkeleton } from "../layout/ShellSkeleton";
 
@@ -45,7 +50,9 @@ export function WorkspaceGate({ children }: { children: ReactNode }) {
       .then(([items, me]) => {
         if (cancelled) return;
         const current = items.find((item) => item.id === getSelectedTenantId()) ?? items[0];
-        if (current) saveSelectedTenantId(current.id);
+        if (current && !saveSelectedTenantId(current.id) && current.id !== DEFAULT_TENANT_ID) {
+          throw new Error("Workspace switching requires session storage access");
+        }
         setUserName(me.user_name);
         setSelected(current?.id ?? null);
         setWorkspaces(items);
@@ -120,7 +127,13 @@ export function WorkspaceGate({ children }: { children: ReactNode }) {
           <select
             aria-label="ワークスペース"
             value={selected ?? ""}
-            onChange={(event) => switchTenant(event.target.value)}
+            onChange={(event) => {
+              try {
+                switchTenant(event.target.value);
+              } catch {
+                setError("ワークスペースの切替にはブラウザーのストレージへのアクセスが必要です。");
+              }
+            }}
             disabled={!selected || busy}
             className="max-w-56 rounded border bg-background p-1"
           >

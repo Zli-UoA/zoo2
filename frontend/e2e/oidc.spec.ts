@@ -188,7 +188,9 @@ test("OIDC PKCE ログイン後に API と Shape が Bearer で通る", async ({
       .getByRole("textbox", { name: "追加するユーザー名", exact: true })
       .fill(profile.user_name);
     await page.getByRole("button", { name: "追加", exact: true }).click();
-    await expect(page.getByRole("status")).toHaveText("メンバーを追加しました。");
+    await expect(
+      page.getByRole("status").filter({ hasText: "メンバーを追加しました。" }),
+    ).toBeVisible();
     await page.getByRole("button", { name: "閉じる", exact: true }).click();
   } finally {
     await memberContext.close();

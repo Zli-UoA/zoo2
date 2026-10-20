@@ -22,7 +22,8 @@
 | `POST /api/tenants` | `{ "name": "チーム名" }` で作成し、作成者を所属・管理者として登録する |
 | `POST /api/tenants/members` | 管理者が選択中のワークスペースに `{ "user_name": "alice" }` のアカウントを追加する |
 | `GET /api/users` と `GET /api/users/{id}` | 選択中のワークスペースの所属ユーザーに限定する |
-| `GET/PATCH /api/users/me` | ワークスペース未所属でも本人の共通プロフィールを取得・編集する |
+| `GET/PATCH /api/users/me` | ワークスペース未所属でも本人の共通プロフィールを取得・編集する。`GET` の `is_admin` は選択中ワークスペースへの所属とロールで判定する |
+| `GET /api/users/admins` | 選択中ワークスペースの管理者IDだけを返す |
 
 書き込みレスポンスは既存の `{ data, txid }` 形式です。所属済みアカウントの再追加は更新なしとして `txid: null` を返します。テナント作成と所属・管理者登録は同じトランザクションで行います。
 

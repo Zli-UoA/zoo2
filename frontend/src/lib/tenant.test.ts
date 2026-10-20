@@ -32,6 +32,25 @@ describe("workspace selection", () => {
     expect(getSelectedTenantId()).toBe("tenant-a");
   });
 
+  it("keeps the default workspace usable when storage is blocked and refuses an unpersisted switch", () => {
+    const assign = vi.fn();
+    vi.stubGlobal("window", {
+      sessionStorage: {
+        getItem: () => {
+          throw new Error("storage blocked");
+        },
+        setItem: () => {
+          throw new Error("storage blocked");
+        },
+      },
+      location: { assign },
+    });
+    expect(getSelectedTenantId()).toBe(DEFAULT_TENANT_ID);
+    expect(saveSelectedTenantId("tenant-b")).toBe(false);
+    expect(() => switchTenant("tenant-b")).toThrow("session storage access");
+    expect(assign).not.toHaveBeenCalled();
+  });
+
   it("navigates away from old channel routes when switching", () => {
     const { assign } = browser();
     switchTenant("tenant-b");

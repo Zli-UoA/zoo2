@@ -64,6 +64,7 @@ async fn test_validation_and_duplicate_conflicts() -> anyhow::Result<()> {
     let invalid_uuid_user_req = Request::builder()
         .method("GET")
         .uri("/api/users/not-a-valid-uuid")
+        .header("X-Dev-User", &created_user_id)
         .body(Body::empty())?;
     let resp = app.clone().oneshot(invalid_uuid_user_req).await?;
     assert_eq!(resp.status(), StatusCode::BAD_REQUEST);

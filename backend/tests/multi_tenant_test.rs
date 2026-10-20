@@ -120,6 +120,32 @@ async fn workspaces_isolate_api_roles_and_electric_shapes() -> anyhow::Result<()
         json!({"user_name":alice_name}),
     )
     .await;
+    // Profile-based RBAC and the admin directory must use the selected workspace too.
+    let me_a = ok(&app, &alice, Some(&a), "GET", "/api/users/me", Value::Null).await;
+    let me_b = ok(&app, &alice, Some(&b), "GET", "/api/users/me", Value::Null).await;
+    assert_eq!(me_a["is_admin"], true);
+    assert_eq!(me_b["is_admin"], false);
+    let admins_a = ok(
+        &app,
+        &alice,
+        Some(&a),
+        "GET",
+        "/api/users/admins",
+        Value::Null,
+    )
+    .await;
+    let admins_b = ok(
+        &app,
+        &alice,
+        Some(&b),
+        "GET",
+        "/api/users/admins",
+        Value::Null,
+    )
+    .await;
+    assert_eq!(admins_a["user_ids"], json!([alice]));
+    assert_eq!(admins_b["user_ids"], json!([bob]));
+
     // Adding a member twice is an idempotent operation.
     let duplicate = ok(
         &app,
@@ -396,6 +422,7 @@ async fn workspaces_isolate_api_roles_and_electric_shapes() -> anyhow::Result<()
     assert_eq!(status, StatusCode::NOT_FOUND);
     let profile = ok(&app, &newcomer, None, "GET", "/api/users/me", Value::Null).await;
     assert_eq!(profile["id"], newcomer);
+    assert_eq!(profile["is_admin"], false);
     ok(
         &app,
         &newcomer,

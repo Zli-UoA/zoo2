@@ -1,3 +1,4 @@
+import { DEFAULT_TENANT_ID, getSelectedTenantId } from "./tenant";
 import { ApiError, createConfiguredApiClient, type FetchLike } from "./api/client";
 import type { UserResponse } from "./api/types";
 import type { AppConfig } from "./config";
@@ -65,7 +66,8 @@ export async function resolveCurrentUser(
     if (!config.oidc) {
       return {
         currentUserId: config.devUserId,
-        isAdmin: config.devUserId === DEFAULT_DEV_ADMIN_ID,
+        isAdmin:
+          config.devUserId === DEFAULT_DEV_ADMIN_ID && getSelectedTenantId() === DEFAULT_TENANT_ID,
         error: null,
       };
     }
@@ -97,7 +99,8 @@ export function createCurrentUserStore(
     : {
         currentUserId: config.devUserId,
         isLoading: false,
-        isAdmin: config.devUserId === DEFAULT_DEV_ADMIN_ID,
+        isAdmin:
+          config.devUserId === DEFAULT_DEV_ADMIN_ID && getSelectedTenantId() === DEFAULT_TENANT_ID,
         error: null,
       };
   let inflight: Promise<void> | null = null;

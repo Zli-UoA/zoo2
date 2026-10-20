@@ -42,6 +42,7 @@ function userResponse(id: string, isAdmin = false): Record<string, unknown> {
 }
 
 afterEach(() => {
+  vi.unstubAllGlobals();
   resetTokenProvider();
   setUnauthorizedHandler(null);
 });
@@ -61,6 +62,15 @@ describe("resolveCurrentUser", () => {
     const fetchMock = vi.fn(async () => jsonResponse({ error: "boom" }, 500));
     const resolved = await resolveCurrentUser(DEV_CONFIG, { fetch: fetchMock });
     expect(resolved).toEqual({ currentUserId: "dev-user-1", isAdmin: false, error: null });
+  });
+
+  it("does not carry the fixed dev administrator into another workspace on a failed profile request", async () => {
+    vi.stubGlobal("window", { sessionStorage: { getItem: () => "other-workspace" } });
+    const config = { ...DEV_CONFIG, devUserId: "00000000-0000-0000-0000-000000000001" };
+    const fetchMock = vi.fn(async () => jsonResponse({ error: "boom" }, 500));
+    expect(createCurrentUserStore(config).getState().isAdmin).toBe(false);
+    const resolved = await resolveCurrentUser(config, { fetch: fetchMock });
+    expect(resolved.isAdmin).toBe(false);
   });
 
   it("keeps the current user unresolved in dev direct mode without VITE_DEV_USER_ID", async () => {
