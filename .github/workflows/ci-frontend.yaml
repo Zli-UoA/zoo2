@@ -6,6 +6,8 @@ on:
       - "frontend/**"
       - "infra/Dockerfile-frontend-deploy*"
       - "infra/frontend-nginx.conf"
+      - "infra/csp-hashes.mjs"
+      - "infra/frontend-entrypoint.sh"
       - "infra/Dockerfile-proxy-deploy*"
       - "infra/proxy/**"
       - "infra/compose.stg*.yaml"
@@ -15,6 +17,8 @@ on:
       - "frontend/**"
       - "infra/Dockerfile-frontend-deploy*"
       - "infra/frontend-nginx.conf"
+      - "infra/csp-hashes.mjs"
+      - "infra/frontend-entrypoint.sh"
       - "infra/Dockerfile-proxy-deploy*"
       - "infra/proxy/**"
       - "infra/compose.stg*.yaml"
@@ -25,6 +29,8 @@ jobs:
     runs-on: ubuntu-latest
     env:
       POSTGRES_PASSWORD: container-test
+      # envsubst で CSP に埋め込まれることを確認するためのダミー IdP オリジン。
+      CSP_CONNECT_SRC: https://id.example
     steps:
       - name: Checkout
         uses: actions/checkout@v7
@@ -41,6 +47,10 @@ jobs:
             printf "%s" "$headers" | grep -qi "X-Content-Type-Options: nosniff"
             printf "%s" "$headers" | grep -qi "Referrer-Policy: strict-origin-when-cross-origin"
             printf "%s" "$headers" | grep -qi "X-Frame-Options: DENY"
+            printf "%s" "$headers" | grep -qi "Content-Security-Policy:"
+            # script はビルド時のインライン script ハッシュで許可し、unsafe-inline は使わない。
+            printf "%s" "$headers" | grep -q "script-src 'self' 'sha256-"
+            printf "%s" "$headers" | grep -q "connect-src 'self' https://id.example"
           done
 
       - name: Missing assets must not fall back to index.html

@@ -8,6 +8,12 @@ test("起動 → チャンネル作成 → メッセージ送信 → 反映", as
   await page.goto("/");
   await expect(page.getByRole("heading", { name: "チャンネル", exact: true })).toBeVisible();
 
+  // dev ビルドの TanStack Devtools 起動ボタンが右下の送信ボタンに重なるため、
+  // 操作の前に非表示にする（アプリ本体の挙動確認には影響しない）。
+  await page.addStyleTag({
+    content: 'button[aria-label="Open TanStack Devtools"]{display:none !important}',
+  });
+
   // 作成ダイアログを開いてチャンネルを作成し、一覧に反映される。
   await page.getByRole("button", { name: "チャンネルを作成" }).click();
   await page.getByPlaceholder("新しいチャンネル名").fill(channelName);

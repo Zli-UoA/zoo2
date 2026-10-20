@@ -54,6 +54,10 @@ services:
         VITE_OIDC_SCOPE: ${VITE_OIDC_SCOPE:-}
         VITE_OIDC_POST_LOGOUT_REDIRECT_URI: ${VITE_OIDC_POST_LOGOUT_REDIRECT_URI:-}
     restart: unless-stopped
+    environment:
+      # CSP の connect-src に足す IdP のオリジン（空白区切り）。未設定なら同一オリジンのみ。
+      # 例: https://idm.example.com
+      CSP_CONNECT_SRC: ${CSP_CONNECT_SRC:-}
     networks:
       - frontend
 

@@ -27,6 +27,7 @@ pnpm check            # format / lint / typecheck
 pnpm lint             # lint のみ
 pnpm test             # vitest (Vite+ 内蔵)
 pnpm test:e2e         # Playwright スモーク (要: DB + Electric + バックエンド)
+pnpm test:e2e:oidc    # OIDC PKCE E2E (モック IdP + 本番同等設定のバックエンド)
 pnpm generate-routes  # ルートツリーを再生成
 ```
 
@@ -136,6 +137,33 @@ cd frontend && pnpm test:e2e      # 起動 → 送信 → 反映
 
 `pnpm test:e2e` はフロントエンド（proxy モード）だけを起動し、バックエンドは既存のものを再利用します。現在ユーザー（`VITE_DEV_USER_ID`、既定 `...0001`）が未作成なら `POST /api/users` でスモーク用に作成します。
 
+### OIDC ログイン E2E（#50）
+
+`e2e/oidc.spec.ts` は、外部依存なしのモック IdP（`e2e/mock-idp-server.ts`）と本番同等の認証設定を使い、**未ログイン → authorize → ログイン → Bearer で REST/Shape → チャンネル作成 → メッセージ送信 → Shape 反映**を通しで確認します。自分のメッセージにだけ編集/削除が出ること、ログアウト → 別ユーザーでの再ログイン、参加/退出も含みます。
+
+Playwright がモック IdP（既定 `http://127.0.0.1:4100`）とフロントの dev サーバ（`http://localhost:5173`）を起動します。バックエンドは先に起動しておいてください（既定のスモークとは別設定です）。
+
+```bash
+make db-up && make migrate
+cd backend
+DEV_AUTH_ENABLED=false ENVIRONMENT=production \
+  OIDC_ISSUER=http://127.0.0.1:4100/oauth2/openid/zoo OIDC_AUDIENCE=zoo \
+  CORS_ALLOWED_ORIGINS=http://localhost:5173 \
+  DATABASE_URL='postgres://root:password@localhost:5432/zoo?sslmode=disable' \
+  ELECTRIC_URL=http://127.0.0.1:3000 \
+  cargo run
+# 別ターミナル
+cd frontend && pnpm test:e2e:oidc
+```
+
+- `OIDC_ISSUER` は `playwright.oidc.config.ts` が起動するモック IdP の issuer と一致させます。ポートを変える場合は `MOCK_IDP_PORT` と `OIDC_ISSUER` の両方を揃えてください。
+- `ELECTRIC_URL` は `localhost` ではなく `127.0.0.1` を指定します（Docker の公開ポートが IPv4 のみの環境で `::1` に解決されるのを避けるため）。
+- テストはモック IdP の `/__mock/user` でユーザーを切り替えます。テスト終了後にモック IdP とフロントは Playwright が停止します。
+- モック IdP は起動のたびに署名鍵を生成します。テストを再実行する際は、古い JWKS キャッシュが残らないようバックエンドも再起動してください。
+- CI では `.github/workflows/ci-frontend-auth-e2e.yaml` が PostgreSQL + Electric + Atlas migration + Rust を起動して同じテストを実行します。重いため `pnpm test` / `pnpm test:e2e` からは分離しています。
+
+CSP は `infra/frontend-nginx.conf`（コンテナ起動時に envsubst）で設定します。`script-src` はビルド時のインライン script ハッシュ、`connect-src` は同一オリジン + `CSP_CONNECT_SRC`（Kanidm のオリジン）です。ステージングでの設定・確認手順は [インフラの README](../infra/README.md#csp) を参照してください。
+
 ## 現状
 
-Phase 0（足場）・Phase 1（型・データアクセス層）・Phase 2（読み取り・live query）・Phase 3（書き込み・楽観更新）・Phase 4（UI: shadcn テーマのみ）・Phase 5（バックエンド経由への切替）・Phase 6（テスト・品質）完了（トラッキング: #19）。
+Phase 0（足場）・Phase 1（型・データアクセス層）・Phase 2（読み取り・live query）・Phase 3（書き込み・楽観更新）・Phase 4（UI: shadcn テーマのみ）・Phase 5（バックエンド経由への切替）・Phase 6（テスト・品質）完了（トラッキング: #19）。SPA の OIDC PKCE ログイン（#60）と、モック IdP による認証 E2E・CSP（#50）も追加済みです。

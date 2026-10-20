@@ -1,6 +1,8 @@
 **
 !infra/
 !infra/frontend-nginx.conf
+!infra/csp-hashes.mjs
+!infra/frontend-entrypoint.sh
 !frontend/
 !frontend/**
 frontend/node_modules
