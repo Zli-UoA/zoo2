@@ -22,7 +22,7 @@ for (const entry of entries) {
   }
 }
 await writeFile(
-  new URL("../public/emoji-kitchen.json", import.meta.url),
+  new URL("../src/lib/emoji/emoji-kitchen.json", import.meta.url),
   JSON.stringify({ emojis, dates, pairs }) + "\n",
 );
 console.log(`${emojis.length} emojis, ${Object.keys(pairs).length} combinations`);

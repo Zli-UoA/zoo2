@@ -190,6 +190,8 @@ SPA は `VITE_OIDC_ISSUER`・`VITE_OIDC_CLIENT_ID`・`VITE_OIDC_REDIRECT_URI`（
 
 リロード後は IdP セッションを使って authorize へ再リダイレクトし（サイレント再ログイン）、期限前には refresh_token で更新します。Kanidm は refresh_token の再利用でセッションを失効させるため、同時更新は 1 リクエストに集約し、更新後の refresh_token に置き換えます。401 と refresh 失敗は再ログインに倒します。ログアウトはメモリのトークン破棄までで、Kanidm は RP-initiated logout（`end_session_endpoint`）を公開していないため、Kanidm セッション自体を終えるには Kanidm 側でログアウトしてください。
 
+Emoji Kitchen の合成画像は `https://www.gstatic.com` からブラウザが直接取得するため、閲覧者の IP アドレスが Google に伝わります。画像には `referrerPolicy="no-referrer"` を設定し、閲覧ページの URL は送りません。CSP を導入するときは `img-src` に `https://www.gstatic.com` を含めてください。組み合わせカタログはアプリと同じオリジンのハッシュ付き `/assets/` から必要時に取得し、gzip 圧縮・`immutable` の長期キャッシュで配信します。
+
 SPA は IdP の Discovery / token エンドポイントをブラウザから直接叩くため、IdP 側で SPA のオリジンに CORS を許可する必要があります（Kanidm は OAuth2 クライアントに設定した redirect origin に応じて CORS を返します）。`Content-Security-Policy` の `connect-src` は Kanidm の確定後に #50 で設定します。
 
 > **メモ:** 現在ユーザー（内部 `users.id`）は SPA が起動時に `GET /api/users/me`（Bearer）で解決し、自分の投稿判定・参加状態・メンバー表示・退出の本人確認に使います（#49）。解決できるまでは参加状態や作成・退出の操作を出さず、解決に失敗した場合は再読み込みまたは画面遷移で再試行します。`VITE_OIDC_*` を有効にする際は、この解決と Shape / REST の Bearer がバックエンドで通ることをステージングで確認してください（#50）。

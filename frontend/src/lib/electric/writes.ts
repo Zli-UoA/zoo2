@@ -275,7 +275,7 @@ async function waitForChannelUserSync(
   operation: "insert" | "delete",
   row: ChannelUserRow,
   target: ElectricCollectionUtils<ChannelUserRow>,
-  txid: string,
+  txid: string | null,
   txidMode: TxidMode,
 ): Promise<void> {
   await syncTxid({

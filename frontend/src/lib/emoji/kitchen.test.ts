@@ -10,7 +10,7 @@ import {
 } from "./kitchen";
 
 const catalog = JSON.parse(
-  readFileSync(new URL("../../../public/emoji-kitchen.json", import.meta.url), "utf8"),
+  readFileSync(new URL("./emoji-kitchen.json", import.meta.url), "utf8"),
 ) as KitchenCatalog;
 
 describe("Emoji Kitchen", () => {

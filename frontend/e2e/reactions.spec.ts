@@ -89,7 +89,7 @@ test("Kitchen reaction persists, receives live updates and removes only my react
 
 test("failed writes roll back and catalog loading can be retried", async ({ page }) => {
   let catalogAttempts = 0;
-  await page.route("**/emoji-kitchen.json", (route) =>
+  await page.route("**/emoji-kitchen*.json", (route) =>
     ++catalogAttempts === 1 ? route.fulfill({ status: 503 }) : route.continue(),
   );
   await openMessage(page);

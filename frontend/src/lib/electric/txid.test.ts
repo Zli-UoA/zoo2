@@ -47,6 +47,15 @@ describe("syncTxid", () => {
     expect(awaitMatch).not.toHaveBeenCalled();
   });
 
+  it("does not await replicated changes for idempotent no-ops in either sync mode", async () => {
+    const { target, awaitTxId, awaitMatch } = makeTarget();
+    for (const mode of ["awaitTxId", "awaitMatch"] as const) {
+      await syncTxid({ mode, txid: null, target, match: () => true });
+    }
+    expect(awaitTxId).not.toHaveBeenCalled();
+    expect(awaitMatch).not.toHaveBeenCalled();
+  });
+
   it("converts the string txid to a number for awaitTxId", async () => {
     const { target, awaitTxId, awaitMatch } = makeTarget();
 

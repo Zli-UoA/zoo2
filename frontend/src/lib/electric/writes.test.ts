@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vite-plus/test";
 
-import type { ApiClient } from "../api/client";
+import { createApiClient, type ApiClient } from "../api/client";
 import type { ChannelRow, ChannelUserRow, MessageRow } from "./types";
 import {
   createChannelUserWrites,
@@ -373,6 +373,25 @@ describe("reaction writes", () => {
     expect(awaitTxId).not.toHaveBeenCalled();
     expect(awaitMatch).not.toHaveBeenCalled();
   });
+  it("accepts the backend's null txid through the real API client for a duplicate reaction", async () => {
+    const client = createApiClient({
+      getToken: () => null,
+      fetch: async () =>
+        new Response(JSON.stringify({ data: { ...reaction, id: "existing-id" }, txid: null }), {
+          headers: { "Content-Type": "application/json" },
+        }),
+    });
+    const { collection, awaitTxId, awaitMatch } = makeCollection();
+    const writes = createReactionWrites({
+      client,
+      txidMode: "awaitTxId",
+      getCurrentUserId: () => CURRENT_USER,
+    });
+    await writes.onInsert(params(collection, [insertMutation(reaction)]));
+    expect(awaitTxId).not.toHaveBeenCalled();
+    expect(awaitMatch).not.toHaveBeenCalled();
+  });
+
   it("encodes the emoji when removing my reaction and waits for the txid", async () => {
     const { client, del } = makeClient();
     const { collection, awaitTxId } = makeCollection();

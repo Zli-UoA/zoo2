@@ -36,7 +36,7 @@ export interface TxidSyncTarget<T extends Row<unknown>> {
 export interface SyncTxidOptions<T extends Row<unknown>> {
   mode: TxidMode;
   /** REST エンベロープの `txid`。Electric は number を要求するため数値化する。 */
-  txid: string;
+  txid: string | null;
   target: TxidSyncTarget<T>;
   /** `awaitMatch` モードで使う照合述語。 */
   match: ChangeMatcher<T>;
@@ -56,7 +56,8 @@ export interface SyncTxidOptions<T extends Row<unknown>> {
  */
 export async function syncTxid<T extends Row<unknown>>(options: SyncTxidOptions<T>): Promise<void> {
   const { mode, txid, target, match, timeout } = options;
-  if (mode === "skip") {
+  // Idempotent no-ops return null and emit no change or txid to wait for.
+  if (mode === "skip" || txid === null) {
     return;
   }
   if (mode === "awaitTxId") {

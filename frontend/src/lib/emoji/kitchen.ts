@@ -1,3 +1,5 @@
+import catalogUrl from "./emoji-kitchen.json?url";
+
 export interface KitchenCatalog {
   /** Source codepoint sequence, printable emoji, English search label. */
   emojis: [string, string, string][];
@@ -44,12 +46,24 @@ export function kitchenLabel(value: string): string {
     .join(" + ");
 }
 
+const catalogIndices = new WeakMap<KitchenCatalog, ReadonlyMap<string, number>>();
+
+function indexCatalog(catalog: KitchenCatalog): ReadonlyMap<string, number> {
+  let indices = catalogIndices.get(catalog);
+  if (!indices) {
+    indices = new Map(
+      catalog.emojis.map(([codepoint], index) => [componentKey(codepoint)!, index]),
+    );
+    catalogIndices.set(catalog, indices);
+  }
+  return indices;
+}
+
 export function kitchenImageUrl(catalog: KitchenCatalog, value: string): string | null {
   const parts = kitchenParts(value);
   if (!parts) return null;
-  const indices = parts.map((part) =>
-    catalog.emojis.findIndex(([codepoint]) => componentKey(codepoint) === part),
-  );
+  const lookup = indexCatalog(catalog);
+  const indices = parts.map((part) => lookup.get(part) ?? -1);
   if (indices.some((index) => index < 0)) return null;
   const [first, second] = indices.sort((a, b) => a - b);
   const packed = catalog.pairs[`${first}_${second}`];
@@ -68,10 +82,12 @@ let catalogPromise: Promise<KitchenCatalog> | null = null;
 
 /** Fetch the compact local catalog only when a Kitchen image or picker is used. */
 export function loadKitchenCatalog(): Promise<KitchenCatalog> {
-  catalogPromise ??= fetch("/emoji-kitchen.json")
+  catalogPromise ??= fetch(catalogUrl)
     .then(async (response) => {
       if (!response.ok) throw new Error("Emoji Kitchenの一覧を読み込めませんでした");
-      return (await response.json()) as KitchenCatalog;
+      const catalog = (await response.json()) as KitchenCatalog;
+      indexCatalog(catalog);
+      return catalog;
     })
     .catch((error: unknown) => {
       catalogPromise = null;

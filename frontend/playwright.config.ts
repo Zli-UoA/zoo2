@@ -35,6 +35,8 @@ export default defineConfig({
   projects: [{ name: "chromium", use: { ...devices["Desktop Chrome"] } }],
   webServer: {
     // Devtools のボタンの重なりと、複数ブラウザ間のログ転送による干渉を避ける。
+    // Vite の mode は production。将来 .env.production を追加すると E2E にも適用される。
+    // dev サーバーなので NODE_ENV が development の間は import.meta.env.DEV は true。
     command: "pnpm dev --mode production",
     url: baseURL,
     reuseExistingServer: !process.env.CI,

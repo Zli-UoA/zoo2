@@ -10,6 +10,6 @@ curl -fL --compressed https://raw.githubusercontent.com/xsalazar/emoji-kitchen-b
 node scripts/generate-emoji-kitchen.mjs /tmp/emoji-kitchen-metadata.json
 ```
 
-`public/emoji-kitchen.json` は絵文字一覧、配信日一覧と、ソート済み絵文字インデックスのペアから「配信日インデックス × 2 + URL の絵文字順を反転するか」へのマップです。未収録の組み合わせでは URL を推測しません。カタログは初回の利用時に読み込み、失敗時は再試行できます。
+`src/lib/emoji/emoji-kitchen.json` は絵文字一覧、配信日一覧と、ソート済み絵文字インデックスのペアから「配信日インデックス × 2 + URL の絵文字順を反転するか」へのマップです。未収録の組み合わせでは URL を推測しません。カタログは初回の利用時に読み込み、失敗時は再試行できます。Vite の `?url` インポートでハッシュ付きの `/assets/` に出力し、nginx では gzip 圧縮と `immutable` の長期キャッシュを使います。
 
 元データには 619 種類の絵文字と 147,000 通りの組み合わせがあります。データ更新時はバックエンドの `emojis` クレートが対応する Unicode バージョンと、実際の画像 URL を確認してください。
