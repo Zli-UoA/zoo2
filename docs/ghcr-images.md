@@ -1,76 +1,184 @@
-# GHCR images
+# GHCR イメージ
 
-Issue #73 publishes application images; deploying them to k3s and managing Preview namespaces belong to the subsequent deployment issues. Existing Compose configuration remains available.
+Issue #73 の範囲は、アプリケーションイメージの公開までです。k3s へのデプロイと Preview 用 namespace の管理は、後続のデプロイ関連 Issue で扱います。既存の Compose 構成も引き続き使えます。
 
-## Image contract
+## イメージの仕様
 
-All images use `ghcr.io/zli-uoa/zoo2-<component>` and `linux/amd64`.
+イメージ名は `ghcr.io/zli-uoa/zoo2-<component>`、プラットフォームは `linux/amd64` に統一しています。
 
-| Event | frontend | backend / migrate |
+| イベント | frontend | backend / migrate |
 | --- | --- | --- |
-| main push | `<40-character SHA>`, `latest` with production OIDC; `preview-<SHA>`, `preview` with development authentication | `<SHA>`, `latest` |
-| Same-repository PR opened / synchronized / reopened | `pr-<number>-<head SHA>` with development authentication when changed; otherwise `preview` | `pr-<number>-<head SHA>` when changed; otherwise `latest` |
-| Fork PR | Publication skipped | Publication skipped |
+| main への push | 本番 OIDC 設定: `<40 文字の SHA>` と `latest`<br>開発用認証: `preview-<SHA>` と `preview` | `<SHA>` と `latest` |
+| 同一リポジトリの PR の opened / synchronized / reopened | 変更があれば開発用認証で `pr-<番号>-<head SHA>`<br>なければ `preview` を使う | 変更があれば `pr-<番号>-<head SHA>`<br>なければ `latest` を使う |
+| フォークからの PR | 公開しない | 公開しない |
 
-The plan job outputs `sha`, `tags` (a component-to-tag JSON object), and the build matrix. Its Actions summary records the selected references. The PR diff is cumulative against the base, including original paths for renamed files. Source files and component Dockerfiles/ignore files trigger their component; nginx configuration triggers frontend; database definitions trigger migrate. Shared image scripts, image actions, the publication workflow, or a root Docker ignore change trigger every component. Diffs reaching GitHub's 3,000-file limit also build every component.
+plan ジョブの出力は次の 3 つです。参照するタグは Actions のサマリに記録されます。
 
-Bootstrap all main images before using unchanged-component fallbacks. `latest` and `preview` are mutable aliases; a deployment controller should resolve them to digests when recording a release. After every component build succeeds, a single promote job checks the current main head once and moves all aliases one after another, restoring the previous digests if any update fails. Registry tags cannot move atomically across packages, so aliases may briefly point to different commits during promotion. A controller that needs a consistent set should read `org.opencontainers.image.revision` from one alias and deploy every component by its `<SHA>` tag. Old main and stale/closed PR runs cannot overwrite current aliases or publish obsolete PR builds, respectively. Images pushed by a build still running when its PR closes are reclaimed by the daily cleanup.
+- `sha`
+- `tags`（コンポーネント名からタグへの JSON オブジェクト）
+- ビルド matrix
 
-## Repository setup
+どのコンポーネントをビルドするかは、base からの累積差分で判定します。リネームされたファイルは元のパスも判定に含めます。
 
-Configure these **Repository Variables**, not secrets, for the existing Kanidm client. They become public frontend build output. Do not invent production values.
-
-| Variable | Requirement |
+| 変更されたファイル | ビルド対象 |
 | --- | --- |
-| `VITE_OIDC_ISSUER` | Required, existing Kanidm issuer |
-| `VITE_OIDC_CLIENT_ID` | Required, existing client ID |
-| `VITE_OIDC_REDIRECT_URI` | Optional; application defaults to the origin plus `/auth/callback` |
-| `VITE_OIDC_SCOPE` | Optional; application default is `openid profile email` |
-| `VITE_OIDC_POST_LOGOUT_REDIRECT_URI` | Optional; application default |
+| ソースファイル、コンポーネントの Dockerfile・ignore ファイル | そのコンポーネント |
+| nginx 設定 | frontend |
+| データベース定義 | migrate |
+| イメージ用の共通スクリプト・アクション、公開ワークフロー、ルートの Docker ignore | 全コンポーネント |
 
-Production frontend publication fails if issuer/client ID is empty or whitespace. Preview frontend builds explicitly clear all five values. `VITE_API_BASE_URL` is empty to use same-origin `/api` routing. Existing authentication readiness requirements still apply before production deployment.
+差分が GitHub の上限である 3,000 ファイルに達した場合も、全コンポーネントをビルドします。
 
-Publication and cleanup use the repository `GITHUB_TOKEN` with `packages: write`. Images carry the `org.opencontainers.image.source` repository label and the `org.opencontainers.image.revision` commit label. For existing packages, check package settings: link the source repository, allow this repository's Actions access, and grant the repository **Admin** package access for deletion. Organization policies must permit image publication. A missing package is skipped; permission failures fail the run. Package visibility and k3s pull credentials are configured separately; publication does not make a private package publicly pullable.
+変更のないコンポーネントは `latest` / `preview` を使うので、使い始める前に main のイメージをすべて一度ビルドしておいてください。
 
-## Retention and operation
+`latest` と `preview` は書き換わるエイリアスです。デプロイ用のコントローラは、リリースを記録するときに digest に解決してください。昇格の流れは次のとおりです。
 
-`Clean up images` runs on PR close, daily at 18:23 UTC (03:23 JST), and manually. Manual runs default to `dry_run: true`; review the Actions summary before selecting `false`. Close and scheduled runs delete candidates automatically.
+- 全コンポーネントのビルドが成功したあと、単一の promote ジョブが main の head を 1 回だけ確認し、エイリアスを順番に更新します。
+- 途中で失敗した場合は、更新済みのエイリアスを元の digest に戻します。
+- レジストリのタグはパッケージをまたいで一度に動かせないため、昇格中は一時的にエイリアスが別々のコミットを指すことがあります。
 
-- Keep the newest 2 image versions per component for each open PR. The image matching the PR's current head SHA is always kept, even after a force-push back to an older commit.
-- Keep the newest 15 production SHA versions and 15 shared Preview SHA versions per component, sorted by creation time.
-- Remove all generations belonging to closed PRs. Close events target their PR; daily runs also catch missed close events.
-- Keep `latest`, `preview`, unknown tags, and any version carrying at least one retained tag. A version is deleted only when all its tags are disposable.
-- Delete untagged versions after 24 hours, preserving platform and attestation manifests recursively referenced by retained OCI indexes. A manifest missing from the registry (404) references nothing; other inspection failures abort cleanup rather than assume a manifest is disposable.
-- Open PRs are listed once per package. Before each deletion, recheck the version's tags and, for closed-PR tags, the PR state. A version whose tags changed or whose PR was reopened is kept along with its referenced manifests, and cleanup continues. Already deleted versions (404) are harmless; other API errors fail the run, and the Actions summary still lists the deletions completed before the failure.
+組み合わせの一貫性が必要なコントローラは、どれか 1 つのエイリアスから `org.opencontainers.image.revision` を読み、全コンポーネントをその `<SHA>` タグでデプロイしてください。
 
-Image builds are serialized per branch or PR (`ghcr-images-<ref>`) and cleanup runs in its own `ghcr-cleanup` group, both with `queue: max` so pending runs are not replaced. GitHub permits up to 100 queued runs. A build can reference an existing untagged manifest from a new index, so cleanup defers untagged deletion while any `Publish images` run is queued or in progress; tagged deletions still proceed because each is rechecked. This check is not an atomic lock. It is sufficient because BuildKit writes a new, timestamped image config and provenance on every build, and promotion only references manifests tagged by the current run, so a new index does not reference an untagged manifest older than 24 hours. Do not publish to these packages from a writer outside `Publish images`.
+古い main の実行は、現在のエイリアスを上書きしません。古くなった PR や閉じた PR の実行は、イメージを公開しません。PR を閉じた時点で実行中だったビルドが push したイメージは、日次のクリーンアップで回収されます。
 
-Buildx uses component-specific GitHub Actions layer caches. Backend additionally restores Cargo registry, git, and target cache mounts using `actions/cache` and `buildkit-cache-dance`. The cache key is the hash of `Cargo.lock` and the backend Dockerfile, so it is saved once per dependency set; on an exact hit, extraction and saving are skipped to stay within the 10 GB repository cache limit. The release executable is copied out of the target cache mount before the Distroless stage copies it. Local target directories and environment files are excluded from the backend build context.
+## リポジトリの設定
 
-## Validation and acceptance
+既存の Kanidm クライアント用に、次の値を secrets ではなく **Repository Variables** に設定してください。値は frontend のビルド成果物に含まれて公開されます。本番の値を勝手に決めて入れないでください。
 
-Local verification on 2026-10-20: all 18 policy/API tests passed; backend, migrate, Preview frontend, and frontend with synthetic OIDC build arguments built successfully. The backend executable is approximately 14 MiB and `file` reports `stripped`. It starts in Distroless and reaches database connection initialization; no database was provided for this smoke check. `git diff --check` passed. Actionlint passed with only its unsupported `concurrency.queue` key excluded; that key was checked against GitHub's official queue documentation.
+| 変数 | 要件 |
+| --- | --- |
+| `VITE_OIDC_ISSUER` | 必須。既存の Kanidm の issuer |
+| `VITE_OIDC_CLIENT_ID` | 必須。既存のクライアント ID |
+| `VITE_OIDC_REDIRECT_URI` | 任意。省略時はオリジンに `/auth/callback` を付けた URL |
+| `VITE_OIDC_SCOPE` | 任意。省略時は `openid profile email` |
+| `VITE_OIDC_POST_LOGOUT_REDIRECT_URI` | 任意。省略時はアプリケーションの既定値 |
 
-Actual GHCR push/deletion, Actions cache restoration, production Kanidm values, and k3s acceptance remain unverified. Repository Variables were empty when inspected during planning; no production values or package settings were changed.
+- issuer かクライアント ID が空か空白だけのときは、本番 frontend の公開を失敗させます。
+- Preview 用 frontend のビルドでは、5 つの値をすべて明示的に空にします。
+- `VITE_API_BASE_URL` は空にして、同一オリジンの `/api` にルーティングします。
+- 本番デプロイの前には、既存の認証まわりの準備要件も満たしてください。
 
-Run the policy tests with:
+公開とクリーンアップには、`packages: write` 権限を付けたリポジトリの `GITHUB_TOKEN` を使います。イメージには 2 つのラベルを付けます。
+
+- `org.opencontainers.image.source`: リポジトリ
+- `org.opencontainers.image.revision`: コミット
+
+既存のパッケージは、パッケージ設定で次の 3 点を確認してください。
+
+- ソースリポジトリがリンクされている
+- このリポジトリの Actions からのアクセスが許可されている
+- 削除のために、このリポジトリに **Admin** 権限が付与されている
+
+イメージを公開できるかは Organization のポリシーにも左右されます。パッケージが存在しない場合はスキップし、権限エラーの場合は実行を失敗させます。
+
+パッケージの公開範囲と k3s の pull 用認証情報は、別途設定してください。イメージを公開しても、private パッケージが誰でも pull できるようになるわけではありません。
+
+## 保持ルールと運用
+
+`Clean up images` が実行されるのは次の 3 つの場合です。
+
+- PR が閉じられたとき
+- 毎日 18:23 UTC（03:23 JST）
+- 手動で実行したとき
+
+手動実行の既定値は `dry_run: true` です。`false` にする前に Actions のサマリを確認してください。PR が閉じられたときと定期実行では、削除候補を自動で削除します。
+
+- 開いている PR については、コンポーネントごとに新しい順に 2 バージョンを保持します。PR の現在の head SHA に一致するイメージは、古いコミットに force-push で戻した場合でも必ず保持します。
+- 本番用の SHA バージョンと、共有の Preview 用 SHA バージョンは、コンポーネントごとに作成日時の新しい順に 15 ずつ保持します。
+- 閉じた PR のイメージは、すべての世代を削除します。close イベントではその PR だけを対象にし、取りこぼした close イベントは日次の実行で拾います。
+- 次のバージョンは保持します。1 つのバージョンが複数のタグを持つ場合、すべてのタグが削除対象のときだけ削除します。
+  - `latest` か `preview` を持つもの
+  - 想定外のタグを持つもの
+  - 保持対象のタグを 1 つでも持つもの
+- タグなしのバージョンは、作成から 24 時間経ったら削除します。
+  - 保持する OCI index から再帰的に参照されているプラットフォームと attestation のマニフェストは残します。
+  - レジストリに存在しないマニフェスト（404）は、何も参照していないものとして扱います。
+  - それ以外の理由でマニフェストを確認できなかった場合は、削除してよいとは判断せず、クリーンアップを中止します。
+- 開いている PR の一覧は、パッケージごとに 1 回取得します。
+  - 削除の直前に、そのバージョンのタグと、PR タグを持つ場合はその PR の状態を確認し直します。
+  - タグが変わっていたバージョンや PR が reopen されたバージョンは、参照先のマニフェストごと残し、クリーンアップを続けます。
+  - すでに削除済み（404）の場合は問題ありません。それ以外の API エラーでは実行を失敗させますが、失敗するまでに削除した分は Actions のサマリに記録されます。
+
+### 同時実行の制御
+
+| 対象 | concurrency group |
+| --- | --- |
+| イメージのビルド | ブランチまたは PR ごとの `ghcr-images-<ref>`。同じブランチや PR の中で直列に実行する |
+| クリーンアップ | 専用の `ghcr-cleanup` |
+
+どちらも `queue: max` を指定しているので、待機中の実行が置き換えられることはありません。GitHub が待機させられる実行は最大 100 件です。
+
+新しい index が既存のタグなしマニフェストを参照する可能性があるため、`Publish images` の実行が queued か in_progress の間は、タグなしバージョンの削除を次回に回します。タグ付きバージョンは 1 件ずつ確認し直すので、そのまま削除を進めます。
+
+この確認はアトミックなロックではありませんが、次の理由で十分です。
+
+- BuildKit はビルドのたびに、タイムスタンプ入りの新しい image config と provenance を作ります。
+- 昇格で参照するのは、その実行でタグを付けたマニフェストだけです。
+
+そのため、新しい index が 24 時間以上前のタグなしマニフェストを参照することはありません。`Publish images` 以外からこれらのパッケージにイメージを公開しないでください。
+
+### ビルドキャッシュ
+
+- Buildx は、コンポーネントごとに分けた GitHub Actions のレイヤーキャッシュを使います。
+- backend はこれに加えて、`actions/cache` と `buildkit-cache-dance` で Cargo の registry・git・target のキャッシュマウントを復元します。
+- このキャッシュのキーは `Cargo.lock` と backend の Dockerfile のハッシュなので、依存関係の組み合わせごとに 1 回だけ保存されます。キーが完全一致した場合は抽出も保存もせず、リポジトリのキャッシュ上限 10 GB に収まるようにしています。
+- リリースビルドの実行ファイルは、target のキャッシュマウントから取り出したあとで Distroless ステージにコピーします。
+- ローカルの target ディレクトリと環境変数ファイルは、backend のビルドコンテキストから除外しています。
+
+## 検証と受け入れ
+
+2026-10-20 にローカルで次のことを確認しました。
+
+- ポリシーと API の 18 件のテストはすべて通過しました。
+- 次の 4 つのビルドが成功しました。
+  - backend
+  - migrate
+  - Preview 用 frontend
+  - 仮の OIDC ビルド引数を渡した frontend
+- backend の実行ファイルは約 14 MiB で、`file` の結果は `stripped` でした。
+- backend は Distroless 上で起動し、データベース接続の初期化まで進みました。このスモークテストではデータベースを用意していません。
+- `git diff --check` は通過しました。
+- actionlint は、対応していない `concurrency.queue` キーだけを除外して通過しました。このキーは GitHub の公式ドキュメントで確認済みです。
+
+次の項目はまだ確認できていません。
+
+- GHCR への実際の push と削除
+- Actions でのキャッシュの復元
+- 本番の Kanidm の値
+- k3s での受け入れ
+
+計画段階で確認したときは Repository Variables は空でした。本番の値やパッケージの設定は変更していません。
+
+ポリシーのテストは次のコマンドで実行します。
 
 ```sh
 node .github/scripts/images.test.mjs
 ```
 
-They exercise component selection, head SHA tagging, fork/stale/closed PR skips, rename/truncated diffs, retention boundaries, multi-tag protection, untagged age, manifest references, and API failure handling. Both workflows run these tests before their operation.
+テストで確認している内容は次のとおりです。両方のワークフローとも、処理の前にこのテストを実行します。
 
-Build the three Dockerfiles from the repository root to validate container output. For production frontend build acceptance, pass the actual configured OIDC build arguments; an empty-argument build validates only Preview output.
+- コンポーネントの選択と、head SHA でのタグ付け
+- フォーク・古い PR・閉じた PR のスキップ
+- リネームを含む差分と、上限で打ち切られた差分
+- 保持数の境界、複数タグを持つバージョンの保護、タグなしバージョンの経過時間
+- マニフェストの参照の保護
+- API エラーの扱い
 
-After merge and repository setup, verify separately on GitHub:
+コンテナの出力を確認するときは、リポジトリのルートで 3 つの Dockerfile をビルドしてください。本番用 frontend のビルドを受け入れ確認するときは、実際に設定した OIDC のビルド引数を渡してください。引数を空にしたビルドで確認できるのは Preview 用の出力だけです。
 
-1. Main publishes all immutable tags and current aliases; verify production OIDC and Preview development-auth builds.
-2. A same-repository PR changing only one component publishes only its image with its head SHA; inspect fallback references. Fork PRs do not publish.
-3. Repeated backend builds restore both Docker layers and Rust cache mounts in Actions logs.
-4. Run cleanup in dry-run mode, inspect the selected versions and protected references, then exercise deletion with disposable PR image generations.
-5. Close a test PR and confirm its image versions disappear. Verify the daily policy preserves the configured generation counts and referenced manifests.
+マージしてリポジトリを設定したあと、GitHub 上で次のことを別途確認してください。
 
-Local tests and builds do not demonstrate GHCR permissions, actual push/deletion, cache restoration across Actions runners, or k3s pull/deployment acceptance. These require the live checks above.
+1. main への push で、すべての不変タグと現在のエイリアスが公開されること。本番 OIDC 用と Preview 開発認証用の各ビルドも確認する。
+2. 同一リポジトリの PR で 1 つのコンポーネントだけを変更したとき、そのイメージだけが head SHA 付きで公開されること。変更のないコンポーネントの参照先も確認する。フォークからの PR では公開されないこと。
+3. backend を繰り返しビルドしたとき、Docker のレイヤーと Rust のキャッシュマウントの両方が復元されることを Actions のログで確認する。
+4. クリーンアップを dry run で実行し、選ばれたバージョンと保護された参照を確認する。そのあと、削除してよい PR のイメージで実際の削除を試す。
+5. テスト用の PR を閉じて、そのイメージが消えることを確認する。日次のクリーンアップで、設定した世代数と参照先のマニフェストが残ることも確認する。
 
-References: [GitHub package deletion](https://docs.github.com/en/packages/learn-github-packages/deleting-and-restoring-a-package), [Docker Actions caches](https://docs.docker.com/build/ci/github-actions/cache/), [GitHub concurrency queues](https://docs.github.com/en/actions/how-tos/write-workflows/choose-when-workflows-run/control-workflow-concurrency).
+ローカルのテストとビルドでは、次の点は確かめられません。上の確認を GitHub 上で行う必要があります。
+
+- GHCR の権限
+- 実際の push と削除
+- Actions ランナー間でのキャッシュの復元
+- k3s での pull とデプロイの受け入れ
+
+参考: [GitHub のパッケージ削除](https://docs.github.com/en/packages/learn-github-packages/deleting-and-restoring-a-package)、[Docker の GitHub Actions キャッシュ](https://docs.docker.com/build/ci/github-actions/cache/)、[GitHub Actions の concurrency のキュー](https://docs.github.com/en/actions/how-tos/write-workflows/choose-when-workflows-run/control-workflow-concurrency)
