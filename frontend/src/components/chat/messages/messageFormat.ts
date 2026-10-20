@@ -11,6 +11,8 @@ export interface FeedMessage {
   user_id: string;
   content: string;
   created_at: string;
+  /** 返信先のルートメッセージ。`null` はチャンネル直下。 */
+  parent_id: string | null;
   user_name?: string | null;
   display_name?: string | null;
 }

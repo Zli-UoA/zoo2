@@ -7,7 +7,7 @@ import { getCurrentUserStore } from "../currentUser";
 import { createShapeFetch, type ShapeFetchSource } from "./headers";
 import { buildShapeRequestUrl, resolveShapeUrl, type ShapeQueryOptions } from "./query";
 import { SHAPE_META, coerceElectricRow, type ShapeName } from "./schema";
-import type { ChannelRow, ChannelUserRow, MessageRow, MessageReactionRow, UserRow } from "./types";
+import type { ChannelRow, ChannelUserRow, MessageReactionRow, MessageRow, UserRow } from "./types";
 import {
   createChannelUserWrites,
   createChannelWrites,
@@ -133,7 +133,9 @@ function reactionsCollection(
       onDelete: writes.onDelete,
     }),
   );
+  // メッセージ単位のチップ集計と、自分のリアクション判定で引く。
   collection.createIndex((row) => row.message_id);
+  collection.createIndex((row) => row.user_id);
   return collection;
 }
 
@@ -141,6 +143,7 @@ export type ChannelsCollection = ReturnType<typeof channelsCollection>;
 export type UsersCollection = ReturnType<typeof usersCollection>;
 export type ChannelUsersCollection = ReturnType<typeof channelUsersCollection>;
 export type MessagesCollection = ReturnType<typeof messagesCollection>;
+export type ReactionsCollection = ReturnType<typeof reactionsCollection>;
 
 export interface CollectionsBundle {
   config: AppConfig;
@@ -149,7 +152,8 @@ export interface CollectionsBundle {
   channelUsers: ChannelUsersCollection;
   /** `channel_id` 単位で生成しキャッシュした messages コレクションを返す。 */
   messages: (channelId: string) => MessagesCollection;
-  reactions: (channelId: string) => ReturnType<typeof reactionsCollection>;
+  /** `channel_id` 単位で生成しキャッシュした message_reactions コレクションを返す。 */
+  reactions: (channelId: string) => ReactionsCollection;
 }
 
 export function isBrowser(): boolean {
@@ -183,7 +187,7 @@ export function getCollections(config?: AppConfig): CollectionsBundle {
   }
 
   const messageCache = new Map<string, MessagesCollection>();
-  const reactionCache = new Map<string, ReturnType<typeof reactionsCollection>>();
+  const reactionCache = new Map<string, ReactionsCollection>();
   // 現在ユーザーは `useCurrentUser` と同じストアから引く（OIDC では
   // `/api/users/me` の解決後に値が入る）。退出の本人確認は書き込み時に
   // getCurrentUserId() で最新値を読む。

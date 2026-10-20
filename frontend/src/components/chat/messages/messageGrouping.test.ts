@@ -9,6 +9,7 @@ function message(id: string, userId: string, createdAt: string): FeedMessage {
     user_id: userId,
     content: id,
     created_at: createdAt,
+    parent_id: null,
     user_name: userId,
     display_name: userId,
   };

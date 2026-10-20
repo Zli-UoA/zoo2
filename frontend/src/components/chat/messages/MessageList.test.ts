@@ -31,6 +31,7 @@ it("announces each new message in its arrival language without repeating it on a
     user_id: "other",
     content: id,
     created_at: "2026-01-02 00:00:00.000",
+    parent_id: null,
     display_name: "Alice",
   });
   const first = message("one");
@@ -58,6 +59,8 @@ it("announces each new message in its arrival language without repeating it on a
             canReact: false,
             onReaction: noop,
             onPickReaction: noop,
+            replyCounts: new Map(),
+            onOpenThread: noop,
           }),
         ],
       }),

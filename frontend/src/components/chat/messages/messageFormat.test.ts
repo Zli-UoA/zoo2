@@ -23,6 +23,7 @@ function message(overrides: Partial<FeedMessage> = {}): FeedMessage {
     user_id: "user-1",
     content: "hello",
     created_at: "2026-01-02 00:00:00.000",
+    parent_id: null,
     user_name: "alice",
     display_name: "Alice",
     ...overrides,

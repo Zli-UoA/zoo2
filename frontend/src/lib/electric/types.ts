@@ -1,6 +1,6 @@
 import type { TimestampString } from "../timestamps";
 
-export type TableName = "users" | "channels" | "messages" | "channel_user" | "message_reactions";
+export type TableName = "users" | "channels" | "messages" | "message_reactions" | "channel_user";
 
 export type UserRow = {
   id: string;
@@ -30,12 +30,8 @@ export type MessageRow = {
   created_at: TimestampString;
   updated_at: TimestampString | null;
   deleted_at: TimestampString | null;
-};
-
-export type ChannelUserRow = {
-  user_id: string;
-  channel_id: string;
-  joined_at: TimestampString;
+  /** 返信先のルートメッセージ。`null` はチャンネル直下のメッセージ。 */
+  parent_id: string | null;
 };
 
 export type MessageReactionRow = {
@@ -46,10 +42,16 @@ export type MessageReactionRow = {
   created_at: TimestampString;
 };
 
+export type ChannelUserRow = {
+  user_id: string;
+  channel_id: string;
+  joined_at: TimestampString;
+};
+
 export type TableRowMap = {
   users: UserRow;
   channels: ChannelRow;
   messages: MessageRow;
-  channel_user: ChannelUserRow;
   message_reactions: MessageReactionRow;
+  channel_user: ChannelUserRow;
 };

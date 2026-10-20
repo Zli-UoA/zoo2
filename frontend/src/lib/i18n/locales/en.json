@@ -142,6 +142,20 @@
     "announcement": "New message from {{author}}: “{{excerpt}}”",
     "announcementAuthor": "New message from {{author}}"
   },
+  "threads": {
+    "title": "Thread",
+    "close": "Close thread",
+    "open": "Open thread",
+    "openWithCount": "Open thread ({{count}} replies)",
+    "replyCount_one": "{{count}} reply",
+    "replyCount_other": "{{count}} replies",
+    "loading": "Loading…",
+    "repliesLoading": "Loading replies…",
+    "loadError": "Failed to load replies.",
+    "empty": "No replies yet. Send the first reply.",
+    "compose": "Write a reply",
+    "rootDeleted": "The original message was deleted"
+  },
   "reactions": {
     "add": "Add a reaction",
     "picker": "Reactions",

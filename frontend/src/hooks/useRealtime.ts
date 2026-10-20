@@ -25,8 +25,9 @@ export function useActiveChannels() {
 }
 
 /**
- * 指定チャンネルのメッセージを投稿者名（users）と結合して購読する。
- * `channelId` が無いときは購読しない。
+ * 指定チャンネルのルートメッセージ（`parent_id IS NULL`）を投稿者名（users）と
+ * 結合して購読する。返信は `useThreadFeed` が同じ messages コレクションを
+ * `parent_id` で絞って購読する。`channelId` が無いときは購読しない。
  */
 export function useMessageFeed(channelId: string | null) {
   const { messages, users } = getCollections();

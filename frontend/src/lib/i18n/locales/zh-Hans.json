@@ -142,6 +142,20 @@
     "announcement": "{{author}} 的新消息：“{{excerpt}}”",
     "announcementAuthor": "{{author}} 的新消息"
   },
+  "threads": {
+    "title": "子线程",
+    "close": "关闭子线程",
+    "open": "打开子线程",
+    "openWithCount": "打开子线程（{{count}} 条回复）",
+    "replyCount_one": "{{count}} 条回复",
+    "replyCount_other": "{{count}} 条回复",
+    "loading": "加载中…",
+    "repliesLoading": "正在加载回复…",
+    "loadError": "无法加载回复。",
+    "empty": "暂无回复。发送第一条回复吧。",
+    "compose": "输入回复",
+    "rootDeleted": "原消息已被删除"
+  },
   "reactions": {
     "add": "添加表情回应",
     "picker": "表情回应",

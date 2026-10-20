@@ -3,7 +3,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vite-plus/test";
 
 import { LocaleProvider } from "../../i18n/LocaleProvider";
-import { MessageRow } from "./MessageRow";
+import { MessageRow, type MessageRowProps } from "./MessageRow";
 import type { MessageItem } from "./messageGrouping";
 
 function buildItem(overrides: Partial<MessageItem["message"]> = {}): MessageItem {
@@ -13,6 +13,7 @@ function buildItem(overrides: Partial<MessageItem["message"]> = {}): MessageItem
       user_id: "user-1",
       content: "hello",
       created_at: "2026-01-02 00:00:00.000",
+      parent_id: null,
       user_name: "alice",
       display_name: "Alice",
       ...overrides,
@@ -25,7 +26,7 @@ function buildItem(overrides: Partial<MessageItem["message"]> = {}): MessageItem
 
 function noop() {}
 
-function render(item: MessageItem, isOwn = false): string {
+function render(item: MessageItem, isOwn = false, props: Partial<MessageRowProps> = {}): string {
   return renderToStaticMarkup(
     createElement(LocaleProvider, {
       children: createElement(MessageRow, {
@@ -43,6 +44,7 @@ function render(item: MessageItem, isOwn = false): string {
         canReact: false,
         onReaction: noop,
         onPickReaction: noop,
+        ...props,
       }),
     }),
   );
@@ -63,6 +65,35 @@ describe("MessageRow", () => {
     expect(html).not.toContain("<script>");
     expect(html).toContain("&lt;script&gt;alert(1)&lt;/script&gt;");
     expect(html).toContain('href="https://example.com/"');
+  });
+
+  it("renders reaction chips with counts and the current user's highlight", () => {
+    const html = render(buildItem(), false, {
+      reactions: [
+        { emoji: "👍", count: 3, ownId: "r1" },
+        { emoji: "🎉", count: 1, ownId: null },
+      ],
+      canReact: true,
+    });
+
+    expect(html).toContain("👍");
+    expect(html).toContain(">3<");
+    expect(html).toContain("🎉");
+    expect(html).toContain('aria-pressed="true"');
+    expect(html).toContain('aria-pressed="false"');
+    expect(html).toContain("border-brand/40");
+  });
+
+  it("renders the reply count only for a root message", () => {
+    const html = render(buildItem(), false, {
+      replyCount: 4,
+      onOpenThread: noop,
+    });
+    expect(html).toContain("4 件の返信");
+    expect(html).toContain('aria-label="スレッドを開く（4 件の返信）"');
+
+    const withoutThread = render(buildItem(), false, { replyCount: 0 });
+    expect(withoutThread).not.toContain("件の返信");
   });
 
   it("keeps the hover actions from stealing clicks while invisible", () => {

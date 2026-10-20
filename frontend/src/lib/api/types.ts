@@ -28,6 +28,15 @@ export interface MessageResponse {
   created_at: TimestampString;
   updated_at: TimestampString | null;
   deleted_at: TimestampString | null;
+  parent_id: string | null;
+}
+
+export interface MessageReactionResponse {
+  id: string;
+  message_id: string;
+  user_id: string;
+  emoji: string;
+  created_at: TimestampString;
 }
 
 export interface ChannelUserResponse {
@@ -63,10 +72,17 @@ export interface CreateMessageRequest {
   id?: string;
   channel_id: string;
   content: string;
+  /** 返信先のルートメッセージ。通常メッセージでは省略する。 */
+  parent_id?: string;
 }
 
 export interface UpdateMessageRequest {
   content: string;
+}
+
+export interface AddReactionRequest {
+  id?: string;
+  emoji: string;
 }
 
 export interface LeaveChannelResponse {
