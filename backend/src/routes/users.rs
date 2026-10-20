@@ -10,7 +10,7 @@ use crate::{
     auth::{AuthUser, rbac::is_workspace_admin},
     db::get_current_txid,
     error::AppError,
-    models::User,
+    models::{User, UserRole},
     routes::response::ApiResponse,
     state::AppState,
     validation::{validate_display_name, validate_user_name},
@@ -62,7 +62,42 @@ pub fn router() -> Router<AppState> {
     Router::new()
         .route("/api/users", post(create_user).get(list_users))
         .route("/api/users/me", get(get_me).patch(update_me))
+        .route("/api/users/admins", get(list_admin_users))
         .route("/api/users/{id}", get(get_user_by_id))
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AdminUsersResponse {
+    pub user_ids: Vec<String>,
+}
+
+/// キック可否の UI 判定用に、ワークスペース管理者の user_id を返す。
+///
+/// 管理者ロールは `users` / `channel_user` の Shape に含めていないため、
+/// フロントが「キック不可の相手」を正確に判定できるよう軽量な一覧だけを提供する。
+/// dev auth の固定管理者はロール行を持たなくても管理者として扱われるため、
+/// `is_workspace_admin` と同じ条件で一覧に含める。
+async fn list_admin_users(
+    State(state): State<AppState>,
+    _auth_user: AuthUser,
+) -> Result<Json<AdminUsersResponse>, AppError> {
+    let mut db = state.db.clone();
+    let roles = UserRole::filter(UserRole::fields().role_id().eq("role_admin"))
+        .exec(&mut db)
+        .await?;
+
+    let mut user_ids: Vec<String> = roles.into_iter().map(|role| role.user_id).collect();
+    if state.config.dev_auth_enabled
+        && !user_ids
+            .iter()
+            .any(|id| id == crate::auth::DEFAULT_DEV_USER_ID)
+    {
+        user_ids.push(crate::auth::DEFAULT_DEV_USER_ID.to_string());
+    }
+    user_ids.sort();
+    user_ids.dedup();
+
+    Ok(Json(AdminUsersResponse { user_ids }))
 }
 
 async fn get_me(

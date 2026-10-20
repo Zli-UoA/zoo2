@@ -6,7 +6,8 @@ use serde_json::{Value, json};
 use tower::ServiceExt;
 
 use backend::{
-    config::Config, db::init_db, models::UserRole, routes::create_router, state::AppState,
+    auth::DEFAULT_DEV_USER_ID, config::Config, db::init_db, models::UserRole,
+    routes::create_router, state::AppState,
 };
 
 #[tokio::test]
@@ -328,6 +329,15 @@ async fn test_member_kick_and_access_revocation() -> anyhow::Result<()> {
     let resp = app.clone().oneshot(req).await?;
     assert_eq!(resp.status(), StatusCode::OK);
 
+    // 1.5 作成者 Alice は退出できない -> 400 Bad Request
+    let req = Request::builder()
+        .method("POST")
+        .uri(format!("/api/channels/{channel_id}/leave"))
+        .header("X-Dev-User", &alice_id)
+        .body(Body::empty())?;
+    let resp = app.clone().oneshot(req).await?;
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+
     // 2. Alice が Bob を追加
     let req = Request::builder()
         .method("POST")
@@ -517,6 +527,26 @@ async fn test_get_me_reports_is_admin() -> anyhow::Result<()> {
     let json: Value = serde_json::from_slice(&body)?;
     assert_eq!(json["id"], admin_id);
     assert_eq!(json["is_admin"], true);
+
+    // キック可否の UI 判定用の管理者一覧にも同じ条件で載る
+    let req = Request::builder()
+        .method("GET")
+        .uri("/api/users/admins")
+        .header("X-Dev-User", &member_id)
+        .body(Body::empty())?;
+    let resp = app.clone().oneshot(req).await?;
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = to_bytes(resp.into_body(), usize::MAX).await?;
+    let json: Value = serde_json::from_slice(&body)?;
+    let ids = json["user_ids"]
+        .as_array()
+        .expect("user_ids should be an array");
+    assert!(ids.iter().any(|id| id.as_str() == Some(admin_id.as_str())));
+    assert!(
+        ids.iter()
+            .any(|id| id.as_str() == Some(DEFAULT_DEV_USER_ID))
+    );
+    assert!(!ids.iter().any(|id| id.as_str() == Some(member_id.as_str())));
 
     Ok(())
 }

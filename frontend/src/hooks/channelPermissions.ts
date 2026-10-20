@@ -39,20 +39,24 @@ export interface KickPermissionInput {
   actorCanManage: boolean;
   channelCreatorId: string;
   targetUserId: string;
+  /** 対象がワークスペース管理者か（`GET /api/users/admins` から解決する）。 */
+  targetIsAdmin: boolean;
 }
 
 /**
- * メンバーキック。自分自身とチャンネル作成者は UI でも除外する。
+ * メンバーキック。自分自身・チャンネル作成者・ワークスペース管理者は UI でも除外する。
  *
- * ワークスペース管理者かどうかは Shape にロールが無いため対象ユーザーについて
- * 判定できない。対象が管理者の場合はバックエンドが 403 を返すので、失敗を
- * `sonner` で通知する（権限判定の最終防衛線はバックエンド）。
+ * ロールは Shape に含まれないため、管理者かどうかは軽量エンドポイント
+ * `GET /api/users/admins` の結果を `targetIsAdmin` として渡す。取得に失敗して
+ * 判定できない場合も、バックエンドが 403 を返したらダイアログを閉じて通知する
+ * （権限判定の最終防衛線はバックエンド）。
  */
 export function canKickChannelMember({
   actorId,
   actorCanManage,
   channelCreatorId,
   targetUserId,
+  targetIsAdmin,
 }: KickPermissionInput): boolean {
   if (!actorId || !actorCanManage) {
     return false;
@@ -60,5 +64,5 @@ export function canKickChannelMember({
   if (targetUserId === actorId || targetUserId === channelCreatorId) {
     return false;
   }
-  return true;
+  return !targetIsAdmin;
 }
