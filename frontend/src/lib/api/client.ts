@@ -14,15 +14,26 @@ export interface ApiEnvelope<T> {
   txid: string | null;
 }
 
+export interface ApiErrorRequest {
+  path: string;
+  method: string;
+}
+
 export class ApiError extends Error {
   readonly status: number;
   readonly body: unknown;
+  /** 失敗したリクエストのパス。呼び出し側が操作に応じた文言を選ぶために使う。 */
+  readonly path: string | null;
+  /** 失敗したリクエストの HTTP メソッド。 */
+  readonly method: string | null;
 
-  constructor(status: number, message: string, body?: unknown) {
+  constructor(status: number, message: string, body?: unknown, request?: ApiErrorRequest) {
     super(message);
     this.name = "ApiError";
     this.status = status;
     this.body = body;
+    this.path = request?.path ?? null;
+    this.method = request?.method ?? null;
   }
 }
 
@@ -126,10 +137,11 @@ export function createApiClient(options: ApiClientOptions = {}): ApiClient {
 
   async function request<T>(path: string, requestOptions: RequestOptions = {}): Promise<T> {
     const hasBody = requestOptions.body !== undefined;
+    const method = requestOptions.method ?? "GET";
     const headers = await buildHeaders(requestOptions.headers, hasBody);
 
     const response = await doFetch(joinUrl(baseUrl, path), {
-      method: requestOptions.method ?? "GET",
+      method,
       headers,
       body: hasBody ? JSON.stringify(requestOptions.body) : undefined,
       signal: requestOptions.signal,
@@ -144,6 +156,7 @@ export function createApiClient(options: ApiClientOptions = {}): ApiClient {
         response.status,
         `Request to ${path} failed with status ${response.status}`,
         body,
+        { path, method },
       );
     }
     onAuthorized();

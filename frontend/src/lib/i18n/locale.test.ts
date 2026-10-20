@@ -70,6 +70,8 @@ describe("translations", () => {
     expect(t("messages.count", { count: 0 })).toBe("0 messages");
     expect(t("messages.count", { count: 1 })).toBe("1 message");
     expect(t("messages.count", { count: 2 })).toBe("2 messages");
+    expect(t("threads.openWithCount", { count: 1 })).toBe("Open thread (1 reply)");
+    expect(t("threads.openWithCount", { count: 2 })).toBe("Open thread (2 replies)");
     expect(t("members.already", { userId: "alice" })).toBe("Already a member: alice");
     expect(createI18n("yue").t("dates.yesterday")).toBe("尋日");
   });

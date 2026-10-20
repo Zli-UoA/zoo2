@@ -162,6 +162,8 @@ describe("createApiClient", () => {
       name: "ApiError",
       status: 403,
       body: { error: "forbidden" },
+      path: "/api/secrets",
+      method: "GET",
     });
     await expect(client.get("/api/secrets")).rejects.toBeInstanceOf(ApiError);
   });

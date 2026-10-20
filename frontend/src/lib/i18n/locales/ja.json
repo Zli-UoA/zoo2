@@ -9,6 +9,7 @@
     "empty": "チャンネルがありません。",
     "createAction": "作成する",
     "notFound": "チャンネルが見つかりません。",
+    "duplicateName": "同名のチャンネルが既に存在します。",
     "privateMessages": "このチャンネルは非公開です。招待されるとメッセージを表示できます。",
     "back": "チャンネル一覧へ戻る",
     "noDescription": "説明はまだありません",
@@ -115,7 +116,18 @@
     "save": "保存",
     "writeError": "操作に失敗しました",
     "close": "閉じる",
-    "writeErrorDetail": "操作失敗: {{error}}"
+    "writeErrorDetail": "操作失敗: {{error}}",
+    "errors": {
+      "badRequest": "入力内容を確認してください。",
+      "unauthorized": "ログインの有効期限が切れました。もう一度ログインしてください。",
+      "forbidden": "この操作を行う権限がありません。",
+      "notFound": "対象が見つかりませんでした。",
+      "conflict": "操作が競合しました。最新の状態を確認してもう一度お試しください。",
+      "rateLimited": "リクエストが多すぎます。しばらく待ってからもう一度お試しください。",
+      "server": "サーバーでエラーが発生しました。しばらく待ってからもう一度お試しください。",
+      "network": "サーバーに接続できませんでした。接続を確認してもう一度お試しください。",
+      "unexpected": "操作に失敗しました。もう一度お試しください。"
+    }
   },
   "welcome": {
     "title": "ようこそ Zoo へ",
@@ -146,7 +158,8 @@
     "title": "スレッド",
     "close": "スレッドを閉じる",
     "open": "スレッドを開く",
-    "openWithCount": "スレッドを開く（{{count}} 件の返信）",
+    "openWithCount_one": "スレッドを開く（{{count}} 件の返信）",
+    "openWithCount_other": "スレッドを開く（{{count}} 件の返信）",
     "replyCount_one": "{{count}} 件の返信",
     "replyCount_other": "{{count}} 件の返信",
     "loading": "読み込み中…",
@@ -196,7 +209,8 @@
   "composer": {
     "mac": "⌘（Cmd）+Enter で送信 / Enter で改行",
     "ctrl": "Ctrl+Enter で送信 / Enter で改行",
-    "other": "Cmd / Ctrl+Enter で送信 / Enter で改行"
+    "other": "Cmd / Ctrl+Enter で送信 / Enter で改行",
+    "touch": "送信ボタンで送信します"
   },
   "notifications": {
     "label": "通知",

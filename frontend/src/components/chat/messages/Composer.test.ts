@@ -129,4 +129,10 @@ describe("composerSendHint", () => {
   it("判別できないときは Cmd / Ctrl の両方を案内する", () => {
     expect(composerSendHint("unknown", t)).toBe("Cmd / Ctrl+Enter で送信 / Enter で改行");
   });
+
+  it("タッチ環境ではキーボードではなく送信ボタンを案内する", () => {
+    for (const platform of ALL_PLATFORMS) {
+      expect(composerSendHint(platform, t, true)).toBe("送信ボタンで送信します");
+    }
+  });
 });
