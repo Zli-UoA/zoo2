@@ -7,8 +7,9 @@ on:
   workflow_dispatch:
 permissions:
   contents: read
+# Serialize runs per branch or PR only. Cleanup defers untagged deletion while any run is active.
 concurrency:
-  group: ghcr-lifecycle
+  group: ghcr-images-${{ github.event.pull_request.number && format('pr-{0}', github.event.pull_request.number) || github.ref }}
   queue: max
 jobs:
   plan:
@@ -62,18 +63,19 @@ jobs:
         run: |
           test -n "${ISSUER//[[:space:]]/}" || { echo 'Set VITE_OIDC_ISSUER repository variable'; exit 1; }
           test -n "${CLIENT_ID//[[:space:]]/}" || { echo 'Set VITE_OIDC_CLIENT_ID repository variable'; exit 1; }
+      # Save once per dependency set; a per-commit key would evict the buildx layer caches.
       - name: Restore Rust cache mounts
+        id: rust-cache
         if: matrix.component == 'backend'
         uses: actions/cache@v4
         with:
           path: .buildkit-cache
-          key: rust-image-${{ runner.os }}-${{ hashFiles('backend/Cargo.lock', 'infra/Dockerfile-backend-deploy') }}-${{ needs.plan.outputs.sha }}
-          restore-keys: |
-            rust-image-${{ runner.os }}-${{ hashFiles('backend/Cargo.lock', 'infra/Dockerfile-backend-deploy') }}-
+          key: rust-image-${{ runner.os }}-${{ hashFiles('backend/Cargo.lock', 'infra/Dockerfile-backend-deploy') }}
       - name: Inject Rust cache mounts
         if: matrix.component == 'backend'
         uses: reproducible-containers/buildkit-cache-dance@v3
         with:
+          skip-extraction: ${{ steps.rust-cache.outputs.cache-hit }}
           cache-map: |
             {
               ".buildkit-cache/registry": "/usr/local/cargo/registry",
@@ -119,23 +121,38 @@ jobs:
             VITE_OIDC_REDIRECT_URI=
             VITE_OIDC_SCOPE=
             VITE_OIDC_POST_LOGOUT_REDIRECT_URI=
+  # Promote all components together, only after every build succeeded, so aliases never mix commits.
+  promote:
+    needs: [plan, build]
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
       - name: Promote current main images
-        if: github.event_name != 'pull_request'
         uses: actions/github-script@v8
         env:
-          IMAGE: ghcr.io/zli-uoa/zoo2-${{ matrix.component }}
           IMAGE_SHA: ${{ needs.plan.outputs.sha }}
-          DIGEST: ${{ steps.image.outputs.digest }}
-          PREVIEW_DIGEST: ${{ steps.preview.outputs.digest }}
+          MATRIX: ${{ needs.plan.outputs.matrix }}
         with:
           script: |
             const {data} = await github.rest.repos.getBranch({...context.repo, branch: 'main'});
-            if (data.commit.sha !== process.env.IMAGE_SHA) {
+            const sha = process.env.IMAGE_SHA;
+            if (data.commit.sha !== sha) {
               core.notice('Newer main exists; keeping immutable tags without promoting aliases');
               return;
             }
-            const image = process.env.IMAGE;
-            await exec.exec('docker', ['buildx', 'imagetools', 'create', '-t', `${image}:latest`, `${image}@${process.env.DIGEST}`]);
-            if (process.env.PREVIEW_DIGEST) {
-              await exec.exec('docker', ['buildx', 'imagetools', 'create', '-t', `${image}:preview`, `${image}@${process.env.PREVIEW_DIGEST}`]);
+            for (const {component} of JSON.parse(process.env.MATRIX).include) {
+              const image = `ghcr.io/zli-uoa/zoo2-${component}`;
+              await exec.exec('docker', ['buildx', 'imagetools', 'create', '-t', `${image}:latest`, `${image}:${sha}`]);
+              if (component === 'frontend') {
+                await exec.exec('docker', ['buildx', 'imagetools', 'create', '-t', `${image}:preview`, `${image}:preview-${sha}`]);
+              }
             }

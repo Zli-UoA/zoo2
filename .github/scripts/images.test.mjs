@@ -92,28 +92,41 @@ test('main plans all images with full SHA tags', async () => {
 });
 
 import cleanup from './image-cleanup.mjs';
-function cleanupFixture({dryRun = false, changedTags = false, denied = false, reopened = false} = {}) {
+function cleanupFixture({dryRun = false, changedTags = false, denied = false, reopened = false, publishing = false, missingManifest = false, deleteFails = false} = {}) {
   const versions = [
     version(1, [`pr-7-${sha(1)}`]), version(2, []),
-    version(3, ['latest']), version(4, []), version(5, [], 0.1),
+    version(3, ['latest']), version(4, []), version(5, [], 0.1), version(6, []),
   ];
+  // Index 3 is retained and references 4; index 1 is disposable and references 6.
+  const children = {[versions[2].name]: versions[3].name, [versions[0].name]: versions[5].name};
   const deleted = [];
-  const summary = {addHeading() {return this;}, addTable() {return this;}, async write() {}};
-  let openCalls = 0;
+  const rows = [];
+  const summary = {addHeading() {return this;}, addTable(table) {rows.push(...table.slice(1)); return this;}, async write() {}};
+  const calls = {pulls: 0};
   const github = {
-    rest: {pulls: {list: 'pulls'}, packages: {
-      getAllPackageVersionsForPackageOwnedByOrg: 'versions',
-      getPackageVersionForPackageOwnedByOrg: async ({package_version_id}) => {
-        if (denied) throw new Error('403 forbidden');
-        const data = structuredClone(versions.find(v => v.id === package_version_id));
-        if (changedTags) data.metadata.container.tags.push('latest');
-        return {data};
+    rest: {
+      pulls: {list: 'pulls', get: async ({pull_number}) => ({data: {state: reopened && pull_number === 7 ? 'open' : 'closed'}})},
+      actions: {listWorkflowRuns: async ({workflow_id, status}) => {
+        assert.equal(workflow_id, 'cd-images.yaml');
+        return {data: {total_count: publishing && status === 'in_progress' ? 1 : 0}};
+      }},
+      packages: {
+        getAllPackageVersionsForPackageOwnedByOrg: 'versions',
+        getPackageVersionForPackageOwnedByOrg: async ({package_version_id}) => {
+          if (denied) throw new Error('403 forbidden');
+          const data = structuredClone(versions.find(v => v.id === package_version_id));
+          if (changedTags && package_version_id === 1) data.metadata.container.tags.push('latest');
+          return {data};
+        },
+        deletePackageVersionForOrg: async ({package_version_id}) => {
+          if (deleteFails && deleted.length) throw new Error('500 delete');
+          deleted.push(package_version_id);
+        },
       },
-      deletePackageVersionForOrg: async ({package_version_id}) => {deleted.push(package_version_id);},
-    }},
+    },
     paginate: async (method, params) => {
       assert.equal(params.per_page, 100);
-      if (method === 'pulls') return reopened && openCalls++ > 0 ? [{number: 7}] : [];
+      if (method === 'pulls') { calls.pulls++; return []; }
       if (params.package_name !== 'zoo2-frontend') throw {status: 404};
       return versions;
     },
@@ -123,10 +136,11 @@ function cleanupFixture({dryRun = false, changedTags = false, denied = false, re
   const fetchMock = async url => {
     if (url.includes('/token?')) return {ok: true, json: async () => ({token: 'test'})};
     const digest = url.split('/').at(-1);
-    const child = digest === versions[2].name ? versions[3].name : null;
-    return {ok: true, json: async () => child ? {manifests: [{digest: child}]} : {}};
+    if (missingManifest && digest === versions[2].name) return {ok: false, status: 404};
+    const child = children[digest];
+    return {ok: true, status: 200, json: async () => child ? {manifests: [{digest: child}]} : {}};
   };
-  return {github, context, core, deleted, fetchMock, dryRun};
+  return {github, context, core, deleted, rows, calls, fetchMock, dryRun};
 }
 async function runCleanupFixture(options) {
   const fixture = cleanupFixture(options);
@@ -142,13 +156,31 @@ async function runCleanupFixture(options) {
   return fixture;
 }
 test('cleanup API flow deletes disposable versions and protects retained index children', async () => {
-  assert.deepEqual((await runCleanupFixture({})).deleted, [1, 2]);
+  const fixture = await runCleanupFixture({});
+  assert.deepEqual(fixture.deleted, [1, 2, 6]);
+  assert.equal(fixture.calls.pulls, 1);
 });
 test('dry run performs no deletions', async () => {
-  assert.deepEqual((await runCleanupFixture({dryRun: true})).deleted, []);
+  const fixture = await runCleanupFixture({dryRun: true});
+  assert.deepEqual(fixture.deleted, []);
+  assert.deepEqual(fixture.rows.map(r => r[1]), ['1', '2', '6']);
 });
-test('tag changes, reopening, and API permission failures abort cleanup', async () => {
-  await assert.rejects(runCleanupFixture({changedTags: true}), /Tags changed/);
-  await assert.rejects(runCleanupFixture({reopened: true}), /PR state changed/);
+test('tag changes and reopened PRs keep the version and its children without aborting', async () => {
+  assert.deepEqual((await runCleanupFixture({changedTags: true})).deleted, [2]);
+  assert.deepEqual((await runCleanupFixture({reopened: true})).deleted, [2]);
+});
+test('running publication defers untagged deletion only', async () => {
+  assert.deepEqual((await runCleanupFixture({publishing: true})).deleted, [1]);
+});
+test('a missing retained manifest protects nothing', async () => {
+  assert.deepEqual((await runCleanupFixture({missingManifest: true})).deleted, [1, 2, 4, 6]);
+});
+test('API failures abort cleanup but still record completed deletions', async () => {
   await assert.rejects(runCleanupFixture({denied: true}), /403/);
+  const fixture = cleanupFixture({deleteFails: true});
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = fixture.fetchMock;
+  process.env.DRY_RUN = 'false';
+  try { await assert.rejects(cleanup(fixture), /500/); } finally { globalThis.fetch = originalFetch; delete process.env.DRY_RUN; }
+  assert.deepEqual(fixture.rows.map(r => r[1]), ['1']);
 });

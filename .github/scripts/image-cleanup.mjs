@@ -35,15 +35,17 @@ export async function ignoreMissing(operation) {
 }
 
 // Follow OCI indexes to protect untagged platform/attestation manifests as well.
-export async function referencedDigests(roots, readManifest) {
-  const protectedDigests = new Set();
+export async function referencedDigests(roots, readManifest, {protectedDigests = new Set(), concurrency = 8} = {}) {
   async function visit(digest) {
     if (protectedDigests.has(digest)) return;
     protectedDigests.add(digest);
     const manifest = await readManifest(digest);
-    for (const child of manifest.manifests ?? []) await visit(child.digest);
+    await Promise.all((manifest.manifests ?? []).map(child => visit(child.digest)));
   }
-  for (const digest of roots) await visit(digest);
+  const queue = [...roots];
+  await Promise.all(Array.from({length: Math.min(concurrency, queue.length)}, async () => {
+    while (queue.length) await visit(queue.shift());
+  }));
   return protectedDigests;
 }
 
@@ -52,52 +54,79 @@ export default async function cleanup({github, context, core}) {
   const closedPR = context.eventName === 'pull_request_target' ? context.payload.pull_request.number : null;
   const dryRun = process.env.DRY_RUN !== 'false';
   const listOpen = async () => new Set((await github.paginate(github.rest.pulls.list, {...context.repo, state: 'open', per_page: 100})).map(p => p.number));
-  let open = await listOpen();
-  const initialOpen = JSON.stringify([...open].sort((a, b) => a - b));
-  const rows = [];
-  for (const component of ['frontend', 'backend', 'migrate']) {
-    const package_name = `zoo2-${component}`;
-    const params = {org: owner, package_type: 'container', package_name};
-    const versions = await ignoreMissing(() => github.paginate(github.rest.packages.getAllPackageVersionsForPackageOwnedByOrg, {...params, per_page: 100}));
-    if (versions === null) { core.notice(`${package_name}: not found`); continue; }
-    const selected = candidates(versions, open, {closedPR});
-    if (!selected.length) continue;
-    const selectedIDs = new Set(selected.map(v => v.id));
-    const repository = `${owner.toLowerCase()}/${package_name}`;
-    const auth = Buffer.from(`${process.env.GITHUB_ACTOR}:${process.env.GH_TOKEN}`).toString('base64');
-    const tokenResponse = await fetch(`https://ghcr.io/token?service=ghcr.io&scope=${encodeURIComponent(`repository:${repository}:pull`)}`, {headers: {Authorization: `Basic ${auth}`}});
-    if (!tokenResponse.ok) throw new Error(`GHCR token request: ${tokenResponse.status}`);
-    const {token} = await tokenResponse.json();
-    const readManifest = async digest => {
-      const response = await fetch(`https://ghcr.io/v2/${repository}/manifests/${digest}`, {headers: {
-        Authorization: `Bearer ${token}`,
-        Accept: 'application/vnd.oci.image.index.v1+json, application/vnd.docker.distribution.manifest.list.v2+json, application/vnd.oci.image.manifest.v1+json, application/vnd.docker.distribution.manifest.v2+json',
-      }});
-      if (!response.ok) throw new Error(`Cannot inspect protected manifest ${digest}: ${response.status}`);
-      return response.json();
-    };
-    const protectedDigests = await referencedDigests(versions.filter(v => !selectedIDs.has(v.id)).map(v => v.name), readManifest);
-    // Delete parent indexes first. Abort on failure, leaving their children intact.
-    selected.sort((a, b) => Number(tagsOf(b).length > 0) - Number(tagsOf(a).length > 0));
-    for (const version of selected) {
-      if (protectedDigests.has(version.name)) continue;
-      open = await listOpen();
-      if (JSON.stringify([...open].sort((a, b) => a - b)) !== initialOpen) {
-        throw new Error('PR state changed during cleanup; rerun to recompute manifest protection');
-      }
-      const current = await ignoreMissing(() => github.rest.packages.getPackageVersionForPackageOwnedByOrg({...params, package_version_id: version.id}));
-      if (!current) continue;
-      if (JSON.stringify([...tagsOf(current.data)].sort()) !== JSON.stringify([...tagsOf(version)].sort())) {
-        throw new Error(`Tags changed for ${version.id}; rerun to recompute manifest protection`);
-      }
-      if (!candidates(versions, open, {closedPR}).some(v => v.id === version.id)) continue;
-      const reason = tagsOf(version).length ? (closedPR ? `closed PR ${closedPR}` : 'outside retained generations / closed PR') : 'untagged, older than 24 hours';
-      core.info(`${dryRun ? 'Would delete' : 'Deleting'} ${package_name}/${version.id}: ${reason}`);
-      rows.push([package_name, String(version.id), tagsOf(version).join(', ') || version.name, reason]);
-      if (!dryRun) await ignoreMissing(() => github.rest.packages.deletePackageVersionForOrg({...params, package_version_id: version.id}));
+  const isOpen = async number => (await github.rest.pulls.get({...context.repo, pull_number: number})).data.state === 'open';
+  // A running build may put an old untagged digest into a new index, so untagged deletion waits for it.
+  const publishing = async () => {
+    for (const status of ['in_progress', 'queued']) {
+      const {data} = await github.rest.actions.listWorkflowRuns({...context.repo, workflow_id: 'cd-images.yaml', status, per_page: 1});
+      if (data.total_count > 0) return true;
     }
+    return false;
+  };
+  const rows = [];
+  try {
+    for (const component of ['frontend', 'backend', 'migrate']) {
+      const package_name = `zoo2-${component}`;
+      const params = {org: owner, package_type: 'container', package_name};
+      const versions = await ignoreMissing(() => github.paginate(github.rest.packages.getAllPackageVersionsForPackageOwnedByOrg, {...params, per_page: 100}));
+      if (versions === null) { core.notice(`${package_name}: not found`); continue; }
+      const open = await listOpen();
+      const selected = candidates(versions, open, {closedPR});
+      if (!selected.length) continue;
+      const selectedIDs = new Set(selected.map(v => v.id));
+      const repository = `${owner.toLowerCase()}/${package_name}`;
+      const auth = Buffer.from(`${process.env.GITHUB_ACTOR}:${process.env.GH_TOKEN}`).toString('base64');
+      const tokenResponse = await fetch(`https://ghcr.io/token?service=ghcr.io&scope=${encodeURIComponent(`repository:${repository}:pull`)}`, {headers: {Authorization: `Basic ${auth}`}});
+      if (!tokenResponse.ok) throw new Error(`GHCR token request: ${tokenResponse.status}`);
+      const {token} = await tokenResponse.json();
+      const readManifest = async digest => {
+        const response = await fetch(`https://ghcr.io/v2/${repository}/manifests/${digest}`, {headers: {
+          Authorization: `Bearer ${token}`,
+          Accept: 'application/vnd.oci.image.index.v1+json, application/vnd.docker.distribution.manifest.list.v2+json, application/vnd.oci.image.manifest.v1+json, application/vnd.docker.distribution.manifest.v2+json',
+        }});
+        // A missing manifest references nothing.
+        if (response.status === 404) return {};
+        if (!response.ok) throw new Error(`Cannot inspect protected manifest ${digest}: ${response.status}`);
+        return response.json();
+      };
+      const protectedDigests = await referencedDigests(versions.filter(v => !selectedIDs.has(v.id)).map(v => v.name), readManifest);
+      // A version kept after selection also keeps its children; skip it rather than abort the run.
+      const skip = async (version, message) => {
+        core.notice(`${package_name}/${version.id}: ${message}; keeping it and its referenced manifests`);
+        await referencedDigests([version.name], readManifest, {protectedDigests});
+      };
+      let writersActive = null;
+      // Delete parent indexes first. Abort on failure, leaving their children intact.
+      selected.sort((a, b) => Number(tagsOf(b).length > 0) - Number(tagsOf(a).length > 0));
+      for (const version of selected) {
+        if (protectedDigests.has(version.name)) continue;
+        const current = await ignoreMissing(() => github.rest.packages.getPackageVersionForPackageOwnedByOrg({...params, package_version_id: version.id}));
+        if (!current) continue;
+        if (JSON.stringify([...tagsOf(current.data)].sort()) !== JSON.stringify([...tagsOf(version)].sort())) {
+          await skip(version, 'tags changed during cleanup');
+          continue;
+        }
+        const closedPRs = [...new Set(tagsOf(version).map(t => Number(t.match(prTag)?.[1])).filter(n => n && !open.has(n)))];
+        let reopened = false;
+        for (const number of closedPRs) reopened ||= await isOpen(number);
+        if (reopened) {
+          await skip(version, 'PR reopened during cleanup');
+          continue;
+        }
+        // Untagged versions are sorted last.
+        if (!tagsOf(version).length && (writersActive ??= await publishing())) {
+          core.notice(`${package_name}: image publication is running; deferring untagged versions to the next run`);
+          break;
+        }
+        const reason = tagsOf(version).length ? (closedPR ? `closed PR ${closedPR}` : 'outside retained generations / closed PR') : 'untagged, older than 24 hours';
+        core.info(`${dryRun ? 'Would delete' : 'Deleting'} ${package_name}/${version.id}: ${reason}`);
+        if (!dryRun) await ignoreMissing(() => github.rest.packages.deletePackageVersionForOrg({...params, package_version_id: version.id}));
+        rows.push([package_name, String(version.id), tagsOf(version).join(', ') || version.name, reason]);
+      }
+    }
+  } finally {
+    await core.summary.addHeading(dryRun ? 'GHCR cleanup dry run' : 'GHCR cleanup').addTable([
+      [{data: 'Package', header: true}, {data: 'Version', header: true}, {data: 'Tags / digest', header: true}, {data: 'Reason', header: true}], ...rows,
+    ]).write();
   }
-  await core.summary.addHeading(dryRun ? 'GHCR cleanup dry run' : 'GHCR cleanup').addTable([
-    [{data: 'Package', header: true}, {data: 'Version', header: true}, {data: 'Tags / digest', header: true}, {data: 'Reason', header: true}], ...rows,
-  ]).write();
 }
