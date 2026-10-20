@@ -40,6 +40,8 @@ interface MessageListProps {
   onPickReaction: (messageId: string) => void;
   replyCounts: Map<string, number>;
   onOpenThread: (messageId: string) => void;
+  /** 空状態の説明文。アーカイブ済みなど送信できない場合に差し替える。 */
+  emptyDescription?: string;
 }
 
 function MessageSkeleton() {
@@ -102,6 +104,7 @@ export function MessageList({
   onPickReaction,
   replyCounts,
   onOpenThread,
+  emptyDescription,
 }: MessageListProps) {
   const { t } = useTranslation();
   const items = useMemo(() => buildMessageItems(messages), [messages]);
@@ -207,7 +210,10 @@ export function MessageList({
           description={t("messages.retryHelp")}
         />
       ) : showEmpty ? (
-        <MessageState title={t("messages.empty")} description={t("messages.first")} />
+        <MessageState
+          title={t("messages.empty")}
+          description={emptyDescription ?? t("messages.first")}
+        />
       ) : (
         <div
           ref={scrollRef}

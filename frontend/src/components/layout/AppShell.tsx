@@ -1,6 +1,6 @@
 import { useRouterState } from "@tanstack/react-router";
 import { cn } from "cn";
-import { useEffect, useMemo, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
 
 import { useActiveChannels } from "../../hooks/useRealtime";
 import { ChannelSidebar } from "../chat/ChannelSidebar";
@@ -28,6 +28,7 @@ import { useMediaQuery } from "./useMediaQuery";
 export function AppShell({ children }: { children: ReactNode }) {
   const [pane, setPane] = useState<ShellPane>("sidebar");
   const [membersOpen, setMembersOpen] = useState(false);
+  const [threadRootId, setThreadRootId] = useState<string | null>(null);
   const isWide = useMediaQuery("(min-width: 1024px)");
 
   const channelsQuery = useActiveChannels();
@@ -62,8 +63,35 @@ export function AppShell({ children }: { children: ReactNode }) {
     setPrevIsWide(isWide);
     if (!isWide) {
       setMembersOpen(false);
+    } else if (membersOpen) {
+      // 狭幅でダイアログとスレッドが重なったまま広げた場合は、右ペインを
+      // 奪い合わないようスレッドを閉じる。
+      setThreadRootId(null);
     }
   }
+
+  // メンバーとスレッドは右ペインを奪い合うため、ワイドでは排他にする。
+  // スレッドを開いたときに閉じる処理は `openThread` が行い、メンバーを開いた
+  // ときはここでスレッドを閉じる（レンダー中に反映して一瞬の同時表示を避ける）。
+  // 狭幅はスレッドがオーバーレイ、メンバーがダイアログなので重ねたままにする。
+  const [prevMembersOpen, setPrevMembersOpen] = useState(membersOpen);
+  if (prevMembersOpen !== membersOpen) {
+    setPrevMembersOpen(membersOpen);
+    if (membersOpen && isWide) {
+      setThreadRootId(null);
+    }
+  }
+
+  const openThread = useCallback(
+    (rootId: string) => {
+      setThreadRootId(rootId);
+      if (isWide) {
+        setMembersOpen(false);
+      }
+    },
+    [isWide],
+  );
+  const closeThread = useCallback(() => setThreadRootId(null), []);
 
   const value = useMemo<ShellContextValue>(
     () => ({
@@ -73,9 +101,12 @@ export function AppShell({ children }: { children: ReactNode }) {
       membersOpen,
       setMembersOpen,
       toggleMembers: () => setMembersOpen((open) => !open),
+      threadRootId,
+      openThread,
+      closeThread,
       selectedChannelId,
     }),
-    [pane, membersOpen, selectedChannelId],
+    [pane, membersOpen, threadRootId, openThread, closeThread, selectedChannelId],
   );
 
   const showSidebar = pane === "sidebar";
