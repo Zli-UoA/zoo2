@@ -5,6 +5,8 @@ use toasty::Model;
 #[table = "user_role"]
 pub struct UserRole {
     #[key]
+    pub tenant_id: String,
+    #[key]
     pub user_id: String,
     #[key]
     pub role_id: String,

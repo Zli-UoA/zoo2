@@ -1,3 +1,7 @@
+pub mod tenant;
+pub mod tenant_user;
+pub use tenant::Tenant;
+pub use tenant_user::TenantUser;
 pub mod channel;
 pub mod channel_user;
 pub mod message;

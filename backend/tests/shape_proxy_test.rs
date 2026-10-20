@@ -198,13 +198,26 @@ async fn test_cors_allowlist() -> anyhow::Result<()> {
     let state = AppState::new(db, config);
     let app = create_router(state);
 
+    // Use this test's own account: fresh CI databases do not contain the fixed dev user.
+    let user_id = uuid::Uuid::new_v4().to_string();
+    let payload = json!({ "id": user_id, "user_name": format!("cors_{}", uuid::Uuid::new_v4().simple()), "display_name": "CORS test" });
+    let req = Request::builder()
+        .method("POST")
+        .uri("/api/users")
+        .header("content-type", "application/json")
+        .body(Body::from(serde_json::to_vec(&payload)?))?;
+    assert_eq!(app.clone().oneshot(req).await?.status(), StatusCode::OK);
+
     // 許可オリジンの preflight は成功し、メソッド/ヘッダを許可する
     let req = Request::builder()
         .method("OPTIONS")
         .uri("/api/shapes/users")
         .header("Origin", "http://localhost:5173")
         .header("Access-Control-Request-Method", "GET")
-        .header("Access-Control-Request-Headers", "authorization,x-dev-user")
+        .header(
+            "Access-Control-Request-Headers",
+            "authorization,x-dev-user,x-tenant-id",
+        )
         .body(Body::empty())?;
 
     let resp = app.clone().oneshot(req).await?;
@@ -223,13 +236,14 @@ async fn test_cors_allowlist() -> anyhow::Result<()> {
         .to_lowercase();
     assert!(allow_headers.contains("authorization"));
     assert!(allow_headers.contains("x-dev-user"));
+    assert!(allow_headers.contains("x-tenant-id"));
 
     // 許可オリジンの実リクエストは electric-* を expose する
     let req = Request::builder()
         .method("GET")
         .uri("/api/shapes/users?offset=-1")
         .header("Origin", "http://localhost:5173")
-        .header("X-Dev-User", "00000000-0000-0000-0000-000000000001")
+        .header("X-Dev-User", &user_id)
         .body(Body::empty())?;
     let resp = app.clone().oneshot(req).await?;
     assert_eq!(resp.status(), StatusCode::OK);

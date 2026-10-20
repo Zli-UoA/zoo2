@@ -174,6 +174,7 @@ async fn test_admin_privileges_and_message_force_delete() -> anyhow::Result<()> 
     let mut db_tx = db.clone();
     let mut tx = db_tx.transaction().await?;
     toasty::create!(UserRole {
+        tenant_id: backend::auth::tenant::DEFAULT_TENANT_ID,
         user_id: admin_id.as_str(),
         role_id: "role_admin",
     })
@@ -395,6 +396,7 @@ async fn test_member_kick_and_access_revocation() -> anyhow::Result<()> {
     let mut db_tx = db.clone();
     let mut tx = db_tx.transaction().await?;
     toasty::create!(UserRole {
+        tenant_id: backend::auth::tenant::DEFAULT_TENANT_ID,
         user_id: admin_id.as_str(),
         role_id: "role_admin",
     })
@@ -508,6 +510,7 @@ async fn test_get_me_reports_is_admin() -> anyhow::Result<()> {
     let mut db_tx = db.clone();
     let mut tx = db_tx.transaction().await?;
     toasty::create!(UserRole {
+        tenant_id: backend::auth::tenant::DEFAULT_TENANT_ID,
         user_id: admin_id.as_str(),
         role_id: "role_admin",
     })

@@ -11,7 +11,12 @@ const apiBaseUrl = process.env.VITE_API_BASE_URL ?? "http://localhost:8000";
  * `offset=-1` の応答はスナップショットの終端ヘッダだけを返すことがあるため、
  * `electric-handle` / `electric-offset` で続きを取得する（Electric の仕様）。
  */
-async function readShape(page: Page, url: string, bearer: string): Promise<string> {
+async function readShape(
+  page: Page,
+  url: string,
+  bearer: string,
+  tenantId: string,
+): Promise<string> {
   let handle: string | null = null;
   let offset = "-1";
   let body = "";
@@ -24,7 +29,7 @@ async function readShape(page: Page, url: string, bearer: string): Promise<strin
       requestUrl.searchParams.set("log", "full");
     }
     const response = await page.request.get(requestUrl.toString(), {
-      headers: { Authorization: bearer },
+      headers: { Authorization: bearer, "X-Tenant-ID": tenantId },
     });
     expect(response.ok()).toBe(true);
     body += await response.text();
@@ -49,6 +54,14 @@ async function readShape(page: Page, url: string, bearer: string): Promise<strin
  * （`playwright.oidc.config.ts` のコメント参照）。既定のスモークとは別設定。
  */
 test("OIDC PKCE ログイン後に API と Shape が Bearer で通る", async ({ page }, testInfo) => {
+  // The development-only floating launcher overlaps the composer send button.
+  await page.addInitScript(() => {
+    document.addEventListener("DOMContentLoaded", () => {
+      const style = document.createElement("style");
+      style.textContent = 'button[aria-label="Open TanStack Devtools"]{display:none !important}';
+      document.head.append(style);
+    });
+  });
   const bearerRequests: string[] = [];
   page.on("request", (request) => {
     if (request.url().includes("/api/")) {
@@ -73,7 +86,16 @@ test("OIDC PKCE ログイン後に API と Shape が Bearer で通る", async ({
 
   await page.getByRole("button", { name: "ログイン" }).click();
 
-  // コールバック処理後、シェルが描画される（Shape の購読には Bearer が必要）。
+  // 新規ログインは既存ワークスペースへ自動参加しない。本人が作成してから購読する。
+  await expect(page.getByRole("combobox", { name: "ワークスペース", exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "新規作成", exact: true }).click();
+  await page
+    .getByRole("textbox", { name: "ワークスペース名", exact: true })
+    .fill(`OIDC ${Date.now()}`);
+  await page.getByRole("button", { name: "作成", exact: true }).click();
+  // Workspace switching reloads the page; the mock IdP asks for consent on every authorize request.
+  await expect(page.getByRole("heading", { name: "Mock IdP" })).toBeVisible();
+  await page.getByRole("button", { name: "ログイン", exact: true }).click();
   await expect(page.getByRole("heading", { name: "チャンネル", exact: true })).toBeVisible();
   await page.screenshot({ path: testInfo.outputPath("02-app-shell.png") });
 
@@ -106,9 +128,18 @@ test("OIDC PKCE ログイン後に API と Shape が Bearer で通る", async ({
   // 画面の反映が楽観更新だけに依存しないよう、Shape プロキシの応答にも
   // 送信した行が含まれることを Bearer 付きで確認する（live=true は使わない）。
   const channelId = new URL(page.url()).pathname.split("/").slice(-1)[0];
+  const tenantId = await page
+    .getByRole("combobox", { name: "ワークスペース", exact: true })
+    .inputValue();
   await expect
     .poll(
-      () => readShape(page, `${apiBaseUrl}/api/shapes/messages?channel_id=${channelId}`, bearer!),
+      () =>
+        readShape(
+          page,
+          `${apiBaseUrl}/api/shapes/messages?channel_id=${channelId}`,
+          bearer!,
+          tenantId,
+        ),
       { timeout: 15_000 },
     )
     .toContain(message);
@@ -131,6 +162,37 @@ test("OIDC PKCE ログイン後に API と Shape が Bearer で通る", async ({
   await page.getByRole("menuitemradio", { name: "ライト" }).click();
   await expect(page.locator("html")).not.toHaveClass(/dark/);
   await expect(page.getByRole("menuitemradio", { name: "ライト" })).toBeHidden();
+
+  // 別アカウントを独立したブラウザセッションでプロビジョニングする。
+  await page.request.post(`${mockIdpOrigin}/__mock/user`, {
+    data: { sub: "user-b", preferredUsername: "bee", name: "Bee", email: "bee@example.com" },
+  });
+  const memberContext = await page.context().browser()!.newContext();
+  try {
+    const memberPage = await memberContext.newPage();
+    await memberPage.goto(testInfo.project.use.baseURL ?? "http://localhost:5173");
+    await expect(memberPage.getByRole("heading", { name: "Mock IdP" })).toBeVisible();
+    const profileResponse = memberPage.waitForResponse(
+      (response) => response.url().endsWith("/api/users/me") && response.ok(),
+    );
+    await memberPage.getByRole("button", { name: "ログイン", exact: true }).click();
+    const profile = (await (await profileResponse).json()) as { user_name: string };
+    await expect(
+      memberPage.getByRole("combobox", { name: "ワークスペース", exact: true }),
+    ).toBeVisible();
+    await expect(memberPage.getByRole("link", { name: new RegExp(channelName) })).toHaveCount(0);
+
+    // 管理者が明示的に追加した後だけ、ユーザーBも同じ公開チャンネルを閲覧できる。
+    await page.getByRole("button", { name: "メンバーを追加", exact: true }).click();
+    await page
+      .getByRole("textbox", { name: "追加するユーザー名", exact: true })
+      .fill(profile.user_name);
+    await page.getByRole("button", { name: "追加", exact: true }).click();
+    await expect(page.getByRole("status")).toHaveText("メンバーを追加しました。");
+    await page.getByRole("button", { name: "閉じる", exact: true }).click();
+  } finally {
+    await memberContext.close();
+  }
 
   // 別ユーザーへ切り替えてログアウト → 再ログインする。
   await page.request.post(`${mockIdpOrigin}/__mock/user`, {
@@ -172,7 +234,7 @@ test("OIDC PKCE ログイン後に API と Shape が Bearer で通る", async ({
 
   // 参加 / 退出: 退出の本人確認は /api/users/me で解決した id で行われる（#49）。
   // メンバーペインは既定で閉じているため、ヘッダの「メンバー」から開く。
-  await page.getByRole("button", { name: /メンバー/ }).click();
+  await page.getByRole("button", { name: /^メンバー \d/ }).click();
   const joinResponse = page.waitForResponse(
     (response) => response.request().method() === "POST" && response.url().endsWith("/join"),
   );

@@ -8,7 +8,23 @@ CREATE TABLE users (
   CONSTRAINT users_user_name_key UNIQUE (user_name)
 );
 
+CREATE TABLE tenants (
+  id text PRIMARY KEY,
+  name varchar(100) NOT NULL,
+  created_at timestamp(3) NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE tenant_users (
+  tenant_id text NOT NULL REFERENCES tenants (id) ON DELETE RESTRICT,
+  user_id text NOT NULL REFERENCES users (id) ON DELETE RESTRICT,
+  joined_at timestamp(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (tenant_id, user_id)
+);
+CREATE INDEX idx_tenant_users_user_id ON tenant_users (user_id);
+ALTER TABLE tenant_users REPLICA IDENTITY FULL;
+
 CREATE TABLE channels (
+  tenant_id text NOT NULL,
   id text NOT NULL,
   channel_name varchar(255) NOT NULL,
   description varchar(255),
@@ -19,13 +35,14 @@ CREATE TABLE channels (
   archive_at timestamp(3),
   deleted_at timestamp(3),
   PRIMARY KEY (id),
-  CONSTRAINT channels_channel_name_key UNIQUE (channel_name),
+  CONSTRAINT channels_tenant_name_key UNIQUE (tenant_id, channel_name),
   CONSTRAINT channels_created_user_id_fkey
     FOREIGN KEY (created_user_id) REFERENCES users (id)
     ON UPDATE CASCADE ON DELETE RESTRICT
 );
 
 CREATE TABLE messages (
+  tenant_id text NOT NULL,
   id text NOT NULL,
   user_id text NOT NULL,
   channel_id text NOT NULL,
@@ -47,6 +64,7 @@ CREATE TABLE messages (
 );
 
 CREATE TABLE channel_user (
+  tenant_id text NOT NULL,
   user_id text NOT NULL,
   channel_id text NOT NULL,
   joined_at timestamp(3) NOT NULL,
@@ -67,9 +85,10 @@ CREATE TABLE role (
 );
 
 CREATE TABLE user_role (
+  tenant_id text NOT NULL,
   user_id text NOT NULL,
   role_id text NOT NULL,
-  PRIMARY KEY (user_id, role_id),
+  PRIMARY KEY (tenant_id, user_id, role_id),
   CONSTRAINT user_role_user_id_fkey
     FOREIGN KEY (user_id) REFERENCES users (id)
     ON UPDATE CASCADE ON DELETE RESTRICT,
@@ -93,6 +112,7 @@ CREATE TABLE user_identities (
 );
 
 CREATE TABLE message_reactions (
+  tenant_id text NOT NULL,
   id text NOT NULL,
   message_id text NOT NULL,
   user_id text NOT NULL,
@@ -113,3 +133,19 @@ CREATE INDEX idx_messages_parent_id ON messages (parent_id);
 CREATE INDEX idx_message_reactions_message_id ON message_reactions (message_id);
 CREATE INDEX idx_message_reactions_user_id ON message_reactions (user_id);
 
+ALTER TABLE channels ADD CONSTRAINT channels_tenant_id_key UNIQUE (tenant_id, id);
+ALTER TABLE channels ADD CONSTRAINT channels_tenant_fkey FOREIGN KEY (tenant_id) REFERENCES tenants (id);
+ALTER TABLE channels ADD CONSTRAINT channels_tenant_creator_fkey FOREIGN KEY (tenant_id, created_user_id) REFERENCES tenant_users (tenant_id, user_id);
+ALTER TABLE messages ADD CONSTRAINT messages_tenant_id_key UNIQUE (tenant_id, id);
+ALTER TABLE messages ADD CONSTRAINT messages_channel_id_id_key UNIQUE (channel_id, id);
+ALTER TABLE messages ADD CONSTRAINT messages_tenant_channel_fkey FOREIGN KEY (tenant_id, channel_id) REFERENCES channels (tenant_id, id);
+ALTER TABLE messages ADD CONSTRAINT messages_tenant_author_fkey FOREIGN KEY (tenant_id, user_id) REFERENCES tenant_users (tenant_id, user_id);
+ALTER TABLE messages ADD CONSTRAINT messages_parent_channel_fkey FOREIGN KEY (channel_id, parent_id) REFERENCES messages (channel_id, id);
+ALTER TABLE channel_user ADD CONSTRAINT channel_user_tenant_channel_fkey FOREIGN KEY (tenant_id, channel_id) REFERENCES channels (tenant_id, id);
+ALTER TABLE channel_user ADD CONSTRAINT channel_user_tenant_member_fkey FOREIGN KEY (tenant_id, user_id) REFERENCES tenant_users (tenant_id, user_id);
+ALTER TABLE message_reactions ADD CONSTRAINT message_reactions_tenant_message_fkey FOREIGN KEY (tenant_id, message_id) REFERENCES messages (tenant_id, id) ON DELETE CASCADE;
+ALTER TABLE message_reactions ADD CONSTRAINT message_reactions_tenant_member_fkey FOREIGN KEY (tenant_id, user_id) REFERENCES tenant_users (tenant_id, user_id);
+ALTER TABLE user_role ADD CONSTRAINT user_role_tenant_member_fkey FOREIGN KEY (tenant_id, user_id) REFERENCES tenant_users (tenant_id, user_id);
+CREATE INDEX idx_messages_tenant_channel ON messages (tenant_id, channel_id);
+CREATE INDEX idx_channel_user_tenant ON channel_user (tenant_id);
+CREATE INDEX idx_message_reactions_tenant ON message_reactions (tenant_id);

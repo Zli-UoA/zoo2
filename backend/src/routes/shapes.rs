@@ -11,7 +11,7 @@ use axum::{
 use uuid::Uuid;
 
 use crate::{
-    auth::AuthUser,
+    auth::tenant::TenantAuth,
     error::AppError,
     models::{Channel, ChannelUser},
     state::AppState,
@@ -102,16 +102,30 @@ pub(crate) fn channel_users_shape_where<'a>(
 async fn proxy_shape(
     state: &AppState,
     table: &str,
+    tenant_id: &str,
     where_clause: Option<&str>,
     extra_params: &[(&str, &str)],
     raw_query: &HashMap<String, String>,
-    is_user_scoped: bool,
 ) -> Result<Response, AppError> {
     let mut params = filter_electric_params(raw_query);
     params.push(("table".to_string(), table.to_string()));
-    if let Some(w) = where_clause {
-        params.push(("where".to_string(), w.to_string()));
-    }
+    // params[2] is reserved for the server-selected tenant. Client SQL/params never pass through.
+    let tenant_filter = if table == "users" {
+        "id IN (SELECT user_id FROM tenant_users WHERE tenant_id = $2)"
+    } else {
+        "tenant_id = $2"
+    };
+    let scoped_where = match where_clause {
+        Some(w) => format!("({tenant_filter}) AND ({w})"),
+        None => tenant_filter.to_string(),
+    };
+    let (scoped_where, tenant_param) = if table == "users" {
+        (scoped_where.replace("$2", "$1"), "params[1]")
+    } else {
+        (scoped_where, "params[2]")
+    };
+    params.push(("where".to_string(), scoped_where));
+    params.push((tenant_param.to_string(), tenant_id.to_string()));
     for (k, v) in extra_params {
         params.push((k.to_string(), v.to_string()));
     }
@@ -155,17 +169,15 @@ async fn proxy_shape(
         }
     }
 
-    // ユーザー別認可フィルタが適用された Shape の場合、共有キャッシュによる情報漏洩を防止
-    if is_user_scoped {
-        headers.insert(
-            HeaderName::from_static("vary"),
-            HeaderValue::from_static("Authorization, X-Dev-User"),
-        );
-        headers.insert(
-            HeaderName::from_static("cache-control"),
-            HeaderValue::from_static("private, no-cache"),
-        );
-    }
+    // Every shape is tenant-scoped; shared caches must never reuse its response.
+    headers.insert(
+        HeaderName::from_static("vary"),
+        HeaderValue::from_static("Authorization, X-Dev-User, X-Tenant-ID"),
+    );
+    headers.insert(
+        HeaderName::from_static("cache-control"),
+        HeaderValue::from_static("private, no-cache"),
+    );
 
     // ストリーミングボディをバッファリングせず透過的に転送
     let stream = upstream_resp.bytes_stream();
@@ -183,7 +195,7 @@ async fn proxy_shape(
 /// リアルタイムに行の move-in / move-out を配信できる (メンバーシップ変更時の 409 再取得を防止)。
 async fn channels_shape(
     State(state): State<AppState>,
-    auth_user: AuthUser,
+    auth_user: TenantAuth,
     Query(raw_query): Query<HashMap<String, String>>,
 ) -> Result<Response, AppError> {
     let (where_clause, extra_params) = channels_shape_where(auth_user.id.as_str());
@@ -191,10 +203,10 @@ async fn channels_shape(
     proxy_shape(
         &state,
         "channels",
+        &auth_user.tenant_id,
         Some(&where_clause),
         &extra_params,
         &raw_query,
-        true,
     )
     .await
 }
@@ -202,7 +214,7 @@ async fn channels_shape(
 /// Messages Shape (channel_id 必須)
 async fn messages_shape(
     State(state): State<AppState>,
-    auth_user: AuthUser,
+    auth_user: TenantAuth,
     Query(raw_query): Query<HashMap<String, String>>,
 ) -> Result<Response, AppError> {
     let channel_id = raw_query
@@ -224,6 +236,8 @@ async fn messages_shape(
                 AppError::from(err)
             }
         })?;
+
+    auth_user.check_channel(&channel)?;
 
     if channel.deleted_at.is_some() {
         return Err(AppError::NotFound(format!(
@@ -255,10 +269,10 @@ async fn messages_shape(
     proxy_shape(
         &state,
         "messages",
+        &auth_user.tenant_id,
         Some(&where_clause),
         &extra_params,
         &raw_query,
-        channel.is_private,
     )
     .await
 }
@@ -266,7 +280,7 @@ async fn messages_shape(
 /// Message Reactions Shape (channel_id 必須)
 async fn message_reactions_shape(
     State(state): State<AppState>,
-    auth_user: AuthUser,
+    auth_user: TenantAuth,
     Query(raw_query): Query<HashMap<String, String>>,
 ) -> Result<Response, AppError> {
     let channel_id = raw_query
@@ -288,6 +302,8 @@ async fn message_reactions_shape(
                 AppError::from(err)
             }
         })?;
+
+    auth_user.check_channel(&channel)?;
 
     if channel.deleted_at.is_some() {
         return Err(AppError::NotFound(format!(
@@ -319,30 +335,30 @@ async fn message_reactions_shape(
     proxy_shape(
         &state,
         "message_reactions",
+        &auth_user.tenant_id,
         Some(&where_clause),
         &extra_params,
         &raw_query,
-        channel.is_private,
     )
     .await
 }
 
-/// Users Shape (全ユーザー同期)
+/// Users Shape (所属ワークスペース内のユーザーのみ同期)
 async fn users_shape(
     State(state): State<AppState>,
-    _auth_user: AuthUser,
+    auth_user: TenantAuth,
     Query(raw_query): Query<HashMap<String, String>>,
 ) -> Result<Response, AppError> {
-    proxy_shape(&state, "users", None, &[], &raw_query, false).await
+    proxy_shape(&state, "users", &auth_user.tenant_id, None, &[], &raw_query).await
 }
 
 /// Channel Users Shape (メンバー一覧)
 async fn channel_users_shape(
     State(state): State<AppState>,
-    auth_user: AuthUser,
+    auth_user: TenantAuth,
     Query(raw_query): Query<HashMap<String, String>>,
 ) -> Result<Response, AppError> {
-    let (channel_id_opt, is_private) = if let Some(channel_id) = raw_query.get("channel_id") {
+    let channel_id_opt = if let Some(channel_id) = raw_query.get("channel_id") {
         Uuid::parse_str(channel_id).map_err(|_| {
             AppError::BadRequest(format!("channel_id is not a valid UUID: {channel_id}"))
         })?;
@@ -357,6 +373,8 @@ async fn channel_users_shape(
                     AppError::from(err)
                 }
             })?;
+
+        auth_user.check_channel(&channel)?;
 
         if channel.deleted_at.is_some() {
             return Err(AppError::NotFound(format!(
@@ -382,9 +400,9 @@ async fn channel_users_shape(
                 )));
             }
         }
-        (Some(channel_id.as_str()), channel.is_private)
+        Some(channel_id.as_str())
     } else {
-        (None, true)
+        None
     };
 
     let (where_clause, extra_params) =
@@ -393,10 +411,10 @@ async fn channel_users_shape(
     proxy_shape(
         &state,
         "channel_user",
+        &auth_user.tenant_id,
         Some(&where_clause),
         &extra_params,
         &raw_query,
-        is_private,
     )
     .await
 }
