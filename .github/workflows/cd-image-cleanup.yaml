@@ -1,0 +1,37 @@
+name: Clean up images
+on:
+  pull_request_target:
+    types: [closed]
+  schedule:
+    - cron: '23 18 * * *'
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: Report candidates without deleting images
+        type: boolean
+        default: true
+permissions:
+  contents: read
+  pull-requests: read
+  packages: write
+concurrency:
+  group: ghcr-lifecycle
+  queue: max
+jobs:
+  cleanup:
+    runs-on: ubuntu-latest
+    steps:
+      # Never check out the PR head in this privileged workflow.
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+      - name: Test image planning and retention
+        run: node .github/scripts/images.test.mjs
+      - uses: actions/github-script@v8
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run || false }}
+        with:
+          script: |
+            const {default: cleanup} = await import(`${process.env.GITHUB_WORKSPACE}/.github/scripts/image-cleanup.mjs`);
+            await cleanup({github, context, core});

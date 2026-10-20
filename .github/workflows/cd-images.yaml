@@ -1,0 +1,141 @@
+name: Publish images
+on:
+  push:
+    branches: [main]
+  pull_request:
+    types: [opened, synchronize, reopened]
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: ghcr-lifecycle
+  queue: max
+jobs:
+  plan:
+    if: github.event_name != 'workflow_dispatch' || github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      matrix: ${{ steps.plan.outputs.matrix }}
+      sha: ${{ steps.plan.outputs.sha }}
+      tags: ${{ steps.plan.outputs.tags }}
+      has_images: ${{ steps.plan.outputs.has_images }}
+      enabled: ${{ steps.plan.outputs.enabled }}
+    steps:
+      - uses: actions/checkout@v7
+      - name: Test image planning and retention
+        run: node .github/scripts/images.test.mjs
+      - id: plan
+        if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+        uses: actions/github-script@v8
+        with:
+          script: |
+            const {default: plan} = await import(`${process.env.GITHUB_WORKSPACE}/.github/scripts/image-plan.mjs`);
+            await plan({github, context, core});
+  build:
+    needs: plan
+    if: needs.plan.outputs.enabled == 'true' && needs.plan.outputs.has_images == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.plan.outputs.sha }}
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Validate production OIDC configuration
+        if: matrix.component == 'frontend' && github.event_name != 'pull_request'
+        env:
+          ISSUER: ${{ vars.VITE_OIDC_ISSUER }}
+          CLIENT_ID: ${{ vars.VITE_OIDC_CLIENT_ID }}
+        run: |
+          test -n "${ISSUER//[[:space:]]/}" || { echo 'Set VITE_OIDC_ISSUER repository variable'; exit 1; }
+          test -n "${CLIENT_ID//[[:space:]]/}" || { echo 'Set VITE_OIDC_CLIENT_ID repository variable'; exit 1; }
+      - name: Restore Rust cache mounts
+        if: matrix.component == 'backend'
+        uses: actions/cache@v4
+        with:
+          path: .buildkit-cache
+          key: rust-image-${{ runner.os }}-${{ hashFiles('backend/Cargo.lock', 'infra/Dockerfile-backend-deploy') }}-${{ needs.plan.outputs.sha }}
+          restore-keys: |
+            rust-image-${{ runner.os }}-${{ hashFiles('backend/Cargo.lock', 'infra/Dockerfile-backend-deploy') }}-
+      - name: Inject Rust cache mounts
+        if: matrix.component == 'backend'
+        uses: reproducible-containers/buildkit-cache-dance@v3
+        with:
+          cache-map: |
+            {
+              ".buildkit-cache/registry": "/usr/local/cargo/registry",
+              ".buildkit-cache/git": "/usr/local/cargo/git",
+              ".buildkit-cache/target": "/app/target"
+            }
+      - name: Build and publish immutable image
+        id: image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: infra/Dockerfile-${{ matrix.component }}-deploy
+          push: true
+          platforms: linux/amd64
+          tags: ghcr.io/zli-uoa/zoo2-${{ matrix.component }}:${{ fromJSON(needs.plan.outputs.tags)[matrix.component] }}
+          labels: org.opencontainers.image.source=https://github.com/Zli-UoA/zoo2
+          cache-from: type=gha,scope=${{ matrix.component }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.component }}
+          build-args: |
+            VITE_API_BASE_URL=
+            VITE_OIDC_ISSUER=${{ github.event_name != 'pull_request' && vars.VITE_OIDC_ISSUER || '' }}
+            VITE_OIDC_CLIENT_ID=${{ github.event_name != 'pull_request' && vars.VITE_OIDC_CLIENT_ID || '' }}
+            VITE_OIDC_REDIRECT_URI=${{ github.event_name != 'pull_request' && vars.VITE_OIDC_REDIRECT_URI || '' }}
+            VITE_OIDC_SCOPE=${{ github.event_name != 'pull_request' && vars.VITE_OIDC_SCOPE || '' }}
+            VITE_OIDC_POST_LOGOUT_REDIRECT_URI=${{ github.event_name != 'pull_request' && vars.VITE_OIDC_POST_LOGOUT_REDIRECT_URI || '' }}
+      - name: Build and publish shared preview frontend
+        if: matrix.component == 'frontend' && github.event_name != 'pull_request'
+        id: preview
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: infra/Dockerfile-frontend-deploy
+          push: true
+          platforms: linux/amd64
+          tags: ghcr.io/zli-uoa/zoo2-frontend:preview-${{ needs.plan.outputs.sha }}
+          labels: org.opencontainers.image.source=https://github.com/Zli-UoA/zoo2
+          cache-from: type=gha,scope=frontend-preview
+          cache-to: type=gha,mode=max,scope=frontend-preview
+          build-args: |
+            VITE_API_BASE_URL=
+            VITE_OIDC_ISSUER=
+            VITE_OIDC_CLIENT_ID=
+            VITE_OIDC_REDIRECT_URI=
+            VITE_OIDC_SCOPE=
+            VITE_OIDC_POST_LOGOUT_REDIRECT_URI=
+      - name: Promote current main images
+        if: github.event_name != 'pull_request'
+        uses: actions/github-script@v8
+        env:
+          IMAGE: ghcr.io/zli-uoa/zoo2-${{ matrix.component }}
+          IMAGE_SHA: ${{ needs.plan.outputs.sha }}
+          DIGEST: ${{ steps.image.outputs.digest }}
+          PREVIEW_DIGEST: ${{ steps.preview.outputs.digest }}
+        with:
+          script: |
+            const {data} = await github.rest.repos.getBranch({...context.repo, branch: 'main'});
+            if (data.commit.sha !== process.env.IMAGE_SHA) {
+              core.notice('Newer main exists; keeping immutable tags without promoting aliases');
+              return;
+            }
+            const image = process.env.IMAGE;
+            await exec.exec('docker', ['buildx', 'imagetools', 'create', '-t', `${image}:latest`, `${image}@${process.env.DIGEST}`]);
+            if (process.env.PREVIEW_DIGEST) {
+              await exec.exec('docker', ['buildx', 'imagetools', 'create', '-t', `${image}:preview`, `${image}@${process.env.PREVIEW_DIGEST}`]);
+            }

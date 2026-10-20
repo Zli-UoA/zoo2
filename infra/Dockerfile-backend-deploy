@@ -1,3 +1,4 @@
+# syntax=docker/dockerfile:1
 FROM rust:1 AS build-env
 
 ARG DATABASE_URL="postgresql://postgres:postgres@localhost:5432/db?schema=public"
@@ -6,14 +7,18 @@ WORKDIR /app
 
 COPY backend/ /app
 
-RUN cargo build --release
+RUN --mount=type=cache,target=/usr/local/cargo/registry \
+    --mount=type=cache,target=/usr/local/cargo/git \
+    --mount=type=cache,target=/app/target \
+    cargo build --locked --release --bin zoo_backend && \
+    cp /app/target/release/zoo_backend /zoo_backend
 
 
 FROM gcr.io/distroless/cc-debian12:nonroot
 
 USER nonroot
 
-COPY --chown=nonroot:nonroot --from=build-env /app/target/release/zoo_backend  /home/nonroot/
+COPY --chown=nonroot:nonroot --from=build-env /zoo_backend /home/nonroot/
 
 CMD ["/home/nonroot/zoo_backend"]
 
