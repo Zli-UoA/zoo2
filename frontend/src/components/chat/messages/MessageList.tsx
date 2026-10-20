@@ -38,6 +38,8 @@ interface MessageListProps {
   canReact: boolean;
   onReaction: (messageId: string, emoji: string) => void;
   onPickReaction: (messageId: string) => void;
+  replyCounts: Map<string, number>;
+  onOpenThread: (messageId: string) => void;
 }
 
 function MessageSkeleton() {
@@ -98,6 +100,8 @@ export function MessageList({
   canReact,
   onReaction,
   onPickReaction,
+  replyCounts,
+  onOpenThread,
 }: MessageListProps) {
   const { t } = useTranslation();
   const items = useMemo(() => buildMessageItems(messages), [messages]);
@@ -244,6 +248,8 @@ export function MessageList({
                     onCancelEdit={onCancelEdit}
                     onSaveEdit={onSaveEdit}
                     onRequestDelete={() => onRequestDelete(item.message.id)}
+                    replyCount={replyCounts.get(item.message.id) ?? 0}
+                    onOpenThread={() => onOpenThread(item.message.id)}
                   />
                 </div>
               );

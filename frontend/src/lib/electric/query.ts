@@ -2,7 +2,7 @@ import { buildShapeUrl, type AppConfig } from "../config";
 import type { ShapeName } from "./schema";
 
 export interface ShapeQueryOptions {
-  /** メッセージ / メンバー一覧を絞り込むチャンネル ID。 */
+  /** メッセージ / リアクション / メンバー一覧を絞り込むチャンネル ID。 */
   channelId?: string;
 }
 
@@ -28,7 +28,7 @@ export function shapeQueryParams(
 ): ShapeQueryParams {
   if (config.shapeMode === "proxy") {
     if (
-      (shape === "messages" || shape === "channelUsers" || shape === "messageReactions") &&
+      (shape === "messages" || shape === "messageReactions" || shape === "channelUsers") &&
       options.channelId
     ) {
       return { channel_id: options.channelId };

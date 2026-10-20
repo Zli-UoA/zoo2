@@ -51,6 +51,7 @@ const message: MessageRow = {
   created_at: "2026-01-01 00:00:00.000",
   updated_at: null,
   deleted_at: null,
+  parent_id: null,
 };
 
 const channel: ChannelRow = {
@@ -90,6 +91,26 @@ describe("message writes", () => {
     });
     expect(awaitTxId).toHaveBeenCalledWith(Number(TXID), undefined);
     expect(awaitMatch).not.toHaveBeenCalled();
+  });
+
+  it("sends parent_id for thread replies", async () => {
+    const { client, post } = makeClient();
+    const writes = createMessageWrites({
+      client,
+      txidMode: "awaitTxId",
+      getCurrentUserId: () => CURRENT_USER,
+    });
+    const { collection } = makeCollection();
+    const reply = { ...message, id: "m2", parent_id: "m1" };
+
+    await writes.onInsert(params(collection, [insertMutation(reply)]));
+
+    expect(post).toHaveBeenCalledWith("/api/messages", {
+      id: "m2",
+      channel_id: "c1",
+      content: "hello",
+      parent_id: "m1",
+    });
   });
 
   it("PATCHes content edits", async () => {

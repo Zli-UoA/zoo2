@@ -142,6 +142,20 @@
     "announcement": "{{author}} 傳咗新訊息：「{{excerpt}}」",
     "announcementAuthor": "{{author}} 傳咗新訊息"
   },
+  "threads": {
+    "title": "子討論",
+    "close": "閂咗個子討論",
+    "open": "開子討論",
+    "openWithCount": "開子討論（{{count}} 則回覆）",
+    "replyCount_one": "{{count}} 則回覆",
+    "replyCount_other": "{{count}} 則回覆",
+    "loading": "載入中…",
+    "repliesLoading": "載入緊回覆…",
+    "loadError": "載入唔到回覆。",
+    "empty": "仲未有回覆。傳送第一則回覆啦。",
+    "compose": "輸入回覆",
+    "rootDeleted": "原本嘅訊息已經刪除咗"
+  },
   "reactions": {
     "add": "加個表情回應",
     "picker": "表情回應",

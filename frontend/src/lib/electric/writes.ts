@@ -16,7 +16,7 @@ import type {
 import { reactionKey } from "../emoji/kitchen";
 import type { TxidMode } from "../config";
 import { changeMessageMatcher, syncTxid } from "./txid";
-import type { ChannelRow, ChannelUserRow, MessageRow, MessageReactionRow } from "./types";
+import type { ChannelRow, ChannelUserRow, MessageReactionRow, MessageRow } from "./types";
 
 export interface WriteDependencies {
   client: ApiClient;
@@ -102,6 +102,10 @@ export function createMessageWrites({ client, txidMode }: WriteDependencies) {
         channel_id: row.channel_id,
         content: row.content,
       };
+      // 通常メッセージではキー自体を送らない（バックエンドの既定はルート）。
+      if (row.parent_id) {
+        body.parent_id = row.parent_id;
+      }
       const { txid } = await client.post<MessageRow>("/api/messages", body);
       await syncTxid({
         mode: txidMode,

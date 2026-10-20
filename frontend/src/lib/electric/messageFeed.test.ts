@@ -1,7 +1,7 @@
 import { createCollection, localOnlyCollectionOptions, queryOnce } from "@tanstack/react-db";
 import { describe, expect, it } from "vite-plus/test";
 
-import { messageFeedQuery } from "./messageFeed";
+import { messageFeedQuery, replyParentQuery } from "./messageFeed";
 import type { MessageRow, UserRow } from "./types";
 
 const users: UserRow[] = [
@@ -30,6 +30,7 @@ const messages: MessageRow[] = [
     created_at: "2026-01-02 00:00:00.000",
     updated_at: null,
     deleted_at: null,
+    parent_id: null,
   },
   {
     id: "message-2",
@@ -39,6 +40,7 @@ const messages: MessageRow[] = [
     created_at: "2026-01-03 00:00:00.000",
     updated_at: null,
     deleted_at: "2026-01-03 01:00:00.000",
+    parent_id: null,
   },
   {
     id: "message-3",
@@ -48,6 +50,7 @@ const messages: MessageRow[] = [
     created_at: "2026-01-04 00:00:00.000",
     updated_at: null,
     deleted_at: null,
+    parent_id: null,
   },
 ];
 
@@ -110,6 +113,7 @@ describe("messageFeedQuery", () => {
       content: "orphan",
       created_at: "2026-01-05 00:00:00.000",
       updated_at: null,
+      parent_id: null,
       deleted_at: null,
     };
 
@@ -118,5 +122,60 @@ describe("messageFeedQuery", () => {
     expect(result).toHaveLength(1);
     expect(result[0].content).toBe("orphan");
     expect(result[0].user_name).toBeUndefined();
+  });
+});
+
+describe("messageFeedQuery scopes", () => {
+  const withReplies: MessageRow[] = [
+    {
+      id: "root-1",
+      user_id: "user-1",
+      channel_id: "channel-1",
+      content: "root",
+      created_at: "2026-01-02 00:00:00.000",
+      updated_at: null,
+      deleted_at: null,
+      parent_id: null,
+    },
+    {
+      id: "reply-1",
+      user_id: "user-2",
+      channel_id: "channel-1",
+      content: "reply",
+      created_at: "2026-01-02 00:01:00.000",
+      updated_at: null,
+      deleted_at: null,
+      parent_id: "root-1",
+    },
+    {
+      id: "reply-deleted",
+      user_id: "user-2",
+      channel_id: "channel-1",
+      content: "removed reply",
+      created_at: "2026-01-02 00:02:00.000",
+      updated_at: null,
+      deleted_at: "2026-01-02 00:03:00.000",
+      parent_id: "root-1",
+    },
+  ];
+
+  it("returns only top-level messages in the default scope", async () => {
+    const result = await queryOnce((q) => messageFeedQuery(q, makeCollections(withReplies, users)));
+    expect(result.map((row) => row.id)).toEqual(["root-1"]);
+  });
+
+  it("returns only the replies of the requested root", async () => {
+    const result = await queryOnce((q) =>
+      messageFeedQuery(q, makeCollections(withReplies, users), { parentId: "root-1" }),
+    );
+    expect(result.map((row) => row.id)).toEqual(["reply-1"]);
+    expect(result[0]?.parent_id).toBe("root-1");
+  });
+
+  it("counts non-deleted reply parents", async () => {
+    const result = await queryOnce((q) =>
+      replyParentQuery(q, { messages: makeCollections(withReplies, users).messages }),
+    );
+    expect(result.map((row) => row.parent_id)).toEqual(["root-1"]);
   });
 });

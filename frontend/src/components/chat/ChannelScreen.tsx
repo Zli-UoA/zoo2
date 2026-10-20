@@ -104,6 +104,8 @@ export function ChannelScreen({ channelId }: { channelId: string }) {
                 canReact={false}
                 onReaction={noop}
                 onPickReaction={noop}
+                replyCounts={new Map()}
+                onOpenThread={noop}
               />
             </div>
           ) : (

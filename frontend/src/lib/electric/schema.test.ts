@@ -1,6 +1,12 @@
 import { describe, expect, it } from "vite-plus/test";
 
-import { SHAPE_META, coerceElectricRow, coerceElectricValue, toNumber } from "./schema";
+import {
+  MESSAGE_REACTION_SCHEMA,
+  SHAPE_META,
+  coerceElectricRow,
+  coerceElectricValue,
+  toNumber,
+} from "./schema";
 import type { MessageRow } from "./types";
 
 describe("toNumber", () => {
@@ -75,5 +81,33 @@ describe("SHAPE_META", () => {
       table: "channel_user",
       proxyPath: "channel_users",
     });
+  });
+
+  it("maps the reaction shape to the message_reactions table", () => {
+    expect(SHAPE_META.messageReactions).toEqual({
+      table: "message_reactions",
+      proxyPath: "message_reactions",
+    });
+  });
+});
+
+describe("reaction rows", () => {
+  it("keeps timestamps as strings when coercing message_reactions", () => {
+    expect(
+      coerceElectricRow("message_reactions", {
+        id: "reaction-1",
+        message_id: "message-1",
+        user_id: "user-1",
+        emoji: "👍",
+        created_at: "2026-10-15 13:32:55.123",
+      }),
+    ).toEqual({
+      id: "reaction-1",
+      message_id: "message-1",
+      user_id: "user-1",
+      emoji: "👍",
+      created_at: "2026-10-15 13:32:55.123",
+    });
+    expect(MESSAGE_REACTION_SCHEMA.columns.created_at).toBe("timestamp");
   });
 });
