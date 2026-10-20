@@ -18,6 +18,9 @@ test('retain 15 main and preview versions, two open PR generations', () => {
   const versions = Array.from({length: 17}, (_, i) => version(i + 1, [sha(i + 1)]));
   assert.deepEqual(candidates(versions, new Map()).map(v => v.id), [16, 17]);
   assert.deepEqual(candidates(versions.map(v => version(v.id, [`preview-${sha(v.id)}`])), new Map()).map(v => v.id), [16, 17]);
+  // A main reset to an old published commit keeps that image beyond 15 generations.
+  assert.deepEqual(candidates(versions, new Map(), {mainHead: sha(17)}).map(v => v.id), [16]);
+  assert.deepEqual(candidates(versions.map(v => version(v.id, [`preview-${sha(v.id)}`])), new Map(), {mainHead: sha(16)}).map(v => v.id), [17]);
   assert.deepEqual(candidates([1, 2, 3].map(i => version(i, [`pr-7-${sha(i)}`])), new Map([[7, sha(99)]])).map(v => v.id), [3]);
   // A force-push back to an older SHA keeps that head image even beyond two generations.
   assert.deepEqual(candidates([1, 2, 3].map(i => version(i, [`pr-7-${sha(i)}`])), new Map([[7, sha(3)]])), []);
@@ -107,6 +110,7 @@ function cleanupFixture({dryRun = false, changedTags = false, denied = false, re
   const calls = {pulls: 0};
   const github = {
     rest: {
+      repos: {getBranch: async ({branch}) => ({data: {commit: {sha: branch === 'main' ? sha(98) : null}}})},
       pulls: {list: 'pulls', get: async ({pull_number}) => ({data: {state: reopened && pull_number === 7 ? 'open' : 'closed', head: {sha: sha(50)}}})},
       actions: {listWorkflowRuns: async ({workflow_id, status}) => {
         assert.equal(workflow_id, 'cd-images.yaml');
