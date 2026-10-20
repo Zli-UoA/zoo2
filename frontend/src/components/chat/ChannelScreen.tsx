@@ -99,6 +99,11 @@ export function ChannelScreen({ channelId }: { channelId: string }) {
                 onCancelEdit={noop}
                 onSaveEdit={noop}
                 onRequestDelete={noop}
+                reactions={new Map()}
+                kitchenCatalog={null}
+                canReact={false}
+                onReaction={noop}
+                onPickReaction={noop}
               />
             </div>
           ) : (
