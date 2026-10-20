@@ -115,6 +115,12 @@ jobs:
       - name: build
         run: pnpm build
 
+      - name: Install Playwright Chromium
+        run: pnpm exec playwright install --with-deps chromium
+
+      - name: i18n browser tests
+        run: pnpm test:e2e:i18n
+
   unit-test:
     runs-on: ubuntu-latest
     defaults:

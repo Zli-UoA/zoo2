@@ -1,0 +1,136 @@
+{
+  "nav": {
+    "main": "メインナビゲーション"
+  },
+  "channels": {
+    "title": "チャンネル",
+    "createTitle": "チャンネルを作成",
+    "loadError": "チャンネル取得に失敗しました。",
+    "empty": "チャンネルがありません。",
+    "createAction": "作成する",
+    "notFound": "チャンネルが見つかりません。",
+    "privateMessages": "このチャンネルは非公開です。招待されるとメッセージを表示できます。",
+    "back": "チャンネル一覧へ戻る",
+    "noDescription": "説明はまだありません",
+    "visibilityHelp": "公開チャンネルは誰でも参加できます。非公開は作成者が招待した人だけが参加できます。",
+    "newName": "新しいチャンネル名",
+    "makePrivate": "非公開にする",
+    "creating": "作成中…",
+    "create": "チャンネル作成"
+  },
+  "sync": {
+    "title": "同期の状態",
+    "user": "ユーザー",
+    "oidc": "OIDC ログイン中",
+    "unset": "（未設定: VITE_DEV_USER_ID）",
+    "browserLoading": "ブラウザで読み込み中…",
+    "back": "チャンネル一覧へ",
+    "description": "Electric Shape の購読と REST 書き込みの検証 UI はトップとチャンネル画面へ移行しました。 ここでは接続設定だけを表示します。"
+  },
+  "auth": {
+    "logout": "ログアウト",
+    "loggedOut": "ログアウトしました",
+    "loggedOutHelp": "Kanidm のセッションは残っているため、続けるには再度ログインしてください。",
+    "login": "ログイン",
+    "failed": "ログインできませんでした",
+    "retry": "再ログイン",
+    "unauthorizedLoop": "API が 401 を返し続けたため、再ログインを停止しました。OIDC の設定（audience / typ / JWKS）とバックエンドのログを確認してください。",
+    "errorWithCode": "{{message}}（{{code}}）",
+    "oidcErrors": {
+      "discovery_failed": "OpenID Discovery が {{status}} を返しました",
+      "issuer_mismatch": "Discovery の issuer が設定と一致しません",
+      "invalid_discovery": "Discovery に必須エンドポイントがありません",
+      "authorization_failed": "認可に失敗しました",
+      "invalid_callback": "コールバックに code / state がありません",
+      "missing_pending_request": "保存された認可リクエストが無いため state / nonce を検証できません",
+      "state_mismatch": "state が一致しません",
+      "no_refresh_token": "refresh_token がありません",
+      "session_reset": "セッションが破棄されました",
+      "invalid_token_response": "トークン応答の形式が不正、または access_token がありません",
+      "token_request_failed": "トークンエンドポイントが {{status}} を返しました",
+      "invalid_id_token": "ID トークンが無いか、デコードできません",
+      "id_token_issuer_mismatch": "ID トークンの iss が一致しません",
+      "id_token_audience_mismatch": "ID トークンの aud が一致しません",
+      "id_token_expired": "ID トークンが期限切れです",
+      "nonce_mismatch": "ID トークンの nonce が一致しません"
+    }
+  },
+  "members": {
+    "joined": "参加中",
+    "notJoined": "未参加",
+    "title": "メンバー",
+    "creator": "作成者",
+    "you": "あなた",
+    "empty": "メンバーがいません。",
+    "loadError": "メンバー取得に失敗しました。",
+    "checking": "確認中…",
+    "leave": "退出",
+    "join": "参加",
+    "private": "非公開チャンネルです。参加には作成者からの招待が必要です。",
+    "already": "既にメンバーです: {{userId}}",
+    "search": "名前で検索して追加",
+    "addLabel": "メンバーを追加",
+    "candidates": "メンバー候補",
+    "usersLoading": "ユーザーを読み込み中…",
+    "usersError": "ユーザー取得に失敗しました。",
+    "usersEmpty": "該当するユーザーがいません。"
+  },
+  "common": {
+    "loading": "読み込み中…",
+    "cancel": "キャンセル",
+    "cancelShort": "取消",
+    "save": "保存",
+    "writeError": "操作に失敗しました",
+    "close": "閉じる",
+    "writeErrorDetail": "操作失敗: {{error}}"
+  },
+  "welcome": {
+    "title": "ようこそ Zoo へ",
+    "description": "左のリストからチャンネルを選択すると、メッセージのやり取りを表示します。"
+  },
+  "messages": {
+    "compose": "メッセージを送信",
+    "send": "送信",
+    "edit": "編集",
+    "delete": "削除",
+    "more": "その他の操作",
+    "editLabel": "メッセージを編集",
+    "loadError": "メッセージの取得に失敗しました",
+    "retryHelp": "接続を確認して、もう一度お試しください。",
+    "empty": "まだメッセージがありません",
+    "first": "最初のメッセージを送ってみましょう。",
+    "new": "新着メッセージ",
+    "title": "メッセージ",
+    "fetchError": "メッセージ取得に失敗しました",
+    "deleteTitle": "メッセージを削除しますか？",
+    "deleteDescription": "この操作は取り消せません。削除したメッセージはチャンネルのメンバーからも見えなくなります。",
+    "count_one": "{{count}} 件",
+    "count_other": "{{count}} 件",
+    "announcement": "新着メッセージ: {{author}}「{{excerpt}}」",
+    "announcementAuthor": "新着メッセージ: {{author}}"
+  },
+  "theme": {
+    "switch": "テーマを切り替える",
+    "title": "テーマ",
+    "light": "ライト",
+    "dark": "ダーク",
+    "system": "システム"
+  },
+  "language": {
+    "switch": "言語を切り替える",
+    "title": "言語"
+  },
+  "dates": {
+    "today": "今日",
+    "yesterday": "昨日"
+  },
+  "composer": {
+    "mac": "⌘（Cmd）+Enter で送信 / Enter で改行",
+    "ctrl": "Ctrl+Enter で送信 / Enter で改行",
+    "other": "Cmd / Ctrl+Enter で送信 / Enter で改行"
+  },
+  "notifications": {
+    "label": "通知",
+    "close": "通知を閉じる"
+  }
+}

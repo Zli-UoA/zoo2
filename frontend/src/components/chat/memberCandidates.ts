@@ -1,3 +1,4 @@
+import { DEFAULT_LOCALE, INTL_LOCALES, type Locale } from "../../lib/i18n/locale";
 import type { ChannelUserRow, UserRow } from "../../lib/electric/types";
 
 /** 候補リストに一度に出す最大件数。 */
@@ -9,13 +10,14 @@ export function userLabel(user: Pick<UserRow, "display_name" | "user_name">): st
 }
 
 /**
- * ラベル順（ja ロケール）に並べた新しい配列を返す。
+ * 選択言語のラベル順に並べた新しい配列を返す。
  *
  * キー入力のたびに全ユーザーを並べ替えないよう、`MembersPanel` 側でユーザー一覧に
  * 対して一度だけ適用し、`filterMemberCandidates` は並びを保ったまま絞り込む。
  */
-export function sortUsersByLabel(users: UserRow[]): UserRow[] {
-  return [...users].sort((a, b) => userLabel(a).localeCompare(userLabel(b), "ja"));
+export function sortUsersByLabel(users: UserRow[], locale: Locale = DEFAULT_LOCALE): UserRow[] {
+  const collator = new Intl.Collator(INTL_LOCALES[locale]);
+  return [...users].sort((a, b) => collator.compare(userLabel(a), userLabel(b)));
 }
 
 export interface MemberCandidateFilter {

@@ -85,3 +85,9 @@ describe("filterMemberCandidates", () => {
     expect(MEMBER_CANDIDATE_LIMIT).toBeGreaterThan(0);
   });
 });
+
+it("orders Chinese names according to the selected script", () => {
+  const input = [user("a", "阿"), user("b", "王"), user("c", "张")];
+  expect(sortUsersByLabel(input, "zh-Hans").map(userLabel)).toEqual(["阿", "王", "张"]);
+  expect(sortUsersByLabel(input, "zh-Hant").map(userLabel)).toEqual(["王", "张", "阿"]);
+});

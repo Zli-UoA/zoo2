@@ -1,5 +1,7 @@
 import { expect, test } from "@playwright/test";
 
+test.use({ locale: "ja-JP" });
+
 const mockIdpPort = process.env.MOCK_IDP_PORT ?? "4100";
 const mockIdpOrigin = `http://127.0.0.1:${mockIdpPort}`;
 

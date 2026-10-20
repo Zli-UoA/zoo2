@@ -1,3 +1,4 @@
+import { createI18n } from "../../../lib/i18n";
 import { describe, expect, it } from "vite-plus/test";
 
 import {
@@ -115,16 +116,17 @@ describe("resolveComposerPlatform", () => {
 });
 
 describe("composerSendHint", () => {
+  const t = createI18n().t;
   it("macOS は ⌘（Cmd）+Enter を案内する", () => {
-    expect(composerSendHint("mac")).toBe("⌘（Cmd）+Enter で送信 / Enter で改行");
+    expect(composerSendHint("mac", t)).toBe("⌘（Cmd）+Enter で送信 / Enter で改行");
   });
 
   it("Windows / Linux は Ctrl+Enter を案内する", () => {
-    expect(composerSendHint("windows")).toBe("Ctrl+Enter で送信 / Enter で改行");
-    expect(composerSendHint("linux")).toBe("Ctrl+Enter で送信 / Enter で改行");
+    expect(composerSendHint("windows", t)).toBe("Ctrl+Enter で送信 / Enter で改行");
+    expect(composerSendHint("linux", t)).toBe("Ctrl+Enter で送信 / Enter で改行");
   });
 
   it("判別できないときは Cmd / Ctrl の両方を案内する", () => {
-    expect(composerSendHint("unknown")).toBe("Cmd / Ctrl+Enter で送信 / Enter で改行");
+    expect(composerSendHint("unknown", t)).toBe("Cmd / Ctrl+Enter で送信 / Enter で改行");
   });
 });
