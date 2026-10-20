@@ -107,7 +107,7 @@ export default async function cleanup({github, context, core}) {
       selected.sort((a, b) => Number(tagsOf(b).length > 0) - Number(tagsOf(a).length > 0));
       for (const version of selected) {
         if (protectedDigests.has(version.name)) continue;
-        const current = await ignoreMissing(() => github.rest.packages.getPackageVersionForPackageOwnedByOrg({...params, package_version_id: version.id}));
+        const current = await ignoreMissing(() => github.rest.packages.getPackageVersionForOrganization({...params, package_version_id: version.id}));
         if (!current) continue;
         if (JSON.stringify([...tagsOf(current.data)].sort()) !== JSON.stringify([...tagsOf(version)].sort())) {
           await skip(version, 'tags changed during cleanup');

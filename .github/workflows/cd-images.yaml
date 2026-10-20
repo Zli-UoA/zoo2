@@ -55,8 +55,33 @@ jobs:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
+      # Immutable tags are never rewritten; a rerun for the same commit reuses what was already published.
+      - name: Check existing immutable tags
+        id: existing
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          IMAGE: ghcr.io/zli-uoa/zoo2-${{ matrix.component }}
+          TAG: ${{ fromJSON(needs.plan.outputs.tags)[matrix.component] }}
+          PREVIEW_TAG: ${{ matrix.component == 'frontend' && github.event_name != 'pull_request' && format('preview-{0}', needs.plan.outputs.sha) || '' }}
+        run: |
+          # A missing tag reports "not found"; a package that does not exist yet may be refused instead.
+          exists() {
+            local out
+            if out=$(docker buildx imagetools inspect "$1" 2>&1); then echo true
+            elif grep -qi 'not found' <<<"$out"; then echo false
+            elif gh api "orgs/Zli-UoA/packages/container/${IMAGE##*/}" --silent 2>&1 | grep -q 'HTTP 404'; then echo false
+            else echo "$out" >&2; return 1
+            fi
+          }
+          image=$(exists "$IMAGE:$TAG")
+          preview=false
+          if [ -n "$PREVIEW_TAG" ]; then preview=$(exists "$IMAGE:$PREVIEW_TAG"); fi
+          [ "$image" = false ] || echo "::notice::$IMAGE:$TAG already exists; not rebuilding"
+          [ "$preview" = false ] || echo "::notice::$IMAGE:$PREVIEW_TAG already exists; not rebuilding"
+          echo "image=$image" >> "$GITHUB_OUTPUT"
+          echo "preview=$preview" >> "$GITHUB_OUTPUT"
       - name: Validate production OIDC configuration
-        if: matrix.component == 'frontend' && github.event_name != 'pull_request'
+        if: matrix.component == 'frontend' && github.event_name != 'pull_request' && steps.existing.outputs.image == 'false'
         env:
           ISSUER: ${{ vars.VITE_OIDC_ISSUER }}
           CLIENT_ID: ${{ vars.VITE_OIDC_CLIENT_ID }}
@@ -66,13 +91,13 @@ jobs:
       # Save once per dependency set; a per-commit key would evict the buildx layer caches.
       - name: Restore Rust cache mounts
         id: rust-cache
-        if: matrix.component == 'backend'
+        if: matrix.component == 'backend' && steps.existing.outputs.image == 'false'
         uses: actions/cache@v4
         with:
           path: .buildkit-cache
           key: rust-image-${{ runner.os }}-${{ hashFiles('backend/Cargo.lock', 'infra/Dockerfile-backend-deploy') }}
       - name: Inject Rust cache mounts
-        if: matrix.component == 'backend'
+        if: matrix.component == 'backend' && steps.existing.outputs.image == 'false'
         uses: reproducible-containers/buildkit-cache-dance@v3
         with:
           skip-extraction: ${{ steps.rust-cache.outputs.cache-hit }}
@@ -84,6 +109,7 @@ jobs:
             }
       - name: Build and publish immutable image
         id: image
+        if: steps.existing.outputs.image == 'false'
         uses: docker/build-push-action@v6
         with:
           context: .
@@ -104,7 +130,7 @@ jobs:
             VITE_OIDC_SCOPE=${{ github.event_name != 'pull_request' && vars.VITE_OIDC_SCOPE || '' }}
             VITE_OIDC_POST_LOGOUT_REDIRECT_URI=${{ github.event_name != 'pull_request' && vars.VITE_OIDC_POST_LOGOUT_REDIRECT_URI || '' }}
       - name: Build and publish shared preview frontend
-        if: matrix.component == 'frontend' && github.event_name != 'pull_request'
+        if: steps.existing.outputs.preview == 'false' && matrix.component == 'frontend' && github.event_name != 'pull_request'
         id: preview
         uses: docker/build-push-action@v6
         with:

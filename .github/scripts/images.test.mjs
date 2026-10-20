@@ -114,7 +114,7 @@ function cleanupFixture({dryRun = false, changedTags = false, denied = false, re
       }},
       packages: {
         getAllPackageVersionsForPackageOwnedByOrg: 'versions',
-        getPackageVersionForPackageOwnedByOrg: async ({package_version_id}) => {
+        getPackageVersionForOrganization: async ({package_version_id}) => {
           if (denied) throw new Error('403 forbidden');
           const data = structuredClone(versions.find(v => v.id === package_version_id));
           if (changedTags && package_version_id === 1) data.metadata.container.tags.push('latest');
