@@ -449,3 +449,74 @@ async fn test_member_kick_and_access_revocation() -> anyhow::Result<()> {
 
     Ok(())
 }
+
+#[tokio::test]
+async fn test_get_me_reports_is_admin() -> anyhow::Result<()> {
+    dotenvy::dotenv().ok();
+    dotenvy::from_filename("../.env").ok();
+
+    let mut config = Config::from_env();
+    config.dev_auth_enabled = true;
+    let db = init_db(&config.database_url).await?;
+    let state = AppState::new(db.clone(), config);
+    let app = create_router(state);
+
+    let member_id = uuid::Uuid::new_v4().to_string();
+    let admin_id = uuid::Uuid::new_v4().to_string();
+
+    for (id, name) in [(&member_id, "member"), (&admin_id, "admin")] {
+        let user_payload = json!({
+            "id": id,
+            "user_name": format!("{}_{}", name, uuid::Uuid::new_v4().simple()),
+            "display_name": name,
+        });
+        let req = Request::builder()
+            .method("POST")
+            .uri("/api/users")
+            .header("content-type", "application/json")
+            .body(Body::from(serde_json::to_vec(&user_payload)?))?;
+        let resp = app.clone().oneshot(req).await?;
+        assert_eq!(resp.status(), StatusCode::OK);
+    }
+
+    // 一般メンバー: is_admin = false
+    let req = Request::builder()
+        .method("GET")
+        .uri("/api/users/me")
+        .header("X-Dev-User", &member_id)
+        .body(Body::empty())?;
+    let resp = app.clone().oneshot(req).await?;
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = to_bytes(resp.into_body(), usize::MAX).await?;
+    let json: Value = serde_json::from_slice(&body)?;
+    assert_eq!(json["id"], member_id);
+    assert_eq!(json["is_admin"], false);
+    // 既存フィールドがフラットに残っていること
+    assert_eq!(json["display_name"], "member");
+
+    // role_admin を付与
+    let mut db_tx = db.clone();
+    let mut tx = db_tx.transaction().await?;
+    toasty::create!(UserRole {
+        user_id: admin_id.as_str(),
+        role_id: "role_admin",
+    })
+    .exec(&mut tx)
+    .await?;
+    tx.commit().await?;
+
+    // ワークスペース管理者: is_admin = true
+    let req = Request::builder()
+        .method("GET")
+        .uri("/api/users/me")
+        .header("X-Dev-User", &admin_id)
+        .body(Body::empty())?;
+    let resp = app.clone().oneshot(req).await?;
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = to_bytes(resp.into_body(), usize::MAX).await?;
+    let json: Value = serde_json::from_slice(&body)?;
+    assert_eq!(json["id"], admin_id);
+    assert_eq!(json["is_admin"], true);
+
+    Ok(())
+}

@@ -4,6 +4,7 @@ import { useMemo } from "react";
 import { getCollections } from "../lib/electric/collections";
 import { messageFeedQuery } from "../lib/electric/messageFeed";
 import type { ChannelRow, ChannelUserRow } from "../lib/electric/types";
+import { canAddChannelMember, canManageChannel } from "./channelPermissions";
 import { useCurrentUser } from "./useCurrentUser";
 
 /** 投稿者名の解決に使う全ユーザーを購読する。 */
@@ -82,10 +83,18 @@ export interface ChannelAccess {
   members: ChannelUserRow[];
   /** 現在ユーザーが参加しているか。 */
   isMember: boolean;
+  /** 現在ユーザーがチャンネル作成者か。 */
+  isCreator: boolean;
+  /** 現在ユーザーがワークスペース管理者か。 */
+  isAdmin: boolean;
   /** 非公開チャンネルは参加者のみ読める（direct の全件配信に対する UI 側ガード）。 */
   canRead: boolean;
-  /** 追加は作成者か、公開チャンネルの既存メンバー（バックエンドと同じ条件）。 */
+  /** 追加は管理者か作成者、公開チャンネルの既存メンバー（バックエンドと同じ条件）。 */
   canAddMember: boolean;
+  /** アーカイブ・キック・強制削除（管理者か作成者）。 */
+  canManageChannel: boolean;
+  /** アーカイブ済み（読み取り専用）か。 */
+  isArchived: boolean;
   /** メンバー購読の読み込み中（ヘッダーの件数表示用）。 */
   isLoading: boolean;
   /**
@@ -100,25 +109,36 @@ export interface ChannelAccess {
 /**
  * チャンネルの権限判定をまとめる。
  *
- * 条件はバックエンドの認可と同じ: 非公開は参加者のみ閲覧、追加は作成者か公開の
- * 既存メンバー。direct モードの Shape は認可せず全件配信するため UI 側のガードが
- * 必要（proxy 切替後も同じ）。現在ユーザーは `useCurrentUser()` から取る。
- * `channel` が未解決の間はメンバーを購読せず、判定はすべて false。
+ * 条件はバックエンドの認可と同じ: 非公開は参加者のみ閲覧、追加は管理者か作成者
+ * または公開の既存メンバー、管理は管理者か作成者。direct モードの Shape は認可
+ * せず全件配信するため UI 側のガードが必要（proxy 切替後も同じ）。現在ユーザーと
+ * `is_admin` は `useCurrentUser()` から取る。`channel` が未解決の間はメンバーを
+ * 購読せず、判定はすべて false。
  */
 export function useChannelAccess(channel: ChannelRow | null): ChannelAccess {
-  const { currentUserId, isLoading: currentUserLoading } = useCurrentUser();
+  const { currentUserId, isLoading: currentUserLoading, isAdmin } = useCurrentUser();
   const membersQuery = useChannelMembers(channel?.id ?? null);
   const members = membersQuery.data ?? [];
   const isMember = currentUserId
     ? members.some((member) => member.user_id === currentUserId)
     : false;
+  const isCreator = !!channel && currentUserId === channel.created_user_id;
   return {
     members,
     isMember,
+    isCreator,
+    isAdmin,
     canRead: channel ? !channel.is_private || isMember : false,
     canAddMember: channel
-      ? currentUserId === channel.created_user_id || (!channel.is_private && isMember)
+      ? canAddChannelMember({
+          isAdmin,
+          isCreator,
+          isPrivate: channel.is_private,
+          isMember,
+        })
       : false,
+    canManageChannel: channel ? canManageChannel({ isAdmin, isCreator }) : false,
+    isArchived: !!channel?.archive_at,
     isLoading: membersQuery.isLoading,
     isMembershipPending: !!channel?.is_private && (membersQuery.isLoading || currentUserLoading),
     isError: membersQuery.isError,

@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::{
-    auth::AuthUser,
+    auth::{AuthUser, rbac::is_workspace_admin},
     db::get_current_txid,
     error::AppError,
     models::User,
@@ -49,6 +49,15 @@ impl From<User> for UserResponse {
     }
 }
 
+/// `GET /api/users/me` のレスポンス。既存クライアントとの互換性を保つため、
+/// `UserResponse` のフィールドはそのままフラットに並べ、`is_admin` だけを足す。
+#[derive(Debug, Clone, Serialize)]
+pub struct MeResponse {
+    #[serde(flatten)]
+    pub user: UserResponse,
+    pub is_admin: bool,
+}
+
 pub fn router() -> Router<AppState> {
     Router::new()
         .route("/api/users", post(create_user).get(list_users))
@@ -59,16 +68,27 @@ pub fn router() -> Router<AppState> {
 async fn get_me(
     State(state): State<AppState>,
     auth_user: AuthUser,
-) -> Result<Json<UserResponse>, AppError> {
+) -> Result<Json<MeResponse>, AppError> {
     let mut db = state.db.clone();
-    match User::get_by_id(&mut db, auth_user.id.as_str()).await {
-        Ok(user) => Ok(Json(UserResponse::from(user))),
-        Err(err) if err.is_record_not_found() => Err(AppError::NotFound(format!(
-            "User not found with id: {}",
-            auth_user.id
-        ))),
-        Err(err) => Err(err.into()),
-    }
+    let mut tx = db.transaction().await?;
+    let user = match User::get_by_id(&mut tx, auth_user.id.as_str()).await {
+        Ok(user) => user,
+        Err(err) if err.is_record_not_found() => {
+            return Err(AppError::NotFound(format!(
+                "User not found with id: {}",
+                auth_user.id
+            )));
+        }
+        Err(err) => return Err(err.into()),
+    };
+    let is_admin =
+        is_workspace_admin(&mut tx, &auth_user.id, state.config.dev_auth_enabled).await?;
+    tx.commit().await?;
+
+    Ok(Json(MeResponse {
+        user: UserResponse::from(user),
+        is_admin,
+    }))
 }
 
 async fn update_me(
