@@ -86,7 +86,7 @@ export function ThreadPane({
 
   return (
     <aside
-      aria-label="スレッド"
+      aria-label={t("threads.title")}
       className="absolute inset-0 z-20 flex min-h-0 min-w-0 flex-col border-l bg-background sm:static sm:z-auto sm:w-80 sm:shrink-0 xl:w-96"
     >
       <header className="flex items-center gap-2 border-b px-4 py-2.5">

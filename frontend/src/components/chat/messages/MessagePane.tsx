@@ -117,11 +117,17 @@ export function MessagePane({ channelId }: { channelId: string }) {
   }, [channelId]);
 
   // ルートが（他ユーザーの操作などで）見えなくなったらスレッドも閉じる。
+  // 論理削除なら、返信が残っていることを利用者に伝えてから閉じる。
   useEffect(() => {
-    if (threadRootId && !messagesQuery.isLoading && !threadRoot) {
-      setThreadRootId(null);
+    if (!threadRootId || messagesQuery.isLoading || threadRoot) {
+      return;
     }
-  }, [threadRootId, threadRoot, messagesQuery.isLoading]);
+    const rootRow = messagesCollection.get(threadRootId);
+    setThreadRootId(null);
+    if (rootRow?.deleted_at) {
+      toast.info(t("threads.rootDeleted"), { id: "thread-root-deleted" });
+    }
+  }, [threadRootId, threadRoot, messagesQuery.isLoading, messagesCollection, t]);
 
   // 書き込み失敗は sonner で通知する（既存の `useWriteRunner` の error を監視）。
   useEffect(() => {
