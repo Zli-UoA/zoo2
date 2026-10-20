@@ -1,6 +1,7 @@
 import { eq, isNull, useLiveQuery } from "@tanstack/react-db";
-import { useMemo } from "react";
+import { useEffect, useMemo, useState } from "react";
 
+import { createConfiguredApiClient } from "../lib/api/client";
 import { getCollections } from "../lib/electric/collections";
 import { messageFeedQuery } from "../lib/electric/messageFeed";
 import type { ChannelRow, ChannelUserRow } from "../lib/electric/types";
@@ -50,6 +51,49 @@ export function useChannelMembers(channelId: string | null) {
 export function useMessageReactions(channelId: string) {
   const { reactions } = getCollections();
   return useLiveQuery((q) => q.from({ reactions: reactions(channelId) }));
+}
+
+export interface WorkspaceAdminIds {
+  /** ワークスペース管理者の user_id 集合。 */
+  adminIds: ReadonlySet<string>;
+  /** 取得中か。失敗時も false になり、その場合はキック可否をバックエンドに委ねる。 */
+  isLoading: boolean;
+}
+
+/**
+ * キック可否の UI 判定に使うワークスペース管理者の一覧を取得する。
+ *
+ * 管理者ロールは `users` / `channel_user` の Shape に含まれないため、
+ * `GET /api/users/admins` の軽量エンドポイントから一度だけ取得する。Shape を
+ * 増やさず、管理者をキック対象として表示しないための最小限の情報にとどめる。
+ */
+export function useWorkspaceAdminIds(): WorkspaceAdminIds {
+  const { config } = getCollections();
+  const client = useMemo(() => createConfiguredApiClient(config), [config]);
+  const [adminIds, setAdminIds] = useState<ReadonlySet<string>>(() => new Set());
+  const [isLoading, setIsLoading] = useState(true);
+
+  useEffect(() => {
+    let cancelled = false;
+    client
+      .get<{ user_ids: string[] }>("/api/users/admins")
+      .then((response) => {
+        if (cancelled) return;
+        setAdminIds(new Set(response.user_ids));
+        setIsLoading(false);
+      })
+      .catch((cause) => {
+        if (cancelled) return;
+        console.warn("ワークスペース管理者の取得に失敗しました", cause);
+        setAdminIds(new Set());
+        setIsLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [client]);
+
+  return { adminIds, isLoading };
 }
 
 export interface MyChannelMemberships {

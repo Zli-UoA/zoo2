@@ -548,6 +548,14 @@ async fn leave_channel(
         )));
     }
 
+    // 作成者が抜けると作成者不在のチャンネルになり、管理権限を失う。
+    // UI でも退出ボタンを無効化しているが、API 直叩きに対する最終防衛線として拒否する。
+    if channel.created_user_id == auth_user.id {
+        return Err(AppError::BadRequest(
+            "The channel creator cannot leave the channel".into(),
+        ));
+    }
+
     let existing = ChannelUser::filter(
         ChannelUser::fields()
             .channel_id()

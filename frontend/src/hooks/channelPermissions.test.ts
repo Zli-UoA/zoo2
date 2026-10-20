@@ -28,6 +28,7 @@ describe("canKickChannelMember", () => {
     actorCanManage: true,
     channelCreatorId: "alice",
     targetUserId: "bob",
+    targetIsAdmin: false,
   };
 
   it("allows the creator or an admin to kick a regular member", () => {
@@ -42,5 +43,18 @@ describe("canKickChannelMember", () => {
     expect(canKickChannelMember({ ...base, actorId: null })).toBe(false);
     expect(canKickChannelMember({ ...base, targetUserId: "alice" })).toBe(false);
     expect(canKickChannelMember({ ...base, actorId: "admin", targetUserId: "admin" })).toBe(false);
+  });
+
+  it("rejects a workspace admin as the target", () => {
+    expect(canKickChannelMember({ ...base, targetIsAdmin: true })).toBe(false);
+    expect(
+      canKickChannelMember({
+        ...base,
+        actorId: "creator",
+        channelCreatorId: "creator",
+        targetUserId: "admin",
+        targetIsAdmin: true,
+      }),
+    ).toBe(false);
   });
 });

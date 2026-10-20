@@ -6,7 +6,7 @@ import { useId, useMemo, useState, type ChangeEvent, type KeyboardEvent } from "
 import { canKickChannelMember } from "../../hooks/channelPermissions";
 import { useChannelAdmin } from "../../hooks/useChannelAdmin";
 import { useCurrentUser } from "../../hooks/useCurrentUser";
-import { useChannelMembers, useUsers } from "../../hooks/useRealtime";
+import { useChannelMembers, useUsers, useWorkspaceAdminIds } from "../../hooks/useRealtime";
 import { useWriteRunner } from "../../hooks/useWriteRunner";
 import { getCollections } from "../../lib/electric/collections";
 import type { ChannelUserWriteMetadata } from "../../lib/electric/writes";
@@ -57,13 +57,16 @@ export function MembersPanel({ channel, className }: { channel: ChannelRow; clas
   const { currentUserId, isLoading: currentUserLoading } = useCurrentUser();
   const { error, setError, run } = useWriteRunner();
   const admin = useChannelAdmin(channel);
+  const { adminIds, isLoading: adminIdsLoading } = useWorkspaceAdminIds();
   const isArchived = admin.access.isArchived;
+  const isCreator = admin.access.isCreator;
   const canManage = admin.access.canManageChannel;
   const [query, setQuery] = useState("");
   const [isCandidateListOpen, setCandidateListOpen] = useState(false);
   const [activeIndex, setActiveIndex] = useState(-1);
   const [kickTarget, setKickTarget] = useState<{ userId: string; label: string } | null>(null);
   const candidateListId = useId();
+  const creatorLeaveHintId = useId();
 
   const members = membersQuery.data ?? [];
   const userNames = useMemo(() => {
@@ -145,7 +148,11 @@ export function MembersPanel({ channel, className }: { channel: ChannelRow; clas
         break;
       }
       case "Escape":
+        // ポップアップだけを閉じ、ダイアログ（Base UI が document で Escape を
+        // 監視する）まで閉じないよう伝播を止める。閉じた状態で再度 Escape を
+        // 押すと、通常どおりダイアログが閉じる。
         event.preventDefault();
+        event.stopPropagation();
         closeCandidateList();
         break;
       case "Tab":
@@ -165,7 +172,7 @@ export function MembersPanel({ channel, className }: { channel: ChannelRow; clas
   }
 
   async function leaveChannel() {
-    if (!currentUserId || busy) return;
+    if (!currentUserId || busy || isCreator) return;
     const userId = currentUserId;
     await run(() =>
       channelUsers.delete(`${userId}:${channel.id}`, {
@@ -176,10 +183,20 @@ export function MembersPanel({ channel, className }: { channel: ChannelRow; clas
 
   async function confirmKick() {
     if (!kickTarget) return;
-    const succeeded = await admin.kickMember(kickTarget.userId);
-    if (succeeded) {
-      setKickTarget(null);
+    await admin.kickMember(kickTarget.userId);
+    // 権限判定の結果が古い（管理者一覧の取得失敗など）場合でも、403 のあとに
+    // ダイアログを残さない。失敗理由は useChannelAdmin がトーストで通知する。
+    setKickTarget(null);
+  }
+
+  function handlePanelKeyDown(event: KeyboardEvent<HTMLDivElement>) {
+    if (event.key !== "Escape" || !isCandidateListOpen) {
+      return;
     }
+    // 入力欄以外にフォーカスがあっても、まず候補ポップアップを閉じる。
+    event.preventDefault();
+    event.stopPropagation();
+    closeCandidateList();
   }
 
   async function addMember(user: UserRow) {
@@ -201,7 +218,7 @@ export function MembersPanel({ channel, className }: { channel: ChannelRow; clas
   }
 
   return (
-    <div className={cn("min-h-0 flex-col bg-background", className)}>
+    <div className={cn("min-h-0 flex-col bg-background", className)} onKeyDown={handlePanelKeyDown}>
       <header className="flex items-center justify-between gap-2 border-b px-4 py-3">
         <h3 className="text-sm font-semibold">{t("members.title")}</h3>
         <span className="rounded bg-muted px-2 py-0.5 text-xs tabular-nums text-muted-foreground">
@@ -231,11 +248,13 @@ export function MembersPanel({ channel, className }: { channel: ChannelRow; clas
                     const isMe = member.user_id === currentUserId;
                     const canKick =
                       !isArchived &&
+                      !adminIdsLoading &&
                       canKickChannelMember({
                         actorId: currentUserId,
                         actorCanManage: canManage,
                         channelCreatorId: channel.created_user_id,
                         targetUserId: member.user_id,
+                        targetIsAdmin: adminIds.has(member.user_id),
                       });
                     return (
                       <li
@@ -294,7 +313,9 @@ export function MembersPanel({ channel, className }: { channel: ChannelRow; clas
                   value={query}
                   onChange={handleQueryChange}
                   onKeyDown={handleQueryKeyDown}
-                  onFocus={openCandidateList}
+                  // ダイアログを開いた直後の自動フォーカスでは候補を開かない。
+                  // 入力（onChange）か明示的なクリック、矢印キーで開く。
+                  onClick={openCandidateList}
                   onBlur={closeCandidateList}
                   disabled={busy}
                   role="combobox"
@@ -372,16 +393,33 @@ export function MembersPanel({ channel, className }: { channel: ChannelRow; clas
                 {currentUserLoading
                   ? t("members.checking")
                   : isMember
-                    ? t("members.joined")
+                    ? isCreator
+                      ? t("members.creator")
+                      : t("members.joined")
                     : isArchived
                       ? t("moderation.archived")
                       : t("members.notJoined")}
               </span>
               {!currentUserLoading && currentUserId ? (
                 isMember ? (
-                  <Button variant="outline" size="sm" onClick={leaveChannel} disabled={busy}>
-                    {t("members.leave")}
-                  </Button>
+                  <>
+                    <span title={isCreator ? t("moderation.forbidden") : undefined}>
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={leaveChannel}
+                        disabled={busy || isCreator}
+                        aria-describedby={isCreator ? creatorLeaveHintId : undefined}
+                      >
+                        {t("members.leave")}
+                      </Button>
+                    </span>
+                    {isCreator ? (
+                      <span id={creatorLeaveHintId} className="sr-only">
+                        {t("moderation.forbidden")}
+                      </span>
+                    ) : null}
+                  </>
                 ) : isArchived ? null : (
                   <Button size="sm" onClick={joinChannel} disabled={busy}>
                     {t("members.join")}
