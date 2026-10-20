@@ -6,10 +6,27 @@ on:
       - "infra/db/migrations/**"
       - "infra/db/compose.yml"
       - ".github/workflows/ci-backend.yaml"
+      - ".github/workflows/select-runner.yaml"
   workflow_dispatch:
+    inputs:
+      runner:
+        description: Runner selection (auto prefers a compatible idle self-hosted runner)
+        type: choice
+        options: [auto, github, self-hosted]
+        default: auto
+permissions:
+  contents: read
 jobs:
+  select-runner:
+    uses: ./.github/workflows/select-runner.yaml
+    with:
+      mode: ${{ inputs.runner || 'auto' }}
+    secrets:
+      runner-status-token: ${{ secrets.RUNNER_STATUS_TOKEN }}
   build:
-    runs-on: ubuntu-latest
+    needs: select-runner
+    runs-on: ${{ fromJSON(needs.select-runner.outputs.rust) }}
+    timeout-minutes: 30
     defaults:
       run:
         working-directory: ./backend
@@ -28,7 +45,9 @@ jobs:
           cargo build
 
   lint:
-    runs-on: ubuntu-latest
+    needs: select-runner
+    runs-on: ${{ fromJSON(needs.select-runner.outputs.rust) }}
+    timeout-minutes: 30
     defaults:
       run:
         working-directory: ./backend
@@ -52,7 +71,9 @@ jobs:
           cargo fmt --check
 
   unit-test:
-    runs-on: ubuntu-latest
+    needs: select-runner
+    runs-on: ${{ fromJSON(needs.select-runner.outputs.rust) }}
+    timeout-minutes: 30
     defaults:
       run:
         working-directory: ./backend
@@ -73,7 +94,9 @@ jobs:
           cargo test --lib
 
   e2e:
-    runs-on: ubuntu-latest
+    needs: select-runner
+    runs-on: ${{ fromJSON(needs.select-runner.outputs.docker) }}
+    timeout-minutes: 40
     defaults:
       run:
         working-directory: ./backend

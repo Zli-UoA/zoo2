@@ -1,0 +1,99 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: zoo2-runner
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: zoo2-runner-persistent
+  template:
+    metadata:
+      labels:
+        app: zoo2-runner-persistent
+    spec:
+      automountServiceAccountToken: false
+      terminationGracePeriodSeconds: 120
+      securityContext:
+        fsGroup: 1001
+      containers:
+      - name: runner
+        image: ghcr.io/actions/actions-runner:latest
+        imagePullPolicy: Always
+        command:
+        - /bin/bash
+        - /runner-start/bootstrap.sh
+        env:
+        - name: POD_UID
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.uid
+        - name: DOCKER_HOST
+          value: unix:///var/run/docker/docker.sock
+        - name: CARGO_BUILD_JOBS
+          value: '1'
+        - name: RUNNER_LABELS
+          value: zoo2,zoo2-rust,zoo2-docker
+        securityContext:
+          runAsUser: 0
+          runAsGroup: 0
+        resources:
+          requests:
+            cpu: 250m
+            memory: 512Mi
+          limits:
+            cpu: '1'
+            memory: 1200Mi
+        volumeMounts:
+        - name: auth
+          mountPath: /runner-auth
+          readOnly: true
+        - name: start
+          mountPath: /runner-start
+          readOnly: true
+        - name: work
+          mountPath: /home/runner/_work
+        - name: docker-socket
+          mountPath: /var/run/docker
+      - name: docker
+        image: docker:29-dind
+        args:
+        - dockerd
+        - --host=unix:///var/run/docker/docker.sock
+        - --storage-driver=overlay2
+        env:
+        - name: DOCKER_TLS_CERTDIR
+          value: ''
+        securityContext:
+          privileged: true
+          runAsUser: 0
+        resources:
+          requests:
+            cpu: 250m
+            memory: 256Mi
+          limits:
+            cpu: 500m
+            memory: 1200Mi
+        volumeMounts:
+        - name: docker-socket
+          mountPath: /var/run/docker
+        - name: docker-data
+          mountPath: /var/lib/docker
+        - name: work
+          mountPath: /home/runner/_work
+      volumes:
+      - name: auth
+        secret:
+          secretName: zoo2-runner-api
+          defaultMode: 288
+      - name: start
+        configMap:
+          name: zoo2-runner-start
+      - name: work
+        emptyDir: {}
+      - name: docker-socket
+        emptyDir: {}
+      - name: docker-data
+        emptyDir: {}
