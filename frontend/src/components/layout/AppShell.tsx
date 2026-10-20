@@ -63,24 +63,34 @@ export function AppShell({ children }: { children: ReactNode }) {
     setPrevIsWide(isWide);
     if (!isWide) {
       setMembersOpen(false);
-    }
-  }
-
-  // メンバーとスレッドは右ペインを奪い合うため排他にする。スレッドを開いた
-  // ときに閉じる処理は `openThread` が行い、メンバーを開いたときはここで
-  // スレッドを閉じる（レンダー中に反映して一瞬の同時表示を避ける）。
-  const [prevMembersOpen, setPrevMembersOpen] = useState(membersOpen);
-  if (prevMembersOpen !== membersOpen) {
-    setPrevMembersOpen(membersOpen);
-    if (membersOpen) {
+    } else if (membersOpen) {
+      // 狭幅でダイアログとスレッドが重なったまま広げた場合は、右ペインを
+      // 奪い合わないようスレッドを閉じる。
       setThreadRootId(null);
     }
   }
 
-  const openThread = useCallback((rootId: string) => {
-    setThreadRootId(rootId);
-    setMembersOpen(false);
-  }, []);
+  // メンバーとスレッドは右ペインを奪い合うため、ワイドでは排他にする。
+  // スレッドを開いたときに閉じる処理は `openThread` が行い、メンバーを開いた
+  // ときはここでスレッドを閉じる（レンダー中に反映して一瞬の同時表示を避ける）。
+  // 狭幅はスレッドがオーバーレイ、メンバーがダイアログなので重ねたままにする。
+  const [prevMembersOpen, setPrevMembersOpen] = useState(membersOpen);
+  if (prevMembersOpen !== membersOpen) {
+    setPrevMembersOpen(membersOpen);
+    if (membersOpen && isWide) {
+      setThreadRootId(null);
+    }
+  }
+
+  const openThread = useCallback(
+    (rootId: string) => {
+      setThreadRootId(rootId);
+      if (isWide) {
+        setMembersOpen(false);
+      }
+    },
+    [isWide],
+  );
   const closeThread = useCallback(() => setThreadRootId(null), []);
 
   const value = useMemo<ShellContextValue>(
