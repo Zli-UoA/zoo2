@@ -148,8 +148,7 @@ function cleanupFixture({dryRun = false, changedTags = false, denied = false, re
   };
   return {github, context, core, deleted, rows, calls, fetchMock, dryRun};
 }
-async function runCleanupFixture(options) {
-  const fixture = cleanupFixture(options);
+async function runCleanupFixture(options, fixture = cleanupFixture(options)) {
   const originalFetch = globalThis.fetch;
   const originalDryRun = process.env.DRY_RUN;
   globalThis.fetch = fixture.fetchMock;
@@ -184,9 +183,18 @@ test('a missing retained manifest protects nothing', async () => {
 test('API failures abort cleanup but still record completed deletions', async () => {
   await assert.rejects(runCleanupFixture({denied: true}), /403/);
   const fixture = cleanupFixture({deleteFails: true});
-  const originalFetch = globalThis.fetch;
-  globalThis.fetch = fixture.fetchMock;
-  process.env.DRY_RUN = 'false';
-  try { await assert.rejects(cleanup(fixture), /500/); } finally { globalThis.fetch = originalFetch; delete process.env.DRY_RUN; }
+  await assert.rejects(runCleanupFixture({}, fixture), /500/);
   assert.deepEqual(fixture.rows.map(r => r[1]), ['1']);
+});
+test('manifest reads stay within the concurrency limit across nested indexes', async () => {
+  const manifests = {root: {manifests: Array.from({length: 20}, (_, i) => ({digest: `child${i}`}))}};
+  let active = 0, peak = 0;
+  const read = async digest => {
+    peak = Math.max(peak, ++active);
+    await new Promise(resolve => setTimeout(resolve, 1));
+    active--;
+    return manifests[digest] ?? {};
+  };
+  assert.equal((await referencedDigests(['root'], read, {concurrency: 3})).size, 21);
+  assert.equal(peak, 3);
 });

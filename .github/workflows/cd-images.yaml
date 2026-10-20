@@ -96,6 +96,9 @@ jobs:
         with:
           path: .buildkit-cache
           key: rust-image-${{ runner.os }}-${{ hashFiles('backend/Cargo.lock', 'infra/Dockerfile-backend-deploy') }}
+          # Start a new dependency set from the previous one instead of a cold build.
+          restore-keys: |
+            rust-image-${{ runner.os }}-
       - name: Inject Rust cache mounts
         if: matrix.component == 'backend' && steps.existing.outputs.image == 'false'
         uses: reproducible-containers/buildkit-cache-dance@v3
@@ -184,10 +187,13 @@ jobs:
               return [[image, 'latest', sha], ...(component === 'frontend' ? [[image, 'preview', `preview-${sha}`]] : [])];
             });
             // Tags cannot move atomically across packages; roll back on failure so aliases do not stay mixed.
+            // Only a missing alias (first promotion) may lack a previous digest; any other failure stops before promoting.
             const previous = [];
             for (const [image, alias] of aliases) {
-              const {exitCode, stdout} = await exec.getExecOutput('docker', ['buildx', 'imagetools', 'inspect', `${image}:${alias}`, '--format', '{{json .Manifest}}'], {ignoreReturnCode: true, silent: true});
-              previous.push(exitCode === 0 ? JSON.parse(stdout).digest : null);
+              const {exitCode, stdout, stderr} = await exec.getExecOutput('docker', ['buildx', 'imagetools', 'inspect', `${image}:${alias}`, '--format', '{{json .Manifest}}'], {ignoreReturnCode: true, silent: true});
+              if (exitCode === 0) previous.push(JSON.parse(stdout).digest);
+              else if (/not found/i.test(stderr)) previous.push(null);
+              else throw new Error(`Cannot inspect ${image}:${alias} before promotion: ${stderr.trim()}`);
             }
             let done = 0;
             try {
@@ -196,10 +202,17 @@ jobs:
                 done++;
               }
             } catch (error) {
+              // Attempt every restore, then report the promotion failure together with any restore failures.
+              const failed = [];
               for (let i = done - 1; i >= 0; i--) {
                 const [image, alias] = aliases[i];
-                if (previous[i]) await exec.exec('docker', ['buildx', 'imagetools', 'create', '-t', `${image}:${alias}`, `${image}@${previous[i]}`]);
-                else core.warning(`${image}:${alias} had no previous digest to restore`);
+                if (!previous[i]) { core.warning(`${image}:${alias} did not exist before promotion; left on the new commit`); continue; }
+                try {
+                  await exec.exec('docker', ['buildx', 'imagetools', 'create', '-t', `${image}:${alias}`, `${image}@${previous[i]}`]);
+                } catch (restoreError) {
+                  failed.push(`${image}:${alias} (${restoreError.message})`);
+                }
               }
+              if (failed.length) core.error(`Rollback failed; aliases are mixed: ${failed.join(', ')}`);
               throw error;
             }

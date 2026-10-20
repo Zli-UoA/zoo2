@@ -38,17 +38,22 @@ export async function ignoreMissing(operation) {
 }
 
 // Follow OCI indexes to protect untagged platform/attestation manifests as well.
+// At most `concurrency` manifest reads are in flight, however wide or deep the indexes are.
 export async function referencedDigests(roots, readManifest, {protectedDigests = new Set(), concurrency = 8} = {}) {
+  let active = 0;
+  const waiting = [];
+  const limited = async digest => {
+    if (active >= concurrency) await new Promise(resolve => waiting.push(resolve));
+    active++;
+    try { return await readManifest(digest); } finally { active--; waiting.shift()?.(); }
+  };
   async function visit(digest) {
     if (protectedDigests.has(digest)) return;
     protectedDigests.add(digest);
-    const manifest = await readManifest(digest);
+    const manifest = await limited(digest);
     await Promise.all((manifest.manifests ?? []).map(child => visit(child.digest)));
   }
-  const queue = [...roots];
-  await Promise.all(Array.from({length: Math.min(concurrency, queue.length)}, async () => {
-    while (queue.length) await visit(queue.shift());
-  }));
+  await Promise.all(roots.map(visit));
   return protectedDigests;
 }
 
@@ -56,17 +61,18 @@ export default async function cleanup({github, context, core}) {
   const owner = context.repo.owner;
   const closedPR = context.eventName === 'pull_request_target' ? context.payload.pull_request.number : null;
   const dryRun = process.env.DRY_RUN !== 'false';
-  let open;
   const listOpen = async () => new Map((await github.paginate(github.rest.pulls.list, {...context.repo, state: 'open', per_page: 100})).map(p => [p.number, p.head.sha]));
   // A PR tag must stay if its PR was reopened or it became the current head (e.g. force-push back).
   const stillNeeded = async (number, tagSha) => {
     const {data} = await github.rest.pulls.get({...context.repo, pull_number: number});
     return data.state === 'open' && (!open.has(number) || data.head.sha === tagSha);
   };
+  let open;
   const getMainHead = async () => (await github.rest.repos.getBranch({...context.repo, branch: 'main'})).data.commit.sha;
   // A running build may put an old untagged digest into a new index, so untagged deletion waits for it.
   const publishing = async () => {
-    for (const status of ['in_progress', 'queued']) {
+    // Runs held by a concurrency queue report pending/waiting/requested rather than queued.
+    for (const status of ['in_progress', 'queued', 'pending', 'waiting', 'requested']) {
       const {data} = await github.rest.actions.listWorkflowRuns({...context.repo, workflow_id: 'cd-images.yaml', status, per_page: 1});
       if (data.total_count > 0) return true;
     }
@@ -74,25 +80,36 @@ export default async function cleanup({github, context, core}) {
   };
   const rows = [];
   try {
+    // Fetched once; every version is rechecked right before deletion.
+    open = await listOpen();
+    const mainHead = await getMainHead();
     for (const component of ['frontend', 'backend', 'migrate']) {
       const package_name = `zoo2-${component}`;
       const params = {org: owner, package_type: 'container', package_name};
       const versions = await ignoreMissing(() => github.paginate(github.rest.packages.getAllPackageVersionsForPackageOwnedByOrg, {...params, per_page: 100}));
       if (versions === null) { core.notice(`${package_name}: not found`); continue; }
-      open = await listOpen();
-      const selected = candidates(versions, open, {closedPR, mainHead: await getMainHead()});
+      const selected = candidates(versions, open, {closedPR, mainHead});
       if (!selected.length) continue;
       const selectedIDs = new Set(selected.map(v => v.id));
       const repository = `${owner.toLowerCase()}/${package_name}`;
       const auth = Buffer.from(`${process.env.GITHUB_ACTOR}:${process.env.GH_TOKEN}`).toString('base64');
-      const tokenResponse = await fetch(`https://ghcr.io/token?service=ghcr.io&scope=${encodeURIComponent(`repository:${repository}:pull`)}`, {headers: {Authorization: `Basic ${auth}`}});
-      if (!tokenResponse.ok) throw new Error(`GHCR token request: ${tokenResponse.status}`);
-      const {token} = await tokenResponse.json();
+      const fetchToken = async () => {
+        const response = await fetch(`https://ghcr.io/token?service=ghcr.io&scope=${encodeURIComponent(`repository:${repository}:pull`)}`, {headers: {Authorization: `Basic ${auth}`}});
+        if (!response.ok) throw new Error(`GHCR token request: ${response.status}`);
+        return (await response.json()).token;
+      };
+      let token = await fetchToken();
+      const requestManifest = digest => fetch(`https://ghcr.io/v2/${repository}/manifests/${digest}`, {headers: {
+        Authorization: `Bearer ${token}`,
+        Accept: 'application/vnd.oci.image.index.v1+json, application/vnd.docker.distribution.manifest.list.v2+json, application/vnd.oci.image.manifest.v1+json, application/vnd.docker.distribution.manifest.v2+json',
+      }});
       const readManifest = async digest => {
-        const response = await fetch(`https://ghcr.io/v2/${repository}/manifests/${digest}`, {headers: {
-          Authorization: `Bearer ${token}`,
-          Accept: 'application/vnd.oci.image.index.v1+json, application/vnd.docker.distribution.manifest.list.v2+json, application/vnd.oci.image.manifest.v1+json, application/vnd.docker.distribution.manifest.v2+json',
-        }});
+        let response = await requestManifest(digest);
+        // The registry token can expire during a long deletion loop; renew it once.
+        if (response.status === 401) {
+          token = await fetchToken();
+          response = await requestManifest(digest);
+        }
         // A missing manifest references nothing.
         if (response.status === 404) return {};
         if (!response.ok) throw new Error(`Cannot inspect protected manifest ${digest}: ${response.status}`);
