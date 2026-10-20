@@ -50,7 +50,13 @@
     "leave": "離開",
     "join": "加入",
     "private": "呢個係私人頻道，要建立者邀請先入得。",
-    "already": "已經係成員：{{userId}}"
+    "already": "已經係成員：{{userId}}",
+    "search": "搜尋個名嚟加入",
+    "addLabel": "加入成員",
+    "candidates": "成員建議",
+    "usersLoading": "載入緊用戶…",
+    "usersError": "載入唔到用戶。",
+    "usersEmpty": "搵唔到符合嘅用戶。"
   },
   "common": {
     "loading": "載入緊…",
@@ -82,7 +88,9 @@
     "deleteTitle": "要刪除呢個訊息？",
     "deleteDescription": "呢個操作無法復原。刪除之後，頻道其他成員都會睇唔到呢個訊息。",
     "count_one": "{{count}} 個訊息",
-    "count_other": "{{count}} 個訊息"
+    "count_other": "{{count}} 個訊息",
+    "announcement": "{{author}} 傳咗新訊息：「{{excerpt}}」",
+    "announcementAuthor": "{{author}} 傳咗新訊息"
   },
   "theme": {
     "switch": "切換主題",

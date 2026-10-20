@@ -2,10 +2,11 @@ import { useTranslation } from "react-i18next";
 import { useCallback, useEffect, useState } from "react";
 import { toast } from "sonner";
 
-import { useCurrentUser } from "../hooks/useCurrentUser";
-import { useMessageFeed } from "../hooks/useRealtime";
-import { useWriteRunner } from "../hooks/useWriteRunner";
-import { getCollections } from "../lib/electric/collections";
+import { useCurrentUser } from "../../../hooks/useCurrentUser";
+import { useMessageFeed } from "../../../hooks/useRealtime";
+import { useWriteRunner } from "../../../hooks/useWriteRunner";
+import { getCollections } from "../../../lib/electric/collections";
+import { nowIso } from "../../../lib/time";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -15,13 +16,9 @@ import {
   AlertDialogFooter,
   AlertDialogHeader,
   AlertDialogTitle,
-} from "./ui/alert-dialog";
-import { Composer } from "./chat/messages/Composer";
-import { MessageList } from "./chat/messages/MessageList";
-
-function nowIso(): string {
-  return new Date().toISOString();
-}
+} from "../../ui/alert-dialog";
+import { Composer } from "./Composer";
+import { MessageList } from "./MessageList";
 
 /**
  * チャンネルのメッセージ表示・送信・編集・論理削除。

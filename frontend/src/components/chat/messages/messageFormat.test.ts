@@ -7,7 +7,10 @@ import {
   formatTime,
   isSameLocalDay,
   localDayKey,
+  messageTextSegments,
+  newMessageAnnouncement,
   type FeedMessage,
+  type MessageTextSegment,
 } from "./messageFormat";
 
 function message(overrides: Partial<FeedMessage> = {}): FeedMessage {
@@ -64,6 +67,114 @@ describe("formatRelativeDay", () => {
   });
 });
 
+function text(value: string): MessageTextSegment {
+  return { kind: "text", value };
+}
+
+function link(value: string): MessageTextSegment {
+  return { kind: "link", value };
+}
+
+describe("messageTextSegments", () => {
+  it("returns plain content as a single text segment", () => {
+    expect(messageTextSegments("こんにちは\n改行もそのまま")).toEqual([
+      text("こんにちは\n改行もそのまま"),
+    ]);
+    expect(messageTextSegments("")).toEqual([text("")]);
+  });
+
+  it("splits a URL out of the surrounding text", () => {
+    expect(messageTextSegments("see https://example.com/a?b=1#c now")).toEqual([
+      text("see "),
+      link("https://example.com/a?b=1#c"),
+      text(" now"),
+    ]);
+  });
+
+  it("linkifies http and https, but not other schemes", () => {
+    expect(messageTextSegments("http://example.com")).toEqual([link("http://example.com")]);
+    expect(messageTextSegments("javascript:alert(1)")).toEqual([text("javascript:alert(1)")]);
+    expect(messageTextSegments("foohttps://example.com")).toEqual([text("foohttps://example.com")]);
+  });
+
+  it("keeps trailing sentence punctuation out of the link", () => {
+    expect(messageTextSegments("詳細は https://example.com/docs。")).toEqual([
+      text("詳細は "),
+      link("https://example.com/docs"),
+      text("。"),
+    ]);
+    expect(messageTextSegments("https://example.com/a, and more")).toEqual([
+      link("https://example.com/a"),
+      text(", and more"),
+    ]);
+  });
+
+  it("keeps balanced parentheses in the URL", () => {
+    expect(messageTextSegments("https://example.com/wiki/Foo_(bar)")).toEqual([
+      link("https://example.com/wiki/Foo_(bar)"),
+    ]);
+    expect(messageTextSegments("(https://example.com/a)")).toEqual([
+      text("("),
+      link("https://example.com/a"),
+      text(")"),
+    ]);
+    expect(messageTextSegments("（https://example.com/a）")).toEqual([
+      text("（"),
+      link("https://example.com/a"),
+      text("）"),
+    ]);
+  });
+
+  it("handles multiple URLs", () => {
+    expect(messageTextSegments("https://a.example と https://b.example")).toEqual([
+      link("https://a.example"),
+      text(" と "),
+      link("https://b.example"),
+    ]);
+  });
+
+  it("stops the URL at whitespace and angle brackets", () => {
+    expect(messageTextSegments("https://example.com/a,b")).toEqual([
+      link("https://example.com/a,b"),
+    ]);
+    expect(messageTextSegments("<https://example.com>")).toEqual([
+      text("<"),
+      link("https://example.com"),
+      text(">"),
+    ]);
+  });
+
+  it("requires a host part after the scheme", () => {
+    expect(messageTextSegments("https://.")).toEqual([text("https://.")]);
+    expect(messageTextSegments("https://?q")).toEqual([text("https://?q")]);
+    expect(messageTextSegments("https:///path")).toEqual([text("https:///path")]);
+    expect(messageTextSegments("https://)")).toEqual([text("https://)")]);
+    expect(messageTextSegments("詳細: https://。")).toEqual([text("詳細: https://。")]);
+    // ホスト部があるものは今までどおりリンクにする。
+    expect(messageTextSegments("https://[::1]:3000/a")).toEqual([link("https://[::1]:3000/a")]);
+    expect(messageTextSegments("https://localhost:3000/")).toEqual([
+      link("https://localhost:3000/"),
+    ]);
+  });
+});
+
+describe("newMessageAnnouncement", () => {
+  it("summarizes the author and the collapsed content", () => {
+    expect(newMessageAnnouncement(message({ content: " line1\n\nline2 " }))).toBe(
+      "新着メッセージ: Alice「line1 line2」",
+    );
+  });
+
+  it("truncates long content by code points", () => {
+    const announcement = newMessageAnnouncement(message({ content: "あ".repeat(10) }), 4);
+    expect(announcement).toBe("新着メッセージ: Alice「ああああ…」");
+  });
+
+  it("falls back to the author only when there is no content", () => {
+    expect(newMessageAnnouncement(message({ content: "   " }))).toBe("新着メッセージ: Alice");
+  });
+});
+
 describe("localized dates", () => {
   const now = new Date(2026, 5, 15, 20);
   it("localizes relative labels and older dates", () => {
@@ -72,4 +183,11 @@ describe("localized dates", () => {
     expect(formatRelativeDay(new Date(2026, 5, 10), now, "en")).toBe("Wed, June 10, 2026");
     expect(formatRelativeDay(new Date(2026, 5, 10), now, "zh-Hans")).toBe("2026年6月10日周三");
   });
+});
+
+it("localizes new message announcements without translating user content", () => {
+  expect(newMessageAnnouncement(message({ content: "hello" }), 80, "en")).toBe(
+    "New message from Alice: “hello”",
+  );
+  expect(newMessageAnnouncement(message({ content: "" }), 80, "yue")).toBe("Alice 傳咗新訊息");
 });

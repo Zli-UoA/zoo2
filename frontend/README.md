@@ -104,7 +104,7 @@ Electric の Shape 購読と REST 書き込みを分離し、接続先を設定�
 shadcn（Base UI）のテーマのみで最小の画面を組んでいます。細かい Tailwind の作り込みは行いません。
 
 - ルート `/` … チャンネル一覧・作成・参加/退出・メンバー表示（`src/routes/index.tsx` → `src/components/ChannelDirectory.tsx`）。各チャンネルは `Link` でメッセージ画面へ遷移します。
-- ルート `/channels/$channelId` … メッセージ一覧・送信・編集・論理削除・投稿者表示（`src/routes/channels/$channelId.tsx` → `src/components/MessagePane.tsx`）。
+- ルート `/channels/$channelId` … メッセージ一覧・送信・編集・論理削除・投稿者表示（`src/routes/channels/$channelId.tsx` → `src/components/chat/messages/MessagePane.tsx`）。
 - ルート `/realtime` … 検証 UI は上記の実ルートへ移行しました。ここは接続モード（Shape / txid / 開発ユーザー）を表示する最小画面です（`src/components/SyncStatus.tsx`）。
 - `src/hooks/useWriteRunner.ts` … `collection.insert()` などの楽観更新トランザクションを `when("settled")` まで待ち、失敗を UI のエラーメッセージにまとめます。
 - 編集・削除は自分のメッセージにのみ表示します（バックエンドは投稿者のみ許可するため）。開発で `proxy` モードを使うときは `VITE_DEV_USER_ID` が必須です（未設定は起動時エラー）。`frontend/.env.example` の例にならい設定してください。

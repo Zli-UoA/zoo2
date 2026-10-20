@@ -50,7 +50,13 @@
     "leave": "退出",
     "join": "参加",
     "private": "非公開チャンネルです。参加には作成者からの招待が必要です。",
-    "already": "既にメンバーです: {{userId}}"
+    "already": "既にメンバーです: {{userId}}",
+    "search": "名前で検索して追加",
+    "addLabel": "メンバーを追加",
+    "candidates": "メンバー候補",
+    "usersLoading": "ユーザーを読み込み中…",
+    "usersError": "ユーザー取得に失敗しました。",
+    "usersEmpty": "該当するユーザーがいません。"
   },
   "common": {
     "loading": "読み込み中…",
@@ -82,7 +88,9 @@
     "deleteTitle": "メッセージを削除しますか？",
     "deleteDescription": "この操作は取り消せません。削除したメッセージはチャンネルのメンバーからも見えなくなります。",
     "count_one": "{{count}} 件",
-    "count_other": "{{count}} 件"
+    "count_other": "{{count}} 件",
+    "announcement": "新着メッセージ: {{author}}「{{excerpt}}」",
+    "announcementAuthor": "新着メッセージ: {{author}}"
   },
   "theme": {
     "switch": "テーマを切り替える",

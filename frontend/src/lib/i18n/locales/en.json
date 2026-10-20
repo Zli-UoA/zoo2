@@ -50,7 +50,13 @@
     "leave": "Leave",
     "join": "Join",
     "private": "This channel is private. Ask its creator for an invitation.",
-    "already": "Already a member: {{userId}}"
+    "already": "Already a member: {{userId}}",
+    "search": "Search by name to add",
+    "addLabel": "Add a member",
+    "candidates": "Member suggestions",
+    "usersLoading": "Loading users…",
+    "usersError": "Failed to load users.",
+    "usersEmpty": "No matching users."
   },
   "common": {
     "loading": "Loading…",
@@ -82,7 +88,9 @@
     "deleteTitle": "Delete this message?",
     "deleteDescription": "This cannot be undone. The message will also disappear for other channel members.",
     "count_one": "{{count}} message",
-    "count_other": "{{count}} messages"
+    "count_other": "{{count}} messages",
+    "announcement": "New message from {{author}}: “{{excerpt}}”",
+    "announcementAuthor": "New message from {{author}}"
   },
   "theme": {
     "switch": "Switch theme",

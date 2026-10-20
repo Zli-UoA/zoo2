@@ -24,6 +24,106 @@ export function authorLabel(message: FeedMessage): string {
   return message.display_name || message.user_name || message.user_id;
 }
 
+/** 本文をリンク化するための断片。`text` はそのまま、`link` は href として描く。 */
+export type MessageTextSegment = { kind: "text" | "link"; value: string };
+
+/**
+ * `http(s)` URL の候補。ホスト部の先頭 1 文字を要求して `https://.` のような
+ * 断片を拾わない。`<` `>` と引用符・空白で終端し、`javascript:` などはそもそも
+ * 開始スキームが合わないため拾わない。`\b` で語中（`foohttps://`）を防ぐ。
+ */
+const URL_PATTERN = /\bhttps?:\/\/[^\s<>"'`/.?#][^\s<>"'`]*/gi;
+
+/** 約物だけが残って `https://` になった断片を弾く（ホスト部が 1 文字以上ある）。 */
+const URL_HAS_HOST = /^https?:\/\/./i;
+
+/** URL 末尾に紛れ込みやすい約物（日本語の句読点を含む）。 */
+const TRAILING_PUNCTUATION = /[.,;:!?、。！？…]+$/;
+
+/** 閉じ括弧 → 対応する開き括弧。URL 内で釣り合っていなければ文の約物とみなす。 */
+const CLOSING_BRACKETS: Record<string, string> = {
+  ")": "(",
+  "]": "[",
+  "}": "{",
+  "）": "（",
+  "】": "【",
+  "》": "《",
+  "」": "「",
+  "』": "『",
+  "〕": "〔",
+};
+
+function countOccurrences(value: string, char: string): number {
+  let total = 0;
+  for (const current of value) {
+    if (current === char) {
+      total += 1;
+    }
+  }
+  return total;
+}
+
+/** 文末の約物を URL から落とす。閉じ括弧は対応する開き括弧が無いときだけ落とす。 */
+function trimUrlEnd(candidate: string): string {
+  let url = candidate.replace(TRAILING_PUNCTUATION, "");
+  for (;;) {
+    const last = url.at(-1);
+    if (!last) {
+      return url;
+    }
+    const opener = CLOSING_BRACKETS[last];
+    if (!opener || countOccurrences(url, last) <= countOccurrences(url, opener)) {
+      return url;
+    }
+    url = url.slice(0, -1);
+  }
+}
+
+/**
+ * 本文を素のテキストと URL の断片に分ける。文字列の連結だけで組み立てるため、
+ * 描画側で React が値をエスケープし、`href` は常に `http(s)` で始まる。
+ */
+export function messageTextSegments(content: string): MessageTextSegment[] {
+  const segments: MessageTextSegment[] = [];
+  let cursor = 0;
+  for (const match of content.matchAll(URL_PATTERN)) {
+    const start = match.index ?? 0;
+    const url = trimUrlEnd(match[0]);
+    if (!url || !URL_HAS_HOST.test(url)) {
+      continue;
+    }
+    if (start > cursor) {
+      segments.push({ kind: "text", value: content.slice(cursor, start) });
+    }
+    segments.push({ kind: "link", value: url });
+    cursor = start + url.length;
+  }
+  if (cursor < content.length) {
+    segments.push({ kind: "text", value: content.slice(cursor) });
+  }
+  return segments.length > 0 ? segments : [{ kind: "text", value: content }];
+}
+
+/**
+ * スクリーンリーダーへ `aria-live` で読み上げる新着メッセージの要約。
+ * 改行・連続空白は 1 つに畳み、長文は `maxLength` 文字（コードポイント単位）で切る。
+ */
+export function newMessageAnnouncement(
+  message: FeedMessage,
+  maxLength = 80,
+  locale: Locale = DEFAULT_LOCALE,
+): string {
+  const collapsed = message.content.replace(/\s+/g, " ").trim();
+  const characters = Array.from(collapsed);
+  const excerpt =
+    characters.length > maxLength ? `${characters.slice(0, maxLength).join("")}…` : collapsed;
+  const author = authorLabel(message);
+  const t = getTranslator(locale);
+  return excerpt
+    ? t("messages.announcement", { author, excerpt })
+    : t("messages.announcementAuthor", { author });
+}
+
 /** `Date` を時計表示（HH:mm）に整える。 */
 export function formatClock(date: Date, locale: Locale = DEFAULT_LOCALE): string {
   return new Intl.DateTimeFormat(INTL_LOCALES[locale], {
