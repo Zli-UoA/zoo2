@@ -72,9 +72,10 @@ pub async fn create_message_notifications(
     let mentions = extract_mentions(&message.content);
 
     // チャンネル所属メンバーのIDを取得
-    let channel_users = ChannelUser::filter(ChannelUser::fields().channel_id().eq(&message.channel_id))
-        .exec(tx)
-        .await?;
+    let channel_users =
+        ChannelUser::filter(ChannelUser::fields().channel_id().eq(&message.channel_id))
+            .exec(tx)
+            .await?;
     let member_ids: HashSet<String> = channel_users.into_iter().map(|cu| cu.user_id).collect();
 
     // 通知対象ユーザーと通知タイプ (user_id -> notification_type)
@@ -91,20 +92,24 @@ pub async fn create_message_notifications(
 
     // 2. @username: 該当ユーザーが存在し、かつチャンネル所属メンバーである場合 (本人除く)
     for username in &mentions.usernames {
-        if let Ok(user) = User::get_by_user_name(tx, username.as_str()).await {
-            if user.id != actor_id && member_ids.contains(&user.id) {
-                targets_to_notify.insert(user.id, "mention");
-            }
+        if let Ok(user) = User::get_by_user_name(tx, username.as_str()).await
+            && user.id != actor_id
+            && member_ids.contains(&user.id)
+        {
+            targets_to_notify.insert(user.id, "mention");
         }
     }
 
     // 3. スレッド返信: 親メッセージの投稿者 (本人除く)
     // [P1] 過去に投稿していても現在チャンネルメンバーでない (キック/退出された) 場合は通知しない
-    if let Some(parent_id) = parent_author_id {
-        if parent_id != actor_id && member_ids.contains(parent_id) {
-            // 既にメンション対象になっていれば "mention" を優先
-            targets_to_notify.entry(parent_id.to_string()).or_insert("reply");
-        }
+    if let Some(parent_id) = parent_author_id
+        && parent_id != actor_id
+        && member_ids.contains(parent_id)
+    {
+        // 既にメンション対象になっていれば "mention" を優先
+        targets_to_notify
+            .entry(parent_id.to_string())
+            .or_insert("reply");
     }
 
     let mut created_notifications = Vec::new();

@@ -6,11 +6,7 @@ use serde_json::{Value, json};
 use tower::ServiceExt;
 
 use backend::{
-    config::Config,
-    db::init_db,
-    models::Notification,
-    routes::create_router,
-    state::AppState,
+    config::Config, db::init_db, models::Notification, routes::create_router, state::AppState,
 };
 
 #[tokio::test]
@@ -33,7 +29,11 @@ async fn test_notifications_full_flow() -> anyhow::Result<()> {
 
     // 1. ユーザー作成 (Alice, Bob, Charlie)
     for (id, username, display) in [
-        (&alice_id, format!("alice_{}", uuid::Uuid::new_v4().simple()), "Alice"),
+        (
+            &alice_id,
+            format!("alice_{}", uuid::Uuid::new_v4().simple()),
+            "Alice",
+        ),
         (&bob_id, bob_username.clone(), "Bob"),
         (&charlie_id, charlie_username.clone(), "Charlie"),
     ] {
@@ -310,7 +310,9 @@ async fn test_notifications_full_flow() -> anyhow::Result<()> {
         .uri(format!("/api/channels/{priv_channel_id}/users"))
         .header("content-type", "application/json")
         .header("X-Dev-User", &alice_id)
-        .body(Body::from(serde_json::to_vec(&json!({ "user_id": &bob_id }))?))?;
+        .body(Body::from(serde_json::to_vec(
+            &json!({ "user_id": &bob_id }),
+        )?))?;
     let resp = app.clone().oneshot(req).await?;
     assert_eq!(resp.status(), StatusCode::OK);
 
@@ -366,10 +368,11 @@ async fn test_notifications_full_flow() -> anyhow::Result<()> {
 
     // [P1] 検証: Bob はキック済みのため、プライベートチャンネルの返信およびリアクション通知が作成されていないこと
     let kicked_reply_notifs = Notification::filter(
-        Notification::fields()
-            .user_id()
-            .eq(bob_id.as_str())
-            .and(Notification::fields().message_id().eq(reply_to_kicked_id.as_str())),
+        Notification::fields().user_id().eq(bob_id.as_str()).and(
+            Notification::fields()
+                .message_id()
+                .eq(reply_to_kicked_id.as_str()),
+        ),
     )
     .exec(&mut check_db)
     .await?;
@@ -379,7 +382,11 @@ async fn test_notifications_full_flow() -> anyhow::Result<()> {
         Notification::fields()
             .user_id()
             .eq(bob_id.as_str())
-            .and(Notification::fields().message_id().eq(bob_priv_msg_id.as_str()))
+            .and(
+                Notification::fields()
+                    .message_id()
+                    .eq(bob_priv_msg_id.as_str()),
+            )
             .and(Notification::fields().notification_type().eq("reaction")),
     )
     .exec(&mut check_db)

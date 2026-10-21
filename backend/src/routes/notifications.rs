@@ -7,12 +7,8 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::{
-    auth::AuthUser,
-    db::get_current_txid,
-    error::AppError,
-    models::Notification,
-    routes::response::ApiResponse,
-    state::AppState,
+    auth::AuthUser, db::get_current_txid, error::AppError, models::Notification,
+    routes::response::ApiResponse, state::AppState,
 };
 
 #[derive(Debug, Deserialize, Default)]
@@ -54,8 +50,14 @@ pub struct ReadAllResponse {
 
 pub fn router() -> Router<AppState> {
     Router::new()
-        .route("/api/notifications/{id}/read", patch(mark_notification_read))
-        .route("/api/notifications/read-all", post(mark_all_notifications_read))
+        .route(
+            "/api/notifications/{id}/read",
+            patch(mark_notification_read),
+        )
+        .route(
+            "/api/notifications/read-all",
+            post(mark_all_notifications_read),
+        )
 }
 
 /// 単一通知の既読化
@@ -144,7 +146,7 @@ async fn mark_all_notifications_read(
     };
 
     let rows = toasty::sql::query(&sql).exec(&mut tx).await?;
-    let updated_count = rows.into_iter().count();
+    let updated_count = rows.len();
 
     if updated_count == 0 {
         return Ok(Json(ApiResponse::new(
