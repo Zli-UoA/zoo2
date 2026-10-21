@@ -79,6 +79,31 @@ impl fmt::Debug for Config {
     }
 }
 
+fn non_empty(value: Option<&str>) -> Option<&str> {
+    value.filter(|value| !value.is_empty())
+}
+
+/// OIDC 環境変数から `OidcConfig` を組み立てる純粋関数
+///
+/// 空文字は未設定として扱い、`OIDC_AUDIENCE` が空なら `OIDC_CLIENT_ID` に
+/// フォールバックする。`OIDC_ISSUER` と audience の両方が揃わなければ `None`。
+pub(crate) fn parse_oidc_config(
+    issuer: Option<&str>,
+    audience: Option<&str>,
+    client_id: Option<&str>,
+    jwks_url: Option<&str>,
+) -> Option<OidcConfig> {
+    let issuer = non_empty(issuer)?;
+    let audience = non_empty(audience).or_else(|| non_empty(client_id))?;
+    let jwks_url = non_empty(jwks_url).map(str::to_string);
+
+    Some(OidcConfig {
+        issuer: issuer.to_string(),
+        audience: audience.to_string(),
+        jwks_url,
+    })
+}
+
 impl Config {
     pub fn from_env() -> Self {
         // .env または親ディレクトリの .env を読み込む
@@ -108,21 +133,12 @@ impl Config {
 
         let electric_secret = env::var("ELECTRIC_SECRET").ok().filter(|s| !s.is_empty());
 
-        let oidc = match (
-            env::var("OIDC_ISSUER"),
-            env::var("OIDC_AUDIENCE").or_else(|_| env::var("OIDC_CLIENT_ID")),
-        ) {
-            (Ok(issuer), Ok(audience)) => {
-                let jwks_url = env::var("OIDC_JWKS_URL").ok().filter(|s| !s.is_empty());
-
-                Some(OidcConfig {
-                    issuer,
-                    audience,
-                    jwks_url,
-                })
-            }
-            _ => None,
-        };
+        let oidc = parse_oidc_config(
+            env::var("OIDC_ISSUER").ok().as_deref(),
+            env::var("OIDC_AUDIENCE").ok().as_deref(),
+            env::var("OIDC_CLIENT_ID").ok().as_deref(),
+            env::var("OIDC_JWKS_URL").ok().as_deref(),
+        );
 
         let environment = env::var("ENVIRONMENT").unwrap_or_else(|_| "development".to_string());
 
@@ -231,6 +247,65 @@ mod tests {
             ..prod_no_oidc
         };
         assert!(prod_with_oidc.validate().is_ok());
+    }
+
+    #[test]
+    fn test_parse_oidc_config_requires_issuer_and_audience() {
+        assert!(parse_oidc_config(None, Some("zoo-client"), None, None).is_none());
+        assert!(parse_oidc_config(Some("https://idp.example.com"), None, None, None).is_none());
+
+        let oidc = parse_oidc_config(
+            Some("https://idp.example.com"),
+            Some("zoo-client"),
+            None,
+            Some("https://idp.example.com/jwks"),
+        )
+        .expect("issuer and audience should produce OIDC config");
+        assert_eq!(oidc.issuer, "https://idp.example.com");
+        assert_eq!(oidc.audience, "zoo-client");
+        assert_eq!(
+            oidc.jwks_url.as_deref(),
+            Some("https://idp.example.com/jwks")
+        );
+    }
+
+    #[test]
+    fn test_parse_oidc_config_treats_empty_values_as_unset() {
+        // 空文字は設定済みとして扱わない。
+        assert!(parse_oidc_config(Some(""), Some("zoo-client"), None, None).is_none());
+        assert!(parse_oidc_config(Some("https://idp.example.com"), Some(""), None, None).is_none());
+        assert!(
+            parse_oidc_config(Some(""), Some(""), Some(""), Some("")).is_none(),
+            "all-empty OIDC variables must be treated as unset"
+        );
+
+        // 空の audience は client_id にフォールバックする。
+        let oidc = parse_oidc_config(
+            Some("https://idp.example.com"),
+            Some(""),
+            Some("zoo-client"),
+            Some(""),
+        )
+        .expect("client_id should be used when audience is empty");
+        assert_eq!(oidc.audience, "zoo-client");
+        assert_eq!(oidc.jwks_url, None, "empty jwks_url must be unset");
+    }
+
+    #[test]
+    fn test_production_validate_rejects_empty_oidc_values() {
+        // compose が空文字を渡しても from_env と同じ組み立て結果になり、本番では起動できない。
+        let config = Config {
+            database_url: "test".to_string(),
+            host: "127.0.0.1".to_string(),
+            port: 8080,
+            electric_url: "test".to_string(),
+            electric_secret: None,
+            oidc: parse_oidc_config(Some(""), Some(""), Some(""), Some("")),
+            dev_auth_enabled: false,
+            environment: "production".to_string(),
+            cors_allowed_origins: vec![],
+        };
+        assert!(config.validate().is_err());
     }
 
     #[test]
