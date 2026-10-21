@@ -191,7 +191,9 @@
     "previewError": "无法加载图片。请尝试其他组合。",
     "unsupported": "不支持此组合。",
     "addCombination": "添加此组合",
-    "kitchenImageNotice": "Emoji Kitchen 的图片从 Google 加载。"
+    "kitchenImageNotice": "Emoji Kitchen 的图片从 Google 加载。",
+    "searchEmoji": "搜索表情",
+    "noSearchResults": "没有匹配的表情"
   },
   "theme": {
     "switch": "切换主题",

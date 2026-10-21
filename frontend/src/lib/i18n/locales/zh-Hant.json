@@ -191,7 +191,9 @@
     "previewError": "無法載入圖片。請嘗試其他組合。",
     "unsupported": "不支援此組合。",
     "addCombination": "加入此組合",
-    "kitchenImageNotice": "Emoji Kitchen 的圖片從 Google 載入。"
+    "kitchenImageNotice": "Emoji Kitchen 的圖片從 Google 載入。",
+    "searchEmoji": "搜尋表情",
+    "noSearchResults": "沒有符合的表情"
   },
   "theme": {
     "switch": "切換佈景主題",

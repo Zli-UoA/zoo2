@@ -2,9 +2,12 @@ import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vite-plus/test";
 
 import {
+  filterKitchenEmojis,
+  kitchenEmojis,
   kitchenImageUrl,
   kitchenLabel,
   kitchenParts,
+  matchesKitchenQuery,
   reactionKey,
   type KitchenCatalog,
 } from "./kitchen";
@@ -54,5 +57,20 @@ describe("Emoji Kitchen", () => {
     }
     expect(kitchenParts("👍")).toBeNull();
     expect(kitchenLabel("kitchen:1f600_1f431")).toBe("😀 + 🐱");
+  });
+
+  it("filters emojis by name, emoji and codepoint without case or underscore sensitivity", () => {
+    const emojis = kitchenEmojis(catalog);
+    expect(filterKitchenEmojis(emojis, "cat").map((emoji) => emoji.codepoint)).toEqual(["1f431"]);
+    expect(filterKitchenEmojis(emojis, "CAT").map((emoji) => emoji.codepoint)).toEqual(["1f431"]);
+    expect(filterKitchenEmojis(emojis, "heart eyes").map((emoji) => emoji.codepoint)).toContain(
+      "1f60d",
+    );
+    expect(filterKitchenEmojis(emojis, "🐱").map((emoji) => emoji.codepoint)).toEqual(["1f431"]);
+    expect(filterKitchenEmojis(emojis, "1f602").map((emoji) => emoji.codepoint)).toEqual(["1f602"]);
+    expect(filterKitchenEmojis(emojis, "grinning cat")).toEqual([]);
+    expect(filterKitchenEmojis(emojis, "  ")).toBe(emojis);
+    expect(filterKitchenEmojis([], "cat")).toEqual([]);
+    expect(matchesKitchenQuery(emojis[0], "")).toBe(true);
   });
 });
