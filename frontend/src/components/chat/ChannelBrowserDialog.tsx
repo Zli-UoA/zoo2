@@ -104,12 +104,22 @@ export function ChannelBrowserDialog({
             className="pointer-events-none absolute top-1/2 left-2.5 size-4 -translate-y-1/2 text-muted-foreground"
           />
           <input
-            type="text"
-            className={cn(inputClassName(), "w-full pr-8 pl-8")}
+            type="search"
+            className={cn(
+              inputClassName(),
+              "w-full pr-8 pl-8 [&::-webkit-search-cancel-button]:appearance-none",
+            )}
             placeholder={t("channels.browseSearch")}
             aria-label={t("channels.browseSearch")}
             value={query}
             onChange={(event) => setQuery(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key === "Escape" && query) {
+                event.preventDefault();
+                event.stopPropagation();
+                setQuery("");
+              }
+            }}
             autoComplete="off"
             spellCheck={false}
             autoFocus
