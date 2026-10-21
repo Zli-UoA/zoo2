@@ -2,6 +2,7 @@ import { ClientOnly, HeadContent, Scripts, createRootRoute } from "@tanstack/rea
 import { TanStackRouterDevtoolsPanel } from "@tanstack/react-router-devtools";
 import { TanStackDevtools } from "@tanstack/react-devtools";
 
+import { WorkspaceGate } from "@/components/auth/WorkspaceGate";
 import { AuthGate } from "@/components/auth/AuthGate";
 import { ThemeProvider } from "@/components/theme/ThemeProvider";
 import { themeInitScript } from "@/components/theme/theme";
@@ -51,7 +52,9 @@ function RootDocument({ children }: { children: React.ReactNode }) {
           <LocaleProvider>
             <ThemeProvider>
               <TooltipProvider>
-                <AuthGate>{children}</AuthGate>
+                <AuthGate>
+                  <WorkspaceGate>{children}</WorkspaceGate>
+                </AuthGate>
                 <Toaster />
               </TooltipProvider>
             </ThemeProvider>

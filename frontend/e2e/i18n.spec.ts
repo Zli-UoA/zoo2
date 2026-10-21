@@ -1,5 +1,23 @@
 import { expect, test } from "@playwright/test";
 
+// These tests exercise locale handling without a backend. Supply the account and
+// membership needed by the workspace gate; authorization itself is covered by API/OIDC E2E.
+test.beforeEach(async ({ page }) => {
+  const tenantId = "00000000-0000-0000-0000-000000000001";
+  await page.route("**/api/tenants", (route) =>
+    route.fulfill({
+      json: [{ id: tenantId, name: "Zoo" }],
+      headers: { "Access-Control-Allow-Origin": "*" },
+    }),
+  );
+  await page.route("**/api/users/me", (route) =>
+    route.fulfill({
+      json: { id: tenantId, user_name: "i18n-test", display_name: "Locale test", is_admin: false },
+      headers: { "Access-Control-Allow-Origin": "*" },
+    }),
+  );
+});
+
 const languages = [
   {
     locale: "ja",

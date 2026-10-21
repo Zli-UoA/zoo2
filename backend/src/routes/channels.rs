@@ -8,11 +8,11 @@ use uuid::Uuid;
 
 use crate::{
     auth::{
-        AuthUser,
         rbac::{
             can_add_member, can_join, can_kick_member, can_manage_channel, is_channel_visible,
             is_workspace_admin,
         },
+        tenant::TenantAuth,
     },
     db::get_current_txid,
     error::AppError,
@@ -116,7 +116,7 @@ pub fn router() -> Router<AppState> {
 
 async fn create_channel(
     State(state): State<AppState>,
-    auth_user: AuthUser,
+    auth_user: TenantAuth,
     Json(payload): Json<CreateChannelRequest>,
 ) -> Result<Json<ApiResponse<ChannelResponse>>, AppError> {
     validate_channel_name(&payload.channel_name)?;
@@ -131,6 +131,7 @@ async fn create_channel(
     let now = crate::models::now_utc_millis();
 
     let channel = toasty::create!(Channel {
+        tenant_id: auth_user.tenant_id.as_str(),
         id: id.as_str(),
         channel_name: payload.channel_name.as_str(),
         description: payload.description,
@@ -146,6 +147,7 @@ async fn create_channel(
 
     // 作成者をチャンネルメンバーに追加
     toasty::create!(ChannelUser {
+        tenant_id: auth_user.tenant_id.as_str(),
         user_id: auth_user.id.as_str(),
         channel_id: id.as_str(),
         joined_at: now,
@@ -161,7 +163,7 @@ async fn create_channel(
 
 async fn update_channel(
     State(state): State<AppState>,
-    auth_user: AuthUser,
+    auth_user: TenantAuth,
     Path(id): Path<String>,
     Json(payload): Json<UpdateChannelRequest>,
 ) -> Result<Json<ApiResponse<ChannelResponse>>, AppError> {
@@ -188,14 +190,21 @@ async fn update_channel(
             }
         })?;
 
+    auth_user.check_channel(&channel)?;
+
     if channel.deleted_at.is_some() {
         return Err(AppError::NotFound(format!(
             "Channel not found with id: {id}"
         )));
     }
 
-    let is_admin =
-        is_workspace_admin(&mut tx, &auth_user.id, state.config.dev_auth_enabled).await?;
+    let is_admin = is_workspace_admin(
+        &mut tx,
+        &auth_user.id,
+        &auth_user.tenant_id,
+        state.config.dev_auth_enabled,
+    )
+    .await?;
 
     if channel.is_private {
         let membership = ChannelUser::filter(
@@ -254,7 +263,7 @@ async fn update_channel(
 
 async fn delete_channel(
     State(state): State<AppState>,
-    auth_user: AuthUser,
+    auth_user: TenantAuth,
     Path(id): Path<String>,
 ) -> Result<Json<ApiResponse<ChannelResponse>>, AppError> {
     Uuid::parse_str(&id)
@@ -273,14 +282,21 @@ async fn delete_channel(
             }
         })?;
 
+    auth_user.check_channel(&channel)?;
+
     if channel.deleted_at.is_some() {
         return Err(AppError::NotFound(format!(
             "Channel not found with id: {id}"
         )));
     }
 
-    let is_admin =
-        is_workspace_admin(&mut tx, &auth_user.id, state.config.dev_auth_enabled).await?;
+    let is_admin = is_workspace_admin(
+        &mut tx,
+        &auth_user.id,
+        &auth_user.tenant_id,
+        state.config.dev_auth_enabled,
+    )
+    .await?;
 
     if channel.is_private {
         let membership = ChannelUser::filter(
@@ -325,7 +341,7 @@ async fn delete_channel(
 
 async fn join_channel(
     State(state): State<AppState>,
-    auth_user: AuthUser,
+    auth_user: TenantAuth,
     Path(id): Path<String>,
 ) -> Result<Json<ApiResponse<ChannelUserResponse>>, AppError> {
     Uuid::parse_str(&id)
@@ -343,6 +359,8 @@ async fn join_channel(
                 AppError::from(err)
             }
         })?;
+
+    auth_user.check_channel(&channel)?;
 
     if channel.deleted_at.is_some() {
         return Err(AppError::NotFound(format!(
@@ -379,6 +397,7 @@ async fn join_channel(
     } else {
         let now = crate::models::now_utc_millis();
         toasty::create!(ChannelUser {
+            tenant_id: auth_user.tenant_id.as_str(),
             user_id: auth_user.id.as_str(),
             channel_id: id.as_str(),
             joined_at: now,
@@ -398,7 +417,7 @@ async fn join_channel(
 
 async fn add_channel_user(
     State(state): State<AppState>,
-    auth_user: AuthUser,
+    auth_user: TenantAuth,
     Path(id): Path<String>,
     Json(payload): Json<AddChannelUserRequest>,
 ) -> Result<Json<ApiResponse<ChannelUserResponse>>, AppError> {
@@ -409,6 +428,9 @@ async fn add_channel_user(
     })?;
 
     let mut db = state.db.clone();
+    crate::auth::tenant::require_membership(&mut db, &auth_user.tenant_id, &payload.user_id)
+        .await?;
+
     let mut tx = db.transaction().await?;
 
     let channel = Channel::get_by_id(&mut tx, id.as_str())
@@ -421,14 +443,21 @@ async fn add_channel_user(
             }
         })?;
 
+    auth_user.check_channel(&channel)?;
+
     if channel.deleted_at.is_some() {
         return Err(AppError::NotFound(format!(
             "Channel not found with id: {id}"
         )));
     }
 
-    let is_admin =
-        is_workspace_admin(&mut tx, &auth_user.id, state.config.dev_auth_enabled).await?;
+    let is_admin = is_workspace_admin(
+        &mut tx,
+        &auth_user.id,
+        &auth_user.tenant_id,
+        state.config.dev_auth_enabled,
+    )
+    .await?;
 
     if channel.is_private {
         let membership = ChannelUser::filter(
@@ -504,6 +533,7 @@ async fn add_channel_user(
     } else {
         let now = crate::models::now_utc_millis();
         toasty::create!(ChannelUser {
+            tenant_id: auth_user.tenant_id.as_str(),
             user_id: payload.user_id.as_str(),
             channel_id: id.as_str(),
             joined_at: now,
@@ -523,7 +553,7 @@ async fn add_channel_user(
 
 async fn leave_channel(
     State(state): State<AppState>,
-    auth_user: AuthUser,
+    auth_user: TenantAuth,
     Path(id): Path<String>,
 ) -> Result<Json<ApiResponse<LeaveChannelResponse>>, AppError> {
     Uuid::parse_str(&id)
@@ -541,6 +571,8 @@ async fn leave_channel(
                 AppError::from(err)
             }
         })?;
+
+    auth_user.check_channel(&channel)?;
 
     if channel.deleted_at.is_some() {
         return Err(AppError::NotFound(format!(
@@ -587,7 +619,7 @@ async fn leave_channel(
 
     Ok(Json(ApiResponse::new(
         LeaveChannelResponse {
-            user_id: auth_user.id,
+            user_id: auth_user.user.id,
             channel_id: id,
         },
         txid,
@@ -596,7 +628,7 @@ async fn leave_channel(
 
 async fn archive_channel(
     State(state): State<AppState>,
-    auth_user: AuthUser,
+    auth_user: TenantAuth,
     Path(id): Path<String>,
 ) -> Result<Json<ApiResponse<ChannelResponse>>, AppError> {
     Uuid::parse_str(&id)
@@ -615,14 +647,21 @@ async fn archive_channel(
             }
         })?;
 
+    auth_user.check_channel(&channel)?;
+
     if channel.deleted_at.is_some() {
         return Err(AppError::NotFound(format!(
             "Channel not found with id: {id}"
         )));
     }
 
-    let is_admin =
-        is_workspace_admin(&mut tx, &auth_user.id, state.config.dev_auth_enabled).await?;
+    let is_admin = is_workspace_admin(
+        &mut tx,
+        &auth_user.id,
+        &auth_user.tenant_id,
+        state.config.dev_auth_enabled,
+    )
+    .await?;
 
     if channel.is_private {
         let membership = ChannelUser::filter(
@@ -669,7 +708,7 @@ async fn archive_channel(
 
 async fn unarchive_channel(
     State(state): State<AppState>,
-    auth_user: AuthUser,
+    auth_user: TenantAuth,
     Path(id): Path<String>,
 ) -> Result<Json<ApiResponse<ChannelResponse>>, AppError> {
     Uuid::parse_str(&id)
@@ -688,14 +727,21 @@ async fn unarchive_channel(
             }
         })?;
 
+    auth_user.check_channel(&channel)?;
+
     if channel.deleted_at.is_some() {
         return Err(AppError::NotFound(format!(
             "Channel not found with id: {id}"
         )));
     }
 
-    let is_admin =
-        is_workspace_admin(&mut tx, &auth_user.id, state.config.dev_auth_enabled).await?;
+    let is_admin = is_workspace_admin(
+        &mut tx,
+        &auth_user.id,
+        &auth_user.tenant_id,
+        state.config.dev_auth_enabled,
+    )
+    .await?;
 
     if channel.is_private {
         let membership = ChannelUser::filter(
@@ -742,7 +788,7 @@ async fn unarchive_channel(
 
 async fn kick_channel_user(
     State(state): State<AppState>,
-    auth_user: AuthUser,
+    auth_user: TenantAuth,
     Path((id, user_id)): Path<(String, String)>,
 ) -> Result<Json<ApiResponse<ChannelUserResponse>>, AppError> {
     Uuid::parse_str(&id)
@@ -769,14 +815,21 @@ async fn kick_channel_user(
             }
         })?;
 
+    auth_user.check_channel(&channel)?;
+
     if channel.deleted_at.is_some() {
         return Err(AppError::NotFound(format!(
             "Channel not found with id: {id}"
         )));
     }
 
-    let actor_is_admin =
-        is_workspace_admin(&mut tx, &auth_user.id, state.config.dev_auth_enabled).await?;
+    let actor_is_admin = is_workspace_admin(
+        &mut tx,
+        &auth_user.id,
+        &auth_user.tenant_id,
+        state.config.dev_auth_enabled,
+    )
+    .await?;
 
     if channel.is_private {
         let membership = ChannelUser::filter(
@@ -796,8 +849,13 @@ async fn kick_channel_user(
         }
     }
 
-    let target_is_admin =
-        is_workspace_admin(&mut tx, &user_id, state.config.dev_auth_enabled).await?;
+    let target_is_admin = is_workspace_admin(
+        &mut tx,
+        &user_id,
+        &auth_user.tenant_id,
+        state.config.dev_auth_enabled,
+    )
+    .await?;
 
     if !can_kick_member(
         &channel.created_user_id,
@@ -849,21 +907,34 @@ async fn kick_channel_user(
 
 async fn list_channels(
     State(state): State<AppState>,
-    auth_user: AuthUser,
+    auth_user: TenantAuth,
 ) -> Result<Json<Vec<ChannelResponse>>, AppError> {
     let mut db = state.db.clone();
 
     // ユーザーが参加しているチャンネル ID リストを取得
-    let memberships =
-        ChannelUser::filter(ChannelUser::fields().user_id().eq(auth_user.id.as_str()))
-            .exec(&mut db)
-            .await?;
+    let memberships = ChannelUser::filter(
+        ChannelUser::fields()
+            .user_id()
+            .eq(auth_user.id.as_str())
+            .and(
+                ChannelUser::fields()
+                    .tenant_id()
+                    .eq(auth_user.tenant_id.as_str()),
+            ),
+    )
+    .exec(&mut db)
+    .await?;
     let joined_channel_ids: Vec<String> = memberships.into_iter().map(|m| m.channel_id).collect();
 
-    let all_channels = Channel::filter(Channel::fields().deleted_at().is_none())
-        .order_by(Channel::fields().created_at().asc())
-        .exec(&mut db)
-        .await?;
+    let all_channels = Channel::filter(
+        Channel::fields()
+            .tenant_id()
+            .eq(auth_user.tenant_id.as_str())
+            .and(Channel::fields().deleted_at().is_none()),
+    )
+    .order_by(Channel::fields().created_at().asc())
+    .exec(&mut db)
+    .await?;
 
     let visible_channels: Vec<ChannelResponse> = all_channels
         .into_iter()
@@ -876,7 +947,7 @@ async fn list_channels(
 
 async fn get_channel_by_id(
     State(state): State<AppState>,
-    auth_user: AuthUser,
+    auth_user: TenantAuth,
     Path(id): Path<String>,
 ) -> Result<Json<ChannelResponse>, AppError> {
     Uuid::parse_str(&id)
@@ -892,6 +963,8 @@ async fn get_channel_by_id(
                 AppError::from(err)
             }
         })?;
+
+    auth_user.check_channel(&channel)?;
 
     if channel.deleted_at.is_some() {
         return Err(AppError::NotFound(format!(

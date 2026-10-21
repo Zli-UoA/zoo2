@@ -42,7 +42,7 @@ export default defineConfig({
       env: { MOCK_IDP_PORT: mockIdpPort, MOCK_IDP_CLIENT_ID: "zoo" },
     },
     {
-      command: "pnpm dev",
+      command: "pnpm dev --mode production",
       url: baseURL,
       reuseExistingServer: !process.env.CI,
       timeout: 120_000,

@@ -1,16 +1,21 @@
 use axum::{
     Json, Router,
     extract::{Path, State},
+    http::HeaderMap,
     routing::{get, post},
 };
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::{
-    auth::{AuthUser, rbac::is_workspace_admin},
+    auth::{
+        AuthUser,
+        rbac::is_workspace_admin,
+        tenant::{DEFAULT_TENANT_ID, TenantAuth, require_membership, tenant_id_from_headers},
+    },
     db::get_current_txid,
     error::AppError,
-    models::{User, UserRole},
+    models::{TenantUser, User, UserRole},
     routes::response::ApiResponse,
     state::AppState,
     validation::{validate_display_name, validate_user_name},
@@ -79,15 +84,22 @@ pub struct AdminUsersResponse {
 /// `is_workspace_admin` と同じ条件で一覧に含める。
 async fn list_admin_users(
     State(state): State<AppState>,
-    _auth_user: AuthUser,
+    auth_user: TenantAuth,
 ) -> Result<Json<AdminUsersResponse>, AppError> {
     let mut db = state.db.clone();
-    let roles = UserRole::filter(UserRole::fields().role_id().eq("role_admin"))
-        .exec(&mut db)
-        .await?;
+    let roles = UserRole::filter(
+        UserRole::fields().role_id().eq("role_admin").and(
+            UserRole::fields()
+                .tenant_id()
+                .eq(auth_user.tenant_id.as_str()),
+        ),
+    )
+    .exec(&mut db)
+    .await?;
 
     let mut user_ids: Vec<String> = roles.into_iter().map(|role| role.user_id).collect();
     if state.config.dev_auth_enabled
+        && auth_user.tenant_id == DEFAULT_TENANT_ID
         && !user_ids
             .iter()
             .any(|id| id == crate::auth::DEFAULT_DEV_USER_ID)
@@ -103,6 +115,7 @@ async fn list_admin_users(
 async fn get_me(
     State(state): State<AppState>,
     auth_user: AuthUser,
+    headers: HeaderMap,
 ) -> Result<Json<MeResponse>, AppError> {
     let mut db = state.db.clone();
     let mut tx = db.transaction().await?;
@@ -116,8 +129,26 @@ async fn get_me(
         }
         Err(err) => return Err(err.into()),
     };
-    let is_admin =
-        is_workspace_admin(&mut tx, &auth_user.id, state.config.dev_auth_enabled).await?;
+    // A profile is available before joining a workspace; admin privileges still require membership.
+    let tenant_id = tenant_id_from_headers(&headers)?;
+    let is_member = TenantUser::filter(
+        TenantUser::fields()
+            .tenant_id()
+            .eq(tenant_id.as_str())
+            .and(TenantUser::fields().user_id().eq(auth_user.id.as_str())),
+    )
+    .first()
+    .exec(&mut tx)
+    .await?
+    .is_some();
+    let is_admin = is_member
+        && is_workspace_admin(
+            &mut tx,
+            &auth_user.id,
+            &tenant_id,
+            state.config.dev_auth_enabled,
+        )
+        .await?;
     tx.commit().await?;
 
     Ok(Json(MeResponse {
@@ -187,6 +218,15 @@ async fn create_user(
     .exec(&mut tx)
     .await?;
 
+    // Development-only fixture creation retains the original single-workspace workflow.
+    toasty::create!(TenantUser {
+        tenant_id: DEFAULT_TENANT_ID,
+        user_id: id.as_str(),
+        joined_at: now,
+    })
+    .exec(&mut tx)
+    .await?;
+
     let txid = get_current_txid(&mut tx).await?;
     tx.commit().await?;
 
@@ -195,10 +235,18 @@ async fn create_user(
 
 async fn list_users(
     State(state): State<AppState>,
-    _auth_user: AuthUser,
+    auth_user: TenantAuth,
 ) -> Result<Json<Vec<UserResponse>>, AppError> {
     let mut db = state.db.clone();
-    let users = User::all()
+    let members = TenantUser::filter(
+        TenantUser::fields()
+            .tenant_id()
+            .eq(auth_user.tenant_id.as_str()),
+    )
+    .exec(&mut db)
+    .await?;
+    let ids: Vec<String> = members.into_iter().map(|member| member.user_id).collect();
+    let users = User::filter(User::fields().id().in_list(ids))
         .order_by(User::fields().created_at().asc())
         .exec(&mut db)
         .await?;
@@ -208,13 +256,14 @@ async fn list_users(
 
 async fn get_user_by_id(
     State(state): State<AppState>,
-    _auth_user: AuthUser,
+    auth_user: TenantAuth,
     Path(id): Path<String>,
 ) -> Result<Json<UserResponse>, AppError> {
     Uuid::parse_str(&id)
         .map_err(|_| AppError::BadRequest(format!("user id is not a valid UUID: {id}")))?;
 
     let mut db = state.db.clone();
+    require_membership(&mut db, &auth_user.tenant_id, &id).await?;
     match User::get_by_id(&mut db, id.as_str()).await {
         Ok(user) => Ok(Json(UserResponse::from(user))),
         Err(err) if err.is_record_not_found() => {

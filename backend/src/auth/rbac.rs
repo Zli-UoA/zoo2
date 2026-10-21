@@ -4,16 +4,25 @@ use crate::{error::AppError, models::UserRole};
 pub async fn is_workspace_admin(
     tx: &mut toasty::Transaction<'_>,
     user_id: &str,
+    tenant_id: &str,
     dev_auth_enabled: bool,
 ) -> Result<bool, AppError> {
     // 開発環境かつ固定開発ユーザーの場合は常に管理者として扱う (テスト・ローカル環境の便宜)
-    if dev_auth_enabled && user_id == crate::auth::DEFAULT_DEV_USER_ID {
+    if dev_auth_enabled
+        && tenant_id == crate::auth::tenant::DEFAULT_TENANT_ID
+        && user_id == crate::auth::DEFAULT_DEV_USER_ID
+    {
         return Ok(true);
     }
 
-    let user_roles = UserRole::filter(UserRole::fields().user_id().eq(user_id))
-        .exec(tx)
-        .await?;
+    let user_roles = UserRole::filter(
+        UserRole::fields()
+            .user_id()
+            .eq(user_id)
+            .and(UserRole::fields().tenant_id().eq(tenant_id)),
+    )
+    .exec(tx)
+    .await?;
 
     for ur in user_roles {
         if ur.role_id == "role_admin" {

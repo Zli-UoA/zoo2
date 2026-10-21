@@ -1,3 +1,4 @@
+import { getSelectedTenantId } from "../tenant";
 import {
   getToken as defaultGetToken,
   notifyAuthorized,
@@ -10,6 +11,7 @@ import {
 export interface ShapeFetchSource {
   getToken?: TokenProvider;
   devUserId?: string | null;
+  tenantId?: string;
   /**
    * 認証ヘッダ（`Authorization` / `X-Dev-User`）を付与するか。既定は true。
    *
@@ -36,6 +38,7 @@ export interface ShapeFetchSource {
  */
 export function createShapeFetch(source: ShapeFetchSource = {}): typeof fetch {
   const auth = source.auth ?? true;
+  const tenantId = source.tenantId ?? getSelectedTenantId();
   const getToken = source.getToken ?? defaultGetToken;
   const onUnauthorized = source.onUnauthorized ?? notifyUnauthorized;
   const onAuthorized = source.onAuthorized ?? notifyAuthorized;
@@ -45,6 +48,7 @@ export function createShapeFetch(source: ShapeFetchSource = {}): typeof fetch {
   return async (input, init) => {
     const headers = new Headers(init?.headers);
     if (auth) {
+      headers.set("X-Tenant-ID", tenantId);
       if (devUserId) {
         headers.set("X-Dev-User", devUserId);
       }

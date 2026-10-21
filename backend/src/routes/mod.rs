@@ -3,6 +3,7 @@ pub mod health;
 pub mod messages;
 pub mod response;
 pub mod shapes;
+pub mod tenants;
 pub mod users;
 
 use axum::{
@@ -39,6 +40,7 @@ pub fn create_router(state: AppState) -> Router {
             header::CONTENT_TYPE,
             header::ACCEPT,
             HeaderName::from_static("x-dev-user"),
+            HeaderName::from_static("x-tenant-id"),
         ])
         .expose_headers([
             HeaderName::from_static("electric-handle"),
@@ -52,6 +54,7 @@ pub fn create_router(state: AppState) -> Router {
     Router::new()
         .merge(health::router())
         .merge(users::router())
+        .merge(tenants::router())
         .merge(channels::router())
         .merge(messages::router())
         .merge(shapes::router())

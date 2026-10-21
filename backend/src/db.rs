@@ -1,5 +1,6 @@
 use crate::models::{
-    Channel, ChannelUser, Message, MessageReaction, Role, User, UserIdentity, UserRole,
+    Channel, ChannelUser, Message, MessageReaction, Role, Tenant, TenantUser, User, UserIdentity,
+    UserRole,
 };
 
 pub async fn init_db(database_url: &str) -> Result<toasty::Db, toasty::Error> {
@@ -7,6 +8,8 @@ pub async fn init_db(database_url: &str) -> Result<toasty::Db, toasty::Error> {
 
     let db = toasty::Db::builder()
         .models(toasty::models!(
+            Tenant,
+            TenantUser,
             User,
             UserIdentity,
             Channel,

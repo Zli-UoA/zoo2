@@ -1,5 +1,7 @@
 import { expect, test, type Page } from "@playwright/test";
 
+test.use({ locale: "ja-JP" });
+
 const api = process.env.VITE_API_BASE_URL ?? "http://localhost:8000";
 const userId = process.env.VITE_DEV_USER_ID ?? "00000000-0000-0000-0000-000000000001";
 const headers = { "X-Dev-User": userId };
@@ -47,7 +49,7 @@ test("Kitchen reaction persists, receives live updates and removes only my react
   );
   await page.getByRole("button", { name: "この組み合わせを追加" }).click();
   expect((await saved).ok()).toBe(true);
-  const mine = page.getByRole("button", { name: /1件（解除）/ });
+  const mine = page.getByRole("button", { name: /1 件（自分もリアクション済み）/ });
   await expect(mine).toHaveAttribute("aria-pressed", "true");
   await page.reload();
   await expect(mine).toBeVisible();
@@ -79,9 +81,9 @@ test("Kitchen reaction persists, receives live updates and removes only my react
       })
     ).ok(),
   ).toBe(true);
-  await expect(page.getByRole("button", { name: /2件（解除）/ })).toBeVisible();
-  await page.getByRole("button", { name: /2件（解除）/ }).click();
-  const remaining = page.getByRole("button", { name: /1件（追加）/ });
+  await expect(page.getByRole("button", { name: /2 件（自分もリアクション済み）/ })).toBeVisible();
+  await page.getByRole("button", { name: /2 件（自分もリアクション済み）/ }).click();
+  const remaining = page.getByRole("button", { name: /1 件$/ });
   await expect(remaining).toHaveAttribute("aria-pressed", "false");
   await page.reload();
   await expect(remaining).toBeVisible();
@@ -117,5 +119,5 @@ test("failed writes roll back and catalog loading can be retried", async ({ page
   );
   await page.getByRole("button", { name: "👍", exact: true }).click();
   await expect(page.getByText("操作に失敗しました", { exact: true })).toBeVisible();
-  await expect(page.getByRole("button", { name: /👍 1件/ })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: /👍 1 件/ })).toHaveCount(0);
 });

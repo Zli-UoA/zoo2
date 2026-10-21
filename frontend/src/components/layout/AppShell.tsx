@@ -114,7 +114,7 @@ export function AppShell({ children }: { children: ReactNode }) {
 
   return (
     <ShellContext.Provider value={value}>
-      <div className="flex h-dvh w-full overflow-hidden bg-background text-foreground">
+      <div className="flex h-full w-full overflow-hidden bg-background text-foreground">
         <LeftRail />
         <ChannelSidebar
           channels={channels}

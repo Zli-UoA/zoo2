@@ -1,3 +1,4 @@
+import { getSelectedTenantId } from "../tenant";
 import {
   getToken as defaultGetToken,
   notifyAuthorized,
@@ -59,6 +60,7 @@ export type FetchLike = (input: string, init?: RequestInit) => Promise<Response>
 export interface ApiClientOptions {
   baseUrl?: string;
   devUserId?: string | null;
+  tenantId?: string;
   getToken?: TokenProvider;
   /** 401 時の再ログイン導線。既定は `auth.notifyUnauthorized`。 */
   onUnauthorized?: UnauthorizedHandler;
@@ -70,11 +72,13 @@ export interface ApiClientOptions {
 export interface AuthHeadersSource {
   getToken?: TokenProvider;
   devUserId?: string | null;
+  tenantId?: string;
 }
 
 export async function buildAuthHeaders(source: AuthHeadersSource = {}): Promise<Headers> {
   const getToken = source.getToken ?? defaultGetToken;
   const headers = new Headers();
+  headers.set("X-Tenant-ID", source.tenantId ?? getSelectedTenantId());
   const token = await getToken();
   if (token) {
     headers.set("Authorization", `Bearer ${token}`);
@@ -115,6 +119,7 @@ function parseBody(text: string): unknown {
 export function createApiClient(options: ApiClientOptions = {}): ApiClient {
   const baseUrl = options.baseUrl ?? "";
   const devUserId = options.devUserId ?? null;
+  const tenantId = options.tenantId ?? getSelectedTenantId();
   const tokenProvider = options.getToken ?? defaultGetToken;
   const onUnauthorized = options.onUnauthorized ?? notifyUnauthorized;
   const onAuthorized = options.onAuthorized ?? notifyAuthorized;
@@ -125,7 +130,7 @@ export function createApiClient(options: ApiClientOptions = {}): ApiClient {
     hasBody: boolean,
   ): Promise<Headers> {
     const headers = new Headers(explicit);
-    const authHeaders = await buildAuthHeaders({ getToken: tokenProvider, devUserId });
+    const authHeaders = await buildAuthHeaders({ getToken: tokenProvider, devUserId, tenantId });
     authHeaders.forEach((value, key) => headers.set(key, value));
     headers.set("Accept", "application/json");
     if (hasBody) {

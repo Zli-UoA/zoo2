@@ -8,8 +8,8 @@ use uuid::Uuid;
 
 use crate::{
     auth::{
-        AuthUser,
         rbac::{can_delete_message, is_workspace_admin},
+        tenant::TenantAuth,
     },
     db::get_current_txid,
     error::AppError,
@@ -111,7 +111,7 @@ pub fn router() -> Router<AppState> {
 
 async fn create_message(
     State(state): State<AppState>,
-    auth_user: AuthUser,
+    auth_user: TenantAuth,
     Json(payload): Json<CreateMessageRequest>,
 ) -> Result<Json<ApiResponse<MessageResponse>>, AppError> {
     validate_message_content(&payload.content)?;
@@ -140,6 +140,8 @@ async fn create_message(
                 AppError::from(err)
             }
         })?;
+
+    auth_user.check_channel(&channel)?;
 
     if channel.deleted_at.is_some() {
         return Err(AppError::NotFound(format!(
@@ -212,6 +214,7 @@ async fn create_message(
 
     // 投稿者は必ず認証済みユーザー (auth_user.id) を強制
     let message = toasty::create!(Message {
+        tenant_id: auth_user.tenant_id.as_str(),
         id: id.as_str(),
         user_id: auth_user.id.as_str(),
         channel_id: payload.channel_id.as_str(),
@@ -232,7 +235,7 @@ async fn create_message(
 
 async fn update_message(
     State(state): State<AppState>,
-    auth_user: AuthUser,
+    auth_user: TenantAuth,
     Path(id): Path<String>,
     Json(payload): Json<UpdateMessageRequest>,
 ) -> Result<Json<ApiResponse<MessageResponse>>, AppError> {
@@ -267,6 +270,8 @@ async fn update_message(
                 AppError::from(err)
             }
         })?;
+
+    auth_user.check_channel(&channel)?;
 
     if channel.deleted_at.is_some() {
         return Err(AppError::NotFound(format!(
@@ -323,7 +328,7 @@ async fn update_message(
 
 async fn delete_message(
     State(state): State<AppState>,
-    auth_user: AuthUser,
+    auth_user: TenantAuth,
     Path(id): Path<String>,
 ) -> Result<Json<ApiResponse<MessageResponse>>, AppError> {
     Uuid::parse_str(&id)
@@ -356,6 +361,8 @@ async fn delete_message(
             }
         })?;
 
+    auth_user.check_channel(&channel)?;
+
     if channel.deleted_at.is_some() {
         return Err(AppError::NotFound(format!(
             "Channel not found: {}",
@@ -363,8 +370,13 @@ async fn delete_message(
         )));
     }
 
-    let is_admin =
-        is_workspace_admin(&mut tx, &auth_user.id, state.config.dev_auth_enabled).await?;
+    let is_admin = is_workspace_admin(
+        &mut tx,
+        &auth_user.id,
+        &auth_user.tenant_id,
+        state.config.dev_auth_enabled,
+    )
+    .await?;
 
     if channel.is_private {
         let membership = ChannelUser::filter(
@@ -421,7 +433,7 @@ async fn delete_message(
 
 async fn list_messages(
     State(state): State<AppState>,
-    auth_user: AuthUser,
+    auth_user: TenantAuth,
     Query(query): Query<ListMessagesQuery>,
 ) -> Result<Json<Vec<MessageResponse>>, AppError> {
     let mut db = state.db.clone();
@@ -442,6 +454,8 @@ async fn list_messages(
                 AppError::from(err)
             }
         })?;
+
+    auth_user.check_channel(&channel)?;
 
     if channel.deleted_at.is_some() {
         return Err(AppError::NotFound(format!(
@@ -485,7 +499,7 @@ async fn list_messages(
 
 async fn add_reaction(
     State(state): State<AppState>,
-    auth_user: AuthUser,
+    auth_user: TenantAuth,
     Path(id): Path<String>,
     Json(payload): Json<AddReactionRequest>,
 ) -> Result<Json<ApiResponse<ReactionResponse>>, AppError> {
@@ -520,6 +534,8 @@ async fn add_reaction(
                 AppError::from(err)
             }
         })?;
+
+    auth_user.check_channel(&channel)?;
 
     if channel.deleted_at.is_some() {
         return Err(AppError::NotFound(format!(
@@ -590,6 +606,7 @@ async fn add_reaction(
     let now = crate::models::now_utc_millis();
 
     let created_res = toasty::create!(MessageReaction {
+        tenant_id: auth_user.tenant_id.as_str(),
         id: reaction_id.as_str(),
         message_id: id.as_str(),
         user_id: auth_user.id.as_str(),
@@ -658,7 +675,7 @@ async fn add_reaction(
 
 async fn delete_reaction(
     State(state): State<AppState>,
-    auth_user: AuthUser,
+    auth_user: TenantAuth,
     Path(id): Path<String>,
     Query(query): Query<DeleteReactionQuery>,
 ) -> Result<Json<ApiResponse<ReactionResponse>>, AppError> {
@@ -693,6 +710,8 @@ async fn delete_reaction(
                 AppError::from(err)
             }
         })?;
+
+    auth_user.check_channel(&channel)?;
 
     if channel.deleted_at.is_some() {
         return Err(AppError::NotFound(format!(

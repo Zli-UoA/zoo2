@@ -4,6 +4,7 @@ use toasty::Model;
 #[derive(Debug, Clone, Model, Serialize, Deserialize)]
 #[table = "messages"]
 pub struct Message {
+    pub tenant_id: String,
     #[key]
     pub id: String,
     pub user_id: String,
