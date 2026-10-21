@@ -625,6 +625,7 @@ describe("OidcClient.logout", () => {
     expect(url.origin + url.pathname).toBe(END_SESSION_ENDPOINT);
     expect(url.searchParams.get("client_id")).toBe(CLIENT_ID);
     expect(url.searchParams.get("post_logout_redirect_uri")).toBe("https://app.example/");
+    expect(url.searchParams.get("state")).toBeTruthy();
     expect(url.searchParams.get("id_token_hint")).not.toBeNull();
     expect(harness.storage.getItem("zoo.oidc.loggedOut")).toBe("1");
   });

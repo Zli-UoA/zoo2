@@ -138,6 +138,7 @@ test("OIDC PKCE ログイン後に API と Shape が Bearer で通る", async ({
   });
   await page.getByRole("button", { name: "ログアウト" }).click();
   await expect(page.getByRole("heading", { name: "ログアウトしました" })).toBeVisible();
+  expect(new URL(page.url()).searchParams.get("state")).toBeTruthy();
   await page.screenshot({ path: testInfo.outputPath("06-logged-out.png") });
 
   await page.getByRole("button", { name: "ログイン", exact: true }).click();

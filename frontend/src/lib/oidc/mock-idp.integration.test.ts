@@ -123,6 +123,7 @@ describe("OIDC login against a mock IdP", () => {
     const logoutUrl = new URL(browser.assigned.at(-1)!);
     expect(logoutUrl.origin + logoutUrl.pathname).toBe(idp.endSessionEndpoint);
     expect(logoutUrl.searchParams.get("post_logout_redirect_uri")).toBe("https://app.example/");
+    expect(logoutUrl.searchParams.get("state")).toBeTruthy();
   });
 
   it("rejects a token exchange with a wrong code_verifier", async () => {

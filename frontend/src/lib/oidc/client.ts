@@ -488,6 +488,7 @@ export class OidcClient {
       const url = new URL(endpoints.endSessionEndpoint);
       url.searchParams.set("client_id", this.clientId);
       url.searchParams.set("post_logout_redirect_uri", this.postLogoutRedirectUri);
+      url.searchParams.set("state", createState());
       if (tokens?.idToken) {
         url.searchParams.set("id_token_hint", tokens.idToken);
       }
