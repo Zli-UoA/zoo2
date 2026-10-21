@@ -13,6 +13,7 @@
     "browseSearch": "按频道名搜索",
     "searchClear": "清除搜索",
     "searchEmpty": "没有匹配的频道。",
+    "browseEmpty": "没有可加入的公开频道。",
     "noJoined": "还没有加入任何频道。",
     "join": "加入",
     "joining": "加入中…",

@@ -13,6 +13,7 @@
     "browseSearch": "チャンネル名で検索",
     "searchClear": "検索をクリア",
     "searchEmpty": "一致するチャンネルがありません。",
+    "browseEmpty": "参加できる公開チャンネルはありません。",
     "noJoined": "参加中のチャンネルはありません。",
     "join": "参加する",
     "joining": "参加中…",

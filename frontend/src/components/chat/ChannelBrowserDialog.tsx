@@ -141,7 +141,7 @@ export function ChannelBrowserDialog({
 
         {discoverableChannels.length === 0 ? (
           <p className="px-2 py-6 text-center text-sm text-muted-foreground">
-            {t("channels.searchEmpty")}
+            {query.trim() ? t("channels.searchEmpty") : t("channels.browseEmpty")}
           </p>
         ) : (
           <ScrollArea className="max-h-80">

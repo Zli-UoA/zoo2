@@ -13,6 +13,7 @@
     "browseSearch": "Search by channel name",
     "searchClear": "Clear search",
     "searchEmpty": "No channels match your search.",
+    "browseEmpty": "No public channels are available to join.",
     "noJoined": "You haven't joined any channels yet.",
     "join": "Join",
     "joining": "Joining…",
