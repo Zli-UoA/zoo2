@@ -48,6 +48,11 @@ WHYmwlj7VcIctm9ecC5nEQY=
 -----END PRIVATE KEY-----
 "#;
 
+const TEST_ED25519_PEM: &str = r#"-----BEGIN PRIVATE KEY-----
+MC4CAQAwBQYDK2VwBCIEIA0bID3qxIoHZTqzIn9bRmUiRLn6RyGupe/S6WE1CL7/
+-----END PRIVATE KEY-----
+"#;
+
 const TEST_KEY2_PEM: &str = r#"-----BEGIN PRIVATE KEY-----
 MIIEvAIBADANBgkqhkiG9w0BAQEFAASCBKYwggSiAgEAAoIBAQDFFjm/LOFGEWM4
 7Uw/SM3jo2gX3mXY/iQ4b0Cbo7V3VWRBC3He94m+a8C5DWIFR/R/4EuK5tChSlO8
@@ -100,9 +105,24 @@ fn key2_jwk() -> Value {
     })
 }
 
+fn ed25519_jwk(include_alg: bool) -> Value {
+    let mut jwk = json!({
+        "kty": "OKP",
+        "crv": "Ed25519",
+        "x": "cB-qRdJ9-hGN7VUdA71a5iLBDK9JKRIMVHe8_F3Dm3Y",
+        "kid": "test-ed-key-1",
+        "use": "sig"
+    });
+    if include_alg {
+        jwk["alg"] = json!("EdDSA");
+    }
+    jwk
+}
+
 #[allow(clippy::too_many_arguments)]
-fn generate_token_with_typ(
-    pem: &str,
+fn encode_token(
+    alg: Algorithm,
+    encoding_key: &EncodingKey,
     kid: &str,
     typ: Option<&str>,
     iss: &str,
@@ -114,7 +134,7 @@ fn generate_token_with_typ(
     exp_offset_sec: i64,
     nbf_offset_sec: Option<i64>,
 ) -> String {
-    let mut header = Header::new(Algorithm::RS256);
+    let mut header = Header::new(alg);
     header.kid = Some(kid.to_string());
     header.typ = typ.map(|t| t.to_string());
 
@@ -133,8 +153,67 @@ fn generate_token_with_typ(
         "scope": scope,
     });
 
+    encode(&header, &claims, encoding_key).unwrap()
+}
+
+#[allow(clippy::too_many_arguments)]
+fn generate_token_with_typ(
+    pem: &str,
+    kid: &str,
+    typ: Option<&str>,
+    iss: &str,
+    aud: &str,
+    sub: &str,
+    preferred_username: Option<&str>,
+    name: Option<&str>,
+    scope: Option<&str>,
+    exp_offset_sec: i64,
+    nbf_offset_sec: Option<i64>,
+) -> String {
     let enc_key = EncodingKey::from_rsa_pem(pem.as_bytes()).unwrap();
-    encode(&header, &claims, &enc_key).unwrap()
+    encode_token(
+        Algorithm::RS256,
+        &enc_key,
+        kid,
+        typ,
+        iss,
+        aud,
+        sub,
+        preferred_username,
+        name,
+        scope,
+        exp_offset_sec,
+        nbf_offset_sec,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn generate_ed_token(
+    kid: &str,
+    typ: Option<&str>,
+    iss: &str,
+    aud: &str,
+    sub: &str,
+    preferred_username: Option<&str>,
+    name: Option<&str>,
+    scope: Option<&str>,
+    exp_offset_sec: i64,
+) -> String {
+    let enc_key = EncodingKey::from_ed_pem(TEST_ED25519_PEM.as_bytes()).unwrap();
+    encode_token(
+        Algorithm::EdDSA,
+        &enc_key,
+        kid,
+        typ,
+        iss,
+        aud,
+        sub,
+        preferred_username,
+        name,
+        scope,
+        exp_offset_sec,
+        None,
+    )
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -722,6 +801,93 @@ async fn test_oidc_key_rotation() -> anyhow::Result<()> {
     let body = to_bytes(resp.into_body(), usize::MAX).await?;
     let user_json: Value = serde_json::from_slice(&body)?;
     assert_eq!(user_json["user_name"], carol_username);
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_eddsa_jwks_with_explicit_alg() -> anyhow::Result<()> {
+    let mock_server = MockServer::start().await;
+
+    // Better Auth OAuth Provider が発行する Ed25519 の JWKS を再現
+    let jwks_body = json!({ "keys": [ed25519_jwk(true)] });
+    Mock::given(method("GET"))
+        .and(path("/.well-known/jwks.json"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(&jwks_body))
+        .mount(&mock_server)
+        .await;
+
+    let (app, _state, oidc_cfg) = setup_test_app(&mock_server, true).await;
+
+    let username = format!("eddsa_{}", &uuid::Uuid::new_v4().simple().to_string()[..6]);
+    let token = generate_ed_token(
+        "test-ed-key-1",
+        Some("at+jwt"),
+        &oidc_cfg.issuer,
+        &oidc_cfg.audience,
+        &format!("eddsa-sub-{}", uuid::Uuid::new_v4().simple()),
+        Some(&username),
+        Some("Ed DSA"),
+        Some("openid profile"),
+        3600,
+    );
+
+    let req = Request::builder()
+        .uri("/api/users/me")
+        .header("Authorization", format!("Bearer {token}"))
+        .body(Body::empty())?;
+
+    let resp = app.oneshot(req).await?;
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    let body = to_bytes(resp.into_body(), usize::MAX).await?;
+    let user_json: Value = serde_json::from_slice(&body)?;
+    assert_eq!(user_json["user_name"], username);
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_eddsa_jwk_without_alg_inferred_from_octet_key_pair() -> anyhow::Result<()> {
+    let mock_server = MockServer::start().await;
+
+    // alg を省略した OKP キーでも kty/crv から EdDSA と推論できること
+    let jwks_body = json!({ "keys": [ed25519_jwk(false)] });
+    Mock::given(method("GET"))
+        .and(path("/.well-known/jwks.json"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(&jwks_body))
+        .mount(&mock_server)
+        .await;
+
+    let (app, _state, oidc_cfg) = setup_test_app(&mock_server, true).await;
+
+    let username = format!(
+        "eddsa_noalg_{}",
+        &uuid::Uuid::new_v4().simple().to_string()[..6]
+    );
+    let token = generate_ed_token(
+        "test-ed-key-1",
+        Some("at+jwt"),
+        &oidc_cfg.issuer,
+        &oidc_cfg.audience,
+        &format!("eddsa-noalg-sub-{}", uuid::Uuid::new_v4().simple()),
+        Some(&username),
+        Some("Ed DSA No Alg"),
+        None,
+        3600,
+    );
+
+    let req = Request::builder()
+        .uri("/api/users/me")
+        .header("Authorization", format!("Bearer {token}"))
+        .body(Body::empty())?;
+
+    let resp = app.oneshot(req).await?;
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    let body = to_bytes(resp.into_body(), usize::MAX).await?;
+    let user_json: Value = serde_json::from_slice(&body)?;
+    assert_eq!(user_json["user_name"], username);
 
     Ok(())
 }
