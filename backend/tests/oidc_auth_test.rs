@@ -16,6 +16,7 @@ use backend::{
     models::{User, UserIdentity},
     routes::create_router,
     state::AppState,
+    validation::validate_user_name,
 };
 
 const TEST_KEY1_PEM: &str = r#"-----BEGIN PRIVATE KEY-----
@@ -274,6 +275,17 @@ async fn setup_test_app(
     (app, state, oidc_config)
 }
 
+async fn fetch_current_user(app: &axum::Router, token: &str) -> anyhow::Result<Value> {
+    let req = Request::builder()
+        .uri("/api/users/me")
+        .header("Authorization", format!("Bearer {token}"))
+        .body(Body::empty())?;
+    let resp = app.clone().oneshot(req).await?;
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = to_bytes(resp.into_body(), usize::MAX).await?;
+    Ok(serde_json::from_slice(&body)?)
+}
+
 #[tokio::test]
 async fn test_oidc_jit_provisioning_and_user_profile_flow() -> anyhow::Result<()> {
     let mock_server = MockServer::start().await;
@@ -419,6 +431,85 @@ async fn test_preferred_username_spn_format() -> anyhow::Result<()> {
     let user_json: Value = serde_json::from_slice(&body)?;
     // @ より前がユーザー名として採用されること
     assert_eq!(user_json["user_name"], expected_name);
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_oidc_jit_username_contract_and_collision_suffix() -> anyhow::Result<()> {
+    let mock_server = MockServer::start().await;
+    let jwks_body = json!({ "keys": [key1_jwk()] });
+    Mock::given(method("GET"))
+        .and(path("/.well-known/jwks.json"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(&jwks_body))
+        .mount(&mock_server)
+        .await;
+
+    let (app, _state, oidc_cfg) = setup_test_app(&mock_server, true).await;
+
+    let unique = uuid::Uuid::new_v4().simple().to_string();
+    let max_length_name = format!("{}{}", &unique[..12], "a".repeat(68));
+    assert_eq!(max_length_name.chars().count(), 80);
+
+    let first_token = generate_token(
+        TEST_KEY1_PEM,
+        "test-key-1",
+        &oidc_cfg.issuer,
+        &oidc_cfg.audience,
+        &format!("username-first-{}", uuid::Uuid::new_v4().simple()),
+        Some(&max_length_name),
+        Some("First User"),
+        Some("openid profile"),
+        3600,
+    );
+    let first = fetch_current_user(&app, &first_token).await?;
+    assert_eq!(first["user_name"], max_length_name);
+
+    let second_token = generate_token(
+        TEST_KEY1_PEM,
+        "test-key-1",
+        &oidc_cfg.issuer,
+        &oidc_cfg.audience,
+        &format!("username-second-{}", uuid::Uuid::new_v4().simple()),
+        Some(&max_length_name),
+        Some("Second User"),
+        Some("openid profile"),
+        3600,
+    );
+    let second = fetch_current_user(&app, &second_token).await?;
+    assert_ne!(second["id"], first["id"]);
+
+    let second_name = second["user_name"].as_str().unwrap();
+    let prefix: String = max_length_name.chars().take(70).collect();
+    assert!(second_name.starts_with(&format!("{prefix}_")));
+    let suffix = &second_name[prefix.len() + 1..];
+    assert_eq!(suffix.len(), 6);
+    assert!(suffix.chars().all(|c| c.is_ascii_hexdigit()));
+    assert_eq!(second_name.chars().count(), 77);
+    assert!(validate_user_name(second_name).is_ok());
+
+    let reserved_token = generate_token(
+        TEST_KEY1_PEM,
+        "test-key-1",
+        &oidc_cfg.issuer,
+        &oidc_cfg.audience,
+        &format!("username-reserved-{}", uuid::Uuid::new_v4().simple()),
+        Some("admin"),
+        Some("Reserved User"),
+        Some("openid profile"),
+        3600,
+    );
+    let reserved = fetch_current_user(&app, &reserved_token).await?;
+    let reserved_name = reserved["user_name"].as_str().unwrap();
+    assert_ne!(reserved_name, "admin");
+    assert!(reserved_name.starts_with("user_"));
+    assert_eq!(reserved_name.len(), 13);
+    assert!(
+        reserved_name["user_".len()..]
+            .chars()
+            .all(|c| c.is_ascii_hexdigit())
+    );
+    assert!(validate_user_name(reserved_name).is_ok());
 
     Ok(())
 }

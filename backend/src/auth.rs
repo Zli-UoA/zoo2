@@ -556,4 +556,64 @@ mod tests {
         );
         assert_eq!(sanitize_for_display_name("   ", "fallback"), "fallback");
     }
+
+    #[test]
+    fn test_sanitize_for_user_name_preserves_valid_names() {
+        for name in [
+            "a",
+            "0",
+            ".",
+            "-",
+            "_",
+            "john.doe",
+            "alice_123",
+            "bob-smith",
+            "general",
+        ] {
+            assert_eq!(sanitize_for_user_name(name, "unused"), name);
+        }
+
+        let exact = "a".repeat(MAX_USER_NAME_LENGTH);
+        assert_eq!(sanitize_for_user_name(&exact, "unused"), exact);
+    }
+
+    #[test]
+    fn test_sanitize_for_user_name_replaces_reserved_names() {
+        for reserved in RESERVED_USER_NAMES {
+            let sanitized =
+                sanitize_for_user_name(reserved, "12345678-0000-0000-0000-000000000000");
+            assert_eq!(sanitized, "user_12345678");
+            assert!(crate::validation::validate_user_name(&sanitized).is_ok());
+        }
+    }
+
+    #[test]
+    fn test_sanitize_for_user_name_always_returns_valid_name() {
+        let fallback = "abcdef12-0000-0000-0000-000000000000";
+        let too_long = "a".repeat(MAX_USER_NAME_LENGTH + 1);
+
+        for candidate in [
+            "",
+            "   ",
+            "あ",
+            "Ａ",
+            "user name",
+            "user@example.com",
+            "😀",
+            too_long.as_str(),
+        ] {
+            let sanitized = sanitize_for_user_name(candidate, fallback);
+            assert!(
+                crate::validation::validate_user_name(&sanitized).is_ok(),
+                "{candidate:?} produced invalid username {sanitized:?}"
+            );
+        }
+
+        assert_eq!(sanitize_for_user_name("", fallback), "user_abcdef12");
+        assert_eq!(sanitize_for_user_name("あ😀", fallback), "user_abcdef12");
+        assert_eq!(
+            sanitize_for_user_name(&too_long, fallback).chars().count(),
+            MAX_USER_NAME_LENGTH
+        );
+    }
 }

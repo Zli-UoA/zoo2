@@ -412,18 +412,37 @@ mod tests {
 
     #[test]
     fn test_validate_user_name() {
+        assert!(validate_user_name("a").is_ok());
         assert!(validate_user_name("john.doe").is_ok());
         assert!(validate_user_name("alice_123").is_ok());
         assert!(validate_user_name("bob-smith").is_ok());
+        assert!(validate_user_name("0.-_").is_ok());
+        assert!(validate_user_name("general").is_ok());
+
+        let exact = "a".repeat(MAX_USER_NAME_LENGTH);
+        assert!(validate_user_name(&exact).is_ok());
+        let too_long = "a".repeat(MAX_USER_NAME_LENGTH + 1);
+        assert!(validate_user_name(&too_long).is_err());
 
         assert!(validate_user_name("").is_err());
         assert!(validate_user_name("John").is_err());
         assert!(validate_user_name("user name").is_err());
-        assert!(validate_user_name("slackbot").is_err());
-        assert!(validate_user_name("admin").is_err());
+        assert!(validate_user_name("user@example").is_err());
+        assert!(validate_user_name("user+tag").is_err());
+        assert!(validate_user_name("user/name").is_err());
+        assert!(validate_user_name("あ").is_err());
+        assert!(validate_user_name("Ａ").is_err());
+        assert!(validate_user_name("user😀").is_err());
 
-        let too_long = "a".repeat(81);
-        assert!(validate_user_name(&too_long).is_err());
+        for reserved in ["all", "channel", "everyone", "here", "slackbot", "admin"] {
+            assert!(
+                validate_user_name(reserved).is_err(),
+                "{reserved} must be reserved"
+            );
+        }
+
+        assert!(validate_user_name("admin1").is_ok());
+        assert!(validate_user_name("channel.").is_ok());
     }
 
     #[test]
