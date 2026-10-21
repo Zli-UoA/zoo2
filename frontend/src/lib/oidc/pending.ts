@@ -153,13 +153,14 @@ export function clearAuthorizeRedirectPending(storage: AuthStorage): void {
 export function isAuthorizeRedirectPending(
   storage: AuthStorage,
   now: number = Date.now(),
+  maxAgeMs: number = PENDING_TTL_MS,
 ): boolean {
   const raw = storage.getItem(AUTHORIZE_REDIRECT_KEY);
   if (!raw) {
     return false;
   }
   const startedAt = Number(raw);
-  if (!Number.isFinite(startedAt) || now - startedAt > PENDING_TTL_MS) {
+  if (!Number.isFinite(startedAt) || now - startedAt > maxAgeMs) {
     // リダイレクトが中断されたまま残った値は無効として捨てる。
     clearAuthorizeRedirectPending(storage);
     return false;
@@ -180,7 +181,9 @@ export function readUnauthorizedRedirectState(
   now: number,
   recentMs: number,
 ): UnauthorizedRedirectState {
-  if (isAuthorizeRedirectPending(storage, now)) {
+  // IdP から戻ったまま mount されない（bfcache）場合などに備え、古い記録は
+  // リダイレクト中とみなさない。無視し続けると 401 のまま再ログインできない。
+  if (isAuthorizeRedirectPending(storage, now, recentMs)) {
     return "redirecting";
   }
   const lastRedirectAt = readLastRedirectAt(storage);

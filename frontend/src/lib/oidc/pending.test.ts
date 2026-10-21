@@ -151,4 +151,12 @@ describe("authorize redirect pending", () => {
     expect(readUnauthorizedRedirectState(storage, 2_000, 10_000)).toBe("recent");
     expect(readUnauthorizedRedirectState(storage, 12_000, 10_000)).toBe("none");
   });
+
+  it("stops ignoring 401s when a redirect marker is stale", () => {
+    markRedirectStarted(storage, 1_000);
+    markAuthorizeRedirectPending(storage, 1_000);
+
+    expect(readUnauthorizedRedirectState(storage, 11_001, 10_000)).toBe("none");
+    expect(storage.getItem("zoo.oidc.authorizeRedirectAt")).toBeNull();
+  });
 });

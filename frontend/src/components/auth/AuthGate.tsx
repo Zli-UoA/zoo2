@@ -121,6 +121,15 @@ export function AuthGate({ children }: { children: ReactNode }) {
     // 設定不一致として扱える。通常ページの再読み込みで残った値もここで消す。
     clearAuthorizeRedirectPending(window.sessionStorage);
 
+    // bfcache から戻った場合は mount されないため、進行中フラグを明示的に
+    // 落とす。戻った先で 401 が続いても再ログインを止めないようにする。
+    const handlePageShow = (event: PageTransitionEvent) => {
+      if (event.persisted) {
+        clearAuthorizeRedirectPending(window.sessionStorage);
+      }
+    };
+    window.addEventListener("pageshow", handlePageShow);
+
     if (client.isCallbackUrl()) {
       client
         .handleCallback()
@@ -159,6 +168,7 @@ export function AuthGate({ children }: { children: ReactNode }) {
 
     return () => {
       cancelled = true;
+      window.removeEventListener("pageshow", handlePageShow);
       setUnauthorizedHandler(null);
       setAuthorizedHandler(null);
       client.setReauthorizeHandler(null);
