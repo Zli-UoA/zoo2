@@ -24,6 +24,7 @@ const PENDING_KEY = "zoo.oidc.pending";
 const LOGGED_OUT_KEY = "zoo.oidc.loggedOut";
 const REDIRECT_ATTEMPTS_KEY = "zoo.oidc.redirectAttempts";
 const LAST_REDIRECT_KEY = "zoo.oidc.lastRedirectAt";
+const AUTHORIZE_REDIRECT_KEY = "zoo.oidc.authorizeRedirectAt";
 
 /**
  * 401 を契機にした再ログインの試行制限。
@@ -132,6 +133,61 @@ export function readLastRedirectAt(storage: AuthStorage): number | null {
   }
   const parsed = Number(raw);
   return Number.isFinite(parsed) ? parsed : null;
+}
+
+/**
+ * authorize リダイレクトが進行中かどうか。
+ *
+ * 失効前の事前再認可では、遷移が始まる直前に発行済みのリクエストが 401 で
+ * 返ることがある。これを設定不一致によるループと誤判定しないよう、
+ * リダイレクト開始からコールバック処理までを記録する。
+ */
+export function markAuthorizeRedirectPending(storage: AuthStorage, now: number = Date.now()): void {
+  storage.setItem(AUTHORIZE_REDIRECT_KEY, String(now));
+}
+
+export function clearAuthorizeRedirectPending(storage: AuthStorage): void {
+  storage.removeItem(AUTHORIZE_REDIRECT_KEY);
+}
+
+export function isAuthorizeRedirectPending(
+  storage: AuthStorage,
+  now: number = Date.now(),
+): boolean {
+  const raw = storage.getItem(AUTHORIZE_REDIRECT_KEY);
+  if (!raw) {
+    return false;
+  }
+  const startedAt = Number(raw);
+  if (!Number.isFinite(startedAt) || now - startedAt > PENDING_TTL_MS) {
+    // リダイレクトが中断されたまま残った値は無効として捨てる。
+    clearAuthorizeRedirectPending(storage);
+    return false;
+  }
+  return true;
+}
+
+export type UnauthorizedRedirectState = "redirecting" | "recent" | "none";
+
+/**
+ * 401 を受けたときのリダイレクト状況を返す。
+ *
+ * `redirecting` は遷移前のリクエストが返っただけなので無視してよい。
+ * `recent` はコールバック直後の 401 で、設定不一致によるループの疑いがある。
+ */
+export function readUnauthorizedRedirectState(
+  storage: AuthStorage,
+  now: number,
+  recentMs: number,
+): UnauthorizedRedirectState {
+  if (isAuthorizeRedirectPending(storage, now)) {
+    return "redirecting";
+  }
+  const lastRedirectAt = readLastRedirectAt(storage);
+  if (lastRedirectAt !== null && now - lastRedirectAt < recentMs) {
+    return "recent";
+  }
+  return "none";
 }
 
 function readRedirectAttempts(storage: AuthStorage, now: number): number[] {

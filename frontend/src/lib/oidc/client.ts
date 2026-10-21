@@ -11,6 +11,12 @@ import { createChallenge, createNonce, createState, createVerifier } from "./pkc
 
 export type OidcFetch = (input: string, init?: RequestInit) => Promise<Response>;
 
+/**
+ * アクセストークンの期限が近づいたときに再認可を始めるフック。
+ * 引数はリダイレクト後に戻る現在のパス（クエリ・フラグメントを含む）。
+ */
+export type ReauthorizeHandler = (returnTo: string) => void;
+
 /** 既定のコールバックパス。`VITE_OIDC_REDIRECT_URI` で差し替え可能。 */
 export const DEFAULT_CALLBACK_PATH = "/auth/callback";
 
@@ -165,6 +171,8 @@ export class OidcClient {
   private callbackRequest: { url: string; promise: Promise<{ returnTo: string }> } | null = null;
   /** セッション破棄と進行中の refresh の競合を検知するための世代番号。 */
   private generation = 0;
+  private reauthorizeHandler: ReauthorizeHandler | null = null;
+  private reauthorizeRequested = false;
 
   constructor(options: OidcClientOptions) {
     this.environment = options.environment ?? createBrowserEnvironment();
@@ -189,6 +197,35 @@ export class OidcClient {
 
   get hasSession(): boolean {
     return this.tokens !== null;
+  }
+
+  /**
+   * 期限接近時の再認可フックを登録する。AuthGate が authorize リダイレクトを
+   * 実装し、未登録なら従来どおり null を返して 401 起点の再ログインに委ねる。
+   */
+  setReauthorizeHandler(handler: ReauthorizeHandler | null): void {
+    this.reauthorizeHandler = handler;
+    if (!handler) {
+      this.reauthorizeRequested = false;
+    }
+  }
+
+  private currentReturnTo(): string {
+    try {
+      const url = new URL(this.environment.href);
+      return `${url.pathname}${url.search}${url.hash}`;
+    } catch {
+      return "/";
+    }
+  }
+
+  /** 期限が近いとき、同時呼び出しを 1 回の再認可にまとめる。 */
+  private requestReauthorization(): void {
+    if (this.reauthorizeRequested || !this.reauthorizeHandler) {
+      return;
+    }
+    this.reauthorizeRequested = true;
+    this.reauthorizeHandler(this.currentReturnTo());
   }
 
   /** RFC 8707 の resource を要求に付ける。未設定なら何もしない。 */
@@ -348,23 +385,32 @@ export class OidcClient {
       refreshToken: null,
       idToken: null,
     });
+    this.reauthorizeRequested = false;
     clearLoggedOut(this.environment.storage);
     return { returnTo: sanitizeReturnTo(pending.returnTo, new URL(this.redirectUri).pathname) };
   }
 
   /**
    * 有効なアクセストークンを返す。期限が近ければ単一の refresh で更新し、
-   * 更新できない場合はキャッシュを捨てて null を返す（呼び出し側の 401 で再ログイン）。
+   * refresh できない構成では再認可フックを呼んで期限前に authorize へ誘導する。
+   *
+   * 再認可を始めた時点でまだ期限内なら、遷移が始まるまでのリクエストに
+   * 使えるようトークンを返す。期限を過ぎていればキャッシュを捨てて null を返す。
    */
   async getAccessToken(): Promise<string | null> {
     const tokens = this.tokens;
     if (!tokens) {
       return null;
     }
-    if (tokens.expiresAt - this.environment.now() > REFRESH_SKEW_MS) {
+    const remaining = tokens.expiresAt - this.environment.now();
+    if (remaining > REFRESH_SKEW_MS) {
       return tokens.accessToken;
     }
     if (!tokens.refreshToken) {
+      this.requestReauthorization();
+      if (remaining > 0) {
+        return tokens.accessToken;
+      }
       this.tokens = null;
       return null;
     }
@@ -379,6 +425,7 @@ export class OidcClient {
   resetSession(): void {
     this.generation += 1;
     this.tokens = null;
+    this.reauthorizeRequested = false;
   }
 
   /**
@@ -432,6 +479,7 @@ export class OidcClient {
     this.generation += 1;
     this.tokens = null;
     this.refreshPromise = null;
+    this.reauthorizeRequested = false;
     clearPending(this.environment.storage);
     markLoggedOut(this.environment.storage);
 

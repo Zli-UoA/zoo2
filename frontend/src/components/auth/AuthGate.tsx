@@ -7,11 +7,13 @@ import { resolveConfig, type AppConfig } from "../../lib/config";
 import { OidcClient } from "../../lib/oidc/client";
 import {
   MAX_REDIRECT_ATTEMPTS,
+  clearAuthorizeRedirectPending,
   clearLoggedOut,
   clearRedirectAttempts,
   isLoggedOut,
+  markAuthorizeRedirectPending,
   markRedirectStarted,
-  readLastRedirectAt,
+  readUnauthorizedRedirectState,
   recordRedirectAttempt,
 } from "../../lib/oidc/pending";
 import { getOidcClient } from "../../lib/oidc/session";
@@ -52,8 +54,12 @@ export function AuthGate({ children }: { children: ReactNode }) {
   const clientRef = useRef<OidcClient | null>(null);
 
   const startLogin = useCallback((client: OidcClient, returnTo: string) => {
-    markRedirectStarted(window.sessionStorage, Date.now());
+    const storage = window.sessionStorage;
+    const now = Date.now();
+    markRedirectStarted(storage, now);
+    markAuthorizeRedirectPending(storage, now);
     void client.login(returnTo).catch((cause: unknown) => {
+      clearAuthorizeRedirectPending(storage);
       setError(describeAuthError(cause));
       setPhase("error");
     });
@@ -77,6 +83,9 @@ export function AuthGate({ children }: { children: ReactNode }) {
     }
     clientRef.current = client;
     setTokenProvider(() => client.getAccessToken());
+    client.setReauthorizeHandler((returnTo) => {
+      startLogin(client, returnTo);
+    });
     setAuthorizedHandler(() => {
       // バックエンドがトークンを受け付けたら試行カウンタを戻す。
       clearRedirectAttempts(window.sessionStorage);
@@ -84,10 +93,15 @@ export function AuthGate({ children }: { children: ReactNode }) {
     setUnauthorizedHandler(() => {
       const storage = window.sessionStorage;
       const now = Date.now();
+      const redirectState = readUnauthorizedRedirectState(storage, now, REDIRECT_COOLDOWN_MS);
+      // 事前再認可や 401 起点のリダイレクト中に届いた 401 は、遷移前の
+      // リクエストの結果。設定不一致のループ判定には使わない。
+      if (redirectState === "redirecting") {
+        return;
+      }
       // リダイレクト直後の 401 は「IdP では通るのにバックエンドが拒否する」
       // 設定不一致の典型。再ログインせずエラー画面へ倒してループを止める。
-      const lastRedirectAt = readLastRedirectAt(storage);
-      if (lastRedirectAt !== null && now - lastRedirectAt < REDIRECT_COOLDOWN_MS) {
+      if (redirectState === "recent") {
         setError({ kind: "unauthorizedLoop" });
         setPhase("error");
         return;
@@ -102,6 +116,10 @@ export function AuthGate({ children }: { children: ReactNode }) {
       }
       startLogin(client, currentReturnTo());
     });
+
+    // コールバック処理へ入る時点で進行中フラグを落とす。以後の 401 は
+    // 設定不一致として扱える。通常ページの再読み込みで残った値もここで消す。
+    clearAuthorizeRedirectPending(window.sessionStorage);
 
     if (client.isCallbackUrl()) {
       client
@@ -143,6 +161,7 @@ export function AuthGate({ children }: { children: ReactNode }) {
       cancelled = true;
       setUnauthorizedHandler(null);
       setAuthorizedHandler(null);
+      client.setReauthorizeHandler(null);
     };
   }, [router, startLogin]);
 
