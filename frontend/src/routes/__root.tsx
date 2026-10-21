@@ -3,6 +3,7 @@ import { TanStackRouterDevtoolsPanel } from "@tanstack/react-router-devtools";
 import { TanStackDevtools } from "@tanstack/react-devtools";
 
 import { AuthGate } from "@/components/auth/AuthGate";
+import { PreviewUserSwitcher } from "@/components/auth/PreviewUserSwitcher";
 import { ThemeProvider } from "@/components/theme/ThemeProvider";
 import { themeInitScript } from "@/components/theme/theme";
 import { Toaster } from "@/components/ui/sonner";
@@ -52,6 +53,7 @@ function RootDocument({ children }: { children: React.ReactNode }) {
             <ThemeProvider>
               <TooltipProvider>
                 <AuthGate>{children}</AuthGate>
+                <PreviewUserSwitcher />
                 <Toaster />
               </TooltipProvider>
             </ThemeProvider>

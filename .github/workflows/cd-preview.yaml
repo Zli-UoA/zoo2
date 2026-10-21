@@ -1,0 +1,124 @@
+name: Preview environment
+on:
+  workflow_run:
+    workflows: [Publish images]
+    types: [completed]
+  pull_request_target:
+    types: [closed]
+  schedule:
+    - cron: '43 18 * * *'
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  # Serialize creation, migration and cleanup on the single preview site.
+  group: preview-site1
+  queue: max
+jobs:
+  plan:
+    if: vars.PREVIEW_ENABLED == 'true' && github.event_name == 'workflow_run'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: read
+      pull-requests: read
+    outputs:
+      plan: ${{ steps.plan.outputs.plan }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          persist-credentials: false
+      - id: plan
+        uses: actions/github-script@v8
+        env:
+          PREVIEW_DOMAIN: ${{ vars.PREVIEW_DOMAIN }}
+        with:
+          script: |
+            const {plan} = await import(`${process.env.GITHUB_WORKSPACE}/.github/scripts/preview.mjs`);
+            await plan({github, context, core});
+  deploy:
+    needs: plan
+    if: needs.plan.outputs.plan != ''
+    environment: preview-site1
+    runs-on: ${{ fromJSON(vars.PREVIEW_RUNNER_LABELS || '["ubuntu-latest"]') }}
+    timeout-minutes: 45
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          persist-credentials: false
+      - name: Validate deployment prerequisites
+        env:
+          INFRA_REF: ${{ vars.PREVIEW_INFRA_REF }}
+          ACCESS_READY: ${{ vars.PREVIEW_ACCESS_READY }}
+        run: |
+          [[ "$INFRA_REF" =~ ^[a-f0-9]{40}$ ]] || { echo 'Set PREVIEW_INFRA_REF to the reviewed infra commit'; exit 1; }
+          test "$ACCESS_READY" = true || { echo 'Configure Cloudflare Access and set PREVIEW_ACCESS_READY=true'; exit 1; }
+      - uses: actions/checkout@v7
+        with:
+          repository: Zli-UoA/zoo2-infra
+          ref: ${{ vars.PREVIEW_INFRA_REF }}
+          token: ${{ secrets.PREVIEW_INFRA_READ_TOKEN }}
+          path: preview-infra
+          persist-credentials: false
+      - uses: azure/setup-kubectl@v4
+        with:
+          version: v1.35.0
+      - name: Configure site1 access
+        env:
+          PREVIEW_KUBECONFIG: ${{ secrets.PREVIEW_KUBECONFIG }}
+        run: |
+          umask 077
+          test -n "$PREVIEW_KUBECONFIG"
+          printf '%s' "$PREVIEW_KUBECONFIG" > "$RUNNER_TEMP/preview-kubeconfig"
+          echo "KUBECONFIG=$RUNNER_TEMP/preview-kubeconfig" >> "$GITHUB_ENV"
+      - name: Deploy current PR
+        uses: actions/github-script@v8
+        env:
+          PREVIEW_PLAN: ${{ needs.plan.outputs.plan }}
+          PREVIEW_DOMAIN: ${{ vars.PREVIEW_DOMAIN }}
+          GHCR_DOCKERCONFIGJSON: ${{ secrets.PREVIEW_GHCR_DOCKERCONFIGJSON }}
+        with:
+          script: |
+            const {deploy} = await import(`${process.env.GITHUB_WORKSPACE}/.github/scripts/preview.mjs`);
+            await deploy({github, context, core});
+      - name: Remove local credentials
+        if: always()
+        run: rm -f "$RUNNER_TEMP/preview-kubeconfig"
+  cleanup:
+    if: vars.PREVIEW_ENABLED == 'true' && github.event_name != 'workflow_run'
+    environment: preview-site1
+    runs-on: ${{ fromJSON(vars.PREVIEW_RUNNER_LABELS || '["ubuntu-latest"]') }}
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          persist-credentials: false
+      - uses: azure/setup-kubectl@v4
+        with:
+          version: v1.35.0
+      - name: Configure site1 access
+        env:
+          PREVIEW_KUBECONFIG: ${{ secrets.PREVIEW_KUBECONFIG }}
+        run: |
+          umask 077
+          test -n "$PREVIEW_KUBECONFIG"
+          printf '%s' "$PREVIEW_KUBECONFIG" > "$RUNNER_TEMP/preview-kubeconfig"
+          echo "KUBECONFIG=$RUNNER_TEMP/preview-kubeconfig" >> "$GITHUB_ENV"
+      - name: Reclaim closed or expired previews
+        uses: actions/github-script@v8
+        with:
+          script: |
+            const {cleanup} = await import(`${process.env.GITHUB_WORKSPACE}/.github/scripts/preview.mjs`);
+            await cleanup({github, context});
+      - name: Remove local credentials
+        if: always()
+        run: rm -f "$RUNNER_TEMP/preview-kubeconfig"
