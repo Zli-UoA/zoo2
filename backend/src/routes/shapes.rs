@@ -69,10 +69,11 @@ pub(crate) fn channels_shape_where(user_id: &str) -> (String, Vec<(&'static str,
 ///
 /// [P1] ユーザー本人の通知であることに加え、現在閲覧権限があるチャンネル (公開チャンネル、
 /// または所属しているプライベートチャンネル) の通知のみを配信する。
-/// キック・退出された場合、ElectricSQL の move-out 機構によりクライアントから即座に通知が除外される。
+/// また、論理削除されたメッセージ (deleted_at IS NOT NULL) の通知を除外する。
+/// キック・退出やメッセージ削除が行われた場合、ElectricSQL の move-out 機構によりクライアントから即座に通知が除外される。
 pub(crate) fn notifications_shape_where(user_id: &str) -> (String, Vec<(&'static str, &str)>) {
     (
-        "user_id = $1 AND (channel_id IN (SELECT id FROM channels WHERE is_private = false AND deleted_at IS NULL) OR channel_id IN (SELECT channel_id FROM channel_user WHERE user_id = $1))"
+        "user_id = $1 AND message_id IN (SELECT id FROM messages WHERE deleted_at IS NULL) AND (channel_id IN (SELECT id FROM channels WHERE is_private = false AND deleted_at IS NULL) OR channel_id IN (SELECT channel_id FROM channel_user WHERE user_id = $1))"
             .to_string(),
         vec![("params[1]", user_id)],
     )
@@ -479,6 +480,9 @@ mod tests {
         let (clause, params) = notifications_shape_where(user_id);
 
         assert!(clause.contains("user_id = $1"));
+        assert!(
+            clause.contains("message_id IN (SELECT id FROM messages WHERE deleted_at IS NULL)")
+        );
         assert!(clause.contains("is_private = false AND deleted_at IS NULL"));
         assert!(clause.contains("SELECT channel_id FROM channel_user WHERE user_id = $1"));
         assert_eq!(params, vec![("params[1]", "user-123")]);

@@ -6,16 +6,36 @@ use crate::{
     models::{Channel, ChannelUser, Message, Notification, User, now_utc_millis},
 };
 
+#[derive(Debug, PartialEq, Eq, Clone)]
+pub struct MentionUserCandidate {
+    pub raw: String,
+    pub trimmed: Option<String>,
+}
+
 #[derive(Debug, PartialEq, Eq)]
 pub struct MentionTargets {
-    pub usernames: HashSet<String>,
+    pub user_candidates: Vec<MentionUserCandidate>,
     pub has_channel: bool,
     pub has_here: bool,
 }
 
+const PUNCTUATION: &[char] = &['.', ',', '!', '?', ':', ';', '。', '、', '！', '？'];
+
+pub fn is_mention_boundary(prev: char) -> bool {
+    prev.is_whitespace()
+        || matches!(
+            prev,
+            '(' | '[' | '{' | '<' | '（' | '「' | '『' | '"' | '\''
+        )
+}
+
 /// メッセージ本文からメンション (@username, @channel, @here) を抽出する
+///
+/// [P3] @ の直前が行頭・空白・開き括弧などの区切り文字であることを要求する (メールアドレスやURLの除外)。
+/// また、Thanks @bob. のように文末に句読点がある場合でもユーザー名候補として照合できるよう、
+/// 完全一致候補 (raw) と末尾句読点トリム候補 (trimmed) の双方を保持する。
 pub fn extract_mentions(content: &str) -> MentionTargets {
-    let mut usernames = HashSet::new();
+    let mut user_candidates = Vec::new();
     let mut has_channel = false;
     let mut has_here = false;
 
@@ -25,35 +45,48 @@ pub fn extract_mentions(content: &str) -> MentionTargets {
 
     while i < len {
         if chars[i] == '@' {
-            let start = i + 1;
-            let mut end = start;
-            while end < len {
-                let c = chars[end];
-                if c.is_ascii_alphanumeric() || c == '.' || c == '-' || c == '_' {
-                    end += 1;
-                } else {
-                    break;
+            let is_boundary = i == 0 || is_mention_boundary(chars[i - 1]);
+            if is_boundary {
+                let start = i + 1;
+                let mut end = start;
+                while end < len {
+                    let c = chars[end];
+                    if c.is_ascii_alphanumeric() || c == '.' || c == '-' || c == '_' {
+                        end += 1;
+                    } else {
+                        break;
+                    }
                 }
-            }
 
-            if end > start {
-                let token: String = chars[start..end].iter().collect();
-                if token.eq_ignore_ascii_case("channel") {
-                    has_channel = true;
-                } else if token.eq_ignore_ascii_case("here") {
-                    has_here = true;
-                } else {
-                    usernames.insert(token);
+                if end > start {
+                    let token: String = chars[start..end].iter().collect();
+                    let trimmed_token = token.trim_end_matches(PUNCTUATION);
+
+                    if trimmed_token.eq_ignore_ascii_case("channel") {
+                        has_channel = true;
+                    } else if trimmed_token.eq_ignore_ascii_case("here") {
+                        has_here = true;
+                    } else {
+                        let trimmed = if trimmed_token != token && !trimmed_token.is_empty() {
+                            Some(trimmed_token.to_string())
+                        } else {
+                            None
+                        };
+                        user_candidates.push(MentionUserCandidate {
+                            raw: token,
+                            trimmed,
+                        });
+                    }
+                    i = end;
+                    continue;
                 }
-                i = end;
-                continue;
             }
         }
         i += 1;
     }
 
     MentionTargets {
-        usernames,
+        user_candidates,
         has_channel,
         has_here,
     }
@@ -62,7 +95,8 @@ pub fn extract_mentions(content: &str) -> MentionTargets {
 /// メッセージ作成時の通知生成
 ///
 /// 1つのメッセージ投稿に対し、同一ユーザー宛ての通知は1件に集約する (メンション > 返信)。
-/// チャンネル非所属ユーザー (キック・退出者含む) や本人自身のアクションは通知から除外する。
+/// [P2] 公開チャンネルでは非メンバー投稿者への返信通知も配信する。
+/// プライベートチャンネルではチャンネル非所属ユーザー (キック・退出者含む) への通知を除外する。
 pub async fn create_message_notifications(
     tx: &mut toasty::Transaction<'_>,
     message: &Message,
@@ -70,6 +104,9 @@ pub async fn create_message_notifications(
     parent_author_id: Option<&str>,
 ) -> Result<Vec<Notification>, AppError> {
     let mentions = extract_mentions(&message.content);
+
+    // チャンネル情報を取得 (公開かプライベートかで通知先ポリシーを判定)
+    let channel = Channel::get_by_id(tx, message.channel_id.as_str()).await?;
 
     // チャンネル所属メンバーのIDを取得
     let channel_users =
@@ -90,26 +127,50 @@ pub async fn create_message_notifications(
         }
     }
 
-    // 2. @username: 該当ユーザーが存在し、かつチャンネル所属メンバーである場合 (本人除く)
-    for username in &mentions.usernames {
-        if let Ok(user) = User::get_by_user_name(tx, username.as_str()).await
+    // 2. @username: 該当ユーザーが存在する場合 (本人除く)
+    // [P3] raw (完全一致) で引いた後、見つからなければ trimmed (末尾句読点除去) で引く
+    for candidate in mentions.user_candidates {
+        let user_opt = if let Ok(u) = User::get_by_user_name(tx, candidate.raw.as_str()).await {
+            Some(u)
+        } else if let Some(ref trimmed) = candidate.trimmed {
+            User::get_by_user_name(tx, trimmed.as_str()).await.ok()
+        } else {
+            None
+        };
+
+        if let Some(user) = user_opt
             && user.id != actor_id
-            && member_ids.contains(&user.id)
         {
-            targets_to_notify.insert(user.id, "mention");
+            let can_notify = if channel.is_private {
+                member_ids.contains(&user.id)
+            } else {
+                channel.deleted_at.is_none()
+            };
+
+            if can_notify {
+                targets_to_notify.insert(user.id, "mention");
+            }
         }
     }
 
     // 3. スレッド返信: 親メッセージの投稿者 (本人除く)
-    // [P1] 過去に投稿していても現在チャンネルメンバーでない (キック/退出された) 場合は通知しない
+    // [P2] 公開チャンネルなら非メンバー投稿者であっても返信通知を作成する
+    // プライベートチャンネルの場合は channel_user 所属を確認し、キック/退出者には通知しない
     if let Some(parent_id) = parent_author_id
         && parent_id != actor_id
-        && member_ids.contains(parent_id)
     {
-        // 既にメンション対象になっていれば "mention" を優先
-        targets_to_notify
-            .entry(parent_id.to_string())
-            .or_insert("reply");
+        let can_notify = if channel.is_private {
+            member_ids.contains(parent_id)
+        } else {
+            channel.deleted_at.is_none()
+        };
+
+        if can_notify {
+            // 既にメンション対象になっていれば "mention" を優先
+            targets_to_notify
+                .entry(parent_id.to_string())
+                .or_insert("reply");
+        }
     }
 
     let mut created_notifications = Vec::new();
@@ -188,41 +249,60 @@ mod tests {
         let text = "Hello @alice and @bob, check this out!";
         let targets = extract_mentions(text);
 
-        assert_eq!(targets.usernames.len(), 2);
-        assert!(targets.usernames.contains("alice"));
-        assert!(targets.usernames.contains("bob"));
+        assert_eq!(targets.user_candidates.len(), 2);
+        assert_eq!(targets.user_candidates[0].raw, "alice");
+        assert_eq!(targets.user_candidates[0].trimmed, None);
+        assert_eq!(targets.user_candidates[1].raw, "bob");
+        assert_eq!(targets.user_candidates[1].trimmed, None);
         assert!(!targets.has_channel);
         assert!(!targets.has_here);
     }
 
     #[test]
-    fn test_extract_mentions_special() {
-        let text = "Attention @channel and @HERE please";
+    fn test_extract_mentions_punctuation_and_sentence_end() {
+        let text = "Thanks @bob. Have you seen @charlie! Also (@dave)";
         let targets = extract_mentions(text);
 
-        assert!(targets.usernames.is_empty());
+        assert_eq!(targets.user_candidates.len(), 3);
+        assert_eq!(targets.user_candidates[0].raw, "bob.");
+        assert_eq!(targets.user_candidates[0].trimmed, Some("bob".to_string()));
+
+        assert_eq!(targets.user_candidates[1].raw, "charlie");
+        assert_eq!(targets.user_candidates[1].trimmed, None);
+
+        assert_eq!(targets.user_candidates[2].raw, "dave");
+        assert_eq!(targets.user_candidates[2].trimmed, None);
+    }
+
+    #[test]
+    fn test_extract_mentions_special_with_punctuation() {
+        let text = "Attention @channel! and @HERE. please";
+        let targets = extract_mentions(text);
+
+        assert!(targets.user_candidates.is_empty());
         assert!(targets.has_channel);
         assert!(targets.has_here);
     }
 
     #[test]
-    fn test_extract_mentions_mixed() {
-        let text = "@charlie please ask @channel";
+    fn test_extract_mentions_email_and_url_ignored() {
+        let text = "Contact test@example.com or visit https://example.com/@here or @channel_inside";
         let targets = extract_mentions(text);
 
-        assert_eq!(targets.usernames.len(), 1);
-        assert!(targets.usernames.contains("charlie"));
-        assert!(targets.has_channel);
+        // test@example.com -> 前が 't' なので境界でないため無視
+        // https://example.com/@here -> 前が '/' なので境界でないため無視
+        // @channel_inside -> 前が ' ' なので有効なメンショントークン
         assert!(!targets.has_here);
+        assert_eq!(targets.user_candidates.len(), 1);
+        assert_eq!(targets.user_candidates[0].raw, "channel_inside");
     }
 
     #[test]
     fn test_extract_mentions_none() {
-        let text = "No mentions here, just an email test@example.com";
+        let text = "No mentions here, just normal text";
         let targets = extract_mentions(text);
 
-        // emailの @example.com も正規表現 @([a-zA-Z0-9_.-]+) でマッチしうるが、
-        // 存在しないユーザーはDBルックアップで除外される
+        assert!(targets.user_candidates.is_empty());
         assert!(!targets.has_channel);
         assert!(!targets.has_here);
     }

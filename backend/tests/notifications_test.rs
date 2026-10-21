@@ -395,3 +395,169 @@ async fn test_notifications_full_flow() -> anyhow::Result<()> {
 
     Ok(())
 }
+
+#[tokio::test]
+async fn test_notifications_p2_p3_fixes() -> anyhow::Result<()> {
+    dotenvy::dotenv().ok();
+    dotenvy::from_filename("../.env").ok();
+
+    let mut config = Config::from_env();
+    config.dev_auth_enabled = true;
+    let db = init_db(&config.database_url).await?;
+    let state = AppState::new(db.clone(), config);
+    let app = create_router(state);
+
+    let alice_id = uuid::Uuid::new_v4().to_string();
+    let dave_id = uuid::Uuid::new_v4().to_string(); // 非メンバー
+    let bob_id = uuid::Uuid::new_v4().to_string();
+
+    let bob_username = format!("bob_{}", uuid::Uuid::new_v4().simple());
+    let dave_username = format!("dave_{}", uuid::Uuid::new_v4().simple());
+
+    // ユーザー作成
+    for (id, username, display) in [
+        (
+            &alice_id,
+            format!("alice_{}", uuid::Uuid::new_v4().simple()),
+            "Alice",
+        ),
+        (&dave_id, dave_username.clone(), "Dave"),
+        (&bob_id, bob_username.clone(), "Bob"),
+    ] {
+        let user_payload = json!({
+            "id": id,
+            "user_name": username,
+            "display_name": display,
+        });
+        let req = Request::builder()
+            .method("POST")
+            .uri("/api/users")
+            .header("content-type", "application/json")
+            .body(Body::from(serde_json::to_vec(&user_payload)?))?;
+        let resp = app.clone().oneshot(req).await?;
+        assert_eq!(resp.status(), StatusCode::OK);
+    }
+
+    // 公開チャンネル作成 (Alice が作成、Alice のみ所属)
+    let public_ch_id = uuid::Uuid::new_v4().to_string();
+    let ch_payload = json!({
+        "id": public_ch_id,
+        "channel_name": format!("pub_{}", uuid::Uuid::new_v4().simple()),
+        "is_private": false,
+    });
+    let req = Request::builder()
+        .method("POST")
+        .uri("/api/channels")
+        .header("content-type", "application/json")
+        .header("X-Dev-User", &alice_id)
+        .body(Body::from(serde_json::to_vec(&ch_payload)?))?;
+    let resp = app.clone().oneshot(req).await?;
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    // 1. [P2] 非メンバー Dave が公開チャンネルに投稿
+    let dave_root_msg_id = uuid::Uuid::new_v4().to_string();
+    let req = Request::builder()
+        .method("POST")
+        .uri("/api/messages")
+        .header("content-type", "application/json")
+        .header("X-Dev-User", &dave_id)
+        .body(Body::from(serde_json::to_vec(&json!({
+            "id": dave_root_msg_id,
+            "channel_id": public_ch_id,
+            "content": "Dave's public message without joining channel_user",
+        }))?))?;
+    let resp = app.clone().oneshot(req).await?;
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    // Alice が Dave の投稿に返信
+    let reply_msg_id = uuid::Uuid::new_v4().to_string();
+    let req = Request::builder()
+        .method("POST")
+        .uri("/api/messages")
+        .header("content-type", "application/json")
+        .header("X-Dev-User", &alice_id)
+        .body(Body::from(serde_json::to_vec(&json!({
+            "id": reply_msg_id,
+            "channel_id": public_ch_id,
+            "content": "Alice replies to Dave",
+            "parent_id": dave_root_msg_id,
+        }))?))?;
+    let resp = app.clone().oneshot(req).await?;
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    // [P2 検証]: 非メンバー Dave 宛てに reply 通知が作成されていること
+    let mut check_db = db.clone();
+    let dave_reply_notifs = Notification::filter(
+        Notification::fields().user_id().eq(dave_id.as_str()).and(
+            Notification::fields()
+                .message_id()
+                .eq(reply_msg_id.as_str()),
+        ),
+    )
+    .exec(&mut check_db)
+    .await?;
+    assert_eq!(dave_reply_notifs.len(), 1);
+    assert_eq!(dave_reply_notifs[0].notification_type, "reply");
+    assert_eq!(dave_reply_notifs[0].actor_id, alice_id);
+
+    // 2. [P3] 文末句読点付きメンション & メール・URL 除外テスト
+    // Alice が「Thanks @bob. Please email test@example.com or visit https://example.com/@here」を投稿
+    let p3_msg_id = uuid::Uuid::new_v4().to_string();
+    let p3_content = format!(
+        "Thanks @{}. Please email test@example.com or visit https://example.com/@here",
+        bob_username
+    );
+    let req = Request::builder()
+        .method("POST")
+        .uri("/api/messages")
+        .header("content-type", "application/json")
+        .header("X-Dev-User", &alice_id)
+        .body(Body::from(serde_json::to_vec(&json!({
+            "id": p3_msg_id,
+            "channel_id": public_ch_id,
+            "content": p3_content,
+        }))?))?;
+    let resp = app.clone().oneshot(req).await?;
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    // [P3 検証 1]: 文末に '.' があっても Bob 宛てに mention 通知が作成されていること
+    let bob_notifs = Notification::filter(
+        Notification::fields()
+            .user_id()
+            .eq(bob_id.as_str())
+            .and(Notification::fields().message_id().eq(p3_msg_id.as_str())),
+    )
+    .exec(&mut check_db)
+    .await?;
+    assert_eq!(bob_notifs.len(), 1);
+    assert_eq!(bob_notifs[0].notification_type, "mention");
+
+    // [P3 検証 2]: @here が URL の一部にあるため、全メンバーへの @here 通知は作成されないこと (Alice/Dave に通知なし)
+    let dave_here_notifs = Notification::filter(
+        Notification::fields()
+            .user_id()
+            .eq(dave_id.as_str())
+            .and(Notification::fields().message_id().eq(p3_msg_id.as_str())),
+    )
+    .exec(&mut check_db)
+    .await?;
+    assert_eq!(dave_here_notifs.len(), 0);
+
+    // 3. read-all クエリパラメータ (?channel_id=...) テスト
+    let req = Request::builder()
+        .method("POST")
+        .uri(format!(
+            "/api/notifications/read-all?channel_id={public_ch_id}"
+        ))
+        .header("X-Dev-User", &dave_id)
+        .body(Body::empty())?;
+    let resp = app.clone().oneshot(req).await?;
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    let body = to_bytes(resp.into_body(), usize::MAX).await?;
+    let json: Value = serde_json::from_slice(&body)?;
+    assert_eq!(json["data"]["updated_count"], 1);
+    assert!(json["txid"].is_string());
+
+    Ok(())
+}

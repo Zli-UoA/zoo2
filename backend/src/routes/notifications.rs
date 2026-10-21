@@ -1,6 +1,6 @@
 use axum::{
     Json, Router,
-    extract::{Path, State},
+    extract::{Path, Query, State},
     routing::{patch, post},
 };
 use serde::{Deserialize, Serialize};
@@ -10,6 +10,11 @@ use crate::{
     auth::AuthUser, db::get_current_txid, error::AppError, models::Notification,
     routes::response::ApiResponse, state::AppState,
 };
+
+#[derive(Debug, Deserialize, Default)]
+pub struct ReadAllNotificationsQuery {
+    pub channel_id: Option<String>,
+}
 
 #[derive(Debug, Deserialize, Default)]
 pub struct ReadAllNotificationsRequest {
@@ -116,15 +121,19 @@ async fn mark_notification_read(
 
 /// 一括既読化
 ///
+/// クエリパラメータ (?channel_id=...) および JSON ボディ ({ "channel_id": "..." }) の双方から
+/// 絞り込み対象のチャンネルIDを受け付け可能。
 /// [P2] 更新対象が 0 件の場合、txid: None を返却する。
 async fn mark_all_notifications_read(
     State(state): State<AppState>,
     auth_user: AuthUser,
+    Query(query): Query<ReadAllNotificationsQuery>,
     payload_opt: Option<Json<ReadAllNotificationsRequest>>,
 ) -> Result<Json<ApiResponse<ReadAllResponse>>, AppError> {
     let payload = payload_opt.map(|Json(p)| p).unwrap_or_default();
+    let channel_id_opt = query.channel_id.or(payload.channel_id);
 
-    if let Some(ref ch_id) = payload.channel_id {
+    if let Some(ref ch_id) = channel_id_opt {
         Uuid::parse_str(ch_id).map_err(|_| {
             AppError::BadRequest(format!("channel_id is not a valid UUID: {ch_id}"))
         })?;
@@ -133,7 +142,7 @@ async fn mark_all_notifications_read(
     let mut db = state.db.clone();
     let mut tx = db.transaction().await?;
 
-    let sql = if let Some(ref ch_id) = payload.channel_id {
+    let sql = if let Some(ref ch_id) = channel_id_opt {
         format!(
             "UPDATE notifications SET is_read = true WHERE user_id = '{}' AND channel_id = '{}' AND is_read = false RETURNING id",
             auth_user.id, ch_id

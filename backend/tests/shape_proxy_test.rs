@@ -264,3 +264,78 @@ async fn test_cors_allowlist() -> anyhow::Result<()> {
 
     Ok(())
 }
+
+/// /api/shapes/notifications のプロキシ・認可・ヘッダ検証テスト
+#[tokio::test]
+async fn test_notifications_shape_proxy() -> anyhow::Result<()> {
+    dotenvy::dotenv().ok();
+    dotenvy::from_filename("../.env").ok();
+
+    let mut config = Config::from_env();
+    config.dev_auth_enabled = true;
+    let db = init_db(&config.database_url).await?;
+    let state = AppState::new(db, config);
+    let app = create_router(state);
+
+    let alice_id = uuid::Uuid::new_v4().to_string();
+    let bob_id = uuid::Uuid::new_v4().to_string();
+
+    // 1. 不正な認証情報 (無効な UUID) -> 400 Bad Request
+    let bad_req = Request::builder()
+        .method("GET")
+        .uri("/api/shapes/notifications?offset=-1")
+        .header("X-Dev-User", "invalid-uuid")
+        .body(Body::empty())?;
+    let resp = app.clone().oneshot(bad_req).await?;
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+
+    // 2. 認証済みアクセス (Alice) -> 200 OK
+    let auth_req = Request::builder()
+        .method("GET")
+        .uri("/api/shapes/notifications?offset=-1")
+        .header("X-Dev-User", &alice_id)
+        .body(Body::empty())?;
+    let resp = app.clone().oneshot(auth_req).await?;
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    // 3. ヘッダ検証 (electric-handle, vary, cache-control)
+    assert!(
+        resp.headers().contains_key("electric-handle"),
+        "electric-handle header must be present"
+    );
+    let vary = resp
+        .headers()
+        .get("vary")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or_default()
+        .to_lowercase();
+    assert!(
+        vary.contains("authorization"),
+        "vary must contain authorization"
+    );
+    assert!(vary.contains("x-dev-user"), "vary must contain x-dev-user");
+
+    let cache_control = resp
+        .headers()
+        .get("cache-control")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or_default()
+        .to_lowercase();
+    assert!(
+        cache_control.contains("private") && cache_control.contains("no-cache"),
+        "cache-control must be private, no-cache, got: {}",
+        cache_control
+    );
+
+    // 4. Bob も自身の Shape を取得可能 -> 200 OK
+    let bob_req = Request::builder()
+        .method("GET")
+        .uri("/api/shapes/notifications?offset=-1")
+        .header("X-Dev-User", &bob_id)
+        .body(Body::empty())?;
+    let resp = app.clone().oneshot(bob_req).await?;
+    assert_eq!(resp.status(), StatusCode::OK);
+    assert!(resp.headers().contains_key("electric-handle"));
+
+    Ok(())
+}
