@@ -19,6 +19,7 @@ export function getOidcClient(config: AppConfig): OidcClient | null {
     clientId: oidc.clientId,
     redirectUri: oidc.redirectUri,
     scope: oidc.scope,
+    resource: oidc.resource,
     postLogoutRedirectUri: oidc.postLogoutRedirectUri,
   });
   currentKey = key;

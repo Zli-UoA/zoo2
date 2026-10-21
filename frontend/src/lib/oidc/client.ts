@@ -14,7 +14,7 @@ export type OidcFetch = (input: string, init?: RequestInit) => Promise<Response>
 /** 既定のコールバックパス。`VITE_OIDC_REDIRECT_URI` で差し替え可能。 */
 export const DEFAULT_CALLBACK_PATH = "/auth/callback";
 
-export const DEFAULT_OIDC_SCOPE = "openid profile email";
+export const DEFAULT_OIDC_SCOPE = "openid profile";
 
 /** 期限切れ前に更新を始める余裕。ロングポーリング中の Shape もここで切れ目なく更新される。 */
 const REFRESH_SKEW_MS = 60_000;
@@ -76,6 +76,8 @@ export interface OidcClientOptions {
   clientId: string;
   redirectUri?: string | null;
   scope?: string;
+  /** RFC 8707 の resource。設定すると authorize と token 要求に含める。 */
+  resource?: string | null;
   postLogoutRedirectUri?: string | null;
   environment?: OidcEnvironment;
 }
@@ -154,6 +156,7 @@ export class OidcClient {
   private readonly configuredRedirectUri: string | null;
   private readonly configuredPostLogoutRedirectUri: string | null;
   readonly scope: string;
+  private readonly resource: string | null;
 
   private endpoints: OidcEndpoints | null = null;
   private discoveryPromise: Promise<OidcEndpoints> | null = null;
@@ -170,6 +173,7 @@ export class OidcClient {
     this.configuredRedirectUri = options.redirectUri ?? null;
     this.configuredPostLogoutRedirectUri = options.postLogoutRedirectUri ?? null;
     this.scope = options.scope?.trim() || DEFAULT_OIDC_SCOPE;
+    this.resource = options.resource?.trim() || null;
   }
 
   get redirectUri(): string {
@@ -185,6 +189,13 @@ export class OidcClient {
 
   get hasSession(): boolean {
     return this.tokens !== null;
+  }
+
+  /** RFC 8707 の resource を要求に付ける。未設定なら何もしない。 */
+  private addResource(params: URLSearchParams): void {
+    if (this.resource) {
+      params.set("resource", this.resource);
+    }
   }
 
   /** 現在の URL（または指定 URL）がコールバックかどうか。 */
@@ -267,6 +278,7 @@ export class OidcClient {
     url.searchParams.set("client_id", this.clientId);
     url.searchParams.set("redirect_uri", this.redirectUri);
     url.searchParams.set("scope", this.scope);
+    this.addResource(url.searchParams);
     url.searchParams.set("state", pending.state);
     url.searchParams.set("nonce", pending.nonce);
     url.searchParams.set("code_challenge", challenge);
@@ -329,6 +341,7 @@ export class OidcClient {
       client_id: this.clientId,
       code_verifier: pending.verifier,
     });
+    this.addResource(body);
     const responseBody = await this.requestToken(body);
     // nonce を検証できるよう、コード交換では ID トークンを必須にする。
     this.tokens = this.parseTokens(responseBody, pending.nonce, {
@@ -391,6 +404,7 @@ export class OidcClient {
       refresh_token: refreshToken,
       client_id: this.clientId,
     });
+    this.addResource(body);
     const responseBody = await this.requestToken(body);
     // refresh 応答に id_token が無い IdP でも、logout の id_token_hint 用に
     // 前回の値を引き継ぐ。
