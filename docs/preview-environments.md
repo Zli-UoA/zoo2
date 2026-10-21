@@ -14,7 +14,7 @@ PR ごとに site1 の `zoo2-pr-<番号>` Namespace に検証環境を作りま�
 4. 管理者と一般ユーザー2人を投入します。既存のユーザーは上書きしません。
 5. Electric、backend、frontend を各1 replica で起動し、Ready になった後に PR の URL コメントを作成・更新します。
 
-変更があるコンポーネントは `pr-<番号>-<head SHA>` を使用します。変更がない backend・migrate は `latest`、frontend は OIDC 無効・Preview 認証有効でビルドした `preview` を使います。本番の frontend `latest` は使いません。初回導入では、この変更を含む main の `Publish images` を成功させてから Preview を有効にしてください。
+変更があるコンポーネントは `pr-<番号>-<head SHA>` を使用します。変更がないコンポーネントには、デプロイ計画の時点で `latest` が指す main コミットの不変タグを使います。backend・migrate は `<SHA>`、frontend は OIDC 無効・Preview 認証有効でビルドした `preview-<SHA>` です。Pod の再作成や後続の main 昇格でイメージが変わらないよう、可変タグの `latest`・`preview` は参照しません。本番の frontend は使いません。初回導入では、この変更を含む main の `Publish images` を成功させてから Preview を有効にしてください。
 
 ## 導入時の設定
 
@@ -57,7 +57,7 @@ NetworkPolicy は同じ Namespace 内、Traefik からの frontend/backend 接�
 
 PR close 時に所有ラベルの付いた該当 Namespace を削除します。再 open された PR は削除しません。GHCR の PR イメージは既存の `cd-image-cleanup.yaml` が close 時と日次で回収します。Namespace 削除と GHCR 削除は独立した処理です。
 
-日次、または `Preview environment` の手動実行で、close 済み環境と最終更新から7日以上経過した環境を回収します。TTL を過ぎた open PR の環境も削除します。環境を再作成するには PR を更新するか、最新 SHA の `Publish images` を再実行してください。Preview ワークフロー自体の手動実行は回収専用です。
+日次、または `Preview environment` の手動実行で、close 済み環境と最終更新から7日以上経過した環境を回収します。1つの Namespace の削除に失敗しても残りの回収を続け、最後に失敗した Namespace をまとめてエラーにします。TTL を過ぎた open PR の環境も削除します。環境を再作成するには PR を更新するか、最新 SHA の `Publish images` を再実行してください。Preview ワークフロー自体の手動実行は回収専用です。
 
 DB データは PR 終了・TTL 回収に加え、PostgreSQL Pod の削除やノード喪失でも失われます。永続化や本番データのコピーには使用しません。PostgreSQL コンテナの再起動ではデータを保持します。
 
@@ -72,7 +72,7 @@ DB データは PR 終了・TTL 回収に加え、PostgreSQL Pod の削除やノ
 - PR 作成・更新で Namespace が作られ、Atlas Job が完了した後に3つの Deployment が Ready になる。
 - 未ログインのブラウザは Cloudflare Access で拒否される。
 - Preview URL でユーザーを切り替え、チャンネル作成・メッセージ送信・別タブの Shape 同期・権限の差を確認できる。
-- backend だけを変更した PR では frontend `preview` と migrate `latest` を使う。
+- backend だけを変更した PR では、frontend `preview-<SHA>` と migrate `<SHA>` に同じ main コミットを使う。
 - PR close で Namespace が消え、GHCR cleanup の成功後に該当 PR タグが消える。
 - reopen、古いビルドの遅延完了、TTL、4つ目の PR、マイグレーション失敗でも意図した作成・停止・回収になる。
 

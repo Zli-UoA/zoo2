@@ -13,10 +13,24 @@ export function previewIdentity(number, domain) {
   if (!domain || domain.length > 200 || !domain.split('.').every(p => /^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$/.test(p))) throw new Error('Invalid PREVIEW_DOMAIN');
   return {number, namespace, host: `${namespace}.${domain}`};
 }
-export function imageTags(pr, files) {
+export function changedForPR(files) {
+  return files.length >= 3000 ? components : changedComponents(files.flatMap(f => [f.filename, f.previous_filename].filter(Boolean)));
+}
+// Unchanged components use the immutable tags of one promoted main commit, never the moving aliases:
+// a recreated Pod or a later promotion must not pair a newer backend with the schema migrated here.
+export function imageTags(pr, files, mainSha) {
   if (!/^[a-f0-9]{40}$/.test(pr.head.sha)) throw new Error('Invalid head SHA');
-  const changed = files.length >= 3000 ? components : changedComponents(files.flatMap(f => [f.filename, f.previous_filename].filter(Boolean)));
-  return Object.fromEntries(components.map(c => [c, changed.includes(c) ? `pr-${pr.number}-${pr.head.sha}` : c === 'frontend' ? 'preview' : 'latest']));
+  const changed = changedForPR(files);
+  if (changed.length < components.length && !/^[a-f0-9]{40}$/.test(mainSha ?? '')) throw new Error('Invalid main SHA');
+  return Object.fromEntries(components.map(c => [c, changed.includes(c) ? `pr-${pr.number}-${pr.head.sha}` : c === 'frontend' ? `preview-${mainSha}` : mainSha]));
+}
+// Promotion moves the aliases only after every component of that commit was published.
+export async function promotedMainSha(github, org) {
+  const versions = await github.paginate(github.rest.packages.getAllPackageVersionsForPackageOwnedByOrg, {org, package_type: 'container', package_name: 'zoo2-backend', per_page: 100});
+  const tags = versions.find(v => v.metadata?.container?.tags?.includes('latest'))?.metadata.container.tags ?? [];
+  const sha = tags.find(t => /^[a-f0-9]{40}$/.test(t));
+  if (!sha) throw new Error('zoo2-backend:latest has no main commit tag');
+  return sha;
 }
 export function currentPR(pr, repository, sha) {
   return pr.state === 'open' && pr.head.repo?.full_name === repository && (!sha || pr.head.sha === sha);
@@ -37,7 +51,8 @@ export async function plan({github, context, core}) {
   if (workflow.path !== '.github/workflows/cd-images.yaml') throw new Error('Unexpected image workflow');
   const identity = previewIdentity(pr.number, process.env.PREVIEW_DOMAIN);
   const files = await github.paginate(github.rest.pulls.listFiles, {...context.repo, pull_number: pr.number, per_page: 100});
-  core.setOutput('plan', JSON.stringify({...identity, sha: pr.head.sha, tags: imageTags(pr, files)}));
+  const mainSha = changedForPR(files).length < components.length ? await promotedMainSha(github, context.repo.owner) : null;
+  core.setOutput('plan', JSON.stringify({...identity, sha: pr.head.sha, tags: imageTags(pr, files, mainSha)}));
 }
 
 const kubectl = (args, input) => execFileSync('kubectl', args, {input, encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe']});
@@ -101,7 +116,9 @@ export async function deploy({github, context, core}) {
   // Migrations run with all previous clients stopped, and before any new client.
   if (json(['get', 'deployments', '-n', namespace]).items.length) {
     kubectl(['scale', 'deployment', '--all', '-n', namespace, '--replicas=0']);
-    kubectl(['wait', 'pod', '-n', namespace, '-l', 'app.kubernetes.io/name in (frontend,backend,electric)', '--for=delete', '--timeout=180s']);
+    const clients = ['-n', namespace, '-l', 'app.kubernetes.io/name in (frontend,backend,electric)'];
+    // Deployments left at 0 replicas by an aborted run have no Pods, and wait fails on an empty selection.
+    if (json(['get', 'pods', ...clients]).items.length) kubectl(['wait', 'pod', ...clients, '--for=delete', '--timeout=180s']);
   }
   kubectl(['delete', 'job', 'zoo2-migrate', '-n', namespace, '--ignore-not-found', '--wait=true']);
   kubectl(['apply', '-f', '-'], render('migrate', config));
@@ -120,15 +137,23 @@ export function expired(ns, now = Date.now()) {
   const updated = Date.parse(ns.metadata.annotations?.['zoo2.zli.dev/updated-at']);
   return Number.isFinite(updated) && now - updated >= 7 * 86400000;
 }
-export async function cleanup({github, context}) {
+export async function cleanup({github, context, core}) {
   const owner = `${context.repo.owner}.${context.repo.repo}`;
   const namespaces = json(['get', 'namespaces', '-l', `${managedLabel}=true`]).items;
+  // One stuck Namespace must not block reclaiming the rest, or the preview limit stays reached.
+  const failed = [];
   for (const ns of namespaces.filter(n => isManaged(n, owner))) {
     const number = Number(ns.metadata.name.slice('zoo2-pr-'.length));
     if (context.eventName === 'pull_request_target' && number !== context.payload.pull_request.number) continue;
-    const {data: pr} = await github.rest.pulls.get({...context.repo, pull_number: number});
-    if (pr.state === 'open' && (context.eventName === 'pull_request_target' || !expired(ns))) continue;
-    kubectl(['delete', 'namespace', ns.metadata.name, '--wait=true', '--timeout=180s']);
-    await comment(github, context, number, `Preview 環境を削除しました（${pr.state === 'closed' ? 'PR 終了' : '更新から7日経過'}）。再作成するには PR を更新し、Publish images を成功させてください。`);
+    try {
+      const {data: pr} = await github.rest.pulls.get({...context.repo, pull_number: number});
+      if (pr.state === 'open' && (context.eventName === 'pull_request_target' || !expired(ns))) continue;
+      kubectl(['delete', 'namespace', ns.metadata.name, '--wait=true', '--timeout=180s']);
+      await comment(github, context, number, `Preview 環境を削除しました（${pr.state === 'closed' ? 'PR 終了' : '更新から7日経過'}）。再作成するには PR を更新し、Publish images を成功させてください。`);
+    } catch (error) {
+      core.error(`${ns.metadata.name}: ${error.stderr?.trim() || error.message}`);
+      failed.push(ns.metadata.name);
+    }
   }
+  if (failed.length) throw new Error(`Failed to reclaim: ${failed.join(', ')}`);
 }

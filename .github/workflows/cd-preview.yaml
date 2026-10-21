@@ -21,6 +21,7 @@ jobs:
     permissions:
       contents: read
       actions: read
+      packages: read
       pull-requests: read
     outputs:
       plan: ${{ steps.plan.outputs.plan }}
@@ -118,7 +119,7 @@ jobs:
         with:
           script: |
             const {cleanup} = await import(`${process.env.GITHUB_WORKSPACE}/.github/scripts/preview.mjs`);
-            await cleanup({github, context});
+            await cleanup({github, context, core});
       - name: Remove local credentials
         if: always()
         run: rm -f "$RUNNER_TEMP/preview-kubeconfig"

@@ -13,7 +13,13 @@ export function PreviewUserSwitcher() {
           className="rounded border bg-background p-1"
           defaultValue={previewUserId()}
           onChange={(event) => {
-            window.sessionStorage.setItem(PREVIEW_USER_KEY, event.target.value);
+            try {
+              window.sessionStorage.setItem(PREVIEW_USER_KEY, event.target.value);
+            } catch {
+              // Storage is blocked; keep showing the user that requests still use.
+              event.target.value = previewUserId();
+              return;
+            }
             window.location.reload();
           }}
         >

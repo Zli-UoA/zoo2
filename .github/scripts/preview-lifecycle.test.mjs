@@ -22,27 +22,31 @@ const input = fs.readFileSync(0, 'utf8');
 fs.appendFileSync(process.env.MOCK_LOG, JSON.stringify({args, input}) + '\\n');
 const options = JSON.parse(process.env.MOCK_OPTIONS);
 if (args[0] === 'wait' && args.includes('job/zoo2-migrate') && options.migrateFails) process.exit(1);
+if (args[0] === 'wait' && args.includes('--for=delete') && !options.pods) { process.stderr.write('error: no matching resources found'); process.exit(1); }
+if (args[0] === 'delete' && args[1] === 'namespace' && (options.deleteFails ?? []).includes(args[2])) { process.stderr.write('error: timed out'); process.exit(1); }
 if (args[0] === 'get') {
+  const items = {namespaces: options.namespaces, deployments: options.deployments && [{}], pods: options.pods && [{}]}[args[1]];
   if (args[1] === 'namespace') process.stdout.write('');
   else if (args[1] === 'configmap') process.stdout.write(JSON.stringify({data: {'seed.sql': 'SELECT 1;'}}));
-  else process.stdout.write(JSON.stringify({items: args[1] === 'namespaces' ? (options.namespaces ?? []) : []}));
+  else process.stdout.write(JSON.stringify({items: items ?? []}));
 } else if (args[0] === 'kustomize') process.stdout.write(JSON.stringify({stage: args[1].split('/').at(-1)}));
 `, {mode: 0o755});
   process.env.PATH = `${directory}/bin:${process.env.PATH}`;
   process.env.MOCK_LOG = log;
   process.env.MOCK_OPTIONS = JSON.stringify(options);
-  process.env.PREVIEW_PLAN = JSON.stringify({number: 74, namespace: 'zoo2-pr-74', host: 'zoo2-pr-74.example.com', sha, tags: {frontend: 'preview', backend: 'latest', migrate: 'latest'}});
+  process.env.PREVIEW_PLAN = JSON.stringify({number: 74, namespace: 'zoo2-pr-74', host: 'zoo2-pr-74.example.com', sha, tags: {frontend: `preview-${'c'.repeat(40)}`, backend: 'c'.repeat(40), migrate: 'c'.repeat(40)}});
   process.env.PREVIEW_DOMAIN = 'example.com';
   process.env.GHCR_DOCKERCONFIGJSON = JSON.stringify({auths: {'ghcr.io': {auth: 'test'}}});
   let reads = 0;
   const comments = [];
+  const errors = [];
   const github = {rest: {
-    pulls: {get: async () => ({data: (++reads > 1 && options.staleAfterMigration) ? {...pr, head: {...pr.head, sha: 'b'.repeat(40)}} : {...pr, state: options.state ?? 'open'}})},
+    pulls: {get: async ({pull_number}) => ({data: pull_number !== 74 ? {...pr, number: pull_number, state: 'closed'} : (++reads > 1 && options.staleAfterMigration) ? {...pr, head: {...pr.head, sha: 'b'.repeat(40)}} : {...pr, state: options.state ?? 'open'}})},
     issues: {listComments: 'comments', createComment: async c => comments.push(c), updateComment: async c => comments.push(c)},
   }, paginate: async () => []};
   process.chdir(directory);
   try {
-    await callback({github, context, core: {notice() {}}, comments, calls: () => {
+    await callback({github, context, core: {notice() {}, error: e => errors.push(e)}, comments, errors, calls: () => {
       try { return readFileSync(log, 'utf8').trim().split('\n').filter(Boolean).map(JSON.parse); }
       catch { return []; }
     }});
@@ -89,4 +93,26 @@ test('cleanup deletes only owned closed previews and preserves reopened PRs', as
       assert.deepEqual(f.calls().filter(c => c.args[0] === 'delete').map(c => c.args[2]), state === 'closed' ? ['zoo2-pr-74'] : []);
     });
   }
+});
+test('redeploy stops previous clients, waiting only for Pods that still exist', async () => {
+  for (const pods of [true, false]) {
+    await fixture({deployments: true, pods}, async f => {
+      await deploy(f);
+      const calls = f.calls();
+      const wait = calls.findIndex(c => c.args[0] === 'wait' && c.args.includes('--for=delete'));
+      assert.ok(calls.some(c => c.args[0] === 'scale' && c.args.includes('--replicas=0')));
+      assert.equal(wait >= 0, pods);
+      assert.equal(f.comments.length, 1);
+    });
+  }
+});
+test('one stuck Namespace does not stop reclaiming the others', async () => {
+  const labels = {[managedLabel]: 'true', 'zoo2.zli.dev/repository': 'Zli-UoA.zoo2'};
+  const namespaces = [74, 75].map(n => ({metadata: {name: `zoo2-pr-${n}`, labels}}));
+  await fixture({state: 'closed', namespaces, deleteFails: ['zoo2-pr-74']}, async f => {
+    await assert.rejects(cleanup(f), /zoo2-pr-74/);
+    assert.deepEqual(f.calls().filter(c => c.args[0] === 'delete').map(c => c.args[2]), ['zoo2-pr-74', 'zoo2-pr-75']);
+    assert.deepEqual(f.comments.map(c => c.issue_number), [75]);
+    assert.match(f.errors[0], /zoo2-pr-74: error: timed out/);
+  });
 });
