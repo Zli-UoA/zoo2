@@ -4,7 +4,8 @@ use axum::{extract::FromRequestParts, http::request::Parts};
 use uuid::Uuid;
 
 use crate::{
-    auth::oidc::OidcClaims,
+    auth::oidc::{JwksVerifier, OidcClaims, OidcUserInfo},
+    config::OidcConfig,
     error::AppError,
     models::{User, UserIdentity},
     state::{AppState, UserResolutionCache},
@@ -16,6 +17,8 @@ pub mod rbac;
 
 pub const DEFAULT_DEV_USER_ID: &str = "00000000-0000-0000-0000-000000000001";
 const JIT_CACHE_TTL: Duration = Duration::from_secs(300); // 5分
+/// claims / UserInfo のどちらからも表示名を取得できなかった場合のフォールバック
+const FALLBACK_USER_NAME: &str = "user";
 
 /// ユーザー名用のサニタイズ関数
 pub(crate) fn sanitize_for_user_name(candidate: &str, fallback_uuid: &str) -> String {
@@ -45,6 +48,151 @@ pub(crate) fn sanitize_for_display_name(candidate: &str, fallback: &str) -> Stri
     } else {
         trimmed.chars().take(MAX_DISPLAY_NAME_LENGTH).collect()
     }
+}
+
+fn preferred_username<'a>(
+    claims: &'a OidcClaims,
+    user_info: Option<&'a OidcUserInfo>,
+) -> Option<&'a str> {
+    claims
+        .preferred_username
+        .as_deref()
+        .or_else(|| user_info.and_then(|info| info.preferred_username.as_deref()))
+}
+
+fn email<'a>(claims: &'a OidcClaims, user_info: Option<&'a OidcUserInfo>) -> Option<&'a str> {
+    claims
+        .email
+        .as_deref()
+        .or_else(|| user_info.and_then(|info| info.email.as_deref()))
+}
+
+/// 表示名に使う名前 (アクセストークンの claims を優先し、無ければ UserInfo)
+fn profile_name<'a>(
+    claims: &'a OidcClaims,
+    user_info: Option<&'a OidcUserInfo>,
+) -> Option<&'a str> {
+    claims
+        .name
+        .as_deref()
+        .or_else(|| user_info.and_then(|info| info.name.as_deref()))
+}
+
+/// 表示名の候補。`name` が無い場合は `preferred_username` を SPN のローカル部分として使う。
+fn display_name_candidate<'a>(
+    claims: &'a OidcClaims,
+    user_info: Option<&'a OidcUserInfo>,
+) -> Option<&'a str> {
+    profile_name(claims, user_info)
+        .or_else(|| preferred_username(claims, user_info).and_then(|name| name.split('@').next()))
+}
+
+fn derive_base_username(
+    claims: &OidcClaims,
+    user_info: Option<&OidcUserInfo>,
+    new_user_id: &str,
+) -> String {
+    let preferred_name = preferred_username(claims, user_info)
+        .or_else(|| email(claims, user_info))
+        .and_then(|name| name.split('@').next())
+        .unwrap_or(FALLBACK_USER_NAME);
+
+    sanitize_for_user_name(preferred_name, new_user_id)
+}
+
+fn derive_display_name(
+    claims: &OidcClaims,
+    user_info: Option<&OidcUserInfo>,
+    fallback: &str,
+) -> String {
+    display_name_candidate(claims, user_info)
+        .map(|candidate| sanitize_for_display_name(candidate, fallback))
+        .unwrap_or_else(|| fallback.to_string())
+}
+
+/// UserInfo を取得する。失敗・不正応答時は警告を出して `None` を返す (ログインは継続する)。
+async fn fetch_userinfo_for_profile(
+    jwks_verifier: &JwksVerifier,
+    oidc_config: &OidcConfig,
+    access_token: &str,
+    claims: &OidcClaims,
+) -> Option<OidcUserInfo> {
+    match jwks_verifier
+        .fetch_userinfo(access_token, &claims.sub, oidc_config)
+        .await
+    {
+        Ok(user_info) => Some(user_info),
+        Err(err) => {
+            tracing::warn!(
+                issuer = %claims.iss,
+                sub = %claims.sub,
+                "Failed to fetch UserInfo for user profile; falling back to access token claims/default profile: {err}"
+            );
+            None
+        }
+    }
+}
+
+/// 修正前に JIT で作成された `display_name = "user"` のユーザーを UserInfo から補正する。
+///
+/// ユーザー本人が `PATCH /api/users/me` で編集した表示名を上書きしないよう、
+/// 未編集 (`updated_at` が NULL) かつ旧フォールバック値のままの場合だけ更新する。
+async fn repair_legacy_display_name(
+    db: &toasty::Db,
+    user_cache: &UserResolutionCache,
+    jwks_verifier: &JwksVerifier,
+    oidc_config: &OidcConfig,
+    access_token: &str,
+    claims: &OidcClaims,
+    user: User,
+) -> Result<User, AppError> {
+    if user.display_name != FALLBACK_USER_NAME || user.updated_at.is_some() {
+        return Ok(user);
+    }
+
+    if !user_cache.should_attempt_profile_repair(&user.id).await {
+        return Ok(user);
+    }
+
+    let user_info =
+        fetch_userinfo_for_profile(jwks_verifier, oidc_config, access_token, claims).await;
+    let Some(candidate) = display_name_candidate(claims, user_info.as_ref()) else {
+        // UserInfo が成功しても名前が無い場合は、しばらく再試行を抑止する
+        if user_info.is_some() {
+            user_cache.mark_profile_repair_attempted(&user.id).await;
+        }
+        return Ok(user);
+    };
+
+    let new_display_name = sanitize_for_display_name(candidate, &user.user_name);
+    if new_display_name == user.display_name || new_display_name == FALLBACK_USER_NAME {
+        if user_info.is_some() {
+            user_cache.mark_profile_repair_attempted(&user.id).await;
+        }
+        return Ok(user);
+    }
+
+    let mut db_client = db.clone();
+    let mut tx = db_client.transaction().await?;
+    let now = crate::models::now_utc_millis();
+    // 読み取り後に本人が PATCH /api/users/me で編集している可能性があるため、
+    // 旧フォールバックのまま未編集であることを UPDATE の条件にも含める。
+    User::filter(
+        User::fields()
+            .id()
+            .eq(user.id.as_str())
+            .and(User::fields().display_name().eq(FALLBACK_USER_NAME))
+            .and(User::fields().updated_at().is_none()),
+    )
+    .update()
+    .display_name(new_display_name.as_str())
+    .updated_at(Some(now))
+    .exec(&mut tx)
+    .await?;
+    let updated_user = User::get_by_id(&mut tx, user.id.as_str()).await?;
+    tx.commit().await?;
+
+    Ok(updated_user)
 }
 
 /// 環境変数の値とビルド種別から Dev Auth が有効かどうかを判定する純粋関数
@@ -81,6 +229,9 @@ pub fn dev_auth_enabled() -> bool {
 pub async fn resolve_or_provision_user(
     db: &toasty::Db,
     user_cache: &UserResolutionCache,
+    jwks_verifier: &JwksVerifier,
+    oidc_config: &OidcConfig,
+    access_token: &str,
     claims: &OidcClaims,
 ) -> Result<AuthUser, AppError> {
     // 1. インメモリキャッシュの確認 (全リクエストでの DB 問い合わせ負荷を低減)
@@ -103,6 +254,16 @@ pub async fn resolve_or_provision_user(
 
     if let Some(identity) = existing_identity {
         let user = User::get_by_id(&mut db_client, &identity.user_id).await?;
+        let user = repair_legacy_display_name(
+            db,
+            user_cache,
+            jwks_verifier,
+            oidc_config,
+            access_token,
+            claims,
+            user,
+        )
+        .await?;
 
         let auth_user = AuthUser {
             id: user.id,
@@ -123,19 +284,14 @@ pub async fn resolve_or_provision_user(
     }
 
     // 3. 新規ユーザーおよび Identity の作成 (JIT プロビジョニング)
+    //    AuthZ などの access token にはプロフィール属性が含まれないため、
+    //    初回ログイン時に UserInfo から表示名を取得する (失敗時は従来のフォールバック)。
     let new_user_id = Uuid::new_v4().to_string();
-    let preferred_name = claims
-        .preferred_username
-        .as_deref()
-        .and_then(|u| u.split('@').next())
-        .or_else(|| claims.email.as_deref().and_then(|e| e.split('@').next()))
-        .unwrap_or("user");
+    let user_info =
+        fetch_userinfo_for_profile(jwks_verifier, oidc_config, access_token, claims).await;
 
-    let base_username = sanitize_for_user_name(preferred_name, &new_user_id);
-    let display_name = sanitize_for_display_name(
-        claims.name.as_deref().unwrap_or(&base_username),
-        &base_username,
-    );
+    let base_username = derive_base_username(claims, user_info.as_ref(), &new_user_id);
+    let display_name = derive_display_name(claims, user_info.as_ref(), &base_username);
 
     // 衝突時のリトライループ (usernameの重複や、並行リクエストによる同一 (iss, sub) の同時作成)
     let mut attempt = 0;
@@ -371,7 +527,15 @@ impl FromRequestParts<AppState> for AuthUser {
                 // (b) UUID 形式でない場合、OIDC 設定があれば OIDC トークンとして検証
                 if let Some(ref oidc_config) = state.config.oidc {
                     let claims = state.jwks_verifier.verify_token(token, oidc_config).await?;
-                    return resolve_or_provision_user(&state.db, &state.user_cache, &claims).await;
+                    return resolve_or_provision_user(
+                        &state.db,
+                        &state.user_cache,
+                        &state.jwks_verifier,
+                        oidc_config,
+                        token,
+                        &claims,
+                    )
+                    .await;
                 }
             }
 
@@ -402,7 +566,15 @@ impl FromRequestParts<AppState> for AuthUser {
 
         let claims = state.jwks_verifier.verify_token(token, oidc_config).await?;
 
-        resolve_or_provision_user(&state.db, &state.user_cache, &claims).await
+        resolve_or_provision_user(
+            &state.db,
+            &state.user_cache,
+            &state.jwks_verifier,
+            oidc_config,
+            token,
+            &claims,
+        )
+        .await
     }
 }
 
