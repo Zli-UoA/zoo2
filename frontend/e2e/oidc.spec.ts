@@ -150,9 +150,18 @@ test("OIDC PKCE ログイン後に API と Shape が Bearer で通る", async ({
     content: 'button[aria-label="Open TanStack Devtools"]{display:none !important}',
   });
 
-  // 同じ公開チャンネルを開くと、他人のメッセージには編集/削除が出ない。
-  await page.getByRole("link", { name: new RegExp(channelName) }).click();
+  // サイドバーは参加中のみなので、「チャンネルを探す」から参加して開く。
+  await page.getByRole("button", { name: "チャンネルを探す" }).first().click();
+  await page.getByRole("searchbox", { name: "チャンネル名で検索" }).fill(channelName);
+  const joinResponse = page.waitForResponse(
+    (response) => response.request().method() === "POST" && response.url().endsWith("/join"),
+  );
+  await page.getByRole("button", { name: "参加する", exact: true }).click();
+  await joinResponse;
   await expect(page.getByRole("heading", { name: "メッセージ" })).toBeVisible();
+  expect(new URL(page.url()).pathname).toBe(`/channels/${channelId}`);
+  // 参加したチャンネルはサイドバーにも出る。
+  await expect(page.getByRole("link", { name: new RegExp(channelName) })).toBeVisible();
   const otherRow = page.getByRole("listitem").filter({ hasText: message });
   await expect(otherRow).toBeVisible();
   await otherRow.hover();
@@ -170,14 +179,10 @@ test("OIDC PKCE ログイン後に API と Shape が Bearer で通る", async ({
   await expect(beeRow.getByRole("button", { name: "削除" })).toBeVisible();
   await page.screenshot({ path: testInfo.outputPath("08-own-message-second-user.png") });
 
-  // 参加 / 退出: 退出の本人確認は /api/users/me で解決した id で行われる（#49）。
+  // 退出: 退出の本人確認は /api/users/me で解決した id で行われる（#49）。
   // メンバーペインは既定で閉じているため、ヘッダの「メンバー」から開く。
+  // 参加は上の「チャンネルを探す」で済んでいる。
   await page.getByRole("button", { name: /メンバー/ }).click();
-  const joinResponse = page.waitForResponse(
-    (response) => response.request().method() === "POST" && response.url().endsWith("/join"),
-  );
-  await page.getByRole("button", { name: "参加", exact: true }).click();
-  await joinResponse;
   await expect(page.getByRole("button", { name: "退出", exact: true })).toBeVisible();
   await expect(page.getByText("あなた", { exact: true })).toBeVisible();
   const leaveResponse = page.waitForResponse(
