@@ -65,12 +65,14 @@ interface Harness {
   client: OidcClient;
   storage: AuthStorage;
   assigned: string[];
+  reauthorizeCalls: string[];
   fetchMock: ReturnType<typeof vi.fn<OidcFetch>>;
   tokenCalls: URLSearchParams[];
   advance(ms: number): void;
   refreshCalls(): URLSearchParams[];
   /** token ハンドラが参照する nonce を、login 後に設定する。 */
   setNonce(nonce: string): void;
+  setHref(href: string): void;
 }
 
 interface HarnessOptions {
@@ -78,14 +80,17 @@ interface HarnessOptions {
   /** token エンドポイントの応答。`URLSearchParams` と現在の nonce を受け取る。 */
   token?: (body: URLSearchParams, nonce: string) => unknown;
   resource?: string;
+  href?: string;
 }
 
 function createHarness(options: HarnessOptions = {}): Harness {
   const storage = memoryStorage();
   const assigned: string[] = [];
+  const reauthorizeCalls: string[] = [];
   const tokenCalls: URLSearchParams[] = [];
   let clock = 1_000_000;
   let lastNonce = "nonce";
+  let href = options.href ?? "https://app.example/";
 
   const fetchMock = vi.fn<OidcFetch>(async (input, init) => {
     if (input.endsWith("/.well-known/openid-configuration")) {
@@ -113,7 +118,9 @@ function createHarness(options: HarnessOptions = {}): Harness {
 
   const env: OidcEnvironment = {
     origin: "https://app.example",
-    href: "https://app.example/",
+    get href() {
+      return href;
+    },
     assign: (url) => void assigned.push(url),
     replaceUrl: () => {},
     storage,
@@ -126,11 +133,15 @@ function createHarness(options: HarnessOptions = {}): Harness {
     environment: env,
     resource: options.resource,
   });
+  client.setReauthorizeHandler((returnTo) => {
+    reauthorizeCalls.push(returnTo);
+  });
 
   return {
     client,
     storage,
     assigned,
+    reauthorizeCalls,
     fetchMock,
     tokenCalls,
     advance: (ms) => {
@@ -139,6 +150,9 @@ function createHarness(options: HarnessOptions = {}): Harness {
     refreshCalls: () => tokenCalls.filter((body) => body.get("grant_type") === "refresh_token"),
     setNonce: (value) => {
       lastNonce = value;
+    },
+    setHref: (value) => {
+      href = value;
     },
   };
 }
@@ -501,6 +515,94 @@ describe("OidcClient.getAccessToken", () => {
     await expect(harness.client.getAccessToken()).resolves.toBeNull();
     expect(harness.client.hasSession).toBe(false);
     expect(harness.refreshCalls()).toHaveLength(0);
+  });
+});
+
+describe("OidcClient proactive reauthorization", () => {
+  it("does not request reauthorization while the token is comfortably valid", async () => {
+    const harness = createHarness();
+    await completeLogin(harness);
+
+    harness.advance(239_000);
+    await expect(harness.client.getAccessToken()).resolves.toBe("access-1");
+    expect(harness.reauthorizeCalls).toHaveLength(0);
+  });
+
+  it("starts reauthorization inside the skew window and keeps the usable token", async () => {
+    const harness = createHarness();
+    await completeLogin(harness);
+
+    harness.advance(240_000);
+    await expect(harness.client.getAccessToken()).resolves.toBe("access-1");
+    expect(harness.reauthorizeCalls).toHaveLength(1);
+    expect(harness.client.hasSession).toBe(true);
+  });
+
+  it("starts reauthorization at expiry and does not return the expired token", async () => {
+    const harness = createHarness();
+    await completeLogin(harness);
+
+    harness.advance(300_000);
+    await expect(harness.client.getAccessToken()).resolves.toBeNull();
+    expect(harness.reauthorizeCalls).toHaveLength(1);
+    expect(harness.client.hasSession).toBe(false);
+  });
+
+  it("starts reauthorization after expiry", async () => {
+    const harness = createHarness();
+    await completeLogin(harness);
+
+    harness.advance(300_001);
+    await expect(harness.client.getAccessToken()).resolves.toBeNull();
+    expect(harness.reauthorizeCalls).toHaveLength(1);
+  });
+
+  it("coalesces concurrent calls into one reauthorization", async () => {
+    const harness = createHarness();
+    await completeLogin(harness);
+
+    harness.advance(250_000);
+    const tokens = await Promise.all([
+      harness.client.getAccessToken(),
+      harness.client.getAccessToken(),
+      harness.client.getAccessToken(),
+    ]);
+
+    expect(tokens).toEqual(["access-1", "access-1", "access-1"]);
+    expect(harness.reauthorizeCalls).toHaveLength(1);
+  });
+
+  it("passes the current path as returnTo", async () => {
+    const harness = createHarness({ href: "https://app.example/channels/abc?tab=info#top" });
+    await completeLogin(harness);
+
+    harness.advance(290_000);
+    await harness.client.getAccessToken();
+
+    expect(harness.reauthorizeCalls).toEqual(["/channels/abc?tab=info#top"]);
+  });
+
+  it("keeps returnTo across a proactive reauthorization", async () => {
+    const harness = createHarness({ href: "https://app.example/channels/abc?tab=info#top" });
+    await completeLogin(harness);
+    harness.assigned.length = 0;
+    harness.client.setReauthorizeHandler((returnTo) => {
+      void harness.client.login(returnTo);
+    });
+
+    harness.advance(290_000);
+    await expect(harness.client.getAccessToken()).resolves.toBe("access-1");
+    await vi.waitFor(() => expect(harness.assigned).toHaveLength(1));
+
+    const pending = takePending(harness.storage, 1_290_000);
+    expect(pending?.returnTo).toBe("/channels/abc?tab=info#top");
+
+    savePending(harness.storage, pending!);
+    harness.setNonce(pending!.nonce);
+    const result = await harness.client.handleCallback(
+      `${CALLBACK_URL}?code=code-2&state=${pending!.state}`,
+    );
+    expect(result.returnTo).toBe("/channels/abc?tab=info#top");
   });
 });
 
