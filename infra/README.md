@@ -205,6 +205,8 @@ SPA は `VITE_OIDC_ISSUER`・`VITE_OIDC_CLIENT_ID`・`VITE_OIDC_REDIRECT_URI`（
 
 バックエンド側の `OIDC_ISSUER` / `OIDC_AUDIENCE` と、トークンの `iss` / `aud` / `typ` を一致させてください。AuthZ の `aud` は resource identifier の配列です。
 
+バックエンドは初回ログイン (JIT プロビジョニング) 時に Discovery の `userinfo_endpoint` をアクセストークン付きで呼び出し、`preferred_username` / `name` からユーザー名と表示名を設定します。UserInfo の取得に失敗した場合は `user` にフォールバックしてログインを継続します。既存ユーザーは、表示名が旧フォールバック値 `user` のままで本人が未編集の場合に限り、再ログイン時に一度だけ UserInfo から補正します。
+
 リロード後は IdP セッションを使って authorize へ再リダイレクトし（サイレント再ログイン）、期限前には refresh_token で更新します。Kanidm は refresh_token の再利用でセッションを失効させるため、同時更新は 1 リクエストに集約し、更新後の refresh_token に置き換えます。401 と refresh 失敗は再ログインに倒します。AuthZ は refresh token を発行しないため、access token の期限切れ後は再ログインになります。ログアウトはメモリのトークン破棄までで、Kanidm は RP-initiated logout（`end_session_endpoint`）を公開していないため、Kanidm セッション自体を終えるには Kanidm 側でログアウトしてください。
 
 SPA は IdP の Discovery / token エンドポイントをブラウザから直接叩くため、IdP 側で SPA のオリジンに CORS を許可する必要があります（Kanidm は OAuth2 クライアントに設定した redirect origin に応じて CORS を返します）。CSP の `connect-src` には `CSP_CONNECT_SRC` で IdP のオリジンを追加します。

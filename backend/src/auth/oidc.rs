@@ -11,10 +11,24 @@ use tokio::sync::RwLock;
 use crate::{config::OidcConfig, error::AppError};
 
 /// OpenID Provider Configuration (.well-known/openid-configuration)
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 struct OpenIdConfiguration {
     pub issuer: String,
     pub jwks_uri: String,
+    #[serde(default)]
+    pub userinfo_endpoint: Option<String>,
+}
+
+/// UserInfo エンドポイントのレスポンス (OpenID Connect Core 5.3)
+#[derive(Debug, Clone, Deserialize)]
+pub struct OidcUserInfo {
+    pub sub: String,
+    #[serde(default)]
+    pub preferred_username: Option<String>,
+    #[serde(default)]
+    pub name: Option<String>,
+    #[serde(default)]
+    pub email: Option<String>,
 }
 
 /// OIDC トークンのクレーム定義 (RFC 9068 適合)
@@ -32,10 +46,11 @@ pub struct OidcClaims {
     pub scope: Option<serde_json::Value>,
 }
 
-/// JWKS キャッシュ
+/// JWKS / UserInfo エンドポイントのキャッシュ
 struct JwksCache {
     keys: HashMap<String, (DecodingKey, Algorithm)>,
     last_fetched_at: Option<Instant>,
+    userinfo_endpoint: Option<(String, Instant)>,
 }
 
 /// JWKS によるトークン検証マネージャ
@@ -53,6 +68,7 @@ impl JwksVerifier {
             cache: Arc::new(RwLock::new(JwksCache {
                 keys: HashMap::new(),
                 last_fetched_at: None,
+                userinfo_endpoint: None,
             })),
             http_client,
             cache_ttl: Duration::from_secs(24 * 3600), // 24時間キャッシュ
@@ -66,6 +82,7 @@ impl JwksVerifier {
             cache: Arc::new(RwLock::new(JwksCache {
                 keys,
                 last_fetched_at: Some(Instant::now()),
+                userinfo_endpoint: None,
             })),
             http_client: reqwest::Client::new(),
             cache_ttl: Duration::from_secs(24 * 3600),
@@ -73,12 +90,8 @@ impl JwksVerifier {
         }
     }
 
-    /// JWKS URL の解決 (明示設定がある場合はそれを使い、未設定の場合は OpenID Discovery を使用)
-    async fn resolve_jwks_url(&self, config: &OidcConfig) -> Result<String, AppError> {
-        if let Some(ref url) = config.jwks_url {
-            return Ok(url.clone());
-        }
-
+    /// OpenID Discovery を取得し、issuer を検証する
+    async fn fetch_discovery(&self, config: &OidcConfig) -> Result<OpenIdConfiguration, AppError> {
         let discovery_url = format!(
             "{}/.well-known/openid-configuration",
             config.issuer.trim_end_matches('/')
@@ -122,7 +135,88 @@ impl JwksVerifier {
             ));
         }
 
-        Ok(openid_config.jwks_uri)
+        Ok(openid_config)
+    }
+
+    /// JWKS URL の解決 (明示設定がある場合はそれを使い、未設定の場合は OpenID Discovery を使用)
+    async fn resolve_jwks_url(&self, config: &OidcConfig) -> Result<String, AppError> {
+        if let Some(ref url) = config.jwks_url {
+            return Ok(url.clone());
+        }
+
+        Ok(self.fetch_discovery(config).await?.jwks_uri)
+    }
+
+    /// UserInfo エンドポイント URL の解決 (OpenID Discovery の userinfo_endpoint を使用)
+    async fn resolve_userinfo_url(&self, config: &OidcConfig) -> Result<String, AppError> {
+        {
+            let cache = self.cache.read().await;
+            if let Some((url, fetched_at)) = &cache.userinfo_endpoint
+                && fetched_at.elapsed() < self.cache_ttl
+            {
+                return Ok(url.clone());
+            }
+        }
+
+        let openid_config = self.fetch_discovery(config).await?;
+        let userinfo_url = openid_config.userinfo_endpoint.ok_or_else(|| {
+            tracing::warn!("OpenID discovery metadata does not include userinfo_endpoint");
+            AppError::BadGateway("OpenID provider does not expose a UserInfo endpoint".to_string())
+        })?;
+
+        let mut cache = self.cache.write().await;
+        cache.userinfo_endpoint = Some((userinfo_url.clone(), Instant::now()));
+
+        Ok(userinfo_url)
+    }
+
+    /// UserInfo エンドポイントを Bearer アクセストークンで呼び出し、プロフィール情報を取得する。
+    ///
+    /// OpenID Connect Core 5.3.2 に基づき、レスポンスの `sub` がアクセストークンの
+    /// `sub` と一致することを検証する。
+    pub async fn fetch_userinfo(
+        &self,
+        access_token: &str,
+        expected_sub: &str,
+        config: &OidcConfig,
+    ) -> Result<OidcUserInfo, AppError> {
+        let userinfo_url = self.resolve_userinfo_url(config).await?;
+
+        let resp = self
+            .http_client
+            .get(&userinfo_url)
+            .bearer_auth(access_token)
+            .send()
+            .await
+            .map_err(|e| {
+                tracing::warn!("Failed to fetch UserInfo from {userinfo_url}: {e}");
+                AppError::BadGateway("Failed to connect to UserInfo endpoint".to_string())
+            })?;
+
+        if !resp.status().is_success() {
+            tracing::warn!(
+                "UserInfo endpoint {userinfo_url} returned status {}",
+                resp.status()
+            );
+            return Err(AppError::BadGateway(format!(
+                "UserInfo endpoint returned status {}",
+                resp.status()
+            )));
+        }
+
+        let user_info: OidcUserInfo = resp.json().await.map_err(|e| {
+            tracing::warn!("Failed to parse UserInfo response: {e}");
+            AppError::BadGateway("Failed to parse UserInfo response".to_string())
+        })?;
+
+        if user_info.sub != expected_sub {
+            tracing::warn!("UserInfo subject does not match the access token subject");
+            return Err(AppError::Unauthorized(
+                "UserInfo subject does not match access token".to_string(),
+            ));
+        }
+
+        Ok(user_info)
     }
 
     /// JWKS をエンドポイントから取得してキャッシュを更新
