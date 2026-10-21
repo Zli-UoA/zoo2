@@ -160,6 +160,18 @@ test("OIDC PKCE ログイン後に API と Shape が Bearer で通る", async ({
   await expect(otherRow.getByRole("button", { name: "削除" })).toHaveCount(0);
   await page.screenshot({ path: testInfo.outputPath("07-other-users-message.png") });
 
+  // 未参加の公開チャンネルでは composer の代わりに参加導線が出る（#92）。
+  await expect(page.getByPlaceholder("メッセージを送信")).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "参加して投稿" })).toBeVisible();
+  await page.screenshot({ path: testInfo.outputPath("08-join-to-post.png") });
+
+  const joinResponse = page.waitForResponse(
+    (response) => response.request().method() === "POST" && response.url().endsWith("/join"),
+  );
+  await page.getByRole("button", { name: "参加して投稿" }).click();
+  await joinResponse;
+  await expect(page.getByPlaceholder("メッセージを送信")).toBeVisible();
+
   // 自分のメッセージには改めて編集/削除が出る。
   const ownMessage = `hello from bee ${channelName}`;
   await page.getByPlaceholder("メッセージを送信").fill(ownMessage);
@@ -168,16 +180,11 @@ test("OIDC PKCE ログイン後に API と Shape が Bearer で通る", async ({
   await beeRow.hover();
   await expect(beeRow.getByRole("button", { name: "編集" })).toBeVisible();
   await expect(beeRow.getByRole("button", { name: "削除" })).toBeVisible();
-  await page.screenshot({ path: testInfo.outputPath("08-own-message-second-user.png") });
+  await page.screenshot({ path: testInfo.outputPath("09-own-message-second-user.png") });
 
-  // 参加 / 退出: 退出の本人確認は /api/users/me で解決した id で行われる（#49）。
+  // 退出: 退出の本人確認は /api/users/me で解決した id で行われる（#49）。
   // メンバーペインは既定で閉じているため、ヘッダの「メンバー」から開く。
   await page.getByRole("button", { name: /メンバー/ }).click();
-  const joinResponse = page.waitForResponse(
-    (response) => response.request().method() === "POST" && response.url().endsWith("/join"),
-  );
-  await page.getByRole("button", { name: "参加", exact: true }).click();
-  await joinResponse;
   await expect(page.getByRole("button", { name: "退出", exact: true })).toBeVisible();
   await expect(page.getByText("あなた", { exact: true })).toBeVisible();
   const leaveResponse = page.waitForResponse(
@@ -187,5 +194,8 @@ test("OIDC PKCE ログイン後に API と Shape が Bearer で通る", async ({
   await leaveResponse;
   await expect(page.getByRole("button", { name: "参加", exact: true })).toBeVisible();
   await expect(page.getByText("あなた", { exact: true })).toHaveCount(0);
-  await page.screenshot({ path: testInfo.outputPath("09-join-leave.png") });
+  // 退出後は composer が再び参加導線に戻る。
+  await expect(page.getByRole("button", { name: "参加して投稿" })).toBeVisible();
+  await expect(page.getByPlaceholder("メッセージを送信")).toHaveCount(0);
+  await page.screenshot({ path: testInfo.outputPath("10-join-leave.png") });
 });

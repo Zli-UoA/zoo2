@@ -8,10 +8,12 @@ import { useMessageFeed, useMessageReactions } from "../../../hooks/useRealtime"
 import { useReplyCounts, useThreadFeed } from "../../../hooks/useThread";
 import { useWriteRunner } from "../../../hooks/useWriteRunner";
 import { getCollections } from "../../../lib/electric/collections";
+import type { ChannelUserWriteMetadata } from "../../../lib/electric/writes";
 import { groupReactions } from "../../../lib/emoji/reactions";
 import { reactionKey } from "../../../lib/emoji/kitchen";
 import { nowIso } from "../../../lib/time";
 import { useShell } from "../../layout/shell-context";
+import { Button } from "../../ui/button";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -27,6 +29,28 @@ import { MessageList } from "./MessageList";
 import { ReactionPicker } from "./ReactionPicker";
 import { ThreadPane } from "./ThreadPane";
 
+function JoinToPostPrompt({
+  onJoin,
+  joining,
+  disabled,
+}: {
+  onJoin: () => void;
+  joining: boolean;
+  disabled: boolean;
+}) {
+  const { t } = useTranslation();
+  return (
+    <div className="border-t px-3 py-3">
+      <div className="flex flex-col items-center gap-2 rounded-xl border border-dashed bg-muted/30 px-4 py-4 text-center">
+        <p className="text-sm text-muted-foreground">{t("messages.joinToPostDescription")}</p>
+        <Button size="sm" onClick={onJoin} disabled={disabled || joining} aria-busy={joining}>
+          {t("messages.joinToPost")}
+        </Button>
+      </div>
+    </div>
+  );
+}
+
 /**
  * チャンネルのメッセージ表示・送信・編集・論理削除に加え、リアクションと
  * スレッドを扱う。
@@ -35,10 +59,13 @@ import { ThreadPane } from "./ThreadPane";
  * `useWriteRunner`（楽観更新の確定待ち）をそのまま使い、表示だけを作り込む。
  * スレッドも同じ messages コレクションを `parent_id` で絞るだけで、専用の
  * Shape / コレクションは作らない。
+ *
+ * 未参加の公開チャンネルでは Composer の代わりに参加導線を出し、参加後に
+ * 通常の Composer へ戻す（`isMember` は `useChannelAccess` の判定）。
  */
-export function MessagePane({ channelId }: { channelId: string }) {
+export function MessagePane({ channelId, isMember }: { channelId: string; isMember: boolean }) {
   const { t } = useTranslation();
-  const { messages, reactions } = getCollections();
+  const { messages, channelUsers, reactions } = getCollections();
   const messagesCollection = messages(channelId);
   const reactionsCollection = reactions(channelId);
   const messagesQuery = useMessageFeed(channelId);
@@ -111,6 +138,7 @@ export function MessagePane({ channelId }: { channelId: string }) {
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editingText, setEditingText] = useState("");
   const [pendingDeleteId, setPendingDeleteId] = useState<string | null>(null);
+  const [isJoining, setIsJoining] = useState(false);
 
   // チャンネルを移動したら開いていたスレッドは閉じる。スレッドの状態は
   // メンバーパネルとの排他を管理する AppShell が持つため、離脱時にも閉じる。
@@ -141,6 +169,23 @@ export function MessagePane({ channelId }: { channelId: string }) {
     setError(null);
   }, [error, setError, t]);
 
+  const handleJoin = useCallback(async () => {
+    if (!currentUserId || isJoining) {
+      return;
+    }
+    setIsJoining(true);
+    try {
+      await run(() =>
+        channelUsers.insert(
+          { user_id: currentUserId, channel_id: channelId, joined_at: nowIso() },
+          { metadata: { action: "join" } satisfies ChannelUserWriteMetadata },
+        ),
+      );
+    } finally {
+      setIsJoining(false);
+    }
+  }, [channelId, channelUsers, currentUserId, isJoining, run]);
+
   const handleSend = useCallback(
     async (content: string): Promise<boolean> => {
       const id = crypto.randomUUID();
@@ -165,6 +210,10 @@ export function MessagePane({ channelId }: { channelId: string }) {
 
   const handleSendReply = useCallback(
     async (content: string): Promise<boolean> => {
+      if (!isMember) {
+        toast.info(t("messages.joinToPostDescription"), { id: "thread-reply-join-required" });
+        return false;
+      }
       const rootId = threadRootId;
       if (!rootId) {
         return false;
@@ -184,7 +233,7 @@ export function MessagePane({ channelId }: { channelId: string }) {
       );
       return messagesCollection.get(id) !== undefined;
     },
-    [run, messagesCollection, currentUserId, channelId, threadRootId],
+    [run, messagesCollection, currentUserId, channelId, threadRootId, isMember, t],
   );
 
   const handleStartEdit = useCallback((id: string, content: string) => {
@@ -263,9 +312,18 @@ export function MessagePane({ channelId }: { channelId: string }) {
           onPickReaction={setReactionMessageId}
           replyCounts={replyCounts}
           onOpenThread={openThread}
+          canCompose={isMember}
         />
 
-        <Composer onSend={handleSend} />
+        {isMember ? (
+          <Composer onSend={handleSend} />
+        ) : (
+          <JoinToPostPrompt
+            onJoin={() => void handleJoin()}
+            joining={isJoining}
+            disabled={!currentUserId}
+          />
+        )}
       </div>
 
       {threadRoot ? (
