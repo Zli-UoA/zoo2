@@ -18,11 +18,11 @@ test('retain 15 main and preview versions, two open PR generations', () => {
   const versions = Array.from({length: 17}, (_, i) => version(i + 1, [sha(i + 1)]));
   assert.deepEqual(candidates(versions, new Map()).map(v => v.id), [16, 17]);
   assert.deepEqual(candidates(versions.map(v => version(v.id, [`preview-${sha(v.id)}`])), new Map()).map(v => v.id), [16, 17]);
-  // A main reset to an old published commit keeps that image beyond 15 generations.
+  // main を発行済みの古いコミットに戻した場合は、15世代より古くてもそのイメージを残す。
   assert.deepEqual(candidates(versions, new Map(), {mainHead: sha(17)}).map(v => v.id), [16]);
   assert.deepEqual(candidates(versions.map(v => version(v.id, [`preview-${sha(v.id)}`])), new Map(), {mainHead: sha(16)}).map(v => v.id), [17]);
   assert.deepEqual(candidates([1, 2, 3].map(i => version(i, [`pr-7-${sha(i)}`])), new Map([[7, sha(99)]])).map(v => v.id), [3]);
-  // A force-push back to an older SHA keeps that head image even beyond two generations.
+  // 古い SHA へ force-push で戻した場合は、2世代より古くても head のイメージを残す。
   assert.deepEqual(candidates([1, 2, 3].map(i => version(i, [`pr-7-${sha(i)}`])), new Map([[7, sha(3)]])), []);
 });
 test('closed PR, exact PR boundary, protected and unknown tags', () => {
@@ -102,7 +102,7 @@ function cleanupFixture({dryRun = false, changedTags = false, denied = false, re
     version(1, [`pr-7-${sha(1)}`]), version(2, []),
     version(3, ['latest']), version(4, []), version(5, [], 0.1), version(6, []),
   ];
-  // Index 3 is retained and references 4; index 1 is disposable and references 6.
+  // index 3 は残す対象で 4 を参照する。index 1 は削除してよく、6 を参照する。
   const children = {[versions[2].name]: versions[3].name, [versions[0].name]: versions[5].name};
   const deleted = [];
   const rows = [];

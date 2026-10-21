@@ -1,12 +1,22 @@
+// GHCR の古いイメージを回収する。cd-image-cleanup.yaml から、PR の close 時と日次で呼ぶ。
+// DRY_RUN=false のときだけ実際に削除し、それ以外は削除対象をサマリーに出すだけにする。
+
+// 回収対象にするタグの形式。main は `<SHA>`、Preview 用 frontend は `preview-<SHA>`、PR は `pr-<番号>-<SHA>`。
+// latest・preview などそれ以外のタグが付いたバージョンは削除しない。
 const SHA = '[a-f0-9]{40}';
 const mainTag = new RegExp(`^${SHA}$`);
 const previewTag = new RegExp(`^preview-${SHA}$`);
 const prTag = new RegExp(`^pr-([1-9][0-9]*)-(${SHA})$`);
 export const tagsOf = v => v.metadata?.container?.tags ?? [];
 
-// A version can carry multiple tags. Delete only if EVERY tag is disposable.
-// openPRs maps open PR numbers to head SHAs. Current PR and main head images are kept regardless of age.
+// 削除候補のバージョンを返す。1つのバージョンには複数のタグが付くことがあり、すべてのタグが削除してよいものの場合だけ候補にする。
+// openPRs は open な PR の番号から head SHA への Map。PR の現在の head と main の head のイメージは、世代数にかかわらず残す。
+// - main・preview: 新しい順に15世代を残す
+// - open な PR: PR ごとに新しい順に2世代を残す
+// - タグなし: 作成から24時間を過ぎたものを候補にする
+// - closedPR を指定した場合（PR close 時）: その PR のタグだけが付いたバージョンを候補にする。再 open 済みなら残す
 export function candidates(versions, openPRs, {closedPR = null, mainHead = null, now = Date.now()} = {}) {
+  // 新しい順に並べ、同じ作成時刻なら ID の大きい方を新しいとみなす。
   const sorted = [...versions].sort((a, b) => Date.parse(b.created_at) - Date.parse(a.created_at) || b.id - a.id);
   const keep = new Set();
   const counts = new Map();
@@ -33,12 +43,14 @@ export function candidates(versions, openPRs, {closedPR = null, mainHead = null,
   });
 }
 
+// 404 を「すでに存在しない」とみなして null を返す。他のエラーはそのまま投げる。
 export async function ignoreMissing(operation) {
   try { return await operation(); } catch (error) { if (error.status === 404) return null; throw error; }
 }
 
-// Follow OCI indexes to protect untagged platform/attestation manifests as well.
-// At most `concurrency` manifest reads are in flight, however wide or deep the indexes are.
+// 残すイメージから参照されている digest をすべて集める。
+// OCI の index をたどり、タグのない各プラットフォームのマニフェストや attestation も保護する。
+// index の幅や深さにかかわらず、同時に読み込むマニフェストは `concurrency` 件までにする。
 export async function referencedDigests(roots, readManifest, {protectedDigests = new Set(), concurrency = 8} = {}) {
   let active = 0;
   const waiting = [];
@@ -57,21 +69,22 @@ export async function referencedDigests(roots, readManifest, {protectedDigests =
   return protectedDigests;
 }
 
+// 回収の本体。パッケージ（frontend・backend・migrate）ごとに削除候補を選び、削除の直前に状態を確認し直してから削除する。
 export default async function cleanup({github, context, core}) {
   const owner = context.repo.owner;
   const closedPR = context.eventName === 'pull_request_target' ? context.payload.pull_request.number : null;
   const dryRun = process.env.DRY_RUN !== 'false';
   const listOpen = async () => new Map((await github.paginate(github.rest.pulls.list, {...context.repo, state: 'open', per_page: 100})).map(p => [p.number, p.head.sha]));
-  // A PR tag must stay if its PR was reopened or it became the current head (e.g. force-push back).
+  // PR が再 open された場合や、そのタグの SHA が再び head になった場合（古い SHA への force-push など）は、PR のタグを残す。
   const stillNeeded = async (number, tagSha) => {
     const {data} = await github.rest.pulls.get({...context.repo, pull_number: number});
     return data.state === 'open' && (!open.has(number) || data.head.sha === tagSha);
   };
   let open;
   const getMainHead = async () => (await github.rest.repos.getBranch({...context.repo, branch: 'main'})).data.commit.sha;
-  // A running build may put an old untagged digest into a new index, so untagged deletion waits for it.
+  // 実行中のビルドは、タグのない古い digest を新しい index に含めることがある。そのため、ビルド中はタグなしの削除を待つ。
   const publishing = async () => {
-    // Runs held by a concurrency queue report pending/waiting/requested rather than queued.
+    // concurrency の待ち行列に入った実行は、queued ではなく pending・waiting・requested として返る。
     for (const status of ['in_progress', 'queued', 'pending', 'waiting', 'requested']) {
       const {data} = await github.rest.actions.listWorkflowRuns({...context.repo, workflow_id: 'cd-images.yaml', status, per_page: 1});
       if (data.total_count > 0) return true;
@@ -80,7 +93,7 @@ export default async function cleanup({github, context, core}) {
   };
   const rows = [];
   try {
-    // Fetched once; every version is rechecked right before deletion.
+    // open な PR と main の head は最初に一度だけ取得する。各バージョンは削除の直前に確認し直す。
     open = await listOpen();
     const mainHead = await getMainHead();
     for (const component of ['frontend', 'backend', 'migrate']) {
@@ -91,6 +104,7 @@ export default async function cleanup({github, context, core}) {
       const selected = candidates(versions, open, {closedPR, mainHead});
       if (!selected.length) continue;
       const selectedIDs = new Set(selected.map(v => v.id));
+      // マニフェストの参照関係を読むため、GHCR の Registry API を pull 権限のトークンで呼ぶ。
       const repository = `${owner.toLowerCase()}/${package_name}`;
       const auth = Buffer.from(`${process.env.GITHUB_ACTOR}:${process.env.GH_TOKEN}`).toString('base64');
       const fetchToken = async () => {
@@ -105,33 +119,36 @@ export default async function cleanup({github, context, core}) {
       }});
       const readManifest = async digest => {
         let response = await requestManifest(digest);
-        // The registry token can expire during a long deletion loop; renew it once.
+        // 削除のループが長いと、途中で Registry のトークンが失効することがある。その場合は一度だけ取り直す。
         if (response.status === 401) {
           token = await fetchToken();
           response = await requestManifest(digest);
         }
-        // A missing manifest references nothing.
+        // 存在しないマニフェストは何も参照していないものとして扱う。
         if (response.status === 404) return {};
         if (!response.ok) throw new Error(`Cannot inspect protected manifest ${digest}: ${response.status}`);
         return response.json();
       };
+      // 削除候補にならなかったバージョンと、それらが参照する digest は削除しない。
       const protectedDigests = await referencedDigests(versions.filter(v => !selectedIDs.has(v.id)).map(v => v.name), readManifest);
-      // A version kept after selection also keeps its children; skip it rather than abort the run.
+      // 候補に選んだ後に残すと決めたバージョンは、参照先も一緒に残す。実行全体は中断せず、そのバージョンだけを飛ばす。
       const skip = async (version, message) => {
         core.notice(`${package_name}/${version.id}: ${message}; keeping it and its referenced manifests`);
         await referencedDigests([version.name], readManifest, {protectedDigests});
       };
       let writersActive = null;
-      // Delete parent indexes first. Abort on failure, leaving their children intact.
+      // 親の index（タグ付き）を先に削除する。失敗したらそこで中断し、参照先のマニフェストは残したままにする。
       selected.sort((a, b) => Number(tagsOf(b).length > 0) - Number(tagsOf(a).length > 0));
       for (const version of selected) {
         if (protectedDigests.has(version.name)) continue;
+        // 一覧の取得後に削除済み、またはタグが変わったバージョンは削除しない。
         const current = await ignoreMissing(() => github.rest.packages.getPackageVersionForOrganization({...params, package_version_id: version.id}));
         if (!current) continue;
         if (JSON.stringify([...tagsOf(current.data)].sort()) !== JSON.stringify([...tagsOf(version)].sort())) {
           await skip(version, 'tags changed during cleanup');
           continue;
         }
+        // 一覧の取得後に、PR が再 open されたり、main がこのコミットに戻ったりしていないかを確認する。
         let needed = false;
         for (const [, number, tagSha] of tagsOf(version).map(t => t.match(prTag)).filter(Boolean)) {
           needed ||= await stillNeeded(Number(number), tagSha);
@@ -145,7 +162,7 @@ export default async function cleanup({github, context, core}) {
           await skip(version, 'main moved to this commit during cleanup');
           continue;
         }
-        // Untagged versions are sorted last.
+        // タグなしのバージョンは最後に並んでいる。イメージのビルド中なら、ここから先は次回の実行に回す。
         if (!tagsOf(version).length && (writersActive ??= await publishing())) {
           core.notice(`${package_name}: image publication is running; deferring untagged versions to the next run`);
           break;
@@ -157,6 +174,7 @@ export default async function cleanup({github, context, core}) {
       }
     }
   } finally {
+    // 途中で失敗しても、それまでに削除した（dry run では削除予定の）バージョンをサマリーに残す。
     await core.summary.addHeading(dryRun ? 'GHCR cleanup dry run' : 'GHCR cleanup').addTable([
       [{data: 'Package', header: true}, {data: 'Version', header: true}, {data: 'Tags / digest', header: true}, {data: 'Reason', header: true}], ...rows,
     ]).write();

@@ -1,4 +1,5 @@
 import { SHAPE_META, type ShapeName } from "./electric/schema";
+import { previewUserId } from "./preview";
 
 export type ShapeMode = "direct" | "proxy";
 
@@ -59,6 +60,7 @@ export interface ConfigEnv {
   VITE_API_BASE_URL?: string;
   VITE_SHAPE_PROXY_PATH?: string;
   VITE_DEV_USER_ID?: string;
+  VITE_PREVIEW_AUTH?: string;
   VITE_OIDC_ISSUER?: string;
   VITE_OIDC_CLIENT_ID?: string;
   VITE_OIDC_REDIRECT_URI?: string;
@@ -161,6 +163,7 @@ export function resolveConfig(
   const isDev = env.DEV === true;
   const shapeMode = resolveShapeMode(env.VITE_SHAPE_MODE);
   const oidc = resolveOidc(env);
+  const preview = env.VITE_PREVIEW_AUTH === "true" && oidc === null;
   return {
     ...DEFAULT_CONFIG,
     shapeMode,
@@ -168,7 +171,9 @@ export function resolveConfig(
     electricShapeUrl: env.VITE_ELECTRIC_SHAPE_URL ?? DEFAULT_CONFIG.electricShapeUrl,
     apiBaseUrl: env.VITE_API_BASE_URL ?? DEFAULT_CONFIG.apiBaseUrl,
     shapeProxyPath: env.VITE_SHAPE_PROXY_PATH ?? DEFAULT_CONFIG.shapeProxyPath,
-    devUserId: resolveDevUserId(shapeMode, isDev, env.VITE_DEV_USER_ID, oidc !== null),
+    devUserId: preview
+      ? previewUserId()
+      : resolveDevUserId(shapeMode, isDev, env.VITE_DEV_USER_ID, oidc !== null),
     oidc,
     ...overrides,
   };

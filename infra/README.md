@@ -1,5 +1,7 @@
 # Infrastructure
 
+PR ごとの k3s 検証環境は [Preview Environment の手順](../docs/preview-environments.md)を参照してください。旧ステージングの廃止は [#104](https://github.com/Zli-UoA/zoo2/issues/104) に分離し、以下の既存手順は維持します。
+
 フロント・バックエンド・リバースプロキシのコンテナと、PostgreSQL、ElectricSQL、Atlas migrationを管理します。
 
 ## 構成
