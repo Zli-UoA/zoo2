@@ -17,6 +17,7 @@ const AUTHZ_ENDPOINT = "https://id.example/ui/oauth2";
 const TOKEN_ENDPOINT = "https://id.example/oauth2/token";
 const END_SESSION_ENDPOINT = "https://id.example/ui/logout";
 const CALLBACK_URL = "https://app.example/auth/callback";
+const RESOURCE = "https://zoo2.example";
 
 function memoryStorage(): AuthStorage {
   const map = new Map<string, string>();
@@ -76,6 +77,7 @@ interface HarnessOptions {
   discovery?: Record<string, unknown>;
   /** token エンドポイントの応答。`URLSearchParams` と現在の nonce を受け取る。 */
   token?: (body: URLSearchParams, nonce: string) => unknown;
+  resource?: string;
 }
 
 function createHarness(options: HarnessOptions = {}): Harness {
@@ -122,6 +124,7 @@ function createHarness(options: HarnessOptions = {}): Harness {
     issuer: ISSUER,
     clientId: CLIENT_ID,
     environment: env,
+    resource: options.resource,
   });
 
   return {
@@ -213,6 +216,7 @@ describe("OidcClient.login", () => {
     expect(url.searchParams.get("client_id")).toBe(CLIENT_ID);
     expect(url.searchParams.get("redirect_uri")).toBe("https://app.example/auth/callback");
     expect(url.searchParams.get("scope")).toBe("openid profile");
+    expect(url.searchParams.get("resource")).toBeNull();
     expect(url.searchParams.get("code_challenge_method")).toBe("S256");
     expect(harness.assigned).toEqual([href]);
 
@@ -223,6 +227,20 @@ describe("OidcClient.login", () => {
       await createChallenge(pending?.verifier ?? ""),
     );
     expect(pending?.returnTo).toBe("/channels/abc?tab=info");
+  });
+
+  it("includes the resource in authorize and token requests when configured", async () => {
+    const harness = createHarness({ resource: RESOURCE });
+    const href = await harness.client.login();
+
+    expect(new URL(href).searchParams.get("resource")).toBe(RESOURCE);
+
+    const pending = takePending(harness.storage, 1_000_000)!;
+    savePending(harness.storage, pending);
+    harness.setNonce(pending.nonce);
+    await harness.client.handleCallback(`${CALLBACK_URL}?code=code-1&state=${pending.state}`);
+
+    expect(harness.tokenCalls[0]?.get("resource")).toBe(RESOURCE);
   });
 });
 
@@ -237,6 +255,7 @@ describe("OidcClient.handleCallback", () => {
     expect(body?.get("code")).toBe("code-1");
     expect(body?.get("client_id")).toBe(CLIENT_ID);
     expect(body?.get("redirect_uri")).toBe(CALLBACK_URL);
+    expect(body?.get("resource")).toBeNull();
     expect(nonce.length).toBeGreaterThan(0);
     const pendingVerifier = body?.get("code_verifier");
     expect(pendingVerifier).toBeTruthy();

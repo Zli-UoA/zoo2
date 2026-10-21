@@ -86,8 +86,18 @@ describe("resolveConfig", () => {
       clientId: "zoo",
       redirectUri: null,
       scope: "openid profile",
+      resource: null,
       postLogoutRedirectUri: null,
     });
+  });
+
+  it("reads the OIDC resource from the environment", () => {
+    const config = resolveConfig({
+      VITE_OIDC_ISSUER: "https://id.example/oauth2/openid/zoo",
+      VITE_OIDC_CLIENT_ID: "zoo",
+      VITE_OIDC_RESOURCE: "https://zoo2.example",
+    });
+    expect(config.oidc?.resource).toBe("https://zoo2.example");
   });
 
   it("overrides scope, redirect, and post-logout redirect", () => {

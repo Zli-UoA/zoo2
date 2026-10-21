@@ -154,10 +154,12 @@ VITE_OIDC_ISSUER=http://localhost:4321/api/auth
 VITE_OIDC_CLIENT_ID=<AuthZ で登録した public client ID>
 VITE_OIDC_REDIRECT_URI=http://localhost:5173/auth/callback
 VITE_OIDC_SCOPE=openid profile
+VITE_OIDC_RESOURCE=https://zoo2.zli.works
 ```
 
 - 既定 scope は `openid profile` です。`VITE_OIDC_SCOPE` で上書きできます。AuthZ は `email` と `offline_access` を拒否するため要求しません。`ains` も現時点では要求せず、必要になったら `VITE_OIDC_SCOPE="openid profile ains"` のように追加します。
-- バックエンドの `OIDC_AUDIENCE` には上の `VITE_OIDC_CLIENT_ID` と同じ値（AuthZ の client ID）を設定します。access token の `aud` と一致させてください。`OIDC_ISSUER` も `VITE_OIDC_ISSUER` と一致させます。
+- `VITE_OIDC_RESOURCE` は AuthZ の resource（RFC 8707）です。設定すると authorize と token 要求の両方に `resource` が付き、access token が `typ: at+jwt` の JWT になります。未設定だと AuthZ は opaque token（32 文字）を発行します。本番の resource identifier は `https://zoo2.zli.works`、ローカルは AuthZ 側で登録した値を使います。
+- バックエンドの `OIDC_AUDIENCE` には `VITE_OIDC_RESOURCE` と同じ resource identifier を設定します（access token の `aud` は resource の配列）。`resource` を設定しないと opaque token のためバックエンドの JWT 検証は通りません。`OIDC_ISSUER` も `VITE_OIDC_ISSUER` と一致させます。
 - AuthZ は `offline_access` 非対応で refresh token を発行しません。access token の期限が切れると再ログインになります。トークンはメモリ保持のみのため、リロード後は authorize へ再遷移します（IdP のセッションが残っていれば操作なしで戻ります）。
 - ログアウトは Discovery の `end_session_endpoint` を使う RP-initiated logout です。`VITE_OIDC_POST_LOGOUT_REDIRECT_URI` で戻り先を変更できます（既定 `${origin}/`）。
 
