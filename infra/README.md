@@ -158,7 +158,7 @@ DBサービスは Coolify が `extends` や `!reset` を扱えないため、`co
 
 リポジトリルートで `--project-directory .` を指定してください。`POSTGRES_PASSWORD` は必須です。
 
-Rust の本番起動には `OIDC_ISSUER` と `OIDC_AUDIENCE`（未設定なら `OIDC_CLIENT_ID`）も必要です。既存の Kanidm クライアントに合わせて Coolify の環境変数に設定してください。`OIDC_JWKS_URL` は任意で、未設定なら Discovery を使います。OIDC 設定を省略すると Rust は起動を拒否します。フロント単体とモックを使ったプロキシテストには不要です。
+Rust の本番起動には `OIDC_ISSUER` と `OIDC_AUDIENCE`（未設定なら `OIDC_CLIENT_ID`）も必要です。IdP に合わせて Coolify の環境変数に設定してください。Kanidm では `OIDC_AUDIENCE` を client ID に、AuthZ では resource identifier（`VITE_OIDC_RESOURCE`）に一致させます。`OIDC_JWKS_URL` は任意で、未設定なら Discovery を使います。OIDC 設定を省略すると Rust は起動を拒否します。フロント単体とモックを使ったプロキシテストには不要です。
 
 ```bash
 POSTGRES_PASSWORD=staging-test-password \
@@ -186,25 +186,26 @@ Rust は `ENVIRONMENT=production`・`DEV_AUTH_ENABLED=false` で起動し、受�
 
 #### フロントの OIDC PKCE ログイン
 
-SPA は `VITE_OIDC_ISSUER`・`VITE_OIDC_CLIENT_ID`・`VITE_OIDC_REDIRECT_URI`（既定 `${origin}/auth/callback`）・`VITE_OIDC_SCOPE`（既定 `openid profile email`）・`VITE_OIDC_POST_LOGOUT_REDIRECT_URI` をビルド時に埋め込み、Authorization Code + PKCE (S256) でログインします。未設定（空）なら従来どおり dev の `X-Dev-User` で動きます。値は `infra/compose.stg.yaml` の frontend の build args に渡します。`state` / `nonce` / `code_verifier` は `sessionStorage` に一時保存し、コールバックで使い切りにします。トークン本体はメモリのみに置きます。
+SPA は `VITE_OIDC_ISSUER`・`VITE_OIDC_CLIENT_ID`・`VITE_OIDC_REDIRECT_URI`（既定 `${origin}/auth/callback`）・`VITE_OIDC_SCOPE`（既定 `openid profile`）・`VITE_OIDC_RESOURCE`（任意）・`VITE_OIDC_POST_LOGOUT_REDIRECT_URI` をビルド時に埋め込み、Authorization Code + PKCE (S256) でログインします。未設定（空）なら従来どおり dev の `X-Dev-User` で動きます。値は `infra/compose.stg.yaml` の frontend の build args に渡します。AuthZ では `VITE_OIDC_RESOURCE` を resource identifier に設定しないと opaque token が発行されるため、バックエンドの JWT 検証が通りません。`state` / `nonce` / `code_verifier` は `sessionStorage` に一時保存し、コールバックで使い切りにします。トークン本体はメモリのみに置きます。
 
 `VITE_OIDC_*` は **ビルド時に静的ファイルへ埋め込まれる**ため、変更したら `frontend` イメージを再ビルドしてください（コンテナの再起動だけでは反映されません）。
 
 | Variable | 設定先 | 必須 | 説明 |
 | --- | --- | --- | --- |
 | `OIDC_ISSUER` | backend | 必須 | Kanidm の issuer。トークンの `iss` と完全一致させる |
-| `OIDC_AUDIENCE` | backend | 必須 | 受け付ける `aud`。未設定時は `OIDC_CLIENT_ID` にフォールバック |
+| `OIDC_AUDIENCE` | backend | 必須 | 受け付ける `aud`。未設定時は `OIDC_CLIENT_ID` にフォールバック。AuthZ では resource identifier を明示する |
 | `OIDC_JWKS_URL` | backend | 任意 | 未設定なら Discovery から解決 |
 | `VITE_OIDC_ISSUER` | frontend build | 必須 | `OIDC_ISSUER` と同じ値 |
-| `VITE_OIDC_CLIENT_ID` | frontend build | 必須 | Kanidm の Public client ID |
+| `VITE_OIDC_CLIENT_ID` | frontend build | 必須 | IdP の Public client ID（Kanidm / AuthZ） |
 | `VITE_OIDC_REDIRECT_URI` | frontend build | 任意 | 既定 `${origin}/auth/callback`。ステージングでは公開 URL を明示 |
-| `VITE_OIDC_SCOPE` | frontend build | 任意 | 既定 `openid profile email` |
+| `VITE_OIDC_SCOPE` | frontend build | 任意 | 既定 `openid profile`。Kanidm では `openid profile email` も可 |
+| `VITE_OIDC_RESOURCE` | frontend build | 任意 | AuthZ の resource identifier（RFC 8707）。未設定だと AuthZ は opaque token を発行する |
 | `VITE_OIDC_POST_LOGOUT_REDIRECT_URI` | frontend build | 任意 | 既定 `${origin}/` |
 | `CSP_CONNECT_SRC` | frontend runtime | OIDC 利用時は必須 | Kanidm のオリジン（`connect-src` に追加） |
 
-バックエンド側の `OIDC_ISSUER` / `OIDC_AUDIENCE` と、トークンの `iss` / `aud` / `typ` を一致させてください。
+バックエンド側の `OIDC_ISSUER` / `OIDC_AUDIENCE` と、トークンの `iss` / `aud` / `typ` を一致させてください。AuthZ の `aud` は resource identifier の配列です。
 
-リロード後は IdP セッションを使って authorize へ再リダイレクトし（サイレント再ログイン）、期限前には refresh_token で更新します。Kanidm は refresh_token の再利用でセッションを失効させるため、同時更新は 1 リクエストに集約し、更新後の refresh_token に置き換えます。401 と refresh 失敗は再ログインに倒します。ログアウトはメモリのトークン破棄までで、Kanidm は RP-initiated logout（`end_session_endpoint`）を公開していないため、Kanidm セッション自体を終えるには Kanidm 側でログアウトしてください。
+リロード後は IdP セッションを使って authorize へ再リダイレクトし（サイレント再ログイン）、期限前には refresh_token で更新します。Kanidm は refresh_token の再利用でセッションを失効させるため、同時更新は 1 リクエストに集約し、更新後の refresh_token に置き換えます。401 と refresh 失敗は再ログインに倒します。AuthZ は refresh token を発行しないため、access token の期限切れ後は再ログインになります。ログアウトはメモリのトークン破棄までで、Kanidm は RP-initiated logout（`end_session_endpoint`）を公開していないため、Kanidm セッション自体を終えるには Kanidm 側でログアウトしてください。
 
 SPA は IdP の Discovery / token エンドポイントをブラウザから直接叩くため、IdP 側で SPA のオリジンに CORS を許可する必要があります（Kanidm は OAuth2 クライアントに設定した redirect origin に応じて CORS を返します）。CSP の `connect-src` には `CSP_CONNECT_SRC` で Kanidm のオリジンを追加します。
 
@@ -238,8 +239,8 @@ curl -fsSI https://<公開ホスト>/ | grep -i content-security-policy
 
 - Kanidm の OAuth2 クライアントを **Public client + PKCE (S256)** にし、redirect URI を公開 URL の `${origin}/auth/callback` に一致させる（`VITE_OIDC_REDIRECT_URI` を明示する場合はその値）。
 - SPA のオリジンからの Discovery / token への CORS を許可する。
-- `VITE_OIDC_ISSUER` を token の `iss` と完全一致させる（末尾スラッシュの有無を含む）。`VITE_OIDC_CLIENT_ID` と Rust の `OIDC_AUDIENCE` を一致させる。
-- `VITE_OIDC_SCOPE` は `openid profile email` を基本とする。Kanidm 側で scope を絞る場合は `preferred_username` / `name` / `email` がトークンに含まれることを確認する。
+- `VITE_OIDC_ISSUER` を token の `iss` と完全一致させる（末尾スラッシュの有無を含む）。`OIDC_AUDIENCE` は Kanidm では `VITE_OIDC_CLIENT_ID`、AuthZ では `VITE_OIDC_RESOURCE` と同じ値にする。
+- `VITE_OIDC_SCOPE` は Kanidm では `openid profile email`、AuthZ では `openid profile` を基本とする。Kanidm 側で scope を絞る場合は `preferred_username` / `name` / `email` がトークンに含まれることを確認する。
 - `CSP_CONNECT_SRC` に Kanidm のオリジンを設定する。
 - Rust を `ENVIRONMENT=production`・`DEV_AUTH_ENABLED=false` で起動し、`/api/users/me`・Shape・REST が Bearer で通ることを確認する。
 - リロード後のサイレント再ログイン、refresh_token のローテーション、401 時の再ログインがループしないことを確認する。

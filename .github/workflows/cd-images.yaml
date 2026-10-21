@@ -131,6 +131,7 @@ jobs:
             VITE_OIDC_CLIENT_ID=${{ github.event_name != 'pull_request' && vars.VITE_OIDC_CLIENT_ID || '' }}
             VITE_OIDC_REDIRECT_URI=${{ github.event_name != 'pull_request' && vars.VITE_OIDC_REDIRECT_URI || '' }}
             VITE_OIDC_SCOPE=${{ github.event_name != 'pull_request' && vars.VITE_OIDC_SCOPE || '' }}
+            VITE_OIDC_RESOURCE=${{ github.event_name != 'pull_request' && vars.VITE_OIDC_RESOURCE || '' }}
             VITE_OIDC_POST_LOGOUT_REDIRECT_URI=${{ github.event_name != 'pull_request' && vars.VITE_OIDC_POST_LOGOUT_REDIRECT_URI || '' }}
       - name: Build and publish shared preview frontend
         if: steps.existing.outputs.preview == 'false' && matrix.component == 'frontend' && github.event_name != 'pull_request'
@@ -153,6 +154,7 @@ jobs:
             VITE_OIDC_CLIENT_ID=
             VITE_OIDC_REDIRECT_URI=
             VITE_OIDC_SCOPE=
+            VITE_OIDC_RESOURCE=
             VITE_OIDC_POST_LOGOUT_REDIRECT_URI=
   # Promote all components together, only after every build succeeded, so aliases never mix commits.
   promote:
