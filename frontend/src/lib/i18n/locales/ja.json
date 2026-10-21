@@ -189,7 +189,9 @@
     "previewError": "画像を読み込めませんでした。別の組み合わせをお試しください。",
     "unsupported": "この組み合わせは未対応です。",
     "addCombination": "この組み合わせを追加",
-    "kitchenImageNotice": "Emoji Kitchenの画像はGoogleから読み込みます。"
+    "kitchenImageNotice": "Emoji Kitchenの画像はGoogleから読み込みます。",
+    "searchEmoji": "絵文字を検索",
+    "noSearchResults": "一致する絵文字がありません"
   },
   "theme": {
     "switch": "テーマを切り替える",

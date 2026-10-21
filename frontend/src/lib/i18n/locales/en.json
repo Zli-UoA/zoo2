@@ -189,7 +189,9 @@
     "previewError": "Could not load the image. Try another combination.",
     "unsupported": "This combination is not supported.",
     "addCombination": "Add this combination",
-    "kitchenImageNotice": "Emoji Kitchen images are loaded from Google."
+    "kitchenImageNotice": "Emoji Kitchen images are loaded from Google.",
+    "searchEmoji": "Search emojis",
+    "noSearchResults": "No matching emojis"
   },
   "theme": {
     "switch": "Switch theme",
