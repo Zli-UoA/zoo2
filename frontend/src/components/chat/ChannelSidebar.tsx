@@ -2,7 +2,7 @@ import { useTranslation } from "react-i18next";
 import { Link } from "@tanstack/react-router";
 import { useLiveQuery } from "@tanstack/react-db";
 import { cn } from "cn";
-import { ArchiveIcon, HashIcon, LockIcon, PlusIcon, SearchIcon, XIcon } from "lucide-react";
+import { ArchiveIcon, HashIcon, LockIcon, PlusIcon, SearchIcon } from "lucide-react";
 import { useMemo, useState } from "react";
 
 import { useCurrentUser } from "../../hooks/useCurrentUser";
@@ -11,15 +11,15 @@ import type { ChannelRow } from "../../lib/electric/types";
 import { SyncStatus } from "../SyncStatus";
 import { useShell } from "../layout/shell-context";
 import { Button } from "../ui/button";
-import { inputClassName } from "../ui/input-styles";
 import { ScrollArea } from "../ui/scroll-area";
 import { Skeleton } from "../ui/skeleton";
-import { filterChannels } from "./channelSearch";
+import { ChannelBrowserDialog } from "./ChannelBrowserDialog";
+import { filterJoinedChannels } from "./channelSearch";
 import { CreateChannelDialog } from "./CreateChannelDialog";
 
 const SKELETON_ROWS = [0, 1, 2, 3, 4];
 
-/** 左サイドバー。チャンネル一覧・作成と、現在ユーザーの参加状態を出す。 */
+/** 左サイドバー。参加中のチャンネル一覧・作成・検索の入口を出す。 */
 export function ChannelSidebar({
   channels,
   loading,
@@ -36,8 +36,7 @@ export function ChannelSidebar({
   const { channelUsers } = getCollections();
   const { currentUserId, isLoading: currentUserLoading } = useCurrentUser();
   const [createOpen, setCreateOpen] = useState(false);
-  const [query, setQuery] = useState("");
-  const filteredChannels = useMemo(() => filterChannels(channels, query), [channels, query]);
+  const [browserOpen, setBrowserOpen] = useState(false);
 
   // 一覧の各チャンネルについて現在ユーザーの参加状態を出す。`channel_user` の
   // 購読は `getCollections()` が 1 本だけ持つため、ここで直接 live query を張っても
@@ -52,9 +51,14 @@ export function ChannelSidebar({
     }
     return joined;
   }, [membershipsQuery.data, currentUserId]);
-  // 解決前は参加状態を出さない（OIDC では /api/users/me の応答待ちの間、
-  // 一瞬「未参加」に見えるのを避ける）。
-  const hasCurrentUser = !currentUserLoading && currentUserId !== null;
+  // サイドバーは参加中だけを出すため、参加状態が解決するまでは一覧を確定しない
+  // （解決前に空の一覧を一瞬出さない）。
+  const sidebarLoading = loading || membershipsQuery.isLoading || currentUserLoading;
+  const sidebarError = error || membershipsQuery.isError;
+  const sidebarChannels = useMemo(
+    () => filterJoinedChannels(channels, joinedChannelIds),
+    [channels, joinedChannelIds],
+  );
 
   return (
     <aside
@@ -69,58 +73,36 @@ export function ChannelSidebar({
             {t("channels.title")}
           </h1>
           <span className="text-xs tabular-nums text-muted-foreground">
-            {loading ? "…" : channels.length}
+            {sidebarLoading ? "…" : sidebarChannels.length}
           </span>
         </div>
-        <Button
-          variant="ghost"
-          size="icon-sm"
-          aria-label={t("channels.createTitle")}
-          onClick={() => setCreateOpen(true)}
-        >
-          <PlusIcon />
-        </Button>
-      </div>
-
-      {!loading && !error && channels.length > 0 ? (
-        <div className="px-3 pb-2">
-          <div className="relative">
-            <SearchIcon
-              aria-hidden="true"
-              className="pointer-events-none absolute top-1/2 left-2.5 size-4 -translate-y-1/2 text-muted-foreground"
-            />
-            <input
-              type="text"
-              className={cn(inputClassName(), "w-full pr-8 pl-8")}
-              placeholder={t("channels.searchPlaceholder")}
-              aria-label={t("channels.searchPlaceholder")}
-              value={query}
-              onChange={(event) => setQuery(event.target.value)}
-              autoComplete="off"
-              spellCheck={false}
-            />
-            {query ? (
-              <Button
-                type="button"
-                variant="ghost"
-                size="icon-xs"
-                className="absolute top-1/2 right-1 -translate-y-1/2"
-                aria-label={t("channels.searchClear")}
-                title={t("channels.searchClear")}
-                onClick={() => setQuery("")}
-              >
-                <XIcon />
-              </Button>
-            ) : null}
-          </div>
+        <div className="flex items-center gap-0.5">
+          <Button
+            variant="ghost"
+            size="icon-sm"
+            aria-label={t("channels.browseTitle")}
+            title={t("channels.browseTitle")}
+            onClick={() => setBrowserOpen(true)}
+            disabled={sidebarLoading || channels.length === 0}
+          >
+            <SearchIcon />
+          </Button>
+          <Button
+            variant="ghost"
+            size="icon-sm"
+            aria-label={t("channels.createTitle")}
+            onClick={() => setCreateOpen(true)}
+          >
+            <PlusIcon />
+          </Button>
         </div>
-      ) : null}
+      </div>
 
       <ScrollArea className="min-h-0 flex-1">
         <div className="flex flex-col gap-0.5 px-2 pb-2">
-          {loading ? (
+          {sidebarLoading ? (
             SKELETON_ROWS.map((row) => <Skeleton key={row} className="h-9 w-full rounded-lg" />)
-          ) : error ? (
+          ) : sidebarError ? (
             <p className="px-2 py-1 text-xs text-destructive">{t("channels.loadError")}</p>
           ) : channels.length === 0 ? (
             <div className="flex flex-col items-start gap-2 px-2 py-4">
@@ -130,12 +112,17 @@ export function ChannelSidebar({
                 {t("channels.createAction")}
               </Button>
             </div>
-          ) : filteredChannels.length === 0 ? (
-            <p className="px-2 py-4 text-sm text-muted-foreground">{t("channels.searchEmpty")}</p>
+          ) : sidebarChannels.length === 0 ? (
+            <div className="flex flex-col items-start gap-2 px-2 py-4">
+              <p className="text-sm text-muted-foreground">{t("channels.noJoined")}</p>
+              <Button variant="outline" size="sm" onClick={() => setBrowserOpen(true)}>
+                <SearchIcon />
+                {t("channels.browseTitle")}
+              </Button>
+            </div>
           ) : (
-            filteredChannels.map((channel) => {
+            sidebarChannels.map((channel) => {
               const isActive = shell.selectedChannelId === channel.id;
-              const isJoined = joinedChannelIds.has(channel.id);
               return (
                 <Link
                   key={channel.id}
@@ -173,20 +160,6 @@ export function ChannelSidebar({
                       <ArchiveIcon className="size-3" aria-hidden="true" />
                     </span>
                   ) : null}
-                  {hasCurrentUser ? (
-                    isJoined ? (
-                      <span
-                        role="img"
-                        title={t("members.joined")}
-                        aria-label={t("members.joined")}
-                        className="size-1.5 shrink-0 rounded-full bg-brand"
-                      />
-                    ) : (
-                      <span className="shrink-0 text-[0.65rem] text-muted-foreground/70">
-                        {t("members.notJoined")}
-                      </span>
-                    )
-                  ) : null}
                 </Link>
               );
             })
@@ -202,6 +175,12 @@ export function ChannelSidebar({
       ) : null}
 
       <CreateChannelDialog open={createOpen} onOpenChange={setCreateOpen} />
+      <ChannelBrowserDialog
+        open={browserOpen}
+        onOpenChange={setBrowserOpen}
+        channels={channels}
+        joinedChannelIds={joinedChannelIds}
+      />
     </aside>
   );
 }
