@@ -40,8 +40,8 @@ interface MessageListProps {
   onPickReaction: (messageId: string) => void;
   replyCounts: Map<string, number>;
   onOpenThread: (messageId: string) => void;
-  /** 空状態の説明文。アーカイブ済みなど送信できない場合に差し替える。 */
-  emptyDescription?: string;
+  /** 送信できる状態か。false なら空状態で「最初のメッセージ」を促さない。 */
+  canCompose?: boolean;
 }
 
 function MessageSkeleton() {
@@ -66,7 +66,7 @@ function MessageState({
   destructive = false,
 }: {
   title: string;
-  description: string;
+  description?: string;
   destructive?: boolean;
 }) {
   return (
@@ -74,7 +74,7 @@ function MessageState({
       <p className={destructive ? "text-sm font-medium text-destructive" : "text-sm font-medium"}>
         {title}
       </p>
-      <p className="text-xs text-muted-foreground">{description}</p>
+      {description ? <p className="text-xs text-muted-foreground">{description}</p> : null}
     </div>
   );
 }
@@ -104,7 +104,7 @@ export function MessageList({
   onPickReaction,
   replyCounts,
   onOpenThread,
-  emptyDescription,
+  canCompose = true,
 }: MessageListProps) {
   const { t } = useTranslation();
   const items = useMemo(() => buildMessageItems(messages), [messages]);
@@ -212,7 +212,7 @@ export function MessageList({
       ) : showEmpty ? (
         <MessageState
           title={t("messages.empty")}
-          description={emptyDescription ?? t("messages.first")}
+          description={canCompose ? t("messages.first") : undefined}
         />
       ) : (
         <div

@@ -153,6 +153,8 @@
     "retryHelp": "Check your connection and try again.",
     "empty": "No messages yet",
     "first": "Send the first message.",
+    "joinToPost": "Join to post",
+    "joinToPostDescription": "Join this channel to send messages.",
     "new": "New messages",
     "title": "Messages",
     "fetchError": "Failed to load messages",

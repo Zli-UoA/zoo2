@@ -90,33 +90,43 @@ it("announces each new message in its arrival language without repeating it on a
   }
 });
 
-it("shows the provided empty description instead of the first-message prompt", () => {
+it("shows only the empty title when composing is unavailable", () => {
+  localStorage.setItem("zoo-locale", "ja");
   const noop = () => {};
-  const html = renderToStaticMarkup(
-    createElement(LocaleProvider, {
-      children: createElement(MessageList, {
-        messages: [],
-        isLoading: false,
-        isError: false,
-        currentUserId: null,
-        editingId: null,
-        editingText: "",
-        onEditingTextChange: noop,
-        onStartEdit: noop,
-        onCancelEdit: noop,
-        onSaveEdit: noop,
-        onRequestDelete: noop,
-        reactions: new Map(),
-        kitchenCatalog: null,
-        canReact: false,
-        onReaction: noop,
-        onPickReaction: noop,
-        replyCounts: new Map(),
-        onOpenThread: noop,
-        emptyDescription: "アーカイブ済みのため送信できません",
+  const render = (canCompose?: boolean) =>
+    renderToStaticMarkup(
+      createElement(LocaleProvider, {
+        children: createElement(MessageList, {
+          messages: [],
+          isLoading: false,
+          isError: false,
+          currentUserId: null,
+          editingId: null,
+          editingText: "",
+          onEditingTextChange: noop,
+          onStartEdit: noop,
+          onCancelEdit: noop,
+          onSaveEdit: noop,
+          onRequestDelete: noop,
+          reactions: new Map(),
+          kitchenCatalog: null,
+          canReact: false,
+          onReaction: noop,
+          onPickReaction: noop,
+          replyCounts: new Map(),
+          onOpenThread: noop,
+          canCompose,
+        }),
       }),
-    }),
-  );
-  expect(html).toContain("アーカイブ済みのため送信できません");
-  expect(html).not.toContain("最初のメッセージを送ってみましょう。");
+    );
+
+  try {
+    const readOnly = render(false);
+    expect(readOnly).toContain("まだメッセージがありません");
+    expect(readOnly).not.toContain("最初のメッセージを送ってみましょう。");
+
+    expect(render()).toContain("最初のメッセージを送ってみましょう。");
+  } finally {
+    localStorage.clear();
+  }
 });
