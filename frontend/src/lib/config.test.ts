@@ -10,19 +10,6 @@ import {
 } from "./config";
 
 describe("resolveConfig", () => {
-  it("enables the default preview user only with the explicit preview build flag", () => {
-    expect(resolveConfig({ DEV: false, VITE_PREVIEW_AUTH: "true" }).devUserId).toBe(
-      "00000000-0000-0000-0000-000000000001",
-    );
-    expect(resolveConfig({ DEV: false, VITE_PREVIEW_AUTH: "false" }).devUserId).toBeNull();
-    expect(
-      resolveConfig({
-        VITE_PREVIEW_AUTH: "true",
-        VITE_OIDC_ISSUER: "https://id.example",
-        VITE_OIDC_CLIENT_ID: "zoo2",
-      }).devUserId,
-    ).toBeNull();
-  });
   it("defaults to proxy mode in development when a dev user is configured", () => {
     const config = resolveConfig({ DEV: true, VITE_DEV_USER_ID: "dev-user-1" });
     expect(config).toEqual({ ...DEFAULT_CONFIG, shapeMode: "proxy", devUserId: "dev-user-1" });

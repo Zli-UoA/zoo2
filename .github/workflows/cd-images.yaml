@@ -127,7 +127,6 @@ jobs:
           cache-to: type=gha,mode=max,scope=${{ matrix.component }}
           build-args: |
             VITE_API_BASE_URL=
-            VITE_PREVIEW_AUTH=${{ github.event_name == 'pull_request' && 'true' || 'false' }}
             VITE_OIDC_ISSUER=${{ github.event_name != 'pull_request' && vars.VITE_OIDC_ISSUER || '' }}
             VITE_OIDC_CLIENT_ID=${{ github.event_name != 'pull_request' && vars.VITE_OIDC_CLIENT_ID || '' }}
             VITE_OIDC_REDIRECT_URI=${{ github.event_name != 'pull_request' && vars.VITE_OIDC_REDIRECT_URI || '' }}
@@ -151,7 +150,6 @@ jobs:
           cache-to: type=gha,mode=max,scope=frontend-preview
           build-args: |
             VITE_API_BASE_URL=
-            VITE_PREVIEW_AUTH=true
             VITE_OIDC_ISSUER=
             VITE_OIDC_CLIENT_ID=
             VITE_OIDC_REDIRECT_URI=
