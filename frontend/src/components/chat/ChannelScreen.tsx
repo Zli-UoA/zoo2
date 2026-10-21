@@ -106,7 +106,7 @@ export function ChannelScreen({ channelId }: { channelId: string }) {
                 onPickReaction={noop}
                 replyCounts={new Map()}
                 onOpenThread={noop}
-                emptyDescription={t("moderation.archivedReadOnly")}
+                canCompose={false}
               />
             </div>
           ) : (
@@ -117,7 +117,7 @@ export function ChannelScreen({ channelId }: { channelId: string }) {
             </div>
           )
         ) : access.canRead ? (
-          <MessagePane key={channelId} channelId={channelId} />
+          <MessagePane key={channelId} channelId={channelId} isMember={access.isMember} />
         ) : (
           <div className="flex flex-1 items-center justify-center p-6">
             <p className="max-w-sm text-center text-sm text-muted-foreground">

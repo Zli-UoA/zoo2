@@ -144,6 +144,8 @@
     "retryHelp": "请检查连接后重试。",
     "empty": "暂无消息",
     "first": "发送第一条消息吧。",
+    "joinToPost": "加入并发言",
+    "joinToPostDescription": "加入频道后即可发送消息。",
     "new": "新消息",
     "title": "消息",
     "fetchError": "无法加载消息",

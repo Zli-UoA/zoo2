@@ -144,6 +144,8 @@
     "retryHelp": "請檢查連線後再試一次。",
     "empty": "尚無訊息",
     "first": "傳送第一則訊息吧。",
+    "joinToPost": "加入並發言",
+    "joinToPostDescription": "加入頻道後即可傳送訊息。",
     "new": "新訊息",
     "title": "訊息",
     "fetchError": "無法載入訊息",
