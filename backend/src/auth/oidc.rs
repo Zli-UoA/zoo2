@@ -154,12 +154,15 @@ impl JwksVerifier {
                     Some(jsonwebtoken::jwk::KeyAlgorithm::RS384) => Algorithm::RS384,
                     Some(jsonwebtoken::jwk::KeyAlgorithm::ES384) => Algorithm::ES384,
                     Some(jsonwebtoken::jwk::KeyAlgorithm::RS512) => Algorithm::RS512,
+                    // Better Auth OAuth Provider の JWT アクセストークンは Ed25519 で署名される
+                    Some(jsonwebtoken::jwk::KeyAlgorithm::EdDSA) => Algorithm::EdDSA,
                     _ => match key.algorithm {
                         // Kanidm の既定は ES256 (alg 省略時も kty/parameters から推論)
                         jsonwebtoken::jwk::AlgorithmParameters::EllipticCurve(_) => {
                             Algorithm::ES256
                         }
                         jsonwebtoken::jwk::AlgorithmParameters::RSA(_) => Algorithm::RS256,
+                        jsonwebtoken::jwk::AlgorithmParameters::OctetKeyPair(_) => Algorithm::EdDSA,
                         _ => Algorithm::RS256,
                     },
                 };
