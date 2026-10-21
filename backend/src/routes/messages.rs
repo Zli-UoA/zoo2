@@ -175,6 +175,7 @@ async fn create_message(
     }
 
     // スレッド親メッセージ検証
+    let mut parent_author_id: Option<String> = None;
     if let Some(ref parent_id) = payload.parent_id {
         Uuid::parse_str(parent_id).map_err(|_| {
             AppError::BadRequest(format!("parent_id is not a valid UUID: {parent_id}"))
@@ -206,6 +207,8 @@ async fn create_message(
                     .into(),
             ));
         }
+
+        parent_author_id = Some(parent.user_id);
     }
 
     let now = crate::models::now_utc_millis();
@@ -222,6 +225,14 @@ async fn create_message(
         parent_id: payload.parent_id,
     })
     .exec(&mut tx)
+    .await?;
+
+    crate::notifications::create_message_notifications(
+        &mut tx,
+        &message,
+        auth_user.id.as_str(),
+        parent_author_id.as_deref(),
+    )
     .await?;
 
     let txid = get_current_txid(&mut tx).await?;
@@ -600,7 +611,15 @@ async fn add_reaction(
     .await;
 
     let reaction = match created_res {
-        Ok(r) => r,
+        Ok(r) => {
+            crate::notifications::create_reaction_notification(
+                &mut tx,
+                &message,
+                auth_user.id.as_str(),
+            )
+            .await?;
+            r
+        }
         Err(err) => {
             // UNIQUE制約違反等でトランザクションがabortされた場合、ロールバックして新しいtxで取得
             let _ = tx.rollback().await;

@@ -1,6 +1,7 @@
 pub mod channels;
 pub mod health;
 pub mod messages;
+pub mod notifications;
 pub mod response;
 pub mod shapes;
 pub mod users;
@@ -54,6 +55,7 @@ pub fn create_router(state: AppState) -> Router {
         .merge(users::router())
         .merge(channels::router())
         .merge(messages::router())
+        .merge(notifications::router())
         .merge(shapes::router())
         .layer(TraceLayer::new_for_http())
         .layer(cors)
