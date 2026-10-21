@@ -27,7 +27,7 @@ export interface OidcSettings {
   postLogoutRedirectUri: string | null;
 }
 
-export const DEFAULT_OIDC_SCOPE = "openid profile email";
+export const DEFAULT_OIDC_SCOPE = "openid profile";
 
 export interface AppConfig {
   shapeMode: ShapeMode;

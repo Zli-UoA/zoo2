@@ -85,7 +85,7 @@ describe("resolveConfig", () => {
       issuer: "https://id.example/oauth2/openid/zoo",
       clientId: "zoo",
       redirectUri: null,
-      scope: "openid profile email",
+      scope: "openid profile",
       postLogoutRedirectUri: null,
     });
   });

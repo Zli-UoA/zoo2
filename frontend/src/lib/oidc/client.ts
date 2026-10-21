@@ -14,7 +14,7 @@ export type OidcFetch = (input: string, init?: RequestInit) => Promise<Response>
 /** 既定のコールバックパス。`VITE_OIDC_REDIRECT_URI` で差し替え可能。 */
 export const DEFAULT_CALLBACK_PATH = "/auth/callback";
 
-export const DEFAULT_OIDC_SCOPE = "openid profile email";
+export const DEFAULT_OIDC_SCOPE = "openid profile";
 
 /** 期限切れ前に更新を始める余裕。ロングポーリング中の Shape もここで切れ目なく更新される。 */
 const REFRESH_SKEW_MS = 60_000;

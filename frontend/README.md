@@ -142,6 +142,25 @@ cd frontend && pnpm dev           # http://localhost:5173
 - `channel_users` のサブクエリ経路（`electric#3143`）: Electric 1.8.1 を `ELECTRIC_FEATURE_FLAGS=allow_subqueries` で動かしており、`WHERE ... IN (SELECT ... WHERE user_id = $1)` の形がそのまま通ることを実測しました（`params[1]` により move-in / move-out も配信）。`$1` をリテラルへ埋め込む回避策は不要でした。
 - 書き込み: すべて REST（`{ data, txid }`）で行い、`txid` を `awaitTxId` で Electric の配信と突き合わせます。失敗時は楽観状態がロールバックします。
 
+## OIDC ログイン（AuthZ）
+
+SPA は Authorization Code + PKCE (S256) で AuthZ に接続します。`VITE_OIDC_ISSUER` と `VITE_OIDC_CLIENT_ID` を設定すると OIDC が有効になり、未設定なら従来どおり `X-Dev-User` の dev 経路で動きます。
+
+AuthZ の public client には redirect URI（既定 `${origin}/auth/callback`）を登録し、`frontend/.env` に次を設定します。
+
+```bash
+# 本番: https://account.zli.works/api/auth / ローカル: http://localhost:4321/api/auth
+VITE_OIDC_ISSUER=http://localhost:4321/api/auth
+VITE_OIDC_CLIENT_ID=<AuthZ で登録した public client ID>
+VITE_OIDC_REDIRECT_URI=http://localhost:5173/auth/callback
+VITE_OIDC_SCOPE=openid profile
+```
+
+- 既定 scope は `openid profile` です。`VITE_OIDC_SCOPE` で上書きできます。AuthZ は `email` と `offline_access` を拒否するため要求しません。`ains` も現時点では要求せず、必要になったら `VITE_OIDC_SCOPE="openid profile ains"` のように追加します。
+- バックエンドの `OIDC_AUDIENCE` には上の `VITE_OIDC_CLIENT_ID` と同じ値（AuthZ の client ID）を設定します。access token の `aud` と一致させてください。`OIDC_ISSUER` も `VITE_OIDC_ISSUER` と一致させます。
+- AuthZ は `offline_access` 非対応で refresh token を発行しません。access token の期限が切れると再ログインになります。トークンはメモリ保持のみのため、リロード後は authorize へ再遷移します（IdP のセッションが残っていれば操作なしで戻ります）。
+- ログアウトは Discovery の `end_session_endpoint` を使う RP-initiated logout です。`VITE_OIDC_POST_LOGOUT_REDIRECT_URI` で戻り先を変更できます（既定 `${origin}/`）。
+
 ## テスト・品質（Phase 6）
 
 主要なデータ変換と書き込みフローを vitest で担保し、`vp check`（format / lint / typecheck）とテストを CI で回します。
