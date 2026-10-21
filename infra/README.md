@@ -201,13 +201,13 @@ SPA は `VITE_OIDC_ISSUER`・`VITE_OIDC_CLIENT_ID`・`VITE_OIDC_REDIRECT_URI`（
 | `VITE_OIDC_SCOPE` | frontend build | 任意 | 既定 `openid profile`。Kanidm では `openid profile email` も可 |
 | `VITE_OIDC_RESOURCE` | frontend build | 任意 | AuthZ の resource identifier（RFC 8707）。未設定だと AuthZ は opaque token を発行する |
 | `VITE_OIDC_POST_LOGOUT_REDIRECT_URI` | frontend build | 任意 | 既定 `${origin}/` |
-| `CSP_CONNECT_SRC` | frontend runtime | OIDC 利用時は必須 | Kanidm のオリジン（`connect-src` に追加） |
+| `CSP_CONNECT_SRC` | frontend runtime | OIDC 利用時は必須 | IdP のオリジン（`connect-src` に追加） |
 
 バックエンド側の `OIDC_ISSUER` / `OIDC_AUDIENCE` と、トークンの `iss` / `aud` / `typ` を一致させてください。AuthZ の `aud` は resource identifier の配列です。
 
 リロード後は IdP セッションを使って authorize へ再リダイレクトし（サイレント再ログイン）、期限前には refresh_token で更新します。Kanidm は refresh_token の再利用でセッションを失効させるため、同時更新は 1 リクエストに集約し、更新後の refresh_token に置き換えます。401 と refresh 失敗は再ログインに倒します。AuthZ は refresh token を発行しないため、access token の期限切れ後は再ログインになります。ログアウトはメモリのトークン破棄までで、Kanidm は RP-initiated logout（`end_session_endpoint`）を公開していないため、Kanidm セッション自体を終えるには Kanidm 側でログアウトしてください。
 
-SPA は IdP の Discovery / token エンドポイントをブラウザから直接叩くため、IdP 側で SPA のオリジンに CORS を許可する必要があります（Kanidm は OAuth2 クライアントに設定した redirect origin に応じて CORS を返します）。CSP の `connect-src` には `CSP_CONNECT_SRC` で Kanidm のオリジンを追加します。
+SPA は IdP の Discovery / token エンドポイントをブラウザから直接叩くため、IdP 側で SPA のオリジンに CORS を許可する必要があります（Kanidm は OAuth2 クライアントに設定した redirect origin に応じて CORS を返します）。CSP の `connect-src` には `CSP_CONNECT_SRC` で IdP のオリジンを追加します。
 
 #### CSP
 
@@ -218,7 +218,7 @@ SPA は IdP の Discovery / token エンドポイントをブラウザから直�
 | `CSP_SCRIPT_SRC` | ビルド時に自動生成 | `index.html` のインライン `<script>` の SHA-256。手動設定しない |
 | `CSP_CONNECT_SRC` | frontend の実行時環境変数 | `connect-src` に追加するオリジン（空白区切り）。既定は空で `'self'` のみ |
 
-`CSP_CONNECT_SRC` には Kanidm の **issuer と token エンドポイントのオリジン**を指定します（例: `https://idm.example.com`）。Kanidm では通常どちらも同じオリジンです。JWKS は Rust が取得するためブラウザの CSP には不要ですが、リバースプロキシ等で別オリジンに置いている場合でも Rust 側の到達性だけを確認してください。`VITE_API_BASE_URL` を空以外にして API を別オリジンへ向ける構成にした場合は、そのオリジンも `CSP_CONNECT_SRC` に追加してください（Compose のステージング構成では `/api/*` を同一オリジンで Traefik から Rust へ転送するため不要です）。
+`CSP_CONNECT_SRC` には IdP の **issuer と token エンドポイントのオリジン**を指定します（例: `https://idm.example.com`）。Kanidm では通常どちらも同じオリジンです。JWKS は Rust が取得するためブラウザの CSP には不要ですが、リバースプロキシ等で別オリジンに置いている場合でも Rust 側の到達性だけを確認してください。`VITE_API_BASE_URL` を空以外にして API を別オリジンへ向ける構成にした場合は、そのオリジンも `CSP_CONNECT_SRC` に追加してください（Compose のステージング構成では `/api/*` を同一オリジンで Traefik から Rust へ転送するため不要です）。
 
 `img-src` は `'self' data: https://www.gstatic.com` に固定しています。`https://www.gstatic.com` は Emoji Kitchen の合成画像（#82）をブラウザから直接取得するためです。新しい外部画像オリジンを追加する場合は、`/` と `/assets/` の両方の `img-src` と `container` ジョブの検査を更新してください。
 
@@ -228,7 +228,7 @@ CSP の確認例（ステージング）:
 
 ```bash
 curl -fsSI https://<公開ホスト>/ | grep -i content-security-policy
-# connect-src に Kanidm のオリジンが入っていること
+# connect-src に IdP のオリジンが入っていること
 ```
 
 さらにブラウザの DevTools Console に CSP 違反（`Refused to execute inline script` 等）が出ないこと、ログイン → チャンネル作成 → メッセージ送信 → 別タブ/再読み込みで反映、を確認します。CI の `container` ジョブは既定の CSP と `CSP_CONNECT_SRC` の展開に加え、ビルド済み nginx に対して Playwright（`pnpm test:e2e:csp`）を実行し、CSP 違反が 0 件であることとテーマ初期化 script の実行を検証します。
@@ -241,7 +241,7 @@ curl -fsSI https://<公開ホスト>/ | grep -i content-security-policy
 - SPA のオリジンからの Discovery / token への CORS を許可する。
 - `VITE_OIDC_ISSUER` を token の `iss` と完全一致させる（末尾スラッシュの有無を含む）。`OIDC_AUDIENCE` は Kanidm では `VITE_OIDC_CLIENT_ID`、AuthZ では `VITE_OIDC_RESOURCE` と同じ値にする。
 - `VITE_OIDC_SCOPE` は Kanidm では `openid profile email`、AuthZ では `openid profile` を基本とする。Kanidm 側で scope を絞る場合は `preferred_username` / `name` / `email` がトークンに含まれることを確認する。
-- `CSP_CONNECT_SRC` に Kanidm のオリジンを設定する。
+- `CSP_CONNECT_SRC` に IdP のオリジンを設定する。
 - Rust を `ENVIRONMENT=production`・`DEV_AUTH_ENABLED=false` で起動し、`/api/users/me`・Shape・REST が Bearer で通ることを確認する。
 - リロード後のサイレント再ログイン、refresh_token のローテーション、401 時の再ログインがループしないことを確認する。
 
