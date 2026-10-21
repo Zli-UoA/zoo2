@@ -2,7 +2,7 @@ import { useTranslation } from "react-i18next";
 import { Link } from "@tanstack/react-router";
 import { useLiveQuery } from "@tanstack/react-db";
 import { cn } from "cn";
-import { ArchiveIcon, HashIcon, LockIcon, PlusIcon } from "lucide-react";
+import { ArchiveIcon, HashIcon, LockIcon, PlusIcon, SearchIcon, XIcon } from "lucide-react";
 import { useMemo, useState } from "react";
 
 import { useCurrentUser } from "../../hooks/useCurrentUser";
@@ -11,8 +11,10 @@ import type { ChannelRow } from "../../lib/electric/types";
 import { SyncStatus } from "../SyncStatus";
 import { useShell } from "../layout/shell-context";
 import { Button } from "../ui/button";
+import { inputClassName } from "../ui/input-styles";
 import { ScrollArea } from "../ui/scroll-area";
 import { Skeleton } from "../ui/skeleton";
+import { filterChannels } from "./channelSearch";
 import { CreateChannelDialog } from "./CreateChannelDialog";
 
 const SKELETON_ROWS = [0, 1, 2, 3, 4];
@@ -34,6 +36,8 @@ export function ChannelSidebar({
   const { channelUsers } = getCollections();
   const { currentUserId, isLoading: currentUserLoading } = useCurrentUser();
   const [createOpen, setCreateOpen] = useState(false);
+  const [query, setQuery] = useState("");
+  const filteredChannels = useMemo(() => filterChannels(channels, query), [channels, query]);
 
   // 一覧の各チャンネルについて現在ユーザーの参加状態を出す。`channel_user` の
   // 購読は `getCollections()` が 1 本だけ持つため、ここで直接 live query を張っても
@@ -78,6 +82,40 @@ export function ChannelSidebar({
         </Button>
       </div>
 
+      {!loading && !error && channels.length > 0 ? (
+        <div className="px-3 pb-2">
+          <div className="relative">
+            <SearchIcon
+              aria-hidden="true"
+              className="pointer-events-none absolute top-1/2 left-2.5 size-4 -translate-y-1/2 text-muted-foreground"
+            />
+            <input
+              type="text"
+              className={cn(inputClassName(), "w-full pr-8 pl-8")}
+              placeholder={t("channels.searchPlaceholder")}
+              aria-label={t("channels.searchPlaceholder")}
+              value={query}
+              onChange={(event) => setQuery(event.target.value)}
+              autoComplete="off"
+              spellCheck={false}
+            />
+            {query ? (
+              <Button
+                type="button"
+                variant="ghost"
+                size="icon-xs"
+                className="absolute top-1/2 right-1 -translate-y-1/2"
+                aria-label={t("channels.searchClear")}
+                title={t("channels.searchClear")}
+                onClick={() => setQuery("")}
+              >
+                <XIcon />
+              </Button>
+            ) : null}
+          </div>
+        </div>
+      ) : null}
+
       <ScrollArea className="min-h-0 flex-1">
         <div className="flex flex-col gap-0.5 px-2 pb-2">
           {loading ? (
@@ -92,8 +130,10 @@ export function ChannelSidebar({
                 {t("channels.createAction")}
               </Button>
             </div>
+          ) : filteredChannels.length === 0 ? (
+            <p className="px-2 py-4 text-sm text-muted-foreground">{t("channels.searchEmpty")}</p>
           ) : (
-            channels.map((channel) => {
+            filteredChannels.map((channel) => {
               const isActive = shell.selectedChannelId === channel.id;
               const isJoined = joinedChannelIds.has(channel.id);
               return (
