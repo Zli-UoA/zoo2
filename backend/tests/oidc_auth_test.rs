@@ -1337,3 +1337,114 @@ async fn test_legacy_display_name_repaired_once_without_overwriting_edits() -> a
 
     Ok(())
 }
+
+#[tokio::test]
+async fn test_display_name_repair_does_not_overwrite_concurrent_user_edit() -> anyhow::Result<()> {
+    let mock_server = MockServer::start().await;
+    let jwks_path = "/.well-known/jwks.json";
+    let userinfo_path = "/oauth2/openid/zoo-client/userinfo";
+
+    // 1. UserInfo 障害時に旧フォールバックでユーザーを作成する
+    mount_jwks(&mock_server, jwks_path).await;
+    mount_discovery(&mock_server, jwks_path, userinfo_path).await;
+    Mock::given(method("GET"))
+        .and(path(userinfo_path))
+        .respond_with(ResponseTemplate::new(500))
+        .mount(&mock_server)
+        .await;
+
+    let (app, state, oidc_cfg) = setup_test_app(&mock_server, true).await;
+
+    let sub = format!("concurrent-edit-sub-{}", uuid::Uuid::new_v4().simple());
+    let token = generate_token(
+        TEST_KEY1_PEM,
+        "test-key-1",
+        &oidc_cfg.issuer,
+        &oidc_cfg.audience,
+        &sub,
+        None,
+        None,
+        None,
+        3600,
+    );
+
+    let req = Request::builder()
+        .uri("/api/users/me")
+        .header("Authorization", format!("Bearer {token}"))
+        .body(Body::empty())?;
+    let resp = app.oneshot(req).await?;
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = to_bytes(resp.into_body(), usize::MAX).await?;
+    let user_json: Value = serde_json::from_slice(&body)?;
+    let user_id = user_json["id"]
+        .as_str()
+        .expect("id must be string")
+        .to_string();
+    assert_eq!(user_json["display_name"], "user");
+
+    // 2. UserInfo の応答を遅延させ、その間に本人の表示名編集を模擬する
+    mock_server.reset().await;
+    mount_jwks(&mock_server, jwks_path).await;
+    mount_discovery(&mock_server, jwks_path, userinfo_path).await;
+    Mock::given(method("GET"))
+        .and(path(userinfo_path))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_delay(std::time::Duration::from_millis(500))
+                .set_body_json(json!({
+                    "sub": &sub,
+                    "preferred_username": "legacy_user",
+                    "name": "Recovered User",
+                })),
+        )
+        .mount(&mock_server)
+        .await;
+
+    let state2 = AppState::new(state.db.clone(), state.config.clone());
+    let app2 = create_router(state2);
+    let req2 = Request::builder()
+        .uri("/api/users/me")
+        .header("Authorization", format!("Bearer {token}"))
+        .body(Body::empty())?;
+    let handle = tokio::spawn(async move { app2.oneshot(req2).await });
+
+    // UserInfo へのリクエストが届くまで待つ (届いた時点では応答は保留中)
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(2);
+    loop {
+        let received = mock_server.received_requests().await.unwrap_or_default();
+        if received
+            .iter()
+            .any(|request| request.url.path() == userinfo_path)
+        {
+            break;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "UserInfo request was not observed"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+
+    let mut db = state.db.clone();
+    let mut tx = db.transaction().await?;
+    let now = backend::models::now_utc_millis();
+    User::update_by_id(user_id.as_str())
+        .display_name("Edited By User")
+        .updated_at(Some(now))
+        .exec(&mut tx)
+        .await?;
+    tx.commit().await?;
+
+    let resp2 = handle.await??;
+    assert_eq!(resp2.status(), StatusCode::OK);
+    let body2 = to_bytes(resp2.into_body(), usize::MAX).await?;
+    let user_json2: Value = serde_json::from_slice(&body2)?;
+    // UserInfo の応答が遅れている間に本人が編集した表示名を上書きしない
+    assert_eq!(user_json2["display_name"], "Edited By User");
+
+    let mut db = state.db.clone();
+    let stored_user = User::get_by_id(&mut db, user_id.as_str()).await?;
+    assert_eq!(stored_user.display_name, "Edited By User");
+
+    Ok(())
+}

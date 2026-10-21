@@ -12,11 +12,16 @@ use crate::{
 };
 
 type UserCacheMap = HashMap<(String, String), (AuthUser, Instant)>;
+type ProfileRepairAttemptMap = HashMap<String, Instant>;
+
+/// UserInfo が名前を返さないユーザーへの補正試行を抑止する期間
+const PROFILE_REPAIR_RETRY_INTERVAL: Duration = Duration::from_secs(3600);
 
 /// 認証済みユーザーのインメモリキャッシュ (JIT 解決結果のキャッシュ)
 #[derive(Clone, Default)]
 pub struct UserResolutionCache {
     entries: Arc<RwLock<UserCacheMap>>,
+    profile_repair_attempts: Arc<RwLock<ProfileRepairAttemptMap>>,
 }
 
 impl UserResolutionCache {
@@ -43,6 +48,27 @@ impl UserResolutionCache {
         }
         let expires_at = Instant::now() + ttl;
         cache.insert((iss, sub), (user, expires_at));
+    }
+
+    /// 直近に表示名の補正を試みたかどうか。
+    ///
+    /// UserInfo が名前を返さないユーザーに対して、5分ごとの外部呼び出しが
+    /// 繰り返されるのを防ぐ。一定期間経過後は再試行する。
+    pub async fn should_attempt_profile_repair(&self, user_id: &str) -> bool {
+        let attempts = self.profile_repair_attempts.read().await;
+        attempts
+            .get(user_id)
+            .map(|attempted_at| attempted_at.elapsed() >= PROFILE_REPAIR_RETRY_INTERVAL)
+            .unwrap_or(true)
+    }
+
+    pub async fn mark_profile_repair_attempted(&self, user_id: &str) {
+        let mut attempts = self.profile_repair_attempts.write().await;
+        if attempts.len() > 10000 {
+            attempts
+                .retain(|_, attempted_at| attempted_at.elapsed() < PROFILE_REPAIR_RETRY_INTERVAL);
+        }
+        attempts.insert(user_id.to_string(), Instant::now());
     }
 }
 
@@ -163,6 +189,17 @@ mod tests {
     fn test_default_clients_construction() {
         let _http_client = AppState::default_http_client();
         let _electric_client = AppState::default_electric_client();
+    }
+
+    #[tokio::test]
+    async fn test_profile_repair_attempt_cache() {
+        let cache = UserResolutionCache::new();
+
+        assert!(cache.should_attempt_profile_repair("user-1").await);
+        cache.mark_profile_repair_attempted("user-1").await;
+        assert!(!cache.should_attempt_profile_repair("user-1").await);
+        // 別ユーザーの補正試行には影響しない
+        assert!(cache.should_attempt_profile_repair("user-2").await);
     }
 
     #[test]

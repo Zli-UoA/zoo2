@@ -139,6 +139,7 @@ async fn fetch_userinfo_for_profile(
 /// 未編集 (`updated_at` が NULL) かつ旧フォールバック値のままの場合だけ更新する。
 async fn repair_legacy_display_name(
     db: &toasty::Db,
+    user_cache: &UserResolutionCache,
     jwks_verifier: &JwksVerifier,
     oidc_config: &OidcConfig,
     access_token: &str,
@@ -149,25 +150,45 @@ async fn repair_legacy_display_name(
         return Ok(user);
     }
 
+    if !user_cache.should_attempt_profile_repair(&user.id).await {
+        return Ok(user);
+    }
+
     let user_info =
         fetch_userinfo_for_profile(jwks_verifier, oidc_config, access_token, claims).await;
     let Some(candidate) = display_name_candidate(claims, user_info.as_ref()) else {
+        // UserInfo が成功しても名前が無い場合は、しばらく再試行を抑止する
+        if user_info.is_some() {
+            user_cache.mark_profile_repair_attempted(&user.id).await;
+        }
         return Ok(user);
     };
 
     let new_display_name = sanitize_for_display_name(candidate, &user.user_name);
     if new_display_name == user.display_name || new_display_name == FALLBACK_USER_NAME {
+        if user_info.is_some() {
+            user_cache.mark_profile_repair_attempted(&user.id).await;
+        }
         return Ok(user);
     }
 
     let mut db_client = db.clone();
     let mut tx = db_client.transaction().await?;
     let now = crate::models::now_utc_millis();
-    User::update_by_id(user.id.as_str())
-        .display_name(new_display_name.as_str())
-        .updated_at(Some(now))
-        .exec(&mut tx)
-        .await?;
+    // 読み取り後に本人が PATCH /api/users/me で編集している可能性があるため、
+    // 旧フォールバックのまま未編集であることを UPDATE の条件にも含める。
+    User::filter(
+        User::fields()
+            .id()
+            .eq(user.id.as_str())
+            .and(User::fields().display_name().eq(FALLBACK_USER_NAME))
+            .and(User::fields().updated_at().is_none()),
+    )
+    .update()
+    .display_name(new_display_name.as_str())
+    .updated_at(Some(now))
+    .exec(&mut tx)
+    .await?;
     let updated_user = User::get_by_id(&mut tx, user.id.as_str()).await?;
     tx.commit().await?;
 
@@ -233,9 +254,16 @@ pub async fn resolve_or_provision_user(
 
     if let Some(identity) = existing_identity {
         let user = User::get_by_id(&mut db_client, &identity.user_id).await?;
-        let user =
-            repair_legacy_display_name(db, jwks_verifier, oidc_config, access_token, claims, user)
-                .await?;
+        let user = repair_legacy_display_name(
+            db,
+            user_cache,
+            jwks_verifier,
+            oidc_config,
+            access_token,
+            claims,
+            user,
+        )
+        .await?;
 
         let auth_user = AuthUser {
             id: user.id,
