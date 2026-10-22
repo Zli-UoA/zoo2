@@ -87,9 +87,9 @@ function isPendingAuthorization(value: unknown): value is PendingAuthorization {
 }
 
 /**
- * ログアウト直後は IdP セッションが残っていても自動再ログインしない。
- * Kanidm は RP-initiated logout を提供しないため、これを立てないと
- * 「ログアウト → 即座にサイレント再ログイン」になり操作が無意味になる。
+ * ログアウト直後は自動再ログインしない。IdP が RP-initiated logout に
+ * 対応していない場合、このフラグがないと「ログアウト → 即座に
+ * サイレント再ログイン」になり操作が無意味になる。
  */
 export function markLoggedOut(storage: AuthStorage): void {
   storage.setItem(LOGGED_OUT_KEY, "1");

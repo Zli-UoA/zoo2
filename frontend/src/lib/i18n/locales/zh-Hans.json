@@ -41,7 +41,7 @@
   "auth": {
     "logout": "退出登录",
     "loggedOut": "您已退出登录",
-    "loggedOutHelp": "Kanidm 会话仍有效，请重新登录以继续。",
+    "loggedOutHelp": "请重新登录以继续。",
     "login": "登录",
     "failed": "无法登录",
     "retry": "重新登录",
