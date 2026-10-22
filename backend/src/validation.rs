@@ -15,7 +15,7 @@ pub(crate) const RESERVED_USER_NAMES: &[&str] =
 
 /// チャンネル名のバリデーション:
 /// - 1 文字以上 80 文字以下
-/// - Unicode の文字・結合文字・数字と半角ハイフン (`-`) のみ許可
+/// - Unicode の文字・結合文字・数字と半角ハイフン (`-`)・アンダースコア (`_`) のみ許可
 /// - 予約語 (`all`, `channel`, `everyone`, `here`, `general`) の禁止
 pub fn validate_channel_name(name: &str) -> Result<(), AppError> {
     if name.trim().is_empty() {
@@ -37,10 +37,10 @@ pub fn validate_channel_name(name: &str) -> Result<(), AppError> {
     }
 
     static CHANNEL_NAME_PATTERN: LazyLock<regex::Regex> =
-        LazyLock::new(|| regex::Regex::new(r"\A[\p{L}\p{M}\p{N}-]+\z").unwrap());
+        LazyLock::new(|| regex::Regex::new(r"\A[\p{L}\p{M}\p{N}_-]+\z").unwrap());
     if !CHANNEL_NAME_PATTERN.is_match(name) {
         return Err(AppError::BadRequest(
-            "Channel name can only contain letters, combining marks, numbers, and hyphens"
+            "Channel name can only contain letters, combining marks, numbers, hyphens, and underscores"
                 .to_string(),
         ));
     }
@@ -382,6 +382,8 @@ mod tests {
             "開発相談",
             "日々のメモ",
             "サーバー-開発-123",
+            "開発_相談",
+            "dev_123",
             "ﾁｬﾝﾈﾙ",
             "か\u{3099}",
             "𠮷野家",
@@ -402,7 +404,6 @@ mod tests {
             "　",
             "\t",
             "hello world",
-            "開発_相談",
             "開発・相談",
             "開発😀",
             "#general",

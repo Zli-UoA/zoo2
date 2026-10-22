@@ -4,7 +4,7 @@
   },
   "channels": {
     "renameTitle": "Rename channel",
-    "renameHelp": "Use up to 80 letters, numbers, or hyphens (-). Spaces, emoji, other symbols, and reserved names are not allowed.",
+    "renameHelp": "Use up to 80 letters, numbers, hyphens (-), or underscores (_). Spaces, emoji, other symbols, and reserved names are not allowed.",
     "saveName": "Save",
     "savingName": "Saving…",
     "title": "Channels",

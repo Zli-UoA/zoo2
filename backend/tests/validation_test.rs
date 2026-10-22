@@ -124,9 +124,22 @@ async fn test_validation_and_duplicate_conflicts() -> anyhow::Result<()> {
         .header("X-Dev-User", &created_user_id)
         .body(Body::from(serde_json::to_vec(&json!({
             "id": normal_id,
-            "channel_name": format!("開発-Team-{}", uuid::Uuid::new_v4().simple()),
+            "channel_name": format!("開発_Team-{}", uuid::Uuid::new_v4().simple()),
         }))?))?;
     assert_eq!(app.clone().oneshot(req).await?.status(), StatusCode::OK);
+    let renamed = format!("相談_Team-{}", uuid::Uuid::new_v4().simple());
+    let req = Request::builder()
+        .method("PATCH")
+        .uri(format!("/api/channels/{normal_id}"))
+        .header("content-type", "application/json")
+        .header("X-Dev-User", &created_user_id)
+        .body(Body::from(serde_json::to_vec(
+            &json!({ "channel_name": renamed }),
+        )?))?;
+    let resp = app.clone().oneshot(req).await?;
+    assert_eq!(resp.status(), StatusCode::OK);
+    let updated: Value = serde_json::from_slice(&to_bytes(resp.into_body(), usize::MAX).await?)?;
+    assert_eq!(updated["data"]["channel_name"], renamed);
     let mut ids = [created_user_id.as_str(), target_user_id.as_str()];
     ids.sort();
     let dm_name = format!("dm:{}:{}", ids[0], ids[1]);
@@ -134,7 +147,6 @@ async fn test_validation_and_duplicate_conflicts() -> anyhow::Result<()> {
         dm_name.as_str(),
         "dm:group:test",
         "dm:",
-        "開発_相談",
         "開発:相談",
         "開発😀",
         "開発 相談",
