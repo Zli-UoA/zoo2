@@ -56,6 +56,16 @@ pub(crate) fn filter_electric_params(raw_query: &HashMap<String, String>) -> Vec
         .collect()
 }
 
+/// Electric の API secret をクエリパラメータ `secret` として付ける
+///
+/// Electric は `Authorization` ヘッダーではなく `secret` クエリパラメータだけを見るため、
+/// Bearer で送ると「Invalid API secret」の 401 になる。
+pub(crate) fn append_electric_secret(params: &mut Vec<(String, String)>, secret: Option<&str>) {
+    if let Some(secret) = secret {
+        params.push(("secret".to_string(), secret.to_string()));
+    }
+}
+
 /// Channels Shape の where 句とパラメータの純粋組み立て
 pub(crate) fn channels_shape_where(user_id: &str) -> (String, Vec<(&'static str, &str)>) {
     (
@@ -136,18 +146,22 @@ async fn proxy_shape(
         state.config.electric_url.trim_end_matches('/')
     );
 
-    let mut req = state.electric_client.get(&url).query(&params);
+    append_electric_secret(&mut params, state.config.electric_secret.as_deref());
 
-    if let Some(ref secret) = state.config.electric_secret {
-        req = req.bearer_auth(secret);
-    }
-
-    let upstream_resp = req.send().await.map_err(|err| {
-        tracing::error!("Failed to connect to Electric server at {url}: {err}");
-        AppError::Internal(anyhow::anyhow!(
-            "Failed to connect to Electric server: {err}"
-        ))
-    })?;
+    let upstream_resp = state
+        .electric_client
+        .get(&url)
+        .query(&params)
+        .send()
+        .await
+        .map_err(|err| {
+            // reqwest のエラーはクエリ付き URL を含むため、secret がログに出ないよう外す
+            let err = err.without_url();
+            tracing::error!("Failed to connect to Electric server at {url}: {err}");
+            AppError::Internal(anyhow::anyhow!(
+                "Failed to connect to Electric server: {err}"
+            ))
+        })?;
 
     let status =
         StatusCode::from_u16(upstream_resp.status().as_u16()).unwrap_or(StatusCode::BAD_GATEWAY);
@@ -438,6 +452,24 @@ async fn notifications_shape(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_append_electric_secret() {
+        let mut params = vec![("offset".to_string(), "-1".to_string())];
+        append_electric_secret(&mut params, Some("s3cret"));
+        assert!(params.contains(&("secret".to_string(), "s3cret".to_string())));
+
+        let mut params = Vec::new();
+        append_electric_secret(&mut params, None);
+        assert!(params.is_empty());
+    }
+
+    #[test]
+    fn test_client_supplied_secret_is_not_forwarded() {
+        let mut raw = HashMap::new();
+        raw.insert("secret".to_string(), "from-client".to_string());
+        assert!(filter_electric_params(&raw).is_empty());
+    }
 
     #[test]
     fn test_filter_electric_params() {
