@@ -12,6 +12,7 @@ import {
   matchesKitchenQuery,
 } from "../../../lib/emoji/kitchen";
 import { Button } from "../../ui/button";
+import { Skeleton } from "../../ui/skeleton";
 import {
   Dialog,
   DialogContent,
@@ -184,15 +185,38 @@ export function ReactionPicker({
             ))}
           </div>
           <h3 className="font-medium">{t("reactions.kitchen")}</h3>
-          {error ? (
-            <div role="alert">
-              {t("reactions.kitchenLoadError")}
-              <Button variant="outline" size="sm" onClick={retry}>
-                {t("reactions.retry")}
-              </Button>
+          {!catalog ? (
+            <div className="flex flex-col gap-4">
+              <div className="flex items-start gap-2">
+                {[t("reactions.firstEmoji"), t("reactions.secondEmoji")].map((label) => (
+                  <div key={label} className="flex min-w-0 flex-1 flex-col gap-1 text-xs">
+                    <span>{label}</span>
+                    {error ? (
+                      <div
+                        aria-hidden="true"
+                        className="h-8 w-full rounded-lg border border-dashed bg-muted/30"
+                      />
+                    ) : (
+                      <Skeleton className="h-8 w-full rounded-lg" />
+                    )}
+                  </div>
+                ))}
+              </div>
+              <div
+                role={error ? "alert" : "status"}
+                className="flex min-h-28 flex-col items-center justify-center gap-2"
+              >
+                <p className={error ? "text-destructive" : undefined}>
+                  {error ? t("reactions.kitchenLoadError") : t("reactions.kitchenLoading")}
+                </p>
+                {error ? (
+                  <Button variant="outline" size="sm" onClick={retry}>
+                    {t("reactions.retry")}
+                  </Button>
+                ) : null}
+              </div>
+              <Button disabled>{t("reactions.addCombination")}</Button>
             </div>
-          ) : !catalog ? (
-            <p role="status">{t("reactions.kitchenLoading")}</p>
           ) : (
             <>
               <div className="flex items-start gap-2">

@@ -98,7 +98,7 @@ export function ChannelBrowserDialog({
           <DialogDescription>{t("channels.browseDescription")}</DialogDescription>
         </DialogHeader>
 
-        <div className="relative">
+        <div className="relative min-w-0">
           <SearchIcon
             aria-hidden="true"
             className="pointer-events-none absolute top-1/2 left-2.5 size-4 -translate-y-1/2 text-muted-foreground"
@@ -139,52 +139,54 @@ export function ChannelBrowserDialog({
           ) : null}
         </div>
 
-        {discoverableChannels.length === 0 ? (
-          <p className="px-2 py-6 text-center text-sm text-muted-foreground">
-            {query.trim() ? t("channels.searchEmpty") : t("channels.browseEmpty")}
-          </p>
-        ) : (
-          <ScrollArea className="max-h-80">
-            <ul className="flex flex-col gap-0.5 pr-2">
-              {discoverableChannels.map((channel) => {
-                const joinable = isChannelJoinable(channel);
-                const joining = joiningId === channel.id;
-                return (
-                  <li key={channel.id} className="flex items-center gap-2 rounded-lg px-1 py-1.5">
-                    <HashIcon className="ml-1 size-4 shrink-0 opacity-60" aria-hidden="true" />
-                    <div className="min-w-0 flex-1">
-                      <p className="truncate text-sm text-foreground">{channel.channel_name}</p>
-                      {channel.description ? (
-                        <p className="truncate text-xs text-muted-foreground">
-                          {channel.description}
-                        </p>
+        <div className="h-80 min-h-0 min-w-0">
+          {discoverableChannels.length === 0 ? (
+            <p className="flex h-full items-center justify-center px-2 text-center text-sm text-muted-foreground">
+              {query.trim() ? t("channels.searchEmpty") : t("channels.browseEmpty")}
+            </p>
+          ) : (
+            <ScrollArea className="h-full">
+              <ul className="flex flex-col gap-0.5 pr-2">
+                {discoverableChannels.map((channel) => {
+                  const joinable = isChannelJoinable(channel);
+                  const joining = joiningId === channel.id;
+                  return (
+                    <li key={channel.id} className="flex items-center gap-2 rounded-lg px-1 py-1.5">
+                      <HashIcon className="ml-1 size-4 shrink-0 opacity-60" aria-hidden="true" />
+                      <div className="min-w-0 flex-1">
+                        <p className="truncate text-sm text-foreground">{channel.channel_name}</p>
+                        {channel.description ? (
+                          <p className="truncate text-xs text-muted-foreground">
+                            {channel.description}
+                          </p>
+                        ) : null}
+                      </div>
+                      {channel.archive_at ? (
+                        <span className="shrink-0 rounded bg-muted px-1.5 py-0.5 text-[0.65rem] text-muted-foreground">
+                          {t("moderation.archived")}
+                        </span>
                       ) : null}
-                    </div>
-                    {channel.archive_at ? (
-                      <span className="shrink-0 rounded bg-muted px-1.5 py-0.5 text-[0.65rem] text-muted-foreground">
-                        {t("moderation.archived")}
-                      </span>
-                    ) : null}
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      disabled={
-                        !joinable || joiningId !== null || currentUserLoading || !currentUserId
-                      }
-                      onClick={() => void joinChannel(channel)}
-                    >
-                      {joining
-                        ? t("channels.joining")
-                        : joinable
-                          ? t("channels.join")
-                          : t("channels.joinUnavailable")}
-                    </Button>
-                  </li>
-                );
-              })}
-            </ul>
-          </ScrollArea>
-        )}
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        disabled={
+                          !joinable || joiningId !== null || currentUserLoading || !currentUserId
+                        }
+                        onClick={() => void joinChannel(channel)}
+                      >
+                        {joining
+                          ? t("channels.joining")
+                          : joinable
+                            ? t("channels.join")
+                            : t("channels.joinUnavailable")}
+                      </Button>
+                    </li>
+                  );
+                })}
+              </ul>
+            </ScrollArea>
+          )}
+        </div>
 
         {errorCause ? (
           <p className="text-xs text-destructive">
