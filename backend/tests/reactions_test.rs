@@ -49,7 +49,7 @@ async fn test_reaction_flow_and_txid() -> anyhow::Result<()> {
     let channel_id = uuid::Uuid::new_v4().to_string();
     let channel_payload = json!({
         "id": channel_id,
-        "channel_name": format!("pub_{}", uuid::Uuid::new_v4().simple()),
+        "channel_name": format!("pub-{}", uuid::Uuid::new_v4().simple()),
         "description": "Public Channel",
         "is_private": false,
     });
@@ -243,7 +243,7 @@ async fn test_reaction_normalization_and_formats() -> anyhow::Result<()> {
     let channel_id = uuid::Uuid::new_v4().to_string();
     let channel_payload = json!({
         "id": channel_id,
-        "channel_name": format!("ch_{}", uuid::Uuid::new_v4().simple()),
+        "channel_name": format!("ch-{}", uuid::Uuid::new_v4().simple()),
         "is_private": false,
     });
     let req = Request::builder()
@@ -367,7 +367,7 @@ async fn test_reaction_permissions_and_archived_channel() -> anyhow::Result<()> 
     let private_channel_id = uuid::Uuid::new_v4().to_string();
     let channel_payload = json!({
         "id": private_channel_id,
-        "channel_name": format!("priv_{}", uuid::Uuid::new_v4().simple()),
+        "channel_name": format!("priv-{}", uuid::Uuid::new_v4().simple()),
         "is_private": true,
     });
     let req = Request::builder()
@@ -469,7 +469,7 @@ async fn test_concurrent_reaction_idempotency() -> anyhow::Result<()> {
 
     let channel_payload = json!({
         "id": channel_id,
-        "channel_name": format!("ch_{}", uuid::Uuid::new_v4().simple()),
+        "channel_name": format!("ch-{}", uuid::Uuid::new_v4().simple()),
         "is_private": false,
     });
     let req = Request::builder()
@@ -576,7 +576,7 @@ async fn test_reaction_on_deleted_message() -> anyhow::Result<()> {
 
     let channel_payload = json!({
         "id": channel_id,
-        "channel_name": format!("ch_{}", uuid::Uuid::new_v4().simple()),
+        "channel_name": format!("ch-{}", uuid::Uuid::new_v4().simple()),
         "is_private": false,
     });
     let req = Request::builder()
@@ -681,7 +681,7 @@ async fn test_reaction_kitchen_validation_and_pk_conflict() -> anyhow::Result<()
         .header("X-Dev-User", &user_id)
         .body(Body::from(serde_json::to_vec(&json!({
             "id": channel_id,
-            "channel_name": format!("pub_{}", uuid::Uuid::new_v4().simple()),
+            "channel_name": format!("pub-{}", uuid::Uuid::new_v4().simple()),
             "is_private": false,
         }))?))?;
     let resp = app.clone().oneshot(req).await?;

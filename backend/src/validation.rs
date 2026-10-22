@@ -15,7 +15,7 @@ pub(crate) const RESERVED_USER_NAMES: &[&str] =
 
 /// チャンネル名のバリデーション:
 /// - 1 文字以上 80 文字以下
-/// - 空白のみの名前と制御文字・改行を禁止し、それ以外の文字は許可
+/// - Unicode の文字・結合文字・数字と半角ハイフン (`-`) のみ許可
 /// - 予約語 (`all`, `channel`, `everyone`, `here`, `general`) の禁止
 pub fn validate_channel_name(name: &str) -> Result<(), AppError> {
     if name.trim().is_empty() {
@@ -36,12 +36,12 @@ pub fn validate_channel_name(name: &str) -> Result<(), AppError> {
         )));
     }
 
-    if name
-        .chars()
-        .any(|c| c.is_control() || matches!(c, '\u{2028}' | '\u{2029}'))
-    {
+    static CHANNEL_NAME_PATTERN: LazyLock<regex::Regex> =
+        LazyLock::new(|| regex::Regex::new(r"\A[\p{L}\p{M}\p{N}-]+\z").unwrap());
+    if !CHANNEL_NAME_PATTERN.is_match(name) {
         return Err(AppError::BadRequest(
-            "Channel name cannot contain control characters or line separators".to_string(),
+            "Channel name can only contain letters, combining marks, numbers, and hyphens"
+                .to_string(),
         ));
     }
 
@@ -374,35 +374,25 @@ mod tests {
     #[test]
     fn test_validate_channel_name() {
         assert!(validate_channel_name("general-chat").is_ok());
-        assert!(validate_channel_name("dev_123").is_ok());
+        assert!(validate_channel_name("dev-123").is_ok());
 
         for name in [
             "ざつだん",
             "チャンネル",
             "開発相談",
             "日々のメモ",
-            "サーバー_開発-123",
+            "サーバー-開発-123",
             "ﾁｬﾝﾈﾙ",
             "か\u{3099}",
             "𠮷野家",
             "General",
-            "hello world",
-            "日本語　空白",
-            "#general",
-            "test@",
-            "開発・相談",
-            "開発😀",
-            "開発/相談",
-            "開発ABC",
             "équipe",
             "فريق",
-            "👩‍💻",
-            "<開発> & \"相談\"",
-            "path\\name",
+            "cafe\u{301}",
         ] {
             assert!(validate_channel_name(name).is_ok(), "{name}");
         }
-        for character in ["あ", "𠮷", "😀"] {
+        for character in ["あ", "𠮷"] {
             assert!(validate_channel_name(&character.repeat(80)).is_ok());
             assert!(validate_channel_name(&character.repeat(81)).is_err());
         }
@@ -411,14 +401,25 @@ mod tests {
             " ",
             "　",
             "\t",
+            "hello world",
+            "開発_相談",
+            "開発・相談",
+            "開発😀",
+            "#general",
+            "test@",
+            "開発/相談",
+            "開発\\相談",
+            "開発.相談",
+            "開発:相談",
+            "開発—相談",
+            "開発−相談",
             "開発\n相談",
             "開発\r相談",
-            "開発\t相談",
             "開発\0相談",
-            "開発\u{7f}相談",
-            "開発\u{85}相談",
             "開発\u{2028}相談",
             "開発\u{2029}相談",
+            "開発\u{200b}相談",
+            "dm:00000000-0000-0000-0000-000000000001:00000000-0000-0000-0000-000000000002",
         ] {
             assert!(validate_channel_name(name).is_err(), "{name:?}");
         }

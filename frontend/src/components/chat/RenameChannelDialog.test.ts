@@ -107,7 +107,7 @@ describe("RenameChannelDialog", () => {
     await flush(settle);
     expect(onOpenChange).toHaveBeenCalledWith(false);
   });
-  it.each(["開発チーム_ざつだん-123", "𠮷".repeat(80), "Team 開発 👩‍💻 / #相談", "😀".repeat(80)])(
+  it.each(["開発チーム-ざつだん-123", "𠮷".repeat(80), "Team-開発-相談"])(
     "accepts and persists channel name %s",
     async (name) => {
       const draft = { channel_name: "original" };
