@@ -11,6 +11,7 @@ pub struct Channel {
     pub description: Option<String>,
     pub created_user_id: String,
     pub is_private: bool,
+    pub is_dm: bool,
     pub created_at: jiff::civil::DateTime,
     pub updated_at: Option<jiff::civil::DateTime>,
     pub archive_at: Option<jiff::civil::DateTime>,

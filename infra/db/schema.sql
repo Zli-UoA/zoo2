@@ -14,6 +14,7 @@ CREATE TABLE channels (
   description varchar(255),
   created_user_id text NOT NULL,
   is_private boolean NOT NULL,
+  is_dm boolean NOT NULL DEFAULT false,
   created_at timestamp(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at timestamp(3),
   archive_at timestamp(3),
@@ -24,6 +25,9 @@ CREATE TABLE channels (
     FOREIGN KEY (created_user_id) REFERENCES users (id)
     ON UPDATE CASCADE ON DELETE RESTRICT
 );
+
+CREATE INDEX idx_channels_is_dm ON channels (is_dm);
+
 
 CREATE TABLE messages (
   id text NOT NULL,
