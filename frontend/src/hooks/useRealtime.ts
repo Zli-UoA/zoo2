@@ -14,14 +14,14 @@ export function useUsers() {
   return useLiveQuery((q) => q.from({ users }));
 }
 
-/** 論理削除されていないチャンネル一覧を購読する。 */
+/** 論理削除されていないチャンネル一覧をチャンネル名の昇順で購読する。 */
 export function useActiveChannels() {
   const { channels } = getCollections();
   return useLiveQuery((q) =>
     q
       .from({ channels })
       .where(({ channels }) => isNull(channels.deleted_at))
-      .orderBy(({ channels }) => channels.created_at),
+      .orderBy(({ channels }) => channels.channel_name, "asc"),
   );
 }
 
