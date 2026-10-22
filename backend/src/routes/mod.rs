@@ -1,4 +1,5 @@
 pub mod channels;
+pub mod dms;
 pub mod health;
 pub mod messages;
 pub mod notifications;
@@ -54,6 +55,7 @@ pub fn create_router(state: AppState) -> Router {
         .merge(health::router())
         .merge(users::router())
         .merge(channels::router())
+        .merge(dms::router())
         .merge(messages::router())
         .merge(notifications::router())
         .merge(shapes::router())

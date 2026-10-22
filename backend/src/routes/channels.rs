@@ -49,6 +49,7 @@ pub struct ChannelResponse {
     pub description: Option<String>,
     pub created_user_id: String,
     pub is_private: bool,
+    pub is_dm: bool,
     pub created_at: String,
     pub updated_at: Option<String>,
     pub archive_at: Option<String>,
@@ -63,6 +64,7 @@ impl From<Channel> for ChannelResponse {
             description: c.description,
             created_user_id: c.created_user_id,
             is_private: c.is_private,
+            is_dm: c.is_dm,
             created_at: c.created_at.to_string(),
             updated_at: c.updated_at.map(|t| t.to_string()),
             archive_at: c.archive_at.map(|t| t.to_string()),
@@ -136,6 +138,7 @@ async fn create_channel(
         description: payload.description,
         created_user_id: auth_user.id.as_str(),
         is_private: payload.is_private.unwrap_or(false),
+        is_dm: false,
         created_at: now,
         updated_at: None,
         archive_at: None,
@@ -194,8 +197,11 @@ async fn update_channel(
         )));
     }
 
-    let is_admin =
-        is_workspace_admin(&mut tx, &auth_user.id, state.config.dev_auth_enabled).await?;
+    let is_admin = if channel.is_dm {
+        false
+    } else {
+        is_workspace_admin(&mut tx, &auth_user.id, state.config.dev_auth_enabled).await?
+    };
 
     if channel.is_private {
         let membership = ChannelUser::filter(
@@ -208,16 +214,31 @@ async fn update_channel(
         .exec(&mut tx)
         .await?;
 
-        if membership.is_none() && !is_admin && channel.created_user_id != auth_user.id {
+        if membership.is_none()
+            && (!is_admin || channel.is_dm)
+            && (channel.created_user_id != auth_user.id || channel.is_dm)
+        {
             return Err(AppError::NotFound(format!(
                 "Channel not found with id: {id}"
             )));
         }
     }
 
-    if !can_manage_channel(&channel.created_user_id, &auth_user.id, is_admin) {
+    if channel.is_dm
+        || !can_manage_channel(
+            &channel.created_user_id,
+            &auth_user.id,
+            is_admin,
+            channel.is_dm,
+        )
+    {
         return Err(AppError::Forbidden(
-            "Only the channel creator or a workspace admin can update this channel".into(),
+            if channel.is_dm {
+                "Cannot update a direct message channel"
+            } else {
+                "Only the channel creator or a workspace admin can update this channel"
+            }
+            .into(),
         ));
     }
 
@@ -279,8 +300,11 @@ async fn delete_channel(
         )));
     }
 
-    let is_admin =
-        is_workspace_admin(&mut tx, &auth_user.id, state.config.dev_auth_enabled).await?;
+    let is_admin = if channel.is_dm {
+        false
+    } else {
+        is_workspace_admin(&mut tx, &auth_user.id, state.config.dev_auth_enabled).await?
+    };
 
     if channel.is_private {
         let membership = ChannelUser::filter(
@@ -293,16 +317,31 @@ async fn delete_channel(
         .exec(&mut tx)
         .await?;
 
-        if membership.is_none() && !is_admin && channel.created_user_id != auth_user.id {
+        if membership.is_none()
+            && (!is_admin || channel.is_dm)
+            && (channel.created_user_id != auth_user.id || channel.is_dm)
+        {
             return Err(AppError::NotFound(format!(
                 "Channel not found with id: {id}"
             )));
         }
     }
 
-    if !can_manage_channel(&channel.created_user_id, &auth_user.id, is_admin) {
+    if channel.is_dm
+        || !can_manage_channel(
+            &channel.created_user_id,
+            &auth_user.id,
+            is_admin,
+            channel.is_dm,
+        )
+    {
         return Err(AppError::Forbidden(
-            "Only the channel creator or a workspace admin can delete this channel".into(),
+            if channel.is_dm {
+                "Cannot delete a direct message channel"
+            } else {
+                "Only the channel creator or a workspace admin can delete this channel"
+            }
+            .into(),
         ));
     }
 
@@ -356,10 +395,10 @@ async fn join_channel(
         ));
     }
 
-    // プライベートチャンネルへの直接 join は禁止 (作成者または招待による追加のみ)
-    if !can_join(channel.is_private) {
+    // プライベートチャンネルまたは DM への直接 join は禁止
+    if !can_join(channel.is_private, channel.is_dm) {
         return Err(AppError::Forbidden(
-            "Cannot join a private channel directly. You must be added by the channel owner."
+            "Cannot join a private or DM channel directly. You must be added by the channel owner."
                 .into(),
         ));
     }
@@ -427,8 +466,11 @@ async fn add_channel_user(
         )));
     }
 
-    let is_admin =
-        is_workspace_admin(&mut tx, &auth_user.id, state.config.dev_auth_enabled).await?;
+    let is_admin = if channel.is_dm {
+        false
+    } else {
+        is_workspace_admin(&mut tx, &auth_user.id, state.config.dev_auth_enabled).await?
+    };
 
     if channel.is_private {
         let membership = ChannelUser::filter(
@@ -441,7 +483,10 @@ async fn add_channel_user(
         .exec(&mut tx)
         .await?;
 
-        if membership.is_none() && !is_admin && channel.created_user_id != auth_user.id {
+        if membership.is_none()
+            && (!is_admin || channel.is_dm)
+            && (channel.created_user_id != auth_user.id || channel.is_dm)
+        {
             return Err(AppError::NotFound(format!(
                 "Channel not found with id: {id}"
             )));
@@ -466,15 +511,20 @@ async fn add_channel_user(
         false
     };
 
-    if !can_add_member(
-        channel.is_private,
-        &channel.created_user_id,
-        &auth_user.id,
-        is_actor_member,
-        is_admin,
-    ) {
+    if channel.is_dm
+        || !can_add_member(
+            channel.is_private,
+            &channel.created_user_id,
+            &auth_user.id,
+            is_actor_member,
+            is_admin,
+            channel.is_dm,
+        )
+    {
         return Err(AppError::Forbidden(
-            if channel.is_private {
+            if channel.is_dm {
+                "Cannot add members to a direct message channel"
+            } else if channel.is_private {
                 "Only the channel creator or a workspace admin can add members to a private channel"
             } else {
                 "You must be a member, creator, or workspace admin of the channel to add other users"
@@ -550,7 +600,8 @@ async fn leave_channel(
 
     // 作成者が抜けると作成者不在のチャンネルになり、管理権限を失う。
     // UI でも退出ボタンを無効化しているが、API 直叩きに対する最終防衛線として拒否する。
-    if channel.created_user_id == auth_user.id {
+    // ※ DM チャンネルでは作成者も自由に退出可能
+    if !channel.is_dm && channel.created_user_id == auth_user.id {
         return Err(AppError::BadRequest(
             "The channel creator cannot leave the channel".into(),
         ));
@@ -621,8 +672,11 @@ async fn archive_channel(
         )));
     }
 
-    let is_admin =
-        is_workspace_admin(&mut tx, &auth_user.id, state.config.dev_auth_enabled).await?;
+    let is_admin = if channel.is_dm {
+        false
+    } else {
+        is_workspace_admin(&mut tx, &auth_user.id, state.config.dev_auth_enabled).await?
+    };
 
     if channel.is_private {
         let membership = ChannelUser::filter(
@@ -635,16 +689,31 @@ async fn archive_channel(
         .exec(&mut tx)
         .await?;
 
-        if membership.is_none() && !is_admin && channel.created_user_id != auth_user.id {
+        if membership.is_none()
+            && (!is_admin || channel.is_dm)
+            && (channel.created_user_id != auth_user.id || channel.is_dm)
+        {
             return Err(AppError::NotFound(format!(
                 "Channel not found with id: {id}"
             )));
         }
     }
 
-    if !can_manage_channel(&channel.created_user_id, &auth_user.id, is_admin) {
+    if channel.is_dm
+        || !can_manage_channel(
+            &channel.created_user_id,
+            &auth_user.id,
+            is_admin,
+            channel.is_dm,
+        )
+    {
         return Err(AppError::Forbidden(
-            "Only the channel creator or a workspace admin can archive this channel".into(),
+            if channel.is_dm {
+                "Cannot archive a direct message channel"
+            } else {
+                "Only the channel creator or a workspace admin can archive this channel"
+            }
+            .into(),
         ));
     }
 
@@ -694,8 +763,11 @@ async fn unarchive_channel(
         )));
     }
 
-    let is_admin =
-        is_workspace_admin(&mut tx, &auth_user.id, state.config.dev_auth_enabled).await?;
+    let is_admin = if channel.is_dm {
+        false
+    } else {
+        is_workspace_admin(&mut tx, &auth_user.id, state.config.dev_auth_enabled).await?
+    };
 
     if channel.is_private {
         let membership = ChannelUser::filter(
@@ -708,16 +780,31 @@ async fn unarchive_channel(
         .exec(&mut tx)
         .await?;
 
-        if membership.is_none() && !is_admin && channel.created_user_id != auth_user.id {
+        if membership.is_none()
+            && (!is_admin || channel.is_dm)
+            && (channel.created_user_id != auth_user.id || channel.is_dm)
+        {
             return Err(AppError::NotFound(format!(
                 "Channel not found with id: {id}"
             )));
         }
     }
 
-    if !can_manage_channel(&channel.created_user_id, &auth_user.id, is_admin) {
+    if channel.is_dm
+        || !can_manage_channel(
+            &channel.created_user_id,
+            &auth_user.id,
+            is_admin,
+            channel.is_dm,
+        )
+    {
         return Err(AppError::Forbidden(
-            "Only the channel creator or a workspace admin can unarchive this channel".into(),
+            if channel.is_dm {
+                "Cannot unarchive a direct message channel"
+            } else {
+                "Only the channel creator or a workspace admin can unarchive this channel"
+            }
+            .into(),
         ));
     }
 
@@ -775,8 +862,11 @@ async fn kick_channel_user(
         )));
     }
 
-    let actor_is_admin =
-        is_workspace_admin(&mut tx, &auth_user.id, state.config.dev_auth_enabled).await?;
+    let actor_is_admin = if channel.is_dm {
+        false
+    } else {
+        is_workspace_admin(&mut tx, &auth_user.id, state.config.dev_auth_enabled).await?
+    };
 
     if channel.is_private {
         let membership = ChannelUser::filter(
@@ -789,25 +879,39 @@ async fn kick_channel_user(
         .exec(&mut tx)
         .await?;
 
-        if membership.is_none() && !actor_is_admin && channel.created_user_id != auth_user.id {
+        if membership.is_none()
+            && (!actor_is_admin || channel.is_dm)
+            && (channel.created_user_id != auth_user.id || channel.is_dm)
+        {
             return Err(AppError::NotFound(format!(
                 "Channel not found with id: {id}"
             )));
         }
     }
 
-    let target_is_admin =
-        is_workspace_admin(&mut tx, &user_id, state.config.dev_auth_enabled).await?;
+    let target_is_admin = if channel.is_dm {
+        false
+    } else {
+        is_workspace_admin(&mut tx, &user_id, state.config.dev_auth_enabled).await?
+    };
 
-    if !can_kick_member(
-        &channel.created_user_id,
-        &auth_user.id,
-        &user_id,
-        actor_is_admin,
-        target_is_admin,
-    ) {
+    if channel.is_dm
+        || !can_kick_member(
+            &channel.created_user_id,
+            &auth_user.id,
+            &user_id,
+            actor_is_admin,
+            target_is_admin,
+            channel.is_dm,
+        )
+    {
         return Err(AppError::Forbidden(
-            "You do not have permission to kick this member".into(),
+            if channel.is_dm {
+                "Cannot kick members from a direct message channel"
+            } else {
+                "You do not have permission to kick this member"
+            }
+            .into(),
         ));
     }
 
@@ -934,43 +1038,67 @@ mod tests {
 
         // 1. プライベートチャンネル
         // - 作成者は追加可能
-        assert!(can_add_member(true, creator_id, creator_id, true, false));
-        assert!(can_add_member(true, creator_id, creator_id, false, false));
+        assert!(can_add_member(
+            true, creator_id, creator_id, true, false, false
+        ));
+        assert!(can_add_member(
+            true, creator_id, creator_id, false, false, false
+        ));
         // - 管理者は追加可能
-        assert!(can_add_member(true, creator_id, "admin-id", false, true));
+        assert!(can_add_member(
+            true, creator_id, "admin-id", false, true, false
+        ));
         // - メンバーであっても非作成者は追加不可
-        assert!(!can_add_member(true, creator_id, member_id, true, false));
+        assert!(!can_add_member(
+            true, creator_id, member_id, true, false, false
+        ));
         // - 未参加ユーザーは追加不可
         assert!(!can_add_member(
             true,
             creator_id,
             non_member_id,
             false,
-            false
+            false,
+            false,
         ));
 
         // 2. パブリックチャンネル
         // - 作成者は常に追加可能
-        assert!(can_add_member(false, creator_id, creator_id, true, false));
-        assert!(can_add_member(false, creator_id, creator_id, false, false));
+        assert!(can_add_member(
+            false, creator_id, creator_id, true, false, false
+        ));
+        assert!(can_add_member(
+            false, creator_id, creator_id, false, false, false
+        ));
         // - 既存メンバーは追加可能
-        assert!(can_add_member(false, creator_id, member_id, true, false));
+        assert!(can_add_member(
+            false, creator_id, member_id, true, false, false
+        ));
         // - 未参加の非作成者は追加不可 (公開チャンネルに他人を勝手に追加できない)
         assert!(!can_add_member(
             false,
             creator_id,
             non_member_id,
             false,
-            false
+            false,
+            false,
+        ));
+
+        // 3. DM
+        assert!(!can_add_member(
+            true, creator_id, creator_id, true, true, true
         ));
     }
 
     #[test]
     fn test_can_join() {
         // パブリックチャンネルなら直接参加可能
-        assert!(can_join(false));
+        assert!(can_join(false, false));
         // プライベートチャンネルなら直接参加不可
-        assert!(!can_join(true));
+        assert!(!can_join(true, false));
+        // DMなら直接参加不可
+        assert!(!can_join(false, true));
+        assert!(!can_join(true, true));
     }
 
     #[test]
@@ -978,9 +1106,11 @@ mod tests {
         let creator_id = "creator-user-id";
         let other_id = "other-user-id";
 
-        assert!(can_manage_channel(creator_id, creator_id, false));
-        assert!(can_manage_channel(creator_id, other_id, true));
-        assert!(!can_manage_channel(creator_id, other_id, false));
+        assert!(can_manage_channel(creator_id, creator_id, false, false));
+        assert!(can_manage_channel(creator_id, other_id, true, false));
+        assert!(!can_manage_channel(creator_id, other_id, false, false));
+        // DM
+        assert!(!can_manage_channel(creator_id, creator_id, true, true));
     }
 
     #[test]

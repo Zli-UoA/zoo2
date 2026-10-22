@@ -374,8 +374,11 @@ async fn delete_message(
         )));
     }
 
-    let is_admin =
-        is_workspace_admin(&mut tx, &auth_user.id, state.config.dev_auth_enabled).await?;
+    let is_admin = if channel.is_dm {
+        false
+    } else {
+        is_workspace_admin(&mut tx, &auth_user.id, state.config.dev_auth_enabled).await?
+    };
 
     if channel.is_private {
         let membership = ChannelUser::filter(
@@ -389,7 +392,8 @@ async fn delete_message(
         .await?;
 
         // ワークスペース管理者でもなくメンバーでもない場合は存在隠蔽 (404)
-        if membership.is_none() && !is_admin {
+        // DM の場合は管理者であってもメンバーでなければ存在隠蔽 (404)
+        if membership.is_none() && (!is_admin || channel.is_dm) {
             return Err(AppError::NotFound(format!("Message not found: {id}")));
         }
     }
@@ -399,14 +403,17 @@ async fn delete_message(
         &channel.created_user_id,
         &auth_user.id,
         is_admin,
+        channel.is_dm,
     ) {
         return Err(AppError::Forbidden(
             "You do not have permission to delete this message".into(),
         ));
     }
 
-    // アーカイブ中の削除制限: 管理者およびチャンネル作成者は例外として強制削除を許可
-    if channel.archive_at.is_some() && !is_admin && auth_user.id != channel.created_user_id {
+    // アーカイブ中の削除制限: 管理者およびチャンネル作成者は例外として強制削除を許可 (DM の場合は管理者・作成者特権無効)
+    if channel.archive_at.is_some()
+        && (channel.is_dm || (!is_admin && auth_user.id != channel.created_user_id))
+    {
         return Err(AppError::BadRequest(
             "Cannot delete message in an archived channel".into(),
         ));
