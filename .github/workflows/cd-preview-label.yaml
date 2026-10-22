@@ -1,0 +1,35 @@
+name: Preview label
+# The site1 Flux Operator deploys open PRs that carry the preview label (zoo2-infra docs/preview.md).
+# Ready same-repository PRs get the label; a PR converted back to draft loses it to free a slot.
+# pull_request_target supplies a token that can label; this workflow never checks out or runs PR code.
+on:
+  pull_request_target:
+    types: [opened, reopened, ready_for_review, converted_to_draft]
+permissions:
+  contents: read
+concurrency:
+  group: preview-label-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+jobs:
+  label:
+    # Fork PRs publish no images, so a preview of them would only fail and take a slot.
+    if: github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: write
+      issues: write
+    steps:
+      - uses: actions/github-script@v8
+        with:
+          script: |
+            // Read the current state: the event may be stale by the time this job runs.
+            const {data: pr} = await github.rest.pulls.get({...context.repo, pull_number: context.payload.pull_request.number});
+            if (pr.state !== 'open') return;
+            const labeled = pr.labels.some(l => l.name === 'preview');
+            if (!pr.draft && !labeled) {
+              await github.rest.issues.addLabels({...context.repo, issue_number: pr.number, labels: ['preview']});
+              core.notice('Added the preview label');
+            } else if (pr.draft && labeled) {
+              await github.rest.issues.removeLabel({...context.repo, issue_number: pr.number, name: 'preview'});
+              core.notice('Removed the preview label from a draft');
+            }
