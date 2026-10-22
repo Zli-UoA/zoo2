@@ -138,6 +138,7 @@ test("OIDC PKCE ログイン後に API と Shape が Bearer で通る", async ({
   });
   await page.getByRole("button", { name: "ログアウト" }).click();
   await expect(page.getByRole("heading", { name: "ログアウトしました" })).toBeVisible();
+  expect(new URL(page.url()).searchParams.get("state")).toBeTruthy();
   await page.screenshot({ path: testInfo.outputPath("06-logged-out.png") });
 
   await page.getByRole("button", { name: "ログイン", exact: true }).click();
@@ -150,9 +151,20 @@ test("OIDC PKCE ログイン後に API と Shape が Bearer で通る", async ({
     content: 'button[aria-label="Open TanStack Devtools"]{display:none !important}',
   });
 
-  // 同じ公開チャンネルを開くと、他人のメッセージには編集/削除が出ない。
-  await page.getByRole("link", { name: new RegExp(channelName) }).click();
+  // サイドバーは参加中のみなので、「チャンネルを探す」から検索して参加する（#112）。
+  await page.getByRole("button", { name: "チャンネルを探す" }).first().click();
+  await page.getByRole("searchbox", { name: "チャンネル名で検索" }).fill(channelName);
+  const browserJoinResponse = page.waitForResponse(
+    (response) => response.request().method() === "POST" && response.url().endsWith("/join"),
+  );
+  await page.getByRole("button", { name: "参加する", exact: true }).click();
+  await browserJoinResponse;
   await expect(page.getByRole("heading", { name: "メッセージ" })).toBeVisible();
+  expect(new URL(page.url()).pathname).toBe(`/channels/${channelId}`);
+  // 参加したチャンネルはサイドバーにも出る。
+  await expect(page.getByRole("link", { name: new RegExp(channelName) })).toBeVisible();
+
+  // 同じ公開チャンネルを開くと、他人のメッセージには編集/削除が出ない。
   const otherRow = page.getByRole("listitem").filter({ hasText: message });
   await expect(otherRow).toBeVisible();
   await otherRow.hover();
@@ -160,7 +172,25 @@ test("OIDC PKCE ログイン後に API と Shape が Bearer で通る", async ({
   await expect(otherRow.getByRole("button", { name: "削除" })).toHaveCount(0);
   await page.screenshot({ path: testInfo.outputPath("07-other-users-message.png") });
 
-  // 自分のメッセージには改めて編集/削除が出る。
+  // 退出すると、未参加の公開チャンネルでは composer の代わりに参加導線が出る（#92）。
+  await page.getByRole("button", { name: /メンバー/ }).click();
+  const leaveResponse = page.waitForResponse(
+    (response) => response.request().method() === "POST" && response.url().endsWith("/leave"),
+  );
+  await page.getByRole("button", { name: "退出", exact: true }).click();
+  await leaveResponse;
+  await expect(page.getByRole("button", { name: "参加して投稿" })).toBeVisible();
+  await expect(page.getByPlaceholder("メッセージを送信")).toHaveCount(0);
+  await page.screenshot({ path: testInfo.outputPath("08-join-to-post.png") });
+
+  // 参加して投稿から再参加し、自分のメッセージには編集/削除が出る。
+  const rejoinResponse = page.waitForResponse(
+    (response) => response.request().method() === "POST" && response.url().endsWith("/join"),
+  );
+  await page.getByRole("button", { name: "参加して投稿" }).click();
+  await rejoinResponse;
+  await expect(page.getByPlaceholder("メッセージを送信")).toBeVisible();
+
   const ownMessage = `hello from bee ${channelName}`;
   await page.getByPlaceholder("メッセージを送信").fill(ownMessage);
   await page.getByRole("button", { name: "送信" }).click();
@@ -168,24 +198,18 @@ test("OIDC PKCE ログイン後に API と Shape が Bearer で通る", async ({
   await beeRow.hover();
   await expect(beeRow.getByRole("button", { name: "編集" })).toBeVisible();
   await expect(beeRow.getByRole("button", { name: "削除" })).toBeVisible();
-  await page.screenshot({ path: testInfo.outputPath("08-own-message-second-user.png") });
+  await page.screenshot({ path: testInfo.outputPath("09-own-message-second-user.png") });
 
-  // 参加 / 退出: 退出の本人確認は /api/users/me で解決した id で行われる（#49）。
-  // メンバーペインは既定で閉じているため、ヘッダの「メンバー」から開く。
-  await page.getByRole("button", { name: /メンバー/ }).click();
-  const joinResponse = page.waitForResponse(
-    (response) => response.request().method() === "POST" && response.url().endsWith("/join"),
-  );
-  await page.getByRole("button", { name: "参加", exact: true }).click();
-  await joinResponse;
-  await expect(page.getByRole("button", { name: "退出", exact: true })).toBeVisible();
-  await expect(page.getByText("あなた", { exact: true })).toBeVisible();
-  const leaveResponse = page.waitForResponse(
+  // 退出の本人確認は /api/users/me で解決した id で行われる（#49）。
+  // 1 回目の退出でメンバーペインは開いたままなので、そのまま退出する。
+  const finalLeaveResponse = page.waitForResponse(
     (response) => response.request().method() === "POST" && response.url().endsWith("/leave"),
   );
   await page.getByRole("button", { name: "退出", exact: true }).click();
-  await leaveResponse;
+  await finalLeaveResponse;
   await expect(page.getByRole("button", { name: "参加", exact: true })).toBeVisible();
   await expect(page.getByText("あなた", { exact: true })).toHaveCount(0);
-  await page.screenshot({ path: testInfo.outputPath("09-join-leave.png") });
+  await expect(page.getByRole("button", { name: "参加して投稿" })).toBeVisible();
+  await expect(page.getByPlaceholder("メッセージを送信")).toHaveCount(0);
+  await page.screenshot({ path: testInfo.outputPath("10-join-leave.png") });
 });

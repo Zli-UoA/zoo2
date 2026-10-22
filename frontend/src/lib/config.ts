@@ -1,4 +1,5 @@
 import { SHAPE_META, type ShapeName } from "./electric/schema";
+import { previewUserId } from "./preview";
 
 export type ShapeMode = "direct" | "proxy";
 
@@ -24,10 +25,12 @@ export interface OidcSettings {
   /** 未設定なら `${origin}/auth/callback` を実行時に組み立てる。 */
   redirectUri: string | null;
   scope: string;
+  /** RFC 8707 の resource。AuthZ は設定時だけ access token を JWT で発行する。 */
+  resource: string | null;
   postLogoutRedirectUri: string | null;
 }
 
-export const DEFAULT_OIDC_SCOPE = "openid profile email";
+export const DEFAULT_OIDC_SCOPE = "openid profile";
 
 export interface AppConfig {
   shapeMode: ShapeMode;
@@ -57,10 +60,12 @@ export interface ConfigEnv {
   VITE_API_BASE_URL?: string;
   VITE_SHAPE_PROXY_PATH?: string;
   VITE_DEV_USER_ID?: string;
+  VITE_PREVIEW_AUTH?: string;
   VITE_OIDC_ISSUER?: string;
   VITE_OIDC_CLIENT_ID?: string;
   VITE_OIDC_REDIRECT_URI?: string;
   VITE_OIDC_SCOPE?: string;
+  VITE_OIDC_RESOURCE?: string;
   VITE_OIDC_POST_LOGOUT_REDIRECT_URI?: string;
 }
 
@@ -134,6 +139,7 @@ function resolveOidc(env: ConfigEnv): OidcSettings | null {
     clientId,
     redirectUri: env.VITE_OIDC_REDIRECT_URI?.trim() || null,
     scope: env.VITE_OIDC_SCOPE?.trim() || DEFAULT_OIDC_SCOPE,
+    resource: env.VITE_OIDC_RESOURCE?.trim() || null,
     postLogoutRedirectUri: env.VITE_OIDC_POST_LOGOUT_REDIRECT_URI?.trim() || null,
   };
 }
@@ -157,6 +163,7 @@ export function resolveConfig(
   const isDev = env.DEV === true;
   const shapeMode = resolveShapeMode(env.VITE_SHAPE_MODE);
   const oidc = resolveOidc(env);
+  const preview = env.VITE_PREVIEW_AUTH === "true" && oidc === null;
   return {
     ...DEFAULT_CONFIG,
     shapeMode,
@@ -164,7 +171,9 @@ export function resolveConfig(
     electricShapeUrl: env.VITE_ELECTRIC_SHAPE_URL ?? DEFAULT_CONFIG.electricShapeUrl,
     apiBaseUrl: env.VITE_API_BASE_URL ?? DEFAULT_CONFIG.apiBaseUrl,
     shapeProxyPath: env.VITE_SHAPE_PROXY_PATH ?? DEFAULT_CONFIG.shapeProxyPath,
-    devUserId: resolveDevUserId(shapeMode, isDev, env.VITE_DEV_USER_ID, oidc !== null),
+    devUserId: preview
+      ? previewUserId()
+      : resolveDevUserId(shapeMode, isDev, env.VITE_DEV_USER_ID, oidc !== null),
     oidc,
     ...overrides,
   };

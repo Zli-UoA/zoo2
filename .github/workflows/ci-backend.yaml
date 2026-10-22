@@ -3,8 +3,11 @@ on:
   push:
     paths:
       - "backend/**"
-      - "infra/db/migrations/**"
-      - "infra/db/compose.yml"
+      - "infra/db/**"
+      - "infra/Dockerfile-backend-deploy"
+      - "infra/Dockerfile-migrate-deploy"
+      - "infra/compose.stg*.yaml"
+      - "rust-toolchain.toml"
       - ".github/workflows/ci-backend.yaml"
   workflow_dispatch:
 jobs:
@@ -71,6 +74,82 @@ jobs:
       - name: unit test
         run: |
           cargo test --lib
+
+  deploy-image:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      POSTGRES_PASSWORD: deploy-image-test
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Build production backend image
+        run: docker compose --project-directory . -f infra/compose.stg.yaml build backend
+
+      # compose の backend サービスは ENVIRONMENT=production なので、
+      # OIDC 未設定・空文字のままでは起動しないことを確認する。
+      - name: Reject production startup without OIDC configuration
+        run: |
+          set +e
+          output=$(docker compose --project-directory . -f infra/compose.stg.yaml run -T --rm --no-deps backend 2>&1)
+          rc=$?
+          set -e
+          printf '%s\n' "$output"
+          test "$rc" -ne 0
+          grep -q "OIDC configuration" <<<"$output"
+
+      - name: Reject production startup with empty OIDC configuration
+        env:
+          OIDC_ISSUER: ""
+          OIDC_AUDIENCE: ""
+          OIDC_CLIENT_ID: ""
+          OIDC_JWKS_URL: ""
+        run: |
+          set +e
+          output=$(docker compose --project-directory . -f infra/compose.stg.yaml run -T --rm --no-deps backend 2>&1)
+          rc=$?
+          set -e
+          printf '%s\n' "$output"
+          test "$rc" -ne 0
+          grep -q "OIDC configuration" <<<"$output"
+
+      - name: Start production backend with OIDC configuration
+        env:
+          OIDC_ISSUER: https://id.example
+          OIDC_AUDIENCE: zoo
+          OIDC_JWKS_URL: https://id.example/jwks
+        run: |
+          compose=(docker compose --project-directory . -f infra/compose.stg.yaml)
+          "${compose[@]}" build migrate
+          "${compose[@]}" up -d --wait postgres
+          "${compose[@]}" run -T --rm migrate
+          "${compose[@]}" up -d --wait electric
+          "${compose[@]}" up -d backend
+
+          backend_id=$("${compose[@]}" ps -q backend)
+          for _ in $(seq 1 60); do
+            if docker logs "$backend_id" 2>&1 | grep -q "Server listening"; then
+              env_dump=$(docker inspect --format '{{range .Config.Env}}{{println .}}{{end}}' "$backend_id")
+              grep -qx "OIDC_ISSUER=https://id.example" <<<"$env_dump"
+              grep -qx "OIDC_AUDIENCE=zoo" <<<"$env_dump"
+              grep -qx "OIDC_JWKS_URL=https://id.example/jwks" <<<"$env_dump"
+              docker run --rm --network "container:$backend_id" curlimages/curl:8.10.1 \
+                -fsS http://127.0.0.1:8000/health
+              exit 0
+            fi
+            sleep 1
+          done
+          "${compose[@]}" logs backend
+          exit 1
+
+      - name: Show container logs
+        if: failure()
+        run: docker compose --project-directory . -f infra/compose.stg.yaml logs backend postgres migrate electric
+
+      - name: Stop containers
+        if: always()
+        run: docker compose --project-directory . -f infra/compose.stg.yaml down -v --remove-orphans
 
   e2e:
     runs-on: ubuntu-latest

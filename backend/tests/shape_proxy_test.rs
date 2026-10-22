@@ -1,11 +1,19 @@
+use std::time::Duration;
+
 use axum::{
     body::Body,
     http::{Request, StatusCode},
 };
 use serde_json::json;
 use tower::ServiceExt;
+use wiremock::{
+    Mock, MockServer, ResponseTemplate,
+    matchers::{method, path},
+};
 
-use backend::{config::Config, db::init_db, routes::create_router, state::AppState};
+use backend::{
+    auth::oidc::JwksVerifier, config::Config, db::init_db, routes::create_router, state::AppState,
+};
 
 #[tokio::test]
 async fn test_shape_proxy_and_authorization() -> anyhow::Result<()> {
@@ -336,6 +344,110 @@ async fn test_notifications_shape_proxy() -> anyhow::Result<()> {
     let resp = app.clone().oneshot(bob_req).await?;
     assert_eq!(resp.status(), StatusCode::OK);
     assert!(resp.headers().contains_key("electric-handle"));
+
+    Ok(())
+}
+
+/// #65 回帰テスト (CI 用): http_client に短いタイムアウトが設定されていても、
+/// proxy_shape が electric_client を使用しているためタイムアウトエラー (500) にならず正常応答することを確認
+#[tokio::test]
+async fn test_shape_proxy_uses_electric_client_not_affected_by_http_client_timeout()
+-> anyhow::Result<()> {
+    dotenvy::dotenv().ok();
+    dotenvy::from_filename("../.env").ok();
+
+    let mock_electric = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/v1/shape"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_delay(Duration::from_millis(150))
+                .insert_header("electric-handle", "mock-handle")
+                .insert_header("electric-offset", "0_0"),
+        )
+        .mount(&mock_electric)
+        .await;
+
+    let mut config = Config::from_env();
+    config.dev_auth_enabled = true;
+    config.electric_url = mock_electric.uri();
+
+    let db = init_db(&config.database_url).await?;
+
+    // http_client に 50ms タイムアウトを設定
+    let http_client = reqwest::Client::builder()
+        .timeout(Duration::from_millis(50))
+        .build()?;
+    // electric_client はタイムアウトなしのデフォルト
+    let electric_client = AppState::default_electric_client();
+    let jwks_verifier = JwksVerifier::new(http_client.clone());
+
+    let state = AppState::with_clients(db, config, http_client, electric_client, jwks_verifier);
+    let app = create_router(state);
+
+    let req = Request::builder()
+        .method("GET")
+        .uri("/api/shapes/users?offset=-1")
+        .header("X-Dev-User", "00000000-0000-0000-0000-000000000001")
+        .body(Body::empty())?;
+
+    // 150ms かかるが、electric_client を使用しているため 50ms でタイムアウトせず 200 OK になる
+    let resp = app.oneshot(req).await?;
+    assert_eq!(resp.status(), StatusCode::OK);
+    assert_eq!(
+        resp.headers()
+            .get("electric-handle")
+            .and_then(|v| v.to_str().ok()),
+        Some("mock-handle")
+    );
+
+    Ok(())
+}
+
+/// #65 回帰テスト (実待機): Electric のロングポーリング待機 (既定20秒) において、
+/// 従来の 10秒タイムアウトで 500 にならず 11秒後も正常に応答できることを検証する。
+/// ※ 実行に 11秒かかるため、通常の CI では ignore とし `cargo test -- --ignored` で実行可能。
+#[tokio::test]
+#[ignore = "runs for 11s to verify long polling does not time out at 10s (regression test for #65)"]
+async fn test_shape_proxy_long_polling_regression_11s() -> anyhow::Result<()> {
+    dotenvy::dotenv().ok();
+    dotenvy::from_filename("../.env").ok();
+
+    let mock_electric = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/v1/shape"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_delay(Duration::from_secs(11))
+                .insert_header("electric-handle", "mock-handle")
+                .insert_header("electric-offset", "0_0"),
+        )
+        .mount(&mock_electric)
+        .await;
+
+    let mut config = Config::from_env();
+    config.dev_auth_enabled = true;
+    config.electric_url = mock_electric.uri();
+
+    let db = init_db(&config.database_url).await?;
+    // 本番環境と同じ AppState::new を使用 (http_client は 10s タイムアウト、electric_client はタイムアウトなし)
+    let state = AppState::new(db, config);
+    let app = create_router(state);
+
+    let req = Request::builder()
+        .method("GET")
+        .uri("/api/shapes/users?offset=-1&live=true")
+        .header("X-Dev-User", "00000000-0000-0000-0000-000000000001")
+        .body(Body::empty())?;
+
+    let resp = app.oneshot(req).await?;
+    assert_eq!(resp.status(), StatusCode::OK);
+    assert_eq!(
+        resp.headers()
+            .get("electric-handle")
+            .and_then(|v| v.to_str().ok()),
+        Some("mock-handle")
+    );
 
     Ok(())
 }

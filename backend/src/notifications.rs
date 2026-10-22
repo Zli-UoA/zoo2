@@ -25,7 +25,7 @@ pub fn is_mention_boundary(prev: char) -> bool {
     prev.is_whitespace()
         || matches!(
             prev,
-            '(' | '[' | '{' | '<' | '（' | '「' | '『' | '"' | '\''
+            '(' | '[' | '{' | '<' | '（' | '「' | '『' | '"' | '\'' | '。' | '、'
         )
 }
 
@@ -140,16 +140,9 @@ pub async fn create_message_notifications(
 
         if let Some(user) = user_opt
             && user.id != actor_id
+            && member_ids.contains(&user.id)
         {
-            let can_notify = if channel.is_private {
-                member_ids.contains(&user.id)
-            } else {
-                channel.deleted_at.is_none()
-            };
-
-            if can_notify {
-                targets_to_notify.insert(user.id, "mention");
-            }
+            targets_to_notify.insert(user.id, "mention");
         }
     }
 
@@ -305,5 +298,15 @@ mod tests {
         assert!(targets.user_candidates.is_empty());
         assert!(!targets.has_channel);
         assert!(!targets.has_here);
+    }
+
+    #[test]
+    fn test_extract_mentions_japanese_punctuation() {
+        let text = "こんにちは。@bob、確認してください、@alice！";
+        let targets = extract_mentions(text);
+
+        assert_eq!(targets.user_candidates.len(), 2);
+        assert_eq!(targets.user_candidates[0].raw, "bob");
+        assert_eq!(targets.user_candidates[1].raw, "alice");
     }
 }

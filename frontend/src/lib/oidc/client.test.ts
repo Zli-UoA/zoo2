@@ -17,6 +17,7 @@ const AUTHZ_ENDPOINT = "https://id.example/ui/oauth2";
 const TOKEN_ENDPOINT = "https://id.example/oauth2/token";
 const END_SESSION_ENDPOINT = "https://id.example/ui/logout";
 const CALLBACK_URL = "https://app.example/auth/callback";
+const RESOURCE = "https://zoo2.example";
 
 function memoryStorage(): AuthStorage {
   const map = new Map<string, string>();
@@ -64,26 +65,32 @@ interface Harness {
   client: OidcClient;
   storage: AuthStorage;
   assigned: string[];
+  reauthorizeCalls: string[];
   fetchMock: ReturnType<typeof vi.fn<OidcFetch>>;
   tokenCalls: URLSearchParams[];
   advance(ms: number): void;
   refreshCalls(): URLSearchParams[];
   /** token ハンドラが参照する nonce を、login 後に設定する。 */
   setNonce(nonce: string): void;
+  setHref(href: string): void;
 }
 
 interface HarnessOptions {
   discovery?: Record<string, unknown>;
   /** token エンドポイントの応答。`URLSearchParams` と現在の nonce を受け取る。 */
   token?: (body: URLSearchParams, nonce: string) => unknown;
+  resource?: string;
+  href?: string;
 }
 
 function createHarness(options: HarnessOptions = {}): Harness {
   const storage = memoryStorage();
   const assigned: string[] = [];
+  const reauthorizeCalls: string[] = [];
   const tokenCalls: URLSearchParams[] = [];
   let clock = 1_000_000;
   let lastNonce = "nonce";
+  let href = options.href ?? "https://app.example/";
 
   const fetchMock = vi.fn<OidcFetch>(async (input, init) => {
     if (input.endsWith("/.well-known/openid-configuration")) {
@@ -111,7 +118,9 @@ function createHarness(options: HarnessOptions = {}): Harness {
 
   const env: OidcEnvironment = {
     origin: "https://app.example",
-    href: "https://app.example/",
+    get href() {
+      return href;
+    },
     assign: (url) => void assigned.push(url),
     replaceUrl: () => {},
     storage,
@@ -122,12 +131,17 @@ function createHarness(options: HarnessOptions = {}): Harness {
     issuer: ISSUER,
     clientId: CLIENT_ID,
     environment: env,
+    resource: options.resource,
+  });
+  client.setReauthorizeHandler((returnTo) => {
+    reauthorizeCalls.push(returnTo);
   });
 
   return {
     client,
     storage,
     assigned,
+    reauthorizeCalls,
     fetchMock,
     tokenCalls,
     advance: (ms) => {
@@ -136,6 +150,9 @@ function createHarness(options: HarnessOptions = {}): Harness {
     refreshCalls: () => tokenCalls.filter((body) => body.get("grant_type") === "refresh_token"),
     setNonce: (value) => {
       lastNonce = value;
+    },
+    setHref: (value) => {
+      href = value;
     },
   };
 }
@@ -212,7 +229,8 @@ describe("OidcClient.login", () => {
     expect(url.searchParams.get("response_type")).toBe("code");
     expect(url.searchParams.get("client_id")).toBe(CLIENT_ID);
     expect(url.searchParams.get("redirect_uri")).toBe("https://app.example/auth/callback");
-    expect(url.searchParams.get("scope")).toBe("openid profile email");
+    expect(url.searchParams.get("scope")).toBe("openid profile");
+    expect(url.searchParams.get("resource")).toBeNull();
     expect(url.searchParams.get("code_challenge_method")).toBe("S256");
     expect(harness.assigned).toEqual([href]);
 
@@ -223,6 +241,20 @@ describe("OidcClient.login", () => {
       await createChallenge(pending?.verifier ?? ""),
     );
     expect(pending?.returnTo).toBe("/channels/abc?tab=info");
+  });
+
+  it("includes the resource in authorize and token requests when configured", async () => {
+    const harness = createHarness({ resource: RESOURCE });
+    const href = await harness.client.login();
+
+    expect(new URL(href).searchParams.get("resource")).toBe(RESOURCE);
+
+    const pending = takePending(harness.storage, 1_000_000)!;
+    savePending(harness.storage, pending);
+    harness.setNonce(pending.nonce);
+    await harness.client.handleCallback(`${CALLBACK_URL}?code=code-1&state=${pending.state}`);
+
+    expect(harness.tokenCalls[0]?.get("resource")).toBe(RESOURCE);
   });
 });
 
@@ -237,6 +269,7 @@ describe("OidcClient.handleCallback", () => {
     expect(body?.get("code")).toBe("code-1");
     expect(body?.get("client_id")).toBe(CLIENT_ID);
     expect(body?.get("redirect_uri")).toBe(CALLBACK_URL);
+    expect(body?.get("resource")).toBeNull();
     expect(nonce.length).toBeGreaterThan(0);
     const pendingVerifier = body?.get("code_verifier");
     expect(pendingVerifier).toBeTruthy();
@@ -485,6 +518,94 @@ describe("OidcClient.getAccessToken", () => {
   });
 });
 
+describe("OidcClient proactive reauthorization", () => {
+  it("does not request reauthorization while the token is comfortably valid", async () => {
+    const harness = createHarness();
+    await completeLogin(harness);
+
+    harness.advance(239_000);
+    await expect(harness.client.getAccessToken()).resolves.toBe("access-1");
+    expect(harness.reauthorizeCalls).toHaveLength(0);
+  });
+
+  it("starts reauthorization inside the skew window and keeps the usable token", async () => {
+    const harness = createHarness();
+    await completeLogin(harness);
+
+    harness.advance(240_000);
+    await expect(harness.client.getAccessToken()).resolves.toBe("access-1");
+    expect(harness.reauthorizeCalls).toHaveLength(1);
+    expect(harness.client.hasSession).toBe(true);
+  });
+
+  it("starts reauthorization at expiry and does not return the expired token", async () => {
+    const harness = createHarness();
+    await completeLogin(harness);
+
+    harness.advance(300_000);
+    await expect(harness.client.getAccessToken()).resolves.toBeNull();
+    expect(harness.reauthorizeCalls).toHaveLength(1);
+    expect(harness.client.hasSession).toBe(false);
+  });
+
+  it("starts reauthorization after expiry", async () => {
+    const harness = createHarness();
+    await completeLogin(harness);
+
+    harness.advance(300_001);
+    await expect(harness.client.getAccessToken()).resolves.toBeNull();
+    expect(harness.reauthorizeCalls).toHaveLength(1);
+  });
+
+  it("coalesces concurrent calls into one reauthorization", async () => {
+    const harness = createHarness();
+    await completeLogin(harness);
+
+    harness.advance(250_000);
+    const tokens = await Promise.all([
+      harness.client.getAccessToken(),
+      harness.client.getAccessToken(),
+      harness.client.getAccessToken(),
+    ]);
+
+    expect(tokens).toEqual(["access-1", "access-1", "access-1"]);
+    expect(harness.reauthorizeCalls).toHaveLength(1);
+  });
+
+  it("passes the current path as returnTo", async () => {
+    const harness = createHarness({ href: "https://app.example/channels/abc?tab=info#top" });
+    await completeLogin(harness);
+
+    harness.advance(290_000);
+    await harness.client.getAccessToken();
+
+    expect(harness.reauthorizeCalls).toEqual(["/channels/abc?tab=info#top"]);
+  });
+
+  it("keeps returnTo across a proactive reauthorization", async () => {
+    const harness = createHarness({ href: "https://app.example/channels/abc?tab=info#top" });
+    await completeLogin(harness);
+    harness.assigned.length = 0;
+    harness.client.setReauthorizeHandler((returnTo) => {
+      void harness.client.login(returnTo);
+    });
+
+    harness.advance(290_000);
+    await expect(harness.client.getAccessToken()).resolves.toBe("access-1");
+    await vi.waitFor(() => expect(harness.assigned).toHaveLength(1));
+
+    const pending = takePending(harness.storage, 1_290_000);
+    expect(pending?.returnTo).toBe("/channels/abc?tab=info#top");
+
+    savePending(harness.storage, pending!);
+    harness.setNonce(pending!.nonce);
+    const result = await harness.client.handleCallback(
+      `${CALLBACK_URL}?code=code-2&state=${pending!.state}`,
+    );
+    expect(result.returnTo).toBe("/channels/abc?tab=info#top");
+  });
+});
+
 describe("OidcClient.logout", () => {
   it("clears the session and redirects to end_session_endpoint when present", async () => {
     const harness = createHarness({
@@ -504,6 +625,7 @@ describe("OidcClient.logout", () => {
     expect(url.origin + url.pathname).toBe(END_SESSION_ENDPOINT);
     expect(url.searchParams.get("client_id")).toBe(CLIENT_ID);
     expect(url.searchParams.get("post_logout_redirect_uri")).toBe("https://app.example/");
+    expect(url.searchParams.get("state")).toBeTruthy();
     expect(url.searchParams.get("id_token_hint")).not.toBeNull();
     expect(harness.storage.getItem("zoo.oidc.loggedOut")).toBe("1");
   });

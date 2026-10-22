@@ -9,6 +9,11 @@ const png = Buffer.from(
   "base64",
 );
 
+async function chooseEmoji(page: Page, label: string, name: string) {
+  await page.getByRole("combobox", { name: label }).fill(name);
+  await page.getByRole("option", { name, exact: true }).click();
+}
+
 async function openMessage(page: Page) {
   const channelResponse = await page.request.post(`${api}/api/channels`, {
     headers,
@@ -97,13 +102,13 @@ test("failed writes roll back and catalog loading can be retried", async ({ page
   await expect(page.getByText("絵文字の一覧を読み込めませんでした。")).toBeVisible();
   await page.getByRole("button", { name: "再試行" }).click();
   await expect(page.getByRole("button", { name: "この組み合わせを追加" })).toBeEnabled();
-  await page.getByLabel("1つ目の絵文字").selectOption("1f602");
-  await page.getByLabel("2つ目の絵文字").selectOption("1f94d");
+  await chooseEmoji(page, "1つ目の絵文字", "joy");
+  await chooseEmoji(page, "2つ目の絵文字", "lacrosse");
   await expect(page.getByText("この組み合わせは未対応です。")).toBeVisible();
   await expect(page.getByRole("button", { name: "この組み合わせを追加" })).toBeDisabled();
   await page.unroute(imagePattern);
   await page.route(imagePattern, (route) => route.abort());
-  await page.getByLabel("2つ目の絵文字").selectOption("1f60d");
+  await chooseEmoji(page, "2つ目の絵文字", "heart eyes");
   await expect(
     page.getByText("画像を読み込めませんでした。別の組み合わせをお試しください。"),
   ).toBeVisible();

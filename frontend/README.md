@@ -142,6 +142,28 @@ cd frontend && pnpm dev           # http://localhost:5173
 - `channel_users` のサブクエリ経路（`electric#3143`）: Electric 1.8.1 を `ELECTRIC_FEATURE_FLAGS=allow_subqueries` で動かしており、`WHERE ... IN (SELECT ... WHERE user_id = $1)` の形がそのまま通ることを実測しました（`params[1]` により move-in / move-out も配信）。`$1` をリテラルへ埋め込む回避策は不要でした。
 - 書き込み: すべて REST（`{ data, txid }`）で行い、`txid` を `awaitTxId` で Electric の配信と突き合わせます。失敗時は楽観状態がロールバックします。
 
+## OIDC ログイン（AuthZ）
+
+SPA は Authorization Code + PKCE (S256) で AuthZ に接続します。`VITE_OIDC_ISSUER` と `VITE_OIDC_CLIENT_ID` を設定すると OIDC が有効になり、未設定なら従来どおり `X-Dev-User` の dev 経路で動きます。
+
+AuthZ の public client には redirect URI（既定 `${origin}/auth/callback`）を登録し、`frontend/.env` に次を設定します。
+
+```bash
+# 本番: https://account.zli.works/api/auth / ローカル: http://localhost:4321/api/auth
+VITE_OIDC_ISSUER=http://localhost:4321/api/auth
+VITE_OIDC_CLIENT_ID=<AuthZ で登録した public client ID>
+VITE_OIDC_REDIRECT_URI=http://localhost:5173/auth/callback
+VITE_OIDC_SCOPE=openid profile
+VITE_OIDC_RESOURCE=https://zoo2.zli.works
+```
+
+- 既定 scope は `openid profile` です。`VITE_OIDC_SCOPE` で上書きできます。AuthZ は `email` と `offline_access` を拒否するため要求しません。`ains` も現時点では要求せず、必要になったら `VITE_OIDC_SCOPE="openid profile ains"` のように追加します。
+- `VITE_OIDC_RESOURCE` は AuthZ の resource（RFC 8707）です。設定すると authorize と token 要求の両方に `resource` が付き、access token が `typ: at+jwt` の JWT になります。未設定だと AuthZ は opaque token（32 文字）を発行します。本番の resource identifier は `https://zoo2.zli.works`、ローカルは AuthZ 側で登録した値を使います。
+- AuthZ 側では resource identifier を `oauthResource` に登録し、zoo2 の client を `oauthClientResource` で紐付けます。AuthZ の管理画面で設定し、AuthZ の `docs/oidc.md` / `docs/deployment.md` も参照してください。
+- バックエンドの `OIDC_AUDIENCE` には `VITE_OIDC_RESOURCE` と同じ resource identifier を設定します（access token の `aud` は resource の配列）。`resource` を設定しないと opaque token のためバックエンドの JWT 検証は通りません。`OIDC_ISSUER` も `VITE_OIDC_ISSUER` と一致させます。
+- AuthZ は `offline_access` 非対応で refresh token を発行しません。access token の期限が切れると再ログインになります。トークンはメモリ保持のみのため、リロード後は authorize へ再遷移します（IdP のセッションが残っていれば操作なしで戻ります）。
+- ログアウトは Discovery の `end_session_endpoint` を使う RP-initiated logout です。`VITE_OIDC_POST_LOGOUT_REDIRECT_URI` で戻り先を変更できます（既定 `${origin}/`）。
+
 ## テスト・品質（Phase 6）
 
 主要なデータ変換と書き込みフローを vitest で担保し、`vp check`（format / lint / typecheck）とテストを CI で回します。
@@ -183,7 +205,7 @@ cd frontend && pnpm test:e2e:oidc
 - モック IdP は起動のたびに署名鍵を生成します。テストを再実行する際は、古い JWKS キャッシュが残らないようバックエンドも再起動してください。
 - CI では `.github/workflows/ci-frontend-auth-e2e.yaml` が PostgreSQL + Electric + Atlas migration + Rust を起動して同じテストを実行します。重いため `pnpm test` / `pnpm test:e2e` からは分離しています。
 
-CSP は `infra/frontend-nginx.conf`（コンテナ起動時に envsubst）で設定します。`script-src` はビルド時のインライン script ハッシュ、`connect-src` は同一オリジン + `CSP_CONNECT_SRC`（Kanidm のオリジン）、`img-src` は Emoji Kitchen 用の `https://www.gstatic.com` を含みます。ステージングでの設定・確認手順は [インフラの README](../infra/README.md#csp) を参照してください。
+CSP は `infra/frontend-nginx.conf`（コンテナ起動時に envsubst）で設定します。`script-src` はビルド時のインライン script ハッシュ、`connect-src` は同一オリジン + `CSP_CONNECT_SRC`（IdP のオリジン）、`img-src` は Emoji Kitchen 用の `https://www.gstatic.com` を含みます。ステージングでの設定・確認手順は [インフラの README](../infra/README.md#csp) を参照してください。
 
 `pnpm test:e2e:csp` は、nginx が配信するビルド済みのフロントに対して Playwright を 1 本実行し、`securitypolicyviolation` が 0 件であること、テーマ初期化 script が実行されること（`<html>` の `colorScheme`）を確認します。既定では `http://127.0.0.1:3100` を見るため、CI の `container` ジョブと同じようにイメージを起動してから実行してください。
 

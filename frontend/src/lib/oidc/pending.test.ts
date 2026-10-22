@@ -4,13 +4,17 @@ import {
   MAX_REDIRECT_ATTEMPTS,
   PENDING_TTL_MS,
   REDIRECT_ATTEMPT_WINDOW_MS,
+  clearAuthorizeRedirectPending,
   clearLoggedOut,
   clearPending,
   clearRedirectAttempts,
+  isAuthorizeRedirectPending,
   isLoggedOut,
+  markAuthorizeRedirectPending,
   markLoggedOut,
   markRedirectStarted,
   readLastRedirectAt,
+  readUnauthorizedRedirectState,
   recordRedirectAttempt,
   savePending,
   takePending,
@@ -117,5 +121,42 @@ describe("last redirect", () => {
   it("treats malformed values as absent", () => {
     storage.setItem("zoo.oidc.lastRedirectAt", "not-a-number");
     expect(readLastRedirectAt(storage)).toBeNull();
+  });
+});
+
+describe("authorize redirect pending", () => {
+  it("tracks whether an authorize redirect is in progress", () => {
+    expect(isAuthorizeRedirectPending(storage, 1_000)).toBe(false);
+    markAuthorizeRedirectPending(storage, 1_000);
+    expect(isAuthorizeRedirectPending(storage, 1_500)).toBe(true);
+    clearAuthorizeRedirectPending(storage);
+    expect(isAuthorizeRedirectPending(storage, 1_500)).toBe(false);
+  });
+
+  it("drops stale and malformed values", () => {
+    markAuthorizeRedirectPending(storage, 1_000);
+    expect(isAuthorizeRedirectPending(storage, 1_000 + PENDING_TTL_MS + 1)).toBe(false);
+    expect(storage.getItem("zoo.oidc.authorizeRedirectAt")).toBeNull();
+
+    storage.setItem("zoo.oidc.authorizeRedirectAt", "not-a-number");
+    expect(isAuthorizeRedirectPending(storage, 1_000)).toBe(false);
+  });
+
+  it("ignores 401s while redirecting and treats a just-finished redirect as a loop", () => {
+    markRedirectStarted(storage, 1_000);
+    markAuthorizeRedirectPending(storage, 1_000);
+    expect(readUnauthorizedRedirectState(storage, 2_000, 10_000)).toBe("redirecting");
+
+    clearAuthorizeRedirectPending(storage);
+    expect(readUnauthorizedRedirectState(storage, 2_000, 10_000)).toBe("recent");
+    expect(readUnauthorizedRedirectState(storage, 12_000, 10_000)).toBe("none");
+  });
+
+  it("stops ignoring 401s when a redirect marker is stale", () => {
+    markRedirectStarted(storage, 1_000);
+    markAuthorizeRedirectPending(storage, 1_000);
+
+    expect(readUnauthorizedRedirectState(storage, 11_001, 10_000)).toBe("none");
+    expect(storage.getItem("zoo.oidc.authorizeRedirectAt")).toBeNull();
   });
 });

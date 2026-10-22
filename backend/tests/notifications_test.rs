@@ -500,12 +500,21 @@ async fn test_notifications_p2_p3_fixes() -> anyhow::Result<()> {
     assert_eq!(dave_reply_notifs[0].notification_type, "reply");
     assert_eq!(dave_reply_notifs[0].actor_id, alice_id);
 
-    // 2. [P3] 文末句読点付きメンション & メール・URL 除外テスト
-    // Alice が「Thanks @bob. Please email test@example.com or visit https://example.com/@here」を投稿
+    // Bob をチャンネルに参加させる (Bob はメンバー、Dave は非メンバー)
+    let req = Request::builder()
+        .method("POST")
+        .uri(format!("/api/channels/{public_ch_id}/join"))
+        .header("X-Dev-User", &bob_id)
+        .body(Body::empty())?;
+    let resp = app.clone().oneshot(req).await?;
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    // 2. [P3] 文末句読点付きメンション & 日本語句読点境界 & メール・URL 除外 & 非メンバーメンション除外テスト
+    // Alice が「こんにちは。Thanks @bob. @dave Please email test@example.com or visit https://example.com/@here」を投稿
     let p3_msg_id = uuid::Uuid::new_v4().to_string();
     let p3_content = format!(
-        "Thanks @{}. Please email test@example.com or visit https://example.com/@here",
-        bob_username
+        "こんにちは。Thanks @{}. @{} Please email test@example.com or visit https://example.com/@here",
+        bob_username, dave_username
     );
     let req = Request::builder()
         .method("POST")
@@ -520,7 +529,7 @@ async fn test_notifications_p2_p3_fixes() -> anyhow::Result<()> {
     let resp = app.clone().oneshot(req).await?;
     assert_eq!(resp.status(), StatusCode::OK);
 
-    // [P3 検証 1]: 文末に '.' があっても Bob 宛てに mention 通知が作成されていること
+    // [P3 検証 1]: メンバー Bob 宛てに mention 通知が作成されていること (句点直後・文末ピリオド両方の抽出成功)
     let bob_notifs = Notification::filter(
         Notification::fields()
             .user_id()
@@ -532,8 +541,8 @@ async fn test_notifications_p2_p3_fixes() -> anyhow::Result<()> {
     assert_eq!(bob_notifs.len(), 1);
     assert_eq!(bob_notifs[0].notification_type, "mention");
 
-    // [P3 検証 2]: @here が URL の一部にあるため、全メンバーへの @here 通知は作成されないこと (Alice/Dave に通知なし)
-    let dave_here_notifs = Notification::filter(
+    // [P2 検証 2]: 非メンバー Dave 宛てには mention 通知が作成されないこと (チャンネル所属メンバー限定)
+    let dave_mention_notifs = Notification::filter(
         Notification::fields()
             .user_id()
             .eq(dave_id.as_str())
@@ -541,7 +550,18 @@ async fn test_notifications_p2_p3_fixes() -> anyhow::Result<()> {
     )
     .exec(&mut check_db)
     .await?;
-    assert_eq!(dave_here_notifs.len(), 0);
+    assert_eq!(dave_mention_notifs.len(), 0);
+
+    // [P3 検証 3]: @here が URL の一部にあるため、全メンバーへの @here 通知は作成されないこと (Alice/Bob/Dave に @here 通知なし)
+    let alice_here_notifs = Notification::filter(
+        Notification::fields()
+            .user_id()
+            .eq(alice_id.as_str())
+            .and(Notification::fields().message_id().eq(p3_msg_id.as_str())),
+    )
+    .exec(&mut check_db)
+    .await?;
+    assert_eq!(alice_here_notifs.len(), 0);
 
     // 3. read-all クエリパラメータ (?channel_id=...) テスト
     let req = Request::builder()

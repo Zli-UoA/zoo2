@@ -7,7 +7,7 @@ use serde_json::{Value, json};
 use tower::ServiceExt;
 use wiremock::{
     Mock, MockServer, ResponseTemplate,
-    matchers::{method, path},
+    matchers::{header, method, path},
 };
 
 use backend::{
@@ -16,6 +16,7 @@ use backend::{
     models::{User, UserIdentity},
     routes::create_router,
     state::AppState,
+    validation::validate_user_name,
 };
 
 const TEST_KEY1_PEM: &str = r#"-----BEGIN PRIVATE KEY-----
@@ -45,6 +46,11 @@ QTloEvxz6xNIX7yOtH4eaBj4pH+pM/GExetKTGaXAoGAbTbl6agiq9PAFIgmYHaH
 CaJducfFAlWeSQsx9N6qVEY/6sPFv6ZoevF86n0hlBTyb7qap87kHyfBJZR3P1By
 lEl8A6VuBIAnpqkbJz9nT7xsS/1UbKuFQ5jMH9qz20KZmD5YTZ/6zre3zLTdJK5A
 WHYmwlj7VcIctm9ecC5nEQY=
+-----END PRIVATE KEY-----
+"#;
+
+const TEST_ED25519_PEM: &str = r#"-----BEGIN PRIVATE KEY-----
+MC4CAQAwBQYDK2VwBCIEIA0bID3qxIoHZTqzIn9bRmUiRLn6RyGupe/S6WE1CL7/
 -----END PRIVATE KEY-----
 "#;
 
@@ -100,9 +106,24 @@ fn key2_jwk() -> Value {
     })
 }
 
+fn ed25519_jwk(include_alg: bool) -> Value {
+    let mut jwk = json!({
+        "kty": "OKP",
+        "crv": "Ed25519",
+        "x": "cB-qRdJ9-hGN7VUdA71a5iLBDK9JKRIMVHe8_F3Dm3Y",
+        "kid": "test-ed-key-1",
+        "use": "sig"
+    });
+    if include_alg {
+        jwk["alg"] = json!("EdDSA");
+    }
+    jwk
+}
+
 #[allow(clippy::too_many_arguments)]
-fn generate_token_with_typ(
-    pem: &str,
+fn encode_token(
+    alg: Algorithm,
+    encoding_key: &EncodingKey,
     kid: &str,
     typ: Option<&str>,
     iss: &str,
@@ -114,7 +135,7 @@ fn generate_token_with_typ(
     exp_offset_sec: i64,
     nbf_offset_sec: Option<i64>,
 ) -> String {
-    let mut header = Header::new(Algorithm::RS256);
+    let mut header = Header::new(alg);
     header.kid = Some(kid.to_string());
     header.typ = typ.map(|t| t.to_string());
 
@@ -133,8 +154,67 @@ fn generate_token_with_typ(
         "scope": scope,
     });
 
+    encode(&header, &claims, encoding_key).unwrap()
+}
+
+#[allow(clippy::too_many_arguments)]
+fn generate_token_with_typ(
+    pem: &str,
+    kid: &str,
+    typ: Option<&str>,
+    iss: &str,
+    aud: &str,
+    sub: &str,
+    preferred_username: Option<&str>,
+    name: Option<&str>,
+    scope: Option<&str>,
+    exp_offset_sec: i64,
+    nbf_offset_sec: Option<i64>,
+) -> String {
     let enc_key = EncodingKey::from_rsa_pem(pem.as_bytes()).unwrap();
-    encode(&header, &claims, &enc_key).unwrap()
+    encode_token(
+        Algorithm::RS256,
+        &enc_key,
+        kid,
+        typ,
+        iss,
+        aud,
+        sub,
+        preferred_username,
+        name,
+        scope,
+        exp_offset_sec,
+        nbf_offset_sec,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn generate_ed_token(
+    kid: &str,
+    typ: Option<&str>,
+    iss: &str,
+    aud: &str,
+    sub: &str,
+    preferred_username: Option<&str>,
+    name: Option<&str>,
+    scope: Option<&str>,
+    exp_offset_sec: i64,
+) -> String {
+    let enc_key = EncodingKey::from_ed_pem(TEST_ED25519_PEM.as_bytes()).unwrap();
+    encode_token(
+        Algorithm::EdDSA,
+        &enc_key,
+        kid,
+        typ,
+        iss,
+        aud,
+        sub,
+        preferred_username,
+        name,
+        scope,
+        exp_offset_sec,
+        None,
+    )
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -193,6 +273,17 @@ async fn setup_test_app(
     let app = create_router(state.clone());
 
     (app, state, oidc_config)
+}
+
+async fn fetch_current_user(app: &axum::Router, token: &str) -> anyhow::Result<Value> {
+    let req = Request::builder()
+        .uri("/api/users/me")
+        .header("Authorization", format!("Bearer {token}"))
+        .body(Body::empty())?;
+    let resp = app.clone().oneshot(req).await?;
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = to_bytes(resp.into_body(), usize::MAX).await?;
+    Ok(serde_json::from_slice(&body)?)
 }
 
 #[tokio::test]
@@ -340,6 +431,85 @@ async fn test_preferred_username_spn_format() -> anyhow::Result<()> {
     let user_json: Value = serde_json::from_slice(&body)?;
     // @ より前がユーザー名として採用されること
     assert_eq!(user_json["user_name"], expected_name);
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_oidc_jit_username_contract_and_collision_suffix() -> anyhow::Result<()> {
+    let mock_server = MockServer::start().await;
+    let jwks_body = json!({ "keys": [key1_jwk()] });
+    Mock::given(method("GET"))
+        .and(path("/.well-known/jwks.json"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(&jwks_body))
+        .mount(&mock_server)
+        .await;
+
+    let (app, _state, oidc_cfg) = setup_test_app(&mock_server, true).await;
+
+    let unique = uuid::Uuid::new_v4().simple().to_string();
+    let max_length_name = format!("{}{}", &unique[..12], "a".repeat(68));
+    assert_eq!(max_length_name.chars().count(), 80);
+
+    let first_token = generate_token(
+        TEST_KEY1_PEM,
+        "test-key-1",
+        &oidc_cfg.issuer,
+        &oidc_cfg.audience,
+        &format!("username-first-{}", uuid::Uuid::new_v4().simple()),
+        Some(&max_length_name),
+        Some("First User"),
+        Some("openid profile"),
+        3600,
+    );
+    let first = fetch_current_user(&app, &first_token).await?;
+    assert_eq!(first["user_name"], max_length_name);
+
+    let second_token = generate_token(
+        TEST_KEY1_PEM,
+        "test-key-1",
+        &oidc_cfg.issuer,
+        &oidc_cfg.audience,
+        &format!("username-second-{}", uuid::Uuid::new_v4().simple()),
+        Some(&max_length_name),
+        Some("Second User"),
+        Some("openid profile"),
+        3600,
+    );
+    let second = fetch_current_user(&app, &second_token).await?;
+    assert_ne!(second["id"], first["id"]);
+
+    let second_name = second["user_name"].as_str().unwrap();
+    let prefix: String = max_length_name.chars().take(70).collect();
+    assert!(second_name.starts_with(&format!("{prefix}_")));
+    let suffix = &second_name[prefix.len() + 1..];
+    assert_eq!(suffix.len(), 6);
+    assert!(suffix.chars().all(|c| c.is_ascii_hexdigit()));
+    assert_eq!(second_name.chars().count(), 77);
+    assert!(validate_user_name(second_name).is_ok());
+
+    let reserved_token = generate_token(
+        TEST_KEY1_PEM,
+        "test-key-1",
+        &oidc_cfg.issuer,
+        &oidc_cfg.audience,
+        &format!("username-reserved-{}", uuid::Uuid::new_v4().simple()),
+        Some("admin"),
+        Some("Reserved User"),
+        Some("openid profile"),
+        3600,
+    );
+    let reserved = fetch_current_user(&app, &reserved_token).await?;
+    let reserved_name = reserved["user_name"].as_str().unwrap();
+    assert_ne!(reserved_name, "admin");
+    assert!(reserved_name.starts_with("user_"));
+    assert_eq!(reserved_name.len(), 13);
+    assert!(
+        reserved_name["user_".len()..]
+            .chars()
+            .all(|c| c.is_ascii_hexdigit())
+    );
+    assert!(validate_user_name(reserved_name).is_ok());
 
     Ok(())
 }
@@ -727,6 +897,93 @@ async fn test_oidc_key_rotation() -> anyhow::Result<()> {
 }
 
 #[tokio::test]
+async fn test_eddsa_jwks_with_explicit_alg() -> anyhow::Result<()> {
+    let mock_server = MockServer::start().await;
+
+    // Better Auth OAuth Provider が発行する Ed25519 の JWKS を再現
+    let jwks_body = json!({ "keys": [ed25519_jwk(true)] });
+    Mock::given(method("GET"))
+        .and(path("/.well-known/jwks.json"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(&jwks_body))
+        .mount(&mock_server)
+        .await;
+
+    let (app, _state, oidc_cfg) = setup_test_app(&mock_server, true).await;
+
+    let username = format!("eddsa_{}", &uuid::Uuid::new_v4().simple().to_string()[..6]);
+    let token = generate_ed_token(
+        "test-ed-key-1",
+        Some("at+jwt"),
+        &oidc_cfg.issuer,
+        &oidc_cfg.audience,
+        &format!("eddsa-sub-{}", uuid::Uuid::new_v4().simple()),
+        Some(&username),
+        Some("Ed DSA"),
+        Some("openid profile"),
+        3600,
+    );
+
+    let req = Request::builder()
+        .uri("/api/users/me")
+        .header("Authorization", format!("Bearer {token}"))
+        .body(Body::empty())?;
+
+    let resp = app.oneshot(req).await?;
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    let body = to_bytes(resp.into_body(), usize::MAX).await?;
+    let user_json: Value = serde_json::from_slice(&body)?;
+    assert_eq!(user_json["user_name"], username);
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_eddsa_jwk_without_alg_inferred_from_octet_key_pair() -> anyhow::Result<()> {
+    let mock_server = MockServer::start().await;
+
+    // alg を省略した OKP キーでも kty/crv から EdDSA と推論できること
+    let jwks_body = json!({ "keys": [ed25519_jwk(false)] });
+    Mock::given(method("GET"))
+        .and(path("/.well-known/jwks.json"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(&jwks_body))
+        .mount(&mock_server)
+        .await;
+
+    let (app, _state, oidc_cfg) = setup_test_app(&mock_server, true).await;
+
+    let username = format!(
+        "eddsa_noalg_{}",
+        &uuid::Uuid::new_v4().simple().to_string()[..6]
+    );
+    let token = generate_ed_token(
+        "test-ed-key-1",
+        Some("at+jwt"),
+        &oidc_cfg.issuer,
+        &oidc_cfg.audience,
+        &format!("eddsa-noalg-sub-{}", uuid::Uuid::new_v4().simple()),
+        Some(&username),
+        Some("Ed DSA No Alg"),
+        None,
+        3600,
+    );
+
+    let req = Request::builder()
+        .uri("/api/users/me")
+        .header("Authorization", format!("Bearer {token}"))
+        .body(Body::empty())?;
+
+    let resp = app.oneshot(req).await?;
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    let body = to_bytes(resp.into_body(), usize::MAX).await?;
+    let user_json: Value = serde_json::from_slice(&body)?;
+    assert_eq!(user_json["user_name"], username);
+
+    Ok(())
+}
+
+#[tokio::test]
 async fn test_production_environment_fail_closed_guards() -> anyhow::Result<()> {
     // 【重要】プロセス全体の環境変数を書き換えるのではなく、
     // Config の dev_auth_enabled = false / environment = "production" を直接注入してテスト。
@@ -888,6 +1145,397 @@ async fn test_oidc_jit_concurrent_requests_no_conflict() -> anyhow::Result<()> {
         .exec(&mut db)
         .await?;
     assert_eq!(users.len(), 1, "Exactly one user record should exist");
+
+    Ok(())
+}
+
+fn discovery_body(mock_server: &MockServer, jwks_path: &str, userinfo_path: &str) -> Value {
+    json!({
+        "issuer": mock_server.uri(),
+        "jwks_uri": format!("{}{}", mock_server.uri(), jwks_path),
+        "userinfo_endpoint": format!("{}{}", mock_server.uri(), userinfo_path),
+    })
+}
+
+async fn mount_jwks(mock_server: &MockServer, jwks_path: &str) {
+    Mock::given(method("GET"))
+        .and(path(jwks_path))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "keys": [key1_jwk()] })))
+        .mount(mock_server)
+        .await;
+}
+
+async fn mount_discovery(mock_server: &MockServer, jwks_path: &str, userinfo_path: &str) {
+    Mock::given(method("GET"))
+        .and(path("/.well-known/openid-configuration"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(discovery_body(
+            mock_server,
+            jwks_path,
+            userinfo_path,
+        )))
+        .mount(mock_server)
+        .await;
+}
+
+#[tokio::test]
+async fn test_userinfo_provides_jit_profile_names() -> anyhow::Result<()> {
+    let mock_server = MockServer::start().await;
+    let jwks_path = "/.well-known/jwks.json";
+    let userinfo_path = "/oauth2/openid/zoo-client/userinfo";
+
+    mount_jwks(&mock_server, jwks_path).await;
+    mount_discovery(&mock_server, jwks_path, userinfo_path).await;
+
+    let (app, _state, oidc_cfg) = setup_test_app(&mock_server, false).await;
+
+    let sub = format!("userinfo-sub-{}", uuid::Uuid::new_v4().simple());
+    let username = format!(
+        "authz_user_{}",
+        &uuid::Uuid::new_v4().simple().to_string()[..6]
+    );
+    let token = generate_token(
+        TEST_KEY1_PEM,
+        "test-key-1",
+        &oidc_cfg.issuer,
+        &oidc_cfg.audience,
+        &sub,
+        None,
+        None,
+        Some("openid profile"),
+        3600,
+    );
+
+    Mock::given(method("GET"))
+        .and(path(userinfo_path))
+        .and(header("authorization", format!("Bearer {token}")))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "sub": &sub,
+            "preferred_username": &username,
+            "name": "AuthZ Profile User",
+        })))
+        .mount(&mock_server)
+        .await;
+
+    let req = Request::builder()
+        .uri("/api/users/me")
+        .header("Authorization", format!("Bearer {token}"))
+        .body(Body::empty())?;
+
+    let resp = app.oneshot(req).await?;
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    let body = to_bytes(resp.into_body(), usize::MAX).await?;
+    let user_json: Value = serde_json::from_slice(&body)?;
+    assert_eq!(user_json["user_name"], username);
+    assert_eq!(user_json["display_name"], "AuthZ Profile User");
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_userinfo_failure_falls_back_to_user() -> anyhow::Result<()> {
+    let mock_server = MockServer::start().await;
+    let jwks_path = "/.well-known/jwks.json";
+    let userinfo_path = "/oauth2/openid/zoo-client/userinfo";
+
+    mount_jwks(&mock_server, jwks_path).await;
+    mount_discovery(&mock_server, jwks_path, userinfo_path).await;
+    Mock::given(method("GET"))
+        .and(path(userinfo_path))
+        .respond_with(ResponseTemplate::new(500))
+        .mount(&mock_server)
+        .await;
+
+    let (app, _state, oidc_cfg) = setup_test_app(&mock_server, true).await;
+
+    let token = generate_token(
+        TEST_KEY1_PEM,
+        "test-key-1",
+        &oidc_cfg.issuer,
+        &oidc_cfg.audience,
+        &format!("userinfo-failure-sub-{}", uuid::Uuid::new_v4().simple()),
+        None,
+        None,
+        None,
+        3600,
+    );
+
+    let req = Request::builder()
+        .uri("/api/users/me")
+        .header("Authorization", format!("Bearer {token}"))
+        .body(Body::empty())?;
+
+    let resp = app.oneshot(req).await?;
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    let body = to_bytes(resp.into_body(), usize::MAX).await?;
+    let user_json: Value = serde_json::from_slice(&body)?;
+    // UserInfo が失敗してもログインは継続し、従来のフォールバックが使われる
+    assert_eq!(user_json["display_name"], "user");
+    assert!(
+        user_json["user_name"]
+            .as_str()
+            .is_some_and(|name| name.starts_with("user"))
+    );
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_userinfo_subject_mismatch_falls_back_to_user() -> anyhow::Result<()> {
+    let mock_server = MockServer::start().await;
+    let jwks_path = "/.well-known/jwks.json";
+    let userinfo_path = "/oauth2/openid/zoo-client/userinfo";
+
+    mount_jwks(&mock_server, jwks_path).await;
+    mount_discovery(&mock_server, jwks_path, userinfo_path).await;
+    Mock::given(method("GET"))
+        .and(path(userinfo_path))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "sub": "different-subject",
+            "preferred_username": "mallory",
+            "name": "Mallory",
+        })))
+        .mount(&mock_server)
+        .await;
+
+    let (app, _state, oidc_cfg) = setup_test_app(&mock_server, true).await;
+
+    let token = generate_token(
+        TEST_KEY1_PEM,
+        "test-key-1",
+        &oidc_cfg.issuer,
+        &oidc_cfg.audience,
+        &format!("userinfo-mismatch-sub-{}", uuid::Uuid::new_v4().simple()),
+        None,
+        None,
+        None,
+        3600,
+    );
+
+    let req = Request::builder()
+        .uri("/api/users/me")
+        .header("Authorization", format!("Bearer {token}"))
+        .body(Body::empty())?;
+
+    let resp = app.oneshot(req).await?;
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    let body = to_bytes(resp.into_body(), usize::MAX).await?;
+    let user_json: Value = serde_json::from_slice(&body)?;
+    // sub が一致しない UserInfo は採用せず、フォールバックする
+    assert_eq!(user_json["display_name"], "user");
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_legacy_display_name_repaired_once_without_overwriting_edits() -> anyhow::Result<()> {
+    let mock_server = MockServer::start().await;
+    let jwks_path = "/.well-known/jwks.json";
+    let userinfo_path = "/oauth2/openid/zoo-client/userinfo";
+
+    mount_jwks(&mock_server, jwks_path).await;
+    mount_discovery(&mock_server, jwks_path, userinfo_path).await;
+    Mock::given(method("GET"))
+        .and(path(userinfo_path))
+        .respond_with(ResponseTemplate::new(500))
+        .mount(&mock_server)
+        .await;
+
+    let (app, state, oidc_cfg) = setup_test_app(&mock_server, true).await;
+
+    let sub = format!("legacy-sub-{}", uuid::Uuid::new_v4().simple());
+    let token = generate_token(
+        TEST_KEY1_PEM,
+        "test-key-1",
+        &oidc_cfg.issuer,
+        &oidc_cfg.audience,
+        &sub,
+        None,
+        None,
+        None,
+        3600,
+    );
+
+    // 1. UserInfo 障害時に旧フォールバックでユーザーが作成される
+    let req = Request::builder()
+        .uri("/api/users/me")
+        .header("Authorization", format!("Bearer {token}"))
+        .body(Body::empty())?;
+    let resp = app.oneshot(req).await?;
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = to_bytes(resp.into_body(), usize::MAX).await?;
+    let user_json: Value = serde_json::from_slice(&body)?;
+    let user_id = user_json["id"]
+        .as_str()
+        .expect("id must be string")
+        .to_string();
+    assert_eq!(user_json["display_name"], "user");
+
+    // 2. 再ログイン時に UserInfo が利用できると表示名が補正される
+    mock_server.reset().await;
+    mount_jwks(&mock_server, jwks_path).await;
+    mount_discovery(&mock_server, jwks_path, userinfo_path).await;
+    Mock::given(method("GET"))
+        .and(path(userinfo_path))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "sub": &sub,
+            "preferred_username": "legacy_user",
+            "name": "Recovered User",
+        })))
+        .mount(&mock_server)
+        .await;
+
+    let state2 = AppState::new(state.db.clone(), state.config.clone());
+    let app2 = create_router(state2);
+    let req2 = Request::builder()
+        .uri("/api/users/me")
+        .header("Authorization", format!("Bearer {token}"))
+        .body(Body::empty())?;
+    let resp2 = app2.oneshot(req2).await?;
+    assert_eq!(resp2.status(), StatusCode::OK);
+    let body2 = to_bytes(resp2.into_body(), usize::MAX).await?;
+    let user_json2: Value = serde_json::from_slice(&body2)?;
+    assert_eq!(user_json2["id"].as_str(), Some(user_id.as_str()));
+    assert_eq!(user_json2["display_name"], "Recovered User");
+
+    // 3. 補正後は UserInfo の名前が変わっても上書きしない (ユーザー編集との競合回避)
+    mock_server.reset().await;
+    mount_jwks(&mock_server, jwks_path).await;
+    mount_discovery(&mock_server, jwks_path, userinfo_path).await;
+    Mock::given(method("GET"))
+        .and(path(userinfo_path))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "sub": &sub,
+            "preferred_username": "legacy_user",
+            "name": "Renamed At IdP",
+        })))
+        .mount(&mock_server)
+        .await;
+
+    let state3 = AppState::new(state.db.clone(), state.config.clone());
+    let app3 = create_router(state3);
+    let req3 = Request::builder()
+        .uri("/api/users/me")
+        .header("Authorization", format!("Bearer {token}"))
+        .body(Body::empty())?;
+    let resp3 = app3.oneshot(req3).await?;
+    assert_eq!(resp3.status(), StatusCode::OK);
+    let body3 = to_bytes(resp3.into_body(), usize::MAX).await?;
+    let user_json3: Value = serde_json::from_slice(&body3)?;
+    assert_eq!(user_json3["display_name"], "Recovered User");
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_display_name_repair_does_not_overwrite_concurrent_user_edit() -> anyhow::Result<()> {
+    let mock_server = MockServer::start().await;
+    let jwks_path = "/.well-known/jwks.json";
+    let userinfo_path = "/oauth2/openid/zoo-client/userinfo";
+
+    // 1. UserInfo 障害時に旧フォールバックでユーザーを作成する
+    mount_jwks(&mock_server, jwks_path).await;
+    mount_discovery(&mock_server, jwks_path, userinfo_path).await;
+    Mock::given(method("GET"))
+        .and(path(userinfo_path))
+        .respond_with(ResponseTemplate::new(500))
+        .mount(&mock_server)
+        .await;
+
+    let (app, state, oidc_cfg) = setup_test_app(&mock_server, true).await;
+
+    let sub = format!("concurrent-edit-sub-{}", uuid::Uuid::new_v4().simple());
+    let token = generate_token(
+        TEST_KEY1_PEM,
+        "test-key-1",
+        &oidc_cfg.issuer,
+        &oidc_cfg.audience,
+        &sub,
+        None,
+        None,
+        None,
+        3600,
+    );
+
+    let req = Request::builder()
+        .uri("/api/users/me")
+        .header("Authorization", format!("Bearer {token}"))
+        .body(Body::empty())?;
+    let resp = app.oneshot(req).await?;
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = to_bytes(resp.into_body(), usize::MAX).await?;
+    let user_json: Value = serde_json::from_slice(&body)?;
+    let user_id = user_json["id"]
+        .as_str()
+        .expect("id must be string")
+        .to_string();
+    assert_eq!(user_json["display_name"], "user");
+
+    // 2. UserInfo の応答を遅延させ、その間に本人の表示名編集を模擬する
+    mock_server.reset().await;
+    mount_jwks(&mock_server, jwks_path).await;
+    mount_discovery(&mock_server, jwks_path, userinfo_path).await;
+    Mock::given(method("GET"))
+        .and(path(userinfo_path))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_delay(std::time::Duration::from_millis(500))
+                .set_body_json(json!({
+                    "sub": &sub,
+                    "preferred_username": "legacy_user",
+                    "name": "Recovered User",
+                })),
+        )
+        .mount(&mock_server)
+        .await;
+
+    let state2 = AppState::new(state.db.clone(), state.config.clone());
+    let app2 = create_router(state2);
+    let req2 = Request::builder()
+        .uri("/api/users/me")
+        .header("Authorization", format!("Bearer {token}"))
+        .body(Body::empty())?;
+    let handle = tokio::spawn(async move { app2.oneshot(req2).await });
+
+    // UserInfo へのリクエストが届くまで待つ (届いた時点では応答は保留中)
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(2);
+    loop {
+        let received = mock_server.received_requests().await.unwrap_or_default();
+        if received
+            .iter()
+            .any(|request| request.url.path() == userinfo_path)
+        {
+            break;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "UserInfo request was not observed"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+
+    let mut db = state.db.clone();
+    let mut tx = db.transaction().await?;
+    let now = backend::models::now_utc_millis();
+    User::update_by_id(user_id.as_str())
+        .display_name("Edited By User")
+        .updated_at(Some(now))
+        .exec(&mut tx)
+        .await?;
+    tx.commit().await?;
+
+    let resp2 = handle.await??;
+    assert_eq!(resp2.status(), StatusCode::OK);
+    let body2 = to_bytes(resp2.into_body(), usize::MAX).await?;
+    let user_json2: Value = serde_json::from_slice(&body2)?;
+    // UserInfo の応答が遅れている間に本人が編集した表示名を上書きしない
+    assert_eq!(user_json2["display_name"], "Edited By User");
+
+    let mut db = state.db.clone();
+    let stored_user = User::get_by_id(&mut db, user_id.as_str()).await?;
+    assert_eq!(stored_user.display_name, "Edited By User");
 
     Ok(())
 }

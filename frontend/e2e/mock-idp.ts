@@ -340,7 +340,12 @@ export async function startMockIdp(options: MockIdpOptions = {}): Promise<MockId
 
     if (path === "/logout" && request.method === "GET") {
       const postLogout = url.searchParams.get("post_logout_redirect_uri") ?? "/";
-      response.writeHead(302, { Location: postLogout });
+      const location = new URL(postLogout, origin);
+      const state = url.searchParams.get("state");
+      if (state) {
+        location.searchParams.set("state", state);
+      }
+      response.writeHead(302, { Location: location.toString() });
       response.end();
       return;
     }

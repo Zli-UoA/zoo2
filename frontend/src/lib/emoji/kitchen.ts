@@ -46,6 +46,42 @@ export function kitchenLabel(value: string): string {
     .join(" + ");
 }
 
+export interface KitchenEmoji {
+  codepoint: string;
+  emoji: string;
+  name: string;
+}
+
+const catalogEmojis = new WeakMap<KitchenCatalog, readonly KitchenEmoji[]>();
+
+export function kitchenEmojis(catalog: KitchenCatalog): readonly KitchenEmoji[] {
+  let emojis = catalogEmojis.get(catalog);
+  if (!emojis) {
+    emojis = catalog.emojis.map(([codepoint, emoji, name]) => ({ codepoint, emoji, name }));
+    catalogEmojis.set(catalog, emojis);
+  }
+  return emojis;
+}
+
+function normalizeQuery(value: string): string {
+  return value.normalize("NFKC").toLowerCase().replaceAll("_", " ").replace(/\s+/g, " ").trim();
+}
+
+export function matchesKitchenQuery(emoji: KitchenEmoji, query: string): boolean {
+  const tokens = normalizeQuery(query).split(" ").filter(Boolean);
+  if (tokens.length === 0) return true;
+  const text = `${normalizeQuery(emoji.name)} ${normalizeQuery(emoji.emoji)} ${emoji.codepoint}`;
+  return tokens.every((token) => text.includes(token));
+}
+
+export function filterKitchenEmojis(
+  emojis: readonly KitchenEmoji[],
+  query: string,
+): readonly KitchenEmoji[] {
+  if (normalizeQuery(query) === "") return emojis;
+  return emojis.filter((emoji) => matchesKitchenQuery(emoji, query));
+}
+
 const catalogIndices = new WeakMap<KitchenCatalog, ReadonlyMap<string, number>>();
 
 function indexCatalog(catalog: KitchenCatalog): ReadonlyMap<string, number> {
