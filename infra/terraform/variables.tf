@@ -36,7 +36,7 @@ variable "prod_cors_origins" {
 variable "stg_cors_origins" {
   type        = list(string)
   description = "Allowed origins for staging / preview R2 bucket CORS"
-  default     = [
+  default = [
     "https://stg.zoo.example.com",
     "https://*.preview.zoo.example.com"
   ]
