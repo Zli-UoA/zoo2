@@ -10,6 +10,7 @@ export interface FeedMessage {
   id: string;
   user_id: string;
   content: string;
+  card?: string | null;
   created_at: string;
   /** 返信先のルートメッセージ。`null` はチャンネル直下。 */
   parent_id: string | null;

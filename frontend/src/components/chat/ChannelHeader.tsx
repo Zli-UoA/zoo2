@@ -1,3 +1,4 @@
+import { ChannelWebhooksDialog } from "./ChannelWebhooksDialog";
 import { useTranslation } from "react-i18next";
 import {
   ArchiveIcon,
@@ -55,6 +56,7 @@ export function ChannelHeader({
   const isArchived = admin.access.isArchived;
   const canManage = admin.access.canManageChannel;
   const [confirmAction, setConfirmAction] = useState<"archive" | "unarchive" | null>(null);
+  const [webhooksOpen, setWebhooksOpen] = useState(false);
   const [renameOpen, setRenameOpen] = useState(false);
   const [messageAdminOpen, setMessageAdminOpen] = useState(false);
 
@@ -129,6 +131,9 @@ export function ChannelHeader({
               <MoreHorizontalIcon />
             </DropdownMenuTrigger>
             <DropdownMenuContent align="end">
+              <DropdownMenuItem onClick={() => setWebhooksOpen(true)}>
+                {t("webhooks.title")}
+              </DropdownMenuItem>
               {!isArchived ? (
                 <DropdownMenuItem onClick={() => setRenameOpen(true)}>
                   <PencilIcon />
@@ -154,6 +159,10 @@ export function ChannelHeader({
           </DropdownMenu>
         ) : null}
       </div>
+
+      {webhooksOpen && canManage ? (
+        <ChannelWebhooksDialog key={channel.id} channel={channel} onOpenChange={setWebhooksOpen} />
+      ) : null}
 
       {renameOpen && canManage && !isArchived ? (
         <RenameChannelDialog key={channel.id} channel={channel} onOpenChange={setRenameOpen} />

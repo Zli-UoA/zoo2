@@ -222,7 +222,7 @@ async fn create_or_get_dm(
 
     // 参加予定ユーザーの存在確認 (リード操作のためトランザクション外で実行)
     for uid in &payload.target_user_ids {
-        User::get_by_id(&mut db, uid.as_str())
+        let target = User::get_by_id(&mut db, uid.as_str())
             .await
             .map_err(|err| {
                 if err.is_record_not_found() {
@@ -231,6 +231,11 @@ async fn create_or_get_dm(
                     AppError::from(err)
                 }
             })?;
+        if target.is_bot {
+            return Err(AppError::BadRequest(
+                "Cannot start a DM with an integration user".into(),
+            ));
+        }
     }
 
     // 1対1 DM

@@ -91,3 +91,14 @@ it("orders Chinese names according to the selected script", () => {
   expect(sortUsersByLabel(input, "zh-Hans").map(userLabel)).toEqual(["阿", "王", "张"]);
   expect(sortUsersByLabel(input, "zh-Hant").map(userLabel)).toEqual(["王", "张", "阿"]);
 });
+
+describe("integration accounts", () => {
+  it("excludes retained webhook users from member candidates", () => {
+    const bot = { ...user("bot-1", "integration"), is_bot: true };
+    expect(
+      filterMemberCandidates({ users: [bot, user("human", "alice")], members: [], query: "" }).map(
+        (u) => u.id,
+      ),
+    ).toEqual(["human"]);
+  });
+});

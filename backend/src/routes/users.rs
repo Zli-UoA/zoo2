@@ -33,6 +33,7 @@ pub struct UserResponse {
     pub id: String,
     pub user_name: String,
     pub display_name: String,
+    pub is_bot: bool,
     pub created_at: String,
     pub updated_at: Option<String>,
 }
@@ -43,6 +44,7 @@ impl From<User> for UserResponse {
             id: user.id,
             user_name: user.user_name,
             display_name: user.display_name,
+            is_bot: user.is_bot,
             created_at: user.created_at.to_string(),
             updated_at: user.updated_at.map(|t| t.to_string()),
         }
@@ -178,6 +180,7 @@ async fn create_user(
     let now = crate::models::now_utc_millis();
 
     let user = toasty::create!(User {
+        is_bot: false,
         id: id.as_str(),
         user_name: payload.user_name.as_str(),
         display_name: payload.display_name.as_str(),
@@ -198,7 +201,7 @@ async fn list_users(
     _auth_user: AuthUser,
 ) -> Result<Json<Vec<UserResponse>>, AppError> {
     let mut db = state.db.clone();
-    let users = User::all()
+    let users = User::filter(User::fields().is_bot().eq(false))
         .order_by(User::fields().created_at().asc())
         .exec(&mut db)
         .await?;

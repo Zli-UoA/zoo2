@@ -6,6 +6,7 @@ export type UserRow = {
   id: string;
   user_name: string;
   display_name: string;
+  is_bot?: boolean;
   created_at: TimestampString;
   updated_at: TimestampString | null;
 };
@@ -27,6 +28,7 @@ export type MessageRow = {
   user_id: string;
   channel_id: string;
   content: string;
+  card?: string | null;
   created_at: TimestampString;
   updated_at: TimestampString | null;
   deleted_at: TimestampString | null;

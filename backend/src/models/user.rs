@@ -9,6 +9,7 @@ pub struct User {
     #[unique]
     pub user_name: String,
     pub display_name: String,
+    pub is_bot: bool,
     pub created_at: jiff::civil::DateTime,
     pub updated_at: Option<jiff::civil::DateTime>,
 }

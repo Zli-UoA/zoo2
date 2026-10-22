@@ -241,5 +241,27 @@
   "notifications": {
     "label": "通知",
     "close": "關閉通知"
+  },
+  "webhooks": {
+    "title": "Webhook 設定",
+    "description": "管理 {{channel}} 的通知整合。",
+    "instructions": "GitHub 請使用 GitHub URL 和 Secret，並選擇 application/json。其他服務請使用通用 Webhook URL 和共用卡片格式。系統會自動建立專用發文使用者。",
+    "copied": "已複製",
+    "copyError": "無法複製。請選取欄位並手動複製。",
+    "copyLabel": "複製 {{label}}",
+    "showSecret": "顯示 Secret",
+    "hideSecret": "隱藏 Secret",
+    "retry": "重新載入",
+    "loading": "載入中…",
+    "name": "Webhook 名稱",
+    "create": "建立",
+    "archived": "已封存的頻道無法建立新的 Webhook。",
+    "empty": "尚無 Webhook。",
+    "rotate": "重新產生 Secret",
+    "delete": "刪除",
+    "deleteConfirm": "要刪除此 Webhook 嗎？此 URL 將停止接收通知。",
+    "rotateConfirm": "要重新產生 Secret 嗎？目前的 Secret 將失效，請同步更新 GitHub 的設定。",
+    "confirm": "確認",
+    "genericUrl": "通用 Webhook URL"
   }
 }
