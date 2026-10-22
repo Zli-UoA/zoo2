@@ -27,6 +27,7 @@ pub fn router() -> Router<AppState> {
         )
         .route("/api/shapes/users", get(users_shape))
         .route("/api/shapes/channel_users", get(channel_users_shape))
+        .route("/api/shapes/notifications", get(notifications_shape))
 }
 
 /// クライアントから送信されたクエリパラメータのうち、Electric プロトコルで許可されたものを転送
@@ -59,6 +60,20 @@ pub(crate) fn filter_electric_params(raw_query: &HashMap<String, String>) -> Vec
 pub(crate) fn channels_shape_where(user_id: &str) -> (String, Vec<(&'static str, &str)>) {
     (
         "is_private = false OR id IN (SELECT channel_id FROM channel_user WHERE user_id = $1)"
+            .to_string(),
+        vec![("params[1]", user_id)],
+    )
+}
+
+/// Notifications Shape の where 句とパラメータの純粋組み立て
+///
+/// [P1] ユーザー本人の通知であることに加え、現在閲覧権限があるチャンネル (公開チャンネル、
+/// または所属しているプライベートチャンネル) の通知のみを配信する。
+/// また、論理削除されたメッセージ (deleted_at IS NOT NULL) およびチャンネルの通知を除外する。
+/// キック・退出やメッセージ・チャンネル削除が行われた場合、ElectricSQL の move-out 機構によりクライアントから即座に通知が除外される。
+pub(crate) fn notifications_shape_where(user_id: &str) -> (String, Vec<(&'static str, &str)>) {
+    (
+        "user_id = $1 AND message_id IN (SELECT id FROM messages WHERE deleted_at IS NULL) AND channel_id IN (SELECT id FROM channels WHERE deleted_at IS NULL AND (is_private = false OR id IN (SELECT channel_id FROM channel_user WHERE user_id = $1)))"
             .to_string(),
         vec![("params[1]", user_id)],
     )
@@ -401,6 +416,25 @@ async fn channel_users_shape(
     .await
 }
 
+/// Notifications Shape (ユーザー別認可・配信)
+async fn notifications_shape(
+    State(state): State<AppState>,
+    auth_user: AuthUser,
+    Query(raw_query): Query<HashMap<String, String>>,
+) -> Result<Response, AppError> {
+    let (where_clause, extra_params) = notifications_shape_where(auth_user.id.as_str());
+
+    proxy_shape(
+        &state,
+        "notifications",
+        Some(&where_clause),
+        &extra_params,
+        &raw_query,
+        true,
+    )
+    .await
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -435,6 +469,21 @@ mod tests {
         let user_id = "user-123";
         let (clause, params) = channels_shape_where(user_id);
 
+        assert!(clause.contains("is_private = false"));
+        assert!(clause.contains("SELECT channel_id FROM channel_user WHERE user_id = $1"));
+        assert_eq!(params, vec![("params[1]", "user-123")]);
+    }
+
+    #[test]
+    fn test_notifications_shape_where() {
+        let user_id = "user-123";
+        let (clause, params) = notifications_shape_where(user_id);
+
+        assert!(clause.contains("user_id = $1"));
+        assert!(
+            clause.contains("message_id IN (SELECT id FROM messages WHERE deleted_at IS NULL)")
+        );
+        assert!(clause.contains("deleted_at IS NULL"));
         assert!(clause.contains("is_private = false"));
         assert!(clause.contains("SELECT channel_id FROM channel_user WHERE user_id = $1"));
         assert_eq!(params, vec![("params[1]", "user-123")]);
