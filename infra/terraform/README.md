@@ -14,11 +14,26 @@ Cloudflare API Token に以下の権限を付与してください:
 
 ## 手動実行手順
 
+### 1. API トークンの設定 (環境変数推奨)
+API トークンなどの秘密情報をファイルに保存せず誤コミットを防ぐため、CI と同様に環境変数で渡す運用を推奨します。
+
+```bash
+export TF_VAR_cloudflare_api_token="<YOUR_CLOUDFLARE_API_TOKEN>"
+```
+
+### 2. パラメータの設定 (`terraform.tfvars`)
+アカウント ID やバケット名、CORS 許可オリジンなどの非秘密なパラメータは `terraform.tfvars` に記述します。
+※ `terraform.tfvars` は `.gitignore` に登録されており、Git の追跡から除外されます。
+
 ```bash
 cd infra/terraform
 cp terraform.tfvars.example terraform.tfvars
-# terraform.tfvars に cloudflare_api_token と cloudflare_account_id を設定
+# terraform.tfvars に cloudflare_account_id などを設定
+```
 
+### 3. 初期化と適用
+
+```bash
 terraform init
 terraform plan
 terraform apply
