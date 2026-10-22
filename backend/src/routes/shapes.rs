@@ -139,10 +139,13 @@ async fn proxy_shape(
     let mut req = state.electric_client.get(&url).query(&params);
 
     if let Some(ref secret) = state.config.electric_secret {
-        req = req.bearer_auth(secret);
+        // Electric の API secret は Bearer ではなくクエリで渡す。
+        req = req.query(&[("secret", secret)]);
     }
 
     let upstream_resp = req.send().await.map_err(|err| {
+        // URL のクエリに含まれる API secret をログやエラー応答へ出さない。
+        let err = err.without_url();
         tracing::error!("Failed to connect to Electric server at {url}: {err}");
         AppError::Internal(anyhow::anyhow!(
             "Failed to connect to Electric server: {err}"

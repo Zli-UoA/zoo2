@@ -451,3 +451,59 @@ async fn test_shape_proxy_long_polling_regression_11s() -> anyhow::Result<()> {
 
     Ok(())
 }
+
+/// Electric の API secret はサーバー設定からクエリへ付与し、入力値では上書きしない。
+#[tokio::test]
+async fn test_shape_proxy_electric_secret_query() -> anyhow::Result<()> {
+    dotenvy::dotenv().ok();
+    dotenvy::from_filename("../.env").ok();
+
+    for configured_secret in [Some("test-secret +/&?="), None] {
+        let mock_electric = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/v1/shape"))
+            .respond_with(ResponseTemplate::new(200).set_body_string("[]"))
+            .expect(1)
+            .mount(&mock_electric)
+            .await;
+
+        let mut config = Config::from_env();
+        config.dev_auth_enabled = true;
+        config.electric_url = mock_electric.uri();
+        config.electric_secret = configured_secret.map(str::to_owned);
+        let db = init_db(&config.database_url).await?;
+        let app = create_router(AppState::new(db, config));
+
+        let req = Request::builder()
+            .uri("/api/shapes/users?offset=-1&secret=untrusted&api_secret=untrusted")
+            .header("X-Dev-User", "00000000-0000-0000-0000-000000000001")
+            .header("Authorization", "Bearer client-token")
+            .body(Body::empty())?;
+        let resp = app.oneshot(req).await?;
+        assert_eq!(resp.status(), StatusCode::OK);
+        let requests = mock_electric.received_requests().await.unwrap();
+        assert_eq!(requests.len(), 1);
+        let request = &requests[0];
+        let pairs: Vec<_> = request.url.query_pairs().collect();
+        let secrets: Vec<_> = pairs
+            .iter()
+            .filter(|(key, _)| key == "secret")
+            .map(|(_, value)| value.as_ref())
+            .collect();
+        assert_eq!(secrets, configured_secret.into_iter().collect::<Vec<_>>());
+        assert!(!pairs.iter().any(|(key, _)| key == "api_secret"));
+        assert!(
+            pairs
+                .iter()
+                .any(|(key, value)| key == "table" && value == "users")
+        );
+        assert!(
+            pairs
+                .iter()
+                .any(|(key, value)| key == "offset" && value == "-1")
+        );
+        assert!(!request.headers.contains_key("authorization"));
+    }
+
+    Ok(())
+}
