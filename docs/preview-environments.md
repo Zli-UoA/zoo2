@@ -5,7 +5,7 @@
 ## 使い方
 
 1. 同じリポジトリのブランチから PR を作り、`Publish images` の成功を待ちます。
-2. PR に `preview` ラベルを付けます。1分ほどで配備が始まります。
+2. PR に `preview` ラベルを付けます。1分ほどで配備が始まります。ラベルを付けると `Publish images` も実行し直し、足りないタグがあれば付けます（この仕組みより前に作られた PR 向け）。
 3. 準備ができると、PR に URL 付きのコメントと head SHA の commit status が付きます。コメントは作り直さずに更新されます。
 4. push すると、新しい head SHA のイメージで更新されます。
 5. PR を close するか、`preview` ラベルを外すと環境は削除されます。
@@ -24,7 +24,7 @@
 4. Atlas の Job が完了した後に、管理者と一般ユーザー2人を投入します。既存のユーザーは上書きしません。
 5. Electric、backend、frontend を各1 replica で起動し、Ready になると PR に通知します。
 
-イメージタグは3つのコンポーネントとも `pr-<番号>-<head SHA>` です。`Publish images` は PR で変更のあるコンポーネントだけをビルドし、変更のないコンポーネントには、その時点で `latest` が指す main コミットの不変タグ（frontend は Preview 用ビルドの `preview-<SHA>`）を元に同じタグを付けます（[GHCR イメージ](ghcr-images.md)）。Pod の再作成や後続の main 昇格でイメージが変わることはありません。本番の frontend は使いません。
+イメージタグは3つのコンポーネントとも `pr-<番号>-<head SHA>` です。`Publish images` は PR で変更のあるコンポーネントだけをビルドし、変更のないコンポーネントには、その時点で `latest` が指す main コミットの不変タグ（frontend は Preview 用ビルドの `preview-<SHA>`）を元に同じタグを付けます（[GHCR イメージ](ghcr-images.md)）。Pod の再作成や後続の main 昇格でイメージが変わることはありません。本番の frontend は使いません。タグは全コンポーネントのビルドが成功してから付け、migrate を最後にします。ビルドの一部が失敗した場合はタグが付かないので、マイグレーションも実行されず、Preview は前の head のまま動き続けます。
 
 push で head SHA が変わると、マイグレーションを実行し、その完了後にアプリを更新します。マイグレーション中も古いアプリは動き続けます。
 

@@ -9,10 +9,10 @@ Issue #73 の範囲は、アプリケーションイメージの公開までで�
 | イベント | frontend | backend / migrate |
 | --- | --- | --- |
 | main への push | 本番 OIDC 設定: `<40 文字の SHA>` と `latest`<br>開発用認証: `preview-<SHA>` と `preview` | `<SHA>` と `latest` |
-| 同一リポジトリの PR の opened / synchronized / reopened | `pr-<番号>-<head SHA>`<br>変更があれば開発用認証でビルドし、なければ `preview-<main の SHA>` に別名を付ける | `pr-<番号>-<head SHA>`<br>変更があればビルドし、なければ `<main の SHA>` に別名を付ける |
+| 同一リポジトリの PR の opened / synchronized / reopened、`preview` ラベルの labeled | `pr-<番号>-<head SHA>`<br>変更があれば開発用認証でビルドし、なければ `preview-<main の SHA>` に別名を付ける | `pr-<番号>-<head SHA>`<br>変更があればビルドし、なければ `<main の SHA>` に別名を付ける |
 | フォークからの PR | 公開しない | 公開しない |
 
-PR では、3 つのコンポーネントすべてに同じ `pr-<番号>-<head SHA>` が付きます。site1 の Preview（[手順](preview-environments.md)）は PR 番号と head SHA だけからタグを組み立てるためです。変更のないコンポーネントは再ビルドせず、alias ジョブが `docker buildx imagetools create` で別名を付けます。別名の元は、plan の時点で `zoo2-backend:latest` が指す main コミットの不変タグです。可変タグの `latest` / `preview` は元にしないので、昇格と前後しても 3 つのコンポーネントは同じ main コミットにそろいます。別名は同じ digest に付くため、GHCR では main のバージョンにタグが増えるだけです。
+PR では、3 つのコンポーネントすべてに同じ `pr-<番号>-<head SHA>` が付きます。site1 の Preview（[手順](preview-environments.md)）は PR 番号と head SHA だけからタグを組み立てるためです。変更のないコンポーネントは再ビルドせず、`docker buildx imagetools create` で別名を付けます。別名の元は、plan の時点で `zoo2-backend:latest` が指す main コミットの不変タグです。可変タグの `latest` / `preview` は元にしないので、昇格と前後しても 3 つのコンポーネントは同じ main コミットにそろいます。別名は同じ digest に付くため、GHCR では main のバージョンにタグが増えるだけです。
 
 plan ジョブの出力は次の 7 つです。参照するタグと別名の元は Actions のサマリに記録されます。
 
@@ -24,7 +24,9 @@ plan ジョブの出力は次の 7 つです。参照するタグと別名の元
 - `aliases`（別名を付けるコンポーネントと元のタグの JSON 配列。main では空）
 - `pr`（PR 番号。main では空）
 
-alias ジョブは、build がすべて成功した（またはビルド対象がない）場合だけ動きます。実行前に PR が open で head が同じ SHA かを確認し、すでにあるタグは上書きしません。
+PR のビルドはタグを付けず、digest だけで push します。`pr-*` タグは publish ジョブが、build がすべて成功した（またはビルド対象がない）場合だけ付けます。ビルドしたコンポーネントは build から受け取った digest に、変更のないものは main の不変タグに付けます。順番は frontend、backend、migrate で、migrate を最後にします。Preview は migrate のタグができた時点でマイグレーションを実行するため、一部のビルドが失敗したまま DB のスキーマだけが進むことを防ぎます。publish ジョブは実行前に PR が open で head が同じ SHA かを確認し、すでにあるタグは上書きしません。タグが付かなかった digest は、タグなしのバージョンとして日次のクリーンアップで回収されます。
+
+この仕組みより前に作られた PR には、変更のないコンポーネントの `pr-*` タグがありません。`preview` ラベルを付けると（labeled）同じ計画で実行し直し、足りないタグだけを付けます。ほかのラベルでは実行しません。
 
 どのコンポーネントをビルドするかは、base からの累積差分で判定します。リネームされたファイルは元のパスも判定に含めます。
 
