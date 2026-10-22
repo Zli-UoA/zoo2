@@ -4,7 +4,7 @@
   },
   "channels": {
     "renameTitle": "Rename channel",
-    "renameHelp": "Use up to 80 lowercase letters, numbers, hyphens, or underscores. Reserved names are not allowed.",
+    "renameHelp": "Use up to 80 Japanese characters, lowercase letters, numbers, hyphens, or underscores. Reserved names are not allowed.",
     "saveName": "Save",
     "savingName": "Saving…",
     "title": "Channels",

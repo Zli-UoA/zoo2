@@ -15,7 +15,7 @@ pub(crate) const RESERVED_USER_NAMES: &[&str] =
 
 /// チャンネル名のバリデーション (Slack 準拠):
 /// - 1 文字以上 80 文字以下
-/// - 半角英小文字、数字、ハイフン (`-`)、アンダースコア (`_`) のみ許可
+/// - 日本語（ひらがな・カタカナ・漢字）、半角英小文字、数字、ハイフン、アンダースコアを許可
 /// - 予約語 (`all`, `channel`, `everyone`, `here`, `general`) の禁止
 pub fn validate_channel_name(name: &str) -> Result<(), AppError> {
     if name.is_empty() {
@@ -36,13 +36,21 @@ pub fn validate_channel_name(name: &str) -> Result<(), AppError> {
         )));
     }
 
-    let is_valid = name
-        .chars()
-        .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-' || c == '_');
+    let is_valid = name.chars().all(|c| {
+        c.is_ascii_lowercase()
+            || c.is_ascii_digit()
+            || matches!(c, '-' | '_' | '々' | '〆' | '〇'
+                    | '\u{3041}'..='\u{3096}' | '\u{3099}'..='\u{309f}'
+                    | '\u{30a1}'..='\u{30fa}' | '\u{30fc}'..='\u{30ff}'
+                    | '\u{31f0}'..='\u{31ff}' | '\u{ff66}'..='\u{ff9f}'
+                    | '\u{3400}'..='\u{4dbf}' | '\u{4e00}'..='\u{9fff}'
+                    | '\u{f900}'..='\u{faff}' | '\u{20000}'..='\u{2fa1f}'
+                    | '\u{30000}'..='\u{323af}')
+    });
 
     if !is_valid {
         return Err(AppError::BadRequest(
-            "Channel name can only contain lowercase letters, numbers, hyphens, and underscores"
+            "Channel name can only contain Japanese characters, lowercase letters, numbers, hyphens, and underscores"
                 .to_string(),
         ));
     }
@@ -377,6 +385,34 @@ mod tests {
     fn test_validate_channel_name() {
         assert!(validate_channel_name("general-chat").is_ok());
         assert!(validate_channel_name("dev_123").is_ok());
+
+        for name in [
+            "ざつだん",
+            "チャンネル",
+            "開発相談",
+            "日々のメモ",
+            "サーバー_開発-123",
+            "ﾁｬﾝﾈﾙ",
+            "か\u{3099}",
+            "𠮷野家",
+        ] {
+            assert!(validate_channel_name(name).is_ok(), "{name}");
+        }
+        assert!(validate_channel_name(&"あ".repeat(80)).is_ok());
+        assert!(validate_channel_name(&"あ".repeat(81)).is_err());
+        assert!(validate_channel_name(&"𠮷".repeat(80)).is_ok());
+        assert!(validate_channel_name(&"𠮷".repeat(81)).is_err());
+        for name in [
+            "日本語　空白",
+            "日本語 空白",
+            "開発・相談",
+            "開発😀",
+            "開発\n相談",
+            "開発/相談",
+            "開発ABC",
+        ] {
+            assert!(validate_channel_name(name).is_err(), "{name}");
+        }
 
         // 空文字
         assert!(validate_channel_name("").is_err());
