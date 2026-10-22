@@ -66,11 +66,14 @@ jobs:
             printf "%s" "$headers" | grep -q "<html"
             printf "%s" "$headers" | grep -qi "X-Content-Type-Options: nosniff"
             printf "%s" "$headers" | grep -qi "Referrer-Policy: strict-origin-when-cross-origin"
-            printf "%s" "$headers" | grep -qi "X-Frame-Options: DENY"
+            printf "%s" "$headers" | grep -qi "X-Frame-Options: SAMEORIGIN"
             printf "%s" "$headers" | grep -qi "Content-Security-Policy:"
             # script はビルド時のインライン script ハッシュで許可し、unsafe-inline は使わない。
             printf "%s" "$headers" | grep -q "script-src 'self' 'sha256-"
             printf "%s" "$headers" | grep -q "connect-src 'self' https://id.example"
+            # 認証更新用 iframe は認証サーバーへ遷移でき、コールバックは同一オリジンからのみ埋め込める。
+            printf "%s" "$headers" | grep -q "frame-src 'self' https://id.example;"
+            printf "%s" "$headers" | grep -q "frame-ancestors 'self';"
             # Emoji Kitchen の合成画像（#82）を許可する。
             printf "%s" "$headers" | grep -q "img-src 'self' data: https://www.gstatic.com"
           done
