@@ -241,5 +241,26 @@
   "notifications": {
     "label": "Notifications",
     "close": "Dismiss notification"
+  },
+  "webhooks": {
+    "title": "Webhook settings",
+    "description": "Manage GitHub notifications for {{channel}}.",
+    "instructions": "In GitHub Settings → Webhooks, enter the URL and Secret and select application/json. A dedicated posting user is created automatically.",
+    "copied": "Copied",
+    "copyError": "Could not copy. Select the field and copy it manually.",
+    "copyLabel": "Copy {{label}}",
+    "showSecret": "Show Secret",
+    "hideSecret": "Hide Secret",
+    "retry": "Reload",
+    "loading": "Loading…",
+    "name": "Webhook name",
+    "create": "Create",
+    "archived": "New webhooks cannot be created in archived channels.",
+    "empty": "No webhooks yet.",
+    "rotate": "Regenerate Secret",
+    "delete": "Delete",
+    "deleteConfirm": "Delete this webhook? This URL will stop receiving notifications.",
+    "rotateConfirm": "Regenerate the Secret? The current Secret will stop working. Update it on GitHub too.",
+    "confirm": "Confirm"
   }
 }

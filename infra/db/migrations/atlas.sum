@@ -1,4 +1,4 @@
-h1:NA4rr5XgqI1L8hZcGGezqS43DHmlEsm/IoRVNxk3gQ4=
+h1:fd76Y/bH7djHknh5DyDUb7Uo2L8ABE2CKqqZZe+8O8g=
 20261008000000_initial.sql h1:v3rZATh+MriHOzHYMS+oLMrabKMd7J8aLKuEYdsKNfc=
 20261015110156_snake_case_and_replica_identity.sql h1:gWKFhGTel2djLDzitJiG+ufrbKEjusudna0EhabxkZU=
 20261016171538_create_user_identities.sql h1:h8btCK61sRc0EaVuiKnON59nR594VVKdLtl8nes3KKc=
@@ -7,3 +7,4 @@ h1:NA4rr5XgqI1L8hZcGGezqS43DHmlEsm/IoRVNxk3gQ4=
 20261021113514_create_notifications.sql h1:iVt8E23G0/wBjP1gOLMouIUy6Ui5d1R2sq4ckDSB6BY=
 20261022080224_add_is_dm_to_channels.sql h1:eGEsGkpY788laD90j7WAemAp+ybRZIxDTvae1eIZv2Y=
 20261023000000_create_typing_presence.sql h1:oUIwr8RuDUX+ywdJhX5/tQ12jWz1LFQ0KbSgeVHSop8=
+20261023010000_create_channel_webhooks.sql h1:GjXx1PzMzmT1jWl4iPHhIoZCc9hpzlQUqYStOJR7+8A=

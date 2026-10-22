@@ -114,6 +114,15 @@ async fn create_message(
     auth_user: AuthUser,
     Json(payload): Json<CreateMessageRequest>,
 ) -> Result<Json<ApiResponse<MessageResponse>>, AppError> {
+    create_message_impl(state, auth_user, payload, true).await
+}
+
+pub(super) async fn create_message_impl(
+    state: AppState,
+    auth_user: AuthUser,
+    payload: CreateMessageRequest,
+    notify: bool,
+) -> Result<Json<ApiResponse<MessageResponse>>, AppError> {
     validate_message_content(&payload.content)?;
 
     Uuid::parse_str(&payload.channel_id).map_err(|_| {
@@ -227,13 +236,15 @@ async fn create_message(
     .exec(&mut tx)
     .await?;
 
-    crate::notifications::create_message_notifications(
-        &mut tx,
-        &message,
-        auth_user.id.as_str(),
-        parent_author_id.as_deref(),
-    )
-    .await?;
+    if notify {
+        crate::notifications::create_message_notifications(
+            &mut tx,
+            &message,
+            auth_user.id.as_str(),
+            parent_author_id.as_deref(),
+        )
+        .await?;
+    }
 
     let txid = get_current_txid(&mut tx).await?;
     tx.commit().await?;

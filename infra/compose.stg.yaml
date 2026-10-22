@@ -74,6 +74,9 @@ services:
       PORT: ${PORT:-8000}
       ENVIRONMENT: production
       DEV_AUTH_ENABLED: "false"
+      GITHUB_WEBHOOK_SECRET: ${GITHUB_WEBHOOK_SECRET:-}
+      GITHUB_WEBHOOK_CHANNEL_ID: ${GITHUB_WEBHOOK_CHANNEL_ID:-}
+      GITHUB_WEBHOOK_USER_ID: ${GITHUB_WEBHOOK_USER_ID:-}
       # Pass through configured OIDC values; keep missing keys unset so Rust's
       # production validation and OIDC_CLIENT_ID fallback still apply.
       OIDC_ISSUER:

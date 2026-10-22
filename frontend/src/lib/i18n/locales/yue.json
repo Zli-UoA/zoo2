@@ -241,5 +241,26 @@
   "notifications": {
     "label": "通知",
     "close": "關閉通知"
+  },
+  "webhooks": {
+    "title": "Webhook 設定",
+    "description": "管理 {{channel}} 嘅 GitHub 通知。",
+    "instructions": "喺 GitHub Settings → Webhooks 填入 URL 同 Secret，並揀 application/json。系統會自動建立專用嘅發文用戶。",
+    "copied": "已複製",
+    "copyError": "複製唔到。請選取欄位再手動複製。",
+    "copyLabel": "複製 {{label}}",
+    "showSecret": "顯示 Secret",
+    "hideSecret": "隱藏 Secret",
+    "retry": "重新載入",
+    "loading": "載入中…",
+    "name": "Webhook 名稱",
+    "create": "建立",
+    "archived": "已封存嘅頻道唔可以建立新 Webhook。",
+    "empty": "暫時未有 Webhook。",
+    "rotate": "重新產生 Secret",
+    "delete": "刪除",
+    "deleteConfirm": "要刪除呢個 Webhook 嗎？呢個 URL 會停止接收通知。",
+    "rotateConfirm": "要重新產生 Secret 嗎？而家嘅 Secret 會失效，請一併更新 GitHub 嘅設定。",
+    "confirm": "確認"
   }
 }

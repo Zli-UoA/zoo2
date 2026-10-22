@@ -1,3 +1,4 @@
+import { GitHubCard, parseGitHubCard } from "./GitHubCard";
 import { useTranslation } from "react-i18next";
 import { cn } from "cn";
 import {
@@ -61,6 +62,8 @@ export interface MessageRowProps {
  * メンション装飾は将来対応（今回はやらない）。
  */
 export function MessageBody({ content }: { content: string }) {
+  const card = parseGitHubCard(content);
+  if (card) return <GitHubCard card={card} />;
   return (
     <p className="whitespace-pre-wrap break-words text-sm leading-relaxed">
       {messageTextSegments(content).map((segment, index) =>
