@@ -132,6 +132,14 @@ async fn create_message(
 
     // 添付ファイルの検証 (外部ストレージへの HeadObject 検証はトランザクション外で実行)
     let attachment_ids = payload.attachment_ids.unwrap_or_default();
+    const MAX_ATTACHMENTS_PER_MESSAGE: usize = 10;
+    if attachment_ids.len() > MAX_ATTACHMENTS_PER_MESSAGE {
+        return Err(AppError::BadRequest(format!(
+            "Too many attachments: maximum allowed is {MAX_ATTACHMENTS_PER_MESSAGE}, got {}",
+            attachment_ids.len()
+        )));
+    }
+
     let mut verified_attachments = Vec::new();
     if !attachment_ids.is_empty() {
         let mut seen = std::collections::HashSet::new();

@@ -48,11 +48,76 @@ pub fn router() -> Router<AppState> {
 
 /// 危険な実行ファイル・スクリプトなどのアップロードを拒否する
 fn validate_upload_mime(content_type: &str) -> Result<(), AppError> {
-    let lower = content_type.to_ascii_lowercase();
-    let base_mime = lower.split(';').next().unwrap_or("").trim();
-
-    if base_mime.is_empty() {
+    if content_type.is_empty() {
         return Err(AppError::BadRequest("content_type cannot be empty".into()));
+    }
+
+    if content_type.len() > 128 {
+        return Err(AppError::BadRequest(
+            "content_type exceeds maximum length of 128 characters".into(),
+        ));
+    }
+
+    // 制御文字や改行 (\r, \n, \0 等) の混入禁止 (Header Injection 防止)
+    if content_type.chars().any(|c| c.is_ascii_control()) {
+        return Err(AppError::BadRequest(
+            "content_type contains invalid control characters".into(),
+        ));
+    }
+
+    let lower = content_type.to_ascii_lowercase();
+    let mut segments = lower.split(';');
+    let base_mime = segments.next().unwrap_or("").trim();
+
+    // RFC 6838 準拠の type/subtype 形式検証
+    let parts: Vec<&str> = base_mime.split('/').collect();
+    if parts.len() != 2 || parts[0].is_empty() || parts[1].is_empty() {
+        return Err(AppError::BadRequest(format!(
+            "Invalid content_type format (expected type/subtype): {content_type}"
+        )));
+    }
+
+    let is_valid_token = |s: &str| {
+        !s.is_empty()
+            && s.chars().all(|c| {
+                c.is_ascii_alphanumeric()
+                    || matches!(c, '!' | '#' | '$' | '&' | '^' | '_' | '.' | '+' | '-')
+            })
+    };
+
+    if !is_valid_token(parts[0]) || !is_valid_token(parts[1]) {
+        return Err(AppError::BadRequest(format!(
+            "Invalid characters in content_type: {content_type}"
+        )));
+    }
+
+    // セミコロン以降のパラメータがある場合 (例: charset=utf-8) の検証
+    for param in segments {
+        let param = param.trim();
+        if param.is_empty() {
+            return Err(AppError::BadRequest(format!(
+                "Invalid empty parameter in content_type: {content_type}"
+            )));
+        }
+        let kv: Vec<&str> = param.splitn(2, '=').collect();
+        if kv.len() != 2 || !is_valid_token(kv[0].trim()) {
+            return Err(AppError::BadRequest(format!(
+                "Invalid parameter format in content_type: {content_type}"
+            )));
+        }
+        let val = kv[1].trim();
+        let is_valid_val = if val.starts_with('"') && val.ends_with('"') && val.len() >= 2 {
+            val[1..val.len() - 1]
+                .chars()
+                .all(|c| c.is_ascii_graphic() || c == ' ')
+        } else {
+            is_valid_token(val)
+        };
+        if !is_valid_val {
+            return Err(AppError::BadRequest(format!(
+                "Invalid parameter value in content_type: {content_type}"
+            )));
+        }
     }
 
     // 実行可能ファイルや危険な拡張フォーマットのブロック
@@ -137,23 +202,27 @@ async fn presign_attachment(
         ));
     }
 
-    // プライベートチャンネルの場合、所属していなければ 404 で存在を隠蔽
-    if channel.is_private {
-        let membership = ChannelUser::filter(
-            ChannelUser::fields()
-                .channel_id()
-                .eq(payload.channel_id.as_str())
-                .and(ChannelUser::fields().user_id().eq(auth_user.id.as_str())),
-        )
-        .first()
-        .exec(&mut db)
-        .await?;
+    // チャンネル参加メンバーシップの確認 (公開・プライベート問わず参加者のみ presign 可能)
+    let membership = ChannelUser::filter(
+        ChannelUser::fields()
+            .channel_id()
+            .eq(payload.channel_id.as_str())
+            .and(ChannelUser::fields().user_id().eq(auth_user.id.as_str())),
+    )
+    .first()
+    .exec(&mut db)
+    .await?;
 
-        if membership.is_none() {
+    if membership.is_none() {
+        if channel.is_private {
             return Err(AppError::NotFound(format!(
                 "Channel not found: {}",
                 payload.channel_id
             )));
+        } else {
+            return Err(AppError::Forbidden(
+                "Must be a member of the channel to attach files".into(),
+            ));
         }
     }
 
@@ -298,4 +367,35 @@ async fn get_attachment_url(
         },
         None,
     )))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_validate_upload_mime_valid() {
+        assert!(validate_upload_mime("image/png").is_ok());
+        assert!(validate_upload_mime("image/jpeg").is_ok());
+        assert!(validate_upload_mime("application/pdf").is_ok());
+        assert!(validate_upload_mime("text/plain; charset=utf-8").is_ok());
+        assert!(validate_upload_mime("application/json; version=1").is_ok());
+    }
+
+    #[test]
+    fn test_validate_upload_mime_disallowed_executables() {
+        assert!(validate_upload_mime("application/x-msdownload").is_err());
+        assert!(validate_upload_mime("application/x-executable").is_err());
+        assert!(validate_upload_mime("application/x-sh").is_err());
+    }
+
+    #[test]
+    fn test_validate_upload_mime_malformed_and_injection() {
+        assert!(validate_upload_mime("").is_err());
+        assert!(validate_upload_mime("image").is_err());
+        assert!(validate_upload_mime("image/").is_err());
+        assert!(validate_upload_mime("/png").is_err());
+        assert!(validate_upload_mime("image/png\r\nInjected: true").is_err());
+        assert!(validate_upload_mime("image/png; invalid token @!").is_err());
+    }
 }

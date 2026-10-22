@@ -240,13 +240,44 @@ impl Config {
         }
     }
 
-    /// 設定値の整合性検証 (本番環境での OIDC 設定必須化など)
+    /// 設定値の整合性検証 (本番環境での OIDC 設定必須化および S3/R2 設定必須化など)
     pub fn validate(&self) -> Result<(), String> {
-        if self.environment == "production" && self.oidc.is_none() {
-            return Err(
-                "OIDC configuration (OIDC_ISSUER and OIDC_AUDIENCE) is required when ENVIRONMENT is 'production'"
-                    .to_string(),
-            );
+        if self.environment == "production" {
+            if self.oidc.is_none() {
+                return Err(
+                    "OIDC configuration (OIDC_ISSUER and OIDC_AUDIENCE) is required when ENVIRONMENT is 'production'"
+                        .to_string(),
+                );
+            }
+
+            // 本番環境における S3 / Cloudflare R2 設定の検証
+            if self.s3.endpoint.is_empty()
+                || self.s3.endpoint == "http://localhost:9000"
+                || self.s3.endpoint == "http://127.0.0.1:9000"
+            {
+                return Err(
+                    "S3_ENDPOINT must be explicitly set to a production storage endpoint (e.g. Cloudflare R2) when ENVIRONMENT is 'production'"
+                        .to_string(),
+                );
+            }
+            if self.s3.bucket.is_empty() || self.s3.bucket == "zoo-attachments-dev" {
+                return Err(
+                    "S3_BUCKET must be explicitly set to a production bucket name when ENVIRONMENT is 'production'"
+                        .to_string(),
+                );
+            }
+            if self.s3.access_key_id.is_empty() || self.s3.access_key_id == "rustfsadmin" {
+                return Err(
+                    "S3_ACCESS_KEY_ID must be set and cannot use the development default 'rustfsadmin' when ENVIRONMENT is 'production'"
+                        .to_string(),
+                );
+            }
+            if self.s3.secret_access_key.is_empty() || self.s3.secret_access_key == "rustfsadmin" {
+                return Err(
+                    "S3_SECRET_ACCESS_KEY must be set and cannot use the development default 'rustfsadmin' when ENVIRONMENT is 'production'"
+                        .to_string(),
+                );
+            }
         }
         Ok(())
     }
@@ -258,12 +289,12 @@ mod tests {
 
     fn dummy_s3_config() -> S3Config {
         S3Config {
-            endpoint: "http://localhost:9000".to_string(),
-            bucket: "test-bucket".to_string(),
+            endpoint: "https://example.r2.cloudflarestorage.com".to_string(),
+            bucket: "zoo-attachments-prod".to_string(),
             region: "auto".to_string(),
-            access_key_id: "test_key_id".to_string(),
+            access_key_id: "prod_key_id".to_string(),
             secret_access_key: "super_secret_s3_key".to_string(),
-            force_path_style: true,
+            force_path_style: false,
             presigned_put_expiry_secs: 900,
             presigned_get_expiry_secs: 300,
             max_file_size: 52428800,
@@ -392,6 +423,49 @@ mod tests {
             cors_allowed_origins: vec![],
             s3: dummy_s3_config(),
         };
+        assert!(config.validate().is_err());
+    }
+
+    #[test]
+    fn test_production_validate_rejects_default_or_missing_s3_config() {
+        let valid_oidc = parse_oidc_config(
+            Some("https://idp.example.com"),
+            Some("zoo-client"),
+            None,
+            Some("https://idp.example.com/jwks"),
+        );
+
+        // 1. 正常な本番設定 (OIDC あり、本番 R2 設定あり)
+        let mut config = Config {
+            database_url: "test".to_string(),
+            host: "127.0.0.1".to_string(),
+            port: 8080,
+            electric_url: "test".to_string(),
+            electric_secret: None,
+            oidc: valid_oidc.clone(),
+            dev_auth_enabled: false,
+            environment: "production".to_string(),
+            cors_allowed_origins: vec![],
+            s3: dummy_s3_config(),
+        };
+        assert!(config.validate().is_ok());
+
+        // 2. 開発用 localhost endpoint のまま
+        config.s3.endpoint = "http://localhost:9000".to_string();
+        assert!(config.validate().is_err());
+
+        // 3. 開発用バケット名のまま
+        config.s3 = dummy_s3_config();
+        config.s3.bucket = "zoo-attachments-dev".to_string();
+        assert!(config.validate().is_err());
+
+        // 4. 開発用デフォルトクレデンシャル (rustfsadmin) のまま
+        config.s3 = dummy_s3_config();
+        config.s3.access_key_id = "rustfsadmin".to_string();
+        assert!(config.validate().is_err());
+
+        config.s3 = dummy_s3_config();
+        config.s3.secret_access_key = "rustfsadmin".to_string();
         assert!(config.validate().is_err());
     }
 

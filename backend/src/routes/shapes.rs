@@ -100,9 +100,12 @@ pub(crate) fn message_reactions_shape_where(
 }
 
 /// Attachments Shape の where 句とパラメータの純粋組み立て
+///
+/// 親メッセージが紐付けられており (message_id IS NOT NULL)、かつ親メッセージが論理削除されていない
+/// (deleted_at IS NULL) 添付ファイルのみを配信する。親メッセージ削除時は move-out でクライアントから除外される。
 pub(crate) fn attachments_shape_where(channel_id: &str) -> (String, Vec<(&'static str, &str)>) {
     (
-        "channel_id = $1 AND message_id IS NOT NULL".to_string(),
+        "channel_id = $1 AND message_id IN (SELECT id FROM messages WHERE channel_id = $1 AND deleted_at IS NULL)".to_string(),
         vec![("params[1]", channel_id)],
     )
 }
@@ -517,7 +520,10 @@ mod tests {
     #[test]
     fn test_attachments_shape_where() {
         let (clause, params) = attachments_shape_where("ch-123");
-        assert_eq!(clause, "channel_id = $1 AND message_id IS NOT NULL");
+        assert_eq!(
+            clause,
+            "channel_id = $1 AND message_id IN (SELECT id FROM messages WHERE channel_id = $1 AND deleted_at IS NULL)"
+        );
         assert_eq!(params, vec![("params[1]", "ch-123")]);
     }
 
