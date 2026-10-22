@@ -203,7 +203,13 @@
     "addCombination": "Add this combination",
     "kitchenImageNotice": "Emoji Kitchen images are loaded from Google.",
     "searchEmoji": "Search emojis",
-    "noSearchResults": "No matching emojis"
+    "noSearchResults": "No matching emojis",
+    "tabEmoji": "Emoji",
+    "tabKitchen": "Emoji Kitchen",
+    "emojiDescription": "Pick any emoji to react with.",
+    "emojiLoading": "Loading emojis…",
+    "recent": "Recent emojis",
+    "skinTone": "Skin tone"
   },
   "theme": {
     "switch": "Switch theme",

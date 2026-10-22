@@ -203,7 +203,13 @@
     "addCombination": "この組み合わせを追加",
     "kitchenImageNotice": "Emoji Kitchenの画像はGoogleから読み込みます。",
     "searchEmoji": "絵文字を検索",
-    "noSearchResults": "一致する絵文字がありません"
+    "noSearchResults": "一致する絵文字がありません",
+    "tabEmoji": "絵文字",
+    "tabKitchen": "Emoji Kitchen",
+    "emojiDescription": "すべての絵文字から選べます。",
+    "emojiLoading": "絵文字を読み込み中…",
+    "recent": "最近使った絵文字",
+    "skinTone": "肌の色"
   },
   "theme": {
     "switch": "テーマを切り替える",

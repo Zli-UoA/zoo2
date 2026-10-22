@@ -2,3 +2,5 @@
 src/routeTree.gen.ts
 # Generated compact Emoji Kitchen lookup table.
 src/lib/emoji/emoji-kitchen.json
+# Upstream Emojibase data copied by scripts/sync-emojibase-data.mjs.
+public/emojibase-data

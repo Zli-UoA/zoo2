@@ -203,7 +203,13 @@
     "addCombination": "添加此组合",
     "kitchenImageNotice": "Emoji Kitchen 的图片从 Google 加载。",
     "searchEmoji": "搜索表情",
-    "noSearchResults": "没有匹配的表情"
+    "noSearchResults": "没有匹配的表情",
+    "tabEmoji": "表情符号",
+    "tabKitchen": "Emoji Kitchen",
+    "emojiDescription": "可以从所有表情符号中选择。",
+    "emojiLoading": "正在加载表情符号…",
+    "recent": "最近使用的表情符号",
+    "skinTone": "肤色"
   },
   "theme": {
     "switch": "切换主题",
