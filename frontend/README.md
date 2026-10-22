@@ -69,6 +69,22 @@ pnpm test:e2e:i18n    # 本番ビルド + Playwright。バックエンド不要
 
 ブラウザテストには Playwright の Chromium が必要です（`pnpm exec playwright install chromium`）。各言語の自動判定・ダイアログ・切り替え・再読み込み後の保存値を確認します。既存のスモーク / OIDC テストは表示言語を日本語に固定しています。
 
+## 絵文字ピッカー
+
+リアクションの絵文字ピッカーは [frimousse](https://frimousse.liveblocks.io)（headless）で描画し、絵文字データは `public/emojibase-data` から自前配信します。実行時に CDN へはアクセスしません。
+
+- 配信するロケールは `en` / `ja` / `zh-hant` の3つです。アプリのロケールとの対応は `src/lib/emoji/locale.ts` の中央マップで解決します（`zh-Hans` と `yue` は繁体字データを使い、未対応は `en`）。
+- frimousse は初回に選択ロケールの `data.json` と `messages.json` だけを取得し、localStorage にキャッシュします。2回目以降のオープンではキャッシュを使います。
+- 表示する絵文字は `SUPPORTED_EMOJI_VERSION`（`src/lib/emoji/data.ts`、現在は 16）までに制限します。バックエンドの `emojis` クレートが Unicode 16.0 までしか検証しないためで、どちらかを更新するときは両方の上限を揃えてください。
+- recents は localStorage の `zoo-recent-emoji` に最大16件、新しい順で保存します。
+- データは `emojibase-data`（devDependency）からコピーします。バージョンを更新したら次を実行し、差分をコミットしてください。
+
+```bash
+pnpm sync:emojibase
+```
+
+`public/emojibase-data/LICENSE` に上流の MIT ライセンスを同梱しています。
+
 ## データアクセス層（Phase 1）
 
 Electric の Shape 購読と REST 書き込みを分離し、接続先を設定だけで切り替えられるようにしています。

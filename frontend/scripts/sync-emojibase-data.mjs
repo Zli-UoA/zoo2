@@ -1,0 +1,25 @@
+// Copies the Emojibase locale data served from public/emojibase-data.
+// Usage: pnpm sync:emojibase
+import { copyFile, mkdir, readFile } from "node:fs/promises";
+import { createRequire } from "node:module";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
+
+const require = createRequire(import.meta.url);
+const sourceRoot = dirname(require.resolve("emojibase-data/package.json"));
+const packageJson = JSON.parse(await readFile(join(sourceRoot, "package.json"), "utf8"));
+const targetRoot = fileURLToPath(new URL("../public/emojibase-data/", import.meta.url));
+const locales = ["en", "ja", "zh-hant"];
+const files = ["data.json", "messages.json"];
+
+for (const locale of locales) {
+  await mkdir(join(targetRoot, locale), { recursive: true });
+  for (const file of files) {
+    await copyFile(join(sourceRoot, locale, file), join(targetRoot, locale, file));
+  }
+}
+
+await copyFile(join(sourceRoot, "LICENSE"), join(targetRoot, "LICENSE"));
+console.log(
+  `emojibase-data@${packageJson.version}: copied ${locales.join(", ")} to public/emojibase-data`,
+);

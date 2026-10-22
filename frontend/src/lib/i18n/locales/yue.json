@@ -203,7 +203,13 @@
     "addCombination": "加呢個組合",
     "kitchenImageNotice": "Emoji Kitchen 嘅圖片會由 Google 載入。",
     "searchEmoji": "搵表情",
-    "noSearchResults": "搵唔到符合嘅表情"
+    "noSearchResults": "搵唔到符合嘅表情",
+    "tabEmoji": "表情符號",
+    "tabKitchen": "Emoji Kitchen",
+    "emojiDescription": "可以喺所有表情符號度揀。",
+    "emojiLoading": "載入緊表情符號…",
+    "recent": "最近用過嘅表情符號",
+    "skinTone": "膚色"
   },
   "theme": {
     "switch": "切換主題",
