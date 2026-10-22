@@ -405,7 +405,7 @@ async fn test_dm_validation_errors() -> anyhow::Result<()> {
         .header("X-Dev-User", &alice_id)
         .body(Body::from(serde_json::to_vec(&json!({
             "id": &duplicate_channel_id,
-            "channel_name": format!("ch_{}", uuid::Uuid::new_v4().simple()),
+            "channel_name": format!("ch-{}", uuid::Uuid::new_v4().simple()),
         }))?))?;
     let resp = app.clone().oneshot(create_ch_req).await?;
     assert_eq!(resp.status(), StatusCode::OK);
@@ -491,7 +491,7 @@ async fn test_dm_access_control_and_privacy() -> anyhow::Result<()> {
         .header("content-type", "application/json")
         .header("X-Dev-User", admin_id)
         .body(Body::from(serde_json::to_vec(&json!({
-            "channel_name": "renamed_by_admin"
+            "channel_name": "renamed-by-admin"
         }))?))?;
     let resp = app.clone().oneshot(req).await?;
     assert_eq!(resp.status(), StatusCode::NOT_FOUND);
