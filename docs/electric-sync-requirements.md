@@ -11,6 +11,8 @@
 
 本番および統合時の経路では、クライアントは Electric に直接アクセスせず、バックエンドの Shape プロキシエンドポイント（例: `GET /api/shapes/{resource}`）を経由します。バックエンド側で認証・認可を検証し、対象テーブル（`table`）と行フィルタ（`where`）を確定させてください。クライアントから任意の `table` や `where` を指定できないようにして認可漏れを防ぎ、Electric との通信にはサーバ側で `ELECTRIC_SECRET` を付与します。
 
+Electric 1.8.1 の [HTTP API](https://electric-sql.com/docs/api/http) に合わせ、`ELECTRIC_SECRET` はバックエンドから Electric への `secret` クエリパラメータとして送ります。Bearer ヘッダでは API secret として認識されないためです。ブラウザーからの `secret` / `api_secret` は転送せず、サーバー設定だけを使用します。secret を含む上流 URL がログやエラー応答へ出ないよう、接続エラーから URL を除去します。ブラウザーからバックエンドへの OIDC Bearer 認証とは別に扱います。
+
 先行開発時の経路では、ローカルの Electric（`infra/db/compose.yml` の `http://localhost:3000/v1/shape`、`ELECTRIC_INSECURE=true`）に直接接続します。
 
 ### 必要な Shape（現行スキーマ基準・粒度は要相談）
