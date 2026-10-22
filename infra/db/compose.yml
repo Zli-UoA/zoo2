@@ -60,6 +60,18 @@ services:
       timeout: 5s
       retries: 15
 
+  rustfs-init:
+    image: minio/mc:latest
+    depends_on:
+      rustfs:
+        condition: service_healthy
+    entrypoint: >
+      /bin/sh -c "
+      /usr/bin/mc alias set local http://rustfs:9000 $${S3_ACCESS_KEY_ID:-rustfsadmin} $${S3_SECRET_ACCESS_KEY:-rustfsadmin};
+      /usr/bin/mc mb --ignore-existing local/$${S3_BUCKET:-zoo-attachments-dev};
+      exit 0;
+      "
+
 volumes:
   postgres-data:
   rustfs-data:

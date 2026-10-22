@@ -9,6 +9,12 @@ use backend::{
     config::Config, db::init_db, models::Attachment, routes::create_router, state::AppState,
 };
 
+async fn ensure_bucket_exists(client: &aws_sdk_s3::Client, bucket: &str) {
+    if client.head_bucket().bucket(bucket).send().await.is_err() {
+        let _ = client.create_bucket().bucket(bucket).send().await;
+    }
+}
+
 #[tokio::test]
 async fn test_attachments_presign_and_validation() -> anyhow::Result<()> {
     dotenvy::dotenv().ok();
@@ -17,8 +23,10 @@ async fn test_attachments_presign_and_validation() -> anyhow::Result<()> {
     let mut config = Config::from_env();
     config.dev_auth_enabled = true;
     let db = init_db(&config.database_url).await?;
-    let state = AppState::new(db.clone(), config);
-    let app = create_router(state);
+    let state = AppState::new(db.clone(), config.clone());
+    let app = create_router(state.clone());
+
+    ensure_bucket_exists(&state.s3_client, &config.s3.bucket).await;
 
     let alice_id = uuid::Uuid::new_v4().to_string();
     let bob_id = uuid::Uuid::new_v4().to_string();
@@ -232,6 +240,8 @@ async fn test_attachments_upload_verification_and_message_linking() -> anyhow::R
     let db = init_db(&config.database_url).await?;
     let state = AppState::new(db.clone(), config.clone());
     let app = create_router(state.clone());
+
+    ensure_bucket_exists(&state.s3_client, &config.s3.bucket).await;
 
     let alice_id = uuid::Uuid::new_v4().to_string();
     let bob_id = uuid::Uuid::new_v4().to_string();
