@@ -3,7 +3,8 @@ on:
   push:
     branches: [main]
   pull_request:
-    types: [opened, synchronize, reopened]
+    # labeled publishes the tags a PR opened before the preview existed may lack.
+    types: [opened, synchronize, reopened, labeled]
   workflow_dispatch:
 permissions:
   contents: read
@@ -13,15 +14,21 @@ concurrency:
   queue: max
 jobs:
   plan:
-    if: github.event_name != 'workflow_dispatch' || github.ref == 'refs/heads/main'
+    if: >-
+      (github.event_name != 'workflow_dispatch' || github.ref == 'refs/heads/main') &&
+      (github.event.action != 'labeled' || github.event.label.name == 'preview')
     runs-on: ubuntu-latest
     permissions:
       contents: read
       pull-requests: read
+      # Unchanged PR components are aliased to the main commit that latest points to.
+      packages: read
     outputs:
       matrix: ${{ steps.plan.outputs.matrix }}
       sha: ${{ steps.plan.outputs.sha }}
       tags: ${{ steps.plan.outputs.tags }}
+      aliases: ${{ steps.plan.outputs.aliases }}
+      pr: ${{ steps.plan.outputs.pr }}
       has_images: ${{ steps.plan.outputs.has_images }}
       enabled: ${{ steps.plan.outputs.enabled }}
     steps:
@@ -110,6 +117,8 @@ jobs:
               ".buildkit-cache/git": "/usr/local/cargo/git",
               ".buildkit-cache/target": "/app/target"
             }
+      # PR images are pushed by digest only. The preview ResourceSet pulls pr-<number>-<SHA> as soon as
+      # it exists, so the publish job tags all components after every build, migrate last.
       - name: Build and publish immutable image
         id: image
         if: steps.existing.outputs.image == 'false'
@@ -117,9 +126,10 @@ jobs:
         with:
           context: .
           file: infra/Dockerfile-${{ matrix.component }}-deploy
-          push: true
+          push: ${{ github.event_name != 'pull_request' }}
+          outputs: ${{ github.event_name == 'pull_request' && format('type=image,name=ghcr.io/zli-uoa/zoo2-{0},push-by-digest=true,name-canonical=true,push=true', matrix.component) || '' }}
           platforms: linux/amd64
-          tags: ghcr.io/zli-uoa/zoo2-${{ matrix.component }}:${{ fromJSON(needs.plan.outputs.tags)[matrix.component] }}
+          tags: ${{ github.event_name != 'pull_request' && format('ghcr.io/zli-uoa/zoo2-{0}:{1}', matrix.component, fromJSON(needs.plan.outputs.tags)[matrix.component]) || '' }}
           labels: |
             org.opencontainers.image.source=https://github.com/Zli-UoA/zoo2
             org.opencontainers.image.revision=${{ needs.plan.outputs.sha }}
@@ -134,6 +144,23 @@ jobs:
             VITE_OIDC_SCOPE=${{ github.event_name != 'pull_request' && vars.VITE_OIDC_SCOPE || '' }}
             VITE_OIDC_RESOURCE=${{ github.event_name != 'pull_request' && vars.VITE_OIDC_RESOURCE || '' }}
             VITE_OIDC_POST_LOGOUT_REDIRECT_URI=${{ github.event_name != 'pull_request' && vars.VITE_OIDC_POST_LOGOUT_REDIRECT_URI || '' }}
+      - name: Record PR image digest
+        if: github.event_name == 'pull_request' && steps.image.outcome == 'success'
+        env:
+          DIGEST: ${{ steps.image.outputs.digest }}
+          COMPONENT: ${{ matrix.component }}
+        run: |
+          [[ "$DIGEST" =~ ^sha256:[a-f0-9]{64}$ ]] || { echo "Unexpected digest: $DIGEST"; exit 1; }
+          mkdir -p "$RUNNER_TEMP/digests"
+          printf '%s' "$DIGEST" > "$RUNNER_TEMP/digests/$COMPONENT"
+      - name: Upload PR image digest
+        if: github.event_name == 'pull_request' && steps.image.outcome == 'success'
+        uses: actions/upload-artifact@v4
+        with:
+          name: digest-${{ matrix.component }}
+          path: ${{ runner.temp }}/digests/${{ matrix.component }}
+          retention-days: 1
+          if-no-files-found: error
       - name: Build and publish shared preview frontend
         if: steps.existing.outputs.preview == 'false' && matrix.component == 'frontend' && github.event_name != 'pull_request'
         id: preview
@@ -219,4 +246,66 @@ jobs:
               }
               if (failed.length) core.error(`Rollback failed; aliases are mixed: ${failed.join(', ')}`);
               throw error;
+            }
+  # Give every PR component the same pr-<number>-<SHA> tag, which the site1 preview ResourceSet pulls.
+  # Tags appear only after every build succeeded, and migrate last: the ResourceSet runs the migration as
+  # soon as its tag exists, so a failed build must not leave a migrated schema behind an old app.
+  # Built components are tagged from the digests the build pushed; unchanged ones alias the pinned main image.
+  publish:
+    needs: [plan, build]
+    if: >-
+      always() && github.event_name == 'pull_request' && needs.plan.result == 'success' &&
+      needs.plan.outputs.enabled == 'true' &&
+      (needs.build.result == 'success' || needs.build.result == 'skipped')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+      pull-requests: read
+    steps:
+      - name: Download PR image digests
+        if: needs.build.result == 'success'
+        uses: actions/download-artifact@v4
+        with:
+          pattern: digest-*
+          path: ${{ runner.temp }}/digests
+          merge-multiple: true
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Tag PR images, migrate last
+        uses: actions/github-script@v8
+        env:
+          PR_NUMBER: ${{ needs.plan.outputs.pr }}
+          IMAGE_SHA: ${{ needs.plan.outputs.sha }}
+          TAGS: ${{ needs.plan.outputs.tags }}
+          ALIASES: ${{ needs.plan.outputs.aliases }}
+        with:
+          script: |
+            const {existsSync, readFileSync} = await import('node:fs');
+            // A closed or updated PR is no longer deployed; its newer run publishes the current head.
+            const {data: pr} = await github.rest.pulls.get({...context.repo, pull_number: Number(process.env.PR_NUMBER)});
+            if (pr.state !== 'open' || pr.head.sha !== process.env.IMAGE_SHA) {
+              core.notice('PR closed or changed; not tagging');
+              return;
+            }
+            const tags = JSON.parse(process.env.TAGS);
+            const aliases = Object.fromEntries(JSON.parse(process.env.ALIASES).map(({component, source}) => [component, source]));
+            for (const component of ['frontend', 'backend', 'migrate']) {
+              const image = `ghcr.io/zli-uoa/zoo2-${component}`;
+              const target = `${image}:${tags[component]}`;
+              // Immutable tags are never rewritten; a rerun keeps what was already published.
+              const {exitCode, stderr} = await exec.getExecOutput('docker', ['buildx', 'imagetools', 'inspect', target], {ignoreReturnCode: true, silent: true});
+              if (exitCode === 0) { core.notice(`${target} already exists; not tagging`); continue; }
+              if (!/not found/i.test(stderr)) throw new Error(`Cannot inspect ${target}: ${stderr.trim()}`);
+              const digestFile = `${process.env.RUNNER_TEMP}/digests/${component}`;
+              let source;
+              if (component in aliases) source = `${image}:${aliases[component]}`;
+              else if (existsSync(digestFile)) source = `${image}@${readFileSync(digestFile, 'utf8').trim()}`;
+              else throw new Error(`${component} was planned for a build but has no digest or tag`);
+              if (!/@sha256:[a-f0-9]{64}$|:[a-z0-9-]+$/.test(source)) throw new Error(`Unexpected source ${source}`);
+              await exec.exec('docker', ['buildx', 'imagetools', 'create', '-t', target, source]);
             }

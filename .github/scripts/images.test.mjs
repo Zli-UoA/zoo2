@@ -36,6 +36,15 @@ test('multiple tags preserve version if any tag is retained', () => {
   versions[16].metadata.container.tags.push(`pr-9-${sha(17)}`);
   assert.deepEqual(candidates(versions, new Map([[9, sha(99)]])).map(v => v.id), [16]);
 });
+test('a PR alias on a main version never deletes the main image', () => {
+  // 変更のないコンポーネントの pr タグは、main の `<SHA>` と同じバージョンに付く。
+  const aliased = [version(1, [sha(1), `pr-7-${sha(50)}`]), version(2, [`preview-${sha(1)}`, `pr-7-${sha(50)}`])];
+  assert.deepEqual(candidates(aliased, new Map(), {closedPR: 7}), []);
+  assert.deepEqual(candidates(aliased, new Map()), []);
+  // main の15世代より古くても、open な PR の head が使っている間は残す。
+  const old = [...Array.from({length: 15}, (_, i) => version(i + 1, [sha(i + 1)])), version(16, [sha(16), `pr-7-${sha(50)}`])];
+  assert.deepEqual(candidates(old, new Map([[7, sha(50)]])), []);
+});
 test('untagged grace period', () => {
   assert.deepEqual(candidates([version(1, [], 0.5), version(2, [], 2)], new Map()).map(v => v.id), [2]);
 });
@@ -49,24 +58,38 @@ test('only missing versions are ignored', async () => {
   await assert.rejects(ignoreMissing(async () => {throw new Error('403');}));
 });
 
-import plan from './image-plan.mjs';
+import plan, {promotedMainSha} from './image-plan.mjs';
 function planFixture({files = [], fork = false, state = 'open', currentSha = sha(1)} = {}) {
   const outputs = {};
   let requestedPages = false;
   const core = {setOutput: (key, value) => {outputs[key] = value;}, summary: {addHeading() {return this;}, addCodeBlock() {return this;}, async write() {}}};
   const context = {repo: {owner: 'Zli-UoA', repo: 'zoo2'}, sha: sha(99), payload: {pull_request: {number: 7, head: {sha: sha(1), repo: {full_name: fork ? 'someone/zoo2' : 'Zli-UoA/zoo2'}}}}};
-  const github = {rest: {pulls: {get: async () => ({data: {state, head: {sha: currentSha}}}), listFiles: 'listFiles'}}, paginate: async (method, params) => {
-    assert.equal(method, 'listFiles'); assert.equal(params.per_page, 100); requestedPages = true; return files;
+  let requestedVersions = false;
+  const github = {rest: {pulls: {get: async () => ({data: {state, head: {sha: currentSha}}}), listFiles: 'listFiles'}, packages: {getAllPackageVersionsForPackageOwnedByOrg: 'versions'}}, paginate: async (method, params) => {
+    assert.equal(params.per_page, 100);
+    // latest は main の SHA 98 を指す。より新しいバージョンがあっても昇格済みの SHA を使う。
+    if (method === 'versions') { requestedVersions = true; return [version(2, [sha(97)]), version(1, ['latest', sha(98)])]; }
+    assert.equal(method, 'listFiles'); requestedPages = true; return files;
   }};
-  return {github, context, core, outputs, paginated: () => requestedPages};
+  return {github, context, core, outputs, paginated: () => requestedPages, readVersions: () => requestedVersions};
 }
-test('PR plan uses head SHA, paginated whole-PR diff, and preview fallback', async () => {
+test('PR plan uses head SHA, paginated whole-PR diff, and aliases unchanged components to the promoted main', async () => {
   const fixture = planFixture({files: [{filename: 'backend/src/main.rs'}]});
   await plan(fixture);
   assert.equal(fixture.paginated(), true);
   assert.equal(fixture.outputs.sha, sha(1));
-  assert.deepEqual(JSON.parse(fixture.outputs.tags), {frontend: 'preview', backend: `pr-7-${sha(1)}`, migrate: 'latest'});
+  assert.equal(fixture.outputs.pr, '7');
+  assert.deepEqual(JSON.parse(fixture.outputs.tags), {frontend: `pr-7-${sha(1)}`, backend: `pr-7-${sha(1)}`, migrate: `pr-7-${sha(1)}`});
+  assert.deepEqual(JSON.parse(fixture.outputs.aliases), [{component: 'frontend', source: `preview-${sha(98)}`}, {component: 'migrate', source: sha(98)}]);
   assert.deepEqual(JSON.parse(fixture.outputs.matrix), {include: [{component: 'backend'}]});
+});
+test('the promoted main commit comes from the latest alias, not the newest version', async () => {
+  const github = {rest: {packages: {getAllPackageVersionsForPackageOwnedByOrg: 'versions'}}, paginate: async (_, params) => {
+    assert.deepEqual(params, {org: 'Zli-UoA', package_type: 'container', package_name: 'zoo2-backend', per_page: 100});
+    return [version(2, [sha(97)]), version(1, ['latest', sha(98)])];
+  }};
+  assert.equal(await promotedMainSha(github, 'Zli-UoA'), sha(98));
+  await assert.rejects(promotedMainSha({...github, paginate: async () => [version(1, ['latest'])]}, 'Zli-UoA'));
 });
 test('renames include the original path; huge diffs build all images', async () => {
   const rename = planFixture({files: [{filename: 'docs/old.rs', previous_filename: 'backend/src/old.rs'}]});
@@ -75,6 +98,9 @@ test('renames include the original path; huge diffs build all images', async () 
   const huge = planFixture({files: Array.from({length: 3000}, () => ({filename: 'docs/a.md'}))});
   await plan(huge);
   assert.equal(JSON.parse(huge.outputs.matrix).include.length, 3);
+  // すべてビルドする場合は別名がなく、main の SHA も調べない。
+  assert.deepEqual(JSON.parse(huge.outputs.aliases), []);
+  assert.equal(huge.readVersions(), false);
 });
 test('fork, closed and stale PRs do not publish', async () => {
   for (const options of [{fork: true}, {state: 'closed'}, {currentSha: sha(2)}]) {
@@ -84,16 +110,19 @@ test('fork, closed and stale PRs do not publish', async () => {
     assert.equal(fixture.outputs.matrix, undefined);
   }
 });
-test('docs-only PR produces fallbacks without an empty build matrix job', async () => {
+test('docs-only PR aliases every component without an empty build matrix job', async () => {
   const fixture = planFixture({files: [{filename: 'README.md'}]});
   await plan(fixture);
   assert.equal(fixture.outputs.has_images, 'false');
+  assert.deepEqual(JSON.parse(fixture.outputs.aliases).map(a => a.source), [`preview-${sha(98)}`, sha(98), sha(98)]);
 });
 test('main plans all images with full SHA tags', async () => {
   const fixture = planFixture(); fixture.context.payload = {};
   await plan(fixture);
   assert.equal(JSON.parse(fixture.outputs.matrix).include.length, 3);
   assert.deepEqual(Object.values(JSON.parse(fixture.outputs.tags)), [sha(99), sha(99), sha(99)]);
+  assert.deepEqual(JSON.parse(fixture.outputs.aliases), []);
+  assert.equal(fixture.outputs.pr, '');
 });
 
 import cleanup from './image-cleanup.mjs';
