@@ -24,6 +24,8 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "../../ui/alert-dialog";
+import { useTyping } from "../../../hooks/useTyping";
+import { TypingIndicator } from "./TypingIndicator";
 import { Composer } from "./Composer";
 import { MessageList } from "./MessageList";
 import { ReactionPicker } from "./ReactionPicker";
@@ -72,6 +74,7 @@ export function MessagePane({ channelId, isMember }: { channelId: string; isMemb
   const feed = messagesQuery.data ?? [];
   const reactionsQuery = useMessageReactions(channelId);
   const { currentUserId } = useCurrentUser();
+  const typing = useTyping(channelId, null, isMember && !!currentUserId);
   const { error, setError, run } = useWriteRunner();
 
   const [reactionMessageId, setReactionMessageId] = useState<string | null>(null);
@@ -130,6 +133,11 @@ export function MessagePane({ channelId, isMember }: { channelId: string; isMemb
   const { threadRootId, openThread, closeThread } = useShell();
   const threadQuery = useThreadFeed(channelId, threadRootId);
   const threadReplies = threadQuery.data ?? [];
+  const threadTyping = useTyping(
+    channelId,
+    threadRootId,
+    isMember && !!currentUserId && !!threadRootId,
+  );
   const threadRoot = useMemo(
     () => feed.find((message) => message.id === threadRootId) ?? null,
     [feed, threadRootId],
@@ -316,7 +324,10 @@ export function MessagePane({ channelId, isMember }: { channelId: string; isMemb
         />
 
         {isMember ? (
-          <Composer onSend={handleSend} />
+          <>
+            <TypingIndicator users={typing.users} />
+            <Composer key={channelId} onSend={handleSend} onTyping={typing.onTyping} />
+          </>
         ) : (
           <JoinToPostPrompt
             onJoin={() => void handleJoin()}
@@ -328,6 +339,10 @@ export function MessagePane({ channelId, isMember }: { channelId: string; isMemb
 
       {threadRoot ? (
         <ThreadPane
+          key={threadRoot.id}
+          isMember={isMember}
+          typingUsers={threadTyping.users}
+          onTyping={threadTyping.onTyping}
           root={threadRoot}
           replies={threadReplies}
           isLoading={threadQuery.isLoading}

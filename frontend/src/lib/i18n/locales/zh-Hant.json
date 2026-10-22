@@ -148,6 +148,8 @@
     "description": "從左側列表選擇頻道，即可查看對話。"
   },
   "messages": {
+    "typing": "{{names}}正在輸入…",
+    "typingSeparator": "、",
     "compose": "輸入訊息",
     "send": "傳送",
     "edit": "編輯",
