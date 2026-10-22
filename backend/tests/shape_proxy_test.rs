@@ -452,7 +452,6 @@ async fn test_shape_proxy_long_polling_regression_11s() -> anyhow::Result<()> {
     Ok(())
 }
 
-
 /// Electric の API secret はサーバー設定からクエリへ付与し、入力値では上書きしない。
 #[tokio::test]
 async fn test_shape_proxy_electric_secret_query() -> anyhow::Result<()> {
