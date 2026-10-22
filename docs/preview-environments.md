@@ -10,7 +10,9 @@
 4. push すると、新しい head SHA のイメージで更新されます。
 5. PR を close するか、`preview` ラベルを外すと環境は削除されます。
 
-ラベルを付けられるのは write 権限を持つメンバーだけです。fork の PR はイメージを発行しないため、ラベルを付けても起動しません。同時に動かせるのは3環境までで、4つ目のラベル付き PR は失敗せずに対象外になります。不要になった環境はラベルを外してください。
+ラベルを付けられるのは write 権限を持つメンバーだけです。fork の PR にはラベルを付けないでください。fork の PR はイメージを発行しないため配備に失敗し、上限の枠だけを使います。クラスタ側には fork を除外する条件がありません。
+
+同時に動かせるのは5環境までです。6件目のラベル付き PR ができると、**作成日が最も古いラベル付き PR の環境が削除されます**（DB も消えます）。判定はラベルを付けた順ではなく、PR を作成した順です。以前の構成のように新しい配備を失敗させて既存の環境を残すことはしません。不要になった環境は、早めにラベルを外してください。
 
 ## 構成
 
@@ -32,7 +34,15 @@ push で head SHA が変わると、マイグレーションを実行し、そ�
 2. リポジトリに `preview` ラベルを作成します。
 3. infra の手順に従い、flux-system に Secret を作成してから infra の変更をマージします。GitHub のトークンは `Zli-UoA/zoo2` に限定した fine-grained token で、Pull requests と Commit statuses の read/write、Contents の read を付けます。
 
-push 型だった以前の構成から移行する場合は、先に `PREVIEW_ENABLED` を外し、残っている `zoo2-pr-*` Namespace を削除します。その後、Environment `preview-site1` と、変数 `PREVIEW_ENABLED`・`PREVIEW_DOMAIN`・`PREVIEW_RUNNER_LABELS`・`PREVIEW_INFRA_REF`・`PREVIEW_ACCESS_READY`、Secret `PREVIEW_INFRA_READ_TOKEN`・`PREVIEW_KUBECONFIG`・`PREVIEW_GHCR_DOCKERCONFIGJSON` を削除します。
+push 型だった以前の構成から移行する場合は、先に `PREVIEW_ENABLED` を外し、残っている `zoo2-pr-*` Namespace を削除します。その後、次の設定を削除します。
+
+| 設定先 | 名前 |
+| --- | --- |
+| Repository variable | `PREVIEW_ENABLED`、`PREVIEW_DOMAIN`、`PREVIEW_RUNNER_LABELS` |
+| Environment `preview-site1` の variable | `PREVIEW_INFRA_REF`、`PREVIEW_ACCESS_READY` |
+| Environment `preview-site1` の secret | `PREVIEW_INFRA_READ_TOKEN`、`PREVIEW_KUBECONFIG`、`PREVIEW_GHCR_DOCKERCONFIGJSON` |
+
+最後に Environment `preview-site1` 自体を削除します。
 
 ## 公開経路と認証
 
@@ -50,7 +60,7 @@ NetworkPolicy は同じ Namespace 内、Traefik からの frontend/backend 接�
 
 ## 回収・復旧
 
-PR の close または `preview` ラベルの除去で、Namespace と配下のリソースが削除されます。以前の構成にあった7日の TTL はありません。GHCR の PR イメージは既存の `cd-image-cleanup.yaml` が close 時と日次で回収します。変更のないコンポーネントのタグは main のイメージと同じバージョンに付くため、PR の回収で main のイメージは消えません。
+PR の close または `preview` ラベルの除去で、Namespace と配下のリソースが削除されます。以前の構成にあった7日の TTL はありません。GHCR の PR イメージは既存の `cd-image-cleanup.yaml` が close 時と日次で回収します。変更のないコンポーネントのタグは main のイメージと同じバージョンに付くため、PR の回収で main のイメージは消えません。GHCR のバージョン単位でしか削除できないので、その `pr-<番号>-<SHA>` タグも PR の close では消えず、main のバージョンが保持世代（15）を外れたときに一緒に削除されます。
 
 イメージの発行より先にラベルを付けた場合、マイグレーションのイメージを取得できず、2分ごとに再試行します。`Publish images` が成功すれば自動で揃います。
 
@@ -70,6 +80,6 @@ DB データは PR の終了やラベルの除去に加え、PostgreSQL Pod の�
 - backend だけを変更した PR で、frontend と migrate の `pr-<番号>-<SHA>` が main の同じコミットの digest になる。
 - push で head SHA が変わると、マイグレーションの後にアプリが更新される。
 - ラベルの除去と PR の close で Namespace が消え、GHCR cleanup の後も main のイメージが残る。
-- 4つ目のラベル付き PR、ラベルのない PR、マイグレーションの失敗で、意図したとおり作成・停止される。
+- 6件目のラベル付き PR で、作成日が最も古い PR の環境が削除される。ラベルのない PR は配備されない。マイグレーションが失敗するとアプリは更新されない。
 
 クラスタへの適用、Cloudflare Access・Tunnel の変更、実ブラウザでの操作・書き込み・Shape 同期は、この実装作業では未実施です。
