@@ -3,6 +3,10 @@
     "main": "主导航"
   },
   "channels": {
+    "renameTitle": "重命名频道",
+    "renameHelp": "名称最多80个字符，仅限小写英文字母、数字、连字符和下划线，不能使用保留名称。",
+    "saveName": "保存",
+    "savingName": "保存中…",
     "title": "频道",
     "createTitle": "创建频道",
     "loadError": "无法加载频道。",
