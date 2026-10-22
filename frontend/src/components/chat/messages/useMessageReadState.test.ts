@@ -1,7 +1,9 @@
 // @vitest-environment happy-dom
-import { act, createElement } from "react";
+import { act, createElement, useEffect } from "react";
 import { createRoot } from "react-dom/client";
 import { beforeEach, expect, it, vi } from "vite-plus/test";
+import type { Transaction } from "@tanstack/react-db";
+import { useWriteRunner } from "../../../hooks/useWriteRunner";
 import type { FeedMessage } from "./messageFormat";
 import { buildMessageItems } from "./messageGrouping";
 import { firstUnreadMessage, useMessageReadState } from "./useMessageReadState";
@@ -95,6 +97,82 @@ it("does not mark messages read when fetching the server cursor fails", async ()
     expect(api.post).not.toHaveBeenCalled();
   } finally {
     await act(async () => root.unmount());
+    vi.unstubAllGlobals();
+  }
+});
+
+it.each([false, true])("waits for all writes and resumes after rollback=%s", async (rollback) => {
+  vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+  vi.spyOn(document, "hasFocus").mockReturnValue(true);
+  vi.spyOn(document, "visibilityState", "get").mockReturnValue("visible");
+  api.get.mockResolvedValue(cursor("1"));
+  api.post.mockResolvedValue({ data: cursor("3"), txid: "1" });
+  const root = createRoot(document.createElement("div"));
+  let runner!: ReturnType<typeof useWriteRunner>;
+  let state!: ReturnType<typeof useMessageReadState>;
+  const deferred = () => {
+    let resolve!: () => void;
+    let reject!: (error: Error) => void;
+    const promise = new Promise<void>((yes, no) => {
+      resolve = yes;
+      reject = no;
+    });
+    return { resolve, reject, transaction: { when: () => promise } as unknown as Transaction };
+  };
+  const first = deferred();
+  const second = deferred();
+  let firstRun!: Promise<void>;
+  let secondRun!: Promise<void>;
+  function Test({ optimistic = false }: { optimistic?: boolean }) {
+    runner = useWriteRunner();
+    state = useMessageReadState(
+      "channel",
+      "me",
+      [message("1"), ...(optimistic ? [message("3", "me")] : [])],
+      false,
+      runner.isPending,
+    );
+    // MessageList reevaluates markRead when pending writes finish.
+    useEffect(() => state.markRead(), [state.markRead]);
+    return null;
+  }
+  try {
+    await act(async () => root.render(createElement(Test)));
+    await act(async () => {
+      firstRun = runner.run(() => first.transaction);
+      secondRun = runner.run(() => second.transaction);
+      root.render(createElement(Test, { optimistic: true }));
+    });
+    expect(runner.isPending).toBe(true);
+    expect(state.firstUnreadId).toBeNull();
+    expect(api.post).not.toHaveBeenCalled();
+    await act(async () => {
+      first.resolve();
+      await firstRun;
+    });
+    expect(runner.isPending).toBe(true);
+    state.markRead();
+    expect(api.post).not.toHaveBeenCalled();
+    await act(async () => {
+      if (rollback) {
+        root.render(createElement(Test));
+        second.reject(new Error("save failed"));
+      } else second.resolve();
+      await secondRun;
+    });
+    expect(runner.isPending).toBe(false);
+    if (rollback) {
+      expect(api.post).not.toHaveBeenCalled();
+      expect(runner.error).toBe("save failed");
+    } else {
+      expect(api.post).toHaveBeenCalledTimes(1);
+      expect(api.post).toHaveBeenCalledWith("/api/channels/channel/read-state", {
+        message_id: "3",
+      });
+    }
+  } finally {
+    await act(async () => root.unmount());
+    vi.restoreAllMocks();
     vi.unstubAllGlobals();
   }
 });

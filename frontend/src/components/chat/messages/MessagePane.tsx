@@ -75,7 +75,7 @@ export function MessagePane({ channelId, isMember }: { channelId: string; isMemb
   const reactionsQuery = useMessageReactions(channelId);
   const { currentUserId } = useCurrentUser();
   const typing = useTyping(channelId, null, isMember && !!currentUserId);
-  const { error, setError, run } = useWriteRunner();
+  const { error, setError, run, isPending: isWritePending } = useWriteRunner();
 
   const [reactionMessageId, setReactionMessageId] = useState<string | null>(null);
   const reactionRows = reactionsQuery.data ?? [];
@@ -304,6 +304,7 @@ export function MessagePane({ channelId, isMember }: { channelId: string; isMemb
           key={`${channelId}:${currentUserId}`}
           channelId={channelId}
           messages={feed}
+          isWritePending={isWritePending}
           isLoading={messagesQuery.isLoading}
           isError={messagesQuery.isError}
           currentUserId={currentUserId}

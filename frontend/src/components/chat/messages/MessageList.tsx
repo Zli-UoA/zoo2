@@ -26,6 +26,7 @@ interface MessageListProps {
   channelId?: string;
   messages: FeedMessage[];
   isLoading: boolean;
+  isWritePending?: boolean;
   isError: boolean;
   currentUserId: string | null;
   editingId: string | null;
@@ -91,6 +92,7 @@ export function MessageList({
   channelId,
   messages,
   isLoading,
+  isWritePending = false,
   isError,
   currentUserId,
   editingId,
@@ -115,7 +117,7 @@ export function MessageList({
     markRead,
     isLoading: readStateLoading,
     isError: readStateError,
-  } = useMessageReadState(channelId, currentUserId, messages, isLoading || isError);
+  } = useMessageReadState(channelId, currentUserId, messages, isLoading || isError, isWritePending);
   const items = useMemo(
     () =>
       readStateLoading || readStateError
