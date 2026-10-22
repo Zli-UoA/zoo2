@@ -31,6 +31,7 @@ jobs:
       pr: ${{ steps.plan.outputs.pr }}
       has_images: ${{ steps.plan.outputs.has_images }}
       enabled: ${{ steps.plan.outputs.enabled }}
+      release: ${{ steps.plan.outputs.release }}
     steps:
       - uses: actions/checkout@v7
       - name: Test image planning and retention
@@ -186,6 +187,8 @@ jobs:
             VITE_OIDC_RESOURCE=
             VITE_OIDC_POST_LOGOUT_REDIRECT_URI=
   # Promote all components together, only after every build succeeded, so aliases never mix commits.
+  # The shared release tag goes on last, migrate last of all: zoo2-infra's ResourceSet deploys all three
+  # images at the newest release tag it sees on migrate, so the other two must already carry it.
   promote:
     needs: [plan, build]
     if: github.event_name != 'pull_request'
@@ -194,6 +197,9 @@ jobs:
       contents: read
       packages: write
     steps:
+      - uses: actions/checkout@v7
+        with:
+          sparse-checkout: .github/scripts
       - uses: docker/setup-buildx-action@v3
       - uses: docker/login-action@v3
         with:
@@ -205,20 +211,22 @@ jobs:
         env:
           IMAGE_SHA: ${{ needs.plan.outputs.sha }}
           MATRIX: ${{ needs.plan.outputs.matrix }}
+          RELEASE: ${{ needs.plan.outputs.release }}
         with:
           script: |
+            const {promotionAliases} = await import(`${process.env.GITHUB_WORKSPACE}/.github/scripts/image-plan.mjs`);
             const {data} = await github.rest.repos.getBranch({...context.repo, branch: 'main'});
             const sha = process.env.IMAGE_SHA;
             if (data.commit.sha !== sha) {
               core.notice('Newer main exists; keeping immutable tags without promoting aliases');
               return;
             }
-            const aliases = JSON.parse(process.env.MATRIX).include.flatMap(({component}) => {
-              const image = `ghcr.io/zli-uoa/zoo2-${component}`;
-              return [[image, 'latest', sha], ...(component === 'frontend' ? [[image, 'preview', `preview-${sha}`]] : [])];
-            });
+            const selected = JSON.parse(process.env.MATRIX).include.map(({component}) => component);
+            const aliases = promotionAliases(selected, sha, process.env.RELEASE);
             // Tags cannot move atomically across packages; roll back on failure so aliases do not stay mixed.
-            // Only a missing alias (first promotion) may lack a previous digest; any other failure stops before promoting.
+            // Only a missing alias (first promotion, or a new release tag) may lack a previous digest; any
+            // other failure stops before promoting. A release tag left on frontend or backend by a failed
+            // run is never deployed, because migrate, tagged last, does not carry it.
             const previous = [];
             for (const [image, alias] of aliases) {
               const {exitCode, stdout, stderr} = await exec.getExecOutput('docker', ['buildx', 'imagetools', 'inspect', `${image}:${alias}`, '--format', '{{json .Manifest}}'], {ignoreReturnCode: true, silent: true});

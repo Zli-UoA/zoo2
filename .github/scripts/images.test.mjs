@@ -1,6 +1,6 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
-import {changedComponents} from './image-plan.mjs';
+import {changedComponents, promotionAliases} from './image-plan.mjs';
 import {candidates, referencedDigests, ignoreMissing} from './image-cleanup.mjs';
 const sha = n => n.toString(16).padStart(40, '0');
 const version = (id, tags, age = id) => ({id, name: `sha256:${sha(id)}`, created_at: new Date(Date.now() - age * 86400000).toISOString(), metadata: {container: {tags}}});
@@ -45,6 +45,27 @@ test('a PR alias on a main version never deletes the main image', () => {
   const old = [...Array.from({length: 15}, (_, i) => version(i + 1, [sha(i + 1)])), version(16, [sha(16), `pr-7-${sha(50)}`])];
   assert.deepEqual(candidates(old, new Map([[7, sha(50)]])), []);
 });
+test('release tags follow the main generation they were promoted with', () => {
+  const versions = Array.from({length: 17}, (_, i) => version(i + 1, [sha(i + 1), `0.0.${i + 1}`]));
+  assert.deepEqual(candidates(versions, new Map()).map(v => v.id), [16, 17]);
+  // latest など別のタグも付いたバージョンは、リリースタグがあっても残す。
+  assert.deepEqual(candidates([version(1, ['0.0.1', 'latest'])], new Map()), []);
+  assert.deepEqual(candidates([version(1, ['0.0.1-rc'])], new Map()), []);
+});
+test('promotion tags migrate with the release tag last', () => {
+  const all = promotionAliases(['frontend', 'backend', 'migrate'], sha(1), '0.0.5');
+  const image = c => `ghcr.io/zli-uoa/zoo2-${c}`;
+  assert.deepEqual(all, [
+    [image('frontend'), 'latest', sha(1)], [image('frontend'), 'preview', `preview-${sha(1)}`],
+    [image('backend'), 'latest', sha(1)], [image('migrate'), 'latest', sha(1)],
+    [image('frontend'), '0.0.5', sha(1)], [image('backend'), '0.0.5', sha(1)], [image('migrate'), '0.0.5', sha(1)],
+  ]);
+  // Flux は3つに同じタグを使うので、1つでも欠けていればリリースタグを付けない。
+  assert.ok(promotionAliases(['migrate', 'backend'], sha(1), '0.0.5').every(([, tag]) => tag === 'latest'));
+  assert.ok(promotionAliases(['frontend', 'backend', 'migrate'], sha(1), '').every(([, tag]) => tag !== '0.0.5'));
+  // matrix の順に関係なく migrate を最後にする。
+  assert.deepEqual(promotionAliases(['migrate', 'backend', 'frontend'], sha(1), '0.0.5').at(-1), [image('migrate'), '0.0.5', sha(1)]);
+});
 test('untagged grace period', () => {
   assert.deepEqual(candidates([version(1, [], 0.5), version(2, [], 2)], new Map()).map(v => v.id), [2]);
 });
@@ -79,6 +100,7 @@ test('PR plan uses head SHA, paginated whole-PR diff, and aliases unchanged comp
   assert.equal(fixture.paginated(), true);
   assert.equal(fixture.outputs.sha, sha(1));
   assert.equal(fixture.outputs.pr, '7');
+  assert.equal(fixture.outputs.release, '');
   assert.deepEqual(JSON.parse(fixture.outputs.tags), {frontend: `pr-7-${sha(1)}`, backend: `pr-7-${sha(1)}`, migrate: `pr-7-${sha(1)}`});
   assert.deepEqual(JSON.parse(fixture.outputs.aliases), [{component: 'frontend', source: `preview-${sha(98)}`}, {component: 'migrate', source: sha(98)}]);
   assert.deepEqual(JSON.parse(fixture.outputs.matrix), {include: [{component: 'backend'}]});
@@ -117,12 +139,13 @@ test('docs-only PR aliases every component without an empty build matrix job', a
   assert.deepEqual(JSON.parse(fixture.outputs.aliases).map(a => a.source), [`preview-${sha(98)}`, sha(98), sha(98)]);
 });
 test('main plans all images with full SHA tags', async () => {
-  const fixture = planFixture(); fixture.context.payload = {};
+  const fixture = planFixture(); fixture.context.payload = {}; fixture.context.runNumber = 42;
   await plan(fixture);
   assert.equal(JSON.parse(fixture.outputs.matrix).include.length, 3);
   assert.deepEqual(Object.values(JSON.parse(fixture.outputs.tags)), [sha(99), sha(99), sha(99)]);
   assert.deepEqual(JSON.parse(fixture.outputs.aliases), []);
   assert.equal(fixture.outputs.pr, '');
+  assert.equal(fixture.outputs.release, '0.0.42');
 });
 
 import cleanup from './image-cleanup.mjs';
