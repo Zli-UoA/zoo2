@@ -102,8 +102,13 @@ export function ChannelHeader({
           size="sm"
           onClick={shell.toggleMembers}
           aria-expanded={shell.membersOpen}
+          aria-label={
+            memberCount === undefined || memberCount === null
+              ? t("members.title")
+              : `${t("members.title")} ${memberCount}`
+          }
         >
-          <UsersIcon />
+          <UsersIcon aria-hidden="true" />
           <span className="hidden sm:inline">{t("members.title")}</span>
           {memberCount === undefined ? null : (
             <span className="tabular-nums text-muted-foreground">

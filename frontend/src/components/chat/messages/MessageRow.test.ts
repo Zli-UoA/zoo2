@@ -90,7 +90,7 @@ describe("MessageRow", () => {
       onOpenThread: noop,
     });
     expect(html).toContain("4 件の返信");
-    expect(html).toContain('aria-label="スレッドを開く（4 件の返信）"');
+    expect(html).toContain('aria-label="4 件の返信（スレッドを開く）"');
 
     const withoutThread = render(buildItem(), false, { replyCount: 0 });
     expect(withoutThread).not.toContain("件の返信");
