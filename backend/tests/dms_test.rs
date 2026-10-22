@@ -396,6 +396,35 @@ async fn test_dm_validation_errors() -> anyhow::Result<()> {
     let resp = app.clone().oneshot(req).await?;
     assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
 
+    // 7. 既存チャンネルと重複する ID を指定した場合は 409 Conflict が返る (500 に置き換わらないことの検証)
+    let duplicate_channel_id = uuid::Uuid::new_v4().to_string();
+    let create_ch_req = Request::builder()
+        .method("POST")
+        .uri("/api/channels")
+        .header("content-type", "application/json")
+        .header("X-Dev-User", &alice_id)
+        .body(Body::from(serde_json::to_vec(&json!({
+            "id": &duplicate_channel_id,
+            "channel_name": format!("ch_{}", uuid::Uuid::new_v4().simple()),
+        }))?))?;
+    let resp = app.clone().oneshot(create_ch_req).await?;
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    let charlie_id = uuid::Uuid::new_v4().to_string();
+    create_test_user(&app, &charlie_id, "charlie").await?;
+
+    let dm_dup_req = Request::builder()
+        .method("POST")
+        .uri("/api/dms")
+        .header("content-type", "application/json")
+        .header("X-Dev-User", &alice_id)
+        .body(Body::from(serde_json::to_vec(&json!({
+            "id": &duplicate_channel_id,
+            "target_user_ids": [&charlie_id]
+        }))?))?;
+    let resp = app.clone().oneshot(dm_dup_req).await?;
+    assert_eq!(resp.status(), StatusCode::CONFLICT);
+
     Ok(())
 }
 

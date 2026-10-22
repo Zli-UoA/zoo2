@@ -79,6 +79,41 @@ impl AppError {
         tracing::error!("Database internal error: {:?}", err);
         AppError::Database(err)
     }
+
+    /// `toasty::Error` が UNIQUE 制約違反かどうか、および指定された制約名（オプション）に合致するか判定する
+    pub fn is_unique_violation(err: &toasty::Error, constraint_name: Option<&str>) -> bool {
+        let mut curr: Option<&(dyn std::error::Error + 'static)> = Some(err);
+        while let Some(e) = curr {
+            if let Some(db_err) = e
+                .downcast_ref::<tokio_postgres::Error>()
+                .and_then(|pg_err| pg_err.as_db_error())
+                .filter(|db_err| {
+                    *db_err.code() == tokio_postgres::error::SqlState::UNIQUE_VIOLATION
+                })
+            {
+                return match (constraint_name, db_err.constraint()) {
+                    (Some(expected), Some(actual)) => actual == expected,
+                    (Some(_), None) => false,
+                    (None, _) => true,
+                };
+            }
+            curr = e.source();
+        }
+
+        let err_str = err.to_string();
+        let is_unique = err_str.contains("23505")
+            || err_str.contains("unique constraint")
+            || err_str.contains("UNIQUE constraint");
+
+        if !is_unique {
+            return false;
+        }
+
+        match constraint_name {
+            Some(expected) => err_str.contains(expected),
+            None => true,
+        }
+    }
 }
 
 impl From<toasty::Error> for AppError {

@@ -68,9 +68,16 @@ async fn try_create_or_get_1on1_dm(
                 .exec(&mut tx)
                 .await;
 
-                if res.is_err() {
+                if let Err(err) = res {
                     let _ = tx.rollback().await;
-                    return Ok(None); // 並行追加衝突のためリトライへ
+                    // channel_user_pkey 衝突の場合は並行追加による競合なのでリトライ
+                    if AppError::is_unique_violation(&err, Some("channel_user_pkey")) {
+                        tracing::warn!(
+                            "Concurrent channel_user insert conflict (channel_user_pkey), retrying: {err}"
+                        );
+                        return Ok(None);
+                    }
+                    return Err(AppError::from(err));
                 }
                 added_any = true;
             }
@@ -114,37 +121,53 @@ async fn try_create_or_get_1on1_dm(
 
     let channel = match channel_res {
         Ok(c) => c,
-        Err(_) => {
-            // channels_channel_name_key 衝突等の場合リトライへ
+        Err(err) => {
             let _ = tx.rollback().await;
-            return Ok(None);
+            // channels_channel_name_key 衝突の場合は並行作成競合なのでリトライ
+            if AppError::is_unique_violation(&err, Some("channels_channel_name_key")) {
+                tracing::warn!(
+                    "Concurrent 1-on-1 DM channel creation conflict (channels_channel_name_key), retrying: {err}"
+                );
+                return Ok(None);
+            }
+            return Err(AppError::from(err));
         }
     };
 
-    if toasty::create!(ChannelUser {
+    if let Err(err) = toasty::create!(ChannelUser {
         user_id: auth_user_id,
         channel_id: channel_id.as_str(),
         joined_at: now,
     })
     .exec(&mut tx)
     .await
-    .is_err()
     {
         let _ = tx.rollback().await;
-        return Ok(None);
+        if AppError::is_unique_violation(&err, Some("channel_user_pkey")) {
+            tracing::warn!(
+                "Concurrent channel_user insert conflict (channel_user_pkey), retrying: {err}"
+            );
+            return Ok(None);
+        }
+        return Err(AppError::from(err));
     }
 
-    if toasty::create!(ChannelUser {
+    if let Err(err) = toasty::create!(ChannelUser {
         user_id: target_id,
         channel_id: channel_id.as_str(),
         joined_at: now,
     })
     .exec(&mut tx)
     .await
-    .is_err()
     {
         let _ = tx.rollback().await;
-        return Ok(None);
+        if AppError::is_unique_violation(&err, Some("channel_user_pkey")) {
+            tracing::warn!(
+                "Concurrent channel_user insert conflict (channel_user_pkey), retrying: {err}"
+            );
+            return Ok(None);
+        }
+        return Err(AppError::from(err));
     }
 
     let txid = get_current_txid(&mut tx).await?;
@@ -196,11 +219,10 @@ async fn create_or_get_dm(
     }
 
     let mut db = state.db.clone();
-    let mut tx = db.transaction().await?;
 
-    // 参加予定ユーザーの存在確認
+    // 参加予定ユーザーの存在確認 (リード操作のためトランザクション外で実行)
     for uid in &payload.target_user_ids {
-        User::get_by_id(&mut tx, uid.as_str())
+        User::get_by_id(&mut db, uid.as_str())
             .await
             .map_err(|err| {
                 if err.is_record_not_found() {
@@ -223,9 +245,6 @@ async fn create_or_get_dm(
         };
         let channel_name = format!("dm:{user_a}:{user_b}");
 
-        // 先に開いた tx をコミット/ドロップしてリトライループ内でトランザクションを管理
-        let _ = tx.commit().await;
-
         for _ in 0..2 {
             if let Some(resp) = try_create_or_get_1on1_dm(
                 &mut db,
@@ -240,12 +259,13 @@ async fn create_or_get_dm(
             }
         }
 
-        return Err(AppError::Internal(anyhow::anyhow!(
-            "Failed to create or get direct message channel due to concurrent conflict"
-        )));
+        return Err(AppError::Conflict(
+            "Failed to create or get direct message channel due to concurrent conflict. Please retry.".into(),
+        ));
     }
 
     // グループ DM の新規作成
+    let mut tx = db.transaction().await?;
     let channel_id = payload.id.unwrap_or_else(|| Uuid::new_v4().to_string());
     let group_uuid = Uuid::new_v4().to_string();
     let channel_name = format!("dm:group:{group_uuid}");
