@@ -12,6 +12,7 @@ on:
       - "infra/proxy/**"
       - "infra/compose.stg*.yaml"
       - ".github/workflows/ci-frontend.yaml"
+      - ".github/workflows/select-runner.yaml"
   pull_request:
     paths:
       - "frontend/**"
@@ -23,10 +24,27 @@ on:
       - "infra/proxy/**"
       - "infra/compose.stg*.yaml"
       - ".github/workflows/ci-frontend.yaml"
+      - ".github/workflows/select-runner.yaml"
   workflow_dispatch:
+    inputs:
+      runner:
+        description: Runner selection (auto prefers a compatible idle self-hosted runner)
+        type: choice
+        options: [auto, github, self-hosted]
+        default: auto
+permissions:
+  contents: read
 jobs:
+  select-runner:
+    uses: ./.github/workflows/select-runner.yaml
+    with:
+      mode: ${{ inputs.runner || 'auto' }}
+    secrets:
+      runner-status-token: ${{ secrets.RUNNER_STATUS_TOKEN }}
   container:
-    runs-on: ubuntu-latest
+    needs: select-runner
+    runs-on: ${{ fromJSON(needs.select-runner.outputs.docker) }}
+    timeout-minutes: 40
     env:
       POSTGRES_PASSWORD: container-test
       # envsubst で CSP に埋め込まれることを確認するためのダミー IdP オリジン。
@@ -132,7 +150,9 @@ jobs:
           docker compose --project-directory . -f infra/compose.stg.yaml down
 
   proxy:
-    runs-on: ubuntu-latest
+    needs: select-runner
+    runs-on: ${{ fromJSON(needs.select-runner.outputs.docker) }}
+    timeout-minutes: 40
     env:
       POSTGRES_PASSWORD: proxy-test
       PROXY_PORT: 18080
@@ -155,13 +175,20 @@ jobs:
         run: docker compose --project-directory . -f infra/compose.stg.yaml -f infra/proxy/test/compose.yaml down
 
   check:
-    runs-on: ubuntu-latest
+    needs: select-runner
+    runs-on: ${{ fromJSON(needs.select-runner.outputs.node) }}
+    timeout-minutes: 30
     defaults:
       run:
         working-directory: ./frontend
     steps:
       - name: Checkout
         uses: actions/checkout@v7
+
+      - name: Bootstrap Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
 
       - name: Setup pnpm
         uses: pnpm/action-setup@v4
@@ -191,13 +218,20 @@ jobs:
         run: pnpm test:e2e:i18n
 
   unit-test:
-    runs-on: ubuntu-latest
+    needs: select-runner
+    runs-on: ${{ fromJSON(needs.select-runner.outputs.node) }}
+    timeout-minutes: 30
     defaults:
       run:
         working-directory: ./frontend
     steps:
       - name: Checkout
         uses: actions/checkout@v7
+
+      - name: Bootstrap Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
 
       - name: Setup pnpm
         uses: pnpm/action-setup@v4

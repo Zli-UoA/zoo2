@@ -1,0 +1,73 @@
+name: Select CI runner
+on:
+  workflow_call:
+    inputs:
+      mode:
+        type: string
+        default: auto
+    secrets:
+      runner-status-token:
+        required: false
+    outputs:
+      node:
+        value: ${{ jobs.select.outputs.node }}
+      rust:
+        value: ${{ jobs.select.outputs.rust }}
+      docker:
+        value: ${{ jobs.select.outputs.docker }}
+jobs:
+  select:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    permissions:
+      contents: read
+    outputs:
+      node: ${{ steps.select.outputs.node }}
+      rust: ${{ steps.select.outputs.rust }}
+      docker: ${{ steps.select.outputs.docker }}
+    steps:
+      # No checkout: the status token is never passed to repository code.
+      - uses: actions/github-script@v8
+        id: select
+        env:
+          RUNNER_MODE: ${{ inputs.mode }}
+          HAS_STATUS_TOKEN: ${{ secrets.runner-status-token != '' }}
+        with:
+          github-token: ${{ secrets.runner-status-token || github.token }}
+          script: |
+            const hosted = JSON.stringify('ubuntu-latest');
+            core.setOutput('node', hosted);
+            core.setOutput('rust', hosted);
+            core.setOutput('docker', hosted);
+            // Explicit dispatch is useful for testing without a status API credential.
+            if (context.eventName === 'workflow_dispatch' && process.env.RUNNER_MODE === 'self-hosted') {
+              for (const [kind, extra] of Object.entries({node: [], rust: ['zoo2-rust'], docker: ['zoo2-docker']})) {
+                core.setOutput(kind, JSON.stringify(['self-hosted', 'Linux', 'X64', 'zoo2', ...extra]));
+              }
+              return;
+            }
+            // PR code always runs on disposable GitHub-hosted runners.
+            if (context.eventName === 'pull_request' ||
+                process.env.RUNNER_MODE === 'github' ||
+                process.env.HAS_STATUS_TOKEN !== 'true') {
+              core.info('Using GitHub-hosted runners (PR, explicit override, or no status token).');
+              return;
+            }
+            try {
+              const runners = await github.paginate(github.rest.actions.listSelfHostedRunnersForRepo, {
+                ...context.repo, per_page: 100, request: { timeout: 10000 }
+              });
+              for (const [kind, required] of Object.entries({
+                node: ['self-hosted', 'Linux', 'X64', 'zoo2'],
+                rust: ['self-hosted', 'Linux', 'X64', 'zoo2', 'zoo2-rust'],
+                docker: ['self-hosted', 'Linux', 'X64', 'zoo2', 'zoo2-docker']
+              })) {
+                const available = runners.some(r => r.status === 'online' && !r.busy &&
+                  required.every(label => r.labels.some(l => l.name.toLowerCase() === label.toLowerCase())));
+                const selected = available ? JSON.stringify(required) : hosted;
+                core.setOutput(kind, selected);
+                core.info(`${kind}: ${selected}`);
+              }
+            } catch (error) {
+              core.warning(`Runner status unavailable; using GitHub-hosted runners (${error.status || 'network error'}).`);
+            }
