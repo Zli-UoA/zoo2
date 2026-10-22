@@ -4,6 +4,7 @@ pub mod dms;
 pub mod health;
 pub mod messages;
 pub mod notifications;
+pub mod read_states;
 pub mod response;
 pub mod shapes;
 pub mod typing;
@@ -64,6 +65,7 @@ pub fn create_router(state: AppState) -> Router {
         .merge(messages::router())
         .merge(typing::router())
         .merge(notifications::router())
+        .merge(read_states::router())
         .merge(shapes::router())
         .layer(TraceLayer::new_for_http())
         .layer(cors)

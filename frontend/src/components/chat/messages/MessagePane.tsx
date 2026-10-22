@@ -301,7 +301,8 @@ export function MessagePane({ channelId, isMember }: { channelId: string; isMemb
         </div>
 
         <MessageList
-          key={channelId}
+          key={`${channelId}:${currentUserId}`}
+          channelId={channelId}
           messages={feed}
           isLoading={messagesQuery.isLoading}
           isError={messagesQuery.isError}

@@ -10,6 +10,7 @@ import { Skeleton } from "../../ui/skeleton";
 import { newMessageAnnouncement, type FeedMessage } from "./messageFormat";
 import { buildMessageItems } from "./messageGrouping";
 import { MessageRow } from "./MessageRow";
+import { useMessageReadState } from "./useMessageReadState";
 import {
   classifyScrollChange,
   isNearBottom,
@@ -22,6 +23,7 @@ const ESTIMATED_ROW_HEIGHT = 64;
 const SKELETON_ROWS = [0, 1, 2, 3, 4, 5];
 
 interface MessageListProps {
+  channelId?: string;
   messages: FeedMessage[];
   isLoading: boolean;
   isError: boolean;
@@ -86,6 +88,7 @@ function MessageState({
  * 「新着メッセージ」ボタンに加えて `aria-live` でも読み上げる。
  */
 export function MessageList({
+  channelId,
   messages,
   isLoading,
   isError,
@@ -107,7 +110,19 @@ export function MessageList({
   canCompose = true,
 }: MessageListProps) {
   const { t } = useTranslation();
-  const items = useMemo(() => buildMessageItems(messages), [messages]);
+  const {
+    firstUnreadId,
+    markRead,
+    isLoading: readStateLoading,
+    isError: readStateError,
+  } = useMessageReadState(channelId, currentUserId, messages, isLoading || isError);
+  const items = useMemo(
+    () =>
+      readStateLoading || readStateError
+        ? []
+        : buildMessageItems(messages, undefined, firstUnreadId),
+    [messages, firstUnreadId, readStateLoading, readStateError],
+  );
   const scrollRef = useRef<HTMLDivElement>(null);
 
   const virtualizer = useVirtualizer({
@@ -148,8 +163,9 @@ export function MessageList({
     atBottomRef.current = near;
     if (near) {
       setHasNewBelow(false);
+      markRead();
     }
-  }, []);
+  }, [markRead]);
 
   useLayoutEffect(() => {
     const element = scrollRef.current;
@@ -165,6 +181,10 @@ export function MessageList({
       if (delta > 0) {
         element.scrollTop += delta;
       }
+    } else if (change === "initial" && firstUnreadId) {
+      const index = items.findIndex((item) => item.message.id === firstUnreadId);
+      atBottomRef.current = false;
+      requestAnimationFrame(() => virtualizer.scrollToIndex(index, { align: "start" }));
     } else if (shouldStickToBottom(change, atBottomRef.current)) {
       requestAnimationFrame(() => scrollToBottom());
     } else if (change === "append") {
@@ -182,7 +202,24 @@ export function MessageList({
 
     snapshotRef.current = next;
     previousScrollHeightRef.current = element.scrollHeight;
-  }, [items, currentUserId, scrollToBottom, t]);
+  }, [items, currentUserId, scrollToBottom, t, firstUnreadId, virtualizer]);
+
+  useEffect(() => {
+    const update = () => {
+      const element = scrollRef.current;
+      if (element && isNearBottom(element.scrollTop, element.scrollHeight, element.clientHeight)) {
+        markRead();
+      }
+    };
+    const frame = requestAnimationFrame(update);
+    window.addEventListener("focus", update);
+    document.addEventListener("visibilitychange", update);
+    return () => {
+      cancelAnimationFrame(frame);
+      window.removeEventListener("focus", update);
+      document.removeEventListener("visibilitychange", update);
+    };
+  }, [markRead]);
 
   // 編集の開始・終了で行の高さが変わるため測り直す。
   useEffect(() => {
@@ -195,9 +232,10 @@ export function MessageList({
     }
   }, [hasNewBelow]);
 
-  const showSkeleton = isLoading && items.length === 0;
-  const showError = isError && items.length === 0;
-  const showEmpty = !isLoading && !isError && items.length === 0;
+  const showSkeleton = (isLoading || readStateLoading) && items.length === 0;
+  const showError = (isError || readStateError) && items.length === 0;
+  const showEmpty =
+    !isLoading && !readStateLoading && !isError && !readStateError && items.length === 0;
 
   return (
     <div className="relative min-h-0 flex-1">
@@ -239,6 +277,17 @@ export function MessageList({
                   className="absolute left-0 top-0 w-full"
                   style={{ transform: `translateY(${virtualRow.start}px)` }}
                 >
+                  {item.message.id === firstUnreadId ? (
+                    <div
+                      role="separator"
+                      aria-label="new"
+                      className="flex items-center gap-2 py-2 text-xs font-semibold text-destructive"
+                    >
+                      <span className="h-px flex-1 bg-destructive" />
+                      <span>new</span>
+                      <span className="h-px w-6 bg-destructive" />
+                    </div>
+                  ) : null}
                   <MessageRow
                     item={item}
                     reactions={reactions.get(item.message.id) ?? []}

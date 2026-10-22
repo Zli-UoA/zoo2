@@ -30,6 +30,7 @@ function withinGroup(earlier: FeedMessage, later: FeedMessage, groupGapMs: numbe
 export function buildMessageItems(
   messages: FeedMessage[],
   groupGapMs: number = GROUP_GAP_MS,
+  firstUnreadId: string | null = null,
 ): MessageItem[] {
   return messages.map((message, index) => {
     const previous = messages[index - 1];
@@ -40,6 +41,7 @@ export function buildMessageItems(
       !previous || !isSameLocalDay(parseUtcTimestamp(previous.created_at), messageDate);
 
     const continuesFromPrevious =
+      message.id !== firstUnreadId &&
       !!previous &&
       !showDateSeparator &&
       previous.user_id === message.user_id &&
@@ -47,6 +49,7 @@ export function buildMessageItems(
 
     const continuesToNext =
       !!next &&
+      next.id !== firstUnreadId &&
       next.user_id === message.user_id &&
       isSameLocalDay(parseUtcTimestamp(next.created_at), messageDate) &&
       withinGroup(message, next, groupGapMs);

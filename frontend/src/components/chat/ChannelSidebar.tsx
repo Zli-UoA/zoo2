@@ -5,6 +5,7 @@ import { cn } from "cn";
 import { ArchiveIcon, HashIcon, LockIcon, PlusIcon, SearchIcon } from "lucide-react";
 import { useMemo, useState } from "react";
 
+import { useUnreadChannels } from "../../hooks/useUnreadChannels";
 import { useCurrentUser } from "../../hooks/useCurrentUser";
 import { getCollections } from "../../lib/electric/collections";
 import type { ChannelRow } from "../../lib/electric/types";
@@ -35,6 +36,7 @@ export function ChannelSidebar({
   const shell = useShell();
   const { channelUsers } = getCollections();
   const { currentUserId, isLoading: currentUserLoading } = useCurrentUser();
+  const unreadChannelIds = useUnreadChannels(currentUserId);
   const [createOpen, setCreateOpen] = useState(false);
   const [browserOpen, setBrowserOpen] = useState(false);
 
@@ -122,6 +124,7 @@ export function ChannelSidebar({
             </div>
           ) : (
             sidebarChannels.map((channel) => {
+              const isUnread = unreadChannelIds.has(channel.id);
               const isActive = shell.selectedChannelId === channel.id;
               return (
                 <Link
@@ -132,9 +135,12 @@ export function ChannelSidebar({
                   className={cn(
                     "group flex items-center gap-2 rounded-lg px-2.5 py-2 text-sm transition-colors",
                     "focus-visible:ring-3 focus-visible:ring-ring/50 outline-none",
+                    isUnread && "font-semibold text-sidebar-foreground",
                     isActive
                       ? "bg-brand-muted font-medium text-brand-muted-foreground"
-                      : "text-muted-foreground hover:bg-sidebar-accent hover:text-sidebar-accent-foreground",
+                      : isUnread
+                        ? "hover:bg-sidebar-accent"
+                        : "text-muted-foreground hover:bg-sidebar-accent hover:text-sidebar-accent-foreground",
                   )}
                 >
                   {channel.is_private ? (
@@ -150,6 +156,14 @@ export function ChannelSidebar({
                   >
                     {channel.channel_name}
                   </span>
+                  {isUnread ? (
+                    <span
+                      role="img"
+                      aria-label={t("channels.unread")}
+                      title={t("channels.unread")}
+                      className="size-2 shrink-0 rounded-full bg-brand"
+                    />
+                  ) : null}
                   {channel.archive_at ? (
                     <span
                       role="img"
