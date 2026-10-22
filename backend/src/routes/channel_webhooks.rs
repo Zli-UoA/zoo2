@@ -1,6 +1,6 @@
 use super::{
     response::ApiResponse,
-    webhooks::{Settings, receive_delivery},
+    webhooks::{Settings, persist_card, receive_delivery, verify},
 };
 use crate::{
     auth::{
@@ -29,12 +29,14 @@ pub struct WebhookResponse {
     id: String,
     name: String,
     path: String,
+    generic_path: String,
     secret: String,
     created_at: String,
 }
 impl From<ChannelWebhook> for WebhookResponse {
     fn from(w: ChannelWebhook) -> Self {
         Self {
+            generic_path: format!("/api/webhooks/{}", w.id),
             path: format!("/api/webhooks/github/{}", w.id),
             id: w.id,
             name: w.name,
@@ -59,7 +61,11 @@ pub fn router() -> Router<AppState> {
             "/api/channels/{channel_id}/webhooks/{id}/rotate-secret",
             post(rotate),
         )
-        .route("/api/webhooks/github/{id}", post(receive))
+        .route(
+            "/api/webhooks/github/{id}",
+            post(receive).layer(axum::extract::DefaultBodyLimit::max(25 * 1024 * 1024)),
+        )
+        .route("/api/webhooks/{id}", post(receive_generic))
         .layer(middleware::map_response(
             |mut response: Response| async move {
                 response.headers_mut().insert(
@@ -168,10 +174,11 @@ async fn create(
     }
     let id = Uuid::new_v4().to_string();
     let user = Uuid::new_v4().to_string();
-    let username = format!("github_{}", Uuid::new_v4().simple());
+    let username = format!("webhook_{}", Uuid::new_v4().simple());
     let secret = new_secret();
     let now = crate::models::now_utc_millis();
     toasty::create!(User {
+        is_bot: true,
         id: user.as_str(),
         user_name: username.as_str(),
         display_name: name,
@@ -215,15 +222,10 @@ async fn remove(
         .delete()
         .exec(&mut tx)
         .await?;
-    ChannelUser::filter(
-        ChannelUser::fields()
-            .channel_id()
-            .eq(channel.as_str())
-            .and(ChannelUser::fields().user_id().eq(hook.user_id.as_str())),
-    )
-    .delete()
-    .exec(&mut tx)
-    .await?;
+    ChannelUser::filter(ChannelUser::fields().user_id().eq(hook.user_id.as_str()))
+        .delete()
+        .exec(&mut tx)
+        .await?;
     let txid = get_current_txid(&mut tx).await?;
     tx.commit().await?;
     Ok(Json(ApiResponse::new(id, txid)))
@@ -270,6 +272,38 @@ async fn receive(
         },
         headers,
         body,
+    )
+    .await
+}
+
+async fn receive_generic(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Result<StatusCode, AppError> {
+    let mut db = state.db.clone();
+    let hook = ChannelWebhook::filter(ChannelWebhook::fields().id().eq(id.as_str()))
+        .first()
+        .exec(&mut db)
+        .await?
+        .ok_or_else(|| AppError::NotFound("Webhook not found".into()))?;
+    let header = |key| headers.get(key).and_then(|v| v.to_str().ok()).unwrap_or("");
+    if !verify(&hook.secret, &body, header("x-webhook-signature-256")) {
+        return Err(AppError::Unauthorized("Invalid webhook signature".into()));
+    }
+    let card: crate::cards::MessageCard = serde_json::from_slice(&body)
+        .map_err(|_| AppError::BadRequest("Invalid card payload".into()))?;
+    card.encode()?;
+    persist_card(
+        state,
+        Settings {
+            channel: hook.channel_id,
+            user: hook.user_id,
+            secret: hook.secret,
+        },
+        card,
+        header("x-webhook-delivery"),
     )
     .await
 }

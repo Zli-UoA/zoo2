@@ -20,6 +20,7 @@ const hook = {
   id: "hook-1",
   name: "GitHub",
   path: "/api/webhooks/github/hook-1",
+  generic_path: "/api/webhooks/hook-1",
   secret: "initial-secret",
   created_at: "2026-10-23",
 };
@@ -86,9 +87,15 @@ describe("channel webhook management", () => {
     await mount();
     expect(document.querySelector('input[type="password"]')).not.toBeNull();
     await flush(() =>
-      (document.querySelector('[aria-label="URLをコピー"]') as HTMLButtonElement).click(),
+      (document.querySelector('[aria-label="GitHub URLをコピー"]') as HTMLButtonElement).click(),
     );
     expect(copy).toHaveBeenCalledWith("https://zoo.example" + hook.path);
+    await flush(() =>
+      (
+        document.querySelector('[aria-label="共通Webhook URLをコピー"]') as HTMLButtonElement
+      ).click(),
+    );
+    expect(copy).toHaveBeenCalledWith("https://zoo.example" + hook.generic_path);
     await flush(() =>
       (document.querySelector('[aria-label="Secretをコピー"]') as HTMLButtonElement).click(),
     );

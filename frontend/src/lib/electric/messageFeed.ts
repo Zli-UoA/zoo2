@@ -62,6 +62,7 @@ export function messageFeedQuery(
       channel_id: messages.channel_id,
       user_id: messages.user_id,
       content: messages.content,
+      card: messages.card,
       created_at: messages.created_at,
       parent_id: messages.parent_id,
       user_name: users.user_name,

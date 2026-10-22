@@ -1,4 +1,4 @@
-import { GitHubCard, parseGitHubCard } from "./GitHubCard";
+import { MessageCard, parseMessageCard } from "./MessageCard";
 import { useTranslation } from "react-i18next";
 import { cn } from "cn";
 import {
@@ -61,9 +61,9 @@ export interface MessageRowProps {
  * 別タブで開き、`noopener noreferrer` で開いた側から `window.opener` を触らせない。
  * メンション装飾は将来対応（今回はやらない）。
  */
-export function MessageBody({ content }: { content: string }) {
-  const card = parseGitHubCard(content);
-  if (card) return <GitHubCard card={card} />;
+export function MessageBody({ content, card: data }: { content: string; card?: string | null }) {
+  const card = parseMessageCard(data);
+  if (card) return <MessageCard card={card} />;
   return (
     <p className="whitespace-pre-wrap break-words text-sm leading-relaxed">
       {messageTextSegments(content).map((segment, index) =>
@@ -230,7 +230,7 @@ export function MessageRow({
               </div>
             </form>
           ) : (
-            <MessageBody content={message.content} />
+            <MessageBody content={message.content} card={message.card} />
           )}
 
           {!isEditing ? (

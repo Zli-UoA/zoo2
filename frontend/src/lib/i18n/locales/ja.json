@@ -244,8 +244,8 @@
   },
   "webhooks": {
     "title": "Webhook設定",
-    "description": "{{channel}} のGitHub通知を管理します。",
-    "instructions": "GitHubのSettings → Webhooksで、URL・SecretとContent type「application/json」を設定してください。Webhook専用の投稿ユーザーは自動作成されます。",
+    "description": "管理対象チャンネル {{channel}} の通知連携を設定します。",
+    "instructions": "GitHubにはGitHub URLとSecretを設定し、Content typeはapplication/jsonにしてください。他のサービスには共通Webhook URLと共通カード形式を使います。専用の投稿ユーザーは自動作成されます。",
     "copied": "コピーしました",
     "copyError": "コピーできませんでした。欄を選択して手動でコピーしてください。",
     "copyLabel": "{{label}}をコピー",
@@ -261,6 +261,7 @@
     "delete": "削除",
     "deleteConfirm": "このWebhookを削除しますか？このURLからの通知は受信できなくなります。",
     "rotateConfirm": "Secretを再発行しますか？現在のSecretは無効になります。GitHub側も更新してください。",
-    "confirm": "実行"
+    "confirm": "実行",
+    "genericUrl": "共通Webhook URL"
   }
 }

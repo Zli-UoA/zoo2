@@ -1,4 +1,5 @@
 use super::messages::{CreateMessageRequest, create_message_impl};
+use crate::cards::MessageCard;
 use crate::{auth::AuthUser, error::AppError, models::Message, state::AppState};
 use axum::{
     Extension, Router,
@@ -8,7 +9,9 @@ use axum::{
     routing::post,
 };
 use hmac::{Hmac, KeyInit, Mac};
-use serde_json::{Value, json};
+use serde_json::Value;
+#[cfg(test)]
+use serde_json::json;
 use sha2::{Digest, Sha256};
 
 // Loaded once at startup. Never expose the secret in Debug output or responses.
@@ -29,11 +32,14 @@ pub fn router() -> Router<AppState> {
         })
     })();
     Router::new()
-        .route("/api/webhooks/github", post(receive))
+        .route(
+            "/api/webhooks/github",
+            post(receive).layer(axum::extract::DefaultBodyLimit::max(25 * 1024 * 1024)),
+        )
         .layer(Extension(setting))
 }
 
-fn verify(secret: &str, body: &[u8], signature: &str) -> bool {
+pub(super) fn verify(secret: &str, body: &[u8], signature: &str) -> bool {
     let Some(hex) = signature.strip_prefix("sha256=") else {
         return false;
     };
@@ -53,7 +59,7 @@ fn verify(secret: &str, body: &[u8], signature: &str) -> bool {
     mac.verify_slice(&bytes).is_ok()
 }
 
-fn card(event: &str, v: &Value) -> Option<String> {
+fn card(event: &str, v: &Value) -> Option<MessageCard> {
     let text = |pointer| {
         v.pointer(pointer)
             .and_then(Value::as_str)
@@ -154,10 +160,15 @@ fn card(event: &str, v: &Value) -> Option<String> {
         ),
         _ => return None,
     };
-    Some(format!(
-        "zoo:github:v1\n{}",
-        json!({"title": title, "url": url, "description": description, "repository": text("/repository/full_name"), "actor": text("/sender/login"), "event": event})
-    ))
+    Some(MessageCard {
+        title,
+        url,
+        description,
+        source: "GitHub".into(),
+        context: text("/repository/full_name"),
+        author: text("/sender/login"),
+        badge: event.into(),
+    })
 }
 
 async fn receive(
@@ -187,12 +198,20 @@ pub(super) async fn receive_delivery(
     if event == "ping" {
         return Ok(StatusCode::OK);
     }
-    let Some(content) = card(event, &value) else {
+    let Some(card) = card(event, &value) else {
         return Ok(StatusCode::NO_CONTENT);
     };
-    let delivery = header("x-github-delivery");
+    persist_card(state, settings, card, header("x-github-delivery")).await
+}
+
+pub(super) async fn persist_card(
+    state: AppState,
+    settings: Settings,
+    card: MessageCard,
+    delivery: &str,
+) -> Result<StatusCode, AppError> {
     uuid::Uuid::parse_str(delivery)
-        .map_err(|_| AppError::BadRequest("Missing or invalid GitHub delivery ID".into()))?;
+        .map_err(|_| AppError::BadRequest("Missing or invalid webhook delivery ID".into()))?;
     let digest = Sha256::digest(format!("github:{}:{delivery}", settings.channel));
     let id = uuid::Uuid::from_slice(&digest[..16])
         .expect("16 bytes")
@@ -216,10 +235,11 @@ pub(super) async fn receive_delivery(
         CreateMessageRequest {
             id: Some(id),
             channel_id: settings.channel,
-            content,
+            content: card.title.clone(),
             parent_id: None,
         },
         false,
+        Some(card.encode()?),
     )
     .await?;
     Ok(StatusCode::OK)
@@ -239,11 +259,12 @@ mod tests {
     #[test]
     fn formats_events_and_ignores_unknown_events() {
         let v = json!({"action":"closed", "pull_request":{"number":42,"merged":true,"title":"Fix","html_url":"https://github.com/a/b/pull/42"}});
-        assert!(card("pull_request", &v).unwrap().contains("merged"));
+        assert!(card("pull_request", &v).unwrap().title.contains("merged"));
         assert!(card("unsupported", &v).is_none());
         assert!(
             card("push", &json!({"ref":"refs/heads/main","commits":[]}))
                 .unwrap()
+                .title
                 .contains("Push · main")
         );
     }

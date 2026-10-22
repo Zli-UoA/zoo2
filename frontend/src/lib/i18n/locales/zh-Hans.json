@@ -244,8 +244,8 @@
   },
   "webhooks": {
     "title": "Webhook 设置",
-    "description": "管理 {{channel}} 的 GitHub 通知。",
-    "instructions": "在 GitHub Settings → Webhooks 填入 URL 和 Secret，并选择 application/json。系统会自动创建专用的发帖用户。",
+    "description": "管理 {{channel}} 的通知集成。",
+    "instructions": "GitHub 请使用 GitHub URL 和 Secret，并选择 application/json。其他服务请使用通用 Webhook URL 和共享卡片格式。系统会自动创建专用发帖用户。",
     "copied": "已复制",
     "copyError": "无法复制。请选中字段并手动复制。",
     "copyLabel": "复制 {{label}}",
@@ -261,6 +261,7 @@
     "delete": "删除",
     "deleteConfirm": "要删除此 Webhook 吗？此 URL 将停止接收通知。",
     "rotateConfirm": "要重新生成 Secret 吗？当前的 Secret 将失效，请同步更新 GitHub 的设置。",
-    "confirm": "确认"
+    "confirm": "确认",
+    "genericUrl": "通用 Webhook URL"
   }
 }

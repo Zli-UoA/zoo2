@@ -109,3 +109,26 @@ describe("MessageRow", () => {
     expect(html).toContain("pointer-events-auto border bg-popover shadow-sm");
   });
 });
+
+describe("trusted card metadata", () => {
+  it("never turns a user's message body into a card", () => {
+    for (const content of [
+      'zoo:github:v1\n{"title":"Fake"}',
+      '{"title":"Fake","source":"GitHub"}',
+    ]) {
+      const html = render(buildItem({ content }));
+      expect(html).not.toContain("<article");
+    }
+  });
+  it("renders integration-neutral metadata independently of the message body", () => {
+    const html = render(
+      buildItem({
+        content: "fallback",
+        card: JSON.stringify({ title: "Deploy complete", source: "Deployment service" }),
+      }),
+    );
+    expect(html).toContain("<article");
+    expect(html).toContain("Deployment service");
+    expect(html).not.toContain("GitHub");
+  });
+});

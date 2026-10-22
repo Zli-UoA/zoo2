@@ -244,8 +244,8 @@
   },
   "webhooks": {
     "title": "Webhook settings",
-    "description": "Manage GitHub notifications for {{channel}}.",
-    "instructions": "In GitHub Settings → Webhooks, enter the URL and Secret and select application/json. A dedicated posting user is created automatically.",
+    "description": "Manage notification integrations for {{channel}}.",
+    "instructions": "For GitHub, use the GitHub URL and Secret with application/json. For other services, use the generic webhook URL and shared card format. A dedicated posting user is created automatically.",
     "copied": "Copied",
     "copyError": "Could not copy. Select the field and copy it manually.",
     "copyLabel": "Copy {{label}}",
@@ -261,6 +261,7 @@
     "delete": "Delete",
     "deleteConfirm": "Delete this webhook? This URL will stop receiving notifications.",
     "rotateConfirm": "Regenerate the Secret? The current Secret will stop working. Update it on GitHub too.",
-    "confirm": "Confirm"
+    "confirm": "Confirm",
+    "genericUrl": "Generic webhook URL"
   }
 }

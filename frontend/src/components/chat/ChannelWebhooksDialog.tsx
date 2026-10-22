@@ -15,6 +15,7 @@ export interface ChannelWebhook {
   id: string;
   name: string;
   path: string;
+  generic_path?: string;
   secret: string;
   created_at: string;
 }
@@ -206,9 +207,19 @@ export function ChannelWebhooksDialog({
                 <li key={hook.id} className="flex flex-col gap-3 rounded-lg border p-3">
                   <h3 className="break-words text-sm font-semibold">{hook.name}</h3>
                   <Credential
-                    label="URL"
+                    label="GitHub URL"
                     value={webhookUrl(config.apiBaseUrl, hook.path, window.location.origin)}
                   />
+                  {hook.generic_path ? (
+                    <Credential
+                      label={t("webhooks.genericUrl")}
+                      value={webhookUrl(
+                        config.apiBaseUrl,
+                        hook.generic_path,
+                        window.location.origin,
+                      )}
+                    />
+                  ) : null}
                   <Credential key={hook.secret} label="Secret" value={hook.secret} secret />
                   <div className="flex justify-end gap-2">
                     <Button

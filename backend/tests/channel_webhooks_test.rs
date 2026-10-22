@@ -138,7 +138,102 @@ async fn manages_channel_webhooks_and_credentials() -> anyhow::Result<()> {
         .await?;
     assert_eq!(messages.len(), 1);
     assert_ne!(messages[0].user_id, owner);
-    assert!(messages[0].content.starts_with("zoo:github:v1\n"));
+    assert_eq!(
+        serde_json::from_str::<Value>(messages[0].card.as_ref().unwrap())?["source"],
+        "GitHub"
+    );
+    assert!(!messages[0].content.starts_with("zoo:github:v1\n"));
+    let bot = &messages[0].user_id;
+    assert_eq!(
+        request(
+            &app,
+            "PATCH",
+            &format!("/api/messages/{}", messages[0].id),
+            bot,
+            json!({"content":"edited card"})
+        )
+        .await
+        .0,
+        StatusCode::FORBIDDEN
+    );
+    assert_eq!(
+        request(
+            &app,
+            "POST",
+            "/api/dms",
+            &owner,
+            json!({"target_user_ids":[bot]})
+        )
+        .await
+        .0,
+        StatusCode::BAD_REQUEST
+    );
+    assert_eq!(
+        request(
+            &app,
+            "POST",
+            &format!("/api/channels/{channel}/users"),
+            &owner,
+            json!({"user_id":bot})
+        )
+        .await
+        .0,
+        StatusCode::BAD_REQUEST
+    );
+    // User-controlled text and extra JSON keys cannot set trusted card metadata.
+    let forged = "zoo:github:v1\n{\"title\":\"Forged notification\"}";
+    let (status, human, _) = request(
+        &app,
+        "POST",
+        "/api/messages",
+        &owner,
+        json!({"channel_id":channel, "content":forged, "card":"{\"title\":\"Fake\"}"}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(human["data"]["card"].is_null());
+    let human_id = human["data"]["id"].as_str().unwrap();
+    let (status, edited, _) = request(
+        &app,
+        "PATCH",
+        &format!("/api/messages/{human_id}"),
+        &owner,
+        json!({"content":forged,"card":"{\"title\":\"Fake\"}"}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(edited["data"]["card"].is_null());
+    let generic_path = hook["generic_path"].as_str().unwrap();
+    let generic = json!({"title":"Deploy complete", "source":"Deploy system", "description":"Production is healthy", "url":"https://example.com/deploy/123"}).to_string();
+    let mut mac = Hmac::<Sha256>::new_from_slice(secret.as_bytes()).unwrap();
+    mac.update(generic.as_bytes());
+    let sig = mac
+        .finalize()
+        .into_bytes()
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect::<String>();
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(generic_path)
+                .header("x-webhook-signature-256", format!("sha256={sig}"))
+                .header("x-webhook-delivery", Uuid::new_v4().to_string())
+                .body(Body::from(generic))
+                .unwrap(),
+        )
+        .await?;
+    assert_eq!(response.status(), StatusCode::OK);
+    let stored = Message::filter(Message::fields().channel_id().eq(channel.as_str()))
+        .exec(&mut db)
+        .await?;
+    assert!(
+        stored
+            .iter()
+            .any(|m| m.card.as_ref().is_some_and(|c| c.contains("Deploy system")))
+    );
     let item = format!("{path}/{id}");
     assert_eq!(
         request(&app, "DELETE", &item, &outsider, Value::Null)
@@ -234,5 +329,27 @@ async fn manages_channel_webhooks_and_credentials() -> anyhow::Result<()> {
     );
     let (_, list, _) = request(&app, "GET", &path, &owner, Value::Null).await;
     assert_eq!(list["data"].as_array().unwrap().len(), 0);
+    let bot_user = backend::models::User::get_by_id(&mut db, bot.as_str()).await?;
+    assert!(bot_user.is_bot);
+    let (_, candidates, _) = request(&app, "GET", "/api/users", &owner, Value::Null).await;
+    assert!(
+        !candidates
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|u| u["id"] == *bot)
+    );
+    assert_eq!(
+        request(
+            &app,
+            "POST",
+            "/api/dms",
+            &owner,
+            json!({"target_user_ids":[bot]})
+        )
+        .await
+        .0,
+        StatusCode::BAD_REQUEST
+    );
     Ok(())
 }
