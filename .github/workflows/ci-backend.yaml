@@ -4,12 +4,15 @@ on:
     paths:
       - "backend/**"
       - "infra/db/**"
-      - "infra/Dockerfile-backend-deploy"
-      - "infra/Dockerfile-migrate-deploy"
+      - "infra/Dockerfile-backend-deploy*"
+      - "infra/Dockerfile-migrate-deploy*"
       - "infra/compose.stg*.yaml"
       - "rust-toolchain.toml"
       - ".github/workflows/ci-backend.yaml"
   workflow_dispatch:
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 jobs:
   build:
     runs-on: ubuntu-latest

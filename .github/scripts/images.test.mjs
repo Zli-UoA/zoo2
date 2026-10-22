@@ -79,7 +79,7 @@ test('only missing versions are ignored', async () => {
   await assert.rejects(ignoreMissing(async () => {throw new Error('403');}));
 });
 
-import plan, {promotedMainSha} from './image-plan.mjs';
+import plan, {promotedMainSha, pullRequestComponents} from './image-plan.mjs';
 function planFixture({files = [], fork = false, state = 'open', currentSha = sha(1)} = {}) {
   const outputs = {};
   let requestedPages = false;
@@ -132,11 +132,17 @@ test('fork, closed and stale PRs do not publish', async () => {
     assert.equal(fixture.outputs.matrix, undefined);
   }
 });
-test('docs-only PR aliases every component without an empty build matrix job', async () => {
-  const fixture = planFixture({files: [{filename: 'README.md'}]});
+test('docs-only PR publishes nothing and does not read the main SHA', async () => {
+  const fixture = planFixture({files: [{filename: 'README.md'}, {filename: 'docs/a.md', previous_filename: 'docs/b.md'}]});
   await plan(fixture);
-  assert.equal(fixture.outputs.has_images, 'false');
-  assert.deepEqual(JSON.parse(fixture.outputs.aliases).map(a => a.source), [`preview-${sha(98)}`, sha(98), sha(98)]);
+  assert.equal(fixture.outputs.enabled, 'false');
+  assert.equal(fixture.outputs.matrix, undefined);
+  assert.equal(fixture.readVersions(), false);
+});
+test('pullRequestComponents covers renames and huge diffs', () => {
+  assert.deepEqual(pullRequestComponents([{filename: 'docs/a.md'}]), []);
+  assert.deepEqual(pullRequestComponents([{filename: 'docs/a.rs', previous_filename: 'backend/a.rs'}]), ['backend']);
+  assert.equal(pullRequestComponents(Array.from({length: 3000}, () => ({filename: 'docs/a.md'}))).length, 3);
 });
 test('main plans all images with full SHA tags', async () => {
   const fixture = planFixture(); fixture.context.payload = {}; fixture.context.runNumber = 42;

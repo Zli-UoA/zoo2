@@ -24,6 +24,9 @@ on:
       - "infra/compose.stg*.yaml"
       - ".github/workflows/ci-frontend.yaml"
   workflow_dispatch:
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
 jobs:
   container:
     runs-on: ubuntu-latest
