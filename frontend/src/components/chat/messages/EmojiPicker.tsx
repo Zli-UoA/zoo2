@@ -4,12 +4,12 @@ import { useCallback, useEffect, useState, type KeyboardEvent } from "react";
 import { useTranslation } from "react-i18next";
 import { cn } from "cn";
 
+import { EMOJIBASE_DATA_URL, SUPPORTED_EMOJI_VERSION } from "../../../lib/emoji/data";
 import { resolveEmojiDataLocale } from "../../../lib/emoji/locale";
 import { addRecentEmoji, loadRecentEmojis } from "../../../lib/emoji/recents";
 import { useLocale } from "../../i18n/LocaleProvider";
 import { inputClassName } from "../../ui/input-styles";
 
-export const EMOJIBASE_DATA_URL = "/emojibase-data";
 const COLUMNS = 8;
 
 const emojiButtonClassName =
@@ -69,6 +69,7 @@ export function EmojiPicker({ onSelect }: { onSelect: (emoji: string) => void })
       locale={resolveEmojiDataLocale(locale)}
       columns={COLUMNS}
       emojibaseUrl={EMOJIBASE_DATA_URL}
+      emojiVersion={SUPPORTED_EMOJI_VERSION}
       onEmojiSelect={(emoji) => choose(emoji.emoji)}
       onKeyDown={forwardNavigationKey}
       className="flex h-full min-h-0 flex-col gap-2"

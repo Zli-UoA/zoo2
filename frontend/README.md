@@ -75,6 +75,7 @@ pnpm test:e2e:i18n    # 本番ビルド + Playwright。バックエンド不要
 
 - 配信するロケールは `en` / `ja` / `zh-hant` の3つです。アプリのロケールとの対応は `src/lib/emoji/locale.ts` の中央マップで解決します（`zh-Hans` と `yue` は繁体字データを使い、未対応は `en`）。
 - frimousse は初回に選択ロケールの `data.json` と `messages.json` だけを取得し、localStorage にキャッシュします。2回目以降のオープンではキャッシュを使います。
+- 表示する絵文字は `SUPPORTED_EMOJI_VERSION`（`src/lib/emoji/data.ts`、現在は 16）までに制限します。バックエンドの `emojis` クレートが Unicode 16.0 までしか検証しないためで、どちらかを更新するときは両方の上限を揃えてください。
 - recents は localStorage の `zoo-recent-emoji` に最大16件、新しい順で保存します。
 - データは `emojibase-data`（devDependency）からコピーします。バージョンを更新したら次を実行し、差分をコミットしてください。
 
