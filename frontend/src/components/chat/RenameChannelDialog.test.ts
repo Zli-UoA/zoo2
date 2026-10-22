@@ -107,8 +107,8 @@ describe("RenameChannelDialog", () => {
     await flush(settle);
     expect(onOpenChange).toHaveBeenCalledWith(false);
   });
-  it.each(["開発チーム_ざつだん-123", "𠮷".repeat(80)])(
-    "accepts and persists Japanese name %s",
+  it.each(["開発チーム_ざつだん-123", "𠮷".repeat(80), "Team 開発 👩‍💻 / #相談", "😀".repeat(80)])(
+    "accepts and persists channel name %s",
     async (name) => {
       const draft = { channel_name: "original" };
       update.mockImplementation((_id, change) => {

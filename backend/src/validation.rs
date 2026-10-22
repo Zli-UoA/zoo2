@@ -13,14 +13,14 @@ const RESERVED_CHANNEL_NAMES: &[&str] = &["all", "channel", "everyone", "here", 
 pub(crate) const RESERVED_USER_NAMES: &[&str] =
     &["all", "channel", "everyone", "here", "slackbot", "admin"];
 
-/// チャンネル名のバリデーション (Slack 準拠):
+/// チャンネル名のバリデーション:
 /// - 1 文字以上 80 文字以下
-/// - 日本語（ひらがな・カタカナ・漢字）、半角英小文字、数字、ハイフン、アンダースコアを許可
+/// - 空白のみの名前と制御文字・改行を禁止し、それ以外の文字は許可
 /// - 予約語 (`all`, `channel`, `everyone`, `here`, `general`) の禁止
 pub fn validate_channel_name(name: &str) -> Result<(), AppError> {
-    if name.is_empty() {
+    if name.trim().is_empty() {
         return Err(AppError::BadRequest(
-            "Channel name cannot be empty".to_string(),
+            "Channel name cannot be empty or only whitespace".to_string(),
         ));
     }
 
@@ -36,22 +36,12 @@ pub fn validate_channel_name(name: &str) -> Result<(), AppError> {
         )));
     }
 
-    let is_valid = name.chars().all(|c| {
-        c.is_ascii_lowercase()
-            || c.is_ascii_digit()
-            || matches!(c, '-' | '_' | '々' | '〆' | '〇'
-                    | '\u{3041}'..='\u{3096}' | '\u{3099}'..='\u{309f}'
-                    | '\u{30a1}'..='\u{30fa}' | '\u{30fc}'..='\u{30ff}'
-                    | '\u{31f0}'..='\u{31ff}' | '\u{ff66}'..='\u{ff9f}'
-                    | '\u{3400}'..='\u{4dbf}' | '\u{4e00}'..='\u{9fff}'
-                    | '\u{f900}'..='\u{faff}' | '\u{20000}'..='\u{2fa1f}'
-                    | '\u{30000}'..='\u{323af}')
-    });
-
-    if !is_valid {
+    if name
+        .chars()
+        .any(|c| c.is_control() || matches!(c, '\u{2028}' | '\u{2029}'))
+    {
         return Err(AppError::BadRequest(
-            "Channel name can only contain Japanese characters, lowercase letters, numbers, hyphens, and underscores"
-                .to_string(),
+            "Channel name cannot contain control characters or line separators".to_string(),
         ));
     }
 
@@ -395,34 +385,43 @@ mod tests {
             "ﾁｬﾝﾈﾙ",
             "か\u{3099}",
             "𠮷野家",
+            "General",
+            "hello world",
+            "日本語　空白",
+            "#general",
+            "test@",
+            "開発・相談",
+            "開発😀",
+            "開発/相談",
+            "開発ABC",
+            "équipe",
+            "فريق",
+            "👩‍💻",
+            "<開発> & \"相談\"",
+            "path\\name",
         ] {
             assert!(validate_channel_name(name).is_ok(), "{name}");
         }
-        assert!(validate_channel_name(&"あ".repeat(80)).is_ok());
-        assert!(validate_channel_name(&"あ".repeat(81)).is_err());
-        assert!(validate_channel_name(&"𠮷".repeat(80)).is_ok());
-        assert!(validate_channel_name(&"𠮷".repeat(81)).is_err());
-        for name in [
-            "日本語　空白",
-            "日本語 空白",
-            "開発・相談",
-            "開発😀",
-            "開発\n相談",
-            "開発/相談",
-            "開発ABC",
-        ] {
-            assert!(validate_channel_name(name).is_err(), "{name}");
+        for character in ["あ", "𠮷", "😀"] {
+            assert!(validate_channel_name(&character.repeat(80)).is_ok());
+            assert!(validate_channel_name(&character.repeat(81)).is_err());
         }
-
-        // 空文字
-        assert!(validate_channel_name("").is_err());
-        // 大文字
-        assert!(validate_channel_name("General").is_err());
-        // スペース
-        assert!(validate_channel_name("hello world").is_err());
-        // 特殊記号
-        assert!(validate_channel_name("#general").is_err());
-        assert!(validate_channel_name("test@").is_err());
+        for name in [
+            "",
+            " ",
+            "　",
+            "\t",
+            "開発\n相談",
+            "開発\r相談",
+            "開発\t相談",
+            "開発\0相談",
+            "開発\u{7f}相談",
+            "開発\u{85}相談",
+            "開発\u{2028}相談",
+            "開発\u{2029}相談",
+        ] {
+            assert!(validate_channel_name(name).is_err(), "{name:?}");
+        }
         // 予約語
         assert!(validate_channel_name("general").is_err());
         assert!(validate_channel_name("all").is_err());
