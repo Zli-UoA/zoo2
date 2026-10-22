@@ -12,9 +12,23 @@ export function changedComponents(files) {
     (c === 'frontend' && f === 'infra/frontend-nginx.conf')));
 }
 
+// 現在 latest が指している main コミットの SHA を GHCR から取得する。
+// latest は `<SHA>` タグと同じバージョンを指すため、そのバージョンに付いている40桁のタグを読む。
+// 昇格は全コンポーネントのビルド成功後に行われるので、backend だけ見れば他のコンポーネントにも同じ SHA のイメージがある。
+export async function promotedMainSha(github, org) {
+  const versions = await github.paginate(github.rest.packages.getAllPackageVersionsForPackageOwnedByOrg, {org, package_type: 'container', package_name: 'zoo2-backend', per_page: 100});
+  const tags = versions.find(v => v.metadata?.container?.tags?.includes('latest'))?.metadata.container.tags ?? [];
+  const sha = tags.find(t => /^[a-f0-9]{40}$/.test(t));
+  if (!sha) throw new Error('zoo2-backend:latest has no main commit tag');
+  return sha;
+}
+
 // ビルド計画を作り、ジョブの出力に渡す。
 // - main への push・手動実行: 全コンポーネントをビルドし、タグは `<SHA>`
-// - PR: 変更のあるコンポーネントだけをビルドし、タグは `pr-<番号>-<SHA>`
+// - PR: 変更のあるコンポーネントだけをビルドする。タグは全コンポーネントで `pr-<番号>-<SHA>` にそろえ、
+//   変更のないコンポーネントには、昇格済み main コミットの不変タグ（frontend は Preview 用ビルドの `preview-<SHA>`）を元に別名を付ける。
+//   site1 の Flux は PR 番号と head SHA だけからタグを組み立てるため、3つのタグがそろっている必要がある。
+//   可変タグの latest・preview を元にしないのは、別名の付与と main の昇格が前後しても3つを同じコミットにそろえるため。
 // fork の PR、close 済みの PR、すでに新しいコミットが push された PR は `enabled=false` にしてビルドしない。
 export default async function plan({github, context, core}) {
   const pr = context.payload.pull_request;
@@ -35,12 +49,17 @@ export default async function plan({github, context, core}) {
     selected = files.length >= 3000 ? components : changedComponents(files.flatMap(f => [f.filename, f.previous_filename].filter(Boolean)));
   }
   const sha = pr?.head.sha ?? context.sha;
-  // ビルドしないコンポーネントには参照先として可変タグを書いておく（frontend は Preview 用ビルドの preview、他は latest）。
-  const tags = Object.fromEntries(components.map(c => [c, selected.includes(c) ? (pr ? `pr-${pr.number}-${sha}` : sha) : c === 'frontend' ? 'preview' : 'latest']));
+  const tags = Object.fromEntries(components.map(c => [c, pr ? `pr-${pr.number}-${sha}` : sha]));
+  // 変更のないコンポーネントと、別名の元にするタグ。main では全コンポーネントをビルドするので空になる。
+  const unchanged = components.filter(c => !selected.includes(c));
+  const mainSha = unchanged.length ? await promotedMainSha(github, context.repo.owner) : null;
+  const aliases = unchanged.map(component => ({component, source: component === 'frontend' ? `preview-${mainSha}` : mainSha}));
   core.setOutput('enabled', 'true');
   core.setOutput('matrix', JSON.stringify({include: selected.map(component => ({component}))}));
   core.setOutput('has_images', String(selected.length > 0));
   core.setOutput('sha', sha);
   core.setOutput('tags', JSON.stringify(tags));
-  await core.summary.addHeading('Image references').addCodeBlock(JSON.stringify(tags, null, 2), 'json').write();
+  core.setOutput('aliases', JSON.stringify(aliases));
+  core.setOutput('pr', pr ? String(pr.number) : '');
+  await core.summary.addHeading('Image references').addCodeBlock(JSON.stringify({tags, aliases}, null, 2), 'json').write();
 }

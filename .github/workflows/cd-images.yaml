@@ -18,10 +18,14 @@ jobs:
     permissions:
       contents: read
       pull-requests: read
+      # Unchanged PR components are aliased to the main commit that latest points to.
+      packages: read
     outputs:
       matrix: ${{ steps.plan.outputs.matrix }}
       sha: ${{ steps.plan.outputs.sha }}
       tags: ${{ steps.plan.outputs.tags }}
+      aliases: ${{ steps.plan.outputs.aliases }}
+      pr: ${{ steps.plan.outputs.pr }}
       has_images: ${{ steps.plan.outputs.has_images }}
       enabled: ${{ steps.plan.outputs.enabled }}
     steps:
@@ -219,4 +223,48 @@ jobs:
               }
               if (failed.length) core.error(`Rollback failed; aliases are mixed: ${failed.join(', ')}`);
               throw error;
+            }
+  # Give every PR component the same pr-<number>-<SHA> tag, which the site1 preview ResourceSet pulls.
+  # Unchanged components get it as an alias of the pinned main image; nothing is rebuilt.
+  alias:
+    needs: [plan, build]
+    if: >-
+      always() && github.event_name == 'pull_request' && needs.plan.result == 'success' &&
+      needs.plan.outputs.enabled == 'true' && needs.plan.outputs.aliases != '[]' &&
+      (needs.build.result == 'success' || needs.build.result == 'skipped')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+      pull-requests: read
+    steps:
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Alias unchanged components
+        uses: actions/github-script@v8
+        env:
+          PR_NUMBER: ${{ needs.plan.outputs.pr }}
+          IMAGE_SHA: ${{ needs.plan.outputs.sha }}
+          TAGS: ${{ needs.plan.outputs.tags }}
+          ALIASES: ${{ needs.plan.outputs.aliases }}
+        with:
+          script: |
+            // A closed or updated PR is no longer deployed; its newer run publishes the current head.
+            const {data: pr} = await github.rest.pulls.get({...context.repo, pull_number: Number(process.env.PR_NUMBER)});
+            if (pr.state !== 'open' || pr.head.sha !== process.env.IMAGE_SHA) {
+              core.notice('PR closed or changed; not aliasing');
+              return;
+            }
+            const tags = JSON.parse(process.env.TAGS);
+            for (const {component, source} of JSON.parse(process.env.ALIASES)) {
+              const image = `ghcr.io/zli-uoa/zoo2-${component}`;
+              // Immutable tags are never rewritten; a rerun keeps what was already published.
+              const {exitCode, stderr} = await exec.getExecOutput('docker', ['buildx', 'imagetools', 'inspect', `${image}:${tags[component]}`], {ignoreReturnCode: true, silent: true});
+              if (exitCode === 0) { core.notice(`${image}:${tags[component]} already exists; not aliasing`); continue; }
+              if (!/not found/i.test(stderr)) throw new Error(`Cannot inspect ${image}:${tags[component]}: ${stderr.trim()}`);
+              await exec.exec('docker', ['buildx', 'imagetools', 'create', '-t', `${image}:${tags[component]}`, `${image}:${source}`]);
             }
