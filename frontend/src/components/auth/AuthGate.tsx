@@ -66,6 +66,15 @@ export function AuthGate({ children }: { children: ReactNode }) {
   }, []);
 
   useEffect(() => {
+    // The parent exchanges the code and validates state/nonce. Never start login
+    // or consume the interactive transaction inside the renewal iframe.
+    if (window.parent !== window) {
+      window.parent.postMessage(
+        { type: "zoo:oidc:silent", url: window.location.href },
+        window.location.origin,
+      );
+      return;
+    }
     let cancelled = false;
     let config: AppConfig;
     try {

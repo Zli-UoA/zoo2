@@ -75,6 +75,7 @@ export interface OidcEnvironment {
   storage: AuthStorage;
   fetch: OidcFetch;
   now(): number;
+  authorizeSilently?(url: string, redirectUri: string): Promise<string>;
 }
 
 export interface OidcClientOptions {
@@ -105,7 +106,43 @@ export function createBrowserEnvironment(): OidcEnvironment {
     storage: window.sessionStorage,
     fetch: (input, init) => fetch(input, init),
     now: () => Date.now(),
+    authorizeSilently,
   };
+}
+
+/** Only accept the callback from the iframe we created, on our own origin. */
+function authorizeSilently(url: string, redirectUri: string): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const frame = document.createElement("iframe");
+    frame.hidden = true;
+    frame.title = "Session renewal";
+    const callback = new URL(redirectUri);
+    const cleanup = () => {
+      clearTimeout(timer);
+      window.removeEventListener("message", receive);
+      frame.remove();
+    };
+    const receive = (event: MessageEvent) => {
+      if (
+        event.origin !== callback.origin ||
+        event.source !== frame.contentWindow ||
+        event.data?.type !== "zoo:oidc:silent" ||
+        typeof event.data.url !== "string"
+      )
+        return;
+      const result = new URL(event.data.url);
+      if (result.origin !== callback.origin || result.pathname !== callback.pathname) return;
+      cleanup();
+      resolve(result.href);
+    };
+    const timer = setTimeout(() => {
+      cleanup();
+      reject(new OidcError("silent_authorization_timeout", "認証の自動更新がタイムアウトしました"));
+    }, 15_000);
+    window.addEventListener("message", receive);
+    frame.src = url;
+    document.body.append(frame);
+  });
 }
 
 const RETURN_TO_BASE = "http://localhost";
@@ -167,6 +204,7 @@ export class OidcClient {
   private endpoints: OidcEndpoints | null = null;
   private discoveryPromise: Promise<OidcEndpoints> | null = null;
   private tokens: OidcTokens | null = null;
+  private silentPromise: Promise<string> | null = null;
   private refreshPromise: Promise<OidcTokens> | null = null;
   private callbackRequest: { url: string; promise: Promise<{ returnTo: string }> } | null = null;
   /** セッション破棄と進行中の refresh の競合を検知するための世代番号。 */
@@ -407,6 +445,18 @@ export class OidcClient {
       return tokens.accessToken;
     }
     if (!tokens.refreshToken) {
+      if (this.environment.authorizeSilently) {
+        try {
+          this.silentPromise ??= this.renewSilently().finally(() => {
+            this.silentPromise = null;
+          });
+          return await this.silentPromise;
+        } catch {
+          // A logout while renewal was in flight must not trigger login.
+          if (this.tokens !== tokens) return null;
+          // Fall back to interactive login only when silent renewal is unavailable.
+        }
+      }
       this.requestReauthorization();
       if (remaining > 0) {
         return tokens.accessToken;
@@ -420,6 +470,45 @@ export class OidcClient {
       this.tokens = null;
       return null;
     }
+  }
+
+  private async renewSilently(): Promise<string> {
+    const generation = this.generation;
+    const entries = new Map<string, string>();
+    let authorizationUrl = "";
+    // Keep the iframe transaction separate from interactive login storage.
+    const renewal = new OidcClient({
+      issuer: this.issuer,
+      clientId: this.clientId,
+      redirectUri: this.redirectUri,
+      scope: this.scope,
+      resource: this.resource,
+      environment: {
+        ...this.environment,
+        assign: (url) => {
+          authorizationUrl = url;
+        },
+        storage: {
+          getItem: (key) => entries.get(key) ?? null,
+          setItem: (key, value) => {
+            entries.set(key, value);
+          },
+          removeItem: (key) => {
+            entries.delete(key);
+          },
+        },
+      },
+    });
+    await renewal.login();
+    const url = new URL(authorizationUrl);
+    url.searchParams.set("prompt", "none");
+    const callback = await this.environment.authorizeSilently!(url.href, this.redirectUri);
+    await renewal.handleCallback(callback);
+    if (generation !== this.generation || !renewal.tokens) {
+      throw new OidcError("session_reset", "セッションが破棄されました");
+    }
+    this.tokens = renewal.tokens;
+    return this.tokens.accessToken;
   }
 
   resetSession(): void {

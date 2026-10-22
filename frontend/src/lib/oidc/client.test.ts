@@ -76,6 +76,7 @@ interface Harness {
 }
 
 interface HarnessOptions {
+  authorizeSilently?: OidcEnvironment["authorizeSilently"];
   discovery?: Record<string, unknown>;
   /** token エンドポイントの応答。`URLSearchParams` と現在の nonce を受け取る。 */
   token?: (body: URLSearchParams, nonce: string) => unknown;
@@ -126,6 +127,7 @@ function createHarness(options: HarnessOptions = {}): Harness {
     storage,
     fetch: fetchMock,
     now: () => clock,
+    authorizeSilently: options.authorizeSilently,
   };
   const client = new OidcClient({
     issuer: ISSUER,
@@ -647,5 +649,54 @@ describe("OidcClient.isCallbackUrl", () => {
     expect(harness.client.isCallbackUrl(CALLBACK_URL)).toBe(false);
     expect(harness.client.isCallbackUrl("https://app.example/channels/abc")).toBe(false);
     expect(harness.client.isCallbackUrl("https://other.example/auth/callback?code=c")).toBe(false);
+  });
+});
+
+describe("silent authorization without a refresh token", () => {
+  it("coalesces renewal, validates the callback and leaves the main page in place", async () => {
+    const silent = vi.fn(async (href: string) => {
+      const url = new URL(href);
+      expect(url.searchParams.get("prompt")).toBe("none");
+      harness.setNonce(url.searchParams.get("nonce")!);
+      return `${CALLBACK_URL}?code=renewed&state=${url.searchParams.get("state")}`;
+    });
+    const harness = createHarness({ authorizeSilently: silent });
+    await completeLogin(harness);
+    harness.advance(250_000);
+    expect(
+      await Promise.all([harness.client.getAccessToken(), harness.client.getAccessToken()]),
+    ).toEqual(["access-1", "access-1"]);
+    expect(silent).toHaveBeenCalledTimes(1);
+    expect(harness.assigned).toHaveLength(1);
+    expect(harness.reauthorizeCalls).toHaveLength(0);
+    expect(await harness.client.getAccessToken()).toBe("access-1");
+    expect(silent).toHaveBeenCalledTimes(1);
+  });
+
+  it("rejects an invalid state and falls back to interactive authorization", async () => {
+    const harness = createHarness({
+      authorizeSilently: async () => `${CALLBACK_URL}?code=bad&state=wrong`,
+    });
+    await completeLogin(harness);
+    harness.advance(250_000);
+    await harness.client.getAccessToken();
+    expect(harness.reauthorizeCalls).toHaveLength(1);
+    expect(harness.tokenCalls).toHaveLength(1);
+  });
+
+  it("does not restore the session or redirect after a reset during renewal", async () => {
+    const harness = createHarness({
+      authorizeSilently: async (href) => {
+        const url = new URL(href);
+        harness.setNonce(url.searchParams.get("nonce")!);
+        harness.client.resetSession();
+        return `${CALLBACK_URL}?code=renewed&state=${url.searchParams.get("state")}`;
+      },
+    });
+    await completeLogin(harness);
+    harness.advance(250_000);
+    expect(await harness.client.getAccessToken()).toBeNull();
+    expect(harness.client.hasSession).toBe(false);
+    expect(harness.reauthorizeCalls).toHaveLength(0);
   });
 });
