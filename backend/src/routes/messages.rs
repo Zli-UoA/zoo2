@@ -13,7 +13,7 @@ use crate::{
     },
     db::get_current_txid,
     error::AppError,
-    models::{Channel, ChannelUser, Message, MessageReaction},
+    models::{Attachment, Channel, ChannelUser, Message, MessageReaction},
     routes::response::ApiResponse,
     state::AppState,
     validation::{normalize_and_validate_emoji, validate_message_content},
@@ -25,6 +25,7 @@ pub struct CreateMessageRequest {
     pub channel_id: String,
     pub content: String,
     pub parent_id: Option<String>,
+    pub attachment_ids: Option<Vec<String>>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -128,6 +129,65 @@ async fn create_message(
         .map_err(|_| AppError::BadRequest(format!("message id is not a valid UUID: {id}")))?;
 
     let mut db = state.db.clone();
+
+    // 添付ファイルの検証 (外部ストレージへの HeadObject 検証はトランザクション外で実行)
+    let attachment_ids = payload.attachment_ids.unwrap_or_default();
+    let mut verified_attachments = Vec::new();
+    if !attachment_ids.is_empty() {
+        let mut seen = std::collections::HashSet::new();
+        for att_id in &attachment_ids {
+            Uuid::parse_str(att_id).map_err(|_| {
+                AppError::BadRequest(format!("attachment id is not a valid UUID: {att_id}"))
+            })?;
+            if !seen.insert(att_id) {
+                return Err(AppError::BadRequest(format!(
+                    "Duplicate attachment_id in request: {att_id}"
+                )));
+            }
+
+            let att = Attachment::get_by_id(&mut db, att_id.as_str())
+                .await
+                .map_err(|err| {
+                    if err.is_record_not_found() {
+                        AppError::NotFound(format!("Attachment not found: {att_id}"))
+                    } else {
+                        AppError::from(err)
+                    }
+                })?;
+
+            if att.uploader_id != auth_user.id {
+                return Err(AppError::Forbidden(format!(
+                    "Cannot attach file uploaded by another user: {att_id}"
+                )));
+            }
+
+            if att.channel_id != payload.channel_id {
+                return Err(AppError::BadRequest(format!(
+                    "Attachment channel mismatch: expected {}, got {}",
+                    payload.channel_id, att.channel_id
+                )));
+            }
+
+            if att.message_id.is_some() {
+                return Err(AppError::BadRequest(format!(
+                    "Attachment {att_id} is already attached to a message"
+                )));
+            }
+
+            // HeadObject による実体検証
+            crate::storage::verify_uploaded_object(
+                &state.s3_client,
+                &state.config.s3.bucket,
+                &att.storage_key,
+                att.file_size,
+                &att.content_type,
+            )
+            .await?;
+
+            verified_attachments.push(att.id);
+        }
+    }
+
     let mut tx = db.transaction().await?;
 
     // チャンネル存在確認
@@ -226,6 +286,29 @@ async fn create_message(
     })
     .exec(&mut tx)
     .await?;
+
+    // 添付ファイルの紐付け (条件付き原子的 UPDATE)
+    for att_id in &verified_attachments {
+        let rows = toasty::sql::query(
+            "UPDATE attachments SET message_id = $1
+             WHERE id = $2 AND uploader_id = $3 AND channel_id = $4
+               AND message_id IS NULL AND created_at > now() - INTERVAL '23 hours'
+             RETURNING id",
+        )
+        .bind(&id)
+        .bind(att_id)
+        .bind(&auth_user.id)
+        .bind(&payload.channel_id)
+        .exec(&mut tx)
+        .await?;
+
+        if rows.len() != 1 {
+            let _ = tx.rollback().await;
+            return Err(AppError::BadRequest(format!(
+                "Failed to attach file {att_id}: conflict, already attached, or expired"
+            )));
+        }
+    }
 
     crate::notifications::create_message_notifications(
         &mut tx,

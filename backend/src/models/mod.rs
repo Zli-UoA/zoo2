@@ -1,3 +1,4 @@
+pub mod attachment;
 pub mod channel;
 pub mod channel_user;
 pub mod message;
@@ -8,6 +9,7 @@ pub mod user;
 pub mod user_identity;
 pub mod user_role;
 
+pub use attachment::Attachment;
 pub use channel::Channel;
 pub use channel_user::ChannelUser;
 pub use message::Message;

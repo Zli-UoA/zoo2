@@ -48,6 +48,35 @@ pub(crate) fn parse_cors_allowed_origins(raw: Option<&str>, environment: &str) -
 }
 
 #[derive(Clone)]
+pub struct S3Config {
+    pub endpoint: String,
+    pub bucket: String,
+    pub region: String,
+    pub access_key_id: String,
+    pub secret_access_key: String,
+    pub force_path_style: bool,
+    pub presigned_put_expiry_secs: u64,
+    pub presigned_get_expiry_secs: u64,
+    pub max_file_size: u64,
+}
+
+impl fmt::Debug for S3Config {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("S3Config")
+            .field("endpoint", &self.endpoint)
+            .field("bucket", &self.bucket)
+            .field("region", &self.region)
+            .field("access_key_id", &"[REDACTED]")
+            .field("secret_access_key", &"[REDACTED]")
+            .field("force_path_style", &self.force_path_style)
+            .field("presigned_put_expiry_secs", &self.presigned_put_expiry_secs)
+            .field("presigned_get_expiry_secs", &self.presigned_get_expiry_secs)
+            .field("max_file_size", &self.max_file_size)
+            .finish()
+    }
+}
+
+#[derive(Clone)]
 pub struct Config {
     pub database_url: String,
     pub host: String,
@@ -58,6 +87,7 @@ pub struct Config {
     pub dev_auth_enabled: bool,
     pub environment: String,
     pub cors_allowed_origins: Vec<String>,
+    pub s3: S3Config,
 }
 
 impl fmt::Debug for Config {
@@ -75,6 +105,7 @@ impl fmt::Debug for Config {
             .field("dev_auth_enabled", &self.dev_auth_enabled)
             .field("environment", &self.environment)
             .field("cors_allowed_origins", &self.cors_allowed_origins)
+            .field("s3", &self.s3)
             .finish()
     }
 }
@@ -159,6 +190,42 @@ impl Config {
             is_test_build,
         );
 
+        let s3_endpoint =
+            env::var("S3_ENDPOINT").unwrap_or_else(|_| "http://localhost:9000".to_string());
+        let s3_bucket = env::var("S3_BUCKET").unwrap_or_else(|_| "zoo-attachments-dev".to_string());
+        let s3_region = env::var("S3_REGION").unwrap_or_else(|_| "auto".to_string());
+        let s3_access_key_id =
+            env::var("S3_ACCESS_KEY_ID").unwrap_or_else(|_| "rustfsadmin".to_string());
+        let s3_secret_access_key =
+            env::var("S3_SECRET_ACCESS_KEY").unwrap_or_else(|_| "rustfsadmin".to_string());
+        let s3_force_path_style = env::var("S3_FORCE_PATH_STYLE")
+            .map(|v| v.to_lowercase() == "true" || v == "1")
+            .unwrap_or(true);
+        let presigned_put_expiry_secs = env::var("ATTACHMENT_PRESIGNED_PUT_EXPIRY_SECS")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(900);
+        let presigned_get_expiry_secs = env::var("ATTACHMENT_PRESIGNED_GET_EXPIRY_SECS")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(300);
+        let max_file_size = env::var("ATTACHMENT_MAX_FILE_SIZE")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(52428800);
+
+        let s3 = S3Config {
+            endpoint: s3_endpoint,
+            bucket: s3_bucket,
+            region: s3_region,
+            access_key_id: s3_access_key_id,
+            secret_access_key: s3_secret_access_key,
+            force_path_style: s3_force_path_style,
+            presigned_put_expiry_secs,
+            presigned_get_expiry_secs,
+            max_file_size,
+        };
+
         Self {
             database_url,
             host,
@@ -169,6 +236,7 @@ impl Config {
             dev_auth_enabled,
             environment,
             cors_allowed_origins,
+            s3,
         }
     }
 
@@ -188,6 +256,20 @@ impl Config {
 mod tests {
     use super::*;
 
+    fn dummy_s3_config() -> S3Config {
+        S3Config {
+            endpoint: "http://localhost:9000".to_string(),
+            bucket: "test-bucket".to_string(),
+            region: "auto".to_string(),
+            access_key_id: "test_key_id".to_string(),
+            secret_access_key: "super_secret_s3_key".to_string(),
+            force_path_style: true,
+            presigned_put_expiry_secs: 900,
+            presigned_get_expiry_secs: 300,
+            max_file_size: 52428800,
+        }
+    }
+
     #[test]
     fn test_config_debug_redacts_database_url() {
         let config = Config {
@@ -204,10 +286,13 @@ mod tests {
             dev_auth_enabled: false,
             environment: "production".to_string(),
             cors_allowed_origins: vec!["https://zoo.example.com".to_string()],
+            s3: dummy_s3_config(),
         };
         let debug_str = format!("{config:?}");
         assert!(!debug_str.contains("super_secret_password"));
         assert!(!debug_str.contains("secret123"));
+        assert!(!debug_str.contains("super_secret_s3_key"));
+        assert!(!debug_str.contains("test_key_id"));
         assert!(!debug_str.contains("user:"));
         assert!(debug_str.contains("[REDACTED]"));
         assert!(debug_str.contains("8080"));
@@ -227,6 +312,7 @@ mod tests {
             dev_auth_enabled: false,
             environment: "production".to_string(),
             cors_allowed_origins: vec![],
+            s3: dummy_s3_config(),
         };
         assert!(prod_no_oidc.validate().is_err());
 
@@ -304,6 +390,7 @@ mod tests {
             dev_auth_enabled: false,
             environment: "production".to_string(),
             cors_allowed_origins: vec![],
+            s3: dummy_s3_config(),
         };
         assert!(config.validate().is_err());
     }
