@@ -107,6 +107,21 @@ describe("RenameChannelDialog", () => {
     await flush(settle);
     expect(onOpenChange).toHaveBeenCalledWith(false);
   });
+  it.each(["開発チーム_ざつだん-123", "𠮷".repeat(80), "Team-開発-相談"])(
+    "accepts and persists channel name %s",
+    async (name) => {
+      const draft = { channel_name: "original" };
+      update.mockImplementation((_id, change) => {
+        change(draft);
+        return { when: () => Promise.resolve() };
+      });
+      await rename(name);
+      expect(input().checkValidity()).toBe(true);
+      await send();
+      expect(draft.channel_name).toBe(name);
+      expect(onOpenChange).toHaveBeenCalledWith(false);
+    },
+  );
   it("keeps the edited name and shows a duplicate error so the user can retry", async () => {
     update.mockImplementation(() => {
       throw new ApiError(409, "Conflict", {}, { method: "PATCH", path: "/api/channels/channel-1" });

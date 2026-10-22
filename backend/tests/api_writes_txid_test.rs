@@ -48,7 +48,7 @@ async fn test_create_user_and_message_returns_txid() -> anyhow::Result<()> {
 
     // 2. チャンネル作成
     let channel_id = uuid::Uuid::new_v4().to_string();
-    let channel_name = format!("test_ch_{}", uuid::Uuid::new_v4().simple());
+    let channel_name = format!("test-ch-{}", uuid::Uuid::new_v4().simple());
     let channel_payload = json!({
         "id": channel_id,
         "channel_name": channel_name,

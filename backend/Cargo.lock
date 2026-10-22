@@ -236,6 +236,7 @@ dependencies = [
  "futures-util",
  "jiff",
  "jsonwebtoken",
+ "regex",
  "reqwest",
  "serde",
  "serde_json",

@@ -38,7 +38,7 @@ async fn test_thread_reply_creation_and_validation() -> anyhow::Result<()> {
     let channel_id_1 = uuid::Uuid::new_v4().to_string();
     let channel_payload_1 = json!({
         "id": channel_id_1,
-        "channel_name": format!("ch1_{}", uuid::Uuid::new_v4().simple()),
+        "channel_name": format!("ch1-{}", uuid::Uuid::new_v4().simple()),
         "is_private": false,
     });
     let req = Request::builder()
@@ -112,7 +112,7 @@ async fn test_thread_reply_creation_and_validation() -> anyhow::Result<()> {
     let channel_id_2 = uuid::Uuid::new_v4().to_string();
     let channel_payload_2 = json!({
         "id": channel_id_2,
-        "channel_name": format!("ch2_{}", uuid::Uuid::new_v4().simple()),
+        "channel_name": format!("ch2-{}", uuid::Uuid::new_v4().simple()),
         "is_private": false,
     });
     let req = Request::builder()
