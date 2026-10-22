@@ -2,9 +2,11 @@
 // DRY_RUN=false のときだけ実際に削除し、それ以外は削除対象をサマリーに出すだけにする。
 
 // 回収対象にするタグの形式。main は `<SHA>`、Preview 用 frontend は `preview-<SHA>`、PR は `pr-<番号>-<SHA>`。
+// main の昇格で `<SHA>` と同じバージョンに付くリリースタグ `0.0.<実行番号>` は、その `<SHA>` の世代と一緒に回収する。
 // latest・preview などそれ以外のタグが付いたバージョンは削除しない。
 const SHA = '[a-f0-9]{40}';
 const mainTag = new RegExp(`^${SHA}$`);
+const releaseTag = /^0\.0\.[1-9][0-9]*$/;
 const previewTag = new RegExp(`^preview-${SHA}$`);
 const prTag = new RegExp(`^pr-([1-9][0-9]*)-(${SHA})$`);
 export const tagsOf = v => v.metadata?.container?.tags ?? [];
@@ -39,7 +41,7 @@ export function candidates(versions, openPRs, {closedPR = null, mainHead = null,
     const tags = tagsOf(v);
     if (!tags.length) return now - Date.parse(v.created_at) >= 24 * 60 * 60 * 1000;
     if (closedPR !== null) return !openPRs.has(closedPR) && tags.every(t => Number(t.match(prTag)?.[1]) === closedPR);
-    return !keep.has(v.id) && tags.every(t => mainTag.test(t) || previewTag.test(t) || prTag.test(t));
+    return !keep.has(v.id) && tags.every(t => mainTag.test(t) || releaseTag.test(t) || previewTag.test(t) || prTag.test(t));
   });
 }
 

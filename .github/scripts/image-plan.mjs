@@ -1,6 +1,27 @@
 // Publish images（cd-images.yaml）の plan ジョブから呼ぶ。ビルドするコンポーネントと、付けるイメージタグを決める。
 export const components = ['frontend', 'backend', 'migrate'];
 
+// main の昇格で3つのイメージに共通して付けるリリースタグ。zoo2-infra の Flux Operator が semver で最新を選ぶので、
+// ワークフローの実行番号を patch に入れる。実行番号は実行ごとに増え、同じ実行の再実行では変わらない。
+export const releaseTag = runNumber => `0.0.${runNumber}`;
+
+// 昇格で付けるタグを、付ける順に返す。各要素は [イメージ, 付けるタグ, 元のタグ]。
+// latest・preview を先に付け替え、リリースタグは最後に付ける。zoo2-infra は migrate のリリースタグだけを見るので、
+// migrate を最後にして、そのタグが見えた時点でほかの2つにも同じタグが付いているようにする。
+// Flux は3つすべてに同じタグを使うため、3つすべてをビルドした場合だけリリースタグを付ける。
+export function promotionAliases(selected, sha, release) {
+  const image = component => `ghcr.io/zli-uoa/zoo2-${component}`;
+  const aliases = selected.flatMap(component => [
+    [image(component), 'latest', sha],
+    ...(component === 'frontend' ? [[image(component), 'preview', `preview-${sha}`]] : []),
+  ]);
+  if (release && components.every(component => selected.includes(component))) {
+    const ordered = [...selected].sort((a, b) => Number(a === 'migrate') - Number(b === 'migrate'));
+    aliases.push(...ordered.map(component => [image(component), release, sha]));
+  }
+  return aliases;
+}
+
 // 変更されたファイルの一覧から、ビルドが必要なコンポーネントを返す。
 // ビルド用のスクリプト・アクション・ワークフロー、.dockerignore が変わった場合は、すべてのコンポーネントをビルドし直す。
 // それ以外は、各コンポーネントのソースと Dockerfile の変更を見る（migrate のソースは infra/db/、frontend は nginx 設定も含む）。
@@ -61,5 +82,7 @@ export default async function plan({github, context, core}) {
   core.setOutput('tags', JSON.stringify(tags));
   core.setOutput('aliases', JSON.stringify(aliases));
   core.setOutput('pr', pr ? String(pr.number) : '');
+  // PR は昇格しないので、リリースタグを付けない。
+  core.setOutput('release', pr ? '' : releaseTag(context.runNumber));
   await core.summary.addHeading('Image references').addCodeBlock(JSON.stringify({tags, aliases}, null, 2), 'json').write();
 }
