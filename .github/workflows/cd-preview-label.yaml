@@ -1,10 +1,11 @@
 name: Preview label
 # The site1 Flux Operator deploys open PRs that carry the preview label (zoo2-infra docs/preview.md).
-# Ready same-repository PRs get the label; a PR converted back to draft loses it to free a slot.
+# Ready same-repository PRs that change an image component get the label; a PR converted back to draft loses it to free a slot.
+# PRs that change only docs and the like build no images, so they get no preview. If a push first adds an image change, it gets the label then.
 # pull_request_target supplies a token that can label; this workflow never checks out or runs PR code.
 on:
   pull_request_target:
-    types: [opened, reopened, ready_for_review, converted_to_draft]
+    types: [opened, reopened, ready_for_review, converted_to_draft, synchronize]
 permissions:
   contents: read
 concurrency:
@@ -19,17 +20,42 @@ jobs:
       pull-requests: write
       issues: write
     steps:
+      # Never check out the PR head in this privileged workflow.
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.repository.default_branch }}
       - uses: actions/github-script@v8
         with:
           script: |
+            const {pullRequestComponents} = await import(`${process.env.GITHUB_WORKSPACE}/.github/scripts/image-plan.mjs`);
             // Read the current state: the event may be stale by the time this job runs.
             const {data: pr} = await github.rest.pulls.get({...context.repo, pull_number: context.payload.pull_request.number});
             if (pr.state !== 'open') return;
             const labeled = pr.labels.some(l => l.name === 'preview');
-            if (!pr.draft && !labeled) {
-              await github.rest.issues.addLabels({...context.repo, issue_number: pr.number, labels: ['preview']});
-              core.notice('Added the preview label');
-            } else if (pr.draft && labeled) {
-              await github.rest.issues.removeLabel({...context.repo, issue_number: pr.number, name: 'preview'});
-              core.notice('Removed the preview label from a draft');
+            if (pr.draft) {
+              if (labeled) {
+                await github.rest.issues.removeLabel({...context.repo, issue_number: pr.number, name: 'preview'});
+                core.notice('Removed the preview label from a draft');
+              }
+              return;
             }
+            if (labeled) return;
+            const files = await github.paginate(github.rest.pulls.listFiles, {...context.repo, pull_number: pr.number, per_page: 100});
+            if (pullRequestComponents(files).length === 0) {
+              core.notice('No image component changed; no preview label');
+              return;
+            }
+            if (context.payload.action === 'synchronize') {
+              // A removed label stays removed: add it only when this push is the first to change an image component.
+              // If the previous head is unavailable (force push), assume it already had changes.
+              let hadChanges = true;
+              try {
+                const before = await github.paginate(github.rest.repos.compareCommitsWithBasehead, {...context.repo, basehead: `${pr.base.sha}...${context.payload.before}`, per_page: 100}, response => response.data.files);
+                hadChanges = pullRequestComponents(before).length > 0;
+              } catch (error) {
+                core.info(`Could not read the previous head: ${error.message}`);
+              }
+              if (hadChanges) return;
+            }
+            await github.rest.issues.addLabels({...context.repo, issue_number: pr.number, labels: ['preview']});
+            core.notice('Added the preview label');

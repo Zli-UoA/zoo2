@@ -6,22 +6,17 @@ on:
       - "frontend/**"
       - "backend/**"
       - "infra/db/**"
-      - "infra/compose.stg*.yaml"
-      - "infra/frontend-nginx.conf"
-      - "infra/csp-hashes.mjs"
-      - "infra/frontend-entrypoint.sh"
       - ".github/workflows/ci-frontend-auth-e2e.yaml"
   pull_request:
     paths:
       - "frontend/**"
       - "backend/**"
       - "infra/db/**"
-      - "infra/compose.stg*.yaml"
-      - "infra/frontend-nginx.conf"
-      - "infra/csp-hashes.mjs"
-      - "infra/frontend-entrypoint.sh"
       - ".github/workflows/ci-frontend-auth-e2e.yaml"
   workflow_dispatch:
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
 jobs:
   oidc-e2e:
     runs-on: ubuntu-latest

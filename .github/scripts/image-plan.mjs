@@ -33,6 +33,12 @@ export function changedComponents(files) {
     (c === 'frontend' && f === 'infra/frontend-nginx.conf')));
 }
 
+// listFiles が返す PR 全体の差分から、ビルドが必要なコンポーネントを返す（Preview label ワークフローも使う）。
+// GitHub の変更ファイル一覧は3000件で打ち切られる。変更を見落とさないよう、3000件以上ならすべてビルドする。
+export function pullRequestComponents(files) {
+  return files.length >= 3000 ? components : changedComponents(files.flatMap(f => [f.filename, f.previous_filename].filter(Boolean)));
+}
+
 // 現在 latest が指している main コミットの SHA を GHCR から取得する。
 // latest は `<SHA>` タグと同じバージョンを指すため、そのバージョンに付いている40桁のタグを読む。
 // 昇格は全コンポーネントのビルド成功後に行われるので、backend だけ見れば他のコンポーネントにも同じ SHA のイメージがある。
@@ -50,7 +56,7 @@ export async function promotedMainSha(github, org) {
 //   変更のないコンポーネントには、昇格済み main コミットの不変タグ（frontend は Preview 用ビルドの `preview-<SHA>`）を元に別名を付ける。
 //   site1 の Flux は PR 番号と head SHA だけからタグを組み立てるため、3つのタグがそろっている必要がある。
 //   可変タグの latest・preview を元にしないのは、別名の付与と main の昇格が前後しても3つを同じコミットにそろえるため。
-// fork の PR、close 済みの PR、すでに新しいコミットが push された PR は `enabled=false` にしてビルドしない。
+// fork の PR、close 済みの PR、すでに新しいコミットが push された PR、ビルド対象のコンポーネントを変更しない PR は `enabled=false` にしてビルドしない。
 export default async function plan({github, context, core}) {
   const pr = context.payload.pull_request;
   if (pr && pr.head.repo.full_name !== `${context.repo.owner}/${context.repo.repo}`) {
@@ -66,8 +72,12 @@ export default async function plan({github, context, core}) {
       return;
     }
     const files = await github.paginate(github.rest.pulls.listFiles, {...context.repo, pull_number: pr.number, per_page: 100});
-    // GitHub の変更ファイル一覧は3000件で打ち切られる。変更を見落とさないよう、3000件以上ならすべてビルドする。
-    selected = files.length >= 3000 ? components : changedComponents(files.flatMap(f => [f.filename, f.previous_filename].filter(Boolean)));
+    selected = pullRequestComponents(files);
+    // ドキュメントなどだけの PR は、イメージも Preview も要らない。タグを付けないので、Preview label もラベルを付けない。
+    if (selected.length === 0) {
+      core.setOutput('enabled', 'false');
+      return;
+    }
   }
   const sha = pr?.head.sha ?? context.sha;
   const tags = Object.fromEntries(components.map(c => [c, pr ? `pr-${pr.number}-${sha}` : sha]));
