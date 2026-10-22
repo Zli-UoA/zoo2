@@ -144,6 +144,8 @@
     "description": "从左侧列表选择频道，即可查看对话。"
   },
   "messages": {
+    "typing": "{{names}}正在输入…",
+    "typingSeparator": "、",
     "compose": "输入消息",
     "send": "发送",
     "edit": "编辑",

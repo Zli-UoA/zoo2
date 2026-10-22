@@ -5,6 +5,7 @@ pub mod messages;
 pub mod notifications;
 pub mod response;
 pub mod shapes;
+pub mod typing;
 pub mod users;
 
 use axum::{
@@ -57,6 +58,7 @@ pub fn create_router(state: AppState) -> Router {
         .merge(channels::router())
         .merge(dms::router())
         .merge(messages::router())
+        .merge(typing::router())
         .merge(notifications::router())
         .merge(shapes::router())
         .layer(TraceLayer::new_for_http())

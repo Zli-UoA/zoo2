@@ -144,6 +144,8 @@
     "description": "喺左邊列表揀個頻道，就可以睇對話。"
   },
   "messages": {
+    "typing": "{{names}}輸入緊…",
+    "typingSeparator": "、",
     "compose": "輸入訊息",
     "send": "傳送",
     "edit": "編輯",

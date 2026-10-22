@@ -144,6 +144,8 @@
     "description": "Select a channel from the list to view the conversation."
   },
   "messages": {
+    "typing": "{{names}} typing…",
+    "typingSeparator": ", ",
     "compose": "Write a message",
     "send": "Send",
     "edit": "Edit",

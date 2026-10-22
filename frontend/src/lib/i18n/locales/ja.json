@@ -144,6 +144,8 @@
     "description": "左のリストからチャンネルを選択すると、メッセージのやり取りを表示します。"
   },
   "messages": {
+    "typing": "{{names}}が入力中…",
+    "typingSeparator": "、",
     "compose": "メッセージを送信",
     "send": "送信",
     "edit": "編集",
