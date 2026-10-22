@@ -310,6 +310,7 @@ pub async fn resolve_or_provision_user(
         let now = crate::models::now_utc_millis();
 
         let create_user_res = toasty::create!(User {
+            is_bot: false,
             id: new_user_id.as_str(),
             user_name: candidate_username.as_str(),
             display_name: display_name.as_str(),

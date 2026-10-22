@@ -55,7 +55,7 @@ async fn test_notifications_full_flow() -> anyhow::Result<()> {
     let channel_id = uuid::Uuid::new_v4().to_string();
     let channel_payload = json!({
         "id": channel_id,
-        "channel_name": format!("ch_{}", uuid::Uuid::new_v4().simple()),
+        "channel_name": format!("ch-{}", uuid::Uuid::new_v4().simple()),
         "is_private": false,
     });
     let req = Request::builder()
@@ -292,7 +292,7 @@ async fn test_notifications_full_flow() -> anyhow::Result<()> {
     let priv_channel_id = uuid::Uuid::new_v4().to_string();
     let priv_channel_payload = json!({
         "id": priv_channel_id,
-        "channel_name": format!("priv_{}", uuid::Uuid::new_v4().simple()),
+        "channel_name": format!("priv-{}", uuid::Uuid::new_v4().simple()),
         "is_private": true,
     });
     let req = Request::builder()
@@ -442,7 +442,7 @@ async fn test_notifications_p2_p3_fixes() -> anyhow::Result<()> {
     let public_ch_id = uuid::Uuid::new_v4().to_string();
     let ch_payload = json!({
         "id": public_ch_id,
-        "channel_name": format!("pub_{}", uuid::Uuid::new_v4().simple()),
+        "channel_name": format!("pub-{}", uuid::Uuid::new_v4().simple()),
         "is_private": false,
     });
     let req = Request::builder()

@@ -83,6 +83,7 @@ export function composerSendHint(
 
 interface ComposerProps {
   /** 送信を実行し、成功したかを返す。false なら下書きを復元する。 */
+  onTyping?: (active: boolean) => void;
   onSend: (content: string) => Promise<boolean>;
   disabled?: boolean;
   placeholder?: string;
@@ -93,7 +94,13 @@ interface ComposerProps {
  * メッセージ入力。複数行 autosize、⌘/Ctrl+Enter 送信 / Enter 改行。
  * 送信は楽観更新に任せ、入力欄は即座にクリアする。確定に失敗したら下書きを戻す。
  */
-export function Composer({ onSend, disabled = false, placeholder, ariaLabel }: ComposerProps) {
+export function Composer({
+  onTyping,
+  onSend,
+  disabled = false,
+  placeholder,
+  ariaLabel,
+}: ComposerProps) {
   const { t } = useTranslation();
   const resolvedPlaceholder = placeholder ?? t("messages.compose");
   const resolvedAriaLabel = ariaLabel ?? t("messages.compose");
@@ -119,6 +126,7 @@ export function Composer({ onSend, disabled = false, placeholder, ariaLabel }: C
       return;
     }
     setValue("");
+    onTyping?.(false);
     let sent = false;
     try {
       sent = await onSend(content);
@@ -148,7 +156,11 @@ export function Composer({ onSend, disabled = false, placeholder, ariaLabel }: C
           placeholder={resolvedPlaceholder}
           aria-label={resolvedAriaLabel}
           className="min-h-9 resize-none border-0 bg-transparent px-2 py-1.5 text-sm shadow-none [field-sizing:fixed] focus-visible:ring-0 dark:bg-transparent"
-          onChange={(event) => setValue(event.target.value)}
+          onChange={(event) => {
+            setValue(event.target.value);
+            onTyping?.(event.target.value.trim().length > 0);
+          }}
+          onBlur={() => onTyping?.(false)}
           onKeyDown={(event) => {
             if (
               shouldSendFromKey(

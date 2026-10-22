@@ -3,6 +3,10 @@
     "main": "Main navigation"
   },
   "channels": {
+    "renameTitle": "Rename channel",
+    "renameHelp": "Use up to 80 letters, numbers, hyphens (-), or underscores (_). Spaces, emoji, other symbols, and reserved names are not allowed.",
+    "saveName": "Save",
+    "savingName": "Saving…",
     "title": "Channels",
     "createTitle": "Create a channel",
     "loadError": "Failed to load channels.",
@@ -144,6 +148,8 @@
     "description": "Select a channel from the list to view the conversation."
   },
   "messages": {
+    "typing": "{{names}} typing…",
+    "typingSeparator": ", ",
     "compose": "Write a message",
     "send": "Send",
     "edit": "Edit",
@@ -235,5 +241,27 @@
   "notifications": {
     "label": "Notifications",
     "close": "Dismiss notification"
+  },
+  "webhooks": {
+    "title": "Webhook settings",
+    "description": "Manage notification integrations for {{channel}}.",
+    "instructions": "For GitHub, use the GitHub URL and Secret with application/json. For other services, use the generic webhook URL and shared card format. A dedicated posting user is created automatically.",
+    "copied": "Copied",
+    "copyError": "Could not copy. Select the field and copy it manually.",
+    "copyLabel": "Copy {{label}}",
+    "showSecret": "Show Secret",
+    "hideSecret": "Hide Secret",
+    "retry": "Reload",
+    "loading": "Loading…",
+    "name": "Webhook name",
+    "create": "Create",
+    "archived": "New webhooks cannot be created in archived channels.",
+    "empty": "No webhooks yet.",
+    "rotate": "Regenerate Secret",
+    "delete": "Delete",
+    "deleteConfirm": "Delete this webhook? This URL will stop receiving notifications.",
+    "rotateConfirm": "Regenerate the Secret? The current Secret will stop working. Update it on GitHub too.",
+    "confirm": "Confirm",
+    "genericUrl": "Generic webhook URL"
   }
 }

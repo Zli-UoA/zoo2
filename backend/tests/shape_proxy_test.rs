@@ -52,7 +52,7 @@ async fn test_shape_proxy_and_authorization() -> anyhow::Result<()> {
     let private_channel_id = uuid::Uuid::new_v4().to_string();
     let channel_payload = json!({
         "id": private_channel_id,
-        "channel_name": format!("secret_{}", uuid::Uuid::new_v4().simple()),
+        "channel_name": format!("secret-{}", uuid::Uuid::new_v4().simple()),
         "description": "Secret Channel",
         "is_private": true,
     });

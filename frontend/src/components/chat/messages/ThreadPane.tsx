@@ -8,6 +8,8 @@ import type { ReactionGroup } from "../../../lib/emoji/reactions";
 import { Avatar, AvatarFallback } from "../../ui/avatar";
 import { Button } from "../../ui/button";
 import { initials } from "../format";
+import type { TypingUser } from "../../../hooks/useTyping";
+import { TypingIndicator } from "./TypingIndicator";
 import { Composer } from "./Composer";
 import { MessageBody, MessageRow } from "./MessageRow";
 import { authorLabel, formatTime, fullTimestamp, type FeedMessage } from "./messageFormat";
@@ -15,6 +17,9 @@ import { buildMessageItems } from "./messageGrouping";
 import { isNearBottom } from "./messageScroll";
 
 export interface ThreadPaneProps {
+  isMember?: boolean;
+  typingUsers?: TypingUser[];
+  onTyping?: (active: boolean) => void;
   root: FeedMessage;
   replies: FeedMessage[];
   isLoading: boolean;
@@ -44,6 +49,9 @@ export interface ThreadPaneProps {
  * `messages.insert`（`parent_id` 付き）で、txid の確定は MessagePane が待つ。
  */
 export function ThreadPane({
+  isMember = true,
+  typingUsers = [],
+  onTyping,
   root,
   replies,
   isLoading,
@@ -118,7 +126,7 @@ export function ThreadPane({
               </time>
             </div>
             <div className="max-h-40 overflow-y-auto">
-              <MessageBody content={root.content} />
+              <MessageBody content={root.content} card={root.card} />
             </div>
           </div>
         </div>
@@ -168,7 +176,10 @@ export function ThreadPane({
         )}
       </div>
 
+      <TypingIndicator users={typingUsers} />
       <Composer
+        disabled={!isMember}
+        onTyping={onTyping}
         onSend={onSendReply}
         placeholder={t("threads.compose")}
         ariaLabel={t("threads.compose")}

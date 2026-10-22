@@ -3,6 +3,10 @@
     "main": "主要導覽"
   },
   "channels": {
+    "renameTitle": "更改頻道名稱",
+    "renameHelp": "最多80個字元，只可以用文字、數字、半形連字號（-）同底線（_）。唔可以用空格、表情符號、其他符號或者保留名稱。",
+    "saveName": "儲存",
+    "savingName": "儲存緊…",
     "title": "頻道",
     "createTitle": "開新頻道",
     "loadError": "載入唔到頻道。",
@@ -144,6 +148,8 @@
     "description": "喺左邊列表揀個頻道，就可以睇對話。"
   },
   "messages": {
+    "typing": "{{names}}輸入緊…",
+    "typingSeparator": "、",
     "compose": "輸入訊息",
     "send": "傳送",
     "edit": "編輯",
@@ -235,5 +241,27 @@
   "notifications": {
     "label": "通知",
     "close": "關閉通知"
+  },
+  "webhooks": {
+    "title": "Webhook 設定",
+    "description": "管理 {{channel}} 嘅通知整合。",
+    "instructions": "GitHub 請用 GitHub URL 同 Secret，並揀 application/json。其他服務請用通用 Webhook URL 同共用卡片格式。系統會自動建立專用發文用戶。",
+    "copied": "已複製",
+    "copyError": "複製唔到。請選取欄位再手動複製。",
+    "copyLabel": "複製 {{label}}",
+    "showSecret": "顯示 Secret",
+    "hideSecret": "隱藏 Secret",
+    "retry": "重新載入",
+    "loading": "載入中…",
+    "name": "Webhook 名稱",
+    "create": "建立",
+    "archived": "已封存嘅頻道唔可以建立新 Webhook。",
+    "empty": "暫時未有 Webhook。",
+    "rotate": "重新產生 Secret",
+    "delete": "刪除",
+    "deleteConfirm": "要刪除呢個 Webhook 嗎？呢個 URL 會停止接收通知。",
+    "rotateConfirm": "要重新產生 Secret 嗎？而家嘅 Secret 會失效，請一併更新 GitHub 嘅設定。",
+    "confirm": "確認",
+    "genericUrl": "通用 Webhook URL"
   }
 }

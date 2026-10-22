@@ -3,6 +3,10 @@
     "main": "メインナビゲーション"
   },
   "channels": {
+    "renameTitle": "チャンネル名を変更",
+    "renameHelp": "日本語などの文字・数字と半角ハイフン（-）・アンダースコア（_）で80文字以内にしてください。空白・絵文字・その他の記号・予約語は使用できません。",
+    "saveName": "保存",
+    "savingName": "保存中…",
     "title": "チャンネル",
     "createTitle": "チャンネルを作成",
     "loadError": "チャンネル取得に失敗しました。",
@@ -144,6 +148,8 @@
     "description": "左のリストからチャンネルを選択すると、メッセージのやり取りを表示します。"
   },
   "messages": {
+    "typing": "{{names}}が入力中…",
+    "typingSeparator": "、",
     "compose": "メッセージを送信",
     "send": "送信",
     "edit": "編集",
@@ -235,5 +241,27 @@
   "notifications": {
     "label": "通知",
     "close": "通知を閉じる"
+  },
+  "webhooks": {
+    "title": "Webhook設定",
+    "description": "管理対象チャンネル {{channel}} の通知連携を設定します。",
+    "instructions": "GitHubにはGitHub URLとSecretを設定し、Content typeはapplication/jsonにしてください。他のサービスには共通Webhook URLと共通カード形式を使います。専用の投稿ユーザーは自動作成されます。",
+    "copied": "コピーしました",
+    "copyError": "コピーできませんでした。欄を選択して手動でコピーしてください。",
+    "copyLabel": "{{label}}をコピー",
+    "showSecret": "Secretを表示",
+    "hideSecret": "Secretを隠す",
+    "retry": "再読み込み",
+    "loading": "読み込み中…",
+    "name": "Webhook名",
+    "create": "作成",
+    "archived": "アーカイブ中は新規作成できません。",
+    "empty": "Webhookはまだありません。",
+    "rotate": "Secretを再発行",
+    "delete": "削除",
+    "deleteConfirm": "このWebhookを削除しますか？このURLからの通知は受信できなくなります。",
+    "rotateConfirm": "Secretを再発行しますか？現在のSecretは無効になります。GitHub側も更新してください。",
+    "confirm": "実行",
+    "genericUrl": "共通Webhook URL"
   }
 }

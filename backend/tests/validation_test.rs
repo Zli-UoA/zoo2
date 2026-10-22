@@ -104,6 +104,85 @@ async fn test_validation_and_duplicate_conflicts() -> anyhow::Result<()> {
     let resp = app.clone().oneshot(reserved_ch_req).await?;
     assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
 
+    // 通常チャンネルが DM の内部名を占有できないことを、作成と改名の両方で確認する。
+    let target_user_id = uuid::Uuid::new_v4().to_string();
+    let req = Request::builder()
+        .method("POST")
+        .uri("/api/users")
+        .header("content-type", "application/json")
+        .body(Body::from(serde_json::to_vec(&json!({
+            "id": target_user_id,
+            "user_name": format!("target_{}", uuid::Uuid::new_v4().simple()),
+            "display_name": "Target",
+        }))?))?;
+    assert_eq!(app.clone().oneshot(req).await?.status(), StatusCode::OK);
+    let normal_id = uuid::Uuid::new_v4().to_string();
+    let req = Request::builder()
+        .method("POST")
+        .uri("/api/channels")
+        .header("content-type", "application/json")
+        .header("X-Dev-User", &created_user_id)
+        .body(Body::from(serde_json::to_vec(&json!({
+            "id": normal_id,
+            "channel_name": format!("開発_Team-{}", uuid::Uuid::new_v4().simple()),
+        }))?))?;
+    assert_eq!(app.clone().oneshot(req).await?.status(), StatusCode::OK);
+    let renamed = format!("相談_Team-{}", uuid::Uuid::new_v4().simple());
+    let req = Request::builder()
+        .method("PATCH")
+        .uri(format!("/api/channels/{normal_id}"))
+        .header("content-type", "application/json")
+        .header("X-Dev-User", &created_user_id)
+        .body(Body::from(serde_json::to_vec(
+            &json!({ "channel_name": renamed }),
+        )?))?;
+    let resp = app.clone().oneshot(req).await?;
+    assert_eq!(resp.status(), StatusCode::OK);
+    let updated: Value = serde_json::from_slice(&to_bytes(resp.into_body(), usize::MAX).await?)?;
+    assert_eq!(updated["data"]["channel_name"], renamed);
+    let mut ids = [created_user_id.as_str(), target_user_id.as_str()];
+    ids.sort();
+    let dm_name = format!("dm:{}:{}", ids[0], ids[1]);
+    for name in [
+        dm_name.as_str(),
+        "dm:group:test",
+        "dm:",
+        "開発:相談",
+        "開発😀",
+        "開発 相談",
+    ] {
+        for (method, path) in [
+            ("POST", "/api/channels".to_string()),
+            ("PATCH", format!("/api/channels/{normal_id}")),
+        ] {
+            let req = Request::builder()
+                .method(method)
+                .uri(path)
+                .header("content-type", "application/json")
+                .header("X-Dev-User", &created_user_id)
+                .body(Body::from(serde_json::to_vec(
+                    &json!({ "channel_name": name }),
+                )?))?;
+            assert_eq!(
+                app.clone().oneshot(req).await?.status(),
+                StatusCode::BAD_REQUEST,
+                "{method} {name}"
+            );
+        }
+    }
+    let req = Request::builder()
+        .method("POST")
+        .uri("/api/dms")
+        .header("content-type", "application/json")
+        .header("X-Dev-User", &created_user_id)
+        .body(Body::from(serde_json::to_vec(
+            &json!({ "target_user_ids": [target_user_id] }),
+        )?))?;
+    let resp = app.clone().oneshot(req).await?;
+    assert_eq!(resp.status(), StatusCode::OK);
+    let dm: Value = serde_json::from_slice(&to_bytes(resp.into_body(), usize::MAX).await?)?;
+    assert_eq!(dm["data"]["channel_name"], dm_name);
+
     Ok(())
 }
 
@@ -136,7 +215,7 @@ async fn test_messages_simple_list() -> anyhow::Result<()> {
     assert_eq!(resp.status(), StatusCode::OK);
 
     // 1. チャンネル作成
-    let channel_name = format!("msg_ch_{}", uuid::Uuid::new_v4().simple());
+    let channel_name = format!("msg-ch-{}", uuid::Uuid::new_v4().simple());
     let ch_req = Request::builder()
         .method("POST")
         .uri("/api/channels")

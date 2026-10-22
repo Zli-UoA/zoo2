@@ -44,7 +44,7 @@ async fn test_channel_archive_and_unarchive_flow() -> anyhow::Result<()> {
     let channel_id = uuid::Uuid::new_v4().to_string();
     let channel_payload = json!({
         "id": channel_id,
-        "channel_name": format!("ch_{}", uuid::Uuid::new_v4().simple()),
+        "channel_name": format!("ch-{}", uuid::Uuid::new_v4().simple()),
         "is_private": false,
     });
     let req = Request::builder()
@@ -185,7 +185,7 @@ async fn test_admin_privileges_and_message_force_delete() -> anyhow::Result<()> 
     let channel_id = uuid::Uuid::new_v4().to_string();
     let channel_payload = json!({
         "id": channel_id,
-        "channel_name": format!("ch_{}", uuid::Uuid::new_v4().simple()),
+        "channel_name": format!("ch-{}", uuid::Uuid::new_v4().simple()),
         "is_private": false,
     });
     let req = Request::builder()
@@ -317,7 +317,7 @@ async fn test_member_kick_and_access_revocation() -> anyhow::Result<()> {
     let channel_id = uuid::Uuid::new_v4().to_string();
     let channel_payload = json!({
         "id": channel_id,
-        "channel_name": format!("secret_{}", uuid::Uuid::new_v4().simple()),
+        "channel_name": format!("secret-{}", uuid::Uuid::new_v4().simple()),
         "is_private": true,
     });
     let req = Request::builder()

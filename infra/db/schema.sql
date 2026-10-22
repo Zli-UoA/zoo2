@@ -147,3 +147,39 @@ CREATE INDEX idx_notifications_channel_id ON notifications (channel_id);
 CREATE INDEX idx_notifications_message_id ON notifications (message_id);
 
 
+
+-- Shared ephemeral typing state; the database clock is authoritative for expiry.
+CREATE TABLE typing_presence (
+  channel_id text NOT NULL,
+  parent_id text,
+  user_id text NOT NULL,
+  session_id text NOT NULL,
+  expires_at timestamptz NOT NULL,
+  PRIMARY KEY (channel_id, user_id, session_id),
+  CONSTRAINT typing_presence_channel_id_fkey
+    FOREIGN KEY (channel_id) REFERENCES channels (id)
+    ON UPDATE CASCADE ON DELETE CASCADE,
+  CONSTRAINT typing_presence_parent_id_fkey
+    FOREIGN KEY (parent_id) REFERENCES messages (id)
+    ON UPDATE CASCADE ON DELETE CASCADE,
+  CONSTRAINT typing_presence_user_id_fkey
+    FOREIGN KEY (user_id) REFERENCES users (id)
+    ON UPDATE CASCADE ON DELETE CASCADE
+);
+
+CREATE INDEX idx_typing_presence_scope ON typing_presence (channel_id, parent_id, expires_at);
+CREATE INDEX idx_typing_presence_expires_at ON typing_presence (expires_at);
+
+CREATE TABLE channel_webhooks (
+  id text NOT NULL PRIMARY KEY,
+  channel_id text NOT NULL REFERENCES channels (id) ON DELETE CASCADE,
+  name varchar(80) NOT NULL,
+  secret text NOT NULL,
+  user_id text NOT NULL REFERENCES users (id) ON DELETE RESTRICT,
+  created_at timestamp(3) NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX idx_channel_webhooks_channel_id ON channel_webhooks (channel_id);
+
+-- Structured integration cards are separate from user-controlled message content.
+ALTER TABLE messages ADD COLUMN card text;
+ALTER TABLE users ADD COLUMN is_bot boolean NOT NULL DEFAULT false;

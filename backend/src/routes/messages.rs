@@ -54,6 +54,7 @@ pub struct MessageResponse {
     pub user_id: String,
     pub channel_id: String,
     pub content: String,
+    pub card: Option<String>,
     pub created_at: String,
     pub updated_at: Option<String>,
     pub deleted_at: Option<String>,
@@ -67,6 +68,7 @@ impl From<Message> for MessageResponse {
             user_id: m.user_id,
             channel_id: m.channel_id,
             content: m.content,
+            card: m.card,
             created_at: m.created_at.to_string(),
             updated_at: m.updated_at.map(|t| t.to_string()),
             deleted_at: m.deleted_at.map(|t| t.to_string()),
@@ -113,6 +115,16 @@ async fn create_message(
     State(state): State<AppState>,
     auth_user: AuthUser,
     Json(payload): Json<CreateMessageRequest>,
+) -> Result<Json<ApiResponse<MessageResponse>>, AppError> {
+    create_message_impl(state, auth_user, payload, true, None).await
+}
+
+pub(super) async fn create_message_impl(
+    state: AppState,
+    auth_user: AuthUser,
+    payload: CreateMessageRequest,
+    notify: bool,
+    card: Option<String>,
 ) -> Result<Json<ApiResponse<MessageResponse>>, AppError> {
     validate_message_content(&payload.content)?;
 
@@ -219,6 +231,7 @@ async fn create_message(
         user_id: auth_user.id.as_str(),
         channel_id: payload.channel_id.as_str(),
         content: payload.content.as_str(),
+        card,
         created_at: now,
         updated_at: None,
         deleted_at: None,
@@ -227,13 +240,15 @@ async fn create_message(
     .exec(&mut tx)
     .await?;
 
-    crate::notifications::create_message_notifications(
-        &mut tx,
-        &message,
-        auth_user.id.as_str(),
-        parent_author_id.as_deref(),
-    )
-    .await?;
+    if notify {
+        crate::notifications::create_message_notifications(
+            &mut tx,
+            &message,
+            auth_user.id.as_str(),
+            parent_author_id.as_deref(),
+        )
+        .await?;
+    }
 
     let txid = get_current_txid(&mut tx).await?;
     tx.commit().await?;
@@ -305,6 +320,12 @@ async fn update_message(
     if message.user_id != auth_user.id {
         return Err(AppError::Forbidden(
             "Only the message author can edit this message".into(),
+        ));
+    }
+
+    if message.card.is_some() {
+        return Err(AppError::Forbidden(
+            "Integration cards cannot be edited through the user API".into(),
         ));
     }
 
