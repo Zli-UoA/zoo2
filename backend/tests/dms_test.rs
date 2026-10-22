@@ -167,7 +167,7 @@ async fn test_direct_message_leave_and_reopen() -> anyhow::Result<()> {
     let resp = app.clone().oneshot(req).await?;
     assert_eq!(resp.status(), StatusCode::OK);
 
-    // 4. Alice が再度 Bob との DM をリクエスト (再オープン・復帰)
+    // 4. Alice が再度 Bob との DM をリクエスト (再オープン・Alice 復帰)
     let req = Request::builder()
         .method("POST")
         .uri("/api/dms")
@@ -191,6 +191,74 @@ async fn test_direct_message_leave_and_reopen() -> anyhow::Result<()> {
         .body(Body::empty())?;
     let resp = app.clone().oneshot(req).await?;
     assert_eq!(resp.status(), StatusCode::OK);
+
+    // 5. [P2 指摘事項の検証] 今度は Bob が DM から退出
+    let req = Request::builder()
+        .method("POST")
+        .uri(format!("/api/channels/{channel_id}/leave"))
+        .header("X-Dev-User", &bob_id)
+        .body(Body::empty())?;
+    let resp = app.clone().oneshot(req).await?;
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    // Bob は退出したので 404
+    let req = Request::builder()
+        .method("GET")
+        .uri(format!("/api/channels/{channel_id}"))
+        .header("X-Dev-User", &bob_id)
+        .body(Body::empty())?;
+    let resp = app.clone().oneshot(req).await?;
+    assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+
+    // 6. Alice（現在所属中）が Bob との DM を開き直す (POST /api/dms)
+    // -> Alice 単独ではなく、退出済みの相手 Bob も channel_user に復帰させて有効な txid を返す
+    let req = Request::builder()
+        .method("POST")
+        .uri("/api/dms")
+        .header("content-type", "application/json")
+        .header("X-Dev-User", &alice_id)
+        .body(Body::from(serde_json::to_vec(&dm_payload)?))?;
+    let resp = app.clone().oneshot(req).await?;
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    let body = to_bytes(resp.into_body(), usize::MAX).await?;
+    let json: Value = serde_json::from_slice(&body)?;
+    assert_eq!(json["data"]["id"], channel_id);
+    // Bob の再追加が発生したため有効な txid が返却される
+    assert!(json["txid"].is_string());
+
+    // 復帰した Bob も再度チャンネル情報取得可能
+    let req = Request::builder()
+        .method("GET")
+        .uri(format!("/api/channels/{channel_id}"))
+        .header("X-Dev-User", &bob_id)
+        .body(Body::empty())?;
+    let resp = app.clone().oneshot(req).await?;
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    // 7. Alice が送信したメッセージが Bob からも閲覧可能であることを確認
+    let msg_req = Request::builder()
+        .method("POST")
+        .uri("/api/messages")
+        .header("content-type", "application/json")
+        .header("X-Dev-User", &alice_id)
+        .body(Body::from(serde_json::to_vec(&json!({
+            "channel_id": channel_id,
+            "content": "Hello Bob, welcome back!",
+        }))?))?;
+    let resp = app.clone().oneshot(msg_req).await?;
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    let list_req = Request::builder()
+        .method("GET")
+        .uri(format!("/api/messages?channel_id={channel_id}"))
+        .header("X-Dev-User", &bob_id)
+        .body(Body::empty())?;
+    let resp = app.clone().oneshot(list_req).await?;
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = to_bytes(resp.into_body(), usize::MAX).await?;
+    let msgs: Value = serde_json::from_slice(&body)?;
+    assert_eq!(msgs.as_array().unwrap().len(), 1);
 
     Ok(())
 }
@@ -512,11 +580,20 @@ async fn test_dm_access_control_and_privacy() -> anyhow::Result<()> {
     let resp = app.clone().oneshot(req).await?;
     assert_eq!(resp.status(), StatusCode::FORBIDDEN);
 
-    // - 直接 join 試行 (Charlie による)
+    // - 直接 join 試行 (非参加者 Charlie による -> 404 Not Found 存在隠蔽)
     let req = Request::builder()
         .method("POST")
         .uri(format!("/api/channels/{channel_id}/join"))
         .header("X-Dev-User", &charlie_id)
+        .body(Body::empty())?;
+    let resp = app.clone().oneshot(req).await?;
+    assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+
+    // - 直接 join 試行 (参加者 Alice による -> 403 Forbidden)
+    let req = Request::builder()
+        .method("POST")
+        .uri(format!("/api/channels/{channel_id}/join"))
+        .header("X-Dev-User", &alice_id)
         .body(Body::empty())?;
     let resp = app.clone().oneshot(req).await?;
     assert_eq!(resp.status(), StatusCode::FORBIDDEN);
@@ -539,6 +616,77 @@ async fn test_dm_access_control_and_privacy() -> anyhow::Result<()> {
         .body(Body::empty())?;
     let resp = app.clone().oneshot(req).await?;
     assert_eq!(resp.status(), StatusCode::OK);
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_concurrent_dm_creation() -> anyhow::Result<()> {
+    let (app, _) = setup_app().await?;
+
+    let alice_id = uuid::Uuid::new_v4().to_string();
+    let bob_id = uuid::Uuid::new_v4().to_string();
+
+    create_test_user(&app, &alice_id, "alice").await?;
+    create_test_user(&app, &bob_id, "bob").await?;
+
+    // Alice と Bob の双方が同時に POST /api/dms を送信する
+    let app1 = app.clone();
+    let a_id = alice_id.clone();
+    let b_id = bob_id.clone();
+    let handle1 = tokio::spawn(async move {
+        let req = Request::builder()
+            .method("POST")
+            .uri("/api/dms")
+            .header("content-type", "application/json")
+            .header("X-Dev-User", &a_id)
+            .body(Body::from(
+                serde_json::to_vec(&json!({
+                    "target_user_ids": [&b_id],
+                }))
+                .unwrap(),
+            ))
+            .unwrap();
+        app1.oneshot(req).await.unwrap()
+    });
+
+    let app2 = app.clone();
+    let a_id2 = alice_id.clone();
+    let b_id2 = bob_id.clone();
+    let handle2 = tokio::spawn(async move {
+        let req = Request::builder()
+            .method("POST")
+            .uri("/api/dms")
+            .header("content-type", "application/json")
+            .header("X-Dev-User", &b_id2)
+            .body(Body::from(
+                serde_json::to_vec(&json!({
+                    "target_user_ids": [&a_id2],
+                }))
+                .unwrap(),
+            ))
+            .unwrap();
+        app2.oneshot(req).await.unwrap()
+    });
+
+    let (res1, res2) = tokio::join!(handle1, handle2);
+    let resp1 = res1?;
+    let resp2 = res2?;
+
+    // どちらのリクエストも 409 や 500 にならず、200 OK で成功すること
+    assert_eq!(resp1.status(), StatusCode::OK);
+    assert_eq!(resp2.status(), StatusCode::OK);
+
+    let body1 = to_bytes(resp1.into_body(), usize::MAX).await?;
+    let json1: Value = serde_json::from_slice(&body1)?;
+    let ch_id1 = json1["data"]["id"].as_str().unwrap();
+
+    let body2 = to_bytes(resp2.into_body(), usize::MAX).await?;
+    let json2: Value = serde_json::from_slice(&body2)?;
+    let ch_id2 = json2["data"]["id"].as_str().unwrap();
+
+    // 両者が取得したチャンネル ID が完全に同一であること
+    assert_eq!(ch_id1, ch_id2);
 
     Ok(())
 }

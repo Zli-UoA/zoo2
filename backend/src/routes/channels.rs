@@ -395,10 +395,34 @@ async fn join_channel(
         ));
     }
 
-    // プライベートチャンネルまたは DM への直接 join は禁止
+    // DM チャンネルへの直接 join は禁止。
+    // かつ非参加者にはチャンネルの存在自体を推測させないため 404 Not Found を返却する。
+    if channel.is_dm {
+        let membership = ChannelUser::filter(
+            ChannelUser::fields()
+                .channel_id()
+                .eq(id.as_str())
+                .and(ChannelUser::fields().user_id().eq(auth_user.id.as_str())),
+        )
+        .first()
+        .exec(&mut tx)
+        .await?;
+
+        if membership.is_none() {
+            return Err(AppError::NotFound(format!(
+                "Channel not found with id: {id}"
+            )));
+        }
+
+        return Err(AppError::Forbidden(
+            "Cannot join a direct message channel".into(),
+        ));
+    }
+
+    // プライベートチャンネルへの直接 join は禁止 (作成者または招待による追加のみ)
     if !can_join(channel.is_private, channel.is_dm) {
         return Err(AppError::Forbidden(
-            "Cannot join a private or DM channel directly. You must be added by the channel owner."
+            "Cannot join a private channel directly. You must be added by the channel owner."
                 .into(),
         ));
     }

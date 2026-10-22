@@ -23,6 +23,136 @@ pub fn router() -> Router<AppState> {
     Router::new().route("/api/dms", post(create_or_get_dm))
 }
 
+async fn try_create_or_get_1on1_dm(
+    db: &mut toasty::Db,
+    auth_user_id: &str,
+    target_id: &str,
+    channel_name: &str,
+    custom_id: Option<String>,
+) -> Result<Option<ApiResponse<ChannelResponse>>, AppError> {
+    let mut tx = db.transaction().await?;
+
+    let existing = Channel::filter(
+        Channel::fields()
+            .channel_name()
+            .eq(channel_name)
+            .and(Channel::fields().is_dm().eq(true))
+            .and(Channel::fields().deleted_at().is_none()),
+    )
+    .first()
+    .exec(&mut tx)
+    .await?;
+
+    if let Some(existing_channel) = existing {
+        let mut added_any = false;
+        let now = crate::models::now_utc_millis();
+
+        // 1対1 DM の両者について membership を確認し、退出済みのユーザーをすべて復帰させる
+        for uid in [auth_user_id, target_id] {
+            let membership = ChannelUser::filter(
+                ChannelUser::fields()
+                    .channel_id()
+                    .eq(existing_channel.id.as_str())
+                    .and(ChannelUser::fields().user_id().eq(uid)),
+            )
+            .first()
+            .exec(&mut tx)
+            .await?;
+
+            if membership.is_none() {
+                let res = toasty::create!(ChannelUser {
+                    user_id: uid,
+                    channel_id: existing_channel.id.as_str(),
+                    joined_at: now,
+                })
+                .exec(&mut tx)
+                .await;
+
+                if res.is_err() {
+                    let _ = tx.rollback().await;
+                    return Ok(None); // 並行追加衝突のためリトライへ
+                }
+                added_any = true;
+            }
+        }
+
+        if !added_any {
+            // 両者とも既に所属中: WAL 書き込みなしで既存チャンネルを返却 (txid: None)
+            return Ok(Some(ApiResponse::new(
+                ChannelResponse::from(existing_channel),
+                None,
+            )));
+        }
+
+        let txid = get_current_txid(&mut tx).await?;
+        tx.commit().await?;
+
+        return Ok(Some(ApiResponse::new(
+            ChannelResponse::from(existing_channel),
+            txid,
+        )));
+    }
+
+    // 1対1 DM の新規作成
+    let channel_id = custom_id.unwrap_or_else(|| Uuid::new_v4().to_string());
+    let now = crate::models::now_utc_millis();
+
+    let channel_res = toasty::create!(Channel {
+        id: channel_id.as_str(),
+        channel_name: channel_name,
+        description: None,
+        created_user_id: auth_user_id,
+        is_private: true,
+        is_dm: true,
+        created_at: now,
+        updated_at: None,
+        archive_at: None,
+        deleted_at: None,
+    })
+    .exec(&mut tx)
+    .await;
+
+    let channel = match channel_res {
+        Ok(c) => c,
+        Err(_) => {
+            // channels_channel_name_key 衝突等の場合リトライへ
+            let _ = tx.rollback().await;
+            return Ok(None);
+        }
+    };
+
+    if toasty::create!(ChannelUser {
+        user_id: auth_user_id,
+        channel_id: channel_id.as_str(),
+        joined_at: now,
+    })
+    .exec(&mut tx)
+    .await
+    .is_err()
+    {
+        let _ = tx.rollback().await;
+        return Ok(None);
+    }
+
+    if toasty::create!(ChannelUser {
+        user_id: target_id,
+        channel_id: channel_id.as_str(),
+        joined_at: now,
+    })
+    .exec(&mut tx)
+    .await
+    .is_err()
+    {
+        let _ = tx.rollback().await;
+        return Ok(None);
+    }
+
+    let txid = get_current_txid(&mut tx).await?;
+    tx.commit().await?;
+
+    Ok(Some(ApiResponse::new(ChannelResponse::from(channel), txid)))
+}
+
 async fn create_or_get_dm(
     State(state): State<AppState>,
     auth_user: AuthUser,
@@ -82,6 +212,8 @@ async fn create_or_get_dm(
     }
 
     // 1対1 DM
+    // 並行作成・並行復帰による UNIQUE 制約違反 (channels_channel_name_key, channel_user_pkey) に備え、
+    // 競合時は最大 1 回リトライして既存チャンネルの取得・復帰処理を行う。
     if payload.target_user_ids.len() == 1 {
         let target_id = &payload.target_user_ids[0];
         let (user_a, user_b) = if auth_user.id < *target_id {
@@ -91,94 +223,26 @@ async fn create_or_get_dm(
         };
         let channel_name = format!("dm:{user_a}:{user_b}");
 
-        let existing = Channel::filter(
-            Channel::fields()
-                .channel_name()
-                .eq(channel_name.as_str())
-                .and(Channel::fields().is_dm().eq(true))
-                .and(Channel::fields().deleted_at().is_none()),
-        )
-        .first()
-        .exec(&mut tx)
-        .await?;
+        // 先に開いた tx をコミット/ドロップしてリトライループ内でトランザクションを管理
+        let _ = tx.commit().await;
 
-        if let Some(existing_channel) = existing {
-            let membership = ChannelUser::filter(
-                ChannelUser::fields()
-                    .channel_id()
-                    .eq(existing_channel.id.as_str())
-                    .and(ChannelUser::fields().user_id().eq(auth_user.id.as_str())),
+        for _ in 0..2 {
+            if let Some(resp) = try_create_or_get_1on1_dm(
+                &mut db,
+                &auth_user.id,
+                target_id,
+                &channel_name,
+                payload.id.clone(),
             )
-            .first()
-            .exec(&mut tx)
-            .await?;
-
-            if membership.is_some() {
-                // 既に所属中: WAL 書き込みなしで既存チャンネルを返却 (txid: None)
-                return Ok(Json(ApiResponse::new(
-                    ChannelResponse::from(existing_channel),
-                    None,
-                )));
+            .await?
+            {
+                return Ok(Json(resp));
             }
-
-            // 過去に退出していた場合: channel_user に再追加して復帰 (WAL 書き込みあり)
-            let now = crate::models::now_utc_millis();
-            toasty::create!(ChannelUser {
-                user_id: auth_user.id.as_str(),
-                channel_id: existing_channel.id.as_str(),
-                joined_at: now,
-            })
-            .exec(&mut tx)
-            .await?;
-
-            let txid = get_current_txid(&mut tx).await?;
-            tx.commit().await?;
-
-            return Ok(Json(ApiResponse::new(
-                ChannelResponse::from(existing_channel),
-                txid,
-            )));
         }
 
-        // 1対1 DM の新規作成
-        let channel_id = payload.id.unwrap_or_else(|| Uuid::new_v4().to_string());
-        let now = crate::models::now_utc_millis();
-
-        let channel = toasty::create!(Channel {
-            id: channel_id.as_str(),
-            channel_name: channel_name.as_str(),
-            description: None,
-            created_user_id: auth_user.id.as_str(),
-            is_private: true,
-            is_dm: true,
-            created_at: now,
-            updated_at: None,
-            archive_at: None,
-            deleted_at: None,
-        })
-        .exec(&mut tx)
-        .await?;
-
-        toasty::create!(ChannelUser {
-            user_id: auth_user.id.as_str(),
-            channel_id: channel_id.as_str(),
-            joined_at: now,
-        })
-        .exec(&mut tx)
-        .await?;
-
-        toasty::create!(ChannelUser {
-            user_id: target_id.as_str(),
-            channel_id: channel_id.as_str(),
-            joined_at: now,
-        })
-        .exec(&mut tx)
-        .await?;
-
-        let txid = get_current_txid(&mut tx).await?;
-        tx.commit().await?;
-
-        return Ok(Json(ApiResponse::new(ChannelResponse::from(channel), txid)));
+        return Err(AppError::Internal(anyhow::anyhow!(
+            "Failed to create or get direct message channel due to concurrent conflict"
+        )));
     }
 
     // グループ DM の新規作成
