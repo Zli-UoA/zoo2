@@ -1,8 +1,10 @@
 import { useTranslation } from "react-i18next";
-import { ArchiveIcon } from "lucide-react";
+import { ArchiveIcon, ArrowLeftIcon } from "lucide-react";
 import { useMemo } from "react";
 
 import { useActiveChannels, useChannelAccess, useMessageFeed } from "../../hooks/useRealtime";
+import { useShell } from "../layout/shell-context";
+import { Button } from "../ui/button";
 import { Skeleton } from "../ui/skeleton";
 import { ChannelHeader } from "./ChannelHeader";
 import { MessageList } from "./messages/MessageList";
@@ -34,6 +36,7 @@ function ChannelLoading() {
 /** チャンネルルート。ヘッダとメッセージ（非公開は参加者だけ）を出す。 */
 export function ChannelScreen({ channelId }: { channelId: string }) {
   const { t } = useTranslation();
+  const shell = useShell();
   const channelsQuery = useActiveChannels();
   const channels = channelsQuery.data ?? [];
   const channel = useMemo(
@@ -57,13 +60,19 @@ export function ChannelScreen({ channelId }: { channelId: string }) {
     }
     return (
       <div className="flex h-full items-center justify-center p-6">
-        <p
-          className={
-            channelsQuery.isError ? "text-sm text-destructive" : "text-sm text-muted-foreground"
-          }
-        >
-          {channelsQuery.isError ? t("channels.loadError") : t("channels.notFound")}
-        </p>
+        <div className="flex max-w-sm flex-col items-center gap-3 text-center">
+          <p
+            className={
+              channelsQuery.isError ? "text-sm text-destructive" : "text-sm text-muted-foreground"
+            }
+          >
+            {channelsQuery.isError ? t("channels.loadError") : t("channels.notFound")}
+          </p>
+          <Button variant="outline" size="sm" onClick={shell.showSidebar}>
+            <ArrowLeftIcon />
+            {t("channels.back")}
+          </Button>
+        </div>
       </div>
     );
   }
