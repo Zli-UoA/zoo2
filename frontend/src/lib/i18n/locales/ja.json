@@ -41,7 +41,7 @@
   "auth": {
     "logout": "ログアウト",
     "loggedOut": "ログアウトしました",
-    "loggedOutHelp": "Kanidm のセッションは残っているため、続けるには再度ログインしてください。",
+    "loggedOutHelp": "続けるには再度ログインしてください。",
     "login": "ログイン",
     "failed": "ログインできませんでした",
     "retry": "再ログイン",

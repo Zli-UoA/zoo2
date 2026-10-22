@@ -17,7 +17,7 @@ export const TXID_MODES: readonly TxidMode[] = ["awaitTxId", "awaitMatch", "skip
 
 /**
  * SPA が OIDC PKCE で利用する設定。未設定なら従来どおり dev（X-Dev-User）で動く。
- * Kanidm の確定値は #50 で差し替えられるよう、すべて環境変数で注入する。
+ * IdP ごとに異なる設定値は #50 で差し替えられるよう、すべて環境変数で注入する。
  */
 export interface OidcSettings {
   issuer: string;

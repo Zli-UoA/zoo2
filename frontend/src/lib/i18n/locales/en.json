@@ -41,7 +41,7 @@
   "auth": {
     "logout": "Log out",
     "loggedOut": "You have been logged out",
-    "loggedOutHelp": "Your Kanidm session is still active. Log in again to continue.",
+    "loggedOutHelp": "Log in again to continue.",
     "login": "Log in",
     "failed": "Unable to log in",
     "retry": "Log in again",

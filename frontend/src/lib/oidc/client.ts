@@ -430,7 +430,7 @@ export class OidcClient {
 
   /**
    * refresh_token でアクセストークンを更新する。同時呼び出しは 1 回のリクエストに
-   * 集約する（Kanidm は refresh の再利用を検知するとセッションを失効させるため）。
+   * 集約する（IdP によっては refresh token の再利用を検知するとセッションを失効させるため）。
    */
   private refreshTokens(): Promise<OidcTokens> {
     this.refreshPromise ??= this.performRefresh().finally(() => {
@@ -470,9 +470,6 @@ export class OidcClient {
   /**
    * ローカルのトークンを破棄し、IdP が RP-initiated logout に対応していれば
    * end_session_endpoint へ、対応していなければログアウト画面へ遷移する。
-   *
-   * Kanidm は end_session_endpoint を公開していないため、実質ローカルログアウトに
-   * なる。Kanidm のセッション自体を終えるには Kanidm 側でログアウトする必要がある。
    */
   async logout(): Promise<void> {
     const tokens = this.tokens;
