@@ -74,7 +74,6 @@ impl UserResolutionCache {
 
 #[derive(Clone)]
 pub struct AppState {
-    pub typing: crate::routes::typing::TypingStore,
     pub db: toasty::Db,
     pub config: Config,
     pub http_client: reqwest::Client,
@@ -91,7 +90,6 @@ impl AppState {
         let user_cache = UserResolutionCache::new();
 
         Self {
-            typing: Default::default(),
             db,
             config,
             http_client,
@@ -133,7 +131,6 @@ impl AppState {
         let jwks_verifier = JwksVerifier::new(http_client.clone());
         let user_cache = UserResolutionCache::new();
         Self {
-            typing: Default::default(),
             db,
             config,
             http_client,
@@ -155,7 +152,6 @@ impl AppState {
         let electric_client = Self::default_electric_client();
         let user_cache = UserResolutionCache::new();
         Self {
-            typing: Default::default(),
             db,
             config,
             http_client,
@@ -175,7 +171,6 @@ impl AppState {
     ) -> Self {
         let user_cache = UserResolutionCache::new();
         Self {
-            typing: Default::default(),
             db,
             config,
             http_client,

@@ -2,7 +2,7 @@
 use crate::{
     auth::AuthUser,
     error::AppError,
-    models::{Channel, ChannelUser, Message, User},
+    models::{Channel, ChannelUser, Message},
     state::AppState,
 };
 use axum::{
@@ -11,42 +11,6 @@ use axum::{
     routing::get,
 };
 use serde::{Deserialize, Serialize};
-use std::{
-    collections::HashMap,
-    sync::Arc,
-    time::{Duration, Instant},
-};
-use tokio::sync::RwLock;
-
-const TTL: Duration = Duration::from_secs(6);
-type Key = (String, Option<String>, String, String);
-#[derive(Clone, Default)]
-pub struct TypingStore(Arc<RwLock<HashMap<Key, Instant>>>);
-
-impl TypingStore {
-    async fn update(&self, key: Key, active: bool) {
-        let mut entries = self.0.write().await;
-        entries.retain(|_, at| at.elapsed() < TTL);
-        if active {
-            entries.insert(key, Instant::now());
-        } else {
-            entries.remove(&key);
-        }
-    }
-    async fn users(&self, channel: &str, parent: &Option<String>, actor: &str) -> Vec<String> {
-        let mut entries = self.0.write().await;
-        entries.retain(|_, at| at.elapsed() < TTL);
-        let mut users: Vec<_> = entries
-            .keys()
-            .filter(|(c, p, u, _)| c == channel && p == parent && u != actor)
-            .map(|(_, _, u, _)| u.clone())
-            .collect();
-        users.sort();
-        users.dedup();
-        users
-    }
-}
-
 #[derive(Deserialize)]
 struct Scope {
     parent_id: Option<String>,
@@ -68,20 +32,20 @@ pub fn router() -> Router<AppState> {
 }
 
 async fn authorize(
-    state: &AppState,
+    tx: &mut toasty::Transaction<'_>,
     channel_id: &str,
     parent: &Option<String>,
     user: &AuthUser,
 ) -> Result<(), AppError> {
-    let mut db = state.db.clone();
-    let mut tx = db.transaction().await?;
-    let channel = Channel::get_by_id(&mut tx, channel_id).await.map_err(|e| {
-        if e.is_record_not_found() {
-            AppError::NotFound("Channel not found".into())
-        } else {
-            e.into()
-        }
-    })?;
+    let channel = Channel::get_by_id(&mut *tx, channel_id)
+        .await
+        .map_err(|e| {
+            if e.is_record_not_found() {
+                AppError::NotFound("Channel not found".into())
+            } else {
+                e.into()
+            }
+        })?;
     let member = ChannelUser::filter(
         ChannelUser::fields()
             .channel_id()
@@ -89,13 +53,13 @@ async fn authorize(
             .and(ChannelUser::fields().user_id().eq(user.id.as_str())),
     )
     .first()
-    .exec(&mut tx)
+    .exec(&mut *tx)
     .await?;
     if channel.deleted_at.is_some() || channel.archive_at.is_some() || member.is_none() {
         return Err(AppError::NotFound("Channel not found".into()));
     }
     if let Some(parent) = parent {
-        let root = Message::get_by_id(&mut tx, parent.as_str())
+        let root = Message::get_by_id(&mut *tx, parent.as_str())
             .await
             .map_err(|e| {
                 if e.is_record_not_found() {
@@ -117,14 +81,49 @@ async fn update(
     Path(id): Path<String>,
     Json(body): Json<Update>,
 ) -> Result<Json<serde_json::Value>, AppError> {
-    authorize(&state, &id, &body.parent_id, &user).await?;
-    state
-        .typing
-        .update(
-            (id, body.parent_id, user.id, body.session_id.to_string()),
-            body.active,
+    let mut db = state.db.clone();
+    let mut tx = db.transaction().await?;
+    authorize(&mut tx, &id, &body.parent_id, &user).await?;
+    // Bounded cleanup, skipping rows being refreshed on other instances.
+    toasty::sql::statement(
+        "DELETE FROM typing_presence WHERE ctid IN (
+            SELECT ctid FROM typing_presence
+            WHERE expires_at <= statement_timestamp()
+            LIMIT 1000 FOR UPDATE SKIP LOCKED
+        )",
+    )
+    .exec(&mut tx)
+    .await?;
+    let scope = body.parent_id.unwrap_or_default();
+    let session = body.session_id.to_string();
+    if body.active {
+        // Database time avoids clock skew between backend instances.
+        toasty::sql::statement(
+            "INSERT INTO typing_presence (channel_id, parent_id, user_id, session_id, expires_at)
+             VALUES ($1, NULLIF($2, ''), $3, $4, statement_timestamp() + interval '6 seconds')
+             ON CONFLICT (channel_id, user_id, session_id)
+             DO UPDATE SET parent_id = EXCLUDED.parent_id, expires_at = EXCLUDED.expires_at",
         )
-        .await;
+        .bind(id)
+        .bind(scope)
+        .bind(user.id)
+        .bind(session)
+        .exec(&mut tx)
+        .await?;
+    } else {
+        toasty::sql::statement(
+            "DELETE FROM typing_presence
+             WHERE channel_id = $1 AND parent_id IS NOT DISTINCT FROM NULLIF($2, '')
+               AND user_id = $3 AND session_id = $4",
+        )
+        .bind(id)
+        .bind(scope)
+        .bind(user.id)
+        .bind(session)
+        .exec(&mut tx)
+        .await?;
+    }
+    tx.commit().await?;
     Ok(Json(serde_json::json!({"ok": true})))
 }
 
@@ -134,61 +133,39 @@ async fn list(
     Path(id): Path<String>,
     Query(scope): Query<Scope>,
 ) -> Result<Json<Vec<TypingUser>>, AppError> {
-    authorize(&state, &id, &scope.parent_id, &user).await?;
-    let ids = state.typing.users(&id, &scope.parent_id, &user.id).await;
     let mut db = state.db.clone();
     let mut tx = db.transaction().await?;
-    let mut users = Vec::new();
-    for user_id in ids {
-        // Membership can change while a presence entry is alive.
-        let member = ChannelUser::filter(
-            ChannelUser::fields()
-                .channel_id()
-                .eq(id.as_str())
-                .and(ChannelUser::fields().user_id().eq(user_id.as_str())),
-        )
-        .first()
-        .exec(&mut tx)
-        .await?;
-        if member.is_some() {
-            let user = User::get_by_id(&mut tx, user_id.as_str()).await?;
-            users.push(TypingUser {
-                id: user.id,
-                display_name: user.display_name,
-            });
+    authorize(&mut tx, &id, &scope.parent_id, &user).await?;
+    let rows = toasty::sql::query(
+        "SELECT DISTINCT u.id, u.display_name::text
+         FROM typing_presence p
+         JOIN users u ON u.id = p.user_id
+         JOIN channel_user m ON m.user_id = p.user_id AND m.channel_id = p.channel_id
+         WHERE p.channel_id = $1 AND p.parent_id IS NOT DISTINCT FROM NULLIF($2, '')
+           AND p.user_id <> $3 AND p.expires_at > statement_timestamp()
+         ORDER BY u.id",
+    )
+    .bind(id)
+    .bind(scope.parent_id.unwrap_or_default())
+    .bind(user.id)
+    .exec(&mut tx)
+    .await?;
+    let mut users = Vec::with_capacity(rows.len());
+    for row in rows {
+        if let toasty::stmt::Value::Record(record) = row {
+            let mut fields = record.fields.into_iter();
+            if let (
+                Some(toasty::stmt::Value::String(id)),
+                Some(toasty::stmt::Value::String(display_name)),
+            ) = (fields.next(), fields.next())
+            {
+                users.push(TypingUser { id, display_name });
+                continue;
+            }
         }
+        return Err(AppError::Internal(anyhow::anyhow!(
+            "Invalid typing presence row"
+        )));
     }
     Ok(Json(users))
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    #[tokio::test]
-    async fn presence_is_scoped_deduplicated_and_expires() {
-        let store = TypingStore::default();
-        let key = ("channel".into(), None, "alice".into(), "tab1".into());
-        store.update(key.clone(), true).await;
-        store
-            .update(
-                ("channel".into(), None, "alice".into(), "tab2".into()),
-                true,
-            )
-            .await;
-        assert_eq!(store.users("channel", &None, "bob").await, vec!["alice"]);
-        assert!(store.users("channel", &None, "alice").await.is_empty());
-        assert!(store.users("other", &None, "bob").await.is_empty());
-        assert!(
-            store
-                .users("channel", &Some("thread".into()), "bob")
-                .await
-                .is_empty()
-        );
-        store.update(key, false).await;
-        assert_eq!(store.users("channel", &None, "bob").await, vec!["alice"]);
-        for at in store.0.write().await.values_mut() {
-            *at = Instant::now() - TTL;
-        }
-        assert!(store.users("channel", &None, "bob").await.is_empty());
-    }
 }
