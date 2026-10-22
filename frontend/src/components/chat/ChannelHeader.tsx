@@ -6,6 +6,7 @@ import {
   HashIcon,
   LockIcon,
   MoreHorizontalIcon,
+  PencilIcon,
   ShieldAlertIcon,
   TrashIcon,
   UsersIcon,
@@ -36,6 +37,7 @@ import {
 } from "../ui/dropdown-menu";
 import { ScrollArea } from "../ui/scroll-area";
 import { Skeleton } from "../ui/skeleton";
+import { RenameChannelDialog } from "./RenameChannelDialog";
 import { authorLabel, formatTime, fullTimestamp, type FeedMessage } from "./messages/messageFormat";
 
 /** チャンネルヘッダ。名前・説明・メンバー数と管理メニュー、狭幅の戻る。 */
@@ -53,6 +55,7 @@ export function ChannelHeader({
   const isArchived = admin.access.isArchived;
   const canManage = admin.access.canManageChannel;
   const [confirmAction, setConfirmAction] = useState<"archive" | "unarchive" | null>(null);
+  const [renameOpen, setRenameOpen] = useState(false);
   const [messageAdminOpen, setMessageAdminOpen] = useState(false);
 
   async function confirmArchive() {
@@ -126,6 +129,12 @@ export function ChannelHeader({
               <MoreHorizontalIcon />
             </DropdownMenuTrigger>
             <DropdownMenuContent align="end">
+              {!isArchived ? (
+                <DropdownMenuItem onClick={() => setRenameOpen(true)}>
+                  <PencilIcon />
+                  {t("channels.renameTitle")}
+                </DropdownMenuItem>
+              ) : null}
               {isArchived ? (
                 <DropdownMenuItem onClick={() => setConfirmAction("unarchive")}>
                   <ArchiveRestoreIcon />
@@ -145,6 +154,10 @@ export function ChannelHeader({
           </DropdownMenu>
         ) : null}
       </div>
+
+      {renameOpen && canManage && !isArchived ? (
+        <RenameChannelDialog key={channel.id} channel={channel} onOpenChange={setRenameOpen} />
+      ) : null}
 
       <AlertDialog
         open={confirmAction !== null}

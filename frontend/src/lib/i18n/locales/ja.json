@@ -3,6 +3,10 @@
     "main": "メインナビゲーション"
   },
   "channels": {
+    "renameTitle": "チャンネル名を変更",
+    "renameHelp": "半角英小文字・数字・ハイフン・アンダースコアで80文字以内にしてください。予約語は使用できません。",
+    "saveName": "保存",
+    "savingName": "保存中…",
     "title": "チャンネル",
     "createTitle": "チャンネルを作成",
     "loadError": "チャンネル取得に失敗しました。",

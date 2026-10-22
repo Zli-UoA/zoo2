@@ -3,6 +3,10 @@
     "main": "主要導覽"
   },
   "channels": {
+    "renameTitle": "更改頻道名稱",
+    "renameHelp": "名稱最多80個字元，只可以用小寫英文字母、數字、連字號同底線，唔可以用保留名稱。",
+    "saveName": "儲存",
+    "savingName": "儲存緊…",
     "title": "頻道",
     "createTitle": "開新頻道",
     "loadError": "載入唔到頻道。",
