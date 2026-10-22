@@ -1,0 +1,34 @@
+name: Validate Flux production status
+
+on:
+  pull_request:
+    paths:
+      - .github/scripts/flux-status*.mjs
+      - .github/workflows/flux-status.yaml
+      - .github/workflows/ci-flux-status.yaml
+  push:
+    branches: [main]
+    paths:
+      - .github/scripts/flux-status*.mjs
+      - .github/workflows/flux-status.yaml
+      - .github/workflows/ci-flux-status.yaml
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-flux-status-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: "24.22.0"
+      - run: node --test .github/scripts/flux-status.test.mjs
