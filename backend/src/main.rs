@@ -33,6 +33,11 @@ async fn main() -> anyhow::Result<()> {
     // アプリケーション状態構築
     let state = AppState::new(db, config.clone());
 
+    // 開発・ステージング環境の場合、S3 バケットの存在を確認し必要に応じて作成
+    if config.environment != "production" {
+        backend::storage::ensure_bucket_exists(&state.s3_client, &config.s3.bucket).await;
+    }
+
     // ルーター構築
     let app = create_router(state);
 

@@ -7,13 +7,8 @@ use tower::ServiceExt;
 
 use backend::{
     config::Config, db::init_db, models::Attachment, routes::create_router, state::AppState,
+    storage::ensure_bucket_exists,
 };
-
-async fn ensure_bucket_exists(client: &aws_sdk_s3::Client, bucket: &str) {
-    if client.head_bucket().bucket(bucket).send().await.is_err() {
-        let _ = client.create_bucket().bucket(bucket).send().await;
-    }
-}
 
 #[tokio::test]
 async fn test_attachments_presign_and_validation() -> anyhow::Result<()> {

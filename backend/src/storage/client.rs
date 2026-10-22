@@ -26,3 +26,10 @@ pub fn create_s3_client(config: &S3Config) -> Client {
 
     Client::from_conf(s3_config)
 }
+
+/// 指定した S3 バケットが存在しない場合に作成する (主に開発・テスト用)
+pub async fn ensure_bucket_exists(client: &Client, bucket: &str) {
+    if client.head_bucket().bucket(bucket).send().await.is_err() {
+        let _ = client.create_bucket().bucket(bucket).send().await;
+    }
+}
