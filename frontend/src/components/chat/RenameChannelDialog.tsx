@@ -74,8 +74,6 @@ export function RenameChannelDialog({
             placeholder={t("channels.newName")}
             value={name}
             onChange={(event) => setName(event.target.value)}
-            maxLength={80}
-            pattern={"[a-z0-9_\\-]+"}
             required
             disabled={submitting}
             autoFocus

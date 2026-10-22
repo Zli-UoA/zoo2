@@ -32,7 +32,11 @@ Electric クライアントが送信する以下のプロトコル用・ペー�
 また、Electric が返す `electric-handle`, `electric-offset`, `electric-schema`, `electric-cursor` 等のヘッダをクライアントへそのまま返してください（HTTP クライアントが自動展開する `content-encoding` や `content-length` は除きます）。
 
 ### SSE とストリーミング転送
-`live=true` や `live_sse=true` の応答は Server-Sent Events です。プロキシ側でレスポンスをバッファリングせず、チャンクのままクライアントへ透過的に流してください。応答全体を一度に読み込む実装（`bytes()` 等でまとめて取得する方式）は、SSE では応答が返らず停止するため使えません。
+フロントエンドはすべての Shape 購読で `shapeOptions.liveSse: true` を設定します。初期同期は通常の HTTP で取得し、同期が追いついた後は `live=true&live_sse=true` による Server-Sent Events で更新を受信します。`live=true` だけの場合は long polling です。
+
+更新通知はサーバーからクライアントへの一方向であり、Electric が SSE を標準サポートしているため、独自の WebSocket 配信は追加しません。書き込みは REST API のままとし、`txid` による楽観的更新の確定も既存の仕組みを使います。認証ヘッダの付与、切断時の再接続、offset による再開は Electric クライアントに任せます。SSE 接続が短時間で繰り返し切れる環境では、クライアントの標準動作で long polling にフォールバックする場合があります。
+
+プロキシ側でレスポンスをバッファリングせず、チャンクのままクライアントへ透過的に流してください。応答全体を一度に読み込む実装（`bytes()` 等でまとめて取得する方式）は、SSE では応答が返らず停止するため使えません。既存の Axum Shape プロキシは `bytes_stream()`、Traefik は `responseForwarding.flushInterval: -1ms` と `writeTimeout=0s` によりストリーミングを維持します。
 
 ### `WHERE` 句のサブクエリに関する注意点
 プライベートチャンネルの認可などで `WHERE` 句内のサブクエリ（例: `id IN (SELECT channel_id FROM channel_user WHERE user_id = $1)`）を使います。

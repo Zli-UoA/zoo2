@@ -170,6 +170,30 @@ CREATE TABLE typing_presence (
 CREATE INDEX idx_typing_presence_scope ON typing_presence (channel_id, parent_id, expires_at);
 CREATE INDEX idx_typing_presence_expires_at ON typing_presence (expires_at);
 
+CREATE TABLE channel_webhooks (
+  id text NOT NULL PRIMARY KEY,
+  channel_id text NOT NULL REFERENCES channels (id) ON DELETE CASCADE,
+  name varchar(80) NOT NULL,
+  secret text NOT NULL,
+  user_id text NOT NULL REFERENCES users (id) ON DELETE RESTRICT,
+  created_at timestamp(3) NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX idx_channel_webhooks_channel_id ON channel_webhooks (channel_id);
+
+-- Structured integration cards are separate from user-controlled message content.
+ALTER TABLE messages ADD COLUMN card text;
+ALTER TABLE users ADD COLUMN is_bot boolean NOT NULL DEFAULT false;
+
+CREATE TABLE channel_read_states (
+  user_id text NOT NULL REFERENCES users (id) ON UPDATE CASCADE ON DELETE CASCADE,
+  channel_id text NOT NULL REFERENCES channels (id) ON UPDATE CASCADE ON DELETE CASCADE,
+  last_read_at timestamp(3) NOT NULL,
+  PRIMARY KEY (user_id, channel_id)
+);
+
+CREATE INDEX idx_messages_channel_unread ON messages (channel_id, created_at)
+  WHERE parent_id IS NULL AND deleted_at IS NULL;
+
 CREATE TABLE attachments (
   id text NOT NULL,
   message_id text,
@@ -195,4 +219,3 @@ CREATE TABLE attachments (
 CREATE INDEX idx_attachments_message_id ON attachments (message_id);
 CREATE INDEX idx_attachments_channel_id ON attachments (channel_id);
 CREATE INDEX idx_attachments_uploader_id ON attachments (uploader_id);
-

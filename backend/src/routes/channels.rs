@@ -563,6 +563,13 @@ async fn add_channel_user(
         ));
     }
 
+    let target = crate::models::User::get_by_id(&mut tx, payload.user_id.as_str()).await?;
+    if target.is_bot {
+        return Err(AppError::BadRequest(
+            "Integration users cannot be added manually".into(),
+        ));
+    }
+
     let existing = ChannelUser::filter(
         ChannelUser::fields()
             .channel_id()

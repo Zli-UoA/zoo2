@@ -1,13 +1,16 @@
 pub mod attachments;
+pub mod channel_webhooks;
 pub mod channels;
 pub mod dms;
 pub mod health;
 pub mod messages;
 pub mod notifications;
+pub mod read_states;
 pub mod response;
 pub mod shapes;
 pub mod typing;
 pub mod users;
+pub mod webhooks;
 
 use axum::{
     Router,
@@ -55,6 +58,8 @@ pub fn create_router(state: AppState) -> Router {
 
     Router::new()
         .merge(health::router())
+        .merge(webhooks::router())
+        .merge(channel_webhooks::router())
         .merge(users::router())
         .merge(channels::router())
         .merge(dms::router())
@@ -62,6 +67,7 @@ pub fn create_router(state: AppState) -> Router {
         .merge(attachments::router())
         .merge(typing::router())
         .merge(notifications::router())
+        .merge(read_states::router())
         .merge(shapes::router())
         .layer(TraceLayer::new_for_http())
         .layer(cors)

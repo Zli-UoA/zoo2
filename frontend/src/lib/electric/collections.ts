@@ -36,6 +36,9 @@ function shapeOptions(shape: ShapeName, config: AppConfig, options: ShapeQueryOp
   return {
     url: resolveShapeUrl(buildShapeRequestUrl(shape, config, options), window.location.href),
     fetchClient: createShapeFetch(shapeAuthSource(config)),
+    // 初期同期後は SSE で更新を受信し、空の long-poll を繰り返さない。
+    // 認証・再接続・offset による再開は Electric のクライアントに任せる。
+    liveSse: true,
     // Electric は integer を文字列、boolean を "true" / "false" で配信する。
     // そのままだと `"false"` が truthy になるなど型が崩れるため、Shape ごとの
     // スキーマで行を正規化してから TanStack DB に渡す。

@@ -1,4 +1,6 @@
 pub mod attachment;
+pub mod channel_webhook;
+pub use channel_webhook::ChannelWebhook;
 pub mod channel;
 pub mod channel_user;
 pub mod message;
