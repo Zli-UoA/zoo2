@@ -1,3 +1,4 @@
+import { useCallback } from "react";
 import { eq, useLiveQuery } from "@tanstack/react-db";
 import { getCollections } from "../lib/electric/collections";
 import { useCurrentUser } from "./useCurrentUser";
@@ -18,14 +19,33 @@ export function useNotifications() {
   );
   const notifications = query.data ?? [];
   const unread = notifications.filter((notification) => !notification.is_read);
-  async function markRead(id?: string) {
-    if (!collection) return;
-    const ids = unread.filter((row) => id === undefined || row.id === id).map((row) => row.id);
-    if (ids.length === 0) return;
-    const transaction = collection.update(ids, (rows) => {
-      for (const row of rows) row.is_read = true;
-    });
-    await transaction.isPersisted.promise;
-  }
+  const markRead = useCallback(
+    async (id?: string | readonly string[]) => {
+      if (!collection) return;
+      const requested = Array.isArray(id) ? new Set(id) : null;
+      const ids = unread
+        .filter((row) => id === undefined || (requested ? requested.has(row.id) : row.id === id))
+        .map((row) => row.id);
+      if (ids.length === 0) return;
+      if (requested) {
+        // One transaction per visible ID: the multi-row writer calls read-all, which would also
+        // acknowledge notifications outside the viewport or arriving during this request.
+        await Promise.all(
+          ids.map(
+            (key) =>
+              collection.update(key, (row) => {
+                row.is_read = true;
+              }).isPersisted.promise,
+          ),
+        );
+        return;
+      }
+      const transaction = collection.update(ids, (rows) => {
+        for (const row of rows) row.is_read = true;
+      });
+      await transaction.isPersisted.promise;
+    },
+    [collection, notifications],
+  );
   return { ...query, notifications, unreadCount: unread.length, markRead };
 }

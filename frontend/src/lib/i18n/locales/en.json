@@ -253,7 +253,10 @@
     "reply": "{{actor}} replied to you",
     "reaction": "{{actor}} reacted to your message",
     "openMessage": "Open message",
-    "unavailable": "Channel unavailable"
+    "unavailable": "Channel unavailable",
+    "reactionGroup": "{{actor}} +{{count}} reacted to your message",
+    "reactions": "Reactions",
+    "messageUnavailable": "This message was deleted or is unavailable"
   },
   "webhooks": {
     "title": "Webhook settings",

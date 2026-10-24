@@ -253,7 +253,10 @@
     "reply": "{{actor}} さんが返信しました",
     "reaction": "{{actor}} さんがリアクションしました",
     "openMessage": "メッセージを開く",
-    "unavailable": "チャンネルを利用できません"
+    "unavailable": "チャンネルを利用できません",
+    "reactionGroup": "{{actor}} さんほか{{count}}人がリアクションしました",
+    "reactions": "リアクション",
+    "messageUnavailable": "メッセージが削除されたか、閲覧できません"
   },
   "webhooks": {
     "title": "Webhook設定",

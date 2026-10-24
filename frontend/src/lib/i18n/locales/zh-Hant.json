@@ -253,7 +253,10 @@
     "reply": "{{actor}} 回覆了你",
     "reaction": "{{actor}} 對你的訊息加入了表情回應",
     "openMessage": "開啟訊息",
-    "unavailable": "頻道無法使用"
+    "unavailable": "頻道無法使用",
+    "reactionGroup": "{{actor}} 等另外 {{count}} 人回應了你的訊息",
+    "reactions": "回應",
+    "messageUnavailable": "訊息已刪除或無法查看"
   },
   "webhooks": {
     "title": "Webhook 設定",

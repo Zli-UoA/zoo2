@@ -253,7 +253,10 @@
     "reply": "{{actor}} 回复了你",
     "reaction": "{{actor}} 对你的消息添加了表情回应",
     "openMessage": "打开消息",
-    "unavailable": "频道不可用"
+    "unavailable": "频道不可用",
+    "reactionGroup": "{{actor}} 等另外 {{count}} 人回应了你的消息",
+    "reactions": "回应",
+    "messageUnavailable": "消息已删除或无法查看"
   },
   "webhooks": {
     "title": "Webhook 设置",
