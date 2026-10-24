@@ -35,9 +35,11 @@ export async function saveSubscription(
   config: AppConfig,
   subscription: PushSubscription,
 ): Promise<void> {
+  const keys = subscription.toJSON().keys;
+  if (!keys?.p256dh || !keys.auth) throw new Error("Missing push subscription keys");
   await createConfiguredApiClient(config).request("/api/push/subscriptions", {
     method: "POST",
-    body: { endpoint: subscription.endpoint },
+    body: { endpoint: subscription.endpoint, keys },
   });
 }
 

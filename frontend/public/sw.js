@@ -32,19 +32,36 @@ self.addEventListener("fetch", (event) => {
   }
 });
 self.addEventListener("push", (event) => {
-  // Empty-body Web Push: message content and credentials are never sent to the push provider.
+  let payload = {};
+  try {
+    const data = event.data?.json();
+    if (data && typeof data === "object") payload = data;
+  } catch {
+    // Keep displaying a generic alert for old or malformed deliveries.
+  }
   const language = (self.navigator.language || "en").toLowerCase();
-  const body = language.startsWith("ja")
+  const fallback = language.startsWith("ja")
     ? "新しい通知があります。Zooを開いて確認してください。"
     : language.startsWith("zh")
       ? "你有新通知。請開啟 Zoo 查看。"
       : "You have a new notification. Open Zoo to view it.";
+  const title = typeof payload.title === "string" ? payload.title : "Zoo";
+  let body = typeof payload.body === "string" ? payload.body : fallback;
+  if (payload.notificationType === "reaction") {
+    body =
+      (language.startsWith("ja")
+        ? "リアクション: "
+        : language.startsWith("zh")
+          ? "回應: "
+          : "Reaction: ") + body;
+  }
   event.waitUntil(
-    self.registration.showNotification("Zoo", {
+    self.registration.showNotification(title, {
       body,
       icon: "/icons/icon-192.png",
       badge: "/icons/icon-192.png",
-      tag: "zoo-activity",
+      tag: typeof payload.tag === "string" ? payload.tag : "zoo-activity",
+      data: { url: typeof payload.url === "string" ? payload.url : "/" },
     }),
   );
 });
@@ -52,14 +69,28 @@ self.addEventListener("notificationclick", (event) => {
   event.notification.close();
   event.waitUntil(
     (async () => {
+      let target = "/";
+      try {
+        const url = new URL(event.notification.data?.url || "/", self.location.origin);
+        if (url.origin === self.location.origin && url.pathname.startsWith("/channels/")) {
+          target = url.href;
+        }
+      } catch {
+        /* Invalid destinations open the app root. */
+      }
       const windows = await self.clients.matchAll({ type: "window", includeUncontrolled: true });
       for (const client of windows) {
         if (new URL(client.url).origin === self.location.origin) {
-          await client.focus();
-          return;
+          try {
+            if (target !== "/" && client.url !== target) await client.navigate(target);
+            await client.focus();
+            return;
+          } catch {
+            /* Try another app window or open a new one. */
+          }
         }
       }
-      await self.clients.openWindow("/");
+      await self.clients.openWindow(target);
     })(),
   );
 });

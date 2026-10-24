@@ -30,6 +30,12 @@ async fn config(_actor: AuthUser) -> Result<Json<Value>, AppError> {
 #[derive(Deserialize)]
 struct SubscriptionRequest {
     endpoint: String,
+    keys: crate::push::SubscriptionKeys,
+}
+
+#[derive(Deserialize)]
+struct UnsubscribeRequest {
+    endpoint: String,
 }
 
 fn endpoint_id(endpoint: &str) -> String {
@@ -53,6 +59,9 @@ async fn subscribe(
         ));
     }
     crate::push::validate_endpoint(&body.endpoint)?;
+    body.keys
+        .validate()
+        .map_err(|_| AppError::BadRequest("Invalid push subscription keys".into()))?;
     let id = endpoint_id(&body.endpoint);
     let mut db = state.db.clone();
     let mut tx = db.transaction().await?;
@@ -66,6 +75,11 @@ async fn subscribe(
                 "Unsubscribe this browser before changing accounts".into(),
             ));
         }
+        PushSubscription::update_by_id(id.as_str())
+            .p256dh(Some(body.keys.p256dh))
+            .auth_secret(Some(body.keys.auth))
+            .exec(&mut tx)
+            .await?;
     } else {
         let subscriptions =
             PushSubscription::filter(PushSubscription::fields().user_id().eq(actor.id.as_str()))
@@ -78,6 +92,8 @@ async fn subscribe(
             .id(id)
             .user_id(actor.id)
             .endpoint(body.endpoint)
+            .p256dh(Some(body.keys.p256dh))
+            .auth_secret(Some(body.keys.auth))
             .created_at(now_utc_millis())
             .exec(&mut tx)
             .await?;
@@ -89,7 +105,7 @@ async fn subscribe(
 async fn unsubscribe(
     State(state): State<AppState>,
     actor: AuthUser,
-    Json(body): Json<SubscriptionRequest>,
+    Json(body): Json<UnsubscribeRequest>,
 ) -> Result<Json<Value>, AppError> {
     let id = endpoint_id(&body.endpoint);
     let mut db = state.db.clone();

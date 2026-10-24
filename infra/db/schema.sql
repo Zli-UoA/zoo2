@@ -201,3 +201,6 @@ CREATE TABLE push_subscriptions (
   created_at timestamp(3) NOT NULL
 );
 CREATE INDEX idx_push_subscriptions_user_id ON push_subscriptions (user_id);
+
+ALTER TABLE push_subscriptions ADD COLUMN p256dh text;
+ALTER TABLE push_subscriptions ADD COLUMN auth_secret text;

@@ -8,5 +8,7 @@ pub struct PushSubscription {
     pub id: String,
     pub user_id: String,
     pub endpoint: String,
+    pub p256dh: Option<String>,
+    pub auth_secret: Option<String>,
     pub created_at: jiff::civil::DateTime,
 }

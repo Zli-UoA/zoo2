@@ -27,7 +27,7 @@ function worker(overrides = {}) {
   return { handlers, notifications, context };
 }
 
-test("empty Web Push displays an alert without parsing payload or fetching private data", async () => {
+test("legacy empty Web Push still displays a generic alert", async () => {
   const { handlers, notifications } = worker();
   let work;
   handlers.get("push")({
@@ -112,4 +112,102 @@ test("manifest icon files exist with the declared PNG dimensions", () => {
     assert.equal(bytes.readUInt32BE(16), width);
     assert.equal(bytes.readUInt32BE(20), height);
   }
+});
+
+test("push displays sender, channel and message preview from the decrypted payload", async () => {
+  const { handlers, notifications } = worker();
+  let work;
+  handlers.get("push")({
+    data: {
+      json: () => ({
+        title: "Alice · #general",
+        body: "こんにちは、Bob!",
+        url: "/channels/123?message=456",
+        tag: "zoo-123",
+        notificationType: "mention",
+      }),
+    },
+    waitUntil: (value) => {
+      work = value;
+    },
+  });
+  await work;
+  assert.equal(notifications[0][0], "Alice · #general");
+  assert.equal(notifications[0][1].body, "こんにちは、Bob!");
+  assert.equal(notifications[0][1].data.url, "/channels/123?message=456");
+  assert.equal(notifications[0][1].tag, "zoo-123");
+});
+
+test("reaction notifications describe the event and malformed payloads retain the fallback", async () => {
+  const { handlers, notifications } = worker();
+  for (const data of [
+    { json: () => ({ title: "Bob", body: "Hello", notificationType: "reaction" }) },
+    {
+      json: () => {
+        throw new Error("bad JSON");
+      },
+    },
+  ]) {
+    let work;
+    handlers.get("push")({
+      data,
+      waitUntil: (value) => {
+        work = value;
+      },
+    });
+    await work;
+  }
+  assert.equal(notifications[0][1].body, "リアクション: Hello");
+  assert.equal(notifications[1][0], "Zoo");
+  assert.match(notifications[1][1].body, /新しい通知/);
+});
+
+test("notification click navigates an existing app to the target message", async () => {
+  const { handlers, context } = worker();
+  const target = "https://zoo.example/channels/123?message=456";
+  const actions = [];
+  context.self.clients.matchAll = async () => [
+    {
+      url: "https://zoo.example/",
+      navigate: async (url) => {
+        actions.push(url);
+      },
+      focus: async () => {
+        actions.push("focus");
+      },
+    },
+  ];
+  let work;
+  handlers.get("notificationclick")({
+    notification: { close() {}, data: { url: "/channels/123?message=456" } },
+    waitUntil: (value) => {
+      work = value;
+    },
+  });
+  await work;
+  assert.deepEqual(actions, [target, "focus"]);
+});
+
+test("notification destinations stay inside the app and open directly when no window exists", async () => {
+  const { handlers, context } = worker();
+  const opened = [];
+  context.self.clients.openWindow = async (url) => {
+    opened.push(url);
+  };
+  for (const url of [
+    "/channels/123?message=456",
+    "https://evil.example/channels/1",
+    "/auth/callback",
+    "javascript:alert(1)",
+  ]) {
+    let work;
+    handlers.get("notificationclick")({
+      notification: { close() {}, data: { url } },
+      waitUntil: (value) => {
+        work = value;
+      },
+    });
+    await work;
+  }
+  assert.deepEqual(opened, ["https://zoo.example/channels/123?message=456", "/", "/", "/"]);
 });

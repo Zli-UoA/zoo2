@@ -99,8 +99,8 @@ async fn registration_respects_server_configuration_and_endpoint_ownership() -> 
     use axum::body::to_bytes;
     let mut config = Config::from_env();
     config.dev_auth_enabled = true;
-    let db = init_db(&config.database_url).await?;
-    let app = create_router(AppState::new(db, config));
+    let mut db = init_db(&config.database_url).await?;
+    let app = create_router(AppState::new(db.clone(), config));
     let users = [Uuid::new_v4().to_string(), Uuid::new_v4().to_string()];
     for user in &users {
         let response = app.clone().oneshot(Request::builder().method("POST").uri("/api/users")
@@ -123,13 +123,18 @@ async fn registration_respects_server_configuration_and_endpoint_ownership() -> 
         serde_json::from_slice(&to_bytes(response.into_body(), 4096).await?)?;
     assert_eq!(body["publicKey"].is_string(), configured);
     let endpoint = format!("https://fcm.googleapis.com/test/{}", Uuid::new_v4());
+    let (receiver, auth) = ece::generate_keypair_and_auth_secret()?;
+    use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
+    let keys = json!({"p256dh": URL_SAFE_NO_PAD.encode(receiver.pub_as_raw()?), "auth": URL_SAFE_NO_PAD.encode(auth)});
     let request = |user: &str, endpoint: &str| {
         Request::builder()
             .method("POST")
             .uri("/api/push/subscriptions")
             .header("X-Dev-User", user)
             .header("content-type", "application/json")
-            .body(Body::from(json!({"endpoint":endpoint}).to_string()))
+            .body(Body::from(
+                json!({"endpoint":endpoint,"keys":keys}).to_string(),
+            ))
             .unwrap()
     };
     let invalid = app
@@ -147,6 +152,17 @@ async fn registration_respects_server_configuration_and_endpoint_ownership() -> 
                 StatusCode::BAD_REQUEST
             }
         );
+        if configured {
+            let saved = PushSubscription::filter(
+                PushSubscription::fields().endpoint().eq(endpoint.as_str()),
+            )
+            .first()
+            .exec(&mut db)
+            .await?
+            .unwrap();
+            assert_eq!(saved.p256dh.as_deref(), keys["p256dh"].as_str());
+            assert_eq!(saved.auth_secret.as_deref(), keys["auth"].as_str());
+        }
     }
     let response = app.clone().oneshot(request(&users[1], &endpoint)).await?;
     assert_eq!(

@@ -1,6 +1,6 @@
 import { afterEach, expect, it, vi } from "vite-plus/test";
 import { DEFAULT_CONFIG } from "../config";
-import { applicationServerKey, disablePush } from "./push";
+import { applicationServerKey, disablePush, saveSubscription } from "./push";
 
 vi.mock("../api/client", () => ({ createConfiguredApiClient: () => ({ request }) }));
 const { request } = vi.hoisted(() => ({ request: vi.fn() }));
@@ -64,4 +64,18 @@ it("does nothing for a browser without a subscription", async () => {
   vi.stubGlobal("navigator", { serviceWorker: { getRegistration: async () => undefined } });
   await disablePush(DEFAULT_CONFIG);
   expect(request).not.toHaveBeenCalled();
+});
+
+it("registers the browser encryption keys along with its endpoint", async () => {
+  const keys = { p256dh: "browser-public-key", auth: "browser-auth-secret" };
+  const subscription = {
+    endpoint: "https://fcm.googleapis.com/test",
+    toJSON: () => ({ keys }),
+  } as unknown as PushSubscription;
+  request.mockResolvedValue({ ok: true });
+  await saveSubscription(DEFAULT_CONFIG, subscription);
+  expect(request).toHaveBeenCalledWith("/api/push/subscriptions", {
+    method: "POST",
+    body: { endpoint: subscription.endpoint, keys },
+  });
 });
