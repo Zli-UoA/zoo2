@@ -33,6 +33,11 @@ pnpm test:e2e:csp     # nginx の本番 CSP をブラウザで検証 (要: ビ�
 pnpm generate-routes  # ルートツリーを再生成
 ```
 
+認証E2Eは、HTTP/1.1の接続上限でShapeのSSEがREST送信を塞がないよう、
+一時的な自己署名証明書を使うHTTP/2プロキシ経由でバックエンドへ接続します。
+`openssl` が必要です。プロキシは既定で8443番を使い、`E2E_HTTP2_PORT` で変更できます。
+`VITE_API_BASE_URL` はプロキシから接続するバックエンドのURLです。
+
 ルートの Makefile からも実行できます: `make frontend-dev` / `frontend-build` / `frontend-check` / `frontend-test` / `frontend-e2e`。
 
 開発サーバは Electric（ポート 3000）と衝突しないよう **5173** で起動します。
