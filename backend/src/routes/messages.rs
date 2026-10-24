@@ -240,18 +240,21 @@ pub(super) async fn create_message_impl(
     .exec(&mut tx)
     .await?;
 
-    if notify {
+    let notifications = if notify {
         crate::notifications::create_message_notifications(
             &mut tx,
             &message,
             auth_user.id.as_str(),
             parent_author_id.as_deref(),
         )
-        .await?;
-    }
+        .await?
+    } else {
+        Vec::new()
+    };
 
     let txid = get_current_txid(&mut tx).await?;
     tx.commit().await?;
+    crate::push::dispatch(state.clone(), notifications);
 
     Ok(Json(ApiResponse::new(MessageResponse::from(message), txid)))
 }
@@ -638,14 +641,18 @@ async fn add_reaction(
     .exec(&mut tx)
     .await;
 
+    let mut notifications = Vec::new();
     let reaction = match created_res {
         Ok(r) => {
-            crate::notifications::create_reaction_notification(
+            if let Some(notification) = crate::notifications::create_reaction_notification(
                 &mut tx,
                 &message,
                 auth_user.id.as_str(),
             )
-            .await?;
+            .await?
+            {
+                notifications.push(notification);
+            }
             r
         }
         Err(err) => {
@@ -697,6 +704,7 @@ async fn add_reaction(
     let txid = get_current_txid(&mut tx).await?;
     tx.commit().await?;
 
+    crate::push::dispatch(state.clone(), notifications);
     Ok(Json(ApiResponse::new(
         ReactionResponse::from(reaction),
         txid,

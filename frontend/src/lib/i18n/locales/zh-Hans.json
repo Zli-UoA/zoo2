@@ -279,5 +279,16 @@
   },
   "mentions": {
     "suggestions": "提及建议"
+  },
+  "pwa": {
+    "install": "安装 Zoo",
+    "enable": "启用推送通知",
+    "disable": "关闭推送通知",
+    "unsupported": "此环境不支持推送通知。在 iOS 上，请先将 Zoo 添加到主屏幕。",
+    "unconfigured": "服务器尚未配置推送通知",
+    "blocked": "请在浏览器设置中允许通知",
+    "permission": "请允许通知。在 iOS 上，请从主屏幕打开 Zoo。",
+    "error": "无法更新通知设置，请重试。",
+    "logoutError": "无法关闭通知，请重新尝试退出登录。"
   }
 }

@@ -5,6 +5,8 @@ pub mod channel_user;
 pub mod message;
 pub mod message_reaction;
 pub mod notification;
+pub mod push_subscription;
+pub use push_subscription::PushSubscription;
 pub mod role;
 pub mod user;
 pub mod user_identity;
