@@ -1,0 +1,150 @@
+import { Link } from "@tanstack/react-router";
+import { useMemo, type RefObject } from "react";
+import { useTranslation } from "react-i18next";
+import { HeartIcon, MessageCircleIcon, AtSignIcon } from "lucide-react";
+
+import { useKitchenCatalog } from "../../../hooks/useKitchenCatalog";
+import type { ChannelRow, UserRow } from "../../../lib/electric/types";
+import { kitchenLabel, kitchenParts } from "../../../lib/emoji/kitchen";
+import { useLocale } from "../../i18n/LocaleProvider";
+import { useShell } from "../../layout/shell-context";
+import { Avatar, AvatarFallback, AvatarGroup, AvatarGroupCount } from "../../ui/avatar";
+import { initials } from "../format";
+import { ReactionEmoji } from "../messages/ReactionEmoji";
+import { fullTimestamp } from "../messages/messageFormat";
+import {
+  quotePreview,
+  notificationReactionGroups,
+  type NotificationGroup,
+} from "./groupNotifications";
+import { useNotificationContext } from "./useNotificationContext";
+import { useReadVisibleNotification } from "./useReadVisibleNotification";
+
+export function NotificationCard({
+  group,
+  channel,
+  users,
+  onRead,
+  scrollRoot,
+}: {
+  group: NotificationGroup;
+  channel?: ChannelRow;
+  users: ReadonlyMap<string, UserRow>;
+  onRead: (ids: readonly string[]) => void;
+  scrollRoot: RefObject<HTMLDivElement | null>;
+}) {
+  const { t } = useTranslation();
+  const { locale } = useLocale();
+  const shell = useShell();
+  const notification = group.latest;
+  const isReaction = notification.notification_type === "reaction";
+  const unreadIds = useMemo(
+    () => group.notifications.filter((row) => !row.is_read).map((row) => row.id),
+    [group],
+  );
+  const { ref, hasBeenVisible } = useReadVisibleNotification(unreadIds, onRead, scrollRoot);
+  const context = useNotificationContext(channel && hasBeenVisible ? notification.id : null);
+  const message = context.data?.message;
+  const reactionGroups = isReaction
+    ? notificationReactionGroups(context.data?.reactions ?? [], group.actorIds)
+    : [];
+  const { catalog } = useKitchenCatalog(
+    reactionGroups.some((reaction) => kitchenParts(reaction.emoji) !== null),
+  );
+  const name = (id: string) => {
+    const user = users.get(id);
+    return user?.display_name || user?.user_name || id;
+  };
+  const actor = name(group.actorIds[0]!);
+  const label =
+    isReaction && group.actorIds.length > 1
+      ? t("notifications.reactionGroup", { actor, count: group.actorIds.length - 1 })
+      : t(
+          isReaction
+            ? "notifications.reaction"
+            : notification.notification_type === "mention"
+              ? "notifications.mention"
+              : notification.notification_type === "dm"
+                ? "notifications.dm"
+                : "notifications.reply",
+          { actor },
+        );
+  const Icon = isReaction
+    ? HeartIcon
+    : notification.notification_type === "mention"
+      ? AtSignIcon
+      : MessageCircleIcon;
+
+  return (
+    <li
+      ref={ref}
+      className={`rounded-xl border p-4 ${unreadIds.length ? "border-brand/40 bg-brand-muted/20" : "bg-card"}`}
+    >
+      <div className="flex items-start gap-3">
+        <span className="mt-1 text-brand">
+          <Icon className="size-4" aria-hidden="true" />
+        </span>
+        <div className="min-w-0 flex-1 space-y-2">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <AvatarGroup>
+              {group.actorIds.slice(0, 8).map((id) => (
+                <Avatar key={id} size="sm" title={name(id)}>
+                  <AvatarFallback>{initials(name(id))}</AvatarFallback>
+                </Avatar>
+              ))}
+              {group.actorIds.length > 8 ? (
+                <AvatarGroupCount>+{group.actorIds.length - 8}</AvatarGroupCount>
+              ) : null}
+            </AvatarGroup>
+            <time className="text-xs text-muted-foreground" dateTime={notification.created_at}>
+              {fullTimestamp(notification.created_at, locale)}
+            </time>
+          </div>
+          <p className="text-sm font-medium">{label}</p>
+          <p className="text-xs text-muted-foreground">
+            {channel ? `#${channel.channel_name}` : t("notifications.unavailable")}
+          </p>
+          {reactionGroups.length ? (
+            <ul className="flex flex-wrap gap-1.5" aria-label={t("notifications.reactions")}>
+              {reactionGroups.map((reaction) => (
+                <li
+                  key={reaction.emoji}
+                  className="flex items-center gap-1 rounded-full border bg-muted/50 px-2 py-0.5 text-sm"
+                  aria-label={`${kitchenLabel(reaction.emoji)} ${reaction.count}`}
+                  title={kitchenLabel(reaction.emoji)}
+                >
+                  <ReactionEmoji emoji={reaction.emoji} catalog={catalog} size={20} />
+                  <span className="tabular-nums text-muted-foreground">{reaction.count}</span>
+                </li>
+              ))}
+            </ul>
+          ) : null}
+          {channel && message ? (
+            <Link
+              to="/channels/$channelId"
+              params={{ channelId: notification.channel_id }}
+              search={{ message: notification.message_id }}
+              onClick={() => shell.showChat()}
+              className="block rounded-md border-l-2 border-brand/40 bg-muted/40 px-3 py-2 transition-colors outline-none hover:bg-muted focus-visible:ring-2 focus-visible:ring-ring/50"
+            >
+              <blockquote>
+                <p className="mb-1 truncate text-xs font-medium text-muted-foreground">
+                  {name(message.user_id)}
+                </p>
+                <p className="line-clamp-3 whitespace-pre-wrap break-words text-sm leading-relaxed">
+                  {quotePreview(message.content)}
+                </p>
+              </blockquote>
+            </Link>
+          ) : (
+            <p className="rounded-md border-l-2 px-3 py-2 text-sm text-muted-foreground">
+              {!hasBeenVisible || context.isLoading
+                ? t("common.loading")
+                : t("notifications.messageUnavailable")}
+            </p>
+          )}
+        </div>
+      </div>
+    </li>
+  );
+}

@@ -15,6 +15,7 @@ pub async fn init_db(database_url: &str) -> Result<toasty::Db, toasty::Error> {
             Message,
             MessageReaction,
             Notification,
+            crate::models::PushSubscription,
             ChannelUser,
             Role,
             UserRole

@@ -27,6 +27,8 @@ async fn main() -> anyhow::Result<()> {
         "Starting backend service"
     );
 
+    backend::push::PushConfig::from_env()?;
+
     // データベース接続初期化 (Toasty ORM)
     let db = init_db(&config.database_url).await?;
 

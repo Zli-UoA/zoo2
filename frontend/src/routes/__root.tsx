@@ -18,6 +18,8 @@ import appCss from "../styles.css?url";
 export const Route = createRootRoute({
   head: () => ({
     meta: [
+      { name: "theme-color", content: "#25635b" },
+      { name: "apple-mobile-web-app-title", content: "Zoo" },
       {
         charSet: "utf-8",
       },
@@ -30,6 +32,8 @@ export const Route = createRootRoute({
       },
     ],
     links: [
+      { rel: "manifest", href: "/manifest.webmanifest" },
+      { rel: "apple-touch-icon", href: "/icons/icon-180.png" },
       {
         rel: "stylesheet",
         href: appCss,

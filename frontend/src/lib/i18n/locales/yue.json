@@ -253,7 +253,11 @@
     "reply": "{{actor}} 回覆咗你",
     "reaction": "{{actor}} 對你嘅訊息加咗表情回應",
     "openMessage": "開啟訊息",
-    "unavailable": "頻道用唔到"
+    "unavailable": "頻道用唔到",
+    "reactionGroup": "{{actor}} 同另外 {{count}} 人回應咗你嘅訊息",
+    "reactions": "回應",
+    "messageUnavailable": "訊息已刪除或者睇唔到",
+    "dm": "{{actor}} 傳咗私人訊息畀你"
   },
   "webhooks": {
     "title": "Webhook 設定",
@@ -279,5 +283,16 @@
   },
   "mentions": {
     "suggestions": "提及建議"
+  },
+  "pwa": {
+    "install": "安裝 Zoo",
+    "enable": "開啟推送通知",
+    "disable": "關閉推送通知",
+    "unsupported": "呢個環境唔支援推送通知。用 iOS 請先將 Zoo 加到主畫面。",
+    "unconfigured": "伺服器未設定推送通知",
+    "blocked": "請喺瀏覽器設定允許通知",
+    "permission": "請允許通知。用 iOS 請由主畫面開啟 Zoo。",
+    "error": "更新唔到通知設定，請再試。",
+    "logoutError": "關閉唔到通知，請再試登出。"
   }
 }

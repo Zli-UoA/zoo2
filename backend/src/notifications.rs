@@ -94,7 +94,7 @@ pub fn extract_mentions(content: &str) -> MentionTargets {
 
 /// メッセージ作成時の通知生成
 ///
-/// 1つのメッセージ投稿に対し、同一ユーザー宛ての通知は1件に集約する (メンション > 返信)。
+/// 1つのメッセージ投稿に対し、同一ユーザー宛ての通知は1件に集約する (メンション > 返信 > DM)。
 /// [P2] 公開チャンネルでは非メンバー投稿者への返信通知も配信する。
 /// プライベートチャンネルではチャンネル非所属ユーザー (キック・退出者含む) への通知を除外する。
 pub async fn create_message_notifications(
@@ -163,6 +163,15 @@ pub async fn create_message_notifications(
             targets_to_notify
                 .entry(parent_id.to_string())
                 .or_insert("reply");
+        }
+    }
+
+    // 通常の DM も現在の参加者全員へ通知する。メンション・返信は優先して重複させない。
+    if channel.is_dm && channel.deleted_at.is_none() {
+        for member_id in &member_ids {
+            if member_id != actor_id {
+                targets_to_notify.entry(member_id.clone()).or_insert("dm");
+            }
         }
     }
 

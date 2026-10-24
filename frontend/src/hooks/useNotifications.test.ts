@@ -61,6 +61,15 @@ it("counts live unread notifications, persists read changes and clears data on u
     });
     expect(result.unreadCount).toBe(1);
     await act(async () => {
+      alice.insert(notification("offscreen", "alice"));
+    });
+    await act(async () => {
+      await result.markRead(["n4"]);
+    });
+    expect(alice.get("n4")?.is_read).toBe(true);
+    expect(alice.get("offscreen")?.is_read).toBe(false);
+    expect(result.unreadCount).toBe(1);
+    await act(async () => {
       await result.markRead();
     });
     expect(result.unreadCount).toBe(0);

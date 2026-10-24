@@ -1,14 +1,20 @@
 use axum::{
     Json, Router,
     extract::{Path, Query, State},
-    routing::{patch, post},
+    http::header,
+    response::{IntoResponse, Response},
+    routing::{get, patch, post},
 };
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::{
-    auth::AuthUser, db::get_current_txid, error::AppError, models::Notification,
-    routes::response::ApiResponse, state::AppState,
+    auth::AuthUser,
+    db::get_current_txid,
+    error::AppError,
+    models::{Channel, ChannelUser, Message, MessageReaction, Notification},
+    routes::response::ApiResponse,
+    state::AppState,
 };
 
 #[derive(Debug, Deserialize, Default)]
@@ -55,6 +61,7 @@ pub struct ReadAllResponse {
 
 pub fn router() -> Router<AppState> {
     Router::new()
+        .route("/api/notifications/{id}/context", get(notification_context))
         .route(
             "/api/notifications/{id}/read",
             patch(mark_notification_read),
@@ -63,6 +70,106 @@ pub fn router() -> Router<AppState> {
             "/api/notifications/read-all",
             post(mark_all_notifications_read),
         )
+}
+
+#[derive(Serialize)]
+struct MessagePreview {
+    id: String,
+    user_id: String,
+    content: String,
+}
+
+#[derive(Serialize)]
+struct PreviewReaction {
+    user_id: String,
+    emoji: String,
+}
+
+#[derive(Serialize)]
+struct NotificationContext {
+    message: Option<MessagePreview>,
+    reactions: Vec<PreviewReaction>,
+}
+
+/// Return only the referenced message and its reactions, never a channel's history.
+async fn notification_context(
+    State(state): State<AppState>,
+    actor: AuthUser,
+    Path(id): Path<String>,
+) -> Result<Response, AppError> {
+    Uuid::parse_str(&id).map_err(|_| AppError::BadRequest("Invalid notification ID".into()))?;
+    let mut db = state.db.clone();
+    let mut tx = db.transaction().await?;
+    let unavailable = || AppError::NotFound("Notification context unavailable".into());
+    let notification = Notification::filter(
+        Notification::fields()
+            .id()
+            .eq(id.as_str())
+            .and(Notification::fields().user_id().eq(actor.id.as_str())),
+    )
+    .first()
+    .exec(&mut tx)
+    .await?
+    .ok_or_else(unavailable)?;
+    let channel = Channel::filter(Channel::fields().id().eq(notification.channel_id.as_str()))
+        .first()
+        .exec(&mut tx)
+        .await?
+        .ok_or_else(unavailable)?;
+    if channel.deleted_at.is_some() {
+        return Err(unavailable());
+    }
+    if channel.is_private || channel.is_dm {
+        let member = ChannelUser::filter(
+            ChannelUser::fields()
+                .channel_id()
+                .eq(channel.id.as_str())
+                .and(ChannelUser::fields().user_id().eq(actor.id.as_str())),
+        )
+        .first()
+        .exec(&mut tx)
+        .await?;
+        if member.is_none() {
+            return Err(unavailable());
+        }
+    }
+    let message = Message::filter(
+        Message::fields()
+            .id()
+            .eq(notification.message_id.as_str())
+            .and(Message::fields().channel_id().eq(channel.id.as_str())),
+    )
+    .first()
+    .exec(&mut tx)
+    .await?
+    .filter(|message| message.deleted_at.is_none());
+    let reactions = if message.is_some() && notification.notification_type == "reaction" {
+        MessageReaction::filter(
+            MessageReaction::fields()
+                .message_id()
+                .eq(notification.message_id.as_str()),
+        )
+        .exec(&mut tx)
+        .await?
+        .into_iter()
+        .map(|row| PreviewReaction {
+            user_id: row.user_id,
+            emoji: row.emoji,
+        })
+        .collect()
+    } else {
+        Vec::new()
+    };
+    let context = NotificationContext {
+        // Include one extra character so the client can indicate that the preview was truncated.
+        message: message.map(|row| MessagePreview {
+            id: row.id,
+            user_id: row.user_id,
+            content: row.content.chars().take(281).collect(),
+        }),
+        reactions,
+    };
+    Ok(([(header::CACHE_CONTROL, "no-store")], Json(context)).into_response())
 }
 
 /// 単一通知の既読化

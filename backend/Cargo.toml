@@ -30,6 +30,10 @@ emojis = "0.6"
 hmac = "0.13"
 sha2 = "0.11"
 regex = "1"
+base64 = "0.22"
+ece = "2.4"
+# Statically link OpenSSL so the distroless runtime needs no shared libcrypto.
+openssl = { version = "0.10", features = ["vendored"] }
 
 [dev-dependencies]
 wiremock = "0.6"

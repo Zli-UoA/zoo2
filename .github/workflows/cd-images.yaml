@@ -103,10 +103,11 @@ jobs:
         uses: actions/cache@v4
         with:
           path: .buildkit-cache
-          key: rust-image-${{ runner.os }}-${{ hashFiles('backend/Cargo.lock', 'infra/Dockerfile-backend-deploy') }}
-          # Start a new dependency set from the previous one instead of a cold build.
+          key: rust-image-${{ runner.os }}-${{ hashFiles('infra/Dockerfile-backend-deploy') }}-${{ hashFiles('backend/Cargo.lock') }}
+          # Reuse dependency builds only within the same compiler/base image. Native artifacts
+          # (for example vendored OpenSSL) may require a newer glibc than the next build image.
           restore-keys: |
-            rust-image-${{ runner.os }}-
+            rust-image-${{ runner.os }}-${{ hashFiles('infra/Dockerfile-backend-deploy') }}-
       - name: Inject Rust cache mounts
         if: matrix.component == 'backend' && steps.existing.outputs.image == 'false'
         uses: reproducible-containers/buildkit-cache-dance@v3

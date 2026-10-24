@@ -1,3 +1,6 @@
+import { toast } from "sonner";
+import { PwaControls } from "../pwa/PwaControls";
+import { disablePush } from "../../lib/pwa/push";
 import { useTranslation } from "react-i18next";
 import { Link } from "@tanstack/react-router";
 import { cn } from "cn";
@@ -53,12 +56,18 @@ export function LeftRail() {
 
   // OIDC セッションの破棄（トークンのクリアとログアウト画面への遷移）。
   // dev（OIDC 未設定）ではログアウト UI を出さない。
-  const handleLogout = () => {
+  const handleLogout = async () => {
     const client = getOidcClient(config);
     if (!client) {
       return;
     }
-    void client.logout();
+    try {
+      await disablePush(config);
+    } catch {
+      toast.error(t("pwa.logoutError"));
+      return;
+    }
+    await client.logout();
   };
 
   return (
@@ -82,6 +91,7 @@ export function LeftRail() {
       ) : null}
 
       <div className="mt-auto flex flex-col items-center gap-2">
+        <PwaControls />
         <LanguageToggle />
         <ModeToggle />
         <Separator className="w-6" />
