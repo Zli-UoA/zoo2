@@ -256,7 +256,8 @@
     "unavailable": "頻道用唔到",
     "reactionGroup": "{{actor}} 同另外 {{count}} 人回應咗你嘅訊息",
     "reactions": "回應",
-    "messageUnavailable": "訊息已刪除或者睇唔到"
+    "messageUnavailable": "訊息已刪除或者睇唔到",
+    "dm": "{{actor}} 傳咗私人訊息畀你"
   },
   "webhooks": {
     "title": "Webhook 設定",

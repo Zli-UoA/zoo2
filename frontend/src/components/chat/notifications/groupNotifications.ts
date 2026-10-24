@@ -1,3 +1,4 @@
+import { reactionKey } from "../../../lib/emoji/kitchen";
 import type { NotificationRow } from "../../../lib/electric/types";
 import { parseUtcTimestamp } from "../../../lib/timestamps";
 
@@ -35,4 +36,23 @@ export function groupNotifications(rows: readonly NotificationRow[]): Notificati
 export function quotePreview(content: string): string {
   const characters = Array.from(content);
   return characters.length > 280 ? `${characters.slice(0, 280).join("")}…` : content;
+}
+
+export function notificationReactionGroups(
+  rows: readonly { user_id: string; emoji: string }[],
+  actorIds: readonly string[],
+): { emoji: string; count: number }[] {
+  const actors = new Set(actorIds);
+  const groups = new Map<string, { emoji: string; users: Set<string> }>();
+  for (const row of rows) {
+    if (!actors.has(row.user_id)) continue;
+    const key = reactionKey(row.emoji);
+    let group = groups.get(key);
+    if (!group) {
+      group = { emoji: row.emoji, users: new Set() };
+      groups.set(key, group);
+    }
+    group.users.add(row.user_id);
+  }
+  return [...groups.values()].map(({ emoji, users }) => ({ emoji, count: users.size }));
 }

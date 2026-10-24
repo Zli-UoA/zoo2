@@ -1,14 +1,10 @@
-import { eq, useLiveQuery } from "@tanstack/react-db";
 import { Link } from "@tanstack/react-router";
 import { useMemo, type RefObject } from "react";
 import { useTranslation } from "react-i18next";
 import { HeartIcon, MessageCircleIcon, AtSignIcon } from "lucide-react";
 
-import { useChannelAccess } from "../../../hooks/useRealtime";
 import { useKitchenCatalog } from "../../../hooks/useKitchenCatalog";
-import { getCollections } from "../../../lib/electric/collections";
 import type { ChannelRow, UserRow } from "../../../lib/electric/types";
-import { groupReactions } from "../../../lib/emoji/reactions";
 import { kitchenLabel, kitchenParts } from "../../../lib/emoji/kitchen";
 import { useLocale } from "../../i18n/LocaleProvider";
 import { useShell } from "../../layout/shell-context";
@@ -16,7 +12,12 @@ import { Avatar, AvatarFallback, AvatarGroup, AvatarGroupCount } from "../../ui/
 import { initials } from "../format";
 import { ReactionEmoji } from "../messages/ReactionEmoji";
 import { fullTimestamp } from "../messages/messageFormat";
-import { quotePreview, type NotificationGroup } from "./groupNotifications";
+import {
+  quotePreview,
+  notificationReactionGroups,
+  type NotificationGroup,
+} from "./groupNotifications";
+import { useNotificationContext } from "./useNotificationContext";
 import { useReadVisibleNotification } from "./useReadVisibleNotification";
 
 export function NotificationCard({
@@ -41,35 +42,12 @@ export function NotificationCard({
     () => group.notifications.filter((row) => !row.is_read).map((row) => row.id),
     [group],
   );
-  const ref = useReadVisibleNotification(unreadIds, onRead, scrollRoot);
-  const collections = getCollections();
-  const access = useChannelAccess(channel ?? null);
-  const readable = channel && access.canRead && !access.isMembershipPending;
-  const messages = readable ? collections.messages(channel.id) : null;
-  const reactions = readable && isReaction ? collections.reactions(channel.id) : null;
-  const messageQuery = useLiveQuery(
-    (q) =>
-      messages
-        ? q.from({ messages }).where(({ messages: row }) => eq(row.id, notification.message_id))
-        : undefined,
-    [messages, notification.message_id],
-  );
-  const reactionQuery = useLiveQuery(
-    (q) =>
-      reactions
-        ? q
-            .from({ reactions })
-            .where(({ reactions: row }) => eq(row.message_id, notification.message_id))
-        : undefined,
-    [reactions, notification.message_id],
-  );
-  const message = messageQuery.data?.[0];
-  const actorIds = new Set(group.actorIds);
-  const reactionGroups =
-    groupReactions(
-      (reactionQuery.data ?? []).filter((row) => actorIds.has(row.user_id)),
-      null,
-    ).get(notification.message_id) ?? [];
+  const { ref, hasBeenVisible } = useReadVisibleNotification(unreadIds, onRead, scrollRoot);
+  const context = useNotificationContext(channel && hasBeenVisible ? notification.id : null);
+  const message = context.data?.message;
+  const reactionGroups = isReaction
+    ? notificationReactionGroups(context.data?.reactions ?? [], group.actorIds)
+    : [];
   const { catalog } = useKitchenCatalog(
     reactionGroups.some((reaction) => kitchenParts(reaction.emoji) !== null),
   );
@@ -86,7 +64,9 @@ export function NotificationCard({
             ? "notifications.reaction"
             : notification.notification_type === "mention"
               ? "notifications.mention"
-              : "notifications.reply",
+              : notification.notification_type === "dm"
+                ? "notifications.dm"
+                : "notifications.reply",
           { actor },
         );
   const Icon = isReaction
@@ -139,7 +119,7 @@ export function NotificationCard({
               ))}
             </ul>
           ) : null}
-          {readable && message && !message.deleted_at ? (
+          {channel && message ? (
             <Link
               to="/channels/$channelId"
               params={{ channelId: notification.channel_id }}
@@ -158,7 +138,7 @@ export function NotificationCard({
             </Link>
           ) : (
             <p className="rounded-md border-l-2 px-3 py-2 text-sm text-muted-foreground">
-              {messageQuery.isLoading || access.isMembershipPending
+              {!hasBeenVisible || context.isLoading
                 ? t("common.loading")
                 : t("notifications.messageUnavailable")}
             </p>

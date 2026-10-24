@@ -1,4 +1,4 @@
-import { useEffect, useRef, type RefObject } from "react";
+import { useEffect, useRef, useState, type RefObject } from "react";
 
 /** Only acknowledge cards actually seen in the foreground notifications pane. */
 export function useReadVisibleNotification(
@@ -7,16 +7,28 @@ export function useReadVisibleNotification(
   scrollRoot: RefObject<HTMLDivElement | null>,
 ) {
   const ref = useRef<HTMLLIElement>(null);
+  const [hasBeenVisible, setHasBeenVisible] = useState(false);
   useEffect(() => {
     const element = ref.current;
-    if (!element || ids.length === 0 || typeof IntersectionObserver === "undefined") return;
+    if (!element) return;
+    if (typeof IntersectionObserver === "undefined") {
+      setHasBeenVisible(true);
+      return;
+    }
     let visible = false;
     const read = () => {
-      if (visible && document.visibilityState === "visible" && document.hasFocus()) onRead(ids);
+      if (
+        visible &&
+        ids.length > 0 &&
+        document.visibilityState === "visible" &&
+        document.hasFocus()
+      )
+        onRead(ids);
     };
     const observer = new IntersectionObserver(
       (entries) => {
         visible = entries.some((entry) => entry.isIntersecting);
+        if (visible) setHasBeenVisible(true);
         read();
       },
       { root: scrollRoot.current, threshold: 0.1 },
@@ -30,5 +42,5 @@ export function useReadVisibleNotification(
       window.removeEventListener("focus", read);
     };
   }, [ids, onRead, scrollRoot]);
-  return ref;
+  return { ref, hasBeenVisible };
 }

@@ -1,6 +1,6 @@
 import { expect, it } from "vite-plus/test";
 import type { NotificationRow } from "../../../lib/electric/types";
-import { groupNotifications, quotePreview } from "./groupNotifications";
+import { groupNotifications, quotePreview, notificationReactionGroups } from "./groupNotifications";
 
 const row = (id: string, overrides: Partial<NotificationRow> = {}): NotificationRow => ({
   id,
@@ -53,4 +53,23 @@ it("limits long previews without splitting emoji and preserves short multiline q
   const long = "🦊".repeat(300);
   expect(quotePreview(long)).toBe("🦊".repeat(280) + "…");
   expect(quotePreview("a".repeat(280))).toHaveLength(280);
+});
+
+it("counts only notification actors and deduplicates equivalent kitchen reactions", () => {
+  expect(
+    notificationReactionGroups(
+      [
+        { user_id: "alice", emoji: "👍" },
+        { user_id: "alice", emoji: "👍" },
+        { user_id: "outsider", emoji: "👍" },
+        { user_id: "bob", emoji: "👍" },
+        { user_id: "alice", emoji: "kitchen:1f600_1f431" },
+        { user_id: "bob", emoji: "kitchen:1f431_1f600" },
+      ],
+      ["alice", "bob"],
+    ),
+  ).toEqual([
+    { emoji: "👍", count: 2 },
+    { emoji: "kitchen:1f600_1f431", count: 2 },
+  ]);
 });

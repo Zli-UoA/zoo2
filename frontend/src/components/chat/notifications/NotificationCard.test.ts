@@ -16,15 +16,18 @@ import { groupNotifications } from "./groupNotifications";
 const state = vi.hoisted(() => ({
   message: null as MessageRow | null,
   reactions: [] as MessageReactionRow[],
-  query: 0,
   canRead: true,
 }));
-vi.mock("@tanstack/react-db", () => ({
-  eq: vi.fn(),
-  useLiveQuery: () =>
-    state.query++ % 2 === 0
-      ? { data: state.message ? [state.message] : [], isLoading: false }
-      : { data: state.reactions, isLoading: false },
+vi.mock("./useReadVisibleNotification", () => ({
+  useReadVisibleNotification: () => ({ ref: { current: null }, hasBeenVisible: true }),
+}));
+vi.mock("./useNotificationContext", () => ({
+  useNotificationContext: () => ({
+    data: state.canRead
+      ? { message: state.message?.deleted_at ? null : state.message, reactions: state.reactions }
+      : null,
+    isLoading: false,
+  }),
 }));
 vi.mock("@tanstack/react-router", () => ({
   Link: ({
@@ -43,14 +46,8 @@ vi.mock("@tanstack/react-router", () => ({
       children,
     ),
 }));
-vi.mock("../../../lib/electric/collections", () => ({
-  getCollections: () => ({ messages: () => ({}), reactions: () => ({}) }),
-}));
 vi.mock("../../../hooks/useKitchenCatalog", () => ({
   useKitchenCatalog: () => ({ catalog: null }),
-}));
-vi.mock("../../../hooks/useRealtime", () => ({
-  useChannelAccess: () => ({ canRead: state.canRead, isMembershipPending: false }),
 }));
 vi.mock("../../i18n/LocaleProvider", () => ({ useLocale: () => ({ locale: "ja" }) }));
 vi.mock("../../layout/shell-context", () => ({ useShell: () => ({ showChat: vi.fn() }) }));
@@ -88,14 +85,13 @@ const rows: NotificationRow[] = ["alice", "bob"].map((id) => ({
   is_read: false,
   created_at: now,
 }));
-function render() {
-  state.query = 0;
+function render(notifications = rows) {
   return renderToStaticMarkup(
     createElement(
       I18nextProvider,
       { i18n: createI18n("ja") },
       createElement(NotificationCard, {
-        group: groupNotifications(rows)[0],
+        group: groupNotifications(notifications)[0],
         channel,
         users,
         onRead: vi.fn(),
@@ -143,4 +139,10 @@ it("does not offer a quote link for deleted or inaccessible messages", () => {
   const html = render();
   expect(html).not.toContain("<blockquote>");
   expect(html).toContain("閲覧できません");
+});
+
+it("labels ordinary direct messages independently from replies", () => {
+  const html = render([{ ...rows[0], notification_type: "dm" }]);
+  expect(html).toContain("ダイレクトメッセージが届きました");
+  expect(html).not.toContain("返信しました");
 });

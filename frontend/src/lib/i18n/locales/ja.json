@@ -256,7 +256,8 @@
     "unavailable": "チャンネルを利用できません",
     "reactionGroup": "{{actor}} さんほか{{count}}人がリアクションしました",
     "reactions": "リアクション",
-    "messageUnavailable": "メッセージが削除されたか、閲覧できません"
+    "messageUnavailable": "メッセージが削除されたか、閲覧できません",
+    "dm": "{{actor}} さんからダイレクトメッセージが届きました"
   },
   "webhooks": {
     "title": "Webhook設定",

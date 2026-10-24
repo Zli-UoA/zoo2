@@ -256,7 +256,8 @@
     "unavailable": "Channel unavailable",
     "reactionGroup": "{{actor}} +{{count}} reacted to your message",
     "reactions": "Reactions",
-    "messageUnavailable": "This message was deleted or is unavailable"
+    "messageUnavailable": "This message was deleted or is unavailable",
+    "dm": "{{actor}} sent you a direct message"
   },
   "webhooks": {
     "title": "Webhook settings",
