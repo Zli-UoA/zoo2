@@ -34,6 +34,9 @@ export function AppShell({ children }: { children: ReactNode }) {
   const channelsQuery = useActiveChannels();
   const channels = channelsQuery.data ?? [];
 
+  const isNotifications = useRouterState({
+    select: (state) => state.location.pathname === "/notifications",
+  });
   const selectedChannelId = useRouterState({
     select: (state) => {
       for (let index = state.matches.length - 1; index >= 0; index -= 1) {
@@ -50,10 +53,10 @@ export function AppShell({ children }: { children: ReactNode }) {
     [channels, selectedChannelId],
   );
 
-  // チャンネルを開いたら狭幅ではチャット面へ、未選択ならサイドバーへ戻す。
+  // チャンネル・通知を開いたら狭幅でもメイン画面へ、ホームではサイドバーへ戻す。
   useEffect(() => {
-    setPane(selectedChannelId ? "chat" : "sidebar");
-  }, [selectedChannelId]);
+    setPane(selectedChannelId || isNotifications ? "chat" : "sidebar");
+  }, [selectedChannelId, isNotifications]);
 
   // ワイドから狭幅へ縮んだときに、ペインで開いていたメンバーが
   // そのままダイアログとして出ないように閉じる。コミット前に反映するため
@@ -109,8 +112,8 @@ export function AppShell({ children }: { children: ReactNode }) {
     [pane, membersOpen, threadRootId, openThread, closeThread, selectedChannelId],
   );
 
-  const showSidebar = pane === "sidebar";
-  const showChat = pane === "chat";
+  const showSidebar = !isNotifications && pane === "sidebar";
+  const showChat = isNotifications || pane === "chat";
 
   return (
     <ShellContext.Provider value={value}>
