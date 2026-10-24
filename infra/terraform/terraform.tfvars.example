@@ -1,0 +1,9 @@
+# API トークンは環境変数 TF_VAR_cloudflare_api_token で渡すことを推奨します。
+# ファイルに記載する場合はコミットしないようご注意ください（.gitignore で除外されます）。
+# cloudflare_api_token  = "your-cloudflare-api-token"
+cloudflare_account_id = "your-cloudflare-account-id"
+r2_location           = "apac"
+prod_bucket_name      = "zoo-attachments-prod"
+stg_bucket_name       = "zoo-attachments-stg"
+prod_cors_origins     = ["https://zoo.example.com"]
+stg_cors_origins      = ["https://stg.zoo.example.com", "https://*.preview.zoo.example.com"]

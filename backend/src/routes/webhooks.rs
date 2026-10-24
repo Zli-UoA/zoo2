@@ -237,6 +237,7 @@ pub(super) async fn persist_card(
             channel_id: settings.channel,
             content: card.title.clone(),
             parent_id: None,
+            attachment_ids: None,
         },
         false,
         Some(card.encode()?),
