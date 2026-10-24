@@ -111,3 +111,8 @@ describe("reaction rows", () => {
     expect(MESSAGE_REACTION_SCHEMA.columns.created_at).toBe("timestamp");
   });
 });
+
+it("coerces notification read status so false remains unread", () => {
+  expect(coerceElectricRow("notifications", { id: "n1", is_read: "false" }).is_read).toBe(false);
+  expect(coerceElectricRow("notifications", { id: "n1", is_read: "t" }).is_read).toBe(true);
+});

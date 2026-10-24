@@ -16,7 +16,13 @@ import type {
 import { reactionKey } from "../emoji/kitchen";
 import type { TxidMode } from "../config";
 import { changeMessageMatcher, syncTxid } from "./txid";
-import type { ChannelRow, ChannelUserRow, MessageReactionRow, MessageRow } from "./types";
+import type {
+  ChannelRow,
+  ChannelUserRow,
+  MessageReactionRow,
+  MessageRow,
+  NotificationRow,
+} from "./types";
 
 export interface WriteDependencies {
   client: ApiClient;
@@ -353,4 +359,48 @@ export function createReactionWrites({ client, txidMode, getCurrentUserId }: Wri
     }
   }
   return { onInsert, onDelete };
+}
+
+/** 通知の既読化。まとめて更新する場合は read-all API を使う。 */
+export function createNotificationWrites({
+  client,
+  txidMode,
+  getCurrentUserId,
+}: WriteDependencies) {
+  async function onUpdate({
+    transaction,
+    collection,
+  }: UpdateMutationFnParams<
+    NotificationRow,
+    string | number,
+    ElectricCollectionUtils<NotificationRow>
+  >): Promise<void> {
+    const mutations = transaction.mutations;
+    for (const mutation of mutations) {
+      if (
+        !getCurrentUserId() ||
+        mutation.modified.user_id !== getCurrentUserId() ||
+        !mutation.modified.is_read
+      )
+        throw new Error("Only your own notifications can be marked read");
+    }
+    if (mutations.length === 0) return;
+    const { txid } =
+      mutations.length > 1
+        ? await client.post<{ updated_count: number }>("/api/notifications/read-all")
+        : await client.patch<NotificationRow>(
+            `/api/notifications/${mutations[0]!.modified.id}/read`,
+          );
+    const ids = new Set(mutations.map((mutation) => mutation.modified.id));
+    await syncTxid({
+      mode: txidMode,
+      txid,
+      target: collection.utils,
+      match: changeMessageMatcher<NotificationRow>(
+        "update",
+        (row) => ids.has(row.id) && row.is_read,
+      ),
+    });
+  }
+  return { onUpdate };
 }

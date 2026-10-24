@@ -7,12 +7,20 @@ import { getCurrentUserStore } from "../currentUser";
 import { createShapeFetch, type ShapeFetchSource } from "./headers";
 import { buildShapeRequestUrl, resolveShapeUrl, type ShapeQueryOptions } from "./query";
 import { SHAPE_META, coerceElectricRow, type ShapeName } from "./schema";
-import type { ChannelRow, ChannelUserRow, MessageReactionRow, MessageRow, UserRow } from "./types";
+import type {
+  ChannelRow,
+  ChannelUserRow,
+  MessageReactionRow,
+  MessageRow,
+  NotificationRow,
+  UserRow,
+} from "./types";
 import {
   createChannelUserWrites,
   createChannelWrites,
   createMessageWrites,
   createReactionWrites,
+  createNotificationWrites,
   type WriteDependencies,
 } from "./writes";
 
@@ -142,6 +150,24 @@ function reactionsCollection(
   return collection;
 }
 
+function notificationsCollection(
+  userId: string,
+  config: AppConfig,
+  dependencies: WriteDependencies,
+) {
+  const writes = createNotificationWrites(dependencies);
+  return createCollection(
+    electricCollectionOptions<NotificationRow>({
+      id: `notifications:${userId}`,
+      getKey: (row) => row.id,
+      defaultIndexType: BasicIndex,
+      shapeOptions: shapeOptions("notifications", config, { userId }),
+      onUpdate: writes.onUpdate,
+    }),
+  );
+}
+
+export type NotificationsCollection = ReturnType<typeof notificationsCollection>;
 export type ChannelsCollection = ReturnType<typeof channelsCollection>;
 export type UsersCollection = ReturnType<typeof usersCollection>;
 export type ChannelUsersCollection = ReturnType<typeof channelUsersCollection>;
@@ -150,6 +176,7 @@ export type ReactionsCollection = ReturnType<typeof reactionsCollection>;
 
 export interface CollectionsBundle {
   config: AppConfig;
+  notifications: (userId: string) => NotificationsCollection;
   channels: ChannelsCollection;
   users: UsersCollection;
   channelUsers: ChannelUsersCollection;
@@ -189,6 +216,7 @@ export function getCollections(config?: AppConfig): CollectionsBundle {
     return bundle;
   }
 
+  const notificationCache = new Map<string, NotificationsCollection>();
   const messageCache = new Map<string, MessagesCollection>();
   const reactionCache = new Map<string, ReactionsCollection>();
   // 現在ユーザーは `useCurrentUser` と同じストアから引く（OIDC では
@@ -202,6 +230,14 @@ export function getCollections(config?: AppConfig): CollectionsBundle {
   };
   bundle = {
     config: resolved,
+    notifications: (userId) => {
+      let collection = notificationCache.get(userId);
+      if (!collection) {
+        collection = notificationsCollection(userId, resolved, dependencies);
+        notificationCache.set(userId, collection);
+      }
+      return collection;
+    },
     channels: channelsCollection(resolved, dependencies),
     users: usersCollection(resolved),
     channelUsers: channelUsersCollection(resolved, dependencies),

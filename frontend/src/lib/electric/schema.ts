@@ -3,6 +3,7 @@ import type {
   ChannelUserRow,
   MessageReactionRow,
   MessageRow,
+  NotificationRow,
   TableName,
   TableRowMap,
   UserRow,
@@ -32,7 +33,13 @@ export const NUMERIC_ELECTRIC_TYPES: ReadonlySet<ElectricType> = new Set<Electri
   "float8",
 ]);
 
-export type ShapeName = "channels" | "messages" | "messageReactions" | "users" | "channelUsers";
+export type ShapeName =
+  | "channels"
+  | "messages"
+  | "messageReactions"
+  | "users"
+  | "channelUsers"
+  | "notifications";
 
 export interface ShapeMeta {
   table: TableName;
@@ -40,6 +47,7 @@ export interface ShapeMeta {
 }
 
 export const SHAPE_META: Record<ShapeName, ShapeMeta> = {
+  notifications: { table: "notifications", proxyPath: "notifications" },
   channels: { table: "channels", proxyPath: "channels" },
   messages: { table: "messages", proxyPath: "messages" },
   messageReactions: { table: "message_reactions", proxyPath: "message_reactions" },
@@ -114,7 +122,22 @@ export const CHANNEL_USER_SCHEMA: ShapeSchema<ChannelUserRow> = {
   },
 };
 
+export const NOTIFICATION_SCHEMA: ShapeSchema<NotificationRow> = {
+  table: "notifications",
+  columns: {
+    id: "text",
+    user_id: "text",
+    actor_id: "text",
+    channel_id: "text",
+    message_id: "text",
+    notification_type: "text",
+    is_read: "bool",
+    created_at: "timestamp",
+  },
+};
+
 export const SHAPE_SCHEMAS: { [K in TableName]: ShapeSchema<TableRowMap[K]> } = {
+  notifications: NOTIFICATION_SCHEMA,
   users: USER_SCHEMA,
   channels: CHANNEL_SCHEMA,
   messages: MESSAGE_SCHEMA,

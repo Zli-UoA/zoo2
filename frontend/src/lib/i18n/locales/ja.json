@@ -241,7 +241,19 @@
   },
   "notifications": {
     "label": "通知",
-    "close": "通知を閉じる"
+    "close": "通知を閉じる",
+    "title": "通知",
+    "unread": "未読通知 {{count}} 件",
+    "readAll": "すべて既読にする",
+    "read": "既読にする",
+    "empty": "通知はありません",
+    "loadError": "通知を読み込めませんでした",
+    "readError": "通知を既読にできませんでした",
+    "mention": "{{actor}} さんがあなたをメンションしました",
+    "reply": "{{actor}} さんが返信しました",
+    "reaction": "{{actor}} さんがリアクションしました",
+    "openMessage": "メッセージを開く",
+    "unavailable": "チャンネルを利用できません"
   },
   "webhooks": {
     "title": "Webhook設定",
@@ -264,5 +276,8 @@
     "rotateConfirm": "Secretを再発行しますか？現在のSecretは無効になります。GitHub側も更新してください。",
     "confirm": "実行",
     "genericUrl": "共通Webhook URL"
+  },
+  "mentions": {
+    "suggestions": "メンション候補"
   }
 }

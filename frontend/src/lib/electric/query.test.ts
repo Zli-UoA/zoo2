@@ -98,3 +98,18 @@ describe("reaction shapes", () => {
     expect(params.get("params[1]")).toBe("channel-1");
   });
 });
+
+describe("notification shapes", () => {
+  it("scopes direct subscriptions to the current user and rejects unscoped access", () => {
+    expect(shapeQueryParams("notifications", directConfig, { userId: "alice" })).toEqual({
+      where: "user_id = $1",
+      "params[1]": "alice",
+    });
+    expect(() => shapeQueryParams("notifications", directConfig)).toThrow(/user ID/);
+  });
+  it("lets the authenticated proxy determine notification ownership", () => {
+    expect(buildShapeRequestUrl("notifications", proxyConfig, { userId: "ignored" })).toBe(
+      "http://localhost:8000/api/shapes/notifications",
+    );
+  });
+});

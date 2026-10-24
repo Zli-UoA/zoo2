@@ -77,6 +77,13 @@ export function MessageBody({ content, card: data }: { content: string; card?: s
           >
             {segment.value}
           </a>
+        ) : segment.kind === "mention" ? (
+          <span
+            key={index}
+            className="rounded bg-brand-muted px-0.5 font-medium text-brand-muted-foreground"
+          >
+            {segment.value}
+          </span>
         ) : (
           <Fragment key={index}>{segment.value}</Fragment>
         ),

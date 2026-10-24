@@ -1,6 +1,12 @@
 import type { TimestampString } from "../timestamps";
 
-export type TableName = "users" | "channels" | "messages" | "message_reactions" | "channel_user";
+export type TableName =
+  | "users"
+  | "channels"
+  | "messages"
+  | "message_reactions"
+  | "channel_user"
+  | "notifications";
 
 export type UserRow = {
   id: string;
@@ -50,7 +56,19 @@ export type ChannelUserRow = {
   joined_at: TimestampString;
 };
 
+export type NotificationRow = {
+  id: string;
+  user_id: string;
+  actor_id: string;
+  channel_id: string;
+  message_id: string;
+  notification_type: string;
+  is_read: boolean;
+  created_at: TimestampString;
+};
+
 export type TableRowMap = {
+  notifications: NotificationRow;
   users: UserRow;
   channels: ChannelRow;
   messages: MessageRow;

@@ -12,6 +12,7 @@ import { Route as rootRouteImport } from './routes/__root'
 import { Route as ShellRouteImport } from './routes/_shell'
 import { Route as RealtimeRouteImport } from './routes/realtime'
 import { Route as ShellIndexRouteImport } from './routes/_shell.index'
+import { Route as ShellNotificationsRouteImport } from './routes/_shell.notifications'
 import { Route as ShellChannelsChannelIdRouteImport } from './routes/_shell.channels.$channelId'
 
 const ShellRoute = ShellRouteImport.update({
@@ -28,6 +29,11 @@ const ShellIndexRoute = ShellIndexRouteImport.update({
   path: '/',
   getParentRoute: () => ShellRoute,
 } as any)
+const ShellNotificationsRoute = ShellNotificationsRouteImport.update({
+  id: '/notifications',
+  path: '/notifications',
+  getParentRoute: () => ShellRoute,
+} as any)
 const ShellChannelsChannelIdRoute = ShellChannelsChannelIdRouteImport.update({
   id: '/channels/$channelId',
   path: '/channels/$channelId',
@@ -37,10 +43,12 @@ const ShellChannelsChannelIdRoute = ShellChannelsChannelIdRouteImport.update({
 export interface FileRoutesByFullPath {
   '/': typeof ShellIndexRoute
   '/realtime': typeof RealtimeRoute
+  '/notifications': typeof ShellNotificationsRoute
   '/channels/$channelId': typeof ShellChannelsChannelIdRoute
 }
 export interface FileRoutesByTo {
   '/realtime': typeof RealtimeRoute
+  '/notifications': typeof ShellNotificationsRoute
   '/': typeof ShellIndexRoute
   '/channels/$channelId': typeof ShellChannelsChannelIdRoute
 }
@@ -48,18 +56,20 @@ export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/_shell': typeof ShellRouteWithChildren
   '/realtime': typeof RealtimeRoute
+  '/_shell/notifications': typeof ShellNotificationsRoute
   '/_shell/': typeof ShellIndexRoute
   '/_shell/channels/$channelId': typeof ShellChannelsChannelIdRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
-  fullPaths: '/' | '/realtime' | '/channels/$channelId'
+  fullPaths: '/' | '/realtime' | '/notifications' | '/channels/$channelId'
   fileRoutesByTo: FileRoutesByTo
-  to: '/realtime' | '/' | '/channels/$channelId'
+  to: '/realtime' | '/notifications' | '/' | '/channels/$channelId'
   id:
     | '__root__'
     | '/_shell'
     | '/realtime'
+    | '/_shell/notifications'
     | '/_shell/'
     | '/_shell/channels/$channelId'
   fileRoutesById: FileRoutesById
@@ -92,6 +102,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ShellIndexRouteImport
       parentRoute: typeof ShellRoute
     }
+    '/_shell/notifications': {
+      id: '/_shell/notifications'
+      path: '/notifications'
+      fullPath: '/notifications'
+      preLoaderRoute: typeof ShellNotificationsRouteImport
+      parentRoute: typeof ShellRoute
+    }
     '/_shell/channels/$channelId': {
       id: '/_shell/channels/$channelId'
       path: '/channels/$channelId'
@@ -103,11 +120,13 @@ declare module '@tanstack/react-router' {
 }
 
 interface ShellRouteChildren {
+  ShellNotificationsRoute: typeof ShellNotificationsRoute
   ShellIndexRoute: typeof ShellIndexRoute
   ShellChannelsChannelIdRoute: typeof ShellChannelsChannelIdRoute
 }
 
 const ShellRouteChildren: ShellRouteChildren = {
+  ShellNotificationsRoute: ShellNotificationsRoute,
   ShellIndexRoute: ShellIndexRoute,
   ShellChannelsChannelIdRoute: ShellChannelsChannelIdRoute,
 }
