@@ -1,6 +1,6 @@
 # syntax=docker/dockerfile:1
-# Keep glibc compatible with the Debian 12 distroless runtime.
-FROM rust:1-bookworm AS build-env
+# Align Rust with rust-toolchain.toml and glibc with the Debian 12 distroless runtime.
+FROM rust:1.99-bookworm AS build-env
 
 ARG DATABASE_URL="postgresql://postgres:postgres@localhost:5432/db?schema=public"
 
