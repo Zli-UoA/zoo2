@@ -27,10 +27,16 @@ pnpm check            # format / lint / typecheck
 pnpm lint             # lint のみ
 pnpm test             # vitest (Vite+ 内蔵)
 pnpm test:e2e         # Playwright スモーク (要: DB + Electric + バックエンド)
+pnpm test:e2e:layout  # 編集・モバイル表示領域のレイアウト回帰テスト (バックエンド不要)
 pnpm test:e2e:oidc    # OIDC PKCE E2E (モック IdP + 本番同等設定のバックエンド)
 pnpm test:e2e:csp     # nginx の本番 CSP をブラウザで検証 (要: ビルド済みフロントコンテナ)
 pnpm generate-routes  # ルートツリーを再生成
 ```
+
+認証E2Eは、HTTP/1.1の接続上限でShapeのSSEがREST送信を塞がないよう、
+一時的な自己署名証明書を使うHTTP/2プロキシ経由でバックエンドへ接続します。
+`openssl` が必要です。プロキシは既定で8443番を使い、`E2E_HTTP2_PORT` で変更できます。
+`VITE_API_BASE_URL` はプロキシから接続するバックエンドのURLです。
 
 ルートの Makefile からも実行できます: `make frontend-dev` / `frontend-build` / `frontend-check` / `frontend-test` / `frontend-e2e`。
 

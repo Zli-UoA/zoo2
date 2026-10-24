@@ -193,6 +193,9 @@ jobs:
       - name: i18n browser tests
         run: pnpm test:e2e:i18n
 
+      - name: Message layout browser tests
+        run: pnpm test:e2e:layout
+
   unit-test:
     runs-on: ubuntu-latest
     defaults:

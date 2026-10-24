@@ -168,7 +168,7 @@ export function Composer({
 
   return (
     <form
-      className="border-t px-3 py-3"
+      className="shrink-0 border-t px-3 py-3"
       onSubmit={(event) => {
         event.preventDefault();
         void submit();
@@ -209,7 +209,7 @@ export function Composer({
           disabled={disabled}
           placeholder={resolvedPlaceholder}
           aria-label={resolvedAriaLabel}
-          className="min-h-9 resize-none border-0 bg-transparent px-2 py-1.5 text-sm shadow-none [field-sizing:fixed] focus-visible:ring-0 dark:bg-transparent"
+          className="min-h-9 resize-none border-0 bg-transparent px-2 py-1.5 text-base shadow-none [field-sizing:fixed] focus-visible:ring-0 md:text-sm dark:bg-transparent"
           role="combobox"
           aria-autocomplete="list"
           aria-expanded={options.length > 0}
