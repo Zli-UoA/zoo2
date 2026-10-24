@@ -1,0 +1,64 @@
+name: Flux production status
+
+on:
+  repository_dispatch:
+    types:
+      - Kustomization/zoo2-migrate.flux-system
+      - Kustomization/zoo2.flux-system
+
+permissions:
+  contents: read
+  actions: write
+  packages: read
+  statuses: write
+  deployments: write
+
+# Keep the watermark restore, report and save in one shared critical section.
+# queue:max retains up to 100 pending runs instead of replacing the pending run.
+concurrency:
+  group: flux-zoo2-production-status
+  cancel-in-progress: false
+  queue: max
+
+jobs:
+  report:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: "24.22.0"
+      - name: Restore event watermark
+        id: restore
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p .flux-state
+          source_run=$(node .github/scripts/flux-status.mjs --state-run)
+          if [ -n "$source_run" ]; then
+            gh run download "$source_run" --name flux-production-state --dir .flux-state
+          fi
+      - name: Report Flux result
+        env:
+          GH_TOKEN: ${{ github.token }}
+          FLUX_STATE_PATH: .flux-state/state.json
+        run: node .github/scripts/flux-status.mjs
+      - name: Save event watermark
+        id: save
+        if: ${{ always() && steps.restore.outcome == 'success' }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: flux-production-state
+          path: .flux-state/state.json
+          include-hidden-files: true
+          if-no-files-found: ignore
+          retention-days: 90
+          overwrite: true
+      - name: Retain two trusted watermark snapshots
+        if: ${{ always() && steps.save.outputs.artifact-id != '' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: node .github/scripts/flux-status.mjs --prune-state
