@@ -27,6 +27,7 @@ pnpm check            # format / lint / typecheck
 pnpm lint             # lint のみ
 pnpm test             # vitest (Vite+ 内蔵)
 pnpm test:e2e         # Playwright スモーク (要: DB + Electric + バックエンド)
+pnpm test:e2e:layout  # 編集・モバイル表示領域のレイアウト回帰テスト (バックエンド不要)
 pnpm test:e2e:oidc    # OIDC PKCE E2E (モック IdP + 本番同等設定のバックエンド)
 pnpm test:e2e:csp     # nginx の本番 CSP をブラウザで検証 (要: ビルド済みフロントコンテナ)
 pnpm generate-routes  # ルートツリーを再生成

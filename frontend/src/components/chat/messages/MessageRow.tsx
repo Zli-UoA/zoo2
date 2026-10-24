@@ -218,10 +218,10 @@ export function MessageRow({
                 autoFocus
                 rows={1}
                 aria-label={t("messages.editLabel")}
-                className="min-h-9 resize-none text-sm"
+                className="max-h-48 min-h-9 resize-none overflow-y-auto text-base md:text-sm"
                 onChange={(event) => onEditingTextChange(event.target.value)}
                 onKeyDown={(event) => {
-                  if (event.key === "Escape") {
+                  if (event.key === "Escape" && !event.nativeEvent.isComposing) {
                     event.preventDefault();
                     onCancelEdit();
                   }

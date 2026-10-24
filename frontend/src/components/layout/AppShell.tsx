@@ -9,6 +9,7 @@ import { MembersPanel } from "../chat/MembersPanel";
 import { LeftRail } from "./LeftRail";
 import { ShellContext, type ShellContextValue, type ShellPane } from "./shell-context";
 import { useMediaQuery } from "./useMediaQuery";
+import { useVisualViewport } from "./useVisualViewport";
 
 /**
  * 3ペインのアプリシェル。左レール＋サイドバー / メイン / 右メンバー。
@@ -26,6 +27,7 @@ import { useMediaQuery } from "./useMediaQuery";
  * ルート側でマウント後の一度だけレンダリングする（SSR では呼ばない）。
  */
 export function AppShell({ children }: { children: ReactNode }) {
+  const viewportRef = useVisualViewport();
   const [pane, setPane] = useState<ShellPane>("sidebar");
   const [membersOpen, setMembersOpen] = useState(false);
   const [threadRootId, setThreadRootId] = useState<string | null>(null);
@@ -117,7 +119,10 @@ export function AppShell({ children }: { children: ReactNode }) {
 
   return (
     <ShellContext.Provider value={value}>
-      <div className="flex h-dvh w-full overflow-hidden bg-background text-foreground">
+      <div
+        ref={viewportRef}
+        className="fixed inset-x-0 top-0 flex h-dvh w-full overflow-hidden bg-background text-foreground"
+      >
         <LeftRail />
         <ChannelSidebar
           channels={channels}

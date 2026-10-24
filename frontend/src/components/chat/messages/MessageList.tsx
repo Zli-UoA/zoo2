@@ -243,10 +243,9 @@ export function MessageList({
     return () => cancelAnimationFrame(frame);
   }, [targetMessageId, items, virtualizer]);
 
-  // 編集の開始・終了で行の高さが変わるため測り直す。
-  useEffect(() => {
-    virtualizer.measure();
-  }, [editingId, virtualizer]);
+  // 各行の measureElement / ResizeObserver が編集・保存・折り返しによる
+  // 高さの変化を追跡する。measure() で全行の実測値を消すと、変化していない
+  // 行まで推定高へ戻り、次の ResizeObserver 通知まで配置がずれてしまう。
 
   useEffect(() => {
     if (!hasNewBelow) {
