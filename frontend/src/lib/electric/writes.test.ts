@@ -7,6 +7,7 @@ import {
   createChannelWrites,
   createMessageWrites,
   createReactionWrites,
+  createNotificationWrites,
 } from "./writes";
 
 const TXID = "4242";
@@ -443,5 +444,67 @@ describe("reaction writes", () => {
     await expect(writes.onInsert(params(collection, [insertMutation(reaction)]))).rejects.toThrow(
       "403 forbidden",
     );
+  });
+});
+
+describe("notification writes", () => {
+  const notification = { id: "n1", user_id: CURRENT_USER, is_read: false };
+  it("marks an individual notification read and waits for replication", async () => {
+    const { client, patch, post } = makeClient();
+    const { collection, awaitTxId } = makeCollection();
+    const writes = createNotificationWrites({
+      client,
+      txidMode: "awaitTxId",
+      getCurrentUserId: () => CURRENT_USER,
+    });
+    await writes.onUpdate(params(collection, [updateMutation(notification, { is_read: true })]));
+    expect(patch).toHaveBeenCalledWith("/api/notifications/n1/read");
+    expect(post).not.toHaveBeenCalled();
+    expect(awaitTxId).toHaveBeenCalledWith(Number(TXID), undefined);
+  });
+  it("uses the bulk API and propagates failures for optimistic rollback", async () => {
+    const { client, post, patch } = makeClient();
+    const { collection } = makeCollection();
+    const writes = createNotificationWrites({
+      client,
+      txidMode: "skip",
+      getCurrentUserId: () => CURRENT_USER,
+    });
+    const mutations = [
+      updateMutation(notification, { is_read: true }),
+      updateMutation({ ...notification, id: "n2" }, { is_read: true }),
+    ];
+    await writes.onUpdate(params(collection, mutations));
+    expect(post).toHaveBeenCalledWith("/api/notifications/read-all");
+    expect(patch).not.toHaveBeenCalled();
+    post.mockRejectedValueOnce(new Error("offline"));
+    await expect(writes.onUpdate(params(collection, mutations))).rejects.toThrow("offline");
+  });
+  it("does not write another user's notification", async () => {
+    const { client, patch, post } = makeClient();
+    const { collection } = makeCollection();
+    const writes = createNotificationWrites({
+      client,
+      txidMode: "skip",
+      getCurrentUserId: () => "other",
+    });
+    await expect(
+      writes.onUpdate(params(collection, [updateMutation(notification, { is_read: true })])),
+    ).rejects.toThrow(/own notifications/);
+    expect(patch).not.toHaveBeenCalled();
+    expect(post).not.toHaveBeenCalled();
+  });
+  it("does not wait for replication on an already-read no-op", async () => {
+    const { client, patch } = makeClient();
+    patch.mockResolvedValueOnce({ data: {}, txid: null } as never);
+    const { collection, awaitTxId, awaitMatch } = makeCollection();
+    const writes = createNotificationWrites({
+      client,
+      txidMode: "awaitTxId",
+      getCurrentUserId: () => CURRENT_USER,
+    });
+    await writes.onUpdate(params(collection, [updateMutation(notification, { is_read: true })]));
+    expect(awaitTxId).not.toHaveBeenCalled();
+    expect(awaitMatch).not.toHaveBeenCalled();
   });
 });

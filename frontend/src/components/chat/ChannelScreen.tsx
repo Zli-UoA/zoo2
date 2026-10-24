@@ -34,7 +34,13 @@ function ChannelLoading() {
 }
 
 /** チャンネルルート。ヘッダとメッセージ（非公開は参加者だけ）を出す。 */
-export function ChannelScreen({ channelId }: { channelId: string }) {
+export function ChannelScreen({
+  channelId,
+  targetMessageId,
+}: {
+  channelId: string;
+  targetMessageId?: string;
+}) {
   const { t } = useTranslation();
   const shell = useShell();
   const channelsQuery = useActiveChannels();
@@ -96,6 +102,7 @@ export function ChannelScreen({ channelId }: { channelId: string }) {
                 <span>{t("moderation.archivedReadOnly")}</span>
               </div>
               <MessageList
+                targetMessageId={targetMessageId}
                 key={`archived-${channelId}`}
                 messages={archivedFeedQuery.data ?? []}
                 isLoading={archivedFeedQuery.isLoading}
@@ -126,7 +133,12 @@ export function ChannelScreen({ channelId }: { channelId: string }) {
             </div>
           )
         ) : access.canRead ? (
-          <MessagePane key={channelId} channelId={channelId} isMember={access.isMember} />
+          <MessagePane
+            targetMessageId={targetMessageId}
+            key={channelId}
+            channelId={channelId}
+            isMember={access.isMember}
+          />
         ) : (
           <div className="flex flex-1 items-center justify-center p-6">
             <p className="max-w-sm text-center text-sm text-muted-foreground">

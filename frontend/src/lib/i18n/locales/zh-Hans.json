@@ -241,7 +241,19 @@
   },
   "notifications": {
     "label": "通知",
-    "close": "关闭通知"
+    "close": "关闭通知",
+    "title": "通知",
+    "unread": "{{count}} 条未读通知",
+    "readAll": "全部标为已读",
+    "read": "标为已读",
+    "empty": "暂无通知",
+    "loadError": "无法加载通知",
+    "readError": "无法将通知标为已读",
+    "mention": "{{actor}} 提到了你",
+    "reply": "{{actor}} 回复了你",
+    "reaction": "{{actor}} 对你的消息添加了表情回应",
+    "openMessage": "打开消息",
+    "unavailable": "频道不可用"
   },
   "webhooks": {
     "title": "Webhook 设置",
@@ -264,5 +276,8 @@
     "rotateConfirm": "要重新生成 Secret 吗？当前的 Secret 将失效，请同步更新 GitHub 的设置。",
     "confirm": "确认",
     "genericUrl": "通用 Webhook URL"
+  },
+  "mentions": {
+    "suggestions": "提及建议"
   }
 }

@@ -4,7 +4,12 @@ import { toast } from "sonner";
 
 import { useCurrentUser } from "../../../hooks/useCurrentUser";
 import { useKitchenCatalog } from "../../../hooks/useKitchenCatalog";
-import { useMessageFeed, useMessageReactions } from "../../../hooks/useRealtime";
+import {
+  useChannelMembers,
+  useUsers,
+  useMessageFeed,
+  useMessageReactions,
+} from "../../../hooks/useRealtime";
 import { useReplyCounts, useThreadFeed } from "../../../hooks/useThread";
 import { useWriteRunner } from "../../../hooks/useWriteRunner";
 import { getCollections } from "../../../lib/electric/collections";
@@ -65,9 +70,23 @@ function JoinToPostPrompt({
  * 未参加の公開チャンネルでは Composer の代わりに参加導線を出し、参加後に
  * 通常の Composer へ戻す（`isMember` は `useChannelAccess` の判定）。
  */
-export function MessagePane({ channelId, isMember }: { channelId: string; isMember: boolean }) {
+export function MessagePane({
+  channelId,
+  isMember,
+  targetMessageId,
+}: {
+  channelId: string;
+  isMember: boolean;
+  targetMessageId?: string;
+}) {
   const { t } = useTranslation();
   const { messages, channelUsers, reactions } = getCollections();
+  const mentionUsers = useUsers().data ?? [];
+  const members = useChannelMembers(channelId).data;
+  const mentionMemberIds = useMemo(
+    () => new Set((members ?? []).map((member) => member.user_id)),
+    [members],
+  );
   const messagesCollection = messages(channelId);
   const reactionsCollection = reactions(channelId);
   const messagesQuery = useMessageFeed(channelId);
@@ -154,6 +173,12 @@ export function MessagePane({ channelId, isMember }: { channelId: string; isMemb
     closeThread();
   }, [channelId, closeThread]);
   useEffect(() => closeThread, [closeThread]);
+
+  useEffect(() => {
+    if (!targetMessageId || messagesQuery.isLoading) return;
+    const target = messagesCollection.get(targetMessageId);
+    if (target?.parent_id && !target.deleted_at) openThread(target.parent_id);
+  }, [targetMessageId, messagesQuery.isLoading, messagesCollection, openThread]);
 
   // ルートが（他ユーザーの操作などで）見えなくなったらスレッドも閉じる。
   // 論理削除なら、返信が残っていることを利用者に伝えてから閉じる。
@@ -301,6 +326,7 @@ export function MessagePane({ channelId, isMember }: { channelId: string; isMemb
         </div>
 
         <MessageList
+          targetMessageId={targetMessageId}
           key={`${channelId}:${currentUserId}`}
           channelId={channelId}
           messages={feed}
@@ -328,7 +354,13 @@ export function MessagePane({ channelId, isMember }: { channelId: string; isMemb
         {isMember ? (
           <>
             <TypingIndicator users={typing.users} />
-            <Composer key={channelId} onSend={handleSend} onTyping={typing.onTyping} />
+            <Composer
+              mentionUsers={mentionUsers}
+              mentionMemberIds={mentionMemberIds}
+              key={channelId}
+              onSend={handleSend}
+              onTyping={typing.onTyping}
+            />
           </>
         ) : (
           <JoinToPostPrompt
@@ -341,6 +373,9 @@ export function MessagePane({ channelId, isMember }: { channelId: string; isMemb
 
       {threadRoot ? (
         <ThreadPane
+          targetMessageId={targetMessageId}
+          mentionUsers={mentionUsers}
+          mentionMemberIds={mentionMemberIds}
           key={threadRoot.id}
           isMember={isMember}
           typingUsers={threadTyping.users}

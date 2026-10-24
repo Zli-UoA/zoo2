@@ -241,7 +241,19 @@
   },
   "notifications": {
     "label": "Notifications",
-    "close": "Dismiss notification"
+    "close": "Dismiss notification",
+    "title": "Notifications",
+    "unread": "{{count}} unread notifications",
+    "readAll": "Mark all as read",
+    "read": "Mark as read",
+    "empty": "No notifications",
+    "loadError": "Could not load notifications",
+    "readError": "Could not mark notifications as read",
+    "mention": "{{actor}} mentioned you",
+    "reply": "{{actor}} replied to you",
+    "reaction": "{{actor}} reacted to your message",
+    "openMessage": "Open message",
+    "unavailable": "Channel unavailable"
   },
   "webhooks": {
     "title": "Webhook settings",
@@ -264,5 +276,8 @@
     "rotateConfirm": "Regenerate the Secret? The current Secret will stop working. Update it on GitHub too.",
     "confirm": "Confirm",
     "genericUrl": "Generic webhook URL"
+  },
+  "mentions": {
+    "suggestions": "Mention suggestions"
   }
 }

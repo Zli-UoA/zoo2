@@ -12,6 +12,7 @@ import { ModeToggle } from "../theme/ModeToggle";
 import { Avatar, AvatarFallback } from "../ui/avatar";
 import { Button } from "../ui/button";
 import { Separator } from "../ui/separator";
+import { NotificationsButton } from "../chat/NotificationsButton";
 import { initials } from "../chat/format";
 
 function RailLink({
@@ -74,6 +75,7 @@ export function LeftRail() {
       </div>
       <Separator className="my-1 w-6" />
       <RailLink to="/" icon={HashIcon} label={t("channels.title")} exact />
+      <NotificationsButton />
       {/* 同期の状態（/realtime）は開発時の確認用。本番ビルドでは出さない。 */}
       {import.meta.env.DEV ? (
         <RailLink to="/realtime" icon={ActivityIcon} label={t("sync.title")} exact />

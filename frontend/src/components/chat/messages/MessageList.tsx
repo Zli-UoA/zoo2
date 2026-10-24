@@ -23,6 +23,7 @@ const ESTIMATED_ROW_HEIGHT = 64;
 const SKELETON_ROWS = [0, 1, 2, 3, 4, 5];
 
 interface MessageListProps {
+  targetMessageId?: string;
   channelId?: string;
   messages: FeedMessage[];
   isLoading: boolean;
@@ -89,6 +90,7 @@ function MessageState({
  * 「新着メッセージ」ボタンに加えて `aria-live` でも読み上げる。
  */
 export function MessageList({
+  targetMessageId,
   channelId,
   messages,
   isLoading,
@@ -223,6 +225,24 @@ export function MessageList({
     };
   }, [markRead]);
 
+  const scrolledTarget = useRef<string | undefined>(undefined);
+  useEffect(() => {
+    if (!targetMessageId) {
+      scrolledTarget.current = undefined;
+      return;
+    }
+    if (scrolledTarget.current === targetMessageId) return;
+    const index = items.findIndex((item) => item.message.id === targetMessageId);
+    if (index < 0) return;
+    atBottomRef.current = false;
+    const frame = requestAnimationFrame(() => {
+      atBottomRef.current = false;
+      virtualizer.scrollToIndex(index, { align: "center" });
+      scrolledTarget.current = targetMessageId;
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [targetMessageId, items, virtualizer]);
+
   // 編集の開始・終了で行の高さが変わるため測り直す。
   useEffect(() => {
     virtualizer.measure();
@@ -276,7 +296,7 @@ export function MessageList({
                   ref={virtualizer.measureElement}
                   data-index={virtualRow.index}
                   role="listitem"
-                  className="absolute left-0 top-0 w-full"
+                  className={`absolute left-0 top-0 w-full ${item.message.id === targetMessageId ? "rounded-lg bg-brand-muted/40 ring-1 ring-brand" : ""}`}
                   style={{ transform: `translateY(${virtualRow.start}px)` }}
                 >
                   {item.message.id === firstUnreadId ? (

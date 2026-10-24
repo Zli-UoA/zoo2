@@ -17,6 +17,9 @@ import { buildMessageItems } from "./messageGrouping";
 import { isNearBottom } from "./messageScroll";
 
 export interface ThreadPaneProps {
+  targetMessageId?: string;
+  mentionUsers?: import("../../../lib/electric/types").UserRow[];
+  mentionMemberIds?: ReadonlySet<string>;
   isMember?: boolean;
   typingUsers?: TypingUser[];
   onTyping?: (active: boolean) => void;
@@ -49,6 +52,9 @@ export interface ThreadPaneProps {
  * `messages.insert`（`parent_id` 付き）で、txid の確定は MessagePane が待つ。
  */
 export function ThreadPane({
+  targetMessageId,
+  mentionUsers,
+  mentionMemberIds,
   isMember = true,
   typingUsers = [],
   onTyping,
@@ -91,6 +97,27 @@ export function ThreadPane({
       element.scrollTop = element.scrollHeight;
     });
   }, [items.length, root.id]);
+
+  const scrolledTarget = useRef<string | undefined>(undefined);
+  useEffect(() => {
+    if (!targetMessageId) {
+      scrolledTarget.current = undefined;
+      return;
+    }
+    if (scrolledTarget.current === targetMessageId) return;
+    if (!replies.some((reply) => reply.id === targetMessageId)) return;
+    const frame = requestAnimationFrame(() => {
+      const target = Array.from(
+        scrollRef.current?.querySelectorAll<HTMLElement>("[data-message-id]") ?? [],
+      ).find((element) => element.dataset.messageId === targetMessageId);
+      if (target && scrollRef.current) {
+        atBottomRef.current = false;
+        scrolledTarget.current = targetMessageId;
+        scrollRef.current.scrollTop = target.offsetTop - scrollRef.current.offsetTop;
+      }
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [targetMessageId, replies]);
 
   return (
     <aside
@@ -153,7 +180,16 @@ export function ThreadPane({
         ) : (
           <div role="list">
             {items.map((item) => (
-              <div key={item.message.id} role="listitem">
+              <div
+                key={item.message.id}
+                data-message-id={item.message.id}
+                role="listitem"
+                className={
+                  item.message.id === targetMessageId
+                    ? "rounded-lg bg-brand-muted/40 ring-1 ring-brand"
+                    : undefined
+                }
+              >
                 <MessageRow
                   item={item}
                   isOwn={!!currentUserId && item.message.user_id === currentUserId}
@@ -178,6 +214,8 @@ export function ThreadPane({
 
       <TypingIndicator users={typingUsers} />
       <Composer
+        mentionUsers={mentionUsers}
+        mentionMemberIds={mentionMemberIds}
         disabled={!isMember}
         onTyping={onTyping}
         onSend={onSendReply}
