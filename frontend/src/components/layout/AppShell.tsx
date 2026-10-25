@@ -3,6 +3,7 @@ import { cn } from "cn";
 import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
 
 import { useActiveChannels } from "../../hooks/useRealtime";
+import { MfmChannelsProvider } from "../chat/messages/MfmChannels";
 import { ChannelSidebar } from "../chat/ChannelSidebar";
 import { MembersDialog } from "../chat/MembersDialog";
 import { MembersPanel } from "../chat/MembersPanel";
@@ -120,6 +121,7 @@ export function AppShell({ children }: { children: ReactNode }) {
 
   return (
     <ShellContext.Provider value={value}>
+      <MfmChannelsProvider channels={channels}>
       <div
         ref={viewportRef}
         data-app-shell
@@ -152,6 +154,7 @@ export function AppShell({ children }: { children: ReactNode }) {
           />
         ) : null}
       </div>
+      </MfmChannelsProvider>
     </ShellContext.Provider>
   );
 }

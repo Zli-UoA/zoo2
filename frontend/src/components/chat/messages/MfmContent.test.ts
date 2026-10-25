@@ -1,6 +1,7 @@
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vite-plus/test";
+import { MfmChannelsProvider } from "./MfmChannels";
 import { parse } from "mfm-js";
 import { MfmContent, type MfmContentProps } from "./MfmContent";
 
@@ -137,8 +138,25 @@ describe("MfmContent", () => {
   });
   it("renders remote mentions, hashtags and search without automatically fetching external services", () => {
     expect(render("@alice@example.com")).toContain('href="https://example.com/@alice"');
-    expect(render("#猫")).toContain("https://www.google.com/search?q=%23%E7%8C%AB");
+    expect(render("#猫")).toBe("#猫");
     expect(render("猫 検索")).toContain("https://www.google.com/search?q=%E7%8C%AB");
+  });
+  it("links only exact existing channel names, including inside decorations", () => {
+    const channels = [
+      { id: "channel-1", channel_name: "開発", deleted_at: null },
+      { id: "channel-2", channel_name: "deleted", deleted_at: "2026-10-25" },
+    ];
+    const html = renderToStaticMarkup(
+      createElement(MfmChannelsProvider, {
+        channels,
+        children: createElement(MfmContent, { content: "$[jelly #開発] #未登録 #deleted #開発中" }),
+      }),
+    );
+    expect(html).toContain('href="/channels/channel-1"');
+    expect(html.match(/<a /g)).toHaveLength(1);
+    expect(html).toContain("#未登録 #deleted #開発中");
+    expect(html).not.toContain("google.com");
+    expect(html).not.toContain('target="_blank"');
   });
   it("escapes HTML, denies unsafe links and KaTeX trusted commands", () => {
     const html = render("<script>alert(1)</script> [click](javascript:alert(1))");

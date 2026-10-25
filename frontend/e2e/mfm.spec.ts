@@ -50,3 +50,13 @@ test("blur and clickable functions work with the keyboard", async ({ page }) => 
   await page.keyboard.press("Enter");
   await expect(page.locator("#result")).toHaveText("test");
 });
+
+test("hashtags link only to existing channels in the same tab", async ({ page }) => {
+  const hashtags = page.locator("#hashtags");
+  await expect(hashtags).toHaveText("#開発 #未登録 #削除済み");
+  const links = hashtags.getByRole("link");
+  await expect(links).toHaveCount(1);
+  await expect(links).toHaveText("#開発");
+  await expect(links).toHaveAttribute("href", "/channels/dev-id");
+  await expect(links).not.toHaveAttribute("target", "_blank");
+});
