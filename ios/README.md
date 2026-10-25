@@ -2,7 +2,8 @@
 
 A SwiftUI client for Zli's zoo2 workspace. Requires iOS 18 or later. The existing
 Rust backend remains the authority for identity, membership, and authorization.
-No backend or database changes are included.
+Native push registration and delivery require the accompanying backend migration.
+See [Native authentication and push deployment](docs/native-auth-push.md).
 
 ## Architecture
 
@@ -32,8 +33,8 @@ make test DESTINATION='platform=iOS Simulator,name=iPhone 17'
 tests intercept every request with URLProtocol. UI tests use the isolated demo;
 they never write to the production workspace. Build products stay in `.build/`.
 These Simulator commands use ad-hoc signing so Keychain access can be tested;
-they do not use a distribution certificate. Set a development team in Xcode
-for a physical device; never add signing credentials to this repository.
+they do not use a distribution certificate. Team `F82XB5KFX2` is configured;
+physical devices still require a matching provisioning profile and signing identity; never add signing credentials to this repository.
 
 ## Connect to Zli
 
@@ -45,25 +46,26 @@ The public defaults match zoo2's current deployment:
 | OIDC issuer | `https://account.zli.works/api/auth` |
 | Resource / API audience | `https://zli.chat/api` |
 | Scope | `openid profile offline_access` |
-| Redirect URI | `zoo2://oauth/callback` |
+| Redirect URI | `https://zli.chat/ios/oauth/callback` |
 
-The native OAuth client has **not been registered** as of implementation. The
-web client ID is deliberately not reused. An identity administrator must register
-a public native client with the exact redirect URI above, authorization code flow,
-PKCE S256, and access to the existing API resource. Enable refresh tokens if
-supported. Public clients must not require an embedded client secret. Confirm
-that the resulting access token has the issuer and audience expected by zoo2.
+The dedicated public OAuth client was registered on 2026-10-26:
+`UPPfdYapcgiBgnfZIoGvFuJMAEIhXQOV`. It is the app's default Client ID. AuthZ
+confirmed `token_endpoint_auth_method=none`, required PKCE, authorization-code and
+refresh-token grants, the exact HTTPS redirect above, and the Zoo API resource.
+No client secret is generated or embedded. Real login and token audience still
+require verification after the association/callback routes are deployed.
 
 Enter that client ID in **Connection settings** (`接続設定`) on the welcome screen,
 save, and log in. ASWebAuthenticationSession handles browser authentication;
-the client verifies callback scheme, host, path and OAuth state before exchanging
+the client verifies callback scheme, host, path, OAuth state and response issuer before exchanging
 the code. Access/refresh tokens are stored in the device-only Keychain, scoped by
 connection settings. Concurrent token refreshes share one exchange. Logout clears
-tokens, subscriptions, in-memory messages and drafts. It does not revoke other
+tokens, in-memory messages and drafts. Push revocation is queued separately and
+retried if the network is unavailable. It does not revoke other
 devices' sessions. Native HTTPS requests do not need browser CORS changes.
 
-Production login and real-account integration remain unverified until this client
-is registered. Do not interpret demo tests as production authentication coverage.
+Production login and real-account integration remain unverified until the
+association/callback routes and backend changes are deployed. Do not interpret demo tests as production authentication coverage.
 
 ## Implemented flows
 
@@ -77,6 +79,9 @@ is registered. Do not interpret demo tests as production authentication coverage
 - Read notification activity and navigate to its conversation/thread.
 - Display server unread state and explicitly mark a visible conversation read.
 - Edit the current user's display name and log out.
+- Opt into native APNs alerts for DM, mention, reply and reaction notifications;
+  open the authorized conversation after tapping an alert. Alerts contain generic
+  text rather than private message previews.
 - Support Dynamic Type, system appearance, iPhone/iPad layouts and VoiceOver labels.
 
 Read models use `/api/shapes/*`, including cursor/handle continuation, partial
@@ -95,12 +100,12 @@ Shape updates. The app does not fabricate a successful offline write.
 
 ## Release blockers and parity gaps
 
-- Register the iOS OAuth client and verify real login, token refresh, logout,
+- Verify the registered iOS OAuth client with real login, token refresh, logout,
   authorization loss, and two-device messaging against a staging workspace.
-- Native background push delivery is not implemented. The backend currently
-  implements Web Push, which is not an APNs device-token registration API.
-  Native push requires APNs entitlement/signing, device registration and backend
-  delivery work, plus device verification. No push permission is requested yet.
+- Deploy the APNs migration and server configuration, register the Apple App ID
+  and capabilities, install a signed app on a physical device, and verify sandbox
+  and TestFlight delivery. APNs implementation and Simulator tests do not prove
+  delivery through Apple. See the deployment guide for the remaining prerequisites.
 - Member removal, typing presence, Emoji Kitchen rendering, and full web-client localization are
   not included. Messages currently display their literal text.
 - File attachments and MFM are not claimed: their referenced zoo2 PRs were not
@@ -122,14 +127,13 @@ installed. The app icon is reproducible with `make icon`.
 
 ## Validation evidence
 
-The architecture migration preserves protocol and UI coverage and adds tests for
-shared feature state, channel isolation, subscription readers, draft preservation,
-late responses after logout, transient recovery, and received-history release.
 Validated on 2026-10-26 with Xcode 27.1 and the iPhone 18 Pro iOS 27 Simulator:
-35 unit/network/feature tests and 4 UI tests passed in separate invocations.
-The earlier combined run encountered a test-host bootstrap failure and a failed
-UI tap; both suites passed when rerun separately. The final independent
-`reviewer-jp` review reported no significant findings.
+45 unit/network/feature tests and 5 UI tests passed in separate invocations.
+Backend validation passed 65 unit tests and 5 PostgreSQL integration tests, using
+a temporary local database with all 14 Atlas migrations applied. The new tests
+cover revocation ownership, delayed registration after logout, receipt expiry,
+network failure, account switching and HTTPS callback validation. Independent
+`reviewer-jp` review findings were addressed and the final review passed.
 
 Production OAuth and real-account integration remain subject to the release
 blockers above.
@@ -148,3 +152,7 @@ XCTest attachments. Include these images in the pull request description.
 | Thread | Notifications |
 | --- | --- |
 | ![Thread](docs/screenshots/thread.png) | ![Notifications](docs/screenshots/notifications.png) |
+
+The connection settings screenshot shows the HTTPS callback configuration:
+
+![Connection settings](docs/screenshots/connection.png)

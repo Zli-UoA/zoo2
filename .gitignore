@@ -6,3 +6,9 @@
 target/
 .target/
 .idea/
+
+.env.local
+.env.*.local
+*.p8
+*.pem
+*.key

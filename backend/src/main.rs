@@ -28,6 +28,8 @@ async fn main() -> anyhow::Result<()> {
     );
 
     backend::push::PushConfig::from_env()?;
+    backend::apns::ApnsConfig::from_env("sandbox")?;
+    backend::apns::ApnsConfig::from_env("production")?;
 
     // データベース接続初期化 (Toasty ORM)
     let db = init_db(&config.database_url).await?;

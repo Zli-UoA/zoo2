@@ -1,7 +1,9 @@
+pub mod apns;
 pub mod channel_webhooks;
 pub mod channels;
 pub mod dms;
 pub mod health;
+pub mod ios;
 pub mod messages;
 pub mod notifications;
 pub mod push;
@@ -67,9 +69,14 @@ pub fn create_router(state: AppState) -> Router {
         .merge(typing::router())
         .merge(notifications::router())
         .merge(push::router())
+        .merge(apns::router())
+        .merge(ios::router())
         .merge(read_states::router())
         .merge(shapes::router())
-        .layer(TraceLayer::new_for_http())
+        .layer(TraceLayer::new_for_http().make_span_with(|request: &axum::http::Request<axum::body::Body>| {
+            // OAuth callbacks may carry one-time credentials in their query string.
+            tracing::debug_span!("request", method = %request.method(), path = request.uri().path())
+        }))
         .layer(cors)
         .with_state(state)
 }

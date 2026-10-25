@@ -27,11 +27,22 @@ struct ProfileScreen: View {
                         Task { _ = await session.perform { try await model.updateName(displayName.trimmingCharacters(in: .whitespacesAndNewlines)) }; busy = false }
                     }.disabled(busy || displayName == model.me?.display_name || displayName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || displayName.unicodeScalars.count > 80)
                 }
+                if !session.isDemo {
+                    Section("プッシュ通知") {
+                        Text(session.notifications.status).font(.caption).foregroundStyle(.secondary)
+                        Button(session.notifications.enabled ? "通知を再登録" : "通知を有効にする") {
+                            Task { await session.notifications.enable() }
+                        }
+                        if session.notifications.enabled {
+                            Button("通知を無効にする", role: .destructive) { session.notifications.disable() }
+                        }
+                    }
+                }
                 Section("アプリについて") {
                     LabeledContent("アプリ", value: "Zoo for iOS")
                     LabeledContent("ワークスペース", value: "Zli")
                     if session.isDemo { Text("デモの変更はログアウトすると消えます。").font(.caption).foregroundStyle(.secondary) }
-                    else { Text("通知はアプリ内で確認できます。このバージョンはバックグラウンドのプッシュ通知に対応していません。").font(.caption).foregroundStyle(.secondary) }
+
                 }
                 Section {
                     Button(session.isDemo ? "デモを終了" : "ログアウト", role: .destructive) { confirmingLogout = true }

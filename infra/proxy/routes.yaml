@@ -7,6 +7,12 @@ http:
       entryPoints: [web]
       middlewares: [private-response, strip-dev-headers]
       service: backend
+    ios:
+      rule: 'Path(`/.well-known/apple-app-site-association`) || Path(`/ios/oauth/callback`)'
+      priority: 100
+      entryPoints: [web]
+      middlewares: [strip-dev-headers]
+      service: backend
     frontend:
       rule: 'PathPrefix(`/`)'
       priority: 1

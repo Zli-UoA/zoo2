@@ -1,3 +1,7 @@
+pub mod apns_revocation;
+pub use apns_revocation::ApnsRevocation;
+pub mod apns_subscription;
+pub use apns_subscription::ApnsSubscription;
 pub mod channel_webhook;
 pub use channel_webhook::ChannelWebhook;
 pub mod channel;

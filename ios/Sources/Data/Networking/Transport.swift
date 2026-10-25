@@ -3,10 +3,10 @@ import Foundation
 struct ConnectionSettings: Codable, Equatable, Sendable {
     var server = "https://zli.chat"
     var issuer = "https://account.zli.works/api/auth"
-    var clientID = ""
+    var clientID = "UPPfdYapcgiBgnfZIoGvFuJMAEIhXQOV"
     var resource = "https://zli.chat/api"
     var scope = "openid profile offline_access"
-    static let callback = "zoo2://oauth/callback"
+    static let callback = "https://zli.chat/ios/oauth/callback"
 
     static func secureURL(_ raw: String) throws -> URL {
         guard let url = URL(string: raw), url.scheme == "https", url.host != nil,

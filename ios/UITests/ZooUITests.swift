@@ -76,6 +76,17 @@ final class ZooUITests: XCTestCase {
         capture(app, name: "zoo-notifications")
     }
 
+    func testConnectionSettingsShowHTTPSCallback() {
+        let app = XCUIApplication()
+        app.launchArguments = ["--uitesting"]
+        app.launch()
+        XCTAssertTrue(app.buttons["接続設定"].waitForExistence(timeout: 5))
+        app.buttons["接続設定"].tap()
+        let help = app.staticTexts.containing(NSPredicate(format: "label CONTAINS %@", "https://zli.chat/ios/oauth/callback")).firstMatch
+        XCTAssertTrue(help.waitForExistence(timeout: 5))
+        capture(app, name: "zoo-connection")
+    }
+
     private func capture(_ app: XCUIApplication, name: String) {
         let attachment = XCTAttachment(screenshot: app.screenshot())
         attachment.name = name

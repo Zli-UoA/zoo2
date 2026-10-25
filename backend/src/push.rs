@@ -170,6 +170,7 @@ pub fn dispatch(state: AppState, notifications: Vec<Notification>) {
     if notifications.is_empty() {
         return;
     }
+    crate::apns::dispatch(state.clone(), notifications.clone());
     tokio::spawn(async move {
         if deliver(&state, notifications).await.is_err() {
             tracing::warn!("Web Push delivery failed");

@@ -62,6 +62,44 @@ final class NetworkTests: XCTestCase {
         return APIClient(settings: settings, auth: auth, transport: transport)
     }
 
+    func testPushCleanupUsesOriginalServerWithoutBearerAndRejectsSPAResponse() async throws {
+        let api = try client()
+        defer { api.auth.logout(); StubProtocol.state.install(nil) }
+        let receipt = PushReceipt(server: "https://previous.test.invalid", account: "old", token: "aabb", environment: "sandbox", secret: String(repeating: "a", count: 64))
+        let backend = LivePushBackend(api: api, transport: api.transport)
+        StubProtocol.state.install { request in
+            XCTAssertEqual(request.url?.host, "previous.test.invalid")
+            XCTAssertEqual(request.url?.path, "/api/push/apns/revoke")
+            XCTAssertNil(request.value(forHTTPHeaderField: "Authorization"))
+            let body = try JSONSerialization.jsonObject(with: Self.body(request)) as! [String: String]
+            XCTAssertEqual(body["id"], receipt.id)
+            XCTAssertEqual(body["revocation_secret"], receipt.secret)
+            return (200, [:], Data("<html>SPA fallback</html>".utf8))
+        }
+        do { try await backend.revoke(receipt); XCTFail("A successful HTTP response is not proof of cleanup") }
+        catch { XCTAssertTrue(error is DecodingError) }
+        StubProtocol.state.install { _ in (200, [:], Data(#"{"ok":true}"#.utf8)) }
+        try await backend.revoke(receipt)
+    }
+
+    func testPushRegistrationUsesEnvironmentConfigurationAndStableReceipt() async throws {
+        let api = try client()
+        defer { api.auth.logout(); StubProtocol.state.install(nil) }
+        let receipt = PushReceipt(server: api.settings.server, account: "user", token: "aabb", environment: "sandbox", secret: String(repeating: "a", count: 64))
+        StubProtocol.state.install { request in
+            XCTAssertEqual(request.value(forHTTPHeaderField: "Authorization"), "Bearer test-access")
+            if request.url?.path == "/api/push/apns/config" {
+                return (200, [:], Data(#"{"sandbox":true,"production":false}"#.utf8))
+            }
+            XCTAssertEqual(request.url?.path, "/api/push/apns/subscriptions")
+            let body = try JSONSerialization.jsonObject(with: Self.body(request)) as! [String: Any]
+            XCTAssertEqual(body["created_at"] as? Int64, receipt.createdAt)
+            XCTAssertEqual(body["environment"] as? String, "sandbox")
+            return (200, [:], try JSONSerialization.data(withJSONObject: ["id": receipt.id]))
+        }
+        try await LivePushBackend(api: api, transport: api.transport).subscribe(receipt)
+    }
+
     func testWritesUseBearerAndDecodeExistingBackendEnvelope() async throws {
         let api = try client()
         defer { api.auth.logout(); StubProtocol.state.install(nil) }

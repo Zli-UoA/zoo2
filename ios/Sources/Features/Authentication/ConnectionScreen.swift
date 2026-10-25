@@ -15,7 +15,7 @@ struct ConnectionScreen: View {
                     TextField("Resource", text: $settings.resource).keyboardType(.URL)
                     TextField("Scope", text: $settings.scope)
                 } header: { Text("Zli アカウント") } footer: {
-                    Text("管理者が発行した iOS 用の接続設定を入力してください。戻り先は zoo2://oauth/callback です。パスワードやクライアントシークレットは入力しません。")
+                    Text("管理者が発行した iOS 用の接続設定を入力してください。戻り先は https://zli.chat/ios/oauth/callback です。パスワードやクライアントシークレットは入力しません。")
                 }
             }
             .textInputAutocapitalization(.never).autocorrectionDisabled()

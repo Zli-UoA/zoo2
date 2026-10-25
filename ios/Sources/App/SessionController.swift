@@ -8,6 +8,7 @@ final class SessionController {
     private(set) var isDemo = false
     private(set) var isConnecting = false
     var error: String?
+    let notifications: NotificationController
     private var authentication: Authentication
     private var repositorySession: RepositorySession
     private let transport: HTTPTransport
@@ -19,6 +20,7 @@ final class SessionController {
         let settings = configured ?? saved.flatMap { try? JSONDecoder().decode(ConnectionSettings.self, from: $0) } ?? ConnectionSettings()
         self.settings = settings
         self.transport = transport
+        notifications = NotificationController(transport: transport)
         let authentication = Authentication(settings: settings, transport: transport)
         self.authentication = authentication
         repositorySession = RepositorySession(api: APIClient(settings: settings, auth: authentication, transport: transport))
@@ -51,6 +53,7 @@ final class SessionController {
             let session = repositorySession
             let repository = LiveWorkspaceRepository(session: session)
             repository.state.me = user
+            notifications.connect(api: session.api, userID: user.id)
             install(WorkspaceContext(repository: repository) {
                 LiveMessageRepository(channelID: $0, userID: user.id, session: session)
             })
@@ -86,6 +89,7 @@ final class SessionController {
     }
 
     func logout() {
+        notifications.logout()
         generation = UUID()
         repositorySession.invalidate()
         authentication.logout()

@@ -64,8 +64,9 @@ enum PKCE {
 
     static func challenge(_ verifier: String) -> String { base64(Data(SHA256.hash(data: Data(verifier.utf8)))) }
 
-    static func code(from callback: URL, expectedState: String) throws -> String {
-        guard callback.scheme == "zoo2", callback.host == "oauth", callback.path == "/callback",
+    static func code(from callback: URL, expectedState: String, expectedIssuer: String? = nil) throws -> String {
+        guard callback.scheme == "https", callback.host == "zli.chat", callback.path == "/ios/oauth/callback",
+              callback.port == nil, callback.user == nil, callback.password == nil, callback.fragment == nil,
               let query = URLComponents(url: callback, resolvingAgainstBaseURL: false)?.queryItems else {
             throw ZooError.auth("認証の戻り先を確認できませんでした。")
         }
@@ -75,6 +76,10 @@ enum PKCE {
               !query.contains(where: { $0.name == "error" }), codes.count == 1,
               let code = codes.first?.value, !code.isEmpty else {
             throw ZooError.auth("認証を完了できませんでした。もう一度ログインしてください。")
+        }
+        let issuers = query.filter { $0.name == "iss" }
+        if let expectedIssuer, (issuers.count != 1 || issuers.first?.value != expectedIssuer) {
+            throw ZooError.auth("認証サーバーの識別情報が一致しません。")
         }
         return code
     }
@@ -137,7 +142,7 @@ final class Authentication: NSObject, ASWebAuthenticationPresentationContextProv
         url.queryItems = fields.map { URLQueryItem(name: $0.key, value: $0.value) }
         guard let authorizationURL = url.url else { throw ZooError.invalidConfiguration }
         let callback: URL = try await withCheckedThrowingContinuation { continuation in
-            let session = ASWebAuthenticationSession(url: authorizationURL, callbackURLScheme: "zoo2") { url, error in
+            let session = ASWebAuthenticationSession(url: authorizationURL, callback: .https(host: "zli.chat", path: "/ios/oauth/callback")) { url, error in
                 if let url { continuation.resume(returning: url) }
                 else { continuation.resume(throwing: error ?? ZooError.auth("ログインを中止しました。")) }
             }
@@ -147,7 +152,7 @@ final class Authentication: NSObject, ASWebAuthenticationPresentationContextProv
             if !session.start() { continuation.resume(throwing: ZooError.auth("ログイン画面を開けませんでした。")) }
         }
         browser = nil
-        let code = try PKCE.code(from: callback, expectedState: state)
+        let code = try PKCE.code(from: callback, expectedState: state, expectedIssuer: discovery.issuer)
         var exchange = ["grant_type": "authorization_code", "client_id": settings.clientID,
                         "redirect_uri": ConnectionSettings.callback, "code": code, "code_verifier": verifier]
         if !settings.resource.isEmpty { exchange["resource"] = settings.resource }

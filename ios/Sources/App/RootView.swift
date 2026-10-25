@@ -38,6 +38,22 @@ struct RootView: View {
                     .environment(context.channels)
                     .environment(context.notifications)
                     .environment(context.profile)
+                    .sheet(isPresented: Binding(get: {
+                        guard let target = session.notifications.destination,
+                              target.userID == context.profile.me?.id else { return false }
+                        return context.channels.channel(target.channelID) != nil
+                    }, set: { if !$0 { session.notifications.destination = nil } })) {
+                        if let target = session.notifications.destination,
+                           target.userID == context.profile.me?.id,
+                           let channel = context.channels.channel(target.channelID) {
+                            NavigationStack {
+                                ChannelScreen(route: ChannelRoute(channel: channel, messageID: target.messageID))
+                                    .toolbar { ToolbarItem(placement: .cancellationAction) {
+                                        Button("閉じる") { session.notifications.destination = nil }
+                                    } }
+                            }.environment(context).environment(context.channels)
+                        }
+                    }
                 }
             } else { WelcomeScreen() }
         }

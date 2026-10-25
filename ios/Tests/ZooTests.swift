@@ -7,9 +7,9 @@ final class ProtocolTests: XCTestCase {
     }
 
     func testCallbackRejectsWrongStateHostAndDuplicateCode() throws {
-        XCTAssertEqual(try PKCE.code(from: URL(string: "zoo2://oauth/callback?state=s&code=ok")!, expectedState: "s"), "ok")
-        for value in ["zoo2://oauth/callback?state=wrong&code=ok", "zoo2://evil/callback?state=s&code=ok",
-                      "zoo2://oauth/callback?state=s&code=a&code=b", "zoo2://oauth/callback?state=s&code=ok&error=denied"] {
+        XCTAssertEqual(try PKCE.code(from: URL(string: "https://zli.chat/ios/oauth/callback?state=s&code=ok")!, expectedState: "s"), "ok")
+        for value in ["https://zli.chat/ios/oauth/callback?state=wrong&code=ok", "zoo2://evil/callback?state=s&code=ok",
+                      "https://zli.chat/ios/oauth/callback?state=s&code=a&code=b", "https://zli.chat/ios/oauth/callback?state=s&code=ok&error=denied"] {
             XCTAssertThrowsError(try PKCE.code(from: URL(string: value)!, expectedState: "s"))
         }
     }
