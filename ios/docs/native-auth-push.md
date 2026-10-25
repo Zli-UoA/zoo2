@@ -16,6 +16,7 @@ The dedicated public OAuth client is registered with Client ID
 No production database migration or service deployment has been performed.
 
 Coordination requests:
+
 - [AuthZ client registration](https://github.com/Zli-UoA/AuthZ/issues/82)
 - [Kubernetes/Flux deployment](https://github.com/Zli-UoA/zoo2-infra/issues/60)
 
@@ -37,15 +38,14 @@ The public OAuth client was registered in AuthZ with these settings:
 | Issuer | `https://account.zli.works/api/auth` |
 
 The public Client ID is included in the app defaults and remains editable in
-Connection settings. Do not reuse
-Zoo's browser client or add its secret to the app. The previous custom-scheme
+Connection settings. Do not reuse Zoo's browser client or add its secret to the app. The previous custom-scheme
 redirect is incompatible with AuthZ's production HTTPS-only redirect validation.
 The app also checks AuthZ's RFC 9207 `iss` authorization response parameter.
 
 ## Apple account and application
 
 The supplied Team ID is `F82XB5KFX2`; the bundle identifier is `works.zli.zoo`.
-Register that explicit App ID with Push Notifications and Associated Domains.
+That explicit App ID has Push Notifications and Associated Domains enabled.
 Create signing/provisioning assets for this team. If the App ID prefix differs
 from the Team ID (legacy accounts), correct the association document to the actual
 signed application identifier before deployment.
@@ -83,8 +83,8 @@ independently. Invalid partial configuration fails closed.
 
 Review and apply `20261026000000_create_apns_subscriptions.sql` through the normal
 Atlas deployment workflow before running the new backend. It adds a table and
-index, plus an expiring revocation table; it does not modify existing notification records. Check the migration on
-a staging database before approving a production deployment. The compose file
+index, plus an expiring revocation table; it does not modify existing notification
+records. Check the migration on a staging database before approving a production deployment. The compose file
 passes the APNs configuration into the backend and supplies the public Team ID.
 Outbound HTTPS/HTTP2 access to Apple's APNs endpoints is required.
 
