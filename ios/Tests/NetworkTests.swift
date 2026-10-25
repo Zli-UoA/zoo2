@@ -128,8 +128,11 @@ final class NetworkTests: XCTestCase {
     func testUnknownSubmissionRetainsRetryIDAcrossChannelResync() async throws {
         let api = try client()
         defer { api.auth.logout(); StubProtocol.state.install(nil) }
-        let store = ZooStore(settings: api.settings, transport: api.transport)
-        store.me = Person(id: "u", user_name: "user", display_name: "User")
+        let session = RepositorySession(api: api)
+        let workspace = LiveWorkspaceRepository(session: session)
+        workspace.state.me = Person(id: "u", user_name: "user", display_name: "User")
+        let repository = LiveMessageRepository(channelID: "c", userID: "u", session: session)
+        let store = ConversationViewModel(repository: repository, workspace: workspace, userID: "u")
         StubProtocol.state.install { request in
             let body = try JSONDecoder().decode([String: String].self, from: Self.body(request))
             let id = try XCTUnwrap(body["id"])
@@ -137,15 +140,105 @@ final class NetworkTests: XCTestCase {
             let response: [String: Any] = ["data": ["id": id, "user_id": "u", "channel_id": "c", "content": "hello", "created_at": "2026-10-26T12:00:00Z"], "txid": "42"]
             return (200, [:], try JSONSerialization.data(withJSONObject: response))
         }
-        do { try await store.send("hello", channelID: "c", parentID: nil); XCTFail("Expected a lost response") }
+        do { try await store.send("hello", parentID: nil); XCTFail("Expected a lost response") }
         catch { }
-        store.selectedChannel = "c"
-        store.receiveChannels([], ready: false)
-        try await store.send("hello", channelID: "c", parentID: nil)
+        workspace.state.channels = []
+        workspace.state.channelPhase = .resyncing
+        store.reconcileChannels()
+        try await store.send("hello", parentID: nil)
         let ids = StubProtocol.state.recordedIDs()
         XCTAssertEqual(ids.count, 2)
         XCTAssertEqual(ids.first, ids.last)
         XCTAssertEqual(store.timeline.count, 1)
+    }
+
+    func testMessageSubscriptionRecoversOnNoContentAfterTransientFailure() async throws {
+        let api = try client()
+        let repository = LiveMessageRepository(channelID: "c", userID: "u", session: RepositorySession(api: api))
+        defer { repository.stop(); api.auth.logout(); StubProtocol.state.install(nil) }
+        StubProtocol.state.install { request in
+            if request.url!.path.hasSuffix("message_reactions") {
+                return (200, ["electric-offset": "0_0", "electric-handle": "reactions"], Data(#"[{"headers":{"control":"up-to-date"}}]"#.utf8))
+            }
+            let count = StubProtocol.state.record("messages")
+            if count == 1 {
+                return (200, ["electric-offset": "0_0", "electric-handle": "messages"], Data(#"[{"headers":{"control":"up-to-date"}}]"#.utf8))
+            }
+            if count == 2 { return (500, [:], Data()) }
+            return (204, [:], Data())
+        }
+        repository.start()
+        await eventually { repository.state.phase == .ready }
+        await eventually { repository.state.phase.failure != nil }
+        await eventually { repository.state.phase == .ready }
+    }
+
+    func testNoContentDoesNotHideAnUndecodableInitialSnapshot() async throws {
+        let api = try client()
+        let repository = LiveMessageRepository(channelID: "c", userID: "u", session: RepositorySession(api: api))
+        defer { repository.stop(); api.auth.logout(); StubProtocol.state.install(nil) }
+        let recoveredRequest = expectation(description: "Polled after no-content response")
+        StubProtocol.state.install { request in
+            if request.url!.path.hasSuffix("message_reactions") {
+                return (200, ["electric-offset": "0_0", "electric-handle": "reactions"], Data(#"[{"headers":{"control":"up-to-date"}}]"#.utf8))
+            }
+            let count = StubProtocol.state.record("messages")
+            if count == 1 {
+                return (200, ["electric-offset": "0_0", "electric-handle": "messages"], Data(#"[{"key":"broken","value":{"id":"broken"},"headers":{"operation":"insert"}},{"headers":{"control":"up-to-date"}}]"#.utf8))
+            }
+            if count == 3 { recoveredRequest.fulfill() }
+            return (204, [:], Data())
+        }
+        repository.start()
+        await fulfillment(of: [recoveredRequest], timeout: 3)
+        XCTAssertNotNil(repository.state.phase.failure)
+        XCTAssertTrue(repository.state.timeline.isEmpty)
+    }
+
+    func testStoppingLiveConversationReleasesHistoryButKeepsUnreplicatedPosts() throws {
+        let api = try client()
+        defer { api.auth.logout() }
+        let repository = LiveMessageRepository(channelID: "c", userID: "u", session: RepositorySession(api: api))
+        let confirmed = Message(id: "old", user_id: "u", channel_id: "c", content: "old", created_at: ZooDate.now())
+        let outgoing = Message(id: "new", user_id: "u", channel_id: "c", content: "new", created_at: ZooDate.now())
+        repository.state.receive([confirmed])
+        repository.state.acknowledge(outgoing)
+        repository.state.reactions = [Reaction(id: "r", message_id: "old", user_id: "u", emoji: "👍")]
+        repository.stop()
+        XCTAssertEqual(repository.state.timeline.map(\.id), ["new"])
+        XCTAssertTrue(repository.state.reactions.isEmpty)
+        repository.state.receive([confirmed, outgoing])
+        XCTAssertEqual(repository.state.timeline.count, 2)
+        repository.stop()
+        XCTAssertTrue(repository.state.timeline.isEmpty)
+    }
+
+    func testInvalidatedSessionRejectsLateWriteResponse() async throws {
+        let api = try client()
+        defer { api.auth.logout(); StubProtocol.state.install(nil) }
+        let session = RepositorySession(api: api)
+        let started = expectation(description: "Request received")
+        let release = DispatchSemaphore(value: 0)
+        defer { release.signal() }
+        StubProtocol.state.install { _ in
+            started.fulfill()
+            guard release.wait(timeout: .now() + 3) == .success else { throw URLError(.timedOut) }
+            return (200, [:], Data(#"{"data":{"ok":true},"txid":"1"}"#.utf8))
+        }
+        let write = Task { () throws -> JSONValue in try await session.write("api/messages") }
+        await fulfillment(of: [started], timeout: 2)
+        session.invalidate()
+        release.signal()
+        do { _ = try await write.value; XCTFail("Accepted a response from the previous session") }
+        catch { XCTAssertTrue(error is CancellationError) }
+    }
+
+    private func eventually(_ condition: @MainActor () -> Bool, file: StaticString = #filePath, line: UInt = #line) async {
+        let deadline = ContinuousClock.now + .seconds(3)
+        while !condition(), ContinuousClock.now < deadline {
+            try? await Task.sleep(for: .milliseconds(10))
+        }
+        XCTAssertTrue(condition(), file: file, line: line)
     }
 
     func testShapePublishesOnlyAfterAllInitialPages() async throws {

@@ -4,6 +4,12 @@ A SwiftUI client for Zli's zoo2 workspace. Requires iOS 18 or later. The existin
 Rust backend remains the authority for identity, membership, and authorization.
 No backend or database changes are included.
 
+## Architecture
+
+The client uses feature-oriented MVVM and injectable repositories. See
+[Architecture](docs/architecture.md) for ownership, dependency boundaries,
+synchronization lifetimes and testing conventions.
+
 ## Run locally
 
 Open `Zoo.xcodeproj`, select the `Zoo` scheme and an iOS Simulator, then run.
@@ -116,19 +122,17 @@ installed. The app icon is reproducible with `make icon`.
 
 ## Validation evidence
 
+The architecture migration preserves protocol and UI coverage and adds tests for
+shared feature state, channel isolation, subscription readers, draft preservation,
+late responses after logout, transient recovery, and received-history release.
 Validated on 2026-10-26 with Xcode 27.1 and the iPhone 18 Pro iOS 27 Simulator:
+35 unit/network/feature tests and 4 UI tests passed in separate invocations.
+The earlier combined run encountered a test-host bootstrap failure and a failed
+UI tap; both suites passed when rerun separately. The final independent
+`reviewer-jp` review reported no significant findings.
 
-- 9 protocol tests: PKCE, callback validation, URL validation, Shape updates and dates.
-- 6 network tests: Bearer auth, expired sessions, shared token refresh, forbidden
-  subscriptions, initial paging, and stable retry IDs across resynchronization.
-- 6 store tests: posting/replies/editing/deleting, reactions/DM reuse, logout,
-  input validation, draft preservation, and confirmed authorization loss.
-- 4 UI tests: posting/replies, channel creation/logout, DM/notifications and screenshots.
-
-All 25 tests passed: the full 23-test run passed before two regression tests were
-added; the final 21 non-UI tests then passed after the regression additions.
-Independent `reviewer-jp` review found seven issues across two passes; all were
-addressed and the final review reported no significant findings.
+Production OAuth and real-account integration remain subject to the release
+blockers above.
 
 ## Review screenshots
 
