@@ -1,0 +1,65 @@
+name: Zoo
+options:
+  bundleIdPrefix: works.zli
+  deploymentTarget:
+    iOS: '18.0'
+settings:
+  base:
+    SWIFT_VERSION: '6.0'
+    TARGETED_DEVICE_FAMILY: '1,2'
+    CODE_SIGN_STYLE: Automatic
+    DEVELOPMENT_TEAM: ''
+    ENABLE_USER_SCRIPT_SANDBOXING: YES
+targets:
+  Zoo:
+    type: application
+    platform: iOS
+    sources: [Sources]
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: works.zli.zoo
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        GENERATE_INFOPLIST_FILE: YES
+        INFOPLIST_KEY_CFBundleDisplayName: Zoo
+        INFOPLIST_KEY_LSApplicationCategoryType: public.app-category.social-networking
+        INFOPLIST_KEY_UILaunchScreen_Generation: YES
+        INFOPLIST_KEY_UIApplicationSceneManifest_Generation: YES
+        INFOPLIST_KEY_ITSAppUsesNonExemptEncryption: NO
+    info:
+      path: Info.plist
+      properties:
+        CFBundleURLTypes:
+          - CFBundleURLName: works.zli.zoo.oauth
+            CFBundleURLSchemes: [zoo2]
+        NSAppTransportSecurity:
+          NSAllowsLocalNetworking: true
+        UISupportedInterfaceOrientations:
+          - UIInterfaceOrientationPortrait
+          - UIInterfaceOrientationLandscapeLeft
+          - UIInterfaceOrientationLandscapeRight
+  ZooTests:
+    type: bundle.unit-test
+    platform: iOS
+    sources: [Tests]
+    dependencies:
+      - target: Zoo
+    settings:
+      base:
+        GENERATE_INFOPLIST_FILE: YES
+  ZooUITests:
+    type: bundle.ui-testing
+    platform: iOS
+    sources: [UITests]
+    dependencies:
+      - target: Zoo
+    settings:
+      base:
+        GENERATE_INFOPLIST_FILE: YES
+schemes:
+  Zoo:
+    build:
+      targets:
+        Zoo: all
+    test:
+      targets: [ZooTests, ZooUITests]
+      gatherCoverageData: true
