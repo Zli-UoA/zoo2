@@ -98,7 +98,7 @@ association/callback routes and backend changes are deployed. Do not interpret d
 - Opt into native APNs alerts for DM, mention, reply and reaction notifications;
   open the authorized conversation after tapping an alert. Alerts contain generic
   text rather than private message previews.
-- Support Dynamic Type, system appearance, iPhone/iPad layouts and VoiceOver labels.
+- Support Dynamic Type, system appearance, iPhone layouts and VoiceOver labels.
 
 Read models use `/api/shapes/*`, including cursor/handle continuation, partial
 updates, string booleans, 409/must-refetch resets, cancellation and bounded retry
@@ -144,7 +144,9 @@ installed. The app icon is reproducible with `make icon`.
 ## Validation evidence
 
 Validated on 2026-10-26 with Xcode 27.1 and the iPhone 18 Pro iOS 27 Simulator:
-45 unit/network/feature tests and 5 UI tests passed in separate invocations.
+45 unit/network/feature tests and 14 UI tests passed in a single full test run.
+The profile regression test verifies that an unsaved name survives tab switches
+and that saving updates the profile. Review screenshots were refreshed from this run.
 Backend validation passed 65 unit tests and 5 PostgreSQL integration tests, using
 a temporary local database with all 14 Atlas migrations applied. The new tests
 cover revocation ownership, delayed registration after logout, receipt expiry,

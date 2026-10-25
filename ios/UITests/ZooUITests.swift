@@ -87,6 +87,28 @@ final class ZooUITests: XCTestCase {
         XCTAssertTrue(app.navigationBars["general"].exists)
     }
 
+    func testProfileDraftSurvivesTabSwitchAndSaves() {
+        let app = launchDemo()
+        navigate(app, to: "あなた")
+        let name = app.textFields["displayName"]
+        XCTAssertTrue(name.waitForExistence(timeout: 5))
+        name.tap()
+        name.typeText(" draft")
+        let draft = name.value as? String
+        XCTAssertTrue(draft?.contains("draft") == true)
+        navigate(app, to: "チャンネル")
+        navigate(app, to: "あなた")
+        XCTAssertEqual(name.value as? String, draft)
+        app.buttons["表示名を保存"].tap()
+        XCTAssertTrue(app.staticTexts["保存しました"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.staticTexts[draft!].exists)
+        navigate(app, to: "DM")
+        navigate(app, to: "あなた")
+        XCTAssertEqual(name.value as? String, draft)
+        XCTAssertFalse(app.buttons["表示名を保存"].isEnabled)
+        capture(app, name: "zoo-profile-saved")
+    }
+
     func testDarkAppearanceScreenshots() {
         let app = XCUIApplication()
         app.launchArguments = ["--uitesting", "--demo", "--dark-appearance"]

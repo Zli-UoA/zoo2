@@ -4,6 +4,7 @@ struct ProfileScreen: View {
     @Environment(ProfileViewModel.self) private var model
     @Environment(SessionController.self) private var session
     @State private var displayName = ""
+    @State private var loadedName: String?
     @State private var busy = false
     @State private var confirmingLogout = false
     @State private var saved = false
@@ -55,7 +56,11 @@ struct ProfileScreen: View {
                 }
             }
             .navigationTitle("あなた").navigationBarTitleDisplayMode(.inline)
-            .onAppear { displayName = model.me?.display_name ?? "" }
+            .onChange(of: model.me?.display_name, initial: true) { _, name in
+                guard let name else { return }
+                if loadedName == nil || displayName == loadedName { displayName = name }
+                loadedName = name
+            }
             .confirmationDialog("ログアウトしますか？", isPresented: $confirmingLogout, titleVisibility: .visible) {
                 Button("ログアウト", role: .destructive) { session.logout() }
             } message: { Text("この端末のログイン情報と下書きを削除します。") }
