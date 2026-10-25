@@ -11,6 +11,12 @@ createRoot(document.getElementById("app")!).render(
     ]}
   >
     <main style={{ padding: 24 }}>
+      <div id="winter-time">
+        <MfmContent content="$[unixtime 0]" />
+      </div>
+      <div id="summer-time">
+        <MfmContent content="$[unixtime 1593561600]" />
+      </div>
       <div id="hashtags">
         <MfmContent content="#開発 #未登録 #削除済み" />
       </div>

@@ -42,7 +42,7 @@ MFM は `mfm-js@0.28.0` の全 AST 構文に対応しています。
 | `sparkle` | なし（装飾用の星を点滅） |
 | `rotate` | `deg` |
 | `ruby` | なし。`$[ruby 漢字 かんじ]`。装飾した親文字にも対応 |
-| `unixtime` | なし。本文の Unix 秒を UTC 日時で表示 |
+| `unixtime` | なし。本文の Unix 秒を端末のタイムゾーン・ロケールで表示（夏時間に対応）。ツールチップも同じ日時を表示し、`datetime` 属性は元の時点を UTC ISO 形式で保持 |
 | `clickable`（上流 renderer 拡張） | `ev`。キーボード操作可能なボタン。`mfm-click` DOM イベント（detail は ev）を発行。コンポーネント利用側は `onClickEvent` で受け取り可能 |
 
 ## カスタム絵文字

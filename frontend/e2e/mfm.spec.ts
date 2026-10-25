@@ -60,3 +60,19 @@ test("hashtags link only to existing channels in the same tab", async ({ page })
   await expect(links).toHaveAttribute("href", "/channels/dev-id");
   await expect(links).not.toHaveAttribute("target", "_blank");
 });
+
+for (const [timezoneId, winter, summer] of [
+  ["Asia/Tokyo", "1/1/1970, 9:00:00 AM", "7/1/2020, 9:00:00 AM"],
+  ["America/New_York", "12/31/1969, 7:00:00 PM", "6/30/2020, 8:00:00 PM"],
+]) {
+  test.describe(timezoneId, () => {
+    test.use({ timezoneId, locale: "en-US" });
+    test("unixtime follows device timezone including daylight saving", async ({ page }) => {
+      const time = page.locator("#winter-time time");
+      await expect(time).toContainText(winter);
+      await expect(page.locator("#summer-time time")).toContainText(summer);
+      await expect(time).toHaveAttribute("datetime", "1970-01-01T00:00:00.000Z");
+      expect(await time.getAttribute("title")).toBe(await time.textContent());
+    });
+  });
+}

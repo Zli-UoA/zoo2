@@ -59,7 +59,7 @@ describe("MfmContent", () => {
     ["blur", "mfm-blur"],
     ["rotate.deg=-45", "rotate(-45deg)"],
     ["ruby", "<ruby>"],
-    ["unixtime", "1970-01-01"],
+    ["unixtime", 'class="mfm-unixtime"'],
     ["clickable.ev=hello", '<button type="button"'],
   ])("renders function %s", (fn, expected) => {
     const html = render(`$[${fn} ${fn === "unixtime" ? "0" : "hello"}]`);
@@ -76,7 +76,7 @@ describe("MfmContent", () => {
     expect(border).toContain("border-radius:0");
     expect(border).not.toContain("overflow:clip");
   });
-  it("renders ruby with formatted base text and deterministic timestamps", () => {
+  it("renders ruby and preserves the absolute timestamp for local date display", () => {
     expect(render("$[ruby 漢字 かんじ]")).toContain("漢字<rp>(</rp><rt>かんじ</rt>");
     expect(render("$[ruby **漢字** かんじ]")).toContain(
       "<strong>漢字</strong><rp>(</rp><rt>かんじ</rt>",

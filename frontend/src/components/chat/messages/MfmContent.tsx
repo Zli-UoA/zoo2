@@ -228,12 +228,12 @@ function renderNode(
         const raw = toString(node.children).trim();
         const timestamp = /^-?\d+$/.test(raw) ? Number(raw) * 1000 : NaN;
         const date = new Date(timestamp);
-        return Number.isFinite(date.getTime()) ? (
-          <time dateTime={date.toISOString()} title={date.toISOString()} className="mfm-unixtime">
-            {date.toISOString().replace("T", " ").replace(".000Z", " UTC")}
+        if (!Number.isFinite(date.getTime())) return toString(node);
+        const label = date.toLocaleString(undefined, { timeZoneName: "short" });
+        return (
+          <time dateTime={date.toISOString()} title={label} className="mfm-unixtime">
+            {label}
           </time>
-        ) : (
-          toString(node)
         );
       }
       if (name === "clickable")
