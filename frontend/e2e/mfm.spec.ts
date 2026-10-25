@@ -76,3 +76,38 @@ for (const [timezoneId, winter, summer] of [
     });
   });
 }
+
+test("MFM suggestions filter and insert at the caret with a keyboard", async ({ page }) => {
+  const input = page.getByRole("combobox");
+  await input.fill("hello $[sp");
+  const list = page.getByRole("listbox", { name: "MFM suggestions" });
+  await expect(list.getByRole("option")).toHaveCount(2);
+  await input.press("ArrowDown");
+  await input.press("Enter");
+  await expect(input).toHaveValue("hello $[sparkle ]");
+  await expect(page.locator("#sent")).toBeEmpty();
+  expect(await input.evaluate((el: HTMLTextAreaElement) => el.selectionStart)).toBe(
+    "hello $[sparkle ".length,
+  );
+  await input.pressSequentially("🎉");
+  await expect(input).toHaveValue("hello $[sparkle 🎉]");
+  await expect(list).toHaveCount(0);
+});
+
+test("MFM suggestions support clicking and tapping and Escape", async ({ page, isMobile }) => {
+  const input = page.getByRole("combobox");
+  await input.fill("$je");
+  const option = page.getByRole("button", { name: "$[jelly] Stretch and squash" });
+  if (isMobile) await option.tap();
+  else await option.click();
+  await expect(input).toHaveValue("$[jelly ]");
+  await expect(input).toBeFocused();
+  expect(await input.evaluate((el: HTMLTextAreaElement) => el.selectionStart)).toBe(
+    "$[jelly ".length,
+  );
+  await input.fill("$");
+  await expect(page.getByRole("listbox")).toBeVisible();
+  await input.press("Escape");
+  await expect(page.getByRole("listbox")).toHaveCount(0);
+  await expect(input).toHaveValue("$");
+});

@@ -139,4 +139,38 @@ it("selects a mention by clicking an option and keeps focus in the textarea", as
   expect(textarea.value).toBe("hi @alice ");
   expect(document.activeElement).toBe(textarea);
   expect(container.querySelector('[role="listbox"]')).toBeNull();
+
+});
+
+it("offers MFM after $ and inserts inside brackets with Tab without sending", async () => {
+  const textarea = await input("hello $je");
+  expect(container.querySelector('[role="listbox"]')?.textContent).toContain("$[jelly]");
+  await act(async () => {
+    textarea.dispatchEvent(new KeyboardEvent("keydown", { key: "Tab", bubbles: true }));
+  });
+  expect(textarea.value).toBe("hello $[jelly ]");
+  expect(send).not.toHaveBeenCalled();
+  await act(async () => {
+    await new Promise((resolve) => requestAnimationFrame(resolve));
+  });
+  expect(textarea.selectionStart).toBe("hello $[jelly ".length);
+});
+
+it("supports MFM arrow selection, Escape and IME without interfering with mentions", async () => {
+  const textarea = await input("$");
+  expect(container.querySelectorAll('[role="option"]').length).toBeGreaterThan(8);
+  await act(async () => {
+    textarea.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true }));
+    textarea.dispatchEvent(
+      new KeyboardEvent("keydown", { key: "Enter", isComposing: true, bubbles: true }),
+    );
+  });
+  expect(textarea.value).toBe("$");
+  expect(send).not.toHaveBeenCalled();
+  await act(async () => {
+    textarea.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+  });
+  expect(container.querySelector('[role="listbox"]')).toBeNull();
+  await input("@ali");
+  expect(container.querySelector('[role="listbox"]')?.textContent).toContain("@alice");
 });

@@ -8,6 +8,8 @@ import { Button } from "../../ui/button";
 import { Textarea } from "../../ui/textarea";
 
 import { insertMention, mentionOptions, mentionQuery, type MentionOption } from "./mentions";
+import { insertMfm, mfmOptions, mfmQuery } from "./mfmSuggestions";
+import type { MFM_FUNCTIONS } from "./mfmFunctions";
 import type { UserRow } from "../../../lib/electric/types";
 
 const MAX_COMPOSER_HEIGHT = 200;
@@ -117,12 +119,22 @@ export function Composer({
   const [dismissed, setDismissed] = useState(false);
   const [composing, setComposing] = useState(false);
   const listId = useId();
-  const range = !disabled && !dismissed && !composing ? mentionQuery(value, caret) : null;
-  const options = range ? mentionOptions(mentionUsers, mentionMemberIds, range.query) : [];
+  const suggest = !disabled && !dismissed && !composing && caret >= 0;
+  const mfmRange = suggest ? mfmQuery(value, caret) : null;
+  const range = suggest && !mfmRange ? mentionQuery(value, caret) : null;
+  const options: MentionOption[] = mfmRange
+    ? mfmOptions(mfmRange.query).map((name) => ({ name, label: t(`mfm.functions.${name}`) }))
+    : range
+      ? mentionOptions(mentionUsers, mentionMemberIds, range.query)
+      : [];
   const selectedOption = Math.min(activeOption, Math.max(0, options.length - 1));
-  function selectMention(option: MentionOption) {
-    if (!range) return;
-    const next = insertMention(value, range, option.name);
+  function selectOption(option: MentionOption) {
+    const next = mfmRange
+      ? insertMfm(value, mfmRange, option.name as (typeof MFM_FUNCTIONS)[number])
+      : range
+        ? insertMention(value, range, option.name)
+        : null;
+    if (!next) return;
     setValue(next.value);
     setCaret(next.caret);
     setDismissed(true);
@@ -136,6 +148,10 @@ export function Composer({
   // タッチ端末には Ctrl / Cmd が無いため、キーボードショートカットを案内しない。
   const isTouch = useMediaQuery("(hover: none)");
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const listRef = useRef<HTMLUListElement>(null);
+  useLayoutEffect(() => {
+    listRef.current?.querySelector('[aria-selected="true"]')?.scrollIntoView({ block: "nearest" });
+  }, [selectedOption, options.length]);
 
   useLayoutEffect(() => {
     const element = textareaRef.current;
@@ -177,8 +193,9 @@ export function Composer({
       {options.length > 0 ? (
         <ul
           id={listId}
+          ref={listRef}
           role="listbox"
-          aria-label={t("mentions.suggestions")}
+          aria-label={t(mfmRange ? "mfm.suggestions" : "mentions.suggestions")}
           className="mb-2 max-h-48 overflow-y-auto rounded-lg border bg-popover p-1"
         >
           {options.map((option, index) => (
@@ -190,15 +207,15 @@ export function Composer({
               tabIndex={-1}
               className={`flex cursor-pointer gap-2 rounded px-2 py-1 text-left text-sm outline-none ${index === selectedOption ? "bg-accent" : ""}`}
               onMouseDown={(event) => event.preventDefault()}
-              onClick={() => selectMention(option)}
+              onClick={() => selectOption(option)}
               onKeyDown={(event) => {
                 if (event.key === "Enter" || event.key === " ") {
                   event.preventDefault();
-                  selectMention(option);
+                  selectOption(option);
                 }
               }}
             >
-              <span>@{option.name}</span>
+              <span className="shrink-0 font-mono">{mfmRange ? `$[${option.name}]` : `@${option.name}`}</span>
               <span className="truncate text-muted-foreground">{option.label}</span>
             </li>
           ))}
@@ -218,7 +235,13 @@ export function Composer({
           aria-activedescendant={options.length ? `${listId}-${selectedOption}` : undefined}
           onCompositionStart={() => setComposing(true)}
           onCompositionEnd={() => setComposing(false)}
-          onSelect={(event) => setCaret(event.currentTarget.selectionStart)}
+          onSelect={(event) =>
+            setCaret(
+              event.currentTarget.selectionStart === event.currentTarget.selectionEnd
+                ? event.currentTarget.selectionStart
+                : -1,
+            )
+          }
           onChange={(event) => {
             setCaret(event.target.selectionStart);
             setActiveOption(0);
@@ -245,9 +268,9 @@ export function Composer({
                 );
                 return;
               }
-              if ((event.key === "Enter" && !event.shiftKey) || event.key === "Tab") {
+              if ((event.key === "Enter" || event.key === "Tab") && !event.shiftKey) {
                 event.preventDefault();
-                selectMention(options[selectedOption]!);
+                selectOption(options[selectedOption]!);
                 return;
               }
               if (event.key === "Escape") {

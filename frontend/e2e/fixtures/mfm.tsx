@@ -1,3 +1,5 @@
+import { Composer } from "../../src/components/chat/messages/Composer";
+import { LocaleProvider } from "../../src/components/i18n/LocaleProvider";
 import { createRoot } from "react-dom/client";
 import { MfmChannelsProvider } from "../../src/components/chat/messages/MfmChannels";
 import { MfmContent } from "../../src/components/chat/messages/MfmContent";
@@ -11,6 +13,15 @@ createRoot(document.getElementById("app")!).render(
     ]}
   >
     <main style={{ padding: 24 }}>
+      <LocaleProvider>
+        <Composer
+          onSend={async (content) => {
+            document.getElementById("sent")!.textContent = content;
+            return true;
+          }}
+        />
+      </LocaleProvider>
+      <output id="sent" />
       <div id="winter-time">
         <MfmContent content="$[unixtime 0]" />
       </div>
