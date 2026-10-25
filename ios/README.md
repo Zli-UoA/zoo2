@@ -1,6 +1,6 @@
 # Zoo for iOS
 
-A SwiftUI client for Zli's zoo2 workspace. Requires iOS 18 or later. The existing
+A SwiftUI client for Zli's zoo2 workspace. Requires an iPhone running iOS 18 or later. The existing
 Rust backend remains the authority for identity, membership, and authorization.
 Native push registration and delivery require the accompanying backend migration.
 See [Native authentication and push deployment](docs/native-auth-push.md).
@@ -10,6 +10,22 @@ See [Native authentication and push deployment](docs/native-auth-push.md).
 The client uses feature-oriented MVVM and injectable repositories. See
 [Architecture](docs/architecture.md) for ownership, dependency boundaries,
 synchronization lifetimes and testing conventions.
+
+## Interface
+
+The interface follows the web/PWA's green brand tokens, paw mark, neutral surfaces,
+compact channel rows, circular avatars, and bordered message composer. Semantic
+colors adapt to light and dark appearance using `frontend/src/styles.css` as the
+reference. Native bottom tabs preserve conversation width and retain each section's navigation
+state. The supported device family is iPhone only. System text styles support Dynamic
+Type, and the keyboard toolbar provides an explicit dismissal action. Conversations
+include date separators and an accessible message menu alongside long-press
+shortcuts. Notifications offer All/Unread filters with distinct unread rows.
+Profile, channel, and connection forms keep field labels visible while editing.
+
+UI tests cover section switching, message and thread sending, dark appearance,
+landscape composition, and accessibility text sizes. Screenshots use demo data,
+not a verified production session.
 
 ## Run locally
 

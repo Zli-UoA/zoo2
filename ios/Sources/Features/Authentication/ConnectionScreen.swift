@@ -8,12 +8,12 @@ struct ConnectionScreen: View {
     var body: some View {
         NavigationStack {
             Form {
-                Section("ワークスペース") { TextField("サーバー URL", text: $settings.server).keyboardType(.URL) }
+                Section("ワークスペース") { LabeledTextField(title: "サーバー URL", text: $settings.server, prompt: "https://zli.chat").keyboardType(.URL) }
                 Section {
-                    TextField("Issuer URL", text: $settings.issuer).keyboardType(.URL)
-                    TextField("iOS 用 Client ID", text: $settings.clientID)
-                    TextField("Resource", text: $settings.resource).keyboardType(.URL)
-                    TextField("Scope", text: $settings.scope)
+                    LabeledTextField(title: "Issuer URL", text: $settings.issuer).keyboardType(.URL)
+                    LabeledTextField(title: "iOS 用 Client ID", text: $settings.clientID)
+                    LabeledTextField(title: "Resource", text: $settings.resource).keyboardType(.URL)
+                    LabeledTextField(title: "Scope", text: $settings.scope)
                 } header: { Text("Zli アカウント") } footer: {
                     Text("管理者が発行した iOS 用の接続設定を入力してください。戻り先は https://zli.chat/ios/oauth/callback です。パスワードやクライアントシークレットは入力しません。")
                 }

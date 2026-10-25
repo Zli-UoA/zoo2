@@ -31,8 +31,19 @@ private struct ChannelContent: View {
     var body: some View {
         VStack(spacing: 0) {
             if let description = channel.description, !description.isEmpty {
-                Text(description).font(.caption).foregroundStyle(.secondary)
-                    .frame(maxWidth: .infinity, alignment: .leading).padding(.horizontal, 18).padding(.vertical, 8)
+                Button { showMembers = true } label: {
+                    HStack {
+                        Text(description).font(.caption).foregroundStyle(.secondary).lineLimit(2)
+                            .dynamicTypeSize(...DynamicTypeSize.accessibility1)
+                        Spacer(minLength: 4)
+                        Image(systemName: "chevron.right").font(.caption)
+                    }
+                    .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+                    .padding(.horizontal, 18)
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain).accessibilityLabel("チャンネルの説明を表示")
+                .accessibilityIdentifier("showChannelDescription")
                 Divider()
             }
             if conversation.accessDenied {
@@ -41,6 +52,7 @@ private struct ChannelContent: View {
                 MessageTimeline(channelID: channel.id, parentID: nil, targetID: route.messageID, canPost: canPost) { thread = $0 }
             }
         }
+        .background(Color.zooBackground)
         .safeAreaInset(edge: .bottom, spacing: 0) {
             if canPost { Composer(channelID: channel.id, parentID: nil) }
             else if channel.archive_at != nil {

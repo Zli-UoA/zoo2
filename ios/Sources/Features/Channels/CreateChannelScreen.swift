@@ -14,8 +14,8 @@ struct CreateChannelScreen: View {
         NavigationStack {
             Form {
                 Section("チャンネル") {
-                    TextField("名前", text: $name).accessibilityIdentifier("channelName")
-                    TextField("どんな話をする場所？", text: $description, axis: .vertical).lineLimit(2...4)
+                    LabeledTextField(title: "名前", text: $name, prompt: "例：開発", identifier: "channelName")
+                    LabeledTextField(title: "説明", text: $description, prompt: "どんな話をする場所？", axis: .vertical)
                 }
                 Section { Toggle("プライベート", isOn: $isPrivate) } footer: { Text("プライベートチャンネルは参加メンバーだけが閲覧できます。") }
             }
@@ -24,7 +24,7 @@ struct CreateChannelScreen: View {
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) { Button("キャンセル") { dismiss() }.disabled(busy) }
                 ToolbarItem(placement: .confirmationAction) {
-                    Button("作成") {
+                    Button(busy ? "作成中…" : "作成") {
                         busy = true
                         Task {
                             _ = await session.perform {

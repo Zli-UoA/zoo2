@@ -9,6 +9,21 @@ final class ZooUITests: XCTestCase {
         return app
     }
 
+    func testArchiveFilterOnlyAppearsInChannelBrowser() {
+        let app = launchDemo()
+        XCTAssertTrue(app.buttons["channel-general"].waitForExistence(timeout: 5))
+        XCTAssertFalse(app.switches["includeArchived"].exists)
+        app.buttons["browseChannels"].tap()
+        XCTAssertTrue(app.switches["includeArchived"].waitForExistence(timeout: 5))
+        app.switches["includeArchived"].tap()
+        app.descendants(matching: .any)["channelBrowserList"].firstMatch.buttons["channel-general"].tap()
+        XCTAssertTrue(app.descendants(matching: .any)["composer"].waitForExistence(timeout: 5))
+        app.navigationBars["general"].buttons.element(boundBy: 0).tap()
+        app.buttons["閉じる"].tap()
+        XCTAssertTrue(app.buttons["browseChannels"].waitForExistence(timeout: 5))
+        XCTAssertFalse(app.switches["includeArchived"].exists)
+    }
+
     func testSendMessageAndReplyInThread() {
         let app = launchDemo()
         let channel = app.buttons["channel-general"]
@@ -43,7 +58,7 @@ final class ZooUITests: XCTestCase {
         app.buttons["confirmCreate"].tap()
         XCTAssertTrue(app.navigationBars["ios-test"].waitForExistence(timeout: 5))
         app.navigationBars.buttons.element(boundBy: 0).tap()
-        app.tabBars.buttons["あなた"].tap()
+        navigate(app, to: "あなた")
         XCTAssertTrue(app.buttons["logoutButton"].waitForExistence(timeout: 5))
         app.buttons["logoutButton"].tap()
         app.buttons["ログアウト"].tap()
@@ -52,11 +67,105 @@ final class ZooUITests: XCTestCase {
 
     func testDMAndNotificationsAreReachable() {
         let app = launchDemo()
-        app.tabBars.buttons["DM"].tap()
+        navigate(app, to: "DM")
         XCTAssertTrue(app.buttons["channel-dm"].waitForExistence(timeout: 5))
         app.buttons["channel-dm"].tap()
         XCTAssertTrue(app.staticTexts["もくもく会でアプリ見せてね！"].waitForExistence(timeout: 5))
-        app.tabBars.buttons["通知"].tap()
+        navigate(app, to: "通知")
+        XCTAssertTrue(app.staticTexts["スレッドに返信しました"].waitForExistence(timeout: 5))
+    }
+
+    func testNavigationPreservesConversationWhenSwitchingSections() {
+        let app = launchDemo()
+        XCTAssertTrue(app.buttons["channel-general"].waitForExistence(timeout: 5))
+        app.buttons["channel-general"].tap()
+        XCTAssertTrue(app.descendants(matching: .any)["composer"].waitForExistence(timeout: 5))
+        navigate(app, to: "通知")
+        XCTAssertTrue(app.staticTexts["スレッドに返信しました"].waitForExistence(timeout: 5))
+        navigate(app, to: "チャンネル")
+        XCTAssertTrue(app.descendants(matching: .any)["composer"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.navigationBars["general"].exists)
+    }
+
+    func testDarkAppearanceScreenshots() {
+        let app = XCUIApplication()
+        app.launchArguments = ["--uitesting", "--demo", "--dark-appearance"]
+        app.launch()
+        XCTAssertTrue(app.buttons["channel-general"].waitForExistence(timeout: 5))
+        capture(app, name: "zoo-home-dark")
+        app.buttons["channel-general"].tap()
+        XCTAssertTrue(app.descendants(matching: .any)["composer"].waitForExistence(timeout: 5))
+        capture(app, name: "zoo-conversation-dark")
+    }
+
+    func testLandscapeComposerAndNavigation() {
+        let app = launchDemo()
+        defer { XCUIDevice.shared.orientation = .portrait }
+        XCTAssertTrue(app.buttons["channel-general"].waitForExistence(timeout: 5))
+        app.buttons["channel-general"].tap()
+        XCUIDevice.shared.orientation = .landscapeLeft
+        let composer = app.descendants(matching: .any)["composer"]
+        XCTAssertTrue(composer.waitForExistence(timeout: 5))
+        composer.tap()
+        composer.typeText("Landscape draft")
+        XCTAssertTrue(app.buttons["sendButton"].isHittable)
+        XCTAssertTrue(app.buttons["dismissKeyboard"].waitForExistence(timeout: 5))
+        app.buttons["dismissKeyboard"].tap()
+        capture(app, name: "zoo-landscape")
+        navigate(app, to: "通知")
+        XCTAssertTrue(app.staticTexts["スレッドに返信しました"].waitForExistence(timeout: 5))
+    }
+
+    func testAccessibilityTextSize() {
+        let app = XCUIApplication()
+        app.launchArguments = ["--uitesting", "--demo", "-UIPreferredContentSizeCategoryName", "UICTContentSizeCategoryAccessibilityXXXL"]
+        app.launch()
+        XCTAssertTrue(app.buttons["channel-general"].waitForExistence(timeout: 5))
+        capture(app, name: "zoo-large-text")
+        app.buttons["channel-general"].tap()
+        XCTAssertTrue(app.descendants(matching: .any)["composer"].waitForExistence(timeout: 5))
+        capture(app, name: "zoo-conversation-large-text")
+    }
+
+    func testChannelDescriptionIsReadable() {
+        let app = launchDemo()
+        XCTAssertTrue(app.buttons["channel-general"].waitForExistence(timeout: 5))
+        app.buttons["channel-general"].tap()
+        XCTAssertTrue(app.buttons["showChannelDescription"].waitForExistence(timeout: 5))
+        app.buttons["showChannelDescription"].tap()
+        XCTAssertTrue(app.navigationBars["チャンネル情報"].waitForExistence(timeout: 5))
+        let description = app.descendants(matching: .any)["channelDescription"].firstMatch
+        XCTAssertTrue(description.waitForExistence(timeout: 5))
+        XCTAssertTrue(description.label == "Zli のみんなが集まる場所" || description.value as? String == "Zli のみんなが集まる場所")
+    }
+
+    func testMessageActionsOpenThreadWithoutLongPress() {
+        let app = launchDemo()
+        XCTAssertTrue(app.buttons["channel-general"].waitForExistence(timeout: 5))
+        app.buttons["channel-general"].tap()
+        let actions = app.buttons["messageActions-meetup"]
+        XCTAssertTrue(actions.waitForExistence(timeout: 5))
+        if !actions.isHittable { app.swipeDown() }
+        actions.tap()
+        app.buttons["スレッドを開く"].tap()
+        XCTAssertTrue(app.descendants(matching: .any)["replyComposer"].waitForExistence(timeout: 5))
+    }
+
+    func testNotificationFilterAndReadState() {
+        let app = launchDemo()
+        navigate(app, to: "通知")
+        let filter = app.segmentedControls["notificationFilter"]
+        XCTAssertTrue(filter.waitForExistence(timeout: 5))
+        filter.buttons["未読"].tap()
+        XCTAssertTrue(app.staticTexts["スレッドに返信しました"].waitForExistence(timeout: 5))
+        app.staticTexts["スレッドに返信しました"].tap()
+        XCTAssertTrue(app.descendants(matching: .any)["replyComposer"].waitForExistence(timeout: 5))
+        app.buttons["閉じる"].tap()
+        XCTAssertTrue(app.navigationBars["general"].waitForExistence(timeout: 5))
+        app.navigationBars["general"].buttons.element(boundBy: 0).tap()
+        XCTAssertTrue(filter.waitForExistence(timeout: 5))
+        XCTAssertFalse(app.staticTexts["スレッドに返信しました"].exists)
+        filter.buttons["すべて"].tap()
         XCTAssertTrue(app.staticTexts["スレッドに返信しました"].waitForExistence(timeout: 5))
     }
 
@@ -71,9 +180,12 @@ final class ZooUITests: XCTestCase {
         XCTAssertTrue(app.descendants(matching: .any)["replyComposer"].waitForExistence(timeout: 5))
         capture(app, name: "zoo-thread")
         app.buttons["閉じる"].tap()
-        app.tabBars.buttons["通知"].tap()
+        navigate(app, to: "通知")
         XCTAssertTrue(app.staticTexts["スレッドに返信しました"].waitForExistence(timeout: 5))
         capture(app, name: "zoo-notifications")
+        navigate(app, to: "あなた")
+        XCTAssertTrue(app.buttons["logoutButton"].waitForExistence(timeout: 5))
+        capture(app, name: "zoo-profile")
     }
 
     func testConnectionSettingsShowHTTPSCallback() {
@@ -81,14 +193,21 @@ final class ZooUITests: XCTestCase {
         app.launchArguments = ["--uitesting"]
         app.launch()
         XCTAssertTrue(app.buttons["接続設定"].waitForExistence(timeout: 5))
+        capture(app, name: "zoo-welcome")
         app.buttons["接続設定"].tap()
         let help = app.staticTexts.containing(NSPredicate(format: "label CONTAINS %@", "https://zli.chat/ios/oauth/callback")).firstMatch
         XCTAssertTrue(help.waitForExistence(timeout: 5))
         capture(app, name: "zoo-connection")
     }
 
+    private func navigate(_ app: XCUIApplication, to title: String) {
+        let tab = app.tabBars.buttons[title]
+        XCTAssertTrue(tab.waitForExistence(timeout: 5))
+        tab.tap()
+    }
+
     private func capture(_ app: XCUIApplication, name: String) {
-        let attachment = XCTAttachment(screenshot: app.screenshot())
+        let attachment = XCTAttachment(screenshot: XCUIScreen.main.screenshot())
         attachment.name = name
         attachment.lifetime = .keepAlways
         add(attachment)

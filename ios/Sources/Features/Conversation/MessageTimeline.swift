@@ -29,22 +29,29 @@ struct MessageTimeline: View {
                     } else if rows.isEmpty {
                         ContentUnavailableView(parentID == nil ? "ここから会話をはじめよう" : "最初の返信を送ろう", systemImage: "bubble.left", description: Text("アイデアも、ちょっとした一言も。"))
                     }
-                    ForEach(Array(rows.suffix(limit))) { message in
+                    let visible = Array(rows.suffix(limit))
+                    ForEach(Array(visible.enumerated()), id: \.element.id) { index, message in
+                        if let date = ZooDate.parse(message.created_at),
+                           index == 0 || ZooDate.parse(visible[index - 1].created_at).map({ !Calendar.current.isDate($0, inSameDayAs: date) }) == true {
+                            ConversationDateDivider(date: date)
+                        }
                         MessageRow(message: message, canPost: canPost, showsThread: parentID == nil, openThread: openThread)
                             .id(message.id)
                     }
                     Color.clear.frame(height: 1).id("bottom")
                         .onAppear { atBottom = true }.onDisappear { atBottom = false }
                     if parentID == nil, let last = rows.last(where: { $0.deleted_at == nil }) {
-                        Button("ここまで既読にする") {
+                        Button("ここまで既読にする", systemImage: "checkmark") {
                             markingRead = true
                             Task { _ = await session.perform { try await conversation.markRead(messageID: last.id) }; markingRead = false }
-                        }.font(.caption).padding().frame(maxWidth: .infinity).disabled(markingRead)
+                        }.font(.caption).buttonStyle(.bordered).controlSize(.small)
+                        .padding(12).frame(maxWidth: .infinity).disabled(markingRead)
                     }
                 }.padding(.vertical, 10)
             }
             .scrollDismissesKeyboard(.interactively)
             .defaultScrollAnchor(.bottom)
+            .defaultScrollAnchor(.top, for: .alignment)
             .onChange(of: rows, initial: true) { _, new in
                 guard !new.isEmpty else { return }
                 if !positioned {

@@ -6,6 +6,8 @@ struct ProfileScreen: View {
     @State private var displayName = ""
     @State private var busy = false
     @State private var confirmingLogout = false
+    @State private var saved = false
+    private var trimmedName: String { displayName.trimmingCharacters(in: .whitespacesAndNewlines) }
 
     var body: some View {
         NavigationStack {
@@ -14,18 +16,21 @@ struct ProfileScreen: View {
                     HStack(spacing: 16) {
                         Avatar(name: model.me?.display_name ?? "", size: 64)
                         VStack(alignment: .leading, spacing: 5) {
-                            Text(model.me?.display_name ?? "").font(.title2.bold())
+                            Text(model.me?.display_name ?? "").font(.title3.bold())
                             Text("@\(model.me?.user_name ?? "")").foregroundStyle(.secondary)
                             Text("Zli メンバー").font(.caption).foregroundStyle(.secondary)
                         }
                     }.padding(.vertical, 10)
                 }
                 Section("プロフィール") {
-                    TextField("表示名", text: $displayName)
-                    Button("表示名を保存") {
+                    LabeledTextField(title: "表示名", text: $displayName, identifier: "displayName")
+                        .disabled(busy)
+                        .onChange(of: displayName) { _, _ in saved = false }
+                    Button(busy ? "保存中…" : "表示名を保存") {
                         busy = true
-                        Task { _ = await session.perform { try await model.updateName(displayName.trimmingCharacters(in: .whitespacesAndNewlines)) }; busy = false }
-                    }.disabled(busy || displayName == model.me?.display_name || displayName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || displayName.unicodeScalars.count > 80)
+                        Task { saved = await session.perform { try await model.updateName(trimmedName) }; busy = false }
+                    }.disabled(busy || trimmedName == model.me?.display_name || trimmedName.isEmpty || displayName.unicodeScalars.count > 80)
+                    if saved { Label("保存しました", systemImage: "checkmark.circle").font(.caption).foregroundStyle(Color.zooAccent) }
                 }
                 if !session.isDemo {
                     Section("プッシュ通知") {
@@ -49,7 +54,7 @@ struct ProfileScreen: View {
                         .accessibilityIdentifier("logoutButton")
                 }
             }
-            .navigationTitle("あなた")
+            .navigationTitle("あなた").navigationBarTitleDisplayMode(.inline)
             .onAppear { displayName = model.me?.display_name ?? "" }
             .confirmationDialog("ログアウトしますか？", isPresented: $confirmingLogout, titleVisibility: .visible) {
                 Button("ログアウト", role: .destructive) { session.logout() }

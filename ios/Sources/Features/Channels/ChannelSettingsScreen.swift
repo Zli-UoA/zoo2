@@ -15,10 +15,16 @@ struct ChannelSettingsScreen: View {
         NavigationStack {
             Form {
                 if let channel = model.channel(channelID) {
+                    if let summary = channel.description, !summary.isEmpty {
+                        Section("説明") {
+                            Text(summary).textSelection(.enabled)
+                                .accessibilityIdentifier("channelDescription")
+                        }
+                    }
                     if model.canManage(channel) {
                         Section("チャンネル設定") {
-                            TextField("名前", text: $name)
-                            TextField("説明", text: $description, axis: .vertical).lineLimit(2...4)
+                            LabeledTextField(title: "名前", text: $name)
+                            LabeledTextField(title: "説明", text: $description, axis: .vertical)
                             Button("変更を保存") {
                                 run { try await model.updateChannel(channel, name: name.trimmingCharacters(in: .whitespacesAndNewlines), description: description) }
                             }.disabled(busy || name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || name.unicodeScalars.count > 80 || description.unicodeScalars.count > 250)

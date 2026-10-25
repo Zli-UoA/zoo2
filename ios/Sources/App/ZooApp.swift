@@ -11,6 +11,8 @@ struct ZooApp: App {
             RootView()
                 .environment(session)
                 .tint(.zooAccent)
+                .preferredColorScheme(ProcessInfo.processInfo.arguments.contains("--uitesting") &&
+                    ProcessInfo.processInfo.arguments.contains("--dark-appearance") ? .dark : nil)
                 .task {
                     delegate.bind(session.notifications)
                     session.notifications.cleanupAtLaunch()
