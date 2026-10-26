@@ -222,3 +222,47 @@ jobs:
 
       - name: unit test
         run: pnpm test
+
+  browser-test:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: ./frontend
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 12.11.2
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: frontend/pnpm-lock.yaml
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Install Playwright Chromium
+        run: pnpm exec playwright install --with-deps chromium
+
+      - name: browser test
+        run: pnpm test:browser
+
+      - name: vrt
+        run: pnpm test:vrt
+
+      - name: storybook test
+        run: pnpm test:storybook
+
+      - name: Upload VRT failure screenshots
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: vitest-vrt-artifacts
+          path: frontend/.vitest/attachments
+          if-no-files-found: ignore

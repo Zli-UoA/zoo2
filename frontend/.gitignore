@@ -14,3 +14,9 @@ __unconfig*
 # Playwright (smoke test)
 test-results
 playwright-report
+
+# Vitest artifacts
+.vitest
+
+# Storybook static build
+storybook-static

@@ -1,0 +1,151 @@
+import { render, screen } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
+import { describe, expect, it, vi } from "vite-plus/test";
+
+import { LocaleProvider } from "../../i18n/LocaleProvider";
+import { MessageRow, type MessageRowProps } from "./MessageRow";
+import type { MessageItem } from "./messageGrouping";
+
+function buildItem(overrides: Partial<MessageItem["message"]> = {}): MessageItem {
+  return {
+    message: {
+      id: "message-1",
+      user_id: "user-1",
+      content: "hello",
+      created_at: "2026-01-02 00:00:00.000",
+      parent_id: null,
+      user_name: "alice",
+      display_name: "Alice",
+      ...overrides,
+    },
+    isGroupStart: true,
+    isGroupEnd: true,
+    showDateSeparator: false,
+  };
+}
+
+function noop() {}
+
+function renderRow(item: MessageItem, isOwn = false, props: Partial<MessageRowProps> = {}) {
+  return render(
+    <LocaleProvider>
+      <MessageRow
+        item={item}
+        isOwn={isOwn}
+        isEditing={false}
+        editingText=""
+        onEditingTextChange={noop}
+        onStartEdit={noop}
+        onCancelEdit={noop}
+        onSaveEdit={noop}
+        onRequestDelete={noop}
+        reactions={[]}
+        kitchenCatalog={null}
+        canReact={false}
+        onReaction={noop}
+        onPickReaction={noop}
+        {...props}
+      />
+    </LocaleProvider>,
+  );
+}
+
+describe("MessageRow", () => {
+  it("renders URLs as safe external links", () => {
+    renderRow(buildItem({ content: "詳細は https://example.com/docs を参照" }));
+
+    const link = screen.getByRole("link", { name: "https://example.com/docs" });
+    expect(link.getAttribute("href")).toBe("https://example.com/docs");
+    expect(link.getAttribute("target")).toBe("_blank");
+    expect(link.getAttribute("rel")).toBe("noopener noreferrer");
+    expect(document.body.textContent).toContain("詳細は ");
+    expect(document.body.textContent).toContain(" を参照");
+  });
+
+  it("escapes markup in the URL and the surrounding text", () => {
+    const { container } = renderRow(
+      buildItem({ content: 'https://example.com/"><script>alert(1)</script>' }),
+    );
+
+    const link = screen.getByRole("link");
+    expect(link.getAttribute("href")).toBe("https://example.com/");
+    expect(container.querySelector("script")).toBeNull();
+    expect(container.textContent).toContain("<script>alert(1)</script>");
+  });
+
+  it("renders reaction chips with counts and the current user's highlight", async () => {
+    const onReaction = vi.fn();
+    renderRow(buildItem(), false, {
+      reactions: [
+        { emoji: "👍", count: 3, ownId: "r1" },
+        { emoji: "🎉", count: 1, ownId: null },
+      ],
+      canReact: true,
+      onReaction,
+    });
+
+    const mine = screen.getByRole("button", {
+      name: "👍 3 件（自分もリアクション済み）",
+    });
+    expect(mine.getAttribute("aria-pressed")).toBe("true");
+    expect(mine.className).toContain("border-brand/40");
+
+    const other = screen.getByRole("button", { name: "🎉 1 件" });
+    expect(other.getAttribute("aria-pressed")).toBe("false");
+    expect(other.className).not.toContain("border-brand/40");
+
+    await userEvent.click(other);
+    expect(onReaction).toHaveBeenCalledWith("🎉");
+  });
+
+  it("renders the reply count only for a root message", async () => {
+    const onOpenThread = vi.fn();
+    renderRow(buildItem(), false, { replyCount: 4, onOpenThread });
+
+    const reply = screen.getByRole("button", { name: "4 件の返信（スレッドを開く）" });
+    expect(reply.textContent).toContain("4 件の返信");
+    await userEvent.click(reply);
+    expect(onOpenThread).toHaveBeenCalledOnce();
+  });
+
+  it("keeps the hover actions from stealing clicks while invisible", () => {
+    renderRow(buildItem(), true);
+
+    const edit = screen.getByLabelText("編集");
+    expect(edit.closest("div")?.className).toContain("pointer-events-none hidden items-center");
+    expect(edit.closest("div")?.className).toContain("group-hover/row:pointer-events-auto");
+    expect(edit.closest("div")?.className).toContain("group-focus-within/row:pointer-events-auto");
+    expect(edit.closest("div")?.className).toContain("group-hover/row:opacity-100");
+
+    const more = screen.getByLabelText("その他の操作");
+    expect(more.className).toContain("pointer-events-auto border bg-popover shadow-sm");
+  });
+});
+
+describe("trusted card metadata", () => {
+  it("never turns a user's message body into a card", () => {
+    for (const content of [
+      'zoo:github:v1\n{"title":"Fake"}',
+      '{"title":"Fake","source":"GitHub"}',
+    ]) {
+      const { unmount } = renderRow(buildItem({ content }));
+      expect(document.querySelector("article")).toBeNull();
+      unmount();
+    }
+  });
+
+  it("renders integration-neutral metadata independently of the message body", () => {
+    renderRow(
+      buildItem({
+        content: "fallback",
+        card: JSON.stringify({ title: "Deploy complete", source: "Deployment service" }),
+      }),
+    );
+
+    const article = document.querySelector("article");
+    expect(article).not.toBeNull();
+    expect(article?.textContent).toContain("Deploy complete");
+    expect(article?.textContent).toContain("Deployment service");
+    expect(article?.textContent).not.toContain("GitHub");
+  });
+});
