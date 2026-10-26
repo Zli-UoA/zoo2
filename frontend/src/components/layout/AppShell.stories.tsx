@@ -1,4 +1,5 @@
 import type { Meta, StoryObj } from "@storybook/react-vite";
+import { expect, screen } from "storybook/test";
 
 import { ChannelScreen } from "../chat/ChannelScreen";
 import { NotificationsScreen } from "../chat/NotificationsScreen";
@@ -21,6 +22,19 @@ type Story = StoryObj<typeof meta>;
 export const Welcome: Story = {};
 
 export const Channel: Story = {
+  args: {
+    children: <ChannelScreen channelId="channel-general" />,
+  },
+  parameters: {
+    router: { initialEntries: ["/channels/channel-general"] },
+  },
+  play: async () => {
+    await expect(await screen.findByText(/今日のリリースは 18:00/)).toBeInTheDocument();
+  },
+};
+
+export const MobileChannel: Story = {
+  globals: { viewport: { value: "mobile" } },
   args: {
     children: <ChannelScreen channelId="channel-general" />,
   },

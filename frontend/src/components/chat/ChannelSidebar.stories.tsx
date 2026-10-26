@@ -1,5 +1,6 @@
 import type { Meta, StoryObj } from "@storybook/react-vite";
 import { http, HttpResponse } from "msw";
+import { expect, screen } from "storybook/test";
 
 import { StoryShell } from "../../../.storybook/shell";
 import { storyChannelUsers, storyChannels, storyCollections } from "../../../.storybook/fixtures";
@@ -86,5 +87,9 @@ export const UnreadAndArchived: Story = {
         ),
       ],
     },
+  },
+  play: async () => {
+    await expect(await screen.findAllByRole("img", { name: "未読メッセージあり" })).toHaveLength(2);
+    await expect(screen.getByRole("img", { name: "アーカイブ済み" })).toBeInTheDocument();
   },
 };
