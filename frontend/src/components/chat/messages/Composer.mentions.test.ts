@@ -15,6 +15,10 @@ beforeEach(async () => {
     addEventListener() {},
     removeEventListener() {},
   }));
+  vi.stubGlobal("requestAnimationFrame", (callback: FrameRequestCallback) => {
+    callback(0);
+    return 0;
+  });
   container = document.createElement("div");
   document.body.append(container);
   root = createRoot(container);
@@ -56,6 +60,16 @@ async function input(value: string) {
   });
   return textarea;
 }
+function options() {
+  return Array.from(container.querySelectorAll<HTMLElement>('[role="option"]'));
+}
+async function press(key: string) {
+  const textarea = container.querySelector("textarea")!;
+  await act(async () => {
+    textarea.dispatchEvent(new KeyboardEvent("keydown", { key, bubbles: true, cancelable: true }));
+  });
+  return textarea;
+}
 it("inserts a member mention with Enter without sending, then sends the inserted username", async () => {
   const textarea = await input("hello @ali");
   expect(container.querySelector('[role="listbox"]')?.textContent).toContain("@alice");
@@ -83,5 +97,46 @@ it("ignores IME Enter and dismisses suggestions with Escape", async () => {
   await act(async () => {
     textarea.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
   });
+  expect(container.querySelector('[role="listbox"]')).toBeNull();
+});
+it("exposes suggestions as a listbox without nested interactive controls", async () => {
+  const textarea = await input("@al");
+  const listbox = container.querySelector('[role="listbox"]')!;
+  const option = options()[0]!;
+  expect(textarea.getAttribute("role")).toBeNull();
+  expect(textarea.getAttribute("aria-expanded")).toBeNull();
+  expect(textarea.getAttribute("aria-autocomplete")).toBe("list");
+  expect(textarea.getAttribute("aria-controls")).toBe(listbox.id);
+  expect(textarea.getAttribute("aria-activedescendant")).toBe(option.id);
+  expect(option.tagName).toBe("LI");
+  expect(option.getAttribute("tabindex")).toBe("-1");
+  expect(option.getAttribute("aria-selected")).toBe("true");
+  expect(option.querySelector("button")).toBeNull();
+});
+it("moves the active mention with arrow keys and inserts it with Enter", async () => {
+  const textarea = await input("hi @");
+  const [channel, here, alice] = options();
+  expect(textarea.getAttribute("aria-activedescendant")).toBe(channel!.id);
+  await press("ArrowDown");
+  expect(textarea.getAttribute("aria-activedescendant")).toBe(here!.id);
+  expect(here!.getAttribute("aria-selected")).toBe("true");
+  await press("ArrowDown");
+  expect(textarea.getAttribute("aria-activedescendant")).toBe(alice!.id);
+  await press("ArrowUp");
+  expect(textarea.getAttribute("aria-activedescendant")).toBe(here!.id);
+  await press("Enter");
+  expect(textarea.value).toBe("hi @here ");
+  expect(send).not.toHaveBeenCalled();
+});
+it("selects a mention by clicking an option and keeps focus in the textarea", async () => {
+  const textarea = await input("hi @al");
+  textarea.focus();
+  const option = options()[0]!;
+  await act(async () => {
+    option.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, cancelable: true }));
+    option.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
+  });
+  expect(textarea.value).toBe("hi @alice ");
+  expect(document.activeElement).toBe(textarea);
   expect(container.querySelector('[role="listbox"]')).toBeNull();
 });
