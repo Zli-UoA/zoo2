@@ -11,7 +11,7 @@ export function NotificationsButton() {
   return (
     <Link
       to="/notifications"
-      aria-label={`${t("notifications.title")} (${t("notifications.unread", { count: unreadCount })})`}
+      aria-label={t("notifications.unread", { count: unreadCount })}
       title={t("notifications.title")}
       className="relative flex size-10 items-center justify-center rounded-xl text-muted-foreground transition-colors outline-none hover:bg-accent hover:text-foreground focus-visible:ring-3 focus-visible:ring-ring/50 data-[status=active]:bg-brand-muted data-[status=active]:text-brand-muted-foreground"
     >

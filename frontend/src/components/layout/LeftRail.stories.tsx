@@ -6,7 +6,7 @@ const meta = {
   title: "Layout/LeftRail",
   component: LeftRail,
   tags: ["autodocs"],
-  parameters: { a11y: { test: "todo" } },
+  parameters: { a11y: { test: "error" } },
   decorators: [
     (Story) => (
       <div className="flex h-[640px] bg-background">
