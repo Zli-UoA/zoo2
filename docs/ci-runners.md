@@ -14,7 +14,7 @@ GitHub Actions のジョブは、zoo2 クラスタ上の self-hosted runner `zli
 | Secret `RUNNER_STATUS_TOKEN` が無い（fork の PR を含む） | runner の状態を確認できない |
 | runner の API がエラーになる | 同上 |
 | online の `zli-k8s` の runner が無い | クラスタ、ARC、GitHub App のいずれかが止まっている |
-| `zli-k8s` の runner が上限の6台とも busy | 待つより GitHub-hosted の方が早い |
+| `zli-k8s` の runner が上限の4台とも busy | 待つより GitHub-hosted の方が早い |
 
 scale set は `minRunners: 1` で、待機中の runner を常に1台置いています。そのため、online の runner が1台も無いことを、`zli-k8s` が使えない合図として扱えます。
 

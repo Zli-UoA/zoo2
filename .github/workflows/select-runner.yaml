@@ -29,7 +29,7 @@ jobs:
           github-token: ${{ secrets.runner-status-token || github.token }}
           script: |
             const SCALE_SET = 'zli-k8s';
-            const MAX_RUNNERS = 6; // zoo2-infra の arc-runners の maxRunners
+            const MAX_RUNNERS = 4; // zoo2-infra の arc-runners の maxRunners
             const use = (runsOn, reason) => {
               core.setOutput('runs-on', JSON.stringify(runsOn));
               core.info(`${runsOn}: ${reason}`);
