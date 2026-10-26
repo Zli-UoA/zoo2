@@ -16,6 +16,7 @@ const emojiButtonClassName =
   "flex min-w-0 flex-1 items-center justify-center rounded-md p-1 text-xl leading-none outline-none hover:bg-accent focus-visible:ring-3 focus-visible:ring-ring/50";
 
 const NAVIGATION_KEYS = new Set(["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight"]);
+const SCROLL_CORRECTION_WINDOW_MS = 200;
 
 /**
  * Frimousse is headless, so the picker, list and category headers are styled
@@ -28,6 +29,7 @@ export function EmojiPicker({ onSelect }: { onSelect: (emoji: string) => void })
   const { locale } = useLocale();
   const [recents, setRecents] = useState<string[]>([]);
   const viewportRef = useRef<HTMLDivElement>(null);
+  const keyboardNavigationAt = useRef(0);
 
   useEffect(() => {
     setRecents(loadRecentEmojis());
@@ -37,6 +39,7 @@ export function EmojiPicker({ onSelect }: { onSelect: (emoji: string) => void })
     const viewport = viewportRef.current;
     if (!viewport) return;
     const observer = new MutationObserver(() => {
+      if (performance.now() - keyboardNavigationAt.current > SCROLL_CORRECTION_WINDOW_MS) return;
       const active = viewport.querySelector<HTMLElement>('[role="gridcell"][data-active]');
       if (!active) return;
       if (active.getBoundingClientRect().bottom > viewport.getBoundingClientRect().bottom) {
@@ -65,6 +68,7 @@ export function EmojiPicker({ onSelect }: { onSelect: (emoji: string) => void })
   const forwardNavigationKey = useCallback((event: KeyboardEvent<HTMLDivElement>) => {
     if (!NAVIGATION_KEYS.has(event.key)) return;
     const { key, code, location, ctrlKey, shiftKey, altKey, metaKey } = event;
+    keyboardNavigationAt.current = performance.now();
     event.preventDefault();
     queueMicrotask(() => {
       document.dispatchEvent(
