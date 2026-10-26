@@ -37,39 +37,72 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v7
 
+      # Pull and boot the databases while the frontend and Rust are set up.
+      # "Wait for PostgreSQL and Electric" below waits until they are healthy.
+      - name: Start PostgreSQL and Electric
+        working-directory: .
+        run: |
+          nohup docker compose -f infra/db/compose.yml up -d --wait \
+            > "$RUNNER_TEMP/compose-up.log" 2>&1 &
+          echo $! > "$RUNNER_TEMP/compose-up.pid"
+
       - name: Setup pnpm
-        uses: pnpm/action-setup@v4
+        uses: pnpm/action-setup@v6
         with:
           version: 12.11.2
 
       - name: Setup Node
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v7
         with:
-          node-version: 22
+          node-version: 24
           cache: pnpm
           cache-dependency-path: frontend/pnpm-lock.yaml
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
-      - name: Install Playwright browser
-        run: pnpm exec playwright install --with-deps chromium
+      - name: Restore Playwright browser
+        uses: actions/cache@v6
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ hashFiles('frontend/pnpm-lock.yaml') }}
 
+      # The self-hosted runner image already has the system libraries.
+      - name: Install Playwright browser
+        run: pnpm exec playwright install ${{ runner.environment == 'github-hosted' && '--with-deps' || '' }} chromium
+
+      - name: Read Rust toolchain
+        id: rust-toolchain
+        working-directory: .
+        # Install only the toolchain pinned in rust-toolchain.toml, not stable as well.
+        run: echo "channel=$(sed -n 's/^channel = "\(.*\)"$/\1/p' rust-toolchain.toml)" >> "$GITHUB_OUTPUT"
       - name: Setup Rust
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ steps.rust-toolchain.outputs.channel }}
 
       - name: Restore Rust cache
         uses: Swatinem/rust-cache@v2
         with:
           workspaces: backend
+          # Reuse the debug build cache of ci-backend.yaml's build job.
+          shared-key: backend-debug
+          # Keep the build cache even when the E2E test fails.
+          cache-on-failure: true
 
       - name: Build backend
         working-directory: ./backend
         run: cargo build
 
-      - name: Start PostgreSQL and Electric
+      - name: Wait for PostgreSQL and Electric
         working-directory: .
-        run: docker compose -f infra/db/compose.yml up -d --wait
+        run: |
+          # Let the background start finish first so two `up` runs never race.
+          pid=$(cat "$RUNNER_TEMP/compose-up.pid")
+          while kill -0 "$pid" 2>/dev/null; do sleep 1; done
+          cat "$RUNNER_TEMP/compose-up.log"
+          # Idempotent: fails here if a service did not become healthy.
+          docker compose -f infra/db/compose.yml up -d --wait
 
       - name: Setup Atlas
         uses: ariga/setup-atlas@v0
@@ -99,15 +132,10 @@ jobs:
 
       - name: Upload Playwright artifacts
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: playwright-oidc
           path: |
             frontend/test-results
             frontend/playwright-report
           retention-days: 7
-
-      - name: Stop containers
-        if: always()
-        working-directory: .
-        run: docker compose -f infra/db/compose.yml down -v
