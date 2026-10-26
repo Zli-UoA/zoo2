@@ -2,7 +2,9 @@ import { Outlet, createFileRoute } from "@tanstack/react-router";
 import { useEffect, useState } from "react";
 
 import { AppShell } from "../components/layout/AppShell";
+import { OfflineProvider } from "../components/offline/OfflineProvider";
 import { ShellSkeleton } from "../components/layout/ShellSkeleton";
+import { resolveConfig } from "../lib/config";
 
 export const Route = createFileRoute("/_shell")({ component: ShellLayout });
 
@@ -12,14 +14,19 @@ export const Route = createFileRoute("/_shell")({ component: ShellLayout });
  */
 function ShellLayout() {
   const [mounted, setMounted] = useState(false);
+  // AuthGate が設定を検証済み。ここでは同一インスタンスを使い回し、
+  // OfflineProvider の初期化が再レンダーで繰り返されないようにする。
+  const [config] = useState(resolveConfig);
   useEffect(() => {
     setMounted(true);
   }, []);
 
   return mounted ? (
-    <AppShell>
-      <Outlet />
-    </AppShell>
+    <OfflineProvider config={config}>
+      <AppShell>
+        <Outlet />
+      </AppShell>
+    </OfflineProvider>
   ) : (
     <ShellSkeleton />
   );

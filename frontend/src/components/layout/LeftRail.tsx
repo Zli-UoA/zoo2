@@ -10,6 +10,7 @@ import { useCurrentUser } from "../../hooks/useCurrentUser";
 import { useUsers } from "../../hooks/useRealtime";
 import { useCollections } from "../../lib/electric/collections-context";
 import { getOidcClient } from "../../lib/oidc/session";
+import { useOfflineStatus } from "../../lib/offline/offline-context";
 import { LanguageToggle } from "../i18n/LanguageToggle";
 import { ModeToggle } from "../theme/ModeToggle";
 import { Avatar, AvatarFallback } from "../ui/avatar";
@@ -50,6 +51,7 @@ export function LeftRail() {
   const { t } = useTranslation();
   const { config } = useCollections();
   const { currentUserId } = useCurrentUser();
+  const { clearUserData } = useOfflineStatus();
   const usersQuery = useUsers();
   const me = (usersQuery.data ?? []).find((user) => user.id === currentUserId);
   const meLabel = me ? me.display_name || me.user_name : (currentUserId ?? "?");
@@ -66,6 +68,11 @@ export function LeftRail() {
     } catch {
       toast.error(t("pwa.logoutError"));
       return;
+    }
+    try {
+      await clearUserData();
+    } catch {
+      // 端末データを消せなくてもログアウトは続ける（ユーザー単位で分離済み）。
     }
     await client.logout();
   };

@@ -179,3 +179,47 @@ describe("messageFeedQuery scopes", () => {
     expect(result.map((row) => row.parent_id)).toEqual(["root-1"]);
   });
 });
+
+describe("messageFeedQuery since window", () => {
+  it("returns only messages at or after the window start", async () => {
+    const result = await queryOnce((q) =>
+      messageFeedQuery(q, makeCollections(messages, users), {
+        parentId: null,
+        since: "2026-01-03 00:00:00.000",
+      }),
+    );
+    expect(result.map((row) => row.id)).toEqual(["message-3"]);
+  });
+
+  it("applies the same window to thread replies", async () => {
+    const replies: MessageRow[] = [
+      {
+        id: "reply-old",
+        user_id: "user-1",
+        channel_id: "channel-1",
+        content: "old",
+        created_at: "2026-01-01 00:00:00.000",
+        updated_at: null,
+        deleted_at: null,
+        parent_id: "root-1",
+      },
+      {
+        id: "reply-new",
+        user_id: "user-1",
+        channel_id: "channel-1",
+        content: "new",
+        created_at: "2026-01-05 00:00:00.000",
+        updated_at: null,
+        deleted_at: null,
+        parent_id: "root-1",
+      },
+    ];
+    const result = await queryOnce((q) =>
+      messageFeedQuery(q, makeCollections(replies, users), {
+        parentId: "root-1",
+        since: "2026-01-02 00:00:00.000",
+      }),
+    );
+    expect(result.map((row) => row.id)).toEqual(["reply-new"]);
+  });
+});

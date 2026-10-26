@@ -284,6 +284,17 @@
   "mentions": {
     "suggestions": "提及建議"
   },
+  "offline": {
+    "bannerTitle": "你而家離線",
+    "bannerDescription": "顯示緊儲存咗嘅內容。連返線之前唔可以send訊息。",
+    "cached": "顯示緊儲存咗嘅內容",
+    "composeDisabled": "離線時唔可以send訊息",
+    "emptyTitle": "離線而且冇儲存咗嘅訊息",
+    "emptyDescription": "連返線之後請重新載入。",
+    "retry": "再試",
+    "persistenceErrorTitle": "呢部裝置儲存唔到訊息",
+    "persistenceErrorDescription": "請檢查瀏覽器嘅儲存設定。一樣可以繼續傾偈。"
+  },
   "pwa": {
     "install": "安裝 Zoo",
     "enable": "開啟推送通知",

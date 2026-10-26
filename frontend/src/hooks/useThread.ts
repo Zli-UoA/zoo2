@@ -9,11 +9,11 @@ import { countRepliesByParent } from "../lib/electric/threads";
  * 指定ルートへの返信を、メイン一覧と同じ messages コレクションの live query で
  * 購読する。スレッド専用の Shape / collection は作らない。
  */
-export function useThreadFeed(channelId: string | null, rootId: string | null) {
+export function useThreadFeed(channelId: string | null, rootId: string | null, since?: string) {
   const { messages, users } = useCollections();
   return useLiveQuery((q) =>
     channelId && rootId
-      ? messageFeedQuery(q, { messages: messages(channelId), users }, { parentId: rootId })
+      ? messageFeedQuery(q, { messages: messages(channelId), users }, { parentId: rootId, since })
       : undefined,
   );
 }

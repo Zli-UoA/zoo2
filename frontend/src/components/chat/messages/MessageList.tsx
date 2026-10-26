@@ -1,7 +1,15 @@
 import { useTranslation } from "react-i18next";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { ArrowDownIcon } from "lucide-react";
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+  type ReactNode,
+} from "react";
 
 import type { KitchenCatalog } from "../../../lib/emoji/kitchen";
 import type { ReactionGroup } from "../../../lib/emoji/reactions";
@@ -21,6 +29,10 @@ import {
 
 const ESTIMATED_ROW_HEIGHT = 64;
 const SKELETON_ROWS = [0, 1, 2, 3, 4, 5];
+/** 上端からこの距離まで来たら、過去のメッセージを読み足す。 */
+const LOAD_OLDER_THRESHOLD = 64;
+/** Shape が無言で止まったときにスケルトン無限表示を避けるための上限。 */
+const LOADING_TIMEOUT_MS = 8_000;
 
 interface MessageListProps {
   targetMessageId?: string;
@@ -46,6 +58,12 @@ interface MessageListProps {
   onOpenThread: (messageId: string) => void;
   /** 送信できる状態か。false なら空状態で「最初のメッセージ」を促さない。 */
   canCompose?: boolean;
+  /** オフラインか。スケルトンの代わりに保存済みがない旨を出す。 */
+  isOffline?: boolean;
+  /** 上端付近で過去のメッセージを読み足す。 */
+  onLoadOlder?: (oldestCreatedAt: string) => void;
+  /** 取得失敗・停止時の再試行。 */
+  onRetry?: () => void;
 }
 
 function MessageSkeleton() {
@@ -68,19 +86,36 @@ function MessageState({
   title,
   description,
   destructive = false,
+  action,
 }: {
   title: string;
   description?: string;
   destructive?: boolean;
+  action?: ReactNode;
 }) {
   return (
-    <div className="flex h-full flex-col items-center justify-center gap-1 p-6 text-center">
+    <div className="flex h-full flex-col items-center justify-center gap-2 p-6 text-center">
       <p className={destructive ? "text-sm font-medium text-destructive" : "text-sm font-medium"}>
         {title}
       </p>
       {description ? <p className="text-xs text-muted-foreground">{description}</p> : null}
+      {action}
     </div>
   );
+}
+
+/** 読み込みが長時間終わらないときだけ true にする。 */
+function useLoadingTimeout(active: boolean, timeoutMs = LOADING_TIMEOUT_MS): boolean {
+  const [timedOut, setTimedOut] = useState(false);
+  useEffect(() => {
+    if (!active) {
+      setTimedOut(false);
+      return;
+    }
+    const timer = setTimeout(() => setTimedOut(true), timeoutMs);
+    return () => clearTimeout(timer);
+  }, [active, timeoutMs]);
+  return active && timedOut;
 }
 
 /**
@@ -112,6 +147,9 @@ export function MessageList({
   replyCounts,
   onOpenThread,
   canCompose = true,
+  isOffline = false,
+  onLoadOlder,
+  onRetry,
 }: MessageListProps) {
   const { t } = useTranslation();
   const {
@@ -120,11 +158,15 @@ export function MessageList({
     isLoading: readStateLoading,
     isError: readStateError,
   } = useMessageReadState(channelId, currentUserId, messages, isLoading || isError, isWritePending);
+  // 既読位置の取得に失敗しても、保存済みのメッセージは隠さない。
+  // 未読区切りだけを出さずに描画する（オフライン時に空になるのを防ぐ）。
   const items = useMemo(
     () =>
-      readStateLoading || readStateError
-        ? []
-        : buildMessageItems(messages, undefined, firstUnreadId),
+      buildMessageItems(
+        messages,
+        undefined,
+        readStateLoading || readStateError ? null : firstUnreadId,
+      ),
     [messages, firstUnreadId, readStateLoading, readStateError],
   );
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -169,7 +211,13 @@ export function MessageList({
       setHasNewBelow(false);
       markRead();
     }
-  }, [markRead]);
+    if (element.scrollTop <= LOAD_OLDER_THRESHOLD) {
+      const oldest = messages[0];
+      if (oldest) {
+        onLoadOlder?.(oldest.created_at);
+      }
+    }
+  }, [markRead, messages, onLoadOlder]);
 
   useLayoutEffect(() => {
     const element = scrollRef.current;
@@ -207,6 +255,27 @@ export function MessageList({
     snapshotRef.current = next;
     previousScrollHeightRef.current = element.scrollHeight;
   }, [items, currentUserId, scrollToBottom, t, firstUnreadId, virtualizer]);
+
+  // 行の実測で scrollHeight が変わっても、次の prepend 補正が古い高さを
+  // 基準にしないよう、毎コミットで最新値を記録する。
+  useLayoutEffect(() => {
+    const element = scrollRef.current;
+    if (element) {
+      previousScrollHeightRef.current = element.scrollHeight;
+    }
+  });
+
+  // 一覧がスクロールできないほど短い場合でも、上端スクロール相当の操作が
+  // できないため、古いメッセージがあれば自動で窓を広げる。
+  useEffect(() => {
+    const element = scrollRef.current;
+    if (!element || messages.length === 0 || !onLoadOlder) {
+      return;
+    }
+    if (element.scrollHeight <= element.clientHeight + LOAD_OLDER_THRESHOLD) {
+      onLoadOlder(messages[0]!.created_at);
+    }
+  }, [messages, onLoadOlder]);
 
   useEffect(() => {
     const update = () => {
@@ -253,20 +322,44 @@ export function MessageList({
     }
   }, [hasNewBelow]);
 
-  const showSkeleton = (isLoading || readStateLoading) && items.length === 0;
-  const showError = (isError || readStateError) && items.length === 0;
+  const stalled = useLoadingTimeout(
+    (isLoading || readStateLoading) && messages.length === 0 && !isOffline,
+  );
+  const showOffline = isOffline && items.length === 0;
+  const showSkeleton =
+    (isLoading || readStateLoading) && items.length === 0 && !isOffline && !stalled;
+  const showError = !showOffline && (isError || readStateError || stalled) && items.length === 0;
   const showEmpty =
-    !isLoading && !readStateLoading && !isError && !readStateError && items.length === 0;
+    !showSkeleton && !showOffline && !isError && !readStateError && !stalled && items.length === 0;
 
   return (
     <div className="relative min-h-0 flex-1">
       {showSkeleton ? (
         <MessageSkeleton />
+      ) : showOffline ? (
+        <MessageState
+          title={t("offline.emptyTitle")}
+          description={t("offline.emptyDescription")}
+          action={
+            onRetry ? (
+              <Button variant="outline" size="sm" onClick={onRetry}>
+                {t("offline.retry")}
+              </Button>
+            ) : null
+          }
+        />
       ) : showError ? (
         <MessageState
           destructive
           title={t("messages.loadError")}
           description={t("messages.retryHelp")}
+          action={
+            onRetry ? (
+              <Button variant="outline" size="sm" onClick={onRetry}>
+                {t("offline.retry")}
+              </Button>
+            ) : null
+          }
         />
       ) : showEmpty ? (
         <MessageState
@@ -277,6 +370,7 @@ export function MessageList({
         <div
           ref={scrollRef}
           onScroll={handleScroll}
+          data-testid="message-scroll"
           className="h-full overflow-y-auto overscroll-contain px-2 py-3"
         >
           <div

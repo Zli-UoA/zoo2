@@ -5,7 +5,7 @@ Zoo はホーム画面へのインストールと Web Push に対応する。左
 - HTTPS が必要（ローカル開発の localhost は例外）。
 - Chrome / Edge では、インストール可能になるとレールにインストールボタンが出る。
 - iOS / iPadOS 16.4 以降では Safari の共有メニューから「ホーム画面に追加」し、追加した Zoo を開いて通知を許可する。
-- オフラインでは専用の案内ページを表示する。チャットの閲覧・投稿・同期には接続が必要。
+- オフラインでも app shell を起動し、保存済みのチャンネルとメッセージを表示する。送信と最新への同期には接続が必要（`docs/offline-windowed-messages.md`）。
 
 ## Web の通知一覧
 
@@ -52,7 +52,7 @@ tail -c 65 vapid-public.der | openssl base64 -A | tr '+/' '-_' | tr -d '='
 
 配信はベストエフォートで、メッセージ投稿の成功とは独立している。プロセス終了・サービス障害時の再送キューはなく、通知の到達は保証しない。通知は5分で失効し、通知レコードごとに表示する。アプリ内の通知レコードは従来どおり保存・同期される。
 
-Service Worker は公開のオフラインページとアイコンだけを保存する。API、OIDC コールバック、チャットデータ、認証済み HTML はキャッシュしない。
+Service Worker は静的 app shell（`/index.html`、ビルド済みの `/assets/`、アイコン）を保存する。API、OIDC コールバック、cross-origin の認証リクエストはキャッシュしない。チャットデータは Service Worker ではなく、TanStack DB がユーザー単位の OPFS SQLite に保存する。
 
 ## API
 

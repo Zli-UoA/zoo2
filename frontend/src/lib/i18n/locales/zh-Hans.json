@@ -284,6 +284,17 @@
   "mentions": {
     "suggestions": "提及建议"
   },
+  "offline": {
+    "bannerTitle": "你已离线",
+    "bannerDescription": "正在显示已保存的内容。重新连接前无法发送消息。",
+    "cached": "正在显示已保存的内容",
+    "composeDisabled": "离线时无法发送消息",
+    "emptyTitle": "离线且没有已保存的消息",
+    "emptyDescription": "重新连接后请刷新页面。",
+    "retry": "重试",
+    "persistenceErrorTitle": "无法在此设备上保存消息",
+    "persistenceErrorDescription": "请检查浏览器的存储设置。聊天仍可继续。"
+  },
   "pwa": {
     "install": "安装 Zoo",
     "enable": "启用推送通知",

@@ -284,6 +284,17 @@
   "mentions": {
     "suggestions": "メンション候補"
   },
+  "offline": {
+    "bannerTitle": "オフラインです",
+    "bannerDescription": "保存済みの内容を表示しています。接続が戻るまで送信できません。",
+    "cached": "保存済みの内容を表示しています",
+    "composeDisabled": "オフラインのため送信できません",
+    "emptyTitle": "オフラインで、保存済みのメッセージがありません",
+    "emptyDescription": "接続が戻ったら再読み込みしてください。",
+    "retry": "再試行",
+    "persistenceErrorTitle": "この端末にメッセージを保存できません",
+    "persistenceErrorDescription": "ブラウザーの保存領域を確認してください。チャット自体は続けられます。"
+  },
   "pwa": {
     "install": "Zooをインストール",
     "enable": "プッシュ通知を有効にする",
