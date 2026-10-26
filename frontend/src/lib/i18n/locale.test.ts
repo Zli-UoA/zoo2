@@ -72,6 +72,14 @@ describe("translations", () => {
     expect(t("messages.count", { count: 2 })).toBe("2 messages");
     expect(t("threads.openWithCount", { count: 1 })).toBe("1 reply (open thread)");
     expect(t("threads.openWithCount", { count: 2 })).toBe("2 replies (open thread)");
+    expect(t("notifications.unread", { count: 1 })).toBe("1 unread notification");
+    expect(t("notifications.unread", { count: 3 })).toBe("3 unread notifications");
+    expect(t("notifications.reactionGroup", { actor: "Alice", count: 1 })).toBe(
+      "Alice and 1 other reacted to your message",
+    );
+    expect(t("notifications.reactionGroup", { actor: "Alice", count: 2 })).toBe(
+      "Alice +2 reacted to your message",
+    );
     expect(t("members.already", { userId: "alice" })).toBe("Already a member: alice");
     expect(createI18n("yue").t("dates.yesterday")).toBe("尋日");
   });

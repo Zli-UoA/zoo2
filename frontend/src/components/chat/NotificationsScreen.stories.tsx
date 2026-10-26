@@ -1,7 +1,7 @@
 import type { Meta, StoryObj } from "@storybook/react-vite";
 
 import { StoryShell } from "../../../.storybook/shell";
-import { storyCollections } from "../../../.storybook/fixtures";
+import { storyCollections, storyNotifications } from "../../../.storybook/fixtures";
 import { NotificationsScreen } from "./NotificationsScreen";
 
 const meta = {
@@ -24,6 +24,18 @@ export default meta;
 type Story = StoryObj<typeof meta>;
 
 export const Default: Story = {};
+
+export const SingleUnread: Story = {
+  parameters: {
+    collections: {
+      ...storyCollections,
+      notifications: storyNotifications.map((notification, index) => ({
+        ...notification,
+        is_read: index !== 0,
+      })),
+    },
+  },
+};
 
 export const Empty: Story = {
   parameters: {

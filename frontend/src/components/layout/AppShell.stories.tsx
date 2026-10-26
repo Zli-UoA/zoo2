@@ -1,5 +1,6 @@
 import type { Meta, StoryObj } from "@storybook/react-vite";
 
+import { storyCollections, storyNotifications } from "../../../.storybook/fixtures";
 import { ChannelScreen } from "../chat/ChannelScreen";
 import { NotificationsScreen } from "../chat/NotificationsScreen";
 import { WelcomePanel } from "../chat/WelcomePanel";
@@ -35,6 +36,22 @@ export const Notifications: Story = {
   },
   parameters: {
     router: { initialEntries: ["/notifications"] },
+  },
+};
+
+export const NotificationsSingleUnread: Story = {
+  args: {
+    children: <NotificationsScreen />,
+  },
+  parameters: {
+    router: { initialEntries: ["/notifications"] },
+    collections: {
+      ...storyCollections,
+      notifications: storyNotifications.map((notification, index) => ({
+        ...notification,
+        is_read: index !== 0,
+      })),
+    },
   },
 };
 
