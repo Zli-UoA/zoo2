@@ -14,10 +14,10 @@ final class WebPageTests: XCTestCase {
         configuration.websiteDataStore = .nonPersistent()
         configuration.userContentController.addScriptMessageHandler(bridge, contentWorld: .page, name: "zoo")
         let page = WebPage(configuration: configuration)
-        for try await _ in page.load(html: "<html><body>Bridge fixture</body></html>", baseURL: WebTrust.home) { }
+        for try await _ in page.load(html: "<html><body>ブリッジのテスト用ページ</body></html>", baseURL: WebTrust.home) { }
         let version = try await page.callJavaScript("const result = await window.webkit.messageHandlers.zoo.postMessage({version: 1, method: 'session'}); return result.version;") as? Int
         XCTAssertEqual(version, 1)
-        for try await _ in page.load(html: "<html><body>Untrusted fixture</body></html>", baseURL: URL(string: "https://evil.test")!) { }
+        for try await _ in page.load(html: "<html><body>信頼しないオリジンのテスト用ページ</body></html>", baseURL: URL(string: "https://evil.test")!) { }
         let rejected = try await page.callJavaScript("try { await window.webkit.messageHandlers.zoo.postMessage({version: 1, method: 'session'}); return false; } catch { return true; }") as? Bool
         XCTAssertEqual(rejected, true)
     }
@@ -32,7 +32,7 @@ final class WebPageTests: XCTestCase {
         configuration.websiteDataStore = .nonPersistent()
         configuration.userContentController.addScriptMessageHandler(bridge, contentWorld: .page, name: "zoo")
         let page = WebPage(configuration: configuration)
-        for try await _ in page.load(html: "<html><body>Session fixture</body></html>", baseURL: WebTrust.home) { }
+        for try await _ in page.load(html: "<html><body>セッションのテスト用ページ</body></html>", baseURL: WebTrust.home) { }
         let rejected = try await page.callJavaScript("try { await window.webkit.messageHandlers.zoo.postMessage({version: 1, method: 'token'}); return false; } catch { return true; }") as? Bool
         XCTAssertEqual(rejected, true)
     }

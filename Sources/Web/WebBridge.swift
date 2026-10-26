@@ -2,7 +2,7 @@ import Foundation
 import WebKit
 import UIKit
 
-// Keep the native capability restricted to the same HTTPS origin as the shared UI.
+// ネイティブ機能の呼び出しを、共通画面と同じ HTTPS オリジンに限定する。
 enum WebTrust {
     static let home = URL(string: "https://zli.chat")!
     static func allows(_ url: URL?) -> Bool {
@@ -34,14 +34,14 @@ final class WebBridge: NSObject, WKScriptMessageHandlerWithReply {
               let body = message.body as? [String: Any],
               let version = body["version"] as? Int, version == 1,
               let method = body["method"] as? String, let command = BridgeCommand(rawValue: method),
-              let handle else { return (nil, "Unsupported native request") }
+              let handle else { return (nil, "このネイティブ機能の呼び出しは許可されていません。") }
         do {
             let result = try await handle(command)
-            guard active else { return (nil, "Session ended") }
+            guard active else { return (nil, "セッションが終了しました。") }
             return (result, nil)
         } catch {
-            // Never return server responses, authorization codes or tokens as diagnostics.
-            return (nil, "Native request failed")
+            // 診断情報としてサーバー応答、認可コード、トークンを返さない。
+            return (nil, "ネイティブ機能の呼び出しに失敗しました。")
         }
     }
 

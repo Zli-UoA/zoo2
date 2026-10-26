@@ -74,9 +74,9 @@ final class NetworkTests: XCTestCase {
             let body = try JSONSerialization.jsonObject(with: Self.body(request)) as! [String: String]
             XCTAssertEqual(body["id"], receipt.id)
             XCTAssertEqual(body["revocation_secret"], receipt.secret)
-            return (200, [:], Data("<html>SPA fallback</html>".utf8))
+            return (200, [:], Data("<html>SPA のフォールバックページ</html>".utf8))
         }
-        do { try await backend.revoke(receipt); XCTFail("A successful HTTP response is not proof of cleanup") }
+        do { try await backend.revoke(receipt); XCTFail("HTTP 応答の成功だけでは登録解除の完了とみなせません。") }
         catch { XCTAssertTrue(error is DecodingError) }
         StubProtocol.state.install { _ in (200, [:], Data(#"{"ok":true}"#.utf8)) }
         try await backend.revoke(receipt)
@@ -108,24 +108,24 @@ final class NetworkTests: XCTestCase {
             XCTAssertEqual(request.httpMethod, "POST")
             XCTAssertEqual(request.value(forHTTPHeaderField: "Authorization"), "Bearer test-access")
             XCTAssertNil(request.value(forHTTPHeaderField: "X-Dev-User"))
-            return (200, [:], Data(#"{"data":{"id":"m","user_id":"u","channel_id":"c","content":"hello","created_at":"2026-10-26 10:00:00","parent_id":null,"deleted_at":null,"updated_at":null},"txid":"123"}"#.utf8))
+            return (200, [:], Data(#"{"data":{"id":"m","user_id":"u","channel_id":"c","content":"こんにちは","created_at":"2026-10-26 10:00:00","parent_id":null,"deleted_at":null,"updated_at":null},"txid":"123"}"#.utf8))
         }
-        let message: Message = try await api.write("api/messages", body: ["content": .string("hello"), "channel_id": .string("c")])
-        XCTAssertEqual(message.content, "hello")
+        let message: Message = try await api.write("api/messages", body: ["content": .string("こんにちは"), "channel_id": .string("c")])
+        XCTAssertEqual(message.content, "こんにちは")
     }
 
     func testUnauthorizedIsAnExpiredSession() async throws {
         let api = try client()
         defer { api.auth.logout(); StubProtocol.state.install(nil) }
         StubProtocol.state.install { _ in (401, [:], Data()) }
-        do { let _: Person = try await api.get("api/users/me"); XCTFail("Unauthorized response accepted") }
+        do { let _: Person = try await api.get("api/users/me"); XCTFail("認証エラーの応答が受け入れられました。") }
         catch ZooError.expiredSession { }
     }
 
     func testRefreshIsSharedAcrossConcurrentRequests() async throws {
         let api = try client(expired: true)
         defer { api.auth.logout(); StubProtocol.state.install(nil) }
-        let refreshed = expectation(description: "one token exchange")
+        let refreshed = expectation(description: "トークン交換が 1 回だけ行われる")
         refreshed.assertForOverFulfill = true
         StubProtocol.state.install { request in
             if request.url?.path == "/.well-known/openid-configuration" {

@@ -1,67 +1,70 @@
-# Architecture
+# アプリの構成
 
-## Ownership
+## Web とネイティブの役割
 
-The iOS app uses SwiftUI `WebView` with a `WebPage` on iOS 26+. The React application
-owns chat UI, routing, localization, API writes and Electric subscriptions. Swift
-owns `ASWebAuthenticationSession`, PKCE, refresh serialization, Keychain and APNs.
-The shared Web app uses its existing token-provider interface to request a native
-access token. Refresh tokens and APNs revocation capabilities never cross the bridge.
+iOS アプリは iOS 26 以降の SwiftUI `WebView` と `WebPage` を使用します。
+React アプリがチャット画面、ルーティング、ローカライズ、API への書き込み、Electric の購読を担当します。
+Swift 側は `ASWebAuthenticationSession`、PKCE、トークン更新の直列化、Keychain、APNs を担当します。
+共通 Web アプリは既存のトークン取得インターフェースを通じて、ネイティブ側にアクセストークンを要求します。
+リフレッシュトークンと APNs 登録を解除するための秘密情報は、ブリッジに渡しません。
 
-`WebSession` is main-actor isolated and observed by SwiftUI. Login resolves the
-current user before creating a WebPage. Logout invalidates pending bridge responses,
-cancels authentication work, discards the WebPage and its nonpersistent data store,
-and queues APNs cleanup. Failed/offline cleanup retains its Keychain receipt for retry.
+`WebSession` はメインアクター上で動作し、SwiftUI が状態を監視します。
+ログイン時は現在のユーザーを確定してから WebPage を作成します。
+ログアウト時は処理中のブリッジ応答を無効にし、認証処理をキャンセルして、WebPage と非永続データストアを破棄します。
+APNs 登録の解除もキューに追加します。解除に失敗した場合やオフラインの場合は、
+再試行に必要な登録情報を Keychain に保持します。
 
-## Bridge version 1
+## ブリッジのバージョン 1
 
-Only the HTTPS `zli.chat` main frame may call `window.webkit.messageHandlers.zoo`.
-Every request is `{version: 1, method: string}` and returns a Promise through
-`WKScriptMessageHandlerWithReply`. The native side injects the immutable
-`window.__ZOO_NATIVE__ = {version: 1}` marker before document scripts run.
-It validates the frame URL, security origin and protocol version, independently
-of any JavaScript marker. Unknown commands fail closed.
+`window.webkit.messageHandlers.zoo` を呼び出せるのは、HTTPS の `zli.chat` のメインフレームだけです。
+リクエストはすべて `{version: 1, method: string}` の形式で、
+`WKScriptMessageHandlerWithReply` を通じて Promise を返します。
+ネイティブ側はページ内のスクリプトが実行される前に、変更できない
+`window.__ZOO_NATIVE__ = {version: 1}` マーカーを注入します。
+この JavaScript マーカーとは独立に、フレームの URL、セキュリティオリジン、プロトコルのバージョンを検証します。
+未知のコマンドは拒否します。
 
-| Method | Response | Purpose |
+| メソッド | 応答 | 用途 |
 | --- | --- | --- |
-| `session` | `{version: 1, userID}` | Select the native authenticated session |
-| `token` | `{accessToken}` | Supply a short-lived bearer token to existing Web API clients |
-| `ready` | `{ok: true}` | Announce that the Web router and navigation handler are ready |
-| `logout` | Page is destroyed | End the native and Web session |
-| `notificationState` | `{enabled, status, failed}` | Read notification preference and registration status |
-| `enableNotifications` | `{enabled, status, failed}` | Request permission and queue APNs registration |
-| `disableNotifications` | `{enabled, status, failed}` | Disable delivery and queue server cleanup |
+| `session` | `{version: 1, userID}` | ネイティブ側で認証済みのセッションを選択する |
+| `token` | `{accessToken}` | 既存の Web API クライアントに有効期間の短い Bearer トークンを渡す |
+| `ready` | `{ok: true}` | Web ルーターと画面遷移処理の準備完了を知らせる |
+| `logout` | ページを破棄 | ネイティブと Web のセッションを終了する |
+| `notificationState` | `{enabled, status, failed}` | 通知の有効・無効の設定と登録状態を取得する |
+| `enableNotifications` | `{enabled, status, failed}` | 通知許可を要求し、APNs 登録をキューに追加する |
+| `disableNotifications` | `{enabled, status, failed}` | 通知を無効にし、サーバー側の登録解除をキューに追加する |
 
-`enabled` is the user's preference, not proof that APNs registration or delivery
-succeeded. The asynchronous registration result updates `status` and `failed`, and
-emits `zoo:native:notifications`. A foreground transition emits `zoo:native:resume`
-and a focus event so the Web UI refreshes state. Web callers time out after 30 seconds.
+`enabled` はユーザーの設定を表し、APNs の登録や配信の成功を保証する値ではありません。
+非同期の登録結果に応じて `status` と `failed` を更新し、`zoo:native:notifications` を発火します。
+フォアグラウンドへの復帰時は `zoo:native:resume` とフォーカスイベントを発火し、Web 画面の状態を更新します。
+Web 側からの呼び出しは 30 秒でタイムアウトします。
 
-Swift calls `window.__zooNavigate({userID, channelID, messageID?})` for notification
-taps. Both sides check the destination's account and identifier shape. The Web
-router opens `/channels/<channelID>?message=<messageID>` and reveals the chat pane,
-even when navigating to the currently selected channel. Swift clears the queued
-destination only after successful acknowledgement. API authorization remains the
-source of truth for channel membership and message access.
+通知のタップ時は、Swift が `window.__zooNavigate({userID, channelID, messageID?})` を呼び出します。
+両側で遷移先のアカウントと識別子の形式を検証します。
+Web ルーターは `/channels/<channelID>?message=<messageID>` を開き、
+選択中と同じチャンネルへの遷移でもチャット欄を表示します。
+Swift は成功応答を受け取った後にだけ、待機中の遷移先を消去します。
+チャンネルへの参加資格とメッセージへのアクセス権限は、API 側の認可で判定します。
 
-## Security and lifecycle
+## セキュリティとライフサイクル
 
-Only trusted-origin navigation stays inside the app. User-initiated external links
-open through the operating system; arbitrary script redirects are cancelled.
-Bridge methods do not accept arbitrary URLs, scripts, credentials or Keychain keys.
-A trusted-page script can obtain an access token, as the browser UI already can;
-this is not isolation from a same-origin XSS. CSP and Web input handling remain
-important. Tokens are never placed in navigation URLs or Web persistent storage.
+信頼するオリジンへの遷移だけをアプリ内で開きます。
+ユーザーが操作した外部リンクは OS を通じて開き、スクリプトによる任意のリダイレクトは取り消します。
+ブリッジのメソッドは、任意の URL、スクリプト、認証情報、Keychain のキーを受け付けません。
+信頼するページのスクリプトは、通常のブラウザー画面と同様にアクセストークンを取得できます。
+同一オリジンの XSS を隔離する構成ではないため、CSP と Web 側の入力処理は引き続き重要です。
+トークンは画面遷移の URL や Web の永続ストレージに保存しません。
 
-The app uses native browser authentication, rather than authenticating inside the
-WebView. HTTPS callback association and APNs deployment are still required.
-The native shell has retry and logout controls outside the page, including when
-the deployed Web UI is unavailable or incompatible. It does not claim offline chat.
+認証は WebView 内では行わず、ネイティブのブラウザー認証を使用します。
+HTTPS コールバックの関連付けと APNs の配備は引き続き必要です。
+ネイティブ側にはページ外に再試行とログアウトの操作を用意しているため、
+デプロイ済みの Web 画面が利用できない場合や互換性がない場合でも操作できます。
+オフラインでのチャット利用は保証していません。
 
-## Acceptance
+## 受け入れ確認
 
-Verify signed iOS 26+ login, restart/token renewal, message send/sync, Japanese
-keyboard layout, foreground recovery, notification tap during cold/warm launch,
-account changes, and offline logout cleanup. A simulator/local-fixture result does
-not establish production OAuth or APNs delivery. Distribution review remains a
-separate release step.
+署名した iOS 26 以降の実機で、ログイン、再起動・トークン更新、メッセージ送信・同期、
+日本語キーボード使用時のレイアウト、フォアグラウンド復帰、
+アプリの終了時・起動中の通知タップ、アカウント切り替え、オフラインでのログアウト後の登録解除を確認してください。
+シミュレーターやローカルのテストデータでの成功だけでは、本番の OAuth 認証や APNs 配信を確認したことにはなりません。
+配布時の審査は、別途リリース工程で行います。

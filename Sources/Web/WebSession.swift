@@ -54,7 +54,7 @@ final class WebSession {
             return try await self.handle(command)
         }
         var configuration = WebPage.Configuration()
-        // A fresh, ephemeral store prevents a previous account's Web data surviving logout.
+        // 非永続ストアを毎回作成し、ログアウト後に前のアカウントの Web データが残るのを防ぐ。
         configuration.websiteDataStore = .nonPersistent()
         configuration.applicationNameForUserAgent = "Zoo-iOS/1"
         configuration.userContentController.addScriptMessageHandler(bridge, contentWorld: .page, name: "zoo")
@@ -162,6 +162,6 @@ final class WebSession {
             if handled == true, epoch == generation, self.page === page, notifications.destination == target {
                 notifications.destination = nil
             }
-        } catch { /* Keep the target until the Web UI is ready again. */ }
+        } catch { /* Web 画面の準備が再び整うまで遷移先を保持する。 */ }
     }
 }

@@ -67,7 +67,7 @@ final class PushTests: XCTestCase {
     func testLogoutWaitsForInFlightRegistrationThenRevokes() async {
         let store = MemoryPushStore(), backend = StubPushBackend()
         let registration = PushRegistration(store: store)
-        let started = expectation(description: "Registration began")
+        let started = expectation(description: "通知の登録が開始された")
         var release: CheckedContinuation<Void, Never>?
         backend.beforeSubscribe = {
             await withCheckedContinuation { release = $0; started.fulfill() }

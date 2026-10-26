@@ -111,7 +111,7 @@ final class Authentication: NSObject, ASWebAuthenticationPresentationContextProv
     var hasSession: Bool { tokens != nil }
 
     func presentationAnchor(for session: ASWebAuthenticationSession) -> ASPresentationAnchor {
-        // A foreground window is required before starting the authentication session.
+        // 認証セッションの開始前に、フォアグラウンドのウィンドウを確保しておく必要がある。
         presentationWindow!
     }
 

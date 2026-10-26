@@ -76,7 +76,7 @@ struct LivePushBackend: PushBackend {
         guard try JSONDecoder().decode(Response.self, from: data).id == receipt.id else { throw ZooError.invalidResponse }
     }
     func revoke(_ receipt: PushReceipt) async throws {
-        // Cleanup uses only the original server and its narrowly scoped capability, never a new account's bearer token.
+        // 登録解除には元のサーバーと解除専用の秘密情報だけを使い、新しいアカウントの Bearer トークンは使わない。
         var request = URLRequest(url: try ConnectionSettings.secureURL(receipt.server).appendingPathComponent("api/push/apns/revoke"))
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
@@ -94,7 +94,7 @@ final class PushRegistration {
     private var tail: Task<Void, Never>?
     init(store: any PushReceiptStore = KeychainPushReceiptStore()) { self.store = store }
 
-    // Operations are serialized across suspension points so logout always follows any registration in flight.
+    // 中断を挟む処理も直列化し、進行中の登録が終わってからログアウトに伴う解除を行う。
     @discardableResult
     func update(backend: any PushBackend, account: String?, token: String?, environment: String,
                 completion: @escaping @MainActor (Error?) -> Void = { _ in }) -> Task<Void, Never> {
@@ -126,7 +126,7 @@ final class PushRegistration {
             guard SecRandomCopyBytes(kSecRandomDefault, bytes.count, &bytes) == errSecSuccess else { throw ZooError.invalidResponse }
             receipt = PushReceipt(server: backend.server, account: account, token: token, environment: environment,
                                   secret: bytes.map { String(format: "%02x", $0) }.joined())
-            // Persist before sending: a lost HTTP response must still leave enough information to revoke or retry.
+            // HTTP 応答が失われても解除や再試行ができるよう、送信前に登録情報を永続化する。
             try store.save(receipt)
         }
         if let receipt { try await backend.subscribe(receipt) }

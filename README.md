@@ -1,14 +1,14 @@
-# Zoo for iOS
+# Zoo の iOS アプリ
 
-Zoo's iPhone client for iOS 26 and later. SwiftUI's `WebView` and `WebPage`
-render the shared Zoo web interface at `https://zli.chat`. Native code owns
-OAuth authentication, Keychain credentials, APNs registration, and notification navigation.
+iOS 26 以降に対応した Zoo の iPhone アプリです。SwiftUI の `WebView` と `WebPage` で、
+`https://zli.chat` の共通 Web 画面を表示します。OAuth 認証、Keychain による認証情報の保存、
+APNs 登録、通知からの画面遷移はネイティブ側が担当します。
 
-## Development
+## 開発手順
 
-Open `Zoo.xcodeproj` in Xcode. The project is generated from `project.yml` with
-XcodeGen. Use Xcode 26 or later with an SDK that includes WebKit for SwiftUI;
-the migration is developed with Xcode 27.1 and Swift 6.4 in Swift 6 language mode.
+Xcode で `Zoo.xcodeproj` を開きます。プロジェクトは XcodeGen を使い、`project.yml` から生成します。
+SwiftUI 向け WebKit を含む SDK と Xcode 26 以降が必要です。
+今回の移行では Xcode 27.1 と Swift 6.4 を使用し、Swift 6 言語モードで開発しています。
 
 ```sh
 make generate
@@ -16,51 +16,50 @@ make build
 make test
 ```
 
-Override `DESTINATION` for an available simulator or physical device. A signed
-device build requires the `works.zli.zoo` App ID in team `F82XB5KFX2`, Associated
-Domains, and Push Notifications capabilities. Debug uses APNs sandbox; Release
-uses APNs production. Do not commit signing keys, profiles, tokens or `.env` files.
+使用するシミュレーターや実機に合わせて `DESTINATION` を指定します。
+実機向けの署名付きビルドには、チーム `F82XB5KFX2` の App ID `works.zli.zoo` と、
+Associated Domains、Push Notifications の機能設定が必要です。
+Debug は APNs のサンドボックス環境、Release は本番環境を使います。
+署名鍵、プロビジョニングプロファイル、トークン、`.env` ファイルはコミットしないでください。
 
-## Repositories
+## リポジトリの役割
 
-- `Zli-UoA/zoo2-ios`: native shell, authentication, notifications, app tests.
-- `Zli-UoA/zoo2`: shared React UI, REST API, Electric synchronization, APNs backend.
-- `Zli-UoA/zoo2-infra`: production routing, secrets, migrations and deployment.
+- `Zli-UoA/zoo2-ios`：ネイティブ部分、認証、通知、アプリのテスト。
+- `Zli-UoA/zoo2`：共通の React 画面、REST API、Electric による同期、APNs バックエンド。
+- `Zli-UoA/zoo2-infra`：本番のルーティング、シークレット、マイグレーション、デプロイ。
 
-The native services were extracted from `Zli-UoA/zoo2` commit
-`96b1538e134cf211638ffde9a8d6a24cb5be7e16`. Duplicate SwiftUI chat screens,
-repositories and Shape subscriptions are replaced by the shared Web implementation.
-The Web source is not copied into this repository.
+ネイティブの処理は `Zli-UoA/zoo2` のコミット
+`96b1538e134cf211638ffde9a8d6a24cb5be7e16` から移しました。
+重複していた SwiftUI のチャット画面、データアクセス用リポジトリ、Shape の購読処理は、
+共通の Web 実装に置き換えています。Web のソースコードはこのリポジトリにコピーしていません。
 
-## Integration and deployment
+## Web との連携とデプロイ
 
-The shared UI must include native bridge version 1 before this app can display
-an authenticated workspace. See [the architecture and protocol](docs/architecture.md).
-The app loads the deployed site, so a local change to the Web source alone does
-not update the app. Web updates must preserve compatibility with released bridge
-versions and be tested against supported iOS releases.
+認証済みのワークスペースを表示するには、共通 Web 画面がネイティブブリッジのバージョン 1 に対応している必要があります。
+詳細は[構成と通信仕様](docs/architecture.md)を参照してください。
+アプリはデプロイ済みのサイトを読み込むため、ローカルの Web ソースを変更するだけではアプリに反映されません。
+Web を更新する際は、リリース済みのブリッジのバージョンとの互換性を保ち、対応する iOS で検証してください。
 
-Production OAuth and APNs acceptance are not yet verified. The previously observed
-AASA URL returned the SPA HTML rather than the association JSON, blocking HTTPS
-login. See [deployment prerequisites](docs/native-auth-push.md) and
-[zoo2-infra #60](https://github.com/Zli-UoA/zoo2-infra/issues/60).
-This repository migration does not deploy any server changes or apply migrations.
+本番での OAuth 認証と APNs 通知の受信確認は未完了です。
+以前の確認では、AASA の URL が関連付け用の JSON ではなく SPA の HTML を返し、HTTPS ログインを妨げていました。
+[デプロイの前提条件](docs/native-auth-push.md)と
+[zoo2-infra の Issue #60](https://github.com/Zli-UoA/zoo2-infra/issues/60)を参照してください。
+今回のリポジトリ移行では、サーバー変更のデプロイやマイグレーションの適用は行っていません。
 
-## Validation
+## 検証範囲
 
-Unit tests cover PKCE, token renewal, registration cleanup, bridge origin checks
-and notification destinations. WebPage tests run the actual JavaScript reply
-bridge using local HTML fixtures; they do not log in to production or send pushes.
-UI tests exercise the native welcome screen. Real-device login, message exchange,
-background/terminated APNs delivery, and notification navigation remain required
-before a production release.
+単体テストでは PKCE、トークン更新、通知登録の解除、ブリッジのオリジン検証、通知の遷移先を確認します。
+WebPage のテストはローカルの HTML を使い、実際の JavaScript 応答付きブリッジを検証します。
+本番へのログインやプッシュ通知の送信は行いません。UI テストではネイティブのログイン前画面を確認します。
+本番リリース前には、実機でのログイン、メッセージの送受信、バックグラウンド時・終了時の APNs 受信、
+通知からの画面遷移の検証が必要です。
 
-## Migration verification (2026-10-26)
+## 移行時の検証結果（2026-10-26）
 
-- iOS 26.5 and iOS 27.0 simulators: 22 unit/integration tests and one UI test passed on each OS.
-- Signed physical-device build from this standalone repository: passed.
-- Shared Web change: 467 tests, TypeScript checking, and production build passed.
-- Web static checks: zero errors; eight pre-existing warnings in `scripts/pwa.test.mjs`.
-- Independent `reviewer-jp` review: findings addressed and final review passed.
-- Production Web deployment, AASA/callback configuration and APNs delivery remain unverified.
-- Production deployment and database migrations are separate from this source migration.
+- iOS 26.5 と iOS 27.0 のシミュレーターで、それぞれ単体・結合テスト 22 件と UI テスト 1 件が成功。
+- この独立リポジトリからの実機向け署名付きビルドが成功。
+- 共通 Web 側の変更は、テスト 467 件、TypeScript の型検査、本番向けビルドが成功。
+- Web の静的検査はエラー 0 件。`scripts/pwa.test.mjs` に既存の警告が 8 件。
+- 独立した `reviewer-jp` の指摘に対応し、最終レビューを通過。
+- 本番 Web のデプロイ、AASA・コールバック設定、APNs 通知の配信は未検証。
+- 本番デプロイとデータベースのマイグレーションは、今回のソースコード移行とは別作業。

@@ -3,7 +3,7 @@ import Foundation
 import ImageIO
 import UniformTypeIdentifiers
 
-// Render a vector monogram without font or window-server dependencies.
+// フォントやウィンドウサーバーに依存せず、ベクター形式のモノグラムを描画する。
 let side = 1024
 let context = CGContext(data: nil, width: side, height: side, bitsPerComponent: 8,
                         bytesPerRow: side * 4, space: CGColorSpaceCreateDeviceRGB(),
@@ -21,4 +21,4 @@ let output = URL(fileURLWithPath: "Sources/Assets.xcassets/AppIcon.appiconset/Ic
 try FileManager.default.createDirectory(at: output.deletingLastPathComponent(), withIntermediateDirectories: true)
 let destination = CGImageDestinationCreateWithURL(output as CFURL, UTType.png.identifier as CFString, 1, nil)!
 CGImageDestinationAddImage(destination, context.makeImage()!, nil)
-guard CGImageDestinationFinalize(destination) else { fatalError("Could not write icon") }
+guard CGImageDestinationFinalize(destination) else { fatalError("アイコンを書き出せませんでした。") }

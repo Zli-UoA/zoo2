@@ -32,7 +32,7 @@ final class NoRedirects: NSObject, URLSessionTaskDelegate, Sendable {
                     willPerformHTTPRedirection response: HTTPURLResponse,
                     newRequest request: URLRequest,
                     completionHandler: @escaping @Sendable (URLRequest?) -> Void) {
-        // Tokens are never forwarded to redirect destinations.
+        // リダイレクト先へトークンを転送しない。
         completionHandler(nil)
     }
 }

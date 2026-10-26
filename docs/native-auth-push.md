@@ -1,148 +1,150 @@
-# Native authentication and push deployment
+# ネイティブ認証とプッシュ通知の配備
 
-## Current boundary
+## 実装済みの範囲と未検証事項
 
-The implementation includes HTTPS browser authentication, Apple association metadata,
-APNs registration/revocation, provider token signing, and native alert delivery.
-Production authentication and APNs delivery have not been verified. An ordinary
-AuthZ user cannot register clients: AuthZ disables dynamic registration and requires
-an administrator session. Public source access does not grant this permission.
+HTTPS のブラウザー認証、Apple の関連付け情報、APNs の登録・解除、
+プロバイダートークンの署名、ネイティブのアラート通知は実装済みです。
+本番での認証と APNs 配信は未検証です。
+AuthZ は動的なクライアント登録を無効にしており、登録には管理者セッションが必要です。
+通常の AuthZ ユーザーや公開ソースへのアクセス権だけでは登録できません。
 
-The Apple App ID already has Push Notifications and Associated Domains enabled.
-Sandbox and Production topic-specific APNs keys have been created with the account
-owner's approval and saved locally outside the repository with owner-only access.
-The dedicated public OAuth client is registered with Client ID
-`UPPfdYapcgiBgnfZIoGvFuJMAEIhXQOV` and is configured as the iOS default.
-No production database migration or service deployment has been performed.
+Apple の App ID では Push Notifications と Associated Domains が有効になっています。
+サンドボックス用・本番用のトピック限定 APNs キーは、アカウント所有者の承認を得て作成済みです。
+リポジトリ外のローカル領域に、所有者だけがアクセスできる権限で保存しています。
+専用の公開 OAuth クライアントは登録済みで、クライアント ID
+`UPPfdYapcgiBgnfZIoGvFuJMAEIhXQOV` を iOS の既定値に設定しています。
+本番データベースのマイグレーションとサービスのデプロイは行っていません。
 
-Coordination requests:
+関連する依頼は以下の Issue に記載しています。
 
-- [AuthZ client registration](https://github.com/Zli-UoA/AuthZ/issues/82)
-- [Kubernetes/Flux deployment](https://github.com/Zli-UoA/zoo2-infra/issues/60)
+- [AuthZ のクライアント登録](https://github.com/Zli-UoA/AuthZ/issues/82)
+- [Kubernetes / Flux へのデプロイ](https://github.com/Zli-UoA/zoo2-infra/issues/60)
 
-## AuthZ administrator handoff
+## AuthZ 管理者への引き継ぎ
 
-The public OAuth client was registered in AuthZ with these settings:
+公開 OAuth クライアントは、以下の設定で AuthZ に登録済みです。
 
-| Field | Value |
+| 項目 | 値 |
 | --- | --- |
-| Display name | Zoo for iOS |
-| Client type | Public; no client secret |
-| Redirect URI | `https://zli.chat/ios/oauth/callback` |
-| Grants | `authorization_code`, `refresh_token` |
-| Response type | `code` |
-| PKCE | Required, `S256` |
-| Token endpoint authentication | `none` |
-| Allowed scopes | `openid profile offline_access` |
-| Linked resource / audience | `https://zli.chat/api` |
-| Issuer | `https://account.zli.works/api/auth` |
+| 表示名 | Zoo for iOS |
+| クライアント種別 | 公開クライアント。クライアントシークレットなし |
+| リダイレクト URI | `https://zli.chat/ios/oauth/callback` |
+| グラント種別 | `authorization_code`、`refresh_token` |
+| レスポンス種別 | `code` |
+| PKCE | 必須。`S256` を使用 |
+| トークンエンドポイントの認証方式 | `none` |
+| 許可スコープ | `openid profile offline_access` |
+| 関連付けるリソース / audience | `https://zli.chat/api` |
+| 発行者 | `https://account.zli.works/api/auth` |
 
-The public Client ID is included in the app defaults. The shell uses a fixed trusted production origin. Do not reuse Zoo's browser client or add its secret to the app. The previous custom-scheme
-redirect is incompatible with AuthZ's production HTTPS-only redirect validation.
-The app also checks AuthZ's RFC 9207 `iss` authorization response parameter.
+公開クライアント ID はアプリの既定値に含まれます。
+ネイティブ部分は、固定した信頼済みの本番オリジンを使用します。
+Zoo のブラウザー用クライアントを流用したり、そのシークレットをアプリに追加したりしないでください。
+以前のカスタムスキームによるリダイレクトは、本番の AuthZ が HTTPS のみを許可する検証に適合しません。
+アプリは RFC 9207 に基づき、AuthZ の認可応答に含まれる `iss` パラメーターも検証します。
 
-## Apple account and application
+## Apple アカウントとアプリの設定
 
-The supplied Team ID is `F82XB5KFX2`; the bundle identifier is `works.zli.zoo`.
-That explicit App ID has Push Notifications and Associated Domains enabled.
-Create signing/provisioning assets for this team. If the App ID prefix differs
-from the Team ID (legacy accounts), correct the association document to the actual
-signed application identifier before deployment.
+Team ID は `F82XB5KFX2`、バンドル識別子は `works.zli.zoo` です。
+この明示的な App ID では Push Notifications と Associated Domains が有効です。
+このチーム用の署名・プロビジョニング設定を用意してください。
+旧来のアカウントなどで App ID のプレフィックスが Team ID と異なる場合は、
+配備前に関連付けファイルを、実際に署名されるアプリケーション識別子に合わせて修正してください。
 
-The iOS 26+ HTTPS `ASWebAuthenticationSession` callback requires the
-`webcredentials:zli.chat` associated domain. The backend implementation in `Zli-UoA/zoo2` serves
-`/.well-known/apple-app-site-association` as JSON with
-`webcredentials.apps = ["F82XB5KFX2.works.zli.zoo"]`. Serve this over public HTTPS
-without redirects or authentication. The proxy routes this path and the OAuth
-fallback page to the backend. Query strings are excluded from backend request
-spans, and the fallback page never reflects codes or states. If upstream access
-logging is enabled, redact callback query strings there as well.
+iOS 26 以降の HTTPS `ASWebAuthenticationSession` コールバックには、
+関連付けドメイン `webcredentials:zli.chat` が必要です。
+`Zli-UoA/zoo2` のバックエンド実装は、`/.well-known/apple-app-site-association` を
+`webcredentials.apps = ["F82XB5KFX2.works.zli.zoo"]` を含む JSON として配信します。
+公開 HTTPS で、リダイレクトや認証を挟まずに配信してください。
+プロキシはこのパスと OAuth のフォールバックページをバックエンドへ転送します。
+バックエンドのリクエストスパンからクエリ文字列を除外し、フォールバックページにも認可コードや state を出力しません。
+上流のアクセスログが有効な場合は、そこでもコールバックのクエリ文字列を記録しないようにしてください。
 
-Use separate Sandbox and Production APNs token signing keys, each restricted to
-the topic `works.zli.zoo`.
-Store the downloaded `.p8` only in the deployment secret manager; never commit it
-or paste it in a chat, PR, screenshot or client configuration. Keep the Key ID
-and Team ID with the server configuration. No Apple account password is needed
-by the app or backend.
+APNs トークンの署名鍵はサンドボックス用と本番用で分け、どちらもトピック `works.zli.zoo` に限定します。
+ダウンロードした `.p8` はデプロイ用のシークレット管理先だけに保管し、
+コミットや、チャット・PR・スクリーンショット・クライアント設定への貼り付けはしないでください。
+Key ID と Team ID はサーバー設定で管理します。
+アプリやバックエンドに Apple アカウントのパスワードは不要です。
 
-## Server deployment settings
+## サーバーの配備設定
 
-| Environment variable | Value |
+| 環境変数 | 値 |
 | --- | --- |
 | `APPLE_TEAM_ID` | `F82XB5KFX2` |
-| `APNS_SANDBOX_KEY_ID` | The 10-character ID of the Sandbox APNs key |
-| `APNS_SANDBOX_PRIVATE_KEY` | Sandbox multiline P-256 `.p8` PEM secret |
-| `APNS_PRODUCTION_KEY_ID` | The 10-character ID of the Production APNs key |
-| `APNS_PRODUCTION_PRIVATE_KEY` | Production multiline P-256 `.p8` PEM secret |
+| `APNS_SANDBOX_KEY_ID` | サンドボックス用 APNs キーの 10 文字の ID |
+| `APNS_SANDBOX_PRIVATE_KEY` | サンドボックス用の P-256 `.p8` 秘密鍵。複数行の PEM 形式 |
+| `APNS_PRODUCTION_KEY_ID` | 本番用 APNs キーの 10 文字の ID |
+| `APNS_PRODUCTION_PRIVATE_KEY` | 本番用の P-256 `.p8` 秘密鍵。複数行の PEM 形式 |
 
-The backend uses a fixed APNs topic `works.zli.zoo` and Apple's sandbox/production
-hosts. It does not accept arbitrary provider URLs. APNs credentials remain in the
-backend. Missing APNs keys disable registration and delivery; Web Push continues
-independently. Invalid partial configuration fails closed.
+バックエンドは固定の APNs トピック `works.zli.zoo` と、Apple のサンドボックス・本番ホストを使用します。
+任意のプロバイダー URL は受け付けません。APNs の認証情報はバックエンド内で管理します。
+APNs キーが未設定の場合は登録と配信を無効にしますが、Web Push は独立して動作します。
+設定が一部だけ存在するなど不正な場合は、安全のため処理を拒否します。
 
-Review and apply `20261026000000_create_apns_subscriptions.sql` through the normal
-Atlas deployment workflow before running the new backend. It adds a table and
-index, plus an expiring revocation table; it does not modify existing notification
-records. Check the migration on a staging database before approving a production deployment. The compose file
-passes the APNs configuration into the backend and supplies the public Team ID.
-Outbound HTTPS/HTTP2 access to Apple's APNs endpoints is required.
+新しいバックエンドを起動する前に、通常の Atlas 配備手順で
+`20261026000000_create_apns_subscriptions.sql` をレビュー・適用してください。
+このマイグレーションはテーブルとインデックス、有効期限付きの登録解除テーブルを追加し、既存の通知レコードは変更しません。
+本番デプロイを承認する前に、ステージングのデータベースで確認してください。
+Web 側の compose ファイルは、APNs 設定と公開情報である Team ID をバックエンドに渡します。
+Apple の APNs エンドポイントへの外向き HTTPS / HTTP2 通信が必要です。
 
-Production is managed by `Zli-UoA/zoo2-infra` using Kubernetes/Flux, not this
-repository's compose file. Add the exact callback/association routes to its
-IngressRoute and APNs environment variables through a backend-only Secret.
-Preserve the migrate-before-app dependency and preview namespace isolation.
-The infrastructure issue above lists the inspected paths and rollout checks.
+本番環境は `Zli-UoA/zoo2-infra` の Kubernetes / Flux で管理します。
+compose ファイルによる配備ではありません。
+IngressRoute にコールバックと関連付けファイルのパスを正確に追加し、
+バックエンド専用の Secret を通じて APNs の環境変数を渡してください。
+アプリより先にマイグレーションを実行する依存関係と、プレビュー環境の名前空間の分離を維持してください。
+上記のインフラ Issue に、確認済みのパスと段階的な配備の確認項目を記載しています。
 
-## Device behavior
+## 実機での動作
 
-The shared Web notification control requests native system permission only when the user enables push.
-Debug builds use the APNs sandbox; Release uses production. The Info.plist value
-and `aps-environment` entitlement derive from the same build setting. Verify the
-signed provisioning profile agrees with this setting, including exported builds.
-APNs registration must use a real signed device; Simulator delivery is not an
-acceptance test for this server path.
+共通 Web 画面の通知設定は、ユーザーがプッシュ通知を有効にしたときだけ、ネイティブのシステム権限を要求します。
+Debug ビルドは APNs のサンドボックス環境、Release は本番環境を使用します。
+Info.plist の値と `aps-environment` エンタイトルメントは同じビルド設定から決まります。
+書き出したビルドも含め、署名済みのプロビジョニングプロファイルがこの設定と一致することを確認してください。
+APNs 登録は署名した実機で確認する必要があります。
+シミュレーターでの配信は、このサーバー経由の通知の受け入れ確認にはなりません。
 
-The server produces an alert notification, which iOS can display while the app is
-backgrounded or terminated. No silent background processing is claimed. A tap
-waits for the authenticated Web router before opening its channel/message; backend
-membership checks still determine access. Alerts contain generic text so private
-message previews are not retained on a locked device.
+サーバーは、アプリがバックグラウンドにある場合や終了している場合も iOS が表示できるアラート通知を生成します。
+サイレント通知によるバックグラウンド処理は保証していません。
+通知をタップすると、認証済み Web ルーターの準備を待ってチャンネルやメッセージを開きます。
+アクセスの可否は引き続きバックエンドの参加資格確認で決まります。
+アラートは汎用的な文面とし、ロック中の端末に私的なメッセージのプレビューを残しません。
 
-Each registration has a random 256-bit revocation capability saved to the device
-Keychain before sending the request. Only its hash is stored in the database.
-The app serializes registration and revocation, preserving the capability after
-network failure. Logout disables local registration and queues server cleanup;
-an offline logout cannot guarantee immediate removal of the server registration.
-Registration and revocation share a database transaction lock. Revocation
-records prevent requests that arrive after logout from recreating a registration.
-Registration requests retain their original timestamp and expire after 10 minutes
-(with up to 30 seconds of future clock skew). Revocations are retained for 11
-minutes, capped at 10,000 records across backend replicas, and limited to 120
-requests/minute per backend process. Cleanup removes expired records as part of
-subsequent revocations; no unbounded client-address map is retained. A 429 response
-keeps the device's receipt for retry. Devices with incorrect clocks must enable
-automatic date/time. Expired receipts rotate only after successful revocation.
+各登録には、解除に使うランダムな 256 ビットの秘密情報を割り当て、リクエスト送信前に端末の Keychain へ保存します。
+データベースにはそのハッシュだけを保存します。
+アプリは登録と解除を直列化し、通信に失敗しても解除用の秘密情報を保持します。
+ログアウト時は端末側の登録を無効にし、サーバー側の登録解除をキューに追加します。
+オフラインでのログアウトでは、サーバー側の登録を直ちに削除できるとは限りません。
+登録と解除は共通のデータベーストランザクションロックを使用します。
+解除記録により、ログアウト後に到着したリクエストが登録を復活させることを防ぎます。
+登録リクエストは最初のタイムスタンプを保持し、10 分で期限切れになります。未来方向の時計のずれは 30 秒まで許容します。
+解除記録は 11 分間保持し、バックエンドの全レプリカ合計で 10,000 件を上限とします。
+解除リクエストはバックエンドのプロセスごとに毎分 120 件までに制限します。
+期限切れの記録は、その後の解除処理時に削除します。上限なく増えるクライアントアドレスの対応表は保持しません。
+429 応答を受けた場合は、再試行のために端末の登録情報を保持します。
+端末の時計が正しくない場合は、日時の自動設定を有効にしてください。
+期限切れの登録情報は、解除に成功した後にだけ更新します。
 
-Cleanup is retried on the next foreground connection or launch without requiring
-an unexpired access token. A delayed old revocation cannot remove a new account's
-registration. Reinstalling the app or losing its Keychain may require server-side
-removal of an orphaned registration; it cannot silently transfer device ownership.
+登録解除は、次にフォアグラウンドで接続したときや起動時に再試行します。有効なアクセストークンは不要です。
+古い解除リクエストが遅れて到着しても、新しいアカウントの登録は削除できません。
+アプリの再インストールや Keychain の喪失後は、残存する登録をサーバー側で削除する必要がある場合があります。
+その登録を使って、端末の所有アカウントを知らないうちに移すことはできません。
 
-## Release verification
+## リリース前の検証
 
-1. Deploy the migration, backend, proxy routes and association document to staging.
-2. Configure the public OAuth Client ID and verify browser login, callback, user
-   identity, API audience, refresh and logout on a signed physical device.
-3. Enable push using the Web notification control. Verify one device registration with a hashed capability;
-   never display raw device tokens or capabilities in logs or screenshots.
-4. From a second test account, send a DM, mention and thread reply while the first
-   device is backgrounded. Confirm receipt, generic preview and correct tap target.
-5. Repeat with the app terminated. Verify tap navigation after authentication and
-   synchronization. Remove channel access and confirm protected content is denied.
-6. Log out while offline, reconnect and confirm server cleanup. Change accounts and
-   verify the previous account's alerts cannot open content in the new account.
-7. Repeat production-environment delivery using TestFlight with a distribution
-   profile. Verify invalid/expired device tokens are pruned on APNs HTTP 410.
+1. マイグレーション、バックエンド、プロキシのルート、関連付けファイルをステージングに配備します。
+2. 公開 OAuth クライアント ID を設定し、署名した実機でブラウザーログイン、コールバック、ユーザーの識別、
+   API の audience、トークン更新、ログアウトを確認します。
+3. Web の通知設定でプッシュ通知を有効にし、解除用の秘密情報がハッシュ化された端末登録が 1 件あることを確認します。
+   生のデバイストークンや解除用の秘密情報をログやスクリーンショットに出さないでください。
+4. 端末のアプリをバックグラウンドにして、別のテストアカウントから DM、メンション、スレッド返信を送ります。
+   受信、汎用的なプレビュー文面、タップ後の正しい遷移先を確認します。
+5. アプリを終了した状態でも同じ確認を行います。認証と同期の後に正しく遷移することを確認します。
+   チャンネルへのアクセス権を削除し、保護された内容へのアクセスが拒否されることも確認します。
+6. オフラインでログアウトしてから再接続し、サーバー側の登録解除を確認します。
+   アカウントを切り替え、以前のアカウント宛ての通知から、新しいアカウントでその内容を開けないことを確認します。
+7. 配布用プロファイルを使用した TestFlight で、本番環境の配信を再確認します。
+   APNs の HTTP 410 応答を受けた無効・期限切れのデバイストークンが削除されることを確認します。
 
-Record actual device and deployment results separately from unit tests and demo
-screenshots. Do not declare the app production-ready until these checks pass.
+実機と配備の結果は、単体テストやデモ画面のスクリーンショットと分けて記録してください。
+これらの確認が完了するまでは、本番運用の準備が整ったと判断しないでください。
