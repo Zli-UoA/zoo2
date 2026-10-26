@@ -12,10 +12,16 @@ concurrency:
   group: preview-label-${{ github.event.pull_request.number }}
   cancel-in-progress: true
 jobs:
+  runner:
+    uses: ./.github/workflows/select-runner.yaml
+    secrets:
+      runner-status-token: ${{ secrets.RUNNER_STATUS_TOKEN }}
+
   label:
+    needs: runner
     # Fork PRs publish no images, so a preview of them would only fail and take a slot.
     if: github.event.pull_request.head.repo.full_name == github.repository
-    runs-on: ubuntu-latest
+    runs-on: ${{ fromJSON(needs.runner.outputs.runs-on) }}
     permissions:
       pull-requests: write
       issues: write

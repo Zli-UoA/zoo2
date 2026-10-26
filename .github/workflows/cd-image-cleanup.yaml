@@ -19,13 +19,22 @@ concurrency:
   group: ghcr-cleanup
   queue: max
 jobs:
+  runner:
+    uses: ./.github/workflows/select-runner.yaml
+    secrets:
+      runner-status-token: ${{ secrets.RUNNER_STATUS_TOKEN }}
+
   cleanup:
-    runs-on: ubuntu-latest
+    needs: runner
+    runs-on: ${{ fromJSON(needs.runner.outputs.runs-on) }}
     steps:
       # Never check out the PR head in this privileged workflow.
       - uses: actions/checkout@v7
         with:
           ref: ${{ github.event.repository.default_branch }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
       - name: Test image planning and retention
         run: node .github/scripts/images.test.mjs
       - uses: actions/github-script@v8

@@ -7,19 +7,28 @@ on:
       - "backend/**"
       - "infra/db/**"
       - ".github/workflows/ci-frontend-auth-e2e.yaml"
+      - ".github/workflows/select-runner.yaml"
   pull_request:
     paths:
       - "frontend/**"
       - "backend/**"
       - "infra/db/**"
       - ".github/workflows/ci-frontend-auth-e2e.yaml"
+      - ".github/workflows/select-runner.yaml"
   workflow_dispatch:
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
+# runner ジョブが zli-k8s（self-hosted）か GitHub-hosted を選ぶ（select-runner.yaml）。
 jobs:
+  runner:
+    uses: ./.github/workflows/select-runner.yaml
+    secrets:
+      runner-status-token: ${{ secrets.RUNNER_STATUS_TOKEN }}
+
   oidc-e2e:
-    runs-on: ubuntu-latest
+    needs: runner
+    runs-on: ${{ fromJSON(needs.runner.outputs.runs-on) }}
     timeout-minutes: 30
     env:
       DATABASE_URL: postgres://root:password@localhost:5432/zoo?sslmode=disable
