@@ -1,5 +1,5 @@
 import type { Meta, StoryObj } from "@storybook/react-vite";
-import { fn } from "storybook/test";
+import { expect, fn, userEvent, within } from "storybook/test";
 
 import { MessageRow } from "./MessageRow";
 import type { MessageItem } from "./messageGrouping";
@@ -20,9 +20,23 @@ const item: MessageItem = {
   showDateSeparator: false,
 };
 
+const longContent = Array.from(
+  { length: 8 },
+  (_, index) =>
+    `${index + 1}. リリース手順の確認項目です。担当者と期限を確認してから次へ進んでください。`,
+).join("\n");
+
 const meta = {
   title: "Chat/MessageRow",
   component: MessageRow,
+  tags: ["autodocs"],
+  parameters: { a11y: { test: "todo" } },
+  argTypes: {
+    isOwn: { control: "boolean" },
+    isEditing: { control: "boolean" },
+    replyCount: { control: { type: "number", min: 0 } },
+    canReact: { control: "boolean" },
+  },
   args: {
     item,
     isOwn: false,
@@ -54,6 +68,24 @@ type Story = StoryObj<typeof meta>;
 
 export const Default: Story = {};
 
+export const OwnMessage: Story = {
+  args: {
+    isOwn: true,
+  },
+};
+
+export const HoverActions: Story = {
+  args: {
+    isOwn: true,
+    onOpenThread: fn(),
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await userEvent.hover(canvas.getByText(/こんにちは/));
+    await expect(canvas.getByRole("button", { name: "編集" })).toBeInTheDocument();
+  },
+};
+
 export const WithReactions: Story = {
   args: {
     isOwn: true,
@@ -64,6 +96,34 @@ export const WithReactions: Story = {
       { emoji: "🎉", count: 1, ownId: null },
       { emoji: "kitchen:1f431_1f600", count: 2, ownId: null },
     ],
+  },
+};
+
+export const ReplyCount: Story = {
+  args: {
+    replyCount: 3,
+    onOpenThread: fn(),
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expect(canvas.getByRole("button", { name: /3 件の返信/ })).toBeVisible();
+  },
+};
+
+export const Editing: Story = {
+  args: {
+    isOwn: true,
+    isEditing: true,
+    editingText: "こんにちは。今日のリリースは 18:00 です。",
+  },
+};
+
+export const LongMessage: Story = {
+  args: {
+    item: {
+      ...item,
+      message: { ...item.message, content: longContent },
+    },
   },
 };
 
@@ -82,5 +142,15 @@ export const Card: Story = {
         }),
       },
     },
+  },
+};
+
+export const Mobile: Story = {
+  globals: { viewport: { value: "mobile" } },
+  args: {
+    isOwn: true,
+    replyCount: 2,
+    onOpenThread: fn(),
+    reactions: [{ emoji: "👍", count: 2, ownId: "reaction-1" }],
   },
 };

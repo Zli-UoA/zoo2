@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { createConfiguredApiClient } from "../../../lib/api/client";
-import { getCollections } from "../../../lib/electric/collections";
+import { useCollections } from "../../../lib/electric/collections-context";
 
 export interface NotificationContext {
   message: { id: string; user_id: string; content: string } | null;
@@ -9,7 +9,7 @@ export interface NotificationContext {
 
 /** Fetch a bounded preview, not a channel-wide messages/reactions Shape. */
 export function useNotificationContext(notificationId: string | null) {
-  const { config } = getCollections();
+  const { config } = useCollections();
   const client = useMemo(() => createConfiguredApiClient(config), [config]);
   const [state, setState] = useState<{
     id: string | null;

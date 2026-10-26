@@ -1,6 +1,11 @@
-import { beforeAll, vi } from "vite-plus/test";
+import { beforeAll, beforeEach, vi } from "vite-plus/test";
 
-import { startMockServer } from "./browser-setup";
+import { storybookApiHandlers } from "../../.storybook/mock-api";
+import { mockServer, startMockServer } from "./browser-setup";
+
+beforeEach(() => {
+  mockServer.use(...storybookApiHandlers);
+});
 
 beforeAll(async () => {
   vi.setSystemTime(new Date("2026-01-02T00:00:00.000Z"));

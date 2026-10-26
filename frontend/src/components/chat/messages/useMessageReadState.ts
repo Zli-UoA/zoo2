@@ -5,6 +5,7 @@ import { useTranslation } from "react-i18next";
 import { READ_STATE_CHANGED, type ChannelReadState } from "../../../hooks/useUnreadChannels";
 import { createConfiguredApiClient } from "../../../lib/api/client";
 import { getCollections } from "../../../lib/electric/collections";
+import { useOptionalCollections } from "../../../lib/electric/collections-context";
 import { parseUtcTimestamp } from "../../../lib/timestamps";
 import type { FeedMessage } from "./messageFormat";
 
@@ -31,9 +32,11 @@ export function useMessageReadState(
 ) {
   const { t } = useTranslation();
   const enabled = !!channelId && !!userId;
+  const injected = useOptionalCollections();
+  const config = injected?.config ?? (enabled ? getCollections().config : null);
   const client = useMemo(
-    () => (enabled ? createConfiguredApiClient(getCollections().config) : null),
-    [enabled, userId],
+    () => (enabled && config ? createConfiguredApiClient(config) : null),
+    [config, enabled],
   );
   const path = `/api/channels/${channelId}/read-state`;
   const [lastRead, setLastRead] = useState<number | null>(null);

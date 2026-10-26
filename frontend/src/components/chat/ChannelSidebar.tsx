@@ -7,7 +7,7 @@ import { useMemo, useState } from "react";
 
 import { useUnreadChannels } from "../../hooks/useUnreadChannels";
 import { useCurrentUser } from "../../hooks/useCurrentUser";
-import { getCollections } from "../../lib/electric/collections";
+import { useCollections } from "../../lib/electric/collections-context";
 import type { ChannelRow } from "../../lib/electric/types";
 import { SyncStatus } from "../SyncStatus";
 import { useShell } from "../layout/shell-context";
@@ -34,7 +34,7 @@ export function ChannelSidebar({
 }) {
   const { t } = useTranslation();
   const shell = useShell();
-  const { channelUsers } = getCollections();
+  const { channelUsers } = useCollections();
   const { currentUserId, isLoading: currentUserLoading } = useCurrentUser();
   const unreadChannelIds = useUnreadChannels(currentUserId);
   const [createOpen, setCreateOpen] = useState(false);

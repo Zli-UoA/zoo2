@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createConfiguredApiClient } from "../lib/api/client";
-import { getCollections } from "../lib/electric/collections";
+import { useCollections } from "../lib/electric/collections-context";
 
 export interface TypingUser {
   id: string;
@@ -9,7 +9,7 @@ export interface TypingUser {
 
 /** Ephemeral presence, separate from replicated messages. */
 export function useTyping(channelId: string, parentId: string | null, enabled: boolean) {
-  const { config } = getCollections();
+  const { config } = useCollections();
   const client = useMemo(() => createConfiguredApiClient(config), [config]);
   const [users, setUsers] = useState<TypingUser[]>([]);
   const activity = useRef<((active: boolean) => void) | null>(null);

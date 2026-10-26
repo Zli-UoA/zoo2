@@ -259,6 +259,17 @@ jobs:
       - name: storybook test
         run: pnpm test:storybook
 
+      - name: build storybook
+        run: pnpm build-storybook
+
+      - name: Upload Storybook static catalog
+        uses: actions/upload-artifact@v4
+        with:
+          name: storybook-static
+          path: frontend/storybook-static
+          retention-days: 7
+          if-no-files-found: error
+
       - name: Upload VRT failure screenshots
         if: failure()
         uses: actions/upload-artifact@v4

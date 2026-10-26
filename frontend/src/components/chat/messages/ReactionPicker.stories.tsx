@@ -1,9 +1,20 @@
 import type { Meta, StoryObj } from "@storybook/react-vite";
-import { fn } from "storybook/test";
+import { delay, http, HttpResponse } from "msw";
+import { expect, fn, screen, userEvent } from "storybook/test";
 import { useState } from "react";
 
+import { RECENT_EMOJIS_STORAGE_KEY } from "../../../lib/emoji/recents";
 import { Button } from "../../ui/button";
 import { ReactionPicker } from "./ReactionPicker";
+
+const minimalKitchenCatalog = {
+  emojis: [
+    ["1f600", "😀", "grinning face"],
+    ["1f431", "🐱", "cat face"],
+  ],
+  dates: ["20260101"],
+  pairs: { "0_1": 0 },
+};
 
 function ReactionPickerDemo({ onSelect }: { onSelect: (emoji: string) => void }) {
   const [open, setOpen] = useState(true);
@@ -18,6 +29,11 @@ function ReactionPickerDemo({ onSelect }: { onSelect: (emoji: string) => void })
 const meta = {
   title: "Chat/ReactionPicker",
   component: ReactionPicker,
+  tags: ["autodocs"],
+  parameters: { a11y: { test: "todo" } },
+  argTypes: {
+    open: { control: "boolean" },
+  },
   args: {
     open: true,
     onOpenChange: fn(),
@@ -30,3 +46,49 @@ export default meta;
 type Story = StoryObj<typeof meta>;
 
 export const Default: Story = {};
+
+export const Kitchen: Story = {
+  play: async () => {
+    await userEvent.click(screen.getByRole("tab", { name: "Emoji Kitchen" }));
+    await expect(
+      await screen.findByRole("combobox", { name: "1つ目の絵文字" }, { timeout: 5000 }),
+    ).toBeVisible();
+  },
+};
+
+export const SearchEmpty: Story = {
+  play: async () => {
+    const search = screen.getByPlaceholderText("絵文字を検索");
+    await userEvent.type(search, "zzzzzzzz");
+    await expect(await screen.findByText("一致する絵文字がありません")).toBeVisible();
+  },
+};
+
+export const Recents: Story = {
+  decorators: [
+    (Story) => {
+      localStorage.setItem(RECENT_EMOJIS_STORAGE_KEY, JSON.stringify(["🎉", "👍"]));
+      return <Story />;
+    },
+  ],
+};
+
+export const KitchenLoading: Story = {
+  parameters: {
+    msw: {
+      handlers: [
+        http.get(/emoji-kitchen.*\.json/, async () => {
+          await delay(1500);
+          return HttpResponse.json(minimalKitchenCatalog);
+        }),
+      ],
+    },
+  },
+  play: async () => {
+    await userEvent.click(screen.getByRole("tab", { name: "Emoji Kitchen" }));
+  },
+};
+
+export const Mobile: Story = {
+  globals: { viewport: { value: "mobile" } },
+};

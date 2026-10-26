@@ -1,0 +1,68 @@
+import type { Meta, StoryObj } from "@storybook/react-vite";
+import { expect, screen, userEvent } from "storybook/test";
+
+import { StoryShell } from "../../../.storybook/shell";
+import { storyChannels } from "../../../.storybook/fixtures";
+import { ChannelHeader } from "./ChannelHeader";
+
+const general = storyChannels.find((channel) => channel.id === "channel-general")!;
+const secret = storyChannels.find((channel) => channel.id === "channel-secret")!;
+const archived = storyChannels.find((channel) => channel.id === "channel-archive")!;
+
+const meta = {
+  title: "Screens/ChannelHeader",
+  component: ChannelHeader,
+  tags: ["autodocs"],
+  parameters: { a11y: { test: "error" } },
+  argTypes: {
+    memberCount: { control: { type: "number", min: 0 } },
+  },
+  args: {
+    channel: general,
+    memberCount: 3,
+  },
+  decorators: [
+    (Story) => (
+      <StoryShell selectedChannelId={general.id}>
+        <div className="w-full bg-background">
+          <Story />
+        </div>
+      </StoryShell>
+    ),
+  ],
+} satisfies Meta<typeof ChannelHeader>;
+
+export default meta;
+type Story = StoryObj<typeof meta>;
+
+export const Default: Story = {
+  play: async () => {
+    await userEvent.click(screen.getByRole("button", { name: "チャンネルの管理" }));
+    await expect(await screen.findByRole("menuitem", { name: "Webhook設定" })).toBeInTheDocument();
+  },
+};
+
+export const Private: Story = {
+  args: {
+    channel: secret,
+    memberCount: 2,
+  },
+};
+
+export const Archived: Story = {
+  parameters: { a11y: { test: "todo" } },
+  args: {
+    channel: archived,
+    memberCount: 1,
+  },
+};
+
+export const LoadingMemberCount: Story = {
+  args: {
+    memberCount: null,
+  },
+};
+
+export const Mobile: Story = {
+  globals: { viewport: { value: "mobile" } },
+};

@@ -1,7 +1,7 @@
 import { useLiveQuery } from "@tanstack/react-db";
 import { useMemo } from "react";
 
-import { getCollections } from "../lib/electric/collections";
+import { useCollections } from "../lib/electric/collections-context";
 import { messageFeedQuery, replyParentQuery } from "../lib/electric/messageFeed";
 import { countRepliesByParent } from "../lib/electric/threads";
 
@@ -10,7 +10,7 @@ import { countRepliesByParent } from "../lib/electric/threads";
  * 購読する。スレッド専用の Shape / collection は作らない。
  */
 export function useThreadFeed(channelId: string | null, rootId: string | null) {
-  const { messages, users } = getCollections();
+  const { messages, users } = useCollections();
   return useLiveQuery((q) =>
     channelId && rootId
       ? messageFeedQuery(q, { messages: messages(channelId), users }, { parentId: rootId })
@@ -23,7 +23,7 @@ export function useThreadFeed(channelId: string | null, rootId: string | null) {
  * 持たないため、削除されていない返信の行からクライアントで集計する。
  */
 export function useReplyCounts(channelId: string | null): Map<string, number> {
-  const { messages } = getCollections();
+  const { messages } = useCollections();
   const query = useLiveQuery((q) =>
     channelId ? replyParentQuery(q, { messages: messages(channelId) }) : undefined,
   );

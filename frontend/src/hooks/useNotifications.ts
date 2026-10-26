@@ -1,11 +1,12 @@
 import { useCallback } from "react";
 import { eq, useLiveQuery } from "@tanstack/react-db";
-import { getCollections } from "../lib/electric/collections";
+import { useCollections } from "../lib/electric/collections-context";
 import { useCurrentUser } from "./useCurrentUser";
 
 export function useNotifications() {
   const { currentUserId } = useCurrentUser();
-  const collection = currentUserId ? getCollections().notifications(currentUserId) : null;
+  const collections = useCollections();
+  const collection = currentUserId ? collections.notifications(currentUserId) : null;
   const query = useLiveQuery(
     (q) =>
       collection && currentUserId
