@@ -2,9 +2,12 @@ import { afterEach, describe, expect, it, vi } from "vite-plus/test";
 
 import {
   OFFLINE_LAST_USER_KEY,
+  clearPendingOfflineDeletion,
   forgetOfflineUserId,
+  markOfflineDeletionPending,
   offlineDatabaseName,
   readLastOfflineUserId,
+  readPendingOfflineDeletion,
   rememberOfflineUserId,
   resolveOfflineNamespace,
 } from "./identity";
@@ -65,6 +68,17 @@ describe("offlineDatabaseName", () => {
     const name = offlineDatabaseName(`user/${"a".repeat(200)}:b c`);
     expect(name).toMatch(/^zoo-offline-[a-z0-9]+\.sqlite$/);
     expect(name.length).toBeLessThanOrEqual(40);
+  });
+});
+
+describe("pending offline deletion", () => {
+  it("remembers a failed logout deletion until the next startup", () => {
+    stubStorage();
+    expect(readPendingOfflineDeletion()).toBeNull();
+    markOfflineDeletionPending("user-alice");
+    expect(readPendingOfflineDeletion()).toBe("user-alice");
+    clearPendingOfflineDeletion();
+    expect(readPendingOfflineDeletion()).toBeNull();
   });
 });
 

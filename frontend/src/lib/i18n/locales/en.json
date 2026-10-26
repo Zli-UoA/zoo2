@@ -293,7 +293,8 @@
     "emptyDescription": "Reconnect and reload to view your chats.",
     "retry": "Retry",
     "persistenceErrorTitle": "Messages can't be saved on this device",
-    "persistenceErrorDescription": "Check your browser's storage settings. You can keep chatting."
+    "persistenceErrorDescription": "Check your browser's storage settings. You can keep chatting.",
+    "deleteFailed": "Could not delete saved data on this device. It will be retried on the next start."
   },
   "pwa": {
     "install": "Install Zoo",

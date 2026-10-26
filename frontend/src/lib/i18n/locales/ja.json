@@ -293,7 +293,8 @@
     "emptyDescription": "接続が戻ったら再読み込みしてください。",
     "retry": "再試行",
     "persistenceErrorTitle": "この端末にメッセージを保存できません",
-    "persistenceErrorDescription": "ブラウザーの保存領域を確認してください。チャット自体は続けられます。"
+    "persistenceErrorDescription": "ブラウザーの保存領域を確認してください。チャット自体は続けられます。",
+    "deleteFailed": "端末の保存データを削除できませんでした。次回の起動時に再試行します。"
   },
   "pwa": {
     "install": "Zooをインストール",

@@ -12,7 +12,9 @@ import { getCurrentUserStore } from "../../lib/currentUser";
 import { getCollections, type CollectionsBundle } from "../../lib/electric/collections";
 import { CollectionsProvider } from "../../lib/electric/collections-context";
 import {
+  clearPendingOfflineDeletion,
   forgetOfflineUserId,
+  markOfflineDeletionPending,
   rememberOfflineUserId,
   resolveOfflineNamespace,
 } from "../../lib/offline/identity";
@@ -26,6 +28,7 @@ import {
   OfflinePersistenceUnavailableError,
   openOfflinePersistence,
   removeOfflineDatabase,
+  retryPendingOfflineDeletion,
 } from "../../lib/offline/persistence";
 import { ShellSkeleton } from "../layout/ShellSkeleton";
 
@@ -131,6 +134,7 @@ export function OfflineProvider({ config, children }: { config: AppConfig; child
       let persistence = null;
       let persistenceStatus: OfflinePersistenceStatus = "unavailable";
       let persistenceError: string | null = null;
+      await retryPendingOfflineDeletion();
       try {
         const handle = await openOfflinePersistence(namespace);
         if (cancelled) return;
@@ -154,8 +158,12 @@ export function OfflineProvider({ config, children }: { config: AppConfig; child
 
   const retryPersistence = useCallback(() => setRetryToken((token) => token + 1), []);
   const clearUserData = useCallback(async () => {
-    await removeOfflineDatabase(namespace);
+    // 削除に失敗しても、次のオフライン起動が前のユーザーの DB を選ばないよう
+    // 先に lastUser を消す。未完了の削除は次の起動で再試行する。
     forgetOfflineUserId(currentUserId);
+    markOfflineDeletionPending(namespace);
+    await removeOfflineDatabase(namespace);
+    clearPendingOfflineDeletion();
   }, [currentUserId, namespace]);
 
   const value = useMemo<OfflineContextValue>(

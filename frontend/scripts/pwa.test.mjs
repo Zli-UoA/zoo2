@@ -235,11 +235,50 @@ test("offline navigation falls back to the cached app shell, then offline.html",
 });
 
 test("online navigation stores the static shell for later deep-link reloads", async () => {
-  const { handlers, cacheContext } = worker();
+  const { handlers, cacheContext } = worker({
+    fetch: async (input) =>
+      basicResponse(`html:${requestKey(input)}`, { headers: { "content-type": "text/html" } }),
+  });
   const response = await fetchThrough(handlers, navigation(`${ORIGIN}/channels/123`));
-  assert.match(await response.text(), /network:/);
+  assert.match(await response.text(), /html:/);
   const shell = cacheContext.storeFor("zoo-shell-v2");
   assert.ok(shell.has(`${ORIGIN}/index.html`));
+});
+
+test("direct navigation to a non-HTML asset does not overwrite the app shell", async () => {
+  const { handlers, cacheContext } = worker({
+    fetch: async (input) =>
+      basicResponse(`png:${requestKey(input)}`, { headers: { "content-type": "image/png" } }),
+  });
+  const shell = cacheContext.storeFor("zoo-shell-v2");
+  shell.set(`${ORIGIN}/index.html`, basicResponse("cached-shell"));
+  const response = await fetchThrough(handlers, navigation(`${ORIGIN}/icons/icon-512.png`));
+  assert.match(await response.text(), /png:/);
+  assert.equal(await shell.get(`${ORIGIN}/index.html`).text(), "cached-shell");
+});
+
+test("a build-specific cache name replaces the previous shell cache", async () => {
+  const indexHtml =
+    '<html><head><script type="module" src="/assets/index-abc123.js"></script></head></html>';
+  const { handlers, cacheContext } = worker({
+    fetch: async (input) => {
+      const key = requestKey(input);
+      if (key === `${ORIGIN}/` || key === `${ORIGIN}/index.html`) {
+        return basicResponse(indexHtml, { headers: { "content-type": "text/html" } });
+      }
+      return basicResponse(`network:${key}`);
+    },
+  });
+  await dispatch(handlers, "install");
+  const names = await cacheContext.api.keys();
+  assert.ok(names.includes("zoo-shell-abc123"));
+  assert.ok(!names.includes("zoo-shell-v2"));
+
+  await cacheContext.api.open("zoo-shell-v2");
+  await dispatch(handlers, "activate");
+  const after = await cacheContext.api.keys();
+  assert.ok(after.includes("zoo-shell-abc123"));
+  assert.ok(!after.includes("zoo-shell-v2"));
 });
 
 test("APIs, auth, cross-origin requests and non-GET requests pass through", async () => {

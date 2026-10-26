@@ -293,7 +293,8 @@
     "emptyDescription": "重新连接后请刷新页面。",
     "retry": "重试",
     "persistenceErrorTitle": "无法在此设备上保存消息",
-    "persistenceErrorDescription": "请检查浏览器的存储设置。聊天仍可继续。"
+    "persistenceErrorDescription": "请检查浏览器的存储设置。聊天仍可继续。",
+    "deleteFailed": "无法删除此设备上保存的数据。下次启动时会重试。"
   },
   "pwa": {
     "install": "安装 Zoo",

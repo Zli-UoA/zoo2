@@ -293,7 +293,8 @@
     "emptyDescription": "連返線之後請重新載入。",
     "retry": "再試",
     "persistenceErrorTitle": "呢部裝置儲存唔到訊息",
-    "persistenceErrorDescription": "請檢查瀏覽器嘅儲存設定。一樣可以繼續傾偈。"
+    "persistenceErrorDescription": "請檢查瀏覽器嘅儲存設定。一樣可以繼續傾偈。",
+    "deleteFailed": "刪除唔到呢部裝置儲存咗嘅資料。下次啟動會再試。"
   },
   "pwa": {
     "install": "安裝 Zoo",

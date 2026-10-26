@@ -72,7 +72,9 @@ export function LeftRail() {
     try {
       await clearUserData();
     } catch {
-      // 端末データを消せなくてもログアウトは続ける（ユーザー単位で分離済み）。
+      // 端末データを消せなくてもログアウトは続ける。lastUser は消えているため
+      // 次のオフライン起動で前のユーザーの DB は選ばれず、削除は再試行される。
+      toast.error(t("offline.deleteFailed"));
     }
     await client.logout();
   };

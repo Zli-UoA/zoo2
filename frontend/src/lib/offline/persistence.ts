@@ -5,7 +5,11 @@ import {
   type PersistedCollectionPersistence,
 } from "@tanstack/browser-db-sqlite-persistence";
 
-import { offlineDatabaseName } from "./identity";
+import {
+  clearPendingOfflineDeletion,
+  offlineDatabaseName,
+  readPendingOfflineDeletion,
+} from "./identity";
 
 export class OfflinePersistenceUnavailableError extends Error {
   constructor(message: string) {
@@ -74,6 +78,23 @@ async function closeHandle(handle: OfflinePersistenceHandle): Promise<void> {
     await handle.database.close?.();
   } catch {
     // A pagehide/worker teardown may already have closed the connection.
+  }
+}
+
+/**
+ * 前回のログアウトで消せなかった DB を、アプリ起動時に削除し直す。
+ * 別タブがハンドルを持っている場合などは、また次の起動へ持ち越す。
+ */
+export async function retryPendingOfflineDeletion(): Promise<void> {
+  const pending = readPendingOfflineDeletion();
+  if (!pending) {
+    return;
+  }
+  try {
+    await removeOfflineDatabase(pending);
+    clearPendingOfflineDeletion();
+  } catch {
+    // Keep the marker; the next startup retries after other tabs close.
   }
 }
 

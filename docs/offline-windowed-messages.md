@@ -47,9 +47,12 @@ Electric の Shape 自体は従来どおりチャンネル単位で購読する�
 
 - install で `/`、`/index.html`、`/offline.html`、manifest、アイコンを precache する。
 - ナビゲーションは network-first。失敗時は保存済みの `/index.html`、なければ `/offline.html`。
+  `content-type: text/html` の応答だけを `/index.html` として保存し、アイコンや JSON への
+  直接遷移で app shell を上書きしない。
 - `/assets/`、`/icons/`、`/emojibase-data/` は runtime cache（cache-first）。
 - `/api/`、`/auth/`、`/sw.js`、cross-origin、GET 以外はキャッシュしない。
-- キャッシュ名は `zoo-shell-v2`。activate で古い `zoo-` キャッシュを削除する。
+- キャッシュ名はビルドごとの entry hash を含む `zoo-shell-<build>`。install 時に index.html から
+  決定し、activate で古い `zoo-shell-*` / `zoo-offline-*` キャッシュを削除する。
 - `fetch()` が返す body は展開済みなのに `content-encoding` ヘッダーが残ると module script の読み込みが
   `ERR_FAILED` になるため、キャッシュ前に encoding・validator・`cache-control` を落として `no-store` を付ける。
 - 初回ロード時点で Service Worker が制御していない assets（フォントや OPFS worker）は、
@@ -86,7 +89,10 @@ INSERT の一意制約違反になり、既存メッセージを成功として�
 - OPFS の SQLite は平文。OS アカウントやブラウザープロファイルを共有する端末では、DB ファイルを
   直接読める可能性がある。端末暗号化（WebCrypto で行・DB を暗号化する等）は未実装。
 - ログアウト時の削除は best-effort。別タブが DB を開いている場合やブラウザーが削除を拒否した場合は
-  残ることがある。ユーザー単位の分離で他ユーザーからは読めないが、端末上には残りうる。
+  残ることがある。ただし `lastUser` は削除前に消し、未完了の削除は localStorage のマーカーとして
+  次の起動時に再試行する。そのため、削除に失敗しても次のオフライン起動は `anonymous` の空 DB を使い、
+  前のユーザーのデータを画面から読むことはない。ユーザー単位の分離で他ユーザーからも読めないが、
+  端末上には平文で残りうる。
 - 共有端末ではブラウザーのプロファイル分離と OS のディスク暗号化を併用する。
 
 ## 確認

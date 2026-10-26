@@ -2,6 +2,7 @@ import { readStorageValue } from "../storage";
 
 /** 最後に解決したユーザー。オフライン起動時の OPFS 名前空間に使う。 */
 export const OFFLINE_LAST_USER_KEY = "zoo.offline.lastUser";
+export const OFFLINE_PENDING_DELETE_KEY = "zoo.offline.pendingDelete";
 export const OFFLINE_DATABASE_PREFIX = "zoo-offline-";
 
 /** FNV-1a を 2 種類の seed で回し、短く衝突しにくい DB 名にする。 */
@@ -67,5 +68,26 @@ export function forgetOfflineUserId(userId?: string | null): void {
     }
   } catch {
     // Storage may be blocked; nothing to clear.
+  }
+}
+
+/** ログアウト時の削除に失敗した DB を、次の起動で再試行するための印。 */
+export function markOfflineDeletionPending(namespace: string): void {
+  try {
+    window.localStorage.setItem(OFFLINE_PENDING_DELETE_KEY, namespace);
+  } catch {
+    // The DB is still isolated by user even if the retry marker cannot be saved.
+  }
+}
+
+export function readPendingOfflineDeletion(): string | null {
+  return readStorageValue(OFFLINE_PENDING_DELETE_KEY) || null;
+}
+
+export function clearPendingOfflineDeletion(): void {
+  try {
+    window.localStorage.removeItem(OFFLINE_PENDING_DELETE_KEY);
+  } catch {
+    // Nothing to clear.
   }
 }

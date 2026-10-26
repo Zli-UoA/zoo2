@@ -5,7 +5,11 @@
  * app without a network. Never cache API, auth, OIDC or event-stream responses:
  * chat data is persisted separately in OPFS by TanStack DB.
  */
-const CACHE = "zoo-shell-v2";
+const DEFAULT_CACHE = "zoo-shell-v2";
+const CACHE_PREFIX = "zoo-shell-";
+// ビルドごとに変わる hashed entry を cache 名に含め、古い assets ごと
+// activate で破棄できるようにする。install 時に index.html から決定する。
+let cacheName = DEFAULT_CACHE;
 const SHELL = [
   "/",
   "/index.html",
@@ -26,6 +30,11 @@ function isCacheableAsset(url) {
     CACHEABLE_PREFIXES.some((prefix) => url.pathname.startsWith(prefix)) ||
     url.pathname === "/manifest.webmanifest"
   );
+}
+
+function cacheNameForIndex(html) {
+  const match = html.match(/\/assets\/index-([^"'?#]+)\.js/);
+  return match?.[1] ? `${CACHE_PREFIX}${match[1]}` : DEFAULT_CACHE;
 }
 
 /**
@@ -95,19 +104,42 @@ async function precacheIndexAssets(cache, response) {
   );
 }
 
+async function fetchShellIndex() {
+  for (const path of ["/index.html", "/"]) {
+    try {
+      const response = await fetch(path, { cache: "reload" });
+      if (response.ok) return response;
+    } catch {
+      /* Try the other spelling of the entry point. */
+    }
+  }
+  return null;
+}
+
 async function precacheShell() {
-  const cache = await caches.open(CACHE);
+  const index = await fetchShellIndex();
+  if (index) {
+    let html = "";
+    try {
+      html = await index.clone().text();
+    } catch {
+      /* Keep the default cache name when the body cannot be read. */
+    }
+    cacheName = cacheNameForIndex(html);
+  }
+  const cache = await caches.open(cacheName);
+  if (index) {
+    const cached = await cacheResponse(cache, "/index.html", index);
+    // Navigation fallbacks check /index.html first, but keep / for old clients.
+    await cache.put("/", cached.clone());
+    await precacheIndexAssets(cache, cached.clone());
+  }
   // Fetch each entry separately: one missing icon must not fail the install.
   await Promise.all(
-    SHELL.map(async (path) => {
+    SHELL.filter((path) => path !== "/" && path !== "/index.html").map(async (path) => {
       try {
         const response = await fetch(path, { cache: "reload" });
-        if (response.ok) {
-          const cached = await cacheResponse(cache, path, response);
-          if (path === "/index.html" || path === "/") {
-            await precacheIndexAssets(cache, cached);
-          }
-        }
+        if (response.ok) await cacheResponse(cache, path, response);
       } catch {
         /* Offline installs fall back to the runtime cache. */
       }
@@ -118,15 +150,17 @@ async function precacheShell() {
 async function handleNavigation(request) {
   try {
     const response = await fetch(request);
-    if (response.ok) {
+    const contentType = response.headers.get("content-type") || "";
+    if (response.ok && contentType.includes("text/html")) {
       // The SPA shell is static. Store it under /index.html so any navigation
       // can fall back to it, regardless of the deep link that was open.
-      const cache = await caches.open(CACHE);
+      // Direct navigations to icons or JSON must not overwrite the shell.
+      const cache = await caches.open(cacheName);
       return await cacheResponse(cache, "/index.html", response);
     }
     return response;
   } catch {
-    const cache = await caches.open(CACHE);
+    const cache = await caches.open(cacheName);
     return (
       (await cache.match("/index.html")) ||
       (await cache.match("/")) ||
@@ -137,7 +171,7 @@ async function handleNavigation(request) {
 }
 
 async function handleAsset(request) {
-  const cache = await caches.open(CACHE);
+  const cache = await caches.open(cacheName);
   const cached = await cache.match(request);
   if (cached) return cached;
   try {
@@ -159,7 +193,8 @@ self.addEventListener("activate", (event) => {
   event.waitUntil(
     (async () => {
       for (const name of await caches.keys()) {
-        if (name.startsWith("zoo-") && name !== CACHE) await caches.delete(name);
+        const managed = name.startsWith(CACHE_PREFIX) || name.startsWith("zoo-offline-");
+        if (managed && name !== cacheName) await caches.delete(name);
       }
       await self.clients.claim();
     })(),
@@ -174,7 +209,7 @@ self.addEventListener("message", (event) => {
     .slice(0, 200);
   event.waitUntil(
     (async () => {
-      const cache = await caches.open(CACHE);
+      const cache = await caches.open(cacheName);
       for (const url of urls) {
         if (await cache.match(url)) continue;
         try {
