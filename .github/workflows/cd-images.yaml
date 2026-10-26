@@ -12,13 +12,19 @@ permissions:
 concurrency:
   group: ghcr-images-${{ github.event.pull_request.number && format('pr-{0}', github.event.pull_request.number) || github.ref }}
   queue: max
-# zli-k8s は zoo2 クラスタ上の self-hosted runner（privileged な dind）。fork の PR のコードはそこで動かさず、GitHub-hosted runner に回す。
+# runner ジョブが zli-k8s（self-hosted）か GitHub-hosted を選ぶ（select-runner.yaml）。
 jobs:
+  runner:
+    uses: ./.github/workflows/select-runner.yaml
+    secrets:
+      runner-status-token: ${{ secrets.RUNNER_STATUS_TOKEN }}
+
   plan:
+    needs: runner
     if: >-
       (github.event_name != 'workflow_dispatch' || github.ref == 'refs/heads/main') &&
       (github.event.action != 'labeled' || github.event.label.name == 'preview')
-    runs-on: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository && 'ubuntu-latest' || 'zli-k8s' }}
+    runs-on: ${{ fromJSON(needs.runner.outputs.runs-on) }}
     permissions:
       contents: read
       pull-requests: read
@@ -40,6 +46,8 @@ jobs:
           node-version: 22
       - name: Test image planning and retention
         run: node .github/scripts/images.test.mjs
+      - name: Test runner selection
+        run: node .github/scripts/select-runner.test.mjs
       - id: plan
         if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
         uses: actions/github-script@v8
@@ -48,9 +56,9 @@ jobs:
             const {default: plan} = await import(`${process.env.GITHUB_WORKSPACE}/.github/scripts/image-plan.mjs`);
             await plan({github, context, core});
   build:
-    needs: plan
+    needs: [runner, plan]
     if: needs.plan.outputs.enabled == 'true' && needs.plan.outputs.has_images == 'true'
-    runs-on: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository && 'ubuntu-latest' || 'zli-k8s' }}
+    runs-on: ${{ fromJSON(needs.runner.outputs.runs-on) }}
     permissions:
       contents: read
       packages: write
@@ -195,9 +203,9 @@ jobs:
   # The shared release tag goes on last, migrate last of all: zoo2-infra's ResourceSet deploys all three
   # images at the newest release tag it sees on migrate, so the other two must already carry it.
   promote:
-    needs: [plan, build]
+    needs: [runner, plan, build]
     if: github.event_name != 'pull_request'
-    runs-on: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository && 'ubuntu-latest' || 'zli-k8s' }}
+    runs-on: ${{ fromJSON(needs.runner.outputs.runs-on) }}
     permissions:
       contents: read
       packages: write
@@ -265,12 +273,12 @@ jobs:
   # soon as its tag exists, so a failed build must not leave a migrated schema behind an old app.
   # Built components are tagged from the digests the build pushed; unchanged ones alias the pinned main image.
   publish:
-    needs: [plan, build]
+    needs: [runner, plan, build]
     if: >-
       always() && github.event_name == 'pull_request' && needs.plan.result == 'success' &&
       needs.plan.outputs.enabled == 'true' &&
       (needs.build.result == 'success' || needs.build.result == 'skipped')
-    runs-on: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository && 'ubuntu-latest' || 'zli-k8s' }}
+    runs-on: ${{ fromJSON(needs.runner.outputs.runs-on) }}
     permissions:
       contents: read
       packages: write

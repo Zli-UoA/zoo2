@@ -9,14 +9,21 @@ on:
       - "infra/compose.stg*.yaml"
       - "rust-toolchain.toml"
       - ".github/workflows/ci-backend.yaml"
+      - ".github/workflows/select-runner.yaml"
   workflow_dispatch:
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
-# push だけで動くので、fork のコードは来ない。zli-k8s は zoo2 クラスタ上の self-hosted runner。
+# runner ジョブが zli-k8s（self-hosted）か GitHub-hosted を選ぶ（select-runner.yaml）。
 jobs:
+  runner:
+    uses: ./.github/workflows/select-runner.yaml
+    secrets:
+      runner-status-token: ${{ secrets.RUNNER_STATUS_TOKEN }}
+
   build:
-    runs-on: zli-k8s
+    needs: runner
+    runs-on: ${{ fromJSON(needs.runner.outputs.runs-on) }}
     defaults:
       run:
         working-directory: ./backend
@@ -35,7 +42,8 @@ jobs:
           cargo build
 
   lint:
-    runs-on: zli-k8s
+    needs: runner
+    runs-on: ${{ fromJSON(needs.runner.outputs.runs-on) }}
     defaults:
       run:
         working-directory: ./backend
@@ -59,7 +67,8 @@ jobs:
           cargo fmt --check
 
   unit-test:
-    runs-on: zli-k8s
+    needs: runner
+    runs-on: ${{ fromJSON(needs.runner.outputs.runs-on) }}
     defaults:
       run:
         working-directory: ./backend
@@ -80,7 +89,8 @@ jobs:
           cargo test --lib
 
   deploy-image:
-    runs-on: zli-k8s
+    needs: runner
+    runs-on: ${{ fromJSON(needs.runner.outputs.runs-on) }}
     timeout-minutes: 30
     env:
       POSTGRES_PASSWORD: deploy-image-test
@@ -156,7 +166,8 @@ jobs:
         run: docker compose --project-directory . -f infra/compose.stg.yaml down -v --remove-orphans
 
   e2e:
-    runs-on: zli-k8s
+    needs: runner
+    runs-on: ${{ fromJSON(needs.runner.outputs.runs-on) }}
     defaults:
       run:
         working-directory: ./backend

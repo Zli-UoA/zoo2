@@ -19,8 +19,14 @@ concurrency:
   group: ghcr-cleanup
   queue: max
 jobs:
+  runner:
+    uses: ./.github/workflows/select-runner.yaml
+    secrets:
+      runner-status-token: ${{ secrets.RUNNER_STATUS_TOKEN }}
+
   cleanup:
-    runs-on: zli-k8s
+    needs: runner
+    runs-on: ${{ fromJSON(needs.runner.outputs.runs-on) }}
     steps:
       # Never check out the PR head in this privileged workflow.
       - uses: actions/checkout@v7

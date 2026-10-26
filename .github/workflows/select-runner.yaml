@@ -1,0 +1,63 @@
+name: Select runner
+
+# zli-k8s（zoo2 クラスタ上の ARC の self-hosted runner）が使えればそれを、
+# 使えなければ GitHub-hosted runner を選ぶ。詳細は docs/ci-runners.md。
+on:
+  workflow_call:
+    secrets:
+      runner-status-token:
+        required: false
+    outputs:
+      runs-on:
+        description: runs-on に渡す JSON 文字列
+        value: ${{ jobs.select.outputs.runs-on }}
+
+jobs:
+  select:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    permissions: {}
+    outputs:
+      runs-on: ${{ steps.select.outputs.runs-on }}
+    steps:
+      # checkout しない。状態確認のトークンをリポジトリのコードに渡さないため。
+      - uses: actions/github-script@v8
+        id: select
+        env:
+          HAS_STATUS_TOKEN: ${{ secrets.runner-status-token != '' }}
+        with:
+          github-token: ${{ secrets.runner-status-token || github.token }}
+          script: |
+            const SCALE_SET = 'zli-k8s';
+            const MAX_RUNNERS = 3; // zoo2-infra の arc-runners の maxRunners
+            const use = (runsOn, reason) => {
+              core.setOutput('runs-on', JSON.stringify(runsOn));
+              core.info(`${runsOn}: ${reason}`);
+            };
+            const pr = context.payload.pull_request;
+            // fork の PR のコードは privileged な self-hosted runner で動かさない。
+            if (context.eventName === 'pull_request' && pr.head.repo.full_name !== `${context.repo.owner}/${context.repo.repo}`) {
+              return use('ubuntu-latest', 'fork pull request');
+            }
+            if (process.env.HAS_STATUS_TOKEN !== 'true') {
+              return use('ubuntu-latest', 'RUNNER_STATUS_TOKEN is not set');
+            }
+            let runners;
+            try {
+              runners = await github.paginate(github.rest.actions.listSelfHostedRunnersForOrg, {
+                org: context.repo.owner, per_page: 100, request: {timeout: 10000},
+              });
+            } catch (error) {
+              core.warning(`Runner status unavailable (${error.status || 'network error'})`);
+              return use('ubuntu-latest', 'runner status unavailable');
+            }
+            // minRunners: 1 なので、scale set が動いていれば少なくとも1台は online になる。
+            const online = runners.filter(r => r.status === 'online' &&
+              (r.name.startsWith(`${SCALE_SET}-`) || r.labels.some(l => l.name === SCALE_SET)));
+            if (online.length === 0) {
+              return use('ubuntu-latest', `no online ${SCALE_SET} runner`);
+            }
+            if (online.length >= MAX_RUNNERS && online.every(r => r.busy)) {
+              return use('ubuntu-latest', `all ${MAX_RUNNERS} ${SCALE_SET} runners are busy`);
+            }
+            return use(SCALE_SET, `${online.length} online, ${online.filter(r => !r.busy).length} idle`);
