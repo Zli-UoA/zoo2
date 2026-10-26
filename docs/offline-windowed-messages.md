@@ -53,6 +53,9 @@ Electric の Shape 自体は従来どおりチャンネル単位で購読する�
 - `/api/`、`/auth/`、`/sw.js`、cross-origin、GET 以外はキャッシュしない。
 - キャッシュ名はビルドごとの entry hash を含む `zoo-shell-<build>`。install 時に index.html から
   決定し、activate で古い `zoo-shell-*` / `zoo-offline-*` キャッシュを削除する。
+  Service Worker は数十秒で停止され再起動すると global 変数を失うため、名前は変数に保持せず、
+  install がキャッシュ内に書いたメタ情報から毎回選び直す。これにより停止後のオフライン再読み込みでも
+  ビルド別キャッシュを見つけられる。
 - `fetch()` が返す body は展開済みなのに `content-encoding` ヘッダーが残ると module script の読み込みが
   `ERR_FAILED` になるため、キャッシュ前に encoding・validator・`cache-control` を落として `no-store` を付ける。
 - 初回ロード時点で Service Worker が制御していない assets（フォントや OPFS worker）は、

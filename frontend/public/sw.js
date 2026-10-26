@@ -7,9 +7,10 @@
  */
 const DEFAULT_CACHE = "zoo-shell-v2";
 const CACHE_PREFIX = "zoo-shell-";
+const META_PATH = "/__zoo_shell_meta__";
 // ビルドごとに変わる hashed entry を cache 名に含め、古い assets ごと
-// activate で破棄できるようにする。install 時に index.html から決定する。
-let cacheName = DEFAULT_CACHE;
+// activate で破棄できるようにする。名前は global に保持せず、毎回
+// Cache API のメタ情報から決める（Service Worker は頻繁に停止されるため）。
 const SHELL = [
   "/",
   "/index.html",
@@ -35,6 +36,30 @@ function isCacheableAsset(url) {
 function cacheNameForIndex(html) {
   const match = html.match(/\/assets\/index-([^"'?#]+)\.js/);
   return match?.[1] ? `${CACHE_PREFIX}${match[1]}` : DEFAULT_CACHE;
+}
+
+/**
+ * 現在有効な app shell キャッシュを返す。install が書いたメタ情報のうち
+ * 最新のものを選ぶ。メタ情報がない旧キャッシュは index.html の有無で拾う。
+ */
+async function findActiveShellCache() {
+  const names = (await caches.keys()).filter((name) => name.startsWith(CACHE_PREFIX));
+  let latest = null;
+  for (const name of names) {
+    const cache = await caches.open(name);
+    const meta = await cache.match(META_PATH);
+    if (!meta) continue;
+    const installedAt = Number(await meta.text());
+    if (Number.isFinite(installedAt) && (!latest || installedAt > latest.installedAt)) {
+      latest = { name, installedAt };
+    }
+  }
+  if (latest) return latest.name;
+  for (const name of names) {
+    const cache = await caches.open(name);
+    if (await cache.match("/index.html")) return name;
+  }
+  return DEFAULT_CACHE;
 }
 
 /**
@@ -118,22 +143,20 @@ async function fetchShellIndex() {
 
 async function precacheShell() {
   const index = await fetchShellIndex();
-  if (index) {
-    let html = "";
-    try {
-      html = await index.clone().text();
-    } catch {
-      /* Keep the default cache name when the body cannot be read. */
-    }
-    cacheName = cacheNameForIndex(html);
+  // Without the app shell there is nothing safe to replace; keep the old cache.
+  if (!index) return;
+  let html = "";
+  try {
+    html = await index.clone().text();
+  } catch {
+    /* Keep the default cache name when the body cannot be read. */
   }
-  const cache = await caches.open(cacheName);
-  if (index) {
-    const cached = await cacheResponse(cache, "/index.html", index);
-    // Navigation fallbacks check /index.html first, but keep / for old clients.
-    await cache.put("/", cached.clone());
-    await precacheIndexAssets(cache, cached.clone());
-  }
+  const name = cacheNameForIndex(html);
+  const cache = await caches.open(name);
+  const cached = await cacheResponse(cache, "/index.html", index);
+  // Navigation fallbacks check /index.html first, but keep / for old clients.
+  await cache.put("/", cached.clone());
+  await precacheIndexAssets(cache, cached.clone());
   // Fetch each entry separately: one missing icon must not fail the install.
   await Promise.all(
     SHELL.filter((path) => path !== "/" && path !== "/index.html").map(async (path) => {
@@ -145,6 +168,8 @@ async function precacheShell() {
       }
     }),
   );
+  // Write the marker last so a partially precached cache is not selected.
+  await cache.put(META_PATH, new Response(String(Date.now())));
 }
 
 async function handleNavigation(request) {
@@ -155,12 +180,12 @@ async function handleNavigation(request) {
       // The SPA shell is static. Store it under /index.html so any navigation
       // can fall back to it, regardless of the deep link that was open.
       // Direct navigations to icons or JSON must not overwrite the shell.
-      const cache = await caches.open(cacheName);
+      const cache = await caches.open(await findActiveShellCache());
       return await cacheResponse(cache, "/index.html", response);
     }
     return response;
   } catch {
-    const cache = await caches.open(cacheName);
+    const cache = await caches.open(await findActiveShellCache());
     return (
       (await cache.match("/index.html")) ||
       (await cache.match("/")) ||
@@ -171,7 +196,7 @@ async function handleNavigation(request) {
 }
 
 async function handleAsset(request) {
-  const cache = await caches.open(cacheName);
+  const cache = await caches.open(await findActiveShellCache());
   const cached = await cache.match(request);
   if (cached) return cached;
   try {
@@ -192,9 +217,10 @@ self.addEventListener("install", (event) => {
 self.addEventListener("activate", (event) => {
   event.waitUntil(
     (async () => {
+      const active = await findActiveShellCache();
       for (const name of await caches.keys()) {
         const managed = name.startsWith(CACHE_PREFIX) || name.startsWith("zoo-offline-");
-        if (managed && name !== cacheName) await caches.delete(name);
+        if (managed && name !== active) await caches.delete(name);
       }
       await self.clients.claim();
     })(),
@@ -209,7 +235,7 @@ self.addEventListener("message", (event) => {
     .slice(0, 200);
   event.waitUntil(
     (async () => {
-      const cache = await caches.open(cacheName);
+      const cache = await caches.open(await findActiveShellCache());
       for (const url of urls) {
         if (await cache.match(url)) continue;
         try {

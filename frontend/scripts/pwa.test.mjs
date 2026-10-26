@@ -34,10 +34,10 @@ function memoryCaches(entries = []) {
       const store = storeFor(name);
       return {
         async put(request, response) {
-          store.set(requestKey(request), response);
+          store.set(requestKey(request), response.clone());
         },
         async match(request) {
-          return store.get(requestKey(request));
+          return store.get(requestKey(request))?.clone();
         },
         async addAll(requests) {
           for (const request of requests) {
@@ -50,7 +50,7 @@ function memoryCaches(entries = []) {
       const key = requestKey(request);
       for (const store of stores.values()) {
         const response = store.get(key);
-        if (response) return response;
+        if (response) return response.clone();
       }
       return undefined;
     },
@@ -194,6 +194,20 @@ test("page-driven asset caching only accepts same-origin /assets paths", async (
   assert.ok(shell.has(`${ORIGIN}/assets/lazy-worker.js`));
   assert.ok(!shell.has("https://evil.example/assets/x.js"));
   assert.ok(!shell.has(`${ORIGIN}/api/users/me`));
+});
+
+test("a restarted Service Worker still finds the build-specific shell cache", async () => {
+  const first = worker();
+  await dispatch(first.handlers, "install");
+  // A new worker instance has an empty global scope, like Chrome after ~30s.
+  const restarted = worker({
+    caches: first.cacheContext.api,
+    fetch: async () => {
+      throw new Error("offline");
+    },
+  });
+  const response = await fetchThrough(restarted.handlers, navigation(`${ORIGIN}/channels/123`));
+  assert.match(await response.text(), /network:https:\/\/zoo\.example\/index\.html/);
 });
 
 test("activation removes older cache versions and claims clients", async () => {
