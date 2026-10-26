@@ -1,4 +1,4 @@
-import { fireEvent, render, screen } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { ReactNode } from "react";
 import { describe, expect, it, vi } from "vite-plus/test";
@@ -114,6 +114,6 @@ describe("ReactionPicker", () => {
     await userEvent.click(screen.getByRole("tab", { name: "絵文字" }));
 
     expect(screen.getByTestId("mock-emoji")).not.toBeNull();
-    expect(document.body.textContent).not.toContain("1つ目の絵文字");
+    await waitFor(() => expect(screen.queryByText("1つ目の絵文字")).toBeNull());
   });
 });

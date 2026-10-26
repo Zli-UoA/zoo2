@@ -1,5 +1,11 @@
 import type { Meta, StoryObj } from "@storybook/react-vite";
-import { ArchiveIcon, PencilIcon, ShieldAlertIcon, TrashIcon } from "lucide-react";
+import {
+  ArchiveIcon,
+  MoreHorizontalIcon,
+  PencilIcon,
+  ShieldAlertIcon,
+  TrashIcon,
+} from "lucide-react";
 import { expect, screen, userEvent, within } from "storybook/test";
 import { useState } from "react";
 
@@ -19,6 +25,39 @@ function DropdownDemo({ defaultOpen = false }: { defaultOpen?: boolean }) {
       <DropdownMenu open={open} onOpenChange={setOpen}>
         <DropdownMenuTrigger render={<Button variant="outline" />}>
           チャンネル操作
+        </DropdownMenuTrigger>
+        <DropdownMenuContent align="center">
+          <DropdownMenuItem>
+            <PencilIcon />
+            名前を変更
+          </DropdownMenuItem>
+          <DropdownMenuItem>
+            <ArchiveIcon />
+            アーカイブ
+          </DropdownMenuItem>
+          <DropdownMenuItem>
+            <ShieldAlertIcon />
+            メッセージ管理
+          </DropdownMenuItem>
+          <DropdownMenuSeparator />
+          <DropdownMenuItem variant="destructive">
+            <TrashIcon />
+            削除
+          </DropdownMenuItem>
+        </DropdownMenuContent>
+      </DropdownMenu>
+    </div>
+  );
+}
+
+function IconOnlyDropdownDemo() {
+  return (
+    <div className="flex min-h-72 items-start justify-center bg-background p-12">
+      <DropdownMenu defaultOpen>
+        <DropdownMenuTrigger
+          render={<Button variant="ghost" size="icon-sm" aria-label="メニュー" />}
+        >
+          <MoreHorizontalIcon />
         </DropdownMenuTrigger>
         <DropdownMenuContent align="center">
           <DropdownMenuItem>
@@ -67,4 +106,14 @@ export const Default: Story = {
 
 export const Open: Story = {
   render: () => <DropdownDemo defaultOpen />,
+};
+
+export const IconOnlyTrigger: Story = {
+  render: () => <IconOnlyDropdownDemo />,
+  play: async () => {
+    const menu = await screen.findByRole("menu");
+    const item = within(menu).getByRole("menuitem", { name: "メッセージ管理" });
+    await expect(getComputedStyle(item).whiteSpace).toBe("nowrap");
+    await expect(menu.offsetWidth).toBeGreaterThanOrEqual(176);
+  },
 };
