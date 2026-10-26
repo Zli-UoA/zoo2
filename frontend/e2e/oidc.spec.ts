@@ -68,7 +68,8 @@ test("OIDC PKCE ログイン後に API と Shape が Bearer で通る", async ({
 
   // 未ログインではアプリを描画せず、モック IdP のログイン画面へリダイレクトする。
   await page.goto("/");
-  await expect(page.getByRole("heading", { name: "Mock IdP" })).toBeVisible();
+  // 最初のアクセスでは dev サーバがモジュールを変換するので、CI の負荷によっては数十秒かかる。
+  await expect(page.getByRole("heading", { name: "Mock IdP" })).toBeVisible({ timeout: 30_000 });
   await page.screenshot({ path: testInfo.outputPath("01-mock-idp-login.png") });
 
   await page.getByRole("button", { name: "ログイン" }).click();
