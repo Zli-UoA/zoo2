@@ -71,7 +71,7 @@ test("keyboard viewport resize and pan keep the composer visible and restore on 
   const fullHeight = await page.evaluate(() => window.innerHeight);
   const shell = page.getByTestId("shell");
   await expect(shell).toHaveCSS("height", `${fullHeight}px`);
-  await page.getByRole("combobox", { name: "Write a message" }).focus();
+  await page.getByRole("textbox", { name: "Write a message" }).focus();
   await page.evaluate(() => {
     Object.assign(window.visualViewport!, { height: 380, offsetTop: 35 });
     window.visualViewport!.dispatchEvent(new Event("resize"));
@@ -79,7 +79,7 @@ test("keyboard viewport resize and pan keep the composer visible and restore on 
   });
   await expect(shell).toHaveCSS("height", "380px");
   await expect(shell).toHaveCSS("top", "35px");
-  const composer = await page.getByRole("combobox", { name: "Write a message" }).boundingBox();
+  const composer = await page.getByRole("textbox", { name: "Write a message" }).boundingBox();
   expect(composer!.y + composer!.height).toBeLessThanOrEqual(415);
   await expectNoOverlap(page);
   await page.evaluate(() => {
