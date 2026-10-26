@@ -13,9 +13,10 @@ on:
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
+# push だけで動くので、fork のコードは来ない。zli-k8s は zoo2 クラスタ上の self-hosted runner。
 jobs:
   build:
-    runs-on: ubuntu-latest
+    runs-on: zli-k8s
     defaults:
       run:
         working-directory: ./backend
@@ -34,7 +35,7 @@ jobs:
           cargo build
 
   lint:
-    runs-on: ubuntu-latest
+    runs-on: zli-k8s
     defaults:
       run:
         working-directory: ./backend
@@ -58,7 +59,7 @@ jobs:
           cargo fmt --check
 
   unit-test:
-    runs-on: ubuntu-latest
+    runs-on: zli-k8s
     defaults:
       run:
         working-directory: ./backend
@@ -79,7 +80,7 @@ jobs:
           cargo test --lib
 
   deploy-image:
-    runs-on: ubuntu-latest
+    runs-on: zli-k8s
     timeout-minutes: 30
     env:
       POSTGRES_PASSWORD: deploy-image-test
@@ -155,7 +156,7 @@ jobs:
         run: docker compose --project-directory . -f infra/compose.stg.yaml down -v --remove-orphans
 
   e2e:
-    runs-on: ubuntu-latest
+    runs-on: zli-k8s
     defaults:
       run:
         working-directory: ./backend

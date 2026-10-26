@@ -27,9 +27,10 @@ on:
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
+# zli-k8s は zoo2 クラスタ上の self-hosted runner（privileged な dind）。fork の PR のコードはそこで動かさず、GitHub-hosted runner に回す。
 jobs:
   container:
-    runs-on: ubuntu-latest
+    runs-on: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository && 'ubuntu-latest' || 'zli-k8s' }}
     env:
       POSTGRES_PASSWORD: container-test
       # envsubst で CSP に埋め込まれることを確認するためのダミー IdP オリジン。
@@ -135,7 +136,7 @@ jobs:
           docker compose --project-directory . -f infra/compose.stg.yaml down
 
   proxy:
-    runs-on: ubuntu-latest
+    runs-on: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository && 'ubuntu-latest' || 'zli-k8s' }}
     env:
       POSTGRES_PASSWORD: proxy-test
       PROXY_PORT: 18080
@@ -158,7 +159,7 @@ jobs:
         run: docker compose --project-directory . -f infra/compose.stg.yaml -f infra/proxy/test/compose.yaml down
 
   check:
-    runs-on: ubuntu-latest
+    runs-on: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository && 'ubuntu-latest' || 'zli-k8s' }}
     defaults:
       run:
         working-directory: ./frontend
@@ -197,7 +198,7 @@ jobs:
         run: pnpm test:e2e:layout
 
   unit-test:
-    runs-on: ubuntu-latest
+    runs-on: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository && 'ubuntu-latest' || 'zli-k8s' }}
     defaults:
       run:
         working-directory: ./frontend
@@ -224,7 +225,7 @@ jobs:
         run: pnpm test
 
   browser-test:
-    runs-on: ubuntu-latest
+    runs-on: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository && 'ubuntu-latest' || 'zli-k8s' }}
     defaults:
       run:
         working-directory: ./frontend

@@ -1,0 +1,4 @@
+self-hosted-runner:
+  # ARC runner scale set on the zoo2 cluster (Zli-UoA/zoo2-infra).
+  labels:
+    - zli-k8s

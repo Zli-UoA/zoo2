@@ -12,12 +12,13 @@ permissions:
 concurrency:
   group: ghcr-images-${{ github.event.pull_request.number && format('pr-{0}', github.event.pull_request.number) || github.ref }}
   queue: max
+# zli-k8s は zoo2 クラスタ上の self-hosted runner（privileged な dind）。fork の PR のコードはそこで動かさず、GitHub-hosted runner に回す。
 jobs:
   plan:
     if: >-
       (github.event_name != 'workflow_dispatch' || github.ref == 'refs/heads/main') &&
       (github.event.action != 'labeled' || github.event.label.name == 'preview')
-    runs-on: ubuntu-latest
+    runs-on: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository && 'ubuntu-latest' || 'zli-k8s' }}
     permissions:
       contents: read
       pull-requests: read
@@ -34,6 +35,9 @@ jobs:
       release: ${{ steps.plan.outputs.release }}
     steps:
       - uses: actions/checkout@v7
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
       - name: Test image planning and retention
         run: node .github/scripts/images.test.mjs
       - id: plan
@@ -46,7 +50,7 @@ jobs:
   build:
     needs: plan
     if: needs.plan.outputs.enabled == 'true' && needs.plan.outputs.has_images == 'true'
-    runs-on: ubuntu-latest
+    runs-on: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository && 'ubuntu-latest' || 'zli-k8s' }}
     permissions:
       contents: read
       packages: write
@@ -193,7 +197,7 @@ jobs:
   promote:
     needs: [plan, build]
     if: github.event_name != 'pull_request'
-    runs-on: ubuntu-latest
+    runs-on: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository && 'ubuntu-latest' || 'zli-k8s' }}
     permissions:
       contents: read
       packages: write
@@ -266,7 +270,7 @@ jobs:
       always() && github.event_name == 'pull_request' && needs.plan.result == 'success' &&
       needs.plan.outputs.enabled == 'true' &&
       (needs.build.result == 'success' || needs.build.result == 'skipped')
-    runs-on: ubuntu-latest
+    runs-on: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository && 'ubuntu-latest' || 'zli-k8s' }}
     permissions:
       contents: read
       packages: write

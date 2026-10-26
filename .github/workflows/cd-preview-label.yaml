@@ -15,7 +15,7 @@ jobs:
   label:
     # Fork PRs publish no images, so a preview of them would only fail and take a slot.
     if: github.event.pull_request.head.repo.full_name == github.repository
-    runs-on: ubuntu-latest
+    runs-on: zli-k8s
     permissions:
       pull-requests: write
       issues: write
