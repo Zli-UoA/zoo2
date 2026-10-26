@@ -141,6 +141,12 @@ it("does not offer a quote link for deleted or inaccessible messages", () => {
   expect(html).toContain("閲覧できません");
 });
 
+it("uses a machine-readable datetime for the notification timestamp", () => {
+  const html = render([{ ...rows[0], created_at: "2026-01-02 09:00:00.000" }]);
+  expect(html).toMatch(/datetime="2026-01-02T09:00:00\.000Z"/i);
+  expect(html).not.toMatch(/datetime="2026-01-02 09:00:00\.000"/i);
+});
+
 it("labels ordinary direct messages independently from replies", () => {
   const html = render([{ ...rows[0], notification_type: "dm" }]);
   expect(html).toContain("ダイレクトメッセージが届きました");

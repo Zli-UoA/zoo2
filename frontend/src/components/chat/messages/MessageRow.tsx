@@ -24,6 +24,7 @@ import {
   DropdownMenuTrigger,
 } from "../../ui/dropdown-menu";
 import { Textarea } from "../../ui/textarea";
+import { normalizeUtcTimestamp } from "../../../lib/timestamps";
 import { initials } from "../format";
 import {
   authorLabel,
@@ -183,7 +184,7 @@ export function MessageRow({
           <div className="mt-0.5 w-8 shrink-0 text-right">
             <time
               className="hidden text-[10px] text-muted-foreground tabular-nums group-hover/row:inline group-focus-within/row:inline"
-              dateTime={message.created_at}
+              dateTime={normalizeUtcTimestamp(message.created_at)}
               title={fullTimestamp(message.created_at, locale)}
             >
               {formatTime(message.created_at, locale)}
@@ -197,7 +198,7 @@ export function MessageRow({
               <span className="truncate text-sm font-semibold">{authorLabel(message)}</span>
               <time
                 className="shrink-0 text-[11px] text-muted-foreground tabular-nums"
-                dateTime={message.created_at}
+                dateTime={normalizeUtcTimestamp(message.created_at)}
                 title={fullTimestamp(message.created_at, locale)}
               >
                 {formatTime(message.created_at, locale)}
@@ -324,35 +325,37 @@ export function MessageRow({
               ) : null}
             </div>
             {/* タッチ端末用の常時表示。「⋯」は外枠の pointer-events を打ち消す。 */}
-            <div className="pointer-events-auto hidden items-center gap-0.5 rounded-lg border bg-popover p-0.5 shadow-sm [@media(hover:none)]:flex">
-              {threadButton}
-              {isOwn ? (
-                <DropdownMenu>
-                  <DropdownMenuTrigger
-                    aria-label={t("messages.more")}
-                    title={t("messages.more")}
-                    className={buttonVariants({
-                      variant: "ghost",
-                      size: "icon-xs",
-                      className:
-                        "pointer-events-auto border bg-popover shadow-sm [@media(hover:hover)]:hidden",
-                    })}
-                  >
-                    <MoreHorizontalIcon />
-                  </DropdownMenuTrigger>
-                  <DropdownMenuContent align="end">
-                    <DropdownMenuItem onClick={onStartEdit}>
-                      <PencilIcon />
-                      {t("messages.edit")}
-                    </DropdownMenuItem>
-                    <DropdownMenuItem variant="destructive" onClick={onRequestDelete}>
-                      <TrashIcon />
-                      {t("messages.delete")}
-                    </DropdownMenuItem>
-                  </DropdownMenuContent>
-                </DropdownMenu>
-              ) : null}
-            </div>
+            {threadButton || isOwn ? (
+              <div className="pointer-events-auto hidden items-center gap-0.5 rounded-lg border bg-popover p-0.5 shadow-sm [@media(hover:none)]:flex">
+                {threadButton}
+                {isOwn ? (
+                  <DropdownMenu>
+                    <DropdownMenuTrigger
+                      aria-label={t("messages.more")}
+                      title={t("messages.more")}
+                      className={buttonVariants({
+                        variant: "ghost",
+                        size: "icon-xs",
+                        className:
+                          "pointer-events-auto border bg-popover shadow-sm [@media(hover:hover)]:hidden",
+                      })}
+                    >
+                      <MoreHorizontalIcon />
+                    </DropdownMenuTrigger>
+                    <DropdownMenuContent align="end">
+                      <DropdownMenuItem onClick={onStartEdit}>
+                        <PencilIcon />
+                        {t("messages.edit")}
+                      </DropdownMenuItem>
+                      <DropdownMenuItem variant="destructive" onClick={onRequestDelete}>
+                        <TrashIcon />
+                        {t("messages.delete")}
+                      </DropdownMenuItem>
+                    </DropdownMenuContent>
+                  </DropdownMenu>
+                ) : null}
+              </div>
+            ) : null}
           </div>
         ) : null}
       </div>

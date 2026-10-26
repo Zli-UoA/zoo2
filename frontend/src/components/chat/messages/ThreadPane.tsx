@@ -5,6 +5,7 @@ import { useEffect, useMemo, useRef } from "react";
 import { useLocale } from "../../i18n/LocaleProvider";
 import type { KitchenCatalog } from "../../../lib/emoji/kitchen";
 import type { ReactionGroup } from "../../../lib/emoji/reactions";
+import { normalizeUtcTimestamp } from "../../../lib/timestamps";
 import { Avatar, AvatarFallback } from "../../ui/avatar";
 import { Button } from "../../ui/button";
 import { initials } from "../format";
@@ -146,7 +147,7 @@ export function ThreadPane({
               <span className="truncate text-sm font-semibold">{authorLabel(root)}</span>
               <time
                 className="shrink-0 text-[11px] text-muted-foreground tabular-nums"
-                dateTime={root.created_at}
+                dateTime={normalizeUtcTimestamp(root.created_at)}
                 title={fullTimestamp(root.created_at, locale)}
               >
                 {formatTime(root.created_at, locale)}

@@ -6,6 +6,7 @@ import { HeartIcon, MessageCircleIcon, AtSignIcon } from "lucide-react";
 import { useKitchenCatalog } from "../../../hooks/useKitchenCatalog";
 import type { ChannelRow, UserRow } from "../../../lib/electric/types";
 import { kitchenLabel, kitchenParts } from "../../../lib/emoji/kitchen";
+import { normalizeUtcTimestamp } from "../../../lib/timestamps";
 import { useLocale } from "../../i18n/LocaleProvider";
 import { useShell } from "../../layout/shell-context";
 import { Avatar, AvatarFallback, AvatarGroup, AvatarGroupCount } from "../../ui/avatar";
@@ -96,7 +97,10 @@ export function NotificationCard({
                 <AvatarGroupCount>+{group.actorIds.length - 8}</AvatarGroupCount>
               ) : null}
             </AvatarGroup>
-            <time className="text-xs text-muted-foreground" dateTime={notification.created_at}>
+            <time
+              className="text-xs text-muted-foreground"
+              dateTime={normalizeUtcTimestamp(notification.created_at)}
+            >
               {fullTimestamp(notification.created_at, locale)}
             </time>
           </div>

@@ -71,6 +71,12 @@ describe("ThreadPane", () => {
     expect(html).toContain('placeholder="返信を送信"');
   });
 
+  it("uses a machine-readable datetime for the root timestamp", () => {
+    const html = render();
+    expect(html).toMatch(/datetime="2026-01-02T00:00:00\.000Z"/i);
+    expect(html).not.toMatch(/datetime="2026-01-02 00:00:00\.000"/i);
+  });
+
   it("shows an empty state for a thread without replies", () => {
     const html = render();
     expect(html).toContain("返信はまだありません");

@@ -17,6 +17,7 @@ import { useState } from "react";
 import { useChannelAdmin } from "../../hooks/useChannelAdmin";
 import { useMessageFeed } from "../../hooks/useRealtime";
 import type { ChannelRow } from "../../lib/electric/types";
+import { normalizeUtcTimestamp } from "../../lib/timestamps";
 import { useShell } from "../layout/shell-context";
 import {
   AlertDialog,
@@ -274,7 +275,7 @@ function MessageAdminDialog({
                         <span className="truncate text-sm font-medium">{authorLabel(message)}</span>
                         <time
                           className="shrink-0 text-[11px] tabular-nums text-muted-foreground"
-                          dateTime={message.created_at}
+                          dateTime={normalizeUtcTimestamp(message.created_at)}
                           title={fullTimestamp(message.created_at)}
                         >
                           {formatTime(message.created_at)}
