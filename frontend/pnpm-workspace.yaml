@@ -28,3 +28,10 @@ minimumReleaseAgeExclude:
   - "@tanstack/db@0.15.0"
   - "@tanstack/electric-db-collection@0.6.1"
   - "@tanstack/react-db@0.5.10"
+  - "@storybook/addon-a11y@10.6.4"
+  - "@storybook/addon-vitest@10.6.4"
+  - "@storybook/builder-vite@10.6.4"
+  - "@storybook/react-dom-shim@10.6.4"
+  - "@storybook/react-vite@10.6.4"
+  - "@storybook/react@10.6.4"
+  - storybook@10.6.4
