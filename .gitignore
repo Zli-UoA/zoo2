@@ -8,3 +8,6 @@ xcuserdata/
 *.pem
 *.key
 *.p8
+.autodev/
+
+Scripts/IssueWebhook/node_modules/
