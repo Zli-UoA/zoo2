@@ -284,6 +284,18 @@
   "mentions": {
     "suggestions": "Mention suggestions"
   },
+  "offline": {
+    "bannerTitle": "You're offline",
+    "bannerDescription": "Showing saved content. Sending is disabled until you reconnect.",
+    "cached": "Showing saved content",
+    "composeDisabled": "You can't send messages while offline",
+    "emptyTitle": "No saved messages while offline",
+    "emptyDescription": "Reconnect and reload to view your chats.",
+    "retry": "Retry",
+    "persistenceErrorTitle": "Messages can't be saved on this device",
+    "persistenceErrorDescription": "Check your browser's storage settings. You can keep chatting.",
+    "deleteFailed": "Could not delete saved data on this device. It will be retried on the next start."
+  },
   "pwa": {
     "install": "Install Zoo",
     "enable": "Enable push notifications",

@@ -13,10 +13,14 @@ import {
 import { useReplyCounts, useThreadFeed } from "../../../hooks/useThread";
 import { useWriteRunner } from "../../../hooks/useWriteRunner";
 import { useCollections } from "../../../lib/electric/collections-context";
+import { expandWindowSince, messageWindowStart } from "../../../lib/electric/messageWindow";
+import type { MessageRow } from "../../../lib/electric/types";
 import type { ChannelUserWriteMetadata } from "../../../lib/electric/writes";
 import { groupReactions } from "../../../lib/emoji/reactions";
+import { useOfflineStatus } from "../../../lib/offline/offline-context";
 import { reactionKey } from "../../../lib/emoji/kitchen";
 import { nowIso } from "../../../lib/time";
+import { parseUtcTimestamp } from "../../../lib/timestamps";
 import { useShell } from "../../layout/shell-context";
 import { Button } from "../../ui/button";
 import {
@@ -35,6 +39,24 @@ import { Composer } from "./Composer";
 import { MessageList } from "./MessageList";
 import { ReactionPicker } from "./ReactionPicker";
 import { ThreadPane } from "./ThreadPane";
+
+function oldestRowTimestamp(
+  rows: Iterable<MessageRow>,
+  predicate: (row: MessageRow) => boolean,
+): string | null {
+  let oldest: { at: string; ms: number } | null = null;
+  for (const row of rows) {
+    if (row.deleted_at || !predicate(row)) {
+      continue;
+    }
+    const ms = parseUtcTimestamp(row.created_at).getTime();
+    if (!Number.isFinite(ms) || (oldest && ms >= oldest.ms)) {
+      continue;
+    }
+    oldest = { at: row.created_at, ms };
+  }
+  return oldest?.at ?? null;
+}
 
 function JoinToPostPrompt({
   onJoin,
@@ -89,10 +111,14 @@ export function MessagePane({
   );
   const messagesCollection = messages(channelId);
   const reactionsCollection = reactions(channelId);
-  const messagesQuery = useMessageFeed(channelId);
+  // 直近30日を初期表示し、上端付近で `since` を過去へ広げる。`limit` は
+  // 新着で最古行が落ちるため使わない。
+  const [since, setSince] = useState(messageWindowStart);
+  const messagesQuery = useMessageFeed(channelId, { since });
   const feed = messagesQuery.data ?? [];
   const reactionsQuery = useMessageReactions(channelId);
   const { currentUserId } = useCurrentUser();
+  const { isOnline } = useOfflineStatus();
   const typing = useTyping(channelId, null, isMember && !!currentUserId);
   const { error, setError, run, isPending: isWritePending } = useWriteRunner();
 
@@ -150,7 +176,8 @@ export function MessagePane({
   const replyCounts = useReplyCounts(channelId);
 
   const { threadRootId, openThread, closeThread } = useShell();
-  const threadQuery = useThreadFeed(channelId, threadRootId);
+  const [threadSince, setThreadSince] = useState(messageWindowStart);
+  const threadQuery = useThreadFeed(channelId, threadRootId, threadSince);
   const threadReplies = threadQuery.data ?? [];
   const threadTyping = useTyping(
     channelId,
@@ -173,6 +200,68 @@ export function MessagePane({
     closeThread();
   }, [channelId, closeThread]);
   useEffect(() => closeThread, [closeThread]);
+  useEffect(() => {
+    if (!threadRootId) {
+      setThreadSince(messageWindowStart());
+      return;
+    }
+    // 通知から開いた返信が30日窓の外なら、その返信を含む位置から始める。
+    const target = targetMessageId ? messagesCollection.get(targetMessageId) : undefined;
+    const anchor = target?.parent_id === threadRootId ? target.created_at : null;
+    setThreadSince(anchor ? expandWindowSince(messageWindowStart(), anchor) : messageWindowStart());
+  }, [messagesCollection, targetMessageId, threadRootId]);
+
+  // 30日窓が空でも、コレクションに古いメッセージがあれば自動で広げる。
+  useEffect(() => {
+    if (messagesQuery.isLoading || feed.length > 0) {
+      return;
+    }
+    const oldest = oldestRowTimestamp(messagesCollection.values(), (row) => row.parent_id === null);
+    if (oldest) {
+      setSince((current) => expandWindowSince(current, oldest));
+    }
+  }, [feed.length, messagesCollection, messagesQuery.isLoading]);
+
+  // 通知から開いたメッセージが30日窓の外でも、その行まで含める。
+  useEffect(() => {
+    if (!targetMessageId) {
+      return;
+    }
+    const target = messagesCollection.get(targetMessageId);
+    if (!target || target.deleted_at) {
+      return;
+    }
+    if (target.parent_id) {
+      setThreadSince((current) => expandWindowSince(current, target.created_at));
+    } else {
+      setSince((current) => expandWindowSince(current, target.created_at));
+    }
+  }, [messagesCollection, targetMessageId]);
+
+  // スレッドのルートが窓の外でも、返信と一緒に表示できるよう広げる。
+  useEffect(() => {
+    if (!threadRootId) {
+      return;
+    }
+    const root = messagesCollection.get(threadRootId);
+    if (root) {
+      setSince((current) => expandWindowSince(current, root.created_at));
+    }
+  }, [messagesCollection, threadRootId]);
+
+  // 返信が30日窓で空なら、コレクション内の最も古い返信まで広げる。
+  useEffect(() => {
+    if (!threadRootId || threadQuery.isLoading || threadReplies.length > 0) {
+      return;
+    }
+    const oldest = oldestRowTimestamp(
+      messagesCollection.values(),
+      (row) => row.parent_id === threadRootId,
+    );
+    if (oldest) {
+      setThreadSince((current) => expandWindowSince(current, oldest));
+    }
+  }, [messagesCollection, threadReplies.length, threadQuery.isLoading, threadRootId]);
 
   useEffect(() => {
     if (!targetMessageId || messagesQuery.isLoading) return;
@@ -321,7 +410,16 @@ export function MessagePane({
             <span className="text-xs text-destructive">{t("reactions.fetchError")}</span>
           ) : null}
           {messagesQuery.isError ? (
-            <span className="text-xs text-destructive">{t("messages.fetchError")}</span>
+            <span
+              className={
+                feed.length > 0 ? "text-xs text-muted-foreground" : "text-xs text-destructive"
+              }
+            >
+              {feed.length > 0 ? t("offline.cached") : t("messages.fetchError")}
+            </span>
+          ) : null}
+          {messagesQuery.persistedStatus === "error" ? (
+            <span className="text-xs text-destructive">{t("offline.persistenceErrorTitle")}</span>
           ) : null}
         </div>
 
@@ -349,6 +447,11 @@ export function MessagePane({
           replyCounts={replyCounts}
           onOpenThread={openThread}
           canCompose={isMember}
+          isOffline={!isOnline}
+          onLoadOlder={(oldest) => {
+            setSince((current) => expandWindowSince(current, oldest));
+          }}
+          onRetry={() => window.location.reload()}
         />
 
         {isMember ? (
@@ -360,13 +463,15 @@ export function MessagePane({
               key={channelId}
               onSend={handleSend}
               onTyping={typing.onTyping}
+              disabled={!isOnline}
+              placeholder={isOnline ? undefined : t("offline.composeDisabled")}
             />
           </>
         ) : (
           <JoinToPostPrompt
             onJoin={() => void handleJoin()}
             joining={isJoining}
-            disabled={!currentUserId}
+            disabled={!currentUserId || !isOnline}
           />
         )}
       </div>
@@ -378,6 +483,7 @@ export function MessagePane({
           mentionMemberIds={mentionMemberIds}
           key={threadRoot.id}
           isMember={isMember}
+          isOffline={!isOnline}
           typingUsers={threadTyping.users}
           onTyping={threadTyping.onTyping}
           root={threadRoot}
@@ -398,6 +504,13 @@ export function MessagePane({
           onSaveEdit={handleSaveEdit}
           onRequestDelete={setPendingDeleteId}
           onSendReply={handleSendReply}
+          onLoadOlder={() => {
+            const oldest = threadReplies[0];
+            if (oldest) {
+              setThreadSince((current) => expandWindowSince(current, oldest.created_at));
+            }
+          }}
+          onRetry={() => window.location.reload()}
           onClose={closeThread}
         />
       ) : null}

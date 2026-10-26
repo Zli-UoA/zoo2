@@ -25,15 +25,26 @@ export function useActiveChannels() {
   );
 }
 
+export interface MessageFeedOptions {
+  /** スレッドの返信を購読する場合のルート ID。未指定はチャンネル直下。 */
+  parentId?: string | null;
+  /** この時刻以降だけを表示する（30日窓）。 */
+  since?: string;
+}
+
 /**
  * 指定チャンネルのルートメッセージ（`parent_id IS NULL`）を投稿者名（users）と
- * 結合して購読する。返信は `useThreadFeed` が同じ messages コレクションを
- * `parent_id` で絞って購読する。`channelId` が無いときは購読しない。
+ * 結合して購読する。返信は同じ messages コレクションを `parent_id` で絞る。
+ * `channelId` が無いときは購読しない。
  */
-export function useMessageFeed(channelId: string | null) {
+export function useMessageFeed(channelId: string | null, options: MessageFeedOptions = {}) {
   const { messages, users } = useCollections();
+  const parentId = options.parentId ?? null;
+  const since = options.since;
   return useLiveQuery((q) =>
-    channelId ? messageFeedQuery(q, { messages: messages(channelId), users }) : undefined,
+    channelId
+      ? messageFeedQuery(q, { messages: messages(channelId), users }, { parentId, since })
+      : undefined,
   );
 }
 

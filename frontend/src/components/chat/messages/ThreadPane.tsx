@@ -22,6 +22,8 @@ export interface ThreadPaneProps {
   mentionUsers?: import("../../../lib/electric/types").UserRow[];
   mentionMemberIds?: ReadonlySet<string>;
   isMember?: boolean;
+  /** オフラインか。返信がないときの案内と composer を切り替える。 */
+  isOffline?: boolean;
   typingUsers?: TypingUser[];
   onTyping?: (active: boolean) => void;
   root: FeedMessage;
@@ -42,6 +44,10 @@ export interface ThreadPaneProps {
   onSaveEdit: () => void;
   onRequestDelete: (id: string) => void;
   onSendReply: (content: string) => Promise<boolean>;
+  /** 上端付近で古い返信を読み足す。 */
+  onLoadOlder?: () => void;
+  /** 取得失敗時の再試行。 */
+  onRetry?: () => void;
   onClose: () => void;
 }
 
@@ -57,6 +63,7 @@ export function ThreadPane({
   mentionUsers,
   mentionMemberIds,
   isMember = true,
+  isOffline = false,
   typingUsers = [],
   onTyping,
   root,
@@ -77,6 +84,8 @@ export function ThreadPane({
   onSaveEdit,
   onRequestDelete,
   onSendReply,
+  onLoadOlder,
+  onRetry,
   onClose,
 }: ThreadPaneProps) {
   const { t } = useTranslation();
@@ -170,12 +179,31 @@ export function ThreadPane({
             element.scrollHeight,
             element.clientHeight,
           );
+          if (element.scrollTop <= 48) {
+            onLoadOlder?.();
+          }
         }}
       >
         {isLoading && replies.length === 0 ? (
           <p className="p-3 text-xs text-muted-foreground">{t("threads.repliesLoading")}</p>
+        ) : isOffline && replies.length === 0 ? (
+          <div className="flex flex-col items-start gap-2 p-3">
+            <p className="text-xs text-muted-foreground">{t("offline.emptyTitle")}</p>
+            {onRetry ? (
+              <Button variant="outline" size="sm" onClick={onRetry}>
+                {t("offline.retry")}
+              </Button>
+            ) : null}
+          </div>
         ) : isError && replies.length === 0 ? (
-          <p className="p-3 text-xs text-destructive">{t("threads.loadError")}</p>
+          <div className="flex flex-col items-start gap-2 p-3">
+            <p className="text-xs text-destructive">{t("threads.loadError")}</p>
+            {onRetry ? (
+              <Button variant="outline" size="sm" onClick={onRetry}>
+                {t("offline.retry")}
+              </Button>
+            ) : null}
+          </div>
         ) : replies.length === 0 ? (
           <p className="p-3 text-xs text-muted-foreground">{t("threads.empty")}</p>
         ) : (
@@ -217,10 +245,10 @@ export function ThreadPane({
       <Composer
         mentionUsers={mentionUsers}
         mentionMemberIds={mentionMemberIds}
-        disabled={!isMember}
+        disabled={!isMember || isOffline}
         onTyping={onTyping}
         onSend={onSendReply}
-        placeholder={t("threads.compose")}
+        placeholder={isOffline ? t("offline.composeDisabled") : t("threads.compose")}
         ariaLabel={t("threads.compose")}
       />
     </aside>

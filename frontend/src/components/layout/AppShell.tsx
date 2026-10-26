@@ -6,6 +6,7 @@ import { useActiveChannels } from "../../hooks/useRealtime";
 import { ChannelSidebar } from "../chat/ChannelSidebar";
 import { MembersDialog } from "../chat/MembersDialog";
 import { MembersPanel } from "../chat/MembersPanel";
+import { OfflineBanner } from "../offline/OfflineBanner";
 import { LeftRail } from "./LeftRail";
 import { ShellContext, type ShellContextValue, type ShellPane } from "./shell-context";
 import { useMediaQuery } from "./useMediaQuery";
@@ -123,6 +124,7 @@ export function AppShell({ children }: { children: ReactNode }) {
         ref={viewportRef}
         className="fixed inset-x-0 top-0 flex h-dvh w-full overflow-hidden bg-background text-foreground"
       >
+        <OfflineBanner />
         <LeftRail />
         <ChannelSidebar
           channels={channels}

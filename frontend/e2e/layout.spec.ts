@@ -93,3 +93,52 @@ test("keyboard viewport resize and pan keep the composer visible and restore on 
   });
   await expect(shell).toHaveCSS("height", "700px");
 });
+
+async function scrollMessages(page: Page, to: "top" | "bottom") {
+  const scroller = page.getByTestId("message-scroll");
+  await scroller.evaluate((element, target) => {
+    element.scrollTop = target === "top" ? 0 : element.scrollHeight;
+    element.dispatchEvent(new Event("scroll"));
+  }, to);
+}
+
+test("scrolling to the top loads older messages without moving the reader", async ({ page }) => {
+  await page.goto("/e2e/fixtures/layout.html");
+  await scrollMessages(page, "bottom");
+  await expect(page.getByText(/^Message 39\b/)).toBeVisible();
+  await page.waitForTimeout(500);
+  await scrollMessages(page, "top");
+  await expect(page.getByText(/^Message 1\b/)).toBeVisible();
+  const scroller = page.getByTestId("message-scroll");
+  const before = await scroller.evaluate((element) => ({
+    top: element.scrollTop,
+    height: element.scrollHeight,
+  }));
+  await page.getByTestId("prepend-older").click();
+  await expect
+    .poll(async () => {
+      const after = await scroller.evaluate((element) => ({
+        top: element.scrollTop,
+        height: element.scrollHeight,
+      }));
+      return Math.abs(after.top - before.top - (after.height - before.height));
+    })
+    .toBeLessThanOrEqual(2);
+  await expectNoOverlap(page);
+});
+
+test("new messages below do not move a scrolled-up reader", async ({ page }) => {
+  await page.goto("/e2e/fixtures/layout.html");
+  await expect(page.getByText(/^Message 39\b/)).toBeVisible();
+  await page.waitForTimeout(500);
+  await scrollMessages(page, "top");
+  const row = page.getByText(/^Message 1\b/);
+  await expect(row).toBeVisible();
+  const before = await row.boundingBox();
+  await page.getByTestId("append-new").click();
+  await expect(page.getByRole("button", { name: "New messages" })).toBeVisible();
+  const after = await row.boundingBox();
+  expect(after).not.toBeNull();
+  expect(before).not.toBeNull();
+  expect(Math.abs(after!.y - before!.y)).toBeLessThanOrEqual(2);
+});

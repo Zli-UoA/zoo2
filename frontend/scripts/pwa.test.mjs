@@ -3,63 +3,326 @@ import { runInNewContext } from "node:vm";
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
+const ORIGIN = "https://zoo.example";
 const source = readFileSync(new URL("../public/sw.js", import.meta.url), "utf8");
+
+function basicResponse(body, init = {}) {
+  const response = new Response(body, init);
+  Object.defineProperty(response, "type", { value: "basic" });
+  return response;
+}
+
+function requestKey(request) {
+  if (typeof request === "string") return new URL(request, ORIGIN).href;
+  return request.url;
+}
+
+function memoryCaches(entries = []) {
+  const stores = new Map();
+  const storeFor = (name) => {
+    let store = stores.get(name);
+    if (!store) {
+      store = new Map(
+        entries.filter(([cache]) => cache === name).map(([, key, value]) => [key, value]),
+      );
+      stores.set(name, store);
+    }
+    return store;
+  };
+  const api = {
+    async open(name) {
+      const store = storeFor(name);
+      return {
+        async put(request, response) {
+          store.set(requestKey(request), response.clone());
+        },
+        async match(request) {
+          return store.get(requestKey(request))?.clone();
+        },
+        async addAll(requests) {
+          for (const request of requests) {
+            store.set(requestKey(request), basicResponse(`asset:${requestKey(request)}`));
+          }
+        },
+      };
+    },
+    async match(request) {
+      const key = requestKey(request);
+      for (const store of stores.values()) {
+        const response = store.get(key);
+        if (response) return response.clone();
+      }
+      return undefined;
+    },
+    async keys() {
+      return [...stores.keys()];
+    },
+    async delete(name) {
+      return stores.delete(name);
+    },
+  };
+  return { api, stores, storeFor };
+}
+
 function worker(overrides = {}) {
   const handlers = new Map();
   const notifications = [];
+  const cacheContext = overrides.caches ?? memoryCaches();
+  const baseFetch = async (input) => {
+    const key = requestKey(input);
+    return basicResponse(`network:${key}`);
+  };
   const context = {
     URL,
     Response,
+    Headers,
     self: {
-      location: { origin: "https://zoo.example" },
+      location: { origin: ORIGIN },
       navigator: { language: "ja" },
       addEventListener: (type, handler) => handlers.set(type, handler),
       registration: { showNotification: async (...args) => notifications.push(args) },
-      clients: { matchAll: async () => [], openWindow: async () => {} },
+      clients: {
+        matchAll: async () => [],
+        openWindow: async () => {},
+        claim: async () => {},
+      },
+      skipWaiting: async () => {},
     },
-    caches: { match: async () => new Response("offline") },
-    fetch: async () => {
-      throw new Error("offline");
-    },
+    caches: cacheContext.api ?? cacheContext,
+    fetch: overrides.fetch ?? baseFetch,
     ...overrides,
   };
   runInNewContext(source, context);
-  return { handlers, notifications, context };
+  return { handlers, notifications, context, cacheContext };
 }
 
-test("legacy empty Web Push still displays a generic alert", async () => {
-  const { handlers, notifications } = worker();
+function dispatch(handlers, type, event = {}) {
   let work;
-  handlers.get("push")({
+  handlers.get(type)({
+    ...event,
     waitUntil: (promise) => {
       work = promise;
     },
   });
-  await work;
+  return Promise.resolve(work);
+}
+
+async function fetchThrough(handlers, request) {
+  let response;
+  handlers.get("fetch")({
+    request,
+    respondWith: (value) => {
+      response = value;
+    },
+  });
+  return response === undefined ? undefined : await Promise.resolve(response);
+}
+
+function navigation(url) {
+  return { url, method: "GET", mode: "navigate" };
+}
+
+test("legacy empty Web Push still displays a generic alert", async () => {
+  const { handlers, notifications } = worker();
+  await dispatch(handlers, "push");
   assert.equal(notifications.length, 1);
   assert.equal(notifications[0][0], "Zoo");
   assert.match(notifications[0][1].body, /新しい通知/);
 });
 
-test("offline navigation falls back while APIs, auth and cross-origin requests pass through", async () => {
-  const { handlers } = worker();
-  for (const [path, mode, expected] of [
-    ["https://zoo.example/channels/123", "navigate", true],
-    ["https://zoo.example/api/users/me", "navigate", false],
-    ["https://zoo.example/auth/callback", "navigate", false],
-    ["https://idp.example/auth", "navigate", false],
-    ["https://zoo.example/api/shapes/messages", "cors", false],
-  ]) {
-    let response;
-    handlers.get("fetch")({
-      request: { url: path, method: "GET", mode },
-      respondWith: (value) => {
-        response = value;
-      },
-    });
-    assert.equal(Boolean(response), expected, path);
-    if (response) assert.equal(await (await response).text(), "offline");
+test("install precaches the app shell so offline navigation can start the SPA", async () => {
+  const { handlers, cacheContext } = worker();
+  await dispatch(handlers, "install");
+  const shell = cacheContext.storeFor("zoo-shell-v2");
+  for (const path of ["/", "/index.html", "/offline.html", "/manifest.webmanifest"]) {
+    assert.ok(shell.has(`${ORIGIN}${path}`), path);
   }
+  assert.match(await shell.get(`${ORIGIN}/index.html`).text(), /network:/);
+});
+
+test("install precaches the hashed assets referenced by the app shell", async () => {
+  const { handlers, cacheContext } = worker({
+    fetch: async (input) => {
+      const key = requestKey(input);
+      if (key === `${ORIGIN}/` || key === `${ORIGIN}/index.html`) {
+        return basicResponse(
+          '<html><head><link rel="stylesheet" href="/assets/app.css"></head><body><script type="module" src="/assets/app.js"></script></body></html>',
+          { headers: { "content-type": "text/html" } },
+        );
+      }
+      return basicResponse(`network:${key}`);
+    },
+  });
+  await dispatch(handlers, "install");
+  const shell = cacheContext.storeFor("zoo-shell-v2");
+  assert.ok(shell.has(`${ORIGIN}/assets/app.css`));
+  assert.ok(shell.has(`${ORIGIN}/assets/app.js`));
+});
+
+test("cached responses are stored without transport encoding or validators", async () => {
+  const { handlers, cacheContext } = worker({
+    fetch: async (input) => {
+      const response = basicResponse(`body:${requestKey(input)}`, {
+        headers: {
+          "content-encoding": "gzip",
+          "cache-control": "no-cache",
+          etag: '"abc"',
+          "content-type": "text/javascript",
+        },
+      });
+      return response;
+    },
+  });
+  await dispatch(handlers, "install");
+  const shell = cacheContext.storeFor("zoo-shell-v2");
+  const cached = shell.get(`${ORIGIN}/index.html`);
+  assert.equal(cached.headers.get("content-encoding"), null);
+  assert.equal(cached.headers.get("etag"), null);
+  assert.equal(cached.headers.get("cache-control"), "no-store");
+  assert.equal(cached.headers.get("content-type"), "text/javascript");
+});
+
+test("page-driven asset caching only accepts same-origin /assets paths", async () => {
+  const { handlers, cacheContext } = worker();
+  await dispatch(handlers, "message", {
+    data: {
+      type: "CACHE_ASSETS",
+      urls: ["/assets/lazy-worker.js", "https://evil.example/assets/x.js", "/api/users/me"],
+    },
+  });
+  const shell = cacheContext.storeFor("zoo-shell-v2");
+  assert.ok(shell.has(`${ORIGIN}/assets/lazy-worker.js`));
+  assert.ok(!shell.has("https://evil.example/assets/x.js"));
+  assert.ok(!shell.has(`${ORIGIN}/api/users/me`));
+});
+
+test("a restarted Service Worker still finds the build-specific shell cache", async () => {
+  const first = worker();
+  await dispatch(first.handlers, "install");
+  // A new worker instance has an empty global scope, like Chrome after ~30s.
+  const restarted = worker({
+    caches: first.cacheContext.api,
+    fetch: async () => {
+      throw new Error("offline");
+    },
+  });
+  const response = await fetchThrough(restarted.handlers, navigation(`${ORIGIN}/channels/123`));
+  assert.match(await response.text(), /network:https:\/\/zoo\.example\/index\.html/);
+});
+
+test("activation removes older cache versions and claims clients", async () => {
+  const { handlers, context, cacheContext } = worker();
+  let claimed = false;
+  context.self.clients.claim = async () => {
+    claimed = true;
+  };
+  await cacheContext.api.open("zoo-offline-v1");
+  await cacheContext.api.open("unrelated-cache");
+  await dispatch(handlers, "activate");
+  const names = await cacheContext.api.keys();
+  assert.ok(!names.includes("zoo-offline-v1"));
+  assert.ok(names.includes("unrelated-cache"));
+  assert.equal(claimed, true);
+});
+
+test("offline navigation falls back to the cached app shell, then offline.html", async () => {
+  const { handlers, cacheContext } = worker({
+    fetch: async (input) => {
+      if (requestKey(input).includes("/channels/")) throw new Error("offline");
+      return basicResponse(`network:${requestKey(input)}`);
+    },
+  });
+  await dispatch(handlers, "install");
+  const shell = cacheContext.storeFor("zoo-shell-v2");
+  // Installation cached the offline page; without an app shell it is the last resort.
+  shell.delete(`${ORIGIN}/index.html`);
+  shell.delete(`${ORIGIN}/`);
+  let response = await fetchThrough(handlers, navigation(`${ORIGIN}/channels/123`));
+  assert.equal(await response.text(), "network:https://zoo.example/offline.html");
+
+  shell.set(
+    `${ORIGIN}/index.html`,
+    basicResponse("cached-shell", { headers: { "content-type": "text/html" } }),
+  );
+  response = await fetchThrough(handlers, navigation(`${ORIGIN}/channels/456`));
+  assert.equal(await response.text(), "cached-shell");
+});
+
+test("online navigation stores the static shell for later deep-link reloads", async () => {
+  const { handlers, cacheContext } = worker({
+    fetch: async (input) =>
+      basicResponse(`html:${requestKey(input)}`, { headers: { "content-type": "text/html" } }),
+  });
+  const response = await fetchThrough(handlers, navigation(`${ORIGIN}/channels/123`));
+  assert.match(await response.text(), /html:/);
+  const shell = cacheContext.storeFor("zoo-shell-v2");
+  assert.ok(shell.has(`${ORIGIN}/index.html`));
+});
+
+test("direct navigation to a non-HTML asset does not overwrite the app shell", async () => {
+  const { handlers, cacheContext } = worker({
+    fetch: async (input) =>
+      basicResponse(`png:${requestKey(input)}`, { headers: { "content-type": "image/png" } }),
+  });
+  const shell = cacheContext.storeFor("zoo-shell-v2");
+  shell.set(`${ORIGIN}/index.html`, basicResponse("cached-shell"));
+  const response = await fetchThrough(handlers, navigation(`${ORIGIN}/icons/icon-512.png`));
+  assert.match(await response.text(), /png:/);
+  assert.equal(await shell.get(`${ORIGIN}/index.html`).text(), "cached-shell");
+});
+
+test("a build-specific cache name replaces the previous shell cache", async () => {
+  const indexHtml =
+    '<html><head><script type="module" src="/assets/index-abc123.js"></script></head></html>';
+  const { handlers, cacheContext } = worker({
+    fetch: async (input) => {
+      const key = requestKey(input);
+      if (key === `${ORIGIN}/` || key === `${ORIGIN}/index.html`) {
+        return basicResponse(indexHtml, { headers: { "content-type": "text/html" } });
+      }
+      return basicResponse(`network:${key}`);
+    },
+  });
+  await dispatch(handlers, "install");
+  const names = await cacheContext.api.keys();
+  assert.ok(names.includes("zoo-shell-abc123"));
+  assert.ok(!names.includes("zoo-shell-v2"));
+
+  await cacheContext.api.open("zoo-shell-v2");
+  await dispatch(handlers, "activate");
+  const after = await cacheContext.api.keys();
+  assert.ok(after.includes("zoo-shell-abc123"));
+  assert.ok(!after.includes("zoo-shell-v2"));
+});
+
+test("APIs, auth, cross-origin requests and non-GET requests pass through", async () => {
+  const { handlers } = worker();
+  for (const [url, mode, method] of [
+    [`${ORIGIN}/api/users/me`, "navigate", "GET"],
+    [`${ORIGIN}/auth/callback`, "navigate", "GET"],
+    [`${ORIGIN}/api/shapes/messages`, "cors", "GET"],
+    ["https://idp.example/auth", "navigate", "GET"],
+    [`${ORIGIN}/assets/app.js`, "cors", "POST"],
+  ]) {
+    const response = await fetchThrough(handlers, { url, mode, method });
+    assert.equal(response, undefined, `${method} ${url}`);
+  }
+});
+
+test("static assets are cached on first fetch and served from the cache afterwards", async () => {
+  let requests = 0;
+  const { handlers } = worker({
+    fetch: async (input) => {
+      requests += 1;
+      return basicResponse(`asset-body:${requestKey(input)}`);
+    },
+  });
+  const asset = { url: `${ORIGIN}/assets/app-abc.js`, method: "GET", mode: "cors" };
+  const first = await fetchThrough(handlers, asset);
+  assert.match(await first.text(), /asset-body:/);
+  const second = await fetchThrough(handlers, asset);
+  assert.match(await second.text(), /asset-body:/);
+  assert.equal(requests, 1);
 });
 
 test("notification click focuses an existing app or opens the app root", async () => {
@@ -91,13 +354,13 @@ test("notification click focuses an existing app or opens the app root", async (
     },
   };
   handlers.get("notificationclick")(event);
-  await work;
+  await Promise.resolve(work);
   assert.equal(closed, true);
   assert.equal(focused, true);
   assert.equal(opened, false);
   context.self.clients.matchAll = async () => [];
   handlers.get("notificationclick")(event);
-  await work;
+  await Promise.resolve(work);
   assert.equal(opened, true);
 });
 
@@ -116,8 +379,7 @@ test("manifest icon files exist with the declared PNG dimensions", () => {
 
 test("push displays sender, channel and message preview from the decrypted payload", async () => {
   const { handlers, notifications } = worker();
-  let work;
-  handlers.get("push")({
+  await dispatch(handlers, "push", {
     data: {
       json: () => ({
         title: "Alice · #general",
@@ -127,11 +389,7 @@ test("push displays sender, channel and message preview from the decrypted paylo
         notificationType: "mention",
       }),
     },
-    waitUntil: (value) => {
-      work = value;
-    },
   });
-  await work;
   assert.equal(notifications[0][0], "Alice · #general");
   assert.equal(notifications[0][1].body, "こんにちは、Bob!");
   assert.equal(notifications[0][1].data.url, "/channels/123?message=456");
@@ -148,14 +406,7 @@ test("reaction notifications describe the event and malformed payloads retain th
       },
     },
   ]) {
-    let work;
-    handlers.get("push")({
-      data,
-      waitUntil: (value) => {
-        work = value;
-      },
-    });
-    await work;
+    await dispatch(handlers, "push", { data });
   }
   assert.equal(notifications[0][1].body, "リアクション: Hello");
   assert.equal(notifications[1][0], "Zoo");
@@ -177,14 +428,9 @@ test("notification click navigates an existing app to the target message", async
       },
     },
   ];
-  let work;
-  handlers.get("notificationclick")({
+  await dispatch(handlers, "notificationclick", {
     notification: { close() {}, data: { url: "/channels/123?message=456" } },
-    waitUntil: (value) => {
-      work = value;
-    },
   });
-  await work;
   assert.deepEqual(actions, [target, "focus"]);
 });
 
@@ -200,14 +446,9 @@ test("notification destinations stay inside the app and open directly when no wi
     "/auth/callback",
     "javascript:alert(1)",
   ]) {
-    let work;
-    handlers.get("notificationclick")({
+    await dispatch(handlers, "notificationclick", {
       notification: { close() {}, data: { url } },
-      waitUntil: (value) => {
-        work = value;
-      },
     });
-    await work;
   }
   assert.deepEqual(opened, ["https://zoo.example/channels/123?message=456", "/", "/", "/"]);
 });

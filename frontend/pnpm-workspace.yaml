@@ -3,6 +3,7 @@
 allowBuilds:
   esbuild: true
   lightningcss: true
+  "@journeyapps/wa-sqlite": true
 
 catalog:
   vite: npm:@voidzero-dev/vite-plus-core@1.1.0
@@ -25,6 +26,8 @@ minimumReleaseAgeExclude:
   - "@tanstack/router-utils@1.162.4"
   - "@tanstack/start-plugin-core@1.171.53"
   - "@tanstack/start-server-core@1.169.43"
-  - "@tanstack/db@0.15.0"
-  - "@tanstack/electric-db-collection@0.6.1"
-  - "@tanstack/react-db@0.5.10"
+  - "@tanstack/db@0.15.2"
+  - "@tanstack/db-sqlite-persistence-core@0.4.12"
+  - "@tanstack/browser-db-sqlite-persistence@0.2.37"
+  - "@tanstack/electric-db-collection@0.6.3"
+  - "@tanstack/react-db@0.5.12"

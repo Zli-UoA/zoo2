@@ -21,13 +21,47 @@ function Layout() {
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editingText, setEditingText] = useState("");
   const noop = () => {};
+  const prependOlder = () => {
+    setMessages((current) => [
+      ...Array.from({ length: 10 }, (_, i) => ({
+        id: `older-${i}-${current.length}`,
+        user_id: "me",
+        display_name: "Alice",
+        parent_id: null,
+        content: `Older ${i}\n` + "Older line\n".repeat((i % 3) + 1),
+        created_at: "2026-01-01 00:00:00.000",
+      })),
+      ...current,
+    ]);
+  };
+  const appendNew = () => {
+    setMessages((current) => [
+      ...current,
+      {
+        id: `new-${current.length}`,
+        user_id: "other",
+        display_name: "Bob",
+        parent_id: null,
+        content: `New ${current.length}`,
+        created_at: "2026-01-03 00:00:00.000",
+      },
+    ]);
+  };
   return (
     <div
       ref={ref}
       data-testid="shell"
       className="fixed inset-x-0 top-0 flex h-dvh flex-col overflow-hidden"
     >
-      <header className="shrink-0 border-b p-3">Channel</header>
+      <header className="flex shrink-0 items-center gap-2 border-b p-3">
+        <span>Channel</span>
+        <button type="button" data-testid="prepend-older" onClick={prependOlder}>
+          Prepend older
+        </button>
+        <button type="button" data-testid="append-new" onClick={appendNew}>
+          Append new
+        </button>
+      </header>
       <MessageList
         messages={messages}
         isLoading={false}
