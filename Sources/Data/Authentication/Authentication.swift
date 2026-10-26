@@ -190,36 +190,43 @@ final class Authentication: NSObject, ASWebAuthenticationPresentationContextProv
     }
 
     func accessToken() async throws -> String {
+        try Task.checkCancellation()
         guard let tokens else { throw ZooError.expiredSession }
         if tokens.expires.timeIntervalSinceNow > 30 { return tokens.access }
+        let epoch = generation
+        let task: Task<TokenSet, Error>
         if let refreshTask {
-            let epoch = generation
-            do {
-                let token = try await refreshTask.value
+            task = refreshTask
+        } else {
+            guard let refresh = tokens.refresh else { throw ZooError.expiredSession }
+            task = Task {
+                defer { if epoch == generation { refreshTask = nil } }
+                let discovery = try await self.discovery()
+                try Task.checkCancellation()
+                var fields = ["grant_type": "refresh_token", "client_id": settings.clientID, "refresh_token": refresh]
+                if !settings.resource.isEmpty { fields["resource"] = settings.resource }
+                let fresh = try await self.exchangeToken(endpoint: discovery.token_endpoint, fields: fields, previousRefresh: refresh)
+                try Task.checkCancellation()
                 guard epoch == generation else { throw CancellationError() }
-                return token.access
-            } catch ZooError.rejected(let status, _) where status == 400 || status == 401 {
-                throw ZooError.expiredSession
+                // 呼び出し元がキャンセルされても、待機者へ返す前に更新後の認証情報を保存します。
+                try TokenVault.save(fresh, account: settings.storageKey)
+                self.tokens = fresh
+                return fresh
             }
+            refreshTask = task
         }
-        guard let refresh = tokens.refresh else { throw ZooError.expiredSession }
-        let currentGeneration = generation
-        let task = Task {
-            let discovery = try await self.discovery()
-            var fields = ["grant_type": "refresh_token", "client_id": settings.clientID, "refresh_token": refresh]
-            if !settings.resource.isEmpty { fields["resource"] = settings.resource }
-            return try await self.exchangeToken(endpoint: discovery.token_endpoint, fields: fields, previousRefresh: refresh)
-        }
-        refreshTask = task
-        defer { if currentGeneration == generation { refreshTask = nil } }
         do {
             let fresh = try await task.value
-            guard currentGeneration == generation else { throw CancellationError() }
-            try TokenVault.save(fresh, account: settings.storageKey)
-            self.tokens = fresh
+            try Task.checkCancellation()
+            guard epoch == generation else { throw CancellationError() }
             return fresh.access
-        } catch ZooError.rejected(let status, _) where status == 400 || status == 401 {
-            throw ZooError.expiredSession
+        } catch {
+            try Task.checkCancellation()
+            guard epoch == generation else { throw CancellationError() }
+            if case ZooError.rejected(let status, _) = error, status == 400 || status == 401 {
+                throw ZooError.expiredSession
+            }
+            throw error
         }
     }
 

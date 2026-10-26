@@ -1,3 +1,4 @@
+import CoreFoundation
 import Foundation
 import WebKit
 import UIKit
@@ -32,7 +33,8 @@ final class WebBridge: NSObject, WKScriptMessageHandlerWithReply {
               mainFrame: message.frameInfo.isMainFrame, protocolName: origin.protocol,
               host: origin.host, port: origin.port),
               let body = message.body as? [String: Any],
-              let version = body["version"] as? Int, version == 1,
+              let version = body["version"] as? NSNumber,
+              CFGetTypeID(version) != CFBooleanGetTypeID(), version == 1,
               let method = body["method"] as? String, let command = BridgeCommand(rawValue: method),
               let handle else { return (nil, "このネイティブ機能の呼び出しは許可されていません。") }
         do {
