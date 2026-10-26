@@ -3,7 +3,7 @@ import { BellIcon, BellOffIcon, DownloadIcon } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
 import { ApiError, createConfiguredApiClient } from "../../lib/api/client";
-import { getCollections } from "../../lib/electric/collections";
+import { useCollections } from "../../lib/electric/collections-context";
 import {
   applicationServerKey,
   disablePush,
@@ -20,7 +20,7 @@ type InstallEvent = Event & {
 
 export function PwaControls() {
   const { t } = useTranslation();
-  const { config } = getCollections();
+  const { config } = useCollections();
   const [install, setInstall] = useState<InstallEvent | null>(null);
   const [supported, setSupported] = useState(false);
   const [enabled, setEnabled] = useState(false);

@@ -4,7 +4,7 @@ import { useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 
 import { ApiError, createConfiguredApiClient } from "../lib/api/client";
-import { getCollections } from "../lib/electric/collections";
+import { useCollections } from "../lib/electric/collections-context";
 import { changeMessageMatcher, syncTxid } from "../lib/electric/txid";
 import type { ChannelRow, ChannelUserRow, MessageRow } from "../lib/electric/types";
 import { useChannelAccess, type ChannelAccess } from "./useRealtime";
@@ -68,7 +68,7 @@ export function describeApiError(cause: unknown, t: TFunction): string {
 export function useChannelAdmin(channel: ChannelRow | null): ChannelAdmin {
   const { t } = useTranslation();
   const access = useChannelAccess(channel);
-  const collections = useMemo(() => getCollections(), []);
+  const collections = useCollections();
   const client = useMemo(() => createConfiguredApiClient(collections.config), [collections]);
   const [pending, setPending] = useState<ChannelAdminAction | null>(null);
   // 同じイベント内の連打は state 反映前なので、ref で同期的に弾く。

@@ -8,7 +8,7 @@ import { useChannelAdmin } from "../../hooks/useChannelAdmin";
 import { useCurrentUser } from "../../hooks/useCurrentUser";
 import { useChannelMembers, useUsers, useWorkspaceAdminIds } from "../../hooks/useRealtime";
 import { useWriteRunner } from "../../hooks/useWriteRunner";
-import { getCollections } from "../../lib/electric/collections";
+import { useCollections } from "../../lib/electric/collections-context";
 import type { ChannelUserWriteMetadata } from "../../lib/electric/writes";
 import type { ChannelRow, UserRow } from "../../lib/electric/types";
 import { useLocale } from "../i18n/LocaleProvider";
@@ -51,7 +51,7 @@ function nowIso(): string {
 export function MembersPanel({ channel, className }: { channel: ChannelRow; className?: string }) {
   const { t } = useTranslation();
   const { locale } = useLocale();
-  const { channelUsers } = getCollections();
+  const { channelUsers } = useCollections();
   const membersQuery = useChannelMembers(channel.id);
   const usersQuery = useUsers();
   const { currentUserId, isLoading: currentUserLoading } = useCurrentUser();

@@ -1,5 +1,5 @@
 import { useTranslation } from "react-i18next";
-import { getCollections } from "../lib/electric/collections";
+import { useCollections } from "../lib/electric/collections-context";
 
 function StatusItem({ label, value }: { label: string; value: string }) {
   return (
@@ -12,7 +12,7 @@ function StatusItem({ label, value }: { label: string; value: string }) {
 /** Shape の接続モードと書き込みの待ち方、現在の開発ユーザーを表示する。 */
 export function SyncStatus() {
   const { t } = useTranslation();
-  const { config } = getCollections();
+  const { config } = useCollections();
   return (
     <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
       <StatusItem label="Shape" value={config.shapeMode} />

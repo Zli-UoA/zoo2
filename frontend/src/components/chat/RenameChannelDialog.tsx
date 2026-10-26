@@ -1,7 +1,7 @@
 import { useRef, useState, type FormEvent } from "react";
 import { useTranslation } from "react-i18next";
 
-import { getCollections } from "../../lib/electric/collections";
+import { useCollections } from "../../lib/electric/collections-context";
 import type { ChannelRow } from "../../lib/electric/types";
 import { localizeApiError } from "../../lib/i18n/apiError";
 import { Button } from "../ui/button";
@@ -24,6 +24,7 @@ export function RenameChannelDialog({
   onOpenChange: (open: boolean) => void;
 }) {
   const { t } = useTranslation();
+  const { channels } = useCollections();
   const [name, setName] = useState(channel.channel_name);
   const [submitting, setSubmitting] = useState(false);
   const pending = useRef(false);
@@ -45,7 +46,6 @@ export function RenameChannelDialog({
     setSubmitting(true);
     setErrorCause(null);
     try {
-      const { channels } = getCollections();
       const transaction = channels.update(channel.id, (draft) => {
         draft.channel_name = nextName;
       });

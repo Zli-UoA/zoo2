@@ -12,7 +12,7 @@ import {
 } from "../../../hooks/useRealtime";
 import { useReplyCounts, useThreadFeed } from "../../../hooks/useThread";
 import { useWriteRunner } from "../../../hooks/useWriteRunner";
-import { getCollections } from "../../../lib/electric/collections";
+import { useCollections } from "../../../lib/electric/collections-context";
 import type { ChannelUserWriteMetadata } from "../../../lib/electric/writes";
 import { groupReactions } from "../../../lib/emoji/reactions";
 import { reactionKey } from "../../../lib/emoji/kitchen";
@@ -80,7 +80,7 @@ export function MessagePane({
   targetMessageId?: string;
 }) {
   const { t } = useTranslation();
-  const { messages, channelUsers, reactions } = getCollections();
+  const { messages, channelUsers, reactions } = useCollections();
   const mentionUsers = useUsers().data ?? [];
   const members = useChannelMembers(channelId).data;
   const mentionMemberIds = useMemo(

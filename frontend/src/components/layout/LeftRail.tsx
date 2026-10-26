@@ -8,7 +8,7 @@ import { ActivityIcon, HashIcon, LogOutIcon, type LucideIcon, PawPrintIcon } fro
 
 import { useCurrentUser } from "../../hooks/useCurrentUser";
 import { useUsers } from "../../hooks/useRealtime";
-import { getCollections } from "../../lib/electric/collections";
+import { useCollections } from "../../lib/electric/collections-context";
 import { getOidcClient } from "../../lib/oidc/session";
 import { LanguageToggle } from "../i18n/LanguageToggle";
 import { ModeToggle } from "../theme/ModeToggle";
@@ -48,7 +48,7 @@ function RailLink({
  */
 export function LeftRail() {
   const { t } = useTranslation();
-  const { config } = getCollections();
+  const { config } = useCollections();
   const { currentUserId } = useCurrentUser();
   const usersQuery = useUsers();
   const me = (usersQuery.data ?? []).find((user) => user.id === currentUserId);

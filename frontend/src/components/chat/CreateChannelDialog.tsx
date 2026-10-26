@@ -2,7 +2,7 @@ import { useTranslation } from "react-i18next";
 import { useState, type FormEvent } from "react";
 
 import { useCurrentUser } from "../../hooks/useCurrentUser";
-import { getCollections } from "../../lib/electric/collections";
+import { useCollections } from "../../lib/electric/collections-context";
 import { localizeApiError } from "../../lib/i18n/apiError";
 import { Button } from "../ui/button";
 import {
@@ -23,7 +23,7 @@ export function CreateChannelDialog({
   open: boolean;
   onOpenChange: (open: boolean) => void;
 }) {
-  const { channels } = getCollections();
+  const { channels } = useCollections();
   const { t } = useTranslation();
   const { currentUserId, isLoading: currentUserLoading } = useCurrentUser();
   const [name, setName] = useState("");

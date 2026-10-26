@@ -3,7 +3,7 @@ import { useTranslation } from "react-i18next";
 import { CopyIcon, EyeIcon, EyeOffIcon } from "lucide-react";
 import { toast } from "sonner";
 import { createConfiguredApiClient } from "../../lib/api/client";
-import { getCollections } from "../../lib/electric/collections";
+import { useCollections } from "../../lib/electric/collections-context";
 import { joinUrl } from "../../lib/config";
 import type { ChannelRow } from "../../lib/electric/types";
 import { describeApiError } from "../../hooks/useChannelAdmin";
@@ -89,7 +89,7 @@ export function ChannelWebhooksDialog({
   onOpenChange: (open: boolean) => void;
 }) {
   const { t } = useTranslation();
-  const config = useMemo(() => getCollections().config, []);
+  const { config } = useCollections();
   const client = useMemo(() => createConfiguredApiClient(config), [config]);
   const path = `/api/channels/${channel.id}/webhooks`;
   const [hooks, setHooks] = useState<ChannelWebhook[]>([]);

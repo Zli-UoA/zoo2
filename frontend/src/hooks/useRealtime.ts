@@ -2,7 +2,7 @@ import { eq, isNull, useLiveQuery } from "@tanstack/react-db";
 import { useEffect, useMemo, useState } from "react";
 
 import { createConfiguredApiClient } from "../lib/api/client";
-import { getCollections } from "../lib/electric/collections";
+import { useCollections } from "../lib/electric/collections-context";
 import { messageFeedQuery } from "../lib/electric/messageFeed";
 import type { ChannelRow, ChannelUserRow } from "../lib/electric/types";
 import { canAddChannelMember, canManageChannel } from "./channelPermissions";
@@ -10,13 +10,13 @@ import { useCurrentUser } from "./useCurrentUser";
 
 /** 投稿者名の解決に使う全ユーザーを購読する。 */
 export function useUsers() {
-  const { users } = getCollections();
+  const { users } = useCollections();
   return useLiveQuery((q) => q.from({ users }));
 }
 
 /** 論理削除されていないチャンネル一覧をチャンネル名の昇順で購読する。 */
 export function useActiveChannels() {
-  const { channels } = getCollections();
+  const { channels } = useCollections();
   return useLiveQuery((q) =>
     q
       .from({ channels })
@@ -31,7 +31,7 @@ export function useActiveChannels() {
  * `parent_id` で絞って購読する。`channelId` が無いときは購読しない。
  */
 export function useMessageFeed(channelId: string | null) {
-  const { messages, users } = getCollections();
+  const { messages, users } = useCollections();
   return useLiveQuery((q) =>
     channelId ? messageFeedQuery(q, { messages: messages(channelId), users }) : undefined,
   );
@@ -39,7 +39,7 @@ export function useMessageFeed(channelId: string | null) {
 
 /** 指定チャンネルの参加メンバー（channel_user）を購読する。 */
 export function useChannelMembers(channelId: string | null) {
-  const { channelUsers } = getCollections();
+  const { channelUsers } = useCollections();
   return useLiveQuery((q) =>
     channelId
       ? q.from({ channelUsers }).where(({ channelUsers }) => eq(channelUsers.channel_id, channelId))
@@ -49,7 +49,7 @@ export function useChannelMembers(channelId: string | null) {
 
 /** チャンネル内のメッセージへのリアクションを購読する。 */
 export function useMessageReactions(channelId: string) {
-  const { reactions } = getCollections();
+  const { reactions } = useCollections();
   return useLiveQuery((q) => q.from({ reactions: reactions(channelId) }));
 }
 
@@ -68,7 +68,7 @@ export interface WorkspaceAdminIds {
  * 増やさず、管理者をキック対象として表示しないための最小限の情報にとどめる。
  */
 export function useWorkspaceAdminIds(): WorkspaceAdminIds {
-  const { config } = getCollections();
+  const { config } = useCollections();
   const client = useMemo(() => createConfiguredApiClient(config), [config]);
   const [adminIds, setAdminIds] = useState<ReadonlySet<string>>(() => new Set());
   const [isLoading, setIsLoading] = useState(true);
@@ -115,7 +115,7 @@ export interface MyChannelMemberships {
  * 押し込まず購読後に走査する。
  */
 export function useMyChannelMemberships(): MyChannelMemberships {
-  const { channelUsers } = getCollections();
+  const { channelUsers } = useCollections();
   const { currentUserId } = useCurrentUser();
   const membershipsQuery = useLiveQuery((q) => q.from({ channelUsers }));
   const memberships = useMemo(
