@@ -10,9 +10,20 @@
 }
 
 html,
-body,
-#app {
+body {
   min-height: 100%;
+}
+
+/*
+ * シェル表示中はページ自体をスクロールさせない。iOS ではページのバウンスで
+ * visualViewport が動き、シェルごとずれてスクロールが逆向きに見えるため。
+ * スクロールは各ペインの中だけで行う。
+ */
+html:has([data-app-shell]),
+html:has([data-app-shell]) body {
+  height: 100%;
+  overflow: hidden;
+  overscroll-behavior: none;
 }
 
 body {

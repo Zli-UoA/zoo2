@@ -121,6 +121,7 @@ export function AppShell({ children }: { children: ReactNode }) {
     <ShellContext.Provider value={value}>
       <div
         ref={viewportRef}
+        data-app-shell
         className="fixed inset-x-0 top-0 flex h-dvh w-full overflow-hidden bg-background text-foreground"
       >
         <LeftRail />
