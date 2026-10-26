@@ -1,8 +1,22 @@
 import { cleanup } from "@testing-library/react";
 import { afterAll, afterEach, beforeAll } from "vite-plus/test";
+import { http, HttpResponse } from "msw";
 import { setupWorker } from "msw/browser";
 
-export const mockServer = setupWorker();
+const transparentPng = Uint8Array.from(
+  atob(
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==",
+  ),
+  (char) => char.charCodeAt(0),
+);
+
+export const mockServer = setupWorker(
+  http.get("https://www.gstatic.com/**", () =>
+    HttpResponse.arrayBuffer(transparentPng.buffer as ArrayBuffer, {
+      headers: { "Content-Type": "image/png" },
+    }),
+  ),
+);
 let started = false;
 
 export async function startMockServer() {

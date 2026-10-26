@@ -256,6 +256,9 @@ jobs:
       - name: vrt
         run: pnpm test:vrt
 
+      - name: storybook test
+        run: pnpm test:storybook
+
       - name: Upload VRT failure screenshots
         if: failure()
         uses: actions/upload-artifact@v4
