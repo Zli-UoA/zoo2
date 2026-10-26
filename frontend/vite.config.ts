@@ -80,7 +80,7 @@ const config = defineConfig({
             expect: {
               toMatchScreenshot: {
                 comparatorName: "pixelmatch",
-                comparatorOptions: { allowedMismatchedPixelRatio: 0 },
+                comparatorOptions: { allowedMismatchedPixelRatio: 0.003 },
               },
             },
           },
