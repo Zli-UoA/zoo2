@@ -78,7 +78,7 @@ for (const [timezoneId, winter, summer] of [
 }
 
 test("MFM suggestions filter and insert at the caret with a keyboard", async ({ page }) => {
-  const input = page.getByRole("combobox");
+  const input = page.getByRole("textbox");
   await input.fill("hello $[sp");
   const list = page.getByRole("listbox", { name: "MFM suggestions" });
   await expect(list.getByRole("option")).toHaveCount(2);
@@ -95,9 +95,9 @@ test("MFM suggestions filter and insert at the caret with a keyboard", async ({ 
 });
 
 test("MFM suggestions support clicking and tapping and Escape", async ({ page, isMobile }) => {
-  const input = page.getByRole("combobox");
+  const input = page.getByRole("textbox");
   await input.fill("$je");
-  const option = page.getByRole("button", { name: "$[jelly] Stretch and squash" });
+  const option = page.getByRole("option", { name: "$[jelly] Stretch and squash" });
   if (isMobile) await option.tap();
   else await option.click();
   await expect(input).toHaveValue("$[jelly ]");
@@ -113,7 +113,7 @@ test("MFM suggestions support clicking and tapping and Escape", async ({ page, i
 });
 
 test("MFM and Japanese mentions remain visible while IME owns the keyboard", async ({ page }) => {
-  const input = page.getByRole("combobox");
+  const input = page.getByRole("textbox");
   for (const [token, label, result] of [
     ["$je", "$[jelly]", "$[jelly ]"],
     ["@太", "@taro", "@taro "],

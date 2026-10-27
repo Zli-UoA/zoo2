@@ -227,7 +227,9 @@ export function Composer({
                 }
               }}
             >
-              <span className="shrink-0 font-mono">{mfmRange ? `$[${option.name}]` : `@${option.name}`}</span>
+              <span className="shrink-0 font-mono">
+                {mfmRange ? `$[${option.name}]` : `@${option.name}`}
+              </span>
               <span className="truncate text-muted-foreground">{option.label}</span>
             </li>
           ))}

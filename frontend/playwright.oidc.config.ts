@@ -34,7 +34,7 @@ export default defineConfig({
     baseURL,
     // E2E専用プロキシの一時的な自己署名証明書を信頼する。
     ignoreHTTPSErrors: true,
-    trace: "on-first-retry",
+    trace: "retain-on-failure",
   },
   projects: [{ name: "chromium", use: { ...devices["Desktop Chrome"] } }],
   webServer: [

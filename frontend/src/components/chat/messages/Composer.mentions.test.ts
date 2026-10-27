@@ -15,10 +15,6 @@ beforeEach(async () => {
     addEventListener() {},
     removeEventListener() {},
   }));
-  vi.stubGlobal("requestAnimationFrame", (callback: FrameRequestCallback) => {
-    callback(0);
-    return 0;
-  });
   container = document.createElement("div");
   document.body.append(container);
   root = createRoot(container);
@@ -51,6 +47,7 @@ afterEach(async () => {
 async function input(value: string) {
   const textarea = container.querySelector("textarea")!;
   await act(async () => {
+    textarea.focus();
     Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!.call(
       textarea,
       value,
@@ -139,7 +136,6 @@ it("selects a mention by clicking an option and keeps focus in the textarea", as
   expect(textarea.value).toBe("hi @alice ");
   expect(document.activeElement).toBe(textarea);
   expect(container.querySelector('[role="listbox"]')).toBeNull();
-
 });
 
 it("offers MFM after $ and inserts inside brackets with Tab without sending", async () => {
