@@ -308,5 +308,34 @@
     "permission": "请允许通知。在 iOS 上，请从主屏幕打开 Zoo。",
     "error": "无法更新通知设置，请重试。",
     "logoutError": "无法关闭通知，请重新尝试退出登录。"
+  },
+  "mfm": {
+    "suggestions": "MFM 候选",
+    "functions": {
+      "tada": "庆祝动画",
+      "jelly": "伸缩",
+      "twitch": "抽动",
+      "shake": "摇动",
+      "spin": "旋转",
+      "jump": "跳跃",
+      "bounce": "弹跳",
+      "flip": "翻转",
+      "x2": "放大两倍",
+      "x3": "放大三倍",
+      "x4": "放大四倍",
+      "scale": "水平和垂直缩放",
+      "position": "偏移位置",
+      "fg": "文字颜色",
+      "bg": "背景颜色",
+      "border": "边框",
+      "font": "字体",
+      "blur": "模糊（悬停显示）",
+      "rainbow": "彩虹色",
+      "sparkle": "闪烁星光",
+      "rotate": "调整角度",
+      "ruby": "注音（输入文字和读音）",
+      "unixtime": "日期时间（输入 Unix 秒数）",
+      "clickable": "点击事件"
+    }
   }
 }

@@ -185,7 +185,20 @@ export function MessageList({
   // ボタンと同じ条件）。最下部へ戻ったら空にして、同文の連投も再度読み上げられる。
   const [liveAnnouncement, setLiveAnnouncement] = useState("");
   const snapshotRef = useRef<ScrollSnapshot>({ firstId: null, lastId: null });
-  const previousScrollHeightRef = useRef(0);
+  const scrollAnchorRef = useRef<{ id: string; offset: number } | null>(null);
+  const restoringAnchorRef = useRef(false);
+  const captureScrollAnchor = useCallback(() => {
+    const element = scrollRef.current;
+    if (!element || restoringAnchorRef.current) return;
+    const viewport = element.getBoundingClientRect();
+    for (const row of element.querySelectorAll<HTMLElement>("[data-message-id]")) {
+      const bounds = row.getBoundingClientRect();
+      if (bounds.bottom > viewport.top && bounds.top < viewport.bottom) {
+        scrollAnchorRef.current = { id: row.dataset.messageId!, offset: bounds.top - viewport.top };
+        break;
+      }
+    }
+  }, []);
 
   const scrollToBottom = useCallback(
     (behavior: ScrollBehavior = "auto") => {
@@ -205,6 +218,7 @@ export function MessageList({
     if (!element) {
       return;
     }
+    captureScrollAnchor();
     const near = isNearBottom(element.scrollTop, element.scrollHeight, element.clientHeight);
     atBottomRef.current = near;
     if (near) {
@@ -217,7 +231,7 @@ export function MessageList({
         onLoadOlder?.(oldest.created_at);
       }
     }
-  }, [markRead, messages, onLoadOlder]);
+  }, [captureScrollAnchor, markRead, messages, onLoadOlder]);
 
   useLayoutEffect(() => {
     const element = scrollRef.current;
@@ -228,10 +242,64 @@ export function MessageList({
     const next = snapshot(ids);
     const change = classifyScrollChange(snapshotRef.current, next, new Set(ids));
 
+    let stopRestoring: (() => void) | undefined;
     if (change === "prepend") {
-      const delta = element.scrollHeight - previousScrollHeightRef.current;
-      if (delta > 0) {
-        element.scrollTop += delta;
+      // Estimates for unmounted rows must not decide which message the reader sees.
+      const anchor = scrollAnchorRef.current;
+      const index = anchor ? items.findIndex((item) => item.message.id === anchor.id) : -1;
+      if (anchor && index >= 0) {
+        restoringAnchorRef.current = true;
+        let frame = 0;
+        let stopped = false;
+        let stableFrames = 0;
+        const events = ["wheel", "touchstart", "pointerdown", "keydown"] as const;
+        const stop = () => {
+          stopped = true;
+          restoringAnchorRef.current = false;
+          cancelAnimationFrame(frame);
+          for (const event of events) element.removeEventListener(event, stop);
+        };
+        stopRestoring = stop;
+        for (const event of events) element.addEventListener(event, stop, { passive: true });
+        const restore = () => {
+          if (stopped || !element.isConnected) {
+            stop();
+            return;
+          }
+          const row = Array.from(element.querySelectorAll<HTMLElement>("[data-message-id]")).find(
+            (entry) => entry.dataset.messageId === anchor.id,
+          );
+          if (row) {
+            const delta =
+              row.getBoundingClientRect().top - element.getBoundingClientRect().top - anchor.offset;
+            if (Math.abs(delta) > 1) {
+              stableFrames = 0;
+              const previousTop = element.scrollTop;
+              virtualizer.scrollToOffset(previousTop + delta);
+              // A short list or viewport resize can make the requested offset unreachable.
+              if (Math.abs(element.scrollTop - previousTop) < 0.5) {
+                stop();
+                captureScrollAnchor();
+                return;
+              }
+            } else stableFrames++;
+          } else {
+            // Mount the anchor's new virtual range first, then correct its measured position.
+            stableFrames = 0;
+            const offset = virtualizer.getOffsetForIndex(index, "start");
+            if (offset)
+              virtualizer.scrollToOffset(
+                offset[0] + parseFloat(getComputedStyle(element).paddingTop) - anchor.offset,
+              );
+          }
+          // ResizeObserver and React can commit new measurements on a later frame.
+          if (stableFrames < 2) frame = requestAnimationFrame(restore);
+          else {
+            stop();
+            captureScrollAnchor();
+          }
+        };
+        restore();
       }
     } else if (change === "initial" && firstUnreadId) {
       const index = items.findIndex((item) => item.message.id === firstUnreadId);
@@ -253,16 +321,12 @@ export function MessageList({
     }
 
     snapshotRef.current = next;
-    previousScrollHeightRef.current = element.scrollHeight;
-  }, [items, currentUserId, scrollToBottom, t, firstUnreadId, virtualizer]);
+    return () => stopRestoring?.();
+  }, [items, currentUserId, scrollToBottom, t, firstUnreadId, virtualizer, captureScrollAnchor]);
 
-  // 行の実測で scrollHeight が変わっても、次の prepend 補正が古い高さを
-  // 基準にしないよう、毎コミットで最新値を記録する。
+  // Also capture after measurements commit, not just when the user scrolls.
   useLayoutEffect(() => {
-    const element = scrollRef.current;
-    if (element) {
-      previousScrollHeightRef.current = element.scrollHeight;
-    }
+    captureScrollAnchor();
   });
 
   // 一覧がスクロールできないほど短い場合でも、上端スクロール相当の操作が
@@ -371,7 +435,7 @@ export function MessageList({
           ref={scrollRef}
           onScroll={handleScroll}
           data-testid="message-scroll"
-          className="h-full overflow-y-auto overscroll-contain px-2 py-3"
+          className="h-full overflow-y-auto overscroll-contain px-2 py-3 [overflow-anchor:none]"
         >
           <div
             role="list"
@@ -388,6 +452,7 @@ export function MessageList({
                   key={virtualRow.key}
                   ref={virtualizer.measureElement}
                   data-index={virtualRow.index}
+                  data-message-id={item.message.id}
                   role="listitem"
                   className={`absolute left-0 top-0 w-full ${item.message.id === targetMessageId ? "rounded-lg bg-brand-muted/40 ring-1 ring-brand" : ""}`}
                   style={{ transform: `translateY(${virtualRow.start}px)` }}

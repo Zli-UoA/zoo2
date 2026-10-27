@@ -125,25 +125,37 @@ test("scrolling to the top loads older messages without moving the reader", asyn
   await page.goto("/e2e/fixtures/layout.html");
   await scrollMessages(page, "bottom");
   await expect(page.getByText(/^Message 39\b/)).toBeVisible();
-  await page.waitForTimeout(500);
+  await page.evaluate(() => document.fonts.ready);
   await scrollMessages(page, "top");
-  await expect(page.getByText(/^Message 1\b/)).toBeVisible();
-  const scroller = page.getByTestId("message-scroll");
-  const before = await scroller.evaluate((element) => ({
-    top: element.scrollTop,
-    height: element.scrollHeight,
-  }));
-  await page.getByTestId("prepend-older").click();
-  await expect
-    .poll(async () => {
-      const after = await scroller.evaluate((element) => ({
-        top: element.scrollTop,
-        height: element.scrollHeight,
-      }));
-      return Math.abs(after.top - before.top - (after.height - before.height));
-    })
-    .toBeLessThanOrEqual(2);
+  const row = page.getByText(/^Message 1\b/);
+  await expect(row).toBeVisible();
   await expectNoOverlap(page);
+  for (let batch = 0; batch < 2; batch++) {
+    const before = await row.boundingBox();
+    expect(before).not.toBeNull();
+    await page.getByTestId("prepend-older").click();
+    await expect(row.locator("xpath=ancestor::*[@role='listitem']")).toHaveAttribute(
+      "data-index",
+      String(1 + (batch + 1) * 10),
+    );
+    await expectNoOverlap(page);
+    // Wait for ResizeObserver measurements to commit without a fixed-duration sleep.
+    await page.evaluate(
+      () =>
+        new Promise<void>((resolve) =>
+          requestAnimationFrame(() => requestAnimationFrame(() => resolve())),
+        ),
+    );
+    // Virtual total height includes estimates for offscreen rows. Check the actual
+    // message the reader sees instead of coupling its position to those estimates.
+    await expect
+      .poll(async () => {
+        const after = await row.boundingBox();
+        return after ? Math.abs(after.y - before!.y) : Infinity;
+      })
+      .toBeLessThanOrEqual(2);
+    await expectNoOverlap(page);
+  }
 });
 
 test("new messages below do not move a scrolled-up reader", async ({ page }) => {

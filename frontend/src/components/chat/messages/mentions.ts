@@ -4,8 +4,10 @@ import type { UserRow } from "../../../lib/electric/types";
 export const MENTION_PATTERN = /(^|[\s([{<（「『"'。、])(@[a-zA-Z0-9._-]+)/g;
 
 export function mentionQuery(value: string, caret: number) {
-  const match = /(?:^|[\s([{<（「『"'。、])@([a-zA-Z0-9._-]*)$/.exec(value.slice(0, caret));
-  return match ? { start: caret - match[1]!.length - 1, end: caret, query: match[1]! } : null;
+  const match = /(?:^|[\s([{<（「『"'。、])@([\p{L}\p{M}\p{N}._-]*)$/u.exec(value.slice(0, caret));
+  return match
+    ? { start: caret - match[1]!.length - 1, end: caret, query: match[1]!.normalize("NFKC") }
+    : null;
 }
 
 export interface MentionOption {
@@ -17,7 +19,7 @@ export function mentionOptions(
   memberIds: ReadonlySet<string>,
   query: string,
 ): MentionOption[] {
-  const search = query.toLowerCase();
+  const search = query.normalize("NFKC").toLowerCase();
   return [
     { name: "channel", label: "@channel" },
     { name: "here", label: "@here" },
@@ -32,7 +34,8 @@ export function mentionOptions(
   ]
     .filter(
       (option) =>
-        option.name.toLowerCase().includes(search) || option.label.toLowerCase().includes(search),
+        option.name.normalize("NFKC").toLowerCase().includes(search) ||
+        option.label.normalize("NFKC").toLowerCase().includes(search),
     )
     .slice(0, 8);
 }

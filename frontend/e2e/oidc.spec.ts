@@ -4,6 +4,7 @@ test.use({ locale: "ja-JP" });
 
 const mockIdpPort = process.env.MOCK_IDP_PORT ?? "4100";
 const mockIdpOrigin = `http://127.0.0.1:${mockIdpPort}`;
+const SHAPE_SYNC_TIMEOUT_MS = 15_000;
 const apiBaseUrl = `https://localhost:${process.env.E2E_HTTP2_PORT ?? "8443"}`;
 
 /**
@@ -88,10 +89,21 @@ test("OIDC PKCE ログイン後に API と Shape が Bearer で通る", async ({
   const message = `hello ${channelName}`;
   await page.getByRole("button", { name: "チャンネルを作成" }).click();
   await page.getByPlaceholder("新しいチャンネル名").fill(channelName);
+  const created = page.waitForResponse(
+    (response) =>
+      new URL(response.url()).pathname === "/api/channels" &&
+      response.request().method() === "POST",
+  );
   await page.getByRole("button", { name: "チャンネル作成" }).click();
+  expect((await created).ok()).toBe(true);
+  // The API acknowledgement precedes Electric delivery. The dialog closes after
+  // the channel transaction settles; the sidebar also needs its membership Shape.
+  await expect(page.getByPlaceholder("新しいチャンネル名")).toBeHidden({
+    timeout: SHAPE_SYNC_TIMEOUT_MS,
+  });
 
   const channelLink = page.getByRole("link", { name: new RegExp(channelName) });
-  await expect(channelLink).toBeVisible();
+  await expect(channelLink).toBeVisible({ timeout: SHAPE_SYNC_TIMEOUT_MS });
   await channelLink.click();
   await expect(page.getByRole("heading", { name: "メッセージ" })).toBeVisible();
 
@@ -110,7 +122,7 @@ test("OIDC PKCE ログイン後に API と Shape が Bearer で通る", async ({
   await expect
     .poll(
       () => readShape(page, `${apiBaseUrl}/api/shapes/messages?channel_id=${channelId}`, bearer!),
-      { timeout: 15_000 },
+      { timeout: SHAPE_SYNC_TIMEOUT_MS },
     )
     .toContain(message);
 
