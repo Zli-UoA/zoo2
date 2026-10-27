@@ -58,8 +58,12 @@ export function OfflineProvider({ config, children }: { config: AppConfig; child
     (listener: () => void) => userStore.subscribe(listener),
     [userStore],
   );
-  const getCurrentUserId = useCallback(() => userStore.getState().currentUserId, [userStore]);
-  const currentUserId = useSyncExternalStore(subscribe, getCurrentUserId, () => config.devUserId);
+  const getUserState = useCallback(() => userStore.getState(), [userStore]);
+  const userState = useSyncExternalStore(subscribe, getUserState, getUserState);
+  const currentUserId = userState.currentUserId;
+  // オンラインの初回ログインでは本人の名前空間が決まるまでシェルを出さない。
+  // anonymous → user の切り替えによる再マウントで入力中のフォームが消えるのを防ぐ。
+  const waitingForUser = Boolean(config.oidc && isOnline && userState.isLoading);
   const [retryToken, setRetryToken] = useState(0);
   const [ready, setReady] = useState<ReadyState | null>(null);
 
@@ -130,6 +134,7 @@ export function OfflineProvider({ config, children }: { config: AppConfig; child
   useEffect(() => {
     let cancelled = false;
     setReady(null);
+    if (waitingForUser) return;
     void (async () => {
       let persistence = null;
       let persistenceStatus: OfflinePersistenceStatus = "unavailable";
@@ -154,7 +159,7 @@ export function OfflineProvider({ config, children }: { config: AppConfig; child
     return () => {
       cancelled = true;
     };
-  }, [config, namespace, retryToken, key]);
+  }, [config, namespace, retryToken, key, waitingForUser]);
 
   const retryPersistence = useCallback(() => setRetryToken((token) => token + 1), []);
   const clearUserData = useCallback(async () => {
@@ -178,7 +183,7 @@ export function OfflineProvider({ config, children }: { config: AppConfig; child
     [clearUserData, isOnline, namespace, ready, retryPersistence],
   );
 
-  if (!ready || ready.key !== key) {
+  if (waitingForUser || !ready || ready.key !== key) {
     return <ShellSkeleton />;
   }
 

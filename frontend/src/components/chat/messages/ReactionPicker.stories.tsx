@@ -60,7 +60,10 @@ export const SearchEmpty: Story = {
   play: async () => {
     const search = screen.getByPlaceholderText("絵文字を検索");
     await userEvent.type(search, "zzzzzzzz");
-    await expect(await screen.findByText("一致する絵文字がありません")).toBeVisible();
+    // 初回はローカルの絵文字データの読み込みも待つ。CI では既定の 1 秒を超える。
+    await expect(
+      await screen.findByText("一致する絵文字がありません", {}, { timeout: 5000 }),
+    ).toBeVisible();
   },
 };
 
