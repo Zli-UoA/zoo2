@@ -51,3 +51,8 @@ describe("mentions", () => {
     expect(mentionQuery("@", 1)?.query).toBe("");
   });
 });
+
+it("accepts fullwidth and Japanese mention queries with original insertion offsets", () => {
+  expect(mentionQuery("hi ＠太", 5)).toEqual({ start: 3, end: 5, query: "太" });
+  expect(mentionQuery("＠ａｌ", 3)).toEqual({ start: 0, end: 3, query: "al" });
+});

@@ -174,3 +174,39 @@ it("supports MFM arrow selection, Escape and IME without interfering with mentio
   await input("@ali");
   expect(container.querySelector('[role="listbox"]')?.textContent).toContain("@alice");
 });
+
+it("keeps suggestions visible during composition and leaves IME keys untouched", async () => {
+  const textarea = container.querySelector("textarea")!;
+  for (const value of ["＄ｊｅ", "＠ａｌ"]) {
+    await act(async () =>
+      textarea.dispatchEvent(new CompositionEvent("compositionstart", { bubbles: true })),
+    );
+    await input(value);
+    expect(container.querySelector('[role="listbox"]')?.textContent).toContain(
+      value.startsWith("＄") ? "$[jelly]" : "@alice",
+    );
+    for (const key of ["Enter", "ArrowDown", "Tab", "Escape"]) {
+      const event = new KeyboardEvent("keydown", { key, bubbles: true, cancelable: true });
+      await act(async () => textarea.dispatchEvent(event));
+      expect(event.defaultPrevented).toBe(false);
+      expect(textarea.value).toBe(value);
+      expect(container.querySelector('[role="listbox"]')).not.toBeNull();
+    }
+    expect(send).not.toHaveBeenCalled();
+    await act(async () =>
+      textarea.dispatchEvent(new CompositionEvent("compositionend", { bubbles: true })),
+    );
+    const imeEnter = new KeyboardEvent("keydown", {
+      key: "Enter",
+      keyCode: 229,
+      bubbles: true,
+      cancelable: true,
+    });
+    await act(async () => textarea.dispatchEvent(imeEnter));
+    expect(textarea.value).toBe(value);
+    await act(async () =>
+      textarea.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true })),
+    );
+    expect(textarea.value).toBe(value.startsWith("＄") ? "$[jelly ]" : "@alice ");
+  }
+});

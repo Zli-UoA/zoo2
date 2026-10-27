@@ -10,7 +10,7 @@ export interface MfmSuggestionRange {
 export function mfmQuery(value: string, caret: number): MfmSuggestionRange | null {
   if (caret < 0 || caret > value.length) return null;
   const prefix = value.slice(0, caret);
-  const match = /\$\[?([a-zA-Z0-9]*)$/.exec(prefix);
+  const match = /(?:\$|＄)(?:\[|［)?([\p{L}\p{M}\p{N}]*)$/u.exec(prefix);
   if (!match || /https?:\/\/\S*$/i.test(prefix)) return null;
   let escapes = 0;
   for (let i = match.index - 1; i >= 0 && value[i] === "\\"; i--) escapes++;
@@ -21,11 +21,21 @@ export function mfmQuery(value: string, caret: number): MfmSuggestionRange | nul
     if (!delimiter) delimiter = length;
     else if (length === delimiter || (delimiter >= 3 && length >= delimiter)) delimiter = 0;
   }
-  return delimiter ? null : { start: match.index, end: caret, query: match[1]!.toLowerCase() };
+  return delimiter
+    ? null
+    : { start: match.index, end: caret, query: match[1]!.normalize("NFKC").toLowerCase() };
 }
 
-export function mfmOptions(query: string) {
-  return MFM_FUNCTIONS.filter((name) => name.startsWith(query.toLowerCase()));
+export function mfmOptions(
+  query: string,
+  labelFor?: (name: (typeof MFM_FUNCTIONS)[number]) => string,
+) {
+  const search = query.normalize("NFKC").toLowerCase();
+  return MFM_FUNCTIONS.filter(
+    (name) =>
+      name.startsWith(search) ||
+      (search.length > 0 && labelFor?.(name).normalize("NFKC").toLowerCase().includes(search)),
+  );
 }
 
 const templates: Partial<Record<(typeof MFM_FUNCTIONS)[number], string>> = {

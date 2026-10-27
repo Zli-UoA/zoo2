@@ -15,6 +15,16 @@ createRoot(document.getElementById("app")!).render(
     <main style={{ padding: 24 }}>
       <LocaleProvider>
         <Composer
+          mentionUsers={[
+            {
+              id: "taro",
+              user_name: "taro",
+              display_name: "太郎",
+              created_at: "2026-10-27T00:00:00Z",
+              updated_at: null,
+            },
+          ]}
+          mentionMemberIds={new Set(["taro"])}
           onSend={async (content) => {
             document.getElementById("sent")!.textContent = content;
             return true;

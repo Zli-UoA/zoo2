@@ -117,18 +117,22 @@ export function Composer({
   const [caret, setCaret] = useState(0);
   const [activeOption, setActiveOption] = useState(0);
   const [dismissed, setDismissed] = useState(false);
-  const [composing, setComposing] = useState(false);
+  const composingRef = useRef(false);
   const listId = useId();
-  const suggest = !disabled && !dismissed && !composing && caret >= 0;
+  const suggest = !disabled && !dismissed && caret >= 0;
   const mfmRange = suggest ? mfmQuery(value, caret) : null;
   const range = suggest && !mfmRange ? mentionQuery(value, caret) : null;
   const options: MentionOption[] = mfmRange
-    ? mfmOptions(mfmRange.query).map((name) => ({ name, label: t(`mfm.functions.${name}`) }))
+    ? mfmOptions(mfmRange.query, (name) => t(`mfm.functions.${name}`)).map((name) => ({
+        name,
+        label: t(`mfm.functions.${name}`),
+      }))
     : range
       ? mentionOptions(mentionUsers, mentionMemberIds, range.query)
       : [];
   const selectedOption = Math.min(activeOption, Math.max(0, options.length - 1));
   function selectOption(option: MentionOption) {
+    if (composingRef.current) return;
     const next = mfmRange
       ? insertMfm(value, mfmRange, option.name as (typeof MFM_FUNCTIONS)[number])
       : range
@@ -163,9 +167,17 @@ export function Composer({
     element.style.overflowY = element.scrollHeight > MAX_COMPOSER_HEIGHT ? "auto" : "hidden";
   }, [value]);
 
+  function updateDraft(element: HTMLTextAreaElement, isComposing = composingRef.current) {
+    setCaret(isComposing ? element.selectionEnd : element.selectionStart);
+    setActiveOption(0);
+    setDismissed(false);
+    setValue(element.value);
+    onTyping?.(element.value.trim().length > 0);
+  }
+
   async function submit() {
     const content = value.trim();
-    if (!canSubmitComposer(value, disabled)) {
+    if (composingRef.current || !canSubmitComposer(value, disabled)) {
       return;
     }
     setValue("");
@@ -233,33 +245,40 @@ export function Composer({
           aria-autocomplete="list"
           aria-controls={options.length ? listId : undefined}
           aria-activedescendant={options.length ? `${listId}-${selectedOption}` : undefined}
-          onCompositionStart={() => setComposing(true)}
-          onCompositionEnd={() => setComposing(false)}
+          onCompositionStart={() => {
+            composingRef.current = true;
+            setDismissed(false);
+          }}
+          onCompositionEnd={(event) => {
+            composingRef.current = false;
+            updateDraft(event.currentTarget, false);
+          }}
+          onInput={(event) => {
+            if (composingRef.current || (event.nativeEvent as InputEvent).isComposing)
+              updateDraft(event.currentTarget, true);
+          }}
           onSelect={(event) =>
             setCaret(
-              event.currentTarget.selectionStart === event.currentTarget.selectionEnd
-                ? event.currentTarget.selectionStart
+              composingRef.current ||
+                event.currentTarget.selectionStart === event.currentTarget.selectionEnd
+                ? event.currentTarget.selectionEnd
                 : -1,
             )
           }
-          onChange={(event) => {
-            setCaret(event.target.selectionStart);
-            setActiveOption(0);
-            setDismissed(false);
-            setValue(event.target.value);
-            onTyping?.(event.target.value.trim().length > 0);
-          }}
+          onChange={(event) => updateDraft(event.currentTarget)}
           onBlur={() => {
             setDismissed(true);
             onTyping?.(false);
           }}
           onKeyDown={(event) => {
+            // IME owns Enter, arrows, Tab and Escape while composing. Safari may only report 229.
             if (
-              options.length &&
-              !event.nativeEvent.isComposing &&
-              !event.metaKey &&
-              !event.ctrlKey
-            ) {
+              composingRef.current ||
+              event.nativeEvent.isComposing ||
+              event.nativeEvent.keyCode === 229
+            )
+              return;
+            if (options.length && !event.metaKey && !event.ctrlKey) {
               if (event.key === "ArrowDown" || event.key === "ArrowUp") {
                 event.preventDefault();
                 setActiveOption(

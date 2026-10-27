@@ -111,3 +111,46 @@ test("MFM suggestions support clicking and tapping and Escape", async ({ page, i
   await expect(page.getByRole("listbox")).toHaveCount(0);
   await expect(input).toHaveValue("$");
 });
+
+test("MFM and Japanese mentions remain visible while IME owns the keyboard", async ({ page }) => {
+  const input = page.getByRole("combobox");
+  for (const [token, label, result] of [
+    ["＄ｊｅ", "$[jelly]", "$[jelly ]"],
+    ["＠太", "@taro", "@taro "],
+  ]) {
+    await input.focus();
+    await input.evaluate((el: HTMLTextAreaElement, value) => {
+      el.dispatchEvent(new CompositionEvent("compositionstart", { bubbles: true }));
+      Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!.call(el, value);
+      el.setSelectionRange(0, value.length);
+      el.dispatchEvent(
+        new InputEvent("input", {
+          bubbles: true,
+          data: value,
+          inputType: "insertCompositionText",
+          isComposing: true,
+        }),
+      );
+    }, token);
+    await expect(page.getByRole("listbox")).toContainText(label);
+    for (const key of ["ArrowDown", "Tab", "Escape", "Enter"]) {
+      const prevented = await input.evaluate((el, key) => {
+        const event = new KeyboardEvent("keydown", { key, bubbles: true, cancelable: true });
+        el.dispatchEvent(event);
+        return event.defaultPrevented;
+      }, key);
+      expect(prevented).toBe(false);
+      await expect(input).toHaveValue(token);
+      await expect(page.getByRole("listbox")).toBeVisible();
+    }
+    await expect(page.locator("#sent")).toBeEmpty();
+    await input.evaluate((el: HTMLTextAreaElement) => {
+      el.setSelectionRange(el.value.length, el.value.length);
+      el.dispatchEvent(new CompositionEvent("compositionend", { bubbles: true }));
+      el.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", keyCode: 229, bubbles: true }));
+    });
+    await expect(input).toHaveValue(token);
+    await input.press("Enter");
+    await expect(input).toHaveValue(result);
+  }
+});

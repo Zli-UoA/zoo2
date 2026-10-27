@@ -35,3 +35,9 @@ describe("MFM suggestions", () => {
     });
   });
 });
+
+it("normalizes fullwidth composing text and filters translated descriptions", () => {
+  expect(mfmQuery("hi ＄［ｊｅ", 7)).toEqual({ start: 3, end: 7, query: "je" });
+  expect(mfmOptions("ＪＥ")).toEqual(["jelly"]);
+  expect(mfmOptions("伸", (name) => (name === "jelly" ? "伸び縮み" : "回転"))).toEqual(["jelly"]);
+});
