@@ -2,12 +2,14 @@ import type { Meta, StoryObj } from "@storybook/react-vite";
 import { expect, screen, userEvent } from "storybook/test";
 
 import { StoryShell } from "../../../.storybook/shell";
-import { storyChannels } from "../../../.storybook/fixtures";
+import { storyChannels, storyChannelUsers } from "../../../.storybook/fixtures";
 import { ChannelHeader } from "./ChannelHeader";
 
 const general = storyChannels.find((channel) => channel.id === "channel-general")!;
 const secret = storyChannels.find((channel) => channel.id === "channel-secret")!;
 const archived = storyChannels.find((channel) => channel.id === "channel-archive")!;
+const memberCount = (channelId: string) =>
+  storyChannelUsers.filter((row) => row.channel_id === channelId).length;
 
 const meta = {
   title: "Screens/ChannelHeader",
@@ -19,7 +21,7 @@ const meta = {
   },
   args: {
     channel: general,
-    memberCount: 3,
+    memberCount: memberCount(general.id),
   },
   decorators: [
     (Story) => (
@@ -35,7 +37,9 @@ const meta = {
 export default meta;
 type Story = StoryObj<typeof meta>;
 
-export const Default: Story = {
+export const Default: Story = {};
+
+export const ManageMenuOpen: Story = {
   play: async () => {
     await userEvent.click(screen.getByRole("button", { name: "チャンネルの管理" }));
     await expect(await screen.findByRole("menuitem", { name: "Webhook設定" })).toBeInTheDocument();
@@ -45,7 +49,7 @@ export const Default: Story = {
 export const Private: Story = {
   args: {
     channel: secret,
-    memberCount: 2,
+    memberCount: memberCount(secret.id),
   },
 };
 
@@ -53,7 +57,7 @@ export const Archived: Story = {
   parameters: { a11y: { test: "todo" } },
   args: {
     channel: archived,
-    memberCount: 1,
+    memberCount: memberCount(archived.id),
   },
 };
 

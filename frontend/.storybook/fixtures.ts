@@ -243,6 +243,17 @@ export const storyChannels: ChannelRow[] = [
     deleted_at: null,
   },
   {
+    id: "channel-random",
+    channel_name: "random",
+    description: "雑談と気軽な共有",
+    created_user_id: "user-bob",
+    is_private: false,
+    created_at: timestamp(1, 0),
+    updated_at: null,
+    archive_at: null,
+    deleted_at: null,
+  },
+  {
     id: "channel-archive",
     channel_name: "old-announcements",
     description: "アーカイブ済みのお知らせ",
@@ -265,6 +276,7 @@ export const storyChannelUsers: ChannelUserRow[] = [
   { user_id: "user-alice", channel_id: "channel-secret", joined_at: timestamp(1, 0) },
   { user_id: "user-bob", channel_id: "channel-secret", joined_at: timestamp(1, 0) },
   { user_id: "user-admin", channel_id: "channel-general", joined_at: timestamp(1, 0) },
+  { user_id: "user-admin", channel_id: "channel-archive", joined_at: timestamp(1, 0) },
 ];
 
 export const storyMessages: MessageRow[] = [

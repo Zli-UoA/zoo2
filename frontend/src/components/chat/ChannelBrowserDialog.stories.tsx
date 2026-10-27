@@ -33,7 +33,12 @@ const meta = {
 export default meta;
 type Story = StoryObj<typeof meta>;
 
-export const Default: Story = {};
+export const Default: Story = {
+  play: async () => {
+    await expect(await screen.findByText("random")).toBeInTheDocument();
+    await expect(screen.getByRole("button", { name: "参加する" })).toBeEnabled();
+  },
+};
 
 export const SearchEmpty: Story = {
   play: async () => {

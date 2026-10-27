@@ -1,6 +1,6 @@
 import type { Meta, StoryObj } from "@storybook/react-vite";
 import { http, HttpResponse } from "msw";
-import { fn } from "storybook/test";
+import { expect, fn, screen } from "storybook/test";
 
 import { storyChannels } from "../../../.storybook/fixtures";
 import { ChannelWebhooksDialog } from "./ChannelWebhooksDialog";
@@ -22,13 +22,25 @@ const meta = {
 export default meta;
 type Story = StoryObj<typeof meta>;
 
-export const Default: Story = {};
+export const Default: Story = {
+  play: async () => {
+    await expect(await screen.findByText("GitHub")).toBeInTheDocument();
+    await expect(screen.getByRole("button", { name: "Secretを表示" })).toBeInTheDocument();
+  },
+};
 
 export const Empty: Story = {
   parameters: {
     msw: {
-      handlers: [http.get("*/api/channels/:channelId/webhooks", () => HttpResponse.json([]))],
+      handlers: [
+        http.get("*/api/channels/:channelId/webhooks", () =>
+          HttpResponse.json({ data: [], txid: null }),
+        ),
+      ],
     },
+  },
+  play: async () => {
+    await expect(await screen.findByText("Webhookはまだありません。")).toBeInTheDocument();
   },
 };
 

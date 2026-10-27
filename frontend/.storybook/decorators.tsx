@@ -2,6 +2,7 @@ import type { Decorator } from "@storybook/react-vite";
 import {
   createMemoryHistory,
   createRootRoute,
+  createRoute,
   createRouter,
   RouterProvider,
 } from "@tanstack/react-router";
@@ -47,13 +48,18 @@ export function StoryRouter({
   children: ReactNode;
   initialEntries?: string[];
 }) {
+  const entriesKey = initialEntries.join("\n");
   const router = useMemo(() => {
     const rootRoute = createRootRoute({ component: () => <>{children}</> });
-    return createRouter({
-      routeTree: rootRoute,
-      history: createMemoryHistory({ initialEntries }),
+    const channelRoute = createRoute({
+      getParentRoute: () => rootRoute,
+      path: "channels/$channelId",
     });
-  }, [children, initialEntries]);
+    return createRouter({
+      routeTree: rootRoute.addChildren([channelRoute]),
+      history: createMemoryHistory({ initialEntries: entriesKey.split("\n") }),
+    });
+  }, [children, entriesKey]);
   return <RouterProvider router={router} />;
 }
 
@@ -98,14 +104,23 @@ export const withProviders: Decorator = (Story, context) => {
   );
 };
 
-let workerStarted = false;
+let workerStart: Promise<void> | null = null;
+
+/** 最初の Story がレンダーされる前に MSW を有効化する。 */
+export function startStorybookWorker(): Promise<void> {
+  workerStart ??= worker
+    .start({ onUnhandledFrame: "bypass", quiet: true })
+    .then(() => undefined)
+    .catch((error) => {
+      workerStart = null;
+      throw error;
+    });
+  return workerStart;
+}
 
 export const withMsw: Decorator = (Story, context) => {
   const handlers = (context.parameters.msw?.handlers ?? []) as RequestHandler[];
-  worker.resetHandlers(...storybookApiHandlers, ...handlers);
-  if (!workerStarted) {
-    workerStarted = true;
-    void worker.start({ onUnhandledFrame: "bypass", quiet: true });
-  }
+  // MSW は先に一致したハンドラーを使うため、Story 固有のハンドラーを先に置く。
+  worker.resetHandlers(...handlers, ...storybookApiHandlers);
   return <Story />;
 };

@@ -386,6 +386,7 @@ describe("catalog surfaces", () => {
       />,
     );
     await screen.findByText("old-announcements");
+    await screen.findByText("random");
     await expect(page).toMatchScreenshot("channel-browser-dialog-desktop-light");
   });
 
