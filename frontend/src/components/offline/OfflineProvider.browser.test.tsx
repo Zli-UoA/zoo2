@@ -1,80 +1,94 @@
 import { act, render, screen } from "@testing-library/react";
-import { afterEach, beforeEach, expect, it, vi } from "vite-plus/test";
+import { beforeEach, expect, it, vi } from "vite-plus/test";
 
-import { DEFAULT_CONFIG } from "../../lib/config";
+import type { AppConfig } from "../../lib/config";
 import type { CurrentUserState } from "../../lib/currentUser";
 import { OfflineProvider } from "./OfflineProvider";
 
 const mocks = vi.hoisted(() => ({
-  getCurrentUserStore: vi.fn(),
-  getCollections: vi.fn(),
-  openOfflinePersistence: vi.fn(),
-  useOnlineStatus: vi.fn(),
+  state: { currentUserId: null, isLoading: true, isAdmin: false, error: null } as CurrentUserState,
+  listeners: new Set<() => void>(),
+  online: true,
+  open: vi.fn(async () => ({ persistence: {} })),
 }));
-vi.mock("../../lib/currentUser", () => ({ getCurrentUserStore: mocks.getCurrentUserStore }));
-vi.mock("../../lib/electric/collections", () => ({ getCollections: mocks.getCollections }));
-vi.mock("../../lib/offline/online", () => ({ useOnlineStatus: mocks.useOnlineStatus }));
+vi.mock("../../lib/offline/online", () => ({ useOnlineStatus: () => mocks.online }));
+vi.mock("../../lib/currentUser", () => ({
+  getCurrentUserStore: () => ({
+    getState: () => mocks.state,
+    subscribe: (listener: () => void) => {
+      mocks.listeners.add(listener);
+      return () => mocks.listeners.delete(listener);
+    },
+    ensureLoaded: async () => {},
+  }),
+}));
+vi.mock("../../lib/electric/collections", () => ({ getCollections: () => ({}) }));
 vi.mock("../../lib/offline/persistence", () => ({
-  openOfflinePersistence: mocks.openOfflinePersistence,
+  openOfflinePersistence: mocks.open,
   retryPendingOfflineDeletion: async () => {},
   removeOfflineDatabase: async () => {},
   OfflinePersistenceUnavailableError: class extends Error {},
 }));
-vi.mock("../layout/ShellSkeleton", () => ({ ShellSkeleton: () => <span>Loading shell</span> }));
-const config = {
-  ...DEFAULT_CONFIG,
-  oidc: {
-    issuer: "https://id.example",
-    clientId: "zoo",
-    redirectUri: null,
-    scope: "openid profile",
-    resource: null,
-    postLogoutRedirectUri: null,
-  },
-};
-let state: CurrentUserState;
-let listeners: Set<() => void>;
+vi.mock("../layout/ShellSkeleton", () => ({ ShellSkeleton: () => <p>Loading</p> }));
+
 beforeEach(() => {
-  state = { currentUserId: null, isLoading: true, isAdmin: false, error: null };
-  listeners = new Set();
-  mocks.getCurrentUserStore.mockReturnValue({
-    getState: () => state,
-    subscribe: (listener: () => void) => {
-      listeners.add(listener);
-      return () => listeners.delete(listener);
-    },
-    ensureLoaded: async () => {},
-  });
-  mocks.getCollections.mockReturnValue({ config });
-  mocks.openOfflinePersistence.mockResolvedValue({ persistence: {} });
-  mocks.useOnlineStatus.mockReturnValue(true);
+  mocks.state = { currentUserId: null, isLoading: true, isAdmin: false, error: null };
+  mocks.online = true;
+  mocks.open.mockClear();
 });
-afterEach(() => vi.clearAllMocks());
-it("does not mount an anonymous shell before the online OIDC user resolves", async () => {
+
+it("waits for user resolution before opening storage and mounting interactive children", async () => {
   render(
-    <OfflineProvider config={config}>
-      <input aria-label="channel name" />
+    <OfflineProvider config={{ devUserId: null, oidc: {} } as AppConfig}>
+      <button>Create channel</button>
     </OfflineProvider>,
   );
   await act(async () => {});
-  expect(screen.queryByRole("textbox")).toBeNull();
-  expect(mocks.openOfflinePersistence).not.toHaveBeenCalled();
-  act(() => {
-    state = { ...state, currentUserId: "alice", isLoading: false };
-    for (const listener of listeners) listener();
+  expect(screen.queryByRole("button")).toBeNull();
+  expect(mocks.open).not.toHaveBeenCalled();
+
+  await act(async () => {
+    mocks.state = { currentUserId: "user-a", isLoading: false, isAdmin: false, error: null };
+    for (const listener of mocks.listeners) listener();
   });
-  await screen.findByRole("textbox");
-  expect(mocks.openOfflinePersistence).toHaveBeenCalledWith("user-alice");
-  expect(mocks.getCollections).toHaveBeenCalledTimes(1);
+  expect(await screen.findByRole("button", { name: "Create channel" })).toBeTruthy();
+  expect(mocks.open).toHaveBeenCalledExactlyOnceWith("user-user-a");
 });
-it("opens the last user's cache offline while user resolution is pending", async () => {
-  localStorage.setItem("zoo.offline.lastUser", "alice");
-  mocks.useOnlineStatus.mockReturnValue(false);
+
+it.each([
+  { online: false, oidc: {} },
+  { online: true, oidc: null },
+])("does not block cached or dev startup: %j", async ({ online, oidc }) => {
+  mocks.online = online;
   render(
-    <OfflineProvider config={config}>
-      <input aria-label="channel name" />
+    <OfflineProvider config={{ devUserId: null, oidc } as AppConfig}>
+      <button>Cached channel</button>
     </OfflineProvider>,
   );
-  await screen.findByRole("textbox");
-  expect(mocks.openOfflinePersistence).toHaveBeenCalledWith("user-alice");
+  expect(await screen.findByRole("button", { name: "Cached channel" })).toBeTruthy();
+  expect(mocks.open).toHaveBeenCalledExactlyOnceWith("anonymous");
+});
+
+it("does not open the previous user's cache after online user resolution fails", async () => {
+  localStorage.setItem("zoo.offline.lastUser", "previous-user");
+  mocks.state = { ...mocks.state, isLoading: false, error: "Request timed out" };
+  render(
+    <OfflineProvider config={{ devUserId: null, oidc: {} } as AppConfig}>
+      <button>App</button>
+    </OfflineProvider>,
+  );
+  await screen.findByRole("alert");
+  expect(screen.queryByRole("button", { name: "App" })).toBeNull();
+  expect(mocks.open).not.toHaveBeenCalled();
+});
+it("keeps the last-user cache available when offline", async () => {
+  localStorage.setItem("zoo.offline.lastUser", "previous-user");
+  mocks.online = false;
+  render(
+    <OfflineProvider config={{ devUserId: null, oidc: {} } as AppConfig}>
+      <button>Cache</button>
+    </OfflineProvider>,
+  );
+  await screen.findByRole("button", { name: "Cache" });
+  expect(mocks.open).toHaveBeenCalledExactlyOnceWith("user-previous-user");
 });

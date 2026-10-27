@@ -64,13 +64,14 @@ test("keyboard viewport resize and pan keep the composer visible and restore on 
   await page.addInitScript(() => {
     // OSキーボードは自動操作できないため VisualViewport のイベントを再現する。
     const viewport = new EventTarget();
-    Object.assign(viewport, { height: 700, offsetTop: 0, scale: 1 });
+    Object.assign(viewport, { height: window.innerHeight, offsetTop: 0, scale: 1 });
     Object.defineProperty(window, "visualViewport", { value: viewport });
   });
   await page.goto("/e2e/fixtures/layout.html");
+  const fullHeight = await page.evaluate(() => window.innerHeight);
   const shell = page.getByTestId("shell");
-  await expect(shell).toHaveCSS("height", "700px");
-  await page.getByRole("combobox", { name: "Write a message" }).focus();
+  await expect(shell).toHaveCSS("height", `${fullHeight}px`);
+  await page.getByRole("textbox", { name: "Write a message" }).focus();
   await page.evaluate(() => {
     Object.assign(window.visualViewport!, { height: 380, offsetTop: 35 });
     window.visualViewport!.dispatchEvent(new Event("resize"));
@@ -78,20 +79,38 @@ test("keyboard viewport resize and pan keep the composer visible and restore on 
   });
   await expect(shell).toHaveCSS("height", "380px");
   await expect(shell).toHaveCSS("top", "35px");
-  const composer = await page.getByRole("combobox", { name: "Write a message" }).boundingBox();
+  const composer = await page.getByRole("textbox", { name: "Write a message" }).boundingBox();
   expect(composer!.y + composer!.height).toBeLessThanOrEqual(415);
   await expectNoOverlap(page);
   await page.evaluate(() => {
-    Object.assign(window.visualViewport!, { height: 700, offsetTop: 0 });
+    Object.assign(window.visualViewport!, { height: window.innerHeight, offsetTop: 0 });
     window.visualViewport!.dispatchEvent(new Event("resize"));
   });
-  await expect(shell).toHaveCSS("height", "700px");
+  await expect(shell).toHaveCSS("height", `${fullHeight}px`);
   await expect(shell).toHaveCSS("top", "0px");
   await page.evaluate(() => {
     Object.assign(window.visualViewport!, { height: 350, scale: 2 });
     window.visualViewport!.dispatchEvent(new Event("resize"));
   });
-  await expect(shell).toHaveCSS("height", "700px");
+  await expect(shell).toHaveCSS("height", `${fullHeight}px`);
+});
+
+test("page bounce without keyboard does not move the shell", async ({ page }) => {
+  await page.addInitScript(() => {
+    // iOS のバウンスでは高さを変えずに offsetTop だけが動く。
+    const viewport = new EventTarget();
+    Object.assign(viewport, { height: window.innerHeight, offsetTop: 0, scale: 1 });
+    Object.defineProperty(window, "visualViewport", { value: viewport });
+  });
+  await page.goto("/e2e/fixtures/layout.html");
+  const shell = page.getByTestId("shell");
+  await expect(page.locator("html")).toHaveCSS("overflow-y", "hidden");
+  await expect(page.locator("body")).toHaveCSS("overflow-y", "hidden");
+  await page.evaluate(() => {
+    Object.assign(window.visualViewport!, { offsetTop: 40 });
+    window.visualViewport!.dispatchEvent(new Event("scroll"));
+  });
+  await expect(shell).toHaveCSS("top", "0px");
 });
 
 async function scrollMessages(page: Page, to: "top" | "bottom") {
@@ -106,24 +125,37 @@ test("scrolling to the top loads older messages without moving the reader", asyn
   await page.goto("/e2e/fixtures/layout.html");
   await scrollMessages(page, "bottom");
   await expect(page.getByText(/^Message 39\b/)).toBeVisible();
-  await page.waitForTimeout(500);
+  await page.evaluate(() => document.fonts.ready);
   await scrollMessages(page, "top");
-  const anchor = page.getByRole("listitem").filter({ has: page.getByText(/^Message 1\b/) });
-  await expect(anchor).toBeVisible();
-  const before = await anchor.boundingBox();
-  expect(before).not.toBeNull();
-  await page.getByTestId("prepend-older").click();
-  // 追加が反映される前に位置比較が成功しないよう、10 行分の移動を待つ。
-  await expect(anchor).toHaveAttribute("data-index", "11");
-  // 仮想リストの総高さには未描画行の推定値も含まれ、実測のたびに変わる。
-  // 読んでいた行そのものの画面上の位置が保たれることを検証する。
-  await expect
-    .poll(async () => {
-      const after = await anchor.boundingBox();
-      return after ? Math.abs(after.y - before!.y) : Infinity;
-    })
-    .toBeLessThanOrEqual(2);
+  const row = page.getByText(/^Message 1\b/);
+  await expect(row).toBeVisible();
   await expectNoOverlap(page);
+  for (let batch = 0; batch < 2; batch++) {
+    const before = await row.boundingBox();
+    expect(before).not.toBeNull();
+    await page.getByTestId("prepend-older").click();
+    await expect(row.locator("xpath=ancestor::*[@role='listitem']")).toHaveAttribute(
+      "data-index",
+      String(1 + (batch + 1) * 10),
+    );
+    await expectNoOverlap(page);
+    // Wait for ResizeObserver measurements to commit without a fixed-duration sleep.
+    await page.evaluate(
+      () =>
+        new Promise<void>((resolve) =>
+          requestAnimationFrame(() => requestAnimationFrame(() => resolve())),
+        ),
+    );
+    // Virtual total height includes estimates for offscreen rows. Check the actual
+    // message the reader sees instead of coupling its position to those estimates.
+    await expect
+      .poll(async () => {
+        const after = await row.boundingBox();
+        return after ? Math.abs(after.y - before!.y) : Infinity;
+      })
+      .toBeLessThanOrEqual(2);
+    await expectNoOverlap(page);
+  }
 });
 
 test("new messages below do not move a scrolled-up reader", async ({ page }) => {

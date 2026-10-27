@@ -1,4 +1,4 @@
-import { useMemo, useState, type ReactNode } from "react";
+import { useCallback, useMemo, useState, type ReactNode } from "react";
 
 import {
   ShellContext,
@@ -23,20 +23,36 @@ export function StoryShell({
   const [membersOpen, setMembersOpen] = useState(initialMembersOpen);
   const [threadRootId, setThreadRootId] = useState<string | null>(initialThreadRootId);
 
+  const showSidebar = useCallback(() => setPane("sidebar"), []);
+  const showChat = useCallback(() => setPane("chat"), []);
+  const toggleMembers = useCallback(() => setMembersOpen((open) => !open), []);
+  const openThread = useCallback((rootId: string) => setThreadRootId(rootId), []);
+  const closeThread = useCallback(() => setThreadRootId(null), []);
+
   const value = useMemo<ShellContextValue>(
     () => ({
       pane,
-      showSidebar: () => setPane("sidebar"),
-      showChat: () => setPane("chat"),
+      showSidebar,
+      showChat,
       membersOpen,
       setMembersOpen,
-      toggleMembers: () => setMembersOpen((open) => !open),
+      toggleMembers,
       threadRootId,
-      openThread: setThreadRootId,
-      closeThread: () => setThreadRootId(null),
+      openThread,
+      closeThread,
       selectedChannelId,
     }),
-    [pane, membersOpen, threadRootId, selectedChannelId],
+    [
+      pane,
+      showSidebar,
+      showChat,
+      membersOpen,
+      toggleMembers,
+      threadRootId,
+      openThread,
+      closeThread,
+      selectedChannelId,
+    ],
   );
 
   return <ShellContext.Provider value={value}>{children}</ShellContext.Provider>;

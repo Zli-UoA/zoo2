@@ -21,6 +21,10 @@ const config = defineConfig({
   },
   resolve: { tsconfigPaths: true },
   preview: { host: "127.0.0.1" },
+  build: {
+    // Production CSP permits same-origin fonts only. Keep small KaTeX fonts out of data URLs.
+    assetsInlineLimit: (filePath) => (/\.(?:woff2?|ttf|otf)$/i.test(filePath) ? false : undefined),
+  },
   plugins: lazyPlugins(() => [
     devtools(),
     tailwindcss(),

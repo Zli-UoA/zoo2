@@ -257,3 +257,17 @@ Phase 0（足場）・Phase 1（型・データアクセス層）・Phase 2（�
 ## 送信と既読更新の順序
 
 メッセージは保存前から楽観表示しますが、既読更新は書き込みトランザクションの確定後に行います。`useWriteRunner` は処理中の件数を保持し、並行する書き込みがすべて完了するまで `MessageList` の既読更新だけを保留します。表示や未読境界は維持します。保存・同期失敗時もロールバック後に保留を解除し、存在しない楽観行を既読APIへ送らないようにします。最下部・フォーカス・タブ表示の条件は既存の判定を使用します。
+
+## MFM 本文表示
+
+通常メッセージとスレッド返信に MFM を使用できます。
+構文一覧・引数・動作制限は [MFM 対応表](../docs/mfm.md) を参照してください。
+例: `$[jelly 🎉]`、`$[spin.x,speed=2s 🐱]`、`$[ruby 漢字 かんじ]`、`\(x^2\)`。
+OS の `prefers-reduced-motion` 設定ではアニメーションを停止します。
+
+解析は [mfm-js](https://github.com/misskey-dev/mfm.js)（MIT）、数式は
+[KaTeX](https://katex.org/)（MIT）、コードの色付けは
+[highlight.js](https://highlightjs.org/)（BSD-3-Clause）を使用します。
+描画処理とアニメーションは本プロジェクトの独自実装です。
+間接依存と絵文字データを含めた著作権表記・ライセンス全文を
+[`public/licenses`](public/licenses) に同梱し、配信時も `/licenses/README.txt` から確認できます。

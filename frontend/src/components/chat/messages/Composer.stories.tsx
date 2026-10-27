@@ -57,14 +57,14 @@ export const Disabled: Story = {
   },
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
-    await expect(canvas.getByRole("combobox")).toBeDisabled();
+    await expect(canvas.getByRole("textbox")).toBeDisabled();
   },
 };
 
 export const Multiline: Story = {
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
-    const textarea = canvas.getByRole("combobox");
+    const textarea = canvas.getByRole("textbox");
     await userEvent.type(textarea, "1行目{enter}2行目{enter}3行目");
     await expect(textarea).toHaveValue("1行目\n2行目\n3行目");
   },
@@ -73,7 +73,7 @@ export const Multiline: Story = {
 export const MentionSuggestions: Story = {
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
-    await userEvent.type(canvas.getByRole("combobox"), "@al");
+    await userEvent.type(canvas.getByRole("textbox"), "@al");
     await expect(canvas.getByRole("listbox", { name: "メンション候補" })).toBeVisible();
   },
 };

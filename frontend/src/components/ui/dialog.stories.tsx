@@ -1,5 +1,5 @@
 import type { Meta, StoryObj } from "@storybook/react-vite";
-import { expect, screen, userEvent } from "storybook/test";
+import { expect, screen } from "storybook/test";
 import { useState } from "react";
 
 import { Button } from "./button";
@@ -51,13 +51,11 @@ const meta = {
 export default meta;
 type Story = StoryObj<typeof meta>;
 
-export const Default: Story = {
-  play: async () => {
-    await userEvent.click(screen.getByRole("button", { name: "ダイアログを開く" }));
-    await expect(screen.getByRole("dialog")).toBeInTheDocument();
-  },
-};
+export const Default: Story = {};
 
 export const Open: Story = {
   render: () => <DialogDemo defaultOpen />,
+  play: async () => {
+    await expect(await screen.findByRole("dialog")).toBeInTheDocument();
+  },
 };

@@ -2,6 +2,8 @@
 @import "tw-animate-css";
 @import "shadcn/tailwind.css";
 @import "@fontsource-variable/geist";
+@import "katex/dist/katex.min.css";
+@import "highlight.js/styles/github-dark.css";
 
 @custom-variant dark (&:is(.dark *));
 
@@ -10,9 +12,20 @@
 }
 
 html,
-body,
-#app {
+body {
   min-height: 100%;
+}
+
+/*
+ * シェル表示中はページ自体をスクロールさせない。iOS ではページのバウンスで
+ * visualViewport が動き、シェルごとずれてスクロールが逆向きに見えるため。
+ * スクロールは各ペインの中だけで行う。
+ */
+html:has([data-app-shell]),
+html:has([data-app-shell]) body {
+  height: 100%;
+  overflow: hidden;
+  overscroll-behavior: none;
 }
 
 body {
@@ -152,5 +165,218 @@ body {
   }
   html {
     @apply font-sans;
+  }
+}
+
+/* Original zoo2 animations; no Misskey renderer or styles are copied. */
+.mfm-effect {
+  display: inline-block;
+  transform-origin: center;
+  animation-iteration-count: infinite;
+}
+.mfm-jelly {
+  animation-name: mfm-jelly;
+}
+.mfm-tada {
+  animation-name: mfm-tada;
+}
+.mfm-bounce {
+  animation-name: mfm-bounce;
+}
+.mfm-shake {
+  animation-name: mfm-shake;
+}
+.mfm-spin {
+  animation-name: mfm-spin;
+  animation-timing-function: linear;
+}
+.mfm-jump {
+  animation-name: mfm-jump;
+}
+@keyframes mfm-jelly {
+  0%,
+  100% {
+    transform: scale(1, 1);
+  }
+  30% {
+    transform: scale(1.25, 0.75);
+  }
+  60% {
+    transform: scale(0.85, 1.15);
+  }
+  80% {
+    transform: scale(1.05, 0.95);
+  }
+}
+@keyframes mfm-tada {
+  0%,
+  100% {
+    transform: rotate(0) scale(1);
+  }
+  20%,
+  60% {
+    transform: rotate(-10deg) scale(1.1);
+  }
+  40%,
+  80% {
+    transform: rotate(10deg) scale(1.1);
+  }
+}
+@keyframes mfm-bounce {
+  0%,
+  100% {
+    transform: translateY(0) scale(1.1, 0.9);
+  }
+  50% {
+    transform: translateY(-0.35em) scale(0.95, 1.05);
+  }
+}
+@keyframes mfm-shake {
+  0%,
+  100% {
+    transform: translateX(0);
+  }
+  25%,
+  75% {
+    transform: translateX(-0.08em);
+  }
+  50% {
+    transform: translateX(0.08em);
+  }
+}
+@keyframes mfm-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+@keyframes mfm-jump {
+  50% {
+    transform: translateY(-0.5em);
+  }
+}
+
+.mfm-body {
+  overflow: clip;
+  contain: paint;
+}
+.mfm-function {
+  display: inline-block;
+  transform-origin: center;
+  max-width: 100%;
+  overflow-wrap: anywhere;
+}
+.mfm-twitch {
+  animation-name: mfm-twitch;
+}
+.mfm-rainbow {
+  animation-name: mfm-rainbow;
+}
+.mfm-sparkle {
+  position: relative;
+}
+.mfm-sparkles {
+  position: absolute;
+  inset: -0.3em;
+  pointer-events: none;
+  color: #db9e00;
+  animation: mfm-sparkle 1.5s ease-in-out infinite;
+}
+.mfm-blur {
+  filter: blur(6px);
+  transition: filter 0.2s;
+}
+.mfm-blur:hover,
+.mfm-blur:focus {
+  filter: none;
+}
+.mfm-custom-emoji {
+  display: inline-block;
+  height: 1.5em;
+  width: auto;
+  max-width: 8em;
+  object-fit: contain;
+  vertical-align: middle;
+}
+.mfm-math-block {
+  display: block;
+  max-width: 100%;
+  overflow-x: auto;
+}
+.mfm-code {
+  max-width: 100%;
+  overflow-x: auto;
+  border-radius: 0.25rem;
+  background: var(--muted);
+  padding: 0.5rem;
+  white-space: pre;
+}
+.mfm-code .hljs {
+  background: transparent;
+}
+.mfm-search,
+.mfm-unixtime {
+  border: 1px solid var(--border);
+  border-radius: 0.4rem;
+  padding: 0.2em 0.5em;
+}
+.mfm-clickable {
+  cursor: pointer;
+  border-radius: 0.2em;
+}
+.mfm-clickable:focus-visible {
+  outline: 2px solid var(--ring);
+}
+@keyframes mfm-twitch {
+  5%,
+  15% {
+    transform: translate(0.08em, -0.04em);
+  }
+  10%,
+  20% {
+    transform: translate(-0.08em, 0.04em);
+  }
+  25%,
+  100% {
+    transform: none;
+  }
+}
+@keyframes mfm-spin-x {
+  to {
+    transform: rotateX(360deg);
+  }
+}
+@keyframes mfm-spin-y {
+  to {
+    transform: rotateY(360deg);
+  }
+}
+@keyframes mfm-rainbow {
+  from {
+    filter: hue-rotate(0deg);
+    color: #dc2626;
+  }
+  to {
+    filter: hue-rotate(360deg);
+    color: #dc2626;
+  }
+}
+@keyframes mfm-sparkle {
+  0%,
+  100% {
+    opacity: 0.35;
+    transform: scale(0.8) rotate(-10deg);
+  }
+  50% {
+    opacity: 1;
+    transform: scale(1.15) rotate(10deg);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .mfm-effect,
+  .mfm-sparkles {
+    animation: none !important;
+  }
+  .mfm-blur {
+    transition: none;
   }
 }

@@ -5,7 +5,7 @@ import { storyChannels, storyCollections, storyChannelUsers } from "../../../.st
 import { MembersPanel } from "./MembersPanel";
 
 const general = storyChannels.find((channel) => channel.id === "channel-general")!;
-const design = storyChannels.find((channel) => channel.id === "channel-design")!;
+const secret = storyChannels.find((channel) => channel.id === "channel-secret")!;
 const archived = storyChannels.find((channel) => channel.id === "channel-archive")!;
 
 const meta = {
@@ -28,7 +28,9 @@ const meta = {
 export default meta;
 type Story = StoryObj<typeof meta>;
 
-export const Default: Story = {
+export const Default: Story = {};
+
+export const AddCandidates: Story = {
   play: async () => {
     const input = screen.getByRole("combobox", { name: "メンバーを追加" });
     await userEvent.click(input);
@@ -44,12 +46,14 @@ export const Archived: Story = {
 
 export const PrivateNotJoined: Story = {
   args: {
-    channel: design,
+    channel: secret,
   },
   parameters: {
     collections: {
       ...storyCollections,
-      channelUsers: storyChannelUsers.filter((row) => row.channel_id !== "channel-design"),
+      channelUsers: storyChannelUsers.filter(
+        (row) => !(row.channel_id === secret.id && row.user_id === "user-alice"),
+      ),
     },
   },
 };

@@ -294,6 +294,7 @@
     "emptyTitle": "No saved messages while offline",
     "emptyDescription": "Reconnect and reload to view your chats.",
     "retry": "Retry",
+    "userErrorTitle": "Could not verify the signed-in user. Please try again.",
     "persistenceErrorTitle": "Messages can't be saved on this device",
     "persistenceErrorDescription": "Check your browser's storage settings. You can keep chatting.",
     "deleteFailed": "Could not delete saved data on this device. It will be retried on the next start."
@@ -308,5 +309,34 @@
     "permission": "Allow notifications to receive alerts. On iOS, open Zoo from the Home Screen.",
     "error": "Could not update notifications. Please try again.",
     "logoutError": "Could not disable notifications. Please try logging out again."
+  },
+  "mfm": {
+    "suggestions": "MFM suggestions",
+    "functions": {
+      "tada": "Celebrate",
+      "jelly": "Stretch and squash",
+      "twitch": "Twitch",
+      "shake": "Shake",
+      "spin": "Spin",
+      "jump": "Jump",
+      "bounce": "Bounce",
+      "flip": "Flip",
+      "x2": "Double size",
+      "x3": "Triple size",
+      "x4": "Quadruple size",
+      "scale": "Scale horizontally and vertically",
+      "position": "Shift position",
+      "fg": "Text color",
+      "bg": "Background color",
+      "border": "Border",
+      "font": "Font",
+      "blur": "Blur (hover to reveal)",
+      "rainbow": "Rainbow colors",
+      "sparkle": "Sparkle",
+      "rotate": "Rotate by angle",
+      "ruby": "Ruby (enter base text and reading)",
+      "unixtime": "Date and time (enter Unix seconds)",
+      "clickable": "Click event"
+    }
   }
 }

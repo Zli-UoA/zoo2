@@ -1,11 +1,22 @@
 import { http, HttpResponse } from "msw";
 
-const transparentPng = Uint8Array.from(
-  atob(
-    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==",
-  ),
-  (char) => char.charCodeAt(0),
-);
+// Emoji Kitchen のプレビューとして使う、猫耳付きのスマイリー。
+const kitchenPreview = `<svg xmlns="http://www.w3.org/2000/svg" width="72" height="72" viewBox="0 0 72 72">
+  <defs>
+    <linearGradient id="face" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#fde68a"/>
+      <stop offset="1" stop-color="#f59e0b"/>
+    </linearGradient>
+  </defs>
+  <rect width="72" height="72" rx="18" fill="url(#face)"/>
+  <path d="M14 25 20 8l15 12Z" fill="#fbbf24" stroke="#b45309" stroke-width="2" stroke-linejoin="round"/>
+  <path d="M58 25 52 8 37 20Z" fill="#fbbf24" stroke="#b45309" stroke-width="2" stroke-linejoin="round"/>
+  <circle cx="27" cy="37" r="4" fill="#3f2a14"/>
+  <circle cx="45" cy="37" r="4" fill="#3f2a14"/>
+  <circle cx="20" cy="47" r="4" fill="#fb7185" opacity=".65"/>
+  <circle cx="52" cy="47" r="4" fill="#fb7185" opacity=".65"/>
+  <path d="M28 50c4 5 12 5 16 0" fill="none" stroke="#3f2a14" stroke-width="3" stroke-linecap="round"/>
+</svg>`;
 
 const lastReadAt = "2026-01-02 10:00:00.000";
 
@@ -97,21 +108,22 @@ export const storybookApiHandlers = [
   }),
   http.get("*/api/channels/:channelId/webhooks", ({ params }) => {
     const channelId = String(params.channelId);
-    return HttpResponse.json([
-      {
-        id: "webhook-1",
-        name: "GitHub",
-        path: `/api/webhooks/${channelId}/github`,
-        generic_path: `/api/webhooks/${channelId}/generic`,
-        secret: "storybook-example-secret",
-        created_at: "2026-01-02T09:00:00.000Z",
-      },
-    ]);
+    return HttpResponse.json({
+      data: [
+        {
+          id: "webhook-1",
+          name: "GitHub",
+          path: `/api/webhooks/${channelId}/github`,
+          generic_path: `/api/webhooks/${channelId}/generic`,
+          secret: "storybook-example-secret",
+          created_at: "2026-01-02T09:00:00.000Z",
+        },
+      ],
+      txid: null,
+    });
   }),
   http.get("*/api/push/config", () => HttpResponse.json({ publicKey: null })),
   http.get("https://www.gstatic.com/**", () =>
-    HttpResponse.arrayBuffer(transparentPng.buffer as ArrayBuffer, {
-      headers: { "Content-Type": "image/png" },
-    }),
+    HttpResponse.text(kitchenPreview, { headers: { "Content-Type": "image/svg+xml" } }),
   ),
 ];

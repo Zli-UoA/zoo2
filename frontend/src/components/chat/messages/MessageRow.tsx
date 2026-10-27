@@ -9,7 +9,7 @@ import {
   SmilePlusIcon,
   TrashIcon,
 } from "lucide-react";
-import { Fragment } from "react";
+import { MfmContent } from "./MfmContent";
 
 import { useLocale } from "../../i18n/LocaleProvider";
 import type { KitchenCatalog } from "../../../lib/emoji/kitchen";
@@ -26,13 +26,7 @@ import {
 import { Textarea } from "../../ui/textarea";
 import { normalizeUtcTimestamp } from "../../../lib/timestamps";
 import { initials } from "../format";
-import {
-  authorLabel,
-  formatDateSeparator,
-  formatTime,
-  fullTimestamp,
-  messageTextSegments,
-} from "./messageFormat";
+import { authorLabel, formatDateSeparator, formatTime, fullTimestamp } from "./messageFormat";
 import type { MessageItem } from "./messageGrouping";
 import { ReactionEmoji } from "./ReactionEmoji";
 
@@ -57,39 +51,14 @@ export interface MessageRowProps {
   onOpenThread?: () => void;
 }
 
-/**
- * 本文。`http(s)` URL だけを `<a>` にし、残りは素のテキストとして描く。
- * 別タブで開き、`noopener noreferrer` で開いた側から `window.opener` を触らせない。
- * メンション装飾は将来対応（今回はやらない）。
- */
+/** 通常投稿は MFM、連携カードは専用の描画を使う。 */
 export function MessageBody({ content, card: data }: { content: string; card?: string | null }) {
   const card = parseMessageCard(data);
   if (card) return <MessageCard card={card} />;
   return (
-    <p className="whitespace-pre-wrap break-words text-sm leading-relaxed">
-      {messageTextSegments(content).map((segment, index) =>
-        segment.kind === "link" ? (
-          <a
-            key={index}
-            href={segment.value}
-            target="_blank"
-            rel="noopener noreferrer"
-            className="rounded-sm text-brand underline underline-offset-2 outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
-          >
-            {segment.value}
-          </a>
-        ) : segment.kind === "mention" ? (
-          <span
-            key={index}
-            className="rounded bg-brand-muted px-0.5 font-medium text-brand-muted-foreground"
-          >
-            {segment.value}
-          </span>
-        ) : (
-          <Fragment key={index}>{segment.value}</Fragment>
-        ),
-      )}
-    </p>
+    <div className="mfm-body whitespace-pre-wrap break-words text-sm leading-relaxed">
+      <MfmContent content={content} />
+    </div>
   );
 }
 

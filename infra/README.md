@@ -289,3 +289,9 @@ docker compose --project-directory . -f infra/compose.stg.yaml -f infra/proxy/te
 nix develop --command node infra/proxy/test/check.mjs
 docker compose --project-directory . -f infra/compose.stg.yaml -f infra/proxy/test/compose.yaml down
 ```
+
+CSP を変更すると、アプリはネットワークから取得した CSP の SHA-256 を `/sw.js?v=<hash>` の登録 URL に反映します。Service Worker もこの値をキャッシュ名に含め、新版の activate 時に旧キャッシュを削除します。Worker レスポンスの CSP はキャッシュでも保持します。
+
+既存キャッシュからの更新は `cd frontend && pnpm test:csp:offline:warm` で検証します。Firefox・Chromium の同一ブラウザコンテキストで旧 CSP をキャッシュし、CSP だけを更新した後、旧キャッシュの削除、新 CSP の Worker による保存・再接続、オフライン再読み込みを確認します。デプロイ後も新規プロファイルと既存 SW キャッシュを持つプロファイルの両方で、保存エラーとブラウザコンソールの CSP 違反がないことを確認してください。
+
+オンラインの OIDC 起動では `/api/users/me` を最大8秒待ちます。応答がない場合は待機を解除して再試行できるエラー画面を表示します。前ユーザーのキャッシュは開きません。オフライン時は従来どおり、ログアウトで削除されていない前回ユーザーのローカルキャッシュを表示します。

@@ -1,7 +1,7 @@
 import type { Preview } from "@storybook/react-vite";
 
 import "../src/styles.css";
-import { withCollections, withMsw, withProviders } from "./decorators";
+import { startStorybookWorker, withCollections, withMsw, withProviders } from "./decorators";
 
 // アプリの Service Worker が MSW の worker を上書きしないよう、Storybook では
 // PWA の登録処理を無効にする。
@@ -14,6 +14,9 @@ if (typeof window !== "undefined") {
 }
 
 const preview: Preview = {
+  beforeAll: async () => {
+    await startStorybookWorker();
+  },
   parameters: {
     layout: "fullscreen",
     controls: {

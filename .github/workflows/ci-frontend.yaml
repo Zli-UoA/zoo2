@@ -72,10 +72,13 @@ jobs:
 
       - name: Check SPA routes and security headers
         run: |
-          for path in "/" "/channels/container-test"; do
+          worker=$(docker compose --project-directory . -f infra/compose.stg.yaml exec -T frontend \
+            find /usr/share/nginx/html/assets -name 'opfs-worker-*.js')
+          test -n "$worker"
+          for path in "/" "/channels/container-test" "${worker#/usr/share/nginx/html}"; do
             headers=$(docker compose --project-directory . -f infra/compose.stg.yaml exec -T frontend \
               wget -S -O - "http://127.0.0.1:3000${path}" 2>&1)
-            printf "%s" "$headers" | grep -q "<html"
+            case "$path" in /assets/*) ;; *) printf "%s" "$headers" | grep -q "<html" ;; esac
             printf "%s" "$headers" | grep -qi "X-Content-Type-Options: nosniff"
             printf "%s" "$headers" | grep -qi "Referrer-Policy: strict-origin-when-cross-origin"
             printf "%s" "$headers" | grep -qi "X-Frame-Options: DENY"
@@ -198,8 +201,13 @@ jobs:
       - name: build
         run: pnpm build
 
-      - name: Install Playwright Chromium
-        run: pnpm exec playwright install --with-deps chromium
+      - name: Install Playwright Firefox and Chromium
+        run: pnpm exec playwright install --with-deps firefox chromium
+
+      - name: SQLite CSP cold and warm cache tests
+        run: |
+          pnpm test:csp:offline
+          node scripts/offline-csp.test.mjs --warm
 
       - name: i18n browser tests
         run: pnpm test:e2e:i18n

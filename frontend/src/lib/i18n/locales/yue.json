@@ -294,6 +294,7 @@
     "emptyTitle": "離線而且冇儲存咗嘅訊息",
     "emptyDescription": "連返線之後請重新載入。",
     "retry": "再試",
+    "userErrorTitle": "未能確認而家登入嘅使用者，請再試一次。",
     "persistenceErrorTitle": "呢部裝置儲存唔到訊息",
     "persistenceErrorDescription": "請檢查瀏覽器嘅儲存設定。一樣可以繼續傾偈。",
     "deleteFailed": "刪除唔到呢部裝置儲存咗嘅資料。下次啟動會再試。"
@@ -308,5 +309,34 @@
     "permission": "請允許通知。用 iOS 請由主畫面開啟 Zoo。",
     "error": "更新唔到通知設定，請再試。",
     "logoutError": "關閉唔到通知，請再試登出。"
+  },
+  "mfm": {
+    "suggestions": "MFM 建議",
+    "functions": {
+      "tada": "慶祝動畫",
+      "jelly": "伸縮",
+      "twitch": "抽動",
+      "shake": "搖動",
+      "spin": "旋轉",
+      "jump": "跳躍",
+      "bounce": "彈跳",
+      "flip": "反轉",
+      "x2": "放大兩倍",
+      "x3": "放大三倍",
+      "x4": "放大四倍",
+      "scale": "水平同垂直縮放",
+      "position": "移動位置",
+      "fg": "文字顏色",
+      "bg": "背景顏色",
+      "border": "邊框",
+      "font": "字款",
+      "blur": "模糊（移過去顯示）",
+      "rainbow": "彩虹色",
+      "sparkle": "閃閃發光",
+      "rotate": "調整角度",
+      "ruby": "注音（輸入文字同讀音）",
+      "unixtime": "日期時間（輸入 Unix 秒數）",
+      "clickable": "點擊事件"
+    }
   }
 }

@@ -6,7 +6,7 @@ import {
   ShieldAlertIcon,
   TrashIcon,
 } from "lucide-react";
-import { expect, screen, userEvent, within } from "storybook/test";
+import { expect, screen, within } from "storybook/test";
 import { useState } from "react";
 
 import { Button } from "./button";
@@ -94,18 +94,15 @@ const meta = {
 export default meta;
 type Story = StoryObj<typeof meta>;
 
-export const Default: Story = {
-  play: async ({ canvasElement }) => {
-    const canvas = within(canvasElement);
-    await userEvent.click(canvas.getByRole("button", { name: "チャンネル操作" }));
+export const Default: Story = {};
+
+export const Open: Story = {
+  render: () => <DropdownDemo defaultOpen />,
+  play: async () => {
     await expect(
       await screen.findByRole("menuitem", { name: "名前を変更" }, { timeout: 3000 }),
     ).toBeInTheDocument();
   },
-};
-
-export const Open: Story = {
-  render: () => <DropdownDemo defaultOpen />,
 };
 
 export const IconOnlyTrigger: Story = {

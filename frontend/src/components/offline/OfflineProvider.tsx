@@ -7,6 +7,8 @@ import {
   type ReactNode,
 } from "react";
 
+import { useTranslation } from "react-i18next";
+
 import type { AppConfig } from "../../lib/config";
 import { getCurrentUserStore } from "../../lib/currentUser";
 import { getCollections, type CollectionsBundle } from "../../lib/electric/collections";
@@ -48,10 +50,12 @@ function describeError(error: unknown): string {
  * Electric コレクションを子へ渡す。
  *
  * DB のオープンに失敗してもアプリは動かす（メモリのみにフォールバック）。
- * OIDC では現在ユーザーの解決後に名前空間が変わるため、そのときは
- * コレクションを作り直して別ユーザーのキャッシュを混ぜない。
+ * オンラインの OIDC 起動は現在ユーザーの解決を待ってから名前空間を選ぶ。
+ * オフラインは保存済みの名前空間で起動する。初期化途中の再マウントで
+ * 入力中のフォームを消さず、別ユーザーのキャッシュも混ぜない。
  */
 export function OfflineProvider({ config, children }: { config: AppConfig; children: ReactNode }) {
+  const { t } = useTranslation();
   const isOnline = useOnlineStatus();
   const userStore = getCurrentUserStore(config);
   const subscribe = useCallback(
@@ -59,11 +63,14 @@ export function OfflineProvider({ config, children }: { config: AppConfig; child
     [userStore],
   );
   const getUserState = useCallback(() => userStore.getState(), [userStore]);
-  const userState = useSyncExternalStore(subscribe, getUserState, getUserState);
-  const currentUserId = userState.currentUserId;
-  // オンラインの初回ログインでは本人の名前空間が決まるまでシェルを出さない。
-  // anonymous → user の切り替えによる再マウントで入力中のフォームが消えるのを防ぐ。
-  const waitingForUser = Boolean(config.oidc && isOnline && userState.isLoading);
+  const { currentUserId, isLoading: currentUserLoading } = useSyncExternalStore(
+    subscribe,
+    getUserState,
+    getUserState,
+  );
+  // オフラインのキャッシュ表示は /me の完了に依存させない。
+  const waitingForUser = Boolean(config.oidc && isOnline && currentUserLoading);
+  const userUnavailable = Boolean(config.oidc && isOnline && !currentUserLoading && !currentUserId);
   const [retryToken, setRetryToken] = useState(0);
   const [ready, setReady] = useState<ReadyState | null>(null);
 
@@ -125,16 +132,18 @@ export function OfflineProvider({ config, children }: { config: AppConfig; child
     }
   }, [currentUserId]);
 
-  const namespace = resolveOfflineNamespace({
-    devUserId: config.devUserId,
-    currentUserId,
-  });
+  // オンラインで本人を確認できない場合は、前ユーザーのキャッシュを開かない。
+  const namespace =
+    config.oidc && isOnline && !currentUserId
+      ? "anonymous"
+      : resolveOfflineNamespace({ devUserId: config.devUserId, currentUserId });
   const key = `${namespace}:${retryToken}`;
 
   useEffect(() => {
     let cancelled = false;
     setReady(null);
-    if (waitingForUser) return;
+    // Do not mount an anonymous shell that will discard open forms when /me resolves.
+    if (waitingForUser || userUnavailable) return;
     void (async () => {
       let persistence = null;
       let persistenceStatus: OfflinePersistenceStatus = "unavailable";
@@ -159,7 +168,7 @@ export function OfflineProvider({ config, children }: { config: AppConfig; child
     return () => {
       cancelled = true;
     };
-  }, [config, namespace, retryToken, key, waitingForUser]);
+  }, [config, namespace, retryToken, key, waitingForUser, userUnavailable]);
 
   const retryPersistence = useCallback(() => setRetryToken((token) => token + 1), []);
   const clearUserData = useCallback(async () => {
@@ -182,6 +191,17 @@ export function OfflineProvider({ config, children }: { config: AppConfig; child
     }),
     [clearUserData, isOnline, namespace, ready, retryPersistence],
   );
+
+  if (userUnavailable) {
+    return (
+      <div role="alert" className="flex h-dvh flex-col items-center justify-center gap-3 p-6">
+        <p>{t("offline.userErrorTitle")}</p>
+        <button type="button" onClick={() => void userStore.ensureLoaded()}>
+          {t("offline.retry")}
+        </button>
+      </div>
+    );
+  }
 
   if (waitingForUser || !ready || ready.key !== key) {
     return <ShellSkeleton />;

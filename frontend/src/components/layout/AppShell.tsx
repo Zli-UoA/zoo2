@@ -3,6 +3,7 @@ import { cn } from "cn";
 import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
 
 import { useActiveChannels } from "../../hooks/useRealtime";
+import { MfmChannelsProvider } from "../chat/messages/MfmChannels";
 import { ChannelSidebar } from "../chat/ChannelSidebar";
 import { MembersDialog } from "../chat/MembersDialog";
 import { MembersPanel } from "../chat/MembersPanel";
@@ -120,37 +121,40 @@ export function AppShell({ children }: { children: ReactNode }) {
 
   return (
     <ShellContext.Provider value={value}>
-      <div
-        ref={viewportRef}
-        className="fixed inset-x-0 top-0 flex h-dvh w-full overflow-hidden bg-background text-foreground"
-      >
-        <OfflineBanner />
-        <LeftRail />
-        <ChannelSidebar
-          channels={channels}
-          loading={channelsQuery.isLoading}
-          error={channelsQuery.isError}
-          className={showSidebar ? "flex" : "hidden md:flex"}
-        />
-        <main className={cn("min-w-0 flex-1 flex-col", showChat ? "flex" : "hidden md:flex")}>
-          {children}
-        </main>
-        {/* 表示は CSS（`hidden lg:flex`）が決める。狭幅でダイアログと二重に
+      <MfmChannelsProvider channels={channels}>
+        <div
+          ref={viewportRef}
+          data-app-shell
+          className="fixed inset-x-0 top-0 flex h-dvh w-full overflow-hidden bg-background text-foreground"
+        >
+          <OfflineBanner />
+          <LeftRail />
+          <ChannelSidebar
+            channels={channels}
+            loading={channelsQuery.isLoading}
+            error={channelsQuery.isError}
+            className={showSidebar ? "flex" : "hidden md:flex"}
+          />
+          <main className={cn("min-w-0 flex-1 flex-col", showChat ? "flex" : "hidden md:flex")}>
+            {children}
+          </main>
+          {/* 表示は CSS（`hidden lg:flex`）が決める。狭幅でダイアログと二重に
             マウントしないよう、マウントだけ `isWide` で抑える。 */}
-        {isWide && membersOpen && selectedChannel ? (
-          <MembersPanel
-            channel={selectedChannel}
-            className="hidden w-72 shrink-0 border-l lg:flex xl:w-80"
-          />
-        ) : null}
-        {selectedChannel ? (
-          <MembersDialog
-            channel={selectedChannel}
-            open={membersOpen && !isWide}
-            onOpenChange={setMembersOpen}
-          />
-        ) : null}
-      </div>
+          {isWide && membersOpen && selectedChannel ? (
+            <MembersPanel
+              channel={selectedChannel}
+              className="hidden w-72 shrink-0 border-l lg:flex xl:w-80"
+            />
+          ) : null}
+          {selectedChannel ? (
+            <MembersDialog
+              channel={selectedChannel}
+              open={membersOpen && !isWide}
+              onOpenChange={setMembersOpen}
+            />
+          ) : null}
+        </div>
+      </MfmChannelsProvider>
     </ShellContext.Provider>
   );
 }

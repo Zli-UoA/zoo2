@@ -5,7 +5,12 @@
  * app without a network. Never cache API, auth, OIDC or event-stream responses:
  * chat data is persisted separately in OPFS by TanStack DB.
  */
-const DEFAULT_CACHE = "zoo-shell-v2";
+const POLICY_VERSION = new URL(
+  self.location.href || "/sw.js",
+  self.location.origin,
+).searchParams.get("v");
+const POLICY_PREFIX = POLICY_VERSION ? `zoo-shell-${POLICY_VERSION}-` : "zoo-shell-";
+const DEFAULT_CACHE = `${POLICY_PREFIX}v2`;
 const CACHE_PREFIX = "zoo-shell-";
 const META_PATH = "/__zoo_shell_meta__";
 // ビルドごとに変わる hashed entry を cache 名に含め、古い assets ごと
@@ -35,7 +40,7 @@ function isCacheableAsset(url) {
 
 function cacheNameForIndex(html) {
   const match = html.match(/\/assets\/index-([^"'?#]+)\.js/);
-  return match?.[1] ? `${CACHE_PREFIX}${match[1]}` : DEFAULT_CACHE;
+  return match?.[1] ? `${POLICY_PREFIX}${match[1]}` : DEFAULT_CACHE;
 }
 
 /**
@@ -43,7 +48,7 @@ function cacheNameForIndex(html) {
  * 最新のものを選ぶ。メタ情報がない旧キャッシュは index.html の有無で拾う。
  */
 async function findActiveShellCache() {
-  const names = (await caches.keys()).filter((name) => name.startsWith(CACHE_PREFIX));
+  const names = (await caches.keys()).filter((name) => name.startsWith(POLICY_PREFIX));
   let latest = null;
   for (const name of names) {
     const cache = await caches.open(name);
@@ -144,7 +149,7 @@ async function fetchShellIndex() {
 async function precacheShell() {
   const index = await fetchShellIndex();
   // Without the app shell there is nothing safe to replace; keep the old cache.
-  if (!index) return;
+  if (!index) throw new Error("Cannot install an app shell without a fresh index");
   let html = "";
   try {
     html = await index.clone().text();

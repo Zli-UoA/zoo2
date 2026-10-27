@@ -5,7 +5,7 @@ const SIDEBAR_ROWS = [0, 1, 2, 3, 4, 5];
 /** シェルのデータ購読が始まるまでのプレースホルダ。3ペインの形だけをなぞる。 */
 export function ShellSkeleton() {
   return (
-    <div className="flex h-dvh w-full overflow-hidden bg-background">
+    <div data-app-shell className="flex h-dvh w-full overflow-hidden bg-background">
       <div className="w-14 shrink-0 border-r bg-sidebar md:w-16" />
       <div className="hidden w-72 shrink-0 flex-col gap-2 border-r p-3 md:flex">
         <Skeleton className="h-6 w-24" />

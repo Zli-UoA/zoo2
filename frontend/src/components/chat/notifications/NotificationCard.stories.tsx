@@ -1,5 +1,5 @@
 import type { Meta, StoryObj } from "@storybook/react-vite";
-import { fn } from "storybook/test";
+import { expect, fn, screen } from "storybook/test";
 import { useRef, type ComponentProps } from "react";
 
 import { StoryShell } from "../../../../.storybook/shell";
@@ -56,7 +56,11 @@ const meta = {
 export default meta;
 type Story = StoryObj<typeof meta>;
 
-export const Mention: Story = {};
+export const Mention: Story = {
+  play: async () => {
+    await expect(await screen.findByText(/今日のリリースは 18:00/)).toBeInTheDocument();
+  },
+};
 
 export const Reply: Story = {
   args: {

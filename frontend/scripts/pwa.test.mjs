@@ -452,3 +452,12 @@ test("notification destinations stay inside the app and open directly when no wi
   }
   assert.deepEqual(opened, ["https://zoo.example/channels/123?message=456", "/", "/", "/"]);
 });
+
+test("a failed shell download aborts installation instead of replacing the working cache", async () => {
+  const { handlers } = worker({
+    fetch: async () => {
+      throw new Error("offline");
+    },
+  });
+  await assert.rejects(dispatch(handlers, "install"), /without a fresh index/);
+});

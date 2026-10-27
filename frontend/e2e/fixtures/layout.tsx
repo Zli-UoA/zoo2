@@ -51,6 +51,7 @@ function Layout() {
     <div
       ref={ref}
       data-testid="shell"
+      data-app-shell
       className="fixed inset-x-0 top-0 flex h-dvh flex-col overflow-hidden"
     >
       <header className="flex shrink-0 items-center gap-2 border-b p-3">
