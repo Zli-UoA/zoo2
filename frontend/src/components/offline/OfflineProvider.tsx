@@ -48,8 +48,8 @@ function describeError(error: unknown): string {
  * Electric コレクションを子へ渡す。
  *
  * DB のオープンに失敗してもアプリは動かす（メモリのみにフォールバック）。
- * OIDC では現在ユーザーの解決後に名前空間が変わるため、そのときは
- * コレクションを作り直して別ユーザーのキャッシュを混ぜない。
+ * 現在ユーザーの解決を待ってから名前空間を選ぶ。初期化途中の再マウントで
+ * 入力中のフォームを消さず、別ユーザーのキャッシュも混ぜない。
  */
 export function OfflineProvider({ config, children }: { config: AppConfig; children: ReactNode }) {
   const isOnline = useOnlineStatus();
@@ -58,8 +58,12 @@ export function OfflineProvider({ config, children }: { config: AppConfig; child
     (listener: () => void) => userStore.subscribe(listener),
     [userStore],
   );
-  const getCurrentUserId = useCallback(() => userStore.getState().currentUserId, [userStore]);
-  const currentUserId = useSyncExternalStore(subscribe, getCurrentUserId, () => config.devUserId);
+  const getUserState = useCallback(() => userStore.getState(), [userStore]);
+  const { currentUserId, isLoading: currentUserLoading } = useSyncExternalStore(
+    subscribe,
+    getUserState,
+    getUserState,
+  );
   const [retryToken, setRetryToken] = useState(0);
   const [ready, setReady] = useState<ReadyState | null>(null);
 
@@ -130,6 +134,8 @@ export function OfflineProvider({ config, children }: { config: AppConfig; child
   useEffect(() => {
     let cancelled = false;
     setReady(null);
+    // Do not mount an anonymous shell that will discard open forms when /me resolves.
+    if (currentUserLoading) return;
     void (async () => {
       let persistence = null;
       let persistenceStatus: OfflinePersistenceStatus = "unavailable";
@@ -154,7 +160,7 @@ export function OfflineProvider({ config, children }: { config: AppConfig; child
     return () => {
       cancelled = true;
     };
-  }, [config, namespace, retryToken, key]);
+  }, [config, namespace, retryToken, key, currentUserLoading]);
 
   const retryPersistence = useCallback(() => setRetryToken((token) => token + 1), []);
   const clearUserData = useCallback(async () => {
@@ -178,7 +184,7 @@ export function OfflineProvider({ config, children }: { config: AppConfig; child
     [clearUserData, isOnline, namespace, ready, retryPersistence],
   );
 
-  if (!ready || ready.key !== key) {
+  if (currentUserLoading || !ready || ready.key !== key) {
     return <ShellSkeleton />;
   }
 
