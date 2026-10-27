@@ -81,8 +81,8 @@ jobs:
             printf "%s" "$headers" | grep -qi "X-Frame-Options: DENY"
             printf "%s" "$headers" | grep -qi "Content-Security-Policy:"
             # script はビルド時のインライン script ハッシュで許可し、unsafe-inline は使わない。
-            printf "%s" "$headers" | grep -q "script-src 'self' 'sha256-"
-            printf "%s" "$headers" | grep -q "connect-src 'self' https://id.example"
+            printf "%s" "$headers" | grep -q "script-src 'self' 'wasm-unsafe-eval' 'sha256-"
+            printf "%s" "$headers" | grep -q "connect-src 'self' data: https://id.example"
             # Emoji Kitchen の合成画像（#82）を許可する。
             printf "%s" "$headers" | grep -q "img-src 'self' data: https://www.gstatic.com"
           done

@@ -226,7 +226,9 @@ SPA は IdP の Discovery / token エンドポイントをブラウザから直�
 
 `img-src` は `'self' data: https://www.gstatic.com` に固定しています。`https://www.gstatic.com` は Emoji Kitchen の合成画像（#82）をブラウザから直接取得するためです。新しい外部画像オリジンを追加する場合は、`/` と `/assets/` の両方の `img-src` と `container` ジョブの検査を更新してください。
 
-`script-src` は `'unsafe-inline'` を使わず、ビルド時のハッシュで許可します。ハッシュは `infra/csp-hashes.mjs` が `pnpm build` 後の `index.html` から生成し、`infra/frontend-entrypoint.sh` が起動時に `CSP_SCRIPT_SRC` として渡します。`index.html` やテーマ初期化 script を変更した場合は、必ずイメージを再ビルドしてください。`style-src` の `'unsafe-inline'` は React の style 属性に必要なため残しています。
+`script-src` は `'unsafe-inline'` を使わず、ビルド時のハッシュで許可します。 SQLite Worker の WebAssembly 実行には `'wasm-unsafe-eval'`、ビルド時に埋め込まれる WASM の `data:` URL の読み込みには `connect-src` の `data:` を許可しています。JavaScript の `'unsafe-eval'` は許可しません。ハッシュは `infra/csp-hashes.mjs` が `pnpm build` 後の `index.html` から生成し、`infra/frontend-entrypoint.sh` が起動時に `CSP_SCRIPT_SRC` として渡します。`index.html` やテーマ初期化 script を変更した場合は、必ずイメージを再ビルドしてください。`style-src` の `'unsafe-inline'` は React の style 属性に必要なため残しています。
+
+SQLite Worker の本番 CSP 下での保存と再接続は、`cd frontend && pnpm test:csp:offline` で Firefox と Chromium の両方を検証できます。事前に `pnpm exec playwright install firefox chromium` を実行してください。バックエンドや Docker は不要です。
 
 CSP の確認例（ステージング）:
 
