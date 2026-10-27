@@ -294,6 +294,7 @@
     "emptyTitle": "離線而且冇儲存咗嘅訊息",
     "emptyDescription": "連返線之後請重新載入。",
     "retry": "再試",
+    "userErrorTitle": "未能確認而家登入嘅使用者，請再試一次。",
     "persistenceErrorTitle": "呢部裝置儲存唔到訊息",
     "persistenceErrorDescription": "請檢查瀏覽器嘅儲存設定。一樣可以繼續傾偈。",
     "deleteFailed": "刪除唔到呢部裝置儲存咗嘅資料。下次啟動會再試。"
