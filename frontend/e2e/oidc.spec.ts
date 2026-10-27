@@ -74,8 +74,11 @@ test("OIDC PKCE ログイン後に API と Shape が Bearer で通る", async ({
 
   await page.getByRole("button", { name: "ログイン" }).click();
 
-  // コールバック処理後、シェルが描画される（Shape の購読には Bearer が必要）。
-  await expect(page.getByRole("heading", { name: "チャンネル", exact: true })).toBeVisible();
+  // コールバック後はルートの初回変換・ユーザー解決・OPFS 初期化も待つ。
+  // OPFS のオープンだけでも最大 8 秒なので、既定の 5 秒では打ち切らない。
+  await expect(page.getByRole("heading", { name: "チャンネル", exact: true })).toBeVisible({
+    timeout: 30_000,
+  });
   await page.screenshot({ path: testInfo.outputPath("02-app-shell.png") });
 
   // Dev ビルドの TanStack Devtools 起動ボタンが右下の送信ボタン等に重なるため、
@@ -145,7 +148,9 @@ test("OIDC PKCE ログイン後に API と Shape が Bearer で通る", async ({
   await page.getByRole("button", { name: "ログイン", exact: true }).click();
   await expect(page.getByRole("heading", { name: "Mock IdP" })).toBeVisible();
   await page.getByRole("button", { name: "ログイン" }).click();
-  await expect(page.getByRole("heading", { name: "チャンネル", exact: true })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "チャンネル", exact: true })).toBeVisible({
+    timeout: 30_000,
+  });
 
   // ログアウト → 再ログインはページ全体の遷移なので、Devtools 非表示をやり直す。
   await page.addStyleTag({

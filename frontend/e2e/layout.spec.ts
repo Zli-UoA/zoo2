@@ -108,20 +108,19 @@ test("scrolling to the top loads older messages without moving the reader", asyn
   await expect(page.getByText(/^Message 39\b/)).toBeVisible();
   await page.waitForTimeout(500);
   await scrollMessages(page, "top");
-  await expect(page.getByText(/^Message 1\b/)).toBeVisible();
-  const scroller = page.getByTestId("message-scroll");
-  const before = await scroller.evaluate((element) => ({
-    top: element.scrollTop,
-    height: element.scrollHeight,
-  }));
+  const anchor = page.getByRole("listitem").filter({ has: page.getByText(/^Message 1\b/) });
+  await expect(anchor).toBeVisible();
+  const before = await anchor.boundingBox();
+  expect(before).not.toBeNull();
   await page.getByTestId("prepend-older").click();
+  // 追加が反映される前に位置比較が成功しないよう、10 行分の移動を待つ。
+  await expect(anchor).toHaveAttribute("data-index", "11");
+  // 仮想リストの総高さには未描画行の推定値も含まれ、実測のたびに変わる。
+  // 読んでいた行そのものの画面上の位置が保たれることを検証する。
   await expect
     .poll(async () => {
-      const after = await scroller.evaluate((element) => ({
-        top: element.scrollTop,
-        height: element.scrollHeight,
-      }));
-      return Math.abs(after.top - before.top - (after.height - before.height));
+      const after = await anchor.boundingBox();
+      return after ? Math.abs(after.y - before!.y) : Infinity;
     })
     .toBeLessThanOrEqual(2);
   await expectNoOverlap(page);

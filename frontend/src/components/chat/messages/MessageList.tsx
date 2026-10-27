@@ -176,6 +176,9 @@ export function MessageList({
     getScrollElement: () => scrollRef.current,
     estimateSize: () => ESTIMATED_ROW_HEIGHT,
     overscan: 8,
+    // 安定した message id を基準に、prepend と実測高さの変化を一括で補正する。
+    anchorTo: "end",
+    useAnimationFrameWithResizeObserver: true,
     getItemKey: (index) => items[index]?.message.id ?? index,
   });
 
@@ -185,7 +188,6 @@ export function MessageList({
   // ボタンと同じ条件）。最下部へ戻ったら空にして、同文の連投も再度読み上げられる。
   const [liveAnnouncement, setLiveAnnouncement] = useState("");
   const snapshotRef = useRef<ScrollSnapshot>({ firstId: null, lastId: null });
-  const previousScrollHeightRef = useRef(0);
 
   const scrollToBottom = useCallback(
     (behavior: ScrollBehavior = "auto") => {
@@ -228,12 +230,7 @@ export function MessageList({
     const next = snapshot(ids);
     const change = classifyScrollChange(snapshotRef.current, next, new Set(ids));
 
-    if (change === "prepend") {
-      const delta = element.scrollHeight - previousScrollHeightRef.current;
-      if (delta > 0) {
-        element.scrollTop += delta;
-      }
-    } else if (change === "initial" && firstUnreadId) {
+    if (change === "initial" && firstUnreadId) {
       const index = items.findIndex((item) => item.message.id === firstUnreadId);
       atBottomRef.current = false;
       requestAnimationFrame(() => virtualizer.scrollToIndex(index, { align: "start" }));
@@ -253,17 +250,7 @@ export function MessageList({
     }
 
     snapshotRef.current = next;
-    previousScrollHeightRef.current = element.scrollHeight;
   }, [items, currentUserId, scrollToBottom, t, firstUnreadId, virtualizer]);
-
-  // 行の実測で scrollHeight が変わっても、次の prepend 補正が古い高さを
-  // 基準にしないよう、毎コミットで最新値を記録する。
-  useLayoutEffect(() => {
-    const element = scrollRef.current;
-    if (element) {
-      previousScrollHeightRef.current = element.scrollHeight;
-    }
-  });
 
   // 一覧がスクロールできないほど短い場合でも、上端スクロール相当の操作が
   // できないため、古いメッセージがあれば自動で窓を広げる。
