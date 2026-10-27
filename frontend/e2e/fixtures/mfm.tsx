@@ -1,3 +1,4 @@
+import { MessageBody } from "../../src/components/chat/messages/MessageRow";
 import { Composer } from "../../src/components/chat/messages/Composer";
 import { LocaleProvider } from "../../src/components/i18n/LocaleProvider";
 import { createRoot } from "react-dom/client";
@@ -32,6 +33,29 @@ createRoot(document.getElementById("app")!).render(
         />
       </LocaleProvider>
       <output id="sent" />
+      <section id="containment" style={{ width: 240, background: "white", color: "black" }}>
+        <button
+          id="previous-row"
+          style={{ display: "block", width: "100%", height: 32 }}
+          onClick={(event) => {
+            event.currentTarget.textContent = "clicked previous";
+          }}
+        >
+          previous row
+        </button>
+        <div id="transformed-row">
+          <MessageBody content="$[position.y=-50 $[clickable overlay up]] $[position.y=50 $[clickable overlay down]] $[scale.x=5,y=5 $[scale.x=5,y=5 $[scale.x=5,y=5 $[clickable ■■■■■■■■]]]] $[rotate.deg=90 $[clickable rotated overlay]]" />
+        </div>
+        <button
+          id="next-row"
+          style={{ display: "block", width: "100%", height: 32 }}
+          onClick={(event) => {
+            event.currentTarget.textContent = "clicked next";
+          }}
+        >
+          next row
+        </button>
+      </section>
       <div id="winter-time">
         <MfmContent content="$[unixtime 0]" />
       </div>

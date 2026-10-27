@@ -105,13 +105,19 @@ function MathFormula({ formula, block }: { formula: string; block: boolean }) {
   );
 }
 function CodeBlock({ code, lang }: { code: string; lang: string | null }) {
-  if (!lang || !hljs.getLanguage(lang))
+  const html = useMemo(
+    () =>
+      lang && hljs.getLanguage(lang)
+        ? hljs.highlight(code, { language: lang, ignoreIllegals: true }).value
+        : null,
+    [code, lang],
+  );
+  if (html === null)
     return (
       <pre className="mfm-code">
         <code>{code}</code>
       </pre>
     );
-  const html = hljs.highlight(code, { language: lang, ignoreIllegals: true }).value;
   // highlight.js escapes the source before adding its own span elements.
   return (
     <pre className="mfm-code">
@@ -256,11 +262,8 @@ function renderNode(
             {children()}
           </button>
         );
-      const presentation = functionPresentation(node.props);
-      const factor = /^x[234]$/.test(name) ? Number(name.slice(1)) : 1;
-      // A nested enlargement must not grow exponentially beyond a readable message.
-      if (scale * factor > 8) presentation.style.fontSize = `${8 / scale}em`;
-      const body = render(node.children, Math.min(8, scale * factor));
+      const { scale: nextScale, ...presentation } = functionPresentation(node.props, scale);
+      const body = render(node.children, nextScale);
       return (
         <span {...presentation} tabIndex={name === "blur" ? 0 : undefined}>
           {name === "sparkle" ? (

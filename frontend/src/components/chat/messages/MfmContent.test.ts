@@ -69,7 +69,7 @@ describe("MfmContent", () => {
   it("bounds cumulative enlargement, transforms and borders", () => {
     expect(render("$[x4 $[x4 hi]]")).toContain("font-size:2em");
     expect(render("$[scale.x=999,y=-999 hi]")).toContain("scale(5, -5)");
-    expect(render("$[position.x=999 hi]")).toContain("translate(50em, 0em)");
+    expect(render("$[position.x=999 hi]")).toContain("translate(2em, 0em)");
     const border = render("$[border.width=999,style=evil,radius=-2,noclip hi]");
     expect(border).toContain("border-width:100px");
     expect(border).toContain("border-style:solid");
@@ -167,4 +167,21 @@ describe("MfmContent", () => {
     expect(render("\\(\\href{javascript:alert(1)}{x}\\)")).not.toContain('href="javascript:');
     expect(render("\\(\\htmlStyle{position:fixed}{x}\\)")).not.toContain('style="position:fixed');
   });
+});
+
+it("bounds mixed nested transforms and font enlargement, including axis swaps and negatives", () => {
+  const html = render(
+    "$[scale.x=5,y=-5 $[rotate.deg=90 $[scale.x=5,y=5 $[x4 $[scale.x=5,y=5 ■]]]]]",
+  );
+  const scales = [...html.matchAll(/transform:scale\(([-\d.]+), ([-\d.]+)\)/g)];
+  const fonts = [...html.matchAll(/font-size:([\d.]+)em/g)];
+  const total =
+    scales.reduce(
+      (value, match) => value * Math.max(Math.abs(Number(match[1])), Math.abs(Number(match[2]))),
+      1,
+    ) * fonts.reduce((value, match) => value * Number(match[1]), 1);
+  expect(scales).toHaveLength(3);
+  expect(total).toBeLessThanOrEqual(8);
+  expect(html).toContain("scale(5, -5)");
+  expect(render("$[position.x=50,y=-50 hi]")).toContain("translate(2em, -2em)");
 });

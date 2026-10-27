@@ -255,6 +255,10 @@ body {
   }
 }
 
+.mfm-body {
+  overflow: clip;
+  contain: paint;
+}
 .mfm-function {
   display: inline-block;
   transform-origin: center;

@@ -72,12 +72,17 @@ function color(value: unknown, fallback: string): string {
 }
 
 /** Construct typed, validated properties; never interpret arbitrary user CSS. */
-export function functionPresentation({ name, args }: MfmFn["props"]): {
+export function functionPresentation(
+  { name, args }: MfmFn["props"],
+  inheritedScale = 1,
+): {
   className: string;
   style: CSSProperties;
+  scale: number;
 } {
   const style: CSSProperties = {};
   let className = "mfm-function";
+  let factor = 1;
   if (Object.hasOwn(durations, name)) {
     className += ` mfm-effect mfm-${name}`;
     style.animationDuration = time(args.speed, durations[name]!);
@@ -95,13 +100,22 @@ export function functionPresentation({ name, args }: MfmFn["props"]): {
     case "x2":
     case "x3":
     case "x4":
-      style.fontSize = `${name.slice(1)}em`;
+      factor = Math.min(Number(name.slice(1)), 8 / inheritedScale);
+      style.fontSize = `${factor}em`;
       break;
-    case "scale":
-      style.transform = `scale(${number(args.x, 1, -5, 5)}, ${number(args.y, 1, -5, 5)})`;
+    case "scale": {
+      const x = number(args.x, 1, -5, 5);
+      const y = number(args.y, 1, -5, 5);
+      // Bound the largest axis across transforms and font sizes, including rotations
+      // between anisotropic scales. Shrinking never grants a larger nested budget.
+      const magnitude = Math.max(1, Math.abs(x), Math.abs(y));
+      const correction = Math.min(1, 8 / inheritedScale / magnitude);
+      style.transform = `scale(${x * correction}, ${y * correction})`;
+      factor = Math.max(1, magnitude * correction);
       break;
+    }
     case "position":
-      style.transform = `translate(${number(args.x, 0, -50, 50)}em, ${number(args.y, 0, -50, 50)}em)`;
+      style.transform = `translate(${number(args.x, 0, -2, 2)}em, ${number(args.y, 0, -2, 2)}em)`;
       break;
     case "rotate":
       style.transform = `rotate(${number(args.deg, 90, -36000, 36000)}deg)`;
@@ -129,5 +143,5 @@ export function functionPresentation({ name, args }: MfmFn["props"]): {
       className += " mfm-blur";
       break;
   }
-  return { className, style };
+  return { className, style, scale: inheritedScale * factor };
 }

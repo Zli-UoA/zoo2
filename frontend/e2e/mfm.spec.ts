@@ -154,3 +154,48 @@ test("MFM and Japanese mentions remain visible while IME owns the keyboard", asy
     await expect(input).toHaveValue(result);
   }
 });
+
+test("transformed message paint and hit targets stay inside the body", async ({ page }) => {
+  const body = page.locator("#transformed-row .mfm-body");
+  await expect(body).toBeVisible();
+  await page.evaluate(() => document.fonts.ready);
+  const section = page.locator("#containment");
+  expect(await section.evaluate((el) => el.scrollWidth)).toBe(
+    await section.evaluate((el) => el.clientWidth),
+  );
+  for (const id of ["previous-row", "next-row"]) {
+    const neighbor = page.locator(`#${id}`);
+    await neighbor.scrollIntoViewIfNeeded();
+    await page.mouse.move(0, 0);
+    const box = (await neighbor.boundingBox())!;
+    // Inset the capture to exclude the fractional pixel shared with the next row.
+    const clip = { x: box.x + 2, y: box.y + 2, width: box.width - 4, height: box.height - 4 };
+    const painted = await page.screenshot({ clip });
+    await body.evaluate((el) => {
+      el.style.visibility = "hidden";
+    });
+    const withoutMessage = await page.screenshot({ clip });
+    const samePixels = await page.evaluate(
+      async ({ painted, hidden }) => {
+        const pixels = async (base64: string) => {
+          const bytes = Uint8Array.from(atob(base64), (char) => char.charCodeAt(0));
+          const bitmap = await createImageBitmap(new Blob([bytes], { type: "image/png" }));
+          const canvas = new OffscreenCanvas(bitmap.width, bitmap.height);
+          const context = canvas.getContext("2d")!;
+          context.drawImage(bitmap, 0, 0);
+          bitmap.close();
+          return context.getImageData(0, 0, canvas.width, canvas.height).data;
+        };
+        const [a, b] = await Promise.all([pixels(painted), pixels(hidden)]);
+        return a.length === b.length && a.every((value, index) => value === b[index]);
+      },
+      { painted: painted.toString("base64"), hidden: withoutMessage.toString("base64") },
+    );
+    expect(samePixels).toBe(true);
+    await body.evaluate((el) => {
+      el.style.visibility = "";
+    });
+    await neighbor.click();
+    await expect(neighbor).toHaveText(id === "previous-row" ? "clicked previous" : "clicked next");
+  }
+});

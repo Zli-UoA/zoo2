@@ -56,7 +56,7 @@ export function MessageBody({ content, card: data }: { content: string; card?: s
   const card = parseMessageCard(data);
   if (card) return <MessageCard card={card} />;
   return (
-    <div className="whitespace-pre-wrap break-words text-sm leading-relaxed">
+    <div className="mfm-body whitespace-pre-wrap break-words text-sm leading-relaxed">
       <MfmContent content={content} />
     </div>
   );

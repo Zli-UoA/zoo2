@@ -48,7 +48,8 @@ function describeError(error: unknown): string {
  * Electric コレクションを子へ渡す。
  *
  * DB のオープンに失敗してもアプリは動かす（メモリのみにフォールバック）。
- * 現在ユーザーの解決を待ってから名前空間を選ぶ。初期化途中の再マウントで
+ * オンラインの OIDC 起動は現在ユーザーの解決を待ってから名前空間を選ぶ。
+ * オフラインは保存済みの名前空間で起動する。初期化途中の再マウントで
  * 入力中のフォームを消さず、別ユーザーのキャッシュも混ぜない。
  */
 export function OfflineProvider({ config, children }: { config: AppConfig; children: ReactNode }) {
@@ -64,6 +65,8 @@ export function OfflineProvider({ config, children }: { config: AppConfig; child
     getUserState,
     getUserState,
   );
+  // オフラインのキャッシュ表示は /me の完了に依存させない。
+  const waitingForUser = Boolean(config.oidc && isOnline && currentUserLoading);
   const [retryToken, setRetryToken] = useState(0);
   const [ready, setReady] = useState<ReadyState | null>(null);
 
@@ -135,7 +138,7 @@ export function OfflineProvider({ config, children }: { config: AppConfig; child
     let cancelled = false;
     setReady(null);
     // Do not mount an anonymous shell that will discard open forms when /me resolves.
-    if (currentUserLoading) return;
+    if (waitingForUser) return;
     void (async () => {
       let persistence = null;
       let persistenceStatus: OfflinePersistenceStatus = "unavailable";
@@ -160,7 +163,7 @@ export function OfflineProvider({ config, children }: { config: AppConfig; child
     return () => {
       cancelled = true;
     };
-  }, [config, namespace, retryToken, key, currentUserLoading]);
+  }, [config, namespace, retryToken, key, waitingForUser]);
 
   const retryPersistence = useCallback(() => setRetryToken((token) => token + 1), []);
   const clearUserData = useCallback(async () => {
@@ -184,7 +187,7 @@ export function OfflineProvider({ config, children }: { config: AppConfig; child
     [clearUserData, isOnline, namespace, ready, retryPersistence],
   );
 
-  if (currentUserLoading || !ready || ready.key !== key) {
+  if (waitingForUser || !ready || ready.key !== key) {
     return <ShellSkeleton />;
   }
 

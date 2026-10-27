@@ -1,5 +1,5 @@
 import { act, render, screen } from "@testing-library/react";
-import { expect, it, vi } from "vite-plus/test";
+import { beforeEach, expect, it, vi } from "vite-plus/test";
 
 import type { AppConfig } from "../../lib/config";
 import type { CurrentUserState } from "../../lib/currentUser";
@@ -8,8 +8,10 @@ import { OfflineProvider } from "./OfflineProvider";
 const mocks = vi.hoisted(() => ({
   state: { currentUserId: null, isLoading: true, isAdmin: false, error: null } as CurrentUserState,
   listeners: new Set<() => void>(),
+  online: true,
   open: vi.fn(async () => ({ persistence: {} })),
 }));
+vi.mock("../../lib/offline/online", () => ({ useOnlineStatus: () => mocks.online }));
 vi.mock("../../lib/currentUser", () => ({
   getCurrentUserStore: () => ({
     getState: () => mocks.state,
@@ -37,9 +39,15 @@ vi.mock("../../lib/offline/identity", () => ({
 }));
 vi.mock("../layout/ShellSkeleton", () => ({ ShellSkeleton: () => <p>Loading</p> }));
 
+beforeEach(() => {
+  mocks.state = { currentUserId: null, isLoading: true, isAdmin: false, error: null };
+  mocks.online = true;
+  mocks.open.mockClear();
+});
+
 it("waits for user resolution before opening storage and mounting interactive children", async () => {
   render(
-    <OfflineProvider config={{ devUserId: null } as AppConfig}>
+    <OfflineProvider config={{ devUserId: null, oidc: {} } as AppConfig}>
       <button>Create channel</button>
     </OfflineProvider>,
   );
@@ -53,4 +61,18 @@ it("waits for user resolution before opening storage and mounting interactive ch
   });
   expect(await screen.findByRole("button", { name: "Create channel" })).toBeTruthy();
   expect(mocks.open).toHaveBeenCalledExactlyOnceWith("user-a");
+});
+
+it.each([
+  { online: false, oidc: {} },
+  { online: true, oidc: null },
+])("does not block cached or dev startup: %j", async ({ online, oidc }) => {
+  mocks.online = online;
+  render(
+    <OfflineProvider config={{ devUserId: null, oidc } as AppConfig}>
+      <button>Cached channel</button>
+    </OfflineProvider>,
+  );
+  expect(await screen.findByRole("button", { name: "Cached channel" })).toBeTruthy();
+  expect(mocks.open).toHaveBeenCalledExactlyOnceWith("anonymous");
 });
