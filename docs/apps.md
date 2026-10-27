@@ -97,3 +97,62 @@ Appは完了済みファイルを自分のメッセージへ添付できます�
 APIの失敗はHTTPステータスと `error` を返します。Appルートは `private, no-store` を返し、本番プロキシでも保持します。`/api/apps/metrics` は管理者に配信待ち・失敗・再送・最古の待ち時間を返します。ログはevent IDとdelivery IDで追跡でき、本文やSecretを記録しません。
 
 検証コマンドは `make test-unit`、`make test-e2e`、`make frontend-check`、`make frontend-test`、`make sdk-check`、`make sdk-test` です。S3接続先の実運用検証は、対象バケットに対してアップロード・complete・ダウンロードを実施してください。
+
+## Slack イベントの対応範囲
+
+公式一覧との全件対応・例外理由は [Slack イベント対応表](slack-event-coverage.md)、機械可読の一覧は [slack-event-coverage.json](slack-event-coverage.json) です。`GET /api/apps/events` でも取得できます。Slack のイベント名も購読名として指定でき、対応する Zoo のイベント名で届きます。公開／非公開／DM／グループ DM の区別を保ちます。既存 Slack SDK のペイロードとは互換ではありません。
+
+新しい scope は `users:write`、`preferences:read/write`、`pins:read/write`、`stars:read/write`、`emoji:read/write`、`usergroups:read/write`、`workspace:read/write`、`apps:read`、`invites:read/write`、`reminders:read/write`、`files:share`、`metadata:read/write`、`assistant:write`、`functions:execute` です。管理操作には scope に加えて操作主体の管理者権限が必要です。Bot に管理者権限を自動付与しません。
+
+### 状態を変更する API
+
+以下は人の認証を受け付けるパスです。App は対応する `/api/apps/v1/` パスと scope を使います。JSON フィールドの省略は現在値の維持です。時刻は RFC3339、明示的な `null` で期限を解除します。
+
+| 操作 | API | 主な入力 |
+| --- | --- | --- |
+| 自分のプロフィール・状態・設定 | `GET/PATCH /api/users/me/profile` | `display_name`, `status_text`, `status_emoji`, `status_expires_at`, `fields`, `preferences`, `presence: auto/away`, `dnd_until` |
+| 公開プロフィール | `GET /api/users/{id}/profile` | 私的な設定や DND 終了時刻は返さない |
+| ゲスト・利用停止 | `PATCH /api/users/{id}/guest` | 管理者のみ。`kind: none/single/multi/deactivated` |
+| 在席の更新 | `POST /api/presence/heartbeat` | 可視のクライアントが30秒ごとに更新、90秒で away |
+| トピック・説明・投稿制限 | `GET/PATCH /api/channels/{channel}/settings` | `topic`, `purpose`, `posting_policy: members/managers` |
+| 会話の表示・非表示 | `POST /api/channels/{channel}/view` | `open: boolean`。所属の追加・削除とは別 |
+| 履歴の一括削除 | `DELETE /api/channels/{channel}/history` | チャンネル管理者のみ、メッセージを論理削除 |
+| ピン | `GET/POST /api/channels/{channel}/pins` | `item_type: message/file`, `item_id` |
+| ピンの解除 | `DELETE /api/channels/{channel}/pins/{kind}/{id}` | — |
+| 自分の保存項目 | `GET/POST /api/stars` | `item_type: message/channel/file`, `item_id`, 必要なら `channel_id` |
+| 保存の解除 | `DELETE /api/stars/{kind}/{id}` | — |
+| カスタム絵文字 | `GET/POST /api/emojis`, `DELETE /api/emojis/{name}` | `name`, `url` (HTTPS)。リアクションは `:name:` |
+| ワークスペース設定 | `GET/PATCH /api/workspace` | `name`, `preferences`, `profile_fields: [{id,label,type}]`。編集は管理者のみ |
+| ユーザーグループ | `GET/POST /api/usergroups`, `PATCH /api/usergroups/{id}` | `name`, `handle`, `description`, `active`。編集は管理者のみ |
+| グループメンバー | `GET/PUT /api/usergroups/{id}/members` | PUT はユーザー ID 配列、管理者のみ |
+| 招待申請 | `GET/POST /api/invite-requests` | `email`, `channel_id` (任意) |
+| 招待申請の判断 | `PATCH /api/invite-requests/{id}` | 管理者のみ、`status: approved/rejected` |
+| リマインダー | `GET/POST /api/reminders`, `PATCH/DELETE /api/reminders/{id}` | `content`, `due_at`, `channel_id` (任意) |
+| メッセージ metadata | `PATCH/DELETE /api/messages/{id}/metadata` | `event_type`, `event_payload`。投稿者のみ |
+| Assistant セッション | `GET/POST /api/assistant-sessions`, `PATCH /api/assistant-sessions/{id}` | 作成: `app_id`, `user_id`, `channel_id`, `parent_id` (任意), `title`, `context`。更新: `title`, `context`, `state: stopped` |
+| App の表示コンテキスト | `POST /api/apps/{id}/context` | `channel_id`, `context` |
+| 外部アカウント接続要求 | `GET/POST /api/apps/{id}/connection` | `connect: boolean`, `channel_id` (任意)。manifest の `user_connections: true` が必要 |
+| 接続結果の通知 | `POST /api/apps/v1/user-connections/{user}` | App が `connected: boolean` を返す。接続要求のある本人のみ |
+| 関数の実行 | `POST /api/apps/{id}/functions/{name}/invoke` | manifest の `functions` に登録。`id` (任意、冪等キー), `channel_id` (任意), `inputs` |
+| 関数の完了 | `POST /api/apps/v1/function-executions/{id}/complete` | 対象 App のみ、`outputs` または `error` |
+| 外部エンティティの取得要求 | `POST /api/apps/{id}/entities/requests` | `kind: details/comments`, `url`, `message_id`, `channel_id`, `cursor`, `limit`。実際に unfurl されたリンクに限定 |
+| ファイルの情報・編集・削除 | `GET/PATCH/DELETE /api/apps/v1/files/{id}` | `name`, `description`。削除後はダウンロード・公開リンクとも使用不可 |
+| ファイルの共有先追加・削除 | `POST /api/apps/v1/files/{id}/shares`, `DELETE .../shares/{channel}` | `channel_id`。共有先へのアクセスが必要 |
+| ファイルの公開リンク | `POST /api/apps/v1/files/{id}/public-link` | `public: boolean`。作成時だけ無作為な URL を返し、DB はハッシュだけ保存 |
+| App の削除 | `POST /api/apps/{id}/actions/delete` | 開発者・管理者のみ。失効・チャンネル退出と論理削除。過去の投稿は保持 |
+
+招待申請の承認は Zoo の管理記録です。外部 IdP でのアカウント発行は IdP 側で行います。カスタム絵文字の配信元は既存の App 画像と同様に CSP 設定が必要です。DND はプッシュ送信を抑止し、通知一覧には記録を残します。期限切れ状態とリマインダーはバックエンドのワーカーで処理します。ゲストは未参加の公開チャンネルも閲覧できず、single ゲストは通常チャンネル1件に制限されます。利用停止はキャッシュ済みの認証情報でも拒否します。
+
+Assistant・外部接続・リンク詳細要求は対応する App にだけ配信します。外部サービス自体の接続処理や AI の生成処理は Bot 側の責務です。App 詳細画面から接続要求と Assistant の開始・改名・停止、展開済みリンクから詳細／コメント要求を実行できます。その他の追加リソースは上記 API で操作できます。
+
+### 通信制御
+
+WebSocket は接続時に `{"type":"hello","version":1,"installation_id":"..."}`、終了時に送信可能なら `{"type":"goodbye","reason":"connection_closed"}` を返します。ネットワーク切断では goodbye の到達は保証されません。通常の Delivery と区別し、ACK は Delivery に対してだけ返します。
+
+`users:read` を持つ Socket から `{"type":"presence_query","id":"request-id","users":["user-id"]}` を送ると `{"type":"presence_snapshot","request_id":"request-id","users":[{"user_id":"...","presence":"active"}]}` が返ります。`presence_sub` は最大500件の購読集合を置き換え、変更時に snapshot を送信します。空配列で解除します。接続し直した際は再購読してください。権限のない要求は `type: error` になります。
+
+HTTP App は `POST /api/apps/{id}/actions/verify-endpoint` で署名付き `{"type":"url_verification","challenge":"..."}` を受けます。同じ challenge を JSON オブジェクトまたはプレーンテキストで返すと検証時刻を記録します。応答上限は4KiB、リダイレクトは禁止、送信先は公開 IP に固定して検証します。manifest または署名鍵の変更で検証記録を解除します。検証の実行は任意です。サンプル HTTP Bot は challenge にも対応します。
+
+配信はインストールごと毎時30,000件までとし、再送は同じイベントとして扱います。超過すると `app.rate_limited` を1時間に1件配信します。発火側でも不要なキューの増大を抑止し、並行トランザクションの境界で作られた余剰分は配信側で上限を適用します。イベント ID はトランザクションと内容から決定し、同一操作による重複通知を避けます。
+
+契約更新時は `python3 scripts/sync-app-contracts.py` で対応表・JSON Schema・OpenAPI・SDK のイベント型を再生成します。

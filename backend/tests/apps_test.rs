@@ -644,6 +644,11 @@ async fn websocket_delivery_ack_and_single_use_ticket() -> anyhow::Result<()> {
     );
     let (mut ws, _) = tokio_tungstenite::connect_async(&url).await?;
     assert!(tokio_tungstenite::connect_async(&url).await.is_err());
+    let hello = ws.next().await.unwrap()?;
+    assert_eq!(
+        serde_json::from_str::<Value>(hello.to_text()?)?["type"],
+        "hello"
+    );
     let message = tokio::time::timeout(std::time::Duration::from_secs(5), ws.next())
         .await?
         .unwrap()?;

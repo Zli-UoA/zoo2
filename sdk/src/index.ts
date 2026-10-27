@@ -1,5 +1,6 @@
+export { EVENT_TYPES, type EventType } from "./events.ts";
 export interface Credentials { access_token: string; refresh_token: string; expires_in?: number }
-export interface AppEvent { id: string; version: 1; type: string; actor_id: string; channel_id?: string; data: Record<string, unknown> }
+export interface AppEvent { id: string; version: 1; type: string; actor_id: string | null; channel_id?: string | null; subject_user_id?: string | null; data: Record<string, unknown> }
 export interface Delivery { delivery_id: string; ack_token: string; event: AppEvent; attempt: number }
 export interface EventStore { has(id: string): Promise<boolean>; mark(id: string): Promise<void> }
 export interface Options { baseUrl: string; credentials: Credentials; saveCredentials?: (credentials: Credentials) => Promise<void>; fetch?: typeof fetch; eventStore?: EventStore }
@@ -36,7 +37,7 @@ export class ZooApp {
     }
     throw new Error("Zoo API retry limit reached");
   }
-  postMessage(input: { channel_id: string; content: string; parent_id?: string; id?: string }) { return this.request<{ id: string }>("POST", "/messages", { ...input, id: input.id ?? crypto.randomUUID() }); }
+  postMessage(input: { channel_id: string; content: string; parent_id?: string; id?: string; kind?: "message" | "emote"; broadcast?: boolean; metadata?: Record<string, unknown> }) { return this.request<{ id: string }>("POST", "/messages", { ...input, id: input.id ?? crypto.randomUUID() }); }
   updateMessage(id: string, content: string) { return this.request("PATCH", `/messages/${encodeURIComponent(id)}`, { content }); }
   deleteMessage(id: string) { return this.request("DELETE", `/messages/${encodeURIComponent(id)}`); }
   setBlocks(id: string, blocks: unknown[]) { return this.request("POST", `/messages/${encodeURIComponent(id)}/blocks`, blocks); }

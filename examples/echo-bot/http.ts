@@ -10,7 +10,9 @@ createServer(async (request, response) => {
     for await (const chunk of request) { size += chunk.length; if (size > 2 * 1024 * 1024) { response.writeHead(413).end(); return; } chunks.push(chunk); }
     const body = Buffer.concat(chunks).toString("utf8");
     if (!await verifySignature(secret, String(request.headers["x-zoo-timestamp"] ?? ""), body, String(request.headers["x-zoo-signature"] ?? ""))) { response.writeHead(401).end(); return; }
-    const delivery = JSON.parse(body) as Delivery;
+    const payload = JSON.parse(body);
+    if (payload.type === "url_verification" && typeof payload.challenge === "string") { response.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({ challenge: payload.challenge })); return; }
+    const delivery = payload as Delivery;
     await app.dispatch(delivery, async (event) => {
       if (event.type === "app.mentioned" && event.channel_id) await app.postMessage({ channel_id: event.channel_id, content: "HTTP Botからの返信です。", parent_id: String(event.data.parent_id ?? event.data.id) });
     });

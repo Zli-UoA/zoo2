@@ -51,6 +51,9 @@ impl AppError {
                         "Resource already exists or unique constraint was violated".to_string(),
                     );
                 }
+                if *code == tokio_postgres::error::SqlState::CHECK_VIOLATION {
+                    return AppError::BadRequest("Operation violates a resource constraint".into());
+                }
                 if *code == tokio_postgres::error::SqlState::FOREIGN_KEY_VIOLATION {
                     tracing::warn!("Database foreign key constraint violated (SQLSTATE 23503)");
                     return AppError::BadRequest("Invalid foreign key reference".to_string());

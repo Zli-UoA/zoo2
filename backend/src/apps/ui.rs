@@ -436,7 +436,7 @@ async fn unfurl(
         ));
     }
     toasty::sql::statement("INSERT INTO app_link_unfurls(message_id,installation_id,url,card) VALUES($1,$2,$3,$4) ON CONFLICT(message_id,installation_id,url) DO UPDATE SET card=EXCLUDED.card").bind(id.as_str()).bind(p.installation_id).bind(b.url).bind(card).exec(&mut tx).await?;
-    toasty::sql::statement("UPDATE messages SET app_unfurls=(SELECT COALESCE(jsonb_agg(jsonb_build_object('app_id',i.app_id,'name',a.name,'card',u.card::jsonb)),'[]'::jsonb)::text FROM app_link_unfurls u JOIN app_installations i ON i.id=u.installation_id JOIN apps a ON a.id=i.app_id WHERE u.message_id=$1),updated_at=CURRENT_TIMESTAMP WHERE id=$1").bind(id.as_str()).exec(&mut tx).await?;
+    toasty::sql::statement("UPDATE messages SET app_unfurls=(SELECT COALESCE(jsonb_agg(jsonb_build_object('app_id',i.app_id,'name',a.name,'url',u.url,'card',u.card::jsonb)),'[]'::jsonb)::text FROM app_link_unfurls u JOIN app_installations i ON i.id=u.installation_id JOIN apps a ON a.id=i.app_id WHERE u.message_id=$1),updated_at=CURRENT_TIMESTAMP WHERE id=$1").bind(id.as_str()).exec(&mut tx).await?;
     tx.commit().await?;
     Ok(Json(json!({"id":id})))
 }

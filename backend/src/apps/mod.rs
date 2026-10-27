@@ -1,9 +1,11 @@
 //! External applications. Private platform tables never enter Electric shapes.
 pub mod api;
 pub mod delivery;
+pub mod events;
 pub mod files;
 pub mod management;
 pub mod oauth;
+pub mod resources;
 pub mod ui;
 
 use crate::{auth::AuthUser, error::AppError, state::AppState};
@@ -25,22 +27,115 @@ pub const SCOPES: &[&str] = &[
     "ui:write",
     "commands:read",
     "links:write",
+    "users:write",
+    "preferences:read",
+    "preferences:write",
+    "pins:read",
+    "pins:write",
+    "stars:read",
+    "stars:write",
+    "emoji:read",
+    "emoji:write",
+    "usergroups:read",
+    "usergroups:write",
+    "workspace:read",
+    "workspace:write",
+    "apps:read",
+    "invites:read",
+    "invites:write",
+    "reminders:read",
+    "reminders:write",
+    "files:share",
+    "metadata:read",
+    "metadata:write",
+    "assistant:write",
+    "functions:execute",
 ];
 pub const EVENTS: &[&str] = &[
     "message.created",
     "message.updated",
     "message.deleted",
-    "app.mentioned",
-    "reaction.added",
-    "reaction.removed",
+    "message.replied",
+    "message.thread_broadcast",
+    "message.emote",
+    "channel.history_changed",
+    "user.typing",
     "member.joined",
     "member.left",
     "channel.created",
     "channel.updated",
     "channel.deleted",
+    "channel.archived",
+    "channel.unarchived",
+    "channel.renamed",
+    "channel.purpose_changed",
+    "channel.topic_changed",
+    "channel.privacy_changed",
+    "channel.posting_permissions_changed",
+    "conversation.created",
+    "conversation.opened",
+    "conversation.closed",
+    "conversation.marked",
+    "user.joined",
+    "user.changed",
+    "user.profile_changed",
+    "user.status_changed",
+    "user.presence_changed",
+    "user.guest_status_changed",
+    "bot.added",
+    "bot.changed",
+    "user.preferences_changed",
+    "user.manual_presence_changed",
+    "user.dnd_changed",
+    "user.dnd_changed_public",
+    "pin.added",
+    "pin.removed",
+    "star.added",
+    "star.removed",
+    "emoji.changed",
+    "usergroup.created",
+    "usergroup.updated",
+    "usergroup.members_changed",
+    "usergroup.self_added",
+    "usergroup.self_removed",
+    "workspace.renamed",
+    "workspace.preferences_changed",
+    "workspace.profile_changed",
+    "workspace.profile_deleted",
+    "workspace.profile_reordered",
+    "app.requested",
+    "app.deleted",
+    "app.installed_workspace",
+    "app.uninstalled_workspace",
+    "commands.changed",
     "file.created",
+    "file.changed",
+    "file.deleted",
+    "file.public",
+    "file.shared",
+    "file.unshared",
+    "message.metadata_posted",
+    "message.metadata_updated",
+    "message.metadata_deleted",
+    "invite.requested",
+    "reminder.created",
+    "reminder.fired",
     "app.installed",
     "app.uninstalled",
+    "tokens.revoked",
+    "assistant.started",
+    "assistant.context_changed",
+    "assistant.stopped",
+    "assistant.title_changed",
+    "app.context_changed",
+    "user.connection_requested",
+    "function.executed",
+    "entity.details_requested",
+    "entity.comments_requested",
+    "app.rate_limited",
+    "app.mentioned",
+    "reaction.added",
+    "reaction.removed",
     "command.invoked",
     "action.invoked",
     "view.submitted",
@@ -75,6 +170,10 @@ pub struct Manifest {
     pub message_shortcuts: Vec<String>,
     #[serde(default)]
     pub link_domains: Vec<String>,
+    #[serde(default)]
+    pub functions: Vec<String>,
+    #[serde(default)]
+    pub user_connections: bool,
 }
 #[derive(Clone, Debug, Serialize, Deserialize, Default, PartialEq)]
 #[serde(rename_all = "snake_case")]
@@ -86,9 +185,18 @@ pub enum Transport {
 impl Manifest {
     pub fn validate(&self) -> Result<(), AppError> {
         if self.scopes.iter().any(|s| !SCOPES.contains(&s.as_str()))
-            || self.events.iter().any(|s| !EVENTS.contains(&s.as_str()))
+            || self.events.iter().any(|s| !events::known(s))
         {
             return Err(AppError::BadRequest("Unknown scope or event".into()));
+        }
+        for name in &self.events {
+            for required in events::required_scopes(name) {
+                if !self.scopes.contains(&required) {
+                    return Err(AppError::BadRequest(format!(
+                        "Event {name} requires {required}"
+                    )));
+                }
+            }
         }
         if self.transport == Transport::Http {
             validate_https(self.event_url.as_deref().unwrap_or(""))?;
@@ -101,10 +209,11 @@ impl Manifest {
             || self.message_shortcuts.len() > 50
             || self.link_domains.len() > 50
             || self.redirect_uris.len() > 20
+            || self.functions.len() > 50
         {
             return Err(AppError::BadRequest("Manifest collection too large".into()));
         }
-        if self.commands.iter().any(|s| {
+        if self.commands.iter().chain(self.functions.iter()).any(|s| {
             s.is_empty()
                 || s.len() > 48
                 || !s
@@ -113,14 +222,14 @@ impl Manifest {
         }) {
             return Err(AppError::BadRequest("Invalid command name".into()));
         }
-        if self
-            .events
-            .iter()
-            .any(|s| s.starts_with("message.") || s == "app.mentioned")
-            && !self.scopes.iter().any(|s| s == "messages:read")
-        {
+        if !self.functions.is_empty() && !self.scopes.iter().any(|s| s == "functions:execute") {
             return Err(AppError::BadRequest(
-                "Message events require messages:read".into(),
+                "Functions require functions:execute".into(),
+            ));
+        }
+        if self.user_connections && !self.scopes.iter().any(|s| s == "users:write") {
+            return Err(AppError::BadRequest(
+                "User connections require users:write".into(),
             ));
         }
         for domain in &self.link_domains {
@@ -317,7 +426,7 @@ impl FromRequestParts<AppState> for Principal {
             .ok_or_else(|| AppError::Unauthorized("An app access token is required".into()))?;
         let mut db = state.db.clone();
         let mut tx = db.transaction().await?;
-        let rows=query(&mut tx,"SELECT json_build_object('credential_id',t.id,'installation_id',i.id,'app_id',a.id,'user_id',COALESCE(t.user_id,a.bot_user_id),'bot_user_id',a.bot_user_id,'scopes',t.scopes::jsonb,'manifest',i.manifest::jsonb,'delegated',t.user_id IS NOT NULL)::text FROM app_credentials t JOIN app_installations i ON i.id=t.installation_id JOIN apps a ON a.id=i.app_id WHERE t.token_hash=$1 AND t.revoked_at IS NULL AND t.expires_at>now() AND i.active AND a.status='installed'",&[&hash(token)]).await?;
+        let rows=query(&mut tx,"SELECT json_build_object('credential_id',t.id,'installation_id',i.id,'app_id',a.id,'user_id',COALESCE(t.user_id,a.bot_user_id),'bot_user_id',a.bot_user_id,'scopes',t.scopes::jsonb,'manifest',i.manifest::jsonb,'delegated',t.user_id IS NOT NULL)::text FROM app_credentials t JOIN app_installations i ON i.id=t.installation_id JOIN apps a ON a.id=i.app_id WHERE t.token_hash=$1 AND t.revoked_at IS NULL AND t.expires_at>now() AND i.active AND a.status='installed' AND NOT EXISTS(SELECT 1 FROM users u WHERE u.id=COALESCE(t.user_id,a.bot_user_id) AND u.is_deactivated)",&[&hash(token)]).await?;
         let v = rows
             .first()
             .ok_or_else(|| AppError::Unauthorized("Invalid or expired app token".into()))?;

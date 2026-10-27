@@ -435,6 +435,23 @@
     "revokeConsent": "自分のアクセス許可を取り消す",
     "messageActions": "Appでメッセージを操作",
     "transport": "接続方式",
-    "eventEndpoint": "イベント配信先"
+    "eventEndpoint": "イベント配信先",
+    "entity": {
+      "details": "詳細を取得",
+      "comments": "コメントを取得"
+    },
+    "assistant": {
+      "session": "アシスタント",
+      "start": "アシスタントを開始",
+      "stop": "停止",
+      "title": "セッション名"
+    },
+    "userConnection": {
+      "connected": "接続済み",
+      "requested": "接続を要求済み",
+      "disconnected": "未接続",
+      "connect": "アカウントを接続",
+      "disconnect": "接続を解除"
+    }
   }
 }

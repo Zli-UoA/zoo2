@@ -9,11 +9,13 @@ import { useShell } from "../layout/shell-context";
 import { Button } from "../ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "../ui/dialog";
 import { inputClassName } from "../ui/input-styles";
+import { AppConnections } from "./AppConnections";
 import { AppBlocks } from "./AppBlocks";
 import { AppAvatar } from "./AppIdentity";
 
 type Manifest = {
   scopes?: string[];
+  user_connections?: boolean;
   transport?: string;
   event_url?: string | null;
   notification_only?: boolean;
@@ -379,6 +381,13 @@ function UserAppsDialog({
                   </div>
                 </div>
                 <p className="whitespace-pre-wrap text-sm">{app.description}</p>
+                {app.status === "installed" ? (
+                  <AppConnections
+                    appId={app.id}
+                    connections={Boolean(app.manifest.user_connections)}
+                    assistant={Boolean(app.manifest.scopes?.includes("assistant:write"))}
+                  />
+                ) : null}
                 <p className="break-all text-xs text-muted-foreground">
                   {t("apps.developer")}:{" "}
                   {people.find((user) => user.id === app.owner_id)?.display_name ||

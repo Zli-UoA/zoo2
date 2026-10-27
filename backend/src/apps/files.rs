@@ -236,12 +236,24 @@ async fn download(
     let mut tx = db.transaction().await?;
     let row = one(
         &mut tx,
-        "SELECT row_to_json(f)::text FROM app_files f WHERE id=$1 AND completed",
+        "SELECT row_to_json(f)::text FROM app_files f WHERE id=$1 AND completed AND deleted_at IS NULL",
         &[&id],
     )
     .await?;
-    p.channel(&mut tx, row["channel_id"].as_str().unwrap(), false)
-        .await?;
+    let shares=super::query(&mut tx,"SELECT json_build_object('channel',channel_id)::text FROM app_file_shares WHERE file_id=$1",&[&id]).await?;
+    let mut allowed = false;
+    for share in shares {
+        if p.channel(&mut tx, share["channel"].as_str().unwrap(), false)
+            .await
+            .is_ok()
+        {
+            allowed = true;
+            break;
+        }
+    }
+    if !allowed {
+        return Err(AppError::NotFound("File not found".into()));
+    }
     signed_download(&row)
 }
 async fn human_download(
@@ -251,10 +263,10 @@ async fn human_download(
 ) -> Result<Json<Value>, AppError> {
     let mut db = s.db.clone();
     let mut tx = db.transaction().await?;
-    let row=one(&mut tx,"SELECT row_to_json(f)::text FROM app_files f JOIN channels c ON c.id=f.channel_id WHERE f.id=$1 AND f.completed AND c.deleted_at IS NULL AND (NOT c.is_private OR EXISTS(SELECT 1 FROM channel_user cu WHERE cu.channel_id=c.id AND cu.user_id=$2))",&[&id,&actor.id]).await?;
+    let row=one(&mut tx,"SELECT row_to_json(f)::text FROM app_files f WHERE f.id=$1 AND f.completed AND f.deleted_at IS NULL AND EXISTS(SELECT 1 FROM app_file_shares sh JOIN channels c ON c.id=sh.channel_id WHERE sh.file_id=f.id AND c.deleted_at IS NULL AND ((NOT c.is_private AND NOT EXISTS(SELECT 1 FROM users WHERE id=$2 AND is_guest)) OR EXISTS(SELECT 1 FROM channel_user cu WHERE cu.channel_id=c.id AND cu.user_id=$2)))",&[&id,&actor.id]).await?;
     signed_download(&row)
 }
-fn signed_download(row: &Value) -> Result<Json<Value>, AppError> {
+pub(crate) fn signed_download(row: &Value) -> Result<Json<Value>, AppError> {
     Ok(Json(
         json!({"url":Store::configured()?.sign("GET",row["object_key"].as_str().unwrap(),None,jiff::Timestamp::now())?,"expires_in":60,"name":row["name"]}),
     ))
@@ -281,7 +293,7 @@ async fn attach(
     }
     let mut metadata = Vec::new();
     for file in files {
-        metadata.push(one(&mut tx,"SELECT json_build_object('id',id,'name',name,'size_bytes',size_bytes)::text FROM app_files WHERE id=$1 AND installation_id=$2 AND channel_id=$3 AND completed",&[&file,&p.installation_id,&m.channel_id]).await?);
+        metadata.push(one(&mut tx,"SELECT json_build_object('id',id,'name',name,'size_bytes',size_bytes)::text FROM app_files WHERE id=$1 AND installation_id=$2 AND completed AND deleted_at IS NULL AND EXISTS(SELECT 1 FROM app_file_shares sh WHERE sh.file_id=app_files.id AND sh.channel_id=$3)",&[&file,&p.installation_id,&m.channel_id]).await?);
     }
     toasty::sql::statement(
         "UPDATE messages SET app_attachments=$2,updated_at=CURRENT_TIMESTAMP WHERE id=$1",

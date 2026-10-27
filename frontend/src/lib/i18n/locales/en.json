@@ -435,6 +435,23 @@
     "revokeConsent": "Revoke my authorization",
     "messageActions": "Message app actions",
     "transport": "Transport",
-    "eventEndpoint": "Event endpoint"
+    "eventEndpoint": "Event endpoint",
+    "entity": {
+      "details": "Get details",
+      "comments": "Get comments"
+    },
+    "assistant": {
+      "session": "Assistant",
+      "start": "Start assistant",
+      "stop": "Stop",
+      "title": "Session title"
+    },
+    "userConnection": {
+      "connected": "Connected",
+      "requested": "Connection requested",
+      "disconnected": "Disconnected",
+      "connect": "Connect account",
+      "disconnect": "Disconnect"
+    }
   }
 }

@@ -161,7 +161,7 @@ function ConnectedMessageAppContent({ message }: { message: FeedMessage }) {
   const { t } = useTranslation();
   const client = useMemo(() => createConfiguredApiClient(config), [config]);
   const [error, setError] = useState("");
-  let unfurls: { app_id: string; name: string; card: unknown }[] = [];
+  let unfurls: { app_id: string; name: string; url?: string; card: unknown }[] = [];
   try {
     const value: unknown = JSON.parse(message.app_unfurls ?? "[]");
     if (Array.isArray(value))
@@ -214,6 +214,32 @@ function ConnectedMessageAppContent({ message }: { message: FeedMessage }) {
               {unfurl.name} · APP
             </button>
             <MessageCard card={card} />
+            {unfurl.url && shell.selectedChannelId ? (
+              <div className="flex gap-2">
+                {(["details", "comments"] as const).map((kind) => (
+                  <Button
+                    key={kind}
+                    size="sm"
+                    variant="ghost"
+                    onClick={() => {
+                      void client
+                        .request(`/api/apps/${unfurl.app_id}/entities/requests`, {
+                          method: "POST",
+                          body: {
+                            kind,
+                            url: unfurl.url,
+                            message_id: message.id,
+                            channel_id: shell.selectedChannelId,
+                          },
+                        })
+                        .catch(() => setError(t("apps.actionError")));
+                    }}
+                  >
+                    {t(`apps.entity.${kind}`)}
+                  </Button>
+                ))}
+              </div>
+            ) : null}
           </div>
         ) : null;
       })}

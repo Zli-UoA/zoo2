@@ -58,13 +58,29 @@ async fn socket(
 pub(crate) async fn active(s: &AppState, credential: &str) -> Result<bool, AppError> {
     let mut db = s.db.clone();
     let mut tx = db.transaction().await?;
-    Ok(one(&mut tx,"SELECT json_build_object('ok',EXISTS(SELECT 1 FROM app_credentials t JOIN app_installations i ON i.id=t.installation_id JOIN apps a ON a.id=i.app_id WHERE t.id=$1 AND t.revoked_at IS NULL AND t.expires_at>now() AND i.active AND a.status='installed'))::text",&[credential]).await?["ok"]==true)
+    Ok(one(&mut tx,"SELECT json_build_object('ok',EXISTS(SELECT 1 FROM app_credentials t JOIN app_installations i ON i.id=t.installation_id JOIN apps a ON a.id=i.app_id WHERE t.id=$1 AND t.revoked_at IS NULL AND t.expires_at>now() AND i.active AND a.status='installed' AND NOT EXISTS(SELECT 1 FROM users u WHERE u.id=COALESCE(t.user_id,a.bot_user_id) AND u.is_deactivated)))::text",&[credential]).await?["ok"]==true)
 }
 pub async fn claim(s: &AppState, installation: &str) -> Result<Option<Value>, AppError> {
     let mut db = s.db.clone();
     let mut tx = db.transaction().await?;
+    // Serialize only dispatchers for this installation, never source transactions.
+    one(&mut tx,"SELECT json_build_object('locked',pg_advisory_xact_lock(hashtextextended($1,0)) IS NULL)::text",&[&format!("app-dispatch:{installation}")]).await?;
+    let usage=one(&mut tx,"SELECT json_build_object('count',count(*))::text FROM app_deliveries WHERE installation_id=$1 AND first_delivered_at>=date_trunc('hour',now()) AND event_type<>'app.rate_limited'",&[installation]).await?;
+    let limited = usage["count"].as_u64().unwrap_or(0) >= 30000;
+    if limited {
+        super::events::emit(
+            &mut tx,
+            "app.rate_limited",
+            json!({"installation_id":installation,"limit":30000}),
+            None,
+            None,
+            None,
+            Some(installation),
+        )
+        .await?;
+    }
     let lease = uuid::Uuid::new_v4().to_string();
-    let rows=query(&mut tx,"WITH candidate AS(SELECT d.id FROM app_deliveries d JOIN app_installations i ON i.id=d.installation_id JOIN apps a ON a.id=i.app_id WHERE i.id=$1 AND ((i.active AND a.status='installed') OR (d.event_type='app.uninstalled' AND a.status='disabled')) AND d.acked_at IS NULL AND d.available_at<=now() AND d.expires_at>now() AND (d.lease_until IS NULL OR d.lease_until<now()) AND (d.channel_id IS NULL OR EXISTS(SELECT 1 FROM channel_user cu JOIN channels c ON c.id=cu.channel_id WHERE cu.channel_id=d.channel_id AND cu.user_id=a.bot_user_id AND (c.deleted_at IS NULL OR d.event_type='channel.deleted'))) ORDER BY d.created_at,d.id FOR UPDATE OF d SKIP LOCKED LIMIT 1) UPDATE app_deliveries d SET attempts=attempts+1,lease_until=now()+interval '3 seconds',lease_token=$2,available_at=now()+make_interval(secs=>LEAST(3600,power(2,LEAST(attempts+1,12))::integer)) FROM candidate c WHERE d.id=c.id RETURNING json_build_object('delivery_id',d.id,'ack_token',d.lease_token,'event',d.payload::jsonb,'attempt',d.attempts)::text",&[installation,&lease]).await?;
+    let rows=query(&mut tx,"WITH candidate AS(SELECT d.id FROM app_deliveries d WHERE d.installation_id=$1 AND app_delivery_allowed(d) AND (NOT $3::boolean OR d.first_delivered_at IS NOT NULL OR d.event_type='app.rate_limited') AND d.acked_at IS NULL AND d.available_at<=now() AND d.expires_at>now() AND (d.lease_until IS NULL OR d.lease_until<now()) ORDER BY d.created_at,d.id FOR UPDATE SKIP LOCKED LIMIT 1) UPDATE app_deliveries d SET attempts=attempts+1,first_delivered_at=COALESCE(first_delivered_at,now()),lease_until=now()+interval '3 seconds',lease_token=$2,available_at=now()+make_interval(secs=>LEAST(3600,power(2,LEAST(attempts+1,12))::integer)) FROM candidate c WHERE d.id=c.id RETURNING json_build_object('delivery_id',d.id,'ack_token',d.lease_token,'event',d.payload::jsonb,'attempt',d.attempts)::text",&[installation,&lease,if limited {"true"}else{"false"}]).await?;
     tx.commit().await?;
     let value = rows.into_iter().next();
     if let Some(event) = &value {
@@ -85,11 +101,29 @@ async fn ack(s: &AppState, installation: &str, id: &str, lease: &str) -> Result<
     Ok(())
 }
 async fn run_socket(s: AppState, mut ws: WebSocket, installation: String, credential: String) {
+    if ws
+        .send(Message::Text(
+            json!({"type":"hello","version":1,"installation_id":installation})
+                .to_string()
+                .into(),
+        ))
+        .await
+        .is_err()
+    {
+        return;
+    }
+    let mut subscriptions: Vec<String> = Vec::new();
+    let mut previous_presence = Value::Null;
     let mut ticks = tokio::time::interval(Duration::from_millis(300));
     loop {
         tokio::select! {
         _=ticks.tick()=>{
          if !active(&s,&credential).await.unwrap_or(false){terminal_socket(&s,&mut ws,&installation).await;break;}
+         if !subscriptions.is_empty() {
+          match presence_snapshot(&s,&credential,&subscriptions).await {
+           Ok(snapshot)=>{if snapshot!=previous_presence {previous_presence=snapshot.clone();if ws.send(Message::Text(json!({"type":"presence_snapshot","users":snapshot}).to_string().into())).await.is_err(){break;}}},Err(_)=>break
+          }
+         }
          match claim(&s,&installation).await{
           Ok(Some(event))=>{
            if ws.send(Message::Text(event.to_string().into())).await.is_err(){break;}
@@ -99,12 +133,39 @@ async fn run_socket(s: AppState, mut ws: WebSocket, installation: String, creden
         frame=ws.recv()=>{match frame{
          Some(Ok(Message::Text(text)))=>{
           if !active(&s,&credential).await.unwrap_or(false){break;}
+          if let Ok(v)=serde_json::from_str::<Value>(&text)
+           && matches!(v["type"].as_str(),Some("presence_query"|"presence_sub")) {
+            let users=v["users"].as_array().filter(|ids|ids.len()<=500).and_then(|ids|ids.iter().map(|id|id.as_str().map(str::to_owned)).collect::<Option<Vec<_>>>());
+            let result=match users.as_ref(){Some(ids)=>presence_snapshot(&s,&credential,ids).await,None=>Err(AppError::BadRequest("users must contain at most 500 user IDs".into()))};
+            match result {Ok(snapshot)=>{if v["type"]=="presence_sub"{subscriptions=users.unwrap();previous_presence=snapshot.clone();}
+            if ws.send(Message::Text(json!({"type":"presence_snapshot","request_id":v["id"],"users":snapshot}).to_string().into())).await.is_err(){break;}},Err(_)=>{if ws.send(Message::Text(json!({"type":"error","request_id":v["id"],"error":"Presence request denied or invalid"}).to_string().into())).await.is_err(){break;}}}
+            continue;
+           }
           if let Ok(v)=serde_json::from_str::<Value>(&text)&& let(Some(id),Some(token))=(v["ack"].as_str(),v["ack_token"].as_str())&& ack(&s,&installation,id,token).await.is_err(){break;}
          },Some(Ok(Message::Ping(data)))=>{if ws.send(Message::Pong(data)).await.is_err(){break;}},Some(Ok(Message::Close(_)))|None|Some(Err(_))=>break,_=>{}
         }}
         }
     }
+    let _ = ws
+        .send(Message::Text(
+            json!({"type":"goodbye","reason":"connection_closed"})
+                .to_string()
+                .into(),
+        ))
+        .await;
     let _ = ws.close().await;
+}
+
+async fn presence_snapshot(
+    s: &AppState,
+    credential: &str,
+    users: &[String],
+) -> Result<Value, AppError> {
+    let mut db = s.db.clone();
+    let mut tx = db.transaction().await?;
+    let identity=one(&mut tx,"SELECT json_build_object('id',COALESCE(t.user_id,a.bot_user_id))::text FROM app_credentials t JOIN app_installations i ON i.id=t.installation_id JOIN apps a ON a.id=i.app_id WHERE t.id=$1 AND t.revoked_at IS NULL AND t.expires_at>now() AND i.active AND a.status='installed' AND t.scopes::jsonb ? 'users:read' AND i.scopes::jsonb ? 'users:read'",&[credential]).await?;
+    let rows=query(&mut tx,"SELECT json_build_object('user_id',u.id,'presence',CASE WHEN u.is_deactivated THEN 'away' ELSE COALESCE(e.presence,'away') END)::text FROM users u LEFT JOIN user_event_settings e ON e.user_id=u.id WHERE $1::jsonb ? u.id AND (u.id=$2 OR NOT EXISTS(SELECT 1 FROM users WHERE id=$2 AND is_guest) OR EXISTS(SELECT 1 FROM channel_user me JOIN channel_user other ON other.channel_id=me.channel_id JOIN channels c ON c.id=me.channel_id WHERE me.user_id=$2 AND other.user_id=u.id AND c.deleted_at IS NULL)) ORDER BY u.id",&[&json!(users).to_string(),identity["id"].as_str().unwrap()]).await?;
+    Ok(json!(rows))
 }
 
 async fn terminal_socket(s: &AppState, ws: &mut WebSocket, installation: &str) {
@@ -169,7 +230,11 @@ fn public_ip(ip: IpAddr) -> bool {
         }
     }
 }
-async fn deliver(url: &str, signing: &str, event: &Value) -> Result<(), AppError> {
+async fn signed_post(
+    url: &str,
+    signing: &str,
+    event: &Value,
+) -> Result<reqwest::Response, AppError> {
     validate_https(url)?;
     let url = reqwest::Url::parse(url).map_err(|e| AppError::Internal(e.into()))?;
     let host = url.host_str().unwrap();
@@ -216,7 +281,51 @@ async fn deliver(url: &str, signing: &str, event: &Value) -> Result<(), AppError
             response.status().as_u16()
         )));
     }
+    Ok(response)
+}
+async fn deliver(url: &str, signing: &str, event: &Value) -> Result<(), AppError> {
+    signed_post(url, signing, event).await?;
     Ok(())
+}
+
+pub async fn verify_endpoint(url: &str, signing: &str) -> Result<(), AppError> {
+    let challenge = secret("zoo_challenge_");
+    let response = signed_post(
+        url,
+        signing,
+        &json!({"type":"url_verification","challenge":challenge}),
+    )
+    .await?;
+    if response.content_length().is_some_and(|n| n > 4096) {
+        return Err(AppError::BadGateway(
+            "Challenge response is too large".into(),
+        ));
+    }
+    let mut stream = response.bytes_stream();
+    let mut bytes = Vec::new();
+    while let Some(chunk) = stream.next().await {
+        let chunk =
+            chunk.map_err(|_| AppError::BadGateway("Could not read challenge response".into()))?;
+        if bytes.len() + chunk.len() > 4096 {
+            return Err(AppError::BadGateway(
+                "Challenge response is too large".into(),
+            ));
+        }
+        bytes.extend_from_slice(&chunk);
+    }
+    let matched = valid_challenge_response(&bytes, &challenge);
+    if !matched {
+        return Err(AppError::BadGateway(
+            "Endpoint did not return the challenge".into(),
+        ));
+    }
+    Ok(())
+}
+fn valid_challenge_response(bytes: &[u8], challenge: &str) -> bool {
+    serde_json::from_slice::<Value>(bytes)
+        .ok()
+        .is_some_and(|v| v["challenge"] == challenge)
+        || bytes == challenge.as_bytes()
 }
 pub async fn worker(s: AppState) {
     let mut ticks = tokio::time::interval(Duration::from_millis(500));
@@ -224,6 +333,11 @@ pub async fn worker(s: AppState) {
     loop {
         ticks.tick().await;
         passes = passes.wrapping_add(1);
+        if passes.is_multiple_of(2)
+            && let Err(e) = super::events::maintain(&s).await
+        {
+            tracing::warn!(error=%e,"Event state maintenance failed");
+        }
         if passes.is_multiple_of(120)
             && let Err(e) = cleanup(&s).await
         {
@@ -312,6 +426,17 @@ async fn cleanup(s: &AppState) -> Result<(), AppError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn verifies_exact_challenge_responses() {
+        assert!(valid_challenge_response(b"abc", "abc"));
+        assert!(valid_challenge_response(br#"{"challenge":"abc"}"#, "abc"));
+        assert!(!valid_challenge_response(b"abcd", "abc"));
+        assert!(!valid_challenge_response(
+            br#"{"challenge":"other"}"#,
+            "abc"
+        ));
+        assert!(!valid_challenge_response(b"{}", "abc"));
+    }
     #[test]
     fn rejects_nonpublic_destinations() {
         for ip in [

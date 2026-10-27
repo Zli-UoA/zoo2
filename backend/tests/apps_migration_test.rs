@@ -23,7 +23,7 @@ async fn upgrades_existing_webhooks_without_replacing_identities_or_secrets() ->
     migrations.retain(|p| p.extension().is_some_and(|s| s == "sql"));
     migrations.sort();
     for file in &migrations {
-        if file.file_name().unwrap() != "20261027000000_create_apps.sql" {
+        if file.file_name().unwrap().to_string_lossy().as_ref() < "20261027000000_create_apps.sql" {
             client
                 .batch_execute(&std::fs::read_to_string(file)?)
                 .await?;
@@ -43,6 +43,11 @@ async fn upgrades_existing_webhooks_without_replacing_identities_or_secrets() ->
     client
         .batch_execute(include_str!(
             "../../infra/db/migrations/20261027000000_create_apps.sql"
+        ))
+        .await?;
+    client
+        .batch_execute(include_str!(
+            "../../infra/db/migrations/20261027010000_complete_app_events.sql"
         ))
         .await?;
     let row=client.query_one("SELECT w.id,w.secret,w.user_id,u.app_id,a.name,m.user_id FROM channel_webhooks w JOIN users u ON u.id=w.user_id JOIN apps a ON a.id=u.app_id CROSS JOIN messages m WHERE w.id=$1 AND m.id=$2",&[&hook,&message]).await?;

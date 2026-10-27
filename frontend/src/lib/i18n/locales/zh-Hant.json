@@ -435,6 +435,23 @@
     "revokeConsent": "Revoke my authorization",
     "messageActions": "Message app actions",
     "transport": "Transport",
-    "eventEndpoint": "Event endpoint"
+    "eventEndpoint": "Event endpoint",
+    "entity": {
+      "details": "取得詳細資料",
+      "comments": "取得留言"
+    },
+    "assistant": {
+      "session": "助理",
+      "start": "啟動助理",
+      "stop": "停止",
+      "title": "工作階段名稱"
+    },
+    "userConnection": {
+      "connected": "已連接",
+      "requested": "已要求連接",
+      "disconnected": "未連接",
+      "connect": "連接帳號",
+      "disconnect": "中斷連接"
+    }
   }
 }

@@ -71,6 +71,9 @@ async fn create_message(
     Json(body): Json<m::CreateMessageRequest>,
 ) -> Result<Json<crate::routes::response::ApiResponse<m::MessageResponse>>, AppError> {
     check(&state, &p, &body.channel_id, "messages:write", true).await?;
+    if body.metadata.is_some() {
+        p.require("metadata:write")?;
+    }
     // A supplied UUID is the idempotency key; never return another author's write.
     if let Some(id) = &body.id {
         let mut db = state.db.clone();

@@ -25,6 +25,15 @@ pub struct CreateMessageRequest {
     pub channel_id: String,
     pub content: String,
     pub parent_id: Option<String>,
+    #[serde(default = "default_message_kind")]
+    pub kind: String,
+    #[serde(default)]
+    pub broadcast: bool,
+    pub metadata: Option<serde_json::Value>,
+}
+
+fn default_message_kind() -> String {
+    "message".into()
 }
 
 #[derive(Debug, Deserialize)]
@@ -127,6 +136,16 @@ pub(crate) async fn create_message_impl(
     card: Option<String>,
 ) -> Result<Json<ApiResponse<MessageResponse>>, AppError> {
     validate_message_content(&payload.content)?;
+    if !matches!(payload.kind.as_str(), "message" | "emote")
+        || payload.broadcast && payload.parent_id.is_none()
+    {
+        return Err(AppError::BadRequest(
+            "Invalid message kind or broadcast target".into(),
+        ));
+    }
+    if let Some(metadata) = &payload.metadata {
+        crate::apps::events::object(metadata)?;
+    }
 
     Uuid::parse_str(&payload.channel_id).map_err(|_| {
         AppError::BadRequest(format!(
@@ -141,6 +160,14 @@ pub(crate) async fn create_message_impl(
 
     let mut db = state.db.clone();
     let mut tx = db.transaction().await?;
+    crate::apps::events::actor_context(&mut tx, &auth_user.id).await?;
+    let options = serde_json::json!({"kind":payload.kind,"broadcast":payload.broadcast,"metadata":payload.metadata});
+    crate::apps::one(
+        &mut tx,
+        "SELECT json_build_object('options',set_config('zoo.message_options',$1,true))::text",
+        &[&options.to_string()],
+    )
+    .await?;
 
     let principal = crate::apps::one(&mut tx,
         "SELECT json_build_object('bot',EXISTS(SELECT 1 FROM users WHERE id=$1 AND is_bot),'active',EXISTS(SELECT 1 FROM apps a JOIN app_installations i ON i.app_id=a.id WHERE a.bot_user_id=$1 AND a.status='installed' AND i.active))::text", &[auth_user.id.as_str()]).await?;
@@ -174,7 +201,8 @@ pub(crate) async fn create_message_impl(
     }
 
     // プライベートチャンネルの場合、所属していなければ 404 で存在を隠蔽
-    if channel.is_private || bot_actor {
+    if channel.is_private || bot_actor || crate::apps::events::guest(&mut tx, &auth_user.id).await?
+    {
         let membership = ChannelUser::filter(
             ChannelUser::fields()
                 .channel_id()
@@ -193,6 +221,13 @@ pub(crate) async fn create_message_impl(
         }
     }
 
+    crate::apps::events::posting(
+        &mut tx,
+        &auth_user.id,
+        &payload.channel_id,
+        state.config.dev_auth_enabled,
+    )
+    .await?;
     // スレッド親メッセージ検証
     let mut parent_author_id: Option<String> = None;
     if let Some(ref parent_id) = payload.parent_id {
@@ -311,7 +346,7 @@ pub(crate) async fn update_message(
         )));
     }
 
-    if channel.is_private {
+    if channel.is_private || crate::apps::events::guest(&mut tx, &auth_user.id).await? {
         let membership = ChannelUser::filter(
             ChannelUser::fields()
                 .channel_id()
@@ -411,7 +446,7 @@ pub(crate) async fn delete_message(
         is_workspace_admin(&mut tx, &auth_user.id, state.config.dev_auth_enabled).await?
     };
 
-    if channel.is_private {
+    if channel.is_private || crate::apps::events::guest(&mut tx, &auth_user.id).await? {
         let membership = ChannelUser::filter(
             ChannelUser::fields()
                 .channel_id()
@@ -499,7 +534,7 @@ async fn list_messages(
         )));
     }
 
-    if channel.is_private {
+    if channel.is_private || crate::apps::events::guest_in_db(&mut db, &auth_user.id).await? {
         let membership = ChannelUser::filter(
             ChannelUser::fields()
                 .channel_id()
@@ -541,7 +576,7 @@ pub(crate) async fn add_reaction(
     Uuid::parse_str(&id)
         .map_err(|_| AppError::BadRequest(format!("message id is not a valid UUID: {id}")))?;
 
-    let normalized_emoji = normalize_and_validate_emoji(&payload.emoji)?;
+    let normalized_emoji = reaction_emoji(&state, &payload.emoji, true).await?;
 
     let mut db = state.db.clone();
     let mut tx = db.transaction().await?;
@@ -583,7 +618,7 @@ pub(crate) async fn add_reaction(
         ));
     }
 
-    if channel.is_private {
+    if channel.is_private || crate::apps::events::guest(&mut tx, &auth_user.id).await? {
         let membership = ChannelUser::filter(
             ChannelUser::fields()
                 .channel_id()
@@ -727,7 +762,7 @@ pub(crate) async fn delete_reaction(
     Uuid::parse_str(&id)
         .map_err(|_| AppError::BadRequest(format!("message id is not a valid UUID: {id}")))?;
 
-    let normalized_emoji = normalize_and_validate_emoji(&query.emoji)?;
+    let normalized_emoji = reaction_emoji(&state, &query.emoji, false).await?;
 
     let mut db = state.db.clone();
     let mut tx = db.transaction().await?;
@@ -769,7 +804,7 @@ pub(crate) async fn delete_reaction(
         ));
     }
 
-    if channel.is_private {
+    if channel.is_private || crate::apps::events::guest(&mut tx, &auth_user.id).await? {
         let membership = ChannelUser::filter(
             ChannelUser::fields()
                 .channel_id()
@@ -817,4 +852,34 @@ pub(crate) async fn delete_reaction(
         ReactionResponse::from(reaction),
         txid,
     )))
+}
+
+async fn reaction_emoji(
+    state: &AppState,
+    input: &str,
+    require_existing: bool,
+) -> Result<String, AppError> {
+    if let Ok(emoji) = normalize_and_validate_emoji(input) {
+        return Ok(emoji);
+    }
+    if let Some(name) = input.strip_prefix(':').and_then(|s| s.strip_suffix(':'))
+        && !name.is_empty()
+        && name.len() <= 64
+        && name
+            .bytes()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == b'_')
+    {
+        if require_existing {
+            let mut db = state.db.clone();
+            let mut tx = db.transaction().await?;
+            crate::apps::one(
+                &mut tx,
+                "SELECT '{}'::text FROM workspace_emojis WHERE name=$1",
+                &[name],
+            )
+            .await?;
+        }
+        return Ok(input.to_owned());
+    }
+    normalize_and_validate_emoji(input)
 }

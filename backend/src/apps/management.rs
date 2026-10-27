@@ -186,6 +186,9 @@ async fn action(
     let admin =
         crate::auth::rbac::is_workspace_admin(&mut tx, &actor.id, state.config.dev_auth_enabled)
             .await?;
+    if app["deleted_at"].as_str().is_some() {
+        return Err(AppError::NotFound("App was deleted".into()));
+    }
     let result=match action.as_str(){
  "submit"=>{toasty::sql::statement("UPDATE apps SET status='pending' WHERE id=$1").bind(id.as_str()).exec(&mut tx).await?;json!({"status":"pending"})},
  "install"=>{
@@ -202,7 +205,8 @@ async fn action(
   toasty::sql::statement("UPDATE apps SET status='installed' WHERE id=$1").bind(id.as_str()).exec(&mut tx).await?;
   json!({"status":"installed"})
  },
- "disable"=>{
+ "delete" | "disable"=>{
+  if action=="delete" {toasty::sql::statement("UPDATE apps SET deleted_at=now() WHERE id=$1").bind(id.as_str()).exec(&mut tx).await?;}
   toasty::sql::statement("UPDATE apps SET status='disabled' WHERE id=$1").bind(id.as_str()).exec(&mut tx).await?;
   toasty::sql::statement("UPDATE app_installations SET active=false WHERE app_id=$1").bind(id.as_str()).exec(&mut tx).await?;
   toasty::sql::statement("UPDATE app_credentials SET revoked_at=now() WHERE installation_id IN(SELECT id FROM app_installations WHERE app_id=$1)").bind(id.as_str()).exec(&mut tx).await?;
@@ -211,6 +215,11 @@ async fn action(
  },
  "rotate-signing-secret"=>{
   one(&mut tx,"UPDATE app_installations SET signing_secret=$2 WHERE app_id=$1 AND active RETURNING json_build_object('signing_secret',signing_secret)::text",&[&id,&secret("zoo_sign_")]).await?
+ },
+ "verify-endpoint"=>{
+  let connection=one(&mut tx,"SELECT json_build_object('url',manifest::jsonb->>'event_url','signing',signing_secret)::text FROM app_installations WHERE app_id=$1 AND active AND manifest::jsonb->>'transport'='http'",&[&id]).await?;
+  super::delivery::verify_endpoint(connection["url"].as_str().unwrap_or(""),connection["signing"].as_str().unwrap()).await?;
+  one(&mut tx,"UPDATE app_installations SET endpoint_verified_at=now() WHERE app_id=$1 RETURNING json_build_object('verified_at',endpoint_verified_at)::text",&[&id]).await?
  },
  "connection"=>{
   one(&mut tx,"SELECT json_build_object('signing_secret',signing_secret)::text FROM app_installations WHERE app_id=$1 AND active",&[&id]).await?
