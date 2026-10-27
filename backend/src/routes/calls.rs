@@ -170,7 +170,12 @@ impl CallRegistry {
         let rooms = self.rooms.read().await;
         rooms
             .get(channel_id)
-            .map(|r| r.participants.values().map(|p| p.participant.clone()).collect())
+            .map(|r| {
+                r.participants
+                    .values()
+                    .map(|p| p.participant.clone())
+                    .collect()
+            })
             .unwrap_or_default()
     }
 
@@ -201,7 +206,9 @@ impl CallRegistry {
         let session_id = participant.session_id;
 
         // すでに存在しない新規セッションの場合に上限をチェック
-        if !room.participants.contains_key(&session_id) && room.participants.len() >= max_participants {
+        if !room.participants.contains_key(&session_id)
+            && room.participants.len() >= max_participants
+        {
             return Err(AppError::Conflict(format!(
                 "Call room is full (max {max_participants} participants)"
             )));
@@ -296,7 +303,9 @@ impl CallRegistry {
             .ok_or_else(|| AppError::NotFound("Session not found in call".into()))?;
 
         if session.participant.user_id != user_id {
-            return Err(AppError::Forbidden("Session belongs to another user".into()));
+            return Err(AppError::Forbidden(
+                "Session belongs to another user".into(),
+            ));
         }
 
         session.participant.is_muted = is_muted;
@@ -450,8 +459,9 @@ async fn get_call_status(
     let mut db = state.db.clone();
     authorize_call_access(&mut db, &channel_id, &user).await?;
 
-    let ice_servers: serde_json::Value = serde_json::from_str(&state.config.webrtc_ice_servers_json)
-        .unwrap_or_else(|_| serde_json::json!([{"urls": ["stun:stun.l.google.com:19302"]}]));
+    let ice_servers: serde_json::Value =
+        serde_json::from_str(&state.config.webrtc_ice_servers_json)
+            .unwrap_or_else(|_| serde_json::json!([{"urls": ["stun:stun.l.google.com:19302"]}]));
 
     let participants = state.call_registry.get_participants(&channel_id).await;
     let is_active = !participants.is_empty();
@@ -487,8 +497,9 @@ async fn call_stream(
     };
 
     let (tx, rx) = mpsc::unbounded_channel();
-    let ice_servers: serde_json::Value = serde_json::from_str(&state.config.webrtc_ice_servers_json)
-        .unwrap_or_else(|_| serde_json::json!([{"urls": ["stun:stun.l.google.com:19302"]}]));
+    let ice_servers: serde_json::Value =
+        serde_json::from_str(&state.config.webrtc_ice_servers_json)
+            .unwrap_or_else(|_| serde_json::json!([{"urls": ["stun:stun.l.google.com:19302"]}]));
 
     state
         .call_registry
@@ -535,7 +546,9 @@ async fn send_signal(
     let mut db = state.db.clone();
     authorize_call_access(&mut db, &channel_id, &user).await?;
 
-    let payload_len = serde_json::to_string(&body.signal).unwrap_or_default().len();
+    let payload_len = serde_json::to_string(&body.signal)
+        .unwrap_or_default()
+        .len();
     if payload_len > MAX_SIGNAL_PAYLOAD_SIZE {
         return Err(AppError::BadRequest("Signal payload too large".into()));
     }
@@ -576,7 +589,10 @@ async fn leave_call(
     Path(channel_id): Path<String>,
     Json(body): Json<LeavePayload>,
 ) -> Result<Json<serde_json::Value>, AppError> {
-    state.call_registry.leave(&channel_id, body.session_id).await;
+    state
+        .call_registry
+        .leave(&channel_id, body.session_id)
+        .await;
     Ok(Json(serde_json::json!({ "ok": true })))
 }
 
@@ -743,7 +759,10 @@ mod tests {
             joined_at: "2026-10-28T00:00:00Z".into(),
         };
 
-        registry.join("chan-sig", p1, tx1, 6, ice.clone()).await.unwrap();
+        registry
+            .join("chan-sig", p1, tx1, 6, ice.clone())
+            .await
+            .unwrap();
         let _ = rx1.recv().await; // room_state
         registry.join("chan-sig", p2, tx2, 6, ice).await.unwrap();
         let _ = rx1.recv().await; // p2 joined

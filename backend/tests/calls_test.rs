@@ -100,7 +100,14 @@ async fn test_calls_routes_authorization_and_lifecycle() -> anyhow::Result<()> {
     tx.commit().await?;
 
     // 1. Initial status: public channel call should be inactive
-    let (status, body) = request(&app, &alice, "GET", &format!("/api/channels/{public_ch}/call"), None).await?;
+    let (status, body) = request(
+        &app,
+        &alice,
+        "GET",
+        &format!("/api/channels/{public_ch}/call"),
+        None,
+    )
+    .await?;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(body["is_active"], false);
     assert_eq!(body["participant_count"], 0);
@@ -108,16 +115,37 @@ async fn test_calls_routes_authorization_and_lifecycle() -> anyhow::Result<()> {
     assert!(body["ice_servers"].is_array());
 
     // 2. Private channel: outsider should get 404
-    let (status, _) = request(&app, &outsider, "GET", &format!("/api/channels/{private_ch}/call"), None).await?;
+    let (status, _) = request(
+        &app,
+        &outsider,
+        "GET",
+        &format!("/api/channels/{private_ch}/call"),
+        None,
+    )
+    .await?;
     assert_eq!(status, StatusCode::NOT_FOUND);
 
     // 3. Member of private channel gets 200
-    let (status, body) = request(&app, &alice, "GET", &format!("/api/channels/{private_ch}/call"), None).await?;
+    let (status, body) = request(
+        &app,
+        &alice,
+        "GET",
+        &format!("/api/channels/{private_ch}/call"),
+        None,
+    )
+    .await?;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(body["is_active"], false);
 
     // 4. Archived channel: returns 403 Forbidden
-    let (status, _) = request(&app, &alice, "GET", &format!("/api/channels/{archived_ch}/call"), None).await?;
+    let (status, _) = request(
+        &app,
+        &alice,
+        "GET",
+        &format!("/api/channels/{archived_ch}/call"),
+        None,
+    )
+    .await?;
     assert_eq!(status, StatusCode::FORBIDDEN);
 
     // 5. Active calls summary
