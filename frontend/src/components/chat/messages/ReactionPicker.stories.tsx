@@ -45,7 +45,14 @@ const meta = {
 export default meta;
 type Story = StoryObj<typeof meta>;
 
-export const Default: Story = {};
+export const Default: Story = {
+  play: async () => {
+    const rows = await screen.findAllByRole("row");
+    await expect(rows.every((row) => Number(row.getAttribute("aria-rowindex")) >= 1)).toBe(true);
+    const cells = screen.getAllByRole("gridcell");
+    await expect(cells.every((cell) => Number(cell.getAttribute("aria-colindex")) >= 1)).toBe(true);
+  },
+};
 
 export const Kitchen: Story = {
   play: async () => {

@@ -187,16 +187,19 @@ export function Composer({
               id={`${listId}-${index}`}
               role="option"
               aria-selected={index === selectedOption}
+              tabIndex={-1}
+              className={`flex cursor-pointer gap-2 rounded px-2 py-1 text-left text-sm outline-none ${index === selectedOption ? "bg-accent" : ""}`}
+              onMouseDown={(event) => event.preventDefault()}
+              onClick={() => selectMention(option)}
+              onKeyDown={(event) => {
+                if (event.key === "Enter" || event.key === " ") {
+                  event.preventDefault();
+                  selectMention(option);
+                }
+              }}
             >
-              <button
-                type="button"
-                className={`flex w-full gap-2 rounded px-2 py-1 text-left text-sm ${index === selectedOption ? "bg-accent" : ""}`}
-                onMouseDown={(event) => event.preventDefault()}
-                onClick={() => selectMention(option)}
-              >
-                <span>@{option.name}</span>
-                <span className="truncate text-muted-foreground">{option.label}</span>
-              </button>
+              <span>@{option.name}</span>
+              <span className="truncate text-muted-foreground">{option.label}</span>
             </li>
           ))}
         </ul>
@@ -210,9 +213,7 @@ export function Composer({
           placeholder={resolvedPlaceholder}
           aria-label={resolvedAriaLabel}
           className="min-h-9 resize-none border-0 bg-transparent px-2 py-1.5 text-base shadow-none [field-sizing:fixed] focus-visible:ring-0 md:text-sm dark:bg-transparent"
-          role="combobox"
           aria-autocomplete="list"
-          aria-expanded={options.length > 0}
           aria-controls={options.length ? listId : undefined}
           aria-activedescendant={options.length ? `${listId}-${selectedOption}` : undefined}
           onCompositionStart={() => setComposing(true)}
