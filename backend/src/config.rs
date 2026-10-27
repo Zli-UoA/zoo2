@@ -58,6 +58,7 @@ pub struct Config {
     pub dev_auth_enabled: bool,
     pub environment: String,
     pub cors_allowed_origins: Vec<String>,
+    pub webrtc_ice_servers_json: String,
 }
 
 impl fmt::Debug for Config {
@@ -75,6 +76,7 @@ impl fmt::Debug for Config {
             .field("dev_auth_enabled", &self.dev_auth_enabled)
             .field("environment", &self.environment)
             .field("cors_allowed_origins", &self.cors_allowed_origins)
+            .field("webrtc_ice_servers_json", &self.webrtc_ice_servers_json)
             .finish()
     }
 }
@@ -159,6 +161,11 @@ impl Config {
             is_test_build,
         );
 
+        let webrtc_ice_servers_json = env::var("WEBRTC_ICE_SERVERS_JSON")
+            .ok()
+            .filter(|s| !s.trim().is_empty())
+            .unwrap_or_else(|| r#"[{"urls":["stun:stun.l.google.com:19302"]}]"#.to_string());
+
         Self {
             database_url,
             host,
@@ -169,6 +176,7 @@ impl Config {
             dev_auth_enabled,
             environment,
             cors_allowed_origins,
+            webrtc_ice_servers_json,
         }
     }
 
@@ -204,6 +212,7 @@ mod tests {
             dev_auth_enabled: false,
             environment: "production".to_string(),
             cors_allowed_origins: vec!["https://zoo.example.com".to_string()],
+            webrtc_ice_servers_json: r#"[{"urls":["stun:stun.l.google.com:19302"]}]"#.to_string(),
         };
         let debug_str = format!("{config:?}");
         assert!(!debug_str.contains("super_secret_password"));
@@ -227,6 +236,7 @@ mod tests {
             dev_auth_enabled: false,
             environment: "production".to_string(),
             cors_allowed_origins: vec![],
+            webrtc_ice_servers_json: r#"[{"urls":["stun:stun.l.google.com:19302"]}]"#.to_string(),
         };
         assert!(prod_no_oidc.validate().is_err());
 
@@ -304,6 +314,7 @@ mod tests {
             dev_auth_enabled: false,
             environment: "production".to_string(),
             cors_allowed_origins: vec![],
+            webrtc_ice_servers_json: r#"[{"urls":["stun:stun.l.google.com:19302"]}]"#.to_string(),
         };
         assert!(config.validate().is_err());
     }
@@ -359,5 +370,23 @@ mod tests {
         // 空文字はクロスオリジン無効 (空リスト)
         assert!(parse_cors_allowed_origins(Some(""), "development").is_empty());
         assert!(parse_cors_allowed_origins(Some(""), "production").is_empty());
+    }
+
+    #[test]
+    fn test_webrtc_ice_servers_default_and_debug() {
+        let config = Config {
+            database_url: "test".to_string(),
+            host: "127.0.0.1".to_string(),
+            port: 8080,
+            electric_url: "test".to_string(),
+            electric_secret: None,
+            oidc: None,
+            dev_auth_enabled: false,
+            environment: "development".to_string(),
+            cors_allowed_origins: vec![],
+            webrtc_ice_servers_json: r#"[{"urls":["stun:stun.l.google.com:19302"]}]"#.to_string(),
+        };
+        let debug_str = format!("{config:?}");
+        assert!(debug_str.contains("stun:stun.l.google.com:19302"));
     }
 }

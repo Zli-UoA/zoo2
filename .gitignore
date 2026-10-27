@@ -2,6 +2,7 @@
 .direnv/
 .codex/
 .env
+__pycache__/
 
 target/
 .target/

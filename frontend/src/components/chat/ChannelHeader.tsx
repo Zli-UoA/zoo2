@@ -5,6 +5,7 @@ import {
   ArchiveRestoreIcon,
   ArrowLeftIcon,
   HashIcon,
+  HeadphonesIcon,
   LockIcon,
   MoreHorizontalIcon,
   PencilIcon,
@@ -16,6 +17,7 @@ import { useState } from "react";
 
 import { useChannelAdmin } from "../../hooks/useChannelAdmin";
 import { useMessageFeed } from "../../hooks/useRealtime";
+import { useCall } from "../../lib/call/call-context";
 import type { ChannelRow } from "../../lib/electric/types";
 import { normalizeUtcTimestamp } from "../../lib/timestamps";
 import { useShell } from "../layout/shell-context";
@@ -61,6 +63,19 @@ export function ChannelHeader({
   const [renameOpen, setRenameOpen] = useState(false);
   const [messageAdminOpen, setMessageAdminOpen] = useState(false);
 
+  const call = useCall();
+  const isInThisCall = call.currentChannelId === channel.id;
+  const activeCallCount = call.activeCalls.get(channel.id) ?? 0;
+  const hasActiveCall = activeCallCount > 0;
+
+  async function handleCallClick() {
+    if (isInThisCall) {
+      await call.leaveCall();
+    } else {
+      await call.joinCall(channel.id);
+    }
+  }
+
   async function confirmArchive() {
     if (!confirmAction) {
       return;
@@ -103,6 +118,45 @@ export function ChannelHeader({
         </p>
       </div>
       <div className="flex shrink-0 items-center gap-1">
+        {!isArchived ? (
+          <Button
+            variant={isInThisCall ? "secondary" : hasActiveCall ? "outline" : "ghost"}
+            size="sm"
+            onClick={() => void handleCallClick()}
+            disabled={call.connectionState === "connecting"}
+            aria-label={
+              isInThisCall
+                ? t("call.inCall")
+                : hasActiveCall
+                  ? `${t("call.join")} (${activeCallCount})`
+                  : t("call.start")
+            }
+            title={
+              isInThisCall
+                ? t("call.inCall")
+                : hasActiveCall
+                  ? `${t("call.join")} (${activeCallCount})`
+                  : t("call.start")
+            }
+            className={
+              isInThisCall
+                ? "bg-emerald-500/15 text-emerald-600 hover:bg-emerald-500/25 dark:text-emerald-400"
+                : hasActiveCall
+                  ? "border-emerald-500/40 text-emerald-600 hover:bg-emerald-500/10 dark:text-emerald-400"
+                  : ""
+            }
+          >
+            <HeadphonesIcon aria-hidden="true" />
+            <span className="hidden sm:inline">
+              {isInThisCall ? t("call.inCall") : hasActiveCall ? t("call.join") : t("call.start")}
+            </span>
+            {hasActiveCall && !isInThisCall ? (
+              <span className="tabular-nums font-semibold text-emerald-600 dark:text-emerald-400">
+                {activeCallCount}
+              </span>
+            ) : null}
+          </Button>
+        ) : null}
         <Button
           variant="outline"
           size="sm"

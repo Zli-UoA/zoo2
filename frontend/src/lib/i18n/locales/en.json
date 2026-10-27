@@ -337,5 +337,23 @@
       "unixtime": "Date and time (enter Unix seconds)",
       "clickable": "Click event"
     }
+  },
+  "call": {
+    "start": "Start call",
+    "join": "Join call",
+    "leave": "Leave call",
+    "inCall": "In call",
+    "mute": "Mute",
+    "unmute": "Unmute",
+    "muted": "Muted",
+    "connecting": "Connecting…",
+    "connected": "Connected",
+    "participantCount": "{{count}} in call",
+    "full": "Call room is full (max 6 participants)",
+    "archived": "Calls are disabled in archived channels",
+    "notFound": "Channel not found or access denied",
+    "connectError": "Failed to connect to call",
+    "micPermissionDenied": "Microphone access denied. Please allow microphone permissions in browser settings.",
+    "micNotFound": "No microphone found."
   }
 }

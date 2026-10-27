@@ -337,5 +337,23 @@
       "unixtime": "日期时间（输入 Unix 秒数）",
       "clickable": "点击事件"
     }
+  },
+  "call": {
+    "start": "开始通话",
+    "join": "加入通话",
+    "leave": "离开通话",
+    "inCall": "通话中",
+    "mute": "静音",
+    "unmute": "取消静音",
+    "muted": "已静音",
+    "connecting": "连接中…",
+    "connected": "通话中",
+    "participantCount": "{{count}}人参与通话",
+    "full": "通话房间已满（最多6人）",
+    "archived": "已归档频道无法发起通话",
+    "notFound": "未找到频道或无权访问",
+    "connectError": "连接通话失败",
+    "micPermissionDenied": "麦克风权限被拒绝。请在浏览器设置中允许麦克风权限。",
+    "micNotFound": "未找到麦克风设备。"
   }
 }

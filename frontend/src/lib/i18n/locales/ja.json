@@ -337,5 +337,23 @@
       "unixtime": "日時（本文にUnix秒）",
       "clickable": "クリックイベント"
     }
+  },
+  "call": {
+    "start": "通話を開始",
+    "join": "通話に参加",
+    "leave": "通話から退出",
+    "inCall": "通話中",
+    "mute": "ミュート",
+    "unmute": "ミュート解除",
+    "muted": "ミュート中",
+    "connecting": "接続中…",
+    "connected": "接続中",
+    "participantCount": "{{count}}人が参加中",
+    "full": "通話が満員です（最大6人）",
+    "archived": "アーカイブされたチャンネルでは通話できません",
+    "notFound": "チャンネルが見つからないか、参加権限がありません",
+    "connectError": "通話への接続に失敗しました",
+    "micPermissionDenied": "マイクの使用が拒否されました。ブラウザの設定でマイクのアクセスを許可してください。",
+    "micNotFound": "マイクが見つかりませんでした。"
   }
 }

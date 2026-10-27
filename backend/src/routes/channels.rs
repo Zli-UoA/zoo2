@@ -667,6 +667,11 @@ async fn leave_channel(
     let txid = get_current_txid(&mut tx).await?;
     tx.commit().await?;
 
+    state
+        .call_registry
+        .remove_user_from_channel(&id, &auth_user.id)
+        .await;
+
     Ok(Json(ApiResponse::new(
         LeaveChannelResponse {
             user_id: auth_user.id,
@@ -763,6 +768,8 @@ async fn archive_channel(
     let updated = Channel::get_by_id(&mut tx, id.as_str()).await?;
     let txid = get_current_txid(&mut tx).await?;
     tx.commit().await?;
+
+    state.call_registry.close_room(&id).await;
 
     Ok(Json(ApiResponse::new(ChannelResponse::from(updated), txid)))
 }
@@ -975,6 +982,11 @@ async fn kick_channel_user(
 
     let txid = get_current_txid(&mut tx).await?;
     tx.commit().await?;
+
+    state
+        .call_registry
+        .remove_user_from_channel(&id, &user_id)
+        .await;
 
     Ok(Json(ApiResponse::new(
         ChannelUserResponse::from(existing),

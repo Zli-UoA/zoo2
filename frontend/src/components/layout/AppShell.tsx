@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react
 
 import { useActiveChannels } from "../../hooks/useRealtime";
 import { MfmChannelsProvider } from "../chat/messages/MfmChannels";
+import { CallBar } from "../chat/CallBar";
 import { ChannelSidebar } from "../chat/ChannelSidebar";
 import { MembersDialog } from "../chat/MembersDialog";
 import { MembersPanel } from "../chat/MembersPanel";
@@ -153,6 +154,7 @@ export function AppShell({ children }: { children: ReactNode }) {
               onOpenChange={setMembersOpen}
             />
           ) : null}
+          <CallBar channels={channels} />
         </div>
       </MfmChannelsProvider>
     </ShellContext.Provider>

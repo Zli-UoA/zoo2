@@ -2,11 +2,19 @@ import { useTranslation } from "react-i18next";
 import { Link } from "@tanstack/react-router";
 import { useLiveQuery } from "@tanstack/react-db";
 import { cn } from "cn";
-import { ArchiveIcon, HashIcon, LockIcon, PlusIcon, SearchIcon } from "lucide-react";
+import {
+  ArchiveIcon,
+  HashIcon,
+  HeadphonesIcon,
+  LockIcon,
+  PlusIcon,
+  SearchIcon,
+} from "lucide-react";
 import { useMemo, useState } from "react";
 
 import { useUnreadChannels } from "../../hooks/useUnreadChannels";
 import { useCurrentUser } from "../../hooks/useCurrentUser";
+import { useCall } from "../../lib/call/call-context";
 import { useCollections } from "../../lib/electric/collections-context";
 import type { ChannelRow } from "../../lib/electric/types";
 import { SyncStatus } from "../SyncStatus";
@@ -34,6 +42,7 @@ export function ChannelSidebar({
 }) {
   const { t } = useTranslation();
   const shell = useShell();
+  const call = useCall();
   const { channelUsers } = useCollections();
   const { currentUserId, isLoading: currentUserLoading } = useCurrentUser();
   const unreadChannelIds = useUnreadChannels(currentUserId);
@@ -126,6 +135,7 @@ export function ChannelSidebar({
             sidebarChannels.map((channel) => {
               const isUnread = unreadChannelIds.has(channel.id);
               const isActive = shell.selectedChannelId === channel.id;
+              const hasActiveCall = (call.activeCalls.get(channel.id) ?? 0) > 0;
               return (
                 <Link
                   key={channel.id}
@@ -156,6 +166,16 @@ export function ChannelSidebar({
                   >
                     {channel.channel_name}
                   </span>
+                  {hasActiveCall ? (
+                    <span
+                      role="img"
+                      title={t("call.inCall")}
+                      aria-label={t("call.inCall")}
+                      className="flex items-center text-emerald-500"
+                    >
+                      <HeadphonesIcon className="size-3 animate-pulse" />
+                    </span>
+                  ) : null}
                   {isUnread ? (
                     <span
                       role="img"
