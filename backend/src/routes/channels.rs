@@ -356,6 +356,8 @@ async fn delete_channel(
     let txid = get_current_txid(&mut tx).await?;
     tx.commit().await?;
 
+    state.call_registry.close_room(&id).await;
+
     Ok(Json(ApiResponse::new(
         ChannelResponse::from(deleted_channel),
         txid,

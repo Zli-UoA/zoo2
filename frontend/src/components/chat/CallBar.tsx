@@ -70,17 +70,30 @@ export function CallBar({ channels = [] }: CallBarProps) {
             <div className="flex -space-x-1 overflow-hidden">
               {participants.slice(0, 4).map((p) => {
                 const isSpeaking = speakingUserIds.has(p.user_id);
+                const statusDetails: string[] = [];
+                if (isSpeaking) statusDetails.push(t("call.speaking"));
+                if (p.is_muted) statusDetails.push(t("call.muted"));
+                const label =
+                  statusDetails.length > 0
+                    ? `${p.display_name} (${statusDetails.join(", ")})`
+                    : p.display_name;
+
                 return (
                   <div
                     key={p.session_id}
-                    title={`${p.display_name}${p.is_muted ? ` (${t("call.muted")})` : ""}`}
+                    role="img"
+                    aria-label={label}
+                    title={label}
                     className={`relative flex size-5 shrink-0 items-center justify-center rounded-full bg-muted text-[10px] font-medium transition-all ${
                       isSpeaking ? "ring-2 ring-emerald-500" : ""
                     }`}
                   >
-                    <span>{p.display_name.slice(0, 1).toUpperCase()}</span>
+                    <span aria-hidden="true">{p.display_name.slice(0, 1).toUpperCase()}</span>
                     {p.is_muted ? (
-                      <span className="absolute -bottom-0.5 -right-0.5 rounded-full bg-destructive p-0.5 text-destructive-foreground">
+                      <span
+                        aria-hidden="true"
+                        className="absolute -bottom-0.5 -right-0.5 rounded-full bg-destructive p-0.5 text-destructive-foreground"
+                      >
                         <MicOffIcon className="size-2" />
                       </span>
                     ) : null}

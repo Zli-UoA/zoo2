@@ -346,6 +346,7 @@
     "mute": "ミュート",
     "unmute": "ミュート解除",
     "muted": "ミュート中",
+    "speaking": "発話中",
     "connecting": "接続中…",
     "connected": "接続中",
     "participantCount": "{{count}}人が参加中",

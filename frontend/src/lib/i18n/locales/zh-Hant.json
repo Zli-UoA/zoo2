@@ -346,6 +346,7 @@
     "mute": "靜音",
     "unmute": "取消靜音",
     "muted": "已靜音",
+    "speaking": "正在發言",
     "connecting": "連線中…",
     "connected": "通話中",
     "participantCount": "{{count}}人參與通話",

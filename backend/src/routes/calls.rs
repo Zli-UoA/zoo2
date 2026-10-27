@@ -36,6 +36,27 @@ pub struct CallParticipant {
     pub joined_at: String,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct PublicCallParticipant {
+    pub user_id: String,
+    pub user_name: String,
+    pub display_name: String,
+    pub is_muted: bool,
+    pub joined_at: String,
+}
+
+impl From<&CallParticipant> for PublicCallParticipant {
+    fn from(p: &CallParticipant) -> Self {
+        Self {
+            user_id: p.user_id.clone(),
+            user_name: p.user_name.clone(),
+            display_name: p.display_name.clone(),
+            is_muted: p.is_muted,
+            joined_at: p.joined_at.clone(),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct CallStatusResponse {
     pub is_active: bool,
@@ -50,7 +71,7 @@ pub struct CallStatusResponse {
 pub struct ActiveCallSummary {
     pub channel_id: String,
     pub participant_count: usize,
-    pub participants: Vec<CallParticipant>,
+    pub participants: Vec<PublicCallParticipant>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -64,6 +85,11 @@ pub struct SignalPayload {
 pub struct UpdateStatePayload {
     pub session_id: Uuid,
     pub is_muted: bool,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct HeartbeatPayload {
+    pub session_id: Uuid,
 }
 
 #[derive(Debug, Deserialize)]
@@ -147,8 +173,7 @@ impl CallServerEvent {
 
 struct ParticipantSession {
     participant: CallParticipant,
-    sender: mpsc::UnboundedSender<CallServerEvent>,
-    #[allow(dead_code)]
+    sender: mpsc::Sender<CallServerEvent>,
     last_heartbeat: Instant,
 }
 
@@ -164,6 +189,40 @@ pub struct CallRegistry {
 impl CallRegistry {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    pub async fn sweep_stale_sessions(&self, timeout: Duration) {
+        let mut rooms = self.rooms.write().await;
+        let now = Instant::now();
+        let mut empty_rooms = Vec::new();
+
+        for (cid, room) in rooms.iter_mut() {
+            let stale_ids: Vec<(Uuid, String)> = room
+                .participants
+                .iter()
+                .filter(|(_, p)| now.duration_since(p.last_heartbeat) > timeout)
+                .map(|(sid, p)| (*sid, p.participant.user_id.clone()))
+                .collect();
+
+            for (sid, uid) in stale_ids {
+                room.participants.remove(&sid);
+                let left_event = CallServerEvent::ParticipantLeft {
+                    session_id: sid,
+                    user_id: uid,
+                };
+                for p in room.participants.values() {
+                    let _ = p.sender.try_send(left_event.clone());
+                }
+            }
+
+            if room.participants.is_empty() {
+                empty_rooms.push(cid.clone());
+            }
+        }
+
+        for cid in empty_rooms {
+            rooms.remove(&cid);
+        }
     }
 
     pub async fn get_participants(&self, channel_id: &str) -> Vec<CallParticipant> {
@@ -192,7 +251,7 @@ impl CallRegistry {
         &self,
         channel_id: &str,
         participant: CallParticipant,
-        sender: mpsc::UnboundedSender<CallServerEvent>,
+        sender: mpsc::Sender<CallServerEvent>,
         max_participants: usize,
         ice_servers: serde_json::Value,
     ) -> Result<(), AppError> {
@@ -205,10 +264,13 @@ impl CallRegistry {
 
         let session_id = participant.session_id;
 
-        // すでに存在しない新規セッションの場合に上限をチェック
-        if !room.participants.contains_key(&session_id)
-            && room.participants.len() >= max_participants
-        {
+        // 同一 session_id が既に存在する場合は Conflict (なりすましや重複防止)
+        if room.participants.contains_key(&session_id) {
+            return Err(AppError::Conflict("Session ID is already in use".into()));
+        }
+
+        // 定員チェック
+        if room.participants.len() >= max_participants {
             return Err(AppError::Conflict(format!(
                 "Call room is full (max {max_participants} participants)"
             )));
@@ -227,7 +289,7 @@ impl CallRegistry {
         };
         for (sid, p) in &room.participants {
             if *sid != session_id {
-                let _ = p.sender.send(join_event.clone());
+                let _ = p.sender.try_send(join_event.clone());
             }
         }
 
@@ -242,7 +304,7 @@ impl CallRegistry {
             max_participants,
             ice_servers,
         };
-        let _ = sender.send(room_state_event);
+        let _ = sender.try_send(room_state_event);
 
         room.participants.insert(
             session_id,
@@ -260,28 +322,64 @@ impl CallRegistry {
         &self,
         channel_id: &str,
         sender_session_id: Uuid,
+        user_id: &str,
         target_session_id: Uuid,
         signal: serde_json::Value,
     ) -> Result<(), AppError> {
-        let rooms = self.rooms.read().await;
+        let mut rooms = self.rooms.write().await;
         let room = rooms
-            .get(channel_id)
+            .get_mut(channel_id)
             .ok_or_else(|| AppError::NotFound("Call room not active".into()))?;
 
-        if !room.participants.contains_key(&sender_session_id) {
+        let sender_session = room
+            .participants
+            .get_mut(&sender_session_id)
+            .ok_or_else(|| {
+                AppError::Forbidden("Sender is not a participant in this call".into())
+            })?;
+
+        if sender_session.participant.user_id != user_id {
             return Err(AppError::Forbidden(
-                "Sender is not a participant in this call".into(),
+                "Session belongs to another user".into(),
             ));
         }
+
+        sender_session.last_heartbeat = Instant::now();
 
         if let Some(target) = room.participants.get(&target_session_id) {
             let event = CallServerEvent::Signal {
                 from_session_id: sender_session_id,
                 signal,
             };
-            let _ = target.sender.send(event);
+            let _ = target.sender.try_send(event);
         }
 
+        Ok(())
+    }
+
+    pub async fn heartbeat(
+        &self,
+        channel_id: &str,
+        session_id: Uuid,
+        user_id: &str,
+    ) -> Result<(), AppError> {
+        let mut rooms = self.rooms.write().await;
+        let room = rooms
+            .get_mut(channel_id)
+            .ok_or_else(|| AppError::NotFound("Call room not active".into()))?;
+
+        let session = room
+            .participants
+            .get_mut(&session_id)
+            .ok_or_else(|| AppError::NotFound("Session not found in call".into()))?;
+
+        if session.participant.user_id != user_id {
+            return Err(AppError::Forbidden(
+                "Session belongs to another user".into(),
+            ));
+        }
+
+        session.last_heartbeat = Instant::now();
         Ok(())
     }
 
@@ -317,7 +415,7 @@ impl CallRegistry {
 
         for (sid, p) in &room.participants {
             if *sid != session_id {
-                let _ = p.sender.send(updated_event.clone());
+                let _ = p.sender.try_send(updated_event.clone());
             }
         }
 
@@ -335,7 +433,7 @@ impl CallRegistry {
                 user_id: session.participant.user_id.clone(),
             };
             for p in room.participants.values() {
-                let _ = p.sender.send(left_event.clone());
+                let _ = p.sender.try_send(left_event.clone());
             }
         }
 
@@ -344,6 +442,44 @@ impl CallRegistry {
         }
 
         removed.map(|s| s.participant)
+    }
+
+    pub async fn leave_for_user(
+        &self,
+        channel_id: &str,
+        session_id: Uuid,
+        user_id: &str,
+    ) -> Result<(), AppError> {
+        let mut rooms = self.rooms.write().await;
+        let Some(room) = rooms.get_mut(channel_id) else {
+            return Ok(());
+        };
+
+        if let Some(session) = room.participants.get(&session_id) {
+            if session.participant.user_id != user_id {
+                return Err(AppError::Forbidden(
+                    "Session belongs to another user".into(),
+                ));
+            }
+        } else {
+            return Ok(());
+        }
+
+        if let Some(session) = room.participants.remove(&session_id) {
+            let left_event = CallServerEvent::ParticipantLeft {
+                session_id,
+                user_id: session.participant.user_id,
+            };
+            for p in room.participants.values() {
+                let _ = p.sender.try_send(left_event.clone());
+            }
+        }
+
+        if room.participants.is_empty() {
+            rooms.remove(channel_id);
+        }
+
+        Ok(())
     }
 
     pub async fn close_room(&self, channel_id: &str) {
@@ -371,7 +507,7 @@ impl CallRegistry {
                     user_id: session.participant.user_id,
                 };
                 for p in room.participants.values() {
-                    let _ = p.sender.send(left_event.clone());
+                    let _ = p.sender.try_send(left_event.clone());
                 }
             }
         }
@@ -405,6 +541,7 @@ pub fn router() -> Router<AppState> {
         .route("/api/channels/{id}/call/stream", get(call_stream))
         .route("/api/channels/{id}/call/signal", post(send_signal))
         .route("/api/channels/{id}/call/state", post(update_state))
+        .route("/api/channels/{id}/call/heartbeat", post(heartbeat))
         .route("/api/channels/{id}/call/leave", post(leave_call))
         .route("/api/calls/active", get(list_active_calls))
 }
@@ -496,7 +633,7 @@ async fn call_stream(
         joined_at: now_str,
     };
 
-    let (tx, rx) = mpsc::unbounded_channel();
+    let (tx, rx) = mpsc::channel(64);
     let ice_servers: serde_json::Value =
         serde_json::from_str(&state.config.webrtc_ice_servers_json)
             .unwrap_or_else(|_| serde_json::json!([{"urls": ["stun:stun.l.google.com:19302"]}]));
@@ -558,6 +695,7 @@ async fn send_signal(
         .send_signal(
             &channel_id,
             body.session_id,
+            &user.id,
             body.target_session_id,
             body.signal,
         )
@@ -583,16 +721,37 @@ async fn update_state(
     Ok(Json(serde_json::json!({ "ok": true })))
 }
 
+async fn heartbeat(
+    State(state): State<AppState>,
+    user: AuthUser,
+    Path(channel_id): Path<String>,
+    Json(body): Json<HeartbeatPayload>,
+) -> Result<Json<serde_json::Value>, AppError> {
+    let mut db = state.db.clone();
+    authorize_call_access(&mut db, &channel_id, &user).await?;
+
+    state
+        .call_registry
+        .heartbeat(&channel_id, body.session_id, &user.id)
+        .await?;
+
+    Ok(Json(serde_json::json!({ "ok": true })))
+}
+
 async fn leave_call(
     State(state): State<AppState>,
-    _user: AuthUser,
+    user: AuthUser,
     Path(channel_id): Path<String>,
     Json(body): Json<LeavePayload>,
 ) -> Result<Json<serde_json::Value>, AppError> {
+    let mut db = state.db.clone();
+    authorize_call_access(&mut db, &channel_id, &user).await?;
+
     state
         .call_registry
-        .leave(&channel_id, body.session_id)
-        .await;
+        .leave_for_user(&channel_id, body.session_id, &user.id)
+        .await?;
+
     Ok(Json(serde_json::json!({ "ok": true })))
 }
 
@@ -600,6 +759,12 @@ async fn list_active_calls(
     State(state): State<AppState>,
     user: AuthUser,
 ) -> Result<Json<Vec<ActiveCallSummary>>, AppError> {
+    // タイムアウトしたセッションのスイープ
+    state
+        .call_registry
+        .sweep_stale_sessions(Duration::from_secs(60))
+        .await;
+
     let channel_ids = state.call_registry.get_active_channel_ids().await;
     let mut db = state.db.clone();
     let mut active = Vec::new();
@@ -611,7 +776,10 @@ async fn list_active_calls(
                 active.push(ActiveCallSummary {
                     channel_id: cid,
                     participant_count: participants.len(),
-                    participants,
+                    participants: participants
+                        .iter()
+                        .map(PublicCallParticipant::from)
+                        .collect(),
                 });
             }
         }
@@ -627,7 +795,7 @@ mod tests {
     #[tokio::test]
     async fn test_call_registry_join_and_room_state() {
         let registry = CallRegistry::new();
-        let (tx1, mut rx1) = mpsc::unbounded_channel();
+        let (tx1, mut rx1) = mpsc::channel(64);
         let session_1 = Uuid::new_v4();
 
         let p1 = CallParticipant {
@@ -656,7 +824,7 @@ mod tests {
         }
 
         // Second user joins
-        let (tx2, mut rx2) = mpsc::unbounded_channel();
+        let (tx2, mut rx2) = mpsc::channel(64);
         let session_2 = Uuid::new_v4();
         let p2 = CallParticipant {
             session_id: session_2,
@@ -697,7 +865,7 @@ mod tests {
         let ice = serde_json::json!([{"urls": ["stun:stun.l.google.com:19302"]}]);
 
         for i in 0..6 {
-            let (tx, _rx) = mpsc::unbounded_channel();
+            let (tx, _rx) = mpsc::channel(64);
             let p = CallParticipant {
                 session_id: Uuid::new_v4(),
                 user_id: format!("user-{i}"),
@@ -713,7 +881,7 @@ mod tests {
         }
 
         // 7th should fail with Conflict
-        let (tx7, _rx7) = mpsc::unbounded_channel();
+        let (tx7, _rx7) = mpsc::channel(64);
         let p7 = CallParticipant {
             session_id: Uuid::new_v4(),
             user_id: "user-7".into(),
@@ -736,8 +904,8 @@ mod tests {
     #[tokio::test]
     async fn test_call_registry_signaling_and_state_updates() {
         let registry = CallRegistry::new();
-        let (tx1, mut rx1) = mpsc::unbounded_channel();
-        let (tx2, mut rx2) = mpsc::unbounded_channel();
+        let (tx1, mut rx1) = mpsc::channel(64);
+        let (tx2, mut rx2) = mpsc::channel(64);
         let s1 = Uuid::new_v4();
         let s2 = Uuid::new_v4();
         let ice = serde_json::json!([]);
@@ -771,7 +939,7 @@ mod tests {
         // s1 sends signal to s2
         let sig = serde_json::json!({"type": "offer", "sdp": "v=0..."});
         registry
-            .send_signal("chan-sig", s1, s2, sig.clone())
+            .send_signal("chan-sig", s1, "u1", s2, sig.clone())
             .await
             .unwrap();
 

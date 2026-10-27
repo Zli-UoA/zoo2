@@ -346,6 +346,7 @@
     "mute": "Mute",
     "unmute": "Unmute",
     "muted": "Muted",
+    "speaking": "Speaking",
     "connecting": "Connecting…",
     "connected": "Connected",
     "participantCount": "{{count}} in call",

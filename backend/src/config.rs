@@ -76,7 +76,7 @@ impl fmt::Debug for Config {
             .field("dev_auth_enabled", &self.dev_auth_enabled)
             .field("environment", &self.environment)
             .field("cors_allowed_origins", &self.cors_allowed_origins)
-            .field("webrtc_ice_servers_json", &self.webrtc_ice_servers_json)
+            .field("webrtc_ice_servers_json", &"[REDACTED]")
             .finish()
     }
 }
@@ -188,6 +188,14 @@ impl Config {
                     .to_string(),
             );
         }
+
+        // WebRTC ICE サーバー設定の JSON 検証
+        let parsed: serde_json::Value = serde_json::from_str(&self.webrtc_ice_servers_json)
+            .map_err(|e| format!("Invalid JSON in WEBRTC_ICE_SERVERS_JSON: {e}"))?;
+        if !parsed.is_array() {
+            return Err("WEBRTC_ICE_SERVERS_JSON must be a JSON array of ICE servers".to_string());
+        }
+
         Ok(())
     }
 }
@@ -218,9 +226,43 @@ mod tests {
         assert!(!debug_str.contains("super_secret_password"));
         assert!(!debug_str.contains("secret123"));
         assert!(!debug_str.contains("user:"));
+        assert!(!debug_str.contains("stun:stun.l.google.com:19302"));
         assert!(debug_str.contains("[REDACTED]"));
         assert!(debug_str.contains("8080"));
         assert!(debug_str.contains("https://idp.example.com"));
+    }
+
+    #[test]
+    fn test_config_validate_ice_servers() {
+        let base_config = Config {
+            database_url: "test".to_string(),
+            host: "127.0.0.1".to_string(),
+            port: 8080,
+            electric_url: "test".to_string(),
+            electric_secret: None,
+            oidc: None,
+            dev_auth_enabled: false,
+            environment: "development".to_string(),
+            cors_allowed_origins: vec![],
+            webrtc_ice_servers_json: r#"[{"urls":["stun:stun.l.google.com:19302"]}]"#.to_string(),
+        };
+
+        // 有効な JSON 配列
+        assert!(base_config.validate().is_ok());
+
+        // 不正な JSON
+        let invalid_json = Config {
+            webrtc_ice_servers_json: "not valid json".to_string(),
+            ..base_config.clone()
+        };
+        assert!(invalid_json.validate().is_err());
+
+        // 配列でない JSON
+        let not_array = Config {
+            webrtc_ice_servers_json: r#"{"urls":["stun:stun.l.google.com:19302"]}"#.to_string(),
+            ..base_config
+        };
+        assert!(not_array.validate().is_err());
     }
 
     #[test]
@@ -387,6 +429,7 @@ mod tests {
             webrtc_ice_servers_json: r#"[{"urls":["stun:stun.l.google.com:19302"]}]"#.to_string(),
         };
         let debug_str = format!("{config:?}");
-        assert!(debug_str.contains("stun:stun.l.google.com:19302"));
+        assert!(!debug_str.contains("stun:stun.l.google.com:19302"));
+        assert!(debug_str.contains("[REDACTED]"));
     }
 }

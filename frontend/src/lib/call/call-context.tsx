@@ -3,20 +3,36 @@ import {
   useCallback,
   useContext,
   useEffect,
+  useMemo,
   useRef,
   useState,
   type ReactNode,
 } from "react";
 import { useTranslation } from "react-i18next";
+import { toast } from "sonner";
 
 import { buildAuthHeaders, createConfiguredApiClient } from "../api/client";
-import { resolveConfig, type AppConfig } from "../config";
+import { joinUrl, resolveConfig, type AppConfig } from "../config";
+import { useCurrentUser } from "../../hooks/useCurrentUser";
 import type {
   ActiveCallSummary,
   CallConnectionState,
   CallContextValue,
   CallParticipant,
 } from "./types";
+
+const defaultCallContext: CallContextValue = {
+  currentChannelId: null,
+  connectionState: "idle",
+  error: null,
+  participants: [],
+  isMuted: false,
+  speakingUserIds: new Set(),
+  activeCalls: new Map(),
+  joinCall: async () => {},
+  leaveCall: async () => {},
+  toggleMute: async () => {},
+};
 
 const CallContext = createContext<CallContextValue | null>(null);
 
@@ -31,6 +47,10 @@ function createVolumeMeter(
     if (!AudioContextClass) return () => {};
 
     const audioContext = new AudioContextClass();
+    if (audioContext.state === "suspended") {
+      void audioContext.resume().catch(() => {});
+    }
+
     const source = audioContext.createMediaStreamSource(stream);
     const analyser = audioContext.createAnalyser();
     analyser.fftSize = 256;
@@ -71,8 +91,11 @@ export interface CallProviderProps {
 
 export function CallProvider({ config: explicitConfig, children }: CallProviderProps) {
   const { t } = useTranslation();
-  const config = explicitConfig ?? resolveConfig();
-  const apiClient = createConfiguredApiClient(config);
+  const { currentUserId } = useCurrentUser();
+  const config = useMemo(() => explicitConfig ?? resolveConfig(), [explicitConfig]);
+  const apiClient = useMemo(() => createConfiguredApiClient(config), [config]);
+
+  const effectiveUserId = currentUserId ?? config.devUserId ?? "me";
 
   const [currentChannelId, setCurrentChannelId] = useState<string | null>(null);
   const [connectionState, setConnectionState] = useState<CallConnectionState>("idle");
@@ -84,6 +107,11 @@ export function CallProvider({ config: explicitConfig, children }: CallProviderP
 
   const currentChannelIdRef = useRef<string | null>(null);
   currentChannelIdRef.current = currentChannelId;
+
+  const participantsRef = useRef<CallParticipant[]>([]);
+  participantsRef.current = participants;
+
+  const sessionUserMapRef = useRef<Map<string, string>>(new Map());
 
   const sessionIdRef = useRef<string | null>(null);
   const localStreamRef = useRef<MediaStream | null>(null);
@@ -109,7 +137,13 @@ export function CallProvider({ config: explicitConfig, children }: CallProviderP
           map.set(item.channel_id, item.participant_count);
         }
       }
-      setActiveCalls(map);
+      setActiveCalls((prev) => {
+        if (prev.size !== map.size) return map;
+        for (const [k, v] of map.entries()) {
+          if (prev.get(k) !== v) return map;
+        }
+        return prev;
+      });
     } catch {}
   }, [apiClient]);
 
@@ -125,6 +159,7 @@ export function CallProvider({ config: explicitConfig, children }: CallProviderP
       entry.pc.close();
     }
     peersRef.current.clear();
+    sessionUserMapRef.current.clear();
   }, []);
 
   const closeMedia = useCallback(() => {
@@ -138,6 +173,15 @@ export function CallProvider({ config: explicitConfig, children }: CallProviderP
       localStreamRef.current = null;
     }
   }, []);
+
+  // Provider アンマウント時のクリーンアップ
+  useEffect(() => {
+    return () => {
+      sseAbortRef.current?.abort();
+      cleanupPeers();
+      closeMedia();
+    };
+  }, [cleanupPeers, closeMedia]);
 
   const leaveCall = useCallback(async () => {
     const channelId = currentChannelIdRef.current;
@@ -170,17 +214,26 @@ export function CallProvider({ config: explicitConfig, children }: CallProviderP
     void pollActiveCalls();
   }, [apiClient, cleanupPeers, closeMedia, pollActiveCalls]);
 
-  // タブ閉じ・アンロード時の退出処理
+  // タブ閉じ・アンロード時の退出処理 (fetch keepalive + 認証ヘッダー)
   useEffect(() => {
     const handleUnload = () => {
       const channelId = currentChannelIdRef.current;
       const sessionId = sessionIdRef.current;
       if (channelId && sessionId) {
         const payload = JSON.stringify({ session_id: sessionId });
-        const url = `/api/channels/${channelId}/call/leave`;
-        if (navigator.sendBeacon) {
-          navigator.sendBeacon(url, new Blob([payload], { type: "application/json" }));
-        }
+        const url = joinUrl(config.apiBaseUrl, `/api/channels/${channelId}/call/leave`);
+        void (async () => {
+          try {
+            const headers = await buildAuthHeaders({ devUserId: config.devUserId });
+            headers.set("Content-Type", "application/json");
+            void fetch(url, {
+              method: "POST",
+              headers,
+              body: payload,
+              keepalive: true,
+            });
+          } catch {}
+        })();
       }
     };
 
@@ -190,7 +243,7 @@ export function CallProvider({ config: explicitConfig, children }: CallProviderP
       window.removeEventListener("beforeunload", handleUnload);
       window.removeEventListener("pagehide", handleUnload);
     };
-  }, []);
+  }, [config.apiBaseUrl, config.devUserId]);
 
   const toggleMute = useCallback(async () => {
     const channelId = currentChannelIdRef.current;
@@ -210,6 +263,20 @@ export function CallProvider({ config: explicitConfig, children }: CallProviderP
       });
     } catch {}
   }, [apiClient, isMuted]);
+
+  const updateSpeakingUser = useCallback((userId: string, isSpeaking: boolean) => {
+    setSpeakingUserIds((prev) => {
+      const next = new Set(prev);
+      if (isSpeaking) next.add(userId);
+      else next.delete(userId);
+
+      if (prev.size !== next.size) return next;
+      for (const id of next) {
+        if (!prev.has(id)) return next;
+      }
+      return prev;
+    });
+  }, []);
 
   const createPeer = useCallback(
     (
@@ -262,16 +329,12 @@ export function CallProvider({ config: explicitConfig, children }: CallProviderP
         void audio.play().catch(() => {});
 
         const stopMeter = createVolumeMeter(stream, (speaking) => {
-          setSpeakingUserIds((prev) => {
-            const next = new Set(prev);
-            if (speaking) next.add(targetUserId);
-            else next.delete(targetUserId);
-            return next;
-          });
+          updateSpeakingUser(targetUserId, speaking);
         });
 
         entry.cleanupAudio = () => {
           stopMeter();
+          updateSpeakingUser(targetUserId, false);
           audio.pause();
           audio.srcObject = null;
         };
@@ -279,7 +342,7 @@ export function CallProvider({ config: explicitConfig, children }: CallProviderP
 
       return pc;
     },
-    [apiClient],
+    [apiClient, updateSpeakingUser],
   );
 
   const joinCall = useCallback(
@@ -313,6 +376,7 @@ export function CallProvider({ config: explicitConfig, children }: CallProviderP
               : e.message || t("call.micNotFound");
 
         setError(msg);
+        toast.error(msg);
         setConnectionState("error");
         setCurrentChannelId(null);
         return;
@@ -323,13 +387,7 @@ export function CallProvider({ config: explicitConfig, children }: CallProviderP
 
       // 発話検知
       localVolumeCleanupRef.current = createVolumeMeter(stream, (speaking) => {
-        setSpeakingUserIds((prev) => {
-          const myUser = config.devUserId ?? "me";
-          const next = new Set(prev);
-          if (speaking && !isMuted) next.add(myUser);
-          else next.delete(myUser);
-          return next;
-        });
+        updateSpeakingUser(effectiveUserId, speaking && !isMuted);
       });
 
       const mySessionId = crypto.randomUUID();
@@ -343,7 +401,10 @@ export function CallProvider({ config: explicitConfig, children }: CallProviderP
         const authHeaders = await buildAuthHeaders({ devUserId: config.devUserId });
         authHeaders.set("Accept", "text/event-stream");
 
-        const streamUrl = `/api/channels/${channelId}/call/stream?session_id=${mySessionId}`;
+        const streamUrl = joinUrl(
+          config.apiBaseUrl,
+          `/api/channels/${channelId}/call/stream?session_id=${mySessionId}`,
+        );
         const response = await fetch(streamUrl, {
           headers: authHeaders,
           signal: abortController.signal,
@@ -413,6 +474,10 @@ export function CallProvider({ config: explicitConfig, children }: CallProviderP
               iceServersRef.current = ice;
               setParticipants(roomParticipants);
 
+              for (const p of roomParticipants) {
+                sessionUserMapRef.current.set(p.session_id, p.user_id);
+              }
+
               // 既存参加者へ Offer を送信 (自分が新規参加者)
               for (const p of roomParticipants) {
                 if (p.session_id === mySessionId) continue;
@@ -435,6 +500,7 @@ export function CallProvider({ config: explicitConfig, children }: CallProviderP
             } else if (eventType === "participant_joined") {
               const newP = data.participant as CallParticipant;
               if (newP && newP.session_id !== mySessionId) {
+                sessionUserMapRef.current.set(newP.session_id, newP.user_id);
                 setParticipants((prev) => {
                   if (prev.some((p) => p.session_id === newP.session_id)) return prev;
                   return [...prev, newP];
@@ -450,12 +516,14 @@ export function CallProvider({ config: explicitConfig, children }: CallProviderP
                   entry.pc.close();
                   peersRef.current.delete(leftSid);
                 }
+                sessionUserMapRef.current.delete(leftSid);
                 setParticipants((prev) => prev.filter((p) => p.session_id !== leftSid));
                 void pollActiveCalls();
               }
             } else if (eventType === "participant_updated") {
               const updatedP = data.participant as CallParticipant;
               if (updatedP) {
+                sessionUserMapRef.current.set(updatedP.session_id, updatedP.user_id);
                 setParticipants((prev) =>
                   prev.map((p) => (p.session_id === updatedP.session_id ? updatedP : p)),
                 );
@@ -471,12 +539,16 @@ export function CallProvider({ config: explicitConfig, children }: CallProviderP
               if (!fromSid || !signal) continue;
 
               if (signal.type === "offer" && signal.sdp) {
-                const targetParticipant = participants.find((p) => p.session_id === fromSid);
+                const targetUserId =
+                  sessionUserMapRef.current.get(fromSid) ??
+                  participantsRef.current.find((p) => p.session_id === fromSid)?.user_id ??
+                  fromSid;
+
                 const pc = createPeer(
                   channelId,
                   mySessionId,
                   fromSid,
-                  targetParticipant?.user_id ?? fromSid,
+                  targetUserId,
                   iceServersRef.current,
                 );
 
@@ -539,18 +611,45 @@ export function CallProvider({ config: explicitConfig, children }: CallProviderP
             }
           }
         }
+
+        // SSE 終了時 (done) の後始末
+        cleanupPeers();
+        closeMedia();
+        if (!abortController.signal.aborted) {
+          sessionIdRef.current = null;
+          setCurrentChannelId(null);
+          setConnectionState("idle");
+          setParticipants([]);
+        }
       } catch (err: unknown) {
         if (!abortController.signal.aborted) {
           const e = err as Error;
-          setError(e.message || t("call.connectError"));
+          const errorMsg = e.message || t("call.connectError");
+          setError(errorMsg);
+          toast.error(errorMsg);
           setConnectionState("error");
           cleanupPeers();
           closeMedia();
+          sessionIdRef.current = null;
           setCurrentChannelId(null);
+          setParticipants([]);
         }
       }
     },
-    [apiClient, config.devUserId, createPeer, isMuted, leaveCall, participants, pollActiveCalls, t],
+    [
+      apiClient,
+      cleanupPeers,
+      closeMedia,
+      config.apiBaseUrl,
+      config.devUserId,
+      createPeer,
+      effectiveUserId,
+      isMuted,
+      leaveCall,
+      pollActiveCalls,
+      t,
+      updateSpeakingUser,
+    ],
   );
 
   return (
@@ -575,8 +674,5 @@ export function CallProvider({ config: explicitConfig, children }: CallProviderP
 
 export function useCall(): CallContextValue {
   const context = useContext(CallContext);
-  if (!context) {
-    throw new Error("useCall must be used within a CallProvider");
-  }
-  return context;
+  return context ?? defaultCallContext;
 }

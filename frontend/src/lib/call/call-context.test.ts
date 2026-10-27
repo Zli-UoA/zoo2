@@ -8,6 +8,15 @@ import { LocaleProvider } from "../../components/i18n/LocaleProvider";
 import { resolveConfig } from "../config";
 import { CallProvider, useCall } from "./call-context";
 
+vi.mock("../../hooks/useCurrentUser", () => ({
+  useCurrentUser: () => ({
+    currentUserId: "dev-user-1",
+    isLoading: false,
+    isAdmin: false,
+    error: null,
+  }),
+}));
+
 const testConfig = resolveConfig({ DEV: true, VITE_DEV_USER_ID: "dev-user-1" });
 
 let root: Root;
@@ -29,17 +38,26 @@ afterEach(() => {
 });
 
 describe("CallContext", () => {
-  it("throws error when used outside CallProvider", () => {
+  it("returns default idle state when used outside CallProvider without throwing", () => {
+    let capturedState: ReturnType<typeof useCall> | null = null;
     function Consumer() {
-      useCall();
-      return null;
+      capturedState = useCall();
+      return createElement("div", { id: "rendered-standalone" });
     }
 
-    expect(() => {
-      act(() => {
-        root.render(createElement(Consumer));
-      });
-    }).toThrow("useCall must be used within a CallProvider");
+    act(() => {
+      root.render(createElement(Consumer));
+    });
+
+    expect(capturedState).not.toBeNull();
+    const state = capturedState!;
+    expect(state.currentChannelId).toBeNull();
+    expect(state.connectionState).toBe("idle");
+    expect(state.error).toBeNull();
+    expect(state.participants).toEqual([]);
+    expect(state.speakingUserIds.size).toBe(0);
+    expect(state.activeCalls.size).toBe(0);
+    expect(document.getElementById("rendered-standalone")).not.toBeNull();
   });
 
   it("provides default idle state within CallProvider", () => {
