@@ -64,3 +64,10 @@ db-restart:
 
 db-reset:
 	$(MAKE) -C infra db-reset
+
+.PHONY: sdk-check sdk-test
+sdk-check:
+	frontend/node_modules/.bin/tsc --project sdk/tsconfig.json
+
+sdk-test:
+	node --experimental-strip-types --test sdk/src/index.test.ts

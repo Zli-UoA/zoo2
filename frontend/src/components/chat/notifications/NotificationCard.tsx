@@ -9,8 +9,8 @@ import { kitchenLabel, kitchenParts } from "../../../lib/emoji/kitchen";
 import { normalizeUtcTimestamp } from "../../../lib/timestamps";
 import { useLocale } from "../../i18n/LocaleProvider";
 import { useShell } from "../../layout/shell-context";
-import { Avatar, AvatarFallback, AvatarGroup, AvatarGroupCount } from "../../ui/avatar";
-import { initials } from "../format";
+import { AvatarGroup, AvatarGroupCount } from "../../ui/avatar";
+import { AppAvatar } from "../AppIdentity";
 import { ReactionEmoji } from "../messages/ReactionEmoji";
 import { fullTimestamp } from "../messages/messageFormat";
 import {
@@ -89,9 +89,14 @@ export function NotificationCard({
           <div className="flex flex-wrap items-center justify-between gap-2">
             <AvatarGroup>
               {group.actorIds.slice(0, 8).map((id) => (
-                <Avatar key={id} size="sm" title={name(id)}>
-                  <AvatarFallback>{initials(name(id))}</AvatarFallback>
-                </Avatar>
+                <AppAvatar
+                  key={id}
+                  title={name(id)}
+                  size="sm"
+                  label={name(id)}
+                  isBot={users.get(id)?.is_bot}
+                  src={users.get(id)?.avatar_url}
+                />
               ))}
               {group.actorIds.length > 8 ? (
                 <AvatarGroupCount>+{group.actorIds.length - 8}</AvatarGroupCount>
@@ -104,7 +109,12 @@ export function NotificationCard({
               {fullTimestamp(notification.created_at, locale)}
             </time>
           </div>
-          <p className="text-sm font-medium">{label}</p>
+          <p className="text-sm font-medium">
+            {label}{" "}
+            {users.get(group.actorIds[0]!)?.is_bot ? (
+              <span className="text-xs text-muted-foreground">APP</span>
+            ) : null}
+          </p>
           <p className="text-xs text-muted-foreground">
             {channel ? `#${channel.channel_name}` : t("notifications.unavailable")}
           </p>

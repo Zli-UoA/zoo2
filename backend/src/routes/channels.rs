@@ -116,7 +116,7 @@ pub fn router() -> Router<AppState> {
         )
 }
 
-async fn create_channel(
+pub(crate) async fn create_channel(
     State(state): State<AppState>,
     auth_user: AuthUser,
     Json(payload): Json<CreateChannelRequest>,
@@ -162,7 +162,7 @@ async fn create_channel(
     Ok(Json(ApiResponse::new(ChannelResponse::from(channel), txid)))
 }
 
-async fn update_channel(
+pub(crate) async fn update_channel(
     State(state): State<AppState>,
     auth_user: AuthUser,
     Path(id): Path<String>,
@@ -273,7 +273,7 @@ async fn update_channel(
     )))
 }
 
-async fn delete_channel(
+pub(crate) async fn delete_channel(
     State(state): State<AppState>,
     auth_user: AuthUser,
     Path(id): Path<String>,
@@ -362,7 +362,7 @@ async fn delete_channel(
     )))
 }
 
-async fn join_channel(
+pub(crate) async fn join_channel(
     State(state): State<AppState>,
     auth_user: AuthUser,
     Path(id): Path<String>,
@@ -602,7 +602,7 @@ async fn add_channel_user(
     )))
 }
 
-async fn leave_channel(
+pub(crate) async fn leave_channel(
     State(state): State<AppState>,
     auth_user: AuthUser,
     Path(id): Path<String>,
@@ -676,7 +676,7 @@ async fn leave_channel(
     )))
 }
 
-async fn archive_channel(
+pub(crate) async fn archive_channel(
     State(state): State<AppState>,
     auth_user: AuthUser,
     Path(id): Path<String>,
@@ -767,7 +767,7 @@ async fn archive_channel(
     Ok(Json(ApiResponse::new(ChannelResponse::from(updated), txid)))
 }
 
-async fn unarchive_channel(
+pub(crate) async fn unarchive_channel(
     State(state): State<AppState>,
     auth_user: AuthUser,
     Path(id): Path<String>,

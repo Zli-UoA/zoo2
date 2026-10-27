@@ -218,7 +218,7 @@ async fn channels_shape(
 }
 
 /// Messages Shape (channel_id 必須)
-async fn messages_shape(
+pub(crate) async fn messages_shape(
     State(state): State<AppState>,
     auth_user: AuthUser,
     Query(raw_query): Query<HashMap<String, String>>,
@@ -282,7 +282,7 @@ async fn messages_shape(
 }
 
 /// Message Reactions Shape (channel_id 必須)
-async fn message_reactions_shape(
+pub(crate) async fn message_reactions_shape(
     State(state): State<AppState>,
     auth_user: AuthUser,
     Query(raw_query): Query<HashMap<String, String>>,
@@ -346,7 +346,7 @@ async fn message_reactions_shape(
 }
 
 /// Users Shape (全ユーザー同期)
-async fn users_shape(
+pub(crate) async fn users_shape(
     State(state): State<AppState>,
     _auth_user: AuthUser,
     Query(raw_query): Query<HashMap<String, String>>,
@@ -355,7 +355,7 @@ async fn users_shape(
 }
 
 /// Channel Users Shape (メンバー一覧)
-async fn channel_users_shape(
+pub(crate) async fn channel_users_shape(
     State(state): State<AppState>,
     auth_user: AuthUser,
     Query(raw_query): Query<HashMap<String, String>>,
@@ -433,6 +433,25 @@ async fn notifications_shape(
         Some(&where_clause),
         &extra_params,
         &raw_query,
+        true,
+    )
+    .await
+}
+
+/// App tokens only enumerate channels their acting identity has joined.
+pub(crate) async fn app_channels_shape(
+    state: AppState,
+    p: &crate::apps::Principal,
+    params: HashMap<String, String>,
+) -> Result<Response, AppError> {
+    proxy_shape(
+        &state,
+        "channels",
+        Some(
+            "deleted_at IS NULL AND id IN (SELECT channel_id FROM channel_user WHERE user_id = $1)",
+        ),
+        &[("params[1]", p.user_id.as_str())],
+        &params,
         true,
     )
     .await

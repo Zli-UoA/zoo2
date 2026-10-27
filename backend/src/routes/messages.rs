@@ -119,7 +119,7 @@ async fn create_message(
     create_message_impl(state, auth_user, payload, true, None).await
 }
 
-pub(super) async fn create_message_impl(
+pub(crate) async fn create_message_impl(
     state: AppState,
     auth_user: AuthUser,
     payload: CreateMessageRequest,
@@ -141,6 +141,13 @@ pub(super) async fn create_message_impl(
 
     let mut db = state.db.clone();
     let mut tx = db.transaction().await?;
+
+    let principal = crate::apps::one(&mut tx,
+        "SELECT json_build_object('bot',EXISTS(SELECT 1 FROM users WHERE id=$1 AND is_bot),'active',EXISTS(SELECT 1 FROM apps a JOIN app_installations i ON i.app_id=a.id WHERE a.bot_user_id=$1 AND a.status='installed' AND i.active))::text", &[auth_user.id.as_str()]).await?;
+    let bot_actor = principal["bot"] == true;
+    if bot_actor && principal["active"] != true {
+        return Err(AppError::Forbidden("App is not installed".into()));
+    }
 
     // チャンネル存在確認
     let channel = Channel::get_by_id(&mut tx, payload.channel_id.as_str())
@@ -167,7 +174,7 @@ pub(super) async fn create_message_impl(
     }
 
     // プライベートチャンネルの場合、所属していなければ 404 で存在を隠蔽
-    if channel.is_private {
+    if channel.is_private || bot_actor {
         let membership = ChannelUser::filter(
             ChannelUser::fields()
                 .channel_id()
@@ -259,7 +266,7 @@ pub(super) async fn create_message_impl(
     Ok(Json(ApiResponse::new(MessageResponse::from(message), txid)))
 }
 
-async fn update_message(
+pub(crate) async fn update_message(
     State(state): State<AppState>,
     auth_user: AuthUser,
     Path(id): Path<String>,
@@ -356,7 +363,7 @@ async fn update_message(
     )))
 }
 
-async fn delete_message(
+pub(crate) async fn delete_message(
     State(state): State<AppState>,
     auth_user: AuthUser,
     Path(id): Path<String>,
@@ -525,7 +532,7 @@ async fn list_messages(
     Ok(Json(res))
 }
 
-async fn add_reaction(
+pub(crate) async fn add_reaction(
     State(state): State<AppState>,
     auth_user: AuthUser,
     Path(id): Path<String>,
@@ -711,7 +718,7 @@ async fn add_reaction(
     )))
 }
 
-async fn delete_reaction(
+pub(crate) async fn delete_reaction(
     State(state): State<AppState>,
     auth_user: AuthUser,
     Path(id): Path<String>,

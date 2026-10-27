@@ -28,6 +28,7 @@ use uuid::Uuid;
 pub struct WebhookResponse {
     id: String,
     name: String,
+    bot_user_id: String,
     path: String,
     generic_path: String,
     secret: String,
@@ -40,6 +41,7 @@ impl From<ChannelWebhook> for WebhookResponse {
             path: format!("/api/webhooks/github/{}", w.id),
             id: w.id,
             name: w.name,
+            bot_user_id: w.user_id.clone(),
             secret: w.secret,
             created_at: w.created_at.to_string(),
         }
@@ -57,6 +59,10 @@ pub fn router() -> Router<AppState> {
             get(list).post(create),
         )
         .route("/api/channels/{channel_id}/webhooks/{id}", delete(remove))
+        .route(
+            "/api/channels/{channel_id}/webhooks/{id}/app",
+            post(associate_app),
+        )
         .route(
             "/api/channels/{channel_id}/webhooks/{id}/rotate-secret",
             post(rotate),
@@ -187,6 +193,7 @@ async fn create(
     })
     .exec(&mut tx)
     .await?;
+    crate::apps::management::attach_webhook(&mut tx, &user, &actor.id, name).await?;
     toasty::create!(ChannelUser {
         channel_id: channel.as_str(),
         user_id: user.as_str(),
@@ -222,10 +229,7 @@ async fn remove(
         .delete()
         .exec(&mut tx)
         .await?;
-    ChannelUser::filter(ChannelUser::fields().user_id().eq(hook.user_id.as_str()))
-        .delete()
-        .exec(&mut tx)
-        .await?;
+    remove_unused_membership(&mut tx, &channel, &hook.user_id).await?;
     let txid = get_current_txid(&mut tx).await?;
     tx.commit().await?;
     Ok(Json(ApiResponse::new(id, txid)))
@@ -306,4 +310,48 @@ async fn receive_generic(
         header("x-webhook-delivery"),
     )
     .await
+}
+
+#[derive(Deserialize)]
+struct AssociateApp {
+    app_id: String,
+}
+async fn remove_unused_membership(
+    tx: &mut toasty::Transaction<'_>,
+    channel: &str,
+    user: &str,
+) -> Result<(), AppError> {
+    toasty::sql::statement("DELETE FROM channel_user WHERE channel_id=$1 AND user_id=$2 AND NOT EXISTS(SELECT 1 FROM channel_webhooks WHERE channel_id=$1 AND user_id=$2)").bind(channel).bind(user).exec(tx).await?;
+    toasty::sql::statement("UPDATE apps SET status='disabled' WHERE bot_user_id=$1 AND manifest::jsonb->>'notification_only'='true' AND NOT EXISTS(SELECT 1 FROM channel_webhooks WHERE user_id=$1)").bind(user).exec(tx).await?;
+    Ok(())
+}
+async fn associate_app(
+    State(state): State<AppState>,
+    actor: AuthUser,
+    Path((channel, id)): Path<(String, String)>,
+    Json(body): Json<AssociateApp>,
+) -> Result<Json<ApiResponse<WebhookResponse>>, AppError> {
+    let mut db = state.db.clone();
+    let mut tx = db.transaction().await?;
+    authorize(&mut tx, &state, &actor, &channel).await?;
+    let app = crate::apps::can_manage(&mut tx, &state, &actor, &body.app_id).await?;
+    let manifest: crate::apps::Manifest = serde_json::from_str(app["manifest"].as_str().unwrap())
+        .map_err(|e| AppError::Internal(e.into()))?;
+    if app["status"] != "installed" || !manifest.notification_only {
+        return Err(AppError::BadRequest(
+            "Select an installed notification-only app".into(),
+        ));
+    }
+    let old = find(&mut tx, &channel, &id).await?;
+    let bot = app["bot_user_id"].as_str().unwrap();
+    ChannelWebhook::update_by_id(id.as_str())
+        .user_id(bot)
+        .exec(&mut tx)
+        .await?;
+    toasty::sql::statement("INSERT INTO channel_user(channel_id,user_id,joined_at) VALUES($1,$2,CURRENT_TIMESTAMP) ON CONFLICT DO NOTHING").bind(channel.as_str()).bind(bot).exec(&mut tx).await?;
+    remove_unused_membership(&mut tx, &channel, &old.user_id).await?;
+    let hook = find(&mut tx, &channel, &id).await?;
+    let txid = get_current_txid(&mut tx).await?;
+    tx.commit().await?;
+    Ok(Json(ApiResponse::new(hook.into(), txid)))
 }

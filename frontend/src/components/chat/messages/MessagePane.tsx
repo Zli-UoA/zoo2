@@ -1,3 +1,4 @@
+import { createConfiguredApiClient } from "../../../lib/api/client";
 import { useTranslation } from "react-i18next";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
@@ -102,8 +103,11 @@ export function MessagePane({
   targetMessageId?: string;
 }) {
   const { t } = useTranslation();
-  const { messages, channelUsers, reactions } = useCollections();
-  const mentionUsers = useUsers().data ?? [];
+  const { messages, channelUsers, reactions, config } = useCollections();
+  const appClient = useMemo(() => createConfiguredApiClient(config), [config]);
+  const mentionUsers = (useUsers().data ?? []).filter(
+    (user) => !user.is_bot || user.bot_mentionable,
+  );
   const members = useChannelMembers(channelId).data;
   const mentionMemberIds = useMemo(
     () => new Set((members ?? []).map((member) => member.user_id)),
@@ -310,6 +314,19 @@ export function MessagePane({
 
   const handleSend = useCallback(
     async (content: string): Promise<boolean> => {
+      const command = /^\/([a-zA-Z0-9_-]+)(?:\s+([\s\S]*))?$/.exec(content.trim());
+      if (command) {
+        try {
+          await appClient.request(`/api/apps/commands/${command[1]}`, {
+            method: "POST",
+            body: { channel_id: channelId, text: command[2] ?? "" },
+          });
+          return true;
+        } catch {
+          toast.error(t("apps.actionError"));
+          return false;
+        }
+      }
       const id = crypto.randomUUID();
       await run(() =>
         messagesCollection.insert({
@@ -327,7 +344,7 @@ export function MessagePane({
       // 成否を判定する（Composer が失敗時に下書きを復元できるようにする）。
       return messagesCollection.get(id) !== undefined;
     },
-    [run, messagesCollection, currentUserId, channelId],
+    [run, messagesCollection, currentUserId, channelId, appClient, t],
   );
 
   const handleSendReply = useCallback(

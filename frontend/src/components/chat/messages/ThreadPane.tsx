@@ -6,9 +6,10 @@ import { useLocale } from "../../i18n/LocaleProvider";
 import type { KitchenCatalog } from "../../../lib/emoji/kitchen";
 import type { ReactionGroup } from "../../../lib/emoji/reactions";
 import { normalizeUtcTimestamp } from "../../../lib/timestamps";
-import { Avatar, AvatarFallback } from "../../ui/avatar";
+import { AppAvatar, AuthorIdentity } from "../AppIdentity";
+import { MessageAppContent } from "../AppBlocks";
 import { Button } from "../../ui/button";
-import { initials } from "../format";
+
 import type { TypingUser } from "../../../hooks/useTyping";
 import { TypingIndicator } from "./TypingIndicator";
 import { Composer } from "./Composer";
@@ -148,12 +149,16 @@ export function ThreadPane({
 
       <div className="border-b bg-muted/30 px-4 py-3">
         <div className="flex gap-3">
-          <Avatar size="sm" className="mt-0.5">
-            <AvatarFallback>{initials(authorLabel(root))}</AvatarFallback>
-          </Avatar>
+          <AppAvatar
+            className="mt-0.5"
+            size="sm"
+            label={authorLabel(root)}
+            isBot={!!root.is_bot}
+            src={root.avatar_url}
+          />
           <div className="min-w-0 flex-1">
             <div className="flex items-baseline gap-2">
-              <span className="truncate text-sm font-semibold">{authorLabel(root)}</span>
+              <AuthorIdentity message={root} />
               <time
                 className="shrink-0 text-[11px] text-muted-foreground tabular-nums"
                 dateTime={normalizeUtcTimestamp(root.created_at)}
@@ -164,6 +169,7 @@ export function ThreadPane({
             </div>
             <div className="max-h-40 overflow-y-auto">
               <MessageBody content={root.content} card={root.card} />
+              <MessageAppContent message={root} />
             </div>
           </div>
         </div>

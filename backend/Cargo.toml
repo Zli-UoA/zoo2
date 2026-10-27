@@ -7,7 +7,7 @@ edition = "2024"
 strip = true
 
 [dependencies]
-axum = "0.8"
+axum = { version = "0.8", features = ["ws"] }
 tokio = { version = "1", features = ["full"] }
 toasty = { version = "0.11", features = ["postgresql", "jiff", "serde"] }
 toasty-driver-postgresql = { version = "0.11", features = ["jiff"] }
@@ -37,6 +37,7 @@ openssl = { version = "0.10", features = ["vendored"] }
 
 [dev-dependencies]
 wiremock = "0.6"
+tokio-tungstenite = "0.29"
 
 [lib]
 name = "backend"

@@ -175,6 +175,17 @@ pub async fn create_message_notifications(
         }
     }
 
+    // Apps receive events rather than human inbox notifications.
+    if !targets_to_notify.is_empty() {
+        let ids = serde_json::json!(targets_to_notify.keys().collect::<Vec<_>>()).to_string();
+        let bots = crate::apps::query(tx, "SELECT json_build_object('id',id)::text FROM users WHERE is_bot AND id IN (SELECT jsonb_array_elements_text($1::jsonb))", &[&ids]).await?;
+        for bot in bots {
+            if let Some(id) = bot["id"].as_str() {
+                targets_to_notify.remove(id);
+            }
+        }
+    }
+
     let mut created_notifications = Vec::new();
     let now = now_utc_millis();
 
@@ -205,7 +216,7 @@ pub async fn create_reaction_notification(
     message: &Message,
     actor_id: &str,
 ) -> Result<Option<Notification>, AppError> {
-    if message.user_id == actor_id {
+    if message.user_id == actor_id || User::get_by_id(tx, message.user_id.as_str()).await?.is_bot {
         return Ok(None);
     }
 

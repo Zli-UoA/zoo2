@@ -176,7 +176,7 @@ async fn try_create_or_get_1on1_dm(
     Ok(Some(ApiResponse::new(ChannelResponse::from(channel), txid)))
 }
 
-async fn create_or_get_dm(
+pub(crate) async fn create_or_get_dm(
     State(state): State<AppState>,
     auth_user: AuthUser,
     Json(payload): Json<CreateDmRequest>,
@@ -231,7 +231,7 @@ async fn create_or_get_dm(
                     AppError::from(err)
                 }
             })?;
-        if target.is_bot {
+        if target.is_bot && !crate::apps::bot_can_chat(&mut db, uid).await? {
             return Err(AppError::BadRequest(
                 "Cannot start a DM with an integration user".into(),
             ));
