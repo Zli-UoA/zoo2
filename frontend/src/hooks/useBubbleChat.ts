@@ -47,21 +47,42 @@ export function useBubbleChat(enabled = true) {
     let idleTimer: ReturnType<typeof setTimeout> | undefined;
     let pollTimer: ReturnType<typeof setTimeout> | undefined;
 
-    // Serialize writes so an earlier update cannot overtake a later update or clear.
-    let writes = Promise.resolve();
-    const send = (value: string) => {
-      writes = writes
-        .then(async () => {
-          if (value.trim().length > 0 && (cancelled || activeContent.trim().length === 0)) {
-            return;
+    // Coalesce pending writes so at most one follow-up request is queued while a write is in flight,
+    // always sending the latest activeContent (or empty string on clear) when the in-flight write finishes.
+    let inFlight = false;
+    let hasPendingWrite = false;
+
+    const flushWrites = async () => {
+      if (inFlight) {
+        return;
+      }
+      inFlight = true;
+      try {
+        while (hasPendingWrite) {
+          hasPendingWrite = false;
+          clearTimeout(flushTimer);
+          const valueToSend = cancelled || activeContent.trim().length === 0 ? "" : activeContent;
+          if (valueToSend.length > 0) {
+            lastSent = Date.now();
           }
-          await client.request(path, {
-            method: "POST",
-            body: { session_id: sessionId, content: value },
-            signal: AbortSignal.timeout(5000),
-          });
-        })
-        .catch(() => {});
+          try {
+            await client.request(path, {
+              method: "POST",
+              body: { session_id: sessionId, content: valueToSend },
+              signal: AbortSignal.timeout(5000),
+            });
+          } catch {
+            // Ignore transient network errors; subsequent input or timeout will recover.
+          }
+        }
+      } finally {
+        inFlight = false;
+      }
+    };
+
+    const send = () => {
+      hasPendingWrite = true;
+      void flushWrites();
     };
 
     const stop = () => {
@@ -71,7 +92,7 @@ export function useBubbleChat(enabled = true) {
       lastSent = 0;
       if (hasSentActive) {
         hasSentActive = false;
-        send("");
+        send();
       }
     };
 
@@ -88,12 +109,12 @@ export function useBubbleChat(enabled = true) {
       clearTimeout(flushTimer);
       if (!lastSent || now - lastSent >= THROTTLE_MS) {
         lastSent = now;
-        send(next);
+        send();
       } else {
         flushTimer = setTimeout(
           () => {
             lastSent = Date.now();
-            send(activeContent);
+            send();
           },
           THROTTLE_MS - (now - lastSent),
         );

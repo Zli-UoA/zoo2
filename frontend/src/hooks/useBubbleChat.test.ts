@@ -90,6 +90,39 @@ describe("useBubbleChat", () => {
     expect(payloads().at(-1)?.content).toBe("");
   });
 
+  it("coalesces intermediate throttled writes while a request is still in flight", async () => {
+    let resolveFirst!: (value: { ok: boolean }) => void;
+    mocks.request.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          resolveFirst = resolve;
+        }),
+    );
+
+    await flush(() => root.render(createElement(Probe)));
+
+    // First input starts an in-flight POST immediately.
+    await flush(() => state.setContent("1"));
+    expect(payloads()).toEqual([{ session_id: expect.any(String), content: "1" }]);
+
+    // Multiple throttled intervals pass while the first POST is still in flight.
+    await flush(() => state.setContent("12"));
+    await flush(() => vi.advanceTimersByTime(200));
+    await flush(() => state.setContent("123"));
+    await flush(() => vi.advanceTimersByTime(200));
+    await flush(() => state.setContent("1234"));
+
+    // Still only the first request has been dispatched so far.
+    expect(payloads()).toEqual([{ session_id: expect.any(String), content: "1" }]);
+
+    // Once the first request resolves, only the latest content ("1234") is sent.
+    await flush(() => resolveFirst({ ok: true }));
+    expect(payloads()).toEqual([
+      { session_id: expect.any(String), content: "1" },
+      { session_id: expect.any(String), content: "1234" },
+    ]);
+  });
+
   it("clears immediately when text is emptied or clearContent is called", async () => {
     await flush(() => root.render(createElement(Probe)));
     await flush(() => state.setContent("テスト"));

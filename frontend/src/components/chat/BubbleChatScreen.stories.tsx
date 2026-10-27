@@ -1,6 +1,6 @@
 import type { Meta, StoryObj } from "@storybook/react-vite";
 import { http, HttpResponse } from "msw";
-import { expect, screen, userEvent } from "storybook/test";
+import { expect, screen, userEvent, within } from "storybook/test";
 
 import { StoryShell } from "../../../.storybook/shell";
 import { BubbleChatScreen } from "./BubbleChatScreen";
@@ -58,7 +58,12 @@ export const ActiveConversation: Story = {
 
     const input = screen.getByRole("textbox", { name: "リアルタイムメッセージ入力" });
     await userEvent.type(input, "ありがとう！準備してきます");
-    await expect(await screen.findByText("ありがとう！準備してきます")).toBeInTheDocument();
+    const list = screen.getByRole("list");
+    await expect(await within(list).findByText("ありがとう！準備してきます")).toBeInTheDocument();
+
+    await userEvent.keyboard("{Control>}{Enter}{/Control}");
+    await expect(input).toHaveValue("");
+    await expect(within(list).queryByText("ありがとう！準備してきます")).not.toBeInTheDocument();
   },
 };
 

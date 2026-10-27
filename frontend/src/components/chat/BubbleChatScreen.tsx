@@ -12,12 +12,33 @@ import { initials } from "./format";
 
 const MAX_INPUT_HEIGHT = 180;
 
+export interface BubbleChatKeyInput {
+  key: string;
+  metaKey: boolean;
+  ctrlKey: boolean;
+  shiftKey: boolean;
+  altKey?: boolean;
+  isComposing: boolean;
+}
+
+/**
+ * Cmd+Enter / Ctrl+Enter で入力中の文字列を全削除する。
+ * Enter / Shift+Enter は改行に任せ、IME 変換中（isComposing）は実行しない。
+ */
+export function shouldClearBubbleChatFromKey(input: BubbleChatKeyInput): boolean {
+  if (input.key !== "Enter" || input.isComposing || input.shiftKey || input.altKey) {
+    return false;
+  }
+  return input.metaKey || input.ctrlKey;
+}
+
 export function BubbleChatScreen() {
   const { t } = useTranslation();
   const { entries, content, setContent, clearContent } = useBubbleChat(true);
   const { currentUserId } = useCurrentUser();
   const usersQuery = useUsers();
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const composingRef = useRef(false);
 
   const me = useMemo(
     () => (usersQuery.data ?? []).find((user) => user.id === currentUserId),
@@ -122,7 +143,35 @@ export function BubbleChatScreen() {
               placeholder={t("bubbleChat.placeholder")}
               aria-label={t("bubbleChat.inputLabel")}
               className="min-h-9 resize-none border-0 bg-transparent px-2 py-1.5 text-base shadow-none [field-sizing:fixed] focus-visible:ring-0 md:text-sm dark:bg-transparent"
+              onCompositionStart={() => {
+                composingRef.current = true;
+              }}
+              onCompositionEnd={() => {
+                composingRef.current = false;
+              }}
               onChange={(event) => setContent(event.currentTarget.value)}
+              onKeyDown={(event) => {
+                if (
+                  composingRef.current ||
+                  event.nativeEvent.isComposing ||
+                  event.nativeEvent.keyCode === 229
+                ) {
+                  return;
+                }
+                if (
+                  shouldClearBubbleChatFromKey({
+                    key: event.key,
+                    metaKey: event.metaKey,
+                    ctrlKey: event.ctrlKey,
+                    shiftKey: event.shiftKey,
+                    altKey: event.altKey,
+                    isComposing: event.nativeEvent.isComposing,
+                  })
+                ) {
+                  event.preventDefault();
+                  clearContent();
+                }
+              }}
             />
             <Button
               type="button"
