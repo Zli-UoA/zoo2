@@ -1,6 +1,6 @@
 import type { Meta, StoryObj } from "@storybook/react-vite";
 import { delay, http, HttpResponse } from "msw";
-import { expect, fn, screen, userEvent } from "storybook/test";
+import { expect, fn, screen, userEvent, within } from "storybook/test";
 import { useState } from "react";
 
 import { RECENT_EMOJIS_STORAGE_KEY } from "../../../lib/emoji/recents";
@@ -47,9 +47,13 @@ type Story = StoryObj<typeof meta>;
 
 export const Default: Story = {
   play: async () => {
-    const rows = await screen.findAllByRole("row");
+    const dialog = await screen.findByRole("dialog", {}, { timeout: 5000 });
+    // The first open fetches the emoji catalogue and mounts a virtual grid.
+    // Wait for that grid rather than applying Testing Library's 1s default.
+    const picker = within(dialog);
+    const rows = await picker.findAllByRole("row", {}, { timeout: 5000 });
     await expect(rows.every((row) => Number(row.getAttribute("aria-rowindex")) >= 1)).toBe(true);
-    const cells = screen.getAllByRole("gridcell");
+    const cells = await picker.findAllByRole("gridcell", {}, { timeout: 5000 });
     await expect(cells.every((cell) => Number(cell.getAttribute("aria-colindex")) >= 1)).toBe(true);
   },
 };
