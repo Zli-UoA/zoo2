@@ -8,9 +8,11 @@ WORKDIR /app
 
 COPY backend/ /app
 
+# Rebuild the application even if restored artifacts have newer timestamps.
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/usr/local/cargo/git \
     --mount=type=cache,target=/app/target \
+    cargo clean --locked --release --package backend && \
     cargo build --locked --release --bin zoo_backend && \
     cp /app/target/release/zoo_backend /zoo_backend
 
