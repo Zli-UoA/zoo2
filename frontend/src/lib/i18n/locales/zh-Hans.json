@@ -337,5 +337,15 @@
       "unixtime": "日期时间（输入 Unix 秒数）",
       "clickable": "点击事件"
     }
+  },
+  "bubbleChat": {
+    "title": "Bubble Chat",
+    "description": "输入的文字会实时显示在此房间中",
+    "emptyTitle": "当前没有人在输入",
+    "emptyDescription": "在下方输入框中打字，即可实时显示为对话气泡。",
+    "placeholder": "在此输入即可实时共享…",
+    "inputLabel": "实时消息输入",
+    "clear": "清空输入",
+    "hint": "无需发送按钮，清空文字或离开页面后气泡即会消失。"
   }
 }

@@ -337,5 +337,15 @@
       "unixtime": "Date and time (enter Unix seconds)",
       "clickable": "Click event"
     }
+  },
+  "bubbleChat": {
+    "title": "Bubble Chat",
+    "description": "A room where text appears in real time as you type",
+    "emptyTitle": "No one is typing right now",
+    "emptyDescription": "Start typing below to show your speech bubble in real time.",
+    "placeholder": "Type here to share in real time…",
+    "inputLabel": "Real-time message input",
+    "clear": "Clear input",
+    "hint": "No send button—your bubble disappears when you clear the text or leave."
   }
 }

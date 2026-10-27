@@ -8,6 +8,7 @@ pub const MAX_CHANNEL_DESCRIPTION_LENGTH: usize = 250;
 pub const MAX_USER_NAME_LENGTH: usize = 80;
 pub const MAX_DISPLAY_NAME_LENGTH: usize = 80;
 pub const MAX_MESSAGE_CONTENT_LENGTH: usize = 40_000;
+pub const MAX_BUBBLE_CHAT_CONTENT_LENGTH: usize = 1_000;
 
 const RESERVED_CHANNEL_NAMES: &[&str] = &["all", "channel", "everyone", "here", "general"];
 pub(crate) const RESERVED_USER_NAMES: &[&str] =
@@ -129,6 +130,19 @@ pub fn validate_message_content(content: &str) -> Result<(), AppError> {
     if content.chars().count() > MAX_MESSAGE_CONTENT_LENGTH {
         return Err(AppError::BadRequest(format!(
             "Message content cannot exceed {MAX_MESSAGE_CONTENT_LENGTH} characters"
+        )));
+    }
+
+    Ok(())
+}
+
+/// Bubble Chat の入力文字列バリデーション:
+/// - 空文字・空白のみは消去要求として許可
+/// - 最大 1,000 文字
+pub fn validate_bubble_chat_content(content: &str) -> Result<(), AppError> {
+    if content.chars().count() > MAX_BUBBLE_CHAT_CONTENT_LENGTH {
+        return Err(AppError::BadRequest(format!(
+            "Bubble chat content cannot exceed {MAX_BUBBLE_CHAT_CONTENT_LENGTH} characters"
         )));
     }
 
@@ -512,5 +526,17 @@ mod tests {
         assert!(validate_message_content(&too_long).is_err());
         let exact = "a".repeat(40_000);
         assert!(validate_message_content(&exact).is_ok());
+    }
+
+    #[test]
+    fn test_validate_bubble_chat_content() {
+        assert!(validate_bubble_chat_content("").is_ok());
+        assert!(validate_bubble_chat_content("   ").is_ok());
+        assert!(validate_bubble_chat_content("こんにちは！").is_ok());
+
+        let exact = "あ".repeat(MAX_BUBBLE_CHAT_CONTENT_LENGTH);
+        assert!(validate_bubble_chat_content(&exact).is_ok());
+        let too_long = "あ".repeat(MAX_BUBBLE_CHAT_CONTENT_LENGTH + 1);
+        assert!(validate_bubble_chat_content(&too_long).is_err());
     }
 }

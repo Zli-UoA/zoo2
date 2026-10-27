@@ -4,7 +4,14 @@ import { disablePush } from "../../lib/pwa/push";
 import { useTranslation } from "react-i18next";
 import { Link } from "@tanstack/react-router";
 import { cn } from "cn";
-import { ActivityIcon, HashIcon, LogOutIcon, type LucideIcon, PawPrintIcon } from "lucide-react";
+import {
+  ActivityIcon,
+  HashIcon,
+  LogOutIcon,
+  MessageCircleMoreIcon,
+  type LucideIcon,
+  PawPrintIcon,
+} from "lucide-react";
 
 import { useCurrentUser } from "../../hooks/useCurrentUser";
 import { useUsers } from "../../hooks/useRealtime";
@@ -25,7 +32,7 @@ function RailLink({
   label,
   exact = false,
 }: {
-  to: "/" | "/realtime";
+  to: "/" | "/bubble-chat" | "/realtime";
   icon: LucideIcon;
   label: string;
   exact?: boolean;
@@ -94,6 +101,12 @@ export function LeftRail() {
       <Separator className="my-1 w-6" />
       <RailLink to="/" icon={HashIcon} label={t("channels.title")} exact />
       <NotificationsButton />
+      <RailLink
+        to="/bubble-chat"
+        icon={MessageCircleMoreIcon}
+        label={t("bubbleChat.title")}
+        exact
+      />
       {/* 同期の状態（/realtime）は開発時の確認用。本番ビルドでは出さない。 */}
       {import.meta.env.DEV ? (
         <RailLink to="/realtime" icon={ActivityIcon} label={t("sync.title")} exact />

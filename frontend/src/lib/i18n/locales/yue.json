@@ -337,5 +337,15 @@
       "unixtime": "日期時間（輸入 Unix 秒數）",
       "clickable": "點擊事件"
     }
+  },
+  "bubbleChat": {
+    "title": "Bubble Chat",
+    "description": "打緊嘅字會即時顯示喺呢個房入面",
+    "emptyTitle": "而家冇人打緊字",
+    "emptyDescription": "喺下面輸入欄打字，就會即時變成對話氣泡顯示出嚟。",
+    "placeholder": "喺度打字就會即時分享…",
+    "inputLabel": "即時訊息輸入",
+    "clear": "清除輸入",
+    "hint": "唔使撳發送，刪走啲字或者離開畫面之後氣泡就會消失。"
   }
 }
