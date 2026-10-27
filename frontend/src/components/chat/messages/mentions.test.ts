@@ -52,7 +52,7 @@ describe("mentions", () => {
   });
 });
 
-it("accepts fullwidth and Japanese mention queries with original insertion offsets", () => {
-  expect(mentionQuery("hi ＠太", 5)).toEqual({ start: 3, end: 5, query: "太" });
-  expect(mentionQuery("＠ａｌ", 3)).toEqual({ start: 0, end: 3, query: "al" });
+it("accepts Japanese display-name queries only after an ASCII @", () => {
+  expect(mentionQuery("hi @太", 5)).toEqual({ start: 3, end: 5, query: "太" });
+  expect(mentionQuery("＠太", 2)).toBeNull();
 });

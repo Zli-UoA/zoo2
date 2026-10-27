@@ -4,9 +4,7 @@ import type { UserRow } from "../../../lib/electric/types";
 export const MENTION_PATTERN = /(^|[\s([{<（「『"'。、])(@[a-zA-Z0-9._-]+)/g;
 
 export function mentionQuery(value: string, caret: number) {
-  const match = /(?:^|[\s([{<（「『"'。、])[@＠]([\p{L}\p{M}\p{N}._-]*)$/u.exec(
-    value.slice(0, caret),
-  );
+  const match = /(?:^|[\s([{<（「『"'。、])@([\p{L}\p{M}\p{N}._-]*)$/u.exec(value.slice(0, caret));
   return match
     ? { start: caret - match[1]!.length - 1, end: caret, query: match[1]!.normalize("NFKC") }
     : null;

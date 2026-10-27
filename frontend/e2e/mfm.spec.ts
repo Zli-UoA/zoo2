@@ -115,8 +115,8 @@ test("MFM suggestions support clicking and tapping and Escape", async ({ page, i
 test("MFM and Japanese mentions remain visible while IME owns the keyboard", async ({ page }) => {
   const input = page.getByRole("combobox");
   for (const [token, label, result] of [
-    ["＄ｊｅ", "$[jelly]", "$[jelly ]"],
-    ["＠太", "@taro", "@taro "],
+    ["$je", "$[jelly]", "$[jelly ]"],
+    ["@太", "@taro", "@taro "],
   ]) {
     await input.focus();
     await input.evaluate((el: HTMLTextAreaElement, value) => {

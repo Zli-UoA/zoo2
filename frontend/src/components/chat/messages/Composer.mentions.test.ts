@@ -177,13 +177,13 @@ it("supports MFM arrow selection, Escape and IME without interfering with mentio
 
 it("keeps suggestions visible during composition and leaves IME keys untouched", async () => {
   const textarea = container.querySelector("textarea")!;
-  for (const value of ["＄ｊｅ", "＠ａｌ"]) {
+  for (const value of ["$je", "@al"]) {
     await act(async () =>
       textarea.dispatchEvent(new CompositionEvent("compositionstart", { bubbles: true })),
     );
     await input(value);
     expect(container.querySelector('[role="listbox"]')?.textContent).toContain(
-      value.startsWith("＄") ? "$[jelly]" : "@alice",
+      value.startsWith("$") ? "$[jelly]" : "@alice",
     );
     for (const key of ["Enter", "ArrowDown", "Tab", "Escape"]) {
       const event = new KeyboardEvent("keydown", { key, bubbles: true, cancelable: true });
@@ -207,6 +207,6 @@ it("keeps suggestions visible during composition and leaves IME keys untouched",
     await act(async () =>
       textarea.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true })),
     );
-    expect(textarea.value).toBe(value.startsWith("＄") ? "$[jelly ]" : "@alice ");
+    expect(textarea.value).toBe(value.startsWith("$") ? "$[jelly ]" : "@alice ");
   }
 });

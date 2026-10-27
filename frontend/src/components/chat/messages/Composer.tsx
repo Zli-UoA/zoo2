@@ -123,7 +123,7 @@ export function Composer({
   const mfmRange = suggest ? mfmQuery(value, caret) : null;
   const range = suggest && !mfmRange ? mentionQuery(value, caret) : null;
   const options: MentionOption[] = mfmRange
-    ? mfmOptions(mfmRange.query, (name) => t(`mfm.functions.${name}`)).map((name) => ({
+    ? mfmOptions(mfmRange.query).map((name) => ({
         name,
         label: t(`mfm.functions.${name}`),
       }))
