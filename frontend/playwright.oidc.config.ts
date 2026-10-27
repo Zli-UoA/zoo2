@@ -30,6 +30,9 @@ export default defineConfig({
   retries: 0,
   reporter: process.env.CI ? "github" : "list",
   timeout: 90_000,
+  // Cold dev-module loading and Electric/OPFS initialization can outlast the
+  // default 5s on CI. Keep assertions bounded without retrying the whole flow.
+  expect: { timeout: 15_000 },
   use: {
     baseURL,
     // E2E専用プロキシの一時的な自己署名証明書を信頼する。
