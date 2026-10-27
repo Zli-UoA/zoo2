@@ -64,12 +64,13 @@ test("keyboard viewport resize and pan keep the composer visible and restore on 
   await page.addInitScript(() => {
     // OSキーボードは自動操作できないため VisualViewport のイベントを再現する。
     const viewport = new EventTarget();
-    Object.assign(viewport, { height: 700, offsetTop: 0, scale: 1 });
+    Object.assign(viewport, { height: window.innerHeight, offsetTop: 0, scale: 1 });
     Object.defineProperty(window, "visualViewport", { value: viewport });
   });
   await page.goto("/e2e/fixtures/layout.html");
+  const fullHeight = await page.evaluate(() => window.innerHeight);
   const shell = page.getByTestId("shell");
-  await expect(shell).toHaveCSS("height", "700px");
+  await expect(shell).toHaveCSS("height", `${fullHeight}px`);
   await page.getByRole("combobox", { name: "Write a message" }).focus();
   await page.evaluate(() => {
     Object.assign(window.visualViewport!, { height: 380, offsetTop: 35 });
@@ -82,16 +83,34 @@ test("keyboard viewport resize and pan keep the composer visible and restore on 
   expect(composer!.y + composer!.height).toBeLessThanOrEqual(415);
   await expectNoOverlap(page);
   await page.evaluate(() => {
-    Object.assign(window.visualViewport!, { height: 700, offsetTop: 0 });
+    Object.assign(window.visualViewport!, { height: window.innerHeight, offsetTop: 0 });
     window.visualViewport!.dispatchEvent(new Event("resize"));
   });
-  await expect(shell).toHaveCSS("height", "700px");
+  await expect(shell).toHaveCSS("height", `${fullHeight}px`);
   await expect(shell).toHaveCSS("top", "0px");
   await page.evaluate(() => {
     Object.assign(window.visualViewport!, { height: 350, scale: 2 });
     window.visualViewport!.dispatchEvent(new Event("resize"));
   });
-  await expect(shell).toHaveCSS("height", "700px");
+  await expect(shell).toHaveCSS("height", `${fullHeight}px`);
+});
+
+test("page bounce without keyboard does not move the shell", async ({ page }) => {
+  await page.addInitScript(() => {
+    // iOS のバウンスでは高さを変えずに offsetTop だけが動く。
+    const viewport = new EventTarget();
+    Object.assign(viewport, { height: window.innerHeight, offsetTop: 0, scale: 1 });
+    Object.defineProperty(window, "visualViewport", { value: viewport });
+  });
+  await page.goto("/e2e/fixtures/layout.html");
+  const shell = page.getByTestId("shell");
+  await expect(page.locator("html")).toHaveCSS("overflow-y", "hidden");
+  await expect(page.locator("body")).toHaveCSS("overflow-y", "hidden");
+  await page.evaluate(() => {
+    Object.assign(window.visualViewport!, { offsetTop: 40 });
+    window.visualViewport!.dispatchEvent(new Event("scroll"));
+  });
+  await expect(shell).toHaveCSS("top", "0px");
 });
 
 async function scrollMessages(page: Page, to: "top" | "bottom") {
