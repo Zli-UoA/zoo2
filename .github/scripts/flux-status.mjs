@@ -111,7 +111,9 @@ export function parseState(text) {
   for (const [name, value] of Object.entries(state.workloads)) {
     if (
       !["zoo2", "zoo2-migrate"].includes(name) ||
-      !Number.isFinite(Date.parse(value?.timestamp))
+      !Number.isFinite(Date.parse(value?.timestamp)) ||
+      // Snapshots saved before outcomes were recorded have no state.
+      ![undefined, "success", "failure"].includes(value.state)
     )
       throw new Error("Invalid Flux watermark");
   }
@@ -188,10 +190,28 @@ export async function report(
   const result = parseEvent(event);
   if (!result) return { skipped: "intermediate" };
   const previous = state.workloads[result.name];
-  if (Date.parse(previous?.timestamp) > Date.parse(result.timestamp))
-    return { skipped: "older-event" };
+  const previousTime = Date.parse(previous?.timestamp);
+  const resultTime = Date.parse(result.timestamp);
+  if (previousTime > resultTime) return { skipped: "older-event" };
+  // Flux event timestamps have second resolution and dispatch order is not
+  // event order. A success and a failure in the same second cannot be ordered,
+  // so never let such a success replace the failure (or create a Deployment).
+  // The next reconciliation reports a later success if the workload recovered.
+  if (
+    previousTime === resultTime &&
+    previous.state === "failure" &&
+    result.state === "success"
+  ) {
+    warn(
+      "::warning::A success with the same timestamp as a recorded failure cannot be ordered; nothing was reported.",
+    );
+    return { skipped: "ambiguous-same-time" };
+  }
   const remember = () => {
-    state.workloads[result.name] = { timestamp: result.timestamp };
+    state.workloads[result.name] = {
+      timestamp: result.timestamp,
+      state: result.state,
+    };
   };
   const sha = await resolveSha(api, result.digest, result.releaseTag);
   if (!sha) {

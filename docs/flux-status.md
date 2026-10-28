@@ -27,7 +27,9 @@ workflow は default branch の main で動くため、Actions の実行 SHA と
 
 ## 重複・順序逆転・再配備
 
-全イベントは共通 concurrency group で直列処理し、`queue: max` で最大100件を待機させます。各 Kustomization の最終処理時刻を `flux-production-state` artifact に保存し、古いイベントを抑制します。同じ main の受信 workflow が作った artifact だけを復元し、保存後は最新2件を残します。保持期限は90日です。復元や状態ファイルの異常、削除 API のエラーは workflow を失敗させます。
+全イベントは共通 concurrency group で直列処理し、`queue: max` で最大100件を待機させます。各 Kustomization の最終処理時刻と結果（成功・失敗）を `flux-production-state` artifact に保存し、古いイベントを抑制します。同じ main の受信 workflow が作った artifact だけを復元し、保存後は最新2件を残します。保持期限は90日です。復元や状態ファイルの異常、削除 API のエラーは workflow を失敗させます。
+
+Flux のイベント時刻は秒単位で、concurrency の直列化も発生順を保証しません。そのため、処理済みの失敗と同じ時刻の成功は前後を判定できないものとして扱い、warning を残して何も記録しません（失敗ステータスを成功で上書きせず、Deployment も作りません）。同じ時刻の成功の後に届いた失敗は記録します。ワークロードが回復していれば、次の reconcile が後の時刻で成功を送るため、そこで成功と Deployment が記録されます。
 
 同じ状態・リリースタグ・digest のステータスは増やしません。その場合も処理済み時刻は進めます。直前と同じ SHA・タグ・digest の成功では既存 Deployment を使い、作成後の部分失敗は成功ステータスの登録から再開します。同じコミットに新しいリリースタグを付けて再配備した場合や、A→B→A の切り戻しでは新しい Deployment を記録します。同じ `Publish images` 実行の再実行ではタグが変わらないため、新しいリリースにはなりません。
 
@@ -35,7 +37,7 @@ artifact がすべて削除・期限切れになると過去の処理時刻を�
 
 ## 権限と導入順
 
-workflow は `GITHUB_TOKEN` の `contents: read`、`packages: read`、`statuses: write`、`deployments: write`、状態の復元・古い artifact の削除用の `actions: write` を使います。artifact に保存するのは処理済み時刻だけです。専用 PAT や App 秘密鍵を zoo2 の Actions Secret に保存する必要はありません。
+workflow は `GITHUB_TOKEN` の `contents: read`、`packages: read`、`statuses: write`、`deployments: write`、状態の復元・古い artifact の削除用の `actions: write` を使います。artifact に保存するのは処理済み時刻と結果だけです。専用 PAT や App 秘密鍵を zoo2 の Actions Secret に保存する必要はありません。
 
 1. この受信 workflow を zoo2 の main に反映します。
 2. GHCR `zoo2-migrate` package の「Manage Actions access」で zoo2 から読み取れることを確認します。
@@ -50,7 +52,7 @@ repository_dispatch は zoo2 の write 権限者も送信できます。リポ�
 node --test .github/scripts/flux-status.test.mjs
 ```
 
-専用の `Validate Flux production status` CI でも同じテストを実行します。モック API で、成功・失敗・途中経過、タグと digest の照合、SHA 未検出、ページ送り、重複、順序逆転、再配備、切り戻し、部分失敗、artifact の復元・削除を検証します。実際の通知受信や GitHub 書き込みは別途確認が必要です。
+専用の `Validate Flux production status` CI でも同じテストを実行します。モック API で、成功・失敗・途中経過、タグと digest の照合、SHA 未検出、ページ送り、重複、順序逆転（同じ時刻の失敗と成功を含む）、再配備、切り戻し、部分失敗、artifact の復元・削除を検証します。実際の通知受信や GitHub 書き込みは別途確認が必要です。
 
 実機では通常の main 更新後に、リリースタグ・digest・両ステータス・Deployment の SHA と公開 URL の一致を確認してください。同じリリースの再同期では Deployment が増えず、同じコミットを新しいリリースタグで再配備すると履歴が増えることも確認します。artifact の復元・最新2件の保持、部分失敗からの再開、Actions の回数とログ量も受入項目です。SHA と context ごとのステータス1000件の上限は、実際の状態変化の累積にも適用されます。
 

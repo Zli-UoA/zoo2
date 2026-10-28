@@ -620,3 +620,61 @@ test("release tags are mandatory production release identifiers", () => {
     );
   }
 });
+
+for (const name of ["zoo2", "zoo2-migrate"]) {
+  test(`${name}: a success with the same timestamp as a processed failure cannot override it`, async () => {
+    const warnings = [];
+    const f = fixture();
+    const failure = event(name, { severity: "error", reason: "HealthCheckFailed" });
+    await report(failure, f);
+    const result = await report(event(name), {
+      ...f,
+      warn: (message) => warnings.push(message),
+    });
+    assert.equal(result.skipped, "ambiguous-same-time");
+    assert.equal(warnings.length, 1);
+    assert.equal(f.writes.length, 1);
+    assert.equal(f.statuses[0].state, "failure");
+    assert.equal(f.deployments.length, 0);
+    assert.deepEqual(f.state.workloads[name], {
+      timestamp: "2026-10-22T10:00:00Z",
+      state: "failure",
+    });
+    // A later reconciliation still reports the recovery.
+    await report(event(name, { timestamp: "2026-10-22T10:00:01Z" }), f);
+    assert.equal(f.statuses[0].state, "success");
+    assert.equal(f.deployments.length, name === "zoo2" ? 1 : 0);
+  });
+}
+
+test("a failure with the same timestamp as a processed success is still recorded", async () => {
+  const f = fixture();
+  await report(event(), f);
+  await report(event("zoo2", { severity: "error", reason: "HealthCheckFailed" }), f);
+  assert.equal(f.statuses[0].state, "failure");
+  assert.equal(f.state.workloads.zoo2.state, "failure");
+  // Rerunning the earlier success cannot turn the commit green again.
+  assert.equal((await report(event(), f)).skipped, "ambiguous-same-time");
+  assert.equal(f.statuses[0].state, "failure");
+});
+
+test("rerunning the same failure or success event stays idempotent", async () => {
+  for (const changes of [{}, { severity: "error", reason: "HealthCheckFailed" }]) {
+    const f = fixture();
+    await report(event("zoo2", changes), f);
+    const count = f.writes.length;
+    await report(event("zoo2", changes), f);
+    assert.equal(f.writes.length, count);
+  }
+});
+
+test("watermarks accept legacy entries without state and reject unknown states", () => {
+  assert.doesNotThrow(() =>
+    parseState('{"version":1,"workloads":{"zoo2":{"timestamp":"2026-10-22T10:00:00Z"}}}'),
+  );
+  assert.throws(() =>
+    parseState(
+      '{"version":1,"workloads":{"zoo2":{"timestamp":"2026-10-22T10:00:00Z","state":"pending"}}}',
+    ),
+  );
+});
