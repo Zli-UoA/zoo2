@@ -452,6 +452,7 @@
       "disconnected": "未连接",
       "connect": "连接账号",
       "disconnect": "断开连接"
-    }
+    },
+    "commandArguments": "参数"
   }
 }

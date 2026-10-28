@@ -253,7 +253,7 @@ async fn fixture() -> anyhow::Result<(AppState, Router, String, String, String, 
         let status=req(&router,"POST","/api/users",actor,json!({"id":actor,"user_name":format!("appfix_{}",Uuid::new_v4().simple()),"display_name":"Developer"})).await.0;
         assert!(status == StatusCode::OK || actor == admin && status == StatusCode::CONFLICT);
     }
-    let manifest = json!({"scopes":["messages:read","messages:write","ui:write","commands:read"],"events":["message.created","app.mentioned","app.uninstalled"],"transport":"websocket","event_url":"https://callbacks.example.test/private-path","commands":["echo"],"message_shortcuts":["inspect"],"redirect_uris":["https://example.com/callback"]});
+    let manifest = json!({"scopes":["messages:read","messages:write","ui:write","commands:read"],"events":["message.created","app.mentioned","app.uninstalled","command.invoked","action.invoked","view.submitted","shortcut.invoked","home.opened"],"transport":"websocket","event_url":"https://callbacks.example.test/private-path","commands":["echo"],"message_shortcuts":["inspect"],"redirect_uris":["https://example.com/callback"]});
     let (status, app) = req(
         &router,
         "POST",

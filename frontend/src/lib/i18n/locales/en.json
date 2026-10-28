@@ -452,6 +452,7 @@
       "disconnected": "Disconnected",
       "connect": "Connect account",
       "disconnect": "Disconnect"
-    }
+    },
+    "commandArguments": "Arguments"
   }
 }

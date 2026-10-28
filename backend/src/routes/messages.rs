@@ -867,7 +867,7 @@ async fn reaction_emoji(
         && name.len() <= 64
         && name
             .bytes()
-            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == b'_')
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == b'_' || c == b'-')
     {
         if require_existing {
             let mut db = state.db.clone();

@@ -206,7 +206,7 @@ async fn shape(
     State(s): State<AppState>,
     p: Principal,
     Path(name): Path<String>,
-    Query(params): Query<HashMap<String, String>>,
+    Query(mut params): Query<HashMap<String, String>>,
 ) -> Result<axum::response::Response, AppError> {
     use crate::routes::shapes;
     let guard_state = s.clone();
@@ -219,6 +219,10 @@ async fn shape(
                 .ok_or_else(|| AppError::BadRequest("channel_id is required".into()))?;
             check(&s, &p, channel, "messages:read", false).await?;
             if name == "messages" {
+                params.insert(
+                    "_app_metadata_allowed".into(),
+                    p.scopes.iter().any(|s| s == "metadata:read").to_string(),
+                );
                 shapes::messages_shape(State(s), p.actor(), Query(params)).await
             } else {
                 shapes::message_reactions_shape(State(s), p.actor(), Query(params)).await

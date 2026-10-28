@@ -117,6 +117,7 @@ async fn publish(
     }
     let mut db = s.db.clone();
     let mut tx = db.transaction().await?;
+    p.authorize_locked(&mut tx, "ui:write").await?;
     if let Some(channel) = &b.channel_id {
         p.channel(&mut tx, channel, true).await?;
         one(&mut tx,"SELECT json_build_object('id',user_id)::text FROM channel_user WHERE channel_id=$1 AND user_id=$2",&[channel,&b.user_id]).await?;
@@ -186,6 +187,7 @@ async fn invoke(
     let mut db = s.db.clone();
     let mut tx = db.transaction().await?;
     human(&mut tx, &actor).await?;
+    lock_app_installation(&mut tx, &id).await?;
     let app=one(&mut tx,"SELECT json_build_object('installation',i.id,'bot',a.bot_user_id,'manifest',i.manifest::jsonb)::text FROM app_installations i JOIN apps a ON a.id=i.app_id WHERE a.id=$1 AND a.status='installed' AND i.active",&[&id]).await?;
     if let Some(channel) = &b.channel_id {
         one(&mut tx,"SELECT '{}'::text FROM channel_user me JOIN channel_user bot ON bot.channel_id=me.channel_id JOIN channels c ON c.id=me.channel_id WHERE me.channel_id=$1 AND me.user_id=$2 AND bot.user_id=$3 AND c.deleted_at IS NULL AND c.archive_at IS NULL",&[channel,&actor.id,app["bot"].as_str().unwrap()]).await?;
@@ -291,6 +293,28 @@ async fn invoke(
         }
         _ => return Err(AppError::BadRequest("Unknown invocation".into())),
     };
+    let allowed = one(
+        &mut tx,
+        "SELECT json_build_object('ok',app_event_matches($1,$2,NULLIF($3,''),$4,$5))::text",
+        &[
+            &app["manifest"].to_string(),
+            event_type,
+            b.channel_id.as_deref().unwrap_or(""),
+            &actor.id,
+            app["bot"].as_str().unwrap(),
+        ],
+    )
+    .await?;
+    if allowed["ok"] != true {
+        return Err(AppError::Forbidden(
+            "App does not subscribe to this interaction".into(),
+        ));
+    }
+    if matches!(b.kind.as_str(), "home" | "action" | "submit")
+        && !manifest.scopes.iter().any(|s| s == "ui:write")
+    {
+        return Err(AppError::Forbidden("App has no ui:write capability".into()));
+    }
     let trigger = secret("zoo_trigger_");
     let installation = app["installation"].as_str().unwrap();
     toasty::sql::statement("INSERT INTO app_ui(id,installation_id,user_id,channel_id,kind,expires_at) VALUES($1,$2,$3,NULLIF($4,''),'trigger',now()+interval '3 seconds')").bind(trigger.as_str()).bind(installation).bind(actor.id.as_str()).bind(b.channel_id.as_deref().unwrap_or("")).exec(&mut tx).await?;
@@ -318,7 +342,7 @@ async fn surfaces(
 ) -> Result<Json<Value>, AppError> {
     let mut db = s.db.clone();
     let mut tx = db.transaction().await?;
-    let rows=query(&mut tx,"SELECT json_build_object('id',u.id,'kind',kind,'channel_id',u.channel_id,'document',document::jsonb,'updated_at',u.updated_at)::text FROM app_ui u JOIN app_installations i ON i.id=u.installation_id JOIN apps a ON a.id=i.app_id WHERE a.id=$1 AND a.status='installed' AND i.active AND u.user_id=$2 AND kind<>'trigger' AND (expires_at IS NULL OR expires_at>now()) AND (u.channel_id IS NULL OR EXISTS(SELECT 1 FROM channel_user cu JOIN channels c ON c.id=cu.channel_id WHERE cu.channel_id=u.channel_id AND cu.user_id=$2 AND c.deleted_at IS NULL)) ORDER BY u.updated_at",&[&id,&actor.id]).await?;
+    let rows=query(&mut tx,"SELECT json_build_object('id',u.id,'kind',kind,'channel_id',u.channel_id,'document',document::jsonb,'updated_at',u.updated_at)::text FROM app_ui u JOIN app_installations i ON i.id=u.installation_id JOIN apps a ON a.id=i.app_id WHERE a.id=$1 AND a.status='installed' AND i.active AND i.scopes::jsonb ? 'ui:write' AND u.user_id=$2 AND kind<>'trigger' AND (expires_at IS NULL OR expires_at>now()) AND (u.channel_id IS NULL OR EXISTS(SELECT 1 FROM channel_user cu JOIN channels c ON c.id=cu.channel_id WHERE cu.channel_id=u.channel_id AND cu.user_id=$2 AND c.deleted_at IS NULL)) ORDER BY u.updated_at",&[&id,&actor.id]).await?;
     Ok(Json(json!(rows)))
 }
 async fn blocks(
@@ -447,7 +471,7 @@ pub async fn private_surfaces(
 ) -> Result<Json<Value>, AppError> {
     let mut db = s.db.clone();
     let mut tx = db.transaction().await?;
-    let rows=query(&mut tx,"SELECT json_build_object('id',u.id,'kind',u.kind,'app_id',a.id,'name',a.name,'channel_id',u.channel_id,'document',u.document::jsonb)::text FROM app_ui u JOIN app_installations i ON i.id=u.installation_id JOIN apps a ON a.id=i.app_id WHERE a.status='installed' AND i.active AND u.user_id=$1 AND u.kind IN('modal','ephemeral') AND u.expires_at>now() AND (u.channel_id IS NULL OR EXISTS(SELECT 1 FROM channel_user cu JOIN channel_user bot ON bot.channel_id=cu.channel_id JOIN channels c ON c.id=cu.channel_id WHERE cu.channel_id=u.channel_id AND cu.user_id=$1 AND bot.user_id=a.bot_user_id AND c.deleted_at IS NULL)) ORDER BY u.updated_at LIMIT 30",&[&actor.id]).await?;
+    let rows=query(&mut tx,"SELECT json_build_object('id',u.id,'kind',u.kind,'app_id',a.id,'name',a.name,'channel_id',u.channel_id,'document',u.document::jsonb)::text FROM app_ui u JOIN app_installations i ON i.id=u.installation_id JOIN apps a ON a.id=i.app_id WHERE a.status='installed' AND i.active AND i.scopes::jsonb ? 'ui:write' AND u.user_id=$1 AND u.kind IN('modal','ephemeral') AND u.expires_at>now() AND (u.channel_id IS NULL OR EXISTS(SELECT 1 FROM channel_user cu JOIN channel_user bot ON bot.channel_id=cu.channel_id JOIN channels c ON c.id=cu.channel_id WHERE cu.channel_id=u.channel_id AND cu.user_id=$1 AND bot.user_id=a.bot_user_id AND c.deleted_at IS NULL)) ORDER BY u.updated_at LIMIT 30",&[&actor.id]).await?;
     Ok(Json(json!(rows)))
 }
 async fn dismiss(
@@ -475,7 +499,9 @@ async fn respond(
     validate_blocks(&blocks)?;
     let mut db = s.db.clone();
     let mut tx = db.transaction().await?;
-    let row=one(&mut tx,"UPDATE app_responses r SET used_at=now() FROM app_installations i JOIN apps a ON a.id=i.app_id WHERE r.token_hash=$1 AND r.installation_id=i.id AND r.used_at IS NULL AND r.expires_at>now() AND i.active AND a.status='installed' AND r.channel_id IS NOT NULL AND EXISTS(SELECT 1 FROM channel_user me JOIN channel_user bot ON bot.channel_id=me.channel_id JOIN channels c ON c.id=me.channel_id WHERE me.channel_id=r.channel_id AND me.user_id=r.user_id AND bot.user_id=a.bot_user_id AND c.deleted_at IS NULL AND c.archive_at IS NULL) RETURNING json_build_object('installation',r.installation_id,'user',r.user_id,'channel',r.channel_id)::text",&[&hash(&token)]).await?;
+    let installation=one(&mut tx,"SELECT json_build_object('id',installation_id)::text FROM app_responses WHERE token_hash=$1",&[&hash(&token)]).await?;
+    lock_installation(&mut tx, installation["id"].as_str().unwrap()).await?;
+    let row=one(&mut tx,"UPDATE app_responses r SET used_at=now() FROM app_installations i JOIN apps a ON a.id=i.app_id WHERE r.token_hash=$1 AND r.installation_id=i.id AND r.used_at IS NULL AND r.expires_at>now() AND i.active AND a.status='installed' AND i.scopes::jsonb ? 'ui:write' AND r.channel_id IS NOT NULL AND EXISTS(SELECT 1 FROM channel_user me JOIN channel_user bot ON bot.channel_id=me.channel_id JOIN channels c ON c.id=me.channel_id WHERE me.channel_id=r.channel_id AND me.user_id=r.user_id AND bot.user_id=a.bot_user_id AND c.deleted_at IS NULL AND c.archive_at IS NULL) RETURNING json_build_object('installation',r.installation_id,'user',r.user_id,'channel',r.channel_id)::text",&[&hash(&token)]).await?;
     let id = uuid::Uuid::new_v4().to_string();
     toasty::sql::statement("INSERT INTO app_ui(id,installation_id,user_id,channel_id,kind,document,expires_at) VALUES($1,$2,$3,$4,'ephemeral',$5,now()+interval '15 minutes')").bind(id.as_str()).bind(row["installation"].as_str().unwrap()).bind(row["user"].as_str().unwrap()).bind(row["channel"].as_str().unwrap()).bind(json!({"blocks":blocks}).to_string()).exec(&mut tx).await?;
     tx.commit().await?;

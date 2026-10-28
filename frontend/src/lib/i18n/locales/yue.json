@@ -452,6 +452,7 @@
       "disconnected": "未連接",
       "connect": "連接帳戶",
       "disconnect": "中斷連接"
-    }
+    },
+    "commandArguments": "參數"
   }
 }

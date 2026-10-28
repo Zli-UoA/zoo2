@@ -25,7 +25,7 @@ export function ReactionEmoji({
   const [failedUrl, setFailedUrl] = useState<string | null>(null);
   const label = kitchenLabel(emoji);
   const kitchen = kitchenParts(emoji);
-  if (/^:[a-z0-9_]{1,64}:$/.test(emoji))
+  if (/^:[a-z0-9_-]{1,64}:$/.test(emoji))
     return <CustomReactionEmoji name={emoji.slice(1, -1)} size={size} />;
   if (!kitchen) return <span>{label}</span>;
 

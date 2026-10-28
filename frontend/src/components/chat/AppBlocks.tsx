@@ -73,7 +73,7 @@ export function AppBlocks({
           },
         },
       });
-      onDone?.();
+      if (kind === "submit") onDone?.();
     } catch {
       setError(t("apps.actionError"));
     } finally {

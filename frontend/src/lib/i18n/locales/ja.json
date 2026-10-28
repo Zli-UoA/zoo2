@@ -452,6 +452,7 @@
       "disconnected": "未接続",
       "connect": "アカウントを接続",
       "disconnect": "接続を解除"
-    }
+    },
+    "commandArguments": "引数"
   }
 }

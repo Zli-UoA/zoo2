@@ -196,6 +196,7 @@ async fn action(
   if body.as_ref().and_then(|b|b.0["revision"].as_i64())!=app["revision"].as_i64() {return Err(AppError::Conflict("App configuration changed; review the current revision before approval".into()));}
   if app["status"]!="pending" {return Err(AppError::BadRequest("Submit the app for approval first".into()));}
   let manifest:Manifest=serde_json::from_str(app["manifest"].as_str().unwrap()).map_err(|e|AppError::Internal(e.into()))?;manifest.validate()?;
+  invalidate_ui(&mut tx,&id).await?;
   let installation=uuid::Uuid::new_v4().to_string();
   toasty::sql::statement("INSERT INTO app_installations(id,app_id,approved_by,scopes,manifest,revision) SELECT $2,id,$3,(manifest::jsonb->'scopes')::text,manifest,revision FROM apps WHERE id=$1 ON CONFLICT(app_id) DO UPDATE SET active=true,approved_by=EXCLUDED.approved_by,scopes=EXCLUDED.scopes,manifest=EXCLUDED.manifest,revision=EXCLUDED.revision")
   .bind(id.as_str()).bind(installation).bind(actor.id.as_str()).exec(&mut tx).await?;
@@ -206,6 +207,8 @@ async fn action(
   json!({"status":"installed"})
  },
  "delete" | "disable"=>{
+  invalidate_ui(&mut tx,&id).await?;
+  toasty::sql::statement("UPDATE app_files SET public_token_hash=NULL WHERE installation_id IN(SELECT id FROM app_installations WHERE app_id=$1)").bind(id.as_str()).exec(&mut tx).await?;
   if action=="delete" {toasty::sql::statement("UPDATE apps SET deleted_at=now() WHERE id=$1").bind(id.as_str()).exec(&mut tx).await?;}
   toasty::sql::statement("UPDATE apps SET status='disabled' WHERE id=$1").bind(id.as_str()).exec(&mut tx).await?;
   toasty::sql::statement("UPDATE app_installations SET active=false WHERE app_id=$1").bind(id.as_str()).exec(&mut tx).await?;
@@ -376,6 +379,7 @@ async fn revoke_consent(
     let mut db = s.db.clone();
     let mut tx = db.transaction().await?;
     human(&mut tx, &actor).await?;
+    lock_app_installation(&mut tx, &id).await?;
     toasty::sql::statement("UPDATE app_credentials SET revoked_at=now() WHERE user_id=$1 AND installation_id IN(SELECT id FROM app_installations WHERE app_id=$2)").bind(actor.id.as_str()).bind(id.as_str()).exec(&mut tx).await?;
     toasty::sql::statement("UPDATE app_oauth_codes SET used_at=now() WHERE user_id=$1 AND installation_id IN(SELECT id FROM app_installations WHERE app_id=$2)").bind(actor.id.as_str()).bind(id.as_str()).exec(&mut tx).await?;
     audit(&mut tx, &id, &actor.id, "user.consent_revoked").await?;
@@ -391,4 +395,11 @@ async fn metrics(State(s): State<AppState>, actor: AuthUser) -> Result<Json<Valu
     }
     let v=one(&mut tx,"SELECT json_build_object('pending',count(*) FILTER(WHERE acked_at IS NULL AND expires_at>now()),'failed',count(*) FILTER(WHERE acked_at IS NULL AND expires_at<=now()),'delivered',count(*) FILTER(WHERE acked_at IS NOT NULL),'retried',count(*) FILTER(WHERE attempts>1),'oldest_pending_seconds',COALESCE(extract(epoch FROM now()-min(created_at) FILTER(WHERE acked_at IS NULL AND expires_at>now())),0))::text FROM app_deliveries",&[]).await?;
     Ok(Json(v))
+}
+
+async fn invalidate_ui(tx: &mut toasty::Transaction<'_>, app: &str) -> Result<(), AppError> {
+    for table in ["app_ui", "app_responses"] {
+        toasty::sql::statement(format!("DELETE FROM {table} WHERE installation_id IN(SELECT id FROM app_installations WHERE app_id=$1)")).bind(app).exec(tx).await?;
+    }
+    Ok(())
 }

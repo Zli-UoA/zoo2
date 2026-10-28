@@ -32,3 +32,5 @@ Secret は共有キャッシュへ保存せず、Webhook 管理 API は `Cache-C
 `POST /api/webhooks/github` と `POST /api/webhooks/github/{id}`、`GITHUB_WEBHOOK_SECRET` / `GITHUB_WEBHOOK_CHANNEL_ID` / `GITHUB_WEBHOOK_USER_ID` の設定は削除しました。GitHub の署名・イベント形式を Zoo 本体で解釈しません。
 
 既存の共通 Webhook URL・Secret・投稿者・投稿履歴は保持します。GitHub 側の送信先は Bot アプリの受信先へ変更してください。既存の GitHub 通知カードはそのまま表示できます。
+
+本番への適用前に [リリースノートの移行手順](releases/app-platform.md) に従って送信先を切り替えてください。

@@ -47,6 +47,7 @@ async fn authorize(
     let mut db = s.db.clone();
     let mut tx = db.transaction().await?;
     human(&mut tx, &actor).await?;
+    lock_app_installation(&mut tx, &b.app_id).await?;
     let i=one(&mut tx,"SELECT json_build_object('id',i.id,'manifest',i.manifest::jsonb,'scopes',i.scopes::jsonb)::text FROM app_installations i JOIN apps a ON a.id=i.app_id WHERE a.id=$1 AND a.status='installed' AND i.active",&[&b.app_id]).await?;
     let manifest: Manifest =
         serde_json::from_value(i["manifest"].clone()).map_err(|e| AppError::Internal(e.into()))?;
@@ -88,13 +89,18 @@ async fn token(
 ) -> Result<Json<Value>, AppError> {
     let mut db = s.db.clone();
     let mut tx = db.transaction().await?;
+    let installation=match &b {
+        TokenRequest::AuthorizationCode{code,..}=>one(&mut tx,"SELECT json_build_object('id',installation_id)::text FROM app_oauth_codes WHERE code_hash=$1",&[&hash(code)]).await,
+        TokenRequest::RefreshToken{refresh_token}=>one(&mut tx,"SELECT json_build_object('id',installation_id)::text FROM app_credentials WHERE refresh_hash=$1",&[&hash(refresh_token)]).await,
+    }.map_err(|e|match e{AppError::NotFound(_)=>AppError::Unauthorized("Invalid OAuth grant".into()),other=>other})?;
+    lock_installation(&mut tx, installation["id"].as_str().unwrap()).await?;
     let row=match b{
  TokenRequest::AuthorizationCode{code,redirect_uri,code_verifier}=>{
   if !(43..=128).contains(&code_verifier.len())||!code_verifier.bytes().all(|c|c.is_ascii_alphanumeric()||b"-._~".contains(&c)){return Err(AppError::BadRequest("Invalid PKCE verifier".into()));}
   let challenge=URL_SAFE_NO_PAD.encode(Sha256::digest(code_verifier.as_bytes()));
-  one(&mut tx,"UPDATE app_oauth_codes c SET used_at=now() FROM app_installations i JOIN apps a ON a.id=i.app_id WHERE c.installation_id=i.id AND c.code_hash=$1 AND c.redirect_uri=$2 AND c.code_challenge=$3 AND c.used_at IS NULL AND c.expires_at>now() AND i.active AND a.status='installed' RETURNING json_build_object('installation',c.installation_id,'user',c.user_id,'scopes',c.scopes::jsonb)::text",&[&hash(&code),&redirect_uri,&challenge]).await
+  one(&mut tx,"UPDATE app_oauth_codes c SET used_at=now() FROM app_installations i JOIN apps a ON a.id=i.app_id WHERE c.installation_id=i.id AND c.code_hash=$1 AND c.redirect_uri=$2 AND c.code_challenge=$3 AND c.used_at IS NULL AND c.expires_at>now() AND i.active AND a.status='installed' AND c.scopes::jsonb <@ i.scopes::jsonb RETURNING json_build_object('installation',c.installation_id,'user',c.user_id,'scopes',c.scopes::jsonb)::text",&[&hash(&code),&redirect_uri,&challenge]).await
  },
- TokenRequest::RefreshToken{refresh_token}=>one(&mut tx,"UPDATE app_credentials t SET revoked_at=now() FROM app_installations i JOIN apps a ON a.id=i.app_id WHERE t.installation_id=i.id AND t.refresh_hash=$1 AND t.revoked_at IS NULL AND t.created_at>now()-interval '30 days' AND i.active AND a.status='installed' RETURNING json_build_object('installation',t.installation_id,'user',t.user_id,'scopes',t.scopes::jsonb)::text",&[&hash(&refresh_token)]).await
+ TokenRequest::RefreshToken{refresh_token}=>one(&mut tx,"UPDATE app_credentials t SET revoked_at=now() FROM app_installations i JOIN apps a ON a.id=i.app_id WHERE t.installation_id=i.id AND t.refresh_hash=$1 AND t.revoked_at IS NULL AND t.created_at>now()-interval '30 days' AND i.active AND a.status='installed' AND t.scopes::jsonb <@ i.scopes::jsonb RETURNING json_build_object('installation',t.installation_id,'user',t.user_id,'scopes',t.scopes::jsonb)::text",&[&hash(&refresh_token)]).await
  }.map_err(|e|match e{AppError::NotFound(_)=>AppError::Unauthorized("Invalid or consumed OAuth grant".into()),other=>other})?;
     let value = mint(
         &mut tx,
@@ -113,6 +119,7 @@ struct Revoke {
 async fn revoke(State(s): State<AppState>, Json(b): Json<Revoke>) -> Result<Json<Value>, AppError> {
     let mut db = s.db.clone();
     let mut tx = db.transaction().await?;
+    if let Some(row)=query(&mut tx,"SELECT json_build_object('id',installation_id)::text FROM app_credentials WHERE token_hash=$1 OR refresh_hash=$1",&[&hash(&b.token)]).await?.first(){lock_installation(&mut tx,row["id"].as_str().unwrap()).await?;}
     toasty::sql::statement(
         "UPDATE app_credentials SET revoked_at=now() WHERE token_hash=$1 OR refresh_hash=$1",
     )

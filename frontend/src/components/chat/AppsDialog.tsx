@@ -140,6 +140,7 @@ function UserAppsDialog({
   const [icon, setIcon] = useState("");
   const [manifest, setManifest] = useState(defaultManifest);
   const [credential, setCredential] = useState("");
+  const [commandArguments, setCommandArguments] = useState<Record<string, string>>({});
   const [surfaces, setSurfaces] = useState<Surface[]>([]);
   const [deliveries, setDeliveries] = useState<
     {
@@ -256,6 +257,7 @@ function UserAppsDialog({
         body: {
           kind,
           name: command,
+          values: kind === "command" ? { text: commandArguments[command ?? ""] ?? "" } : {},
           message_id: kind === "shortcut" ? messageId : undefined,
           channel_id: kind === "home" ? null : shell.selectedChannelId,
         },
@@ -517,14 +519,29 @@ function UserAppsDialog({
                   </ul>
                 </div>
                 {app.manifest.commands?.map((command) => (
-                  <Button
-                    key={command}
-                    variant="outline"
-                    disabled={busy || !shell.selectedChannelId}
-                    onClick={() => void invoke("command", command)}
-                  >
-                    /{command}
-                  </Button>
+                  <div key={command} className="flex items-end gap-2">
+                    <label className="flex flex-1 flex-col gap-1 text-sm">
+                      /{command} {t("apps.commandArguments")}
+                      <input
+                        className={inputClassName()}
+                        value={commandArguments[command] ?? ""}
+                        maxLength={4000}
+                        onChange={(e) =>
+                          setCommandArguments((previous) => ({
+                            ...previous,
+                            [command]: e.target.value,
+                          }))
+                        }
+                      />
+                    </label>
+                    <Button
+                      variant="outline"
+                      disabled={busy || !shell.selectedChannelId}
+                      onClick={() => void invoke("command", command)}
+                    >
+                      /{command}
+                    </Button>
+                  </div>
                 ))}
                 {(messageId ? app.manifest.message_shortcuts : app.manifest.shortcuts)?.map(
                   (shortcut) => (

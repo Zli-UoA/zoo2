@@ -847,7 +847,7 @@ async fn invites(State(s): State<AppState>, a: Actor) -> Result<Json<Value>, App
     let admin =
         crate::auth::rbac::is_workspace_admin(&mut tx, &a.user.id, s.config.dev_auth_enabled)
             .await?;
-    Ok(Json(json!(query(&mut tx,"SELECT row_to_json(i)::text FROM workspace_invite_requests i WHERE requested_by=$1 OR $2::boolean ORDER BY created_at DESC LIMIT 100",&[&a.user.id,if admin||a.principal.is_some(){"true"}else{"false"}]).await?)))
+    Ok(Json(json!(query(&mut tx,"SELECT row_to_json(i)::text FROM workspace_invite_requests i WHERE requested_by=$1 OR $2::boolean ORDER BY created_at DESC LIMIT 100",&[&a.user.id,if admin||a.principal.as_ref().is_some_and(|p|!p.delegated){"true"}else{"false"}]).await?)))
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -1111,7 +1111,7 @@ async fn sessions(State(s): State<AppState>, a: Actor) -> Result<Json<Value>, Ap
     a.require("assistant:write")?;
     let mut db = s.db.clone();
     let mut tx = db.transaction().await?;
-    let rows=query(&mut tx,"SELECT json_build_object('id',s.id,'app_id',i.app_id,'user_id',s.user_id,'channel_id',s.channel_id,'parent_id',s.parent_id,'title',s.title,'context',s.context::jsonb,'state',s.state)::text FROM assistant_sessions s JOIN app_installations i ON i.id=s.installation_id WHERE s.user_id=$1 OR i.id=NULLIF($2,'') ORDER BY s.created_at DESC LIMIT 100",&[&a.user.id,a.principal.as_ref().filter(|p|!p.delegated).map(|p|p.installation_id.as_str()).unwrap_or("")]).await?;
+    let rows=query(&mut tx,"SELECT json_build_object('id',s.id,'app_id',i.app_id,'user_id',s.user_id,'channel_id',s.channel_id,'parent_id',s.parent_id,'title',s.title,'context',s.context::jsonb,'state',s.state)::text FROM assistant_sessions s JOIN app_installations i ON i.id=s.installation_id WHERE (s.user_id=$1 OR i.id=NULLIF($2,'')) AND ($3='' OR i.app_id=$3) ORDER BY s.created_at DESC LIMIT 100",&[&a.user.id,a.principal.as_ref().filter(|p|!p.delegated).map(|p|p.installation_id.as_str()).unwrap_or(""),a.principal.as_ref().map(|p|p.app_id.as_str()).unwrap_or("")]).await?;
     let mut visible = Vec::new();
     for row in rows {
         match a
@@ -1156,6 +1156,12 @@ async fn update_session(
         &[&id],
     )
     .await?;
+    if a.principal
+        .as_ref()
+        .is_some_and(|p| old["installation_id"] != p.installation_id)
+    {
+        return Err(AppError::NotFound("Session not found".into()));
+    }
     if old["user_id"] != a.user.id
         && !a
             .principal
@@ -1276,6 +1282,11 @@ async fn confirm_connection(
     Json(b): Json<ConfirmConnection>,
 ) -> Result<Json<Value>, AppError> {
     p.require("users:write")?;
+    if p.delegated {
+        return Err(AppError::Forbidden(
+            "Use a bot token to confirm external connections".into(),
+        ));
+    }
     let mut db = s.db.clone();
     let mut tx = db.transaction().await?;
     let v=one(&mut tx,"UPDATE app_user_connections SET state=$3 WHERE installation_id=$1 AND user_id=$2 AND ($3='disconnected' OR state IN('requested','connected')) RETURNING json_build_object('state',state)::text",&[&p.installation_id,&user,if b.connected{"connected"}else{"disconnected"}]).await?;
@@ -1615,7 +1626,7 @@ async fn public_download(
 ) -> Result<axum::response::Redirect, AppError> {
     let mut db = s.db.clone();
     let mut tx = db.transaction().await?;
-    let f=one(&mut tx,"SELECT row_to_json(f)::text FROM app_files f WHERE public_token_hash=$1 AND completed AND deleted_at IS NULL",&[&hash(&token)]).await?;
+    let f=one(&mut tx,"SELECT row_to_json(f)::text FROM app_files f WHERE public_token_hash=$1 AND completed AND deleted_at IS NULL AND EXISTS(SELECT 1 FROM app_installations i JOIN apps a ON a.id=i.app_id WHERE i.id=f.installation_id AND i.active AND a.status='installed' AND a.deleted_at IS NULL)",&[&hash(&token)]).await?;
     let value = super::files::signed_download(&f)?.0;
     Ok(axum::response::Redirect::temporary(
         value["url"].as_str().unwrap(),

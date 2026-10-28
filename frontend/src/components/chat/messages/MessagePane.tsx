@@ -1,4 +1,4 @@
-import { createConfiguredApiClient } from "../../../lib/api/client";
+import { ApiError, createConfiguredApiClient } from "../../../lib/api/client";
 import { useTranslation } from "react-i18next";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
@@ -322,9 +322,11 @@ export function MessagePane({
             body: { channel_id: channelId, text: command[2] ?? "" },
           });
           return true;
-        } catch {
-          toast.error(t("apps.actionError"));
-          return false;
+        } catch (error) {
+          if (!(error instanceof ApiError && error.status === 404)) {
+            toast.error(t("apps.actionError"));
+            return false;
+          }
         }
       }
       const id = crypto.randomUUID();

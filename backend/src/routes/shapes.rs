@@ -125,6 +125,14 @@ async fn proxy_shape(
 ) -> Result<Response, AppError> {
     let mut params = filter_electric_params(raw_query);
     params.push(("table".to_string(), table.to_string()));
+    if table == "messages"
+        && raw_query
+            .get("_app_metadata_allowed")
+            .is_some_and(|v| v == "false")
+    {
+        params.push(("columns".into(),"id,user_id,channel_id,content,card,created_at,updated_at,deleted_at,parent_id,app_blocks,app_attachments,app_unfurls,app_origin_id,message_kind,broadcast".into()));
+    }
+
     if let Some(w) = where_clause {
         params.push(("where".to_string(), w.to_string()));
     }

@@ -372,7 +372,36 @@ pub async fn can_manage(
             "Only the developer or an administrator can manage this app".into(),
         ));
     }
+    let _ = query(
+        tx,
+        "SELECT json_build_object('id',id)::text FROM app_installations WHERE app_id=$1 FOR NO KEY UPDATE",
+        &[id],
+    )
+    .await?;
     Ok(app)
+}
+
+/// Every grant exchange and revocation takes this lock before reading mutable authorization state.
+pub async fn lock_installation(tx: &mut toasty::Transaction<'_>, id: &str) -> Result<(), AppError> {
+    one(
+        tx,
+        "SELECT json_build_object('id',id)::text FROM app_installations WHERE id=$1 FOR NO KEY UPDATE",
+        &[id],
+    )
+    .await?;
+    Ok(())
+}
+pub async fn lock_app_installation(
+    tx: &mut toasty::Transaction<'_>,
+    app: &str,
+) -> Result<(), AppError> {
+    one(
+        tx,
+        "SELECT json_build_object('id',id)::text FROM app_installations WHERE app_id=$1 FOR NO KEY UPDATE",
+        &[app],
+    )
+    .await?;
+    Ok(())
 }
 
 #[derive(Clone, Debug)]
@@ -393,6 +422,16 @@ impl Principal {
         } else {
             Err(AppError::Forbidden(format!("Missing scope: {scope}")))
         }
+    }
+    pub async fn authorize_locked(
+        &self,
+        tx: &mut toasty::Transaction<'_>,
+        scope: &str,
+    ) -> Result<(), AppError> {
+        self.require(scope)?;
+        lock_installation(tx, &self.installation_id).await?;
+        one(tx,"SELECT '{}'::text FROM app_credentials t JOIN app_installations i ON i.id=t.installation_id JOIN apps a ON a.id=i.app_id WHERE t.id=$1 AND t.revoked_at IS NULL AND t.expires_at>now() AND i.active AND a.status='installed' AND t.scopes::jsonb <@ i.scopes::jsonb AND t.scopes::jsonb ? $2 AND i.scopes::jsonb ? $2",&[&self.credential_id,scope]).await?;
+        Ok(())
     }
     pub fn actor(&self) -> AuthUser {
         AuthUser {
@@ -426,7 +465,7 @@ impl FromRequestParts<AppState> for Principal {
             .ok_or_else(|| AppError::Unauthorized("An app access token is required".into()))?;
         let mut db = state.db.clone();
         let mut tx = db.transaction().await?;
-        let rows=query(&mut tx,"SELECT json_build_object('credential_id',t.id,'installation_id',i.id,'app_id',a.id,'user_id',COALESCE(t.user_id,a.bot_user_id),'bot_user_id',a.bot_user_id,'scopes',t.scopes::jsonb,'manifest',i.manifest::jsonb,'delegated',t.user_id IS NOT NULL)::text FROM app_credentials t JOIN app_installations i ON i.id=t.installation_id JOIN apps a ON a.id=i.app_id WHERE t.token_hash=$1 AND t.revoked_at IS NULL AND t.expires_at>now() AND i.active AND a.status='installed' AND NOT EXISTS(SELECT 1 FROM users u WHERE u.id=COALESCE(t.user_id,a.bot_user_id) AND u.is_deactivated)",&[&hash(token)]).await?;
+        let rows=query(&mut tx,"SELECT json_build_object('credential_id',t.id,'installation_id',i.id,'app_id',a.id,'user_id',COALESCE(t.user_id,a.bot_user_id),'bot_user_id',a.bot_user_id,'scopes',t.scopes::jsonb,'manifest',i.manifest::jsonb,'delegated',t.user_id IS NOT NULL)::text FROM app_credentials t JOIN app_installations i ON i.id=t.installation_id JOIN apps a ON a.id=i.app_id WHERE t.token_hash=$1 AND t.revoked_at IS NULL AND t.expires_at>now() AND i.active AND a.status='installed' AND t.scopes::jsonb <@ i.scopes::jsonb AND NOT EXISTS(SELECT 1 FROM users u WHERE u.id=COALESCE(t.user_id,a.bot_user_id) AND u.is_deactivated)",&[&hash(token)]).await?;
         let v = rows
             .first()
             .ok_or_else(|| AppError::Unauthorized("Invalid or expired app token".into()))?;
@@ -455,6 +494,8 @@ pub async fn mint(
     user: Option<&str>,
     scopes: &Value,
 ) -> Result<Value, AppError> {
+    lock_installation(tx, installation).await?;
+    one(tx,"SELECT '{}'::text FROM app_installations i JOIN apps a ON a.id=i.app_id WHERE i.id=$1 AND i.active AND a.status='installed' AND $2::jsonb <@ i.scopes::jsonb AND ($3='' OR EXISTS(SELECT 1 FROM users WHERE id=$3 AND NOT is_deactivated))",&[installation,&scopes.to_string(),user.unwrap_or("")]).await?;
     let access = secret("zoo_at_");
     let refresh = secret("zoo_rt_");
     toasty::sql::statement("INSERT INTO app_credentials(id,installation_id,user_id,token_hash,refresh_hash,scopes,expires_at) VALUES($1,$2,NULLIF($3,''),$4,$5,$6,now()+interval '1 hour')")
