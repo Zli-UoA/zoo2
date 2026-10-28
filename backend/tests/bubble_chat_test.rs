@@ -65,7 +65,13 @@ async fn test_bubble_chat_presence_lifecycle() -> anyhow::Result<()> {
     }
     tx.commit().await?;
 
-    let path = "/api/bubble-chat";
+    let path = "/api/bubble";
+
+    // Supports both /api/bubble and /api/bubble-chat.
+    assert_eq!(
+        request(&app_a, Some(&alice), "/api/bubble-chat", None).await?.0,
+        StatusCode::OK
+    );
 
     // Invalid dev user header is rejected with 400.
     assert_eq!(

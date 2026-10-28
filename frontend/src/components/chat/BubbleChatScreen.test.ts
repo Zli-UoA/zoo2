@@ -11,6 +11,7 @@ import { BubbleChatScreen, shouldClearBubbleChatFromKey } from "./BubbleChatScre
 const state = vi.hoisted(() => ({
   entries: [] as BubbleChatEntry[],
   content: "",
+  isSharing: true,
   currentUserId: "user-me",
   setContent: vi.fn(),
   clearContent: vi.fn(),
@@ -20,6 +21,7 @@ vi.mock("../../hooks/useBubbleChat", () => ({
   useBubbleChat: () => ({
     entries: state.entries,
     content: state.content,
+    isSharing: state.isSharing,
     setContent: state.setContent,
     clearContent: state.clearContent,
   }),
@@ -52,6 +54,7 @@ function render() {
 beforeEach(() => {
   state.entries = [];
   state.content = "";
+  state.isSharing = true;
   state.currentUserId = "user-me";
   state.setContent.mockReset();
   state.clearContent.mockReset();
@@ -107,6 +110,16 @@ describe("BubbleChatScreen", () => {
     const html = render();
     expect(html).toContain('data-bubble-side="left"');
     expect(html).not.toContain('data-bubble-side="right"');
+  });
+
+  it("hides own bubble when sharing is stopped even if input is not empty", () => {
+    state.content = "入力中だけど共有停止中";
+    state.isSharing = false;
+
+    const html = render();
+    expect(html).not.toContain('data-bubble-side="right"');
+    // The input textarea retains the user's text.
+    expect(html).toContain("入力中だけど共有停止中");
   });
 
   it("clears input on Cmd+Enter or Ctrl+Enter when not composing", () => {

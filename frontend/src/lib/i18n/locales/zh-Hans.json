@@ -346,6 +346,7 @@
     "placeholder": "在此输入即可实时共享…",
     "inputLabel": "实时消息输入",
     "clear": "清空输入",
-    "hint": "无需发送按钮，按 Cmd / Ctrl+Enter 可清空输入；清空文字或离开页面后气泡即会消失。"
+    "hint": "无需发送按钮，按 Cmd / Ctrl+Enter 可清空输入；清空文字或离开页面后气泡即会消失。",
+    "typingSummary": "{{names}}正在输入"
   }
 }

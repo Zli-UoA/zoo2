@@ -65,7 +65,7 @@ describe("useBubbleChat", () => {
     expect(Array.from(clampBubbleChatContent(longText)).length).toBe(MAX_BUBBLE_CHAT_LENGTH);
   });
 
-  it("throttles rapid typing and clears after idle timeout", async () => {
+  it("throttles rapid typing, stops sharing after idle timeout, but retains input content", async () => {
     await flush(() => root.render(createElement(Probe)));
     expect(state.entries[0]?.display_name).toBe("Alice");
 
@@ -76,6 +76,7 @@ describe("useBubbleChat", () => {
     });
 
     expect(state.content).toBe("あいう");
+    expect(state.isSharing).toBe(true);
     expect(payloads()).toEqual([{ session_id: expect.any(String), content: "あ" }]);
 
     await flush(() => vi.advanceTimersByTime(200));
@@ -84,10 +85,17 @@ describe("useBubbleChat", () => {
       { session_id: expect.any(String), content: "あいう" },
     ]);
 
-    // After 15 seconds of inactivity, draft and server presence are cleared.
+    // After 15 seconds of inactivity, sharing stops on the server but the draft input remains.
     await flush(() => vi.advanceTimersByTime(15000));
-    expect(state.content).toBe("");
+    expect(state.isSharing).toBe(false);
+    expect(state.content).toBe("あいう");
     expect(payloads().at(-1)?.content).toBe("");
+
+    // Typing again restarts sharing.
+    await flush(() => state.setContent("あいうえ"));
+    expect(state.isSharing).toBe(true);
+    expect(state.content).toBe("あいうえ");
+    expect(payloads().at(-1)?.content).toBe("あいうえ");
   });
 
   it("coalesces intermediate throttled writes while a request is still in flight", async () => {
@@ -145,7 +153,7 @@ describe("useBubbleChat", () => {
     await flush(() => state.setContent("入力中"));
     const visibility = vi.spyOn(document, "visibilityState", "get").mockReturnValue("hidden");
     await flush(() => document.dispatchEvent(new Event("visibilitychange")));
-    expect(state.content).toBe("");
+    expect(state.isSharing).toBe(false);
     expect(payloads().at(-1)?.content).toBe("");
 
     await flush(() =>
@@ -157,12 +165,12 @@ describe("useBubbleChat", () => {
     visibility.mockRestore();
   });
 
-  it("clears on unmount and handles polling errors gracefully", async () => {
+  it("clears on unmount and retains entries on transient polling errors", async () => {
     await flush(() => root.render(createElement(Probe)));
     await flush(() => state.setContent("退室前"));
     mocks.get.mockRejectedValue(new Error("offline"));
     await flush(() => vi.advanceTimersByTime(1000));
-    expect(state.entries).toEqual([]);
+    expect(state.entries[0]?.display_name).toBe("Alice");
 
     await flush(() => root.render(null));
     expect(payloads().at(-1)?.content).toBe("");

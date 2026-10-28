@@ -20,7 +20,9 @@ struct BubbleChatEntry {
 }
 
 pub fn router() -> Router<AppState> {
-    Router::new().route("/api/bubble-chat", get(list).post(update))
+    Router::new()
+        .route("/api/bubble", get(list).post(update))
+        .route("/api/bubble-chat", get(list).post(update))
 }
 
 async fn update(

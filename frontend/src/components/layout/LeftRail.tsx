@@ -32,7 +32,7 @@ function RailLink({
   label,
   exact = false,
 }: {
-  to: "/" | "/bubble-chat" | "/realtime";
+  to: "/" | "/bubble" | "/realtime";
   icon: LucideIcon;
   label: string;
   exact?: boolean;
@@ -101,12 +101,7 @@ export function LeftRail() {
       <Separator className="my-1 w-6" />
       <RailLink to="/" icon={HashIcon} label={t("channels.title")} exact />
       <NotificationsButton />
-      <RailLink
-        to="/bubble-chat"
-        icon={MessageCircleMoreIcon}
-        label={t("bubbleChat.title")}
-        exact
-      />
+      <RailLink to="/bubble" icon={MessageCircleMoreIcon} label={t("bubbleChat.title")} exact />
       {/* 同期の状態（/realtime）は開発時の確認用。本番ビルドでは出さない。 */}
       {import.meta.env.DEV ? (
         <RailLink to="/realtime" icon={ActivityIcon} label={t("sync.title")} exact />

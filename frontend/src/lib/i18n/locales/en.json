@@ -346,6 +346,7 @@
     "placeholder": "Type here to share in real time…",
     "inputLabel": "Real-time message input",
     "clear": "Clear input",
-    "hint": "No send button—press Cmd / Ctrl+Enter to clear all text. Your bubble disappears when cleared or when you leave."
+    "hint": "No send button—press Cmd / Ctrl+Enter to clear all text. Your bubble disappears when cleared or when you leave.",
+    "typingSummary": "{{names}} typing"
   }
 }

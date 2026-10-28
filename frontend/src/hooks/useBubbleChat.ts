@@ -30,15 +30,17 @@ export function useBubbleChat(enabled = true) {
   const client = useMemo(() => createConfiguredApiClient(config), [config]);
   const [entries, setEntries] = useState<BubbleChatEntry[]>([]);
   const [content, setContentState] = useState("");
+  const [isSharing, setIsSharing] = useState(false);
   const updateRef = useRef<((value: string) => void) | null>(null);
 
   useEffect(() => {
     setEntries([]);
     setContentState("");
+    setIsSharing(false);
     if (!enabled) return;
 
     const sessionId = crypto.randomUUID();
-    const path = "/api/bubble-chat";
+    const path = "/api/bubble";
     let cancelled = false;
     let activeContent = "";
     let hasSentActive = false;
@@ -51,6 +53,7 @@ export function useBubbleChat(enabled = true) {
     // always sending the latest activeContent (or empty string on clear) when the in-flight write finishes.
     let inFlight = false;
     let hasPendingWrite = false;
+    let pendingKeepalive = false;
 
     const flushWrites = async () => {
       if (inFlight) {
@@ -61,6 +64,8 @@ export function useBubbleChat(enabled = true) {
         while (hasPendingWrite) {
           hasPendingWrite = false;
           clearTimeout(flushTimer);
+          const useKeepalive = pendingKeepalive;
+          pendingKeepalive = false;
           const valueToSend = cancelled || activeContent.trim().length === 0 ? "" : activeContent;
           if (valueToSend.length > 0) {
             lastSent = Date.now();
@@ -69,7 +74,8 @@ export function useBubbleChat(enabled = true) {
             await client.request(path, {
               method: "POST",
               body: { session_id: sessionId, content: valueToSend },
-              signal: AbortSignal.timeout(5000),
+              signal: useKeepalive ? undefined : AbortSignal.timeout(5000),
+              keepalive: useKeepalive,
             });
           } catch {
             // Ignore transient network errors; subsequent input or timeout will recover.
@@ -80,19 +86,22 @@ export function useBubbleChat(enabled = true) {
       }
     };
 
-    const send = () => {
+    const send = (keepalive = false) => {
       hasPendingWrite = true;
+      if (keepalive) {
+        pendingKeepalive = true;
+      }
       void flushWrites();
     };
 
-    const stop = () => {
+    const stop = (keepalive = false) => {
       clearTimeout(flushTimer);
       clearTimeout(idleTimer);
       activeContent = "";
       lastSent = 0;
       if (hasSentActive) {
         hasSentActive = false;
-        send();
+        send(keepalive);
       }
     };
 
@@ -100,9 +109,11 @@ export function useBubbleChat(enabled = true) {
       const next = clampBubbleChatContent(raw);
       setContentState(next);
       if (next.trim().length === 0 || document.visibilityState === "hidden") {
+        setIsSharing(false);
         stop();
         return;
       }
+      setIsSharing(true);
       activeContent = next;
       hasSentActive = true;
       const now = Date.now();
@@ -121,9 +132,7 @@ export function useBubbleChat(enabled = true) {
       }
       clearTimeout(idleTimer);
       idleTimer = setTimeout(() => {
-        if (!cancelled) {
-          setContentState("");
-        }
+        setIsSharing(false);
         stop();
       }, IDLE_TIMEOUT_MS);
     };
@@ -139,9 +148,7 @@ export function useBubbleChat(enabled = true) {
             setEntries(result);
           }
         } catch {
-          if (!cancelled) {
-            setEntries([]);
-          }
+          // Keep previous entries on a transient network failure instead of wiping them out.
         }
       }
       if (!cancelled) {
@@ -151,23 +158,29 @@ export function useBubbleChat(enabled = true) {
 
     const onHidden = () => {
       if (document.visibilityState === "hidden") {
-        setContentState("");
+        setIsSharing(false);
         stop();
         setEntries([]);
       }
     };
 
+    const onPageHide = () => {
+      setIsSharing(false);
+      stop(true);
+    };
+
     document.addEventListener("visibilitychange", onHidden);
-    window.addEventListener("pagehide", stop);
+    window.addEventListener("pagehide", onPageHide);
     void poll();
 
     return () => {
       cancelled = true;
       updateRef.current = null;
-      stop();
+      setIsSharing(false);
+      stop(true);
       clearTimeout(pollTimer);
       document.removeEventListener("visibilitychange", onHidden);
-      window.removeEventListener("pagehide", stop);
+      window.removeEventListener("pagehide", onPageHide);
     };
   }, [client, enabled]);
 
@@ -182,6 +195,7 @@ export function useBubbleChat(enabled = true) {
   return {
     entries: enabled ? entries : [],
     content: enabled ? content : "",
+    isSharing: enabled ? isSharing : false,
     setContent,
     clearContent,
   };

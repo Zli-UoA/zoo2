@@ -5,22 +5,40 @@ import { expect, screen, userEvent, within } from "storybook/test";
 import { StoryShell } from "../../../.storybook/shell";
 import { BubbleChatScreen } from "./BubbleChatScreen";
 
-const activeBubblesHandler = http.get("*/api/bubble-chat", () =>
-  HttpResponse.json([
-    {
-      user_id: "user-bob",
-      user_name: "bob",
-      display_name: "Bob",
-      content: "今日のミーティングは何時からでしたっけ？",
-    },
-    {
-      user_id: "user-carol",
-      user_name: "carol",
-      display_name: "Carol",
-      content: "15時からだった気がします！",
-    },
-  ]),
-);
+const activeBubblesHandler = [
+  http.get("*/api/bubble", () =>
+    HttpResponse.json([
+      {
+        user_id: "user-bob",
+        user_name: "bob",
+        display_name: "Bob",
+        content: "今日のミーティングは何時からでしたっけ？",
+      },
+      {
+        user_id: "user-carol",
+        user_name: "carol",
+        display_name: "Carol",
+        content: "15時からだった気がします！",
+      },
+    ]),
+  ),
+  http.get("*/api/bubble-chat", () =>
+    HttpResponse.json([
+      {
+        user_id: "user-bob",
+        user_name: "bob",
+        display_name: "Bob",
+        content: "今日のミーティングは何時からでしたっけ？",
+      },
+      {
+        user_id: "user-carol",
+        user_name: "carol",
+        display_name: "Carol",
+        content: "15時からだった気がします！",
+      },
+    ]),
+  ),
+];
 
 const meta = {
   title: "Chat/BubbleChatScreen",
@@ -28,7 +46,7 @@ const meta = {
   tags: ["autodocs"],
   parameters: {
     a11y: { test: "error" },
-    router: { initialEntries: ["/bubble-chat"] },
+    router: { initialEntries: ["/bubble"] },
   },
   decorators: [
     (Story) => (
@@ -47,7 +65,7 @@ type Story = StoryObj<typeof meta>;
 export const ActiveConversation: Story = {
   parameters: {
     msw: {
-      handlers: [activeBubblesHandler],
+      handlers: activeBubblesHandler,
     },
   },
   play: async () => {
@@ -77,7 +95,7 @@ export const Mobile: Story = {
   globals: { viewport: { value: "mobile" } },
   parameters: {
     msw: {
-      handlers: [activeBubblesHandler],
+      handlers: activeBubblesHandler,
     },
   },
 };

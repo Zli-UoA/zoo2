@@ -95,6 +95,8 @@ export const storybookApiHandlers = [
   }),
   http.get(/\/api\/channels\/[^/]+\/typing$/, () => HttpResponse.json([])),
   http.post(/\/api\/channels\/[^/]+\/typing$/, () => new HttpResponse(null, { status: 204 })),
+  http.get("*/api/bubble", () => HttpResponse.json([])),
+  http.post("*/api/bubble", () => HttpResponse.json({ ok: true })),
   http.get("*/api/bubble-chat", () => HttpResponse.json([])),
   http.post("*/api/bubble-chat", () => HttpResponse.json({ ok: true })),
   http.get("*/api/channel-read-states", () => HttpResponse.json([])),

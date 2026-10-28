@@ -34,7 +34,7 @@ export function shouldClearBubbleChatFromKey(input: BubbleChatKeyInput): boolean
 
 export function BubbleChatScreen() {
   const { t } = useTranslation();
-  const { entries, content, setContent, clearContent } = useBubbleChat(true);
+  const { entries, content, isSharing, setContent, clearContent } = useBubbleChat(true);
   const { currentUserId } = useCurrentUser();
   const usersQuery = useUsers();
   const textareaRef = useRef<HTMLTextAreaElement>(null);
@@ -51,7 +51,7 @@ export function BubbleChatScreen() {
       entries.filter((entry) => entry.user_id !== currentUserId && entry.content.trim().length > 0),
     [entries, currentUserId],
   );
-  const hasOwnBubble = content.trim().length > 0;
+  const hasOwnBubble = isSharing && content.trim().length > 0;
   const isEmpty = otherEntries.length === 0 && !hasOwnBubble;
 
   useLayoutEffect(() => {
@@ -78,7 +78,16 @@ export function BubbleChatScreen() {
         </div>
       </header>
 
-      <div className="min-h-0 flex-1 overflow-y-auto p-4" aria-live="polite">
+      <div className="sr-only" aria-live="polite" aria-atomic="true">
+        {otherEntries.length > 0
+          ? t("bubbleChat.typingSummary", {
+              count: otherEntries.length,
+              names: otherEntries.map((e) => e.display_name || e.user_name).join(", "),
+            })
+          : t("bubbleChat.emptyTitle")}
+      </div>
+
+      <div className="min-h-0 flex-1 overflow-y-auto p-4">
         {isEmpty ? (
           <div className="flex h-full flex-col items-center justify-center gap-2 text-center">
             <div className="flex size-12 items-center justify-center rounded-2xl bg-muted text-muted-foreground">

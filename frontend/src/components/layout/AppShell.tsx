@@ -40,7 +40,9 @@ export function AppShell({ children }: { children: ReactNode }) {
 
   const isStandaloneScreen = useRouterState({
     select: (state) =>
-      state.location.pathname === "/notifications" || state.location.pathname === "/bubble-chat",
+      state.location.pathname === "/notifications" ||
+      state.location.pathname === "/bubble" ||
+      state.location.pathname === "/bubble-chat",
   });
   const selectedChannelId = useRouterState({
     select: (state) => {
