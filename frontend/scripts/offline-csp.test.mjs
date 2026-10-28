@@ -9,7 +9,12 @@ const assets = new URL("../dist/client/assets/", import.meta.url);
 const workerName = (await readdir(assets)).find((name) => /^opfs-worker-.*\.js$/.test(name));
 assert.ok(workerName, "Run pnpm build before this test");
 const workerSource = await readFile(new URL(workerName, assets));
-const sw = await readFile(new URL("../public/sw.js", import.meta.url));
+const sw = await readFile(new URL("../public/sw.js", import.meta.url), "utf8");
+// Simulate the already-deployed version: Cache API versioning without HTTP cache busting.
+const previousSW = sw
+  .replace("if (!POLICY_VERSION) return fetch(request);", "return fetch(request);")
+  .replace("`zoo-shell-v3-${POLICY_VERSION}-`", "`zoo-shell-${POLICY_VERSION}-`");
+let swSource = sw;
 // Serve the production registration module, without introducing a separate test implementation.
 const registrationSource = stripTypeScriptTypes(
   await readFile(new URL("../src/lib/pwa/worker-registration.ts", import.meta.url), "utf8"),
@@ -33,9 +38,12 @@ const server = http.createServer((request, response) => {
     "Content-Type",
     path === "/" || path === "/index.html" ? "text/html" : "text/javascript",
   );
-  response.setHeader("Cache-Control", "no-store");
+  response.setHeader(
+    "Cache-Control",
+    path === `/assets/${workerName}` ? "public, max-age=31536000, immutable" : "no-store",
+  );
   if (path === "/" || path === "/index.html") response.end(html);
-  else if (path === "/sw.js") response.end(sw);
+  else if (path === "/sw.js") response.end(swSource);
   else if (path === "/assets/registration.js") response.end(registrationSource);
   else if (path === `/assets/${workerName}`) response.end(workerSource);
   else response.end("");
@@ -44,7 +52,8 @@ await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
 const origin = `http://127.0.0.1:${server.address().port}`;
 async function registerAndControl(page, legacy = false) {
   const scriptURL = await page.evaluate(async (legacy) => {
-    const { registerWorker } = await import("/assets/registration.js");
+    const { registerWorker, prepareOfflineWorker } = await import("/assets/registration.js");
+    if (!legacy) await prepareOfflineWorker();
     const registration = legacy
       ? await navigator.serviceWorker.register("/sw.js", { scope: "/", updateViaCache: "none" })
       : await registerWorker();
@@ -110,9 +119,14 @@ const sqliteProbe = async (workerName) => {
 };
 try {
   const cases = [firefox, chromium].flatMap((engine) =>
-    (warm ? [true, false] : [false]).map((legacy) => ({ engine, legacy })),
+    (warm ? ["legacy", "versioned", "same-policy-update"] : ["cold"]).map((mode) => ({
+      engine,
+      mode,
+    })),
   );
-  for (const { engine, legacy } of cases) {
+  for (const { engine, mode } of cases) {
+    const legacy = mode === "legacy";
+    swSource = mode === "same-policy-update" ? previousSW : sw;
     const browser = await engine.launch();
     try {
       const context = await browser.newContext();
@@ -151,6 +165,17 @@ try {
           return oldNames.every((name) => !names.includes(name));
         }, oldCaches);
       }
+      if (mode === "same-policy-update") {
+        // The previous PR updates the SW/CSP, yet immutable HTTP responses still carry old CSP.
+        await assert.rejects(page.evaluate(sqliteProbe, workerName), /Aborted|blocked by CSP/);
+        const previousURL = await page.evaluate(() => navigator.serviceWorker.controller.scriptURL);
+        swSource = sw;
+        await page.reload();
+        const updatedURL = await registerAndControl(page);
+        assert.equal(updatedURL, previousURL, "SW code updates must work without a CSP change");
+        await page.reload();
+        await registerAndControl(page);
+      }
       const rows = await page.evaluate(sqliteProbe, workerName);
       assert.deepEqual(rows, [{ content: "保存確認" }]);
       if (warm) {
@@ -169,7 +194,7 @@ try {
         );
       }
       console.log(
-        `${engine.name()}: ${warm ? `warm-cache ${legacy ? "legacy" : "versioned"} CSP upgrade and offline reload` : "cold-cache SQLite persistence"} passed`,
+        `${engine.name()}: ${warm ? `warm-cache ${mode} CSP upgrade and offline reload` : "cold-cache SQLite persistence"} passed`,
       );
     } finally {
       await browser.close();

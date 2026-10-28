@@ -76,8 +76,12 @@ function worker(overrides = {}) {
     URL,
     Response,
     Headers,
+    Request,
     self: {
-      location: { origin: ORIGIN },
+      location: {
+        origin: ORIGIN,
+        href: `${ORIGIN}/sw.js${overrides.policyVersion ? `?v=${overrides.policyVersion}` : ""}`,
+      },
       navigator: { language: "ja" },
       addEventListener: (type, handler) => handlers.set(type, handler),
       registration: { showNotification: async (...args) => notifications.push(args) },
@@ -460,4 +464,28 @@ test("a failed shell download aborts installation instead of replacing the worki
     },
   });
   await assert.rejects(dispatch(handlers, "install"), /without a fresh index/);
+});
+
+test("policy-versioned assets bypass immutable HTTP/CDN caches while preserving the requested cache key", async () => {
+  const requests = [];
+  const { handlers, cacheContext } = worker({
+    policyVersion: "updated-policy",
+    fetch: async (input, init) => {
+      requests.push({ url: requestKey(input), cache: init?.cache });
+      return basicResponse("fresh asset", {
+        headers: { "content-security-policy": "script-src 'self' 'wasm-unsafe-eval'" },
+      });
+    },
+  });
+  const path = `${ORIGIN}/assets/opfs-worker-stable.js`;
+  const response = await fetchThrough(handlers, new Request(path));
+  assert.equal(requests[0].url, `${path}?__zoo_policy=updated-policy`);
+  assert.equal(requests[0].cache, "reload");
+  assert.equal(
+    response.headers.get("content-security-policy"),
+    "script-src 'self' 'wasm-unsafe-eval'",
+  );
+  const cache = await cacheContext.api.open("zoo-shell-v3-updated-policy-v2");
+  assert.ok(await cache.match(path));
+  assert.equal(await cache.match(`${path}?__zoo_policy=updated-policy`), undefined);
 });

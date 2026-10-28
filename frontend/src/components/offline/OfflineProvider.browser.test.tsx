@@ -9,8 +9,10 @@ const mocks = vi.hoisted(() => ({
   state: { currentUserId: null, isLoading: true, isAdmin: false, error: null } as CurrentUserState,
   listeners: new Set<() => void>(),
   online: true,
+  prepare: vi.fn(async () => {}),
   open: vi.fn(async () => ({ persistence: {} })),
 }));
+vi.mock("../../lib/pwa/worker-registration", () => ({ prepareOfflineWorker: mocks.prepare }));
 vi.mock("../../lib/offline/online", () => ({ useOnlineStatus: () => mocks.online }));
 vi.mock("../../lib/currentUser", () => ({
   getCurrentUserStore: () => ({
@@ -35,6 +37,8 @@ beforeEach(() => {
   mocks.state = { currentUserId: null, isLoading: true, isAdmin: false, error: null };
   mocks.online = true;
   mocks.open.mockClear();
+  mocks.prepare.mockReset();
+  mocks.prepare.mockResolvedValue(undefined);
 });
 
 it("waits for user resolution before opening storage and mounting interactive children", async () => {
@@ -91,4 +95,24 @@ it("keeps the last-user cache available when offline", async () => {
   );
   await screen.findByRole("button", { name: "Cache" });
   expect(mocks.open).toHaveBeenCalledExactlyOnceWith("user-previous-user");
+});
+
+it("waits for the controlling Service Worker update before opening SQLite", async () => {
+  let complete!: () => void;
+  mocks.prepare.mockReturnValueOnce(
+    new Promise<void>((resolve) => {
+      complete = resolve;
+    }),
+  );
+  render(
+    <OfflineProvider config={{ devUserId: "dev", oidc: null } as AppConfig}>
+      <button>Ready</button>
+    </OfflineProvider>,
+  );
+  await act(async () => {});
+  expect(mocks.prepare).toHaveBeenCalledTimes(1);
+  expect(mocks.open).not.toHaveBeenCalled();
+  await act(async () => complete());
+  await screen.findByRole("button", { name: "Ready" });
+  expect(mocks.open).toHaveBeenCalledTimes(1);
 });
