@@ -2028,3 +2028,36 @@ async fn reapproval_cannot_leave_a_concurrently_refreshed_overscoped_token() -> 
     assert_eq!(apps::one(&mut tx,"SELECT json_build_object('count',count(*))::text FROM app_credentials t JOIN app_installations i ON i.id=t.installation_id WHERE i.id=$1 AND t.revoked_at IS NULL AND NOT(t.scopes::jsonb <@ i.scopes::jsonb)",&[&f.installation]).await?["count"],0);
     Ok(())
 }
+
+#[tokio::test]
+async fn concurrent_bot_profile_changes_do_not_lock_other_event_recipients() -> anyhow::Result<()> {
+    let first = fixture().await?;
+    let second = fixture().await?;
+    let mut db_a = first.state.db.clone();
+    let mut db_b = second.state.db.clone();
+    let mut a = db_a.transaction().await?;
+    let mut b = db_b.transaction().await?;
+    apps::one(
+        &mut a,
+        "SELECT '{}'::text FROM users WHERE id=$1 FOR UPDATE",
+        &[&first.bot],
+    )
+    .await?;
+    apps::one(
+        &mut b,
+        "SELECT '{}'::text FROM users WHERE id=$1 FOR UPDATE",
+        &[&second.bot],
+    )
+    .await?;
+    let (left,right)=tokio::time::timeout(std::time::Duration::from_secs(5),async {
+        tokio::join!(
+            async {apps::one(&mut a,"UPDATE users SET display_name='Concurrent first' WHERE id=$1 RETURNING '{}'::text",&[&first.bot]).await},
+            async {apps::one(&mut b,"UPDATE users SET display_name='Concurrent second' WHERE id=$1 RETURNING '{}'::text",&[&second.bot]).await}
+        )
+    }).await?;
+    left?;
+    right?;
+    a.commit().await?;
+    b.commit().await?;
+    Ok(())
+}
