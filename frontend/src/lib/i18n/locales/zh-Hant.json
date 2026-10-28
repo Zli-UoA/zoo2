@@ -4,8 +4,8 @@
   },
   "channels": {
     "unread": "有未讀訊息",
-    "renameTitle": "重新命名頻道",
-    "renameHelp": "最多80個字元，僅限文字、數字、半形連字號（-）和底線（_）。不能使用空格、表情符號、其他符號或保留名稱。",
+    "editTitle": "編輯頻道",
+    "editHelp": "頻道名稱最多80個字元，僅限文字、數字、半形連字號（-）和底線（_）。不能使用空格、表情符號、其他符號或保留名稱。",
     "saveName": "儲存",
     "savingName": "儲存中…",
     "title": "頻道",
@@ -31,6 +31,11 @@
     "visibilityHelp": "任何人都可以加入公開頻道。私人頻道僅限建立者邀請的人加入。",
     "newName": "新頻道名稱",
     "makePrivate": "設為私人頻道",
+    "descriptionLabel": "說明（選填）",
+    "descriptionPlaceholder": "這個頻道的用途或話題",
+    "descriptionHelp": "最多{{max}}個字元。",
+    "descriptionTooLong": "說明不能超過{{max}}個字元（目前{{length}}個）。",
+    "descriptionCounter": "{{length}}/{{max}}",
     "creating": "建立中…",
     "create": "建立頻道"
   },

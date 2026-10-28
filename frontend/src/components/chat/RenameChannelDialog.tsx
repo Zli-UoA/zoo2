@@ -14,8 +14,10 @@ import {
   DialogTitle,
 } from "../ui/dialog";
 import { inputClassName } from "../ui/input-styles";
+import { Textarea } from "../ui/textarea";
+import { channelDescriptionLength, MAX_CHANNEL_DESCRIPTION_LENGTH } from "./channelDescription";
 
-/** 開くたびにマウントし、現在の名前から編集を始める。 */
+/** 開くたびにマウントし、現在の名前と説明から編集を始める。 */
 export function RenameChannelDialog({
   channel,
   onOpenChange,
@@ -25,11 +27,19 @@ export function RenameChannelDialog({
 }) {
   const { t } = useTranslation();
   const { channels } = useCollections();
+  const initialDescription = channel.description ?? "";
   const [name, setName] = useState(channel.channel_name);
+  const [description, setDescription] = useState(initialDescription);
   const [submitting, setSubmitting] = useState(false);
   const pending = useRef(false);
   const [errorCause, setErrorCause] = useState<{ cause: unknown } | null>(null);
   const nextName = name.trim();
+  const nextDescription = description.trim();
+  const descriptionLength = channelDescriptionLength(nextDescription);
+  const descriptionTooLong = descriptionLength > MAX_CHANNEL_DESCRIPTION_LENGTH;
+  const nameChanged = nextName !== channel.channel_name;
+  const descriptionChanged = nextDescription !== initialDescription.trim();
+  const hasChanges = nameChanged || descriptionChanged;
 
   function handleOpenChange(open: boolean) {
     if (!pending.current) {
@@ -39,7 +49,7 @@ export function RenameChannelDialog({
 
   async function submit(event: FormEvent) {
     event.preventDefault();
-    if (!nextName || nextName === channel.channel_name || pending.current) {
+    if (!nextName || descriptionTooLong || !hasChanges || pending.current) {
       return;
     }
     pending.current = true;
@@ -47,7 +57,12 @@ export function RenameChannelDialog({
     setErrorCause(null);
     try {
       const transaction = channels.update(channel.id, (draft) => {
-        draft.channel_name = nextName;
+        if (nameChanged) {
+          draft.channel_name = nextName;
+        }
+        if (descriptionChanged) {
+          draft.description = nextDescription;
+        }
       });
       await transaction.when("settled");
       onOpenChange(false);
@@ -63,8 +78,8 @@ export function RenameChannelDialog({
     <Dialog open onOpenChange={handleOpenChange}>
       <DialogContent>
         <DialogHeader>
-          <DialogTitle>{t("channels.renameTitle")}</DialogTitle>
-          <DialogDescription id="rename-channel-help">{t("channels.renameHelp")}</DialogDescription>
+          <DialogTitle>{t("channels.editTitle")}</DialogTitle>
+          <DialogDescription id="rename-channel-help">{t("channels.editHelp")}</DialogDescription>
         </DialogHeader>
         <form className="flex flex-col gap-3" onSubmit={submit}>
           <input
@@ -78,6 +93,47 @@ export function RenameChannelDialog({
             disabled={submitting}
             autoFocus
           />
+          <div className="flex flex-col gap-1.5">
+            <div className="flex items-baseline justify-between gap-2">
+              <label htmlFor="rename-channel-description" className="text-sm font-medium">
+                {t("channels.descriptionLabel")}
+              </label>
+              <span
+                className={
+                  descriptionTooLong
+                    ? "text-xs tabular-nums text-destructive"
+                    : "text-xs tabular-nums text-muted-foreground"
+                }
+              >
+                {t("channels.descriptionCounter", {
+                  length: descriptionLength,
+                  max: MAX_CHANNEL_DESCRIPTION_LENGTH,
+                })}
+              </span>
+            </div>
+            <Textarea
+              id="rename-channel-description"
+              value={description}
+              onChange={(event) => setDescription(event.target.value)}
+              placeholder={t("channels.descriptionPlaceholder")}
+              aria-invalid={descriptionTooLong}
+              aria-describedby="rename-channel-description-help"
+              disabled={submitting}
+            />
+            <p
+              id="rename-channel-description-help"
+              className={
+                descriptionTooLong ? "text-xs text-destructive" : "text-xs text-muted-foreground"
+              }
+            >
+              {descriptionTooLong
+                ? t("channels.descriptionTooLong", {
+                    length: descriptionLength,
+                    max: MAX_CHANNEL_DESCRIPTION_LENGTH,
+                  })
+                : t("channels.descriptionHelp", { max: MAX_CHANNEL_DESCRIPTION_LENGTH })}
+            </p>
+          </div>
           {errorCause ? (
             <p role="alert" className="text-xs text-destructive">
               {t("common.writeErrorDetail", { error: localizeApiError(errorCause.cause, t) })}
@@ -94,7 +150,7 @@ export function RenameChannelDialog({
             </Button>
             <Button
               type="submit"
-              disabled={submitting || !nextName || nextName === channel.channel_name}
+              disabled={submitting || !nextName || descriptionTooLong || !hasChanges}
             >
               {submitting ? t("channels.savingName") : t("channels.saveName")}
             </Button>

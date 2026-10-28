@@ -254,6 +254,20 @@ describe("channel writes", () => {
 
     expect(patch).toHaveBeenCalledWith("/api/channels/c1", { channel_name: "random" });
   });
+
+  it("PATCHes the description and can clear it with an empty string", async () => {
+    const { client, patch } = makeClient();
+    const writes = createChannelWrites({
+      client,
+      txidMode: "awaitTxId",
+      getCurrentUserId: () => CURRENT_USER,
+    });
+    const { collection } = makeCollection();
+
+    await writes.onUpdate(params(collection, [updateMutation(channel, { description: "" })]));
+
+    expect(patch).toHaveBeenCalledWith("/api/channels/c1", { description: "" });
+  });
 });
 
 describe("channel_user writes", () => {
