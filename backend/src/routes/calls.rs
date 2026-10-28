@@ -216,11 +216,20 @@ struct LocalSession {
 #[derive(Clone, Default)]
 pub struct CallRegistry {
     local_sessions: Arc<RwLock<HashMap<Uuid, LocalSession>>>,
+    db: Arc<RwLock<Option<toasty::Db>>>,
 }
 
 impl CallRegistry {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    pub async fn set_db(&self, db: toasty::Db) {
+        *self.db.write().await = Some(db);
+    }
+
+    pub async fn get_db(&self) -> Option<toasty::Db> {
+        self.db.read().await.clone()
     }
 
     /// PostgreSQL の LISTEN zoo_call_events を別タスクで実行し、
@@ -282,7 +291,10 @@ impl CallRegistry {
 
     /// 期限切れセッションの定期スイープタスクを起動
     pub fn start_sweeper(&self, mut db: toasty::Db) {
+        let registry = self.clone();
+        let db_for_set = db.clone();
         tokio::spawn(async move {
+            registry.set_db(db_for_set).await;
             let mut interval = tokio::time::interval(Duration::from_secs(10));
             loop {
                 interval.tick().await;
@@ -346,13 +358,24 @@ impl CallRegistry {
 
         match event {
             CallDistributedEvent::Signal {
-                channel_id: _,
+                channel_id,
                 target_session_id,
                 from_session_id,
                 signal,
             } => {
                 let sessions = self.local_sessions.read().await;
                 if let Some(target) = sessions.get(&target_session_id) {
+                    // チャンネル ID が一致していることを必ず照合（[P1] 越境配送防止）
+                    if target.channel_id != channel_id {
+                        tracing::warn!(
+                            target_session_id = %target_session_id,
+                            event_channel = %channel_id,
+                            session_channel = %target.channel_id,
+                            "Signal channel mismatch: ignoring signal"
+                        );
+                        return;
+                    }
+
                     let sse_event = CallServerEvent::Signal {
                         from_session_id,
                         signal,
@@ -360,8 +383,33 @@ impl CallRegistry {
                     if let Err(e) = target.sender.try_send(sse_event) {
                         tracing::warn!(
                             target_session_id = %target_session_id,
-                            "Failed to deliver signal to local session: {e}"
+                            channel_id = %channel_id,
+                            "Failed to deliver signal to local session (queue full or closed): {e}. Terminating stale session."
                         );
+                        // 宛先セッションのバッファ満杯時は不通セッションを切断・強制退出（[P2]）
+                        let dropped_user_id = target.user_id.clone();
+                        drop(sessions);
+
+                        let mut write_sessions = self.local_sessions.write().await;
+                        write_sessions.remove(&target_session_id);
+                        drop(write_sessions);
+
+                        if let Some(mut db) = self.get_db().await {
+                            let _ = toasty::sql::statement(
+                                "DELETE FROM call_presence WHERE channel_id = $1 AND session_id = $2::uuid",
+                            )
+                            .bind(channel_id.clone())
+                            .bind(target_session_id.to_string())
+                            .exec(&mut db)
+                            .await;
+
+                            let left_event = CallDistributedEvent::ParticipantLeft {
+                                channel_id,
+                                session_id: target_session_id,
+                                user_id: dropped_user_id,
+                            };
+                            let _ = Self::notify_event(&db, &left_event).await;
+                        }
                     }
                 }
             }
@@ -672,21 +720,27 @@ async fn call_stream(
     let mut db = state.db.clone();
     authorize_call_access(&mut db, &channel_id, &user).await?;
 
-    // 1. 期限切れレコードのクリーンアップ
-    let _ = toasty::sql::statement(
-        "DELETE FROM call_presence WHERE expires_at <= statement_timestamp()",
-    )
-    .exec(&mut db)
-    .await;
+    // 1. 期限切れレコードのクリーンアップ（通知付きで安全に実行）
+    let _ = CallRegistry::sweep_stale_presence(&mut db).await;
 
-    // 2. 現在の参加者数をチェック
+    // 2. トランザクションを開始し、チャンネル行を排他ロックして同時参加を直列化 ([P2])
+    let mut tx = db.transaction().await?;
+    let lock_rows = toasty::sql::query("SELECT id FROM channels WHERE id = $1 FOR UPDATE")
+        .bind(channel_id.clone())
+        .exec(&mut tx)
+        .await?;
+    if lock_rows.is_empty() {
+        return Err(AppError::NotFound("Channel not found".into()));
+    }
+
+    // ロック下で現在の参加者数をチェック
     let count_rows = toasty::sql::query(
         "SELECT count(*)::text
          FROM call_presence
          WHERE channel_id = $1 AND expires_at > statement_timestamp()",
     )
     .bind(channel_id.clone())
-    .exec(&mut db)
+    .exec(&mut tx)
     .await?;
 
     let current_count: usize = count_rows
@@ -723,7 +777,7 @@ async fn call_stream(
     .bind(user.user_name.clone())
     .bind(user.display_name.clone())
     .bind(now_str.clone())
-    .exec(&mut db)
+    .exec(&mut tx)
     .await;
 
     if let Err(e) = insert_res {
@@ -748,7 +802,7 @@ async fn call_stream(
          ORDER BY joined_at ASC",
     )
     .bind(channel_id.clone())
-    .exec(&mut db)
+    .exec(&mut tx)
     .await?;
 
     let mut participants = Vec::new();
@@ -760,6 +814,8 @@ async fn call_stream(
             participants.push(participant);
         }
     }
+
+    tx.commit().await?;
 
     let participant = CallParticipant {
         session_id: query.session_id,

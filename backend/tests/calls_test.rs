@@ -404,3 +404,93 @@ async fn test_multi_instance_call_signaling_and_broadcast() -> anyhow::Result<()
 
     Ok(())
 }
+
+#[tokio::test]
+async fn test_session_id_global_uniqueness_and_channel_isolation() -> anyhow::Result<()> {
+    dotenvy::dotenv().ok();
+    dotenvy::from_filename("../.env").ok();
+    let mut config = Config::from_env();
+    config.dev_auth_enabled = true;
+    let mut db = init_db(&config.database_url).await?;
+    let state = AppState::new(db.clone(), config.clone());
+
+    let user_1 = uuid::Uuid::new_v4().to_string();
+    let user_2 = uuid::Uuid::new_v4().to_string();
+    let ch_1 = uuid::Uuid::new_v4().to_string();
+    let ch_2 = uuid::Uuid::new_v4().to_string();
+
+    let mut tx = db.transaction().await?;
+    for (id, name) in [(&user_1, "User1"), (&user_2, "User2")] {
+        toasty::sql::statement(
+            "INSERT INTO users (id, user_name, display_name) VALUES ($1, $1, $2)",
+        )
+        .bind(id.as_str())
+        .bind(name)
+        .exec(&mut tx)
+        .await?;
+    }
+    for ch in [&ch_1, &ch_2] {
+        toasty::sql::statement(
+            "INSERT INTO channels (id, channel_name, created_user_id, is_private) VALUES ($1, $1, $2, false)",
+        )
+        .bind(ch.as_str())
+        .bind(user_1.as_str())
+        .exec(&mut tx)
+        .await?;
+    }
+    tx.commit().await?;
+
+    let shared_session_id = uuid::Uuid::new_v4();
+
+    // チャンネル 1 に session_id を登録
+    toasty::sql::statement(
+        "INSERT INTO call_presence (
+            channel_id, session_id, user_id, user_name, display_name, is_muted, joined_at, expires_at
+         ) VALUES ($1, $2::uuid, $3, 'U1', 'U1', false, '2026-01-01T00:00:00Z', statement_timestamp() + interval '30 seconds')",
+    )
+    .bind(ch_1.clone())
+    .bind(shared_session_id.to_string())
+    .bind(user_1.clone())
+    .exec(&mut db)
+    .await?;
+
+    // 別チャンネル (チャンネル 2) で同じ session_id を登録しようとすると UNIQUE 制約違反で失敗することを確認 ([P1])
+    let dup_res = toasty::sql::statement(
+        "INSERT INTO call_presence (
+            channel_id, session_id, user_id, user_name, display_name, is_muted, joined_at, expires_at
+         ) VALUES ($1, $2::uuid, $3, 'U2', 'U2', false, '2026-01-01T00:00:00Z', statement_timestamp() + interval '30 seconds')",
+    )
+    .bind(ch_2.clone())
+    .bind(shared_session_id.to_string())
+    .bind(user_2.clone())
+    .exec(&mut db)
+    .await;
+
+    assert!(dup_res.is_err(), "Duplicate session_id across channels must fail UNIQUE constraint");
+
+    // シグナルのチャンネル照合テスト ([P1]):
+    // チャンネル 1 のセッション宛ての Signal イベントが、別チャンネルのセッションには配送されないことを検証
+    let (tx1, mut rx1) = tokio::sync::mpsc::channel(256);
+    let session_chan2 = uuid::Uuid::new_v4();
+    state
+        .call_registry
+        .register_local_session(session_chan2, ch_2.clone(), user_2.clone(), tx1)
+        .await;
+
+    // チャンネル 1 宛ての Signal イベントを発行（target_session_id は session_chan2 を指定）
+    let fake_event = backend::routes::calls::CallDistributedEvent::Signal {
+        channel_id: ch_1.clone(),
+        target_session_id: session_chan2,
+        from_session_id: shared_session_id,
+        signal: serde_json::json!({ "type": "offer", "sdp": "fake" }),
+    };
+    let payload = serde_json::to_string(&fake_event).unwrap();
+    state.call_registry.dispatch_distributed_event(&payload).await;
+
+    // チャンネルが一致しないため、rx1 にはイベントが配送されないことを確認
+    let received = tokio::time::timeout(Duration::from_millis(200), rx1.recv()).await;
+    assert!(received.is_err(), "Signal from different channel must not be delivered");
+
+    Ok(())
+}
+

@@ -227,3 +227,6 @@ CREATE TABLE call_presence (
 CREATE INDEX idx_call_presence_channel ON call_presence (channel_id, expires_at);
 CREATE INDEX idx_call_presence_expires_at ON call_presence (expires_at);
 
+ALTER TABLE call_presence ADD CONSTRAINT call_presence_session_id_key UNIQUE (session_id);
+
+

@@ -117,6 +117,9 @@ export function CallProvider({ config: explicitConfig, children }: CallProviderP
   const localStreamRef = useRef<MediaStream | null>(null);
   const localVolumeCleanupRef = useRef<(() => void) | null>(null);
   const sseAbortRef = useRef<AbortController | null>(null);
+  const joinAbortRef = useRef<AbortController | null>(null);
+  const isMutedRef = useRef(false);
+  isMutedRef.current = isMuted;
 
   interface PeerEntry {
     pc: RTCPeerConnection;
@@ -125,6 +128,7 @@ export function CallProvider({ config: explicitConfig, children }: CallProviderP
     pendingCandidates: RTCIceCandidateInit[];
   }
   const peersRef = useRef<Map<string, PeerEntry>>(new Map());
+  const pendingEarlyCandidatesRef = useRef<Map<string, RTCIceCandidateInit[]>>(new Map());
   const iceServersRef = useRef<RTCIceServer[]>([{ urls: "stun:stun.l.google.com:19302" }]);
 
   // アクティブな通話一覧の定期取得 (10秒ごと)
@@ -159,6 +163,7 @@ export function CallProvider({ config: explicitConfig, children }: CallProviderP
       entry.pc.close();
     }
     peersRef.current.clear();
+    pendingEarlyCandidatesRef.current.clear();
     sessionUserMapRef.current.clear();
   }, []);
 
@@ -177,6 +182,7 @@ export function CallProvider({ config: explicitConfig, children }: CallProviderP
   // Provider アンマウント時のクリーンアップ
   useEffect(() => {
     return () => {
+      joinAbortRef.current?.abort();
       sseAbortRef.current?.abort();
       cleanupPeers();
       closeMedia();
@@ -184,6 +190,12 @@ export function CallProvider({ config: explicitConfig, children }: CallProviderP
   }, [cleanupPeers, closeMedia]);
 
   const leaveCall = useCallback(async () => {
+    // 進行中の joinCall があれば直ちに中断 ([P1])
+    if (joinAbortRef.current) {
+      joinAbortRef.current.abort();
+      joinAbortRef.current = null;
+    }
+
     const channelId = currentChannelIdRef.current;
     const sessionId = sessionIdRef.current;
 
@@ -192,15 +204,7 @@ export function CallProvider({ config: explicitConfig, children }: CallProviderP
       sseAbortRef.current = null;
     }
 
-    if (channelId && sessionId) {
-      try {
-        await apiClient.request(`/api/channels/${channelId}/call/leave`, {
-          method: "POST",
-          body: { session_id: sessionId },
-        });
-      } catch {}
-    }
-
+    // まずローカルのメディアおよび接続を即座に停止 ([P2])
     cleanupPeers();
     closeMedia();
 
@@ -212,6 +216,16 @@ export function CallProvider({ config: explicitConfig, children }: CallProviderP
     setIsMuted(false);
     setSpeakingUserIds(new Set());
     void pollActiveCalls();
+
+    // サーバーへの退出リクエストはメディア停止後に送信（待たされてもマイク停止に影響しない）
+    if (channelId && sessionId) {
+      try {
+        await apiClient.request(`/api/channels/${channelId}/call/leave`, {
+          method: "POST",
+          body: { session_id: sessionId },
+        });
+      } catch {}
+    }
   }, [apiClient, cleanupPeers, closeMedia, pollActiveCalls]);
 
   // タブ閉じ・アンロード時の退出処理 (fetch keepalive + 認証ヘッダー)
@@ -251,10 +265,16 @@ export function CallProvider({ config: explicitConfig, children }: CallProviderP
     if (!channelId || !sessionId || !localStreamRef.current) return;
 
     const nextMuted = !isMuted;
+    isMutedRef.current = nextMuted;
     for (const track of localStreamRef.current.getAudioTracks()) {
       track.enabled = !nextMuted;
     }
     setIsMuted(nextMuted);
+
+    // 自分の参加者アバターにもミュート状態を即座に反映 ([P3])
+    setParticipants((prev) =>
+      prev.map((p) => (p.session_id === sessionId ? { ...p, is_muted: nextMuted } : p)),
+    );
 
     try {
       await apiClient.request(`/api/channels/${channelId}/call/state`, {
@@ -278,6 +298,27 @@ export function CallProvider({ config: explicitConfig, children }: CallProviderP
     });
   }, []);
 
+  // 通話中の定期 heartbeat 送信 (10秒ごと、TTL 30秒に対して安全な間隔) ([P1])
+  useEffect(() => {
+    if (connectionState !== "connected" || !currentChannelId) {
+      return;
+    }
+    const interval = window.setInterval(() => {
+      const channelId = currentChannelIdRef.current;
+      const sessionId = sessionIdRef.current;
+      if (channelId && sessionId) {
+        void apiClient
+          .request(`/api/channels/${channelId}/call/heartbeat`, {
+            method: "POST",
+            body: { session_id: sessionId },
+          })
+          .catch(() => {});
+      }
+    }, 10000);
+
+    return () => window.clearInterval(interval);
+  }, [apiClient, connectionState, currentChannelId]);
+
   const createPeer = useCallback(
     (
       channelId: string,
@@ -298,6 +339,14 @@ export function CallProvider({ config: explicitConfig, children }: CallProviderP
         userId: targetUserId,
         pendingCandidates: [],
       };
+
+      // peer 作成前に届いていた ICE candidate があればマージ ([P2])
+      const earlyCandidates = pendingEarlyCandidatesRef.current.get(targetSessionId);
+      if (earlyCandidates && earlyCandidates.length > 0) {
+        entry.pendingCandidates.push(...earlyCandidates);
+        pendingEarlyCandidatesRef.current.delete(targetSessionId);
+      }
+
       peersRef.current.set(targetSessionId, entry);
 
       if (localStreamRef.current) {
@@ -355,6 +404,12 @@ export function CallProvider({ config: explicitConfig, children }: CallProviderP
         await leaveCall();
       }
 
+      if (joinAbortRef.current) {
+        joinAbortRef.current.abort();
+      }
+      const joinAbort = new AbortController();
+      joinAbortRef.current = joinAbort;
+
       setCurrentChannelId(channelId);
       setConnectionState("connecting");
       setError(null);
@@ -367,6 +422,7 @@ export function CallProvider({ config: explicitConfig, children }: CallProviderP
           video: false,
         });
       } catch (err: unknown) {
+        if (joinAbort.signal.aborted) return;
         const e = err as Error;
         const msg =
           e.name === "NotAllowedError" || e.name === "PermissionDeniedError"
@@ -382,12 +438,21 @@ export function CallProvider({ config: explicitConfig, children }: CallProviderP
         return;
       }
 
+      // マイク取得中に退出された場合は即座にトラックを停止して中止 ([P1])
+      if (joinAbort.signal.aborted) {
+        for (const track of stream.getTracks()) {
+          track.stop();
+        }
+        return;
+      }
+
       localStreamRef.current = stream;
       setIsMuted(false);
+      isMutedRef.current = false;
 
-      // 発話検知
+      // 発話検知 (最新の isMutedRef を参照して通話切り替え後も正常に反映 [P3])
       localVolumeCleanupRef.current = createVolumeMeter(stream, (speaking) => {
-        updateSpeakingUser(effectiveUserId, speaking && !isMuted);
+        updateSpeakingUser(effectiveUserId, speaking && !isMutedRef.current);
       });
 
       const mySessionId = crypto.randomUUID();
@@ -478,23 +543,26 @@ export function CallProvider({ config: explicitConfig, children }: CallProviderP
                 sessionUserMapRef.current.set(p.session_id, p.user_id);
               }
 
-              // 既存参加者へ Offer を送信 (自分が新規参加者)
+              // 同時参加時の Offer 衝突 (Glare) 回避:
+              // セッション ID の辞書順比較で小さい側のみが Offer を送信する ([P2])
               for (const p of roomParticipants) {
                 if (p.session_id === mySessionId) continue;
-                const pc = createPeer(channelId, mySessionId, p.session_id, p.user_id, ice);
-                try {
-                  const offer = await pc.createOffer();
-                  await pc.setLocalDescription(offer);
-                  await apiClient.request(`/api/channels/${channelId}/call/signal`, {
-                    method: "POST",
-                    body: {
-                      session_id: mySessionId,
-                      target_session_id: p.session_id,
-                      signal: { type: "offer", sdp: offer.sdp },
-                    },
-                  });
-                } catch (offerErr) {
-                  console.error("Failed to send offer", offerErr);
+                if (mySessionId.localeCompare(p.session_id) < 0) {
+                  const pc = createPeer(channelId, mySessionId, p.session_id, p.user_id, ice);
+                  try {
+                    const offer = await pc.createOffer();
+                    await pc.setLocalDescription(offer);
+                    await apiClient.request(`/api/channels/${channelId}/call/signal`, {
+                      method: "POST",
+                      body: {
+                        session_id: mySessionId,
+                        target_session_id: p.session_id,
+                        signal: { type: "offer", sdp: offer.sdp },
+                      },
+                    });
+                  } catch (offerErr) {
+                    console.error("Failed to send offer", offerErr);
+                  }
                 }
               }
             } else if (eventType === "participant_joined") {
@@ -506,6 +574,31 @@ export function CallProvider({ config: explicitConfig, children }: CallProviderP
                   return [...prev, newP];
                 });
                 void pollActiveCalls();
+
+                // 自身が Offer 送信側 (mySessionId < newP.session_id) の場合は新規参加者へ Offer を送信 ([P2])
+                if (mySessionId.localeCompare(newP.session_id) < 0) {
+                  const pc = createPeer(
+                    channelId,
+                    mySessionId,
+                    newP.session_id,
+                    newP.user_id,
+                    iceServersRef.current,
+                  );
+                  try {
+                    const offer = await pc.createOffer();
+                    await pc.setLocalDescription(offer);
+                    await apiClient.request(`/api/channels/${channelId}/call/signal`, {
+                      method: "POST",
+                      body: {
+                        session_id: mySessionId,
+                        target_session_id: newP.session_id,
+                        signal: { type: "offer", sdp: offer.sdp },
+                      },
+                    });
+                  } catch (offerErr) {
+                    console.error("Failed to send offer to new participant", offerErr);
+                  }
+                }
               }
             } else if (eventType === "participant_left") {
               const leftSid = data.session_id as string;
@@ -516,6 +609,7 @@ export function CallProvider({ config: explicitConfig, children }: CallProviderP
                   entry.pc.close();
                   peersRef.current.delete(leftSid);
                 }
+                pendingEarlyCandidatesRef.current.delete(leftSid);
                 sessionUserMapRef.current.delete(leftSid);
                 setParticipants((prev) => prev.filter((p) => p.session_id !== leftSid));
                 void pollActiveCalls();
@@ -606,6 +700,11 @@ export function CallProvider({ config: explicitConfig, children }: CallProviderP
                   } else {
                     entry.pendingCandidates.push(signal.candidate);
                   }
+                } else {
+                  // Peer 作成前 (Offer 受信前) に届いた candidate を早期保留バッファに保存 ([P2])
+                  const list = pendingEarlyCandidatesRef.current.get(fromSid) ?? [];
+                  list.push(signal.candidate);
+                  pendingEarlyCandidatesRef.current.set(fromSid, list);
                 }
               }
             }
@@ -644,7 +743,6 @@ export function CallProvider({ config: explicitConfig, children }: CallProviderP
       config.devUserId,
       createPeer,
       effectiveUserId,
-      isMuted,
       leaveCall,
       pollActiveCalls,
       t,
