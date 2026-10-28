@@ -125,6 +125,7 @@ try {
     })),
   );
   for (const { engine, mode } of cases) {
+    console.log(`${engine.name()}: starting ${mode} CSP check`);
     const legacy = mode === "legacy";
     swSource = mode === "same-policy-update" ? previousSW : sw;
     const browser = await engine.launch();
