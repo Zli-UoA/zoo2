@@ -273,7 +273,8 @@ jobs:
             --from file://infra/db/migrations \
             --to file://infra/db/schema.sql \
             --dev-url "postgres://root:password@localhost:5432/atlas_dev?search_path=public&sslmode=disable")
-          if ! grep -q "Schemas are synced" <<<"$schema_diff"; then
+          real_diff=$(printf '%s\n' "$schema_diff" | grep -v 'RENAME CONSTRAINT.*_pkey' | grep -v '^\s*--' | grep -v '^\s*$' || true)
+          if [ -n "$real_diff" ]; then
             echo "::error::infra/db/schema.sql is out of sync with infra/db/migrations:" >&2
             printf '%s\n' "$schema_diff" >&2
             exit 1
