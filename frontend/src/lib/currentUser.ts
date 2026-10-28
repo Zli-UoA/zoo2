@@ -59,7 +59,9 @@ export async function resolveCurrentUser(
   }
   const client = createConfiguredApiClient(config, options);
   try {
-    const me = await client.get<MeResponse>("/api/users/me");
+    const me = await client.get<MeResponse>("/api/users/me", {
+      signal: AbortSignal.timeout(8_000),
+    });
     return { currentUserId: me.id, isAdmin: me.is_admin === true, error: null };
   } catch (cause) {
     if (!config.oidc) {

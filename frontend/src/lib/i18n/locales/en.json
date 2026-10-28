@@ -294,6 +294,7 @@
     "emptyTitle": "No saved messages while offline",
     "emptyDescription": "Reconnect and reload to view your chats.",
     "retry": "Retry",
+    "userErrorTitle": "Could not verify the signed-in user. Please try again.",
     "persistenceErrorTitle": "Messages can't be saved on this device",
     "persistenceErrorDescription": "Check your browser's storage settings. You can keep chatting.",
     "deleteFailed": "Could not delete saved data on this device. It will be retried on the next start."

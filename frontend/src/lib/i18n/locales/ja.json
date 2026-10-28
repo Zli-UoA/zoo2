@@ -294,6 +294,7 @@
     "emptyTitle": "オフラインで、保存済みのメッセージがありません",
     "emptyDescription": "接続が戻ったら再読み込みしてください。",
     "retry": "再試行",
+    "userErrorTitle": "ログイン中のユーザーを確認できませんでした。再試行してください。",
     "persistenceErrorTitle": "この端末にメッセージを保存できません",
     "persistenceErrorDescription": "ブラウザーの保存領域を確認してください。チャット自体は続けられます。",
     "deleteFailed": "端末の保存データを削除できませんでした。次回の起動時に再試行します。"

@@ -1,7 +1,7 @@
 import { createConfiguredApiClient } from "../api/client";
 import type { AppConfig } from "../config";
 
-let registration: Promise<ServiceWorkerRegistration> | null = null;
+export { registerWorker } from "./worker-registration";
 
 export function supportsPush(): boolean {
   return (
@@ -10,18 +10,6 @@ export function supportsPush(): boolean {
     "PushManager" in window &&
     "Notification" in window
   );
-}
-
-export function registerWorker(): Promise<ServiceWorkerRegistration> {
-  if (!registration) {
-    registration = navigator.serviceWorker
-      .register("/sw.js", { scope: "/", updateViaCache: "none" })
-      .catch((error: unknown) => {
-        registration = null;
-        throw error;
-      });
-  }
-  return registration;
 }
 
 export function applicationServerKey(value: string): Uint8Array<ArrayBuffer> {

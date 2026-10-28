@@ -24,6 +24,8 @@
     "test:e2e:i18n": "playwright test --config playwright.i18n.config.ts",
     "test:e2e:csp": "playwright test --config playwright.csp.config.ts",
     "test:e2e:offline": "playwright test --config playwright.offline.config.ts",
+    "test:csp:offline": "pnpm build && node scripts/offline-csp.test.mjs",
+    "test:csp:offline:warm": "pnpm build && node scripts/offline-csp.test.mjs --warm",
     "test:pwa": "node scripts/pwa.test.mjs",
     "storybook": "storybook dev -p 6006",
     "build-storybook": "storybook build",
