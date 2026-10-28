@@ -1,5 +1,4 @@
-export interface CallParticipant {
-  session_id: string;
+export interface PublicCallParticipant {
   user_id: string;
   user_name: string;
   display_name: string;
@@ -7,11 +6,15 @@ export interface CallParticipant {
   joined_at: string;
 }
 
+export interface CallParticipant extends PublicCallParticipant {
+  session_id: string;
+}
+
 export interface CallStatusResponse {
   is_active: boolean;
   channel_id: string;
-  participant_count: usizeNumber;
-  participants: CallParticipant[];
+  participant_count: number;
+  participants: PublicCallParticipant[];
   max_participants: number;
   ice_servers: RTCIceServer[];
 }
@@ -21,7 +24,7 @@ export type usizeNumber = number;
 export interface ActiveCallSummary {
   channel_id: string;
   participant_count: number;
-  participants: CallParticipant[];
+  participants: PublicCallParticipant[];
 }
 
 export type CallConnectionState = "idle" | "connecting" | "connected" | "error";

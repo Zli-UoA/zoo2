@@ -2,7 +2,7 @@ use std::{
     collections::HashMap,
     convert::Infallible,
     sync::Arc,
-    time::{Duration, Instant},
+    time::Duration,
 };
 
 use axum::{
@@ -24,7 +24,9 @@ use crate::{
 };
 
 pub const MAX_CALL_PARTICIPANTS: usize = 6;
-pub const MAX_SIGNAL_PAYLOAD_SIZE: usize = 65536;
+/// PostgreSQL NOTIFY ペイロード上限 (8000 bytes) を超えない安全な上限
+pub const MAX_SIGNAL_PAYLOAD_SIZE: usize = 7000;
+pub const CALL_PRESENCE_TTL_SECONDS: u64 = 30;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct CallParticipant {
@@ -62,7 +64,7 @@ pub struct CallStatusResponse {
     pub is_active: bool,
     pub channel_id: String,
     pub participant_count: usize,
-    pub participants: Vec<CallParticipant>,
+    pub participants: Vec<PublicCallParticipant>,
     pub max_participants: usize,
     pub ice_servers: serde_json::Value,
 }
@@ -171,19 +173,49 @@ impl CallServerEvent {
     }
 }
 
-struct ParticipantSession {
-    participant: CallParticipant,
-    sender: mpsc::Sender<CallServerEvent>,
-    last_heartbeat: Instant,
+/// PostgreSQL LISTEN/NOTIFY による全レプリカ間ブロードキャスト用イベント
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "type")]
+pub enum CallDistributedEvent {
+    #[serde(rename = "signal")]
+    Signal {
+        channel_id: String,
+        target_session_id: Uuid,
+        from_session_id: Uuid,
+        signal: serde_json::Value,
+    },
+    #[serde(rename = "participant_joined")]
+    ParticipantJoined {
+        channel_id: String,
+        participant: CallParticipant,
+    },
+    #[serde(rename = "participant_left")]
+    ParticipantLeft {
+        channel_id: String,
+        session_id: Uuid,
+        user_id: String,
+    },
+    #[serde(rename = "participant_updated")]
+    ParticipantUpdated {
+        channel_id: String,
+        participant: CallParticipant,
+    },
+    #[serde(rename = "room_closed")]
+    RoomClosed {
+        channel_id: String,
+    },
 }
 
-struct CallRoom {
-    participants: HashMap<Uuid, ParticipantSession>,
+struct LocalSession {
+    channel_id: String,
+    #[allow(dead_code)]
+    user_id: String,
+    sender: mpsc::Sender<CallServerEvent>,
 }
 
 #[derive(Clone, Default)]
 pub struct CallRegistry {
-    rooms: Arc<RwLock<HashMap<String, CallRoom>>>,
+    local_sessions: Arc<RwLock<HashMap<Uuid, LocalSession>>>,
 }
 
 impl CallRegistry {
@@ -191,329 +223,300 @@ impl CallRegistry {
         Self::default()
     }
 
-    pub async fn sweep_stale_sessions(&self, timeout: Duration) {
-        let mut rooms = self.rooms.write().await;
-        let now = Instant::now();
-        let mut empty_rooms = Vec::new();
+    /// PostgreSQL の LISTEN zoo_call_events を別タスクで実行し、
+    /// 受信した通知をローカルセッションへディスパッチする。
+    pub fn start_listener(&self, database_url: String) {
+        let registry = self.clone();
+        tokio::spawn(async move {
+            loop {
+                tracing::debug!("Connecting to PostgreSQL for call signaling LISTEN...");
+                match tokio_postgres::connect(&database_url, tokio_postgres::NoTls).await {
+                    Ok((client, mut connection)) => {
+                        let mut stream =
+                            futures_util::stream::poll_fn(move |cx| connection.poll_message(cx));
+                        let listen_fut = client.batch_execute("LISTEN zoo_call_events");
+                        tokio::pin!(listen_fut);
 
-        for (cid, room) in rooms.iter_mut() {
-            let stale_ids: Vec<(Uuid, String)> = room
-                .participants
-                .iter()
-                .filter(|(_, p)| now.duration_since(p.last_heartbeat) > timeout)
-                .map(|(sid, p)| (*sid, p.participant.user_id.clone()))
-                .collect();
+                        let mut listen_active = true;
+                        tracing::info!("Subscribed to PostgreSQL channel zoo_call_events");
 
-            for (sid, uid) in stale_ids {
-                room.participants.remove(&sid);
-                let left_event = CallServerEvent::ParticipantLeft {
-                    session_id: sid,
-                    user_id: uid,
-                };
-                for p in room.participants.values() {
-                    let _ = p.sender.try_send(left_event.clone());
+                        loop {
+                            use futures_util::StreamExt;
+                            tokio::select! {
+                                res = &mut listen_fut, if listen_active => {
+                                    listen_active = false;
+                                    if let Err(e) = res {
+                                        tracing::warn!("Failed to execute LISTEN zoo_call_events: {e}");
+                                        break;
+                                    }
+                                }
+                                item = stream.next() => {
+                                    match item {
+                                        Some(Ok(tokio_postgres::AsyncMessage::Notification(notification))) => {
+                                            if notification.channel() == "zoo_call_events" {
+                                                registry.dispatch_distributed_event(notification.payload()).await;
+                                            }
+                                        }
+                                        Some(Ok(_)) => {}
+                                        Some(Err(e)) => {
+                                            tracing::warn!("PostgreSQL notification stream error: {e}");
+                                            break;
+                                        }
+                                        None => {
+                                            tracing::warn!("PostgreSQL notification connection ended");
+                                            break;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        tracing::warn!("Failed to connect to PostgreSQL for LISTEN: {e}");
+                    }
+                }
+                tokio::time::sleep(Duration::from_secs(2)).await;
+            }
+        });
+    }
+
+    /// 期限切れセッションの定期スイープタスクを起動
+    pub fn start_sweeper(&self, mut db: toasty::Db) {
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(Duration::from_secs(10));
+            loop {
+                interval.tick().await;
+                if let Err(e) = Self::sweep_stale_presence(&mut db).await {
+                    tracing::warn!("Failed to sweep stale call presence: {e}");
                 }
             }
+        });
+    }
 
-            if room.participants.is_empty() {
-                empty_rooms.push(cid.clone());
+    /// DB 上の期限切れセッションを検出し削除・通知する
+    pub async fn sweep_stale_presence(db: &mut toasty::Db) -> Result<(), AppError> {
+        let rows = toasty::sql::query(
+            "DELETE FROM call_presence
+             WHERE ctid IN (
+                 SELECT ctid FROM call_presence
+                 WHERE expires_at <= statement_timestamp()
+                 LIMIT 100 FOR UPDATE SKIP LOCKED
+             )
+             RETURNING json_build_object(
+                 'channel_id', channel_id,
+                 'session_id', session_id,
+                 'user_id', user_id
+             )::text",
+        )
+        .exec(db)
+        .await?;
+
+        #[derive(Deserialize)]
+        struct ExpiredRow {
+            channel_id: String,
+            session_id: Uuid,
+            user_id: String,
+        }
+
+        for row in rows {
+            if let toasty::stmt::Value::Record(rec) = row
+                && let Some(toasty::stmt::Value::String(json)) = rec.fields.into_iter().next()
+                && let Ok(expired) = serde_json::from_str::<ExpiredRow>(&json)
+            {
+                let event = CallDistributedEvent::ParticipantLeft {
+                    channel_id: expired.channel_id,
+                    session_id: expired.session_id,
+                    user_id: expired.user_id,
+                };
+                let _ = Self::notify_event(db, &event).await;
             }
         }
-
-        for cid in empty_rooms {
-            rooms.remove(&cid);
-        }
+        Ok(())
     }
 
-    pub async fn get_participants(&self, channel_id: &str) -> Vec<CallParticipant> {
-        let rooms = self.rooms.read().await;
-        rooms
-            .get(channel_id)
-            .map(|r| {
-                r.participants
-                    .values()
-                    .map(|p| p.participant.clone())
-                    .collect()
-            })
-            .unwrap_or_default()
-    }
-
-    pub async fn get_active_channel_ids(&self) -> Vec<String> {
-        let rooms = self.rooms.read().await;
-        rooms
-            .iter()
-            .filter(|(_, r)| !r.participants.is_empty())
-            .map(|(cid, _)| cid.clone())
-            .collect()
-    }
-
-    pub async fn join(
-        &self,
-        channel_id: &str,
-        participant: CallParticipant,
-        sender: mpsc::Sender<CallServerEvent>,
-        max_participants: usize,
-        ice_servers: serde_json::Value,
-    ) -> Result<(), AppError> {
-        let mut rooms = self.rooms.write().await;
-        let room = rooms
-            .entry(channel_id.to_string())
-            .or_insert_with(|| CallRoom {
-                participants: HashMap::new(),
-            });
-
-        let session_id = participant.session_id;
-
-        // 同一 session_id が既に存在する場合は Conflict (なりすましや重複防止)
-        if room.participants.contains_key(&session_id) {
-            return Err(AppError::Conflict("Session ID is already in use".into()));
-        }
-
-        // 定員チェック
-        if room.participants.len() >= max_participants {
-            return Err(AppError::Conflict(format!(
-                "Call room is full (max {max_participants} participants)"
-            )));
-        }
-
-        // 既存の参加者一覧を収集
-        let existing_participants: Vec<CallParticipant> = room
-            .participants
-            .values()
-            .map(|p| p.participant.clone())
-            .collect();
-
-        // 他の既存参加者へ participant_joined を配信
-        let join_event = CallServerEvent::ParticipantJoined {
-            participant: participant.clone(),
-        };
-        for (sid, p) in &room.participants {
-            if *sid != session_id {
-                let _ = p.sender.try_send(join_event.clone());
+    /// 受信した分散イベントを、このインスタンス内のローカル SSE クライアントへ配送する
+    pub async fn dispatch_distributed_event(&self, payload: &str) {
+        let event: CallDistributedEvent = match serde_json::from_str(payload) {
+            Ok(ev) => ev,
+            Err(e) => {
+                tracing::warn!("Failed to parse distributed call event: {e}, payload: {payload}");
+                return;
             }
-        }
-
-        // 新規参加者自身の room_state イベント用の参加者一覧（自分を含む）
-        let mut all_participants = existing_participants;
-        if !all_participants.iter().any(|p| p.session_id == session_id) {
-            all_participants.push(participant.clone());
-        }
-
-        let room_state_event = CallServerEvent::RoomState {
-            participants: all_participants,
-            max_participants,
-            ice_servers,
         };
-        let _ = sender.try_send(room_state_event);
 
-        room.participants.insert(
-            session_id,
-            ParticipantSession {
+        match event {
+            CallDistributedEvent::Signal {
+                channel_id: _,
+                target_session_id,
+                from_session_id,
+                signal,
+            } => {
+                let sessions = self.local_sessions.read().await;
+                if let Some(target) = sessions.get(&target_session_id) {
+                    let sse_event = CallServerEvent::Signal {
+                        from_session_id,
+                        signal,
+                    };
+                    if let Err(e) = target.sender.try_send(sse_event) {
+                        tracing::warn!(
+                            target_session_id = %target_session_id,
+                            "Failed to deliver signal to local session: {e}"
+                        );
+                    }
+                }
+            }
+            CallDistributedEvent::ParticipantJoined {
+                channel_id,
                 participant,
+            } => {
+                let sessions = self.local_sessions.read().await;
+                let sse_event = CallServerEvent::ParticipantJoined {
+                    participant: participant.clone(),
+                };
+                for (sid, session) in sessions.iter() {
+                    if session.channel_id == channel_id && *sid != participant.session_id {
+                        let _ = session.sender.try_send(sse_event.clone());
+                    }
+                }
+            }
+            CallDistributedEvent::ParticipantLeft {
+                channel_id,
+                session_id,
+                user_id,
+            } => {
+                let sse_event = CallServerEvent::ParticipantLeft {
+                    session_id,
+                    user_id,
+                };
+                let mut sessions = self.local_sessions.write().await;
+                for (sid, session) in sessions.iter() {
+                    if session.channel_id == channel_id && *sid != session_id {
+                        let _ = session.sender.try_send(sse_event.clone());
+                    }
+                }
+                sessions.remove(&session_id);
+            }
+            CallDistributedEvent::ParticipantUpdated {
+                channel_id,
+                participant,
+            } => {
+                let sessions = self.local_sessions.read().await;
+                let sse_event = CallServerEvent::ParticipantUpdated {
+                    participant: participant.clone(),
+                };
+                for (sid, session) in sessions.iter() {
+                    if session.channel_id == channel_id && *sid != participant.session_id {
+                        let _ = session.sender.try_send(sse_event.clone());
+                    }
+                }
+            }
+            CallDistributedEvent::RoomClosed { channel_id } => {
+                let mut sessions = self.local_sessions.write().await;
+                sessions.retain(|_, s| s.channel_id != channel_id);
+            }
+        }
+    }
+
+    /// ローカル宛先セッションのバッファが満杯かどうかを確認する
+    pub async fn is_target_full(&self, session_id: &Uuid) -> bool {
+        let sessions = self.local_sessions.read().await;
+        if let Some(target) = sessions.get(session_id) {
+            target.sender.capacity() == 0
+        } else {
+            false
+        }
+    }
+
+    /// ローカルセッションを登録
+    pub async fn register_local_session(
+        &self,
+        session_id: Uuid,
+        channel_id: String,
+        user_id: String,
+        sender: mpsc::Sender<CallServerEvent>,
+    ) {
+        let mut sessions = self.local_sessions.write().await;
+        sessions.insert(
+            session_id,
+            LocalSession {
+                channel_id,
+                user_id,
                 sender,
-                last_heartbeat: Instant::now(),
             },
         );
+    }
 
+    /// ローカルセッションを解除
+    pub async fn unregister_local_session(&self, session_id: &Uuid) {
+        let mut sessions = self.local_sessions.write().await;
+        sessions.remove(session_id);
+    }
+
+    /// PostgreSQL の pg_notify を発行して全インスタンスへイベントをブロードキャストする
+    pub async fn notify_event(
+        db: &toasty::Db,
+        event: &CallDistributedEvent,
+    ) -> Result<(), AppError> {
+        let mut db = db.clone();
+        let payload = serde_json::to_string(event).map_err(|e| AppError::Internal(e.into()))?;
+        toasty::sql::statement("SELECT pg_notify('zoo_call_events', $1)")
+            .bind(payload)
+            .exec(&mut db)
+            .await
+            .map_err(AppError::from)?;
         Ok(())
     }
 
-    pub async fn send_signal(
-        &self,
-        channel_id: &str,
-        sender_session_id: Uuid,
-        user_id: &str,
-        target_session_id: Uuid,
-        signal: serde_json::Value,
-    ) -> Result<(), AppError> {
-        let mut rooms = self.rooms.write().await;
-        let room = rooms
-            .get_mut(channel_id)
-            .ok_or_else(|| AppError::NotFound("Call room not active".into()))?;
-
-        let sender_session = room
-            .participants
-            .get_mut(&sender_session_id)
-            .ok_or_else(|| {
-                AppError::Forbidden("Sender is not a participant in this call".into())
-            })?;
-
-        if sender_session.participant.user_id != user_id {
-            return Err(AppError::Forbidden(
-                "Session belongs to another user".into(),
-            ));
-        }
-
-        sender_session.last_heartbeat = Instant::now();
-
-        if let Some(target) = room.participants.get(&target_session_id) {
-            let event = CallServerEvent::Signal {
-                from_session_id: sender_session_id,
-                signal,
-            };
-            let _ = target.sender.try_send(event);
-        }
-
-        Ok(())
+    /// チャンネル削除時にルームを破棄する
+    pub async fn close_room(&self, db: &toasty::Db, channel_id: &str) {
+        let event = CallDistributedEvent::RoomClosed {
+            channel_id: channel_id.to_string(),
+        };
+        let _ = Self::notify_event(db, &event).await;
+        let mut sessions = self.local_sessions.write().await;
+        sessions.retain(|_, s| s.channel_id != channel_id);
     }
 
-    pub async fn heartbeat(
+    /// チャンネルからユーザーが脱退した際のクリーンアップ
+    pub async fn remove_user_from_channel(
         &self,
+        db: &toasty::Db,
         channel_id: &str,
-        session_id: Uuid,
         user_id: &str,
-    ) -> Result<(), AppError> {
-        let mut rooms = self.rooms.write().await;
-        let room = rooms
-            .get_mut(channel_id)
-            .ok_or_else(|| AppError::NotFound("Call room not active".into()))?;
-
-        let session = room
-            .participants
-            .get_mut(&session_id)
-            .ok_or_else(|| AppError::NotFound("Session not found in call".into()))?;
-
-        if session.participant.user_id != user_id {
-            return Err(AppError::Forbidden(
-                "Session belongs to another user".into(),
-            ));
-        }
-
-        session.last_heartbeat = Instant::now();
-        Ok(())
-    }
-
-    pub async fn update_state(
-        &self,
-        channel_id: &str,
-        session_id: Uuid,
-        user_id: &str,
-        is_muted: bool,
-    ) -> Result<(), AppError> {
-        let mut rooms = self.rooms.write().await;
-        let room = rooms
-            .get_mut(channel_id)
-            .ok_or_else(|| AppError::NotFound("Call room not active".into()))?;
-
-        let session = room
-            .participants
-            .get_mut(&session_id)
-            .ok_or_else(|| AppError::NotFound("Session not found in call".into()))?;
-
-        if session.participant.user_id != user_id {
-            return Err(AppError::Forbidden(
-                "Session belongs to another user".into(),
-            ));
-        }
-
-        session.participant.is_muted = is_muted;
-        session.last_heartbeat = Instant::now();
-
-        let updated_event = CallServerEvent::ParticipantUpdated {
-            participant: session.participant.clone(),
+    ) {
+        let mut db = db.clone();
+        let rows = match toasty::sql::query(
+            "DELETE FROM call_presence
+             WHERE channel_id = $1 AND user_id = $2
+             RETURNING json_build_object('session_id', session_id)::text",
+        )
+        .bind(channel_id.to_string())
+        .bind(user_id.to_string())
+        .exec(&mut db)
+        .await
+        {
+            Ok(r) => r,
+            Err(_) => return,
         };
 
-        for (sid, p) in &room.participants {
-            if *sid != session_id {
-                let _ = p.sender.try_send(updated_event.clone());
-            }
+        #[derive(Deserialize)]
+        struct RemovedRow {
+            session_id: Uuid,
         }
 
-        Ok(())
-    }
-
-    pub async fn leave(&self, channel_id: &str, session_id: Uuid) -> Option<CallParticipant> {
-        let mut rooms = self.rooms.write().await;
-        let room = rooms.get_mut(channel_id)?;
-
-        let removed = room.participants.remove(&session_id);
-        if let Some(ref session) = removed {
-            let left_event = CallServerEvent::ParticipantLeft {
-                session_id,
-                user_id: session.participant.user_id.clone(),
-            };
-            for p in room.participants.values() {
-                let _ = p.sender.try_send(left_event.clone());
-            }
-        }
-
-        if room.participants.is_empty() {
-            rooms.remove(channel_id);
-        }
-
-        removed.map(|s| s.participant)
-    }
-
-    pub async fn leave_for_user(
-        &self,
-        channel_id: &str,
-        session_id: Uuid,
-        user_id: &str,
-    ) -> Result<(), AppError> {
-        let mut rooms = self.rooms.write().await;
-        let Some(room) = rooms.get_mut(channel_id) else {
-            return Ok(());
-        };
-
-        if let Some(session) = room.participants.get(&session_id) {
-            if session.participant.user_id != user_id {
-                return Err(AppError::Forbidden(
-                    "Session belongs to another user".into(),
-                ));
-            }
-        } else {
-            return Ok(());
-        }
-
-        if let Some(session) = room.participants.remove(&session_id) {
-            let left_event = CallServerEvent::ParticipantLeft {
-                session_id,
-                user_id: session.participant.user_id,
-            };
-            for p in room.participants.values() {
-                let _ = p.sender.try_send(left_event.clone());
-            }
-        }
-
-        if room.participants.is_empty() {
-            rooms.remove(channel_id);
-        }
-
-        Ok(())
-    }
-
-    pub async fn close_room(&self, channel_id: &str) {
-        let mut rooms = self.rooms.write().await;
-        rooms.remove(channel_id);
-    }
-
-    pub async fn remove_user_from_channel(&self, channel_id: &str, user_id: &str) {
-        let mut rooms = self.rooms.write().await;
-        let Some(room) = rooms.get_mut(channel_id) else {
-            return;
-        };
-
-        let session_ids_to_remove: Vec<Uuid> = room
-            .participants
-            .iter()
-            .filter(|(_, p)| p.participant.user_id == user_id)
-            .map(|(sid, _)| *sid)
-            .collect();
-
-        for sid in session_ids_to_remove {
-            if let Some(session) = room.participants.remove(&sid) {
-                let left_event = CallServerEvent::ParticipantLeft {
-                    session_id: sid,
-                    user_id: session.participant.user_id,
+        for row in rows {
+            if let toasty::stmt::Value::Record(rec) = row
+                && let Some(toasty::stmt::Value::String(json)) = rec.fields.into_iter().next()
+                && let Ok(removed) = serde_json::from_str::<RemovedRow>(&json)
+            {
+                let event = CallDistributedEvent::ParticipantLeft {
+                    channel_id: channel_id.to_string(),
+                    session_id: removed.session_id,
+                    user_id: user_id.to_string(),
                 };
-                for p in room.participants.values() {
-                    let _ = p.sender.try_send(left_event.clone());
-                }
+                let _ = Self::notify_event(&db, &event).await;
+                self.unregister_local_session(&removed.session_id).await;
             }
-        }
-
-        if room.participants.is_empty() {
-            rooms.remove(channel_id);
         }
     }
 }
@@ -522,6 +525,8 @@ pub struct SessionGuard {
     call_registry: CallRegistry,
     channel_id: String,
     session_id: Uuid,
+    user_id: String,
+    db: toasty::Db,
 }
 
 impl Drop for SessionGuard {
@@ -529,8 +534,27 @@ impl Drop for SessionGuard {
         let registry = self.call_registry.clone();
         let channel_id = self.channel_id.clone();
         let session_id = self.session_id;
+        let user_id = self.user_id.clone();
+        let mut db = self.db.clone();
+
         tokio::spawn(async move {
-            registry.leave(&channel_id, session_id).await;
+            registry.unregister_local_session(&session_id).await;
+            let del_res = toasty::sql::statement(
+                "DELETE FROM call_presence WHERE channel_id = $1 AND session_id = $2::uuid",
+            )
+            .bind(channel_id.clone())
+            .bind(session_id.to_string())
+            .exec(&mut db)
+            .await;
+
+            if del_res.is_ok() {
+                let event = CallDistributedEvent::ParticipantLeft {
+                    channel_id,
+                    session_id,
+                    user_id,
+                };
+                let _ = CallRegistry::notify_event(&mut db, &event).await;
+            }
         });
     }
 }
@@ -600,7 +624,32 @@ async fn get_call_status(
         serde_json::from_str(&state.config.webrtc_ice_servers_json)
             .unwrap_or_else(|_| serde_json::json!([{"urls": ["stun:stun.l.google.com:19302"]}]));
 
-    let participants = state.call_registry.get_participants(&channel_id).await;
+    let rows = toasty::sql::query(
+        "SELECT json_build_object(
+            'user_id', user_id,
+            'user_name', user_name,
+            'display_name', display_name,
+            'is_muted', is_muted,
+            'joined_at', joined_at
+         )::text
+         FROM call_presence
+         WHERE channel_id = $1 AND expires_at > statement_timestamp()
+         ORDER BY joined_at ASC",
+    )
+    .bind(channel_id.clone())
+    .exec(&mut db)
+    .await?;
+
+    let mut participants = Vec::new();
+    for row in rows {
+        if let toasty::stmt::Value::Record(rec) = row
+            && let Some(toasty::stmt::Value::String(json)) = rec.fields.into_iter().next()
+            && let Ok(participant) = serde_json::from_str::<PublicCallParticipant>(&json)
+        {
+            participants.push(participant);
+        }
+    }
+
     let is_active = !participants.is_empty();
     let participant_count = participants.len();
 
@@ -623,7 +672,95 @@ async fn call_stream(
     let mut db = state.db.clone();
     authorize_call_access(&mut db, &channel_id, &user).await?;
 
+    // 1. 期限切れレコードのクリーンアップ
+    let _ = toasty::sql::statement(
+        "DELETE FROM call_presence WHERE expires_at <= statement_timestamp()",
+    )
+    .exec(&mut db)
+    .await;
+
+    // 2. 現在の参加者数をチェック
+    let count_rows = toasty::sql::query(
+        "SELECT count(*)::text
+         FROM call_presence
+         WHERE channel_id = $1 AND expires_at > statement_timestamp()",
+    )
+    .bind(channel_id.clone())
+    .exec(&mut db)
+    .await?;
+
+    let current_count: usize = count_rows
+        .into_iter()
+        .find_map(|row| {
+            if let toasty::stmt::Value::Record(rec) = row
+                && let Some(toasty::stmt::Value::String(cnt)) = rec.fields.into_iter().next()
+            {
+                cnt.parse().ok()
+            } else {
+                None
+            }
+        })
+        .unwrap_or(0);
+
+    if current_count >= MAX_CALL_PARTICIPANTS {
+        return Err(AppError::Conflict(format!(
+            "Call room is full (max {MAX_CALL_PARTICIPANTS} participants)"
+        )));
+    }
+
     let now_str = crate::models::now_utc_millis().to_string();
+    let session_str = query.session_id.to_string();
+
+    // 3. call_presence に挿入
+    let insert_res = toasty::sql::statement(
+        "INSERT INTO call_presence (
+            channel_id, session_id, user_id, user_name, display_name, is_muted, joined_at, expires_at
+         ) VALUES ($1, $2::uuid, $3, $4, $5, false, $6, statement_timestamp() + interval '30 seconds')",
+    )
+    .bind(channel_id.clone())
+    .bind(session_str)
+    .bind(user.id.clone())
+    .bind(user.user_name.clone())
+    .bind(user.display_name.clone())
+    .bind(now_str.clone())
+    .exec(&mut db)
+    .await;
+
+    if let Err(e) = insert_res {
+        if AppError::is_unique_violation(&e, None) {
+            return Err(AppError::Conflict("Session ID is already in use".into()));
+        }
+        return Err(AppError::from(e));
+    }
+
+    // 4. 自身を含む現在の有効参加者一覧を取得
+    let rows = toasty::sql::query(
+        "SELECT json_build_object(
+            'session_id', session_id,
+            'user_id', user_id,
+            'user_name', user_name,
+            'display_name', display_name,
+            'is_muted', is_muted,
+            'joined_at', joined_at
+         )::text
+         FROM call_presence
+         WHERE channel_id = $1 AND expires_at > statement_timestamp()
+         ORDER BY joined_at ASC",
+    )
+    .bind(channel_id.clone())
+    .exec(&mut db)
+    .await?;
+
+    let mut participants = Vec::new();
+    for row in rows {
+        if let toasty::stmt::Value::Record(rec) = row
+            && let Some(toasty::stmt::Value::String(json)) = rec.fields.into_iter().next()
+            && let Ok(participant) = serde_json::from_str::<CallParticipant>(&json)
+        {
+            participants.push(participant);
+        }
+    }
+
     let participant = CallParticipant {
         session_id: query.session_id,
         user_id: user.id.clone(),
@@ -633,26 +770,43 @@ async fn call_stream(
         joined_at: now_str,
     };
 
-    let (tx, rx) = mpsc::channel(64);
+    // 5. ローカルキュー (容量 256) を作成し登録
+    let (tx, rx) = mpsc::channel(256);
+    state
+        .call_registry
+        .register_local_session(
+            query.session_id,
+            channel_id.clone(),
+            user.id.clone(),
+            tx.clone(),
+        )
+        .await;
+
     let ice_servers: serde_json::Value =
         serde_json::from_str(&state.config.webrtc_ice_servers_json)
             .unwrap_or_else(|_| serde_json::json!([{"urls": ["stun:stun.l.google.com:19302"]}]));
 
-    state
-        .call_registry
-        .join(
-            &channel_id,
-            participant,
-            tx,
-            MAX_CALL_PARTICIPANTS,
-            ice_servers,
-        )
-        .await?;
+    // 6. 新規参加者自身への初期 RoomState イベント送信
+    let room_state_event = CallServerEvent::RoomState {
+        participants,
+        max_participants: MAX_CALL_PARTICIPANTS,
+        ice_servers,
+    };
+    let _ = tx.try_send(room_state_event);
+
+    // 7. 全レプリカの他参加者へ ParticipantJoined イベントをブロードキャスト
+    let join_event = CallDistributedEvent::ParticipantJoined {
+        channel_id: channel_id.clone(),
+        participant,
+    };
+    let _ = CallRegistry::notify_event(&mut db, &join_event).await;
 
     let guard = SessionGuard {
         call_registry: state.call_registry.clone(),
         channel_id: channel_id.clone(),
         session_id: query.session_id,
+        user_id: user.id.clone(),
+        db: state.db.clone(),
     };
 
     let stream = futures_util::stream::unfold((rx, guard), |(mut rx, guard)| async move {
@@ -690,16 +844,92 @@ async fn send_signal(
         return Err(AppError::BadRequest("Signal payload too large".into()));
     }
 
-    state
+    // 送信元と宛先セッションの存在および認証ユーザーとの整合性を検証
+    let rows = toasty::sql::query(
+        "SELECT json_build_object(
+            'session_id', session_id,
+            'user_id', user_id
+         )::text
+         FROM call_presence
+         WHERE channel_id = $1
+           AND session_id IN ($2::uuid, $3::uuid)
+           AND expires_at > statement_timestamp()",
+    )
+    .bind(channel_id.clone())
+    .bind(body.session_id.to_string())
+    .bind(body.target_session_id.to_string())
+    .exec(&mut db)
+    .await?;
+
+    #[derive(Deserialize)]
+    struct PresenceRow {
+        session_id: Uuid,
+        user_id: String,
+    }
+
+    let mut found_sender = false;
+    let mut found_target = false;
+
+    for row in rows {
+        if let toasty::stmt::Value::Record(rec) = row
+            && let Some(toasty::stmt::Value::String(json)) = rec.fields.into_iter().next()
+            && let Ok(p) = serde_json::from_str::<PresenceRow>(&json)
+        {
+            if p.session_id == body.session_id {
+                if p.user_id != user.id {
+                    return Err(AppError::Forbidden(
+                        "Session belongs to another user".into(),
+                    ));
+                }
+                found_sender = true;
+            }
+            if p.session_id == body.target_session_id {
+                found_target = true;
+            }
+        }
+    }
+
+    if !found_sender {
+        return Err(AppError::Forbidden(
+            "Sender is not an active participant in this call".into(),
+        ));
+    }
+    if !found_target {
+        return Err(AppError::NotFound(
+            "Target participant not in call".into(),
+        ));
+    }
+
+    // ローカル宛先のバッファ満杯チェック ([P2] 503 返却)
+    if state
         .call_registry
-        .send_signal(
-            &channel_id,
-            body.session_id,
-            &user.id,
-            body.target_session_id,
-            body.signal,
-        )
-        .await?;
+        .is_target_full(&body.target_session_id)
+        .await
+    {
+        return Err(AppError::ServiceUnavailable(
+            "Signaling buffer full for target participant".into(),
+        ));
+    }
+
+    // 送信元の有効期限を延長
+    let _ = toasty::sql::statement(
+        "UPDATE call_presence
+         SET expires_at = statement_timestamp() + interval '30 seconds'
+         WHERE channel_id = $1 AND session_id = $2::uuid",
+    )
+    .bind(channel_id.clone())
+    .bind(body.session_id.to_string())
+    .exec(&mut db)
+    .await;
+
+    // 分散イベント通知を発行
+    let event = CallDistributedEvent::Signal {
+        channel_id,
+        target_session_id: body.target_session_id,
+        from_session_id: body.session_id,
+        signal: body.signal,
+    };
+    CallRegistry::notify_event(&mut db, &event).await?;
 
     Ok(Json(serde_json::json!({ "ok": true })))
 }
@@ -713,10 +943,45 @@ async fn update_state(
     let mut db = state.db.clone();
     authorize_call_access(&mut db, &channel_id, &user).await?;
 
-    state
-        .call_registry
-        .update_state(&channel_id, body.session_id, &user.id, body.is_muted)
-        .await?;
+    let rows = toasty::sql::query(
+        "UPDATE call_presence
+         SET is_muted = $4, expires_at = statement_timestamp() + interval '30 seconds'
+         WHERE channel_id = $1 AND session_id = $2::uuid AND user_id = $3 AND expires_at > statement_timestamp()
+         RETURNING json_build_object(
+             'session_id', session_id,
+             'user_id', user_id,
+             'user_name', user_name,
+             'display_name', display_name,
+             'is_muted', is_muted,
+             'joined_at', joined_at
+         )::text",
+    )
+    .bind(channel_id.clone())
+    .bind(body.session_id.to_string())
+    .bind(user.id.clone())
+    .bind(body.is_muted)
+    .exec(&mut db)
+    .await?;
+
+    let updated_participant = rows.into_iter().find_map(|row| {
+        if let toasty::stmt::Value::Record(rec) = row
+            && let Some(toasty::stmt::Value::String(json)) = rec.fields.into_iter().next()
+        {
+            serde_json::from_str::<CallParticipant>(&json).ok()
+        } else {
+            None
+        }
+    });
+
+    let Some(participant) = updated_participant else {
+        return Err(AppError::NotFound("Session not found in call".into()));
+    };
+
+    let event = CallDistributedEvent::ParticipantUpdated {
+        channel_id,
+        participant,
+    };
+    CallRegistry::notify_event(&mut db, &event).await?;
 
     Ok(Json(serde_json::json!({ "ok": true })))
 }
@@ -730,10 +995,21 @@ async fn heartbeat(
     let mut db = state.db.clone();
     authorize_call_access(&mut db, &channel_id, &user).await?;
 
-    state
-        .call_registry
-        .heartbeat(&channel_id, body.session_id, &user.id)
-        .await?;
+    let rows = toasty::sql::query(
+        "UPDATE call_presence
+         SET expires_at = statement_timestamp() + interval '30 seconds'
+         WHERE channel_id = $1 AND session_id = $2::uuid AND user_id = $3 AND expires_at > statement_timestamp()
+         RETURNING session_id::text",
+    )
+    .bind(channel_id)
+    .bind(body.session_id.to_string())
+    .bind(user.id)
+    .exec(&mut db)
+    .await?;
+
+    if rows.is_empty() {
+        return Err(AppError::NotFound("Session not found in call".into()));
+    }
 
     Ok(Json(serde_json::json!({ "ok": true })))
 }
@@ -747,10 +1023,32 @@ async fn leave_call(
     let mut db = state.db.clone();
     authorize_call_access(&mut db, &channel_id, &user).await?;
 
+    let rows = toasty::sql::query(
+        "DELETE FROM call_presence
+         WHERE channel_id = $1 AND session_id = $2::uuid AND user_id = $3
+         RETURNING user_id",
+    )
+    .bind(channel_id.clone())
+    .bind(body.session_id.to_string())
+    .bind(user.id.clone())
+    .exec(&mut db)
+    .await?;
+
+    if rows.is_empty() {
+        return Err(AppError::NotFound("Session not found in call".into()));
+    }
+
     state
         .call_registry
-        .leave_for_user(&channel_id, body.session_id, &user.id)
-        .await?;
+        .unregister_local_session(&body.session_id)
+        .await;
+
+    let event = CallDistributedEvent::ParticipantLeft {
+        channel_id,
+        session_id: body.session_id,
+        user_id: user.id,
+    };
+    CallRegistry::notify_event(&mut db, &event).await?;
 
     Ok(Json(serde_json::json!({ "ok": true })))
 }
@@ -759,32 +1057,65 @@ async fn list_active_calls(
     State(state): State<AppState>,
     user: AuthUser,
 ) -> Result<Json<Vec<ActiveCallSummary>>, AppError> {
-    // タイムアウトしたセッションのスイープ
-    state
-        .call_registry
-        .sweep_stale_sessions(Duration::from_secs(60))
-        .await;
-
-    let channel_ids = state.call_registry.get_active_channel_ids().await;
     let mut db = state.db.clone();
-    let mut active = Vec::new();
 
-    for cid in channel_ids {
-        if authorize_call_access(&mut db, &cid, &user).await.is_ok() {
-            let participants = state.call_registry.get_participants(&cid).await;
-            if !participants.is_empty() {
-                active.push(ActiveCallSummary {
-                    channel_id: cid,
-                    participant_count: participants.len(),
-                    participants: participants
-                        .iter()
-                        .map(PublicCallParticipant::from)
-                        .collect(),
-                });
-            }
+    // 期限切れレコードのクリーンアップスイープ
+    let _ = CallRegistry::sweep_stale_presence(&mut db).await;
+
+    #[derive(Deserialize)]
+    struct ActiveRow {
+        channel_id: String,
+        user_id: String,
+        user_name: String,
+        display_name: String,
+        is_muted: bool,
+        joined_at: String,
+    }
+
+    let rows = toasty::sql::query(
+        "SELECT json_build_object(
+            'channel_id', channel_id,
+            'user_id', user_id,
+            'user_name', user_name,
+            'display_name', display_name,
+            'is_muted', is_muted,
+            'joined_at', joined_at
+         )::text
+         FROM call_presence
+         WHERE expires_at > statement_timestamp()
+         ORDER BY channel_id, joined_at ASC",
+    )
+    .exec(&mut db)
+    .await?;
+
+    let mut channel_map: HashMap<String, Vec<PublicCallParticipant>> = HashMap::new();
+    for row in rows {
+        if let toasty::stmt::Value::Record(rec) = row
+            && let Some(toasty::stmt::Value::String(json)) = rec.fields.into_iter().next()
+            && let Ok(r) = serde_json::from_str::<ActiveRow>(&json)
+        {
+            channel_map.entry(r.channel_id).or_default().push(PublicCallParticipant {
+                user_id: r.user_id,
+                user_name: r.user_name,
+                display_name: r.display_name,
+                is_muted: r.is_muted,
+                joined_at: r.joined_at,
+            });
         }
     }
 
+    let mut active = Vec::new();
+    for (cid, participants) in channel_map {
+        if authorize_call_access(&mut db, &cid, &user).await.is_ok() && !participants.is_empty() {
+            active.push(ActiveCallSummary {
+                channel_id: cid,
+                participant_count: participants.len(),
+                participants,
+            });
+        }
+    }
+
+    active.sort_by(|a, b| a.channel_id.cmp(&b.channel_id));
     Ok(Json(active))
 }
 
@@ -793,38 +1124,15 @@ mod tests {
     use super::*;
 
     #[tokio::test]
-    async fn test_call_registry_join_and_room_state() {
+    async fn test_call_registry_dispatch_events() {
         let registry = CallRegistry::new();
-        let (tx1, mut rx1) = mpsc::channel(64);
+        let (tx1, mut rx1) = mpsc::channel(256);
         let session_1 = Uuid::new_v4();
 
-        let p1 = CallParticipant {
-            session_id: session_1,
-            user_id: "user-1".into(),
-            user_name: "alice".into(),
-            display_name: "Alice".into(),
-            is_muted: false,
-            joined_at: "2026-10-28T00:00:00Z".into(),
-        };
-
-        let ice = serde_json::json!([{"urls": ["stun:stun.l.google.com:19302"]}]);
         registry
-            .join("chan-1", p1.clone(), tx1, 6, ice.clone())
-            .await
-            .expect("join should succeed");
+            .register_local_session(session_1, "chan-1".into(), "user-1".into(), tx1)
+            .await;
 
-        // rx1 should receive RoomState with p1
-        let first_event = rx1.recv().await.expect("should receive event");
-        match first_event {
-            CallServerEvent::RoomState { participants, .. } => {
-                assert_eq!(participants.len(), 1);
-                assert_eq!(participants[0].session_id, session_1);
-            }
-            _ => panic!("expected RoomState event"),
-        }
-
-        // Second user joins
-        let (tx2, mut rx2) = mpsc::channel(64);
         let session_2 = Uuid::new_v4();
         let p2 = CallParticipant {
             session_id: session_2,
@@ -835,151 +1143,59 @@ mod tests {
             joined_at: "2026-10-28T00:00:01Z".into(),
         };
 
-        registry
-            .join("chan-1", p2.clone(), tx2, 6, ice)
-            .await
-            .expect("join should succeed");
+        // ParticipantJoined イベントのディスパッチテスト
+        let join_event = CallDistributedEvent::ParticipantJoined {
+            channel_id: "chan-1".into(),
+            participant: p2.clone(),
+        };
+        let join_json = serde_json::to_string(&join_event).unwrap();
+        registry.dispatch_distributed_event(&join_json).await;
 
-        // rx1 should receive ParticipantJoined for p2
-        let join_event = rx1.recv().await.expect("should receive event");
-        match join_event {
+        let ev1 = rx1.recv().await.expect("should receive event");
+        match ev1 {
             CallServerEvent::ParticipantJoined { participant } => {
                 assert_eq!(participant.session_id, session_2);
             }
             _ => panic!("expected ParticipantJoined event"),
         }
 
-        // rx2 should receive RoomState with both p1 and p2
-        let state2 = rx2.recv().await.expect("should receive event");
-        match state2 {
-            CallServerEvent::RoomState { participants, .. } => {
-                assert_eq!(participants.len(), 2);
-            }
-            _ => panic!("expected RoomState event"),
-        }
-    }
-
-    #[tokio::test]
-    async fn test_call_registry_max_capacity() {
-        let registry = CallRegistry::new();
-        let ice = serde_json::json!([{"urls": ["stun:stun.l.google.com:19302"]}]);
-
-        for i in 0..6 {
-            let (tx, _rx) = mpsc::channel(64);
-            let p = CallParticipant {
-                session_id: Uuid::new_v4(),
-                user_id: format!("user-{i}"),
-                user_name: format!("user{i}"),
-                display_name: format!("User {i}"),
-                is_muted: false,
-                joined_at: "2026-10-28T00:00:00Z".into(),
-            };
-            registry
-                .join("chan-cap", p, tx, 6, ice.clone())
-                .await
-                .expect("should succeed within capacity");
-        }
-
-        // 7th should fail with Conflict
-        let (tx7, _rx7) = mpsc::channel(64);
-        let p7 = CallParticipant {
-            session_id: Uuid::new_v4(),
-            user_id: "user-7".into(),
-            user_name: "user7".into(),
-            display_name: "User 7".into(),
-            is_muted: false,
-            joined_at: "2026-10-28T00:00:00Z".into(),
+        // Signal イベントのディスパッチテスト
+        let sig_event = CallDistributedEvent::Signal {
+            channel_id: "chan-1".into(),
+            target_session_id: session_1,
+            from_session_id: session_2,
+            signal: serde_json::json!({"type": "offer", "sdp": "v=0..."}),
         };
-        let err = registry
-            .join("chan-cap", p7, tx7, 6, ice)
-            .await
-            .expect_err("should reject 7th participant");
+        let sig_json = serde_json::to_string(&sig_event).unwrap();
+        registry.dispatch_distributed_event(&sig_json).await;
 
-        match err {
-            AppError::Conflict(msg) => assert!(msg.contains("full")),
-            _ => panic!("expected Conflict error"),
-        }
-    }
-
-    #[tokio::test]
-    async fn test_call_registry_signaling_and_state_updates() {
-        let registry = CallRegistry::new();
-        let (tx1, mut rx1) = mpsc::channel(64);
-        let (tx2, mut rx2) = mpsc::channel(64);
-        let s1 = Uuid::new_v4();
-        let s2 = Uuid::new_v4();
-        let ice = serde_json::json!([]);
-
-        let p1 = CallParticipant {
-            session_id: s1,
-            user_id: "u1".into(),
-            user_name: "u1".into(),
-            display_name: "U1".into(),
-            is_muted: false,
-            joined_at: "2026-10-28T00:00:00Z".into(),
-        };
-        let p2 = CallParticipant {
-            session_id: s2,
-            user_id: "u2".into(),
-            user_name: "u2".into(),
-            display_name: "U2".into(),
-            is_muted: false,
-            joined_at: "2026-10-28T00:00:00Z".into(),
-        };
-
-        registry
-            .join("chan-sig", p1, tx1, 6, ice.clone())
-            .await
-            .unwrap();
-        let _ = rx1.recv().await; // room_state
-        registry.join("chan-sig", p2, tx2, 6, ice).await.unwrap();
-        let _ = rx1.recv().await; // p2 joined
-        let _ = rx2.recv().await; // room_state
-
-        // s1 sends signal to s2
-        let sig = serde_json::json!({"type": "offer", "sdp": "v=0..."});
-        registry
-            .send_signal("chan-sig", s1, "u1", s2, sig.clone())
-            .await
-            .unwrap();
-
-        let received = rx2.recv().await.unwrap();
-        match received {
+        let ev2 = rx1.recv().await.expect("should receive event");
+        match ev2 {
             CallServerEvent::Signal {
                 from_session_id,
                 signal,
             } => {
-                assert_eq!(from_session_id, s1);
-                assert_eq!(signal, sig);
+                assert_eq!(from_session_id, session_2);
+                assert_eq!(signal["type"], "offer");
             }
             _ => panic!("expected Signal event"),
         }
 
-        // s1 mutes
-        registry
-            .update_state("chan-sig", s1, "u1", true)
-            .await
-            .unwrap();
+        // ParticipantLeft イベントのディスパッチテスト
+        let left_event = CallDistributedEvent::ParticipantLeft {
+            channel_id: "chan-1".into(),
+            session_id: session_2,
+            user_id: "user-2".into(),
+        };
+        let left_json = serde_json::to_string(&left_event).unwrap();
+        registry.dispatch_distributed_event(&left_json).await;
 
-        let updated = rx2.recv().await.unwrap();
-        match updated {
-            CallServerEvent::ParticipantUpdated { participant } => {
-                assert_eq!(participant.session_id, s1);
-                assert!(participant.is_muted);
-            }
-            _ => panic!("expected ParticipantUpdated event"),
-        }
-
-        // s2 leaves
-        registry.leave("chan-sig", s2).await;
-        let left = rx1.recv().await.unwrap();
-        match left {
+        let ev3 = rx1.recv().await.expect("should receive event");
+        match ev3 {
             CallServerEvent::ParticipantLeft { session_id, .. } => {
-                assert_eq!(session_id, s2);
+                assert_eq!(session_id, session_2);
             }
             _ => panic!("expected ParticipantLeft event"),
         }
-
-        assert_eq!(registry.get_participants("chan-sig").await.len(), 1);
     }
 }

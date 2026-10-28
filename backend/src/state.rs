@@ -91,6 +91,8 @@ impl AppState {
         let jwks_verifier = JwksVerifier::new(http_client.clone());
         let user_cache = UserResolutionCache::new();
         let call_registry = CallRegistry::new();
+        call_registry.start_listener(config.database_url.clone());
+        call_registry.start_sweeper(db.clone());
 
         Self {
             db,
@@ -135,6 +137,8 @@ impl AppState {
         let jwks_verifier = JwksVerifier::new(http_client.clone());
         let user_cache = UserResolutionCache::new();
         let call_registry = CallRegistry::new();
+        call_registry.start_listener(config.database_url.clone());
+        call_registry.start_sweeper(db.clone());
         Self {
             db,
             config,
@@ -158,6 +162,8 @@ impl AppState {
         let electric_client = Self::default_electric_client();
         let user_cache = UserResolutionCache::new();
         let call_registry = CallRegistry::new();
+        call_registry.start_listener(config.database_url.clone());
+        call_registry.start_sweeper(db.clone());
         Self {
             db,
             config,
@@ -179,6 +185,8 @@ impl AppState {
     ) -> Self {
         let user_cache = UserResolutionCache::new();
         let call_registry = CallRegistry::new();
+        call_registry.start_listener(config.database_url.clone());
+        call_registry.start_sweeper(db.clone());
         Self {
             db,
             config,

@@ -356,7 +356,7 @@ async fn delete_channel(
     let txid = get_current_txid(&mut tx).await?;
     tx.commit().await?;
 
-    state.call_registry.close_room(&id).await;
+    state.call_registry.close_room(&state.db, &id).await;
 
     Ok(Json(ApiResponse::new(
         ChannelResponse::from(deleted_channel),
@@ -671,7 +671,7 @@ async fn leave_channel(
 
     state
         .call_registry
-        .remove_user_from_channel(&id, &auth_user.id)
+        .remove_user_from_channel(&state.db, &id, &auth_user.id)
         .await;
 
     Ok(Json(ApiResponse::new(
@@ -771,7 +771,7 @@ async fn archive_channel(
     let txid = get_current_txid(&mut tx).await?;
     tx.commit().await?;
 
-    state.call_registry.close_room(&id).await;
+    state.call_registry.close_room(&state.db, &id).await;
 
     Ok(Json(ApiResponse::new(ChannelResponse::from(updated), txid)))
 }
@@ -987,7 +987,7 @@ async fn kick_channel_user(
 
     state
         .call_registry
-        .remove_user_from_channel(&id, &user_id)
+        .remove_user_from_channel(&state.db, &id, &user_id)
         .await;
 
     Ok(Json(ApiResponse::new(

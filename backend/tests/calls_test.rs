@@ -1,3 +1,5 @@
+use std::time::Duration;
+
 use axum::{
     Router,
     body::{Body, to_bytes},
@@ -97,7 +99,6 @@ async fn test_calls_routes_authorization_and_lifecycle() -> anyhow::Result<()> {
     .bind(alice.as_str())
     .exec(&mut tx)
     .await?;
-
     tx.commit().await?;
 
     // 1. Initial status: public channel call should be inactive
@@ -154,54 +155,49 @@ async fn test_calls_routes_authorization_and_lifecycle() -> anyhow::Result<()> {
     assert_eq!(status, StatusCode::OK);
     assert!(body.is_array());
 
-    // 6. Join call and verify session isolation & authorization
-    let (tx, _rx) = tokio::sync::mpsc::channel(64);
+    // 6. call_presence に直接セッションを登録して検証
     let session_alice = uuid::Uuid::new_v4();
-    let participant_alice = backend::routes::calls::CallParticipant {
-        session_id: session_alice,
-        user_id: alice.clone(),
-        user_name: "Alice".to_string(),
-        display_name: "Alice".to_string(),
-        is_muted: false,
-        joined_at: "2026-01-01T00:00:00Z".to_string(),
-    };
+    toasty::sql::statement(
+        "INSERT INTO call_presence (
+            channel_id, session_id, user_id, user_name, display_name, is_muted, joined_at, expires_at
+         ) VALUES ($1, $2::uuid, $3, $4, $5, false, '2026-01-01T00:00:00Z', statement_timestamp() + interval '30 seconds')",
+    )
+    .bind(public_ch.clone())
+    .bind(session_alice.to_string())
+    .bind(alice.clone())
+    .bind("Alice".to_string())
+    .bind("Alice".to_string())
+    .exec(&mut db)
+    .await?;
 
-    state
-        .call_registry
-        .join(&public_ch, participant_alice, tx, 6, serde_json::json!([]))
-        .await?;
+    // GET /api/channels/{id}/call で参加者が取得でき、session_id が含まれないことを検証 ([P3])
+    let (status, body) = request(
+        &app,
+        &alice,
+        "GET",
+        &format!("/api/channels/{public_ch}/call"),
+        None,
+    )
+    .await?;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["is_active"], true);
+    assert_eq!(body["participant_count"], 1);
+    let p = &body["participants"][0];
+    assert_eq!(p["user_id"], alice);
+    assert!(p.get("session_id").is_none());
 
-    // 重複する session_id での join は Conflict になる
-    let (tx2, _rx2) = tokio::sync::mpsc::channel(64);
-    let duplicate_participant = backend::routes::calls::CallParticipant {
-        session_id: session_alice,
-        user_id: bob.clone(),
-        user_name: "Bob".to_string(),
-        display_name: "Bob".to_string(),
-        is_muted: false,
-        joined_at: "2026-01-01T00:00:00Z".to_string(),
-    };
-    let join_dup_result = state
-        .call_registry
-        .join(
-            &public_ch,
-            duplicate_participant,
-            tx2,
-            6,
-            serde_json::json!([]),
-        )
-        .await;
-    assert!(join_dup_result.is_err());
-
-    // Active calls summary で session_id が露出していないことを確認
+    // Active calls summary でも session_id が露出していないことを確認
     let (status, body) = request(&app, &alice, "GET", "/api/calls/active", None).await?;
     assert_eq!(status, StatusCode::OK);
-    let first_ch = &body[0];
-    assert_eq!(first_ch["channel_id"], public_ch);
+    let first_ch = body
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|c| c["channel_id"] == public_ch)
+        .expect("channel should be in active list");
     assert_eq!(first_ch["participant_count"], 1);
     let first_participant = &first_ch["participants"][0];
     assert_eq!(first_participant["user_id"], alice);
-    // session_id フィールドが存在しないことを検証
     assert!(first_participant.get("session_id").is_none());
 
     // 他人 (bob) の session_id を騙った signal 送信は拒否 (403 Forbidden)
@@ -219,7 +215,7 @@ async fn test_calls_routes_authorization_and_lifecycle() -> anyhow::Result<()> {
     .await?;
     assert_eq!(status, StatusCode::FORBIDDEN);
 
-    // 他人 (bob) が他人の session_id を leave しようとすると拒否 (403 Forbidden)
+    // 他人 (bob) が他人の session_id を leave しようとすると拒否 (404 または 403)
     let (status, _) = request(
         &app,
         &bob,
@@ -230,7 +226,7 @@ async fn test_calls_routes_authorization_and_lifecycle() -> anyhow::Result<()> {
         })),
     )
     .await?;
-    assert_eq!(status, StatusCode::FORBIDDEN);
+    assert_eq!(status, StatusCode::NOT_FOUND);
 
     // 本人 (alice) による leave は成功 (200 OK)
     let (status, _) = request(
@@ -246,8 +242,165 @@ async fn test_calls_routes_authorization_and_lifecycle() -> anyhow::Result<()> {
     assert_eq!(status, StatusCode::OK);
 
     // ルームが空になったことを確認
-    let participants = state.call_registry.get_participants(&public_ch).await;
-    assert!(participants.is_empty());
+    let (status, body) = request(
+        &app,
+        &alice,
+        "GET",
+        &format!("/api/channels/{public_ch}/call"),
+        None,
+    )
+    .await?;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["is_active"], false);
+    assert_eq!(body["participant_count"], 0);
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_multi_instance_call_signaling_and_broadcast() -> anyhow::Result<()> {
+    dotenvy::dotenv().ok();
+    dotenvy::from_filename("../.env").ok();
+    let mut config = Config::from_env();
+    config.dev_auth_enabled = true;
+    let mut db = init_db(&config.database_url).await?;
+
+    // 2つの独立した AppState (マルチレプリカ相当) を生成
+    let state_pod1 = AppState::new(db.clone(), config.clone());
+    let state_pod2 = AppState::new(db.clone(), config.clone());
+    let app_pod2 = create_router(state_pod2.clone());
+
+    let user_a = uuid::Uuid::new_v4().to_string();
+    let user_b = uuid::Uuid::new_v4().to_string();
+    let channel_id = uuid::Uuid::new_v4().to_string();
+
+    let mut tx = db.transaction().await?;
+    for (id, name) in [(&user_a, "UserA"), (&user_b, "UserB")] {
+        toasty::sql::statement(
+            "INSERT INTO users (id, user_name, display_name) VALUES ($1, $1, $2)",
+        )
+        .bind(id.as_str())
+        .bind(name)
+        .exec(&mut tx)
+        .await?;
+    }
+    toasty::sql::statement(
+        "INSERT INTO channels (id, channel_name, created_user_id, is_private) VALUES ($1, $1, $2, false)",
+    )
+    .bind(channel_id.as_str())
+    .bind(user_a.as_str())
+    .exec(&mut tx)
+    .await?;
+    tx.commit().await?;
+
+    // LISTEN コネクションの確立を少し待機
+    tokio::time::sleep(Duration::from_millis(500)).await;
+
+    // User A は Pod 1 に接続 (ローカルセッション登録 + DB プレゼンス登録)
+    let session_a = uuid::Uuid::new_v4();
+    let (tx_a, mut rx_a) = tokio::sync::mpsc::channel(256);
+    state_pod1
+        .call_registry
+        .register_local_session(session_a, channel_id.clone(), user_a.clone(), tx_a)
+        .await;
+
+    toasty::sql::statement(
+        "INSERT INTO call_presence (
+            channel_id, session_id, user_id, user_name, display_name, is_muted, joined_at, expires_at
+         ) VALUES ($1, $2::uuid, $3, $4, $5, false, '2026-01-01T00:00:00Z', statement_timestamp() + interval '30 seconds')",
+    )
+    .bind(channel_id.clone())
+    .bind(session_a.to_string())
+    .bind(user_a.clone())
+    .bind("UserA".to_string())
+    .bind("UserA".to_string())
+    .exec(&mut db)
+    .await?;
+
+    // User B は Pod 2 に接続 (ローカルセッション登録 + DB プレゼンス登録)
+    let session_b = uuid::Uuid::new_v4();
+    let (tx_b, _rx_b) = tokio::sync::mpsc::channel(256);
+    state_pod2
+        .call_registry
+        .register_local_session(session_b, channel_id.clone(), user_b.clone(), tx_b)
+        .await;
+
+    toasty::sql::statement(
+        "INSERT INTO call_presence (
+            channel_id, session_id, user_id, user_name, display_name, is_muted, joined_at, expires_at
+         ) VALUES ($1, $2::uuid, $3, $4, $5, false, '2026-01-01T00:00:00Z', statement_timestamp() + interval '30 seconds')",
+    )
+    .bind(channel_id.clone())
+    .bind(session_b.to_string())
+    .bind(user_b.clone())
+    .bind("UserB".to_string())
+    .bind("UserB".to_string())
+    .exec(&mut db)
+    .await?;
+
+    // User B が Pod 2 に POST /signal (宛先: User A) を送信
+    let (status, resp_body) = request(
+        &app_pod2,
+        &user_b,
+        "POST",
+        &format!("/api/channels/{channel_id}/call/signal"),
+        Some(serde_json::json!({
+            "session_id": session_b,
+            "target_session_id": session_a,
+            "signal": { "type": "offer", "sdp": "v=0-multi-instance-test" }
+        })),
+    )
+    .await?;
+
+    assert_eq!(status, StatusCode::OK, "response body: {:?}", resp_body);
+
+    // Pod 1 にいる User A の rx_a が、PostgreSQL LISTEN/NOTIFY 経由でシグナルを受信できることを検証！
+    let received_event = tokio::time::timeout(Duration::from_secs(3), rx_a.recv())
+        .await
+        .expect("timeout waiting for distributed signal on Pod 1")
+        .expect("rx_a stream closed");
+
+    match received_event {
+        backend::routes::calls::CallServerEvent::Signal {
+            from_session_id,
+            signal,
+        } => {
+            assert_eq!(from_session_id, session_b);
+            assert_eq!(signal["type"], "offer");
+            assert_eq!(signal["sdp"], "v=0-multi-instance-test");
+        }
+        other => panic!("expected Signal event, got: {:?}", other.event_type()),
+    }
+
+    // User B が Pod 2 に POST /leave を送信
+    let (status, _) = request(
+        &app_pod2,
+        &user_b,
+        "POST",
+        &format!("/api/channels/{channel_id}/call/leave"),
+        Some(serde_json::json!({
+            "session_id": session_b
+        })),
+    )
+    .await?;
+    assert_eq!(status, StatusCode::OK);
+
+    // Pod 1 にいる User A に ParticipantLeft イベントが届くことを検証！
+    let left_event = tokio::time::timeout(Duration::from_secs(3), rx_a.recv())
+        .await
+        .expect("timeout waiting for ParticipantLeft on Pod 1")
+        .expect("rx_a stream closed");
+
+    match left_event {
+        backend::routes::calls::CallServerEvent::ParticipantLeft {
+            session_id,
+            user_id,
+        } => {
+            assert_eq!(session_id, session_b);
+            assert_eq!(user_id, user_b);
+        }
+        other => panic!("expected ParticipantLeft event, got: {:?}", other.event_type()),
+    }
 
     Ok(())
 }
