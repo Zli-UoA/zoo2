@@ -14,7 +14,9 @@ const runner = (name, state = {}) => ({
 const pull = repo => ({pull_request: {head: {repo: {full_name: repo}}}});
 const cases = [
   {name: 'idle runner', runners: [runner('zli-k8s-abc-runner-1')], expected: 'zli-k8s'},
-  {name: 'busy but can scale', runners: [runner('zli-k8s-a', {busy: true}), runner('zli-k8s-b', {busy: true})], expected: 'zli-k8s'},
+  {name: 'all online busy below configured maximum', runners: [runner('zli-k8s-a', {busy: true}), runner('zli-k8s-b', {busy: true})], expected: 'ubuntu-latest'},
+  {name: 'one busy and one idle', runners: [runner('zli-k8s-a', {busy: true}), runner('zli-k8s-b')], expected: 'zli-k8s'},
+  {name: 'offline idle does not provide capacity', runners: [runner('zli-k8s-a', {busy: true}), runner('zli-k8s-b', {status: 'offline'})], expected: 'ubuntu-latest'},
   {name: 'all busy at max', runners: ['a', 'b', 'c', 'd'].map(n => runner(`zli-k8s-${n}`, {busy: true})), expected: 'ubuntu-latest'},
   {name: 'matched by name only', runners: [{...runner('zli-k8s-a'), labels: []}], expected: 'zli-k8s'},
   {name: 'offline', runners: [runner('zli-k8s-a', {status: 'offline'})], expected: 'ubuntu-latest'},
