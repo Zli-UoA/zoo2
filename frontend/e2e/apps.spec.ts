@@ -32,14 +32,16 @@ test("Appを作成・承認し、Botとして投稿と個人宛応答を表示�
   await page.goto(`/channels/${channel.id}`);
   await page.getByRole("button", { name: "App・連携", exact: true }).click();
   await page.getByRole("button", { name, exact: true }).click();
-  await page.getByRole("button", { name: "このチャンネルに追加", exact: true }).click();
+  const addChannel = page.getByRole("button", { name: "このチャンネルに追加", exact: true });
+  await addChannel.click();
+  await expect(addChannel).toBeEnabled();
   await page.keyboard.press("Escape");
   const content = `Bot message ${Date.now()}`;
   const posted = await request.post(`${api}/api/apps/v1/messages`, {
     headers: authHeaders,
     data: { channel_id: channel.id, content },
   });
-  expect(posted.ok()).toBe(true);
+  expect(posted.ok(), await posted.text()).toBe(true);
   await expect(page.getByText(content, { exact: true })).toBeVisible({ timeout: 15000 });
   await expect(page.getByText("APP", { exact: true })).toBeVisible();
   await page.getByRole("button", { name, exact: true }).click();

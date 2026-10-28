@@ -235,6 +235,26 @@ pub async fn maintain(state: &AppState) -> Result<(), AppError> {
 mod tests {
     use super::*;
     #[test]
+    fn semantic_aliases_require_their_resource_scope() {
+        for (name, scope) in [
+            ("message.channel_topic", "channels:read"),
+            ("message.pinned_item", "pins:read"),
+            ("message.metadata_posted", "metadata:read"),
+        ] {
+            let manifest = Manifest {
+                events: vec![name.into()],
+                scopes: vec![scope.into()],
+                ..Default::default()
+            };
+            assert!(manifest.validate().is_ok(), "{name}");
+            let denied = Manifest {
+                scopes: vec![],
+                ..manifest
+            };
+            assert!(denied.validate().is_err(), "{name}");
+        }
+    }
+    #[test]
     fn no_unclassified_official_events_or_dangling_aliases() {
         let c = coverage();
         assert_eq!(c["official_events"].as_array().unwrap().len(), 120);

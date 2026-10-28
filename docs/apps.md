@@ -28,7 +28,7 @@ API定義は [apps.openapi.json](apps.openapi.json)、イベント形式は [app
 
 ## 権限・認証
 
-App設定の `scopes` は `messages:read`、`messages:write`、`reactions:write`、`channels:read`、`channels:manage`、`users:read`、`dm:write`、`files:read`、`files:write`、`ui:write`、`commands:read`、`links:write` を受け付けます。
+App設定の `scopes` は [OpenAPI の Manifest 定義](apps.openapi.json) に列挙しています。各イベントの必要な scope は [対応表](slack-event-coverage.md) で確認できます。
 
 管理者の承認、トークンのscope、操作主体の権限、対象への現在のアクセスをすべて満たす必要があります。Botは参加しているチャンネルだけを読み書きできます。ユーザー代理操作も本人の権限を超えません。scopeのないAPI呼び出しは403、閲覧できないチャンネルは404です。インストール単位で毎分120リクエストに制限し、超過時は429と `Retry-After: 60` を返します。
 
