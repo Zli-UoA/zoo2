@@ -113,7 +113,8 @@ jobs:
   deploy-image:
     needs: runner
     runs-on: ${{ fromJSON(needs.runner.outputs.runs-on) }}
-    timeout-minutes: 30
+    # A cold build also needs time to extract and save the cache mounts.
+    timeout-minutes: 60
     env:
       POSTGRES_PASSWORD: deploy-image-test
     steps:
