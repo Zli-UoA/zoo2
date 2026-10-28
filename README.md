@@ -1,6 +1,6 @@
 # zoo2
 
-GitHubの通知連携は [Webhook設定](docs/github-webhooks.md) を参照してください。
+共通カード形式での通知連携は [Webhook設定](docs/webhooks.md) を参照してください。
 
 PWA のインストールとプッシュ通知の設定・動作は [PWA とプッシュ通知](docs/pwa-and-push.md) を参照してください。
 

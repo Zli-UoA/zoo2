@@ -269,7 +269,7 @@
   "webhooks": {
     "title": "Webhook 設定",
     "description": "管理 {{channel}} 嘅通知整合。",
-    "instructions": "GitHub 請用 GitHub URL 同 Secret，並揀 application/json。其他服務請用通用 Webhook URL 同共用卡片格式。系統會自動建立專用發文用戶。",
+    "instructions": "請將共用卡片格式嘅 JSON 傳送去通用 Webhook URL，並用 Secret 簽署本文。系統會自動建立專用發文 App。",
     "copied": "已複製",
     "copyError": "複製唔到。請選取欄位再手動複製。",
     "copyLabel": "複製 {{label}}",
@@ -284,7 +284,7 @@
     "rotate": "重新產生 Secret",
     "delete": "刪除",
     "deleteConfirm": "要刪除呢個 Webhook 嗎？呢個 URL 會停止接收通知。",
-    "rotateConfirm": "要重新產生 Secret 嗎？而家嘅 Secret 會失效，請一併更新 GitHub 嘅設定。",
+    "rotateConfirm": "要重新產生 Secret 嗎？而家嘅 Secret 會失效，請一併更新傳送端設定。",
     "confirm": "確認",
     "genericUrl": "通用 Webhook URL"
   },

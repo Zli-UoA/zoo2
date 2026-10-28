@@ -66,7 +66,6 @@ pub fn create_router(state: AppState) -> Router {
         .merge(crate::apps::files::router())
         .merge(crate::apps::events::router())
         .merge(crate::apps::resources::router())
-        .merge(webhooks::router())
         .merge(channel_webhooks::router())
         .merge(users::router())
         .merge(channels::router())

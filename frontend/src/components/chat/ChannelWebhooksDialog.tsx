@@ -15,7 +15,6 @@ export interface ChannelWebhook {
   id: string;
   name: string;
   path: string;
-  generic_path?: string;
   bot_user_id?: string;
   secret: string;
   created_at: string;
@@ -96,7 +95,7 @@ export function ChannelWebhooksDialog({
   const [hooks, setHooks] = useState<ChannelWebhook[]>([]);
   const [loading, setLoading] = useState(true);
   const [reload, setReload] = useState(0);
-  const [name, setName] = useState("GitHub");
+  const [name, setName] = useState("Webhook");
   const [busy, setBusy] = useState(false);
   const pending = useRef(false);
   const [error, setError] = useState<string | null>(null);
@@ -179,7 +178,7 @@ export function ChannelWebhooksDialog({
                 void run(async () => {
                   const result = await client.post<ChannelWebhook>(path, { name: name.trim() });
                   setHooks((current) => [...current, result.data]);
-                  setName("GitHub");
+                  setName("Webhook");
                 });
               }}
             >
@@ -213,19 +212,9 @@ export function ChannelWebhooksDialog({
                     onUpdated={() => setReload((value) => value + 1)}
                   />
                   <Credential
-                    label="GitHub URL"
+                    label={t("webhooks.genericUrl")}
                     value={webhookUrl(config.apiBaseUrl, hook.path, window.location.origin)}
                   />
-                  {hook.generic_path ? (
-                    <Credential
-                      label={t("webhooks.genericUrl")}
-                      value={webhookUrl(
-                        config.apiBaseUrl,
-                        hook.generic_path,
-                        window.location.origin,
-                      )}
-                    />
-                  ) : null}
                   <Credential key={hook.secret} label="Secret" value={hook.secret} secret />
                   <div className="flex justify-end gap-2">
                     <Button

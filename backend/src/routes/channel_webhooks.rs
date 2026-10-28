@@ -1,6 +1,6 @@
 use super::{
     response::ApiResponse,
-    webhooks::{Settings, persist_card, receive_delivery, verify},
+    webhooks::{Settings, persist_card, verify},
 };
 use crate::{
     auth::{
@@ -37,8 +37,8 @@ pub struct WebhookResponse {
 impl From<ChannelWebhook> for WebhookResponse {
     fn from(w: ChannelWebhook) -> Self {
         Self {
+            path: format!("/api/webhooks/{}", w.id),
             generic_path: format!("/api/webhooks/{}", w.id),
-            path: format!("/api/webhooks/github/{}", w.id),
             id: w.id,
             name: w.name,
             bot_user_id: w.user_id.clone(),
@@ -66,10 +66,6 @@ pub fn router() -> Router<AppState> {
         .route(
             "/api/channels/{channel_id}/webhooks/{id}/rotate-secret",
             post(rotate),
-        )
-        .route(
-            "/api/webhooks/github/{id}",
-            post(receive).layer(axum::extract::DefaultBodyLimit::max(25 * 1024 * 1024)),
         )
         .route("/api/webhooks/{id}", post(receive_generic))
         .layer(middleware::map_response(
@@ -255,31 +251,6 @@ async fn rotate(
     Ok(Json(ApiResponse::new(hook.into(), txid)))
 }
 
-async fn receive(
-    State(state): State<AppState>,
-    Path(id): Path<String>,
-    headers: HeaderMap,
-    body: Bytes,
-) -> Result<StatusCode, AppError> {
-    let mut db = state.db.clone();
-    let hook = ChannelWebhook::filter(ChannelWebhook::fields().id().eq(id.as_str()))
-        .first()
-        .exec(&mut db)
-        .await?
-        .ok_or_else(|| AppError::NotFound("Webhook not found".into()))?;
-    receive_delivery(
-        state,
-        Settings {
-            channel: hook.channel_id,
-            user: hook.user_id,
-            secret: hook.secret,
-        },
-        headers,
-        body,
-    )
-    .await
-}
-
 async fn receive_generic(
     State(state): State<AppState>,
     Path(id): Path<String>,
@@ -304,7 +275,6 @@ async fn receive_generic(
         Settings {
             channel: hook.channel_id,
             user: hook.user_id,
-            secret: hook.secret,
         },
         card,
         header("x-webhook-delivery"),

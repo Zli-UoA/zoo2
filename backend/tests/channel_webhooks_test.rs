@@ -44,16 +44,8 @@ async fn request(
         no_store,
     )
 }
-async fn delivery(
-    app: &Router,
-    path: &str,
-    secret: &str,
-    event: &str,
-    delivery_id: &str,
-) -> StatusCode {
-    let body =
-        json!({"ref":"refs/heads/main", "commits":[], "repository":{"full_name":"test/repo"}})
-            .to_string();
+async fn delivery(app: &Router, path: &str, secret: &str, delivery_id: &str) -> StatusCode {
+    let body = json!({"title":"Deploy notification","source":"Build service"}).to_string();
     let mut mac = Hmac::<Sha256>::new_from_slice(secret.as_bytes()).unwrap();
     mac.update(body.as_bytes());
     let sig = mac
@@ -67,9 +59,8 @@ async fn delivery(
             Request::builder()
                 .method("POST")
                 .uri(path)
-                .header("x-hub-signature-256", format!("sha256={sig}"))
-                .header("x-github-event", event)
-                .header("x-github-delivery", delivery_id)
+                .header("x-webhook-signature-256", format!("sha256={sig}"))
+                .header("x-webhook-delivery", delivery_id)
                 .body(Body::from(body))
                 .unwrap(),
         )
@@ -107,7 +98,7 @@ async fn manages_channel_webhooks_and_credentials() -> anyhow::Result<()> {
         "POST",
         &path,
         &owner,
-        json!({"name":"GitHub notifications"}),
+        json!({"name":"Build notifications"}),
     )
     .await;
     assert_eq!(status, StatusCode::OK);
@@ -117,20 +108,31 @@ async fn manages_channel_webhooks_and_credentials() -> anyhow::Result<()> {
     let secret = hook["secret"].as_str().unwrap();
     let receive = hook["path"].as_str().unwrap();
     assert_eq!(secret.len(), 64);
+    assert_eq!(receive, format!("/api/webhooks/{id}"));
+    assert_eq!(hook["generic_path"], receive);
+    for old in [
+        "/api/webhooks/github".to_owned(),
+        format!("/api/webhooks/github/{id}"),
+    ] {
+        assert_eq!(
+            delivery(&app, &old, secret, &Uuid::new_v4().to_string()).await,
+            StatusCode::NOT_FOUND
+        );
+    }
     let (_, list, no_store) = request(&app, "GET", &path, &owner, Value::Null).await;
     assert!(no_store);
     assert_eq!(list["data"][0]["secret"], secret);
     assert_eq!(
-        delivery(&app, receive, "wrong", "ping", &Uuid::new_v4().to_string()).await,
+        delivery(&app, receive, "wrong", &Uuid::new_v4().to_string()).await,
         StatusCode::UNAUTHORIZED
     );
     let delivery_id = Uuid::new_v4().to_string();
     assert_eq!(
-        delivery(&app, receive, secret, "push", &delivery_id).await,
+        delivery(&app, receive, secret, &delivery_id).await,
         StatusCode::OK
     );
     assert_eq!(
-        delivery(&app, receive, secret, "push", &delivery_id).await,
+        delivery(&app, receive, secret, &delivery_id).await,
         StatusCode::OK
     );
     let messages = Message::filter(Message::fields().channel_id().eq(channel.as_str()))
@@ -140,7 +142,7 @@ async fn manages_channel_webhooks_and_credentials() -> anyhow::Result<()> {
     assert_ne!(messages[0].user_id, owner);
     assert_eq!(
         serde_json::from_str::<Value>(messages[0].card.as_ref().unwrap())?["source"],
-        "GitHub"
+        "Build service"
     );
     assert!(!messages[0].content.starts_with("zoo:github:v1\n"));
     let bot = &messages[0].user_id;
@@ -253,11 +255,11 @@ async fn manages_channel_webhooks_and_credentials() -> anyhow::Result<()> {
     let next = rotated["data"]["secret"].as_str().unwrap();
     assert_ne!(secret, next);
     assert_eq!(
-        delivery(&app, receive, secret, "ping", &delivery_id).await,
+        delivery(&app, receive, secret, &delivery_id).await,
         StatusCode::UNAUTHORIZED
     );
     assert_eq!(
-        delivery(&app, receive, next, "ping", &delivery_id).await,
+        delivery(&app, receive, next, &delivery_id).await,
         StatusCode::OK
     );
     // A different channel manager cannot use their channel route to access this hook.
@@ -316,7 +318,7 @@ async fn manages_channel_webhooks_and_credentials() -> anyhow::Result<()> {
         StatusCode::BAD_REQUEST
     );
     assert_eq!(
-        delivery(&app, receive, next, "push", &Uuid::new_v4().to_string()).await,
+        delivery(&app, receive, next, &Uuid::new_v4().to_string()).await,
         StatusCode::BAD_REQUEST
     );
     assert_eq!(
@@ -324,7 +326,7 @@ async fn manages_channel_webhooks_and_credentials() -> anyhow::Result<()> {
         StatusCode::OK
     );
     assert_eq!(
-        delivery(&app, receive, next, "ping", &delivery_id).await,
+        delivery(&app, receive, next, &delivery_id).await,
         StatusCode::NOT_FOUND
     );
     let (_, list, _) = request(&app, "GET", &path, &owner, Value::Null).await;
