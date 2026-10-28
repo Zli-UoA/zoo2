@@ -360,7 +360,7 @@ pub async fn can_manage(
     human(tx, actor).await?;
     let app = one(
         tx,
-        "SELECT row_to_json(a)::text FROM apps a WHERE id=$1 FOR UPDATE",
+        "SELECT row_to_json(a)::text FROM apps a WHERE id=$1 FOR NO KEY UPDATE",
         &[id],
     )
     .await?;
@@ -381,7 +381,7 @@ pub async fn can_manage(
     Ok(app)
 }
 
-/// Every grant exchange and revocation takes this lock before reading mutable authorization state.
+/// Serialize mutable authorization without blocking event/audit foreign-key references.
 pub async fn lock_installation(tx: &mut toasty::Transaction<'_>, id: &str) -> Result<(), AppError> {
     one(
         tx,

@@ -1959,3 +1959,72 @@ async fn websocket_slots_and_presence_requests_have_distributed_limits() -> anyh
     server.abort();
     Ok(())
 }
+
+#[tokio::test]
+async fn reapproval_cannot_leave_a_concurrently_refreshed_overscoped_token() -> anyhow::Result<()> {
+    let f = fixture().await?;
+    let mut db = f.state.db.clone();
+    let mut barrier = db.transaction().await?;
+    apps::lock_installation(&mut barrier, &f.installation).await?;
+    let router = f.app.clone();
+    let refresh = f.grant_refresh.clone();
+    let mut exchange = tokio::spawn(async move {
+        request(
+            &router,
+            "POST",
+            "/api/apps/oauth/token",
+            "",
+            json!({"grant_type":"refresh_token","refresh_token":refresh}),
+        )
+        .await
+    });
+    let narrow = reconfigure(
+        &f,
+        json!({"scopes":["messages:read"],"events":["message.created"],"transport":"websocket"}),
+    );
+    tokio::pin!(narrow);
+    assert!(
+        tokio::time::timeout(std::time::Duration::from_millis(100), &mut exchange)
+            .await
+            .is_err()
+    );
+    assert!(
+        tokio::time::timeout(std::time::Duration::from_millis(100), &mut narrow)
+            .await
+            .is_err()
+    );
+    barrier.commit().await?;
+    let (refreshed, current) = tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        tokio::join!(exchange, narrow)
+    })
+    .await?;
+    let refreshed = refreshed?;
+    let current = current?;
+    assert!(matches!(
+        refreshed.0,
+        StatusCode::OK | StatusCode::UNAUTHORIZED
+    ));
+    if refreshed.0 == StatusCode::OK {
+        assert_eq!(
+            request(
+                &f.app,
+                "GET",
+                "/api/apps/v1/auth",
+                refreshed.1["access_token"].as_str().unwrap(),
+                Value::Null
+            )
+            .await
+            .0,
+            StatusCode::UNAUTHORIZED
+        );
+    }
+    assert_eq!(
+        request(&f.app, "GET", "/api/apps/v1/auth", &current, Value::Null)
+            .await
+            .0,
+        StatusCode::OK
+    );
+    let mut tx = db.transaction().await?;
+    assert_eq!(apps::one(&mut tx,"SELECT json_build_object('count',count(*))::text FROM app_credentials t JOIN app_installations i ON i.id=t.installation_id WHERE i.id=$1 AND t.revoked_at IS NULL AND NOT(t.scopes::jsonb <@ i.scopes::jsonb)",&[&f.installation]).await?["count"],0);
+    Ok(())
+}
