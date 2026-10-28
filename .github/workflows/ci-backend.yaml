@@ -1,6 +1,17 @@
 name: CI
 on:
   push:
+    branches: [main]
+    paths:
+      - "backend/**"
+      - "infra/db/**"
+      - "infra/Dockerfile-backend-deploy*"
+      - "infra/Dockerfile-migrate-deploy*"
+      - "infra/compose.stg*.yaml"
+      - "rust-toolchain.toml"
+      - ".github/workflows/ci-backend.yaml"
+      - ".github/workflows/select-runner.yaml"
+  pull_request:
     paths:
       - "backend/**"
       - "infra/db/**"
@@ -12,7 +23,7 @@ on:
       - ".github/workflows/select-runner.yaml"
   workflow_dispatch:
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 # runner ジョブが zli-k8s（self-hosted）か GitHub-hosted を選ぶ（select-runner.yaml）。
 jobs:
@@ -247,6 +258,33 @@ jobs:
 
       - name: Setup Atlas
         uses: ariga/setup-atlas@v0
+
+      - name: Validate migrations and upgrade path from base branch
+        working-directory: .
+        env:
+          DATABASE_URL: postgres://root:password@localhost:5432/zoo?sslmode=disable
+          BASE_REF: ${{ github.event_name == 'pull_request' && github.base_ref || '' }}
+        run: |
+          docker compose -f infra/db/compose.yml exec -T postgres \
+            psql -U root -d postgres -c "CREATE DATABASE atlas_dev;"
+          atlas migrate validate --dir file://infra/db/migrations \
+            --dev-url "postgres://root:password@localhost:5432/atlas_dev?search_path=public&sslmode=disable"
+          schema_diff=$(atlas schema diff \
+            --from file://infra/db/migrations \
+            --to file://infra/db/schema.sql \
+            --dev-url "postgres://root:password@localhost:5432/atlas_dev?search_path=public&sslmode=disable")
+          if ! grep -q "Schemas are synced" <<<"$schema_diff"; then
+            echo "::error::infra/db/schema.sql is out of sync with infra/db/migrations:" >&2
+            printf '%s\n' "$schema_diff" >&2
+            exit 1
+          fi
+          if [ -n "$BASE_REF" ]; then
+            git fetch --no-tags --depth=1 origin "$BASE_REF"
+            base_dir=$(mktemp -d)
+            git archive "FETCH_HEAD:infra/db/migrations" | tar -x -C "$base_dir"
+            atlas migrate apply --dir "file://$base_dir" --url "$DATABASE_URL"
+            rm -rf "$base_dir"
+          fi
 
       - name: Apply migrations
         working-directory: ./infra
