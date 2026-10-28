@@ -14,11 +14,13 @@ import { toast } from "sonner";
 import { buildAuthHeaders, createConfiguredApiClient } from "../api/client";
 import { joinUrl, resolveConfig, type AppConfig } from "../config";
 import { useCurrentUser } from "../../hooks/useCurrentUser";
-import type {
-  ActiveCallSummary,
-  CallConnectionState,
-  CallContextValue,
-  CallParticipant,
+import {
+  isActiveCallSummary,
+  isCallParticipant,
+  type ActiveCallSummary,
+  type CallConnectionState,
+  type CallContextValue,
+  type CallParticipant,
 } from "./types";
 
 const defaultCallContext: CallContextValue = {
@@ -135,9 +137,10 @@ export function CallProvider({ config: explicitConfig, children }: CallProviderP
   const pollActiveCalls = useCallback(async () => {
     try {
       const list = await apiClient.request<ActiveCallSummary[]>("/api/calls/active");
+      if (!Array.isArray(list)) return;
       const map = new Map<string, number>();
       for (const item of list) {
-        if (item.participant_count > 0) {
+        if (isActiveCallSummary(item) && item.participant_count > 0) {
           map.set(item.channel_id, item.participant_count);
         }
       }
@@ -414,6 +417,10 @@ export function CallProvider({ config: explicitConfig, children }: CallProviderP
       setConnectionState("connecting");
       setError(null);
 
+      // マイク取得前の既存状態クリーンアップ ([P1])
+      cleanupPeers();
+      closeMedia();
+
       // マイク取得
       let stream: MediaStream;
       try {
@@ -422,6 +429,8 @@ export function CallProvider({ config: explicitConfig, children }: CallProviderP
           video: false,
         });
       } catch (err: unknown) {
+        cleanupPeers();
+        closeMedia();
         if (joinAbort.signal.aborted) return;
         const e = err as Error;
         const msg =
@@ -435,6 +444,8 @@ export function CallProvider({ config: explicitConfig, children }: CallProviderP
         toast.error(msg);
         setConnectionState("error");
         setCurrentChannelId(null);
+        sessionIdRef.current = null;
+        setParticipants([]);
         return;
       }
 
@@ -443,6 +454,8 @@ export function CallProvider({ config: explicitConfig, children }: CallProviderP
         for (const track of stream.getTracks()) {
           track.stop();
         }
+        cleanupPeers();
+        closeMedia();
         return;
       }
 
@@ -532,7 +545,8 @@ export function CallProvider({ config: explicitConfig, children }: CallProviderP
             }
 
             if (eventType === "room_state") {
-              const roomParticipants = (data.participants as CallParticipant[]) ?? [];
+              const rawParticipants = Array.isArray(data.participants) ? data.participants : [];
+              const roomParticipants = rawParticipants.filter(isCallParticipant);
               const ice = (data.ice_servers as RTCIceServer[]) ?? [
                 { urls: "stun:stun.l.google.com:19302" },
               ];
@@ -566,7 +580,7 @@ export function CallProvider({ config: explicitConfig, children }: CallProviderP
                 }
               }
             } else if (eventType === "participant_joined") {
-              const newP = data.participant as CallParticipant;
+              const newP = isCallParticipant(data.participant) ? data.participant : null;
               if (newP && newP.session_id !== mySessionId) {
                 sessionUserMapRef.current.set(newP.session_id, newP.user_id);
                 setParticipants((prev) => {
@@ -615,7 +629,7 @@ export function CallProvider({ config: explicitConfig, children }: CallProviderP
                 void pollActiveCalls();
               }
             } else if (eventType === "participant_updated") {
-              const updatedP = data.participant as CallParticipant;
+              const updatedP = isCallParticipant(data.participant) ? data.participant : null;
               if (updatedP) {
                 sessionUserMapRef.current.set(updatedP.session_id, updatedP.user_id);
                 setParticipants((prev) =>
@@ -714,24 +728,34 @@ export function CallProvider({ config: explicitConfig, children }: CallProviderP
         // SSE 終了時 (done) の後始末
         cleanupPeers();
         closeMedia();
+        sessionIdRef.current = null;
+        setCurrentChannelId(null);
+        setParticipants([]);
+
         if (!abortController.signal.aborted) {
-          sessionIdRef.current = null;
-          setCurrentChannelId(null);
+          // 意図しない切断の場合: エラーとして通知し、状態を error に設定 ([P2])
+          const disconnectMsg = t("call.disconnected");
+          setError(disconnectMsg);
+          toast.error(disconnectMsg);
+          setConnectionState("error");
+        } else {
           setConnectionState("idle");
-          setParticipants([]);
         }
       } catch (err: unknown) {
+        cleanupPeers();
+        closeMedia();
+        sessionIdRef.current = null;
+        setCurrentChannelId(null);
+        setParticipants([]);
+
         if (!abortController.signal.aborted) {
           const e = err as Error;
           const errorMsg = e.message || t("call.connectError");
           setError(errorMsg);
           toast.error(errorMsg);
           setConnectionState("error");
-          cleanupPeers();
-          closeMedia();
-          sessionIdRef.current = null;
-          setCurrentChannelId(null);
-          setParticipants([]);
+        } else {
+          setConnectionState("idle");
         }
       }
     },

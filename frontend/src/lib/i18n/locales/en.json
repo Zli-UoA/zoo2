@@ -354,6 +354,7 @@
     "archived": "Calls are disabled in archived channels",
     "notFound": "Channel not found or access denied",
     "connectError": "Failed to connect to call",
+    "disconnected": "Call was disconnected",
     "micPermissionDenied": "Microphone access denied. Please allow microphone permissions in browser settings.",
     "micNotFound": "No microphone found."
   }

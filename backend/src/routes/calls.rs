@@ -24,8 +24,10 @@ use crate::{
 };
 
 pub const MAX_CALL_PARTICIPANTS: usize = 6;
-/// PostgreSQL NOTIFY ペイロード上限 (8000 bytes) を超えない安全な上限
-pub const MAX_SIGNAL_PAYLOAD_SIZE: usize = 7000;
+/// 単一シグナル（SDP/ICE）の安全な上限（メタデータ込みで NOTIFY 上限を超えない値）
+pub const MAX_SIGNAL_PAYLOAD_SIZE: usize = 6500;
+/// PostgreSQL NOTIFY ペイロード上限 (8000 bytes) に対する安全な上限
+pub const MAX_NOTIFY_PAYLOAD_BYTES: usize = 7500;
 pub const CALL_PRESENCE_TTL_SECONDS: u64 = 30;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -507,6 +509,18 @@ impl CallRegistry {
     ) -> Result<(), AppError> {
         let mut db = db.clone();
         let payload = serde_json::to_string(event).map_err(|e| AppError::Internal(e.into()))?;
+        if payload.len() > MAX_NOTIFY_PAYLOAD_BYTES {
+            tracing::warn!(
+                payload_len = payload.len(),
+                max_bytes = MAX_NOTIFY_PAYLOAD_BYTES,
+                "Distributed call event payload exceeds PostgreSQL NOTIFY size limit"
+            );
+            return Err(AppError::BadRequest(format!(
+                "Event payload size ({} bytes) exceeds limit of {} bytes",
+                payload.len(),
+                MAX_NOTIFY_PAYLOAD_BYTES
+            )));
+        }
         toasty::sql::statement("SELECT pg_notify('zoo_call_events', $1)")
             .bind(payload)
             .exec(&mut db)
@@ -575,35 +589,92 @@ pub struct SessionGuard {
     session_id: Uuid,
     user_id: String,
     db: toasty::Db,
+    cleaned_up: Arc<std::sync::atomic::AtomicBool>,
+}
+
+impl SessionGuard {
+    pub async fn cleanup(&self) {
+        if self
+            .cleaned_up
+            .compare_exchange(
+                false,
+                true,
+                std::sync::atomic::Ordering::SeqCst,
+                std::sync::atomic::Ordering::SeqCst,
+            )
+            .is_ok()
+        {
+            Self::execute_cleanup(
+                self.call_registry.clone(),
+                self.channel_id.clone(),
+                self.session_id,
+                self.user_id.clone(),
+                self.db.clone(),
+            )
+            .await;
+        }
+    }
+
+    async fn execute_cleanup(
+        registry: CallRegistry,
+        channel_id: String,
+        session_id: Uuid,
+        user_id: String,
+        mut db: toasty::Db,
+    ) {
+        registry.unregister_local_session(&session_id).await;
+
+        let del_res = toasty::sql::query(
+            "DELETE FROM call_presence WHERE channel_id = $1 AND session_id = $2::uuid RETURNING session_id",
+        )
+        .bind(channel_id.clone())
+        .bind(session_id.to_string())
+        .exec(&mut db)
+        .await;
+
+        match del_res {
+            Ok(rows) => {
+                // 実際に自セッション行を削除できた場合のみ ParticipantLeft をブロードキャスト（二重通知防止）
+                if !rows.is_empty() {
+                    let event = CallDistributedEvent::ParticipantLeft {
+                        channel_id,
+                        session_id,
+                        user_id,
+                    };
+                    if let Err(e) = CallRegistry::notify_event(&db, &event).await {
+                        tracing::error!("Failed to notify ParticipantLeft during cleanup: {e}");
+                    }
+                }
+            }
+            Err(e) => {
+                tracing::error!("Failed to delete call_presence during cleanup: {e}");
+            }
+        }
+    }
 }
 
 impl Drop for SessionGuard {
     fn drop(&mut self) {
-        let registry = self.call_registry.clone();
-        let channel_id = self.channel_id.clone();
-        let session_id = self.session_id;
-        let user_id = self.user_id.clone();
-        let mut db = self.db.clone();
-
-        tokio::spawn(async move {
-            registry.unregister_local_session(&session_id).await;
-            let del_res = toasty::sql::statement(
-                "DELETE FROM call_presence WHERE channel_id = $1 AND session_id = $2::uuid",
+        if self
+            .cleaned_up
+            .compare_exchange(
+                false,
+                true,
+                std::sync::atomic::Ordering::SeqCst,
+                std::sync::atomic::Ordering::SeqCst,
             )
-            .bind(channel_id.clone())
-            .bind(session_id.to_string())
-            .exec(&mut db)
-            .await;
+            .is_ok()
+        {
+            let registry = self.call_registry.clone();
+            let channel_id = self.channel_id.clone();
+            let session_id = self.session_id;
+            let user_id = self.user_id.clone();
+            let db = self.db.clone();
 
-            if del_res.is_ok() {
-                let event = CallDistributedEvent::ParticipantLeft {
-                    channel_id,
-                    session_id,
-                    user_id,
-                };
-                let _ = CallRegistry::notify_event(&mut db, &event).await;
-            }
-        });
+            tokio::spawn(async move {
+                Self::execute_cleanup(registry, channel_id, session_id, user_id, db).await;
+            });
+        }
     }
 }
 
@@ -765,26 +836,43 @@ async fn call_stream(
     let now_str = crate::models::now_utc_millis().to_string();
     let session_str = query.session_id.to_string();
 
-    // 3. call_presence に挿入
-    let insert_res = toasty::sql::statement(
+    // 3. call_presence に挿入 (定員 6 人を超えないことを条件付きでアトミックに検証・挿入)
+    let insert_query = format!(
         "INSERT INTO call_presence (
             channel_id, session_id, user_id, user_name, display_name, is_muted, joined_at, expires_at
-         ) VALUES ($1, $2::uuid, $3, $4, $5, false, $6, statement_timestamp() + interval '30 seconds')",
-    )
-    .bind(channel_id.clone())
-    .bind(session_str)
-    .bind(user.id.clone())
-    .bind(user.user_name.clone())
-    .bind(user.display_name.clone())
-    .bind(now_str.clone())
-    .exec(&mut tx)
-    .await;
+         )
+         SELECT $1, $2::uuid, $3, $4, $5, false, $6, statement_timestamp() + interval '{CALL_PRESENCE_TTL_SECONDS} seconds'
+         WHERE (
+             SELECT count(*) FROM call_presence
+             WHERE channel_id = $1 AND expires_at > statement_timestamp()
+         ) < {MAX_CALL_PARTICIPANTS}
+         RETURNING session_id::text"
+    );
 
-    if let Err(e) = insert_res {
-        if AppError::is_unique_violation(&e, None) {
-            return Err(AppError::Conflict("Session ID is already in use".into()));
+    let insert_res = toasty::sql::query(&insert_query)
+        .bind(channel_id.clone())
+        .bind(session_str)
+        .bind(user.id.clone())
+        .bind(user.user_name.clone())
+        .bind(user.display_name.clone())
+        .bind(now_str.clone())
+        .exec(&mut tx)
+        .await;
+
+    let inserted_rows = match insert_res {
+        Ok(rows) => rows,
+        Err(e) => {
+            if AppError::is_unique_violation(&e, None) {
+                return Err(AppError::Conflict("Session ID is already in use".into()));
+            }
+            return Err(AppError::from(e));
         }
-        return Err(AppError::from(e));
+    };
+
+    if inserted_rows.is_empty() {
+        return Err(AppError::Conflict(format!(
+            "Call room is full (max {MAX_CALL_PARTICIPANTS} participants)"
+        )));
     }
 
     // 4. 自身を含む現在の有効参加者一覧を取得
@@ -855,7 +943,7 @@ async fn call_stream(
         channel_id: channel_id.clone(),
         participant,
     };
-    let _ = CallRegistry::notify_event(&mut db, &join_event).await;
+    let _ = CallRegistry::notify_event(&db, &join_event).await;
 
     let guard = SessionGuard {
         call_registry: state.call_registry.clone(),
@@ -863,6 +951,7 @@ async fn call_stream(
         session_id: query.session_id,
         user_id: user.id.clone(),
         db: state.db.clone(),
+        cleaned_up: Arc::new(std::sync::atomic::AtomicBool::new(false)),
     };
 
     let stream = futures_util::stream::unfold((rx, guard), |(mut rx, guard)| async move {
@@ -873,7 +962,11 @@ async fn call_stream(
                     .data(msg.to_json().to_string());
                 Some((Ok::<_, Infallible>(event), (rx, guard)))
             }
-            None => None,
+            None => {
+                // ストリーム終了時に明示的に非同期クリーンアップを実行 ([P1])
+                guard.cleanup().await;
+                None
+            }
         }
     });
 
@@ -967,16 +1060,24 @@ async fn send_signal(
         ));
     }
 
-    // 送信元の有効期限を延長
-    let _ = toasty::sql::statement(
+    // 送信元の有効期限をアトミックに延長確認
+    let update_res = toasty::sql::query(format!(
         "UPDATE call_presence
-         SET expires_at = statement_timestamp() + interval '30 seconds'
-         WHERE channel_id = $1 AND session_id = $2::uuid",
-    )
+         SET expires_at = statement_timestamp() + interval '{CALL_PRESENCE_TTL_SECONDS} seconds'
+         WHERE channel_id = $1 AND session_id = $2::uuid AND user_id = $3 AND expires_at > statement_timestamp()
+         RETURNING session_id::text"
+    ))
     .bind(channel_id.clone())
     .bind(body.session_id.to_string())
+    .bind(user.id)
     .exec(&mut db)
-    .await;
+    .await?;
+
+    if update_res.is_empty() {
+        return Err(AppError::Forbidden(
+            "Sender session expired or not found".into(),
+        ));
+    }
 
     // 分散イベント通知を発行
     let event = CallDistributedEvent::Signal {
@@ -985,7 +1086,7 @@ async fn send_signal(
         from_session_id: body.session_id,
         signal: body.signal,
     };
-    CallRegistry::notify_event(&mut db, &event).await?;
+    CallRegistry::notify_event(&db, &event).await?;
 
     Ok(Json(serde_json::json!({ "ok": true })))
 }
@@ -999,9 +1100,9 @@ async fn update_state(
     let mut db = state.db.clone();
     authorize_call_access(&mut db, &channel_id, &user).await?;
 
-    let rows = toasty::sql::query(
+    let update_query = format!(
         "UPDATE call_presence
-         SET is_muted = $4, expires_at = statement_timestamp() + interval '30 seconds'
+         SET is_muted = $4, expires_at = statement_timestamp() + interval '{CALL_PRESENCE_TTL_SECONDS} seconds'
          WHERE channel_id = $1 AND session_id = $2::uuid AND user_id = $3 AND expires_at > statement_timestamp()
          RETURNING json_build_object(
              'session_id', session_id,
@@ -1010,14 +1111,16 @@ async fn update_state(
              'display_name', display_name,
              'is_muted', is_muted,
              'joined_at', joined_at
-         )::text",
-    )
-    .bind(channel_id.clone())
-    .bind(body.session_id.to_string())
-    .bind(user.id.clone())
-    .bind(body.is_muted)
-    .exec(&mut db)
-    .await?;
+         )::text"
+    );
+
+    let rows = toasty::sql::query(update_query)
+        .bind(channel_id.clone())
+        .bind(body.session_id.to_string())
+        .bind(user.id.clone())
+        .bind(body.is_muted)
+        .exec(&mut db)
+        .await?;
 
     let updated_participant = rows.into_iter().find_map(|row| {
         if let toasty::stmt::Value::Record(rec) = row
@@ -1037,7 +1140,7 @@ async fn update_state(
         channel_id,
         participant,
     };
-    CallRegistry::notify_event(&mut db, &event).await?;
+    CallRegistry::notify_event(&db, &event).await?;
 
     Ok(Json(serde_json::json!({ "ok": true })))
 }
@@ -1051,17 +1154,19 @@ async fn heartbeat(
     let mut db = state.db.clone();
     authorize_call_access(&mut db, &channel_id, &user).await?;
 
-    let rows = toasty::sql::query(
+    let hb_query = format!(
         "UPDATE call_presence
-         SET expires_at = statement_timestamp() + interval '30 seconds'
+         SET expires_at = statement_timestamp() + interval '{CALL_PRESENCE_TTL_SECONDS} seconds'
          WHERE channel_id = $1 AND session_id = $2::uuid AND user_id = $3 AND expires_at > statement_timestamp()
-         RETURNING session_id::text",
-    )
-    .bind(channel_id)
-    .bind(body.session_id.to_string())
-    .bind(user.id)
-    .exec(&mut db)
-    .await?;
+         RETURNING session_id::text"
+    );
+
+    let rows = toasty::sql::query(hb_query)
+        .bind(channel_id)
+        .bind(body.session_id.to_string())
+        .bind(user.id)
+        .exec(&mut db)
+        .await?;
 
     if rows.is_empty() {
         return Err(AppError::NotFound("Session not found in call".into()));
@@ -1104,7 +1209,7 @@ async fn leave_call(
         session_id: body.session_id,
         user_id: user.id,
     };
-    CallRegistry::notify_event(&mut db, &event).await?;
+    CallRegistry::notify_event(&db, &event).await?;
 
     Ok(Json(serde_json::json!({ "ok": true })))
 }
@@ -1114,9 +1219,6 @@ async fn list_active_calls(
     user: AuthUser,
 ) -> Result<Json<Vec<ActiveCallSummary>>, AppError> {
     let mut db = state.db.clone();
-
-    // 期限切れレコードのクリーンアップスイープ
-    let _ = CallRegistry::sweep_stale_presence(&mut db).await;
 
     #[derive(Deserialize)]
     struct ActiveRow {
@@ -1128,19 +1230,31 @@ async fn list_active_calls(
         joined_at: String,
     }
 
+    // 単一クエリで channels と channel_user を JOIN し、ユーザーがアクセス可能なチャンネルのみを一度に取得 ([P2] N+1 解消)
     let rows = toasty::sql::query(
         "SELECT json_build_object(
-            'channel_id', channel_id,
-            'user_id', user_id,
-            'user_name', user_name,
-            'display_name', display_name,
-            'is_muted', is_muted,
-            'joined_at', joined_at
+            'channel_id', cp.channel_id,
+            'user_id', cp.user_id,
+            'user_name', cp.user_name,
+            'display_name', cp.display_name,
+            'is_muted', cp.is_muted,
+            'joined_at', cp.joined_at
          )::text
-         FROM call_presence
-         WHERE expires_at > statement_timestamp()
-         ORDER BY channel_id, joined_at ASC",
+         FROM call_presence cp
+         INNER JOIN channels c ON c.id = cp.channel_id
+         WHERE cp.expires_at > statement_timestamp()
+           AND c.deleted_at IS NULL
+           AND c.archive_at IS NULL
+           AND (
+               c.is_private = false
+               OR EXISTS (
+                   SELECT 1 FROM channel_user cu
+                   WHERE cu.channel_id = c.id AND cu.user_id = $1
+               )
+           )
+         ORDER BY cp.channel_id, cp.joined_at ASC",
     )
+    .bind(user.id)
     .exec(&mut db)
     .await?;
 
@@ -1162,7 +1276,7 @@ async fn list_active_calls(
 
     let mut active = Vec::new();
     for (cid, participants) in channel_map {
-        if authorize_call_access(&mut db, &cid, &user).await.is_ok() && !participants.is_empty() {
+        if !participants.is_empty() {
             active.push(ActiveCallSummary {
                 channel_id: cid,
                 participant_count: participants.len(),

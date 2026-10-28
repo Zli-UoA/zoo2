@@ -192,8 +192,71 @@ impl Config {
         // WebRTC ICE サーバー設定の JSON 検証
         let parsed: serde_json::Value = serde_json::from_str(&self.webrtc_ice_servers_json)
             .map_err(|e| format!("Invalid JSON in WEBRTC_ICE_SERVERS_JSON: {e}"))?;
-        if !parsed.is_array() {
-            return Err("WEBRTC_ICE_SERVERS_JSON must be a JSON array of ICE servers".to_string());
+        let servers = parsed
+            .as_array()
+            .ok_or_else(|| "WEBRTC_ICE_SERVERS_JSON must be a JSON array of ICE servers".to_string())?;
+
+        for (i, server) in servers.iter().enumerate() {
+            let obj = server.as_object().ok_or_else(|| {
+                format!("WEBRTC_ICE_SERVERS_JSON element at index {i} must be an object")
+            })?;
+
+            let urls_val = obj.get("urls").ok_or_else(|| {
+                format!("WEBRTC_ICE_SERVERS_JSON element at index {i} must have a 'urls' field")
+            })?;
+
+            let mut urls = Vec::new();
+            if let Some(s) = urls_val.as_str() {
+                urls.push(s);
+            } else if let Some(arr) = urls_val.as_array() {
+                if arr.is_empty() {
+                    return Err(format!(
+                        "WEBRTC_ICE_SERVERS_JSON element at index {i} 'urls' array cannot be empty"
+                    ));
+                }
+                for (j, item) in arr.iter().enumerate() {
+                    let s = item.as_str().ok_or_else(|| {
+                        format!(
+                            "WEBRTC_ICE_SERVERS_JSON element at index {i} 'urls' array item at index {j} must be a string"
+                        )
+                    })?;
+                    urls.push(s);
+                }
+            } else {
+                return Err(format!(
+                    "WEBRTC_ICE_SERVERS_JSON element at index {i} 'urls' must be a string or array of strings"
+                ));
+            }
+
+            for url in urls {
+                let trimmed = url.trim();
+                let lower = trimmed.to_ascii_lowercase();
+                if !(lower.starts_with("stun:")
+                    || lower.starts_with("stuns:")
+                    || lower.starts_with("turn:")
+                    || lower.starts_with("turns:"))
+                {
+                    return Err(format!(
+                        "Invalid ICE server URL '{url}' at index {i}: scheme must be stun, stuns, turn, or turns"
+                    ));
+                }
+            }
+
+            if let Some(username) = obj.get("username")
+                && !username.is_string()
+            {
+                return Err(format!(
+                    "WEBRTC_ICE_SERVERS_JSON element at index {i} 'username' must be a string"
+                ));
+            }
+
+            if let Some(credential) = obj.get("credential")
+                && !credential.is_string()
+            {
+                return Err(format!(
+                    "WEBRTC_ICE_SERVERS_JSON element at index {i} 'credential' must be a string"
+                ));
+            }
         }
 
         Ok(())
@@ -368,6 +431,49 @@ mod tests {
         assert!(origins.contains(&"http://localhost:5173".to_string()));
         assert!(origins.contains(&"http://127.0.0.1:5173".to_string()));
         assert_eq!(origins.len(), DEFAULT_CORS_ALLOWED_ORIGINS.len());
+    }
+
+    #[test]
+    fn test_webrtc_ice_servers_validation() {
+        let create_config = |json: &str| Config {
+            database_url: "test".to_string(),
+            host: "127.0.0.1".to_string(),
+            port: 8080,
+            electric_url: "test".to_string(),
+            electric_secret: None,
+            oidc: None,
+            dev_auth_enabled: true,
+            environment: "development".to_string(),
+            cors_allowed_origins: vec![],
+            webrtc_ice_servers_json: json.to_string(),
+        };
+
+        // 正常系: 有効な STUN / TURN
+        assert!(
+            create_config(r#"[{"urls":"stun:stun.l.google.com:19302"}]"#)
+                .validate()
+                .is_ok()
+        );
+        assert!(
+            create_config(
+                r#"[{"urls":["stun:stun1.example.com", "turns:turn.example.com:5349"], "username":"user", "credential":"pwd"}]"#
+            )
+            .validate()
+            .is_ok()
+        );
+
+        // 異常系: 配列でない
+        assert!(create_config(r#"{"urls":"stun:example.com"}"#).validate().is_err());
+        // 異常系: オブジェクトでない
+        assert!(create_config(r#"["stun:example.com"]"#).validate().is_err());
+        // 異常系: urls がない
+        assert!(create_config(r#"[{"username":"foo"}]"#).validate().is_err());
+        // 異常系: urls が空配列
+        assert!(create_config(r#"[{"urls":[]}]"#).validate().is_err());
+        // 異常系: スキームが不正
+        assert!(create_config(r#"[{"urls":"http://example.com"}]"#).validate().is_err());
+        // 異常系: username が文字列でない
+        assert!(create_config(r#"[{"urls":"stun:example.com", "username": 123}]"#).validate().is_err());
     }
 
     #[test]

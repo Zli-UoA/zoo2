@@ -354,6 +354,7 @@
     "archived": "已封存嘅頻道無法發起通話",
     "notFound": "搵唔到頻道或無權限參與",
     "connectError": "連接通話失敗",
+    "disconnected": "通話已斷線",
     "micPermissionDenied": "麥克風權限被拒絕。請喺瀏覽器設定中允許使用麥克風。",
     "micNotFound": "搵唔到麥克風。"
   }

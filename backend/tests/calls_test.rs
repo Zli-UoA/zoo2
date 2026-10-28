@@ -494,3 +494,90 @@ async fn test_session_id_global_uniqueness_and_channel_isolation() -> anyhow::Re
     Ok(())
 }
 
+#[tokio::test]
+async fn test_call_notify_payload_size_limit_and_active_calls_isolation() -> anyhow::Result<()> {
+    dotenvy::dotenv().ok();
+    dotenvy::from_filename("../.env").ok();
+    let mut config = Config::from_env();
+    config.dev_auth_enabled = true;
+    let mut db = init_db(&config.database_url).await?;
+    let state = AppState::new(db.clone(), config.clone());
+    let app = create_router(state.clone());
+
+    let alice = uuid::Uuid::new_v4().to_string();
+    let bob = uuid::Uuid::new_v4().to_string();
+    let private_ch = uuid::Uuid::new_v4().to_string();
+
+    // ユーザーとプライベートチャンネル作成 (Alice のみ所属)
+    let mut tx = db.transaction().await?;
+    for (u, name) in [(&alice, "Alice"), (&bob, "Bob")] {
+        toasty::sql::statement("INSERT INTO users (id, user_name, display_name) VALUES ($1, $1, $2)")
+            .bind(u.as_str())
+            .bind(name)
+            .exec(&mut tx)
+            .await?;
+    }
+    toasty::sql::statement(
+        "INSERT INTO channels (id, channel_name, created_user_id, is_private) VALUES ($1, $1, $2, true)",
+    )
+    .bind(private_ch.as_str())
+    .bind(alice.as_str())
+    .exec(&mut tx)
+    .await?;
+    toasty::sql::statement(
+        "INSERT INTO channel_user (channel_id, user_id, joined_at) VALUES ($1, $2, statement_timestamp())",
+    )
+    .bind(private_ch.as_str())
+    .bind(alice.as_str())
+    .exec(&mut tx)
+    .await?;
+    tx.commit().await?;
+
+    // 1. ペイロードサイズ制限テスト ([P2]): 7500 バイト超のイベント送信が拒否されること
+    let large_sdp = "a".repeat(8000);
+    let large_event = backend::routes::calls::CallDistributedEvent::Signal {
+        channel_id: private_ch.clone(),
+        target_session_id: uuid::Uuid::new_v4(),
+        from_session_id: uuid::Uuid::new_v4(),
+        signal: serde_json::json!({ "type": "offer", "sdp": large_sdp }),
+    };
+    let notify_res = backend::routes::calls::CallRegistry::notify_event(&db, &large_event).await;
+    assert!(
+        notify_res.is_err(),
+        "Payload exceeding MAX_NOTIFY_PAYLOAD_BYTES must return error"
+    );
+
+    // 2. プライベートチャンネルでの通話登録
+    let session_alice = uuid::Uuid::new_v4();
+    toasty::sql::statement(
+        "INSERT INTO call_presence (
+            channel_id, session_id, user_id, user_name, display_name, is_muted, joined_at, expires_at
+         ) VALUES ($1, $2::uuid, $3, 'Alice', 'Alice', false, '2026-01-01T00:00:00Z', statement_timestamp() + interval '30 seconds')",
+    )
+    .bind(private_ch.clone())
+    .bind(session_alice.to_string())
+    .bind(alice.clone())
+    .exec(&mut db)
+    .await?;
+
+    // Alice (メンバー) の list_active_calls: private_ch が含まれる ([P2] JOIN 認可検証)
+    let (status, body) = request(&app, &alice, "GET", "/api/calls/active", None).await?;
+    assert_eq!(status, StatusCode::OK);
+    let list = body.as_array().expect("array expected");
+    assert!(
+        list.iter().any(|item| item["channel_id"] == private_ch),
+        "Alice should see private channel call because she is a member"
+    );
+
+    // Bob (非メンバー) の list_active_calls: private_ch が含まれないこと
+    let (status_bob, body_bob) = request(&app, &bob, "GET", "/api/calls/active", None).await?;
+    assert_eq!(status_bob, StatusCode::OK);
+    let list_bob = body_bob.as_array().expect("array expected");
+    assert!(
+        !list_bob.iter().any(|item| item["channel_id"] == private_ch),
+        "Bob should not see private channel call because he is not a member"
+    );
+
+    Ok(())
+}
+

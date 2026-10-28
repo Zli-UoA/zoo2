@@ -354,6 +354,7 @@
     "archived": "已归档频道无法发起通话",
     "notFound": "未找到频道或无权访问",
     "connectError": "连接通话失败",
+    "disconnected": "通话已断开",
     "micPermissionDenied": "麦克风权限被拒绝。请在浏览器设置中允许麦克风权限。",
     "micNotFound": "未找到麦克风设备。"
   }
