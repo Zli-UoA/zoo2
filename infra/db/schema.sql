@@ -210,6 +210,7 @@ CREATE TABLE bubble_chat_presence (
   user_id text NOT NULL,
   session_id text NOT NULL,
   content text NOT NULL,
+  seq bigint NOT NULL DEFAULT 0,
   updated_at timestamptz NOT NULL,
   expires_at timestamptz NOT NULL,
   PRIMARY KEY (user_id, session_id),

@@ -87,7 +87,9 @@ export const ActiveConversation: Story = {
 
 export const Empty: Story = {
   play: async () => {
-    await expect(await screen.findByText("現在入力中のユーザーはいません")).toBeInTheDocument();
+    await expect(
+      await screen.findByText("現在入力中のユーザーはいません", { selector: "p" }),
+    ).toBeInTheDocument();
   },
 };
 

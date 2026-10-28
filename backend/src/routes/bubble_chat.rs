@@ -9,6 +9,8 @@ use serde::{Deserialize, Serialize};
 struct UpdateBubbleChat {
     session_id: uuid::Uuid,
     content: String,
+    #[serde(default)]
+    seq: Option<i64>,
 }
 
 #[derive(Serialize)]
@@ -47,32 +49,33 @@ async fn update(
     .await?;
 
     let session = body.session_id.to_string();
-    if body.content.trim().is_empty() {
-        toasty::sql::statement(
-            "DELETE FROM bubble_chat_presence
-             WHERE user_id = $1 AND session_id = $2",
-        )
-        .bind(user.id)
-        .bind(session)
-        .exec(&mut tx)
-        .await?;
+    let seq = body.seq.unwrap_or(0);
+    let content = if body.content.trim().is_empty() {
+        String::new()
     } else {
-        // Database time avoids clock skew between backend instances.
-        toasty::sql::statement(
-            "INSERT INTO bubble_chat_presence (user_id, session_id, content, updated_at, expires_at)
-             VALUES ($1, $2, $3, statement_timestamp(), statement_timestamp() + interval '15 seconds')
-             ON CONFLICT (user_id, session_id)
-             DO UPDATE SET
-               content = EXCLUDED.content,
-               updated_at = EXCLUDED.updated_at,
-               expires_at = EXCLUDED.expires_at",
-        )
-        .bind(user.id)
-        .bind(session)
-        .bind(body.content)
-        .exec(&mut tx)
-        .await?;
-    }
+        body.content
+    };
+
+    // Database time avoids clock skew between backend instances.
+    // An empty content row acts as a tombstone retaining the latest seq for the TTL window,
+    // ensuring older out-of-order writes or delayed retries cannot resurrect cleared text.
+    toasty::sql::statement(
+        "INSERT INTO bubble_chat_presence (user_id, session_id, content, seq, updated_at, expires_at)
+         VALUES ($1, $2, $3, $4, statement_timestamp(), statement_timestamp() + interval '15 seconds')
+         ON CONFLICT (user_id, session_id)
+         DO UPDATE SET
+           content = EXCLUDED.content,
+           seq = EXCLUDED.seq,
+           updated_at = EXCLUDED.updated_at,
+           expires_at = EXCLUDED.expires_at
+         WHERE EXCLUDED.seq >= bubble_chat_presence.seq",
+    )
+    .bind(user.id)
+    .bind(session)
+    .bind(content)
+    .bind(seq)
+    .exec(&mut tx)
+    .await?;
 
     tx.commit().await?;
     Ok(Json(serde_json::json!({"ok": true})))

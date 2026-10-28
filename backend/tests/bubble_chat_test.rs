@@ -34,6 +34,10 @@ fn update(session: &str, content: &str) -> Value {
     json!({ "session_id": session, "content": content })
 }
 
+fn update_with_seq(session: &str, seq: i64, content: &str) -> Value {
+    json!({ "session_id": session, "seq": seq, "content": content })
+}
+
 #[tokio::test]
 async fn test_bubble_chat_presence_lifecycle() -> anyhow::Result<()> {
     dotenvy::dotenv().ok();
@@ -69,7 +73,9 @@ async fn test_bubble_chat_presence_lifecycle() -> anyhow::Result<()> {
 
     // Supports both /api/bubble and /api/bubble-chat.
     assert_eq!(
-        request(&app_a, Some(&alice), "/api/bubble-chat", None).await?.0,
+        request(&app_a, Some(&alice), "/api/bubble-chat", None)
+            .await?
+            .0,
         StatusCode::OK
     );
 
@@ -157,7 +163,80 @@ async fn test_bubble_chat_presence_lifecycle() -> anyhow::Result<()> {
             .any(|entry| entry["user_id"] == alice)
     );
 
-    // Content exceeding 1000 chars is rejected with 400 Bad Request.
+    // Out-of-order sequence handling: older seq does not overwrite newer seq.
+    assert_eq!(
+        request(
+            &app_a,
+            Some(&alice),
+            path,
+            Some(update_with_seq(&session1, 10, "最新の書き込み")),
+        )
+        .await?
+        .0,
+        StatusCode::OK
+    );
+    // Delayed older write with seq=9 is ignored.
+    assert_eq!(
+        request(
+            &app_a,
+            Some(&alice),
+            path,
+            Some(update_with_seq(&session1, 9, "遅延した古い書き込み")),
+        )
+        .await?
+        .0,
+        StatusCode::OK
+    );
+    let (_, list) = request(&app_b, Some(&bob), path, None).await?;
+    let alice_entry = list
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|entry| entry["user_id"] == alice)
+        .expect("Alice bubble should be present");
+    assert_eq!(alice_entry["content"], "最新の書き込み");
+
+    // Newer clear with seq=11 clears presence.
+    assert_eq!(
+        request(
+            &app_a,
+            Some(&alice),
+            path,
+            Some(update_with_seq(&session1, 11, "")),
+        )
+        .await?
+        .0,
+        StatusCode::OK
+    );
+    let (_, list) = request(&app_b, Some(&bob), path, None).await?;
+    assert!(
+        !list
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|entry| entry["user_id"] == alice)
+    );
+
+    // Stale older write with seq=10 arriving after seq=11 does not resurrect the row.
+    assert_eq!(
+        request(
+            &app_a,
+            Some(&alice),
+            path,
+            Some(update_with_seq(&session1, 10, "復活試行")),
+        )
+        .await?
+        .0,
+        StatusCode::OK
+    );
+    let (_, list) = request(&app_b, Some(&bob), path, None).await?;
+    assert!(
+        !list
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|entry| entry["user_id"] == alice)
+    );
     let too_long = "あ".repeat(1001);
     assert_eq!(
         request(

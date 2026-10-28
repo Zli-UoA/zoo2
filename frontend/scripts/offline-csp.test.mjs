@@ -71,7 +71,7 @@ const sqliteProbe = async (workerName) => {
         const timeout = setTimeout(() => {
           worker.terminate();
           reject(new Error("SQLite Worker timed out"));
-        }, 8000);
+        }, 30000);
         worker.onmessage = ({ data }) => {
           if (data.requestId !== requestId) return;
           clearTimeout(timeout);
