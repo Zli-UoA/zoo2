@@ -192,9 +192,9 @@ impl Config {
         // WebRTC ICE サーバー設定の JSON 検証
         let parsed: serde_json::Value = serde_json::from_str(&self.webrtc_ice_servers_json)
             .map_err(|e| format!("Invalid JSON in WEBRTC_ICE_SERVERS_JSON: {e}"))?;
-        let servers = parsed
-            .as_array()
-            .ok_or_else(|| "WEBRTC_ICE_SERVERS_JSON must be a JSON array of ICE servers".to_string())?;
+        let servers = parsed.as_array().ok_or_else(|| {
+            "WEBRTC_ICE_SERVERS_JSON must be a JSON array of ICE servers".to_string()
+        })?;
 
         for (i, server) in servers.iter().enumerate() {
             let obj = server.as_object().ok_or_else(|| {
@@ -463,7 +463,11 @@ mod tests {
         );
 
         // 異常系: 配列でない
-        assert!(create_config(r#"{"urls":"stun:example.com"}"#).validate().is_err());
+        assert!(
+            create_config(r#"{"urls":"stun:example.com"}"#)
+                .validate()
+                .is_err()
+        );
         // 異常系: オブジェクトでない
         assert!(create_config(r#"["stun:example.com"]"#).validate().is_err());
         // 異常系: urls がない
@@ -471,9 +475,17 @@ mod tests {
         // 異常系: urls が空配列
         assert!(create_config(r#"[{"urls":[]}]"#).validate().is_err());
         // 異常系: スキームが不正
-        assert!(create_config(r#"[{"urls":"http://example.com"}]"#).validate().is_err());
+        assert!(
+            create_config(r#"[{"urls":"http://example.com"}]"#)
+                .validate()
+                .is_err()
+        );
         // 異常系: username が文字列でない
-        assert!(create_config(r#"[{"urls":"stun:example.com", "username": 123}]"#).validate().is_err());
+        assert!(
+            create_config(r#"[{"urls":"stun:example.com", "username": 123}]"#)
+                .validate()
+                .is_err()
+        );
     }
 
     #[test]

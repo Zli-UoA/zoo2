@@ -1,9 +1,4 @@
-use std::{
-    collections::HashMap,
-    convert::Infallible,
-    sync::Arc,
-    time::Duration,
-};
+use std::{collections::HashMap, convert::Infallible, sync::Arc, time::Duration};
 
 use axum::{
     Json, Router,
@@ -203,9 +198,7 @@ pub enum CallDistributedEvent {
         participant: CallParticipant,
     },
     #[serde(rename = "room_closed")]
-    RoomClosed {
-        channel_id: String,
-    },
+    RoomClosed { channel_id: String },
 }
 
 struct LocalSession {
@@ -307,44 +300,36 @@ impl CallRegistry {
         });
     }
 
-    /// DB 上の期限切れセッションを検出し削除・通知する
+    /// DB 上の期限切れセッションを検出し削除・通知する ([P1] アトミック整合性保証)
     pub async fn sweep_stale_presence(db: &mut toasty::Db) -> Result<(), AppError> {
-        let rows = toasty::sql::query(
-            "DELETE FROM call_presence
-             WHERE ctid IN (
-                 SELECT ctid FROM call_presence
-                 WHERE expires_at <= statement_timestamp()
-                 LIMIT 100 FOR UPDATE SKIP LOCKED
+        let mut tx = db.transaction().await?;
+        let _ = toasty::sql::query(
+            "WITH deleted AS (
+                 DELETE FROM call_presence
+                 WHERE ctid IN (
+                     SELECT ctid FROM call_presence
+                     WHERE expires_at <= statement_timestamp()
+                     LIMIT 100 FOR UPDATE SKIP LOCKED
+                 )
+                 RETURNING channel_id, session_id, user_id
+             ), notified AS (
+                 SELECT pg_notify(
+                     'zoo_call_events',
+                     json_build_object(
+                         'type', 'participant_left',
+                         'channel_id', channel_id,
+                         'session_id', session_id,
+                         'user_id', user_id
+                     )::text
+                 )
+                 FROM deleted
              )
-             RETURNING json_build_object(
-                 'channel_id', channel_id,
-                 'session_id', session_id,
-                 'user_id', user_id
-             )::text",
+             SELECT 1 FROM deleted",
         )
-        .exec(db)
+        .exec(&mut tx)
         .await?;
 
-        #[derive(Deserialize)]
-        struct ExpiredRow {
-            channel_id: String,
-            session_id: Uuid,
-            user_id: String,
-        }
-
-        for row in rows {
-            if let toasty::stmt::Value::Record(rec) = row
-                && let Some(toasty::stmt::Value::String(json)) = rec.fields.into_iter().next()
-                && let Ok(expired) = serde_json::from_str::<ExpiredRow>(&json)
-            {
-                let event = CallDistributedEvent::ParticipantLeft {
-                    channel_id: expired.channel_id,
-                    session_id: expired.session_id,
-                    user_id: expired.user_id,
-                };
-                let _ = Self::notify_event(db, &event).await;
-            }
-        }
+        tx.commit().await?;
         Ok(())
     }
 
@@ -539,47 +524,37 @@ impl CallRegistry {
         sessions.retain(|_, s| s.channel_id != channel_id);
     }
 
-    /// チャンネルからユーザーが脱退した際のクリーンアップ
-    pub async fn remove_user_from_channel(
-        &self,
-        db: &toasty::Db,
-        channel_id: &str,
-        user_id: &str,
-    ) {
+    /// チャンネルからユーザーが脱退した際のクリーンアップ ([P1] 自インスタンス即時切断 & 通知アトミック保証)
+    pub async fn remove_user_from_channel(&self, db: &toasty::Db, channel_id: &str, user_id: &str) {
+        // 自インスタンス内の該当ユーザーのローカルセッションを直ちに切断
+        let mut sessions = self.local_sessions.write().await;
+        sessions.retain(|_, s| !(s.channel_id == channel_id && s.user_id == user_id));
+        drop(sessions);
+
         let mut db = db.clone();
-        let rows = match toasty::sql::query(
-            "DELETE FROM call_presence
-             WHERE channel_id = $1 AND user_id = $2
-             RETURNING json_build_object('session_id', session_id)::text",
+        let _ = toasty::sql::query(
+            "WITH deleted AS (
+                 DELETE FROM call_presence
+                 WHERE channel_id = $1 AND user_id = $2
+                 RETURNING session_id
+             ), notified AS (
+                 SELECT pg_notify(
+                     'zoo_call_events',
+                     json_build_object(
+                         'type', 'participant_left',
+                         'channel_id', $1,
+                         'session_id', session_id,
+                         'user_id', $2
+                     )::text
+                 )
+                 FROM deleted
+             )
+             SELECT 1 FROM deleted",
         )
         .bind(channel_id.to_string())
         .bind(user_id.to_string())
         .exec(&mut db)
-        .await
-        {
-            Ok(r) => r,
-            Err(_) => return,
-        };
-
-        #[derive(Deserialize)]
-        struct RemovedRow {
-            session_id: Uuid,
-        }
-
-        for row in rows {
-            if let toasty::stmt::Value::Record(rec) = row
-                && let Some(toasty::stmt::Value::String(json)) = rec.fields.into_iter().next()
-                && let Ok(removed) = serde_json::from_str::<RemovedRow>(&json)
-            {
-                let event = CallDistributedEvent::ParticipantLeft {
-                    channel_id: channel_id.to_string(),
-                    session_id: removed.session_id,
-                    user_id: user_id.to_string(),
-                };
-                let _ = Self::notify_event(&db, &event).await;
-                self.unregister_local_session(&removed.session_id).await;
-            }
-        }
+        .await;
     }
 }
 
@@ -794,49 +769,115 @@ async fn call_stream(
     // 1. 期限切れレコードのクリーンアップ（通知付きで安全に実行）
     let _ = CallRegistry::sweep_stale_presence(&mut db).await;
 
-    // 2. トランザクションを開始し、チャンネル行を排他ロックして同時参加を直列化 ([P2])
-    let mut tx = db.transaction().await?;
-    let lock_rows = toasty::sql::query("SELECT id FROM channels WHERE id = $1 FOR UPDATE")
-        .bind(channel_id.clone())
-        .exec(&mut tx)
-        .await?;
-    if lock_rows.is_empty() {
-        return Err(AppError::NotFound("Channel not found".into()));
+    // 2. 他者への公開前にローカル受信キューを作成・登録 ([P2] 参加イベント取りこぼし防止)
+    let (tx_chan, rx) = mpsc::channel(256);
+    state
+        .call_registry
+        .register_local_session(
+            query.session_id,
+            channel_id.clone(),
+            user.id.clone(),
+            tx_chan.clone(),
+        )
+        .await;
+
+    // 3. トランザクションを開始し、チャンネル行を排他ロックして同時参加・キックを直列化 ([P1])
+    let mut tx = match db.transaction().await {
+        Ok(t) => t,
+        Err(e) => {
+            state
+                .call_registry
+                .unregister_local_session(&query.session_id)
+                .await;
+            return Err(AppError::from(e));
+        }
+    };
+
+    #[derive(Deserialize)]
+    struct ChannelLockRow {
+        is_private: bool,
+        deleted_at: Option<String>,
+        archive_at: Option<String>,
     }
 
-    // ロック下で現在の参加者数をチェック
-    let count_rows = toasty::sql::query(
-        "SELECT count(*)::text
-         FROM call_presence
-         WHERE channel_id = $1 AND expires_at > statement_timestamp()",
+    let lock_rows = toasty::sql::query(
+        "SELECT json_build_object(
+            'is_private', is_private,
+            'deleted_at', deleted_at,
+            'archive_at', archive_at
+         )::text
+         FROM channels WHERE id = $1 FOR UPDATE",
     )
     .bind(channel_id.clone())
     .exec(&mut tx)
-    .await?;
+    .await;
 
-    let current_count: usize = count_rows
-        .into_iter()
-        .find_map(|row| {
+    let ch_info = match lock_rows {
+        Ok(rows) => rows.into_iter().find_map(|row| {
             if let toasty::stmt::Value::Record(rec) = row
-                && let Some(toasty::stmt::Value::String(cnt)) = rec.fields.into_iter().next()
+                && let Some(toasty::stmt::Value::String(json)) = rec.fields.into_iter().next()
             {
-                cnt.parse().ok()
+                serde_json::from_str::<ChannelLockRow>(&json).ok()
             } else {
                 None
             }
-        })
-        .unwrap_or(0);
+        }),
+        Err(e) => {
+            state
+                .call_registry
+                .unregister_local_session(&query.session_id)
+                .await;
+            return Err(AppError::from(e));
+        }
+    };
 
-    if current_count >= MAX_CALL_PARTICIPANTS {
-        return Err(AppError::Conflict(format!(
-            "Call room is full (max {MAX_CALL_PARTICIPANTS} participants)"
-        )));
+    let Some(ch) = ch_info else {
+        state
+            .call_registry
+            .unregister_local_session(&query.session_id)
+            .await;
+        return Err(AppError::NotFound("Channel not found".into()));
+    };
+
+    if ch.deleted_at.is_some() {
+        state
+            .call_registry
+            .unregister_local_session(&query.session_id)
+            .await;
+        return Err(AppError::NotFound("Channel not found".into()));
+    }
+    if ch.archive_at.is_some() {
+        state
+            .call_registry
+            .unregister_local_session(&query.session_id)
+            .await;
+        return Err(AppError::Forbidden("Channel is archived".into()));
     }
 
+    // ロック下でプライベートチャンネルのメンバーシップを再検証 ([P1] キックとの競合防止)
+    if ch.is_private {
+        let member_rows =
+            toasty::sql::query("SELECT 1 FROM channel_user WHERE channel_id = $1 AND user_id = $2")
+                .bind(channel_id.clone())
+                .bind(user.id.clone())
+                .exec(&mut tx)
+                .await;
+
+        match member_rows {
+            Ok(rows) if !rows.is_empty() => {}
+            _ => {
+                state
+                    .call_registry
+                    .unregister_local_session(&query.session_id)
+                    .await;
+                return Err(AppError::NotFound("Channel not found".into()));
+            }
+        }
+    }
+
+    // 4. call_presence に挿入 (定員 6 人を超えないことを条件付きでアトミックに検証・挿入)
     let now_str = crate::models::now_utc_millis().to_string();
     let session_str = query.session_id.to_string();
-
-    // 3. call_presence に挿入 (定員 6 人を超えないことを条件付きでアトミックに検証・挿入)
     let insert_query = format!(
         "INSERT INTO call_presence (
             channel_id, session_id, user_id, user_name, display_name, is_muted, joined_at, expires_at
@@ -862,6 +903,10 @@ async fn call_stream(
     let inserted_rows = match insert_res {
         Ok(rows) => rows,
         Err(e) => {
+            state
+                .call_registry
+                .unregister_local_session(&query.session_id)
+                .await;
             if AppError::is_unique_violation(&e, None) {
                 return Err(AppError::Conflict("Session ID is already in use".into()));
             }
@@ -870,12 +915,16 @@ async fn call_stream(
     };
 
     if inserted_rows.is_empty() {
+        state
+            .call_registry
+            .unregister_local_session(&query.session_id)
+            .await;
         return Err(AppError::Conflict(format!(
             "Call room is full (max {MAX_CALL_PARTICIPANTS} participants)"
         )));
     }
 
-    // 4. 自身を含む現在の有効参加者一覧を取得
+    // 5. 自身を含む現在の有効参加者一覧を取得
     let rows = toasty::sql::query(
         "SELECT json_build_object(
             'session_id', session_id,
@@ -891,10 +940,21 @@ async fn call_stream(
     )
     .bind(channel_id.clone())
     .exec(&mut tx)
-    .await?;
+    .await;
+
+    let participant_rows = match rows {
+        Ok(r) => r,
+        Err(e) => {
+            state
+                .call_registry
+                .unregister_local_session(&query.session_id)
+                .await;
+            return Err(AppError::from(e));
+        }
+    };
 
     let mut participants = Vec::new();
-    for row in rows {
+    for row in participant_rows {
         if let toasty::stmt::Value::Record(rec) = row
             && let Some(toasty::stmt::Value::String(json)) = rec.fields.into_iter().next()
             && let Ok(participant) = serde_json::from_str::<CallParticipant>(&json)
@@ -903,7 +963,30 @@ async fn call_stream(
         }
     }
 
-    tx.commit().await?;
+    if let Err(e) = tx.commit().await {
+        state
+            .call_registry
+            .unregister_local_session(&query.session_id)
+            .await;
+        return Err(AppError::from(e));
+    }
+
+    // 6. コミット直後のセッション生存再確認 ([P1])
+    let verify_rows = toasty::sql::query(
+        "SELECT 1 FROM call_presence WHERE channel_id = $1 AND session_id = $2::uuid",
+    )
+    .bind(channel_id.clone())
+    .bind(query.session_id.to_string())
+    .exec(&mut db)
+    .await;
+
+    if verify_rows.as_ref().map(|r| r.is_empty()).unwrap_or(true) {
+        state
+            .call_registry
+            .unregister_local_session(&query.session_id)
+            .await;
+        return Err(AppError::NotFound("Call session was revoked".into()));
+    }
 
     let participant = CallParticipant {
         session_id: query.session_id,
@@ -914,31 +997,19 @@ async fn call_stream(
         joined_at: now_str,
     };
 
-    // 5. ローカルキュー (容量 256) を作成し登録
-    let (tx, rx) = mpsc::channel(256);
-    state
-        .call_registry
-        .register_local_session(
-            query.session_id,
-            channel_id.clone(),
-            user.id.clone(),
-            tx.clone(),
-        )
-        .await;
-
     let ice_servers: serde_json::Value =
         serde_json::from_str(&state.config.webrtc_ice_servers_json)
             .unwrap_or_else(|_| serde_json::json!([{"urls": ["stun:stun.l.google.com:19302"]}]));
 
-    // 6. 新規参加者自身への初期 RoomState イベント送信
+    // 7. 新規参加者自身への初期 RoomState イベント送信
     let room_state_event = CallServerEvent::RoomState {
         participants,
         max_participants: MAX_CALL_PARTICIPANTS,
         ice_servers,
     };
-    let _ = tx.try_send(room_state_event);
+    let _ = tx_chan.try_send(room_state_event);
 
-    // 7. 全レプリカの他参加者へ ParticipantJoined イベントをブロードキャスト
+    // 8. 全レプリカの他参加者へ ParticipantJoined イベントをブロードキャスト
     let join_event = CallDistributedEvent::ParticipantJoined {
         channel_id: channel_id.clone(),
         participant,
@@ -1044,19 +1115,46 @@ async fn send_signal(
         ));
     }
     if !found_target {
-        return Err(AppError::NotFound(
-            "Target participant not in call".into(),
-        ));
+        return Err(AppError::NotFound("Target participant not in call".into()));
     }
 
-    // ローカル宛先のバッファ満杯チェック ([P2] 503 返却)
+    // ローカル宛先のバッファ満杯チェック ([P2] 満杯時は不通セッションとして切断・退出処理を行い NotFound を返却)
     if state
         .call_registry
         .is_target_full(&body.target_session_id)
         .await
     {
-        return Err(AppError::ServiceUnavailable(
-            "Signaling buffer full for target participant".into(),
+        state
+            .call_registry
+            .unregister_local_session(&body.target_session_id)
+            .await;
+
+        let _ = toasty::sql::query(
+            "WITH deleted AS (
+                 DELETE FROM call_presence
+                 WHERE channel_id = $1 AND session_id = $2::uuid
+                 RETURNING user_id
+             ), notified AS (
+                 SELECT pg_notify(
+                     'zoo_call_events',
+                     json_build_object(
+                         'type', 'participant_left',
+                         'channel_id', $1,
+                         'session_id', $2::text,
+                         'user_id', user_id
+                     )::text
+                 )
+                 FROM deleted
+             )
+             SELECT 1 FROM deleted",
+        )
+        .bind(channel_id.clone())
+        .bind(body.target_session_id.to_string())
+        .exec(&mut db)
+        .await;
+
+        return Err(AppError::NotFound(
+            "Target participant disconnected (buffer full)".into(),
         ));
     }
 
@@ -1264,13 +1362,16 @@ async fn list_active_calls(
             && let Some(toasty::stmt::Value::String(json)) = rec.fields.into_iter().next()
             && let Ok(r) = serde_json::from_str::<ActiveRow>(&json)
         {
-            channel_map.entry(r.channel_id).or_default().push(PublicCallParticipant {
-                user_id: r.user_id,
-                user_name: r.user_name,
-                display_name: r.display_name,
-                is_muted: r.is_muted,
-                joined_at: r.joined_at,
-            });
+            channel_map
+                .entry(r.channel_id)
+                .or_default()
+                .push(PublicCallParticipant {
+                    user_id: r.user_id,
+                    user_name: r.user_name,
+                    display_name: r.display_name,
+                    is_muted: r.is_muted,
+                    joined_at: r.joined_at,
+                });
         }
     }
 

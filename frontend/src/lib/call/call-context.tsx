@@ -11,7 +11,7 @@ import {
 import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
 
-import { buildAuthHeaders, createConfiguredApiClient } from "../api/client";
+import { ApiError, buildAuthHeaders, createConfiguredApiClient } from "../api/client";
 import { joinUrl, resolveConfig, type AppConfig } from "../config";
 import { useCurrentUser } from "../../hooks/useCurrentUser";
 import {
@@ -132,6 +132,39 @@ export function CallProvider({ config: explicitConfig, children }: CallProviderP
   const peersRef = useRef<Map<string, PeerEntry>>(new Map());
   const pendingEarlyCandidatesRef = useRef<Map<string, RTCIceCandidateInit[]>>(new Map());
   const iceServersRef = useRef<RTCIceServer[]>([{ urls: "stun:stun.l.google.com:19302" }]);
+  const callGenerationRef = useRef(0);
+
+  const sendSignalWithRetry = useCallback(
+    async (
+      channelId: string,
+      mySessionId: string,
+      targetSessionId: string,
+      signal: unknown,
+      retries = 2,
+    ) => {
+      for (let attempt = 0; attempt <= retries; attempt++) {
+        try {
+          await apiClient.request(`/api/channels/${channelId}/call/signal`, {
+            method: "POST",
+            body: {
+              session_id: mySessionId,
+              target_session_id: targetSessionId,
+              signal,
+            },
+          });
+          return;
+        } catch (err: unknown) {
+          const status =
+            err instanceof ApiError ? err.status : (err as { status?: number })?.status;
+          if (status === 404 || status === 403 || status === 400 || attempt === retries) {
+            throw err;
+          }
+          await new Promise((resolve) => setTimeout(resolve, 300 * (attempt + 1)));
+        }
+      }
+    },
+    [apiClient],
+  );
 
   // アクティブな通話一覧の定期取得 (10秒ごと)
   const pollActiveCalls = useCallback(async () => {
@@ -193,6 +226,9 @@ export function CallProvider({ config: explicitConfig, children }: CallProviderP
   }, [cleanupPeers, closeMedia]);
 
   const leaveCall = useCallback(async () => {
+    // 世代を進めて古い非同期コールバックや SSE ループを無効化 ([P1])
+    callGenerationRef.current++;
+
     // 進行中の joinCall があれば直ちに中断 ([P1])
     if (joinAbortRef.current) {
       joinAbortRef.current.abort();
@@ -315,12 +351,18 @@ export function CallProvider({ config: explicitConfig, children }: CallProviderP
             method: "POST",
             body: { session_id: sessionId },
           })
-          .catch(() => {});
+          .catch((err: unknown) => {
+            const status =
+              err instanceof ApiError ? err.status : (err as { status?: number })?.status;
+            if (status === 404 || status === 403) {
+              void leaveCall();
+            }
+          });
       }
     }, 10000);
 
     return () => window.clearInterval(interval);
-  }, [apiClient, connectionState, currentChannelId]);
+  }, [apiClient, connectionState, currentChannelId, leaveCall]);
 
   const createPeer = useCallback(
     (
@@ -360,14 +402,10 @@ export function CallProvider({ config: explicitConfig, children }: CallProviderP
 
       pc.onicecandidate = (event) => {
         if (event.candidate) {
-          void apiClient.request(`/api/channels/${channelId}/call/signal`, {
-            method: "POST",
-            body: {
-              session_id: mySessionId,
-              target_session_id: targetSessionId,
-              signal: { type: "candidate", candidate: event.candidate.toJSON() },
-            },
-          });
+          void sendSignalWithRetry(channelId, mySessionId, targetSessionId, {
+            type: "candidate",
+            candidate: event.candidate.toJSON(),
+          }).catch(() => {});
         }
       };
 
@@ -394,7 +432,7 @@ export function CallProvider({ config: explicitConfig, children }: CallProviderP
 
       return pc;
     },
-    [apiClient, updateSpeakingUser],
+    [sendSignalWithRetry, updateSpeakingUser],
   );
 
   const joinCall = useCallback(
@@ -406,6 +444,8 @@ export function CallProvider({ config: explicitConfig, children }: CallProviderP
       if (currentChannelIdRef.current) {
         await leaveCall();
       }
+
+      const currentGen = ++callGenerationRef.current;
 
       if (joinAbortRef.current) {
         joinAbortRef.current.abort();
@@ -429,9 +469,9 @@ export function CallProvider({ config: explicitConfig, children }: CallProviderP
           video: false,
         });
       } catch (err: unknown) {
+        if (callGenerationRef.current !== currentGen || joinAbort.signal.aborted) return;
         cleanupPeers();
         closeMedia();
-        if (joinAbort.signal.aborted) return;
         const e = err as Error;
         const msg =
           e.name === "NotAllowedError" || e.name === "PermissionDeniedError"
@@ -449,13 +489,11 @@ export function CallProvider({ config: explicitConfig, children }: CallProviderP
         return;
       }
 
-      // マイク取得中に退出された場合は即座にトラックを停止して中止 ([P1])
-      if (joinAbort.signal.aborted) {
+      // マイク取得中に世代が変わった場合（退出や別通話への参加）は即座にトラックを停止して中止 ([P1])
+      if (callGenerationRef.current !== currentGen || joinAbort.signal.aborted) {
         for (const track of stream.getTracks()) {
           track.stop();
         }
-        cleanupPeers();
-        closeMedia();
         return;
       }
 
@@ -477,6 +515,7 @@ export function CallProvider({ config: explicitConfig, children }: CallProviderP
 
       try {
         const authHeaders = await buildAuthHeaders({ devUserId: config.devUserId });
+        if (callGenerationRef.current !== currentGen) return;
         authHeaders.set("Accept", "text/event-stream");
 
         const streamUrl = joinUrl(
@@ -487,6 +526,8 @@ export function CallProvider({ config: explicitConfig, children }: CallProviderP
           headers: authHeaders,
           signal: abortController.signal,
         });
+
+        if (callGenerationRef.current !== currentGen) return;
 
         if (!response.ok) {
           const body = await response.text();
@@ -517,6 +558,7 @@ export function CallProvider({ config: explicitConfig, children }: CallProviderP
 
         while (true) {
           const { done, value } = await reader.read();
+          if (callGenerationRef.current !== currentGen) return;
           if (done) break;
 
           buffer += decoder.decode(value, { stream: true });
@@ -557,22 +599,30 @@ export function CallProvider({ config: explicitConfig, children }: CallProviderP
                 sessionUserMapRef.current.set(p.session_id, p.user_id);
               }
 
-              // 同時参加時の Offer 衝突 (Glare) 回避:
-              // セッション ID の辞書順比較で小さい側のみが Offer を送信する ([P2])
+              // 接続完了前に設定されたミュート状態をバックエンドに即時反映 ([P2])
+              if (isMutedRef.current) {
+                void apiClient
+                  .request(`/api/channels/${channelId}/call/state`, {
+                    method: "POST",
+                    body: { session_id: mySessionId, is_muted: true },
+                  })
+                  .catch(() => {});
+              }
+
+              // 同時参加時の Offer 衝突 (Glare) 回避 & 冪等性ガード ([P2]):
+              // 既に PeerConnection が存在する場合は重複作成しない。
+              // セッション ID の辞書順比較で小さい側のみが Offer を送信する。
               for (const p of roomParticipants) {
                 if (p.session_id === mySessionId) continue;
+                if (peersRef.current.has(p.session_id)) continue;
                 if (mySessionId.localeCompare(p.session_id) < 0) {
                   const pc = createPeer(channelId, mySessionId, p.session_id, p.user_id, ice);
                   try {
                     const offer = await pc.createOffer();
                     await pc.setLocalDescription(offer);
-                    await apiClient.request(`/api/channels/${channelId}/call/signal`, {
-                      method: "POST",
-                      body: {
-                        session_id: mySessionId,
-                        target_session_id: p.session_id,
-                        signal: { type: "offer", sdp: offer.sdp },
-                      },
+                    await sendSignalWithRetry(channelId, mySessionId, p.session_id, {
+                      type: "offer",
+                      sdp: offer.sdp,
                     });
                   } catch (offerErr) {
                     console.error("Failed to send offer", offerErr);
@@ -589,6 +639,9 @@ export function CallProvider({ config: explicitConfig, children }: CallProviderP
                 });
                 void pollActiveCalls();
 
+                // 既にピアが存在する場合は重複作成・送信を防止 ([P2])
+                if (peersRef.current.has(newP.session_id)) continue;
+
                 // 自身が Offer 送信側 (mySessionId < newP.session_id) の場合は新規参加者へ Offer を送信 ([P2])
                 if (mySessionId.localeCompare(newP.session_id) < 0) {
                   const pc = createPeer(
@@ -601,13 +654,9 @@ export function CallProvider({ config: explicitConfig, children }: CallProviderP
                   try {
                     const offer = await pc.createOffer();
                     await pc.setLocalDescription(offer);
-                    await apiClient.request(`/api/channels/${channelId}/call/signal`, {
-                      method: "POST",
-                      body: {
-                        session_id: mySessionId,
-                        target_session_id: newP.session_id,
-                        signal: { type: "offer", sdp: offer.sdp },
-                      },
+                    await sendSignalWithRetry(channelId, mySessionId, newP.session_id, {
+                      type: "offer",
+                      sdp: offer.sdp,
                     });
                   } catch (offerErr) {
                     console.error("Failed to send offer to new participant", offerErr);
@@ -676,13 +725,9 @@ export function CallProvider({ config: explicitConfig, children }: CallProviderP
                   const answer = await pc.createAnswer();
                   await pc.setLocalDescription(answer);
 
-                  await apiClient.request(`/api/channels/${channelId}/call/signal`, {
-                    method: "POST",
-                    body: {
-                      session_id: mySessionId,
-                      target_session_id: fromSid,
-                      signal: { type: "answer", sdp: answer.sdp },
-                    },
+                  await sendSignalWithRetry(channelId, mySessionId, fromSid, {
+                    type: "answer",
+                    sdp: answer.sdp,
                   });
                 } catch (err) {
                   console.error("Failed to handle offer", err);
@@ -725,6 +770,11 @@ export function CallProvider({ config: explicitConfig, children }: CallProviderP
           }
         }
 
+        // 古い世代のループ終了・後始末が新しい通話のリソースを破壊しないようガード ([P1])
+        if (callGenerationRef.current !== currentGen) {
+          return;
+        }
+
         // SSE 終了時 (done) の後始末
         cleanupPeers();
         closeMedia();
@@ -742,6 +792,10 @@ export function CallProvider({ config: explicitConfig, children }: CallProviderP
           setConnectionState("idle");
         }
       } catch (err: unknown) {
+        if (callGenerationRef.current !== currentGen) {
+          return;
+        }
+
         cleanupPeers();
         closeMedia();
         sessionIdRef.current = null;
@@ -769,6 +823,7 @@ export function CallProvider({ config: explicitConfig, children }: CallProviderP
       effectiveUserId,
       leaveCall,
       pollActiveCalls,
+      sendSignalWithRetry,
       t,
       updateSpeakingUser,
     ],

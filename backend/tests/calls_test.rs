@@ -399,7 +399,10 @@ async fn test_multi_instance_call_signaling_and_broadcast() -> anyhow::Result<()
             assert_eq!(session_id, session_b);
             assert_eq!(user_id, user_b);
         }
-        other => panic!("expected ParticipantLeft event, got: {:?}", other.event_type()),
+        other => panic!(
+            "expected ParticipantLeft event, got: {:?}",
+            other.event_type()
+        ),
     }
 
     Ok(())
@@ -466,7 +469,10 @@ async fn test_session_id_global_uniqueness_and_channel_isolation() -> anyhow::Re
     .exec(&mut db)
     .await;
 
-    assert!(dup_res.is_err(), "Duplicate session_id across channels must fail UNIQUE constraint");
+    assert!(
+        dup_res.is_err(),
+        "Duplicate session_id across channels must fail UNIQUE constraint"
+    );
 
     // シグナルのチャンネル照合テスト ([P1]):
     // チャンネル 1 のセッション宛ての Signal イベントが、別チャンネルのセッションには配送されないことを検証
@@ -485,11 +491,17 @@ async fn test_session_id_global_uniqueness_and_channel_isolation() -> anyhow::Re
         signal: serde_json::json!({ "type": "offer", "sdp": "fake" }),
     };
     let payload = serde_json::to_string(&fake_event).unwrap();
-    state.call_registry.dispatch_distributed_event(&payload).await;
+    state
+        .call_registry
+        .dispatch_distributed_event(&payload)
+        .await;
 
     // チャンネルが一致しないため、rx1 にはイベントが配送されないことを確認
     let received = tokio::time::timeout(Duration::from_millis(200), rx1.recv()).await;
-    assert!(received.is_err(), "Signal from different channel must not be delivered");
+    assert!(
+        received.is_err(),
+        "Signal from different channel must not be delivered"
+    );
 
     Ok(())
 }
@@ -511,11 +523,13 @@ async fn test_call_notify_payload_size_limit_and_active_calls_isolation() -> any
     // ユーザーとプライベートチャンネル作成 (Alice のみ所属)
     let mut tx = db.transaction().await?;
     for (u, name) in [(&alice, "Alice"), (&bob, "Bob")] {
-        toasty::sql::statement("INSERT INTO users (id, user_name, display_name) VALUES ($1, $1, $2)")
-            .bind(u.as_str())
-            .bind(name)
-            .exec(&mut tx)
-            .await?;
+        toasty::sql::statement(
+            "INSERT INTO users (id, user_name, display_name) VALUES ($1, $1, $2)",
+        )
+        .bind(u.as_str())
+        .bind(name)
+        .exec(&mut tx)
+        .await?;
     }
     toasty::sql::statement(
         "INSERT INTO channels (id, channel_name, created_user_id, is_private) VALUES ($1, $1, $2, true)",
@@ -580,4 +594,3 @@ async fn test_call_notify_payload_size_limit_and_active_calls_isolation() -> any
 
     Ok(())
 }
-
