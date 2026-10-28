@@ -30,6 +30,7 @@ const channel = {
   description: null,
   created_user_id: "owner",
   is_private: false,
+  is_dm: false,
   created_at: "2026-10-23",
   updated_at: null,
   archive_at: null,

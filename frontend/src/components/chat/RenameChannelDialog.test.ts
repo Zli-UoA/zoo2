@@ -19,6 +19,7 @@ const channel: ChannelRow = {
   description: "keep",
   created_user_id: "user-1",
   is_private: false,
+  is_dm: false,
   created_at: "2026-01-01T00:00:00Z",
   updated_at: null,
   archive_at: null,
