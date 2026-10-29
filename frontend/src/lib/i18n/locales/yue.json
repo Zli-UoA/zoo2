@@ -376,6 +376,10 @@
     "leave": "退出",
     "leaving": "退出緊…",
     "leaveTitle": "要退出呢個私訊？",
-    "leaveDescription": "退出之後會喺列表消失。一對一嘅話，再揀同一個人就可以繼續傾。"
+    "leaveDescription": "退出之後會喺列表消失。一對一嘅話，再揀同一個人就可以繼續傾。",
+    "reload": "重新載入",
+    "syncPending": "私訊開咗，但仲未顯示出嚟。等一陣再撳「開對話」。",
+    "openCreated": "開對話",
+    "opening": "開緊…"
   }
 }

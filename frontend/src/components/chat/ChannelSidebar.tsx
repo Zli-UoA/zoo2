@@ -200,10 +200,12 @@ export function ChannelSidebar({
           currentUserId={currentUserId}
           loading={sidebarLoading || usersQuery.isLoading}
           error={error || membershipsQuery.isError}
+          usersError={usersQuery.isError}
           activeChannelId={shell.selectedChannelId}
           unreadChannelIds={unreadChannelIds}
           onCreate={() => setDmOpen(true)}
           onOpen={() => shell.showChat()}
+          onReload={() => window.location.reload()}
         />
       </ScrollArea>
 

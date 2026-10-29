@@ -376,6 +376,10 @@
     "leave": "退出",
     "leaving": "退出中…",
     "leaveTitle": "要退出私信吗？",
-    "leaveDescription": "退出后会从列表中消失。一对一私信只要再次选择相同对象，就能重新开始对话。"
+    "leaveDescription": "退出后会从列表中消失。一对一私信只要再次选择相同对象，就能重新开始对话。",
+    "reload": "重新加载",
+    "syncPending": "私信已创建，但尚未显示。请稍等片刻，然后点击“打开对话”。",
+    "openCreated": "打开对话",
+    "opening": "正在打开…"
   }
 }

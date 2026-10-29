@@ -376,6 +376,10 @@
     "leave": "退出",
     "leaving": "退出中…",
     "leaveTitle": "要退出私訊嗎？",
-    "leaveDescription": "退出後會從清單中消失。一對一私訊只要再次選擇相同對象，就能重新開始對話。"
+    "leaveDescription": "退出後會從清單中消失。一對一私訊只要再次選擇相同對象，就能重新開始對話。",
+    "reload": "重新載入",
+    "syncPending": "私訊已建立，但尚未顯示。請稍候片刻，然後點選「開啟對話」。",
+    "openCreated": "開啟對話",
+    "opening": "正在開啟…"
   }
 }

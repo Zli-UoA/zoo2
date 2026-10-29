@@ -5,6 +5,7 @@ import { PlusIcon, SearchIcon, XIcon } from "lucide-react";
 import {
   useId,
   useMemo,
+  useRef,
   useState,
   type FormEvent,
   type KeyboardEvent,
@@ -17,8 +18,7 @@ import { localizeApiError } from "../../lib/i18n/apiError";
 import { createOrGetDm } from "../../lib/api/dms";
 import { createConfiguredApiClient } from "../../lib/api/client";
 import { useCollections } from "../../lib/electric/collections-context";
-import { changeMessageMatcher, syncTxid } from "../../lib/electric/txid";
-import type { ChannelRow, UserRow } from "../../lib/electric/types";
+import type { UserRow } from "../../lib/electric/types";
 import { useLocale } from "../i18n/LocaleProvider";
 import { useShell } from "../layout/shell-context";
 import { Avatar, AvatarFallback } from "../ui/avatar";
@@ -33,11 +33,9 @@ import {
 } from "../ui/dialog";
 import { inputClassName } from "../ui/input-styles";
 import { ScrollArea } from "../ui/scroll-area";
-import { DM_MAX_MEMBERS, DM_MAX_TARGETS, filterDmCandidates } from "./dm";
+import { DM_MAX_MEMBERS, DM_MAX_TARGETS, filterDmCandidates, waitForDmAvailability } from "./dm";
 import { initials } from "./format";
 import { sortUsersByLabel, userLabel } from "./memberCandidates";
-
-const SYNC_TIMEOUT_MS = 5000;
 
 export function CreateDmDialog({
   open,
@@ -59,7 +57,10 @@ export function CreateDmDialog({
   const [activeIndex, setActiveIndex] = useState(0);
   const [limitReached, setLimitReached] = useState(false);
   const [submitting, setSubmitting] = useState(false);
+  const [createdChannelId, setCreatedChannelId] = useState<string | null>(null);
+  const [syncPending, setSyncPending] = useState(false);
   const [errorCause, setErrorCause] = useState<{ cause: unknown } | null>(null);
+  const submittingRef = useRef(false);
   const listId = useId();
 
   const users = usersQuery.data ?? [];
@@ -75,19 +76,27 @@ export function CreateDmDialog({
   }));
   const resolvedIndex = candidates.length === 0 ? -1 : Math.min(activeIndex, candidates.length - 1);
   const activeCandidate = resolvedIndex >= 0 ? candidates[resolvedIndex] : undefined;
-  const busy = submitting || currentUserLoading;
-  const canSubmit = selectedIds.length > 0 && !busy && currentUserId !== null;
+  const inputBusy = submitting || currentUserLoading || createdChannelId !== null;
+  const canSubmit = createdChannelId
+    ? !submitting && currentUserId !== null
+    : selectedIds.length > 0 && !inputBusy && currentUserId !== null;
 
   function reset() {
     setQuery("");
     setSelectedIds([]);
     setActiveIndex(0);
     setLimitReached(false);
+    setCreatedChannelId(null);
+    setSyncPending(false);
     setSubmitting(false);
     setErrorCause(null);
+    submittingRef.current = false;
   }
 
   function handleOpenChange(next: boolean) {
+    if (!next && submittingRef.current) {
+      return;
+    }
     if (!next) {
       reset();
     }
@@ -95,7 +104,7 @@ export function CreateDmDialog({
   }
 
   function addUser(user: UserRow) {
-    if (busy) {
+    if (inputBusy) {
       return;
     }
     if (selectedIds.length >= DM_MAX_TARGETS) {
@@ -116,6 +125,9 @@ export function CreateDmDialog({
   }
 
   function handleSearchKeyDown(event: KeyboardEvent<HTMLInputElement>) {
+    if (event.nativeEvent.isComposing || event.nativeEvent.keyCode === 229) {
+      return;
+    }
     switch (event.key) {
       case "ArrowDown":
         event.preventDefault();
@@ -157,38 +169,44 @@ export function CreateDmDialog({
 
   async function submit(event: FormEvent) {
     event.preventDefault();
-    if (!canSubmit) {
+    if (!canSubmit || !currentUserId || submittingRef.current) {
       return;
     }
+    submittingRef.current = true;
     setSubmitting(true);
     setErrorCause(null);
     try {
-      const { data, txid } = await createOrGetDm(client, selectedIds);
-      if (txid !== null && !collections.channels.has(data.id)) {
-        try {
-          await syncTxid({
-            mode: collections.config.txidMode,
-            txid,
-            target: collections.channels.utils,
-            match: changeMessageMatcher<ChannelRow>("insert", (row) => row.id === data.id),
-            timeout: SYNC_TIMEOUT_MS,
-          });
-        } catch (cause) {
-          console.warn("ダイレクトメッセージの Shape 反映待ちに失敗しました", cause);
-        }
+      let channelId = createdChannelId;
+      if (!channelId) {
+        const { data } = await createOrGetDm(client, selectedIds);
+        channelId = data.id;
+        setCreatedChannelId(channelId);
       }
-      handleOpenChange(false);
+      setSyncPending(false);
+      const ready = await waitForDmAvailability(collections, channelId, currentUserId);
+      if (!ready) {
+        setSyncPending(true);
+        setSubmitting(false);
+        submittingRef.current = false;
+        return;
+      }
+      reset();
+      onOpenChange(false);
       shell.showChat();
-      await navigate({ to: "/channels/$channelId", params: { channelId: data.id } });
+      await navigate({ to: "/channels/$channelId", params: { channelId } });
     } catch (cause) {
-      setErrorCause({ cause });
+      submittingRef.current = false;
       setSubmitting(false);
+      setErrorCause({ cause });
     }
   }
 
   return (
     <Dialog open={open} onOpenChange={handleOpenChange}>
-      <DialogContent className="max-h-[85dvh] overflow-y-auto sm:max-w-md">
+      <DialogContent
+        className="max-h-[85dvh] overflow-y-auto sm:max-w-md"
+        showCloseButton={!submitting}
+      >
         <DialogHeader>
           <DialogTitle>{t("dms.createTitle")}</DialogTitle>
           <DialogDescription>{t("dms.createDescription")}</DialogDescription>
@@ -224,7 +242,7 @@ export function CreateDmDialog({
               autoComplete="off"
               spellCheck={false}
               autoFocus
-              disabled={busy}
+              disabled={inputBusy}
             />
             {query ? (
               <Button
@@ -234,6 +252,7 @@ export function CreateDmDialog({
                 className="absolute top-1/2 right-0 size-9 -translate-y-1/2"
                 aria-label={t("dms.searchClear")}
                 title={t("dms.searchClear")}
+                disabled={inputBusy}
                 onClick={() => {
                   setQuery("");
                   setActiveIndex(0);
@@ -265,7 +284,7 @@ export function CreateDmDialog({
                         className="flex min-h-11 items-center gap-1.5 rounded-full border bg-muted/40 py-1 pr-2 pl-1 text-sm outline-none hover:bg-accent focus-visible:ring-3 focus-visible:ring-ring/50"
                         aria-label={t("dms.remove", { name: label })}
                         title={t("dms.remove", { name: label })}
-                        disabled={busy}
+                        disabled={inputBusy}
                         onClick={() => removeUser(id)}
                       >
                         <Avatar size="sm" aria-hidden="true">
@@ -352,6 +371,11 @@ export function CreateDmDialog({
             )}
           </div>
 
+          {syncPending ? (
+            <p role="status" className="text-xs text-destructive">
+              {t("dms.syncPending")}
+            </p>
+          ) : null}
           {errorCause ? (
             <p className="text-xs text-destructive">
               {t("common.writeErrorDetail", {
@@ -365,12 +389,19 @@ export function CreateDmDialog({
               type="button"
               variant="outline"
               className="min-h-11"
+              disabled={submitting}
               onClick={() => handleOpenChange(false)}
             >
               {t("common.cancel")}
             </Button>
             <Button type="submit" className="min-h-11" disabled={!canSubmit}>
-              {submitting ? t("dms.creating") : t("dms.create")}
+              {submitting
+                ? createdChannelId
+                  ? t("dms.opening")
+                  : t("dms.creating")
+                : createdChannelId
+                  ? t("dms.openCreated")
+                  : t("dms.create")}
             </Button>
           </DialogFooter>
         </form>

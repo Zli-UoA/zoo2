@@ -5,6 +5,8 @@ import { userLabel } from "./memberCandidates";
 export const DM_MAX_MEMBERS = 10;
 export const DM_MAX_TARGETS = DM_MAX_MEMBERS - 1;
 export const DM_VISIBLE_NAMES = 3;
+export const DM_SYNC_TIMEOUT_MS = 8000;
+const DM_SYNC_POLL_MS = 100;
 
 const GROUP_DM_PREFIX = "dm:group:";
 
@@ -63,22 +65,22 @@ export function resolveDmDisplayName({
   };
 }
 
-export interface DmCandidateFilter<T extends Pick<UserRow, "id" | "display_name" | "user_name">> {
+export interface DmCandidateFilter<
+  T extends Pick<UserRow, "id" | "display_name" | "user_name" | "is_bot">,
+> {
   users: T[];
   currentUserId: string | null;
   selectedIds: Iterable<string>;
   query: string;
 }
 
-export function filterDmCandidates<T extends Pick<UserRow, "id" | "display_name" | "user_name">>({
-  users,
-  currentUserId,
-  selectedIds,
-  query,
-}: DmCandidateFilter<T>): T[] {
+export function filterDmCandidates<
+  T extends Pick<UserRow, "id" | "display_name" | "user_name" | "is_bot">,
+>({ users, currentUserId, selectedIds, query }: DmCandidateFilter<T>): T[] {
   const selected = new Set(selectedIds);
   const needle = query.trim().toLowerCase();
   return users
+    .filter((user) => !user.is_bot)
     .filter((user) => user.id !== currentUserId && !selected.has(user.id))
     .filter((user) => {
       if (!needle) {
@@ -89,4 +91,44 @@ export function filterDmCandidates<T extends Pick<UserRow, "id" | "display_name"
         user.user_name.toLowerCase().includes(needle)
       );
     });
+}
+
+export interface DmAvailabilitySource {
+  channels: { has: (channelId: string) => boolean };
+  channelUsers: { has: (key: string) => boolean };
+}
+
+export interface DmAvailabilityOptions {
+  timeoutMs?: number;
+  pollMs?: number;
+  now?: () => number;
+  sleep?: (ms: number) => Promise<void>;
+}
+
+/**
+ * DM 作成後に、チャンネル本体と現在ユーザーの参加行がコレクションへ
+ * 反映されるまで待つ。Shape の反映が遅い場合に、行のない会話へ遷移して
+ * 「見つかりません」になるのを防ぐ。
+ */
+export async function waitForDmAvailability(
+  source: DmAvailabilitySource,
+  channelId: string,
+  userId: string,
+  options: DmAvailabilityOptions = {},
+): Promise<boolean> {
+  const timeoutMs = options.timeoutMs ?? DM_SYNC_TIMEOUT_MS;
+  const pollMs = options.pollMs ?? DM_SYNC_POLL_MS;
+  const now = options.now ?? Date.now;
+  const sleep =
+    options.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
+  const deadline = now() + timeoutMs;
+  while (true) {
+    if (source.channels.has(channelId) && source.channelUsers.has(`${userId}:${channelId}`)) {
+      return true;
+    }
+    if (now() >= deadline) {
+      return false;
+    }
+    await sleep(pollMs);
+  }
 }

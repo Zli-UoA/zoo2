@@ -19,10 +19,12 @@ export function DmSection({
   currentUserId,
   loading,
   error,
+  usersError,
   activeChannelId,
   unreadChannelIds,
   onCreate,
   onOpen,
+  onReload,
   className,
 }: {
   channels: ChannelRow[];
@@ -31,10 +33,12 @@ export function DmSection({
   currentUserId: string | null;
   loading: boolean;
   error: boolean;
+  usersError: boolean;
   activeChannelId: string | null;
   unreadChannelIds: ReadonlySet<string>;
   onCreate: () => void;
   onOpen: () => void;
+  onReload: () => void;
   className?: string;
 }) {
   const { t } = useTranslation();
@@ -107,6 +111,13 @@ export function DmSection({
           SKELETON_ROWS.map((row) => <Skeleton key={row} className="h-11 w-full rounded-lg" />)
         ) : error ? (
           <p className="px-2 py-1 text-xs text-destructive">{t("dms.loadError")}</p>
+        ) : usersError ? (
+          <div role="alert" className="flex flex-col items-start gap-2 px-2 py-2">
+            <p className="text-xs text-destructive">{t("dms.usersError")}</p>
+            <Button variant="outline" size="sm" className="min-h-11" onClick={onReload}>
+              {t("dms.reload")}
+            </Button>
+          </div>
         ) : channels.length === 0 ? (
           <div className="flex flex-col items-start gap-2 px-2 py-3">
             <p className="text-sm text-muted-foreground">{t("dms.empty")}</p>

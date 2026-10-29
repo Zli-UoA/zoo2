@@ -376,6 +376,10 @@
     "leave": "Leave",
     "leaving": "Leaving…",
     "leaveTitle": "Leave this direct message?",
-    "leaveDescription": "It will disappear from your list. For a 1:1 chat, choose the same person again to reopen the conversation."
+    "leaveDescription": "It will disappear from your list. For a 1:1 chat, choose the same person again to reopen the conversation.",
+    "reload": "Reload",
+    "syncPending": "The DM was created, but it has not appeared yet. Wait a moment, then choose Open conversation.",
+    "openCreated": "Open conversation",
+    "opening": "Opening…"
   }
 }

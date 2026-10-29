@@ -121,3 +121,25 @@ test("グループ DM を作成してメッセージを送れる", async ({ page
   await page.getByRole("button", { name: "送信", exact: true }).click();
   await expect(page.getByText(message)).toBeVisible();
 });
+
+test("作成中は Escape でダイアログを閉じられない", async ({ page }) => {
+  const suffix = Date.now();
+  const displayName = `Slow DM ${suffix}`;
+  await createPartner(displayName, `slow_dm_${suffix}`);
+
+  await page.goto("/");
+  await hideDevtools(page);
+  await page.route("**/api/dms", async (route) => {
+    await new Promise((resolve) => setTimeout(resolve, 1500));
+    await route.continue();
+  });
+  await openDmDialog(page);
+  await selectPartner(page, displayName);
+  await page.getByRole("button", { name: "会話を始める", exact: true }).click();
+  await expect(page.getByRole("button", { name: "作成中…", exact: true })).toBeVisible();
+
+  await page.keyboard.press("Escape");
+  await expect(page.getByRole("dialog")).toBeVisible();
+  await expect(page).toHaveURL(/\/$/);
+  await expect(page).toHaveURL(/\/channels\/[0-9a-f-]+$/, { timeout: 15_000 });
+});
