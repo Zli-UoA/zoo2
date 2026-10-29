@@ -34,10 +34,10 @@ jobs:
     permissions:
       contents: read
     steps:
-      - uses: actions/checkout@11d5960a3263750d5838078e36cf38b85af67726c2 # v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           persist-credentials: false
-      - uses: actions/setup-node@24997072c9b0ef3589644e2896645e5dc5b1a9c38 # v6
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
         with:
           node-version: "24.22.0"
       - run: node --test .github/scripts/deployment-badges.test.mjs
@@ -60,11 +60,11 @@ jobs:
       deployments: read
     steps:
       # workflow_run is privileged: always execute trusted default-branch code.
-      - uses: actions/checkout@11d5960a3263750d5838078e36cf38b85af67726c2 # v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           ref: main
           persist-credentials: false
-      - uses: actions/setup-node@24997072c9b0ef3589644e2896645e5dc5b1a9c38 # v6
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
         with:
           node-version: "24.22.0"
       - run: node --test .github/scripts/deployment-badges.test.mjs
