@@ -55,7 +55,7 @@ jobs:
       group: deployment-badges
       cancel-in-progress: false
     permissions:
-      contents: write
+      contents: read
       statuses: read
       deployments: read
     steps:
@@ -68,7 +68,8 @@ jobs:
         with:
           node-version: "24.22.0"
       - run: node --test .github/scripts/deployment-badges.test.mjs
-      - name: Publish Flux snapshot to the dedicated branch
+      - name: Publish badge JSON to the shared Gist
         env:
           GH_TOKEN: ${{ github.token }}
+          BADGE_GIST_TOKEN: ${{ secrets.BADGE_GIST_TOKEN }}
         run: node .github/scripts/deployment-badges.mjs

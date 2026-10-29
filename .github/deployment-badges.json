@@ -3,5 +3,7 @@
   "required": [
     "flux/zoo2-migrate",
     "flux/zoo2"
-  ]
+  ],
+  "prefix": "zoo2",
+  "gistId": "4def5a543fcb732d3ed5aa9182568925"
 }
