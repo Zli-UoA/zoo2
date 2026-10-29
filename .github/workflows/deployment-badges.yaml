@@ -19,9 +19,18 @@ on:
 permissions: {}
 
 jobs:
+  runner:
+    if: vars.CI_RUNNER == ''
+    uses: ./.github/workflows/select-runner.yaml
+    permissions:
+      contents: read
+    secrets:
+      runner-status-token: ${{ secrets.RUNNER_STATUS_TOKEN }}
+
   test:
-    if: github.event_name == 'pull_request'
-    runs-on: ubuntu-24.04
+    needs: runner
+    if: ${{ !cancelled() && github.event_name == 'pull_request' }}
+    runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-24.04' || fromJSON(needs.runner.outputs.runs-on || format('"{0}"', vars.CI_RUNNER || 'zli-k8s')) }}
     permissions:
       contents: read
     steps:
@@ -34,12 +43,13 @@ jobs:
       - run: node --test .github/scripts/deployment-badges.test.mjs
 
   publish:
+    needs: runner
     if: >-
-      github.event_name != 'pull_request' &&
+      !cancelled() && github.event_name != 'pull_request' &&
       (github.event_name != 'status' ||
        startsWith(github.event.context, 'flux/') ||
        startsWith(github.event.context, 'kustomization/'))
-    runs-on: ubuntu-24.04
+    runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-24.04' || fromJSON(needs.runner.outputs.runs-on || format('"{0}"', vars.CI_RUNNER || 'zli-k8s')) }}
     timeout-minutes: 5
     concurrency:
       group: deployment-badges
