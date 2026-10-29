@@ -1,3 +1,4 @@
+import { useEffect, useRef, useState } from "react";
 import { MessageCard, parseMessageCard } from "./MessageCard";
 import { useTranslation } from "react-i18next";
 import { cn } from "cn";
@@ -16,8 +17,7 @@ import { useLocale } from "../../i18n/LocaleProvider";
 import type { KitchenCatalog } from "../../../lib/emoji/kitchen";
 import { kitchenLabel, reactionKey } from "../../../lib/emoji/kitchen";
 import type { ReactionGroup } from "../../../lib/emoji/reactions";
-import { AppAvatar, AuthorIdentity } from "../AppIdentity";
-import { MessageAppContent } from "../AppBlocks";
+import { Avatar, AvatarFallback } from "../../ui/avatar";
 import { Button, buttonVariants } from "../../ui/button";
 import {
   DropdownMenu,
@@ -27,6 +27,7 @@ import {
 } from "../../ui/dropdown-menu";
 import { Textarea } from "../../ui/textarea";
 import { normalizeUtcTimestamp } from "../../../lib/timestamps";
+import { initials } from "../format";
 import { authorLabel, formatDateSeparator, formatTime, fullTimestamp } from "./messageFormat";
 import type { MessageItem } from "./messageGrouping";
 import { ReactionEmoji } from "./ReactionEmoji";
@@ -100,7 +101,7 @@ function ReplyLink({ count, onOpen }: { count: number; onOpen: () => void }) {
  * 1 行分のメッセージ。連投は先頭だけアバターと投稿者名を出し、以降は本文だけを
  * 詰めて表示する。リアクションのチップは自分の分をハイライトし、クリックで
  * 追加 / 削除する。返信数はルートにだけ出し、押すとスレッドペインを開く。
- * 編集 / 削除はホバー / フォーカス時（タッチ端末では常時）に出す。
+ * 編集 / 削除はホバー / フォーカス時（タッチ端末では長押し）に出す。
  */
 export function MessageRow({
   item,
@@ -124,6 +125,15 @@ export function MessageRow({
   const { locale } = useLocale();
   const { message } = item;
 
+  const [menuOpen, setMenuOpen] = useState(false);
+  const hold = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const origin = useRef({ x: 0, y: 0 });
+  function cancelHold() {
+    if (hold.current !== null) clearTimeout(hold.current);
+    hold.current = null;
+  }
+  useEffect(() => cancelHold, []);
+
   const threadButton = onOpenThread ? (
     <Button
       variant="ghost"
@@ -140,6 +150,30 @@ export function MessageRow({
     <>
       {item.showDateSeparator ? <DateSeparator value={message.created_at} /> : null}
       <div
+        onPointerDown={(event) => {
+          if (
+            isEditing ||
+            event.pointerType !== "touch" ||
+            !event.isPrimary ||
+            (event.target as HTMLElement).closest("button, a, input, textarea")
+          )
+            return;
+          cancelHold();
+          origin.current = { x: event.clientX, y: event.clientY };
+          hold.current = setTimeout(() => {
+            setMenuOpen(true);
+            hold.current = null;
+          }, 500);
+        }}
+        onPointerMove={(event) => {
+          if (Math.hypot(event.clientX - origin.current.x, event.clientY - origin.current.y) > 10)
+            cancelHold();
+        }}
+        onPointerUp={cancelHold}
+        onPointerCancel={cancelHold}
+        onContextMenu={(event) => {
+          if (menuOpen || hold.current !== null) event.preventDefault();
+        }}
         className={cn(
           "group/row relative flex gap-3 rounded-lg px-3 transition-colors hover:bg-muted/60 focus-within:bg-muted/60",
           item.isGroupStart ? "pt-1.5" : "pt-0",
@@ -147,12 +181,9 @@ export function MessageRow({
         )}
       >
         {item.isGroupStart ? (
-          <AppAvatar
-            className="mt-0.5"
-            label={authorLabel(message)}
-            isBot={!!message.is_bot}
-            src={message.avatar_url}
-          />
+          <Avatar className="mt-0.5">
+            <AvatarFallback>{initials(authorLabel(message))}</AvatarFallback>
+          </Avatar>
         ) : (
           <div className="mt-0.5 w-8 shrink-0 text-right">
             <time
@@ -168,7 +199,7 @@ export function MessageRow({
         <div className="min-w-0 flex-1">
           {item.isGroupStart ? (
             <div className="flex items-baseline gap-2">
-              <AuthorIdentity message={message} />
+              <span className="truncate text-sm font-semibold">{authorLabel(message)}</span>
               <time
                 className="shrink-0 text-[11px] text-muted-foreground tabular-nums"
                 dateTime={normalizeUtcTimestamp(message.created_at)}
@@ -211,10 +242,7 @@ export function MessageRow({
               </div>
             </form>
           ) : (
-            <>
-              <MessageBody content={message.content} card={message.card} />
-              <MessageAppContent message={message} />
-            </>
+            <MessageBody content={message.content} card={message.card} />
           )}
 
           {!isEditing ? (
@@ -222,40 +250,54 @@ export function MessageRow({
               {replyCount > 0 && onOpenThread ? (
                 <ReplyLink count={replyCount} onOpen={onOpenThread} />
               ) : null}
-              <div
-                className="flex flex-wrap items-center gap-1 py-1"
-                role="group"
-                aria-label={t("reactions.groupLabel")}
-              >
-                {reactions.map((reaction) => (
-                  <button
-                    key={reactionKey(reaction.emoji)}
-                    type="button"
-                    className={cn(
-                      "inline-flex min-h-8 items-center gap-1 rounded-full border px-2 text-xs transition-colors hover:bg-muted disabled:opacity-50",
-                      reaction.ownId &&
-                        "border-brand/40 bg-brand-muted text-brand-muted-foreground",
-                    )}
-                    aria-pressed={!!reaction.ownId}
+              <div className="flex flex-wrap items-center gap-1 py-1">
+              {reactions.length > 0 ? (
+                <div
+                  className="contents"
+                  role="group"
+                  aria-label={t("reactions.groupLabel")}
+                >
+                  {reactions.map((reaction) => (
+                    <button
+                      key={reactionKey(reaction.emoji)}
+                      type="button"
+                      className={cn(
+                        "inline-flex min-h-8 items-center gap-1 rounded-full border px-2 text-xs transition-colors hover:bg-muted disabled:opacity-50",
+                        reaction.ownId &&
+                          "border-brand/40 bg-brand-muted text-brand-muted-foreground",
+                      )}
+                      aria-pressed={!!reaction.ownId}
+                      disabled={!canReact}
+                      aria-label={
+                        reaction.ownId
+                          ? t("reactions.chipMine", {
+                              emoji: kitchenLabel(reaction.emoji),
+                              count: reaction.count,
+                            })
+                          : t("reactions.chip", {
+                              emoji: kitchenLabel(reaction.emoji),
+                              count: reaction.count,
+                            })
+                      }
+                      title={kitchenLabel(reaction.emoji)}
+                      onClick={() => onReaction(reaction.emoji)}
+                    >
+                      <ReactionEmoji emoji={reaction.emoji} catalog={kitchenCatalog} />
+                      <span className="tabular-nums">{reaction.count}</span>
+                    </button>
+                  ))}
+                  <Button
+                    variant="ghost"
+                    size="icon-xs"
+                    aria-label={t("reactions.add")}
+                    title={t("reactions.add")}
                     disabled={!canReact}
-                    aria-label={
-                      reaction.ownId
-                        ? t("reactions.chipMine", {
-                            emoji: kitchenLabel(reaction.emoji),
-                            count: reaction.count,
-                          })
-                        : t("reactions.chip", {
-                            emoji: kitchenLabel(reaction.emoji),
-                            count: reaction.count,
-                          })
-                    }
-                    title={kitchenLabel(reaction.emoji)}
-                    onClick={() => onReaction(reaction.emoji)}
+                    onClick={onPickReaction}
                   >
-                    <ReactionEmoji emoji={reaction.emoji} catalog={kitchenCatalog} />
-                    <span className="tabular-nums">{reaction.count}</span>
-                  </button>
-                ))}
+                    <SmilePlusIcon />
+                  </Button>
+                </div>
+              ) : null}
                 <Button
                   variant="ghost"
                   size="icon-xs"
@@ -269,16 +311,6 @@ export function MessageRow({
                 >
                   <BotIcon />
                 </Button>
-                <Button
-                  variant="ghost"
-                  size="icon-xs"
-                  aria-label={t("reactions.add")}
-                  title={t("reactions.add")}
-                  disabled={!canReact}
-                  onClick={onPickReaction}
-                >
-                  <SmilePlusIcon />
-                </Button>
               </div>
             </>
           ) : null}
@@ -288,6 +320,16 @@ export function MessageRow({
           // 外枠は不可視の間クリックを通す（子は自前で pointer-events を戻す）。
           <div className="pointer-events-none absolute right-1.5 top-0 flex items-center">
             <div className="pointer-events-none hidden items-center gap-0.5 rounded-lg border bg-popover p-0.5 opacity-0 shadow-sm transition-opacity group-hover/row:pointer-events-auto group-hover/row:opacity-100 group-focus-within/row:pointer-events-auto group-focus-within/row:opacity-100 [@media(hover:hover)]:flex">
+              <Button
+                variant="ghost"
+                size="icon-xs"
+                aria-label={t("reactions.add")}
+                title={t("reactions.add")}
+                disabled={!canReact}
+                onClick={onPickReaction}
+              >
+                <SmilePlusIcon />
+              </Button>
               {threadButton}
               {isOwn ? (
                 <>
@@ -313,38 +355,44 @@ export function MessageRow({
                 </>
               ) : null}
             </div>
-            {/* タッチ端末用の常時表示。「⋯」は外枠の pointer-events を打ち消す。 */}
-            {threadButton || isOwn ? (
-              <div className="pointer-events-auto hidden items-center gap-0.5 rounded-lg border bg-popover p-0.5 shadow-sm [@media(hover:none)]:flex">
-                {threadButton}
-                {isOwn ? (
-                  <DropdownMenu>
-                    <DropdownMenuTrigger
-                      aria-label={t("messages.more")}
-                      title={t("messages.more")}
-                      className={buttonVariants({
-                        variant: "ghost",
-                        size: "icon-xs",
-                        className:
-                          "pointer-events-auto border bg-popover shadow-sm [@media(hover:hover)]:hidden",
-                      })}
-                    >
-                      <MoreHorizontalIcon />
-                    </DropdownMenuTrigger>
-                    <DropdownMenuContent align="end">
-                      <DropdownMenuItem onClick={onStartEdit}>
-                        <PencilIcon />
-                        {t("messages.edit")}
-                      </DropdownMenuItem>
-                      <DropdownMenuItem variant="destructive" onClick={onRequestDelete}>
-                        <TrashIcon />
-                        {t("messages.delete")}
-                      </DropdownMenuItem>
-                    </DropdownMenuContent>
-                  </DropdownMenu>
+            <DropdownMenu open={menuOpen} onOpenChange={setMenuOpen}>
+              <DropdownMenuTrigger
+                aria-label={t("messages.more")}
+                title={t("messages.more")}
+                className={buttonVariants({
+                  variant: "ghost",
+                  size: "icon-xs",
+                  className:
+                    "pointer-events-none opacity-0 focus-visible:pointer-events-auto focus-visible:opacity-100",
+                })}
+              >
+                <MoreHorizontalIcon />
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end">
+                <DropdownMenuItem disabled={!canReact} onClick={onPickReaction}>
+                  <SmilePlusIcon />
+                  {t("reactions.add")}
+                </DropdownMenuItem>
+                {onOpenThread ? (
+                  <DropdownMenuItem onClick={onOpenThread}>
+                    <MessageSquarePlusIcon />
+                    {t("threads.open")}
+                  </DropdownMenuItem>
                 ) : null}
-              </div>
-            ) : null}
+                {isOwn ? (
+                  <>
+                    <DropdownMenuItem onClick={onStartEdit}>
+                      <PencilIcon />
+                      {t("messages.edit")}
+                    </DropdownMenuItem>
+                    <DropdownMenuItem variant="destructive" onClick={onRequestDelete}>
+                      <TrashIcon />
+                      {t("messages.delete")}
+                    </DropdownMenuItem>
+                  </>
+                ) : null}
+              </DropdownMenuContent>
+            </DropdownMenu>
           </div>
         ) : null}
       </div>

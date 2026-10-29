@@ -5,7 +5,6 @@ import { SendIcon } from "lucide-react";
 import type { TFunction } from "i18next";
 import { useMediaQuery } from "../../layout/useMediaQuery";
 import { Button } from "../../ui/button";
-import { Textarea } from "../../ui/textarea";
 
 import { insertMention, mentionOptions, mentionQuery, type MentionOption } from "./mentions";
 import { insertMfm, mfmOptions, mfmQuery } from "./mfmSuggestions";
@@ -68,14 +67,14 @@ export function canSubmitComposer(value: string, disabled: boolean): boolean {
   return !disabled && value.trim().length > 0;
 }
 
-/** キーボード操作を案内できないタッチ環境では送信ボタンを案内する。 */
+/** キーボード操作を案内できないタッチ環境では案内を表示しない。 */
 export function composerSendHint(
   platform: ComposerPlatform,
   t: TFunction,
   isTouch = false,
 ): string {
   if (isTouch) {
-    return t("composer.touch");
+    return "";
   }
   if (platform === "mac") {
     return t("composer.mac");
@@ -236,14 +235,14 @@ export function Composer({
         </ul>
       ) : null}
       <div className="flex items-end gap-2 rounded-xl border border-input bg-background p-1.5 transition-colors focus-within:border-ring focus-within:ring-3 focus-within:ring-ring/30 dark:bg-input/30">
-        <Textarea
+        <textarea
           ref={textareaRef}
           rows={1}
           value={value}
           disabled={disabled}
           placeholder={resolvedPlaceholder}
           aria-label={resolvedAriaLabel}
-          className="min-h-9 resize-none border-0 bg-transparent px-2 py-1.5 text-base shadow-none [field-sizing:fixed] focus-visible:ring-0 md:text-sm dark:bg-transparent"
+          className="w-full outline-none placeholder:text-muted-foreground disabled:cursor-not-allowed disabled:opacity-50 min-h-11 min-w-0 flex-1 resize-none rounded-none border-0 bg-transparent px-2 py-2.5 text-base leading-6 shadow-none field-sizing-fixed focus-visible:ring-0 md:text-sm dark:bg-transparent"
           aria-autocomplete="list"
           aria-controls={options.length ? listId : undefined}
           aria-activedescendant={options.length ? `${listId}-${selectedOption}` : undefined}
@@ -319,7 +318,8 @@ export function Composer({
         />
         <Button
           type="submit"
-          size="icon-sm"
+          size="icon-lg"
+          className="mb-1 size-11! md:size-9!"
           disabled={!canSubmitComposer(value, disabled)}
           aria-label={t("messages.send")}
           title={t("messages.send")}
@@ -327,9 +327,11 @@ export function Composer({
           <SendIcon />
         </Button>
       </div>
-      <p className="mt-1.5 px-1 text-[11px] text-muted-foreground">
-        {composerSendHint(platform, t, isTouch)}
-      </p>
+      {!isTouch ? (
+        <p className="mt-1.5 px-1 text-[11px] text-muted-foreground">
+          {composerSendHint(platform, t, isTouch)}
+        </p>
+      ) : null}
     </form>
   );
 }

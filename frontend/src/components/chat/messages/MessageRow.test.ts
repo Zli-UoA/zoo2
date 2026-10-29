@@ -109,12 +109,12 @@ describe("MessageRow", () => {
     expect(continued).toMatch(/datetime="2026-01-02T09:00:00\.000Z"/i);
   });
 
-  it("omits the touch actions container when there are no actions", () => {
+  it("never displays a persistent touch toolbar", () => {
     const withoutActions = render(buildItem());
     expect(withoutActions).not.toContain("[@media(hover:none)]:flex");
 
     const withActions = render(buildItem(), false, { onOpenThread: noop });
-    expect(withActions).toContain("[@media(hover:none)]:flex");
+    expect(withActions).not.toContain("[@media(hover:none)]:flex");
   });
 
   it("keeps the hover actions from stealing clicks while invisible", () => {
@@ -126,8 +126,8 @@ describe("MessageRow", () => {
     expect(html).toContain("group-focus-within/row:pointer-events-auto");
     expect(html).toContain("group-hover/row:opacity-100");
     expect(html).toContain("group-focus-within/row:opacity-100");
-    // タッチ用の「⋯」は外枠の指定を打ち消して押せるままにする。
-    expect(html).toContain("pointer-events-auto border bg-popover shadow-sm");
+    // 長押し用アンカーは通常のタップを奪わない。
+    expect(html).toContain("pointer-events-none opacity-0");
   });
 });
 

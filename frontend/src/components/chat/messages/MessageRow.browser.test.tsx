@@ -1,4 +1,4 @@
-import { render, screen } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vite-plus/test";
 
@@ -51,6 +51,32 @@ function renderRow(item: MessageItem, isOwn = false, props: Partial<MessageRowPr
 }
 
 describe("MessageRow", () => {
+  it("hides the reaction strip until a reaction exists", () => {
+    const { container } = renderRow(buildItem(), false, { canReact: true });
+    expect(container.querySelector('[role="group"]')).toBeNull();
+  });
+
+  it("opens the menu on a touch hold and adds the first reaction", async () => {
+    const onPickReaction = vi.fn();
+    const { container } = renderRow(buildItem(), false, { canReact: true, onPickReaction });
+    const row = container.querySelector("div.group\\/row")!;
+    fireEvent.pointerDown(row, { pointerType: "touch", isPrimary: true, clientX: 20, clientY: 20 });
+    await waitFor(() =>
+      expect(screen.getByRole("menuitem", { name: "リアクションを追加" })).toBeTruthy(),
+    );
+    await userEvent.click(screen.getByRole("menuitem", { name: "リアクションを追加" }));
+    expect(onPickReaction).toHaveBeenCalledOnce();
+  });
+
+  it("cancels a touch hold when scrolling", async () => {
+    const { container } = renderRow(buildItem());
+    const row = container.querySelector("div.group\\/row")!;
+    fireEvent.pointerDown(row, { pointerType: "touch", isPrimary: true, clientX: 20, clientY: 20 });
+    fireEvent.pointerMove(row, { pointerType: "touch", clientX: 20, clientY: 50 });
+    await new Promise((resolve) => setTimeout(resolve, 550));
+    expect(screen.queryByRole("menu")).toBeNull();
+  });
+
   it("renders URLs as safe external links", () => {
     renderRow(buildItem({ content: "詳細は https://example.com/docs を参照" }));
 
@@ -118,7 +144,7 @@ describe("MessageRow", () => {
     expect(edit.closest("div")?.className).toContain("group-hover/row:opacity-100");
 
     const more = screen.getByLabelText("その他の操作");
-    expect(more.className).toContain("pointer-events-auto border bg-popover shadow-sm");
+    expect(more.className).toContain("pointer-events-none opacity-0");
   });
 });
 
