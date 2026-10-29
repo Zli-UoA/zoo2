@@ -56,6 +56,16 @@ export function AppShell({ children }: { children: ReactNode }) {
     () => channels.find((channel) => channel.id === selectedChannelId) ?? null,
     [channels, selectedChannelId],
   );
+  const membersChannel = selectedChannel && !selectedChannel.is_dm ? selectedChannel : null;
+
+  const [prevSelectedChannelIsDm, setPrevSelectedChannelIsDm] = useState(false);
+  const selectedChannelIsDm = selectedChannel?.is_dm ?? false;
+  if (prevSelectedChannelIsDm !== selectedChannelIsDm) {
+    setPrevSelectedChannelIsDm(selectedChannelIsDm);
+    if (selectedChannelIsDm) {
+      setMembersOpen(false);
+    }
+  }
 
   // チャンネル・通知を開いたら狭幅でもメイン画面へ、ホームではサイドバーへ戻す。
   useEffect(() => {
@@ -140,15 +150,15 @@ export function AppShell({ children }: { children: ReactNode }) {
           </main>
           {/* 表示は CSS（`hidden lg:flex`）が決める。狭幅でダイアログと二重に
             マウントしないよう、マウントだけ `isWide` で抑える。 */}
-          {isWide && membersOpen && selectedChannel ? (
+          {isWide && membersOpen && membersChannel ? (
             <MembersPanel
-              channel={selectedChannel}
+              channel={membersChannel}
               className="hidden w-72 shrink-0 border-l lg:flex xl:w-80"
             />
           ) : null}
-          {selectedChannel ? (
+          {membersChannel ? (
             <MembersDialog
-              channel={selectedChannel}
+              channel={membersChannel}
               open={membersOpen && !isWide}
               onOpenChange={setMembersOpen}
             />

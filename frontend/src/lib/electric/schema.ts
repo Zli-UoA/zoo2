@@ -80,6 +80,7 @@ export const CHANNEL_SCHEMA: ShapeSchema<ChannelRow> = {
     description: "varchar",
     created_user_id: "text",
     is_private: "bool",
+    is_dm: "bool",
     created_at: "timestamp",
     updated_at: "timestamp",
     archive_at: "timestamp",
