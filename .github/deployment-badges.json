@@ -1,0 +1,7 @@
+{
+  "mode": "app",
+  "required": [
+    "flux/zoo2-migrate",
+    "flux/zoo2"
+  ]
+}

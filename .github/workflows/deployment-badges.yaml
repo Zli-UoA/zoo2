@@ -1,0 +1,64 @@
+name: Deployment badges
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    paths:
+      - .github/workflows/deployment-badges.yaml
+      - .github/deployment-badges.json
+      - .github/scripts/deployment-badges*.mjs
+  status:
+  workflow_run:
+    workflows: [Flux production status]
+    types: [completed]
+  schedule:
+    - cron: "17 * * * *"
+  workflow_dispatch:
+
+permissions: {}
+
+jobs:
+  test:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@11d5960a3263750d5838078e36cf38b85af67726c2 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@24997072c9b0ef3589644e2896645e5dc5b1a9c38 # v6
+        with:
+          node-version: "24.22.0"
+      - run: node --test .github/scripts/deployment-badges.test.mjs
+
+  publish:
+    if: >-
+      github.event_name != 'pull_request' &&
+      (github.event_name != 'status' ||
+       startsWith(github.event.context, 'flux/') ||
+       startsWith(github.event.context, 'kustomization/'))
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    concurrency:
+      group: deployment-badges
+      cancel-in-progress: false
+    permissions:
+      contents: write
+      statuses: read
+      deployments: read
+    steps:
+      # workflow_run is privileged: always execute trusted default-branch code.
+      - uses: actions/checkout@11d5960a3263750d5838078e36cf38b85af67726c2 # v4
+        with:
+          ref: main
+          persist-credentials: false
+      - uses: actions/setup-node@24997072c9b0ef3589644e2896645e5dc5b1a9c38 # v6
+        with:
+          node-version: "24.22.0"
+      - run: node --test .github/scripts/deployment-badges.test.mjs
+      - name: Publish Flux snapshot to the dedicated branch
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: node .github/scripts/deployment-badges.mjs
