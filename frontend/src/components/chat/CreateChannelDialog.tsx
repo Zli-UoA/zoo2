@@ -64,6 +64,7 @@ export function CreateChannelDialog({
         description: trimmedDescription || null,
         created_user_id: currentUserId ?? "",
         is_private: isPrivate,
+        is_dm: false,
         created_at: new Date().toISOString(),
         updated_at: null,
         archive_at: null,

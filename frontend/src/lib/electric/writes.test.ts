@@ -61,6 +61,7 @@ const channel: ChannelRow = {
   description: null,
   created_user_id: "u1",
   is_private: false,
+  is_dm: false,
   created_at: "2026-01-01 00:00:00.000",
   updated_at: null,
   archive_at: null,
