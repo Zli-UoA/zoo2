@@ -4,8 +4,8 @@
   },
   "channels": {
     "unread": "未読メッセージあり",
-    "renameTitle": "チャンネル名を変更",
-    "renameHelp": "日本語などの文字・数字と半角ハイフン（-）・アンダースコア（_）で80文字以内にしてください。空白・絵文字・その他の記号・予約語は使用できません。",
+    "editTitle": "チャンネルを編集",
+    "editHelp": "チャンネル名は日本語などの文字・数字と半角ハイフン（-）・アンダースコア（_）で80文字以内にしてください。空白・絵文字・その他の記号・予約語は使用できません。",
     "saveName": "保存",
     "savingName": "保存中…",
     "title": "チャンネル",
@@ -31,6 +31,11 @@
     "visibilityHelp": "公開チャンネルは誰でも参加できます。非公開は作成者が招待した人だけが参加できます。",
     "newName": "新しいチャンネル名",
     "makePrivate": "非公開にする",
+    "descriptionLabel": "説明（任意）",
+    "descriptionPlaceholder": "このチャンネルの目的や話題",
+    "descriptionHelp": "{{max}}文字以内で入力できます。",
+    "descriptionTooLong": "説明は{{max}}文字以内で入力してください（現在{{length}}文字）。",
+    "descriptionCounter": "{{length}}/{{max}}",
     "creating": "作成中…",
     "create": "チャンネル作成"
   },

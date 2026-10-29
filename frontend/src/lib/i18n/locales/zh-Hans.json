@@ -4,8 +4,8 @@
   },
   "channels": {
     "unread": "有未读消息",
-    "renameTitle": "重命名频道",
-    "renameHelp": "最多80个字符，仅限文字、数字、半角连字符（-）和下划线（_）。不能使用空格、表情符号、其他符号或保留名称。",
+    "editTitle": "编辑频道",
+    "editHelp": "频道名最多80个字符，仅限文字、数字、半角连字符（-）和下划线（_）。不能使用空格、表情符号、其他符号或保留名称。",
     "saveName": "保存",
     "savingName": "保存中…",
     "title": "频道",
@@ -31,6 +31,11 @@
     "visibilityHelp": "任何人都可以加入公开频道。私密频道仅限创建者邀请的人加入。",
     "newName": "新频道名称",
     "makePrivate": "设为私密频道",
+    "descriptionLabel": "描述（可选）",
+    "descriptionPlaceholder": "这个频道的用途或话题",
+    "descriptionHelp": "最多{{max}}个字符。",
+    "descriptionTooLong": "描述不能超过{{max}}个字符（当前{{length}}个）。",
+    "descriptionCounter": "{{length}}/{{max}}",
     "creating": "创建中…",
     "create": "创建频道"
   },

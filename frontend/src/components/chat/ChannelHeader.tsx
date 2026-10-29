@@ -39,6 +39,7 @@ import {
 } from "../ui/dropdown-menu";
 import { ScrollArea } from "../ui/scroll-area";
 import { Skeleton } from "../ui/skeleton";
+import { normalizeChannelDescription } from "./channelDescription";
 import { RenameChannelDialog } from "./RenameChannelDialog";
 import { authorLabel, formatTime, fullTimestamp, type FeedMessage } from "./messages/messageFormat";
 
@@ -56,6 +57,7 @@ export function ChannelHeader({
   const admin = useChannelAdmin(channel);
   const isArchived = admin.access.isArchived;
   const canManage = admin.access.canManageChannel;
+  const description = normalizeChannelDescription(channel.description);
   const [confirmAction, setConfirmAction] = useState<"archive" | "unarchive" | null>(null);
   const [webhooksOpen, setWebhooksOpen] = useState(false);
   const [renameOpen, setRenameOpen] = useState(false);
@@ -99,7 +101,7 @@ export function ChannelHeader({
           ) : null}
         </div>
         <p className="truncate text-xs text-muted-foreground">
-          {channel.description ?? t("channels.noDescription")}
+          {description || t("channels.noDescription")}
         </p>
       </div>
       <div className="flex shrink-0 items-center gap-1">
@@ -138,7 +140,7 @@ export function ChannelHeader({
               {!isArchived ? (
                 <DropdownMenuItem onClick={() => setRenameOpen(true)}>
                   <PencilIcon />
-                  {t("channels.renameTitle")}
+                  {t("channels.editTitle")}
                 </DropdownMenuItem>
               ) : null}
               {isArchived ? (

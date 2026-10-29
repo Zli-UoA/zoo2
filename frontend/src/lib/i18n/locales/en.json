@@ -4,8 +4,8 @@
   },
   "channels": {
     "unread": "Unread messages",
-    "renameTitle": "Rename channel",
-    "renameHelp": "Use up to 80 letters, numbers, hyphens (-), or underscores (_). Spaces, emoji, other symbols, and reserved names are not allowed.",
+    "editTitle": "Edit channel",
+    "editHelp": "Use up to 80 letters, numbers, hyphens (-), or underscores (_) for the channel name. Spaces, emoji, other symbols, and reserved names are not allowed.",
     "saveName": "Save",
     "savingName": "Saving…",
     "title": "Channels",
@@ -31,6 +31,11 @@
     "visibilityHelp": "Anyone can join a public channel. Private channels are invite-only.",
     "newName": "New channel name",
     "makePrivate": "Make private",
+    "descriptionLabel": "Description (optional)",
+    "descriptionPlaceholder": "What is this channel about?",
+    "descriptionHelp": "Up to {{max}} characters.",
+    "descriptionTooLong": "Description must be {{max}} characters or fewer (currently {{length}}).",
+    "descriptionCounter": "{{length}}/{{max}}",
     "creating": "Creating…",
     "create": "Create channel"
   },
