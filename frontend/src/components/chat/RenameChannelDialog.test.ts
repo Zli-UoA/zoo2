@@ -139,6 +139,30 @@ describe("RenameChannelDialog", () => {
     expect(onOpenChange).toHaveBeenCalledWith(false);
   });
 
+  it("does not send a stale description after an external update when only the name is edited", async () => {
+    const draft: Partial<ChannelRow> = { channel_name: "original", description: "external" };
+    update.mockImplementation((_id, change) => {
+      change(draft);
+      return { when: () => Promise.resolve() };
+    });
+    await render({ description: "external" });
+    await setValue(nameInput(), "renamed");
+    await send();
+    expect(draft).toEqual({ channel_name: "renamed", description: "external" });
+  });
+
+  it("does not send a stale name after an external update when only the description is edited", async () => {
+    const draft: Partial<ChannelRow> = { channel_name: "external-name", description: "keep" };
+    update.mockImplementation((_id, change) => {
+      change(draft);
+      return { when: () => Promise.resolve() };
+    });
+    await render({ channel_name: "external-name" });
+    await setValue(descriptionInput(), "新しい説明");
+    await send();
+    expect(draft).toEqual({ channel_name: "external-name", description: "新しい説明" });
+  });
+
   it("clears the description by saving an empty string", async () => {
     const draft: Partial<ChannelRow> = { channel_name: "original", description: "keep" };
     update.mockImplementation((_id, change) => {

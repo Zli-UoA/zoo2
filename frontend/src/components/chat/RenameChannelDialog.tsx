@@ -27,9 +27,11 @@ export function RenameChannelDialog({
 }) {
   const { t } = useTranslation();
   const { channels } = useCollections();
-  const initialDescription = channel.description ?? "";
-  const [name, setName] = useState(channel.channel_name);
-  const [description, setDescription] = useState(initialDescription);
+  // 開いた時点の値を保持し、外部更新で prop が変わっても未編集フィールドは送らない。
+  const initialName = useRef(channel.channel_name);
+  const initialDescription = useRef(channel.description ?? "");
+  const [name, setName] = useState(initialName.current);
+  const [description, setDescription] = useState(initialDescription.current);
   const [submitting, setSubmitting] = useState(false);
   const pending = useRef(false);
   const [errorCause, setErrorCause] = useState<{ cause: unknown } | null>(null);
@@ -37,8 +39,8 @@ export function RenameChannelDialog({
   const nextDescription = description.trim();
   const descriptionLength = channelDescriptionLength(nextDescription);
   const descriptionTooLong = descriptionLength > MAX_CHANNEL_DESCRIPTION_LENGTH;
-  const nameChanged = nextName !== channel.channel_name;
-  const descriptionChanged = nextDescription !== initialDescription.trim();
+  const nameChanged = nextName !== initialName.current.trim();
+  const descriptionChanged = nextDescription !== initialDescription.current.trim();
   const hasChanges = nameChanged || descriptionChanged;
 
   function handleOpenChange(open: boolean) {
@@ -76,7 +78,7 @@ export function RenameChannelDialog({
 
   return (
     <Dialog open onOpenChange={handleOpenChange}>
-      <DialogContent>
+      <DialogContent className="max-h-[85dvh] overflow-y-auto">
         <DialogHeader>
           <DialogTitle>{t("channels.editTitle")}</DialogTitle>
           <DialogDescription id="rename-channel-help">{t("channels.editHelp")}</DialogDescription>
@@ -113,6 +115,7 @@ export function RenameChannelDialog({
             </div>
             <Textarea
               id="rename-channel-description"
+              className="max-h-40 overflow-y-auto"
               value={description}
               onChange={(event) => setDescription(event.target.value)}
               placeholder={t("channels.descriptionPlaceholder")}

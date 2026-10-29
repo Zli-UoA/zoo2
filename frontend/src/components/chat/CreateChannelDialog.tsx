@@ -79,7 +79,7 @@ export function CreateChannelDialog({
 
   return (
     <Dialog open={open} onOpenChange={handleOpenChange}>
-      <DialogContent>
+      <DialogContent className="max-h-[85dvh] overflow-y-auto">
         <DialogHeader>
           <DialogTitle>{t("channels.createTitle")}</DialogTitle>
           <DialogDescription>{t("channels.visibilityHelp")}</DialogDescription>
@@ -113,6 +113,7 @@ export function CreateChannelDialog({
             </div>
             <Textarea
               id="create-channel-description"
+              className="max-h-40 overflow-y-auto"
               value={description}
               onChange={(event) => setDescription(event.target.value)}
               placeholder={t("channels.descriptionPlaceholder")}
