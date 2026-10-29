@@ -8,6 +8,8 @@ use backend::{apps, config::Config, db::init_db, routes::create_router, state::A
 use serde_json::{Value, json};
 use tower::ServiceExt;
 use uuid::Uuid;
+static HTTP_WORKER_TEST_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
 async fn request(
     app: &Router,
     method: &str,
@@ -1083,6 +1085,7 @@ async fn websocket_control_frames_and_scoped_presence_commands() -> anyhow::Resu
         }
     })
     .await?;
+    exhaust_event_quota(&f).await?;
     ok(
         &f.app,
         "POST",
@@ -1133,6 +1136,7 @@ async fn websocket_control_frames_and_scoped_presence_commands() -> anyhow::Resu
 #[tokio::test]
 async fn dispatcher_enforces_quota_without_charging_retries() -> anyhow::Result<()> {
     let f = fixture().await?;
+    reconfigure(&f,json!({"scopes":["messages:read"],"events":["message.created","app.rate_limited"],"transport":"websocket"})).await?;
     let mut db = f.state.db.clone();
     // Prepare delivery history at the hourly boundary; source events still come from an API write.
     let mut tx = db.transaction().await?;
@@ -1853,6 +1857,7 @@ async fn retention_uses_bounded_batches_and_keeps_fresh_deliveries() -> anyhow::
 #[tokio::test]
 async fn http_dispatch_batches_messages_and_keeps_revocation_only_apps_eligible()
 -> anyhow::Result<()> {
+    let _guard = HTTP_WORKER_TEST_LOCK.lock().await;
     let f = fixture().await?;
     // A non-public destination is rejected before network I/O. Attempts still exercise the real batch scheduler.
     reconfigure(&f,json!({"scopes":["messages:read"],"events":["message.created","tokens.revoked"],"transport":"http","event_url":"https://127.0.0.1:1/events"})).await?;
@@ -2059,5 +2064,129 @@ async fn concurrent_bot_profile_changes_do_not_lock_other_event_recipients() -> 
     right?;
     a.commit().await?;
     b.commit().await?;
+    Ok(())
+}
+
+async fn exhaust_event_quota(f: &Fixture) -> anyhow::Result<()> {
+    let mut db = f.state.db.clone();
+    let mut tx = db.transaction().await?;
+    apps::one(&mut tx,"INSERT INTO app_event_limits VALUES($1,date_trunc('hour',now()),30000) ON CONFLICT(installation_id,window_start) DO UPDATE SET events=30000 RETURNING '{}'::text",&[&f.installation]).await?;
+    toasty::sql::statement("INSERT INTO app_deliveries(id,event_id,installation_id,event_type,payload,first_delivered_at,acked_at) SELECT gen_random_uuid()::text,gen_random_uuid()::text,$1,'message.created','{}',now(),now() FROM generate_series(1,30000)").bind(f.installation.as_str()).exec(&mut tx).await?;
+    tx.commit().await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn terminal_events_survive_source_and_http_dispatch_quotas() -> anyhow::Result<()> {
+    let _guard = HTTP_WORKER_TEST_LOCK.lock().await;
+    let f = fixture().await?;
+    reconfigure(&f,json!({"scopes":["messages:read"],"events":["message.created","app.uninstalled","tokens.revoked"],"transport":"http","event_url":"https://127.0.0.1:1/events"})).await?;
+    let observer = fixture().await?;
+    reconfigure(
+        &observer,
+        json!({"scopes":["apps:read"],"events":["app.deleted"],"transport":"websocket"}),
+    )
+    .await?;
+    exhaust_event_quota(&observer).await?;
+    exhaust_event_quota(&f).await?;
+    ok(
+        &f.app,
+        "POST",
+        "/api/messages",
+        &f.owner,
+        json!({"channel_id":f.channel,"content":"must be limited"}),
+    )
+    .await;
+    ok(
+        &f.app,
+        "POST",
+        &format!("/api/apps/{}/actions/delete", f.id),
+        &f.owner,
+        Value::Null,
+    )
+    .await;
+    let types = event_types(&f).await?;
+    for event in ["app.uninstalled", "tokens.revoked"] {
+        assert!(types.iter().any(|t| t == event), "Missing {event} at quota");
+    }
+    let candidates = apps::delivery::http_candidates(&f.state).await?;
+    assert!(candidates.iter().any(|i| i["id"] == f.installation));
+    let mut delivered = Vec::new();
+    while let Some(event) = apps::delivery::claim(&f.state, &f.installation).await? {
+        delivered.push(event["event"]["type"].as_str().unwrap().to_owned());
+    }
+    for event in ["app.uninstalled", "tokens.revoked"] {
+        assert!(
+            delivered.iter().any(|t| t == event),
+            "Cannot dispatch {event} at quota"
+        );
+    }
+    assert!(!delivered.iter().any(|t| t == "message.created"));
+    let deletion = apps::delivery::claim(&observer.state, &observer.installation)
+        .await?
+        .expect("Workspace deletion event must survive the observer quota");
+    assert_eq!(deletion["event"]["type"], "app.deleted");
+    Ok(())
+}
+
+async fn seed_http_candidates(f: &Fixture, count: i64, joined: bool) -> anyhow::Result<String> {
+    let prefix = format!("review-http-{}-", Uuid::new_v4());
+    let manifest=json!({"scopes":["messages:read"],"events":["message.created"],"transport":"http","event_url":"https://127.0.0.1:1/events"}).to_string();
+    let mut db = f.state.db.clone();
+    let mut tx = db.transaction().await?;
+    apps::one(&mut tx,"WITH rows AS(INSERT INTO users(id,user_name,display_name,is_bot) SELECT $1||n,$1||n,'HTTP candidate',true FROM generate_series(1,$2::integer) n RETURNING id) SELECT '{}'::text FROM rows LIMIT 1",&[&prefix,&count.to_string()]).await?;
+    apps::one(&mut tx,"WITH rows AS(INSERT INTO apps(id,bot_user_id,owner_id,name,manifest,status) SELECT $1||n,$1||n,$3,'HTTP candidate',$4,'installed' FROM generate_series(1,$2::integer) n RETURNING id) SELECT '{}'::text FROM rows LIMIT 1",&[&prefix,&count.to_string(),&f.owner,&manifest]).await?;
+    apps::one(&mut tx,"WITH rows AS(INSERT INTO app_installations(id,app_id,scopes,manifest,revision) SELECT $1||n,$1||n,'[\"messages:read\"]',$3,1 FROM generate_series(1,$2::integer) n RETURNING id) SELECT '{}'::text FROM rows LIMIT 1",&[&prefix,&count.to_string(),&manifest]).await?;
+    if joined {
+        apps::one(&mut tx,"WITH rows AS(INSERT INTO channel_user(channel_id,user_id,joined_at) SELECT $3,$1||n,now() FROM generate_series(1,$2::integer) n RETURNING user_id) SELECT '{}'::text FROM rows LIMIT 1",&[&prefix,&count.to_string(),&f.channel]).await?;
+    }
+    apps::one(&mut tx,"WITH rows AS(INSERT INTO app_deliveries(id,event_id,installation_id,channel_id,event_type,payload,required_scope,access_user_id) SELECT gen_random_uuid()::text,gen_random_uuid()::text,$1||n,$3,'message.created','{}','messages:read',$1||n FROM generate_series(1,$2::integer) n RETURNING id) SELECT '{}'::text FROM rows LIMIT 1",&[&prefix,&count.to_string(),&f.channel]).await?;
+    tx.commit().await?;
+    Ok(prefix)
+}
+
+#[tokio::test]
+async fn http_selection_skips_inaccessible_events_and_rotates_beyond_one_page() -> anyhow::Result<()>
+{
+    let _guard = HTTP_WORKER_TEST_LOCK.lock().await;
+    let f = fixture().await?;
+    let blocked = seed_http_candidates(&f, 101, false).await?;
+    let eligible = seed_http_candidates(&f, 101, true).await?;
+    let leased = seed_http_candidates(&f, 1, true).await?;
+    let mut db = f.state.db.clone();
+    let mut tx = db.transaction().await?;
+    apps::one(&mut tx,"UPDATE app_deliveries SET lease_until=now()+interval '1 hour' WHERE installation_id=$1 RETURNING '{}'::text",&[&format!("{leased}1")]).await?;
+    tx.commit().await?;
+    for _ in 0..2 {
+        let page = apps::delivery::http_candidates(&f.state).await?;
+        assert!(page.len() <= 100);
+        assert!(
+            page.iter()
+                .all(|i| !i["id"].as_str().unwrap().starts_with(&blocked)
+                    && !i["id"].as_str().unwrap().starts_with(&leased))
+        );
+    }
+    let mut tx = db.transaction().await?;
+    let visited=apps::one(&mut tx,"SELECT json_build_object('count',count(*))::text FROM app_installations WHERE starts_with(id,$1) AND last_http_dispatch_at IS NOT NULL",&[&eligible]).await?;
+    assert_eq!(
+        visited["count"], 101,
+        "Every eligible App must get a turn beyond LIMIT 100"
+    );
+    for prefix in [&blocked, &eligible, &leased] {
+        for statement in [
+            "DELETE FROM app_deliveries WHERE starts_with(installation_id,$1)",
+            "DELETE FROM app_installations WHERE starts_with(id,$1)",
+            "DELETE FROM app_versions WHERE starts_with(app_id,$1)",
+            "DELETE FROM apps WHERE starts_with(id,$1)",
+            "DELETE FROM channel_user WHERE starts_with(user_id,$1)",
+            "DELETE FROM users WHERE starts_with(id,$1)",
+        ] {
+            toasty::sql::statement(statement)
+                .bind(prefix.as_str())
+                .exec(&mut tx)
+                .await?;
+        }
+    }
+    tx.commit().await?;
     Ok(())
 }

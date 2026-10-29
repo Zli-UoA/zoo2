@@ -45,10 +45,17 @@ export class ZooApp {
   openDm(userId: string) { return this.request<{ id: string }>("POST", "/dms", { target_user_ids: [userId] }); }
   async dispatch(delivery: Delivery, handler: (event: AppEvent) => Promise<void>) {
     const id = delivery.event.id;
-    if (this.seen.has(id) || await this.options.eventStore?.has(id)) return;
+    if (this.seen.has(id)) return;
     let pending = this.inFlight.get(id);
     if (!pending) {
-      pending = (async () => { await handler(delivery.event); await this.options.eventStore?.mark(id); this.seen.add(id); if (this.seen.size > 1000) this.seen.delete(this.seen.values().next().value!); })().finally(() => this.inFlight.delete(id));
+      // Reserve the ID before awaiting the durable store, including slow or failed reads.
+      pending = Promise.resolve().then(async () => {
+        if (this.seen.has(id) || await this.options.eventStore?.has(id)) return;
+        await handler(delivery.event);
+        await this.options.eventStore?.mark(id);
+        this.seen.add(id);
+        if (this.seen.size > 1000) this.seen.delete(this.seen.values().next().value!);
+      }).finally(() => this.inFlight.delete(id));
       this.inFlight.set(id, pending);
     }
     await pending;

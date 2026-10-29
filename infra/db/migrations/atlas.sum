@@ -1,4 +1,4 @@
-h1:rR8ZxIUQexNQ/Av/GJan7PrDnyHPSUzWrvoSc3m6GSQ=
+h1:V+lMUWTXNgkQ9EE4PCCj8d/GXHsPqDqYvgcDLMLWft8=
 20261008000000_initial.sql h1:v3rZATh+MriHOzHYMS+oLMrabKMd7J8aLKuEYdsKNfc=
 20261015110156_snake_case_and_replica_identity.sql h1:gWKFhGTel2djLDzitJiG+ufrbKEjusudna0EhabxkZU=
 20261016171538_create_user_identities.sql h1:h8btCK61sRc0EaVuiKnON59nR594VVKdLtl8nes3KKc=
@@ -16,3 +16,4 @@ h1:rR8ZxIUQexNQ/Av/GJan7PrDnyHPSUzWrvoSc3m6GSQ=
 20261027010000_complete_app_events.sql h1:WCkD81COkqU+oy6r2ZxFBygxt6QR9ZCwSL+WuyYP4zE=
 20261028000000_harden_app_authorization.sql h1:0K7KctIVUAtMwCPQ47y1IKiT6bnzgrFgxa5fgg5US18=
 20261028010000_decouple_outbox_authorization_identity.sql h1:BPRFtLDVRW+RtFt6w6h74kd4dWFDfBCj9gjtYNhUx1k=
+20261029000000_preserve_terminal_events_and_dispatch_fairly.sql h1:VgJWoMMqVRpcyBdmZkZs6tG3XFPeYAlnQZ2JE/FaQeY=

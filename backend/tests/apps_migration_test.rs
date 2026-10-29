@@ -60,6 +60,7 @@ async fn upgrades_existing_webhooks_without_replacing_identities_or_secrets() ->
             "../../infra/db/migrations/20261028010000_decouple_outbox_authorization_identity.sql"
         ))
         .await?;
+    client.batch_execute(include_str!("../../infra/db/migrations/20261029000000_preserve_terminal_events_and_dispatch_fairly.sql")).await?;
     let row=client.query_one("SELECT w.id,w.secret,w.user_id,u.app_id,a.name,m.user_id FROM channel_webhooks w JOIN users u ON u.id=w.user_id JOIN apps a ON a.id=u.app_id CROSS JOIN messages m WHERE w.id=$1 AND m.id=$2",&[&hook,&message]).await?;
     assert_eq!(row.get::<_, String>(0), hook);
     assert_eq!(row.get::<_, String>(1), "preserved-secret");

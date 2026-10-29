@@ -35,3 +35,32 @@ test("refreshes credentials and retains the message id across a retry",async()=>
  const message=await client.postMessage({channel_id:"channel",content:"hello"});
  assert.equal(messages[0].id,messages[1].id);assert.equal(message.id,messages[0].id);assert.equal(saved,true);
 });
+
+test("deduplicates deliveries when an EventStore read returns a delayed stale result", async () => {
+ let reads=0,calls=0;
+ let release!: (seen:boolean)=>void;
+ const staleRead=new Promise<boolean>(resolve=>{release=resolve;});
+ const client=new ZooApp({baseUrl:"https://zoo.example",credentials:{access_token:"a",refresh_token:"r"},eventStore:{has:async()=>++reads===1?false:staleRead,mark:async()=>{}}});
+ const delivery:Delivery={delivery_id:"delivery",ack_token:"ack",attempt:1,event:{id:"async-event",version:1,type:"message.created",actor_id:"user",data:{}}};
+ const handler=async()=>{calls++;};
+ const first=client.dispatch(delivery,handler);
+ const duplicate=client.dispatch(delivery,handler);
+ await first;
+ release(false);
+ await duplicate;
+ assert.equal(calls,1,"A delayed has() result must not run the same side effect twice");
+ await client.dispatch(delivery,handler);
+ assert.equal(calls,1);
+});
+
+test("shares a failing EventStore read and permits a later retry", async () => {
+ let reads=0,calls=0;
+ const client=new ZooApp({baseUrl:"https://zoo.example",credentials:{access_token:"a",refresh_token:"r"},eventStore:{has:async()=>{if(++reads===1)throw new Error("store unavailable");return false;},mark:async()=>{}}});
+ const delivery:Delivery={delivery_id:"delivery",ack_token:"ack",attempt:1,event:{id:"retry-store",version:1,type:"message.created",actor_id:"user",data:{}}};
+ const handler=async()=>{calls++;};
+ const results=await Promise.allSettled([client.dispatch(delivery,handler),client.dispatch(delivery,handler)]);
+ assert.ok(results.every(result=>result.status==="rejected"));
+ assert.equal(calls,0);
+ await client.dispatch(delivery,handler);
+ assert.equal(calls,1);
+});

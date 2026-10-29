@@ -86,7 +86,7 @@ async fn claim_filtered(
     let mut tx = db.transaction().await?;
     // Serialize only dispatchers for this installation, never source transactions.
     one(&mut tx,"SELECT json_build_object('locked',pg_advisory_xact_lock(hashtextextended($1,0)) IS NULL)::text",&[&format!("app-dispatch:{installation}")]).await?;
-    let usage=one(&mut tx,"SELECT json_build_object('count',count(*))::text FROM app_deliveries WHERE installation_id=$1 AND first_delivered_at>=date_trunc('hour',now()) AND event_type<>'app.rate_limited'",&[installation]).await?;
+    let usage=one(&mut tx,"SELECT json_build_object('count',count(*))::text FROM app_deliveries WHERE installation_id=$1 AND first_delivered_at>=date_trunc('hour',now()) AND event_type<>'app.rate_limited' AND NOT app_event_quota_exempt(event_type)",&[installation]).await?;
     let limited = usage["count"].as_u64().unwrap_or(0) >= 30000;
     if limited {
         super::events::emit(
@@ -101,7 +101,7 @@ async fn claim_filtered(
         .await?;
     }
     let lease = uuid::Uuid::new_v4().to_string();
-    let rows=query(&mut tx,"WITH candidate AS(SELECT d.id FROM app_deliveries d WHERE d.installation_id=$1 AND app_delivery_allowed(d) AND (NOT $4::boolean OR d.event_type IN('app.uninstalled','tokens.revoked','app.deleted')) AND (NOT $3::boolean OR d.first_delivered_at IS NOT NULL OR d.event_type='app.rate_limited') AND d.acked_at IS NULL AND d.available_at<=now() AND d.expires_at>now() AND (d.lease_until IS NULL OR d.lease_until<now()) ORDER BY CASE WHEN d.event_type='app.uninstalled' THEN 0 ELSE 1 END,d.created_at,d.id FOR UPDATE SKIP LOCKED LIMIT 1) UPDATE app_deliveries d SET attempts=attempts+1,first_delivered_at=COALESCE(first_delivered_at,now()),lease_until=now()+interval '3 seconds',lease_token=$2,available_at=now()+make_interval(secs=>LEAST(3600,power(2,LEAST(attempts+1,12))::integer)) FROM candidate c WHERE d.id=c.id RETURNING json_build_object('delivery_id',d.id,'ack_token',d.lease_token,'event',app_delivery_payload(d),'attempt',d.attempts)::text",&[installation,&lease,if limited {"true"}else{"false"},if terminal_only {"true"}else{"false"}]).await?;
+    let rows=query(&mut tx,"WITH candidate AS(SELECT d.id FROM app_deliveries d WHERE d.installation_id=$1 AND app_delivery_allowed(d) AND (NOT $4::boolean OR d.event_type IN('app.uninstalled','tokens.revoked','app.deleted')) AND (NOT $3::boolean OR d.first_delivered_at IS NOT NULL OR app_event_quota_exempt(d.event_type)) AND d.acked_at IS NULL AND d.available_at<=now() AND d.expires_at>now() AND (d.lease_until IS NULL OR d.lease_until<now()) ORDER BY CASE WHEN d.event_type='app.uninstalled' THEN 0 ELSE 1 END,d.created_at,d.id FOR UPDATE SKIP LOCKED LIMIT 1) UPDATE app_deliveries d SET attempts=attempts+1,first_delivered_at=COALESCE(first_delivered_at,now()),lease_until=now()+interval '3 seconds',lease_token=$2,available_at=now()+make_interval(secs=>LEAST(3600,power(2,LEAST(attempts+1,12))::integer)) FROM candidate c WHERE d.id=c.id RETURNING json_build_object('delivery_id',d.id,'ack_token',d.lease_token,'event',app_delivery_payload(d),'attempt',d.attempts)::text",&[installation,&lease,if limited {"true"}else{"false"},if terminal_only {"true"}else{"false"}]).await?;
     tx.commit().await?;
     let value = rows.into_iter().next();
     if let Some(event) = &value {
@@ -412,11 +412,27 @@ pub async fn worker(s: AppState) {
     };
     tokio::join!(maintenance, dispatch);
 }
-async fn http_pass(s: &AppState) -> Result<(), AppError> {
+/// Reserve a fair page across workers; inaccessible and currently leased events cannot occupy it.
+pub async fn http_candidates(s: &AppState) -> Result<Vec<Value>, AppError> {
     let mut db = s.db.clone();
     let mut tx = db.transaction().await?;
-    let installs=query(&mut tx,"SELECT json_build_object('id',i.id,'url',i.manifest::jsonb->>'event_url','secret',i.signing_secret)::text FROM app_installations i JOIN apps a ON a.id=i.app_id WHERE (i.active AND a.status='installed' OR a.status='disabled' AND EXISTS(SELECT 1 FROM app_deliveries terminal WHERE terminal.installation_id=i.id AND terminal.event_type IN('app.uninstalled','tokens.revoked','app.deleted') AND terminal.acked_at IS NULL AND terminal.expires_at>now())) AND i.manifest::jsonb->>'transport'='http' AND EXISTS(SELECT 1 FROM app_deliveries d WHERE d.installation_id=i.id AND d.acked_at IS NULL AND d.available_at<=now() AND d.expires_at>now()) LIMIT 100",&[]).await?;
-    drop(tx);
+    let installs=query(&mut tx,r#"WITH candidates AS (
+ SELECT i.id FROM app_installations i JOIN apps a ON a.id=i.app_id
+ WHERE (i.active AND a.status='installed' OR a.status='disabled')
+ AND i.manifest::jsonb->>'transport'='http'
+ AND EXISTS(SELECT 1 FROM app_deliveries d WHERE d.installation_id=i.id
+  AND d.acked_at IS NULL AND d.available_at<=now() AND d.expires_at>now()
+  AND (d.lease_until IS NULL OR d.lease_until<now()) AND app_delivery_allowed(d))
+ ORDER BY i.last_http_dispatch_at NULLS FIRST,i.id LIMIT 100 FOR NO KEY UPDATE OF i SKIP LOCKED
+), selected AS (
+ UPDATE app_installations i SET last_http_dispatch_at=clock_timestamp() FROM candidates c WHERE i.id=c.id RETURNING i.*
+) SELECT json_build_object('id',id,'url',manifest::jsonb->>'event_url','secret',signing_secret)::text FROM selected"#,&[]).await?;
+    tx.commit().await?;
+    Ok(installs)
+}
+
+async fn http_pass(s: &AppState) -> Result<(), AppError> {
+    let installs = http_candidates(s).await?;
     let results = futures_util::stream::iter(installs)
         .map(|i| async move {
             let sends = futures_util::stream::iter(0..32)
