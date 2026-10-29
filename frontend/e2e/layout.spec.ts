@@ -24,7 +24,20 @@ test("editing, saving and cancelling preserve measured row positions", async ({
   await expectNoOverlap(page);
   const edit = async () => {
     if (isMobile) {
-      await row.getByRole("button", { name: "More actions" }).click();
+      const body = row.locator(".mfm-body");
+      const box = await body.boundingBox();
+      expect(box).not.toBeNull();
+      const session = await page.context().newCDPSession(page);
+      try {
+        await session.send("Input.dispatchTouchEvent", {
+          type: "touchStart",
+          touchPoints: [{ x: box!.x + 10, y: box!.y + 10 }],
+        });
+        await expect(page.getByRole("menuitem", { name: "Edit", exact: true })).toBeVisible();
+        await session.send("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
+      } finally {
+        await session.detach();
+      }
       await page.getByRole("menuitem", { name: "Edit", exact: true }).click();
     } else {
       await row.hover();

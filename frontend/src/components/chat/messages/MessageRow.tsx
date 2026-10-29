@@ -127,6 +127,7 @@ export function MessageRow({
 
   const [menuOpen, setMenuOpen] = useState(false);
   const hold = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const longPressed = useRef(false);
   const origin = useRef({ x: 0, y: 0 });
   function cancelHold() {
     if (hold.current !== null) clearTimeout(hold.current);
@@ -159,8 +160,10 @@ export function MessageRow({
           )
             return;
           cancelHold();
+          longPressed.current = false;
           origin.current = { x: event.clientX, y: event.clientY };
           hold.current = setTimeout(() => {
+            longPressed.current = true;
             setMenuOpen(true);
             hold.current = null;
           }, 500);
@@ -169,7 +172,17 @@ export function MessageRow({
           if (Math.hypot(event.clientX - origin.current.x, event.clientY - origin.current.y) > 10)
             cancelHold();
         }}
-        onPointerUp={cancelHold}
+        onPointerUp={(event) => {
+          cancelHold();
+          if (longPressed.current) event.stopPropagation();
+        }}
+        onTouchEnd={(event) => {
+          if (longPressed.current) {
+            event.preventDefault();
+            event.stopPropagation();
+            longPressed.current = false;
+          }
+        }}
         onPointerCancel={cancelHold}
         onContextMenu={(event) => {
           if (menuOpen || hold.current !== null) event.preventDefault();
