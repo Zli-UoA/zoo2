@@ -152,6 +152,8 @@ export function MessageRow({
       {item.showDateSeparator ? <DateSeparator value={message.created_at} /> : null}
       <div
         onPointerDown={(event) => {
+          cancelHold();
+          longPressed.current = false;
           if (
             isEditing ||
             event.pointerType !== "touch" ||
@@ -159,8 +161,6 @@ export function MessageRow({
             (event.target as HTMLElement).closest("button, a, input, textarea")
           )
             return;
-          cancelHold();
-          longPressed.current = false;
           origin.current = { x: event.clientX, y: event.clientY };
           hold.current = setTimeout(() => {
             longPressed.current = true;
@@ -183,8 +183,17 @@ export function MessageRow({
             longPressed.current = false;
           }
         }}
-        onPointerCancel={cancelHold}
+        onPointerCancel={() => {
+          cancelHold();
+          longPressed.current = false;
+        }}
+        onTouchCancel={() => {
+          cancelHold();
+          longPressed.current = false;
+        }}
         onContextMenu={(event) => {
+          // リンクなどの標準メニューは維持し、本文の長押しは操作メニューに使う。
+          if ((event.target as HTMLElement).closest("button, a, input, textarea")) return;
           if (menuOpen || hold.current !== null) event.preventDefault();
         }}
         className={cn(

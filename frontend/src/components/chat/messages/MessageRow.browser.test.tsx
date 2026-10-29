@@ -77,6 +77,44 @@ describe("MessageRow", () => {
     expect(screen.queryByRole("menu")).toBeNull();
   });
 
+  for (const cancel of ["pointerCancel", "touchCancel"] as const) {
+    it(`clears a completed hold after ${cancel} so a subsequent reaction tap works`, async () => {
+      const onReaction = vi.fn();
+      const { container } = renderRow(buildItem(), false, {
+        canReact: true,
+        onReaction,
+        reactions: [{ emoji: "👍", count: 1, ownId: null }],
+      });
+      const row = container.querySelector("div.group\\/row")!;
+      fireEvent.pointerDown(row, { pointerType: "touch", isPrimary: true });
+      await waitFor(() => expect(screen.getByRole("menu")).toBeTruthy());
+      fireEvent[cancel](row);
+      // pointercancel の後に touchend が届かなくても抑止状態を残さない。
+      expect(fireEvent.touchEnd(row)).toBe(true);
+      await userEvent.keyboard("{Escape}");
+      await waitFor(() => expect(screen.queryByRole("menu")).toBeNull());
+      const reaction = screen.getByRole("button", { name: "👍 1 件" });
+      fireEvent.pointerDown(reaction, { pointerType: "touch", isPrimary: true });
+      expect(fireEvent.touchEnd(reaction)).toBe(true);
+      await userEvent.click(reaction);
+      expect(onReaction).toHaveBeenCalledWith("👍");
+    });
+  }
+
+  it("preserves native context menus on links while using body holds for actions", async () => {
+    const { container } = renderRow(buildItem({ content: "hello https://example.com" }));
+    const row = container.querySelector("div.group\\/row")!;
+    const link = screen.getByRole("link");
+    expect(fireEvent.contextMenu(row)).toBe(true);
+    fireEvent.pointerDown(row, { pointerType: "touch", isPrimary: true });
+    expect(fireEvent.contextMenu(row)).toBe(false);
+    expect(fireEvent.contextMenu(link)).toBe(true);
+    await waitFor(() => expect(screen.getByRole("menu")).toBeTruthy());
+    expect(fireEvent.contextMenu(row)).toBe(false);
+    expect(fireEvent.contextMenu(link)).toBe(true);
+    fireEvent.pointerCancel(row);
+  });
+
   it("renders URLs as safe external links", () => {
     renderRow(buildItem({ content: "詳細は https://example.com/docs を参照" }));
 
