@@ -13,7 +13,7 @@ READMEのバッジは、GitHubに記録されたFluxの結果を共用GistのJSO
 
 AuthZとzoo2はmigrationとアプリの両方の`flux/*`ステータスでmainを判定します。production Deploymentが未登録ならproductionはunknownです。infraは設定JSONに列挙したKustomizationを使い、未通知の対象があればpendingにします。対象を追加・廃止した場合は一覧も更新してください。通知workflowの成功だけでは、配備成功にしません。
 
-バッジをクリックすると、mainのコミット一覧、productionの配備履歴、バッジの更新workflowへ進めます。リソースごとの結果・イベント時刻・完全なSHAは、更新jobのSummaryで確認できます。READMEの上部には説明文を追加しません。
+バッジをクリックすると、mainのコミット一覧、productionの配備履歴、バッジの更新workflowへ進めます。リソースごとの結果・commit statusの更新時刻・完全なSHAは、更新jobのSummaryで確認できます。この更新時刻はFluxイベントの発生時刻ではなく、同じ結果の再通知では変わらないことがあります。READMEの上部には説明文を追加しません。
 
 ## Gistと公開する情報
 
@@ -51,7 +51,9 @@ PAT交換時は新しいトークンを3リポジトリへ登録し、手動実�
 
 更新の契機はmainへのpush、Fluxのcommit status通知、Flux production status workflowの完了、毎時17分の定期実行、手動実行です。GITHUB_TOKENによるstatus登録から別workflowが起動しないため、AuthZ・zoo2では通知workflowの完了も使います。runner選択とCI_RUNNERの扱いは既存のCIと共通です。
 
-最新mainのSHAを確定してから、そのSHAのステータスを取得します。取得に失敗した場合はunknownを保存します。Gist更新の429・5xx・通信エラーは合計3回まで試み、更新できなければjobを失敗させます。認証・権限エラーは再試行しません。更新できない間は前回の表示が残るため、確認時刻とActionsの失敗を確認してください。
+最新mainのSHAを確定してから、そのSHAのステータスを取得します。取得後にmainのSHAと最新ステータスの1ページ目を再確認し、取得中に更新されていた場合は再取得します。3回試しても安定しない場合やAPI取得に失敗した場合はunknownを保存します。確認時刻は取得処理が終わった時刻です。照合後の変更や画像キャッシュもあるため、表示は確認時点のスナップショットとして扱ってください。
+
+Gist更新の429・5xx・通信エラーは合計3回まで試み、更新できなければjobを失敗させます。認証・権限エラーは再試行しません。更新できない間は前回の表示が残るため、確認時刻とActionsの失敗を確認してください。
 
 Gitのブランチ・コミットは生成せず、自前のSVG生成も行いません。旧deployment-badgesブランチが存在しても、この変更では削除しません。
 

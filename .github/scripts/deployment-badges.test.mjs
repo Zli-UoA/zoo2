@@ -315,5 +315,102 @@ test("resource details and full SHAs stay in the private Job Summary", () => {
   );
   assert.ok(summary.includes(fullSha));
   assert.ok(summary.includes("db name line"));
-  assert.ok(summary.includes("Last event (UTC)"));
+  assert.ok(summary.includes("Commit status updated (UTC)"));
+  assert.ok(!summary.includes("Last event (UTC)"));
+});
+
+test("main changing during collection discards the old SHA and retries", async () => {
+  let reads = 0;
+  const newSha = "b".repeat(40);
+  const result = await collect(
+    async (path) => {
+      if (path === "commits/main")
+        return { sha: ++reads === 1 ? fullSha : newSha };
+      if (path.startsWith("deployments?")) return [];
+      return [
+        {
+          id: path.includes(newSha) ? 2 : 1,
+          context: "flux/web",
+          state: path.includes(newSha) ? "failure" : "success",
+        },
+      ];
+    },
+    { ...config, required: ["flux/web"] },
+  );
+  assert.equal(result.sha, newSha);
+  assert.equal(result.state, "failure");
+  assert.equal(reads, 4);
+});
+
+test("a new failure shifting pagination boundaries is detected and recollected", async () => {
+  let inserted = false;
+  let mainReads = 0;
+  const history = [
+    ...Array.from({ length: 100 }, (_, index) => ({
+      id: 101 - index,
+      context: "ci",
+      state: "success",
+    })),
+    { id: 1, context: "flux/web", state: "success" },
+  ];
+  const result = await collect(
+    async (path) => {
+      if (path === "commits/main") {
+        mainReads++;
+        return { sha: fullSha };
+      }
+      if (path.startsWith("deployments?")) return [];
+      const page = Number(
+        new URL("https://example.test/" + path).searchParams.get("page"),
+      );
+      if (page === 2 && !inserted) {
+        history.unshift({ id: 102, context: "flux/web", state: "failure" });
+        inserted = true;
+      }
+      return history.slice((page - 1) * 100, page * 100);
+    },
+    { ...config, required: ["flux/web"] },
+  );
+  assert.equal(result.state, "failure");
+  assert.equal(result.entries[0].id, 102);
+  assert.equal(mainReads, 4);
+});
+
+test("continuously changing main publishes unknown after exactly three attempts", async () => {
+  let mainReads = 0;
+  let files;
+  await run(
+    async (path) => {
+      if (path === "commits/main")
+        return { sha: ++mainReads % 2 ? fullSha : "b".repeat(40) };
+      if (path.startsWith("deployments?")) return [];
+      return [{ id: 1, context: "flux/web", state: "success" }];
+    },
+    async (value) => {
+      files = value;
+    },
+    { ...config, required: ["flux/web"] },
+    { now: at },
+  );
+  assert.equal(mainReads, 6);
+  assert.equal(badge(files, "authz-main.json").message, "unknown unknown");
+});
+
+test("continuously changing statuses never publish the old success", async () => {
+  let statusReads = 0;
+  let files;
+  await run(
+    async (path) => {
+      if (path === "commits/main") return { sha: fullSha };
+      if (path.startsWith("deployments?")) return [];
+      return [{ id: ++statusReads, context: "flux/web", state: "success" }];
+    },
+    async (value) => {
+      files = value;
+    },
+    { ...config, required: ["flux/web"] },
+    { now: at },
+  );
+  assert.equal(statusReads, 6);
+  assert.equal(badge(files, "authz-main.json").message, "unknown unknown");
 });

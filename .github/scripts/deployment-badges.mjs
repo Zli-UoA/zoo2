@@ -83,37 +83,66 @@ export function makeApi(repository, token, request = fetch) {
 
 async function allPages(api, path) {
   const items = [];
+  let firstPage;
   for (let page = 1; page <= 100; page++) {
     const chunk = await api(`${path}?per_page=100&page=${page}`);
+    if (page === 1) firstPage = chunk;
     items.push(...chunk);
-    if (chunk.length < 100) return items;
+    if (chunk.length < 100) return { items, firstPage };
   }
   throw new Error("Status history exceeds pagination limit");
 }
 
 export async function collect(api, config) {
-  const head = await api("commits/main");
-  const statuses = await allPages(api, `commits/${head.sha}/statuses`);
-  const result = {
-    sha: head.sha,
-    ...summarize(statuses, config.required, config.mode),
-  };
-  if (config.mode === "app") {
-    const deployments = await api(
-      "deployments?environment=production&per_page=1",
+  // Status records are append-only and newest first. Rechecking the first page
+  // detects inserts that could shift pagination boundaries during collection.
+  const fingerprint = (statuses) =>
+    JSON.stringify(
+      statuses.map(({ id, context, state, updated_at }) => ({
+        id,
+        context,
+        state,
+        updated_at,
+      })),
     );
-    if (deployments.length) {
-      const states = await api(
-        `deployments/${deployments[0].id}/statuses?per_page=1`,
+  for (let attempt = 0; attempt < 3; attempt++) {
+    const head = await api("commits/main");
+    const { items, firstPage } = await allPages(
+      api,
+      `commits/${head.sha}/statuses`,
+    );
+    const result = {
+      sha: head.sha,
+      ...summarize(items, config.required, config.mode),
+    };
+    if (config.mode === "app") {
+      const deployments = await api(
+        "deployments?environment=production&per_page=1",
       );
-      result.production = {
-        sha: deployments[0].sha,
-        state: states[0]?.state ?? "unknown",
-        updated_at: states[0]?.created_at,
-      };
+      if (deployments.length) {
+        const states = await api(
+          `deployments/${deployments[0].id}/statuses?per_page=1`,
+        );
+        result.production = {
+          sha: deployments[0].sha,
+          state: states[0]?.state ?? "unknown",
+          updated_at: states[0]?.created_at,
+        };
+      }
     }
+    const latestStatuses = await api(
+      `commits/${head.sha}/statuses?per_page=100&page=1`,
+    );
+    const latestHead = await api("commits/main");
+    if (
+      head.sha === latestHead.sha &&
+      fingerprint(firstPage) === fingerprint(latestStatuses)
+    )
+      return result;
   }
-  return result;
+  throw new Error(
+    "Deployment status changed during all three collection attempts",
+  );
 }
 
 export function endpoint(label, message, state) {
@@ -205,14 +234,14 @@ export function jobSummary(result, now) {
         `| ${cell(entry.name)} | ${cell(entry.state ?? "pending")} | ${cell(entry.updated_at)} |`,
     )
     .join("\n");
-  return `## Flux deployment snapshot\n\nChecked at ${now} (UTC).\n\nMain: ${cell(result.sha ?? "unknown")} — ${cell(result.state)}\n\n| Resource | State | Last event (UTC) |\n| --- | --- | --- |\n${rows}\n\nProduction: ${cell(result.production?.sha ?? "unknown")} — ${cell(result.production?.state ?? "unknown")}\n`;
+  return `## Flux deployment snapshot\n\nChecked at ${now} (UTC).\n\nMain: ${cell(result.sha ?? "unknown")} — ${cell(result.state)}\n\n| Resource | State | Commit status updated (UTC) |\n| --- | --- | --- |\n${rows}\n\nProduction: ${cell(result.production?.sha ?? "unknown")} — ${cell(result.production?.state ?? "unknown")}\n`;
 }
 
 export async function run(
   api,
   publish,
   config,
-  { now = new Date().toISOString(), summary = async () => {} } = {},
+  { now, summary = async () => {} } = {},
 ) {
   let result;
   try {
@@ -220,11 +249,12 @@ export async function run(
   } catch {
     result = { state: "unknown", entries: [] };
     console.error(
-      "::warning::Could not read deployment status; publishing unknown",
+      "::warning::Could not read stable deployment status; publishing unknown",
     );
   }
-  await publish(filesFor(result, config, now));
-  await summary(jobSummary(result, now));
+  const checkedAt = now ?? new Date().toISOString();
+  await publish(filesFor(result, config, checkedAt));
+  await summary(jobSummary(result, checkedAt));
 }
 
 if (
