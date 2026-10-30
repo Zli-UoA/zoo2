@@ -269,24 +269,24 @@
   "webhooks": {
     "title": "Webhook settings",
     "description": "Manage notification integrations for {{channel}}.",
-    "instructions": "Send JSON in the shared card format to the generic webhook URL. Sign the body using the Secret. A dedicated posting app is created automatically.",
+    "instructions": "Send Slack Incoming Webhook JSON to the webhook URL. The URL includes authentication; no signature header is required. A dedicated posting app is created automatically.",
     "copied": "Copied",
     "copyError": "Could not copy. Select the field and copy it manually.",
     "copyLabel": "Copy {{label}}",
-    "showSecret": "Show Secret",
-    "hideSecret": "Hide Secret",
+    "showUrl": "Show webhook URL",
+    "hideUrl": "Hide webhook URL",
     "retry": "Reload",
     "loading": "Loading…",
     "name": "Webhook name",
     "create": "Create",
     "archived": "New webhooks cannot be created in archived channels.",
     "empty": "No webhooks yet.",
-    "rotate": "Regenerate Secret",
+    "rotate": "Regenerate webhook URL",
     "delete": "Delete",
     "deleteConfirm": "Delete this webhook? This URL will stop receiving notifications.",
-    "rotateConfirm": "Regenerate the Secret? The current Secret will stop working. Update the sender configuration too.",
+    "rotateConfirm": "Regenerate the webhook URL? The current URL will stop working. Update the sender configuration too.",
     "confirm": "Confirm",
-    "genericUrl": "Generic webhook URL"
+    "url": "Webhook URL"
   },
   "mentions": {
     "suggestions": "Mention suggestions"

@@ -82,6 +82,8 @@ pub fn create_router(state: AppState) -> Router {
             |request: &axum::http::Request<axum::body::Body>| {
                 let path = if request.uri().path().starts_with("/api/app-responses/") {
                     "/api/app-responses/[redacted]"
+                } else if request.uri().path().starts_with("/api/webhooks/") {
+                    "/api/webhooks/[redacted]"
                 } else {
                     request.uri().path()
                 };

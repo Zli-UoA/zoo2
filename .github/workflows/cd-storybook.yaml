@@ -1,0 +1,148 @@
+name: Storybook Preview
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: read
+
+jobs:
+  runner:
+    uses: ./.github/workflows/select-runner.yaml
+    secrets:
+      runner-status-token: ${{ secrets.RUNNER_STATUS_TOKEN }}
+
+  build:
+    needs: runner
+    # Fork PRs cannot access the Cloudflare secrets needed by the deploy job.
+    if: github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ${{ fromJSON(needs.runner.outputs.runs-on) }}
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v6
+        with:
+          version: 12.11.2
+
+      - name: Setup Node
+        uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: pnpm
+          cache-dependency-path: frontend/pnpm-lock.yaml
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build Storybook
+        run: pnpm build-storybook
+
+      - name: Upload Storybook
+        uses: actions/upload-artifact@v7
+        with:
+          name: storybook-preview
+          path: frontend/storybook-static
+          retention-days: 7
+          if-no-files-found: error
+
+  deploy:
+    needs: build
+    # Serialize alias updates without canceling an active or pending deployment.
+    concurrency:
+      group: storybook-preview-deploy-${{ github.event.pull_request.number }}
+      cancel-in-progress: false
+      queue: max
+    # Use a fresh hosted runner: no PR scripts or dependencies run with secrets.
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      deployments: write
+      pull-requests: read
+    environment:
+      name: storybook-pr-${{ github.event.pull_request.number }}
+      url: ${{ steps.deploy.outputs.pages-deployment-alias-url }}
+    steps:
+      - name: Check Cloudflare configuration
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_PAGES_PROJECT_NAME: ${{ vars.CLOUDFLARE_PAGES_PROJECT_NAME }}
+        run: |
+          for variable in CLOUDFLARE_API_TOKEN CLOUDFLARE_ACCOUNT_ID CLOUDFLARE_PAGES_PROJECT_NAME; do
+            if [ -z "${!variable}" ]; then
+              echo "::error::$variable is not set. See docs/storybook-preview.md."
+              exit 1
+            fi
+          done
+
+      - name: Download Storybook
+        uses: actions/download-artifact@v8
+        with:
+          name: storybook-preview
+          path: storybook-static
+
+      - name: Remove Cloudflare Pages runtime and routing configuration
+        # PR artifacts must only supply static content. _worker.js can be a directory.
+        run: |
+          rm -rf -- storybook-static/_worker.js storybook-static/_headers \
+            storybook-static/_redirects storybook-static/_routes.json
+
+      - name: Setup Node
+        uses: actions/setup-node@v7
+        with:
+          node-version: 24
+
+      - name: Check current PR head before publishing
+        id: current
+        uses: actions/github-script@v9
+        with:
+          script: |
+            const {data: pr} = await github.rest.pulls.get({
+              ...context.repo,
+              pull_number: context.payload.pull_request.number,
+            });
+            const expected = context.payload.pull_request.head.sha;
+            const publish = pr.state === 'open' && pr.head.sha === expected;
+            core.setOutput('publish', String(publish));
+            if (!publish) {
+              core.notice(`Skipping outdated or closed PR: built ${expected}, current ${pr.head.sha} (${pr.state})`);
+            }
+
+      - name: Deploy to Cloudflare Pages
+        if: steps.current.outputs.publish == 'true'
+        id: deploy
+        uses: cloudflare/wrangler-action@v3
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          packageManager: npm
+          wranglerVersion: "4"
+          command: >-
+            pages deploy storybook-static
+            --project-name=${{ vars.CLOUDFLARE_PAGES_PROJECT_NAME }}
+            --branch=pr-${{ github.event.pull_request.number }}
+            --commit-hash=${{ github.event.pull_request.head.sha }}
+
+      - name: Publish preview links
+        if: steps.current.outputs.publish == 'true'
+        env:
+          PREVIEW_URL: ${{ steps.deploy.outputs.pages-deployment-alias-url }}
+          DEPLOYMENT_URL: ${{ steps.deploy.outputs.deployment-url }}
+        run: |
+          {
+            echo "### Storybook"
+            echo
+            echo "- [PR preview]($PREVIEW_URL)"
+            echo "- [This deployment]($DEPLOYMENT_URL)"
+          } >> "$GITHUB_STEP_SUMMARY"
