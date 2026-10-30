@@ -25,7 +25,41 @@
 }
 ```
 
-`{"text":"Hello"}` のようなテキストのみの通知も受け付けます。Flux は Provider の `type: slack` を使用し、Secret の `address` にこの URL を設定します。Flux が送信する `good`・`danger` の色をそのまま表示します。
+`{"text":"Hello"}` のようなテキストのみの通知も受け付けます。Flux は下記のヘッダー認証の設定を使用してください。Flux が送信する `good`・`danger` の色をそのまま表示します。
+
+## Flux の設定と送信エラーのマスク
+
+Flux notification-controller v1.9.4 では、Slack Provider の再送が失敗すると、Secret の `address` に含めた query トークンがログや Kubernetes Event に残る場合があります。Flux には設定画面のトークン付き URL をそのまま渡さず、URL とトークンを分けて設定してください。
+
+同じ受信口は `Authorization: Bearer <認証トークン>` にも対応します。設定画面でコピーした URL の `?token=` より前を `address`、`token` の値を Secret の `token` に設定します。
+
+```yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: zoo-webhook
+  namespace: flux-system
+type: Opaque
+stringData:
+  address: https://zli.chat/api/webhooks/WEBHOOK_ID
+  token: WEBHOOK_TOKEN
+---
+apiVersion: notification.toolkit.fluxcd.io/v1beta3
+kind: Provider
+metadata:
+  name: zoo
+  namespace: flux-system
+spec:
+  type: slack
+  secretRef:
+    name: zoo-webhook
+```
+
+`WEBHOOK_ID` と `WEBHOOK_TOKEN` は設定画面の値に置き換えてください。実際の Secret は平文で Git に登録せず、既存の Secret 管理方法で適用します。通知先の Alert はこの Provider を参照させます。
+
+v1.9.4 の [Slack 送信処理](https://github.com/fluxcd/notification-controller/blob/v1.9.4/internal/notifier/slack.go) は Secret.token を Authorization ヘッダーに設定し、[失敗時の処理](https://github.com/fluxcd/notification-controller/blob/v1.9.4/internal/server/event_handlers.go) はその値をマスクします。この設定では送信先 URL に認証情報が含まれません。別バージョンや独自 relay を使用する場合も、トークンを URL に含めずヘッダーで送信し、エラーログ・Event・プロキシのアクセスログにヘッダーを記録しないことを確認してください。実クラスタでの失敗ログは本 PR のテスト対象外です。
+
+Authorization ヘッダーがある場合はヘッダーを優先し、不正なヘッダーから query トークンへのフォールバックは行いません。URL の再発行ではヘッダーに使用する旧トークンも無効になります。
 
 ## 対応する表示項目
 
@@ -34,6 +68,8 @@
 - `color` は `good`（緑）、`warning`（黄）、`danger`（赤）、6桁の16進色コード（`#` は省略可）を受け付けます。省略時はブランド色です。不正な色は400エラーになります。
 - Block Kit（`blocks`）、操作ボタン、画像、アイコン、送信者名・チャンネルの上書きには対応しません。未知の表示項目は無視します。対応する本文がない通知は400エラーになります。
 - HTML・Slack mrkdwn は解釈せずプレーンテキストとして表示します。リンクは `title_link` の HTTPS URL のみです。
+
+読み上げ・管理画面・旧クライアント向けの `content` には、各カードのタイトルと本文を順番に連結し、40,000文字以内に収めた要約を保存します。タイトルが省略されたカードは本文だけを使用します。要約を切り詰めても、保存するカード本体は変更しません。
 
 本文上限は2 MiBです。変換後の各カードのタイトルは500文字、説明は4,000文字、リンク・著者・フッターなどの各項目は2,000文字までです。`pretext`・`text`・`fields` を連結した説明にも4,000文字の制限を適用します。各添付の `fields` は最大100件です。
 
@@ -56,7 +92,15 @@ Webhook の受信仕様を Slack 互換形式に置き換えます。既存の W
 3. 本文署名の `X-Webhook-Signature-256` は不要です。トークンのない URL と旧共通カード形式では受信できません。
 4. 再送を重複排除する送信元は、引き続き `X-Webhook-Delivery` に同じ UUID を指定してください。
 
-既存の投稿 App・投稿履歴・保存済みカードは保持します。デプロイ時には送信元の切り替えも行ってください。
+既存の投稿 App・投稿履歴・保存済みカードは保持します。同時切り替えや無停止移行は保証しません。送信元の運用担当者は以下の順序で切り替えてください。
+
+1. デプロイ前に全送信元を洗い出し、旧 URL・署名 Secret・JSON 変換設定を Secret 管理先に保管します。zoo2-infra の alert-relay が稼働している場合、旧カードJSONと署名を送るため、URLだけでなく変換処理と認証も更新する準備をします。relay を外して Flux の Slack Provider に切り替える場合は上記の設定を用意します。
+2. 送信処理を一時停止し、未送信通知を送信元のキュー等へ保存します。停止中に発生するイベントを保存・再送できない送信元は通知欠落を防げないため、欠落を許容できる保守時間の合意が必要です。実環境の送信元・キュー・許容時間はこの PR では確認していません。
+3. Zooをデプロイし、管理画面から新 URL を取得して、送信先・JSON・認証設定を更新します。Flux は URL と token を分けます。成功・失敗のテスト通知で、色と保存済み本文を確認します。
+4. 送信を再開し、保存した未送信通知を再送します。以前に配信済みの通知には同じ Delivery ID を使用します。
+5. ロールバックする場合は送信を再び停止し、Zoo を旧バージョンへ戻してから、保管した旧 URL・署名 Secret・旧 JSON 変換設定を送信元へ戻します。旧形式でのテスト通知を確認した後に送信と再送を再開します。切り替え完了まで Webhook の削除や URL の再発行は行いません。
+
+新旧形式を併用する移行期間は設けません。上記の停止・再送を用意できることをデプロイ前に確認してください。
 
 ## GitHub 連携
 

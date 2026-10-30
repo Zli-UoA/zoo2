@@ -261,6 +261,48 @@ async fn manages_channel_webhooks_and_credentials() -> anyhow::Result<()> {
     assert_eq!(cards["cards"][1]["color"], "#2eb886");
     assert_eq!(cards["cards"][2]["color"], "#ff0000");
     assert_eq!(
+        slack_messages[0].content,
+        "Flux deployment\nReady\nproduction\nFailed\nstaging"
+    );
+    // Flux sends credentials as Secret.token, keeping retry error URLs public.
+    let (endpoint, token) = receive.split_once("?token=").unwrap();
+    for (url, authorization, expected) in [
+        (endpoint, format!("Bearer {token}"), StatusCode::OK),
+        (endpoint, "Bearer wrong".into(), StatusCode::UNAUTHORIZED),
+        (receive, "Basic wrong".into(), StatusCode::UNAUTHORIZED),
+        (receive, "Bearer wrong".into(), StatusCode::UNAUTHORIZED),
+    ] {
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(url)
+                    .header("authorization", authorization)
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        r#"{"attachments":[{"text":"Reconciliation failed","color":"danger"}]}"#,
+                    ))
+                    .unwrap(),
+            )
+            .await?;
+        assert_eq!(response.status(), expected);
+    }
+    let max_cards = json!({"attachments": vec![json!({"title":"界".repeat(500)}); 100]});
+    assert_eq!(
+        slack_delivery(&app, receive, &Uuid::new_v4().to_string(), max_cards).await,
+        StatusCode::OK
+    );
+    let stored = Message::filter(Message::fields().channel_id().eq(channel.as_str()))
+        .exec(&mut db)
+        .await?;
+    assert!(stored.iter().any(|m| m.content == "Reconciliation failed"));
+    let long = stored.iter().find(|m| m.content.starts_with("界")).unwrap();
+    assert_eq!(long.content.chars().count(), 40_000);
+    let full: Value = serde_json::from_str(long.card.as_ref().unwrap())?;
+    assert_eq!(full["cards"].as_array().unwrap().len(), 100);
+    assert_eq!(full["cards"][99]["title"], "界".repeat(500));
+    assert_eq!(
         slack_delivery(
             &app,
             &format!("/api/webhooks/{id}?token=invalid"),
@@ -315,6 +357,24 @@ async fn manages_channel_webhooks_and_credentials() -> anyhow::Result<()> {
     assert_eq!(status, StatusCode::OK);
     let next = rotated["data"]["path"].as_str().unwrap();
     assert_ne!(receive, next);
+    for (bearer, expected) in [
+        (token, StatusCode::UNAUTHORIZED),
+        (next.split_once("?token=").unwrap().1, StatusCode::OK),
+    ] {
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(endpoint)
+                    .header("authorization", format!("Bearer {bearer}"))
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"text":"Rotated header token"}"#))
+                    .unwrap(),
+            )
+            .await?;
+        assert_eq!(response.status(), expected);
+    }
     assert_eq!(
         delivery(&app, receive, &delivery_id).await,
         StatusCode::UNAUTHORIZED

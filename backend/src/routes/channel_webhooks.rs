@@ -266,7 +266,20 @@ async fn receive(
         .exec(&mut db)
         .await?
         .ok_or_else(|| AppError::NotFound("Webhook not found".into()))?;
-    if !verify_token(&hook.secret, &auth.token) {
+    // Flux can keep the URL free of credentials and redact Secret.token on errors.
+    // A supplied Authorization header takes precedence, including when invalid.
+    let token = if let Some(value) = headers.get(axum::http::header::AUTHORIZATION) {
+        value
+            .to_str()
+            .ok()
+            .and_then(|value| value.split_once(' '))
+            .filter(|(scheme, _)| scheme.eq_ignore_ascii_case("Bearer"))
+            .map(|(_, token)| token)
+            .ok_or_else(|| AppError::Unauthorized("Invalid webhook token".into()))?
+    } else {
+        &auth.token
+    };
+    if !verify_token(&hook.secret, token) {
         return Err(AppError::Unauthorized("Invalid webhook token".into()));
     }
     let cards = crate::cards::parse_webhook_cards(&body)?;
