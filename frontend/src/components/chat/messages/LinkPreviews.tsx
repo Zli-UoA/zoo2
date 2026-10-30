@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { createConfiguredApiClient, type ApiClient } from "../../../lib/api/client";
+import { ApiError, createConfiguredApiClient, type ApiClient } from "../../../lib/api/client";
 import type { AppConfig } from "../../../lib/config";
 import { useOptionalCollections } from "../../../lib/electric/collections-context";
 import { previewUrls, proxyImageUrl } from "./linkPreviews";
@@ -9,7 +9,7 @@ interface Preview {
   description: string;
   image: string | null;
 }
-// Requests are shared across the timeline and thread pane, including failures.
+// Requests and bounded retries are shared across the timeline and thread pane.
 const cache = new Map<string, { at: number; request: Promise<Preview | null> }>();
 let activeRequests = 0;
 const waiting: (() => void)[] = [];
@@ -20,19 +20,38 @@ async function queuedPreview(client: ApiClient, url: string) {
     return await client.get<Preview>(`/api/link-preview?${new URLSearchParams({ url })}`, {
       signal: AbortSignal.timeout(12_000),
     });
-  } catch {
-    return null;
   } finally {
     const next = waiting.shift();
     if (next) next();
     else activeRequests--;
   }
 }
+async function retryPreview(client: ApiClient, url: string): Promise<Preview | null> {
+  for (let attempt = 0; ; attempt++) {
+    try {
+      return await queuedPreview(client, url);
+    } catch (error) {
+      const transient =
+        (error instanceof ApiError && [408, 429, 502, 503, 504].includes(error.status)) ||
+        error instanceof TypeError ||
+        (error instanceof DOMException &&
+          (error.name === "TimeoutError" || error.name === "AbortError"));
+      if (!transient) return null;
+      if (attempt >= 3) throw error;
+      // Release the request slot before waiting; allow the server's 10s fetches to finish.
+      await new Promise<void>((resolve) => setTimeout(resolve, 2_000 * 2 ** attempt));
+    }
+  }
+}
 function load(client: ApiClient, key: string, url: string) {
   const previous = cache.get(key);
   if (previous && Date.now() - previous.at < 300_000) return previous.request;
   if (cache.size >= 256) cache.clear();
-  const request = queuedPreview(client, url);
+  const request = retryPreview(client, url).catch(() => {
+    // A later mount can retry transient failures even after this retry budget is exhausted.
+    if (cache.get(key)?.request === request) cache.delete(key);
+    return null;
+  });
   cache.set(key, { at: Date.now(), request });
   return request;
 }

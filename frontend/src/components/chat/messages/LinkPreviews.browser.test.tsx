@@ -1,14 +1,22 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, expect, it, vi } from "vite-plus/test";
+import { ApiError } from "../../../lib/api/client";
 import { LinkPreviews } from "./LinkPreviews";
 import { DEFAULT_CONFIG } from "../../../lib/config";
 
 const api = vi.hoisted(() => ({ get: vi.fn() }));
-vi.mock("../../../lib/api/client", () => ({ createConfiguredApiClient: () => api }));
+vi.mock("../../../lib/api/client", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../../../lib/api/client")>()),
+  createConfiguredApiClient: () => api,
+}));
 vi.mock("../../../lib/electric/collections-context", () => ({
   useOptionalCollections: () => ({ config: DEFAULT_CONFIG }),
 }));
-afterEach(() => vi.restoreAllMocks());
+afterEach(() => {
+  api.get.mockReset();
+  vi.useRealTimers();
+  vi.restoreAllMocks();
+});
 
 it("renders metadata and loads the thumbnail directly from the runtime proxy endpoint", async () => {
   vi.spyOn(globalThis, "fetch").mockResolvedValue(
@@ -54,4 +62,60 @@ it("hides failed cards and ignores stale responses after the URL is edited", asy
   );
   expect(screen.queryByRole("link")).toBeNull();
   expect(screen.queryByText("Old title")).toBeNull();
+});
+
+it("retries a rate-limited card while it stays mounted and shares retries across views", async () => {
+  vi.useFakeTimers();
+  api.get
+    .mockRejectedValueOnce(new ApiError(429, "busy"))
+    .mockResolvedValue({ title: "Recovered card", description: "", image: null });
+  render(
+    <>
+      <LinkPreviews content="https://example.com/retry-mounted" />
+      <LinkPreviews content="https://example.com/retry-mounted" />
+    </>,
+  );
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(0);
+  });
+  expect(api.get).toHaveBeenCalledTimes(1);
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(2_000);
+  });
+  expect(api.get).toHaveBeenCalledTimes(2);
+  expect(screen.getAllByRole("link", { name: /Recovered card/ })).toHaveLength(2);
+});
+
+it("bounds transient retries and lets a later mount retry after exhaustion", async () => {
+  vi.useFakeTimers();
+  api.get.mockRejectedValue(new ApiError(429, "busy"));
+  const view = render(<LinkPreviews content="https://example.com/retry-exhausted" />);
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(14_000);
+  });
+  expect(api.get).toHaveBeenCalledTimes(4);
+  expect(screen.queryByRole("link")).toBeNull();
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(60_000);
+  });
+  expect(api.get).toHaveBeenCalledTimes(4);
+  view.unmount();
+  api.get.mockResolvedValue({ title: "Later card", description: "", image: null });
+  render(<LinkPreviews content="https://example.com/retry-exhausted" />);
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(0);
+  });
+  expect(api.get).toHaveBeenCalledTimes(5);
+  expect(screen.getByRole("link", { name: /Later card/ })).toBeInTheDocument();
+});
+
+it("does not retry permanent API failures", async () => {
+  vi.useFakeTimers();
+  api.get.mockRejectedValue(new ApiError(400, "unsupported URL"));
+  render(<LinkPreviews content="https://example.com/permanent-failure" />);
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(60_000);
+  });
+  expect(api.get).toHaveBeenCalledTimes(1);
+  expect(screen.queryByRole("link")).toBeNull();
 });
