@@ -194,7 +194,7 @@ export function MessageRow({
         onContextMenu={(event) => {
           // リンクなどの標準メニューは維持し、本文の長押しは操作メニューに使う。
           if ((event.target as HTMLElement).closest("button, a, input, textarea")) return;
-          if (menuOpen || hold.current !== null) event.preventDefault();
+          if (longPressed.current || menuOpen || hold.current !== null) event.preventDefault();
         }}
         className={cn(
           "group/row relative flex gap-3 rounded-lg px-3 transition-colors hover:bg-muted/60 focus-within:bg-muted/60",
@@ -377,6 +377,7 @@ export function MessageRow({
                 </>
               ) : null}
             </div>
+            {/* 長押し用のアンカーを、キーボード操作の入口としても使う。 */}
             <DropdownMenu open={menuOpen} onOpenChange={setMenuOpen}>
               <DropdownMenuTrigger
                 aria-label={t("messages.more")}

@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vite-plus/test";
 
@@ -113,6 +113,38 @@ describe("MessageRow", () => {
     expect(fireEvent.contextMenu(row)).toBe(false);
     expect(fireEvent.contextMenu(link)).toBe(true);
     fireEvent.pointerCancel(row);
+  });
+
+  it("suppresses the native menu immediately after the hold timer before React commits", () => {
+    const { container } = renderRow(buildItem({ content: "hello https://example.com" }));
+    const row = container.querySelector("div.group\\/row")!;
+    const link = screen.getByRole("link");
+    vi.useFakeTimers();
+    try {
+      fireEvent.pointerDown(row, { pointerType: "touch", isPrimary: true });
+      act(() => {
+        vi.advanceTimersByTime(500);
+        // state の反映前、タイマーはクリア済みでも本文の標準メニューを抑止する。
+        expect(screen.queryByRole("menu")).toBeNull();
+        expect(fireEvent.contextMenu(row)).toBe(false);
+        expect(fireEvent.contextMenu(link)).toBe(true);
+      });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("offers the long-press menu as a keyboard fallback", async () => {
+    const onStartEdit = vi.fn();
+    renderRow(buildItem(), true, { onStartEdit });
+    const trigger = screen.getByRole("button", { name: "その他の操作" });
+    trigger.focus();
+    expect(document.activeElement).toBe(trigger);
+    await userEvent.keyboard("{Enter}");
+    const edit = screen.getByRole("menuitem", { name: "編集" });
+    edit.focus();
+    await userEvent.keyboard("{Enter}");
+    expect(onStartEdit).toHaveBeenCalledOnce();
   });
 
   it("renders URLs as safe external links", () => {
