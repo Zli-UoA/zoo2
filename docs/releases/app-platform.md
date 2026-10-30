@@ -7,11 +7,11 @@
 削除対象は `/api/webhooks/github`、`/api/webhooks/github/{id}` と `GITHUB_WEBHOOK_*` の設定です。GitHub 固有の変換機能は Zoo 本体へ戻しません。
 
 1. GitHub イベントを受信・検証する外部 Bot アプリを用意し、Zoo の App として登録します。必要な scope と投稿先チャンネルへの参加を管理者が承認します。
-2. Bot アプリ側の受信 URL と GitHub の署名 Secret を設定し、GitHub 側の Webhook の送信先をその URL へ変更します。Zoo の共通 Webhook URL は GitHub の生ペイロードを受け付けません。
+2. Bot アプリ側の受信 URL と GitHub の署名 Secret を設定し、GitHub 側の Webhook の送信先をその URL へ変更します。Zoo の Webhook URL は GitHub の生ペイロードを受け付けません。
 3. GitHub のテスト配信と実際の対象イベントで、Bot アプリ経由の投稿を確認します。旧通知と重複しないことも確認します。
 4. 旧 Zoo 側の GitHub 環境変数を除去し、このバージョンをデプロイします。Bot アプリの準備・切り替えが未完了なら、本番への適用を延期してください。
 
-共通 Webhook の URL・Secret・重複排除、既存の投稿者と通知カードは保持します。共通 Webhook の設定手順は [webhooks.md](../webhooks.md)、Bot アプリの設定は [apps.md](../apps.md) を参照してください。
+Webhookの受信仕様もSlack互換形式へ変更します。適用時には設定画面のトークン付きWebhook URLへ送信先を変更し、送信JSONをSlack形式へ切り替えてください。旧共通カード形式と本文署名ヘッダーでの受信は終了します。既存の投稿者・通知カード・Delivery IDによる重複排除は保持します。移行手順は [webhooks.md](../webhooks.md)、Bot アプリの設定は [apps.md](../apps.md) を参照してください。
 
 ## 追加マイグレーション
 

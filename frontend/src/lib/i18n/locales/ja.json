@@ -269,24 +269,24 @@
   "webhooks": {
     "title": "Webhook設定",
     "description": "管理対象チャンネル {{channel}} の通知連携を設定します。",
-    "instructions": "共通Webhook URLへ共通カード形式のJSONを送信してください。Secretで本文の署名を作成します。専用の投稿Appは自動作成されます。",
+    "instructions": "Webhook URLにSlack Incoming Webhook形式のJSONを送信してください。URLに認証情報を含むため、署名ヘッダーは不要です。専用の投稿Appは自動作成されます。",
     "copied": "コピーしました",
     "copyError": "コピーできませんでした。欄を選択して手動でコピーしてください。",
     "copyLabel": "{{label}}をコピー",
-    "showSecret": "Secretを表示",
-    "hideSecret": "Secretを隠す",
+    "showUrl": "Webhook URLを表示",
+    "hideUrl": "Webhook URLを隠す",
     "retry": "再読み込み",
     "loading": "読み込み中…",
     "name": "Webhook名",
     "create": "作成",
     "archived": "アーカイブ中は新規作成できません。",
     "empty": "Webhookはまだありません。",
-    "rotate": "Secretを再発行",
+    "rotate": "Webhook URLを再発行",
     "delete": "削除",
     "deleteConfirm": "このWebhookを削除しますか？このURLからの通知は受信できなくなります。",
-    "rotateConfirm": "Secretを再発行しますか？現在のSecretは無効になります。送信元の設定も更新してください。",
+    "rotateConfirm": "Webhook URLを再発行しますか？現在のURLは無効になります。送信元の設定も更新してください。",
     "confirm": "実行",
-    "genericUrl": "共通Webhook URL"
+    "url": "Webhook URL"
   },
   "mentions": {
     "suggestions": "メンション候補"

@@ -16,7 +16,6 @@ export interface ChannelWebhook {
   name: string;
   path: string;
   bot_user_id?: string;
-  secret: string;
   created_at: string;
 }
 
@@ -61,7 +60,7 @@ function Credential({
             type="button"
             variant="ghost"
             size="icon-sm"
-            aria-label={visible ? t("webhooks.hideSecret") : t("webhooks.showSecret")}
+            aria-label={visible ? t("webhooks.hideUrl") : t("webhooks.showUrl")}
             onClick={() => setVisible(!visible)}
           >
             {visible ? <EyeOffIcon /> : <EyeIcon />}
@@ -212,10 +211,11 @@ export function ChannelWebhooksDialog({
                     onUpdated={() => setReload((value) => value + 1)}
                   />
                   <Credential
-                    label={t("webhooks.genericUrl")}
+                    key={hook.path}
+                    label={t("webhooks.url")}
                     value={webhookUrl(config.apiBaseUrl, hook.path, window.location.origin)}
+                    secret
                   />
-                  <Credential key={hook.secret} label="Secret" value={hook.secret} secret />
                   <div className="flex justify-end gap-2">
                     <Button
                       variant="outline"

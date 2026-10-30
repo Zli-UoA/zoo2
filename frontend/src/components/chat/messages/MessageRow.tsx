@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { MessageCard, parseMessageCard } from "./MessageCard";
+import { MessageCard, parseMessageCards } from "./MessageCard";
 import { useTranslation } from "react-i18next";
 import { cn } from "cn";
 import {
@@ -55,8 +55,15 @@ export interface MessageRowProps {
 
 /** 通常投稿は MFM、連携カードは専用の描画を使う。 */
 export function MessageBody({ content, card: data }: { content: string; card?: string | null }) {
-  const card = parseMessageCard(data);
-  if (card) return <MessageCard card={card} />;
+  const cards = parseMessageCards(data);
+  if (cards)
+    return (
+      <>
+        {cards.map((card, index) => (
+          <MessageCard key={index} card={card} />
+        ))}
+      </>
+    );
   return (
     <div className="mfm-body whitespace-pre-wrap break-words text-sm leading-relaxed">
       <MfmContent content={content} />

@@ -112,8 +112,7 @@ export const storybookApiHandlers = [
         {
           id: "webhook-1",
           name: "Webhook",
-          path: "/api/webhooks/webhook-1",
-          secret: "storybook-example-secret",
+          path: "/api/webhooks/webhook-1?token=storybook-example-token",
           created_at: "2026-01-02T09:00:00.000Z",
         },
       ],

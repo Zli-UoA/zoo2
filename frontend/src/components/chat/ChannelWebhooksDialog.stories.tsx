@@ -25,7 +25,7 @@ type Story = StoryObj<typeof meta>;
 export const Default: Story = {
   play: async () => {
     await expect(await screen.findByText("Webhook")).toBeInTheDocument();
-    await expect(screen.getByRole("button", { name: "Secretを表示" })).toBeInTheDocument();
+    await expect(screen.getByRole("button", { name: "Webhook URLを表示" })).toBeInTheDocument();
   },
 };
 

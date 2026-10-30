@@ -9,6 +9,31 @@ export interface CardData {
   context: string;
   author: string;
   badge: string;
+  color?: string;
+}
+
+function cardColor(value: unknown): string | undefined {
+  if (typeof value !== "string") return undefined;
+  const named: Record<string, string> = { good: "#2eb886", warning: "#daa038", danger: "#a30200" };
+  if (Object.hasOwn(named, value)) return named[value];
+  return /^#?[0-9a-fA-F]{6}$/.test(value) ? `#${value.replace(/^#/, "")}` : undefined;
+}
+
+export function parseMessageCards(value?: string | null): CardData[] | null {
+  if (!value) return null;
+  try {
+    const parsed: unknown = JSON.parse(value);
+    if (parsed && typeof parsed === "object" && "cards" in parsed) {
+      if (!Array.isArray(parsed.cards) || !parsed.cards.length || parsed.cards.length > 101)
+        return null;
+      const cards = parsed.cards.map((card: unknown) => parseMessageCard(JSON.stringify(card)));
+      return cards.every((card): card is CardData => card !== null) ? cards : null;
+    }
+    const card = parseMessageCard(value);
+    return card ? [card] : null;
+  } catch {
+    return null;
+  }
 }
 export function parseMessageCard(value?: string | null): CardData | null {
   if (!value) return null;
@@ -30,6 +55,8 @@ export function parseMessageCard(value?: string | null): CardData | null {
       if (c[key] !== undefined && typeof c[key] !== "string") return null;
       result[key] = (c[key] as string | undefined) ?? "";
     }
+    const color = cardColor(c.color);
+    if (color) result.color = color;
     return result;
   } catch {
     return null;
@@ -44,7 +71,10 @@ export function MessageCard({ card }: { card: CardData }) {
     /* Missing links render as text. */
   }
   return (
-    <article className="my-1 max-w-xl overflow-hidden rounded-lg border border-l-4 border-l-brand bg-card p-3 text-sm shadow-sm">
+    <article
+      className="my-1 max-w-xl overflow-hidden rounded-lg border border-l-4 border-l-brand bg-card p-3 text-sm shadow-sm"
+      style={cardColor(card.color) ? { borderLeftColor: cardColor(card.color) } : undefined}
+    >
       {card.source || card.context || card.badge ? (
         <div className="mb-2 flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
           <SquareArrowOutUpRightIcon className="size-4 shrink-0" aria-hidden="true" />

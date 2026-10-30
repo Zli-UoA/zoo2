@@ -1,4 +1,4 @@
-//! Shared signature validation and card persistence for generic incoming webhooks.
+//! Token authentication and card persistence for Slack-compatible incoming webhooks.
 use super::messages::{CreateMessageRequest, create_message_impl};
 use crate::{
     auth::AuthUser, cards::MessageCard, error::AppError, models::Message, state::AppState,
@@ -12,10 +12,20 @@ pub(super) struct Settings {
     pub(super) user: String,
 }
 
-pub(super) fn verify(secret: &str, body: &[u8], signature: &str) -> bool {
-    let Some(hex) = signature.strip_prefix("sha256=") else {
-        return false;
-    };
+pub(super) const WEBHOOK_TOKEN_CONTEXT: &[u8] = b"zoo:incoming-webhook:v1";
+
+pub(super) fn webhook_token(secret: &str) -> String {
+    let mut mac =
+        Hmac::<Sha256>::new_from_slice(secret.as_bytes()).expect("HMAC accepts any key length");
+    mac.update(WEBHOOK_TOKEN_CONTEXT);
+    mac.finalize()
+        .into_bytes()
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect()
+}
+
+pub(super) fn verify_token(secret: &str, hex: &str) -> bool {
     if hex.len() != 64 || !hex.is_ascii() {
         return false;
     }
@@ -28,16 +38,37 @@ pub(super) fn verify(secret: &str, body: &[u8], signature: &str) -> bool {
     };
     let mut mac =
         Hmac::<Sha256>::new_from_slice(secret.as_bytes()).expect("HMAC accepts any key length");
-    mac.update(body);
+    mac.update(WEBHOOK_TOKEN_CONTEXT);
     mac.verify_slice(&bytes).is_ok()
 }
 
 pub(super) async fn persist_card(
     state: AppState,
     settings: Settings,
-    card: MessageCard,
+    cards: Vec<MessageCard>,
     delivery: &str,
 ) -> Result<StatusCode, AppError> {
+    let mut encoded = Vec::new();
+    for card in &cards {
+        encoded.push(
+            serde_json::from_str::<serde_json::Value>(&card.encode()?)
+                .map_err(|e| AppError::Internal(e.into()))?,
+        );
+    }
+    if encoded.is_empty() {
+        return Err(AppError::BadRequest("Empty webhook message".into()));
+    }
+    let content = cards
+        .iter()
+        .map(|c| c.title.as_str())
+        .collect::<Vec<_>>()
+        .join("\n");
+    let card_data = if encoded.len() == 1 {
+        encoded.remove(0)
+    } else {
+        serde_json::json!({"cards": encoded})
+    }
+    .to_string();
     uuid::Uuid::parse_str(delivery)
         .map_err(|_| AppError::BadRequest("Missing or invalid webhook delivery ID".into()))?;
     // Retain the legacy namespace so retries of existing generic deliveries remain idempotent.
@@ -64,14 +95,14 @@ pub(super) async fn persist_card(
         CreateMessageRequest {
             id: Some(id),
             channel_id: settings.channel,
-            content: card.title.clone(),
+            content,
             parent_id: None,
             kind: "message".into(),
             broadcast: false,
             metadata: None,
         },
         false,
-        Some(card.encode()?),
+        Some(card_data),
     )
     .await?;
     Ok(StatusCode::OK)
@@ -81,11 +112,11 @@ pub(super) async fn persist_card(
 mod tests {
     use super::*;
     #[test]
-    fn webhook_signature_vector() {
-        let sig = "sha256=757107ea0eb2509fc211221cce984b8a37570b6d7586c22c46f4379c8b043e17";
-        assert!(verify("It's a Secret to Everybody", b"Hello, World!", sig));
-        assert!(!verify("wrong", b"Hello, World!", sig));
-        assert!(!verify("It's a Secret to Everybody", b"changed", sig));
-        assert!(!verify("secret", b"body", "sha256=bad"));
+    fn verifies_webhook_url_tokens() {
+        let token = webhook_token("secret");
+        assert!(verify_token("secret", &token));
+        assert!(!verify_token("rotated", &token));
+        assert!(!verify_token("secret", "bad"));
+        assert!(!verify_token("secret", &"0".repeat(64)));
     }
 }

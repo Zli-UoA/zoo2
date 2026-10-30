@@ -269,24 +269,24 @@
   "webhooks": {
     "title": "Webhook 設定",
     "description": "管理 {{channel}} 嘅通知整合。",
-    "instructions": "請將共用卡片格式嘅 JSON 傳送去通用 Webhook URL，並用 Secret 簽署本文。系統會自動建立專用發文 App。",
+    "instructions": "請將 Slack Incoming Webhook 格式嘅 JSON 傳送去 Webhook URL。URL 已包含認證資料，唔需要簽署標頭。系統會自動建立專用發文 App。",
     "copied": "已複製",
     "copyError": "複製唔到。請選取欄位再手動複製。",
     "copyLabel": "複製 {{label}}",
-    "showSecret": "顯示 Secret",
-    "hideSecret": "隱藏 Secret",
+    "showUrl": "顯示 Webhook URL",
+    "hideUrl": "隱藏 Webhook URL",
     "retry": "重新載入",
     "loading": "載入中…",
     "name": "Webhook 名稱",
     "create": "建立",
     "archived": "已封存嘅頻道唔可以建立新 Webhook。",
     "empty": "暫時未有 Webhook。",
-    "rotate": "重新產生 Secret",
+    "rotate": "重新產生 Webhook URL",
     "delete": "刪除",
     "deleteConfirm": "要刪除呢個 Webhook 嗎？呢個 URL 會停止接收通知。",
-    "rotateConfirm": "要重新產生 Secret 嗎？而家嘅 Secret 會失效，請一併更新傳送端設定。",
+    "rotateConfirm": "要重新產生 Webhook URL 嗎？而家嘅 URL 會失效，請一併更新傳送端設定。",
     "confirm": "確認",
-    "genericUrl": "通用 Webhook URL"
+    "url": "Webhook URL"
   },
   "mentions": {
     "suggestions": "提及建議"
