@@ -96,6 +96,27 @@ describe("MessageRow", () => {
     expect(withoutThread).not.toContain("件の返信");
   });
 
+  it("uses a machine-readable datetime for the timestamp", () => {
+    const groupStart = render(buildItem({ created_at: "2026-01-02 09:00:00.000" }));
+    expect(groupStart.match(/datetime=/gi)).toHaveLength(1);
+    expect(groupStart).toMatch(/datetime="2026-01-02T09:00:00\.000Z"/i);
+    expect(groupStart).not.toMatch(/datetime="2026-01-02 09:00:00\.000"/i);
+
+    const groupContinue = buildItem({ created_at: "2026-01-02 09:00:00.000" });
+    groupContinue.isGroupStart = false;
+    const continued = render(groupContinue);
+    expect(continued.match(/datetime=/gi)).toHaveLength(1);
+    expect(continued).toMatch(/datetime="2026-01-02T09:00:00\.000Z"/i);
+  });
+
+  it("never displays a persistent touch toolbar", () => {
+    const withoutActions = render(buildItem());
+    expect(withoutActions).not.toContain("[@media(hover:none)]:flex");
+
+    const withActions = render(buildItem(), false, { onOpenThread: noop });
+    expect(withActions).not.toContain("[@media(hover:none)]:flex");
+  });
+
   it("keeps the hover actions from stealing clicks while invisible", () => {
     const html = render(buildItem(), true);
     // 外枠ごとクリックを通し、表示（ホバー / フォーカス内）のときだけ操作群を戻す。
@@ -105,8 +126,8 @@ describe("MessageRow", () => {
     expect(html).toContain("group-focus-within/row:pointer-events-auto");
     expect(html).toContain("group-hover/row:opacity-100");
     expect(html).toContain("group-focus-within/row:opacity-100");
-    // タッチ用の「⋯」は外枠の指定を打ち消して押せるままにする。
-    expect(html).toContain("pointer-events-auto border bg-popover shadow-sm");
+    // 長押し用アンカーは通常のタップを奪わない。
+    expect(html).toContain("pointer-events-none opacity-0");
   });
 });
 

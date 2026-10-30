@@ -94,7 +94,7 @@ pub fn extract_mentions(content: &str) -> MentionTargets {
 
 /// メッセージ作成時の通知生成
 ///
-/// 1つのメッセージ投稿に対し、同一ユーザー宛ての通知は1件に集約する (メンション > 返信)。
+/// 1つのメッセージ投稿に対し、同一ユーザー宛ての通知は1件に集約する (メンション > 返信 > DM)。
 /// [P2] 公開チャンネルでは非メンバー投稿者への返信通知も配信する。
 /// プライベートチャンネルではチャンネル非所属ユーザー (キック・退出者含む) への通知を除外する。
 pub async fn create_message_notifications(
@@ -166,6 +166,26 @@ pub async fn create_message_notifications(
         }
     }
 
+    // 通常の DM も現在の参加者全員へ通知する。メンション・返信は優先して重複させない。
+    if channel.is_dm && channel.deleted_at.is_none() {
+        for member_id in &member_ids {
+            if member_id != actor_id {
+                targets_to_notify.entry(member_id.clone()).or_insert("dm");
+            }
+        }
+    }
+
+    // Apps receive events rather than human inbox notifications.
+    if !targets_to_notify.is_empty() {
+        let ids = serde_json::json!(targets_to_notify.keys().collect::<Vec<_>>()).to_string();
+        let bots = crate::apps::query(tx, "SELECT json_build_object('id',id)::text FROM users WHERE is_bot AND id IN (SELECT jsonb_array_elements_text($1::jsonb))", &[&ids]).await?;
+        for bot in bots {
+            if let Some(id) = bot["id"].as_str() {
+                targets_to_notify.remove(id);
+            }
+        }
+    }
+
     let mut created_notifications = Vec::new();
     let now = now_utc_millis();
 
@@ -196,7 +216,7 @@ pub async fn create_reaction_notification(
     message: &Message,
     actor_id: &str,
 ) -> Result<Option<Notification>, AppError> {
-    if message.user_id == actor_id {
+    if message.user_id == actor_id || User::get_by_id(tx, message.user_id.as_str()).await?.is_bot {
         return Ok(None);
     }
 

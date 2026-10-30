@@ -1,14 +1,14 @@
 import { useTranslation } from "react-i18next";
 import { cn } from "cn";
 import { SearchIcon, UserMinusIcon } from "lucide-react";
-import { useId, useMemo, useState, type ChangeEvent, type KeyboardEvent } from "react";
+import { Fragment, useId, useMemo, useState, type ChangeEvent, type KeyboardEvent } from "react";
 
 import { canKickChannelMember } from "../../hooks/channelPermissions";
 import { useChannelAdmin } from "../../hooks/useChannelAdmin";
 import { useCurrentUser } from "../../hooks/useCurrentUser";
 import { useChannelMembers, useUsers, useWorkspaceAdminIds } from "../../hooks/useRealtime";
 import { useWriteRunner } from "../../hooks/useWriteRunner";
-import { getCollections } from "../../lib/electric/collections";
+import { useCollections } from "../../lib/electric/collections-context";
 import type { ChannelUserWriteMetadata } from "../../lib/electric/writes";
 import type { ChannelRow, UserRow } from "../../lib/electric/types";
 import { useLocale } from "../i18n/LocaleProvider";
@@ -28,6 +28,7 @@ import { inputClassName } from "../ui/input-styles";
 import { ScrollArea } from "../ui/scroll-area";
 import { Skeleton } from "../ui/skeleton";
 import { initials } from "./format";
+import { AppAvatar, openApp } from "./AppIdentity";
 import { filterMemberCandidates, sortUsersByLabel, userLabel } from "./memberCandidates";
 
 const SKELETON_ROWS = [0, 1, 2];
@@ -51,7 +52,7 @@ function nowIso(): string {
 export function MembersPanel({ channel, className }: { channel: ChannelRow; className?: string }) {
   const { t } = useTranslation();
   const { locale } = useLocale();
-  const { channelUsers } = getCollections();
+  const { channelUsers } = useCollections();
   const membersQuery = useChannelMembers(channel.id);
   const usersQuery = useUsers();
   const { currentUserId, isLoading: currentUserLoading } = useCurrentUser();
@@ -68,7 +69,10 @@ export function MembersPanel({ channel, className }: { channel: ChannelRow; clas
   const candidateListId = useId();
   const creatorLeaveHintId = useId();
 
-  const members = membersQuery.data ?? [];
+  const userMap = new Map((usersQuery.data ?? []).map((user) => [user.id, user]));
+  const members = [...(membersQuery.data ?? [])].sort(
+    (a, b) => Number(!!userMap.get(a.user_id)?.is_bot) - Number(!!userMap.get(b.user_id)?.is_bot),
+  );
   const userNames = useMemo(() => {
     const map = new Map<string, string>();
     for (const user of usersQuery.data ?? []) {
@@ -222,7 +226,11 @@ export function MembersPanel({ channel, className }: { channel: ChannelRow; clas
       <header className="flex items-center justify-between gap-2 border-b px-4 py-3">
         <h3 className="text-sm font-semibold">{t("members.title")}</h3>
         <span className="rounded bg-muted px-2 py-0.5 text-xs tabular-nums text-muted-foreground">
-          {!canViewMembers ? "—" : membersQuery.isLoading ? "…" : members.length}
+          {!canViewMembers
+            ? "—"
+            : membersQuery.isLoading
+              ? "…"
+              : members.filter((member) => !userMap.get(member.user_id)?.is_bot).length}
         </span>
       </header>
 
@@ -242,7 +250,11 @@ export function MembersPanel({ channel, className }: { channel: ChannelRow; clas
                       <Skeleton className="h-4 flex-1" />
                     </li>
                   ))
-                : members.map((member) => {
+                : members.map((member, index) => {
+                    const bot = userMap.get(member.user_id);
+                    const isBot = !!bot?.is_bot;
+                    const startsAppSection =
+                      isBot && (index === 0 || !userMap.get(members[index - 1]!.user_id)?.is_bot);
                     const label = userNames.get(member.user_id) ?? member.user_id;
                     const isCreator = member.user_id === channel.created_user_id;
                     const isMe = member.user_id === currentUserId;
@@ -257,38 +269,48 @@ export function MembersPanel({ channel, className }: { channel: ChannelRow; clas
                         targetIsAdmin: adminIds.has(member.user_id),
                       });
                     return (
-                      <li
-                        key={member.user_id}
-                        className="flex items-center gap-2.5 rounded-lg px-2 py-1.5 hover:bg-accent/60"
-                      >
-                        <Avatar size="sm">
-                          <AvatarFallback>{initials(label)}</AvatarFallback>
-                        </Avatar>
-                        <span className="min-w-0 flex-1 truncate text-sm">{label}</span>
-                        {isCreator ? (
-                          <span className="shrink-0 rounded bg-muted px-1.5 py-0.5 text-[0.65rem] text-muted-foreground">
-                            {t("members.creator")}
+                      <Fragment key={member.user_id}>
+                        {startsAppSection ? (
+                          <li className="mt-3 px-2 py-1 text-xs font-semibold text-muted-foreground">
+                            {t("apps.title")}
+                          </li>
+                        ) : null}
+                        <li className="flex items-center gap-2.5 rounded-lg px-2 py-1.5 hover:bg-accent/60">
+                          <AppAvatar label={label} isBot={isBot} src={bot?.avatar_url} size="sm" />
+                          <span className="min-w-0 flex-1 truncate text-sm">
+                            {isBot && bot?.app_id ? (
+                              <button type="button" onClick={() => openApp(bot.app_id!)}>
+                                {label} <span className="text-xs text-muted-foreground">APP</span>
+                              </button>
+                            ) : (
+                              label
+                            )}
                           </span>
-                        ) : null}
-                        {isMe ? (
-                          <span className="shrink-0 rounded bg-brand-muted px-1.5 py-0.5 text-[0.65rem] text-brand-muted-foreground">
-                            {t("members.you")}
-                          </span>
-                        ) : null}
-                        {canKick ? (
-                          <Button
-                            variant="ghost"
-                            size="icon-xs"
-                            className="shrink-0 text-destructive hover:bg-destructive/10 hover:text-destructive"
-                            aria-label={t("moderation.kickLabel", { name: label })}
-                            title={t("moderation.kick")}
-                            disabled={busy}
-                            onClick={() => setKickTarget({ userId: member.user_id, label })}
-                          >
-                            <UserMinusIcon />
-                          </Button>
-                        ) : null}
-                      </li>
+                          {isCreator ? (
+                            <span className="shrink-0 rounded bg-muted px-1.5 py-0.5 text-[0.65rem] text-muted-foreground">
+                              {t("members.creator")}
+                            </span>
+                          ) : null}
+                          {isMe ? (
+                            <span className="shrink-0 rounded bg-brand-muted px-1.5 py-0.5 text-[0.65rem] text-brand-muted-foreground">
+                              {t("members.you")}
+                            </span>
+                          ) : null}
+                          {canKick ? (
+                            <Button
+                              variant="ghost"
+                              size="icon-xs"
+                              className="shrink-0 text-destructive hover:bg-destructive/10 hover:text-destructive"
+                              aria-label={t("moderation.kickLabel", { name: label })}
+                              title={t("moderation.kick")}
+                              disabled={busy}
+                              onClick={() => setKickTarget({ userId: member.user_id, label })}
+                            >
+                              <UserMinusIcon />
+                            </Button>
+                          ) : null}
+                        </li>
+                      </Fragment>
                     );
                   })}
             </ul>

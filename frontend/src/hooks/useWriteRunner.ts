@@ -7,6 +7,8 @@ function describeError(error: unknown): string {
 
 export interface WriteRunner {
   error: string | null;
+  /** 並行する書き込みがすべて確定するまで true。 */
+  isPending: boolean;
   setError: (message: string | null) => void;
   /** 楽観更新トランザクションを確定まで待ち、失敗はエラーメッセージにまとめる。 */
   run: (action: () => Transaction | Promise<Transaction>) => Promise<void>;
@@ -20,17 +22,21 @@ export interface WriteRunner {
  * `awaitTxId` のタイムアウトはロールバックとしてここで受け止める。
  */
 export function useWriteRunner(): WriteRunner {
+  const [pendingCount, setPendingCount] = useState(0);
   const [error, setError] = useState<string | null>(null);
 
   const run = useCallback(async (action: () => Transaction | Promise<Transaction>) => {
+    setPendingCount((count) => count + 1);
     setError(null);
     try {
       const transaction = await action();
       await transaction.when("settled");
     } catch (cause) {
       setError(describeError(cause));
+    } finally {
+      setPendingCount((count) => count - 1);
     }
   }, []);
 
-  return { error, setError, run };
+  return { error, setError, run, isPending: pendingCount > 0 };
 }

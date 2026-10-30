@@ -3,10 +3,12 @@ import {
   type InitialQueryBuilder,
   and,
   eq,
+  gte,
   isNull,
   not,
 } from "@tanstack/react-db";
 
+import type { TimestampString } from "../timestamps";
 import type { MessageRow, UserRow } from "./types";
 
 /**
@@ -25,10 +27,12 @@ export interface ReplyCountSources {
 
 /**
  * フィードの範囲。`parentId: null` はチャンネル直下（スレッドのルート）、
- * 文字列はそのメッセージへの返信を表す。
+ * 文字列はそのメッセージへの返信を表す。`since` を渡すとその時刻以降だけを
+ * 返す（30日窓。過去は上スクロールで広げる）。
  */
 export interface MessageFeedScope {
   parentId: string | null;
+  since?: TimestampString;
 }
 
 /**
@@ -49,20 +53,28 @@ export function messageFeedQuery(
   return q
     .from({ messages: sources.messages })
     .join({ users: sources.users }, ({ messages, users }) => eq(messages.user_id, users.id))
-    .where(({ messages }) =>
-      and(
-        isNull(messages.deleted_at),
+    .where(({ messages }) => {
+      const parent =
         scope.parentId === null
           ? isNull(messages.parent_id)
-          : eq(messages.parent_id, scope.parentId),
-      ),
-    )
+          : eq(messages.parent_id, scope.parentId);
+      return scope.since
+        ? and(isNull(messages.deleted_at), parent, gte(messages.created_at, scope.since))
+        : and(isNull(messages.deleted_at), parent);
+    })
     .select(({ messages, users }) => ({
       id: messages.id,
       channel_id: messages.channel_id,
       user_id: messages.user_id,
       content: messages.content,
       card: messages.card,
+      app_blocks: messages.app_blocks,
+      app_attachments: messages.app_attachments,
+      app_unfurls: messages.app_unfurls,
+      app_origin_id: messages.app_origin_id,
+      is_bot: users.is_bot,
+      app_id: users.app_id,
+      avatar_url: users.avatar_url,
       created_at: messages.created_at,
       parent_id: messages.parent_id,
       user_name: users.user_name,

@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 
 import { createConfiguredApiClient } from "../lib/api/client";
-import { getCollections } from "../lib/electric/collections";
+import { useCollections } from "../lib/electric/collections-context";
 
 export interface ChannelReadState {
   channel_id: string;
@@ -13,7 +13,8 @@ export const READ_STATE_CHANGED = "zoo-read-state-changed";
 
 /** Refresh inactive channels without opening a message subscription for every channel. */
 export function useUnreadChannels(userId: string | null): Set<string> {
-  const client = useMemo(() => createConfiguredApiClient(getCollections().config), [userId]);
+  const { config } = useCollections();
+  const client = useMemo(() => createConfiguredApiClient(config), [config, userId]);
   const [result, setResult] = useState<{ userId: string; ids: Set<string> } | null>(null);
   useEffect(() => {
     if (!userId) return;

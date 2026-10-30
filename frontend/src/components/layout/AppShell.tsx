@@ -2,13 +2,18 @@ import { useRouterState } from "@tanstack/react-router";
 import { cn } from "cn";
 import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
 
+import { usePresence, useConversationView } from "../../hooks/usePresence";
+import { AppSurfaceHost } from "../chat/AppSurfaceHost";
 import { useActiveChannels } from "../../hooks/useRealtime";
+import { MfmChannelsProvider } from "../chat/messages/MfmChannels";
 import { ChannelSidebar } from "../chat/ChannelSidebar";
 import { MembersDialog } from "../chat/MembersDialog";
 import { MembersPanel } from "../chat/MembersPanel";
+import { OfflineBanner } from "../offline/OfflineBanner";
 import { LeftRail } from "./LeftRail";
 import { ShellContext, type ShellContextValue, type ShellPane } from "./shell-context";
 import { useMediaQuery } from "./useMediaQuery";
+import { useVisualViewport } from "./useVisualViewport";
 
 /**
  * 3ペインのアプリシェル。左レール＋サイドバー / メイン / 右メンバー。
@@ -26,6 +31,8 @@ import { useMediaQuery } from "./useMediaQuery";
  * ルート側でマウント後の一度だけレンダリングする（SSR では呼ばない）。
  */
 export function AppShell({ children }: { children: ReactNode }) {
+  usePresence();
+  const viewportRef = useVisualViewport();
   const [pane, setPane] = useState<ShellPane>("sidebar");
   const [membersOpen, setMembersOpen] = useState(false);
   const [threadRootId, setThreadRootId] = useState<string | null>(null);
@@ -34,6 +41,9 @@ export function AppShell({ children }: { children: ReactNode }) {
   const channelsQuery = useActiveChannels();
   const channels = channelsQuery.data ?? [];
 
+  const isNotifications = useRouterState({
+    select: (state) => state.location.pathname === "/notifications",
+  });
   const selectedChannelId = useRouterState({
     select: (state) => {
       for (let index = state.matches.length - 1; index >= 0; index -= 1) {
@@ -45,15 +55,26 @@ export function AppShell({ children }: { children: ReactNode }) {
       return null;
     },
   });
+  useConversationView(selectedChannelId);
   const selectedChannel = useMemo(
     () => channels.find((channel) => channel.id === selectedChannelId) ?? null,
     [channels, selectedChannelId],
   );
+  const membersChannel = selectedChannel && !selectedChannel.is_dm ? selectedChannel : null;
 
-  // チャンネルを開いたら狭幅ではチャット面へ、未選択ならサイドバーへ戻す。
+  const [prevSelectedChannelIsDm, setPrevSelectedChannelIsDm] = useState(false);
+  const selectedChannelIsDm = selectedChannel?.is_dm ?? false;
+  if (prevSelectedChannelIsDm !== selectedChannelIsDm) {
+    setPrevSelectedChannelIsDm(selectedChannelIsDm);
+    if (selectedChannelIsDm) {
+      setMembersOpen(false);
+    }
+  }
+
+  // チャンネル・通知を開いたら狭幅でもメイン画面へ、ホームではサイドバーへ戻す。
   useEffect(() => {
-    setPane(selectedChannelId ? "chat" : "sidebar");
-  }, [selectedChannelId]);
+    setPane(selectedChannelId || isNotifications ? "chat" : "sidebar");
+  }, [selectedChannelId, isNotifications]);
 
   // ワイドから狭幅へ縮んだときに、ペインで開いていたメンバーが
   // そのままダイアログとして出ないように閉じる。コミット前に反映するため
@@ -109,38 +130,46 @@ export function AppShell({ children }: { children: ReactNode }) {
     [pane, membersOpen, threadRootId, openThread, closeThread, selectedChannelId],
   );
 
-  const showSidebar = pane === "sidebar";
-  const showChat = pane === "chat";
+  const showSidebar = !isNotifications && pane === "sidebar";
+  const showChat = isNotifications || pane === "chat";
 
   return (
     <ShellContext.Provider value={value}>
-      <div className="flex h-dvh w-full overflow-hidden bg-background text-foreground">
-        <LeftRail />
-        <ChannelSidebar
-          channels={channels}
-          loading={channelsQuery.isLoading}
-          error={channelsQuery.isError}
-          className={showSidebar ? "flex" : "hidden md:flex"}
-        />
-        <main className={cn("min-w-0 flex-1 flex-col", showChat ? "flex" : "hidden md:flex")}>
-          {children}
-        </main>
-        {/* 表示は CSS（`hidden lg:flex`）が決める。狭幅でダイアログと二重に
+      <MfmChannelsProvider channels={channels}>
+        <div
+          ref={viewportRef}
+          data-app-shell
+          className="fixed inset-x-0 top-0 flex h-dvh w-full overflow-hidden bg-background text-foreground"
+        >
+          <OfflineBanner />
+          <AppSurfaceHost />
+          <LeftRail />
+          <ChannelSidebar
+            channels={channels}
+            loading={channelsQuery.isLoading}
+            error={channelsQuery.isError}
+            className={showSidebar ? "flex" : "hidden md:flex"}
+          />
+          <main className={cn("min-w-0 flex-1 flex-col", showChat ? "flex" : "hidden md:flex")}>
+            {children}
+          </main>
+          {/* 表示は CSS（`hidden lg:flex`）が決める。狭幅でダイアログと二重に
             マウントしないよう、マウントだけ `isWide` で抑える。 */}
-        {isWide && membersOpen && selectedChannel ? (
-          <MembersPanel
-            channel={selectedChannel}
-            className="hidden w-72 shrink-0 border-l lg:flex xl:w-80"
-          />
-        ) : null}
-        {selectedChannel ? (
-          <MembersDialog
-            channel={selectedChannel}
-            open={membersOpen && !isWide}
-            onOpenChange={setMembersOpen}
-          />
-        ) : null}
-      </div>
+          {isWide && membersOpen && membersChannel ? (
+            <MembersPanel
+              channel={membersChannel}
+              className="hidden w-72 shrink-0 border-l lg:flex xl:w-80"
+            />
+          ) : null}
+          {membersChannel ? (
+            <MembersDialog
+              channel={membersChannel}
+              open={membersOpen && !isWide}
+              onOpenChange={setMembersOpen}
+            />
+          ) : null}
+        </div>
+      </MfmChannelsProvider>
     </ShellContext.Provider>
   );
 }

@@ -1,7 +1,9 @@
-import { MessageCard, parseMessageCard } from "./MessageCard";
+import { useEffect, useRef, useState } from "react";
+import { MessageCard, parseMessageCards } from "./MessageCard";
 import { useTranslation } from "react-i18next";
 import { cn } from "cn";
 import {
+  BotIcon,
   MessageSquarePlusIcon,
   MessageSquareTextIcon,
   MoreHorizontalIcon,
@@ -9,13 +11,14 @@ import {
   SmilePlusIcon,
   TrashIcon,
 } from "lucide-react";
-import { Fragment } from "react";
+import { MfmContent } from "./MfmContent";
 
 import { useLocale } from "../../i18n/LocaleProvider";
 import type { KitchenCatalog } from "../../../lib/emoji/kitchen";
 import { kitchenLabel, reactionKey } from "../../../lib/emoji/kitchen";
 import type { ReactionGroup } from "../../../lib/emoji/reactions";
-import { Avatar, AvatarFallback } from "../../ui/avatar";
+import { AppAvatar, AuthorIdentity } from "../AppIdentity";
+import { MessageAppContent } from "../AppBlocks";
 import { Button, buttonVariants } from "../../ui/button";
 import {
   DropdownMenu,
@@ -24,14 +27,8 @@ import {
   DropdownMenuTrigger,
 } from "../../ui/dropdown-menu";
 import { Textarea } from "../../ui/textarea";
-import { initials } from "../format";
-import {
-  authorLabel,
-  formatDateSeparator,
-  formatTime,
-  fullTimestamp,
-  messageTextSegments,
-} from "./messageFormat";
+import { normalizeUtcTimestamp } from "../../../lib/timestamps";
+import { authorLabel, formatDateSeparator, formatTime, fullTimestamp } from "./messageFormat";
 import type { MessageItem } from "./messageGrouping";
 import { ReactionEmoji } from "./ReactionEmoji";
 
@@ -56,32 +53,21 @@ export interface MessageRowProps {
   onOpenThread?: () => void;
 }
 
-/**
- * 本文。`http(s)` URL だけを `<a>` にし、残りは素のテキストとして描く。
- * 別タブで開き、`noopener noreferrer` で開いた側から `window.opener` を触らせない。
- * メンション装飾は将来対応（今回はやらない）。
- */
+/** 通常投稿は MFM、連携カードは専用の描画を使う。 */
 export function MessageBody({ content, card: data }: { content: string; card?: string | null }) {
-  const card = parseMessageCard(data);
-  if (card) return <MessageCard card={card} />;
+  const cards = parseMessageCards(data);
+  if (cards)
+    return (
+      <>
+        {cards.map((card, index) => (
+          <MessageCard key={index} card={card} />
+        ))}
+      </>
+    );
   return (
-    <p className="whitespace-pre-wrap break-words text-sm leading-relaxed">
-      {messageTextSegments(content).map((segment, index) =>
-        segment.kind === "link" ? (
-          <a
-            key={index}
-            href={segment.value}
-            target="_blank"
-            rel="noopener noreferrer"
-            className="rounded-sm text-brand underline underline-offset-2 outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
-          >
-            {segment.value}
-          </a>
-        ) : (
-          <Fragment key={index}>{segment.value}</Fragment>
-        ),
-      )}
-    </p>
+    <div className="mfm-body whitespace-pre-wrap break-words text-sm leading-relaxed">
+      <MfmContent content={content} />
+    </div>
   );
 }
 
@@ -122,7 +108,7 @@ function ReplyLink({ count, onOpen }: { count: number; onOpen: () => void }) {
  * 1 行分のメッセージ。連投は先頭だけアバターと投稿者名を出し、以降は本文だけを
  * 詰めて表示する。リアクションのチップは自分の分をハイライトし、クリックで
  * 追加 / 削除する。返信数はルートにだけ出し、押すとスレッドペインを開く。
- * 編集 / 削除はホバー / フォーカス時（タッチ端末では常時）に出す。
+ * 編集 / 削除はホバー / フォーカス時（タッチ端末では長押し）に出す。
  */
 export function MessageRow({
   item,
@@ -146,6 +132,16 @@ export function MessageRow({
   const { locale } = useLocale();
   const { message } = item;
 
+  const [menuOpen, setMenuOpen] = useState(false);
+  const hold = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const longPressed = useRef(false);
+  const origin = useRef({ x: 0, y: 0 });
+  function cancelHold() {
+    if (hold.current !== null) clearTimeout(hold.current);
+    hold.current = null;
+  }
+  useEffect(() => cancelHold, []);
+
   const threadButton = onOpenThread ? (
     <Button
       variant="ghost"
@@ -162,6 +158,51 @@ export function MessageRow({
     <>
       {item.showDateSeparator ? <DateSeparator value={message.created_at} /> : null}
       <div
+        onPointerDown={(event) => {
+          cancelHold();
+          longPressed.current = false;
+          if (
+            isEditing ||
+            event.pointerType !== "touch" ||
+            !event.isPrimary ||
+            (event.target as HTMLElement).closest("button, a, input, textarea")
+          )
+            return;
+          origin.current = { x: event.clientX, y: event.clientY };
+          hold.current = setTimeout(() => {
+            longPressed.current = true;
+            setMenuOpen(true);
+            hold.current = null;
+          }, 500);
+        }}
+        onPointerMove={(event) => {
+          if (Math.hypot(event.clientX - origin.current.x, event.clientY - origin.current.y) > 10)
+            cancelHold();
+        }}
+        onPointerUp={(event) => {
+          cancelHold();
+          if (longPressed.current) event.stopPropagation();
+        }}
+        onTouchEnd={(event) => {
+          if (longPressed.current) {
+            event.preventDefault();
+            event.stopPropagation();
+            longPressed.current = false;
+          }
+        }}
+        onPointerCancel={() => {
+          cancelHold();
+          longPressed.current = false;
+        }}
+        onTouchCancel={() => {
+          cancelHold();
+          longPressed.current = false;
+        }}
+        onContextMenu={(event) => {
+          // リンクなどの標準メニューは維持し、本文の長押しは操作メニューに使う。
+          if ((event.target as HTMLElement).closest("button, a, input, textarea")) return;
+          if (longPressed.current || menuOpen || hold.current !== null) event.preventDefault();
+        }}
         className={cn(
           "group/row relative flex gap-3 rounded-lg px-3 transition-colors hover:bg-muted/60 focus-within:bg-muted/60",
           item.isGroupStart ? "pt-1.5" : "pt-0",
@@ -169,14 +210,17 @@ export function MessageRow({
         )}
       >
         {item.isGroupStart ? (
-          <Avatar className="mt-0.5">
-            <AvatarFallback>{initials(authorLabel(message))}</AvatarFallback>
-          </Avatar>
+          <AppAvatar
+            className="mt-0.5"
+            label={authorLabel(message)}
+            isBot={!!message.is_bot}
+            src={message.avatar_url}
+          />
         ) : (
           <div className="mt-0.5 w-8 shrink-0 text-right">
             <time
               className="hidden text-[10px] text-muted-foreground tabular-nums group-hover/row:inline group-focus-within/row:inline"
-              dateTime={message.created_at}
+              dateTime={normalizeUtcTimestamp(message.created_at)}
               title={fullTimestamp(message.created_at, locale)}
             >
               {formatTime(message.created_at, locale)}
@@ -187,10 +231,10 @@ export function MessageRow({
         <div className="min-w-0 flex-1">
           {item.isGroupStart ? (
             <div className="flex items-baseline gap-2">
-              <span className="truncate text-sm font-semibold">{authorLabel(message)}</span>
+              <AuthorIdentity message={message} />
               <time
                 className="shrink-0 text-[11px] text-muted-foreground tabular-nums"
-                dateTime={message.created_at}
+                dateTime={normalizeUtcTimestamp(message.created_at)}
                 title={fullTimestamp(message.created_at, locale)}
               >
                 {formatTime(message.created_at, locale)}
@@ -211,10 +255,10 @@ export function MessageRow({
                 autoFocus
                 rows={1}
                 aria-label={t("messages.editLabel")}
-                className="min-h-9 resize-none text-sm"
+                className="max-h-48 min-h-9 resize-none overflow-y-auto text-base md:text-sm"
                 onChange={(event) => onEditingTextChange(event.target.value)}
                 onKeyDown={(event) => {
-                  if (event.key === "Escape") {
+                  if (event.key === "Escape" && !event.nativeEvent.isComposing) {
                     event.preventDefault();
                     onCancelEdit();
                   }
@@ -230,7 +274,10 @@ export function MessageRow({
               </div>
             </form>
           ) : (
-            <MessageBody content={message.content} card={message.card} />
+            <>
+              <MessageBody content={message.content} card={message.card} />
+              <MessageAppContent message={message} />
+            </>
           )}
 
           {!isEditing ? (
@@ -238,51 +285,53 @@ export function MessageRow({
               {replyCount > 0 && onOpenThread ? (
                 <ReplyLink count={replyCount} onOpen={onOpenThread} />
               ) : null}
-              <div
-                className="flex flex-wrap items-center gap-1 py-1"
-                role="group"
-                aria-label={t("reactions.groupLabel")}
-              >
-                {reactions.map((reaction) => (
-                  <button
-                    key={reactionKey(reaction.emoji)}
-                    type="button"
-                    className={cn(
-                      "inline-flex min-h-8 items-center gap-1 rounded-full border px-2 text-xs transition-colors hover:bg-muted disabled:opacity-50",
-                      reaction.ownId &&
-                        "border-brand/40 bg-brand-muted text-brand-muted-foreground",
-                    )}
-                    aria-pressed={!!reaction.ownId}
-                    disabled={!canReact}
-                    aria-label={
-                      reaction.ownId
-                        ? t("reactions.chipMine", {
-                            emoji: kitchenLabel(reaction.emoji),
-                            count: reaction.count,
-                          })
-                        : t("reactions.chip", {
-                            emoji: kitchenLabel(reaction.emoji),
-                            count: reaction.count,
-                          })
-                    }
-                    title={kitchenLabel(reaction.emoji)}
-                    onClick={() => onReaction(reaction.emoji)}
-                  >
-                    <ReactionEmoji emoji={reaction.emoji} catalog={kitchenCatalog} />
-                    <span className="tabular-nums">{reaction.count}</span>
-                  </button>
-                ))}
-                <Button
-                  variant="ghost"
-                  size="icon-xs"
-                  aria-label={t("reactions.add")}
-                  title={t("reactions.add")}
-                  disabled={!canReact}
-                  onClick={onPickReaction}
+              {reactions.length > 0 ? (
+                <div
+                  className="flex flex-wrap items-center gap-1 py-1"
+                  role="group"
+                  aria-label={t("reactions.groupLabel")}
                 >
-                  <SmilePlusIcon />
-                </Button>
-              </div>
+                  {reactions.map((reaction) => (
+                    <button
+                      key={reactionKey(reaction.emoji)}
+                      type="button"
+                      className={cn(
+                        "inline-flex min-h-8 items-center gap-1 rounded-full border px-2 text-xs transition-colors hover:bg-muted disabled:opacity-50",
+                        reaction.ownId &&
+                          "border-brand/40 bg-brand-muted text-brand-muted-foreground",
+                      )}
+                      aria-pressed={!!reaction.ownId}
+                      disabled={!canReact}
+                      aria-label={
+                        reaction.ownId
+                          ? t("reactions.chipMine", {
+                              emoji: kitchenLabel(reaction.emoji),
+                              count: reaction.count,
+                            })
+                          : t("reactions.chip", {
+                              emoji: kitchenLabel(reaction.emoji),
+                              count: reaction.count,
+                            })
+                      }
+                      title={kitchenLabel(reaction.emoji)}
+                      onClick={() => onReaction(reaction.emoji)}
+                    >
+                      <ReactionEmoji emoji={reaction.emoji} catalog={kitchenCatalog} />
+                      <span className="tabular-nums">{reaction.count}</span>
+                    </button>
+                  ))}
+                  <Button
+                    variant="ghost"
+                    size="icon-xs"
+                    aria-label={t("reactions.add")}
+                    title={t("reactions.add")}
+                    disabled={!canReact}
+                    onClick={onPickReaction}
+                  >
+                    <SmilePlusIcon />
+                  </Button>
+                </div>
+              ) : null}
             </>
           ) : null}
         </div>
@@ -291,6 +340,16 @@ export function MessageRow({
           // 外枠は不可視の間クリックを通す（子は自前で pointer-events を戻す）。
           <div className="pointer-events-none absolute right-1.5 top-0 flex items-center">
             <div className="pointer-events-none hidden items-center gap-0.5 rounded-lg border bg-popover p-0.5 opacity-0 shadow-sm transition-opacity group-hover/row:pointer-events-auto group-hover/row:opacity-100 group-focus-within/row:pointer-events-auto group-focus-within/row:opacity-100 [@media(hover:hover)]:flex">
+              <Button
+                variant="ghost"
+                size="icon-xs"
+                aria-label={t("reactions.add")}
+                title={t("reactions.add")}
+                disabled={!canReact}
+                onClick={onPickReaction}
+              >
+                <SmilePlusIcon />
+              </Button>
               {threadButton}
               {isOwn ? (
                 <>
@@ -316,24 +375,43 @@ export function MessageRow({
                 </>
               ) : null}
             </div>
-            {/* タッチ端末用の常時表示。「⋯」は外枠の pointer-events を打ち消す。 */}
-            <div className="pointer-events-auto hidden items-center gap-0.5 rounded-lg border bg-popover p-0.5 shadow-sm [@media(hover:none)]:flex">
-              {threadButton}
-              {isOwn ? (
-                <DropdownMenu>
-                  <DropdownMenuTrigger
-                    aria-label={t("messages.more")}
-                    title={t("messages.more")}
-                    className={buttonVariants({
-                      variant: "ghost",
-                      size: "icon-xs",
-                      className:
-                        "pointer-events-auto border bg-popover shadow-sm [@media(hover:hover)]:hidden",
-                    })}
-                  >
-                    <MoreHorizontalIcon />
-                  </DropdownMenuTrigger>
-                  <DropdownMenuContent align="end">
+            {/* PC はホバー、タッチは長押し、キーボードはフォーカスで操作する。 */}
+            <DropdownMenu open={menuOpen} onOpenChange={setMenuOpen}>
+              <DropdownMenuTrigger
+                aria-label={t("messages.more")}
+                title={t("messages.more")}
+                className={buttonVariants({
+                  variant: "ghost",
+                  size: "icon-xs",
+                  className:
+                    "pointer-events-none opacity-0 focus-visible:pointer-events-auto focus-visible:opacity-100 [@media(hover:hover)]:group-hover/row:pointer-events-auto [@media(hover:hover)]:group-hover/row:opacity-100 data-popup-open:pointer-events-auto data-popup-open:opacity-100",
+                })}
+              >
+                <MoreHorizontalIcon />
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end">
+                <DropdownMenuItem
+                  onClick={() =>
+                    window.dispatchEvent(
+                      new CustomEvent("zoo:message-actions", { detail: message.id }),
+                    )
+                  }
+                >
+                  <BotIcon />
+                  {t("apps.messageActions")}
+                </DropdownMenuItem>
+                <DropdownMenuItem disabled={!canReact} onClick={onPickReaction}>
+                  <SmilePlusIcon />
+                  {t("reactions.add")}
+                </DropdownMenuItem>
+                {onOpenThread ? (
+                  <DropdownMenuItem onClick={onOpenThread}>
+                    <MessageSquarePlusIcon />
+                    {t("threads.open")}
+                  </DropdownMenuItem>
+                ) : null}
+                {isOwn ? (
+                  <>
                     <DropdownMenuItem onClick={onStartEdit}>
                       <PencilIcon />
                       {t("messages.edit")}
@@ -342,10 +420,10 @@ export function MessageRow({
                       <TrashIcon />
                       {t("messages.delete")}
                     </DropdownMenuItem>
-                  </DropdownMenuContent>
-                </DropdownMenu>
-              ) : null}
-            </div>
+                  </>
+                ) : null}
+              </DropdownMenuContent>
+            </DropdownMenu>
           </div>
         ) : null}
       </div>

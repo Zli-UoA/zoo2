@@ -133,9 +133,18 @@ async fn proxy_shape(
     extra_params: &[(&str, &str)],
     raw_query: &HashMap<String, String>,
     is_user_scoped: bool,
+    actor: &str,
 ) -> Result<Response, AppError> {
     let mut params = filter_electric_params(raw_query);
     params.push(("table".to_string(), table.to_string()));
+    if table == "messages"
+        && raw_query
+            .get("_app_metadata_allowed")
+            .is_some_and(|v| v == "false")
+    {
+        params.push(("columns".into(),"id,user_id,channel_id,content,card,created_at,updated_at,deleted_at,parent_id,app_blocks,app_attachments,app_unfurls,app_origin_id,message_kind,broadcast".into()));
+    }
+
     if let Some(w) = where_clause {
         params.push(("where".to_string(), w.to_string()));
     }
@@ -198,7 +207,32 @@ async fn proxy_shape(
     }
 
     // ストリーミングボディをバッファリングせず透過的に転送
-    let stream = upstream_resp.bytes_stream();
+    use futures_util::StreamExt;
+    let mut db = state.db.clone();
+    let initial_guest = crate::apps::events::guest_in_db(&mut db, actor).await?;
+    let channel = raw_query.get("channel_id").cloned();
+    let stream = upstream_resp.bytes_stream().boxed();
+    let stream = futures_util::stream::unfold(
+        (
+            stream,
+            state.clone(),
+            actor.to_owned(),
+            initial_guest,
+            channel,
+        ),
+        |(mut upstream, state, actor, initial_guest, channel)| async move {
+            loop {
+                let mut db = state.db.clone();
+                let mut tx = db.transaction().await.ok()?;
+                let access=crate::apps::one(&mut tx,"SELECT json_build_object('ok',NOT u.is_deactivated AND u.is_guest=$2::boolean AND ($3='' OR EXISTS(SELECT 1 FROM channels c WHERE c.id=$3 AND c.deleted_at IS NULL AND (NOT c.is_private AND NOT c.is_dm AND NOT u.is_guest OR EXISTS(SELECT 1 FROM channel_user cu WHERE cu.channel_id=c.id AND cu.user_id=u.id)))))::text FROM users u WHERE u.id=$1",&[&actor,if initial_guest{"true"}else{"false"},channel.as_deref().unwrap_or("")]).await.ok()?;
+                if access["ok"] != true {
+                    return None;
+                }
+                drop(tx);
+                tokio::select! {chunk=upstream.next()=>return chunk.map(|chunk|(chunk,(upstream,state,actor,initial_guest,channel))),_=tokio::time::sleep(std::time::Duration::from_secs(1))=>{}}
+            }
+        },
+    );
     let body = Body::from_stream(stream);
 
     let mut response = (status, body).into_response();
@@ -216,7 +250,11 @@ async fn channels_shape(
     auth_user: AuthUser,
     Query(raw_query): Query<HashMap<String, String>>,
 ) -> Result<Response, AppError> {
-    let (where_clause, extra_params) = channels_shape_where(auth_user.id.as_str());
+    let (mut where_clause, extra_params) = channels_shape_where(auth_user.id.as_str());
+    let mut db = state.db.clone();
+    if crate::apps::events::guest_in_db(&mut db, &auth_user.id).await? {
+        where_clause = "id IN (SELECT channel_id FROM channel_user WHERE user_id = $1)".into();
+    }
 
     proxy_shape(
         &state,
@@ -225,12 +263,13 @@ async fn channels_shape(
         &extra_params,
         &raw_query,
         true,
+        &auth_user.id,
     )
     .await
 }
 
 /// Messages Shape (channel_id 必須)
-async fn messages_shape(
+pub(crate) async fn messages_shape(
     State(state): State<AppState>,
     auth_user: AuthUser,
     Query(raw_query): Query<HashMap<String, String>>,
@@ -261,7 +300,7 @@ async fn messages_shape(
         )));
     }
 
-    if channel.is_private {
+    if channel.is_private || crate::apps::events::guest_in_db(&mut db, &auth_user.id).await? {
         let is_member = ChannelUser::filter(
             ChannelUser::fields()
                 .channel_id()
@@ -289,12 +328,13 @@ async fn messages_shape(
         &extra_params,
         &raw_query,
         channel.is_private,
+        &auth_user.id,
     )
     .await
 }
 
 /// Message Reactions Shape (channel_id 必須)
-async fn message_reactions_shape(
+pub(crate) async fn message_reactions_shape(
     State(state): State<AppState>,
     auth_user: AuthUser,
     Query(raw_query): Query<HashMap<String, String>>,
@@ -325,7 +365,7 @@ async fn message_reactions_shape(
         )));
     }
 
-    if channel.is_private {
+    if channel.is_private || crate::apps::events::guest_in_db(&mut db, &auth_user.id).await? {
         let is_member = ChannelUser::filter(
             ChannelUser::fields()
                 .channel_id()
@@ -353,21 +393,26 @@ async fn message_reactions_shape(
         &extra_params,
         &raw_query,
         channel.is_private,
+        &auth_user.id,
     )
     .await
 }
 
 /// Users Shape (全ユーザー同期)
-async fn users_shape(
+pub(crate) async fn users_shape(
     State(state): State<AppState>,
-    _auth_user: AuthUser,
+    auth_user: AuthUser,
     Query(raw_query): Query<HashMap<String, String>>,
 ) -> Result<Response, AppError> {
-    proxy_shape(&state, "users", None, &[], &raw_query, false).await
+    let mut db = state.db.clone();
+    if crate::apps::events::guest_in_db(&mut db, &auth_user.id).await? {
+        return proxy_shape(&state,"users",Some("id = $1 OR id IN (SELECT user_id FROM channel_user WHERE channel_id IN (SELECT channel_id FROM channel_user WHERE user_id = $1))"),&[("params[1]",auth_user.id.as_str())],&raw_query,true,&auth_user.id).await;
+    }
+    proxy_shape(&state, "users", None, &[], &raw_query, false, &auth_user.id).await
 }
 
 /// Channel Users Shape (メンバー一覧)
-async fn channel_users_shape(
+pub(crate) async fn channel_users_shape(
     State(state): State<AppState>,
     auth_user: AuthUser,
     Query(raw_query): Query<HashMap<String, String>>,
@@ -394,7 +439,7 @@ async fn channel_users_shape(
             )));
         }
 
-        if channel.is_private {
+        if channel.is_private || crate::apps::events::guest_in_db(&mut db, &auth_user.id).await? {
             let is_member = ChannelUser::filter(
                 ChannelUser::fields()
                     .channel_id()
@@ -417,8 +462,15 @@ async fn channel_users_shape(
         (None, true)
     };
 
-    let (where_clause, extra_params) =
+    let (mut where_clause, extra_params) =
         channel_users_shape_where(channel_id_opt, auth_user.id.as_str());
+    if channel_id_opt.is_none() {
+        let mut db = state.db.clone();
+        if crate::apps::events::guest_in_db(&mut db, &auth_user.id).await? {
+            where_clause =
+                "channel_id IN (SELECT channel_id FROM channel_user WHERE user_id = $1)".into();
+        }
+    }
 
     proxy_shape(
         &state,
@@ -427,6 +479,7 @@ async fn channel_users_shape(
         &extra_params,
         &raw_query,
         is_private,
+        &auth_user.id,
     )
     .await
 }
@@ -437,7 +490,11 @@ async fn notifications_shape(
     auth_user: AuthUser,
     Query(raw_query): Query<HashMap<String, String>>,
 ) -> Result<Response, AppError> {
-    let (where_clause, extra_params) = notifications_shape_where(auth_user.id.as_str());
+    let (mut where_clause, extra_params) = notifications_shape_where(auth_user.id.as_str());
+    let mut db = state.db.clone();
+    if crate::apps::events::guest_in_db(&mut db, &auth_user.id).await? {
+        where_clause = where_clause.replace("is_private = false OR ", "");
+    }
 
     proxy_shape(
         &state,
@@ -446,6 +503,27 @@ async fn notifications_shape(
         &extra_params,
         &raw_query,
         true,
+        &auth_user.id,
+    )
+    .await
+}
+
+/// App tokens only enumerate channels their acting identity has joined.
+pub(crate) async fn app_channels_shape(
+    state: AppState,
+    p: &crate::apps::Principal,
+    params: HashMap<String, String>,
+) -> Result<Response, AppError> {
+    proxy_shape(
+        &state,
+        "channels",
+        Some(
+            "deleted_at IS NULL AND id IN (SELECT channel_id FROM channel_user WHERE user_id = $1)",
+        ),
+        &[("params[1]", p.user_id.as_str())],
+        &params,
+        true,
+        &p.user_id,
     )
     .await
 }
@@ -509,6 +587,7 @@ async fn attachments_shape(
         &extra_params,
         &raw_query,
         false,
+        &auth_user.id,
     )
     .await
 }

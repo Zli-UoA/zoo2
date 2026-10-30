@@ -5,9 +5,11 @@ import { useEffect, useMemo, useRef } from "react";
 import { useLocale } from "../../i18n/LocaleProvider";
 import type { KitchenCatalog } from "../../../lib/emoji/kitchen";
 import type { ReactionGroup } from "../../../lib/emoji/reactions";
-import { Avatar, AvatarFallback } from "../../ui/avatar";
+import { normalizeUtcTimestamp } from "../../../lib/timestamps";
+import { AppAvatar, AuthorIdentity } from "../AppIdentity";
+import { MessageAppContent } from "../AppBlocks";
 import { Button } from "../../ui/button";
-import { initials } from "../format";
+
 import type { TypingUser } from "../../../hooks/useTyping";
 import { TypingIndicator } from "./TypingIndicator";
 import { Composer } from "./Composer";
@@ -17,7 +19,12 @@ import { buildMessageItems } from "./messageGrouping";
 import { isNearBottom } from "./messageScroll";
 
 export interface ThreadPaneProps {
+  targetMessageId?: string;
+  mentionUsers?: import("../../../lib/electric/types").UserRow[];
+  mentionMemberIds?: ReadonlySet<string>;
   isMember?: boolean;
+  /** オフラインか。返信がないときの案内と composer を切り替える。 */
+  isOffline?: boolean;
   typingUsers?: TypingUser[];
   onTyping?: (active: boolean) => void;
   root: FeedMessage;
@@ -38,6 +45,10 @@ export interface ThreadPaneProps {
   onSaveEdit: () => void;
   onRequestDelete: (id: string) => void;
   onSendReply: (content: string) => Promise<boolean>;
+  /** 上端付近で古い返信を読み足す。 */
+  onLoadOlder?: () => void;
+  /** 取得失敗時の再試行。 */
+  onRetry?: () => void;
   onClose: () => void;
 }
 
@@ -49,7 +60,11 @@ export interface ThreadPaneProps {
  * `messages.insert`（`parent_id` 付き）で、txid の確定は MessagePane が待つ。
  */
 export function ThreadPane({
+  targetMessageId,
+  mentionUsers,
+  mentionMemberIds,
   isMember = true,
+  isOffline = false,
   typingUsers = [],
   onTyping,
   root,
@@ -70,6 +85,8 @@ export function ThreadPane({
   onSaveEdit,
   onRequestDelete,
   onSendReply,
+  onLoadOlder,
+  onRetry,
   onClose,
 }: ThreadPaneProps) {
   const { t } = useTranslation();
@@ -92,6 +109,27 @@ export function ThreadPane({
     });
   }, [items.length, root.id]);
 
+  const scrolledTarget = useRef<string | undefined>(undefined);
+  useEffect(() => {
+    if (!targetMessageId) {
+      scrolledTarget.current = undefined;
+      return;
+    }
+    if (scrolledTarget.current === targetMessageId) return;
+    if (!replies.some((reply) => reply.id === targetMessageId)) return;
+    const frame = requestAnimationFrame(() => {
+      const target = Array.from(
+        scrollRef.current?.querySelectorAll<HTMLElement>("[data-message-id]") ?? [],
+      ).find((element) => element.dataset.messageId === targetMessageId);
+      if (target && scrollRef.current) {
+        atBottomRef.current = false;
+        scrolledTarget.current = targetMessageId;
+        scrollRef.current.scrollTop = target.offsetTop - scrollRef.current.offsetTop;
+      }
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [targetMessageId, replies]);
+
   return (
     <aside
       aria-label={t("threads.title")}
@@ -111,15 +149,19 @@ export function ThreadPane({
 
       <div className="border-b bg-muted/30 px-4 py-3">
         <div className="flex gap-3">
-          <Avatar size="sm" className="mt-0.5">
-            <AvatarFallback>{initials(authorLabel(root))}</AvatarFallback>
-          </Avatar>
+          <AppAvatar
+            className="mt-0.5"
+            size="sm"
+            label={authorLabel(root)}
+            isBot={!!root.is_bot}
+            src={root.avatar_url}
+          />
           <div className="min-w-0 flex-1">
             <div className="flex items-baseline gap-2">
-              <span className="truncate text-sm font-semibold">{authorLabel(root)}</span>
+              <AuthorIdentity message={root} />
               <time
                 className="shrink-0 text-[11px] text-muted-foreground tabular-nums"
-                dateTime={root.created_at}
+                dateTime={normalizeUtcTimestamp(root.created_at)}
                 title={fullTimestamp(root.created_at, locale)}
               >
                 {formatTime(root.created_at, locale)}
@@ -127,6 +169,7 @@ export function ThreadPane({
             </div>
             <div className="max-h-40 overflow-y-auto">
               <MessageBody content={root.content} card={root.card} />
+              <MessageAppContent message={root} />
             </div>
           </div>
         </div>
@@ -142,18 +185,46 @@ export function ThreadPane({
             element.scrollHeight,
             element.clientHeight,
           );
+          if (element.scrollTop <= 48) {
+            onLoadOlder?.();
+          }
         }}
       >
         {isLoading && replies.length === 0 ? (
           <p className="p-3 text-xs text-muted-foreground">{t("threads.repliesLoading")}</p>
+        ) : isOffline && replies.length === 0 ? (
+          <div className="flex flex-col items-start gap-2 p-3">
+            <p className="text-xs text-muted-foreground">{t("offline.emptyTitle")}</p>
+            {onRetry ? (
+              <Button variant="outline" size="sm" onClick={onRetry}>
+                {t("offline.retry")}
+              </Button>
+            ) : null}
+          </div>
         ) : isError && replies.length === 0 ? (
-          <p className="p-3 text-xs text-destructive">{t("threads.loadError")}</p>
+          <div className="flex flex-col items-start gap-2 p-3">
+            <p className="text-xs text-destructive">{t("threads.loadError")}</p>
+            {onRetry ? (
+              <Button variant="outline" size="sm" onClick={onRetry}>
+                {t("offline.retry")}
+              </Button>
+            ) : null}
+          </div>
         ) : replies.length === 0 ? (
           <p className="p-3 text-xs text-muted-foreground">{t("threads.empty")}</p>
         ) : (
           <div role="list">
             {items.map((item) => (
-              <div key={item.message.id} role="listitem">
+              <div
+                key={item.message.id}
+                data-message-id={item.message.id}
+                role="listitem"
+                className={
+                  item.message.id === targetMessageId
+                    ? "rounded-lg bg-brand-muted/40 ring-1 ring-brand"
+                    : undefined
+                }
+              >
                 <MessageRow
                   item={item}
                   isOwn={!!currentUserId && item.message.user_id === currentUserId}
@@ -178,10 +249,12 @@ export function ThreadPane({
 
       <TypingIndicator users={typingUsers} />
       <Composer
-        disabled={!isMember}
+        mentionUsers={mentionUsers}
+        mentionMemberIds={mentionMemberIds}
+        disabled={!isMember || isOffline}
         onTyping={onTyping}
         onSend={onSendReply}
-        placeholder={t("threads.compose")}
+        placeholder={isOffline ? t("offline.composeDisabled") : t("threads.compose")}
         ariaLabel={t("threads.compose")}
       />
     </aside>

@@ -4,6 +4,7 @@ import type { ShapeName } from "./schema";
 export interface ShapeQueryOptions {
   /** メッセージ / リアクション / メンバー一覧を絞り込むチャンネル ID。 */
   channelId?: string;
+  userId?: string;
 }
 
 export type ShapeQueryParams = Record<string, string | number>;
@@ -36,6 +37,10 @@ export function shapeQueryParams(
     return {};
   }
 
+  if (shape === "notifications") {
+    if (!options.userId) throw new Error("Notification shapes require a user ID");
+    return { where: "user_id = $1", "params[1]": options.userId };
+  }
   if (shape === "messageReactions" && options.channelId) {
     return {
       where: "message_id IN (SELECT id FROM messages WHERE channel_id = $1 AND deleted_at IS NULL)",

@@ -27,6 +27,8 @@ async fn main() -> anyhow::Result<()> {
         "Starting backend service"
     );
 
+    backend::push::PushConfig::from_env()?;
+
     // データベース接続初期化 (Toasty ORM)
     let db = init_db(&config.database_url).await?;
 
@@ -39,6 +41,7 @@ async fn main() -> anyhow::Result<()> {
     }
 
     // ルーター構築
+    let delivery_worker = tokio::spawn(backend::apps::delivery::worker(state.clone()));
     let app = create_router(state);
 
     // サーバーバインド
@@ -50,6 +53,7 @@ async fn main() -> anyhow::Result<()> {
         .with_graceful_shutdown(shutdown_signal())
         .await?;
 
+    delivery_worker.abort();
     tracing::info!("Server shut down gracefully");
     Ok(())
 }

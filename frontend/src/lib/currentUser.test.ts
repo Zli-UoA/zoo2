@@ -205,3 +205,34 @@ describe("createCurrentUserStore", () => {
     });
   });
 });
+
+it("ends loading and permits retry after a stalled current-user request times out", async () => {
+  const controller = new AbortController();
+  const timeout = vi.spyOn(AbortSignal, "timeout").mockReturnValue(controller.signal);
+  let started!: () => void;
+  const fetching = new Promise<void>((resolve) => {
+    started = resolve;
+  });
+  const fetchMock = vi.fn<FetchLike>(
+    (_, init) =>
+      new Promise((_, reject) => {
+        init!.signal!.addEventListener("abort", () => reject(init!.signal!.reason), { once: true });
+        started();
+      }),
+  );
+  try {
+    const store = createCurrentUserStore(OIDC_CONFIG, { fetch: fetchMock });
+    const loading = store.ensureLoaded();
+    await fetching;
+    expect(timeout).toHaveBeenCalledWith(8_000);
+    controller.abort(new DOMException("Request timed out", "TimeoutError"));
+    await loading;
+    expect(store.getState().isLoading).toBe(false);
+    expect(store.getState().error).toContain("timed out");
+    fetchMock.mockResolvedValueOnce(jsonResponse(userResponse("user-1")));
+    await store.ensureLoaded();
+    expect(store.getState().currentUserId).toBe("user-1");
+  } finally {
+    timeout.mockRestore();
+  }
+});

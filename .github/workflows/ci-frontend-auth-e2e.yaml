@@ -6,29 +6,35 @@ on:
       - "frontend/**"
       - "backend/**"
       - "infra/db/**"
-      - "infra/compose.stg*.yaml"
-      - "infra/frontend-nginx.conf"
-      - "infra/csp-hashes.mjs"
-      - "infra/frontend-entrypoint.sh"
       - ".github/workflows/ci-frontend-auth-e2e.yaml"
+      - ".github/workflows/select-runner.yaml"
   pull_request:
     paths:
       - "frontend/**"
       - "backend/**"
       - "infra/db/**"
-      - "infra/compose.stg*.yaml"
-      - "infra/frontend-nginx.conf"
-      - "infra/csp-hashes.mjs"
-      - "infra/frontend-entrypoint.sh"
       - ".github/workflows/ci-frontend-auth-e2e.yaml"
+      - ".github/workflows/select-runner.yaml"
   workflow_dispatch:
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+# runner ジョブが zli-k8s（self-hosted）か GitHub-hosted を選ぶ（select-runner.yaml）。
 jobs:
+  runner:
+    uses: ./.github/workflows/select-runner.yaml
+    secrets:
+      runner-status-token: ${{ secrets.RUNNER_STATUS_TOKEN }}
+
   oidc-e2e:
-    runs-on: ubuntu-latest
+    needs: runner
+    runs-on: ${{ fromJSON(needs.runner.outputs.runs-on) }}
     timeout-minutes: 30
     env:
-      DATABASE_URL: postgres://root:password@localhost:5432/zoo?sslmode=disable
-      ELECTRIC_URL: http://127.0.0.1:3000
+      # Each job owns its containers and dynamically assigned host ports.
+      COMPOSE_PROJECT_NAME: zoo-ci-oidc-${{ github.run_id }}-${{ github.run_attempt }}
+      POSTGRES_PORT: "0"
+      ELECTRIC_PORT: "0"
       # 本番同等の認証経路（Bearer + JWKS）を通す。dev の X-Dev-User は使わない。
       ENVIRONMENT: production
       DEV_AUTH_ENABLED: "false"
@@ -46,39 +52,76 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v7
 
+      # Pull and boot the databases while the frontend and Rust are set up.
+      # "Wait for PostgreSQL and Electric" below waits until they are healthy.
+      - name: Start PostgreSQL and Electric
+        working-directory: .
+        run: |
+          nohup docker compose -f infra/db/compose.yml up -d --wait \
+            > "$RUNNER_TEMP/compose-up.log" 2>&1 &
+          echo $! > "$RUNNER_TEMP/compose-up.pid"
+
       - name: Setup pnpm
-        uses: pnpm/action-setup@v4
+        uses: pnpm/action-setup@v6
         with:
           version: 12.11.2
 
       - name: Setup Node
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v7
         with:
-          node-version: 22
+          node-version: 24
           cache: pnpm
           cache-dependency-path: frontend/pnpm-lock.yaml
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
-      - name: Install Playwright browser
-        run: pnpm exec playwright install --with-deps chromium
+      - name: Restore Playwright browser
+        uses: actions/cache@v6
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ hashFiles('frontend/pnpm-lock.yaml') }}
 
+      # The self-hosted runner image already has the system libraries.
+      - name: Install Playwright browser
+        run: pnpm exec playwright install ${{ runner.environment == 'github-hosted' && '--with-deps' || '' }} chromium
+
+      - name: Read Rust toolchain
+        id: rust-toolchain
+        working-directory: .
+        # Install only the toolchain pinned in rust-toolchain.toml, not stable as well.
+        run: echo "channel=$(sed -n 's/^channel = "\(.*\)"$/\1/p' rust-toolchain.toml)" >> "$GITHUB_OUTPUT"
       - name: Setup Rust
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ steps.rust-toolchain.outputs.channel }}
 
       - name: Restore Rust cache
         uses: Swatinem/rust-cache@v2
         with:
           workspaces: backend
+          # Reuse the debug build cache of ci-backend.yaml's build job.
+          shared-key: backend-debug
+          # Keep the build cache even when the E2E test fails.
+          cache-on-failure: true
 
       - name: Build backend
         working-directory: ./backend
         run: cargo build
 
-      - name: Start PostgreSQL and Electric
+      - name: Wait for PostgreSQL and Electric
         working-directory: .
-        run: docker compose -f infra/db/compose.yml up -d --wait
+        run: |
+          # Let the background start finish first so two `up` runs never race.
+          pid=$(cat "$RUNNER_TEMP/compose-up.pid")
+          while kill -0 "$pid" 2>/dev/null; do sleep 1; done
+          cat "$RUNNER_TEMP/compose-up.log"
+          # Idempotent: fails here if a service did not become healthy.
+          docker compose -f infra/db/compose.yml up -d --wait
+          postgres_port=$(docker compose -f infra/db/compose.yml port postgres 5432)
+          electric_port=$(docker compose -f infra/db/compose.yml port electric 3000)
+          echo "DATABASE_URL=postgres://root:password@${postgres_port}/zoo?sslmode=disable" >> "$GITHUB_ENV"
+          echo "ELECTRIC_URL=http://${electric_port}" >> "$GITHUB_ENV"
 
       - name: Setup Atlas
         uses: ariga/setup-atlas@v0
@@ -104,11 +147,14 @@ jobs:
 
       - name: Backend logs
         if: failure()
-        run: cat /tmp/backend.log
+        working-directory: .
+        run: |
+          if [ -f /tmp/backend.log ]; then cat /tmp/backend.log; fi
+          docker compose -f infra/db/compose.yml logs postgres electric
 
       - name: Upload Playwright artifacts
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: playwright-oidc
           path: |
@@ -119,4 +165,4 @@ jobs:
       - name: Stop containers
         if: always()
         working-directory: .
-        run: docker compose -f infra/db/compose.yml down -v
+        run: docker compose -f infra/db/compose.yml down -v --remove-orphans

@@ -1,3 +1,6 @@
+import { toast } from "sonner";
+import { PwaControls } from "../pwa/PwaControls";
+import { disablePush } from "../../lib/pwa/push";
 import { useTranslation } from "react-i18next";
 import { Link } from "@tanstack/react-router";
 import { cn } from "cn";
@@ -5,13 +8,16 @@ import { ActivityIcon, HashIcon, LogOutIcon, type LucideIcon, PawPrintIcon } fro
 
 import { useCurrentUser } from "../../hooks/useCurrentUser";
 import { useUsers } from "../../hooks/useRealtime";
-import { getCollections } from "../../lib/electric/collections";
+import { useCollections } from "../../lib/electric/collections-context";
 import { getOidcClient } from "../../lib/oidc/session";
+import { useOfflineStatus } from "../../lib/offline/offline-context";
 import { LanguageToggle } from "../i18n/LanguageToggle";
 import { ModeToggle } from "../theme/ModeToggle";
 import { Avatar, AvatarFallback } from "../ui/avatar";
 import { Button } from "../ui/button";
 import { Separator } from "../ui/separator";
+import { AppsButton } from "../chat/AppsDialog";
+import { NotificationsButton } from "../chat/NotificationsButton";
 import { initials } from "../chat/format";
 
 function RailLink({
@@ -44,20 +50,34 @@ function RailLink({
  */
 export function LeftRail() {
   const { t } = useTranslation();
-  const { config } = getCollections();
+  const { config } = useCollections();
   const { currentUserId } = useCurrentUser();
+  const { clearUserData } = useOfflineStatus();
   const usersQuery = useUsers();
   const me = (usersQuery.data ?? []).find((user) => user.id === currentUserId);
   const meLabel = me ? me.display_name || me.user_name : (currentUserId ?? "?");
 
   // OIDC セッションの破棄（トークンのクリアとログアウト画面への遷移）。
   // dev（OIDC 未設定）ではログアウト UI を出さない。
-  const handleLogout = () => {
+  const handleLogout = async () => {
     const client = getOidcClient(config);
     if (!client) {
       return;
     }
-    void client.logout();
+    try {
+      await disablePush(config);
+    } catch {
+      toast.error(t("pwa.logoutError"));
+      return;
+    }
+    try {
+      await clearUserData();
+    } catch {
+      // 端末データを消せなくてもログアウトは続ける。lastUser は消えているため
+      // 次のオフライン起動で前のユーザーの DB は選ばれず、削除は再試行される。
+      toast.error(t("offline.deleteFailed"));
+    }
+    await client.logout();
   };
 
   return (
@@ -74,12 +94,15 @@ export function LeftRail() {
       </div>
       <Separator className="my-1 w-6" />
       <RailLink to="/" icon={HashIcon} label={t("channels.title")} exact />
+      <NotificationsButton />
+      <AppsButton />
       {/* 同期の状態（/realtime）は開発時の確認用。本番ビルドでは出さない。 */}
       {import.meta.env.DEV ? (
         <RailLink to="/realtime" icon={ActivityIcon} label={t("sync.title")} exact />
       ) : null}
 
       <div className="mt-auto flex flex-col items-center gap-2">
+        <PwaControls />
         <LanguageToggle />
         <ModeToggle />
         <Separator className="w-6" />

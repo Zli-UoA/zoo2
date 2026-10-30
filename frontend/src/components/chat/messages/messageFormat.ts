@@ -1,3 +1,4 @@
+import { MENTION_PATTERN } from "./mentions";
 import type { TFunction } from "i18next";
 import { DEFAULT_LOCALE, INTL_LOCALES, type Locale } from "../../../lib/i18n/locale";
 import { normalizeUtcTimestamp, parseUtcTimestamp } from "../../../lib/timestamps";
@@ -11,6 +12,13 @@ export interface FeedMessage {
   user_id: string;
   content: string;
   card?: string | null;
+  app_blocks?: string | null;
+  app_attachments?: string | null;
+  app_unfurls?: string | null;
+  app_origin_id?: string | null;
+  is_bot?: boolean | null;
+  app_id?: string | null;
+  avatar_url?: string | null;
   created_at: string;
   /** 返信先のルートメッセージ。`null` はチャンネル直下。 */
   parent_id: string | null;
@@ -28,7 +36,7 @@ export function authorLabel(message: FeedMessage): string {
 }
 
 /** 本文をリンク化するための断片。`text` はそのまま、`link` は href として描く。 */
-export type MessageTextSegment = { kind: "text" | "link"; value: string };
+export type MessageTextSegment = { kind: "text" | "link" | "mention"; value: string };
 
 /**
  * `http(s)` URL の候補。ホスト部の先頭 1 文字を要求して `https://.` のような
@@ -104,7 +112,24 @@ export function messageTextSegments(content: string): MessageTextSegment[] {
   if (cursor < content.length) {
     segments.push({ kind: "text", value: content.slice(cursor) });
   }
-  return segments.length > 0 ? segments : [{ kind: "text", value: content }];
+  const parts: MessageTextSegment[] =
+    segments.length > 0 ? segments : [{ kind: "text", value: content }];
+  return parts.flatMap((part): MessageTextSegment[] => {
+    if (part.kind !== "text") return [part];
+    const result: MessageTextSegment[] = [];
+    let position = 0;
+    for (const match of part.value.matchAll(MENTION_PATTERN)) {
+      const start = match.index + match[1]!.length;
+      const token = match[2]!.replace(/\.+$/, "");
+      if (token.length < 2) continue;
+      if (start > position) result.push({ kind: "text", value: part.value.slice(position, start) });
+      result.push({ kind: "mention", value: token });
+      position = start + token.length;
+    }
+    if (position < part.value.length)
+      result.push({ kind: "text", value: part.value.slice(position) });
+    return result.length ? result : [part];
+  });
 }
 
 /**

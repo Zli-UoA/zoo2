@@ -2,11 +2,19 @@ import { useTranslation } from "react-i18next";
 import { ArchiveIcon, ArrowLeftIcon } from "lucide-react";
 import { useMemo } from "react";
 
-import { useActiveChannels, useChannelAccess, useMessageFeed } from "../../hooks/useRealtime";
+import { useCurrentUser } from "../../hooks/useCurrentUser";
+import {
+  useActiveChannels,
+  useChannelAccess,
+  useMessageFeed,
+  useUsers,
+} from "../../hooks/useRealtime";
+import { useLocale } from "../i18n/LocaleProvider";
 import { useShell } from "../layout/shell-context";
 import { Button } from "../ui/button";
 import { Skeleton } from "../ui/skeleton";
 import { ChannelHeader } from "./ChannelHeader";
+import { isGroupDm, resolveDmDisplayName } from "./dm";
 import { MessageList } from "./messages/MessageList";
 import { MessagePane } from "./messages/MessagePane";
 
@@ -34,10 +42,19 @@ function ChannelLoading() {
 }
 
 /** チャンネルルート。ヘッダとメッセージ（非公開は参加者だけ）を出す。 */
-export function ChannelScreen({ channelId }: { channelId: string }) {
+export function ChannelScreen({
+  channelId,
+  targetMessageId,
+}: {
+  channelId: string;
+  targetMessageId?: string;
+}) {
   const { t } = useTranslation();
   const shell = useShell();
+  const { locale } = useLocale();
+  const { currentUserId } = useCurrentUser();
   const channelsQuery = useActiveChannels();
+  const usersQuery = useUsers();
   const channels = channelsQuery.data ?? [];
   const channel = useMemo(
     () => channels.find((candidate) => candidate.id === channelId) ?? null,
@@ -45,6 +62,26 @@ export function ChannelScreen({ channelId }: { channelId: string }) {
   );
   // 権限判定（閲覧可否・参加状態・保留中）は `useChannelAccess` に集約する。
   const access = useChannelAccess(channel);
+  const dm = useMemo(() => {
+    if (!channel?.is_dm) {
+      return null;
+    }
+    const resolved = resolveDmDisplayName({
+      channelName: channel.channel_name,
+      members: access.members,
+      users: usersQuery.data ?? [],
+      currentUserId,
+      locale,
+    });
+    const names = resolved.names.join(", ") || t("dms.untitled");
+    return {
+      title:
+        resolved.remaining > 0
+          ? `${names} ${t("dms.moreNames", { count: resolved.remaining })}`
+          : names,
+      group: isGroupDm(channel.channel_name),
+    };
+  }, [access.members, channel, currentUserId, locale, t, usersQuery.data]);
   // アーカイブ済みは Composer を出さず、MessageList を読み取り専用で描く。
   const archivedFeedQuery = useMessageFeed(
     channel && access.isArchived && access.canRead ? channelId : null,
@@ -81,7 +118,25 @@ export function ChannelScreen({ channelId }: { channelId: string }) {
     <div className="flex h-full min-h-0 flex-col">
       <ChannelHeader
         channel={channel}
-        memberCount={access.canRead ? (access.isLoading ? null : access.members.length) : undefined}
+        title={dm?.title}
+        subtitle={
+          dm
+            ? dm.group
+              ? access.isLoading
+                ? "…"
+                : t("dms.memberCount", { count: access.members.length })
+              : t("dms.direct")
+            : undefined
+        }
+        memberCount={
+          channel.is_dm
+            ? undefined
+            : access.canRead
+              ? access.isLoading
+                ? null
+                : access.members.length
+              : undefined
+        }
       />
       <div className="flex min-h-0 flex-1 flex-col">
         {access.isMembershipPending ? (
@@ -96,6 +151,7 @@ export function ChannelScreen({ channelId }: { channelId: string }) {
                 <span>{t("moderation.archivedReadOnly")}</span>
               </div>
               <MessageList
+                targetMessageId={targetMessageId}
                 key={`archived-${channelId}`}
                 messages={archivedFeedQuery.data ?? []}
                 isLoading={archivedFeedQuery.isLoading}
@@ -126,7 +182,12 @@ export function ChannelScreen({ channelId }: { channelId: string }) {
             </div>
           )
         ) : access.canRead ? (
-          <MessagePane key={channelId} channelId={channelId} isMember={access.isMember} />
+          <MessagePane
+            targetMessageId={targetMessageId}
+            key={channelId}
+            channelId={channelId}
+            isMember={access.isMember}
+          />
         ) : (
           <div className="flex flex-1 items-center justify-center p-6">
             <p className="max-w-sm text-center text-sm text-muted-foreground">

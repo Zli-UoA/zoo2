@@ -1,6 +1,6 @@
 import { EmojiPicker as Frimousse } from "frimousse";
 import { SearchIcon } from "lucide-react";
-import { useCallback, useEffect, useState, type KeyboardEvent } from "react";
+import { useCallback, useEffect, useRef, useState, type KeyboardEvent } from "react";
 import { useTranslation } from "react-i18next";
 import { cn } from "cn";
 
@@ -16,6 +16,7 @@ const emojiButtonClassName =
   "flex min-w-0 flex-1 items-center justify-center rounded-md p-1 text-xl leading-none outline-none hover:bg-accent focus-visible:ring-3 focus-visible:ring-ring/50";
 
 const NAVIGATION_KEYS = new Set(["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight"]);
+const SCROLL_CORRECTION_WINDOW_MS = 200;
 
 /**
  * Frimousse is headless, so the picker, list and category headers are styled
@@ -27,9 +28,30 @@ export function EmojiPicker({ onSelect }: { onSelect: (emoji: string) => void })
   const { t } = useTranslation();
   const { locale } = useLocale();
   const [recents, setRecents] = useState<string[]>([]);
+  const viewportRef = useRef<HTMLDivElement>(null);
+  const keyboardNavigationAt = useRef(0);
 
   useEffect(() => {
     setRecents(loadRecentEmojis());
+  }, []);
+
+  useEffect(() => {
+    const viewport = viewportRef.current;
+    if (!viewport) return;
+    const observer = new MutationObserver(() => {
+      if (performance.now() - keyboardNavigationAt.current > SCROLL_CORRECTION_WINDOW_MS) return;
+      const active = viewport.querySelector<HTMLElement>('[role="gridcell"][data-active]');
+      if (!active) return;
+      if (active.getBoundingClientRect().bottom > viewport.getBoundingClientRect().bottom) {
+        active.scrollIntoView({ block: "nearest" });
+      }
+    });
+    observer.observe(viewport, {
+      attributes: true,
+      attributeFilter: ["data-active"],
+      subtree: true,
+    });
+    return () => observer.disconnect();
   }, []);
 
   const choose = useCallback(
@@ -46,6 +68,7 @@ export function EmojiPicker({ onSelect }: { onSelect: (emoji: string) => void })
   const forwardNavigationKey = useCallback((event: KeyboardEvent<HTMLDivElement>) => {
     if (!NAVIGATION_KEYS.has(event.key)) return;
     const { key, code, location, ctrlKey, shiftKey, altKey, metaKey } = event;
+    keyboardNavigationAt.current = performance.now();
     event.preventDefault();
     queueMicrotask(() => {
       document.dispatchEvent(
@@ -111,7 +134,10 @@ export function EmojiPicker({ onSelect }: { onSelect: (emoji: string) => void })
           className="flex size-8 shrink-0 items-center justify-center rounded-lg border border-border bg-background text-lg leading-none outline-none hover:bg-muted focus-visible:ring-3 focus-visible:ring-ring/50"
         />
       </div>
-      <Frimousse.Viewport className="min-h-0 flex-1 rounded-lg border border-border">
+      <Frimousse.Viewport
+        ref={viewportRef}
+        className="min-h-0 flex-1 rounded-lg border border-border"
+      >
         <Frimousse.Loading className="block p-3 text-center text-xs text-muted-foreground">
           {t("reactions.emojiLoading")}
         </Frimousse.Loading>
@@ -120,8 +146,12 @@ export function EmojiPicker({ onSelect }: { onSelect: (emoji: string) => void })
         </Frimousse.Empty>
         <Frimousse.List
           components={{
-            Row: ({ children, ...props }) => (
-              <div {...props} className="flex w-full gap-1 px-1">
+            Row: ({ children, "aria-rowindex": ariaRowIndex, ...props }) => (
+              <div
+                {...props}
+                aria-rowindex={ariaRowIndex === undefined ? undefined : Number(ariaRowIndex) + 1}
+                className="flex w-full gap-1 px-1"
+              >
                 {children}
               </div>
             ),
@@ -133,9 +163,10 @@ export function EmojiPicker({ onSelect }: { onSelect: (emoji: string) => void })
                 {category.label}
               </div>
             ),
-            Emoji: ({ emoji, ...props }) => (
+            Emoji: ({ emoji, "aria-colindex": ariaColIndex, ...props }) => (
               <button
                 {...props}
+                aria-colindex={ariaColIndex === undefined ? undefined : Number(ariaColIndex) + 1}
                 type="button"
                 className={cn(emojiButtonClassName, emoji.isActive && "bg-accent")}
               >

@@ -1,3 +1,4 @@
+pub mod apps;
 pub mod auth;
 pub mod cards;
 pub mod config;
@@ -5,6 +6,7 @@ pub mod db;
 pub mod error;
 pub mod models;
 pub mod notifications;
+pub mod push;
 pub mod routes;
 pub mod state;
 pub mod storage;

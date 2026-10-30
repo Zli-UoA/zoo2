@@ -226,7 +226,9 @@ SPA は IdP の Discovery / token エンドポイントをブラウザから直�
 
 `img-src` は `'self' data: https://www.gstatic.com` に固定しています。`https://www.gstatic.com` は Emoji Kitchen の合成画像（#82）をブラウザから直接取得するためです。新しい外部画像オリジンを追加する場合は、`/` と `/assets/` の両方の `img-src` と `container` ジョブの検査を更新してください。
 
-`script-src` は `'unsafe-inline'` を使わず、ビルド時のハッシュで許可します。ハッシュは `infra/csp-hashes.mjs` が `pnpm build` 後の `index.html` から生成し、`infra/frontend-entrypoint.sh` が起動時に `CSP_SCRIPT_SRC` として渡します。`index.html` やテーマ初期化 script を変更した場合は、必ずイメージを再ビルドしてください。`style-src` の `'unsafe-inline'` は React の style 属性に必要なため残しています。
+`script-src` は `'unsafe-inline'` を使わず、ビルド時のハッシュで許可します。 SQLite Worker の WebAssembly 実行には `'wasm-unsafe-eval'`、ビルド時に埋め込まれる WASM の `data:` URL の読み込みには `connect-src` の `data:` を許可しています。JavaScript の `'unsafe-eval'` は許可しません。ハッシュは `infra/csp-hashes.mjs` が `pnpm build` 後の `index.html` から生成し、`infra/frontend-entrypoint.sh` が起動時に `CSP_SCRIPT_SRC` として渡します。`index.html` やテーマ初期化 script を変更した場合は、必ずイメージを再ビルドしてください。`style-src` の `'unsafe-inline'` は React の style 属性に必要なため残しています。
+
+SQLite Worker の本番 CSP 下での保存と再接続は、`cd frontend && pnpm test:csp:offline` で Firefox と Chromium の両方を検証できます。事前に `pnpm exec playwright install firefox chromium` を実行してください。バックエンドや Docker は不要です。
 
 CSP の確認例（ステージング）:
 
@@ -287,3 +289,15 @@ docker compose --project-directory . -f infra/compose.stg.yaml -f infra/proxy/te
 nix develop --command node infra/proxy/test/check.mjs
 docker compose --project-directory . -f infra/compose.stg.yaml -f infra/proxy/test/compose.yaml down
 ```
+
+CSP を変更すると、アプリはネットワークから取得した CSP の SHA-256 を `/sw.js?v=<hash>` の登録 URL に反映します。Service Worker もこの値をキャッシュ名に含め、新版の activate 時に旧キャッシュを削除します。Worker レスポンスの CSP はキャッシュでも保持します。
+
+既存キャッシュからの更新は `cd frontend && pnpm test:csp:offline:warm` で検証します。Firefox・Chromium の同一ブラウザコンテキストで旧 CSP をキャッシュし、CSP だけを更新した後、旧キャッシュの削除、新 CSP の Worker による保存・再接続、オフライン再読み込みを確認します。デプロイ後も新規プロファイルと既存 SW キャッシュを持つプロファイルの両方で、保存エラーとブラウザコンソールの CSP 違反がないことを確認してください。
+
+オンラインの OIDC 起動では `/api/users/me` を最大8秒待ちます。応答がない場合は待機を解除して再試行できるエラー画面を表示します。前ユーザーのキャッシュは開きません。オフライン時は従来どおり、ログアウトで削除されていない前回ユーザーのローカルキャッシュを表示します。
+
+### App基盤
+
+`20261027000000_create_apps.sql` の適用後、バックエンド本体が永続イベント配信ワーカーを起動します。複数バックエンドでもDBのリースで配信を排他します。プロキシはWebSocket upgradeをそのまま中継し、App APIには `private, no-store` を設定します。
+
+ファイルは任意のS3互換バケットに接続します。設定は `APP_S3_ENDPOINT`、`APP_S3_BUCKET`、`APP_S3_REGION`、`APP_S3_ACCESS_KEY_ID`、`APP_S3_SECRET_ACCESS_KEY` です。未設定でもファイル以外のApp機能は使えます。`CSP_APP_IMAGE_SRC` にAppアイコンのHTTPS配信元を空白区切りで指定できます。既定の画像配信元制限は維持します。詳しい構築・検証手順は [App・Bot基盤](../docs/apps.md) を参照してください。

@@ -1,11 +1,15 @@
 import { ChannelWebhooksDialog } from "./ChannelWebhooksDialog";
 import { useTranslation } from "react-i18next";
+import { useNavigate } from "@tanstack/react-router";
+import { cn } from "cn";
 import {
   ArchiveIcon,
   ArchiveRestoreIcon,
   ArrowLeftIcon,
   HashIcon,
   LockIcon,
+  LogOutIcon,
+  MessagesSquareIcon,
   MoreHorizontalIcon,
   PencilIcon,
   ShieldAlertIcon,
@@ -15,8 +19,13 @@ import {
 import { useState } from "react";
 
 import { useChannelAdmin } from "../../hooks/useChannelAdmin";
+import { useCurrentUser } from "../../hooks/useCurrentUser";
 import { useMessageFeed } from "../../hooks/useRealtime";
+import { useCollections } from "../../lib/electric/collections-context";
 import type { ChannelRow } from "../../lib/electric/types";
+import type { ChannelUserWriteMetadata } from "../../lib/electric/writes";
+import { localizeApiError } from "../../lib/i18n/apiError";
+import { normalizeUtcTimestamp } from "../../lib/timestamps";
 import { useShell } from "../layout/shell-context";
 import {
   AlertDialog,
@@ -38,23 +47,34 @@ import {
 } from "../ui/dropdown-menu";
 import { ScrollArea } from "../ui/scroll-area";
 import { Skeleton } from "../ui/skeleton";
+import { normalizeChannelDescription } from "./channelDescription";
 import { RenameChannelDialog } from "./RenameChannelDialog";
+import { isGroupDm } from "./dm";
 import { authorLabel, formatTime, fullTimestamp, type FeedMessage } from "./messages/messageFormat";
 
 /** チャンネルヘッダ。名前・説明・メンバー数と管理メニュー、狭幅の戻る。 */
 export function ChannelHeader({
   channel,
   memberCount,
+  title,
+  subtitle,
 }: {
   channel: ChannelRow;
   /** 数値=人数、`null`=読み込み中、`undefined`=非表示（非公開で未参加）。 */
   memberCount?: number | null;
+  title?: string;
+  subtitle?: string;
 }) {
   const { t } = useTranslation();
   const shell = useShell();
   const admin = useChannelAdmin(channel);
+  const isDm = channel.is_dm;
+  const isGroup = isDm && isGroupDm(channel.channel_name);
   const isArchived = admin.access.isArchived;
-  const canManage = admin.access.canManageChannel;
+  const canManage = admin.access.canManageChannel && !isDm;
+  const description = normalizeChannelDescription(channel.description);
+  const displayTitle = title ?? channel.channel_name;
+  const displaySubtitle = subtitle ?? (description || t("channels.noDescription"));
   const [confirmAction, setConfirmAction] = useState<"archive" | "unarchive" | null>(null);
   const [webhooksOpen, setWebhooksOpen] = useState(false);
   const [renameOpen, setRenameOpen] = useState(false);
@@ -82,7 +102,13 @@ export function ChannelHeader({
         <ArrowLeftIcon />
       </Button>
       <div className="flex size-8 shrink-0 items-center justify-center rounded-lg bg-muted text-muted-foreground">
-        {channel.is_private ? (
+        {isDm ? (
+          isGroup ? (
+            <UsersIcon className="size-4" aria-hidden="true" />
+          ) : (
+            <MessagesSquareIcon className="size-4" aria-hidden="true" />
+          )
+        ) : channel.is_private ? (
           <LockIcon className="size-4" aria-hidden="true" />
         ) : (
           <HashIcon className="size-4" aria-hidden="true" />
@@ -90,37 +116,38 @@ export function ChannelHeader({
       </div>
       <div className="min-w-0 flex-1">
         <div className="flex min-w-0 items-center gap-2">
-          <h2 className="truncate text-sm font-semibold">{channel.channel_name}</h2>
-          {isArchived ? (
+          <h2 className="truncate text-sm font-semibold">{displayTitle}</h2>
+          {isArchived && !isDm ? (
             <span className="shrink-0 rounded bg-muted px-1.5 py-0.5 text-[0.65rem] text-muted-foreground">
               {t("moderation.archived")}
             </span>
           ) : null}
         </div>
-        <p className="truncate text-xs text-muted-foreground">
-          {channel.description ?? t("channels.noDescription")}
-        </p>
+        <p className="truncate text-xs text-muted-foreground">{displaySubtitle}</p>
       </div>
       <div className="flex shrink-0 items-center gap-1">
-        <Button
-          variant="outline"
-          size="sm"
-          onClick={shell.toggleMembers}
-          aria-expanded={shell.membersOpen}
-          aria-label={
-            memberCount === undefined || memberCount === null
-              ? t("members.title")
-              : `${t("members.title")} ${memberCount}`
-          }
-        >
-          <UsersIcon aria-hidden="true" />
-          <span className="hidden sm:inline">{t("members.title")}</span>
-          {memberCount === undefined ? null : (
-            <span className="tabular-nums text-muted-foreground">
-              {memberCount === null ? "…" : memberCount}
-            </span>
-          )}
-        </Button>
+        {!isDm ? (
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={shell.toggleMembers}
+            aria-expanded={shell.membersOpen}
+            aria-label={
+              memberCount === undefined || memberCount === null
+                ? t("members.title")
+                : `${t("members.title")} ${memberCount}`
+            }
+          >
+            <UsersIcon aria-hidden="true" />
+            <span className="hidden sm:inline">{t("members.title")}</span>
+            {memberCount === undefined ? null : (
+              <span className="tabular-nums text-muted-foreground">
+                {memberCount === null ? "…" : memberCount}
+              </span>
+            )}
+          </Button>
+        ) : null}
+        {isDm ? <DmHeaderMenu channel={channel} /> : null}
         {canManage ? (
           <DropdownMenu>
             <DropdownMenuTrigger
@@ -137,7 +164,7 @@ export function ChannelHeader({
               {!isArchived ? (
                 <DropdownMenuItem onClick={() => setRenameOpen(true)}>
                   <PencilIcon />
-                  {t("channels.renameTitle")}
+                  {t("channels.editTitle")}
                 </DropdownMenuItem>
               ) : null}
               {isArchived ? (
@@ -169,7 +196,7 @@ export function ChannelHeader({
       ) : null}
 
       <AlertDialog
-        open={confirmAction !== null}
+        open={!isDm && confirmAction !== null}
         onOpenChange={(open) => {
           if (!open) {
             setConfirmAction(null);
@@ -204,7 +231,7 @@ export function ChannelHeader({
         </AlertDialogContent>
       </AlertDialog>
 
-      {messageAdminOpen ? (
+      {messageAdminOpen && canManage ? (
         <MessageAdminDialog
           channel={channel}
           open={messageAdminOpen}
@@ -214,6 +241,98 @@ export function ChannelHeader({
         />
       ) : null}
     </header>
+  );
+}
+
+function DmHeaderMenu({ channel }: { channel: ChannelRow }) {
+  const { t } = useTranslation();
+  const shell = useShell();
+  const navigate = useNavigate();
+  const { channelUsers } = useCollections();
+  const { currentUserId } = useCurrentUser();
+  const [confirmOpen, setConfirmOpen] = useState(false);
+  const [pending, setPending] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  function handleOpenChange(open: boolean) {
+    if (!open && !pending) {
+      setConfirmOpen(false);
+      setError(null);
+    }
+  }
+
+  async function leave() {
+    if (!currentUserId || pending) {
+      return;
+    }
+    setPending(true);
+    setError(null);
+    try {
+      const transaction = channelUsers.delete(`${currentUserId}:${channel.id}`, {
+        metadata: { action: "leave" } satisfies ChannelUserWriteMetadata,
+      });
+      await transaction.when("settled");
+      setConfirmOpen(false);
+      shell.showSidebar();
+      await navigate({ to: "/" });
+    } catch (cause) {
+      setError(localizeApiError(cause, t));
+    } finally {
+      setPending(false);
+    }
+  }
+
+  return (
+    <>
+      <DropdownMenu>
+        <DropdownMenuTrigger
+          aria-label={t("dms.menu")}
+          title={t("dms.menu")}
+          className={cn(buttonVariants({ variant: "ghost", size: "icon-sm" }), "size-11 md:size-7")}
+        >
+          <MoreHorizontalIcon />
+        </DropdownMenuTrigger>
+        <DropdownMenuContent align="end">
+          <DropdownMenuItem
+            variant="destructive"
+            className="min-h-11"
+            disabled={!currentUserId}
+            onClick={() => {
+              setError(null);
+              setConfirmOpen(true);
+            }}
+          >
+            <LogOutIcon />
+            {t("dms.leave")}
+          </DropdownMenuItem>
+        </DropdownMenuContent>
+      </DropdownMenu>
+
+      <AlertDialog open={confirmOpen} onOpenChange={handleOpenChange}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>{t("dms.leaveTitle")}</AlertDialogTitle>
+            <AlertDialogDescription>{t("dms.leaveDescription")}</AlertDialogDescription>
+          </AlertDialogHeader>
+          {error ? (
+            <p className="text-xs text-destructive">{t("common.writeErrorDetail", { error })}</p>
+          ) : null}
+          <AlertDialogFooter>
+            <AlertDialogCancel className="min-h-11" disabled={pending}>
+              {t("common.cancelShort")}
+            </AlertDialogCancel>
+            <AlertDialogAction
+              variant="destructive"
+              className="min-h-11"
+              disabled={pending || !currentUserId}
+              onClick={() => void leave()}
+            >
+              {pending ? t("dms.leaving") : t("dms.leave")}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+    </>
   );
 }
 
@@ -274,7 +393,7 @@ function MessageAdminDialog({
                         <span className="truncate text-sm font-medium">{authorLabel(message)}</span>
                         <time
                           className="shrink-0 text-[11px] tabular-nums text-muted-foreground"
-                          dateTime={message.created_at}
+                          dateTime={normalizeUtcTimestamp(message.created_at)}
                           title={fullTimestamp(message.created_at)}
                         >
                           {formatTime(message.created_at)}

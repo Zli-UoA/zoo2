@@ -1,15 +1,20 @@
 # syntax=docker/dockerfile:1
-FROM rust:1-bookworm AS build-env
+# Align Rust with rust-toolchain.toml and glibc with the Debian 12 distroless runtime.
+FROM rust:1.99-bookworm AS build-env
 
 ARG DATABASE_URL="postgresql://postgres:postgres@localhost:5432/db?schema=public"
 
 WORKDIR /app
 
 COPY backend/ /app
+# events.rs embeds this public contract at compile time.
+COPY docs/slack-event-coverage.json /docs/slack-event-coverage.json
 
+# Rebuild the application even if restored artifacts have newer timestamps.
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/usr/local/cargo/git \
     --mount=type=cache,target=/app/target \
+    cargo clean --locked --release --package backend && \
     cargo build --locked --release --bin zoo_backend && \
     cp /app/target/release/zoo_backend /zoo_backend
 

@@ -16,7 +16,9 @@ import { defineConfig, devices } from "@playwright/test";
  * PostgreSQL + Electric + 本番同等設定の Rust を起動してから実行する。
  */
 const baseURL = process.env.E2E_BASE_URL ?? "http://localhost:5173";
-const apiBaseUrl = process.env.VITE_API_BASE_URL ?? "http://localhost:8000";
+const apiUpstream = process.env.VITE_API_BASE_URL ?? "http://localhost:8000";
+const http2Port = process.env.E2E_HTTP2_PORT ?? "8443";
+const apiBaseUrl = `https://localhost:${http2Port}`;
 const mockIdpPort = process.env.MOCK_IDP_PORT ?? "4100";
 const mockIdpIssuer = `http://127.0.0.1:${mockIdpPort}/oauth2/openid/zoo`;
 
@@ -28,12 +30,24 @@ export default defineConfig({
   retries: 0,
   reporter: process.env.CI ? "github" : "list",
   timeout: 90_000,
+  // Cold dev-module loading and Electric/OPFS initialization can outlast the
+  // default 5s on CI. Keep assertions bounded without retrying the whole flow.
+  expect: { timeout: 15_000 },
   use: {
     baseURL,
-    trace: "on-first-retry",
+    // E2E専用プロキシの一時的な自己署名証明書を信頼する。
+    ignoreHTTPSErrors: true,
+    trace: "retain-on-failure",
   },
   projects: [{ name: "chromium", use: { ...devices["Desktop Chrome"] } }],
   webServer: [
+    {
+      command: "node e2e/http2-api-server.ts",
+      url: `${apiBaseUrl}/health`,
+      ignoreHTTPSErrors: true,
+      timeout: 30_000,
+      env: { E2E_HTTP2_PORT: http2Port, E2E_API_UPSTREAM: apiUpstream },
+    },
     {
       command: "node e2e/mock-idp-server.ts",
       url: `${mockIdpIssuer}/.well-known/openid-configuration`,

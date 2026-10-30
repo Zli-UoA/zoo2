@@ -5,6 +5,7 @@ import { useTranslation } from "react-i18next";
 import { READ_STATE_CHANGED, type ChannelReadState } from "../../../hooks/useUnreadChannels";
 import { createConfiguredApiClient } from "../../../lib/api/client";
 import { getCollections } from "../../../lib/electric/collections";
+import { useOptionalCollections } from "../../../lib/electric/collections-context";
 import { parseUtcTimestamp } from "../../../lib/timestamps";
 import type { FeedMessage } from "./messageFormat";
 
@@ -27,12 +28,15 @@ export function useMessageReadState(
   userId: string | null,
   messages: FeedMessage[],
   pending: boolean,
+  writePending = false,
 ) {
   const { t } = useTranslation();
   const enabled = !!channelId && !!userId;
+  const injected = useOptionalCollections();
+  const config = injected?.config ?? (enabled ? getCollections().config : null);
   const client = useMemo(
-    () => (enabled ? createConfiguredApiClient(getCollections().config) : null),
-    [enabled, userId],
+    () => (enabled && config ? createConfiguredApiClient(config) : null),
+    [config, enabled],
   );
   const path = `/api/channels/${channelId}/read-state`;
   const [lastRead, setLastRead] = useState<number | null>(null);
@@ -76,6 +80,7 @@ export function useMessageReadState(
     if (
       !client ||
       pending ||
+      writePending ||
       lastRead === null ||
       inFlight.current ||
       document.visibilityState === "hidden" ||
@@ -102,6 +107,6 @@ export function useMessageReadState(
       .finally(() => {
         inFlight.current = false;
       });
-  }, [client, path, messages, pending, lastRead, t, savedVersion]);
+  }, [client, path, messages, pending, writePending, lastRead, t, savedVersion]);
   return { firstUnreadId, markRead, isLoading: enabled && lastRead === null && !isError, isError };
 }

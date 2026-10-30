@@ -1,0 +1,171 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://zoo.example/schemas/app-events-v1.json",
+  "title": "Zoo event delivery v1",
+  "type": "object",
+  "required": [
+    "delivery_id",
+    "ack_token",
+    "event",
+    "attempt"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "delivery_id": {
+      "type": "string"
+    },
+    "ack_token": {
+      "type": "string",
+      "description": "Acknowledges only this delivery attempt; keep private"
+    },
+    "attempt": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "event": {
+      "type": "object",
+      "required": [
+        "id",
+        "version",
+        "type",
+        "occurred_at",
+        "actor_id",
+        "data"
+      ],
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "version": {
+          "const": 1
+        },
+        "type": {
+          "type": "string",
+          "enum": [
+            "message.created",
+            "message.updated",
+            "message.deleted",
+            "message.replied",
+            "message.thread_broadcast",
+            "message.emote",
+            "channel.history_changed",
+            "user.typing",
+            "member.joined",
+            "member.left",
+            "channel.created",
+            "channel.updated",
+            "channel.deleted",
+            "channel.archived",
+            "channel.unarchived",
+            "channel.renamed",
+            "channel.purpose_changed",
+            "channel.topic_changed",
+            "channel.privacy_changed",
+            "channel.posting_permissions_changed",
+            "conversation.created",
+            "conversation.opened",
+            "conversation.closed",
+            "conversation.marked",
+            "user.joined",
+            "user.changed",
+            "user.profile_changed",
+            "user.status_changed",
+            "user.presence_changed",
+            "user.guest_status_changed",
+            "bot.added",
+            "bot.changed",
+            "user.preferences_changed",
+            "user.manual_presence_changed",
+            "user.dnd_changed",
+            "user.dnd_changed_public",
+            "pin.added",
+            "pin.removed",
+            "star.added",
+            "star.removed",
+            "emoji.changed",
+            "usergroup.created",
+            "usergroup.updated",
+            "usergroup.members_changed",
+            "usergroup.self_added",
+            "usergroup.self_removed",
+            "workspace.renamed",
+            "workspace.preferences_changed",
+            "workspace.profile_changed",
+            "workspace.profile_deleted",
+            "workspace.profile_reordered",
+            "app.requested",
+            "app.deleted",
+            "app.installed_workspace",
+            "app.uninstalled_workspace",
+            "commands.changed",
+            "file.created",
+            "file.changed",
+            "file.deleted",
+            "file.public",
+            "file.shared",
+            "file.unshared",
+            "message.metadata_posted",
+            "message.metadata_updated",
+            "message.metadata_deleted",
+            "invite.requested",
+            "reminder.created",
+            "reminder.fired",
+            "app.installed",
+            "app.uninstalled",
+            "tokens.revoked",
+            "assistant.started",
+            "assistant.context_changed",
+            "assistant.stopped",
+            "assistant.title_changed",
+            "app.context_changed",
+            "user.connection_requested",
+            "function.executed",
+            "entity.details_requested",
+            "entity.comments_requested",
+            "app.rate_limited",
+            "app.mentioned",
+            "reaction.added",
+            "reaction.removed",
+            "command.invoked",
+            "action.invoked",
+            "view.submitted",
+            "shortcut.invoked",
+            "link.shared",
+            "home.opened"
+          ]
+        },
+        "occurred_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "actor_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "channel_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "data": {
+          "type": "object"
+        },
+        "previous": {
+          "type": [
+            "object",
+            "null"
+          ]
+        },
+        "subject_user_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      }
+    }
+  }
+}

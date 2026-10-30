@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useSyncExternalStore } from "react";
 
 import { getCurrentUserStore, type CurrentUserState } from "../lib/currentUser";
-import { getCollections } from "../lib/electric/collections";
+import { useCollections } from "../lib/electric/collections-context";
 
 /**
  * 現在ユーザーを購読する。OIDC 有効時は `/api/users/me` を起動時に 1 回呼び、
@@ -9,7 +9,8 @@ import { getCollections } from "../lib/electric/collections";
  * 解決済みのものを使う（画面はマウント後のブラウザでのみ描画される）。
  */
 export function useCurrentUser(): CurrentUserState {
-  const store = getCurrentUserStore(getCollections().config);
+  const { config } = useCollections();
+  const store = getCurrentUserStore(config);
   const subscribe = useCallback((listener: () => void) => store.subscribe(listener), [store]);
   const getState = useCallback(() => store.getState(), [store]);
   const state = useSyncExternalStore(subscribe, getState, getState);

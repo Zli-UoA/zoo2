@@ -116,7 +116,7 @@ pub fn router() -> Router<AppState> {
         )
 }
 
-async fn create_channel(
+pub(crate) async fn create_channel(
     State(state): State<AppState>,
     auth_user: AuthUser,
     Json(payload): Json<CreateChannelRequest>,
@@ -130,6 +130,13 @@ async fn create_channel(
 
     let mut db = state.db.clone();
     let mut tx = db.transaction().await?;
+    crate::apps::events::actor_context(&mut tx, &auth_user.id).await?;
+    if crate::apps::events::guest(&mut tx, &auth_user.id).await? {
+        return Err(AppError::Forbidden(
+            "Guests cannot create or join channels without an invitation".into(),
+        ));
+    }
+
     let now = crate::models::now_utc_millis();
 
     let channel = toasty::create!(Channel {
@@ -162,7 +169,7 @@ async fn create_channel(
     Ok(Json(ApiResponse::new(ChannelResponse::from(channel), txid)))
 }
 
-async fn update_channel(
+pub(crate) async fn update_channel(
     State(state): State<AppState>,
     auth_user: AuthUser,
     Path(id): Path<String>,
@@ -180,6 +187,7 @@ async fn update_channel(
 
     let mut db = state.db.clone();
     let mut tx = db.transaction().await?;
+    crate::apps::events::actor_context(&mut tx, &auth_user.id).await?;
 
     let channel = Channel::get_by_id(&mut tx, id.as_str())
         .await
@@ -203,7 +211,7 @@ async fn update_channel(
         is_workspace_admin(&mut tx, &auth_user.id, state.config.dev_auth_enabled).await?
     };
 
-    if channel.is_private {
+    if channel.is_private || crate::apps::events::guest(&mut tx, &auth_user.id).await? {
         let membership = ChannelUser::filter(
             ChannelUser::fields()
                 .channel_id()
@@ -273,7 +281,7 @@ async fn update_channel(
     )))
 }
 
-async fn delete_channel(
+pub(crate) async fn delete_channel(
     State(state): State<AppState>,
     auth_user: AuthUser,
     Path(id): Path<String>,
@@ -283,6 +291,7 @@ async fn delete_channel(
 
     let mut db = state.db.clone();
     let mut tx = db.transaction().await?;
+    crate::apps::events::actor_context(&mut tx, &auth_user.id).await?;
 
     let channel = Channel::get_by_id(&mut tx, id.as_str())
         .await
@@ -306,7 +315,7 @@ async fn delete_channel(
         is_workspace_admin(&mut tx, &auth_user.id, state.config.dev_auth_enabled).await?
     };
 
-    if channel.is_private {
+    if channel.is_private || crate::apps::events::guest(&mut tx, &auth_user.id).await? {
         let membership = ChannelUser::filter(
             ChannelUser::fields()
                 .channel_id()
@@ -362,7 +371,7 @@ async fn delete_channel(
     )))
 }
 
-async fn join_channel(
+pub(crate) async fn join_channel(
     State(state): State<AppState>,
     auth_user: AuthUser,
     Path(id): Path<String>,
@@ -372,6 +381,12 @@ async fn join_channel(
 
     let mut db = state.db.clone();
     let mut tx = db.transaction().await?;
+    crate::apps::events::actor_context(&mut tx, &auth_user.id).await?;
+    if crate::apps::events::guest(&mut tx, &auth_user.id).await? {
+        return Err(AppError::Forbidden(
+            "Guests cannot create or join channels without an invitation".into(),
+        ));
+    }
 
     let channel = Channel::get_by_id(&mut tx, id.as_str())
         .await
@@ -473,6 +488,7 @@ async fn add_channel_user(
 
     let mut db = state.db.clone();
     let mut tx = db.transaction().await?;
+    crate::apps::events::actor_context(&mut tx, &auth_user.id).await?;
 
     let channel = Channel::get_by_id(&mut tx, id.as_str())
         .await
@@ -496,7 +512,7 @@ async fn add_channel_user(
         is_workspace_admin(&mut tx, &auth_user.id, state.config.dev_auth_enabled).await?
     };
 
-    if channel.is_private {
+    if channel.is_private || crate::apps::events::guest(&mut tx, &auth_user.id).await? {
         let membership = ChannelUser::filter(
             ChannelUser::fields()
                 .channel_id()
@@ -548,7 +564,7 @@ async fn add_channel_user(
         return Err(AppError::Forbidden(
             if channel.is_dm {
                 "Cannot add members to a direct message channel"
-            } else if channel.is_private {
+            } else if channel.is_private || crate::apps::events::guest(&mut tx,&auth_user.id).await? {
                 "Only the channel creator or a workspace admin can add members to a private channel"
             } else {
                 "You must be a member, creator, or workspace admin of the channel to add other users"
@@ -602,7 +618,7 @@ async fn add_channel_user(
     )))
 }
 
-async fn leave_channel(
+pub(crate) async fn leave_channel(
     State(state): State<AppState>,
     auth_user: AuthUser,
     Path(id): Path<String>,
@@ -612,6 +628,7 @@ async fn leave_channel(
 
     let mut db = state.db.clone();
     let mut tx = db.transaction().await?;
+    crate::apps::events::actor_context(&mut tx, &auth_user.id).await?;
 
     let channel = Channel::get_by_id(&mut tx, id.as_str())
         .await
@@ -676,7 +693,7 @@ async fn leave_channel(
     )))
 }
 
-async fn archive_channel(
+pub(crate) async fn archive_channel(
     State(state): State<AppState>,
     auth_user: AuthUser,
     Path(id): Path<String>,
@@ -686,6 +703,7 @@ async fn archive_channel(
 
     let mut db = state.db.clone();
     let mut tx = db.transaction().await?;
+    crate::apps::events::actor_context(&mut tx, &auth_user.id).await?;
 
     let channel = Channel::get_by_id(&mut tx, id.as_str())
         .await
@@ -709,7 +727,7 @@ async fn archive_channel(
         is_workspace_admin(&mut tx, &auth_user.id, state.config.dev_auth_enabled).await?
     };
 
-    if channel.is_private {
+    if channel.is_private || crate::apps::events::guest(&mut tx, &auth_user.id).await? {
         let membership = ChannelUser::filter(
             ChannelUser::fields()
                 .channel_id()
@@ -767,7 +785,7 @@ async fn archive_channel(
     Ok(Json(ApiResponse::new(ChannelResponse::from(updated), txid)))
 }
 
-async fn unarchive_channel(
+pub(crate) async fn unarchive_channel(
     State(state): State<AppState>,
     auth_user: AuthUser,
     Path(id): Path<String>,
@@ -777,6 +795,7 @@ async fn unarchive_channel(
 
     let mut db = state.db.clone();
     let mut tx = db.transaction().await?;
+    crate::apps::events::actor_context(&mut tx, &auth_user.id).await?;
 
     let channel = Channel::get_by_id(&mut tx, id.as_str())
         .await
@@ -800,7 +819,7 @@ async fn unarchive_channel(
         is_workspace_admin(&mut tx, &auth_user.id, state.config.dev_auth_enabled).await?
     };
 
-    if channel.is_private {
+    if channel.is_private || crate::apps::events::guest(&mut tx, &auth_user.id).await? {
         let membership = ChannelUser::filter(
             ChannelUser::fields()
                 .channel_id()
@@ -876,6 +895,7 @@ async fn kick_channel_user(
 
     let mut db = state.db.clone();
     let mut tx = db.transaction().await?;
+    crate::apps::events::actor_context(&mut tx, &auth_user.id).await?;
 
     let channel = Channel::get_by_id(&mut tx, id.as_str())
         .await
@@ -899,7 +919,7 @@ async fn kick_channel_user(
         is_workspace_admin(&mut tx, &auth_user.id, state.config.dev_auth_enabled).await?
     };
 
-    if channel.is_private {
+    if channel.is_private || crate::apps::events::guest(&mut tx, &auth_user.id).await? {
         let membership = ChannelUser::filter(
             ChannelUser::fields()
                 .channel_id()
@@ -1000,9 +1020,10 @@ async fn list_channels(
         .exec(&mut db)
         .await?;
 
+    let guest = crate::apps::events::guest_in_db(&mut db, &auth_user.id).await?;
     let visible_channels: Vec<ChannelResponse> = all_channels
         .into_iter()
-        .filter(|c| is_channel_visible(c.is_private, joined_channel_ids.contains(&c.id)))
+        .filter(|c| is_channel_visible(c.is_private || guest, joined_channel_ids.contains(&c.id)))
         .map(ChannelResponse::from)
         .collect();
 
@@ -1034,7 +1055,7 @@ async fn get_channel_by_id(
         )));
     }
 
-    if channel.is_private {
+    if channel.is_private || crate::apps::events::guest_in_db(&mut db, &auth_user.id).await? {
         let is_member = ChannelUser::filter(
             ChannelUser::fields()
                 .channel_id()
@@ -1047,7 +1068,7 @@ async fn get_channel_by_id(
         .is_some();
 
         // 存在推測攻撃を防ぐため 403 ではなく 404 を返却
-        if !is_channel_visible(channel.is_private, is_member) {
+        if !is_member {
             return Err(AppError::NotFound(format!(
                 "Channel not found with id: {id}"
             )));

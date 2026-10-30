@@ -3,6 +3,7 @@ import type {
   ChannelUserRow,
   MessageReactionRow,
   MessageRow,
+  NotificationRow,
   TableName,
   TableRowMap,
   UserRow,
@@ -32,7 +33,13 @@ export const NUMERIC_ELECTRIC_TYPES: ReadonlySet<ElectricType> = new Set<Electri
   "float8",
 ]);
 
-export type ShapeName = "channels" | "messages" | "messageReactions" | "users" | "channelUsers";
+export type ShapeName =
+  | "channels"
+  | "messages"
+  | "messageReactions"
+  | "users"
+  | "channelUsers"
+  | "notifications";
 
 export interface ShapeMeta {
   table: TableName;
@@ -40,6 +47,7 @@ export interface ShapeMeta {
 }
 
 export const SHAPE_META: Record<ShapeName, ShapeMeta> = {
+  notifications: { table: "notifications", proxyPath: "notifications" },
   channels: { table: "channels", proxyPath: "channels" },
   messages: { table: "messages", proxyPath: "messages" },
   messageReactions: { table: "message_reactions", proxyPath: "message_reactions" },
@@ -59,6 +67,9 @@ export const USER_SCHEMA: ShapeSchema<UserRow> = {
     user_name: "text",
     display_name: "varchar",
     is_bot: "bool",
+    app_id: "text",
+    avatar_url: "text",
+    bot_mentionable: "bool",
     created_at: "timestamp",
     updated_at: "timestamp",
   },
@@ -72,6 +83,7 @@ export const CHANNEL_SCHEMA: ShapeSchema<ChannelRow> = {
     description: "varchar",
     created_user_id: "text",
     is_private: "bool",
+    is_dm: "bool",
     created_at: "timestamp",
     updated_at: "timestamp",
     archive_at: "timestamp",
@@ -87,6 +99,10 @@ export const MESSAGE_SCHEMA: ShapeSchema<MessageRow> = {
     channel_id: "text",
     content: "text",
     card: "text",
+    app_blocks: "text",
+    app_attachments: "text",
+    app_unfurls: "text",
+    app_origin_id: "text",
     created_at: "timestamp",
     updated_at: "timestamp",
     deleted_at: "timestamp",
@@ -114,7 +130,22 @@ export const CHANNEL_USER_SCHEMA: ShapeSchema<ChannelUserRow> = {
   },
 };
 
+export const NOTIFICATION_SCHEMA: ShapeSchema<NotificationRow> = {
+  table: "notifications",
+  columns: {
+    id: "text",
+    user_id: "text",
+    actor_id: "text",
+    channel_id: "text",
+    message_id: "text",
+    notification_type: "text",
+    is_read: "bool",
+    created_at: "timestamp",
+  },
+};
+
 export const SHAPE_SCHEMAS: { [K in TableName]: ShapeSchema<TableRowMap[K]> } = {
+  notifications: NOTIFICATION_SCHEMA,
   users: USER_SCHEMA,
   channels: CHANNEL_SCHEMA,
   messages: MESSAGE_SCHEMA,

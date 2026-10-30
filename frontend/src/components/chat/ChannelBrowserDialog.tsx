@@ -5,7 +5,7 @@ import { HashIcon, SearchIcon, XIcon } from "lucide-react";
 import { useMemo, useState } from "react";
 
 import { useCurrentUser } from "../../hooks/useCurrentUser";
-import { getCollections } from "../../lib/electric/collections";
+import { useCollections } from "../../lib/electric/collections-context";
 import type { ChannelRow, ChannelUserRow } from "../../lib/electric/types";
 import type { ChannelUserWriteMetadata } from "../../lib/electric/writes";
 import { localizeApiError } from "../../lib/i18n/apiError";
@@ -41,7 +41,7 @@ export function ChannelBrowserDialog({
   const { t } = useTranslation();
   const shell = useShell();
   const navigate = useNavigate();
-  const { channelUsers } = getCollections();
+  const { channelUsers } = useCollections();
   const { currentUserId, isLoading: currentUserLoading } = useCurrentUser();
   const [query, setQuery] = useState("");
   const [joiningId, setJoiningId] = useState<string | null>(null);
@@ -155,9 +155,9 @@ export function ChannelBrowserDialog({
                       <HashIcon className="ml-1 size-4 shrink-0 opacity-60" aria-hidden="true" />
                       <div className="min-w-0 flex-1">
                         <p className="truncate text-sm text-foreground">{channel.channel_name}</p>
-                        {channel.description ? (
+                        {channel.description?.trim() ? (
                           <p className="truncate text-xs text-muted-foreground">
-                            {channel.description}
+                            {channel.description.trim()}
                           </p>
                         ) : null}
                       </div>

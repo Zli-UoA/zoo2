@@ -162,6 +162,10 @@ export function AuthGate({ children }: { children: ReactNode }) {
       setPhase("ready");
     } else if (isLoggedOut(window.sessionStorage)) {
       setPhase("loggedOut");
+    } else if (typeof navigator !== "undefined" && !navigator.onLine) {
+      // オフラインでは IdP に到達できない。トークンが無くても、保存済みの
+      // チャンネル・メッセージを読めるようアプリを起動する。
+      setPhase("ready");
     } else {
       startLogin(client, currentReturnTo());
     }
@@ -174,6 +178,24 @@ export function AuthGate({ children }: { children: ReactNode }) {
       client.setReauthorizeHandler(null);
     };
   }, [router, startLogin]);
+
+  // オフライン起動から接続が戻ったら、通常の OIDC ログインへ戻す。
+  // 認証付き API が 401 を返すまでの間、キャッシュ表示を止めない。
+  useEffect(() => {
+    const client = clientRef.current;
+    if (!client) {
+      return;
+    }
+    const handleOnline = () => {
+      if (phase !== "ready" || client.hasSession || isLoggedOut(window.sessionStorage)) {
+        return;
+      }
+      setPhase("checking");
+      startLogin(client, currentReturnTo());
+    };
+    window.addEventListener("online", handleOnline);
+    return () => window.removeEventListener("online", handleOnline);
+  }, [phase, startLogin]);
 
   if (phase === "disabled" || phase === "ready") {
     return <>{children}</>;

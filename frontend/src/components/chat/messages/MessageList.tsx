@@ -1,7 +1,15 @@
 import { useTranslation } from "react-i18next";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { ArrowDownIcon } from "lucide-react";
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+  type ReactNode,
+} from "react";
 
 import type { KitchenCatalog } from "../../../lib/emoji/kitchen";
 import type { ReactionGroup } from "../../../lib/emoji/reactions";
@@ -21,11 +29,17 @@ import {
 
 const ESTIMATED_ROW_HEIGHT = 64;
 const SKELETON_ROWS = [0, 1, 2, 3, 4, 5];
+/** 上端からこの距離まで来たら、過去のメッセージを読み足す。 */
+const LOAD_OLDER_THRESHOLD = 64;
+/** Shape が無言で止まったときにスケルトン無限表示を避けるための上限。 */
+const LOADING_TIMEOUT_MS = 8_000;
 
 interface MessageListProps {
+  targetMessageId?: string;
   channelId?: string;
   messages: FeedMessage[];
   isLoading: boolean;
+  isWritePending?: boolean;
   isError: boolean;
   currentUserId: string | null;
   editingId: string | null;
@@ -44,6 +58,12 @@ interface MessageListProps {
   onOpenThread: (messageId: string) => void;
   /** 送信できる状態か。false なら空状態で「最初のメッセージ」を促さない。 */
   canCompose?: boolean;
+  /** オフラインか。スケルトンの代わりに保存済みがない旨を出す。 */
+  isOffline?: boolean;
+  /** 上端付近で過去のメッセージを読み足す。 */
+  onLoadOlder?: (oldestCreatedAt: string) => void;
+  /** 取得失敗・停止時の再試行。 */
+  onRetry?: () => void;
 }
 
 function MessageSkeleton() {
@@ -66,19 +86,36 @@ function MessageState({
   title,
   description,
   destructive = false,
+  action,
 }: {
   title: string;
   description?: string;
   destructive?: boolean;
+  action?: ReactNode;
 }) {
   return (
-    <div className="flex h-full flex-col items-center justify-center gap-1 p-6 text-center">
+    <div className="flex h-full flex-col items-center justify-center gap-2 p-6 text-center">
       <p className={destructive ? "text-sm font-medium text-destructive" : "text-sm font-medium"}>
         {title}
       </p>
       {description ? <p className="text-xs text-muted-foreground">{description}</p> : null}
+      {action}
     </div>
   );
+}
+
+/** 読み込みが長時間終わらないときだけ true にする。 */
+function useLoadingTimeout(active: boolean, timeoutMs = LOADING_TIMEOUT_MS): boolean {
+  const [timedOut, setTimedOut] = useState(false);
+  useEffect(() => {
+    if (!active) {
+      setTimedOut(false);
+      return;
+    }
+    const timer = setTimeout(() => setTimedOut(true), timeoutMs);
+    return () => clearTimeout(timer);
+  }, [active, timeoutMs]);
+  return active && timedOut;
 }
 
 /**
@@ -88,9 +125,11 @@ function MessageState({
  * 「新着メッセージ」ボタンに加えて `aria-live` でも読み上げる。
  */
 export function MessageList({
+  targetMessageId,
   channelId,
   messages,
   isLoading,
+  isWritePending = false,
   isError,
   currentUserId,
   editingId,
@@ -108,6 +147,9 @@ export function MessageList({
   replyCounts,
   onOpenThread,
   canCompose = true,
+  isOffline = false,
+  onLoadOlder,
+  onRetry,
 }: MessageListProps) {
   const { t } = useTranslation();
   const {
@@ -115,12 +157,16 @@ export function MessageList({
     markRead,
     isLoading: readStateLoading,
     isError: readStateError,
-  } = useMessageReadState(channelId, currentUserId, messages, isLoading || isError);
+  } = useMessageReadState(channelId, currentUserId, messages, isLoading || isError, isWritePending);
+  // 既読位置の取得に失敗しても、保存済みのメッセージは隠さない。
+  // 未読区切りだけを出さずに描画する（オフライン時に空になるのを防ぐ）。
   const items = useMemo(
     () =>
-      readStateLoading || readStateError
-        ? []
-        : buildMessageItems(messages, undefined, firstUnreadId),
+      buildMessageItems(
+        messages,
+        undefined,
+        readStateLoading || readStateError ? null : firstUnreadId,
+      ),
     [messages, firstUnreadId, readStateLoading, readStateError],
   );
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -139,7 +185,20 @@ export function MessageList({
   // ボタンと同じ条件）。最下部へ戻ったら空にして、同文の連投も再度読み上げられる。
   const [liveAnnouncement, setLiveAnnouncement] = useState("");
   const snapshotRef = useRef<ScrollSnapshot>({ firstId: null, lastId: null });
-  const previousScrollHeightRef = useRef(0);
+  const scrollAnchorRef = useRef<{ id: string; offset: number } | null>(null);
+  const restoringAnchorRef = useRef(false);
+  const captureScrollAnchor = useCallback(() => {
+    const element = scrollRef.current;
+    if (!element || restoringAnchorRef.current) return;
+    const viewport = element.getBoundingClientRect();
+    for (const row of element.querySelectorAll<HTMLElement>("[data-message-id]")) {
+      const bounds = row.getBoundingClientRect();
+      if (bounds.bottom > viewport.top && bounds.top < viewport.bottom) {
+        scrollAnchorRef.current = { id: row.dataset.messageId!, offset: bounds.top - viewport.top };
+        break;
+      }
+    }
+  }, []);
 
   const scrollToBottom = useCallback(
     (behavior: ScrollBehavior = "auto") => {
@@ -159,13 +218,20 @@ export function MessageList({
     if (!element) {
       return;
     }
+    captureScrollAnchor();
     const near = isNearBottom(element.scrollTop, element.scrollHeight, element.clientHeight);
     atBottomRef.current = near;
     if (near) {
       setHasNewBelow(false);
       markRead();
     }
-  }, [markRead]);
+    if (element.scrollTop <= LOAD_OLDER_THRESHOLD) {
+      const oldest = messages[0];
+      if (oldest) {
+        onLoadOlder?.(oldest.created_at);
+      }
+    }
+  }, [captureScrollAnchor, markRead, messages, onLoadOlder]);
 
   useLayoutEffect(() => {
     const element = scrollRef.current;
@@ -176,10 +242,64 @@ export function MessageList({
     const next = snapshot(ids);
     const change = classifyScrollChange(snapshotRef.current, next, new Set(ids));
 
+    let stopRestoring: (() => void) | undefined;
     if (change === "prepend") {
-      const delta = element.scrollHeight - previousScrollHeightRef.current;
-      if (delta > 0) {
-        element.scrollTop += delta;
+      // Estimates for unmounted rows must not decide which message the reader sees.
+      const anchor = scrollAnchorRef.current;
+      const index = anchor ? items.findIndex((item) => item.message.id === anchor.id) : -1;
+      if (anchor && index >= 0) {
+        restoringAnchorRef.current = true;
+        let frame = 0;
+        let stopped = false;
+        let stableFrames = 0;
+        const events = ["wheel", "touchstart", "pointerdown", "keydown"] as const;
+        const stop = () => {
+          stopped = true;
+          restoringAnchorRef.current = false;
+          cancelAnimationFrame(frame);
+          for (const event of events) element.removeEventListener(event, stop);
+        };
+        stopRestoring = stop;
+        for (const event of events) element.addEventListener(event, stop, { passive: true });
+        const restore = () => {
+          if (stopped || !element.isConnected) {
+            stop();
+            return;
+          }
+          const row = Array.from(element.querySelectorAll<HTMLElement>("[data-message-id]")).find(
+            (entry) => entry.dataset.messageId === anchor.id,
+          );
+          if (row) {
+            const delta =
+              row.getBoundingClientRect().top - element.getBoundingClientRect().top - anchor.offset;
+            if (Math.abs(delta) > 1) {
+              stableFrames = 0;
+              const previousTop = element.scrollTop;
+              virtualizer.scrollToOffset(previousTop + delta);
+              // A short list or viewport resize can make the requested offset unreachable.
+              if (Math.abs(element.scrollTop - previousTop) < 0.5) {
+                stop();
+                captureScrollAnchor();
+                return;
+              }
+            } else stableFrames++;
+          } else {
+            // Mount the anchor's new virtual range first, then correct its measured position.
+            stableFrames = 0;
+            const offset = virtualizer.getOffsetForIndex(index, "start");
+            if (offset)
+              virtualizer.scrollToOffset(
+                offset[0] + parseFloat(getComputedStyle(element).paddingTop) - anchor.offset,
+              );
+          }
+          // ResizeObserver and React can commit new measurements on a later frame.
+          if (stableFrames < 2) frame = requestAnimationFrame(restore);
+          else {
+            stop();
+            captureScrollAnchor();
+          }
+        };
+        restore();
       }
     } else if (change === "initial" && firstUnreadId) {
       const index = items.findIndex((item) => item.message.id === firstUnreadId);
@@ -201,8 +321,25 @@ export function MessageList({
     }
 
     snapshotRef.current = next;
-    previousScrollHeightRef.current = element.scrollHeight;
-  }, [items, currentUserId, scrollToBottom, t, firstUnreadId, virtualizer]);
+    return () => stopRestoring?.();
+  }, [items, currentUserId, scrollToBottom, t, firstUnreadId, virtualizer, captureScrollAnchor]);
+
+  // Also capture after measurements commit, not just when the user scrolls.
+  useLayoutEffect(() => {
+    captureScrollAnchor();
+  });
+
+  // 一覧がスクロールできないほど短い場合でも、上端スクロール相当の操作が
+  // できないため、古いメッセージがあれば自動で窓を広げる。
+  useEffect(() => {
+    const element = scrollRef.current;
+    if (!element || messages.length === 0 || !onLoadOlder) {
+      return;
+    }
+    if (element.scrollHeight <= element.clientHeight + LOAD_OLDER_THRESHOLD) {
+      onLoadOlder(messages[0]!.created_at);
+    }
+  }, [messages, onLoadOlder]);
 
   useEffect(() => {
     const update = () => {
@@ -221,10 +358,27 @@ export function MessageList({
     };
   }, [markRead]);
 
-  // 編集の開始・終了で行の高さが変わるため測り直す。
+  const scrolledTarget = useRef<string | undefined>(undefined);
   useEffect(() => {
-    virtualizer.measure();
-  }, [editingId, virtualizer]);
+    if (!targetMessageId) {
+      scrolledTarget.current = undefined;
+      return;
+    }
+    if (scrolledTarget.current === targetMessageId) return;
+    const index = items.findIndex((item) => item.message.id === targetMessageId);
+    if (index < 0) return;
+    atBottomRef.current = false;
+    const frame = requestAnimationFrame(() => {
+      atBottomRef.current = false;
+      virtualizer.scrollToIndex(index, { align: "center" });
+      scrolledTarget.current = targetMessageId;
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [targetMessageId, items, virtualizer]);
+
+  // 各行の measureElement / ResizeObserver が編集・保存・折り返しによる
+  // 高さの変化を追跡する。measure() で全行の実測値を消すと、変化していない
+  // 行まで推定高へ戻り、次の ResizeObserver 通知まで配置がずれてしまう。
 
   useEffect(() => {
     if (!hasNewBelow) {
@@ -232,20 +386,44 @@ export function MessageList({
     }
   }, [hasNewBelow]);
 
-  const showSkeleton = (isLoading || readStateLoading) && items.length === 0;
-  const showError = (isError || readStateError) && items.length === 0;
+  const stalled = useLoadingTimeout(
+    (isLoading || readStateLoading) && messages.length === 0 && !isOffline,
+  );
+  const showOffline = isOffline && items.length === 0;
+  const showSkeleton =
+    (isLoading || readStateLoading) && items.length === 0 && !isOffline && !stalled;
+  const showError = !showOffline && (isError || readStateError || stalled) && items.length === 0;
   const showEmpty =
-    !isLoading && !readStateLoading && !isError && !readStateError && items.length === 0;
+    !showSkeleton && !showOffline && !isError && !readStateError && !stalled && items.length === 0;
 
   return (
     <div className="relative min-h-0 flex-1">
       {showSkeleton ? (
         <MessageSkeleton />
+      ) : showOffline ? (
+        <MessageState
+          title={t("offline.emptyTitle")}
+          description={t("offline.emptyDescription")}
+          action={
+            onRetry ? (
+              <Button variant="outline" size="sm" onClick={onRetry}>
+                {t("offline.retry")}
+              </Button>
+            ) : null
+          }
+        />
       ) : showError ? (
         <MessageState
           destructive
           title={t("messages.loadError")}
           description={t("messages.retryHelp")}
+          action={
+            onRetry ? (
+              <Button variant="outline" size="sm" onClick={onRetry}>
+                {t("offline.retry")}
+              </Button>
+            ) : null
+          }
         />
       ) : showEmpty ? (
         <MessageState
@@ -256,7 +434,8 @@ export function MessageList({
         <div
           ref={scrollRef}
           onScroll={handleScroll}
-          className="h-full overflow-y-auto overscroll-contain px-2 py-3"
+          data-testid="message-scroll"
+          className="h-full overflow-y-auto overscroll-contain px-2 py-3 [overflow-anchor:none]"
         >
           <div
             role="list"
@@ -273,8 +452,9 @@ export function MessageList({
                   key={virtualRow.key}
                   ref={virtualizer.measureElement}
                   data-index={virtualRow.index}
+                  data-message-id={item.message.id}
                   role="listitem"
-                  className="absolute left-0 top-0 w-full"
+                  className={`absolute left-0 top-0 w-full ${item.message.id === targetMessageId ? "rounded-lg bg-brand-muted/40 ring-1 ring-brand" : ""}`}
                   style={{ transform: `translateY(${virtualRow.start}px)` }}
                 >
                   {item.message.id === firstUnreadId ? (

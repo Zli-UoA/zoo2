@@ -14,18 +14,32 @@
     "preview": "vp preview",
     "check": "vp check",
     "lint": "vp lint",
-    "test": "vp test",
+    "test": "vp test --project unit",
+    "test:browser": "vp test --project browser",
+    "test:vrt": "vp test --project vrt",
     "test:e2e": "playwright test",
+    "test:e2e:mfm": "playwright test --config playwright.mfm.config.ts",
+    "test:e2e:layout": "playwright test --config playwright.layout.config.ts",
     "test:e2e:oidc": "playwright test --config playwright.oidc.config.ts",
     "test:e2e:i18n": "playwright test --config playwright.i18n.config.ts",
-    "test:e2e:csp": "playwright test --config playwright.csp.config.ts"
+    "test:e2e:csp": "playwright test --config playwright.csp.config.ts",
+    "test:e2e:offline": "playwright test --config playwright.offline.config.ts",
+    "test:csp:offline": "pnpm build && node scripts/offline-csp.test.mjs",
+    "test:csp:offline:warm": "pnpm build && node scripts/offline-csp.test.mjs --warm",
+    "test:pwa": "node scripts/pwa.test.mjs",
+    "storybook": "storybook dev -p 6006",
+    "build-storybook": "storybook build",
+    "test:storybook": "vp test --project storybook"
   },
   "dependencies": {
     "@base-ui/react": "^1.9.0",
     "@fontsource-variable/geist": "^5.3.0",
+    "@journeyapps/wa-sqlite": "1.4.1",
     "@tailwindcss/vite": "^4.1.18",
-    "@tanstack/electric-db-collection": "0.6.1",
-    "@tanstack/react-db": "0.5.10",
+    "@tanstack/browser-db-sqlite-persistence": "0.2.37",
+    "@tanstack/db-sqlite-persistence-core": "0.4.12",
+    "@tanstack/electric-db-collection": "0.6.3",
+    "@tanstack/react-db": "0.5.12",
     "@tanstack/react-devtools": "0.10.13",
     "@tanstack/react-router": "1.170.44",
     "@tanstack/react-router-devtools": "1.167.2",
@@ -34,8 +48,11 @@
     "class-variance-authority": "^0.7.1",
     "cn": "^0.4.0",
     "frimousse": "^0.4.0",
+    "highlight.js": "^11.12.0",
     "i18next": "^26.5.2",
+    "katex": "^0.19.1",
     "lucide-react": "^1.57.0",
+    "mfm-js": "^0.28.0",
     "react": "^19.2.0",
     "react-dom": "^19.2.0",
     "react-i18next": "^17.1.0",
@@ -46,14 +63,22 @@
   },
   "devDependencies": {
     "@playwright/test": "^1.64.1",
+    "@storybook/addon-a11y": "10.6.3",
+    "@storybook/addon-vitest": "10.6.3",
+    "@storybook/react-vite": "10.6.3",
     "@tanstack/devtools-vite": "0.8.5",
     "@tanstack/router-cli": "1.167.43",
+    "@testing-library/react": "^16.3.3",
+    "@testing-library/user-event": "^14.6.8",
     "@types/node": "^22.10.2",
     "@types/react": "^19.2.0",
     "@types/react-dom": "^19.2.0",
     "@vitejs/plugin-react": "^6.0.1",
+    "@vitest/browser-playwright": "5.0.3",
     "emojibase-data": "18.0.0",
     "happy-dom": "^21.0.3",
+    "msw": "^3.0.3",
+    "storybook": "10.6.3",
     "typescript": "^6.0.2",
     "vite": "catalog:",
     "vite-plus": "catalog:"
@@ -64,5 +89,10 @@
       "version": "12.11.2",
       "onFail": "warn"
     }
+  },
+  "msw": {
+    "workerDirectory": [
+      "public"
+    ]
   }
 }
