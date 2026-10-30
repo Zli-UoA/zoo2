@@ -7,10 +7,6 @@ on:
 permissions:
   contents: read
 
-concurrency:
-  group: storybook-preview-${{ github.event.pull_request.number }}
-  cancel-in-progress: true
-
 jobs:
   runner:
     uses: ./.github/workflows/select-runner.yaml
@@ -30,6 +26,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v7
         with:
+          ref: ${{ github.event.pull_request.head.sha }}
           persist-credentials: false
 
       - name: Setup pnpm
@@ -60,12 +57,18 @@ jobs:
 
   deploy:
     needs: build
+    # Serialize alias updates without canceling an active or pending deployment.
+    concurrency:
+      group: storybook-preview-deploy-${{ github.event.pull_request.number }}
+      cancel-in-progress: false
+      queue: max
     # Use a fresh hosted runner: no PR scripts or dependencies run with secrets.
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
       contents: read
       deployments: write
+      pull-requests: read
     environment:
       name: storybook-pr-${{ github.event.pull_request.number }}
       url: ${{ steps.deploy.outputs.pages-deployment-alias-url }}
@@ -100,7 +103,24 @@ jobs:
         with:
           node-version: 24
 
+      - name: Check current PR head before publishing
+        id: current
+        uses: actions/github-script@v9
+        with:
+          script: |
+            const {data: pr} = await github.rest.pulls.get({
+              ...context.repo,
+              pull_number: context.payload.pull_request.number,
+            });
+            const expected = context.payload.pull_request.head.sha;
+            const publish = pr.state === 'open' && pr.head.sha === expected;
+            core.setOutput('publish', String(publish));
+            if (!publish) {
+              core.notice(`Skipping outdated or closed PR: built ${expected}, current ${pr.head.sha} (${pr.state})`);
+            }
+
       - name: Deploy to Cloudflare Pages
+        if: steps.current.outputs.publish == 'true'
         id: deploy
         uses: cloudflare/wrangler-action@v3
         with:
@@ -115,6 +135,7 @@ jobs:
             --commit-hash=${{ github.event.pull_request.head.sha }}
 
       - name: Publish preview links
+        if: steps.current.outputs.publish == 'true'
         env:
           PREVIEW_URL: ${{ steps.deploy.outputs.pages-deployment-alias-url }}
           DEPLOYMENT_URL: ${{ steps.deploy.outputs.deployment-url }}

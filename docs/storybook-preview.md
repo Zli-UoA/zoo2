@@ -12,6 +12,14 @@ Actions の実行サマリーの `PR preview` から開けます。
 その実行で公開した内容の固定 URL です。ビルド・デプロイに失敗した場合は、
 前回成功時のプレビューが残るため、Actions の結果も確認してください。
 
+ビルドはイベントに記録された PR の head SHA を checkout し、同じ SHA を
+Cloudflare のデプロイ情報に記録します。base と合成した merge commit は使いません。
+PR ごとのデプロイは同時に1件だけ実行し、実行中・待機中のデプロイを新しい実行で
+キャンセルしません（最大100件まで待機）。公開直前に GitHub API で PR の最新 head と
+ビルド対象 SHA を照合し、一致しない実行や閉じた PR は公開をスキップします。
+照合後に新しい push が来た場合は、進行中の公開が終わってから後続の実行が
+照合・公開します。古い実行を後から再実行しても、公開済みの新しい内容を巻き戻しません。
+
 ## 初回設定
 
 1. Cloudflare Pages に **Direct Upload** のプロジェクトを作成します。
@@ -61,12 +69,31 @@ Actions の実行サマリーの `PR preview` から開けます。
   Pages の production branch を `pr-<PR番号>` に設定しないでください。
 - プレビューは公開 URL です。Story や fixture には公開可能なデータを使ってください。
 - PR を閉じても Pages のデプロイと GitHub Environment は残ります。
-  不要になったプレビューは Cloudflare Pages と GitHub の画面で削除してください。
+  不要になったプレビューの削除手順は後述します。
 
 ## 再実行時に生成物が見つからない場合
 
 ビルド生成物の保存期間は7日です。`Artifact not found for name: storybook-preview`
 で失敗した場合、保存期限が切れているか、生成物が削除されています。
-Actions の **Re-run all jobs** でビルドから再実行するか、PR に push して
+PR の現在の head SHA と一致する最新実行を選び、Actions の **Re-run all jobs**
+でビルドから再実行するか、PR に push して
 生成物を作り直してください。**Re-run failed jobs** だけでは成功済みの
 ビルドが再実行されないため、生成物は復元されません。
+古い SHA の実行は、生成物を作り直しても公開直前の照合でスキップされます。
+この照合を導入する前のワークフロー実行は再実行しないでください。再実行は当時の
+ワークフロー定義を使うため、今回追加した照合や直列化は適用されません。
+
+## PR を閉じた後のプレビュー削除
+
+Pages の画面ではブランチの最新デプロイを削除できない場合があります。
+固定 URL の alias を持つ preview は、[Cloudflare の削除 API](https://developers.cloudflare.com/api/resources/pages/subresources/projects/subresources/deployments/methods/delete/)
+の `force=true` を指定して削除します。対象 PR が閉じており、進行中・待機中の
+デプロイがないことを確認してから、対象プロジェクトのデプロイ一覧で
+`pr-<PR番号>` の preview の deployment ID を特定してください。
+
+`DELETE /accounts/{account_id}/pages/projects/{project_name}/deployments/{deployment_id}?force=true`
+に Pages Edit 権限の API Token で認証してリクエストします。対象 PR に属する
+preview だけを削除し、production や他の PR のデプロイは削除しないでください。
+削除後は固定 URL と各デプロイ URL が Storybook を返さないことを確認し、GitHub の
+Settings → Environments から対応する `storybook-pr-<PR番号>` も削除します。
+この手順は API の仕様に基づきます。実際のプロジェクトでの削除は未検証です。
