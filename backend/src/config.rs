@@ -242,6 +242,20 @@ impl Config {
 
     /// 設定値の整合性検証 (本番環境での OIDC 設定必須化および S3/R2 設定必須化など)
     pub fn validate(&self) -> Result<(), String> {
+        const MAX_PRESIGNED_EXPIRY_SECS: u64 = 604_800; // AWS SigV4 上限 (7 日)
+        if !(1..=MAX_PRESIGNED_EXPIRY_SECS).contains(&self.s3.presigned_put_expiry_secs) {
+            return Err(format!(
+                "ATTACHMENT_PRESIGNED_PUT_EXPIRY_SECS must be between 1 and {MAX_PRESIGNED_EXPIRY_SECS} seconds, got {}",
+                self.s3.presigned_put_expiry_secs
+            ));
+        }
+        if !(1..=MAX_PRESIGNED_EXPIRY_SECS).contains(&self.s3.presigned_get_expiry_secs) {
+            return Err(format!(
+                "ATTACHMENT_PRESIGNED_GET_EXPIRY_SECS must be between 1 and {MAX_PRESIGNED_EXPIRY_SECS} seconds, got {}",
+                self.s3.presigned_get_expiry_secs
+            ));
+        }
+
         if self.environment == "production" {
             if self.oidc.is_none() {
                 return Err(
@@ -323,7 +337,7 @@ mod tests {
         assert!(!debug_str.contains("super_secret_password"));
         assert!(!debug_str.contains("secret123"));
         assert!(!debug_str.contains("super_secret_s3_key"));
-        assert!(!debug_str.contains("test_key_id"));
+        assert!(!debug_str.contains("prod_key_id"));
         assert!(!debug_str.contains("user:"));
         assert!(debug_str.contains("[REDACTED]"));
         assert!(debug_str.contains("8080"));
@@ -466,6 +480,48 @@ mod tests {
 
         config.s3 = dummy_s3_config();
         config.s3.secret_access_key = "rustfsadmin".to_string();
+        assert!(config.validate().is_err());
+    }
+
+    #[test]
+    fn test_validate_presigned_expiry_bounds() {
+        let mut config = Config {
+            database_url: "test".to_string(),
+            host: "127.0.0.1".to_string(),
+            port: 8080,
+            electric_url: "test".to_string(),
+            electric_secret: None,
+            oidc: None,
+            dev_auth_enabled: true,
+            environment: "development".to_string(),
+            cors_allowed_origins: vec![],
+            s3: dummy_s3_config(),
+        };
+
+        // 境界値 OK (1 秒、604,800 秒 = 7 日)
+        config.s3.presigned_put_expiry_secs = 1;
+        config.s3.presigned_get_expiry_secs = 604_800;
+        assert!(config.validate().is_ok());
+
+        config.s3.presigned_put_expiry_secs = 604_800;
+        config.s3.presigned_get_expiry_secs = 1;
+        assert!(config.validate().is_ok());
+
+        // 範囲外 NG (0 秒、604,801 秒)
+        config.s3.presigned_put_expiry_secs = 0;
+        config.s3.presigned_get_expiry_secs = 300;
+        assert!(config.validate().is_err());
+
+        config.s3.presigned_put_expiry_secs = 604_801;
+        config.s3.presigned_get_expiry_secs = 300;
+        assert!(config.validate().is_err());
+
+        config.s3.presigned_put_expiry_secs = 900;
+        config.s3.presigned_get_expiry_secs = 0;
+        assert!(config.validate().is_err());
+
+        config.s3.presigned_put_expiry_secs = 900;
+        config.s3.presigned_get_expiry_secs = 604_801;
         assert!(config.validate().is_err());
     }
 

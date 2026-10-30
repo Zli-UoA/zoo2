@@ -153,11 +153,16 @@ async fn presign_attachment(
     })?;
 
     // ファイル名バリデーション
+    if payload.file_name.chars().any(|c| c.is_control()) {
+        return Err(AppError::BadRequest(
+            "file_name contains invalid control characters".into(),
+        ));
+    }
     let file_name = payload.file_name.trim();
     if file_name.is_empty() {
         return Err(AppError::BadRequest("file_name cannot be empty".into()));
     }
-    if file_name.len() > 255 {
+    if file_name.chars().count() > 255 {
         return Err(AppError::BadRequest(
             "file_name exceeds 255 characters".into(),
         ));
@@ -196,13 +201,8 @@ async fn presign_attachment(
         )));
     }
 
-    if channel.archive_at.is_some() {
-        return Err(AppError::BadRequest(
-            "Cannot attach files to an archived channel".into(),
-        ));
-    }
-
-    // チャンネル参加メンバーシップの確認 (公開・プライベート問わず参加者のみ presign 可能)
+    // チャンネル参加メンバーシップの確認 (アーカイブ判定より前に実施し、非公開チャンネルの存在漏洩を防止)
+    let is_guest = crate::apps::events::guest_in_db(&mut db, &auth_user.id).await?;
     let membership = ChannelUser::filter(
         ChannelUser::fields()
             .channel_id()
@@ -214,7 +214,7 @@ async fn presign_attachment(
     .await?;
 
     if membership.is_none() {
-        if channel.is_private {
+        if channel.is_private || is_guest {
             return Err(AppError::NotFound(format!(
                 "Channel not found: {}",
                 payload.channel_id
@@ -224,6 +224,24 @@ async fn presign_attachment(
                 "Must be a member of the channel to attach files".into(),
             ));
         }
+    }
+
+    if channel.archive_at.is_some() {
+        return Err(AppError::BadRequest(
+            "Cannot attach files to an archived channel".into(),
+        ));
+    }
+
+    {
+        let mut tx = db.transaction().await?;
+        crate::apps::events::posting(
+            &mut tx,
+            &auth_user.id,
+            &payload.channel_id,
+            state.config.dev_auth_enabled,
+        )
+        .await?;
+        tx.commit().await?;
     }
 
     let attachment_id = Uuid::new_v4().to_string();
@@ -305,7 +323,7 @@ async fn get_attachment_url(
         )));
     }
 
-    if channel.is_private {
+    if channel.is_private || crate::apps::events::guest_in_db(&mut db, &auth_user.id).await? {
         let membership = ChannelUser::filter(
             ChannelUser::fields()
                 .channel_id()

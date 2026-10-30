@@ -242,6 +242,8 @@ jobs:
       COMPOSE_PROJECT_NAME: zoo-ci-backend-${{ github.run_id }}-${{ github.run_attempt }}
       POSTGRES_PORT: "0"
       ELECTRIC_PORT: "0"
+      S3_PORT: "0"
+      S3_CONSOLE_PORT: "0"
     needs: runner
     runs-on: ${{ fromJSON(needs.runner.outputs.runs-on) }}
     defaults:
@@ -265,14 +267,16 @@ jobs:
         with:
           workspaces: backend
 
-      - name: Start PostgreSQL and Electric
+      - name: Start PostgreSQL, Electric, and RustFS
         working-directory: .
         run: |
           docker compose -f infra/db/compose.yml up -d --wait
           postgres_port=$(docker compose -f infra/db/compose.yml port postgres 5432)
           electric_port=$(docker compose -f infra/db/compose.yml port electric 3000)
+          rustfs_port=$(docker compose -f infra/db/compose.yml port rustfs 9000)
           echo "DATABASE_URL=postgres://root:password@${postgres_port}/zoo?sslmode=disable" >> "$GITHUB_ENV"
           echo "ELECTRIC_URL=http://${electric_port}" >> "$GITHUB_ENV"
+          echo "S3_ENDPOINT=http://${rustfs_port}" >> "$GITHUB_ENV"
 
       - name: Setup Atlas
         uses: ariga/setup-atlas@v0

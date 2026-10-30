@@ -16,7 +16,7 @@ const registrationSource = stripTypeScriptTypes(
 );
 const nginx = await readFile(new URL("../../infra/frontend-nginx.conf", import.meta.url), "utf8");
 const policies = [...nginx.matchAll(/add_header Content-Security-Policy "([^"]+)" always;/g)].map(
-  (match) => match[1].replaceAll("${CSP_SCRIPT_SRC}", "").replaceAll("${CSP_CONNECT_SRC}", ""),
+  (match) => match[1].replace(/\$\{CSP_[A-Z0-9_]+\}/g, ""),
 );
 assert.equal(policies.length, 2);
 assert.equal(policies[0], policies[1], "Document and Worker policies must agree");

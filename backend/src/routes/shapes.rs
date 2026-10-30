@@ -560,7 +560,8 @@ async fn attachments_shape(
         )));
     }
 
-    if channel.is_private {
+    let is_guest = crate::apps::events::guest_in_db(&mut db, &auth_user.id).await?;
+    if channel.is_private || is_guest {
         let is_member = ChannelUser::filter(
             ChannelUser::fields()
                 .channel_id()
@@ -586,7 +587,7 @@ async fn attachments_shape(
         Some(&where_clause),
         &extra_params,
         &raw_query,
-        false,
+        channel.is_private || is_guest,
         &auth_user.id,
     )
     .await

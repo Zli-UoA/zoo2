@@ -35,6 +35,8 @@ jobs:
       COMPOSE_PROJECT_NAME: zoo-ci-oidc-${{ github.run_id }}-${{ github.run_attempt }}
       POSTGRES_PORT: "0"
       ELECTRIC_PORT: "0"
+      S3_PORT: "0"
+      S3_CONSOLE_PORT: "0"
       # 本番同等の認証経路（Bearer + JWKS）を通す。dev の X-Dev-User は使わない。
       ENVIRONMENT: production
       DEV_AUTH_ENABLED: "false"

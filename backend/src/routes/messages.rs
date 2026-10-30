@@ -16,7 +16,7 @@ use crate::{
     models::{Attachment, Channel, ChannelUser, Message, MessageReaction},
     routes::response::ApiResponse,
     state::AppState,
-    validation::{normalize_and_validate_emoji, validate_message_content},
+    validation::{normalize_and_validate_emoji, validate_message_content_with_options},
 };
 
 #[derive(Debug, Deserialize)]
@@ -136,7 +136,16 @@ pub(crate) async fn create_message_impl(
     notify: bool,
     card: Option<String>,
 ) -> Result<Json<ApiResponse<MessageResponse>>, AppError> {
-    validate_message_content(&payload.content)?;
+    let attachment_ids = payload.attachment_ids.unwrap_or_default();
+    const MAX_ATTACHMENTS_PER_MESSAGE: usize = 10;
+    if attachment_ids.len() > MAX_ATTACHMENTS_PER_MESSAGE {
+        return Err(AppError::BadRequest(format!(
+            "Too many attachments: maximum allowed is {MAX_ATTACHMENTS_PER_MESSAGE}, got {}",
+            attachment_ids.len()
+        )));
+    }
+
+    validate_message_content_with_options(&payload.content, !attachment_ids.is_empty())?;
     if !matches!(payload.kind.as_str(), "message" | "emote")
         || payload.broadcast && payload.parent_id.is_none()
     {
@@ -162,15 +171,6 @@ pub(crate) async fn create_message_impl(
     let mut db = state.db.clone();
 
     // 添付ファイルの検証 (外部ストレージへの HeadObject 検証はトランザクション外で実行)
-    let attachment_ids = payload.attachment_ids.unwrap_or_default();
-    const MAX_ATTACHMENTS_PER_MESSAGE: usize = 10;
-    if attachment_ids.len() > MAX_ATTACHMENTS_PER_MESSAGE {
-        return Err(AppError::BadRequest(format!(
-            "Too many attachments: maximum allowed is {MAX_ATTACHMENTS_PER_MESSAGE}, got {}",
-            attachment_ids.len()
-        )));
-    }
-
     let mut verified_attachments = Vec::new();
     if !attachment_ids.is_empty() {
         let mut seen = std::collections::HashSet::new();
@@ -355,7 +355,8 @@ pub(crate) async fn create_message_impl(
         let rows = toasty::sql::query(
             "UPDATE attachments SET message_id = $1
              WHERE id = $2 AND uploader_id = $3 AND channel_id = $4
-               AND message_id IS NULL AND created_at > now() - INTERVAL '23 hours'
+               AND message_id IS NULL
+               AND created_at > (now() AT TIME ZONE 'UTC') - INTERVAL '23 hours'
              RETURNING id",
         )
         .bind(&id)
@@ -398,7 +399,7 @@ pub(crate) async fn update_message(
     Path(id): Path<String>,
     Json(payload): Json<UpdateMessageRequest>,
 ) -> Result<Json<ApiResponse<MessageResponse>>, AppError> {
-    validate_message_content(&payload.content)?;
+    validate_message_content_with_options(&payload.content, true)?;
 
     Uuid::parse_str(&id)
         .map_err(|_| AppError::BadRequest(format!("message id is not a valid UUID: {id}")))?;
@@ -469,6 +470,15 @@ pub(crate) async fn update_message(
         return Err(AppError::BadRequest(
             "Cannot edit message in an archived channel".into(),
         ));
+    }
+
+    if payload.content.trim().is_empty() {
+        let has_attachments = Attachment::filter(Attachment::fields().message_id().eq(id.as_str()))
+            .first()
+            .exec(&mut tx)
+            .await?
+            .is_some();
+        validate_message_content_with_options(&payload.content, has_attachments)?;
     }
 
     let now = crate::models::now_utc_millis();

@@ -59,6 +59,8 @@ services:
       # CSP の connect-src に足す IdP のオリジン（空白区切り）。未設定なら同一オリジンのみ。
       # 例: https://idm.example.com
       CSP_CONNECT_SRC: ${CSP_CONNECT_SRC:-}
+      # CSP の connect-src / img-src に足す添付ファイル用ストレージ（R2 等）のオリジン（空白区切り）。
+      CSP_STORAGE_SRC: ${CSP_STORAGE_SRC:-}
       CSP_APP_IMAGE_SRC: ${CSP_APP_IMAGE_SRC:-}
     networks:
       - frontend
