@@ -57,6 +57,10 @@ struct Fixture {
     channel: String,
 }
 async fn fixture() -> anyhow::Result<Fixture> {
+    fixture_with_events(json!(apps::EVENTS)).await
+}
+
+async fn fixture_with_events(events: Value) -> anyhow::Result<Fixture> {
     let mut config = Config::from_env();
     config.dev_auth_enabled = true;
     let state = AppState::new(init_db(&config.database_url).await?, config);
@@ -68,7 +72,7 @@ async fn fixture() -> anyhow::Result<Fixture> {
         let(s,v)=request(&app,"POST","/api/users",actor,json!({"id":actor,"user_name":format!("evt_{}",Uuid::new_v4().simple()),"display_name":"Events"})).await;
         assert!(s == StatusCode::OK || s == StatusCode::CONFLICT, "{v}");
     }
-    let manifest = json!({"scopes":apps::SCOPES,"events":apps::EVENTS,"transport":"websocket","include_bot_events":true,"user_connections":true,"functions":["echo"],"commands":["event"],"shortcuts":["event"],"message_shortcuts":["event"],"link_domains":["example.com"],"dm_enabled":true,"redirect_uris":["https://example.com/callback"]});
+    let manifest = json!({"scopes":apps::SCOPES,"events":events,"transport":"websocket","include_bot_events":true,"user_connections":true,"functions":["echo"],"commands":["event"],"shortcuts":["event"],"message_shortcuts":["event"],"link_domains":["example.com"],"dm_enabled":true,"redirect_uris":["https://example.com/callback"]});
     let created = ok(
         &app,
         "POST",
@@ -1024,9 +1028,16 @@ async fn interaction_callbacks_and_remaining_lifecycle_events() -> anyhow::Resul
 
 #[tokio::test]
 async fn websocket_control_frames_and_scoped_presence_commands() -> anyhow::Result<()> {
+    use anyhow::Context;
     use futures_util::{SinkExt, StreamExt};
     use tokio_tungstenite::tungstenite::Message;
-    let f = fixture().await?;
+    // Avoid unrelated events from other parallel fixtures occupying the socket.
+    let f = fixture_with_events(json!([
+        "app.uninstalled",
+        "tokens.revoked",
+        "app.rate_limited"
+    ]))
+    .await?;
     let ticket = ok(
         &f.app,
         "POST",
@@ -1062,7 +1073,8 @@ async fn websocket_control_frames_and_scoped_presence_commands() -> anyhow::Resu
                 }
             }
         })
-        .await?;
+        .await
+        .with_context(|| format!("waiting for {kind} response"))?;
         assert_eq!(snapshot["type"], "presence_snapshot");
         assert_eq!(snapshot["users"][0]["user_id"], f.owner);
     }
@@ -1084,7 +1096,8 @@ async fn websocket_control_frames_and_scoped_presence_commands() -> anyhow::Resu
             }
         }
     })
-    .await?;
+    .await
+    .context("waiting for active presence subscription update")?;
     exhaust_event_quota(&f).await?;
     ok(
         &f.app,
@@ -1123,7 +1136,8 @@ async fn websocket_control_frames_and_scoped_presence_commands() -> anyhow::Resu
             }
         }
     })
-    .await?;
+    .await
+    .context("waiting for terminal events and goodbye")?;
     assert_eq!(
         terminal_types.first().map(String::as_str),
         Some("app.uninstalled")
@@ -1896,7 +1910,8 @@ async fn http_dispatch_batches_messages_and_keeps_revocation_only_apps_eligible(
 async fn websocket_slots_and_presence_requests_have_distributed_limits() -> anyhow::Result<()> {
     use futures_util::{SinkExt, StreamExt};
     use tokio_tungstenite::tungstenite::Message;
-    let f = fixture().await?;
+    // This test exercises control requests, not the event delivery queue.
+    let f = fixture_with_events(json!([])).await?;
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
     let address = listener.local_addr()?;
     let app = f.app.clone();
