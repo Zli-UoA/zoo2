@@ -489,3 +489,16 @@ test("policy-versioned assets bypass immutable HTTP/CDN caches while preserving 
   assert.ok(await cache.match(path));
   assert.equal(await cache.match(`${path}?__zoo_policy=updated-policy`), undefined);
 });
+
+test("unversioned assets still revalidate the HTTP cache", async () => {
+  const requests = [];
+  const { handlers } = worker({
+    fetch: async (input, init) => {
+      requests.push({ url: requestKey(input), cache: init?.cache });
+      return basicResponse("asset");
+    },
+  });
+  const url = `${ORIGIN}/assets/unversioned.js`;
+  await fetchThrough(handlers, new Request(url));
+  assert.deepEqual(requests, [{ url, cache: "reload" }]);
+});

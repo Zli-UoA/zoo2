@@ -45,7 +45,16 @@ export async function prepareOfflineWorker(): Promise<void> {
       (async () => {
         const registration = await registerWorker();
         if (stopped) return;
-        const target = registration.installing ?? registration.waiting ?? registration.active;
+        const updating = registration.installing ?? registration.waiting;
+        // A hard reload may bypass an already-active SW. Without an update,
+        // activate/clients.claim will not run again, so control cannot change here.
+        if (
+          !updating &&
+          registration.active?.state === "activated" &&
+          navigator.serviceWorker.controller !== registration.active
+        )
+          return;
+        const target = updating ?? registration.active;
         if (!target) return;
         await new Promise<void>((resolve, reject) => {
           const cleanup = () => {

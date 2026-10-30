@@ -12,7 +12,10 @@ const workerSource = await readFile(new URL(workerName, assets));
 const sw = await readFile(new URL("../public/sw.js", import.meta.url), "utf8");
 // Simulate the already-deployed version: Cache API versioning without HTTP cache busting.
 const previousSW = sw
-  .replace("if (!POLICY_VERSION) return fetch(request);", "return fetch(request);")
+  .replace(
+    'if (!POLICY_VERSION) return fetch(request, { cache: "reload" });',
+    "return fetch(request);",
+  )
   .replace("`zoo-shell-v3-${POLICY_VERSION}-`", "`zoo-shell-${POLICY_VERSION}-`");
 let swSource = sw;
 // Serve the production registration module, without introducing a separate test implementation.
@@ -21,7 +24,11 @@ const registrationSource = stripTypeScriptTypes(
 );
 const nginx = await readFile(new URL("../../infra/frontend-nginx.conf", import.meta.url), "utf8");
 const policies = [...nginx.matchAll(/add_header Content-Security-Policy "([^"]+)" always;/g)].map(
-  (match) => match[1].replaceAll("${CSP_SCRIPT_SRC}", "").replaceAll("${CSP_CONNECT_SRC}", ""),
+  (match) =>
+    match[1]
+      .replaceAll("${CSP_SCRIPT_SRC}", "")
+      .replaceAll("${CSP_CONNECT_SRC}", "")
+      .replaceAll("${CSP_APP_IMAGE_SRC}", ""),
 );
 assert.equal(policies.length, 2);
 assert.equal(policies[0], policies[1], "Document and Worker policies must agree");

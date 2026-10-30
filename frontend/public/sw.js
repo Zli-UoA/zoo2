@@ -109,7 +109,7 @@ async function cacheResponse(cache, request, response) {
 // A policy update does not change hashed asset bytes. Give the HTTP cache and CDN
 // a new key as well as the Cache API, otherwise immutable responses keep the old CSP.
 function fetchStaticAsset(request) {
-  if (!POLICY_VERSION) return fetch(request);
+  if (!POLICY_VERSION) return fetch(request, { cache: "reload" });
   const url = new URL(typeof request === "string" ? request : request.url, self.location.origin);
   url.searchParams.set("__zoo_policy", POLICY_VERSION);
   return fetch(new Request(url.href, typeof request === "string" ? undefined : request), {
