@@ -56,6 +56,29 @@ describe("MessageRow", () => {
     expect(container.querySelector('[role="group"]')).toBeNull();
   });
 
+  it.each([false, true])(
+    "keeps App message actions available with reactions=%s",
+    async (hasReactions) => {
+      const opened = vi.fn();
+      window.addEventListener("zoo:message-actions", opened);
+      try {
+        const { container } = renderRow(buildItem(), false, {
+          canReact: true,
+          reactions: hasReactions ? [{ emoji: "👍", count: 1, ownId: null }] : [],
+        });
+        const group = container.querySelector('[role="group"]');
+        expect(group?.querySelector('[aria-label="リアクションを追加"]') != null).toBe(
+          hasReactions,
+        );
+        await userEvent.click(screen.getByRole("button", { name: "Appでメッセージを操作" }));
+        expect(opened).toHaveBeenCalledOnce();
+        expect((opened.mock.calls[0]![0] as CustomEvent<string>).detail).toBe("message-1");
+      } finally {
+        window.removeEventListener("zoo:message-actions", opened);
+      }
+    },
+  );
+
   it("opens the menu on a touch hold and adds the first reaction", async () => {
     const onPickReaction = vi.fn();
     const { container } = renderRow(buildItem(), false, { canReact: true, onPickReaction });

@@ -17,7 +17,8 @@ import { useLocale } from "../../i18n/LocaleProvider";
 import type { KitchenCatalog } from "../../../lib/emoji/kitchen";
 import { kitchenLabel, reactionKey } from "../../../lib/emoji/kitchen";
 import type { ReactionGroup } from "../../../lib/emoji/reactions";
-import { Avatar, AvatarFallback } from "../../ui/avatar";
+import { AppAvatar, AuthorIdentity } from "../AppIdentity";
+import { MessageAppContent } from "../AppBlocks";
 import { Button, buttonVariants } from "../../ui/button";
 import {
   DropdownMenu,
@@ -27,7 +28,6 @@ import {
 } from "../../ui/dropdown-menu";
 import { Textarea } from "../../ui/textarea";
 import { normalizeUtcTimestamp } from "../../../lib/timestamps";
-import { initials } from "../format";
 import { authorLabel, formatDateSeparator, formatTime, fullTimestamp } from "./messageFormat";
 import type { MessageItem } from "./messageGrouping";
 import { ReactionEmoji } from "./ReactionEmoji";
@@ -203,9 +203,12 @@ export function MessageRow({
         )}
       >
         {item.isGroupStart ? (
-          <Avatar className="mt-0.5">
-            <AvatarFallback>{initials(authorLabel(message))}</AvatarFallback>
-          </Avatar>
+          <AppAvatar
+            className="mt-0.5"
+            label={authorLabel(message)}
+            isBot={!!message.is_bot}
+            src={message.avatar_url}
+          />
         ) : (
           <div className="mt-0.5 w-8 shrink-0 text-right">
             <time
@@ -221,7 +224,7 @@ export function MessageRow({
         <div className="min-w-0 flex-1">
           {item.isGroupStart ? (
             <div className="flex items-baseline gap-2">
-              <span className="truncate text-sm font-semibold">{authorLabel(message)}</span>
+              <AuthorIdentity message={message} />
               <time
                 className="shrink-0 text-[11px] text-muted-foreground tabular-nums"
                 dateTime={normalizeUtcTimestamp(message.created_at)}
@@ -264,7 +267,10 @@ export function MessageRow({
               </div>
             </form>
           ) : (
-            <MessageBody content={message.content} card={message.card} />
+            <>
+              <MessageBody content={message.content} card={message.card} />
+              <MessageAppContent message={message} />
+            </>
           )}
 
           {!isEditing ? (
@@ -273,53 +279,49 @@ export function MessageRow({
                 <ReplyLink count={replyCount} onOpen={onOpenThread} />
               ) : null}
               <div className="flex flex-wrap items-center gap-1 py-1">
-              {reactions.length > 0 ? (
-                <div
-                  className="contents"
-                  role="group"
-                  aria-label={t("reactions.groupLabel")}
-                >
-                  {reactions.map((reaction) => (
-                    <button
-                      key={reactionKey(reaction.emoji)}
-                      type="button"
-                      className={cn(
-                        "inline-flex min-h-8 items-center gap-1 rounded-full border px-2 text-xs transition-colors hover:bg-muted disabled:opacity-50",
-                        reaction.ownId &&
-                          "border-brand/40 bg-brand-muted text-brand-muted-foreground",
-                      )}
-                      aria-pressed={!!reaction.ownId}
+                {reactions.length > 0 ? (
+                  <div className="contents" role="group" aria-label={t("reactions.groupLabel")}>
+                    {reactions.map((reaction) => (
+                      <button
+                        key={reactionKey(reaction.emoji)}
+                        type="button"
+                        className={cn(
+                          "inline-flex min-h-8 items-center gap-1 rounded-full border px-2 text-xs transition-colors hover:bg-muted disabled:opacity-50",
+                          reaction.ownId &&
+                            "border-brand/40 bg-brand-muted text-brand-muted-foreground",
+                        )}
+                        aria-pressed={!!reaction.ownId}
+                        disabled={!canReact}
+                        aria-label={
+                          reaction.ownId
+                            ? t("reactions.chipMine", {
+                                emoji: kitchenLabel(reaction.emoji),
+                                count: reaction.count,
+                              })
+                            : t("reactions.chip", {
+                                emoji: kitchenLabel(reaction.emoji),
+                                count: reaction.count,
+                              })
+                        }
+                        title={kitchenLabel(reaction.emoji)}
+                        onClick={() => onReaction(reaction.emoji)}
+                      >
+                        <ReactionEmoji emoji={reaction.emoji} catalog={kitchenCatalog} />
+                        <span className="tabular-nums">{reaction.count}</span>
+                      </button>
+                    ))}
+                    <Button
+                      variant="ghost"
+                      size="icon-xs"
+                      aria-label={t("reactions.add")}
+                      title={t("reactions.add")}
                       disabled={!canReact}
-                      aria-label={
-                        reaction.ownId
-                          ? t("reactions.chipMine", {
-                              emoji: kitchenLabel(reaction.emoji),
-                              count: reaction.count,
-                            })
-                          : t("reactions.chip", {
-                              emoji: kitchenLabel(reaction.emoji),
-                              count: reaction.count,
-                            })
-                      }
-                      title={kitchenLabel(reaction.emoji)}
-                      onClick={() => onReaction(reaction.emoji)}
+                      onClick={onPickReaction}
                     >
-                      <ReactionEmoji emoji={reaction.emoji} catalog={kitchenCatalog} />
-                      <span className="tabular-nums">{reaction.count}</span>
-                    </button>
-                  ))}
-                  <Button
-                    variant="ghost"
-                    size="icon-xs"
-                    aria-label={t("reactions.add")}
-                    title={t("reactions.add")}
-                    disabled={!canReact}
-                    onClick={onPickReaction}
-                  >
-                    <SmilePlusIcon />
-                  </Button>
-                </div>
-              ) : null}
+                      <SmilePlusIcon />
+                    </Button>
+                  </div>
+                ) : null}
                 <Button
                   variant="ghost"
                   size="icon-xs"
