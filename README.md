@@ -9,3 +9,5 @@ PWA のインストールとプッシュ通知の設定・動作は [PWA とプ�
 App・Botの開発、認証、イベント配信、既存Webhookの移行は [App・Bot基盤](docs/apps.md) を参照してください。
 
 投稿URLのカード展開と画像プロクシの設定は [URLカード](docs/link-previews.md) を参照してください。
+
+GitHub のコメント・状態変更を Zoo に通知する外部 Bot は [GitHub 通知 Bot](apps/github-bot/README.md) を参照してください。

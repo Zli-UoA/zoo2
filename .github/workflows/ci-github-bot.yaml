@@ -1,0 +1,58 @@
+name: CI GitHub Bot
+on:
+  pull_request:
+    paths:
+      - "apps/github-bot/**"
+      - "sdk/**"
+      - ".github/workflows/ci-github-bot.yaml"
+      - ".github/workflows/select-runner.yaml"
+  push:
+    branches: [main]
+    paths:
+      - "apps/github-bot/**"
+      - "sdk/**"
+      - ".github/workflows/ci-github-bot.yaml"
+      - ".github/workflows/select-runner.yaml"
+permissions:
+  contents: read
+concurrency:
+  group: github-bot-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+jobs:
+  runner:
+    uses: ./.github/workflows/select-runner.yaml
+    secrets:
+      runner-status-token: ${{ secrets.RUNNER_STATUS_TOKEN }}
+  test:
+    needs: runner
+    runs-on: ${{ fromJSON(needs.runner.outputs.runs-on) }}
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: apps/github-bot/package-lock.json
+      - run: npm ci --prefix apps/github-bot --ignore-scripts
+      - run: npm --prefix apps/github-bot run check
+      - run: npm --prefix apps/github-bot test
+      - run: node --experimental-strip-types --test sdk/src/index.test.ts
+      - name: Build standalone bot image
+        run: docker build -f apps/github-bot/Dockerfile -t zoo-github-bot:test .
+      - name: Smoke-test the packaged server and SQLite as an unprivileged user
+        run: |
+          docker run --rm --entrypoint node zoo-github-bot:test --experimental-strip-types --input-type=module -e '
+            import { Store } from "./apps/github-bot/src/store.ts";
+            import { server } from "./apps/github-bot/src/server.ts";
+            import assert from "node:assert/strict";
+            assert.notEqual(process.getuid(), 0);
+            const store = new Store(":memory:", Buffer.alloc(32, 1));
+            const http = server({}, store);
+            await new Promise(resolve => http.listen(0, "127.0.0.1", resolve));
+            const response = await fetch(`http://127.0.0.1:${http.address().port}/health`);
+            assert.equal(response.status, 200);
+            http.closeAllConnections();
+            await new Promise(resolve => http.close(resolve));
+            store.close();
+          '

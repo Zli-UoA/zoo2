@@ -1,0 +1,37 @@
+{
+  "name": "Zoo GitHub Notifications",
+  "url": "https://github-bot.example.com",
+  "hook_attributes": { "url": "https://github-bot.example.com/github/webhook", "active": true },
+  "public": false,
+  "request_oauth_on_install": false,
+  "default_permissions": {
+    "metadata": "read",
+    "contents": "read",
+    "issues": "read",
+    "pull_requests": "read",
+    "checks": "read",
+    "statuses": "read",
+    "actions": "read",
+    "deployments": "read",
+    "discussions": "read"
+  },
+  "default_events": [
+    "issues",
+    "issue_comment",
+    "pull_request",
+    "pull_request_review",
+    "pull_request_review_comment",
+    "pull_request_review_thread",
+    "push",
+    "release",
+    "create",
+    "delete",
+    "discussion",
+    "discussion_comment",
+    "workflow_run",
+    "deployment_status",
+    "check_run",
+    "check_suite",
+    "status"
+  ]
+}
