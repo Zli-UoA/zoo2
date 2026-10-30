@@ -149,3 +149,17 @@ describe("trusted card metadata", () => {
     expect(article?.textContent).not.toContain("GitHub");
   });
 });
+
+it("shows an app identity and opens its profile without treating it as a person", async () => {
+  const opened = vi.fn();
+  window.addEventListener("zoo:open-app", opened);
+  try {
+    renderRow(buildItem({ is_bot: true, app_id: "github-app", display_name: "GitHub" }));
+    expect(screen.getByText("APP")).toBeVisible();
+    await userEvent.click(screen.getByRole("button", { name: "GitHub" }));
+    expect(opened).toHaveBeenCalledOnce();
+    expect((opened.mock.calls[0]![0] as CustomEvent<string>).detail).toBe("github-app");
+  } finally {
+    window.removeEventListener("zoo:open-app", opened);
+  }
+});

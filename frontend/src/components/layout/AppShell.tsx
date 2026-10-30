@@ -2,6 +2,8 @@ import { useRouterState } from "@tanstack/react-router";
 import { cn } from "cn";
 import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
 
+import { usePresence, useConversationView } from "../../hooks/usePresence";
+import { AppSurfaceHost } from "../chat/AppSurfaceHost";
 import { useActiveChannels } from "../../hooks/useRealtime";
 import { MfmChannelsProvider } from "../chat/messages/MfmChannels";
 import { ChannelSidebar } from "../chat/ChannelSidebar";
@@ -29,6 +31,7 @@ import { useVisualViewport } from "./useVisualViewport";
  * ルート側でマウント後の一度だけレンダリングする（SSR では呼ばない）。
  */
 export function AppShell({ children }: { children: ReactNode }) {
+  usePresence();
   const viewportRef = useVisualViewport();
   const [pane, setPane] = useState<ShellPane>("sidebar");
   const [membersOpen, setMembersOpen] = useState(false);
@@ -52,6 +55,7 @@ export function AppShell({ children }: { children: ReactNode }) {
       return null;
     },
   });
+  useConversationView(selectedChannelId);
   const selectedChannel = useMemo(
     () => channels.find((channel) => channel.id === selectedChannelId) ?? null,
     [channels, selectedChannelId],
@@ -138,6 +142,7 @@ export function AppShell({ children }: { children: ReactNode }) {
           className="fixed inset-x-0 top-0 flex h-dvh w-full overflow-hidden bg-background text-foreground"
         >
           <OfflineBanner />
+          <AppSurfaceHost />
           <LeftRail />
           <ChannelSidebar
             channels={channels}

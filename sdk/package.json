@@ -1,0 +1,9 @@
+{
+  "name": "@zoo/app-sdk",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": "./src/index.ts",
+  "scripts": { "check": "tsc --noEmit", "test": "node --experimental-strip-types --test src/index.test.ts" },
+  "engines": { "node": ">=22.18" }
+}

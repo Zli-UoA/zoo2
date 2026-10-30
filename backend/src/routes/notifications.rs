@@ -119,7 +119,8 @@ async fn notification_context(
     if channel.deleted_at.is_some() {
         return Err(unavailable());
     }
-    if channel.is_private || channel.is_dm {
+    if channel.is_private || channel.is_dm || crate::apps::events::guest(&mut tx, &actor.id).await?
+    {
         let member = ChannelUser::filter(
             ChannelUser::fields()
                 .channel_id()

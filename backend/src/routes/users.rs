@@ -198,26 +198,41 @@ async fn create_user(
 
 async fn list_users(
     State(state): State<AppState>,
-    _auth_user: AuthUser,
+    auth_user: AuthUser,
 ) -> Result<Json<Vec<UserResponse>>, AppError> {
     let mut db = state.db.clone();
-    let users = User::filter(User::fields().is_bot().eq(false))
+    let mut users = User::filter(User::fields().is_bot().eq(false))
         .order_by(User::fields().created_at().asc())
         .exec(&mut db)
         .await?;
+    if crate::apps::events::guest_in_db(&mut db, &auth_user.id).await? {
+        let mut tx = db.transaction().await?;
+        let visible=crate::apps::query(&mut tx,"SELECT DISTINCT json_build_object('id',other.user_id)::text FROM channel_user me JOIN channel_user other ON other.channel_id=me.channel_id JOIN channels c ON c.id=me.channel_id WHERE me.user_id=$1 AND c.deleted_at IS NULL",&[&auth_user.id]).await?;
+        let ids: std::collections::HashSet<_> =
+            visible.iter().filter_map(|v| v["id"].as_str()).collect();
+        users.retain(|u| u.id == auth_user.id || ids.contains(u.id.as_str()));
+    }
     let res = users.into_iter().map(UserResponse::from).collect();
     Ok(Json(res))
 }
 
 async fn get_user_by_id(
     State(state): State<AppState>,
-    _auth_user: AuthUser,
+    auth_user: AuthUser,
     Path(id): Path<String>,
 ) -> Result<Json<UserResponse>, AppError> {
     Uuid::parse_str(&id)
         .map_err(|_| AppError::BadRequest(format!("user id is not a valid UUID: {id}")))?;
 
     let mut db = state.db.clone();
+    let actor = crate::apps::events::Actor {
+        user: auth_user,
+        principal: None,
+    };
+    {
+        let mut tx = db.transaction().await?;
+        actor.visible_user(&mut tx, &id).await?;
+    }
     match User::get_by_id(&mut db, id.as_str()).await {
         Ok(user) => Ok(Json(UserResponse::from(user))),
         Err(err) if err.is_record_not_found() => {
