@@ -29,5 +29,6 @@ jobs:
           ignore-checks: |
             [
               { "workflow": "cd-images.yaml" },
-              { "workflow": "cd-preview-label.yaml" }
+              { "workflow": "cd-preview-label.yaml" },
+              { "workflow": "cd-storybook.yaml" }
             ]

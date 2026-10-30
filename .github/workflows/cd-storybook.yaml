@@ -55,7 +55,7 @@ jobs:
         with:
           name: storybook-preview
           path: frontend/storybook-static
-          retention-days: 1
+          retention-days: 7
           if-no-files-found: error
 
   deploy:
@@ -88,6 +88,12 @@ jobs:
         with:
           name: storybook-preview
           path: storybook-static
+
+      - name: Remove Cloudflare Pages runtime and routing configuration
+        # PR artifacts must only supply static content. _worker.js can be a directory.
+        run: |
+          rm -rf -- storybook-static/_worker.js storybook-static/_headers \
+            storybook-static/_redirects storybook-static/_routes.json
 
       - name: Setup Node
         uses: actions/setup-node@v7
