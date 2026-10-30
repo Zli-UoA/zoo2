@@ -2,6 +2,8 @@
 .direnv/
 .codex/
 .env
+__pycache__/
+node_modules/
 
 target/
 .target/

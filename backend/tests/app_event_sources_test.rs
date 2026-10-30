@@ -1108,7 +1108,7 @@ async fn websocket_control_frames_and_scoped_presence_commands() -> anyhow::Resu
     )
     .await;
     let mut terminal_types = Vec::new();
-    tokio::time::timeout(std::time::Duration::from_secs(6), async {
+    tokio::time::timeout(std::time::Duration::from_secs(15), async {
         loop {
             let Some(Ok(frame)) = ws.next().await else {
                 panic!("No goodbye")

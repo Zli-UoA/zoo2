@@ -9,6 +9,7 @@ use tokio::sync::RwLock;
 use crate::{
     auth::{AuthUser, oidc::JwksVerifier},
     config::Config,
+    routes::calls::CallRegistry,
 };
 
 type UserCacheMap = HashMap<(String, String), (AuthUser, Instant)>;
@@ -80,6 +81,7 @@ pub struct AppState {
     pub electric_client: reqwest::Client,
     pub jwks_verifier: JwksVerifier,
     pub user_cache: UserResolutionCache,
+    pub call_registry: CallRegistry,
 }
 
 impl AppState {
@@ -88,6 +90,9 @@ impl AppState {
         let electric_client = Self::default_electric_client();
         let jwks_verifier = JwksVerifier::new(http_client.clone());
         let user_cache = UserResolutionCache::new();
+        let call_registry = CallRegistry::new();
+        call_registry.start_listener(config.database_url.clone());
+        call_registry.start_sweeper(db.clone());
 
         Self {
             db,
@@ -96,6 +101,7 @@ impl AppState {
             electric_client,
             jwks_verifier,
             user_cache,
+            call_registry,
         }
     }
 
@@ -130,6 +136,9 @@ impl AppState {
         let electric_client = Self::default_electric_client();
         let jwks_verifier = JwksVerifier::new(http_client.clone());
         let user_cache = UserResolutionCache::new();
+        let call_registry = CallRegistry::new();
+        call_registry.start_listener(config.database_url.clone());
+        call_registry.start_sweeper(db.clone());
         Self {
             db,
             config,
@@ -137,6 +146,7 @@ impl AppState {
             electric_client,
             jwks_verifier,
             user_cache,
+            call_registry,
         }
     }
 
@@ -151,6 +161,9 @@ impl AppState {
     ) -> Self {
         let electric_client = Self::default_electric_client();
         let user_cache = UserResolutionCache::new();
+        let call_registry = CallRegistry::new();
+        call_registry.start_listener(config.database_url.clone());
+        call_registry.start_sweeper(db.clone());
         Self {
             db,
             config,
@@ -158,6 +171,7 @@ impl AppState {
             electric_client,
             jwks_verifier,
             user_cache,
+            call_registry,
         }
     }
 
@@ -170,6 +184,9 @@ impl AppState {
         jwks_verifier: JwksVerifier,
     ) -> Self {
         let user_cache = UserResolutionCache::new();
+        let call_registry = CallRegistry::new();
+        call_registry.start_listener(config.database_url.clone());
+        call_registry.start_sweeper(db.clone());
         Self {
             db,
             config,
@@ -177,6 +194,7 @@ impl AppState {
             electric_client,
             jwks_verifier,
             user_cache,
+            call_registry,
         }
     }
 }

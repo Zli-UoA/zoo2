@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import { AppShell } from "../components/layout/AppShell";
 import { OfflineProvider } from "../components/offline/OfflineProvider";
 import { ShellSkeleton } from "../components/layout/ShellSkeleton";
+import { CallProvider } from "../lib/call/call-context";
 import { resolveConfig } from "../lib/config";
 
 export const Route = createFileRoute("/_shell")({ component: ShellLayout });
@@ -23,9 +24,11 @@ function ShellLayout() {
 
   return mounted ? (
     <OfflineProvider config={config}>
-      <AppShell>
-        <Outlet />
-      </AppShell>
+      <CallProvider config={config}>
+        <AppShell>
+          <Outlet />
+        </AppShell>
+      </CallProvider>
     </OfflineProvider>
   ) : (
     <ShellSkeleton />

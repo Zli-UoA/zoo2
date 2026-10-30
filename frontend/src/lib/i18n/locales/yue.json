@@ -344,6 +344,26 @@
       "clickable": "點擊事件"
     }
   },
+  "call": {
+    "start": "開始通話",
+    "join": "加入通話",
+    "leave": "離開通話",
+    "inCall": "通話中",
+    "mute": "靜音",
+    "unmute": "取消靜音",
+    "muted": "已靜音",
+    "speaking": "講緊嘢",
+    "connecting": "連線中…",
+    "connected": "通話中",
+    "participantCount": "{{count}}人通話中",
+    "full": "通話房間已滿（最多6人）",
+    "archived": "已封存嘅頻道無法發起通話",
+    "notFound": "搵唔到頻道或無權限參與",
+    "connectError": "連接通話失敗",
+    "disconnected": "通話已斷線",
+    "micPermissionDenied": "麥克風權限被拒絕。請喺瀏覽器設定中允許使用麥克風。",
+    "micNotFound": "搵唔到麥克風。"
+  },
   "dms": {
     "title": "私訊",
     "createTitle": "新開私訊",
