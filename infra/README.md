@@ -299,6 +299,10 @@ CSP を変更すると、アプリはネットワークから取得した CSP �
 
 オンラインの OIDC 起動では `/api/users/me` を最大8秒待ちます。応答がない場合は待機を解除して再試行できるエラー画面を表示します。前ユーザーのキャッシュは開きません。オフライン時は従来どおり、ログアウトで削除されていない前回ユーザーのローカルキャッシュを表示します。
 
+Worker のファイル名が同じまま CSP が変わる場合、SW の Cache API だけでなく、ブラウザの HTTP キャッシュと CDN の immutable レスポンスにも旧 CSP が残ります。SW はアセットの取得 URL に `__zoo_policy=<CSPのハッシュ>` を付けて `cache: reload` で取得し、Cache API には元の URL をキーに保存します。キャッシュ形式 v3 への更新では旧形式のレスポンスを引き継ぎません。SQLite の初期化は、更新対象の SW がこのページを制御し始めてから行います。
+
+`pnpm test:csp:offline:warm` は本番と同じ `Cache-Control: public, max-age=31536000, immutable` を Worker に付与して検証します。旧形式、バージョン付き、CSP が同じままの SW コード更新を Firefox・Chromium の両方で確認します。Worker を `no-store` で配信するだけでは HTTP キャッシュに旧 CSP が残る不具合を検出できないため、この条件を維持してください。
+
 ### App基盤
 
 `20261027000000_create_apps.sql` の適用後、バックエンド本体が永続イベント配信ワーカーを起動します。複数バックエンドでもDBのリースで配信を排他します。プロキシはWebSocket upgradeをそのまま中継し、App APIには `private, no-store` を設定します。
