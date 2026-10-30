@@ -7,4 +7,23 @@ set -eu
 CSP_SCRIPT_SRC="$(cat /etc/nginx/csp-script-src.txt)"
 export CSP_SCRIPT_SRC
 
+# Public endpoints are interpolated into nginx syntax; allow URL path characters only.
+endpoint_origin() {
+  case "$1" in
+    *[!a-zA-Z0-9:/._~%-]*) echo "Invalid public preview endpoint" >&2; return 1 ;;
+  esac
+  case "$1" in
+    https://*) printf '%s' "$1" | sed 's#^\(https://[^/]*\).*#\1#' ;;
+    http://localhost:*|http://127.0.0.1:*) printf '%s' "$1" | sed 's#^\(http://[^/]*\).*#\1#' ;;
+    //*) echo "Preview endpoint must not be protocol-relative" >&2; return 1 ;;
+    /*|"") ;;
+    *) echo "Preview endpoint must be HTTPS or a same-origin path" >&2; return 1 ;;
+  esac
+}
+MEDIA_PROXY_URL="${MEDIA_PROXY_URL:-}"
+SUMMALY_URL="${SUMMALY_URL:-}"
+CSP_MEDIA_PROXY_SRC="$(endpoint_origin "$MEDIA_PROXY_URL")"
+CSP_SUMMALY_SRC="$(endpoint_origin "$SUMMALY_URL")"
+export MEDIA_PROXY_URL SUMMALY_URL CSP_MEDIA_PROXY_SRC CSP_SUMMALY_SRC
+
 exec /docker-entrypoint.sh "$@"
