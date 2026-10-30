@@ -11,6 +11,8 @@ struct UpdateBubbleChat {
     content: String,
     #[serde(default)]
     seq: Option<i64>,
+    #[serde(default)]
+    sent_at: Option<i64>,
 }
 
 #[derive(Serialize)]
@@ -34,14 +36,25 @@ async fn update(
 ) -> Result<Json<serde_json::Value>, AppError> {
     validate_bubble_chat_content(&body.content)?;
 
+    // Reject delayed/stale requests if sent_at is provided and older than 5 minutes or in future > 1 minute.
+    if let Some(sent_at) = body.sent_at {
+        let now_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis() as i64)
+            .unwrap_or(0);
+        if sent_at < now_ms - 300_000 || sent_at > now_ms + 60_000 {
+            return Ok(Json(serde_json::json!({"ok": false, "stale": true})));
+        }
+    }
+
     let mut db = state.db.clone();
     let mut tx = db.transaction().await?;
 
-    // Bounded cleanup, skipping rows being refreshed on other instances.
+    // Bounded cleanup of rows whose retention period has expired.
     toasty::sql::statement(
         "DELETE FROM bubble_chat_presence WHERE ctid IN (
             SELECT ctid FROM bubble_chat_presence
-            WHERE expires_at <= statement_timestamp()
+            WHERE retention_until <= statement_timestamp()
             LIMIT 1000 FOR UPDATE SKIP LOCKED
         )",
     )
@@ -50,30 +63,40 @@ async fn update(
 
     let session = body.session_id.to_string();
     let seq = body.seq.unwrap_or(0);
-    let content = if body.content.trim().is_empty() {
+    let is_empty = body.content.trim().is_empty();
+    let content = if is_empty {
         String::new()
     } else {
         body.content
     };
 
     // Database time avoids clock skew between backend instances.
-    // An empty content row acts as a tombstone retaining the latest seq for the TTL window,
-    // ensuring older out-of-order writes or delayed retries cannot resurrect cleared text.
+    // Non-empty content is visible for 15 seconds (expires_at).
+    // Cleared content (tombstone) expires immediately for display, but the row and its seq
+    // are retained until retention_until (10 minutes) so that delayed out-of-order writes
+    // with older seq cannot resurrect cleared text or overwrite newer input.
     toasty::sql::statement(
-        "INSERT INTO bubble_chat_presence (user_id, session_id, content, seq, updated_at, expires_at)
-         VALUES ($1, $2, $3, $4, statement_timestamp(), statement_timestamp() + interval '15 seconds')
+        "INSERT INTO bubble_chat_presence (user_id, session_id, content, seq, updated_at, expires_at, retention_until)
+         VALUES (
+           $1, $2, $3, $4,
+           statement_timestamp(),
+           CASE WHEN $5 THEN statement_timestamp() ELSE statement_timestamp() + interval '15 seconds' END,
+           statement_timestamp() + interval '10 minutes'
+         )
          ON CONFLICT (user_id, session_id)
          DO UPDATE SET
            content = EXCLUDED.content,
            seq = EXCLUDED.seq,
            updated_at = EXCLUDED.updated_at,
-           expires_at = EXCLUDED.expires_at
+           expires_at = EXCLUDED.expires_at,
+           retention_until = EXCLUDED.retention_until
          WHERE EXCLUDED.seq >= bubble_chat_presence.seq",
     )
     .bind(user.id)
     .bind(session)
     .bind(content)
     .bind(seq)
+    .bind(is_empty)
     .exec(&mut tx)
     .await?;
 

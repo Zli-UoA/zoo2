@@ -77,12 +77,29 @@ describe("useBubbleChat", () => {
 
     expect(state.content).toBe("あいう");
     expect(state.isSharing).toBe(true);
-    expect(payloads()).toEqual([{ session_id: expect.any(String), seq: 1, content: "あ" }]);
+    expect(payloads()).toEqual([
+      {
+        session_id: expect.any(String),
+        seq: 1,
+        content: "あ",
+        sent_at: expect.any(Number),
+      },
+    ]);
 
     await flush(() => vi.advanceTimersByTime(200));
     expect(payloads()).toEqual([
-      { session_id: expect.any(String), seq: 1, content: "あ" },
-      { session_id: expect.any(String), seq: 2, content: "あいう" },
+      {
+        session_id: expect.any(String),
+        seq: 1,
+        content: "あ",
+        sent_at: expect.any(Number),
+      },
+      {
+        session_id: expect.any(String),
+        seq: 2,
+        content: "あいう",
+        sent_at: expect.any(Number),
+      },
     ]);
 
     // After 15 seconds of inactivity, sharing stops on the server but the draft input remains.
@@ -113,7 +130,14 @@ describe("useBubbleChat", () => {
 
     // First input starts an in-flight POST immediately.
     await flush(() => state.setContent("1"));
-    expect(payloads()).toEqual([{ session_id: expect.any(String), seq: 1, content: "1" }]);
+    expect(payloads()).toEqual([
+      {
+        session_id: expect.any(String),
+        seq: 1,
+        content: "1",
+        sent_at: expect.any(Number),
+      },
+    ]);
 
     // Multiple throttled intervals pass while the first POST is still in flight.
     await flush(() => state.setContent("12"));
@@ -123,13 +147,30 @@ describe("useBubbleChat", () => {
     await flush(() => state.setContent("1234"));
 
     // Still only the first request has been dispatched so far.
-    expect(payloads()).toEqual([{ session_id: expect.any(String), seq: 1, content: "1" }]);
+    expect(payloads()).toEqual([
+      {
+        session_id: expect.any(String),
+        seq: 1,
+        content: "1",
+        sent_at: expect.any(Number),
+      },
+    ]);
 
     // Once the first request resolves, only the latest content ("1234") is sent.
     await flush(() => resolveFirst({ ok: true }));
     expect(payloads()).toEqual([
-      { session_id: expect.any(String), seq: 1, content: "1" },
-      { session_id: expect.any(String), seq: 2, content: "1234" },
+      {
+        session_id: expect.any(String),
+        seq: 1,
+        content: "1",
+        sent_at: expect.any(Number),
+      },
+      {
+        session_id: expect.any(String),
+        seq: 2,
+        content: "1234",
+        sent_at: expect.any(Number),
+      },
     ]);
   });
 
@@ -186,14 +227,29 @@ describe("useBubbleChat", () => {
     mocks.request.mockRejectedValueOnce(new Error("second network failure"));
     await flush(() => state.setContent("リトライ確認"));
     expect(payloads()).toEqual([
-      { session_id: expect.any(String), seq: 1, content: "リトライ確認" },
+      {
+        session_id: expect.any(String),
+        seq: 1,
+        content: "リトライ確認",
+        sent_at: expect.any(Number),
+      },
     ]);
 
     // Retry timer fires after 1000ms
     await flush(() => vi.advanceTimersByTime(1000));
     expect(payloads()).toEqual([
-      { session_id: expect.any(String), seq: 1, content: "リトライ確認" },
-      { session_id: expect.any(String), seq: 2, content: "リトライ確認" },
+      {
+        session_id: expect.any(String),
+        seq: 1,
+        content: "リトライ確認",
+        sent_at: expect.any(Number),
+      },
+      {
+        session_id: expect.any(String),
+        seq: 2,
+        content: "リトライ確認",
+        sent_at: expect.any(Number),
+      },
     ]);
 
     // Second retry would fire in another 1000ms, but user types new content immediately
@@ -204,11 +260,91 @@ describe("useBubbleChat", () => {
       session_id: expect.any(String),
       seq: 3,
       content: "最新の入力",
+      sent_at: expect.any(Number),
     });
 
     // Advance 1000ms to ensure no redundant retry of old content fires
     await flush(() => vi.advanceTimersByTime(1000));
     expect(payloads().length).toBe(3);
+  });
+
+  it("retries clearing when previous write was unconfirmed and clear POST fails", async () => {
+    await flush(() => root.render(createElement(Probe)));
+
+    // Initial write succeeds or fails unconfirmed
+    mocks.request.mockRejectedValueOnce(new Error("network timeout"));
+    await flush(() => state.setContent("消去前入力"));
+    expect(payloads().at(-1)?.content).toBe("消去前入力");
+
+    // Clear request also fails
+    mocks.request.mockRejectedValueOnce(new Error("clear failed"));
+    await flush(() => state.clearContent());
+    expect(payloads().at(-1)?.content).toBe("");
+    expect(payloads().at(-1)?.seq).toBe(2);
+
+    // Because previous content was unconfirmed on server, clear must be retried
+    mocks.request.mockResolvedValueOnce({ ok: true });
+    await flush(() => vi.advanceTimersByTime(1000));
+    expect(payloads().at(-1)?.content).toBe("");
+    expect(payloads().at(-1)?.seq).toBe(3);
+
+    // After success, no further retries
+    await flush(() => vi.advanceTimersByTime(2000));
+    expect(payloads().length).toBe(3);
+  });
+
+  it("sends keepalive clear on pagehide even if previous clear completed while newer input is in flight", async () => {
+    let resolveClear!: (value: { ok: boolean }) => void;
+    let resolveSecondInput!: (value: { ok: boolean }) => void;
+
+    await flush(() => root.render(createElement(Probe)));
+
+    // 1. Initial write "A" succeeds
+    await flush(() => state.setContent("A"));
+    expect(payloads().at(-1)?.content).toBe("A");
+
+    // 2. Clear request starts and hangs in flight
+    mocks.request.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          resolveClear = resolve;
+        }),
+    );
+    await flush(() => state.clearContent());
+    expect(payloads().at(-1)?.content).toBe("");
+    expect(payloads().at(-1)?.seq).toBe(2);
+
+    // 3. User types "B" while clear is still in flight
+    mocks.request.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          resolveSecondInput = resolve;
+        }),
+    );
+    await flush(() => state.setContent("B"));
+
+    // 4. Clear resolves
+    await flush(() => resolveClear({ ok: true }));
+
+    // Now B is dispatched and hanging in flight
+    expect(payloads().at(-1)?.content).toBe("B");
+    expect(payloads().at(-1)?.seq).toBe(3);
+
+    // 5. pagehide occurs while B is in flight
+    await flush(() => window.dispatchEvent(new Event("pagehide")));
+
+    // B should be aborted and keepalive clear must be dispatched!
+    const lastCall = mocks.request.mock.calls.at(-1);
+    expect(lastCall).toBeDefined();
+    expect(lastCall?.[1].keepalive).toBe(true);
+    expect(lastCall?.[1].body).toEqual({
+      session_id: expect.any(String),
+      seq: 4,
+      content: "",
+      sent_at: expect.any(Number),
+    });
+
+    resolveSecondInput({ ok: true });
   });
 
   it("aborts in-flight request and sends keepalive clear on pagehide", async () => {
@@ -233,7 +369,56 @@ describe("useBubbleChat", () => {
       session_id: expect.any(String),
       seq: 2,
       content: "",
+      sent_at: expect.any(Number),
     });
+  });
+
+  it("aborts in-flight GET on visibility change to hidden, ignores stale results, and maintains single poll loop", async () => {
+    let capturedSignal: AbortSignal | undefined;
+    let resolveStaleGet!: (data: BubbleChatEntry[]) => void;
+
+    mocks.get.mockImplementationOnce((_path, options) => {
+      capturedSignal = options?.signal;
+      return new Promise((resolve) => {
+        resolveStaleGet = resolve;
+      });
+    });
+
+    await flush(() => root.render(createElement(Probe)));
+
+    // First poll is in flight
+    expect(capturedSignal?.aborted).toBe(false);
+
+    // Tab is hidden
+    const visibility = vi.spyOn(document, "visibilityState", "get").mockReturnValue("hidden");
+    await flush(() => document.dispatchEvent(new Event("visibilitychange")));
+
+    // In-flight GET should be aborted immediately
+    expect(capturedSignal?.aborted).toBe(true);
+    expect(state.entries).toEqual([]);
+
+    // Tab is visible again
+    visibility.mockReturnValue("visible");
+    mocks.get.mockResolvedValueOnce([
+      { user_id: "bob", user_name: "bob", display_name: "Bob", content: "新しい情報" },
+    ]);
+    await flush(() => document.dispatchEvent(new Event("visibilitychange")));
+
+    // Stale GET finishes now
+    resolveStaleGet([
+      { user_id: "alice", user_name: "alice", display_name: "Alice", content: "古い情報" },
+    ]);
+    await flush(() => vi.advanceTimersByTime(50));
+
+    // Stale result should NOT overwrite entries
+    expect(state.entries[0]?.content).toBe("新しい情報");
+
+    // Only a single polling loop continues
+    const getCallCount = mocks.get.mock.calls.length;
+    await flush(() => vi.advanceTimersByTime(1000));
+    expect(mocks.get.mock.calls.length).toBe(getCallCount + 1);
+
+    visibility.mockRestore();
   });
 
   it("clears entries if polling errors persist beyond IDLE_TIMEOUT_MS", async () => {

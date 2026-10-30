@@ -46,14 +46,18 @@ export function useBubbleChat(enabled = true) {
     let cancelled = false;
     let seq = 0;
     let activeContent = "";
-    let lastConfirmedContent = "";
-    let hasSentActive = false;
+    let confirmedContent = "";
+    let confirmedSeq = 0;
+    let latestNonEmptySeq = 0;
+    let serverMayHaveContent = false;
     let lastSent = 0;
     let flushTimer: ReturnType<typeof setTimeout> | undefined;
     let idleTimer: ReturnType<typeof setTimeout> | undefined;
     let pollTimer: ReturnType<typeof setTimeout> | undefined;
     let retryTimer: ReturnType<typeof setTimeout> | undefined;
     let activeAbortController: AbortController | null = null;
+    let activePollAbortController: AbortController | null = null;
+    let pollGeneration = 0;
     let lastSuccessfulPoll = Date.now();
 
     // Coalesce pending writes so at most one follow-up request is queued while a write is in flight,
@@ -74,10 +78,13 @@ export function useBubbleChat(enabled = true) {
           retryTimer = undefined;
 
           const valueToSend = cancelled || activeContent.trim().length === 0 ? "" : activeContent;
+          const requestSeq = ++seq;
           if (valueToSend.length > 0) {
+            latestNonEmptySeq = requestSeq;
+            serverMayHaveContent = true;
             lastSent = Date.now();
           }
-          const requestSeq = ++seq;
+
           const abortController = new AbortController();
           activeAbortController = abortController;
           const timeoutId = setTimeout(() => abortController.abort(), REQUEST_TIMEOUT_MS);
@@ -85,18 +92,33 @@ export function useBubbleChat(enabled = true) {
           try {
             await client.request(path, {
               method: "POST",
-              body: { session_id: sessionId, seq: requestSeq, content: valueToSend },
+              body: {
+                session_id: sessionId,
+                seq: requestSeq,
+                content: valueToSend,
+                sent_at: Date.now(),
+              },
               signal: abortController.signal,
             });
-            lastConfirmedContent = valueToSend;
-            if (valueToSend === "") {
-              hasSentActive = false;
+            confirmedSeq = requestSeq;
+            confirmedContent = valueToSend;
+            if (valueToSend === "" && requestSeq >= latestNonEmptySeq) {
+              serverMayHaveContent = false;
             }
           } catch {
             if (abortController.signal.aborted && cancelled) {
               return;
             }
-            if (!cancelled && !hasPendingWrite && activeContent !== lastConfirmedContent) {
+            // If there is no immediate subsequent write pending and either the latest target content
+            // is not confirmed or the server may still hold unconfirmed content, schedule a retry.
+            const targetContent =
+              cancelled || activeContent.trim().length === 0 ? "" : activeContent;
+            const needsRetry =
+              confirmedContent !== targetContent ||
+              confirmedSeq < requestSeq ||
+              (targetContent === "" && serverMayHaveContent);
+
+            if (!cancelled && !hasPendingWrite && needsRetry) {
               clearTimeout(retryTimer);
               retryTimer = setTimeout(() => {
                 retryTimer = undefined;
@@ -130,7 +152,7 @@ export function useBubbleChat(enabled = true) {
       retryTimer = undefined;
       activeContent = "";
       lastSent = 0;
-      if (hasSentActive || lastConfirmedContent.length > 0) {
+      if (serverMayHaveContent || confirmedContent.length > 0 || inFlight || hasPendingWrite) {
         send();
       }
     };
@@ -141,18 +163,27 @@ export function useBubbleChat(enabled = true) {
       clearTimeout(retryTimer);
       retryTimer = undefined;
       activeContent = "";
+
       if (activeAbortController) {
         activeAbortController.abort();
         activeAbortController = null;
       }
-      if (hasSentActive || lastConfirmedContent.length > 0) {
-        hasSentActive = false;
-        lastConfirmedContent = "";
+
+      if (serverMayHaveContent || confirmedContent.length > 0 || inFlight || hasPendingWrite) {
+        serverMayHaveContent = false;
+        confirmedContent = "";
+        inFlight = false;
+        hasPendingWrite = false;
         const requestSeq = ++seq;
         void client
           .request(path, {
             method: "POST",
-            body: { session_id: sessionId, seq: requestSeq, content: "" },
+            body: {
+              session_id: sessionId,
+              seq: requestSeq,
+              content: "",
+              sent_at: Date.now(),
+            },
             keepalive: true,
           })
           .catch(() => {});
@@ -169,7 +200,6 @@ export function useBubbleChat(enabled = true) {
       }
       setIsSharing(true);
       activeContent = next;
-      hasSentActive = true;
       const now = Date.now();
       clearTimeout(flushTimer);
       if (!lastSent || now - lastSent >= THROTTLE_MS) {
@@ -192,36 +222,67 @@ export function useBubbleChat(enabled = true) {
     };
 
     const isVisible = () => document.visibilityState !== "hidden";
+
     const poll = async () => {
-      if (isVisible()) {
-        try {
-          const result = await client.get<BubbleChatEntry[]>(path, {
-            signal: AbortSignal.timeout(5000),
-          });
-          if (!cancelled && isVisible()) {
-            lastSuccessfulPoll = Date.now();
-            setEntries(result);
-          }
-        } catch {
-          // Keep previous entries on a transient network failure instead of wiping them out,
-          // but if poll failures persist beyond IDLE_TIMEOUT_MS, server-side presence has expired.
-          if (!cancelled && isVisible() && Date.now() - lastSuccessfulPoll >= IDLE_TIMEOUT_MS) {
+      clearTimeout(pollTimer);
+      pollTimer = undefined;
+      if (!isVisible() || cancelled) {
+        return;
+      }
+
+      const currentGen = ++pollGeneration;
+      if (activePollAbortController) {
+        activePollAbortController.abort();
+      }
+      const abortController = new AbortController();
+      activePollAbortController = abortController;
+
+      try {
+        const result = await client.get<BubbleChatEntry[]>(path, {
+          signal: abortController.signal,
+        });
+        if (!cancelled && currentGen === pollGeneration && isVisible()) {
+          lastSuccessfulPoll = Date.now();
+          setEntries(result);
+        }
+      } catch {
+        // Keep previous entries on a transient network failure instead of wiping them out,
+        // but if poll failures persist beyond IDLE_TIMEOUT_MS, server-side presence has expired.
+        if (!cancelled && currentGen === pollGeneration && isVisible()) {
+          if (Date.now() - lastSuccessfulPoll >= IDLE_TIMEOUT_MS) {
             setEntries([]);
           }
         }
-      }
-      if (!cancelled) {
-        pollTimer = setTimeout(() => void poll(), POLL_INTERVAL_MS);
+      } finally {
+        if (activePollAbortController === abortController) {
+          activePollAbortController = null;
+        }
+        if (!cancelled && currentGen === pollGeneration && isVisible()) {
+          pollTimer = setTimeout(() => void poll(), POLL_INTERVAL_MS);
+        }
       }
     };
 
     const onVisibilityChange = () => {
       if (document.visibilityState === "hidden") {
+        clearTimeout(pollTimer);
+        pollTimer = undefined;
+        pollGeneration++;
+        if (activePollAbortController) {
+          activePollAbortController.abort();
+          activePollAbortController = null;
+        }
         setIsSharing(false);
         stop();
         setEntries([]);
       } else {
         clearTimeout(pollTimer);
+        pollTimer = undefined;
+        pollGeneration++;
+        if (activePollAbortController) {
+          activePollAbortController.abort();
+          activePollAbortController = null;
+        }
         void poll();
       }
     };
@@ -241,6 +302,11 @@ export function useBubbleChat(enabled = true) {
       setIsSharing(false);
       clearKeepalive();
       clearTimeout(pollTimer);
+      pollGeneration++;
+      if (activePollAbortController) {
+        activePollAbortController.abort();
+        activePollAbortController = null;
+      }
       document.removeEventListener("visibilitychange", onVisibilityChange);
       window.removeEventListener("pagehide", onPageHide);
     };

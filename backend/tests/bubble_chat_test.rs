@@ -38,6 +38,10 @@ fn update_with_seq(session: &str, seq: i64, content: &str) -> Value {
     json!({ "session_id": session, "seq": seq, "content": content })
 }
 
+fn update_with_seq_and_sent_at(session: &str, seq: i64, content: &str, sent_at: i64) -> Value {
+    json!({ "session_id": session, "seq": seq, "content": content, "sent_at": sent_at })
+}
+
 #[tokio::test]
 async fn test_bubble_chat_presence_lifecycle() -> anyhow::Result<()> {
     dotenvy::dotenv().ok();
@@ -251,17 +255,28 @@ async fn test_bubble_chat_presence_lifecycle() -> anyhow::Result<()> {
     );
 
     // Expiry uses database time.
+    // Verify valid presence first before testing expiration.
     assert_eq!(
         request(
             &app_a,
             Some(&alice),
             path,
-            Some(update(&session1, "期限切れテスト")),
+            Some(update_with_seq(&session1, 12, "期限切れテスト")),
         )
         .await?
         .0,
         StatusCode::OK
     );
+    let (_, list) = request(&app_b, Some(&bob), path, None).await?;
+    let alice_entry = list
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|entry| entry["user_id"] == alice)
+        .expect("Alice bubble should be present before expiration");
+    assert_eq!(alice_entry["content"], "期限切れテスト");
+
+    // Advance expires_at into the past while retaining retention_until.
     let mut tx = db.transaction().await?;
     toasty::sql::statement(
         "UPDATE bubble_chat_presence SET expires_at = statement_timestamp() - interval '1 second' WHERE user_id = $1",
@@ -271,6 +286,7 @@ async fn test_bubble_chat_presence_lifecycle() -> anyhow::Result<()> {
     .await?;
     tx.commit().await?;
 
+    // Presence disappears from list once expires_at has passed.
     let (_, list) = request(&app_b, Some(&bob), path, None).await?;
     assert!(
         !list
@@ -280,7 +296,46 @@ async fn test_bubble_chat_presence_lifecycle() -> anyhow::Result<()> {
             .any(|entry| entry["user_id"] == alice)
     );
 
-    // Cleanup on next write removes expired row.
+    // Stale write older than 5 minutes is rejected.
+    let now_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0);
+    let past_timestamp = now_ms - 600_000;
+    let (status, body) = request(
+        &app_a,
+        Some(&alice),
+        path,
+        Some(update_with_seq_and_sent_at(
+            &session1,
+            13,
+            "古い要求",
+            past_timestamp,
+        )),
+    )
+    .await?;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["stale"], true);
+
+    // Row is retained until retention_until expires.
+    let mut tx = db.transaction().await?;
+    assert!(
+        !toasty::sql::query("SELECT session_id FROM bubble_chat_presence WHERE user_id = $1")
+            .bind(alice.as_str())
+            .exec(&mut tx)
+            .await?
+            .is_empty()
+    );
+    // Force retention_until into the past to verify cleanup.
+    toasty::sql::statement(
+        "UPDATE bubble_chat_presence SET retention_until = statement_timestamp() - interval '1 second' WHERE user_id = $1",
+    )
+    .bind(alice.as_str())
+    .exec(&mut tx)
+    .await?;
+    tx.commit().await?;
+
+    // Cleanup on next write removes expired retention row.
     assert_eq!(
         request(&app_b, Some(&bob), path, Some(update(&session2, "")))
             .await?
