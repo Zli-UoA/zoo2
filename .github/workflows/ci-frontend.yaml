@@ -41,8 +41,9 @@ jobs:
     runs-on: ${{ fromJSON(needs.runner.outputs.runs-on) }}
     env:
       POSTGRES_PASSWORD: container-test
-      # envsubst で CSP に埋め込まれることを確認するためのダミー IdP オリジン。
+      # envsubst で CSP に埋め込まれることを確認するためのダミー IdP・ストレージオリジン。
       CSP_CONNECT_SRC: https://id.example
+      CSP_STORAGE_SRC: https://storage.example
     steps:
       - name: Checkout
         uses: actions/checkout@v7
@@ -85,9 +86,9 @@ jobs:
             printf "%s" "$headers" | grep -qi "Content-Security-Policy:"
             # script はビルド時のインライン script ハッシュで許可し、unsafe-inline は使わない。
             printf "%s" "$headers" | grep -q "script-src 'self' 'wasm-unsafe-eval' 'sha256-"
-            printf "%s" "$headers" | grep -q "connect-src 'self' data: https://id.example"
-            # Emoji Kitchen の合成画像（#82）を許可する。
-            printf "%s" "$headers" | grep -q "img-src 'self' data: https://www.gstatic.com"
+            printf "%s" "$headers" | grep -q "connect-src 'self' data: https://id.example https://storage.example"
+            # Emoji Kitchen の合成画像（#82）とストレージオリジンを許可する。
+            printf "%s" "$headers" | grep -q "img-src 'self' data: https://www.gstatic.com https://storage.example"
           done
 
       - name: Check Emoji Kitchen catalog compression and caching
@@ -115,7 +116,7 @@ jobs:
       - name: Start frontend for CSP browser test
         run: |
           docker run --rm -d --name zoo-frontend-csp-test \
-            -p 127.0.0.1:3100:3000 -e CSP_CONNECT_SRC=https://id.example \
+            -p 127.0.0.1:3100:3000 -e CSP_CONNECT_SRC=https://id.example -e CSP_STORAGE_SRC=https://storage.example \
             "${FRONTEND_IMAGE:-zoo-frontend:stg}"
           for _ in $(seq 1 30); do
             if curl -fsS http://127.0.0.1:3100/ > /dev/null; then

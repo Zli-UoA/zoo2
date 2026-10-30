@@ -93,6 +93,7 @@ pub(super) async fn persist_card(
             channel_id: settings.channel,
             content,
             parent_id: None,
+            attachment_ids: None,
             kind: "message".into(),
             broadcast: false,
             metadata: None,
