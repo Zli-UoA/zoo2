@@ -3,6 +3,7 @@ on:
   push:
     paths:
       - "backend/**"
+      - "docs/slack-event-coverage.json"
       - "infra/db/**"
       - "infra/Dockerfile-backend-deploy*"
       - "infra/Dockerfile-migrate-deploy*"
@@ -117,6 +118,7 @@ jobs:
     timeout-minutes: 60
     env:
       POSTGRES_PASSWORD: deploy-image-test
+      COMPOSE_PROJECT_NAME: zoo-ci-image-${{ github.run_id }}-${{ github.run_attempt }}
     steps:
       - name: Checkout
         uses: actions/checkout@v7
@@ -218,6 +220,10 @@ jobs:
         run: docker compose --project-directory . -f infra/compose.stg.yaml down -v --remove-orphans
 
   e2e:
+    env:
+      COMPOSE_PROJECT_NAME: zoo-ci-backend-${{ github.run_id }}-${{ github.run_attempt }}
+      POSTGRES_PORT: "0"
+      ELECTRIC_PORT: "0"
     needs: runner
     runs-on: ${{ fromJSON(needs.runner.outputs.runs-on) }}
     defaults:
@@ -243,21 +249,22 @@ jobs:
 
       - name: Start PostgreSQL and Electric
         working-directory: .
-        run: docker compose -f infra/db/compose.yml up -d --wait
+        run: |
+          docker compose -f infra/db/compose.yml up -d --wait
+          postgres_port=$(docker compose -f infra/db/compose.yml port postgres 5432)
+          electric_port=$(docker compose -f infra/db/compose.yml port electric 3000)
+          echo "DATABASE_URL=postgres://root:password@${postgres_port}/zoo?sslmode=disable" >> "$GITHUB_ENV"
+          echo "ELECTRIC_URL=http://${electric_port}" >> "$GITHUB_ENV"
 
       - name: Setup Atlas
         uses: ariga/setup-atlas@v0
 
       - name: Apply migrations
         working-directory: ./infra
-        env:
-          DATABASE_URL: postgres://root:password@localhost:5432/zoo?sslmode=disable
         run: atlas migrate apply --config file://db/atlas.hcl --env local
 
       - name: e2e test
         env:
-          DATABASE_URL: postgres://root:password@localhost:5432/zoo?sslmode=disable
-          ELECTRIC_URL: http://localhost:3000
           DEV_AUTH_ENABLED: "true"
         run: |
           cargo test --test '*'

@@ -110,15 +110,13 @@ export const storybookApiHandlers = [
       },
     );
   }),
-  http.get("*/api/channels/:channelId/webhooks", ({ params }) => {
-    const channelId = String(params.channelId);
+  http.get("*/api/channels/:channelId/webhooks", () => {
     return HttpResponse.json({
       data: [
         {
           id: "webhook-1",
-          name: "GitHub",
-          path: `/api/webhooks/${channelId}/github`,
-          generic_path: `/api/webhooks/${channelId}/generic`,
+          name: "Webhook",
+          path: "/api/webhooks/webhook-1",
           secret: "storybook-example-secret",
           created_at: "2026-01-02T09:00:00.000Z",
         },

@@ -155,9 +155,9 @@ export function ChannelBrowserDialog({
                       <HashIcon className="ml-1 size-4 shrink-0 opacity-60" aria-hidden="true" />
                       <div className="min-w-0 flex-1">
                         <p className="truncate text-sm text-foreground">{channel.channel_name}</p>
-                        {channel.description ? (
+                        {channel.description?.trim() ? (
                           <p className="truncate text-xs text-muted-foreground">
-                            {channel.description}
+                            {channel.description.trim()}
                           </p>
                         ) : null}
                       </div>
