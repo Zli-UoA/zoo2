@@ -68,10 +68,13 @@ const sqliteProbe = async (workerName) => {
     function request(payload) {
       const requestId = String(++sequence);
       return new Promise((resolve, reject) => {
+        // 初回の WASM コンパイルと OPFS 起動は、共有 CI runner の負荷に左右される。
+        // SQL 実行の制限は維持し、初期化だけ余裕を持たせる。
+        const timeoutMs = payload.type === "init" ? 60_000 : 8_000;
         const timeout = setTimeout(() => {
           worker.terminate();
-          reject(new Error("SQLite Worker timed out"));
-        }, 8000);
+          reject(new Error(`SQLite Worker ${payload.type} timed out after ${timeoutMs}ms`));
+        }, timeoutMs);
         worker.onmessage = ({ data }) => {
           if (data.requestId !== requestId) return;
           clearTimeout(timeout);
@@ -114,6 +117,12 @@ try {
     try {
       const context = await browser.newContext();
       const page = await context.newPage();
+      const label = `${engine.name()}: ${warm ? `warm-cache ${legacy ? "legacy" : "versioned"}` : "cold-cache"}`;
+      console.log(`${label}: starting SQLite CSP test`);
+      page.on("pageerror", (error) => console.error(`${label}: ${error.message}`));
+      page.on("console", (message) => {
+        if (message.type() === "error") console.error(`${label}: ${message.text()}`);
+      });
       policy = warm ? oldPolicy : policies[0];
       await page.goto(origin);
       if (warm) {
