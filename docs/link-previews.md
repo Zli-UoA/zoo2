@@ -1,23 +1,27 @@
-# URLカードとメディアプロクシ
+# URLカード・Summaly・画像プロクシ
 
-投稿・スレッド内のHTTP(S)リンクを最大3件、タイトル・説明付きのカードとして表示します。コード、`<plain>`、MFMのサイレントリンク `?[label](url)` は展開しません。同じURLは1件にまとめます。取得に失敗したときは元の本文リンクを引き続き利用できます。
+投稿・スレッド内のHTTP(S)リンクを最大3件、タイトル・説明付きのカードとして表示します。コード、`<plain>`、MFMのサイレントリンク `?[label](url)` は展開しません。同じURLは1件にまとめます。取得に失敗しても本文リンクは維持します。
 
-ページのメタデータは認証付きの `GET /api/link-preview?url=...` で取得します。バックエンドは外部ページへ認証情報を渡さず、公開IPだけに接続します。DNSの接続先を固定し、リダイレクトごとに検証します。取得はHTTP(S)の標準ポート、10秒、HTML 512 KiB、同時8件までです。結果はプロセス内で10分、最大256件キャッシュします。UTF-8のHTMLを対象とし、JavaScriptの実行は行いません。
+フロントは指定の [mei23/summaly](https://github.com/mei23/summaly) の `/url?url=...` からJSONを取得します。`title`・`description` を文字列として描画し、`thumbnail` だけを画像プロクシへ渡します。HTMLやplayerは埋め込みません。SummalyへのリクエストにアプリのCookie・Authorization・Refererを送信しません。
 
-サムネイルはフロントから **media-proxy-rsへ直接** `?url=<画像URL>&preview=1&static=1` で取得します。プロクシ未設定時は画像を表示しません。外部画像のURLへ直接フォールバックしません。
+画像はフロントからmedia-proxy-rsへ `?url=<画像URL>&preview=1&static=1` で取得します。画像プロクシ未設定時はテキストのカードだけを表示します。元のサムネイルのホストへ直接フォールバックしません。
 
-## エンドポイントの設定
+## エンドポイント
 
-本番のfrontendコンテナに `MEDIA_PROXY_URL` を指定します。イメージの再ビルドは不要です。
+frontendコンテナの実行時環境変数に、それぞれのエンドポイントを指定します。イメージの再ビルドは不要です。
 
 ```yaml
 env:
+  - name: SUMMALY_URL
+    value: https://summaly.zliusercontent.com/url
   - name: MEDIA_PROXY_URL
-    value: /media-proxy/
+    value: https://media-proxy.zliusercontent.com/
 ```
 
-`https://media.example.com/` のような別オリジンのHTTPSエンドポイントも指定できます。nginx起動時にそのオリジンがCSPの `img-src` に追加されます。エンドポイントは `/media-proxy-endpoint` から公開のプレーンテキストとして配信されるため、認証情報を含めないでください。エンドポイント自体にクエリは指定しません。
+起動時にSummalyのオリジンをCSPの `connect-src`、画像プロクシのオリジンを `img-src` に追加します。設定は `/summaly-endpoint` と `/media-proxy-endpoint` から公開のプレーンテキストとして配信します。認証情報やクエリを設定値に含めないでください。Summaly未設定時はURLカードを展開しません。
 
-ローカルのVite開発では `VITE_MEDIA_PROXY_URL=http://localhost:12766/` を指定します。コンテナでの `MEDIA_PROXY_URL` が優先されます。Composeでもfrontendの `MEDIA_PROXY_URL` を渡せます。
+Vite開発では `VITE_SUMMALY_URL=http://localhost:3030/url` と `VITE_MEDIA_PROXY_URL=http://localhost:12766/` を利用できます。コンテナの実行時設定が優先されます。Composeでも両環境変数をfrontendへ渡します。
 
-media-proxy-rsのDeployment、Service、IngressRoute、NetworkPolicyは [zoo2-infra](https://github.com/Zli-UoA/zoo2-infra) で管理します。zoo2側ではサービスを起動しません。運用手順は同リポジトリの `docs/media-proxy.md` を参照してください。
+取得は同時4件までで、同じURLの要求を共有します。一時的な失敗は最大3回再試行し、タイムアウト・過負荷が続いても本文リンクを維持します。成功結果はブラウザ内で5分、最大256件キャッシュします。
+
+両サービスは [zoo2-infra](https://github.com/Zli-UoA/zoo2-infra) で別々のDeployment・Service・Namespaceとして配備します。運用手順は同リポジトリの `docs/summaly.md` と `docs/media-proxy.md` を参照してください。Rustバックエンドでの独自HTML解析は使用しません。

@@ -63,6 +63,7 @@ services:
       CSP_STORAGE_SRC: ${CSP_STORAGE_SRC:-}
       CSP_APP_IMAGE_SRC: ${CSP_APP_IMAGE_SRC:-}
       MEDIA_PROXY_URL: ${MEDIA_PROXY_URL:-}
+      SUMMALY_URL: ${SUMMALY_URL:-}
     networks:
       - frontend
 

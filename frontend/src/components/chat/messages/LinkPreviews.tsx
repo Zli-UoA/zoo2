@@ -1,23 +1,23 @@
 import { useEffect, useMemo, useState } from "react";
-import { ApiError, createConfiguredApiClient, type ApiClient } from "../../../lib/api/client";
+import { ApiError } from "../../../lib/api/client";
+import {
+  createSummalyClient,
+  type SummalyClient,
+  type LinkPreviewData as Preview,
+} from "../../../lib/summaly";
 import type { AppConfig } from "../../../lib/config";
 import { useOptionalCollections } from "../../../lib/electric/collections-context";
 import { previewUrls, proxyImageUrl } from "./linkPreviews";
 
-interface Preview {
-  title: string;
-  description: string;
-  image: string | null;
-}
 // Requests and bounded retries are shared across the timeline and thread pane.
 const cache = new Map<string, { at: number; request: Promise<Preview | null> }>();
 let activeRequests = 0;
 const waiting: (() => void)[] = [];
-async function queuedPreview(client: ApiClient, url: string) {
+async function queuedPreview(client: SummalyClient, url: string) {
   if (activeRequests >= 4) await new Promise<void>((resolve) => waiting.push(resolve));
   else activeRequests++;
   try {
-    return await client.get<Preview>(`/api/link-preview?${new URLSearchParams({ url })}`, {
+    return await client.get(url, {
       signal: AbortSignal.timeout(12_000),
     });
   } finally {
@@ -26,7 +26,7 @@ async function queuedPreview(client: ApiClient, url: string) {
     else activeRequests--;
   }
 }
-async function retryPreview(client: ApiClient, url: string): Promise<Preview | null> {
+async function retryPreview(client: SummalyClient, url: string): Promise<Preview | null> {
   for (let attempt = 0; ; attempt++) {
     try {
       return await queuedPreview(client, url);
@@ -43,7 +43,7 @@ async function retryPreview(client: ApiClient, url: string): Promise<Preview | n
     }
   }
 }
-function load(client: ApiClient, key: string, url: string) {
+function load(client: SummalyClient, key: string, url: string) {
   const previous = cache.get(key);
   if (previous && Date.now() - previous.at < 300_000) return previous.request;
   if (cache.size >= 256) cache.clear();
@@ -55,16 +55,30 @@ function load(client: ApiClient, key: string, url: string) {
   cache.set(key, { at: Date.now(), request });
   return request;
 }
-let runtimeEndpoint: Promise<string> | undefined;
-function endpoint(fallback: string) {
-  runtimeEndpoint ??= fetch("/media-proxy-endpoint")
-    .then(async (r) =>
-      r.ok && r.headers.get("content-type")?.startsWith("text/plain")
-        ? (await r.text()).trim()
-        : "",
-    )
-    .catch(() => "");
-  return runtimeEndpoint.then((value) => value || fallback);
+interface Endpoints {
+  summaly: string;
+  media: string;
+}
+let runtimeEndpoints: Promise<Endpoints> | undefined;
+async function readEndpoint(path: string): Promise<string> {
+  try {
+    const response = await fetch(path, { cache: "no-store" });
+    return response.ok && response.headers.get("content-type")?.startsWith("text/plain")
+      ? (await response.text()).trim()
+      : "";
+  } catch {
+    return "";
+  }
+}
+function endpoints(config: AppConfig): Promise<Endpoints> {
+  runtimeEndpoints ??= Promise.all([
+    readEndpoint("/summaly-endpoint"),
+    readEndpoint("/media-proxy-endpoint"),
+  ]).then(([summaly, media]) => ({ summaly, media }));
+  return runtimeEndpoints.then((value) => ({
+    summaly: value.summaly || config.summalyUrl || "",
+    media: value.media || config.mediaProxyUrl || "",
+  }));
 }
 function LinkPreview({
   url,
@@ -73,7 +87,7 @@ function LinkPreview({
   proxy,
 }: {
   url: string;
-  client: ApiClient;
+  client: SummalyClient;
   cacheKey: string;
   proxy: string;
 }) {
@@ -119,25 +133,28 @@ function LinkPreview({
   );
 }
 function ActiveLinkPreviews({ urls, config }: { urls: string[]; config: AppConfig }) {
-  const client = useMemo(() => createConfiguredApiClient(config), [config]);
-  const [proxy, setProxy] = useState(config.mediaProxyUrl ?? "");
+  const [sources, setSources] = useState<Endpoints | null>(null);
+  const client = useMemo(
+    () => (sources?.summaly ? createSummalyClient(sources.summaly) : null),
+    [sources?.summaly],
+  );
   useEffect(() => {
-    if (!urls.length) return;
     let active = true;
-    void endpoint(config.mediaProxyUrl ?? "").then((value) => {
-      if (active) setProxy(value);
+    void endpoints(config).then((value) => {
+      if (active) setSources(value);
     });
     return () => {
       active = false;
     };
-  }, [config.mediaProxyUrl, urls.length]);
+  }, [config]);
+  if (!client || !sources) return null;
   return urls.map((url) => (
     <LinkPreview
       key={url}
       url={url}
       client={client}
-      cacheKey={`${config.apiBaseUrl}:${config.devUserId ?? "oidc"}`}
-      proxy={proxy}
+      cacheKey={sources.summaly}
+      proxy={sources.media}
     />
   ));
 }

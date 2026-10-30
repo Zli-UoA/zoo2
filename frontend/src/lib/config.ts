@@ -38,6 +38,7 @@ export interface AppConfig {
   electricShapeUrl: string;
   apiBaseUrl: string;
   mediaProxyUrl?: string;
+  summalyUrl?: string;
   shapeProxyPath: string;
   devUserId: string | null;
   oidc: OidcSettings | null;
@@ -49,6 +50,7 @@ export const DEFAULT_CONFIG: AppConfig = {
   electricShapeUrl: "http://localhost:3000/v1/shape",
   apiBaseUrl: "http://localhost:8000",
   mediaProxyUrl: "",
+  summalyUrl: "",
   shapeProxyPath: "/api/shapes",
   devUserId: null,
   oidc: null,
@@ -61,6 +63,7 @@ export interface ConfigEnv {
   VITE_ELECTRIC_SHAPE_URL?: string;
   VITE_API_BASE_URL?: string;
   VITE_MEDIA_PROXY_URL?: string;
+  VITE_SUMMALY_URL?: string;
   VITE_SHAPE_PROXY_PATH?: string;
   VITE_DEV_USER_ID?: string;
   VITE_PREVIEW_AUTH?: string;
@@ -174,6 +177,7 @@ export function resolveConfig(
     electricShapeUrl: env.VITE_ELECTRIC_SHAPE_URL ?? DEFAULT_CONFIG.electricShapeUrl,
     apiBaseUrl: env.VITE_API_BASE_URL ?? DEFAULT_CONFIG.apiBaseUrl,
     mediaProxyUrl: env.VITE_MEDIA_PROXY_URL ?? DEFAULT_CONFIG.mediaProxyUrl,
+    summalyUrl: env.VITE_SUMMALY_URL ?? DEFAULT_CONFIG.summalyUrl,
     shapeProxyPath: env.VITE_SHAPE_PROXY_PATH ?? DEFAULT_CONFIG.shapeProxyPath,
     devUserId: preview
       ? previewUserId()

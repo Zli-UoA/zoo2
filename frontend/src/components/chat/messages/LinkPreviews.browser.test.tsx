@@ -3,14 +3,16 @@ import { afterEach, expect, it, vi } from "vite-plus/test";
 import { ApiError } from "../../../lib/api/client";
 import { LinkPreviews } from "./LinkPreviews";
 import { DEFAULT_CONFIG } from "../../../lib/config";
+import { http, HttpResponse } from "msw";
+import { mockServer } from "../../../test/browser-setup";
 
+const previewConfig = { ...DEFAULT_CONFIG, summalyUrl: "https://summaly.example/url" };
 const api = vi.hoisted(() => ({ get: vi.fn() }));
-vi.mock("../../../lib/api/client", async (importOriginal) => ({
-  ...(await importOriginal<typeof import("../../../lib/api/client")>()),
-  createConfiguredApiClient: () => api,
-}));
+vi.mock("../../../lib/summaly", () => ({ createSummalyClient: () => api }));
 vi.mock("../../../lib/electric/collections-context", () => ({
-  useOptionalCollections: () => ({ config: DEFAULT_CONFIG }),
+  useOptionalCollections: () => ({
+    config: previewConfig,
+  }),
 }));
 afterEach(() => {
   api.get.mockReset();
@@ -19,8 +21,25 @@ afterEach(() => {
 });
 
 it("renders metadata and loads the thumbnail directly from the runtime proxy endpoint", async () => {
-  vi.spyOn(globalThis, "fetch").mockResolvedValue(
-    new Response("https://media.example/", { headers: { "Content-Type": "text/plain" } }),
+  vi.spyOn(globalThis, "fetch").mockImplementation(
+    async (input) =>
+      new Response(
+        input === "/summaly-endpoint" ? "https://summaly.example/url" : "https://media.example/",
+        { headers: { "Content-Type": "text/plain" } },
+      ),
+  );
+  mockServer.use(
+    http.get("https://media.example/", () =>
+      HttpResponse.arrayBuffer(
+        Uint8Array.from(
+          atob(
+            "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==",
+          ),
+          (c) => c.charCodeAt(0),
+        ).buffer,
+        { headers: { "Content-Type": "image/png" } },
+      ),
+    ),
   );
   api.get.mockResolvedValue({
     title: "Example title",
@@ -52,7 +71,9 @@ it("hides failed cards and ignores stale responses after the URL is edited", asy
     )
     .mockRejectedValueOnce(new Error("unavailable"));
   const view = render(<LinkPreviews content="https://example.com/old-preview" />);
+  await waitFor(() => expect(finish).toBeDefined());
   view.rerender(<LinkPreviews content="https://example.com/failed-preview" />);
+  await waitFor(() => expect(finish).toBeDefined());
   finish({ title: "Old title", description: "", image: null });
   await waitFor(() =>
     expect(api.get).toHaveBeenCalledWith(
@@ -90,6 +111,9 @@ it("bounds transient retries and lets a later mount retry after exhaustion", asy
   vi.useFakeTimers();
   api.get.mockRejectedValue(new ApiError(429, "busy"));
   const view = render(<LinkPreviews content="https://example.com/retry-exhausted" />);
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(0);
+  });
   await act(async () => {
     await vi.advanceTimersByTimeAsync(14_000);
   });
