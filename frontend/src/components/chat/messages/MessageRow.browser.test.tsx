@@ -57,7 +57,7 @@ describe("MessageRow", () => {
   });
 
   it.each([false, true])(
-    "keeps App message actions available with reactions=%s",
+    "opens App message actions from the menu with reactions=%s",
     async (hasReactions) => {
       const opened = vi.fn();
       window.addEventListener("zoo:message-actions", opened);
@@ -70,7 +70,10 @@ describe("MessageRow", () => {
         expect(group?.querySelector('[aria-label="リアクションを追加"]') != null).toBe(
           hasReactions,
         );
-        await userEvent.click(screen.getByRole("button", { name: "Appでメッセージを操作" }));
+        expect(screen.queryByRole("button", { name: "Appでメッセージを操作" })).toBeNull();
+        screen.getByRole("button", { name: "その他の操作" }).focus();
+        await userEvent.keyboard("{Enter}");
+        await userEvent.click(screen.getByRole("menuitem", { name: "Appでメッセージを操作" }));
         expect(opened).toHaveBeenCalledOnce();
         expect((opened.mock.calls[0]![0] as CustomEvent<string>).detail).toBe("message-1");
       } finally {
@@ -89,6 +92,24 @@ describe("MessageRow", () => {
     );
     await userEvent.click(screen.getByRole("menuitem", { name: "リアクションを追加" }));
     expect(onPickReaction).toHaveBeenCalledOnce();
+  });
+
+  it("opens App message actions from the touch hold menu", async () => {
+    const opened = vi.fn();
+    window.addEventListener("zoo:message-actions", opened);
+    try {
+      const { container } = renderRow(buildItem());
+      const row = container.querySelector("div.group\\/row")!;
+      fireEvent.pointerDown(row, { pointerType: "touch", isPrimary: true });
+      await waitFor(() =>
+        expect(screen.getByRole("menuitem", { name: "Appでメッセージを操作" })).toBeTruthy(),
+      );
+      await userEvent.click(screen.getByRole("menuitem", { name: "Appでメッセージを操作" }));
+      expect(opened).toHaveBeenCalledOnce();
+      expect((opened.mock.calls[0]![0] as CustomEvent<string>).detail).toBe("message-1");
+    } finally {
+      window.removeEventListener("zoo:message-actions", opened);
+    }
   });
 
   it("cancels a touch hold when scrolling", async () => {

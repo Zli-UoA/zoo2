@@ -186,3 +186,38 @@ test("new messages below do not move a scrolled-up reader", async ({ page }) => 
   expect(before).not.toBeNull();
   expect(Math.abs(after!.y - before!.y)).toBeLessThanOrEqual(2);
 });
+
+test("App actions open from the upper-right menu", async ({ page, isMobile }) => {
+  await page.goto("/e2e/fixtures/layout.html");
+  const row = page.locator('[data-index="37"]');
+  await expect(row).toBeVisible();
+  await expect(row.getByRole("button", { name: "Message app actions" })).toHaveCount(0);
+  await page.evaluate(() => {
+    window.addEventListener("zoo:message-actions", (event) => {
+      document.documentElement.dataset.appMessageId = (event as CustomEvent<string>).detail;
+    });
+  });
+  const more = row.getByRole("button", { name: "More actions" });
+  await expect(more).toHaveCSS("opacity", "0");
+  if (isMobile) {
+    const box = await row.locator(".mfm-body").boundingBox();
+    expect(box).not.toBeNull();
+    const session = await page.context().newCDPSession(page);
+    try {
+      await session.send("Input.dispatchTouchEvent", {
+        type: "touchStart",
+        touchPoints: [{ x: box!.x + 10, y: box!.y + 10 }],
+      });
+      await expect(page.getByRole("menuitem", { name: "Message app actions" })).toBeVisible();
+      await session.send("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
+    } finally {
+      await session.detach();
+    }
+  } else {
+    await row.hover();
+    await expect(more).toHaveCSS("opacity", "1");
+    await more.click();
+  }
+  await page.getByRole("menuitem", { name: "Message app actions" }).click();
+  await expect(page.locator("html")).toHaveAttribute("data-app-message-id", /.+/);
+});

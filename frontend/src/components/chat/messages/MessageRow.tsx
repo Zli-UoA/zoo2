@@ -278,64 +278,53 @@ export function MessageRow({
               {replyCount > 0 && onOpenThread ? (
                 <ReplyLink count={replyCount} onOpen={onOpenThread} />
               ) : null}
-              <div className="flex flex-wrap items-center gap-1 py-1">
-                {reactions.length > 0 ? (
-                  <div className="contents" role="group" aria-label={t("reactions.groupLabel")}>
-                    {reactions.map((reaction) => (
-                      <button
-                        key={reactionKey(reaction.emoji)}
-                        type="button"
-                        className={cn(
-                          "inline-flex min-h-8 items-center gap-1 rounded-full border px-2 text-xs transition-colors hover:bg-muted disabled:opacity-50",
-                          reaction.ownId &&
-                            "border-brand/40 bg-brand-muted text-brand-muted-foreground",
-                        )}
-                        aria-pressed={!!reaction.ownId}
-                        disabled={!canReact}
-                        aria-label={
-                          reaction.ownId
-                            ? t("reactions.chipMine", {
-                                emoji: kitchenLabel(reaction.emoji),
-                                count: reaction.count,
-                              })
-                            : t("reactions.chip", {
-                                emoji: kitchenLabel(reaction.emoji),
-                                count: reaction.count,
-                              })
-                        }
-                        title={kitchenLabel(reaction.emoji)}
-                        onClick={() => onReaction(reaction.emoji)}
-                      >
-                        <ReactionEmoji emoji={reaction.emoji} catalog={kitchenCatalog} />
-                        <span className="tabular-nums">{reaction.count}</span>
-                      </button>
-                    ))}
-                    <Button
-                      variant="ghost"
-                      size="icon-xs"
-                      aria-label={t("reactions.add")}
-                      title={t("reactions.add")}
-                      disabled={!canReact}
-                      onClick={onPickReaction}
-                    >
-                      <SmilePlusIcon />
-                    </Button>
-                  </div>
-                ) : null}
-                <Button
-                  variant="ghost"
-                  size="icon-xs"
-                  aria-label={t("apps.messageActions")}
-                  title={t("apps.messageActions")}
-                  onClick={() =>
-                    window.dispatchEvent(
-                      new CustomEvent("zoo:message-actions", { detail: message.id }),
-                    )
-                  }
+              {reactions.length > 0 ? (
+                <div
+                  className="flex flex-wrap items-center gap-1 py-1"
+                  role="group"
+                  aria-label={t("reactions.groupLabel")}
                 >
-                  <BotIcon />
-                </Button>
-              </div>
+                  {reactions.map((reaction) => (
+                    <button
+                      key={reactionKey(reaction.emoji)}
+                      type="button"
+                      className={cn(
+                        "inline-flex min-h-8 items-center gap-1 rounded-full border px-2 text-xs transition-colors hover:bg-muted disabled:opacity-50",
+                        reaction.ownId &&
+                          "border-brand/40 bg-brand-muted text-brand-muted-foreground",
+                      )}
+                      aria-pressed={!!reaction.ownId}
+                      disabled={!canReact}
+                      aria-label={
+                        reaction.ownId
+                          ? t("reactions.chipMine", {
+                              emoji: kitchenLabel(reaction.emoji),
+                              count: reaction.count,
+                            })
+                          : t("reactions.chip", {
+                              emoji: kitchenLabel(reaction.emoji),
+                              count: reaction.count,
+                            })
+                      }
+                      title={kitchenLabel(reaction.emoji)}
+                      onClick={() => onReaction(reaction.emoji)}
+                    >
+                      <ReactionEmoji emoji={reaction.emoji} catalog={kitchenCatalog} />
+                      <span className="tabular-nums">{reaction.count}</span>
+                    </button>
+                  ))}
+                  <Button
+                    variant="ghost"
+                    size="icon-xs"
+                    aria-label={t("reactions.add")}
+                    title={t("reactions.add")}
+                    disabled={!canReact}
+                    onClick={onPickReaction}
+                  >
+                    <SmilePlusIcon />
+                  </Button>
+                </div>
+              ) : null}
             </>
           ) : null}
         </div>
@@ -379,7 +368,7 @@ export function MessageRow({
                 </>
               ) : null}
             </div>
-            {/* 長押し用のアンカーを、キーボード操作の入口としても使う。 */}
+            {/* PC はホバー、タッチは長押し、キーボードはフォーカスで操作する。 */}
             <DropdownMenu open={menuOpen} onOpenChange={setMenuOpen}>
               <DropdownMenuTrigger
                 aria-label={t("messages.more")}
@@ -388,12 +377,22 @@ export function MessageRow({
                   variant: "ghost",
                   size: "icon-xs",
                   className:
-                    "pointer-events-none opacity-0 focus-visible:pointer-events-auto focus-visible:opacity-100",
+                    "pointer-events-none opacity-0 focus-visible:pointer-events-auto focus-visible:opacity-100 [@media(hover:hover)]:group-hover/row:pointer-events-auto [@media(hover:hover)]:group-hover/row:opacity-100 data-popup-open:pointer-events-auto data-popup-open:opacity-100",
                 })}
               >
                 <MoreHorizontalIcon />
               </DropdownMenuTrigger>
               <DropdownMenuContent align="end">
+                <DropdownMenuItem
+                  onClick={() =>
+                    window.dispatchEvent(
+                      new CustomEvent("zoo:message-actions", { detail: message.id }),
+                    )
+                  }
+                >
+                  <BotIcon />
+                  {t("apps.messageActions")}
+                </DropdownMenuItem>
                 <DropdownMenuItem disabled={!canReact} onClick={onPickReaction}>
                   <SmilePlusIcon />
                   {t("reactions.add")}
