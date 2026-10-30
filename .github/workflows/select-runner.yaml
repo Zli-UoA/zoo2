@@ -1,7 +1,7 @@
 name: Select runner
 
-# zli-k8s（zoo2 クラスタ上の ARC の self-hosted runner）が使えればそれを、
-# 使えなければ GitHub-hosted runner を選ぶ。詳細は docs/ci-runners.md。
+# Workload priority: kubecamp -> zli-k8s -> hosted; Docker jobs skip kubecamp.
+# CI_RUNNER now only chooses the selector host, not the workload destination.
 on:
   workflow_call:
     secrets:
@@ -9,18 +9,26 @@ on:
         required: false
     outputs:
       runs-on:
-        description: runs-on に渡す JSON 文字列
+        description: JSON for Docker-free jobs
         value: ${{ jobs.select.outputs.runs-on }}
+      docker-runs-on:
+        description: JSON for jobs requiring a Docker daemon
+        value: ${{ jobs.select.outputs.docker-runs-on }}
+
+permissions:
+  contents: read
 
 jobs:
   select:
-    runs-on: ubuntu-latest
+    runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-latest' || vars.CI_SELECTOR_RUNNER || vars.CI_RUNNER || 'ubuntu-latest' }}
     timeout-minutes: 3
+    continue-on-error: true
     permissions: {}
     outputs:
       runs-on: ${{ steps.select.outputs.runs-on }}
+      docker-runs-on: ${{ steps.select.outputs.docker-runs-on }}
     steps:
-      # checkout しない。状態確認のトークンをリポジトリのコードに渡さないため。
+      # No checkout: the status token never reaches repository code.
       - uses: actions/github-script@v8
         id: select
         env:
@@ -28,18 +36,23 @@ jobs:
         with:
           github-token: ${{ secrets.runner-status-token || github.token }}
           script: |
+            const KUBECAMP = 'zli-kubecamp-no-docker';
             const SCALE_SET = 'zli-k8s';
-            const use = (runsOn, reason) => {
+            const HOSTED = 'ubuntu-latest';
+            const MAX_RUNNERS = 2; // maxRunners in zoo2-infra
+            const use = (runsOn, dockerRunsOn, reason) => {
               core.setOutput('runs-on', JSON.stringify(runsOn));
-              core.info(`${runsOn}: ${reason}`);
+              core.setOutput('docker-runs-on', JSON.stringify(dockerRunsOn));
+              core.info(`Docker-free: ${runsOn}; Docker: ${dockerRunsOn}: ${reason}`);
             };
             const pr = context.payload.pull_request;
-            // fork の PR のコードは privileged な self-hosted runner で動かさない。
+            // Fork code uses hosted runners; pull_request_target never checks out PR code.
             if (context.eventName === 'pull_request' && pr.head.repo.full_name !== `${context.repo.owner}/${context.repo.repo}`) {
-              return use('ubuntu-latest', 'fork pull request');
+              return use(HOSTED, HOSTED, 'fork pull request');
             }
+            // Unknown availability keeps the first eligible self-hosted pool.
             if (process.env.HAS_STATUS_TOKEN !== 'true') {
-              return use('ubuntu-latest', 'RUNNER_STATUS_TOKEN is not set');
+              return use(KUBECAMP, SCALE_SET, 'RUNNER_STATUS_TOKEN is not set');
             }
             let runners;
             try {
@@ -48,15 +61,14 @@ jobs:
               });
             } catch (error) {
               core.warning(`Runner status unavailable (${error.status || 'network error'})`);
-              return use('ubuntu-latest', 'runner status unavailable');
+              return use(KUBECAMP, SCALE_SET, 'runner status unavailable');
             }
-            // minRunners: 1 なので、scale set が動いていれば少なくとも1台は online になる。
-            const online = runners.filter(r => r.status === 'online' &&
-              (r.name.startsWith(`${SCALE_SET}-`) || r.labels.some(l => l.name === SCALE_SET)));
-            if (online.length === 0) {
-              return use('ubuntu-latest', `no online ${SCALE_SET} runner`);
-            }
-            if (online.every(r => r.busy)) {
-              return use('ubuntu-latest', `all ${online.length} online ${SCALE_SET} runners are busy`);
-            }
-            return use(SCALE_SET, `${online.length} online, ${online.filter(r => !r.busy).length} idle`);
+            const online = runners.filter(r => r.status === 'online');
+            const hasLabel = (r, name) => (r.labels || []).some(l => l.name === name);
+            const kubecamp = online.filter(r => hasLabel(r, KUBECAMP) && !r.busy);
+            const arc = online.filter(r => r.name.startsWith(`${SCALE_SET}-`) || hasLabel(r, SCALE_SET));
+            // One busy ARC runner can still scale to two. Kubecamp has fixed CronJob slots.
+            const arcAvailable = arc.some(r => !r.busy) || (arc.length > 0 && arc.length < MAX_RUNNERS);
+            const dockerRunsOn = arcAvailable ? SCALE_SET : HOSTED;
+            return use(kubecamp.length > 0 ? KUBECAMP : dockerRunsOn, dockerRunsOn,
+              `${kubecamp.length} idle kubecamp, ${arc.length} online ARC, ${arc.filter(r => !r.busy).length} idle ARC`);

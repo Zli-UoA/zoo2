@@ -21,7 +21,7 @@ jobs:
     needs: runner
     # Fork PRs publish no images, so a preview of them would only fail and take a slot.
     if: github.event.pull_request.head.repo.full_name == github.repository
-    runs-on: ${{ fromJSON(needs.runner.outputs.runs-on) }}
+    runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-latest' || fromJSON(needs.runner.outputs.runs-on || '"zli-kubecamp-no-docker"') }}
     permissions:
       pull-requests: write
       issues: write

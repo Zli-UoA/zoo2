@@ -17,7 +17,7 @@ jobs:
     needs: runner
     # Fork PRs cannot access the Cloudflare secrets needed by the deploy job.
     if: github.event.pull_request.head.repo.full_name == github.repository
-    runs-on: ${{ fromJSON(needs.runner.outputs.runs-on) }}
+    runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-latest' || fromJSON(needs.runner.outputs.runs-on || '"zli-kubecamp-no-docker"') }}
     timeout-minutes: 15
     defaults:
       run:
@@ -56,14 +56,14 @@ jobs:
           if-no-files-found: error
 
   deploy:
-    needs: build
+    needs: [runner, build]
     # Serialize alias updates without canceling an active or pending deployment.
     concurrency:
       group: storybook-preview-deploy-${{ github.event.pull_request.number }}
       cancel-in-progress: false
       queue: max
-    # Use a fresh hosted runner: no PR scripts or dependencies run with secrets.
-    runs-on: ubuntu-latest
+    # Each selected self-hosted runner is ephemeral; no PR code runs with secrets.
+    runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-latest' || fromJSON(needs.runner.outputs.runs-on || '"zli-kubecamp-no-docker"') }}
     timeout-minutes: 10
     permissions:
       contents: read

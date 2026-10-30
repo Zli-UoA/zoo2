@@ -26,7 +26,7 @@ jobs:
 
   cleanup:
     needs: runner
-    runs-on: ${{ fromJSON(needs.runner.outputs.runs-on) }}
+    runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-latest' || fromJSON(needs.runner.outputs.runs-on || '"zli-kubecamp-no-docker"') }}
     steps:
       # Never check out the PR head in this privileged workflow.
       - uses: actions/checkout@v7

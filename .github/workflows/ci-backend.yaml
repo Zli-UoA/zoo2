@@ -15,7 +15,7 @@ on:
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
-# runner ジョブが zli-k8s（self-hosted）か GitHub-hosted を選ぶ（select-runner.yaml）。
+# runner ジョブがDocker不要用とDocker必須用の実行先を選びます。
 jobs:
   runner:
     uses: ./.github/workflows/select-runner.yaml
@@ -24,7 +24,7 @@ jobs:
 
   build:
     needs: runner
-    runs-on: ${{ fromJSON(needs.runner.outputs.runs-on) }}
+    runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-latest' || fromJSON(needs.runner.outputs.runs-on || '"zli-kubecamp-no-docker"') }}
     defaults:
       run:
         working-directory: ./backend
@@ -53,7 +53,7 @@ jobs:
 
   lint:
     needs: runner
-    runs-on: ${{ fromJSON(needs.runner.outputs.runs-on) }}
+    runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-latest' || fromJSON(needs.runner.outputs.runs-on || '"zli-kubecamp-no-docker"') }}
     defaults:
       run:
         working-directory: ./backend
@@ -85,7 +85,7 @@ jobs:
 
   unit-test:
     needs: runner
-    runs-on: ${{ fromJSON(needs.runner.outputs.runs-on) }}
+    runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-latest' || fromJSON(needs.runner.outputs.runs-on || '"zli-kubecamp-no-docker"') }}
     defaults:
       run:
         working-directory: ./backend
@@ -113,7 +113,7 @@ jobs:
 
   deploy-image:
     needs: runner
-    runs-on: ${{ fromJSON(needs.runner.outputs.runs-on) }}
+    runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-latest' || fromJSON(needs.runner.outputs.docker-runs-on || '"zli-k8s"') }}
     # A cold build also needs time to extract and save the cache mounts.
     timeout-minutes: 60
     env:
@@ -245,7 +245,7 @@ jobs:
       S3_PORT: "0"
       S3_CONSOLE_PORT: "0"
     needs: runner
-    runs-on: ${{ fromJSON(needs.runner.outputs.runs-on) }}
+    runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-latest' || fromJSON(needs.runner.outputs.docker-runs-on || '"zli-k8s"') }}
     defaults:
       run:
         working-directory: ./backend
