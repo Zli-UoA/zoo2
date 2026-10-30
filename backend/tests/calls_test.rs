@@ -594,3 +594,61 @@ async fn test_call_notify_payload_size_limit_and_active_calls_isolation() -> any
 
     Ok(())
 }
+
+#[tokio::test]
+async fn test_local_session_overwrite_and_unauthorized_unregister_prevention() -> anyhow::Result<()>
+{
+    let registry = backend::routes::calls::CallRegistry::default();
+    let (tx1, _rx1) = tokio::sync::mpsc::channel(16);
+    let (tx2, _rx2) = tokio::sync::mpsc::channel(16);
+
+    let session_id = uuid::Uuid::new_v4();
+    let channel_id = "chan-1".to_string();
+    let alice = "alice".to_string();
+    let mallory = "mallory".to_string();
+
+    // 1. Alice がセッションを登録
+    let reg1 = registry
+        .try_register_local_session(session_id, channel_id.clone(), alice.clone(), tx1)
+        .await;
+    assert!(reg1.is_ok(), "Initial registration should succeed");
+
+    // 2. Mallory が同一 session_id で仮登録を試行 -> Conflict で拒否され上書きされないこと ([P1])
+    let reg2 = registry
+        .try_register_local_session(session_id, channel_id.clone(), mallory.clone(), tx2)
+        .await;
+    assert!(
+        reg2.is_err(),
+        "Second registration with same session_id should fail with conflict"
+    );
+
+    // 3. Mallory が unregister_local_session_if_user を呼んでも Alice のセッションは削除されないこと ([P1])
+    registry
+        .unregister_local_session_if_user(&session_id, &mallory)
+        .await;
+
+    // 依然として session_id は Alice のものとして残っている（再登録は拒否される）
+    let (tx3, _rx3) = tokio::sync::mpsc::channel(16);
+    let reg3 = registry
+        .try_register_local_session(session_id, channel_id.clone(), mallory.clone(), tx3)
+        .await;
+    assert!(
+        reg3.is_err(),
+        "Alice's session should still be registered and not deleted by Mallory"
+    );
+
+    // 4. 正当な登録者 Alice が解除すれば削除されること
+    registry
+        .unregister_local_session_if_user(&session_id, &alice)
+        .await;
+    let (tx4, _rx4) = tokio::sync::mpsc::channel(16);
+    let reg4 = registry
+        .try_register_local_session(session_id, channel_id, alice, tx4)
+        .await;
+    assert!(
+        reg4.is_ok(),
+        "After legitimate user unregisters, registration should succeed again"
+    );
+
+    Ok(())
+}

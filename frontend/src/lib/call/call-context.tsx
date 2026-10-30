@@ -133,6 +133,8 @@ export function CallProvider({ config: explicitConfig, children }: CallProviderP
   const pendingEarlyCandidatesRef = useRef<Map<string, RTCIceCandidateInit[]>>(new Map());
   const iceServersRef = useRef<RTCIceServer[]>([{ urls: "stun:stun.l.google.com:19302" }]);
   const callGenerationRef = useRef(0);
+  const leftSessionIdsRef = useRef<Set<string>>(new Set());
+  const cachedAuthHeadersRef = useRef<Headers | null>(null);
 
   const sendSignalWithRetry = useCallback(
     async (
@@ -201,6 +203,7 @@ export function CallProvider({ config: explicitConfig, children }: CallProviderP
     peersRef.current.clear();
     pendingEarlyCandidatesRef.current.clear();
     sessionUserMapRef.current.clear();
+    leftSessionIdsRef.current.clear();
   }, []);
 
   const closeMedia = useCallback(() => {
@@ -267,7 +270,7 @@ export function CallProvider({ config: explicitConfig, children }: CallProviderP
     }
   }, [apiClient, cleanupPeers, closeMedia, pollActiveCalls]);
 
-  // タブ閉じ・アンロード時の退出処理 (fetch keepalive + 認証ヘッダー)
+  // タブ閉じ・アンロード時の退出処理 (fetch keepalive + キャッシュ済み認証ヘッダーによる同期発火 [P2])
   useEffect(() => {
     const handleUnload = () => {
       const channelId = currentChannelIdRef.current;
@@ -275,18 +278,18 @@ export function CallProvider({ config: explicitConfig, children }: CallProviderP
       if (channelId && sessionId) {
         const payload = JSON.stringify({ session_id: sessionId });
         const url = joinUrl(config.apiBaseUrl, `/api/channels/${channelId}/call/leave`);
-        void (async () => {
-          try {
-            const headers = await buildAuthHeaders({ devUserId: config.devUserId });
-            headers.set("Content-Type", "application/json");
-            void fetch(url, {
-              method: "POST",
-              headers,
-              body: payload,
-              keepalive: true,
-            });
-          } catch {}
-        })();
+        const headers = cachedAuthHeadersRef.current
+          ? new Headers(cachedAuthHeadersRef.current)
+          : new Headers();
+        headers.set("Content-Type", "application/json");
+        try {
+          void fetch(url, {
+            method: "POST",
+            headers,
+            body: payload,
+            keepalive: true,
+          });
+        } catch {}
       }
     };
 
@@ -296,7 +299,7 @@ export function CallProvider({ config: explicitConfig, children }: CallProviderP
       window.removeEventListener("beforeunload", handleUnload);
       window.removeEventListener("pagehide", handleUnload);
     };
-  }, [config.apiBaseUrl, config.devUserId]);
+  }, [config.apiBaseUrl]);
 
   const toggleMute = useCallback(async () => {
     const channelId = currentChannelIdRef.current;
@@ -345,6 +348,7 @@ export function CallProvider({ config: explicitConfig, children }: CallProviderP
     const interval = window.setInterval(() => {
       const channelId = currentChannelIdRef.current;
       const sessionId = sessionIdRef.current;
+      const sentGen = callGenerationRef.current;
       if (channelId && sessionId) {
         void apiClient
           .request(`/api/channels/${channelId}/call/heartbeat`, {
@@ -352,6 +356,14 @@ export function CallProvider({ config: explicitConfig, children }: CallProviderP
             body: { session_id: sessionId },
           })
           .catch((err: unknown) => {
+            // 送信時の世代・セッション・チャンネルが現在の通話と一致する場合のみ退出処理を実行 ([P1])
+            if (
+              callGenerationRef.current !== sentGen ||
+              sessionIdRef.current !== sessionId ||
+              currentChannelIdRef.current !== channelId
+            ) {
+              return;
+            }
             const status =
               err instanceof ApiError ? err.status : (err as { status?: number })?.status;
             if (status === 404 || status === 403) {
@@ -516,6 +528,7 @@ export function CallProvider({ config: explicitConfig, children }: CallProviderP
       try {
         const authHeaders = await buildAuthHeaders({ devUserId: config.devUserId });
         if (callGenerationRef.current !== currentGen) return;
+        cachedAuthHeadersRef.current = new Headers(authHeaders);
         authHeaders.set("Accept", "text/event-stream");
 
         const streamUrl = joinUrl(
@@ -593,11 +606,29 @@ export function CallProvider({ config: explicitConfig, children }: CallProviderP
                 { urls: "stun:stun.l.google.com:19302" },
               ];
               iceServersRef.current = ice;
-              setParticipants(roomParticipants);
 
-              for (const p of roomParticipants) {
+              // 先行して受信した participant_left / participant_joined とマージ整合性を担保 ([P2])
+              const leftSessionIds = leftSessionIdsRef.current;
+              const validRoomParticipants = roomParticipants.filter(
+                (p) => !leftSessionIds.has(p.session_id),
+              );
+
+              for (const p of validRoomParticipants) {
                 sessionUserMapRef.current.set(p.session_id, p.user_id);
               }
+
+              setParticipants((prev) => {
+                const map = new Map<string, CallParticipant>();
+                for (const p of validRoomParticipants) {
+                  map.set(p.session_id, p);
+                }
+                for (const p of prev) {
+                  if (!map.has(p.session_id) && !leftSessionIds.has(p.session_id)) {
+                    map.set(p.session_id, p);
+                  }
+                }
+                return Array.from(map.values());
+              });
 
               // 接続完了前に設定されたミュート状態をバックエンドに即時反映 ([P2])
               if (isMutedRef.current) {
@@ -612,7 +643,7 @@ export function CallProvider({ config: explicitConfig, children }: CallProviderP
               // 同時参加時の Offer 衝突 (Glare) 回避 & 冪等性ガード ([P2]):
               // 既に PeerConnection が存在する場合は重複作成しない。
               // セッション ID の辞書順比較で小さい側のみが Offer を送信する。
-              for (const p of roomParticipants) {
+              for (const p of validRoomParticipants) {
                 if (p.session_id === mySessionId) continue;
                 if (peersRef.current.has(p.session_id)) continue;
                 if (mySessionId.localeCompare(p.session_id) < 0) {
@@ -666,6 +697,7 @@ export function CallProvider({ config: explicitConfig, children }: CallProviderP
             } else if (eventType === "participant_left") {
               const leftSid = data.session_id as string;
               if (leftSid) {
+                leftSessionIdsRef.current.add(leftSid);
                 const entry = peersRef.current.get(leftSid);
                 if (entry) {
                   entry.cleanupAudio?.();

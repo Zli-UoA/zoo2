@@ -312,19 +312,17 @@ impl CallRegistry {
                      LIMIT 100 FOR UPDATE SKIP LOCKED
                  )
                  RETURNING channel_id, session_id, user_id
-             ), notified AS (
-                 SELECT pg_notify(
-                     'zoo_call_events',
-                     json_build_object(
-                         'type', 'participant_left',
-                         'channel_id', channel_id,
-                         'session_id', session_id,
-                         'user_id', user_id
-                     )::text
-                 )
-                 FROM deleted
              )
-             SELECT 1 FROM deleted",
+             SELECT pg_notify(
+                 'zoo_call_events',
+                 json_build_object(
+                     'type', 'participant_left',
+                     'channel_id', channel_id,
+                     'session_id', session_id,
+                     'user_id', user_id
+                 )::text
+             )
+             FROM deleted",
         )
         .exec(&mut tx)
         .await?;
@@ -462,6 +460,29 @@ impl CallRegistry {
         }
     }
 
+    /// ローカルセッションを仮登録（既存エントリがあれば上書きを拒否）([P1])
+    pub async fn try_register_local_session(
+        &self,
+        session_id: Uuid,
+        channel_id: String,
+        user_id: String,
+        sender: mpsc::Sender<CallServerEvent>,
+    ) -> Result<(), AppError> {
+        let mut sessions = self.local_sessions.write().await;
+        if sessions.contains_key(&session_id) {
+            return Err(AppError::Conflict("Session ID is already in use".into()));
+        }
+        sessions.insert(
+            session_id,
+            LocalSession {
+                channel_id,
+                user_id,
+                sender,
+            },
+        );
+        Ok(())
+    }
+
     /// ローカルセッションを登録
     pub async fn register_local_session(
         &self,
@@ -479,6 +500,16 @@ impl CallRegistry {
                 sender,
             },
         );
+    }
+
+    /// 登録者の一致を確認した上でローカルセッションを解除 ([P1])
+    pub async fn unregister_local_session_if_user(&self, session_id: &Uuid, user_id: &str) {
+        let mut sessions = self.local_sessions.write().await;
+        if let Some(session) = sessions.get(session_id)
+            && session.user_id == user_id
+        {
+            sessions.remove(session_id);
+        }
     }
 
     /// ローカルセッションを解除
@@ -514,14 +545,22 @@ impl CallRegistry {
         Ok(())
     }
 
-    /// チャンネル削除時にルームを破棄する
+    /// チャンネル削除時にルームを破棄する ([P2] DB 上の存在レコードも即座に消去)
     pub async fn close_room(&self, db: &toasty::Db, channel_id: &str) {
+        let mut sessions = self.local_sessions.write().await;
+        sessions.retain(|_, s| s.channel_id != channel_id);
+        drop(sessions);
+
         let event = CallDistributedEvent::RoomClosed {
             channel_id: channel_id.to_string(),
         };
         let _ = Self::notify_event(db, &event).await;
-        let mut sessions = self.local_sessions.write().await;
-        sessions.retain(|_, s| s.channel_id != channel_id);
+
+        let mut db = db.clone();
+        let _ = toasty::sql::query("DELETE FROM call_presence WHERE channel_id = $1")
+            .bind(channel_id.to_string())
+            .exec(&mut db)
+            .await;
     }
 
     /// チャンネルからユーザーが脱退した際のクリーンアップ ([P1] 自インスタンス即時切断 & 通知アトミック保証)
@@ -537,19 +576,17 @@ impl CallRegistry {
                  DELETE FROM call_presence
                  WHERE channel_id = $1 AND user_id = $2
                  RETURNING session_id
-             ), notified AS (
-                 SELECT pg_notify(
-                     'zoo_call_events',
-                     json_build_object(
-                         'type', 'participant_left',
-                         'channel_id', $1,
-                         'session_id', session_id,
-                         'user_id', $2
-                     )::text
-                 )
-                 FROM deleted
              )
-             SELECT 1 FROM deleted",
+             SELECT pg_notify(
+                 'zoo_call_events',
+                 json_build_object(
+                     'type', 'participant_left',
+                     'channel_id', $1,
+                     'session_id', session_id,
+                     'user_id', $2
+                 )::text
+             )
+             FROM deleted",
         )
         .bind(channel_id.to_string())
         .bind(user_id.to_string())
@@ -597,7 +634,9 @@ impl SessionGuard {
         user_id: String,
         mut db: toasty::Db,
     ) {
-        registry.unregister_local_session(&session_id).await;
+        registry
+            .unregister_local_session_if_user(&session_id, &user_id)
+            .await;
 
         let del_res = toasty::sql::query(
             "DELETE FROM call_presence WHERE channel_id = $1 AND session_id = $2::uuid RETURNING session_id",
@@ -769,17 +808,17 @@ async fn call_stream(
     // 1. 期限切れレコードのクリーンアップ（通知付きで安全に実行）
     let _ = CallRegistry::sweep_stale_presence(&mut db).await;
 
-    // 2. 他者への公開前にローカル受信キューを作成・登録 ([P2] 参加イベント取りこぼし防止)
+    // 2. 他者への公開前にローカル受信キューを作成・仮登録 ([P1] 既存上書き拒否 & [P2] 参加イベント取りこぼし防止)
     let (tx_chan, rx) = mpsc::channel(256);
     state
         .call_registry
-        .register_local_session(
+        .try_register_local_session(
             query.session_id,
             channel_id.clone(),
             user.id.clone(),
             tx_chan.clone(),
         )
-        .await;
+        .await?;
 
     // 3. トランザクションを開始し、チャンネル行を排他ロックして同時参加・キックを直列化 ([P1])
     let mut tx = match db.transaction().await {
@@ -787,7 +826,7 @@ async fn call_stream(
         Err(e) => {
             state
                 .call_registry
-                .unregister_local_session(&query.session_id)
+                .unregister_local_session_if_user(&query.session_id, &user.id)
                 .await;
             return Err(AppError::from(e));
         }
@@ -825,7 +864,7 @@ async fn call_stream(
         Err(e) => {
             state
                 .call_registry
-                .unregister_local_session(&query.session_id)
+                .unregister_local_session_if_user(&query.session_id, &user.id)
                 .await;
             return Err(AppError::from(e));
         }
@@ -834,7 +873,7 @@ async fn call_stream(
     let Some(ch) = ch_info else {
         state
             .call_registry
-            .unregister_local_session(&query.session_id)
+            .unregister_local_session_if_user(&query.session_id, &user.id)
             .await;
         return Err(AppError::NotFound("Channel not found".into()));
     };
@@ -842,14 +881,14 @@ async fn call_stream(
     if ch.deleted_at.is_some() {
         state
             .call_registry
-            .unregister_local_session(&query.session_id)
+            .unregister_local_session_if_user(&query.session_id, &user.id)
             .await;
         return Err(AppError::NotFound("Channel not found".into()));
     }
     if ch.archive_at.is_some() {
         state
             .call_registry
-            .unregister_local_session(&query.session_id)
+            .unregister_local_session_if_user(&query.session_id, &user.id)
             .await;
         return Err(AppError::Forbidden("Channel is archived".into()));
     }
@@ -868,7 +907,7 @@ async fn call_stream(
             _ => {
                 state
                     .call_registry
-                    .unregister_local_session(&query.session_id)
+                    .unregister_local_session_if_user(&query.session_id, &user.id)
                     .await;
                 return Err(AppError::NotFound("Channel not found".into()));
             }
@@ -905,7 +944,7 @@ async fn call_stream(
         Err(e) => {
             state
                 .call_registry
-                .unregister_local_session(&query.session_id)
+                .unregister_local_session_if_user(&query.session_id, &user.id)
                 .await;
             if AppError::is_unique_violation(&e, None) {
                 return Err(AppError::Conflict("Session ID is already in use".into()));
@@ -917,7 +956,7 @@ async fn call_stream(
     if inserted_rows.is_empty() {
         state
             .call_registry
-            .unregister_local_session(&query.session_id)
+            .unregister_local_session_if_user(&query.session_id, &user.id)
             .await;
         return Err(AppError::Conflict(format!(
             "Call room is full (max {MAX_CALL_PARTICIPANTS} participants)"
@@ -947,7 +986,7 @@ async fn call_stream(
         Err(e) => {
             state
                 .call_registry
-                .unregister_local_session(&query.session_id)
+                .unregister_local_session_if_user(&query.session_id, &user.id)
                 .await;
             return Err(AppError::from(e));
         }
@@ -966,7 +1005,7 @@ async fn call_stream(
     if let Err(e) = tx.commit().await {
         state
             .call_registry
-            .unregister_local_session(&query.session_id)
+            .unregister_local_session_if_user(&query.session_id, &user.id)
             .await;
         return Err(AppError::from(e));
     }
@@ -983,7 +1022,7 @@ async fn call_stream(
     if verify_rows.as_ref().map(|r| r.is_empty()).unwrap_or(true) {
         state
             .call_registry
-            .unregister_local_session(&query.session_id)
+            .unregister_local_session_if_user(&query.session_id, &user.id)
             .await;
         return Err(AppError::NotFound("Call session was revoked".into()));
     }
@@ -1134,19 +1173,17 @@ async fn send_signal(
                  DELETE FROM call_presence
                  WHERE channel_id = $1 AND session_id = $2::uuid
                  RETURNING user_id
-             ), notified AS (
-                 SELECT pg_notify(
-                     'zoo_call_events',
-                     json_build_object(
-                         'type', 'participant_left',
-                         'channel_id', $1,
-                         'session_id', $2::text,
-                         'user_id', user_id
-                     )::text
-                 )
-                 FROM deleted
              )
-             SELECT 1 FROM deleted",
+             SELECT pg_notify(
+                 'zoo_call_events',
+                 json_build_object(
+                     'type', 'participant_left',
+                     'channel_id', $1,
+                     'session_id', $2::text,
+                     'user_id', user_id
+                 )::text
+             )
+             FROM deleted",
         )
         .bind(channel_id.clone())
         .bind(body.target_session_id.to_string())
