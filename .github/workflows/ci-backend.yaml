@@ -3,6 +3,7 @@ on:
   push:
     paths:
       - "backend/**"
+      - "docs/slack-event-coverage.json"
       - "infra/db/**"
       - "infra/Dockerfile-backend-deploy*"
       - "infra/Dockerfile-migrate-deploy*"
@@ -113,15 +114,46 @@ jobs:
   deploy-image:
     needs: runner
     runs-on: ${{ fromJSON(needs.runner.outputs.runs-on) }}
-    timeout-minutes: 30
+    # A cold build also needs time to extract and save the cache mounts.
+    timeout-minutes: 60
     env:
       POSTGRES_PASSWORD: deploy-image-test
+      COMPOSE_PROJECT_NAME: zoo-ci-image-${{ github.run_id }}-${{ github.run_attempt }}
     steps:
       - name: Checkout
         uses: actions/checkout@v7
 
+      - name: Set up Docker Buildx
+        id: buildx
+        uses: docker/setup-buildx-action@v4
+        with:
+          driver-opts: default-load=true
+
+      - name: Restore Rust cache mounts
+        id: rust-cache
+        uses: actions/cache@v6
+        with:
+          path: .buildkit-cache
+          key: ci-rust-image-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('infra/Dockerfile-backend-deploy') }}-${{ hashFiles('backend/Cargo.lock') }}
+          restore-keys: |
+            ci-rust-image-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('infra/Dockerfile-backend-deploy') }}-
+
+      - name: Inject Rust cache mounts
+        uses: reproducible-containers/buildkit-cache-dance@v3
+        with:
+          builder: ${{ steps.buildx.outputs.name }}
+          skip-extraction: ${{ steps.rust-cache.outputs.cache-hit }}
+          cache-map: |
+            {
+              ".buildkit-cache/registry": "/usr/local/cargo/registry",
+              ".buildkit-cache/git": "/usr/local/cargo/git",
+              ".buildkit-cache/target": "/app/target"
+            }
+
       - name: Build production backend image
-        run: docker compose --project-directory . -f infra/compose.stg.yaml build backend
+        run: |
+          docker compose --project-directory . -f infra/compose.stg.yaml \
+            build --builder "${{ steps.buildx.outputs.name }}" backend
 
       # compose の backend サービスは ENVIRONMENT=production なので、
       # OIDC 未設定・空文字のままでは起動しないことを確認する。
@@ -188,6 +220,10 @@ jobs:
         run: docker compose --project-directory . -f infra/compose.stg.yaml down -v --remove-orphans
 
   e2e:
+    env:
+      COMPOSE_PROJECT_NAME: zoo-ci-backend-${{ github.run_id }}-${{ github.run_attempt }}
+      POSTGRES_PORT: "0"
+      ELECTRIC_PORT: "0"
     needs: runner
     runs-on: ${{ fromJSON(needs.runner.outputs.runs-on) }}
     defaults:
@@ -213,21 +249,22 @@ jobs:
 
       - name: Start PostgreSQL and Electric
         working-directory: .
-        run: docker compose -f infra/db/compose.yml up -d --wait
+        run: |
+          docker compose -f infra/db/compose.yml up -d --wait
+          postgres_port=$(docker compose -f infra/db/compose.yml port postgres 5432)
+          electric_port=$(docker compose -f infra/db/compose.yml port electric 3000)
+          echo "DATABASE_URL=postgres://root:password@${postgres_port}/zoo?sslmode=disable" >> "$GITHUB_ENV"
+          echo "ELECTRIC_URL=http://${electric_port}" >> "$GITHUB_ENV"
 
       - name: Setup Atlas
         uses: ariga/setup-atlas@v0
 
       - name: Apply migrations
         working-directory: ./infra
-        env:
-          DATABASE_URL: postgres://root:password@localhost:5432/zoo?sslmode=disable
         run: atlas migrate apply --config file://db/atlas.hcl --env local
 
       - name: e2e test
         env:
-          DATABASE_URL: postgres://root:password@localhost:5432/zoo?sslmode=disable
-          ELECTRIC_URL: http://localhost:3000
           DEV_AUTH_ENABLED: "true"
         run: |
           cargo test --test '*'

@@ -303,7 +303,7 @@ impl CallRegistry {
     /// DB 上の期限切れセッションを検出し削除・通知する ([P1] アトミック整合性保証)
     pub async fn sweep_stale_presence(db: &mut toasty::Db) -> Result<(), AppError> {
         let mut tx = db.transaction().await?;
-        let _ = toasty::sql::query(
+        toasty::sql::statement(
             "WITH deleted AS (
                  DELETE FROM call_presence
                  WHERE ctid IN (
@@ -571,7 +571,7 @@ impl CallRegistry {
         drop(sessions);
 
         let mut db = db.clone();
-        let _ = toasty::sql::query(
+        let _ = toasty::sql::statement(
             "WITH deleted AS (
                  DELETE FROM call_presence
                  WHERE channel_id = $1 AND user_id = $2
@@ -1168,7 +1168,7 @@ async fn send_signal(
             .unregister_local_session(&body.target_session_id)
             .await;
 
-        let _ = toasty::sql::query(
+        let _ = toasty::sql::statement(
             "WITH deleted AS (
                  DELETE FROM call_presence
                  WHERE channel_id = $1 AND session_id = $2::uuid

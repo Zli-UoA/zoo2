@@ -7,6 +7,8 @@ import {
   type ReactNode,
 } from "react";
 
+import { useTranslation } from "react-i18next";
+
 import type { AppConfig } from "../../lib/config";
 import { getCurrentUserStore } from "../../lib/currentUser";
 import { getCollections, type CollectionsBundle } from "../../lib/electric/collections";
@@ -53,6 +55,7 @@ function describeError(error: unknown): string {
  * 入力中のフォームを消さず、別ユーザーのキャッシュも混ぜない。
  */
 export function OfflineProvider({ config, children }: { config: AppConfig; children: ReactNode }) {
+  const { t } = useTranslation();
   const isOnline = useOnlineStatus();
   const userStore = getCurrentUserStore(config);
   const subscribe = useCallback(
@@ -67,6 +70,7 @@ export function OfflineProvider({ config, children }: { config: AppConfig; child
   );
   // オフラインのキャッシュ表示は /me の完了に依存させない。
   const waitingForUser = Boolean(config.oidc && isOnline && currentUserLoading);
+  const userUnavailable = Boolean(config.oidc && isOnline && !currentUserLoading && !currentUserId);
   const [retryToken, setRetryToken] = useState(0);
   const [ready, setReady] = useState<ReadyState | null>(null);
 
@@ -128,17 +132,18 @@ export function OfflineProvider({ config, children }: { config: AppConfig; child
     }
   }, [currentUserId]);
 
-  const namespace = resolveOfflineNamespace({
-    devUserId: config.devUserId,
-    currentUserId,
-  });
+  // オンラインで本人を確認できない場合は、前ユーザーのキャッシュを開かない。
+  const namespace =
+    config.oidc && isOnline && !currentUserId
+      ? "anonymous"
+      : resolveOfflineNamespace({ devUserId: config.devUserId, currentUserId });
   const key = `${namespace}:${retryToken}`;
 
   useEffect(() => {
     let cancelled = false;
     setReady(null);
     // Do not mount an anonymous shell that will discard open forms when /me resolves.
-    if (waitingForUser) return;
+    if (waitingForUser || userUnavailable) return;
     void (async () => {
       let persistence = null;
       let persistenceStatus: OfflinePersistenceStatus = "unavailable";
@@ -163,7 +168,7 @@ export function OfflineProvider({ config, children }: { config: AppConfig; child
     return () => {
       cancelled = true;
     };
-  }, [config, namespace, retryToken, key, waitingForUser]);
+  }, [config, namespace, retryToken, key, waitingForUser, userUnavailable]);
 
   const retryPersistence = useCallback(() => setRetryToken((token) => token + 1), []);
   const clearUserData = useCallback(async () => {
@@ -186,6 +191,17 @@ export function OfflineProvider({ config, children }: { config: AppConfig; child
     }),
     [clearUserData, isOnline, namespace, ready, retryPersistence],
   );
+
+  if (userUnavailable) {
+    return (
+      <div role="alert" className="flex h-dvh flex-col items-center justify-center gap-3 p-6">
+        <p>{t("offline.userErrorTitle")}</p>
+        <button type="button" onClick={() => void userStore.ensureLoaded()}>
+          {t("offline.retry")}
+        </button>
+      </div>
+    );
+  }
 
   if (waitingForUser || !ready || ready.key !== key) {
     return <ShellSkeleton />;

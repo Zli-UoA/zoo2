@@ -8,6 +8,8 @@ use thiserror::Error;
 
 #[derive(Debug, Error)]
 pub enum AppError {
+    #[error("Rate limit exceeded")]
+    RateLimited,
     #[error("Database error: {0}")]
     Database(toasty::Error),
 
@@ -51,6 +53,9 @@ impl AppError {
                     return AppError::Conflict(
                         "Resource already exists or unique constraint was violated".to_string(),
                     );
+                }
+                if *code == tokio_postgres::error::SqlState::CHECK_VIOLATION {
+                    return AppError::BadRequest("Operation violates a resource constraint".into());
                 }
                 if *code == tokio_postgres::error::SqlState::FOREIGN_KEY_VIOLATION {
                     tracing::warn!("Database foreign key constraint violated (SQLSTATE 23503)");
@@ -128,6 +133,10 @@ impl From<toasty::Error> for AppError {
 impl IntoResponse for AppError {
     fn into_response(self) -> Response {
         let (status, message) = match &self {
+            AppError::RateLimited => (
+                StatusCode::TOO_MANY_REQUESTS,
+                "Rate limit exceeded".to_string(),
+            ),
             AppError::Unauthorized(msg) => (StatusCode::UNAUTHORIZED, msg.clone()),
             AppError::BadGateway(msg) => (StatusCode::BAD_GATEWAY, msg.clone()),
             AppError::ServiceUnavailable(msg) => (StatusCode::SERVICE_UNAVAILABLE, msg.clone()),
@@ -152,7 +161,13 @@ impl IntoResponse for AppError {
             "error": message,
         }));
 
-        (status, body).into_response()
+        let mut response = (status, body).into_response();
+        if status == StatusCode::TOO_MANY_REQUESTS {
+            response
+                .headers_mut()
+                .insert("retry-after", axum::http::HeaderValue::from_static("60"));
+        }
+        response
     }
 }
 

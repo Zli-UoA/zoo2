@@ -29,7 +29,6 @@ jobs:
           github-token: ${{ secrets.runner-status-token || github.token }}
           script: |
             const SCALE_SET = 'zli-k8s';
-            const MAX_RUNNERS = 4; // zoo2-infra の arc-runners の maxRunners
             const use = (runsOn, reason) => {
               core.setOutput('runs-on', JSON.stringify(runsOn));
               core.info(`${runsOn}: ${reason}`);
@@ -57,7 +56,7 @@ jobs:
             if (online.length === 0) {
               return use('ubuntu-latest', `no online ${SCALE_SET} runner`);
             }
-            if (online.length >= MAX_RUNNERS && online.every(r => r.busy)) {
-              return use('ubuntu-latest', `all ${MAX_RUNNERS} ${SCALE_SET} runners are busy`);
+            if (online.every(r => r.busy)) {
+              return use('ubuntu-latest', `all ${online.length} online ${SCALE_SET} runners are busy`);
             }
             return use(SCALE_SET, `${online.length} online, ${online.filter(r => !r.busy).length} idle`);

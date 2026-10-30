@@ -18,9 +18,8 @@ vi.mock("../../lib/electric/collections", () => ({
 vi.mock("../../hooks/useChannelAdmin", () => ({ describeApiError: () => "読み込みエラー" }));
 const hook = {
   id: "hook-1",
-  name: "GitHub",
-  path: "/api/webhooks/github/hook-1",
-  generic_path: "/api/webhooks/hook-1",
+  name: "Webhook",
+  path: "/api/webhooks/hook-1",
   secret: "initial-secret",
   created_at: "2026-10-23",
 };
@@ -30,6 +29,7 @@ const channel = {
   description: null,
   created_user_id: "owner",
   is_private: false,
+  is_dm: false,
   created_at: "2026-10-23",
   updated_at: null,
   archive_at: null,
@@ -86,16 +86,13 @@ describe("channel webhook management", () => {
   it("masks the Secret, copies exact values and reveals it on request", async () => {
     await mount();
     expect(document.querySelector('input[type="password"]')).not.toBeNull();
-    await flush(() =>
-      (document.querySelector('[aria-label="GitHub URLをコピー"]') as HTMLButtonElement).click(),
-    );
-    expect(copy).toHaveBeenCalledWith("https://zoo.example" + hook.path);
+    expect(document.querySelector('[aria-label="GitHub URLをコピー"]')).toBeNull();
     await flush(() =>
       (
         document.querySelector('[aria-label="共通Webhook URLをコピー"]') as HTMLButtonElement
       ).click(),
     );
-    expect(copy).toHaveBeenCalledWith("https://zoo.example" + hook.generic_path);
+    expect(copy).toHaveBeenCalledWith("https://zoo.example" + hook.path);
     await flush(() =>
       (document.querySelector('[aria-label="Secretをコピー"]') as HTMLButtonElement).click(),
     );
@@ -113,7 +110,7 @@ describe("channel webhook management", () => {
         .querySelector("form")!
         .dispatchEvent(new Event("submit", { bubbles: true, cancelable: true })),
     );
-    expect(api.post).toHaveBeenCalledWith("/api/channels/channel-1/webhooks", { name: "GitHub" });
+    expect(api.post).toHaveBeenCalledWith("/api/channels/channel-1/webhooks", { name: "Webhook" });
     api.post.mockResolvedValueOnce({ data: { ...hook, secret: "new-secret" } });
     await flush(() => button("Secretを再発行").click());
     expect(api.post).toHaveBeenCalledTimes(1);

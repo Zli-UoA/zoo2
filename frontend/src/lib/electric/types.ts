@@ -13,6 +13,9 @@ export type UserRow = {
   user_name: string;
   display_name: string;
   is_bot?: boolean;
+  app_id?: string | null;
+  avatar_url?: string | null;
+  bot_mentionable?: boolean;
   created_at: TimestampString;
   updated_at: TimestampString | null;
 };
@@ -23,6 +26,7 @@ export type ChannelRow = {
   description: string | null;
   created_user_id: string;
   is_private: boolean;
+  is_dm: boolean;
   created_at: TimestampString;
   updated_at: TimestampString | null;
   archive_at: TimestampString | null;
@@ -35,6 +39,10 @@ export type MessageRow = {
   channel_id: string;
   content: string;
   card?: string | null;
+  app_blocks?: string | null;
+  app_attachments?: string | null;
+  app_unfurls?: string | null;
+  app_origin_id?: string | null;
   created_at: TimestampString;
   updated_at: TimestampString | null;
   deleted_at: TimestampString | null;

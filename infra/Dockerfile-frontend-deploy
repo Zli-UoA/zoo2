@@ -50,6 +50,7 @@ COPY infra/frontend-entrypoint.sh /usr/local/bin/frontend-entrypoint.sh
 ENV NGINX_ENVSUBST_FILTER="^CSP_"
 # 既定は同一オリジンのみ。ステージングでは Kanidm のオリジンを渡す。
 ENV CSP_CONNECT_SRC=""
+ENV CSP_APP_IMAGE_SRC=""
 ENTRYPOINT ["/usr/local/bin/frontend-entrypoint.sh"]
 CMD ["nginx", "-g", "daemon off;"]
 EXPOSE 3000

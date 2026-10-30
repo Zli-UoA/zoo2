@@ -31,8 +31,10 @@ jobs:
     runs-on: ${{ fromJSON(needs.runner.outputs.runs-on) }}
     timeout-minutes: 30
     env:
-      DATABASE_URL: postgres://root:password@localhost:5432/zoo?sslmode=disable
-      ELECTRIC_URL: http://127.0.0.1:3000
+      # Each job owns its containers and dynamically assigned host ports.
+      COMPOSE_PROJECT_NAME: zoo-ci-oidc-${{ github.run_id }}-${{ github.run_attempt }}
+      POSTGRES_PORT: "0"
+      ELECTRIC_PORT: "0"
       # 本番同等の認証経路（Bearer + JWKS）を通す。dev の X-Dev-User は使わない。
       ENVIRONMENT: production
       DEV_AUTH_ENABLED: "false"
@@ -112,6 +114,10 @@ jobs:
           cat "$RUNNER_TEMP/compose-up.log"
           # Idempotent: fails here if a service did not become healthy.
           docker compose -f infra/db/compose.yml up -d --wait
+          postgres_port=$(docker compose -f infra/db/compose.yml port postgres 5432)
+          electric_port=$(docker compose -f infra/db/compose.yml port electric 3000)
+          echo "DATABASE_URL=postgres://root:password@${postgres_port}/zoo?sslmode=disable" >> "$GITHUB_ENV"
+          echo "ELECTRIC_URL=http://${electric_port}" >> "$GITHUB_ENV"
 
       - name: Setup Atlas
         uses: ariga/setup-atlas@v0
@@ -137,7 +143,10 @@ jobs:
 
       - name: Backend logs
         if: failure()
-        run: cat /tmp/backend.log
+        working-directory: .
+        run: |
+          if [ -f /tmp/backend.log ]; then cat /tmp/backend.log; fi
+          docker compose -f infra/db/compose.yml logs postgres electric
 
       - name: Upload Playwright artifacts
         if: failure()
@@ -148,3 +157,8 @@ jobs:
             frontend/test-results
             frontend/playwright-report
           retention-days: 7
+
+      - name: Stop containers
+        if: always()
+        working-directory: .
+        run: docker compose -f infra/db/compose.yml down -v --remove-orphans

@@ -2,6 +2,8 @@ import { useRouterState } from "@tanstack/react-router";
 import { cn } from "cn";
 import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
 
+import { usePresence, useConversationView } from "../../hooks/usePresence";
+import { AppSurfaceHost } from "../chat/AppSurfaceHost";
 import { useActiveChannels } from "../../hooks/useRealtime";
 import { MfmChannelsProvider } from "../chat/messages/MfmChannels";
 import { CallBar } from "../chat/CallBar";
@@ -30,6 +32,7 @@ import { useVisualViewport } from "./useVisualViewport";
  * ルート側でマウント後の一度だけレンダリングする（SSR では呼ばない）。
  */
 export function AppShell({ children }: { children: ReactNode }) {
+  usePresence();
   const viewportRef = useVisualViewport();
   const [pane, setPane] = useState<ShellPane>("sidebar");
   const [membersOpen, setMembersOpen] = useState(false);
@@ -53,10 +56,21 @@ export function AppShell({ children }: { children: ReactNode }) {
       return null;
     },
   });
+  useConversationView(selectedChannelId);
   const selectedChannel = useMemo(
     () => channels.find((channel) => channel.id === selectedChannelId) ?? null,
     [channels, selectedChannelId],
   );
+  const membersChannel = selectedChannel && !selectedChannel.is_dm ? selectedChannel : null;
+
+  const [prevSelectedChannelIsDm, setPrevSelectedChannelIsDm] = useState(false);
+  const selectedChannelIsDm = selectedChannel?.is_dm ?? false;
+  if (prevSelectedChannelIsDm !== selectedChannelIsDm) {
+    setPrevSelectedChannelIsDm(selectedChannelIsDm);
+    if (selectedChannelIsDm) {
+      setMembersOpen(false);
+    }
+  }
 
   // チャンネル・通知を開いたら狭幅でもメイン画面へ、ホームではサイドバーへ戻す。
   useEffect(() => {
@@ -129,6 +143,7 @@ export function AppShell({ children }: { children: ReactNode }) {
           className="fixed inset-x-0 top-0 flex h-dvh w-full overflow-hidden bg-background text-foreground"
         >
           <OfflineBanner />
+          <AppSurfaceHost />
           <LeftRail />
           <ChannelSidebar
             channels={channels}
@@ -141,15 +156,15 @@ export function AppShell({ children }: { children: ReactNode }) {
           </main>
           {/* 表示は CSS（`hidden lg:flex`）が決める。狭幅でダイアログと二重に
             マウントしないよう、マウントだけ `isWide` で抑える。 */}
-          {isWide && membersOpen && selectedChannel ? (
+          {isWide && membersOpen && membersChannel ? (
             <MembersPanel
-              channel={selectedChannel}
+              channel={membersChannel}
               className="hidden w-72 shrink-0 border-l lg:flex xl:w-80"
             />
           ) : null}
-          {selectedChannel ? (
+          {membersChannel ? (
             <MembersDialog
-              channel={selectedChannel}
+              channel={membersChannel}
               open={membersOpen && !isWide}
               onOpenChange={setMembersOpen}
             />

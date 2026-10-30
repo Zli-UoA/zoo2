@@ -14,6 +14,7 @@ export interface ChannelResponse {
   description: string | null;
   created_user_id: string;
   is_private: boolean;
+  is_dm: boolean;
   created_at: TimestampString;
   updated_at: TimestampString | null;
   archive_at: TimestampString | null;
@@ -56,6 +57,11 @@ export interface CreateChannelRequest {
   channel_name: string;
   description?: string | null;
   is_private?: boolean;
+}
+
+export interface CreateDmRequest {
+  id?: string;
+  target_user_ids: string[];
 }
 
 export interface UpdateChannelRequest {

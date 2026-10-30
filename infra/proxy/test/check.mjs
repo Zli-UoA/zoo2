@@ -57,3 +57,6 @@ while (true) {
 assert.equal(tail, '{"last":true}]');
 console.log('PASS: routing, Bearer forwarding, X-Dev-User stripping, body forwarding, streaming and Electric headers');
 
+
+const appResponse = await request('/api/apps/v1/auth', {headers: {Authorization: 'Bearer valid-token'}});
+assert.equal(appResponse.headers.get('cache-control'), 'private, no-store');

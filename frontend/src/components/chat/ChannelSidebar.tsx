@@ -15,6 +15,7 @@ import { useMemo, useState } from "react";
 import { useUnreadChannels } from "../../hooks/useUnreadChannels";
 import { useCurrentUser } from "../../hooks/useCurrentUser";
 import { useCall } from "../../lib/call/call-context";
+import { useUsers } from "../../hooks/useRealtime";
 import { useCollections } from "../../lib/electric/collections-context";
 import type { ChannelRow } from "../../lib/electric/types";
 import { SyncStatus } from "../SyncStatus";
@@ -25,6 +26,8 @@ import { Skeleton } from "../ui/skeleton";
 import { ChannelBrowserDialog } from "./ChannelBrowserDialog";
 import { filterJoinedChannels } from "./channelSearch";
 import { CreateChannelDialog } from "./CreateChannelDialog";
+import { CreateDmDialog } from "./CreateDmDialog";
+import { DmSection } from "./DmSection";
 
 const SKELETON_ROWS = [0, 1, 2, 3, 4];
 
@@ -44,10 +47,12 @@ export function ChannelSidebar({
   const shell = useShell();
   const call = useCall();
   const { channelUsers } = useCollections();
+  const usersQuery = useUsers();
   const { currentUserId, isLoading: currentUserLoading } = useCurrentUser();
   const unreadChannelIds = useUnreadChannels(currentUserId);
   const [createOpen, setCreateOpen] = useState(false);
   const [browserOpen, setBrowserOpen] = useState(false);
+  const [dmOpen, setDmOpen] = useState(false);
 
   // 一覧の各チャンネルについて現在ユーザーの参加状態を出す。`channel_user` の
   // 購読は `getCollections()` が 1 本だけ持つため、ここで直接 live query を張っても
@@ -66,8 +71,16 @@ export function ChannelSidebar({
   // （解決前に空の一覧を一瞬出さない）。
   const sidebarLoading = loading || membershipsQuery.isLoading || currentUserLoading;
   const sidebarError = error || membershipsQuery.isError;
+  const regularChannels = useMemo(() => channels.filter((channel) => !channel.is_dm), [channels]);
   const sidebarChannels = useMemo(
-    () => filterJoinedChannels(channels, joinedChannelIds),
+    () => filterJoinedChannels(regularChannels, joinedChannelIds),
+    [regularChannels, joinedChannelIds],
+  );
+  const dmChannels = useMemo(
+    () =>
+      channels.filter(
+        (channel) => channel.is_dm && !channel.deleted_at && joinedChannelIds.has(channel.id),
+      ),
     [channels, joinedChannelIds],
   );
 
@@ -94,7 +107,7 @@ export function ChannelSidebar({
             aria-label={t("channels.browseTitle")}
             title={t("channels.browseTitle")}
             onClick={() => setBrowserOpen(true)}
-            disabled={sidebarLoading || channels.length === 0}
+            disabled={sidebarLoading || regularChannels.length === 0}
           >
             <SearchIcon />
           </Button>
@@ -115,7 +128,7 @@ export function ChannelSidebar({
             SKELETON_ROWS.map((row) => <Skeleton key={row} className="h-9 w-full rounded-lg" />)
           ) : sidebarError ? (
             <p className="px-2 py-1 text-xs text-destructive">{t("channels.loadError")}</p>
-          ) : channels.length === 0 ? (
+          ) : regularChannels.length === 0 ? (
             <div className="flex flex-col items-start gap-2 px-2 py-4">
               <p className="text-sm text-muted-foreground">{t("channels.empty")}</p>
               <Button variant="outline" size="sm" onClick={() => setCreateOpen(true)}>
@@ -199,6 +212,21 @@ export function ChannelSidebar({
             })
           )}
         </div>
+        <div className="mx-3 border-t" />
+        <DmSection
+          channels={dmChannels}
+          memberships={membershipsQuery.data ?? []}
+          users={usersQuery.data ?? []}
+          currentUserId={currentUserId}
+          loading={sidebarLoading || usersQuery.isLoading}
+          error={error || membershipsQuery.isError}
+          usersError={usersQuery.isError}
+          activeChannelId={shell.selectedChannelId}
+          unreadChannelIds={unreadChannelIds}
+          onCreate={() => setDmOpen(true)}
+          onOpen={() => shell.showChat()}
+          onReload={() => window.location.reload()}
+        />
       </ScrollArea>
 
       {/* 接続状態の表示は開発時の確認用。本番ビルドでは出さない。 */}
@@ -209,10 +237,11 @@ export function ChannelSidebar({
       ) : null}
 
       <CreateChannelDialog open={createOpen} onOpenChange={setCreateOpen} />
+      <CreateDmDialog open={dmOpen} onOpenChange={setDmOpen} />
       <ChannelBrowserDialog
         open={browserOpen}
         onOpenChange={setBrowserOpen}
-        channels={channels}
+        channels={regularChannels}
         joinedChannelIds={joinedChannelIds}
       />
     </aside>
