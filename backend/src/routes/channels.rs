@@ -632,6 +632,12 @@ pub(crate) async fn leave_channel(
     let mut tx = db.transaction().await?;
     crate::apps::events::actor_context(&mut tx, &auth_user.id).await?;
 
+    // 通話参加処理（call_stream）との同一行ロックによる直列化 ([P1])
+    let _ = toasty::sql::query("SELECT 1 FROM channels WHERE id = $1 FOR UPDATE")
+        .bind(id.clone())
+        .exec(&mut tx)
+        .await?;
+
     let channel = Channel::get_by_id(&mut tx, id.as_str())
         .await
         .map_err(|err| {
@@ -683,12 +689,20 @@ pub(crate) async fn leave_channel(
     .exec(&mut tx)
     .await?;
 
+    // 通話 presence の削除と退出通知を同一トランザクション内で不可分に実行 ([P1], [P2])
+    let _ = crate::routes::calls::CallRegistry::delete_user_presence_and_notify_tx(
+        &mut tx,
+        &id,
+        &auth_user.id,
+    )
+    .await?;
+
     let txid = get_current_txid(&mut tx).await?;
     tx.commit().await?;
 
     state
         .call_registry
-        .remove_user_from_channel(&state.db, &id, &auth_user.id)
+        .terminate_user_local_sessions(&id, &auth_user.id)
         .await;
 
     Ok(Json(ApiResponse::new(
@@ -906,6 +920,12 @@ async fn kick_channel_user(
     let mut tx = db.transaction().await?;
     crate::apps::events::actor_context(&mut tx, &auth_user.id).await?;
 
+    // 通話参加処理（call_stream）との同一行ロックによる直列化 ([P1])
+    let _ = toasty::sql::query("SELECT 1 FROM channels WHERE id = $1 FOR UPDATE")
+        .bind(id.clone())
+        .exec(&mut tx)
+        .await?;
+
     let channel = Channel::get_by_id(&mut tx, id.as_str())
         .await
         .map_err(|err| {
@@ -1002,12 +1022,18 @@ async fn kick_channel_user(
     .exec(&mut tx)
     .await?;
 
+    // 通話 presence の削除と退出通知を同一トランザクション内で不可分に実行 ([P1], [P2])
+    let _ = crate::routes::calls::CallRegistry::delete_user_presence_and_notify_tx(
+        &mut tx, &id, &user_id,
+    )
+    .await?;
+
     let txid = get_current_txid(&mut tx).await?;
     tx.commit().await?;
 
     state
         .call_registry
-        .remove_user_from_channel(&state.db, &id, &user_id)
+        .terminate_user_local_sessions(&id, &user_id)
         .await;
 
     Ok(Json(ApiResponse::new(

@@ -251,6 +251,7 @@ impl CallRegistry {
                                     listen_active = false;
                                     if let Err(e) = res {
                                         tracing::warn!("Failed to execute LISTEN zoo_call_events: {e}");
+                                        registry.terminate_all_local_sessions("Failed to execute LISTEN").await;
                                         break;
                                     }
                                 }
@@ -264,10 +265,12 @@ impl CallRegistry {
                                         Some(Ok(_)) => {}
                                         Some(Err(e)) => {
                                             tracing::warn!("PostgreSQL notification stream error: {e}");
+                                            registry.terminate_all_local_sessions("PostgreSQL notification stream error").await;
                                             break;
                                         }
                                         None => {
                                             tracing::warn!("PostgreSQL notification connection ended");
+                                            registry.terminate_all_local_sessions("PostgreSQL notification connection ended").await;
                                             break;
                                         }
                                     }
@@ -371,7 +374,7 @@ impl CallRegistry {
                             channel_id = %channel_id,
                             "Failed to deliver signal to local session (queue full or closed): {e}. Terminating stale session."
                         );
-                        // 宛先セッションのバッファ満杯時は不通セッションを切断・強制退出（[P2]）
+                        // 宛先セッションのバッファ満杯時は不通セッションを切断・強制退出（[P2] アトミック削除＆通知）
                         let dropped_user_id = target.user_id.clone();
                         drop(sessions);
 
@@ -380,20 +383,13 @@ impl CallRegistry {
                         drop(write_sessions);
 
                         if let Some(mut db) = self.get_db().await {
-                            let _ = toasty::sql::statement(
-                                "DELETE FROM call_presence WHERE channel_id = $1 AND session_id = $2::uuid",
+                            let _ = Self::delete_session_and_notify(
+                                &mut db,
+                                &channel_id,
+                                &target_session_id,
+                                Some(&dropped_user_id),
                             )
-                            .bind(channel_id.clone())
-                            .bind(target_session_id.to_string())
-                            .exec(&mut db)
                             .await;
-
-                            let left_event = CallDistributedEvent::ParticipantLeft {
-                                channel_id,
-                                session_id: target_session_id,
-                                user_id: dropped_user_id,
-                            };
-                            let _ = Self::notify_event(&db, &left_event).await;
                         }
                     }
                 }
@@ -402,13 +398,42 @@ impl CallRegistry {
                 channel_id,
                 participant,
             } => {
-                let sessions = self.local_sessions.read().await;
-                let sse_event = CallServerEvent::ParticipantJoined {
-                    participant: participant.clone(),
-                };
-                for (sid, session) in sessions.iter() {
-                    if session.channel_id == channel_id && *sid != participant.session_id {
-                        let _ = session.sender.try_send(sse_event.clone());
+                let mut failed_sessions = Vec::new();
+                {
+                    let sessions = self.local_sessions.read().await;
+                    let sse_event = CallServerEvent::ParticipantJoined {
+                        participant: participant.clone(),
+                    };
+                    for (sid, session) in sessions.iter() {
+                        if session.channel_id == channel_id
+                            && *sid != participant.session_id
+                            && let Err(e) = session.sender.try_send(sse_event.clone())
+                        {
+                            tracing::warn!(
+                                session_id = %sid,
+                                "Failed to deliver ParticipantJoined to local session (queue full or closed): {e}"
+                            );
+                            failed_sessions.push((*sid, session.user_id.clone()));
+                        }
+                    }
+                }
+                if !failed_sessions.is_empty() {
+                    let mut write_sessions = self.local_sessions.write().await;
+                    for (sid, _) in &failed_sessions {
+                        write_sessions.remove(sid);
+                    }
+                    drop(write_sessions);
+
+                    if let Some(mut db) = self.get_db().await {
+                        for (sid, uid) in failed_sessions {
+                            let _ = Self::delete_session_and_notify(
+                                &mut db,
+                                &channel_id,
+                                &sid,
+                                Some(&uid),
+                            )
+                            .await;
+                        }
                     }
                 }
             }
@@ -421,25 +446,79 @@ impl CallRegistry {
                     session_id,
                     user_id,
                 };
-                let mut sessions = self.local_sessions.write().await;
-                for (sid, session) in sessions.iter() {
-                    if session.channel_id == channel_id && *sid != session_id {
-                        let _ = session.sender.try_send(sse_event.clone());
+                let mut failed_sessions = Vec::new();
+                {
+                    let sessions = self.local_sessions.read().await;
+                    for (sid, session) in sessions.iter() {
+                        if session.channel_id == channel_id
+                            && *sid != session_id
+                            && let Err(e) = session.sender.try_send(sse_event.clone())
+                        {
+                            tracing::warn!(
+                                session_id = %sid,
+                                "Failed to deliver ParticipantLeft to local session (queue full or closed): {e}"
+                            );
+                            failed_sessions.push((*sid, session.user_id.clone()));
+                        }
                     }
                 }
+                let mut sessions = self.local_sessions.write().await;
                 sessions.remove(&session_id);
+                for (sid, _) in &failed_sessions {
+                    sessions.remove(sid);
+                }
+                drop(sessions);
+
+                if !failed_sessions.is_empty()
+                    && let Some(mut db) = self.get_db().await
+                {
+                    for (sid, uid) in failed_sessions {
+                        let _ =
+                            Self::delete_session_and_notify(&mut db, &channel_id, &sid, Some(&uid))
+                                .await;
+                    }
+                }
             }
             CallDistributedEvent::ParticipantUpdated {
                 channel_id,
                 participant,
             } => {
-                let sessions = self.local_sessions.read().await;
-                let sse_event = CallServerEvent::ParticipantUpdated {
-                    participant: participant.clone(),
-                };
-                for (sid, session) in sessions.iter() {
-                    if session.channel_id == channel_id && *sid != participant.session_id {
-                        let _ = session.sender.try_send(sse_event.clone());
+                let mut failed_sessions = Vec::new();
+                {
+                    let sessions = self.local_sessions.read().await;
+                    let sse_event = CallServerEvent::ParticipantUpdated {
+                        participant: participant.clone(),
+                    };
+                    for (sid, session) in sessions.iter() {
+                        if session.channel_id == channel_id
+                            && *sid != participant.session_id
+                            && let Err(e) = session.sender.try_send(sse_event.clone())
+                        {
+                            tracing::warn!(
+                                session_id = %sid,
+                                "Failed to deliver ParticipantUpdated to local session (queue full or closed): {e}"
+                            );
+                            failed_sessions.push((*sid, session.user_id.clone()));
+                        }
+                    }
+                }
+                if !failed_sessions.is_empty() {
+                    let mut write_sessions = self.local_sessions.write().await;
+                    for (sid, _) in &failed_sessions {
+                        write_sessions.remove(sid);
+                    }
+                    drop(write_sessions);
+
+                    if let Some(mut db) = self.get_db().await {
+                        for (sid, uid) in failed_sessions {
+                            let _ = Self::delete_session_and_notify(
+                                &mut db,
+                                &channel_id,
+                                &sid,
+                                Some(&uid),
+                            )
+                            .await;
+                        }
                     }
                 }
             }
@@ -563,35 +642,136 @@ impl CallRegistry {
             .await;
     }
 
-    /// チャンネルからユーザーが脱退した際のクリーンアップ ([P1] 自インスタンス即時切断 & 通知アトミック保証)
-    pub async fn remove_user_from_channel(&self, db: &toasty::Db, channel_id: &str, user_id: &str) {
-        // 自インスタンス内の該当ユーザーのローカルセッションを直ちに切断
+    /// 単一セッションの presence 削除と退出通知を単一 SQL でアトミックに実行する ([P2])
+    pub async fn delete_session_and_notify(
+        db: &mut toasty::Db,
+        channel_id: &str,
+        session_id: &Uuid,
+        user_id: Option<&str>,
+    ) -> Result<bool, AppError> {
+        let rows = toasty::sql::query(
+            "WITH deleted AS (
+                 DELETE FROM call_presence
+                 WHERE channel_id = $1
+                   AND session_id = $2::uuid
+                   AND ($3::text IS NULL OR user_id = $3)
+                 RETURNING channel_id, session_id::text, user_id
+             ),
+             notified AS (
+                 SELECT session_id, pg_notify(
+                     'zoo_call_events',
+                     json_build_object(
+                         'type', 'participant_left',
+                         'channel_id', channel_id,
+                         'session_id', session_id,
+                         'user_id', user_id
+                     )::text
+                 )
+                 FROM deleted
+             )
+             SELECT count(*)::text FROM notified",
+        )
+        .bind(channel_id.to_string())
+        .bind(session_id.to_string())
+        .bind(user_id.map(ToString::to_string))
+        .exec(db)
+        .await?;
+
+        let count: i64 = rows
+            .into_iter()
+            .find_map(|row| {
+                if let toasty::stmt::Value::Record(rec) = row
+                    && let Some(toasty::stmt::Value::String(cnt_str)) =
+                        rec.fields.into_iter().next()
+                {
+                    cnt_str.parse().ok()
+                } else {
+                    None
+                }
+            })
+            .unwrap_or(0);
+
+        Ok(count > 0)
+    }
+
+    /// LISTEN 接続断など、分散同期喪失時に全ローカルセッションを安全に切断・解放する ([P1])
+    pub async fn terminate_all_local_sessions(&self, reason: &str) {
+        let mut sessions = self.local_sessions.write().await;
+        if sessions.is_empty() {
+            return;
+        }
+        tracing::warn!(
+            count = sessions.len(),
+            reason = reason,
+            "Terminating all local call sessions due to signaling desynchronization"
+        );
+        sessions.clear();
+    }
+
+    /// 自インスタンス内の特定ユーザーのローカルセッションを直ちに切断する
+    pub async fn terminate_user_local_sessions(&self, channel_id: &str, user_id: &str) {
         let mut sessions = self.local_sessions.write().await;
         sessions.retain(|_, s| !(s.channel_id == channel_id && s.user_id == user_id));
-        drop(sessions);
+    }
 
-        let mut db = db.clone();
-        let _ = toasty::sql::statement(
+    /// トランザクション内で特定チャンネルから特定ユーザーの call_presence を削除し退出通知を発行する ([P1], [P2])
+    pub async fn delete_user_presence_and_notify_tx(
+        tx: &mut toasty::Transaction<'_>,
+        channel_id: &str,
+        user_id: &str,
+    ) -> Result<bool, toasty::Error> {
+        let rows = toasty::sql::query(
             "WITH deleted AS (
                  DELETE FROM call_presence
                  WHERE channel_id = $1 AND user_id = $2
-                 RETURNING session_id
+                 RETURNING channel_id, session_id::text, user_id
+             ),
+             notified AS (
+                 SELECT session_id, pg_notify(
+                     'zoo_call_events',
+                     json_build_object(
+                         'type', 'participant_left',
+                         'channel_id', channel_id,
+                         'session_id', session_id,
+                         'user_id', user_id
+                     )::text
+                 )
+                 FROM deleted
              )
-             SELECT pg_notify(
-                 'zoo_call_events',
-                 json_build_object(
-                     'type', 'participant_left',
-                     'channel_id', $1,
-                     'session_id', session_id,
-                     'user_id', $2
-                 )::text
-             )
-             FROM deleted",
+             SELECT count(*)::text FROM notified",
         )
         .bind(channel_id.to_string())
         .bind(user_id.to_string())
-        .exec(&mut db)
-        .await;
+        .exec(tx)
+        .await?;
+
+        let count: i64 = rows
+            .into_iter()
+            .find_map(|row| {
+                if let toasty::stmt::Value::Record(rec) = row
+                    && let Some(toasty::stmt::Value::String(cnt_str)) =
+                        rec.fields.into_iter().next()
+                {
+                    cnt_str.parse().ok()
+                } else {
+                    None
+                }
+            })
+            .unwrap_or(0);
+
+        Ok(count > 0)
+    }
+
+    /// チャンネルからユーザーが脱退した際のクリーンアップ ([P1] 自インスタンス即時切断 & 通知アトミック保証)
+    pub async fn remove_user_from_channel(&self, db: &toasty::Db, channel_id: &str, user_id: &str) {
+        self.terminate_user_local_sessions(channel_id, user_id)
+            .await;
+
+        let mut db = db.clone();
+        if let Ok(mut tx) = db.transaction().await {
+            let _ = Self::delete_user_presence_and_notify_tx(&mut tx, channel_id, user_id).await;
+            let _ = tx.commit().await;
+        }
     }
 }
 
@@ -638,31 +818,15 @@ impl SessionGuard {
             .unregister_local_session_if_user(&session_id, &user_id)
             .await;
 
-        let del_res = toasty::sql::query(
-            "DELETE FROM call_presence WHERE channel_id = $1 AND session_id = $2::uuid RETURNING session_id",
+        if let Err(e) = CallRegistry::delete_session_and_notify(
+            &mut db,
+            &channel_id,
+            &session_id,
+            Some(&user_id),
         )
-        .bind(channel_id.clone())
-        .bind(session_id.to_string())
-        .exec(&mut db)
-        .await;
-
-        match del_res {
-            Ok(rows) => {
-                // 実際に自セッション行を削除できた場合のみ ParticipantLeft をブロードキャスト（二重通知防止）
-                if !rows.is_empty() {
-                    let event = CallDistributedEvent::ParticipantLeft {
-                        channel_id,
-                        session_id,
-                        user_id,
-                    };
-                    if let Err(e) = CallRegistry::notify_event(&db, &event).await {
-                        tracing::error!("Failed to notify ParticipantLeft during cleanup: {e}");
-                    }
-                }
-            }
-            Err(e) => {
-                tracing::error!("Failed to delete call_presence during cleanup: {e}");
-            }
+        .await
+        {
+            tracing::error!("Failed to delete call_presence and notify during cleanup: {e}");
         }
     }
 }
@@ -1010,7 +1174,17 @@ async fn call_stream(
         return Err(AppError::from(e));
     }
 
-    // 6. コミット直後のセッション生存再確認 ([P1])
+    // コミット成功直後から presence を安全に管理・回収するガードを即座に生成 ([P2])
+    let guard = SessionGuard {
+        call_registry: state.call_registry.clone(),
+        channel_id: channel_id.clone(),
+        session_id: query.session_id,
+        user_id: user.id.clone(),
+        db: state.db.clone(),
+        cleaned_up: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+    };
+
+    // 6. コミット直後のセッション生存再確認および権限再確認 ([P1], [P2])
     let verify_rows = toasty::sql::query(
         "SELECT 1 FROM call_presence WHERE channel_id = $1 AND session_id = $2::uuid",
     )
@@ -1019,12 +1193,40 @@ async fn call_stream(
     .exec(&mut db)
     .await;
 
-    if verify_rows.as_ref().map(|r| r.is_empty()).unwrap_or(true) {
-        state
-            .call_registry
-            .unregister_local_session_if_user(&query.session_id, &user.id)
-            .await;
-        return Err(AppError::NotFound("Call session was revoked".into()));
+    match verify_rows {
+        Ok(rows) if !rows.is_empty() => {}
+        Ok(_) => {
+            // 他のトランザクション（退出・キック等）で削除された失効ケース ([P2])
+            guard.cleanup().await;
+            return Err(AppError::NotFound("Call session was revoked".into()));
+        }
+        Err(e) => {
+            // DB エラーケース：エラーと失効を明確に区別し presence を回収して 500 を返却 ([P2])
+            guard.cleanup().await;
+            return Err(AppError::from(e));
+        }
+    }
+
+    // プライベートチャンネルの場合、コミット後にもメンバーシップが失効していないことを再確認 ([P1])
+    if ch.is_private {
+        let member_check =
+            toasty::sql::query("SELECT 1 FROM channel_user WHERE channel_id = $1 AND user_id = $2")
+                .bind(channel_id.clone())
+                .bind(user.id.clone())
+                .exec(&mut db)
+                .await;
+
+        match member_check {
+            Ok(rows) if !rows.is_empty() => {}
+            Ok(_) => {
+                guard.cleanup().await;
+                return Err(AppError::NotFound("Channel not found".into()));
+            }
+            Err(e) => {
+                guard.cleanup().await;
+                return Err(AppError::from(e));
+            }
+        }
     }
 
     let participant = CallParticipant {
@@ -1046,23 +1248,22 @@ async fn call_stream(
         max_participants: MAX_CALL_PARTICIPANTS,
         ice_servers,
     };
-    let _ = tx_chan.try_send(room_state_event);
+    if let Err(e) = tx_chan.try_send(room_state_event) {
+        guard.cleanup().await;
+        return Err(AppError::Internal(anyhow::anyhow!(
+            "Failed to send RoomState: {e}"
+        )));
+    }
 
     // 8. 全レプリカの他参加者へ ParticipantJoined イベントをブロードキャスト
     let join_event = CallDistributedEvent::ParticipantJoined {
         channel_id: channel_id.clone(),
         participant,
     };
-    let _ = CallRegistry::notify_event(&db, &join_event).await;
-
-    let guard = SessionGuard {
-        call_registry: state.call_registry.clone(),
-        channel_id: channel_id.clone(),
-        session_id: query.session_id,
-        user_id: user.id.clone(),
-        db: state.db.clone(),
-        cleaned_up: Arc::new(std::sync::atomic::AtomicBool::new(false)),
-    };
+    if let Err(e) = CallRegistry::notify_event(&db, &join_event).await {
+        guard.cleanup().await;
+        return Err(e);
+    }
 
     let stream = futures_util::stream::unfold((rx, guard), |(mut rx, guard)| async move {
         match rx.recv().await {
@@ -1319,18 +1520,15 @@ async fn leave_call(
     let mut db = state.db.clone();
     authorize_call_access(&mut db, &channel_id, &user).await?;
 
-    let rows = toasty::sql::query(
-        "DELETE FROM call_presence
-         WHERE channel_id = $1 AND session_id = $2::uuid AND user_id = $3
-         RETURNING user_id",
+    let deleted = CallRegistry::delete_session_and_notify(
+        &mut db,
+        &channel_id,
+        &body.session_id,
+        Some(&user.id),
     )
-    .bind(channel_id.clone())
-    .bind(body.session_id.to_string())
-    .bind(user.id.clone())
-    .exec(&mut db)
     .await?;
 
-    if rows.is_empty() {
+    if !deleted {
         return Err(AppError::NotFound("Session not found in call".into()));
     }
 
@@ -1338,13 +1536,6 @@ async fn leave_call(
         .call_registry
         .unregister_local_session(&body.session_id)
         .await;
-
-    let event = CallDistributedEvent::ParticipantLeft {
-        channel_id,
-        session_id: body.session_id,
-        user_id: user.id,
-    };
-    CallRegistry::notify_event(&db, &event).await?;
 
     Ok(Json(serde_json::json!({ "ok": true })))
 }
