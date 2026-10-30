@@ -240,6 +240,12 @@ E2E_BASE_URL=http://127.0.0.1:3100 pnpm test:e2e:csp
 docker rm -f zoo-frontend-csp-test
 ```
 
+## Storybook の PR プレビュー
+
+PR の作成・更新時に Storybook を Cloudflare Pages へ公開します。
+PR のデプロイ欄または Actions の実行サマリーから開けます。
+初回設定と運用は [Storybook の PR プレビュー](../docs/storybook-preview.md) を参照してください。
+
 ## 現状
 
 Phase 0（足場）・Phase 1（型・データアクセス層）・Phase 2（読み取り・live query）・Phase 3（書き込み・楽観更新）・Phase 4（UI: shadcn テーマのみ）・Phase 5（バックエンド経由への切替）・Phase 6（テスト・品質）完了（トラッキング: #19）。SPA の OIDC PKCE ログイン（#60）と、モック IdP による認証 E2E・CSP（#50）も追加済みです。
