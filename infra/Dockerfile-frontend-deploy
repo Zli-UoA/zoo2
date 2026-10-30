@@ -47,11 +47,12 @@ COPY --from=build /app/csp-script-src.txt /etc/nginx/csp-script-src.txt
 # filter で CSP_ 接頭辞だけを置換対象にし、nginx の $uri などは触らない。
 COPY infra/frontend-nginx.conf /etc/nginx/templates/default.conf.template
 COPY infra/frontend-entrypoint.sh /usr/local/bin/frontend-entrypoint.sh
-ENV NGINX_ENVSUBST_FILTER="^CSP_"
+ENV NGINX_ENVSUBST_FILTER="^(CSP_|MEDIA_PROXY_URL$)"
 # 既定は同一オリジンのみ。ステージングでは Kanidm や R2 のオリジンを渡す。
 ENV CSP_CONNECT_SRC=""
 ENV CSP_STORAGE_SRC=""
 ENV CSP_APP_IMAGE_SRC=""
+ENV MEDIA_PROXY_URL=""
 ENTRYPOINT ["/usr/local/bin/frontend-entrypoint.sh"]
 CMD ["nginx", "-g", "daemon off;"]
 EXPOSE 3000

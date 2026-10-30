@@ -33,6 +33,7 @@ percent-encoding = "2.3.2"
 hmac = "0.13"
 sha2 = "0.11"
 regex = "1"
+scraper = "0.24"
 base64 = "0.22"
 ece = "2.4"
 # Statically link OpenSSL so the distroless runtime needs no shared libcrypto.
