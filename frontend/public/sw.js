@@ -9,7 +9,7 @@ const POLICY_VERSION = new URL(
   self.location.href || "/sw.js",
   self.location.origin,
 ).searchParams.get("v");
-const POLICY_PREFIX = POLICY_VERSION ? `zoo-shell-${POLICY_VERSION}-` : "zoo-shell-";
+const POLICY_PREFIX = POLICY_VERSION ? `zoo-shell-v3-${POLICY_VERSION}-` : "zoo-shell-";
 const DEFAULT_CACHE = `${POLICY_PREFIX}v2`;
 const CACHE_PREFIX = "zoo-shell-";
 const META_PATH = "/__zoo_shell_meta__";
@@ -106,6 +106,17 @@ async function cacheResponse(cache, request, response) {
   return sanitized;
 }
 
+// A policy update does not change hashed asset bytes. Give the HTTP cache and CDN
+// a new key as well as the Cache API, otherwise immutable responses keep the old CSP.
+function fetchStaticAsset(request) {
+  if (!POLICY_VERSION) return fetch(request, { cache: "reload" });
+  const url = new URL(typeof request === "string" ? request : request.url, self.location.origin);
+  url.searchParams.set("__zoo_policy", POLICY_VERSION);
+  return fetch(new Request(url.href, typeof request === "string" ? undefined : request), {
+    cache: "reload",
+  });
+}
+
 /**
  * Cache the hashed JS/CSS referenced by the built index. The first page load
  * happens before this worker controls the page, so runtime caching alone would
@@ -125,7 +136,7 @@ async function precacheIndexAssets(cache, response) {
   await Promise.all(
     [...assets].map(async (path) => {
       try {
-        const asset = await fetch(path, { cache: "reload" });
+        const asset = await fetchStaticAsset(path);
         if (asset.ok) await cacheResponse(cache, path, asset);
       } catch {
         /* A later navigation can retry the asset. */
@@ -205,7 +216,7 @@ async function handleAsset(request) {
   const cached = await cache.match(request);
   if (cached) return cached;
   try {
-    const response = await fetch(request);
+    const response = await fetchStaticAsset(request);
     if (response.ok && response.type === "basic") {
       return await cacheResponse(cache, request, response);
     }
@@ -244,7 +255,7 @@ self.addEventListener("message", (event) => {
       for (const url of urls) {
         if (await cache.match(url)) continue;
         try {
-          const response = await fetch(url);
+          const response = await fetchStaticAsset(url);
           if (response.ok && response.type === "basic") {
             await cacheResponse(cache, url, response);
           }
