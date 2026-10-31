@@ -3,6 +3,7 @@
     "main": "主要導覽"
   },
   "channels": {
+    "view": "開啟",
     "unread": "有未讀訊息",
     "editTitle": "編輯頻道",
     "editHelp": "頻道名最多80個字元，只可以用文字、數字、半形連字號（-）同底線（_）。唔可以用空格、表情符號、其他符號或者保留名稱。",
@@ -14,7 +15,7 @@
     "empty": "仲未有頻道。",
     "createAction": "開個頻道",
     "browseTitle": "搵頻道",
-    "browseDescription": "未加入嘅公開頻道可以喺度搵同加入。",
+    "browseDescription": "唔使加入都可以睇公開頻道嘅訊息。",
     "browseSearch": "用頻道名搵",
     "searchClear": "清除搜尋",
     "searchEmpty": "冇頻道符合你嘅搜尋。",
@@ -129,7 +130,23 @@
     "notFound": "搵唔到目標。",
     "invalidState": "而家嘅狀態做唔到呢個操作。"
   },
+  "settings": {
+    "admin": "管理員",
+    "member": "成員",
+    "makeAdmin": "設為管理員",
+    "removeAdmin": "移除管理員",
+    "membersDescription": "查看 Zoo 成員。管理員可以改權限。",
+    "roleConfirm": "將 {{name}} 嘅權限改成「{{role}}」。",
+    "lastAdmin": "唔可以移除最後一位管理員或者開發用固定管理員。",
+    "membersLoadError": "載入唔到管理員資料。",
+    "general": "一般",
+    "channelTitle": "頻道設定",
+    "zooTitle": "Zoo 設定",
+    "zooDescription": "管理成員、顯示、通知同 App 連接。",
+    "notifications": "通知同安裝"
+  },
   "common": {
+    "open": "開啟",
     "loading": "載入緊…",
     "cancel": "取消",
     "cancelShort": "取消",
@@ -401,6 +418,24 @@
     "opening": "開緊…"
   },
   "apps": {
+    "ui": {
+      "channel": "目標頻道",
+      "chooseChannel": "選擇頻道",
+      "delete": "刪除 App",
+      "deleteTitle": "刪除「{{name}}」？",
+      "deleteHelp": "刪除 App 會停用連接同 Bot，並撤銷已發出嘅憑證。呢個操作無法復原。",
+      "disableHelp": "停用 App 同 Bot，並撤銷已發出嘅憑證。",
+      "search": "搜尋 App",
+      "filter": "篩選 App",
+      "all": "所有 App",
+      "mine": "我嘅 App",
+      "empty": "冇符合嘅 App。",
+      "back": "返回 App 列表",
+      "overview": "使用",
+      "manage": "管理同開發",
+      "configuration": "設定同批准",
+      "invalidManifest": "請輸入有效嘅 Manifest JSON。"
+    },
     "title": "Apps & integrations",
     "description": "Manage apps, conversations, and external integrations.",
     "create": "Create app",

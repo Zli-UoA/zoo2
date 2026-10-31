@@ -24,16 +24,7 @@ import { nowIso } from "../../../lib/time";
 import { parseUtcTimestamp } from "../../../lib/timestamps";
 import { useShell } from "../../layout/shell-context";
 import { Button } from "../../ui/button";
-import {
-  AlertDialog,
-  AlertDialogAction,
-  AlertDialogCancel,
-  AlertDialogContent,
-  AlertDialogDescription,
-  AlertDialogFooter,
-  AlertDialogHeader,
-  AlertDialogTitle,
-} from "../../ui/alert-dialog";
+import { ConfirmActionDialog } from "../../ui/confirm-action-dialog";
 import { useTyping } from "../../../hooks/useTyping";
 import { TypingIndicator } from "./TypingIndicator";
 import { Composer } from "./Composer";
@@ -96,10 +87,14 @@ function JoinToPostPrompt({
 export function MessagePane({
   channelId,
   isMember,
+  canModerate = false,
+  readOnly = false,
   targetMessageId,
 }: {
   channelId: string;
   isMember: boolean;
+  canModerate?: boolean;
+  readOnly?: boolean;
   targetMessageId?: string;
 }) {
   const { t } = useTranslation();
@@ -123,7 +118,7 @@ export function MessagePane({
   const reactionsQuery = useMessageReactions(channelId);
   const { currentUserId } = useCurrentUser();
   const { isOnline } = useOfflineStatus();
-  const typing = useTyping(channelId, null, isMember && !!currentUserId);
+  const typing = useTyping(channelId, null, !readOnly && isMember && !!currentUserId);
   const { error, setError, run, isPending: isWritePending } = useWriteRunner();
 
   const [reactionMessageId, setReactionMessageId] = useState<string | null>(null);
@@ -186,7 +181,7 @@ export function MessagePane({
   const threadTyping = useTyping(
     channelId,
     threadRootId,
-    isMember && !!currentUserId && !!threadRootId,
+    !readOnly && isMember && !!currentUserId && !!threadRootId,
   );
   const threadRoot = useMemo(
     () => feed.find((message) => message.id === threadRootId) ?? null,
@@ -198,12 +193,6 @@ export function MessagePane({
   const [pendingDeleteId, setPendingDeleteId] = useState<string | null>(null);
   const [isJoining, setIsJoining] = useState(false);
 
-  // チャンネルを移動したら開いていたスレッドは閉じる。スレッドの状態は
-  // メンバーパネルとの排他を管理する AppShell が持つため、離脱時にも閉じる。
-  useEffect(() => {
-    closeThread();
-  }, [channelId, closeThread]);
-  useEffect(() => closeThread, [closeThread]);
   useEffect(() => {
     if (!threadRootId) {
       setThreadSince(messageWindowStart());
@@ -351,7 +340,7 @@ export function MessagePane({
 
   const handleSendReply = useCallback(
     async (content: string): Promise<boolean> => {
-      if (!isMember) {
+      if (readOnly || !isMember) {
         toast.info(t("messages.joinToPostDescription"), { id: "thread-reply-join-required" });
         return false;
       }
@@ -374,7 +363,7 @@ export function MessagePane({
       );
       return messagesCollection.get(id) !== undefined;
     },
-    [run, messagesCollection, currentUserId, channelId, threadRootId, isMember, t],
+    [run, messagesCollection, currentUserId, channelId, threadRootId, isMember, readOnly, t],
   );
 
   const handleStartEdit = useCallback((id: string, content: string) => {
@@ -450,7 +439,8 @@ export function MessagePane({
           isWritePending={isWritePending}
           isLoading={messagesQuery.isLoading}
           isError={messagesQuery.isError}
-          currentUserId={currentUserId}
+          currentUserId={readOnly ? null : currentUserId}
+          canModerate={canModerate}
           editingId={editingId}
           editingText={editingText}
           onEditingTextChange={setEditingText}
@@ -460,7 +450,9 @@ export function MessagePane({
           onRequestDelete={setPendingDeleteId}
           reactions={reactionGroups}
           kitchenCatalog={catalog}
-          canReact={!!currentUserId && !reactionsQuery.isLoading && !reactionsQuery.isError}
+          canReact={
+            !readOnly && !!currentUserId && !reactionsQuery.isLoading && !reactionsQuery.isError
+          }
           onReaction={handleReaction}
           onPickReaction={setReactionMessageId}
           replyCounts={replyCounts}
@@ -473,7 +465,7 @@ export function MessagePane({
           onRetry={() => window.location.reload()}
         />
 
-        {isMember ? (
+        {readOnly ? null : isMember ? (
           <>
             <TypingIndicator users={typing.users} />
             <Composer
@@ -482,7 +474,7 @@ export function MessagePane({
               key={channelId}
               onSend={handleSend}
               onTyping={typing.onTyping}
-              disabled={!isOnline}
+              disabled={readOnly || !isOnline}
               placeholder={isOnline ? undefined : t("offline.composeDisabled")}
             />
           </>
@@ -501,7 +493,8 @@ export function MessagePane({
           mentionUsers={mentionUsers}
           mentionMemberIds={mentionMemberIds}
           key={threadRoot.id}
-          isMember={isMember}
+          readOnly={readOnly}
+          isMember={!readOnly && isMember}
           isOffline={!isOnline}
           typingUsers={threadTyping.users}
           onTyping={threadTyping.onTyping}
@@ -509,10 +502,13 @@ export function MessagePane({
           replies={threadReplies}
           isLoading={threadQuery.isLoading}
           isError={threadQuery.isError}
-          currentUserId={currentUserId}
+          currentUserId={readOnly ? null : currentUserId}
+          canModerate={canModerate}
           reactions={reactionGroups}
           kitchenCatalog={catalog}
-          canReact={!!currentUserId && !reactionsQuery.isLoading && !reactionsQuery.isError}
+          canReact={
+            !readOnly && !!currentUserId && !reactionsQuery.isLoading && !reactionsQuery.isError
+          }
           onReaction={handleReaction}
           onPickReaction={setReactionMessageId}
           editingId={editingId}
@@ -548,27 +544,16 @@ export function MessagePane({
         }}
       />
 
-      <AlertDialog
+      <ConfirmActionDialog
         open={pendingDeleteId !== null}
         onOpenChange={(open) => {
-          if (!open) {
-            setPendingDeleteId(null);
-          }
+          if (!open) setPendingDeleteId(null);
         }}
-      >
-        <AlertDialogContent>
-          <AlertDialogHeader>
-            <AlertDialogTitle>{t("messages.deleteTitle")}</AlertDialogTitle>
-            <AlertDialogDescription>{t("messages.deleteDescription")}</AlertDialogDescription>
-          </AlertDialogHeader>
-          <AlertDialogFooter>
-            <AlertDialogCancel>{t("common.cancelShort")}</AlertDialogCancel>
-            <AlertDialogAction variant="destructive" onClick={handleConfirmDelete}>
-              {t("messages.delete")}
-            </AlertDialogAction>
-          </AlertDialogFooter>
-        </AlertDialogContent>
-      </AlertDialog>
+        title={t("messages.deleteTitle")}
+        description={t("messages.deleteDescription")}
+        confirmLabel={t("messages.delete")}
+        onConfirm={handleConfirmDelete}
+      />
     </section>
   );
 }

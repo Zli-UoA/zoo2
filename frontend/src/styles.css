@@ -91,10 +91,10 @@ body {
   --secondary: oklch(0.97 0 0);
   --secondary-foreground: oklch(0.205 0 0);
   --muted: oklch(0.97 0 0);
-  --muted-foreground: oklch(0.556 0 0);
+  --muted-foreground: oklch(0.5 0 0);
   --accent: oklch(0.97 0 0);
   --accent-foreground: oklch(0.205 0 0);
-  --destructive: oklch(0.577 0.245 27.325);
+  --destructive: oklch(0.51 0.21 27.325);
   --brand: oklch(0.52 0.14 158);
   --brand-foreground: oklch(0.985 0.01 158);
   --brand-muted: oklch(0.95 0.04 158);
@@ -165,6 +165,22 @@ body {
   }
   html {
     @apply font-sans;
+  }
+  :where(
+      button,
+      a[href],
+      [role="button"],
+      [role="menuitem"],
+      [role="menuitemradio"],
+      [role="menuitemcheckbox"],
+      select,
+      summary,
+      label[for]
+    ):not(:disabled):not([aria-disabled="true"]):not([data-disabled]) {
+    cursor: pointer;
+  }
+  :where(button, [role="button"]):is(:disabled, [aria-disabled="true"], [data-disabled]) {
+    cursor: default;
   }
 }
 

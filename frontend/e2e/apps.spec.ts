@@ -6,7 +6,8 @@ test("Appを作成・承認し、Botとして投稿と個人宛応答を表示�
   const actor = process.env.VITE_DEV_USER_ID ?? "00000000-0000-0000-0000-000000000001";
   const name = `Echo ${Date.now()}`;
   await page.goto("/");
-  await page.getByRole("button", { name: "App・連携", exact: true }).click();
+  await page.getByRole("link", { name: "Zoo設定", exact: true }).click();
+  await page.getByRole("tab", { name: "App・連携", exact: true }).click();
   await page.getByRole("button", { name: "Appを作成", exact: true }).click();
   await page.getByLabel("App名", { exact: true }).fill(name);
   await page.getByLabel("説明", { exact: true }).fill("App platform end-to-end test");
@@ -28,14 +29,15 @@ test("Appを作成・承認し、Botとして投稿と個人宛応答を表示�
   });
   expect(channelResponse.ok()).toBe(true);
   const channel = (await channelResponse.json()).data as { id: string };
-  await page.keyboard.press("Escape");
+  await page.getByRole("button", { name: "チャンネル一覧へ戻る" }).click();
   await page.goto(`/channels/${channel.id}`);
-  await page.getByRole("button", { name: "App・連携", exact: true }).click();
-  await page.getByRole("button", { name, exact: true }).click();
+  await page.getByRole("link", { name: "Zoo設定", exact: true }).click();
+  await page.getByRole("tab", { name: "App・連携", exact: true }).click();
+  await page.getByRole("button", { name: new RegExp(name) }).click();
   const addChannel = page.getByRole("button", { name: "このチャンネルに追加", exact: true });
   await addChannel.click();
   await expect(addChannel).toBeEnabled();
-  await page.keyboard.press("Escape");
+  await page.getByRole("button", { name: "チャンネル一覧へ戻る" }).click();
   const content = `Bot message ${Date.now()}`;
   const posted = await request.post(`${api}/api/apps/v1/messages`, {
     headers: authHeaders,
@@ -44,7 +46,7 @@ test("Appを作成・承認し、Botとして投稿と個人宛応答を表示�
   expect(posted.ok(), await posted.text()).toBe(true);
   await expect(page.getByText(content, { exact: true })).toBeVisible({ timeout: 15000 });
   await expect(page.getByText("APP", { exact: true })).toBeVisible();
-  await page.getByRole("button", { name, exact: true }).click();
+  await page.getByRole("button", { name: new RegExp(name) }).click();
   await expect(page.getByRole("heading", { name: new RegExp(name) })).toBeVisible();
   await page.keyboard.press("Escape");
   const privateText = `Private response ${Date.now()}`;
@@ -118,8 +120,9 @@ test("Appの外部接続要求とAssistantの開始・改名・停止を操作�
     (await request.post(`${api}/api/apps/${app.id}/channels/${channel.id}`, { headers })).ok(),
   ).toBe(true);
   await page.goto(`/channels/${channel.id}`);
-  await page.getByRole("button", { name: "App・連携", exact: true }).click();
-  await page.getByRole("button", { name, exact: true }).click();
+  await page.getByRole("link", { name: "Zoo設定", exact: true }).click();
+  await page.getByRole("tab", { name: "App・連携", exact: true }).click();
+  await page.getByRole("button", { name: new RegExp(name) }).click();
   await page.getByRole("button", { name: "アカウントを接続", exact: true }).click();
   await expect(page.getByText("接続を要求済み", { exact: true })).toBeVisible();
   expect(

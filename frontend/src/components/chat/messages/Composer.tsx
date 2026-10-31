@@ -1,3 +1,4 @@
+import { noAutofill } from "../../ui/autofill";
 import { useTranslation } from "react-i18next";
 import { useId, useLayoutEffect, useRef, useState } from "react";
 import { SendIcon } from "lucide-react";
@@ -195,6 +196,7 @@ export function Composer({
 
   return (
     <form
+      autoComplete="off"
       className="shrink-0 border-t px-3 py-3"
       onSubmit={(event) => {
         event.preventDefault();
@@ -236,6 +238,7 @@ export function Composer({
       ) : null}
       <div className="flex items-end gap-2 rounded-xl border border-input bg-background p-1.5 transition-colors focus-within:border-ring focus-within:ring-3 focus-within:ring-ring/30 dark:bg-input/30">
         <textarea
+          {...noAutofill}
           ref={textareaRef}
           rows={1}
           value={value}

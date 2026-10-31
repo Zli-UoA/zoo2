@@ -136,16 +136,21 @@ test("OIDC PKCE ログイン後に API と Shape が Bearer で通る", async ({
   await page.screenshot({ path: testInfo.outputPath("04-own-message-controls.png") });
 
   // ダークテーマでも操作群が出る（証跡用）。以降の画面はライトに戻す。
+  await page.getByRole("link", { name: "Zoo設定" }).click();
   await page.getByRole("button", { name: "テーマを切り替える" }).click();
   await page.getByRole("menuitemradio", { name: "ダーク" }).click();
   await expect(page.locator("html")).toHaveClass(/dark/);
   await expect(page.getByRole("menuitemradio", { name: "ダーク" })).toBeHidden();
+  await page.getByRole("button", { name: "チャンネル一覧へ戻る" }).click();
   await ownRow.hover();
   await page.screenshot({ path: testInfo.outputPath("05-own-message-controls-dark.png") });
+  await page.getByRole("link", { name: "Zoo設定" }).click();
   await page.getByRole("button", { name: "テーマを切り替える" }).click();
   await page.getByRole("menuitemradio", { name: "ライト" }).click();
   await expect(page.locator("html")).not.toHaveClass(/dark/);
   await expect(page.getByRole("menuitemradio", { name: "ライト" })).toBeHidden();
+
+  await page.getByRole("button", { name: "チャンネル一覧へ戻る" }).click();
 
   // 別ユーザーへ切り替えてログアウト → 再ログインする。
   await page.request.post(`${mockIdpOrigin}/__mock/user`, {

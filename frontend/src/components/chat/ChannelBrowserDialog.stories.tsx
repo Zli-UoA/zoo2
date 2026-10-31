@@ -36,7 +36,7 @@ type Story = StoryObj<typeof meta>;
 export const Default: Story = {
   play: async () => {
     await expect(await screen.findByText("random")).toBeInTheDocument();
-    await expect(screen.getByRole("button", { name: "参加する" })).toBeEnabled();
+    await expect(screen.getByRole("link", { name: /random/ })).toBeInTheDocument();
   },
 };
 

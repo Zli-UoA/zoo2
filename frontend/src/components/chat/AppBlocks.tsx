@@ -1,3 +1,4 @@
+import { Input } from "../ui/input";
 import { MessageCard, parseMessageCard, type CardData } from "./messages/MessageCard";
 import { openApp } from "./AppIdentity";
 import { useMemo, useState } from "react";
@@ -91,6 +92,7 @@ export function AppBlocks({
   }
   return (
     <form
+      autoComplete="off"
       className="my-2 space-y-3"
       onSubmit={(e) => {
         e.preventDefault();
@@ -122,7 +124,7 @@ export function AppBlocks({
           <label key={b.action_id} className="flex flex-col gap-1 text-sm">
             {b.label}
             {b.type === "input" ? (
-              <input
+              <Input
                 className={inputClassName()}
                 required={b.required}
                 maxLength={4000}

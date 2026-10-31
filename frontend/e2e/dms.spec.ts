@@ -56,7 +56,7 @@ test("1対1 DM の作成・重複・退出・再オープン", async ({ page }) 
   const firstDmUrl = page.url();
   await expect(page.getByRole("heading", { name: displayName, exact: true })).toBeVisible();
   await expect(page.getByRole("link", { name: displayName, exact: true })).toBeVisible();
-  await expect(page.getByRole("button", { name: "チャンネルの管理" })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "チャンネル設定" })).toHaveCount(0);
   await expect(page.getByRole("button", { name: "メンバー" })).toHaveCount(0);
 
   // 同じ相手をもう一度選ぶと、既存の DM が開く。

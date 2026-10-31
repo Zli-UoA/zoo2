@@ -1,20 +1,16 @@
 import { useTranslation } from "react-i18next";
-import { XIcon } from "lucide-react";
+import { ArrowLeftIcon, XIcon } from "lucide-react";
 import { useEffect, useMemo, useRef } from "react";
 
-import { useLocale } from "../../i18n/LocaleProvider";
 import type { KitchenCatalog } from "../../../lib/emoji/kitchen";
 import type { ReactionGroup } from "../../../lib/emoji/reactions";
-import { normalizeUtcTimestamp } from "../../../lib/timestamps";
-import { AppAvatar, AuthorIdentity } from "../AppIdentity";
-import { MessageAppContent } from "../AppBlocks";
 import { Button } from "../../ui/button";
 
 import type { TypingUser } from "../../../hooks/useTyping";
 import { TypingIndicator } from "./TypingIndicator";
 import { Composer } from "./Composer";
-import { MessageBody, MessageRow } from "./MessageRow";
-import { authorLabel, formatTime, fullTimestamp, type FeedMessage } from "./messageFormat";
+import { MessageRow } from "./MessageRow";
+import type { FeedMessage } from "./messageFormat";
 import { buildMessageItems } from "./messageGrouping";
 import { isNearBottom } from "./messageScroll";
 
@@ -32,6 +28,8 @@ export interface ThreadPaneProps {
   isLoading: boolean;
   isError: boolean;
   currentUserId: string | null;
+  canModerate?: boolean;
+  readOnly?: boolean;
   reactions: Map<string, ReactionGroup[]>;
   kitchenCatalog: KitchenCatalog | null;
   canReact: boolean;
@@ -72,6 +70,8 @@ export function ThreadPane({
   isLoading,
   isError,
   currentUserId,
+  canModerate = false,
+  readOnly = false,
   reactions,
   kitchenCatalog,
   canReact,
@@ -90,7 +90,6 @@ export function ThreadPane({
   onClose,
 }: ThreadPaneProps) {
   const { t } = useTranslation();
-  const { locale } = useLocale();
   const items = useMemo(() => buildMessageItems(replies), [replies]);
   const scrollRef = useRef<HTMLDivElement>(null);
   const atBottomRef = useRef(true);
@@ -135,44 +134,52 @@ export function ThreadPane({
       aria-label={t("threads.title")}
       className="absolute inset-0 z-20 flex min-h-0 min-w-0 flex-col border-l bg-background sm:static sm:z-auto sm:w-80 sm:shrink-0 xl:w-96"
     >
-      <header className="flex items-center gap-2 border-b px-4 py-2.5">
+      <header className="flex min-h-16 shrink-0 items-center gap-2 border-b px-4 py-2.5">
+        <Button
+          variant="ghost"
+          size="icon-sm"
+          className="size-11 sm:hidden"
+          aria-label={t("threads.close")}
+          onClick={onClose}
+        >
+          <ArrowLeftIcon />
+        </Button>
         <div className="min-w-0 flex-1">
           <h2 className="text-sm font-semibold">{t("threads.title")}</h2>
           <p className="text-xs tabular-nums text-muted-foreground">
             {isLoading ? t("threads.loading") : t("threads.replyCount", { count: replies.length })}
           </p>
         </div>
-        <Button variant="ghost" size="icon-sm" aria-label={t("threads.close")} onClick={onClose}>
+        <Button
+          variant="ghost"
+          size="icon-sm"
+          className="hidden sm:inline-flex"
+          aria-label={t("threads.close")}
+          onClick={onClose}
+        >
           <XIcon />
         </Button>
       </header>
 
-      <div className="border-b bg-muted/30 px-4 py-3">
-        <div className="flex gap-3">
-          <AppAvatar
-            className="mt-0.5"
-            size="sm"
-            label={authorLabel(root)}
-            isBot={!!root.is_bot}
-            src={root.avatar_url}
-          />
-          <div className="min-w-0 flex-1">
-            <div className="flex items-baseline gap-2">
-              <AuthorIdentity message={root} />
-              <time
-                className="shrink-0 text-[11px] text-muted-foreground tabular-nums"
-                dateTime={normalizeUtcTimestamp(root.created_at)}
-                title={fullTimestamp(root.created_at, locale)}
-              >
-                {formatTime(root.created_at, locale)}
-              </time>
-            </div>
-            <div className="max-h-40 overflow-y-auto">
-              <MessageBody content={root.content} card={root.card} appBlocks={root.app_blocks} />
-              <MessageAppContent message={root} />
-            </div>
-          </div>
-        </div>
+      <div className="max-h-60 shrink-0 overflow-y-auto border-b bg-muted/30 px-2 py-2">
+        <MessageRow
+          item={{ message: root, isGroupStart: true, isGroupEnd: true, showDateSeparator: false }}
+          isOwn={!!currentUserId && root.user_id === currentUserId}
+          canDelete={canModerate || (!!currentUserId && root.user_id === currentUserId)}
+          isEditing={editingId === root.id}
+          editingText={editingText}
+          onEditingTextChange={onEditingTextChange}
+          onStartEdit={() => onStartEdit(root.id, root.content)}
+          onCancelEdit={onCancelEdit}
+          onSaveEdit={onSaveEdit}
+          onRequestDelete={() => onRequestDelete(root.id)}
+          reactions={reactions.get(root.id) ?? []}
+          kitchenCatalog={kitchenCatalog}
+          canReact={canReact}
+          onReaction={(emoji) => onReaction(root.id, emoji)}
+          onPickReaction={() => onPickReaction(root.id)}
+        />
+
       </div>
 
       <div
@@ -228,6 +235,9 @@ export function ThreadPane({
                 <MessageRow
                   item={item}
                   isOwn={!!currentUserId && item.message.user_id === currentUserId}
+                  canDelete={
+                    canModerate || (!!currentUserId && item.message.user_id === currentUserId)
+                  }
                   isEditing={editingId === item.message.id}
                   editingText={editingText}
                   onEditingTextChange={onEditingTextChange}
@@ -247,16 +257,20 @@ export function ThreadPane({
         )}
       </div>
 
-      <TypingIndicator users={typingUsers} />
-      <Composer
-        mentionUsers={mentionUsers}
-        mentionMemberIds={mentionMemberIds}
-        disabled={!isMember || isOffline}
-        onTyping={onTyping}
-        onSend={onSendReply}
-        placeholder={isOffline ? t("offline.composeDisabled") : t("threads.compose")}
-        ariaLabel={t("threads.compose")}
-      />
+      {!readOnly ? (
+        <>
+          <TypingIndicator users={typingUsers} />
+          <Composer
+            mentionUsers={mentionUsers}
+            mentionMemberIds={mentionMemberIds}
+            disabled={!isMember || isOffline}
+            onTyping={onTyping}
+            onSend={onSendReply}
+            placeholder={isOffline ? t("offline.composeDisabled") : t("threads.compose")}
+            ariaLabel={t("threads.compose")}
+          />
+        </>
+      ) : null}
     </aside>
   );
 }

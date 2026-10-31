@@ -1,32 +1,18 @@
+import { Input } from "../ui/input";
 import { useTranslation } from "react-i18next";
-import { useNavigate } from "@tanstack/react-router";
+import { Link } from "@tanstack/react-router";
 import { cn } from "cn";
 import { HashIcon, SearchIcon, XIcon } from "lucide-react";
 import { useMemo, useState } from "react";
 
-import { useCurrentUser } from "../../hooks/useCurrentUser";
-import { useCollections } from "../../lib/electric/collections-context";
-import type { ChannelRow, ChannelUserRow } from "../../lib/electric/types";
-import type { ChannelUserWriteMetadata } from "../../lib/electric/writes";
-import { localizeApiError } from "../../lib/i18n/apiError";
-import { useShell } from "../layout/shell-context";
+import type { ChannelRow } from "../../lib/electric/types";
 import { Button } from "../ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "../ui/dialog";
 import { inputClassName } from "../ui/input-styles";
 import { ScrollArea } from "../ui/scroll-area";
-import { filterDiscoverableChannels, isChannelJoinable } from "./channelSearch";
+import { filterDiscoverableChannels } from "./channelSearch";
 
-function nowIso(): string {
-  return new Date().toISOString();
-}
-
-/**
- * 未参加の公開チャンネルを探して参加するダイアログ。
- *
- * 候補は `channels` コレクションから引き、参加は `channelUsers.insert()` の
- * `join` アクションで行う（バックエンドは既存の `/join` を叩く）。
- * 参加が確定したらそのチャンネルへ移動する。
- */
+/** 未参加の公開チャンネルを探す。参加は閲覧後の送信欄で行う。 */
 export function ChannelBrowserDialog({
   open,
   onOpenChange,
@@ -39,15 +25,7 @@ export function ChannelBrowserDialog({
   joinedChannelIds: ReadonlySet<string>;
 }) {
   const { t } = useTranslation();
-  const shell = useShell();
-  const navigate = useNavigate();
-  const { channelUsers } = useCollections();
-  const { currentUserId, isLoading: currentUserLoading } = useCurrentUser();
   const [query, setQuery] = useState("");
-  const [joiningId, setJoiningId] = useState<string | null>(null);
-  // 言語を切り替えても文言が追従するよう、翻訳前の原因を保持する。
-  const [errorCause, setErrorCause] = useState<{ cause: unknown } | null>(null);
-
   const discoverableChannels = useMemo(
     () => filterDiscoverableChannels(channels, joinedChannelIds, query),
     [channels, joinedChannelIds, query],
@@ -56,38 +34,8 @@ export function ChannelBrowserDialog({
   function handleOpenChange(next: boolean) {
     if (!next) {
       setQuery("");
-      setJoiningId(null);
-      setErrorCause(null);
     }
     onOpenChange(next);
-  }
-
-  async function joinChannel(channel: ChannelRow) {
-    if (!currentUserId || currentUserLoading || joiningId !== null || !isChannelJoinable(channel)) {
-      return;
-    }
-    setJoiningId(channel.id);
-    setErrorCause(null);
-    try {
-      const transaction = channelUsers.insert(
-        {
-          user_id: currentUserId,
-          channel_id: channel.id,
-          joined_at: nowIso(),
-        } satisfies ChannelUserRow,
-        { metadata: { action: "join" } satisfies ChannelUserWriteMetadata },
-      );
-      await transaction.when("settled");
-      handleOpenChange(false);
-      shell.showChat();
-      await navigate({
-        to: "/channels/$channelId",
-        params: { channelId: channel.id },
-      });
-    } catch (cause) {
-      setErrorCause({ cause });
-      setJoiningId(null);
-    }
   }
 
   return (
@@ -103,7 +51,7 @@ export function ChannelBrowserDialog({
             aria-hidden="true"
             className="pointer-events-none absolute top-1/2 left-2.5 size-4 -translate-y-1/2 text-muted-foreground"
           />
-          <input
+          <Input
             type="search"
             className={cn(
               inputClassName(),
@@ -147,12 +95,15 @@ export function ChannelBrowserDialog({
           ) : (
             <ScrollArea className="h-full">
               <ul className="flex flex-col gap-0.5 pr-2">
-                {discoverableChannels.map((channel) => {
-                  const joinable = isChannelJoinable(channel);
-                  const joining = joiningId === channel.id;
-                  return (
-                    <li key={channel.id} className="flex items-center gap-2 rounded-lg px-1 py-1.5">
-                      <HashIcon className="ml-1 size-4 shrink-0 opacity-60" aria-hidden="true" />
+                {discoverableChannels.map((channel) => (
+                  <li key={channel.id}>
+                    <Link
+                      to="/channels/$channelId"
+                      params={{ channelId: channel.id }}
+                      onClick={() => handleOpenChange(false)}
+                      className="flex min-h-14 items-center gap-3 rounded-lg px-3 py-2 outline-none hover:bg-muted focus-visible:ring-2 focus-visible:ring-ring"
+                    >
+                      <HashIcon className="size-4 shrink-0 opacity-60" aria-hidden="true" />
                       <div className="min-w-0 flex-1">
                         <p className="truncate text-sm text-foreground">{channel.channel_name}</p>
                         {channel.description?.trim() ? (
@@ -166,35 +117,16 @@ export function ChannelBrowserDialog({
                           {t("moderation.archived")}
                         </span>
                       ) : null}
-                      <Button
-                        variant="outline"
-                        size="sm"
-                        disabled={
-                          !joinable || joiningId !== null || currentUserLoading || !currentUserId
-                        }
-                        onClick={() => void joinChannel(channel)}
-                      >
-                        {joining
-                          ? t("channels.joining")
-                          : joinable
-                            ? t("channels.join")
-                            : t("channels.joinUnavailable")}
-                      </Button>
-                    </li>
-                  );
-                })}
+                      <span className="shrink-0 text-xs font-medium text-brand">
+                        {t("channels.view")}
+                      </span>
+                    </Link>
+                  </li>
+                ))}
               </ul>
             </ScrollArea>
           )}
         </div>
-
-        {errorCause ? (
-          <p className="text-xs text-destructive">
-            {t("common.writeErrorDetail", {
-              error: localizeApiError(errorCause.cause, t),
-            })}
-          </p>
-        ) : null}
       </DialogContent>
     </Dialog>
   );

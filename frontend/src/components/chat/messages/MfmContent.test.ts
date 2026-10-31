@@ -9,12 +9,12 @@ const render = (content: string, options: Omit<MfmContentProps, "content"> = {})
   renderToStaticMarkup(createElement(MfmContent, { content, ...options }));
 
 describe("MfmContent", () => {
-  it("styles raw URLs as link chips while preserving destinations and custom labels", () => {
+  it("styles raw URLs as inline links while preserving destinations and custom labels", () => {
     const html = render("https://blog.example.com/a?x=1");
     expect(html).toContain('href="https://blog.example.com/a?x=1"');
-    expect(html).toContain("bg-sky-100");
-    expect(html).toContain('aria-hidden="true"');
-    expect(html).toContain("blog.example.com/a?x=1</span></a>");
+    expect(html).toContain("text-brand underline");
+    expect(html).not.toContain("py-0.5");
+    expect(html).toContain("blog.example.com/a?x=1</a>");
     expect(html).not.toContain(">https://");
     const labeled = render("[Read article](https://example.com/article)");
     expect(labeled).toContain(">Read article</a>");

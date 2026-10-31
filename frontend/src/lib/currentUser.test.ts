@@ -236,3 +236,19 @@ it("ends loading and permits retry after a stalled current-user request times ou
     timeout.mockRestore();
   }
 });
+
+it("refreshes administrator status without dropping the current identity and deduplicates refreshes", async () => {
+  setTokenProvider(() => "token-123");
+  const fetchMock = vi
+    .fn<FetchLike>()
+    .mockResolvedValueOnce(jsonResponse(userResponse("user-1", true)))
+    .mockResolvedValueOnce(jsonResponse(userResponse("user-1", false)));
+  const store = createCurrentUserStore(OIDC_CONFIG, { fetch: fetchMock });
+  await store.ensureLoaded();
+  const first = store.refresh();
+  const second = store.refresh();
+  expect(store.getState().currentUserId).toBe("user-1");
+  await Promise.all([first, second]);
+  expect(fetchMock).toHaveBeenCalledTimes(2);
+  expect(store.getState().isAdmin).toBe(false);
+});

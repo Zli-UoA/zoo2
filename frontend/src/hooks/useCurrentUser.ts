@@ -16,6 +16,15 @@ export function useCurrentUser(): CurrentUserState {
   const state = useSyncExternalStore(subscribe, getState, getState);
   useEffect(() => {
     void store.ensureLoaded();
+    const refresh = () => {
+      void store.refresh();
+    };
+    window.addEventListener("focus", refresh);
+    window.addEventListener("zoo:admins-changed", refresh);
+    return () => {
+      window.removeEventListener("focus", refresh);
+      window.removeEventListener("zoo:admins-changed", refresh);
+    };
   }, [store]);
   return state;
 }

@@ -1,3 +1,4 @@
+import { sidebarItemClassName } from "./sidebarStyles";
 import { useTranslation } from "react-i18next";
 import { Link } from "@tanstack/react-router";
 import { useLiveQuery } from "@tanstack/react-db";
@@ -144,20 +145,12 @@ export function ChannelSidebar({
                   key={channel.id}
                   to="/channels/$channelId"
                   params={{ channelId: channel.id }}
+                  aria-current={isActive ? "page" : undefined}
                   onClick={() => shell.showChat()}
-                  className={cn(
-                    "group flex items-center gap-2 rounded-lg px-2.5 py-2 text-sm transition-colors",
-                    "focus-visible:ring-3 focus-visible:ring-ring/50 outline-none",
-                    isUnread && "font-semibold text-sidebar-foreground",
-                    isActive
-                      ? "bg-brand-muted font-medium text-brand-muted-foreground"
-                      : isUnread
-                        ? "hover:bg-sidebar-accent"
-                        : "text-muted-foreground hover:bg-sidebar-accent hover:text-sidebar-accent-foreground",
-                  )}
+                  className={sidebarItemClassName(isActive, isUnread)}
                 >
                   {channel.is_private ? (
-                    <LockIcon className="size-3.5 shrink-0" aria-hidden="true" />
+                    <LockIcon className="size-4 shrink-0" aria-hidden="true" />
                   ) : (
                     <HashIcon className="size-4 shrink-0 opacity-60" aria-hidden="true" />
                   )}

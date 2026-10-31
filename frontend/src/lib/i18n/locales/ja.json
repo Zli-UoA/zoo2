@@ -3,6 +3,7 @@
     "main": "メインナビゲーション"
   },
   "channels": {
+    "view": "開く",
     "unread": "未読メッセージあり",
     "editTitle": "チャンネルを編集",
     "editHelp": "チャンネル名は日本語などの文字・数字と半角ハイフン（-）・アンダースコア（_）で80文字以内にしてください。空白・絵文字・その他の記号・予約語は使用できません。",
@@ -14,7 +15,7 @@
     "empty": "チャンネルがありません。",
     "createAction": "作成する",
     "browseTitle": "チャンネルを探す",
-    "browseDescription": "未参加の公開チャンネルを探して参加できます。",
+    "browseDescription": "公開チャンネルのメッセージを、参加せずに閲覧できます。",
     "browseSearch": "チャンネル名で検索",
     "searchClear": "検索をクリア",
     "searchEmpty": "一致するチャンネルがありません。",
@@ -129,7 +130,23 @@
     "notFound": "対象が見つかりませんでした。",
     "invalidState": "この操作は現在の状態では実行できません。"
   },
+  "settings": {
+    "admin": "管理者",
+    "member": "メンバー",
+    "makeAdmin": "管理者にする",
+    "removeAdmin": "管理者を外す",
+    "membersDescription": "Zooのメンバーを確認できます。管理者は権限を変更できます。",
+    "roleConfirm": "{{name}} の権限を「{{role}}」に変更します。",
+    "lastAdmin": "最後の管理者、または開発用の固定管理者は外せません。",
+    "membersLoadError": "管理者情報を読み込めませんでした。",
+    "general": "一般",
+    "channelTitle": "チャンネル設定",
+    "zooTitle": "Zoo設定",
+    "zooDescription": "メンバー一覧と表示・通知・App連携を管理します。",
+    "notifications": "通知とインストール"
+  },
   "common": {
+    "open": "開く",
     "loading": "読み込み中…",
     "cancel": "キャンセル",
     "cancelShort": "取消",
@@ -401,6 +418,24 @@
     "opening": "開いています…"
   },
   "apps": {
+    "ui": {
+      "channel": "対象チャンネル",
+      "chooseChannel": "チャンネルを選択",
+      "delete": "Appを削除",
+      "deleteTitle": "「{{name}}」を削除しますか？",
+      "deleteHelp": "Appを削除すると、連携とBotが無効になり、発行済みの認証情報も失効します。この操作は取り消せません。",
+      "disableHelp": "AppとBotを無効にし、発行済みの認証情報を失効させます。",
+      "search": "Appを検索",
+      "filter": "Appの絞り込み",
+      "all": "すべてのApp",
+      "mine": "自分のApp",
+      "empty": "該当するAppはありません。",
+      "back": "App一覧に戻る",
+      "overview": "使う",
+      "manage": "管理・開発",
+      "configuration": "設定と承認",
+      "invalidManifest": "Manifestに有効なJSONを入力してください。"
+    },
     "title": "App・連携",
     "description": "Appの追加、会話、外部サービスとの連携を管理します。",
     "create": "Appを作成",

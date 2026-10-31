@@ -1,5 +1,5 @@
 import { toast } from "sonner";
-import { PwaControls } from "../pwa/PwaControls";
+import { useShell } from "./shell-context";
 import { disablePush } from "../../lib/pwa/push";
 import { useTranslation } from "react-i18next";
 import { Link } from "@tanstack/react-router";
@@ -11,6 +11,7 @@ import {
   MessageCircleMoreIcon,
   type LucideIcon,
   PawPrintIcon,
+  SettingsIcon,
 } from "lucide-react";
 
 import { useCurrentUser } from "../../hooks/useCurrentUser";
@@ -18,12 +19,10 @@ import { useUsers } from "../../hooks/useRealtime";
 import { useCollections } from "../../lib/electric/collections-context";
 import { getOidcClient } from "../../lib/oidc/session";
 import { useOfflineStatus } from "../../lib/offline/offline-context";
-import { LanguageToggle } from "../i18n/LanguageToggle";
-import { ModeToggle } from "../theme/ModeToggle";
 import { Avatar, AvatarFallback } from "../ui/avatar";
 import { Button } from "../ui/button";
 import { Separator } from "../ui/separator";
-import { AppsButton } from "../chat/AppsDialog";
+import { AppDialogs } from "../chat/AppsDialog";
 import { NotificationsButton } from "../chat/NotificationsButton";
 import { initials } from "../chat/format";
 
@@ -57,6 +56,7 @@ function RailLink({
  */
 export function LeftRail() {
   const { t } = useTranslation();
+  const shell = useShell();
   const { config } = useCollections();
   const { currentUserId } = useCurrentUser();
   const { clearUserData } = useOfflineStatus();
@@ -103,16 +103,22 @@ export function LeftRail() {
       <RailLink to="/" icon={HashIcon} label={t("channels.title")} exact />
       <NotificationsButton />
       <RailLink to="/bubble" icon={MessageCircleMoreIcon} label={t("bubbleChat.title")} exact />
-      <AppsButton />
+      <AppDialogs />
       {/* 同期の状態（/realtime）は開発時の確認用。本番ビルドでは出さない。 */}
       {import.meta.env.DEV ? (
         <RailLink to="/realtime" icon={ActivityIcon} label={t("sync.title")} exact />
       ) : null}
 
       <div className="mt-auto flex flex-col items-center gap-2">
-        <PwaControls />
-        <LanguageToggle />
-        <ModeToggle />
+        <Link
+          to="/settings"
+          search={{ channel: shell.selectedChannelId ?? undefined }}
+          aria-label={t("settings.zooTitle")}
+          title={t("settings.zooTitle")}
+          className="flex size-10 items-center justify-center rounded-xl text-muted-foreground outline-none transition-colors hover:bg-accent hover:text-foreground focus-visible:ring-3 focus-visible:ring-ring/50 data-[status=active]:bg-brand-muted data-[status=active]:text-brand-muted-foreground"
+        >
+          <SettingsIcon className="size-5" aria-hidden="true" />
+        </Link>
         <Separator className="w-6" />
         <Avatar size="sm" title={meLabel}>
           <AvatarFallback>{initials(meLabel)}</AvatarFallback>

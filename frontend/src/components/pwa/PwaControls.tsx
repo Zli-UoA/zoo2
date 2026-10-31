@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { createContext, useContext, useEffect, useState, type ReactNode } from "react";
 import { BellIcon, BellOffIcon, DownloadIcon } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
@@ -18,10 +18,37 @@ type InstallEvent = Event & {
   userChoice: Promise<{ outcome: "accepted" | "dismissed" }>;
 };
 
+const InstallPromptContext = createContext<{
+  event: InstallEvent | null;
+  clear: () => void;
+} | null>(null);
+export function InstallPromptProvider({ children }: { children: ReactNode }) {
+  const [event, setEvent] = useState<InstallEvent | null>(null);
+  useEffect(() => {
+    const onInstall = (next: Event) => {
+      next.preventDefault();
+      setEvent(next as InstallEvent);
+    };
+    const installed = () => setEvent(null);
+    window.addEventListener("beforeinstallprompt", onInstall);
+    window.addEventListener("appinstalled", installed);
+    return () => {
+      window.removeEventListener("beforeinstallprompt", onInstall);
+      window.removeEventListener("appinstalled", installed);
+    };
+  }, []);
+  return (
+    <InstallPromptContext.Provider value={{ event, clear: () => setEvent(null) }}>
+      {children}
+    </InstallPromptContext.Provider>
+  );
+}
+
 export function PwaControls() {
   const { t } = useTranslation();
   const { config } = useCollections();
-  const [install, setInstall] = useState<InstallEvent | null>(null);
+  const prompt = useContext(InstallPromptContext);
+  const install = prompt?.event ?? null;
   const [supported, setSupported] = useState(false);
   const [enabled, setEnabled] = useState(false);
   const [publicKey, setPublicKey] = useState<string | null>(null);
@@ -30,13 +57,6 @@ export function PwaControls() {
 
   useEffect(() => {
     let cancelled = false;
-    const onInstall = (event: Event) => {
-      event.preventDefault();
-      setInstall(event as InstallEvent);
-    };
-    const installed = () => setInstall(null);
-    window.addEventListener("beforeinstallprompt", onInstall);
-    window.addEventListener("appinstalled", installed);
     if (window.isSecureContext && "serviceWorker" in navigator) {
       void registerWorker()
         .then(async (worker) => {
@@ -70,8 +90,6 @@ export function PwaControls() {
     }
     return () => {
       cancelled = true;
-      window.removeEventListener("beforeinstallprompt", onInstall);
-      window.removeEventListener("appinstalled", installed);
     };
   }, [config]);
 
@@ -136,7 +154,7 @@ export function PwaControls() {
             void install
               .prompt()
               .then(() => install.userChoice)
-              .then(() => setInstall(null))
+              .then(() => prompt?.clear())
               .catch(() => toast.error(t("pwa.error")));
           }}
         >

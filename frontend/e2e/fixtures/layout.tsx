@@ -14,7 +14,7 @@ function Layout() {
       user_id: "me",
       display_name: "Alice",
       parent_id: null,
-      content: `Message ${i}\n` + "Original line\n".repeat((i % 4) + 1),
+      content: i === 39 ? "Message 39" : `Message ${i}\n` + "Original line\n".repeat((i % 4) + 1),
       created_at: "2026-01-02 00:00:00.000",
     })),
   );

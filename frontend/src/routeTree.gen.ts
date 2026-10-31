@@ -15,6 +15,7 @@ import { Route as ShellIndexRouteImport } from './routes/_shell.index'
 import { Route as ShellAppsAuthorizeRouteImport } from './routes/_shell.apps-authorize'
 import { Route as ShellBubbleRouteImport } from './routes/_shell.bubble'
 import { Route as ShellNotificationsRouteImport } from './routes/_shell.notifications'
+import { Route as ShellSettingsRouteImport } from './routes/_shell.settings'
 import { Route as ShellAppsAppIdRouteImport } from './routes/_shell.apps.$appId'
 import { Route as ShellChannelsChannelIdRouteImport } from './routes/_shell.channels.$channelId'
 
@@ -47,6 +48,11 @@ const ShellNotificationsRoute = ShellNotificationsRouteImport.update({
   path: '/notifications',
   getParentRoute: () => ShellRoute,
 } as any)
+const ShellSettingsRoute = ShellSettingsRouteImport.update({
+  id: '/settings',
+  path: '/settings',
+  getParentRoute: () => ShellRoute,
+} as any)
 const ShellAppsAppIdRoute = ShellAppsAppIdRouteImport.update({
   id: '/apps/$appId',
   path: '/apps/$appId',
@@ -64,6 +70,7 @@ export interface FileRoutesByFullPath {
   '/apps-authorize': typeof ShellAppsAuthorizeRoute
   '/bubble': typeof ShellBubbleRoute
   '/notifications': typeof ShellNotificationsRoute
+  '/settings': typeof ShellSettingsRoute
   '/apps/$appId': typeof ShellAppsAppIdRoute
   '/channels/$channelId': typeof ShellChannelsChannelIdRoute
 }
@@ -72,6 +79,7 @@ export interface FileRoutesByTo {
   '/apps-authorize': typeof ShellAppsAuthorizeRoute
   '/bubble': typeof ShellBubbleRoute
   '/notifications': typeof ShellNotificationsRoute
+  '/settings': typeof ShellSettingsRoute
   '/': typeof ShellIndexRoute
   '/apps/$appId': typeof ShellAppsAppIdRoute
   '/channels/$channelId': typeof ShellChannelsChannelIdRoute
@@ -83,6 +91,7 @@ export interface FileRoutesById {
   '/_shell/apps-authorize': typeof ShellAppsAuthorizeRoute
   '/_shell/bubble': typeof ShellBubbleRoute
   '/_shell/notifications': typeof ShellNotificationsRoute
+  '/_shell/settings': typeof ShellSettingsRoute
   '/_shell/': typeof ShellIndexRoute
   '/_shell/apps/$appId': typeof ShellAppsAppIdRoute
   '/_shell/channels/$channelId': typeof ShellChannelsChannelIdRoute
@@ -95,6 +104,7 @@ export interface FileRouteTypes {
     | '/apps-authorize'
     | '/bubble'
     | '/notifications'
+    | '/settings'
     | '/apps/$appId'
     | '/channels/$channelId'
   fileRoutesByTo: FileRoutesByTo
@@ -103,6 +113,7 @@ export interface FileRouteTypes {
     | '/apps-authorize'
     | '/bubble'
     | '/notifications'
+    | '/settings'
     | '/'
     | '/apps/$appId'
     | '/channels/$channelId'
@@ -113,6 +124,7 @@ export interface FileRouteTypes {
     | '/_shell/apps-authorize'
     | '/_shell/bubble'
     | '/_shell/notifications'
+    | '/_shell/settings'
     | '/_shell/'
     | '/_shell/apps/$appId'
     | '/_shell/channels/$channelId'
@@ -167,6 +179,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ShellNotificationsRouteImport
       parentRoute: typeof ShellRoute
     }
+    '/_shell/settings': {
+      id: '/_shell/settings'
+      path: '/settings'
+      fullPath: '/settings'
+      preLoaderRoute: typeof ShellSettingsRouteImport
+      parentRoute: typeof ShellRoute
+    }
     '/_shell/apps/$appId': {
       id: '/_shell/apps/$appId'
       path: '/apps/$appId'
@@ -188,6 +207,7 @@ interface ShellRouteChildren {
   ShellAppsAuthorizeRoute: typeof ShellAppsAuthorizeRoute
   ShellBubbleRoute: typeof ShellBubbleRoute
   ShellNotificationsRoute: typeof ShellNotificationsRoute
+  ShellSettingsRoute: typeof ShellSettingsRoute
   ShellIndexRoute: typeof ShellIndexRoute
   ShellAppsAppIdRoute: typeof ShellAppsAppIdRoute
   ShellChannelsChannelIdRoute: typeof ShellChannelsChannelIdRoute
@@ -197,6 +217,7 @@ const ShellRouteChildren: ShellRouteChildren = {
   ShellAppsAuthorizeRoute: ShellAppsAuthorizeRoute,
   ShellBubbleRoute: ShellBubbleRoute,
   ShellNotificationsRoute: ShellNotificationsRoute,
+  ShellSettingsRoute: ShellSettingsRoute,
   ShellIndexRoute: ShellIndexRoute,
   ShellAppsAppIdRoute: ShellAppsAppIdRoute,
   ShellChannelsChannelIdRoute: ShellChannelsChannelIdRoute,

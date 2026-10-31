@@ -5,6 +5,7 @@ import {
   filterMemberCandidates,
   MEMBER_CANDIDATE_LIMIT,
   sortUsersByLabel,
+  sortChannelMembers,
   userLabel,
 } from "./memberCandidates";
 
@@ -100,5 +101,33 @@ describe("integration accounts", () => {
         (u) => u.id,
       ),
     ).toEqual(["human"]);
+  });
+});
+
+describe("sortChannelMembers", () => {
+  it("puts the creator first, followed by ABC order regardless of join order or bot identity", () => {
+    const users = [
+      user("z", "zed"),
+      user("a", "alice", "Alice"),
+      user("b", "bob", "bob"),
+      { ...user("app", "app", "Assistant"), is_bot: true },
+    ];
+    const input = [member("b"), member("z"), member("app"), member("a")];
+    expect(sortChannelMembers(input, users, "z").map((entry) => entry.user_id)).toEqual([
+      "z",
+      "a",
+      "app",
+      "b",
+    ]);
+    expect(input.map((entry) => entry.user_id)).toEqual(["b", "z", "app", "a"]);
+  });
+  it("stabilizes equal names and handles users still loading", () => {
+    const users = [user("b", "bob", "Alice"), user("a", "alice", "Alice")];
+    expect(
+      sortChannelMembers([member("b"), member("a")], users, "absent").map((entry) => entry.user_id),
+    ).toEqual(["a", "b"]);
+    expect(
+      sortChannelMembers([member("b"), member("a")], [], "b").map((entry) => entry.user_id),
+    ).toEqual(["b", "a"]);
   });
 });

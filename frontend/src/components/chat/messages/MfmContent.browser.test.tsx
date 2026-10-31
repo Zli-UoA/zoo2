@@ -3,7 +3,7 @@ import { expect, it } from "vite-plus/test";
 import { MfmContent } from "./MfmContent";
 import "../../../styles.css";
 
-it.each([160, 320])("keeps long URLs beside their icon and within a %ipx message", (width) => {
+it.each([160, 320])("wraps long inline URLs within a %ipx message without padding", (width) => {
   const url = `https://example.com/${"verylong".repeat(30)}`;
   const view = render(
     <div
@@ -16,16 +16,9 @@ it.each([160, 320])("keeps long URLs beside their icon and within a %ipx message
   const body = view.container.firstElementChild!;
   const link = screen.getByRole("link");
   expect(link).toHaveAttribute("href", url);
-  const icon = link.querySelector("svg")!;
-  const label = link.lastChild!;
-  const text = label.nodeType === Node.TEXT_NODE ? label : label.firstChild!;
-  const range = document.createRange();
-  range.setStart(text, 0);
-  range.setEnd(text, 1);
-  const firstCharacter = range.getBoundingClientRect();
-  const iconRect = icon.getBoundingClientRect();
-  expect(firstCharacter.left).toBeGreaterThanOrEqual(iconRect.right);
-  expect(Math.abs(firstCharacter.top - iconRect.top)).toBeLessThan(14);
-  expect(link.getBoundingClientRect().height).toBeGreaterThan(firstCharacter.height * 2);
+  expect(getComputedStyle(link).paddingTop).toBe("0px");
+  expect(getComputedStyle(link).paddingBottom).toBe("0px");
+  expect(getComputedStyle(link).cursor).toBe("pointer");
+  expect(link.getClientRects().length).toBeGreaterThan(1);
   expect(body.scrollWidth).toBeLessThanOrEqual(body.clientWidth);
 });

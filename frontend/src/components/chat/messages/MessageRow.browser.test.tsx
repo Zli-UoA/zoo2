@@ -1,3 +1,4 @@
+import "../../../styles.css";
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vite-plus/test";
@@ -248,17 +249,24 @@ describe("MessageRow", () => {
     expect(onOpenThread).toHaveBeenCalledOnce();
   });
 
-  it("keeps the hover actions from stealing clicks while invisible", () => {
+  it("groups the overflow menu and quick actions within one toolbar", () => {
     renderRow(buildItem(), true);
+    const toolbar = document.querySelector("[data-message-toolbar]")!;
+    expect(toolbar.contains(screen.getByLabelText("編集"))).toBe(true);
+    expect(toolbar.contains(screen.getByLabelText("その他の操作"))).toBe(true);
+    expect(getComputedStyle(toolbar).pointerEvents).toBe("none");
+    screen.getByLabelText("その他の操作").focus();
+    expect(getComputedStyle(toolbar).pointerEvents).toBe("auto");
+  });
 
-    const edit = screen.getByLabelText("編集");
-    expect(edit.closest("div")?.className).toContain("pointer-events-none hidden items-center");
-    expect(edit.closest("div")?.className).toContain("group-hover/row:pointer-events-auto");
-    expect(edit.closest("div")?.className).toContain("group-focus-within/row:pointer-events-auto");
-    expect(edit.closest("div")?.className).toContain("group-hover/row:opacity-100");
-
-    const more = screen.getByLabelText("その他の操作");
-    expect(more.className).toContain("pointer-events-none opacity-0");
+  it("allows moderators to delete another author's message without editing it", async () => {
+    const onRequestDelete = vi.fn();
+    renderRow(buildItem(), false, { canDelete: true, onRequestDelete });
+    screen.getByRole("button", { name: "その他の操作" }).focus();
+    await userEvent.keyboard("{Enter}");
+    expect(screen.queryByRole("menuitem", { name: "編集" })).toBeNull();
+    await userEvent.click(screen.getByRole("menuitem", { name: "削除" }));
+    expect(onRequestDelete).toHaveBeenCalledOnce();
   });
 });
 

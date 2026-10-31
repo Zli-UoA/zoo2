@@ -1,3 +1,4 @@
+import { Input } from "../ui/input";
 import { useTranslation } from "react-i18next";
 import { cn } from "cn";
 import { SearchIcon, UserMinusIcon } from "lucide-react";
@@ -29,7 +30,12 @@ import { ScrollArea } from "../ui/scroll-area";
 import { Skeleton } from "../ui/skeleton";
 import { initials } from "./format";
 import { AppAvatar, openApp } from "./AppIdentity";
-import { filterMemberCandidates, sortUsersByLabel, userLabel } from "./memberCandidates";
+import {
+  filterMemberCandidates,
+  sortChannelMembers,
+  sortUsersByLabel,
+  userLabel,
+} from "./memberCandidates";
 
 const SKELETON_ROWS = [0, 1, 2];
 
@@ -70,8 +76,10 @@ export function MembersPanel({ channel, className }: { channel: ChannelRow; clas
   const creatorLeaveHintId = useId();
 
   const userMap = new Map((usersQuery.data ?? []).map((user) => [user.id, user]));
-  const members = [...(membersQuery.data ?? [])].sort(
-    (a, b) => Number(!!userMap.get(a.user_id)?.is_bot) - Number(!!userMap.get(b.user_id)?.is_bot),
+  const members = useMemo(
+    () =>
+      sortChannelMembers(membersQuery.data ?? [], usersQuery.data ?? [], channel.created_user_id),
+    [membersQuery.data, usersQuery.data, channel.created_user_id],
   );
   const userNames = useMemo(() => {
     const map = new Map<string, string>();
@@ -250,11 +258,9 @@ export function MembersPanel({ channel, className }: { channel: ChannelRow; clas
                       <Skeleton className="h-4 flex-1" />
                     </li>
                   ))
-                : members.map((member, index) => {
+                : members.map((member) => {
                     const bot = userMap.get(member.user_id);
                     const isBot = !!bot?.is_bot;
-                    const startsAppSection =
-                      isBot && (index === 0 || !userMap.get(members[index - 1]!.user_id)?.is_bot);
                     const label = userNames.get(member.user_id) ?? member.user_id;
                     const isCreator = member.user_id === channel.created_user_id;
                     const isMe = member.user_id === currentUserId;
@@ -270,11 +276,6 @@ export function MembersPanel({ channel, className }: { channel: ChannelRow; clas
                       });
                     return (
                       <Fragment key={member.user_id}>
-                        {startsAppSection ? (
-                          <li className="mt-3 px-2 py-1 text-xs font-semibold text-muted-foreground">
-                            {t("apps.title")}
-                          </li>
-                        ) : null}
                         <li className="flex items-center gap-2.5 rounded-lg px-2 py-1.5 hover:bg-accent/60">
                           <AppAvatar label={label} isBot={isBot} src={bot?.avatar_url} size="sm" />
                           <span className="min-w-0 flex-1 truncate text-sm">
@@ -329,7 +330,7 @@ export function MembersPanel({ channel, className }: { channel: ChannelRow; clas
                   aria-hidden="true"
                   className="pointer-events-none absolute top-1/2 left-2.5 size-4 -translate-y-1/2 text-muted-foreground"
                 />
-                <input
+                <Input
                   className={cn(inputClassName(), "w-full pl-8")}
                   placeholder={t("members.search")}
                   value={query}

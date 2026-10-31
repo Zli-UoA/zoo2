@@ -1,3 +1,4 @@
+import { noAutofill } from "../../ui/autofill";
 import { Combobox } from "@base-ui/react/combobox";
 import { SearchIcon } from "lucide-react";
 import { useMemo, useState } from "react";
@@ -62,6 +63,7 @@ function KitchenEmojiCombobox({
             className="pointer-events-none absolute top-1/2 left-2.5 size-3.5 -translate-y-1/2 text-muted-foreground"
           />
           <Combobox.Input
+            {...noAutofill}
             className={`${inputClassName()} w-full pl-8`}
             placeholder={t("reactions.searchEmoji")}
             aria-label={label}

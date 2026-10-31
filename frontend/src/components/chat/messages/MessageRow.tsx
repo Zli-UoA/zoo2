@@ -36,6 +36,7 @@ import { ReactionEmoji } from "./ReactionEmoji";
 export interface MessageRowProps {
   item: MessageItem;
   isOwn: boolean;
+  canDelete?: boolean;
   isEditing: boolean;
   editingText: string;
   onEditingTextChange: (value: string) => void;
@@ -126,6 +127,7 @@ function ReplyLink({ count, onOpen }: { count: number; onOpen: () => void }) {
 export function MessageRow({
   item,
   isOwn,
+  canDelete = isOwn,
   isEditing,
   editingText,
   onEditingTextChange,
@@ -230,9 +232,9 @@ export function MessageRow({
             src={message.avatar_url}
           />
         ) : (
-          <div className="mt-0.5 w-8 shrink-0 text-right">
+          <div className="flex h-lh w-8 shrink-0 items-center justify-end text-sm leading-relaxed">
             <time
-              className="hidden text-[10px] text-muted-foreground tabular-nums group-hover/row:inline group-focus-within/row:inline"
+              className="text-[10px] leading-none text-muted-foreground tabular-nums opacity-0 group-hover/row:opacity-100 group-focus-within/row:opacity-100"
               dateTime={normalizeUtcTimestamp(message.created_at)}
               title={fullTimestamp(message.created_at, locale)}
             >
@@ -257,6 +259,7 @@ export function MessageRow({
 
           {isEditing ? (
             <form
+              autoComplete="off"
               className="mt-1 flex flex-col gap-2 rounded-lg border bg-background p-2"
               onSubmit={(event) => {
                 event.preventDefault();
@@ -355,8 +358,14 @@ export function MessageRow({
 
         {!isEditing ? (
           // 外枠は不可視の間クリックを通す（子は自前で pointer-events を戻す）。
-          <div className="pointer-events-none absolute right-1.5 top-0 flex items-center">
-            <div className="pointer-events-none hidden items-center gap-0.5 rounded-lg border bg-popover p-0.5 opacity-0 shadow-sm transition-opacity group-hover/row:pointer-events-auto group-hover/row:opacity-100 group-focus-within/row:pointer-events-auto group-focus-within/row:opacity-100 [@media(hover:hover)]:flex">
+          <div
+            data-message-toolbar
+            className={cn(
+              "pointer-events-none absolute right-1.5 top-0 flex items-center gap-0.5 rounded-lg border bg-popover p-0.5 opacity-0 shadow-sm transition-opacity focus-within:pointer-events-auto focus-within:opacity-100 [@media(hover:hover)]:group-hover/row:pointer-events-auto [@media(hover:hover)]:group-hover/row:opacity-100",
+              menuOpen && "pointer-events-auto opacity-100",
+            )}
+          >
+            <div className="hidden items-center gap-0.5 [@media(hover:hover)]:flex">
               <Button
                 variant="ghost"
                 size="icon-xs"
@@ -379,17 +388,19 @@ export function MessageRow({
                   >
                     <PencilIcon />
                   </Button>
-                  <Button
-                    variant="ghost"
-                    size="icon-xs"
-                    aria-label={t("messages.delete")}
-                    title={t("messages.delete")}
-                    className="text-destructive hover:bg-destructive/10 hover:text-destructive"
-                    onClick={onRequestDelete}
-                  >
-                    <TrashIcon />
-                  </Button>
                 </>
+              ) : null}
+              {canDelete ? (
+                <Button
+                  variant="ghost"
+                  size="icon-xs"
+                  aria-label={t("messages.delete")}
+                  title={t("messages.delete")}
+                  className="text-destructive hover:bg-destructive/10 hover:text-destructive"
+                  onClick={onRequestDelete}
+                >
+                  <TrashIcon />
+                </Button>
               ) : null}
             </div>
             {/* PC はホバー、タッチは長押し、キーボードはフォーカスで操作する。 */}
@@ -400,8 +411,6 @@ export function MessageRow({
                 className={buttonVariants({
                   variant: "ghost",
                   size: "icon-xs",
-                  className:
-                    "pointer-events-none opacity-0 focus-visible:pointer-events-auto focus-visible:opacity-100 [@media(hover:hover)]:group-hover/row:pointer-events-auto [@media(hover:hover)]:group-hover/row:opacity-100 data-popup-open:pointer-events-auto data-popup-open:opacity-100",
                 })}
               >
                 <MoreHorizontalIcon />
@@ -433,11 +442,13 @@ export function MessageRow({
                       <PencilIcon />
                       {t("messages.edit")}
                     </DropdownMenuItem>
-                    <DropdownMenuItem variant="destructive" onClick={onRequestDelete}>
-                      <TrashIcon />
-                      {t("messages.delete")}
-                    </DropdownMenuItem>
                   </>
+                ) : null}
+                {canDelete ? (
+                  <DropdownMenuItem variant="destructive" onClick={onRequestDelete}>
+                    <TrashIcon />
+                    {t("messages.delete")}
+                  </DropdownMenuItem>
                 ) : null}
               </DropdownMenuContent>
             </DropdownMenu>

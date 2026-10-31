@@ -1,5 +1,4 @@
 import { Fragment, useEffect, useMemo, useState, type ReactNode } from "react";
-import { Link as LinkIcon } from "lucide-react";
 import { parse, toString, type MfmNode } from "mfm-js";
 import katex from "katex";
 import hljs from "highlight.js/lib/common";
@@ -18,20 +17,15 @@ export interface MfmContentProps {
 const shortcodes: Readonly<Record<string, string>> = shortcodeData;
 const linkClass =
   "rounded-sm text-brand underline underline-offset-2 outline-none focus-visible:ring-2 focus-visible:ring-ring/50";
-function externalLink(url: string, children: ReactNode, rawUrl = false): ReactNode {
+function externalLink(url: string, children: ReactNode): ReactNode {
   return (
     <a
       href={url}
       target="_blank"
       rel="noopener noreferrer"
-      className={
-        rawUrl
-          ? "inline-flex max-w-full items-baseline gap-1 rounded bg-sky-100 px-1 py-0.5 align-bottom text-sky-700 outline-none hover:bg-sky-200 focus-visible:ring-2 focus-visible:ring-ring/50 dark:bg-sky-950 dark:text-sky-300 dark:hover:bg-sky-900"
-          : linkClass
-      }
+      className={`${linkClass} [overflow-wrap:anywhere]`}
     >
-      {rawUrl ? <LinkIcon aria-hidden="true" className="size-[1em] shrink-0" /> : null}
-      {rawUrl ? <span className="min-w-0 [overflow-wrap:anywhere]">{children}</span> : children}
+      {children}
     </a>
   );
 }
@@ -39,7 +33,7 @@ function text(content: string): ReactNode {
   return messageTextSegments(content).map((segment, index) => (
     <Fragment key={index}>
       {segment.kind === "link" ? (
-        externalLink(segment.value, segment.value.replace(/^https?:\/\//i, ""), true)
+        externalLink(segment.value, segment.value.replace(/^https?:\/\//i, ""))
       ) : segment.kind === "mention" ? (
         <span className="rounded bg-brand-muted px-0.5 font-medium text-brand-muted-foreground">
           {segment.value}

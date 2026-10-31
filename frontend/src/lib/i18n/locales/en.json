@@ -3,6 +3,7 @@
     "main": "Main navigation"
   },
   "channels": {
+    "view": "Open",
     "unread": "Unread messages",
     "editTitle": "Edit channel",
     "editHelp": "Use up to 80 letters, numbers, hyphens (-), or underscores (_) for the channel name. Spaces, emoji, other symbols, and reserved names are not allowed.",
@@ -14,7 +15,7 @@
     "empty": "No channels yet.",
     "createAction": "Create one",
     "browseTitle": "Browse channels",
-    "browseDescription": "Find public channels you haven't joined yet.",
+    "browseDescription": "Browse public channel messages before joining.",
     "browseSearch": "Search by channel name",
     "searchClear": "Clear search",
     "searchEmpty": "No channels match your search.",
@@ -129,7 +130,23 @@
     "notFound": "The target was not found.",
     "invalidState": "This action cannot be performed in the current state."
   },
+  "settings": {
+    "admin": "Administrator",
+    "member": "Member",
+    "makeAdmin": "Make administrator",
+    "removeAdmin": "Remove administrator",
+    "membersDescription": "View Zoo members. Administrators can change roles.",
+    "roleConfirm": "Change {{name}} to {{role}}.",
+    "lastAdmin": "The last administrator or fixed development administrator cannot be removed.",
+    "membersLoadError": "Could not load administrator information.",
+    "general": "General",
+    "channelTitle": "Channel settings",
+    "zooTitle": "Zoo settings",
+    "zooDescription": "Manage members, appearance, notifications, and app integrations.",
+    "notifications": "Notifications and installation"
+  },
   "common": {
+    "open": "Open",
     "loading": "Loading…",
     "cancel": "Cancel",
     "cancelShort": "Cancel",
@@ -401,6 +418,24 @@
     "opening": "Opening…"
   },
   "apps": {
+    "ui": {
+      "channel": "Target channel",
+      "chooseChannel": "Choose a channel",
+      "delete": "Delete app",
+      "deleteTitle": "Delete “{{name}}”?",
+      "deleteHelp": "Deleting the app disables its integration and bot and revokes its credentials. This cannot be undone.",
+      "disableHelp": "Disable the app and bot and revoke issued credentials.",
+      "search": "Search apps",
+      "filter": "Filter apps",
+      "all": "All apps",
+      "mine": "My apps",
+      "empty": "No matching apps.",
+      "back": "Back to apps",
+      "overview": "Overview",
+      "manage": "Manage & develop",
+      "configuration": "Configuration & approval",
+      "invalidManifest": "Enter valid JSON for the manifest."
+    },
     "title": "Apps & integrations",
     "description": "Manage apps, conversations, and external integrations.",
     "create": "Create app",

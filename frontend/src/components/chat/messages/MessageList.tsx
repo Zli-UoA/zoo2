@@ -42,6 +42,7 @@ interface MessageListProps {
   isWritePending?: boolean;
   isError: boolean;
   currentUserId: string | null;
+  canModerate?: boolean;
   editingId: string | null;
   editingText: string;
   onEditingTextChange: (value: string) => void;
@@ -132,6 +133,7 @@ export function MessageList({
   isWritePending = false,
   isError,
   currentUserId,
+  canModerate = false,
   editingId,
   editingText,
   onEditingTextChange,
@@ -476,6 +478,9 @@ export function MessageList({
                     onReaction={(emoji) => onReaction(item.message.id, emoji)}
                     onPickReaction={() => onPickReaction(item.message.id)}
                     isOwn={!!currentUserId && item.message.user_id === currentUserId}
+                    canDelete={
+                      canModerate || (!!currentUserId && item.message.user_id === currentUserId)
+                    }
                     isEditing={editingId === item.message.id}
                     editingText={editingText}
                     onEditingTextChange={onEditingTextChange}

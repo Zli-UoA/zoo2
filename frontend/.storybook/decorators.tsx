@@ -55,8 +55,13 @@ export function StoryRouter({
       getParentRoute: () => rootRoute,
       path: "channels/$channelId",
     });
+    const settingsRoute = createRoute({
+      getParentRoute: () => rootRoute,
+      path: "settings",
+      validateSearch: (search: Record<string, unknown>) => search,
+    });
     return createRouter({
-      routeTree: rootRoute.addChildren([channelRoute]),
+      routeTree: rootRoute.addChildren([channelRoute, settingsRoute]),
       history: createMemoryHistory({ initialEntries: entriesKey.split("\n") }),
     });
   }, [children, entriesKey]);
