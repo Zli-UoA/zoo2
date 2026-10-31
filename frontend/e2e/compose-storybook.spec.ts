@@ -2,6 +2,27 @@ import { test, expect } from "@playwright/test";
 
 const nativeQuery = "viewMode=story&globals=implementation:kotlin";
 
+test("existing reaction-user stories render Kotlin names on hover and in the mobile list", async ({
+  page,
+}) => {
+  const frame = page.frameLocator('iframe[title="Kotlin component preview"]');
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto(`/iframe.html?id=features-chat-messagerow--reaction-users&${nativeQuery}`);
+  await expect(page.locator("[data-compose-catalog-state=ready]")).toBeVisible({ timeout: 90_000 });
+  await frame
+    .getByRole("button", { name: "👍 にリアクションしたユーザーを表示", exact: true })
+    .click({ force: true });
+  await expect(frame.getByText(/A{80} \(@longname\)/)).toBeVisible();
+  await expect(frame.getByText("Bob (@bob)", { exact: true })).toBeVisible();
+  await page.keyboard.press("Escape");
+  await expect(frame.getByText(/A{80} \(@longname\)/)).toBeHidden();
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await page.goto(`/iframe.html?id=features-chat-messagerow--reaction-users-hover&${nativeQuery}`);
+  await expect(page.locator("[data-compose-catalog-state=ready]")).toBeVisible({ timeout: 90_000 });
+  await frame.getByRole("button", { name: /👍 3 件/ }).hover({ force: true });
+  await expect(frame.getByText(/Alice \(@alice\), Bob \(@bob\)/)).toBeVisible();
+});
+
 test("existing stories switch React and Kotlin in the top toolbar and share Controls", async ({
   page,
 }) => {

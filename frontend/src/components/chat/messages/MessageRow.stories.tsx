@@ -5,7 +5,6 @@ import { expect, fn, screen, userEvent, waitFor, within } from "storybook/test";
 import { StoryShell } from "../../../../.storybook/shell";
 import { storyUsers } from "../../../../.storybook/fixtures";
 import { reactionUserLabel } from "../../../lib/emoji/reactions";
-import type { AttachmentRow } from "../../../lib/electric/types";
 import { storyAttachments } from "../../../../.storybook/attachment-fixtures";
 import { MessageRow } from "./MessageRow";
 import type { MessageItem } from "./messageGrouping";
@@ -141,25 +140,25 @@ export const ReactionUsers: Story = {
       },
     ],
   },
-  play: async ({ canvasElement }) => {
+  play: playForImplementation(async ({ canvasElement }) => {
     await userEvent.click(
       within(canvasElement).getByRole("button", { name: "👍 にリアクションしたユーザーを表示" }),
     );
     const dialog = await screen.findByRole("dialog");
     await waitFor(() => expect(within(dialog).getByText(/@longname/)).toBeVisible());
     await waitFor(() => expect(within(dialog).getByText(/@bob/)).toBeVisible());
-  },
+  }),
 };
 
 export const ReactionUsersHover: Story = {
   parameters: { a11y: { test: "error" } },
   args: WithReactions.args,
-  play: async ({ canvasElement }) => {
+  play: playForImplementation(async ({ canvasElement }) => {
     const chip = within(canvasElement).getByRole("button", { name: /👍 3 件/ });
     await userEvent.hover(chip);
     const tooltip = await screen.findByRole("tooltip");
     await expect(tooltip).toHaveTextContent("@alice");
-  },
+  }),
 };
 
 export const ReplyCount: Story = {

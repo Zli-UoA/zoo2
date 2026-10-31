@@ -504,24 +504,8 @@ internal fun Message(
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
                     groups.forEach { (emoji, rows) ->
-                        Row(
-                            Modifier.border(
-                                    1.dp,
-                                    MaterialTheme.colorScheme.outline,
-                                    RoundedCornerShape(8.dp),
-                                )
-                                .clickable(enabled = editable) {
-                                    toggleReaction(app, channel.text("id"), id, emoji, rows)
-                                }
-                                .padding(horizontal = 6.dp, vertical = 2.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                        ) {
-                            ReactionEmoji(emoji)
-                            Text(
-                                rows.map { it.text("user_id") }.distinct().size.toString(),
-                                Modifier.padding(start = 4.dp),
-                                small = true,
-                            )
+                        ReactionChip(app, emoji, rows, users, editable, wide) {
+                            toggleReaction(app, channel.text("id"), id, emoji, rows)
                         }
                     }
                     val replies =
