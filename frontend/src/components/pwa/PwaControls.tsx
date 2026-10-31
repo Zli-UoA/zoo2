@@ -18,12 +18,14 @@ type InstallEvent = Event & {
   userChoice: Promise<{ outcome: "accepted" | "dismissed" }>;
 };
 
-const InstallPromptContext = createContext<{
+const PwaContext = createContext<{
   event: InstallEvent | null;
   clear: () => void;
+  push: ReturnType<typeof usePushControls>;
 } | null>(null);
-export function InstallPromptProvider({ children }: { children: ReactNode }) {
+export function PwaProvider({ children }: { children: ReactNode }) {
   const [event, setEvent] = useState<InstallEvent | null>(null);
+  const push = usePushControls();
   useEffect(() => {
     const onInstall = (next: Event) => {
       next.preventDefault();
@@ -38,17 +40,15 @@ export function InstallPromptProvider({ children }: { children: ReactNode }) {
     };
   }, []);
   return (
-    <InstallPromptContext.Provider value={{ event, clear: () => setEvent(null) }}>
+    <PwaContext.Provider value={{ event, clear: () => setEvent(null), push }}>
       {children}
-    </InstallPromptContext.Provider>
+    </PwaContext.Provider>
   );
 }
 
-export function PwaControls() {
+function usePushControls() {
   const { t } = useTranslation();
   const { config } = useCollections();
-  const prompt = useContext(InstallPromptContext);
-  const install = prompt?.event ?? null;
   const [supported, setSupported] = useState(false);
   const [enabled, setEnabled] = useState(false);
   const [publicKey, setPublicKey] = useState<string | null>(null);
@@ -142,6 +142,33 @@ export function PwaControls() {
         : enabled
           ? t("pwa.disable")
           : t("pwa.enable");
+  return { label, enabled, busy, supported, publicKey, blocked, toggle };
+}
+
+export function PwaControls() {
+  const context = useContext(PwaContext);
+  return context ? (
+    <PwaControlButtons push={context.push} prompt={context} />
+  ) : (
+    <StandalonePwaControls />
+  );
+}
+
+function StandalonePwaControls() {
+  const push = usePushControls();
+  return <PwaControlButtons push={push} prompt={null} />;
+}
+
+function PwaControlButtons({
+  push,
+  prompt,
+}: {
+  push: ReturnType<typeof usePushControls>;
+  prompt: { event: InstallEvent | null; clear: () => void } | null;
+}) {
+  const { t } = useTranslation();
+  const { label, enabled, busy, supported, publicKey, blocked, toggle } = push;
+  const install = prompt?.event ?? null;
   return (
     <>
       {install ? (

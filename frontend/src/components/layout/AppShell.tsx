@@ -10,7 +10,7 @@ import { MfmChannelsProvider } from "../chat/messages/MfmChannels";
 import { ChannelSidebar } from "../chat/ChannelSidebar";
 import { MembersDialog } from "../chat/MembersDialog";
 import { MembersPanel } from "../chat/MembersPanel";
-import { InstallPromptProvider } from "../pwa/PwaControls";
+import { PwaProvider } from "../pwa/PwaControls";
 import { OfflineBanner } from "../offline/OfflineBanner";
 import { LeftRail } from "./LeftRail";
 import { ShellContext, type ShellContextValue, type ShellPane } from "./shell-context";
@@ -161,7 +161,7 @@ export function AppShell({ children }: { children: ReactNode }) {
   const showChat = pane === "chat";
 
   return (
-    <InstallPromptProvider>
+    <PwaProvider>
       <ShellContext.Provider value={value}>
         <MfmChannelsProvider channels={channels}>
           <div
@@ -199,6 +199,6 @@ export function AppShell({ children }: { children: ReactNode }) {
           </div>
         </MfmChannelsProvider>
       </ShellContext.Provider>
-    </InstallPromptProvider>
+    </PwaProvider>
   );
 }

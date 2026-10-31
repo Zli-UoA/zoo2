@@ -2,7 +2,7 @@ import type { Meta, StoryObj } from "@storybook/react-vite";
 import { expect, screen } from "storybook/test";
 import { useEffect, type ReactNode } from "react";
 
-import { InstallPromptProvider, PwaControls } from "./PwaControls";
+import { PwaProvider, PwaControls } from "./PwaControls";
 
 function InstallPrompt({ children }: { children: ReactNode }) {
   useEffect(() => {
@@ -43,9 +43,9 @@ export const InstallAvailable: Story = {
   decorators: [
     (Story) => (
       <InstallPrompt>
-        <InstallPromptProvider>
+        <PwaProvider>
           <Story />
-        </InstallPromptProvider>
+        </PwaProvider>
       </InstallPrompt>
     ),
   ],
