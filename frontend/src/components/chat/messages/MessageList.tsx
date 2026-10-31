@@ -172,6 +172,7 @@ export function MessageList({
     [messages, firstUnreadId, readStateLoading, readStateError],
   );
   const scrollRef = useRef<HTMLDivElement>(null);
+  const atBottomRef = useRef(true);
 
   const virtualizer = useVirtualizer({
     count: items.length,
@@ -179,9 +180,15 @@ export function MessageList({
     estimateSize: () => ESTIMATED_ROW_HEIGHT,
     overscan: 8,
     getItemKey: (index) => items[index]?.message.id ?? index,
+    // URLカードや画像の遅延読込で行が伸びても、最下部付近なら末尾を維持する。
+    // 編集中は入力欄の高さが変わるため、編集中の位置を保つ。
+    anchorTo: atBottomRef.current && editingId === null ? "end" : "start",
+    scrollEndThreshold: 48,
   });
 
-  const atBottomRef = useRef(true);
+  useLayoutEffect(() => {
+    if (editingId !== null) atBottomRef.current = false;
+  }, [editingId]);
   const [hasNewBelow, setHasNewBelow] = useState(false);
   // 最下部にいないとき届いた新着を `aria-live` で読み上げる（「新着メッセージ」
   // ボタンと同じ条件）。最下部へ戻ったら空にして、同文の連投も再度読み上げられる。
@@ -222,7 +229,7 @@ export function MessageList({
     }
     captureScrollAnchor();
     const near = isNearBottom(element.scrollTop, element.scrollHeight, element.clientHeight);
-    atBottomRef.current = near;
+    atBottomRef.current = near && editingId === null;
     if (near) {
       setHasNewBelow(false);
       markRead();
@@ -233,7 +240,7 @@ export function MessageList({
         onLoadOlder?.(oldest.created_at);
       }
     }
-  }, [captureScrollAnchor, markRead, messages, onLoadOlder]);
+  }, [captureScrollAnchor, editingId, markRead, messages, onLoadOlder]);
 
   useLayoutEffect(() => {
     const element = scrollRef.current;
