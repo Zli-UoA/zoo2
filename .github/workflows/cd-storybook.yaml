@@ -56,14 +56,14 @@ jobs:
           if-no-files-found: error
 
   deploy:
-    needs: [runner, build]
+    needs: [build]
     # Serialize alias updates without canceling an active or pending deployment.
     concurrency:
       group: storybook-preview-deploy-${{ github.event.pull_request.number }}
       cancel-in-progress: false
       queue: max
     # Each selected self-hosted runner is ephemeral; no PR code runs with secrets.
-    runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-latest' || fromJSON(needs.runner.outputs.runs-on || '"zli-kubecamp-no-docker"') }}
+    runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-latest' || 'zli-kubecamp-no-docker' }}
     timeout-minutes: 10
     permissions:
       contents: read

@@ -172,8 +172,7 @@ jobs:
         run: docker compose --project-directory . -f infra/compose.stg.yaml -f infra/proxy/test/compose.yaml down
 
   check:
-    needs: runner
-    runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-latest' || fromJSON(needs.runner.outputs.runs-on || '"zli-kubecamp-no-docker"') }}
+    runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-latest' || 'zli-kubecamp-no-docker' }}
     defaults:
       run:
         working-directory: ./frontend
@@ -217,8 +216,7 @@ jobs:
         run: pnpm test:e2e:layout
 
   unit-test:
-    needs: runner
-    runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-latest' || fromJSON(needs.runner.outputs.runs-on || '"zli-kubecamp-no-docker"') }}
+    runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-latest' || 'zli-kubecamp-no-docker' }}
     defaults:
       run:
         working-directory: ./frontend

@@ -19,14 +19,8 @@ concurrency:
   group: ghcr-cleanup
   queue: max
 jobs:
-  runner:
-    uses: ./.github/workflows/select-runner.yaml
-    secrets:
-      runner-status-token: ${{ secrets.RUNNER_STATUS_TOKEN }}
-
   cleanup:
-    needs: runner
-    runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-latest' || fromJSON(needs.runner.outputs.runs-on || '"zli-kubecamp-no-docker"') }}
+    runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-latest' || 'zli-kubecamp-no-docker' }}
     steps:
       # Never check out the PR head in this privileged workflow.
       - uses: actions/checkout@v7

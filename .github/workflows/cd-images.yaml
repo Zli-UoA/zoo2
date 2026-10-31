@@ -20,11 +20,10 @@ jobs:
       runner-status-token: ${{ secrets.RUNNER_STATUS_TOKEN }}
 
   plan:
-    needs: runner
     if: >-
       (github.event_name != 'workflow_dispatch' || github.ref == 'refs/heads/main') &&
       (github.event.action != 'labeled' || github.event.label.name == 'preview')
-    runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-latest' || fromJSON(needs.runner.outputs.runs-on || '"zli-kubecamp-no-docker"') }}
+    runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-latest' || 'zli-kubecamp-no-docker' }}
     permissions:
       contents: read
       pull-requests: read
@@ -203,9 +202,9 @@ jobs:
   # The shared release tag goes on last, migrate last of all: zoo2-infra's ResourceSet deploys all three
   # images at the newest release tag it sees on migrate, so the other two must already carry it.
   promote:
-    needs: [runner, plan, build]
+    needs: [plan, build]
     if: github.event_name != 'pull_request'
-    runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-latest' || fromJSON(needs.runner.outputs.runs-on || '"zli-kubecamp-no-docker"') }}
+    runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-latest' || 'zli-kubecamp-no-docker' }}
     permissions:
       contents: read
       packages: write
@@ -273,12 +272,12 @@ jobs:
   # soon as its tag exists, so a failed build must not leave a migrated schema behind an old app.
   # Built components are tagged from the digests the build pushed; unchanged ones alias the pinned main image.
   publish:
-    needs: [runner, plan, build]
+    needs: [plan, build]
     if: >-
       always() && github.event_name == 'pull_request' && needs.plan.result == 'success' &&
       needs.plan.outputs.enabled == 'true' &&
       (needs.build.result == 'success' || needs.build.result == 'skipped')
-    runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-latest' || fromJSON(needs.runner.outputs.runs-on || '"zli-kubecamp-no-docker"') }}
+    runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-latest' || 'zli-kubecamp-no-docker' }}
     permissions:
       contents: read
       packages: write

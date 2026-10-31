@@ -20,11 +20,11 @@ const cases = [
   ['kubecamp without ARC', {runners: [camp()]}, K, H],
   ['kubecamp before full ARC', {runners: [camp(), busy('a'), busy('b')]}, K, H],
   ['busy kubecamp falls back to ARC', {runners: [camp({busy: true}), arc()]}, A, A],
-  ['busy kubecamp allows ARC scaling', {runners: [camp({busy: true}), busy('a')]}, A, A],
+  ['busy kubecamp and single busy ARC use hosted', {runners: [camp({busy: true}), busy('a')]}, H, H],
   ['busy pools fall back to hosted', {runners: [camp({busy: true}), busy('a'), busy('b')]}, H, H],
   ['offline kubecamp is ignored', {runners: [camp({status: 'offline'}), arc()]}, A, A],
   ['idle ARC', {runners: [arc()]}, A, A],
-  ['busy ARC can scale', {runners: [busy('a')]}, A, A],
+  ['single busy ARC uses hosted during replacement', {runners: [busy('a')]}, H, H],
   ['full ARC', {runners: [busy('a'), busy('b')]}, H, H],
   ['ARC idle alongside busy', {runners: [busy('a'), arc('b')]}, A, A],
   ['offline ARC cannot scale', {runners: [arc('a', {status: 'offline'})]}, H, H],
@@ -61,6 +61,7 @@ for (const [name, input, expected, dockerExpected] of cases) {
   });
 }
 
+const fixedJobs = {"flux-status.yaml": ["report"], "cd-preview-label.yaml": ["label"], "cd-image-cleanup.yaml": ["cleanup"], "ci-flux-status.yaml": ["test"], "cd-images.yaml": ["plan", "promote", "publish"], "cd-storybook.yaml": ["deploy"], "terraform-r2.yaml": ["validate", "plan"], "ci-frontend.yaml": ["check", "unit-test"], "automerge-gate.yaml": ["gate"]};
 const dockerJobs = {"ci-backend.yaml": ["deploy-image", "e2e"], "ci-frontend.yaml": ["container", "proxy"], "ci-frontend-auth-e2e.yaml": ["oidc-e2e"], "cd-images.yaml": ["build"]};
 test('every workload uses the right output and protects fork PRs', () => {
   const dir = new URL('.github/workflows/', root);
@@ -82,7 +83,13 @@ test('every workload uses the right output and protects fork PRs', () => {
       }
       const docker = (dockerJobs[file] || []).includes(id);
       const large = file === 'ci-frontend.yaml' && id === 'browser-test';
-      assert.ok(block.includes(`needs.runner.outputs.${large ? 'large-runs-on' : docker ? 'docker-runs-on' : 'runs-on'}`), `${file}/${id}: wrong pool`);
+      const fixed = (fixedJobs[file] || []).includes(id);
+      if (fixed) {
+        assert.match(block, /runs-on:.*\|\| 'zli-kubecamp-no-docker' \}\}/, `${file}/${id}: fixed pool`);
+        assert.doesNotMatch(block, /^    needs:.*\brunner\b|needs\.runner\./m, `${file}/${id}: selector dependency`);
+      } else {
+        assert.ok(block.includes(`needs.runner.outputs.${large ? 'large-runs-on' : docker ? 'docker-runs-on' : 'runs-on'}`), `${file}/${id}: wrong pool`);
+      }
       const line = block.split('\n').find(x => x.startsWith('    runs-on:'));
       if (line) {
         assert.ok(line.includes(`github.event.pull_request.head.repo.fork && '${H}' ||`), `${file}/${id}: fork guard`);
@@ -97,9 +104,30 @@ test('every workload uses the right output and protects fork PRs', () => {
 });
 test('selector host overrides do not override workload priorities', () => {
   assert.match(yaml, /vars\.CI_SELECTOR_RUNNER \|\| vars\.CI_RUNNER/);
-  assert.equal(Number(script.match(/const MAX_RUNNERS = (\d+);/)[1]), 2);
+  assert.doesNotMatch(script, /arc\.length\s*</);
 });
 
 test('large jobs use the ARC/hosted output when kubecamp memory is insufficient', () => {
   assert.match(yaml, /large-runs-on:\n\s+description: [^\n]+\n\s+value: \$\{\{ jobs.select.outputs.docker-runs-on \}\}/);
+});
+
+test('fixed-only workflows do not create a selector job', () => {
+  for (const [file, ids] of Object.entries(fixedJobs)) {
+    const text = readFileSync(new URL(`.github/workflows/${file}`, root), 'utf8');
+    const jobs = text.split(/^jobs:\s*$/m)[1];
+    const names = [...jobs.matchAll(/^  ([\w-]+):\s*$/gm)].map(m => m[1]);
+    if (["cd-images.yaml", "cd-storybook.yaml", "ci-frontend.yaml"].includes(file)) continue;
+    assert.deepEqual(names.sort(), [...ids].sort(), `${file}: only fixed jobs are expected`);
+    assert.doesNotMatch(jobs, /^  runner:/m);
+  }
+});
+
+test('fixed jobs keep their result dependencies and trusted deployment boundary', () => {
+  const storybook = readFileSync(new URL('.github/workflows/cd-storybook.yaml', root), 'utf8').split('  deploy:')[1];
+  assert.match(storybook, /needs: \[build\]/);
+  assert.doesNotMatch(storybook, /actions\/checkout/);
+  for (const file of ['cd-image-cleanup.yaml', 'cd-preview-label.yaml']) {
+    const text = readFileSync(new URL(`.github/workflows/${file}`, root), 'utf8');
+    assert.match(text, /ref: \$\{\{ github\.event\.repository\.default_branch \}\}/);
+  }
 });

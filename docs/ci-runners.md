@@ -1,12 +1,12 @@
 # CI のRunner選択
 
-Docker daemonが不要なジョブは、**kubecamp → zli-k8s → GitHub-hosted** の順に実行先を選びます。kubecampのラベルは `zli-kubecamp-no-docker`、zoo2 ARCのラベルは `zli-k8s` です。Docker daemonが必要なジョブは **zli-k8s → GitHub-hosted** の順です。
+軽量ジョブはkubecamp固定、空き状況による切り替えを残すDocker不要ジョブは **kubecamp → zli-k8s → GitHub-hosted** の順に実行先を選びます。kubecampのラベルは `zli-kubecamp-no-docker`、zoo2 ARCのラベルは `zli-k8s` です。Docker daemonが必要なジョブは **zli-k8s → GitHub-hosted** の順です。
 
-各workflowの `runner` ジョブが、checkoutせずにorgのRunner一覧を取得します。`runs-on` 出力はDocker不要用、`docker-runs-on` 出力はDocker必須用です。`large-runs-on` はkubecampの2GiBを超えるジョブ用で、同じARC → Hostedの選択を使います。次の条件で選びます。
+自動選択が必要なworkflowだけに置く `runner` ジョブが、checkoutせずにorgのRunner一覧を取得します。`runs-on` 出力はDocker不要用、`docker-runs-on` 出力はDocker必須用です。`large-runs-on` はkubecampの2GiBを超えるジョブ用で、同じARC → Hostedの選択を使います。次の条件で選びます。
 
-1. onlineかつidleのkubecamp Runnerがあれば、Docker不要ジョブを割り当てます。
-2. kubecampが不在または全台busyなら、idleのARC Runnerを使います。onlineのARCが1台だけbusyの場合も、最大2台まで増設できるのでARCを選びます。
-3. ARCが不在、または最大2台以上がすべてbusyならGitHub-hostedを選びます。
+1. onlineかつidleのkubecamp Runnerがあれば、自動選択対象のDocker不要ジョブを割り当てます。
+2. kubecampが不在または全台busyなら、idleのARC Runnerを使います。登録台数から増設余地を推測せず、idleがある場合だけARCを選びます。
+3. ARCが不在、または全台busyならGitHub-hostedを選びます。
 
 forkの `pull_request` は、選択処理と各ジョブの両方でGitHub-hostedに固定します。`pull_request_target` は既定ブランチのコードだけを実行し、PRのコードをcheckoutしません。Runner Groupはアクセス範囲の管理に使えますが、Group自体に順序付きfallbackを指定する機能はありません。[GitHubの実行先指定](https://docs.github.com/en/actions/how-tos/write-workflows/choose-where-workflows-run/choose-the-runner-for-a-job)
 
@@ -35,3 +35,11 @@ kubecampは1ジョブごとの使い捨てPodです。7台の補充は毎分のC
 - イメージのpromote／publishはregistryのmanifestを操作するだけです。常設CLIの `docker buildx imagetools` と `docker login` を使い、daemonを起動するsetup-buildxは実行しません。kubecampのDocker daemonがない実Runnerで、公開manifestのinspect成功を確認しました。実際のタグ更新・発行は別途CIで確認します。
 
 Storybookを含む `browser-test` は、1CPU・2GiB制約で直列化・heap制限でもOOMを再現したため `large-runs-on` を使います。Dockerは不要ですが、必要なメモリを持つARC（Runner limit 6GiB）またはHostedを選びます。テスト内容や失敗条件は維持します。
+
+## kubecamp固定と自動選択
+
+軽量処理は `zli-kubecamp-no-docker` に固定し、selectorを待たずに起動する。全7台がbusyならkubecampで順番待ちし、ARCやHostedへは切り替えない。fork PRはHostedを使う。
+
+固定対象はFlux通知・通知スクリプト検証、ラベル操作、イメージ清掃、イメージplan/promote/publish、Terraform Validate/Plan、frontend check/単体テスト、Storybook deploy、automerge gate。Storybook buildとRust build/lint/単体テストは通常の空き状況選択を残す。Docker処理はDocker用、大容量browser-testは大容量用を使う。
+
+状態確認の実効性: zoo2 #263のselectorログで `HAS_STATUS_TOKEN: true` と実際のRunner件数取得を確認済み。publicリポジトリへのOrg Secret共有が有効であり、Repository Secret一覧だけでは未設定と判断しない。

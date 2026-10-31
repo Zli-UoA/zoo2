@@ -42,7 +42,6 @@ jobs:
             const KUBECAMP = 'zli-kubecamp-no-docker';
             const SCALE_SET = 'zli-k8s';
             const HOSTED = 'ubuntu-latest';
-            const MAX_RUNNERS = 2; // maxRunners in zoo2-infra
             const use = (runsOn, dockerRunsOn, reason) => {
               core.setOutput('runs-on', JSON.stringify(runsOn));
               core.setOutput('docker-runs-on', JSON.stringify(dockerRunsOn));
@@ -70,8 +69,8 @@ jobs:
             const hasLabel = (r, name) => (r.labels || []).some(l => l.name === name);
             const kubecamp = online.filter(r => hasLabel(r, KUBECAMP) && !r.busy);
             const arc = online.filter(r => r.name.startsWith(`${SCALE_SET}-`) || hasLabel(r, SCALE_SET));
-            // One busy ARC runner can still scale to two. Kubecamp has fixed CronJob slots.
-            const arcAvailable = arc.some(r => !r.busy) || (arc.length > 0 && arc.length < MAX_RUNNERS);
+            // Ephemeral registrations do not reveal assigned jobs; only an idle ARC is available.
+            const arcAvailable = arc.some(r => !r.busy);
             const dockerRunsOn = arcAvailable ? SCALE_SET : HOSTED;
             return use(kubecamp.length > 0 ? KUBECAMP : dockerRunsOn, dockerRunsOn,
               `${kubecamp.length} idle kubecamp, ${arc.length} online ARC, ${arc.filter(r => !r.busy).length} idle ARC`);
