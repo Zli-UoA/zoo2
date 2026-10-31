@@ -286,7 +286,15 @@
     "reactionGroup_other": "{{actor}} +{{count}} reacted to your message",
     "reactions": "Reactions",
     "messageUnavailable": "This message was deleted or is unavailable",
-    "dm": "{{actor}} sent you a direct message"
+    "dm": "{{actor}} sent you a direct message",
+    "mentionContext": "Mention",
+    "replyContext": "Thread reply",
+    "reactionContext": "Reaction",
+    "dmContext": "Direct message",
+    "unreadStatus": "Unread",
+    "readStatus": "Read",
+    "actors_one": "{{actor}} and 1 other",
+    "actors_other": "{{actor}} and {{count}} others"
   },
   "webhooks": {
     "title": "Webhook settings",

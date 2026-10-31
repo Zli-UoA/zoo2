@@ -286,7 +286,15 @@
     "reactionGroup_other": "{{actor}} さんほか{{count}}人がリアクションしました",
     "reactions": "リアクション",
     "messageUnavailable": "メッセージが削除されたか、閲覧できません",
-    "dm": "{{actor}} さんからダイレクトメッセージが届きました"
+    "dm": "{{actor}} さんからダイレクトメッセージが届きました",
+    "mentionContext": "メンション",
+    "replyContext": "スレッドへの返信",
+    "reactionContext": "リアクション",
+    "dmContext": "ダイレクトメッセージ",
+    "unreadStatus": "未読",
+    "readStatus": "既読",
+    "actors_one": "{{actor}} さんほか1人",
+    "actors_other": "{{actor}} さんほか{{count}}人"
   },
   "webhooks": {
     "title": "Webhook設定",

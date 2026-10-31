@@ -1,5 +1,5 @@
 import type { Decorator, Meta, StoryObj } from "@storybook/react-vite";
-import { expect, screen } from "storybook/test";
+import { expect, screen, within } from "storybook/test";
 import { useLayoutEffect, type ReactNode } from "react";
 
 import { StoryShell } from "../../../.storybook/shell";
@@ -57,6 +57,15 @@ export const Default: Story = {
   play: async () => {
     await expect(await screen.findByText("未読通知 3 件")).toBeInTheDocument();
     await expect(await screen.findByText(/今日のリリースは 18:00/)).toBeInTheDocument();
+    const list = screen.getByRole("list", { name: "通知" });
+    const region = screen.getByRole("region", { name: "通知" });
+    await expect(list.getBoundingClientRect().width).toBe(region.getBoundingClientRect().width);
+    for (const row of Array.from(list.children))
+      await expect(row.getBoundingClientRect().width).toBe(list.getBoundingClientRect().width);
+    await expect(within(list).getByRole("link", { name: "example.com/docs" })).toHaveAttribute(
+      "target",
+      "_blank",
+    );
   },
 };
 
@@ -79,6 +88,7 @@ export const Empty: Story = {
 };
 
 export const Mobile: Story = {
+  play: Default.play,
   globals: { viewport: { value: "mobile" } },
   decorators: [withUnreadPreview],
 };
@@ -99,3 +109,5 @@ export const DirectMessages: Story = {
     await expect(screen.queryByText(/#dm:/)).not.toBeInTheDocument();
   },
 };
+
+export const Dark: Story = { ...Default, globals: { theme: "dark" } };

@@ -190,3 +190,13 @@ it("keeps a DM readable when user metadata has not arrived", () => {
   expect(html).toContain("ダイレクトメッセージ");
   expect(html).not.toContain("dm:me:unknown");
 });
+
+it("renders message formatting and external links separately from the notification destination", () => {
+  state.message!.content = "**Release** https://example.com/docs @alice";
+  const html = render([{ ...rows[0], notification_type: "mention" }]);
+  expect(html).toContain("<strong>Release</strong>");
+  expect(html).toContain('href="https://example.com/docs"');
+  expect(html).toContain('target="_blank"');
+  expect(html).toContain('href="/channels/channel?message=message"');
+  expect(html).not.toMatch(/<a[^>]*>[^]*<a[^>]*>[^]*<\/a>[^]*<\/a>/);
+});

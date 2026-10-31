@@ -106,7 +106,7 @@
     },
     {
       "file": "src/components/chat/NotificationsScreen.stories.tsx",
-      "states": ["Default", "SingleUnread", "Empty", "Mobile", "DirectMessages"]
+      "states": ["Default", "SingleUnread", "Empty", "Mobile", "DirectMessages", "Dark"]
     },
     {
       "file": "src/components/chat/RenameChannelDialog.stories.tsx",
@@ -197,7 +197,11 @@
         "Read",
         "DirectMessage",
         "GroupDirectMessage",
-        "DmMetadataPending"
+        "DmMetadataPending",
+        "GroupedReactions",
+        "Loading",
+        "Unavailable",
+        "LongContentMobile"
       ]
     },
     {

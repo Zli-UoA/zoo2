@@ -1,5 +1,6 @@
 import type { Meta, StoryObj } from "@storybook/react-vite";
-import { expect, fn, screen } from "storybook/test";
+import { expect, fn, screen, waitFor } from "storybook/test";
+import { delay, http, HttpResponse } from "msw";
 import { useRef, type ComponentProps } from "react";
 
 import { StoryShell } from "../../../../.storybook/shell";
@@ -32,7 +33,7 @@ function NotificationCardDemo(props: Omit<ComponentProps<typeof NotificationCard
   const scrollRoot = useRef<HTMLDivElement>(null);
   return (
     <StoryShell>
-      <div ref={scrollRoot} className="mx-auto max-w-3xl bg-background p-6">
+      <div ref={scrollRoot} className="w-full bg-background">
         <ul>
           <NotificationCard {...props} scrollRoot={scrollRoot} />
         </ul>
@@ -42,7 +43,7 @@ function NotificationCardDemo(props: Omit<ComponentProps<typeof NotificationCard
 }
 
 const meta = {
-  title: "Features/Notifications/Card",
+  title: "Features/Notifications/Row",
   component: NotificationCard,
   tags: ["autodocs"],
   parameters: { a11y: { test: "error" } },
@@ -130,5 +131,120 @@ export const DmMetadataPending: Story = {
       await screen.findByText("ダイレクトメッセージ", { selector: "p > span" }),
     ).toBeVisible();
     await expect(screen.queryByText(/#dm:/)).not.toBeInTheDocument();
+  },
+};
+
+export const GroupedReactions: Story = {
+  args: {
+    group: {
+      ...group("notification-reaction"),
+      actorIds: ["user-bob", "user-carol"],
+      notifications: [
+        group("notification-reaction").latest,
+        {
+          ...group("notification-reaction").latest,
+          id: "notification-reaction-carol",
+          actor_id: "user-carol",
+        },
+      ],
+    },
+  },
+  parameters: {
+    msw: {
+      handlers: [
+        http.get("*/api/notifications/notification-reaction/context", () =>
+          HttpResponse.json({
+            message: {
+              id: "message-thread-root",
+              user_id: "user-alice",
+              content: "確認をお願いします。 https://example.com/release",
+            },
+            reactions: [
+              { user_id: "user-bob", emoji: "👀" },
+              { user_id: "user-carol", emoji: "👀" },
+            ],
+          }),
+        ),
+      ],
+    },
+  },
+  play: async () => {
+    await expect(await screen.findByText("Bob さんほか1人")).toBeVisible();
+    await expect(await screen.findByLabelText("👀 2")).toBeVisible();
+    await expect(screen.getByRole("link", { name: "example.com/release" })).toHaveAttribute(
+      "target",
+      "_blank",
+    );
+    const external = screen.getByRole("link", { name: "example.com/release" });
+    const bounds = external.getBoundingClientRect();
+    await expect(
+      document.elementFromPoint(bounds.x + bounds.width / 2, bounds.y + bounds.height / 2),
+    ).toBe(external);
+  },
+};
+export const Loading: Story = {
+  parameters: {
+    msw: {
+      handlers: [
+        http.get("*/api/notifications/:id/context", async () => {
+          await delay("infinite");
+          return HttpResponse.json({ message: null, reactions: [] });
+        }),
+      ],
+    },
+  },
+  play: async () => {
+    await expect(await screen.findByText("読み込み中…")).toBeVisible();
+  },
+};
+export const Unavailable: Story = {
+  parameters: {
+    msw: {
+      handlers: [
+        http.get("*/api/notifications/:id/context", () =>
+          HttpResponse.json({ message: null, reactions: [] }),
+        ),
+      ],
+    },
+  },
+  play: async () => {
+    await expect(await screen.findByText("メッセージが削除されたか、閲覧できません")).toBeVisible();
+    await expect(screen.queryByRole("link")).not.toBeInTheDocument();
+  },
+};
+export const LongContentMobile: Story = {
+  globals: { viewport: { value: "mobile" } },
+  args: {
+    channel: { ...storyChannels[0], channel_name: "長いチャンネル名".repeat(12) },
+    users: new Map(
+      storyUsers.map((user) => [
+        user.id,
+        user.id === "user-bob" ? { ...user, display_name: "長い名前".repeat(20) } : user,
+      ]),
+    ),
+  },
+  parameters: {
+    msw: {
+      handlers: [
+        http.get("*/api/notifications/:id/context", () =>
+          HttpResponse.json({
+            message: {
+              id: "long",
+              user_id: "user-bob",
+              content: `**確認をお願いします** https://example.com/${"long-path/".repeat(35)}`,
+            },
+            reactions: [],
+          }),
+        ),
+      ],
+    },
+  },
+  play: async () => {
+    await screen.findByText("確認をお願いします", { selector: "strong" });
+    await waitFor(() =>
+      expect(document.documentElement.scrollWidth).toBe(document.documentElement.clientWidth),
+    );
+    const quote = document.querySelector("blockquote")!;
+    await expect(quote.scrollWidth).toBeLessThanOrEqual(quote.clientWidth);
   },
 };

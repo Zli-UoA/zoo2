@@ -3,6 +3,7 @@ import { useCollections } from "../../lib/electric/collections-context";
 import type { ChannelUserRow } from "../../lib/electric/types";
 import { useCallback, useMemo, useRef } from "react";
 import { useTranslation } from "react-i18next";
+import { BellIcon } from "lucide-react";
 import { toast } from "sonner";
 
 import { useNotifications } from "../../hooks/useNotifications";
@@ -52,25 +53,36 @@ export function NotificationsScreen() {
 
   return (
     <section className="flex h-full min-h-0 flex-col" aria-labelledby="notifications-title">
-      <header className="flex items-center justify-between gap-3 border-b px-4 py-3">
+      <header className="flex shrink-0 items-center gap-3 border-b px-4 py-4 sm:px-6">
+        <span
+          className="flex size-10 shrink-0 items-center justify-center rounded-xl bg-primary text-primary-foreground"
+          aria-hidden="true"
+        >
+          <BellIcon className="size-5" />
+        </span>
         <div>
           <h1 id="notifications-title" className="text-lg font-semibold">
             {t("notifications.title")}
           </h1>
-          <p className="text-sm text-muted-foreground">
+          <p className="mt-0.5 text-xs text-muted-foreground">
             {t("notifications.unread", { count: unreadCount })}
           </p>
         </div>
       </header>
-      <div ref={scrollRoot} className="min-h-0 flex-1 overflow-y-auto p-4" aria-busy={isLoading}>
+      <div ref={scrollRoot} className="min-h-0 flex-1 overflow-y-auto" aria-busy={isLoading}>
         {isError ? (
-          <p role="alert">{t("notifications.loadError")}</p>
+          <p className="p-6 text-sm text-destructive" role="alert">
+            {t("notifications.loadError")}
+          </p>
         ) : isLoading ? (
-          <p>{t("common.loading")}</p>
+          <p className="p-6 text-sm text-muted-foreground">{t("common.loading")}</p>
         ) : groups.length === 0 ? (
-          <p>{t("notifications.empty")}</p>
+          <div className="flex min-h-72 flex-col items-center justify-center gap-3 p-6 text-center">
+            <BellIcon className="size-8 text-muted-foreground" aria-hidden="true" />
+            <p className="text-sm text-muted-foreground">{t("notifications.empty")}</p>
+          </div>
         ) : (
-          <ul className="mx-auto max-w-3xl space-y-3">
+          <ul className="w-full" aria-label={t("notifications.title")}>
             {groups.map((group) => (
               <NotificationCard
                 key={group.key}

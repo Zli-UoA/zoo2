@@ -286,7 +286,15 @@
     "reactionGroup_other": "{{actor}} 等另外 {{count}} 人回应了你的消息",
     "reactions": "回应",
     "messageUnavailable": "消息已删除或无法查看",
-    "dm": "{{actor}} 给你发送了私信"
+    "dm": "{{actor}} 给你发送了私信",
+    "mentionContext": "提及",
+    "replyContext": "帖子回复",
+    "reactionContext": "表情回应",
+    "dmContext": "私信",
+    "unreadStatus": "未读",
+    "readStatus": "已读",
+    "actors_one": "{{actor}} 和另外 1 人",
+    "actors_other": "{{actor}} 和另外 {{count}} 人"
   },
   "webhooks": {
     "title": "Webhook 设置",
