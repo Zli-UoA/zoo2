@@ -43,8 +43,9 @@ export function proxyImageUrl(endpoint: string, image: string | null): string | 
       return null;
     if (proxy.username || proxy.password) return null;
     proxy.searchParams.set("url", source.href);
-    proxy.searchParams.set("preview", "1");
-    proxy.searchParams.set("static", "1");
+    // Use the proxy's configured output size instead of its smaller thumbnail presets.
+    proxy.searchParams.delete("preview");
+    proxy.searchParams.delete("static");
     return relative ? `${proxy.pathname}${proxy.search}` : proxy.href;
   } catch {
     return null;

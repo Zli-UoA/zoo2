@@ -17,13 +17,16 @@ describe("link previews", () => {
       ),
     ).toEqual([]);
   });
-  it("sends images only to the configured proxy with encoded source and thumbnail flags", () => {
+  it("sends images only to the configured proxy without smaller thumbnail presets", () => {
     const image = "https://images.example/a.png?x=1&y=2";
     const proxy = new URL(proxyImageUrl("https://media.example/", image)!);
     expect(proxy.origin).toBe("https://media.example");
     expect(proxy.searchParams.get("url")).toBe(image);
-    expect(proxy.searchParams.get("preview")).toBe("1");
-    expect(proxy.searchParams.get("static")).toBe("1");
+    expect(proxy.searchParams.has("preview")).toBe(false);
+    expect(proxy.searchParams.has("static")).toBe(false);
+    const presetProxy = new URL(proxyImageUrl("https://media.example/?preview=1&static=1", image)!);
+    expect(presetProxy.searchParams.has("preview")).toBe(false);
+    expect(presetProxy.searchParams.has("static")).toBe(false);
     expect(proxyImageUrl("/media/", image)).toMatch(/^\/media\/\?url=/);
     expect(proxyImageUrl("", image)).toBeNull();
     expect(proxyImageUrl("//evil.example", image)).toBeNull();

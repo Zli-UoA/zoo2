@@ -6,7 +6,7 @@
 
 フロントは指定の [mei23/summaly](https://github.com/mei23/summaly) の `/url?url=...` からJSONを取得します。`title`・`description`・`sitename` を文字列として描画し、`thumbnail` と `icon` を画像プロクシへ渡します。faviconはサイト名の左に表示し、読み込み失敗時は省略します。HTMLやplayerは埋め込みません。SummalyへのリクエストにアプリのCookie・Authorization・Refererを送信しません。
 
-画像はフロントからmedia-proxy-rsへ `?url=<画像URL>&preview=1&static=1` で取得します。画像プロクシ未設定時はテキストのカードだけを表示します。元のサムネイルのホストへ直接フォールバックしません。
+画像はフロントからmedia-proxy-rsへ `?url=<画像URL>` で取得します。小さいサイズに固定される `preview`・`static` は指定せず、プロクシの設定に従って縮小します。本番は最大辺1024ピクセル、Lanczos3、WebP品質90です。アニメーション画像は静止画に変換せず配信します。画像プロクシ未設定時はテキストのカードだけを表示します。元のサムネイルのホストへ直接フォールバックしません。
 
 ## エンドポイント
 
@@ -29,3 +29,4 @@ Vite開発では `VITE_SUMMALY_URL=http://localhost:3030/url` と `VITE_MEDIA_PR
 実行時設定の取得に失敗した場合は、2秒から最大30秒の間隔で取り直します。再試行タイマーもタブ内で共有するため、カードが増えても設定取得の通信数は増えません。最後のカードがアンマウントされたら再試行を停止します。オンライン復帰時も再取得し、タブの再読み込みなしでカード表示を復旧します。成功した設定はタブ内で共有します。
 
 両サービスは [zoo2-infra](https://github.com/Zli-UoA/zoo2-infra) で別々のDeployment・Service・Namespaceとして配備します。運用手順は同リポジトリの `docs/summaly.md` と `docs/media-proxy.md` を参照してください。Rustバックエンドでの独自HTML解析は使用しません。
+
