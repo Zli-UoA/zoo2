@@ -203,7 +203,7 @@ for (const implementation of ["react", "compose"] as const) {
     await fill("Webhook名", "Parity hook");
     await click("作成");
     await expect(page.getByText("Parity hook", { exact: true })).toBeVisible();
-    await click("Secretを再発行");
+    await click("Webhook URLを再発行");
     await click("実行");
     await expect.poll(async () => (await state()).hooks[0]?.secret).toBe("rotated-secret");
     await expect(page.getByRole("button", { name: "実行", exact: true })).toBeHidden();

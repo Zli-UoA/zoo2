@@ -44,8 +44,7 @@ const nginx = await readFile("../infra/frontend-nginx.conf", "utf8");
 const policy = nginx
   .match(/add_header Content-Security-Policy "([^"]+)" always;/)[1]
   .replaceAll("${CSP_SCRIPT_SRC}", hashes)
-  .replaceAll("${CSP_CONNECT_SRC}", "")
-  .replaceAll("${CSP_APP_IMAGE_SRC}", "");
+  .replace(/\$\{CSP_[A-Z0-9_]+\}/g, "");
 const mime = {
   ".js": "text/javascript",
   ".mjs": "text/javascript",
