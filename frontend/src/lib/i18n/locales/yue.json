@@ -568,6 +568,9 @@
   "experimental": {
     "useCompose": "使用 Compose（實驗・開發中）",
     "useReact": "返回 React",
-    "loadError": "無法啟動 Compose。請返回 React 前端。"
+    "loadError": "無法啟動 Compose。請返回 React 前端。",
+    "catalogLoading": "載入緊 Compose…",
+    "catalogLoadError": "載入唔到 Compose 發佈檔。",
+    "catalogBuildHint": "請安裝 JDK 21，再喺 frontend 執行 pnpm build:compose。"
   }
 }

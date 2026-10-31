@@ -251,8 +251,6 @@ export function ComposeRuntime({ config, status }: { config: AppConfig; status?:
           if (name === "logout") {
             await disablePush(config);
             dispose?.();
-            for (const key of Object.keys(localStorage))
-              if (key.startsWith(`zoo-compose:${userId}:`)) localStorage.removeItem(key);
             try {
               await stateRef.current.offline.clearUserData();
             } catch {

@@ -98,6 +98,6 @@ preview だけを削除し、production や他の PR のデプロイは削除し
 Settings → Environments から対応する `storybook-pr-<PR番号>` も削除します。
 この手順は API の仕様に基づきます。実際のプロジェクトでの削除は未検証です。
 
-Compose版は `Compose/Components` から開けます。PRプレビューのビルドではJDK 21で
+Compose版は `Features/Compose/Chat` から開けます。PRプレビューのビルドではJDK 21で
 Kotlin/Wasmの配布物も生成します。ローカルでは `cd frontend && pnpm build:compose` を実行してから
 Storybookを起動してください。構成と検証手順は [Composeカタログ](compose-multiplatform.md#storybookのcomposeカタログ) を参照してください。

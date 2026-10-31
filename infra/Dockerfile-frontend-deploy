@@ -54,6 +54,8 @@ COPY infra/csp-hashes.mjs /tmp/csp-hashes.mjs
 RUN node /tmp/csp-hashes.mjs dist/client/index.html csp-script-src.txt
 
 FROM nginxinc/nginx-unprivileged:1.30.6-alpine AS runtime
+ARG VITE_EXPERIMENTAL_COMPOSE="false"
+ENV ZOO_COMPOSE_ENABLED=$VITE_EXPERIMENTAL_COMPOSE
 COPY --from=build /app/dist/client/ /usr/share/nginx/html/
 COPY --from=build /app/csp-script-src.txt /etc/nginx/csp-script-src.txt
 # 起動時に /etc/nginx/templates/*.template を envsubst する公式 entrypoint を使う。

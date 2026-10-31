@@ -4,12 +4,17 @@ export type FrontendImplementation = "react" | "compose";
 export const FRONTEND_STORAGE_KEY = "zoo-frontend";
 
 /** Disabled builds always retain React, even if a preference survives another deployment. */
+export function supportsComposePath(path: string): boolean {
+  return !/^\/(?:settings|bubble)(?:\/|$)/.test(path);
+}
+
 export function resolveFrontend(
   enabled: boolean,
   search: string,
   stored: string | null,
+  pathname = "/",
 ): FrontendImplementation {
-  if (!enabled) return "react";
+  if (!enabled || !supportsComposePath(pathname)) return "react";
   const requested = new URLSearchParams(search).get("frontend");
   if (requested === "react" || requested === "compose") return requested;
   return stored === "compose" ? "compose" : "react";
@@ -24,6 +29,7 @@ export function selectedFrontend(): FrontendImplementation {
     composeEnabled(),
     window.location.search,
     readStorageValue(FRONTEND_STORAGE_KEY),
+    window.location.pathname,
   );
 }
 

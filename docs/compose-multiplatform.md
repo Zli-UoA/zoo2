@@ -21,6 +21,8 @@ VITE_EXPERIMENTAL_COMPOSE=true pnpm dev
 `?frontend=compose` で開き、`?frontend=react` で戻せます。選択はブラウザーに保存されます。
 `VITE_EXPERIMENTAL_COMPOSE=true` 以外では保存済み選択・URL指定とも無効です。
 モジュールの取得・起動に失敗した場合もReactに戻る導線を表示します。
+mainで追加された `/settings` と `/bubble` は既存Reactの共通画面を使用します。
+Composeの選択は保持し、対応済みのチャンネル画面へ戻るとComposeで表示します。
 
 ```sh
 cd frontend-compose
@@ -34,7 +36,9 @@ cd frontend-compose
 現在の配布物は約51 MiBで、主にフォントが占めます。初回は読み込み完了を待ち、
 以降はService Workerで保存した静的ファイルを再利用します。
 `pnpm build:compose` はビルド成功後に `frontend/public/compose/` を置換します。
-生成物・依存ソース・GradleキャッシュはGit管理対象外です。
+生成物・依存ソース・フォントバイナリ・GradleキャッシュはGit管理対象外です。
+フォントは `frontend-compose/fonts.lock` のURLとSHA-256で固定し、Gradleがビルド時に取得します。
+生成先は `frontend-compose/build/generated/composeResources/` です。ライセンス文書は配布物に含めます。
 
 ## 実装の配置
 
@@ -66,16 +70,23 @@ Webでは各フォント・ウェイトの読み込み完了を待ってから�
 ## 配布・オフライン
 
 `infra/Dockerfile-frontend-deploy` は `VITE_EXPERIMENTAL_COMPOSE=true` のときだけJDKステージで
-Wasmを生成してWeb配布物へ追加します。既定値は無効です。CDの同名リポジトリ変数と
-ステージングComposeのbuild引数から設定できます。
+Wasmを生成してWeb配布物へ追加します。既定値は無効です。CDでは本番用の
+`VITE_EXPERIMENTAL_COMPOSE_PRODUCTION` とPR用の `VITE_EXPERIMENTAL_COMPOSE_PREVIEW` を別々の
+リポジトリ変数として設定します。いずれも既定はfalseです。旧 `VITE_EXPERIMENTAL_COMPOSE` 変数はCDでは参照しません。
+ステージングComposeのbuild引数は引き続き `VITE_EXPERIMENTAL_COMPOSE` です。
 Nginxは `/compose/` の未存在ファイルに404を返し、Wasm用CSPと圧縮を設定しています。
-JavaScriptの `unsafe-eval` は追加していません。
+JavaScriptの `unsafe-eval` は追加していません。Compose用の画像取得元をconnect-srcへ追加するのは
+有効なイメージだけで、無効時は既存React版のCSPを維持します。CI Compose Webのcontainerジョブで、
+Composeを有効にしたDockerイメージをソースからビルドし、所要時間・配信資源・CSPを確認します。
 
 静的なWasm・フォント・JSはService Worker、ユーザーデータは既存のユーザー別OPFSに保存します。
 API・OIDC・SSEレスポンスはService Workerに保存しません。
 保存領域の初期化・読み書きに失敗した場合はKotlinのバナーを表示し、再試行できます。
-安定した名前のCompose入口はオンラインで更新し、オフライン時に保存済み配布物を使用します。
+安定した名前のCompose入口はオンラインで検証子を使って更新し、オフライン時に保存済み配布物を使用します。
+検証子が同じ場合はCache APIへ書き直さず、HTTPキャッシュにも重複保存しません。
+遅れて読み込んだ静的URLだけをService Workerへ通知し、APIやElectricの取得ごとには再送しません。
 ログアウト時にはユーザーのOPFS・下書き・プッシュ所有情報を既存の手順で削除します。
+ComposeからReactへ戻ってログアウトした場合も共通処理でComposeの下書きを消します。
 Previewのユーザー選択もKotlin側に置き、ブラウザーアダプター経由で既存の認証設定を切り替えます。
 
 ## 検証と制限
@@ -150,8 +161,8 @@ Electric4kの各OS対応だけで、アプリの認証・通知・永続化が�
 
 ## StorybookのComposeカタログ
 
-既存Storybookの `Compose/Components` に、実際のKotlinコンポーネントを描画する
-Message / GroupedMessage / Composer / DisabledComposer / EmojiPicker / RichTextを追加しています。
+既存Storybookの `Features/Compose/Chat` に、実際のKotlinコンポーネントを描画する
+Message / GroupedMessage / Composer / DisabledComposer / EmojiPicker / RichText / LongMessageを追加しています。
 ReactComparisonでは同じKotlinサンプルの本文で両実装を横に並べます（狭い画面では縦に並びます）。
 既存Reactストーリーと同じStorybookで確認でき、テーマ・言語・viewportは既存ツールバー、
 本文・グループ化・無効状態はControlsで変更できます。本文が空の場合は共通Kotlinのサンプルを表示します。

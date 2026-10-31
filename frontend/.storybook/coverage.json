@@ -400,6 +400,19 @@
     {
       "file": "src/components/chat/BubbleChatScreen.stories.tsx",
       "states": ["ActiveConversation", "Empty", "Mobile", "Participants", "MobileParticipants"]
+    },
+    {
+      "file": "src/components/experimental/ComposeCatalog.stories.tsx",
+      "states": [
+        "Message",
+        "GroupedMessage",
+        "Composer",
+        "DisabledComposer",
+        "EmojiPicker",
+        "RichText",
+        "ReactComparison",
+        "LongMessage"
+      ]
     }
   ],
   "modules": [
@@ -743,6 +756,15 @@
       "story": "src/components/chat/messages/Composer.stories.tsx",
       "composed": true,
       "reason": "共通入力枠を通常投稿・Bubble Chatで使い、補完と入力・消去・モバイル表示を各Storyで確認する。"
+    },
+    {
+      "file": "src/components/experimental/ComposeCatalog.tsx",
+      "story": "src/components/experimental/ComposeCatalog.stories.tsx"
+    },
+    {
+      "file": "src/components/experimental/ComposeFrontend.tsx",
+      "reason": "認証・OPFS・ルーターとKotlin/Wasmを接続する制御層。カタログで覆えない起動・ユーザー別保存・失敗復帰・CSPを専用E2Eで検証する。",
+      "checks": ["e2e/compose.spec.ts", "e2e/compose-production.spec.ts"]
     }
   ]
 }
