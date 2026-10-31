@@ -1,4 +1,5 @@
 import { Skeleton } from "../ui/skeleton";
+import { PaneHeader } from "./PaneHeader";
 
 const SIDEBAR_ROWS = [0, 1, 2, 3, 4, 5];
 
@@ -14,13 +15,13 @@ export function ShellSkeleton() {
         ))}
       </div>
       <div className="flex min-w-0 flex-1 flex-col">
-        <div className="flex items-center gap-3 border-b px-4 py-3">
+        <PaneHeader>
           <Skeleton className="size-8 rounded-lg" />
           <div className="flex flex-1 flex-col gap-1.5">
             <Skeleton className="h-4 w-40" />
             <Skeleton className="h-3 w-24" />
           </div>
-        </div>
+        </PaneHeader>
         <div className="flex flex-1 flex-col gap-3 p-4">
           <Skeleton className="h-16 w-full rounded-lg" />
           <Skeleton className="h-16 w-3/4 rounded-lg" />

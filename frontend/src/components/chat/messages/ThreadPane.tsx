@@ -8,6 +8,7 @@ import type { KitchenCatalog } from "../../../lib/emoji/kitchen";
 import type { AttachmentRow } from "../../../lib/electric/types";
 import type { ReactionGroup } from "../../../lib/emoji/reactions";
 import { Button } from "../../ui/button";
+import { PaneHeader } from "../../layout/PaneHeader";
 
 import type { TypingUser } from "../../../hooks/useTyping";
 import { TypingIndicator } from "./TypingIndicator";
@@ -149,7 +150,7 @@ export function ThreadPane({
       aria-label={t("threads.title")}
       className="absolute inset-0 z-20 flex min-h-0 min-w-0 flex-col border-l bg-background sm:static sm:z-auto sm:w-80 sm:shrink-0 xl:w-96"
     >
-      <header className="flex min-h-16 shrink-0 items-center gap-2 border-b px-4 py-2.5">
+      <PaneHeader className="gap-2">
         <Button
           variant="ghost"
           size="icon-sm"
@@ -174,7 +175,7 @@ export function ThreadPane({
         >
           <XIcon />
         </Button>
-      </header>
+      </PaneHeader>
 
       <div className="max-h-60 shrink-0 overflow-y-auto border-b bg-muted/30 px-2 py-2">
         <MessageRow

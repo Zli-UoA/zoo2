@@ -9,6 +9,7 @@ import { toast } from "sonner";
 import { useNotifications } from "../../hooks/useNotifications";
 import { useActiveChannels, useUsers } from "../../hooks/useRealtime";
 import { Spinner } from "../ui/spinner";
+import { ScreenHeader } from "../layout/PaneHeader";
 import { NotificationCard, type NotificationPreviewState } from "./notifications/NotificationCard";
 import { groupNotifications } from "./notifications/groupNotifications";
 
@@ -92,17 +93,12 @@ export function NotificationsScreen() {
       aria-labelledby="notifications-title"
       aria-busy={loading}
     >
-      <header className="flex min-h-16 shrink-0 items-center gap-3 border-b px-4 py-2.5 max-md:min-h-[65px]">
-        <span
-          className="flex size-8 shrink-0 items-center justify-center rounded-lg bg-primary text-primary-foreground"
-          aria-hidden="true"
-        >
-          <BellIcon className="size-4" />
-        </span>
-        <h1 id="notifications-title" className="text-sm font-semibold">
-          {t("notifications.title")}
-        </h1>
-      </header>
+      <ScreenHeader
+        icon={BellIcon}
+        iconClassName="bg-primary text-primary-foreground"
+        titleId="notifications-title"
+        title={t("notifications.title")}
+      />
       <div ref={scrollRoot} className="min-h-0 flex-1 overflow-y-auto" aria-busy={loading}>
         {isError ? (
           <p className="p-6 text-sm text-destructive" role="alert">
