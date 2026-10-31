@@ -587,7 +587,9 @@ for (const implementation of ["react", "compose"] as const) {
       .poll(async () => (await state()).attachmentUrlRequests.length)
       .toBeGreaterThanOrEqual(2);
     await page.getByRole("button", { name: "閉じる", exact: true }).click({ force: native });
-    await expect(page.getByRole("img", { name: "upload.png", exact: true })).toBeHidden();
+    if (native)
+      await expect(page.getByRole("img", { name: "upload.png", exact: true })).toBeHidden();
+    else await expect(page.getByRole("dialog")).toBeHidden();
     await page
       .getByRole("button", { name: /1 件の返信（スレッドを開く）/ })
       .click({ force: native });
