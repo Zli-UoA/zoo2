@@ -12,6 +12,39 @@ const render = (content: string, options: Omit<MfmContentProps, "content"> = {})
   );
 
 describe("MfmContent", () => {
+  it("renders six heading levels with inline MFM and optional closing markers", () => {
+    for (let level = 1; level <= 6; level++) {
+      expect(render(`${"#".repeat(level)} Title`)).toBe(
+        `<h${level} class="mfm-heading">Title</h${level}>`,
+      );
+    }
+    expect(render("before\n## **Title** [docs](https://example.com) ###\nafter")).toContain(
+      'before<h2 class="mfm-heading"><strong>Title</strong> <a ',
+    );
+    expect(render("## Title ###")).toBe('<h2 class="mfm-heading">Title</h2>');
+    expect(render("# Title\n```\n# code\n```\n## Next")).toContain("</h1><pre");
+    expect(render("# Title\n> quote")).toContain("</h1><blockquote");
+    expect(render("# Title\nquery Search")).toContain("</h1><form");
+  });
+  it("preserves literal hashes, protected subtrees and ordinary line breaks", () => {
+    for (const source of [
+      "#general",
+      "text # Title",
+      "####### Title",
+      "    # indented",
+      "# ",
+      "\\# escaped",
+    ]) {
+      expect(render(source)).not.toContain("<h");
+    }
+    expect(render("one\n\ntwo\n")).toBe("one\n\ntwo\n");
+    expect(render("`# inline`")).not.toContain("<h");
+    expect(render("```md\n# code\n```")).not.toContain("<h");
+    expect(render("<plain># plain\n## plain</plain>")).toBe("# plain\n## plain");
+    expect(render("> # quote")).not.toContain("<h");
+    expect(render("**# bold**")).not.toContain("<h");
+    expect(render("# <script>alert(1)</script>")).not.toContain("<script>");
+  });
   it("styles raw URLs as inline links while preserving destinations and custom labels", () => {
     const html = render("https://blog.example.com/a?x=1");
     expect(html).toContain('href="https://blog.example.com/a?x=1"');

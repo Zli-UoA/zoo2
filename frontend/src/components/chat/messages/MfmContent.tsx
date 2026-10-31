@@ -1,4 +1,4 @@
-import { Fragment, useEffect, useMemo, useState, type ReactNode } from "react";
+import { createElement, Fragment, useEffect, useMemo, useState, type ReactNode } from "react";
 import { parse, toString, type MfmNode } from "mfm-js";
 import katex from "katex";
 import hljs from "highlight.js/lib/common";
@@ -284,13 +284,72 @@ function renderNode(
   return exhaustive;
 }
 
+interface MessageBlock {
+  nodes: MfmNode[];
+  newline: boolean;
+  level?: number;
+}
+
+// Only inspect root text. Code, plain text, quotes and other MFM subtrees stay intact.
+function messageBlocks(nodes: MfmNode[]): MessageBlock[] {
+  const blocks: MessageBlock[] = [];
+  let line: MfmNode[] = [];
+  const flush = (newline = false) => {
+    const first = line[0];
+    const marker = first?.type === "text" ? /^ {0,3}(#{1,6})[ \t]+/.exec(first.props.text) : null;
+    let level: number | undefined;
+    if (marker && toString(line).slice(marker[0].length).trim()) {
+      level = marker[1].length;
+      line[0] = {
+        type: "text",
+        props: { text: (first?.type === "text" ? first.props.text : "").slice(marker[0].length) },
+      };
+      const last = line.at(-1);
+      if (last?.type === "text") {
+        line[line.length - 1] = {
+          type: "text",
+          props: { text: last.props.text.replace(/[ \t]+#+[ \t]*$/, "").trimEnd() },
+        };
+      }
+    }
+    if (line.length || newline) blocks.push({ nodes: line, newline, level });
+    line = [];
+  };
+  for (const node of nodes) {
+    if (node.type === "text") {
+      node.props.text.split("\n").forEach((part, index) => {
+        if (index) flush(true);
+        line.push({ type: "text", props: { text: part } });
+      });
+    } else if (["blockCode", "quote", "center", "mathBlock", "search"].includes(node.type)) {
+      // mfm-js consumes the line breaks around block nodes.
+      flush();
+      blocks.push({ nodes: [node], newline: false });
+    } else {
+      line.push(node);
+    }
+  }
+  flush();
+  return blocks;
+}
+
 export function MfmContent({ content, ...options }: MfmContentProps) {
-  const nodes = useMemo(() => parse(content, { nestLimit: 20 }), [content]);
+  const blocks = useMemo(() => messageBlocks(parse(content, { nestLimit: 20 })), [content]);
   return (
     <>
-      {nodes.map((node, index) => (
-        <Fragment key={index}>{renderNode(node, options)}</Fragment>
-      ))}
+      {blocks.map((block, index) => {
+        const body = block.nodes.map((node, childIndex) => (
+          <Fragment key={childIndex}>{renderNode(node, options)}</Fragment>
+        ));
+        return (
+          <Fragment key={index}>
+            {block.level
+              ? createElement(`h${block.level}`, { className: "mfm-heading" }, body)
+              : body}
+            {block.newline && !block.level && !blocks[index + 1]?.level ? "\n" : null}
+          </Fragment>
+        );
+      })}
     </>
   );
 }

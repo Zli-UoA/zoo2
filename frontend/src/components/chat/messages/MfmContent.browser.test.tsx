@@ -22,3 +22,21 @@ it.each([160, 320])("wraps long inline URLs within a %ipx message without paddin
   expect(link.getClientRects().length).toBeGreaterThan(1);
   expect(body.scrollWidth).toBeLessThanOrEqual(body.clientWidth);
 });
+
+it.each([160, 640])("keeps heading size, wrapping and spacing within a %ipx message", (width) => {
+  const view = render(
+    <div
+      style={{ width }}
+      className="mfm-body whitespace-pre-wrap break-words text-sm leading-relaxed"
+    >
+      <MfmContent content={`# ${"LongHeading".repeat(12)}\n## Smaller\nBody`} />
+    </div>,
+  );
+  const [large, small] = screen.getAllByRole("heading");
+  expect(parseFloat(getComputedStyle(large).fontSize)).toBeGreaterThan(
+    parseFloat(getComputedStyle(small).fontSize),
+  );
+  expect(getComputedStyle(large).marginTop).toBe("0px");
+  const body = view.container.firstElementChild!;
+  expect(body.scrollWidth).toBeLessThanOrEqual(body.clientWidth);
+});
