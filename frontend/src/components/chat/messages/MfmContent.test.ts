@@ -15,7 +15,7 @@ describe("MfmContent", () => {
   it("styles raw URLs as inline links while preserving destinations and custom labels", () => {
     const html = render("https://blog.example.com/a?x=1");
     expect(html).toContain('href="https://blog.example.com/a?x=1"');
-    expect(html).toContain("text-brand underline");
+    expect(html).toContain("text-link underline");
     expect(html).not.toContain("py-0.5");
     expect(html).toContain("blog.example.com/a?x=1</a>");
     expect(html).not.toContain(">https://");

@@ -1,4 +1,5 @@
 import type { Meta, StoryObj } from "@storybook/react-vite";
+import { Button } from "./button";
 const pairs = [
   ["background", "foreground"],
   ["card", "card-foreground"],
@@ -7,12 +8,43 @@ const pairs = [
   ["secondary", "secondary-foreground"],
   ["muted", "muted-foreground"],
   ["accent", "accent-foreground"],
+  ["brand", "brand-foreground"],
   ["brand-muted", "brand-muted-foreground"],
 ];
 function Tokens() {
   return (
     <main className="space-y-6 bg-background p-6 text-foreground">
       <h1 className="text-2xl font-semibold">Design tokens</h1>
+      <section className="space-y-3" aria-labelledby="brand-title">
+        <h2 id="brand-title" className="text-lg font-semibold">
+          Zoo · Zli Yellow
+        </h2>
+        <p className="text-sm text-muted-foreground">#FFD600 / #2C2C2C / #D9D9D9</p>
+        <div className="flex flex-wrap items-end gap-4">
+          {[16, 32, 64, 192].map((size) => (
+            <figure key={size} className="space-y-1">
+              <img
+                src="/icons/zoo.svg"
+                alt={`Zoo ${size}px`}
+                width={size}
+                height={size}
+                className="rounded-[20%]"
+              />
+              <figcaption className="text-xs text-muted-foreground">{size}px</figcaption>
+            </figure>
+          ))}
+        </div>
+        <div className="flex flex-wrap items-center gap-3">
+          <Button>メッセージを送信</Button>
+          <Button variant="outline">キャンセル</Button>
+          <a href="#brand-title" className="text-link underline underline-offset-2">
+            本文内のリンク
+          </a>
+          <span className="rounded-lg bg-brand-muted px-3 py-2 text-sm text-brand-muted-foreground">
+            選択中のチャンネル
+          </span>
+        </div>
+      </section>
       <div className="grid gap-3 sm:grid-cols-2">
         {pairs.map(([background, foreground]) => (
           <div
@@ -53,3 +85,5 @@ const meta = {
 export default meta;
 type Story = StoryObj<typeof meta>;
 export const Default: Story = {};
+
+export const Dark: Story = { globals: { theme: "dark" } };

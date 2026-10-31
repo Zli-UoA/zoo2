@@ -10,7 +10,6 @@ import {
   LogOutIcon,
   MessageCircleMoreIcon,
   type LucideIcon,
-  PawPrintIcon,
   SettingsIcon,
 } from "lucide-react";
 
@@ -95,10 +94,13 @@ export function LeftRail() {
         "md:w-16",
       )}
     >
-      <div className="mb-1 flex size-9 items-center justify-center rounded-xl bg-brand text-brand-foreground">
-        <PawPrintIcon className="size-5" aria-hidden="true" />
-        <span className="sr-only">Zoo</span>
-      </div>
+      <img
+        src="/icons/zoo.svg"
+        alt="Zoo"
+        width={36}
+        height={36}
+        className="mb-1 size-9 rounded-xl"
+      />
       <Separator className="my-1 w-6" />
       <RailLink to="/" icon={HashIcon} label={t("channels.title")} exact />
       <NotificationsButton />

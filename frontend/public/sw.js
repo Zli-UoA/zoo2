@@ -21,6 +21,10 @@ const SHELL = [
   "/index.html",
   "/offline.html",
   "/manifest.webmanifest",
+  "/favicon.ico",
+  "/icons/zoo.svg",
+  "/icons/favicon-32.png",
+  "/icons/badge-96.png",
   "/icons/icon-180.png",
   "/icons/icon-192.png",
   "/icons/icon-512.png",
@@ -34,7 +38,8 @@ function isPrivatePath(pathname) {
 function isCacheableAsset(url) {
   return (
     CACHEABLE_PREFIXES.some((prefix) => url.pathname.startsWith(prefix)) ||
-    url.pathname === "/manifest.webmanifest"
+    url.pathname === "/manifest.webmanifest" ||
+    url.pathname === "/favicon.ico"
   );
 }
 
@@ -307,7 +312,7 @@ self.addEventListener("push", (event) => {
     self.registration.showNotification(title, {
       body,
       icon: "/icons/icon-192.png",
-      badge: "/icons/icon-192.png",
+      badge: "/icons/badge-96.png",
       tag: typeof payload.tag === "string" ? payload.tag : "zoo-activity",
       data: { url: typeof payload.url === "string" ? payload.url : "/" },
     }),

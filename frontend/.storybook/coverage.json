@@ -313,7 +313,7 @@
     },
     {
       "file": "src/components/ui/tokens.stories.tsx",
-      "states": ["Default"]
+      "states": ["Default", "Dark"]
     },
     {
       "file": "src/components/ui/tooltip.stories.tsx",

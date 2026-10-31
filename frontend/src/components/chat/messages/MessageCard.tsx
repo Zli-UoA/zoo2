@@ -131,7 +131,7 @@ export function MessageCard({
             href={href}
             target="_blank"
             rel="noopener noreferrer"
-            className="text-brand underline-offset-2 hover:underline"
+            className="text-link underline-offset-2 hover:underline"
           >
             {card.title}
           </a>

@@ -17,7 +17,7 @@ export interface MfmContentProps {
 }
 const shortcodes: Readonly<Record<string, string>> = shortcodeData;
 const linkClass =
-  "rounded-sm text-brand underline underline-offset-2 outline-none focus-visible:ring-2 focus-visible:ring-ring/50";
+  "rounded-sm text-link underline underline-offset-2 outline-none focus-visible:ring-2 focus-visible:ring-ring/50";
 function externalLink(url: string, children: ReactNode): ReactNode {
   return (
     <a
