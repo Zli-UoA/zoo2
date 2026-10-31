@@ -1,8 +1,5 @@
-mod config;
-
 use anyhow::Result;
-
-use crate::config::Config;
+use zoo2_tui::config::Config;
 
 const USAGE: &str = "\
 使い方: zoo2-tui [コマンド]
