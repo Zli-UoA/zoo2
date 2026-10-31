@@ -298,6 +298,10 @@ test("a lost POST response recovers changed parents and comments after a databas
       assert.equal(f.zoo.messages.size, child ? 2 : 1);
       const message = [...f.zoo.messages.values()].find((m) => Boolean(m.parent_id) === child)!;
       assert.match(message.content, /while the bot was stopped/);
+      assert.match(
+        child ? message.blocks[1].card.description : message.blocks[1].card.title,
+        /while the bot was stopped/,
+      );
       assert.equal(
         store.db.prepare("SELECT status FROM jobs WHERE id=?").get(event.id)!.status,
         "done",

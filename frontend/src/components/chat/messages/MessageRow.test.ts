@@ -3,7 +3,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vite-plus/test";
 
 import { LocaleProvider } from "../../i18n/LocaleProvider";
-import { MessageRow, type MessageRowProps } from "./MessageRow";
+import { MessageRow, MessageBody, type MessageRowProps } from "./MessageRow";
 import type { MessageItem } from "./messageGrouping";
 
 function buildItem(overrides: Partial<MessageItem["message"]> = {}): MessageItem {
@@ -51,6 +51,15 @@ function render(item: MessageItem, isOwn = false, props: Partial<MessageRowProps
 }
 
 describe("MessageRow", () => {
+  it("keeps the full text fallback out of the feed when the app provides a card", () => {
+    const html = renderToStaticMarkup(
+      createElement(MessageBody, {
+        content: "Fallback summary",
+        appBlocks: JSON.stringify([{ type: "card", card: { title: "Rendered by AppBlocks" } }]),
+      }),
+    );
+    expect(html).toBe("");
+  });
   it("renders URLs as safe external links", () => {
     const html = render(buildItem({ content: "詳細は https://example.com/docs を参照" }));
     expect(html).toContain('href="https://example.com/docs"');
