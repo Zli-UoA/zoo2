@@ -85,10 +85,10 @@ it("hides failed cards and ignores stale responses after the URL is edited", asy
   expect(screen.queryByText("Old title")).toBeNull();
 });
 
-it("retries a rate-limited card while it stays mounted and shares retries across views", async () => {
+it("retries an upstream 422 while mounted and shares retries across views", async () => {
   vi.useFakeTimers();
   api.get
-    .mockRejectedValueOnce(new ApiError(429, "busy"))
+    .mockRejectedValueOnce(new ApiError(422, "error"))
     .mockResolvedValue({ title: "Recovered card", description: "", image: null });
   render(
     <>
