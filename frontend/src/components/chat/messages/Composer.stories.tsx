@@ -116,13 +116,18 @@ export const CommandSuggestions: Story = {
     await expect(args.onSend).toHaveBeenCalledWith("/echo hello", "notes");
   },
 };
-function pasteImage(target: HTMLElement) {
+function pasteFile(target: HTMLElement, file: File) {
   const clipboardData = new DataTransfer();
-  clipboardData.items.add(
-    new File([new Uint8Array([1, 2, 3, 4])], "screenshot.png", { type: "image/png" }),
-  );
+  clipboardData.items.add(file);
   target.dispatchEvent(
     new ClipboardEvent("paste", { clipboardData, bubbles: true, cancelable: true }),
+  );
+}
+
+function pasteImage(target: HTMLElement) {
+  pasteFile(
+    target,
+    new File([new Uint8Array([1, 2, 3, 4])], "screenshot.png", { type: "image/png" }),
   );
 }
 
@@ -145,6 +150,30 @@ export const WithAttachments: Story = {
   },
 };
 
+export const WithFileAttachment: Story = {
+  parameters: { a11y: { test: "error" } },
+  args: {
+    onUploadAttachment: fn(async () => ({
+      id: "attachment-2",
+      file_name: "release-notes.pdf",
+      file_size: 5,
+      content_type: "application/pdf",
+    })),
+  },
+  play: async ({ canvasElement, args }) => {
+    const canvas = within(canvasElement);
+    pasteFile(
+      canvas.getByRole("textbox"),
+      new File([new Uint8Array([1, 2, 3, 4, 5])], "release-notes.pdf", {
+        type: "application/pdf",
+      }),
+    );
+    await expect(await canvas.findByText("release-notes.pdf")).toBeVisible();
+    await userEvent.click(canvas.getByRole("button", { name: "送信" }));
+    await expect(args.onSend).toHaveBeenCalledWith("", undefined, ["attachment-2"]);
+  },
+};
+
 export const AttachmentUploadError: Story = {
   parameters: { a11y: { test: "error" } },
   args: {
@@ -156,7 +185,7 @@ export const AttachmentUploadError: Story = {
     const canvas = within(canvasElement);
     pasteImage(canvas.getByRole("textbox"));
     await expect(await canvas.findByRole("alert")).toHaveTextContent(
-      "画像をアップロードできませんでした。",
+      "ファイルをアップロードできませんでした。",
     );
     await expect(canvas.queryByRole("img", { name: "screenshot.png" })).toBeNull();
   },

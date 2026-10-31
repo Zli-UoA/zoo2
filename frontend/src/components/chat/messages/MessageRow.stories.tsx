@@ -184,12 +184,24 @@ const attachmentRows: AttachmentRow[] = [
 ];
 
 export const WithAttachments: Story = {
+  parameters: { a11y: { test: "error" } },
   args: {
     item: {
       ...item,
       message: { ...item.message, content: "スクリーンショットを共有します。" },
     },
     attachments: attachmentRows,
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await userEvent.click(
+      await canvas.findByRole("button", { name: "screenshot.pngをプレビュー" }),
+    );
+    const dialog = await screen.findByRole("dialog");
+    const preview = within(dialog).getByRole("img", { name: "screenshot.png" });
+    await waitFor(() => expect(preview).toBeVisible());
+    await userEvent.click(within(dialog).getByRole("button", { name: "閉じる" }));
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
   },
 };
 
