@@ -13,13 +13,14 @@ WebのビルドにAndroid SDKやXcodeは不要です。
 cd frontend
 pnpm install --frozen-lockfile
 pnpm build:compose
-VITE_EXPERIMENTAL_COMPOSE=true pnpm dev
+pnpm dev
 ```
 
 既存のAPI / OIDC設定を使用します。開発用のproxy認証では、既存同様に
 `VITE_DEV_USER_ID` を指定してください。サイドバーの切替ボタン、または
 `?frontend=compose` で開き、`?frontend=react` で戻せます。選択はブラウザーに保存されます。
-`VITE_EXPERIMENTAL_COMPOSE=true` 以外では保存済み選択・URL指定とも無効です。
+切り替えボタン・保存済み選択・URL指定は `VITE_EXPERIMENTAL_COMPOSE` に依存しません。
+この変数はDockerイメージへWasmを含めるためのビルド設定として残ります。
 モジュールの取得・起動に失敗した場合もReactに戻る導線を表示します。
 `/settings` と `/bubble` も共通Kotlinの画面です。設定のタブ変更は履歴を置換し、チャンネルの文脈を保持します。
 明示的にReactへ切り替えるとページを再読み込みし、購読・Canvas・入力状態を解放します。

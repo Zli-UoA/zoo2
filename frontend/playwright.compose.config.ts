@@ -34,7 +34,7 @@ export default defineConfig({
         VITE_DEV_USER_ID: "00000000-0000-0000-0000-000000000001",
         VITE_SHAPE_MODE: "proxy",
         VITE_TXID_MODE: "awaitTxId",
-        VITE_EXPERIMENTAL_COMPOSE: "true",
+        VITE_EXPERIMENTAL_COMPOSE: "false",
         VITE_SUMMALY_URL: "https://127.0.0.1:4187/__summaly",
         VITE_MEDIA_PROXY_URL: "https://127.0.0.1:4187/__media",
       },

@@ -913,7 +913,8 @@
     },
     {
       "file": "src/components/layout/LeftRail.tsx",
-      "story": "src/components/layout/LeftRail.stories.tsx"
+      "story": "src/components/layout/LeftRail.stories.tsx",
+      "reason": "DefaultとMobileで、環境変数に依存せずCompose切り替えボタンが表示されることを確認する。"
     },
     {
       "file": "src/components/layout/PaneHeader.tsx",

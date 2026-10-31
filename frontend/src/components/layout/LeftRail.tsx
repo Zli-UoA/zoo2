@@ -28,7 +28,6 @@ import { initials } from "../chat/format";
 import { PaneHeader } from "./PaneHeader";
 
 import {
-  composeEnabled,
   selectedFrontend,
   switchFrontend,
   supportsComposePath,
@@ -64,7 +63,7 @@ function RailLink({
  */
 export function LeftRail() {
   const path = useRouterState({ select: (state) => state.location.pathname });
-  const compose = composeEnabled() && selectedFrontend() === "compose";
+  const compose = selectedFrontend() === "compose";
   const { t } = useTranslation();
   const shell = useShell();
   const { config } = useCollections();
@@ -119,7 +118,7 @@ export function LeftRail() {
       ) : null}
 
       <div className="mt-auto flex flex-col items-center gap-2">
-        {composeEnabled() && supportsComposePath(path) ? (
+        {supportsComposePath(path) ? (
           <Button
             variant="ghost"
             size="icon-sm"

@@ -5,11 +5,7 @@ import { AppShell } from "../components/layout/AppShell";
 import { OfflineProvider } from "../components/offline/OfflineProvider";
 import { ShellSkeleton } from "../components/layout/ShellSkeleton";
 import { resolveConfig } from "../lib/config";
-import {
-  selectedFrontend,
-  composeEnabled,
-  FRONTEND_STORAGE_KEY,
-} from "../lib/experimentalFrontend";
+import { selectedFrontend, FRONTEND_STORAGE_KEY } from "../lib/experimentalFrontend";
 import { writeStorageValue } from "../lib/storage";
 import { ComposeFrontend } from "../components/experimental/ComposeFrontend";
 
@@ -29,7 +25,7 @@ function ShellLayout() {
   useEffect(() => {
     const implementation = selectedFrontend();
     const requested = new URLSearchParams(window.location.search).get("frontend");
-    if (composeEnabled() && (requested === "react" || requested === "compose"))
+    if (requested === "react" || requested === "compose")
       writeStorageValue(FRONTEND_STORAGE_KEY, requested);
     if (mounted && implementation !== currentImplementation) {
       // Cross-runtime navigation must release the old Electric collections and

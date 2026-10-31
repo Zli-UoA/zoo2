@@ -1,4 +1,5 @@
 import type { Meta, StoryObj } from "@storybook/react-vite";
+import { expect, within } from "storybook/test";
 
 import { StoryShell } from "../../../.storybook/shell";
 import { LeftRail } from "./LeftRail";
@@ -22,8 +23,17 @@ const meta = {
 export default meta;
 type Story = StoryObj<typeof meta>;
 
-export const Default: Story = {};
+export const Default: Story = {
+  play: async ({ canvasElement }) => {
+    await expect(
+      within(canvasElement).getByRole("button", {
+        name: "Compose版を使う（実験・開発中）",
+      }),
+    ).toBeVisible();
+  },
+};
 
 export const Mobile: Story = {
+  ...Default,
   globals: { viewport: { value: "mobile" } },
 };
