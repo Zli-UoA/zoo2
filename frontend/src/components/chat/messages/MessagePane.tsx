@@ -411,27 +411,30 @@ export function MessagePane({
   return (
     <section className="relative flex h-full min-h-0">
       <div className="flex min-w-0 flex-1 flex-col">
-        <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1 border-b px-4 py-2">
-          <h2 className="text-sm font-semibold">{t("messages.title")}</h2>
-          <span className="rounded bg-muted px-2 py-0.5 text-xs tabular-nums text-muted-foreground">
-            {messagesQuery.isLoading ? "…" : t("messages.count", { count: feed.length })}
-          </span>
-          {reactionsQuery.isError ? (
-            <span className="text-xs text-destructive">{t("reactions.fetchError")}</span>
-          ) : null}
-          {messagesQuery.isError ? (
-            <span
-              className={
-                feed.length > 0 ? "text-xs text-muted-foreground" : "text-xs text-destructive"
-              }
-            >
-              {feed.length > 0 ? t("offline.cached") : t("messages.fetchError")}
-            </span>
-          ) : null}
-          {messagesQuery.persistedStatus === "error" ? (
-            <span className="text-xs text-destructive">{t("offline.persistenceErrorTitle")}</span>
-          ) : null}
-        </div>
+        {reactionsQuery.isError ||
+        messagesQuery.isError ||
+        messagesQuery.persistedStatus === "error" ? (
+          <div
+            role="status"
+            className="flex flex-wrap items-baseline gap-x-3 gap-y-1 border-b px-4 py-2"
+          >
+            {reactionsQuery.isError ? (
+              <span className="text-xs text-destructive">{t("reactions.fetchError")}</span>
+            ) : null}
+            {messagesQuery.isError ? (
+              <span
+                className={
+                  feed.length > 0 ? "text-xs text-muted-foreground" : "text-xs text-destructive"
+                }
+              >
+                {feed.length > 0 ? t("offline.cached") : t("messages.fetchError")}
+              </span>
+            ) : null}
+            {messagesQuery.persistedStatus === "error" ? (
+              <span className="text-xs text-destructive">{t("offline.persistenceErrorTitle")}</span>
+            ) : null}
+          </div>
+        ) : null}
 
         <MessageList
           targetMessageId={targetMessageId}
