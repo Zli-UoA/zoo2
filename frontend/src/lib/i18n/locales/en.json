@@ -75,7 +75,9 @@
       "id_token_audience_mismatch": "The ID token audience does not match",
       "id_token_expired": "The ID token has expired",
       "nonce_mismatch": "The ID token nonce does not match"
-    }
+    },
+    "previewUser": "Preview user",
+    "previewMember": "Member {{name}}"
   },
   "members": {
     "joined": "Joined",

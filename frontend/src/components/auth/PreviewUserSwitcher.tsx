@@ -1,15 +1,18 @@
+import { useTranslation } from "react-i18next";
 import { PREVIEW_USERS, PREVIEW_USER_KEY, previewUserId } from "@/lib/preview";
 
 export function PreviewUserSwitcher() {
+  const { t } = useTranslation();
   if (import.meta.env.VITE_PREVIEW_AUTH !== "true" || import.meta.env.VITE_OIDC_ISSUER) {
     return null;
   }
   return (
     <aside className="fixed right-3 bottom-3 z-50 rounded-md border bg-background p-2 text-sm shadow-md">
       <label className="flex items-center gap-2">
-        Preview ユーザー
+        {t("auth.previewUser")}
         <select
-          aria-label="Preview ユーザー"
+          data-testid="preview-user"
+          aria-label={t("auth.previewUser")}
           className="rounded border bg-background p-1"
           defaultValue={previewUserId()}
           onChange={(event) => {
@@ -25,7 +28,7 @@ export function PreviewUserSwitcher() {
         >
           {PREVIEW_USERS.map((user) => (
             <option key={user.id} value={user.id}>
-              {user.label}
+              {t(user.labelKey, { name: user.name })}
             </option>
           ))}
         </select>

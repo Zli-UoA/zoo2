@@ -75,7 +75,9 @@
       "id_token_audience_mismatch": "ID トークンの aud が一致しません",
       "id_token_expired": "ID トークンが期限切れです",
       "nonce_mismatch": "ID トークンの nonce が一致しません"
-    }
+    },
+    "previewUser": "プレビューユーザー",
+    "previewMember": "一般ユーザー {{name}}"
   },
   "members": {
     "joined": "参加中",

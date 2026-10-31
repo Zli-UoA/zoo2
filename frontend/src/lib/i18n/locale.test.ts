@@ -65,6 +65,28 @@ describe("translations", () => {
     }
   });
 
+  const languageIndependentKeys = new Set([
+    "channels.descriptionCounter",
+    "auth.errorWithCode",
+    "reactions.chip",
+    "reactions.kitchen",
+    "reactions.tabKitchen",
+    "webhooks.url",
+    "dms.moreNames",
+  ]);
+
+  it.each(LOCALES.filter((locale) => locale !== "en"))(
+    "does not leave English UI copy in %s translations",
+    (locale) => {
+      const english = flatten(resources.en.translation);
+      const copiedKeys = Object.entries(flatten(resources[locale].translation))
+        // Product names and interpolation-only layouts intentionally stay the same.
+        .filter(([key, value]) => value === english[key] && !languageIndependentKeys.has(key))
+        .map(([key]) => key);
+      expect(copiedKeys).toEqual([]);
+    },
+  );
+
   it("handles English plurals and interpolation", () => {
     const t = createI18n("en").t;
     expect(t("messages.count", { count: 0 })).toBe("0 messages");

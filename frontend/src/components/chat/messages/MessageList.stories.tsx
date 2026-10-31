@@ -134,8 +134,9 @@ export const UnreadSeparator: Story = {
     },
   },
   play: async () => {
-    // アプリ側の aria-label は英語のまま。Story で検出できるよう名前を固定する。
-    await expect(await screen.findByRole("separator", { name: "new" })).toBeInTheDocument();
+    await expect(
+      await screen.findByRole("separator", { name: "新着メッセージ" }),
+    ).toBeInTheDocument();
   },
 };
 

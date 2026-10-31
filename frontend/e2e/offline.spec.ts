@@ -104,7 +104,7 @@ test("switching users opens a separate offline database", async ({ page }) => {
   const first = await databaseFiles();
 
   await page.selectOption(
-    'select[aria-label="Preview ユーザー"]',
+    'select[data-testid="preview-user"]',
     "00000000-0000-0000-0000-000000000002",
   );
   await page.waitForTimeout(2_000);

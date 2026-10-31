@@ -462,11 +462,11 @@ export function MessageList({
                   {item.message.id === firstUnreadId ? (
                     <div
                       role="separator"
-                      aria-label="new"
+                      aria-label={t("messages.new")}
                       className="flex items-center gap-2 py-2 text-xs font-semibold text-destructive"
                     >
                       <span className="h-px flex-1 bg-destructive" />
-                      <span>new</span>
+                      <span>{t("messages.new")}</span>
                       <span className="h-px w-6 bg-destructive" />
                     </div>
                   ) : null}

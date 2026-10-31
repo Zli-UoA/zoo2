@@ -119,6 +119,46 @@ describe("Apps control panel", () => {
     await waitFor(() => expect(screen.queryByRole("button", { name: /Draft/ })).toBeNull());
   });
 
+  it.each([
+    {
+      locale: "zh-Hant",
+      search: "搜尋 App",
+      manage: "管理與開發",
+      token: "發行權杖",
+      edit: "編輯",
+      name: "App 名稱",
+    },
+    {
+      locale: "zh-Hans",
+      search: "搜索 App",
+      manage: "管理与开发",
+      token: "签发令牌",
+      edit: "编辑",
+      name: "App 名称",
+    },
+    {
+      locale: "yue",
+      search: "搜尋 App",
+      manage: "管理同開發",
+      token: "發出存取權杖",
+      edit: "編輯",
+      name: "App 名稱",
+    },
+  ])(
+    "renders app management controls in $locale",
+    async ({ locale, search, manage, token, edit, name }) => {
+      localStorage.setItem("zoo-locale", locale);
+      panel();
+      expect(screen.getByRole("textbox", { name: search })).toBeVisible();
+      await userEvent.click(await screen.findByRole("button", { name: /Alpha/ }));
+      await userEvent.click(screen.getByRole("tab", { name: manage }));
+      expect(screen.getByRole("button", { name: token })).toBeVisible();
+      expect(screen.queryByRole("button", { name: "Issue token" })).toBeNull();
+      await userEvent.click(screen.getByRole("button", { name: edit }));
+      expect(screen.getByRole("textbox", { name })).toBeVisible();
+    },
+  );
+
   it("offers retry after loading the catalog fails", async () => {
     api.get.mockRejectedValueOnce(new Error("offline"));
     panel();
