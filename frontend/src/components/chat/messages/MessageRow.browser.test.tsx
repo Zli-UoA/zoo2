@@ -3,6 +3,7 @@ import { act, fireEvent, render, screen, waitFor } from "@testing-library/react"
 import userEvent from "@testing-library/user-event";
 import { toast } from "sonner";
 import { describe, expect, it, vi } from "vite-plus/test";
+import { page } from "vite-plus/test/browser/context";
 
 import { LocaleProvider } from "../../i18n/LocaleProvider";
 import { MessageRow, type MessageRowProps } from "./MessageRow";
@@ -53,6 +54,81 @@ function renderRow(item: MessageItem, isOwn = false, props: Partial<MessageRowPr
 }
 
 describe("MessageRow", () => {
+  it("allows keyboard users to open the full reaction list on desktop", async () => {
+    await page.viewport(1024, 768);
+    renderRow(buildItem(), false, {
+      canReact: true,
+      reactions: [
+        { emoji: "👍", count: 1, ownId: null, userIds: ["u1"], userNames: { u1: "Alice" } },
+      ],
+    });
+    const chip = screen.getByRole("button", { name: "👍 1 件" });
+    chip.focus();
+    await userEvent.keyboard("{Tab}");
+    const listButton = screen.getByRole("button", { name: "👍 のリアクションユーザーを表示" });
+    expect(document.activeElement).toBe(listButton);
+    await userEvent.keyboard("{Enter}");
+    expect(screen.getByRole("dialog").textContent).toContain("Alice");
+    await page.viewport(390, 844);
+  });
+  it("shows reaction users on hover without toggling the reaction", async () => {
+    await page.viewport(1024, 768);
+    const onReaction = vi.fn();
+    renderRow(buildItem(), false, {
+      canReact: true,
+      onReaction,
+      reactions: [
+        {
+          emoji: "👍",
+          count: 2,
+          ownId: null,
+          userIds: ["u1", "u2"],
+          userNames: { u1: "Alice", u2: "Bob" },
+        },
+      ],
+    });
+    await userEvent.hover(screen.getByRole("button", { name: "👍 2 件" }));
+    const tooltip = await screen.findByRole("tooltip");
+    expect(tooltip.textContent).toContain("Alice");
+    expect(tooltip.textContent).toContain("Bob");
+    expect(onReaction).not.toHaveBeenCalled();
+    await userEvent.unhover(screen.getByRole("button", { name: "👍 2 件" }));
+    screen.getByRole("button", { name: "👍 2 件" }).focus();
+    expect((await screen.findByRole("tooltip")).textContent).toContain("Alice");
+    await page.viewport(390, 844);
+  });
+  it("shows reaction users without toggling the reaction", async () => {
+    const onReaction = vi.fn();
+    renderRow(buildItem(), false, {
+      canReact: true,
+      onReaction,
+      reactions: [
+        {
+          emoji: "👍",
+          count: 2,
+          ownId: null,
+          userIds: ["u1", "u2"],
+          userNames: { u1: "Alice", u2: "Bob" },
+        },
+      ],
+    });
+    await userEvent.click(screen.getByRole("button", { name: "👍 のリアクションユーザーを表示" }));
+    expect(screen.getByRole("dialog").textContent).toContain("Alice");
+    expect(screen.getByRole("dialog").textContent).toContain("Bob");
+    expect(onReaction).not.toHaveBeenCalled();
+    await userEvent.keyboard("{Escape}");
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    await userEvent.click(screen.getByRole("button", { name: "👍 2 件" }));
+    expect(onReaction).toHaveBeenCalledWith("👍");
+  });
+
+  it("shows unavailable users when their information cannot be resolved", async () => {
+    renderRow(buildItem(), false, {
+      reactions: [{ emoji: "👍", count: 1, ownId: null, userIds: ["missing"], userNames: {} }],
+    });
+    await userEvent.click(screen.getByRole("button", { name: "👍 のリアクションユーザーを表示" }));
+    expect(screen.getByRole("dialog").textContent).toContain("ユーザーを表示できません");
+  });
   it("hides the reaction strip until a reaction exists", () => {
     const { container } = renderRow(buildItem(), false, { canReact: true });
     expect(container.querySelector('[role="group"]')).toBeNull();

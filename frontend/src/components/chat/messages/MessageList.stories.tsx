@@ -3,11 +3,19 @@ import { delay, http, HttpResponse } from "msw";
 import { expect, fn, screen, waitFor, within } from "storybook/test";
 
 import { storyMessages, storyReactions, storyUsers } from "../../../../.storybook/fixtures";
-import { groupReactions } from "../../../lib/emoji/reactions";
+import { groupReactions, reactionUserLabel } from "../../../lib/emoji/reactions";
 import { MessageList } from "./MessageList";
 import type { FeedMessage } from "./messageFormat";
 
 const users = new Map(storyUsers.map((user) => [user.id, user]));
+const storyReactionGroups = groupReactions(storyReactions, "user-alice");
+for (const reactions of storyReactionGroups.values()) {
+  for (const reaction of reactions) {
+    reaction.userNames = Object.fromEntries(
+      storyUsers.map((user) => [user.id, reactionUserLabel(user)]),
+    );
+  }
+}
 
 function feedMessage(id: string): FeedMessage {
   const row = storyMessages.find((message) => message.id === id)!;
@@ -74,7 +82,7 @@ const meta = {
     onCancelEdit: fn(),
     onSaveEdit: fn(),
     onRequestDelete: fn(),
-    reactions: groupReactions(storyReactions, "user-alice"),
+    reactions: storyReactionGroups,
     kitchenCatalog: null,
     canReact: true,
     onReaction: fn(),
