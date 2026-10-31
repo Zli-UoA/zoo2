@@ -261,7 +261,7 @@
     },
     {
       "file": "src/components/theme/ModeToggle.stories.tsx",
-      "states": ["Default", "MenuOpen", "SelectControl"]
+      "states": ["Default", "Dark", "KeyboardSelection", "Explanation"]
     },
     {
       "file": "src/components/ui/alert-dialog.stories.tsx",
@@ -656,6 +656,12 @@
       "file": "src/components/preferences/SearchPreferences.tsx",
       "reason": "アカウント単位で設定を読み書きする制御層。保存・再読込・アカウント切替・失敗からの再試行はブラウザテストで検証する。",
       "checks": ["src/components/preferences/SearchPreferences.browser.test.tsx"]
+    },
+    {
+      "file": "src/components/ui/button-group.tsx",
+      "story": "src/components/theme/ModeToggle.stories.tsx",
+      "composed": true,
+      "reason": "テーマ選択で単一選択、選択済み状態、矢印キー移動・Enter/Space操作を実部品で確認する。"
     }
   ]
 }

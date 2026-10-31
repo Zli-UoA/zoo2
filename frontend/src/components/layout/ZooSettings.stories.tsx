@@ -34,7 +34,7 @@ export const General: Story = {
     await expect(bounds.y).toBe(0);
     await expect(bounds.width).toBe(document.documentElement.clientWidth);
     await expect(bounds.height).toBe(window.innerHeight);
-    await expect(screen.getByRole("combobox", { name: "テーマ" })).toBeVisible();
+    await expect(screen.getByRole("group", { name: "テーマ" })).toBeVisible();
     await expect(screen.getByRole("combobox", { name: "言語" })).toBeVisible();
     await expect(screen.getByRole("combobox", { name: "プッシュ通知" })).toBeDisabled();
   },

@@ -13,6 +13,7 @@ import { storybookTest } from "@storybook/addon-vitest/vitest-plugin";
 const dirname = path.dirname(fileURLToPath(import.meta.url));
 
 const config = defineConfig({
+  optimizeDeps: { include: ["@base-ui/react/toggle-group", "@base-ui/react/toggle"] },
   fmt: {},
   lint: {
     jsPlugins: [{ name: "vite-plus", specifier: "vite-plus/oxlint-plugin" }],

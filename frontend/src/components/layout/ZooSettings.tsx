@@ -68,7 +68,7 @@ export function ZooSettings() {
           <Tabs.Panel value="general" keepMounted className="min-h-0 data-[hidden]:hidden">
             <div className="divide-y rounded-lg border">
               <SettingRow icon={<PaletteIcon />} label={t("theme.title")}>
-                <ModeToggle presentation="select" />
+                <ModeToggle />
               </SettingRow>
               <SettingRow icon={<LanguagesIcon />} label={t("language.title")}>
                 <LanguageToggle presentation="select" />

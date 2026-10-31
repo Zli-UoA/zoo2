@@ -137,13 +137,19 @@ test("OIDC PKCE ログイン後に API と Shape が Bearer で通る", async ({
 
   // ダークテーマでも操作群が出る（証跡用）。以降の画面はライトに戻す。
   await page.getByRole("link", { name: "Zoo設定" }).click();
-  await page.getByRole("combobox", { name: "テーマ", exact: true }).selectOption("dark");
+  await page
+    .getByRole("group", { name: "テーマ", exact: true })
+    .getByRole("button", { name: "ダーク", exact: true })
+    .click();
   await expect(page.locator("html")).toHaveClass(/dark/);
   await page.getByRole("button", { name: "チャンネル一覧へ戻る" }).click();
   await ownRow.hover();
   await page.screenshot({ path: testInfo.outputPath("05-own-message-controls-dark.png") });
   await page.getByRole("link", { name: "Zoo設定" }).click();
-  await page.getByRole("combobox", { name: "テーマ", exact: true }).selectOption("light");
+  await page
+    .getByRole("group", { name: "テーマ", exact: true })
+    .getByRole("button", { name: "ライト", exact: true })
+    .click();
   await expect(page.locator("html")).not.toHaveClass(/dark/);
 
   await page.getByRole("button", { name: "チャンネル一覧へ戻る" }).click();
