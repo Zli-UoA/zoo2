@@ -1,6 +1,25 @@
-import { test, expect } from "@playwright/test";
+import { test, expect, type Page } from "@playwright/test";
 
 const nativeQuery = "viewMode=story&globals=implementation:kotlin";
+
+async function openNativeStory(page: Page, story: string) {
+  const ids: Record<string, string> = {
+    "link-preview": "features-chat-linkpreviews--landscape",
+    "integration-cards": "features-chat-messagecard--deployment",
+    "app-card-block": "features-apps-blocks--card",
+    "composer-send-error": "features-chat-composer--send-error",
+    "with-attachments": "features-chat-messagerow--with-attachments",
+    settings: "pages-zoosettings--general",
+    "workspace-members": "pages-zoosettings--members",
+    "bubble-chat": "pages-bubblechat--empty",
+    "notifications-loading": "pages-notifications--loading",
+    notifications: "pages-notifications--default",
+  };
+  await page.goto(`/iframe.html?id=${ids[story]}&${nativeQuery}`);
+  await expect(page.locator("[data-compose-catalog-state=ready]")).toBeVisible({
+    timeout: 90_000,
+  });
+}
 
 test("existing reaction-user stories render Kotlin names on hover and in the mobile list", async ({
   page,
@@ -160,28 +179,9 @@ test("catalog explains missing Wasm assets", async ({ page }) => {
   await expect(page.getByRole("status")).toContainText("pnpm build:compose");
 });
 
-test("native parity catalog renders real settings, cards, Bubble and notification states", async ({
-  page,
-}) => {
+test("native cards share metadata and restore failed composer drafts", async ({ page }) => {
   const frame = page.frameLocator('iframe[title="Kotlin component preview"]');
-  const open = async (story: string) => {
-    const ids: Record<string, string> = {
-      "link-preview": "features-chat-linkpreviews--landscape",
-      "integration-cards": "features-chat-messagecard--deployment",
-      "app-card-block": "features-apps-blocks--card",
-      "composer-send-error": "features-chat-composer--send-error",
-      "with-attachments": "features-chat-messagerow--with-attachments",
-      settings: "pages-zoosettings--general",
-      "workspace-members": "pages-zoosettings--members",
-      "bubble-chat": "pages-bubblechat--empty",
-      "notifications-loading": "pages-notifications--loading",
-      notifications: "pages-notifications--default",
-    };
-    await page.goto(`/iframe.html?id=${ids[story]}&${nativeQuery}`);
-    await expect(page.locator("[data-compose-catalog-state=ready]")).toBeVisible({
-      timeout: 90_000,
-    });
-  };
+  const open = (story: string) => openNativeStory(page, story);
   await open("link-preview");
   await expect(frame.getByRole("button", { name: /^Zooのリリース情報/ })).toBeVisible();
   await open("integration-cards");
@@ -214,6 +214,11 @@ test("native parity catalog renders real settings, cards, Bubble and notificatio
   await expect(frame.getByText("操作に失敗しました", { exact: true })).toBeVisible();
   await expect(failingComposer).toHaveText("restore after failure");
   await expect(frame.getByRole("button", { name: "送信", exact: true })).toBeEnabled();
+});
+
+test("native attachments render from the existing shared story", async ({ page }) => {
+  const frame = page.frameLocator('iframe[title="Kotlin component preview"]');
+  const open = (story: string) => openNativeStory(page, story);
   await open("with-attachments");
   await expect(
     frame.getByRole("button", { name: "screenshot.pngをプレビュー", exact: true }),
@@ -232,8 +237,13 @@ test("native parity catalog renders real settings, cards, Bubble and notificatio
   await page.screenshot({ path: test.info().outputPath("compose-attachment-preview-mobile.png") });
   await frame.getByRole("button", { name: "閉じる", exact: true }).click({ force: true });
   await expect(frame.getByRole("img", { name: "screenshot.png", exact: true })).toBeHidden();
+});
 
-  await page.setViewportSize({ width: 1440, height: 900 });
+test("native settings, Bubble and notifications use the existing story fixtures", async ({
+  page,
+}) => {
+  const frame = page.frameLocator('iframe[title="Kotlin component preview"]');
+  const open = (story: string) => openNativeStory(page, story);
   await open("settings");
   await expect(frame.getByRole("heading", { name: "Zoo設定", exact: true })).toBeVisible();
   await expect(frame.getByRole("button", { name: /^検索エンジン:/ })).toBeVisible();
