@@ -13,7 +13,11 @@ beforeAll(async () => {
   const style = document.createElement("style");
   style.textContent = `
     /* Keep Japanese glyphs independent from OS fallback fonts. */
-    :root { --font-sans: "Geist Variable", "Noto Sans JP Variable", sans-serif; }
+    :root {
+      --font-sans: "Geist Variable", "Noto Sans JP Variable", sans-serif;
+      /* @apply font-sans inlines the production family, so set the actual family too. */
+      font-family: "Geist Variable", "Noto Sans JP Variable", sans-serif;
+    }
     *, *::before, *::after {
       animation: none !important;
       transition: none !important;
@@ -22,5 +26,7 @@ beforeAll(async () => {
   `;
   document.head.append(style);
   await startMockServer();
+  const fonts = await document.fonts.load('400 14px "Noto Sans JP Variable"', "日本語");
+  if (!fonts.length) throw new Error("The fixed VRT Japanese font is not registered");
   await document.fonts.ready;
 });
