@@ -199,6 +199,19 @@ export function MessageRow({
   const selectedReaction = reactions.find(
     (reaction) => reactionKey(reaction.emoji) === reactionUsersKey,
   );
+  useEffect(() => {
+    if (reactionUsersKey !== null && !selectedReaction) setReactionUsersKey(null);
+  }, [reactionUsersKey, selectedReaction]);
+  function reactionUserLabels(reaction: ReactionGroup): string[] {
+    const ids = reaction.userIds ?? [];
+    const labels = ids.flatMap((id) => (reaction.userNames?.[id] ? [reaction.userNames[id]] : []));
+    if (ids.some((id) => !reaction.userNames?.[id])) {
+      labels.push(
+        t(reaction.usersLoading ? "reactions.usersLoading" : "reactions.userUnavailable"),
+      );
+    }
+    return labels;
+  }
   const hold = useRef<ReturnType<typeof setTimeout> | null>(null);
   const longPressed = useRef(false);
   const origin = useRef({ x: 0, y: 0 });
@@ -406,17 +419,7 @@ export function MessageRow({
                             role="tooltip"
                             className="hidden md:flex max-h-64 max-w-xs overflow-y-auto [overflow-wrap:anywhere]"
                           >
-                            <span>
-                              {(reaction.userIds ?? [])
-                                .map(
-                                  (id) =>
-                                    reaction.userNames?.[id] ??
-                                    (reaction.usersLoading
-                                      ? t("reactions.usersLoading")
-                                      : t("reactions.userUnavailable")),
-                                )
-                                .join(", ")}
-                            </span>
+                            <span>{reactionUserLabels(reaction).join(", ")}</span>
                           </TooltipContent>
                         </Tooltip>
                       </TooltipProvider>
@@ -553,7 +556,7 @@ export function MessageRow({
         ) : null}
       </div>
       <Dialog
-        open={reactionUsersKey !== null}
+        open={reactionUsersKey !== null && !!selectedReaction}
         onOpenChange={(open) => {
           if (!open) setReactionUsersKey(null);
         }}
@@ -564,18 +567,13 @@ export function MessageRow({
               emoji: selectedReaction ? kitchenLabel(selectedReaction.emoji) : "",
             })}
           </DialogTitle>
-          {selectedReaction?.usersLoading ? <p>{t("reactions.usersLoading")}</p> : null}
           <ul className="space-y-2" aria-live="polite">
-            {(selectedReaction?.userIds ?? []).map((id) => (
-              <li key={id} className="[overflow-wrap:anywhere]">
-                {selectedReaction?.userNames?.[id] ??
-                  (selectedReaction?.usersLoading
-                    ? t("reactions.usersLoading")
-                    : t("reactions.userUnavailable"))}
+            {(selectedReaction ? reactionUserLabels(selectedReaction) : []).map((label, index) => (
+              <li key={index} className="[overflow-wrap:anywhere]">
+                {label}
               </li>
             ))}
           </ul>
-          {!selectedReaction ? <p>{t("reactions.usersEmpty")}</p> : null}
         </DialogContent>
       </Dialog>
     </>

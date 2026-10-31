@@ -1,5 +1,5 @@
 import "../../../styles.css";
-import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { toast } from "sonner";
 import { describe, expect, it, vi } from "vite-plus/test";
@@ -30,7 +30,7 @@ function buildItem(overrides: Partial<MessageItem["message"]> = {}): MessageItem
 function noop() {}
 
 function renderRow(item: MessageItem, isOwn = false, props: Partial<MessageRowProps> = {}) {
-  return render(
+  const element = (overrides: Partial<MessageRowProps>) => (
     <LocaleProvider>
       <MessageRow
         item={item}
@@ -47,13 +47,68 @@ function renderRow(item: MessageItem, isOwn = false, props: Partial<MessageRowPr
         canReact={false}
         onReaction={noop}
         onPickReaction={noop}
-        {...props}
+        {...overrides}
       />
-    </LocaleProvider>,
+    </LocaleProvider>
   );
+  const result = render(element(props));
+  return {
+    ...result,
+    update: (next: Partial<MessageRowProps>) => result.rerender(element({ ...props, ...next })),
+  };
 }
 
 describe("MessageRow", () => {
+  it("closes the list when its last reaction disappears and stays closed if it returns", async () => {
+    await page.viewport(390, 844);
+    const reaction = {
+      emoji: "👍",
+      count: 1,
+      ownId: null,
+      userIds: ["u1"],
+      userNames: { u1: "Alice" },
+    };
+    const view = renderRow(buildItem(), false, { reactions: [reaction] });
+    await userEvent.click(
+      screen.getByRole("button", { name: "👍 にリアクションしたユーザーを表示" }),
+    );
+    expect(screen.getByRole("dialog")).toBeTruthy();
+    view.update({ reactions: [] });
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    view.update({ reactions: [reaction] });
+    expect(screen.queryByRole("dialog")).toBeNull();
+  });
+  it("shows an unresolved users message only once", async () => {
+    await page.viewport(390, 844);
+    renderRow(buildItem(), false, {
+      reactions: [{ emoji: "👍", count: 2, ownId: null, userIds: ["u1", "u2"], userNames: {} }],
+    });
+    await userEvent.click(
+      screen.getByRole("button", { name: "👍 にリアクションしたユーザーを表示" }),
+    );
+    expect(screen.getAllByText("ユーザーを表示できません")).toHaveLength(1);
+  });
+  it("shows the loading message once alongside resolved users", async () => {
+    await page.viewport(390, 844);
+    renderRow(buildItem(), false, {
+      reactions: [
+        {
+          emoji: "👍",
+          count: 3,
+          ownId: null,
+          userIds: ["u1", "u2", "u3"],
+          userNames: { u1: "Alice" },
+          usersLoading: true,
+        },
+      ],
+    });
+    await userEvent.click(
+      screen.getByRole("button", { name: "👍 にリアクションしたユーザーを表示" }),
+    );
+    const dialog = within(screen.getByRole("dialog"));
+    expect(dialog.getByText("Alice")).toBeTruthy();
+    expect(dialog.getAllByText("ユーザーを読み込み中")).toHaveLength(1);
+  });
   it("allows keyboard users to open the full reaction list on desktop", async () => {
     await page.viewport(1024, 768);
     renderRow(buildItem(), false, {
@@ -65,7 +120,7 @@ describe("MessageRow", () => {
     const chip = screen.getByRole("button", { name: "👍 1 件" });
     chip.focus();
     await userEvent.keyboard("{Tab}");
-    const listButton = screen.getByRole("button", { name: "👍 のリアクションユーザーを表示" });
+    const listButton = screen.getByRole("button", { name: "👍 にリアクションしたユーザーを表示" });
     expect(document.activeElement).toBe(listButton);
     await userEvent.keyboard("{Enter}");
     expect(screen.getByRole("dialog").textContent).toContain("Alice");
@@ -112,7 +167,9 @@ describe("MessageRow", () => {
         },
       ],
     });
-    await userEvent.click(screen.getByRole("button", { name: "👍 のリアクションユーザーを表示" }));
+    await userEvent.click(
+      screen.getByRole("button", { name: "👍 にリアクションしたユーザーを表示" }),
+    );
     expect(screen.getByRole("dialog").textContent).toContain("Alice");
     expect(screen.getByRole("dialog").textContent).toContain("Bob");
     expect(onReaction).not.toHaveBeenCalled();
@@ -126,7 +183,9 @@ describe("MessageRow", () => {
     renderRow(buildItem(), false, {
       reactions: [{ emoji: "👍", count: 1, ownId: null, userIds: ["missing"], userNames: {} }],
     });
-    await userEvent.click(screen.getByRole("button", { name: "👍 のリアクションユーザーを表示" }));
+    await userEvent.click(
+      screen.getByRole("button", { name: "👍 にリアクションしたユーザーを表示" }),
+    );
     expect(screen.getByRole("dialog").textContent).toContain("ユーザーを表示できません");
   });
   it("hides the reaction strip until a reaction exists", () => {

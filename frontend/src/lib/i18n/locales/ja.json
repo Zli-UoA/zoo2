@@ -236,7 +236,7 @@
     "rootDeleted": "元のメッセージは削除されました"
   },
   "reactions": {
-    "showUsers": "{{emoji}} のリアクションユーザーを表示",
+    "showUsers": "{{emoji}} にリアクションしたユーザーを表示",
     "usersTitle": "{{emoji}} にリアクションしたユーザー",
     "usersLoading": "ユーザーを読み込み中",
     "userUnavailable": "ユーザーを表示できません",

@@ -140,7 +140,7 @@ export const ReactionUsers: Story = {
   },
   play: async ({ canvasElement }) => {
     await userEvent.click(
-      within(canvasElement).getByRole("button", { name: "👍 のリアクションユーザーを表示" }),
+      within(canvasElement).getByRole("button", { name: "👍 にリアクションしたユーザーを表示" }),
     );
     const dialog = await screen.findByRole("dialog");
     await expect(within(dialog).getByText(/@longname/)).toBeVisible();
