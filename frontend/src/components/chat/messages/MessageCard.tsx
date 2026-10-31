@@ -1,3 +1,4 @@
+import { ExternalLink } from "../../ui/external-link";
 import { SquareArrowOutUpRightIcon } from "lucide-react";
 
 /** Integration-neutral card schema. This data comes from the server-owned card column. */
@@ -98,19 +99,13 @@ export function MessageCard({
   card: CardData;
   attachment?: boolean;
 }) {
-  let href: string | undefined;
-  try {
-    const url = new URL(card.url);
-    if (url.protocol === "https:") href = url.href;
-  } catch {
-    /* Missing links render as text. */
-  }
+  const href = safeHref(card.url);
   return (
     <article
       className={
         attachment
-          ? "my-2 max-w-2xl overflow-hidden rounded-sm border-l-4 border-l-brand py-1 pl-4 pr-2 text-sm"
-          : "my-1 max-w-xl overflow-hidden rounded-lg border border-l-4 border-l-brand bg-card p-3 text-sm shadow-sm"
+          ? "@container my-2 max-w-2xl overflow-hidden rounded-sm border-l-4 border-l-brand py-1 pl-4 pr-2 text-sm"
+          : "@container my-1 max-w-xl overflow-hidden rounded-lg border border-l-4 border-l-brand bg-card p-3 text-sm shadow-sm"
       }
       style={cardColor(card.color) ? { borderLeftColor: cardColor(card.color) } : undefined}
     >
@@ -127,14 +122,9 @@ export function MessageCard({
       ) : null}
       <div className="break-words font-semibold">
         {href ? (
-          <a
-            href={href}
-            target="_blank"
-            rel="noopener noreferrer"
-            className="text-link underline-offset-2 hover:underline"
-          >
+          <ExternalLink href={href} className="hover:underline">
             {card.title}
-          </a>
+          </ExternalLink>
         ) : (
           card.title
         )}
@@ -145,7 +135,7 @@ export function MessageCard({
         </p>
       ) : null}
       {card.fields?.length ? (
-        <dl className="mt-3 grid grid-cols-1 gap-x-6 gap-y-3 sm:grid-cols-2">
+        <dl className="mt-3 grid grid-cols-1 gap-x-6 gap-y-3 @sm:grid-cols-2">
           {card.fields.map((field, index) => {
             const href = safeHref(field.url);
             const value = field.code ? (
@@ -156,18 +146,13 @@ export function MessageCard({
               field.value
             );
             return (
-              <div key={index} className={field.short ? "min-w-0" : "min-w-0 sm:col-span-2"}>
+              <div key={index} className={field.short ? "min-w-0" : "min-w-0 @sm:col-span-2"}>
                 <dt className="mb-1 font-semibold">{field.title}</dt>
                 <dd className="whitespace-pre-wrap break-words">
                   {href ? (
-                    <a
-                      href={href}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="text-brand hover:underline"
-                    >
+                    <ExternalLink href={href} className="hover:underline">
                       {value}
-                    </a>
+                    </ExternalLink>
                   ) : (
                     value
                   )}

@@ -1,3 +1,4 @@
+import type { CardData } from "../src/components/chat/messages/MessageCard";
 import { http, HttpResponse } from "msw";
 export const storyApps = [
   {
@@ -42,3 +43,29 @@ export const storyCommands = [
   { app_id: "notes", app_name: "Meeting Notes", name: "echo" },
   { app_id: "github", app_name: "GitHub", name: "github" },
 ];
+
+export const storyDeploymentCard: CardData = {
+  title: "Deployment to storybook-pr-271",
+  url: "https://github.com/Zli-UoA/zoo2/deployments",
+  description: "",
+  source: "Zli-UoA/zoo2",
+  context: "2026-10-31 19:56",
+  author: "",
+  badge: "",
+  color: "#2da44e",
+  fields: [
+    { title: "Status", value: "Completed", short: true },
+    {
+      title: "Commit",
+      value: "3968f64 (fix/github-bot-paused-queue)",
+      short: true,
+      code: true,
+      url: "https://github.com/Zli-UoA/zoo2/commit/3968f64",
+    },
+    {
+      title: "Workflow",
+      value: "Storybook Preview #68 / deploy",
+      url: "https://github.com/Zli-UoA/zoo2/actions",
+    },
+  ],
+};

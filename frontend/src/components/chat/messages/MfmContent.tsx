@@ -3,6 +3,7 @@ import { parse, toString, type MfmNode } from "mfm-js";
 import katex from "katex";
 import hljs from "highlight.js/lib/common";
 import shortcodeData from "../../../lib/emoji/shortcodes.json";
+import { ExternalLink, inlineLinkClassName } from "../../ui/external-link";
 import { MfmSearch } from "./MfmSearch";
 import { ChannelHashtag } from "./MfmChannels";
 import { messageTextSegments } from "./messageFormat";
@@ -16,18 +17,12 @@ export interface MfmContentProps {
   onClickEvent?: (event: string) => void;
 }
 const shortcodes: Readonly<Record<string, string>> = shortcodeData;
-const linkClass =
-  "rounded-sm text-link underline underline-offset-2 outline-none focus-visible:ring-2 focus-visible:ring-ring/50";
+const linkClass = `${inlineLinkClassName} underline`;
 function externalLink(url: string, children: ReactNode): ReactNode {
   return (
-    <a
-      href={url}
-      target="_blank"
-      rel="noopener noreferrer"
-      className={`${linkClass} [overflow-wrap:anywhere]`}
-    >
+    <ExternalLink href={url} className="underline [overflow-wrap:anywhere]">
       {children}
-    </a>
+    </ExternalLink>
   );
 }
 function text(content: string): ReactNode {

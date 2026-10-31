@@ -1,3 +1,4 @@
+import { Select } from "../ui/select";
 import { Input } from "../ui/input";
 import { useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
@@ -333,8 +334,8 @@ function UserAppsDialog({
       {!messageId ? (
         <label className="flex flex-wrap items-center gap-3 text-sm">
           <span>{t("apps.ui.channel")}</span>
-          <select
-            className={`${inputClassName()} min-w-0 max-w-full`}
+          <Select
+            className="min-w-0 w-auto max-w-full"
             value={targetChannelId}
             onChange={(event) => setTargetChannelId(event.target.value)}
           >
@@ -344,7 +345,7 @@ function UserAppsDialog({
                 #{channel.channel_name}
               </option>
             ))}
-          </select>
+          </Select>
         </label>
       ) : null}
       <ConfirmActionDialog
@@ -403,8 +404,8 @@ function UserAppsDialog({
             />
           </label>
           {!messageId ? (
-            <select
-              className={inputClassName()}
+            <Select
+              className="w-auto"
               aria-label={t("apps.ui.filter")}
               value={filter}
               onChange={(event) => setFilter(event.target.value)}
@@ -413,7 +414,7 @@ function UserAppsDialog({
               <option value="installed">{t("apps.status.installed")}</option>
               <option value="mine">{t("apps.ui.mine")}</option>
               {isAdmin ? <option value="pending">{t("apps.status.pending")}</option> : null}
-            </select>
+            </Select>
           ) : null}
           <div
             className="min-h-0 max-h-[50dvh] flex-1 space-y-1 overflow-y-auto md:max-h-none"

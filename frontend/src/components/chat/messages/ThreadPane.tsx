@@ -184,7 +184,6 @@ export function ThreadPane({
           onReaction={(emoji) => onReaction(root.id, emoji)}
           onPickReaction={() => onPickReaction(root.id)}
         />
-
       </div>
 
       <div

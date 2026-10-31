@@ -1,3 +1,4 @@
+import { storyDeploymentCard } from "../../../.storybook/app-fixtures";
 import type { Meta, StoryObj } from "@storybook/react-vite";
 import { delay, http, HttpResponse } from "msw";
 import { expect, screen, userEvent } from "storybook/test";
@@ -71,5 +72,18 @@ export const InvalidBlocks: Story = {
       { type: "unsupported" },
       { type: "text", text: "未対応のブロックがあっても本文を表示します。" },
     ],
+  },
+};
+
+export const Card: Story = {
+  args: {
+    submit: false,
+    blocks: [{ type: "card", card: storyDeploymentCard }],
+  },
+  play: async () => {
+    await expect(screen.getByRole("link", { name: storyDeploymentCard.title })).toBeVisible();
+    await expect(
+      screen.getByRole("link", { name: "3968f64 (fix/github-bot-paused-queue)" }),
+    ).toHaveClass("text-link");
   },
 };

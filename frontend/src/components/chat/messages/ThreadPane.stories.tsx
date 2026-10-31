@@ -1,9 +1,10 @@
+import { StoryShell } from "../../../../.storybook/shell";
 import type { Meta, StoryObj } from "@storybook/react-vite";
 import { expect, fn, userEvent, within } from "storybook/test";
 
 import { MfmChannelsProvider } from "./MfmChannels";
 import { storyChannels } from "../../../../.storybook/fixtures";
-import { storyCommands } from "../../../../.storybook/app-fixtures";
+import { storyCommands, storyDeploymentCard } from "../../../../.storybook/app-fixtures";
 import { ThreadPane } from "./ThreadPane";
 import type { FeedMessage } from "./messageFormat";
 
@@ -144,5 +145,31 @@ export const Completions: Story = {
     await expect(input).toHaveValue("/github ");
     await userEvent.click(canvas.getByRole("button", { name: "送信" }));
     await expect(args.onSendReply).toHaveBeenCalledWith("/github", "github");
+  },
+};
+
+export const AppCard: Story = {
+  parameters: { a11y: { test: "error" } },
+  decorators: [
+    (Story) => (
+      <StoryShell>
+        <Story />
+      </StoryShell>
+    ),
+  ],
+  args: {
+    root: {
+      ...root,
+      content: "Plain fallback for card-capable clients",
+      app_origin_id: "github",
+      app_blocks: JSON.stringify([{ type: "card", card: storyDeploymentCard }]),
+    },
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expect(canvas.getByRole("link", { name: storyDeploymentCard.title })).toBeVisible();
+    await expect(
+      canvas.queryByText("Plain fallback for card-capable clients"),
+    ).not.toBeInTheDocument();
   },
 };

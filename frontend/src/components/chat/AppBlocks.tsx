@@ -1,3 +1,4 @@
+import { Select } from "../ui/select";
 import { Input } from "../ui/input";
 import { MessageCard, parseMessageCard, type CardData } from "./messages/MessageCard";
 import { openApp } from "./AppIdentity";
@@ -7,7 +8,6 @@ import { createConfiguredApiClient } from "../../lib/api/client";
 import { useCollections } from "../../lib/electric/collections-context";
 import { useShell } from "../layout/shell-context";
 import { Button } from "../ui/button";
-import { inputClassName } from "../ui/input-styles";
 import type { FeedMessage } from "./messages/messageFormat";
 
 type Block =
@@ -125,15 +125,14 @@ export function AppBlocks({
             {b.label}
             {b.type === "input" ? (
               <Input
-                className={inputClassName()}
                 required={b.required}
                 maxLength={4000}
                 value={values[b.action_id] ?? ""}
                 onChange={(e) => setValues({ ...values, [b.action_id]: e.target.value })}
               />
             ) : (
-              <select
-                className={inputClassName()}
+              <Select
+                className="w-full"
                 value={values[b.action_id] ?? ""}
                 onChange={(e) => {
                   const value = e.target.value;
@@ -145,7 +144,7 @@ export function AppBlocks({
                 {b.options.map((option) => (
                   <option key={option}>{option}</option>
                 ))}
-              </select>
+              </Select>
             )}
           </label>
         );
