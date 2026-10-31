@@ -88,6 +88,8 @@ export const CommandCompletion: Story = {
     const input = await canvas.findByRole("textbox");
     await userEvent.type(input, "/ec");
     await userEvent.click(await canvas.findByRole("option", { name: "/echo Meeting Notes" }));
+    // Composer restores the caret on the next animation frame after completion.
+    await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
     await userEvent.type(input, "hello");
     await userEvent.click(canvas.getByRole("button", { name: "送信" }));
     await waitFor(() =>
