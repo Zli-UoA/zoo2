@@ -923,3 +923,103 @@ async fn test_attachment_expiry_is_timezone_independent() -> anyhow::Result<()> 
 
     Ok(())
 }
+
+#[tokio::test]
+async fn test_attachments_presign_and_get_with_public_endpoint() -> anyhow::Result<()> {
+    dotenvy::dotenv().ok();
+    dotenvy::from_filename("../.env").ok();
+
+    let mut config = Config::from_env();
+    config.dev_auth_enabled = true;
+    config.s3.public_endpoint = Some("https://attachments.zliusercontent.com".to_string());
+
+    let db = init_db(&config.database_url).await?;
+    let state = AppState::new(db.clone(), config.clone());
+    let app = create_router(state.clone());
+
+    ensure_bucket_exists(&state.s3_client, &config.s3.bucket).await;
+
+    let alice_id = uuid::Uuid::new_v4().to_string();
+
+    // 1. ユーザー作成
+    let user_payload = json!({
+        "id": alice_id,
+        "user_name": format!("alice_pub_{}", uuid::Uuid::new_v4().simple()),
+        "display_name": "Alice Pub",
+    });
+    let req = Request::builder()
+        .method("POST")
+        .uri("/api/users")
+        .header("content-type", "application/json")
+        .body(Body::from(serde_json::to_vec(&user_payload)?))?;
+    let resp = app.clone().oneshot(req).await?;
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    // 2. チャンネル作成
+    let channel_id = uuid::Uuid::new_v4().to_string();
+    let channel_payload = json!({
+        "id": channel_id,
+        "channel_name": format!("pub_end_{}", uuid::Uuid::new_v4().simple()),
+        "description": "Public Endpoint Test",
+        "is_private": false,
+    });
+    let req = Request::builder()
+        .method("POST")
+        .uri("/api/channels")
+        .header("content-type", "application/json")
+        .header("X-Dev-User", &alice_id)
+        .body(Body::from(serde_json::to_vec(&channel_payload)?))?;
+    let resp = app.clone().oneshot(req).await?;
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    // 3. presign API の upload_url が S3_PUBLIC_ENDPOINT に書き換えられていることを検証
+    let presign_req = Request::builder()
+        .method("POST")
+        .uri("/api/attachments/presign")
+        .header("content-type", "application/json")
+        .header("X-Dev-User", &alice_id)
+        .body(Body::from(serde_json::to_vec(&json!({
+            "channel_id": channel_id,
+            "file_name": "photo.png",
+            "file_size": 1024,
+            "content_type": "image/png",
+        }))?))?;
+
+    let resp = app.clone().oneshot(presign_req).await?;
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body: Value = serde_json::from_slice(&to_bytes(resp.into_body(), usize::MAX).await?)?;
+    let upload_url = body["data"]["upload_url"].as_str().unwrap();
+    let attachment_id = body["data"]["attachment_id"].as_str().unwrap();
+
+    assert!(
+        upload_url.starts_with("https://attachments.zliusercontent.com/"),
+        "upload_url should start with public endpoint, got {upload_url}"
+    );
+    assert!(
+        upload_url.contains("X-Amz-Signature="),
+        "upload_url should preserve SigV4 query parameters"
+    );
+
+    // 4. GET URL API の download_url も S3_PUBLIC_ENDPOINT に書き換えられていることを検証
+    let get_url_req = Request::builder()
+        .method("GET")
+        .uri(format!("/api/attachments/{attachment_id}/url"))
+        .header("X-Dev-User", &alice_id)
+        .body(Body::empty())?;
+
+    let resp = app.clone().oneshot(get_url_req).await?;
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body: Value = serde_json::from_slice(&to_bytes(resp.into_body(), usize::MAX).await?)?;
+    let download_url = body["data"]["download_url"].as_str().unwrap();
+
+    assert!(
+        download_url.starts_with("https://attachments.zliusercontent.com/"),
+        "download_url should start with public endpoint, got {download_url}"
+    );
+    assert!(
+        download_url.contains("X-Amz-Signature="),
+        "download_url should preserve SigV4 query parameters"
+    );
+
+    Ok(())
+}
