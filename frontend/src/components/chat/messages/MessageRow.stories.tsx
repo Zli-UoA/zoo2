@@ -127,6 +127,7 @@ export const WithReactions: Story = {
 
 export const ReactionUsers: Story = {
   globals: { viewport: { value: "mobile" } },
+  parameters: { a11y: { test: "error" } },
   args: {
     reactions: [
       {
@@ -143,12 +144,13 @@ export const ReactionUsers: Story = {
       within(canvasElement).getByRole("button", { name: "👍 にリアクションしたユーザーを表示" }),
     );
     const dialog = await screen.findByRole("dialog");
-    await expect(within(dialog).getByText(/@longname/)).toBeVisible();
-    await expect(within(dialog).getByText(/@bob/)).toBeVisible();
+    await waitFor(() => expect(within(dialog).getByText(/@longname/)).toBeVisible());
+    await waitFor(() => expect(within(dialog).getByText(/@bob/)).toBeVisible());
   },
 };
 
 export const ReactionUsersHover: Story = {
+  parameters: { a11y: { test: "error" } },
   args: WithReactions.args,
   play: async ({ canvasElement }) => {
     const chip = within(canvasElement).getByRole("button", { name: /👍 3 件/ });
