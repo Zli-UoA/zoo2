@@ -199,19 +199,10 @@ mod tests {
         .await
         .unwrap();
 
-        // 2. 公開エンドポイントを指定して書き換え後の presigned GET URL を生成
+        // 2. 1 回目の URL をそのまま rewrite_presigned_url に渡して比較
+        // （generate_presigned_get_url を 2 回呼ぶと秒境界で X-Amz-Date / X-Amz-Signature が変わり flaky になるのを防止）
         let public_endpoint = "https://attachments.zliusercontent.com";
-        let rewritten_url = generate_presigned_get_url(
-            &client,
-            &s3_config.bucket,
-            key,
-            content_type,
-            japanese_filename,
-            expiry,
-            Some(public_endpoint),
-        )
-        .await
-        .unwrap();
+        let rewritten_url = rewrite_presigned_url(&original_url, Some(public_endpoint)).unwrap();
 
         // ホスト名が書き換わっていることを確認
         assert!(
@@ -247,5 +238,19 @@ mod tests {
             rewritten_query.as_bytes(),
             "query bytes must be preserved identically after URL rewriting"
         );
+
+        // 3. generate_presigned_get_url に直接 public_endpoint を渡した場合も同じホストに書き換わることを確認
+        let direct_url = generate_presigned_get_url(
+            &client,
+            &s3_config.bucket,
+            key,
+            content_type,
+            japanese_filename,
+            expiry,
+            Some(public_endpoint),
+        )
+        .await
+        .unwrap();
+        assert!(direct_url.starts_with("https://attachments.zliusercontent.com/"));
     }
 }
