@@ -140,6 +140,7 @@
         "CommandSuggestions",
         "ChannelInsertion",
         "WithAttachments",
+        "WithFileAttachment",
         "AttachmentUploadError"
       ]
     },

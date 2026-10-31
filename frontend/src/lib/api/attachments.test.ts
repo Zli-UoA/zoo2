@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vite-plus/test";
 
 import type { ApiClient } from "./client";
-import { AttachmentUploadError, uploadAttachment } from "./attachments";
+import { AttachmentUploadError, fetchAttachmentBlob, uploadAttachment } from "./attachments";
 
 function fakeFile(overrides: Partial<File> = {}): File {
   return {
@@ -47,12 +47,45 @@ describe("uploadAttachment", () => {
     });
   });
 
-  it("rejects unsupported files before requesting a presigned URL", async () => {
+  it("uploads non-image files with a declared content type", async () => {
+    const post = vi.fn(async () => ({
+      data: {
+        attachment_id: "attachment-2",
+        upload_url: "https://attachments.zliusercontent.com/upload",
+        storage_key: "attachments/channel-1/attachment-2",
+      },
+      txid: null,
+    }));
+    const fetchImpl = vi.fn(async () => new Response(null, { status: 200 }));
+    const client = { post } as unknown as ApiClient;
+    const file = fakeFile({ name: "release-notes.pdf", type: "application/pdf", size: 8 });
+
+    await expect(
+      uploadAttachment(client, "channel-1", file, fetchImpl as typeof fetch),
+    ).resolves.toEqual({
+      id: "attachment-2",
+      file_name: "release-notes.pdf",
+      file_size: 8,
+      content_type: "application/pdf",
+    });
+    expect(post).toHaveBeenCalledWith("/api/attachments/presign", {
+      channel_id: "channel-1",
+      file_name: "release-notes.pdf",
+      file_size: 8,
+      content_type: "application/pdf",
+    });
+  });
+
+  it("rejects executable files before requesting a presigned URL", async () => {
     const post = vi.fn();
     const client = { post } as unknown as ApiClient;
 
     await expect(
-      uploadAttachment(client, "channel-1", fakeFile({ name: "a.svg", type: "image/svg+xml" })),
+      uploadAttachment(
+        client,
+        "channel-1",
+        fakeFile({ name: "setup.exe", type: "application/x-msdownload" }),
+      ),
     ).rejects.toMatchObject({ reason: "unsupported" });
     expect(post).not.toHaveBeenCalled();
   });
@@ -83,5 +116,33 @@ describe("uploadAttachment", () => {
     await expect(
       uploadAttachment(okClient, "channel-1", fakeFile(), fetchImpl as typeof fetch),
     ).rejects.toMatchObject({ reason: "request" });
+  });
+});
+
+describe("fetchAttachmentBlob", () => {
+  it("downloads the attachment bytes without credentials", async () => {
+    const fetchImpl = vi.fn(async () => new Response(new Blob(["attachment"]), { status: 200 }));
+
+    const blob = await fetchAttachmentBlob(
+      "https://attachments.zliusercontent.com/object?signature=test",
+      fetchImpl as typeof fetch,
+    );
+
+    expect(await blob.text()).toBe("attachment");
+    expect(fetchImpl).toHaveBeenCalledWith(
+      "https://attachments.zliusercontent.com/object?signature=test",
+      { credentials: "omit" },
+    );
+  });
+
+  it("rejects non-success responses", async () => {
+    const fetchImpl = vi.fn(async () => new Response(null, { status: 403 }));
+
+    await expect(
+      fetchAttachmentBlob(
+        "https://attachments.zliusercontent.com/object",
+        fetchImpl as typeof fetch,
+      ),
+    ).rejects.toThrow(/403/);
   });
 });

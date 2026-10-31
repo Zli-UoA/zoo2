@@ -3,19 +3,21 @@ import { ComposerField, composerTextareaClassName } from "./ComposerField";
 import { useAutosizeTextarea } from "../../../hooks/useAutosizeTextarea";
 import { useTranslation } from "react-i18next";
 import { useEffect, useId, useLayoutEffect, useRef, useState, type ClipboardEvent } from "react";
-import { ImagePlusIcon, SendIcon, XIcon } from "lucide-react";
+import { PaperclipIcon, SendIcon, XIcon } from "lucide-react";
 
 import type { TFunction } from "i18next";
 import {
   MAX_ATTACHMENTS_PER_MESSAGE,
   MAX_ATTACHMENT_FILE_SIZE,
-  SUPPORTED_IMAGE_TYPES,
   attachmentFileName,
+  attachmentFilesFromClipboard,
   attachmentRejection,
-  imageFilesFromClipboard,
-  resolveSupportedImageType,
+  formatAttachmentSize,
+  isInlineImage,
+  resolveAttachmentContentType,
 } from "../../../lib/attachments";
 import type { UploadedAttachment } from "../../../lib/api/attachments";
+import { useLocale } from "../../i18n/LocaleProvider";
 import { useMediaQuery } from "../../layout/useMediaQuery";
 import { Button } from "../../ui/button";
 import { Spinner } from "../../ui/spinner";
@@ -111,7 +113,9 @@ interface ComposerAttachmentDraft {
   key: string;
   file: File;
   file_name: string;
-  preview_url: string;
+  file_size: number;
+  content_type: string;
+  preview_url: string | null;
   status: "uploading" | "ready";
   attachment_id?: string;
 }
@@ -124,7 +128,7 @@ interface ComposerProps {
   /** 送信を実行し、成功したかを返す。false なら下書きを復元する。 */
   onTyping?: (active: boolean) => void;
   onSend: (content: string, commandAppId?: string, attachmentIds?: string[]) => Promise<boolean>;
-  /** 画像をアップロードして添付 ID を返す。未指定なら添付 UI を出さない。 */
+  /** ファイルをアップロードして添付 ID を返す。未指定なら添付 UI を出さない。 */
   onUploadAttachment?: (file: File) => Promise<UploadedAttachment>;
   disabled?: boolean;
   placeholder?: string;
@@ -148,6 +152,7 @@ export function Composer({
   ariaLabel,
 }: ComposerProps) {
   const { t } = useTranslation();
+  const { locale } = useLocale();
   const resolvedPlaceholder = placeholder ?? t("messages.compose");
   const resolvedAriaLabel = ariaLabel ?? t("messages.compose");
   const [value, setValue] = useState("");
@@ -259,7 +264,9 @@ export function Composer({
 
   function revokeDrafts(entries: ComposerAttachmentDraft[]) {
     for (const draft of entries) {
-      URL.revokeObjectURL(draft.preview_url);
+      if (draft.preview_url) {
+        URL.revokeObjectURL(draft.preview_url);
+      }
     }
   }
 
@@ -269,7 +276,9 @@ export function Composer({
       return;
     }
     updateDrafts(draftsRef.current.filter((candidate) => candidate.key !== key));
-    URL.revokeObjectURL(draft.preview_url);
+    if (draft.preview_url) {
+      URL.revokeObjectURL(draft.preview_url);
+    }
   }
 
   function rejectionMessage(reason: ReturnType<typeof attachmentRejection>): string | null {
@@ -280,6 +289,9 @@ export function Composer({
       return t("attachments.tooLarge", {
         max: Math.floor(MAX_ATTACHMENT_FILE_SIZE / (1024 * 1024)),
       });
+    }
+    if (reason === "empty") {
+      return t("attachments.empty");
     }
     if (reason === "unsupported") {
       return t("attachments.unsupported");
@@ -300,7 +312,7 @@ export function Composer({
         error ??= rejectionMessage(reason);
         continue;
       }
-      const contentType = resolveSupportedImageType(file);
+      const contentType = resolveAttachmentContentType(file);
       if (!contentType) {
         error ??= t("attachments.unsupported");
         continue;
@@ -311,7 +323,9 @@ export function Composer({
           key: crypto.randomUUID(),
           file,
           file_name: attachmentFileName(file, contentType),
-          preview_url: URL.createObjectURL(file),
+          file_size: file.size,
+          content_type: contentType,
+          preview_url: isInlineImage(contentType) ? URL.createObjectURL(file) : null,
           status: "uploading",
         },
       });
@@ -340,6 +354,8 @@ export function Composer({
                 status: "ready" as const,
                 attachment_id: uploaded.id,
                 file_name: uploaded.file_name,
+                file_size: uploaded.file_size,
+                content_type: uploaded.content_type,
               }
             : candidate,
         ),
@@ -354,7 +370,7 @@ export function Composer({
     if (!onUploadAttachment || disabled) {
       return;
     }
-    const files = imageFilesFromClipboard(event.clipboardData);
+    const files = attachmentFilesFromClipboard(event.clipboardData);
     if (files.length === 0) {
       return;
     }
@@ -427,33 +443,55 @@ export function Composer({
     >
       {drafts.length > 0 ? (
         <ul className="mb-2 flex flex-wrap gap-2" aria-label={t("attachments.selected")}>
-          {drafts.map((draft) => (
-            <li
-              key={draft.key}
-              className="relative size-20 overflow-hidden rounded-lg border bg-muted"
-            >
-              <img
-                src={draft.preview_url}
-                alt={draft.file_name}
-                className="size-full object-cover"
-              />
-              {draft.status === "uploading" ? (
-                <Spinner
-                  label={t("attachments.uploading")}
-                  className="absolute inset-0 bg-background/60"
-                />
-              ) : null}
-              <button
-                type="button"
-                className="absolute right-1 top-1 grid size-6 place-items-center rounded-full bg-background/90 text-foreground shadow-sm hover:bg-background"
-                aria-label={t("attachments.remove", { name: draft.file_name })}
-                title={t("attachments.remove", { name: draft.file_name })}
-                onClick={() => removeDraft(draft.key)}
+          {drafts.map((draft) => {
+            const isImage = isInlineImage(draft.content_type) && draft.preview_url;
+            return (
+              <li
+                key={draft.key}
+                className={
+                  isImage
+                    ? "relative size-20 overflow-hidden rounded-lg border bg-muted"
+                    : "relative flex h-20 w-56 items-center gap-2 overflow-hidden rounded-lg border bg-muted/30 p-2 pr-9"
+                }
               >
-                <XIcon className="size-3.5" />
-              </button>
-            </li>
-          ))}
+                {isImage ? (
+                  <img
+                    src={draft.preview_url!}
+                    alt={draft.file_name}
+                    className="size-full object-cover"
+                  />
+                ) : (
+                  <>
+                    <PaperclipIcon
+                      className="size-5 shrink-0 text-muted-foreground"
+                      aria-hidden="true"
+                    />
+                    <div className="min-w-0">
+                      <p className="truncate text-xs font-medium">{draft.file_name}</p>
+                      <p className="text-[11px] text-muted-foreground">
+                        {formatAttachmentSize(draft.file_size, locale)}
+                      </p>
+                    </div>
+                  </>
+                )}
+                {draft.status === "uploading" ? (
+                  <Spinner
+                    label={t("attachments.uploading")}
+                    className="absolute inset-0 bg-background/60"
+                  />
+                ) : null}
+                <button
+                  type="button"
+                  className="absolute right-1 top-1 grid size-6 place-items-center rounded-full bg-background/90 text-foreground shadow-sm hover:bg-background"
+                  aria-label={t("attachments.remove", { name: draft.file_name })}
+                  title={t("attachments.remove", { name: draft.file_name })}
+                  onClick={() => removeDraft(draft.key)}
+                >
+                  <XIcon className="size-3.5" />
+                </button>
+              </li>
+            );
+          })}
         </ul>
       ) : null}
       {attachmentError ? (
@@ -512,7 +550,6 @@ export function Composer({
             <input
               ref={fileInputRef}
               type="file"
-              accept={SUPPORTED_IMAGE_TYPES.join(",")}
               multiple
               hidden
               onChange={(event) => {
@@ -531,7 +568,7 @@ export function Composer({
               disabled={disabled || drafts.length >= MAX_ATTACHMENTS_PER_MESSAGE}
               onClick={() => fileInputRef.current?.click()}
             >
-              <ImagePlusIcon />
+              <PaperclipIcon />
             </Button>
           </>
         ) : null}

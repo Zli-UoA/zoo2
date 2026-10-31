@@ -227,7 +227,7 @@ SPA は IdP の Discovery / token エンドポイントをブラウザから直�
 
 `CSP_CONNECT_SRC` には IdP の **issuer と token エンドポイントのオリジン**を指定します（例: `https://idm.example.com`）。Kanidm では通常どちらも同じオリジンです。JWKS は Rust が取得するためブラウザの CSP には不要ですが、リバースプロキシ等で別オリジンに置いている場合でも Rust 側の到達性だけを確認してください。`VITE_API_BASE_URL` を空以外にして API を別オリジンへ向ける構成にした場合は、そのオリジンも `CSP_CONNECT_SRC` に追加してください（Compose のステージング構成では `/api/*` を同一オリジンで Traefik から Rust へ転送するため不要です）。
 
-`img-src` は既定で `'self' data: blob: https://www.gstatic.com` に加え、`CSP_STORAGE_SRC` と `CSP_APP_IMAGE_SRC` を展開します。`https://www.gstatic.com` は Emoji Kitchen の合成画像（#82）をブラウザから直接取得するためです。添付ファイルの署名付き PUT / GET URL で Cloudflare R2 等の外部ストレージに直接アクセスする場合は、そのオリジン（例: `https://<account>.r2.cloudflarestorage.com`）を `CSP_STORAGE_SRC` に指定してください。新しい外部画像オリジンを追加する場合は、`/` と `/assets/` の両方の `img-src` と `container` ジョブの検査を更新してください。
+`img-src` は既定で `'self' data: blob: https://www.gstatic.com` に加え、`CSP_STORAGE_SRC` と `CSP_APP_IMAGE_SRC` を展開します。`https://www.gstatic.com` は Emoji Kitchen の合成画像（#82）をブラウザから直接取得するためです。添付ファイルの署名付き PUT / GET URL で Cloudflare R2 等の外部ストレージに直接アクセスする場合は、そのオリジン（例: `https://<account>.r2.cloudflarestorage.com`、カスタムドメイン運用時は `https://attachments.zliusercontent.com`）を `CSP_STORAGE_SRC` に指定してください。新しい外部画像オリジンを追加する場合は、`/` と `/assets/` の両方の `img-src` と `container` ジョブの検査を更新してください。
 
 `script-src` は `'unsafe-inline'` を使わず、ビルド時のハッシュで許可します。 SQLite Worker の WebAssembly 実行には `'wasm-unsafe-eval'`、ビルド時に埋め込まれる WASM の `data:` URL の読み込みには `connect-src` の `data:` を許可しています。JavaScript の `'unsafe-eval'` は許可しません。ハッシュは `infra/csp-hashes.mjs` が `pnpm build` 後の `index.html` から生成し、`infra/frontend-entrypoint.sh` が起動時に `CSP_SCRIPT_SRC` として渡します。`index.html` やテーマ初期化 script を変更した場合は、必ずイメージを再ビルドしてください。`style-src` の `'unsafe-inline'` は React の style 属性に必要なため残しています。
 
