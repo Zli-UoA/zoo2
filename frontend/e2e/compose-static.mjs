@@ -2,8 +2,8 @@ import { createSecureServer } from "node:http2";
 import { request as upstreamRequest } from "node:https";
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
-import { readFile } from "node:fs/promises";
+import { createReadStream, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { readFile, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve, extname } from "node:path";
 const directory = mkdtempSync(join(tmpdir(), "zoo-compose-static-"));
@@ -92,9 +92,16 @@ createSecureServer(tls, async (req, res) => {
     return;
   }
   try {
-    const body = await readFile(file);
+    const info = await stat(file);
+    if (!info.isFile()) throw new Error("Not a static file");
     res.setHeader("Content-Type", mime[extname(file)] ?? "application/octet-stream");
-    res.end(body);
+    res.setHeader("Content-Length", info.size);
+    // Stream large fonts with backpressure, as nginx does. Buffering every response
+    // can exhaust the HTTP/2 session credit while the service worker also caches it.
+    const source = createReadStream(file);
+    source.on("error", () => res.destroy());
+    res.on("close", () => source.destroy());
+    source.pipe(res);
   } catch {
     if (url.pathname.startsWith("/assets/") || url.pathname.startsWith("/compose/")) {
       res.writeHead(404).end();
