@@ -710,6 +710,11 @@ impl App {
             self.notify("自分のメッセージだけを編集できます");
             return;
         }
+        // 編集は入力欄を本文で置き換えるので、書きかけの下書きがあれば始めない。
+        if !matches!(self.target, Target::Edit(_)) && !self.composer.is_empty() {
+            self.notify("書きかけの下書きがあります。送信するか消してから編集してください");
+            return;
+        }
         self.composer = composer_with(&message.content);
         self.target = Target::Edit(message_id);
         self.mode = Mode::Insert;

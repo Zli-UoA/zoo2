@@ -568,6 +568,21 @@ mod tests {
         assert_eq!(app.mode, Mode::Normal);
         assert!(render(&mut app).contains("自分のメッセージだけを編集できます"));
 
+        // 自分の返信を選び、下書きがあるときは編集を始めない。
+        press(&mut app, KeyCode::Enter);
+        press(&mut app, KeyCode::Char('G'));
+        app.composer.insert_str("下書き");
+        press(&mut app, KeyCode::Char('e'));
+        assert_eq!(app.mode, Mode::Normal);
+        assert_eq!(app.composer.lines(), ["下書き"]);
+        assert!(render(&mut app).contains("書きかけの下書きがあります"));
+        app.composer = tui_textarea::TextArea::default();
+        press(&mut app, KeyCode::Char('e'));
+        assert_eq!(app.mode, Mode::Insert);
+        assert_eq!(app.composer.lines(), ["返信です"]);
+        press(&mut app, KeyCode::Esc);
+        press(&mut app, KeyCode::Esc);
+
         press(&mut app, KeyCode::Char('?'));
         assert!(render(&mut app).contains("キー操作"));
         press(&mut app, KeyCode::Char('x'));
