@@ -6,6 +6,12 @@ set -eu
 # ハッシュはビルド成果物と一致している必要があるため、実行時にファイルから読む。
 CSP_SCRIPT_SRC="$(cat /etc/nginx/csp-script-src.txt)"
 export CSP_SCRIPT_SRC
+# React-only images retain their original connect-src allowlist.
+CSP_COMPOSE_CONNECT_SRC=""
+if [ "${ZOO_COMPOSE_ENABLED:-false}" = "true" ]; then
+  CSP_COMPOSE_CONNECT_SRC=" https://www.gstatic.com ${CSP_APP_IMAGE_SRC:-}"
+fi
+export CSP_COMPOSE_CONNECT_SRC
 
 # Public endpoints are interpolated into nginx syntax; allow URL path characters only.
 endpoint_origin() {

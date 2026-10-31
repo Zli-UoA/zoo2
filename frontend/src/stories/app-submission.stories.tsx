@@ -1,3 +1,4 @@
+import { playForImplementation } from "../../.storybook/play-for-implementation";
 import type { Meta, StoryObj } from "@storybook/react-vite";
 import { http, HttpResponse } from "msw";
 import { expect, fn, screen, userEvent, waitFor } from "storybook/test";
@@ -42,7 +43,7 @@ const meta = {
 export default meta;
 type Story = StoryObj<typeof meta>;
 export const RetryPreservesValues: Story = {
-  play: async ({ args }) => {
+  play: playForImplementation(async ({ args }) => {
     await userEvent.type(screen.getByRole("textbox"), "リリース完了");
     await userEvent.selectOptions(screen.getByRole("combobox"), "高");
     await userEvent.click(screen.getByRole("button"));
@@ -58,5 +59,5 @@ export const RetryPreservesValues: Story = {
       values: { title: "リリース完了", priority: "高" },
     });
     await expect(payloads[1]).toEqual(payloads[0]);
-  },
+  }),
 };

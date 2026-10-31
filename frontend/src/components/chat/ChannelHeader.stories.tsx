@@ -1,5 +1,6 @@
+import { playForImplementation } from "../../../.storybook/play-for-implementation";
 import type { Meta, StoryObj } from "@storybook/react-vite";
-import { expect, screen, userEvent } from "storybook/test";
+import { expect, screen, userEvent, waitFor, within } from "storybook/test";
 
 import { StoryShell } from "../../../.storybook/shell";
 import { storyChannels, storyChannelUsers } from "../../../.storybook/fixtures";
@@ -40,10 +41,10 @@ type Story = StoryObj<typeof meta>;
 export const Default: Story = {};
 
 export const ControlPanelOpen: Story = {
-  play: async () => {
+  play: playForImplementation(async () => {
     await userEvent.click(screen.getByRole("button", { name: "チャンネル設定" }));
     await expect(await screen.findByRole("dialog")).toBeInTheDocument();
-  },
+  }),
 };
 
 export const Private: Story = {
@@ -85,4 +86,24 @@ export const LongDescription: Story = {
 
 export const Mobile: Story = {
   globals: { viewport: { value: "mobile" } },
+};
+
+export const WebhookSettingsOpen: Story = {
+  play: playForImplementation(async () => {
+    await userEvent.click(screen.getByRole("button", { name: "チャンネル設定" }));
+    const settings = await screen.findByRole("dialog", { name: "チャンネル設定" });
+    await userEvent.click(within(settings).getByRole("button", { name: /^開く$/ }));
+    await waitFor(async () => {
+      await expect(screen.getByRole("dialog", { name: "Webhook設定" })).toBeVisible();
+    });
+    await waitFor(async () => {
+      await expect(
+        screen.queryByRole("dialog", { name: "チャンネル設定" }),
+      ).not.toBeInTheDocument();
+    });
+    await userEvent.keyboard("{Escape}");
+    await waitFor(async () => {
+      await expect(screen.queryByRole("dialog", { name: "Webhook設定" })).not.toBeInTheDocument();
+    });
+  }),
 };

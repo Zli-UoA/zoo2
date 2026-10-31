@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="ja">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Compose component catalog</title>
+    <style>
+      html,
+      body,
+      #zoo-compose-root {
+        margin: 0;
+        width: 100%;
+        height: 100%;
+        overflow: hidden;
+      }
+      #status {
+        padding: 16px;
+        font-family: sans-serif;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="status" role="status">Compose…</div>
+    <div id="zoo-compose-root"></div>
+    <script type="module" src="/compose-catalog.js"></script>
+  </body>
+</html>

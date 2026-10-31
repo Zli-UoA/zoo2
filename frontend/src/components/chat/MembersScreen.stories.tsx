@@ -1,3 +1,4 @@
+import { playForImplementation } from "../../../.storybook/play-for-implementation";
 import type { Meta, StoryObj } from "@storybook/react-vite";
 import { expect, fn, within } from "storybook/test";
 import { storyChannels, storyCollections, storyChannelUsers } from "../../../.storybook/fixtures";
@@ -21,12 +22,12 @@ const meta = {
 export default meta;
 type Story = StoryObj<typeof meta>;
 export const Default: Story = {
-  play: async ({ canvasElement }) => {
+  play: playForImplementation(async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     await expect(canvas.getByRole("heading", { name: "メンバー", level: 1 })).toBeVisible();
     await expect(canvas.getByRole("button", { name: "チャンネルに戻る" })).toBeVisible();
     await expect(canvas.queryByRole("dialog")).not.toBeInTheDocument();
-  },
+  }),
 };
 export const PublicNotJoined: Story = {
   parameters: {

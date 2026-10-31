@@ -93,7 +93,27 @@ export interface RequestOptions {
   keepalive?: boolean;
 }
 
+/** Start the request synchronously while pagehide still owns the document. */
+export function sendKeepaliveRequest(
+  url: string,
+  body: unknown,
+  auth: HeadersInit,
+  doFetch: FetchLike = fetch,
+): Promise<void> {
+  const headers = new Headers(auth);
+  headers.set("Content-Type", "application/json");
+  headers.set("Accept", "application/json");
+  return doFetch(url, {
+    method: "POST",
+    headers,
+    keepalive: true,
+    body: JSON.stringify(body),
+  }).then(() => undefined);
+}
+
 export interface ApiClient {
+  /** Uses this client's most recently resolved auth headers without asynchronous token refresh. */
+  keepalive?(path: string, body: unknown): Promise<void>;
   request<T>(path: string, options?: RequestOptions): Promise<T>;
   requestWithTx<T>(path: string, options?: RequestOptions): Promise<ApiEnvelope<T>>;
   get<T>(path: string, options?: Omit<RequestOptions, "method" | "body">): Promise<T>;
@@ -121,12 +141,15 @@ export function createApiClient(options: ApiClientOptions = {}): ApiClient {
   const onAuthorized = options.onAuthorized ?? notifyAuthorized;
   const doFetch: FetchLike = options.fetch ?? ((input, init) => fetch(input, init));
 
+  let lastAuthHeaders: Headers | undefined;
+
   async function buildHeaders(
     explicit: Record<string, string> | undefined,
     hasBody: boolean,
   ): Promise<Headers> {
     const headers = new Headers(explicit);
     const authHeaders = await buildAuthHeaders({ getToken: tokenProvider, devUserId });
+    lastAuthHeaders = new Headers(authHeaders);
     authHeaders.forEach((value, key) => headers.set(key, value));
     headers.set("Accept", "application/json");
     if (hasBody) {
@@ -173,6 +196,10 @@ export function createApiClient(options: ApiClientOptions = {}): ApiClient {
   }
 
   return {
+    keepalive: (path, body) =>
+      lastAuthHeaders
+        ? sendKeepaliveRequest(joinUrl(baseUrl, path), body, lastAuthHeaders, doFetch)
+        : Promise.reject(new Error("No resolved authentication for keepalive request")),
     request,
     requestWithTx,
     get: (path, requestOptions) => request(path, { ...requestOptions, method: "GET" }),

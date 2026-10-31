@@ -1,3 +1,4 @@
+import { playForImplementation } from "../../../.storybook/play-for-implementation";
 import { http, HttpResponse } from "msw";
 import { expect, fn, userEvent, waitFor, within } from "storybook/test";
 import { storyCommands } from "../../../.storybook/app-fixtures";
@@ -83,7 +84,7 @@ export const CommandCompletion: Story = {
     commandLookup.mockClear();
     commandInvocation.mockClear();
   },
-  play: async ({ canvasElement }) => {
+  play: playForImplementation(async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     const input = await canvas.findByRole("textbox");
     await userEvent.type(input, "/ec");
@@ -102,5 +103,5 @@ export const CommandCompletion: Story = {
     );
     await expect(commandLookup).toHaveBeenCalledWith("channel-general");
     await expect(input).toHaveValue("");
-  },
+  }),
 };

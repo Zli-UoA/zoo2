@@ -564,5 +564,13 @@
   "cards": {
     "showMore": "展开全文",
     "showLess": "收起"
+  },
+  "experimental": {
+    "useCompose": "使用 Compose（实验・开发中）",
+    "useReact": "返回 React",
+    "loadError": "无法启动 Compose。请返回 React 前端。",
+    "catalogLoading": "正在加载 Compose…",
+    "catalogLoadError": "无法加载 Compose 发布文件。",
+    "catalogBuildHint": "请安装 JDK 21，然后在 frontend 运行 pnpm build:compose。"
   }
 }

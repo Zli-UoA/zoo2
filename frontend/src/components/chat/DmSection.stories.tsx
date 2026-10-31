@@ -1,3 +1,4 @@
+import { playForImplementation } from "../../../.storybook/play-for-implementation";
 import type { Meta, StoryObj } from "@storybook/react-vite";
 import { expect, fn, within } from "storybook/test";
 import { storyChannels, storyUsers } from "../../../.storybook/fixtures";
@@ -34,7 +35,7 @@ type Story = StoryObj<typeof meta>;
 export const Default: Story = {};
 export const Empty: Story = {
   args: { channels: [] },
-  play: async ({ canvasElement }) => {
+  play: playForImplementation(async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     await expect(canvas.queryByRole("button", { name: "DMを始める" })).not.toBeInTheDocument();
     await expect(canvas.getByRole("button", { name: "ダイレクトメッセージ" })).toHaveAttribute(
@@ -42,7 +43,7 @@ export const Empty: Story = {
       "true",
     );
     await expect(canvas.getAllByRole("button")).toHaveLength(2);
-  },
+  }),
 };
 export const Loading: Story = { args: { channels: [], loading: true } };
 export const LoadError: Story = { args: { channels: [], error: true } };

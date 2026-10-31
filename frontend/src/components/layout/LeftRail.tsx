@@ -2,7 +2,7 @@ import { toast } from "sonner";
 import { useShell } from "./shell-context";
 import { disablePush } from "../../lib/pwa/push";
 import { useTranslation } from "react-i18next";
-import { Link } from "@tanstack/react-router";
+import { Link, useRouterState } from "@tanstack/react-router";
 import { cn } from "cn";
 import {
   ActivityIcon,
@@ -25,6 +25,12 @@ import { AppDialogs } from "../chat/AppsDialog";
 import { NotificationsButton } from "../chat/NotificationsButton";
 import { initials } from "../chat/format";
 import { PaneHeader } from "./PaneHeader";
+
+import {
+  selectedFrontend,
+  switchFrontend,
+  supportsComposePath,
+} from "../../lib/experimentalFrontend";
 
 function RailLink({
   to,
@@ -55,6 +61,8 @@ function RailLink({
  * 画面幅に関わらず表示し、狭幅でも操作の入口を保つ。
  */
 export function LeftRail() {
+  const path = useRouterState({ select: (state) => state.location.pathname });
+  const compose = selectedFrontend() === "compose";
   const { t } = useTranslation();
   const shell = useShell();
   const { config } = useCollections();
@@ -108,6 +116,19 @@ export function LeftRail() {
       ) : null}
 
       <div className="mt-auto flex flex-col items-center gap-2">
+        {supportsComposePath(path) ? (
+          <Button
+            variant="ghost"
+            size="icon-sm"
+            title={t(compose ? "experimental.useReact" : "experimental.useCompose")}
+            aria-label={t(compose ? "experimental.useReact" : "experimental.useCompose")}
+            onClick={() => switchFrontend(compose ? "react" : "compose")}
+            data-frontend-switch
+          >
+            <span aria-hidden="true">{compose ? "R" : "K"}</span>
+          </Button>
+        ) : null}
+
         <Link
           to="/settings"
           search={{ channel: shell.selectedChannelId ?? undefined }}

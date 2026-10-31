@@ -1,3 +1,4 @@
+import { playForImplementation } from "../../../.storybook/play-for-implementation";
 import type { Meta, StoryObj } from "@storybook/react-vite";
 import { delay, http, HttpResponse } from "msw";
 import { expect, screen } from "storybook/test";
@@ -45,9 +46,9 @@ export const LoadError: Story = {
       ],
     },
   },
-  play: async () => {
+  play: playForImplementation(async () => {
     await expect(await screen.findByRole("alert")).toBeVisible();
-  },
+  }),
 };
 export const AssistantSession: Story = {
   args: { assistant: true },

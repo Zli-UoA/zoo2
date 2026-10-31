@@ -1,3 +1,4 @@
+import { playForImplementation } from "../../../../.storybook/play-for-implementation";
 import type { Meta, StoryObj } from "@storybook/react-vite";
 import { http, HttpResponse } from "msw";
 import { expect, waitFor } from "storybook/test";
@@ -38,7 +39,7 @@ export const ConsistentSize: Story = {
       <ReactionEmoji emoji="kitchen:1f600_1f431" catalog={null} />
     </div>
   ),
-  play: async ({ canvasElement }) => {
+  play: playForImplementation(async ({ canvasElement }) => {
     const image = canvasElement.querySelector("img")!;
     await waitFor(() => expect(image.naturalWidth).toBeGreaterThan(0));
     for (const element of canvasElement.firstElementChild!.children) {
@@ -47,5 +48,5 @@ export const ConsistentSize: Story = {
     }
     await expect(image).toHaveAttribute("width", "20");
     await expect(image).toHaveAttribute("height", "20");
-  },
+  }),
 };

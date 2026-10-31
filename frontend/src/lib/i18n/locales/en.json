@@ -564,5 +564,13 @@
   "cards": {
     "showMore": "Show more",
     "showLess": "Show less"
+  },
+  "experimental": {
+    "useCompose": "Use Compose (experimental, in development)",
+    "useReact": "Return to React",
+    "loadError": "Could not start Compose. Return to the React frontend.",
+    "catalogLoading": "Loading Compose…",
+    "catalogLoadError": "Could not load the Compose distribution.",
+    "catalogBuildHint": "Install JDK 21, then run pnpm build:compose in frontend."
   }
 }

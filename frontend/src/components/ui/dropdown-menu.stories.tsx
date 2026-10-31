@@ -1,3 +1,4 @@
+import { playForImplementation } from "../../../.storybook/play-for-implementation";
 import type { Meta, StoryObj } from "@storybook/react-vite";
 import {
   ArchiveIcon,
@@ -98,19 +99,19 @@ export const Default: Story = {};
 
 export const Open: Story = {
   render: () => <DropdownDemo defaultOpen />,
-  play: async () => {
+  play: playForImplementation(async () => {
     await expect(
       await screen.findByRole("menuitem", { name: "名前を変更" }, { timeout: 3000 }),
     ).toBeInTheDocument();
-  },
+  }),
 };
 
 export const IconOnlyTrigger: Story = {
   render: () => <IconOnlyDropdownDemo />,
-  play: async () => {
+  play: playForImplementation(async () => {
     const menu = await screen.findByRole("menu");
     const item = within(menu).getByRole("menuitem", { name: "チャンネル設定" });
     await expect(getComputedStyle(item).whiteSpace).toBe("nowrap");
     await expect(menu.offsetWidth).toBeGreaterThanOrEqual(176);
-  },
+  }),
 };
