@@ -319,6 +319,7 @@ export function useBubbleChat(enabled = true) {
     };
 
     document.addEventListener("visibilitychange", onVisibilityChange);
+    window.addEventListener("beforeunload", onPageHide, true);
     window.addEventListener("pagehide", onPageHide, true);
     void poll();
 
@@ -334,6 +335,7 @@ export function useBubbleChat(enabled = true) {
         activePollAbortController = null;
       }
       document.removeEventListener("visibilitychange", onVisibilityChange);
+      window.removeEventListener("beforeunload", onPageHide, true);
       window.removeEventListener("pagehide", onPageHide, true);
     };
   }, [client, enabled]);
