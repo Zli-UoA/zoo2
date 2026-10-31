@@ -1,5 +1,5 @@
 import { Link } from "@tanstack/react-router";
-import { useMemo, type RefObject } from "react";
+import { useMemo, useRef, type MouseEvent as ReactMouseEvent, type RefObject } from "react";
 import { useTranslation } from "react-i18next";
 import {
   HeartIcon,
@@ -49,6 +49,7 @@ export function NotificationCard({
   const { t } = useTranslation();
   const { locale } = useLocale();
   const shell = useShell();
+  const destinationRef = useRef<HTMLAnchorElement>(null);
   const notification = group.latest;
   const isReaction = notification.notification_type === "reaction";
   const unreadIds = useMemo(
@@ -128,6 +129,40 @@ export function NotificationCard({
       }),
     [locale],
   );
+  function openFromRow(event: ReactMouseEvent<HTMLLIElement>) {
+    // The real link remains the keyboard target; text selection and nested controls keep native behavior.
+    if (
+      !channel ||
+      !message ||
+      event.defaultPrevented ||
+      !(event.target instanceof Element) ||
+      event.target.closest("a, button, input, textarea, select, summary, [tabindex]") ||
+      (window.getSelection()?.toString().length ?? 0) > 0
+    )
+      return;
+    const destination = destinationRef.current;
+    if (!destination) return;
+    if (event.ctrlKey || event.metaKey || event.shiftKey) {
+      window.open(
+        destination.href,
+        "_blank",
+        event.shiftKey ? "popup,noopener,noreferrer" : "noopener,noreferrer",
+      );
+      return;
+    }
+    destination.dispatchEvent(
+      new MouseEvent("click", {
+        bubbles: true,
+        cancelable: true,
+        view: window,
+        button: event.button,
+        ctrlKey: event.ctrlKey,
+        metaKey: event.metaKey,
+        altKey: event.altKey,
+        shiftKey: event.shiftKey,
+      }),
+    );
+  }
   const destination = (
     <p className="flex min-w-0 items-center gap-1.5 text-sm text-muted-foreground">
       <ContextIcon className="size-4 shrink-0" aria-hidden="true" />
@@ -148,7 +183,8 @@ export function NotificationCard({
       ref={ref}
       aria-label={label}
       data-unread={unreadIds.length > 0 || undefined}
-      className="group relative isolate w-full border-b px-4 py-5 transition-colors hover:bg-muted/40 sm:px-6 sm:py-6"
+      onClick={openFromRow}
+      className={`group w-full border-b px-4 py-5 transition-colors hover:bg-muted/40 sm:px-6 sm:py-6 ${channel && message ? "cursor-pointer" : ""}`}
     >
       <div className="flex items-start gap-3 sm:gap-4">
         <div className="relative shrink-0">
@@ -167,7 +203,7 @@ export function NotificationCard({
           <div className="flex min-w-0 items-center gap-2">
             <div className="flex min-w-0 flex-1 items-baseline gap-2">
               <p
-                className="relative z-10 min-w-0 truncate text-sm font-semibold sm:text-base"
+                className="min-w-0 truncate text-sm font-semibold sm:text-base"
                 title={group.actorIds.map(name).join(", ")}
               >
                 {actorSummary}
@@ -195,7 +231,7 @@ export function NotificationCard({
                   role="img"
                   aria-label={t("notifications.readStatus")}
                   title={t("notifications.readStatus")}
-                  className="relative z-10 text-muted-foreground"
+                  className="text-muted-foreground"
                 >
                   <CheckCheckIcon className="size-4" aria-hidden="true" />
                 </span>
@@ -204,7 +240,7 @@ export function NotificationCard({
           </div>
           {channel && message ? (
             <blockquote>
-              <div className="mfm-body pointer-events-none relative z-10 line-clamp-3 whitespace-pre-wrap break-words text-sm leading-relaxed sm:text-base [&_a]:pointer-events-auto [&_button]:pointer-events-auto [&_input]:pointer-events-auto">
+              <div className="mfm-body line-clamp-3 whitespace-pre-wrap break-words text-sm leading-relaxed sm:text-base">
                 <MfmContent content={quotePreview(message.content)} />
               </div>
             </blockquote>
@@ -217,13 +253,14 @@ export function NotificationCard({
           )}
           {channel && message ? (
             <Link
+              ref={destinationRef}
               to="/channels/$channelId"
               params={{ channelId: notification.channel_id }}
               search={{ message: notification.message_id }}
               onClick={() => shell.showChat()}
               title={channelLabel}
               aria-label={`${contextLabel !== channelLabel ? `${contextLabel} · ` : ""}${channelLabel} — ${label}: ${quotePreview(message.content)}`}
-              className="block w-fit max-w-full outline-none after:absolute after:inset-0 after:z-0 hover:underline hover:underline-offset-4 focus-visible:after:ring-2 focus-visible:after:ring-inset focus-visible:after:ring-ring"
+              className="block w-fit max-w-full rounded-sm outline-none hover:underline hover:underline-offset-4 focus-visible:ring-2 focus-visible:ring-ring/50"
             >
               {destination}
             </Link>

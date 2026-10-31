@@ -1,7 +1,7 @@
 import "./navigation";
 import { useRouter, useRouterState } from "@tanstack/react-router";
 import { cn } from "cn";
-import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 
 import { usePresence, useConversationView } from "../../hooks/usePresence";
 import { AppSurfaceHost } from "../chat/AppSurfaceHost";
@@ -133,8 +133,15 @@ export function AppShell({ children }: { children: ReactNode }) {
     }
   }, [router, selectedChannelId]);
 
+  const previousThreadRoot = useRef(threadRootId);
   useEffect(() => {
-    if (isWide && membersOpen && threadRootId) closeThread();
+    const enteredThread = previousThreadRoot.current !== threadRootId;
+    previousThreadRoot.current = threadRootId;
+    if (isWide && membersOpen && threadRootId) {
+      // History navigation into a thread takes precedence over the open members panel.
+      if (enteredThread) setMembersOpen(false);
+      else closeThread();
+    }
   }, [isWide, membersOpen, threadRootId, closeThread]);
 
   const showSidebar = useCallback(() => {

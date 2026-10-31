@@ -51,6 +51,7 @@ const config = defineConfig({
       },
       {
         extends: true,
+        optimizeDeps: { include: ["vite-plus/test/browser/context"] },
         test: {
           name: "browser",
           include: ["src/**/*.browser.test.{ts,tsx}"],

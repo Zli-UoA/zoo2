@@ -201,7 +201,8 @@
         "GroupedReactions",
         "Loading",
         "Unavailable",
-        "LongContentMobile"
+        "LongContentMobile",
+        "NativeInteractions"
       ]
     },
     {

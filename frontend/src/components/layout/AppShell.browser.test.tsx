@@ -10,6 +10,7 @@ import {
   Link,
 } from "@tanstack/react-router";
 import { describe, expect, it, vi } from "vite-plus/test";
+import { page } from "vite-plus/test/browser/context";
 import { AppShell } from "./AppShell";
 import { useShell } from "./shell-context";
 
@@ -41,6 +42,8 @@ function Channel() {
       <Link to="/settings">Settings</Link>
       <button onClick={shell.showSidebar}>Back</button>
       <button onClick={() => shell.openThread("root")}>Open thread</button>
+      <button onClick={() => shell.setMembersOpen(true)}>Open members</button>
+      <p>members:{shell.membersOpen ? "open" : "closed"}</p>
       {shell.threadRootId ? (
         <div>
           <p>thread:{shell.threadRootId}</p>
@@ -119,5 +122,26 @@ describe("shell navigation", () => {
     expect(router.state.location.pathname).toBe("/channels/general");
     await userEvent.click(screen.getByRole("button", { name: "Back" }));
     await screen.findByRole("link", { name: "General" });
+  });
+  it("restores a thread with Forward after the members panel was opened", async () => {
+    await page.viewport(1440, 900);
+    const router = setup(["/", "/channels/general"]);
+    await userEvent.click(await screen.findByRole("button", { name: "Open thread" }));
+    await screen.findByText("thread:root");
+    router.history.back();
+    await waitFor(() => expect(screen.queryByText("thread:root")).toBeNull());
+    await userEvent.click(screen.getByRole("button", { name: "Open members" }));
+    await screen.findByText("members:open");
+    router.history.forward();
+    await waitFor(() => {
+      expect(screen.getByText("members:closed")).toBeVisible();
+      expect(screen.getByText("thread:root")).toBeVisible();
+      expect(router.state.location.search).toMatchObject({ thread: "root" });
+    });
+    await userEvent.click(screen.getByRole("button", { name: "Open members" }));
+    await waitFor(() => {
+      expect(screen.getByText("members:open")).toBeVisible();
+      expect(screen.queryByText("thread:root")).toBeNull();
+    });
   });
 });

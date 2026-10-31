@@ -1,5 +1,5 @@
 import type { Meta, StoryObj } from "@storybook/react-vite";
-import { expect, fn, screen, waitFor } from "storybook/test";
+import { expect, fn, screen, spyOn, userEvent, waitFor } from "storybook/test";
 import { delay, http, HttpResponse } from "msw";
 import { useRef, type ComponentProps } from "react";
 
@@ -246,5 +246,62 @@ export const LongContentMobile: Story = {
     );
     const quote = document.querySelector("blockquote")!;
     await expect(quote.scrollWidth).toBeLessThanOrEqual(quote.clientWidth);
+  },
+};
+
+export const NativeInteractions: Story = {
+  play: async () => {
+    const user = userEvent.setup();
+    const external = await screen.findByRole("link", { name: "example.com/docs" });
+    const preview = external.closest(".mfm-body")!;
+    const time = document.querySelector("time")!;
+    const timeBounds = time.getBoundingClientRect();
+    await expect(
+      document
+        .elementFromPoint(timeBounds.x + timeBounds.width / 2, timeBounds.y + timeBounds.height / 2)
+        ?.closest("time"),
+    ).toBe(time);
+    const text = Array.from(preview.childNodes).find(
+      (node) => node.nodeType === Node.TEXT_NODE && (node.textContent?.length ?? 0) > 10,
+    )!;
+    const range = document.createRange();
+    range.setStart(text, 1);
+    range.setEnd(text, 8);
+    const bounds = range.getBoundingClientRect();
+    await expect(
+      document
+        .elementFromPoint(bounds.x + bounds.width / 2, bounds.y + bounds.height / 2)
+        ?.closest(".mfm-body"),
+    ).toBe(preview);
+    const destination = screen.getByRole("link", { name: /^メンション · #general/ });
+    const navigate = fn((event: Event) => event.preventDefault());
+    destination.addEventListener("click", navigate);
+    const selection = window.getSelection()!;
+    try {
+      selection.removeAllRanges();
+      selection.addRange(range);
+      await expect(selection.toString()).not.toBe("");
+      preview.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      await expect(navigate).not.toHaveBeenCalled();
+      selection.removeAllRanges();
+      await user.click(preview);
+      await expect(navigate).toHaveBeenCalledTimes(1);
+      const open = spyOn(window, "open").mockReturnValue(null);
+      try {
+        await user.keyboard("{Control>}");
+        await user.click(preview);
+        await expect(open).toHaveBeenCalledWith(
+          (destination as HTMLAnchorElement).href,
+          "_blank",
+          "noopener,noreferrer",
+        );
+      } finally {
+        await user.keyboard("{/Control}");
+        open.mockRestore();
+      }
+    } finally {
+      selection.removeAllRanges();
+      destination.removeEventListener("click", navigate);
+    }
   },
 };
