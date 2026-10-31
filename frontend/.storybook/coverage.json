@@ -164,6 +164,7 @@
         "Error",
         "UnreadSeparator",
         "LongMessages",
+        "DelayedLinkPreview",
         "Mobile"
       ]
     },
