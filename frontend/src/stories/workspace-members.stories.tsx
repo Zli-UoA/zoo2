@@ -83,6 +83,6 @@ export const RejectedLastAdmin: Story = {
     await userEvent.click(
       within(await screen.findByRole("alertdialog")).getByRole("button", { name: "管理者を外す" }),
     );
-    await expect(await screen.findByRole("alert")).toBeVisible();
+    await waitFor(() => expect(screen.getByRole("alert")).toBeVisible());
   },
 };
