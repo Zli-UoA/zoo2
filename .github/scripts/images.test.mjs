@@ -9,6 +9,7 @@ test('component filters and common inputs', () => {
     assert.deepEqual(changedComponents([`infra/Dockerfile-${c}-deploy.dockerignore`]), [c]);
   }
   assert.deepEqual(changedComponents(['frontend/src/a.ts']), ['frontend']);
+  assert.deepEqual(changedComponents(['frontend-compose/src/commonMain/kotlin/zoo/App.kt']), ['frontend']);
   assert.deepEqual(changedComponents(['backend/Cargo.lock']), ['backend']);
   assert.deepEqual(changedComponents(['docs/slack-event-coverage.json']), ['backend']);
   assert.deepEqual(changedComponents(['infra/db/migrations/a.sql']), ['migrate']);

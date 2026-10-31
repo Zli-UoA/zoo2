@@ -2,6 +2,8 @@ import { useTranslation } from "react-i18next";
 import { Link, createFileRoute } from "@tanstack/react-router";
 import { useEffect, useState } from "react";
 
+import { ComposeFrontend } from "../components/experimental/ComposeFrontend";
+import { selectedFrontend } from "../lib/experimentalFrontend";
 import { SyncStatus } from "../components/SyncStatus";
 
 export const Route = createFileRoute("/realtime")({ component: RealtimeRoute });
@@ -16,6 +18,8 @@ function RealtimeRoute() {
   useEffect(() => {
     setMounted(true);
   }, []);
+
+  if (mounted && selectedFrontend() === "compose") return <ComposeFrontend />;
 
   return (
     <main className="mx-auto max-w-4xl p-8">

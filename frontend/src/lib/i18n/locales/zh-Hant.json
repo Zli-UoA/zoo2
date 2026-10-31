@@ -564,5 +564,10 @@
   "cards": {
     "showMore": "展開全文",
     "showLess": "收合"
+  },
+  "experimental": {
+    "useCompose": "使用 Compose（實驗・開發中）",
+    "useReact": "返回 React",
+    "loadError": "無法啟動 Compose。請返回 React 前端。"
   }
 }

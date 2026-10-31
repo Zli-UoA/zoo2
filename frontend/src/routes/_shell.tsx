@@ -5,6 +5,13 @@ import { AppShell } from "../components/layout/AppShell";
 import { OfflineProvider } from "../components/offline/OfflineProvider";
 import { ShellSkeleton } from "../components/layout/ShellSkeleton";
 import { resolveConfig } from "../lib/config";
+import {
+  selectedFrontend,
+  composeEnabled,
+  FRONTEND_STORAGE_KEY,
+} from "../lib/experimentalFrontend";
+import { writeStorageValue } from "../lib/storage";
+import { ComposeFrontend } from "../components/experimental/ComposeFrontend";
 
 export const Route = createFileRoute("/_shell")({ component: ShellLayout });
 
@@ -14,14 +21,21 @@ export const Route = createFileRoute("/_shell")({ component: ShellLayout });
  */
 function ShellLayout() {
   const [mounted, setMounted] = useState(false);
+  const [implementation, setImplementation] = useState<"react" | "compose">("react");
   // AuthGate が設定を検証済み。ここでは同一インスタンスを使い回し、
   // OfflineProvider の初期化が再レンダーで繰り返されないようにする。
   const [config] = useState(resolveConfig);
   useEffect(() => {
+    const implementation = selectedFrontend();
+    if (composeEnabled() && new URLSearchParams(window.location.search).has("frontend"))
+      writeStorageValue(FRONTEND_STORAGE_KEY, implementation);
+    setImplementation(implementation);
     setMounted(true);
   }, []);
 
-  return mounted ? (
+  return mounted && implementation === "compose" ? (
+    <ComposeFrontend />
+  ) : mounted ? (
     <OfflineProvider config={config}>
       <AppShell>
         <Outlet />

@@ -37,7 +37,7 @@ import { ShellSkeleton } from "../layout/ShellSkeleton";
 
 interface ReadyState {
   key: string;
-  bundle: CollectionsBundle;
+  bundle: CollectionsBundle | null;
   persistenceStatus: OfflinePersistenceStatus;
   persistenceError: string | null;
 }
@@ -55,7 +55,17 @@ function describeError(error: unknown): string {
  * オフラインは保存済みの名前空間で起動する。初期化途中の再マウントで
  * 入力中のフォームを消さず、別ユーザーのキャッシュも混ぜない。
  */
-export function OfflineProvider({ config, children }: { config: AppConfig; children: ReactNode }) {
+export function OfflineProvider({
+  config,
+  children,
+  collectionFactory = getCollections,
+  renderStatus,
+}: {
+  config: AppConfig;
+  children: ReactNode;
+  collectionFactory?: typeof getCollections | null;
+  renderStatus?: (phase: "loading" | "error", retry: () => void) => ReactNode;
+}) {
   const { t } = useTranslation();
   const isOnline = useOnlineStatus();
   const userStore = getCurrentUserStore(config);
@@ -86,31 +96,48 @@ export function OfflineProvider({ config, children }: { config: AppConfig; child
       return;
     }
     let cancelled = false;
+    const urls = new Set<string>();
+    const collect = (entries: readonly PerformanceEntry[]) => {
+      for (const entry of entries) {
+        try {
+          const url = new URL(entry.name);
+          if (
+            url.origin === window.location.origin &&
+            (url.pathname.startsWith("/assets/") || url.pathname.startsWith("/compose/"))
+          )
+            urls.add(url.pathname);
+        } catch {
+          /* Ignore invalid resource URLs. */
+        }
+      }
+    };
     const send = () => {
       if (cancelled) return;
       const controller = navigator.serviceWorker.controller;
       if (!controller) return;
-      const urls = new Set<string>();
-      for (const entry of performance.getEntriesByType("resource")) {
-        try {
-          const url = new URL(entry.name);
-          if (url.origin === window.location.origin && url.pathname.startsWith("/assets/")) {
-            urls.add(url.pathname);
-          }
-        } catch {
-          /* Ignore malformed resource timings. */
-        }
-      }
+      collect(performance.getEntriesByType("resource"));
       if (urls.size > 0) {
         controller.postMessage({ type: "CACHE_ASSETS", urls: [...urls] });
       }
     };
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const observer =
+      typeof PerformanceObserver !== "undefined"
+        ? new PerformanceObserver((entries) => {
+            collect(entries.getEntries());
+            clearTimeout(timer);
+            timer = setTimeout(send, 300);
+          })
+        : null;
+    observer?.observe({ type: "resource", buffered: true });
     const timers = [window.setTimeout(send, 1_000), window.setTimeout(send, 4_000)];
     navigator.serviceWorker.addEventListener("controllerchange", send);
     window.addEventListener("load", send);
     void navigator.serviceWorker.ready.then(send).catch(() => {});
     return () => {
       cancelled = true;
+      observer?.disconnect();
+      clearTimeout(timer);
       for (const timer of timers) window.clearTimeout(timer);
       navigator.serviceWorker.removeEventListener("controllerchange", send);
       window.removeEventListener("load", send);
@@ -169,7 +196,7 @@ export function OfflineProvider({ config, children }: { config: AppConfig; child
         persistenceStatus =
           error instanceof OfflinePersistenceUnavailableError ? "unavailable" : "error";
       }
-      const bundle = getCollections(config, { persistence, namespace });
+      const bundle = collectionFactory?.(config, { persistence, namespace }) ?? null;
       if (!cancelled) {
         setReady({ key, bundle, persistenceStatus, persistenceError });
       }
@@ -177,7 +204,7 @@ export function OfflineProvider({ config, children }: { config: AppConfig; child
     return () => {
       cancelled = true;
     };
-  }, [config, namespace, retryToken, key, waitingForUser, userUnavailable]);
+  }, [config, namespace, retryToken, key, waitingForUser, userUnavailable, collectionFactory]);
 
   const retryPersistence = useCallback(() => setRetryToken((token) => token + 1), []);
   const clearUserData = useCallback(async () => {
@@ -202,6 +229,10 @@ export function OfflineProvider({ config, children }: { config: AppConfig; child
   );
 
   if (userUnavailable) {
+    if (renderStatus)
+      return renderStatus("error", () => {
+        void userStore.ensureLoaded();
+      });
     return (
       <div role="alert" className="flex h-dvh flex-col items-center justify-center gap-3 p-6">
         <p>{t("offline.userErrorTitle")}</p>
@@ -213,12 +244,16 @@ export function OfflineProvider({ config, children }: { config: AppConfig; child
   }
 
   if (waitingForUser || !ready || ready.key !== key) {
-    return <ShellSkeleton />;
+    return renderStatus?.("loading", retryPersistence) ?? <ShellSkeleton />;
   }
 
   return (
     <OfflineContext.Provider value={value}>
-      <CollectionsProvider value={ready.bundle}>{children}</CollectionsProvider>
+      {ready.bundle ? (
+        <CollectionsProvider value={ready.bundle}>{children}</CollectionsProvider>
+      ) : (
+        children
+      )}
     </OfflineContext.Provider>
   );
 }

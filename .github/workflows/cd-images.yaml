@@ -149,6 +149,7 @@ jobs:
           cache-from: type=gha,scope=${{ matrix.component }}
           cache-to: type=gha,mode=max,scope=${{ matrix.component }}
           build-args: |
+            VITE_EXPERIMENTAL_COMPOSE=${{ vars.VITE_EXPERIMENTAL_COMPOSE || 'false' }}
             VITE_API_BASE_URL=
             VITE_PREVIEW_AUTH=${{ github.event_name == 'pull_request' && 'true' || 'false' }}
             VITE_OIDC_ISSUER=${{ github.event_name != 'pull_request' && vars.VITE_OIDC_ISSUER || '' }}
@@ -190,6 +191,7 @@ jobs:
           cache-from: type=gha,scope=frontend-preview
           cache-to: type=gha,mode=max,scope=frontend-preview
           build-args: |
+            VITE_EXPERIMENTAL_COMPOSE=${{ vars.VITE_EXPERIMENTAL_COMPOSE || 'false' }}
             VITE_API_BASE_URL=
             VITE_PREVIEW_AUTH=true
             VITE_OIDC_ISSUER=
