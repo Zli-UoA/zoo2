@@ -207,3 +207,28 @@ export const CopyOriginalMenu: Story = {
     );
   },
 };
+
+export const Edited: Story = {
+  parameters: { a11y: { test: "error" } },
+  args: {
+    item: {
+      ...item,
+      message: {
+        ...item.message,
+        content: "編集後の本文 [リンク](https://example.com/guide)",
+        updated_at: "2026-01-02 09:10:00.000",
+      },
+    },
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const marker = canvas.getByRole("img", { name: "編集済み" });
+    await expect(marker).toBeVisible();
+    await userEvent.hover(marker);
+    await expect(await screen.findByRole("tooltip")).toHaveTextContent("2026");
+    await expect(canvas.getByRole("link", { name: "リンク" })).toHaveAttribute(
+      "href",
+      "https://example.com/guide",
+    );
+  },
+};

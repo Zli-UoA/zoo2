@@ -354,3 +354,41 @@ describe("copy original message", () => {
     }
   });
 });
+
+it.each([null, "thread-root"])(
+  "places an edited marker after the final inline link (parent=%s)",
+  async (parent_id) => {
+    renderRow(
+      buildItem({
+        content: "Updated [link](https://example.com)",
+        parent_id,
+        updated_at: "2026-01-02 00:10:00.000",
+      }),
+    );
+    const marker = screen.getByRole("img", { name: "編集済み" });
+    const link = screen.getByRole("link", { name: "link" });
+    expect(marker.getBoundingClientRect().left).toBeGreaterThanOrEqual(
+      link.getBoundingClientRect().right,
+    );
+    expect(
+      Math.abs(marker.getBoundingClientRect().top - link.getBoundingClientRect().top),
+    ).toBeLessThan(10);
+    await userEvent.hover(marker);
+    const tooltip = await screen.findByRole("tooltip");
+    expect(tooltip.textContent).toContain("編集済み");
+    expect(tooltip.querySelector("time")).toHaveAttribute("datetime", "2026-01-02T00:10:00.000Z");
+  },
+);
+
+it("shows the last edit time when the marker receives keyboard focus", async () => {
+  renderRow(
+    buildItem({
+      content: "Updated [link](https://example.com)",
+      updated_at: "2026-01-02 00:10:00.000",
+    }),
+  );
+  screen.getByRole("link", { name: "link" }).focus();
+  await userEvent.keyboard("{Tab}");
+  expect(screen.getByRole("img", { name: "編集済み" })).toHaveFocus();
+  expect((await screen.findByRole("tooltip")).textContent).toContain("編集済み");
+});

@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useId, useRef, useState } from "react";
 import { MessageCard, parseMessageCards } from "./MessageCard";
 import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
@@ -29,6 +29,7 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from "../../ui/dropdown-menu";
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "../../ui/tooltip";
 import { Textarea } from "../../ui/textarea";
 import { normalizeUtcTimestamp } from "../../../lib/timestamps";
 import { authorLabel, formatDateSeparator, formatTime, fullTimestamp } from "./messageFormat";
@@ -57,12 +58,39 @@ export interface MessageRowProps {
   onOpenThread?: () => void;
 }
 
+function EditedIndicator({ at }: { at: string }) {
+  const tooltipId = useId();
+  const [tooltipOpen, setTooltipOpen] = useState(false);
+  const { t } = useTranslation();
+  const { locale } = useLocale();
+  return (
+    <TooltipProvider>
+      <Tooltip onOpenChange={setTooltipOpen}>
+        <TooltipTrigger
+          render={<span role="img" tabIndex={0} />}
+          aria-label={t("messages.edited")}
+          aria-describedby={tooltipOpen ? tooltipId : undefined}
+          className="ml-1 inline-flex rounded-sm align-middle text-muted-foreground/80 outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
+        >
+          <PencilIcon className="size-3" strokeWidth={1.5} aria-hidden="true" />
+        </TooltipTrigger>
+        <TooltipContent id={tooltipId} role="tooltip">
+          {t("messages.edited")} ·{" "}
+          <time dateTime={normalizeUtcTimestamp(at)}>{fullTimestamp(at, locale)}</time>
+        </TooltipContent>
+      </Tooltip>
+    </TooltipProvider>
+  );
+}
+
 /** 通常投稿は MFM、連携カードは専用の描画を使う。 */
 export function MessageBody({
   content,
   card: data,
   appBlocks,
+  editedAt,
 }: {
+  editedAt?: string | null;
   content: string;
   card?: string | null;
   appBlocks?: string | null;
@@ -75,12 +103,14 @@ export function MessageBody({
         {cards.map((card, index) => (
           <MessageCard key={index} card={card} />
         ))}
+        {editedAt ? <EditedIndicator at={editedAt} /> : null}
       </>
     );
   return (
     <>
       <div className="mfm-body whitespace-pre-wrap break-words text-sm leading-relaxed">
         <MfmContent content={content} />
+        {editedAt ? <EditedIndicator at={editedAt} /> : null}
       </div>
       <LinkPreviews content={content} />
     </>
@@ -306,8 +336,12 @@ export function MessageRow({
                 content={message.content}
                 card={message.card}
                 appBlocks={message.app_blocks}
+                editedAt={message.updated_at}
               />
               <MessageAppContent message={message} />
+              {message.updated_at && hasCardBlocks(message.app_blocks) ? (
+                <EditedIndicator at={message.updated_at} />
+              ) : null}
             </>
           )}
 

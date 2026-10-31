@@ -197,7 +197,8 @@
     "announcementAuthor": "新着メッセージ: {{author}}",
     "copyRaw": "原文をコピー",
     "copied": "原文をコピーしました",
-    "copyFailed": "原文をコピーできませんでした"
+    "copyFailed": "原文をコピーできませんでした",
+    "edited": "編集済み"
   },
   "threads": {
     "title": "スレッド",

@@ -197,7 +197,8 @@
     "announcementAuthor": "{{author}} 的新消息",
     "copyRaw": "复制原文",
     "copied": "已复制原文",
-    "copyFailed": "无法复制原文"
+    "copyFailed": "无法复制原文",
+    "edited": "已编辑"
   },
   "threads": {
     "title": "子线程",

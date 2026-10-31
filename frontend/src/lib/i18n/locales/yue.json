@@ -197,7 +197,8 @@
     "announcementAuthor": "{{author}} 傳咗新訊息",
     "copyRaw": "複製原文",
     "copied": "已複製原文",
-    "copyFailed": "複製唔到原文"
+    "copyFailed": "複製唔到原文",
+    "edited": "已編輯"
   },
   "threads": {
     "title": "子討論",

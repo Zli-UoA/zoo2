@@ -197,7 +197,8 @@
     "announcementAuthor": "New message from {{author}}",
     "copyRaw": "Copy original text",
     "copied": "Original text copied",
-    "copyFailed": "Could not copy the original text"
+    "copyFailed": "Could not copy the original text",
+    "edited": "Edited"
   },
   "threads": {
     "title": "Thread",
