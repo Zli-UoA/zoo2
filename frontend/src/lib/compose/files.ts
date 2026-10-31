@@ -3,7 +3,6 @@ export function createComposeFiles(viewport: HTMLElement) {
   const files = new Map<string, File>();
   const targets = new Map<string, { enabled: boolean; receive: (raw: string) => boolean }>();
   const uploads = new Map<string, AbortController>();
-  const popups = new Map<string, Window>();
   let focused: string | undefined;
   let cancelled = false;
   let pickerOwner: string | undefined;
@@ -78,13 +77,6 @@ export function createComposeFiles(viewport: HTMLElement) {
       uploads.get(id)?.abort();
       files.delete(id);
     },
-    reserve(id: string) {
-      const popup = window.open("about:blank", "_blank");
-      if (popup) {
-        popup.opener = null;
-        popups.set(id, popup);
-      }
-    },
     async invoke(name: string, payload: string): Promise<string> {
       if (cancelled) throw new Error("Compose frontend was disposed");
       if (name === "pickFiles") {
@@ -124,13 +116,32 @@ export function createComposeFiles(viewport: HTMLElement) {
           uploads.delete(id);
         }
       }
-      if (name === "attachmentOpen") {
-        const { id, url } = JSON.parse(payload);
-        const popup = popups.get(id);
-        popups.delete(id);
-        if (popup) {
-          if (url) popup.location.replace(safeUrl(url).href);
-          else popup.close();
+      if (name === "attachmentDownload") {
+        const { url, name: fileName } = JSON.parse(payload);
+        const controller = new AbortController();
+        const key = crypto.randomUUID();
+        uploads.set(key, controller);
+        try {
+          const response = await fetch(safeUrl(url), {
+            credentials: "omit",
+            referrerPolicy: "no-referrer",
+            signal: controller.signal,
+          });
+          if (!response.ok) throw new Error(`Download failed: ${response.status}`);
+          const objectUrl = URL.createObjectURL(await response.blob());
+          try {
+            const anchor = document.createElement("a");
+            anchor.href = objectUrl;
+            anchor.download = fileName;
+            anchor.rel = "noopener";
+            document.body.append(anchor);
+            anchor.click();
+            anchor.remove();
+          } finally {
+            window.setTimeout(() => URL.revokeObjectURL(objectUrl), 1000);
+          }
+        } finally {
+          uploads.delete(key);
         }
         return "{}";
       }
@@ -140,11 +151,9 @@ export function createComposeFiles(viewport: HTMLElement) {
       cancelled = true;
       finishPicker?.("{}");
       uploads.forEach((controller) => controller.abort());
-      popups.forEach((popup) => popup.close());
       files.clear();
       targets.clear();
       uploads.clear();
-      popups.clear();
       input.remove();
       document.removeEventListener("paste", paste, true);
     },

@@ -376,6 +376,13 @@ for (const implementation of ["react", "compose"] as const) {
     await page.keyboard.press("End");
     if (native)
       await expect.poll(() => nativeInput(page)).toEqual({ value: "/echo ", start: 6, end: 6 });
+    if (native)
+      await page.evaluate(
+        () =>
+          new Promise<void>((resolve) =>
+            requestAnimationFrame(() => requestAnimationFrame(() => resolve())),
+          ),
+      );
     await page.keyboard.insertText("hello");
     if (native) await expect(composer).toHaveText("/echo hello");
     else await expect(composer).toHaveValue("/echo hello");
@@ -519,15 +526,18 @@ for (const implementation of ["react", "compose"] as const) {
     const choose = async (name: string, mimeType = "image/png", buffer = image) => {
       const chooser = page.waitForEvent("filechooser");
       await page
-        .getByRole("button", { name: "画像を添付", exact: true })
+        .getByRole("button", { name: "ファイルを添付", exact: true })
         .last()
         .click({ force: native });
       await (await chooser).setFiles({ name, mimeType, buffer });
     };
-    await choose("unsupported.svg", "image/svg+xml");
+    await choose("unsupported.exe", "application/x-msdownload");
     await expect(
-      page.getByText("PNG・JPEG・WebP・GIF の画像を添付できます。", { exact: true }),
+      page.getByText("PNG・JPEG・WebP・GIF のファイルを添付できます。", { exact: true }),
     ).toBeVisible();
+    expect((await state()).uploadRequests).toHaveLength(0);
+    await choose("empty.txt", "text/plain", Buffer.alloc(0));
+    await expect(page.getByText("空のファイルは添付できません。", { exact: true })).toBeVisible();
     expect((await state()).uploadRequests).toHaveLength(0);
     await choose("remove.png");
     await expect.poll(async () => (await state()).uploadRequests.length).toBe(1);
@@ -538,22 +548,19 @@ for (const implementation of ["react", "compose"] as const) {
     await request.post("https://127.0.0.1:4187/__attachment-failures", { data: { upload: true } });
     await choose("failure.png");
     await expect(
-      page.getByText("画像をアップロードできませんでした。", { exact: true }),
+      page.getByText("ファイルをアップロードできませんでした。", { exact: true }),
     ).toBeVisible();
     await expect(page.getByRole("button", { name: "failure.pngを削除", exact: true })).toBeHidden();
     await choose("upload.png");
     await expect.poll(async () => (await state()).uploadRequests.length).toBe(3);
-    await expect(page.getByText("画像をアップロード中…", { exact: true }).first()).toBeHidden();
+    await expect(page.getByText("ファイルをアップロード中…", { exact: true }).first()).toBeHidden();
     await request.post("https://127.0.0.1:4187/__attachment-failures", { data: { message: true } });
     await page.getByRole("button", { name: "送信", exact: true }).click({ force: native });
     await expect.poll(async () => (await state()).failMessage).toBe(false);
     await expect(page.getByRole("button", { name: "upload.pngを削除", exact: true })).toBeVisible();
     await expect(page.getByRole("button", { name: "送信", exact: true })).toBeEnabled();
     await page.getByRole("button", { name: "送信", exact: true }).click({ force: native });
-    const link = page.getByRole(native ? "button" : "link", {
-      name: "upload.pngを開く",
-      exact: true,
-    });
+    const link = page.getByRole("button", { name: "upload.pngをプレビュー", exact: true });
     await expect(link).toBeVisible({ timeout: 30000 });
     await expect.poll(async () => (await state()).attachments.length).toBe(1);
     expect((await state()).messages.at(-1).content).toBe("");
@@ -561,21 +568,25 @@ for (const implementation of ["react", "compose"] as const) {
       expect((await state()).uploadRequests.at(-1)[key]).toBeUndefined();
     await page.clock.setFixedTime(new Date("2026-10-31T01:05:00Z"));
     await request.post("https://127.0.0.1:4187/__attachment-failures", { data: { url: true } });
-    const failedPopup = page.waitForEvent("popup");
     await link.click({ force: native });
-    const failedDownload = await failedPopup;
-    await expect.poll(() => failedDownload.isClosed()).toBe(true);
-    await expect(page.getByText("読み込めませんでした", { exact: false })).toBeVisible();
-    await page.getByRole("button", { name: "再試行", exact: true }).click({ force: native });
-    await expect(link).toBeVisible({ timeout: 30000 });
-    const popup = page.waitForEvent("popup");
-    await link.click({ force: native });
-    const download = await popup;
-    await expect(download).toHaveURL(/\/__download\/attachment-/);
+    await expect(page.getByText("読み込めませんでした", { exact: false }).last()).toBeVisible();
+    await page.getByRole("button", { name: "再試行", exact: true }).last().click({ force: native });
+    await expect(page.getByRole("img", { name: "upload.png", exact: true })).toBeVisible({
+      timeout: 30000,
+    });
+    const downloadEvent = page.waitForEvent("download");
+    await page
+      .getByRole("button", {
+        name: native ? "ダウンロード" : "upload.pngをダウンロード",
+        exact: true,
+      })
+      .click({ force: native });
+    const download = await downloadEvent;
+    expect(download.suggestedFilename()).toBe("upload.png");
     await expect
       .poll(async () => (await state()).attachmentUrlRequests.length)
       .toBeGreaterThanOrEqual(2);
-    await download.close();
+    await page.getByRole("button", { name: "閉じる", exact: true }).click({ force: native });
     await page
       .getByRole("button", { name: /1 件の返信（スレッドを開く）/ })
       .click({ force: native });
@@ -608,7 +619,7 @@ for (const implementation of ["react", "compose"] as const) {
     await choose("second.png");
     await expect(page.getByRole("button", { name: "second.pngを削除", exact: true })).toBeVisible();
     await expect.poll(async () => (await state()).uploadRequests.length).toBe(5);
-    await expect(page.getByText("画像をアップロード中…", { exact: true }).first()).toBeHidden();
+    await expect(page.getByText("ファイルをアップロード中…", { exact: true }).first()).toBeHidden();
     await page.getByRole("button", { name: "送信", exact: true }).last().click({ force: native });
     await expect(
       page.getByRole(native ? "button" : "link", { name: "clipboard.pngを開く", exact: true }),
@@ -626,7 +637,7 @@ for (const implementation of ["react", "compose"] as const) {
     );
     await choose("animation.gif", "image/gif", gif);
     await expect.poll(async () => (await state()).uploadRequests.length).toBe(6);
-    await expect(page.getByText("画像をアップロード中…", { exact: true }).first()).toBeHidden();
+    await expect(page.getByText("ファイルをアップロード中…", { exact: true }).first()).toBeHidden();
     const animation = page.getByRole("img", { name: "animation.gif", exact: true });
     await expect(animation).toBeVisible();
     const firstFrame = await animation.screenshot();
@@ -635,6 +646,17 @@ for (const implementation of ["react", "compose"] as const) {
       .getByRole("button", { name: "animation.gifを削除", exact: true })
       .click({ force: native });
     await expect(animation).toBeHidden();
+    await choose("notes.pdf", "application/octet-stream", Buffer.from("%PDF-1.7\nfixture"));
+    await expect.poll(async () => (await state()).uploadRequests.length).toBe(7);
+    await expect(page.getByText("ファイルをアップロード中…", { exact: true }).first()).toBeHidden();
+    await page.getByRole("button", { name: "送信", exact: true }).last().click({ force: native });
+    const fileDownload = page.getByRole("button", { name: "notes.pdfをダウンロード", exact: true });
+    await expect(fileDownload).toBeVisible();
+    const fileEvent = page.waitForEvent("download");
+    await fileDownload.click({ force: native });
+    expect((await fileEvent).suggestedFilename()).toBe("notes.pdf");
+    expect((await state()).attachments.at(-1).content_type).toBe("application/pdf");
+
     await page.screenshot({
       path: test.info().outputPath(`${implementation}-image-attachments.png`),
     });

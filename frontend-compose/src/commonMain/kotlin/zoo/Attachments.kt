@@ -38,32 +38,89 @@ private fun clampCodePoints(value: String, max: Int): String {
     return value.take(index)
 }
 
-fun attachmentType(name: String, declared: String): String? =
-    declared.substringBefore(';').trim().lowercase().takeIf { it in imageTypes }
-        ?: mapOf(
-            "png" to "image/png",
-            "jpg" to "image/jpeg",
-            "jpeg" to "image/jpeg",
-            "webp" to "image/webp",
-            "gif" to "image/gif",
-        )[name.substringAfterLast('.').lowercase()]
+private val attachmentExtensions =
+    mapOf(
+        "png" to "image/png",
+        "jpg" to "image/jpeg",
+        "jpeg" to "image/jpeg",
+        "webp" to "image/webp",
+        "gif" to "image/gif",
+        "pdf" to "application/pdf",
+        "txt" to "text/plain",
+        "md" to "text/markdown",
+        "csv" to "text/csv",
+        "json" to "application/json",
+        "xml" to "application/xml",
+        "zip" to "application/zip",
+        "gz" to "application/gzip",
+        "tar" to "application/x-tar",
+        "7z" to "application/x-7z-compressed",
+        "rar" to "application/vnd.rar",
+        "doc" to "application/msword",
+        "docx" to "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        "xls" to "application/vnd.ms-excel",
+        "xlsx" to "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        "ppt" to "application/vnd.ms-powerpoint",
+        "pptx" to "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+        "mp3" to "audio/mpeg",
+        "m4a" to "audio/mp4",
+        "wav" to "audio/wav",
+        "ogg" to "audio/ogg",
+        "flac" to "audio/flac",
+        "mp4" to "video/mp4",
+        "webm" to "video/webm",
+        "mov" to "video/quicktime",
+    )
+private val forbiddenAttachmentExtensions =
+    setOf("exe", "com", "scr", "msi", "dll", "so", "dylib", "bat", "cmd", "sh")
+private val forbiddenAttachmentTypes =
+    setOf(
+        "application/x-msdownload",
+        "application/x-executable",
+        "application/x-dosexec",
+        "application/x-msdos-program",
+        "application/x-sharedlib",
+        "application/x-batch",
+        "application/x-sh",
+    )
+
+fun attachmentType(name: String, declared: String): String? {
+    val extension = name.substringAfterLast('.').lowercase()
+    if (extension in forbiddenAttachmentExtensions) return null
+    val mime = declared.substringBefore(';').trim().lowercase()
+    if (
+        mime in setOf("application/octet-stream", "binary/octet-stream") ||
+            !Regex("^[a-z0-9!#$&^_.+-]+/[a-z0-9!#$&^_.+-]+$").matches(mime)
+    )
+        return attachmentExtensions[extension] ?: "application/octet-stream"
+    return mime.takeUnless { it in forbiddenAttachmentTypes }
+}
 
 fun attachmentRejection(file: Row, count: Int): String? =
     when {
         count >= MAX_ATTACHMENTS -> "tooMany"
+        (file.text("size").toLongOrNull() ?: 0) <= 0 -> "empty"
         (file.text("size").toLongOrNull() ?: 0) > MAX_ATTACHMENT_BYTES -> "tooLarge"
         attachmentType(file.text("name"), file.text("type")) == null -> "unsupported"
         else -> null
     }
 
-fun attachmentName(name: String, type: String, fallback: String): String =
-    clampCodePoints(
+fun attachmentName(name: String, type: String, fallback: String): String {
+    val mime = type.substringBefore(';').trim().lowercase()
+    val extension =
+        attachmentExtensions.entries.firstOrNull { it.value == mime }?.key
+            ?: mime.substringAfter('/', "").replace(Regex("[^a-z0-9]+"), "").take(12).ifEmpty {
+                "bin"
+            }
+    val cleaned =
+        clampCodePoints(
             name.map { if (it.code < 32 || it.code == 127) '_' else it }.joinToString("").trim(),
             255,
         )
-        .ifEmpty {
-            "pasted-image-$fallback.${if (type == "image/jpeg") "jpg" else type.substringAfter('/')}"
-        }
+    if (cleaned.isEmpty()) return "attachment-$fallback.$extension"
+    if (Regex("\\.[^./\\\\]+$").containsMatchIn(cleaned)) return cleaned
+    return "${clampCodePoints(cleaned, 254 - extension.length)}.$extension"
+}
 
 fun attachmentSize(value: String): String {
     var size = value.toDoubleOrNull()?.takeIf { it.isFinite() && it >= 0 } ?: return "—"
@@ -146,19 +203,18 @@ class AttachmentLinks(private val app: Session) {
         }
     }
 
-    fun open(id: String) {
-        val popup = app.platform.uuid()
-        app.platform.action("attachmentReserve:$popup")
+    fun download(file: Row) {
         app.run {
-            val url =
-                try {
-                    get(id)
-                } catch (e: CancellationException) {
-                    throw e
-                } catch (_: Exception) {
-                    ""
-                }
-            app.platform.invoke("attachmentOpen", obj("id" to popup, "url" to url).toString())
+            try {
+                app.platform.invoke(
+                    "attachmentDownload",
+                    obj("url" to get(file.text("id")), "name" to file.text("file_name")).toString(),
+                )
+            } catch (e: CancellationException) {
+                throw e
+            } catch (_: Exception) {
+                app.toast = app.t("attachments.downloadError")
+            }
         }
     }
 }
@@ -222,15 +278,17 @@ class AttachmentDrafts(private val app: Session, val channel: String, parentScop
                 )
             items += draft
             owned[file.text("id")] = draft
-            draft.previewJob =
-                scope.launch {
-                    try {
-                        val bytes = Base64.decode(app.platform.invoke("fileRead", file.text("id")))
-                        app.platform.imageFrames(bytes).collect { draft.bitmap = it }
-                    } catch (e: CancellationException) {
-                        throw e
-                    } catch (_: Exception) {}
-                }
+            if (mime in imageTypes)
+                draft.previewJob =
+                    scope.launch {
+                        try {
+                            val bytes =
+                                Base64.decode(app.platform.invoke("fileRead", file.text("id")))
+                            app.platform.imageFrames(bytes).collect { draft.bitmap = it }
+                        } catch (e: CancellationException) {
+                            throw e
+                        } catch (_: Exception) {}
+                    }
             scope.launch {
                 try {
                     val presign =
@@ -279,7 +337,7 @@ class AttachmentDrafts(private val app: Session, val channel: String, parentScop
                     "pickFiles",
                     buildJsonObject {
                             put("owner", owner)
-                            put("accept", imageTypes.joinToString(","))
+                            put("accept", "")
                             put("multiple", true)
                         }
                         .toString(),
@@ -352,6 +410,11 @@ fun DraftAttachments(app: Session, drafts: AttachmentDrafts) {
                             contentScale = ContentScale.Crop,
                         )
                     }
+                    if (draft.type !in imageTypes)
+                        Column(Modifier.padding(8.dp).align(Alignment.Center)) {
+                            Icon("paperclip")
+                            Text(draft.name, small = true, maxLines = 2)
+                        }
                     if (draft.uploaded == null)
                         Text(
                             app.t("attachments.uploading"),
@@ -457,14 +520,17 @@ private fun AttachmentItem(
             loading = false
         }
     }
+    var preview by remember(id) { mutableStateOf(false) }
+    if (preview) AttachmentPreview(app, file) { preview = false }
     val remoteFailure = app.attachmentLinks.errors[id] == true
     if (image && bitmap != null && !loading && !remoteFailure)
         Box(
             modifier
                 .background(MaterialTheme.colorScheme.surfaceVariant, RoundedCornerShape(8.dp))
-                .clickable(role = Role.Button) { app.attachmentLinks.open(id) }
+                .clickable(role = Role.Button) { preview = true }
                 .semantics {
-                    contentDescription = app.t("attachments.open", "name" to file.text("file_name"))
+                    contentDescription =
+                        app.t("attachments.preview", "name" to file.text("file_name"))
                 }
         ) {
             Image(
@@ -507,7 +573,57 @@ private fun AttachmentItem(
                     "download",
                     app.t("attachments.download", "name" to file.text("file_name")),
                 ) {
-                    app.attachmentLinks.open(id)
+                    app.attachmentLinks.download(file)
                 }
         }
+}
+
+@Composable
+private fun AttachmentPreview(app: Session, file: Row, close: () -> Unit) {
+    val id = file.text("id")
+    var attempt by remember(id) { mutableStateOf(0) }
+    var bitmap by remember(id) { mutableStateOf<ImageBitmap?>(null) }
+    var failed by remember(id) { mutableStateOf(false) }
+    LaunchedEffect(id, attempt) {
+        bitmap = null
+        failed = false
+        try {
+            var url = app.attachmentLinks.get(id, attempt > 0)
+            try {
+                app.platform.imageFrames(app.image(url)).collect { bitmap = it }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (_: Exception) {
+                url = app.attachmentLinks.get(id, true)
+                app.platform.imageFrames(app.image(url)).collect { bitmap = it }
+            }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (_: Exception) {
+            failed = true
+        }
+    }
+    Panel(file.text("file_name"), close, 1280.dp) {
+        if (failed) {
+            Text(
+                app.t("attachments.loadError"),
+                color = MaterialTheme.colorScheme.error,
+                modifier = Modifier.semantics { liveRegion = LiveRegionMode.Assertive },
+            )
+            Button(app.t("attachments.retry")) { attempt++ }
+        } else if (bitmap == null) Text(app.t("attachments.loading"))
+        else
+            BoxWithConstraints(Modifier.fillMaxWidth().weight(1f, fill = false)) {
+                Image(
+                    bitmap!!,
+                    file.text("file_name"),
+                    Modifier.fillMaxWidth().heightIn(max = maxHeight),
+                    contentScale = ContentScale.Fit,
+                )
+            }
+        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+            Text(file.text("file_name"), Modifier.weight(1f), small = true)
+            Button(app.t("attachments.downloadShort")) { app.attachmentLinks.download(file) }
+        }
+    }
 }

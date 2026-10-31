@@ -236,7 +236,6 @@ export function ComposeRuntime({ config, status }: { config: AppConfig; status?:
         action: (name) => {
           if (name.startsWith("fileFocus:")) fileBrowser.focus(name.slice(10));
           if (name.startsWith("fileRelease:")) fileBrowser.release(name.slice(12));
-          if (name.startsWith("attachmentReserve:")) fileBrowser.reserve(name.slice(18));
           if (name.startsWith("mfm:"))
             window.dispatchEvent(new CustomEvent("mfm-click", { detail: name.slice(4) }));
           else if (name === "retry") stateRef.current.status?.retry();
@@ -259,7 +258,7 @@ export function ComposeRuntime({ config, status }: { config: AppConfig; status?:
           }
         },
         invoke: async (name, payload) => {
-          if (["pickFiles", "fileRead", "filePut", "attachmentOpen"].includes(name))
+          if (["pickFiles", "fileRead", "filePut", "attachmentDownload"].includes(name))
             return fileBrowser.invoke(name, payload);
           if (name === "bubbleExit") {
             const value = JSON.parse(payload);

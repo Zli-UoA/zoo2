@@ -140,13 +140,23 @@ test("native parity catalog renders real settings, cards, Bubble and notificatio
   await expect(frame.getByRole("button", { name: "送信", exact: true })).toBeEnabled();
   await open("with-attachments");
   await expect(
-    frame.getByRole("button", { name: "screenshot.pngを開く", exact: true }),
+    frame.getByRole("button", { name: "screenshot.pngをプレビュー", exact: true }),
   ).toBeVisible();
-  await expect(frame.getByRole("button", { name: "diagram.pngを開く", exact: true })).toBeVisible();
+  await expect(
+    frame.getByRole("button", { name: "diagram.pngをプレビュー", exact: true }),
+  ).toBeVisible();
   await expect(frame.getByText("release-notes.pdf", { exact: true })).toBeVisible();
   await page.screenshot({ path: test.info().outputPath("compose-attachment-grid-wide.png") });
   await page.setViewportSize({ width: 390, height: 844 });
   await page.screenshot({ path: test.info().outputPath("compose-attachment-grid-mobile.png") });
+  await frame
+    .getByRole("button", { name: "screenshot.pngをプレビュー", exact: true })
+    .click({ force: true });
+  await expect(frame.getByRole("img", { name: "screenshot.png", exact: true })).toBeVisible();
+  await page.screenshot({ path: test.info().outputPath("compose-attachment-preview-mobile.png") });
+  await frame.getByRole("button", { name: "閉じる", exact: true }).click({ force: true });
+  await expect(frame.getByRole("img", { name: "screenshot.png", exact: true })).toBeHidden();
+
   await page.setViewportSize({ width: 1440, height: 900 });
   await open("settings");
   await expect(frame.getByRole("heading", { name: "Zoo設定", exact: true })).toBeVisible();

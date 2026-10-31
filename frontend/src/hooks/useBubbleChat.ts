@@ -299,7 +299,7 @@ export function useBubbleChat(enabled = true) {
           activePollAbortController = null;
         }
         setIsSharing(false);
-        stop();
+        clearKeepalive();
         setEntries([]);
       } else {
         clearTimeout(pollTimer);
@@ -319,7 +319,7 @@ export function useBubbleChat(enabled = true) {
     };
 
     document.addEventListener("visibilitychange", onVisibilityChange);
-    window.addEventListener("pagehide", onPageHide);
+    window.addEventListener("pagehide", onPageHide, true);
     void poll();
 
     return () => {
@@ -334,7 +334,7 @@ export function useBubbleChat(enabled = true) {
         activePollAbortController = null;
       }
       document.removeEventListener("visibilitychange", onVisibilityChange);
-      window.removeEventListener("pagehide", onPageHide);
+      window.removeEventListener("pagehide", onPageHide, true);
     };
   }, [client, enabled]);
 

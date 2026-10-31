@@ -10,10 +10,15 @@ class AttachmentsTest {
         assertNull(attachmentRejection(file(MAX_ATTACHMENT_BYTES), 9))
         assertEquals("tooLarge", attachmentRejection(file(MAX_ATTACHMENT_BYTES + 1), 0))
         assertEquals("tooMany", attachmentRejection(file(1), 10))
-        assertEquals("unsupported", attachmentRejection(file(1, "vector.svg", "image/svg+xml"), 0))
+        assertEquals("unsupported", attachmentRejection(file(1, "bad.exe", "image/png"), 0))
+        assertEquals("empty", attachmentRejection(file(0), 0))
+        assertNull(attachmentRejection(file(1, "vector.svg", "image/svg+xml"), 0))
         assertEquals("image/png", attachmentType("image.PNG", "application/octet-stream"))
         assertEquals("image/jpeg", attachmentType("blob", " IMAGE/JPEG; charset=binary"))
-        assertNull(attachmentType("file.txt", "text/plain"))
+        assertEquals("text/plain", attachmentType("file.txt", "text/plain"))
+        assertEquals("application/pdf", attachmentType("file.pdf", "application/octet-stream"))
+        assertEquals("application/octet-stream", attachmentType("blob", ""))
+        assertNull(attachmentType("image.png", "application/x-sh"))
     }
 
     @Test
@@ -39,8 +44,11 @@ class AttachmentsTest {
             "screen_shot.png",
             attachmentName(" screen\nshot.png ", "image/png", "fallback"),
         )
-        assertEquals("😀".repeat(255), attachmentName("😀".repeat(256), "image/png", "fallback"))
-        assertEquals("pasted-image-fallback.jpg", attachmentName("", "image/jpeg", "fallback"))
+        assertEquals(
+            "😀".repeat(251) + ".png",
+            attachmentName("😀".repeat(256), "image/png", "fallback"),
+        )
+        assertEquals("attachment-fallback.jpg", attachmentName("", "image/jpeg", "fallback"))
         assertEquals("50 MB", attachmentSize(MAX_ATTACHMENT_BYTES.toString()))
         assertEquals("1.5 KB", attachmentSize("1536"))
         assertEquals("—", attachmentSize("invalid"))

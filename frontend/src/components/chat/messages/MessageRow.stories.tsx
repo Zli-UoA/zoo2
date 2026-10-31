@@ -222,7 +222,7 @@ export const WithAttachments: Story = {
       await canvas.findByRole("button", { name: "screenshot.pngをプレビュー" }),
     );
     const dialog = await screen.findByRole("dialog");
-    const preview = within(dialog).getByRole("img", { name: "screenshot.png" });
+    const preview = await within(dialog).findByRole("img", { name: "screenshot.png" });
     await waitFor(() => expect(preview).toBeVisible());
     await userEvent.click(within(dialog).getByRole("button", { name: "閉じる" }));
     await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
