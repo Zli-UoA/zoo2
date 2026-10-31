@@ -14,15 +14,34 @@ afterEach(() => {
   vi.useRealTimers();
 });
 
-it("recovers mounted cards when the browser returns online after configuration failed", async () => {
+it("shares configuration retries across cards and recovers when the browser returns online", async () => {
   vi.useFakeTimers();
   const fetch = vi.spyOn(globalThis, "fetch").mockRejectedValue(new TypeError("offline"));
   api.get.mockResolvedValue({ title: "Online card", description: "", image: null });
-  render(<LinkPreviews content="https://example.com/reconnected" />);
+  const cards = Array.from({ length: 10 }, (_, i) => (
+    <LinkPreviews key={i} content={`https://example.com/reconnected-${i}`} />
+  ));
+  const view = render(<>{cards}</>);
   await act(async () => {
     await vi.advanceTimersByTimeAsync(0);
   });
   expect(api.get).not.toHaveBeenCalled();
+  expect(fetch).toHaveBeenCalledTimes(2);
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(2_000);
+  });
+  expect(fetch).toHaveBeenCalledTimes(4);
+  view.unmount();
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(60_000);
+    window.dispatchEvent(new Event("online"));
+  });
+  expect(fetch).toHaveBeenCalledTimes(4);
+  render(<>{cards}</>);
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(0);
+  });
+  expect(fetch).toHaveBeenCalledTimes(6);
   fetch.mockImplementation(
     async (path) =>
       new Response(
@@ -34,6 +53,6 @@ it("recovers mounted cards when the browser returns online after configuration f
     window.dispatchEvent(new Event("online"));
     await vi.advanceTimersByTimeAsync(0);
   });
-  expect(screen.getByRole("link", { name: /Online card/ })).toBeInTheDocument();
-  expect(fetch).toHaveBeenCalledTimes(4);
+  expect(screen.getAllByRole("link", { name: /Online card/ })).toHaveLength(10);
+  expect(fetch).toHaveBeenCalledTimes(8);
 });

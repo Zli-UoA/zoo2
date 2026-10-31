@@ -8,7 +8,7 @@ import type { AppConfig } from "../../../lib/config";
 import { useOptionalCollections } from "../../../lib/electric/collections-context";
 import { previewUrls, proxyImageUrl } from "./linkPreviews";
 import { acquirePreview } from "./linkPreviewRequests";
-import { previewEndpoints, type PreviewEndpoints } from "./linkPreviewEndpoints";
+import { subscribePreviewEndpoints, type PreviewEndpoints } from "./linkPreviewEndpoints";
 
 function LinkPreview({
   url,
@@ -70,36 +70,7 @@ function ActiveLinkPreviews({ urls, config }: { urls: string[]; config: AppConfi
     () => (sources?.summaly ? createSummalyClient(sources.summaly) : null),
     [sources?.summaly],
   );
-  useEffect(() => {
-    let active = true;
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    let pending = false;
-    let backoff = 2_000;
-    const refresh = async () => {
-      if (pending || !active) return;
-      clearTimeout(timer);
-      pending = true;
-      try {
-        const value = await previewEndpoints(config);
-        if (active) setSources(value);
-      } catch {
-        if (active) {
-          setSources({ summaly: config.summalyUrl ?? "", media: config.mediaProxyUrl ?? "" });
-          timer = setTimeout(refresh, backoff);
-          backoff = Math.min(backoff * 2, 30_000);
-        }
-      } finally {
-        pending = false;
-      }
-    };
-    void refresh();
-    window.addEventListener("online", refresh);
-    return () => {
-      active = false;
-      clearTimeout(timer);
-      window.removeEventListener("online", refresh);
-    };
-  }, [config]);
+  useEffect(() => subscribePreviewEndpoints(config, setSources), [config]);
   if (!client || !sources) return null;
   return urls.map((url) => (
     <LinkPreview
