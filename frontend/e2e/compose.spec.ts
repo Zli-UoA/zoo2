@@ -533,7 +533,7 @@ for (const implementation of ["react", "compose"] as const) {
     };
     await choose("unsupported.exe", "application/x-msdownload");
     await expect(
-      page.getByText("PNG・JPEG・WebP・GIF のファイルを添付できます。", { exact: true }),
+      page.getByText("このファイルは添付できません。", { exact: true }),
     ).toBeVisible();
     expect((await state()).uploadRequests).toHaveLength(0);
     await choose("empty.txt", "text/plain", Buffer.alloc(0));
@@ -622,10 +622,10 @@ for (const implementation of ["react", "compose"] as const) {
     await expect(page.getByText("ファイルをアップロード中…", { exact: true }).first()).toBeHidden();
     await page.getByRole("button", { name: "送信", exact: true }).last().click({ force: native });
     await expect(
-      page.getByRole(native ? "button" : "link", { name: "clipboard.pngを開く", exact: true }),
+      page.getByRole("button", { name: "clipboard.pngをプレビュー", exact: true }),
     ).toBeVisible({ timeout: 30000 });
     await expect(
-      page.getByRole(native ? "button" : "link", { name: "second.pngを開く", exact: true }),
+      page.getByRole("button", { name: "second.pngをプレビュー", exact: true }),
     ).toBeVisible();
     const final = await state();
     expect(final.attachments).toHaveLength(3);
