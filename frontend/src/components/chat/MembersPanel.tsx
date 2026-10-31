@@ -30,6 +30,7 @@ import { ScrollArea } from "../ui/scroll-area";
 import { Skeleton } from "../ui/skeleton";
 import { initials } from "./format";
 import { AppAvatar, openApp } from "./AppIdentity";
+import { PaneHeader } from "../layout/PaneHeader";
 import {
   filterMemberCandidates,
   sortChannelMembers,
@@ -244,7 +245,7 @@ export function MembersPanel({
       className={cn("min-h-0 flex-col bg-background", className)}
       onKeyDown={handlePanelKeyDown}
     >
-      <header className="flex items-center justify-between gap-2 border-b px-4 py-3">
+      <PaneHeader className="justify-between gap-2">
         {onBack ? (
           <>
             <Button
@@ -271,7 +272,7 @@ export function MembersPanel({
               ? "…"
               : members.filter((member) => !userMap.get(member.user_id)?.is_bot).length}
         </span>
-      </header>
+      </PaneHeader>
 
       {canViewMembers ? (
         <>

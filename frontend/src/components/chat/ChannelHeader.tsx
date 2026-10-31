@@ -47,6 +47,7 @@ import {
 import { normalizeChannelDescription } from "./channelDescription";
 import { RenameChannelDialog } from "./RenameChannelDialog";
 import { isGroupDm } from "./dm";
+import { PaneHeader } from "../layout/PaneHeader";
 
 /** チャンネルヘッダ。名前・説明・メンバー数と管理メニュー、狭幅の戻る。 */
 export function ChannelHeader({
@@ -87,7 +88,7 @@ export function ChannelHeader({
   }
 
   return (
-    <header className="flex min-h-16 shrink-0 items-center gap-3 border-b bg-background/80 px-4 py-2.5 backdrop-blur supports-backdrop-filter:bg-background/60">
+    <PaneHeader className="bg-background/80 backdrop-blur supports-backdrop-filter:bg-background/60">
       <Button
         variant="ghost"
         size="icon-sm"
@@ -242,7 +243,7 @@ export function ChannelHeader({
           </SettingsSection>
         </DialogContent>
       </Dialog>
-    </header>
+    </PaneHeader>
   );
 }
 
