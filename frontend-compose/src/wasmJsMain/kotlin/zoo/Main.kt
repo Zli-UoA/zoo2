@@ -37,6 +37,9 @@ private external fun cacheWrite(bridge: JsAny, key: String, value: String): Prom
 @JsFun("(bridge, path) => bridge.navigate(path)")
 private external fun navigateTo(bridge: JsAny, path: String)
 
+@JsFun("(bridge, path) => bridge.navigate(path, true)")
+private external fun replaceTo(bridge: JsAny, path: String)
+
 @JsFun("(bridge, status) => bridge.authStatus(status)")
 private external fun authStatus(bridge: JsAny, status: Int)
 
@@ -62,15 +65,32 @@ private external fun ready(
     escape: () -> Unit,
 )
 
+/** JS failures must enter the Kotlin Exception hierarchy so feature retries can handle them. */
+internal suspend fun <T : JsAny?> Promise<T>.awaitBrowser(): T =
+    try {
+        await()
+    } catch (error: JsException) {
+        throw IllegalStateException(error.message, error)
+    }
+
 private class BrowserPlatform(private val bridge: JsAny) : Platform {
+    override fun controlSemantics(id: String, role: String, enabled: Boolean, selected: Boolean?) =
+        webControl(id, role, enabled, selected)
+
+    override fun forgetControlSemantics(id: String) = forgetWebControl(id)
+
+    @OptIn(kotlin.io.encoding.ExperimentalEncodingApi::class)
+    override suspend fun image(url: String): ByteArray =
+        kotlin.io.encoding.Base64.decode(invoke("publicImage", url))
+
     override suspend fun headers(): Map<String, String> =
-        json.decodeFromString(authHeaders(bridge).await<JsString>().toString())
+        json.decodeFromString(authHeaders(bridge).awaitBrowser<JsString>().toString())
 
     override suspend fun readCache(key: String) =
-        cacheRead(bridge, key).await<JsString?>()?.toString()
+        cacheRead(bridge, key).awaitBrowser<JsString?>()?.toString()
 
     override suspend fun writeCache(key: String, value: String) {
-        cacheWrite(bridge, key, value).await<JsAny?>()
+        cacheWrite(bridge, key, value).awaitBrowser<JsAny?>()
     }
 
     override fun uuid() = randomId()
@@ -79,13 +99,29 @@ private class BrowserPlatform(private val bridge: JsAny) : Platform {
 
     override fun navigate(path: String) = navigateTo(bridge, path)
 
+    override fun replace(path: String) = replaceTo(bridge, path)
+
     override fun translate(key: String, args: Map<String, String>) =
         translateText(bridge, key, json.encodeToString(args))
 
     override fun action(name: String) = browserAction(bridge, name)
 
-    override suspend fun invoke(name: String, payload: String) =
-        browserInvoke(bridge, name, payload).await<JsString>().toString()
+    override suspend fun invoke(name: String, payload: String): String {
+        if (name !in listOf("publicGet", "publicImage"))
+            return browserInvoke(bridge, name, payload).awaitBrowser<JsString>().toString()
+        val id = randomId()
+        try {
+            return browserInvoke(
+                    bridge,
+                    name,
+                    obj("requestId" to id, "payload" to payload).toString(),
+                )
+                .awaitBrowser<JsString>()
+                .toString()
+        } finally {
+            if (!currentCoroutineContext().isActive) browserInvoke(bridge, "cancelPublic", id)
+        }
+    }
 
     override fun time(timestamp: String) = formatTime(bridge, timestamp, false, 0)
 
@@ -110,6 +146,7 @@ private fun environment(raw: String): Environment {
         r.flag("focused"),
         r.text("persistenceStatus"),
         r.text("persistenceError"),
+        r.text("theme").ifEmpty { "system" },
     )
 }
 
@@ -144,6 +181,8 @@ private fun startSession() {
             raw.text("txidMode"),
             raw.text("assetsBaseUrl"),
             raw["previewUsers"]?.rows().orEmpty(),
+            raw.text("summalyUrl"),
+            raw.text("mediaProxyUrl"),
         )
     val http = HttpClient {
         expectSuccess = false
@@ -174,9 +213,11 @@ private fun startSession() {
         val fontsReady = zooFontsReady()
         if (active && fontsReady) {
             LaunchedEffect(Unit) { paintReady(bridge) }
-            ZooTheme(environment(envRaw).dark) {
-                if (app != null) CompositionLocalProvider(LocalApp provides app) { ZooApp(app) }
-                else NativeStatus(platform, json.parseToJsonElement(envRaw).jsonObject)
+            CompositionLocalProvider(LocalWebPlatform provides platform) {
+                ZooTheme(environment(envRaw).dark) {
+                    if (app != null) CompositionLocalProvider(LocalApp provides app) { ZooApp(app) }
+                    else NativeStatus(platform, json.parseToJsonElement(envRaw).jsonObject)
+                }
             }
         }
     }

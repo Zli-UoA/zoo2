@@ -200,18 +200,12 @@ export function useBubbleChat(enabled = true) {
         hasPendingWrite = false;
         const requestSeq = ++seq;
         const sentAt = Date.now() + serverTimeOffset;
-        void client
-          .request(path, {
-            method: "POST",
-            body: {
-              session_id: sessionId,
-              seq: requestSeq,
-              content: "",
-              sent_at: sentAt,
-            },
-            keepalive: true,
-          })
-          .catch(() => {});
+        const body = { session_id: sessionId, seq: requestSeq, content: "", sent_at: sentAt };
+        void (
+          client.keepalive
+            ? client.keepalive(path, body)
+            : client.request(path, { method: "POST", body, keepalive: true })
+        ).catch(() => {});
       }
     };
 

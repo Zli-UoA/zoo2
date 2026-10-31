@@ -5,7 +5,18 @@ import { MessageRow } from "../chat/messages/MessageRow";
 
 interface Props {
   compare: boolean;
-  sample: "message" | "composer" | "emoji-picker" | "rich-text";
+  sample:
+    | "message"
+    | "composer"
+    | "emoji-picker"
+    | "rich-text"
+    | "link-preview"
+    | "settings"
+    | "settings-members"
+    | "bubble"
+    | "notifications"
+    | "notifications-loading";
+  fixture?: Record<string, unknown>;
   content: string;
   disabled: boolean;
   grouped: boolean;
@@ -29,7 +40,7 @@ export function ComposeCatalog(props: Props) {
   const frame = useRef<HTMLIFrameElement>(null);
   const [state, setState] = useState("loading");
   const [defaultMessage, setDefaultMessage] = useState("");
-  const options = { ...props, labels: labels[props.locale] };
+  const options = { ...props, labels: labels[props.locale], locales: labels };
   const current = useRef(options);
   current.current = options;
   const send = () =>
@@ -57,6 +68,7 @@ export function ComposeCatalog(props: Props) {
     return () => window.removeEventListener("message", receive);
   }, []);
   useEffect(send, [
+    props.fixture,
     props.sample,
     props.content,
     props.disabled,

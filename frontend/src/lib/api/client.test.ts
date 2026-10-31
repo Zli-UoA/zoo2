@@ -235,3 +235,20 @@ describe("createConfiguredApiClient", () => {
     expect(new Headers(init?.headers).get("X-Dev-User")).toBe("dev-user");
   });
 });
+
+it("starts an exit write synchronously using the latest resolved auth without refreshing a token", async () => {
+  const getToken = vi.fn().mockResolvedValue("first-token");
+  const fetcher = vi.fn().mockImplementation(async () => new Response("{}"));
+  const client = createApiClient({ baseUrl: "https://api.example", getToken, fetch: fetcher });
+  await client.get("/api/bubble");
+  getToken.mockImplementation(() => new Promise(() => {}));
+  const sent = client.keepalive!("/api/bubble", { session_id: "current", content: "", seq: 2 });
+  expect(fetcher).toHaveBeenCalledTimes(2);
+  expect(getToken).toHaveBeenCalledTimes(1);
+  const [url, options] = fetcher.mock.calls[1];
+  expect(url).toBe("https://api.example/api/bubble");
+  expect(options.keepalive).toBe(true);
+  expect(options.headers.get("Authorization")).toBe("Bearer first-token");
+  expect(JSON.parse(options.body).content).toBe("");
+  await sent;
+});

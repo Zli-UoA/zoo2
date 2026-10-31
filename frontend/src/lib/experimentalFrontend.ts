@@ -5,7 +5,7 @@ export const FRONTEND_STORAGE_KEY = "zoo-frontend";
 
 /** Disabled builds always retain React, even if a preference survives another deployment. */
 export function supportsComposePath(path: string): boolean {
-  return !/^\/(?:settings|bubble)(?:\/|$)/.test(path);
+  return path.startsWith("/") && !path.startsWith("//");
 }
 
 export function resolveFrontend(

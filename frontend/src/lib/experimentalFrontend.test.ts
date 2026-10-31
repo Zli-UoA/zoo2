@@ -20,9 +20,9 @@ describe("experimental frontend selection", () => {
   });
 });
 
-it("keeps newly added React settings and Bubble Chat accessible without losing the preference", () => {
+it("renders settings and Bubble Chat in the selected Compose frontend", () => {
   for (const path of ["/settings", "/settings/account", "/bubble", "/bubble/room"]) {
-    expect(resolveFrontend(true, "?frontend=compose", "compose", path)).toBe("react");
+    expect(resolveFrontend(true, "?frontend=compose", "compose", path)).toBe("compose");
   }
   expect(resolveFrontend(true, "", "compose", "/channels/general")).toBe("compose");
 });

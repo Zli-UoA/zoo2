@@ -11,7 +11,8 @@ import kotlinx.serialization.json.*
 /** Samples live beside the shared UI so native catalogs can render the same examples. */
 object CatalogSamples {
     const val message = "こんにちは。今日のリリースは 18:00 です。詳細は https://example.com/docs を参照してください。"
-    const val richText = "**Compose Multiplatform**\n\n$[tada Hello!] :smile: **太字**\n\n\\[x^2 + y^2 = z^2\\]\n\n```kotlin\nval greeting = \"こんにちは\"\n```"
+    const val richText =
+        "**Compose Multiplatform**\n\n$[tada Hello!] :smile: **太字**\n\n\\[x^2 + y^2 = z^2\\]\n\n```kotlin\nval greeting = \"こんにちは\"\n```"
     val users = listOf(obj("id" to "alice", "display_name" to "Alice", "user_name" to "alice"))
     val channel = obj("id" to "catalog", "channel_name" to "general", "created_user_id" to "alice")
 }
@@ -19,29 +20,84 @@ object CatalogSamples {
 @Composable
 fun Catalog(app: Session, options: Row) {
     val kind = options.text("sample")
-    val content = options.text("content").ifEmpty {
-        if (kind == "rich-text") CatalogSamples.richText else CatalogSamples.message
-    }
+    val content =
+        options.text("content").ifEmpty {
+            if (kind == "rich-text") CatalogSamples.richText else CatalogSamples.message
+        }
     var selected by remember { mutableStateOf("") }
     var picker by remember(kind) { mutableStateOf(kind == "emoji-picker") }
     Box(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background)) {
-        Column(Modifier.fillMaxWidth().padding(vertical = 24.dp)) {
+        Column(
+            Modifier.fillMaxSize()
+                .padding(
+                    vertical =
+                        if (
+                            kind in
+                                listOf(
+                                    "settings",
+                                    "settings-members",
+                                    "bubble",
+                                    "notifications",
+                                    "notifications-loading",
+                                )
+                        )
+                            0.dp
+                        else 24.dp
+                )
+        ) {
             when (kind) {
-                "composer" -> Composer(app, "catalog", null, CatalogSamples.users, !options.flag("disabled"))
-                "emoji-picker" -> Column(Modifier.padding(16.dp)) {
-                    Button(app.t("reactions.add")) { picker = true }
-                    Text(selected)
-                }
-                "rich-text" -> Column(Modifier.fillMaxWidth().padding(20.dp)) {
-                    RichText(content, CatalogSamples.users)
-                }
-                else -> {
-                    val message = obj(
-                        "id" to "catalog-message", "user_id" to "alice", "content" to content,
-                        "created_at" to "2026-01-02T09:00:00Z",
+                "settings",
+                "settings-members" -> ZooSettings(app, CatalogSamples.users)
+                "bubble" -> BubbleChat(app, CatalogSamples.users)
+                "notifications",
+                "notifications-loading" ->
+                    Notifications(
+                        app,
+                        listOf(
+                            obj(
+                                "id" to "catalog-notification",
+                                "actor_id" to "alice",
+                                "user_id" to "alice",
+                                "channel_id" to "catalog",
+                                "message_id" to "catalog-message",
+                                "notification_type" to "mention",
+                                "created_at" to "2026-01-02T09:00:00Z",
+                                "is_read" to "true",
+                            )
+                        ),
+                        CatalogSamples.users,
                     )
-                    Message(app, CatalogSamples.channel, message, listOf(message), emptyList(),
-                        CatalogSamples.users, options.flag("grouped"), true)
+                "composer" ->
+                    Composer(app, "catalog", null, CatalogSamples.users, !options.flag("disabled"))
+                "emoji-picker" ->
+                    Column(Modifier.padding(16.dp)) {
+                        Button(app.t("reactions.add")) { picker = true }
+                        Text(selected)
+                    }
+                "rich-text" ->
+                    Column(Modifier.fillMaxWidth().padding(20.dp)) {
+                        RichText(content, CatalogSamples.users)
+                    }
+                else -> {
+                    val message =
+                        JsonObject(
+                            obj(
+                                "id" to "catalog-message",
+                                "user_id" to "alice",
+                                "content" to content,
+                                "created_at" to "2026-01-02T09:00:00Z",
+                            ) + options.nested("fixture")
+                        )
+                    Message(
+                        app,
+                        CatalogSamples.channel,
+                        message,
+                        listOf(message),
+                        emptyList(),
+                        CatalogSamples.users,
+                        options.flag("grouped"),
+                        true,
+                    )
                 }
             }
             app.toast?.let { Text(it, Modifier.padding(16.dp)) }

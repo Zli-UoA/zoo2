@@ -78,6 +78,15 @@ const message = (id, content, extra = {}) => ({
 function reset() {
   tx = 1;
   state = {
+    preferences: { search_engine: "google" },
+    admins: ["00000000-0000-0000-0000-000000000001"],
+    protectedAdmins: ["00000000-0000-0000-0000-000000000001"],
+    commands: [{ name: "echo", app_name: "Meeting Notes", app_id: "notes" }],
+    commandCalls: [],
+    bubbleWrites: [],
+    bubbles: {},
+    previewRequests: [],
+    mediaRequests: [],
     users: [
       person("00000000-0000-0000-0000-000000000001", "Alice"),
       person("00000000-0000-0000-0000-000000000002", "Bob"),
@@ -212,6 +221,99 @@ const server = createSecureServer(tls, async (req, res) => {
     appResponse(res, state, false);
     return;
   }
+  if (path === "/__seed") {
+    for (const row of body.messages ?? []) {
+      state.messages.push(message(row.id, row.content, row));
+      emit("messages", state.messages.at(-1));
+    }
+    appResponse(res, {}, false);
+    return;
+  }
+  if (path.endsWith("/__summaly")) {
+    state.previewRequests.push({
+      url: url.searchParams.get("url"),
+      authorization: req.headers.authorization,
+      devUser: req.headers["x-dev-user"],
+      cookie: req.headers.cookie,
+      referer: req.headers.referer,
+    });
+    if (url.searchParams.get("url")?.includes("delayed"))
+      await new Promise((resolve) => setTimeout(resolve, 800));
+    appResponse(
+      res,
+      {
+        title: "Parity URL card",
+        description: "遅れて展開しても読んでいる投稿を維持します。".repeat(30),
+        sitename: "Parity",
+        thumbnail: "https://image.example/wide.png",
+      },
+      false,
+    );
+    return;
+  }
+  if (path.endsWith("/__media")) {
+    state.mediaRequests.push({
+      authorization: req.headers.authorization,
+      devUser: req.headers["x-dev-user"],
+      cookie: req.headers.cookie,
+      referer: req.headers.referer,
+    });
+    res.setHeader("Content-Type", "image/png");
+    res.end(readFileSync(new URL("../public/icons/icon-192.png", import.meta.url)));
+    return;
+  }
+  if (path === "/api/users/me/preferences") {
+    if (req.method === "PATCH") Object.assign(state.preferences, body);
+    appResponse(res, state.preferences, false);
+    return;
+  }
+  const role = path.match(/^\/api\/users\/([^/]+)\/admin$/);
+  if (role && req.method === "PATCH") {
+    const id = role[1];
+    if (
+      !body.is_admin &&
+      (state.protectedAdmins.includes(id) ||
+        (state.admins.includes(id) && state.admins.length <= 1))
+    ) {
+      res.writeHead(409).end("{}");
+      return;
+    }
+    state.admins = body.is_admin
+      ? [...new Set([...state.admins, id])]
+      : state.admins.filter((value) => value !== id);
+    appResponse(res, {}, false);
+    return;
+  }
+  if (path === "/api/apps/commands") {
+    appResponse(res, state.commands, false);
+    return;
+  }
+  if (path === "/api/apps/notes/invoke" || path === "/api/apps/commands/echo") {
+    state.commandCalls.push({ path, ...body });
+    appResponse(res, {}, false);
+    return;
+  }
+  if (path === "/api/bubble") {
+    if (req.method === "GET") {
+      appResponse(
+        res,
+        Object.values(state.bubbles)
+          .filter((row) => row.content?.trim())
+          .map((row) => ({ ...state.users[0], user_id: state.users[0].id, content: row.content })),
+        false,
+      );
+      return;
+    }
+    state.bubbleWrites.push(body);
+    const old = state.bubbles[body.session_id];
+    if (old && body.seq <= old.seq) {
+      appResponse(res, { ok: false, stale: true, server_time: Date.now() }, false);
+      return;
+    }
+    state.bubbles[body.session_id] = body;
+    appResponse(res, { ok: true, server_time: Date.now() }, false);
+    return;
+  }
   const notificationContext = path.match(/^\/api\/notifications\/([^/]+)\/context$/);
   if (notificationContext) {
     const notice = state.notifications.find((n) => n.id === notificationContext[1]);
@@ -265,7 +367,7 @@ const server = createSecureServer(tls, async (req, res) => {
     return;
   }
   if (path === "/api/users/admins") {
-    appResponse(res, { user_ids: ["00000000-0000-0000-0000-000000000001"] }, false);
+    appResponse(res, { user_ids: state.admins, protected_user_ids: state.protectedAdmins }, false);
     return;
   }
   if (path === "/api/push/config") {
@@ -312,7 +414,7 @@ const server = createSecureServer(tls, async (req, res) => {
   }
   if (path === "/api/messages" && req.method === "POST") {
     tx++;
-    const row = message(body.id, body.content, body);
+    const row = message(body.id, body.content, { ...body, created_at: new Date().toISOString() });
     state.messages.push(row);
     emit("messages", row);
     appResponse(res, row);

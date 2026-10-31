@@ -17,7 +17,7 @@ jobs:
     needs: runner
     # Fork PRs cannot access the Cloudflare secrets needed by the deploy job.
     if: github.event.pull_request.head.repo.full_name == github.repository
-    runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-latest' || fromJSON(needs.runner.outputs.runs-on || '"zli-kubecamp-no-docker"') }}
+    runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-latest' || fromJSON(needs.runner.outputs.large-runs-on || '"zli-k8s"') }}
     timeout-minutes: 25
     defaults:
       run:

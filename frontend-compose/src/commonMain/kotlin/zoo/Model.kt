@@ -24,9 +24,7 @@ fun visibleChannels(rows: List<Row>): List<Row> =
 
 fun visibleMessages(rows: List<Row>, parent: String? = null): List<Row> =
     rows
-        .filter {
-            !it.present("deleted_at") && it.text("parent_id").ifEmpty { null } == parent
-        }
+        .filter { !it.present("deleted_at") && it.text("parent_id").ifEmpty { null } == parent }
         .sortedWith(
             compareBy(
                 { timestampMillis(it.text("created_at")) ?: Long.MIN_VALUE },
@@ -37,11 +35,16 @@ fun visibleMessages(rows: List<Row>, parent: String? = null): List<Row> =
 fun canManage(channel: Row, userId: String, isAdmin: Boolean) =
     isAdmin || channel.text("created_user_id") == userId
 
-fun isMember(rows: List<Row>, channelId: String, userId: String) = rows.any {
-    it.text("channel_id") == channelId && it.text("user_id") == userId
-}
+fun isMember(rows: List<Row>, channelId: String, userId: String) =
+    rows.any { it.text("channel_id") == channelId && it.text("user_id") == userId }
 
 interface Platform {
+    fun controlSemantics(id: String, role: String, enabled: Boolean, selected: Boolean?) {}
+
+    fun forgetControlSemantics(id: String) {}
+
+    suspend fun image(url: String): ByteArray? = null
+
     suspend fun headers(): Map<String, String>
 
     suspend fun readCache(key: String): String?
@@ -53,6 +56,8 @@ interface Platform {
     fun now(): String
 
     fun navigate(path: String)
+
+    fun replace(path: String) = navigate(path)
 
     fun translate(key: String, args: Map<String, String> = emptyMap()): String
 
@@ -83,6 +88,8 @@ data class Config(
     val txidMode: String = "awaitTxId",
     val assetsBaseUrl: String = "",
     val previewUsers: List<Row> = emptyList(),
+    val summalyUrl: String = "",
+    val mediaProxyUrl: String = "",
 )
 
 data class Environment(
@@ -99,6 +106,7 @@ data class Environment(
     val focused: Boolean = true,
     val persistenceStatus: String = "ready",
     val persistenceError: String = "",
+    val theme: String = "system",
 )
 
 fun endpoint(base: String, path: String): String = base.trimEnd('/') + "/" + path.trimStart('/')

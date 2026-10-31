@@ -9,7 +9,7 @@ import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.*
 import kotlinx.serialization.json.*
 
-class ApiException(val status: Int) : Exception("HTTP $status")
+class ApiException(val status: Int, val body: JsonObject? = null) : Exception("HTTP $status")
 
 /** REST is the only write path. Authentication is resolved again for every request. */
 class ZooApi(val config: Config, val platform: Platform, private val http: HttpClient) {
@@ -28,8 +28,16 @@ class ZooApi(val config: Config, val platform: Platform, private val http: HttpC
                     setBody(body.toString())
                 }
             }
-        if (response.status.value !in 200..299) throw ApiException(response.status.value)
         val raw = response.bodyAsText()
+        if (response.status.value !in 200..299)
+            throw ApiException(
+                response.status.value,
+                try {
+                    json.parseToJsonElement(raw) as? JsonObject
+                } catch (_: Exception) {
+                    null
+                },
+            )
         return if (raw.isBlank()) JsonNull else json.parseToJsonElement(raw)
     }
 }

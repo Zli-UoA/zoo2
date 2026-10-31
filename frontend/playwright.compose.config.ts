@@ -9,6 +9,7 @@ export default defineConfig({
   timeout: 120_000,
   use: {
     ignoreHTTPSErrors: true,
+    launchOptions: { args: ["--ignore-certificate-errors"] },
     actionTimeout: 15_000,
     baseURL: "http://127.0.0.1:4186",
     locale: "ja-JP",
@@ -34,6 +35,8 @@ export default defineConfig({
         VITE_SHAPE_MODE: "proxy",
         VITE_TXID_MODE: "awaitTxId",
         VITE_EXPERIMENTAL_COMPOSE: "true",
+        VITE_SUMMALY_URL: "https://127.0.0.1:4187/__summaly",
+        VITE_MEDIA_PROXY_URL: "https://127.0.0.1:4187/__media",
       },
     },
   ],

@@ -13,14 +13,22 @@ import kotlinx.browser.document
 import kotlinx.coroutines.*
 import kotlinx.serialization.json.*
 
-@JsFun("(boot) => { globalThis.__zooComposeCatalogBoot = boot; globalThis.dispatchEvent(new Event('zoo-compose-catalog-module-ready')); }")
+@JsFun(
+    "(boot) => { globalThis.__zooComposeCatalogBoot = boot; globalThis.dispatchEvent(new Event('zoo-compose-catalog-module-ready')); }"
+)
 private external fun catalogBoot(boot: () -> Unit)
+
 @JsFun("() => JSON.stringify(globalThis.zooCatalog.options)")
 private external fun catalogOptions(): String
+
 @JsFun("(update, close) => globalThis.zooCatalog.ready(update, close)")
 private external fun catalogReady(update: (String) -> Unit, close: () -> Unit)
+
 @JsFun("(message) => globalThis.zooCatalog.painted(message)")
 private external fun catalogPainted(message: String)
+
+@JsFun("() => matchMedia('(prefers-color-scheme: dark)').matches")
+private external fun systemDark(): Boolean
 
 internal fun registerCatalog() = catalogBoot(::startCatalog)
 
@@ -31,57 +39,210 @@ private fun startCatalog() {
     val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     val storage = mutableMapOf<String, String>()
     var sequence = 0
-    val platform = object : Platform {
-        override suspend fun headers() = emptyMap<String, String>()
-        override suspend fun readCache(key: String): String? = null
-        override suspend fun writeCache(key: String, value: String) {}
-        override fun uuid() = "catalog-${++sequence}"
-        override fun now() = "2026-01-02T09:00:00Z"
-        override fun navigate(path: String) {}
-        override fun action(name: String) {}
-        override fun time(timestamp: String) = "09:00"
-        override fun day(timestamp: String) = "2026-01-02"
-        override fun translate(key: String, args: Map<String, String>): String {
-            var value = options.nested("labels").text(key).ifEmpty { key }
-            args.forEach { (name, text) -> value = value.replace("{{$name}}", text) }
-            return value
-        }
-        override suspend fun invoke(name: String, payload: String): String = when (name) {
-            "storageRead" -> storage[payload].orEmpty()
-            "storageWrite" -> {
-                val row = json.parseToJsonElement(payload).jsonObject
-                storage[row.text("key")] = row.text("value")
-                ""
+    lateinit var app: Session
+    lateinit var refresh: () -> Unit
+    val platform =
+        object : Platform {
+            override fun controlSemantics(
+                id: String,
+                role: String,
+                enabled: Boolean,
+                selected: Boolean?,
+            ) = webControl(id, role, enabled, selected)
+
+            override fun forgetControlSemantics(id: String) = forgetWebControl(id)
+
+            override suspend fun headers() = emptyMap<String, String>()
+
+            override suspend fun readCache(key: String): String? =
+                when {
+                    key.contains(":channels:") ->
+                        JsonArray(listOf(CatalogSamples.channel)).toString()
+                    key.contains(":users:") -> JsonArray(CatalogSamples.users).toString()
+                    else -> "[]"
+                }
+
+            override suspend fun writeCache(key: String, value: String) {}
+
+            override fun uuid() = "catalog-${++sequence}"
+
+            override fun now() = "2026-01-02T09:00:00Z"
+
+            override fun navigate(path: String) {
+                options = JsonObject(options + ("path" to JsonPrimitive(path)))
+                refresh()
             }
-            else -> "{}"
+
+            override fun action(name: String) {
+                when {
+                    name.startsWith("theme:") -> {
+                        val theme = name.substringAfter(':')
+                        options =
+                            JsonObject(
+                                options +
+                                    mapOf(
+                                        "theme" to JsonPrimitive(theme),
+                                        "dark" to
+                                            JsonPrimitive(
+                                                theme == "dark" || theme == "system" && systemDark()
+                                            ),
+                                    )
+                            )
+                    }
+                    name.startsWith("locale:") ->
+                        options =
+                            JsonObject(
+                                options + ("locale" to JsonPrimitive(name.substringAfter(':')))
+                            )
+                    else -> return
+                }
+                refresh()
+            }
+
+            override fun time(timestamp: String) = "09:00"
+
+            override fun day(timestamp: String) = "2026-01-02"
+
+            override fun translate(key: String, args: Map<String, String>): String {
+                val labels =
+                    options.nested("locales").nested(options.text("locale")).ifEmpty {
+                        options.nested("labels")
+                    }
+                val suffix =
+                    if (options.text("locale") == "en" && args["count"] == "1") "_one" else "_other"
+                var value =
+                    (if ("count" in args) labels.text(key + suffix) else "")
+                        .ifEmpty { labels.text(key) }
+                        .ifEmpty { key }
+                args.forEach { (name, text) -> value = value.replace("{{$name}}", text) }
+                return value
+            }
+
+            override suspend fun invoke(name: String, payload: String): String =
+                when (name) {
+                    "publicGet" -> {
+                        val url = json.parseToJsonElement(payload).jsonObject.text("url")
+                        val body =
+                            when {
+                                options.text("sample") != "link-preview" -> ""
+                                url.contains("summaly-endpoint") ->
+                                    "https://catalog.invalid/summaly"
+                                url.contains("media-proxy-endpoint") -> ""
+                                else ->
+                                    obj(
+                                            "title" to "Kotlin link preview",
+                                            "description" to "Reactと同じ公開メタデータを表示します",
+                                            "sitename" to "Example",
+                                        )
+                                        .toString()
+                            }
+                        obj(
+                                "body" to body,
+                                "contentType" to
+                                    if (url.contains("endpoint")) "text/plain"
+                                    else "application/json",
+                            )
+                            .toString()
+                    }
+                    "storageRead" -> storage[payload].orEmpty()
+                    "storageWrite" -> {
+                        val row = json.parseToJsonElement(payload).jsonObject
+                        storage[row.text("key")] = row.text("value")
+                        ""
+                    }
+                    else -> "{}"
+                }
         }
-    }
     // All REST requests stay in memory. The catalog never starts Electric or Session.start().
-    val http = HttpClient(MockEngine { request ->
-        respond(if (request.method == HttpMethod.Get) "[]" else "{}",
-            headers = headersOf(HttpHeaders.ContentType, "application/json"))
-    })
-    val config = Config("https://catalog.invalid", "", "alice", false,
-        txidMode = "none", assetsBaseUrl = options.text("origin"))
-    fun environment() = Environment(dark = options.flag("dark"), locale = options.text("locale"),
-        visible = false, reducedMotion = true)
-    val app = Session(Repository(config, platform, http, scope), scope, environment())
+    val http =
+        HttpClient(
+            MockEngine { request ->
+                val path = request.url.encodedPath
+                if (!path.startsWith("/api/")) awaitCancellation()
+                val body =
+                    when {
+                        path.endsWith("/preferences") -> obj("search_engine" to "google").toString()
+                        path.endsWith("/admins") ->
+                            buildJsonObject {
+                                    put("user_ids", JsonArray(listOf(JsonPrimitive("alice"))))
+                                    put(
+                                        "protected_user_ids",
+                                        JsonArray(listOf(JsonPrimitive("alice"))),
+                                    )
+                                }
+                                .toString()
+                        path.endsWith("/commands") -> "[]"
+                        path.endsWith("/context") -> {
+                            if (options.text("sample") == "notifications-loading") delay(60000)
+                            buildJsonObject {
+                                    put("message", obj("content" to CatalogSamples.message))
+                                    put("reactions", JsonArray(emptyList()))
+                                }
+                                .toString()
+                        }
+                        path.endsWith("/bubble") -> {
+                            if (request.method == HttpMethod.Get) "[]"
+                            else {
+                                obj("ok" to "true").toString()
+                            }
+                        }
+                        else -> if (request.method == HttpMethod.Get) "[]" else "{}"
+                    }
+                respond(body, headers = headersOf(HttpHeaders.ContentType, "application/json"))
+            }
+        )
+    val config =
+        Config(
+            "https://catalog.invalid",
+            "",
+            "alice",
+            true,
+            txidMode = "none",
+            assetsBaseUrl = options.text("origin"),
+        )
+    fun environment() =
+        Environment(
+            path =
+                options.text("path").ifEmpty {
+                    when (options.text("sample")) {
+                        "settings-members" -> "/settings?tab=members"
+                        "settings" -> "/settings"
+                        "bubble" -> "/bubble"
+                        else -> "/"
+                    }
+                },
+            dark = options.flag("dark"),
+            locale = options.text("locale"),
+            visible = options.text("sample") == "bubble",
+            reducedMotion = true,
+            theme = options.text("theme").ifEmpty { if (options.flag("dark")) "dark" else "light" },
+        )
+    app = Session(Repository(config, platform, http, scope), scope, environment())
+    refresh = { app.update(environment()) }
     var active by mutableStateOf(true)
     ComposeViewport(document.getElementById("zoo-compose-root")!!) {
         val fontsReady = zooFontsReady()
         if (active && fontsReady) {
             ZooTheme(options.flag("dark")) {
-                CompositionLocalProvider(LocalApp provides app) { Catalog(app, options) }
+                CompositionLocalProvider(
+                    LocalApp provides app,
+                    LocalWebPlatform provides platform,
+                ) {
+                    Catalog(app, options)
+                }
             }
             LaunchedEffect(Unit) { catalogPainted(CatalogSamples.message) }
         }
     }
-    catalogReady({ raw ->
-        options = json.parseToJsonElement(raw).jsonObject
-        app.env = environment()
-    }, {
-        active = false
-        app.close()
-        scope.cancel()
-    })
+    catalogReady(
+        { raw ->
+            options = json.parseToJsonElement(raw).jsonObject
+            refresh()
+        },
+        {
+            active = false
+            app.close()
+            scope.cancel()
+        },
+    )
 }

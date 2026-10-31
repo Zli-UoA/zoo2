@@ -21,9 +21,8 @@ VITE_EXPERIMENTAL_COMPOSE=true pnpm dev
 `?frontend=compose` で開き、`?frontend=react` で戻せます。選択はブラウザーに保存されます。
 `VITE_EXPERIMENTAL_COMPOSE=true` 以外では保存済み選択・URL指定とも無効です。
 モジュールの取得・起動に失敗した場合もReactに戻る導線を表示します。
-mainで追加された `/settings` と `/bubble` は既存Reactの共通画面を使用します。
-Composeの選択は保持し、対応済みのチャンネル画面へ戻るとComposeで表示します。
-実装をまたぐ遷移ではページを再読み込みし、旧画面の購読・Canvas・入力状態を解放します。
+`/settings` と `/bubble` も共通Kotlinの画面です。設定のタブ変更は履歴を置換し、チャンネルの文脈を保持します。
+明示的にReactへ切り替えるとページを再読み込みし、購読・Canvas・入力状態を解放します。
 
 ```sh
 cd frontend-compose
@@ -49,8 +48,10 @@ cd frontend-compose
 | --- | --- |
 | `App.kt`, `Ui.kt`, `Overlays.kt`, `NativeStatus.kt` | レール・一覧・レスポンシブ配置、テーマ、フォーム、メニュー、ダイアログ、認証状態画面 |
 | `Channels.kt` | チャンネル作成・編集・参加・退出・アーカイブ、メンバー、DM、管理者のメッセージ削除 |
-| `Chat.kt`, `Completion.kt` | 投稿・編集・削除、スレッド、リアクション、既読、入力中表示、IME抑制、下書き、メンション・MFM補完 |
+| `Chat.kt`, `Completion.kt` | 投稿・編集・削除、スレッド、リアクション、既読、入力中表示、IME抑制、下書き、メンション・MFM・チャンネル・コマンド補完 |
 | `RichText.kt`, `MfmEffects.kt`, `Math.kt`, `Syntax.kt` | Kotlinによる本文、MFM効果、数式、コードの描画 |
+| `Settings.kt`, `Bubble.kt` | Zoo設定・権限管理・検索エンジン、リアルタイムの一時的なBubble Chat |
+| `LinkPreviews.kt`, `Completion.kt` | 公開メタデータのURLカード、プロキシ画像、チャンネル・コマンド補完 |
 | `Kitchen.kt` | Unicode絵文字、短縮名、検索、最近使用、Emoji Kitchen |
 | `Notifications.kt` | 通知・リアクションのグループ化、本文取得、表示時既読、対象メッセージへの遷移 |
 | `Integrations.kt` | Appの管理・ホーム・Blocks・フォーム・ショートカット・OAuth同意・配信履歴、Webhook管理 |
@@ -65,7 +66,7 @@ Compose選択時は既存のTypeScript版Electricコレクションを起動し�
 既存Webと同じフォントファミリー、Lucideのアイコン形状、絵文字データを使用します。
 コード用にLiberation Mono、数式用にKaTeXのフォントも同梱しています。
 Webでは各フォント・ウェイトの読み込み完了を待ってから画面を表示し、初回の文字欠けを防ぎます。
-ライセンスは配布物に含めます。画像はKtorで取得してComposeで描画するため、外部配信元には
+ライセンスは配布物に含めます。画像はPlatform経由で公開HTTPとして取得し、Composeで描画します。外部配信元には
 ブラウザーからの取得を許可するCORS設定が必要です。
 
 ## 配布・オフライン
@@ -92,7 +93,7 @@ Previewのユーザー選択もKotlin側に置き、ブラウザーアダプタ�
 
 ## 検証と制限
 
-KotlinのChromiumテストは14件です。Shapeの実体化と楽観更新の取り消し、動的認証ヘッダー、
+KotlinのChromiumテストで、Shapeの実体化と楽観更新の取り消し、動的認証ヘッダー、
 購読のキャンセル、Unicodeのチャンネル名検証、本文・App Blocks・通知・補完・絵文字の正規化を検証します。
 本番用Wasmビルド、既存フロントの型・lint・formatチェック、切替テスト、
 OfflineProviderのブラウザーテストも実行しています。
@@ -118,21 +119,14 @@ CIでは機能・CSP・オフライン試験を必須にし、完全一致の画
 MFMの構文解析・効果とコードハイライトも独自実装であり、既存ライブラリの全入力との同一出力を
 保証していません。Appの全状態、全ダイアログ、スクリーンリーダー、各OSのIME・タッチ操作、
 外部画像のCORS、既存UIとの全画面一致についても追加の互換性検証が必要です。
-PR作成時に最新mainへ追従していますが、mainで追加されたファイル・画像添付とURLカード展開は
-Compose側へ未移植です。WebhookのSlack互換受信仕様についても、最新バックエンドを用いた
-Compose画面の再検証が必要です。
+設定・Bubble・URLカード・連携カード・補完・通知の更新を共通Kotlinへ反映しています。
+Appのファイル添付はダウンロード導線を提供します。一般ユーザー向けアップロード機能は現行React版にもありません。
+WebhookのSlack互換受信仕様は、最新バックエンドを用いた総合検証が別途必要です。
 **「全機能・全く同じUI」の完成条件を満たした版としては扱わないでください。**
 
-最終の検証結果は次のとおりです。
+各変更の検証結果は、対象コミットのPRとCIに記録します。React・Composeの共通HTTPS fixtureによる主要操作、設定・権限・Bubble・公開カード・スクロール、実Kotlinカタログ、配布物のCSP・オフライン再読み込みを対象とします。Kotlin/Wasmのブラウザーテストには、JavaScriptの通信例外をKotlinの再試行処理へ渡す契約と、キャンセルの維持も含みます。
 
-| 検証 | 結果 |
-| --- | --- |
-| Kotlin/WasmのChromiumテスト | 14件通過 |
-| 切替・キャッシュアダプター・静的資源通知の単体テスト | 9件通過 |
-| React / Composeの主要操作・保存エラー復帰・設定画面との切替 | 6件通過 |
-| 配布物のCSP・オフライン再読み込み | 通過（初期JS・Wasm・6フォントの保存完了後に切断） |
-| 既存SQLiteのCSP・旧キャッシュ更新 | Firefox / Chromiumのcold・legacy・versioned・同一ポリシー更新で通過 |
-| UIの完全一致比較 | 1440px / 390pxの両方で不一致 |
+これまでの1440px / 390pxの画像比較はいずれも不一致です。機能テストの成功を、UIの完全一致として扱わないでください。
 
 ## Electric4k
 
@@ -163,7 +157,8 @@ Electric4kの各OS対応だけで、アプリの認証・通知・永続化が�
 ## StorybookのComposeカタログ
 
 既存Storybookの `Features/Compose/Chat` に、実際のKotlinコンポーネントを描画する
-Message / GroupedMessage / Composer / DisabledComposer / EmojiPicker / RichText / LongMessageを追加しています。
+Message / GroupedMessage / Composer / DisabledComposer / EmojiPicker / RichText / LongMessageに加え、
+URLカード・連携カード・Appカードブロック・設定・権限管理・Bubble・通知の実コンポーネントを描画します。
 ReactComparisonでは同じKotlinサンプルの本文で両実装を横に並べます（狭い画面では縦に並びます）。
 既存Reactストーリーと同じStorybookで確認でき、テーマ・言語・viewportは既存ツールバー、
 本文・グループ化・無効状態はControlsで変更できます。本文が空の場合は共通Kotlinのサンプルを表示します。
@@ -194,3 +189,10 @@ pnpm exec playwright test --config playwright.compose-storybook.config.ts
 この試験はKotlinの描画、オプション反映、入力、画面切替時の下書き破棄、モバイル幅の絵文字ピッカーを確認します。
 Canvas内部に対する既存DOM用アクセシビリティ検査は同等には使えません。Compose側のsemanticsと操作試験に加え、
 スクリーンリーダー等による確認が必要です。カタログ自体はUI完全一致の保証ではありません。
+
+## Reactの変更への追従
+
+[対応表](compose-parity.md) と [compose-react-parityスキル](../.agents/skills/compose-react-parity/SKILL.md) に従います。
+Reactを変更する場合は同じPRでComposeの機能・表示・操作を反映し、両実装を検証します。
+main取り込み時は競合がない変更も照合します。翻訳・fixture・アイコンは共通の所有先を使い、
+Kotlinの描画を再生成してからカタログと操作テストを実行します。

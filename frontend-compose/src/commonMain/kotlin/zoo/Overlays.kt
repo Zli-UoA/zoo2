@@ -104,6 +104,7 @@ private fun OverlayCard(slot: OverlaySlot) {
                 .pointerInput(slot) { detectTapGestures {} }
                 .semantics {
                     paneTitle = slot.title
+                    if (slot.anchor == null) dialog()
                     isTraversalGroup = true
                 },
             shape = RoundedCornerShape(if (anchor == null) 12.dp else 8.dp),
@@ -133,16 +134,23 @@ private fun OverlayCard(slot: OverlaySlot) {
 }
 
 @Composable
-fun SelectField(label: String, value: String, options: List<String>, change: (String) -> Unit) {
+fun SelectField(
+    label: String,
+    value: String,
+    options: List<String>,
+    enabled: Boolean = true,
+    allowEmpty: Boolean = true,
+    change: (String) -> Unit,
+) {
     var open by remember { mutableStateOf(false) }
     var anchor by remember { mutableStateOf(Rect.Zero) }
     Box(Modifier.onGloballyPositioned { anchor = it.boundsInRoot() }) {
-        Button("$label: $value") { open = true }
+        Button("$label: $value", enabled) { open = true }
     }
     if (open)
         OverlayRegistration(label, { open = false }, 256.dp, anchor) {
             Column(Modifier.verticalScroll(rememberScrollState())) {
-                (listOf("") + options).forEach { option ->
+                ((if (allowEmpty) listOf("") else emptyList()) + options).forEach { option ->
                     Button(option.ifEmpty { "—" }, modifier = Modifier.fillMaxWidth()) {
                         open = false
                         change(option)

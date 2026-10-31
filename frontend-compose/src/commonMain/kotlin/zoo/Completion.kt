@@ -1,8 +1,14 @@
 package zoo
 
-data class CompletionRange(val start: Int, val end: Int, val query: String, val mfm: Boolean)
+data class CompletionRange(
+    val start: Int,
+    val end: Int,
+    val query: String,
+    val mfm: Boolean,
+    val kind: String = if (mfm) "mfm" else "mention",
+)
 
-data class CompletionOption(val name: String, val label: String)
+data class CompletionOption(val name: String, val label: String, val appId: String? = null)
 
 val mfmFunctions =
     listOf(
@@ -46,6 +52,30 @@ private val mfmTemplates =
 fun completionAt(value: String, caret: Int): CompletionRange? {
     if (caret !in 0..value.length) return null
     val prefix = value.take(caret)
+    if (insideCode(value, caret)) return null
+    Regex("^/([a-zA-Z0-9_-]*)$").find(prefix)?.let {
+        return CompletionRange(0, caret, it.groupValues[1].lowercase(), false, "command")
+    }
+    var channelStart = caret
+    while (
+        channelStart > 0 &&
+            !value[channelStart - 1].isWhitespace() &&
+            value[channelStart - 1] !in "#.,!?<>()[]{}「」『』、。！？"
+    ) channelStart--
+    if (
+        channelStart > 0 &&
+            value[channelStart - 1] == '#' &&
+            (channelStart == 1 ||
+                value[channelStart - 2].isWhitespace() ||
+                value[channelStart - 2] in "([{（「『")
+    )
+        return CompletionRange(
+            channelStart - 1,
+            caret,
+            normalizeQuery(value.substring(channelStart, caret)),
+            false,
+            "channel",
+        )
     val mfm = Regex("\\$\\[?([a-zA-Z0-9]*)$").find(prefix)
     if (mfm != null && !Regex("https?://[^\\s]*$").containsMatchIn(prefix)) {
         val escapes = prefix.take(mfm.range.first).takeLastWhile { it == '\\' }.length
@@ -70,8 +100,22 @@ fun completionOptions(
     range: CompletionRange?,
     users: List<Row>,
     memberIds: Set<String>,
+    channels: List<Row> = emptyList(),
+    commands: List<Row> = emptyList(),
 ): List<CompletionOption> {
     if (range == null) return emptyList()
+    if (range.kind == "command")
+        return commands
+            .filter { it.text("name").startsWith(range.query, true) }
+            .map { CompletionOption(it.text("name"), it.text("app_name"), it.text("app_id")) }
+    if (range.kind == "channel")
+        return visibleChannels(channels)
+            .filter {
+                !it.flag("is_dm") &&
+                    normalizeQuery(it.text("channel_name")).contains(range.query, true)
+            }
+            .take(20)
+            .map { CompletionOption(it.text("channel_name"), "") }
     if (range.mfm)
         return mfmFunctions
             .filter { it.startsWith(range.query) }
@@ -89,7 +133,36 @@ fun completionOptions(
 }
 
 fun insertCompletion(value: String, range: CompletionRange, name: String): Pair<String, Int> {
+    if (range.kind in listOf("channel", "command")) {
+        val token = (if (range.kind == "channel") "#" else "/") + name
+        val tail =
+            value.drop(range.end).dropWhile { !it.isWhitespace() && it !in ".,!?<>()[]{}「」『』、。！？" }
+        return value.take(range.start) + token + (if (tail.startsWith(' ')) "" else " ") + tail to
+            range.start + token.length + 1
+    }
     val insert = if (range.mfm) "$[${mfmTemplates[name] ?: name} ]" else "@$name "
     return (value.take(range.start) + insert + value.drop(range.end)) to
         (range.start + insert.length - if (range.mfm) 1 else 0)
 }
+
+fun insideCode(value: String, position: Int): Boolean {
+    var delimiter = 0
+    Regex("(?<!\\\\)`+").findAll(value.take(position)).forEach {
+        val length = it.value.length
+        if (delimiter == 0) delimiter = length
+        else if (length == delimiter || delimiter >= 3 && length >= delimiter) delimiter = 0
+    }
+    return delimiter != 0
+}
+
+fun normalizeQuery(value: String): String =
+    value
+        .map {
+            when (it.code) {
+                in 0xff01..0xff5e -> (it.code - 0xfee0).toChar()
+                0x3000 -> ' '
+                else -> it
+            }
+        }
+        .joinToString("")
+        .lowercase()

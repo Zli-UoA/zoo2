@@ -1,5 +1,6 @@
 import type { Meta, StoryObj } from "@storybook/react-vite";
 import { isLocale } from "../../lib/i18n/locale";
+import { storyDeploymentCard } from "../../../.storybook/app-fixtures";
 import { ComposeCatalog } from "./ComposeCatalog";
 
 const meta = {
@@ -26,7 +27,21 @@ const meta = {
   },
   argTypes: {
     compare: { control: false, table: { disable: true } },
-    sample: { control: "select", options: ["message", "composer", "emoji-picker", "rich-text"] },
+    sample: {
+      control: "select",
+      options: [
+        "message",
+        "composer",
+        "emoji-picker",
+        "rich-text",
+        "link-preview",
+        "settings",
+        "settings-members",
+        "bubble",
+        "notifications",
+        "notifications-loading",
+      ],
+    },
     locale: { control: false, table: { disable: true } },
     dark: { control: false, table: { disable: true } },
   },
@@ -60,3 +75,24 @@ export const LongMessage: Story = {
       "long-path/".repeat(24),
   },
 };
+
+export const LinkPreview: Story = {
+  args: { sample: "link-preview", content: "https://example.com/article" },
+};
+export const IntegrationCards: Story = {
+  args: { fixture: { card: JSON.stringify({ cards: [storyDeploymentCard] }) } },
+};
+export const AppCardBlock: Story = {
+  args: {
+    content: "この本文はカードと二重表示しません",
+    fixture: {
+      app_id: "catalog-app",
+      app_blocks: JSON.stringify([{ type: "card", card: storyDeploymentCard }]),
+    },
+  },
+};
+export const Settings: Story = { args: { sample: "settings" } };
+export const WorkspaceMembers: Story = { args: { sample: "settings-members" } };
+export const BubbleChat: Story = { args: { sample: "bubble" } };
+export const Notifications: Story = { args: { sample: "notifications" } };
+export const NotificationsLoading: Story = { args: { sample: "notifications-loading" } };
