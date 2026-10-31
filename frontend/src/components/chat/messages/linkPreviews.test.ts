@@ -24,9 +24,7 @@ describe("link previews", () => {
     expect(proxy.searchParams.get("url")).toBe(image);
     expect(proxy.searchParams.has("preview")).toBe(false);
     expect(proxy.searchParams.has("static")).toBe(false);
-    const presetProxy = new URL(
-      proxyImageUrl("https://media.example/?preview=1&static=1", image)!,
-    );
+    const presetProxy = new URL(proxyImageUrl("https://media.example/?preview=1&static=1", image)!);
     expect(presetProxy.searchParams.has("preview")).toBe(false);
     expect(presetProxy.searchParams.has("static")).toBe(false);
     expect(proxyImageUrl("/media/", image)).toMatch(/^\/media\/\?url=/);
@@ -36,4 +34,3 @@ describe("link previews", () => {
     expect(proxyImageUrl("https://user:pass@media.example", image)).toBeNull();
   });
 });
-

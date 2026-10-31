@@ -51,4 +51,3 @@ export function proxyImageUrl(endpoint: string, image: string | null): string | 
     return null;
   }
 }
-
