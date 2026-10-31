@@ -6,7 +6,7 @@
 
 削除対象は `/api/webhooks/github`、`/api/webhooks/github/{id}` と `GITHUB_WEBHOOK_*` の設定です。GitHub 固有の変換機能は Zoo 本体へ戻しません。
 
-1. GitHub イベントを受信・検証する外部 Bot アプリを用意し、Zoo の App として登録します。必要な scope と投稿先チャンネルへの参加を管理者が承認します。
+1. [GitHub 通知 Bot](../../apps/github-bot/README.md) など、GitHub イベントを受信・検証する外部 Bot アプリを用意し、Zoo の App として登録します。必要な scope と投稿先チャンネルへの参加を管理者が承認します。
 2. Bot アプリ側の受信 URL と GitHub の署名 Secret を設定し、GitHub 側の Webhook の送信先をその URL へ変更します。Zoo の Webhook URL は GitHub の生ペイロードを受け付けません。
 3. GitHub のテスト配信と実際の対象イベントで、Bot アプリ経由の投稿を確認します。旧通知と重複しないことも確認します。
 4. 旧 Zoo 側の GitHub 環境変数を除去し、このバージョンをデプロイします。Bot アプリの準備・切り替えが未完了なら、本番への適用を延期してください。
