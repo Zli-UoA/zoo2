@@ -263,7 +263,9 @@
     "mac": "⌘（Cmd）+Enter 傳送 / Enter 換行",
     "ctrl": "Ctrl+Enter 傳送 / Enter 換行",
     "other": "Cmd / Ctrl+Enter 傳送 / Enter 換行",
-    "touch": "用傳送按鈕傳送"
+    "touch": "用傳送按鈕傳送",
+    "commands": "指令建議",
+    "channels": "頻道建議"
   },
   "notifications": {
     "label": "通知",

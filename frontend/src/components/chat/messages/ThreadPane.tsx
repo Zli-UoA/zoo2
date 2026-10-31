@@ -2,6 +2,7 @@ import { useTranslation } from "react-i18next";
 import { ArrowLeftIcon, XIcon } from "lucide-react";
 import { useEffect, useMemo, useRef } from "react";
 
+import type { CommandSuggestion } from "./composerSuggestions";
 import type { KitchenCatalog } from "../../../lib/emoji/kitchen";
 import type { ReactionGroup } from "../../../lib/emoji/reactions";
 import { Button } from "../../ui/button";
@@ -15,6 +16,8 @@ import { buildMessageItems } from "./messageGrouping";
 import { isNearBottom } from "./messageScroll";
 
 export interface ThreadPaneProps {
+  commands?: readonly CommandSuggestion[];
+  onRequestCommands?: () => void;
   targetMessageId?: string;
   mentionUsers?: import("../../../lib/electric/types").UserRow[];
   mentionMemberIds?: ReadonlySet<string>;
@@ -42,7 +45,7 @@ export interface ThreadPaneProps {
   onCancelEdit: () => void;
   onSaveEdit: () => void;
   onRequestDelete: (id: string) => void;
-  onSendReply: (content: string) => Promise<boolean>;
+  onSendReply: (content: string, commandAppId?: string) => Promise<boolean>;
   /** 上端付近で古い返信を読み足す。 */
   onLoadOlder?: () => void;
   /** 取得失敗時の再試行。 */
@@ -58,6 +61,8 @@ export interface ThreadPaneProps {
  * `messages.insert`（`parent_id` 付き）で、txid の確定は MessagePane が待つ。
  */
 export function ThreadPane({
+  commands,
+  onRequestCommands,
   targetMessageId,
   mentionUsers,
   mentionMemberIds,
@@ -261,6 +266,8 @@ export function ThreadPane({
         <>
           <TypingIndicator users={typingUsers} />
           <Composer
+            commands={commands}
+            onRequestCommands={onRequestCommands}
             mentionUsers={mentionUsers}
             mentionMemberIds={mentionMemberIds}
             disabled={!isMember || isOffline}

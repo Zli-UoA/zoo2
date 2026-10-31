@@ -81,6 +81,7 @@ const notificationContexts: Record<string, NotificationContextFixture> = {
 };
 
 export const storybookApiHandlers = [
+  http.get("*/api/apps/commands", () => HttpResponse.json([])),
   http.get("*/api/users/me/preferences", () => HttpResponse.json({ search_engine: "google" })),
   http.patch("*/api/users/me/preferences", async ({ request }) =>
     HttpResponse.json({ data: await request.json(), txid: null }),

@@ -57,7 +57,7 @@
     },
     {
       "file": "src/components/chat/ChannelScreen.stories.tsx",
-      "states": ["Default", "PrivateChannel", "Archived", "NotFound", "Mobile"]
+      "states": ["Default", "PrivateChannel", "Archived", "NotFound", "Mobile", "CommandCompletion"]
     },
     {
       "file": "src/components/chat/ChannelSidebar.stories.tsx",
@@ -127,7 +127,16 @@
     },
     {
       "file": "src/components/chat/messages/Composer.stories.tsx",
-      "states": ["Default", "Disabled", "Multiline", "MentionSuggestions", "Mobile"]
+      "states": [
+        "Default",
+        "Disabled",
+        "Multiline",
+        "MentionSuggestions",
+        "Mobile",
+        "ChannelSuggestions",
+        "CommandSuggestions",
+        "ChannelInsertion"
+      ]
     },
     {
       "file": "src/components/chat/messages/LinkPreviews.stories.tsx",
@@ -192,7 +201,7 @@
     },
     {
       "file": "src/components/chat/messages/ThreadPane.stories.tsx",
-      "states": ["Empty", "WithReplies", "Loading", "Error", "Mobile"]
+      "states": ["Empty", "WithReplies", "Loading", "Error", "Mobile", "Completions"]
     },
     {
       "file": "src/components/chat/messages/TypingIndicator.stories.tsx",

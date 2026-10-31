@@ -263,7 +263,9 @@
     "mac": "⌘ (Cmd)+Enter to send / Enter for a new line",
     "ctrl": "Ctrl+Enter to send / Enter for a new line",
     "other": "Cmd / Ctrl+Enter to send / Enter for a new line",
-    "touch": "Use the send button to send"
+    "touch": "Use the send button to send",
+    "commands": "Command suggestions",
+    "channels": "Channel suggestions"
   },
   "notifications": {
     "label": "Notifications",

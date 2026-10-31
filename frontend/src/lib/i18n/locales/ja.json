@@ -263,7 +263,9 @@
     "mac": "⌘（Cmd）+Enter で送信 / Enter で改行",
     "ctrl": "Ctrl+Enter で送信 / Enter で改行",
     "other": "Cmd / Ctrl+Enter で送信 / Enter で改行",
-    "touch": "送信ボタンで送信します"
+    "touch": "送信ボタンで送信します",
+    "commands": "コマンド候補",
+    "channels": "チャンネル候補"
   },
   "notifications": {
     "label": "通知",

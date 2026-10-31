@@ -774,3 +774,92 @@ async fn reapproval_invalidates_old_codes_tokens_and_queued_events() -> anyhow::
     );
     Ok(())
 }
+
+#[tokio::test]
+async fn command_suggestions_only_include_available_approved_installations() -> anyhow::Result<()> {
+    let (state, app, owner, stranger, id, _access, channel) = fixture().await?;
+    let path = format!("/api/apps/commands?channel_id={channel}");
+    let expected = json!([{"app_id":id,"app_name":"Fixture","name":"echo"}]);
+    let (status, rows) = req(&app, "GET", &path, &owner, Value::Null).await;
+    assert_eq!(status, StatusCode::OK, "{rows}");
+    assert_eq!(rows, expected);
+    assert_eq!(
+        req(&app, "GET", &path, &stranger, Value::Null).await.1,
+        json!([])
+    );
+    let mut db = state.db.clone();
+    let mut tx = db.transaction().await?;
+    let bot = backend::apps::one(
+        &mut tx,
+        "SELECT json_build_object('id',bot_user_id)::text FROM apps WHERE id=$1",
+        &[&id],
+    )
+    .await?;
+    drop(tx);
+    assert_eq!(
+        req(&app, "GET", &path, bot["id"].as_str().unwrap(), Value::Null)
+            .await
+            .0,
+        StatusCode::FORBIDDEN
+    );
+    assert_eq!(
+        req(
+            &app,
+            "GET",
+            &format!("/api/apps/commands?channel_id={}", Uuid::new_v4()),
+            &owner,
+            Value::Null
+        )
+        .await
+        .1,
+        json!([])
+    );
+    // Editing the draft manifest must not change the approved command registry.
+    for (sql, available) in [
+        (
+            "UPDATE apps SET manifest=jsonb_set(manifest::jsonb,'{commands}','[\"draft_only\"]'::jsonb)::text WHERE id=$1 RETURNING '{}'::text",
+            true,
+        ),
+        (
+            "UPDATE app_installations SET active=false WHERE app_id=$1 RETURNING '{}'::text",
+            false,
+        ),
+        (
+            "UPDATE app_installations SET active=true,scopes='[]' WHERE app_id=$1 RETURNING '{}'::text",
+            false,
+        ),
+        (
+            "UPDATE app_installations SET scopes='[\"commands:read\"]' WHERE app_id=$1 RETURNING '{}'::text",
+            true,
+        ),
+        (
+            "UPDATE apps SET status='disabled' WHERE id=$1 RETURNING '{}'::text",
+            false,
+        ),
+        (
+            "UPDATE apps SET status='installed' WHERE id=$1 RETURNING '{}'::text",
+            true,
+        ),
+        (
+            "DELETE FROM channel_user WHERE channel_id=(SELECT channel_id FROM channel_user WHERE user_id=(SELECT bot_user_id FROM apps WHERE id=$1) LIMIT 1) AND user_id=(SELECT bot_user_id FROM apps WHERE id=$1) RETURNING '{}'::text",
+            false,
+        ),
+    ] {
+        let mut db = state.db.clone();
+        let mut tx = db.transaction().await?;
+        backend::apps::one(&mut tx, sql, &[&id]).await?;
+        tx.commit().await?;
+        let (status, rows) = req(&app, "GET", &path, &owner, Value::Null).await;
+        assert_eq!(status, StatusCode::OK, "{rows}");
+        assert_eq!(
+            rows,
+            if available {
+                expected.clone()
+            } else {
+                json!([])
+            },
+            "{sql}"
+        );
+    }
+    Ok(())
+}

@@ -1,3 +1,6 @@
+import { http, HttpResponse } from "msw";
+import { expect, fn, userEvent, waitFor, within } from "storybook/test";
+import { storyCommands } from "../../../.storybook/app-fixtures";
 import type { Meta, StoryObj } from "@storybook/react-vite";
 
 import { StoryShell } from "../../../.storybook/shell";
@@ -56,4 +59,46 @@ export const Mobile: Story = {
       </StoryShell>
     ),
   ],
+};
+
+const commandLookup = fn();
+const commandInvocation = fn();
+export const CommandCompletion: Story = {
+  parameters: {
+    a11y: { test: "error" },
+    msw: {
+      handlers: [
+        http.get("*/api/apps/commands", ({ request }) => {
+          commandLookup(new URL(request.url).searchParams.get("channel_id"));
+          return HttpResponse.json(storyCommands);
+        }),
+        http.post("*/api/apps/:id/invoke", async ({ params, request }) => {
+          commandInvocation(params.id, await request.json());
+          return HttpResponse.json({ event_id: "command-event" });
+        }),
+      ],
+    },
+  },
+  beforeEach: () => {
+    commandLookup.mockClear();
+    commandInvocation.mockClear();
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const input = await canvas.findByRole("textbox");
+    await userEvent.type(input, "/ec");
+    await userEvent.click(await canvas.findByRole("option", { name: "/echo Meeting Notes" }));
+    await userEvent.type(input, "hello");
+    await userEvent.click(canvas.getByRole("button", { name: "送信" }));
+    await waitFor(() =>
+      expect(commandInvocation).toHaveBeenCalledWith("notes", {
+        kind: "command",
+        name: "echo",
+        channel_id: "channel-general",
+        values: { text: "hello" },
+      }),
+    );
+    await expect(commandLookup).toHaveBeenCalledWith("channel-general");
+    await expect(input).toHaveValue("");
+  },
 };

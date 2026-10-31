@@ -72,6 +72,8 @@ Appの `redirect_uris` にHTTPSのコールバックURLを登録し、管理者�
 
 ## 対話画面・ファイル・リンク
 
+`GET /api/apps/commands?channel_id=...` は、そのチャンネルで実行可能な承認済みコマンドを `app_id`・`app_name`・`name` の配列で返します。通常投稿・スレッド返信で `/` を入力すると補完候補を表示し、同名コマンドはApp名で選択できます。スレッドからも現在のチャンネルでコマンドを実行します。
+
 `commands` に登録したコマンドはチャンネルで `/コマンド 引数` として実行できます。同名コマンドが複数のAppにある場合はApp詳細から選択します。`shortcuts` はApp詳細から実行します。`message_shortcuts` はメッセージのApp操作ボタンから実行でき、対象メッセージのIDをイベントへ渡します。メッセージ用ショートカットには `messages:read` が必要です。
 
 対話画面は `text`、`button`、`input`、`select` の宣言型ブロックで構成し、任意HTML・JavaScriptを実行しません。メッセージの `blocks` APIと、Appホーム・モーダル・本人だけに表示する一時メッセージの `surfaces` APIで共用します。操作はApp・本人・元の画面／メッセージ・チャンネルに紐づきます。

@@ -263,7 +263,9 @@
     "mac": "⌘（Cmd）+Enter 发送 / Enter 换行",
     "ctrl": "Ctrl+Enter 发送 / Enter 换行",
     "other": "Cmd / Ctrl+Enter 发送 / Enter 换行",
-    "touch": "使用发送按钮发送"
+    "touch": "使用发送按钮发送",
+    "commands": "命令建议",
+    "channels": "频道建议"
   },
   "notifications": {
     "label": "通知",

@@ -36,3 +36,9 @@ export const appHandlers = [
   http.get("*/api/apps", () => HttpResponse.json(storyApps)),
   http.get("*/api/apps/:id/surfaces", () => HttpResponse.json([])),
 ];
+
+export const storyCommands = [
+  { app_id: "echo", app_name: "Echo Bot", name: "echo" },
+  { app_id: "notes", app_name: "Meeting Notes", name: "echo" },
+  { app_id: "github", app_name: "GitHub", name: "github" },
+];

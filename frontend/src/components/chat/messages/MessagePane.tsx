@@ -3,6 +3,7 @@ import { useTranslation } from "react-i18next";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 
+import { useChannelCommands } from "../../../hooks/useChannelCommands";
 import { useCurrentUser } from "../../../hooks/useCurrentUser";
 import { useKitchenCatalog } from "../../../hooks/useKitchenCatalog";
 import {
@@ -117,6 +118,7 @@ export function MessagePane({
   const feed = messagesQuery.data ?? [];
   const reactionsQuery = useMessageReactions(channelId);
   const { currentUserId } = useCurrentUser();
+  const commandSuggestions = useChannelCommands(channelId, currentUserId);
   const { isOnline } = useOfflineStatus();
   const typing = useTyping(channelId, null, !readOnly && isMember && !!currentUserId);
   const { error, setError, run, isPending: isWritePending } = useWriteRunner();
@@ -303,23 +305,41 @@ export function MessagePane({
     }
   }, [channelId, channelUsers, currentUserId, isJoining, run]);
 
-  const handleSend = useCallback(
-    async (content: string): Promise<boolean> => {
+  const runCommand = useCallback(
+    async (content: string, appId?: string): Promise<boolean | null> => {
       const command = /^\/([a-zA-Z0-9_-]+)(?:\s+([\s\S]*))?$/.exec(content.trim());
-      if (command) {
-        try {
+      if (!command) return null;
+      try {
+        if (appId) {
+          await appClient.request(`/api/apps/${encodeURIComponent(appId)}/invoke`, {
+            method: "POST",
+            body: {
+              kind: "command",
+              name: command[1],
+              channel_id: channelId,
+              values: { text: command[2] ?? "" },
+            },
+          });
+        } else {
           await appClient.request(`/api/apps/commands/${command[1]}`, {
             method: "POST",
             body: { channel_id: channelId, text: command[2] ?? "" },
           });
-          return true;
-        } catch (error) {
-          if (!(error instanceof ApiError && error.status === 404)) {
-            toast.error(t("apps.actionError"));
-            return false;
-          }
         }
+        return true;
+      } catch (error) {
+        if (!appId && error instanceof ApiError && error.status === 404) return null;
+        toast.error(t("apps.actionError"));
+        return false;
       }
+    },
+    [appClient, channelId, t],
+  );
+
+  const handleSend = useCallback(
+    async (content: string, commandAppId?: string): Promise<boolean> => {
+      const commandResult = await runCommand(content, commandAppId);
+      if (commandResult !== null) return commandResult;
       const id = crypto.randomUUID();
       await run(() =>
         messagesCollection.insert({
@@ -337,15 +357,17 @@ export function MessagePane({
       // 成否を判定する（Composer が失敗時に下書きを復元できるようにする）。
       return messagesCollection.get(id) !== undefined;
     },
-    [run, messagesCollection, currentUserId, channelId, appClient, t],
+    [run, messagesCollection, currentUserId, channelId, runCommand],
   );
 
   const handleSendReply = useCallback(
-    async (content: string): Promise<boolean> => {
+    async (content: string, commandAppId?: string): Promise<boolean> => {
       if (readOnly || !isMember) {
         toast.info(t("messages.joinToPostDescription"), { id: "thread-reply-join-required" });
         return false;
       }
+      const commandResult = await runCommand(content, commandAppId);
+      if (commandResult !== null) return commandResult;
       const rootId = threadRootId;
       if (!rootId) {
         return false;
@@ -365,7 +387,17 @@ export function MessagePane({
       );
       return messagesCollection.get(id) !== undefined;
     },
-    [run, messagesCollection, currentUserId, channelId, threadRootId, isMember, readOnly, t],
+    [
+      run,
+      messagesCollection,
+      currentUserId,
+      channelId,
+      threadRootId,
+      isMember,
+      readOnly,
+      t,
+      runCommand,
+    ],
   );
 
   const handleStartEdit = useCallback((id: string, content: string) => {
@@ -474,6 +506,8 @@ export function MessagePane({
           <>
             <TypingIndicator users={typing.users} />
             <Composer
+              commands={commandSuggestions.commands}
+              onRequestCommands={commandSuggestions.load}
               mentionUsers={mentionUsers}
               mentionMemberIds={mentionMemberIds}
               key={channelId}
@@ -494,6 +528,8 @@ export function MessagePane({
 
       {threadRoot ? (
         <ThreadPane
+          commands={commandSuggestions.commands}
+          onRequestCommands={commandSuggestions.load}
           targetMessageId={targetMessageId}
           mentionUsers={mentionUsers}
           mentionMemberIds={mentionMemberIds}
