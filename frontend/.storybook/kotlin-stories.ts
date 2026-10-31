@@ -39,6 +39,9 @@ export function kotlinOptions(context: Selection): KotlinPreviewProps | null {
       "Default",
       "Own Message",
       "Grouped",
+      "With Reactions",
+      "Reaction Users",
+      "Reaction Users Hover",
       "Long Message",
       "Card",
       "With Attachments",
@@ -50,6 +53,35 @@ export function kotlinOptions(context: Selection): KotlinPreviewProps | null {
       ...record(item.message),
       ...(args.isOwn ? { user_id: fixture.currentUserId } : {}),
     };
+    const groups = Array.isArray(args.reactions) ? args.reactions.map(record) : [];
+    const users = new Map(
+      (fixture.users as Record<string, unknown>[]).map((user) => [user.id, user]),
+    );
+    users.set(message.user_id, {
+      id: message.user_id,
+      user_name: message.user_name,
+      display_name: message.display_name,
+    });
+    const reactions = groups.flatMap((group, index) => {
+      const names = record(group.userNames);
+      return (Array.isArray(group.userIds) ? group.userIds : []).map((userId) => {
+        const label = names[String(userId)];
+        if (typeof label === "string") {
+          const match = /^(.*?) \(@(.*?)\)$/.exec(label);
+          users.set(userId, {
+            id: userId,
+            display_name: match?.[1] ?? "",
+            user_name: match?.[2] ?? label.replace(/^@/, ""),
+          });
+        }
+        return {
+          id: `reaction-${index}-${userId}`,
+          message_id: message.id,
+          user_id: userId,
+          emoji: group.emoji,
+        };
+      });
+    });
     return {
       ...base,
       content: typeof message.content === "string" ? message.content : "",
@@ -58,9 +90,9 @@ export function kotlinOptions(context: Selection): KotlinPreviewProps | null {
         ...fixture,
         ...message,
         attachments: args.attachments ?? [],
-        users: [
-          { id: message.user_id, user_name: message.user_name, display_name: message.display_name },
-        ],
+        users: [...users.values()],
+        reactions,
+        replyCount: args.replyCount ?? 0,
       },
     };
   }

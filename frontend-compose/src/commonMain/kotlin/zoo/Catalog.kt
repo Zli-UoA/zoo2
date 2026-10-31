@@ -107,8 +107,11 @@ fun Catalog(app: Session, options: Row) {
                             app,
                             CatalogSamples.channel,
                             message,
-                            listOf(message),
-                            emptyList(),
+                            listOf(message) +
+                                List(fixture.text("replyCount").toIntOrNull() ?: 0) { index ->
+                                    obj("id" to "reply-$index", "parent_id" to message.text("id"))
+                                },
+                            fixture.array("reactions").map { it.jsonObject },
                             users,
                             options.flag("grouped"),
                             true,

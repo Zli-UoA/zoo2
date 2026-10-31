@@ -18,6 +18,29 @@ function story(
 }
 
 describe("existing Storybook stories rendered in Kotlin", () => {
+  it("shares reaction actors and labels from the existing reaction-user story", () => {
+    const options = kotlinOptions(
+      story("Features/Chat/MessageRow", "Reaction Users", {
+        item: { message: { id: "m", user_id: "author" }, isGroupStart: true },
+        reactions: [
+          {
+            emoji: "👍",
+            userIds: ["bob", "long"],
+            userNames: { bob: "Bob (@bob)", long: `${"A".repeat(80)} (@longname)` },
+          },
+        ],
+      }),
+    )!;
+    expect(options.fixture?.reactions).toEqual([
+      { id: "reaction-0-bob", message_id: "m", user_id: "bob", emoji: "👍" },
+      { id: "reaction-0-long", message_id: "m", user_id: "long", emoji: "👍" },
+    ]);
+    expect(options.fixture?.users).toContainEqual({
+      id: "long",
+      display_name: "A".repeat(80),
+      user_name: "longname",
+    });
+  });
   it("uses the existing message and attachment arguments without mutating them", () => {
     const message = {
       id: "message-1",
