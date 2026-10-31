@@ -102,7 +102,7 @@ jobs:
         uses: Swatinem/rust-cache@v2
         with:
           workspaces: backend
-          # Reuse the debug build cache of ci-backend.yaml's build job.
+          # Reuse the debug build cache of ci-backend.yaml's check job.
           shared-key: backend-debug
           # Keep the build cache even when the E2E test fails.
           cache-on-failure: true
