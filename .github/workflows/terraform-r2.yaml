@@ -18,9 +18,15 @@ defaults:
     working-directory: infra/terraform
 
 jobs:
+  runner:
+    uses: ./.github/workflows/select-runner.yaml
+    secrets:
+      runner-status-token: ${{ secrets.RUNNER_STATUS_TOKEN }}
+
   validate:
     name: Validate
-    runs-on: ubuntu-latest
+    needs: runner
+    runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-latest' || fromJSON(needs.runner.outputs.runs-on || '"zli-kubecamp-no-docker"') }}
     steps:
       - name: Checkout
         uses: actions/checkout@v7
@@ -41,8 +47,8 @@ jobs:
 
   plan:
     name: Plan
-    needs: validate
-    runs-on: ubuntu-latest
+    needs: [runner, validate]
+    runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-latest' || fromJSON(needs.runner.outputs.runs-on || '"zli-kubecamp-no-docker"') }}
     if: github.event_name == 'pull_request'
     steps:
       - name: Checkout
