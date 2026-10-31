@@ -92,7 +92,9 @@ export const WebhookSettingsOpen: Story = {
     await userEvent.click(screen.getByRole("button", { name: "チャンネル設定" }));
     const settings = await screen.findByRole("dialog", { name: "チャンネル設定" });
     await userEvent.click(within(settings).getByRole("button", { name: /^開く$/ }));
-    await expect(await screen.findByRole("dialog", { name: "Webhook設定" })).toBeVisible();
+    await waitFor(async () => {
+      await expect(screen.getByRole("dialog", { name: "Webhook設定" })).toBeVisible();
+    });
     await waitFor(async () => {
       await expect(
         screen.queryByRole("dialog", { name: "チャンネル設定" }),
