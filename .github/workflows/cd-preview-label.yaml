@@ -1,7 +1,7 @@
 name: Preview label
 # The site1 Flux Operator deploys open PRs that carry the preview label (zoo2-infra docs/preview.md).
-# Ready same-repository PRs that change an image component get the label; a PR converted back to draft loses it to free a slot.
-# PRs that change only docs and the like build no images, so they get no preview. If a push first adds an image change, it gets the label then.
+# Ready same-repository PRs that change the frontend get the label; a PR converted back to draft loses it to free a slot.
+# PRs that change only backend, migrate, docs and the like get no preview. If a push first adds a frontend change, it gets the label then.
 # pull_request_target supplies a token that can label; this workflow never checks out or runs PR code.
 on:
   pull_request_target:
@@ -27,7 +27,7 @@ jobs:
       - uses: actions/github-script@v9
         with:
           script: |
-            const {pullRequestComponents} = await import(`${process.env.GITHUB_WORKSPACE}/.github/scripts/image-plan.mjs`);
+            const {wantsPreview} = await import(`${process.env.GITHUB_WORKSPACE}/.github/scripts/image-plan.mjs`);
             // Read the current state: the event may be stale by the time this job runs.
             const {data: pr} = await github.rest.pulls.get({...context.repo, pull_number: context.payload.pull_request.number});
             if (pr.state !== 'open') return;
@@ -41,17 +41,17 @@ jobs:
             }
             if (labeled) return;
             const files = await github.paginate(github.rest.pulls.listFiles, {...context.repo, pull_number: pr.number, per_page: 100});
-            if (pullRequestComponents(files).length === 0) {
-              core.notice('No image component changed; no preview label');
+            if (!wantsPreview(files)) {
+              core.notice('No frontend change; no preview label');
               return;
             }
             if (context.payload.action === 'synchronize') {
-              // A removed label stays removed: add it only when this push is the first to change an image component.
+              // A removed label stays removed: add it only when this push is the first to change the frontend.
               // If the previous head is unavailable (force push), assume it already had changes.
               let hadChanges = true;
               try {
                 const before = await github.paginate(github.rest.repos.compareCommitsWithBasehead, {...context.repo, basehead: `${pr.base.sha}...${context.payload.before}`, per_page: 100}, response => response.data.files);
-                hadChanges = pullRequestComponents(before).length > 0;
+                hadChanges = wantsPreview(before);
               } catch (error) {
                 core.info(`Could not read the previous head: ${error.message}`);
               }

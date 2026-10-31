@@ -10,9 +10,11 @@
 4. push すると、新しい head SHA のイメージで更新されます。
 5. PR を close するか、`preview` ラベルを外すと環境は削除されます。PR を draft に戻した場合も、ワークフローがラベルを外します。
 
-ドキュメントなどだけを変更する PR（frontend・backend・migrate のイメージに影響するファイルを含まない PR）には、ラベルを付けず、`Publish images` もイメージのタグを付けません。Preview 環境は作られず、環境数の枠も使いません。手でラベルを付けても、イメージが発行されないので配備されません。この PR に最初のイメージ変更を含む push をした時点で、ラベルが付きます。
+ラベルが自動で付くのは、frontend に影響する変更（`frontend/`、`infra/Dockerfile-frontend-deploy*`、`infra/frontend-nginx.conf`）を含む PR だけです。backend・migrate だけ、ビルド用の共有ファイル（`.github/scripts/` など）だけを変更する PR には付けません。`Publish images` はこれらの PR でもイメージを発行するので、Preview が必要なら手でラベルを付けてください。変更ファイルが3000件以上の PR は、見落としを避けるため付けます。
 
-自動で付くのは、イメージに影響する変更を含む PR の opened・reopened・ready_for_review のときと、上の「最初のイメージ変更を含む push」のときだけです。ラベルを手で外した PR には、reopen するか draft から戻すまで付け直しません。fork の PR には付けません。ラベルの追加は `GITHUB_TOKEN` で行うので、その labeled イベントでは `Publish images` は動きません（新しい PR は opened のときにイメージを発行します）。この仕組みより前から open の PR には自動では付かないので、必要なら手で付けてください。
+ドキュメントなどだけを変更する PR（frontend・backend・migrate のイメージに影響するファイルを含まない PR）には、`Publish images` もイメージのタグを付けません。Preview 環境は作られず、環境数の枠も使いません。手でラベルを付けても、イメージが発行されないので配備されません。この PR に最初の frontend の変更を含む push をした時点で、ラベルが付きます。
+
+自動で付くのは、frontend の変更を含む PR の opened・reopened・ready_for_review のときと、上の「最初の frontend の変更を含む push」のときだけです。ラベルを手で外した PR には、reopen するか draft から戻すまで付け直しません。fork の PR には付けません。ラベルの追加は `GITHUB_TOKEN` で行うので、その labeled イベントでは `Publish images` は動きません（新しい PR は opened のときにイメージを発行します）。この仕組みより前から open の PR には自動では付かないので、必要なら手で付けてください。
 
 ラベルを付けられるのは write 権限と Triage 権限を持つメンバーです。ラベルを付けると PR のコードが共有の DB 認証情報とともにクラスタで動くので、どちらの権限も信頼できるメンバーに限ってください。fork の PR にはラベルを付けないでください。fork の PR はイメージを発行しないため配備に失敗し、上限の枠だけを使います。クラスタ側には fork を除外する条件がありません。同じリポジトリにブランチを push できるのは write 権限を持つメンバーだけなので、自動でラベルを付けても、クラスタでコードを動かせる人の範囲は変わりません。
 

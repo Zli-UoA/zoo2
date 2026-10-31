@@ -27,17 +27,29 @@ export function promotionAliases(selected, sha, release) {
 // それ以外は、各コンポーネントのソースと Dockerfile の変更を見る（migrate のソースは infra/db/、frontend は nginx 設定も含む）。
 export function changedComponents(files) {
   const shared = files.some(f => f.startsWith('.github/scripts/') || f.startsWith('.github/actions/') || f === '.github/workflows/cd-images.yaml' || f === '.dockerignore');
-  return components.filter(c => shared || files.some(f =>
-    f.startsWith(`infra/Dockerfile-${c}-deploy`) ||
-    (c === 'migrate' ? f.startsWith('infra/db/') : f.startsWith(`${c}/`)) ||
-    (c === 'frontend' && f === 'infra/frontend-nginx.conf') ||
-    (c === 'backend' && f === 'docs/slack-event-coverage.json')));
+  return components.filter(c => shared || files.some(f => componentFile(c, f)));
 }
 
-// listFiles が返す PR 全体の差分から、ビルドが必要なコンポーネントを返す（Preview label ワークフローも使う）。
+// コンポーネント自身のソースと Dockerfile のファイルか。ビルド用の共有ファイルは含まない。
+function componentFile(c, f) {
+  return f.startsWith(`infra/Dockerfile-${c}-deploy`) ||
+    (c === 'migrate' ? f.startsWith('infra/db/') : f.startsWith(`${c}/`)) ||
+    (c === 'frontend' && f === 'infra/frontend-nginx.conf') ||
+    (c === 'backend' && f === 'docs/slack-event-coverage.json');
+}
+
+const fileNames = files => files.flatMap(f => [f.filename, f.previous_filename].filter(Boolean));
+
+// listFiles が返す PR 全体の差分から、ビルドが必要なコンポーネントを返す。
 // GitHub の変更ファイル一覧は3000件で打ち切られる。変更を見落とさないよう、3000件以上ならすべてビルドする。
 export function pullRequestComponents(files) {
-  return files.length >= 3000 ? components : changedComponents(files.flatMap(f => [f.filename, f.previous_filename].filter(Boolean)));
+  return files.length >= 3000 ? components : changedComponents(fileNames(files));
+}
+
+// Preview label ワークフローが使う。Preview は画面を確かめるためのものなので、frontend 自身の変更がある PR だけに付ける。
+// backend・migrate だけ、またはビルド用の共有ファイルだけの変更では付けない。3000件以上は見落としを避けて付ける。
+export function wantsPreview(files) {
+  return files.length >= 3000 || fileNames(files).some(f => componentFile('frontend', f));
 }
 
 // 現在 latest が指している main コミットの SHA を GHCR から取得する。

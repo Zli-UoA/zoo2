@@ -80,7 +80,7 @@ test('only missing versions are ignored', async () => {
   await assert.rejects(ignoreMissing(async () => {throw new Error('403');}));
 });
 
-import plan, {promotedMainSha, pullRequestComponents} from './image-plan.mjs';
+import plan, {promotedMainSha, pullRequestComponents, wantsPreview} from './image-plan.mjs';
 function planFixture({files = [], fork = false, state = 'open', currentSha = sha(1)} = {}) {
   const outputs = {};
   let requestedPages = false;
@@ -144,6 +144,17 @@ test('pullRequestComponents covers renames and huge diffs', () => {
   assert.deepEqual(pullRequestComponents([{filename: 'docs/a.md'}]), []);
   assert.deepEqual(pullRequestComponents([{filename: 'docs/a.rs', previous_filename: 'backend/a.rs'}]), ['backend']);
   assert.equal(pullRequestComponents(Array.from({length: 3000}, () => ({filename: 'docs/a.md'}))).length, 3);
+});
+test('wantsPreview needs a frontend change', () => {
+  for (const filename of ['frontend/src/main.tsx', 'infra/Dockerfile-frontend-deploy', 'infra/frontend-nginx.conf']) {
+    assert.equal(wantsPreview([{filename}]), true, filename);
+  }
+  assert.equal(wantsPreview([{filename: 'docs/a.tsx', previous_filename: 'frontend/a.tsx'}]), true);
+  // backend・migrate だけ、ビルド用の共有ファイルだけでは、イメージはビルドしても Preview は付けない。
+  for (const filename of ['backend/src/main.rs', 'infra/db/migrations/1.sql', 'infra/Dockerfile-backend-deploy', '.github/scripts/image-plan.mjs', '.github/workflows/cd-images.yaml', '.dockerignore', 'docs/a.md']) {
+    assert.equal(wantsPreview([{filename}]), false, filename);
+  }
+  assert.equal(wantsPreview(Array.from({length: 3000}, () => ({filename: 'docs/a.md'}))), true);
 });
 test('main plans all images with full SHA tags', async () => {
   const fixture = planFixture(); fixture.context.payload = {}; fixture.context.runNumber = 42;
