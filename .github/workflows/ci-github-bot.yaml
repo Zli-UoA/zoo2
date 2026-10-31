@@ -26,7 +26,7 @@ jobs:
       runner-status-token: ${{ secrets.RUNNER_STATUS_TOKEN }}
   test:
     needs: runner
-    runs-on: ${{ fromJSON(needs.runner.outputs.runs-on) }}
+    runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-latest' || fromJSON(needs.runner.outputs.docker-runs-on || '"zli-k8s"') }}
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v7
@@ -60,7 +60,7 @@ jobs:
   publish:
     needs: [runner, test]
     if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
-    runs-on: ${{ fromJSON(needs.runner.outputs.runs-on) }}
+    runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-latest' || fromJSON(needs.runner.outputs.docker-runs-on || '"zli-k8s"') }}
     timeout-minutes: 15
     permissions:
       contents: read
