@@ -74,7 +74,9 @@ export class GitHubBot {
     if (this.busy || this.stopping) return;
     this.busy = true;
     try {
-      for (let i = 0; i < 10 && !this.stopping; i++) {
+      // Credential revocation pauses delivery, not durable webhook acceptance. Check
+      // between jobs too: a tokens.revoked event can disable Zoo during this batch.
+      for (let i = 0; i < 10 && !this.stopping && !this.store.get("zoo-disabled"); i++) {
         const job = this.store.next();
         if (!job) break;
         try {
