@@ -221,7 +221,7 @@
     },
     {
       "file": "src/components/layout/ZooSettings.stories.tsx",
-      "states": ["General", "Apps", "AppsMobile", "Management", "Members"]
+      "states": ["General", "Apps", "AppsMobile", "Management", "Members", "GeneralMobile"]
     },
     {
       "file": "src/components/offline/OfflineBanner.stories.tsx",

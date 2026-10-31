@@ -48,6 +48,7 @@ export function AppShell({ children }: { children: ReactNode }) {
   const channelsQuery = useActiveChannels();
   const channels = channelsQuery.data ?? [];
 
+  const isSettings = useRouterState({ select: (state) => state.location.pathname === "/settings" });
   const isHome = useRouterState({ select: (state) => state.location.pathname === "/" });
   const selectedChannelId = useRouterState({
     select: (state) => {
@@ -171,13 +172,15 @@ export function AppShell({ children }: { children: ReactNode }) {
           >
             <OfflineBanner />
             <AppSurfaceHost />
-            <LeftRail />
-            <ChannelSidebar
-              channels={channels}
-              loading={channelsQuery.isLoading}
-              error={channelsQuery.isError}
-              className={sidebarVisible ? "flex" : "hidden md:flex"}
-            />
+            <div className={isSettings ? "hidden" : "contents"}>
+              <LeftRail />
+              <ChannelSidebar
+                channels={channels}
+                loading={channelsQuery.isLoading}
+                error={channelsQuery.isError}
+                className={sidebarVisible ? "flex" : "hidden md:flex"}
+              />
+            </div>
             <main className={cn("min-w-0 flex-1 flex-col", showChat ? "flex" : "hidden md:flex")}>
               {children}
             </main>

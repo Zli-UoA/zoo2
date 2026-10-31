@@ -2,7 +2,7 @@ import type { Meta, StoryObj } from "@storybook/react-vite";
 import { expect, screen, userEvent, waitFor } from "storybook/test";
 import { http, HttpResponse } from "msw";
 import { appHandlers } from "../../../.storybook/app-fixtures";
-import { StoryShell } from "../../../.storybook/shell";
+import { AppShell } from "./AppShell";
 import { ZooSettings } from "./ZooSettings";
 
 const meta = {
@@ -17,11 +17,9 @@ const meta = {
   },
   decorators: [
     (Story) => (
-      <StoryShell selectedChannelId="channel-general">
-        <div className="h-screen">
-          <Story />
-        </div>
-      </StoryShell>
+      <AppShell>
+        <Story />
+      </AppShell>
     ),
   ],
 } satisfies Meta<typeof ZooSettings>;
@@ -31,6 +29,11 @@ type Story = StoryObj<typeof meta>;
 export const General: Story = {
   play: async () => {
     await waitFor(() => expect(screen.getByRole("heading", { name: "Zoo設定" })).toBeVisible());
+    const bounds = screen.getByRole("region", { name: "Zoo設定" }).getBoundingClientRect();
+    await expect(bounds.x).toBe(0);
+    await expect(bounds.y).toBe(0);
+    await expect(bounds.width).toBe(document.documentElement.clientWidth);
+    await expect(bounds.height).toBe(window.innerHeight);
   },
 };
 export const Apps: Story = {
@@ -74,3 +77,5 @@ export const Members: Story = {
     );
   },
 };
+
+export const GeneralMobile: Story = { ...General, globals: { viewport: { value: "mobile" } } };

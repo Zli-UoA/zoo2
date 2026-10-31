@@ -483,7 +483,8 @@ function UserAppsDialog({
         </div>
         <div
           className={cn(
-            "min-h-0 min-w-0 space-y-4 overflow-y-auto md:max-h-[65dvh]",
+            "min-h-0 min-w-0 space-y-4 overflow-y-auto",
+            !embedded && "md:max-h-[65dvh]",
             !selected && !editing && "hidden md:block",
           )}
         >

@@ -48,7 +48,7 @@ export function ZooSettings() {
               replace: true,
             })
           }
-          className="mx-auto flex w-full max-w-5xl min-h-0 flex-col gap-4"
+          className="flex w-full min-h-0 flex-col gap-4"
         >
           <Tabs.List
             className="flex shrink-0 flex-wrap gap-1 rounded-lg bg-muted p-1"
