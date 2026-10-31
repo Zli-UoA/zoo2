@@ -146,8 +146,10 @@ test('pullRequestComponents covers renames and huge diffs', () => {
   assert.equal(pullRequestComponents(Array.from({length: 3000}, () => ({filename: 'docs/a.md'}))).length, 3);
 });
 test('wantsPreview needs a frontend change', () => {
-  for (const filename of ['frontend/src/main.tsx', 'infra/Dockerfile-frontend-deploy', 'infra/frontend-nginx.conf']) {
+  for (const filename of ['frontend/src/main.tsx', 'infra/Dockerfile-frontend-deploy', 'infra/frontend-nginx.conf', 'infra/csp-hashes.mjs', 'infra/frontend-entrypoint.sh']) {
     assert.equal(wantsPreview([{filename}]), true, filename);
+    // Preview に反映されるよう、frontend イメージもビルドする。
+    assert.deepEqual(pullRequestComponents([{filename}]), ['frontend'], filename);
   }
   assert.equal(wantsPreview([{filename: 'docs/a.tsx', previous_filename: 'frontend/a.tsx'}]), true);
   // backend・migrate だけ、ビルド用の共有ファイルだけでは、イメージはビルドしても Preview は付けない。

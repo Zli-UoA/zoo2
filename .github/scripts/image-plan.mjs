@@ -24,17 +24,20 @@ export function promotionAliases(selected, sha, release) {
 
 // 変更されたファイルの一覧から、ビルドが必要なコンポーネントを返す。
 // ビルド用のスクリプト・アクション・ワークフロー、.dockerignore が変わった場合は、すべてのコンポーネントをビルドし直す。
-// それ以外は、各コンポーネントのソースと Dockerfile の変更を見る（migrate のソースは infra/db/、frontend は nginx 設定も含む）。
+// それ以外は、各コンポーネントのソースと Dockerfile の変更を見る（migrate のソースは infra/db/、frontend は nginx 設定・CSP ハッシュ生成・entrypoint も含む）。
 export function changedComponents(files) {
   const shared = files.some(f => f.startsWith('.github/scripts/') || f.startsWith('.github/actions/') || f === '.github/workflows/cd-images.yaml' || f === '.dockerignore');
   return components.filter(c => shared || files.some(f => componentFile(c, f)));
 }
 
+// infra/Dockerfile-frontend-deploy が frontend/ のほかに COPY するファイル。
+const frontendInfraFiles = ['infra/frontend-nginx.conf', 'infra/csp-hashes.mjs', 'infra/frontend-entrypoint.sh'];
+
 // コンポーネント自身のソースと Dockerfile のファイルか。ビルド用の共有ファイルは含まない。
 function componentFile(c, f) {
   return f.startsWith(`infra/Dockerfile-${c}-deploy`) ||
     (c === 'migrate' ? f.startsWith('infra/db/') : f.startsWith(`${c}/`)) ||
-    (c === 'frontend' && f === 'infra/frontend-nginx.conf') ||
+    (c === 'frontend' && frontendInfraFiles.includes(f)) ||
     (c === 'backend' && f === 'docs/slack-event-coverage.json');
 }
 

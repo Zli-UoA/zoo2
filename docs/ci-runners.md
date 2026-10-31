@@ -20,7 +20,7 @@ forkの `pull_request` は、選択処理と各ジョブの両方でGitHub-hoste
 
 各リポジトリのRepository Secret `RUNNER_STATUS_TOKEN` に登録します。publicリポジトリではOrg Secretの共有も使えますが、GitHub FreeのprivateリポジトリはOrg Secretを利用できません。fine-grained PATならOrganization permissionsのSelf-hosted runners: Read-onlyを使います。判定ジョブ以外には渡しません。
 
-トークン不足・API障害で状態を確認できない場合は、Docker不要ジョブはkubecamp、大容量ジョブはARC、Docker必須ジョブはGitHub-hostedを選びます。障害を確認できていないため、最初の適格なself-hosted poolで待機する扱いです。利用可能なRunnerがなければキューで待ち続ける可能性があります。
+トークン不足・API障害で状態を確認できない場合、Docker必須ジョブは通常どおりGitHub-hostedで実行します。Docker不要ジョブはkubecamp、大容量ジョブはARCを選びます。障害を確認できていないため、この2つは最初の適格なself-hosted poolで待機する扱いです。そのpoolに利用可能なRunnerがなければ、GitHub-hostedへ切り替えずにキューで待ち続ける可能性があります。
 
 判定の失敗は、どこで失敗したかで扱いが変わります。
 

@@ -10,9 +10,9 @@
 4. push すると、新しい head SHA のイメージで更新されます。
 5. PR を close するか、`preview` ラベルを外すと環境は削除されます。PR を draft に戻した場合も、ワークフローがラベルを外します。
 
-ラベルが自動で付くのは、frontend に影響する変更（`frontend/`、`infra/Dockerfile-frontend-deploy*`、`infra/frontend-nginx.conf`）を含む PR だけです。backend・migrate だけ、ビルド用の共有ファイル（`.github/scripts/` など）だけを変更する PR には付けません。`Publish images` はこれらの PR でもイメージを発行するので、Preview が必要なら手でラベルを付けてください。変更ファイルが3000件以上の PR は、見落としを避けるため付けます。
+ラベルが自動で付くのは、frontend に影響する変更（`frontend/`、`infra/Dockerfile-frontend-deploy*`、`infra/frontend-nginx.conf`、`infra/csp-hashes.mjs`、`infra/frontend-entrypoint.sh`）を含む PR だけです。backend・migrate だけ、ビルド用の共有ファイル（`.github/scripts/` など）だけを変更する PR には付けません。`Publish images` はこれらの PR でもイメージを発行するので、Preview が必要なら手でラベルを付けてください。変更ファイルが3000件以上の PR は、見落としを避けるため付けます。
 
-ドキュメントなどだけを変更する PR（frontend・backend・migrate のイメージに影響するファイルを含まない PR）には、`Publish images` もイメージのタグを付けません。Preview 環境は作られず、環境数の枠も使いません。手でラベルを付けても、イメージが発行されないので配備されません。この PR に最初の frontend の変更を含む push をした時点で、ラベルが付きます。
+ドキュメントなどだけを変更する PR（frontend・backend・migrate のイメージに影響するファイルを含まない PR）には、`Publish images` もイメージのタグを付けません。Preview 環境は作られず、環境数の枠も使いません。手でラベルを付けても、イメージが発行されないので配備されません。この PR に最初の frontend の変更を含む push をした時点で、ラベルが付きます。ただし、push 前の差分が300ファイル以上ある PR では自動で付きません。GitHub の Compare API が300件までしか返さず、push 前に frontend の変更があったかを確かめられないためです（手で外したラベルを付け直さないよう、すでに対象だったものとして扱います）。この場合は手でラベルを付けてください。
 
 自動で付くのは、frontend の変更を含む PR の opened・reopened・ready_for_review のときと、上の「最初の frontend の変更を含む push」のときだけです。ラベルを手で外した PR には、reopen するか draft から戻すまで付け直しません。fork の PR には付けません。ラベルの追加は `GITHUB_TOKEN` で行うので、その labeled イベントでは `Publish images` は動きません（新しい PR は opened のときにイメージを発行します）。この仕組みより前から open の PR には自動では付かないので、必要なら手で付けてください。
 
