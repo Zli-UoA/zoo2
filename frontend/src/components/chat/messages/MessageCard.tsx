@@ -10,6 +10,7 @@ export interface CardData {
   author: string;
   badge: string;
   color?: string;
+  fields?: { title: string; value: string; short?: boolean; url?: string; code?: boolean }[];
 }
 
 function cardColor(value: unknown): string | undefined {
@@ -57,12 +58,46 @@ export function parseMessageCard(value?: string | null): CardData | null {
     }
     const color = cardColor(c.color);
     if (color) result.color = color;
+    if (c.fields !== undefined) {
+      if (!Array.isArray(c.fields) || c.fields.length > 10) return null;
+      const fields: NonNullable<CardData["fields"]> = [];
+      for (const field of c.fields) {
+        if (
+          !field ||
+          typeof field !== "object" ||
+          typeof field.title !== "string" ||
+          field.title.length > 100 ||
+          typeof field.value !== "string" ||
+          field.value.length > 4000 ||
+          (field.url !== undefined && typeof field.url !== "string") ||
+          (field.short !== undefined && typeof field.short !== "boolean") ||
+          (field.code !== undefined && typeof field.code !== "boolean")
+        )
+          return null;
+        fields.push(field);
+      }
+      result.fields = fields;
+    }
     return result;
   } catch {
     return null;
   }
 }
-export function MessageCard({ card }: { card: CardData }) {
+function safeHref(value?: string): string | undefined {
+  try {
+    const url = new URL(value ?? "");
+    if (url.protocol === "https:") return url.href;
+  } catch {
+    /* Plain text fallback. */
+  }
+}
+export function MessageCard({
+  card,
+  attachment = false,
+}: {
+  card: CardData;
+  attachment?: boolean;
+}) {
   let href: string | undefined;
   try {
     const url = new URL(card.url);
@@ -72,10 +107,14 @@ export function MessageCard({ card }: { card: CardData }) {
   }
   return (
     <article
-      className="my-1 max-w-xl overflow-hidden rounded-lg border border-l-4 border-l-brand bg-card p-3 text-sm shadow-sm"
+      className={
+        attachment
+          ? "my-2 max-w-2xl overflow-hidden rounded-sm border-l-4 border-l-brand py-1 pl-4 pr-2 text-sm"
+          : "my-1 max-w-xl overflow-hidden rounded-lg border border-l-4 border-l-brand bg-card p-3 text-sm shadow-sm"
+      }
       style={cardColor(card.color) ? { borderLeftColor: cardColor(card.color) } : undefined}
     >
-      {card.source || card.context || card.badge ? (
+      {!attachment && (card.source || card.context || card.badge) ? (
         <div className="mb-2 flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
           <SquareArrowOutUpRightIcon className="size-4 shrink-0" aria-hidden="true" />
           <span className="min-w-0 break-all">
@@ -104,6 +143,47 @@ export function MessageCard({ card }: { card: CardData }) {
         <p className="mt-2 max-h-64 overflow-auto whitespace-pre-wrap break-words text-muted-foreground">
           {card.description}
         </p>
+      ) : null}
+      {card.fields?.length ? (
+        <dl className="mt-3 grid grid-cols-1 gap-x-6 gap-y-3 sm:grid-cols-2">
+          {card.fields.map((field, index) => {
+            const href = safeHref(field.url);
+            const value = field.code ? (
+              <code className="rounded border bg-muted px-1 py-0.5 font-mono text-xs break-all">
+                {field.value}
+              </code>
+            ) : (
+              field.value
+            );
+            return (
+              <div key={index} className={field.short ? "min-w-0" : "min-w-0 sm:col-span-2"}>
+                <dt className="mb-1 font-semibold">{field.title}</dt>
+                <dd className="whitespace-pre-wrap break-words">
+                  {href ? (
+                    <a
+                      href={href}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="text-brand hover:underline"
+                    >
+                      {value}
+                    </a>
+                  ) : (
+                    value
+                  )}
+                </dd>
+              </div>
+            );
+          })}
+        </dl>
+      ) : null}
+      {attachment && (card.source || card.context || card.badge) ? (
+        <div className="mt-3 flex flex-wrap items-center gap-1.5 text-xs text-muted-foreground">
+          <SquareArrowOutUpRightIcon className="size-3.5 shrink-0" aria-hidden="true" />
+          <span className="break-all">
+            {[card.source, card.context, card.badge].filter(Boolean).join(" · ")}
+          </span>
+        </div>
       ) : null}
       {card.author ? (
         <p className="mt-2 break-words text-xs text-muted-foreground">{card.author}</p>

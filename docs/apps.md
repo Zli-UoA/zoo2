@@ -84,6 +84,8 @@ Appは完了済みファイルを自分のメッセージへ添付できます�
 
 `link_domains` に登録したドメインのリンクを `link.shared` で受け取り、`unfurls` APIで共通カードを設定できます。Zooは任意のリンク先を取得しません。カードには提供Appを表示します。
 
+App の投稿には `POST /api/apps/v1/messages/{id}/blocks` で `{"type":"card","card":{...}}` ブロックも設定できます。カードは共通の `title`、`description`、HTTPS の `url`、`source`、`context`、`author`、`badge`、`color` と、最大10件の `fields` を持ちます。各 field は `title`・`value`、任意の `short`（2列表示）、HTTPS の `url`、`code`（等幅表示）です。既存の `ui:write` と投稿の所有者チェックを使い、操作イベントは発生しません。カードブロックがある投稿では本文を表示上のフォールバックとして扱い、カードとの重複表示を避けます。更新時は本文とブロックを両方更新してください。
+
 ## 既存Webhookと移行
 
 既存のWebhookユーザーは、同じIDを持つ通知専用Appへ移行します。Webhookの受信仕様はSlack互換形式へ変更します。送信元のURLと本文形式の更新手順は [Webhook設定](webhooks.md) を参照してください。既存の投稿者・投稿ID・保存済み通知カードは保持します。削除済みのBotも過去ログの表示用に残します。同じ名前という理由では統合しません。

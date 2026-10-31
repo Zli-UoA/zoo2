@@ -21,6 +21,9 @@ pub fn router() -> Router<AppState> {
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Block {
+    Card {
+        card: crate::cards::MessageCard,
+    },
     Text {
         text: String,
     },
@@ -51,6 +54,10 @@ pub fn validate_blocks(value: &Value) -> Result<(), AppError> {
     let mut ids = std::collections::HashSet::new();
     for block in blocks {
         let (id, label) = match block {
+            Block::Card { card } => {
+                card.encode()?;
+                continue;
+            }
             Block::Text { text } => {
                 if text.chars().count() > 4000 {
                     return Err(AppError::BadRequest("Block text too long".into()));
@@ -373,6 +380,23 @@ async fn blocks(
 }
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn validates_read_only_card_blocks() {
+        let card = serde_json::json!([{"type":"card","card":{
+            "title":"Deployment", "color":"#2da44e", "fields":[
+                {"title":"Commit", "value":"abc1234", "short":true, "code":true,
+                 "url":"https://github.com/Org/Repo/commit/abc1234"}
+            ]
+        }}]);
+        assert!(super::validate_blocks(&card).is_ok());
+        let mut unsafe_card = card.clone();
+        unsafe_card[0]["card"]["fields"][0]["url"] = serde_json::json!("javascript:alert(1)");
+        assert!(super::validate_blocks(&unsafe_card).is_err());
+        let mut too_many = card;
+        too_many[0]["card"]["fields"] =
+            serde_json::json!(vec![serde_json::json!({"title":"x","value":"v"}); 11]);
+        assert!(super::validate_blocks(&too_many).is_err());
+    }
     use super::*;
     #[test]
     fn validates_actions_and_limits() {

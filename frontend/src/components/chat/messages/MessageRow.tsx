@@ -19,7 +19,7 @@ import type { KitchenCatalog } from "../../../lib/emoji/kitchen";
 import { kitchenLabel, reactionKey } from "../../../lib/emoji/kitchen";
 import type { ReactionGroup } from "../../../lib/emoji/reactions";
 import { AppAvatar, AuthorIdentity } from "../AppIdentity";
-import { MessageAppContent } from "../AppBlocks";
+import { MessageAppContent, hasCardBlocks } from "../AppBlocks";
 import { Button, buttonVariants } from "../../ui/button";
 import {
   DropdownMenu,
@@ -55,7 +55,16 @@ export interface MessageRowProps {
 }
 
 /** 通常投稿は MFM、連携カードは専用の描画を使う。 */
-export function MessageBody({ content, card: data }: { content: string; card?: string | null }) {
+export function MessageBody({
+  content,
+  card: data,
+  appBlocks,
+}: {
+  content: string;
+  card?: string | null;
+  appBlocks?: string | null;
+}) {
+  if (hasCardBlocks(appBlocks)) return null;
   const cards = parseMessageCards(data);
   if (cards)
     return (
@@ -279,7 +288,11 @@ export function MessageRow({
             </form>
           ) : (
             <>
-              <MessageBody content={message.content} card={message.card} />
+              <MessageBody
+                content={message.content}
+                card={message.card}
+                appBlocks={message.app_blocks}
+              />
               <MessageAppContent message={message} />
             </>
           )}

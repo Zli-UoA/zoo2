@@ -20,9 +20,35 @@ pub struct MessageCard {
     pub badge: String,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub color: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub fields: Vec<CardField>,
+}
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CardField {
+    pub title: String,
+    pub value: String,
+    #[serde(default)]
+    pub short: bool,
+    #[serde(default)]
+    pub url: String,
+    #[serde(default)]
+    pub code: bool,
 }
 impl MessageCard {
     pub fn encode(&self) -> Result<String, AppError> {
+        if self.fields.len() > 10
+            || self.fields.iter().any(|field| {
+                field.title.chars().count() > 100
+                    || field.value.chars().count() > 1000
+                    || field.url.chars().count() > 2000
+                    || (!field.url.is_empty()
+                        && !reqwest::Url::parse(&field.url)
+                            .is_ok_and(|u| u.scheme() == "https" && u.host_str().is_some()))
+            })
+        {
+            return Err(AppError::BadRequest("Invalid card fields".into()));
+        }
         if !self.color.is_empty() && normalize_color(&self.color).is_none() {
             return Err(AppError::BadRequest("Invalid card color".into()));
         }
@@ -114,6 +140,7 @@ pub fn parse_webhook_cards(body: &[u8]) -> Result<Vec<MessageCard>, AppError> {
             author: String::new(),
             badge: String::new(),
             color: String::new(),
+            fields: Vec::new(),
         });
     }
     for attachment in message.attachments {
@@ -156,6 +183,7 @@ pub fn parse_webhook_cards(body: &[u8]) -> Result<Vec<MessageCard>, AppError> {
             } else {
                 normalize_color(&attachment.color).ok_or_else(invalid)?
             },
+            fields: Vec::new(),
         });
     }
     if cards.is_empty() {

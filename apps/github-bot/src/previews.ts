@@ -57,6 +57,8 @@ export async function preview(
   const encode = (v: string) => encodeURIComponent(v);
   // Admin-configured repository/channel permissions apply equally to notifications and previews.
   const metadata = await github.read(repo, "");
+  const displayRepo = String(metadata.full_name ?? repo);
+  u.pathname = u.pathname.replace(/^\/[^/]+\/[^/]+/, () => `/${displayRepo}`);
   let item: Json = metadata;
   let title: string = metadata.full_name;
   let description: string = metadata.description ?? "";
@@ -69,7 +71,7 @@ export async function preview(
       number: parts[3],
     };
     item = await github.snapshot(target);
-    title = `${repo} #${parts[3]} ${item.title}`;
+    title = `${displayRepo} #${parts[3]} ${item.title}`;
     description = item.body ?? "";
     badge = item.merged ? "merged" : (item.state ?? (item.isAnswered ? "answered" : "open"));
     const comment = /^#issuecomment-(\d+)$/.exec(u.hash),
@@ -85,15 +87,15 @@ export async function preview(
     }
   } else if (parts[2] === "commit" && /^[a-f\d]{7,40}$/i.test(parts[3] ?? "")) {
     item = await github.read(repo, `/commits/${encode(parts[3])}`);
-    title = `${repo} ${parts[3].slice(0, 7)}`;
+    title = `${displayRepo} ${parts[3].slice(0, 7)}`;
     description = item.commit.message;
   } else if (parts[2] === "actions" && parts[3] === "runs" && /^\d+$/.test(parts[4] ?? "")) {
     item = await github.read(repo, `/actions/runs/${parts[4]}`);
-    title = `${repo} ${item.name}`;
+    title = `${displayRepo} ${item.name}`;
     description = `${item.status} · ${item.conclusion ?? ""}`;
   } else if (parts[2] === "releases" && parts[3] === "tag" && parts[4]) {
     item = await github.read(repo, `/releases/tags/${encode(parts.slice(4).join("/"))}`);
-    title = `${repo} ${item.name ?? item.tag_name}`;
+    title = `${displayRepo} ${item.name ?? item.tag_name}`;
     description = item.body ?? "";
   } else if (parts[2] === "blob" && parts.length >= 5) {
     const rest = parts.slice(3);
@@ -124,7 +126,7 @@ export async function preview(
     const range = /^#L(\d+)(?:-L(\d+))?$/.exec(u.hash);
     const start = Math.max(1, Number(range?.[1] ?? 1)),
       end = Math.min(lines.length, start + 19, Number(range?.[2] ?? start + 19));
-    title = `${repo}/${file.path} L${start}–L${end}`;
+    title = `${displayRepo}/${file.path} L${start}–L${end}`;
     description = lines.slice(start - 1, end).join("\n");
   } else if (parts.length > 2) return;
   return {
