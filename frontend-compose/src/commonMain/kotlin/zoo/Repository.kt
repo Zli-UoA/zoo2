@@ -280,6 +280,7 @@ class Repository(
             "channel_users" -> members
             "notifications" -> notifications
             "messages",
+            "attachments",
             "message_reactions" ->
                 dynamic.getOrPut(name to channelId) {
                     require(channelId.isNotBlank())
@@ -303,6 +304,8 @@ class Repository(
     }
 
     fun messages(channelId: String) = table("messages", channelId)
+
+    fun attachments(channelId: String) = table("attachments", channelId)
 
     fun reactions(channelId: String) = table("message_reactions", channelId)
 

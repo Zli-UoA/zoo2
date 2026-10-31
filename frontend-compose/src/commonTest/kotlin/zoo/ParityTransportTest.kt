@@ -23,7 +23,9 @@ class ParityTransportTest {
 
         override fun uuid() = "id-${++sequence}"
 
-        override fun now() = "2026-01-02T09:00:00Z"
+        var timestamp = "2026-01-02T09:00:00Z"
+
+        override fun now() = timestamp
 
         override fun navigate(path: String) {}
 
@@ -123,6 +125,85 @@ class ParityTransportTest {
         assertTrue(app.send("c", "/unknown ordinary text", null))
         assertEquals("/api/messages", requests.last().first)
         assertEquals("/unknown ordinary text", requests.last().second.text("content"))
+        assertTrue(app.send("c", "/echo attached", null, "notes", listOf("attachment-1")))
+        assertEquals("/api/messages", requests.last().first)
+        assertEquals(
+            "attachment-1",
+            requests.last().second["attachment_ids"]!!.jsonArray.single().jsonPrimitive.content,
+        )
+        app.close()
+    }
+
+    @Test
+    fun attachmentUrlsAreCachedUntilExpiryAndRecoverFromRefreshFailures() = runTest {
+        val platform = Browser()
+        var calls = 0
+        val http =
+            HttpClient(
+                MockEngine { request ->
+                    if (request.url.encodedPath != "/api/attachments/file/url") awaitCancellation()
+                    calls++
+                    if (calls == 2) respond("{}", HttpStatusCode.ServiceUnavailable)
+                    else respond("{\"download_url\":\"https://storage.test/file.png\"}")
+                }
+            )
+        val repo =
+            Repository(
+                Config("https://zoo.test", "/shapes", "alice", false, txidMode = "none"),
+                platform,
+                http,
+                backgroundScope,
+            )
+        val app = Session(repo, backgroundScope, Environment())
+        assertEquals("https://storage.test/file.png", app.attachmentLinks.get("file"))
+        app.attachmentLinks.get("file")
+        assertEquals(1, calls)
+        platform.timestamp = "2026-01-02T09:05:00Z"
+        assertFailsWith<ApiException> { app.attachmentLinks.get("file") }
+        assertTrue(app.attachmentLinks.errors["file"] == true)
+        assertEquals("https://storage.test/file.png", app.attachmentLinks.get("file", true))
+        assertEquals(3, calls)
+        assertFalse(app.attachmentLinks.errors["file"] == true)
+        app.close()
+    }
+
+    @Test
+    fun failedFinalBubbleClearKeepsTheKeepaliveSnapshot() = runTest {
+        val platform = Browser()
+        var writes = 0
+        val http =
+            HttpClient(MockEngine) {
+                engine {
+                    dispatcher = StandardTestDispatcher(testScheduler)
+                    addHandler { request ->
+                        if (
+                            request.url.encodedPath != "/api/bubble" ||
+                                request.method == HttpMethod.Get
+                        )
+                            awaitCancellation()
+                        writes++
+                        if (writes == 1) respond("{\"ok\":true}")
+                        else respond("{}", HttpStatusCode.ServiceUnavailable)
+                    }
+                }
+            }
+        val repo =
+            Repository(
+                Config("https://zoo.test", "/shapes", "alice", false, txidMode = "none"),
+                platform,
+                http,
+                backgroundScope,
+            )
+        val app = Session(repo, backgroundScope, Environment())
+        val controller = BubbleController(app)
+        controller.edit("shared")
+        val job = backgroundScope.launch { controller.run() }
+        runCurrent()
+        assertTrue(controller.sharing.value)
+        job.cancelAndJoin()
+        assertEquals(2, writes)
+        assertFalse(platform.exits.last().flag("clear"))
+        assertEquals("", platform.exits.last().nested("body").text("content"))
         app.close()
     }
 }

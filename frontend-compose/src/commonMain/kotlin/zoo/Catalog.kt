@@ -88,16 +88,22 @@ fun Catalog(app: Session, options: Row) {
                                 "created_at" to "2026-01-02T09:00:00Z",
                             ) + options.nested("fixture")
                         )
-                    Message(
-                        app,
-                        CatalogSamples.channel,
-                        message,
-                        listOf(message),
-                        emptyList(),
-                        CatalogSamples.users,
-                        options.flag("grouped"),
-                        true,
-                    )
+                    val attachmentRows =
+                        (options.nested("fixture")["attachments"] as? JsonArray)
+                            ?.map { it.jsonObject }
+                            .orEmpty()
+                    CompositionLocalProvider(LocalAttachments provides attachmentRows) {
+                        Message(
+                            app,
+                            CatalogSamples.channel,
+                            message,
+                            listOf(message),
+                            emptyList(),
+                            CatalogSamples.users,
+                            options.flag("grouped"),
+                            true,
+                        )
+                    }
                 }
             }
             app.toast?.let { Text(it, Modifier.padding(16.dp)) }

@@ -1,3 +1,4 @@
+import { storyAttachments } from "../../../.storybook/attachment-fixtures";
 import type { Meta, StoryObj } from "@storybook/react-vite";
 import { isLocale } from "../../lib/i18n/locale";
 import { storyDeploymentCard } from "../../../.storybook/app-fixtures";
@@ -96,3 +97,16 @@ export const WorkspaceMembers: Story = { args: { sample: "settings-members" } };
 export const BubbleChat: Story = { args: { sample: "bubble" } };
 export const Notifications: Story = { args: { sample: "notifications" } };
 export const NotificationsLoading: Story = { args: { sample: "notifications-loading" } };
+
+export const WithAttachments: Story = {
+  args: {
+    fixture: {
+      attachments: storyAttachments.map((row) => ({ ...row, message_id: "catalog-message" })),
+    },
+    content: "スクリーンショットを共有します。",
+  },
+};
+
+export const ComposerSendError: Story = {
+  args: { sample: "composer", fixture: { postFailure: true } },
+};

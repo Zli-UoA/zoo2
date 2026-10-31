@@ -36,6 +36,7 @@ class Session(val repo: Repository, val scope: CoroutineScope, initial: Environm
     private val assetClient = HttpClient()
     val assets = mutableMapOf<String, JsonElement>()
     val previews = PreviewLoader(this)
+    val attachmentLinks = AttachmentLinks(this)
     val channelId: String?
         get() =
             env.path
@@ -203,9 +204,10 @@ class Session(val repo: Repository, val scope: CoroutineScope, initial: Environm
         content: String,
         parent: String?,
         commandAppId: String? = null,
+        attachmentIds: List<String> = emptyList(),
     ): Boolean {
         val command = Regex("^/([a-zA-Z0-9_-]+)(?:\\s+([\\s\\S]*))?$").matchEntire(content.trim())
-        if (command != null) {
+        if (command != null && attachmentIds.isEmpty()) {
             try {
                 val body = buildJsonObject {
                     put("channel_id", channel)
@@ -248,6 +250,8 @@ class Session(val repo: Repository, val scope: CoroutineScope, initial: Environm
             put("channel_id", channel)
             put("content", content)
             parent?.let { put("parent_id", it) }
+            if (attachmentIds.isNotEmpty())
+                put("attachment_ids", JsonArray(attachmentIds.map(::JsonPrimitive)))
         }
         return try {
             repo.messages(channel).write(api, "/api/messages", "POST", body, row)

@@ -120,6 +120,34 @@ test("native parity catalog renders real settings, cards, Bubble and notificatio
   await expect(frame.getByText("この本文はカードと二重表示しません", { exact: true })).toHaveCount(
     0,
   );
+  await open("composer-send-error");
+  const failingComposer = frame.getByRole("textbox", { name: "メッセージを送信", exact: true });
+  await failingComposer.click({ force: true });
+  await expect
+    .poll(() =>
+      failingComposer.evaluate((element) => {
+        let active = element.ownerDocument.activeElement;
+        while (active?.shadowRoot?.activeElement) active = active.shadowRoot.activeElement;
+        return active instanceof HTMLTextAreaElement || active instanceof HTMLInputElement;
+      }),
+    )
+    .toBe(true);
+  await page.keyboard.insertText("restore after failure");
+  await expect(failingComposer).toHaveText("restore after failure");
+  await frame.getByRole("button", { name: "送信", exact: true }).click({ force: true });
+  await expect(frame.getByText("操作に失敗しました", { exact: true })).toBeVisible();
+  await expect(failingComposer).toHaveText("restore after failure");
+  await expect(frame.getByRole("button", { name: "送信", exact: true })).toBeEnabled();
+  await open("with-attachments");
+  await expect(
+    frame.getByRole("button", { name: "screenshot.pngを開く", exact: true }),
+  ).toBeVisible();
+  await expect(frame.getByRole("button", { name: "diagram.pngを開く", exact: true })).toBeVisible();
+  await expect(frame.getByText("release-notes.pdf", { exact: true })).toBeVisible();
+  await page.screenshot({ path: test.info().outputPath("compose-attachment-grid-wide.png") });
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.screenshot({ path: test.info().outputPath("compose-attachment-grid-mobile.png") });
+  await page.setViewportSize({ width: 1440, height: 900 });
   await open("settings");
   await expect(frame.getByRole("heading", { name: "Zoo設定", exact: true })).toBeVisible();
   await expect(frame.getByRole("button", { name: /^検索エンジン:/ })).toBeVisible();

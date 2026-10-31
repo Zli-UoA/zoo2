@@ -124,100 +124,128 @@ fun Chat(
         all.find { it.text("id") == target }
             ?.let { if (it.present("parent_id")) app.openThread(it.text("parent_id"), wide) }
     }
-    Row(modifier.fillMaxWidth()) {
-        if (wide || app.thread == null)
-            Column(Modifier.weight(1f).fillMaxHeight()) {
-                Row(
-                    Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(12.dp),
-                ) {
-                    Text(app.t("messages.title"), weight = FontWeight.SemiBold)
-                    Text(
-                        if (loading) "…"
-                        else
-                            app.t(
-                                "messages.count",
-                                "count" to visibleMessages(all).size.toString(),
-                            ),
-                        Modifier.background(
-                                MaterialTheme.colorScheme.surfaceVariant,
-                                RoundedCornerShape(3.dp),
-                            )
-                            .padding(horizontal = 8.dp, vertical = 2.dp),
-                        small = true,
-                        muted = true,
-                    )
-                }
-                HorizontalDivider()
-                MessageList(app, channel, all, reactions, users, null, wide, Modifier.weight(1f))
-                if (error != null) {
-                    Text(app.t("messages.loadError"), Modifier.padding(12.dp))
-                    Button(app.t("offline.retry")) { table.refresh() }
-                }
-                if (loading && all.isEmpty())
-                    Text(app.t("common.loading"), Modifier.padding(16.dp), muted = true)
-                when {
-                    channel.present("archive_at") ->
+    val attachmentRows by app.repo.attachments(id).rows.collectAsState()
+    CompositionLocalProvider(LocalAttachments provides attachmentRows) {
+        Row(modifier.fillMaxWidth()) {
+            if (wide || app.thread == null)
+                Column(Modifier.weight(1f).fillMaxHeight()) {
+                    Row(
+                        Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(12.dp),
+                    ) {
+                        Text(app.t("messages.title"), weight = FontWeight.SemiBold)
                         Text(
-                            app.t("moderation.archivedReadOnly"),
-                            Modifier.padding(16.dp),
+                            if (loading) "…"
+                            else
+                                app.t(
+                                    "messages.count",
+                                    "count" to visibleMessages(all).size.toString(),
+                                ),
+                            Modifier.background(
+                                    MaterialTheme.colorScheme.surfaceVariant,
+                                    RoundedCornerShape(3.dp),
+                                )
+                                .padding(horizontal = 8.dp, vertical = 2.dp),
+                            small = true,
                             muted = true,
                         )
-                    !joined ->
-                        Row(
-                            Modifier.padding(16.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                        ) {
+                    }
+                    HorizontalDivider()
+                    MessageList(
+                        app,
+                        channel,
+                        all,
+                        reactions,
+                        users,
+                        null,
+                        wide,
+                        Modifier.weight(1f),
+                    )
+                    if (error != null) {
+                        Text(app.t("messages.loadError"), Modifier.padding(12.dp))
+                        Button(app.t("offline.retry")) { table.refresh() }
+                    }
+                    if (loading && all.isEmpty())
+                        Text(app.t("common.loading"), Modifier.padding(16.dp), muted = true)
+                    when {
+                        channel.present("archive_at") ->
                             Text(
-                                app.t(
-                                    if (channel.flag("is_private")) "channels.privateMessages"
-                                    else "messages.joinToPostDescription"
-                                ),
-                                Modifier.weight(1f),
+                                app.t("moderation.archivedReadOnly"),
+                                Modifier.padding(16.dp),
                                 muted = true,
                             )
-                            if (!channel.flag("is_private"))
-                                Button(
-                                    app.t("messages.joinToPost"),
-                                    app.env.online,
-                                    primary = true,
-                                ) {
-                                    app.run("join:$id") {
-                                        val row =
-                                            obj("channel_id" to id, "user_id" to app.config.userId)
-                                        app.repo.members.write(
-                                            app.api,
-                                            "/api/channels/$id/join",
-                                            "POST",
-                                            obj(),
-                                            row,
-                                        )
+                        !joined ->
+                            Row(
+                                Modifier.padding(16.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                            ) {
+                                Text(
+                                    app.t(
+                                        if (channel.flag("is_private")) "channels.privateMessages"
+                                        else "messages.joinToPostDescription"
+                                    ),
+                                    Modifier.weight(1f),
+                                    muted = true,
+                                )
+                                if (!channel.flag("is_private"))
+                                    Button(
+                                        app.t("messages.joinToPost"),
+                                        app.env.online,
+                                        primary = true,
+                                    ) {
+                                        app.run("join:$id") {
+                                            val row =
+                                                obj(
+                                                    "channel_id" to id,
+                                                    "user_id" to app.config.userId,
+                                                )
+                                            app.repo.members.write(
+                                                app.api,
+                                                "/api/channels/$id/join",
+                                                "POST",
+                                                obj(),
+                                                row,
+                                            )
+                                        }
                                     }
-                                }
-                        }
-                    else -> Composer(app, id, null, users, canPost)
+                            }
+                        else -> Composer(app, id, null, users, canPost)
+                    }
                 }
-            }
-        app.thread?.let { parent ->
-            if (wide) VerticalDivider()
-            Column(
-                if (wide) Modifier.width(384.dp).fillMaxHeight()
-                else Modifier.weight(1f).fillMaxHeight()
-            ) {
-                Row(
-                    Modifier.fillMaxWidth().height(56.dp).padding(horizontal = 16.dp),
-                    verticalAlignment = Alignment.CenterVertically,
+            app.thread?.let { parent ->
+                if (wide) VerticalDivider()
+                Column(
+                    if (wide) Modifier.width(384.dp).fillMaxHeight()
+                    else Modifier.weight(1f).fillMaxHeight()
                 ) {
-                    Text(app.t("threads.title"), Modifier.weight(1f), weight = FontWeight.SemiBold)
-                    IconButton("x", app.t("threads.close")) { app.thread = null }
+                    Row(
+                        Modifier.fillMaxWidth().height(56.dp).padding(horizontal = 16.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Text(
+                            app.t("threads.title"),
+                            Modifier.weight(1f),
+                            weight = FontWeight.SemiBold,
+                        )
+                        IconButton("x", app.t("threads.close")) { app.thread = null }
+                    }
+                    HorizontalDivider()
+                    all.find { it.text("id") == parent && !it.present("deleted_at") }
+                        ?.let { Message(app, channel, it, all, reactions, users, false, wide) }
+                    MessageList(
+                        app,
+                        channel,
+                        all,
+                        reactions,
+                        users,
+                        parent,
+                        wide,
+                        Modifier.weight(1f),
+                    )
+                    if (joined && !channel.present("archive_at"))
+                        Composer(app, id, parent, users, canPost)
                 }
-                HorizontalDivider()
-                all.find { it.text("id") == parent && !it.present("deleted_at") }
-                    ?.let { Message(app, channel, it, all, reactions, users, false, wide) }
-                MessageList(app, channel, all, reactions, users, parent, wide, Modifier.weight(1f))
-                if (joined && !channel.present("archive_at"))
-                    Composer(app, id, parent, users, canPost)
             }
         }
     }
@@ -453,11 +481,19 @@ internal fun Message(
                     if (!blockCards) {
                         if (cards != null) cards.forEach { MessageCard(it) }
                         else {
-                            RichText(message.text("content"), users)
-                            LinkPreviews(app, message.text("content"))
+                            if (message.text("content").isNotEmpty()) {
+                                RichText(message.text("content"), users)
+                                LinkPreviews(app, message.text("content"))
+                            }
                         }
                     }
                     MessageAppContent(app, message)
+                    MessageAttachments(
+                        app,
+                        LocalAttachments.current
+                            .filter { it.text("message_id") == id }
+                            .sortedBy { it.text("created_at") },
+                    )
                 }
                 val groups =
                     reactions
@@ -668,6 +704,8 @@ internal fun Composer(
     val memberships by app.repo.members.rows.collectAsState()
     val channels by app.repo.channels.rows.collectAsState()
     var commands by remember(channel) { mutableStateOf<List<Row>>(emptyList()) }
+    val attachments = rememberAttachmentDrafts(app, channel, key, enabled)
+    var sendError by remember(key) { mutableStateOf<String?>(null) }
     var selectedCommand by remember(key) { mutableStateOf<CompletionOption?>(null) }
     LaunchedEffect(channel, app.env.online, value.startsWith("/")) {
         if (app.env.online && value.startsWith("/"))
@@ -774,16 +812,26 @@ internal fun Composer(
         }
     }
     val send = {
-        if (value.isNotBlank() && enabled && key !in app.pending) {
+        if (attachments.canSend(value) && key !in app.pending && !composing) {
             val sent = value
             val commandAppId = selectedCommand?.appId
+            val drafts = attachments.items.toList()
+            val attachmentIds = drafts.mapNotNull { it.uploaded?.text("id") }
+            attachments.items.clear()
+            attachments.error = null
+            sendError = null
             value = ""
             caret = 0
             app.run(key) {
-                if (!app.send(channel, sent, parent, commandAppId) && value.isEmpty()) {
-                    value = sent
-                    caret = sent.length
-                }
+                if (!app.send(channel, sent.trim(), parent, commandAppId, attachmentIds)) {
+                    sendError = app.toast ?: app.t("common.writeError")
+                    app.toast = null
+                    attachments.items.addAll(drafts)
+                    if (value.isEmpty()) {
+                        value = sent
+                        caret = sent.length
+                    }
+                } else attachments.release(drafts)
             }
         }
         Unit
@@ -793,6 +841,21 @@ internal fun Composer(
             .border(BorderStroke(1.dp, MaterialTheme.colorScheme.outline))
             .padding(horizontal = 12.dp, vertical = 12.dp)
     ) {
+        sendError?.let { error ->
+            Row(
+                Modifier.fillMaxWidth().padding(bottom = 8.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(
+                    error,
+                    Modifier.weight(1f).semantics { liveRegion = LiveRegionMode.Assertive },
+                    color = MaterialTheme.colorScheme.error,
+                    small = true,
+                )
+                IconButton("x", app.t("common.close"), size = 24.dp) { sendError = null }
+            }
+        }
+        DraftAttachments(app, attachments)
         if (typing.isNotEmpty())
             Text(
                 app.t(
@@ -834,6 +897,14 @@ internal fun Composer(
                 .padding(6.dp),
             verticalAlignment = Alignment.Bottom,
         ) {
+            IconButton(
+                "image-plus",
+                app.t("attachments.add"),
+                enabled && attachments.items.size < MAX_ATTACHMENTS,
+                size = if (app.env.touch) 44.dp else 36.dp,
+            ) {
+                attachments.pick()
+            }
             Field(
                 value,
                 app.t(if (parent == null) "messages.compose" else "threads.compose"),
@@ -877,6 +948,7 @@ internal fun Composer(
                 singleLine = false,
                 readOnly = !enabled,
                 onComposition = { composing = it },
+                fileOwner = attachments.owner,
                 chrome = false,
                 selection = selection,
                 onSelection = {
@@ -890,18 +962,17 @@ internal fun Composer(
                 dismissed = false
                 activeOption = 0
             }
+            val canSubmit = attachments.canSend(value) && key !in app.pending && !composing
             Box(
                 Modifier.padding(bottom = 4.dp)
+                    .then(webControlModifier("button", canSubmit))
                     .size(if (app.env.touch) 44.dp else 36.dp)
                     .clip(RoundedCornerShape(8.dp))
                     .background(
-                        if (enabled && value.isNotBlank()) MaterialTheme.colorScheme.primary
+                        if (canSubmit) MaterialTheme.colorScheme.primary
                         else MaterialTheme.colorScheme.primary.copy(alpha = .5f)
                     )
-                    .clickable(
-                        enabled && value.isNotBlank() && key !in app.pending,
-                        onClick = send,
-                    ),
+                    .clickable(canSubmit, role = Role.Button, onClick = send),
                 contentAlignment = Alignment.Center,
             ) {
                 Icon("send", app.t("messages.send"), color = MaterialTheme.colorScheme.onPrimary)

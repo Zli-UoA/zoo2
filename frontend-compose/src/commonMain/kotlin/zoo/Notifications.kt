@@ -3,7 +3,6 @@ package zoo
 import androidx.compose.foundation.*
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.*
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.*
@@ -57,28 +56,7 @@ fun Notifications(app: Session, notifications: List<Row>, users: List<Row>) {
     }
     val initialMask = loading && !hasLoaded
     Column(Modifier.fillMaxSize()) {
-        Row(
-            Modifier.fillMaxWidth().height(64.dp).padding(horizontal = 16.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Box(
-                Modifier.size(32.dp)
-                    .background(MaterialTheme.colorScheme.primary, RoundedCornerShape(8.dp)),
-                contentAlignment = Alignment.Center,
-            ) {
-                Icon(
-                    "bell",
-                    modifier = Modifier.size(16.dp),
-                    color = MaterialTheme.colorScheme.onPrimary,
-                )
-            }
-            Spacer(Modifier.width(12.dp))
-            Text(
-                app.t("notifications.title"),
-                Modifier.semantics { heading() },
-                weight = FontWeight.SemiBold,
-            )
-        }
+        ScreenHeader("bell", app.t("notifications.title"), primaryIcon = true)
         HorizontalDivider()
         if (loadError != null) {
             Text(app.t("notifications.loadError"), Modifier.padding(16.dp))

@@ -292,7 +292,6 @@ fun Members(
     var search by remember(id) { mutableStateOf("") }
     var kick by remember(id) { mutableStateOf<Row?>(null) }
     Column(modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-        Text(app.t("members.title"), weight = FontWeight.SemiBold)
         if (channel.present("archive_at"))
             Text(app.t("moderation.archivedMembersHelp"), muted = true, small = true)
         if (canAdd) Field(search, app.t("members.search")) { search = it }

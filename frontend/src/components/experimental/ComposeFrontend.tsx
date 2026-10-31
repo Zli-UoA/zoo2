@@ -1,3 +1,4 @@
+import { createComposeFiles } from "../../lib/compose/files";
 import { useEffect, useRef, useState } from "react";
 import { useRouter, useRouterState } from "@tanstack/react-router";
 import { useTranslation } from "react-i18next";
@@ -36,6 +37,8 @@ interface ComposeBridge {
   config: string;
   headers: () => Promise<string>;
   navigate: (path: string, replace?: boolean) => void;
+  fileTarget: (id: string, bounds: string, receive: (raw: string) => boolean) => void;
+  forgetFileTarget: (id: string) => void;
   cache: ComposeCache;
   translate: (key: string, args: string) => string;
   format: (value: string, day: boolean, offset: number) => string;
@@ -139,6 +142,7 @@ export function ComposeRuntime({ config, status }: { config: AppConfig; status?:
       if (!cancelled) setError(true);
     }, 90_000);
     let install: InstallEvent | null = null;
+    const fileBrowser = createComposeFiles(viewportRef.current!);
     const publicRequests = new Map<string, AbortController>();
     let bubbleExit:
       | { session: string; offset: number; body: object; headers: Record<string, string> }
@@ -153,7 +157,11 @@ export function ComposeRuntime({ config, status }: { config: AppConfig; status?:
         current.headers,
       ).catch(() => {});
     };
-    window.addEventListener("pagehide", clearBubbleOnExit);
+    window.addEventListener("pagehide", clearBubbleOnExit, true);
+    const visibilityChanged = () => {
+      if (document.visibilityState === "hidden") clearBubbleOnExit();
+      update();
+    };
     const onInstall = (event: Event) => {
       event.preventDefault();
       install = event as InstallEvent;
@@ -191,6 +199,8 @@ export function ComposeRuntime({ config, status }: { config: AppConfig; status?:
         cache: createComposeCache(database, (cause) => {
           if (!cancelled) setCacheError(cause instanceof Error ? cause.message : String(cause));
         }),
+        fileTarget: (id, bounds, receive) => fileBrowser.target(id, bounds, receive),
+        forgetFileTarget: (id) => fileBrowser.forget(id),
         headers: async () => {
           if (cancelled) throw new Error("Compose frontend was disposed");
           return JSON.stringify(
@@ -224,6 +234,9 @@ export function ComposeRuntime({ config, status }: { config: AppConfig; status?:
               ).format(date);
         },
         action: (name) => {
+          if (name.startsWith("fileFocus:")) fileBrowser.focus(name.slice(10));
+          if (name.startsWith("fileRelease:")) fileBrowser.release(name.slice(12));
+          if (name.startsWith("attachmentReserve:")) fileBrowser.reserve(name.slice(18));
           if (name.startsWith("mfm:"))
             window.dispatchEvent(new CustomEvent("mfm-click", { detail: name.slice(4) }));
           else if (name === "retry") stateRef.current.status?.retry();
@@ -246,6 +259,8 @@ export function ComposeRuntime({ config, status }: { config: AppConfig; status?:
           }
         },
         invoke: async (name, payload) => {
+          if (["pickFiles", "fileRead", "filePut", "attachmentOpen"].includes(name))
+            return fileBrowser.invoke(name, payload);
           if (name === "bubbleExit") {
             const value = JSON.parse(payload);
             if (value.clear === "true") {
@@ -283,7 +298,7 @@ export function ComposeRuntime({ config, status }: { config: AppConfig; status?:
               if (!response.ok) throw new Error(`Public request failed: ${response.status}`);
               if (name === "publicImage") {
                 const bytes = new Uint8Array(await response.arrayBuffer());
-                if (bytes.byteLength > 16 * 1024 * 1024) throw new Error("Public image too large");
+                if (bytes.byteLength > 50 * 1024 * 1024) throw new Error("Public image too large");
                 let data = "";
                 for (let offset = 0; offset < bytes.length; offset += 32768)
                   data += String.fromCharCode(...bytes.subarray(offset, offset + 32768));
@@ -444,7 +459,7 @@ export function ComposeRuntime({ config, status }: { config: AppConfig; status?:
     window.addEventListener("focus", update);
     window.addEventListener("blur", update);
     window.addEventListener("offline", update);
-    document.addEventListener("visibilitychange", update);
+    document.addEventListener("visibilitychange", visibilityChanged);
     const escape = (event: KeyboardEvent) => {
       if (
         event.key === "Escape" &&
@@ -459,9 +474,10 @@ export function ComposeRuntime({ config, status }: { config: AppConfig; status?:
     if (viewportRef.current) resize.observe(viewportRef.current);
     return () => {
       cancelled = true;
+      fileBrowser.close();
       publicRequests.forEach((controller) => controller.abort());
       clearBubbleOnExit();
-      window.removeEventListener("pagehide", clearBubbleOnExit);
+      window.removeEventListener("pagehide", clearBubbleOnExit, true);
       clearTimeout(readyTimeout);
       resize.disconnect();
       updateRef.current = null;
@@ -476,7 +492,7 @@ export function ComposeRuntime({ config, status }: { config: AppConfig; status?:
       window.removeEventListener("focus", update);
       window.removeEventListener("blur", update);
       window.removeEventListener("offline", update);
-      document.removeEventListener("visibilitychange", update);
+      document.removeEventListener("visibilitychange", visibilityChanged);
     };
   }, [config, offline.namespace, offline.persistenceStatus, router]);
   useEffect(() => {
