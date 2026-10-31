@@ -352,8 +352,15 @@
     "placeholder": "在此輸入即可即時共享…",
     "inputLabel": "即時訊息輸入",
     "clear": "清除輸入",
-    "hint": "無需傳送按鈕，按 Cmd / Ctrl+Enter 可清除輸入；清除文字或離開頁面後氣泡即會消失。",
-    "typingSummary": "{{names}}正在輸入"
+    "hint": "無需傳送按鈕，按 Cmd / Ctrl+Enter 可清除輸入；氣泡會在稍後破裂消失。",
+    "typingSummary": "{{names}}正在輸入",
+    "participants": "參與者",
+    "participantsTitle": "參與者 ({{count}})",
+    "noParticipants": "暫無參與者",
+    "typing": "正在輸入",
+    "active": "在房間中",
+    "you": "你",
+    "closeParticipants": "關閉參與者名單"
   },
   "dms": {
     "title": "私訊",

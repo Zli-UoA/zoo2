@@ -434,4 +434,47 @@ describe("useBubbleChat", () => {
     await flush(() => vi.advanceTimersByTime(14000));
     expect(state.entries).toEqual([]);
   });
+
+  it("treats stale: true response as failure and retries write with updated server time offset", async () => {
+    // 1. First write receives stale rejection with server_time
+    const now = Date.now();
+    const serverTime = now + 120_000; // Server is 2 minutes ahead
+    mocks.request.mockResolvedValueOnce({ ok: false, stale: true, server_time: serverTime });
+
+    await flush(() => root.render(createElement(Probe)));
+    await flush(() => state.setContent("テスト"));
+
+    expect(payloads()).toEqual([
+      {
+        session_id: expect.any(String),
+        seq: 1,
+        content: "テスト",
+        sent_at: now,
+      },
+    ]);
+
+    // 2. Retry occurs after 1 second using adjusted server time offset
+    mocks.request.mockResolvedValueOnce({ ok: true, server_time: serverTime + 1000 });
+    await flush(() => vi.advanceTimersByTime(1000));
+
+    expect(payloads().length).toBe(2);
+    expect(payloads()[1]?.content).toBe("テスト");
+    // sent_at should now incorporate the server time offset (roughly now + 1000 + 120_000)
+    expect(payloads()[1]?.sent_at).toBeGreaterThanOrEqual(now + 120_000);
+  });
+
+  it("aborts hanging GET request after POLL_TIMEOUT_MS and polls again", async () => {
+    let capturedPollSignal: AbortSignal | undefined;
+    mocks.get.mockImplementationOnce((_path, options) => {
+      capturedPollSignal = options?.signal;
+      return new Promise(() => {}); // hangs
+    });
+
+    await flush(() => root.render(createElement(Probe)));
+    expect(capturedPollSignal?.aborted).toBe(false);
+
+    // After POLL_TIMEOUT_MS (5000ms), the hanging poll request should be aborted
+    await flush(() => vi.advanceTimersByTime(5000));
+    expect(capturedPollSignal?.aborted).toBe(true);
+  });
 });

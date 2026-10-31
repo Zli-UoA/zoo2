@@ -352,8 +352,15 @@
     "placeholder": "喺度打字就會即時分享…",
     "inputLabel": "即時訊息輸入",
     "clear": "清除輸入",
-    "hint": "唔使撳發送，撳 Cmd / Ctrl+Enter 可以清空輸入；刪走啲字或者離開畫面之後氣泡就會消失。",
-    "typingSummary": "{{names}}輸入緊"
+    "hint": "唔使撳發送，撳 Cmd / Ctrl+Enter 可以清除輸入；氣泡會喺一陣之後彈走消失。",
+    "typingSummary": "{{names}}輸入緊",
+    "participants": "參加者",
+    "participantsTitle": "參加者 ({{count}})",
+    "noParticipants": "冇參加者",
+    "typing": "輸入緊",
+    "active": "喺房入面",
+    "you": "你",
+    "closeParticipants": "關閉參加者名單"
   },
   "dms": {
     "title": "私訊",

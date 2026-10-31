@@ -27,15 +27,23 @@ async fn request(
     let response = app.clone().oneshot(req).await?;
     let status = response.status();
     let bytes = to_bytes(response.into_body(), usize::MAX).await?;
-    Ok((status, serde_json::from_slice(&bytes)?))
+    let body = serde_json::from_slice(&bytes).unwrap_or(Value::Null);
+    Ok((status, body))
+}
+
+fn current_time_ms() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0)
 }
 
 fn update(session: &str, content: &str) -> Value {
-    json!({ "session_id": session, "content": content })
+    json!({ "session_id": session, "seq": 0, "content": content, "sent_at": current_time_ms() })
 }
 
 fn update_with_seq(session: &str, seq: i64, content: &str) -> Value {
-    json!({ "session_id": session, "seq": seq, "content": content })
+    json!({ "session_id": session, "seq": seq, "content": content, "sent_at": current_time_ms() })
 }
 
 fn update_with_seq_and_sent_at(session: &str, seq: i64, content: &str, sent_at: i64) -> Value {
@@ -296,13 +304,10 @@ async fn test_bubble_chat_presence_lifecycle() -> anyhow::Result<()> {
             .any(|entry| entry["user_id"] == alice)
     );
 
-    // Stale write older than 5 minutes is rejected.
-    let now_ms = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_millis() as i64)
-        .unwrap_or(0);
+    // Stale write older than 5 minutes is rejected with 400 Bad Request.
+    let now_ms = current_time_ms();
     let past_timestamp = now_ms - 600_000;
-    let (status, body) = request(
+    let (status, _) = request(
         &app_a,
         Some(&alice),
         path,
@@ -314,8 +319,17 @@ async fn test_bubble_chat_presence_lifecycle() -> anyhow::Result<()> {
         )),
     )
     .await?;
-    assert_eq!(status, StatusCode::OK);
-    assert_eq!(body["stale"], true);
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+
+    // Requests omitting seq or sent_at are rejected.
+    let (status, _) = request(
+        &app_a,
+        Some(&alice),
+        path,
+        Some(json!({ "session_id": session1, "content": "seq欠落" })),
+    )
+    .await?;
+    assert!(status.is_client_error());
 
     // Row is retained until retention_until expires.
     let mut tx = db.transaction().await?;

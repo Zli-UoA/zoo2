@@ -1,7 +1,7 @@
 import { act, render, screen } from "@testing-library/react";
 import { afterEach, expect, it, vi } from "vite-plus/test";
 import { DEFAULT_CONFIG } from "../../../lib/config";
-import { LinkPreviews } from "./LinkPreviews";
+import { LinkPreviews } from "./LinkPreviews.tsx";
 
 const config = { ...DEFAULT_CONFIG, summalyUrl: "", mediaProxyUrl: "" };
 const api = vi.hoisted(() => ({ get: vi.fn() }));

@@ -52,12 +52,17 @@ function render() {
 }
 
 beforeEach(() => {
+  vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
   state.entries = [];
   state.content = "";
   state.isSharing = true;
   state.currentUserId = "user-me";
-  state.setContent.mockReset();
-  state.clearContent.mockReset();
+  state.setContent.mockReset().mockImplementation((val: string) => {
+    state.content = val;
+  });
+  state.clearContent.mockReset().mockImplementation(() => {
+    state.content = "";
+  });
 });
 
 describe("BubbleChatScreen", () => {
@@ -170,7 +175,8 @@ describe("BubbleChatScreen", () => {
     ).toBe(false);
   });
 
-  it("invokes clearContent when pressing Cmd+Enter or Ctrl+Enter in the textarea", async () => {
+  it("clears textarea immediately and delays clearContent by POP_DURATION_MS with popping animation on Cmd+Enter", async () => {
+    vi.useFakeTimers();
     vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
     state.content = "入力途中のテキスト";
     const container = document.createElement("div");
@@ -191,25 +197,84 @@ describe("BubbleChatScreen", () => {
       const textarea = container.querySelector("textarea");
       expect(textarea).not.toBeNull();
 
+      // Press Cmd+Enter
       await act(async () => {
         textarea!.dispatchEvent(
           new KeyboardEvent("keydown", { key: "Enter", metaKey: true, bubbles: true }),
         );
       });
-      expect(state.clearContent).toHaveBeenCalledTimes(1);
 
+      // Draft input is cleared immediately
+      expect(state.setContent).toHaveBeenCalledWith("");
+      // clearContent has NOT been called yet (popping animation in progress)
+      expect(state.clearContent).not.toHaveBeenCalled();
+
+      // Popping bubble element is present with animate-bubble-pop class
+      const poppingBubble = container.querySelector('[data-bubble-side="right"]');
+      expect(poppingBubble?.className).toContain("animate-bubble-pop");
+
+      // Advance timers by 3500ms
       await act(async () => {
-        textarea!.dispatchEvent(
-          new KeyboardEvent("keydown", { key: "Enter", ctrlKey: true, bubbles: true }),
-        );
+        vi.advanceTimersByTime(3500);
       });
-      expect(state.clearContent).toHaveBeenCalledTimes(2);
+
+      // After 3.5s, clearContent is invoked on the server
+      expect(state.clearContent).toHaveBeenCalledTimes(1);
     } finally {
       await act(async () => {
         root.unmount();
       });
       container.remove();
+      vi.useRealTimers();
       vi.unstubAllGlobals();
+    }
+  });
+
+  it("renders participants button with count and toggles participants panel", async () => {
+    state.entries = [
+      {
+        user_id: "user-alice",
+        user_name: "alice",
+        display_name: "Alice",
+        content: "入力中テキスト",
+      },
+    ];
+    state.content = "自分のテキスト";
+
+    const container = document.createElement("div");
+    document.body.append(container);
+    const root = createRoot(container);
+
+    try {
+      await act(async () => {
+        root.render(
+          createElement(
+            I18nextProvider,
+            { i18n: createI18n("ja") },
+            createElement(BubbleChatScreen),
+          ),
+        );
+      });
+
+      // 2 participants: Alice + Me
+      const button = container.querySelector('button[aria-label="参加者"]');
+      expect(button).not.toBeNull();
+      expect(button?.textContent).toContain("2");
+
+      // Click to open panel
+      await act(async () => {
+        button!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      });
+
+      expect(container.textContent).toContain("参加者 (2)");
+      expect(container.textContent).toContain("Alice");
+      expect(container.textContent).toContain("My Name");
+      expect(container.textContent).toContain("あなた");
+    } finally {
+      await act(async () => {
+        root.unmount();
+      });
+      container.remove();
     }
   });
 });

@@ -8,6 +8,7 @@ const POLL_INTERVAL_MS = 1000;
 const IDLE_TIMEOUT_MS = 15000;
 const RETRY_INTERVAL_MS = 1000;
 const REQUEST_TIMEOUT_MS = 5000;
+const POLL_TIMEOUT_MS = 5000;
 
 export interface BubbleChatEntry {
   user_id: string;
@@ -59,6 +60,7 @@ export function useBubbleChat(enabled = true) {
     let activePollAbortController: AbortController | null = null;
     let pollGeneration = 0;
     let lastSuccessfulPoll = Date.now();
+    let serverTimeOffset = 0;
 
     // Coalesce pending writes so at most one follow-up request is queued while a write is in flight,
     // always sending the latest activeContent (or empty string on clear) when the in-flight write finishes.
@@ -90,16 +92,27 @@ export function useBubbleChat(enabled = true) {
           const timeoutId = setTimeout(() => abortController.abort(), REQUEST_TIMEOUT_MS);
 
           try {
-            await client.request(path, {
+            const sentAt = Date.now() + serverTimeOffset;
+            const res = await client.request<{
+              ok?: boolean;
+              stale?: boolean;
+              server_time?: number;
+            }>(path, {
               method: "POST",
               body: {
                 session_id: sessionId,
                 seq: requestSeq,
                 content: valueToSend,
-                sent_at: Date.now(),
+                sent_at: sentAt,
               },
               signal: abortController.signal,
             });
+            if (typeof res?.server_time === "number") {
+              serverTimeOffset = res.server_time - Date.now();
+            }
+            if (res?.ok !== true || res?.stale === true) {
+              throw new Error("Write rejected as stale or unsuccessful");
+            }
             confirmedSeq = requestSeq;
             confirmedContent = valueToSend;
             if (valueToSend === "" && requestSeq >= latestNonEmptySeq) {
@@ -175,6 +188,7 @@ export function useBubbleChat(enabled = true) {
         inFlight = false;
         hasPendingWrite = false;
         const requestSeq = ++seq;
+        const sentAt = Date.now() + serverTimeOffset;
         void client
           .request(path, {
             method: "POST",
@@ -182,7 +196,7 @@ export function useBubbleChat(enabled = true) {
               session_id: sessionId,
               seq: requestSeq,
               content: "",
-              sent_at: Date.now(),
+              sent_at: sentAt,
             },
             keepalive: true,
           })
@@ -236,16 +250,19 @@ export function useBubbleChat(enabled = true) {
       }
       const abortController = new AbortController();
       activePollAbortController = abortController;
+      const pollTimeoutId = setTimeout(() => abortController.abort(), POLL_TIMEOUT_MS);
 
       try {
         const result = await client.get<BubbleChatEntry[]>(path, {
           signal: abortController.signal,
         });
+        clearTimeout(pollTimeoutId);
         if (!cancelled && currentGen === pollGeneration && isVisible()) {
           lastSuccessfulPoll = Date.now();
           setEntries(result);
         }
       } catch {
+        clearTimeout(pollTimeoutId);
         // Keep previous entries on a transient network failure instead of wiping them out,
         // but if poll failures persist beyond IDLE_TIMEOUT_MS, server-side presence has expired.
         if (!cancelled && currentGen === pollGeneration && isVisible()) {
@@ -254,10 +271,14 @@ export function useBubbleChat(enabled = true) {
           }
         }
       } finally {
+        clearTimeout(pollTimeoutId);
         if (activePollAbortController === abortController) {
           activePollAbortController = null;
         }
         if (!cancelled && currentGen === pollGeneration && isVisible()) {
+          if (Date.now() - lastSuccessfulPoll >= IDLE_TIMEOUT_MS) {
+            setEntries([]);
+          }
           pollTimer = setTimeout(() => void poll(), POLL_INTERVAL_MS);
         }
       }

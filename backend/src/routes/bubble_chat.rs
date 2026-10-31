@@ -9,10 +9,8 @@ use serde::{Deserialize, Serialize};
 struct UpdateBubbleChat {
     session_id: uuid::Uuid,
     content: String,
-    #[serde(default)]
-    seq: Option<i64>,
-    #[serde(default)]
-    sent_at: Option<i64>,
+    seq: i64,
+    sent_at: i64,
 }
 
 #[derive(Serialize)]
@@ -36,15 +34,16 @@ async fn update(
 ) -> Result<Json<serde_json::Value>, AppError> {
     validate_bubble_chat_content(&body.content)?;
 
-    // Reject delayed/stale requests if sent_at is provided and older than 5 minutes or in future > 1 minute.
-    if let Some(sent_at) = body.sent_at {
-        let now_ms = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_millis() as i64)
-            .unwrap_or(0);
-        if sent_at < now_ms - 300_000 || sent_at > now_ms + 60_000 {
-            return Ok(Json(serde_json::json!({"ok": false, "stale": true})));
-        }
+    let now_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0);
+
+    // Reject delayed/stale requests if sent_at is older than 5 minutes or in future > 1 minute.
+    if body.sent_at < now_ms - 300_000 || body.sent_at > now_ms + 60_000 {
+        return Err(AppError::BadRequest(
+            "Stale or invalid request timestamp".into(),
+        ));
     }
 
     let mut db = state.db.clone();
@@ -62,7 +61,7 @@ async fn update(
     .await?;
 
     let session = body.session_id.to_string();
-    let seq = body.seq.unwrap_or(0);
+    let seq = body.seq;
     let is_empty = body.content.trim().is_empty();
     let content = if is_empty {
         String::new()
@@ -101,7 +100,7 @@ async fn update(
     .await?;
 
     tx.commit().await?;
-    Ok(Json(serde_json::json!({"ok": true})))
+    Ok(Json(serde_json::json!({"ok": true, "server_time": now_ms})))
 }
 
 async fn list(

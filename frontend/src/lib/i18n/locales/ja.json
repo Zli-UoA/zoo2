@@ -352,8 +352,15 @@
     "placeholder": "ここに入力するとリアルタイムに表示されます…",
     "inputLabel": "リアルタイムメッセージ入力",
     "clear": "入力をクリア",
-    "hint": "送信ボタンはありません。Cmd / Ctrl+Enter で入力を全削除でき、文字を消すか画面を離れると吹き出しも消えます。",
-    "typingSummary": "{{names}}が入力中"
+    "hint": "送信ボタンはありません。Cmd / Ctrl+Enter で入力文字を消去でき、吹き出しは少し表示されたあと弾けて消えます。",
+    "typingSummary": "{{names}}が入力中",
+    "participants": "参加者",
+    "participantsTitle": "参加者 ({{count}})",
+    "noParticipants": "参加者はいません",
+    "typing": "入力中",
+    "active": "入室中",
+    "you": "あなた",
+    "closeParticipants": "参加者一覧を閉じる"
   },
   "dms": {
     "title": "ダイレクトメッセージ",

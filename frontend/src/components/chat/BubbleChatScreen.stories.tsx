@@ -81,7 +81,8 @@ export const ActiveConversation: Story = {
 
     await userEvent.keyboard("{Control>}{Enter}{/Control}");
     await expect(input).toHaveValue("");
-    await expect(within(list).queryByText("ありがとう！準備してきます")).not.toBeInTheDocument();
+    // 入力欄は即座にクリアされるが、吹き出しは破裂アニメーションのため少しの間表示される
+    await expect(await within(list).findByText("ありがとう！準備してきます")).toBeInTheDocument();
   },
 };
 

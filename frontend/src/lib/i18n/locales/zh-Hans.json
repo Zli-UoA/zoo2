@@ -352,8 +352,15 @@
     "placeholder": "在此输入即可实时共享…",
     "inputLabel": "实时消息输入",
     "clear": "清空输入",
-    "hint": "无需发送按钮，按 Cmd / Ctrl+Enter 可清空输入；清空文字或离开页面后气泡即会消失。",
-    "typingSummary": "{{names}}正在输入"
+    "hint": "无需发送按钮，按 Cmd / Ctrl+Enter 可清空输入；气泡会在稍后破裂消失。",
+    "typingSummary": "{{names}}正在输入",
+    "participants": "参与者",
+    "participantsTitle": "参与者 ({{count}})",
+    "noParticipants": "暂无参与者",
+    "typing": "正在输入",
+    "active": "在房间中",
+    "you": "你",
+    "closeParticipants": "关闭参与者列表"
   },
   "dms": {
     "title": "私信",

@@ -12,7 +12,7 @@ import {
   TrashIcon,
 } from "lucide-react";
 import { MfmContent } from "./MfmContent";
-import { LinkPreviews } from "./LinkPreviews";
+import { LinkPreviews } from "./LinkPreviews.tsx";
 
 import { useLocale } from "../../i18n/LocaleProvider";
 import type { KitchenCatalog } from "../../../lib/emoji/kitchen";
