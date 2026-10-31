@@ -246,7 +246,8 @@ jobs:
 
   browser-test:
     needs: runner
-    runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-latest' || fromJSON(needs.runner.outputs.runs-on || '"zli-kubecamp-no-docker"') }}
+    # Storybook exceeds the 2GiB kubecamp limit, even with a single test page.
+    runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-latest' || fromJSON(needs.runner.outputs.large-runs-on || '"zli-k8s"') }}
     defaults:
       run:
         working-directory: ./frontend

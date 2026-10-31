@@ -14,6 +14,9 @@ on:
       docker-runs-on:
         description: JSON for jobs requiring a Docker daemon
         value: ${{ jobs.select.outputs.docker-runs-on }}
+      large-runs-on:
+        description: JSON for jobs exceeding the 2GiB kubecamp memory limit
+        value: ${{ jobs.select.outputs.docker-runs-on }}
 
 permissions:
   contents: read

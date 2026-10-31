@@ -2,7 +2,7 @@
 
 Docker daemonが不要なジョブは、**kubecamp → zli-k8s → GitHub-hosted** の順に実行先を選びます。kubecampのラベルは `zli-kubecamp-no-docker`、zoo2 ARCのラベルは `zli-k8s` です。Docker daemonが必要なジョブは **zli-k8s → GitHub-hosted** の順です。
 
-各workflowの `runner` ジョブが、checkoutせずにorgのRunner一覧を取得します。`runs-on` 出力はDocker不要用、`docker-runs-on` 出力はDocker必須用です。次の条件で選びます。
+各workflowの `runner` ジョブが、checkoutせずにorgのRunner一覧を取得します。`runs-on` 出力はDocker不要用、`docker-runs-on` 出力はDocker必須用です。`large-runs-on` はkubecampの2GiBを超えるジョブ用で、同じARC → Hostedの選択を使います。次の条件で選びます。
 
 1. onlineかつidleのkubecamp Runnerがあれば、Docker不要ジョブを割り当てます。
 2. kubecampが不在または全台busyなら、idleのARC Runnerを使います。onlineのARCが1台だけbusyの場合も、最大2台まで増設できるのでARCを選びます。
@@ -31,5 +31,7 @@ kubecampは1ジョブごとの使い捨てPodです。7台の補充は毎分のC
 ## Docker daemonの要否
 
 - Docker必須: イメージのbuild、Composeを使うbackend／frontend／OIDC E2E、frontendコンテナ・proxy検証。
-- Docker不要: Rustのbuild／lint／単体テスト、frontendのcheck／単体／ブラウザー検証、イメージ計画、ラベル付与、イメージ清掃、Flux通知、Storybookのbuild／deploy、automerge gate。
+- Docker不要: Rustのbuild／lint／単体テスト、frontendのcheck／単体検証、イメージ計画、ラベル付与、イメージ清掃、Flux通知、Storybookのbuild／deploy、automerge gate。
 - イメージのpromote／publishはregistryのmanifestを操作するだけです。常設CLIの `docker buildx imagetools` と `docker login` を使い、daemonを起動するsetup-buildxは実行しません。kubecampのDocker daemonがない実Runnerで、公開manifestのinspect成功を確認しました。実際のタグ更新・発行は別途CIで確認します。
+
+Storybookを含む `browser-test` は、1CPU・2GiB制約で直列化・heap制限でもOOMを再現したため `large-runs-on` を使います。Dockerは不要ですが、必要なメモリを持つARC（Runner limit 6GiB）またはHostedを選びます。テスト内容や失敗条件は維持します。

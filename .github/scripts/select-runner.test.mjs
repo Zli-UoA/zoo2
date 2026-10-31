@@ -81,7 +81,8 @@ test('every workload uses the right output and protects fork PRs', () => {
         continue;
       }
       const docker = (dockerJobs[file] || []).includes(id);
-      assert.ok(block.includes(`needs.runner.outputs.${docker ? 'docker-runs-on' : 'runs-on'}`), `${file}/${id}: wrong pool`);
+      const large = file === 'ci-frontend.yaml' && id === 'browser-test';
+      assert.ok(block.includes(`needs.runner.outputs.${large ? 'large-runs-on' : docker ? 'docker-runs-on' : 'runs-on'}`), `${file}/${id}: wrong pool`);
       const line = block.split('\n').find(x => x.startsWith('    runs-on:'));
       if (line) {
         assert.ok(line.includes(`github.event.pull_request.head.repo.fork && '${H}' ||`), `${file}/${id}: fork guard`);
@@ -97,4 +98,8 @@ test('every workload uses the right output and protects fork PRs', () => {
 test('selector host overrides do not override workload priorities', () => {
   assert.match(yaml, /vars\.CI_SELECTOR_RUNNER \|\| vars\.CI_RUNNER/);
   assert.equal(Number(script.match(/const MAX_RUNNERS = (\d+);/)[1]), 2);
+});
+
+test('large jobs use the ARC/hosted output when kubecamp memory is insufficient', () => {
+  assert.match(yaml, /large-runs-on:\n\s+description: [^\n]+\n\s+value: \$\{\{ jobs.select.outputs.docker-runs-on \}\}/);
 });
