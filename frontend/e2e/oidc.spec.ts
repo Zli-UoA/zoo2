@@ -107,7 +107,7 @@ test("OIDC PKCE ログイン後に API と Shape が Bearer で通る", async ({
   const channelLink = page.getByRole("link", { name: new RegExp(channelName) });
   await expect(channelLink).toBeVisible({ timeout: SHAPE_SYNC_TIMEOUT_MS });
   await channelLink.click();
-  await expect(page.getByRole("heading", { name: "メッセージ" })).toBeVisible();
+  await expect(page.getByPlaceholder("メッセージを送信")).toBeVisible();
 
   await page.getByPlaceholder("メッセージを送信").fill(message);
   await page.getByRole("button", { name: "送信" }).click();
@@ -137,18 +137,14 @@ test("OIDC PKCE ログイン後に API と Shape が Bearer で通る", async ({
 
   // ダークテーマでも操作群が出る（証跡用）。以降の画面はライトに戻す。
   await page.getByRole("link", { name: "Zoo設定" }).click();
-  await page.getByRole("button", { name: "テーマを切り替える" }).click();
-  await page.getByRole("menuitemradio", { name: "ダーク" }).click();
+  await page.getByRole("combobox", { name: "テーマ", exact: true }).selectOption("dark");
   await expect(page.locator("html")).toHaveClass(/dark/);
-  await expect(page.getByRole("menuitemradio", { name: "ダーク" })).toBeHidden();
   await page.getByRole("button", { name: "チャンネル一覧へ戻る" }).click();
   await ownRow.hover();
   await page.screenshot({ path: testInfo.outputPath("05-own-message-controls-dark.png") });
   await page.getByRole("link", { name: "Zoo設定" }).click();
-  await page.getByRole("button", { name: "テーマを切り替える" }).click();
-  await page.getByRole("menuitemradio", { name: "ライト" }).click();
+  await page.getByRole("combobox", { name: "テーマ", exact: true }).selectOption("light");
   await expect(page.locator("html")).not.toHaveClass(/dark/);
-  await expect(page.getByRole("menuitemradio", { name: "ライト" })).toBeHidden();
 
   await page.getByRole("button", { name: "チャンネル一覧へ戻る" }).click();
 
@@ -171,15 +167,21 @@ test("OIDC PKCE ログイン後に API と Shape が Bearer で通る", async ({
     content: 'button[aria-label="Open TanStack Devtools"]{display:none !important}',
   });
 
-  // サイドバーは参加中のみなので、「チャンネルを探す」から検索して参加する（#112）。
+  // 未参加の公開チャンネルは閲覧でき、参加は送信欄で行う。
   await page.getByRole("button", { name: "チャンネルを探す" }).first().click();
   await page.getByRole("searchbox", { name: "チャンネル名で検索" }).fill(channelName);
   const browserJoinResponse = page.waitForResponse(
     (response) => response.request().method() === "POST" && response.url().endsWith("/join"),
   );
-  await page.getByRole("button", { name: "参加する", exact: true }).click();
+  await page
+    .getByRole("dialog")
+    .getByRole("link", { name: new RegExp(channelName) })
+    .click();
+  await expect(page.getByText(message, { exact: true })).toBeVisible();
+  await expect(page.getByPlaceholder("メッセージを送信")).toHaveCount(0);
+  await page.getByRole("button", { name: "参加して投稿", exact: true }).click();
   await browserJoinResponse;
-  await expect(page.getByRole("heading", { name: "メッセージ" })).toBeVisible();
+  await expect(page.getByPlaceholder("メッセージを送信")).toBeVisible();
   expect(new URL(page.url()).pathname).toBe(`/channels/${channelId}`);
   // 参加したチャンネルはサイドバーにも出る。
   await expect(page.getByRole("link", { name: new RegExp(channelName) })).toBeVisible();

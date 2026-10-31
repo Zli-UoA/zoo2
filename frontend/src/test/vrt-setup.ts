@@ -1,3 +1,4 @@
+import "@fontsource-variable/noto-sans-jp";
 import { beforeAll, beforeEach, vi } from "vite-plus/test";
 
 import { storybookApiHandlers } from "../../.storybook/mock-api";
@@ -11,6 +12,8 @@ beforeAll(async () => {
   vi.setSystemTime(new Date("2026-01-02T00:00:00.000Z"));
   const style = document.createElement("style");
   style.textContent = `
+    /* Keep Japanese glyphs independent from OS fallback fonts. */
+    :root { --font-sans: "Geist Variable", "Noto Sans JP Variable", sans-serif; }
     *, *::before, *::after {
       animation: none !important;
       transition: none !important;

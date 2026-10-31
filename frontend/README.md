@@ -240,6 +240,8 @@ E2E_BASE_URL=http://127.0.0.1:3100 pnpm test:e2e:csp
 docker rm -f zoo-frontend-csp-test
 ```
 
+VRTはOSのフォントに依存しないよう、テスト内でGeistと固定バージョンのNoto Sans JPを読み込みます。描画後にフォントの読み込みを待って比較します。フォント・表示を意図して変更した場合は、差分を確認して基準画像を更新してください。
+
 ## Storybookの構成
 
 分類と追加基準は [storybook-coverageスキル](../.agents/skills/storybook-coverage/SKILL.md) にまとめています。

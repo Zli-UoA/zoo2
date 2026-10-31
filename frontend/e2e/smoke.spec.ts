@@ -26,7 +26,7 @@ test("起動 → チャンネル作成 → メッセージ送信 → 反映", as
 
   // メッセージ画面へ遷移する。
   await channelLink.click();
-  await expect(page.getByRole("heading", { name: "メッセージ" })).toBeVisible();
+  await expect(page.getByPlaceholder("メッセージを送信")).toBeVisible();
 
   // 送信し、Electric 経由で反映される（楽観更新 + txid ハンドシェイク）。
   await page.getByPlaceholder("メッセージを送信").fill(message);
