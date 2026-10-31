@@ -3,7 +3,7 @@ services:
     build:
       context: ../..
       dockerfile: apps/github-bot/Dockerfile
-    image: zoo-github-bot:local
+    image: ${BOT_IMAGE:-ghcr.io/zli-uoa/zoo2-github-bot:latest}
     restart: unless-stopped
     env_file: .env
     environment:

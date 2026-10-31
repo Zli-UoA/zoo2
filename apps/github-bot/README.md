@@ -81,8 +81,13 @@ node --env-file=.env --experimental-strip-types src/main.ts
 `.env` の `GITHUB_PRIVATE_KEY_PATH` にホスト側の鍵ファイルを指定し、UID 1000 のコンテナユーザーが読める権限にします。鍵は読み取り専用でマウントされます。
 
 ```sh
-docker compose up -d --build
+docker compose pull
+docker compose up -d --no-build
 ```
+
+公開イメージは `ghcr.io/zli-uoa/zoo2-github-bot` です。main の変更時に型チェック・テスト・コンテナ検証を通してから、コミット SHA タグと `latest` を発行します。GitHub Actions の `CI GitHub Bot` を main で手動実行して再発行することもできます。PR では公開せず、ビルドと検証だけを行います。初回の発行はこの PR のマージ後です。
+
+バージョンを固定する場合は `.env` の `BOT_IMAGE` を `ghcr.io/zli-uoa/zoo2-github-bot:<main のコミット SHA>` に変更します。GHCR パッケージが非公開の場合は、`read:packages` 権限のある資格情報で `docker login ghcr.io` してから取得してください。
 
 ホストの `127.0.0.1:3001` を HTTPS リバースプロキシに接続します。外部へ bind する必要がある場合は `BOT_BIND_ADDRESS` を設定します。SQLite は named volume に保存されます。DB・バックアップには非公開リポジトリの通知本文が含まれるため、同じ共有範囲で管理してください。
 
@@ -91,6 +96,8 @@ docker compose up -d --build
 ```sh
 docker build -f apps/github-bot/Dockerfile -t zoo-github-bot:local .
 ```
+
+ローカルでビルドしたイメージを Compose で使う場合は、`apps/github-bot` で `BOT_IMAGE=zoo-github-bot:local docker compose up -d --build` を実行します。
 
 ## 購読する
 
