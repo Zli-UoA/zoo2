@@ -193,7 +193,7 @@ export function NotificationCard({
     );
   }
   const destination = (
-    <p className="flex min-w-0 items-center gap-1.5 text-sm text-muted-foreground">
+    <p className="flex min-w-0 items-center gap-1.5 text-xs text-muted-foreground">
       <ContextIcon className="size-4 shrink-0" aria-hidden="true" />
       {contextLabel !== channelLabel ? (
         <>
@@ -243,7 +243,7 @@ export function NotificationCard({
                 </span>
               ) : null}
               <time
-                className="shrink-0 text-xs text-muted-foreground"
+                className="shrink-0 text-[11px] text-muted-foreground tabular-nums"
                 dateTime={normalizeUtcTimestamp(notification.created_at)}
                 title={fullTimestamp(notification.created_at, locale)}
               >
@@ -301,7 +301,7 @@ export function NotificationCard({
               {reactionGroups.map((reaction) => (
                 <li
                   key={reaction.emoji}
-                  className="flex items-center gap-1 rounded-full bg-muted px-2.5 py-1 text-sm"
+                  className="flex items-center gap-1 rounded-full bg-muted px-2.5 py-1 text-xs"
                   aria-label={`${kitchenLabel(reaction.emoji)} ${reaction.count}`}
                   title={kitchenLabel(reaction.emoji)}
                 >

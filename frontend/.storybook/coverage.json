@@ -113,6 +113,8 @@
         "Mobile",
         "DirectMessages",
         "Dark",
+        "MessageLayoutComparison",
+        "MessageLayoutComparisonMobile",
         "Loading",
         "BodiesReadyTogether",
         "LoadingOnScroll"

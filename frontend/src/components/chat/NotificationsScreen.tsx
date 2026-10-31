@@ -92,14 +92,14 @@ export function NotificationsScreen() {
       aria-labelledby="notifications-title"
       aria-busy={loading}
     >
-      <header className="flex shrink-0 items-center gap-3 border-b px-4 py-4 sm:px-6">
+      <header className="flex min-h-16 shrink-0 items-center gap-3 border-b px-4 py-2.5 max-md:min-h-[65px]">
         <span
-          className="flex size-10 shrink-0 items-center justify-center rounded-xl bg-primary text-primary-foreground"
+          className="flex size-8 shrink-0 items-center justify-center rounded-lg bg-primary text-primary-foreground"
           aria-hidden="true"
         >
-          <BellIcon className="size-5" />
+          <BellIcon className="size-4" />
         </span>
-        <h1 id="notifications-title" className="text-lg font-semibold">
+        <h1 id="notifications-title" className="text-sm font-semibold">
           {t("notifications.title")}
         </h1>
       </header>
