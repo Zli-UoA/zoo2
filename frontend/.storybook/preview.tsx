@@ -48,7 +48,7 @@ const preview: Preview = {
     },
     options: {
       storySort: {
-        order: ["Chat", "Notifications", "Layout", "Foundations", "Screens"],
+        order: ["Foundations", "Components", "Features", "Pages", "Flows"],
       },
     },
   },
@@ -71,6 +71,9 @@ const preview: Preview = {
         items: [
           { value: "ja", title: "日本語" },
           { value: "en", title: "English" },
+          { value: "zh-Hans", title: "简体中文" },
+          { value: "zh-Hant", title: "繁體中文" },
+          { value: "yue", title: "粵語" },
         ],
         dynamicTitle: true,
       },

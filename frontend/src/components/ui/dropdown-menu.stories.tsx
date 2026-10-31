@@ -37,7 +37,7 @@ function DropdownDemo({ defaultOpen = false }: { defaultOpen?: boolean }) {
           </DropdownMenuItem>
           <DropdownMenuItem>
             <ShieldAlertIcon />
-            メッセージ管理
+            チャンネル設定
           </DropdownMenuItem>
           <DropdownMenuSeparator />
           <DropdownMenuItem variant="destructive">
@@ -70,7 +70,7 @@ function IconOnlyDropdownDemo() {
           </DropdownMenuItem>
           <DropdownMenuItem>
             <ShieldAlertIcon />
-            メッセージ管理
+            チャンネル設定
           </DropdownMenuItem>
           <DropdownMenuSeparator />
           <DropdownMenuItem variant="destructive">
@@ -84,7 +84,7 @@ function IconOnlyDropdownDemo() {
 }
 
 const meta = {
-  title: "Foundations/DropdownMenu",
+  title: "Components/DropdownMenu",
   component: DropdownMenu,
   tags: ["autodocs"],
   parameters: { a11y: { test: "error" } },
@@ -109,7 +109,7 @@ export const IconOnlyTrigger: Story = {
   render: () => <IconOnlyDropdownDemo />,
   play: async () => {
     const menu = await screen.findByRole("menu");
-    const item = within(menu).getByRole("menuitem", { name: "メッセージ管理" });
+    const item = within(menu).getByRole("menuitem", { name: "チャンネル設定" });
     await expect(getComputedStyle(item).whiteSpace).toBe("nowrap");
     await expect(menu.offsetWidth).toBeGreaterThanOrEqual(176);
   },

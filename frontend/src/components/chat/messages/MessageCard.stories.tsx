@@ -1,3 +1,5 @@
+import { expect, userEvent, within } from "storybook/test";
+import { storyDeploymentCard } from "../../../../.storybook/app-fixtures";
 import type { Meta, StoryObj } from "@storybook/react-vite";
 
 import { MessageCard, type CardData } from "./MessageCard";
@@ -13,7 +15,7 @@ const card: CardData = {
 };
 
 const meta = {
-  title: "Chat/MessageCard",
+  title: "Features/Chat/MessageCard",
   component: MessageCard,
   tags: ["autodocs"],
   parameters: { a11y: { test: "error" } },
@@ -62,46 +64,21 @@ export const LongDescription: Story = {
   },
 };
 
-const deployment: CardData = {
-  title: "Deployment to storybook-pr-271",
-  url: "https://github.com/Zli-UoA/zoo2/deployments",
-  description: "",
-  source: "Zli-UoA/zoo2",
-  context: "2026-10-31 19:56",
-  author: "",
-  badge: "",
-  color: "#2da44e",
-  fields: [
-    { title: "Status", value: "Completed", short: true },
-    {
-      title: "Commit",
-      value: "3968f64 (fix/github-bot-paused-queue)",
-      short: true,
-      code: true,
-      url: "https://github.com/Zli-UoA/zoo2/commit/3968f64",
-    },
-    {
-      title: "Workflow",
-      value: "Storybook Preview #68 / deploy",
-      url: "https://github.com/Zli-UoA/zoo2/actions",
-    },
-  ],
-};
-export const Deployment: Story = { args: { card: deployment, attachment: true } };
+export const Deployment: Story = { args: { card: storyDeploymentCard, attachment: true } };
 export const GitHubFeed: Story = {
-  args: { card: deployment },
+  args: { card: storyDeploymentCard },
   render: () => (
     <div className="max-w-2xl space-y-7 p-4">
       <section>
         <p className="text-sm">Deployment to storybook-pr-271 by Kai-Z-JP</p>
-        <MessageCard card={deployment} attachment />
+        <MessageCard card={storyDeploymentCard} attachment />
       </section>
       <section>
         <p className="text-sm">1 new commit pushed to main by Kai-Z-JP</p>
         <MessageCard
           attachment
           card={{
-            ...deployment,
+            ...storyDeploymentCard,
             title: "Zli-UoA/zoo2 · 103eb20",
             color: "#24292f",
             fields: [
@@ -119,7 +96,7 @@ export const GitHubFeed: Story = {
         <MessageCard
           attachment
           card={{
-            ...deployment,
+            ...storyDeploymentCard,
             title: "#271 fix: Zoo 資格情報の失効中も Bot の受信キューを保持する",
             color: "#8250df",
             url: "https://github.com/Zli-UoA/zoo2/pull/271",
@@ -129,4 +106,32 @@ export const GitHubFeed: Story = {
       </section>
     </div>
   ),
+};
+
+export const CollapsibleBody: Story = {
+  args: {
+    attachment: true,
+    card: {
+      ...storyDeploymentCard,
+      description: Array.from(
+        { length: 20 },
+        (_, i) => `本文 ${i + 1}: リリース内容の詳細です。`,
+      ).join("\n"),
+      author: "Deployment bot",
+    },
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const toggle = await canvas.findByRole("button", { name: "もっと見る" });
+    await expect(toggle).toHaveAttribute("aria-expanded", "false");
+    await expect(canvas.getByText("Completed")).toBeVisible();
+    await expect(canvas.getByText("Deployment bot")).toBeVisible();
+    await userEvent.click(toggle);
+    await expect(canvas.getByRole("button", { name: "折りたたむ" })).toHaveAttribute(
+      "aria-expanded",
+      "true",
+    );
+    await userEvent.click(toggle);
+    await expect(toggle).toHaveAttribute("aria-expanded", "false");
+  },
 };

@@ -1,13 +1,8 @@
+import { isInsideCode, type SuggestionRange } from "./suggestionContext";
 import { MFM_FUNCTIONS } from "./mfmFunctions";
 
-export interface MfmSuggestionRange {
-  start: number;
-  end: number;
-  query: string;
-}
-
 /** Suggest at the caret after $, $[, or a partial function name; leave escapes and code alone. */
-export function mfmQuery(value: string, caret: number): MfmSuggestionRange | null {
+export function mfmQuery(value: string, caret: number): SuggestionRange | null {
   if (caret < 0 || caret > value.length) return null;
   const prefix = value.slice(0, caret);
   const match = /\$\[?([a-zA-Z0-9]*)$/.exec(prefix);
@@ -15,13 +10,9 @@ export function mfmQuery(value: string, caret: number): MfmSuggestionRange | nul
   let escapes = 0;
   for (let i = match.index - 1; i >= 0 && value[i] === "\\"; i--) escapes++;
   if (escapes % 2) return null;
-  let delimiter = 0;
-  for (const ticks of prefix.slice(0, match.index).matchAll(/(?<!\\)`+/g)) {
-    const length = ticks[0].length;
-    if (!delimiter) delimiter = length;
-    else if (length === delimiter || (delimiter >= 3 && length >= delimiter)) delimiter = 0;
-  }
-  return delimiter ? null : { start: match.index, end: caret, query: match[1]!.toLowerCase() };
+  return isInsideCode(value, match.index)
+    ? null
+    : { start: match.index, end: caret, query: match[1]!.toLowerCase() };
 }
 
 export function mfmOptions(query: string) {
@@ -41,7 +32,7 @@ const templates: Partial<Record<(typeof MFM_FUNCTIONS)[number], string>> = {
 
 export function insertMfm(
   value: string,
-  range: MfmSuggestionRange,
+  range: SuggestionRange,
   name: (typeof MFM_FUNCTIONS)[number],
 ) {
   const opening = `$[${templates[name] ?? name} `;

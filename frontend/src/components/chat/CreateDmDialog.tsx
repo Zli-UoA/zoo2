@@ -1,3 +1,4 @@
+import { Input } from "../ui/input";
 import { useTranslation } from "react-i18next";
 import { useNavigate } from "@tanstack/react-router";
 import { cn } from "cn";
@@ -212,13 +213,13 @@ export function CreateDmDialog({
           <DialogDescription>{t("dms.createDescription")}</DialogDescription>
         </DialogHeader>
 
-        <form className="flex flex-col gap-3" onSubmit={submit}>
+        <form autoComplete="off" className="flex flex-col gap-3" onSubmit={submit}>
           <div className="relative min-w-0">
             <SearchIcon
               aria-hidden="true"
               className="pointer-events-none absolute top-1/2 left-2.5 size-4 -translate-y-1/2 text-muted-foreground"
             />
-            <input
+            <Input
               type="search"
               className={cn(
                 inputClassName(),

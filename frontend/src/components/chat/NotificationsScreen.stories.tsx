@@ -1,9 +1,18 @@
 import type { Decorator, Meta, StoryObj } from "@storybook/react-vite";
-import { expect, screen } from "storybook/test";
+import { expect, screen, waitFor, within } from "storybook/test";
+import { delay, http, HttpResponse } from "msw";
 import { useLayoutEffect, type ReactNode } from "react";
 
 import { StoryShell } from "../../../.storybook/shell";
-import { storyCollections, storyNotifications } from "../../../.storybook/fixtures";
+import {
+  storyCollections,
+  storyNotifications,
+  storyChannels,
+  storyChannelUsers,
+  storyDmChannels,
+  storyDmMembers,
+  storyDmNotifications,
+} from "../../../.storybook/fixtures";
 import { NotificationsScreen } from "./NotificationsScreen";
 
 // 通知カードの自動既読はフォーカス中だけ動く。Storybook では未読の見た目を
@@ -26,10 +35,13 @@ const withUnreadPreview: Decorator = (Story) => (
 );
 
 const meta = {
-  title: "Notifications/NotificationsScreen",
+  title: "Pages/Notifications",
   component: NotificationsScreen,
   tags: ["autodocs"],
   parameters: { a11y: { test: "error" } },
+  play: async () => {
+    await waitFor(() => expect(screen.queryByRole("status")).not.toBeInTheDocument());
+  },
   decorators: [
     (Story) => (
       <StoryShell selectedChannelId={null} initialPane="chat">
@@ -47,8 +59,17 @@ type Story = StoryObj<typeof meta>;
 export const Default: Story = {
   decorators: [withUnreadPreview],
   play: async () => {
-    await expect(await screen.findByText("未読通知 3 件")).toBeInTheDocument();
-    await expect(await screen.findByText(/今日のリリースは 18:00/)).toBeInTheDocument();
+    await waitFor(() => expect(screen.queryByRole("status")).not.toBeInTheDocument());
+    await expect(await screen.findByText(/今日のリリースは 18:00/)).toBeVisible();
+    const list = screen.getByRole("list", { name: "通知" });
+    const region = screen.getByRole("region", { name: "通知" });
+    await expect(list.getBoundingClientRect().width).toBe(region.getBoundingClientRect().width);
+    for (const row of Array.from(list.children))
+      await expect(row.getBoundingClientRect().width).toBe(list.getBoundingClientRect().width);
+    await expect(within(list).getByRole("link", { name: "example.com/docs" })).toHaveAttribute(
+      "target",
+      "_blank",
+    );
   },
 };
 
@@ -71,6 +92,78 @@ export const Empty: Story = {
 };
 
 export const Mobile: Story = {
+  play: Default.play,
   globals: { viewport: { value: "mobile" } },
   decorators: [withUnreadPreview],
+};
+
+export const DirectMessages: Story = {
+  decorators: [withUnreadPreview],
+  parameters: {
+    collections: {
+      ...storyCollections,
+      channels: [...storyChannels, ...storyDmChannels],
+      channelUsers: [...storyChannelUsers, ...storyDmMembers],
+      notifications: storyDmNotifications,
+    },
+  },
+  play: async () => {
+    await waitFor(() => expect(screen.queryByRole("status")).not.toBeInTheDocument());
+    await expect(await screen.findByText("Admin, Bob, Carol +1")).toBeVisible();
+    await expect(await screen.findByText("Bob", { selector: "p > span" })).toBeVisible();
+    await expect(screen.queryByText(/#dm:/)).not.toBeInTheDocument();
+  },
+};
+
+export const Dark: Story = { ...Default, globals: { theme: "dark" } };
+
+export const Loading: Story = {
+  parameters: {
+    msw: {
+      handlers: [
+        http.get("*/api/notifications/:id/context", async () => {
+          await delay("infinite");
+          return HttpResponse.json({ message: null, reactions: [] });
+        }),
+      ],
+    },
+  },
+  play: async () => {
+    await expect(await screen.findByRole("status")).toBeVisible();
+    const list = within(screen.getByRole("region", { name: "通知" })).getByRole("list", {
+      hidden: true,
+    });
+    await expect(list).toHaveAttribute("inert");
+    await expect(list).not.toBeVisible();
+    await waitFor(() => expect(list.querySelectorAll(":scope > [data-unread]")).toHaveLength(3));
+  },
+};
+export const BodiesReadyTogether: Story = {
+  parameters: {
+    msw: {
+      handlers: [
+        http.get("*/api/notifications/:id/context", async ({ params }) => {
+          await delay(params.id === "notification-mention" ? 400 : 20);
+          return HttpResponse.json({
+            message: {
+              id: String(params.id),
+              user_id: "user-bob",
+              content: `本文 ${String(params.id)}`,
+            },
+            reactions: [],
+          });
+        }),
+      ],
+    },
+  },
+  play: async () => {
+    await expect(await screen.findByRole("status")).toBeVisible();
+    await expect(
+      within(screen.getByRole("region", { name: "通知" })).getByRole("list", { hidden: true }),
+    ).not.toBeVisible();
+    await waitFor(() => expect(screen.queryByRole("status")).not.toBeInTheDocument());
+    await expect(screen.getByRole("list", { name: "通知" })).toBeVisible();
+    await expect(screen.getByText("本文 notification-mention")).toBeVisible();
+    await expect(screen.getAllByText(/^本文 notification-/)).toHaveLength(4);
+  },
 };

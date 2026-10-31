@@ -20,6 +20,7 @@ export interface FeedMessage {
   app_id?: string | null;
   avatar_url?: string | null;
   created_at: string;
+  updated_at?: string | null;
   /** 返信先のルートメッセージ。`null` はチャンネル直下。 */
   parent_id: string | null;
   user_name?: string | null;

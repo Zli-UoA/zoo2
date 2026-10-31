@@ -1,5 +1,7 @@
+import { delay, http, HttpResponse } from "msw";
+import { mockServer } from "../browser-setup";
 import { render, screen, waitFor } from "@testing-library/react";
-import { describe, expect, it } from "vite-plus/test";
+import { describe, expect, it, vi } from "vite-plus/test";
 import { page } from "vite-plus/test/browser/context";
 import { useRef, useState, type ComponentProps, type ReactNode } from "react";
 
@@ -13,6 +15,7 @@ import { Composer } from "../../components/chat/messages/Composer";
 import { MessageRow } from "../../components/chat/messages/MessageRow";
 import { ReactionPicker } from "../../components/chat/messages/ReactionPicker";
 import { ThreadPane } from "../../components/chat/messages/ThreadPane";
+import { NotificationsScreen } from "../../components/chat/NotificationsScreen";
 import { NotificationCard } from "../../components/chat/notifications/NotificationCard";
 import { StoryShell } from "../../../.storybook/shell";
 import { StoryRouter } from "../../../.storybook/decorators";
@@ -144,10 +147,11 @@ async function renderSurface(
 ) {
   await page.viewport(state.width, state.height);
   render(<Surface theme={state.theme}>{children}</Surface>);
-  await document.fonts.ready;
+  // Layout requests the glyph subsets before we wait for the webfonts.
   await new Promise<void>((resolve) => {
     requestAnimationFrame(() => requestAnimationFrame(() => resolve()));
   });
+  await document.fonts.ready;
 }
 
 async function renderScreen(
@@ -160,10 +164,11 @@ async function renderScreen(
       {children}
     </WithCollections>,
   );
-  await document.fonts.ready;
+  // Layout requests the glyph subsets before we wait for the webfonts.
   await new Promise<void>((resolve) => {
     requestAnimationFrame(() => requestAnimationFrame(() => resolve()));
   });
+  await document.fonts.ready;
 }
 
 function messageRow(overrides: Partial<ComponentProps<typeof MessageRow>> = {}) {
@@ -338,6 +343,48 @@ describe("catalog surfaces", () => {
     await screen.findByText(/リリースノートの下書き/);
     await expect(page).toMatchScreenshot("notification-card-mention-desktop-light");
   });
+
+  it("notifications loading desktop light", async () => {
+    mockServer.use(
+      http.get("*/api/notifications/:id/context", async () => {
+        await delay("infinite");
+        return HttpResponse.json({ message: null, reactions: [] });
+      }),
+    );
+    await renderScreen(
+      { theme: "light", width: 1440, height: 900 },
+      <div style={{ height: 900 }}>
+        <NotificationsScreen />
+      </div>,
+    );
+    await screen.findByRole("status");
+    await expect(page).toMatchScreenshot("notifications-loading-desktop-light");
+  });
+
+  for (const state of [
+    { theme: "light" as const, width: 1440, height: 900, name: "desktop-light" },
+    { theme: "dark" as const, width: 1440, height: 900, name: "desktop-dark" },
+    { theme: "light" as const, width: 390, height: 844, name: "mobile-light" },
+  ]) {
+    it(`notifications full width ${state.name}`, async () => {
+      const focus = vi.spyOn(document, "hasFocus").mockReturnValue(false);
+      try {
+        await renderScreen(
+          state,
+          <div style={{ height: state.height }}>
+            <NotificationsScreen />
+          </div>,
+        );
+        await screen.findByText(/今日のリリースは 18:00/);
+        await screen.findByText(/リリースノートの下書き/);
+        await waitFor(() => expect(screen.queryByRole("status")).toBeNull());
+        await document.fonts.ready;
+        await expect(page).toMatchScreenshot(`notifications-full-width-${state.name}`);
+      } finally {
+        focus.mockRestore();
+      }
+    });
+  }
 
   it("channel sidebar desktop light", async () => {
     await renderScreen(

@@ -3,6 +3,7 @@
     "main": "メインナビゲーション"
   },
   "channels": {
+    "view": "開く",
     "unread": "未読メッセージあり",
     "editTitle": "チャンネルを編集",
     "editHelp": "チャンネル名は日本語などの文字・数字と半角ハイフン（-）・アンダースコア（_）で80文字以内にしてください。空白・絵文字・その他の記号・予約語は使用できません。",
@@ -14,7 +15,7 @@
     "empty": "チャンネルがありません。",
     "createAction": "作成する",
     "browseTitle": "チャンネルを探す",
-    "browseDescription": "未参加の公開チャンネルを探して参加できます。",
+    "browseDescription": "公開チャンネルのメッセージを、参加せずに閲覧できます。",
     "browseSearch": "チャンネル名で検索",
     "searchClear": "検索をクリア",
     "searchEmpty": "一致するチャンネルがありません。",
@@ -74,7 +75,9 @@
       "id_token_audience_mismatch": "ID トークンの aud が一致しません",
       "id_token_expired": "ID トークンが期限切れです",
       "nonce_mismatch": "ID トークンの nonce が一致しません"
-    }
+    },
+    "previewUser": "プレビューユーザー",
+    "previewMember": "一般ユーザー {{name}}"
   },
   "members": {
     "joined": "参加中",
@@ -94,7 +97,8 @@
     "candidates": "メンバー候補",
     "usersLoading": "ユーザーを読み込み中…",
     "usersError": "ユーザー取得に失敗しました。",
-    "usersEmpty": "該当するユーザーがいません。"
+    "usersEmpty": "該当するユーザーがいません。",
+    "back": "チャンネルに戻る"
   },
   "moderation": {
     "archived": "アーカイブ済み",
@@ -129,7 +133,22 @@
     "notFound": "対象が見つかりませんでした。",
     "invalidState": "この操作は現在の状態では実行できません。"
   },
+  "settings": {
+    "admin": "管理者",
+    "member": "メンバー",
+    "makeAdmin": "管理者にする",
+    "removeAdmin": "管理者を外す",
+    "membersDescription": "Zooのメンバーを確認できます。管理者は権限を変更できます。",
+    "roleConfirm": "{{name}} の権限を「{{role}}」に変更します。",
+    "lastAdmin": "最後の管理者、または開発用の固定管理者は外せません。",
+    "membersLoadError": "管理者情報を読み込めませんでした。",
+    "general": "一般",
+    "channelTitle": "チャンネル設定",
+    "zooTitle": "Zoo設定",
+    "notifications": "通知とインストール"
+  },
   "common": {
+    "open": "開く",
     "loading": "読み込み中…",
     "cancel": "キャンセル",
     "cancelShort": "取消",
@@ -176,7 +195,11 @@
     "count_one": "{{count}} 件",
     "count_other": "{{count}} 件",
     "announcement": "新着メッセージ: {{author}}「{{excerpt}}」",
-    "announcementAuthor": "新着メッセージ: {{author}}"
+    "announcementAuthor": "新着メッセージ: {{author}}",
+    "copyRaw": "原文をコピー",
+    "copied": "原文をコピーしました",
+    "copyFailed": "原文をコピーできませんでした",
+    "edited": "編集済み"
   },
   "threads": {
     "title": "スレッド",
@@ -242,7 +265,9 @@
     "mac": "⌘（Cmd）+Enter で送信 / Enter で改行",
     "ctrl": "Ctrl+Enter で送信 / Enter で改行",
     "other": "Cmd / Ctrl+Enter で送信 / Enter で改行",
-    "touch": "送信ボタンで送信します"
+    "touch": "送信ボタンで送信します",
+    "commands": "コマンド候補",
+    "channels": "チャンネル候補"
   },
   "notifications": {
     "label": "通知",
@@ -264,7 +289,15 @@
     "reactionGroup_other": "{{actor}} さんほか{{count}}人がリアクションしました",
     "reactions": "リアクション",
     "messageUnavailable": "メッセージが削除されたか、閲覧できません",
-    "dm": "{{actor}} さんからダイレクトメッセージが届きました"
+    "dm": "{{actor}} さんからダイレクトメッセージが届きました",
+    "mentionContext": "メンション",
+    "replyContext": "スレッドへの返信",
+    "reactionContext": "リアクション",
+    "dmContext": "ダイレクトメッセージ",
+    "unreadStatus": "未読",
+    "readStatus": "既読",
+    "actors_one": "{{actor}} さんほか1人",
+    "actors_other": "{{actor}} さんほか{{count}}人"
   },
   "webhooks": {
     "title": "Webhook設定",
@@ -313,7 +346,11 @@
     "blocked": "ブラウザーの設定で通知を許可してください",
     "permission": "通知を受信するには許可が必要です。iOSではホーム画面からZooを開いてください。",
     "error": "通知設定を変更できませんでした。再度お試しください。",
-    "logoutError": "通知を解除できませんでした。もう一度ログアウトしてください。"
+    "logoutError": "通知を解除できませんでした。もう一度ログアウトしてください。",
+    "on": "有効",
+    "off": "無効",
+    "unavailable": "利用不可",
+    "title": "プッシュ通知"
   },
   "mfm": {
     "suggestions": "MFMの候補",
@@ -401,6 +438,24 @@
     "opening": "開いています…"
   },
   "apps": {
+    "ui": {
+      "channel": "対象チャンネル",
+      "chooseChannel": "チャンネルを選択",
+      "delete": "Appを削除",
+      "deleteTitle": "「{{name}}」を削除しますか？",
+      "deleteHelp": "Appを削除すると、連携とBotが無効になり、発行済みの認証情報も失効します。この操作は取り消せません。",
+      "disableHelp": "AppとBotを無効にし、発行済みの認証情報を失効させます。",
+      "search": "Appを検索",
+      "filter": "Appの絞り込み",
+      "all": "すべてのApp",
+      "mine": "自分のApp",
+      "empty": "該当するAppはありません。",
+      "back": "App一覧に戻る",
+      "overview": "使う",
+      "manage": "管理・開発",
+      "configuration": "設定と承認",
+      "invalidManifest": "Manifestに有効なJSONを入力してください。"
+    },
     "title": "App・連携",
     "description": "Appの追加、会話、外部サービスとの連携を管理します。",
     "create": "Appを作成",
@@ -472,5 +527,18 @@
       "disconnect": "接続を解除"
     },
     "commandArguments": "引数"
+  },
+  "search": {
+    "engine": "検索エンジン",
+    "query": "検索語",
+    "action": "検索",
+    "withEngine": "{{engine}}で検索",
+    "loadError": "検索設定を読み込めませんでした。",
+    "saveError": "保存できませんでした。もう一度選択してください。",
+    "retry": "再試行"
+  },
+  "cards": {
+    "showMore": "もっと見る",
+    "showLess": "折りたたむ"
   }
 }

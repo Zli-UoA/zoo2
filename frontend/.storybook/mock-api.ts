@@ -26,6 +26,18 @@ interface NotificationContextFixture {
 }
 
 const notificationContexts: Record<string, NotificationContextFixture> = {
+  "notification-dm": {
+    message: { id: "message-dm", user_id: "user-bob", content: "個別に確認をお願いします。" },
+    reactions: [],
+  },
+  "notification-dm-group": {
+    message: {
+      id: "message-dm-group",
+      user_id: "user-bob",
+      content: "次の打ち合わせについて相談しましょう。",
+    },
+    reactions: [],
+  },
   "notification-mention": {
     message: {
       id: "message-hello",
@@ -69,6 +81,11 @@ const notificationContexts: Record<string, NotificationContextFixture> = {
 };
 
 export const storybookApiHandlers = [
+  http.get("*/api/apps/commands", () => HttpResponse.json([])),
+  http.get("*/api/users/me/preferences", () => HttpResponse.json({ search_engine: "google" })),
+  http.patch("*/api/users/me/preferences", async ({ request }) =>
+    HttpResponse.json({ data: await request.json(), txid: null }),
+  ),
   http.get("*/api/users/me", () =>
     HttpResponse.json({
       id: "user-alice",

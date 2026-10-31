@@ -84,6 +84,22 @@ describe("messageFeedQuery", () => {
     expect(result.find((row) => row.id === "message-2")).toBeUndefined();
   });
 
+  it.each([null, "root"])(
+    "preserves the last edit time in the feed (parent=%s)",
+    async (parentId) => {
+      const sources = makeCollections([{ ...messages[0], parent_id: parentId }], users);
+      const before = await queryOnce((q) => messageFeedQuery(q, sources, { parentId }));
+      expect(before[0].updated_at).toBeNull();
+      sources.messages.update("message-1", (draft) => {
+        draft.content = "Edited content";
+        draft.updated_at = "2026-01-02 00:10:00.000";
+      });
+      const after = await queryOnce((q) => messageFeedQuery(q, sources, { parentId }));
+      expect(after[0].content).toBe("Edited content");
+      expect(after[0].updated_at).toBe("2026-01-02 00:10:00.000");
+    },
+  );
+
   it("drops a message from the feed after a logical delete update", async () => {
     const { messages: messagesCollection, users: usersCollection } = makeCollections(
       messages,

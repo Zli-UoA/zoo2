@@ -1,3 +1,5 @@
+import { Select } from "../ui/select";
+import { Input } from "../ui/input";
 import { MessageCard, parseMessageCard, type CardData } from "./messages/MessageCard";
 import { openApp } from "./AppIdentity";
 import { useMemo, useState } from "react";
@@ -6,7 +8,6 @@ import { createConfiguredApiClient } from "../../lib/api/client";
 import { useCollections } from "../../lib/electric/collections-context";
 import { useShell } from "../layout/shell-context";
 import { Button } from "../ui/button";
-import { inputClassName } from "../ui/input-styles";
 import type { FeedMessage } from "./messages/messageFormat";
 
 type Block =
@@ -91,6 +92,7 @@ export function AppBlocks({
   }
   return (
     <form
+      autoComplete="off"
       className="my-2 space-y-3"
       onSubmit={(e) => {
         e.preventDefault();
@@ -122,16 +124,15 @@ export function AppBlocks({
           <label key={b.action_id} className="flex flex-col gap-1 text-sm">
             {b.label}
             {b.type === "input" ? (
-              <input
-                className={inputClassName()}
+              <Input
                 required={b.required}
                 maxLength={4000}
                 value={values[b.action_id] ?? ""}
                 onChange={(e) => setValues({ ...values, [b.action_id]: e.target.value })}
               />
             ) : (
-              <select
-                className={inputClassName()}
+              <Select
+                className="w-full"
                 value={values[b.action_id] ?? ""}
                 onChange={(e) => {
                   const value = e.target.value;
@@ -143,7 +144,7 @@ export function AppBlocks({
                 {b.options.map((option) => (
                   <option key={option}>{option}</option>
                 ))}
-              </select>
+              </Select>
             )}
           </label>
         );

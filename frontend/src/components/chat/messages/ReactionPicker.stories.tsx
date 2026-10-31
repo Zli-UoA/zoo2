@@ -27,7 +27,7 @@ function ReactionPickerDemo({ onSelect }: { onSelect: (emoji: string) => void })
 }
 
 const meta = {
-  title: "Chat/ReactionPicker",
+  title: "Features/Chat/ReactionPicker",
   component: ReactionPicker,
   tags: ["autodocs"],
   parameters: { a11y: { test: "todo" } },

@@ -1,9 +1,11 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useId, useRef, useState } from "react";
 import { MessageCard, parseMessageCards } from "./MessageCard";
 import { useTranslation } from "react-i18next";
+import { toast } from "sonner";
 import { cn } from "cn";
 import {
   BotIcon,
+  CopyIcon,
   MessageSquarePlusIcon,
   MessageSquareTextIcon,
   MoreHorizontalIcon,
@@ -27,6 +29,7 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from "../../ui/dropdown-menu";
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "../../ui/tooltip";
 import { Textarea } from "../../ui/textarea";
 import { normalizeUtcTimestamp } from "../../../lib/timestamps";
 import { authorLabel, formatDateSeparator, formatTime, fullTimestamp } from "./messageFormat";
@@ -36,6 +39,7 @@ import { ReactionEmoji } from "./ReactionEmoji";
 export interface MessageRowProps {
   item: MessageItem;
   isOwn: boolean;
+  canDelete?: boolean;
   isEditing: boolean;
   editingText: string;
   onEditingTextChange: (value: string) => void;
@@ -54,12 +58,39 @@ export interface MessageRowProps {
   onOpenThread?: () => void;
 }
 
+function EditedIndicator({ at }: { at: string }) {
+  const tooltipId = useId();
+  const [tooltipOpen, setTooltipOpen] = useState(false);
+  const { t } = useTranslation();
+  const { locale } = useLocale();
+  return (
+    <TooltipProvider>
+      <Tooltip onOpenChange={setTooltipOpen}>
+        <TooltipTrigger
+          render={<span role="img" tabIndex={0} />}
+          aria-label={t("messages.edited")}
+          aria-describedby={tooltipOpen ? tooltipId : undefined}
+          className="ml-1 inline-flex rounded-sm align-middle text-muted-foreground/80 outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
+        >
+          <PencilIcon className="size-3" strokeWidth={1.5} aria-hidden="true" />
+        </TooltipTrigger>
+        <TooltipContent id={tooltipId} role="tooltip">
+          {t("messages.edited")} ·{" "}
+          <time dateTime={normalizeUtcTimestamp(at)}>{fullTimestamp(at, locale)}</time>
+        </TooltipContent>
+      </Tooltip>
+    </TooltipProvider>
+  );
+}
+
 /** 通常投稿は MFM、連携カードは専用の描画を使う。 */
 export function MessageBody({
   content,
   card: data,
   appBlocks,
+  editedAt,
 }: {
+  editedAt?: string | null;
   content: string;
   card?: string | null;
   appBlocks?: string | null;
@@ -72,12 +103,14 @@ export function MessageBody({
         {cards.map((card, index) => (
           <MessageCard key={index} card={card} />
         ))}
+        {editedAt ? <EditedIndicator at={editedAt} /> : null}
       </>
     );
   return (
     <>
       <div className="mfm-body whitespace-pre-wrap break-words text-sm leading-relaxed">
         <MfmContent content={content} />
+        {editedAt ? <EditedIndicator at={editedAt} /> : null}
       </div>
       <LinkPreviews content={content} />
     </>
@@ -126,6 +159,7 @@ function ReplyLink({ count, onOpen }: { count: number; onOpen: () => void }) {
 export function MessageRow({
   item,
   isOwn,
+  canDelete = isOwn,
   isEditing,
   editingText,
   onEditingTextChange,
@@ -144,6 +178,15 @@ export function MessageRow({
   const { t } = useTranslation();
   const { locale } = useLocale();
   const { message } = item;
+
+  async function copyRawMessage() {
+    try {
+      await navigator.clipboard.writeText(message.content);
+      toast.success(t("messages.copied"));
+    } catch {
+      toast.error(t("messages.copyFailed"));
+    }
+  }
 
   const [menuOpen, setMenuOpen] = useState(false);
   const hold = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -230,9 +273,9 @@ export function MessageRow({
             src={message.avatar_url}
           />
         ) : (
-          <div className="mt-0.5 w-8 shrink-0 text-right">
+          <div className="flex h-lh w-8 shrink-0 items-center justify-end text-sm leading-relaxed">
             <time
-              className="hidden text-[10px] text-muted-foreground tabular-nums group-hover/row:inline group-focus-within/row:inline"
+              className="text-[10px] leading-none text-muted-foreground tabular-nums opacity-0 group-hover/row:opacity-100 group-focus-within/row:opacity-100"
               dateTime={normalizeUtcTimestamp(message.created_at)}
               title={fullTimestamp(message.created_at, locale)}
             >
@@ -257,6 +300,7 @@ export function MessageRow({
 
           {isEditing ? (
             <form
+              autoComplete="off"
               className="mt-1 flex flex-col gap-2 rounded-lg border bg-background p-2"
               onSubmit={(event) => {
                 event.preventDefault();
@@ -292,8 +336,12 @@ export function MessageRow({
                 content={message.content}
                 card={message.card}
                 appBlocks={message.app_blocks}
+                editedAt={message.updated_at}
               />
               <MessageAppContent message={message} />
+              {message.updated_at && hasCardBlocks(message.app_blocks) ? (
+                <EditedIndicator at={message.updated_at} />
+              ) : null}
             </>
           )}
 
@@ -355,8 +403,14 @@ export function MessageRow({
 
         {!isEditing ? (
           // 外枠は不可視の間クリックを通す（子は自前で pointer-events を戻す）。
-          <div className="pointer-events-none absolute right-1.5 top-0 flex items-center">
-            <div className="pointer-events-none hidden items-center gap-0.5 rounded-lg border bg-popover p-0.5 opacity-0 shadow-sm transition-opacity group-hover/row:pointer-events-auto group-hover/row:opacity-100 group-focus-within/row:pointer-events-auto group-focus-within/row:opacity-100 [@media(hover:hover)]:flex">
+          <div
+            data-message-toolbar
+            className={cn(
+              "pointer-events-none absolute right-1.5 top-0 flex items-center gap-0.5 rounded-lg border bg-popover p-0.5 opacity-0 shadow-sm transition-opacity focus-within:pointer-events-auto focus-within:opacity-100 [@media(hover:hover)]:group-hover/row:pointer-events-auto [@media(hover:hover)]:group-hover/row:opacity-100",
+              menuOpen && "pointer-events-auto opacity-100",
+            )}
+          >
+            <div className="hidden items-center gap-0.5 [@media(hover:hover)]:flex">
               <Button
                 variant="ghost"
                 size="icon-xs"
@@ -379,17 +433,19 @@ export function MessageRow({
                   >
                     <PencilIcon />
                   </Button>
-                  <Button
-                    variant="ghost"
-                    size="icon-xs"
-                    aria-label={t("messages.delete")}
-                    title={t("messages.delete")}
-                    className="text-destructive hover:bg-destructive/10 hover:text-destructive"
-                    onClick={onRequestDelete}
-                  >
-                    <TrashIcon />
-                  </Button>
                 </>
+              ) : null}
+              {canDelete ? (
+                <Button
+                  variant="ghost"
+                  size="icon-xs"
+                  aria-label={t("messages.delete")}
+                  title={t("messages.delete")}
+                  className="text-destructive hover:bg-destructive/10 hover:text-destructive"
+                  onClick={onRequestDelete}
+                >
+                  <TrashIcon />
+                </Button>
               ) : null}
             </div>
             {/* PC はホバー、タッチは長押し、キーボードはフォーカスで操作する。 */}
@@ -400,13 +456,15 @@ export function MessageRow({
                 className={buttonVariants({
                   variant: "ghost",
                   size: "icon-xs",
-                  className:
-                    "pointer-events-none opacity-0 focus-visible:pointer-events-auto focus-visible:opacity-100 [@media(hover:hover)]:group-hover/row:pointer-events-auto [@media(hover:hover)]:group-hover/row:opacity-100 data-popup-open:pointer-events-auto data-popup-open:opacity-100",
                 })}
               >
                 <MoreHorizontalIcon />
               </DropdownMenuTrigger>
               <DropdownMenuContent align="end">
+                <DropdownMenuItem onClick={() => void copyRawMessage()}>
+                  <CopyIcon />
+                  {t("messages.copyRaw")}
+                </DropdownMenuItem>
                 <DropdownMenuItem
                   onClick={() =>
                     window.dispatchEvent(
@@ -433,11 +491,13 @@ export function MessageRow({
                       <PencilIcon />
                       {t("messages.edit")}
                     </DropdownMenuItem>
-                    <DropdownMenuItem variant="destructive" onClick={onRequestDelete}>
-                      <TrashIcon />
-                      {t("messages.delete")}
-                    </DropdownMenuItem>
                   </>
+                ) : null}
+                {canDelete ? (
+                  <DropdownMenuItem variant="destructive" onClick={onRequestDelete}>
+                    <TrashIcon />
+                    {t("messages.delete")}
+                  </DropdownMenuItem>
                 ) : null}
               </DropdownMenuContent>
             </DropdownMenu>

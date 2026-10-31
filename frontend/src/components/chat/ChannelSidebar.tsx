@@ -1,3 +1,4 @@
+import { sidebarItemClassName } from "./sidebarStyles";
 import { useTranslation } from "react-i18next";
 import { Link } from "@tanstack/react-router";
 import { useLiveQuery } from "@tanstack/react-db";
@@ -14,6 +15,7 @@ import { SyncStatus } from "../SyncStatus";
 import { useShell } from "../layout/shell-context";
 import { Button } from "../ui/button";
 import { ScrollArea } from "../ui/scroll-area";
+import { CollapsibleSection } from "../ui/collapsible-section";
 import { Skeleton } from "../ui/skeleton";
 import { ChannelBrowserDialog } from "./ChannelBrowserDialog";
 import { filterJoinedChannels } from "./channelSearch";
@@ -77,122 +79,112 @@ export function ChannelSidebar({
 
   return (
     <aside
+      aria-label={t("channels.title")}
       className={cn(
         "min-w-0 flex-1 flex-col border-r bg-sidebar text-sidebar-foreground md:w-72 md:flex-none",
         className,
       )}
     >
-      <div className="flex items-center justify-between gap-2 px-3 py-3">
-        <div className="flex items-baseline gap-2">
-          <h1 className="font-heading text-sm font-semibold tracking-tight">
-            {t("channels.title")}
-          </h1>
-          <span className="text-xs tabular-nums text-muted-foreground">
-            {sidebarLoading ? "…" : sidebarChannels.length}
-          </span>
-        </div>
-        <div className="flex items-center gap-0.5">
-          <Button
-            variant="ghost"
-            size="icon-sm"
-            aria-label={t("channels.browseTitle")}
-            title={t("channels.browseTitle")}
-            onClick={() => setBrowserOpen(true)}
-            disabled={sidebarLoading || regularChannels.length === 0}
-          >
-            <SearchIcon />
-          </Button>
-          <Button
-            variant="ghost"
-            size="icon-sm"
-            aria-label={t("channels.createTitle")}
-            onClick={() => setCreateOpen(true)}
-          >
-            <PlusIcon />
-          </Button>
-        </div>
-      </div>
-
-      <ScrollArea className="min-h-0 flex-1">
-        <div className="flex flex-col gap-0.5 px-2 pb-2">
-          {sidebarLoading ? (
-            SKELETON_ROWS.map((row) => <Skeleton key={row} className="h-9 w-full rounded-lg" />)
-          ) : sidebarError ? (
-            <p className="px-2 py-1 text-xs text-destructive">{t("channels.loadError")}</p>
-          ) : regularChannels.length === 0 ? (
-            <div className="flex flex-col items-start gap-2 px-2 py-4">
-              <p className="text-sm text-muted-foreground">{t("channels.empty")}</p>
-              <Button variant="outline" size="sm" onClick={() => setCreateOpen(true)}>
-                <PlusIcon />
-                {t("channels.createAction")}
-              </Button>
-            </div>
-          ) : sidebarChannels.length === 0 ? (
-            <div className="flex flex-col items-start gap-2 px-2 py-4">
-              <p className="text-sm text-muted-foreground">{t("channels.noJoined")}</p>
-              <Button variant="outline" size="sm" onClick={() => setBrowserOpen(true)}>
+      <ScrollArea className="min-h-0 flex-1 py-1">
+        <CollapsibleSection
+          title={t("channels.title")}
+          icon={<HashIcon />}
+          actions={
+            <div className="flex items-center gap-0.5">
+              <Button
+                variant="ghost"
+                size="icon-sm"
+                aria-label={t("channels.browseTitle")}
+                title={t("channels.browseTitle")}
+                onClick={() => setBrowserOpen(true)}
+                disabled={sidebarLoading || regularChannels.length === 0}
+              >
                 <SearchIcon />
-                {t("channels.browseTitle")}
+              </Button>
+              <Button
+                variant="ghost"
+                size="icon-sm"
+                aria-label={t("channels.createTitle")}
+                onClick={() => setCreateOpen(true)}
+              >
+                <PlusIcon />
               </Button>
             </div>
-          ) : (
-            sidebarChannels.map((channel) => {
-              const isUnread = unreadChannelIds.has(channel.id);
-              const isActive = shell.selectedChannelId === channel.id;
-              return (
-                <Link
-                  key={channel.id}
-                  to="/channels/$channelId"
-                  params={{ channelId: channel.id }}
-                  onClick={() => shell.showChat()}
-                  className={cn(
-                    "group flex items-center gap-2 rounded-lg px-2.5 py-2 text-sm transition-colors",
-                    "focus-visible:ring-3 focus-visible:ring-ring/50 outline-none",
-                    isUnread && "font-semibold text-sidebar-foreground",
-                    isActive
-                      ? "bg-brand-muted font-medium text-brand-muted-foreground"
-                      : isUnread
-                        ? "hover:bg-sidebar-accent"
-                        : "text-muted-foreground hover:bg-sidebar-accent hover:text-sidebar-accent-foreground",
-                  )}
-                >
-                  {channel.is_private ? (
-                    <LockIcon className="size-3.5 shrink-0" aria-hidden="true" />
-                  ) : (
-                    <HashIcon className="size-4 shrink-0 opacity-60" aria-hidden="true" />
-                  )}
-                  <span
-                    className={cn(
-                      "min-w-0 flex-1 truncate",
-                      channel.archive_at ? "text-muted-foreground" : null,
-                    )}
+          }
+        >
+          <div className="flex flex-col gap-0.5 px-2 pb-2">
+            {sidebarLoading ? (
+              SKELETON_ROWS.map((row) => (
+                <Skeleton key={row} className="h-9 w-full rounded-md md:h-8" />
+              ))
+            ) : sidebarError ? (
+              <p className="px-2 py-1 text-xs text-destructive">{t("channels.loadError")}</p>
+            ) : regularChannels.length === 0 ? (
+              <div className="flex flex-col items-start gap-2 px-2 py-2">
+                <p className="text-sm text-muted-foreground">{t("channels.empty")}</p>
+                <Button variant="outline" size="sm" onClick={() => setCreateOpen(true)}>
+                  <PlusIcon />
+                  {t("channels.createAction")}
+                </Button>
+              </div>
+            ) : sidebarChannels.length === 0 ? (
+              <div className="flex flex-col items-start gap-2 px-2 py-2">
+                <p className="text-sm text-muted-foreground">{t("channels.noJoined")}</p>
+                <Button variant="outline" size="sm" onClick={() => setBrowserOpen(true)}>
+                  <SearchIcon />
+                  {t("channels.browseTitle")}
+                </Button>
+              </div>
+            ) : (
+              sidebarChannels.map((channel) => {
+                const isUnread = unreadChannelIds.has(channel.id);
+                const isActive = shell.selectedChannelId === channel.id;
+                return (
+                  <Link
+                    key={channel.id}
+                    to="/channels/$channelId"
+                    params={{ channelId: channel.id }}
+                    aria-current={isActive ? "page" : undefined}
+                    onClick={() => shell.showChat()}
+                    className={sidebarItemClassName(isActive, isUnread)}
                   >
-                    {channel.channel_name}
-                  </span>
-                  {isUnread ? (
+                    {channel.is_private ? (
+                      <LockIcon className="size-4 shrink-0" aria-hidden="true" />
+                    ) : (
+                      <HashIcon className="size-4 shrink-0 opacity-60" aria-hidden="true" />
+                    )}
                     <span
-                      role="img"
-                      aria-label={t("channels.unread")}
-                      title={t("channels.unread")}
-                      className="size-2 shrink-0 rounded-full bg-brand"
-                    />
-                  ) : null}
-                  {channel.archive_at ? (
-                    <span
-                      role="img"
-                      title={t("moderation.archived")}
-                      aria-label={t("moderation.archived")}
-                      className="shrink-0 text-muted-foreground/70"
+                      className={cn(
+                        "min-w-0 flex-1 truncate",
+                        channel.archive_at ? "text-muted-foreground" : null,
+                      )}
                     >
-                      <ArchiveIcon className="size-3" aria-hidden="true" />
+                      {channel.channel_name}
                     </span>
-                  ) : null}
-                </Link>
-              );
-            })
-          )}
-        </div>
-        <div className="mx-3 border-t" />
+                    {isUnread ? (
+                      <span
+                        role="img"
+                        aria-label={t("channels.unread")}
+                        title={t("channels.unread")}
+                        className="size-2 shrink-0 rounded-full bg-brand"
+                      />
+                    ) : null}
+                    {channel.archive_at ? (
+                      <span
+                        role="img"
+                        title={t("moderation.archived")}
+                        aria-label={t("moderation.archived")}
+                        className="shrink-0 text-muted-foreground/70"
+                      >
+                        <ArchiveIcon className="size-3" aria-hidden="true" />
+                      </span>
+                    ) : null}
+                  </Link>
+                );
+              })
+            )}
+          </div>
+        </CollapsibleSection>
         <DmSection
           channels={dmChannels}
           memberships={membershipsQuery.data ?? []}

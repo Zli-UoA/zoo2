@@ -3,7 +3,7 @@ import type { Meta, StoryObj } from "@storybook/react-vite";
 import { SyncStatus } from "./SyncStatus";
 
 const meta = {
-  title: "Layout/SyncStatus",
+  title: "Features/Status/Sync",
   component: SyncStatus,
   tags: ["autodocs"],
   parameters: { a11y: { test: "todo" } },

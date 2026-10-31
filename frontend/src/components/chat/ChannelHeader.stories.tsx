@@ -12,7 +12,7 @@ const memberCount = (channelId: string) =>
   storyChannelUsers.filter((row) => row.channel_id === channelId).length;
 
 const meta = {
-  title: "Screens/ChannelHeader",
+  title: "Features/Channels/Header",
   component: ChannelHeader,
   tags: ["autodocs"],
   parameters: { a11y: { test: "error" } },
@@ -39,10 +39,10 @@ type Story = StoryObj<typeof meta>;
 
 export const Default: Story = {};
 
-export const ManageMenuOpen: Story = {
+export const ControlPanelOpen: Story = {
   play: async () => {
-    await userEvent.click(screen.getByRole("button", { name: "チャンネルの管理" }));
-    await expect(await screen.findByRole("menuitem", { name: "Webhook設定" })).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "チャンネル設定" }));
+    await expect(await screen.findByRole("dialog")).toBeInTheDocument();
   },
 };
 

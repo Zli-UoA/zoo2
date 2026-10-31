@@ -3,6 +3,7 @@ import { useTranslation } from "react-i18next";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 
+import { useChannelCommands } from "../../../hooks/useChannelCommands";
 import { useCurrentUser } from "../../../hooks/useCurrentUser";
 import { useKitchenCatalog } from "../../../hooks/useKitchenCatalog";
 import {
@@ -24,16 +25,7 @@ import { nowIso } from "../../../lib/time";
 import { parseUtcTimestamp } from "../../../lib/timestamps";
 import { useShell } from "../../layout/shell-context";
 import { Button } from "../../ui/button";
-import {
-  AlertDialog,
-  AlertDialogAction,
-  AlertDialogCancel,
-  AlertDialogContent,
-  AlertDialogDescription,
-  AlertDialogFooter,
-  AlertDialogHeader,
-  AlertDialogTitle,
-} from "../../ui/alert-dialog";
+import { ConfirmActionDialog } from "../../ui/confirm-action-dialog";
 import { useTyping } from "../../../hooks/useTyping";
 import { TypingIndicator } from "./TypingIndicator";
 import { Composer } from "./Composer";
@@ -96,10 +88,14 @@ function JoinToPostPrompt({
 export function MessagePane({
   channelId,
   isMember,
+  canModerate = false,
+  readOnly = false,
   targetMessageId,
 }: {
   channelId: string;
   isMember: boolean;
+  canModerate?: boolean;
+  readOnly?: boolean;
   targetMessageId?: string;
 }) {
   const { t } = useTranslation();
@@ -122,8 +118,9 @@ export function MessagePane({
   const feed = messagesQuery.data ?? [];
   const reactionsQuery = useMessageReactions(channelId);
   const { currentUserId } = useCurrentUser();
+  const commandSuggestions = useChannelCommands(channelId, currentUserId);
   const { isOnline } = useOfflineStatus();
-  const typing = useTyping(channelId, null, isMember && !!currentUserId);
+  const typing = useTyping(channelId, null, !readOnly && isMember && !!currentUserId);
   const { error, setError, run, isPending: isWritePending } = useWriteRunner();
 
   const [reactionMessageId, setReactionMessageId] = useState<string | null>(null);
@@ -186,7 +183,7 @@ export function MessagePane({
   const threadTyping = useTyping(
     channelId,
     threadRootId,
-    isMember && !!currentUserId && !!threadRootId,
+    !readOnly && isMember && !!currentUserId && !!threadRootId,
   );
   const threadRoot = useMemo(
     () => feed.find((message) => message.id === threadRootId) ?? null,
@@ -198,12 +195,6 @@ export function MessagePane({
   const [pendingDeleteId, setPendingDeleteId] = useState<string | null>(null);
   const [isJoining, setIsJoining] = useState(false);
 
-  // チャンネルを移動したら開いていたスレッドは閉じる。スレッドの状態は
-  // メンバーパネルとの排他を管理する AppShell が持つため、離脱時にも閉じる。
-  useEffect(() => {
-    closeThread();
-  }, [channelId, closeThread]);
-  useEffect(() => closeThread, [closeThread]);
   useEffect(() => {
     if (!threadRootId) {
       setThreadSince(messageWindowStart());
@@ -280,6 +271,8 @@ export function MessagePane({
       return;
     }
     const rootRow = messagesCollection.get(threadRootId);
+    // The root may exist outside the current feed window; let setSince above load it.
+    if (rootRow && !rootRow.deleted_at) return;
     closeThread();
     if (rootRow?.deleted_at) {
       toast.info(t("threads.rootDeleted"), { id: "thread-root-deleted" });
@@ -312,23 +305,41 @@ export function MessagePane({
     }
   }, [channelId, channelUsers, currentUserId, isJoining, run]);
 
-  const handleSend = useCallback(
-    async (content: string): Promise<boolean> => {
+  const runCommand = useCallback(
+    async (content: string, appId?: string): Promise<boolean | null> => {
       const command = /^\/([a-zA-Z0-9_-]+)(?:\s+([\s\S]*))?$/.exec(content.trim());
-      if (command) {
-        try {
+      if (!command) return null;
+      try {
+        if (appId) {
+          await appClient.request(`/api/apps/${encodeURIComponent(appId)}/invoke`, {
+            method: "POST",
+            body: {
+              kind: "command",
+              name: command[1],
+              channel_id: channelId,
+              values: { text: command[2] ?? "" },
+            },
+          });
+        } else {
           await appClient.request(`/api/apps/commands/${command[1]}`, {
             method: "POST",
             body: { channel_id: channelId, text: command[2] ?? "" },
           });
-          return true;
-        } catch (error) {
-          if (!(error instanceof ApiError && error.status === 404)) {
-            toast.error(t("apps.actionError"));
-            return false;
-          }
         }
+        return true;
+      } catch (error) {
+        if (!appId && error instanceof ApiError && error.status === 404) return null;
+        toast.error(t("apps.actionError"));
+        return false;
       }
+    },
+    [appClient, channelId, t],
+  );
+
+  const handleSend = useCallback(
+    async (content: string, commandAppId?: string): Promise<boolean> => {
+      const commandResult = await runCommand(content, commandAppId);
+      if (commandResult !== null) return commandResult;
       const id = crypto.randomUUID();
       await run(() =>
         messagesCollection.insert({
@@ -346,15 +357,17 @@ export function MessagePane({
       // 成否を判定する（Composer が失敗時に下書きを復元できるようにする）。
       return messagesCollection.get(id) !== undefined;
     },
-    [run, messagesCollection, currentUserId, channelId, appClient, t],
+    [run, messagesCollection, currentUserId, channelId, runCommand],
   );
 
   const handleSendReply = useCallback(
-    async (content: string): Promise<boolean> => {
-      if (!isMember) {
+    async (content: string, commandAppId?: string): Promise<boolean> => {
+      if (readOnly || !isMember) {
         toast.info(t("messages.joinToPostDescription"), { id: "thread-reply-join-required" });
         return false;
       }
+      const commandResult = await runCommand(content, commandAppId);
+      if (commandResult !== null) return commandResult;
       const rootId = threadRootId;
       if (!rootId) {
         return false;
@@ -374,7 +387,17 @@ export function MessagePane({
       );
       return messagesCollection.get(id) !== undefined;
     },
-    [run, messagesCollection, currentUserId, channelId, threadRootId, isMember, t],
+    [
+      run,
+      messagesCollection,
+      currentUserId,
+      channelId,
+      threadRootId,
+      isMember,
+      readOnly,
+      t,
+      runCommand,
+    ],
   );
 
   const handleStartEdit = useCallback((id: string, content: string) => {
@@ -420,27 +443,30 @@ export function MessagePane({
   return (
     <section className="relative flex h-full min-h-0">
       <div className="flex min-w-0 flex-1 flex-col">
-        <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1 border-b px-4 py-2">
-          <h2 className="text-sm font-semibold">{t("messages.title")}</h2>
-          <span className="rounded bg-muted px-2 py-0.5 text-xs tabular-nums text-muted-foreground">
-            {messagesQuery.isLoading ? "…" : t("messages.count", { count: feed.length })}
-          </span>
-          {reactionsQuery.isError ? (
-            <span className="text-xs text-destructive">{t("reactions.fetchError")}</span>
-          ) : null}
-          {messagesQuery.isError ? (
-            <span
-              className={
-                feed.length > 0 ? "text-xs text-muted-foreground" : "text-xs text-destructive"
-              }
-            >
-              {feed.length > 0 ? t("offline.cached") : t("messages.fetchError")}
-            </span>
-          ) : null}
-          {messagesQuery.persistedStatus === "error" ? (
-            <span className="text-xs text-destructive">{t("offline.persistenceErrorTitle")}</span>
-          ) : null}
-        </div>
+        {reactionsQuery.isError ||
+        messagesQuery.isError ||
+        messagesQuery.persistedStatus === "error" ? (
+          <div
+            role="status"
+            className="flex flex-wrap items-baseline gap-x-3 gap-y-1 border-b px-4 py-2"
+          >
+            {reactionsQuery.isError ? (
+              <span className="text-xs text-destructive">{t("reactions.fetchError")}</span>
+            ) : null}
+            {messagesQuery.isError ? (
+              <span
+                className={
+                  feed.length > 0 ? "text-xs text-muted-foreground" : "text-xs text-destructive"
+                }
+              >
+                {feed.length > 0 ? t("offline.cached") : t("messages.fetchError")}
+              </span>
+            ) : null}
+            {messagesQuery.persistedStatus === "error" ? (
+              <span className="text-xs text-destructive">{t("offline.persistenceErrorTitle")}</span>
+            ) : null}
+          </div>
+        ) : null}
 
         <MessageList
           targetMessageId={targetMessageId}
@@ -450,7 +476,8 @@ export function MessagePane({
           isWritePending={isWritePending}
           isLoading={messagesQuery.isLoading}
           isError={messagesQuery.isError}
-          currentUserId={currentUserId}
+          currentUserId={readOnly ? null : currentUserId}
+          canModerate={canModerate}
           editingId={editingId}
           editingText={editingText}
           onEditingTextChange={setEditingText}
@@ -460,7 +487,9 @@ export function MessagePane({
           onRequestDelete={setPendingDeleteId}
           reactions={reactionGroups}
           kitchenCatalog={catalog}
-          canReact={!!currentUserId && !reactionsQuery.isLoading && !reactionsQuery.isError}
+          canReact={
+            !readOnly && !!currentUserId && !reactionsQuery.isLoading && !reactionsQuery.isError
+          }
           onReaction={handleReaction}
           onPickReaction={setReactionMessageId}
           replyCounts={replyCounts}
@@ -473,16 +502,18 @@ export function MessagePane({
           onRetry={() => window.location.reload()}
         />
 
-        {isMember ? (
+        {readOnly ? null : isMember ? (
           <>
             <TypingIndicator users={typing.users} />
             <Composer
+              commands={commandSuggestions.commands}
+              onRequestCommands={commandSuggestions.load}
               mentionUsers={mentionUsers}
               mentionMemberIds={mentionMemberIds}
               key={channelId}
               onSend={handleSend}
               onTyping={typing.onTyping}
-              disabled={!isOnline}
+              disabled={readOnly || !isOnline}
               placeholder={isOnline ? undefined : t("offline.composeDisabled")}
             />
           </>
@@ -497,11 +528,14 @@ export function MessagePane({
 
       {threadRoot ? (
         <ThreadPane
+          commands={commandSuggestions.commands}
+          onRequestCommands={commandSuggestions.load}
           targetMessageId={targetMessageId}
           mentionUsers={mentionUsers}
           mentionMemberIds={mentionMemberIds}
           key={threadRoot.id}
-          isMember={isMember}
+          readOnly={readOnly}
+          isMember={!readOnly && isMember}
           isOffline={!isOnline}
           typingUsers={threadTyping.users}
           onTyping={threadTyping.onTyping}
@@ -509,10 +543,13 @@ export function MessagePane({
           replies={threadReplies}
           isLoading={threadQuery.isLoading}
           isError={threadQuery.isError}
-          currentUserId={currentUserId}
+          currentUserId={readOnly ? null : currentUserId}
+          canModerate={canModerate}
           reactions={reactionGroups}
           kitchenCatalog={catalog}
-          canReact={!!currentUserId && !reactionsQuery.isLoading && !reactionsQuery.isError}
+          canReact={
+            !readOnly && !!currentUserId && !reactionsQuery.isLoading && !reactionsQuery.isError
+          }
           onReaction={handleReaction}
           onPickReaction={setReactionMessageId}
           editingId={editingId}
@@ -548,27 +585,16 @@ export function MessagePane({
         }}
       />
 
-      <AlertDialog
+      <ConfirmActionDialog
         open={pendingDeleteId !== null}
         onOpenChange={(open) => {
-          if (!open) {
-            setPendingDeleteId(null);
-          }
+          if (!open) setPendingDeleteId(null);
         }}
-      >
-        <AlertDialogContent>
-          <AlertDialogHeader>
-            <AlertDialogTitle>{t("messages.deleteTitle")}</AlertDialogTitle>
-            <AlertDialogDescription>{t("messages.deleteDescription")}</AlertDialogDescription>
-          </AlertDialogHeader>
-          <AlertDialogFooter>
-            <AlertDialogCancel>{t("common.cancelShort")}</AlertDialogCancel>
-            <AlertDialogAction variant="destructive" onClick={handleConfirmDelete}>
-              {t("messages.delete")}
-            </AlertDialogAction>
-          </AlertDialogFooter>
-        </AlertDialogContent>
-      </AlertDialog>
+        title={t("messages.deleteTitle")}
+        description={t("messages.deleteDescription")}
+        confirmLabel={t("messages.delete")}
+        onConfirm={handleConfirmDelete}
+      />
     </section>
   );
 }

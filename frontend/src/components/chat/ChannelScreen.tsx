@@ -3,24 +3,16 @@ import { ArchiveIcon, ArrowLeftIcon } from "lucide-react";
 import { useMemo } from "react";
 
 import { useCurrentUser } from "../../hooks/useCurrentUser";
-import {
-  useActiveChannels,
-  useChannelAccess,
-  useMessageFeed,
-  useUsers,
-} from "../../hooks/useRealtime";
+import { useActiveChannels, useChannelAccess, useUsers } from "../../hooks/useRealtime";
 import { useLocale } from "../i18n/LocaleProvider";
 import { useShell } from "../layout/shell-context";
 import { Button } from "../ui/button";
 import { Skeleton } from "../ui/skeleton";
 import { ChannelHeader } from "./ChannelHeader";
-import { isGroupDm, resolveDmDisplayName } from "./dm";
-import { MessageList } from "./messages/MessageList";
+import { formatDmDisplayName, isGroupDm, resolveDmDisplayName } from "./dm";
 import { MessagePane } from "./messages/MessagePane";
 
 const LOADING_ROWS = [0, 1, 2, 3];
-
-function noop() {}
 
 function ChannelLoading() {
   return (
@@ -73,19 +65,11 @@ export function ChannelScreen({
       currentUserId,
       locale,
     });
-    const names = resolved.names.join(", ") || t("dms.untitled");
     return {
-      title:
-        resolved.remaining > 0
-          ? `${names} ${t("dms.moreNames", { count: resolved.remaining })}`
-          : names,
+      title: formatDmDisplayName(resolved, t),
       group: isGroupDm(channel.channel_name),
     };
   }, [access.members, channel, currentUserId, locale, t, usersQuery.data]);
-  // アーカイブ済みは Composer を出さず、MessageList を読み取り専用で描く。
-  const archivedFeedQuery = useMessageFeed(
-    channel && access.isArchived && access.canRead ? channelId : null,
-  );
 
   if (!channel) {
     if (channelsQuery.isLoading) {
@@ -143,51 +127,25 @@ export function ChannelScreen({
           <div className="flex flex-1 items-center justify-center">
             <p className="text-sm text-muted-foreground">{t("common.loading")}</p>
           </div>
-        ) : access.isArchived ? (
-          access.canRead ? (
-            <div className="flex min-h-0 flex-1 flex-col">
+        ) : access.canRead ? (
+          <>
+            {access.isArchived ? (
               <div className="flex items-start gap-2 border-b bg-muted/40 px-4 py-2 text-xs text-muted-foreground">
                 <ArchiveIcon className="mt-0.5 size-3.5 shrink-0" aria-hidden="true" />
                 <span>{t("moderation.archivedReadOnly")}</span>
               </div>
-              <MessageList
+            ) : null}
+            <div className="min-h-0 flex-1">
+              <MessagePane
                 targetMessageId={targetMessageId}
-                key={`archived-${channelId}`}
-                messages={archivedFeedQuery.data ?? []}
-                isLoading={archivedFeedQuery.isLoading}
-                isError={archivedFeedQuery.isError}
-                currentUserId={null}
-                editingId={null}
-                editingText=""
-                onEditingTextChange={noop}
-                onStartEdit={noop}
-                onCancelEdit={noop}
-                onSaveEdit={noop}
-                onRequestDelete={noop}
-                reactions={new Map()}
-                kitchenCatalog={null}
-                canReact={false}
-                onReaction={noop}
-                onPickReaction={noop}
-                replyCounts={new Map()}
-                onOpenThread={noop}
-                canCompose={false}
+                key={channelId}
+                channelId={channelId}
+                isMember={access.isMember}
+                canModerate={!channel.is_dm && access.canManageChannel}
+                readOnly={access.isArchived}
               />
             </div>
-          ) : (
-            <div className="flex flex-1 items-center justify-center p-6">
-              <p className="max-w-sm text-center text-sm text-muted-foreground">
-                {t("channels.privateMessages")}
-              </p>
-            </div>
-          )
-        ) : access.canRead ? (
-          <MessagePane
-            targetMessageId={targetMessageId}
-            key={channelId}
-            channelId={channelId}
-            isMember={access.isMember}
-          />
+          </>
         ) : (
           <div className="flex flex-1 items-center justify-center p-6">
             <p className="max-w-sm text-center text-sm text-muted-foreground">

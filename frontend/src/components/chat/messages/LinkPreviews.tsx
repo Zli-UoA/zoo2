@@ -46,7 +46,7 @@ function LinkPreview({
       href={url}
       target="_blank"
       rel="noopener noreferrer"
-      className={`my-2 flex max-w-xl overflow-hidden rounded-2xl border bg-card text-sm outline-none transition-colors hover:bg-muted/50 focus-visible:ring-2 focus-visible:ring-ring ${wide ? "flex-col" : "flex-row"}`}
+      className={`my-2 flex w-full max-w-sm overflow-hidden rounded-lg border bg-card text-sm outline-none transition-colors hover:bg-muted/50 focus-visible:ring-2 focus-visible:ring-ring ${wide ? "flex-col" : "flex-row"}`}
     >
       {src && failedImage !== src ? (
         <span className={wide ? "block" : "relative min-h-24 w-24 shrink-0 sm:w-28"}>
@@ -56,7 +56,9 @@ function LinkPreview({
             loading="lazy"
             referrerPolicy="no-referrer"
             className={
-              wide ? "max-h-80 w-full object-cover" : "absolute inset-0 size-full object-cover"
+              wide
+                ? "aspect-video max-h-52 w-full object-cover"
+                : "absolute inset-0 size-full object-cover"
             }
             onLoad={(event) => {
               const img = event.currentTarget;

@@ -2,6 +2,9 @@ import type { Meta, StoryObj } from "@storybook/react-vite";
 import { expect, fn, userEvent, within } from "storybook/test";
 
 import type { UserRow } from "../../../lib/electric/types";
+import { MfmChannelsProvider } from "./MfmChannels";
+import { storyChannels } from "../../../../.storybook/fixtures";
+import { storyCommands } from "../../../../.storybook/app-fixtures";
 import { Composer } from "./Composer";
 
 const mentionUsers: UserRow[] = [
@@ -22,7 +25,7 @@ const mentionUsers: UserRow[] = [
 ];
 
 const meta = {
-  title: "Chat/Composer",
+  title: "Features/Chat/Composer",
   component: Composer,
   tags: ["autodocs"],
   parameters: { a11y: { test: "todo" } },
@@ -33,14 +36,17 @@ const meta = {
   },
   args: {
     onTyping: fn(),
-    onSend: async () => true,
+    onSend: fn(async () => true),
+    commands: storyCommands,
     mentionUsers,
     mentionMemberIds: new Set(["user-alice", "user-bob"]),
   },
   decorators: [
     (Story) => (
       <div className="mx-auto max-w-3xl bg-background">
-        <Story />
+        <MfmChannelsProvider channels={storyChannels}>
+          <Story />
+        </MfmChannelsProvider>
       </div>
     ),
   ],
@@ -82,5 +88,41 @@ export const Mobile: Story = {
   globals: { viewport: { value: "mobile" } },
   args: {
     placeholder: "モバイルからメッセージを送信",
+  },
+};
+
+export const ChannelSuggestions: Story = {
+  parameters: { a11y: { test: "error" } },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await userEvent.type(canvas.getByRole("textbox"), "詳しくは #gen");
+    await expect(canvas.getByRole("listbox", { name: "チャンネル候補" })).toBeVisible();
+    await expect(canvas.getByRole("option", { name: "#general" })).toBeVisible();
+  },
+};
+export const CommandSuggestions: Story = {
+  parameters: { a11y: { test: "error" } },
+  play: async ({ canvasElement, args }) => {
+    const canvas = within(canvasElement);
+    const input = canvas.getByRole("textbox");
+    await userEvent.type(input, "/ec");
+    await expect(canvas.getByRole("listbox", { name: "コマンド候補" })).toBeVisible();
+    await userEvent.click(canvas.getByRole("option", { name: "/echo Meeting Notes" }));
+    await expect(input).toHaveValue("/echo ");
+    await userEvent.type(input, "hello");
+    await userEvent.click(canvas.getByRole("button", { name: "送信" }));
+    await expect(args.onSend).toHaveBeenCalledWith("/echo hello", "notes");
+  },
+};
+export const ChannelInsertion: Story = {
+  parameters: { a11y: { test: "error" } },
+  globals: { viewport: { value: "mobile" } },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const input = canvas.getByRole("textbox");
+    await userEvent.type(input, "#gen");
+    await userEvent.keyboard("{Tab}");
+    await expect(input).toHaveValue("#general ");
+    await expect(canvas.queryByRole("listbox")).not.toBeInTheDocument();
   },
 };

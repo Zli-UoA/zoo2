@@ -76,6 +76,7 @@ export function messageFeedQuery(
       app_id: users.app_id,
       avatar_url: users.avatar_url,
       created_at: messages.created_at,
+      updated_at: messages.updated_at,
       parent_id: messages.parent_id,
       user_name: users.user_name,
       display_name: users.display_name,

@@ -1,5 +1,7 @@
+import "../../../styles.css";
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { toast } from "sonner";
 import { describe, expect, it, vi } from "vite-plus/test";
 
 import { LocaleProvider } from "../../i18n/LocaleProvider";
@@ -248,17 +250,24 @@ describe("MessageRow", () => {
     expect(onOpenThread).toHaveBeenCalledOnce();
   });
 
-  it("keeps the hover actions from stealing clicks while invisible", () => {
+  it("groups the overflow menu and quick actions within one toolbar", () => {
     renderRow(buildItem(), true);
+    const toolbar = document.querySelector("[data-message-toolbar]")!;
+    expect(toolbar.contains(screen.getByLabelText("編集"))).toBe(true);
+    expect(toolbar.contains(screen.getByLabelText("その他の操作"))).toBe(true);
+    expect(getComputedStyle(toolbar).pointerEvents).toBe("none");
+    screen.getByLabelText("その他の操作").focus();
+    expect(getComputedStyle(toolbar).pointerEvents).toBe("auto");
+  });
 
-    const edit = screen.getByLabelText("編集");
-    expect(edit.closest("div")?.className).toContain("pointer-events-none hidden items-center");
-    expect(edit.closest("div")?.className).toContain("group-hover/row:pointer-events-auto");
-    expect(edit.closest("div")?.className).toContain("group-focus-within/row:pointer-events-auto");
-    expect(edit.closest("div")?.className).toContain("group-hover/row:opacity-100");
-
-    const more = screen.getByLabelText("その他の操作");
-    expect(more.className).toContain("pointer-events-none opacity-0");
+  it("allows moderators to delete another author's message without editing it", async () => {
+    const onRequestDelete = vi.fn();
+    renderRow(buildItem(), false, { canDelete: true, onRequestDelete });
+    screen.getByRole("button", { name: "その他の操作" }).focus();
+    await userEvent.keyboard("{Enter}");
+    expect(screen.queryByRole("menuitem", { name: "編集" })).toBeNull();
+    await userEvent.click(screen.getByRole("menuitem", { name: "削除" }));
+    expect(onRequestDelete).toHaveBeenCalledOnce();
   });
 });
 
@@ -302,4 +311,84 @@ it("shows an app identity and opens its profile without treating it as a person"
   } finally {
     window.removeEventListener("zoo:open-app", opened);
   }
+});
+
+describe("copy original message", () => {
+  const raw = "  **太字** と [リンク](https://example.com/path?a=1)\n\n:smile: $[spin 原文]  ";
+  it.each([null, "thread-root"])(
+    "copies unformatted content from a read-only message with parent=%s",
+    async (parent_id) => {
+      const copy = vi.spyOn(navigator.clipboard, "writeText").mockResolvedValue();
+      const success = vi.spyOn(toast, "success").mockReturnValue("copy-success");
+      try {
+        renderRow(buildItem({ content: raw, parent_id }));
+        screen.getByRole("button", { name: "その他の操作" }).focus();
+        await userEvent.keyboard("{Enter}");
+        await userEvent.click(screen.getByRole("menuitem", { name: "原文をコピー" }));
+        await waitFor(() => expect(copy).toHaveBeenCalledWith(raw));
+        expect(copy).toHaveBeenCalledOnce();
+        await waitFor(() => expect(success).toHaveBeenCalledWith("原文をコピーしました"));
+      } finally {
+        copy.mockRestore();
+        success.mockRestore();
+      }
+    },
+  );
+  it("reports a denied clipboard write without reporting success", async () => {
+    const copy = vi
+      .spyOn(navigator.clipboard, "writeText")
+      .mockRejectedValue(new DOMException("Denied", "NotAllowedError"));
+    const error = vi.spyOn(toast, "error").mockReturnValue("copy-error");
+    const success = vi.spyOn(toast, "success").mockReturnValue("copy-success");
+    try {
+      renderRow(buildItem({ content: raw }));
+      screen.getByRole("button", { name: "その他の操作" }).focus();
+      await userEvent.keyboard("{Enter}");
+      await userEvent.click(screen.getByRole("menuitem", { name: "原文をコピー" }));
+      await waitFor(() => expect(error).toHaveBeenCalledWith("原文をコピーできませんでした"));
+      expect(success).not.toHaveBeenCalled();
+    } finally {
+      copy.mockRestore();
+      error.mockRestore();
+      success.mockRestore();
+    }
+  });
+});
+
+it.each([null, "thread-root"])(
+  "places an edited marker after the final inline link (parent=%s)",
+  async (parent_id) => {
+    renderRow(
+      buildItem({
+        content: "Updated [link](https://example.com)",
+        parent_id,
+        updated_at: "2026-01-02 00:10:00.000",
+      }),
+    );
+    const marker = screen.getByRole("img", { name: "編集済み" });
+    const link = screen.getByRole("link", { name: "link" });
+    expect(marker.getBoundingClientRect().left).toBeGreaterThanOrEqual(
+      link.getBoundingClientRect().right,
+    );
+    expect(
+      Math.abs(marker.getBoundingClientRect().top - link.getBoundingClientRect().top),
+    ).toBeLessThan(10);
+    await userEvent.hover(marker);
+    const tooltip = await screen.findByRole("tooltip");
+    expect(tooltip.textContent).toContain("編集済み");
+    expect(tooltip.querySelector("time")).toHaveAttribute("datetime", "2026-01-02T00:10:00.000Z");
+  },
+);
+
+it("shows the last edit time when the marker receives keyboard focus", async () => {
+  renderRow(
+    buildItem({
+      content: "Updated [link](https://example.com)",
+      updated_at: "2026-01-02 00:10:00.000",
+    }),
+  );
+  screen.getByRole("link", { name: "link" }).focus();
+  await userEvent.keyboard("{Tab}");
+  expect(screen.getByRole("img", { name: "編集済み" })).toHaveFocus();
+  expect((await screen.findByRole("tooltip")).textContent).toContain("編集済み");
 });

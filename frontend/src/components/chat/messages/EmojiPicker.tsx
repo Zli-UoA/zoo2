@@ -1,3 +1,4 @@
+import { noAutofill } from "../../ui/autofill";
 import { EmojiPicker as Frimousse } from "frimousse";
 import { SearchIcon } from "lucide-react";
 import { useCallback, useEffect, useRef, useState, type KeyboardEvent } from "react";
@@ -123,6 +124,7 @@ export function EmojiPicker({ onSelect }: { onSelect: (emoji: string) => void })
             className="pointer-events-none absolute top-1/2 left-2.5 size-3.5 -translate-y-1/2 text-muted-foreground"
           />
           <Frimousse.Search
+            {...noAutofill}
             className={cn(inputClassName(), "w-full pl-8")}
             placeholder={t("reactions.searchEmoji")}
             aria-label={t("reactions.searchEmoji")}

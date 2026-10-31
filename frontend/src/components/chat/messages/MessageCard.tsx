@@ -1,3 +1,8 @@
+import { useId, useLayoutEffect, useRef, useState } from "react";
+import { useTranslation } from "react-i18next";
+import { ChevronDownIcon, ChevronUpIcon } from "lucide-react";
+import { Button } from "../../ui/button";
+import { ExternalLink } from "../../ui/external-link";
 import { SquareArrowOutUpRightIcon } from "lucide-react";
 
 /** Integration-neutral card schema. This data comes from the server-owned card column. */
@@ -91,6 +96,57 @@ function safeHref(value?: string): string | undefined {
     /* Plain text fallback. */
   }
 }
+const DESCRIPTION_PREVIEW_LINES = 8;
+
+function CardDescription({ text }: { text: string }) {
+  const { t } = useTranslation();
+  const id = useId();
+  const textRef = useRef<HTMLParagraphElement>(null);
+  const [expanded, setExpanded] = useState(false);
+  const [overflows, setOverflows] = useState(false);
+  useLayoutEffect(() => {
+    const element = textRef.current;
+    if (!element) return;
+    const measure = () => {
+      const lineHeight = Number.parseFloat(getComputedStyle(element).lineHeight);
+      setOverflows(
+        element.getBoundingClientRect().height > lineHeight * DESCRIPTION_PREVIEW_LINES + 1,
+      );
+    };
+    measure();
+    const observer = new ResizeObserver(measure);
+    observer.observe(element);
+    return () => observer.disconnect();
+  }, []);
+  return (
+    <div className="mt-2">
+      <div
+        id={id}
+        className="overflow-clip"
+        style={{ maxHeight: expanded ? undefined : `${DESCRIPTION_PREVIEW_LINES}lh` }}
+      >
+        <p ref={textRef} className="whitespace-pre-wrap break-words text-muted-foreground">
+          {text}
+        </p>
+      </div>
+      {overflows ? (
+        <Button
+          type="button"
+          variant="link"
+          size="sm"
+          className="mt-1 px-0"
+          aria-controls={id}
+          aria-expanded={expanded}
+          onClick={() => setExpanded((current) => !current)}
+        >
+          {expanded ? <ChevronUpIcon /> : <ChevronDownIcon />}
+          {t(expanded ? "cards.showLess" : "cards.showMore")}
+        </Button>
+      ) : null}
+    </div>
+  );
+}
+
 export function MessageCard({
   card,
   attachment = false,
@@ -98,19 +154,13 @@ export function MessageCard({
   card: CardData;
   attachment?: boolean;
 }) {
-  let href: string | undefined;
-  try {
-    const url = new URL(card.url);
-    if (url.protocol === "https:") href = url.href;
-  } catch {
-    /* Missing links render as text. */
-  }
+  const href = safeHref(card.url);
   return (
     <article
       className={
         attachment
-          ? "my-2 max-w-2xl overflow-hidden rounded-sm border-l-4 border-l-brand py-1 pl-4 pr-2 text-sm"
-          : "my-1 max-w-xl overflow-hidden rounded-lg border border-l-4 border-l-brand bg-card p-3 text-sm shadow-sm"
+          ? "@container my-2 max-w-2xl overflow-hidden rounded-sm border-l-4 border-l-brand py-1 pl-4 pr-2 text-sm"
+          : "@container my-1 max-w-xl overflow-hidden rounded-lg border border-l-4 border-l-brand bg-card p-3 text-sm shadow-sm"
       }
       style={cardColor(card.color) ? { borderLeftColor: cardColor(card.color) } : undefined}
     >
@@ -127,25 +177,16 @@ export function MessageCard({
       ) : null}
       <div className="break-words font-semibold">
         {href ? (
-          <a
-            href={href}
-            target="_blank"
-            rel="noopener noreferrer"
-            className="text-brand underline-offset-2 hover:underline"
-          >
+          <ExternalLink href={href} className="hover:underline">
             {card.title}
-          </a>
+          </ExternalLink>
         ) : (
           card.title
         )}
       </div>
-      {card.description ? (
-        <p className="mt-2 max-h-64 overflow-auto whitespace-pre-wrap break-words text-muted-foreground">
-          {card.description}
-        </p>
-      ) : null}
+      {card.description ? <CardDescription key={card.description} text={card.description} /> : null}
       {card.fields?.length ? (
-        <dl className="mt-3 grid grid-cols-1 gap-x-6 gap-y-3 sm:grid-cols-2">
+        <dl className="mt-3 grid grid-cols-1 gap-x-6 gap-y-3 @sm:grid-cols-2">
           {card.fields.map((field, index) => {
             const href = safeHref(field.url);
             const value = field.code ? (
@@ -156,18 +197,13 @@ export function MessageCard({
               field.value
             );
             return (
-              <div key={index} className={field.short ? "min-w-0" : "min-w-0 sm:col-span-2"}>
+              <div key={index} className={field.short ? "min-w-0" : "min-w-0 @sm:col-span-2"}>
                 <dt className="mb-1 font-semibold">{field.title}</dt>
                 <dd className="whitespace-pre-wrap break-words">
                   {href ? (
-                    <a
-                      href={href}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="text-brand hover:underline"
-                    >
+                    <ExternalLink href={href} className="hover:underline">
                       {value}
-                    </a>
+                    </ExternalLink>
                   ) : (
                     value
                   )}

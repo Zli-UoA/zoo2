@@ -126,17 +126,11 @@ describe("MessageRow", () => {
     expect(withActions).not.toContain("[@media(hover:none)]:flex");
   });
 
-  it("keeps the hover actions from stealing clicks while invisible", () => {
-    const html = render(buildItem(), true);
-    // 外枠ごとクリックを通し、表示（ホバー / フォーカス内）のときだけ操作群を戻す。
-    expect(html).toContain("pointer-events-none absolute right-1.5 top-0 flex items-center");
-    expect(html).toContain("pointer-events-none hidden items-center gap-0.5");
-    expect(html).toContain("group-hover/row:pointer-events-auto");
-    expect(html).toContain("group-focus-within/row:pointer-events-auto");
-    expect(html).toContain("group-hover/row:opacity-100");
-    expect(html).toContain("group-focus-within/row:opacity-100");
-    // 長押し用アンカーは通常のタップを奪わない。
-    expect(html).toContain("pointer-events-none opacity-0");
+  it("offers deletion without editing for moderators", () => {
+    const html = render(buildItem(), false, { canDelete: true });
+    expect(html).toContain('aria-label="削除"');
+    expect(html).not.toContain('aria-label="編集"');
+    expect(render(buildItem())).not.toContain('aria-label="削除"');
   });
 });
 

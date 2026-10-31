@@ -1,5 +1,8 @@
+import { Textarea } from "../../ui/textarea";
+import { ComposerField, composerTextareaClassName } from "./ComposerField";
+import { useAutosizeTextarea } from "../../../hooks/useAutosizeTextarea";
 import { useTranslation } from "react-i18next";
-import { useId, useLayoutEffect, useRef, useState } from "react";
+import { useEffect, useId, useLayoutEffect, useRef, useState } from "react";
 import { SendIcon } from "lucide-react";
 
 import type { TFunction } from "i18next";
@@ -10,6 +13,9 @@ import { insertMention, mentionOptions, mentionQuery, type MentionOption } from 
 import { insertMfm, mfmOptions, mfmQuery } from "./mfmSuggestions";
 import type { MFM_FUNCTIONS } from "./mfmFunctions";
 import type { UserRow } from "../../../lib/electric/types";
+
+import { useMfmChannels } from "./MfmChannels";
+import { composerQuery, insertSuggestion, type CommandSuggestion } from "./composerSuggestions";
 
 const MAX_COMPOSER_HEIGHT = 200;
 
@@ -86,11 +92,13 @@ export function composerSendHint(
 }
 
 interface ComposerProps {
+  commands?: readonly CommandSuggestion[];
+  onRequestCommands?: () => void;
   mentionUsers?: UserRow[];
   mentionMemberIds?: ReadonlySet<string>;
   /** 送信を実行し、成功したかを返す。false なら下書きを復元する。 */
   onTyping?: (active: boolean) => void;
-  onSend: (content: string) => Promise<boolean>;
+  onSend: (content: string, commandAppId?: string) => Promise<boolean>;
   disabled?: boolean;
   placeholder?: string;
   ariaLabel?: string;
@@ -102,6 +110,8 @@ interface ComposerProps {
  */
 export function Composer({
   onTyping,
+  commands = [],
+  onRequestCommands,
   mentionUsers = [],
   mentionMemberIds = new Set(),
   onSend,
@@ -117,27 +127,64 @@ export function Composer({
   const [activeOption, setActiveOption] = useState(0);
   const [dismissed, setDismissed] = useState(false);
   const composingRef = useRef(false);
+  const draftVersion = useRef(0);
   const listId = useId();
+  const channels = useMfmChannels();
+  const [selectedCommand, setSelectedCommand] = useState<CommandSuggestion | null>(null);
   const suggest = !disabled && !dismissed && caret >= 0;
   const mfmRange = suggest ? mfmQuery(value, caret) : null;
+  const commandRange = suggest ? composerQuery(value, caret, "command") : null;
+  const channelRange = suggest ? composerQuery(value, caret, "channel") : null;
   const range = suggest && !mfmRange ? mentionQuery(value, caret) : null;
-  const options: MentionOption[] = mfmRange
-    ? mfmOptions(mfmRange.query).map((name) => ({
-        name,
-        label: t(`mfm.functions.${name}`),
-      }))
-    : range
-      ? mentionOptions(mentionUsers, mentionMemberIds, range.query)
-      : [];
+  const requestingCommands = !!commandRange;
+  useEffect(() => {
+    if (requestingCommands) onRequestCommands?.();
+  }, [requestingCommands, onRequestCommands]);
+  const kind = commandRange
+    ? "commands"
+    : channelRange
+      ? "channelSuggestions"
+      : mfmRange
+        ? "mfm"
+        : "mentions";
+  const options: (MentionOption & { app_id?: string })[] = commandRange
+    ? commands
+        .filter((command) => command.name.toLowerCase().startsWith(commandRange.query))
+        .map((command) => ({ name: command.name, label: command.app_name, app_id: command.app_id }))
+    : channelRange
+      ? [...channels.keys()]
+          .filter((name) => name.normalize("NFKC").toLowerCase().includes(channelRange.query))
+          .sort((a, b) => a.localeCompare(b))
+          .slice(0, 20)
+          .map((name) => ({ name, label: "" }))
+      : mfmRange
+        ? mfmOptions(mfmRange.query).map((name) => ({
+            name,
+            label: t(`mfm.functions.${name}`),
+          }))
+        : range
+          ? mentionOptions(mentionUsers, mentionMemberIds, range.query)
+          : [];
   const selectedOption = Math.min(activeOption, Math.max(0, options.length - 1));
-  function selectOption(option: MentionOption) {
+  function selectOption(option: (typeof options)[number]) {
     if (composingRef.current) return;
-    const next = mfmRange
-      ? insertMfm(value, mfmRange, option.name as (typeof MFM_FUNCTIONS)[number])
-      : range
-        ? insertMention(value, range, option.name)
-        : null;
+    const next = commandRange
+      ? insertSuggestion(value, commandRange, `/${option.name}`)
+      : channelRange
+        ? insertSuggestion(value, channelRange, `#${option.name}`)
+        : mfmRange
+          ? insertMfm(value, mfmRange, option.name as (typeof MFM_FUNCTIONS)[number])
+          : range
+            ? insertMention(value, range, option.name)
+            : null;
     if (!next) return;
+    if (commandRange)
+      setSelectedCommand(
+        commands.find(
+          (command) => command.name === option.name && command.app_id === option.app_id,
+        ) ?? null,
+      );
+    draftVersion.current++;
     setValue(next.value);
     setCaret(next.caret);
     setDismissed(true);
@@ -156,20 +203,19 @@ export function Composer({
     listRef.current?.querySelector('[aria-selected="true"]')?.scrollIntoView({ block: "nearest" });
   }, [selectedOption, options.length]);
 
-  useLayoutEffect(() => {
-    const element = textareaRef.current;
-    if (!element) {
-      return;
-    }
-    element.style.height = "auto";
-    element.style.height = `${Math.min(element.scrollHeight, MAX_COMPOSER_HEIGHT)}px`;
-    element.style.overflowY = element.scrollHeight > MAX_COMPOSER_HEIGHT ? "auto" : "hidden";
-  }, [value]);
+  useAutosizeTextarea(textareaRef, value, MAX_COMPOSER_HEIGHT);
 
   function updateDraft(element: HTMLTextAreaElement, isComposing = composingRef.current) {
     setCaret(isComposing ? element.selectionEnd : element.selectionStart);
     setActiveOption(0);
     setDismissed(false);
+    draftVersion.current++;
+    if (
+      selectedCommand &&
+      element.value !== `/${selectedCommand.name}` &&
+      !element.value.startsWith(`/${selectedCommand.name} `)
+    )
+      setSelectedCommand(null);
     setValue(element.value);
     onTyping?.(element.value.trim().length > 0);
   }
@@ -179,15 +225,23 @@ export function Composer({
     if (composingRef.current || !canSubmitComposer(value, disabled)) {
       return;
     }
+    const version = draftVersion.current;
+    setSelectedCommand(null);
     setValue("");
     onTyping?.(false);
     let sent = false;
     try {
-      sent = await onSend(content);
+      sent =
+        selectedCommand && content.startsWith(`/${selectedCommand.name} `)
+          ? await onSend(content, selectedCommand.app_id)
+          : selectedCommand && content === `/${selectedCommand.name}`
+            ? await onSend(content, selectedCommand.app_id)
+            : await onSend(content);
     } catch {
       sent = false;
     }
     if (!sent) {
+      if (draftVersion.current === version) setSelectedCommand(selectedCommand);
       // 失敗時は下書きを戻す。ただし待っている間に次の入力を始めていたら邪魔しない。
       setValue((current) => (current.length > 0 ? current : content));
     }
@@ -195,6 +249,7 @@ export function Composer({
 
   return (
     <form
+      autoComplete="off"
       className="shrink-0 border-t px-3 py-3"
       onSubmit={(event) => {
         event.preventDefault();
@@ -206,12 +261,18 @@ export function Composer({
           id={listId}
           ref={listRef}
           role="listbox"
-          aria-label={t(mfmRange ? "mfm.suggestions" : "mentions.suggestions")}
+          aria-label={t(
+            kind === "commands"
+              ? "composer.commands"
+              : kind === "channelSuggestions"
+                ? "composer.channels"
+                : `${kind}.suggestions`,
+          )}
           className="mb-2 max-h-48 overflow-y-auto rounded-lg border bg-popover p-1"
         >
           {options.map((option, index) => (
             <li
-              key={option.name}
+              key={`${option.app_id ?? ""}:${option.name}`}
               id={`${listId}-${index}`}
               role="option"
               aria-selected={index === selectedOption}
@@ -227,22 +288,28 @@ export function Composer({
               }}
             >
               <span className="shrink-0 font-mono">
-                {mfmRange ? `$[${option.name}]` : `@${option.name}`}
+                {commandRange
+                  ? `/${option.name}`
+                  : channelRange
+                    ? `#${option.name}`
+                    : mfmRange
+                      ? `$[${option.name}]`
+                      : `@${option.name}`}
               </span>
               <span className="truncate text-muted-foreground">{option.label}</span>
             </li>
           ))}
         </ul>
       ) : null}
-      <div className="flex items-end gap-2 rounded-xl border border-input bg-background p-1.5 transition-colors focus-within:border-ring focus-within:ring-3 focus-within:ring-ring/30 dark:bg-input/30">
-        <textarea
+      <ComposerField>
+        <Textarea
           ref={textareaRef}
           rows={1}
           value={value}
           disabled={disabled}
           placeholder={resolvedPlaceholder}
           aria-label={resolvedAriaLabel}
-          className="w-full outline-none placeholder:text-muted-foreground disabled:cursor-not-allowed disabled:opacity-50 min-h-11 min-w-0 flex-1 resize-none rounded-none border-0 bg-transparent px-2 py-2.5 text-base leading-6 shadow-none field-sizing-fixed focus-visible:ring-0 md:text-sm dark:bg-transparent"
+          className={`${composerTextareaClassName} min-h-11 px-2 py-2.5`}
           aria-autocomplete="list"
           aria-controls={options.length ? listId : undefined}
           aria-activedescendant={options.length ? `${listId}-${selectedOption}` : undefined}
@@ -326,7 +393,7 @@ export function Composer({
         >
           <SendIcon />
         </Button>
-      </div>
+      </ComposerField>
       {!isTouch ? (
         <p className="mt-1.5 px-1 text-[11px] text-muted-foreground">
           {composerSendHint(platform, t, isTouch)}

@@ -42,6 +42,7 @@ interface MessageListProps {
   isWritePending?: boolean;
   isError: boolean;
   currentUserId: string | null;
+  canModerate?: boolean;
   editingId: string | null;
   editingText: string;
   onEditingTextChange: (value: string) => void;
@@ -132,6 +133,7 @@ export function MessageList({
   isWritePending = false,
   isError,
   currentUserId,
+  canModerate = false,
   editingId,
   editingText,
   onEditingTextChange,
@@ -460,11 +462,11 @@ export function MessageList({
                   {item.message.id === firstUnreadId ? (
                     <div
                       role="separator"
-                      aria-label="new"
+                      aria-label={t("messages.new")}
                       className="flex items-center gap-2 py-2 text-xs font-semibold text-destructive"
                     >
                       <span className="h-px flex-1 bg-destructive" />
-                      <span>new</span>
+                      <span>{t("messages.new")}</span>
                       <span className="h-px w-6 bg-destructive" />
                     </div>
                   ) : null}
@@ -476,6 +478,9 @@ export function MessageList({
                     onReaction={(emoji) => onReaction(item.message.id, emoji)}
                     onPickReaction={() => onPickReaction(item.message.id)}
                     isOwn={!!currentUserId && item.message.user_id === currentUserId}
+                    canDelete={
+                      canModerate || (!!currentUserId && item.message.user_id === currentUserId)
+                    }
                     isEditing={editingId === item.message.id}
                     editingText={editingText}
                     onEditingTextChange={onEditingTextChange}

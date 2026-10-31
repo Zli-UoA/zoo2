@@ -43,7 +43,7 @@ function AlertDialogDemo({ defaultOpen = false }: { defaultOpen?: boolean }) {
 }
 
 const meta = {
-  title: "Foundations/AlertDialog",
+  title: "Components/AlertDialog",
   component: AlertDialog,
   tags: ["autodocs"],
   parameters: { a11y: { test: "error" } },
