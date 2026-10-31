@@ -23,7 +23,7 @@ export default defineConfig({
   // OIDC・i18n・nginx CSP・レイアウト・オフラインは専用設定で実行するため、
   // 既定のスモークからは除外する。`pnpm test:e2e:oidc` / `test:e2e:i18n` /
   // `test:e2e:csp` / `test:e2e:layout` / `test:e2e:offline` を参照。
-  testIgnore: /(oidc|i18n|csp|layout|offline|compose(?:-production)?)\.spec\.ts/,
+  testIgnore: /(oidc|i18n|csp|layout|offline|compose(?:-production|-storybook)?)\.spec\.ts/,
   fullyParallel: false,
   forbidOnly: Boolean(process.env.CI),
   retries: process.env.CI ? 1 : 0,

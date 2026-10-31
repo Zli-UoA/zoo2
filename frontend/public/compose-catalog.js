@@ -10,8 +10,9 @@ let close;
 let started = false;
 const timeout = setTimeout(() => fail("Composeの読み込みがタイムアウトしました。"), 90_000);
 function fail(message) {
+  const labels = globalThis.zooCatalog.options.labels ?? {};
   clearTimeout(timeout);
-  status.textContent = `${message} JDK 21を用意して frontend で pnpm build:compose を実行してください。`;
+  status.textContent = `${labels["experimental.catalogLoadError"] ?? message} ${labels["experimental.catalogBuildHint"] ?? "Install JDK 21 and run pnpm build:compose in frontend."}`;
   send("error");
 }
 globalThis.zooCatalog = {
@@ -36,6 +37,8 @@ window.addEventListener("message", (event) => {
   const options = { ...event.data.options, origin: location.origin };
   globalThis.zooCatalog.options = options;
   document.documentElement.lang = options.locale;
+  if (!status.hidden)
+    status.textContent = options.labels?.["experimental.catalogLoading"] ?? "Compose…";
   if (update) update(JSON.stringify(options));
   if (!started) {
     started = true;

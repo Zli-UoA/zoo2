@@ -18,6 +18,7 @@ import {
   forgetOfflineUserId,
   markOfflineDeletionPending,
   rememberOfflineUserId,
+  readLastOfflineUserId,
   resolveOfflineNamespace,
 } from "../../lib/offline/identity";
 import { useOnlineStatus } from "../../lib/offline/online";
@@ -33,6 +34,9 @@ import {
   retryPendingOfflineDeletion,
 } from "../../lib/offline/persistence";
 import { prepareOfflineWorker } from "../../lib/pwa/worker-registration";
+import { clearComposeUserStorage } from "../../lib/compose/storage";
+import { startAssetCaching } from "../../lib/pwa/cache-assets";
+import { Button } from "../ui/button";
 import { ShellSkeleton } from "../layout/ShellSkeleton";
 
 interface ReadyState {
@@ -91,58 +95,7 @@ export function OfflineProvider({
 
   // 初回ロード時に Service Worker が制御していなかった assets（フォントや
   // 動的 import の OPFS worker など）も、後から SW のキャッシュへ送る。
-  useEffect(() => {
-    if (typeof navigator === "undefined" || !("serviceWorker" in navigator)) {
-      return;
-    }
-    let cancelled = false;
-    const urls = new Set<string>();
-    const collect = (entries: readonly PerformanceEntry[]) => {
-      for (const entry of entries) {
-        try {
-          const url = new URL(entry.name);
-          if (
-            url.origin === window.location.origin &&
-            (url.pathname.startsWith("/assets/") || url.pathname.startsWith("/compose/"))
-          )
-            urls.add(url.pathname);
-        } catch {
-          /* Ignore invalid resource URLs. */
-        }
-      }
-    };
-    const send = () => {
-      if (cancelled) return;
-      const controller = navigator.serviceWorker.controller;
-      if (!controller) return;
-      collect(performance.getEntriesByType("resource"));
-      if (urls.size > 0) {
-        controller.postMessage({ type: "CACHE_ASSETS", urls: [...urls] });
-      }
-    };
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    const observer =
-      typeof PerformanceObserver !== "undefined"
-        ? new PerformanceObserver((entries) => {
-            collect(entries.getEntries());
-            clearTimeout(timer);
-            timer = setTimeout(send, 300);
-          })
-        : null;
-    observer?.observe({ type: "resource", buffered: true });
-    const timers = [window.setTimeout(send, 1_000), window.setTimeout(send, 4_000)];
-    navigator.serviceWorker.addEventListener("controllerchange", send);
-    window.addEventListener("load", send);
-    void navigator.serviceWorker.ready.then(send).catch(() => {});
-    return () => {
-      cancelled = true;
-      observer?.disconnect();
-      clearTimeout(timer);
-      for (const timer of timers) window.clearTimeout(timer);
-      navigator.serviceWorker.removeEventListener("controllerchange", send);
-      window.removeEventListener("load", send);
-    };
-  }, []);
+  useEffect(startAssetCaching, []);
 
   // OPFS 接続は pagehide で閉じられる。bfcache から復元された場合は
   // 古い接続を使い続けず、アプリを読み直して新しい接続を作る。
@@ -210,11 +163,12 @@ export function OfflineProvider({
   const clearUserData = useCallback(async () => {
     // 削除に失敗しても、次のオフライン起動が前のユーザーの DB を選ばないよう
     // 先に lastUser を消す。未完了の削除は次の起動で再試行する。
+    clearComposeUserStorage(config.devUserId || currentUserId || readLastOfflineUserId());
     forgetOfflineUserId(currentUserId);
     markOfflineDeletionPending(namespace);
     await removeOfflineDatabase(namespace);
     clearPendingOfflineDeletion();
-  }, [currentUserId, namespace]);
+  }, [config.devUserId, currentUserId, namespace]);
 
   const value = useMemo<OfflineContextValue>(
     () => ({
@@ -236,9 +190,7 @@ export function OfflineProvider({
     return (
       <div role="alert" className="flex h-dvh flex-col items-center justify-center gap-3 p-6">
         <p>{t("offline.userErrorTitle")}</p>
-        <button type="button" onClick={() => void userStore.ensureLoaded()}>
-          {t("offline.retry")}
-        </button>
+        <Button onClick={() => void userStore.ensureLoaded()}>{t("offline.retry")}</Button>
       </div>
     );
   }

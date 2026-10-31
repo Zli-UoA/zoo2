@@ -79,9 +79,13 @@ async function findActiveShellCache() {
  * `content-encoding`. Serving that combination makes module scripts fail with
  * ERR_FAILED, so strip the encoding headers before caching.
  */
-async function cacheResponse(cache, request, response) {
+async function cacheResponse(cache, request, response, validators = false) {
   const body = await response.arrayBuffer();
   const headers = new Headers(response.headers);
+  if (validators) {
+    for (const name of ["etag", "last-modified"])
+      if (headers.has(name)) headers.set(`x-zoo-${name}`, headers.get(name));
+  }
   for (const name of [
     "content-encoding",
     "content-length",
@@ -235,13 +239,24 @@ async function handleAsset(request) {
 // online so a warmed service worker cannot pin an older Kotlin implementation.
 async function handleComposeAsset(request) {
   const cache = await caches.open(await findActiveShellCache());
+  const cached = await cache.match(request);
+  const headers = new Headers(request.headers);
+  const etag = cached?.headers.get("x-zoo-etag");
+  const modified = cached?.headers.get("x-zoo-last-modified");
+  if (etag) headers.set("If-None-Match", etag);
+  else if (modified) headers.set("If-Modified-Since", modified);
   try {
-    const response = await fetch(request, { cache: "no-cache" });
-    if (response.ok && response.type === "basic")
-      return await cacheResponse(cache, request, response);
+    // Cache API is the sole persistent copy. Validate explicitly, without also
+    // keeping large fonts/Wasm in the HTTP cache or rewriting unchanged bodies.
+    const response = await fetch(new Request(request, { headers }), { cache: "no-store" });
+    if (cached && response.status === 304) return cached;
+    if (response.ok && response.type === "basic") {
+      if (cached && etag && response.headers.get("etag") === etag) return response;
+      return await cacheResponse(cache, request, response, true);
+    }
     return response;
   } catch {
-    return (await cache.match(request)) || Response.error();
+    return cached || Response.error();
   }
 }
 

@@ -79,7 +79,7 @@ fun RichText(content: String, users: List<Row> = emptyList(), depth: Int = 0) {
                     )
                 }
                 .padding(vertical = 4.dp),
-            color = androidx.compose.material3.MaterialTheme.colorScheme.secondary,
+            color = LocalLinkColor.current,
         )
         return
     }
@@ -155,7 +155,7 @@ private fun InlineParagraph(
     val inheritedStyle = LocalMfmStyle.current
     val mentionForeground = MaterialTheme.colorScheme.onSecondaryContainer
     val mentionBackground = MaterialTheme.colorScheme.secondaryContainer
-    val accent = MaterialTheme.colorScheme.secondary
+    val accent = LocalLinkColor.current
     val codeBackground = MaterialTheme.colorScheme.surfaceVariant
     val density = androidx.compose.ui.platform.LocalDensity.current
     val sizes = remember(segments) { mutableStateMapOf<String, androidx.compose.ui.unit.IntSize>() }

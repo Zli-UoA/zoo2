@@ -9,7 +9,7 @@ test("built Storybook renders Kotlin samples, updates controls, and isolates sta
   page.on("request", (request) => {
     if (new URL(request.url()).pathname.startsWith("/api/")) requests.push(request.url());
   });
-  await page.goto("/iframe.html?id=compose-components--message&viewMode=story");
+  await page.goto("/iframe.html?id=features-compose-chat--message&viewMode=story");
   const frame = page.frameLocator('iframe[title="Compose component catalog"]');
   await expect(page.locator("[data-compose-catalog-state=ready]")).toBeVisible({ timeout: 90_000 });
   await expect(frame.getByText("こんにちは。今日のリリース", { exact: false })).toBeVisible();
@@ -21,13 +21,13 @@ test("built Storybook renders Kotlin samples, updates controls, and isolates sta
       }
     ).__STORYBOOK_ADDONS_CHANNEL__;
     channel.emit("updateStoryArgs", {
-      storyId: "compose-components--message",
+      storyId: "features-compose-chat--message",
       updatedArgs: { content: "Kotlin Controls update" },
     });
   });
   await expect(frame.getByText("Kotlin Controls update", { exact: false })).toBeVisible();
   await page.goto(
-    "/iframe.html?id=compose-components--composer&viewMode=story&globals=locale:en;theme:dark",
+    "/iframe.html?id=features-compose-chat--composer&viewMode=story&globals=locale:en;theme:dark",
   );
   await expect(page.locator("[data-compose-catalog-state=ready]")).toBeVisible({ timeout: 90_000 });
   const composer = frame.getByRole("textbox", { name: "Write a message", exact: true });
@@ -48,16 +48,16 @@ test("built Storybook renders Kotlin samples, updates controls, and isolates sta
   await expect(page.locator("[data-compose-catalog-state=ready]")).toBeVisible({ timeout: 90_000 });
   await expect(composer).toHaveText("");
   await page.setViewportSize({ width: 390, height: 844 });
-  await page.goto("/iframe.html?id=compose-components--emoji-picker&viewMode=story");
+  await page.goto("/iframe.html?id=features-compose-chat--emoji-picker&viewMode=story");
   await expect(page.locator("[data-compose-catalog-state=ready]")).toBeVisible({ timeout: 90_000 });
   await expect(frame.getByRole("textbox")).toBeVisible();
   await expect(frame.getByText("😀", { exact: true }).first()).toBeVisible({ timeout: 30_000 });
   await expect(page.locator("iframe")).toHaveJSProperty("clientWidth", 390);
-  await page.goto("/iframe.html?id=compose-components--rich-text&viewMode=story");
+  await page.goto("/iframe.html?id=features-compose-chat--rich-text&viewMode=story");
   await expect(page.locator("[data-compose-catalog-state=ready]")).toBeVisible({ timeout: 90_000 });
   await expect(frame.getByText("Compose Multiplatform", { exact: false })).toBeVisible();
   await page.setViewportSize({ width: 1440, height: 900 });
-  await page.goto("/iframe.html?id=compose-components--react-comparison&viewMode=story");
+  await page.goto("/iframe.html?id=features-compose-chat--react-comparison&viewMode=story");
   await expect(page.locator("[data-compose-catalog-state=ready]")).toBeVisible({ timeout: 90_000 });
   await expect(
     page

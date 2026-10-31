@@ -37,6 +37,7 @@ data class Fonts(
 val LocalFonts = staticCompositionLocalOf {
     Fonts(FontFamily.Default, FontFamily.Default, FontFamily.Default)
 }
+val LocalLinkColor = staticCompositionLocalOf { Color(0xff1d4ed8) }
 val LocalApp = staticCompositionLocalOf<Session> { error("Session is missing") }
 
 @Composable
@@ -57,35 +58,35 @@ fun ZooTheme(dark: Boolean, content: @Composable () -> Unit) {
     val scheme =
         if (dark)
             darkColorScheme(
-                primary = Color(0xffe5e5e5),
-                onPrimary = Color(0xff171717),
-                background = Color(0xff0a0a0a),
-                onBackground = Color(0xfffafafa),
-                surface = Color(0xff171717),
-                onSurface = Color(0xfffafafa),
+                primary = Color(0xffffd600),
+                onPrimary = Color.Black,
+                background = Color.Black,
+                onBackground = Color.White,
+                surface = Color(0xff181818),
+                onSurface = Color.White,
                 surfaceVariant = Color(0xff262626),
-                onSurfaceVariant = Color(0xffa3a3a3),
-                outline = Color(0xff232323),
-                outlineVariant = Color(0xff232323),
-                secondary = Color(0xff45bf82),
-                secondaryContainer = Color(0xff153524),
-                onSecondaryContainer = Color(0xffb7dcc5),
+                onSurfaceVariant = Color(0xffbdbdbd),
+                outline = Color(0xff454545),
+                outlineVariant = Color(0xff454545),
+                secondary = Color(0xffd9d9d9),
+                secondaryContainer = Color(0xff303030),
+                onSecondaryContainer = Color(0xffe5e5e5),
             )
         else
             lightColorScheme(
-                primary = Color(0xff171717),
-                onPrimary = Color(0xfffafafa),
+                primary = Color(0xffffd600),
+                onPrimary = Color.Black,
                 background = Color.White,
-                onBackground = Color(0xff0a0a0a),
-                surface = Color(0xfffafafa),
-                onSurface = Color(0xff0a0a0a),
+                onBackground = Color.Black,
+                surface = Color.White,
+                onSurface = Color.Black,
                 surfaceVariant = Color(0xfff5f5f5),
-                onSurfaceVariant = Color(0xff737373),
+                onSurfaceVariant = Color(0xff666666),
                 outline = Color(0xffe5e5e5),
                 outlineVariant = Color(0xffe5e5e5),
-                secondary = Color(0xff008048),
-                secondaryContainer = Color(0xffd9f7e4),
-                onSecondaryContainer = Color(0xff08633d),
+                secondary = Color(0xff626262),
+                secondaryContainer = Color(0xfffff6cc),
+                onSecondaryContainer = Color.Black,
             )
     val mono = FontFamily(Font(Res.font.LiberationMono))
     val math = FontFamily(Font(Res.font.KaTeXMain))
@@ -98,7 +99,10 @@ fun ZooTheme(dark: Boolean, content: @Composable () -> Unit) {
             lineHeightStyle =
                 LineHeightStyle(LineHeightStyle.Alignment.Center, LineHeightStyle.Trim.None),
         )
-    CompositionLocalProvider(LocalFonts provides Fonts(latin, cjk, emoji, mono, math, mathItalic)) {
+    CompositionLocalProvider(
+        LocalFonts provides Fonts(latin, cjk, emoji, mono, math, mathItalic),
+        LocalLinkColor provides if (dark) Color(0xff8ab4ff) else Color(0xff1d4ed8),
+    ) {
         MaterialTheme(
             colorScheme = scheme,
             typography =

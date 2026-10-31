@@ -91,3 +91,32 @@ jobs:
           path: frontend/dist/client/
           retention-days: 7
           if-no-files-found: error
+
+  container:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+      - name: Build opt-in frontend container from source
+        run: |
+          started=$SECONDS
+          docker build -f infra/Dockerfile-frontend-deploy --build-arg VITE_EXPERIMENTAL_COMPOSE=true -t zoo-compose-ci .
+          echo "Cold opt-in frontend container build: $((SECONDS - started)) seconds" >> "$GITHUB_STEP_SUMMARY"
+      - name: Check opt-in assets and conditional CSP
+        run: |
+          docker run -d --name zoo-compose-ci -p 127.0.0.1:3101:3000 zoo-compose-ci
+          for attempt in $(seq 1 30); do
+            if curl -fsS http://127.0.0.1:3101/ > /dev/null; then break; fi
+            sleep 1
+          done
+          curl -fsS -D /tmp/compose-headers http://127.0.0.1:3101/compose/zoo-compose.js -o /tmp/compose-entry.js
+          test -s /tmp/compose-entry.js
+          grep -q "connect-src.*https://www.gstatic.com" /tmp/compose-headers
+          docker exec zoo-compose-ci sh -c 'test -n "$(find /usr/share/nginx/html/compose -name "*.wasm")"'
+          test "$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:3101/compose/missing.js)" = 404
+      - name: Container logs
+        if: always()
+        run: docker logs zoo-compose-ci 2>/dev/null || true
+      - name: Stop test container
+        if: always()
+        run: docker rm -f zoo-compose-ci 2>/dev/null || true

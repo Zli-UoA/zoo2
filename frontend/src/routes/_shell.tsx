@@ -1,4 +1,4 @@
-import { Outlet, createFileRoute } from "@tanstack/react-router";
+import { Outlet, createFileRoute, useRouterState } from "@tanstack/react-router";
 import { useEffect, useState } from "react";
 
 import { AppShell } from "../components/layout/AppShell";
@@ -20,6 +20,7 @@ export const Route = createFileRoute("/_shell")({ component: ShellLayout });
  * 一度だけ `AppShell` を描画する（SSR はスケルトン）。
  */
 function ShellLayout() {
+  const path = useRouterState({ select: (state) => state.location.pathname });
   const [mounted, setMounted] = useState(false);
   const [implementation, setImplementation] = useState<"react" | "compose">("react");
   // AuthGate が設定を検証済み。ここでは同一インスタンスを使い回し、
@@ -27,11 +28,12 @@ function ShellLayout() {
   const [config] = useState(resolveConfig);
   useEffect(() => {
     const implementation = selectedFrontend();
-    if (composeEnabled() && new URLSearchParams(window.location.search).has("frontend"))
-      writeStorageValue(FRONTEND_STORAGE_KEY, implementation);
+    const requested = new URLSearchParams(window.location.search).get("frontend");
+    if (composeEnabled() && (requested === "react" || requested === "compose"))
+      writeStorageValue(FRONTEND_STORAGE_KEY, requested);
     setImplementation(implementation);
     setMounted(true);
-  }, []);
+  }, [path]);
 
   return mounted && implementation === "compose" ? (
     <ComposeFrontend />

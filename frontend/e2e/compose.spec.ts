@@ -17,6 +17,46 @@ async function open(page: Page, implementation: "react" | "compose", path = "/ch
   });
 }
 
+async function channelAction(page: Page, native: boolean, action: "edit" | "webhook") {
+  if (native) {
+    await page
+      .getByRole("button", { name: "チャンネルの管理", exact: true })
+      .click({ force: true });
+    await page
+      .getByRole("button", {
+        name: action === "edit" ? "チャンネルを編集" : "Webhook設定",
+        exact: true,
+      })
+      .click({ force: true });
+    return;
+  }
+  const settings = page.getByRole("dialog", { name: "チャンネル設定", exact: true });
+  if (!(await settings.isVisible()))
+    await page.getByRole("button", { name: "チャンネル設定", exact: true }).click();
+  await settings
+    .getByRole("button", { name: action === "edit" ? "編集" : "開く", exact: true })
+    .click();
+}
+async function closeChannelSettings(page: Page, native: boolean) {
+  await page.keyboard.press("Escape");
+  if (!native) {
+    await expect(page.getByRole("dialog", { name: "Webhook設定", exact: true })).toBeHidden();
+    await page.keyboard.press("Escape");
+  }
+}
+async function openApps(page: Page, native: boolean) {
+  if (native)
+    await page.getByRole("button", { name: "App・連携", exact: true }).click({ force: true });
+  else {
+    await page.getByRole("link", { name: "Zoo設定", exact: true }).click();
+    await page.getByRole("tab", { name: "App・連携", exact: true }).click();
+  }
+}
+async function closeApps(page: Page, native: boolean) {
+  if (native) await page.keyboard.press("Escape");
+  else await page.getByRole("link", { name: "チャンネル", exact: true }).click();
+}
+
 async function nativeInput(page: Page) {
   return page.evaluate(() => {
     let active = document.activeElement;
@@ -110,25 +150,18 @@ for (const implementation of ["react", "compose"] as const) {
     await page
       .getByRole("button", { name: "スレッドを閉じる" })
       .click({ force: implementation === "compose" });
-    await page
-      .getByRole("button", { name: "チャンネルの管理" })
-      .click({ force: implementation === "compose" });
-    await page
-      .getByRole(implementation === "react" ? "menuitem" : "button", { name: "Webhook設定" })
-      .click({ force: implementation === "compose" });
+    await channelAction(page, implementation === "compose", "webhook");
     const webhookDialog =
       implementation === "react"
-        ? page.getByRole("dialog")
+        ? page.getByRole("dialog", { name: "Webhook設定", exact: true })
         : page.getByText("Webhook設定", { exact: true });
     await expect(webhookDialog).toBeVisible();
-    await page.keyboard.press("Escape");
+    await closeChannelSettings(page, implementation === "compose");
     await expect(webhookDialog).toBeHidden();
-    await page
-      .getByRole("button", { name: "App・連携", exact: true })
-      .click({ force: implementation === "compose" });
+    await openApps(page, implementation === "compose");
     const createApp = page.getByRole("button", { name: "Appを作成", exact: true });
     await expect(createApp).toBeVisible();
-    await page.keyboard.press("Escape");
+    await closeApps(page, implementation === "compose");
     await expect(createApp).toBeHidden();
     await page
       .getByRole(implementation === "react" ? "link" : "button", {
@@ -181,10 +214,7 @@ for (const implementation of ["react", "compose"] as const) {
         ),
       )
       .toBe(true);
-    await click("チャンネルの管理");
-    await page
-      .getByRole(native ? "button" : "menuitem", { name: "チャンネルを編集", exact: true })
-      .click({ force: native });
+    await channelAction(page, native, "edit");
     await fill("新しいチャンネル名", "renamed-parity");
     await click("保存");
     await expect
@@ -196,10 +226,7 @@ for (const implementation of ["react", "compose"] as const) {
     await expect(
       page.getByRole("textbox", { name: "新しいチャンネル名", exact: true }),
     ).toBeHidden();
-    await click("チャンネルの管理");
-    await page
-      .getByRole(native ? "button" : "menuitem", { name: "Webhook設定", exact: true })
-      .click({ force: native });
+    await channelAction(page, native, "webhook");
     await fill("Webhook名", "Parity hook");
     await click("作成");
     await expect(page.getByText("Parity hook", { exact: true })).toBeVisible();
@@ -210,9 +237,9 @@ for (const implementation of ["react", "compose"] as const) {
     await click("削除");
     await click("実行");
     await expect(page.getByText("Webhookはまだありません。", { exact: true })).toBeVisible();
-    await page.keyboard.press("Escape");
+    await closeChannelSettings(page, native);
     await expect(page.getByRole("textbox", { name: "Webhook名", exact: true })).toBeHidden();
-    await click("App・連携");
+    await openApps(page, native);
     await click("Appを作成");
     await fill("App名", "Parity App");
     await fill("説明", "Kotlinと既存フロントの共通操作");
@@ -224,7 +251,7 @@ for (const implementation of ["react", "compose"] as const) {
     await click("保存");
     await expect.poll(async () => (await state()).apps[0]?.name).toBe("Updated App");
     await expect(page.getByRole("textbox", { name: "App名", exact: true })).toBeHidden();
-    await page.keyboard.press("Escape");
+    await closeApps(page, native);
     await expect(page.getByRole("button", { name: "Appを作成", exact: true })).toBeHidden();
   });
 }
@@ -293,4 +320,21 @@ test("Compose panes preserve the existing desktop and mobile UI", async ({ brows
       });
     expect.soft(images[1].equals(images[0]), `UI differs at ${viewport.width}px`).toBe(true);
   }
+});
+
+test("Compose entry points keep React settings accessible and restore the selected frontend", async ({
+  page,
+  request,
+}) => {
+  await request.post("https://127.0.0.1:4187/__reset");
+  await open(page, "compose");
+  await page.goto("/settings?frontend=compose");
+  await expect(page.getByRole("heading", { name: "Zoo設定", exact: true })).toBeVisible();
+  await expect(page.locator("[data-compose-shell]")).toHaveCount(0);
+  expect(await page.evaluate(() => localStorage.getItem("zoo-frontend"))).toBe("compose");
+  await page.getByRole("tab", { name: "App・連携", exact: true }).click();
+  await expect(page.getByRole("button", { name: "Appを作成", exact: true })).toBeVisible();
+  await page.getByRole("link", { name: "チャンネル", exact: true }).click();
+  await expect(page.locator("[data-compose-shell]")).toBeVisible({ timeout: 90_000 });
+  await expect(page.getByRole("button", { name: "general", exact: true })).toBeVisible();
 });

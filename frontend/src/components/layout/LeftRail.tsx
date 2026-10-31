@@ -2,7 +2,7 @@ import { toast } from "sonner";
 import { useShell } from "./shell-context";
 import { disablePush } from "../../lib/pwa/push";
 import { useTranslation } from "react-i18next";
-import { Link } from "@tanstack/react-router";
+import { Link, useRouterState } from "@tanstack/react-router";
 import { cn } from "cn";
 import {
   ActivityIcon,
@@ -27,7 +27,12 @@ import { NotificationsButton } from "../chat/NotificationsButton";
 import { initials } from "../chat/format";
 import { PaneHeader } from "./PaneHeader";
 
-import { composeEnabled, selectedFrontend, switchFrontend } from "../../lib/experimentalFrontend";
+import {
+  composeEnabled,
+  selectedFrontend,
+  switchFrontend,
+  supportsComposePath,
+} from "../../lib/experimentalFrontend";
 
 function RailLink({
   to,
@@ -58,6 +63,7 @@ function RailLink({
  * 画面幅に関わらず表示し、狭幅でも操作の入口を保つ。
  */
 export function LeftRail() {
+  const path = useRouterState({ select: (state) => state.location.pathname });
   const compose = composeEnabled() && selectedFrontend() === "compose";
   const { t } = useTranslation();
   const shell = useShell();
@@ -113,7 +119,7 @@ export function LeftRail() {
       ) : null}
 
       <div className="mt-auto flex flex-col items-center gap-2">
-        {composeEnabled() ? (
+        {composeEnabled() && supportsComposePath(path) ? (
           <Button
             variant="ghost"
             size="icon-sm"
