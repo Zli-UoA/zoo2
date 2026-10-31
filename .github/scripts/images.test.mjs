@@ -80,7 +80,7 @@ test('only missing versions are ignored', async () => {
   await assert.rejects(ignoreMissing(async () => {throw new Error('403');}));
 });
 
-import plan, {promotedMainSha, pullRequestComponents, wantsPreview} from './image-plan.mjs';
+import plan, {promotedMainSha, pullRequestComponents, wantsPreview, hadPreviewChanges} from './image-plan.mjs';
 function planFixture({files = [], fork = false, state = 'open', currentSha = sha(1)} = {}) {
   const outputs = {};
   let requestedPages = false;
@@ -155,6 +155,14 @@ test('wantsPreview needs a frontend change', () => {
     assert.equal(wantsPreview([{filename}]), false, filename);
   }
   assert.equal(wantsPreview(Array.from({length: 3000}, () => ({filename: 'docs/a.md'}))), true);
+});
+test('hadPreviewChanges treats a truncated Compare diff as already previewed', () => {
+  assert.equal(hadPreviewChanges([{filename: 'frontend/src/main.tsx'}]), true);
+  assert.equal(hadPreviewChanges([{filename: 'backend/src/main.rs'}]), false);
+  // 300件の上限に達すると、後方の frontend の変更は返ってこない。外したラベルを付け直さないよう、対象だったものとして扱う。
+  const truncated = Array.from({length: 300}, (_, i) => ({filename: `backend/src/f${i}.rs`}));
+  assert.equal(hadPreviewChanges(truncated), true);
+  assert.equal(hadPreviewChanges(truncated.slice(0, 299)), false);
 });
 test('main plans all images with full SHA tags', async () => {
   const fixture = planFixture(); fixture.context.payload = {}; fixture.context.runNumber = 42;

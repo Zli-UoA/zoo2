@@ -27,7 +27,7 @@ jobs:
       - uses: actions/github-script@v9
         with:
           script: |
-            const {wantsPreview} = await import(`${process.env.GITHUB_WORKSPACE}/.github/scripts/image-plan.mjs`);
+            const {wantsPreview, hadPreviewChanges} = await import(`${process.env.GITHUB_WORKSPACE}/.github/scripts/image-plan.mjs`);
             // Read the current state: the event may be stale by the time this job runs.
             const {data: pr} = await github.rest.pulls.get({...context.repo, pull_number: context.payload.pull_request.number});
             if (pr.state !== 'open') return;
@@ -47,11 +47,11 @@ jobs:
             }
             if (context.payload.action === 'synchronize') {
               // A removed label stays removed: add it only when this push is the first to change the frontend.
-              // If the previous head is unavailable (force push), assume it already had changes.
+              // If the previous head is unavailable (force push) or its diff hits the 300-file Compare limit, assume it already had changes.
               let hadChanges = true;
               try {
                 const before = await github.paginate(github.rest.repos.compareCommitsWithBasehead, {...context.repo, basehead: `${pr.base.sha}...${context.payload.before}`, per_page: 100}, response => response.data.files);
-                hadChanges = wantsPreview(before);
+                hadChanges = hadPreviewChanges(before);
               } catch (error) {
                 core.info(`Could not read the previous head: ${error.message}`);
               }

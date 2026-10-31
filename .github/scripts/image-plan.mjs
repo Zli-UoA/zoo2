@@ -52,6 +52,13 @@ export function wantsPreview(files) {
   return files.length >= 3000 || fileNames(files).some(f => componentFile('frontend', f));
 }
 
+// push 前の head が、すでに Preview の対象だったか。Compare API の差分から判定する。
+// Compare API は変更ファイルを最大300件しか返さず、残りは取得できない。300件に達した一覧は不完全なので、
+// 対象だったものとして扱い、手で外したラベルを付け直さない。
+export function hadPreviewChanges(files) {
+  return files.length >= 300 || wantsPreview(files);
+}
+
 // 現在 latest が指している main コミットの SHA を GHCR から取得する。
 // latest は `<SHA>` タグと同じバージョンを指すため、そのバージョンに付いている40桁のタグを読む。
 // 昇格は全コンポーネントのビルド成功後に行われるので、backend だけ見れば他のコンポーネントにも同じ SHA のイメージがある。
