@@ -144,7 +144,14 @@
     },
     {
       "file": "src/components/chat/messages/MessageCard.stories.tsx",
-      "states": ["Default", "TitleOnly", "LongDescription", "Deployment", "GitHubFeed"]
+      "states": [
+        "Default",
+        "TitleOnly",
+        "LongDescription",
+        "Deployment",
+        "GitHubFeed",
+        "CollapsibleBody"
+      ]
     },
     {
       "file": "src/components/chat/messages/MessageList.stories.tsx",

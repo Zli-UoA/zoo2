@@ -534,5 +534,9 @@
     "loadError": "載入唔到搜尋設定。",
     "saveError": "儲存唔到，請再揀一次搜尋引擎。",
     "retry": "再試"
+  },
+  "cards": {
+    "showMore": "睇更多",
+    "showLess": "收起"
   }
 }

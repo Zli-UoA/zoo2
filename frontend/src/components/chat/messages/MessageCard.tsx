@@ -1,3 +1,7 @@
+import { useId, useLayoutEffect, useRef, useState } from "react";
+import { useTranslation } from "react-i18next";
+import { ChevronDownIcon, ChevronUpIcon } from "lucide-react";
+import { Button } from "../../ui/button";
 import { ExternalLink } from "../../ui/external-link";
 import { SquareArrowOutUpRightIcon } from "lucide-react";
 
@@ -92,6 +96,57 @@ function safeHref(value?: string): string | undefined {
     /* Plain text fallback. */
   }
 }
+const DESCRIPTION_PREVIEW_LINES = 8;
+
+function CardDescription({ text }: { text: string }) {
+  const { t } = useTranslation();
+  const id = useId();
+  const textRef = useRef<HTMLParagraphElement>(null);
+  const [expanded, setExpanded] = useState(false);
+  const [overflows, setOverflows] = useState(false);
+  useLayoutEffect(() => {
+    const element = textRef.current;
+    if (!element) return;
+    const measure = () => {
+      const lineHeight = Number.parseFloat(getComputedStyle(element).lineHeight);
+      setOverflows(
+        element.getBoundingClientRect().height > lineHeight * DESCRIPTION_PREVIEW_LINES + 1,
+      );
+    };
+    measure();
+    const observer = new ResizeObserver(measure);
+    observer.observe(element);
+    return () => observer.disconnect();
+  }, []);
+  return (
+    <div className="mt-2">
+      <div
+        id={id}
+        className="overflow-clip"
+        style={{ maxHeight: expanded ? undefined : `${DESCRIPTION_PREVIEW_LINES}lh` }}
+      >
+        <p ref={textRef} className="whitespace-pre-wrap break-words text-muted-foreground">
+          {text}
+        </p>
+      </div>
+      {overflows ? (
+        <Button
+          type="button"
+          variant="link"
+          size="sm"
+          className="mt-1 px-0"
+          aria-controls={id}
+          aria-expanded={expanded}
+          onClick={() => setExpanded((current) => !current)}
+        >
+          {expanded ? <ChevronUpIcon /> : <ChevronDownIcon />}
+          {t(expanded ? "cards.showLess" : "cards.showMore")}
+        </Button>
+      ) : null}
+    </div>
+  );
+}
+
 export function MessageCard({
   card,
   attachment = false,
@@ -129,11 +184,7 @@ export function MessageCard({
           card.title
         )}
       </div>
-      {card.description ? (
-        <p className="mt-2 max-h-64 overflow-auto whitespace-pre-wrap break-words text-muted-foreground">
-          {card.description}
-        </p>
-      ) : null}
+      {card.description ? <CardDescription key={card.description} text={card.description} /> : null}
       {card.fields?.length ? (
         <dl className="mt-3 grid grid-cols-1 gap-x-6 gap-y-3 @sm:grid-cols-2">
           {card.fields.map((field, index) => {

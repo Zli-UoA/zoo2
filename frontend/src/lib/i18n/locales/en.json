@@ -534,5 +534,9 @@
     "loadError": "Could not load search preferences.",
     "saveError": "Could not save. Select an engine to try again.",
     "retry": "Retry"
+  },
+  "cards": {
+    "showMore": "Show more",
+    "showLess": "Show less"
   }
 }

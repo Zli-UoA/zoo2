@@ -534,5 +534,9 @@
     "loadError": "无法加载搜索设置。",
     "saveError": "无法保存，请重新选择搜索引擎。",
     "retry": "重试"
+  },
+  "cards": {
+    "showMore": "展开全文",
+    "showLess": "收起"
   }
 }

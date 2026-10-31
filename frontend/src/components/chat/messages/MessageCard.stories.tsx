@@ -1,3 +1,4 @@
+import { expect, userEvent, within } from "storybook/test";
 import { storyDeploymentCard } from "../../../../.storybook/app-fixtures";
 import type { Meta, StoryObj } from "@storybook/react-vite";
 
@@ -105,4 +106,32 @@ export const GitHubFeed: Story = {
       </section>
     </div>
   ),
+};
+
+export const CollapsibleBody: Story = {
+  args: {
+    attachment: true,
+    card: {
+      ...storyDeploymentCard,
+      description: Array.from(
+        { length: 20 },
+        (_, i) => `本文 ${i + 1}: リリース内容の詳細です。`,
+      ).join("\n"),
+      author: "Deployment bot",
+    },
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const toggle = await canvas.findByRole("button", { name: "もっと見る" });
+    await expect(toggle).toHaveAttribute("aria-expanded", "false");
+    await expect(canvas.getByText("Completed")).toBeVisible();
+    await expect(canvas.getByText("Deployment bot")).toBeVisible();
+    await userEvent.click(toggle);
+    await expect(canvas.getByRole("button", { name: "折りたたむ" })).toHaveAttribute(
+      "aria-expanded",
+      "true",
+    );
+    await userEvent.click(toggle);
+    await expect(toggle).toHaveAttribute("aria-expanded", "false");
+  },
 };
