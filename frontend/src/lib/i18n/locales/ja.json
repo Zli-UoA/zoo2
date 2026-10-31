@@ -676,5 +676,10 @@
     "editProfile": "プロフィールを編集",
     "originalProfile": "元のプロフィール",
     "post": "投稿"
+  },
+  "experimental": {
+    "useCompose": "Compose版を使う（実験・開発中）",
+    "useReact": "React版に戻る",
+    "loadError": "Compose版を起動できませんでした。React版に戻ってください。"
   }
 }

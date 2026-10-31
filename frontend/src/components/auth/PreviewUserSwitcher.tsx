@@ -1,4 +1,5 @@
 import { useTranslation } from "react-i18next";
+import { selectedFrontend } from "../../lib/experimentalFrontend";
 import { PREVIEW_USERS, PREVIEW_USER_KEY, previewUserId } from "@/lib/preview";
 
 export function PreviewUserSwitcher() {
@@ -6,6 +7,7 @@ export function PreviewUserSwitcher() {
   if (import.meta.env.VITE_PREVIEW_AUTH !== "true" || import.meta.env.VITE_OIDC_ISSUER) {
     return null;
   }
+  if (typeof window !== "undefined" && selectedFrontend() === "compose") return null;
   return (
     <aside className="fixed right-3 bottom-3 z-50 rounded-md border bg-background p-2 text-sm shadow-md">
       <label className="flex items-center gap-2">

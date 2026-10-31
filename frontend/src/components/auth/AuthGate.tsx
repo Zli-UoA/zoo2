@@ -3,7 +3,7 @@ import { useRouter } from "@tanstack/react-router";
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 
 import { setAuthorizedHandler, setTokenProvider, setUnauthorizedHandler } from "../../lib/auth";
-import { resolveConfig, type AppConfig } from "../../lib/config";
+import { resolveConfig, DEFAULT_CONFIG, type AppConfig } from "../../lib/config";
 import { OidcClient } from "../../lib/oidc/client";
 import {
   MAX_REDIRECT_ATTEMPTS,
@@ -22,6 +22,9 @@ import { ShellSkeleton } from "../layout/ShellSkeleton";
 import { Button } from "../ui/button";
 
 import { describeAuthError, formatAuthError, type AuthError } from "./authError";
+
+import { ComposeRuntime } from "../experimental/ComposeFrontend";
+import { selectedFrontend } from "../../lib/experimentalFrontend";
 
 type AuthPhase = "checking" | "ready" | "disabled" | "loggedOut" | "error";
 
@@ -52,6 +55,13 @@ export function AuthGate({ children }: { children: ReactNode }) {
   const [phase, setPhase] = useState<AuthPhase>("checking");
   const [error, setError] = useState<AuthError | null>(null);
   const clientRef = useRef<OidcClient | null>(null);
+  const [nativeConfig] = useState(() => {
+    try {
+      return resolveConfig();
+    } catch {
+      return DEFAULT_CONFIG;
+    }
+  });
 
   const startLogin = useCallback((client: OidcClient, returnTo: string) => {
     const storage = window.sessionStorage;
@@ -201,10 +211,6 @@ export function AuthGate({ children }: { children: ReactNode }) {
     return <>{children}</>;
   }
 
-  if (phase === "checking") {
-    return <ShellSkeleton />;
-  }
-
   const retry = () => {
     const client = clientRef.current;
     if (!client) {
@@ -217,6 +223,16 @@ export function AuthGate({ children }: { children: ReactNode }) {
     setPhase("checking");
     startLogin(client, "/");
   };
+
+  if (typeof window !== "undefined" && selectedFrontend() === "compose") {
+    return (
+      <ComposeRuntime
+        config={nativeConfig}
+        status={{ phase, message: phase === "error" ? formatAuthError(error, t) : "", retry }}
+      />
+    );
+  }
+  if (phase === "checking") return <ShellSkeleton />;
 
   return (
     <div className="flex h-dvh w-full items-center justify-center bg-background p-6 text-foreground">

@@ -29,7 +29,7 @@ const SHELL = [
   "/icons/icon-192.png",
   "/icons/icon-512.png",
 ];
-const CACHEABLE_PREFIXES = ["/assets/", "/icons/", "/emojibase-data/"];
+const CACHEABLE_PREFIXES = ["/assets/", "/icons/", "/emojibase-data/", "/compose/"];
 
 function isPrivatePath(pathname) {
   return pathname.startsWith("/api/") || pathname.startsWith("/auth/");
@@ -231,6 +231,20 @@ async function handleAsset(request) {
   }
 }
 
+// The Compose entry and resource names are stable across builds. Revalidate them
+// online so a warmed service worker cannot pin an older Kotlin implementation.
+async function handleComposeAsset(request) {
+  const cache = await caches.open(await findActiveShellCache());
+  try {
+    const response = await fetch(request, { cache: "no-cache" });
+    if (response.ok && response.type === "basic")
+      return await cacheResponse(cache, request, response);
+    return response;
+  } catch {
+    return (await cache.match(request)) || Response.error();
+  }
+}
+
 self.addEventListener("install", (event) => {
   event.waitUntil(precacheShell().then(() => self.skipWaiting()));
 });
@@ -252,7 +266,10 @@ self.addEventListener("message", (event) => {
   const data = event.data;
   if (!data || data.type !== "CACHE_ASSETS" || !Array.isArray(data.urls)) return;
   const urls = data.urls
-    .filter((url) => typeof url === "string" && url.startsWith("/assets/"))
+    .filter(
+      (url) =>
+        typeof url === "string" && (url.startsWith("/assets/") || url.startsWith("/compose/")),
+    )
     .slice(0, 200);
   event.waitUntil(
     (async () => {
@@ -279,6 +296,8 @@ self.addEventListener("fetch", (event) => {
 
   if (event.request.mode === "navigate") {
     event.respondWith(handleNavigation(event.request));
+  } else if (url.pathname.startsWith("/compose/")) {
+    event.respondWith(handleComposeAsset(event.request));
   } else if (isCacheableAsset(url)) {
     event.respondWith(handleAsset(event.request));
   }

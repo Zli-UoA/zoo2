@@ -676,5 +676,10 @@
     "editProfile": "編輯個人檔案",
     "originalProfile": "原本嘅個人檔案",
     "post": "帖文"
+  },
+  "experimental": {
+    "useCompose": "使用 Compose（實驗・開發中）",
+    "useReact": "返回 React",
+    "loadError": "無法啟動 Compose。請返回 React 前端。"
   }
 }

@@ -27,6 +27,8 @@ import { NotificationsButton } from "../chat/NotificationsButton";
 import { initials } from "../chat/format";
 import { PaneHeader } from "./PaneHeader";
 
+import { composeEnabled, selectedFrontend, switchFrontend } from "../../lib/experimentalFrontend";
+
 function RailLink({
   to,
   icon: Icon,
@@ -56,6 +58,7 @@ function RailLink({
  * 画面幅に関わらず表示し、狭幅でも操作の入口を保つ。
  */
 export function LeftRail() {
+  const compose = composeEnabled() && selectedFrontend() === "compose";
   const { t } = useTranslation();
   const shell = useShell();
   const { config } = useCollections();
@@ -110,6 +113,19 @@ export function LeftRail() {
       ) : null}
 
       <div className="mt-auto flex flex-col items-center gap-2">
+        {composeEnabled() ? (
+          <Button
+            variant="ghost"
+            size="icon-sm"
+            title={t(compose ? "experimental.useReact" : "experimental.useCompose")}
+            aria-label={t(compose ? "experimental.useReact" : "experimental.useCompose")}
+            onClick={() => switchFrontend(compose ? "react" : "compose")}
+            data-frontend-switch
+          >
+            <span aria-hidden="true">{compose ? "R" : "K"}</span>
+          </Button>
+        ) : null}
+
         <Link
           to="/settings"
           search={{ channel: shell.selectedChannelId ?? undefined }}

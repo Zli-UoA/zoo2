@@ -676,5 +676,10 @@
     "editProfile": "Edit profile",
     "originalProfile": "Original profile",
     "post": "Post"
+  },
+  "experimental": {
+    "useCompose": "Use Compose (experimental, in development)",
+    "useReact": "Return to React",
+    "loadError": "Could not start Compose. Return to the React frontend."
   }
 }
