@@ -7,7 +7,7 @@ import { useLocale } from "../i18n/LocaleProvider";
 import { Button } from "../ui/button";
 import { CollapsibleSection } from "../ui/collapsible-section";
 import { Skeleton } from "../ui/skeleton";
-import { resolveDmDisplayName } from "./dm";
+import { formatDmDisplayName, resolveDmDisplayName } from "./dm";
 import { DmListItem } from "./DmListItem";
 
 const SKELETON_ROWS = [0, 1, 2];
@@ -67,14 +67,7 @@ export function DmSection({
         currentUserId,
         locale,
       });
-      const names = resolved.names.join(", ");
-      const base = names || t("dms.untitled");
-      map.set(
-        channel.id,
-        resolved.remaining > 0
-          ? `${base} ${t("dms.moreNames", { count: resolved.remaining })}`
-          : base,
-      );
+      map.set(channel.id, formatDmDisplayName(resolved, t));
     }
     return map;
   }, [channels, currentUserId, locale, membersByChannel, t, users]);

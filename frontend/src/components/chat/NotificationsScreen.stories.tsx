@@ -3,7 +3,15 @@ import { expect, screen } from "storybook/test";
 import { useLayoutEffect, type ReactNode } from "react";
 
 import { StoryShell } from "../../../.storybook/shell";
-import { storyCollections, storyNotifications } from "../../../.storybook/fixtures";
+import {
+  storyCollections,
+  storyNotifications,
+  storyChannels,
+  storyChannelUsers,
+  storyDmChannels,
+  storyDmMembers,
+  storyDmNotifications,
+} from "../../../.storybook/fixtures";
 import { NotificationsScreen } from "./NotificationsScreen";
 
 // 通知カードの自動既読はフォーカス中だけ動く。Storybook では未読の見た目を
@@ -73,4 +81,21 @@ export const Empty: Story = {
 export const Mobile: Story = {
   globals: { viewport: { value: "mobile" } },
   decorators: [withUnreadPreview],
+};
+
+export const DirectMessages: Story = {
+  decorators: [withUnreadPreview],
+  parameters: {
+    collections: {
+      ...storyCollections,
+      channels: [...storyChannels, ...storyDmChannels],
+      channelUsers: [...storyChannelUsers, ...storyDmMembers],
+      notifications: storyDmNotifications,
+    },
+  },
+  play: async () => {
+    await expect(await screen.findByText("Admin, Bob, Carol +1")).toBeVisible();
+    await expect(await screen.findByText("Bob", { selector: "p > span" })).toBeVisible();
+    await expect(screen.queryByText(/#dm:/)).not.toBeInTheDocument();
+  },
 };

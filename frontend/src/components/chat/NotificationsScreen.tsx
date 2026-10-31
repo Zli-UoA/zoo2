@@ -1,3 +1,6 @@
+import { useLiveQuery } from "@tanstack/react-db";
+import { useCollections } from "../../lib/electric/collections-context";
+import type { ChannelUserRow } from "../../lib/electric/types";
 import { useCallback, useMemo, useRef } from "react";
 import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
@@ -20,6 +23,17 @@ export function NotificationsScreen() {
     () => new Map((channelsQuery.data ?? []).map((row) => [row.id, row])),
     [channelsQuery.data],
   );
+  const { channelUsers } = useCollections();
+  const memberships = useLiveQuery((q) => q.from({ channelUsers }));
+  const membersByChannel = useMemo(() => {
+    const map = new Map<string, ChannelUserRow[]>();
+    for (const member of memberships.data ?? []) {
+      const rows = map.get(member.channel_id);
+      if (rows) rows.push(member);
+      else map.set(member.channel_id, [member]);
+    }
+    return map;
+  }, [memberships.data]);
   const groups = useMemo(() => groupNotifications(notifications), [notifications]);
   const scrollRoot = useRef<HTMLDivElement>(null);
   const attempted = useRef(new Set<string>());
@@ -63,6 +77,7 @@ export function NotificationsScreen() {
                 group={group}
                 channel={channels.get(group.latest.channel_id)}
                 users={users}
+                members={membersByChannel.get(group.latest.channel_id)}
                 onRead={readVisible}
                 scrollRoot={scrollRoot}
               />

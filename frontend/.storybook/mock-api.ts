@@ -26,6 +26,18 @@ interface NotificationContextFixture {
 }
 
 const notificationContexts: Record<string, NotificationContextFixture> = {
+  "notification-dm": {
+    message: { id: "message-dm", user_id: "user-bob", content: "個別に確認をお願いします。" },
+    reactions: [],
+  },
+  "notification-dm-group": {
+    message: {
+      id: "message-dm-group",
+      user_id: "user-bob",
+      content: "次の打ち合わせについて相談しましょう。",
+    },
+    reactions: [],
+  },
   "notification-mention": {
     message: {
       id: "message-hello",

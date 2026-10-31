@@ -454,3 +454,35 @@ export const storyCollections = {
   reactions: storyReactions,
   notifications: storyNotifications,
 } satisfies StoryCollectionsInput;
+
+/** DM metadata used by notification stories without changing the default channel catalogue. */
+export const storyDmChannels: ChannelRow[] = [
+  {
+    ...storyChannels[0],
+    id: "channel-dm",
+    channel_name: "dm:user-alice:user-bob",
+    is_dm: true,
+    is_private: true,
+  },
+  {
+    ...storyChannels[0],
+    id: "channel-dm-group",
+    channel_name: "dm:group:internal-id",
+    is_dm: true,
+    is_private: true,
+  },
+];
+export const storyDmMembers: ChannelUserRow[] = storyDmChannels.flatMap((channel, index) =>
+  (index === 0 ? storyUsers.slice(0, 2) : storyUsers).map((user) => ({
+    channel_id: channel.id,
+    user_id: user.id,
+    joined_at: channel.created_at,
+  })),
+);
+export const storyDmNotifications: NotificationRow[] = storyDmChannels.map((channel, index) => ({
+  ...storyNotifications[0],
+  id: index === 0 ? "notification-dm" : "notification-dm-group",
+  channel_id: channel.id,
+  message_id: index === 0 ? "message-dm" : "message-dm-group",
+  notification_type: "dm",
+}));

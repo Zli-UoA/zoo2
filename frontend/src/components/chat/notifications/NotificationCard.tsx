@@ -1,15 +1,16 @@
 import { Link } from "@tanstack/react-router";
 import { useMemo, type RefObject } from "react";
 import { useTranslation } from "react-i18next";
-import { HeartIcon, MessageCircleIcon, AtSignIcon } from "lucide-react";
+import { HeartIcon, MessageCircleIcon, AtSignIcon, UserRoundIcon, UsersIcon } from "lucide-react";
 
 import { useKitchenCatalog } from "../../../hooks/useKitchenCatalog";
-import type { ChannelRow, UserRow } from "../../../lib/electric/types";
+import type { ChannelRow, ChannelUserRow, UserRow } from "../../../lib/electric/types";
 import { kitchenLabel, kitchenParts } from "../../../lib/emoji/kitchen";
 import { normalizeUtcTimestamp } from "../../../lib/timestamps";
 import { useLocale } from "../../i18n/LocaleProvider";
 import { useShell } from "../../layout/shell-context";
 import { AvatarGroup, AvatarGroupCount } from "../../ui/avatar";
+import { formatDmDisplayName, isGroupDm, resolveDmDisplayName } from "../dm";
 import { AppAvatar } from "../AppIdentity";
 import { ReactionEmoji } from "../messages/ReactionEmoji";
 import { fullTimestamp } from "../messages/messageFormat";
@@ -24,12 +25,14 @@ import { useReadVisibleNotification } from "./useReadVisibleNotification";
 export function NotificationCard({
   group,
   channel,
+  members = [],
   users,
   onRead,
   scrollRoot,
 }: {
   group: NotificationGroup;
   channel?: ChannelRow;
+  members?: readonly Pick<ChannelUserRow, "user_id">[];
   users: ReadonlyMap<string, UserRow>;
   onRead: (ids: readonly string[]) => void;
   scrollRoot: RefObject<HTMLDivElement | null>;
@@ -76,6 +79,22 @@ export function NotificationCard({
       ? AtSignIcon
       : MessageCircleIcon;
 
+  const channelLabel = channel?.is_dm
+    ? formatDmDisplayName(
+        resolveDmDisplayName({
+          channelName: channel.channel_name,
+          members,
+          users: [...users.values()],
+          currentUserId: notification.user_id,
+          locale,
+        }),
+        t,
+      )
+    : channel
+      ? `#${channel.channel_name}`
+      : t("notifications.unavailable");
+  const DmIcon = channel && isGroupDm(channel.channel_name) ? UsersIcon : UserRoundIcon;
+
   return (
     <li
       ref={ref}
@@ -115,8 +134,9 @@ export function NotificationCard({
               <span className="text-xs text-muted-foreground">APP</span>
             ) : null}
           </p>
-          <p className="text-xs text-muted-foreground">
-            {channel ? `#${channel.channel_name}` : t("notifications.unavailable")}
+          <p className="flex items-center gap-1 text-xs text-muted-foreground">
+            {channel?.is_dm ? <DmIcon className="size-3.5 shrink-0" aria-hidden="true" /> : null}
+            <span className="min-w-0 break-words">{channelLabel}</span>
           </p>
           {reactionGroups.length ? (
             <ul className="flex flex-wrap gap-1.5" aria-label={t("notifications.reactions")}>

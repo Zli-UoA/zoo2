@@ -9,7 +9,7 @@ import { useShell } from "../layout/shell-context";
 import { Button } from "../ui/button";
 import { Skeleton } from "../ui/skeleton";
 import { ChannelHeader } from "./ChannelHeader";
-import { isGroupDm, resolveDmDisplayName } from "./dm";
+import { formatDmDisplayName, isGroupDm, resolveDmDisplayName } from "./dm";
 import { MessagePane } from "./messages/MessagePane";
 
 const LOADING_ROWS = [0, 1, 2, 3];
@@ -65,12 +65,8 @@ export function ChannelScreen({
       currentUserId,
       locale,
     });
-    const names = resolved.names.join(", ") || t("dms.untitled");
     return {
-      title:
-        resolved.remaining > 0
-          ? `${names} ${t("dms.moreNames", { count: resolved.remaining })}`
-          : names,
+      title: formatDmDisplayName(resolved, t),
       group: isGroupDm(channel.channel_name),
     };
   }, [access.members, channel, currentUserId, locale, t, usersQuery.data]);

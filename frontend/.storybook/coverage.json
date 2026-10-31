@@ -106,7 +106,7 @@
     },
     {
       "file": "src/components/chat/NotificationsScreen.stories.tsx",
-      "states": ["Default", "SingleUnread", "Empty", "Mobile"]
+      "states": ["Default", "SingleUnread", "Empty", "Mobile", "DirectMessages"]
     },
     {
       "file": "src/components/chat/RenameChannelDialog.stories.tsx",
@@ -189,7 +189,15 @@
     },
     {
       "file": "src/components/chat/notifications/NotificationCard.stories.tsx",
-      "states": ["Mention", "Reply", "Reaction", "Read"]
+      "states": [
+        "Mention",
+        "Reply",
+        "Reaction",
+        "Read",
+        "DirectMessage",
+        "GroupDirectMessage",
+        "DmMetadataPending"
+      ]
     },
     {
       "file": "src/components/i18n/LanguageToggle.stories.tsx",

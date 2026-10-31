@@ -3,7 +3,14 @@ import { expect, fn, screen } from "storybook/test";
 import { useRef, type ComponentProps } from "react";
 
 import { StoryShell } from "../../../../.storybook/shell";
-import { storyChannels, storyNotifications, storyUsers } from "../../../../.storybook/fixtures";
+import {
+  storyChannels,
+  storyNotifications,
+  storyUsers,
+  storyDmChannels,
+  storyDmMembers,
+  storyDmNotifications,
+} from "../../../../.storybook/fixtures";
 import type { ChannelRow, UserRow } from "../../../lib/electric/types";
 import { NotificationCard } from "./NotificationCard";
 import type { NotificationGroup } from "./groupNotifications";
@@ -77,5 +84,51 @@ export const Reaction: Story = {
 export const Read: Story = {
   args: {
     group: group("notification-reaction-read"),
+  },
+};
+
+export const DirectMessage: Story = {
+  args: {
+    channel: storyDmChannels[0],
+    group: {
+      key: "notification-dm",
+      latest: storyDmNotifications[0],
+      notifications: [storyDmNotifications[0]],
+      actorIds: ["user-bob"],
+    },
+  },
+  play: async () => {
+    await expect(await screen.findByText("Bob", { selector: "p > span" })).toBeVisible();
+    await expect(screen.queryByText(/#dm:/)).not.toBeInTheDocument();
+    await expect(await screen.findByRole("link", { name: /個別に確認/ })).toHaveAttribute(
+      "href",
+      expect.stringContaining("/channels/channel-dm?"),
+    );
+  },
+};
+export const GroupDirectMessage: Story = {
+  args: {
+    channel: storyDmChannels[1],
+    members: storyDmMembers.filter((row) => row.channel_id === storyDmChannels[1].id),
+    group: {
+      key: "notification-dm-group",
+      latest: storyDmNotifications[1],
+      notifications: [storyDmNotifications[1]],
+      actorIds: ["user-bob"],
+    },
+  },
+  play: async () => {
+    await expect(await screen.findByText("Admin, Bob, Carol +1")).toBeVisible();
+    await expect(screen.queryByText(/dm:group:/)).not.toBeInTheDocument();
+  },
+};
+export const DmMetadataPending: Story = {
+  ...DirectMessage,
+  args: { ...DirectMessage.args, users: new Map() },
+  play: async () => {
+    await expect(
+      await screen.findByText("ダイレクトメッセージ", { selector: "p > span" }),
+    ).toBeVisible();
+    await expect(screen.queryByText(/#dm:/)).not.toBeInTheDocument();
   },
 };
