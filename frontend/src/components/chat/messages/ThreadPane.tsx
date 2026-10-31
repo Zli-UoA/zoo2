@@ -168,7 +168,7 @@ export function ThreadPane({
               </time>
             </div>
             <div className="max-h-40 overflow-y-auto">
-              <MessageBody content={root.content} card={root.card} />
+              <MessageBody content={root.content} card={root.card} appBlocks={root.app_blocks} />
               <MessageAppContent message={root} />
             </div>
           </div>

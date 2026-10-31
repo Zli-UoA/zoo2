@@ -38,6 +38,51 @@ function zooHeaders(secret: string, raw: string, age = 0) {
   };
 }
 
+test("revoked Zoo credentials retain accepted webhooks until delivery resumes", async (t) => {
+  const f = fixture(),
+    http = await serve(f);
+  t.after(async () => {
+    await http.close();
+    f.store.close();
+  });
+  const request = f.zoo.request.bind(f.zoo);
+  f.zoo.request = async (method, path, body) => {
+    if (path === "/auth") throw Object.assign(new Error("revoked"), { status: 401 });
+    return request(method, path, body);
+  };
+  const revoked = { ...command(""), type: "tokens.revoked", data: {} };
+  f.store.enqueue(`zoo:${revoked.id}`, "zoo", revoked.type, revoked);
+  const payload = job("issues", { action: "opened", issue: f.remote.issue }).payload;
+  const raw = JSON.stringify(payload),
+    headers = githubHeaders(f.config.githubSecret, raw);
+  const response = await fetch(`${http.url}/github/webhook`, {
+    method: "POST",
+    headers,
+    body: raw,
+  });
+  assert.equal(response.status, 202);
+  await f.bot.tick();
+  assert.equal((await fetch(`${http.url}/health`)).status, 503);
+  const id = `github:${headers["x-github-delivery"]}`;
+  const pending = () => f.store.db.prepare("SELECT status,attempts FROM jobs WHERE id=?").get(id)!;
+  assert.equal(pending().status, "queued");
+  assert.equal(pending().attempts, 0);
+  await f.bot.tick();
+  assert.equal(pending().attempts, 0, "Waiting for credentials must not exhaust retries");
+  const again = await fetch(`${http.url}/github/webhook`, {
+    method: "POST",
+    headers,
+    body: raw,
+  });
+  assert.equal(again.status, 202, "The receiver stays available while Zoo is disabled");
+  assert.equal(f.zoo.messages.size, 0);
+  // main.ts clears this flag when the operator supplies new bootstrap credentials.
+  f.store.remove("zoo-disabled");
+  await f.bot.tick();
+  assert.equal(pending().status, "done");
+  assert.equal(f.zoo.messages.size, 1);
+});
+
 test("GitHub authentication uses the exact body, checks installation policy, and persists before ACK", async (t) => {
   const f = fixture(),
     http = await serve(f);
@@ -253,6 +298,10 @@ test("a lost POST response recovers changed parents and comments after a databas
       assert.equal(f.zoo.messages.size, child ? 2 : 1);
       const message = [...f.zoo.messages.values()].find((m) => Boolean(m.parent_id) === child)!;
       assert.match(message.content, /while the bot was stopped/);
+      assert.match(
+        child ? message.blocks[1].card.description : message.blocks[1].card.title,
+        /while the bot was stopped/,
+      );
       assert.equal(
         store.db.prepare("SELECT status FROM jobs WHERE id=?").get(event.id)!.status,
         "done",

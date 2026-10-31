@@ -1,4 +1,4 @@
-import { MessageCard, parseMessageCard } from "./messages/MessageCard";
+import { MessageCard, parseMessageCard, type CardData } from "./messages/MessageCard";
 import { openApp } from "./AppIdentity";
 import { useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
@@ -10,6 +10,7 @@ import { inputClassName } from "../ui/input-styles";
 import type { FeedMessage } from "./messages/messageFormat";
 
 type Block =
+  | { type: "card"; card: CardData }
   | { type: "text"; text: string }
   | { type: "button"; action_id: string; label: string; value?: string }
   | { type: "input"; action_id: string; label: string; required?: boolean }
@@ -18,6 +19,7 @@ export function parseBlocks(value: unknown): Block[] {
   if (!Array.isArray(value) || value.length > 50) return [];
   return value.filter((b): b is Block => {
     if (!b || typeof b !== "object") return false;
+    if (b.type === "card") return parseMessageCard(JSON.stringify(b.card)) !== null;
     if (b.type === "text") return typeof b.text === "string";
     if (
       !["button", "input", "select"].includes(b.type) ||
@@ -30,6 +32,13 @@ export function parseBlocks(value: unknown): Block[] {
       (Array.isArray(b.options) && b.options.every((s: unknown) => typeof s === "string"))
     );
   });
+}
+export function hasCardBlocks(value?: string | null): boolean {
+  try {
+    return parseBlocks(JSON.parse(value ?? "[]")).some((b) => b.type === "card");
+  } catch {
+    return false;
+  }
 }
 export function AppBlocks({
   blocks,
@@ -89,6 +98,7 @@ export function AppBlocks({
       }}
     >
       {parseBlocks(blocks).map((b, index) => {
+        if (b.type === "card") return <MessageCard key={index} card={b.card} attachment />;
         if (b.type === "text")
           return (
             <p key={index} className="whitespace-pre-wrap break-words text-sm">

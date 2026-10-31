@@ -9,6 +9,7 @@ export interface Notice {
   stateChange?: boolean;
   snapshot?: Json;
   mentions: string[];
+  url?: string;
 }
 export const GITHUB_EVENTS = [
   "ping",

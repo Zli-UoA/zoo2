@@ -49,6 +49,8 @@ export class ZooDouble implements Zoo {
   };
   setBlocks: Zoo["setBlocks"] = async (id, blocks) => {
     this.calls.push({ id, blocks });
+    const message = this.messages.get(id);
+    if (message) message.blocks = structuredClone(blocks);
     return { id };
   };
 }

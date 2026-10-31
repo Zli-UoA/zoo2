@@ -24,6 +24,34 @@ describe("Message card format", () => {
 });
 
 describe("Message card rendering", () => {
+  it("renders attachment fields, a code commit link and a footer without unsafe URLs", () => {
+    const card = parseMessageCard(
+      JSON.stringify({
+        title: "Deployment to production",
+        color: "#2da44e",
+        source: "Zli-UoA/zoo2",
+        fields: [
+          { title: "Status", value: "Completed", short: true },
+          {
+            title: "Commit",
+            value: "103eb20 (main)",
+            short: true,
+            code: true,
+            url: "https://github.com/Zli-UoA/zoo2/commit/103eb20",
+          },
+          { title: "Workflow", value: "<img onerror=alert(1)>", url: "javascript:alert(1)" },
+        ],
+      }),
+    )!;
+    const html = renderToStaticMarkup(createElement(MessageCard, { card, attachment: true }));
+    expect(html).toContain("sm:grid-cols-2");
+    expect(html).toContain("<code");
+    expect(html).toContain("Zli-UoA/zoo2");
+    expect(html).toContain('href="https://github.com/Zli-UoA/zoo2/commit/103eb20"');
+    expect(html).not.toContain("javascript:");
+    expect(html).toContain("&lt;img");
+    expect(parseMessageCard('{"title":"bad","fields":[{"title":"x","value":4}]}')).toBeNull();
+  });
   it("renders all Slack attachments and only permits supported colors", () => {
     const cards = parseMessageCards(
       JSON.stringify({
