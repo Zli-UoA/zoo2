@@ -109,6 +109,8 @@ export const CommandSuggestions: Story = {
     await expect(canvas.getByRole("listbox", { name: "コマンド候補" })).toBeVisible();
     await userEvent.click(canvas.getByRole("option", { name: "/echo Meeting Notes" }));
     await expect(input).toHaveValue("/echo ");
+    // Wait for Composer to restore the caret before typing the command argument.
+    await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
     await userEvent.type(input, "hello");
     await userEvent.click(canvas.getByRole("button", { name: "送信" }));
     await expect(args.onSend).toHaveBeenCalledWith("/echo hello", "notes");

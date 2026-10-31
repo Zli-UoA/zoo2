@@ -1,7 +1,7 @@
 import { useLiveQuery } from "@tanstack/react-db";
 import { useCollections } from "../../lib/electric/collections-context";
 import type { ChannelUserRow } from "../../lib/electric/types";
-import { useCallback, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { BellIcon } from "lucide-react";
 import { toast } from "sonner";
@@ -66,6 +66,11 @@ export function NotificationsScreen() {
   });
   const loading =
     !isError && (isLoading || usersQuery.isLoading || channelsQuery.isLoading || previewsLoading);
+  const [hasLoaded, setHasLoaded] = useState(false);
+  useEffect(() => {
+    if (!loading && !isError) setHasLoaded(true);
+  }, [loading, isError]);
+  const initialLoading = loading && !hasLoaded;
   const scrollRoot = useRef<HTMLDivElement>(null);
   const attempted = useRef(new Set<string>());
   const readVisible = useCallback(
@@ -87,14 +92,14 @@ export function NotificationsScreen() {
       aria-labelledby="notifications-title"
       aria-busy={loading}
     >
-      <header className="flex shrink-0 items-center gap-3 border-b px-4 py-4 sm:px-6">
+      <header className="flex min-h-16 shrink-0 items-center gap-3 border-b px-4 py-2.5 max-md:min-h-[65px]">
         <span
-          className="flex size-10 shrink-0 items-center justify-center rounded-xl bg-primary text-primary-foreground"
+          className="flex size-8 shrink-0 items-center justify-center rounded-lg bg-primary text-primary-foreground"
           aria-hidden="true"
         >
-          <BellIcon className="size-5" />
+          <BellIcon className="size-4" />
         </span>
-        <h1 id="notifications-title" className="text-lg font-semibold">
+        <h1 id="notifications-title" className="text-sm font-semibold">
           {t("notifications.title")}
         </h1>
       </header>
@@ -110,10 +115,10 @@ export function NotificationsScreen() {
           </div>
         ) : (
           <ul
-            className={`w-full ${loading ? "opacity-0" : ""}`}
+            className={`w-full ${initialLoading ? "opacity-0" : ""}`}
             aria-label={t("notifications.title")}
-            aria-hidden={loading || undefined}
-            inert={loading}
+            aria-hidden={initialLoading || undefined}
+            inert={initialLoading}
           >
             {groups.map((group) => (
               <NotificationCard
@@ -130,8 +135,11 @@ export function NotificationsScreen() {
             ))}
           </ul>
         )}
+        {loading && !initialLoading ? (
+          <Spinner label={t("common.loading")} className="sticky bottom-0 bg-background py-4" />
+        ) : null}
       </div>
-      {loading ? (
+      {initialLoading ? (
         <Spinner label={t("common.loading")} className="absolute inset-0 z-20 bg-background" />
       ) : null}
     </section>
