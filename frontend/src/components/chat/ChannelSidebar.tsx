@@ -79,6 +79,7 @@ export function ChannelSidebar({
 
   return (
     <aside
+      aria-label={t("channels.title")}
       className={cn(
         "min-w-0 flex-1 flex-col border-r bg-sidebar text-sidebar-foreground md:w-72 md:flex-none",
         className,

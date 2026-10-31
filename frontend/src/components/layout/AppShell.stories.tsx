@@ -20,7 +20,11 @@ const meta = {
 export default meta;
 type Story = StoryObj<typeof meta>;
 
-export const Welcome: Story = {};
+export const Welcome: Story = {
+  play: async () => {
+    await expect(screen.getByLabelText("チャンネル", { selector: "aside" })).toBeVisible();
+  },
+};
 
 export const Channel: Story = {
   args: {
@@ -31,6 +35,7 @@ export const Channel: Story = {
   },
   play: async () => {
     await expect(await screen.findByText(/今日のリリースは 18:00/)).toBeInTheDocument();
+    await expect(screen.getByLabelText("チャンネル", { selector: "aside" })).toBeVisible();
   },
 };
 
@@ -49,7 +54,15 @@ export const Notifications: Story = {
     children: <NotificationsScreen />,
   },
   parameters: {
+    a11y: { test: "error" },
     router: { initialEntries: ["/notifications"] },
+  },
+  play: async () => {
+    await expect(screen.getByLabelText("チャンネル", { selector: "aside" })).not.toBeVisible();
+    const main = screen.getByRole("main").getBoundingClientRect();
+    const nav = screen.getByRole("navigation").getBoundingClientRect();
+    await expect(main.x).toBe(nav.right);
+    await expect(main.right).toBe(document.documentElement.clientWidth);
   },
 };
 
@@ -74,4 +87,9 @@ export const Mobile: Story = {
   args: {
     children: <WelcomePanel />,
   },
+};
+
+export const MobileNotifications: Story = {
+  ...Notifications,
+  globals: { viewport: { value: "mobile" } },
 };

@@ -1,6 +1,7 @@
 import type { Meta, StoryObj } from "@storybook/react-vite";
 import { delay, http, HttpResponse } from "msw";
 import { expect, screen } from "storybook/test";
+import { AppShell } from "../layout/AppShell";
 import { AppConsent } from "./AppConsent";
 const app = {
   name: "Release Tracker",
@@ -15,7 +16,15 @@ const app = {
 const meta = {
   title: "Pages/AppConsent",
   component: AppConsent,
+  decorators: [
+    (Story) => (
+      <AppShell>
+        <Story />
+      </AppShell>
+    ),
+  ],
   parameters: {
+    router: { initialEntries: ["/apps-authorize"] },
     a11y: { test: "error" },
     msw: { handlers: [http.get("*/api/apps/consent-story", () => HttpResponse.json(app))] },
   },
@@ -43,6 +52,7 @@ export const Default: Story = {
   play: async () => {
     await expect(await screen.findByRole("heading", { name: "Release Tracker" })).toBeVisible();
     await expect(screen.getAllByRole("checkbox")).toHaveLength(2);
+    await expect(screen.getByLabelText("チャンネル", { selector: "aside" })).not.toBeVisible();
   },
 };
 export const Loading: Story = {

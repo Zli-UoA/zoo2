@@ -203,7 +203,8 @@
         "MobileChannel",
         "Notifications",
         "NotificationsSingleUnread",
-        "Mobile"
+        "Mobile",
+        "MobileNotifications"
       ]
     },
     {

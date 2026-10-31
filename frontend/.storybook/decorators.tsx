@@ -60,8 +60,20 @@ export function StoryRouter({
       path: "settings",
       validateSearch: (search: Record<string, unknown>) => search,
     });
+    const notificationsRoute = createRoute({
+      getParentRoute: () => rootRoute,
+      path: "notifications",
+    });
+    const appRoute = createRoute({ getParentRoute: () => rootRoute, path: "apps/$appId" });
+    const consentRoute = createRoute({ getParentRoute: () => rootRoute, path: "apps-authorize" });
     return createRouter({
-      routeTree: rootRoute.addChildren([channelRoute, settingsRoute]),
+      routeTree: rootRoute.addChildren([
+        channelRoute,
+        settingsRoute,
+        notificationsRoute,
+        appRoute,
+        consentRoute,
+      ]),
       history: createMemoryHistory({ initialEntries: entriesKey.split("\n") }),
     });
   }, [children, entriesKey]);

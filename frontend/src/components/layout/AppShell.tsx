@@ -158,6 +158,8 @@ export function AppShell({ children }: { children: ReactNode }) {
     [pane, showSidebar, membersOpen, threadRootId, openThread, closeThread, selectedChannelId],
   );
 
+  // The conversation column belongs to the channel index and channel/DM routes only.
+  const isChannelView = isHome || selectedChannelId !== null;
   const sidebarVisible = pane === "sidebar";
   const showChat = pane === "chat";
 
@@ -178,7 +180,7 @@ export function AppShell({ children }: { children: ReactNode }) {
                 channels={channels}
                 loading={channelsQuery.isLoading}
                 error={channelsQuery.isError}
-                className={sidebarVisible ? "flex" : "hidden md:flex"}
+                className={isChannelView ? (sidebarVisible ? "flex" : "hidden md:flex") : "hidden"}
               />
             </div>
             <main className={cn("min-w-0 flex-1 flex-col", showChat ? "flex" : "hidden md:flex")}>
