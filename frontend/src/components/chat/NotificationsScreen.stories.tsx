@@ -1,4 +1,5 @@
 import { activityPubNotifications } from "../../../.storybook/activitypub-fixtures";
+import { playForImplementation } from "../../../.storybook/play-for-implementation";
 import type { Decorator, Meta, StoryObj } from "@storybook/react-vite";
 import { expect, screen, userEvent, waitFor, within } from "storybook/test";
 import { delay, http, HttpResponse, ws } from "msw";
@@ -42,9 +43,9 @@ const meta = {
   component: NotificationsScreen,
   tags: ["autodocs"],
   parameters: { a11y: { test: "error" } },
-  play: async () => {
+  play: playForImplementation(async () => {
     await waitFor(() => expect(screen.queryByRole("status")).not.toBeInTheDocument());
-  },
+  }),
   decorators: [
     (Story) => (
       <StoryShell selectedChannelId={null} initialPane="chat">
@@ -61,7 +62,7 @@ type Story = StoryObj<typeof meta>;
 
 export const Default: Story = {
   decorators: [withUnreadPreview],
-  play: async () => {
+  play: playForImplementation(async () => {
     await waitFor(() => expect(screen.queryByRole("status")).not.toBeInTheDocument());
     await expect(await screen.findByText(/今日のリリースは 18:00/)).toBeVisible();
     const list = screen.getByRole("list", { name: "通知" });
@@ -73,7 +74,7 @@ export const Default: Story = {
       "target",
       "_blank",
     );
-  },
+  }),
 };
 
 export const SingleUnread: Story = {
@@ -110,12 +111,12 @@ export const DirectMessages: Story = {
       notifications: storyDmNotifications,
     },
   },
-  play: async () => {
+  play: playForImplementation(async () => {
     await waitFor(() => expect(screen.queryByRole("status")).not.toBeInTheDocument());
     await expect(await screen.findByText("Admin, Bob, Carol +1")).toBeVisible();
     await expect(await screen.findByText("Bob", { selector: "p > span" })).toBeVisible();
     await expect(screen.queryByText(/#dm:/)).not.toBeInTheDocument();
-  },
+  }),
 };
 
 export const Dark: Story = { ...Default, globals: { theme: "dark" } };
@@ -133,7 +134,7 @@ export const MessageLayoutComparison: Story = {
       <NotificationsScreen />
     </div>
   ),
-  play: async () => {
+  play: playForImplementation(async () => {
     await waitFor(() => expect(screen.queryByRole("status")).not.toBeInTheDocument());
     const notification = screen.getByRole("region", { name: "通知" });
     const message = screen.getByRole("region", { name: "メッセージ表示の比較用" });
@@ -150,7 +151,7 @@ export const MessageLayoutComparison: Story = {
     await expect(notificationBody.fontSize).toBe(messageBody.fontSize);
     await expect(notificationBody.lineHeight).toBe(messageBody.lineHeight);
     await expect(getComputedStyle(notification.querySelector("time")!).fontSize).toBe("11px");
-  },
+  }),
 };
 
 export const MessageLayoutComparisonMobile: Story = {
@@ -169,7 +170,7 @@ export const Loading: Story = {
       ],
     },
   },
-  play: async () => {
+  play: playForImplementation(async () => {
     await expect(await screen.findByRole("status")).toBeVisible();
     const list = within(screen.getByRole("region", { name: "通知" })).getByRole("list", {
       hidden: true,
@@ -177,7 +178,7 @@ export const Loading: Story = {
     await expect(list).toHaveAttribute("inert");
     await expect(list).not.toBeVisible();
     await waitFor(() => expect(list.querySelectorAll(":scope > [data-unread]")).toHaveLength(3));
-  },
+  }),
 };
 export const BodiesReadyTogether: Story = {
   parameters: {
@@ -197,7 +198,7 @@ export const BodiesReadyTogether: Story = {
       ],
     },
   },
-  play: async () => {
+  play: playForImplementation(async () => {
     await expect(await screen.findByRole("status")).toBeVisible();
     await expect(
       within(screen.getByRole("region", { name: "通知" })).getByRole("list", { hidden: true }),
@@ -206,7 +207,7 @@ export const BodiesReadyTogether: Story = {
     await expect(screen.getByRole("list", { name: "通知" })).toBeVisible();
     await expect(screen.getByText("本文 notification-mention")).toBeVisible();
     await expect(screen.getAllByText(/^本文 notification-/)).toHaveLength(4);
-  },
+  }),
 };
 
 export const LoadingOnScroll: Story = {
@@ -237,7 +238,7 @@ export const LoadingOnScroll: Story = {
       ],
     },
   },
-  play: async () => {
+  play: playForImplementation(async () => {
     await waitFor(() => expect(screen.queryByRole("status")).not.toBeInTheDocument());
     const list = screen.getByRole("list", { name: "通知" });
     const scrollRoot = list.parentElement!;
@@ -256,7 +257,7 @@ export const LoadingOnScroll: Story = {
     scrollRoot.scrollTop = 0;
     await waitFor(() => expect(screen.queryByRole("status")).not.toBeInTheDocument());
     await expect(screen.getByText("本文 scroll-0")).toBeVisible();
-  },
+  }),
 };
 
 let apubItems = structuredClone(activityPubNotifications);

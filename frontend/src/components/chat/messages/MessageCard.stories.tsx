@@ -1,3 +1,4 @@
+import { playForImplementation } from "../../../../.storybook/play-for-implementation";
 import { expect, userEvent, within } from "storybook/test";
 import { storyDeploymentCard } from "../../../../.storybook/app-fixtures";
 import type { Meta, StoryObj } from "@storybook/react-vite";
@@ -120,7 +121,7 @@ export const CollapsibleBody: Story = {
       author: "Deployment bot",
     },
   },
-  play: async ({ canvasElement }) => {
+  play: playForImplementation(async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     const toggle = await canvas.findByRole("button", { name: "もっと見る" });
     await expect(toggle).toHaveAttribute("aria-expanded", "false");
@@ -133,5 +134,5 @@ export const CollapsibleBody: Story = {
     );
     await userEvent.click(toggle);
     await expect(toggle).toHaveAttribute("aria-expanded", "false");
-  },
+  }),
 };

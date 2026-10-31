@@ -1,3 +1,4 @@
+import { playForImplementation } from "../../../.storybook/play-for-implementation";
 import type { Meta, StoryObj } from "@storybook/react-vite";
 import { expect, userEvent, within } from "storybook/test";
 import { Input } from "./input";
@@ -14,10 +15,10 @@ export const Disabled: Story = { args: { disabled: true, value: "general" } };
 export const Invalid: Story = { args: { "aria-invalid": true, defaultValue: "使えない名前" } };
 export const LongValue: Story = { args: { defaultValue: "very-long-channel-name-".repeat(8) } };
 export const KeyboardInput: Story = {
-  play: async ({ canvasElement }) => {
+  play: playForImplementation(async ({ canvasElement }) => {
     const input = within(canvasElement).getByRole("textbox");
     await userEvent.type(input, "design-system");
     await expect(input).toHaveValue("design-system");
     await expect(input).toHaveAttribute("data-1p-ignore");
-  },
+  }),
 };

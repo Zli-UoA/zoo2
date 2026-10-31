@@ -1,3 +1,4 @@
+import { playForImplementation } from "../../../.storybook/play-for-implementation";
 import type { Meta, StoryObj } from "@storybook/react-vite";
 import { expect, fn, screen, userEvent } from "storybook/test";
 import { useEffect, type ReactNode } from "react";
@@ -34,9 +35,9 @@ export default meta;
 type Story = StoryObj<typeof meta>;
 
 export const Default: Story = {
-  play: async () => {
+  play: playForImplementation(async () => {
     await expect(screen.getByRole("button", { name: /プッシュ通知/ })).toBeDisabled();
-  },
+  }),
 };
 
 export const InstallAvailable: Story = {
@@ -49,9 +50,9 @@ export const InstallAvailable: Story = {
       </InstallPrompt>
     ),
   ],
-  play: async () => {
+  play: playForImplementation(async () => {
     await expect(await screen.findByRole("button", { name: "Zooをインストール" })).toBeEnabled();
-  },
+  }),
 };
 
 const push = {
@@ -66,12 +67,12 @@ const push = {
 export const SelectOff: Story = {
   parameters: { a11y: { test: "error" } },
   render: () => <PushNotificationSelect push={push} />,
-  play: async () => {
+  play: playForImplementation(async () => {
     const select = screen.getByRole("combobox", { name: "プッシュ通知" });
     await expect(select).toHaveValue("off");
     await userEvent.selectOptions(select, "on");
     await expect(push.toggle).toHaveBeenCalledOnce();
-  },
+  }),
 };
 export const SelectOn: Story = {
   parameters: { a11y: { test: "error" } },

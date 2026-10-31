@@ -1,3 +1,4 @@
+import { playForImplementation } from "../../../.storybook/play-for-implementation";
 import type { Meta, StoryObj } from "@storybook/react-vite";
 import { expect, screen } from "storybook/test";
 import { useState } from "react";
@@ -57,7 +58,7 @@ export const Default: Story = {};
 
 export const Open: Story = {
   render: () => <AlertDialogDemo defaultOpen />,
-  play: async () => {
+  play: playForImplementation(async () => {
     await expect(await screen.findByRole("alertdialog")).toBeInTheDocument();
-  },
+  }),
 };

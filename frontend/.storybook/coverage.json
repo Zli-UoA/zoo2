@@ -224,7 +224,8 @@
         "ChannelInsertion",
         "WithAttachments",
         "WithFileAttachment",
-        "AttachmentUploadError"
+        "AttachmentUploadError",
+        "SendError"
       ]
     },
     {
@@ -289,7 +290,8 @@
         "WithAttachments",
         "ActivityPubPublic",
         "ActivityPubUnlisted",
-        "ActivityPubGrouped"
+        "ActivityPubGrouped",
+        "Grouped"
       ]
     },
     {
@@ -687,29 +689,6 @@
         "UserProfile",
         "MobileUserProfile",
         "UserProfileError"
-      ]
-    },
-    {
-      "file": "src/components/experimental/ComposeCatalog.stories.tsx",
-      "states": [
-        "Message",
-        "GroupedMessage",
-        "Composer",
-        "DisabledComposer",
-        "EmojiPicker",
-        "RichText",
-        "ReactComparison",
-        "LongMessage",
-        "LinkPreview",
-        "IntegrationCards",
-        "AppCardBlock",
-        "Settings",
-        "WorkspaceMembers",
-        "BubbleChat",
-        "Notifications",
-        "NotificationsLoading",
-        "WithAttachments",
-        "ComposerSendError"
       ]
     }
   ],
@@ -1116,10 +1095,6 @@
       "story": "src/components/home/HomeScreen.stories.tsx",
       "composed": true,
       "reason": "UserProfile/MobileUserProfile/UserProfileErrorでユーザー情報とフォロー申請・取得失敗を確認する。"
-    },
-    {
-      "file": "src/components/experimental/ComposeCatalog.tsx",
-      "story": "src/components/experimental/ComposeCatalog.stories.tsx"
     },
     {
       "file": "src/components/experimental/ComposeFrontend.tsx",

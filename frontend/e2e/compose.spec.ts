@@ -33,6 +33,14 @@ async function channelAction(page: Page, native: boolean, action: "edit" | "webh
         exact: true,
       })
       .click({ force: true });
+    // The menu item and the dialog share a title. Wait for the dialog body before
+    // sending keys; Compose publishes its accessibility tree asynchronously.
+    await expect(
+      page.getByRole("textbox", {
+        name: action === "edit" ? "新しいチャンネル名" : "Webhook名",
+        exact: true,
+      }),
+    ).toBeVisible();
     return;
   }
   const settings = page.getByRole("dialog", { name: "チャンネル設定", exact: true });

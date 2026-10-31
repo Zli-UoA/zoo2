@@ -1,3 +1,4 @@
+import { playForImplementation } from "../../../.storybook/play-for-implementation";
 import type { Meta, StoryObj } from "@storybook/react-vite";
 import { expect, within } from "storybook/test";
 
@@ -24,13 +25,13 @@ export default meta;
 type Story = StoryObj<typeof meta>;
 
 export const Default: Story = {
-  play: async ({ canvasElement }) => {
+  play: playForImplementation(async ({ canvasElement }) => {
     await expect(
       within(canvasElement).getByRole("button", {
         name: "Compose版を使う（実験・開発中）",
       }),
     ).toBeVisible();
-  },
+  }),
 };
 
 export const Mobile: Story = {

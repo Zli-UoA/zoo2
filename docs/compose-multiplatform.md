@@ -157,14 +157,17 @@ LICENSEとNOTICEは配布物の `licenses/electric4k/` に含めます。
 
 Electric4kの各OS対応だけで、アプリの認証・通知・永続化が揃うわけではありません。
 
-## StorybookのComposeカタログ
+## Storybookでの実装比較
 
-既存Storybookの `Features/Compose/Chat` に、実際のKotlinコンポーネントを描画する
-Message / GroupedMessage / Composer / DisabledComposer / EmojiPicker / RichText / LongMessageに加え、
-URLカード・連携カード・Appカードブロック・設定・権限管理・Bubble・通知の実コンポーネントを描画します。
-ReactComparisonでは同じKotlinサンプルの本文で両実装を横に並べます（狭い画面では縦に並びます）。
-既存Reactストーリーと同じStorybookで確認でき、テーマ・言語・viewportは既存ツールバー、
-本文・グループ化・無効状態はControlsで変更できます。本文が空の場合は共通Kotlinのサンプルを表示します。
+既存Storyを開き、上部のimplementationツールバーでReact / Kotlin (Compose)を切り替えます。
+Kotlin専用のFeaturesカテゴリや、同じ状態を複製した別Storyは作りません。
+メッセージ・本文・カード・入力・絵文字ピッカー・設定・Bubble・通知など、登録した対応先を実Kotlinで描画します。
+対応するStory・状態が未登録の場合は、その旨を表示します。ReactをKotlinとして表示しません。
+
+Controlsの引数、テーマ、言語、幅は両版で共有します。対応表は `.storybook/kotlin-stories.ts`、
+切り替えは `.storybook/implementation.tsx` が所有します。Kotlinは同じ入力とコレクションfixture、
+MSWのAPI応答を使用し、Ktor MockEngineからStorybook内のモックへ接続します。
+対応済みの引数だけをKotlinのオプションへ変換します。全Story・全状態のKotlin登録完了を意味するものではありません。
 
 ```sh
 cd frontend
@@ -172,16 +175,13 @@ pnpm build:compose  # JDK 21が必要。Kotlinを変更したら再実行
 pnpm storybook
 ```
 
-サンプルとUIは `commonMain/kotlin/zoo/Catalog.kt`、Web起動処理は `wasmJsMain/kotlin/zoo/CatalogMain.kt` です。
-Reactのストーリーはiframeを管理してオプションを渡すだけです。iframe内でComposeを起動し、
-ストーリーを離れるとCanvas・入力状態・メモリ内の下書きを破棄します。Controls更新は同じiframeに送信します。
-APIはKtor MockEngineによるメモリ内の応答で、Electric・認証・OPFS・PWAを起動しません。
-入力・送信・絵文字選択はサンプル操作で、実サーバーへの保存を検証するものではありません。
-フォント・絵文字データは公開静的ファイルを使用します。Composeのビルドがない場合はカタログ内に案内を表示します。
+UIは `commonMain/kotlin/zoo/Catalog.kt`、Web起動処理は `wasmJsMain/kotlin/zoo/CatalogMain.kt` です。
+KotlinのiframeはStoryを離れるとCanvas・入力・メモリ内下書きを破棄します。Controls更新は同じiframeへ渡します。
+Electric・認証・OPFS・PWAを起動せず、実サーバーへの保存も行いません。
+配布物がない場合は、ビルド方法をカタログ内に表示します。PR PreviewはJDKでWasmを生成してから公開します。
 
-PRのStorybook PreviewはJDKでComposeをビルドしてから公開するため、レビュー画面でも表示できます。
-通常のReact用StorybookテストはJDKやWasm生成を要求しません。Composeストーリーは `!test` タグで
-その自動テストから除外し、CI Compose Webで、ビルド済みStorybookに対するPlaywright試験を別途実行します。
+既存のReact用play・a11yテストはReact表示で維持します。Kotlin選択時のplayはiframeの起動を確認し、
+実際の操作はCI Compose WebのPlaywrightで別途検証します。DOM用axeでCanvas内部のアクセシビリティを保証したことにはしません。
 
 ```sh
 cd frontend
@@ -189,9 +189,8 @@ pnpm build-storybook
 pnpm exec playwright test --config playwright.compose-storybook.config.ts
 ```
 
-この試験はKotlinの描画、オプション反映、入力、画面切替時の下書き破棄、モバイル幅の絵文字ピッカーを確認します。
-Canvas内部に対する既存DOM用アクセシビリティ検査は同等には使えません。Compose側のsemanticsと操作試験に加え、
-スクリーンリーダー等による確認が必要です。カタログ自体はUI完全一致の保証ではありません。
+この試験は上部ツールバーでの往復、共有Controls、テーマ・言語、入力・下書き破棄、モバイル幅、
+カード・設定・Bubble・通知、未登録状態を確認します。カタログはUI完全一致の保証ではありません。
 
 ## Reactの変更への追従
 

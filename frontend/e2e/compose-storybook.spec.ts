@@ -1,35 +1,80 @@
 import { test, expect } from "@playwright/test";
 
-test("built Storybook renders Kotlin samples, updates controls, and isolates state", async ({
+const nativeQuery = "viewMode=story&globals=implementation:kotlin";
+
+test("existing stories switch React and Kotlin in the top toolbar and share Controls", async ({
   page,
 }) => {
   const errors: string[] = [];
-  page.on("pageerror", (error) => errors.push(error.message));
-  const requests: string[] = [];
-  page.on("request", (request) => {
-    if (new URL(request.url()).pathname.startsWith("/api/")) requests.push(request.url());
+  page.on("pageerror", (e) => errors.push(e.message));
+  await page.goto("/?path=/story/features-chat-messagerow--default");
+  const preview = page.frameLocator("#storybook-preview-iframe");
+  await expect(preview.getByText("こんにちは。今日のリリース", { exact: false })).toBeVisible();
+  await page
+    .getByRole("button")
+    .filter({ hasText: /^React$/ })
+    .click();
+  await page.getByText("Kotlin (Compose)", { exact: true }).click();
+  await expect(preview.locator("[data-compose-catalog-state=ready]")).toBeVisible({
+    timeout: 90_000,
   });
-  await page.goto("/iframe.html?id=features-compose-chat--message&viewMode=story");
-  const frame = page.frameLocator('iframe[title="Compose component catalog"]');
-  await expect(page.locator("[data-compose-catalog-state=ready]")).toBeVisible({ timeout: 90_000 });
-  await expect(frame.getByText("こんにちは。今日のリリース", { exact: false })).toBeVisible();
-  const originalFrame = await page.locator("iframe").elementHandle();
-  // The same iframe receives Controls changes without starting a second Compose scene.
-  await page.evaluate(() => {
-    const channel = (
-      window as typeof window & {
-        __STORYBOOK_ADDONS_CHANNEL__: { emit: (name: string, payload: unknown) => void };
-      }
-    ).__STORYBOOK_ADDONS_CHANNEL__;
-    channel.emit("updateStoryArgs", {
-      storyId: "features-compose-chat--message",
-      updatedArgs: { content: "Kotlin Controls update" },
+  const native = preview.frameLocator('iframe[title="Kotlin component preview"]');
+  await expect(native.getByText("こんにちは。今日のリリース", { exact: false })).toBeVisible();
+  const originalFrame = await preview
+    .locator('iframe[title="Kotlin component preview"]')
+    .elementHandle();
+  await page
+    .frameLocator("#storybook-preview-iframe")
+    .locator("body")
+    .evaluate(() => {
+      const channel = (
+        window as typeof window & {
+          __STORYBOOK_ADDONS_CHANNEL__: { emit: (name: string, payload: unknown) => void };
+        }
+      ).__STORYBOOK_ADDONS_CHANNEL__;
+      channel.emit("updateStoryArgs", {
+        storyId: "features-chat-messagerow--default",
+        updatedArgs: {
+          item: {
+            message: {
+              id: "message-1",
+              user_id: "user-1",
+              user_name: "alice",
+              display_name: "Alice",
+              content: "Shared Controls update",
+              created_at: "2026-01-02T09:00:00Z",
+              parent_id: null,
+            },
+            isGroupStart: true,
+            isGroupEnd: true,
+            showDateSeparator: false,
+          },
+        },
+      });
     });
-  });
-  await expect(frame.getByText("Kotlin Controls update", { exact: false })).toBeVisible();
-  expect(await originalFrame!.evaluate((element) => element.isConnected)).toBe(true);
+  await expect(native.getByText("Shared Controls update", { exact: false })).toBeVisible();
+  expect(await originalFrame!.evaluate((e) => e.isConnected)).toBe(true);
+  await page
+    .getByRole("button")
+    .filter({ hasText: /^Kotlin \(Compose\)$/ })
+    .click();
+  await page.getByText("React", { exact: true }).click();
+  await expect(preview.locator('iframe[title="Kotlin component preview"]')).toHaveCount(0);
+  await expect(preview.getByText("Shared Controls update", { exact: true })).toBeVisible();
+  expect(new URL(page.url()).searchParams.get("path")).toBe(
+    "/story/features-chat-messagerow--default",
+  );
+  const index = await (await page.request.get("/index.json")).json();
+  expect(Object.keys(index.entries).some((id) => id.startsWith("features-compose-"))).toBe(false);
+  expect(errors).toEqual([]);
+});
+
+test("Kotlin previews preserve locale, theme, draft isolation and mobile layouts", async ({
+  page,
+}) => {
+  const frame = page.frameLocator('iframe[title="Kotlin component preview"]');
   await page.goto(
-    "/iframe.html?id=features-compose-chat--composer&viewMode=story&globals=locale:en;theme:dark",
+    `/iframe.html?id=features-chat-composer--default&${nativeQuery};locale:en;theme:dark`,
   );
   await expect(page.locator("[data-compose-catalog-state=ready]")).toBeVisible({ timeout: 90_000 });
   const composer = frame.getByRole("textbox", { name: "Write a message", exact: true });
@@ -50,34 +95,32 @@ test("built Storybook renders Kotlin samples, updates controls, and isolates sta
   await expect(page.locator("[data-compose-catalog-state=ready]")).toBeVisible({ timeout: 90_000 });
   await expect(composer).toHaveText("");
   await page.setViewportSize({ width: 390, height: 844 });
-  await page.goto("/iframe.html?id=features-compose-chat--emoji-picker&viewMode=story");
+  await page.goto(`/iframe.html?id=features-chat-reactionpicker--default&${nativeQuery}`);
   await expect(page.locator("[data-compose-catalog-state=ready]")).toBeVisible({ timeout: 90_000 });
   await expect(frame.getByRole("textbox")).toBeVisible();
   await expect(frame.getByText("😀", { exact: true }).first()).toBeVisible({ timeout: 30_000 });
-  await expect(page.locator("iframe")).toHaveJSProperty("clientWidth", 390);
-  await page.goto("/iframe.html?id=features-compose-chat--long-message&viewMode=story");
-  await expect(page.locator("[data-compose-catalog-state=ready]")).toBeVisible({ timeout: 90_000 });
-  await expect(frame.getByText("長い日本語の本文とURL", { exact: false }).first()).toBeVisible();
-  await page.screenshot({ path: test.info().outputPath("compose-long-message-mobile.png") });
-  await page.goto("/iframe.html?id=features-compose-chat--rich-text&viewMode=story");
-  await expect(page.locator("[data-compose-catalog-state=ready]")).toBeVisible({ timeout: 90_000 });
-  await expect(frame.getByText("Compose Multiplatform", { exact: false })).toBeVisible();
-  await page.setViewportSize({ width: 1440, height: 900 });
-  await page.goto("/iframe.html?id=features-compose-chat--react-comparison&viewMode=story");
+  await expect(page.locator('iframe[title="Kotlin component preview"]')).toHaveJSProperty(
+    "clientWidth",
+    390,
+  );
+  await page.goto(`/iframe.html?id=features-chat-messagerow--long-message&${nativeQuery}`);
   await expect(page.locator("[data-compose-catalog-state=ready]")).toBeVisible({ timeout: 90_000 });
   await expect(
-    page
-      .getByRole("region", { name: "React", exact: true })
-      .getByText("こんにちは。今日のリリース", { exact: false }),
+    frame.getByText("リリース手順の確認項目です", { exact: false }).first(),
   ).toBeVisible();
-  await expect(frame.getByText("こんにちは。今日のリリース", { exact: false })).toBeVisible();
-  const screenshot = test.info().outputPath("compose-react-comparison.png");
-  await page.screenshot({ path: screenshot });
-  await test
-    .info()
-    .attach("compose-react-comparison", { path: screenshot, contentType: "image/png" });
-  expect(errors).toEqual([]);
-  expect(requests).toEqual([]);
+  await page.screenshot({ path: test.info().outputPath("kotlin-long-message-mobile.png") });
+  await page.goto(`/iframe.html?id=features-chat-messagecontent--code-and-math&${nativeQuery}`);
+  await expect(page.locator("[data-compose-catalog-state=ready]")).toBeVisible({ timeout: 90_000 });
+  await expect(frame.getByText("const zoo = true", { exact: false })).toBeVisible();
+});
+
+test("unregistered Kotlin stories are explicit and never render React as Kotlin", async ({
+  page,
+}) => {
+  await page.goto(`/iframe.html?id=components-button--default&${nativeQuery}`);
+  await expect(page.locator('[data-kotlin-story-status="unavailable"]')).toContainText("未登録");
+  await expect(page.locator('iframe[title="Kotlin component preview"]')).toHaveCount(0);
+  await expect(page.getByRole("button")).toHaveCount(0);
 });
 
 test("catalog explains missing Wasm assets", async ({ page }) => {
@@ -99,15 +142,27 @@ test("catalog explains missing Wasm assets", async ({ page }) => {
 test("native parity catalog renders real settings, cards, Bubble and notification states", async ({
   page,
 }) => {
-  const frame = page.frameLocator('iframe[title="Compose component catalog"]');
+  const frame = page.frameLocator('iframe[title="Kotlin component preview"]');
   const open = async (story: string) => {
-    await page.goto(`/iframe.html?id=features-compose-chat--${story}&viewMode=story`);
+    const ids: Record<string, string> = {
+      "link-preview": "features-chat-linkpreviews--landscape",
+      "integration-cards": "features-chat-messagecard--deployment",
+      "app-card-block": "features-apps-blocks--card",
+      "composer-send-error": "features-chat-composer--send-error",
+      "with-attachments": "features-chat-messagerow--with-attachments",
+      settings: "pages-zoosettings--general",
+      "workspace-members": "pages-zoosettings--members",
+      "bubble-chat": "pages-bubblechat--empty",
+      "notifications-loading": "pages-notifications--loading",
+      notifications: "pages-notifications--default",
+    };
+    await page.goto(`/iframe.html?id=${ids[story]}&${nativeQuery}`);
     await expect(page.locator("[data-compose-catalog-state=ready]")).toBeVisible({
       timeout: 90_000,
     });
   };
   await open("link-preview");
-  await expect(frame.getByRole("button", { name: /^Kotlin link preview/ })).toBeVisible();
+  await expect(frame.getByRole("button", { name: /^Zooのリリース情報/ })).toBeVisible();
   await open("integration-cards");
   await expect(frame.getByText("Deployment to storybook-pr-271", { exact: true })).toBeVisible();
   await expect(frame.getByText("Completed", { exact: true })).toBeVisible();
@@ -169,7 +224,8 @@ test("native parity catalog renders real settings, cards, Bubble and notificatio
     "aria-selected",
     "true",
   );
-  await expect(frame.getByRole("button", { name: "管理者を外す", exact: true })).toBeDisabled();
+  await expect(frame.getByText("Alice", { exact: true })).toBeVisible();
+  await expect(frame.getByRole("button", { name: "管理者を外す", exact: true })).toHaveCount(0);
   await page.keyboard.press("Home");
   await expect(general).toHaveAttribute("aria-selected", "true");
   await frame.getByRole("button", { name: /^テーマ:/ }).click({ force: true });
@@ -177,7 +233,9 @@ test("native parity catalog renders real settings, cards, Bubble and notificatio
   await expect(frame.getByRole("button", { name: "テーマ: ダーク", exact: true })).toBeVisible();
   await page.screenshot({ path: test.info().outputPath("compose-settings-dark-wide.png") });
   await open("workspace-members");
-  await expect(frame.getByRole("button", { name: "管理者を外す", exact: true })).toBeDisabled();
+  await expect(
+    frame.getByRole("button", { name: "管理者を外す", exact: true }).first(),
+  ).toBeVisible();
   await page.setViewportSize({ width: 390, height: 844 });
   await open("bubble-chat");
   await expect(
@@ -186,6 +244,6 @@ test("native parity catalog renders real settings, cards, Bubble and notificatio
   await open("notifications-loading");
   await expect(frame.getByText("読み込み中…", { exact: true }).first()).toBeVisible();
   await open("notifications");
-  await expect(frame.getByText("こんにちは。今日のリリース", { exact: false })).toBeVisible();
+  await expect(frame.getByText("今日のリリースは 18:00", { exact: false })).toBeVisible();
   await page.screenshot({ path: test.info().outputPath("compose-notifications-mobile.png") });
 });

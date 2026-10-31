@@ -1,3 +1,4 @@
+import { playForImplementation } from "../../../../.storybook/play-for-implementation";
 import type { Meta, StoryObj } from "@storybook/react-vite";
 import { expect, fn, userEvent, within } from "storybook/test";
 
@@ -61,27 +62,27 @@ export const Disabled: Story = {
   args: {
     disabled: true,
   },
-  play: async ({ canvasElement }) => {
+  play: playForImplementation(async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     await expect(canvas.getByRole("textbox")).toBeDisabled();
-  },
+  }),
 };
 
 export const Multiline: Story = {
-  play: async ({ canvasElement }) => {
+  play: playForImplementation(async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     const textarea = canvas.getByRole("textbox");
     await userEvent.type(textarea, "1行目{enter}2行目{enter}3行目");
     await expect(textarea).toHaveValue("1行目\n2行目\n3行目");
-  },
+  }),
 };
 
 export const MentionSuggestions: Story = {
-  play: async ({ canvasElement }) => {
+  play: playForImplementation(async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     await userEvent.type(canvas.getByRole("textbox"), "@al");
     await expect(canvas.getByRole("listbox", { name: "メンション候補" })).toBeVisible();
-  },
+  }),
 };
 
 export const Mobile: Story = {
@@ -93,16 +94,16 @@ export const Mobile: Story = {
 
 export const ChannelSuggestions: Story = {
   parameters: { a11y: { test: "error" } },
-  play: async ({ canvasElement }) => {
+  play: playForImplementation(async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     await userEvent.type(canvas.getByRole("textbox"), "詳しくは #gen");
     await expect(canvas.getByRole("listbox", { name: "チャンネル候補" })).toBeVisible();
     await expect(canvas.getByRole("option", { name: "#general" })).toBeVisible();
-  },
+  }),
 };
 export const CommandSuggestions: Story = {
   parameters: { a11y: { test: "error" } },
-  play: async ({ canvasElement, args }) => {
+  play: playForImplementation(async ({ canvasElement, args }) => {
     const canvas = within(canvasElement);
     const input = canvas.getByRole("textbox");
     await userEvent.type(input, "/ec");
@@ -114,7 +115,7 @@ export const CommandSuggestions: Story = {
     await userEvent.type(input, "hello");
     await userEvent.click(canvas.getByRole("button", { name: "送信" }));
     await expect(args.onSend).toHaveBeenCalledWith("/echo hello", "notes");
-  },
+  }),
 };
 function pasteFile(target: HTMLElement, file: File) {
   const clipboardData = new DataTransfer();
@@ -141,13 +142,13 @@ export const WithAttachments: Story = {
       content_type: "image/png",
     })),
   },
-  play: async ({ canvasElement, args }) => {
+  play: playForImplementation(async ({ canvasElement, args }) => {
     const canvas = within(canvasElement);
     pasteImage(canvas.getByRole("textbox"));
     await expect(await canvas.findByRole("img", { name: "screenshot.png" })).toBeVisible();
     await userEvent.click(canvas.getByRole("button", { name: "送信" }));
     await expect(args.onSend).toHaveBeenCalledWith("", undefined, ["attachment-1"]);
-  },
+  }),
 };
 
 export const WithFileAttachment: Story = {
@@ -160,7 +161,7 @@ export const WithFileAttachment: Story = {
       content_type: "application/pdf",
     })),
   },
-  play: async ({ canvasElement, args }) => {
+  play: playForImplementation(async ({ canvasElement, args }) => {
     const canvas = within(canvasElement);
     pasteFile(
       canvas.getByRole("textbox"),
@@ -171,7 +172,7 @@ export const WithFileAttachment: Story = {
     await expect(await canvas.findByText("release-notes.pdf")).toBeVisible();
     await userEvent.click(canvas.getByRole("button", { name: "送信" }));
     await expect(args.onSend).toHaveBeenCalledWith("", undefined, ["attachment-2"]);
-  },
+  }),
 };
 
 export const AttachmentUploadError: Story = {
@@ -181,25 +182,36 @@ export const AttachmentUploadError: Story = {
       throw new Error("upload failed");
     }),
   },
-  play: async ({ canvasElement }) => {
+  play: playForImplementation(async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     pasteImage(canvas.getByRole("textbox"));
     await expect(await canvas.findByRole("alert")).toHaveTextContent(
       "ファイルをアップロードできませんでした。",
     );
     await expect(canvas.queryByRole("img", { name: "screenshot.png" })).toBeNull();
-  },
+  }),
 };
 
 export const ChannelInsertion: Story = {
   parameters: { a11y: { test: "error" } },
   globals: { viewport: { value: "mobile" } },
-  play: async ({ canvasElement }) => {
+  play: playForImplementation(async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     const input = canvas.getByRole("textbox");
     await userEvent.type(input, "#gen");
     await userEvent.keyboard("{Tab}");
     await expect(input).toHaveValue("#general ");
     await expect(canvas.queryByRole("listbox")).not.toBeInTheDocument();
-  },
+  }),
+};
+
+export const SendError: Story = {
+  args: { onSend: fn(async () => false) },
+  play: playForImplementation(async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const input = canvas.getByRole("textbox");
+    await userEvent.type(input, "Catalog send failure");
+    await userEvent.click(canvas.getByRole("button", { name: "送信" }));
+    await expect(input).toHaveValue("Catalog send failure");
+  }),
 };
