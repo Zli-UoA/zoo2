@@ -11,3 +11,8 @@
 
 - Storybookの追加・整理、またはUI変更に伴うStoryの要否を判断するときは `.agents/skills/storybook-coverage/SKILL.md` に従う。
 - 対象一覧は `frontend/.storybook/coverage.json` に置き、`pnpm --dir frontend check:storybook` で検証する。
+
+# フロントエンドの一貫性と再利用
+
+- フロントエンドの実装・修正・リファクタリングでは `.agents/skills/frontend-consistency/SKILL.md` に従う。
+- mainの取り込みでフロントエンドを調整するときも、既存の共通UI・機能部品・処理を優先し、新機能と既存の表示・操作方針を両立させる。
