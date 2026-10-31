@@ -1,0 +1,16 @@
+[package]
+name = "zoo2-tui"
+version = "0.1.0"
+edition = "2024"
+
+[profile.release]
+strip = true
+
+[dependencies]
+anyhow = "1"
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+serde = { version = "1", features = ["derive"] }
+toml = "0.8"
+url = "2"
+directories = "6"
+
