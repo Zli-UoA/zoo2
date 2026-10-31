@@ -1,7 +1,7 @@
 import type { Meta, StoryObj } from "@storybook/react-vite";
 import { http, HttpResponse } from "msw";
 import { expect, within } from "storybook/test";
-import { LinkPreviews } from "./LinkPreviews";
+import { LinkPreviews } from "./LinkPreviews.tsx";
 const svg = (wide: boolean) =>
   `<svg xmlns="http://www.w3.org/2000/svg" width="${wide ? 1200 : 400}" height="630"><rect width="100%" height="100%" fill="#2468aa"/></svg>`;
 const meta = {

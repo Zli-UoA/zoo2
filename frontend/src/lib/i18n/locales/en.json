@@ -236,6 +236,11 @@
     "rootDeleted": "The original message was deleted"
   },
   "reactions": {
+    "showUsers": "Show users who reacted with {{emoji}}",
+    "usersTitle": "Users who reacted with {{emoji}}",
+    "usersLoading": "Loading users",
+    "userUnavailable": "User unavailable",
+    "usersEmpty": "No reactions",
     "add": "Add a reaction",
     "picker": "Reactions",
     "select": "React with {{emoji}}",

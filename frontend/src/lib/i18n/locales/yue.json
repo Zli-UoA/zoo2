@@ -236,6 +236,11 @@
     "rootDeleted": "原本嘅訊息已經刪除咗"
   },
   "reactions": {
+    "showUsers": "查看用 {{emoji}} 回應嘅用戶",
+    "usersTitle": "用 {{emoji}} 回應嘅用戶",
+    "usersLoading": "載入用戶中",
+    "userUnavailable": "無法顯示用戶",
+    "usersEmpty": "冇回應",
     "add": "加個表情回應",
     "picker": "表情回應",
     "select": "用 {{emoji}} 回應",

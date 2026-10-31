@@ -21,6 +21,14 @@ const fixture = vi.hoisted(() => {
     exists: true,
     rows: [root],
     empty: [],
+    users: [] as { id: string; display_name: string; user_name: string }[],
+    reactions: [] as {
+      id: string;
+      message_id: string;
+      user_id: string;
+      emoji: string;
+      created_at: string;
+    }[],
     closeThread: vi.fn(),
     openThread: vi.fn(),
     api: { request: vi.fn() },
@@ -50,9 +58,9 @@ vi.mock("../../../hooks/useKitchenCatalog", () => ({
   useKitchenCatalog: () => ({ catalog: null }),
 }));
 vi.mock("../../../hooks/useRealtime", () => ({
-  useUsers: () => ({ data: fixture.empty }),
+  useUsers: () => ({ data: fixture.users, isLoading: false }),
   useChannelMembers: () => ({ data: fixture.empty }),
-  useMessageReactions: () => ({ data: fixture.empty, isLoading: false, isError: false }),
+  useMessageReactions: () => ({ data: fixture.reactions, isLoading: false, isError: false }),
   useMessageFeed: (_channel: string, { since }: { since: string }) => ({
     data:
       fixture.exists && !fixture.root.deleted_at && since <= fixture.root.created_at
@@ -86,7 +94,13 @@ vi.mock("../../layout/shell-context", () => ({
     closeThread: fixture.closeThread,
   }),
 }));
-vi.mock("./MessageList", () => ({ MessageList: () => null }));
+vi.mock("./MessageList", () => ({
+  MessageList: ({
+    reactions,
+  }: {
+    reactions: Map<string, { userNames?: Record<string, string> }[]>;
+  }) => <div>{reactions.get("old-root")?.[0]?.userNames?.alice}</div>,
+}));
 vi.mock("./ThreadPane", () => ({
   ThreadPane: ({ root }: { root: { content: string } }) => <div>{root.content}</div>,
 }));
@@ -95,9 +109,29 @@ vi.mock("./ReactionPicker", () => ({ ReactionPicker: () => null }));
 beforeEach(() => {
   fixture.exists = true;
   fixture.root.deleted_at = null;
+  fixture.users = [];
+  fixture.reactions = [];
   fixture.closeThread.mockClear();
 });
 describe("thread URLs outside the initial message window", () => {
+  it("passes resolved reaction user names to the message list", async () => {
+    fixture.users = [{ id: "alice", display_name: "Alice", user_name: "alice" }];
+    fixture.reactions = [
+      {
+        id: "r1",
+        message_id: "old-root",
+        user_id: "alice",
+        emoji: "👍",
+        created_at: "2020-01-01T00:00:00Z",
+      },
+    ];
+    render(
+      <LocaleProvider>
+        <MessagePane channelId="general" isMember={false} />
+      </LocaleProvider>,
+    );
+    expect(await screen.findByText("Alice (@alice)")).toBeTruthy();
+  });
   it("waits for an existing older root instead of closing its thread", async () => {
     render(
       <LocaleProvider>

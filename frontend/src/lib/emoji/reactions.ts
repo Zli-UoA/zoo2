@@ -1,10 +1,17 @@
 import type { MessageReactionRow } from "../electric/types";
 import { reactionKey } from "./kitchen";
 
+export function reactionUserLabel(user: { display_name: string; user_name: string }): string {
+  return user.display_name ? `${user.display_name} (@${user.user_name})` : `@${user.user_name}`;
+}
+
 export interface ReactionGroup {
   emoji: string;
   count: number;
   ownId: string | null;
+  userIds?: string[];
+  userNames?: Record<string, string>;
+  usersLoading?: boolean;
 }
 
 export function groupReactions(
@@ -37,6 +44,7 @@ export function groupReactions(
         emoji,
         count: users.size,
         ownId,
+        userIds: Array.from(users),
       })),
     ]),
   );

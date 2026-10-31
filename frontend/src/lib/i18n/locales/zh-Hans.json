@@ -236,6 +236,11 @@
     "rootDeleted": "原消息已被删除"
   },
   "reactions": {
+    "showUsers": "查看用 {{emoji}} 回应的用户",
+    "usersTitle": "使用 {{emoji}} 回应的用户",
+    "usersLoading": "正在加载用户",
+    "userUnavailable": "无法显示用户",
+    "usersEmpty": "没有回应",
     "add": "添加表情回应",
     "picker": "表情回应",
     "select": "用 {{emoji}} 回应",
