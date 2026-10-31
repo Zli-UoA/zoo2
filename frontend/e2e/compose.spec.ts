@@ -665,3 +665,51 @@ for (const implementation of ["react", "compose"] as const) {
     });
   });
 }
+
+test("Frontend switch entry points work without an experimental build flag", async ({
+  page,
+  request,
+}) => {
+  await request.post("https://127.0.0.1:4187/__reset");
+  await open(page, "react");
+  await page.getByRole("button", { name: "Compose版を使う（実験・開発中）", exact: true }).click();
+  await expect(page.locator("[data-compose-shell]")).toBeVisible({ timeout: 90_000 });
+  await expect(page.getByText("こんにちは Parity", { exact: false })).toBeVisible();
+  expect(new URL(page.url()).searchParams.get("frontend")).toBe("compose");
+  expect(await page.evaluate(() => localStorage.getItem("zoo-frontend"))).toBe("compose");
+  await page.goto("/channels/c1");
+  await expect(page.locator("[data-compose-shell]")).toBeVisible({ timeout: 90_000 });
+  const back = page.getByRole("button", { name: "React版に戻る", exact: true });
+  await expect(back).toBeVisible();
+  await back.click({ force: true });
+  await expect(page.getByRole("textbox", { name: "メッセージを送信", exact: true })).toBeVisible();
+  await expect(page.locator("[data-compose-shell]")).toBeHidden();
+  expect(new URL(page.url()).searchParams.get("frontend")).toBe("react");
+  expect(await page.evaluate(() => localStorage.getItem("zoo-frontend"))).toBe("react");
+});
+
+test.describe("missing Compose assets", () => {
+  // Route the missing-file response directly; service-worker fetches bypass Playwright routing.
+  test.use({ serviceWorkers: "block" });
+
+  test("Frontend switch entry points recover when Compose assets are unavailable", async ({
+    page,
+    request,
+  }) => {
+    await request.post("https://127.0.0.1:4187/__reset");
+    await page.route("**/compose/zoo-compose.js", (route) =>
+      route.fulfill({ status: 404, body: "missing" }),
+    );
+    await open(page, "react");
+    await page
+      .getByRole("button", { name: "Compose版を使う（実験・開発中）", exact: true })
+      .click();
+    await expect(page.locator("[data-compose-shell]")).toBeVisible({ timeout: 90_000 });
+    await expect(page.getByRole("alert")).toContainText("Compose版を起動できませんでした。");
+    await page.getByRole("button", { name: "React版に戻る", exact: true }).click();
+    await expect(
+      page.getByRole("textbox", { name: "メッセージを送信", exact: true }),
+    ).toBeVisible();
+    expect(await page.evaluate(() => localStorage.getItem("zoo-frontend"))).toBe("react");
+  });
+});
