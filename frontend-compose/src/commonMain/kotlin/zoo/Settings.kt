@@ -13,6 +13,7 @@ import androidx.compose.ui.input.key.*
 import androidx.compose.ui.semantics.*
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import kotlinx.coroutines.CancellationException
 import kotlinx.serialization.json.*
 
@@ -53,15 +54,13 @@ fun ZooSettings(app: Session, users: List<Row>) {
         app.platform.replace(builder.buildString().removePrefix("https://zoo.invalid"))
     }
     Column(Modifier.fillMaxSize()) {
-        Row(
-            Modifier.fillMaxWidth().heightIn(min = 64.dp).padding(horizontal = 16.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
+        PaneHeader {
             IconButton("arrow-left", app.t("channels.back"), size = 44.dp) { app.navigate("/") }
             Text(
                 app.t("settings.zooTitle"),
                 Modifier.semantics { heading() },
                 weight = FontWeight.SemiBold,
+                size = 18.sp,
             )
         }
         HorizontalDivider()

@@ -110,13 +110,20 @@ fun ZooApp(app: Session) {
                     (!channel.flag("is_dm") || channel.text("channel_name").startsWith("dm:group:"))
             ) {
                 VerticalDivider()
-                Members(
-                    app,
-                    channel,
-                    users,
-                    members,
-                    Modifier.width(if (width >= 1280.dp) 320.dp else 288.dp).fillMaxHeight(),
-                )
+                Column(Modifier.width(if (width >= 1280.dp) 320.dp else 288.dp).fillMaxHeight()) {
+                    PaneHeader {
+                        Text(
+                            app.t("members.title"),
+                            Modifier.weight(1f),
+                            weight = FontWeight.SemiBold,
+                        )
+                        IconButton("x", app.t("common.close")) { app.membersOpen = false }
+                    }
+                    HorizontalDivider()
+                    Box(Modifier.weight(1f).verticalScroll(rememberScrollState())) {
+                        Members(app, channel, users, members, Modifier.fillMaxWidth())
+                    }
+                }
             }
         }
         if (!app.env.online || app.env.persistenceStatus == "error")
@@ -266,20 +273,24 @@ private fun Rail(app: Session, unread: Int, narrow: Boolean) {
         Modifier.width(if (narrow) 55.dp else 63.dp)
             .fillMaxHeight()
             .background(MaterialTheme.colorScheme.surface)
-            .padding(vertical = 12.dp),
+            .padding(bottom = 12.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.spacedBy(4.dp),
     ) {
-        Box(
-            Modifier.padding(bottom = 4.dp)
-                .size(36.dp)
-                .clip(RoundedCornerShape(12.dp))
-                .background(MaterialTheme.colorScheme.secondary),
-            contentAlignment = Alignment.Center,
-        ) {
-            Icon("paw-print", "Zoo", color = Color.White)
+        Column {
+            Box(Modifier.fillMaxWidth().height(60.dp), contentAlignment = Alignment.Center) {
+                Box(
+                    Modifier.size(36.dp)
+                        .clip(RoundedCornerShape(12.dp))
+                        .background(MaterialTheme.colorScheme.secondary),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Icon("paw-print", "Zoo", color = Color.White)
+                }
+            }
+            HorizontalDivider()
+            Spacer(Modifier.height(4.dp))
         }
-        HorizontalDivider(Modifier.width(24.dp).padding(vertical = 4.dp))
         IconButton(
             "hash",
             app.t("channels.title"),
@@ -363,10 +374,7 @@ private fun Sidebar(
     val channels = visibleChannels(rows)
     val joined = channels.filter { isMember(memberships, it.text("id"), app.config.userId) }
     Column(modifier.fillMaxHeight().background(MaterialTheme.colorScheme.surface)) {
-        Row(
-            Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 12.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
+        PaneHeader(horizontalPadding = 12.dp) {
             Text(app.t("channels.title"), weight = FontWeight.SemiBold)
             Text(
                 if (loading) "…" else joined.count { !it.flag("is_dm") }.toString(),
@@ -578,10 +586,7 @@ private fun Header(
 ) {
     val id = channel.text("id")
     val manage = canManage(channel, app.config.userId, app.config.isAdmin)
-    Row(
-        Modifier.fillMaxWidth().height(56.dp).padding(horizontal = 16.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
+    PaneHeader {
         if (narrow)
             IconButton("arrow-left", app.t("channels.back"), size = 44.dp) { app.pane = "sidebar" }
         Box(

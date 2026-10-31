@@ -1,6 +1,7 @@
 package zoo
 
 import kotlinx.serialization.json.*
+import org.jetbrains.compose.resources.decodeToImageBitmap
 
 typealias Row = JsonObject
 
@@ -39,6 +40,15 @@ fun isMember(rows: List<Row>, channelId: String, userId: String) =
     rows.any { it.text("channel_id") == channelId && it.text("user_id") == userId }
 
 interface Platform {
+    fun imageFrames(
+        bytes: ByteArray
+    ): kotlinx.coroutines.flow.Flow<androidx.compose.ui.graphics.ImageBitmap> =
+        kotlinx.coroutines.flow.flow { emit(bytes.decodeToImageBitmap()) }
+
+    fun fileTarget(id: String, bounds: String, receive: (String) -> Boolean) {}
+
+    fun forgetFileTarget(id: String) {}
+
     fun controlSemantics(id: String, role: String, enabled: Boolean, selected: Boolean?) {}
 
     fun forgetControlSemantics(id: String) {}

@@ -8,6 +8,7 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.*
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.*
 import androidx.compose.ui.graphics.drawscope.*
@@ -321,9 +322,11 @@ fun Field(
     chrome: Boolean = true,
     selection: Int? = null,
     onSelection: (Int) -> Unit = {},
+    fileOwner: String? = null,
     change: (String) -> Unit,
 ) {
     val fonts = LocalFonts.current
+    val webPlatform = LocalWebPlatform.current
     var editing by remember { mutableStateOf(TextFieldValue(value)) }
     LaunchedEffect(value, selection) {
         if (editing.text != value || selection != null && editing.selection.start != selection)
@@ -344,7 +347,10 @@ fun Field(
                 change(it.text)
             },
             modifier =
-                Modifier.fillMaxWidth()
+                Modifier.onFocusChanged {
+                        if (it.isFocused) webPlatform?.action("fileFocus:${fileOwner.orEmpty()}")
+                    }
+                    .fillMaxWidth()
                     .heightIn(min = 36.dp, max = 240.dp)
                     .then(
                         if (chrome)

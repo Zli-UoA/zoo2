@@ -78,6 +78,14 @@ const message = (id, content, extra = {}) => ({
 function reset() {
   tx = 1;
   state = {
+    attachments: [],
+    pendingAttachments: {},
+    uploadRequests: [],
+    downloadRequests: [],
+    attachmentUrlRequests: [],
+    failUpload: false,
+    failMessage: false,
+    failUrl: false,
     preferences: { search_engine: "google" },
     admins: ["00000000-0000-0000-0000-000000000001"],
     protectedAdmins: ["00000000-0000-0000-0000-000000000001"],
@@ -124,7 +132,8 @@ function reset() {
 reset();
 const resourceRows = (name, channelId) => {
   const rows = state[name] ?? [];
-  if (name === "messages") return rows.filter((r) => r.channel_id === channelId);
+  if (name === "messages" || name === "attachments")
+    return rows.filter((r) => r.channel_id === channelId);
   if (name === "message_reactions")
     return rows.filter((r) =>
       state.messages.some((m) => m.id === r.message_id && m.channel_id === channelId),
@@ -163,7 +172,7 @@ const server = createSecureServer(tls, async (req, res) => {
   const url = new URL(req.url, "http://localhost");
   res.setHeader("Access-Control-Allow-Origin", "*");
   res.setHeader("Access-Control-Allow-Headers", "Authorization,Content-Type,X-Dev-User");
-  res.setHeader("Access-Control-Allow-Methods", "GET,POST,PATCH,DELETE,OPTIONS");
+  res.setHeader("Access-Control-Allow-Methods", "GET,POST,PUT,PATCH,DELETE,OPTIONS");
   res.setHeader(
     "Access-Control-Expose-Headers",
     "electric-handle,electric-offset,electric-cursor,electric-schema",
@@ -179,6 +188,33 @@ const server = createSecureServer(tls, async (req, res) => {
   }
   if (url.pathname === "/health") {
     res.end("ok");
+    return;
+  }
+  const storage = url.pathname.match(/^\/__(upload|download)\/([^/]+)$/);
+  if (storage) {
+    const record = {
+      id: storage[2],
+      authorization: req.headers.authorization,
+      devUser: req.headers["x-dev-user"],
+      cookie: req.headers.cookie,
+      contentType: req.headers["content-type"],
+    };
+    if (storage[1] === "upload") {
+      let size = 0;
+      for await (const part of req) size += part.length;
+      state.uploadRequests.push({ ...record, size });
+      if (state.failUpload) {
+        state.failUpload = false;
+        res.writeHead(503).end("retry");
+        return;
+      }
+      state.pendingAttachments[storage[2]].uploaded = true;
+      res.writeHead(200).end("ok");
+    } else {
+      state.downloadRequests.push(record);
+      res.setHeader("Content-Type", "image/png");
+      res.end(readFileSync(new URL("../public/icons/icon-192.png", import.meta.url)));
+    }
     return;
   }
   res.setHeader("Content-Type", "application/json");
@@ -219,6 +255,58 @@ const server = createSecureServer(tls, async (req, res) => {
   const path = url.pathname;
   if (path === "/__state") {
     appResponse(res, state, false);
+    return;
+  }
+  if (path === "/__attachment-failures") {
+    state.failUpload = !!body.upload;
+    state.failMessage = !!body.message;
+    state.failUrl = !!body.url;
+    appResponse(res, {}, false);
+    return;
+  }
+  if (path === "/api/attachments/presign") {
+    const id = "attachment-" + (Object.keys(state.pendingAttachments).length + 1);
+    state.pendingAttachments[id] = {
+      ...body,
+      id,
+      uploader_id: state.users[0].id,
+      message_id: null,
+      storage_key: id,
+      created_at: new Date().toISOString(),
+    };
+    appResponse(
+      res,
+      {
+        data: {
+          attachment_id: id,
+          upload_url: `https://127.0.0.1:${port}/__upload/${id}`,
+          storage_key: id,
+        },
+        txid: null,
+      },
+      false,
+    );
+    return;
+  }
+  const attachmentUrl = path.match(/^\/api\/attachments\/([^/]+)\/url$/);
+  if (attachmentUrl) {
+    state.attachmentUrlRequests.push(attachmentUrl[1]);
+    if (state.failUrl) {
+      state.failUrl = false;
+      res.writeHead(503).end(JSON.stringify({ error: "retry URL" }));
+      return;
+    }
+    appResponse(
+      res,
+      {
+        data: {
+          id: attachmentUrl[1],
+          download_url: `https://127.0.0.1:${port}/__download/${attachmentUrl[1]}`,
+        },
+        txid: null,
+      },
+      false,
+    );
     return;
   }
   if (path === "/__seed") {
@@ -413,10 +501,25 @@ const server = createSecureServer(tls, async (req, res) => {
     return;
   }
   if (path === "/api/messages" && req.method === "POST") {
+    if (state.failMessage) {
+      state.failMessage = false;
+      res.writeHead(500).end(JSON.stringify({ error: "retry message" }));
+      return;
+    }
     tx++;
-    const row = message(body.id, body.content, { ...body, created_at: new Date().toISOString() });
+    const { attachment_ids = [], ...payload } = body;
+    const row = message(payload.id, payload.content, {
+      ...payload,
+      created_at: new Date().toISOString(),
+    });
     state.messages.push(row);
     emit("messages", row);
+    for (const id of attachment_ids) {
+      const file = { ...state.pendingAttachments[id], message_id: row.id };
+      delete file.uploaded;
+      state.attachments.push(file);
+      emit("attachments", file);
+    }
     appResponse(res, row);
     return;
   }
@@ -563,4 +666,5 @@ const server = createSecureServer(tls, async (req, res) => {
     .writeHead(404)
     .end(JSON.stringify({ error: `Unhandled fixture route: ${req.method} ${path}` }));
 });
-server.listen(Number(process.env.COMPOSE_API_PORT ?? 4187), "127.0.0.1");
+const port = Number(process.env.COMPOSE_API_PORT ?? 4187);
+server.listen(port, "127.0.0.1");

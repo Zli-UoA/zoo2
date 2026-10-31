@@ -420,7 +420,9 @@
         "WorkspaceMembers",
         "BubbleChat",
         "Notifications",
-        "NotificationsLoading"
+        "NotificationsLoading",
+        "WithAttachments",
+        "ComposerSendError"
       ]
     }
   ],

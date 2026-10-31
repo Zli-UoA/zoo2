@@ -153,11 +153,11 @@ class BubbleController(private val app: Session) {
             entries.value = emptyList()
             withContext(NonCancellable) {
                 withTimeoutOrNull(5000) {
-                    write("")
-                    app.platform.invoke(
-                        "bubbleExit",
-                        obj("session" to session, "clear" to "true").toString(),
-                    )
+                    if (write(""))
+                        app.platform.invoke(
+                            "bubbleExit",
+                            obj("session" to session, "clear" to "true").toString(),
+                        )
                 }
             }
         }
@@ -213,16 +213,11 @@ fun BubbleChat(app: Session, users: List<Row>) {
         controller.edit("")
     }
     Column(Modifier.fillMaxSize()) {
-        Row(
-            Modifier.fillMaxWidth().padding(16.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(12.dp),
+        ScreenHeader(
+            "message-circle-more",
+            app.t("bubbleChat.title"),
+            app.t("bubbleChat.description"),
         ) {
-            Icon("message-circle-more", modifier = Modifier.size(20.dp))
-            Column(Modifier.weight(1f)) {
-                Text(app.t("bubbleChat.title"), weight = FontWeight.SemiBold)
-                Text(app.t("bubbleChat.description"), small = true, muted = true)
-            }
             IconButton("users", "${app.t("bubbleChat.participants")} ${others.size + 1}") {
                 participants = !participants
             }

@@ -73,7 +73,25 @@ internal suspend fun <T : JsAny?> Promise<T>.awaitBrowser(): T =
         throw IllegalStateException(error.message, error)
     }
 
+@JsFun("(bridge, id, bounds, receive) => bridge.fileTarget(id, bounds, receive)")
+private external fun registerFiles(
+    bridge: JsAny,
+    id: String,
+    bounds: String,
+    receive: (String) -> Boolean,
+)
+
+@JsFun("(bridge, id) => bridge.forgetFileTarget(id)")
+private external fun forgetFiles(bridge: JsAny, id: String)
+
 private class BrowserPlatform(private val bridge: JsAny) : Platform {
+    override fun imageFrames(bytes: ByteArray) = webImageFrames(bytes)
+
+    override fun fileTarget(id: String, bounds: String, receive: (String) -> Boolean) =
+        registerFiles(bridge, id, bounds, receive)
+
+    override fun forgetFileTarget(id: String) = forgetFiles(bridge, id)
+
     override fun controlSemantics(id: String, role: String, enabled: Boolean, selected: Boolean?) =
         webControl(id, role, enabled, selected)
 

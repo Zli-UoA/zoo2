@@ -158,9 +158,21 @@ private fun startCatalog() {
         HttpClient(
             MockEngine { request ->
                 val path = request.url.encodedPath
+                if (
+                    path == "/api/messages" &&
+                        request.method == HttpMethod.Post &&
+                        options.nested("fixture").flag("postFailure")
+                )
+                    return@MockEngine respond("{}", HttpStatusCode.InternalServerError)
                 if (!path.startsWith("/api/")) awaitCancellation()
                 val body =
                     when {
+                        path.startsWith("/api/attachments/") ->
+                            obj(
+                                    "download_url" to
+                                        endpoint(options.text("origin"), "/icons/icon-192.png")
+                                )
+                                .toString()
                         path.endsWith("/preferences") -> obj("search_engine" to "google").toString()
                         path.endsWith("/admins") ->
                             buildJsonObject {
