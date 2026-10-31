@@ -453,6 +453,8 @@ for (const implementation of ["react", "compose"] as const) {
         timeout: 10000,
       })
       .toBe(true);
+    if (native) await expect(bubble).toHaveText("");
+    else await expect(bubble).toHaveValue("");
     await fill(bubble, "clear on pagehide");
     await expect
       .poll(async () =>
@@ -647,7 +649,10 @@ for (const implementation of ["react", "compose"] as const) {
     await choose("notes.pdf", "application/octet-stream", Buffer.from("%PDF-1.7\nfixture"));
     await expect.poll(async () => (await state()).uploadRequests.length).toBe(7);
     await expect(page.getByText("ファイルをアップロード中…", { exact: true }).first()).toBeHidden();
-    await page.getByRole("button", { name: "送信", exact: true }).last().click({ force: native });
+    const fileSend = page.getByRole("button", { name: "送信", exact: true }).last();
+    await expect(fileSend).toBeVisible();
+    await expect(fileSend).toBeEnabled();
+    await fileSend.click({ force: native });
     const fileDownload = page.getByRole("button", { name: "notes.pdfをダウンロード", exact: true });
     await expect(fileDownload).toBeVisible();
     const fileEvent = page.waitForEvent("download");
