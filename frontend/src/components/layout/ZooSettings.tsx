@@ -1,4 +1,4 @@
-import { ArrowLeftIcon } from "lucide-react";
+import { ArrowLeftIcon, BellIcon, LanguagesIcon, PaletteIcon } from "lucide-react";
 import { Tabs } from "@base-ui/react/tabs";
 import { useNavigate, useRouterState } from "@tanstack/react-router";
 import { useTranslation } from "react-i18next";
@@ -66,14 +66,14 @@ export function ZooSettings() {
           </Tabs.List>
           <Tabs.Panel value="general" keepMounted className="min-h-0 data-[hidden]:hidden">
             <div className="divide-y rounded-lg border">
-              <SettingRow label={t("theme.title")}>
-                <ModeToggle />
+              <SettingRow icon={<PaletteIcon />} label={t("theme.title")}>
+                <ModeToggle presentation="select" />
               </SettingRow>
-              <SettingRow label={t("language.title")}>
-                <LanguageToggle />
+              <SettingRow icon={<LanguagesIcon />} label={t("language.title")}>
+                <LanguageToggle presentation="select" />
               </SettingRow>
-              <SettingRow label={t("settings.notifications")}>
-                <PwaControls />
+              <SettingRow icon={<BellIcon />} label={t("pwa.title")}>
+                <PwaControls presentation="select" />
               </SettingRow>
             </div>
           </Tabs.Panel>

@@ -1,4 +1,4 @@
-import { createContext, useContext, useEffect, useState, type ReactNode } from "react";
+import { createContext, useContext, useEffect, useId, useState, type ReactNode } from "react";
 import { BellIcon, BellOffIcon, DownloadIcon } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
@@ -11,6 +11,7 @@ import {
   saveSubscription,
   supportsPush,
 } from "../../lib/pwa/push";
+import { Select } from "../ui/select";
 import { Button } from "../ui/button";
 
 type InstallEvent = Event & {
@@ -145,62 +146,104 @@ function usePushControls() {
   return { label, enabled, busy, supported, publicKey, blocked, toggle };
 }
 
-export function PwaControls() {
+export function PwaControls({ presentation = "icon" }: { presentation?: "icon" | "select" }) {
   const context = useContext(PwaContext);
   return context ? (
-    <PwaControlButtons push={context.push} prompt={context} />
+    <PwaControlButtons push={context.push} prompt={context} presentation={presentation} />
   ) : (
-    <StandalonePwaControls />
+    <StandalonePwaControls presentation={presentation} />
   );
 }
 
-function StandalonePwaControls() {
+function StandalonePwaControls({ presentation }: { presentation: "icon" | "select" }) {
   const push = usePushControls();
-  return <PwaControlButtons push={push} prompt={null} />;
+  return <PwaControlButtons push={push} prompt={null} presentation={presentation} />;
 }
 
 function PwaControlButtons({
   push,
   prompt,
+  presentation,
 }: {
+  presentation: "icon" | "select";
   push: ReturnType<typeof usePushControls>;
   prompt: { event: InstallEvent | null; clear: () => void } | null;
 }) {
   const { t } = useTranslation();
   const { label, enabled, busy, supported, publicKey, blocked, toggle } = push;
   const install = prompt?.event ?? null;
+  const installButton = install ? (
+    <Button
+      variant={presentation === "select" ? "outline" : "ghost"}
+      size={presentation === "select" ? "sm" : "icon"}
+      aria-label={t("pwa.install")}
+      title={t("pwa.install")}
+      onClick={() => {
+        void install
+          .prompt()
+          .then(() => install.userChoice)
+          .then(() => prompt?.clear())
+          .catch(() => toast.error(t("pwa.error")));
+      }}
+    >
+      <DownloadIcon aria-hidden="true" />
+      {presentation === "select" ? t("pwa.install") : null}
+    </Button>
+  ) : null;
   return (
-    <>
-      {install ? (
+    <div
+      className={
+        presentation === "select" ? "flex w-40 flex-col items-end gap-2" : "flex items-center gap-2"
+      }
+    >
+      {presentation === "icon" ? installButton : null}
+      {presentation === "select" ? (
+        <PushNotificationSelect push={push} />
+      ) : (
         <Button
           variant="ghost"
           size="icon"
-          aria-label={t("pwa.install")}
-          title={t("pwa.install")}
+          aria-label={label}
+          title={label}
+          aria-pressed={enabled}
+          disabled={busy || !supported || (!enabled && (!publicKey || blocked))}
           onClick={() => {
-            void install
-              .prompt()
-              .then(() => install.userChoice)
-              .then(() => prompt?.clear())
-              .catch(() => toast.error(t("pwa.error")));
+            void toggle();
           }}
         >
-          <DownloadIcon aria-hidden="true" />
+          {enabled ? <BellIcon aria-hidden="true" /> : <BellOffIcon aria-hidden="true" />}
         </Button>
-      ) : null}
-      <Button
-        variant="ghost"
-        size="icon"
-        aria-label={label}
-        title={label}
-        aria-pressed={enabled}
-        disabled={busy || !supported || (!enabled && (!publicKey || blocked))}
-        onClick={() => {
-          void toggle();
+      )}
+      {presentation === "select" ? installButton : null}
+    </div>
+  );
+}
+
+export function PushNotificationSelect({ push }: { push: ReturnType<typeof usePushControls> }) {
+  const { t } = useTranslation();
+  const descriptionId = useId();
+  const unavailable = !push.supported || (!push.enabled && (!push.publicKey || push.blocked));
+  return (
+    <div className="w-40 space-y-1.5">
+      <Select
+        aria-label={t("pwa.title")}
+        aria-describedby={unavailable ? descriptionId : undefined}
+        aria-busy={push.busy}
+        disabled={push.busy || unavailable}
+        value={unavailable ? "unavailable" : push.enabled ? "on" : "off"}
+        onChange={(event) => {
+          if ((event.target.value === "on") !== push.enabled) void push.toggle();
         }}
       >
-        {enabled ? <BellIcon aria-hidden="true" /> : <BellOffIcon aria-hidden="true" />}
-      </Button>
-    </>
+        {unavailable ? <option value="unavailable">{t("pwa.unavailable")}</option> : null}
+        <option value="on">{t("pwa.on")}</option>
+        <option value="off">{t("pwa.off")}</option>
+      </Select>
+      {unavailable ? (
+        <p id={descriptionId} className="text-xs text-muted-foreground">
+          {push.label}
+        </p>
+      ) : null}
+    </div>
   );
 }

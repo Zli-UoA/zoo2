@@ -193,7 +193,7 @@
     },
     {
       "file": "src/components/i18n/LanguageToggle.stories.tsx",
-      "states": ["Default", "Open"]
+      "states": ["Default", "Open", "SelectControl"]
     },
     {
       "file": "src/components/layout/AppShell.stories.tsx",
@@ -238,11 +238,20 @@
     },
     {
       "file": "src/components/pwa/PwaControls.stories.tsx",
-      "states": ["Default", "InstallAvailable"]
+      "states": [
+        "Default",
+        "InstallAvailable",
+        "SelectOff",
+        "SelectOn",
+        "SelectBusy",
+        "SelectBlocked",
+        "SelectUnavailable",
+        "SelectInstallAvailable"
+      ]
     },
     {
       "file": "src/components/theme/ModeToggle.stories.tsx",
-      "states": ["Default", "MenuOpen"]
+      "states": ["Default", "MenuOpen", "SelectControl"]
     },
     {
       "file": "src/components/ui/alert-dialog.stories.tsx",
@@ -311,6 +320,10 @@
     {
       "file": "src/components/ui/collapsible-section.stories.tsx",
       "states": ["Default", "Closed", "WithActions"]
+    },
+    {
+      "file": "src/components/ui/select.stories.tsx",
+      "states": ["Default", "Disabled", "LongLabel"]
     }
   ],
   "modules": [
@@ -599,6 +612,10 @@
     {
       "file": "src/components/ui/collapsible-section.tsx",
       "story": "src/components/ui/collapsible-section.stories.tsx"
+    },
+    {
+      "file": "src/components/ui/select.tsx",
+      "story": "src/components/ui/select.stories.tsx"
     }
   ]
 }

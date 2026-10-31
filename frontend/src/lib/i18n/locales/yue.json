@@ -332,7 +332,11 @@
     "blocked": "請喺瀏覽器設定允許通知",
     "permission": "請允許通知。用 iOS 請由主畫面開啟 Zoo。",
     "error": "更新唔到通知設定，請再試。",
-    "logoutError": "關閉唔到通知，請再試登出。"
+    "logoutError": "關閉唔到通知，請再試登出。",
+    "on": "開啟",
+    "off": "關閉",
+    "unavailable": "未能使用",
+    "title": "推送通知"
   },
   "mfm": {
     "suggestions": "MFM 建議",

@@ -26,21 +26,30 @@ export function SettingsSection({
 }
 
 export function SettingRow({
+  icon,
   label,
   description,
   children,
 }: {
+  icon?: ReactNode;
   label: string;
   description?: string;
   children: ReactNode;
 }) {
   return (
-    <div className="flex min-h-16 items-center justify-between gap-4 p-4">
-      <div className="min-w-0">
-        <p className="text-sm font-medium">{label}</p>
-        {description ? (
-          <p className="mt-1 break-words text-xs text-muted-foreground">{description}</p>
+    <div className="flex min-h-16 items-start justify-between gap-4 p-4">
+      <div className="flex min-h-8 min-w-0 items-center gap-3">
+        {icon ? (
+          <span aria-hidden="true" className="shrink-0 text-muted-foreground [&>svg]:size-5">
+            {icon}
+          </span>
         ) : null}
+        <div className="min-w-0">
+          <p className="text-sm font-medium">{label}</p>
+          {description ? (
+            <p className="mt-1 break-words text-xs text-muted-foreground">{description}</p>
+          ) : null}
+        </div>
       </div>
       <div className="flex shrink-0 items-center gap-2">{children}</div>
     </div>

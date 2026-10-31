@@ -2,6 +2,7 @@ import { LanguagesIcon } from "lucide-react";
 import { useTranslation } from "react-i18next";
 
 import { LANGUAGE_NAMES, LOCALES, isLocale } from "../../lib/i18n/locale";
+import { Select } from "../ui/select";
 import { Button } from "../ui/button";
 import {
   DropdownMenu,
@@ -15,9 +16,26 @@ import {
 } from "../ui/dropdown-menu";
 import { useLocale } from "./LocaleProvider";
 
-export function LanguageToggle() {
+export function LanguageToggle({ presentation = "icon" }: { presentation?: "icon" | "select" }) {
   const { t } = useTranslation();
   const { locale, setLocale } = useLocale();
+  if (presentation === "select") {
+    return (
+      <Select
+        aria-label={t("language.title")}
+        value={locale}
+        onChange={(event) => {
+          if (isLocale(event.target.value)) setLocale(event.target.value);
+        }}
+      >
+        {LOCALES.map((value) => (
+          <option key={value} value={value} lang={value}>
+            {LANGUAGE_NAMES[value]}
+          </option>
+        ))}
+      </Select>
+    );
+  }
   return (
     <DropdownMenu>
       <DropdownMenuTrigger

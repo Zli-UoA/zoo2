@@ -28,3 +28,15 @@ export const MenuOpen: Story = {
     await expect(await screen.findByRole("menuitemradio", { name: "ダーク" })).toBeInTheDocument();
   },
 };
+
+export const SelectControl: Story = {
+  args: { presentation: "select" },
+  play: async () => {
+    const select = screen.getByRole("combobox", { name: "テーマ" });
+    await userEvent.selectOptions(select, "dark");
+    await expect(select).toHaveValue("dark");
+    await expect(document.documentElement).toHaveClass("dark");
+    await userEvent.selectOptions(select, "system");
+    await expect(select).toHaveValue("system");
+  },
+};

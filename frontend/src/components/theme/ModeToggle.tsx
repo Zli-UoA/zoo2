@@ -1,6 +1,7 @@
 import { useTranslation } from "react-i18next";
 import { MonitorIcon, MoonIcon, SunIcon } from "lucide-react";
 
+import { Select } from "../ui/select";
 import { Button } from "@/components/ui/button";
 import {
   DropdownMenu,
@@ -33,10 +34,27 @@ function TriggerIcon({ theme }: { theme: Theme }) {
 }
 
 /** ライト/ダーク/システムを切り替えるメニュー。 */
-export function ModeToggle() {
+export function ModeToggle({ presentation = "icon" }: { presentation?: "icon" | "select" }) {
   const { t } = useTranslation();
   const { theme, setTheme } = useTheme();
 
+  if (presentation === "select") {
+    return (
+      <Select
+        aria-label={t("theme.title")}
+        value={theme}
+        onChange={(event) => {
+          if (isTheme(event.target.value)) setTheme(event.target.value);
+        }}
+      >
+        {OPTIONS.map((option) => (
+          <option key={option.value} value={option.value}>
+            {t(option.label)}
+          </option>
+        ))}
+      </Select>
+    );
+  }
   return (
     <DropdownMenu>
       <DropdownMenuTrigger
