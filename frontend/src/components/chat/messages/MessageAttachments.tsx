@@ -1,8 +1,12 @@
 import { useTranslation } from "react-i18next";
 import { DownloadIcon, LoaderCircleIcon, PaperclipIcon } from "lucide-react";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type MouseEvent } from "react";
 
-import { formatAttachmentSize, isInlineImage } from "../../../lib/attachments";
+import {
+  formatAttachmentSize,
+  isInlineImage,
+  shouldRefreshAttachmentUrl,
+} from "../../../lib/attachments";
 import type { AttachmentRow } from "../../../lib/electric/types";
 import { useAttachmentUrl, type AttachmentUrlState } from "../../../hooks/useAttachments";
 import { useLocale } from "../../i18n/LocaleProvider";
@@ -52,7 +56,8 @@ function AttachmentImage({
   multiple: boolean;
 }) {
   const { t } = useTranslation();
-  const { status, url, reload } = useAttachmentUrl(attachment.id);
+  const state = useAttachmentUrl(attachment.id);
+  const { status, url, reload } = state;
   const [broken, setBroken] = useState(false);
   const retried = useRef(false);
 
@@ -63,7 +68,7 @@ function AttachmentImage({
   }, [url]);
 
   if (broken || status === "error") {
-    return <AttachmentFileCard attachment={attachment} state={{ status, url, reload }} />;
+    return <AttachmentFileCard attachment={attachment} state={state} />;
   }
 
   if (status === "loading" || !url) {
@@ -84,6 +89,7 @@ function AttachmentImage({
     <ExternalLink
       href={url}
       aria-label={t("attachments.open", { name: attachment.file_name })}
+      onClick={(event) => handleAttachmentLink(event, state)}
       className={
         multiple
           ? "block aspect-square overflow-hidden rounded-lg border bg-muted"
@@ -114,6 +120,26 @@ function AttachmentImage({
       />
     </ExternalLink>
   );
+}
+
+function handleAttachmentLink(event: MouseEvent<HTMLAnchorElement>, state: AttachmentUrlState) {
+  if (!shouldRefreshAttachmentUrl(state.expiresAt)) {
+    return;
+  }
+  event.preventDefault();
+  const popup = window.open("about:blank", "_blank");
+  if (!popup) {
+    void state.getFreshUrl();
+    return;
+  }
+  popup.opener = null;
+  void state.getFreshUrl().then((freshUrl) => {
+    if (freshUrl) {
+      popup.location.replace(freshUrl);
+      return;
+    }
+    popup.close();
+  });
 }
 
 function AttachmentFile({ attachment }: { attachment: AttachmentRow }) {
@@ -169,6 +195,7 @@ function AttachmentFileCard({
           download={attachment.file_name}
           aria-label={t("attachments.download", { name: attachment.file_name })}
           title={t("attachments.download", { name: attachment.file_name })}
+          onClick={(event) => handleAttachmentLink(event, state)}
           className="rounded p-1 text-muted-foreground hover:bg-muted hover:text-foreground"
         >
           <DownloadIcon className="size-4" />

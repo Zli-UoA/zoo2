@@ -1,12 +1,12 @@
 import { useLiveQuery } from "@tanstack/react-db";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
+import { attachmentUrlExpiresAt, shouldRefreshAttachmentUrl } from "../lib/attachments";
 import { createConfiguredApiClient } from "../lib/api/client";
 import { uploadAttachment, type UploadedAttachment } from "../lib/api/attachments";
 import type { AttachmentUrlResponse } from "../lib/api/types";
 import { useCollections } from "../lib/electric/collections-context";
 
-const ATTACHMENT_URL_TTL_MS = 4 * 60 * 1000;
 const urlCache = new Map<string, { url: string; expiresAt: number }>();
 
 type AttachmentUrlStatus = "loading" | "ready" | "error";
@@ -14,7 +14,9 @@ type AttachmentUrlStatus = "loading" | "ready" | "error";
 export interface AttachmentUrlState {
   url: string | null;
   status: AttachmentUrlStatus;
+  expiresAt: number | null;
   reload: () => void;
+  getFreshUrl: () => Promise<string | null>;
 }
 
 export function useMessageAttachments(channelId: string | null) {
@@ -36,50 +38,52 @@ export function useAttachmentUpload(channelId: string) {
 export function useAttachmentUrl(attachmentId: string): AttachmentUrlState {
   const { config } = useCollections();
   const client = useMemo(() => createConfiguredApiClient(config), [config]);
-  const [status, setStatus] = useState<AttachmentUrlStatus>(() =>
-    urlCache.has(attachmentId) ? "ready" : "loading",
-  );
-  const [url, setUrl] = useState<string | null>(() => urlCache.get(attachmentId)?.url ?? null);
+  const cached = urlCache.get(attachmentId);
+  const [status, setStatus] = useState<AttachmentUrlStatus>(cached ? "ready" : "loading");
+  const [url, setUrl] = useState<string | null>(cached?.url ?? null);
+  const [expiresAt, setExpiresAt] = useState<number | null>(cached?.expiresAt ?? null);
   const requestId = useRef(0);
 
   const load = useCallback(
-    (useCache: boolean) => {
-      const cached = urlCache.get(attachmentId);
-      if (useCache && cached && cached.expiresAt > Date.now()) {
+    async (useCache: boolean): Promise<string | null> => {
+      const cachedEntry = urlCache.get(attachmentId);
+      if (useCache && cachedEntry && !shouldRefreshAttachmentUrl(cachedEntry.expiresAt)) {
+        setUrl(cachedEntry.url);
+        setExpiresAt(cachedEntry.expiresAt);
         setStatus("ready");
-        setUrl(cached.url);
-        return;
+        return cachedEntry.url;
       }
       const current = ++requestId.current;
       setStatus("loading");
-      client
-        .requestWithTx<AttachmentUrlResponse>(`/api/attachments/${attachmentId}/url`, {
-          method: "GET",
-        })
-        .then(({ data }) => {
-          if (current !== requestId.current) {
-            return;
-          }
-          urlCache.set(attachmentId, {
-            url: data.download_url,
-            expiresAt: Date.now() + ATTACHMENT_URL_TTL_MS,
-          });
-          setUrl(data.download_url);
-          setStatus("ready");
-        })
-        .catch(() => {
-          if (current !== requestId.current) {
-            return;
-          }
-          setUrl(null);
-          setStatus("error");
-        });
+      try {
+        const { data } = await client.requestWithTx<AttachmentUrlResponse>(
+          `/api/attachments/${attachmentId}/url`,
+          { method: "GET" },
+        );
+        if (current !== requestId.current) {
+          return null;
+        }
+        const nextExpiresAt = attachmentUrlExpiresAt(data.download_url);
+        urlCache.set(attachmentId, { url: data.download_url, expiresAt: nextExpiresAt });
+        setUrl(data.download_url);
+        setExpiresAt(nextExpiresAt);
+        setStatus("ready");
+        return data.download_url;
+      } catch {
+        if (current !== requestId.current) {
+          return null;
+        }
+        setUrl(null);
+        setExpiresAt(null);
+        setStatus("error");
+        return null;
+      }
     },
     [attachmentId, client],
   );
 
   useEffect(() => {
-    load(true);
+    void load(true);
     return () => {
       requestId.current += 1;
     };
@@ -87,8 +91,16 @@ export function useAttachmentUrl(attachmentId: string): AttachmentUrlState {
 
   const reload = useCallback(() => {
     urlCache.delete(attachmentId);
-    load(false);
+    void load(false);
   }, [attachmentId, load]);
 
-  return { url, status, reload };
+  const getFreshUrl = useCallback(() => {
+    const cachedEntry = urlCache.get(attachmentId);
+    if (cachedEntry && !shouldRefreshAttachmentUrl(cachedEntry.expiresAt)) {
+      return Promise.resolve(cachedEntry.url);
+    }
+    return load(false);
+  }, [attachmentId, load]);
+
+  return { url, status, expiresAt, reload, getFreshUrl };
 }

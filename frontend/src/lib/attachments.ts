@@ -3,6 +3,8 @@ import { DEFAULT_LOCALE, INTL_LOCALES, type Locale } from "./i18n/locale";
 
 export const MAX_ATTACHMENTS_PER_MESSAGE = 10;
 export const MAX_ATTACHMENT_FILE_SIZE = 50 * 1024 * 1024;
+export const ATTACHMENT_URL_FALLBACK_TTL_MS = 4 * 60 * 1000;
+export const ATTACHMENT_URL_REFRESH_MARGIN_MS = 5 * 1000;
 
 export const SUPPORTED_IMAGE_TYPES = [
   "image/png",
@@ -63,13 +65,37 @@ export function imageFilesFromClipboard(
     if (!resolveSupportedImageType(file)) {
       return false;
     }
-    const key = `${file.name}:${file.size}:${file.type}:${file.lastModified}`;
+    const key = `${file.name}:${file.size}:${file.type}`;
     if (seen.has(key)) {
       return false;
     }
     seen.add(key);
     return true;
   });
+}
+
+export function attachmentUrlExpiresAt(url: string, now = Date.now()): number {
+  try {
+    const parsed = new URL(url);
+    const expiresParam = parsed.searchParams.get("X-Amz-Expires");
+    const expires = expiresParam ? Number(expiresParam) : Number.NaN;
+    if (!Number.isFinite(expires) || expires <= 0) {
+      return now + ATTACHMENT_URL_FALLBACK_TTL_MS;
+    }
+    const dateParam = parsed.searchParams.get("X-Amz-Date");
+    const normalizedDate = dateParam?.replace(
+      /^(\d{4})(\d{2})(\d{2})T(\d{2})(\d{2})(\d{2})Z$/,
+      "$1-$2-$3T$4:$5:$6Z",
+    );
+    const issuedAt = normalizedDate ? Date.parse(normalizedDate) : now;
+    return (Number.isFinite(issuedAt) ? issuedAt : now) + expires * 1000;
+  } catch {
+    return now + ATTACHMENT_URL_FALLBACK_TTL_MS;
+  }
+}
+
+export function shouldRefreshAttachmentUrl(expiresAt: number | null, now = Date.now()): boolean {
+  return expiresAt === null || expiresAt - now <= ATTACHMENT_URL_REFRESH_MARGIN_MS;
 }
 
 export function attachmentFileName(file: Pick<File, "name">, contentType: string): string {

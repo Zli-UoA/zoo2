@@ -1,15 +1,18 @@
 import { describe, expect, it } from "vite-plus/test";
 
 import {
+  ATTACHMENT_URL_FALLBACK_TTL_MS,
   MAX_ATTACHMENTS_PER_MESSAGE,
   MAX_ATTACHMENT_FILE_SIZE,
   attachmentFileName,
   attachmentRejection,
+  attachmentUrlExpiresAt,
   formatAttachmentSize,
   groupAttachmentsByMessage,
   imageFilesFromClipboard,
   isInlineImage,
   resolveSupportedImageType,
+  shouldRefreshAttachmentUrl,
 } from "./attachments";
 import type { AttachmentRow } from "./electric/types";
 
@@ -54,7 +57,7 @@ describe("imageFilesFromClipboard", () => {
     const data = {
       files: [pasted],
       items: [
-        { kind: "file", getAsFile: () => pasted },
+        { kind: "file", getAsFile: () => ({ ...pasted, lastModified: 2 }) },
         { kind: "string", getAsFile: () => null },
         { kind: "file", getAsFile: () => ({ ...pasted, name: "notes.txt", type: "text/plain" }) },
       ],
@@ -62,6 +65,28 @@ describe("imageFilesFromClipboard", () => {
 
     expect(imageFilesFromClipboard(data)).toEqual([pasted]);
     expect(imageFilesFromClipboard(null)).toEqual([]);
+  });
+});
+
+describe("attachment URL expiry", () => {
+  it("derives expiry from the presigned GET URL", () => {
+    const url =
+      "https://storage.example/object?X-Amz-Date=20261031T120000Z&X-Amz-Expires=300&X-Amz-Signature=test";
+    expect(attachmentUrlExpiresAt(url)).toBe(Date.parse("2026-10-31T12:00:00Z") + 300_000);
+  });
+
+  it("falls back to a conservative TTL when the URL has no expiry", () => {
+    const now = 1_000_000;
+    expect(attachmentUrlExpiresAt("data:image/png;base64,AAAA", now)).toBe(
+      now + ATTACHMENT_URL_FALLBACK_TTL_MS,
+    );
+  });
+
+  it("refreshes missing or nearly expired URLs before opening them", () => {
+    const now = 1_000_000;
+    expect(shouldRefreshAttachmentUrl(null, now)).toBe(true);
+    expect(shouldRefreshAttachmentUrl(now + 1_000, now)).toBe(true);
+    expect(shouldRefreshAttachmentUrl(now + 60_000, now)).toBe(false);
   });
 });
 

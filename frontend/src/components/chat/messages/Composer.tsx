@@ -388,7 +388,7 @@ export function Composer({
     try {
       sent =
         attachmentIds.length > 0
-          ? await onSend(content, commandAppId, attachmentIds)
+          ? await onSend(content, undefined, attachmentIds)
           : commandAppId
             ? await onSend(content, commandAppId)
             : await onSend(content);
