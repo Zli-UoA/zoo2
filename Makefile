@@ -71,3 +71,14 @@ sdk-check:
 
 sdk-test:
 	node --experimental-strip-types --test sdk/src/index.test.ts
+
+# TUI クライアント。tui-dev は backend の dev モード (make backend-dev) に X-Dev-User で接続する。
+.PHONY: tui-dev tui-build tui-check
+tui-dev:
+	cd tui && ZOO_DEV_USER=$${ZOO_DEV_USER:-00000000-0000-0000-0000-000000000001} cargo run -- run
+
+tui-build:
+	cd tui && cargo build --release
+
+tui-check:
+	cd tui && cargo fmt --check && cargo clippy --all-targets -- -D warnings && cargo test
