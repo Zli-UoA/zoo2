@@ -42,6 +42,8 @@ Storybookは部品の一覧だけでなく、利用者が見る状態と操作�
 
 ## ReactとComposeの対応
 
+React版とKotlin版を別のFeaturesカテゴリへ複製しない。既存Storyの上部implementationツールバーで切り替え、同じ引数・共有fixture・テーマ・言語・幅を渡す。未登録のKotlin表示は明示し、ReactをKotlinとして表示しない。playは `playForImplementation` で実装ごとの検証へ分岐し、既存Reactのアサーションを維持する。Kotlinの実操作は専用Playwrightで確認する。
+
 Reactの状態・操作を変更したら、[compose-react-parity](../compose-react-parity/SKILL.md) に従い、実Kotlinコンポーネントのカタログと両実装の操作検証も更新する。ReactのStoryだけでComposeの追従を保証しない。共通fixture・ツールバー・Controlsを使い、同じ入力で比較する。
 
 ## 対象一覧と確認

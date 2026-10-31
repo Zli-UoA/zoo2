@@ -1,3 +1,4 @@
+import { playForImplementation } from "../../../.storybook/play-for-implementation";
 import type { Meta, StoryObj } from "@storybook/react-vite";
 import { delay, http, HttpResponse } from "msw";
 import { expect, screen, userEvent } from "storybook/test";
@@ -28,11 +29,11 @@ type Story = StoryObj<typeof meta>;
 export const ReadOnly: Story = {};
 export const Admin: Story = {
   parameters: { msw: { handlers: [adminIdentity] } },
-  play: async () => {
+  play: playForImplementation(async () => {
     await expect(await screen.findAllByRole("button", { name: "管理者にする" })).not.toHaveLength(
       0,
     );
-  },
+  }),
 };
 export const Empty: Story = { parameters: { collections: { ...storyCollections, users: [] } } };
 export const Loading: Story = {
@@ -53,15 +54,15 @@ export const LoadError: Story = {
       handlers: [http.get("*/api/users/admins", () => new HttpResponse(null, { status: 500 }))],
     },
   },
-  play: async () => {
+  play: playForImplementation(async () => {
     await expect(await screen.findByRole("alert")).toBeVisible();
-  },
+  }),
 };
 export const SearchEmpty: Story = {
-  play: async () => {
+  play: playForImplementation(async () => {
     await userEvent.type(screen.getByRole("searchbox"), "no-such-member");
     await expect(screen.queryByRole("listitem")).not.toBeInTheDocument();
-  },
+  }),
 };
 export const Mobile: Story = { ...Admin, globals: { viewport: { value: "mobile" } } };
 

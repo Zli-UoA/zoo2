@@ -1,3 +1,4 @@
+import { playForImplementation } from "../../../.storybook/play-for-implementation";
 import type { Meta, StoryObj } from "@storybook/react-vite";
 import { expect, screen, userEvent, waitFor, within } from "storybook/test";
 
@@ -40,10 +41,10 @@ type Story = StoryObj<typeof meta>;
 export const Default: Story = {};
 
 export const ControlPanelOpen: Story = {
-  play: async () => {
+  play: playForImplementation(async () => {
     await userEvent.click(screen.getByRole("button", { name: "チャンネル設定" }));
     await expect(await screen.findByRole("dialog")).toBeInTheDocument();
-  },
+  }),
 };
 
 export const Private: Story = {
@@ -88,7 +89,7 @@ export const Mobile: Story = {
 };
 
 export const WebhookSettingsOpen: Story = {
-  play: async () => {
+  play: playForImplementation(async () => {
     await userEvent.click(screen.getByRole("button", { name: "チャンネル設定" }));
     const settings = await screen.findByRole("dialog", { name: "チャンネル設定" });
     await userEvent.click(within(settings).getByRole("button", { name: /^開く$/ }));
@@ -104,5 +105,5 @@ export const WebhookSettingsOpen: Story = {
     await waitFor(async () => {
       await expect(screen.queryByRole("dialog", { name: "Webhook設定" })).not.toBeInTheDocument();
     });
-  },
+  }),
 };

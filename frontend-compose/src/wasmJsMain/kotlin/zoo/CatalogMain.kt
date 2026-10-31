@@ -9,6 +9,7 @@ import io.ktor.client.HttpClient
 import io.ktor.client.engine.mock.*
 import io.ktor.http.*
 import kotlin.JsFun
+import kotlin.js.*
 import kotlinx.browser.document
 import kotlinx.coroutines.*
 import kotlinx.serialization.json.*
@@ -29,6 +30,17 @@ private external fun catalogPainted(message: String)
 
 @JsFun("() => matchMedia('(prefers-color-scheme: dark)').matches")
 private external fun systemDark(): Boolean
+
+// Storybook's same-origin MSW worker supplies the same fixtures to both renderers.
+@JsFun(
+    "(path, method, body) => fetch(path, {method, credentials: 'omit', headers: body ? {'Content-Type':'application/json'} : {}, ...(body ? {body} : {})}).then(async r => JSON.stringify({status:r.status, body:await r.text()}))"
+)
+private external fun fixtureApi(path: String, method: String, body: String): Promise<JsString>
+
+@JsFun(
+    "url => fetch(new URL(url).hostname === 'catalog.invalid' ? new URL(url).pathname + new URL(url).search : url, {credentials:'omit'}).then(async r => {if(!r.ok) throw Error('Fixture fetch failed'); return JSON.stringify({body:await r.text(), contentType:r.headers.get('Content-Type') || ''})})"
+)
+private external fun fixturePublic(url: String): Promise<JsString>
 
 internal fun registerCatalog() = catalogBoot(::startCatalog)
 
@@ -57,8 +69,12 @@ private fun startCatalog() {
             override suspend fun readCache(key: String): String? =
                 when {
                     key.contains(":channels:") ->
-                        JsonArray(listOf(CatalogSamples.channel)).toString()
-                    key.contains(":users:") -> JsonArray(CatalogSamples.users).toString()
+                        (options.nested("fixture")["channels"]
+                                ?: JsonArray(listOf(CatalogSamples.channel)))
+                            .toString()
+                    key.contains(":users:") ->
+                        (options.nested("fixture")["users"] ?: JsonArray(CatalogSamples.users))
+                            .toString()
                     else -> "[]"
                 }
 
@@ -120,30 +136,10 @@ private fun startCatalog() {
 
             override suspend fun invoke(name: String, payload: String): String =
                 when (name) {
-                    "publicGet" -> {
-                        val url = json.parseToJsonElement(payload).jsonObject.text("url")
-                        val body =
-                            when {
-                                options.text("sample") != "link-preview" -> ""
-                                url.contains("summaly-endpoint") ->
-                                    "https://catalog.invalid/summaly"
-                                url.contains("media-proxy-endpoint") -> ""
-                                else ->
-                                    obj(
-                                            "title" to "Kotlin link preview",
-                                            "description" to "Reactと同じ公開メタデータを表示します",
-                                            "sitename" to "Example",
-                                        )
-                                        .toString()
-                            }
-                        obj(
-                                "body" to body,
-                                "contentType" to
-                                    if (url.contains("endpoint")) "text/plain"
-                                    else "application/json",
-                            )
+                    "publicGet" ->
+                        fixturePublic(json.parseToJsonElement(payload).jsonObject.text("url"))
+                            .awaitBrowser<JsString>()
                             .toString()
-                    }
                     "storageRead" -> storage[payload].orEmpty()
                     "storageWrite" -> {
                         val row = json.parseToJsonElement(payload).jsonObject
@@ -164,7 +160,29 @@ private fun startCatalog() {
                         options.nested("fixture").flag("postFailure")
                 )
                     return@MockEngine respond("{}", HttpStatusCode.InternalServerError)
-                if (!path.startsWith("/api/")) awaitCancellation()
+                if (!path.startsWith("/api/") || path.startsWith("/api/shapes/"))
+                    awaitCancellation()
+                if (options.nested("fixture").flag("sharedApi")) {
+                    val response =
+                        json
+                            .parseToJsonElement(
+                                fixtureApi(
+                                        path +
+                                            (if (request.url.encodedQuery.isEmpty()) ""
+                                            else "?${request.url.encodedQuery}"),
+                                        request.method.value,
+                                        request.body.toByteArray().decodeToString(),
+                                    )
+                                    .awaitBrowser<JsString>()
+                                    .toString()
+                            )
+                            .jsonObject
+                    return@MockEngine respond(
+                        response.text("body"),
+                        HttpStatusCode.fromValue(response.text("status").toInt()),
+                        headersOf(HttpHeaders.ContentType, "application/json"),
+                    )
+                }
                 val body =
                     when {
                         path.startsWith("/api/attachments/") ->
@@ -207,8 +225,8 @@ private fun startCatalog() {
         Config(
             "https://catalog.invalid",
             "",
-            "alice",
-            true,
+            options.nested("fixture").text("currentUserId").ifEmpty { "alice" },
+            options.nested("fixture").flag("isAdmin"),
             txidMode = "none",
             assetsBaseUrl = options.text("origin"),
         )
@@ -226,6 +244,7 @@ private fun startCatalog() {
             dark = options.flag("dark"),
             locale = options.text("locale"),
             visible = options.text("sample") == "bubble",
+            focused = false,
             reducedMotion = true,
             theme = options.text("theme").ifEmpty { if (options.flag("dark")) "dark" else "light" },
         )

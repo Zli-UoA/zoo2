@@ -1,3 +1,4 @@
+import { playForImplementation } from "../../../.storybook/play-for-implementation";
 import type { Meta, StoryObj } from "@storybook/react-vite";
 import { expect, screen, userEvent } from "storybook/test";
 
@@ -31,8 +32,8 @@ type Story = StoryObj<typeof meta>;
 export const Default: Story = {};
 
 export const Open: Story = {
-  play: async () => {
+  play: playForImplementation(async () => {
     await userEvent.hover(screen.getByRole("button", { name: "メッセージを編集" }));
     await expect(await screen.findByText("メッセージを編集できます")).toBeInTheDocument();
-  },
+  }),
 };

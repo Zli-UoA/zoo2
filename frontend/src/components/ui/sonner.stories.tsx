@@ -1,3 +1,4 @@
+import { playForImplementation } from "../../../.storybook/play-for-implementation";
 import type { Meta, StoryObj } from "@storybook/react-vite";
 import { toast } from "sonner";
 import { expect, screen, userEvent, waitFor } from "storybook/test";
@@ -29,8 +30,8 @@ const meta = {
 export default meta;
 type Story = StoryObj<typeof meta>;
 export const Success: Story = {
-  play: async () => {
+  play: playForImplementation(async () => {
     await userEvent.click(screen.getByRole("button", { name: "保存" }));
     await waitFor(() => expect(screen.getByText("変更を保存しました")).toBeVisible());
-  },
+  }),
 };

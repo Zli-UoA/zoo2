@@ -1,3 +1,4 @@
+import { playForImplementation } from "../../../../.storybook/play-for-implementation";
 import type { Meta, StoryObj } from "@storybook/react-vite";
 import { expect, fn, screen, userEvent, waitFor, within } from "storybook/test";
 
@@ -88,11 +89,11 @@ export const HoverActions: Story = {
     isOwn: true,
     onOpenThread: fn(),
   },
-  play: async ({ canvasElement }) => {
+  play: playForImplementation(async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     await userEvent.hover(canvas.getByText(/こんにちは/));
     await expect(canvas.getByRole("button", { name: "編集" })).toBeInTheDocument();
-  },
+  }),
 };
 
 export const WithReactions: Story = {
@@ -166,10 +167,10 @@ export const ReplyCount: Story = {
     replyCount: 3,
     onOpenThread: fn(),
   },
-  play: async ({ canvasElement }) => {
+  play: playForImplementation(async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     await expect(canvas.getByRole("button", { name: /3 件の返信/ })).toBeVisible();
-  },
+  }),
 };
 
 export const Editing: Story = {
@@ -216,7 +217,7 @@ export const WithAttachments: Story = {
     },
     attachments: storyAttachments,
   },
-  play: async ({ canvasElement }) => {
+  play: playForImplementation(async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     await userEvent.click(
       await canvas.findByRole("button", { name: "screenshot.pngをプレビュー" }),
@@ -229,7 +230,7 @@ export const WithAttachments: Story = {
     });
     await userEvent.click(within(dialog).getByRole("button", { name: "閉じる" }));
     await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
-  },
+  }),
 };
 
 export const Mobile: Story = {
@@ -258,9 +259,9 @@ export const AppMessage: Story = {
       </StoryShell>
     ),
   ],
-  play: async ({ canvasElement }) => {
+  play: playForImplementation(async ({ canvasElement }) => {
     await expect(within(canvasElement).getByRole("button", { name: "詳細を確認" })).toBeVisible();
-  },
+  }),
   parameters: { a11y: { test: "error" } },
   args: {
     item: {
@@ -293,13 +294,13 @@ export const CopyOriginalMenu: Story = {
       },
     },
   },
-  play: async ({ canvasElement }) => {
+  play: playForImplementation(async ({ canvasElement }) => {
     within(canvasElement).getByRole("button", { name: "その他の操作" }).focus();
     await userEvent.keyboard("{Enter}");
     await waitFor(() =>
       expect(screen.getByRole("menuitem", { name: "原文をコピー" })).toBeVisible(),
     );
-  },
+  }),
 };
 
 export const Edited: Story = {
@@ -314,7 +315,7 @@ export const Edited: Story = {
       },
     },
   },
-  play: async ({ canvasElement }) => {
+  play: playForImplementation(async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     const marker = canvas.getByRole("img", { name: "編集済み" });
     await expect(marker).toBeVisible();
@@ -324,5 +325,7 @@ export const Edited: Story = {
       "href",
       "https://example.com/guide",
     );
-  },
+  }),
 };
+
+export const Grouped: Story = { args: { item: { ...item, isGroupStart: false } } };

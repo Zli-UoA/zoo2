@@ -1,3 +1,4 @@
+import { playForImplementation } from "../../../.storybook/play-for-implementation";
 import type { Meta, StoryObj } from "@storybook/react-vite";
 import { delay, http, HttpResponse } from "msw";
 import { expect, fn, screen, userEvent } from "storybook/test";
@@ -43,29 +44,29 @@ export const LoadError: Story = {
   },
 };
 export const SearchEmpty: Story = {
-  play: async () => {
+  play: playForImplementation(async () => {
     await screen.findByRole("button", { name: /Echo Bot/ });
     await userEvent.type(screen.getByRole("textbox", { name: "Appを検索" }), "nonexistent-app");
     await expect(screen.queryByRole("button", { name: /Echo Bot/ })).not.toBeInTheDocument();
-  },
+  }),
 };
 export const Details: Story = {
-  play: async () => {
+  play: playForImplementation(async () => {
     await userEvent.click(await screen.findByRole("button", { name: /Echo Bot/ }));
     await expect(screen.getByRole("tab", { name: "管理・開発" })).toBeVisible();
-  },
+  }),
 };
 export const OwnerManagement: Story = {
-  play: async (context) => {
+  play: playForImplementation(async (context) => {
     await Details.play?.(context);
     await userEvent.click(screen.getByRole("tab", { name: "管理・開発" }));
     await expect(screen.getByRole("button", { name: "トークンを発行" })).toBeVisible();
-  },
+  }),
 };
 export const OtherOwner: Story = {
-  play: async () => {
+  play: playForImplementation(async () => {
     await userEvent.click(await screen.findByRole("button", { name: /Meeting Notes/ }));
     await expect(screen.queryByRole("tab", { name: "管理・開発" })).not.toBeInTheDocument();
-  },
+  }),
 };
 export const Mobile: Story = { ...Details, globals: { viewport: { value: "mobile" } } };

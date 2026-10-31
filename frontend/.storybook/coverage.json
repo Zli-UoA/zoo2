@@ -142,7 +142,8 @@
         "ChannelInsertion",
         "WithAttachments",
         "WithFileAttachment",
-        "AttachmentUploadError"
+        "AttachmentUploadError",
+        "SendError"
       ]
     },
     {
@@ -194,7 +195,8 @@
         "AppMessage",
         "CopyOriginalMenu",
         "Edited",
-        "WithAttachments"
+        "WithAttachments",
+        "Grouped"
       ]
     },
     {
@@ -401,29 +403,6 @@
     {
       "file": "src/components/chat/BubbleChatScreen.stories.tsx",
       "states": ["ActiveConversation", "Empty", "Mobile", "Participants", "MobileParticipants"]
-    },
-    {
-      "file": "src/components/experimental/ComposeCatalog.stories.tsx",
-      "states": [
-        "Message",
-        "GroupedMessage",
-        "Composer",
-        "DisabledComposer",
-        "EmojiPicker",
-        "RichText",
-        "ReactComparison",
-        "LongMessage",
-        "LinkPreview",
-        "IntegrationCards",
-        "AppCardBlock",
-        "Settings",
-        "WorkspaceMembers",
-        "BubbleChat",
-        "Notifications",
-        "NotificationsLoading",
-        "WithAttachments",
-        "ComposerSendError"
-      ]
     }
   ],
   "modules": [
@@ -768,10 +747,6 @@
       "story": "src/components/chat/messages/Composer.stories.tsx",
       "composed": true,
       "reason": "共通入力枠を通常投稿・Bubble Chatで使い、補完と入力・消去・モバイル表示を各Storyで確認する。"
-    },
-    {
-      "file": "src/components/experimental/ComposeCatalog.tsx",
-      "story": "src/components/experimental/ComposeCatalog.stories.tsx"
     },
     {
       "file": "src/components/experimental/ComposeFrontend.tsx",

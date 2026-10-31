@@ -1,3 +1,4 @@
+import { playForImplementation } from "../../../.storybook/play-for-implementation";
 import type { Meta, StoryObj } from "@storybook/react-vite";
 import { http, HttpResponse } from "msw";
 import { expect, screen, userEvent, within } from "storybook/test";
@@ -88,10 +89,10 @@ export const UnreadAndArchived: Story = {
       ],
     },
   },
-  play: async () => {
+  play: playForImplementation(async () => {
     await expect(await screen.findAllByRole("img", { name: "未読メッセージあり" })).toHaveLength(2);
     await expect(screen.getByRole("img", { name: "アーカイブ済み" })).toBeInTheDocument();
-  },
+  }),
 };
 
 const dm = {
@@ -114,7 +115,7 @@ export const Sections: Story = {
       ],
     },
   },
-  play: async ({ canvasElement }) => {
+  play: playForImplementation(async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     const regular = canvas.getByRole("button", { name: "チャンネル" });
     const direct = canvas.getByRole("button", { name: "ダイレクトメッセージ" });
@@ -134,6 +135,6 @@ export const Sections: Story = {
     await expect(regularLink).toBeVisible();
     await userEvent.click(direct);
     await expect(directLink).toBeVisible();
-  },
+  }),
 };
 export const MobileSections: Story = { ...Sections, globals: { viewport: { value: "mobile" } } };

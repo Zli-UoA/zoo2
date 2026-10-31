@@ -20,10 +20,12 @@ object CatalogSamples {
 @Composable
 fun Catalog(app: Session, options: Row) {
     val kind = options.text("sample")
+    val fixture = options.nested("fixture")
+    val users = (fixture["users"] as? JsonArray)?.map { it.jsonObject } ?: CatalogSamples.users
+
     val content =
-        options.text("content").ifEmpty {
-            if (kind == "rich-text") CatalogSamples.richText else CatalogSamples.message
-        }
+        if ("content" in options) options.text("content")
+        else if (kind == "rich-text") CatalogSamples.richText else CatalogSamples.message
     var selected by remember { mutableStateOf("") }
     var picker by remember(kind) { mutableStateOf(kind == "emoji-picker") }
     Box(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background)) {
@@ -46,38 +48,46 @@ fun Catalog(app: Session, options: Row) {
                 )
         ) {
             when (kind) {
+                "card" -> MessageCard(fixture.nested("card"), fixture.flag("attachment"))
+                "app-blocks" ->
+                    Blocks(
+                        app,
+                        fixture["blocks"],
+                        fixture.text("appId"),
+                        submit = fixture.flag("submit"),
+                    )
+                "link-preview" -> LinkPreviews(app, content)
+
                 "settings",
-                "settings-members" -> ZooSettings(app, CatalogSamples.users)
-                "bubble" -> BubbleChat(app, CatalogSamples.users)
+                "settings-members" -> ZooSettings(app, users)
+                "bubble" -> BubbleChat(app, users)
                 "notifications",
                 "notifications-loading" ->
                     Notifications(
                         app,
-                        listOf(
-                            obj(
-                                "id" to "catalog-notification",
-                                "actor_id" to "alice",
-                                "user_id" to "alice",
-                                "channel_id" to "catalog",
-                                "message_id" to "catalog-message",
-                                "notification_type" to "mention",
-                                "created_at" to "2026-01-02T09:00:00Z",
-                                "is_read" to "true",
-                            )
-                        ),
-                        CatalogSamples.users,
+                        (fixture["notifications"] as? JsonArray)?.map { it.jsonObject }
+                            ?: listOf(
+                                obj(
+                                    "id" to "catalog-notification",
+                                    "actor_id" to "alice",
+                                    "user_id" to "alice",
+                                    "channel_id" to "catalog",
+                                    "message_id" to "catalog-message",
+                                    "notification_type" to "mention",
+                                    "created_at" to "2026-01-02T09:00:00Z",
+                                    "is_read" to "true",
+                                )
+                            ),
+                        users,
                     )
-                "composer" ->
-                    Composer(app, "catalog", null, CatalogSamples.users, !options.flag("disabled"))
+                "composer" -> Composer(app, "catalog", null, users, !options.flag("disabled"))
                 "emoji-picker" ->
                     Column(Modifier.padding(16.dp)) {
                         Button(app.t("reactions.add")) { picker = true }
                         Text(selected)
                     }
                 "rich-text" ->
-                    Column(Modifier.fillMaxWidth().padding(20.dp)) {
-                        RichText(content, CatalogSamples.users)
-                    }
+                    Column(Modifier.fillMaxWidth().padding(20.dp)) { RichText(content, users) }
                 else -> {
                     val message =
                         JsonObject(
@@ -99,7 +109,7 @@ fun Catalog(app: Session, options: Row) {
                             message,
                             listOf(message),
                             emptyList(),
-                            CatalogSamples.users,
+                            users,
                             options.flag("grouped"),
                             true,
                         )

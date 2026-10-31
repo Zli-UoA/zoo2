@@ -1,3 +1,4 @@
+import { playForImplementation } from "../../../.storybook/play-for-implementation";
 import type { Meta, StoryObj } from "@storybook/react-vite";
 import { expect, fn, screen, userEvent } from "storybook/test";
 
@@ -23,7 +24,7 @@ type Story = StoryObj<typeof meta>;
 export const Default: Story = {};
 
 export const Filled: Story = {
-  play: async () => {
+  play: playForImplementation(async () => {
     await userEvent.type(screen.getByPlaceholderText("新しいチャンネル名"), "new-channel");
     await userEvent.type(
       screen.getByPlaceholderText("このチャンネルの目的や話題"),
@@ -31,7 +32,7 @@ export const Filled: Story = {
     );
     await userEvent.click(screen.getByRole("checkbox", { name: "非公開にする" }));
     await expect(screen.getByRole("button", { name: "チャンネル作成" })).toBeEnabled();
-  },
+  }),
 };
 
 export const Closed: Story = {
