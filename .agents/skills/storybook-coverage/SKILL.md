@@ -40,6 +40,10 @@ Storybookは部品の一覧だけでなく、利用者が見る状態と操作�
 - `play` はrole・labelを優先し、非同期結果を待って検証する。固定sleep、空のアサーション、内部stateの直接書換えは避ける。
 - 新規Storyは原則 `a11y.test: "error"`。例外は具体的な理由をStoryに残す。既存のtodoを無条件に増やさない。
 
+## ReactとComposeの対応
+
+Reactの状態・操作を変更したら、[compose-react-parity](../compose-react-parity/SKILL.md) に従い、実Kotlinコンポーネントのカタログと両実装の操作検証も更新する。ReactのStoryだけでComposeの追従を保証しない。共通fixture・ツールバー・Controlsを使い、同じ入力で比較する。
+
 ## 対象一覧と確認
 
 `frontend/.storybook/coverage.json` に対象モジュール・Story・必要な状態を登録する。UIを追加・変更したら対象一覧も更新し、新規モジュールを除外する場合は理由と確認先を明示する。監査は「登録済みの状態が存在するか」を確認するもので、見た目の正しさや全状態の網羅率を保証するものではない。
