@@ -47,6 +47,16 @@ pub(crate) fn parse_cors_allowed_origins(raw: Option<&str>, environment: &str) -
     }
 }
 
+/// S3 公開エンドポイント環境変数（`S3_PUBLIC_ENDPOINT`）をパース・正規化する純粋関数
+///
+/// 未設定または空文字なら `None` を返す。
+/// 指定されている場合は前後空白を除去し、末尾のスラッシュを削除して返す。
+pub(crate) fn parse_public_endpoint(raw: Option<&str>) -> Option<String> {
+    raw.map(str::trim)
+        .filter(|v| !v.is_empty())
+        .map(|v| v.trim_end_matches('/').to_string())
+}
+
 #[derive(Clone)]
 pub struct S3Config {
     pub endpoint: String,
@@ -58,6 +68,7 @@ pub struct S3Config {
     pub presigned_put_expiry_secs: u64,
     pub presigned_get_expiry_secs: u64,
     pub max_file_size: u64,
+    pub public_endpoint: Option<String>,
 }
 
 impl fmt::Debug for S3Config {
@@ -72,6 +83,7 @@ impl fmt::Debug for S3Config {
             .field("presigned_put_expiry_secs", &self.presigned_put_expiry_secs)
             .field("presigned_get_expiry_secs", &self.presigned_get_expiry_secs)
             .field("max_file_size", &self.max_file_size)
+            .field("public_endpoint", &self.public_endpoint)
             .finish()
     }
 }
@@ -213,6 +225,7 @@ impl Config {
             .ok()
             .and_then(|v| v.parse().ok())
             .unwrap_or(52428800);
+        let public_endpoint = parse_public_endpoint(env::var("S3_PUBLIC_ENDPOINT").ok().as_deref());
 
         let s3 = S3Config {
             endpoint: s3_endpoint,
@@ -224,6 +237,7 @@ impl Config {
             presigned_put_expiry_secs,
             presigned_get_expiry_secs,
             max_file_size,
+            public_endpoint,
         };
 
         Self {
@@ -254,6 +268,20 @@ impl Config {
                 "ATTACHMENT_PRESIGNED_GET_EXPIRY_SECS must be between 1 and {MAX_PRESIGNED_EXPIRY_SECS} seconds, got {}",
                 self.s3.presigned_get_expiry_secs
             ));
+        }
+
+        if let Some(ref public_endpoint) = self.s3.public_endpoint {
+            let parsed = reqwest::Url::parse(public_endpoint)
+                .map_err(|e| format!("S3_PUBLIC_ENDPOINT is not a valid URL: {e}"))?;
+            if parsed.scheme() != "http" && parsed.scheme() != "https" {
+                return Err("S3_PUBLIC_ENDPOINT scheme must be http or https".to_string());
+            }
+            if self.environment == "production" && parsed.scheme() != "https" {
+                return Err("S3_PUBLIC_ENDPOINT must use https in production".to_string());
+            }
+            if parsed.host_str().is_none() {
+                return Err("S3_PUBLIC_ENDPOINT must have a host".to_string());
+            }
         }
 
         if self.environment == "production" {
@@ -312,6 +340,7 @@ mod tests {
             presigned_put_expiry_secs: 900,
             presigned_get_expiry_secs: 300,
             max_file_size: 52428800,
+            public_endpoint: None,
         }
     }
 
@@ -576,5 +605,76 @@ mod tests {
         // 空文字はクロスオリジン無効 (空リスト)
         assert!(parse_cors_allowed_origins(Some(""), "development").is_empty());
         assert!(parse_cors_allowed_origins(Some(""), "production").is_empty());
+    }
+
+    #[test]
+    fn test_parse_public_endpoint() {
+        assert_eq!(parse_public_endpoint(None), None);
+        assert_eq!(parse_public_endpoint(Some("")), None);
+        assert_eq!(parse_public_endpoint(Some("   ")), None);
+
+        // トリムおよび末尾スラッシュの除去
+        assert_eq!(
+            parse_public_endpoint(Some("https://attachments.zliusercontent.com")),
+            Some("https://attachments.zliusercontent.com".to_string())
+        );
+        assert_eq!(
+            parse_public_endpoint(Some("  https://attachments.zliusercontent.com/  ")),
+            Some("https://attachments.zliusercontent.com".to_string())
+        );
+        assert_eq!(
+            parse_public_endpoint(Some("https://attachments.zliusercontent.com///")),
+            Some("https://attachments.zliusercontent.com".to_string())
+        );
+    }
+
+    #[test]
+    fn test_validate_public_endpoint() {
+        let valid_oidc = Some(OidcConfig {
+            issuer: "https://idm.example.com".to_string(),
+            audience: "zoo_client".to_string(),
+            jwks_url: None,
+        });
+
+        let mut config = Config {
+            database_url: "test".to_string(),
+            host: "127.0.0.1".to_string(),
+            port: 8080,
+            electric_url: "test".to_string(),
+            electric_secret: None,
+            oidc: valid_oidc.clone(),
+            dev_auth_enabled: false,
+            environment: "development".to_string(),
+            cors_allowed_origins: vec![],
+            s3: dummy_s3_config(),
+        };
+
+        // None は OK
+        config.s3.public_endpoint = None;
+        assert!(config.validate().is_ok());
+
+        // dev では http / https 両方 OK
+        config.s3.public_endpoint = Some("http://localhost:8787".to_string());
+        assert!(config.validate().is_ok());
+
+        config.s3.public_endpoint = Some("https://attachments.zliusercontent.com".to_string());
+        assert!(config.validate().is_ok());
+
+        // 不正な URL
+        config.s3.public_endpoint = Some("not-a-url".to_string());
+        assert!(config.validate().is_err());
+
+        // 不正なスキーム (ftp://)
+        config.s3.public_endpoint = Some("ftp://example.com".to_string());
+        assert!(config.validate().is_err());
+
+        // 本番環境 (production)
+        config.environment = "production".to_string();
+        config.s3.public_endpoint = Some("https://attachments.zliusercontent.com".to_string());
+        assert!(config.validate().is_ok());
+
+        // 本番環境での http は拒否
+        config.s3.public_endpoint = Some("http://attachments.zliusercontent.com".to_string());
+        assert!(config.validate().is_err());
     }
 }
