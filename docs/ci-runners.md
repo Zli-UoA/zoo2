@@ -1,8 +1,8 @@
 # CI のRunner選択
 
-軽量ジョブはkubecamp固定、空き状況による切り替えを残すDocker不要ジョブは **kubecamp → zli-k8s → GitHub-hosted** の順に実行先を選びます。kubecampのラベルは `zli-kubecamp-no-docker`、zoo2 ARCのラベルは `zli-k8s` です。Docker daemonが必要なジョブは **zli-k8s → GitHub-hosted** の順です。
+軽量ジョブはkubecamp固定、空き状況による切り替えを残すDocker不要ジョブは **kubecamp → zli-k8s → GitHub-hosted** の順に実行先を選びます。kubecampのラベルは `zli-kubecamp-no-docker`、zoo2 ARCのラベルは `zli-k8s` です。Docker daemonが必要なジョブは、空き状況にかかわらず **GitHub-hosted** で実行します。zli-k8sのDinDはzoo2クラスタのetcdと同じディスクに書き込み、API停止の原因になっていたためです。kubecampはPodSecurityでprivilegedを許可しないため、DinDを置けません。zoo2はpublicリポジトリなので、GitHub-hostedの標準Runnerは無料です。
 
-自動選択が必要なworkflowだけに置く `runner` ジョブが、checkoutせずにorgのRunner一覧を取得します。`runs-on` 出力はDocker不要用、`docker-runs-on` 出力はDocker必須用です。`large-runs-on` はkubecampの2GiBを超えるジョブ用で、同じARC → Hostedの選択を使います。次の条件で選びます。
+自動選択が必要なworkflowだけに置く `runner` ジョブが、checkoutせずにorgのRunner一覧を取得します。`runs-on` 出力はDocker不要用、`docker-runs-on` 出力はDocker必須用で、常に `ubuntu-latest` を返します。`large-runs-on` はkubecampの2GiBを超えるジョブ用で、ARC → Hostedの選択を使います。次の条件で選びます。
 
 1. onlineかつidleのkubecamp Runnerがあれば、自動選択対象のDocker不要ジョブを割り当てます。
 2. kubecampが不在または全台busyなら、idleのARC Runnerを使います。登録台数から増設余地を推測せず、idleがある場合だけARCを選びます。
@@ -20,7 +20,7 @@ forkの `pull_request` は、選択処理と各ジョブの両方でGitHub-hoste
 
 各リポジトリのRepository Secret `RUNNER_STATUS_TOKEN` に登録します。publicリポジトリではOrg Secretの共有も使えますが、GitHub FreeのprivateリポジトリはOrg Secretを利用できません。fine-grained PATならOrganization permissionsのSelf-hosted runners: Read-onlyを使います。判定ジョブ以外には渡しません。
 
-トークン不足・API障害で状態を確認できない場合、または判定が失敗して出力を返さない場合は、Docker不要ジョブはkubecamp、Docker必須ジョブはARCを選びます。障害を確認できていないため、最初の適格なself-hosted poolで待機する扱いです。利用可能なRunnerがなければキューで待ち続ける可能性があります。
+トークン不足・API障害で状態を確認できない場合、または判定が失敗して出力を返さない場合は、Docker不要ジョブはkubecamp、大容量ジョブはARC、Docker必須ジョブはGitHub-hostedを選びます。障害を確認できていないため、最初の適格なself-hosted poolで待機する扱いです。利用可能なRunnerがなければキューで待ち続ける可能性があります。
 
 ## 選択のタイミングと検証
 
