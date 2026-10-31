@@ -273,7 +273,7 @@
     },
     {
       "file": "src/components/ui/button.stories.tsx",
-      "states": ["Default", "Variants", "Sizes", "Disabled", "WithIcon"]
+      "states": ["Default", "Variants", "Sizes", "Disabled", "WithIcon", "DisabledDark"]
     },
     {
       "file": "src/components/ui/confirm-action-dialog.stories.tsx",

@@ -5,6 +5,7 @@ const pairs = [
   ["card", "card-foreground"],
   ["popover", "popover-foreground"],
   ["primary", "primary-foreground"],
+  ["primary-hover", "primary-foreground"],
   ["secondary", "secondary-foreground"],
   ["muted", "muted-foreground"],
   ["accent", "accent-foreground"],

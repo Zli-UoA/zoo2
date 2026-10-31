@@ -88,3 +88,5 @@ export const WithIcon: Story = {
     ),
   },
 };
+
+export const DisabledDark: Story = { ...Disabled, globals: { theme: "dark" } };
