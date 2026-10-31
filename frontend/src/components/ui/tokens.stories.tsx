@@ -20,7 +20,7 @@ function Tokens() {
         <h2 id="brand-title" className="text-lg font-semibold">
           Zoo · Zli Yellow
         </h2>
-        <p className="text-sm text-muted-foreground">#FFD600 / #2C2C2C / #D9D9D9</p>
+        <p className="text-sm text-muted-foreground">#FFD600 / #000000 / #FFFFFF</p>
         <div className="flex flex-wrap items-end gap-4">
           {[16, 32, 64, 192].map((size) => (
             <figure key={size} className="space-y-1">

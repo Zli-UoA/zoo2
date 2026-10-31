@@ -83,16 +83,16 @@ body {
 :root {
   /* Zli Yellow / Black / White: https://zli.works/brand */
   --background: #ffffff;
-  --foreground: #2c2c2c;
+  --foreground: #000000;
   --card: #ffffff;
-  --card-foreground: #2c2c2c;
+  --card-foreground: #000000;
   --popover: #ffffff;
-  --popover-foreground: #2c2c2c;
+  --popover-foreground: #000000;
   --primary: #ffd600;
   --primary-hover: #ffe34d;
-  --primary-foreground: #2c2c2c;
+  --primary-foreground: #000000;
   --secondary: #f5f5f5;
-  --secondary-foreground: #2c2c2c;
+  --secondary-foreground: #000000;
   --muted: #f5f5f5;
   --muted-foreground: #666666;
   --accent: #fffbe8;
@@ -102,8 +102,8 @@ body {
   /* Secondary accents stay neutral; saturated yellow is reserved for primary actions. */
   --brand: #626262;
   --brand-foreground: #ffffff;
-  --brand-muted: #fffbea;
-  --brand-muted-foreground: #424242;
+  --brand-muted: #fff6cc;
+  --brand-muted-foreground: #000000;
   --border: #e5e5e5;
   --input: #d4d4d4;
   --ring: #737373;
@@ -111,10 +111,10 @@ body {
   --chart-2: #d9d9d9;
   --chart-3: #a3a3a3;
   --chart-4: #626262;
-  --chart-5: #2c2c2c;
+  --chart-5: #000000;
   --radius: 0.625rem;
   --sidebar: #fafaf8;
-  --sidebar-foreground: #2c2c2c;
+  --sidebar-foreground: #000000;
   --sidebar-primary: var(--primary);
   --sidebar-primary-foreground: var(--primary-foreground);
   --sidebar-accent: var(--accent);
@@ -124,26 +124,26 @@ body {
 }
 
 .dark {
-  --background: #1f1f1f;
-  --foreground: #f0f0f0;
-  --card: #2c2c2c;
-  --card-foreground: #f0f0f0;
-  --popover: #2c2c2c;
-  --popover-foreground: #f0f0f0;
+  --background: #000000;
+  --foreground: #ffffff;
+  --card: #181818;
+  --card-foreground: #ffffff;
+  --popover: #181818;
+  --popover-foreground: #ffffff;
   --primary: #ffd600;
   --primary-hover: #ffe34d;
-  --primary-foreground: #2c2c2c;
-  --secondary: #343434;
-  --secondary-foreground: #f0f0f0;
-  --muted: #343434;
+  --primary-foreground: #000000;
+  --secondary: #262626;
+  --secondary-foreground: #ffffff;
+  --muted: #262626;
   --muted-foreground: #bdbdbd;
-  --accent: #383838;
-  --accent-foreground: #f0f0f0;
+  --accent: #2e2e2e;
+  --accent-foreground: #ffffff;
   --destructive: oklch(0.704 0.191 22.216);
   --link: #8ab4ff;
   --brand: #d9d9d9;
-  --brand-foreground: #2c2c2c;
-  --brand-muted: #363636;
+  --brand-foreground: #000000;
+  --brand-muted: #303030;
   --brand-muted-foreground: #e5e5e5;
   --border: #454545;
   --input: #575757;
@@ -153,8 +153,8 @@ body {
   --chart-3: #d9d9d9;
   --chart-4: #bdbdbd;
   --chart-5: #a3a3a3;
-  --sidebar: #2c2c2c;
-  --sidebar-foreground: #f0f0f0;
+  --sidebar: #141414;
+  --sidebar-foreground: #ffffff;
   --sidebar-primary: var(--primary);
   --sidebar-primary-foreground: var(--primary-foreground);
   --sidebar-accent: var(--accent);

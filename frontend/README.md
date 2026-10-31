@@ -316,6 +316,6 @@ OS の `prefers-reduced-motion` 設定ではアニメーションを停止しま
 
 ## ブランドカラーとアイコン
 
-[Zli Brand Guidelines](https://zli.works/brand) の Yellow `#FFD600`・Black `#2C2C2C`・White `#D9D9D9` を基準に、`src/styles.css` で明暗の共通トークンを定義しています。ライトテーマのメイン背景は白を維持し、サイドバーなどのカラムの黄色味はごく薄くし、補助色・境界線・ダークテーマの選択背景はニュートラルなグレーに揃えます。黄色のボタンには黒い文字を使い、本文のリンクはテーマに合わせた青を専用の `--link` トークンで管理します。
+[Zli Brand Guidelines](https://zli.works/brand) の Yellow `#FFD600` をアクセントに使い、白黒の基礎色を `#FFFFFF` / `#000000` として、`src/styles.css` で明暗の共通トークンを定義しています。ライトテーマのメイン背景は白を維持し、サイドバーなどのカラムの黄色味はごく薄くし、補助色・境界線・ダークテーマの選択背景はニュートラルなグレーに揃えます。黄色のボタンには黒い文字を使い、本文のリンクはテーマに合わせた青を専用の `--link` トークンで管理します。
 
 アイコンの正本は `public/icons/zoo.svg` です。提供されたSVGのパスを維持し、アプリ左上・ウェルカム画面・SVG faviconで同じファイルを参照します。PWA / Apple用PNG、PNG favicon、ICO、通知用の単色バッジもこのSVGから生成します。変更時は `pnpm exec playwright install chromium` の後、`pnpm generate:icons` を実行し、生成ファイルもコミットしてください。PWAのマークはmaskableアイコンの中央80%の円内に収め、OSによる切り抜きに備えています。通知バッジはAndroidの描画仕様に合わせ、同じ図案の透過・白一色を使います。

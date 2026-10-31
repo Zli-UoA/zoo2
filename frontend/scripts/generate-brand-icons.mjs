@@ -5,7 +5,7 @@ import { chromium } from "@playwright/test";
 // The mark fits within the central 80% diameter circle required for maskable icons.
 const publicRoot = new URL("../public/", import.meta.url);
 const svg = await readFile(new URL("icons/zoo.svg", publicRoot), "utf8");
-const badge = svg.replace(/<rect[^>]+\/>/, "").replaceAll("#2C2C2C", "#FFFFFF");
+const badge = svg.replace(/<rect[^>]+\/>/, "").replaceAll("#000000", "#FFFFFF");
 const browser = await chromium.launch({ headless: true });
 try {
   const page = await browser.newPage();
