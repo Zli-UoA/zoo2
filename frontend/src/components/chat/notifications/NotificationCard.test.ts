@@ -70,6 +70,7 @@ const channel: ChannelRow = {
   description: null,
   created_user_id: "me",
   is_private: false,
+  is_dm: false,
   created_at: now,
   updated_at: null,
   archive_at: null,

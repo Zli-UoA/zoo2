@@ -13,7 +13,7 @@ on:
     workflows: [Flux production status]
     types: [completed]
   schedule:
-    - cron: "17 * * * *"
+    - cron: "27 * * * *"
   workflow_dispatch:
 
 permissions: {}

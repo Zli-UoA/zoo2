@@ -19,7 +19,7 @@ on:
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
-# runner ジョブが zli-k8s（self-hosted）か GitHub-hosted を選ぶ（select-runner.yaml）。
+# runner ジョブがDocker不要用とDocker必須用の実行先を選びます。
 jobs:
   runner:
     uses: ./.github/workflows/select-runner.yaml
@@ -28,17 +28,25 @@ jobs:
 
   oidc-e2e:
     needs: runner
-    runs-on: ${{ fromJSON(needs.runner.outputs.runs-on) }}
+    runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-latest' || fromJSON(needs.runner.outputs.docker-runs-on || '"zli-k8s"') }}
     timeout-minutes: 30
     env:
-      DATABASE_URL: postgres://root:password@localhost:5432/zoo?sslmode=disable
-      ELECTRIC_URL: http://127.0.0.1:3000
+      # Each job owns its containers and dynamically assigned host ports.
+      COMPOSE_PROJECT_NAME: zoo-ci-oidc-${{ github.run_id }}-${{ github.run_attempt }}
+      POSTGRES_PORT: "0"
+      ELECTRIC_PORT: "0"
+      S3_PORT: "0"
+      S3_CONSOLE_PORT: "0"
       # 本番同等の認証経路（Bearer + JWKS）を通す。dev の X-Dev-User は使わない。
       ENVIRONMENT: production
       DEV_AUTH_ENABLED: "false"
       OIDC_ISSUER: http://127.0.0.1:4100/oauth2/openid/zoo
       OIDC_AUDIENCE: zoo
       CORS_ALLOWED_ORIGINS: http://localhost:5173,http://127.0.0.1:5173
+      S3_ENDPOINT: https://example.r2.cloudflarestorage.com
+      S3_BUCKET: zoo-attachments-prod
+      S3_ACCESS_KEY_ID: dummy-prod-access-key
+      S3_SECRET_ACCESS_KEY: dummy-prod-secret-key
     defaults:
       run:
         working-directory: ./frontend
@@ -112,6 +120,10 @@ jobs:
           cat "$RUNNER_TEMP/compose-up.log"
           # Idempotent: fails here if a service did not become healthy.
           docker compose -f infra/db/compose.yml up -d --wait
+          postgres_port=$(docker compose -f infra/db/compose.yml port postgres 5432)
+          electric_port=$(docker compose -f infra/db/compose.yml port electric 3000)
+          echo "DATABASE_URL=postgres://root:password@${postgres_port}/zoo?sslmode=disable" >> "$GITHUB_ENV"
+          echo "ELECTRIC_URL=http://${electric_port}" >> "$GITHUB_ENV"
 
       - name: Setup Atlas
         uses: ariga/setup-atlas@v0
@@ -137,7 +149,10 @@ jobs:
 
       - name: Backend logs
         if: failure()
-        run: cat /tmp/backend.log
+        working-directory: .
+        run: |
+          if [ -f /tmp/backend.log ]; then cat /tmp/backend.log; fi
+          docker compose -f infra/db/compose.yml logs postgres electric
 
       - name: Upload Playwright artifacts
         if: failure()
@@ -148,3 +163,8 @@ jobs:
             frontend/test-results
             frontend/playwright-report
           retention-days: 7
+
+      - name: Stop containers
+        if: always()
+        working-directory: .
+        run: docker compose -f infra/db/compose.yml down -v --remove-orphans

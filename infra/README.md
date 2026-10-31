@@ -204,6 +204,7 @@ SPA は `VITE_OIDC_ISSUER`・`VITE_OIDC_CLIENT_ID`・`VITE_OIDC_REDIRECT_URI`（
 | `VITE_OIDC_RESOURCE` | frontend build | 任意 | AuthZ の resource identifier（RFC 8707）。未設定だと AuthZ は opaque token を発行する |
 | `VITE_OIDC_POST_LOGOUT_REDIRECT_URI` | frontend build | 任意 | 既定 `${origin}/` |
 | `CSP_CONNECT_SRC` | frontend runtime | OIDC 利用時は必須 | IdP のオリジン（`connect-src` に追加） |
+| `CSP_STORAGE_SRC` | frontend runtime | 添付機能利用時は必須 | オブジェクトストレージ（Cloudflare R2 等）のオリジン（`connect-src` と `img-src` に追加） |
 
 バックエンド側の `OIDC_ISSUER` / `OIDC_AUDIENCE` と、トークンの `iss` / `aud` / `typ` を一致させてください。AuthZ の `aud` は resource identifier の配列です。
 
@@ -221,10 +222,12 @@ SPA は IdP の Discovery / token エンドポイントをブラウザから直�
 | --- | --- | --- |
 | `CSP_SCRIPT_SRC` | ビルド時に自動生成 | `index.html` のインライン `<script>` の SHA-256。手動設定しない |
 | `CSP_CONNECT_SRC` | frontend の実行時環境変数 | `connect-src` に追加するオリジン（空白区切り）。既定は空で `'self'` のみ |
+| `CSP_STORAGE_SRC` | frontend の実行時環境変数 | 添付ファイル用ストレージ（Cloudflare R2 等）のオリジン（空白区切り）。Presigned URL への送受信と画像表示のため `connect-src` と `img-src` の両方に追加される |
+| `CSP_APP_IMAGE_SRC` | frontend の実行時環境変数 | App アイコンの HTTPS 配信元オリジン（空白区切り、`img-src` に追加） |
 
 `CSP_CONNECT_SRC` には IdP の **issuer と token エンドポイントのオリジン**を指定します（例: `https://idm.example.com`）。Kanidm では通常どちらも同じオリジンです。JWKS は Rust が取得するためブラウザの CSP には不要ですが、リバースプロキシ等で別オリジンに置いている場合でも Rust 側の到達性だけを確認してください。`VITE_API_BASE_URL` を空以外にして API を別オリジンへ向ける構成にした場合は、そのオリジンも `CSP_CONNECT_SRC` に追加してください（Compose のステージング構成では `/api/*` を同一オリジンで Traefik から Rust へ転送するため不要です）。
 
-`img-src` は `'self' data: https://www.gstatic.com` に固定しています。`https://www.gstatic.com` は Emoji Kitchen の合成画像（#82）をブラウザから直接取得するためです。新しい外部画像オリジンを追加する場合は、`/` と `/assets/` の両方の `img-src` と `container` ジョブの検査を更新してください。
+`img-src` は既定で `'self' data: https://www.gstatic.com` に加え、`CSP_STORAGE_SRC` と `CSP_APP_IMAGE_SRC` を展開します。`https://www.gstatic.com` は Emoji Kitchen の合成画像（#82）をブラウザから直接取得するためです。添付ファイルの署名付き PUT / GET URL で Cloudflare R2 等の外部ストレージに直接アクセスする場合は、そのオリジン（例: `https://<account>.r2.cloudflarestorage.com`）を `CSP_STORAGE_SRC` に指定してください。新しい外部画像オリジンを追加する場合は、`/` と `/assets/` の両方の `img-src` と `container` ジョブの検査を更新してください。
 
 `script-src` は `'unsafe-inline'` を使わず、ビルド時のハッシュで許可します。 SQLite Worker の WebAssembly 実行には `'wasm-unsafe-eval'`、ビルド時に埋め込まれる WASM の `data:` URL の読み込みには `connect-src` の `data:` を許可しています。JavaScript の `'unsafe-eval'` は許可しません。ハッシュは `infra/csp-hashes.mjs` が `pnpm build` 後の `index.html` から生成し、`infra/frontend-entrypoint.sh` が起動時に `CSP_SCRIPT_SRC` として渡します。`index.html` やテーマ初期化 script を変更した場合は、必ずイメージを再ビルドしてください。`style-src` の `'unsafe-inline'` は React の style 属性に必要なため残しています。
 
@@ -295,3 +298,13 @@ CSP を変更すると、アプリはネットワークから取得した CSP �
 既存キャッシュからの更新は `cd frontend && pnpm test:csp:offline:warm` で検証します。Firefox・Chromium の同一ブラウザコンテキストで旧 CSP をキャッシュし、CSP だけを更新した後、旧キャッシュの削除、新 CSP の Worker による保存・再接続、オフライン再読み込みを確認します。デプロイ後も新規プロファイルと既存 SW キャッシュを持つプロファイルの両方で、保存エラーとブラウザコンソールの CSP 違反がないことを確認してください。
 
 オンラインの OIDC 起動では `/api/users/me` を最大8秒待ちます。応答がない場合は待機を解除して再試行できるエラー画面を表示します。前ユーザーのキャッシュは開きません。オフライン時は従来どおり、ログアウトで削除されていない前回ユーザーのローカルキャッシュを表示します。
+
+Worker のファイル名が同じまま CSP が変わる場合、SW の Cache API だけでなく、ブラウザの HTTP キャッシュと CDN の immutable レスポンスにも旧 CSP が残ります。SW はアセットの取得 URL に `__zoo_policy=<CSPのハッシュ>` を付けて `cache: reload` で取得し、Cache API には元の URL をキーに保存します。キャッシュ形式 v3 への更新では旧形式のレスポンスを引き継ぎません。SQLite の初期化は、更新対象の SW がこのページを制御し始めてから行います。
+
+`pnpm test:csp:offline:warm` は本番と同じ `Cache-Control: public, max-age=31536000, immutable` を Worker に付与して検証します。旧形式、バージョン付き、CSP が同じままの SW コード更新を Firefox・Chromium の両方で確認します。Worker を `no-store` で配信するだけでは HTTP キャッシュに旧 CSP が残る不具合を検出できないため、この条件を維持してください。
+
+### App基盤
+
+`20261027000000_create_apps.sql` の適用後、バックエンド本体が永続イベント配信ワーカーを起動します。複数バックエンドでもDBのリースで配信を排他します。プロキシはWebSocket upgradeをそのまま中継し、App APIには `private, no-store` を設定します。
+
+ファイルは任意のS3互換バケットに接続します。設定は `APP_S3_ENDPOINT`、`APP_S3_BUCKET`、`APP_S3_REGION`、`APP_S3_ACCESS_KEY_ID`、`APP_S3_SECRET_ACCESS_KEY` です。未設定でもファイル以外のApp機能は使えます。`CSP_APP_IMAGE_SRC` にAppアイコンのHTTPS配信元を空白区切りで指定できます。既定の画像配信元制限は維持します。詳しい構築・検証手順は [App・Bot基盤](../docs/apps.md) を参照してください。

@@ -11,7 +11,7 @@ READMEのバッジは、GitHubに記録されたFluxの結果を共用GistのJSO
 | production | 最新production Deploymentの結果と7桁のコミットSHAです。最新mainと一致するとは限りません |
 | checked UTC | 状態を取得した確認時刻です。初期状態ではnot checkedと表示します |
 
-AuthZとzoo2はmigrationとアプリの両方の`flux/*`ステータスでmainを判定します。production Deploymentが未登録ならproductionはunknownです。infraは設定JSONに列挙したKustomizationを使い、未通知の対象があればpendingにします。対象を追加・廃止した場合は一覧も更新してください。通知workflowの成功だけでは、配備成功にしません。
+AuthZとzoo2はmigrationとアプリの両方の`flux/*`ステータスでmainを判定します。production Deploymentが未登録の場合や、Deploymentにstatusがまだない場合はproductionをunknownとします。Deploymentがあれば短縮SHAを残すため、未登録の場合と区別できます。infraは設定JSONに列挙したKustomizationを使い、未通知の対象があればpendingにします。対象を追加・廃止した場合は一覧も更新してください。通知workflowの成功だけでは、配備成功にしません。
 
 バッジをクリックすると、mainのコミット一覧、productionの配備履歴、バッジの更新workflowへ進めます。リソースごとの結果・commit statusの更新時刻・完全なSHAは、更新jobのSummaryで確認できます。この更新時刻はFluxイベントの発生時刻ではなく、同じ結果の再通知では変わらないことがあります。READMEの上部には説明文を追加しません。
 
@@ -49,7 +49,7 @@ PAT交換時は新しいトークンを3リポジトリへ登録し、手動実�
 
 ## 更新と障害時の動作
 
-更新の契機はmainへのpush、Fluxのcommit status通知、Flux production status workflowの完了、毎時17分の定期実行、手動実行です。GITHUB_TOKENによるstatus登録から別workflowが起動しないため、AuthZ・zoo2では通知workflowの完了も使います。runner選択とCI_RUNNERの扱いは既存のCIと共通です。
+更新の契機はmainへのpush、Fluxのcommit status通知、Flux production status workflowの完了、毎時27分の定期実行（共用Gistへの集中を避けるため、AuthZは17分、zoo2は27分、infraは37分）、手動実行です。GITHUB_TOKENによるstatus登録から別workflowが起動しないため、AuthZ・zoo2では通知workflowの完了も使います。runner選択とCI_RUNNERの扱いは既存のCIと共通です。
 
 最新mainのSHAを確定してから、そのSHAのステータスを取得します。取得後にmainのSHAと最新ステータスの1ページ目を再確認し、取得中に更新されていた場合は再取得します。3回試しても安定しない場合やAPI取得に失敗した場合はunknownを保存します。確認時刻は取得処理が終わった時刻です。照合後の変更や画像キャッシュもあるため、表示は確認時点のスナップショットとして扱ってください。
 
@@ -68,6 +68,6 @@ gh workflow run deployment-badges.yaml --repo Zli-UoA/zoo2-infra
 
 マージ後はSecret登録、各workflowの成功、認証なしでのraw JSON取得、Shields.ioとREADMEの画像表示を確認します。状態・短縮SHA・確認時刻がGitHubの記録と一致すること、各リポジトリの更新が他のJSONを保持することも確認してください。
 
-zoo2の通知受信側PR #177が未マージの間は、Fluxの結果が記録されずpendingが続きます。取り込み後の本番通知による変化は別途確認します。
+zoo2の通知受信側PR #177はマージ済みです。本番通知後にmainとproductionがGitHubの記録に追従することを確認してください。
 
 停止時は更新workflowを無効化し、READMEのバッジを外します。Gistは3リポジトリ共用のため、1つのリポジトリの停止だけでGistを削除しないでください。

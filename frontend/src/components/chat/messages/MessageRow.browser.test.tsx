@@ -1,4 +1,4 @@
-import { render, screen } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vite-plus/test";
 
@@ -51,10 +51,150 @@ function renderRow(item: MessageItem, isOwn = false, props: Partial<MessageRowPr
 }
 
 describe("MessageRow", () => {
+  it("hides the reaction strip until a reaction exists", () => {
+    const { container } = renderRow(buildItem(), false, { canReact: true });
+    expect(container.querySelector('[role="group"]')).toBeNull();
+  });
+
+  it.each([false, true])(
+    "opens App message actions from the menu with reactions=%s",
+    async (hasReactions) => {
+      const opened = vi.fn();
+      window.addEventListener("zoo:message-actions", opened);
+      try {
+        const { container } = renderRow(buildItem(), false, {
+          canReact: true,
+          reactions: hasReactions ? [{ emoji: "👍", count: 1, ownId: null }] : [],
+        });
+        const group = container.querySelector('[role="group"]');
+        expect(group?.querySelector('[aria-label="リアクションを追加"]') != null).toBe(
+          hasReactions,
+        );
+        expect(screen.queryByRole("button", { name: "Appでメッセージを操作" })).toBeNull();
+        screen.getByRole("button", { name: "その他の操作" }).focus();
+        await userEvent.keyboard("{Enter}");
+        await userEvent.click(screen.getByRole("menuitem", { name: "Appでメッセージを操作" }));
+        expect(opened).toHaveBeenCalledOnce();
+        expect((opened.mock.calls[0]![0] as CustomEvent<string>).detail).toBe("message-1");
+      } finally {
+        window.removeEventListener("zoo:message-actions", opened);
+      }
+    },
+  );
+
+  it("opens the menu on a touch hold and adds the first reaction", async () => {
+    const onPickReaction = vi.fn();
+    const { container } = renderRow(buildItem(), false, { canReact: true, onPickReaction });
+    const row = container.querySelector("div.group\\/row")!;
+    fireEvent.pointerDown(row, { pointerType: "touch", isPrimary: true, clientX: 20, clientY: 20 });
+    await waitFor(() =>
+      expect(screen.getByRole("menuitem", { name: "リアクションを追加" })).toBeTruthy(),
+    );
+    await userEvent.click(screen.getByRole("menuitem", { name: "リアクションを追加" }));
+    expect(onPickReaction).toHaveBeenCalledOnce();
+  });
+
+  it("opens App message actions from the touch hold menu", async () => {
+    const opened = vi.fn();
+    window.addEventListener("zoo:message-actions", opened);
+    try {
+      const { container } = renderRow(buildItem());
+      const row = container.querySelector("div.group\\/row")!;
+      fireEvent.pointerDown(row, { pointerType: "touch", isPrimary: true });
+      await waitFor(() =>
+        expect(screen.getByRole("menuitem", { name: "Appでメッセージを操作" })).toBeTruthy(),
+      );
+      await userEvent.click(screen.getByRole("menuitem", { name: "Appでメッセージを操作" }));
+      expect(opened).toHaveBeenCalledOnce();
+      expect((opened.mock.calls[0]![0] as CustomEvent<string>).detail).toBe("message-1");
+    } finally {
+      window.removeEventListener("zoo:message-actions", opened);
+    }
+  });
+
+  it("cancels a touch hold when scrolling", async () => {
+    const { container } = renderRow(buildItem());
+    const row = container.querySelector("div.group\\/row")!;
+    fireEvent.pointerDown(row, { pointerType: "touch", isPrimary: true, clientX: 20, clientY: 20 });
+    fireEvent.pointerMove(row, { pointerType: "touch", clientX: 20, clientY: 50 });
+    await new Promise((resolve) => setTimeout(resolve, 550));
+    expect(screen.queryByRole("menu")).toBeNull();
+  });
+
+  for (const cancel of ["pointerCancel", "touchCancel"] as const) {
+    it(`clears a completed hold after ${cancel} so a subsequent reaction tap works`, async () => {
+      const onReaction = vi.fn();
+      const { container } = renderRow(buildItem(), false, {
+        canReact: true,
+        onReaction,
+        reactions: [{ emoji: "👍", count: 1, ownId: null }],
+      });
+      const row = container.querySelector("div.group\\/row")!;
+      fireEvent.pointerDown(row, { pointerType: "touch", isPrimary: true });
+      await waitFor(() => expect(screen.getByRole("menu")).toBeTruthy());
+      fireEvent[cancel](row);
+      // pointercancel の後に touchend が届かなくても抑止状態を残さない。
+      expect(fireEvent.touchEnd(row)).toBe(true);
+      await userEvent.keyboard("{Escape}");
+      await waitFor(() => expect(screen.queryByRole("menu")).toBeNull());
+      const reaction = screen.getByRole("button", { name: "👍 1 件" });
+      fireEvent.pointerDown(reaction, { pointerType: "touch", isPrimary: true });
+      expect(fireEvent.touchEnd(reaction)).toBe(true);
+      await userEvent.click(reaction);
+      expect(onReaction).toHaveBeenCalledWith("👍");
+    });
+  }
+
+  it("preserves native context menus on links while using body holds for actions", async () => {
+    const { container } = renderRow(buildItem({ content: "hello https://example.com" }));
+    const row = container.querySelector("div.group\\/row")!;
+    const link = screen.getByRole("link");
+    expect(fireEvent.contextMenu(row)).toBe(true);
+    fireEvent.pointerDown(row, { pointerType: "touch", isPrimary: true });
+    expect(fireEvent.contextMenu(row)).toBe(false);
+    expect(fireEvent.contextMenu(link)).toBe(true);
+    await waitFor(() => expect(screen.getByRole("menu")).toBeTruthy());
+    expect(fireEvent.contextMenu(row)).toBe(false);
+    expect(fireEvent.contextMenu(link)).toBe(true);
+    fireEvent.pointerCancel(row);
+  });
+
+  it("suppresses the native menu immediately after the hold timer before React commits", () => {
+    const { container } = renderRow(buildItem({ content: "hello https://example.com" }));
+    const row = container.querySelector("div.group\\/row")!;
+    const link = screen.getByRole("link");
+    vi.useFakeTimers();
+    try {
+      fireEvent.pointerDown(row, { pointerType: "touch", isPrimary: true });
+      act(() => {
+        vi.advanceTimersByTime(500);
+        // state の反映前、タイマーはクリア済みでも本文の標準メニューを抑止する。
+        expect(screen.queryByRole("menu")).toBeNull();
+        expect(fireEvent.contextMenu(row)).toBe(false);
+        expect(fireEvent.contextMenu(link)).toBe(true);
+      });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("offers the long-press menu as a keyboard fallback", async () => {
+    const onStartEdit = vi.fn();
+    renderRow(buildItem(), true, { onStartEdit });
+    const trigger = screen.getByRole("button", { name: "その他の操作" });
+    trigger.focus();
+    expect(document.activeElement).toBe(trigger);
+    await userEvent.keyboard("{Enter}");
+    const edit = screen.getByRole("menuitem", { name: "編集" });
+    edit.focus();
+    await userEvent.keyboard("{Enter}");
+    expect(onStartEdit).toHaveBeenCalledOnce();
+  });
+
   it("renders URLs as safe external links", () => {
     renderRow(buildItem({ content: "詳細は https://example.com/docs を参照" }));
 
-    const link = screen.getByRole("link", { name: "https://example.com/docs" });
+    const link = screen.getByRole("link", { name: "example.com/docs" });
     expect(link.getAttribute("href")).toBe("https://example.com/docs");
     expect(link.getAttribute("target")).toBe("_blank");
     expect(link.getAttribute("rel")).toBe("noopener noreferrer");
@@ -118,7 +258,7 @@ describe("MessageRow", () => {
     expect(edit.closest("div")?.className).toContain("group-hover/row:opacity-100");
 
     const more = screen.getByLabelText("その他の操作");
-    expect(more.className).toContain("pointer-events-auto border bg-popover shadow-sm");
+    expect(more.className).toContain("pointer-events-none opacity-0");
   });
 });
 
@@ -148,4 +288,18 @@ describe("trusted card metadata", () => {
     expect(article?.textContent).toContain("Deployment service");
     expect(article?.textContent).not.toContain("GitHub");
   });
+});
+
+it("shows an app identity and opens its profile without treating it as a person", async () => {
+  const opened = vi.fn();
+  window.addEventListener("zoo:open-app", opened);
+  try {
+    renderRow(buildItem({ is_bot: true, app_id: "github-app", display_name: "GitHub" }));
+    expect(screen.getByText("APP")).toBeVisible();
+    await userEvent.click(screen.getByRole("button", { name: "GitHub" }));
+    expect(opened).toHaveBeenCalledOnce();
+    expect((opened.mock.calls[0]![0] as CustomEvent<string>).detail).toBe("github-app");
+  } finally {
+    window.removeEventListener("zoo:open-app", opened);
+  }
 });

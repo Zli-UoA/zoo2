@@ -1,3 +1,4 @@
+pub mod attachments;
 pub mod channel_webhooks;
 pub mod channels;
 pub mod dms;
@@ -58,18 +59,37 @@ pub fn create_router(state: AppState) -> Router {
 
     Router::new()
         .merge(health::router())
-        .merge(webhooks::router())
+        .merge(crate::apps::management::router())
+        .merge(crate::apps::api::router())
+        .merge(crate::apps::oauth::router())
+        .merge(crate::apps::delivery::router())
+        .merge(crate::apps::ui::router())
+        .merge(crate::apps::files::router())
+        .merge(crate::apps::events::router())
+        .merge(crate::apps::resources::router())
         .merge(channel_webhooks::router())
         .merge(users::router())
         .merge(channels::router())
         .merge(dms::router())
         .merge(messages::router())
+        .merge(attachments::router())
         .merge(typing::router())
         .merge(notifications::router())
         .merge(push::router())
         .merge(read_states::router())
         .merge(shapes::router())
-        .layer(TraceLayer::new_for_http())
+        .layer(TraceLayer::new_for_http().make_span_with(
+            |request: &axum::http::Request<axum::body::Body>| {
+                let path = if request.uri().path().starts_with("/api/app-responses/") {
+                    "/api/app-responses/[redacted]"
+                } else if request.uri().path().starts_with("/api/webhooks/") {
+                    "/api/webhooks/[redacted]"
+                } else {
+                    request.uri().path()
+                };
+                tracing::info_span!("http_request", method = %request.method(), path)
+            },
+        ))
         .layer(cors)
         .with_state(state)
 }

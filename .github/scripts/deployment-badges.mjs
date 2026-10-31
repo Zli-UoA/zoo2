@@ -168,7 +168,8 @@ export function filesFor(result, config, now = new Date().toISOString()) {
       productionState,
     );
   }
-  // Explicitly select public fields. Never upload the source status objects or logs.
+  // Send only this repository's prefix. Omitted Gist files stay unchanged;
+  // never send other prefixes or null deletions. Select public fields only.
   return Object.fromEntries(
     Object.entries(badges).map(([kind, badge]) => [
       `${config.prefix}-${kind}.json`,
