@@ -412,7 +412,15 @@
         "EmojiPicker",
         "RichText",
         "ReactComparison",
-        "LongMessage"
+        "LongMessage",
+        "LinkPreview",
+        "IntegrationCards",
+        "AppCardBlock",
+        "Settings",
+        "WorkspaceMembers",
+        "BubbleChat",
+        "Notifications",
+        "NotificationsLoading"
       ]
     }
   ],

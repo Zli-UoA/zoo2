@@ -1,13 +1,18 @@
 import { test, expect, type Page } from "@playwright/test";
 
-async function open(page: Page, implementation: "react" | "compose", path = "/channels/c1") {
+async function open(
+  page: Page,
+  implementation: "react" | "compose",
+  path = "/channels/c1",
+  readyText = "こんにちは Parity",
+) {
   await page.addInitScript(() => {
     localStorage.setItem("zoo-locale", "ja");
     localStorage.setItem("zoo-theme", "light");
   });
   await page.clock.setFixedTime(new Date("2026-10-31T01:00:00Z"));
   await page.goto(`${path}?frontend=${implementation}`);
-  await expect(page.getByText("こんにちは Parity", { exact: false })).toBeVisible({
+  await expect(page.getByText(readyText, { exact: false })).toBeVisible({
     timeout: 90_000,
   });
   if (implementation === "compose")
@@ -45,16 +50,15 @@ async function closeChannelSettings(page: Page, native: boolean) {
   }
 }
 async function openApps(page: Page, native: boolean) {
-  if (native)
-    await page.getByRole("button", { name: "App・連携", exact: true }).click({ force: true });
-  else {
-    await page.getByRole("link", { name: "Zoo設定", exact: true }).click();
-    await page.getByRole("tab", { name: "App・連携", exact: true }).click();
-  }
+  await page
+    .getByRole(native ? "button" : "link", { name: "Zoo設定", exact: true })
+    .click({ force: native });
+  await page.getByRole("tab", { name: "App・連携", exact: true }).click({ force: native });
 }
 async function closeApps(page: Page, native: boolean) {
-  if (native) await page.keyboard.press("Escape");
-  else await page.getByRole("button", { name: "チャンネル一覧へ戻る", exact: true }).click();
+  await page
+    .getByRole("button", { name: "チャンネル一覧へ戻る", exact: true })
+    .click({ force: native });
 }
 
 async function nativeInput(page: Page) {
@@ -322,19 +326,175 @@ test("Compose panes preserve the existing desktop and mobile UI", async ({ brows
   }
 });
 
-test("Compose entry points keep React settings accessible and restore the selected frontend", async ({
+test("Compose entry points render Kotlin settings and preserve the selected frontend", async ({
   page,
   request,
 }) => {
   await request.post("https://127.0.0.1:4187/__reset");
   await open(page, "compose");
   await page.goto("/settings?frontend=compose");
-  await expect(page.getByRole("heading", { name: "Zoo設定", exact: true })).toBeVisible();
-  await expect(page.locator("[data-compose-shell]")).toHaveCount(0);
+  await expect(page.getByRole("heading", { name: "Zoo設定", exact: true })).toBeVisible({
+    timeout: 90000,
+  });
+  await expect(page.locator("[data-compose-shell]")).toBeVisible();
   expect(await page.evaluate(() => localStorage.getItem("zoo-frontend"))).toBe("compose");
-  await page.getByRole("tab", { name: "App・連携", exact: true }).click();
+  await page.getByRole("tab", { name: "App・連携", exact: true }).click({ force: true });
   await expect(page.getByRole("button", { name: "Appを作成", exact: true })).toBeVisible();
-  await page.getByRole("button", { name: "チャンネル一覧へ戻る", exact: true }).click();
+  await page
+    .getByRole("button", { name: "チャンネル一覧へ戻る", exact: true })
+    .click({ force: true });
   await expect(page.locator("[data-compose-shell]")).toBeVisible({ timeout: 90_000 });
   await expect(page.getByRole("button", { name: "general", exact: true })).toBeVisible();
 });
+
+for (const implementation of ["react", "compose"] as const) {
+  test(`${implementation}: parity entry points for completion, preferences, roles, Bubble and URL cards`, async ({
+    page,
+    request,
+  }) => {
+    const native = implementation === "compose";
+    const errors: string[] = [];
+    page.on("pageerror", (error) => errors.push(error.message));
+    await request.post("https://127.0.0.1:4187/__reset");
+    await open(page, implementation);
+    const composer = page.getByRole("textbox", { name: "メッセージを送信", exact: true });
+    const fill = async (input: ReturnType<Page["getByRole"]>, value: string) =>
+      native ? fillNative(page, input, value) : input.fill(value);
+    await fill(composer, "#gen");
+    await page
+      .getByRole(native ? "button" : "option", { name: /^#general/ })
+      .click({ force: native });
+    if (native) await expect(composer).toHaveText("#general ");
+    else await expect(composer).toHaveValue("#general ");
+    await fill(composer, "/ec");
+    await page
+      .getByRole(native ? "button" : "option", { name: /^\/echo.*Meeting Notes/ })
+      .click({ force: native });
+    if (native) await expect(composer).toHaveText("/echo ");
+    else await expect(composer).toHaveValue("/echo ");
+    await composer.click({ force: native });
+    await page.keyboard.press("End");
+    await page.keyboard.insertText("hello");
+    if (native) await expect(composer).toHaveText("/echo hello");
+    else await expect(composer).toHaveValue("/echo hello");
+    await page.getByRole("button", { name: "送信", exact: true }).click({ force: native });
+    const state = async () => (await request.get("https://127.0.0.1:4187/__state")).json();
+    await expect.poll(async () => (await state()).commandCalls[0]?.values?.text).toBe("hello");
+    expect((await state()).messages).toHaveLength(2);
+    await fill(composer, "https://example.test/delayed");
+    await page.getByRole("button", { name: "送信", exact: true }).click({ force: native });
+    await expect(
+      page.getByRole(native ? "button" : "link", { name: /^Parity URL card/ }),
+    ).toBeVisible();
+    const preview = (await state()).previewRequests[0];
+    expect(preview.url).toBe("https://example.test/delayed");
+    for (const key of ["authorization", "devUser", "cookie", "referer"])
+      expect(preview[key]).toBeUndefined();
+    await expect.poll(async () => (await state()).mediaRequests.length).toBeGreaterThan(0);
+    for (const key of ["authorization", "devUser", "cookie", "referer"])
+      expect((await state()).mediaRequests[0][key]).toBeUndefined();
+    await page
+      .getByRole(native ? "button" : "link", { name: "Zoo設定", exact: true })
+      .click({ force: native });
+    if (native) {
+      await page.getByRole("button", { name: /^検索エンジン:/ }).click({ force: true });
+      await page.getByRole("button", { name: "DuckDuckGo", exact: true }).click({ force: true });
+    } else
+      await page
+        .getByRole("combobox", { name: "検索エンジン", exact: true })
+        .selectOption("duckduckgo");
+    await expect.poll(async () => (await state()).preferences.search_engine).toBe("duckduckgo");
+    await page.getByRole("tab", { name: "メンバー", exact: true }).click({ force: native });
+    await expect(
+      page.getByRole("button", { name: "管理者を外す", exact: true }).first(),
+    ).toBeDisabled();
+    await page.getByRole("button", { name: "管理者にする", exact: true }).click({ force: native });
+    await page
+      .getByRole("button", { name: "管理者にする", exact: true })
+      .last()
+      .click({ force: native });
+    await expect
+      .poll(async () => (await state()).admins.includes("00000000-0000-0000-0000-000000000002"))
+      .toBe(true);
+    await expect(page.getByRole("button", { name: "管理者にする", exact: true })).toHaveCount(0);
+    await page
+      .getByRole("button", { name: "チャンネル一覧へ戻る", exact: true })
+      .click({ force: native });
+    await page
+      .getByRole(native ? "button" : "link", { name: "Bubble Chat", exact: true })
+      .click({ force: native });
+    const bubble = page.getByRole("textbox", { name: "リアルタイムメッセージ入力", exact: true });
+    await fill(bubble, "temporary shared draft");
+    await expect
+      .poll(async () =>
+        Object.values((await state()).bubbles).some(
+          (row: any) => row.content === "temporary shared draft",
+        ),
+      )
+      .toBe(true);
+    await bubble.click({ force: native });
+    await page.keyboard.press("ControlOrMeta+Enter");
+    await expect
+      .poll(async () => Object.values((await state()).bubbles).every((row: any) => !row.content), {
+        timeout: 10000,
+      })
+      .toBe(true);
+    await fill(bubble, "clear on pagehide");
+    await expect
+      .poll(async () =>
+        Object.values((await state()).bubbles).some(
+          (row: any) => row.content === "clear on pagehide",
+        ),
+      )
+      .toBe(true);
+    await page.goto("/?frontend=react");
+    await expect
+      .poll(async () => Object.values((await state()).bubbles).every((row: any) => !row.content), {
+        timeout: 10000,
+      })
+      .toBe(true);
+    expect(errors).toEqual([]);
+  });
+}
+
+for (const implementation of ["react", "compose"] as const) {
+  test(`${implementation}: entry points keep the message end visible after delayed URL cards expand`, async ({
+    page,
+    request,
+  }) => {
+    const native = implementation === "compose";
+    await request.post("https://127.0.0.1:4187/__reset");
+    await request.post("https://127.0.0.1:4187/__seed", {
+      data: {
+        messages: Array.from({ length: 50 }, (_, i) => ({
+          id: `scroll-${String(i).padStart(3, "0")}`,
+          content: `Scroll row ${i}`,
+        })),
+      },
+    });
+    await page.setViewportSize({ width: 1440, height: 600 });
+    await open(page, implementation, "/channels/c1", "Scroll row 49");
+    const composer = page.getByRole("textbox", { name: "メッセージを送信", exact: true });
+    const image = page.waitForResponse((response) => response.url().includes("/__media?"));
+    if (native) await fillNative(page, composer, "https://example.test/delayed");
+    else await composer.fill("https://example.test/delayed");
+    await page.getByRole("button", { name: "送信", exact: true }).click({ force: native });
+    await expect(
+      page.getByRole(native ? "button" : "link", { name: /^Parity URL card/ }),
+    ).toBeVisible();
+    await (await image).finished();
+    const data = await (await request.get("https://127.0.0.1:4187/__state")).json();
+    const id = data.messages.at(-1).id;
+    const row = page.locator(native ? `[id="message:${id}"]` : `[data-message-id="${id}"]`);
+    await expect
+      .poll(async () => {
+        const message = await row.boundingBox();
+        const input = await composer.boundingBox();
+        return message && input ? message.y + message.height - input.y : Infinity;
+      })
+      .toBeLessThanOrEqual(2);
+    await page.screenshot({
+      path: test.info().outputPath(`${implementation}-expanded-url-card.png`),
+    });
+  });
+}

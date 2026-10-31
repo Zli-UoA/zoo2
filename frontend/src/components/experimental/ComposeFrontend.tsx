@@ -1,7 +1,12 @@
 import { useEffect, useRef, useState } from "react";
 import { useRouter, useRouterState } from "@tanstack/react-router";
 import { useTranslation } from "react-i18next";
-import { ApiError, buildAuthHeaders, createConfiguredApiClient } from "../../lib/api/client";
+import {
+  ApiError,
+  buildAuthHeaders,
+  createConfiguredApiClient,
+  sendKeepaliveRequest,
+} from "../../lib/api/client";
 import { notifyAuthorized, notifyUnauthorized } from "../../lib/auth";
 import { getCurrentUserStore } from "../../lib/currentUser";
 import { resolveConfig, type AppConfig } from "../../lib/config";
@@ -30,7 +35,7 @@ type Update = (environment: string) => void;
 interface ComposeBridge {
   config: string;
   headers: () => Promise<string>;
-  navigate: (path: string) => void;
+  navigate: (path: string, replace?: boolean) => void;
   cache: ComposeCache;
   translate: (key: string, args: string) => string;
   format: (value: string, day: boolean, offset: number) => string;
@@ -107,6 +112,7 @@ export function ComposeRuntime({ config, status }: { config: AppConfig; status?:
   const environment = () =>
     JSON.stringify({
       path: stateRef.current.location,
+      theme: stateRef.current.theme.theme,
       dark: stateRef.current.theme.resolvedTheme === "dark",
       online: navigator.onLine,
       visible: document.visibilityState === "visible",
@@ -133,6 +139,21 @@ export function ComposeRuntime({ config, status }: { config: AppConfig; status?:
       if (!cancelled) setError(true);
     }, 90_000);
     let install: InstallEvent | null = null;
+    const publicRequests = new Map<string, AbortController>();
+    let bubbleExit:
+      | { session: string; offset: number; body: object; headers: Record<string, string> }
+      | undefined;
+    const clearBubbleOnExit = () => {
+      if (!bubbleExit) return;
+      const current = bubbleExit;
+      bubbleExit = undefined;
+      void sendKeepaliveRequest(
+        new URL(`${config.apiBaseUrl.replace(/\/$/, "")}/api/bubble`, window.location.origin).href,
+        { ...current.body, sent_at: Date.now() + current.offset },
+        current.headers,
+      ).catch(() => {});
+    };
+    window.addEventListener("pagehide", clearBubbleOnExit);
     const onInstall = (event: Event) => {
       event.preventDefault();
       install = event as InstallEvent;
@@ -176,9 +197,10 @@ export function ComposeRuntime({ config, status }: { config: AppConfig; status?:
             Object.fromEntries(await buildAuthHeaders({ devUserId: config.devUserId })),
           );
         },
-        navigate: (path) => {
+        navigate: (path, replace = false) => {
           if (path.startsWith("/") && !path.startsWith("//")) {
-            router.history.push(path);
+            if (replace) router.history.replace(path);
+            else router.history.push(path);
             void router.load().catch(() => setError(true));
           }
         },
@@ -224,6 +246,59 @@ export function ComposeRuntime({ config, status }: { config: AppConfig; status?:
           }
         },
         invoke: async (name, payload) => {
+          if (name === "bubbleExit") {
+            const value = JSON.parse(payload);
+            if (value.clear === "true") {
+              if (bubbleExit?.session === value.session) bubbleExit = undefined;
+            } else bubbleExit = value;
+          }
+          if (name === "cancelPublic") publicRequests.get(payload)?.abort();
+          if (name === "publicGet" || name === "publicImage") {
+            if (cancelled) throw new Error("Compose frontend was disposed");
+            const { requestId, payload: requestPayload } = JSON.parse(payload) as {
+              requestId: string;
+              payload: string;
+            };
+            const raw =
+              name === "publicImage"
+                ? requestPayload
+                : (JSON.parse(requestPayload) as { url: string }).url;
+            const url = new URL(raw, window.location.origin);
+            if (!["https:", "http:"].includes(url.protocol) || url.username || url.password)
+              throw new Error("Unsupported public URL");
+            const controller = new AbortController();
+            publicRequests.set(requestId, controller);
+            try {
+              const response = await fetch(url, {
+                signal: AbortSignal.any([controller.signal, AbortSignal.timeout(5000)]),
+                credentials: "omit",
+                referrerPolicy: "no-referrer",
+                headers: {
+                  Accept:
+                    name === "publicImage"
+                      ? "image/png, image/jpeg, image/webp, image/*"
+                      : "application/json, text/plain",
+                },
+              });
+              if (!response.ok) throw new Error(`Public request failed: ${response.status}`);
+              if (name === "publicImage") {
+                const bytes = new Uint8Array(await response.arrayBuffer());
+                if (bytes.byteLength > 16 * 1024 * 1024) throw new Error("Public image too large");
+                let data = "";
+                for (let offset = 0; offset < bytes.length; offset += 32768)
+                  data += String.fromCharCode(...bytes.subarray(offset, offset + 32768));
+                return btoa(data);
+              }
+              const body = await response.text();
+              if (body.length > 65536) throw new Error("Public response too large");
+              return JSON.stringify({
+                body,
+                contentType: response.headers.get("content-type") ?? "",
+              });
+            } finally {
+              publicRequests.delete(requestId);
+            }
+          }
           if (name === "redirect") {
             const url = new URL(payload);
             if (["http:", "https:"].includes(url.protocol)) window.location.assign(url.href);
@@ -241,6 +316,10 @@ export function ComposeRuntime({ config, status }: { config: AppConfig; status?:
                 /* Keep the user that requests still use. */
               }
             }
+          }
+          if (name === "refreshUser") {
+            await getCurrentUserStore(config).refresh();
+            window.location.reload();
           }
           if (name === "copy") await navigator.clipboard.writeText(payload);
           if (name === "install" && install) {
@@ -380,6 +459,9 @@ export function ComposeRuntime({ config, status }: { config: AppConfig; status?:
     if (viewportRef.current) resize.observe(viewportRef.current);
     return () => {
       cancelled = true;
+      publicRequests.forEach((controller) => controller.abort());
+      clearBubbleOnExit();
+      window.removeEventListener("pagehide", clearBubbleOnExit);
       clearTimeout(readyTimeout);
       resize.disconnect();
       updateRef.current = null;
@@ -402,6 +484,7 @@ export function ComposeRuntime({ config, status }: { config: AppConfig; status?:
   }, [
     location,
     theme.resolvedTheme,
+    theme.theme,
     language.locale,
     status?.phase,
     status?.message,

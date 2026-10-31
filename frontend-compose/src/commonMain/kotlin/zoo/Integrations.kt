@@ -33,6 +33,7 @@ fun Row.array(key: String): JsonArray =
 fun Apps(
     app: Session,
     initial: String? = null,
+    embedded: Boolean = false,
     close: () -> Unit = {
         app.dialog = null
         app.target = null
@@ -50,7 +51,7 @@ fun Apps(
         )
     }
     var credential by remember { mutableStateOf("") }
-    Panel(app.t("apps.title"), close, 768.dp) {
+    AppsContainer(app, embedded, close) {
         Text(app.t("apps.description"), muted = true)
         ApiContent("/api/apps", revision) { data, reload ->
             var detail by remember(selected) { mutableStateOf<Row?>(null) }
@@ -68,290 +69,320 @@ fun Apps(
                 }
             }
             val chosen = listed ?: detail
-            Row(Modifier.heightIn(max = 520.dp)) {
-                Column(
-                    Modifier.width(208.dp).verticalScroll(rememberScrollState()),
-                    verticalArrangement = Arrangement.spacedBy(4.dp),
-                ) {
-                    Button(app.t("apps.create"), app.env.online) {
-                        selected = null
-                        editing = true
-                        name = ""
-                        description = ""
-                        icon = ""
-                    }
-                    data.rows().forEach { item ->
-                        Button(item.text("name")) {
-                            selected = item.text("id")
-                            editing = false
-                            credential = ""
-                        }
-                    }
-                }
-                VerticalDivider()
-                Column(
-                    Modifier.weight(1f)
-                        .verticalScroll(rememberScrollState())
-                        .padding(start = 16.dp),
-                    verticalArrangement = Arrangement.spacedBy(12.dp),
-                ) {
-                    if (editing) {
-                        Field(name, app.t("apps.name")) { if (it.codePointCount() <= 80) name = it }
-                        Field(description, app.t("apps.about"), singleLine = false) {
-                            if (it.codePointCount() <= 4000) description = it
-                        }
-                        Field(icon, app.t("apps.icon")) { icon = it }
-                        Field(manifest, app.t("apps.manifest"), singleLine = false) {
-                            manifest = it
-                        }
-                        val parsed =
-                            try {
-                                json.parseToJsonElement(manifest) as? JsonObject
-                            } catch (_: Exception) {
-                                null
-                            }
-                        Button(
-                            app.t("apps.save"),
-                            name.isNotBlank() &&
-                                parsed != null &&
-                                (icon.isBlank() || icon.startsWith("https://")) &&
-                                "app-save" !in app.pending,
-                            primary = true,
+            BoxWithConstraints(Modifier.fillMaxWidth()) {
+                val wide = maxWidth >= 720.dp
+                Row(Modifier.heightIn(max = 520.dp)) {
+                    if (wide || selected == null && !editing)
+                        Column(
+                            (if (wide) Modifier.width(224.dp) else Modifier.weight(1f))
+                                .verticalScroll(rememberScrollState()),
+                            verticalArrangement = Arrangement.spacedBy(4.dp),
                         ) {
-                            app.run("app-save") {
-                                val result =
-                                    app.api
-                                        .request(
-                                            "/api/apps" + (selected?.let { "/$it" } ?: ""),
-                                            if (selected == null) "POST" else "PATCH",
-                                            buildJsonObject {
-                                                put("name", name)
-                                                put("description", description)
-                                                put(
-                                                    "icon_url",
-                                                    icon
-                                                        .takeIf { it.isNotBlank() }
-                                                        ?.let(::JsonPrimitive) ?: JsonNull,
-                                                )
-                                                put("manifest", parsed!!)
-                                            },
-                                        )
-                                        .jsonObject
-                                selected = result.text("id")
-                                editing = false
-                                revision++
-                            }
-                        }
-                    } else if (chosen != null) {
-                        val id = chosen.text("id")
-                        val info = chosen.nested("manifest")
-                        val manage =
-                            app.config.isAdmin || chosen.text("owner_id") == app.config.userId
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            if (chosen.present("icon_url"))
-                                RemoteImage(
-                                    chosen.text("icon_url"),
-                                    chosen.text("name"),
-                                    Modifier.size(32.dp),
-                                )
-                            Text(
-                                chosen.text("name"),
-                                Modifier.padding(start = 8.dp),
-                                weight = FontWeight.SemiBold,
-                            )
-                        }
-                        Text(chosen.text("description"), muted = true)
-                        val people by app.repo.users.rows.collectAsState()
-                        Text(
-                            "${app.t("apps.developer")}: ${people.find { it.text("id") == chosen.text("owner_id") }?.let(::author) ?: app.t("apps.unknownDeveloper")}",
-                            muted = true,
-                            small = true,
-                        )
-                        Text(
-                            "${app.t("apps.transport")}: ${info.text("transport")}",
-                            muted = true,
-                            small = true,
-                        )
-                        if (info.present("event_url"))
-                            Text(
-                                "${app.t("apps.eventEndpoint")}: ${info.text("event_url")}",
-                                muted = true,
-                                small = true,
-                            )
-                        Text(app.t("apps.status.${chosen.text("status")}"), small = true)
-                        Text(app.t("apps.permissions"), weight = FontWeight.Medium)
-                        info.array("scopes").forEach {
-                            Text(it.jsonPrimitive.content, small = true)
-                        }
-                        Button(app.t("apps.revokeConsent"), app.env.online) {
-                            app.run {
-                                app.api.request("/api/apps/$id/authorization", "DELETE")
-                                reload()
-                            }
-                        }
-                        if (manage) {
-                            Button(app.t("apps.edit")) {
-                                name = chosen.text("name")
-                                description = chosen.text("description")
-                                icon = chosen.text("icon_url")
-                                manifest =
-                                    Json { prettyPrint = true }
-                                        .encodeToString(JsonObject.serializer(), info)
+                            Button(app.t("apps.create"), app.env.online) {
+                                selected = null
                                 editing = true
+                                name = ""
+                                description = ""
+                                icon = ""
                             }
-                            val actions = buildList {
-                                if (chosen.text("status") == "draft")
-                                    add("submit" to "requestApproval")
-                                if (
-                                    app.config.isAdmin &&
-                                        chosen.text("status") in listOf("pending", "disabled")
-                                )
-                                    add("install" to "approve")
-                                if (chosen.text("status") == "installed") {
-                                    add("token" to "issueToken")
-                                    add("connection" to "connection")
-                                    add("disable" to "disable")
+                            data.rows().forEach { item ->
+                                Button(item.text("name")) {
+                                    selected = item.text("id")
+                                    editing = false
+                                    credential = ""
                                 }
                             }
-                            actions.forEach { (action, label) ->
-                                Button(
-                                    app.t("apps.$label"),
-                                    app.env.online && "app:$action" !in app.pending,
-                                ) {
-                                    app.run("app:$action") {
-                                        val result =
-                                            app.api.request(
-                                                "/api/apps/$id/actions/$action",
-                                                "POST",
-                                                if (action == "install")
-                                                    buildJsonObject {
-                                                        put(
-                                                            "revision",
-                                                            chosen["revision"] ?: JsonNull,
-                                                        )
-                                                    }
-                                                else obj(),
-                                            )
-                                        if (action in listOf("token", "connection"))
-                                            credential = result.toString()
-                                        reload()
-                                    }
-                                }
-                            }
-                            if (app.channelId != null && chosen.text("status") == "installed")
-                                Button(app.t("apps.addChannel"), app.env.online) {
-                                    app.run {
-                                        app.api.request(
-                                            "/api/apps/$id/channels/${app.channelId}",
-                                            "POST",
-                                            obj(),
-                                        )
-                                    }
-                                }
                         }
-                        if (credential.isNotEmpty())
-                            Credential(app.t("apps.credential"), credential)
-                        if (chosen.text("status") == "installed") {
-                            if (info.flag("dm_enabled"))
-                                Button(app.t("apps.message"), app.env.online) {
-                                    app.run {
+                    if (wide) VerticalDivider()
+                    if (wide || selected != null || editing)
+                        Column(
+                            Modifier.weight(1f)
+                                .verticalScroll(rememberScrollState())
+                                .padding(start = if (wide) 16.dp else 0.dp),
+                            verticalArrangement = Arrangement.spacedBy(12.dp),
+                        ) {
+                            if (!wide)
+                                Button(app.t("apps.ui.back")) {
+                                    selected = null
+                                    editing = false
+                                    credential = ""
+                                }
+                            if (editing) {
+                                Field(name, app.t("apps.name")) {
+                                    if (it.codePointCount() <= 80) name = it
+                                }
+                                Field(description, app.t("apps.about"), singleLine = false) {
+                                    if (it.codePointCount() <= 4000) description = it
+                                }
+                                Field(icon, app.t("apps.icon")) { icon = it }
+                                Field(manifest, app.t("apps.manifest"), singleLine = false) {
+                                    manifest = it
+                                }
+                                val parsed =
+                                    try {
+                                        json.parseToJsonElement(manifest) as? JsonObject
+                                    } catch (_: Exception) {
+                                        null
+                                    }
+                                Button(
+                                    app.t("apps.save"),
+                                    name.isNotBlank() &&
+                                        parsed != null &&
+                                        (icon.isBlank() || icon.startsWith("https://")) &&
+                                        "app-save" !in app.pending,
+                                    primary = true,
+                                ) {
+                                    app.run("app-save") {
                                         val result =
                                             app.api
                                                 .request(
-                                                    "/api/dms",
-                                                    "POST",
+                                                    "/api/apps" + (selected?.let { "/$it" } ?: ""),
+                                                    if (selected == null) "POST" else "PATCH",
                                                     buildJsonObject {
+                                                        put("name", name)
+                                                        put("description", description)
                                                         put(
-                                                            "target_user_ids",
-                                                            JsonArray(
-                                                                listOf(
-                                                                    JsonPrimitive(
-                                                                        chosen.text("bot_user_id")
-                                                                    )
-                                                                )
-                                                            ),
+                                                            "icon_url",
+                                                            icon
+                                                                .takeIf { it.isNotBlank() }
+                                                                ?.let(::JsonPrimitive) ?: JsonNull,
                                                         )
+                                                        put("manifest", parsed!!)
                                                     },
                                                 )
                                                 .jsonObject
-                                        app.navigate(
-                                            "/channels/${result.nested("data").text("id")}"
-                                        )
-                                        close()
+                                        selected = result.text("id")
+                                        editing = false
+                                        revision++
                                     }
                                 }
-                            AppCommands(app, chosen)
-                            Button(app.t("apps.openHome"), app.env.online) {
-                                app.run {
-                                    app.api.request(
-                                        "/api/apps/$id/invoke",
-                                        "POST",
-                                        obj("kind" to "home", "channel_id" to app.channelId),
-                                    )
-                                }
-                            }
-                            AppHome(app, id)
-                            if (info.flag("user_connections"))
-                                ApiContent("/api/apps/$id/connection", revision) { connection, _ ->
-                                    val connected =
-                                        connection.objectOrEmpty().text("state") == "connected"
-                                    Text(
-                                        app.t(
-                                            "apps.userConnection.${if (connected) "connected" else "disconnected"}"
+                            } else if (chosen != null) {
+                                val id = chosen.text("id")
+                                val info = chosen.nested("manifest")
+                                val manage =
+                                    app.config.isAdmin ||
+                                        chosen.text("owner_id") == app.config.userId
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    if (chosen.present("icon_url"))
+                                        RemoteImage(
+                                            chosen.text("icon_url"),
+                                            chosen.text("name"),
+                                            Modifier.size(32.dp),
                                         )
-                                    )
-                                    Button(
-                                        app.t(
-                                            "apps.userConnection.${if (connected) "disconnect" else "connect"}"
-                                        ),
-                                        app.env.online,
-                                    ) {
-                                        app.run {
-                                            app.api.request(
-                                                "/api/apps/$id/connection",
-                                                "POST",
-                                                buildJsonObject { put("connect", !connected) },
-                                            )
-                                            revision++
-                                        }
-                                    }
-                                }
-                            if (
-                                info.array("scopes").any {
-                                    it.jsonPrimitive.content == "assistant:write"
-                                }
-                            )
-                                AssistantSessions(app, id)
-                        }
-                        if (manage) {
-                            Text(app.t("apps.deliveries"), weight = FontWeight.Medium)
-                            ApiContent("/api/apps/$id/deliveries", revision) { deliveries, _ ->
-                                deliveries.rows().forEach { delivery ->
                                     Text(
-                                        "${delivery.text("type")} · ${app.t(if (delivery.present("acked_at")) "apps.delivered" else "apps.pending")}",
+                                        chosen.text("name"),
+                                        Modifier.padding(start = 8.dp),
+                                        weight = FontWeight.SemiBold,
+                                    )
+                                }
+                                Text(chosen.text("description"), muted = true)
+                                val people by app.repo.users.rows.collectAsState()
+                                Text(
+                                    "${app.t("apps.developer")}: ${people.find { it.text("id") == chosen.text("owner_id") }?.let(::author) ?: app.t("apps.unknownDeveloper")}",
+                                    muted = true,
+                                    small = true,
+                                )
+                                Text(
+                                    "${app.t("apps.transport")}: ${info.text("transport")}",
+                                    muted = true,
+                                    small = true,
+                                )
+                                if (info.present("event_url"))
+                                    Text(
+                                        "${app.t("apps.eventEndpoint")}: ${info.text("event_url")}",
+                                        muted = true,
                                         small = true,
                                     )
-                                    if (delivery.present("last_error"))
-                                        Text(
-                                            delivery.text("last_error"),
-                                            small = true,
-                                            muted = true,
+                                Text(app.t("apps.status.${chosen.text("status")}"), small = true)
+                                Text(app.t("apps.permissions"), weight = FontWeight.Medium)
+                                info.array("scopes").forEach {
+                                    Text(it.jsonPrimitive.content, small = true)
+                                }
+                                Button(app.t("apps.revokeConsent"), app.env.online) {
+                                    app.run {
+                                        app.api.request("/api/apps/$id/authorization", "DELETE")
+                                        reload()
+                                    }
+                                }
+                                if (manage) {
+                                    Button(app.t("apps.edit")) {
+                                        name = chosen.text("name")
+                                        description = chosen.text("description")
+                                        icon = chosen.text("icon_url")
+                                        manifest =
+                                            Json { prettyPrint = true }
+                                                .encodeToString(JsonObject.serializer(), info)
+                                        editing = true
+                                    }
+                                    val actions = buildList {
+                                        if (chosen.text("status") == "draft")
+                                            add("submit" to "requestApproval")
+                                        if (
+                                            app.config.isAdmin &&
+                                                chosen.text("status") in
+                                                    listOf("pending", "disabled")
                                         )
-                                    if (!delivery.present("acked_at"))
-                                        Button(app.t("apps.retry"), app.env.online) {
+                                            add("install" to "approve")
+                                        if (chosen.text("status") == "installed") {
+                                            add("token" to "issueToken")
+                                            add("connection" to "connection")
+                                            add("disable" to "disable")
+                                        }
+                                    }
+                                    actions.forEach { (action, label) ->
+                                        Button(
+                                            app.t("apps.$label"),
+                                            app.env.online && "app:$action" !in app.pending,
+                                        ) {
+                                            app.run("app:$action") {
+                                                val result =
+                                                    app.api.request(
+                                                        "/api/apps/$id/actions/$action",
+                                                        "POST",
+                                                        if (action == "install")
+                                                            buildJsonObject {
+                                                                put(
+                                                                    "revision",
+                                                                    chosen["revision"] ?: JsonNull,
+                                                                )
+                                                            }
+                                                        else obj(),
+                                                    )
+                                                if (action in listOf("token", "connection"))
+                                                    credential = result.toString()
+                                                reload()
+                                            }
+                                        }
+                                    }
+                                    if (
+                                        app.contextChannelId != null &&
+                                            chosen.text("status") == "installed"
+                                    )
+                                        Button(app.t("apps.addChannel"), app.env.online) {
                                             app.run {
                                                 app.api.request(
-                                                    "/api/apps/$id/deliveries/${delivery.text("id")}/retry",
+                                                    "/api/apps/$id/channels/${app.contextChannelId}",
                                                     "POST",
                                                     obj(),
                                                 )
-                                                revision++
                                             }
                                         }
                                 }
-                            }
+                                if (credential.isNotEmpty())
+                                    Credential(app.t("apps.credential"), credential)
+                                if (chosen.text("status") == "installed") {
+                                    if (info.flag("dm_enabled"))
+                                        Button(app.t("apps.message"), app.env.online) {
+                                            app.run {
+                                                val result =
+                                                    app.api
+                                                        .request(
+                                                            "/api/dms",
+                                                            "POST",
+                                                            buildJsonObject {
+                                                                put(
+                                                                    "target_user_ids",
+                                                                    JsonArray(
+                                                                        listOf(
+                                                                            JsonPrimitive(
+                                                                                chosen.text(
+                                                                                    "bot_user_id"
+                                                                                )
+                                                                            )
+                                                                        )
+                                                                    ),
+                                                                )
+                                                            },
+                                                        )
+                                                        .jsonObject
+                                                app.navigate(
+                                                    "/channels/${result.nested("data").text("id")}"
+                                                )
+                                                close()
+                                            }
+                                        }
+                                    AppCommands(app, chosen)
+                                    Button(app.t("apps.openHome"), app.env.online) {
+                                        app.run {
+                                            app.api.request(
+                                                "/api/apps/$id/invoke",
+                                                "POST",
+                                                obj(
+                                                    "kind" to "home",
+                                                    "channel_id" to app.contextChannelId,
+                                                ),
+                                            )
+                                        }
+                                    }
+                                    AppHome(app, id)
+                                    if (info.flag("user_connections"))
+                                        ApiContent("/api/apps/$id/connection", revision) {
+                                            connection,
+                                            _ ->
+                                            val connected =
+                                                connection.objectOrEmpty().text("state") ==
+                                                    "connected"
+                                            Text(
+                                                app.t(
+                                                    "apps.userConnection.${if (connected) "connected" else "disconnected"}"
+                                                )
+                                            )
+                                            Button(
+                                                app.t(
+                                                    "apps.userConnection.${if (connected) "disconnect" else "connect"}"
+                                                ),
+                                                app.env.online,
+                                            ) {
+                                                app.run {
+                                                    app.api.request(
+                                                        "/api/apps/$id/connection",
+                                                        "POST",
+                                                        buildJsonObject {
+                                                            put("connect", !connected)
+                                                        },
+                                                    )
+                                                    revision++
+                                                }
+                                            }
+                                        }
+                                    if (
+                                        info.array("scopes").any {
+                                            it.jsonPrimitive.content == "assistant:write"
+                                        }
+                                    )
+                                        AssistantSessions(app, id)
+                                }
+                                if (manage) {
+                                    Text(app.t("apps.deliveries"), weight = FontWeight.Medium)
+                                    ApiContent("/api/apps/$id/deliveries", revision) { deliveries, _
+                                        ->
+                                        deliveries.rows().forEach { delivery ->
+                                            Text(
+                                                "${delivery.text("type")} · ${app.t(if (delivery.present("acked_at")) "apps.delivered" else "apps.pending")}",
+                                                small = true,
+                                            )
+                                            if (delivery.present("last_error"))
+                                                Text(
+                                                    delivery.text("last_error"),
+                                                    small = true,
+                                                    muted = true,
+                                                )
+                                            if (!delivery.present("acked_at"))
+                                                Button(app.t("apps.retry"), app.env.online) {
+                                                    app.run {
+                                                        app.api.request(
+                                                            "/api/apps/$id/deliveries/${delivery.text("id")}/retry",
+                                                            "POST",
+                                                            obj(),
+                                                        )
+                                                        revision++
+                                                    }
+                                                }
+                                        }
+                                    }
+                                }
+                            } else Text(app.t("apps.choose"), muted = true)
                         }
-                    } else Text(app.t("apps.choose"), muted = true)
                 }
             }
         }
@@ -379,7 +410,7 @@ private fun AppCommands(app: Session, chosen: Row) {
                         buildJsonObject {
                             put("kind", kind)
                             put("name", name)
-                            put("channel_id", app.channelId)
+                            put("channel_id", app.contextChannelId)
                             put("message_id", app.target)
                             put("values", if (kind == "command") obj("text" to argument) else obj())
                         },
@@ -412,15 +443,15 @@ private fun AppHome(app: Session, id: String) {
 private fun AssistantSessions(app: Session, id: String) {
     var revision by remember { mutableStateOf(0) }
     var title by remember { mutableStateOf(app.t("apps.assistant.session")) }
-    LaunchedEffect(id, app.channelId, app.env.online) {
-        if (app.env.online && app.channelId != null) {
+    LaunchedEffect(id, app.contextChannelId, app.env.online) {
+        if (app.env.online && app.contextChannelId != null) {
             try {
                 app.api.request(
                     "/api/apps/$id/context",
                     "POST",
                     buildJsonObject {
-                        put("channel_id", app.channelId)
-                        put("context", obj("view" to "app", "channel_id" to app.channelId))
+                        put("channel_id", app.contextChannelId)
+                        put("context", obj("view" to "app", "channel_id" to app.contextChannelId))
                     },
                 )
             } catch (e: CancellationException) {
@@ -435,7 +466,7 @@ private fun AssistantSessions(app: Session, id: String) {
         }
     }
     Field(title, app.t("apps.assistant.title")) { if (it.codePointCount() <= 200) title = it }
-    Button(app.t("apps.assistant.start"), app.env.online && app.channelId != null) {
+    Button(app.t("apps.assistant.start"), app.env.online && app.contextChannelId != null) {
         app.run {
             app.api.request(
                 "/api/assistant-sessions",
@@ -443,9 +474,9 @@ private fun AssistantSessions(app: Session, id: String) {
                 buildJsonObject {
                     put("app_id", id)
                     put("user_id", app.config.userId)
-                    put("channel_id", app.channelId)
+                    put("channel_id", app.contextChannelId)
                     put("title", title)
-                    put("context", obj("channel_id" to app.channelId))
+                    put("context", obj("channel_id" to app.contextChannelId))
                 },
             )
             revision++
@@ -490,12 +521,22 @@ private fun AssistantSessions(app: Session, id: String) {
 }
 
 fun parseBlocks(value: JsonElement?): List<Row> =
-    (value as? JsonArray)
+    ((if (value is JsonPrimitive)
+            try {
+                json.parseToJsonElement(value.content)
+            } catch (_: Exception) {
+                JsonNull
+            }
+        else value)
+            as? JsonArray)
         ?.takeIf { it.size <= 50 }
         ?.mapNotNull { it as? JsonObject }
         ?.filter {
             when (it.text("type")) {
-                "text" -> it["text"] is JsonPrimitive
+                "card" ->
+                    (it["card"] as? JsonObject)?.text("title")?.isNotBlank() == true &&
+                        messageCards(it["card"])?.size == 1
+                "text" -> (it["text"] as? JsonPrimitive)?.isString == true
                 "button",
                 "input",
                 "select" ->
@@ -516,7 +557,7 @@ fun Blocks(
     appId: String,
     surface: String? = null,
     message: String? = null,
-    channel: String? = app.channelId,
+    channel: String? = app.contextChannelId,
     submit: Boolean = false,
     done: () -> Unit = {},
 ) {
@@ -554,6 +595,7 @@ fun Blocks(
         blocks.forEach { block ->
             val id = block.text("action_id")
             when (block.text("type")) {
+                "card" -> MessageCard(block.nested("card"), attachment = true)
                 "text" -> Text(block.text("text"))
                 "button" ->
                     Button(block.text("label"), key !in app.pending && app.env.online) {
@@ -621,7 +663,9 @@ fun AppSurfaces(app: Session) {
             verticalArrangement = Arrangement.spacedBy(8.dp),
         ) {
             app.surfaces
-                .filter { it.text("kind") == "ephemeral" && it.text("channel_id") == app.channelId }
+                .filter {
+                    it.text("kind") == "ephemeral" && it.text("channel_id") == app.contextChannelId
+                }
                 .forEach { row ->
                     Surface(
                         shape = RoundedCornerShape(12.dp),
@@ -840,8 +884,8 @@ fun MessageAppContent(app: Session, message: Row) {
             Button("${unfurl.text("name")} · APP") {
                 app.navigate("/apps/${unfurl.text("app_id")}")
             }
-            MessageCard(unfurl.nested("card"))
-            if (unfurl.present("url") && app.channelId != null)
+            messageCards(unfurl["card"])?.singleOrNull()?.let { MessageCard(it) }
+            if (unfurl.present("url") && app.contextChannelId != null)
                 Row {
                     listOf("details", "comments").forEach { kind ->
                         Button(app.t("apps.entity.$kind"), app.env.online) {
@@ -853,7 +897,7 @@ fun MessageAppContent(app: Session, message: Row) {
                                         "kind" to kind,
                                         "url" to unfurl.text("url"),
                                         "message_id" to message.text("id"),
-                                        "channel_id" to app.channelId,
+                                        "channel_id" to app.contextChannelId,
                                     ),
                                 )
                             }
@@ -861,4 +905,20 @@ fun MessageAppContent(app: Session, message: Row) {
                     }
                 }
         }
+}
+
+@Composable
+private fun AppsContainer(
+    app: Session,
+    embedded: Boolean,
+    close: () -> Unit,
+    content: @Composable ColumnScope.() -> Unit,
+) {
+    if (embedded)
+        Column(
+            Modifier.fillMaxWidth(),
+            verticalArrangement = Arrangement.spacedBy(12.dp),
+            content = content,
+        )
+    else Panel(app.t("apps.title"), close, 768.dp, content)
 }

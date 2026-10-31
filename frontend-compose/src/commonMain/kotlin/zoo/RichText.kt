@@ -3,18 +3,22 @@ package zoo
 import androidx.compose.foundation.*
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.*
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.appendInlineContent
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.*
+import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.semantics.*
 import androidx.compose.ui.text.*
 import androidx.compose.ui.text.font.*
 import androidx.compose.ui.text.style.*
 import androidx.compose.ui.unit.*
-import io.ktor.http.encodeURLParameter
 import kotlinx.coroutines.*
 import kotlinx.serialization.json.*
 import org.jetbrains.compose.resources.ExperimentalResourceApi
@@ -75,7 +79,7 @@ fun RichText(content: String, users: List<Row> = emptyList(), depth: Int = 0) {
             "⌕ $content",
             Modifier.clickable {
                     app.platform.action(
-                        "open:https://www.google.com/search?q=${search.groupValues[1].encodeURLParameter()}"
+                        "open:${searchUrl(app.searchEngine, search.groupValues[1])}"
                     )
                 }
                 .padding(vertical = 4.dp),
@@ -179,11 +183,7 @@ private fun InlineParagraph(
                         "italic" -> SpanStyle(fontStyle = FontStyle.Italic)
                         "strike" -> SpanStyle(textDecoration = TextDecoration.LineThrough)
                         "small" -> SpanStyle(fontSize = 11.2.sp)
-                        "code" ->
-                            SpanStyle(
-                                fontFamily = fonts.mono,
-                                background = codeBackground,
-                            )
+                        "code" -> SpanStyle(fontFamily = fonts.mono, background = codeBackground)
                         "mention" ->
                             SpanStyle(color = mentionForeground, background = mentionBackground)
                         "hashtag",
@@ -231,25 +231,27 @@ private fun InlineParagraph(
             else write(segment.first)
         }
     }
-    val content = embedded.mapValues { (id, source) ->
-        val measured = sizes[id]
-        val width =
-            measured?.let { with(density) { it.width.toSp() } }
-                ?: (source.length * 7).coerceIn(16, 600).sp
-        val height = measured?.let { with(density) { it.height.toSp() } } ?: 20.sp
-        androidx.compose.foundation.text.InlineTextContent(
-            Placeholder(width, height, PlaceholderVerticalAlign.TextCenter)
-        ) {
-            Box(
-                Modifier.wrapContentSize(unbounded = true)
-                    .then(Modifier.onSizeChanged { sizes[id] = it })
+    val content =
+        embedded.mapValues { (id, source) ->
+            val measured = sizes[id]
+            val width =
+                measured?.let { with(density) { it.width.toSp() } }
+                    ?: (source.length * 7).coerceIn(16, 600).sp
+            val height = measured?.let { with(density) { it.height.toSp() } } ?: 20.sp
+            androidx.compose.foundation.text.InlineTextContent(
+                Placeholder(width, height, PlaceholderVerticalAlign.TextCenter)
             ) {
-                if (source.startsWith("$[")) MfmEffect(source.drop(2).dropLast(1), users, depth + 1)
-                else if (source.startsWith("<plain>")) Text(source.drop(7).dropLast(8))
-                else MathInline(source.drop(2).dropLast(2))
+                Box(
+                    Modifier.wrapContentSize(unbounded = true)
+                        .then(Modifier.onSizeChanged { sizes[id] = it })
+                ) {
+                    if (source.startsWith("$["))
+                        MfmEffect(source.drop(2).dropLast(1), users, depth + 1)
+                    else if (source.startsWith("<plain>")) Text(source.drop(7).dropLast(8))
+                    else MathInline(source.drop(2).dropLast(2))
+                }
             }
         }
-    }
     androidx.compose.material3.Text(
         text,
         inlineContent = content,
@@ -261,37 +263,119 @@ private fun InlineParagraph(
     )
 }
 
-@Composable
-fun MessageCard(card: Row) {
-    val app = LocalApp.current
-    Column(
-        Modifier.fillMaxWidth().border(1.dp, MaterialTheme.colorScheme.outline).padding(12.dp),
-        verticalArrangement = Arrangement.spacedBy(8.dp),
-    ) {
-        card
-            .text("title")
-            .takeIf { it.isNotEmpty() }
-            ?.let { Text(it, weight = FontWeight.SemiBold) }
-        card.text("description").takeIf { it.isNotEmpty() }?.let { Text(it, muted = true) }
-        if (card.text("url").startsWith("https://"))
-            Button(card.text("url")) { app.platform.action("open:${card.text("url")}") }
-        card.text("author").takeIf { it.isNotEmpty() }?.let { Text(it, small = true, muted = true) }
-        card.text("text").takeIf { it.isNotEmpty() }?.let { RichText(it) }
-        card["sections"]?.rows()?.forEach { section ->
-            section
-                .text("title")
-                .takeIf { it.isNotEmpty() }
-                ?.let { Text(it, weight = FontWeight.Medium) }
-            RichText(section.text("text"))
+fun cardColor(value: String): Color? {
+    val raw =
+        when (value) {
+            "good" -> "2eb886"
+            "warning" -> "daa038"
+            "danger" -> "a30200"
+            else -> value.removePrefix("#")
         }
-        card
-            .text("image_url")
-            .takeIf { it.isNotEmpty() }
-            ?.let {
-                RemoteImage(it, card.text("title"), Modifier.fillMaxWidth().heightIn(max = 256.dp))
+    return raw.takeIf { Regex("[a-fA-F0-9]{6}").matches(it) }
+        ?.toLongOrNull(16)
+        ?.let { Color((0xff000000L or it).toInt()) }
+}
+
+@Composable
+fun MessageCard(card: Row, attachment: Boolean = false) {
+    val app = LocalApp.current
+    val accent = cardColor(card.text("color")) ?: MaterialTheme.colorScheme.primary
+    val metadata =
+        listOf("source", "context", "badge")
+            .map { card.text(it) }
+            .filter { it.isNotEmpty() }
+            .joinToString(" · ")
+    val border =
+        if (attachment) Modifier
+        else Modifier.border(1.dp, MaterialTheme.colorScheme.outline, RoundedCornerShape(8.dp))
+    BoxWithConstraints(
+        Modifier.widthIn(max = if (attachment) 672.dp else 576.dp)
+            .fillMaxWidth()
+            .padding(vertical = 8.dp)
+            .then(border)
+            .drawBehind { drawRect(accent, Offset.Zero, Size(4.dp.toPx(), size.height)) }
+            .padding(start = 16.dp, end = 12.dp, top = 8.dp, bottom = 8.dp)
+    ) {
+        val columns = maxWidth >= 384.dp
+        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            if (!attachment && metadata.isNotEmpty()) Text(metadata, small = true, muted = true)
+            val url = publicUrl(card.text("url"))?.takeIf { it.protocol.name == "https" }
+            Text(
+                card.text("title"),
+                if (url != null) Modifier.clickable { app.platform.action("open:$url") }
+                else Modifier,
+                weight = FontWeight.SemiBold,
+                color = if (url != null) LocalLinkColor.current else Color.Unspecified,
+            )
+            card
+                .text("description")
+                .takeIf { it.isNotEmpty() }
+                ?.let { description ->
+                    var expanded by remember(description) { mutableStateOf(false) }
+                    var overflows by remember(description) { mutableStateOf(false) }
+                    Text(
+                        description,
+                        muted = true,
+                        maxLines = if (expanded) Int.MAX_VALUE else 8,
+                        onTextLayout = { if (!expanded) overflows = it.hasVisualOverflow },
+                    )
+                    if (overflows)
+                        Button(app.t(if (expanded) "cards.showLess" else "cards.showMore")) {
+                            expanded = !expanded
+                        }
+                }
+            val fields = card.array("fields").rows()
+            var i = 0
+            while (i < fields.size) {
+                val field = fields[i]
+                if (
+                    columns && field.flag("short") && fields.getOrNull(i + 1)?.flag("short") == true
+                ) {
+                    Row(horizontalArrangement = Arrangement.spacedBy(24.dp)) {
+                        CardField(app, field, Modifier.weight(1f))
+                        CardField(app, fields[i + 1], Modifier.weight(1f))
+                    }
+                    i += 2
+                } else {
+                    CardField(app, field, Modifier.fillMaxWidth())
+                    i++
+                }
             }
-        card["actions"]?.rows()?.forEach { action ->
-            Button(action.text("label")) { app.platform.action("open:${action.text("url")}") }
+            if (attachment && metadata.isNotEmpty()) Text(metadata, small = true, muted = true)
+            card
+                .text("author")
+                .takeIf { it.isNotEmpty() }
+                ?.let { Text(it, small = true, muted = true) }
+        }
+    }
+}
+
+@Composable
+private fun CardField(app: Session, field: Row, modifier: Modifier) {
+    val url = publicUrl(field.text("url"))?.takeIf { it.protocol.name == "https" }
+    Column(modifier) {
+        Text(field.text("title"), weight = FontWeight.SemiBold)
+        val style = LocalMfmStyle.current
+        CompositionLocalProvider(
+            LocalMfmStyle provides
+                if (field.flag("code")) style.copy(fontFamily = LocalFonts.current.mono) else style
+        ) {
+            Text(
+                field.text("value"),
+                (if (url != null) Modifier.clickable { app.platform.action("open:$url") }
+                    else Modifier)
+                    .then(
+                        if (field.flag("code"))
+                            Modifier.background(
+                                    MaterialTheme.colorScheme.surfaceVariant,
+                                    RoundedCornerShape(4.dp),
+                                )
+                                .padding(horizontal = 4.dp, vertical = 2.dp)
+                        else Modifier
+                    ),
+                small = field.flag("code"),
+                color = if (url != null) LocalLinkColor.current else Color.Unspecified,
+            )
         }
     }
 }
@@ -430,13 +514,14 @@ fun EmojiPicker(app: Session, close: () -> Unit, select: (String) -> Unit) {
                 icon = "chevron-down",
             )
         }
-        val filtered = emojis.filter {
-            query.isBlank() ||
-                (it.text("label") + it.text("emoji") + it["tags"].toString()).contains(
-                    query.trim(),
-                    true,
-                )
-        }
+        val filtered =
+            emojis.filter {
+                query.isBlank() ||
+                    (it.text("label") + it.text("emoji") + it["tags"].toString()).contains(
+                        query.trim(),
+                        true,
+                    )
+            }
         LazyColumn(
             Modifier.fillMaxWidth()
                 .height(320.dp)
@@ -568,3 +653,46 @@ fun richSegments(source: String): List<Pair<String, Boolean>> {
     if (plain < source.length) result += source.substring(plain) to false
     return result
 }
+
+/** Mirror the server-owned integration card envelope; invalid data keeps the original text. */
+fun messageCards(value: JsonElement?): List<Row>? =
+    try {
+        val parsed = if (value is JsonPrimitive) json.parseToJsonElement(value.content) else value
+        val envelope = parsed as? JsonObject
+        val cards =
+            if (envelope?.containsKey("cards") == true)
+                envelope["cards"]?.jsonArray?.map { it.jsonObject }
+            else envelope?.let { listOf(it) }
+        cards?.takeIf { list ->
+            list.size in 1..101 &&
+                list.all { card ->
+                    (card["title"] as? JsonPrimitive)?.isString == true &&
+                        card.text("title").isNotBlank() &&
+                        card.text("title").length <= 2000 &&
+                        listOf("description", "url", "source", "context", "author", "badge").all {
+                            key ->
+                            card[key] == null || (card[key] as? JsonPrimitive)?.isString == true
+                        } &&
+                        (card["fields"] == null ||
+                            card["fields"] is JsonArray &&
+                                card.array("fields").size <= 10 &&
+                                card.array("fields").all { field ->
+                                    field is JsonObject &&
+                                        (field["title"] as? JsonPrimitive)?.isString == true &&
+                                        field.text("title").length <= 100 &&
+                                        (field["value"] as? JsonPrimitive)?.isString == true &&
+                                        field.text("value").length <= 4000 &&
+                                        (field["url"] == null ||
+                                            (field["url"] as? JsonPrimitive)?.isString == true) &&
+                                        listOf("short", "code").all { key ->
+                                            field[key] == null ||
+                                                (field[key] as? JsonPrimitive)?.let {
+                                                    !it.isString && it.booleanOrNull != null
+                                                } == true
+                                        }
+                                })
+                }
+        }
+    } catch (_: Exception) {
+        null
+    }

@@ -53,6 +53,9 @@ fun ZooApp(app: Session) {
     val loading by app.repo.channels.loading.collectAsState()
     val channel = channels.find { it.text("id") == app.channelId }
     val isNotifications = app.env.path.startsWith("/notifications")
+    val isSettings = app.env.path.startsWith("/settings")
+    val isBubble = app.env.path.startsWith("/bubble")
+    val fullPage = isNotifications || isSettings || isBubble
     BoxWithConstraints(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background)) {
         val width = maxWidth
         val narrow = width < 768.dp
@@ -65,9 +68,11 @@ fun ZooApp(app: Session) {
         if (channel?.flag("is_dm") == true && !channel.text("channel_name").startsWith("dm:group:"))
             app.membersOpen = false
         Row(Modifier.fillMaxSize()) {
-            Rail(app, notifications.count { !it.flag("is_read") }, narrow)
-            VerticalDivider()
-            if (!narrow || (!isNotifications && app.pane == "sidebar")) {
+            if (!isSettings) {
+                Rail(app, notifications.count { !it.flag("is_read") }, narrow)
+                VerticalDivider()
+            }
+            if (!isSettings && (!narrow || (!fullPage && app.pane == "sidebar"))) {
                 Sidebar(
                     app,
                     channels,
@@ -78,9 +83,11 @@ fun ZooApp(app: Session) {
                 )
                 VerticalDivider()
             }
-            if (!narrow || isNotifications || app.pane == "chat")
+            if (!narrow || fullPage || app.pane == "chat")
                 Column(Modifier.weight(1f).fillMaxHeight()) {
                     when {
+                        isSettings -> ZooSettings(app, users)
+                        isBubble -> BubbleChat(app, users)
                         isNotifications -> Notifications(app, notifications, users)
                         app.env.path.startsWith("/apps-authorize") -> AppConsent(app)
                         app.channelId == null -> Welcome(app)
@@ -185,6 +192,31 @@ fun ZooApp(app: Session) {
             "rename",
             "moderate",
             "leave" -> ChannelDialog(app, dialog, channel, channels, users, members)
+            "channel-settings" ->
+                if (channel != null)
+                    Panel(app.t("settings.channelTitle"), { app.dialog = null }) {
+                        Row(
+                            Modifier.fillMaxWidth(),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Text(app.t("channels.editTitle"), Modifier.weight(1f))
+                            Button(
+                                app.t("messages.edit"),
+                                canManage(channel, app.config.userId, app.config.isAdmin) &&
+                                    !channel.present("archive_at"),
+                            ) {
+                                app.dialog = "rename"
+                            }
+                        }
+                        HorizontalDivider()
+                        Row(
+                            Modifier.fillMaxWidth(),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Text(app.t("webhooks.title"), Modifier.weight(1f))
+                            Button(app.t("common.open")) { app.dialog = "webhooks" }
+                        }
+                    }
             "message-admin" -> if (channel != null) MessageAdministration(app, channel)
             "apps" -> Apps(app)
             "webhooks" -> if (channel != null) Webhooks(app, channel)
@@ -284,9 +316,8 @@ private fun Rail(app: Session, unread: Int, narrow: Boolean) {
                     )
                 }
         }
-        IconButton("bot", app.t("apps.title"), size = 28.dp) {
-            app.target = null
-            app.dialog = "apps"
+        IconButton("message-circle-more", app.t("bubbleChat.title"), size = 40.dp) {
+            app.navigate("/bubble")
         }
         if (app.env.development)
             IconButton("activity", app.t("sync.title"), size = 40.dp) { app.navigate("/realtime") }
@@ -306,33 +337,8 @@ private fun Rail(app: Session, unread: Int, narrow: Boolean) {
             ) {
                 Text("R")
             }
-            if (app.capabilities.flag("installAvailable"))
-                IconButton("download", app.t("pwa.install")) {
-                    app.run { app.platform.invoke("install") }
-                }
-            IconButton(
-                if (app.capabilities.flag("pushEnabled")) "bell" else "bell-off",
-                app.t(
-                    when {
-                        !app.capabilities.flag("pushSupported") -> "pwa.unsupported"
-                        !app.capabilities.flag("pushConfigured") -> "pwa.unconfigured"
-                        app.capabilities.flag("pushEnabled") -> "pwa.disable"
-                        else -> "pwa.enable"
-                    }
-                ),
-                enabled =
-                    app.capabilities.flag("pushSupported") &&
-                        app.capabilities.flag("pushConfigured"),
-            ) {
-                app.run("push") {
-                    app.platform.invoke("push")
-                    app.capabilities =
-                        json.parseToJsonElement(app.platform.invoke("capabilities")).jsonObject
-                }
-            }
-            IconButton("languages", app.t("language.switch")) { app.dialog = "language" }
-            IconButton(if (app.env.dark) "moon" else "sun", app.t("theme.switch")) {
-                app.dialog = "theme"
+            IconButton("settings", app.t("settings.zooTitle"), size = 40.dp) {
+                app.navigate("/settings" + (app.channelId?.let { "?channel=$it" } ?: ""))
             }
             HorizontalDivider(Modifier.width(24.dp))
             val people by app.repo.users.rows.collectAsState()
@@ -405,12 +411,7 @@ private fun Sidebar(
                     Modifier.padding(horizontal = 4.dp, vertical = 8.dp),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
-                    Text(
-                        app.t("dms.title"),
-                        weight = FontWeight.Medium,
-                        small = true,
-                        muted = true,
-                    )
+                    Text(app.t("dms.title"), weight = FontWeight.Medium, small = true, muted = true)
                     Text(
                         joined.count { it.flag("is_dm") }.toString(),
                         Modifier.weight(1f).padding(start = 8.dp),
@@ -661,6 +662,10 @@ private fun Header(
                 MenuAction("log-out", app.t("members.leave"), app.env.online) {
                     app.dialog = "leave"
                 }
+        if (manage && !channel.flag("is_dm"))
+            IconButton("settings", app.t("settings.channelTitle")) {
+                app.dialog = "channel-settings"
+            }
         Menu(app.t("moderation.manageChannel"), actions)
     }
 }

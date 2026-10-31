@@ -1,6 +1,7 @@
 package zoo
 
 import androidx.compose.foundation.*
+import androidx.compose.foundation.gestures.scrollBy
 import androidx.compose.foundation.interaction.*
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.*
@@ -240,16 +241,39 @@ private fun MessageList(
         if (index >= 0) state.scrollToItem(index * 2 + 1)
     }
     var previousSize by remember(channel.text("id"), parent) { mutableStateOf(0) }
+    var pinned by remember(channel.text("id"), parent) { mutableStateOf(true) }
+    var newBelow by remember(channel.text("id"), parent) { mutableStateOf(false) }
+    val scope = rememberCoroutineScope()
+    suspend fun bottom() {
+        if (messages.isNotEmpty()) {
+            state.scrollToItem(messages.lastIndex * 2 + 1)
+            state.scrollBy(state.layoutInfo.visibleItemsInfo.lastOrNull()?.size?.toFloat() ?: 0f)
+        }
+        pinned = true
+        newBelow = false
+    }
+    LaunchedEffect(state) {
+        snapshotFlow { state.isScrollInProgress }
+            .collect { moving ->
+                if (!moving) {
+                    pinned = !state.canScrollForward
+                    if (pinned) newBelow = false
+                }
+            }
+    }
     LaunchedEffect(messages.size) {
-        if (
-            messages.isNotEmpty() &&
-                (previousSize == 0 ||
-                    state.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: 0 >=
-                        previousSize - 2 ||
-                    messages.last().text("user_id") == app.config.userId)
-        )
-            state.scrollToItem(messages.lastIndex * 2)
+        if (messages.isNotEmpty() && messages.size > previousSize) {
+            if (previousSize == 0 || pinned || messages.last().text("user_id") == app.config.userId)
+                bottom()
+            else newBelow = true
+        }
         previousSize = messages.size
+    }
+    // LazyColumn retains the first visible key/offset while an earlier card grows.
+    // Only a reader already following the end follows asynchronously resized cards.
+    LaunchedEffect(state, messages.size) {
+        snapshotFlow { state.layoutInfo.visibleItemsInfo.map { it.key to it.size } }
+            .collect { if (pinned && !state.isScrollInProgress && state.canScrollForward) bottom() }
     }
     LaunchedEffect(channel.text("id"), parent, app.env.visible, app.env.online, all.size) {
         if (parent == null && app.env.visible && app.env.online) {
@@ -274,59 +298,78 @@ private fun MessageList(
                 }
         }
     }
-    LazyColumn(
-        modifier.fillMaxWidth(),
-        state = state,
-        contentPadding = PaddingValues(vertical = 12.dp),
-    ) {
-        if (messages.isEmpty())
-            item {
-                Box(Modifier.fillParentMaxSize(), contentAlignment = Alignment.Center) {
-                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                        Text(app.t("messages.empty"), muted = true)
-                        Text(app.t("messages.first"), small = true, muted = true)
+    Box(modifier.fillMaxWidth()) {
+        LazyColumn(
+            Modifier.fillMaxSize(),
+            state = state,
+            contentPadding = PaddingValues(vertical = 12.dp),
+        ) {
+            if (messages.isEmpty())
+                item {
+                    Box(Modifier.fillParentMaxSize(), contentAlignment = Alignment.Center) {
+                        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                            Text(app.t("messages.empty"), muted = true)
+                            Text(app.t("messages.first"), small = true, muted = true)
+                        }
                     }
                 }
-            }
-        messages.forEachIndexed { index, row ->
-            val previous = messages.getOrNull(index - 1)
-            item("date:${row.text("id")}") {
-                if (
-                    previous == null ||
-                        app.platform.day(previous.text("created_at")) !=
-                            app.platform.day(row.text("created_at"))
-                )
-                    Row(
-                        Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 8.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(12.dp),
-                    ) {
-                        HorizontalDivider(Modifier.weight(1f))
-                        Box(
-                            Modifier.height(21.dp)
-                                .border(
-                                    1.dp,
-                                    MaterialTheme.colorScheme.outline,
-                                    RoundedCornerShape(12.dp),
-                                )
-                                .padding(horizontal = 10.dp),
-                            contentAlignment = Alignment.Center,
+            messages.forEachIndexed { index, row ->
+                val previous = messages.getOrNull(index - 1)
+                item("date:${row.text("id")}") {
+                    if (
+                        previous == null ||
+                            app.platform.day(previous.text("created_at")) !=
+                                app.platform.day(row.text("created_at"))
+                    )
+                        Row(
+                            Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 8.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(12.dp),
                         ) {
-                            Text(
-                                app.dayLabel(row.text("created_at")),
-                                small = true,
-                                muted = true,
-                                size = 11.sp,
-                                weight = FontWeight.Medium,
-                            )
+                            HorizontalDivider(Modifier.weight(1f))
+                            Box(
+                                Modifier.height(21.dp)
+                                    .border(
+                                        1.dp,
+                                        MaterialTheme.colorScheme.outline,
+                                        RoundedCornerShape(12.dp),
+                                    )
+                                    .padding(horizontal = 10.dp),
+                                contentAlignment = Alignment.Center,
+                            ) {
+                                Text(
+                                    app.dayLabel(row.text("created_at")),
+                                    small = true,
+                                    muted = true,
+                                    size = 11.sp,
+                                    weight = FontWeight.Medium,
+                                )
+                            }
+                            HorizontalDivider(Modifier.weight(1f))
                         }
-                        HorizontalDivider(Modifier.weight(1f))
-                    }
-            }
-            item(row.text("id")) {
-                Message(app, channel, row, all, reactions, users, groupedWith(previous, row), wide)
+                }
+                item(row.text("id")) {
+                    Message(
+                        app,
+                        channel,
+                        row,
+                        all,
+                        reactions,
+                        users,
+                        groupedWith(previous, row),
+                        wide,
+                    )
+                }
             }
         }
+        if (newBelow)
+            Button(
+                app.t("messages.new"),
+                modifier = Modifier.align(Alignment.BottomCenter).padding(12.dp),
+                primary = true,
+            ) {
+                scope.launch { bottom() }
+            }
     }
 }
 
@@ -404,8 +447,16 @@ internal fun Message(
                         }
                     }
                 } else {
-                    RichText(message.text("content"), users)
-                    if (message.present("card")) MessageCard(message.nested("card"))
+                    val cards = messageCards(message["card"])
+                    val blockCards =
+                        parseBlocks(message["app_blocks"]).any { it.text("type") == "card" }
+                    if (!blockCards) {
+                        if (cards != null) cards.forEach { MessageCard(it) }
+                        else {
+                            RichText(message.text("content"), users)
+                            LinkPreviews(app, message.text("content"))
+                        }
+                    }
                     MessageAppContent(app, message)
                 }
                 val groups =
@@ -437,9 +488,8 @@ internal fun Message(
                             )
                         }
                     }
-                    val replies = all.count {
-                        it.text("parent_id") == id && !it.present("deleted_at")
-                    }
+                    val replies =
+                        all.count { it.text("parent_id") == id && !it.present("deleted_at") }
                     if (message.text("parent_id").isEmpty() && replies > 0)
                         Row(
                             Modifier.height(22.dp)
@@ -616,6 +666,20 @@ internal fun Composer(
     var activeOption by remember(key) { mutableStateOf(0) }
     var dismissed by remember(key) { mutableStateOf(false) }
     val memberships by app.repo.members.rows.collectAsState()
+    val channels by app.repo.channels.rows.collectAsState()
+    var commands by remember(channel) { mutableStateOf<List<Row>>(emptyList()) }
+    var selectedCommand by remember(key) { mutableStateOf<CompletionOption?>(null) }
+    LaunchedEffect(channel, app.env.online, value.startsWith("/")) {
+        if (app.env.online && value.startsWith("/"))
+            try {
+                commands =
+                    app.api
+                        .request("/api/apps/commands?channel_id=${channel.encodeURLParameter()}")
+                        .rows()
+            } catch (e: CancellationException) {
+                throw e
+            } catch (_: Exception) {}
+    }
     val range = if (enabled && !dismissed && !composing) completionAt(value, caret) else null
     val options =
         completionOptions(
@@ -625,9 +689,12 @@ internal fun Composer(
                 .filter { it.text("channel_id") == channel }
                 .map { it.text("user_id") }
                 .toSet(),
+            channels,
+            commands,
         )
     fun choose(option: CompletionOption) {
         if (range != null) {
+            if (range.kind == "command") selectedCommand = option
             val (next, position) = insertCompletion(value, range, option.name)
             value = next
             caret = position
@@ -709,10 +776,11 @@ internal fun Composer(
     val send = {
         if (value.isNotBlank() && enabled && key !in app.pending) {
             val sent = value
+            val commandAppId = selectedCommand?.appId
             value = ""
             caret = 0
             app.run(key) {
-                if (!app.send(channel, sent, parent) && value.isEmpty()) {
+                if (!app.send(channel, sent, parent, commandAppId) && value.isEmpty()) {
                     value = sent
                     caret = sent.length
                 }
@@ -744,7 +812,10 @@ internal fun Composer(
             ) {
                 options.forEachIndexed { index, option ->
                     Button(
-                        "${if (range?.mfm == true) "$[${option.name}]" else "@${option.name}"}   ${if (range?.mfm == true) app.t(option.label) else option.label}",
+                        "${when(range?.kind) { "mfm" -> "$[${option.name}]"
+ "channel" -> "#${option.name}"
+ "command" -> "/${option.name}"
+ else -> "@${option.name}" }}   ${if (range?.mfm == true) app.t(option.label) else option.label}",
                         modifier =
                             Modifier.fillMaxWidth()
                                 .background(
@@ -814,6 +885,8 @@ internal fun Composer(
                 },
             ) {
                 value = it
+                if (selectedCommand?.let { command -> !it.startsWith("/${command.name} ") } == true)
+                    selectedCommand = null
                 dismissed = false
                 activeOption = 0
             }

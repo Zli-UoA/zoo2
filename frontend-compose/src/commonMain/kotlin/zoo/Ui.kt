@@ -38,6 +38,7 @@ val LocalFonts = staticCompositionLocalOf {
     Fonts(FontFamily.Default, FontFamily.Default, FontFamily.Default)
 }
 val LocalLinkColor = staticCompositionLocalOf { Color(0xff1d4ed8) }
+val LocalWebPlatform = staticCompositionLocalOf<Platform?> { null }
 val LocalApp = staticCompositionLocalOf<Session> { error("Session is missing") }
 
 @Composable
@@ -168,6 +169,7 @@ fun Text(
     color: Color = Color.Unspecified,
     maxLines: Int = Int.MAX_VALUE,
     size: TextUnit = TextUnit.Unspecified,
+    onTextLayout: (androidx.compose.ui.text.TextLayoutResult) -> Unit = {},
 ) {
     val fonts = LocalFonts.current
     androidx.compose.material3.Text(
@@ -186,7 +188,23 @@ fun Text(
         maxLines = maxLines,
         overflow = TextOverflow.Ellipsis,
         fontSize = size,
+        onTextLayout = onTextLayout,
     )
+}
+
+private var nextControl = 0
+
+@Composable
+fun webControlModifier(role: String, enabled: Boolean = true, selected: Boolean? = null): Modifier {
+    val platform = LocalWebPlatform.current
+    val id = remember(platform) { "zoo-control-${platform?.uuid() ?: (++nextControl).toString()}" }
+    SideEffect { platform?.controlSemantics(id, role, enabled, selected) }
+    DisposableEffect(id, platform) { onDispose { platform?.forgetControlSemantics(id) } }
+    return Modifier.semantics {
+        testTag = id
+        if (!enabled) disabled()
+        if (selected != null) this.selected = selected
+    }
 }
 
 @Composable
@@ -196,6 +214,8 @@ fun Button(
     primary: Boolean = false,
     destructive: Boolean = false,
     modifier: Modifier = Modifier,
+    role: Role = Role.Button,
+    selected: Boolean? = null,
     click: () -> Unit,
 ) {
     val colors = MaterialTheme.colorScheme
@@ -203,10 +223,11 @@ fun Button(
         if (destructive) colors.error else if (primary) colors.primary else Color.Transparent
     Box(
         modifier
+            .then(webControlModifier(if (role == Role.Tab) "tab" else "button", enabled, selected))
             .defaultMinSize(minHeight = 32.dp)
             .clip(RoundedCornerShape(8.dp))
             .background(background)
-            .clickable(enabled, role = Role.Button, onClick = click)
+            .clickable(enabled, role = role, onClick = { if (enabled) click() })
             .semantics {
                 contentDescription = label
                 if (!enabled) disabled()
@@ -267,11 +288,12 @@ fun IconButton(
 ) {
     Box(
         Modifier.size(size)
+            .then(webControlModifier("button", enabled))
             .clip(RoundedCornerShape(8.dp))
             .background(
                 if (selected) MaterialTheme.colorScheme.secondaryContainer else Color.Transparent
             )
-            .clickable(enabled, role = Role.Button, onClick = click)
+            .clickable(enabled, role = Role.Button, onClick = { if (enabled) click() })
             .semantics {
                 contentDescription = label
                 if (!enabled) disabled()

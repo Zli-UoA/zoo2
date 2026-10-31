@@ -1,5 +1,8 @@
 import { readFile, writeFile, mkdir, cp } from "node:fs/promises";
 const names = [
+  "settings",
+  "check-check",
+  "message-circle-more",
   "hash",
   "lock",
   "search",

@@ -29,11 +29,13 @@ class Session(val repo: Repository, val scope: CoroutineScope, initial: Environm
     var pending by mutableStateOf<Set<String>>(emptySet())
     var unread by mutableStateOf<Set<String>>(emptySet())
     var admins by mutableStateOf<Set<String>>(emptySet())
+    var searchEngine by mutableStateOf("google")
     var surfaces by mutableStateOf<List<Row>>(emptyList())
     var capabilities by mutableStateOf<JsonObject>(JsonObject(emptyMap()))
     var target by mutableStateOf<String?>(null)
     private val assetClient = HttpClient()
     val assets = mutableMapOf<String, JsonElement>()
+    val previews = PreviewLoader(this)
     val channelId: String?
         get() =
             env.path
@@ -42,6 +44,9 @@ class Session(val repo: Repository, val scope: CoroutineScope, initial: Environm
                 .takeIf { it.startsWith("/channels/") }
                 ?.removePrefix("/channels/")
                 ?.decodeURLPart()
+
+    val contextChannelId: String?
+        get() = channelId ?: query["channel"]
 
     val query: Parameters
         get() = Url("https://zoo.invalid${env.path}").parameters
@@ -107,9 +112,10 @@ class Session(val repo: Repository, val scope: CoroutineScope, initial: Environm
                 .also { assets[path] = it }
 
     suspend fun image(url: String): ByteArray =
-        assetClient
-            .get(if (url.startsWith("/")) endpoint(config.assetsBaseUrl, url) else url)
-            .body()
+        platform.image(if (url.startsWith("/")) endpoint(config.assetsBaseUrl, url) else url)
+            ?: assetClient
+                .get(if (url.startsWith("/")) endpoint(config.assetsBaseUrl, url) else url)
+                .body()
 
     fun update(next: Environment) {
         val old = env
@@ -124,6 +130,17 @@ class Session(val repo: Repository, val scope: CoroutineScope, initial: Environm
     }
 
     fun start() {
+        scope.launch {
+            try {
+                searchEngine =
+                    api.request("/api/users/me/preferences")
+                        .jsonObject
+                        .text("search_engine")
+                        .takeIf { it in searchEngines } ?: "google"
+            } catch (e: CancellationException) {
+                throw e
+            } catch (_: Exception) {}
+        }
         pane = if (channelId != null || env.path.startsWith("/notifications")) "chat" else "sidebar"
         scope.launch {
             while (isActive) {
@@ -181,7 +198,40 @@ class Session(val repo: Repository, val scope: CoroutineScope, initial: Environm
         }
     }
 
-    suspend fun send(channel: String, content: String, parent: String?): Boolean {
+    suspend fun send(
+        channel: String,
+        content: String,
+        parent: String?,
+        commandAppId: String? = null,
+    ): Boolean {
+        val command = Regex("^/([a-zA-Z0-9_-]+)(?:\\s+([\\s\\S]*))?$").matchEntire(content.trim())
+        if (command != null) {
+            try {
+                val body = buildJsonObject {
+                    put("channel_id", channel)
+                    if (commandAppId == null) put("text", command.groupValues[2])
+                    else {
+                        put("kind", "command")
+                        put("name", command.groupValues[1])
+                        put("values", obj("text" to command.groupValues[2]))
+                    }
+                }
+                api.request(
+                    if (commandAppId == null) "/api/apps/commands/${command.groupValues[1]}"
+                    else "/api/apps/${commandAppId.encodeURLParameter()}/invoke",
+                    "POST",
+                    body,
+                )
+                return true
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                if (commandAppId != null || (e as? ApiException)?.status != 404) {
+                    toast = t("apps.actionError")
+                    return false
+                }
+            }
+        }
         val id = platform.uuid()
         val row = buildJsonObject {
             put("id", id)

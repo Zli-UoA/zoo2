@@ -95,3 +95,59 @@ test("catalog explains missing Wasm assets", async ({ page }) => {
   );
   await expect(page.getByRole("status")).toContainText("pnpm build:compose");
 });
+
+test("native parity catalog renders real settings, cards, Bubble and notification states", async ({
+  page,
+}) => {
+  const frame = page.frameLocator('iframe[title="Compose component catalog"]');
+  const open = async (story: string) => {
+    await page.goto(`/iframe.html?id=features-compose-chat--${story}&viewMode=story`);
+    await expect(page.locator("[data-compose-catalog-state=ready]")).toBeVisible({
+      timeout: 90_000,
+    });
+  };
+  await open("link-preview");
+  await expect(frame.getByRole("button", { name: /^Kotlin link preview/ })).toBeVisible();
+  await open("integration-cards");
+  await expect(frame.getByText("Deployment to storybook-pr-271", { exact: true })).toBeVisible();
+  await expect(frame.getByText("Completed", { exact: true })).toBeVisible();
+  await page.screenshot({ path: test.info().outputPath("compose-integration-card-wide.png") });
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.screenshot({ path: test.info().outputPath("compose-integration-card-mobile.png") });
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await open("app-card-block");
+  await expect(frame.getByText("Deployment to storybook-pr-271", { exact: true })).toHaveCount(1);
+  await expect(frame.getByText("この本文はカードと二重表示しません", { exact: true })).toHaveCount(
+    0,
+  );
+  await open("settings");
+  await expect(frame.getByRole("heading", { name: "Zoo設定", exact: true })).toBeVisible();
+  await expect(frame.getByRole("button", { name: /^検索エンジン:/ })).toBeVisible();
+  const general = frame.getByRole("tab", { name: "一般", exact: true });
+  await expect(general).toHaveAttribute("aria-selected", "true");
+  await general.click({ force: true });
+  await page.keyboard.press("End");
+  await expect(frame.getByRole("tab", { name: "メンバー", exact: true })).toHaveAttribute(
+    "aria-selected",
+    "true",
+  );
+  await expect(frame.getByRole("button", { name: "管理者を外す", exact: true })).toBeDisabled();
+  await page.keyboard.press("Home");
+  await expect(general).toHaveAttribute("aria-selected", "true");
+  await frame.getByRole("button", { name: /^テーマ:/ }).click({ force: true });
+  await frame.getByRole("button", { name: "ダーク", exact: true }).click({ force: true });
+  await expect(frame.getByRole("button", { name: "テーマ: ダーク", exact: true })).toBeVisible();
+  await page.screenshot({ path: test.info().outputPath("compose-settings-dark-wide.png") });
+  await open("workspace-members");
+  await expect(frame.getByRole("button", { name: "管理者を外す", exact: true })).toBeDisabled();
+  await page.setViewportSize({ width: 390, height: 844 });
+  await open("bubble-chat");
+  await expect(
+    frame.getByRole("textbox", { name: "リアルタイムメッセージ入力", exact: true }),
+  ).toBeVisible();
+  await open("notifications-loading");
+  await expect(frame.getByText("読み込み中…", { exact: true }).first()).toBeVisible();
+  await open("notifications");
+  await expect(frame.getByText("こんにちは。今日のリリース", { exact: false })).toBeVisible();
+  await page.screenshot({ path: test.info().outputPath("compose-notifications-mobile.png") });
+});

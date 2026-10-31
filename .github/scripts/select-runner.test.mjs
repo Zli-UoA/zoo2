@@ -82,7 +82,7 @@ test('every workload uses the right output and protects fork PRs', () => {
         continue;
       }
       const docker = (dockerJobs[file] || []).includes(id);
-      const large = file === 'ci-frontend.yaml' && id === 'browser-test' || file === 'ci-compose.yaml' && id === 'web';
+      const large = file === 'ci-frontend.yaml' && id === 'browser-test' || file === 'ci-compose.yaml' && id === 'web' || file === 'cd-storybook.yaml' && id === 'build';
       const fixed = (fixedJobs[file] || []).includes(id);
       if (fixed) {
         assert.match(block, /runs-on:.*\|\| 'zli-kubecamp-no-docker' \}\}/, `${file}/${id}: fixed pool`);
