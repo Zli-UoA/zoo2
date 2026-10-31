@@ -57,7 +57,7 @@ jobs:
   build:
     needs: [runner, plan]
     if: needs.plan.outputs.enabled == 'true' && needs.plan.outputs.has_images == 'true'
-    runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-latest' || fromJSON(needs.runner.outputs.docker-runs-on || '"zli-k8s"') }}
+    runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-latest' || fromJSON(needs.runner.outputs.docker-runs-on || '"ubuntu-latest"') }}
     permissions:
       contents: read
       packages: write
