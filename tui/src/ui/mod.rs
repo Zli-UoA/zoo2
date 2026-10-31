@@ -2,8 +2,6 @@ mod app;
 mod timeline;
 mod view;
 
-use std::time::Duration;
-
 use anyhow::Result;
 use crossterm::event::EventStream;
 use futures_util::StreamExt;
@@ -28,7 +26,7 @@ pub async fn run(
 
     let mut terminal = ratatui::init();
     let mut events = EventStream::new();
-    let mut tick = tokio::time::interval(Duration::from_secs(1));
+    let mut tick = tokio::time::interval(app::TICK);
     let result = loop {
         if let Err(err) = terminal.draw(|frame| view::draw(frame, &mut app)) {
             break Err(err.into());

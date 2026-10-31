@@ -1,7 +1,7 @@
 //! 画面の状態とキー操作。描画は `view.rs`、通信は `api` と `electric` に任せる。
 
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     future::Future,
     time::{Duration, Instant},
 };
@@ -11,13 +11,21 @@ use tokio::{sync::mpsc, task::JoinHandle};
 use tui_textarea::TextArea;
 
 use crate::{
-    api::{ApiClient, Me},
+    api::{ApiClient, Me, ReadState, TypingUser},
     electric::{self, ShapeEvent, ShapeId},
     http::Credentials,
     store::Store,
 };
 
 const NOTICE_TTL: Duration = Duration::from_secs(6);
+/// `on_tick` の間隔。`ui::run` の interval と合わせる。
+pub const TICK: Duration = Duration::from_millis(500);
+/// 未読一覧の再取得 (10秒) と、入力中ユーザーの取得 (1.5秒) の間隔。frontend と同じ。
+const READ_STATE_EVERY: u64 = 20;
+const TYPING_POLL_EVERY: u64 = 3;
+/// 入力中の通知は2秒に1回まで送り、3秒止まったら取り消す。
+const TYPING_SEND_INTERVAL: Duration = Duration::from_secs(2);
+const TYPING_IDLE: Duration = Duration::from_secs(3);
 
 /// 非同期の API 呼び出しから画面に返す結果。
 #[derive(Debug)]
@@ -25,6 +33,12 @@ pub enum AppEvent {
     Notice(String),
     /// 送信に失敗した下書きを入力欄に戻す。
     RestoreDraft(String),
+    ReadStates(Vec<ReadState>),
+    Typing {
+        channel_id: String,
+        parent_id: Option<String>,
+        users: Vec<TypingUser>,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -39,6 +53,11 @@ pub enum Mode {
     Normal,
     /// 入力欄に書いている。
     Insert,
+    /// リアクションの絵文字 (ショートコードか絵文字そのもの) を入力している。
+    React {
+        message_id: String,
+        input: String,
+    },
     /// 削除の確認。
     ConfirmDelete {
         message_id: String,
@@ -85,6 +104,18 @@ pub struct App {
     pub target: Target,
     pub notice: Option<(String, Instant)>,
     pub should_quit: bool,
+
+    /// 未読のあるチャンネル。
+    pub unread: HashSet<String>,
+    /// チャンネルごとに既読を送った最新メッセージ。同じ位置を何度も送らない。
+    marked_read: HashMap<String, String>,
+    /// 開いているチャンネルで入力中のユーザー。キーはスレッドの親 (None はタイムライン)。
+    pub typing: HashMap<Option<String>, Vec<TypingUser>>,
+    typing_session: String,
+    /// 入力中を通知している送り先と、最後に送った時刻。
+    typing_sent: Option<(String, Option<String>, Instant)>,
+    last_keystroke: Option<Instant>,
+    ticks: u64,
 }
 
 impl App {
@@ -118,6 +149,13 @@ impl App {
             target: Target::Channel,
             notice: None,
             should_quit: false,
+            unread: HashSet::new(),
+            marked_read: HashMap::new(),
+            typing: HashMap::new(),
+            typing_session: uuid::Uuid::new_v4().to_string(),
+            typing_sent: None,
+            last_keystroke: None,
+            ticks: 0,
         };
         for id in [ShapeId::Channels, ShapeId::Users, ShapeId::ChannelUsers] {
             app.subscribe(id);
@@ -181,6 +219,27 @@ impl App {
                     self.composer = composer_with(&draft);
                 }
             }
+            AppEvent::ReadStates(states) => {
+                self.unread = states
+                    .into_iter()
+                    .filter(|state| state.has_unread)
+                    .map(|state| state.channel_id)
+                    .collect();
+                // 開いているチャンネルは既読を送り直す。
+                if let Some(channel_id) = &self.current {
+                    self.marked_read.remove(channel_id);
+                }
+                self.mark_current_read();
+            }
+            AppEvent::Typing {
+                channel_id,
+                parent_id,
+                users,
+            } => {
+                if self.current.as_deref() == Some(channel_id.as_str()) {
+                    self.typing.insert(parent_id, users);
+                }
+            }
         }
     }
 
@@ -192,6 +251,129 @@ impl App {
         {
             self.notice = None;
         }
+        if self.ticks.is_multiple_of(READ_STATE_EVERY) {
+            self.refresh_read_states();
+        }
+        if self.ticks.is_multiple_of(TYPING_POLL_EVERY) {
+            self.poll_typing();
+        }
+        if self
+            .last_keystroke
+            .is_some_and(|at| at.elapsed() > TYPING_IDLE)
+        {
+            self.stop_typing();
+        }
+        self.mark_current_read();
+        self.ticks += 1;
+    }
+
+    fn refresh_read_states(&self) {
+        let api = self.api.clone();
+        let tx = self.app_tx.clone();
+        tokio::spawn(async move {
+            // 一時的な失敗は次の取得で回復するので、通知しない。
+            if let Ok(states) = api.read_states().await {
+                let _ = tx.send(AppEvent::ReadStates(states));
+            }
+        });
+    }
+
+    /// 開いているチャンネルの最新のルートメッセージまで既読にする。参加していないチャンネルは
+    /// backend が既読を持たないので送らない。
+    fn mark_current_read(&mut self) {
+        let Some(channel_id) = self.current.clone() else {
+            return;
+        };
+        if !self.store.is_synced(&ShapeId::Messages(channel_id.clone()))
+            || !self.store.is_member(&channel_id, &self.me.id)
+        {
+            return;
+        }
+        let Some(latest) = self.store.latest_root(&channel_id).map(|m| m.id.clone()) else {
+            return;
+        };
+        self.unread.remove(&channel_id);
+        if self.marked_read.get(&channel_id) == Some(&latest) {
+            return;
+        }
+        self.marked_read.insert(channel_id.clone(), latest.clone());
+        let api = self.api.clone();
+        tokio::spawn(async move {
+            let _ = api.mark_read(&channel_id, &latest).await;
+        });
+    }
+
+    /// タイムラインと、開いているスレッドの入力中ユーザーを取得する。
+    fn poll_typing(&self) {
+        let Some(channel_id) = self.current.clone() else {
+            return;
+        };
+        if !self.store.is_member(&channel_id, &self.me.id) {
+            return;
+        }
+        let mut scopes = vec![None];
+        if let Some(thread) = &self.thread {
+            scopes.push(Some(thread.root_id.clone()));
+        }
+        for parent_id in scopes {
+            let api = self.api.clone();
+            let tx = self.app_tx.clone();
+            let channel_id = channel_id.clone();
+            tokio::spawn(async move {
+                if let Ok(users) = api.typing(&channel_id, parent_id.as_deref()).await {
+                    let _ = tx.send(AppEvent::Typing {
+                        channel_id,
+                        parent_id,
+                        users,
+                    });
+                }
+            });
+        }
+    }
+
+    /// 文字を入力したときに呼ぶ。送り先が変わったら、前の送り先の入力中を取り消す。
+    fn touch_typing(&mut self) {
+        let (Some(channel_id), parent_id) = (
+            self.current.clone(),
+            match &self.target {
+                Target::Channel => None,
+                Target::Reply(root_id) => Some(root_id.clone()),
+                Target::Edit(_) => return,
+            },
+        ) else {
+            return;
+        };
+        self.last_keystroke = Some(Instant::now());
+        if let Some((sent_channel, sent_parent, at)) = &self.typing_sent {
+            let same = *sent_channel == channel_id && *sent_parent == parent_id;
+            if same && at.elapsed() < TYPING_SEND_INTERVAL {
+                return;
+            }
+            if !same {
+                self.stop_typing();
+                self.last_keystroke = Some(Instant::now());
+            }
+        }
+        self.send_typing(&channel_id, parent_id.clone(), true);
+        self.typing_sent = Some((channel_id, parent_id, Instant::now()));
+    }
+
+    fn stop_typing(&mut self) {
+        self.last_keystroke = None;
+        if let Some((channel_id, parent_id, _)) = self.typing_sent.take() {
+            self.send_typing(&channel_id, parent_id, false);
+        }
+    }
+
+    fn send_typing(&self, channel_id: &str, parent_id: Option<String>, active: bool) {
+        let api = self.api.clone();
+        let channel_id = channel_id.to_string();
+        let session = self.typing_session.clone();
+        tokio::spawn(async move {
+            let _ = api
+                .set_typing(&channel_id, parent_id.as_deref(), &session, active)
+                .await;
+        });
     }
 
     pub fn on_terminal_event(&mut self, event: Event) {
@@ -224,6 +406,7 @@ impl App {
                 self.mode = Mode::Normal;
             }
             Mode::Search(query) => self.on_search_key(key, query),
+            Mode::React { message_id, input } => self.on_react_key(key, message_id, input),
             Mode::Help => self.mode = Mode::Normal,
         }
     }
@@ -243,6 +426,14 @@ impl App {
             KeyCode::Char('i') => self.start_compose(),
             KeyCode::Char('e') => self.start_edit(),
             KeyCode::Char('d') => self.confirm_delete(),
+            KeyCode::Char('r') => {
+                if let Some((_, message_id)) = self.focused_message() {
+                    self.mode = Mode::React {
+                        message_id,
+                        input: String::new(),
+                    };
+                }
+            }
             KeyCode::Char('J') => self.join_or_leave(true),
             KeyCode::Char('L') => self.join_or_leave(false),
             KeyCode::Char('/') => self.mode = Mode::Search(String::new()),
@@ -264,7 +455,9 @@ impl App {
                 self.composer.insert_newline();
             }
             _ => {
-                self.composer.input(key);
+                if self.composer.input(key) {
+                    self.touch_typing();
+                }
             }
         }
     }
@@ -288,6 +481,51 @@ impl App {
                 self.mode = Mode::Search(query);
             }
             _ => {}
+        }
+    }
+
+    fn on_react_key(&mut self, key: KeyEvent, message_id: String, mut input: String) {
+        match key.code {
+            KeyCode::Esc => self.mode = Mode::Normal,
+            KeyCode::Enter => {
+                self.mode = Mode::Normal;
+                match resolve_emoji(&input) {
+                    Some(emoji) => self.toggle_reaction(message_id, emoji),
+                    None => self.notify(format!("絵文字が見つかりません: {input}")),
+                }
+            }
+            KeyCode::Backspace => {
+                input.pop();
+                self.mode = Mode::React { message_id, input };
+            }
+            KeyCode::Char(ch) => {
+                input.push(ch);
+                self.mode = Mode::React { message_id, input };
+            }
+            _ => {}
+        }
+    }
+
+    /// 自分がすでに付けた絵文字なら外し、そうでなければ付ける。
+    fn toggle_reaction(&mut self, message_id: String, emoji: String) {
+        let Some(channel_id) = self.current.clone() else {
+            return;
+        };
+        let mine = self
+            .store
+            .reaction_groups(&channel_id, &message_id, &self.me.id)
+            .iter()
+            .any(|group| group.emoji == emoji && group.mine);
+        let api = self.api.clone();
+        if mine {
+            self.spawn_api("リアクションの取り消し", async move {
+                api.remove_reaction(&message_id, &emoji).await
+            });
+        } else {
+            let id = uuid::Uuid::new_v4().to_string();
+            self.spawn_api("リアクション", async move {
+                api.add_reaction(&id, &message_id, &emoji).await
+            });
         }
     }
 
@@ -392,13 +630,17 @@ impl App {
 
     pub fn open_channel(&mut self, channel_id: String) {
         if self.current.as_deref() != Some(channel_id.as_str()) {
+            self.stop_typing();
+            self.typing.clear();
             self.selected = None;
             self.scroll = 0;
             self.thread = None;
             self.target = Target::Channel;
         }
         self.subscribe(ShapeId::Messages(channel_id.clone()));
+        self.subscribe(ShapeId::Reactions(channel_id.clone()));
         self.current = Some(channel_id);
+        self.poll_typing();
     }
 
     fn back(&mut self) {
@@ -521,6 +763,7 @@ impl App {
         let tx = self.app_tx.clone();
         let target = self.target.clone();
         self.composer = new_composer();
+        self.stop_typing();
         // 編集は1回で終わる。新規投稿と返信は続けて書けるよう入力モードのままにする。
         if matches!(target, Target::Edit(_)) {
             self.target = Target::Channel;
@@ -542,6 +785,15 @@ impl App {
             }
         });
     }
+}
+
+/// `thumbsup` や `:thumbsup:` のショートコード、または絵文字そのものを絵文字にする。
+fn resolve_emoji(input: &str) -> Option<String> {
+    let input = input.trim();
+    let name = input.trim_matches(':');
+    emojis::get_by_shortcode(name)
+        .or_else(|| emojis::get(input))
+        .map(|emoji| emoji.as_str().to_string())
 }
 
 fn new_composer() -> TextArea<'static> {
@@ -590,6 +842,14 @@ mod tests {
         assert_eq!(step(Some(1), 5, 3), Some(2));
         assert_eq!(step(Some(2), isize::MIN, 3), Some(0));
         assert_eq!(step(Some(0), isize::MAX, 3), Some(2));
+    }
+
+    #[test]
+    fn resolves_shortcodes_and_raw_emoji() {
+        assert_eq!(resolve_emoji(":thumbsup:").as_deref(), Some("👍"));
+        assert_eq!(resolve_emoji(" tada ").as_deref(), Some("🎉"));
+        assert_eq!(resolve_emoji("👍").as_deref(), Some("👍"));
+        assert_eq!(resolve_emoji("not-an-emoji"), None);
     }
 
     #[test]

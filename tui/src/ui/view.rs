@@ -93,10 +93,14 @@ fn draw_sidebar(frame: &mut Frame, app: &mut App, area: Rect) {
             {
                 style = style.add_modifier(Modifier::DIM);
             }
-            let mut spans = vec![Span::styled(
-                app.store.channel_label(channel, &app.me.id),
-                style,
-            )];
+            let unread = app.unread.contains(&channel.id);
+            if unread {
+                style = style.add_modifier(Modifier::BOLD);
+            }
+            let mut spans = vec![
+                Span::styled(if unread { "● " } else { "  " }, Style::new().fg(ACCENT)),
+                Span::styled(app.store.channel_label(channel, &app.me.id), style),
+            ];
             if channel.is_private && !channel.is_dm {
                 spans.push(Span::styled(" 🔒", DIM));
             }
@@ -169,6 +173,7 @@ fn draw_messages(frame: &mut Frame, app: &mut App, area: Rect) {
     let counts = app.store.reply_counts(&channel_id);
     let ctx = Context {
         store: &app.store,
+        me_id: &app.me.id,
         me_name: &app.me.user_name,
         selected: app.selected.as_deref(),
         reply_counts: Some(&counts),
@@ -204,6 +209,7 @@ fn draw_thread(frame: &mut Frame, app: &mut App, area: Rect) {
     messages.extend(app.store.replies(&channel_id, &thread.root_id));
     let ctx = Context {
         store: &app.store,
+        me_id: &app.me.id,
         me_name: &app.me.user_name,
         selected: thread.selected.as_deref(),
         reply_counts: None,
@@ -238,8 +244,11 @@ fn draw_composer(frame: &mut Frame, app: &mut App, area: Rect) {
     } else {
         " i: 書く "
     };
-    let block =
+    let mut block =
         pane(Line::from(target), insert).title_bottom(Line::styled(hint, DIM).right_aligned());
+    if let Some(typing) = typing_line(app) {
+        block = block.title_bottom(Line::styled(typing, Style::new().fg(ACCENT)).left_aligned());
+    }
     app.composer.set_block(block);
     let cursor = if insert {
         Style::new().add_modifier(Modifier::REVERSED)
@@ -250,8 +259,36 @@ fn draw_composer(frame: &mut Frame, app: &mut App, area: Rect) {
     frame.render_widget(&app.composer, area);
 }
 
+/// 入力欄の送り先 (タイムラインかスレッド) で入力中の人。
+fn typing_line(app: &App) -> Option<String> {
+    let scope = match &app.target {
+        Target::Reply(root_id) => Some(root_id.clone()),
+        _ => None,
+    };
+    let users = app.typing.get(&scope).filter(|users| !users.is_empty())?;
+    let names: Vec<&str> = users
+        .iter()
+        .map(|user| user.display_name.as_str())
+        .collect();
+    Some(match names.as_slice() {
+        [one] => format!(" {one} が入力中… "),
+        [a, b] => format!(" {a}、{b} が入力中… "),
+        _ => format!(" {} 人が入力中… ", names.len()),
+    })
+}
+
 fn draw_status(frame: &mut Frame, app: &App, area: Rect) {
-    let line = if let Mode::Search(query) = &app.mode {
+    let line = if let Mode::React { input, .. } = &app.mode {
+        Line::from(vec![
+            Span::styled(" リアクション: ", Style::new().fg(ACCENT)),
+            Span::raw(input.clone()),
+            Span::styled("▏", Style::new().fg(ACCENT)),
+            Span::styled(
+                "  例: thumbsup, :tada:, 👍  Enter: 付ける/外す / Esc: やめる",
+                DIM,
+            ),
+        ])
+    } else if let Mode::Search(query) = &app.mode {
         Line::from(vec![
             Span::styled(" 検索: ", Style::new().fg(ACCENT)),
             Span::raw(query.clone()),
@@ -286,6 +323,7 @@ const HELP: &[(&str, &str)] = &[
     ("i", "書く (スレッドでは返信)"),
     ("e", "自分のメッセージを編集"),
     ("d", "自分のメッセージを削除"),
+    ("r", "リアクションを付ける / 外す"),
     ("J / L", "チャンネルに参加 / 退出"),
     ("/", "チャンネルを検索"),
     ("q / Ctrl+C", "終了"),
@@ -333,9 +371,10 @@ mod tests {
 
     use super::*;
     use crate::{
-        api::{ApiClient, Me},
+        api::{ApiClient, Me, ReadState, TypingUser},
         electric::{Batch, Change, ShapeEvent},
         http::Credentials,
+        ui::app::AppEvent,
     };
 
     fn batch(rows: Vec<(&str, Value)>) -> Batch {
@@ -404,6 +443,22 @@ mod tests {
         );
         feed(
             &mut app,
+            ShapeId::Reactions("c1".into()),
+            vec![
+                (
+                    "x1",
+                    json!({ "id": "x1", "message_id": "m1", "user_id": "u1", "emoji": "👍",
+                               "created_at": "2026-11-01 03:02:00" }),
+                ),
+                (
+                    "x2",
+                    json!({ "id": "x2", "message_id": "m1", "user_id": "u2", "emoji": "👍",
+                               "created_at": "2026-11-01 03:03:00" }),
+                ),
+            ],
+        );
+        feed(
+            &mut app,
             ShapeId::Messages("c1".into()),
             vec![
                 (
@@ -457,6 +512,7 @@ mod tests {
         assert!(screen.contains("Bob [bot]"));
         assert!(screen.contains("hello @alice"));
         assert!(screen.contains("返信 1 件"));
+        assert!(screen.contains("👍 2"));
         assert!(!screen.contains("返信です"), "返信はタイムラインに出さない");
 
         press(&mut app, KeyCode::Char('k'));
@@ -471,6 +527,36 @@ mod tests {
         press(&mut app, KeyCode::Esc);
         assert!(app.thread.is_none());
         assert!(render(&mut app).contains("#general へ送信"));
+    }
+
+    #[tokio::test]
+    async fn shows_unread_typing_and_reaction_prompt() {
+        let mut app = app();
+        app.on_app_event(AppEvent::ReadStates(vec![ReadState {
+            channel_id: "c2".into(),
+            has_unread: true,
+        }]));
+        assert!(render(&mut app).contains("● #secret"));
+
+        press(&mut app, KeyCode::Enter);
+        app.on_app_event(AppEvent::Typing {
+            channel_id: "c1".into(),
+            parent_id: None,
+            users: vec![TypingUser {
+                id: "u2".into(),
+                display_name: "Bob".into(),
+            }],
+        });
+        assert!(render(&mut app).contains("Bob が入力中…"));
+
+        press(&mut app, KeyCode::Char('k'));
+        press(&mut app, KeyCode::Char('r'));
+        for ch in "tada".chars() {
+            press(&mut app, KeyCode::Char(ch));
+        }
+        assert!(render(&mut app).contains("リアクション: tada"));
+        press(&mut app, KeyCode::Esc);
+        assert_eq!(app.mode, Mode::Normal);
     }
 
     #[tokio::test]

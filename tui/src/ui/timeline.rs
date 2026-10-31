@@ -16,6 +16,7 @@ const INDENT: usize = 2;
 const SELECTED: Style = Style::new().bg(Color::Rgb(40, 44, 52));
 const MARKER: Style = Style::new().fg(Color::Cyan);
 const DIM: Style = Style::new().fg(Color::DarkGray);
+const MINE: Style = Style::new().fg(Color::Cyan).bg(Color::Rgb(24, 48, 56));
 
 pub struct Timeline {
     pub lines: Vec<Line<'static>>,
@@ -34,6 +35,7 @@ impl Timeline {
 
 pub struct Context<'a> {
     pub store: &'a Store,
+    pub me_id: &'a str,
     pub me_name: &'a str,
     pub selected: Option<&'a str>,
     /// タイムラインでは返信数を出し、スレッドでは出さない。
@@ -94,6 +96,22 @@ fn message_lines(message: &Message, created: Option<&Zoned>, ctx: &Context) -> V
     let mut lines = vec![Line::from(header)];
     lines.extend(mfm::render(&message.content, Some(ctx.me_name)));
 
+    let reactions = ctx
+        .store
+        .reaction_groups(&message.channel_id, &message.id, ctx.me_id);
+    if !reactions.is_empty() {
+        let mut spans = Vec::new();
+        for group in reactions {
+            let style = if group.mine { MINE } else { DIM };
+            spans.push(Span::styled(
+                format!(" {} {} ", reaction_label(&group.emoji), group.count),
+                style,
+            ));
+            spans.push(Span::raw(" "));
+        }
+        lines.push(Line::from(spans));
+    }
+
     if let Some(count) = ctx.reply_counts.and_then(|counts| counts.get(&message.id)) {
         lines.push(Line::from(Span::styled(
             format!("💬 返信 {count} 件"),
@@ -101,6 +119,14 @@ fn message_lines(message: &Message, created: Option<&Zoned>, ctx: &Context) -> V
         )));
     }
     lines
+}
+
+/// Emoji Kitchen の合成絵文字 (`kitchen:<a>_<b>`) は画像なので、元の2つを並べて示す。
+fn reaction_label(emoji: &str) -> String {
+    match emoji.strip_prefix("kitchen:") {
+        Some(pair) => pair.replacen('_', "+", 1),
+        None => emoji.to_string(),
+    }
 }
 
 /// 選択中のメッセージには左端に印を付け、背景色を変える。
@@ -218,6 +244,7 @@ mod tests {
         let counts = HashMap::from([("m2".to_string(), 3)]);
         let ctx = Context {
             store: &store,
+            me_id: "u1",
             me_name: "alice",
             selected: Some("m2"),
             reply_counts: Some(&counts),
