@@ -1,5 +1,9 @@
-use anyhow::Result;
-use zoo2_tui::config::Config;
+use anyhow::{Result, bail};
+use zoo2_tui::{
+    config::{AuthConfig, Config},
+    http::Credentials,
+    ui,
+};
 
 const USAGE: &str = "\
 使い方: zoo2-tui [コマンド]
@@ -16,8 +20,15 @@ async fn main() -> Result<()> {
     match command.as_str() {
         "run" => {
             let config = Config::load()?;
-            println!("{config:?}");
-            Ok(())
+            let credentials = match &config.auth {
+                AuthConfig::Dev { user_id } => Credentials::Dev(user_id.clone()),
+                AuthConfig::Oidc(_) => {
+                    bail!(
+                        "OIDC ログインはまだ使えません。ZOO_DEV_USER を設定して dev モードで起動してください"
+                    )
+                }
+            };
+            ui::run(reqwest::Client::new(), config.api_base_url, credentials).await
         }
         "help" | "-h" | "--help" => {
             println!("{USAGE}");

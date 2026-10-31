@@ -154,6 +154,7 @@ checksum = "829d955a0bb380ef178a640b91779e3987da38c9aea133b20614cfed8cdea9c6"
 dependencies = [
  "bitflags 2.13.2",
  "crossterm_winapi",
+ "futures-core",
  "mio",
  "parking_lot",
  "rustix",
@@ -1742,6 +1743,17 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e421abadd41a4225275504ea4d6566923418b7f05506fbc9c0fe86ba7396114b"
 
 [[package]]
+name = "tui-textarea"
+version = "0.7.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0a5318dd619ed73c52a9417ad19046724effc1287fb75cdcc4eca1d6ac1acbae"
+dependencies = [
+ "crossterm",
+ "ratatui",
+ "unicode-width 0.2.0",
+]
+
+[[package]]
 name = "unicode-ident"
 version = "1.0.27"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2161,8 +2173,10 @@ name = "zoo2-tui"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "crossterm",
  "directories",
  "emojis",
+ "futures-util",
  "jiff",
  "ratatui",
  "reqwest",
@@ -2171,6 +2185,8 @@ dependencies = [
  "thiserror",
  "tokio",
  "toml",
+ "tui-textarea",
+ "unicode-width 0.2.0",
  "url",
  "uuid",
  "wiremock",
