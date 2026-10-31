@@ -9,14 +9,29 @@ it("maps Summaly fields and keeps empty metadata readable", () => {
         title: "Title",
         description: "Text",
         thumbnail: "https://images.example/a.png",
+        sitename: " Example Blog ",
+        icon: "https://example.com/favicon.ico",
         player: { url: "javascript:alert(1)" },
       },
       "https://example.com",
     ),
-  ).toEqual({ title: "Title", description: "Text", image: "https://images.example/a.png" });
+  ).toEqual({
+    title: "Title",
+    description: "Text",
+    image: "https://images.example/a.png",
+    siteName: "Example Blog",
+    icon: "https://example.com/favicon.ico",
+  });
   expect(
     parseSummaly({ title: null, description: null, thumbnail: null }, "https://example.com"),
-  ).toEqual({ title: "example.com", description: "", image: null });
+  ).toEqual({
+    title: "example.com",
+    description: "",
+    image: null,
+    siteName: "example.com",
+    icon: null,
+  });
+  expect(parseSummaly({ sitename: "  " }, "https://example.com").siteName).toBe("example.com");
   expect(() => parseSummaly(null, "https://example.com")).toThrow();
 });
 it("requests the metadata service directly without app credentials", async () => {

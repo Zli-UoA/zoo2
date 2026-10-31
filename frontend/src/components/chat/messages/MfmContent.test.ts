@@ -9,6 +9,17 @@ const render = (content: string, options: Omit<MfmContentProps, "content"> = {})
   renderToStaticMarkup(createElement(MfmContent, { content, ...options }));
 
 describe("MfmContent", () => {
+  it("styles raw URLs as link chips while preserving destinations and custom labels", () => {
+    const html = render("https://blog.example.com/a?x=1");
+    expect(html).toContain('href="https://blog.example.com/a?x=1"');
+    expect(html).toContain("bg-sky-100");
+    expect(html).toContain('aria-hidden="true"');
+    expect(html).toContain("blog.example.com/a?x=1</a>");
+    expect(html).not.toContain(">https://");
+    const labeled = render("[Read article](https://example.com/article)");
+    expect(labeled).toContain(">Read article</a>");
+    expect(labeled).not.toContain("bg-sky-100");
+  });
   it("renders nested formatting and animated Unicode emoji", () => {
     const html = render("$[jelly.speed=2s **🎉**]");
     expect(html).toContain("mfm-effect mfm-jelly");

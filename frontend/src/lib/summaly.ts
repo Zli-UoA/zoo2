@@ -4,6 +4,8 @@ export interface LinkPreviewData {
   title: string;
   description: string;
   image: string | null;
+  siteName?: string;
+  icon?: string | null;
 }
 export interface SummalyClient {
   get(url: string, options: { signal: AbortSignal }): Promise<LinkPreviewData>;
@@ -47,5 +49,10 @@ export function parseSummaly(value: unknown, url: string): LinkPreviewData {
     ).slice(0, 300),
     description: typeof data.description === "string" ? data.description.slice(0, 1000) : "",
     image: typeof data.thumbnail === "string" ? data.thumbnail : null,
+    icon: typeof data.icon === "string" ? data.icon : null,
+    siteName:
+      typeof data.sitename === "string" && data.sitename.trim()
+        ? data.sitename.trim().slice(0, 300)
+        : new URL(url).hostname,
   };
 }
