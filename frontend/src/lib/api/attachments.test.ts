@@ -47,12 +47,45 @@ describe("uploadAttachment", () => {
     });
   });
 
-  it("rejects unsupported files before requesting a presigned URL", async () => {
+  it("uploads non-image files with a declared content type", async () => {
+    const post = vi.fn(async () => ({
+      data: {
+        attachment_id: "attachment-2",
+        upload_url: "https://attachments.zliusercontent.com/upload",
+        storage_key: "attachments/channel-1/attachment-2",
+      },
+      txid: null,
+    }));
+    const fetchImpl = vi.fn(async () => new Response(null, { status: 200 }));
+    const client = { post } as unknown as ApiClient;
+    const file = fakeFile({ name: "release-notes.pdf", type: "application/pdf", size: 8 });
+
+    await expect(
+      uploadAttachment(client, "channel-1", file, fetchImpl as typeof fetch),
+    ).resolves.toEqual({
+      id: "attachment-2",
+      file_name: "release-notes.pdf",
+      file_size: 8,
+      content_type: "application/pdf",
+    });
+    expect(post).toHaveBeenCalledWith("/api/attachments/presign", {
+      channel_id: "channel-1",
+      file_name: "release-notes.pdf",
+      file_size: 8,
+      content_type: "application/pdf",
+    });
+  });
+
+  it("rejects executable files before requesting a presigned URL", async () => {
     const post = vi.fn();
     const client = { post } as unknown as ApiClient;
 
     await expect(
-      uploadAttachment(client, "channel-1", fakeFile({ name: "a.svg", type: "image/svg+xml" })),
+      uploadAttachment(
+        client,
+        "channel-1",
+        fakeFile({ name: "setup.exe", type: "application/x-msdownload" }),
+      ),
     ).rejects.toMatchObject({ reason: "unsupported" });
     expect(post).not.toHaveBeenCalled();
   });

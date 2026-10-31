@@ -202,18 +202,21 @@
     "edited": "編集済み"
   },
   "attachments": {
-    "add": "画像を添付",
-    "selected": "添付する画像",
+    "add": "ファイルを添付",
+    "selected": "添付するファイル",
     "remove": "{{name}}を削除",
-    "unsupported": "PNG・JPEG・WebP・GIF の画像を添付できます。",
-    "tooLarge": "画像は{{max}}MB以下にしてください。",
-    "tooMany": "画像は{{max}}枚まで添付できます。",
-    "uploading": "画像をアップロード中…",
-    "uploadError": "画像をアップロードできませんでした。",
+    "unsupported": "このファイルは添付できません。",
+    "tooLarge": "ファイルは{{max}}MB以下にしてください。",
+    "tooMany": "ファイルは{{max}}件まで添付できます。",
+    "uploading": "ファイルをアップロード中…",
+    "uploadError": "ファイルをアップロードできませんでした。",
+    "empty": "空のファイルは添付できません。",
     "loading": "読み込み中…",
     "loadError": "読み込めませんでした",
+    "preview": "{{name}}をプレビュー",
     "open": "{{name}}を開く",
     "download": "{{name}}をダウンロード",
+    "downloadShort": "ダウンロード",
     "retry": "再試行"
   },
   "threads": {

@@ -1,6 +1,6 @@
 import {
   attachmentFileName,
-  resolveSupportedImageType,
+  resolveAttachmentContentType,
   type AttachmentRejection,
 } from "../attachments";
 import type { ApiClient } from "./client";
@@ -31,7 +31,7 @@ export async function uploadAttachment(
   file: File,
   fetchImpl: typeof fetch = fetch,
 ): Promise<UploadedAttachment> {
-  const contentType = resolveSupportedImageType(file);
+  const contentType = resolveAttachmentContentType(file);
   if (!contentType) {
     throw new AttachmentUploadError("unsupported");
   }

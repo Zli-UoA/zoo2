@@ -5,13 +5,13 @@ import {
   MAX_ATTACHMENTS_PER_MESSAGE,
   MAX_ATTACHMENT_FILE_SIZE,
   attachmentFileName,
+  attachmentFilesFromClipboard,
   attachmentRejection,
   attachmentUrlExpiresAt,
   formatAttachmentSize,
   groupAttachmentsByMessage,
-  imageFilesFromClipboard,
   isInlineImage,
-  resolveSupportedImageType,
+  resolveAttachmentContentType,
   shouldRefreshAttachmentUrl,
 } from "./attachments";
 import type { AttachmentRow } from "./electric/types";
@@ -35,43 +35,41 @@ function attachment(overrides: Partial<AttachmentRow> = {}): AttachmentRow {
   };
 }
 
-describe("resolveSupportedImageType", () => {
-  it("accepts the inline image allowlist", () => {
-    expect(resolveSupportedImageType(file("a.png", "image/png"))).toBe("image/png");
-    expect(resolveSupportedImageType(file("a.jpg", "image/jpeg"))).toBe("image/jpeg");
-    expect(resolveSupportedImageType(file("a.webp", "image/webp"))).toBe("image/webp");
-    expect(resolveSupportedImageType(file("a.gif", "image/gif"))).toBe("image/gif");
-  });
-
-  it("falls back to the extension and rejects other formats", () => {
-    expect(resolveSupportedImageType(file("screenshot.PNG", ""))).toBe("image/png");
-    expect(resolveSupportedImageType(file("photo.jpeg", ""))).toBe("image/jpeg");
-    expect(resolveSupportedImageType(file("diagram.svg", "image/svg+xml"))).toBeNull();
-    expect(resolveSupportedImageType(file("archive.zip", "application/zip"))).toBeNull();
+describe("resolveAttachmentContentType", () => {
+  it("accepts images and other files while rejecting executable formats", () => {
+    expect(resolveAttachmentContentType(file("a.png", "image/png"))).toBe("image/png");
+    expect(resolveAttachmentContentType(file("document.pdf", "application/pdf"))).toBe(
+      "application/pdf",
+    );
+    expect(resolveAttachmentContentType(file("notes.txt", ""))).toBe("text/plain");
+    expect(resolveAttachmentContentType(file("data.bin", ""))).toBe("application/octet-stream");
+    expect(resolveAttachmentContentType(file("setup.exe", "application/x-msdownload"))).toBeNull();
+    expect(resolveAttachmentContentType(file("run.sh", ""))).toBeNull();
   });
 });
 
-describe("imageFilesFromClipboard", () => {
-  it("collects image files from items and files without duplicates", () => {
+describe("attachmentFilesFromClipboard", () => {
+  it("collects all files from items and files without duplicates", () => {
     const pasted = { name: "image.png", type: "image/png", size: 4, lastModified: 1 };
+    const pdf = { name: "document.pdf", type: "application/pdf", size: 8, lastModified: 3 };
     const data = {
       files: [pasted],
       items: [
         { kind: "file", getAsFile: () => ({ ...pasted, lastModified: 2 }) },
         { kind: "string", getAsFile: () => null },
-        { kind: "file", getAsFile: () => ({ ...pasted, name: "notes.txt", type: "text/plain" }) },
+        { kind: "file", getAsFile: () => pdf },
       ],
     } as unknown as Pick<DataTransfer, "items" | "files">;
 
-    expect(imageFilesFromClipboard(data)).toEqual([pasted]);
-    expect(imageFilesFromClipboard(null)).toEqual([]);
+    expect(attachmentFilesFromClipboard(data)).toEqual([pasted, pdf]);
+    expect(attachmentFilesFromClipboard(null)).toEqual([]);
   });
 });
 
 describe("attachment URL expiry", () => {
   it("derives expiry from the presigned GET URL", () => {
     const url =
-      "https://storage.example/object?X-Amz-Date=20261031T120000Z&X-Amz-Expires=300&X-Amz-Signature=test";
+      "https://attachments.zliusercontent.com/object?X-Amz-Date=20261031T120000Z&X-Amz-Expires=300&X-Amz-Signature=test";
     expect(attachmentUrlExpiresAt(url)).toBe(Date.parse("2026-10-31T12:00:00Z") + 300_000);
   });
 
@@ -91,21 +89,28 @@ describe("attachment URL expiry", () => {
 });
 
 describe("attachment validation", () => {
-  it("rejects too many, oversized, and unsupported files", () => {
+  it("rejects too many, empty, oversized, and executable files", () => {
     expect(attachmentRejection(file("a.png", "image/png"), MAX_ATTACHMENTS_PER_MESSAGE)).toBe(
       "too-many",
     );
+    expect(attachmentRejection(file("a.png", "image/png", 0), 0)).toBe("empty");
     expect(attachmentRejection(file("a.png", "image/png", MAX_ATTACHMENT_FILE_SIZE + 1), 0)).toBe(
       "too-large",
     );
-    expect(attachmentRejection(file("a.svg", "image/svg+xml"), 0)).toBe("unsupported");
+    expect(attachmentRejection(file("setup.exe", "application/x-msdownload"), 0)).toBe(
+      "unsupported",
+    );
+    expect(attachmentRejection(file("document.pdf", "application/pdf"), 0)).toBeNull();
     expect(attachmentRejection(file("a.png", "image/png"), 0)).toBeNull();
   });
 
-  it("sanitizes pasted file names and supplies a fallback", () => {
+  it("sanitizes pasted file names and supplies a fallback extension", () => {
     expect(attachmentFileName({ name: "bad\nname.png" }, "image/png")).toBe("bad_name.png");
+    expect(attachmentFileName({ name: "release-notes" }, "application/pdf")).toBe(
+      "release-notes.pdf",
+    );
     const generated = attachmentFileName({ name: "" }, "image/jpeg");
-    expect(generated).toMatch(/^pasted-image-\d+-[a-z0-9]+\.jpg$/);
+    expect(generated).toMatch(/^attachment-\d+-[a-z0-9]+\.jpg$/);
   });
 });
 

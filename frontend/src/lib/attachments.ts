@@ -6,12 +6,7 @@ export const MAX_ATTACHMENT_FILE_SIZE = 50 * 1024 * 1024;
 export const ATTACHMENT_URL_FALLBACK_TTL_MS = 4 * 60 * 1000;
 export const ATTACHMENT_URL_REFRESH_MARGIN_MS = 5 * 1000;
 
-export const SUPPORTED_IMAGE_TYPES = [
-  "image/png",
-  "image/jpeg",
-  "image/webp",
-  "image/gif",
-] as const;
+const SUPPORTED_IMAGE_TYPES = ["image/png", "image/jpeg", "image/webp", "image/gif"] as const;
 
 const EXTENSION_TO_IMAGE_TYPE: Record<string, string> = {
   png: "image/png",
@@ -21,30 +16,117 @@ const EXTENSION_TO_IMAGE_TYPE: Record<string, string> = {
   gif: "image/gif",
 };
 
-const IMAGE_TYPE_TO_EXTENSION: Record<string, string> = {
+const EXTENSION_TO_CONTENT_TYPE: Record<string, string> = {
+  ...EXTENSION_TO_IMAGE_TYPE,
+  pdf: "application/pdf",
+  txt: "text/plain",
+  md: "text/markdown",
+  csv: "text/csv",
+  json: "application/json",
+  xml: "application/xml",
+  zip: "application/zip",
+  gz: "application/gzip",
+  tar: "application/x-tar",
+  "7z": "application/x-7z-compressed",
+  rar: "application/vnd.rar",
+  doc: "application/msword",
+  docx: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+  xls: "application/vnd.ms-excel",
+  xlsx: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+  ppt: "application/vnd.ms-powerpoint",
+  pptx: "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+  mp3: "audio/mpeg",
+  m4a: "audio/mp4",
+  wav: "audio/wav",
+  ogg: "audio/ogg",
+  flac: "audio/flac",
+  mp4: "video/mp4",
+  webm: "video/webm",
+  mov: "video/quicktime",
+};
+
+const CONTENT_TYPE_TO_EXTENSION: Record<string, string> = {
   "image/png": "png",
   "image/jpeg": "jpg",
   "image/webp": "webp",
   "image/gif": "gif",
+  "application/pdf": "pdf",
+  "text/plain": "txt",
+  "text/markdown": "md",
+  "text/csv": "csv",
+  "application/json": "json",
+  "application/xml": "xml",
+  "application/zip": "zip",
+  "application/gzip": "gz",
+  "application/x-tar": "tar",
+  "application/x-7z-compressed": "7z",
+  "application/vnd.rar": "rar",
+  "application/msword": "doc",
+  "application/vnd.openxmlformats-officedocument.wordprocessingml.document": "docx",
+  "application/vnd.ms-excel": "xls",
+  "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": "xlsx",
+  "application/vnd.ms-powerpoint": "ppt",
+  "application/vnd.openxmlformats-officedocument.presentationml.presentation": "pptx",
+  "audio/mpeg": "mp3",
+  "audio/mp4": "m4a",
+  "audio/wav": "wav",
+  "audio/ogg": "ogg",
+  "audio/flac": "flac",
+  "video/mp4": "mp4",
+  "video/webm": "webm",
+  "video/quicktime": "mov",
 };
 
-export type AttachmentRejection = "unsupported" | "too-many" | "too-large";
+const DISALLOWED_UPLOAD_TYPES = new Set([
+  "application/x-msdownload",
+  "application/x-executable",
+  "application/x-dosexec",
+  "application/x-msdos-program",
+  "application/x-sharedlib",
+  "application/x-batch",
+  "application/x-sh",
+]);
+
+const DISALLOWED_UPLOAD_EXTENSIONS = new Set([
+  "exe",
+  "com",
+  "scr",
+  "msi",
+  "dll",
+  "so",
+  "dylib",
+  "bat",
+  "cmd",
+  "sh",
+]);
+
+export type AttachmentRejection = "unsupported" | "too-many" | "too-large" | "empty";
+
+function baseMime(value: string): string {
+  return value.split(";")[0]?.trim().toLowerCase() ?? "";
+}
+
+function fileExtension(name: string): string {
+  return name.split(".").pop()?.toLowerCase() ?? "";
+}
 
 export function isInlineImage(contentType: string): boolean {
-  const mime = contentType.split(";")[0]?.trim().toLowerCase() ?? "";
-  return (SUPPORTED_IMAGE_TYPES as readonly string[]).includes(mime);
+  return (SUPPORTED_IMAGE_TYPES as readonly string[]).includes(baseMime(contentType));
 }
 
-export function resolveSupportedImageType(file: Pick<File, "type" | "name">): string | null {
-  const declared = file.type.split(";")[0]?.trim().toLowerCase() ?? "";
-  if ((SUPPORTED_IMAGE_TYPES as readonly string[]).includes(declared)) {
-    return declared;
+export function resolveAttachmentContentType(file: Pick<File, "type" | "name">): string | null {
+  const extension = fileExtension(file.name);
+  if (DISALLOWED_UPLOAD_EXTENSIONS.has(extension)) {
+    return null;
   }
-  const extension = file.name.split(".").pop()?.toLowerCase() ?? "";
-  return EXTENSION_TO_IMAGE_TYPE[extension] ?? null;
+  const declared = baseMime(file.type);
+  if (/^[a-z0-9!#$&^_.+-]+\/[a-z0-9!#$&^_.+-]+$/.test(declared)) {
+    return DISALLOWED_UPLOAD_TYPES.has(declared) ? null : declared;
+  }
+  return EXTENSION_TO_CONTENT_TYPE[extension] ?? "application/octet-stream";
 }
 
-export function imageFilesFromClipboard(
+export function attachmentFilesFromClipboard(
   data: Pick<DataTransfer, "items" | "files"> | null,
 ): File[] {
   if (!data) {
@@ -62,7 +144,7 @@ export function imageFilesFromClipboard(
   }
   const seen = new Set<string>();
   return candidates.filter((file) => {
-    if (!resolveSupportedImageType(file)) {
+    if (!resolveAttachmentContentType(file)) {
       return false;
     }
     const key = `${file.name}:${file.size}:${file.type}`;
@@ -98,17 +180,32 @@ export function shouldRefreshAttachmentUrl(expiresAt: number | null, now = Date.
   return expiresAt === null || expiresAt - now <= ATTACHMENT_URL_REFRESH_MARGIN_MS;
 }
 
+function contentTypeExtension(contentType: string): string {
+  const known = CONTENT_TYPE_TO_EXTENSION[baseMime(contentType)];
+  if (known) {
+    return known;
+  }
+  const subtype = baseMime(contentType).split("/")[1] ?? "";
+  return subtype.replace(/[^a-z0-9]+/g, "").slice(0, 12) || "bin";
+}
+
 export function attachmentFileName(file: Pick<File, "name">, contentType: string): string {
   const cleaned = Array.from(file.name)
     .map((char) => (char.charCodeAt(0) < 32 || char.charCodeAt(0) === 127 ? "_" : char))
     .join("")
     .trim();
+  const extension = contentTypeExtension(contentType);
   if (cleaned) {
-    return Array.from(cleaned).slice(0, 255).join("");
+    const truncated = Array.from(cleaned).slice(0, 255).join("");
+    if (/\.[^./\\]+$/.test(truncated)) {
+      return truncated;
+    }
+    return `${Array.from(truncated)
+      .slice(0, 254 - extension.length)
+      .join("")}.${extension}`;
   }
-  const extension = IMAGE_TYPE_TO_EXTENSION[contentType] ?? "png";
   const suffix = Math.random().toString(36).slice(2, 8);
-  return `pasted-image-${Date.now()}-${suffix}.${extension}`;
+  return `attachment-${Date.now()}-${suffix}.${extension}`;
 }
 
 export function attachmentRejection(
@@ -118,10 +215,13 @@ export function attachmentRejection(
   if (currentCount >= MAX_ATTACHMENTS_PER_MESSAGE) {
     return "too-many";
   }
+  if (file.size <= 0) {
+    return "empty";
+  }
   if (file.size > MAX_ATTACHMENT_FILE_SIZE) {
     return "too-large";
   }
-  if (!resolveSupportedImageType(file)) {
+  if (!resolveAttachmentContentType(file)) {
     return "unsupported";
   }
   return null;

@@ -202,18 +202,21 @@
     "edited": "Edited"
   },
   "attachments": {
-    "add": "Attach images",
-    "selected": "Images to attach",
+    "add": "Attach files",
+    "selected": "Files to attach",
     "remove": "Remove {{name}}",
-    "unsupported": "You can attach PNG, JPEG, WebP, or GIF images.",
-    "tooLarge": "Images must be {{max}} MB or smaller.",
-    "tooMany": "You can attach up to {{max}} images.",
-    "uploading": "Uploading image…",
-    "uploadError": "Could not upload the image.",
+    "unsupported": "This file cannot be attached.",
+    "tooLarge": "Files must be {{max}} MB or smaller.",
+    "tooMany": "You can attach up to {{max}} files.",
+    "uploading": "Uploading file…",
+    "uploadError": "Could not upload the file.",
+    "empty": "Empty files cannot be attached.",
     "loading": "Loading…",
     "loadError": "Could not load",
+    "preview": "Preview {{name}}",
     "open": "Open {{name}}",
     "download": "Download {{name}}",
+    "downloadShort": "Download",
     "retry": "Try again"
   },
   "threads": {

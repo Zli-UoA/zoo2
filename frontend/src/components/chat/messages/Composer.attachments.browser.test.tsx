@@ -9,6 +9,20 @@ function imageFile(): File {
   return new File([new Uint8Array([1, 2, 3, 4])], "screenshot.png", { type: "image/png" });
 }
 
+function pdfFile(): File {
+  return new File([new Uint8Array([1, 2, 3, 4, 5])], "release-notes.pdf", {
+    type: "application/pdf",
+  });
+}
+
+function paste(target: HTMLElement, file: File) {
+  const clipboardData = new DataTransfer();
+  clipboardData.items.add(file);
+  target.dispatchEvent(
+    new ClipboardEvent("paste", { clipboardData, bubbles: true, cancelable: true }),
+  );
+}
+
 describe("Composer attachments", () => {
   it("uploads a pasted image and sends the attachment id with the message", async () => {
     const upload = vi.fn(async () => ({
@@ -25,13 +39,7 @@ describe("Composer attachments", () => {
     );
 
     const file = imageFile();
-    const clipboardData = new DataTransfer();
-    clipboardData.items.add(file);
-    screen
-      .getByRole("textbox")
-      .dispatchEvent(
-        new ClipboardEvent("paste", { clipboardData, bubbles: true, cancelable: true }),
-      );
+    paste(screen.getByRole("textbox"), file);
 
     await waitFor(() => expect(upload).toHaveBeenCalledWith(file));
     const sendButton = screen.getByRole("button", { name: "送信" });
@@ -40,6 +48,32 @@ describe("Composer attachments", () => {
 
     await waitFor(() => expect(send).toHaveBeenCalledWith("", undefined, ["attachment-1"]));
     expect(screen.queryByRole("button", { name: "screenshot.pngを削除" })).toBeNull();
+  });
+
+  it("uploads a pasted non-image file and sends its attachment id", async () => {
+    const upload = vi.fn(async () => ({
+      id: "attachment-2",
+      file_name: "release-notes.pdf",
+      file_size: 5,
+      content_type: "application/pdf",
+    }));
+    const send = vi.fn(async () => true);
+    render(
+      <LocaleProvider>
+        <Composer onSend={send} onUploadAttachment={upload} />
+      </LocaleProvider>,
+    );
+
+    const file = pdfFile();
+    paste(screen.getByRole("textbox"), file);
+
+    await waitFor(() => expect(upload).toHaveBeenCalledWith(file));
+    expect(await screen.findByText("release-notes.pdf")).toBeVisible();
+    const sendButton = screen.getByRole("button", { name: "送信" });
+    await waitFor(() => expect(sendButton).toBeEnabled());
+    await userEvent.click(sendButton);
+
+    await waitFor(() => expect(send).toHaveBeenCalledWith("", undefined, ["attachment-2"]));
   });
 
   it("shows an error and removes the preview when upload fails", async () => {
@@ -52,16 +86,10 @@ describe("Composer attachments", () => {
       </LocaleProvider>,
     );
 
-    const clipboardData = new DataTransfer();
-    clipboardData.items.add(imageFile());
-    screen
-      .getByRole("textbox")
-      .dispatchEvent(
-        new ClipboardEvent("paste", { clipboardData, bubbles: true, cancelable: true }),
-      );
+    paste(screen.getByRole("textbox"), imageFile());
 
     expect(await screen.findByRole("alert")).toHaveTextContent(
-      "画像をアップロードできませんでした。",
+      "ファイルをアップロードできませんでした。",
     );
     expect(screen.queryByRole("button", { name: "screenshot.pngを削除" })).toBeNull();
   });

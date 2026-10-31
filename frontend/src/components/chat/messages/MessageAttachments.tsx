@@ -10,7 +10,9 @@ import {
 import type { AttachmentRow } from "../../../lib/electric/types";
 import { useAttachmentUrl, type AttachmentUrlState } from "../../../hooks/useAttachments";
 import { useLocale } from "../../i18n/LocaleProvider";
+import { Dialog, DialogContent, DialogTitle } from "../../ui/dialog";
 import { ExternalLink } from "../../ui/external-link";
+import { Spinner } from "../../ui/spinner";
 
 export function MessageAttachments({ attachments }: { attachments: AttachmentRow[] }) {
   if (attachments.length === 0) {
@@ -59,20 +61,21 @@ function AttachmentImage({
   const state = useAttachmentUrl(attachment.id);
   const { status, url, reload } = state;
   const [broken, setBroken] = useState(false);
+  const [open, setOpen] = useState(false);
   const retried = useRef(false);
+  const dialogRetried = useRef(false);
 
   useEffect(() => {
     if (url) {
       setBroken(false);
+      dialogRetried.current = false;
     }
   }, [url]);
 
-  if (broken || status === "error") {
-    return <AttachmentFileCard attachment={attachment} state={state} />;
-  }
-
-  if (status === "loading" || !url) {
-    return (
+  const thumbnail =
+    broken || status === "error" ? (
+      <AttachmentFileCard attachment={attachment} state={state} />
+    ) : status === "loading" || !url ? (
       <div
         className={
           multiple
@@ -82,43 +85,96 @@ function AttachmentImage({
         aria-label={t("attachments.loading")}
         aria-busy="true"
       />
-    );
-  }
-
-  return (
-    <ExternalLink
-      href={url}
-      aria-label={t("attachments.open", { name: attachment.file_name })}
-      onClick={(event) => handleAttachmentLink(event, state)}
-      className={
-        multiple
-          ? "block aspect-square overflow-hidden rounded-lg border bg-muted"
-          : "block w-fit max-w-full overflow-hidden rounded-lg border bg-muted"
-      }
-    >
-      <img
-        src={url}
-        alt={attachment.file_name}
-        loading="lazy"
-        decoding="async"
+    ) : (
+      <button
+        type="button"
+        aria-label={t("attachments.preview", { name: attachment.file_name })}
         className={
           multiple
-            ? "size-full object-cover transition-opacity hover:opacity-90"
-            : "max-h-80 max-w-full object-contain transition-opacity hover:opacity-90"
+            ? "block aspect-square w-full cursor-zoom-in overflow-hidden rounded-lg border bg-muted outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
+            : "block w-fit max-w-full cursor-zoom-in overflow-hidden rounded-lg border bg-muted outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
         }
-        onLoad={() => {
-          retried.current = false;
-        }}
-        onError={() => {
-          if (!retried.current) {
-            retried.current = true;
-            reload();
-            return;
+        onClick={() => {
+          if (shouldRefreshAttachmentUrl(state.expiresAt)) {
+            void state.getFreshUrl();
           }
-          setBroken(true);
+          setOpen(true);
         }}
-      />
-    </ExternalLink>
+      >
+        <img
+          src={url}
+          alt={attachment.file_name}
+          loading="lazy"
+          decoding="async"
+          className={
+            multiple
+              ? "size-full object-cover transition-opacity hover:opacity-90"
+              : "max-h-80 max-w-full object-contain transition-opacity hover:opacity-90"
+          }
+          onLoad={() => {
+            retried.current = false;
+          }}
+          onError={() => {
+            if (!retried.current) {
+              retried.current = true;
+              reload();
+              return;
+            }
+            setBroken(true);
+          }}
+        />
+      </button>
+    );
+
+  return (
+    <>
+      {thumbnail}
+      <Dialog open={open} onOpenChange={setOpen}>
+        <DialogContent className="w-auto max-w-[calc(100vw-2rem)] p-2 sm:max-w-[min(96vw,80rem)]">
+          <DialogTitle className="sr-only">{attachment.file_name}</DialogTitle>
+          {status === "loading" || !url ? (
+            <Spinner label={t("attachments.loading")} className="min-h-64 min-w-64" />
+          ) : status === "error" ? (
+            <p role="alert" className="px-2 py-8 text-center text-sm text-destructive">
+              {t("attachments.loadError")}
+            </p>
+          ) : (
+            <img
+              src={url}
+              alt={attachment.file_name}
+              className="mx-auto max-h-[78vh] max-w-full object-contain"
+              onLoad={() => {
+                dialogRetried.current = false;
+              }}
+              onError={() => {
+                if (!dialogRetried.current) {
+                  dialogRetried.current = true;
+                  reload();
+                }
+              }}
+            />
+          )}
+          <div className="flex items-center justify-between gap-3 px-1">
+            <span className="min-w-0 truncate text-xs text-muted-foreground">
+              {attachment.file_name}
+            </span>
+            {url ? (
+              <ExternalLink
+                href={url}
+                download={attachment.file_name}
+                aria-label={t("attachments.download", { name: attachment.file_name })}
+                title={t("attachments.download", { name: attachment.file_name })}
+                onClick={(event) => handleAttachmentLink(event, state)}
+                className="inline-flex shrink-0 items-center gap-1 text-xs font-medium"
+              >
+                <DownloadIcon className="size-4" />
+                {t("attachments.downloadShort")}
+              </ExternalLink>
+            ) : null}
+          </div>
+        </DialogContent>
+      </Dialog>
+    </>
   );
 }
 
