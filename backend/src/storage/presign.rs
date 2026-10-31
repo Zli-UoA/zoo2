@@ -161,4 +161,91 @@ mod tests {
             "https://attachments.zliusercontent.com/storage/bucket/key?query=1"
         );
     }
+
+    #[tokio::test]
+    async fn test_generate_presigned_get_url_preserves_query_bytes_with_non_ascii_filename() {
+        use crate::config::S3Config;
+        use crate::storage::client::create_s3_client;
+
+        let s3_config = S3Config {
+            endpoint: "https://example.r2.cloudflarestorage.com".to_string(),
+            bucket: "zoo-attachments-prod".to_string(),
+            region: "auto".to_string(),
+            access_key_id: "test_key".to_string(),
+            secret_access_key: "test_secret".to_string(),
+            force_path_style: true,
+            presigned_put_expiry_secs: 900,
+            presigned_get_expiry_secs: 300,
+            max_file_size: 52428800,
+            public_endpoint: None,
+        };
+        let client = create_s3_client(&s3_config);
+
+        let japanese_filename = "日本語 ファイル名 (2026年) [テスト].png";
+        let content_type = "image/png";
+        let key = "attachments/ch1/att1";
+        let expiry = Duration::from_secs(300);
+
+        // 1. 公開エンドポイントなしで元の presigned GET URL を生成
+        let original_url = generate_presigned_get_url(
+            &client,
+            &s3_config.bucket,
+            key,
+            content_type,
+            japanese_filename,
+            expiry,
+            None,
+        )
+        .await
+        .unwrap();
+
+        // 2. 公開エンドポイントを指定して書き換え後の presigned GET URL を生成
+        let public_endpoint = "https://attachments.zliusercontent.com";
+        let rewritten_url = generate_presigned_get_url(
+            &client,
+            &s3_config.bucket,
+            key,
+            content_type,
+            japanese_filename,
+            expiry,
+            Some(public_endpoint),
+        )
+        .await
+        .unwrap();
+
+        // ホスト名が書き換わっていることを確認
+        assert!(
+            rewritten_url.starts_with(
+                "https://attachments.zliusercontent.com/zoo-attachments-prod/attachments/ch1/att1?"
+            ),
+            "rewritten url should start with public endpoint, got {rewritten_url}"
+        );
+
+        // クエリ文字列部分を取り出す
+        let orig_query = original_url
+            .split_once('?')
+            .expect("original url should have query")
+            .1;
+        let rewritten_query = rewritten_url
+            .split_once('?')
+            .expect("rewritten url should have query")
+            .1;
+
+        // クエリに非 ASCII Content-Disposition 由来の % エンコードが含まれていることを確認
+        assert!(
+            orig_query.contains("response-content-disposition="),
+            "query should contain response-content-disposition"
+        );
+        assert!(
+            orig_query.contains("%"),
+            "query should contain percent-encoded characters"
+        );
+
+        // 書き換え前後のクエリ文字列がバイト単位で完全一致することを検証
+        assert_eq!(
+            orig_query.as_bytes(),
+            rewritten_query.as_bytes(),
+            "query bytes must be preserved identically after URL rewriting"
+        );
+    }
 }

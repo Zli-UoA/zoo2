@@ -282,6 +282,21 @@ impl Config {
             if parsed.host_str().is_none() {
                 return Err("S3_PUBLIC_ENDPOINT must have a host".to_string());
             }
+            if !parsed.username().is_empty() || parsed.password().is_some() {
+                return Err("S3_PUBLIC_ENDPOINT must not contain userinfo".to_string());
+            }
+            if parsed.query().is_some() {
+                return Err("S3_PUBLIC_ENDPOINT must not contain query parameters".to_string());
+            }
+            if parsed.fragment().is_some() {
+                return Err("S3_PUBLIC_ENDPOINT must not contain a fragment".to_string());
+            }
+            if !self.s3.force_path_style {
+                return Err(
+                    "S3_PUBLIC_ENDPOINT requires S3_FORCE_PATH_STYLE=true (path-style URLs)"
+                        .to_string(),
+                );
+            }
         }
 
         if self.environment == "production" {
@@ -653,6 +668,14 @@ mod tests {
         config.s3.public_endpoint = None;
         assert!(config.validate().is_ok());
 
+        // public_endpoint がある場合は force_path_style = true が必須
+        config.s3.public_endpoint = Some("https://attachments.zliusercontent.com".to_string());
+        config.s3.force_path_style = false;
+        assert!(config.validate().is_err());
+
+        config.s3.force_path_style = true;
+        assert!(config.validate().is_ok());
+
         // dev では http / https 両方 OK
         config.s3.public_endpoint = Some("http://localhost:8787".to_string());
         assert!(config.validate().is_ok());
@@ -666,6 +689,21 @@ mod tests {
 
         // 不正なスキーム (ftp://)
         config.s3.public_endpoint = Some("ftp://example.com".to_string());
+        assert!(config.validate().is_err());
+
+        // userinfo (ユーザー名・パスワード) の混入拒否
+        config.s3.public_endpoint =
+            Some("https://user:pass@attachments.zliusercontent.com".to_string());
+        assert!(config.validate().is_err());
+
+        // クエリパラメータの混入拒否
+        config.s3.public_endpoint =
+            Some("https://attachments.zliusercontent.com?foo=bar".to_string());
+        assert!(config.validate().is_err());
+
+        // フラグメントの混入拒否
+        config.s3.public_endpoint =
+            Some("https://attachments.zliusercontent.com#section".to_string());
         assert!(config.validate().is_err());
 
         // 本番環境 (production)

@@ -227,7 +227,7 @@ SPA は IdP の Discovery / token エンドポイントをブラウザから直�
 
 `CSP_CONNECT_SRC` には IdP の **issuer と token エンドポイントのオリジン**を指定します（例: `https://idm.example.com`）。Kanidm では通常どちらも同じオリジンです。JWKS は Rust が取得するためブラウザの CSP には不要ですが、リバースプロキシ等で別オリジンに置いている場合でも Rust 側の到達性だけを確認してください。`VITE_API_BASE_URL` を空以外にして API を別オリジンへ向ける構成にした場合は、そのオリジンも `CSP_CONNECT_SRC` に追加してください（Compose のステージング構成では `/api/*` を同一オリジンで Traefik から Rust へ転送するため不要です）。
 
-`img-src` は既定で `'self' data: blob: https://www.gstatic.com` に加え、`CSP_STORAGE_SRC` と `CSP_APP_IMAGE_SRC` を展開します。`https://www.gstatic.com` は Emoji Kitchen の合成画像（#82）をブラウザから直接取得するためです。添付ファイルの署名付き PUT / GET URL で Cloudflare R2 等の外部ストレージに直接アクセスする場合は、そのオリジン（例: `https://<account>.r2.cloudflarestorage.com`）を `CSP_STORAGE_SRC` に指定してください。新しい外部画像オリジンを追加する場合は、`/` と `/assets/` の両方の `img-src` と `container` ジョブの検査を更新してください。
+`img-src` は既定で `'self' data: blob: https://www.gstatic.com` に加え、`CSP_STORAGE_SRC` と `CSP_APP_IMAGE_SRC` を展開します。`https://www.gstatic.com` は Emoji Kitchen の合成画像（#82）をブラウザから直接取得するためです。添付ファイルの署名付き PUT / GET URL で Cloudflare R2 等の外部ストレージに直接アクセスする場合は、そのオリジン（例: `https://<account>.r2.cloudflarestorage.com`）を `CSP_STORAGE_SRC` に指定してください。カスタムドメインやリバースプロキシ（`S3_PUBLIC_ENDPOINT`）を経由する場合は、R2 のオリジンではなくその公開オリジン（例: `https://attachments.zliusercontent.com`）を指定します。新しい外部画像オリジンを追加する場合は、`/` と `/assets/` の両方の `img-src` と `container` ジョブの検査を更新してください。
 
 `script-src` は `'unsafe-inline'` を使わず、ビルド時のハッシュで許可します。 SQLite Worker の WebAssembly 実行には `'wasm-unsafe-eval'`、ビルド時に埋め込まれる WASM の `data:` URL の読み込みには `connect-src` の `data:` を許可しています。JavaScript の `'unsafe-eval'` は許可しません。ハッシュは `infra/csp-hashes.mjs` が `pnpm build` 後の `index.html` から生成し、`infra/frontend-entrypoint.sh` が起動時に `CSP_SCRIPT_SRC` として渡します。`index.html` やテーマ初期化 script を変更した場合は、必ずイメージを再ビルドしてください。`style-src` の `'unsafe-inline'` は React の style 属性に必要なため残しています。
 
@@ -308,3 +308,28 @@ Worker のファイル名が同じまま CSP が変わる場合、SW の Cache A
 `20261027000000_create_apps.sql` の適用後、バックエンド本体が永続イベント配信ワーカーを起動します。複数バックエンドでもDBのリースで配信を排他します。プロキシはWebSocket upgradeをそのまま中継し、App APIには `private, no-store` を設定します。
 
 ファイルは任意のS3互換バケットに接続します。設定は `APP_S3_ENDPOINT`、`APP_S3_BUCKET`、`APP_S3_REGION`、`APP_S3_ACCESS_KEY_ID`、`APP_S3_SECRET_ACCESS_KEY` です。未設定でもファイル以外のApp機能は使えます。`CSP_APP_IMAGE_SRC` にAppアイコンのHTTPS配信元を空白区切りで指定できます。既定の画像配信元制限は維持します。詳しい構築・検証手順は [App・Bot基盤](../docs/apps.md) を参照してください。
+
+### 添付ファイル・オブジェクトストレージ (Phase 4.3)
+
+メッセージ・スレッドの添付ファイルは S3 互換ストレージ（開発環境: RustFS、ステージング・本番環境: Cloudflare R2）に Presigned URL で直接 PUT / GET します。
+
+- 設定環境変数:
+  - `S3_ENDPOINT`: ストレージ API エンドポイント（例: `https://<ACCOUNT_ID>.r2.cloudflarestorage.com`）
+  - `S3_BUCKET`: バケット名（例: `zoo-attachments-prod`、ステージングは `zoo-attachments-stg`）
+  - `S3_REGION`: リージョン（Cloudflare R2 の場合は `auto`）
+  - `S3_ACCESS_KEY_ID` / `S3_SECRET_ACCESS_KEY`: R2 API トークン（S3 クレデンシャル）
+  - `S3_FORCE_PATH_STYLE`: パス形式 URL の使用（既定: `true`）
+  - `S3_PUBLIC_ENDPOINT`: クライアント（ブラウザ）へ返却する Presigned URL の公開エンドポイント（例: `https://attachments.zliusercontent.com`、任意）
+
+#### リバースプロキシ（Cloudflare Worker 等）による公開エンドポイントの要件
+
+`S3_PUBLIC_ENDPOINT` を設定してカスタムドメインからファイルを配信・アップロードする場合、以下の運用前提に従ってください：
+
+1. **`S3_FORCE_PATH_STYLE=true` の維持**:
+   ホスト名置換による URL 生成は path-style URL（`https://<host>/<bucket>/<key>`）を前提とします。virtual-hosted style ではバケット名がホスト名に含まれるため、ホスト名の置換だけではパス整合性が取れなくなります（`Config::validate` で path-style が検証されます）。
+2. **リクエスト転送時の `Host` ヘッダー書き換え**:
+   AWS SigV4 署名の対象には `Host` ヘッダーが含まれます。ブラウザが `https://attachments.zliusercontent.com/...` へ送信したリクエストをプロキシが R2 へ転送する際、必ず `Host` ヘッダーを元の R2 エンドポイント（例: `<ACCOUNT_ID>.r2.cloudflarestorage.com`）に書き換えて転送してください。これを怠ると R2 側で `SignatureDoesNotMatch` エラーになります。
+3. **パス接頭辞の除去**:
+   `S3_PUBLIC_ENDPOINT` にパス接頭辞（例: `https://attachments.zliusercontent.com/storage`）を設定した場合、プロキシ側で接頭辞を除去して R2 のルートへ転送する必要があります。
+4. **フロントエンド CSP への登録**:
+   ブラウザが直接 PUT / GET 通信する先が公開ドメインになるため、フロントエンドの環境変数 `CSP_STORAGE_SRC` にその公開オリジン（例: `https://attachments.zliusercontent.com`）を指定してください。
