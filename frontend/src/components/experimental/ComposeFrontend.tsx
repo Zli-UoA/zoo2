@@ -2,12 +2,7 @@ import { createComposeFiles } from "../../lib/compose/files";
 import { useEffect, useRef, useState } from "react";
 import { useRouter, useRouterState } from "@tanstack/react-router";
 import { useTranslation } from "react-i18next";
-import {
-  ApiError,
-  buildAuthHeaders,
-  createConfiguredApiClient,
-  sendKeepaliveRequest,
-} from "../../lib/api/client";
+import { ApiError, buildAuthHeaders, createConfiguredApiClient } from "../../lib/api/client";
 import { notifyAuthorized, notifyUnauthorized } from "../../lib/auth";
 import { getCurrentUserStore } from "../../lib/currentUser";
 import { resolveConfig, type AppConfig } from "../../lib/config";
@@ -24,6 +19,7 @@ import { isLocale } from "../../lib/i18n/locale";
 import { OfflineProvider } from "../offline/OfflineProvider";
 import { useVisualViewport } from "../layout/useVisualViewport";
 import { getOidcClient } from "../../lib/oidc/session";
+import { createBubbleExit } from "../../lib/compose/bubble-exit";
 import {
   applicationServerKey,
   disablePush,
@@ -144,24 +140,10 @@ export function ComposeRuntime({ config, status }: { config: AppConfig; status?:
     let install: InstallEvent | null = null;
     const fileBrowser = createComposeFiles(viewportRef.current!);
     const publicRequests = new Map<string, AbortController>();
-    let bubbleExit:
-      | { session: string; offset: number; body: object; headers: Record<string, string> }
-      | undefined;
-    const clearBubbleOnExit = () => {
-      if (!bubbleExit) return;
-      const current = bubbleExit;
-      bubbleExit = undefined;
-      void sendKeepaliveRequest(
-        new URL(`${config.apiBaseUrl.replace(/\/$/, "")}/api/bubble`, window.location.origin).href,
-        { ...current.body, sent_at: Date.now() + current.offset },
-        current.headers,
-      ).catch(() => {});
-    };
-    window.addEventListener("pagehide", clearBubbleOnExit, true);
-    const visibilityChanged = () => {
-      if (document.visibilityState === "hidden") clearBubbleOnExit();
-      update();
-    };
+    const bubbleExit = createBubbleExit(
+      new URL(`${config.apiBaseUrl.replace(/\/$/, "")}/api/bubble`, window.location.origin).href,
+    );
+    const visibilityChanged = () => update();
     const onInstall = (event: Event) => {
       event.preventDefault();
       install = event as InstallEvent;
@@ -260,12 +242,7 @@ export function ComposeRuntime({ config, status }: { config: AppConfig; status?:
         invoke: async (name, payload) => {
           if (["pickFiles", "fileRead", "filePut", "attachmentDownload"].includes(name))
             return fileBrowser.invoke(name, payload);
-          if (name === "bubbleExit") {
-            const value = JSON.parse(payload);
-            if (value.clear === "true") {
-              if (bubbleExit?.session === value.session) bubbleExit = undefined;
-            } else bubbleExit = value;
-          }
+          if (name === "bubbleExit") bubbleExit.update(payload);
           if (name === "cancelPublic") publicRequests.get(payload)?.abort();
           if (name === "publicGet" || name === "publicImage") {
             if (cancelled) throw new Error("Compose frontend was disposed");
@@ -475,8 +452,7 @@ export function ComposeRuntime({ config, status }: { config: AppConfig; status?:
       cancelled = true;
       fileBrowser.close();
       publicRequests.forEach((controller) => controller.abort());
-      clearBubbleOnExit();
-      window.removeEventListener("pagehide", clearBubbleOnExit, true);
+      bubbleExit.close();
       clearTimeout(readyTimeout);
       resize.disconnect();
       updateRef.current = null;

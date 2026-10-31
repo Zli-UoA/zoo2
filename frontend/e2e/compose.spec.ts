@@ -587,10 +587,12 @@ for (const implementation of ["react", "compose"] as const) {
       .poll(async () => (await state()).attachmentUrlRequests.length)
       .toBeGreaterThanOrEqual(2);
     await page.getByRole("button", { name: "閉じる", exact: true }).click({ force: native });
+    await expect(page.getByRole("img", { name: "upload.png", exact: true })).toBeHidden();
     await page
       .getByRole("button", { name: /1 件の返信（スレッドを開く）/ })
       .click({ force: native });
     const composer = page.getByRole("textbox", { name: "返信を送信", exact: true });
+    await expect(composer).toBeVisible();
     if (native) await fillNative(page, composer, "");
     else await composer.click();
     const paste = async (name: string) => {
