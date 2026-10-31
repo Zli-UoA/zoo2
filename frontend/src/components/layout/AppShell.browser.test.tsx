@@ -1,3 +1,4 @@
+import "../../styles.css";
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import {
@@ -9,7 +10,7 @@ import {
   Outlet,
   Link,
 } from "@tanstack/react-router";
-import { describe, expect, it, vi } from "vite-plus/test";
+import { beforeEach, describe, expect, it, vi } from "vite-plus/test";
 import { page } from "vite-plus/test/browser/context";
 import { AppShell } from "./AppShell";
 import { useShell } from "./shell-context";
@@ -28,7 +29,13 @@ vi.mock("../../hooks/useRealtime", () => ({
   useActiveChannels: () => ({ data: [], isLoading: false, isError: false }),
 }));
 vi.mock("../chat/AppSurfaceHost", () => ({ AppSurfaceHost: () => null }));
-vi.mock("../chat/ChannelSidebar", () => ({ ChannelSidebar: () => null }));
+vi.mock("../chat/ChannelSidebar", () => ({
+  ChannelSidebar: ({ className }: { className?: string }) => (
+    <aside aria-label="Channels" className={className}>
+      Channel navigation
+    </aside>
+  ),
+}));
 vi.mock("../chat/MembersPanel", () => ({ MembersPanel: () => null }));
 vi.mock("../chat/MembersDialog", () => ({ MembersDialog: () => null }));
 vi.mock("../offline/OfflineBanner", () => ({ OfflineBanner: () => null }));
@@ -83,8 +90,13 @@ function setup(entries: string[]) {
     path: "/settings",
     component: () => <p>Settings page</p>,
   });
+  const bubble = createRoute({
+    getParentRoute: () => root,
+    path: "/bubble",
+    component: () => <h1>Bubble room</h1>,
+  });
   const router = createRouter({
-    routeTree: root.addChildren([home, channel, settings]),
+    routeTree: root.addChildren([home, channel, settings, bubble]),
     history: createMemoryHistory({ initialEntries: entries }),
   });
   render(<RouterProvider router={router} />);
@@ -92,6 +104,9 @@ function setup(entries: string[]) {
 }
 
 describe("shell navigation", () => {
+  beforeEach(async () => {
+    await page.viewport(1440, 900);
+  });
   it("restores channel and thread views with Back and Forward", async () => {
     const router = setup(["/"]);
     await userEvent.click(await screen.findByRole("link", { name: "General" }));
@@ -145,3 +160,20 @@ describe("shell navigation", () => {
     });
   });
 });
+
+it.each([390, 1440])(
+  "keeps Bubble Chat standalone across history navigation at %ipx",
+  async (width) => {
+    await page.viewport(width, 900);
+    const router = setup(["/channels/general", "/bubble"]);
+    await expect.element(page.getByRole("heading", { name: "Bubble room" })).toBeVisible();
+    expect(screen.getByText("Channel navigation")).not.toBeVisible();
+    router.history.back();
+    await screen.findByText("channel:general");
+    if (width >= 768) expect(screen.getByText("Channel navigation")).toBeVisible();
+    else expect(screen.getByText("Channel navigation")).not.toBeVisible();
+    router.history.forward();
+    await screen.findByRole("heading", { name: "Bubble room" });
+    expect(screen.getByText("Channel navigation")).not.toBeVisible();
+  },
+);

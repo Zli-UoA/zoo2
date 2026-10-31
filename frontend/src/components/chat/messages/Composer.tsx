@@ -1,4 +1,6 @@
-import { noAutofill } from "../../ui/autofill";
+import { Textarea } from "../../ui/textarea";
+import { ComposerField, composerTextareaClassName } from "./ComposerField";
+import { useAutosizeTextarea } from "../../../hooks/useAutosizeTextarea";
 import { useTranslation } from "react-i18next";
 import { useEffect, useId, useLayoutEffect, useRef, useState } from "react";
 import { SendIcon } from "lucide-react";
@@ -201,15 +203,7 @@ export function Composer({
     listRef.current?.querySelector('[aria-selected="true"]')?.scrollIntoView({ block: "nearest" });
   }, [selectedOption, options.length]);
 
-  useLayoutEffect(() => {
-    const element = textareaRef.current;
-    if (!element) {
-      return;
-    }
-    element.style.height = "auto";
-    element.style.height = `${Math.min(element.scrollHeight, MAX_COMPOSER_HEIGHT)}px`;
-    element.style.overflowY = element.scrollHeight > MAX_COMPOSER_HEIGHT ? "auto" : "hidden";
-  }, [value]);
+  useAutosizeTextarea(textareaRef, value, MAX_COMPOSER_HEIGHT);
 
   function updateDraft(element: HTMLTextAreaElement, isComposing = composingRef.current) {
     setCaret(isComposing ? element.selectionEnd : element.selectionStart);
@@ -307,16 +301,15 @@ export function Composer({
           ))}
         </ul>
       ) : null}
-      <div className="flex items-end gap-2 rounded-xl border border-input bg-background p-1.5 transition-colors focus-within:border-ring focus-within:ring-3 focus-within:ring-ring/30 dark:bg-input/30">
-        <textarea
-          {...noAutofill}
+      <ComposerField>
+        <Textarea
           ref={textareaRef}
           rows={1}
           value={value}
           disabled={disabled}
           placeholder={resolvedPlaceholder}
           aria-label={resolvedAriaLabel}
-          className="w-full outline-none placeholder:text-muted-foreground disabled:cursor-not-allowed disabled:opacity-50 min-h-11 min-w-0 flex-1 resize-none rounded-none border-0 bg-transparent px-2 py-2.5 text-base leading-6 shadow-none field-sizing-fixed focus-visible:ring-0 md:text-sm dark:bg-transparent"
+          className={`${composerTextareaClassName} min-h-11 px-2 py-2.5`}
           aria-autocomplete="list"
           aria-controls={options.length ? listId : undefined}
           aria-activedescendant={options.length ? `${listId}-${selectedOption}` : undefined}
@@ -400,7 +393,7 @@ export function Composer({
         >
           <SendIcon />
         </Button>
-      </div>
+      </ComposerField>
       {!isTouch ? (
         <p className="mt-1.5 px-1 text-[11px] text-muted-foreground">
           {composerSendHint(platform, t, isTouch)}

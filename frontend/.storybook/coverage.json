@@ -244,7 +244,8 @@
         "Notifications",
         "NotificationsSingleUnread",
         "Mobile",
-        "MobileNotifications"
+        "MobileNotifications",
+        "BubbleChat"
       ]
     },
     {
@@ -380,6 +381,10 @@
         "SaveError",
         "LongQueryMobile"
       ]
+    },
+    {
+      "file": "src/components/chat/BubbleChatScreen.stories.tsx",
+      "states": ["ActiveConversation", "Empty", "Mobile", "Participants", "MobileParticipants"]
     }
   ],
   "modules": [
@@ -705,6 +710,16 @@
       "story": "src/components/chat/messages/MfmContent.stories.tsx",
       "composed": true,
       "reason": "InlineLinksとHeadingsで共通の外部リンクを実描画し、MessageCardのDeploymentおよびAppBlocksのCardでも同じ部品を使う。"
+    },
+    {
+      "file": "src/components/chat/BubbleChatScreen.tsx",
+      "story": "src/components/chat/BubbleChatScreen.stories.tsx"
+    },
+    {
+      "file": "src/components/chat/messages/ComposerField.tsx",
+      "story": "src/components/chat/messages/Composer.stories.tsx",
+      "composed": true,
+      "reason": "共通入力枠を通常投稿・Bubble Chatで使い、補完と入力・消去・モバイル表示を各Storyで確認する。"
     }
   ]
 }

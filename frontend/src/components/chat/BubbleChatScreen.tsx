@@ -1,5 +1,5 @@
 import { EraserIcon, MessageCircleMoreIcon, UsersIcon, XIcon } from "lucide-react";
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { cn } from "cn";
 
@@ -7,12 +7,13 @@ import { useBubbleChat } from "../../hooks/useBubbleChat";
 import { useCurrentUser } from "../../hooks/useCurrentUser";
 import { useUsers } from "../../hooks/useRealtime";
 import { useMediaQuery } from "../layout/useMediaQuery";
-import { Avatar, AvatarFallback } from "../ui/avatar";
+import { AppAvatar } from "./AppIdentity";
+import { ComposerField, composerTextareaClassName } from "./messages/ComposerField";
+import { useAutosizeTextarea } from "../../hooks/useAutosizeTextarea";
 import { Button } from "../ui/button";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "../ui/dialog";
 import { ScrollArea } from "../ui/scroll-area";
 import { Textarea } from "../ui/textarea";
-import { initials } from "./format";
 
 const MAX_INPUT_HEIGHT = 180;
 export const FADE_DURATION_MS = 3000;
@@ -54,14 +55,16 @@ export function BubbleChatScreen() {
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const composingRef = useRef(false);
   const isDesktop = useMediaQuery("(min-width: 768px)");
+  const isTouch = useMediaQuery("(hover: none)");
   const [isParticipantsOpen, setIsParticipantsOpen] = useState(false);
   const [fadingBubble, setFadingBubble] = useState<{ content: string; id: number } | null>(null);
   const fadeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  const me = useMemo(
-    () => (usersQuery.data ?? []).find((user) => user.id === currentUserId),
-    [usersQuery.data, currentUserId],
+  const usersById = useMemo(
+    () => new Map((usersQuery.data ?? []).map((user) => [user.id, user])),
+    [usersQuery.data],
   );
+  const me = usersById.get(currentUserId ?? "");
   const meLabel = me ? me.display_name || me.user_name : (currentUserId ?? "?");
 
   const otherEntries = useMemo(
@@ -209,15 +212,7 @@ export function BubbleChatScreen() {
     [setContent],
   );
 
-  useLayoutEffect(() => {
-    const element = textareaRef.current;
-    if (!element) {
-      return;
-    }
-    element.style.height = "auto";
-    element.style.height = `${Math.min(element.scrollHeight, MAX_INPUT_HEIGHT)}px`;
-    element.style.overflowY = element.scrollHeight > MAX_INPUT_HEIGHT ? "auto" : "hidden";
-  }, [content]);
+  useAutosizeTextarea(textareaRef, content, MAX_INPUT_HEIGHT);
 
   const participantsListContent = (
     <ul className="flex flex-col gap-1 p-2">
@@ -226,9 +221,12 @@ export function BubbleChatScreen() {
           key={p.id}
           className="flex items-center gap-2.5 rounded-lg px-2.5 py-2 transition-colors hover:bg-accent/60"
         >
-          <Avatar className="size-8 shrink-0" title={p.displayName}>
-            <AvatarFallback>{initials(p.displayName)}</AvatarFallback>
-          </Avatar>
+          <AppAvatar
+            className="size-8 shrink-0"
+            title={p.displayName}
+            label={p.displayName}
+            src={usersById.get(p.id)?.avatar_url}
+          />
           <div className="min-w-0 flex-1">
             <div className="flex items-center gap-1.5">
               <span className="truncate text-xs font-semibold">{p.displayName}</span>
@@ -246,8 +244,8 @@ export function BubbleChatScreen() {
           </div>
           <div className="shrink-0">
             {p.isTyping ? (
-              <span className="inline-flex items-center gap-1 rounded-full bg-emerald-500/10 px-2 py-0.5 text-[10px] font-medium text-emerald-600 dark:text-emerald-400">
-                <span className="size-1.5 animate-pulse rounded-full bg-emerald-500" />
+              <span className="inline-flex items-center gap-1 rounded-full bg-brand-muted px-2 py-0.5 text-[10px] font-medium text-brand-muted-foreground">
+                <span className="size-1.5 animate-pulse rounded-full bg-brand motion-reduce:animate-none" />
                 {t("bubbleChat.typing")}
               </span>
             ) : (
@@ -321,9 +319,12 @@ export function BubbleChatScreen() {
                         entry.isFadingOut && "animate-bubble-fade-out",
                       )}
                     >
-                      <Avatar className="mt-1 shrink-0" title={label}>
-                        <AvatarFallback>{initials(label)}</AvatarFallback>
-                      </Avatar>
+                      <AppAvatar
+                        className="mt-1 shrink-0"
+                        title={label}
+                        label={label}
+                        src={usersById.get(entry.userId)?.avatar_url}
+                      />
                       <div className="flex min-w-0 max-w-[75%] flex-col items-start">
                         <span className="mb-1 max-w-full truncate px-1 text-xs font-medium text-muted-foreground">
                           {label}
@@ -353,9 +354,12 @@ export function BubbleChatScreen() {
                         {hasOwnBubble ? content : fadingBubble?.content}
                       </div>
                     </div>
-                    <Avatar className="mt-1 shrink-0" title={meLabel}>
-                      <AvatarFallback>{initials(meLabel)}</AvatarFallback>
-                    </Avatar>
+                    <AppAvatar
+                      className="mt-1 shrink-0"
+                      title={meLabel}
+                      label={meLabel}
+                      src={me?.avatar_url}
+                    />
                   </li>
                 ) : null}
               </ul>
@@ -364,14 +368,14 @@ export function BubbleChatScreen() {
 
           <div className="shrink-0 border-t px-3 py-3">
             <div className="mx-auto max-w-3xl">
-              <div className="flex items-end gap-2 rounded-xl border border-input bg-background p-1.5 transition-colors focus-within:border-ring focus-within:ring-3 focus-within:ring-ring/30 dark:bg-input/30">
+              <ComposerField>
                 <Textarea
                   ref={textareaRef}
                   rows={1}
                   value={content}
                   placeholder={t("bubbleChat.placeholder")}
                   aria-label={t("bubbleChat.inputLabel")}
-                  className="min-h-9 resize-none border-0 bg-transparent px-2 py-1.5 text-base shadow-none [field-sizing:fixed] focus-visible:ring-0 md:text-sm dark:bg-transparent"
+                  className={`${composerTextareaClassName} min-h-9 px-2 py-1.5`}
                   onCompositionStart={() => {
                     composingRef.current = true;
                   }}
@@ -413,10 +417,12 @@ export function BubbleChatScreen() {
                 >
                   <EraserIcon className="size-5 md:size-4" />
                 </Button>
-              </div>
-              <p className="mt-1.5 px-1 text-[11px] text-muted-foreground">
-                {t("bubbleChat.hint")}
-              </p>
+              </ComposerField>
+              {!isTouch ? (
+                <p className="mt-1.5 px-1 text-[11px] text-muted-foreground">
+                  {t("bubbleChat.hint")}
+                </p>
+              ) : null}
             </div>
           </div>
         </div>

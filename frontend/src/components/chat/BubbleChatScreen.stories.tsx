@@ -1,47 +1,12 @@
 import type { Meta, StoryObj } from "@storybook/react-vite";
-import { http, HttpResponse } from "msw";
-import { expect, screen, userEvent, within } from "storybook/test";
+import { bubbleChatHandlers } from "../../../.storybook/bubble-fixtures";
+import { expect, screen, userEvent, waitFor, within } from "storybook/test";
 
 import { StoryShell } from "../../../.storybook/shell";
 import { BubbleChatScreen } from "./BubbleChatScreen";
 
-const activeBubblesHandler = [
-  http.get("*/api/bubble", () =>
-    HttpResponse.json([
-      {
-        user_id: "user-bob",
-        user_name: "bob",
-        display_name: "Bob",
-        content: "今日のミーティングは何時からでしたっけ？",
-      },
-      {
-        user_id: "user-carol",
-        user_name: "carol",
-        display_name: "Carol",
-        content: "15時からだった気がします！",
-      },
-    ]),
-  ),
-  http.get("*/api/bubble-chat", () =>
-    HttpResponse.json([
-      {
-        user_id: "user-bob",
-        user_name: "bob",
-        display_name: "Bob",
-        content: "今日のミーティングは何時からでしたっけ？",
-      },
-      {
-        user_id: "user-carol",
-        user_name: "carol",
-        display_name: "Carol",
-        content: "15時からだった気がします！",
-      },
-    ]),
-  ),
-];
-
 const meta = {
-  title: "Chat/BubbleChatScreen",
+  title: "Pages/BubbleChat",
   component: BubbleChatScreen,
   tags: ["autodocs"],
   parameters: {
@@ -65,7 +30,7 @@ type Story = StoryObj<typeof meta>;
 export const ActiveConversation: Story = {
   parameters: {
     msw: {
-      handlers: activeBubblesHandler,
+      handlers: bubbleChatHandlers,
     },
   },
   play: async () => {
@@ -98,7 +63,27 @@ export const Mobile: Story = {
   globals: { viewport: { value: "mobile" } },
   parameters: {
     msw: {
-      handlers: activeBubblesHandler,
+      handlers: bubbleChatHandlers,
     },
+  },
+};
+
+export const Participants: Story = {
+  parameters: { msw: { handlers: bubbleChatHandlers } },
+  play: async () => {
+    await screen.findByText("今日のミーティングは何時からでしたっけ？");
+    await userEvent.click(screen.getByRole("button", { name: /^参加者 / }));
+    const panel = await screen.findByRole("complementary", { name: "参加者" });
+    await expect(within(panel).getByText("@bob")).toBeVisible();
+  },
+};
+export const MobileParticipants: Story = {
+  globals: { viewport: { value: "mobile" } },
+  parameters: { msw: { handlers: bubbleChatHandlers } },
+  play: async () => {
+    await screen.findByText("今日のミーティングは何時からでしたっけ？");
+    await userEvent.click(screen.getByRole("button", { name: /^参加者 / }));
+    const dialog = await screen.findByRole("dialog");
+    await waitFor(() => expect(within(dialog).getByText("@bob")).toBeVisible());
   },
 };

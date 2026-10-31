@@ -1,3 +1,5 @@
+import { BubbleChatScreen } from "../chat/BubbleChatScreen";
+import { bubbleChatHandlers } from "../../../.storybook/bubble-fixtures";
 import type { Meta, StoryObj } from "@storybook/react-vite";
 import { expect, screen, waitFor } from "storybook/test";
 
@@ -93,4 +95,23 @@ export const Mobile: Story = {
 export const MobileNotifications: Story = {
   ...Notifications,
   globals: { viewport: { value: "mobile" } },
+};
+
+export const BubbleChat: Story = {
+  args: { children: <BubbleChatScreen /> },
+  parameters: {
+    a11y: { test: "error" },
+    router: { initialEntries: ["/bubble"] },
+    msw: { handlers: bubbleChatHandlers },
+  },
+  play: async () => {
+    await expect(
+      await screen.findByRole("textbox", { name: "リアルタイムメッセージ入力" }),
+    ).toBeVisible();
+    await expect(screen.getByLabelText("チャンネル", { selector: "aside" })).not.toBeVisible();
+    await expect(screen.getByRole("link", { name: "Bubble Chat" })).toHaveAttribute(
+      "data-status",
+      "active",
+    );
+  },
 };

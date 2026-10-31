@@ -70,6 +70,7 @@ describe("translations", () => {
     "auth.errorWithCode",
     "reactions.chip",
     "reactions.kitchen",
+    "bubbleChat.title",
     "reactions.tabKitchen",
     "webhooks.url",
     "dms.moreNames",
