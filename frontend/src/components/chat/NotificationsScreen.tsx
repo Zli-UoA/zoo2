@@ -1,7 +1,7 @@
 import { useLiveQuery } from "@tanstack/react-db";
 import { useCollections } from "../../lib/electric/collections-context";
 import type { ChannelUserRow } from "../../lib/electric/types";
-import { useCallback, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { BellIcon } from "lucide-react";
 import { toast } from "sonner";
@@ -66,6 +66,11 @@ export function NotificationsScreen() {
   });
   const loading =
     !isError && (isLoading || usersQuery.isLoading || channelsQuery.isLoading || previewsLoading);
+  const [hasLoaded, setHasLoaded] = useState(false);
+  useEffect(() => {
+    if (!loading && !isError) setHasLoaded(true);
+  }, [loading, isError]);
+  const initialLoading = loading && !hasLoaded;
   const scrollRoot = useRef<HTMLDivElement>(null);
   const attempted = useRef(new Set<string>());
   const readVisible = useCallback(
@@ -110,10 +115,10 @@ export function NotificationsScreen() {
           </div>
         ) : (
           <ul
-            className={`w-full ${loading ? "opacity-0" : ""}`}
+            className={`w-full ${initialLoading ? "opacity-0" : ""}`}
             aria-label={t("notifications.title")}
-            aria-hidden={loading || undefined}
-            inert={loading}
+            aria-hidden={initialLoading || undefined}
+            inert={initialLoading}
           >
             {groups.map((group) => (
               <NotificationCard
@@ -130,8 +135,11 @@ export function NotificationsScreen() {
             ))}
           </ul>
         )}
+        {loading && !initialLoading ? (
+          <Spinner label={t("common.loading")} className="sticky bottom-0 bg-background py-4" />
+        ) : null}
       </div>
-      {loading ? (
+      {initialLoading ? (
         <Spinner label={t("common.loading")} className="absolute inset-0 z-20 bg-background" />
       ) : null}
     </section>

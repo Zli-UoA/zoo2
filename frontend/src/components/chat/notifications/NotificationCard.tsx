@@ -213,26 +213,26 @@ export function NotificationCard({
       aria-label={label}
       data-unread={unreadIds.length > 0 || undefined}
       onClick={openFromRow}
-      className={`group w-full border-b px-4 py-5 transition-colors hover:bg-muted/40 sm:px-6 sm:py-6 ${channel && message ? "cursor-pointer" : ""}`}
+      className={`group w-full border-b px-4 py-5 transition-colors hover:bg-muted/40 sm:px-5 sm:py-3 ${channel && message ? "cursor-pointer" : ""}`}
     >
-      <div className="flex items-start gap-3 sm:gap-4">
+      <div className="flex items-start gap-3">
         <div className="relative shrink-0">
           <AppAvatar
             label={actor}
             title={actor}
             isBot={users.get(group.actorIds[0]!)?.is_bot}
             src={users.get(group.actorIds[0]!)?.avatar_url}
-            className="size-10 sm:size-11"
+            className="size-10 sm:size-9"
           />
           <span className="absolute -right-1 -bottom-1 flex size-5 items-center justify-center rounded-full bg-muted text-muted-foreground ring-2 ring-background">
             <Icon className="size-3" aria-hidden="true" />
           </span>
         </div>
-        <div className="min-w-0 flex-1 space-y-2">
+        <div className="min-w-0 flex-1 space-y-2 sm:space-y-1">
           <div className="flex min-w-0 items-center gap-2">
             <div className="flex min-w-0 flex-1 items-baseline gap-2">
               <p
-                className="min-w-0 truncate text-sm font-semibold sm:text-base"
+                className="min-w-0 truncate text-sm font-semibold"
                 title={group.actorIds.map(name).join(", ")}
               >
                 {actorSummary}
@@ -243,7 +243,7 @@ export function NotificationCard({
                 </span>
               ) : null}
               <time
-                className="shrink-0 text-xs text-muted-foreground sm:text-sm"
+                className="shrink-0 text-xs text-muted-foreground"
                 dateTime={normalizeUtcTimestamp(notification.created_at)}
                 title={fullTimestamp(notification.created_at, locale)}
               >
@@ -269,7 +269,7 @@ export function NotificationCard({
           </div>
           {channel && message ? (
             <blockquote>
-              <div className="mfm-body line-clamp-3 whitespace-pre-wrap break-words text-sm leading-relaxed sm:text-base">
+              <div className="mfm-body line-clamp-3 whitespace-pre-wrap break-words text-sm leading-relaxed">
                 <MfmContent content={quotePreview(message.content)} />
               </div>
             </blockquote>

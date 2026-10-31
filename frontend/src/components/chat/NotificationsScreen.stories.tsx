@@ -167,3 +167,53 @@ export const BodiesReadyTogether: Story = {
     await expect(screen.getAllByText(/^本文 notification-/)).toHaveLength(4);
   },
 };
+
+export const LoadingOnScroll: Story = {
+  decorators: [withUnreadPreview],
+  parameters: {
+    collections: {
+      ...storyCollections,
+      notifications: Array.from({ length: 20 }, (_, index) => ({
+        ...storyNotifications[0]!,
+        id: `scroll-${index}`,
+        message_id: `scroll-message-${index}`,
+        created_at: new Date(Date.UTC(2026, 0, 2, 9, 0, 20 - index)).toISOString(),
+      })),
+    },
+    msw: {
+      handlers: [
+        http.get("*/api/notifications/:id/context", async ({ params }) => {
+          if (Number(String(params.id).slice("scroll-".length)) >= 10) await delay("infinite");
+          return HttpResponse.json({
+            message: {
+              id: String(params.id),
+              user_id: "user-bob",
+              content: `本文 ${String(params.id)}`,
+            },
+            reactions: [],
+          });
+        }),
+      ],
+    },
+  },
+  play: async () => {
+    await waitFor(() => expect(screen.queryByRole("status")).not.toBeInTheDocument());
+    const list = screen.getByRole("list", { name: "通知" });
+    const scrollRoot = list.parentElement!;
+    await expect(screen.getByText("本文 scroll-0")).toBeVisible();
+    scrollRoot.scrollTop = scrollRoot.scrollHeight;
+    const spinner = await screen.findByRole("status");
+    await expect(spinner).toBeVisible();
+    await expect(list).toBeVisible();
+    await expect(list).not.toHaveAttribute("inert");
+    await expect(list).not.toHaveAttribute("aria-hidden");
+    await expect(screen.getByText("本文 scroll-0")).toBeInTheDocument();
+    await expect(spinner.previousElementSibling).toBe(list);
+    await expect(spinner.getBoundingClientRect().bottom).toBeLessThanOrEqual(
+      scrollRoot.getBoundingClientRect().bottom,
+    );
+    scrollRoot.scrollTop = 0;
+    await waitFor(() => expect(screen.queryByRole("status")).not.toBeInTheDocument());
+    await expect(screen.getByText("本文 scroll-0")).toBeVisible();
+  },
+};
