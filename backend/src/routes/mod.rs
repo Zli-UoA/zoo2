@@ -1,3 +1,4 @@
+pub mod attachments;
 pub mod bubble_chat;
 pub mod channel_webhooks;
 pub mod channels;
@@ -72,6 +73,7 @@ pub fn create_router(state: AppState) -> Router {
         .merge(channels::router())
         .merge(dms::router())
         .merge(messages::router())
+        .merge(attachments::router())
         .merge(typing::router())
         .merge(bubble_chat::router())
         .merge(notifications::router())

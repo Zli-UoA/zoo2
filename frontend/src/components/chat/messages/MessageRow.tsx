@@ -12,6 +12,7 @@ import {
   TrashIcon,
 } from "lucide-react";
 import { MfmContent } from "./MfmContent";
+import { LinkPreviews } from "./LinkPreviews";
 
 import { useLocale } from "../../i18n/LocaleProvider";
 import type { KitchenCatalog } from "../../../lib/emoji/kitchen";
@@ -65,9 +66,12 @@ export function MessageBody({ content, card: data }: { content: string; card?: s
       </>
     );
   return (
-    <div className="mfm-body whitespace-pre-wrap break-words text-sm leading-relaxed">
-      <MfmContent content={content} />
-    </div>
+    <>
+      <div className="mfm-body whitespace-pre-wrap break-words text-sm leading-relaxed">
+        <MfmContent content={content} />
+      </div>
+      <LinkPreviews content={content} />
+    </>
   );
 }
 

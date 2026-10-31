@@ -194,7 +194,7 @@ describe("MessageRow", () => {
   it("renders URLs as safe external links", () => {
     renderRow(buildItem({ content: "詳細は https://example.com/docs を参照" }));
 
-    const link = screen.getByRole("link", { name: "https://example.com/docs" });
+    const link = screen.getByRole("link", { name: "example.com/docs" });
     expect(link.getAttribute("href")).toBe("https://example.com/docs");
     expect(link.getAttribute("target")).toBe("_blank");
     expect(link.getAttribute("rel")).toBe("noopener noreferrer");

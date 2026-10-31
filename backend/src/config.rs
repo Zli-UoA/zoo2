@@ -48,6 +48,35 @@ pub(crate) fn parse_cors_allowed_origins(raw: Option<&str>, environment: &str) -
 }
 
 #[derive(Clone)]
+pub struct S3Config {
+    pub endpoint: String,
+    pub bucket: String,
+    pub region: String,
+    pub access_key_id: String,
+    pub secret_access_key: String,
+    pub force_path_style: bool,
+    pub presigned_put_expiry_secs: u64,
+    pub presigned_get_expiry_secs: u64,
+    pub max_file_size: u64,
+}
+
+impl fmt::Debug for S3Config {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("S3Config")
+            .field("endpoint", &self.endpoint)
+            .field("bucket", &self.bucket)
+            .field("region", &self.region)
+            .field("access_key_id", &"[REDACTED]")
+            .field("secret_access_key", &"[REDACTED]")
+            .field("force_path_style", &self.force_path_style)
+            .field("presigned_put_expiry_secs", &self.presigned_put_expiry_secs)
+            .field("presigned_get_expiry_secs", &self.presigned_get_expiry_secs)
+            .field("max_file_size", &self.max_file_size)
+            .finish()
+    }
+}
+
+#[derive(Clone)]
 pub struct Config {
     pub database_url: String,
     pub host: String,
@@ -58,6 +87,7 @@ pub struct Config {
     pub dev_auth_enabled: bool,
     pub environment: String,
     pub cors_allowed_origins: Vec<String>,
+    pub s3: S3Config,
 }
 
 impl fmt::Debug for Config {
@@ -75,6 +105,7 @@ impl fmt::Debug for Config {
             .field("dev_auth_enabled", &self.dev_auth_enabled)
             .field("environment", &self.environment)
             .field("cors_allowed_origins", &self.cors_allowed_origins)
+            .field("s3", &self.s3)
             .finish()
     }
 }
@@ -159,6 +190,42 @@ impl Config {
             is_test_build,
         );
 
+        let s3_endpoint =
+            env::var("S3_ENDPOINT").unwrap_or_else(|_| "http://localhost:9000".to_string());
+        let s3_bucket = env::var("S3_BUCKET").unwrap_or_else(|_| "zoo-attachments-dev".to_string());
+        let s3_region = env::var("S3_REGION").unwrap_or_else(|_| "auto".to_string());
+        let s3_access_key_id =
+            env::var("S3_ACCESS_KEY_ID").unwrap_or_else(|_| "rustfsadmin".to_string());
+        let s3_secret_access_key =
+            env::var("S3_SECRET_ACCESS_KEY").unwrap_or_else(|_| "rustfsadmin".to_string());
+        let s3_force_path_style = env::var("S3_FORCE_PATH_STYLE")
+            .map(|v| v.to_lowercase() == "true" || v == "1")
+            .unwrap_or(true);
+        let presigned_put_expiry_secs = env::var("ATTACHMENT_PRESIGNED_PUT_EXPIRY_SECS")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(900);
+        let presigned_get_expiry_secs = env::var("ATTACHMENT_PRESIGNED_GET_EXPIRY_SECS")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(300);
+        let max_file_size = env::var("ATTACHMENT_MAX_FILE_SIZE")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(52428800);
+
+        let s3 = S3Config {
+            endpoint: s3_endpoint,
+            bucket: s3_bucket,
+            region: s3_region,
+            access_key_id: s3_access_key_id,
+            secret_access_key: s3_secret_access_key,
+            force_path_style: s3_force_path_style,
+            presigned_put_expiry_secs,
+            presigned_get_expiry_secs,
+            max_file_size,
+        };
+
         Self {
             database_url,
             host,
@@ -169,16 +236,62 @@ impl Config {
             dev_auth_enabled,
             environment,
             cors_allowed_origins,
+            s3,
         }
     }
 
-    /// 設定値の整合性検証 (本番環境での OIDC 設定必須化など)
+    /// 設定値の整合性検証 (本番環境での OIDC 設定必須化および S3/R2 設定必須化など)
     pub fn validate(&self) -> Result<(), String> {
-        if self.environment == "production" && self.oidc.is_none() {
-            return Err(
-                "OIDC configuration (OIDC_ISSUER and OIDC_AUDIENCE) is required when ENVIRONMENT is 'production'"
-                    .to_string(),
-            );
+        const MAX_PRESIGNED_EXPIRY_SECS: u64 = 604_800; // AWS SigV4 上限 (7 日)
+        if !(1..=MAX_PRESIGNED_EXPIRY_SECS).contains(&self.s3.presigned_put_expiry_secs) {
+            return Err(format!(
+                "ATTACHMENT_PRESIGNED_PUT_EXPIRY_SECS must be between 1 and {MAX_PRESIGNED_EXPIRY_SECS} seconds, got {}",
+                self.s3.presigned_put_expiry_secs
+            ));
+        }
+        if !(1..=MAX_PRESIGNED_EXPIRY_SECS).contains(&self.s3.presigned_get_expiry_secs) {
+            return Err(format!(
+                "ATTACHMENT_PRESIGNED_GET_EXPIRY_SECS must be between 1 and {MAX_PRESIGNED_EXPIRY_SECS} seconds, got {}",
+                self.s3.presigned_get_expiry_secs
+            ));
+        }
+
+        if self.environment == "production" {
+            if self.oidc.is_none() {
+                return Err(
+                    "OIDC configuration (OIDC_ISSUER and OIDC_AUDIENCE) is required when ENVIRONMENT is 'production'"
+                        .to_string(),
+                );
+            }
+
+            // 本番環境における S3 / Cloudflare R2 設定の検証
+            if self.s3.endpoint.is_empty()
+                || self.s3.endpoint == "http://localhost:9000"
+                || self.s3.endpoint == "http://127.0.0.1:9000"
+            {
+                return Err(
+                    "S3_ENDPOINT must be explicitly set to a production storage endpoint (e.g. Cloudflare R2) when ENVIRONMENT is 'production'"
+                        .to_string(),
+                );
+            }
+            if self.s3.bucket.is_empty() || self.s3.bucket == "zoo-attachments-dev" {
+                return Err(
+                    "S3_BUCKET must be explicitly set to a production bucket name when ENVIRONMENT is 'production'"
+                        .to_string(),
+                );
+            }
+            if self.s3.access_key_id.is_empty() || self.s3.access_key_id == "rustfsadmin" {
+                return Err(
+                    "S3_ACCESS_KEY_ID must be set and cannot use the development default 'rustfsadmin' when ENVIRONMENT is 'production'"
+                        .to_string(),
+                );
+            }
+            if self.s3.secret_access_key.is_empty() || self.s3.secret_access_key == "rustfsadmin" {
+                return Err(
+                    "S3_SECRET_ACCESS_KEY must be set and cannot use the development default 'rustfsadmin' when ENVIRONMENT is 'production'"
+                        .to_string(),
+                );
+            }
         }
         Ok(())
     }
@@ -187,6 +300,20 @@ impl Config {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn dummy_s3_config() -> S3Config {
+        S3Config {
+            endpoint: "https://example.r2.cloudflarestorage.com".to_string(),
+            bucket: "zoo-attachments-prod".to_string(),
+            region: "auto".to_string(),
+            access_key_id: "prod_key_id".to_string(),
+            secret_access_key: "super_secret_s3_key".to_string(),
+            force_path_style: false,
+            presigned_put_expiry_secs: 900,
+            presigned_get_expiry_secs: 300,
+            max_file_size: 52428800,
+        }
+    }
 
     #[test]
     fn test_config_debug_redacts_database_url() {
@@ -204,10 +331,13 @@ mod tests {
             dev_auth_enabled: false,
             environment: "production".to_string(),
             cors_allowed_origins: vec!["https://zoo.example.com".to_string()],
+            s3: dummy_s3_config(),
         };
         let debug_str = format!("{config:?}");
         assert!(!debug_str.contains("super_secret_password"));
         assert!(!debug_str.contains("secret123"));
+        assert!(!debug_str.contains("super_secret_s3_key"));
+        assert!(!debug_str.contains("prod_key_id"));
         assert!(!debug_str.contains("user:"));
         assert!(debug_str.contains("[REDACTED]"));
         assert!(debug_str.contains("8080"));
@@ -227,6 +357,7 @@ mod tests {
             dev_auth_enabled: false,
             environment: "production".to_string(),
             cors_allowed_origins: vec![],
+            s3: dummy_s3_config(),
         };
         assert!(prod_no_oidc.validate().is_err());
 
@@ -304,7 +435,93 @@ mod tests {
             dev_auth_enabled: false,
             environment: "production".to_string(),
             cors_allowed_origins: vec![],
+            s3: dummy_s3_config(),
         };
+        assert!(config.validate().is_err());
+    }
+
+    #[test]
+    fn test_production_validate_rejects_default_or_missing_s3_config() {
+        let valid_oidc = parse_oidc_config(
+            Some("https://idp.example.com"),
+            Some("zoo-client"),
+            None,
+            Some("https://idp.example.com/jwks"),
+        );
+
+        // 1. 正常な本番設定 (OIDC あり、本番 R2 設定あり)
+        let mut config = Config {
+            database_url: "test".to_string(),
+            host: "127.0.0.1".to_string(),
+            port: 8080,
+            electric_url: "test".to_string(),
+            electric_secret: None,
+            oidc: valid_oidc.clone(),
+            dev_auth_enabled: false,
+            environment: "production".to_string(),
+            cors_allowed_origins: vec![],
+            s3: dummy_s3_config(),
+        };
+        assert!(config.validate().is_ok());
+
+        // 2. 開発用 localhost endpoint のまま
+        config.s3.endpoint = "http://localhost:9000".to_string();
+        assert!(config.validate().is_err());
+
+        // 3. 開発用バケット名のまま
+        config.s3 = dummy_s3_config();
+        config.s3.bucket = "zoo-attachments-dev".to_string();
+        assert!(config.validate().is_err());
+
+        // 4. 開発用デフォルトクレデンシャル (rustfsadmin) のまま
+        config.s3 = dummy_s3_config();
+        config.s3.access_key_id = "rustfsadmin".to_string();
+        assert!(config.validate().is_err());
+
+        config.s3 = dummy_s3_config();
+        config.s3.secret_access_key = "rustfsadmin".to_string();
+        assert!(config.validate().is_err());
+    }
+
+    #[test]
+    fn test_validate_presigned_expiry_bounds() {
+        let mut config = Config {
+            database_url: "test".to_string(),
+            host: "127.0.0.1".to_string(),
+            port: 8080,
+            electric_url: "test".to_string(),
+            electric_secret: None,
+            oidc: None,
+            dev_auth_enabled: true,
+            environment: "development".to_string(),
+            cors_allowed_origins: vec![],
+            s3: dummy_s3_config(),
+        };
+
+        // 境界値 OK (1 秒、604,800 秒 = 7 日)
+        config.s3.presigned_put_expiry_secs = 1;
+        config.s3.presigned_get_expiry_secs = 604_800;
+        assert!(config.validate().is_ok());
+
+        config.s3.presigned_put_expiry_secs = 604_800;
+        config.s3.presigned_get_expiry_secs = 1;
+        assert!(config.validate().is_ok());
+
+        // 範囲外 NG (0 秒、604,801 秒)
+        config.s3.presigned_put_expiry_secs = 0;
+        config.s3.presigned_get_expiry_secs = 300;
+        assert!(config.validate().is_err());
+
+        config.s3.presigned_put_expiry_secs = 604_801;
+        config.s3.presigned_get_expiry_secs = 300;
+        assert!(config.validate().is_err());
+
+        config.s3.presigned_put_expiry_secs = 900;
+        config.s3.presigned_get_expiry_secs = 0;
+        assert!(config.validate().is_err());
+
+        config.s3.presigned_put_expiry_secs = 900;
+        config.s3.presigned_get_expiry_secs = 604_801;
         assert!(config.validate().is_err());
     }
 
