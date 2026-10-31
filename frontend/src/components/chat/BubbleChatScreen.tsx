@@ -15,7 +15,16 @@ import { Textarea } from "../ui/textarea";
 import { initials } from "./format";
 
 const MAX_INPUT_HEIGHT = 180;
-const POP_DURATION_MS = 3500;
+export const FADE_DURATION_MS = 3000;
+export const POP_DURATION_MS = FADE_DURATION_MS;
+
+interface DisplayedOtherEntry {
+  userId: string;
+  userName: string;
+  displayName: string;
+  content: string;
+  isFadingOut: boolean;
+}
 
 export interface BubbleChatKeyInput {
   key: string;
@@ -46,8 +55,8 @@ export function BubbleChatScreen() {
   const composingRef = useRef(false);
   const isDesktop = useMediaQuery("(min-width: 768px)");
   const [isParticipantsOpen, setIsParticipantsOpen] = useState(false);
-  const [poppingBubble, setPoppingBubble] = useState<{ content: string; id: number } | null>(null);
-  const popTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const [fadingBubble, setFadingBubble] = useState<{ content: string; id: number } | null>(null);
+  const fadeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const me = useMemo(
     () => (usersQuery.data ?? []).find((user) => user.id === currentUserId),
@@ -60,8 +69,81 @@ export function BubbleChatScreen() {
       entries.filter((entry) => entry.user_id !== currentUserId && entry.content.trim().length > 0),
     [entries, currentUserId],
   );
-  const hasOwnBubble = isSharing && content.trim().length > 0 && poppingBubble === null;
-  const isEmpty = otherEntries.length === 0 && !hasOwnBubble && !poppingBubble;
+
+  const [displayedOthers, setDisplayedOthers] = useState<DisplayedOtherEntry[]>(() =>
+    otherEntries.map((entry) => ({
+      userId: entry.user_id,
+      userName: entry.user_name,
+      displayName: entry.display_name,
+      content: entry.content,
+      isFadingOut: false,
+    })),
+  );
+  const fadingTimersRef = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map());
+
+  // 他のユーザーの吹き出しが消去された際、即座に消さずにフェードアウトアニメーションを適用する
+  useEffect(() => {
+    setDisplayedOthers((prev) => {
+      const next: DisplayedOtherEntry[] = [];
+      const activeUserIds = new Set<string>();
+
+      // 1. 現在アクティブな otherEntries
+      for (const entry of otherEntries) {
+        activeUserIds.add(entry.user_id);
+        const existingTimer = fadingTimersRef.current.get(entry.user_id);
+        if (existingTimer) {
+          clearTimeout(existingTimer);
+          fadingTimersRef.current.delete(entry.user_id);
+        }
+        next.push({
+          userId: entry.user_id,
+          userName: entry.user_name,
+          displayName: entry.display_name,
+          content: entry.content,
+          isFadingOut: false,
+        });
+      }
+
+      // 2. 直前の表示エントリのうち、otherEntries から消えたものをフェードアウト状態として維持
+      for (const prevEntry of prev) {
+        if (!activeUserIds.has(prevEntry.userId)) {
+          if (prevEntry.isFadingOut) {
+            next.push(prevEntry);
+          } else {
+            const fadingEntry: DisplayedOtherEntry = {
+              ...prevEntry,
+              isFadingOut: true,
+            };
+            next.push(fadingEntry);
+
+            const timer = setTimeout(() => {
+              fadingTimersRef.current.delete(prevEntry.userId);
+              setDisplayedOthers((current) =>
+                current.filter((item) => item.userId !== prevEntry.userId),
+              );
+            }, FADE_DURATION_MS);
+            fadingTimersRef.current.set(prevEntry.userId, timer);
+          }
+        }
+      }
+
+      return next;
+    });
+  }, [otherEntries]);
+
+  useEffect(() => {
+    return () => {
+      fadingTimersRef.current.forEach((timer) => clearTimeout(timer));
+      fadingTimersRef.current.clear();
+      if (fadeTimerRef.current) {
+        clearTimeout(fadeTimerRef.current);
+      }
+    };
+  }, []);
+
+  const hasOwnBubble = isSharing && content.trim().length > 0 && fadingBubble === null;
+  const hasOtherBubbles = displayedOthers.length > 0;
+  const isEmpty = !hasOtherBubbles && !hasOwnBubble && !fadingBubble;
 
   // 参加者一覧データ（自分＋他のアクティブな参加者）
   const participants = useMemo(() => {
@@ -77,7 +159,7 @@ export function BubbleChatScreen() {
         displayName: me?.display_name || me?.user_name || t("bubbleChat.you"),
         userName: me?.user_name || "",
         isSelf: true,
-        isTyping: hasOwnBubble || poppingBubble !== null,
+        isTyping: hasOwnBubble || fadingBubble !== null,
       },
     ];
 
@@ -93,47 +175,39 @@ export function BubbleChatScreen() {
       }
     }
     return list;
-  }, [currentUserId, me, otherEntries, hasOwnBubble, poppingBubble, t]);
+  }, [currentUserId, me, otherEntries, hasOwnBubble, fadingBubble, t]);
 
-  const triggerBubblePop = useCallback(() => {
-    if (popTimerRef.current) {
-      clearTimeout(popTimerRef.current);
-      popTimerRef.current = null;
+  const triggerBubbleFade = useCallback(() => {
+    if (fadeTimerRef.current) {
+      clearTimeout(fadeTimerRef.current);
+      fadeTimerRef.current = null;
     }
     const current = content.trim();
     if (current.length > 0) {
       setContent("");
-      setPoppingBubble({ content: current, id: Date.now() });
-      popTimerRef.current = setTimeout(() => {
-        popTimerRef.current = null;
-        setPoppingBubble(null);
+      setFadingBubble({ content: current, id: Date.now() });
+      fadeTimerRef.current = setTimeout(() => {
+        fadeTimerRef.current = null;
+        setFadingBubble(null);
         clearContent();
-      }, POP_DURATION_MS);
+      }, FADE_DURATION_MS);
     } else {
       clearContent();
-      setPoppingBubble(null);
+      setFadingBubble(null);
     }
   }, [content, setContent, clearContent]);
 
   const handleContentChange = useCallback(
     (value: string) => {
-      if (popTimerRef.current) {
-        clearTimeout(popTimerRef.current);
-        popTimerRef.current = null;
-        setPoppingBubble(null);
+      if (fadeTimerRef.current) {
+        clearTimeout(fadeTimerRef.current);
+        fadeTimerRef.current = null;
+        setFadingBubble(null);
       }
       setContent(value);
     },
     [setContent],
   );
-
-  useEffect(() => {
-    return () => {
-      if (popTimerRef.current) {
-        clearTimeout(popTimerRef.current);
-      }
-    };
-  }, []);
 
   useLayoutEffect(() => {
     const element = textareaRef.current;
@@ -236,13 +310,16 @@ export function BubbleChatScreen() {
               </div>
             ) : (
               <ul className="mx-auto flex max-w-3xl flex-col gap-4">
-                {otherEntries.map((entry) => {
-                  const label = entry.display_name || entry.user_name || entry.user_id;
+                {displayedOthers.map((entry) => {
+                  const label = entry.displayName || entry.userName || entry.userId;
                   return (
                     <li
-                      key={entry.user_id}
+                      key={entry.userId}
                       data-bubble-side="left"
-                      className="flex items-start justify-start gap-3"
+                      className={cn(
+                        "flex items-start justify-start gap-3",
+                        entry.isFadingOut && "animate-bubble-fade-out",
+                      )}
                     >
                       <Avatar className="mt-1 shrink-0" title={label}>
                         <AvatarFallback>{initials(label)}</AvatarFallback>
@@ -259,26 +336,21 @@ export function BubbleChatScreen() {
                   );
                 })}
 
-                {hasOwnBubble || poppingBubble ? (
+                {hasOwnBubble || fadingBubble ? (
                   <li
-                    key={poppingBubble ? `pop-${poppingBubble.id}` : "active"}
+                    key={fadingBubble ? `fade-${fadingBubble.id}` : "active"}
                     data-bubble-side="right"
                     className={cn(
                       "flex items-start justify-end gap-3",
-                      poppingBubble && !hasOwnBubble && "animate-bubble-pop",
+                      fadingBubble && !hasOwnBubble && "animate-bubble-fade-out",
                     )}
                   >
                     <div className="flex min-w-0 max-w-[75%] flex-col items-end">
                       <span className="mb-1 max-w-full truncate px-1 text-right text-xs font-medium text-muted-foreground">
                         {meLabel}
                       </span>
-                      <div
-                        className={cn(
-                          "rounded-2xl rounded-tr-sm bg-brand px-3.5 py-2.5 text-sm leading-relaxed break-words whitespace-pre-wrap text-brand-foreground shadow-xs",
-                          poppingBubble && !hasOwnBubble && "shadow-md ring-2 ring-brand/40",
-                        )}
-                      >
-                        {hasOwnBubble ? content : poppingBubble?.content}
+                      <div className="rounded-2xl rounded-tr-sm bg-brand px-3.5 py-2.5 text-sm leading-relaxed break-words whitespace-pre-wrap text-brand-foreground shadow-xs">
+                        {hasOwnBubble ? content : fadingBubble?.content}
                       </div>
                     </div>
                     <Avatar className="mt-1 shrink-0" title={meLabel}>
@@ -326,7 +398,7 @@ export function BubbleChatScreen() {
                       })
                     ) {
                       event.preventDefault();
-                      triggerBubblePop();
+                      triggerBubbleFade();
                     }
                   }}
                 />
@@ -337,7 +409,7 @@ export function BubbleChatScreen() {
                   disabled={content.length === 0}
                   aria-label={t("bubbleChat.clear")}
                   title={t("bubbleChat.clear")}
-                  onClick={triggerBubblePop}
+                  onClick={triggerBubbleFade}
                 >
                   <XIcon />
                 </Button>

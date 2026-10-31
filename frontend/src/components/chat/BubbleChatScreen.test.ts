@@ -175,7 +175,7 @@ describe("BubbleChatScreen", () => {
     ).toBe(false);
   });
 
-  it("clears textarea immediately and delays clearContent by POP_DURATION_MS with popping animation on Cmd+Enter", async () => {
+  it("clears textarea immediately and delays clearContent by FADE_DURATION_MS with fade-out animation on Cmd+Enter", async () => {
     vi.useFakeTimers();
     vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
     state.content = "入力途中のテキスト";
@@ -206,20 +206,90 @@ describe("BubbleChatScreen", () => {
 
       // Draft input is cleared immediately
       expect(state.setContent).toHaveBeenCalledWith("");
-      // clearContent has NOT been called yet (popping animation in progress)
+      // clearContent has NOT been called yet (fading animation in progress)
       expect(state.clearContent).not.toHaveBeenCalled();
 
-      // Popping bubble element is present with animate-bubble-pop class
-      const poppingBubble = container.querySelector('[data-bubble-side="right"]');
-      expect(poppingBubble?.className).toContain("animate-bubble-pop");
+      // Fading bubble element is present with animate-bubble-fade-out class
+      const fadingBubble = container.querySelector('[data-bubble-side="right"]');
+      expect(fadingBubble?.className).toContain("animate-bubble-fade-out");
 
-      // Advance timers by 3500ms
+      // Advance timers by 3000ms
       await act(async () => {
-        vi.advanceTimersByTime(3500);
+        vi.advanceTimersByTime(3000);
       });
 
-      // After 3.5s, clearContent is invoked on the server
+      // After 3s, clearContent is invoked on the server
       expect(state.clearContent).toHaveBeenCalledTimes(1);
+    } finally {
+      await act(async () => {
+        root.unmount();
+      });
+      container.remove();
+      vi.useRealTimers();
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("animates other user's bubble with fade-out before removing it from DOM when cleared", async () => {
+    vi.useFakeTimers();
+    vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+    state.entries = [
+      {
+        user_id: "user-alice",
+        user_name: "alice",
+        display_name: "Alice",
+        content: "Aliceのメッセージ",
+      },
+    ];
+
+    const container = document.createElement("div");
+    document.body.append(container);
+    const root = createRoot(container);
+
+    try {
+      await act(async () => {
+        root.render(
+          createElement(
+            I18nextProvider,
+            { i18n: createI18n("ja") },
+            createElement(BubbleChatScreen),
+          ),
+        );
+      });
+
+      // Initially, Alice's bubble is rendered normally (not fading)
+      let aliceBubble = container.querySelector('[data-bubble-side="left"]');
+      expect(aliceBubble).not.toBeNull();
+      expect(aliceBubble?.textContent).toContain("Aliceのメッセージ");
+      expect(aliceBubble?.className).not.toContain("animate-bubble-fade-out");
+
+      // Alice clears her message on the server (entries becomes empty)
+      state.entries = [];
+      await act(async () => {
+        root.render(
+          createElement(
+            I18nextProvider,
+            { i18n: createI18n("ja") },
+            createElement(BubbleChatScreen),
+          ),
+        );
+      });
+
+      // Alice's bubble is NOT removed immediately; it has animate-bubble-fade-out
+      aliceBubble = container.querySelector('[data-bubble-side="left"]');
+      expect(aliceBubble).not.toBeNull();
+      expect(aliceBubble?.className).toContain("animate-bubble-fade-out");
+      expect(aliceBubble?.textContent).toContain("Aliceのメッセージ");
+
+      // Advance timers by 3000ms (FADE_DURATION_MS)
+      await act(async () => {
+        vi.advanceTimersByTime(3000);
+      });
+
+      // After fade duration, Alice's bubble is removed from DOM and empty placeholder is shown
+      aliceBubble = container.querySelector('[data-bubble-side="left"]');
+      expect(aliceBubble).toBeNull();
+      expect(container.textContent).toContain("現在入力中のユーザーはいません");
     } finally {
       await act(async () => {
         root.unmount();
