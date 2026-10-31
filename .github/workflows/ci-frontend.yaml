@@ -29,7 +29,7 @@ on:
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
-# runner ジョブが zli-k8s（self-hosted）か GitHub-hosted を選ぶ（select-runner.yaml）。
+# runner ジョブがDocker不要用とDocker必須用の実行先を選びます。
 jobs:
   runner:
     uses: ./.github/workflows/select-runner.yaml
@@ -38,7 +38,7 @@ jobs:
 
   container:
     needs: runner
-    runs-on: ${{ fromJSON(needs.runner.outputs.runs-on) }}
+    runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-latest' || fromJSON(needs.runner.outputs.docker-runs-on || '"zli-k8s"') }}
     env:
       POSTGRES_PASSWORD: container-test
       # envsubst で CSP に埋め込まれることを確認するためのダミー IdP・ストレージオリジン。
@@ -149,7 +149,7 @@ jobs:
 
   proxy:
     needs: runner
-    runs-on: ${{ fromJSON(needs.runner.outputs.runs-on) }}
+    runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-latest' || fromJSON(needs.runner.outputs.docker-runs-on || '"zli-k8s"') }}
     env:
       POSTGRES_PASSWORD: proxy-test
       PROXY_PORT: 18080
@@ -172,8 +172,7 @@ jobs:
         run: docker compose --project-directory . -f infra/compose.stg.yaml -f infra/proxy/test/compose.yaml down
 
   check:
-    needs: runner
-    runs-on: ${{ fromJSON(needs.runner.outputs.runs-on) }}
+    runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-latest' || 'zli-kubecamp-no-docker' }}
     defaults:
       run:
         working-directory: ./frontend
@@ -217,8 +216,7 @@ jobs:
         run: pnpm test:e2e:layout
 
   unit-test:
-    needs: runner
-    runs-on: ${{ fromJSON(needs.runner.outputs.runs-on) }}
+    runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-latest' || 'zli-kubecamp-no-docker' }}
     defaults:
       run:
         working-directory: ./frontend
@@ -246,7 +244,8 @@ jobs:
 
   browser-test:
     needs: runner
-    runs-on: ${{ fromJSON(needs.runner.outputs.runs-on) }}
+    # Storybook exceeds the 2GiB kubecamp limit, even with a single test page.
+    runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-latest' || fromJSON(needs.runner.outputs.large-runs-on || '"zli-k8s"') }}
     defaults:
       run:
         working-directory: ./frontend

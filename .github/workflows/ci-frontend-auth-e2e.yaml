@@ -19,7 +19,7 @@ on:
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
-# runner ジョブが zli-k8s（self-hosted）か GitHub-hosted を選ぶ（select-runner.yaml）。
+# runner ジョブがDocker不要用とDocker必須用の実行先を選びます。
 jobs:
   runner:
     uses: ./.github/workflows/select-runner.yaml
@@ -28,7 +28,7 @@ jobs:
 
   oidc-e2e:
     needs: runner
-    runs-on: ${{ fromJSON(needs.runner.outputs.runs-on) }}
+    runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-latest' || fromJSON(needs.runner.outputs.docker-runs-on || '"zli-k8s"') }}
     timeout-minutes: 30
     env:
       # Each job owns its containers and dynamically assigned host ports.
