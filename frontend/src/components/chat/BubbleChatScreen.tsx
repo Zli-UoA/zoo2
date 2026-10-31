@@ -1,4 +1,4 @@
-import { MessageCircleMoreIcon, UsersIcon, XIcon } from "lucide-react";
+import { EraserIcon, MessageCircleMoreIcon, UsersIcon, XIcon } from "lucide-react";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { cn } from "cn";
@@ -404,14 +404,14 @@ export function BubbleChatScreen() {
                 />
                 <Button
                   type="button"
-                  variant="ghost"
-                  size="icon-sm"
-                  disabled={content.length === 0}
+                  size="icon-lg"
+                  className="mb-1 size-11! md:size-9!"
+                  disabled={content.trim().length === 0}
                   aria-label={t("bubbleChat.clear")}
                   title={t("bubbleChat.clear")}
                   onClick={triggerBubbleFade}
                 >
-                  <XIcon />
+                  <EraserIcon className="size-5 md:size-4" />
                 </Button>
               </div>
               <p className="mt-1.5 px-1 text-[11px] text-muted-foreground">

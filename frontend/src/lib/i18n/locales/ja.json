@@ -352,7 +352,7 @@
     "placeholder": "ここに入力するとリアルタイムに表示されます…",
     "inputLabel": "リアルタイムメッセージ入力",
     "clear": "入力をクリア",
-    "hint": "送信ボタンはありません。Cmd / Ctrl+Enter で入力文字を消去でき、吹き出しは少し表示されたあと弾けて消えます。",
+    "hint": "送信ボタンはありません。クリアボタンや Cmd / Ctrl+Enter で入力文字を消去でき、吹き出しは少し表示されたあと消えます。",
     "typingSummary": "{{names}}が入力中",
     "participants": "参加者",
     "participantsTitle": "参加者 ({{count}})",

@@ -352,7 +352,7 @@
     "placeholder": "Type here to share in real time…",
     "inputLabel": "Real-time message input",
     "clear": "Clear input",
-    "hint": "No send button—press Cmd / Ctrl+Enter to clear your draft; bubbles pop after a short delay.",
+    "hint": "No send button—use the clear button or Cmd / Ctrl+Enter to clear your draft; bubbles fade out after a short delay.",
     "typingSummary": "{{names}} typing",
     "participants": "Participants",
     "participantsTitle": "Participants ({{count}})",

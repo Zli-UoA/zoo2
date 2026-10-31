@@ -352,7 +352,7 @@
     "placeholder": "在此輸入即可即時共享…",
     "inputLabel": "即時訊息輸入",
     "clear": "清除輸入",
-    "hint": "無需傳送按鈕，按 Cmd / Ctrl+Enter 可清除輸入；氣泡會在稍後破裂消失。",
+    "hint": "無需傳送按鈕，點擊清除按鈕或按 Cmd / Ctrl+Enter 可清除輸入；氣泡會在稍後淡出消失。",
     "typingSummary": "{{names}}正在輸入",
     "participants": "參與者",
     "participantsTitle": "參與者 ({{count}})",

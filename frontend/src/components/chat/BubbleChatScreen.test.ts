@@ -230,6 +230,60 @@ describe("BubbleChatScreen", () => {
     }
   });
 
+  it("clears textarea and triggers fade-out when clicking clear button", async () => {
+    vi.useFakeTimers();
+    vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+    state.content = "入力途中のテキスト";
+    const container = document.createElement("div");
+    document.body.append(container);
+    const root = createRoot(container);
+
+    try {
+      await act(async () => {
+        root.render(
+          createElement(
+            I18nextProvider,
+            { i18n: createI18n("ja") },
+            createElement(BubbleChatScreen),
+          ),
+        );
+      });
+
+      const clearButton = container.querySelector<HTMLButtonElement>(
+        'button[aria-label="入力をクリア"]',
+      );
+      expect(clearButton).not.toBeNull();
+      expect(clearButton?.disabled).toBe(false);
+
+      // Click clear button
+      await act(async () => {
+        clearButton!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      });
+
+      // Draft input is cleared immediately
+      expect(state.setContent).toHaveBeenCalledWith("");
+      expect(state.clearContent).not.toHaveBeenCalled();
+
+      // Fading bubble element is present with animate-bubble-fade-out class
+      const fadingBubble = container.querySelector('[data-bubble-side="right"]');
+      expect(fadingBubble?.className).toContain("animate-bubble-fade-out");
+
+      // Advance timers by 3000ms
+      await act(async () => {
+        vi.advanceTimersByTime(3000);
+      });
+
+      expect(state.clearContent).toHaveBeenCalledTimes(1);
+    } finally {
+      await act(async () => {
+        root.unmount();
+      });
+      container.remove();
+      vi.useRealTimers();
+      vi.unstubAllGlobals();
+    }
+  });
+
   it("animates other user's bubble with fade-out before removing it from DOM when cleared", async () => {
     vi.useFakeTimers();
     vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
