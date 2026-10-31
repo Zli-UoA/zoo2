@@ -168,9 +168,9 @@ export const storybookApiHandlers = [
     });
   }),
   http.get("*/api/push/config", () => HttpResponse.json({ publicKey: null })),
-  http.get("*/api/attachments/:attachmentId/url", ({ params, request }) => {
+  http.get("*/api/attachments/:attachmentId/url", ({ params }) => {
     const id = String(params.attachmentId);
-    const image = new URL("/icons/icon-192.png", request.url).href;
+    const image = new URL("/icons/icon-192.png", globalThis.location.href).href;
     return HttpResponse.json({
       data: {
         id,
