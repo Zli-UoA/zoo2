@@ -2,6 +2,7 @@ import { ZooError, type AppEvent } from "../../../sdk/src/index.ts";
 import { Store, type Job } from "./store.ts";
 import { GitHub, GitHubError } from "./github.ts";
 import { notices, summary, type Notice } from "./events.ts";
+import { messageBlocks, displayRepository } from "./cards.ts";
 import { subscription, permits, words } from "./subscriptions.ts";
 import { preview } from "./previews.ts";
 import {
@@ -55,26 +56,29 @@ export class GitHubBot {
   async publishMessage(
     input: Parameters<Zoo["postMessage"]>[0] & { id: string },
     published: boolean,
+    blocks?: Json[],
   ) {
     if (published) {
       await this.zoo.updateMessage(input.id, input.content);
-      return;
-    }
-    try {
-      await this.zoo.postMessage(input);
-    } catch (error) {
-      // The POST may have succeeded before a crash or a lost response. Our deterministic
-      // UUID still identifies the same message, even if GitHub's current body has changed.
-      if (error instanceof ZooError && error.status === 409)
-        await this.zoo.updateMessage(input.id, input.content);
-      else throw error;
-    }
+    } else
+      try {
+        await this.zoo.postMessage(input);
+      } catch (error) {
+        // The POST may have succeeded before a crash or a lost response. Our deterministic
+        // UUID still identifies the same message, even if GitHub's current body has changed.
+        if (error instanceof ZooError && error.status === 409)
+          await this.zoo.updateMessage(input.id, input.content);
+        else throw error;
+      }
+    if (blocks) await this.zoo.setBlocks(input.id, blocks);
   }
   async tick() {
     if (this.busy || this.stopping) return;
     this.busy = true;
     try {
-      for (let i = 0; i < 10 && !this.stopping; i++) {
+      // Credential revocation pauses delivery, not durable webhook acceptance. Check
+      // between jobs too: a tokens.revoked event can disable Zoo during this batch.
+      for (let i = 0; i < 10 && !this.stopping && !this.store.get("zoo-disabled"); i++) {
         const job = this.store.next();
         if (!job) break;
         try {
@@ -137,6 +141,7 @@ export class GitHubBot {
       this.store.get(`installation-disabled:${rule.installationId}`)
     )
       return;
+    this.github.rememberName(p.repository.full_name);
     const subscriptions = this.store
       .subscriptions()
       .filter((s) => matches(s.repo, repo) && ruleFor(this.config, repo, s.channel));
@@ -217,7 +222,7 @@ export class GitHubBot {
           if (!published && !this.store.get(`root-opening-job:${thread.message}`))
             this.store.set(`root-opening-job:${thread.message}`, job.id);
           const root =
-            summary(notice.target, snapshot) +
+            summary({ ...notice.target, repo: displayRepository(repo, p) }, snapshot) +
             (published ? "" : `\n${await this.mentions(notice.mentions)}`);
           await this.publishMessage(
             {
@@ -226,6 +231,7 @@ export class GitHubBot {
               content: root,
             },
             Boolean(published),
+            messageBlocks(notice, snapshot, p),
           );
           this.store.set(`root-published:${thread.message}`, true);
           // Opening creates the parent; subsequent state changes and comments become replies.
@@ -276,6 +282,7 @@ export class GitHubBot {
                   : {}),
               },
               Boolean(known),
+              messageBlocks(notice, snapshot, p, true),
             );
             this.store.set(childKey, true);
           }
@@ -356,8 +363,10 @@ export class GitHubBot {
         u.protocol === "https:" &&
         u.hostname === "github.com" &&
         u.pathname.toLowerCase().startsWith(`/${repo}/`)
-      )
+      ) {
+        notice.url = u.toString();
         notice.body += `\n${u}`;
+      }
     } catch {
       /* No canonical comment URL available. */
     }
@@ -447,7 +456,7 @@ export class GitHubBot {
         .filter((s) => ruleFor(this.config, s.repo, channel))
         .map(
           (s) =>
-            `${s.repo}: ${s.features.join(", ")}${s.branch ? ` commits:${s.branch}` : ""}${s.label ? ` +label:${s.label}` : ""}${s.workflow ? ` workflows:${JSON.stringify(s.workflow)}` : ""}`,
+            `${this.github.displayName(s.repo)}: ${s.features.join(", ")}${s.branch ? ` commits:${s.branch}` : ""}${s.label ? ` +label:${s.label}` : ""}${s.workflow ? ` workflows:${JSON.stringify(s.workflow)}` : ""}`,
         );
       await this.private(user, channel, lines.join("\n") || "このチャンネルには購読がありません。");
       return;
@@ -458,12 +467,20 @@ export class GitHubBot {
       const repo = repoName(value.includes("/") ? value : `${value}/*`);
       this.allowed(repo, channel);
       if (command === "unsubscribe" && !this.store.subscription(channel, repo)) {
-        await this.private(user, channel, `${repo} は購読されていません。`);
+        await this.private(
+          user,
+          channel,
+          `${this.github.displayName(repo)} は購読されていません。`,
+        );
         return;
       }
       if (command === "unsubscribe" && !args.length) {
         this.store.unsubscribe(channel, repo);
-        await this.private(user, channel, `${repo} の購読を解除しました。`);
+        await this.private(
+          user,
+          channel,
+          `${this.github.displayName(repo)} の購読を解除しました。`,
+        );
         return;
       }
       if (repo.endsWith("/*")) {
@@ -478,7 +495,11 @@ export class GitHubBot {
         command === "unsubscribe",
       );
       this.store.subscribe(sub);
-      await this.private(user, channel, `${repo}: ${sub.features.join(", ") || "通知なし"}`);
+      await this.private(
+        user,
+        channel,
+        `${this.github.displayName(repo)}: ${sub.features.join(", ") || "通知なし"}`,
+      );
       return;
     }
     if (command === "settings") {
@@ -556,7 +577,7 @@ export class GitHubBot {
             const pulls = await this.github.pages(repo, "/pulls?state=open");
             for (const pr of pulls.filter((p: Json) => p.requested_reviewers?.length))
               lines.push(
-                `${repo} #${pr.number} ${text(pr.title, 160)}\n${resource({ repo, kind: "pull", number: String(pr.number) })} ${await this.mentions(pr.requested_reviewers.map((r: Json) => r.login))}`,
+                `${this.github.displayName(repo)} #${pr.number} ${text(pr.title, 160)}\n${resource({ repo: this.github.displayName(repo), kind: "pull", number: String(pr.number) })} ${await this.mentions(pr.requested_reviewers.map((r: Json) => r.login))}`,
               );
           }
         if (lines.length)

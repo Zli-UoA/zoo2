@@ -1,6 +1,6 @@
+import { sidebarItemClassName } from "./sidebarStyles";
 import { useTranslation } from "react-i18next";
 import { Link } from "@tanstack/react-router";
-import { cn } from "cn";
 import { UsersIcon } from "lucide-react";
 import type { ReactNode } from "react";
 
@@ -32,16 +32,7 @@ export function DmListItem({
       params={{ channelId: channel.id }}
       onClick={onOpen}
       aria-current={active ? "page" : undefined}
-      className={cn(
-        "group flex min-h-11 items-center gap-2 rounded-lg px-2.5 py-2 text-sm transition-colors",
-        "focus-visible:ring-3 focus-visible:ring-ring/50 outline-none",
-        unread && "font-semibold text-sidebar-foreground",
-        active
-          ? "bg-brand-muted font-medium text-brand-muted-foreground"
-          : unread
-            ? "hover:bg-sidebar-accent"
-            : "text-muted-foreground hover:bg-sidebar-accent hover:text-sidebar-accent-foreground",
-      )}
+      className={sidebarItemClassName(active, unread)}
     >
       {group ? (
         <span

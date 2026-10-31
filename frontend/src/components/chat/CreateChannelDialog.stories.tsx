@@ -4,7 +4,7 @@ import { expect, fn, screen, userEvent } from "storybook/test";
 import { CreateChannelDialog } from "./CreateChannelDialog";
 
 const meta = {
-  title: "Screens/CreateChannelDialog",
+  title: "Features/Channels/Create",
   component: CreateChannelDialog,
   tags: ["autodocs"],
   parameters: { a11y: { test: "error" } },

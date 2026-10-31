@@ -12,20 +12,18 @@ import {
   MessagesSquareIcon,
   MoreHorizontalIcon,
   PencilIcon,
-  ShieldAlertIcon,
-  TrashIcon,
+  SettingsIcon,
+  WebhookIcon,
   UsersIcon,
 } from "lucide-react";
 import { useState } from "react";
 
 import { useChannelAdmin } from "../../hooks/useChannelAdmin";
 import { useCurrentUser } from "../../hooks/useCurrentUser";
-import { useMessageFeed } from "../../hooks/useRealtime";
 import { useCollections } from "../../lib/electric/collections-context";
 import type { ChannelRow } from "../../lib/electric/types";
 import type { ChannelUserWriteMetadata } from "../../lib/electric/writes";
 import { localizeApiError } from "../../lib/i18n/apiError";
-import { normalizeUtcTimestamp } from "../../lib/timestamps";
 import { useShell } from "../layout/shell-context";
 import {
   AlertDialog,
@@ -37,6 +35,7 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "../ui/alert-dialog";
+import { SettingRow, SettingsSection } from "../ui/control-panel";
 import { Button, buttonVariants } from "../ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "../ui/dialog";
 import {
@@ -45,12 +44,10 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from "../ui/dropdown-menu";
-import { ScrollArea } from "../ui/scroll-area";
-import { Skeleton } from "../ui/skeleton";
 import { normalizeChannelDescription } from "./channelDescription";
 import { RenameChannelDialog } from "./RenameChannelDialog";
 import { isGroupDm } from "./dm";
-import { authorLabel, formatTime, fullTimestamp, type FeedMessage } from "./messages/messageFormat";
+import { PaneHeader } from "../layout/PaneHeader";
 
 /** チャンネルヘッダ。名前・説明・メンバー数と管理メニュー、狭幅の戻る。 */
 export function ChannelHeader({
@@ -78,7 +75,7 @@ export function ChannelHeader({
   const [confirmAction, setConfirmAction] = useState<"archive" | "unarchive" | null>(null);
   const [webhooksOpen, setWebhooksOpen] = useState(false);
   const [renameOpen, setRenameOpen] = useState(false);
-  const [messageAdminOpen, setMessageAdminOpen] = useState(false);
+  const [settingsOpen, setSettingsOpen] = useState(false);
 
   async function confirmArchive() {
     if (!confirmAction) {
@@ -91,11 +88,11 @@ export function ChannelHeader({
   }
 
   return (
-    <header className="flex items-center gap-3 border-b bg-background/80 px-4 py-2.5 backdrop-blur supports-backdrop-filter:bg-background/60">
+    <PaneHeader className="bg-background/80 backdrop-blur supports-backdrop-filter:bg-background/60">
       <Button
         variant="ghost"
         size="icon-sm"
-        className="md:hidden"
+        className="size-11 md:hidden"
         aria-label={t("channels.back")}
         onClick={shell.showSidebar}
       >
@@ -149,41 +146,16 @@ export function ChannelHeader({
         ) : null}
         {isDm ? <DmHeaderMenu channel={channel} /> : null}
         {canManage ? (
-          <DropdownMenu>
-            <DropdownMenuTrigger
-              aria-label={t("moderation.manageChannel")}
-              title={t("moderation.manageChannel")}
-              className={buttonVariants({ variant: "ghost", size: "icon-sm" })}
-            >
-              <MoreHorizontalIcon />
-            </DropdownMenuTrigger>
-            <DropdownMenuContent align="end">
-              <DropdownMenuItem onClick={() => setWebhooksOpen(true)}>
-                {t("webhooks.title")}
-              </DropdownMenuItem>
-              {!isArchived ? (
-                <DropdownMenuItem onClick={() => setRenameOpen(true)}>
-                  <PencilIcon />
-                  {t("channels.editTitle")}
-                </DropdownMenuItem>
-              ) : null}
-              {isArchived ? (
-                <DropdownMenuItem onClick={() => setConfirmAction("unarchive")}>
-                  <ArchiveRestoreIcon />
-                  {t("moderation.unarchive")}
-                </DropdownMenuItem>
-              ) : (
-                <DropdownMenuItem onClick={() => setConfirmAction("archive")}>
-                  <ArchiveIcon />
-                  {t("moderation.archive")}
-                </DropdownMenuItem>
-              )}
-              <DropdownMenuItem onClick={() => setMessageAdminOpen(true)}>
-                <ShieldAlertIcon />
-                {t("moderation.messageAdmin")}
-              </DropdownMenuItem>
-            </DropdownMenuContent>
-          </DropdownMenu>
+          <Button
+            variant="ghost"
+            size="icon-sm"
+            className="size-11 md:size-8"
+            aria-label={t("settings.channelTitle")}
+            title={t("settings.channelTitle")}
+            onClick={() => setSettingsOpen(true)}
+          >
+            <SettingsIcon />
+          </Button>
         ) : null}
       </div>
 
@@ -231,22 +203,52 @@ export function ChannelHeader({
         </AlertDialogContent>
       </AlertDialog>
 
-      {messageAdminOpen && canManage ? (
-        <MessageAdminDialog
-          channel={channel}
-          open={messageAdminOpen}
-          onOpenChange={setMessageAdminOpen}
-          pending={admin.pending === "delete-message"}
-          onDelete={admin.deleteMessage}
-        />
-      ) : null}
-    </header>
+      <Dialog open={settingsOpen && canManage} onOpenChange={setSettingsOpen}>
+        <DialogContent className="max-h-[85dvh] overflow-y-auto sm:max-w-lg">
+          <DialogHeader className="pr-8">
+            <DialogTitle>{t("settings.channelTitle")}</DialogTitle>
+            <DialogDescription>{displayTitle}</DialogDescription>
+          </DialogHeader>
+          <div className="divide-y rounded-lg border">
+            <SettingRow label={t("channels.editTitle")} description={displaySubtitle}>
+              <Button variant="outline" disabled={isArchived} onClick={() => setRenameOpen(true)}>
+                <PencilIcon />
+                {t("messages.edit")}
+              </Button>
+            </SettingRow>
+            <SettingRow label={t("webhooks.title")}>
+              <Button variant="outline" onClick={() => setWebhooksOpen(true)}>
+                <WebhookIcon />
+                {t("common.open")}
+              </Button>
+            </SettingRow>
+          </div>
+          <SettingsSection className="border-destructive/30">
+            <h3 className="font-medium">
+              {isArchived ? t("moderation.unarchive") : t("moderation.archive")}
+            </h3>
+            <p className="mt-1 text-xs text-muted-foreground">
+              {isArchived
+                ? t("moderation.unarchiveDescription")
+                : t("moderation.archiveDescription")}
+            </p>
+            <Button
+              className="mt-3"
+              variant={isArchived ? "outline" : "destructive"}
+              onClick={() => setConfirmAction(isArchived ? "unarchive" : "archive")}
+            >
+              {isArchived ? <ArchiveRestoreIcon /> : <ArchiveIcon />}
+              {isArchived ? t("moderation.unarchive") : t("moderation.archive")}
+            </Button>
+          </SettingsSection>
+        </DialogContent>
+      </Dialog>
+    </PaneHeader>
   );
 }
 
 function DmHeaderMenu({ channel }: { channel: ChannelRow }) {
   const { t } = useTranslation();
-  const shell = useShell();
   const navigate = useNavigate();
   const { channelUsers } = useCollections();
   const { currentUserId } = useCurrentUser();
@@ -273,7 +275,6 @@ function DmHeaderMenu({ channel }: { channel: ChannelRow }) {
       });
       await transaction.when("settled");
       setConfirmOpen(false);
-      shell.showSidebar();
       await navigate({ to: "/" });
     } catch (cause) {
       setError(localizeApiError(cause, t));
@@ -328,127 +329,6 @@ function DmHeaderMenu({ channel }: { channel: ChannelRow }) {
               onClick={() => void leave()}
             >
               {pending ? t("dms.leaving") : t("dms.leave")}
-            </AlertDialogAction>
-          </AlertDialogFooter>
-        </AlertDialogContent>
-      </AlertDialog>
-    </>
-  );
-}
-
-function MessageAdminDialog({
-  channel,
-  open,
-  onOpenChange,
-  pending,
-  onDelete,
-}: {
-  channel: ChannelRow;
-  open: boolean;
-  onOpenChange: (open: boolean) => void;
-  pending: boolean;
-  onDelete: (messageId: string) => Promise<boolean>;
-}) {
-  const { t } = useTranslation();
-  const messagesQuery = useMessageFeed(channel.id);
-  const messages = messagesQuery.data ?? [];
-  const [target, setTarget] = useState<FeedMessage | null>(null);
-
-  async function confirmDelete() {
-    if (!target) {
-      return;
-    }
-    const succeeded = await onDelete(target.id);
-    if (succeeded) {
-      setTarget(null);
-    }
-  }
-
-  return (
-    <>
-      <Dialog open={open} onOpenChange={onOpenChange}>
-        <DialogContent className="flex max-h-[85dvh] flex-col gap-0 overflow-hidden p-0 sm:max-w-lg">
-          <DialogHeader className="border-b px-4 py-3">
-            <DialogTitle>{t("moderation.messageAdmin")}</DialogTitle>
-            <DialogDescription>{t("moderation.messageAdminDescription")}</DialogDescription>
-          </DialogHeader>
-          <ScrollArea className="min-h-0 flex-1">
-            <ul className="flex flex-col gap-1 p-2">
-              {messagesQuery.isLoading ? (
-                [0, 1, 2].map((row) => <Skeleton key={row} className="h-16 w-full rounded-lg" />)
-              ) : messagesQuery.isError ? (
-                <li className="px-2 py-3 text-xs text-destructive">{t("messages.fetchError")}</li>
-              ) : messages.length === 0 ? (
-                <li className="px-2 py-3 text-xs text-muted-foreground">
-                  {t("moderation.noMessages")}
-                </li>
-              ) : (
-                messages.map((message) => (
-                  <li
-                    key={message.id}
-                    className="flex items-start gap-3 rounded-lg px-2 py-2 hover:bg-accent/60"
-                  >
-                    <div className="min-w-0 flex-1">
-                      <div className="flex items-baseline gap-2">
-                        <span className="truncate text-sm font-medium">{authorLabel(message)}</span>
-                        <time
-                          className="shrink-0 text-[11px] tabular-nums text-muted-foreground"
-                          dateTime={normalizeUtcTimestamp(message.created_at)}
-                          title={fullTimestamp(message.created_at)}
-                        >
-                          {formatTime(message.created_at)}
-                        </time>
-                      </div>
-                      <p className="line-clamp-2 text-xs break-words whitespace-pre-wrap text-muted-foreground">
-                        {message.content}
-                      </p>
-                    </div>
-                    <Button
-                      variant="ghost"
-                      size="icon-xs"
-                      aria-label={t("moderation.deleteMessageLabel", {
-                        author: authorLabel(message),
-                      })}
-                      title={t("moderation.forceDelete")}
-                      className="mt-0.5 shrink-0 text-destructive hover:bg-destructive/10 hover:text-destructive"
-                      disabled={pending}
-                      onClick={() => setTarget(message)}
-                    >
-                      <TrashIcon />
-                    </Button>
-                  </li>
-                ))
-              )}
-            </ul>
-          </ScrollArea>
-        </DialogContent>
-      </Dialog>
-
-      <AlertDialog
-        open={target !== null}
-        onOpenChange={(next) => {
-          if (!next) {
-            setTarget(null);
-          }
-        }}
-      >
-        <AlertDialogContent>
-          <AlertDialogHeader>
-            <AlertDialogTitle>{t("moderation.forceDeleteTitle")}</AlertDialogTitle>
-            <AlertDialogDescription>
-              {target
-                ? t("moderation.forceDeleteDescription", { author: authorLabel(target) })
-                : ""}
-            </AlertDialogDescription>
-          </AlertDialogHeader>
-          <AlertDialogFooter>
-            <AlertDialogCancel>{t("common.cancelShort")}</AlertDialogCancel>
-            <AlertDialogAction
-              variant="destructive"
-              disabled={pending}
-              onClick={() => void confirmDelete()}
-            >
-              {pending ? t("moderation.deleting") : t("messages.delete")}
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>

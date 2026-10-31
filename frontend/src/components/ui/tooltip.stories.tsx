@@ -18,7 +18,7 @@ function TooltipDemo() {
 }
 
 const meta = {
-  title: "Foundations/Tooltip",
+  title: "Components/Tooltip",
   component: Tooltip,
   tags: ["autodocs"],
   parameters: { a11y: { test: "error" } },

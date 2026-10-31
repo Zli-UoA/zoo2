@@ -38,7 +38,7 @@ jobs:
 
   container:
     needs: runner
-    runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-latest' || fromJSON(needs.runner.outputs.docker-runs-on || '"zli-k8s"') }}
+    runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-latest' || fromJSON(needs.runner.outputs.docker-runs-on || '"ubuntu-latest"') }}
     env:
       POSTGRES_PASSWORD: container-test
       # envsubst で CSP に埋め込まれることを確認するためのダミー IdP・ストレージオリジン。
@@ -88,7 +88,7 @@ jobs:
             printf "%s" "$headers" | grep -q "script-src 'self' 'wasm-unsafe-eval' 'sha256-"
             printf "%s" "$headers" | grep -q "connect-src 'self' data: https://id.example https://storage.example"
             # Emoji Kitchen の合成画像（#82）とストレージオリジンを許可する。
-            printf "%s" "$headers" | grep -q "img-src 'self' data: https://www.gstatic.com https://storage.example"
+            printf "%s" "$headers" | grep -q "img-src 'self' data: blob: https://www.gstatic.com https://storage.example"
           done
 
       - name: Check Emoji Kitchen catalog compression and caching
@@ -149,7 +149,7 @@ jobs:
 
   proxy:
     needs: runner
-    runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-latest' || fromJSON(needs.runner.outputs.docker-runs-on || '"zli-k8s"') }}
+    runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-latest' || fromJSON(needs.runner.outputs.docker-runs-on || '"ubuntu-latest"') }}
     env:
       POSTGRES_PASSWORD: proxy-test
       PROXY_PORT: 18080
@@ -194,6 +194,9 @@ jobs:
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
+
+      - name: Storybook catalog audit
+        run: pnpm check:storybook
 
       - name: format / lint / typecheck
         run: pnpm check

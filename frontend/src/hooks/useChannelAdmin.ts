@@ -6,13 +6,13 @@ import { toast } from "sonner";
 import { ApiError, createConfiguredApiClient } from "../lib/api/client";
 import { useCollections } from "../lib/electric/collections-context";
 import { changeMessageMatcher, syncTxid } from "../lib/electric/txid";
-import type { ChannelRow, ChannelUserRow, MessageRow } from "../lib/electric/types";
+import type { ChannelRow, ChannelUserRow } from "../lib/electric/types";
 import { useChannelAccess, type ChannelAccess } from "./useRealtime";
 
 /** Shape 反映待ちの上限。届かなくても操作自体は成功しているので致命的扱いにしない。 */
 const SHAPE_SYNC_TIMEOUT_MS = 5000;
 
-export type ChannelAdminAction = "archive" | "unarchive" | "kick" | "delete-message";
+export type ChannelAdminAction = "archive" | "unarchive" | "kick";
 
 export interface ChannelAdmin {
   access: ChannelAccess;
@@ -22,8 +22,6 @@ export interface ChannelAdmin {
   setArchived: (archived: boolean) => Promise<boolean>;
   /** メンバーをチャンネルからキックする。 */
   kickMember: (userId: string) => Promise<boolean>;
-  /** 管理者によるメッセージの強制削除。 */
-  deleteMessage: (messageId: string) => Promise<boolean>;
 }
 
 /**
@@ -57,7 +55,7 @@ export function describeApiError(cause: unknown, t: TFunction): string {
 }
 
 /**
- * チャンネル管理操作（アーカイブ・キック・強制削除）の実行と通知をまとめる。
+ * チャンネル管理操作（アーカイブ・キック）の実行と通知をまとめる。
  *
  * 書き込みは `api/client.ts` を直接叩き、表示の更新は Electric の Shape に任せる
  * （`channels` / `channel_user` / `messages` の変更がそのまま流れる）。レスポンスの
@@ -169,32 +167,6 @@ export function useChannelAdmin(channel: ChannelRow | null): ChannelAdmin {
           );
         },
         t("moderation.kickSuccess"),
-      );
-    },
-    deleteMessage: async (messageId) => {
-      const channelId = channel?.id;
-      if (!channelId) {
-        return false;
-      }
-      const messagesCollection = collections.messages(channelId);
-      return run(
-        "delete-message",
-        async () => {
-          const response = await client.delete<MessageRow>(`/api/messages/${messageId}`);
-          await waitForShape(() =>
-            syncTxid({
-              mode: collections.config.txidMode,
-              txid: response.txid,
-              target: messagesCollection.utils,
-              match: changeMessageMatcher<MessageRow>(
-                "update",
-                (row) => row.id === messageId && row.deleted_at !== null,
-              ),
-              timeout: SHAPE_SYNC_TIMEOUT_MS,
-            }),
-          );
-        },
-        t("moderation.deleteSuccess"),
       );
     },
   };

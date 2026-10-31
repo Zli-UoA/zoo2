@@ -1,3 +1,8 @@
+import { useId, useLayoutEffect, useRef, useState } from "react";
+import { useTranslation } from "react-i18next";
+import { ChevronDownIcon, ChevronUpIcon } from "lucide-react";
+import { Button } from "../../ui/button";
+import { ExternalLink } from "../../ui/external-link";
 import { SquareArrowOutUpRightIcon } from "lucide-react";
 
 /** Integration-neutral card schema. This data comes from the server-owned card column. */
@@ -10,6 +15,7 @@ export interface CardData {
   author: string;
   badge: string;
   color?: string;
+  fields?: { title: string; value: string; short?: boolean; url?: string; code?: boolean }[];
 }
 
 function cardColor(value: unknown): string | undefined {
@@ -57,25 +63,108 @@ export function parseMessageCard(value?: string | null): CardData | null {
     }
     const color = cardColor(c.color);
     if (color) result.color = color;
+    if (c.fields !== undefined) {
+      if (!Array.isArray(c.fields) || c.fields.length > 10) return null;
+      const fields: NonNullable<CardData["fields"]> = [];
+      for (const field of c.fields) {
+        if (
+          !field ||
+          typeof field !== "object" ||
+          typeof field.title !== "string" ||
+          field.title.length > 100 ||
+          typeof field.value !== "string" ||
+          field.value.length > 4000 ||
+          (field.url !== undefined && typeof field.url !== "string") ||
+          (field.short !== undefined && typeof field.short !== "boolean") ||
+          (field.code !== undefined && typeof field.code !== "boolean")
+        )
+          return null;
+        fields.push(field);
+      }
+      result.fields = fields;
+    }
     return result;
   } catch {
     return null;
   }
 }
-export function MessageCard({ card }: { card: CardData }) {
-  let href: string | undefined;
+function safeHref(value?: string): string | undefined {
   try {
-    const url = new URL(card.url);
-    if (url.protocol === "https:") href = url.href;
+    const url = new URL(value ?? "");
+    if (url.protocol === "https:") return url.href;
   } catch {
-    /* Missing links render as text. */
+    /* Plain text fallback. */
   }
+}
+const DESCRIPTION_PREVIEW_LINES = 8;
+
+function CardDescription({ text }: { text: string }) {
+  const { t } = useTranslation();
+  const id = useId();
+  const textRef = useRef<HTMLParagraphElement>(null);
+  const [expanded, setExpanded] = useState(false);
+  const [overflows, setOverflows] = useState(false);
+  useLayoutEffect(() => {
+    const element = textRef.current;
+    if (!element) return;
+    const measure = () => {
+      const lineHeight = Number.parseFloat(getComputedStyle(element).lineHeight);
+      setOverflows(
+        element.getBoundingClientRect().height > lineHeight * DESCRIPTION_PREVIEW_LINES + 1,
+      );
+    };
+    measure();
+    const observer = new ResizeObserver(measure);
+    observer.observe(element);
+    return () => observer.disconnect();
+  }, []);
+  return (
+    <div className="mt-2">
+      <div
+        id={id}
+        className="overflow-clip"
+        style={{ maxHeight: expanded ? undefined : `${DESCRIPTION_PREVIEW_LINES}lh` }}
+      >
+        <p ref={textRef} className="whitespace-pre-wrap break-words text-muted-foreground">
+          {text}
+        </p>
+      </div>
+      {overflows ? (
+        <Button
+          type="button"
+          variant="link"
+          size="sm"
+          className="mt-1 px-0"
+          aria-controls={id}
+          aria-expanded={expanded}
+          onClick={() => setExpanded((current) => !current)}
+        >
+          {expanded ? <ChevronUpIcon /> : <ChevronDownIcon />}
+          {t(expanded ? "cards.showLess" : "cards.showMore")}
+        </Button>
+      ) : null}
+    </div>
+  );
+}
+
+export function MessageCard({
+  card,
+  attachment = false,
+}: {
+  card: CardData;
+  attachment?: boolean;
+}) {
+  const href = safeHref(card.url);
   return (
     <article
-      className="my-1 max-w-xl overflow-hidden rounded-lg border border-l-4 border-l-brand bg-card p-3 text-sm shadow-sm"
+      className={
+        attachment
+          ? "@container my-2 max-w-2xl overflow-hidden rounded-sm border-l-4 border-l-brand py-1 pl-4 pr-2 text-sm"
+          : "@container my-1 max-w-xl overflow-hidden rounded-lg border border-l-4 border-l-brand bg-card p-3 text-sm shadow-sm"
+      }
       style={cardColor(card.color) ? { borderLeftColor: cardColor(card.color) } : undefined}
     >
-      {card.source || card.context || card.badge ? (
+      {!attachment && (card.source || card.context || card.badge) ? (
         <div className="mb-2 flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
           <SquareArrowOutUpRightIcon className="size-4 shrink-0" aria-hidden="true" />
           <span className="min-w-0 break-all">
@@ -88,22 +177,49 @@ export function MessageCard({ card }: { card: CardData }) {
       ) : null}
       <div className="break-words font-semibold">
         {href ? (
-          <a
-            href={href}
-            target="_blank"
-            rel="noopener noreferrer"
-            className="text-brand underline-offset-2 hover:underline"
-          >
+          <ExternalLink href={href} className="hover:underline">
             {card.title}
-          </a>
+          </ExternalLink>
         ) : (
           card.title
         )}
       </div>
-      {card.description ? (
-        <p className="mt-2 max-h-64 overflow-auto whitespace-pre-wrap break-words text-muted-foreground">
-          {card.description}
-        </p>
+      {card.description ? <CardDescription key={card.description} text={card.description} /> : null}
+      {card.fields?.length ? (
+        <dl className="mt-3 grid grid-cols-1 gap-x-6 gap-y-3 @sm:grid-cols-2">
+          {card.fields.map((field, index) => {
+            const href = safeHref(field.url);
+            const value = field.code ? (
+              <code className="rounded border bg-muted px-1 py-0.5 font-mono text-xs break-all">
+                {field.value}
+              </code>
+            ) : (
+              field.value
+            );
+            return (
+              <div key={index} className={field.short ? "min-w-0" : "min-w-0 @sm:col-span-2"}>
+                <dt className="mb-1 font-semibold">{field.title}</dt>
+                <dd className="whitespace-pre-wrap break-words">
+                  {href ? (
+                    <ExternalLink href={href} className="hover:underline">
+                      {value}
+                    </ExternalLink>
+                  ) : (
+                    value
+                  )}
+                </dd>
+              </div>
+            );
+          })}
+        </dl>
+      ) : null}
+      {attachment && (card.source || card.context || card.badge) ? (
+        <div className="mt-3 flex flex-wrap items-center gap-1.5 text-xs text-muted-foreground">
+          <SquareArrowOutUpRightIcon className="size-3.5 shrink-0" aria-hidden="true" />
+          <span className="break-all">
+            {[card.source, card.context, card.badge].filter(Boolean).join(" · ")}
+          </span>
+        </div>
       ) : null}
       {card.author ? (
         <p className="mt-2 break-words text-xs text-muted-foreground">{card.author}</p>

@@ -11,7 +11,7 @@ export interface ShellContextValue {
   pane: ShellPane;
   showSidebar: () => void;
   showChat: () => void;
-  /** メンバー（Members）パネル・ダイアログの開閉。 */
+  /** メンバー（Members）パネル・画面の開閉。 */
   membersOpen: boolean;
   setMembersOpen: (open: boolean) => void;
   toggleMembers: () => void;

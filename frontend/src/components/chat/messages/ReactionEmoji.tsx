@@ -15,7 +15,7 @@ function componentGlyph(component: string): string {
 export function ReactionEmoji({
   emoji,
   catalog,
-  size = 28,
+  size = 20,
 }: {
   emoji: string;
   catalog: KitchenCatalog | null;
@@ -27,7 +27,15 @@ export function ReactionEmoji({
   const kitchen = kitchenParts(emoji);
   if (/^:[a-z0-9_-]{1,64}:$/.test(emoji))
     return <CustomReactionEmoji name={emoji.slice(1, -1)} size={size} />;
-  if (!kitchen) return <span>{label}</span>;
+  if (!kitchen)
+    return (
+      <span
+        className="inline-flex shrink-0 items-center justify-center leading-none"
+        style={{ width: size, height: size, fontSize: size }}
+      >
+        {label}
+      </span>
+    );
 
   return (
     <span
@@ -47,7 +55,9 @@ export function ReactionEmoji({
           onError={() => setFailedUrl(url)}
         />
       ) : (
-        <span className="text-base leading-none">{componentGlyph(kitchen[0])}</span>
+        <span className="leading-none" style={{ fontSize: size }}>
+          {componentGlyph(kitchen[0])}
+        </span>
       )}
     </span>
   );
@@ -75,6 +85,8 @@ function CustomReactionEmoji({ name, size }: { name: string; size: number }) {
       alt={`:${name}:`}
       width={size}
       height={size}
+      className="shrink-0 object-contain"
+      style={{ width: size, height: size }}
       loading="lazy"
       referrerPolicy="no-referrer"
       onError={() => setUrl(null)}

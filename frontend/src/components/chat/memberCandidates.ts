@@ -57,3 +57,24 @@ export function filterMemberCandidates({
     })
     .slice(0, limit);
 }
+
+/** 作成者を先頭に固定し、残りは表示名のABC順。同名はユーザー名・IDで安定化する。 */
+export function sortChannelMembers(
+  members: ChannelUserRow[],
+  users: UserRow[],
+  creatorId: string,
+): ChannelUserRow[] {
+  const byId = new Map(users.map((user) => [user.id, user]));
+  const collator = new Intl.Collator("en", { sensitivity: "base", numeric: true });
+  return [...members].sort((a, b) => {
+    const creatorOrder = Number(b.user_id === creatorId) - Number(a.user_id === creatorId);
+    if (creatorOrder) return creatorOrder;
+    const left = byId.get(a.user_id);
+    const right = byId.get(b.user_id);
+    return (
+      collator.compare(left ? userLabel(left) : a.user_id, right ? userLabel(right) : b.user_id) ||
+      collator.compare(left?.user_name ?? a.user_id, right?.user_name ?? b.user_id) ||
+      a.user_id.localeCompare(b.user_id)
+    );
+  });
+}

@@ -13,6 +13,7 @@ import { storybookTest } from "@storybook/addon-vitest/vitest-plugin";
 const dirname = path.dirname(fileURLToPath(import.meta.url));
 
 const config = defineConfig({
+  optimizeDeps: { include: ["@base-ui/react/toggle-group", "@base-ui/react/toggle"] },
   fmt: {},
   lint: {
     jsPlugins: [{ name: "vite-plus", specifier: "vite-plus/oxlint-plugin" }],
@@ -50,6 +51,7 @@ const config = defineConfig({
       },
       {
         extends: true,
+        optimizeDeps: { include: ["vite-plus/test/browser/context"] },
         test: {
           name: "browser",
           include: ["src/**/*.browser.test.{ts,tsx}"],
@@ -72,6 +74,8 @@ const config = defineConfig({
             enabled: true,
             headless: true,
             provider: playwright({
+              // Keep text rasterization consistent across Linux hosts and GPUs.
+              launchOptions: { args: ["--disable-lcd-text", "--font-render-hinting=none"] },
               contextOptions: {
                 timezoneId: "Asia/Tokyo",
                 locale: "ja-JP",

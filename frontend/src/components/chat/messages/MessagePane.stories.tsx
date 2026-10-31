@@ -16,7 +16,7 @@ function PaneFrame({ children }: { children: ReactNode }) {
 }
 
 const meta = {
-  title: "Chat/MessagePane",
+  title: "Features/Chat/MessagePane",
   component: MessagePane,
   tags: ["autodocs"],
   parameters: { a11y: { test: "todo" } },
@@ -37,7 +37,12 @@ const meta = {
 export default meta;
 type Story = StoryObj<typeof meta>;
 
-export const Default: Story = {};
+export const Default: Story = {
+  play: async () => {
+    await expect(await screen.findByText(/今日のリリースは 18:00/)).toBeVisible();
+    await expect(screen.queryByRole("heading", { name: "メッセージ" })).not.toBeInTheDocument();
+  },
+};
 
 export const ThreadOpen: Story = {
   play: async () => {

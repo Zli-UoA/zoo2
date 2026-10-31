@@ -1,24 +1,30 @@
 import { toast } from "sonner";
-import { PwaControls } from "../pwa/PwaControls";
+import { useShell } from "./shell-context";
 import { disablePush } from "../../lib/pwa/push";
 import { useTranslation } from "react-i18next";
 import { Link } from "@tanstack/react-router";
 import { cn } from "cn";
-import { ActivityIcon, HashIcon, LogOutIcon, type LucideIcon, PawPrintIcon } from "lucide-react";
+import {
+  ActivityIcon,
+  HashIcon,
+  LogOutIcon,
+  MessageCircleMoreIcon,
+  type LucideIcon,
+  SettingsIcon,
+} from "lucide-react";
 
 import { useCurrentUser } from "../../hooks/useCurrentUser";
 import { useUsers } from "../../hooks/useRealtime";
 import { useCollections } from "../../lib/electric/collections-context";
 import { getOidcClient } from "../../lib/oidc/session";
 import { useOfflineStatus } from "../../lib/offline/offline-context";
-import { LanguageToggle } from "../i18n/LanguageToggle";
-import { ModeToggle } from "../theme/ModeToggle";
 import { Avatar, AvatarFallback } from "../ui/avatar";
 import { Button } from "../ui/button";
 import { Separator } from "../ui/separator";
-import { AppsButton } from "../chat/AppsDialog";
+import { AppDialogs } from "../chat/AppsDialog";
 import { NotificationsButton } from "../chat/NotificationsButton";
 import { initials } from "../chat/format";
+import { PaneHeader } from "./PaneHeader";
 
 function RailLink({
   to,
@@ -26,7 +32,7 @@ function RailLink({
   label,
   exact = false,
 }: {
-  to: "/" | "/realtime";
+  to: "/" | "/bubble" | "/realtime";
   icon: LucideIcon;
   label: string;
   exact?: boolean;
@@ -50,6 +56,7 @@ function RailLink({
  */
 export function LeftRail() {
   const { t } = useTranslation();
+  const shell = useShell();
   const { config } = useCollections();
   const { currentUserId } = useCurrentUser();
   const { clearUserData } = useOfflineStatus();
@@ -84,27 +91,32 @@ export function LeftRail() {
     <nav
       aria-label={t("nav.main")}
       className={cn(
-        "flex w-14 shrink-0 flex-col items-center gap-1 border-r bg-sidebar py-3",
+        "flex w-14 shrink-0 flex-col items-center gap-1 border-r bg-sidebar pb-3",
         "md:w-16",
       )}
     >
-      <div className="mb-1 flex size-9 items-center justify-center rounded-xl bg-brand text-brand-foreground">
-        <PawPrintIcon className="size-5" aria-hidden="true" />
-        <span className="sr-only">Zoo</span>
-      </div>
-      <Separator className="my-1 w-6" />
+      <PaneHeader className="mb-1 w-full justify-center px-0">
+        <img src="/icons/zoo.svg" alt="Zoo" width={36} height={36} className="size-9 rounded-xl" />
+      </PaneHeader>
       <RailLink to="/" icon={HashIcon} label={t("channels.title")} exact />
       <NotificationsButton />
-      <AppsButton />
+      <RailLink to="/bubble" icon={MessageCircleMoreIcon} label={t("bubbleChat.title")} exact />
+      <AppDialogs />
       {/* 同期の状態（/realtime）は開発時の確認用。本番ビルドでは出さない。 */}
       {import.meta.env.DEV ? (
         <RailLink to="/realtime" icon={ActivityIcon} label={t("sync.title")} exact />
       ) : null}
 
       <div className="mt-auto flex flex-col items-center gap-2">
-        <PwaControls />
-        <LanguageToggle />
-        <ModeToggle />
+        <Link
+          to="/settings"
+          search={{ channel: shell.selectedChannelId ?? undefined }}
+          aria-label={t("settings.zooTitle")}
+          title={t("settings.zooTitle")}
+          className="flex size-10 items-center justify-center rounded-xl text-muted-foreground outline-none transition-colors hover:bg-accent hover:text-foreground focus-visible:ring-3 focus-visible:ring-ring/50 data-[status=active]:bg-brand-muted data-[status=active]:text-brand-muted-foreground"
+        >
+          <SettingsIcon className="size-5" aria-hidden="true" />
+        </Link>
         <Separator className="w-6" />
         <Avatar size="sm" title={meLabel}>
           <AvatarFallback>{initials(meLabel)}</AvatarFallback>

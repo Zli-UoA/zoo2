@@ -1,3 +1,4 @@
+import { Input } from "../ui/input";
 import { useRef, useState, type FormEvent } from "react";
 import { useTranslation } from "react-i18next";
 
@@ -83,8 +84,8 @@ export function RenameChannelDialog({
           <DialogTitle>{t("channels.editTitle")}</DialogTitle>
           <DialogDescription id="rename-channel-help">{t("channels.editHelp")}</DialogDescription>
         </DialogHeader>
-        <form className="flex flex-col gap-3" onSubmit={submit}>
-          <input
+        <form autoComplete="off" className="flex flex-col gap-3" onSubmit={submit}>
+          <Input
             className={inputClassName()}
             aria-label={t("channels.newName")}
             aria-describedby="rename-channel-help"

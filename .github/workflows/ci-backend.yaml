@@ -124,7 +124,7 @@ jobs:
 
   deploy-image:
     needs: runner
-    runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-latest' || fromJSON(needs.runner.outputs.docker-runs-on || '"zli-k8s"') }}
+    runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-latest' || fromJSON(needs.runner.outputs.docker-runs-on || '"ubuntu-latest"') }}
     # A cold build also needs time to extract and save the cache mounts.
     timeout-minutes: 60
     env:
@@ -256,7 +256,7 @@ jobs:
       S3_PORT: "0"
       S3_CONSOLE_PORT: "0"
     needs: runner
-    runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-latest' || fromJSON(needs.runner.outputs.docker-runs-on || '"zli-k8s"') }}
+    runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-latest' || fromJSON(needs.runner.outputs.docker-runs-on || '"ubuntu-latest"') }}
     defaults:
       run:
         working-directory: ./backend

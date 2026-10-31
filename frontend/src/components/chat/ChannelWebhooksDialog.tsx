@@ -1,3 +1,4 @@
+import { Input } from "../ui/input";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { CopyIcon, EyeIcon, EyeOffIcon } from "lucide-react";
@@ -46,7 +47,7 @@ function Credential({
     <label className="flex flex-col gap-1 text-xs">
       {label}
       <span className="flex items-center gap-1">
-        <input
+        <Input
           className={`${inputClassName()} min-w-0 flex-1 font-mono text-xs`}
           readOnly
           value={value}
@@ -170,6 +171,7 @@ export function ChannelWebhooksDialog({
         ) : (
           <>
             <form
+              autoComplete="off"
               className="flex items-end gap-2"
               onSubmit={(event) => {
                 event.preventDefault();
@@ -183,7 +185,7 @@ export function ChannelWebhooksDialog({
             >
               <label className="flex min-w-0 flex-1 flex-col gap-1 text-sm">
                 {t("webhooks.name")}
-                <input
+                <Input
                   className={inputClassName()}
                   value={name}
                   maxLength={80}

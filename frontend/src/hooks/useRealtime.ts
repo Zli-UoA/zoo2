@@ -86,20 +86,24 @@ export function useWorkspaceAdminIds(): WorkspaceAdminIds {
 
   useEffect(() => {
     let cancelled = false;
-    client
-      .get<{ user_ids: string[] }>("/api/users/admins")
-      .then((response) => {
-        if (cancelled) return;
-        setAdminIds(new Set(response.user_ids));
-        setIsLoading(false);
-      })
-      .catch((cause) => {
-        if (cancelled) return;
-        console.warn("ワークスペース管理者の取得に失敗しました", cause);
-        setAdminIds(new Set());
-        setIsLoading(false);
-      });
+    const load = () =>
+      client
+        .get<{ user_ids: string[] }>("/api/users/admins")
+        .then((response) => {
+          if (cancelled) return;
+          setAdminIds(new Set(response.user_ids));
+          setIsLoading(false);
+        })
+        .catch((cause) => {
+          if (cancelled) return;
+          console.warn("ワークスペース管理者の取得に失敗しました", cause);
+          setAdminIds(new Set());
+          setIsLoading(false);
+        });
+    void load();
+    window.addEventListener("zoo:admins-changed", load);
     return () => {
+      window.removeEventListener("zoo:admins-changed", load);
       cancelled = true;
     };
   }, [client]);

@@ -1,20 +1,56 @@
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vite-plus/test";
+import { LocaleProvider } from "../../i18n/LocaleProvider";
 import { MfmChannelsProvider } from "./MfmChannels";
 import { parse } from "mfm-js";
 import { MfmContent, type MfmContentProps } from "./MfmContent";
 
 const render = (content: string, options: Omit<MfmContentProps, "content"> = {}) =>
-  renderToStaticMarkup(createElement(MfmContent, { content, ...options }));
+  renderToStaticMarkup(
+    createElement(LocaleProvider, { children: createElement(MfmContent, { content, ...options }) }),
+  );
 
 describe("MfmContent", () => {
-  it("styles raw URLs as link chips while preserving destinations and custom labels", () => {
+  it("renders six heading levels with inline MFM and optional closing markers", () => {
+    for (let level = 1; level <= 6; level++) {
+      expect(render(`${"#".repeat(level)} Title`)).toBe(
+        `<h${level} class="mfm-heading">Title</h${level}>`,
+      );
+    }
+    expect(render("before\n## **Title** [docs](https://example.com) ###\nafter")).toContain(
+      'before<h2 class="mfm-heading"><strong>Title</strong> <a ',
+    );
+    expect(render("## Title ###")).toBe('<h2 class="mfm-heading">Title</h2>');
+    expect(render("# Title\n```\n# code\n```\n## Next")).toContain("</h1><pre");
+    expect(render("# Title\n> quote")).toContain("</h1><blockquote");
+    expect(render("# Title\nquery Search")).toContain("</h1><form");
+  });
+  it("preserves literal hashes, protected subtrees and ordinary line breaks", () => {
+    for (const source of [
+      "#general",
+      "text # Title",
+      "####### Title",
+      "    # indented",
+      "# ",
+      "\\# escaped",
+    ]) {
+      expect(render(source)).not.toContain("<h");
+    }
+    expect(render("one\n\ntwo\n")).toBe("one\n\ntwo\n");
+    expect(render("`# inline`")).not.toContain("<h");
+    expect(render("```md\n# code\n```")).not.toContain("<h");
+    expect(render("<plain># plain\n## plain</plain>")).toBe("# plain\n## plain");
+    expect(render("> # quote")).not.toContain("<h");
+    expect(render("**# bold**")).not.toContain("<h");
+    expect(render("# <script>alert(1)</script>")).not.toContain("<script>");
+  });
+  it("styles raw URLs as inline links while preserving destinations and custom labels", () => {
     const html = render("https://blog.example.com/a?x=1");
     expect(html).toContain('href="https://blog.example.com/a?x=1"');
-    expect(html).toContain("bg-sky-100");
-    expect(html).toContain('aria-hidden="true"');
-    expect(html).toContain("blog.example.com/a?x=1</span></a>");
+    expect(html).toContain("text-link underline");
+    expect(html).not.toContain("py-0.5");
+    expect(html).toContain("blog.example.com/a?x=1</a>");
     expect(html).not.toContain(">https://");
     const labeled = render("[Read article](https://example.com/article)");
     expect(labeled).toContain(">Read article</a>");
@@ -150,7 +186,11 @@ describe("MfmContent", () => {
   it("renders remote mentions, hashtags and search without automatically fetching external services", () => {
     expect(render("@alice@example.com")).toContain('href="https://example.com/@alice"');
     expect(render("#猫")).toBe("#猫");
-    expect(render("猫 検索")).toContain("https://www.google.com/search?q=%E7%8C%AB");
+    const search = render("猫 検索");
+    expect(search).toContain('action="https://www.google.com/search"');
+    expect(search).toContain('name="q"');
+    expect(search).toContain('readOnly=""');
+    expect(search).toContain('value="猫"');
   });
   it("links only exact existing channel names, including inside decorations", () => {
     const channels = [

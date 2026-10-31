@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vite-plus/test";
 
 import {
+  ATTACHMENT_SCHEMA,
   MESSAGE_REACTION_SCHEMA,
   SHAPE_META,
   coerceElectricRow,
@@ -81,6 +82,14 @@ describe("SHAPE_META", () => {
       table: "channel_user",
       proxyPath: "channel_users",
     });
+  });
+
+  it("maps the attachments shape to the attachments table", () => {
+    expect(SHAPE_META.attachments).toEqual({
+      table: "attachments",
+      proxyPath: "attachments",
+    });
+    expect(ATTACHMENT_SCHEMA.columns.file_size).toBe("int8");
   });
 
   it("maps the reaction shape to the message_reactions table", () => {

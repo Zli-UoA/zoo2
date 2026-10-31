@@ -1,13 +1,21 @@
 import type { Meta, StoryObj } from "@storybook/react-vite";
-import { http, HttpResponse } from "msw";
-import { expect, fn, screen } from "storybook/test";
+import { delay, http, HttpResponse } from "msw";
+import { expect, fn, screen, waitFor, within } from "storybook/test";
 
 import { storyMessages, storyReactions, storyUsers } from "../../../../.storybook/fixtures";
-import { groupReactions } from "../../../lib/emoji/reactions";
+import { groupReactions, reactionUserLabel } from "../../../lib/emoji/reactions";
 import { MessageList } from "./MessageList";
 import type { FeedMessage } from "./messageFormat";
 
 const users = new Map(storyUsers.map((user) => [user.id, user]));
+const storyReactionGroups = groupReactions(storyReactions, "user-alice");
+for (const reactions of storyReactionGroups.values()) {
+  for (const reaction of reactions) {
+    reaction.userNames = Object.fromEntries(
+      storyUsers.map((user) => [user.id, reactionUserLabel(user)]),
+    );
+  }
+}
 
 function feedMessage(id: string): FeedMessage {
   const row = storyMessages.find((message) => message.id === id)!;
@@ -52,7 +60,7 @@ const longMessages: FeedMessage[] = [
 ];
 
 const meta = {
-  title: "Chat/MessageList",
+  title: "Features/Chat/MessageList",
   component: MessageList,
   tags: ["autodocs"],
   parameters: { a11y: { test: "todo" } },
@@ -74,7 +82,7 @@ const meta = {
     onCancelEdit: fn(),
     onSaveEdit: fn(),
     onRequestDelete: fn(),
-    reactions: groupReactions(storyReactions, "user-alice"),
+    reactions: storyReactionGroups,
     kitchenCatalog: null,
     canReact: true,
     onReaction: fn(),
@@ -134,8 +142,9 @@ export const UnreadSeparator: Story = {
     },
   },
   play: async () => {
-    // アプリ側の aria-label は英語のまま。Story で検出できるよう名前を固定する。
-    await expect(await screen.findByRole("separator", { name: "new" })).toBeInTheDocument();
+    await expect(
+      await screen.findByRole("separator", { name: "新着メッセージ" }),
+    ).toBeInTheDocument();
   },
 };
 
@@ -149,5 +158,57 @@ export const Mobile: Story = {
   globals: { viewport: { value: "mobile" } },
   args: {
     messages: channelMessages.slice(0, 3),
+  },
+};
+
+export const DelayedLinkPreview: Story = {
+  args: {
+    messages: Array.from({ length: 20 }, (_, index) => ({
+      ...longMessages[0],
+      id: `preview-scroll-${index}`,
+      content:
+        index === 19
+          ? "https://example.com/delayed-scroll-preview"
+          : `Message ${index}\nLine one\nLine two\nLine three`,
+    })),
+  },
+  parameters: {
+    a11y: { test: "error" },
+    msw: {
+      handlers: [
+        http.get("*/summaly-endpoint", () =>
+          HttpResponse.text("https://scroll-story.example/summaly"),
+        ),
+        http.get("*/media-proxy-endpoint", () =>
+          HttpResponse.text("https://scroll-story.example/media"),
+        ),
+        http.get("https://scroll-story.example/summaly", async () => {
+          await delay(300);
+          return HttpResponse.json({
+            title: "Delayed URL card",
+            description: "情報と画像が後から読み込まれても最下部を維持します。",
+            thumbnail: "https://example.com/landscape.svg",
+          });
+        }),
+        http.get("https://scroll-story.example/media", async () => {
+          await delay(300);
+          return HttpResponse.text(
+            '<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="630"><rect width="100%" height="100%" fill="#2468aa"/></svg>',
+            { headers: { "Content-Type": "image/svg+xml" } },
+          );
+        }),
+      ],
+    },
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const card = await canvas.findByRole("link", { name: /Delayed URL card/ });
+    await waitFor(() => expect(card).toHaveClass("flex-col"));
+    const scroller = canvas.getByTestId("message-scroll");
+    await waitFor(() =>
+      expect(
+        scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight,
+      ).toBeLessThanOrEqual(1),
+    );
   },
 };

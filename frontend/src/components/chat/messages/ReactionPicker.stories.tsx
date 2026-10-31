@@ -1,6 +1,6 @@
 import type { Meta, StoryObj } from "@storybook/react-vite";
 import { delay, http, HttpResponse } from "msw";
-import { expect, fn, screen, userEvent, within } from "storybook/test";
+import { expect, fn, screen, userEvent, waitFor, within } from "storybook/test";
 import { useState } from "react";
 
 import { RECENT_EMOJIS_STORAGE_KEY } from "../../../lib/emoji/recents";
@@ -27,7 +27,7 @@ function ReactionPickerDemo({ onSelect }: { onSelect: (emoji: string) => void })
 }
 
 const meta = {
-  title: "Chat/ReactionPicker",
+  title: "Features/Chat/ReactionPicker",
   component: ReactionPicker,
   tags: ["autodocs"],
   parameters: { a11y: { test: "todo" } },
@@ -61,9 +61,10 @@ export const Default: Story = {
 export const Kitchen: Story = {
   play: async () => {
     await userEvent.click(screen.getByRole("tab", { name: "Emoji Kitchen" }));
-    await expect(
-      await screen.findByRole("combobox", { name: "1つ目の絵文字" }, { timeout: 5000 }),
-    ).toBeVisible();
+    await waitFor(
+      () => expect(screen.getByRole("combobox", { name: "1つ目の絵文字" })).toBeVisible(),
+      { timeout: 5000 },
+    );
   },
 };
 

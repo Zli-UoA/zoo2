@@ -1,6 +1,9 @@
-import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import "../../../styles.css";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { toast } from "sonner";
 import { describe, expect, it, vi } from "vite-plus/test";
+import { page } from "vite-plus/test/browser/context";
 
 import { LocaleProvider } from "../../i18n/LocaleProvider";
 import { MessageRow, type MessageRowProps } from "./MessageRow";
@@ -27,7 +30,7 @@ function buildItem(overrides: Partial<MessageItem["message"]> = {}): MessageItem
 function noop() {}
 
 function renderRow(item: MessageItem, isOwn = false, props: Partial<MessageRowProps> = {}) {
-  return render(
+  const element = (overrides: Partial<MessageRowProps>) => (
     <LocaleProvider>
       <MessageRow
         item={item}
@@ -44,13 +47,147 @@ function renderRow(item: MessageItem, isOwn = false, props: Partial<MessageRowPr
         canReact={false}
         onReaction={noop}
         onPickReaction={noop}
-        {...props}
+        {...overrides}
       />
-    </LocaleProvider>,
+    </LocaleProvider>
   );
+  const result = render(element(props));
+  return {
+    ...result,
+    update: (next: Partial<MessageRowProps>) => result.rerender(element({ ...props, ...next })),
+  };
 }
 
 describe("MessageRow", () => {
+  it("closes the list when its last reaction disappears and stays closed if it returns", async () => {
+    await page.viewport(390, 844);
+    const reaction = {
+      emoji: "👍",
+      count: 1,
+      ownId: null,
+      userIds: ["u1"],
+      userNames: { u1: "Alice" },
+    };
+    const view = renderRow(buildItem(), false, { reactions: [reaction] });
+    await userEvent.click(
+      screen.getByRole("button", { name: "👍 にリアクションしたユーザーを表示" }),
+    );
+    expect(screen.getByRole("dialog")).toBeTruthy();
+    view.update({ reactions: [] });
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    view.update({ reactions: [reaction] });
+    expect(screen.queryByRole("dialog")).toBeNull();
+  });
+  it("shows an unresolved users message only once", async () => {
+    await page.viewport(390, 844);
+    renderRow(buildItem(), false, {
+      reactions: [{ emoji: "👍", count: 2, ownId: null, userIds: ["u1", "u2"], userNames: {} }],
+    });
+    await userEvent.click(
+      screen.getByRole("button", { name: "👍 にリアクションしたユーザーを表示" }),
+    );
+    expect(screen.getAllByText("ユーザーを表示できません")).toHaveLength(1);
+  });
+  it("shows the loading message once alongside resolved users", async () => {
+    await page.viewport(390, 844);
+    renderRow(buildItem(), false, {
+      reactions: [
+        {
+          emoji: "👍",
+          count: 3,
+          ownId: null,
+          userIds: ["u1", "u2", "u3"],
+          userNames: { u1: "Alice" },
+          usersLoading: true,
+        },
+      ],
+    });
+    await userEvent.click(
+      screen.getByRole("button", { name: "👍 にリアクションしたユーザーを表示" }),
+    );
+    const dialog = within(screen.getByRole("dialog"));
+    expect(dialog.getByText("Alice")).toBeTruthy();
+    expect(dialog.getAllByText("ユーザーを読み込み中")).toHaveLength(1);
+  });
+  it("allows keyboard users to open the full reaction list on desktop", async () => {
+    await page.viewport(1024, 768);
+    renderRow(buildItem(), false, {
+      canReact: true,
+      reactions: [
+        { emoji: "👍", count: 1, ownId: null, userIds: ["u1"], userNames: { u1: "Alice" } },
+      ],
+    });
+    const chip = screen.getByRole("button", { name: "👍 1 件" });
+    chip.focus();
+    await userEvent.keyboard("{Tab}");
+    const listButton = screen.getByRole("button", { name: "👍 にリアクションしたユーザーを表示" });
+    expect(document.activeElement).toBe(listButton);
+    await userEvent.keyboard("{Enter}");
+    expect(screen.getByRole("dialog").textContent).toContain("Alice");
+    await page.viewport(390, 844);
+  });
+  it("shows reaction users on hover without toggling the reaction", async () => {
+    await page.viewport(1024, 768);
+    const onReaction = vi.fn();
+    renderRow(buildItem(), false, {
+      canReact: true,
+      onReaction,
+      reactions: [
+        {
+          emoji: "👍",
+          count: 2,
+          ownId: null,
+          userIds: ["u1", "u2"],
+          userNames: { u1: "Alice", u2: "Bob" },
+        },
+      ],
+    });
+    await userEvent.hover(screen.getByRole("button", { name: "👍 2 件" }));
+    const tooltip = await screen.findByRole("tooltip");
+    expect(tooltip.textContent).toContain("Alice");
+    expect(tooltip.textContent).toContain("Bob");
+    expect(onReaction).not.toHaveBeenCalled();
+    await userEvent.unhover(screen.getByRole("button", { name: "👍 2 件" }));
+    screen.getByRole("button", { name: "👍 2 件" }).focus();
+    expect((await screen.findByRole("tooltip")).textContent).toContain("Alice");
+    await page.viewport(390, 844);
+  });
+  it("shows reaction users without toggling the reaction", async () => {
+    const onReaction = vi.fn();
+    renderRow(buildItem(), false, {
+      canReact: true,
+      onReaction,
+      reactions: [
+        {
+          emoji: "👍",
+          count: 2,
+          ownId: null,
+          userIds: ["u1", "u2"],
+          userNames: { u1: "Alice", u2: "Bob" },
+        },
+      ],
+    });
+    await userEvent.click(
+      screen.getByRole("button", { name: "👍 にリアクションしたユーザーを表示" }),
+    );
+    expect(screen.getByRole("dialog").textContent).toContain("Alice");
+    expect(screen.getByRole("dialog").textContent).toContain("Bob");
+    expect(onReaction).not.toHaveBeenCalled();
+    await userEvent.keyboard("{Escape}");
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    await userEvent.click(screen.getByRole("button", { name: "👍 2 件" }));
+    expect(onReaction).toHaveBeenCalledWith("👍");
+  });
+
+  it("shows unavailable users when their information cannot be resolved", async () => {
+    renderRow(buildItem(), false, {
+      reactions: [{ emoji: "👍", count: 1, ownId: null, userIds: ["missing"], userNames: {} }],
+    });
+    await userEvent.click(
+      screen.getByRole("button", { name: "👍 にリアクションしたユーザーを表示" }),
+    );
+    expect(screen.getByRole("dialog").textContent).toContain("ユーザーを表示できません");
+  });
   it("hides the reaction strip until a reaction exists", () => {
     const { container } = renderRow(buildItem(), false, { canReact: true });
     expect(container.querySelector('[role="group"]')).toBeNull();
@@ -248,17 +385,24 @@ describe("MessageRow", () => {
     expect(onOpenThread).toHaveBeenCalledOnce();
   });
 
-  it("keeps the hover actions from stealing clicks while invisible", () => {
+  it("groups the overflow menu and quick actions within one toolbar", () => {
     renderRow(buildItem(), true);
+    const toolbar = document.querySelector("[data-message-toolbar]")!;
+    expect(toolbar.contains(screen.getByLabelText("編集"))).toBe(true);
+    expect(toolbar.contains(screen.getByLabelText("その他の操作"))).toBe(true);
+    expect(getComputedStyle(toolbar).pointerEvents).toBe("none");
+    screen.getByLabelText("その他の操作").focus();
+    expect(getComputedStyle(toolbar).pointerEvents).toBe("auto");
+  });
 
-    const edit = screen.getByLabelText("編集");
-    expect(edit.closest("div")?.className).toContain("pointer-events-none hidden items-center");
-    expect(edit.closest("div")?.className).toContain("group-hover/row:pointer-events-auto");
-    expect(edit.closest("div")?.className).toContain("group-focus-within/row:pointer-events-auto");
-    expect(edit.closest("div")?.className).toContain("group-hover/row:opacity-100");
-
-    const more = screen.getByLabelText("その他の操作");
-    expect(more.className).toContain("pointer-events-none opacity-0");
+  it("allows moderators to delete another author's message without editing it", async () => {
+    const onRequestDelete = vi.fn();
+    renderRow(buildItem(), false, { canDelete: true, onRequestDelete });
+    screen.getByRole("button", { name: "その他の操作" }).focus();
+    await userEvent.keyboard("{Enter}");
+    expect(screen.queryByRole("menuitem", { name: "編集" })).toBeNull();
+    await userEvent.click(screen.getByRole("menuitem", { name: "削除" }));
+    expect(onRequestDelete).toHaveBeenCalledOnce();
   });
 });
 
@@ -302,4 +446,84 @@ it("shows an app identity and opens its profile without treating it as a person"
   } finally {
     window.removeEventListener("zoo:open-app", opened);
   }
+});
+
+describe("copy original message", () => {
+  const raw = "  **太字** と [リンク](https://example.com/path?a=1)\n\n:smile: $[spin 原文]  ";
+  it.each([null, "thread-root"])(
+    "copies unformatted content from a read-only message with parent=%s",
+    async (parent_id) => {
+      const copy = vi.spyOn(navigator.clipboard, "writeText").mockResolvedValue();
+      const success = vi.spyOn(toast, "success").mockReturnValue("copy-success");
+      try {
+        renderRow(buildItem({ content: raw, parent_id }));
+        screen.getByRole("button", { name: "その他の操作" }).focus();
+        await userEvent.keyboard("{Enter}");
+        await userEvent.click(screen.getByRole("menuitem", { name: "原文をコピー" }));
+        await waitFor(() => expect(copy).toHaveBeenCalledWith(raw));
+        expect(copy).toHaveBeenCalledOnce();
+        await waitFor(() => expect(success).toHaveBeenCalledWith("原文をコピーしました"));
+      } finally {
+        copy.mockRestore();
+        success.mockRestore();
+      }
+    },
+  );
+  it("reports a denied clipboard write without reporting success", async () => {
+    const copy = vi
+      .spyOn(navigator.clipboard, "writeText")
+      .mockRejectedValue(new DOMException("Denied", "NotAllowedError"));
+    const error = vi.spyOn(toast, "error").mockReturnValue("copy-error");
+    const success = vi.spyOn(toast, "success").mockReturnValue("copy-success");
+    try {
+      renderRow(buildItem({ content: raw }));
+      screen.getByRole("button", { name: "その他の操作" }).focus();
+      await userEvent.keyboard("{Enter}");
+      await userEvent.click(screen.getByRole("menuitem", { name: "原文をコピー" }));
+      await waitFor(() => expect(error).toHaveBeenCalledWith("原文をコピーできませんでした"));
+      expect(success).not.toHaveBeenCalled();
+    } finally {
+      copy.mockRestore();
+      error.mockRestore();
+      success.mockRestore();
+    }
+  });
+});
+
+it.each([null, "thread-root"])(
+  "places an edited marker after the final inline link (parent=%s)",
+  async (parent_id) => {
+    renderRow(
+      buildItem({
+        content: "Updated [link](https://example.com)",
+        parent_id,
+        updated_at: "2026-01-02 00:10:00.000",
+      }),
+    );
+    const marker = screen.getByRole("img", { name: "編集済み" });
+    const link = screen.getByRole("link", { name: "link" });
+    expect(marker.getBoundingClientRect().left).toBeGreaterThanOrEqual(
+      link.getBoundingClientRect().right,
+    );
+    expect(
+      Math.abs(marker.getBoundingClientRect().top - link.getBoundingClientRect().top),
+    ).toBeLessThan(10);
+    await userEvent.hover(marker);
+    const tooltip = await screen.findByRole("tooltip");
+    expect(tooltip.textContent).toContain("編集済み");
+    expect(tooltip.querySelector("time")).toHaveAttribute("datetime", "2026-01-02T00:10:00.000Z");
+  },
+);
+
+it("shows the last edit time when the marker receives keyboard focus", async () => {
+  renderRow(
+    buildItem({
+      content: "Updated [link](https://example.com)",
+      updated_at: "2026-01-02 00:10:00.000",
+    }),
+  );
+  screen.getByRole("link", { name: "link" }).focus();
+  await userEvent.keyboard("{Tab}");
+  expect(screen.getByRole("img", { name: "編集済み" })).toHaveFocus();
+  expect((await screen.findByRole("tooltip")).textContent).toContain("編集済み");
 });

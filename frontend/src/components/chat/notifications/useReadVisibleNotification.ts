@@ -5,19 +5,23 @@ export function useReadVisibleNotification(
   ids: readonly string[],
   onRead: (ids: readonly string[]) => void,
   scrollRoot: RefObject<HTMLDivElement | null>,
+  enabled = true,
 ) {
   const ref = useRef<HTMLLIElement>(null);
   const [hasBeenVisible, setHasBeenVisible] = useState(false);
+  const [isVisible, setIsVisible] = useState<boolean | null>(null);
   useEffect(() => {
     const element = ref.current;
     if (!element) return;
     if (typeof IntersectionObserver === "undefined") {
       setHasBeenVisible(true);
+      setIsVisible(true);
       return;
     }
     let visible = false;
     const read = () => {
       if (
+        enabled &&
         visible &&
         ids.length > 0 &&
         document.visibilityState === "visible" &&
@@ -28,6 +32,7 @@ export function useReadVisibleNotification(
     const observer = new IntersectionObserver(
       (entries) => {
         visible = entries.some((entry) => entry.isIntersecting);
+        setIsVisible(visible);
         if (visible) setHasBeenVisible(true);
         read();
       },
@@ -41,6 +46,6 @@ export function useReadVisibleNotification(
       document.removeEventListener("visibilitychange", read);
       window.removeEventListener("focus", read);
     };
-  }, [ids, onRead, scrollRoot]);
-  return { ref, hasBeenVisible };
+  }, [ids, onRead, scrollRoot, enabled]);
+  return { ref, hasBeenVisible, isVisible };
 }

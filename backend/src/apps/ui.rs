@@ -1,7 +1,7 @@
 use super::*;
 use axum::{
     Json, Router,
-    extract::{Path, State},
+    extract::{Path, Query, State},
     routing::{get, post},
 };
 pub fn router() -> Router<AppState> {
@@ -10,6 +10,7 @@ pub fn router() -> Router<AppState> {
         .route("/api/app-surfaces", get(private_surfaces))
         .route("/api/app-surfaces/{id}", axum::routing::delete(dismiss))
         .route("/api/app-responses/{token}", post(respond))
+        .route("/api/apps/commands", get(commands))
         .route("/api/apps/commands/{name}", post(command))
         .route("/api/apps/v1/messages/{id}/unfurls", post(unfurl))
         .route("/api/apps/{id}/surfaces", get(surfaces))
@@ -21,6 +22,9 @@ pub fn router() -> Router<AppState> {
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Block {
+    Card {
+        card: crate::cards::MessageCard,
+    },
     Text {
         text: String,
     },
@@ -51,6 +55,10 @@ pub fn validate_blocks(value: &Value) -> Result<(), AppError> {
     let mut ids = std::collections::HashSet::new();
     for block in blocks {
         let (id, label) = match block {
+            Block::Card { card } => {
+                card.encode()?;
+                continue;
+            }
             Block::Text { text } => {
                 if text.chars().count() > 4000 {
                     return Err(AppError::BadRequest("Block text too long".into()));
@@ -373,6 +381,23 @@ async fn blocks(
 }
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn validates_read_only_card_blocks() {
+        let card = serde_json::json!([{"type":"card","card":{
+            "title":"Deployment", "color":"#2da44e", "fields":[
+                {"title":"Commit", "value":"abc1234", "short":true, "code":true,
+                 "url":"https://github.com/Org/Repo/commit/abc1234"}
+            ]
+        }}]);
+        assert!(super::validate_blocks(&card).is_ok());
+        let mut unsafe_card = card.clone();
+        unsafe_card[0]["card"]["fields"][0]["url"] = serde_json::json!("javascript:alert(1)");
+        assert!(super::validate_blocks(&unsafe_card).is_err());
+        let mut too_many = card;
+        too_many[0]["card"]["fields"] =
+            serde_json::json!(vec![serde_json::json!({"title":"x","value":"v"}); 11]);
+        assert!(super::validate_blocks(&too_many).is_err());
+    }
     use super::*;
     #[test]
     fn validates_actions_and_limits() {
@@ -380,6 +405,23 @@ mod tests {
         assert!(validate_blocks(&json!([{ "type":"html","html":"<script>"}])).is_err());
         assert!(validate_blocks(&json!([{ "type":"button","action_id":"x","label":"OK"},{ "type":"input","action_id":"x","label":"duplicate"}])).is_err());
     }
+}
+
+#[derive(Deserialize)]
+struct CommandsQuery {
+    channel_id: String,
+}
+async fn commands(
+    State(s): State<AppState>,
+    actor: AuthUser,
+    Query(q): Query<CommandsQuery>,
+) -> Result<Json<Value>, AppError> {
+    let mut db = s.db.clone();
+    let mut tx = db.transaction().await?;
+    human(&mut tx, &actor).await?;
+    // Use approved installations and the same membership/scope checks as invocation.
+    let rows = query(&mut tx, "SELECT json_build_object('app_id',a.id,'app_name',a.name,'name',cmd.name)::text FROM apps a JOIN app_installations i ON i.app_id=a.id JOIN channel_user bot ON bot.user_id=a.bot_user_id JOIN channel_user me ON me.channel_id=bot.channel_id CROSS JOIN LATERAL jsonb_array_elements_text(COALESCE(i.manifest::jsonb->'commands','[]'::jsonb)) cmd(name) WHERE bot.channel_id=$1 AND me.user_id=$2 AND a.status='installed' AND i.active AND i.scopes::jsonb ? 'commands:read' ORDER BY cmd.name,a.name,a.id", &[&q.channel_id, &actor.id]).await?;
+    Ok(Json(json!(rows)))
 }
 
 #[derive(Deserialize)]

@@ -1,0 +1,92 @@
+import { ArrowLeftIcon, BellIcon, LanguagesIcon, PaletteIcon, SearchIcon } from "lucide-react";
+import { Tabs } from "@base-ui/react/tabs";
+import { useNavigate, useRouterState } from "@tanstack/react-router";
+import { useTranslation } from "react-i18next";
+import { SearchEngineSelect } from "../preferences/SearchEngineSelect";
+import { LanguageToggle } from "../i18n/LanguageToggle";
+import { ModeToggle } from "../theme/ModeToggle";
+import { PwaControls } from "../pwa/PwaControls";
+import { AppsPanel } from "../chat/AppsDialog";
+import { WorkspaceMembers } from "./WorkspaceMembers";
+import { Button } from "../ui/button";
+import { SettingRow, panelTabClassName } from "../ui/control-panel";
+import { useShell } from "./shell-context";
+import { PaneHeader } from "./PaneHeader";
+
+export function ZooSettings() {
+  const { t } = useTranslation();
+  const shell = useShell();
+  const navigate = useNavigate();
+  const search = useRouterState({
+    select: (state) => state.location.search as { tab?: string; channel?: string },
+  });
+  const tab = search.tab === "apps" || search.tab === "members" ? search.tab : "general";
+  return (
+    <section className="flex h-full min-h-0 flex-col" aria-labelledby="zoo-settings-title">
+      <PaneHeader>
+        <Button
+          variant="ghost"
+          size="icon-sm"
+          className="size-11"
+          aria-label={t("channels.back")}
+          onClick={shell.showSidebar}
+        >
+          <ArrowLeftIcon />
+        </Button>
+        <h1 id="zoo-settings-title" className="min-w-0 text-lg font-semibold">
+          {t("settings.zooTitle")}
+        </h1>
+      </PaneHeader>
+      <div className="min-h-0 flex-1 overflow-y-auto p-4 sm:p-6">
+        <Tabs.Root
+          value={tab}
+          onValueChange={(value) =>
+            void navigate({
+              to: "/settings",
+              search: { ...search, tab: value as "general" | "apps" | "members" },
+              replace: true,
+            })
+          }
+          className="flex w-full min-h-0 flex-col gap-4"
+        >
+          <Tabs.List
+            className="flex shrink-0 flex-wrap gap-1 rounded-lg bg-muted p-1"
+            aria-label={t("settings.zooTitle")}
+          >
+            <Tabs.Tab value="general" className={panelTabClassName}>
+              {t("settings.general")}
+            </Tabs.Tab>
+            <Tabs.Tab value="apps" className={panelTabClassName}>
+              {t("apps.title")}
+            </Tabs.Tab>
+            <Tabs.Tab value="members" className={panelTabClassName}>
+              {t("members.title")}
+            </Tabs.Tab>
+          </Tabs.List>
+          <Tabs.Panel value="general" keepMounted className="min-h-0 data-[hidden]:hidden">
+            <div className="divide-y rounded-lg border">
+              <SettingRow icon={<PaletteIcon />} label={t("theme.title")}>
+                <ModeToggle />
+              </SettingRow>
+              <SettingRow icon={<LanguagesIcon />} label={t("language.title")}>
+                <LanguageToggle presentation="select" />
+              </SettingRow>
+              <SettingRow icon={<SearchIcon />} label={t("search.engine")}>
+                <SearchEngineSelect />
+              </SettingRow>
+              <SettingRow icon={<BellIcon />} label={t("pwa.title")}>
+                <PwaControls presentation="select" />
+              </SettingRow>
+            </div>
+          </Tabs.Panel>
+          <Tabs.Panel value="apps" className="min-h-0">
+            <AppsPanel channelId={search.channel} onClose={() => {}} />
+          </Tabs.Panel>
+          <Tabs.Panel value="members" className="min-h-0">
+            <WorkspaceMembers />
+          </Tabs.Panel>
+        </Tabs.Root>
+      </div>
+    </section>
+  );
+}

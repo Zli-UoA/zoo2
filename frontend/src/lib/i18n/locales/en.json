@@ -3,6 +3,7 @@
     "main": "Main navigation"
   },
   "channels": {
+    "view": "Open",
     "unread": "Unread messages",
     "editTitle": "Edit channel",
     "editHelp": "Use up to 80 letters, numbers, hyphens (-), or underscores (_) for the channel name. Spaces, emoji, other symbols, and reserved names are not allowed.",
@@ -14,7 +15,7 @@
     "empty": "No channels yet.",
     "createAction": "Create one",
     "browseTitle": "Browse channels",
-    "browseDescription": "Find public channels you haven't joined yet.",
+    "browseDescription": "Browse public channel messages before joining.",
     "browseSearch": "Search by channel name",
     "searchClear": "Clear search",
     "searchEmpty": "No channels match your search.",
@@ -74,7 +75,9 @@
       "id_token_audience_mismatch": "The ID token audience does not match",
       "id_token_expired": "The ID token has expired",
       "nonce_mismatch": "The ID token nonce does not match"
-    }
+    },
+    "previewUser": "Preview user",
+    "previewMember": "Member {{name}}"
   },
   "members": {
     "joined": "Joined",
@@ -94,7 +97,8 @@
     "candidates": "Member suggestions",
     "usersLoading": "Loading users…",
     "usersError": "Failed to load users.",
-    "usersEmpty": "No matching users."
+    "usersEmpty": "No matching users.",
+    "back": "Back to channel"
   },
   "moderation": {
     "archived": "Archived",
@@ -129,7 +133,22 @@
     "notFound": "The target was not found.",
     "invalidState": "This action cannot be performed in the current state."
   },
+  "settings": {
+    "admin": "Administrator",
+    "member": "Member",
+    "makeAdmin": "Make administrator",
+    "removeAdmin": "Remove administrator",
+    "membersDescription": "View Zoo members. Administrators can change roles.",
+    "roleConfirm": "Change {{name}} to {{role}}.",
+    "lastAdmin": "The last administrator or fixed development administrator cannot be removed.",
+    "membersLoadError": "Could not load administrator information.",
+    "general": "General",
+    "channelTitle": "Channel settings",
+    "zooTitle": "Zoo settings",
+    "notifications": "Notifications and installation"
+  },
   "common": {
+    "open": "Open",
     "loading": "Loading…",
     "cancel": "Cancel",
     "cancelShort": "Cancel",
@@ -176,7 +195,30 @@
     "count_one": "{{count}} message",
     "count_other": "{{count}} messages",
     "announcement": "New message from {{author}}: “{{excerpt}}”",
-    "announcementAuthor": "New message from {{author}}"
+    "announcementAuthor": "New message from {{author}}",
+    "copyRaw": "Copy original text",
+    "copied": "Original text copied",
+    "copyFailed": "Could not copy the original text",
+    "edited": "Edited"
+  },
+  "attachments": {
+    "add": "Attach files",
+    "selected": "Files to attach",
+    "remove": "Remove {{name}}",
+    "unsupported": "This file cannot be attached.",
+    "tooLarge": "Files must be {{max}} MB or smaller.",
+    "tooMany": "You can attach up to {{max}} files.",
+    "uploading": "Uploading file…",
+    "uploadError": "Could not upload the file.",
+    "empty": "Empty files cannot be attached.",
+    "loading": "Loading…",
+    "loadError": "Could not load",
+    "preview": "Preview {{name}}",
+    "open": "Open {{name}}",
+    "download": "Download {{name}}",
+    "downloadShort": "Download",
+    "downloadError": "Could not download the file.",
+    "retry": "Try again"
   },
   "threads": {
     "title": "Thread",
@@ -194,6 +236,11 @@
     "rootDeleted": "The original message was deleted"
   },
   "reactions": {
+    "showUsers": "Show users who reacted with {{emoji}}",
+    "usersTitle": "Users who reacted with {{emoji}}",
+    "usersLoading": "Loading users",
+    "userUnavailable": "User unavailable",
+    "usersEmpty": "No reactions",
     "add": "Add a reaction",
     "picker": "Reactions",
     "select": "React with {{emoji}}",
@@ -242,7 +289,9 @@
     "mac": "⌘ (Cmd)+Enter to send / Enter for a new line",
     "ctrl": "Ctrl+Enter to send / Enter for a new line",
     "other": "Cmd / Ctrl+Enter to send / Enter for a new line",
-    "touch": "Use the send button to send"
+    "touch": "Use the send button to send",
+    "commands": "Command suggestions",
+    "channels": "Channel suggestions"
   },
   "notifications": {
     "label": "Notifications",
@@ -264,7 +313,15 @@
     "reactionGroup_other": "{{actor}} +{{count}} reacted to your message",
     "reactions": "Reactions",
     "messageUnavailable": "This message was deleted or is unavailable",
-    "dm": "{{actor}} sent you a direct message"
+    "dm": "{{actor}} sent you a direct message",
+    "mentionContext": "Mention",
+    "replyContext": "Thread reply",
+    "reactionContext": "Reaction",
+    "dmContext": "Direct message",
+    "unreadStatus": "Unread",
+    "readStatus": "Read",
+    "actors_one": "{{actor}} and 1 other",
+    "actors_other": "{{actor}} and {{count}} others"
   },
   "webhooks": {
     "title": "Webhook settings",
@@ -313,7 +370,11 @@
     "blocked": "Allow notifications in browser settings",
     "permission": "Allow notifications to receive alerts. On iOS, open Zoo from the Home Screen.",
     "error": "Could not update notifications. Please try again.",
-    "logoutError": "Could not disable notifications. Please try logging out again."
+    "logoutError": "Could not disable notifications. Please try logging out again.",
+    "on": "On",
+    "off": "Off",
+    "unavailable": "Unavailable",
+    "title": "Push notifications"
   },
   "mfm": {
     "suggestions": "MFM suggestions",
@@ -343,6 +404,24 @@
       "unixtime": "Date and time (enter Unix seconds)",
       "clickable": "Click event"
     }
+  },
+  "bubbleChat": {
+    "title": "Bubble Chat",
+    "description": "A room where text appears in real time as you type",
+    "emptyTitle": "No one is typing right now",
+    "emptyDescription": "Start typing below to show your speech bubble in real time.",
+    "placeholder": "Type here to share in real time…",
+    "inputLabel": "Real-time message input",
+    "clear": "Clear input",
+    "hint": "No send button—use the clear button or Cmd / Ctrl+Enter to clear your draft; bubbles fade out after a short delay.",
+    "typingSummary": "{{names}} typing",
+    "participants": "Participants",
+    "participantsTitle": "Participants ({{count}})",
+    "noParticipants": "No participants",
+    "typing": "Typing",
+    "active": "In room",
+    "you": "You",
+    "closeParticipants": "Close participants list"
   },
   "dms": {
     "title": "Direct messages",
@@ -383,6 +462,24 @@
     "opening": "Opening…"
   },
   "apps": {
+    "ui": {
+      "channel": "Target channel",
+      "chooseChannel": "Choose a channel",
+      "delete": "Delete app",
+      "deleteTitle": "Delete “{{name}}”?",
+      "deleteHelp": "Deleting the app disables its integration and bot and revokes its credentials. This cannot be undone.",
+      "disableHelp": "Disable the app and bot and revoke issued credentials.",
+      "search": "Search apps",
+      "filter": "Filter apps",
+      "all": "All apps",
+      "mine": "My apps",
+      "empty": "No matching apps.",
+      "back": "Back to apps",
+      "overview": "Overview",
+      "manage": "Manage & develop",
+      "configuration": "Configuration & approval",
+      "invalidManifest": "Enter valid JSON for the manifest."
+    },
     "title": "Apps & integrations",
     "description": "Manage apps, conversations, and external integrations.",
     "create": "Create app",
@@ -454,5 +551,18 @@
       "disconnect": "Disconnect"
     },
     "commandArguments": "Arguments"
+  },
+  "search": {
+    "engine": "Search engine",
+    "query": "Search query",
+    "action": "Search",
+    "withEngine": "Search with {{engine}}",
+    "loadError": "Could not load search preferences.",
+    "saveError": "Could not save. Select an engine to try again.",
+    "retry": "Retry"
+  },
+  "cards": {
+    "showMore": "Show more",
+    "showLess": "Show less"
   }
 }

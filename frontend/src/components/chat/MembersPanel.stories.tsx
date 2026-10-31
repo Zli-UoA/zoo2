@@ -9,7 +9,7 @@ const secret = storyChannels.find((channel) => channel.id === "channel-secret")!
 const archived = storyChannels.find((channel) => channel.id === "channel-archive")!;
 
 const meta = {
-  title: "Screens/MembersPanel",
+  title: "Features/Channels/Members",
   component: MembersPanel,
   tags: ["autodocs"],
   parameters: { a11y: { test: "todo" } },

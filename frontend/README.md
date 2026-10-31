@@ -227,7 +227,7 @@ cd frontend && pnpm test:e2e:oidc
 - モック IdP は起動のたびに署名鍵を生成します。テストを再実行する際は、古い JWKS キャッシュが残らないようバックエンドも再起動してください。
 - CI では `.github/workflows/ci-frontend-auth-e2e.yaml` が PostgreSQL + Electric + Atlas migration + Rust を起動して同じテストを実行します。重いため `pnpm test` / `pnpm test:e2e` からは分離しています。
 
-CSP は `infra/frontend-nginx.conf`（コンテナ起動時に envsubst）で設定します。`script-src` はビルド時のインライン script ハッシュ、`connect-src` は同一オリジン + `CSP_CONNECT_SRC`（IdP のオリジン）+ `CSP_STORAGE_SRC`（添付ファイル用ストレージのオリジン）、`img-src` は Emoji Kitchen 用の `https://www.gstatic.com` と `CSP_STORAGE_SRC`・`CSP_APP_IMAGE_SRC` を含みます。ステージングでの設定・確認手順は [インフラの README](../infra/README.md#csp) を参照してください。
+CSP は `infra/frontend-nginx.conf`（コンテナ起動時に envsubst）で設定します。`script-src` はビルド時のインライン script ハッシュ、`connect-src` は同一オリジン + `CSP_CONNECT_SRC`（IdP のオリジン）+ `CSP_STORAGE_SRC`（添付ファイル用ストレージのオリジン。カスタムドメイン運用時は `https://attachments.zliusercontent.com`）、`img-src` は Emoji Kitchen 用の `https://www.gstatic.com`、Composer の添付プレビュー用の `blob:`、`CSP_STORAGE_SRC`・`CSP_APP_IMAGE_SRC` を含みます。ステージングでの設定・確認手順は [インフラの README](../infra/README.md#csp) を参照してください。
 
 `pnpm test:e2e:csp` は、nginx が配信するビルド済みのフロントに対して Playwright を 1 本実行し、`securitypolicyviolation` が 0 件であること、テーマ初期化 script が実行されること（`<html>` の `colorScheme`）を確認します。既定では `http://127.0.0.1:3100` を見るため、CI の `container` ジョブと同じようにイメージを起動してから実行してください。
 
@@ -239,6 +239,32 @@ cd frontend
 E2E_BASE_URL=http://127.0.0.1:3100 pnpm test:e2e:csp
 docker rm -f zoo-frontend-csp-test
 ```
+
+VRTはOSのフォントに依存しないよう、テスト内でGeistと固定バージョンのNoto Sans JPを読み込みます。文字のサブピクセル描画・ヒンティングも固定し、描画後にフォントの読み込みを待って比較します。フォント・表示を意図して変更した場合は、差分を確認して基準画像を更新してください。
+
+## Storybookの構成
+
+分類と追加基準は [storybook-coverageスキル](../.agents/skills/storybook-coverage/SKILL.md) にまとめています。
+
+- **Foundations**: 実際の色・文字・余白の規則。
+- **Components**: 再利用する入力、確認ダイアログ、設定セクションなど。
+- **Features**: チャット、チャンネル、DM、App、メンバー管理の表示状態。
+- **Pages**: 画面全体の構成とレスポンシブ表示。
+- **Flows**: 確認を伴う権限変更や、失敗からの再送信などの操作手順。
+
+通常・空・読込中・失敗・権限差・長い内容など、確認したい状態をStory単位にします。
+テーマと対応5言語はツールバーで切り替えられます。実部品を共有し、データはローカルコレクションとMSWで再現します。
+
+```bash
+pnpm storybook         # 開発用カタログ
+pnpm check:storybook   # 分類・対象一覧・必須状態の欠落
+pnpm test:storybook    # Chromium上のplayとa11y
+pnpm build-storybook  # 静的カタログ
+```
+
+[対象一覧](.storybook/coverage.json) はUIモジュールと確認先Storyを対応づけます。新しいUI・Storyの未登録や必須状態の削除をCIで検出します。
+認証の外部リダイレクト、プレビュー専用ビルド、永続化など6つの制御層・環境依存箇所は理由と別テストを記録し、Storyで確認済みの数には含めません。
+この監査は見た目の正しさや全状態の網羅を保証するものではありません。
 
 ## Storybook の PR プレビュー
 
@@ -277,3 +303,19 @@ OS の `prefers-reduced-motion` 設定ではアニメーションを停止しま
 描画処理とアニメーションは本プロジェクトの独自実装です。
 間接依存と絵文字データを含めた著作権表記・ライセンス全文を
 [`public/licenses`](public/licenses) に同梱し、配信時も `/licenses/README.txt` から確認できます。
+
+## Zoo設定とメッセージ操作
+
+左レールの歯車から `/settings` を開けます。表示・通知の設定、App連携、Zooメンバーの一覧をまとめています。App連携は検索・絞り込みに対応し、「使う」と「管理・開発」を切り替えます。対象チャンネルを選択でき、所有者または管理者は確認後にAppを削除できます。
+
+管理者はメンバー一覧から管理者権限を付与・解除できます。`PATCH /api/users/{id}/admin` は管理者だけが実行でき、最後の管理者と開発用の固定管理者の解除を拒否します。権限変更はトランザクション内で直列化します。DMのメッセージ削除権限は投稿者本人のままです。
+
+通常チャンネルの管理者・作成者は、投稿・スレッド返信の操作メニューから削除できます。公開チャンネルは「探す」から未参加のまま閲覧し、送信欄の参加ボタンで参加できます。スレッドの開閉はURLと履歴に反映され、戻る・進むで復元します。
+
+共通のInput・Textareaと検索コントロールには、自動入力を抑える属性を設定しています。ブラウザやパスワード管理拡張の挙動によっては、これらの指定が無視される場合があります。
+
+## ブランドカラーとアイコン
+
+[Zli Brand Guidelines](https://zli.works/brand) の Yellow `#FFD600` をアクセントに使い、白黒の基礎色を `#FFFFFF` / `#000000` として、`src/styles.css` で明暗の共通トークンを定義しています。ライトテーマのメイン背景は白を維持し、サイドバーなどのカラムの黄色味はごく薄くし、補助色・境界線・ダークテーマの選択背景はニュートラルなグレーに揃えます。黄色のボタンには黒い文字を使い、本文のリンクはテーマに合わせた青を専用の `--link` トークンで管理します。
+
+アイコンの正本は `public/icons/zoo.svg` です。提供されたSVGのパスを維持し、アプリ左上・ウェルカム画面・SVG faviconで同じファイルを参照します。PWA / Apple用PNG、PNG favicon、ICO、通知用の単色バッジもこのSVGから生成します。変更時は `pnpm exec playwright install chromium` の後、`pnpm generate:icons` を実行し、生成ファイルもコミットしてください。PWAのマークはmaskableアイコンの中央80%の円内に収め、OSによる切り抜きに備えています。通知バッジはAndroidの描画仕様に合わせ、同じ図案の透過・白一色を使います。

@@ -80,7 +80,7 @@ test('only missing versions are ignored', async () => {
   await assert.rejects(ignoreMissing(async () => {throw new Error('403');}));
 });
 
-import plan, {promotedMainSha, pullRequestComponents} from './image-plan.mjs';
+import plan, {promotedMainSha, pullRequestComponents, wantsPreview, hadPreviewChanges} from './image-plan.mjs';
 function planFixture({files = [], fork = false, state = 'open', currentSha = sha(1)} = {}) {
   const outputs = {};
   let requestedPages = false;
@@ -144,6 +144,27 @@ test('pullRequestComponents covers renames and huge diffs', () => {
   assert.deepEqual(pullRequestComponents([{filename: 'docs/a.md'}]), []);
   assert.deepEqual(pullRequestComponents([{filename: 'docs/a.rs', previous_filename: 'backend/a.rs'}]), ['backend']);
   assert.equal(pullRequestComponents(Array.from({length: 3000}, () => ({filename: 'docs/a.md'}))).length, 3);
+});
+test('wantsPreview needs a frontend change', () => {
+  for (const filename of ['frontend/src/main.tsx', 'infra/Dockerfile-frontend-deploy', 'infra/frontend-nginx.conf', 'infra/csp-hashes.mjs', 'infra/frontend-entrypoint.sh']) {
+    assert.equal(wantsPreview([{filename}]), true, filename);
+    // Preview に反映されるよう、frontend イメージもビルドする。
+    assert.deepEqual(pullRequestComponents([{filename}]), ['frontend'], filename);
+  }
+  assert.equal(wantsPreview([{filename: 'docs/a.tsx', previous_filename: 'frontend/a.tsx'}]), true);
+  // backend・migrate だけ、ビルド用の共有ファイルだけでは、イメージはビルドしても Preview は付けない。
+  for (const filename of ['backend/src/main.rs', 'infra/db/migrations/1.sql', 'infra/Dockerfile-backend-deploy', '.github/scripts/image-plan.mjs', '.github/workflows/cd-images.yaml', '.dockerignore', 'docs/a.md']) {
+    assert.equal(wantsPreview([{filename}]), false, filename);
+  }
+  assert.equal(wantsPreview(Array.from({length: 3000}, () => ({filename: 'docs/a.md'}))), true);
+});
+test('hadPreviewChanges treats a truncated Compare diff as already previewed', () => {
+  assert.equal(hadPreviewChanges([{filename: 'frontend/src/main.tsx'}]), true);
+  assert.equal(hadPreviewChanges([{filename: 'backend/src/main.rs'}]), false);
+  // 300件の上限に達すると、後方の frontend の変更は返ってこない。外したラベルを付け直さないよう、対象だったものとして扱う。
+  const truncated = Array.from({length: 300}, (_, i) => ({filename: `backend/src/f${i}.rs`}));
+  assert.equal(hadPreviewChanges(truncated), true);
+  assert.equal(hadPreviewChanges(truncated.slice(0, 299)), false);
 });
 test('main plans all images with full SHA tags', async () => {
   const fixture = planFixture(); fixture.context.payload = {}; fixture.context.runNumber = 42;

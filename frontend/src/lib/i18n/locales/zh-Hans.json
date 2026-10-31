@@ -3,6 +3,7 @@
     "main": "主导航"
   },
   "channels": {
+    "view": "打开",
     "unread": "有未读消息",
     "editTitle": "编辑频道",
     "editHelp": "频道名最多80个字符，仅限文字、数字、半角连字符（-）和下划线（_）。不能使用空格、表情符号、其他符号或保留名称。",
@@ -14,7 +15,7 @@
     "empty": "暂无频道。",
     "createAction": "创建频道",
     "browseTitle": "浏览频道",
-    "browseDescription": "查找并加入尚未加入的公开频道。",
+    "browseDescription": "无需加入即可浏览公开频道的消息。",
     "browseSearch": "按频道名搜索",
     "searchClear": "清除搜索",
     "searchEmpty": "没有匹配的频道。",
@@ -74,7 +75,9 @@
       "id_token_audience_mismatch": "ID 令牌的 aud 不符",
       "id_token_expired": "ID 令牌已过期",
       "nonce_mismatch": "ID 令牌的 nonce 不符"
-    }
+    },
+    "previewUser": "预览用户",
+    "previewMember": "普通用户 {{name}}"
   },
   "members": {
     "joined": "已加入",
@@ -94,7 +97,8 @@
     "candidates": "成员建议",
     "usersLoading": "正在加载用户…",
     "usersError": "无法加载用户。",
-    "usersEmpty": "找不到匹配的用户。"
+    "usersEmpty": "找不到匹配的用户。",
+    "back": "返回频道"
   },
   "moderation": {
     "archived": "已归档",
@@ -129,7 +133,22 @@
     "notFound": "找不到目标。",
     "invalidState": "当前状态无法执行此操作。"
   },
+  "settings": {
+    "admin": "管理员",
+    "member": "成员",
+    "makeAdmin": "设为管理员",
+    "removeAdmin": "移除管理员",
+    "membersDescription": "查看 Zoo 成员。管理员可更改权限。",
+    "roleConfirm": "将 {{name}} 的权限更改为“{{role}}”。",
+    "lastAdmin": "无法移除最后一位管理员或开发用固定管理员。",
+    "membersLoadError": "无法加载管理员信息。",
+    "general": "常规",
+    "channelTitle": "频道设置",
+    "zooTitle": "Zoo 设置",
+    "notifications": "通知与安装"
+  },
   "common": {
+    "open": "打开",
     "loading": "加载中…",
     "cancel": "取消",
     "cancelShort": "取消",
@@ -176,7 +195,30 @@
     "count_one": "{{count}} 条消息",
     "count_other": "{{count}} 条消息",
     "announcement": "{{author}} 的新消息：“{{excerpt}}”",
-    "announcementAuthor": "{{author}} 的新消息"
+    "announcementAuthor": "{{author}} 的新消息",
+    "copyRaw": "复制原文",
+    "copied": "已复制原文",
+    "copyFailed": "无法复制原文",
+    "edited": "已编辑"
+  },
+  "attachments": {
+    "add": "添加文件",
+    "selected": "要附加的文件",
+    "remove": "删除{{name}}",
+    "unsupported": "无法附加此文件。",
+    "tooLarge": "文件大小不能超过 {{max}} MB。",
+    "tooMany": "最多可以附加 {{max}} 个文件。",
+    "uploading": "正在上传文件…",
+    "uploadError": "无法上传文件。",
+    "empty": "不能附加空文件。",
+    "loading": "正在加载…",
+    "loadError": "无法加载",
+    "preview": "预览{{name}}",
+    "open": "打开{{name}}",
+    "download": "下载{{name}}",
+    "downloadShort": "下载",
+    "downloadError": "无法下载文件。",
+    "retry": "重试"
   },
   "threads": {
     "title": "子线程",
@@ -194,6 +236,11 @@
     "rootDeleted": "原消息已被删除"
   },
   "reactions": {
+    "showUsers": "查看用 {{emoji}} 回应的用户",
+    "usersTitle": "使用 {{emoji}} 回应的用户",
+    "usersLoading": "正在加载用户",
+    "userUnavailable": "无法显示用户",
+    "usersEmpty": "没有回应",
     "add": "添加表情回应",
     "picker": "表情回应",
     "select": "用 {{emoji}} 回应",
@@ -242,7 +289,9 @@
     "mac": "⌘（Cmd）+Enter 发送 / Enter 换行",
     "ctrl": "Ctrl+Enter 发送 / Enter 换行",
     "other": "Cmd / Ctrl+Enter 发送 / Enter 换行",
-    "touch": "使用发送按钮发送"
+    "touch": "使用发送按钮发送",
+    "commands": "命令建议",
+    "channels": "频道建议"
   },
   "notifications": {
     "label": "通知",
@@ -264,7 +313,15 @@
     "reactionGroup_other": "{{actor}} 等另外 {{count}} 人回应了你的消息",
     "reactions": "回应",
     "messageUnavailable": "消息已删除或无法查看",
-    "dm": "{{actor}} 给你发送了私信"
+    "dm": "{{actor}} 给你发送了私信",
+    "mentionContext": "提及",
+    "replyContext": "帖子回复",
+    "reactionContext": "表情回应",
+    "dmContext": "私信",
+    "unreadStatus": "未读",
+    "readStatus": "已读",
+    "actors_one": "{{actor}} 和另外 1 人",
+    "actors_other": "{{actor}} 和另外 {{count}} 人"
   },
   "webhooks": {
     "title": "Webhook 设置",
@@ -286,7 +343,7 @@
     "deleteConfirm": "要删除此 Webhook 吗？此 URL 将停止接收通知。",
     "rotateConfirm": "要重新生成 Webhook URL 吗？当前 URL 将失效，请同步更新发送端设置。",
     "confirm": "确认",
-    "url": "Webhook URL"
+    "url": "Webhook 网址"
   },
   "mentions": {
     "suggestions": "提及建议"
@@ -313,7 +370,11 @@
     "blocked": "请在浏览器设置中允许通知",
     "permission": "请允许通知。在 iOS 上，请从主屏幕打开 Zoo。",
     "error": "无法更新通知设置，请重试。",
-    "logoutError": "无法关闭通知，请重新尝试退出登录。"
+    "logoutError": "无法关闭通知，请重新尝试退出登录。",
+    "on": "启用",
+    "off": "停用",
+    "unavailable": "不可用",
+    "title": "推送通知"
   },
   "mfm": {
     "suggestions": "MFM 候选",
@@ -343,6 +404,24 @@
       "unixtime": "日期时间（输入 Unix 秒数）",
       "clickable": "点击事件"
     }
+  },
+  "bubbleChat": {
+    "title": "Bubble Chat",
+    "description": "输入的文字会实时显示在此房间中",
+    "emptyTitle": "当前没有人在输入",
+    "emptyDescription": "在下方输入框中打字，即可实时显示为对话气泡。",
+    "placeholder": "在此输入即可实时共享…",
+    "inputLabel": "实时消息输入",
+    "clear": "清空输入",
+    "hint": "无需发送按钮，点击清空按钮或按 Cmd / Ctrl+Enter 可清空输入；气泡会在稍后淡出消失。",
+    "typingSummary": "{{names}}正在输入",
+    "participants": "参与者",
+    "participantsTitle": "参与者 ({{count}})",
+    "noParticipants": "暂无参与者",
+    "typing": "正在输入",
+    "active": "在房间中",
+    "you": "你",
+    "closeParticipants": "关闭参与者列表"
   },
   "dms": {
     "title": "私信",
@@ -383,59 +462,77 @@
     "opening": "正在打开…"
   },
   "apps": {
-    "title": "Apps & integrations",
-    "description": "Manage apps, conversations, and external integrations.",
-    "create": "Create app",
-    "loading": "Loading…",
-    "loadError": "Could not load apps.",
-    "actionError": "The action failed. Check permissions and connectivity.",
-    "submit": "Submit",
-    "name": "App name",
-    "about": "Description",
-    "icon": "Icon URL (HTTPS)",
-    "manifest": "App configuration (JSON)",
-    "save": "Save",
-    "developer": "Developer",
-    "message": "Message",
-    "addChannel": "Add to this channel",
-    "edit": "Edit",
-    "requestApproval": "Request approval",
-    "approve": "Approve and install",
-    "issueToken": "Issue token",
-    "connection": "Connection details",
-    "disable": "Disable",
-    "credential": "Credentials (copy and store securely)",
-    "copy": "Copy",
-    "permissions": "Requested permissions",
-    "openHome": "Open home",
-    "form": "App form",
-    "home": "App home",
-    "deliveries": "Delivery history",
-    "delivered": "Delivered",
-    "pending": "Pending",
-    "retry": "Retry",
-    "choose": "Select an app or create a new one.",
-    "status": {
-      "draft": "Draft",
-      "pending": "Pending approval",
-      "installed": "Installed",
-      "disabled": "Disabled"
+    "ui": {
+      "channel": "目标频道",
+      "chooseChannel": "选择频道",
+      "delete": "删除 App",
+      "deleteTitle": "删除“{{name}}”吗？",
+      "deleteHelp": "删除 App 将停用集成与 Bot，并撤销已颁发的凭据。此操作无法撤销。",
+      "disableHelp": "停用 App 与 Bot，并撤销已颁发的凭据。",
+      "search": "搜索 App",
+      "filter": "筛选 App",
+      "all": "所有 App",
+      "mine": "我的 App",
+      "empty": "没有匹配的 App。",
+      "back": "返回 App 列表",
+      "overview": "使用",
+      "manage": "管理与开发",
+      "configuration": "设置与批准",
+      "invalidManifest": "请在 App 设置中输入有效的 JSON。"
     },
-    "consentTitle": "Authorize app",
-    "consentDescription": "Choose what this app can do on your behalf.",
-    "allow": "Allow",
-    "cancel": "Cancel",
-    "privateResponses": "Private app responses",
-    "onlyYou": "Only visible to you",
-    "close": "Close",
-    "postingApp": "Posting app",
-    "choosePostingApp": "Choose an app",
-    "changePostingApp": "Change posting app",
-    "unknownDeveloper": "Unknown developer",
-    "revokeConsent": "Revoke my authorization",
-    "messageActions": "Message app actions",
-    "transport": "Transport",
-    "eventEndpoint": "Event endpoint",
+    "title": "App 与集成",
+    "description": "管理 App、对话与外部服务集成。",
+    "create": "创建 App",
+    "loading": "加载中…",
+    "loadError": "无法加载 App。",
+    "actionError": "操作失败。请检查权限与网络连接。",
+    "submit": "提交",
+    "name": "App 名称",
+    "about": "说明",
+    "icon": "图标网址（HTTPS）",
+    "manifest": "App 设置（JSON）",
+    "save": "保存",
+    "developer": "开发者",
+    "message": "发送消息",
+    "addChannel": "加入此频道",
+    "edit": "编辑",
+    "requestApproval": "申请批准",
+    "approve": "批准并安装",
+    "issueToken": "签发令牌",
+    "connection": "连接信息",
+    "disable": "停用",
+    "credential": "凭据（请复制并妥善保存）",
+    "copy": "复制",
+    "permissions": "请求的权限",
+    "openHome": "打开主页",
+    "form": "App 表单",
+    "home": "App 主页",
+    "deliveries": "投递记录",
+    "delivered": "已投递",
+    "pending": "待处理",
+    "retry": "重试",
+    "choose": "请选择 App，或创建新的 App。",
+    "status": {
+      "draft": "草稿",
+      "pending": "待批准",
+      "installed": "已安装",
+      "disabled": "已停用"
+    },
+    "consentTitle": "授权 App",
+    "consentDescription": "选择此 App 可以代表您执行哪些操作。",
+    "allow": "允许",
+    "cancel": "取消",
+    "privateResponses": "App 的私密回复",
+    "onlyYou": "仅您可见",
+    "close": "关闭",
+    "postingApp": "发消息的 App",
+    "choosePostingApp": "选择 App",
+    "changePostingApp": "切换发消息的 App",
+    "unknownDeveloper": "未知开发者",
+    "revokeConsent": "撤销我的授权",
+    "messageActions": "App 消息操作",
+    "transport": "传输方式",
+    "eventEndpoint": "事件端点",
     "entity": {
       "details": "获取详情",
       "comments": "获取评论"
@@ -454,5 +551,18 @@
       "disconnect": "断开连接"
     },
     "commandArguments": "参数"
+  },
+  "search": {
+    "engine": "搜索引擎",
+    "query": "搜索词",
+    "action": "搜索",
+    "withEngine": "使用 {{engine}} 搜索",
+    "loadError": "无法加载搜索设置。",
+    "saveError": "无法保存，请重新选择搜索引擎。",
+    "retry": "重试"
+  },
+  "cards": {
+    "showMore": "展开全文",
+    "showLess": "收起"
   }
 }

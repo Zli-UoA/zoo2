@@ -72,6 +72,8 @@ Appの `redirect_uris` にHTTPSのコールバックURLを登録し、管理者�
 
 ## 対話画面・ファイル・リンク
 
+`GET /api/apps/commands?channel_id=...` は、そのチャンネルで実行可能な承認済みコマンドを `app_id`・`app_name`・`name` の配列で返します。通常投稿・スレッド返信で `/` を入力すると補完候補を表示し、同名コマンドはApp名で選択できます。スレッドからも現在のチャンネルでコマンドを実行します。
+
 `commands` に登録したコマンドはチャンネルで `/コマンド 引数` として実行できます。同名コマンドが複数のAppにある場合はApp詳細から選択します。`shortcuts` はApp詳細から実行します。`message_shortcuts` はメッセージのApp操作ボタンから実行でき、対象メッセージのIDをイベントへ渡します。メッセージ用ショートカットには `messages:read` が必要です。
 
 対話画面は `text`、`button`、`input`、`select` の宣言型ブロックで構成し、任意HTML・JavaScriptを実行しません。メッセージの `blocks` APIと、Appホーム・モーダル・本人だけに表示する一時メッセージの `surfaces` APIで共用します。操作はApp・本人・元の画面／メッセージ・チャンネルに紐づきます。
@@ -83,6 +85,8 @@ Appの `redirect_uris` にHTTPSのコールバックURLを登録し、管理者�
 Appは完了済みファイルを自分のメッセージへ添付できます。ダウンロード時に現在の閲覧権限を確認し、添付として配信します。
 
 `link_domains` に登録したドメインのリンクを `link.shared` で受け取り、`unfurls` APIで共通カードを設定できます。Zooは任意のリンク先を取得しません。カードには提供Appを表示します。
+
+App の投稿には `POST /api/apps/v1/messages/{id}/blocks` で `{"type":"card","card":{...}}` ブロックも設定できます。カードは共通の `title`、`description`、HTTPS の `url`、`source`、`context`、`author`、`badge`、`color` と、最大10件の `fields` を持ちます。各 field は `title`・`value`、任意の `short`（2列表示）、HTTPS の `url`、`code`（等幅表示）です。この投稿 API は既存の `messages:write` と投稿の所有者チェックを使い、操作イベントは発生しません。カードブロックがある投稿では本文を表示上のフォールバックとして扱い、カードとの重複表示を避けます。更新時は本文とブロックを両方更新してください。
 
 ## 既存Webhookと移行
 

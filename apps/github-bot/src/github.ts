@@ -128,10 +128,29 @@ export class GitHub {
   invalidate(installation: number) {
     this.tokens.delete(installation);
   }
+  displayName(repo: string): string {
+    return this.store.get<string>(`repository-name:${repo.toLowerCase()}`) ?? repo;
+  }
+  rememberName(name: string) {
+    const key = repoName(name);
+    this.store.set(`repository-name:${key}`, name);
+    const owner = name.split("/")[0];
+    this.store.set(`repository-name:${owner.toLowerCase()}/*`, `${owner}/*`);
+  }
   async read(repo: string, path: string): Promise<any> {
     for (let attempt = 0; attempt < 2; attempt++)
       try {
-        return await this.api(`/repos/${repoName(repo)}${path}`, await this.installation(repo));
+        const result = await this.api(
+          `/repos/${repoName(repo)}${path}`,
+          await this.installation(repo),
+        );
+        if (
+          !path &&
+          typeof result.full_name === "string" &&
+          result.full_name.toLowerCase() === repo.toLowerCase()
+        )
+          this.rememberName(result.full_name);
+        return result;
       } catch (error) {
         if (attempt === 0 && error instanceof GitHubError && error.status === 401) {
           this.invalidate(ruleFor(this.config, repo)!.installationId);
@@ -159,6 +178,7 @@ export class GitHub {
       repos: string[] = [];
     for (let page = 1; page <= 20; page++) {
       const r = await this.api(`/installation/repositories?per_page=100&page=${page}`, token);
+      for (const repository of r.repositories) this.rememberName(repository.full_name);
       repos.push(
         ...r.repositories
           .map((v: Json) => String(v.full_name).toLowerCase())
@@ -269,8 +289,32 @@ export class GitHub {
       result.state = checks.state;
       result.checkSummary = checks.summary;
     }
-    if (target.kind === "deployment")
+    if (target.kind === "deployment") {
       result.latest = (await this.read(target.repo, `/deployments/${n}/statuses?per_page=1`))[0];
+      let run: RegExpExecArray | null = null;
+      try {
+        const log = new URL(result.latest?.log_url ?? "");
+        if (log.protocol === "https:" && log.hostname === "github.com")
+          run = new RegExp(
+            `^/${target.repo.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}/actions/runs/(\\d+)(?:/job/(\\d+))?/?$`,
+            "i",
+          ).exec(log.pathname);
+      } catch {
+        /* Deployment is not associated with a workflow. */
+      }
+      if (run) {
+        try {
+          const workflow = await this.read(target.repo, `/actions/runs/${run[1]}`);
+          const job = run[2] ? await this.read(target.repo, `/actions/jobs/${run[2]}`) : undefined;
+          result.deploymentWorkflow = {
+            title: `${workflow.name} #${workflow.run_number}${job?.name ? ` / ${job.name}` : ""}`,
+            url: job?.html_url ?? workflow.html_url,
+          };
+        } catch (error) {
+          if (!(error instanceof GitHubError) || ![403, 404].includes(error.status)) throw error;
+        }
+      }
+    }
     return result;
   }
 }

@@ -132,13 +132,24 @@ test("legacy empty Web Push still displays a generic alert", async () => {
   assert.equal(notifications.length, 1);
   assert.equal(notifications[0][0], "Zoo");
   assert.match(notifications[0][1].body, /新しい通知/);
+  assert.equal(notifications[0][1].icon, "/icons/icon-192.png");
+  assert.equal(notifications[0][1].badge, "/icons/badge-96.png");
 });
 
 test("install precaches the app shell so offline navigation can start the SPA", async () => {
   const { handlers, cacheContext } = worker();
   await dispatch(handlers, "install");
   const shell = cacheContext.storeFor("zoo-shell-v2");
-  for (const path of ["/", "/index.html", "/offline.html", "/manifest.webmanifest"]) {
+  for (const path of [
+    "/",
+    "/index.html",
+    "/offline.html",
+    "/manifest.webmanifest",
+    "/favicon.ico",
+    "/icons/zoo.svg",
+    "/icons/favicon-32.png",
+    "/icons/badge-96.png",
+  ]) {
     assert.ok(shell.has(`${ORIGIN}${path}`), path);
   }
   assert.match(await shell.get(`${ORIGIN}/index.html`).text(), /network:/);

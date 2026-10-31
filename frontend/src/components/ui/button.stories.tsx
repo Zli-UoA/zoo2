@@ -4,7 +4,7 @@ import { DownloadIcon, PlusIcon } from "lucide-react";
 import { Button } from "./button";
 
 const meta = {
-  title: "Foundations/Button",
+  title: "Components/Button",
   component: Button,
   tags: ["autodocs"],
   parameters: { a11y: { test: "error" } },
@@ -88,3 +88,5 @@ export const WithIcon: Story = {
     ),
   },
 };
+
+export const DisabledDark: Story = { ...Disabled, globals: { theme: "dark" } };

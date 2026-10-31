@@ -1,7 +1,7 @@
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, expect, it, vi } from "vite-plus/test";
 import { ApiError } from "../../../lib/api/client";
-import { LinkPreviews } from "./LinkPreviews";
+import { LinkPreviews } from "./LinkPreviews.tsx";
 import { DEFAULT_CONFIG } from "../../../lib/config";
 import { http, HttpResponse } from "msw";
 import { mockServer } from "../../../test/browser-setup";

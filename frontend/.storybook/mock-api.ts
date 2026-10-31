@@ -26,6 +26,18 @@ interface NotificationContextFixture {
 }
 
 const notificationContexts: Record<string, NotificationContextFixture> = {
+  "notification-dm": {
+    message: { id: "message-dm", user_id: "user-bob", content: "個別に確認をお願いします。" },
+    reactions: [],
+  },
+  "notification-dm-group": {
+    message: {
+      id: "message-dm-group",
+      user_id: "user-bob",
+      content: "次の打ち合わせについて相談しましょう。",
+    },
+    reactions: [],
+  },
   "notification-mention": {
     message: {
       id: "message-hello",
@@ -69,6 +81,11 @@ const notificationContexts: Record<string, NotificationContextFixture> = {
 };
 
 export const storybookApiHandlers = [
+  http.get("*/api/apps/commands", () => HttpResponse.json([])),
+  http.get("*/api/users/me/preferences", () => HttpResponse.json({ search_engine: "google" })),
+  http.patch("*/api/users/me/preferences", async ({ request }) =>
+    HttpResponse.json({ data: await request.json(), txid: null }),
+  ),
   http.get("*/api/users/me", () =>
     HttpResponse.json({
       id: "user-alice",
@@ -95,6 +112,10 @@ export const storybookApiHandlers = [
   }),
   http.get(/\/api\/channels\/[^/]+\/typing$/, () => HttpResponse.json([])),
   http.post(/\/api\/channels\/[^/]+\/typing$/, () => new HttpResponse(null, { status: 204 })),
+  http.get("*/api/bubble", () => HttpResponse.json([])),
+  http.post("*/api/bubble", () => HttpResponse.json({ ok: true })),
+  http.get("*/api/bubble-chat", () => HttpResponse.json([])),
+  http.post("*/api/bubble-chat", () => HttpResponse.json({ ok: true })),
   http.get("*/api/channel-read-states", () => HttpResponse.json([])),
   http.get("*/api/users/admins", () => HttpResponse.json({ user_ids: ["user-admin"] })),
   http.get("*/api/notifications/:notificationId/context", ({ params }) => {
@@ -120,6 +141,20 @@ export const storybookApiHandlers = [
     });
   }),
   http.get("*/api/push/config", () => HttpResponse.json({ publicKey: null })),
+  http.get("*/api/attachments/:attachmentId/url", ({ params }) => {
+    const id = String(params.attachmentId);
+    const image = `data:image/svg+xml;charset=utf-8,${encodeURIComponent(kitchenPreview)}`;
+    return HttpResponse.json({
+      data: {
+        id,
+        download_url: image,
+        file_name: "screenshot.png",
+        file_size: 184_320,
+        content_type: "image/png",
+      },
+      txid: null,
+    });
+  }),
   http.get("https://www.gstatic.com/**", () =>
     HttpResponse.text(kitchenPreview, { headers: { "Content-Type": "image/svg+xml" } }),
   ),
