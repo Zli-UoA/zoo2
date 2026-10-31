@@ -22,7 +22,7 @@ export const Route = createFileRoute("/_shell")({ component: ShellLayout });
 function ShellLayout() {
   const path = useRouterState({ select: (state) => state.location.pathname });
   const [mounted, setMounted] = useState(false);
-  const [implementation, setImplementation] = useState<"react" | "compose">("react");
+  const [currentImplementation, setImplementation] = useState<"react" | "compose">("react");
   // AuthGate が設定を検証済み。ここでは同一インスタンスを使い回し、
   // OfflineProvider の初期化が再レンダーで繰り返されないようにする。
   const [config] = useState(resolveConfig);
@@ -31,11 +31,17 @@ function ShellLayout() {
     const requested = new URLSearchParams(window.location.search).get("frontend");
     if (composeEnabled() && (requested === "react" || requested === "compose"))
       writeStorageValue(FRONTEND_STORAGE_KEY, requested);
+    if (mounted && implementation !== currentImplementation) {
+      // Cross-runtime navigation must release the old Electric collections and
+      // Canvas/input owners, just like the explicit frontend switch.
+      window.location.reload();
+      return;
+    }
     setImplementation(implementation);
     setMounted(true);
-  }, [path]);
+  }, [path, mounted, currentImplementation]);
 
-  return mounted && implementation === "compose" ? (
+  return mounted && currentImplementation === "compose" ? (
     <ComposeFrontend />
   ) : mounted ? (
     <OfflineProvider config={config}>

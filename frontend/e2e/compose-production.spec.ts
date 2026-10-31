@@ -29,8 +29,17 @@ test("native Compose starts under deployment CSP and reloads cached messages off
               (await (await caches.open(name)).keys()).map((r) => r.url),
             ),
           );
-          const assets = keys.flat().filter((url) => url.includes("/compose/"));
+          const assets = keys.flat();
+          const loadedScripts = performance
+            .getEntriesByType("resource")
+            .map((entry) => new URL(entry.name))
+            .filter((url) => url.origin === location.origin && url.pathname.startsWith("/assets/"));
           return (
+            loadedScripts.every(
+              (url) =>
+                assets.includes(url.href) ||
+                assets.some((asset) => new URL(asset).pathname === url.pathname),
+            ) &&
             assets.some((u) => u.endsWith("/zoo-compose.js")) &&
             assets.filter((u) => u.endsWith(".wasm")).length >= 2 &&
             [
@@ -51,6 +60,10 @@ test("native Compose starts under deployment CSP and reloads cached messages off
         "Compose cache state",
         await page.evaluate(async () => ({
           controller: navigator.serviceWorker.controller?.scriptURL,
+          loaded: performance
+            .getEntriesByType("resource")
+            .map((e) => e.name)
+            .filter((u) => u.includes("/assets/")),
           assets: (
             await Promise.all(
               (await caches.keys()).map(async (name) =>
@@ -59,7 +72,7 @@ test("native Compose starts under deployment CSP and reloads cached messages off
             )
           )
             .flat()
-            .filter((url) => url.includes("/compose/")),
+            .filter((url) => url.includes("/compose/") || url.includes("/assets/")),
         })),
       );
       throw error;

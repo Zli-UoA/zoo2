@@ -23,6 +23,7 @@ VITE_EXPERIMENTAL_COMPOSE=true pnpm dev
 モジュールの取得・起動に失敗した場合もReactに戻る導線を表示します。
 mainで追加された `/settings` と `/bubble` は既存Reactの共通画面を使用します。
 Composeの選択は保持し、対応済みのチャンネル画面へ戻るとComposeで表示します。
+実装をまたぐ遷移ではページを再読み込みし、旧画面の購読・Canvas・入力状態を解放します。
 
 ```sh
 cd frontend-compose
@@ -74,7 +75,7 @@ Wasmを生成してWeb配布物へ追加します。既定値は無効です。C
 `VITE_EXPERIMENTAL_COMPOSE_PRODUCTION` とPR用の `VITE_EXPERIMENTAL_COMPOSE_PREVIEW` を別々の
 リポジトリ変数として設定します。いずれも既定はfalseです。旧 `VITE_EXPERIMENTAL_COMPOSE` 変数はCDでは参照しません。
 ステージングComposeのbuild引数は引き続き `VITE_EXPERIMENTAL_COMPOSE` です。
-Nginxは `/compose/` の未存在ファイルに404を返し、Wasm用CSPと圧縮を設定しています。
+Nginxは `/compose/` の未存在ファイルに404を返し、Wasm用CSPを設定しています。
 JavaScriptの `unsafe-eval` は追加していません。Compose用の画像取得元をconnect-srcへ追加するのは
 有効なイメージだけで、無効時は既存React版のCSPを維持します。CI Compose Webのcontainerジョブで、
 Composeを有効にしたDockerイメージをソースからビルドし、所要時間・配信資源・CSPを確認します。
