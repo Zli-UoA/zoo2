@@ -118,7 +118,10 @@ private fun environment(raw: String): Environment {
 )
 private external fun registerBoot(boot: () -> Unit)
 
-fun main() = registerBoot(::startSession)
+fun main() {
+    registerBoot(::startSession)
+    registerCatalog()
+}
 
 @OptIn(
     ExperimentalComposeUiApi::class,
@@ -168,20 +171,8 @@ private fun startSession() {
         // session may be replaced while a new session awaits the same cached request.
         // The Web resource API returns an empty placeholder until each font is ready.
         // Keep the bootstrap visible until every family and weight used by the theme loads.
-        val fonts =
-            listOf(
-                preloadFont(Res.font.Geist).value,
-                preloadFont(Res.font.Geist, FontWeight.Medium).value,
-                preloadFont(Res.font.Geist, FontWeight.SemiBold).value,
-                preloadFont(Res.font.NotoSansJP).value,
-                preloadFont(Res.font.NotoSansJP, FontWeight.Medium).value,
-                preloadFont(Res.font.NotoSansJP, FontWeight.SemiBold).value,
-                preloadFont(Res.font.NotoColorEmoji).value,
-                preloadFont(Res.font.LiberationMono).value,
-                preloadFont(Res.font.KaTeXMain).value,
-                preloadFont(Res.font.KaTeXMath).value,
-            )
-        if (active && fonts.all { it != null }) {
+        val fontsReady = zooFontsReady()
+        if (active && fontsReady) {
             LaunchedEffect(Unit) { paintReady(bridge) }
             ZooTheme(environment(envRaw).dark) {
                 if (app != null) CompositionLocalProvider(LocalApp provides app) { ZooApp(app) }
@@ -204,4 +195,23 @@ private fun startSession() {
         },
         { app?.escape() },
     )
+}
+
+@OptIn(org.jetbrains.compose.resources.ExperimentalResourceApi::class)
+@Composable
+internal fun zooFontsReady(): Boolean {
+    val fonts =
+        listOf(
+            preloadFont(Res.font.Geist).value,
+            preloadFont(Res.font.Geist, FontWeight.Medium).value,
+            preloadFont(Res.font.Geist, FontWeight.SemiBold).value,
+            preloadFont(Res.font.NotoSansJP).value,
+            preloadFont(Res.font.NotoSansJP, FontWeight.Medium).value,
+            preloadFont(Res.font.NotoSansJP, FontWeight.SemiBold).value,
+            preloadFont(Res.font.NotoColorEmoji).value,
+            preloadFont(Res.font.LiberationMono).value,
+            preloadFont(Res.font.KaTeXMain).value,
+            preloadFont(Res.font.KaTeXMath).value,
+        )
+    return fonts.all { it != null }
 }

@@ -147,3 +147,38 @@ LICENSEとNOTICEは配布物の `licenses/electric4k/` に含めます。
 - Android SDK、macOS + Xcode、署名・配布設定、各OSのCIと実機試験。
 
 Electric4kの各OS対応だけで、アプリの認証・通知・永続化が揃うわけではありません。
+
+## StorybookのComposeカタログ
+
+既存Storybookの `Compose/Components` に、実際のKotlinコンポーネントを描画する
+Message / GroupedMessage / Composer / DisabledComposer / EmojiPicker / RichTextを追加しています。
+ReactComparisonでは同じKotlinサンプルの本文で両実装を横に並べます（狭い画面では縦に並びます）。
+既存Reactストーリーと同じStorybookで確認でき、テーマ・言語・viewportは既存ツールバー、
+本文・グループ化・無効状態はControlsで変更できます。本文が空の場合は共通Kotlinのサンプルを表示します。
+
+```sh
+cd frontend
+pnpm build:compose  # JDK 21が必要。Kotlinを変更したら再実行
+pnpm storybook
+```
+
+サンプルとUIは `commonMain/kotlin/zoo/Catalog.kt`、Web起動処理は `wasmJsMain/kotlin/zoo/CatalogMain.kt` です。
+Reactのストーリーはiframeを管理してオプションを渡すだけです。iframe内でComposeを起動し、
+ストーリーを離れるとCanvas・入力状態・メモリ内の下書きを破棄します。Controls更新は同じiframeに送信します。
+APIはKtor MockEngineによるメモリ内の応答で、Electric・認証・OPFS・PWAを起動しません。
+入力・送信・絵文字選択はサンプル操作で、実サーバーへの保存を検証するものではありません。
+フォント・絵文字データは公開静的ファイルを使用します。Composeのビルドがない場合はカタログ内に案内を表示します。
+
+PRのStorybook PreviewはJDKでComposeをビルドしてから公開するため、レビュー画面でも表示できます。
+通常のReact用StorybookテストはJDKやWasm生成を要求しません。Composeストーリーは `!test` タグで
+その自動テストから除外し、CI Compose Webで、ビルド済みStorybookに対するPlaywright試験を別途実行します。
+
+```sh
+cd frontend
+pnpm build-storybook
+pnpm exec playwright test --config playwright.compose-storybook.config.ts
+```
+
+この試験はKotlinの描画、オプション反映、入力、画面切替時の下書き破棄、モバイル幅の絵文字ピッカーを確認します。
+Canvas内部に対する既存DOM用アクセシビリティ検査は同等には使えません。Compose側のsemanticsと操作試験に加え、
+スクリーンリーダー等による確認が必要です。カタログ自体はUI完全一致の保証ではありません。

@@ -35,7 +35,10 @@ kotlin {
             implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.8.1")
             implementation("org.jetbrains.kotlinx:kotlinx-datetime:0.7.1-0.6.x-compat")
         }
-        wasmJsMain.dependencies { implementation("io.ktor:ktor-client-js:3.1.3") }
+        wasmJsMain.dependencies {
+            implementation("io.ktor:ktor-client-js:3.1.3")
+            implementation("io.ktor:ktor-client-mock:3.1.3")
+        }
         commonTest.dependencies {
             implementation(kotlin("test"))
             implementation("io.ktor:ktor-client-mock:3.1.3")

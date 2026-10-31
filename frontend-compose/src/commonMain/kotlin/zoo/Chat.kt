@@ -331,7 +331,7 @@ private fun MessageList(
 }
 
 @Composable
-private fun Message(
+internal fun Message(
     app: Session,
     channel: Row,
     message: Row,
@@ -600,7 +600,7 @@ private fun toggleReaction(
 }
 
 @Composable
-private fun Composer(
+internal fun Composer(
     app: Session,
     channel: String,
     parent: String?,

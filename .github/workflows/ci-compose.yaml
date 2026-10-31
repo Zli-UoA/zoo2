@@ -70,6 +70,11 @@ jobs:
       - name: Test production CSP and offline reload
         working-directory: frontend
         run: pnpm exec playwright test --config playwright.compose-production.config.ts
+      - name: Build and test Compose Storybook catalog
+        working-directory: frontend
+        run: |
+          pnpm build-storybook
+          pnpm exec playwright test --config playwright.compose-storybook.config.ts
       - name: Report exact UI parity
         continue-on-error: true
         working-directory: frontend
