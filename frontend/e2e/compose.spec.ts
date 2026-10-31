@@ -532,9 +532,7 @@ for (const implementation of ["react", "compose"] as const) {
       await (await chooser).setFiles({ name, mimeType, buffer });
     };
     await choose("unsupported.exe", "application/x-msdownload");
-    await expect(
-      page.getByText("このファイルは添付できません。", { exact: true }),
-    ).toBeVisible();
+    await expect(page.getByText("このファイルは添付できません。", { exact: true })).toBeVisible();
     expect((await state()).uploadRequests).toHaveLength(0);
     await choose("empty.txt", "text/plain", Buffer.alloc(0));
     await expect(page.getByText("空のファイルは添付できません。", { exact: true })).toBeVisible();

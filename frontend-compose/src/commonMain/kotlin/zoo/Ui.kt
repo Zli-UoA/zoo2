@@ -13,6 +13,7 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.*
 import androidx.compose.ui.graphics.drawscope.*
 import androidx.compose.ui.graphics.vector.PathParser
+import androidx.compose.ui.input.key.*
 import androidx.compose.ui.layout.boundsInRoot
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.semantics.*
@@ -328,6 +329,7 @@ fun Field(
     val fonts = LocalFonts.current
     val webPlatform = LocalWebPlatform.current
     var editing by remember { mutableStateOf(TextFieldValue(value)) }
+    val layout = remember { arrayOfNulls<TextLayoutResult>(1) }
     LaunchedEffect(value, selection) {
         if (editing.text != value || selection != null && editing.selection.start != selection)
             editing =
@@ -347,7 +349,37 @@ fun Field(
                 change(it.text)
             },
             modifier =
-                Modifier.onFocusChanged {
+                Modifier.onPreviewKeyEvent {
+                        // Compose's visual line end excludes trailing spaces. Match the Web
+                        // textarea so typing after End does not split a completed command token.
+                        if (
+                            it.type == KeyEventType.KeyDown &&
+                                it.key == Key.MoveEnd &&
+                                !it.isCtrlPressed &&
+                                !it.isMetaPressed &&
+                                !it.isAltPressed &&
+                                !it.isShiftPressed &&
+                                editing.composition == null
+                        ) {
+                            val caret = editing.selection.end
+                            val end =
+                                layout[0]?.let { result ->
+                                    result.getLineEnd(
+                                        result.getLineForOffset(caret),
+                                        visibleEnd = false,
+                                    )
+                                }
+                                    ?: editing.text.indexOf('\n', caret).takeIf { it >= 0 }
+                                    ?: editing.text.length
+                            val position =
+                                if (end > 0 && editing.text.getOrNull(end - 1) == '\n') end - 1
+                                else end
+                            editing = editing.copy(selection = TextRange(position))
+                            onSelection(position)
+                            true
+                        } else false
+                    }
+                    .onFocusChanged {
                         if (it.isFocused) webPlatform?.action("fileFocus:${fileOwner.orEmpty()}")
                     }
                     .fillMaxWidth()
@@ -366,6 +398,7 @@ fun Field(
                         vertical = if (chrome) 8.dp else 13.dp,
                     )
                     .semantics { contentDescription = label },
+            onTextLayout = { layout[0] = it },
             singleLine = singleLine,
             readOnly = readOnly,
             decorationBox = { inner ->
