@@ -5,6 +5,7 @@ import { fixture, job, command, pair } from "./helpers.ts";
 import { GitHubError } from "../src/github.ts";
 import { preview } from "../src/previews.ts";
 import { subscription, words, permits } from "../src/subscriptions.ts";
+import { ZooError } from "../../../sdk/src/index.ts";
 import type { Json } from "../src/types.ts";
 
 test("GitHub repository writes are impossible, including Zoo thread replies and action events", async (t) => {
@@ -63,6 +64,7 @@ test("PR updates edit one parent and reply in its thread, with merge reflected i
   await f.bot.githubEvent(closed);
   assert.equal(f.zoo.messages.size, 2);
   assert.match(f.zoo.messages.get(root.message)!.content, /merged/);
+  assert.equal(f.zoo.posts.filter((m) => m.id === root.message).length, 1);
   assert.match(f.zoo.messages.get(root.message)!.content, /New title/);
   const reply = [...f.zoo.messages.values()].find((m) => m.parent_id === root.message)!;
   assert.match(reply.content, /merged/);
@@ -108,6 +110,7 @@ test("GitHub comments create, edit, and delete the same Zoo reply; stale deliver
   assert.equal(f.zoo.messages.size, 2);
   assert.match(f.zoo.messages.get(reply.id)!.content, /Edited ＠alice/);
   assert.match(f.zoo.messages.get(reply.id)!.content, /@alice_zoo/);
+  assert.equal(f.zoo.posts.filter((m) => m.id === reply.id).length, 1);
   f.remote.comment = null;
   await f.bot.githubEvent(
     job("issue_comment", { action: "deleted", issue: f.remote.issue, comment: { id: 99 } }),
@@ -116,6 +119,44 @@ test("GitHub comments create, edit, and delete the same Zoo reply; stale deliver
   assert.deepEqual(f.zoo.deleted, [reply.id]);
   await f.bot.githubEvent(event);
   assert.equal(f.zoo.messages.size, 1, "A late create must not resurrect a deleted GitHub comment");
+});
+
+test("Zoo transient unfurl failures remain queued and recover, while forbidden links finish", async (t) => {
+  for (const status of [429, 503, 403]) {
+    const f = fixture();
+    t.after(() => f.store.close());
+    const request = f.zoo.request.bind(f.zoo);
+    let attempts = 0;
+    f.zoo.request = async (method, path, body) => {
+      if (path.endsWith("/unfurls") && ++attempts === 1)
+        throw new ZooError(status, "Unfurl failed");
+      return request(method, path, body);
+    };
+    const event = {
+      ...command(""),
+      type: "link.shared",
+      data: { id: "message", links: ["https://github.com/acme/project/issues/7"] },
+    };
+    f.store.enqueue(event.id, "zoo", event.type, event);
+    await f.bot.tick();
+    const queued = f.store.db.prepare("SELECT status,attempts FROM jobs WHERE id=?").get(event.id)!;
+    assert.equal(queued.status, status === 403 ? "done" : "queued");
+    assert.equal(
+      f.zoo.calls.some((c) => c.path === "/surfaces"),
+      status === 403,
+    );
+    if (status !== 403) {
+      f.store.db.prepare("UPDATE jobs SET available=0 WHERE id=?").run(event.id);
+      await f.bot.tick();
+      assert.equal(attempts, 2);
+      assert.equal(f.zoo.calls.filter((c) => c.path.endsWith("/unfurls")).length, 1);
+      const finished = f.store.db
+        .prepare("SELECT status,attempts FROM jobs WHERE id=?")
+        .get(event.id)!;
+      assert.equal(finished.status, "done");
+      assert.equal(finished.attempts, 2);
+    }
+  }
 });
 
 test("review dismissal edits its existing reply and Checks changes edit the PR metadata", async (t) => {

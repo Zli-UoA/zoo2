@@ -218,3 +218,49 @@ test("recovery after publishing a parent but before ACK does not add an extra op
   await bot.tick();
   assert.equal(f.zoo.messages.size, 1);
 });
+
+test("a lost POST response recovers changed parents and comments after a database restart", async (t) => {
+  for (const child of [false, true]) {
+    const dir = mkdtempSync(join(tmpdir(), "zoo-github-lost-post-")),
+      path = join(dir, "queue.sqlite"),
+      f = fixture({ database: path });
+    if (child) await f.bot.githubEvent(job("issues", { action: "opened", issue: f.remote.issue }));
+    const event = child
+      ? job("issue_comment", { action: "created", issue: f.remote.issue, comment: { id: 99 } })
+      : job("issues", { action: "opened", issue: f.remote.issue });
+    f.store.enqueue(event.id, "github", event.event, event.payload);
+    const unfinished = f.store.next()!;
+    const post = f.zoo.postMessage.bind(f.zoo);
+    let interrupted = false;
+    f.zoo.postMessage = async (input) => {
+      const result = await post(input);
+      if (!interrupted && Boolean(input.parent_id) === child) {
+        interrupted = true;
+        throw new Error("Connection lost after POST committed");
+      }
+      return result;
+    };
+    await assert.rejects(f.bot.githubEvent(unfinished), /Connection lost/);
+    if (child) f.remote.comment!.body = "Edited while the bot was stopped";
+    else f.remote.issue.title = "Renamed while the bot was stopped";
+    f.store.close();
+    const store = new Store(path, f.config.encryptionKey),
+      owner = store.acquireWorker(),
+      github = new GitHub(f.config, store, f.fetcher),
+      bot = new GitHubBot(f.config, store, github, f.zoo);
+    try {
+      await bot.tick();
+      assert.equal(f.zoo.messages.size, child ? 2 : 1);
+      const message = [...f.zoo.messages.values()].find((m) => Boolean(m.parent_id) === child)!;
+      assert.match(message.content, /while the bot was stopped/);
+      assert.equal(
+        store.db.prepare("SELECT status FROM jobs WHERE id=?").get(event.id)!.status,
+        "done",
+      );
+    } finally {
+      store.releaseWorker(owner);
+      store.close();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }
+});

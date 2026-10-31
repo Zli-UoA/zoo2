@@ -2,7 +2,7 @@ import { generateKeyPairSync, randomUUID } from "node:crypto";
 import { Store } from "../src/store.ts";
 import { GitHub } from "../src/github.ts";
 import { GitHubBot } from "../src/bot.ts";
-import type { AppEvent } from "../../../sdk/src/index.ts";
+import { ZooError, type AppEvent } from "../../../sdk/src/index.ts";
 import type { Config, Json, Zoo } from "../src/types.ts";
 import type { Job } from "../src/store.ts";
 export const pair = generateKeyPairSync("rsa", { modulusLength: 2048 });
@@ -24,6 +24,14 @@ export class ZooDouble implements Zoo {
       throw Object.assign(new Error("forbidden"), { status: 403 });
     const id = input.id ?? randomUUID();
     this.posts.push({ ...input, id });
+    const existing = this.messages.get(id);
+    if (
+      existing &&
+      (existing.channel_id !== input.channel_id ||
+        existing.content !== input.content ||
+        existing.parent_id !== input.parent_id)
+    )
+      throw new ZooError(409, "Idempotency key already used");
     if (!this.messages.has(id)) this.messages.set(id, { ...input, id });
     return { id };
   };

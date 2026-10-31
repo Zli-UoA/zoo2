@@ -1,4 +1,4 @@
-import type { AppEvent } from "../../../sdk/src/index.ts";
+import { ZooError, type AppEvent } from "../../../sdk/src/index.ts";
 import { Store, type Job } from "./store.ts";
 import { GitHub, GitHubError } from "./github.ts";
 import { notices, summary, type Notice } from "./events.ts";
@@ -51,6 +51,24 @@ export class GitHubBot {
       channel_id: channel,
       blocks: [{ type: "text", text: text(message, 3900) }],
     });
+  }
+  async publishMessage(
+    input: Parameters<Zoo["postMessage"]>[0] & { id: string },
+    published: boolean,
+  ) {
+    if (published) {
+      await this.zoo.updateMessage(input.id, input.content);
+      return;
+    }
+    try {
+      await this.zoo.postMessage(input);
+    } catch (error) {
+      // The POST may have succeeded before a crash or a lost response. Our deterministic
+      // UUID still identifies the same message, even if GitHub's current body has changed.
+      if (error instanceof ZooError && error.status === 409)
+        await this.zoo.updateMessage(input.id, input.content);
+      else throw error;
+    }
   }
   async tick() {
     if (this.busy || this.stopping) return;
@@ -201,12 +219,14 @@ export class GitHubBot {
           const root =
             summary(notice.target, snapshot) +
             (published ? "" : `\n${await this.mentions(notice.mentions)}`);
-          await this.zoo.postMessage({
-            id: thread.message,
-            channel_id: thread.channel,
-            content: root,
-          });
-          await this.zoo.updateMessage(thread.message, root);
+          await this.publishMessage(
+            {
+              id: thread.message,
+              channel_id: thread.channel,
+              content: root,
+            },
+            Boolean(published),
+          );
           this.store.set(`root-published:${thread.message}`, true);
           // Opening creates the parent; subsequent state changes and comments become replies.
           const childSource = [
@@ -239,22 +259,24 @@ export class GitHubBot {
             const mentions = await this.mentions(notice.mentions);
             // Verified Zoo mentions are appended after untrusted GitHub text is escaped.
             const withMentions = `${text(notice.body, 3400)}${mentions ? `\n${mentions}` : ""}`;
-            await this.zoo.postMessage({
-              id: child,
-              channel_id: sub.channel,
-              content: withMentions,
-              ...(threading
-                ? {
-                    parent_id: thread.message,
-                    broadcast: Boolean(
-                      notice.stateChange ||
-                      (notice.feature === "comments" && sub.broadcastComments) ||
-                      (notice.feature === "reviews" && sub.broadcastReviews),
-                    ),
-                  }
-                : {}),
-            });
-            if (known) await this.zoo.updateMessage(child, withMentions);
+            await this.publishMessage(
+              {
+                id: child,
+                channel_id: sub.channel,
+                content: withMentions,
+                ...(threading
+                  ? {
+                      parent_id: thread.message,
+                      broadcast: Boolean(
+                        notice.stateChange ||
+                        (notice.feature === "comments" && sub.broadcastComments) ||
+                        (notice.feature === "reviews" && sub.broadcastReviews),
+                      ),
+                    }
+                  : {}),
+              },
+              Boolean(known),
+            );
             this.store.set(childKey, true);
           }
         } catch (error) {
@@ -398,6 +420,7 @@ export class GitHubBot {
       // Normal Zoo messages and reactions never call GitHub APIs.
     } catch (error) {
       if (error instanceof GitHubError && error.retryable) throw error;
+      if (error instanceof ZooError && (error.status === 429 || error.status >= 500)) throw error;
       if (!(error instanceof BotError) && !Number.isInteger((error as { status?: number }).status))
         throw error;
       const message =
