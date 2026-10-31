@@ -97,7 +97,8 @@
     "candidates": "成員建議",
     "usersLoading": "正在載入使用者…",
     "usersError": "無法載入使用者。",
-    "usersEmpty": "找不到符合的使用者。"
+    "usersEmpty": "找不到符合的使用者。",
+    "back": "返回頻道"
   },
   "moderation": {
     "archived": "已封存",

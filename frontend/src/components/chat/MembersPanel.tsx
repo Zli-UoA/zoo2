@@ -1,7 +1,7 @@
 import { Input } from "../ui/input";
 import { useTranslation } from "react-i18next";
 import { cn } from "cn";
-import { SearchIcon, UserMinusIcon } from "lucide-react";
+import { ArrowLeftIcon, SearchIcon, UserMinusIcon } from "lucide-react";
 import { Fragment, useId, useMemo, useState, type ChangeEvent, type KeyboardEvent } from "react";
 
 import { canKickChannelMember } from "../../hooks/channelPermissions";
@@ -55,7 +55,15 @@ function nowIso(): string {
  * ユーザー名で絞り込んだ候補を選ぶ combobox にしている。選択した時点で
  * `channel_user` に追加する（重複ガードは既存どおり残す）。
  */
-export function MembersPanel({ channel, className }: { channel: ChannelRow; className?: string }) {
+export function MembersPanel({
+  channel,
+  className,
+  onBack,
+}: {
+  channel: ChannelRow;
+  className?: string;
+  onBack?: () => void;
+}) {
   const { t } = useTranslation();
   const { locale } = useLocale();
   const { channelUsers } = useCollections();
@@ -201,7 +209,7 @@ export function MembersPanel({ channel, className }: { channel: ChannelRow; clas
     setKickTarget(null);
   }
 
-  function handlePanelKeyDown(event: KeyboardEvent<HTMLDivElement>) {
+  function handlePanelKeyDown(event: KeyboardEvent<HTMLElement>) {
     if (event.key !== "Escape" || !isCandidateListOpen) {
       return;
     }
@@ -230,9 +238,32 @@ export function MembersPanel({ channel, className }: { channel: ChannelRow; clas
   }
 
   return (
-    <div className={cn("min-h-0 flex-col bg-background", className)} onKeyDown={handlePanelKeyDown}>
+    <section
+      role={onBack ? "region" : undefined}
+      aria-label={onBack ? t("members.title") : undefined}
+      className={cn("min-h-0 flex-col bg-background", className)}
+      onKeyDown={handlePanelKeyDown}
+    >
       <header className="flex items-center justify-between gap-2 border-b px-4 py-3">
-        <h3 className="text-sm font-semibold">{t("members.title")}</h3>
+        {onBack ? (
+          <>
+            <Button
+              autoFocus
+              variant="ghost"
+              size="icon-lg"
+              onClick={onBack}
+              aria-label={t("members.back")}
+            >
+              <ArrowLeftIcon />
+            </Button>
+            <div className="min-w-0 flex-1">
+              <h1 className="text-sm font-semibold">{t("members.title")}</h1>
+              <p className="truncate text-xs text-muted-foreground">#{channel.channel_name}</p>
+            </div>
+          </>
+        ) : (
+          <h3 className="text-sm font-semibold">{t("members.title")}</h3>
+        )}
         <span className="rounded bg-muted px-2 py-0.5 text-xs tabular-nums text-muted-foreground">
           {!canViewMembers
             ? "—"
@@ -488,6 +519,6 @@ export function MembersPanel({ channel, className }: { channel: ChannelRow; clas
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
-    </div>
+    </section>
   );
 }

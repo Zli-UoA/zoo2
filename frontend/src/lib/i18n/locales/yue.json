@@ -97,7 +97,8 @@
     "candidates": "成員建議",
     "usersLoading": "載入緊用戶…",
     "usersError": "載入唔到用戶。",
-    "usersEmpty": "搵唔到符合嘅用戶。"
+    "usersEmpty": "搵唔到符合嘅用戶。",
+    "back": "返去頻道"
   },
   "moderation": {
     "archived": "已封存",

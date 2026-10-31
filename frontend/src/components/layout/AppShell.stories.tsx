@@ -115,3 +115,17 @@ export const BubbleChat: Story = {
     );
   },
 };
+
+export const MobileMembers: Story = {
+  args: { children: <ChannelScreen channelId="channel-general" /> },
+  globals: { viewport: { value: "mobile" } },
+  parameters: {
+    a11y: { test: "error" },
+    router: { initialEntries: ["/channels/channel-general?members=true"] },
+  },
+  play: async () => {
+    await expect(await screen.findByRole("heading", { name: "メンバー", level: 1 })).toBeVisible();
+    await expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    await expect(screen.getByLabelText("メインナビゲーション")).not.toBeVisible();
+  },
+};

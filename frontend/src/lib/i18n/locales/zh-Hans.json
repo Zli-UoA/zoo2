@@ -97,7 +97,8 @@
     "candidates": "成员建议",
     "usersLoading": "正在加载用户…",
     "usersError": "无法加载用户。",
-    "usersEmpty": "找不到匹配的用户。"
+    "usersEmpty": "找不到匹配的用户。",
+    "back": "返回频道"
   },
   "moderation": {
     "archived": "已归档",

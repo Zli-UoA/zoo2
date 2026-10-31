@@ -97,7 +97,8 @@
     "candidates": "メンバー候補",
     "usersLoading": "ユーザーを読み込み中…",
     "usersError": "ユーザー取得に失敗しました。",
-    "usersEmpty": "該当するユーザーがいません。"
+    "usersEmpty": "該当するユーザーがいません。",
+    "back": "チャンネルに戻る"
   },
   "moderation": {
     "archived": "アーカイブ済み",

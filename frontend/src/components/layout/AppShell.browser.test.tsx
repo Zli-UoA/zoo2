@@ -26,7 +26,11 @@ vi.mock("../../hooks/usePresence", () => ({
   useConversationView: () => {},
 }));
 vi.mock("../../hooks/useRealtime", () => ({
-  useActiveChannels: () => ({ data: [], isLoading: false, isError: false }),
+  useActiveChannels: () => ({
+    data: [{ id: "general", channel_name: "general", is_dm: false }],
+    isLoading: false,
+    isError: false,
+  }),
 }));
 vi.mock("../chat/AppSurfaceHost", () => ({ AppSurfaceHost: () => null }));
 vi.mock("../chat/ChannelSidebar", () => ({
@@ -36,8 +40,14 @@ vi.mock("../chat/ChannelSidebar", () => ({
     </aside>
   ),
 }));
-vi.mock("../chat/MembersPanel", () => ({ MembersPanel: () => null }));
-vi.mock("../chat/MembersDialog", () => ({ MembersDialog: () => null }));
+vi.mock("../chat/MembersPanel", () => ({
+  MembersPanel: ({ onBack }: { onBack?: () => void }) =>
+    onBack ? (
+      <section aria-label="Members screen">
+        <button onClick={onBack}>Back to channel</button>
+      </section>
+    ) : null,
+}));
 vi.mock("../offline/OfflineBanner", () => ({ OfflineBanner: () => null }));
 vi.mock("./LeftRail", () => ({ LeftRail: () => null }));
 
@@ -46,6 +56,7 @@ function Channel() {
   return (
     <div>
       <p>channel:{shell.selectedChannelId}</p>
+      <input aria-label="Draft" defaultValue="" />
       <Link to="/settings">Settings</Link>
       <button onClick={shell.showSidebar}>Back</button>
       <button onClick={() => shell.openThread("root")}>Open thread</button>
@@ -82,6 +93,7 @@ function setup(entries: string[]) {
     path: "/channels/$channelId",
     validateSearch: (search: Record<string, unknown>) => ({
       thread: typeof search.thread === "string" ? search.thread : undefined,
+      members: search.members === true ? true : undefined,
     }),
     component: Channel,
   });
@@ -177,3 +189,43 @@ it.each([390, 1440])(
     expect(screen.getByText("Channel navigation")).not.toBeVisible();
   },
 );
+
+it.each([390, 900])(
+  "returns from the members screen to the same thread and draft at %ipx",
+  async (width) => {
+    await page.viewport(width, 900);
+    const router = setup(["/channels/general"]);
+    await userEvent.type(await screen.findByLabelText("Draft"), "Keep this draft");
+    await userEvent.click(screen.getByRole("button", { name: "Open thread" }));
+    await screen.findByText("thread:root");
+    await userEvent.click(screen.getByRole("button", { name: "Open members" }));
+    expect(await screen.findByRole("region", { name: "Members screen" })).toBeVisible();
+    expect(screen.queryByRole("dialog")).toBeNull();
+    expect(screen.getByText("Channel navigation")).not.toBeVisible();
+    expect(router.state.location.search).toMatchObject({ thread: "root", members: true });
+    router.history.back();
+    await waitFor(() =>
+      expect(screen.queryByRole("region", { name: "Members screen" })).toBeNull(),
+    );
+    expect(screen.getByText("thread:root")).toBeVisible();
+    expect(screen.getByLabelText("Draft")).toHaveValue("Keep this draft");
+    router.history.forward();
+    await screen.findByRole("region", { name: "Members screen" });
+    await userEvent.click(screen.getByRole("button", { name: "Back to channel" }));
+    await waitFor(() =>
+      expect(screen.queryByRole("region", { name: "Members screen" })).toBeNull(),
+    );
+    expect(screen.getByText("thread:root")).toBeVisible();
+    expect(screen.getByLabelText("Draft")).toHaveValue("Keep this draft");
+  },
+);
+it("closes a directly opened members screen without leaving its channel or thread", async () => {
+  await page.viewport(390, 844);
+  const router = setup(["/channels/general?thread=root&members=true"]);
+  await userEvent.click(await screen.findByRole("button", { name: "Back to channel" }));
+  await waitFor(() => expect(screen.queryByRole("region", { name: "Members screen" })).toBeNull());
+  expect(router.state.location.pathname).toBe("/channels/general");
+  expect(router.state.location.search).toMatchObject({ thread: "root" });
+  expect(router.state.location.search).not.toHaveProperty("members", true);
+  expect(router.history.canGoBack()).toBe(false);
+});

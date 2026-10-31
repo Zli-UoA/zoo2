@@ -97,7 +97,8 @@
     "candidates": "Member suggestions",
     "usersLoading": "Loading users…",
     "usersError": "Failed to load users.",
-    "usersEmpty": "No matching users."
+    "usersEmpty": "No matching users.",
+    "back": "Back to channel"
   },
   "moderation": {
     "archived": "Archived",

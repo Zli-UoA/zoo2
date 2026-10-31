@@ -8,7 +8,6 @@ import { AppSurfaceHost } from "../chat/AppSurfaceHost";
 import { useActiveChannels } from "../../hooks/useRealtime";
 import { MfmChannelsProvider } from "../chat/messages/MfmChannels";
 import { ChannelSidebar } from "../chat/ChannelSidebar";
-import { MembersDialog } from "../chat/MembersDialog";
 import { MembersPanel } from "../chat/MembersPanel";
 import { SearchPreferencesProvider } from "../preferences/SearchPreferences";
 import { PwaProvider } from "../pwa/PwaControls";
@@ -26,9 +25,8 @@ import { useVisualViewport } from "./useVisualViewport";
  *
  * - `md` (768px) 未満: `pane` に従ってサイドバーとチャットを切り替える。
  * - `md` 以上: サイドバーとチャットを並べる（`md:flex`）。
- * - `lg` (1024px) 以上: メンバーペインを `lg:flex` で出す。狭幅ではペインを
- *   マウントせず、ポータルで出る `MembersDialog` へ切り替える（ポータルは CSS で
- *   切り替えられないため `isWide` を見る）。
+ * - `lg` (1024px) 以上: メンバーを右ペインへ出す。狭幅は同じ一覧を
+ *   履歴に対応した全画面で表示する。
  *
  * メンバーの既定は閉じ。このコンポーネントは Electric のコレクションを触るため、
  * ルート側でマウント後の一度だけレンダリングする（SSR では呼ばない）。
@@ -37,7 +35,11 @@ export function AppShell({ children }: { children: ReactNode }) {
   usePresence();
   const viewportRef = useVisualViewport();
   const router = useRouter();
-  const [membersOpen, setMembersOpen] = useState(false);
+  const [membersPanelOpen, setMembersPanelOpen] = useState(false);
+  const membersTriggerRef = useRef<HTMLElement | null>(null);
+  const membersRequested = useRouterState({
+    select: (state) => (state.location.search as { members?: boolean }).members === true,
+  });
   const threadRootId = useRouterState({
     select: (state) => {
       const search = state.location.search as { thread?: unknown };
@@ -68,33 +70,76 @@ export function AppShell({ children }: { children: ReactNode }) {
     [channels, selectedChannelId],
   );
   const membersChannel = selectedChannel && !selectedChannel.is_dm ? selectedChannel : null;
+  const membersOpen = isWide ? membersPanelOpen : membersRequested;
 
   const [prevSelectedChannelIsDm, setPrevSelectedChannelIsDm] = useState(false);
   const selectedChannelIsDm = selectedChannel?.is_dm ?? false;
   if (prevSelectedChannelIsDm !== selectedChannelIsDm) {
     setPrevSelectedChannelIsDm(selectedChannelIsDm);
     if (selectedChannelIsDm) {
-      setMembersOpen(false);
+      setMembersPanelOpen(false);
     }
   }
 
   const pane: ShellPane = isHome ? "sidebar" : "chat";
 
-  // ワイドから狭幅へ縮んだときに、ペインで開いていたメンバーが
-  // そのままダイアログとして出ないように閉じる。コミット前に反映するため
-  // レンダー中に調整する（effect だとダイアログが一度マウントされて残る）。
+  const setMembersOpen = useCallback(
+    (open: boolean) => {
+      if (isWide) {
+        setMembersPanelOpen(open);
+        return;
+      }
+      if (!selectedChannelId) return;
+      const current = router.state.location;
+      const search = current.search as { message?: string; thread?: string; members?: boolean };
+      if (!!search.members === open) return;
+      if (open) {
+        membersTriggerRef.current =
+          document.activeElement instanceof HTMLElement ? document.activeElement : null;
+        void router.navigate({
+          to: "/channels/$channelId",
+          params: { channelId: selectedChannelId },
+          search: { ...search, members: true },
+          state: (previous) => ({ ...previous, zooMembersParent: selectedChannelId }),
+        });
+      } else if (
+        current.state.zooMembersParent === selectedChannelId &&
+        router.history.canGoBack()
+      ) {
+        router.history.back();
+      } else {
+        void router.navigate({
+          to: "/channels/$channelId",
+          params: { channelId: selectedChannelId },
+          search: { ...search, members: undefined },
+          replace: true,
+        });
+      }
+    },
+    [isWide, router, selectedChannelId],
+  );
+
+  // Changing the layout closes the members view, as with the desktop side panel.
   const [prevIsWide, setPrevIsWide] = useState(isWide);
   if (prevIsWide !== isWide) {
     setPrevIsWide(isWide);
-    if (!isWide) {
-      setMembersOpen(false);
-    }
+    setMembersPanelOpen(false);
   }
-
-  // メンバーとスレッドは右ペインを奪い合うため、ワイドでは排他にする。
-  // スレッドを開いたときに閉じる処理は `openThread` が行い、メンバーを開いた
-  // ときもスレッドを閉じる。
-  // 狭幅はスレッドがオーバーレイ、メンバーがダイアログなので重ねたままにする。
+  useEffect(() => {
+    if (isWide && membersRequested && selectedChannelId) {
+      const search = router.state.location.search as { message?: string; thread?: string };
+      void router.navigate({
+        to: "/channels/$channelId",
+        params: { channelId: selectedChannelId },
+        search: { ...search, members: undefined },
+        replace: true,
+      });
+    }
+    if (!membersRequested && membersTriggerRef.current) {
+      if (membersTriggerRef.current.isConnected) membersTriggerRef.current.focus();
+      membersTriggerRef.current = null;
+    }
+  }, [isWide, membersRequested, router, selectedChannelId]);
 
   const openThread = useCallback(
     (rootId: string) => {
@@ -115,7 +160,7 @@ export function AppShell({ children }: { children: ReactNode }) {
       }
       if (isWide) setMembersOpen(false);
     },
-    [isWide, router, selectedChannelId],
+    [isWide, router, selectedChannelId, setMembersOpen],
   );
   const closeThread = useCallback(() => {
     if (!selectedChannelId) return;
@@ -142,10 +187,10 @@ export function AppShell({ children }: { children: ReactNode }) {
       if (enteredThread) setMembersOpen(false);
       else closeThread();
     }
-  }, [isWide, membersOpen, threadRootId, closeThread]);
+  }, [isWide, membersOpen, threadRootId, closeThread, setMembersOpen]);
 
   const showSidebar = useCallback(() => {
-    setMembersOpen(false);
+    setMembersPanelOpen(false);
     if ((router.state.location.state.__TSR_index ?? 0) > 0) router.history.back();
     else void router.navigate({ to: "/", replace: true });
   }, [router]);
@@ -157,19 +202,29 @@ export function AppShell({ children }: { children: ReactNode }) {
       showChat: () => {},
       membersOpen,
       setMembersOpen,
-      toggleMembers: () => setMembersOpen((open) => !open),
+      toggleMembers: () => setMembersOpen(!membersOpen),
       threadRootId,
       openThread,
       closeThread,
       selectedChannelId,
     }),
-    [pane, showSidebar, membersOpen, threadRootId, openThread, closeThread, selectedChannelId],
+    [
+      pane,
+      showSidebar,
+      membersOpen,
+      setMembersOpen,
+      threadRootId,
+      openThread,
+      closeThread,
+      selectedChannelId,
+    ],
   );
 
   // The conversation column belongs to the channel index and channel/DM routes only.
   const isChannelView = isHome || selectedChannelId !== null;
   const sidebarVisible = pane === "sidebar";
   const showChat = pane === "chat";
+  const showMembersScreen = !isWide && membersOpen && !!membersChannel;
 
   return (
     <SearchPreferencesProvider>
@@ -183,7 +238,7 @@ export function AppShell({ children }: { children: ReactNode }) {
             >
               <OfflineBanner />
               <AppSurfaceHost />
-              <div className={isSettings ? "hidden" : "contents"}>
+              <div className={isSettings || showMembersScreen ? "hidden" : "contents"}>
                 <LeftRail />
                 <ChannelSidebar
                   channels={channels}
@@ -195,21 +250,20 @@ export function AppShell({ children }: { children: ReactNode }) {
                 />
               </div>
               <main className={cn("min-w-0 flex-1 flex-col", showChat ? "flex" : "hidden md:flex")}>
-                {children}
+                <div className={showMembersScreen ? "hidden" : "contents"}>{children}</div>
+                {showMembersScreen && membersChannel ? (
+                  <MembersPanel
+                    channel={membersChannel}
+                    className="flex h-full"
+                    onBack={() => setMembersOpen(false)}
+                  />
+                ) : null}
               </main>
-              {/* 表示は CSS（`hidden lg:flex`）が決める。狭幅でダイアログと二重に
-            マウントしないよう、マウントだけ `isWide` で抑える。 */}
+              {/* 一覧は現在の配置先だけにマウントする。 */}
               {isWide && membersOpen && membersChannel ? (
                 <MembersPanel
                   channel={membersChannel}
                   className="hidden w-72 shrink-0 border-l lg:flex xl:w-80"
-                />
-              ) : null}
-              {membersChannel ? (
-                <MembersDialog
-                  channel={membersChannel}
-                  open={membersOpen && !isWide}
-                  onOpenChange={setMembersOpen}
                 />
               ) : null}
             </div>

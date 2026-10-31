@@ -93,8 +93,8 @@
       "states": ["Default", "Empty", "Loading", "LoadError", "UsersError", "Unread", "Group"]
     },
     {
-      "file": "src/components/chat/MembersDialog.stories.tsx",
-      "states": ["Default", "Closed"]
+      "file": "src/components/chat/MembersScreen.stories.tsx",
+      "states": ["Default", "PublicNotJoined"]
     },
     {
       "file": "src/components/chat/MembersPanel.stories.tsx",
@@ -246,7 +246,8 @@
         "NotificationsSingleUnread",
         "Mobile",
         "MobileNotifications",
-        "BubbleChat"
+        "BubbleChat",
+        "MobileMembers"
       ]
     },
     {
@@ -471,10 +472,6 @@
     {
       "file": "src/components/chat/DmSection.tsx",
       "story": "src/components/chat/DmSection.stories.tsx"
-    },
-    {
-      "file": "src/components/chat/MembersDialog.tsx",
-      "story": "src/components/chat/MembersDialog.stories.tsx"
     },
     {
       "file": "src/components/chat/MembersPanel.tsx",
