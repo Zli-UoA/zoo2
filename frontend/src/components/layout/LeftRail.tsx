@@ -24,6 +24,7 @@ import { Separator } from "../ui/separator";
 import { AppDialogs } from "../chat/AppsDialog";
 import { NotificationsButton } from "../chat/NotificationsButton";
 import { initials } from "../chat/format";
+import { PaneHeader } from "./PaneHeader";
 
 function RailLink({
   to,
@@ -90,18 +91,13 @@ export function LeftRail() {
     <nav
       aria-label={t("nav.main")}
       className={cn(
-        "flex w-14 shrink-0 flex-col items-center gap-1 border-r bg-sidebar py-3",
+        "flex w-14 shrink-0 flex-col items-center gap-1 border-r bg-sidebar pb-3",
         "md:w-16",
       )}
     >
-      <img
-        src="/icons/zoo.svg"
-        alt="Zoo"
-        width={36}
-        height={36}
-        className="mb-1 size-9 rounded-xl"
-      />
-      <Separator className="my-1 w-6" />
+      <PaneHeader className="mb-1 w-full justify-center px-0">
+        <img src="/icons/zoo.svg" alt="Zoo" width={36} height={36} className="size-9 rounded-xl" />
+      </PaneHeader>
       <RailLink to="/" icon={HashIcon} label={t("channels.title")} exact />
       <NotificationsButton />
       <RailLink to="/bubble" icon={MessageCircleMoreIcon} label={t("bubbleChat.title")} exact />

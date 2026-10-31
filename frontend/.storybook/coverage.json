@@ -249,11 +249,14 @@
         "Welcome",
         "Channel",
         "MobileChannel",
+        "ChannelWithMembers",
         "Notifications",
         "NotificationsSingleUnread",
         "Mobile",
         "MobileNotifications",
+        "DarkNotifications",
         "BubbleChat",
+        "MobileBubbleChat",
         "MobileMembers"
       ]
     },
@@ -588,6 +591,12 @@
     {
       "file": "src/components/layout/LeftRail.tsx",
       "story": "src/components/layout/LeftRail.stories.tsx"
+    },
+    {
+      "file": "src/components/layout/PaneHeader.tsx",
+      "story": "src/components/layout/AppShell.stories.tsx",
+      "composed": true,
+      "reason": "Notifications・BubbleChat・Channelとモバイルの各Storyで、共通ヘッダーのアイコン・見出し・説明・操作と左レールの境界線の一致を確認する。"
     },
     {
       "file": "src/components/layout/ShellSkeleton.tsx",

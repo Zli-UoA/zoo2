@@ -1,7 +1,7 @@
 import { BubbleChatScreen } from "../chat/BubbleChatScreen";
 import { bubbleChatHandlers } from "../../../.storybook/bubble-fixtures";
 import type { Meta, StoryObj } from "@storybook/react-vite";
-import { expect, screen, waitFor } from "storybook/test";
+import { expect, screen, userEvent, waitFor } from "storybook/test";
 
 import { storyCollections, storyNotifications } from "../../../.storybook/fixtures";
 import { ChannelScreen } from "../chat/ChannelScreen";
@@ -22,6 +22,15 @@ const meta = {
 export default meta;
 type Story = StoryObj<typeof meta>;
 
+async function expectAlignedHeaders() {
+  const railHeader = screen.getByRole("navigation").querySelector("header")!;
+  const mainHeader = screen.getByRole("main").querySelector("header")!;
+  await expect(mainHeader.getBoundingClientRect().top).toBe(railHeader.getBoundingClientRect().top);
+  await expect(mainHeader.getBoundingClientRect().bottom).toBe(
+    railHeader.getBoundingClientRect().bottom,
+  );
+}
+
 export const Welcome: Story = {
   play: async () => {
     await expect(screen.getByLabelText("チャンネル", { selector: "aside" })).toBeVisible();
@@ -38,6 +47,7 @@ export const Channel: Story = {
   play: async () => {
     await expect(await screen.findByText(/今日のリリースは 18:00/)).toBeInTheDocument();
     await expect(screen.getByLabelText("チャンネル", { selector: "aside" })).toBeVisible();
+    await expectAlignedHeaders();
   },
 };
 
@@ -48,6 +58,25 @@ export const MobileChannel: Story = {
   },
   parameters: {
     router: { initialEntries: ["/channels/channel-general"] },
+  },
+  play: async () => {
+    await screen.findByRole("heading", { name: "general" });
+    await expectAlignedHeaders();
+  },
+};
+
+export const ChannelWithMembers: Story = {
+  ...Channel,
+  play: async (context) => {
+    await Channel.play?.(context);
+    await userEvent.click(screen.getByRole("button", { name: /^メンバー / }));
+    const membersHeader = (
+      await screen.findByRole("heading", { name: "メンバー", level: 3 })
+    ).closest("header")!;
+    const railHeader = screen.getByRole("navigation").querySelector("header")!;
+    await expect(membersHeader.getBoundingClientRect().bottom).toBe(
+      railHeader.getBoundingClientRect().bottom,
+    );
   },
 };
 
@@ -66,6 +95,7 @@ export const Notifications: Story = {
     const nav = screen.getByRole("navigation").getBoundingClientRect();
     await expect(main.x).toBe(nav.right);
     await expect(main.right).toBe(document.documentElement.clientWidth);
+    await expectAlignedHeaders();
   },
 };
 
@@ -97,6 +127,11 @@ export const MobileNotifications: Story = {
   globals: { viewport: { value: "mobile" } },
 };
 
+export const DarkNotifications: Story = {
+  ...Notifications,
+  globals: { theme: "dark" },
+};
+
 export const BubbleChat: Story = {
   args: { children: <BubbleChatScreen /> },
   parameters: {
@@ -113,7 +148,13 @@ export const BubbleChat: Story = {
       "data-status",
       "active",
     );
+    await expectAlignedHeaders();
   },
+};
+
+export const MobileBubbleChat: Story = {
+  ...BubbleChat,
+  globals: { viewport: { value: "mobile" } },
 };
 
 export const MobileMembers: Story = {

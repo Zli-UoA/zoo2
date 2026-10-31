@@ -11,19 +11,20 @@ import { Skeleton } from "../ui/skeleton";
 import { ChannelHeader } from "./ChannelHeader";
 import { formatDmDisplayName, isGroupDm, resolveDmDisplayName } from "./dm";
 import { MessagePane } from "./messages/MessagePane";
+import { PaneHeader } from "../layout/PaneHeader";
 
 const LOADING_ROWS = [0, 1, 2, 3];
 
 function ChannelLoading() {
   return (
     <>
-      <div className="flex items-center gap-3 border-b px-4 py-2.5">
+      <PaneHeader>
         <Skeleton className="size-8 rounded-lg" />
         <div className="flex flex-1 flex-col gap-1.5">
           <Skeleton className="h-4 w-40" />
           <Skeleton className="h-3 w-24" />
         </div>
-      </div>
+      </PaneHeader>
       <div className="flex flex-1 flex-col gap-3 p-4">
         {LOADING_ROWS.map((row) => (
           <Skeleton key={row} className="h-14 w-full rounded-lg" />

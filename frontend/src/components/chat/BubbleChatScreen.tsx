@@ -14,6 +14,7 @@ import { Button } from "../ui/button";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "../ui/dialog";
 import { ScrollArea } from "../ui/scroll-area";
 import { Textarea } from "../ui/textarea";
+import { PaneHeader, ScreenHeader } from "../layout/PaneHeader";
 
 const MAX_INPUT_HEIGHT = 180;
 export const FADE_DURATION_MS = 3000;
@@ -261,28 +262,25 @@ export function BubbleChatScreen() {
 
   return (
     <section className="flex h-full min-h-0 flex-col" aria-labelledby="bubble-chat-title">
-      <header className="flex items-center gap-3 border-b bg-background/80 px-4 py-3 backdrop-blur supports-backdrop-filter:bg-background/60">
-        <div className="flex size-8 shrink-0 items-center justify-center rounded-lg bg-brand-muted text-brand-muted-foreground">
-          <MessageCircleMoreIcon className="size-4" aria-hidden="true" />
-        </div>
-        <div className="min-w-0 flex-1">
-          <h1 id="bubble-chat-title" className="truncate text-sm font-semibold">
-            {t("bubbleChat.title")}
-          </h1>
-          <p className="truncate text-xs text-muted-foreground">{t("bubbleChat.description")}</p>
-        </div>
-        <Button
-          variant={isParticipantsOpen ? "secondary" : "outline"}
-          size="sm"
-          aria-label={`${t("bubbleChat.participants")} ${participants.length}`}
-          title={t("bubbleChat.participantsTitle", { count: participants.length })}
-          className="gap-1.5"
-          onClick={() => setIsParticipantsOpen((prev) => !prev)}
-        >
-          <UsersIcon className="size-4" aria-hidden="true" />
-          <span className="text-xs font-semibold">{participants.length}</span>
-        </Button>
-      </header>
+      <ScreenHeader
+        icon={MessageCircleMoreIcon}
+        titleId="bubble-chat-title"
+        title={t("bubbleChat.title")}
+        description={t("bubbleChat.description")}
+        actions={
+          <Button
+            variant={isParticipantsOpen ? "secondary" : "outline"}
+            size="sm"
+            aria-label={`${t("bubbleChat.participants")} ${participants.length}`}
+            title={t("bubbleChat.participantsTitle", { count: participants.length })}
+            className="gap-1.5"
+            onClick={() => setIsParticipantsOpen((prev) => !prev)}
+          >
+            <UsersIcon className="size-4" aria-hidden="true" />
+            <span className="text-xs font-semibold">{participants.length}</span>
+          </Button>
+        }
+      />
 
       <div className="sr-only" aria-live="polite" aria-atomic="true">
         {otherEntries.length > 0
@@ -433,7 +431,7 @@ export function BubbleChatScreen() {
             aria-label={t("bubbleChat.participants")}
             className="flex w-72 shrink-0 flex-col border-l bg-background"
           >
-            <div className="flex items-center justify-between border-b px-4 py-3">
+            <PaneHeader className="justify-between">
               <h2 className="text-sm font-semibold">
                 {t("bubbleChat.participantsTitle", { count: participants.length })}
               </h2>
@@ -445,7 +443,7 @@ export function BubbleChatScreen() {
               >
                 <XIcon className="size-4" />
               </Button>
-            </div>
+            </PaneHeader>
             <ScrollArea className="flex-1">{participantsListContent}</ScrollArea>
           </aside>
         ) : null}

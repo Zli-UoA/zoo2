@@ -11,6 +11,7 @@ import { WorkspaceMembers } from "./WorkspaceMembers";
 import { Button } from "../ui/button";
 import { SettingRow, panelTabClassName } from "../ui/control-panel";
 import { useShell } from "./shell-context";
+import { PaneHeader } from "./PaneHeader";
 
 export function ZooSettings() {
   const { t } = useTranslation();
@@ -22,7 +23,7 @@ export function ZooSettings() {
   const tab = search.tab === "apps" || search.tab === "members" ? search.tab : "general";
   return (
     <section className="flex h-full min-h-0 flex-col" aria-labelledby="zoo-settings-title">
-      <header className="flex min-h-16 shrink-0 items-center gap-3 border-b px-4 py-3">
+      <PaneHeader>
         <Button
           variant="ghost"
           size="icon-sm"
@@ -35,7 +36,7 @@ export function ZooSettings() {
         <h1 id="zoo-settings-title" className="min-w-0 text-lg font-semibold">
           {t("settings.zooTitle")}
         </h1>
-      </header>
+      </PaneHeader>
       <div className="min-h-0 flex-1 overflow-y-auto p-4 sm:p-6">
         <Tabs.Root
           value={tab}
