@@ -14,7 +14,7 @@ describe("MfmContent", () => {
     expect(html).toContain('href="https://blog.example.com/a?x=1"');
     expect(html).toContain("bg-sky-100");
     expect(html).toContain('aria-hidden="true"');
-    expect(html).toContain("blog.example.com/a?x=1</a>");
+    expect(html).toContain("blog.example.com/a?x=1</span></a>");
     expect(html).not.toContain(">https://");
     const labeled = render("[Read article](https://example.com/article)");
     expect(labeled).toContain(">Read article</a>");

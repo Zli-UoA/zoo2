@@ -26,14 +26,12 @@ function externalLink(url: string, children: ReactNode, rawUrl = false): ReactNo
       rel="noopener noreferrer"
       className={
         rawUrl
-          ? "box-decoration-clone rounded bg-sky-100 px-1 py-0.5 text-sky-700 break-words [overflow-wrap:anywhere] outline-none hover:bg-sky-200 focus-visible:ring-2 focus-visible:ring-ring/50 dark:bg-sky-950 dark:text-sky-300 dark:hover:bg-sky-900"
+          ? "inline-flex max-w-full items-baseline gap-1 rounded bg-sky-100 px-1 py-0.5 align-bottom text-sky-700 outline-none hover:bg-sky-200 focus-visible:ring-2 focus-visible:ring-ring/50 dark:bg-sky-950 dark:text-sky-300 dark:hover:bg-sky-900"
           : linkClass
       }
     >
-      {rawUrl ? (
-        <LinkIcon aria-hidden="true" className="mr-1 inline size-[1em] align-[-0.125em]" />
-      ) : null}
-      {children}
+      {rawUrl ? <LinkIcon aria-hidden="true" className="size-[1em] shrink-0" /> : null}
+      {rawUrl ? <span className="min-w-0 [overflow-wrap:anywhere]">{children}</span> : children}
     </a>
   );
 }
