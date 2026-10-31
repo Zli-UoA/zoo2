@@ -8,7 +8,7 @@ import { ChannelBrowserDialog } from "./ChannelBrowserDialog";
 const joined = new Set(["channel-general", "channel-design", "channel-secret"]);
 
 const meta = {
-  title: "Screens/ChannelBrowserDialog",
+  title: "Features/Channels/Discovery",
   component: ChannelBrowserDialog,
   tags: ["autodocs"],
   parameters: { a11y: { test: "error" } },

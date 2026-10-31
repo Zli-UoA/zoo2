@@ -26,7 +26,7 @@ const withUnreadPreview: Decorator = (Story) => (
 );
 
 const meta = {
-  title: "Notifications/NotificationsScreen",
+  title: "Pages/Notifications",
   component: NotificationsScreen,
   tags: ["autodocs"],
   parameters: { a11y: { test: "error" } },

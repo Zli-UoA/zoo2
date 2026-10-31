@@ -17,7 +17,7 @@ function InstallPrompt({ children }: { children: ReactNode }) {
 }
 
 const meta = {
-  title: "Layout/PwaControls",
+  title: "Features/Preferences/PWA",
   component: PwaControls,
   tags: ["autodocs"],
   parameters: { a11y: { test: "todo" } },

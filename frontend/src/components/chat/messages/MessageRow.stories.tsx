@@ -1,6 +1,7 @@
 import type { Meta, StoryObj } from "@storybook/react-vite";
 import { expect, fn, userEvent, within } from "storybook/test";
 
+import { StoryShell } from "../../../../.storybook/shell";
 import { MessageRow } from "./MessageRow";
 import type { MessageItem } from "./messageGrouping";
 
@@ -27,7 +28,7 @@ const longContent = Array.from(
 ).join("\n");
 
 const meta = {
-  title: "Chat/MessageRow",
+  title: "Features/Chat/MessageRow",
   component: MessageRow,
   tags: ["autodocs"],
   parameters: { a11y: { test: "todo" } },
@@ -152,5 +153,35 @@ export const Mobile: Story = {
     replyCount: 2,
     onOpenThread: fn(),
     reactions: [{ emoji: "👍", count: 2, ownId: "reaction-1" }],
+  },
+};
+
+export const AppMessage: Story = {
+  decorators: [
+    (Story) => (
+      <StoryShell>
+        <Story />
+      </StoryShell>
+    ),
+  ],
+  play: async ({ canvasElement }) => {
+    await expect(within(canvasElement).getByRole("button", { name: "詳細を確認" })).toBeVisible();
+  },
+  parameters: { a11y: { test: "error" } },
+  args: {
+    item: {
+      ...item,
+      message: {
+        ...item.message,
+        is_bot: true,
+        app_id: "echo",
+        display_name: "Echo Bot",
+        content: "Appからの通知",
+        app_blocks: JSON.stringify([
+          { type: "text", text: "デプロイ完了" },
+          { type: "button", action_id: "details", label: "詳細を確認" },
+        ]),
+      },
+    },
   },
 };

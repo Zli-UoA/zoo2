@@ -4,7 +4,7 @@ import { expect, screen, userEvent } from "storybook/test";
 import { LanguageToggle } from "./LanguageToggle";
 
 const meta = {
-  title: "Layout/LanguageToggle",
+  title: "Features/Preferences/Language",
   component: LanguageToggle,
   tags: ["autodocs"],
   parameters: { a11y: { test: "error" } },

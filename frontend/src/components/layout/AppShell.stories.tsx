@@ -8,7 +8,7 @@ import { WelcomePanel } from "../chat/WelcomePanel";
 import { AppShell } from "./AppShell";
 
 const meta = {
-  title: "Layout/AppShell",
+  title: "Pages/Shell",
   component: AppShell,
   tags: ["autodocs"],
   parameters: { a11y: { test: "todo" } },

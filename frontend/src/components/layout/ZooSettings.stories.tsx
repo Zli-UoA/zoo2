@@ -1,53 +1,18 @@
 import type { Meta, StoryObj } from "@storybook/react-vite";
 import { expect, screen, userEvent, waitFor } from "storybook/test";
 import { http, HttpResponse } from "msw";
+import { appHandlers } from "../../../.storybook/app-fixtures";
 import { StoryShell } from "../../../.storybook/shell";
 import { ZooSettings } from "./ZooSettings";
 
-const apps = [
-  {
-    id: "echo",
-    name: "Echo Bot",
-    description: "チャンネルの会話をサポートするAppです。",
-    owner_id: "user-alice",
-    status: "installed",
-    revision: 1,
-    manifest: {
-      scopes: ["messages:read", "messages:write"],
-      transport: "websocket",
-      dm_enabled: true,
-    },
-  },
-  {
-    id: "notes",
-    name: "Meeting Notes",
-    description: "会議のメモを共有します。",
-    owner_id: "user-bob",
-    status: "installed",
-    revision: 1,
-    manifest: { scopes: ["messages:write"] },
-  },
-  {
-    id: "release",
-    name: "Release Tracker",
-    description: "リリース情報を共有するAppです。",
-    owner_id: "user-alice",
-    status: "draft",
-    revision: 1,
-    manifest: {},
-  },
-];
 const meta = {
-  title: "Layout/ZooSettings",
+  title: "Pages/ZooSettings",
   component: ZooSettings,
   parameters: {
     a11y: { test: "error" },
     router: { initialEntries: ["/settings?channel=channel-general"] },
     msw: {
-      handlers: [
-        http.get("*/api/apps", () => HttpResponse.json(apps)),
-        http.get("*/api/apps/:id/surfaces", () => HttpResponse.json([])),
-      ],
+      handlers: appHandlers,
     },
   },
   decorators: [

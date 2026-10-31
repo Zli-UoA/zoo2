@@ -7,7 +7,7 @@ import { RenameChannelDialog } from "./RenameChannelDialog";
 const general = storyChannels.find((channel) => channel.id === "channel-general")!;
 
 const meta = {
-  title: "Screens/RenameChannelDialog",
+  title: "Features/Channels/Edit",
   component: RenameChannelDialog,
   tags: ["autodocs"],
   parameters: { a11y: { test: "error" } },

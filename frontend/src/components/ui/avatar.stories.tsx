@@ -3,7 +3,7 @@ import type { Meta, StoryObj } from "@storybook/react-vite";
 import { Avatar, AvatarBadge, AvatarFallback, AvatarGroup, AvatarGroupCount } from "./avatar";
 
 const meta = {
-  title: "Foundations/Avatar",
+  title: "Components/Avatar",
   component: Avatar,
   tags: ["autodocs"],
   parameters: { a11y: { test: "todo" } },

@@ -240,6 +240,30 @@ E2E_BASE_URL=http://127.0.0.1:3100 pnpm test:e2e:csp
 docker rm -f zoo-frontend-csp-test
 ```
 
+## Storybookの構成
+
+分類と追加基準は [storybook-coverageスキル](../.agents/skills/storybook-coverage/SKILL.md) にまとめています。
+
+- **Foundations**: 実際の色・文字・余白の規則。
+- **Components**: 再利用する入力、確認ダイアログ、設定セクションなど。
+- **Features**: チャット、チャンネル、DM、App、メンバー管理の表示状態。
+- **Pages**: 画面全体の構成とレスポンシブ表示。
+- **Flows**: 確認を伴う権限変更や、失敗からの再送信などの操作手順。
+
+通常・空・読込中・失敗・権限差・長い内容など、確認したい状態をStory単位にします。
+テーマと対応5言語はツールバーで切り替えられます。実部品を共有し、データはローカルコレクションとMSWで再現します。
+
+```bash
+pnpm storybook         # 開発用カタログ
+pnpm check:storybook   # 分類・対象一覧・必須状態の欠落
+pnpm test:storybook    # Chromium上のplayとa11y
+pnpm build-storybook  # 静的カタログ
+```
+
+[対象一覧](.storybook/coverage.json) はUIモジュールと確認先Storyを対応づけます。新しいUI・Storyの未登録や必須状態の削除をCIで検出します。
+認証の外部リダイレクト、プレビュー専用ビルド、永続化など6つの制御層・環境依存箇所は理由と別テストを記録し、Storyで確認済みの数には含めません。
+この監査は見た目の正しさや全状態の網羅を保証するものではありません。
+
 ## Storybook の PR プレビュー
 
 PR の作成・更新時に Storybook を Cloudflare Pages へ公開します。

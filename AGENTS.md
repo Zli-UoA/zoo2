@@ -6,3 +6,8 @@
 - レビュー案を作成した後は `.agents/skills/yomiyasu/SKILL.md` を読み、`yomiyasu` で日本語を推敲する。指摘の根拠・重要度・発生条件・断定の強さと、指定された出力形式を保つ。
 - ユーザーが言語や出力形式を明示した場合は、その指定を優先する。
 - 通常の実装依頼を、レビューだけの依頼として扱わない。
+
+# Storybook
+
+- Storybookの追加・整理、またはUI変更に伴うStoryの要否を判断するときは `.agents/skills/storybook-coverage/SKILL.md` に従う。
+- 対象一覧は `frontend/.storybook/coverage.json` に置き、`pnpm --dir frontend check:storybook` で検証する。

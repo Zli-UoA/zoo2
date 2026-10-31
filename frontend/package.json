@@ -29,7 +29,8 @@
     "test:pwa": "node scripts/pwa.test.mjs",
     "storybook": "storybook dev -p 6006",
     "build-storybook": "storybook build",
-    "test:storybook": "vp test --project storybook"
+    "test:storybook": "vp test --project storybook",
+    "check:storybook": "node scripts/storybook-audit.mjs"
   },
   "dependencies": {
     "@base-ui/react": "^1.9.0",

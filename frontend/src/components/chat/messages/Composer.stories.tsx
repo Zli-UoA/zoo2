@@ -22,7 +22,7 @@ const mentionUsers: UserRow[] = [
 ];
 
 const meta = {
-  title: "Chat/Composer",
+  title: "Features/Chat/Composer",
   component: Composer,
   tags: ["autodocs"],
   parameters: { a11y: { test: "todo" } },

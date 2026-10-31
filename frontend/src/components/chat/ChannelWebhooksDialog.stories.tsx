@@ -9,7 +9,7 @@ const general = storyChannels.find((channel) => channel.id === "channel-general"
 const archived = storyChannels.find((channel) => channel.id === "channel-archive")!;
 
 const meta = {
-  title: "Screens/ChannelWebhooksDialog",
+  title: "Features/Channels/Webhooks",
   component: ChannelWebhooksDialog,
   tags: ["autodocs"],
   parameters: { a11y: { test: "error" } },

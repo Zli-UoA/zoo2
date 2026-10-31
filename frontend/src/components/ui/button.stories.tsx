@@ -4,7 +4,7 @@ import { DownloadIcon, PlusIcon } from "lucide-react";
 import { Button } from "./button";
 
 const meta = {
-  title: "Foundations/Button",
+  title: "Components/Button",
   component: Button,
   tags: ["autodocs"],
   parameters: { a11y: { test: "error" } },

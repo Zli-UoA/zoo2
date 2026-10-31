@@ -41,7 +41,7 @@ function DialogDemo({ defaultOpen = false }: { defaultOpen?: boolean }) {
 }
 
 const meta = {
-  title: "Foundations/Dialog",
+  title: "Components/Dialog",
   component: Dialog,
   tags: ["autodocs"],
   parameters: { a11y: { test: "error" } },

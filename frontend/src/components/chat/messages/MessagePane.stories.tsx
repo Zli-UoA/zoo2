@@ -16,7 +16,7 @@ function PaneFrame({ children }: { children: ReactNode }) {
 }
 
 const meta = {
-  title: "Chat/MessagePane",
+  title: "Features/Chat/MessagePane",
   component: MessagePane,
   tags: ["autodocs"],
   parameters: { a11y: { test: "todo" } },

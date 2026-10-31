@@ -7,7 +7,7 @@ import { MembersDialog } from "./MembersDialog";
 const general = storyChannels.find((channel) => channel.id === "channel-general")!;
 
 const meta = {
-  title: "Screens/MembersDialog",
+  title: "Features/Channels/MembersDialog",
   component: MembersDialog,
   tags: ["autodocs"],
   parameters: { a11y: { test: "error" } },

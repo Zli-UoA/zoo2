@@ -4,7 +4,7 @@ import { expect, screen, userEvent } from "storybook/test";
 import { ModeToggle } from "./ModeToggle";
 
 const meta = {
-  title: "Layout/ModeToggle",
+  title: "Features/Preferences/Theme",
   component: ModeToggle,
   tags: ["autodocs"],
   parameters: { a11y: { test: "error" } },

@@ -45,7 +45,7 @@ const replies: FeedMessage[] = [
 ];
 
 const meta = {
-  title: "Chat/ThreadPane",
+  title: "Features/Chat/ThreadPane",
   component: ThreadPane,
   tags: ["autodocs"],
   parameters: { a11y: { test: "todo" } },

@@ -7,7 +7,7 @@ import { storyChannelUsers, storyChannels, storyCollections } from "../../../.st
 import { ChannelSidebar } from "./ChannelSidebar";
 
 const meta = {
-  title: "Screens/ChannelSidebar",
+  title: "Features/Channels/Sidebar",
   component: ChannelSidebar,
   tags: ["autodocs"],
   parameters: { a11y: { test: "todo" } },

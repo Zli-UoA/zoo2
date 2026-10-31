@@ -13,7 +13,7 @@ const card: CardData = {
 };
 
 const meta = {
-  title: "Chat/MessageCard",
+  title: "Features/Chat/MessageCard",
   component: MessageCard,
   tags: ["autodocs"],
   parameters: { a11y: { test: "error" } },

@@ -52,7 +52,7 @@ const longMessages: FeedMessage[] = [
 ];
 
 const meta = {
-  title: "Chat/MessageList",
+  title: "Features/Chat/MessageList",
   component: MessageList,
   tags: ["autodocs"],
   parameters: { a11y: { test: "todo" } },

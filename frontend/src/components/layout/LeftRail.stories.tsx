@@ -4,7 +4,7 @@ import { StoryShell } from "../../../.storybook/shell";
 import { LeftRail } from "./LeftRail";
 
 const meta = {
-  title: "Layout/LeftRail",
+  title: "Features/Navigation/Rail",
   component: LeftRail,
   tags: ["autodocs"],
   parameters: { a11y: { test: "error" } },

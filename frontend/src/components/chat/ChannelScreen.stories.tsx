@@ -4,7 +4,7 @@ import { StoryShell } from "../../../.storybook/shell";
 import { ChannelScreen } from "./ChannelScreen";
 
 const meta = {
-  title: "Screens/ChannelScreen",
+  title: "Pages/Channel",
   component: ChannelScreen,
   tags: ["autodocs"],
   parameters: { a11y: { test: "todo" } },

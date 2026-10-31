@@ -84,7 +84,7 @@ function IconOnlyDropdownDemo() {
 }
 
 const meta = {
-  title: "Foundations/DropdownMenu",
+  title: "Components/DropdownMenu",
   component: DropdownMenu,
   tags: ["autodocs"],
   parameters: { a11y: { test: "error" } },

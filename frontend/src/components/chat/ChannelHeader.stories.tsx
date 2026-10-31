@@ -12,7 +12,7 @@ const memberCount = (channelId: string) =>
   storyChannelUsers.filter((row) => row.channel_id === channelId).length;
 
 const meta = {
-  title: "Screens/ChannelHeader",
+  title: "Features/Channels/Header",
   component: ChannelHeader,
   tags: ["autodocs"],
   parameters: { a11y: { test: "error" } },

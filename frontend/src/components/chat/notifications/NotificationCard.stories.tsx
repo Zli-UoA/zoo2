@@ -35,7 +35,7 @@ function NotificationCardDemo(props: Omit<ComponentProps<typeof NotificationCard
 }
 
 const meta = {
-  title: "Notifications/NotificationCard",
+  title: "Features/Notifications/Card",
   component: NotificationCard,
   tags: ["autodocs"],
   parameters: { a11y: { test: "error" } },

@@ -3,7 +3,6 @@
 @import "shadcn/tailwind.css";
 @import "@fontsource-variable/geist";
 @import "katex/dist/katex.min.css";
-@import "highlight.js/styles/github-dark.css";
 
 @custom-variant dark (&:is(.dark *));
 
@@ -326,8 +325,71 @@ body {
   padding: 0.5rem;
   white-space: pre;
 }
+/* Syntax colors need to follow the app theme, including the code block background. */
+.mfm-code {
+  --syntax-text: #24292e;
+  --syntax-keyword: #a62635;
+  --syntax-title: #6f42c1;
+  --syntax-value: #0054ad;
+  --syntax-string: #032f62;
+  --syntax-comment: #59636e;
+  --syntax-symbol: #943800;
+}
+.dark .mfm-code {
+  --syntax-text: #c9d1d9;
+  --syntax-keyword: #ff7b72;
+  --syntax-title: #d2a8ff;
+  --syntax-value: #79c0ff;
+  --syntax-string: #a5d6ff;
+  --syntax-comment: #a3adb8;
+  --syntax-symbol: #ffa657;
+}
 .mfm-code .hljs {
+  color: var(--syntax-text);
   background: transparent;
+}
+.hljs-keyword,
+.hljs-doctag,
+.hljs-type,
+.hljs-template-tag,
+.hljs-template-variable {
+  color: var(--syntax-keyword);
+}
+.hljs-title {
+  color: var(--syntax-title);
+}
+.hljs-attr,
+.hljs-attribute,
+.hljs-literal,
+.hljs-meta,
+.hljs-number,
+.hljs-operator,
+.hljs-variable,
+.hljs-selector-attr,
+.hljs-selector-class,
+.hljs-selector-id {
+  color: var(--syntax-value);
+}
+.hljs-string,
+.hljs-regexp {
+  color: var(--syntax-string);
+}
+.hljs-comment,
+.hljs-code,
+.hljs-formula {
+  color: var(--syntax-comment);
+}
+.hljs-built_in,
+.hljs-symbol,
+.hljs-name,
+.hljs-tag {
+  color: var(--syntax-symbol);
+}
+.hljs-emphasis {
+  font-style: italic;
+}
+.hljs-strong {
+  font-weight: bold;
 }
 .mfm-search,
 .mfm-unixtime {
