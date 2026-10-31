@@ -257,7 +257,7 @@ describe("BubbleChatScreen", () => {
       });
 
       // 2 participants: Alice + Me
-      const button = container.querySelector('button[aria-label="参加者"]');
+      const button = container.querySelector('button[aria-label="参加者 2"]');
       expect(button).not.toBeNull();
       expect(button?.textContent).toContain("2");
 

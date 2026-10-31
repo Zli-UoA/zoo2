@@ -2,8 +2,48 @@
 use crate::{
     auth::AuthUser, error::AppError, state::AppState, validation::validate_bubble_chat_content,
 };
-use axum::{Json, Router, extract::State, routing::get};
+use axum::{
+    Json, Router,
+    extract::State,
+    http::StatusCode,
+    response::{IntoResponse, Response},
+    routing::get,
+};
 use serde::{Deserialize, Serialize};
+
+#[derive(Debug)]
+pub enum BubbleChatError {
+    App(AppError),
+    StaleTimestamp { server_time: i64 },
+}
+
+impl IntoResponse for BubbleChatError {
+    fn into_response(self) -> Response {
+        match self {
+            Self::App(err) => err.into_response(),
+            Self::StaleTimestamp { server_time } => (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({
+                    "error": "Stale or invalid request timestamp",
+                    "server_time": server_time,
+                })),
+            )
+                .into_response(),
+        }
+    }
+}
+
+impl From<AppError> for BubbleChatError {
+    fn from(err: AppError) -> Self {
+        Self::App(err)
+    }
+}
+
+impl From<toasty::Error> for BubbleChatError {
+    fn from(err: toasty::Error) -> Self {
+        Self::App(AppError::from(err))
+    }
+}
 
 #[derive(Deserialize)]
 struct UpdateBubbleChat {
@@ -31,7 +71,7 @@ async fn update(
     State(state): State<AppState>,
     user: AuthUser,
     Json(body): Json<UpdateBubbleChat>,
-) -> Result<Json<serde_json::Value>, AppError> {
+) -> Result<Json<serde_json::Value>, BubbleChatError> {
     validate_bubble_chat_content(&body.content)?;
 
     let now_ms = std::time::SystemTime::now()
@@ -40,10 +80,11 @@ async fn update(
         .unwrap_or(0);
 
     // Reject delayed/stale requests if sent_at is older than 5 minutes or in future > 1 minute.
+    // Return server_time in 400 response so clients can automatically calibrate clock skew.
     if body.sent_at < now_ms - 300_000 || body.sent_at > now_ms + 60_000 {
-        return Err(AppError::BadRequest(
-            "Stale or invalid request timestamp".into(),
-        ));
+        return Err(BubbleChatError::StaleTimestamp {
+            server_time: now_ms,
+        });
     }
 
     let mut db = state.db.clone();
@@ -109,6 +150,18 @@ async fn list(
 ) -> Result<Json<Vec<BubbleChatEntry>>, AppError> {
     let mut db = state.db.clone();
     let mut tx = db.transaction().await?;
+
+    // Bounded cleanup of rows whose retention period has expired even if no writes occur.
+    toasty::sql::statement(
+        "DELETE FROM bubble_chat_presence WHERE ctid IN (
+            SELECT ctid FROM bubble_chat_presence
+            WHERE retention_until <= statement_timestamp()
+            LIMIT 1000 FOR UPDATE SKIP LOCKED
+        )",
+    )
+    .exec(&mut tx)
+    .await?;
+
     let rows = toasty::sql::query(
         "SELECT DISTINCT ON (u.id) u.id, u.user_name, u.display_name::text, p.content
          FROM bubble_chat_presence p
@@ -144,5 +197,6 @@ async fn list(
             "Invalid bubble chat presence row"
         )));
     }
+    tx.commit().await?;
     Ok(Json(entries))
 }

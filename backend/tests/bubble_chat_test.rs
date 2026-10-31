@@ -304,10 +304,10 @@ async fn test_bubble_chat_presence_lifecycle() -> anyhow::Result<()> {
             .any(|entry| entry["user_id"] == alice)
     );
 
-    // Stale write older than 5 minutes is rejected with 400 Bad Request.
+    // Stale write older than 5 minutes is rejected with 400 Bad Request and contains server_time.
     let now_ms = current_time_ms();
     let past_timestamp = now_ms - 600_000;
-    let (status, _) = request(
+    let (status, body) = request(
         &app_a,
         Some(&alice),
         path,
@@ -320,6 +320,11 @@ async fn test_bubble_chat_presence_lifecycle() -> anyhow::Result<()> {
     )
     .await?;
     assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(body["error"], "Stale or invalid request timestamp");
+    let returned_server_time = body["server_time"]
+        .as_i64()
+        .expect("server_time should be present in 400 response for clock skew calibration");
+    assert!((returned_server_time - now_ms).abs() < 5000);
 
     // Requests omitting seq or sent_at are rejected.
     let (status, _) = request(
@@ -349,11 +354,9 @@ async fn test_bubble_chat_presence_lifecycle() -> anyhow::Result<()> {
     .await?;
     tx.commit().await?;
 
-    // Cleanup on next write removes expired retention row.
+    // Cleanup also works on GET even when no write occurs.
     assert_eq!(
-        request(&app_b, Some(&bob), path, Some(update(&session2, "")))
-            .await?
-            .0,
+        request(&app_b, Some(&bob), path, None).await?.0,
         StatusCode::OK
     );
     let mut tx = db.transaction().await?;

@@ -2,6 +2,7 @@
 import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
+import { ApiError } from "../lib/api/client";
 import {
   MAX_BUBBLE_CHAT_LENGTH,
   clampBubbleChatContent,
@@ -13,9 +14,13 @@ const mocks = vi.hoisted(() => ({ request: vi.fn(), get: vi.fn(), config: {} }))
 vi.mock("../lib/electric/collections", () => ({
   getCollections: () => ({ config: mocks.config }),
 }));
-vi.mock("../lib/api/client", () => ({
-  createConfiguredApiClient: () => ({ request: mocks.request, get: mocks.get }),
-}));
+vi.mock("../lib/api/client", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../lib/api/client")>();
+  return {
+    ...actual,
+    createConfiguredApiClient: () => ({ request: mocks.request, get: mocks.get }),
+  };
+});
 
 let root: Root;
 let element: HTMLDivElement;
@@ -435,11 +440,16 @@ describe("useBubbleChat", () => {
     expect(state.entries).toEqual([]);
   });
 
-  it("treats stale: true response as failure and retries write with updated server time offset", async () => {
-    // 1. First write receives stale rejection with server_time
+  it("calibrates clock skew and retries write when receiving 400 Bad Request with server_time", async () => {
+    // 1. First write receives 400 Bad Request error with server_time from backend
     const now = Date.now();
     const serverTime = now + 120_000; // Server is 2 minutes ahead
-    mocks.request.mockResolvedValueOnce({ ok: false, stale: true, server_time: serverTime });
+    mocks.request.mockRejectedValueOnce(
+      new ApiError(400, "Request to /api/bubble failed with status 400", {
+        error: "Stale or invalid request timestamp",
+        server_time: serverTime,
+      }),
+    );
 
     await flush(() => root.render(createElement(Probe)));
     await flush(() => state.setContent("テスト"));

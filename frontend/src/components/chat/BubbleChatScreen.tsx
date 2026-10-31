@@ -202,8 +202,8 @@ export function BubbleChatScreen() {
         <Button
           variant={isParticipantsOpen ? "secondary" : "outline"}
           size="sm"
-          aria-label={t("bubbleChat.participants")}
-          title={t("bubbleChat.participants")}
+          aria-label={`${t("bubbleChat.participants")} ${participants.length}`}
+          title={t("bubbleChat.participantsTitle", { count: participants.length })}
           className="gap-1.5"
           onClick={() => setIsParticipantsOpen((prev) => !prev)}
         >

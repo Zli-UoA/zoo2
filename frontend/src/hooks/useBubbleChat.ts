@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { createConfiguredApiClient } from "../lib/api/client";
+import { ApiError, createConfiguredApiClient } from "../lib/api/client";
 import { useCollections } from "../lib/electric/collections-context";
 
 export const MAX_BUBBLE_CHAT_LENGTH = 1000;
@@ -118,9 +118,20 @@ export function useBubbleChat(enabled = true) {
             if (valueToSend === "" && requestSeq >= latestNonEmptySeq) {
               serverMayHaveContent = false;
             }
-          } catch {
+          } catch (err) {
             if (abortController.signal.aborted && cancelled) {
               return;
+            }
+            // Calibrate clock skew if server returns server_time in 400 Bad Request error response
+            const errorBody =
+              err instanceof ApiError ? err.body : (err as { body?: unknown } | undefined)?.body;
+            if (
+              typeof errorBody === "object" &&
+              errorBody !== null &&
+              "server_time" in errorBody &&
+              typeof (errorBody as { server_time?: unknown }).server_time === "number"
+            ) {
+              serverTimeOffset = (errorBody as { server_time: number }).server_time - Date.now();
             }
             // If there is no immediate subsequent write pending and either the latest target content
             // is not confirmed or the server may still hold unconfirmed content, schedule a retry.
