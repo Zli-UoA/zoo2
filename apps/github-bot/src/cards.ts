@@ -18,6 +18,17 @@ function https(value: unknown): string {
   return "";
 }
 export function messageBlocks(notice: Notice, s: Json, payload: Json, reply = false): Json[] {
+  // The parent is canonical current state; progress replies record the delivered transition.
+  if (reply && notice.target.kind === "workflow" && payload.workflow_run)
+    s = { ...s, ...payload.workflow_run };
+  if (reply && notice.target.kind === "deployment" && payload.deployment_status)
+    s = {
+      ...s,
+      ...payload.deployment,
+      latest: payload.deployment_status,
+      deploymentWorkflow:
+        s.latest?.log_url === payload.deployment_status.log_url ? s.deploymentWorkflow : undefined,
+    };
   const repo = displayRepository(notice.target.repo, payload);
   const target = { ...notice.target, repo };
   const state = String(
@@ -141,6 +152,7 @@ export function messageBlocks(notice: Notice, s: Json, payload: Json, reply = fa
     } else description = "";
   }
   const timestamp =
+    (notice.target.kind === "deployment" ? s.latest?.created_at : undefined) ??
     s.updated_at ??
     s.published_at ??
     payload.deployment_status?.created_at ??

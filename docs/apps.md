@@ -84,7 +84,7 @@ Appは完了済みファイルを自分のメッセージへ添付できます�
 
 `link_domains` に登録したドメインのリンクを `link.shared` で受け取り、`unfurls` APIで共通カードを設定できます。Zooは任意のリンク先を取得しません。カードには提供Appを表示します。
 
-App の投稿には `POST /api/apps/v1/messages/{id}/blocks` で `{"type":"card","card":{...}}` ブロックも設定できます。カードは共通の `title`、`description`、HTTPS の `url`、`source`、`context`、`author`、`badge`、`color` と、最大10件の `fields` を持ちます。各 field は `title`・`value`、任意の `short`（2列表示）、HTTPS の `url`、`code`（等幅表示）です。既存の `ui:write` と投稿の所有者チェックを使い、操作イベントは発生しません。カードブロックがある投稿では本文を表示上のフォールバックとして扱い、カードとの重複表示を避けます。更新時は本文とブロックを両方更新してください。
+App の投稿には `POST /api/apps/v1/messages/{id}/blocks` で `{"type":"card","card":{...}}` ブロックも設定できます。カードは共通の `title`、`description`、HTTPS の `url`、`source`、`context`、`author`、`badge`、`color` と、最大10件の `fields` を持ちます。各 field は `title`・`value`、任意の `short`（2列表示）、HTTPS の `url`、`code`（等幅表示）です。この投稿 API は既存の `messages:write` と投稿の所有者チェックを使い、操作イベントは発生しません。カードブロックがある投稿では本文を表示上のフォールバックとして扱い、カードとの重複表示を避けます。更新時は本文とブロックを両方更新してください。
 
 ## 既存Webhookと移行
 

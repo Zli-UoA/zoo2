@@ -3,6 +3,59 @@ import assert from "node:assert/strict";
 import { fixture, job, command } from "./helpers.ts";
 import { preview } from "../src/previews.ts";
 
+test("late workflow and deployment transitions keep their historical reply state", async (t) => {
+  const f = fixture();
+  t.after(() => f.store.close());
+  const queued = structuredClone(f.remote.run);
+  await f.bot.githubEvent(job("workflow_run", { action: "requested", workflow_run: queued }));
+  f.remote.run.status = "completed";
+  f.remote.run.conclusion = "failure";
+  const progress = { ...queued, status: "in_progress", updated_at: "2026-10-30T00:01:00Z" };
+  await f.bot.githubEvent(job("workflow_run", { action: "in_progress", workflow_run: progress }));
+  const workflowRoot = f.store.thread("channel", {
+    repo: "acme/project",
+    kind: "workflow",
+    number: "42",
+  })!;
+  const workflowReply = [...f.zoo.messages.values()].find(
+    (m) => m.parent_id === workflowRoot.message,
+  )!;
+  const status = (message: any) =>
+    message.blocks[1].card.fields.find((f: any) => f.title === "Status").value;
+  assert.equal(status(f.zoo.messages.get(workflowRoot.message)), "failure");
+  assert.equal(status(workflowReply), "in_progress");
+  assert.equal(workflowReply.blocks[1].card.context, progress.updated_at);
+
+  await f.bot.githubEvent(
+    job("deployment_status", {
+      deployment: f.remote.deployment,
+      deployment_status: f.remote.deploymentState,
+    }),
+  );
+  f.remote.deploymentState = { id: 114, state: "success", created_at: "2026-10-30T00:03:00Z" };
+  const historical = {
+    id: 113,
+    state: "in_progress",
+    created_at: "2026-10-30T00:02:00Z",
+    environment_url: "https://preview.example",
+  };
+  await f.bot.githubEvent(
+    job("deployment_status", { deployment: f.remote.deployment, deployment_status: historical }),
+  );
+  const deploymentRoot = f.store.thread("channel", {
+    repo: "acme/project",
+    kind: "deployment",
+    number: "11",
+  })!;
+  const deploymentReply = [...f.zoo.messages.values()].find(
+    (m) => m.parent_id === deploymentRoot.message,
+  )!;
+  assert.equal(status(f.zoo.messages.get(deploymentRoot.message)), "Completed");
+  assert.equal(status(deploymentReply), "in_progress");
+  assert.equal(deploymentReply.blocks[1].card.context, historical.created_at);
+  assert.equal(deploymentReply.blocks[1].card.url, "https://preview.example/");
+});
+
 test("deployment cards show canonical repository spelling, status, commit and workflow links", async (t) => {
   const f = fixture();
   t.after(() => f.store.close());
