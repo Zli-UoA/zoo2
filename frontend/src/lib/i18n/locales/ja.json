@@ -201,6 +201,21 @@
     "copyFailed": "原文をコピーできませんでした",
     "edited": "編集済み"
   },
+  "attachments": {
+    "add": "画像を添付",
+    "selected": "添付する画像",
+    "remove": "{{name}}を削除",
+    "unsupported": "PNG・JPEG・WebP・GIF の画像を添付できます。",
+    "tooLarge": "画像は{{max}}MB以下にしてください。",
+    "tooMany": "画像は{{max}}枚まで添付できます。",
+    "uploading": "画像をアップロード中…",
+    "uploadError": "画像をアップロードできませんでした。",
+    "loading": "読み込み中…",
+    "loadError": "読み込めませんでした",
+    "open": "{{name}}を開く",
+    "download": "{{name}}をダウンロード",
+    "retry": "再試行"
+  },
   "threads": {
     "title": "スレッド",
     "close": "スレッドを閉じる",

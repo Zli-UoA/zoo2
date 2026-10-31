@@ -93,6 +93,23 @@ describe("canSubmitComposer", () => {
   });
 });
 
+describe("canSubmitComposer with attachments", () => {
+  it("allows sending an attachment without text", () => {
+    expect(canSubmitComposer("", false, 1)).toBe(true);
+    expect(canSubmitComposer("   ", false, 2)).toBe(true);
+  });
+
+  it("blocks sending while an attachment is uploading", () => {
+    expect(canSubmitComposer("hello", false, 1, true)).toBe(false);
+    expect(canSubmitComposer("", false, 1, true)).toBe(false);
+  });
+
+  it("keeps the existing empty-draft rule without attachments", () => {
+    expect(canSubmitComposer("", false, 0, false)).toBe(false);
+    expect(canSubmitComposer("hello", false, 0, false)).toBe(true);
+  });
+});
+
 describe("resolveComposerPlatform", () => {
   it("macOS を判定する", () => {
     expect(resolveComposerPlatform("MacIntel")).toBe("mac");

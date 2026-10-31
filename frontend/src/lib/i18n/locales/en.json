@@ -201,6 +201,21 @@
     "copyFailed": "Could not copy the original text",
     "edited": "Edited"
   },
+  "attachments": {
+    "add": "Attach images",
+    "selected": "Images to attach",
+    "remove": "Remove {{name}}",
+    "unsupported": "You can attach PNG, JPEG, WebP, or GIF images.",
+    "tooLarge": "Images must be {{max}} MB or smaller.",
+    "tooMany": "You can attach up to {{max}} images.",
+    "uploading": "Uploading image…",
+    "uploadError": "Could not upload the image.",
+    "loading": "Loading…",
+    "loadError": "Could not load",
+    "open": "Open {{name}}",
+    "download": "Download {{name}}",
+    "retry": "Try again"
+  },
   "threads": {
     "title": "Thread",
     "close": "Close thread",

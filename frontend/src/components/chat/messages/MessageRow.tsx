@@ -19,6 +19,7 @@ import { LinkPreviews } from "./LinkPreviews.tsx";
 import { useLocale } from "../../i18n/LocaleProvider";
 import type { KitchenCatalog } from "../../../lib/emoji/kitchen";
 import { kitchenLabel, reactionKey } from "../../../lib/emoji/kitchen";
+import type { AttachmentRow } from "../../../lib/electric/types";
 import type { ReactionGroup } from "../../../lib/emoji/reactions";
 import { AppAvatar, AuthorIdentity } from "../AppIdentity";
 import { MessageAppContent, hasCardBlocks } from "../AppBlocks";
@@ -34,6 +35,7 @@ import { Textarea } from "../../ui/textarea";
 import { normalizeUtcTimestamp } from "../../../lib/timestamps";
 import { authorLabel, formatDateSeparator, formatTime, fullTimestamp } from "./messageFormat";
 import type { MessageItem } from "./messageGrouping";
+import { MessageAttachments } from "./MessageAttachments";
 import { ReactionEmoji } from "./ReactionEmoji";
 
 export interface MessageRowProps {
@@ -56,6 +58,7 @@ export interface MessageRowProps {
   replyCount?: number;
   /** スレッドペインを開く。返信行では未指定。 */
   onOpenThread?: () => void;
+  attachments?: AttachmentRow[];
 }
 
 function EditedIndicator({ at }: { at: string }) {
@@ -174,6 +177,7 @@ export function MessageRow({
   onPickReaction,
   replyCount = 0,
   onOpenThread,
+  attachments = [],
 }: MessageRowProps) {
   const { t } = useTranslation();
   const { locale } = useLocale();
@@ -338,6 +342,7 @@ export function MessageRow({
                 appBlocks={message.app_blocks}
                 editedAt={message.updated_at}
               />
+              <MessageAttachments attachments={attachments} />
               <MessageAppContent message={message} />
               {message.updated_at && hasCardBlocks(message.app_blocks) ? (
                 <EditedIndicator at={message.updated_at} />

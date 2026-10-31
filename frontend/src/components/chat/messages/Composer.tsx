@@ -2,12 +2,23 @@ import { Textarea } from "../../ui/textarea";
 import { ComposerField, composerTextareaClassName } from "./ComposerField";
 import { useAutosizeTextarea } from "../../../hooks/useAutosizeTextarea";
 import { useTranslation } from "react-i18next";
-import { useEffect, useId, useLayoutEffect, useRef, useState } from "react";
-import { SendIcon } from "lucide-react";
+import { useEffect, useId, useLayoutEffect, useRef, useState, type ClipboardEvent } from "react";
+import { ImagePlusIcon, SendIcon, XIcon } from "lucide-react";
 
 import type { TFunction } from "i18next";
+import {
+  MAX_ATTACHMENTS_PER_MESSAGE,
+  MAX_ATTACHMENT_FILE_SIZE,
+  SUPPORTED_IMAGE_TYPES,
+  attachmentFileName,
+  attachmentRejection,
+  imageFilesFromClipboard,
+  resolveSupportedImageType,
+} from "../../../lib/attachments";
+import type { UploadedAttachment } from "../../../lib/api/attachments";
 import { useMediaQuery } from "../../layout/useMediaQuery";
 import { Button } from "../../ui/button";
+import { Spinner } from "../../ui/spinner";
 
 import { insertMention, mentionOptions, mentionQuery, type MentionOption } from "./mentions";
 import { insertMfm, mfmOptions, mfmQuery } from "./mfmSuggestions";
@@ -68,9 +79,14 @@ export function shouldSendFromKey(input: ComposerKeyInput, platform: ComposerPla
   return input.metaKey || input.ctrlKey;
 }
 
-/** 空白のみ・空の下書きや入力無効時は送信しない。 */
-export function canSubmitComposer(value: string, disabled: boolean): boolean {
-  return !disabled && value.trim().length > 0;
+/** 空白のみの下書きでも添付があれば送信できる。アップロード中は送信しない。 */
+export function canSubmitComposer(
+  value: string,
+  disabled: boolean,
+  attachmentCount = 0,
+  isUploading = false,
+): boolean {
+  return !disabled && !isUploading && (value.trim().length > 0 || attachmentCount > 0);
 }
 
 /** キーボード操作を案内できないタッチ環境では案内を表示しない。 */
@@ -91,6 +107,15 @@ export function composerSendHint(
   return t("composer.other");
 }
 
+interface ComposerAttachmentDraft {
+  key: string;
+  file: File;
+  file_name: string;
+  preview_url: string;
+  status: "uploading" | "ready";
+  attachment_id?: string;
+}
+
 interface ComposerProps {
   commands?: readonly CommandSuggestion[];
   onRequestCommands?: () => void;
@@ -98,7 +123,9 @@ interface ComposerProps {
   mentionMemberIds?: ReadonlySet<string>;
   /** 送信を実行し、成功したかを返す。false なら下書きを復元する。 */
   onTyping?: (active: boolean) => void;
-  onSend: (content: string, commandAppId?: string) => Promise<boolean>;
+  onSend: (content: string, commandAppId?: string, attachmentIds?: string[]) => Promise<boolean>;
+  /** 画像をアップロードして添付 ID を返す。未指定なら添付 UI を出さない。 */
+  onUploadAttachment?: (file: File) => Promise<UploadedAttachment>;
   disabled?: boolean;
   placeholder?: string;
   ariaLabel?: string;
@@ -115,6 +142,7 @@ export function Composer({
   mentionUsers = [],
   mentionMemberIds = new Set(),
   onSend,
+  onUploadAttachment,
   disabled = false,
   placeholder,
   ariaLabel,
@@ -126,6 +154,10 @@ export function Composer({
   const [caret, setCaret] = useState(0);
   const [activeOption, setActiveOption] = useState(0);
   const [dismissed, setDismissed] = useState(false);
+  const [drafts, setDrafts] = useState<ComposerAttachmentDraft[]>([]);
+  const [attachmentError, setAttachmentError] = useState<string | null>(null);
+  const draftsRef = useRef<ComposerAttachmentDraft[]>([]);
+  const fileInputRef = useRef<HTMLInputElement>(null);
   const composingRef = useRef(false);
   const draftVersion = useRef(0);
   const listId = useId();
@@ -220,22 +252,145 @@ export function Composer({
     onTyping?.(element.value.trim().length > 0);
   }
 
+  function updateDrafts(next: ComposerAttachmentDraft[]) {
+    draftsRef.current = next;
+    setDrafts(next);
+  }
+
+  function revokeDrafts(entries: ComposerAttachmentDraft[]) {
+    for (const draft of entries) {
+      URL.revokeObjectURL(draft.preview_url);
+    }
+  }
+
+  function removeDraft(key: string) {
+    const draft = draftsRef.current.find((candidate) => candidate.key === key);
+    if (!draft) {
+      return;
+    }
+    updateDrafts(draftsRef.current.filter((candidate) => candidate.key !== key));
+    URL.revokeObjectURL(draft.preview_url);
+  }
+
+  function rejectionMessage(reason: ReturnType<typeof attachmentRejection>): string | null {
+    if (reason === "too-many") {
+      return t("attachments.tooMany", { max: MAX_ATTACHMENTS_PER_MESSAGE });
+    }
+    if (reason === "too-large") {
+      return t("attachments.tooLarge", {
+        max: Math.floor(MAX_ATTACHMENT_FILE_SIZE / (1024 * 1024)),
+      });
+    }
+    if (reason === "unsupported") {
+      return t("attachments.unsupported");
+    }
+    return null;
+  }
+
+  function addFiles(files: File[]) {
+    const upload = onUploadAttachment;
+    if (!upload || disabled || files.length === 0) {
+      return;
+    }
+    let error: string | null = null;
+    const accepted: { draft: ComposerAttachmentDraft; upload: typeof upload }[] = [];
+    for (const file of files) {
+      const reason = attachmentRejection(file, draftsRef.current.length + accepted.length);
+      if (reason) {
+        error ??= rejectionMessage(reason);
+        continue;
+      }
+      const contentType = resolveSupportedImageType(file);
+      if (!contentType) {
+        error ??= t("attachments.unsupported");
+        continue;
+      }
+      accepted.push({
+        upload,
+        draft: {
+          key: crypto.randomUUID(),
+          file,
+          file_name: attachmentFileName(file, contentType),
+          preview_url: URL.createObjectURL(file),
+          status: "uploading",
+        },
+      });
+    }
+    setAttachmentError(error);
+    if (accepted.length === 0) {
+      return;
+    }
+    updateDrafts([...draftsRef.current, ...accepted.map((entry) => entry.draft)]);
+    for (const entry of accepted) {
+      void uploadDraft(entry.draft, entry.upload);
+    }
+  }
+
+  async function uploadDraft(
+    draft: ComposerAttachmentDraft,
+    upload: (file: File) => Promise<UploadedAttachment>,
+  ) {
+    try {
+      const uploaded = await upload(draft.file);
+      updateDrafts(
+        draftsRef.current.map((candidate) =>
+          candidate.key === draft.key
+            ? {
+                ...candidate,
+                status: "ready" as const,
+                attachment_id: uploaded.id,
+                file_name: uploaded.file_name,
+              }
+            : candidate,
+        ),
+      );
+    } catch {
+      removeDraft(draft.key);
+      setAttachmentError(t("attachments.uploadError"));
+    }
+  }
+
+  function handlePaste(event: ClipboardEvent<HTMLTextAreaElement>) {
+    if (!onUploadAttachment || disabled) {
+      return;
+    }
+    const files = imageFilesFromClipboard(event.clipboardData);
+    if (files.length === 0) {
+      return;
+    }
+    event.preventDefault();
+    addFiles(files);
+  }
+
   async function submit() {
     const content = value.trim();
-    if (composingRef.current || !canSubmitComposer(value, disabled)) {
+    const ready = draftsRef.current.filter(
+      (draft) => draft.status === "ready" && draft.attachment_id,
+    );
+    const uploading = draftsRef.current.some((draft) => draft.status === "uploading");
+    if (composingRef.current || !canSubmitComposer(value, disabled, ready.length, uploading)) {
       return;
     }
     const version = draftVersion.current;
+    const restoreDrafts = draftsRef.current;
+    const attachmentIds = ready.map((draft) => draft.attachment_id!);
+    const commandAppId =
+      selectedCommand &&
+      (content === `/${selectedCommand.name}` || content.startsWith(`/${selectedCommand.name} `))
+        ? selectedCommand.app_id
+        : undefined;
+    setAttachmentError(null);
     setSelectedCommand(null);
     setValue("");
     onTyping?.(false);
+    updateDrafts([]);
     let sent = false;
     try {
       sent =
-        selectedCommand && content.startsWith(`/${selectedCommand.name} `)
-          ? await onSend(content, selectedCommand.app_id)
-          : selectedCommand && content === `/${selectedCommand.name}`
-            ? await onSend(content, selectedCommand.app_id)
+        attachmentIds.length > 0
+          ? await onSend(content, undefined, attachmentIds)
+          : commandAppId
+            ? await onSend(content, commandAppId)
             : await onSend(content);
     } catch {
       sent = false;
@@ -244,8 +399,22 @@ export function Composer({
       if (draftVersion.current === version) setSelectedCommand(selectedCommand);
       // 失敗時は下書きを戻す。ただし待っている間に次の入力を始めていたら邪魔しない。
       setValue((current) => (current.length > 0 ? current : content));
+      updateDrafts([...draftsRef.current, ...restoreDrafts]);
+      return;
     }
+    revokeDrafts(restoreDrafts);
   }
+
+  const readyAttachmentCount = drafts.filter(
+    (draft) => draft.status === "ready" && draft.attachment_id,
+  ).length;
+  const isUploading = drafts.some((draft) => draft.status === "uploading");
+
+  useLayoutEffect(() => {
+    return () => {
+      revokeDrafts(draftsRef.current);
+    };
+  }, []);
 
   return (
     <form
@@ -256,6 +425,42 @@ export function Composer({
         void submit();
       }}
     >
+      {drafts.length > 0 ? (
+        <ul className="mb-2 flex flex-wrap gap-2" aria-label={t("attachments.selected")}>
+          {drafts.map((draft) => (
+            <li
+              key={draft.key}
+              className="relative size-20 overflow-hidden rounded-lg border bg-muted"
+            >
+              <img
+                src={draft.preview_url}
+                alt={draft.file_name}
+                className="size-full object-cover"
+              />
+              {draft.status === "uploading" ? (
+                <Spinner
+                  label={t("attachments.uploading")}
+                  className="absolute inset-0 bg-background/60"
+                />
+              ) : null}
+              <button
+                type="button"
+                className="absolute right-1 top-1 grid size-6 place-items-center rounded-full bg-background/90 text-foreground shadow-sm hover:bg-background"
+                aria-label={t("attachments.remove", { name: draft.file_name })}
+                title={t("attachments.remove", { name: draft.file_name })}
+                onClick={() => removeDraft(draft.key)}
+              >
+                <XIcon className="size-3.5" />
+              </button>
+            </li>
+          ))}
+        </ul>
+      ) : null}
+      {attachmentError ? (
+        <p role="alert" className="mb-2 px-1 text-xs text-destructive">
+          {attachmentError}
+        </p>
+      ) : null}
       {options.length > 0 ? (
         <ul
           id={listId}
@@ -302,6 +507,34 @@ export function Composer({
         </ul>
       ) : null}
       <ComposerField>
+        {onUploadAttachment ? (
+          <>
+            <input
+              ref={fileInputRef}
+              type="file"
+              accept={SUPPORTED_IMAGE_TYPES.join(",")}
+              multiple
+              hidden
+              onChange={(event) => {
+                const files = Array.from(event.currentTarget.files ?? []);
+                event.currentTarget.value = "";
+                addFiles(files);
+              }}
+            />
+            <Button
+              type="button"
+              variant="ghost"
+              size="icon-lg"
+              className="mb-1 size-11! shrink-0 md:size-9!"
+              aria-label={t("attachments.add")}
+              title={t("attachments.add")}
+              disabled={disabled || drafts.length >= MAX_ATTACHMENTS_PER_MESSAGE}
+              onClick={() => fileInputRef.current?.click()}
+            >
+              <ImagePlusIcon />
+            </Button>
+          </>
+        ) : null}
         <Textarea
           ref={textareaRef}
           rows={1}
@@ -313,6 +546,7 @@ export function Composer({
           aria-autocomplete="list"
           aria-controls={options.length ? listId : undefined}
           aria-activedescendant={options.length ? `${listId}-${selectedOption}` : undefined}
+          onPaste={handlePaste}
           onCompositionStart={() => {
             composingRef.current = true;
             setDismissed(false);
@@ -387,7 +621,7 @@ export function Composer({
           type="submit"
           size="icon-lg"
           className="mb-1 size-11! md:size-9!"
-          disabled={!canSubmitComposer(value, disabled)}
+          disabled={!canSubmitComposer(value, disabled, readyAttachmentCount, isUploading)}
           aria-label={t("messages.send")}
           title={t("messages.send")}
         >

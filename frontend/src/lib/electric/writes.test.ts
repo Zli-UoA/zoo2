@@ -115,6 +115,27 @@ describe("message writes", () => {
     });
   });
 
+  it("sends attachment_ids from insert metadata", async () => {
+    const { client, post } = makeClient();
+    const writes = createMessageWrites({
+      client,
+      txidMode: "awaitTxId",
+      getCurrentUserId: () => CURRENT_USER,
+    });
+    const { collection } = makeCollection();
+
+    await writes.onInsert(
+      params(collection, [insertMutation(message, { attachment_ids: ["a1", "a2"] })]),
+    );
+
+    expect(post).toHaveBeenCalledWith("/api/messages", {
+      id: "m1",
+      channel_id: "c1",
+      content: "hello",
+      attachment_ids: ["a1", "a2"],
+    });
+  });
+
   it("PATCHes content edits", async () => {
     const { client, patch } = makeClient();
     const writes = createMessageWrites({

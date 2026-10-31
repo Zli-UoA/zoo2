@@ -12,6 +12,7 @@ import {
 } from "react";
 
 import type { KitchenCatalog } from "../../../lib/emoji/kitchen";
+import type { AttachmentRow } from "../../../lib/electric/types";
 import type { ReactionGroup } from "../../../lib/emoji/reactions";
 import { Button } from "../../ui/button";
 import { Skeleton } from "../../ui/skeleton";
@@ -56,6 +57,7 @@ interface MessageListProps {
   onReaction: (messageId: string, emoji: string) => void;
   onPickReaction: (messageId: string) => void;
   replyCounts: Map<string, number>;
+  attachments?: Map<string, AttachmentRow[]>;
   onOpenThread: (messageId: string) => void;
   /** 送信できる状態か。false なら空状態で「最初のメッセージ」を促さない。 */
   canCompose?: boolean;
@@ -147,6 +149,7 @@ export function MessageList({
   onReaction,
   onPickReaction,
   replyCounts,
+  attachments,
   onOpenThread,
   canCompose = true,
   isOffline = false,
@@ -497,6 +500,7 @@ export function MessageList({
                     onRequestDelete={() => onRequestDelete(item.message.id)}
                     replyCount={replyCounts.get(item.message.id) ?? 0}
                     onOpenThread={() => onOpenThread(item.message.id)}
+                    attachments={attachments?.get(item.message.id) ?? []}
                   />
                 </div>
               );
