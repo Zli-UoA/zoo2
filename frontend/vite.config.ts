@@ -72,6 +72,8 @@ const config = defineConfig({
             enabled: true,
             headless: true,
             provider: playwright({
+              // Keep text rasterization consistent across Linux hosts and GPUs.
+              launchOptions: { args: ["--disable-lcd-text", "--font-render-hinting=none"] },
               contextOptions: {
                 timezoneId: "Asia/Tokyo",
                 locale: "ja-JP",
