@@ -32,6 +32,7 @@ import {
   removeOfflineDatabase,
   retryPendingOfflineDeletion,
 } from "../../lib/offline/persistence";
+import { prepareOfflineWorker } from "../../lib/pwa/worker-registration";
 import { ShellSkeleton } from "../layout/ShellSkeleton";
 
 interface ReadyState {
@@ -149,6 +150,14 @@ export function OfflineProvider({ config, children }: { config: AppConfig; child
       let persistenceStatus: OfflinePersistenceStatus = "unavailable";
       let persistenceError: string | null = null;
       await retryPendingOfflineDeletion();
+      // The Worker response may still be cached with the previous deployment's CSP.
+      // Upgrade the controlling SW before the first SQLite open, not after rendering the shell.
+      try {
+        await prepareOfflineWorker();
+      } catch {
+        // SW setup is optional: OPFS may still work directly, including offline.
+      }
+      if (cancelled) return;
       try {
         const handle = await openOfflinePersistence(namespace);
         if (cancelled) return;

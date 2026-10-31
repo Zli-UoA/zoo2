@@ -1001,6 +1001,10 @@ async fn test_production_environment_fail_closed_guards() -> anyhow::Result<()> 
     let mut prod_config = base_state.config.clone();
     prod_config.dev_auth_enabled = false;
     prod_config.environment = "production".to_string();
+    prod_config.s3.endpoint = "https://prod.r2.cloudflarestorage.com".to_string();
+    prod_config.s3.bucket = "zoo-attachments-prod".to_string();
+    prod_config.s3.access_key_id = "prod_access_key".to_string();
+    prod_config.s3.secret_access_key = "prod_secret_key".to_string();
     assert!(prod_config.validate().is_ok());
 
     let prod_state = AppState::new(base_state.db.clone(), prod_config);

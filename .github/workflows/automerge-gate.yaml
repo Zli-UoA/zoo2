@@ -9,14 +9,13 @@ on:
 jobs:
   gate:
     if: >-
-      github.event_name != 'pull_request_review' ||
-      github.event.review.state == 'approved'
+      !cancelled() &&
+      (github.event_name != 'pull_request_review' || github.event.review.state == 'approved')
     concurrency:
       group: ${{ github.workflow }}-${{ github.ref }}
       cancel-in-progress: true
-    runs-on: ubuntu-latest
-    # Allow cold builds and self-hosted runner queueing before checks complete.
-    timeout-minutes: 180
+    runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-latest' || 'zli-kubecamp-no-docker' }}
+    timeout-minutes: 35
     permissions:
       statuses: write
       checks: read
@@ -30,5 +29,6 @@ jobs:
           ignore-checks: |
             [
               { "workflow": "cd-images.yaml" },
-              { "workflow": "cd-preview-label.yaml" }
+              { "workflow": "cd-preview-label.yaml" },
+              { "workflow": "cd-storybook.yaml" }
             ]

@@ -1,0 +1,6960 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "Zoo App API",
+    "version": "1.0.0",
+    "description": "External app APIs and management. See apps.md for scope, transport, and storage contracts."
+  },
+  "servers": [
+    {
+      "url": "/"
+    }
+  ],
+  "paths": {
+    "/api/apps/v1/auth": {
+      "get": {
+        "operationId": "get_api_apps_v1_auth",
+        "summary": "GET /api/apps/v1/auth",
+        "security": [
+          {
+            "appBearer": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success. Chat writes use {data,txid}; platform operations return JSON directly.",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid input",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Invalid or expired credentials"
+          },
+          "403": {
+            "description": "Missing scope or permission"
+          },
+          "404": {
+            "description": "Missing or inaccessible resource"
+          },
+          "409": {
+            "description": "Revision or idempotency conflict"
+          },
+          "429": {
+            "description": "Installation rate limit",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/apps/v1/messages": {
+      "post": {
+        "operationId": "post_api_apps_v1_messages",
+        "summary": "POST /api/apps/v1/messages",
+        "security": [
+          {
+            "appBearer": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success. Chat writes use {data,txid}; platform operations return JSON directly.",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid input",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Invalid or expired credentials"
+          },
+          "403": {
+            "description": "Missing scope or permission"
+          },
+          "404": {
+            "description": "Missing or inaccessible resource"
+          },
+          "409": {
+            "description": "Revision or idempotency conflict"
+          },
+          "429": {
+            "description": "Installation rate limit",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer"
+                }
+              }
+            }
+          }
+        },
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MessageInput"
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/apps/v1/messages/{id}": {
+      "patch": {
+        "operationId": "patch_api_apps_v1_messages_id",
+        "summary": "PATCH /api/apps/v1/messages/{id}",
+        "security": [
+          {
+            "appBearer": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success. Chat writes use {data,txid}; platform operations return JSON directly.",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid input",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Invalid or expired credentials"
+          },
+          "403": {
+            "description": "Missing scope or permission"
+          },
+          "404": {
+            "description": "Missing or inaccessible resource"
+          },
+          "409": {
+            "description": "Revision or idempotency conflict"
+          },
+          "429": {
+            "description": "Installation rate limit",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer"
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object"
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "operationId": "delete_api_apps_v1_messages_id",
+        "summary": "DELETE /api/apps/v1/messages/{id}",
+        "security": [
+          {
+            "appBearer": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success. Chat writes use {data,txid}; platform operations return JSON directly.",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid input",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Invalid or expired credentials"
+          },
+          "403": {
+            "description": "Missing scope or permission"
+          },
+          "404": {
+            "description": "Missing or inaccessible resource"
+          },
+          "409": {
+            "description": "Revision or idempotency conflict"
+          },
+          "429": {
+            "description": "Installation rate limit",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer"
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ]
+      }
+    },
+    "/api/apps/v1/messages/{id}/reactions": {
+      "post": {
+        "operationId": "post_api_apps_v1_messages_id_reactions",
+        "summary": "POST /api/apps/v1/messages/{id}/reactions",
+        "security": [
+          {
+            "appBearer": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success. Chat writes use {data,txid}; platform operations return JSON directly.",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid input",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Invalid or expired credentials"
+          },
+          "403": {
+            "description": "Missing scope or permission"
+          },
+          "404": {
+            "description": "Missing or inaccessible resource"
+          },
+          "409": {
+            "description": "Revision or idempotency conflict"
+          },
+          "429": {
+            "description": "Installation rate limit",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer"
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object"
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "operationId": "delete_api_apps_v1_messages_id_reactions",
+        "summary": "DELETE /api/apps/v1/messages/{id}/reactions",
+        "security": [
+          {
+            "appBearer": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success. Chat writes use {data,txid}; platform operations return JSON directly.",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid input",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Invalid or expired credentials"
+          },
+          "403": {
+            "description": "Missing scope or permission"
+          },
+          "404": {
+            "description": "Missing or inaccessible resource"
+          },
+          "409": {
+            "description": "Revision or idempotency conflict"
+          },
+          "429": {
+            "description": "Installation rate limit",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer"
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ]
+      }
+    },
+    "/api/apps/v1/channels": {
+      "post": {
+        "operationId": "post_api_apps_v1_channels",
+        "summary": "POST /api/apps/v1/channels",
+        "security": [
+          {
+            "appBearer": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success. Chat writes use {data,txid}; platform operations return JSON directly.",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid input",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Invalid or expired credentials"
+          },
+          "403": {
+            "description": "Missing scope or permission"
+          },
+          "404": {
+            "description": "Missing or inaccessible resource"
+          },
+          "409": {
+            "description": "Revision or idempotency conflict"
+          },
+          "429": {
+            "description": "Installation rate limit",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer"
+                }
+              }
+            }
+          }
+        },
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object"
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/apps/v1/channels/{id}": {
+      "patch": {
+        "operationId": "patch_api_apps_v1_channels_id",
+        "summary": "PATCH /api/apps/v1/channels/{id}",
+        "security": [
+          {
+            "appBearer": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success. Chat writes use {data,txid}; platform operations return JSON directly.",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid input",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Invalid or expired credentials"
+          },
+          "403": {
+            "description": "Missing scope or permission"
+          },
+          "404": {
+            "description": "Missing or inaccessible resource"
+          },
+          "409": {
+            "description": "Revision or idempotency conflict"
+          },
+          "429": {
+            "description": "Installation rate limit",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer"
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object"
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "operationId": "delete_api_apps_v1_channels_id",
+        "summary": "DELETE /api/apps/v1/channels/{id}",
+        "security": [
+          {
+            "appBearer": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success. Chat writes use {data,txid}; platform operations return JSON directly.",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid input",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Invalid or expired credentials"
+          },
+          "403": {
+            "description": "Missing scope or permission"
+          },
+          "404": {
+            "description": "Missing or inaccessible resource"
+          },
+          "409": {
+            "description": "Revision or idempotency conflict"
+          },
+          "429": {
+            "description": "Installation rate limit",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer"
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ]
+      }
+    },
+    "/api/apps/v1/channels/{id}/join": {
+      "post": {
+        "operationId": "post_api_apps_v1_channels_id_join",
+        "summary": "POST /api/apps/v1/channels/{id}/join",
+        "security": [
+          {
+            "appBearer": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success. Chat writes use {data,txid}; platform operations return JSON directly.",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid input",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Invalid or expired credentials"
+          },
+          "403": {
+            "description": "Missing scope or permission"
+          },
+          "404": {
+            "description": "Missing or inaccessible resource"
+          },
+          "409": {
+            "description": "Revision or idempotency conflict"
+          },
+          "429": {
+            "description": "Installation rate limit",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer"
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object"
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/apps/v1/channels/{id}/leave": {
+      "post": {
+        "operationId": "post_api_apps_v1_channels_id_leave",
+        "summary": "POST /api/apps/v1/channels/{id}/leave",
+        "security": [
+          {
+            "appBearer": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success. Chat writes use {data,txid}; platform operations return JSON directly.",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid input",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Invalid or expired credentials"
+          },
+          "403": {
+            "description": "Missing scope or permission"
+          },
+          "404": {
+            "description": "Missing or inaccessible resource"
+          },
+          "409": {
+            "description": "Revision or idempotency conflict"
+          },
+          "429": {
+            "description": "Installation rate limit",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer"
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object"
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/apps/v1/channels/{id}/archive": {
+      "post": {
+        "operationId": "post_api_apps_v1_channels_id_archive",
+        "summary": "POST /api/apps/v1/channels/{id}/archive",
+        "security": [
+          {
+            "appBearer": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success. Chat writes use {data,txid}; platform operations return JSON directly.",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid input",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Invalid or expired credentials"
+          },
+          "403": {
+            "description": "Missing scope or permission"
+          },
+          "404": {
+            "description": "Missing or inaccessible resource"
+          },
+          "409": {
+            "description": "Revision or idempotency conflict"
+          },
+          "429": {
+            "description": "Installation rate limit",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer"
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object"
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/apps/v1/channels/{id}/unarchive": {
+      "post": {
+        "operationId": "post_api_apps_v1_channels_id_unarchive",
+        "summary": "POST /api/apps/v1/channels/{id}/unarchive",
+        "security": [
+          {
+            "appBearer": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success. Chat writes use {data,txid}; platform operations return JSON directly.",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid input",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Invalid or expired credentials"
+          },
+          "403": {
+            "description": "Missing scope or permission"
+          },
+          "404": {
+            "description": "Missing or inaccessible resource"
+          },
+          "409": {
+            "description": "Revision or idempotency conflict"
+          },
+          "429": {
+            "description": "Installation rate limit",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer"
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object"
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/apps/v1/dms": {
+      "post": {
+        "operationId": "post_api_apps_v1_dms",
+        "summary": "POST /api/apps/v1/dms",
+        "security": [
+          {
+            "appBearer": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success. Chat writes use {data,txid}; platform operations return JSON directly.",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid input",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Invalid or expired credentials"
+          },
+          "403": {
+            "description": "Missing scope or permission"
+          },
+          "404": {
+            "description": "Missing or inaccessible resource"
+          },
+          "409": {
+            "description": "Revision or idempotency conflict"
+          },
+          "429": {
+            "description": "Installation rate limit",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer"
+                }
+              }
+            }
+          }
+        },
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object"
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/apps/v1/shapes/{shape}": {
+      "get": {
+        "operationId": "get_api_apps_v1_shapes_shape",
+        "summary": "GET /api/apps/v1/shapes/{shape}",
+        "security": [
+          {
+            "appBearer": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success. Chat writes use {data,txid}; platform operations return JSON directly.",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid input",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Invalid or expired credentials"
+          },
+          "403": {
+            "description": "Missing scope or permission"
+          },
+          "404": {
+            "description": "Missing or inaccessible resource"
+          },
+          "409": {
+            "description": "Revision or idempotency conflict"
+          },
+          "429": {
+            "description": "Installation rate limit",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer"
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "shape",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "channel_id",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "offset",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "live",
+            "in": "query",
+            "schema": {
+              "type": "boolean"
+            }
+          }
+        ]
+      }
+    },
+    "/api/apps/v1/socket-ticket": {
+      "post": {
+        "operationId": "post_api_apps_v1_socket_ticket",
+        "summary": "POST /api/apps/v1/socket-ticket",
+        "security": [
+          {
+            "appBearer": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success. Chat writes use {data,txid}; platform operations return JSON directly.",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid input",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Invalid or expired credentials"
+          },
+          "403": {
+            "description": "Missing scope or permission"
+          },
+          "404": {
+            "description": "Missing or inaccessible resource"
+          },
+          "409": {
+            "description": "Revision or idempotency conflict"
+          },
+          "429": {
+            "description": "Installation rate limit",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer"
+                }
+              }
+            }
+          }
+        },
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object"
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/apps/v1/socket": {
+      "get": {
+        "operationId": "get_api_apps_v1_socket",
+        "summary": "GET /api/apps/v1/socket",
+        "security": [],
+        "responses": {
+          "200": {
+            "description": "Success. Chat writes use {data,txid}; platform operations return JSON directly.",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid input",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Invalid or expired credentials"
+          },
+          "403": {
+            "description": "Missing scope or permission"
+          },
+          "404": {
+            "description": "Missing or inaccessible resource"
+          },
+          "409": {
+            "description": "Revision or idempotency conflict"
+          },
+          "429": {
+            "description": "Installation rate limit",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer"
+                }
+              }
+            }
+          },
+          "101": {
+            "description": "WebSocket upgrade; sends Delivery objects, accepts {ack,ack_token}"
+          }
+        },
+        "parameters": [
+          {
+            "name": "ticket",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "30-second single-use ticket"
+          }
+        ]
+      }
+    },
+    "/api/apps/v1/files": {
+      "post": {
+        "operationId": "post_api_apps_v1_files",
+        "summary": "POST /api/apps/v1/files",
+        "security": [
+          {
+            "appBearer": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success. Chat writes use {data,txid}; platform operations return JSON directly.",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid input",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Invalid or expired credentials"
+          },
+          "403": {
+            "description": "Missing scope or permission"
+          },
+          "404": {
+            "description": "Missing or inaccessible resource"
+          },
+          "409": {
+            "description": "Revision or idempotency conflict"
+          },
+          "429": {
+            "description": "Installation rate limit",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer"
+                }
+              }
+            }
+          }
+        },
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/FileInput"
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/apps/v1/files/{id}/complete": {
+      "post": {
+        "operationId": "post_api_apps_v1_files_id_complete",
+        "summary": "POST /api/apps/v1/files/{id}/complete",
+        "security": [
+          {
+            "appBearer": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success. Chat writes use {data,txid}; platform operations return JSON directly.",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid input",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Invalid or expired credentials"
+          },
+          "403": {
+            "description": "Missing scope or permission"
+          },
+          "404": {
+            "description": "Missing or inaccessible resource"
+          },
+          "409": {
+            "description": "Revision or idempotency conflict"
+          },
+          "429": {
+            "description": "Installation rate limit",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer"
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object"
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/apps/v1/files/{id}/download": {
+      "get": {
+        "operationId": "get_api_apps_v1_files_id_download",
+        "summary": "GET /api/apps/v1/files/{id}/download",
+        "security": [
+          {
+            "appBearer": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success. Chat writes use {data,txid}; platform operations return JSON directly.",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid input",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Invalid or expired credentials"
+          },
+          "403": {
+            "description": "Missing scope or permission"
+          },
+          "404": {
+            "description": "Missing or inaccessible resource"
+          },
+          "409": {
+            "description": "Revision or idempotency conflict"
+          },
+          "429": {
+            "description": "Installation rate limit",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer"
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ]
+      }
+    },
+    "/api/app-files/{id}/download": {
+      "get": {
+        "operationId": "get_api_app_files_id_download",
+        "summary": "GET /api/app-files/{id}/download",
+        "security": [
+          {
+            "humanBearer": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success. Chat writes use {data,txid}; platform operations return JSON directly.",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid input",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Invalid or expired credentials"
+          },
+          "403": {
+            "description": "Missing scope or permission"
+          },
+          "404": {
+            "description": "Missing or inaccessible resource"
+          },
+          "409": {
+            "description": "Revision or idempotency conflict"
+          },
+          "429": {
+            "description": "Installation rate limit",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer"
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ]
+      }
+    },
+    "/api/apps/v1/messages/{id}/files": {
+      "post": {
+        "operationId": "post_api_apps_v1_messages_id_files",
+        "summary": "POST /api/apps/v1/messages/{id}/files",
+        "security": [
+          {
+            "appBearer": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success. Chat writes use {data,txid}; platform operations return JSON directly.",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid input",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Invalid or expired credentials"
+          },
+          "403": {
+            "description": "Missing scope or permission"
+          },
+          "404": {
+            "description": "Missing or inaccessible resource"
+          },
+          "409": {
+            "description": "Revision or idempotency conflict"
+          },
+          "429": {
+            "description": "Installation rate limit",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer"
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "array",
+                "maxItems": 10,
+                "items": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/apps": {
+      "get": {
+        "operationId": "get_api_apps",
+        "summary": "GET /api/apps",
+        "security": [
+          {
+            "humanBearer": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success. Chat writes use {data,txid}; platform operations return JSON directly.",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid input",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Invalid or expired credentials"
+          },
+          "403": {
+            "description": "Missing scope or permission"
+          },
+          "404": {
+            "description": "Missing or inaccessible resource"
+          },
+          "409": {
+            "description": "Revision or idempotency conflict"
+          },
+          "429": {
+            "description": "Installation rate limit",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "operationId": "post_api_apps",
+        "summary": "POST /api/apps",
+        "security": [
+          {
+            "humanBearer": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success. Chat writes use {data,txid}; platform operations return JSON directly.",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid input",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Invalid or expired credentials"
+          },
+          "403": {
+            "description": "Missing scope or permission"
+          },
+          "404": {
+            "description": "Missing or inaccessible resource"
+          },
+          "409": {
+            "description": "Revision or idempotency conflict"
+          },
+          "429": {
+            "description": "Installation rate limit",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer"
+                }
+              }
+            }
+          }
+        },
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AppInput"
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/apps/{id}": {
+      "get": {
+        "operationId": "get_api_apps_id",
+        "summary": "GET /api/apps/{id}",
+        "security": [
+          {
+            "humanBearer": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success. Chat writes use {data,txid}; platform operations return JSON directly.",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid input",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Invalid or expired credentials"
+          },
+          "403": {
+            "description": "Missing scope or permission"
+          },
+          "404": {
+            "description": "Missing or inaccessible resource"
+          },
+          "409": {
+            "description": "Revision or idempotency conflict"
+          },
+          "429": {
+            "description": "Installation rate limit",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer"
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ]
+      },
+      "patch": {
+        "operationId": "patch_api_apps_id",
+        "summary": "PATCH /api/apps/{id}",
+        "security": [
+          {
+            "humanBearer": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success. Chat writes use {data,txid}; platform operations return JSON directly.",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid input",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Invalid or expired credentials"
+          },
+          "403": {
+            "description": "Missing scope or permission"
+          },
+          "404": {
+            "description": "Missing or inaccessible resource"
+          },
+          "409": {
+            "description": "Revision or idempotency conflict"
+          },
+          "429": {
+            "description": "Installation rate limit",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer"
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AppInput"
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/apps/{id}/actions/{action}": {
+      "post": {
+        "operationId": "post_api_apps_id_actions_action",
+        "summary": "POST /api/apps/{id}/actions/{action}",
+        "security": [
+          {
+            "humanBearer": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success. Chat writes use {data,txid}; platform operations return JSON directly.",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid input",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Invalid or expired credentials"
+          },
+          "403": {
+            "description": "Missing scope or permission"
+          },
+          "404": {
+            "description": "Missing or inaccessible resource"
+          },
+          "409": {
+            "description": "Revision or idempotency conflict"
+          },
+          "429": {
+            "description": "Installation rate limit",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer"
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "action",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "revision": {
+                    "type": "integer",
+                    "description": "Required when action=install"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/apps/{id}/channels/{channel}": {
+      "post": {
+        "operationId": "post_api_apps_id_channels_channel",
+        "summary": "POST /api/apps/{id}/channels/{channel}",
+        "security": [
+          {
+            "humanBearer": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success. Chat writes use {data,txid}; platform operations return JSON directly.",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid input",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Invalid or expired credentials"
+          },
+          "403": {
+            "description": "Missing scope or permission"
+          },
+          "404": {
+            "description": "Missing or inaccessible resource"
+          },
+          "409": {
+            "description": "Revision or idempotency conflict"
+          },
+          "429": {
+            "description": "Installation rate limit",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer"
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "channel",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object"
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "operationId": "delete_api_apps_id_channels_channel",
+        "summary": "DELETE /api/apps/{id}/channels/{channel}",
+        "security": [
+          {
+            "humanBearer": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success. Chat writes use {data,txid}; platform operations return JSON directly.",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid input",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Invalid or expired credentials"
+          },
+          "403": {
+            "description": "Missing scope or permission"
+          },
+          "404": {
+            "description": "Missing or inaccessible resource"
+          },
+          "409": {
+            "description": "Revision or idempotency conflict"
+          },
+          "429": {
+            "description": "Installation rate limit",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer"
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "channel",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ]
+      }
+    },
+    "/api/apps/{id}/deliveries": {
+      "get": {
+        "operationId": "get_api_apps_id_deliveries",
+        "summary": "GET /api/apps/{id}/deliveries",
+        "security": [
+          {
+            "humanBearer": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success. Chat writes use {data,txid}; platform operations return JSON directly.",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid input",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Invalid or expired credentials"
+          },
+          "403": {
+            "description": "Missing scope or permission"
+          },
+          "404": {
+            "description": "Missing or inaccessible resource"
+          },
+          "409": {
+            "description": "Revision or idempotency conflict"
+          },
+          "429": {
+            "description": "Installation rate limit",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer"
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ]
+      }
+    },
+    "/api/apps/{id}/records/{kind}": {
+      "get": {
+        "operationId": "get_api_apps_id_records_kind",
+        "summary": "GET /api/apps/{id}/records/{kind}",
+        "security": [
+          {
+            "humanBearer": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success. Chat writes use {data,txid}; platform operations return JSON directly.",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid input",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Invalid or expired credentials"
+          },
+          "403": {
+            "description": "Missing scope or permission"
+          },
+          "404": {
+            "description": "Missing or inaccessible resource"
+          },
+          "409": {
+            "description": "Revision or idempotency conflict"
+          },
+          "429": {
+            "description": "Installation rate limit",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer"
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "kind",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ]
+      }
+    },
+    "/api/apps/{id}/credentials/{credential}": {
+      "delete": {
+        "operationId": "delete_api_apps_id_credentials_credential",
+        "summary": "DELETE /api/apps/{id}/credentials/{credential}",
+        "security": [
+          {
+            "humanBearer": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success. Chat writes use {data,txid}; platform operations return JSON directly.",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid input",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Invalid or expired credentials"
+          },
+          "403": {
+            "description": "Missing scope or permission"
+          },
+          "404": {
+            "description": "Missing or inaccessible resource"
+          },
+          "409": {
+            "description": "Revision or idempotency conflict"
+          },
+          "429": {
+            "description": "Installation rate limit",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer"
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "credential",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ]
+      }
+    },
+    "/api/apps/{id}/authorization": {
+      "delete": {
+        "operationId": "delete_api_apps_id_authorization",
+        "summary": "DELETE /api/apps/{id}/authorization",
+        "security": [
+          {
+            "humanBearer": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success. Chat writes use {data,txid}; platform operations return JSON directly.",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid input",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Invalid or expired credentials"
+          },
+          "403": {
+            "description": "Missing scope or permission"
+          },
+          "404": {
+            "description": "Missing or inaccessible resource"
+          },
+          "409": {
+            "description": "Revision or idempotency conflict"
+          },
+          "429": {
+            "description": "Installation rate limit",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer"
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ]
+      }
+    },
+    "/api/apps/metrics": {
+      "get": {
+        "operationId": "get_api_apps_metrics",
+        "summary": "GET /api/apps/metrics",
+        "security": [
+          {
+            "humanBearer": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success. Chat writes use {data,txid}; platform operations return JSON directly.",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid input",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Invalid or expired credentials"
+          },
+          "403": {
+            "description": "Missing scope or permission"
+          },
+          "404": {
+            "description": "Missing or inaccessible resource"
+          },
+          "409": {
+            "description": "Revision or idempotency conflict"
+          },
+          "429": {
+            "description": "Installation rate limit",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/apps/{id}/deliveries/{delivery}/retry": {
+      "post": {
+        "operationId": "post_api_apps_id_deliveries_delivery_retry",
+        "summary": "POST /api/apps/{id}/deliveries/{delivery}/retry",
+        "security": [
+          {
+            "humanBearer": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success. Chat writes use {data,txid}; platform operations return JSON directly.",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid input",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Invalid or expired credentials"
+          },
+          "403": {
+            "description": "Missing scope or permission"
+          },
+          "404": {
+            "description": "Missing or inaccessible resource"
+          },
+          "409": {
+            "description": "Revision or idempotency conflict"
+          },
+          "429": {
+            "description": "Installation rate limit",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer"
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "delivery",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object"
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/apps/oauth/authorize": {
+      "post": {
+        "operationId": "post_api_apps_oauth_authorize",
+        "summary": "POST /api/apps/oauth/authorize",
+        "security": [
+          {
+            "humanBearer": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success. Chat writes use {data,txid}; platform operations return JSON directly.",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid input",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Invalid or expired credentials"
+          },
+          "403": {
+            "description": "Missing scope or permission"
+          },
+          "404": {
+            "description": "Missing or inaccessible resource"
+          },
+          "409": {
+            "description": "Revision or idempotency conflict"
+          },
+          "429": {
+            "description": "Installation rate limit",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer"
+                }
+              }
+            }
+          }
+        },
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object"
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/apps/oauth/token": {
+      "post": {
+        "operationId": "post_api_apps_oauth_token",
+        "summary": "POST /api/apps/oauth/token",
+        "security": [],
+        "responses": {
+          "200": {
+            "description": "Success. Chat writes use {data,txid}; platform operations return JSON directly.",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid input",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Invalid or expired credentials"
+          },
+          "403": {
+            "description": "Missing scope or permission"
+          },
+          "404": {
+            "description": "Missing or inaccessible resource"
+          },
+          "409": {
+            "description": "Revision or idempotency conflict"
+          },
+          "429": {
+            "description": "Installation rate limit",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer"
+                }
+              }
+            }
+          }
+        },
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "schema": {
+                "oneOf": [
+                  {
+                    "type": "object",
+                    "required": [
+                      "grant_type",
+                      "code",
+                      "redirect_uri",
+                      "code_verifier"
+                    ],
+                    "properties": {
+                      "grant_type": {
+                        "const": "authorization_code"
+                      },
+                      "code": {
+                        "type": "string"
+                      },
+                      "redirect_uri": {
+                        "type": "string",
+                        "format": "uri"
+                      },
+                      "code_verifier": {
+                        "type": "string",
+                        "minLength": 43,
+                        "maxLength": 128
+                      }
+                    }
+                  },
+                  {
+                    "type": "object",
+                    "required": [
+                      "grant_type",
+                      "refresh_token"
+                    ],
+                    "properties": {
+                      "grant_type": {
+                        "const": "refresh_token"
+                      },
+                      "refresh_token": {
+                        "type": "string"
+                      }
+                    }
+                  }
+                ]
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/apps/oauth/revoke": {
+      "post": {
+        "operationId": "post_api_apps_oauth_revoke",
+        "summary": "POST /api/apps/oauth/revoke",
+        "security": [],
+        "responses": {
+          "200": {
+            "description": "Success. Chat writes use {data,txid}; platform operations return JSON directly.",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid input",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Invalid or expired credentials"
+          },
+          "403": {
+            "description": "Missing scope or permission"
+          },
+          "404": {
+            "description": "Missing or inaccessible resource"
+          },
+          "409": {
+            "description": "Revision or idempotency conflict"
+          },
+          "429": {
+            "description": "Installation rate limit",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer"
+                }
+              }
+            }
+          }
+        },
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object"
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/apps/{id}/invoke": {
+      "post": {
+        "operationId": "post_api_apps_id_invoke",
+        "summary": "POST /api/apps/{id}/invoke",
+        "security": [
+          {
+            "humanBearer": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success. Chat writes use {data,txid}; platform operations return JSON directly.",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid input",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Invalid or expired credentials"
+          },
+          "403": {
+            "description": "Missing scope or permission"
+          },
+          "404": {
+            "description": "Missing or inaccessible resource"
+          },
+          "409": {
+            "description": "Revision or idempotency conflict"
+          },
+          "429": {
+            "description": "Installation rate limit",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer"
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object"
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/app-surfaces": {
+      "get": {
+        "operationId": "get_api_app_surfaces",
+        "summary": "GET /api/app-surfaces",
+        "security": [
+          {
+            "humanBearer": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success. Chat writes use {data,txid}; platform operations return JSON directly.",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid input",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Invalid or expired credentials"
+          },
+          "403": {
+            "description": "Missing scope or permission"
+          },
+          "404": {
+            "description": "Missing or inaccessible resource"
+          },
+          "409": {
+            "description": "Revision or idempotency conflict"
+          },
+          "429": {
+            "description": "Installation rate limit",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/app-surfaces/{id}": {
+      "delete": {
+        "operationId": "delete_api_app_surfaces_id",
+        "summary": "DELETE /api/app-surfaces/{id}",
+        "security": [
+          {
+            "humanBearer": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success. Chat writes use {data,txid}; platform operations return JSON directly.",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid input",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Invalid or expired credentials"
+          },
+          "403": {
+            "description": "Missing scope or permission"
+          },
+          "404": {
+            "description": "Missing or inaccessible resource"
+          },
+          "409": {
+            "description": "Revision or idempotency conflict"
+          },
+          "429": {
+            "description": "Installation rate limit",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer"
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ]
+      }
+    },
+    "/api/app-responses/{token}": {
+      "post": {
+        "operationId": "post_api_app_responses_token",
+        "summary": "POST /api/app-responses/{token}",
+        "security": [],
+        "responses": {
+          "200": {
+            "description": "Success. Chat writes use {data,txid}; platform operations return JSON directly.",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid input",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Invalid or expired credentials"
+          },
+          "403": {
+            "description": "Missing scope or permission"
+          },
+          "404": {
+            "description": "Missing or inaccessible resource"
+          },
+          "409": {
+            "description": "Revision or idempotency conflict"
+          },
+          "429": {
+            "description": "Installation rate limit",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer"
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "token",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/Blocks"
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/apps/commands/{name}": {
+      "post": {
+        "operationId": "post_api_apps_commands_name",
+        "summary": "POST /api/apps/commands/{name}",
+        "security": [
+          {
+            "humanBearer": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success. Chat writes use {data,txid}; platform operations return JSON directly.",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid input",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Invalid or expired credentials"
+          },
+          "403": {
+            "description": "Missing scope or permission"
+          },
+          "404": {
+            "description": "Missing or inaccessible resource"
+          },
+          "409": {
+            "description": "Revision or idempotency conflict"
+          },
+          "429": {
+            "description": "Installation rate limit",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer"
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object"
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/apps/v1/messages/{id}/unfurls": {
+      "post": {
+        "operationId": "post_api_apps_v1_messages_id_unfurls",
+        "summary": "POST /api/apps/v1/messages/{id}/unfurls",
+        "security": [
+          {
+            "appBearer": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success. Chat writes use {data,txid}; platform operations return JSON directly.",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid input",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Invalid or expired credentials"
+          },
+          "403": {
+            "description": "Missing scope or permission"
+          },
+          "404": {
+            "description": "Missing or inaccessible resource"
+          },
+          "409": {
+            "description": "Revision or idempotency conflict"
+          },
+          "429": {
+            "description": "Installation rate limit",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer"
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object"
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/apps/{id}/surfaces": {
+      "get": {
+        "operationId": "get_api_apps_id_surfaces",
+        "summary": "GET /api/apps/{id}/surfaces",
+        "security": [
+          {
+            "humanBearer": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success. Chat writes use {data,txid}; platform operations return JSON directly.",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid input",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Invalid or expired credentials"
+          },
+          "403": {
+            "description": "Missing scope or permission"
+          },
+          "404": {
+            "description": "Missing or inaccessible resource"
+          },
+          "409": {
+            "description": "Revision or idempotency conflict"
+          },
+          "429": {
+            "description": "Installation rate limit",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer"
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ]
+      }
+    },
+    "/api/apps/v1/surfaces": {
+      "post": {
+        "operationId": "post_api_apps_v1_surfaces",
+        "summary": "POST /api/apps/v1/surfaces",
+        "security": [
+          {
+            "appBearer": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success. Chat writes use {data,txid}; platform operations return JSON directly.",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid input",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Invalid or expired credentials"
+          },
+          "403": {
+            "description": "Missing scope or permission"
+          },
+          "404": {
+            "description": "Missing or inaccessible resource"
+          },
+          "409": {
+            "description": "Revision or idempotency conflict"
+          },
+          "429": {
+            "description": "Installation rate limit",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer"
+                }
+              }
+            }
+          }
+        },
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SurfaceInput"
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/apps/v1/messages/{id}/blocks": {
+      "post": {
+        "operationId": "post_api_apps_v1_messages_id_blocks",
+        "summary": "POST /api/apps/v1/messages/{id}/blocks",
+        "security": [
+          {
+            "appBearer": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success. Chat writes use {data,txid}; platform operations return JSON directly.",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid input",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Invalid or expired credentials"
+          },
+          "403": {
+            "description": "Missing scope or permission"
+          },
+          "404": {
+            "description": "Missing or inaccessible resource"
+          },
+          "409": {
+            "description": "Revision or idempotency conflict"
+          },
+          "429": {
+            "description": "Installation rate limit",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer"
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/Blocks"
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/apps/events": {
+      "get": {
+        "operationId": "get_api_apps_events",
+        "summary": "GET /api/apps/events",
+        "responses": {
+          "200": {
+            "description": "Success; see apps.md for resource fields and authorization."
+          },
+          "400": {
+            "description": "Invalid input"
+          },
+          "401": {
+            "description": "Authentication required"
+          },
+          "403": {
+            "description": "Insufficient scope or role"
+          },
+          "404": {
+            "description": "Resource not visible"
+          }
+        }
+      }
+    },
+    "/api/apps/v1/events": {
+      "get": {
+        "operationId": "get_api_apps_v1_events",
+        "summary": "GET /api/apps/v1/events",
+        "responses": {
+          "200": {
+            "description": "Success; see apps.md for resource fields and authorization."
+          },
+          "400": {
+            "description": "Invalid input"
+          },
+          "401": {
+            "description": "Authentication required"
+          },
+          "403": {
+            "description": "Insufficient scope or role"
+          },
+          "404": {
+            "description": "Resource not visible"
+          }
+        }
+      }
+    },
+    "/api/users/me/profile": {
+      "get": {
+        "operationId": "get_api_users_me_profile",
+        "summary": "GET /api/users/me/profile",
+        "responses": {
+          "200": {
+            "description": "Success; see apps.md for resource fields and authorization."
+          },
+          "400": {
+            "description": "Invalid input"
+          },
+          "401": {
+            "description": "Authentication required"
+          },
+          "403": {
+            "description": "Insufficient scope or role"
+          },
+          "404": {
+            "description": "Resource not visible"
+          }
+        },
+        "security": [
+          {
+            "humanBearer": []
+          }
+        ]
+      },
+      "patch": {
+        "operationId": "patch_api_users_me_profile",
+        "summary": "PATCH /api/users/me/profile",
+        "responses": {
+          "200": {
+            "description": "Success; see apps.md for resource fields and authorization."
+          },
+          "400": {
+            "description": "Invalid input"
+          },
+          "401": {
+            "description": "Authentication required"
+          },
+          "403": {
+            "description": "Insufficient scope or role"
+          },
+          "404": {
+            "description": "Resource not visible"
+          }
+        },
+        "security": [
+          {
+            "humanBearer": []
+          }
+        ]
+      }
+    },
+    "/api/users/{id}/profile": {
+      "get": {
+        "operationId": "get_api_users_id_profile",
+        "summary": "GET /api/users/{id}/profile",
+        "responses": {
+          "200": {
+            "description": "Success; see apps.md for resource fields and authorization."
+          },
+          "400": {
+            "description": "Invalid input"
+          },
+          "401": {
+            "description": "Authentication required"
+          },
+          "403": {
+            "description": "Insufficient scope or role"
+          },
+          "404": {
+            "description": "Resource not visible"
+          }
+        },
+        "security": [
+          {
+            "humanBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ]
+      }
+    },
+    "/api/users/{id}/guest": {
+      "patch": {
+        "operationId": "patch_api_users_id_guest",
+        "summary": "PATCH /api/users/{id}/guest",
+        "responses": {
+          "200": {
+            "description": "Success; see apps.md for resource fields and authorization."
+          },
+          "400": {
+            "description": "Invalid input"
+          },
+          "401": {
+            "description": "Authentication required"
+          },
+          "403": {
+            "description": "Insufficient scope or role"
+          },
+          "404": {
+            "description": "Resource not visible"
+          }
+        },
+        "security": [
+          {
+            "humanBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ]
+      }
+    },
+    "/api/presence/heartbeat": {
+      "post": {
+        "operationId": "post_api_presence_heartbeat",
+        "summary": "POST /api/presence/heartbeat",
+        "responses": {
+          "200": {
+            "description": "Success; see apps.md for resource fields and authorization."
+          },
+          "400": {
+            "description": "Invalid input"
+          },
+          "401": {
+            "description": "Authentication required"
+          },
+          "403": {
+            "description": "Insufficient scope or role"
+          },
+          "404": {
+            "description": "Resource not visible"
+          }
+        },
+        "security": [
+          {
+            "humanBearer": []
+          }
+        ]
+      }
+    },
+    "/api/channels/{channel}/settings": {
+      "get": {
+        "operationId": "get_api_channels_channel_settings",
+        "summary": "GET /api/channels/{channel}/settings",
+        "responses": {
+          "200": {
+            "description": "Success; see apps.md for resource fields and authorization."
+          },
+          "400": {
+            "description": "Invalid input"
+          },
+          "401": {
+            "description": "Authentication required"
+          },
+          "403": {
+            "description": "Insufficient scope or role"
+          },
+          "404": {
+            "description": "Resource not visible"
+          }
+        },
+        "security": [
+          {
+            "humanBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "channel",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ]
+      },
+      "patch": {
+        "operationId": "patch_api_channels_channel_settings",
+        "summary": "PATCH /api/channels/{channel}/settings",
+        "responses": {
+          "200": {
+            "description": "Success; see apps.md for resource fields and authorization."
+          },
+          "400": {
+            "description": "Invalid input"
+          },
+          "401": {
+            "description": "Authentication required"
+          },
+          "403": {
+            "description": "Insufficient scope or role"
+          },
+          "404": {
+            "description": "Resource not visible"
+          }
+        },
+        "security": [
+          {
+            "humanBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "channel",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ]
+      }
+    },
+    "/api/channels/{channel}/view": {
+      "post": {
+        "operationId": "post_api_channels_channel_view",
+        "summary": "POST /api/channels/{channel}/view",
+        "responses": {
+          "200": {
+            "description": "Success; see apps.md for resource fields and authorization."
+          },
+          "400": {
+            "description": "Invalid input"
+          },
+          "401": {
+            "description": "Authentication required"
+          },
+          "403": {
+            "description": "Insufficient scope or role"
+          },
+          "404": {
+            "description": "Resource not visible"
+          }
+        },
+        "security": [
+          {
+            "humanBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "channel",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ]
+      }
+    },
+    "/api/conversation-views": {
+      "get": {
+        "operationId": "get_api_conversation_views",
+        "summary": "GET /api/conversation-views",
+        "responses": {
+          "200": {
+            "description": "Success; see apps.md for resource fields and authorization."
+          },
+          "400": {
+            "description": "Invalid input"
+          },
+          "401": {
+            "description": "Authentication required"
+          },
+          "403": {
+            "description": "Insufficient scope or role"
+          },
+          "404": {
+            "description": "Resource not visible"
+          }
+        },
+        "security": [
+          {
+            "humanBearer": []
+          }
+        ]
+      }
+    },
+    "/api/channels/{channel}/history": {
+      "delete": {
+        "operationId": "delete_api_channels_channel_history",
+        "summary": "DELETE /api/channels/{channel}/history",
+        "responses": {
+          "200": {
+            "description": "Success; see apps.md for resource fields and authorization."
+          },
+          "400": {
+            "description": "Invalid input"
+          },
+          "401": {
+            "description": "Authentication required"
+          },
+          "403": {
+            "description": "Insufficient scope or role"
+          },
+          "404": {
+            "description": "Resource not visible"
+          }
+        },
+        "security": [
+          {
+            "humanBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "channel",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ]
+      }
+    },
+    "/api/channels/{channel}/pins": {
+      "get": {
+        "operationId": "get_api_channels_channel_pins",
+        "summary": "GET /api/channels/{channel}/pins",
+        "responses": {
+          "200": {
+            "description": "Success; see apps.md for resource fields and authorization."
+          },
+          "400": {
+            "description": "Invalid input"
+          },
+          "401": {
+            "description": "Authentication required"
+          },
+          "403": {
+            "description": "Insufficient scope or role"
+          },
+          "404": {
+            "description": "Resource not visible"
+          }
+        },
+        "security": [
+          {
+            "humanBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "channel",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ]
+      },
+      "post": {
+        "operationId": "post_api_channels_channel_pins",
+        "summary": "POST /api/channels/{channel}/pins",
+        "responses": {
+          "200": {
+            "description": "Success; see apps.md for resource fields and authorization."
+          },
+          "400": {
+            "description": "Invalid input"
+          },
+          "401": {
+            "description": "Authentication required"
+          },
+          "403": {
+            "description": "Insufficient scope or role"
+          },
+          "404": {
+            "description": "Resource not visible"
+          }
+        },
+        "security": [
+          {
+            "humanBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "channel",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ]
+      }
+    },
+    "/api/channels/{channel}/pins/{kind}/{id}": {
+      "delete": {
+        "operationId": "delete_api_channels_channel_pins_kind_id",
+        "summary": "DELETE /api/channels/{channel}/pins/{kind}/{id}",
+        "responses": {
+          "200": {
+            "description": "Success; see apps.md for resource fields and authorization."
+          },
+          "400": {
+            "description": "Invalid input"
+          },
+          "401": {
+            "description": "Authentication required"
+          },
+          "403": {
+            "description": "Insufficient scope or role"
+          },
+          "404": {
+            "description": "Resource not visible"
+          }
+        },
+        "security": [
+          {
+            "humanBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "channel",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "kind",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ]
+      }
+    },
+    "/api/stars": {
+      "get": {
+        "operationId": "get_api_stars",
+        "summary": "GET /api/stars",
+        "responses": {
+          "200": {
+            "description": "Success; see apps.md for resource fields and authorization."
+          },
+          "400": {
+            "description": "Invalid input"
+          },
+          "401": {
+            "description": "Authentication required"
+          },
+          "403": {
+            "description": "Insufficient scope or role"
+          },
+          "404": {
+            "description": "Resource not visible"
+          }
+        },
+        "security": [
+          {
+            "humanBearer": []
+          }
+        ]
+      },
+      "post": {
+        "operationId": "post_api_stars",
+        "summary": "POST /api/stars",
+        "responses": {
+          "200": {
+            "description": "Success; see apps.md for resource fields and authorization."
+          },
+          "400": {
+            "description": "Invalid input"
+          },
+          "401": {
+            "description": "Authentication required"
+          },
+          "403": {
+            "description": "Insufficient scope or role"
+          },
+          "404": {
+            "description": "Resource not visible"
+          }
+        },
+        "security": [
+          {
+            "humanBearer": []
+          }
+        ]
+      }
+    },
+    "/api/stars/{kind}/{id}": {
+      "delete": {
+        "operationId": "delete_api_stars_kind_id",
+        "summary": "DELETE /api/stars/{kind}/{id}",
+        "responses": {
+          "200": {
+            "description": "Success; see apps.md for resource fields and authorization."
+          },
+          "400": {
+            "description": "Invalid input"
+          },
+          "401": {
+            "description": "Authentication required"
+          },
+          "403": {
+            "description": "Insufficient scope or role"
+          },
+          "404": {
+            "description": "Resource not visible"
+          }
+        },
+        "security": [
+          {
+            "humanBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "kind",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ]
+      }
+    },
+    "/api/emojis": {
+      "get": {
+        "operationId": "get_api_emojis",
+        "summary": "GET /api/emojis",
+        "responses": {
+          "200": {
+            "description": "Success; see apps.md for resource fields and authorization."
+          },
+          "400": {
+            "description": "Invalid input"
+          },
+          "401": {
+            "description": "Authentication required"
+          },
+          "403": {
+            "description": "Insufficient scope or role"
+          },
+          "404": {
+            "description": "Resource not visible"
+          }
+        },
+        "security": [
+          {
+            "humanBearer": []
+          }
+        ]
+      },
+      "post": {
+        "operationId": "post_api_emojis",
+        "summary": "POST /api/emojis",
+        "responses": {
+          "200": {
+            "description": "Success; see apps.md for resource fields and authorization."
+          },
+          "400": {
+            "description": "Invalid input"
+          },
+          "401": {
+            "description": "Authentication required"
+          },
+          "403": {
+            "description": "Insufficient scope or role"
+          },
+          "404": {
+            "description": "Resource not visible"
+          }
+        },
+        "security": [
+          {
+            "humanBearer": []
+          }
+        ]
+      }
+    },
+    "/api/emojis/{name}": {
+      "get": {
+        "operationId": "get_api_emojis_name",
+        "summary": "GET /api/emojis/{name}",
+        "responses": {
+          "200": {
+            "description": "Success; see apps.md for resource fields and authorization."
+          },
+          "400": {
+            "description": "Invalid input"
+          },
+          "401": {
+            "description": "Authentication required"
+          },
+          "403": {
+            "description": "Insufficient scope or role"
+          },
+          "404": {
+            "description": "Resource not visible"
+          }
+        },
+        "security": [
+          {
+            "humanBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ]
+      },
+      "delete": {
+        "operationId": "delete_api_emojis_name",
+        "summary": "DELETE /api/emojis/{name}",
+        "responses": {
+          "200": {
+            "description": "Success; see apps.md for resource fields and authorization."
+          },
+          "400": {
+            "description": "Invalid input"
+          },
+          "401": {
+            "description": "Authentication required"
+          },
+          "403": {
+            "description": "Insufficient scope or role"
+          },
+          "404": {
+            "description": "Resource not visible"
+          }
+        },
+        "security": [
+          {
+            "humanBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ]
+      }
+    },
+    "/api/workspace": {
+      "get": {
+        "operationId": "get_api_workspace",
+        "summary": "GET /api/workspace",
+        "responses": {
+          "200": {
+            "description": "Success; see apps.md for resource fields and authorization."
+          },
+          "400": {
+            "description": "Invalid input"
+          },
+          "401": {
+            "description": "Authentication required"
+          },
+          "403": {
+            "description": "Insufficient scope or role"
+          },
+          "404": {
+            "description": "Resource not visible"
+          }
+        },
+        "security": [
+          {
+            "humanBearer": []
+          }
+        ]
+      },
+      "patch": {
+        "operationId": "patch_api_workspace",
+        "summary": "PATCH /api/workspace",
+        "responses": {
+          "200": {
+            "description": "Success; see apps.md for resource fields and authorization."
+          },
+          "400": {
+            "description": "Invalid input"
+          },
+          "401": {
+            "description": "Authentication required"
+          },
+          "403": {
+            "description": "Insufficient scope or role"
+          },
+          "404": {
+            "description": "Resource not visible"
+          }
+        },
+        "security": [
+          {
+            "humanBearer": []
+          }
+        ]
+      }
+    },
+    "/api/usergroups": {
+      "get": {
+        "operationId": "get_api_usergroups",
+        "summary": "GET /api/usergroups",
+        "responses": {
+          "200": {
+            "description": "Success; see apps.md for resource fields and authorization."
+          },
+          "400": {
+            "description": "Invalid input"
+          },
+          "401": {
+            "description": "Authentication required"
+          },
+          "403": {
+            "description": "Insufficient scope or role"
+          },
+          "404": {
+            "description": "Resource not visible"
+          }
+        },
+        "security": [
+          {
+            "humanBearer": []
+          }
+        ]
+      },
+      "post": {
+        "operationId": "post_api_usergroups",
+        "summary": "POST /api/usergroups",
+        "responses": {
+          "200": {
+            "description": "Success; see apps.md for resource fields and authorization."
+          },
+          "400": {
+            "description": "Invalid input"
+          },
+          "401": {
+            "description": "Authentication required"
+          },
+          "403": {
+            "description": "Insufficient scope or role"
+          },
+          "404": {
+            "description": "Resource not visible"
+          }
+        },
+        "security": [
+          {
+            "humanBearer": []
+          }
+        ]
+      }
+    },
+    "/api/usergroups/{id}": {
+      "patch": {
+        "operationId": "patch_api_usergroups_id",
+        "summary": "PATCH /api/usergroups/{id}",
+        "responses": {
+          "200": {
+            "description": "Success; see apps.md for resource fields and authorization."
+          },
+          "400": {
+            "description": "Invalid input"
+          },
+          "401": {
+            "description": "Authentication required"
+          },
+          "403": {
+            "description": "Insufficient scope or role"
+          },
+          "404": {
+            "description": "Resource not visible"
+          }
+        },
+        "security": [
+          {
+            "humanBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ]
+      }
+    },
+    "/api/usergroups/{id}/members": {
+      "get": {
+        "operationId": "get_api_usergroups_id_members",
+        "summary": "GET /api/usergroups/{id}/members",
+        "responses": {
+          "200": {
+            "description": "Success; see apps.md for resource fields and authorization."
+          },
+          "400": {
+            "description": "Invalid input"
+          },
+          "401": {
+            "description": "Authentication required"
+          },
+          "403": {
+            "description": "Insufficient scope or role"
+          },
+          "404": {
+            "description": "Resource not visible"
+          }
+        },
+        "security": [
+          {
+            "humanBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ]
+      },
+      "put": {
+        "operationId": "put_api_usergroups_id_members",
+        "summary": "PUT /api/usergroups/{id}/members",
+        "responses": {
+          "200": {
+            "description": "Success; see apps.md for resource fields and authorization."
+          },
+          "400": {
+            "description": "Invalid input"
+          },
+          "401": {
+            "description": "Authentication required"
+          },
+          "403": {
+            "description": "Insufficient scope or role"
+          },
+          "404": {
+            "description": "Resource not visible"
+          }
+        },
+        "security": [
+          {
+            "humanBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ]
+      }
+    },
+    "/api/invite-requests": {
+      "get": {
+        "operationId": "get_api_invite_requests",
+        "summary": "GET /api/invite-requests",
+        "responses": {
+          "200": {
+            "description": "Success; see apps.md for resource fields and authorization."
+          },
+          "400": {
+            "description": "Invalid input"
+          },
+          "401": {
+            "description": "Authentication required"
+          },
+          "403": {
+            "description": "Insufficient scope or role"
+          },
+          "404": {
+            "description": "Resource not visible"
+          }
+        },
+        "security": [
+          {
+            "humanBearer": []
+          }
+        ]
+      },
+      "post": {
+        "operationId": "post_api_invite_requests",
+        "summary": "POST /api/invite-requests",
+        "responses": {
+          "200": {
+            "description": "Success; see apps.md for resource fields and authorization."
+          },
+          "400": {
+            "description": "Invalid input"
+          },
+          "401": {
+            "description": "Authentication required"
+          },
+          "403": {
+            "description": "Insufficient scope or role"
+          },
+          "404": {
+            "description": "Resource not visible"
+          }
+        },
+        "security": [
+          {
+            "humanBearer": []
+          }
+        ]
+      }
+    },
+    "/api/invite-requests/{id}": {
+      "patch": {
+        "operationId": "patch_api_invite_requests_id",
+        "summary": "PATCH /api/invite-requests/{id}",
+        "responses": {
+          "200": {
+            "description": "Success; see apps.md for resource fields and authorization."
+          },
+          "400": {
+            "description": "Invalid input"
+          },
+          "401": {
+            "description": "Authentication required"
+          },
+          "403": {
+            "description": "Insufficient scope or role"
+          },
+          "404": {
+            "description": "Resource not visible"
+          }
+        },
+        "security": [
+          {
+            "humanBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ]
+      }
+    },
+    "/api/reminders": {
+      "get": {
+        "operationId": "get_api_reminders",
+        "summary": "GET /api/reminders",
+        "responses": {
+          "200": {
+            "description": "Success; see apps.md for resource fields and authorization."
+          },
+          "400": {
+            "description": "Invalid input"
+          },
+          "401": {
+            "description": "Authentication required"
+          },
+          "403": {
+            "description": "Insufficient scope or role"
+          },
+          "404": {
+            "description": "Resource not visible"
+          }
+        },
+        "security": [
+          {
+            "humanBearer": []
+          }
+        ]
+      },
+      "post": {
+        "operationId": "post_api_reminders",
+        "summary": "POST /api/reminders",
+        "responses": {
+          "200": {
+            "description": "Success; see apps.md for resource fields and authorization."
+          },
+          "400": {
+            "description": "Invalid input"
+          },
+          "401": {
+            "description": "Authentication required"
+          },
+          "403": {
+            "description": "Insufficient scope or role"
+          },
+          "404": {
+            "description": "Resource not visible"
+          }
+        },
+        "security": [
+          {
+            "humanBearer": []
+          }
+        ]
+      }
+    },
+    "/api/reminders/{id}": {
+      "patch": {
+        "operationId": "patch_api_reminders_id",
+        "summary": "PATCH /api/reminders/{id}",
+        "responses": {
+          "200": {
+            "description": "Success; see apps.md for resource fields and authorization."
+          },
+          "400": {
+            "description": "Invalid input"
+          },
+          "401": {
+            "description": "Authentication required"
+          },
+          "403": {
+            "description": "Insufficient scope or role"
+          },
+          "404": {
+            "description": "Resource not visible"
+          }
+        },
+        "security": [
+          {
+            "humanBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ]
+      },
+      "delete": {
+        "operationId": "delete_api_reminders_id",
+        "summary": "DELETE /api/reminders/{id}",
+        "responses": {
+          "200": {
+            "description": "Success; see apps.md for resource fields and authorization."
+          },
+          "400": {
+            "description": "Invalid input"
+          },
+          "401": {
+            "description": "Authentication required"
+          },
+          "403": {
+            "description": "Insufficient scope or role"
+          },
+          "404": {
+            "description": "Resource not visible"
+          }
+        },
+        "security": [
+          {
+            "humanBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ]
+      }
+    },
+    "/api/messages/{id}/metadata": {
+      "patch": {
+        "operationId": "patch_api_messages_id_metadata",
+        "summary": "PATCH /api/messages/{id}/metadata",
+        "responses": {
+          "200": {
+            "description": "Success; see apps.md for resource fields and authorization."
+          },
+          "400": {
+            "description": "Invalid input"
+          },
+          "401": {
+            "description": "Authentication required"
+          },
+          "403": {
+            "description": "Insufficient scope or role"
+          },
+          "404": {
+            "description": "Resource not visible"
+          }
+        },
+        "security": [
+          {
+            "humanBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ]
+      },
+      "delete": {
+        "operationId": "delete_api_messages_id_metadata",
+        "summary": "DELETE /api/messages/{id}/metadata",
+        "responses": {
+          "200": {
+            "description": "Success; see apps.md for resource fields and authorization."
+          },
+          "400": {
+            "description": "Invalid input"
+          },
+          "401": {
+            "description": "Authentication required"
+          },
+          "403": {
+            "description": "Insufficient scope or role"
+          },
+          "404": {
+            "description": "Resource not visible"
+          }
+        },
+        "security": [
+          {
+            "humanBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ]
+      }
+    },
+    "/api/assistant-sessions": {
+      "get": {
+        "operationId": "get_api_assistant_sessions",
+        "summary": "GET /api/assistant-sessions",
+        "responses": {
+          "200": {
+            "description": "Success; see apps.md for resource fields and authorization."
+          },
+          "400": {
+            "description": "Invalid input"
+          },
+          "401": {
+            "description": "Authentication required"
+          },
+          "403": {
+            "description": "Insufficient scope or role"
+          },
+          "404": {
+            "description": "Resource not visible"
+          }
+        },
+        "security": [
+          {
+            "humanBearer": []
+          }
+        ]
+      },
+      "post": {
+        "operationId": "post_api_assistant_sessions",
+        "summary": "POST /api/assistant-sessions",
+        "responses": {
+          "200": {
+            "description": "Success; see apps.md for resource fields and authorization."
+          },
+          "400": {
+            "description": "Invalid input"
+          },
+          "401": {
+            "description": "Authentication required"
+          },
+          "403": {
+            "description": "Insufficient scope or role"
+          },
+          "404": {
+            "description": "Resource not visible"
+          }
+        },
+        "security": [
+          {
+            "humanBearer": []
+          }
+        ]
+      }
+    },
+    "/api/assistant-sessions/{id}": {
+      "patch": {
+        "operationId": "patch_api_assistant_sessions_id",
+        "summary": "PATCH /api/assistant-sessions/{id}",
+        "responses": {
+          "200": {
+            "description": "Success; see apps.md for resource fields and authorization."
+          },
+          "400": {
+            "description": "Invalid input"
+          },
+          "401": {
+            "description": "Authentication required"
+          },
+          "403": {
+            "description": "Insufficient scope or role"
+          },
+          "404": {
+            "description": "Resource not visible"
+          }
+        },
+        "security": [
+          {
+            "humanBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ]
+      }
+    },
+    "/api/apps/{id}/context": {
+      "post": {
+        "operationId": "post_api_apps_id_context",
+        "summary": "POST /api/apps/{id}/context",
+        "responses": {
+          "200": {
+            "description": "Success; see apps.md for resource fields and authorization."
+          },
+          "400": {
+            "description": "Invalid input"
+          },
+          "401": {
+            "description": "Authentication required"
+          },
+          "403": {
+            "description": "Insufficient scope or role"
+          },
+          "404": {
+            "description": "Resource not visible"
+          }
+        },
+        "security": [
+          {
+            "humanBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ]
+      }
+    },
+    "/api/apps/{id}/connection": {
+      "get": {
+        "operationId": "get_api_apps_id_connection",
+        "summary": "GET /api/apps/{id}/connection",
+        "responses": {
+          "200": {
+            "description": "Success; see apps.md for resource fields and authorization."
+          },
+          "400": {
+            "description": "Invalid input"
+          },
+          "401": {
+            "description": "Authentication required"
+          },
+          "403": {
+            "description": "Insufficient scope or role"
+          },
+          "404": {
+            "description": "Resource not visible"
+          }
+        },
+        "security": [
+          {
+            "humanBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ]
+      },
+      "post": {
+        "operationId": "post_api_apps_id_connection",
+        "summary": "POST /api/apps/{id}/connection",
+        "responses": {
+          "200": {
+            "description": "Success; see apps.md for resource fields and authorization."
+          },
+          "400": {
+            "description": "Invalid input"
+          },
+          "401": {
+            "description": "Authentication required"
+          },
+          "403": {
+            "description": "Insufficient scope or role"
+          },
+          "404": {
+            "description": "Resource not visible"
+          }
+        },
+        "security": [
+          {
+            "humanBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ]
+      }
+    },
+    "/api/apps/{id}/functions/{name}/invoke": {
+      "post": {
+        "operationId": "post_api_apps_id_functions_name_invoke",
+        "summary": "POST /api/apps/{id}/functions/{name}/invoke",
+        "responses": {
+          "200": {
+            "description": "Success; see apps.md for resource fields and authorization."
+          },
+          "400": {
+            "description": "Invalid input"
+          },
+          "401": {
+            "description": "Authentication required"
+          },
+          "403": {
+            "description": "Insufficient scope or role"
+          },
+          "404": {
+            "description": "Resource not visible"
+          }
+        },
+        "security": [
+          {
+            "humanBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "name",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ]
+      }
+    },
+    "/api/apps/{id}/entities/requests": {
+      "post": {
+        "operationId": "post_api_apps_id_entities_requests",
+        "summary": "POST /api/apps/{id}/entities/requests",
+        "responses": {
+          "200": {
+            "description": "Success; see apps.md for resource fields and authorization."
+          },
+          "400": {
+            "description": "Invalid input"
+          },
+          "401": {
+            "description": "Authentication required"
+          },
+          "403": {
+            "description": "Insufficient scope or role"
+          },
+          "404": {
+            "description": "Resource not visible"
+          }
+        },
+        "security": [
+          {
+            "humanBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ]
+      }
+    },
+    "/api/apps/v1/users/me/profile": {
+      "get": {
+        "operationId": "get_api_apps_v1_users_me_profile",
+        "summary": "GET /api/apps/v1/users/me/profile",
+        "responses": {
+          "200": {
+            "description": "Success; see apps.md for resource fields and authorization."
+          },
+          "400": {
+            "description": "Invalid input"
+          },
+          "401": {
+            "description": "Authentication required"
+          },
+          "403": {
+            "description": "Insufficient scope or role"
+          },
+          "404": {
+            "description": "Resource not visible"
+          }
+        },
+        "security": [
+          {
+            "appBearer": []
+          }
+        ]
+      },
+      "patch": {
+        "operationId": "patch_api_apps_v1_users_me_profile",
+        "summary": "PATCH /api/apps/v1/users/me/profile",
+        "responses": {
+          "200": {
+            "description": "Success; see apps.md for resource fields and authorization."
+          },
+          "400": {
+            "description": "Invalid input"
+          },
+          "401": {
+            "description": "Authentication required"
+          },
+          "403": {
+            "description": "Insufficient scope or role"
+          },
+          "404": {
+            "description": "Resource not visible"
+          }
+        },
+        "security": [
+          {
+            "appBearer": []
+          }
+        ]
+      }
+    },
+    "/api/apps/v1/users/{id}/profile": {
+      "get": {
+        "operationId": "get_api_apps_v1_users_id_profile",
+        "summary": "GET /api/apps/v1/users/{id}/profile",
+        "responses": {
+          "200": {
+            "description": "Success; see apps.md for resource fields and authorization."
+          },
+          "400": {
+            "description": "Invalid input"
+          },
+          "401": {
+            "description": "Authentication required"
+          },
+          "403": {
+            "description": "Insufficient scope or role"
+          },
+          "404": {
+            "description": "Resource not visible"
+          }
+        },
+        "security": [
+          {
+            "appBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ]
+      }
+    },
+    "/api/apps/v1/users/{id}/guest": {
+      "patch": {
+        "operationId": "patch_api_apps_v1_users_id_guest",
+        "summary": "PATCH /api/apps/v1/users/{id}/guest",
+        "responses": {
+          "200": {
+            "description": "Success; see apps.md for resource fields and authorization."
+          },
+          "400": {
+            "description": "Invalid input"
+          },
+          "401": {
+            "description": "Authentication required"
+          },
+          "403": {
+            "description": "Insufficient scope or role"
+          },
+          "404": {
+            "description": "Resource not visible"
+          }
+        },
+        "security": [
+          {
+            "appBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ]
+      }
+    },
+    "/api/apps/v1/presence/heartbeat": {
+      "post": {
+        "operationId": "post_api_apps_v1_presence_heartbeat",
+        "summary": "POST /api/apps/v1/presence/heartbeat",
+        "responses": {
+          "200": {
+            "description": "Success; see apps.md for resource fields and authorization."
+          },
+          "400": {
+            "description": "Invalid input"
+          },
+          "401": {
+            "description": "Authentication required"
+          },
+          "403": {
+            "description": "Insufficient scope or role"
+          },
+          "404": {
+            "description": "Resource not visible"
+          }
+        },
+        "security": [
+          {
+            "appBearer": []
+          }
+        ]
+      }
+    },
+    "/api/apps/v1/channels/{channel}/settings": {
+      "get": {
+        "operationId": "get_api_apps_v1_channels_channel_settings",
+        "summary": "GET /api/apps/v1/channels/{channel}/settings",
+        "responses": {
+          "200": {
+            "description": "Success; see apps.md for resource fields and authorization."
+          },
+          "400": {
+            "description": "Invalid input"
+          },
+          "401": {
+            "description": "Authentication required"
+          },
+          "403": {
+            "description": "Insufficient scope or role"
+          },
+          "404": {
+            "description": "Resource not visible"
+          }
+        },
+        "security": [
+          {
+            "appBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "channel",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ]
+      },
+      "patch": {
+        "operationId": "patch_api_apps_v1_channels_channel_settings",
+        "summary": "PATCH /api/apps/v1/channels/{channel}/settings",
+        "responses": {
+          "200": {
+            "description": "Success; see apps.md for resource fields and authorization."
+          },
+          "400": {
+            "description": "Invalid input"
+          },
+          "401": {
+            "description": "Authentication required"
+          },
+          "403": {
+            "description": "Insufficient scope or role"
+          },
+          "404": {
+            "description": "Resource not visible"
+          }
+        },
+        "security": [
+          {
+            "appBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "channel",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ]
+      }
+    },
+    "/api/apps/v1/channels/{channel}/view": {
+      "post": {
+        "operationId": "post_api_apps_v1_channels_channel_view",
+        "summary": "POST /api/apps/v1/channels/{channel}/view",
+        "responses": {
+          "200": {
+            "description": "Success; see apps.md for resource fields and authorization."
+          },
+          "400": {
+            "description": "Invalid input"
+          },
+          "401": {
+            "description": "Authentication required"
+          },
+          "403": {
+            "description": "Insufficient scope or role"
+          },
+          "404": {
+            "description": "Resource not visible"
+          }
+        },
+        "security": [
+          {
+            "appBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "channel",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ]
+      }
+    },
+    "/api/apps/v1/channels/{channel}/history": {
+      "delete": {
+        "operationId": "delete_api_apps_v1_channels_channel_history",
+        "summary": "DELETE /api/apps/v1/channels/{channel}/history",
+        "responses": {
+          "200": {
+            "description": "Success; see apps.md for resource fields and authorization."
+          },
+          "400": {
+            "description": "Invalid input"
+          },
+          "401": {
+            "description": "Authentication required"
+          },
+          "403": {
+            "description": "Insufficient scope or role"
+          },
+          "404": {
+            "description": "Resource not visible"
+          }
+        },
+        "security": [
+          {
+            "appBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "channel",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ]
+      }
+    },
+    "/api/apps/v1/channels/{channel}/pins": {
+      "get": {
+        "operationId": "get_api_apps_v1_channels_channel_pins",
+        "summary": "GET /api/apps/v1/channels/{channel}/pins",
+        "responses": {
+          "200": {
+            "description": "Success; see apps.md for resource fields and authorization."
+          },
+          "400": {
+            "description": "Invalid input"
+          },
+          "401": {
+            "description": "Authentication required"
+          },
+          "403": {
+            "description": "Insufficient scope or role"
+          },
+          "404": {
+            "description": "Resource not visible"
+          }
+        },
+        "security": [
+          {
+            "appBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "channel",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ]
+      },
+      "post": {
+        "operationId": "post_api_apps_v1_channels_channel_pins",
+        "summary": "POST /api/apps/v1/channels/{channel}/pins",
+        "responses": {
+          "200": {
+            "description": "Success; see apps.md for resource fields and authorization."
+          },
+          "400": {
+            "description": "Invalid input"
+          },
+          "401": {
+            "description": "Authentication required"
+          },
+          "403": {
+            "description": "Insufficient scope or role"
+          },
+          "404": {
+            "description": "Resource not visible"
+          }
+        },
+        "security": [
+          {
+            "appBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "channel",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ]
+      }
+    },
+    "/api/apps/v1/channels/{channel}/pins/{kind}/{id}": {
+      "delete": {
+        "operationId": "delete_api_apps_v1_channels_channel_pins_kind_id",
+        "summary": "DELETE /api/apps/v1/channels/{channel}/pins/{kind}/{id}",
+        "responses": {
+          "200": {
+            "description": "Success; see apps.md for resource fields and authorization."
+          },
+          "400": {
+            "description": "Invalid input"
+          },
+          "401": {
+            "description": "Authentication required"
+          },
+          "403": {
+            "description": "Insufficient scope or role"
+          },
+          "404": {
+            "description": "Resource not visible"
+          }
+        },
+        "security": [
+          {
+            "appBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "channel",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "kind",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ]
+      }
+    },
+    "/api/apps/v1/stars": {
+      "get": {
+        "operationId": "get_api_apps_v1_stars",
+        "summary": "GET /api/apps/v1/stars",
+        "responses": {
+          "200": {
+            "description": "Success; see apps.md for resource fields and authorization."
+          },
+          "400": {
+            "description": "Invalid input"
+          },
+          "401": {
+            "description": "Authentication required"
+          },
+          "403": {
+            "description": "Insufficient scope or role"
+          },
+          "404": {
+            "description": "Resource not visible"
+          }
+        },
+        "security": [
+          {
+            "appBearer": []
+          }
+        ]
+      },
+      "post": {
+        "operationId": "post_api_apps_v1_stars",
+        "summary": "POST /api/apps/v1/stars",
+        "responses": {
+          "200": {
+            "description": "Success; see apps.md for resource fields and authorization."
+          },
+          "400": {
+            "description": "Invalid input"
+          },
+          "401": {
+            "description": "Authentication required"
+          },
+          "403": {
+            "description": "Insufficient scope or role"
+          },
+          "404": {
+            "description": "Resource not visible"
+          }
+        },
+        "security": [
+          {
+            "appBearer": []
+          }
+        ]
+      }
+    },
+    "/api/apps/v1/stars/{kind}/{id}": {
+      "delete": {
+        "operationId": "delete_api_apps_v1_stars_kind_id",
+        "summary": "DELETE /api/apps/v1/stars/{kind}/{id}",
+        "responses": {
+          "200": {
+            "description": "Success; see apps.md for resource fields and authorization."
+          },
+          "400": {
+            "description": "Invalid input"
+          },
+          "401": {
+            "description": "Authentication required"
+          },
+          "403": {
+            "description": "Insufficient scope or role"
+          },
+          "404": {
+            "description": "Resource not visible"
+          }
+        },
+        "security": [
+          {
+            "appBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "kind",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ]
+      }
+    },
+    "/api/apps/v1/emojis": {
+      "get": {
+        "operationId": "get_api_apps_v1_emojis",
+        "summary": "GET /api/apps/v1/emojis",
+        "responses": {
+          "200": {
+            "description": "Success; see apps.md for resource fields and authorization."
+          },
+          "400": {
+            "description": "Invalid input"
+          },
+          "401": {
+            "description": "Authentication required"
+          },
+          "403": {
+            "description": "Insufficient scope or role"
+          },
+          "404": {
+            "description": "Resource not visible"
+          }
+        },
+        "security": [
+          {
+            "appBearer": []
+          }
+        ]
+      },
+      "post": {
+        "operationId": "post_api_apps_v1_emojis",
+        "summary": "POST /api/apps/v1/emojis",
+        "responses": {
+          "200": {
+            "description": "Success; see apps.md for resource fields and authorization."
+          },
+          "400": {
+            "description": "Invalid input"
+          },
+          "401": {
+            "description": "Authentication required"
+          },
+          "403": {
+            "description": "Insufficient scope or role"
+          },
+          "404": {
+            "description": "Resource not visible"
+          }
+        },
+        "security": [
+          {
+            "appBearer": []
+          }
+        ]
+      }
+    },
+    "/api/apps/v1/emojis/{name}": {
+      "get": {
+        "operationId": "get_api_apps_v1_emojis_name",
+        "summary": "GET /api/apps/v1/emojis/{name}",
+        "responses": {
+          "200": {
+            "description": "Success; see apps.md for resource fields and authorization."
+          },
+          "400": {
+            "description": "Invalid input"
+          },
+          "401": {
+            "description": "Authentication required"
+          },
+          "403": {
+            "description": "Insufficient scope or role"
+          },
+          "404": {
+            "description": "Resource not visible"
+          }
+        },
+        "security": [
+          {
+            "appBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ]
+      },
+      "delete": {
+        "operationId": "delete_api_apps_v1_emojis_name",
+        "summary": "DELETE /api/apps/v1/emojis/{name}",
+        "responses": {
+          "200": {
+            "description": "Success; see apps.md for resource fields and authorization."
+          },
+          "400": {
+            "description": "Invalid input"
+          },
+          "401": {
+            "description": "Authentication required"
+          },
+          "403": {
+            "description": "Insufficient scope or role"
+          },
+          "404": {
+            "description": "Resource not visible"
+          }
+        },
+        "security": [
+          {
+            "appBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ]
+      }
+    },
+    "/api/apps/v1/workspace": {
+      "get": {
+        "operationId": "get_api_apps_v1_workspace",
+        "summary": "GET /api/apps/v1/workspace",
+        "responses": {
+          "200": {
+            "description": "Success; see apps.md for resource fields and authorization."
+          },
+          "400": {
+            "description": "Invalid input"
+          },
+          "401": {
+            "description": "Authentication required"
+          },
+          "403": {
+            "description": "Insufficient scope or role"
+          },
+          "404": {
+            "description": "Resource not visible"
+          }
+        },
+        "security": [
+          {
+            "appBearer": []
+          }
+        ]
+      },
+      "patch": {
+        "operationId": "patch_api_apps_v1_workspace",
+        "summary": "PATCH /api/apps/v1/workspace",
+        "responses": {
+          "200": {
+            "description": "Success; see apps.md for resource fields and authorization."
+          },
+          "400": {
+            "description": "Invalid input"
+          },
+          "401": {
+            "description": "Authentication required"
+          },
+          "403": {
+            "description": "Insufficient scope or role"
+          },
+          "404": {
+            "description": "Resource not visible"
+          }
+        },
+        "security": [
+          {
+            "appBearer": []
+          }
+        ]
+      }
+    },
+    "/api/apps/v1/usergroups": {
+      "get": {
+        "operationId": "get_api_apps_v1_usergroups",
+        "summary": "GET /api/apps/v1/usergroups",
+        "responses": {
+          "200": {
+            "description": "Success; see apps.md for resource fields and authorization."
+          },
+          "400": {
+            "description": "Invalid input"
+          },
+          "401": {
+            "description": "Authentication required"
+          },
+          "403": {
+            "description": "Insufficient scope or role"
+          },
+          "404": {
+            "description": "Resource not visible"
+          }
+        },
+        "security": [
+          {
+            "appBearer": []
+          }
+        ]
+      },
+      "post": {
+        "operationId": "post_api_apps_v1_usergroups",
+        "summary": "POST /api/apps/v1/usergroups",
+        "responses": {
+          "200": {
+            "description": "Success; see apps.md for resource fields and authorization."
+          },
+          "400": {
+            "description": "Invalid input"
+          },
+          "401": {
+            "description": "Authentication required"
+          },
+          "403": {
+            "description": "Insufficient scope or role"
+          },
+          "404": {
+            "description": "Resource not visible"
+          }
+        },
+        "security": [
+          {
+            "appBearer": []
+          }
+        ]
+      }
+    },
+    "/api/apps/v1/usergroups/{id}": {
+      "patch": {
+        "operationId": "patch_api_apps_v1_usergroups_id",
+        "summary": "PATCH /api/apps/v1/usergroups/{id}",
+        "responses": {
+          "200": {
+            "description": "Success; see apps.md for resource fields and authorization."
+          },
+          "400": {
+            "description": "Invalid input"
+          },
+          "401": {
+            "description": "Authentication required"
+          },
+          "403": {
+            "description": "Insufficient scope or role"
+          },
+          "404": {
+            "description": "Resource not visible"
+          }
+        },
+        "security": [
+          {
+            "appBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ]
+      }
+    },
+    "/api/apps/v1/usergroups/{id}/members": {
+      "get": {
+        "operationId": "get_api_apps_v1_usergroups_id_members",
+        "summary": "GET /api/apps/v1/usergroups/{id}/members",
+        "responses": {
+          "200": {
+            "description": "Success; see apps.md for resource fields and authorization."
+          },
+          "400": {
+            "description": "Invalid input"
+          },
+          "401": {
+            "description": "Authentication required"
+          },
+          "403": {
+            "description": "Insufficient scope or role"
+          },
+          "404": {
+            "description": "Resource not visible"
+          }
+        },
+        "security": [
+          {
+            "appBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ]
+      },
+      "put": {
+        "operationId": "put_api_apps_v1_usergroups_id_members",
+        "summary": "PUT /api/apps/v1/usergroups/{id}/members",
+        "responses": {
+          "200": {
+            "description": "Success; see apps.md for resource fields and authorization."
+          },
+          "400": {
+            "description": "Invalid input"
+          },
+          "401": {
+            "description": "Authentication required"
+          },
+          "403": {
+            "description": "Insufficient scope or role"
+          },
+          "404": {
+            "description": "Resource not visible"
+          }
+        },
+        "security": [
+          {
+            "appBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ]
+      }
+    },
+    "/api/apps/v1/invite-requests": {
+      "get": {
+        "operationId": "get_api_apps_v1_invite_requests",
+        "summary": "GET /api/apps/v1/invite-requests",
+        "responses": {
+          "200": {
+            "description": "Success; see apps.md for resource fields and authorization."
+          },
+          "400": {
+            "description": "Invalid input"
+          },
+          "401": {
+            "description": "Authentication required"
+          },
+          "403": {
+            "description": "Insufficient scope or role"
+          },
+          "404": {
+            "description": "Resource not visible"
+          }
+        },
+        "security": [
+          {
+            "appBearer": []
+          }
+        ]
+      },
+      "post": {
+        "operationId": "post_api_apps_v1_invite_requests",
+        "summary": "POST /api/apps/v1/invite-requests",
+        "responses": {
+          "200": {
+            "description": "Success; see apps.md for resource fields and authorization."
+          },
+          "400": {
+            "description": "Invalid input"
+          },
+          "401": {
+            "description": "Authentication required"
+          },
+          "403": {
+            "description": "Insufficient scope or role"
+          },
+          "404": {
+            "description": "Resource not visible"
+          }
+        },
+        "security": [
+          {
+            "appBearer": []
+          }
+        ]
+      }
+    },
+    "/api/apps/v1/reminders": {
+      "get": {
+        "operationId": "get_api_apps_v1_reminders",
+        "summary": "GET /api/apps/v1/reminders",
+        "responses": {
+          "200": {
+            "description": "Success; see apps.md for resource fields and authorization."
+          },
+          "400": {
+            "description": "Invalid input"
+          },
+          "401": {
+            "description": "Authentication required"
+          },
+          "403": {
+            "description": "Insufficient scope or role"
+          },
+          "404": {
+            "description": "Resource not visible"
+          }
+        },
+        "security": [
+          {
+            "appBearer": []
+          }
+        ]
+      },
+      "post": {
+        "operationId": "post_api_apps_v1_reminders",
+        "summary": "POST /api/apps/v1/reminders",
+        "responses": {
+          "200": {
+            "description": "Success; see apps.md for resource fields and authorization."
+          },
+          "400": {
+            "description": "Invalid input"
+          },
+          "401": {
+            "description": "Authentication required"
+          },
+          "403": {
+            "description": "Insufficient scope or role"
+          },
+          "404": {
+            "description": "Resource not visible"
+          }
+        },
+        "security": [
+          {
+            "appBearer": []
+          }
+        ]
+      }
+    },
+    "/api/apps/v1/reminders/{id}": {
+      "patch": {
+        "operationId": "patch_api_apps_v1_reminders_id",
+        "summary": "PATCH /api/apps/v1/reminders/{id}",
+        "responses": {
+          "200": {
+            "description": "Success; see apps.md for resource fields and authorization."
+          },
+          "400": {
+            "description": "Invalid input"
+          },
+          "401": {
+            "description": "Authentication required"
+          },
+          "403": {
+            "description": "Insufficient scope or role"
+          },
+          "404": {
+            "description": "Resource not visible"
+          }
+        },
+        "security": [
+          {
+            "appBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ]
+      },
+      "delete": {
+        "operationId": "delete_api_apps_v1_reminders_id",
+        "summary": "DELETE /api/apps/v1/reminders/{id}",
+        "responses": {
+          "200": {
+            "description": "Success; see apps.md for resource fields and authorization."
+          },
+          "400": {
+            "description": "Invalid input"
+          },
+          "401": {
+            "description": "Authentication required"
+          },
+          "403": {
+            "description": "Insufficient scope or role"
+          },
+          "404": {
+            "description": "Resource not visible"
+          }
+        },
+        "security": [
+          {
+            "appBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ]
+      }
+    },
+    "/api/apps/v1/messages/{id}/metadata": {
+      "patch": {
+        "operationId": "patch_api_apps_v1_messages_id_metadata",
+        "summary": "PATCH /api/apps/v1/messages/{id}/metadata",
+        "responses": {
+          "200": {
+            "description": "Success; see apps.md for resource fields and authorization."
+          },
+          "400": {
+            "description": "Invalid input"
+          },
+          "401": {
+            "description": "Authentication required"
+          },
+          "403": {
+            "description": "Insufficient scope or role"
+          },
+          "404": {
+            "description": "Resource not visible"
+          }
+        },
+        "security": [
+          {
+            "appBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ]
+      },
+      "delete": {
+        "operationId": "delete_api_apps_v1_messages_id_metadata",
+        "summary": "DELETE /api/apps/v1/messages/{id}/metadata",
+        "responses": {
+          "200": {
+            "description": "Success; see apps.md for resource fields and authorization."
+          },
+          "400": {
+            "description": "Invalid input"
+          },
+          "401": {
+            "description": "Authentication required"
+          },
+          "403": {
+            "description": "Insufficient scope or role"
+          },
+          "404": {
+            "description": "Resource not visible"
+          }
+        },
+        "security": [
+          {
+            "appBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ]
+      }
+    },
+    "/api/apps/v1/assistant-sessions": {
+      "get": {
+        "operationId": "get_api_apps_v1_assistant_sessions",
+        "summary": "GET /api/apps/v1/assistant-sessions",
+        "responses": {
+          "200": {
+            "description": "Success; see apps.md for resource fields and authorization."
+          },
+          "400": {
+            "description": "Invalid input"
+          },
+          "401": {
+            "description": "Authentication required"
+          },
+          "403": {
+            "description": "Insufficient scope or role"
+          },
+          "404": {
+            "description": "Resource not visible"
+          }
+        },
+        "security": [
+          {
+            "appBearer": []
+          }
+        ]
+      },
+      "post": {
+        "operationId": "post_api_apps_v1_assistant_sessions",
+        "summary": "POST /api/apps/v1/assistant-sessions",
+        "responses": {
+          "200": {
+            "description": "Success; see apps.md for resource fields and authorization."
+          },
+          "400": {
+            "description": "Invalid input"
+          },
+          "401": {
+            "description": "Authentication required"
+          },
+          "403": {
+            "description": "Insufficient scope or role"
+          },
+          "404": {
+            "description": "Resource not visible"
+          }
+        },
+        "security": [
+          {
+            "appBearer": []
+          }
+        ]
+      }
+    },
+    "/api/apps/v1/assistant-sessions/{id}": {
+      "patch": {
+        "operationId": "patch_api_apps_v1_assistant_sessions_id",
+        "summary": "PATCH /api/apps/v1/assistant-sessions/{id}",
+        "responses": {
+          "200": {
+            "description": "Success; see apps.md for resource fields and authorization."
+          },
+          "400": {
+            "description": "Invalid input"
+          },
+          "401": {
+            "description": "Authentication required"
+          },
+          "403": {
+            "description": "Insufficient scope or role"
+          },
+          "404": {
+            "description": "Resource not visible"
+          }
+        },
+        "security": [
+          {
+            "appBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ]
+      }
+    },
+    "/api/apps/v1/function-executions/{id}/complete": {
+      "post": {
+        "operationId": "post_api_apps_v1_function_executions_id_complete",
+        "summary": "POST /api/apps/v1/function-executions/{id}/complete",
+        "responses": {
+          "200": {
+            "description": "Success; see apps.md for resource fields and authorization."
+          },
+          "400": {
+            "description": "Invalid input"
+          },
+          "401": {
+            "description": "Authentication required"
+          },
+          "403": {
+            "description": "Insufficient scope or role"
+          },
+          "404": {
+            "description": "Resource not visible"
+          }
+        },
+        "security": [
+          {
+            "appBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ]
+      }
+    },
+    "/api/apps/v1/user-connections/{user}": {
+      "post": {
+        "operationId": "post_api_apps_v1_user_connections_user",
+        "summary": "POST /api/apps/v1/user-connections/{user}",
+        "responses": {
+          "200": {
+            "description": "Success; see apps.md for resource fields and authorization."
+          },
+          "400": {
+            "description": "Invalid input"
+          },
+          "401": {
+            "description": "Authentication required"
+          },
+          "403": {
+            "description": "Insufficient scope or role"
+          },
+          "404": {
+            "description": "Resource not visible"
+          }
+        },
+        "security": [
+          {
+            "appBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "user",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ]
+      }
+    },
+    "/api/apps/v1/files/{id}": {
+      "get": {
+        "operationId": "get_api_apps_v1_files_id",
+        "summary": "GET /api/apps/v1/files/{id}",
+        "responses": {
+          "200": {
+            "description": "Success; see apps.md for resource fields and authorization."
+          },
+          "400": {
+            "description": "Invalid input"
+          },
+          "401": {
+            "description": "Authentication required"
+          },
+          "403": {
+            "description": "Insufficient scope or role"
+          },
+          "404": {
+            "description": "Resource not visible"
+          }
+        },
+        "security": [
+          {
+            "appBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ]
+      },
+      "patch": {
+        "operationId": "patch_api_apps_v1_files_id",
+        "summary": "PATCH /api/apps/v1/files/{id}",
+        "responses": {
+          "200": {
+            "description": "Success; see apps.md for resource fields and authorization."
+          },
+          "400": {
+            "description": "Invalid input"
+          },
+          "401": {
+            "description": "Authentication required"
+          },
+          "403": {
+            "description": "Insufficient scope or role"
+          },
+          "404": {
+            "description": "Resource not visible"
+          }
+        },
+        "security": [
+          {
+            "appBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ]
+      },
+      "delete": {
+        "operationId": "delete_api_apps_v1_files_id",
+        "summary": "DELETE /api/apps/v1/files/{id}",
+        "responses": {
+          "200": {
+            "description": "Success; see apps.md for resource fields and authorization."
+          },
+          "400": {
+            "description": "Invalid input"
+          },
+          "401": {
+            "description": "Authentication required"
+          },
+          "403": {
+            "description": "Insufficient scope or role"
+          },
+          "404": {
+            "description": "Resource not visible"
+          }
+        },
+        "security": [
+          {
+            "appBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ]
+      }
+    },
+    "/api/apps/v1/files/{id}/shares": {
+      "post": {
+        "operationId": "post_api_apps_v1_files_id_shares",
+        "summary": "POST /api/apps/v1/files/{id}/shares",
+        "responses": {
+          "200": {
+            "description": "Success; see apps.md for resource fields and authorization."
+          },
+          "400": {
+            "description": "Invalid input"
+          },
+          "401": {
+            "description": "Authentication required"
+          },
+          "403": {
+            "description": "Insufficient scope or role"
+          },
+          "404": {
+            "description": "Resource not visible"
+          }
+        },
+        "security": [
+          {
+            "appBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ]
+      }
+    },
+    "/api/apps/v1/files/{id}/shares/{channel}": {
+      "delete": {
+        "operationId": "delete_api_apps_v1_files_id_shares_channel",
+        "summary": "DELETE /api/apps/v1/files/{id}/shares/{channel}",
+        "responses": {
+          "200": {
+            "description": "Success; see apps.md for resource fields and authorization."
+          },
+          "400": {
+            "description": "Invalid input"
+          },
+          "401": {
+            "description": "Authentication required"
+          },
+          "403": {
+            "description": "Insufficient scope or role"
+          },
+          "404": {
+            "description": "Resource not visible"
+          }
+        },
+        "security": [
+          {
+            "appBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "channel",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ]
+      }
+    },
+    "/api/apps/v1/files/{id}/public-link": {
+      "post": {
+        "operationId": "post_api_apps_v1_files_id_public_link",
+        "summary": "POST /api/apps/v1/files/{id}/public-link",
+        "responses": {
+          "200": {
+            "description": "Success; see apps.md for resource fields and authorization."
+          },
+          "400": {
+            "description": "Invalid input"
+          },
+          "401": {
+            "description": "Authentication required"
+          },
+          "403": {
+            "description": "Insufficient scope or role"
+          },
+          "404": {
+            "description": "Resource not visible"
+          }
+        },
+        "security": [
+          {
+            "appBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ]
+      }
+    },
+    "/api/public-files/{token}": {
+      "get": {
+        "operationId": "get_api_public_files_token",
+        "summary": "GET /api/public-files/{token}",
+        "responses": {
+          "200": {
+            "description": "Success; see apps.md for resource fields and authorization."
+          },
+          "400": {
+            "description": "Invalid input"
+          },
+          "401": {
+            "description": "Authentication required"
+          },
+          "403": {
+            "description": "Insufficient scope or role"
+          },
+          "404": {
+            "description": "Resource not visible"
+          }
+        },
+        "parameters": [
+          {
+            "name": "token",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ]
+      }
+    }
+  },
+  "components": {
+    "securitySchemes": {
+      "appBearer": {
+        "type": "http",
+        "scheme": "bearer",
+        "description": "zoo_at_ app token"
+      },
+      "humanBearer": {
+        "type": "http",
+        "scheme": "bearer",
+        "description": "Zoo OIDC user access token"
+      }
+    },
+    "schemas": {
+      "Manifest": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "scopes": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "enum": [
+                "messages:read",
+                "messages:write",
+                "reactions:write",
+                "channels:read",
+                "channels:manage",
+                "users:read",
+                "dm:write",
+                "files:read",
+                "files:write",
+                "ui:write",
+                "commands:read",
+                "links:write",
+                "users:write",
+                "preferences:read",
+                "preferences:write",
+                "pins:read",
+                "pins:write",
+                "stars:read",
+                "stars:write",
+                "emoji:read",
+                "emoji:write",
+                "usergroups:read",
+                "usergroups:write",
+                "workspace:read",
+                "workspace:write",
+                "apps:read",
+                "invites:read",
+                "invites:write",
+                "reminders:read",
+                "reminders:write",
+                "files:share",
+                "metadata:read",
+                "metadata:write",
+                "assistant:write",
+                "functions:execute"
+              ]
+            },
+            "uniqueItems": true
+          },
+          "events": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "enum": [
+                "message.created",
+                "message.updated",
+                "message.deleted",
+                "message.replied",
+                "message.thread_broadcast",
+                "message.emote",
+                "channel.history_changed",
+                "user.typing",
+                "member.joined",
+                "member.left",
+                "channel.created",
+                "channel.updated",
+                "channel.deleted",
+                "channel.archived",
+                "channel.unarchived",
+                "channel.renamed",
+                "channel.purpose_changed",
+                "channel.topic_changed",
+                "channel.privacy_changed",
+                "channel.posting_permissions_changed",
+                "conversation.created",
+                "conversation.opened",
+                "conversation.closed",
+                "conversation.marked",
+                "user.joined",
+                "user.changed",
+                "user.profile_changed",
+                "user.status_changed",
+                "user.presence_changed",
+                "user.guest_status_changed",
+                "bot.added",
+                "bot.changed",
+                "user.preferences_changed",
+                "user.manual_presence_changed",
+                "user.dnd_changed",
+                "user.dnd_changed_public",
+                "pin.added",
+                "pin.removed",
+                "star.added",
+                "star.removed",
+                "emoji.changed",
+                "usergroup.created",
+                "usergroup.updated",
+                "usergroup.members_changed",
+                "usergroup.self_added",
+                "usergroup.self_removed",
+                "workspace.renamed",
+                "workspace.preferences_changed",
+                "workspace.profile_changed",
+                "workspace.profile_deleted",
+                "workspace.profile_reordered",
+                "app.requested",
+                "app.deleted",
+                "app.installed_workspace",
+                "app.uninstalled_workspace",
+                "commands.changed",
+                "file.created",
+                "file.changed",
+                "file.deleted",
+                "file.public",
+                "file.shared",
+                "file.unshared",
+                "message.metadata_posted",
+                "message.metadata_updated",
+                "message.metadata_deleted",
+                "invite.requested",
+                "reminder.created",
+                "reminder.fired",
+                "app.installed",
+                "app.uninstalled",
+                "tokens.revoked",
+                "assistant.started",
+                "assistant.context_changed",
+                "assistant.stopped",
+                "assistant.title_changed",
+                "app.context_changed",
+                "user.connection_requested",
+                "function.executed",
+                "entity.details_requested",
+                "entity.comments_requested",
+                "app.rate_limited",
+                "app.mentioned",
+                "reaction.added",
+                "reaction.removed",
+                "command.invoked",
+                "action.invoked",
+                "view.submitted",
+                "shortcut.invoked",
+                "link.shared",
+                "home.opened",
+                "agent_session_stopped",
+                "agent_session_title_changed",
+                "app_context_changed",
+                "app_deleted",
+                "app_home_opened",
+                "app_installed",
+                "app_mention",
+                "app_rate_limited",
+                "app_requested",
+                "app_uninstalled",
+                "assistant_thread_context_changed",
+                "assistant_thread_started",
+                "bot_added",
+                "bot_changed",
+                "channel_archive",
+                "channel_created",
+                "channel_deleted",
+                "channel_history_changed",
+                "channel_joined",
+                "channel_left",
+                "channel_marked",
+                "channel_rename",
+                "channel_unarchive",
+                "commands_changed",
+                "dnd_updated",
+                "dnd_updated_user",
+                "emoji_changed",
+                "entity_comments_requested",
+                "entity_details_requested",
+                "file_change",
+                "file_created",
+                "file_deleted",
+                "file_public",
+                "file_shared",
+                "file_unshared",
+                "function_executed",
+                "group_archive",
+                "group_close",
+                "group_deleted",
+                "group_history_changed",
+                "group_joined",
+                "group_left",
+                "group_marked",
+                "group_open",
+                "group_rename",
+                "group_unarchive",
+                "im_close",
+                "im_created",
+                "im_history_changed",
+                "im_marked",
+                "im_open",
+                "invite_requested",
+                "link_shared",
+                "manual_presence_change",
+                "member_joined_channel",
+                "member_left_channel",
+                "message",
+                "message.app_home",
+                "message.assistant_app_thread",
+                "message.bot_message",
+                "message.channel_archive",
+                "message.channel_convert_to_private",
+                "message.channel_convert_to_public",
+                "message.channel_join",
+                "message.channel_leave",
+                "message.channel_name",
+                "message.channel_posting_permissions",
+                "message.channel_purpose",
+                "message.channel_topic",
+                "message.channel_unarchive",
+                "message.channels",
+                "message.file_mention",
+                "message.file_share",
+                "message.group_archive",
+                "message.group_join",
+                "message.group_leave",
+                "message.group_name",
+                "message.group_purpose",
+                "message.group_topic",
+                "message.group_unarchive",
+                "message.groups",
+                "message.im",
+                "message.me_message",
+                "message.message_changed",
+                "message.message_deleted",
+                "message.message_replied",
+                "message.mpim",
+                "message.pinned_item",
+                "message.reminder_add",
+                "message.reply_broadcast",
+                "message.thread_broadcast",
+                "message.unpinned_item",
+                "message_metadata_deleted",
+                "message_metadata_posted",
+                "message_metadata_updated",
+                "pin_added",
+                "pin_removed",
+                "pref_change",
+                "presence_change",
+                "reaction_added",
+                "reaction_removed",
+                "star_added",
+                "star_removed",
+                "subteam_created",
+                "subteam_members_changed",
+                "subteam_self_added",
+                "subteam_self_removed",
+                "subteam_updated",
+                "team_join",
+                "team_pref_change",
+                "team_profile_change",
+                "team_profile_delete",
+                "team_profile_reorder",
+                "team_rename",
+                "tokens_revoked",
+                "user_change",
+                "user_connection",
+                "user_guest_status_changed",
+                "user_profile_changed",
+                "user_status_changed",
+                "user_typing"
+              ]
+            },
+            "uniqueItems": true
+          },
+          "notification_only": {
+            "type": "boolean",
+            "default": false
+          },
+          "include_bot_events": {
+            "type": "boolean",
+            "default": false
+          },
+          "dm_enabled": {
+            "type": "boolean",
+            "default": false
+          },
+          "transport": {
+            "type": "string",
+            "enum": [
+              "http",
+              "websocket"
+            ],
+            "default": "websocket"
+          },
+          "event_url": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uri"
+          },
+          "redirect_uris": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "format": "uri"
+            },
+            "uniqueItems": true
+          },
+          "commands": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "pattern": "^[a-zA-Z0-9_-]{1,48}$"
+            },
+            "uniqueItems": true
+          },
+          "shortcuts": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "uniqueItems": true
+          },
+          "link_domains": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "uniqueItems": true
+          },
+          "message_shortcuts": {
+            "type": "array",
+            "maxItems": 50,
+            "uniqueItems": true,
+            "items": {
+              "type": "string"
+            }
+          },
+          "functions": {
+            "type": "array",
+            "maxItems": 50,
+            "uniqueItems": true,
+            "items": {
+              "type": "string"
+            }
+          },
+          "user_connections": {
+            "type": "boolean",
+            "default": false
+          }
+        }
+      },
+      "AppInput": {
+        "type": "object",
+        "required": [
+          "name"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "name": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 80
+          },
+          "bot_username": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "maxLength": 80
+          },
+          "description": {
+            "type": "string",
+            "maxLength": 4000
+          },
+          "icon_url": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uri"
+          },
+          "manifest": {
+            "$ref": "#/components/schemas/Manifest"
+          }
+        }
+      },
+      "Error": {
+        "type": "object",
+        "required": [
+          "error"
+        ],
+        "properties": {
+          "error": {
+            "type": "string"
+          }
+        }
+      },
+      "MessageInput": {
+        "type": "object",
+        "required": [
+          "channel_id",
+          "content"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid",
+            "description": "Idempotency key"
+          },
+          "channel_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "content": {
+            "type": "string"
+          },
+          "parent_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uuid"
+          },
+          "kind": {
+            "type": "string",
+            "enum": [
+              "message",
+              "emote"
+            ],
+            "default": "message"
+          },
+          "broadcast": {
+            "type": "boolean",
+            "default": false
+          },
+          "metadata": {
+            "type": [
+              "object",
+              "null"
+            ]
+          }
+        }
+      },
+      "Blocks": {
+        "type": "array",
+        "maxItems": 50,
+        "items": {
+          "oneOf": [
+            {
+              "type": "object",
+              "required": [
+                "type",
+                "text"
+              ],
+              "additionalProperties": false,
+              "properties": {
+                "type": {
+                  "const": "text"
+                },
+                "text": {
+                  "type": "string",
+                  "maxLength": 4000
+                }
+              }
+            },
+            {
+              "type": "object",
+              "required": [
+                "type",
+                "action_id",
+                "label"
+              ],
+              "additionalProperties": false,
+              "properties": {
+                "type": {
+                  "const": "button"
+                },
+                "action_id": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 80
+                },
+                "label": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 200
+                },
+                "value": {
+                  "type": "string"
+                }
+              }
+            },
+            {
+              "type": "object",
+              "required": [
+                "type",
+                "action_id",
+                "label"
+              ],
+              "additionalProperties": false,
+              "properties": {
+                "type": {
+                  "const": "input"
+                },
+                "action_id": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 80
+                },
+                "label": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 200
+                },
+                "required": {
+                  "type": "boolean"
+                }
+              }
+            },
+            {
+              "type": "object",
+              "required": [
+                "type",
+                "action_id",
+                "label",
+                "options"
+              ],
+              "additionalProperties": false,
+              "properties": {
+                "type": {
+                  "const": "select"
+                },
+                "action_id": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 80
+                },
+                "label": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 200
+                },
+                "options": {
+                  "type": "array",
+                  "minItems": 1,
+                  "maxItems": 100,
+                  "items": {
+                    "type": "string",
+                    "maxLength": 200
+                  }
+                }
+              }
+            }
+          ]
+        }
+      },
+      "SurfaceInput": {
+        "type": "object",
+        "required": [
+          "kind",
+          "user_id",
+          "blocks"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "kind": {
+            "type": "string",
+            "enum": [
+              "home",
+              "modal",
+              "ephemeral"
+            ]
+          },
+          "user_id": {
+            "type": "string"
+          },
+          "channel_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "trigger_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "blocks": {
+            "$ref": "#/components/schemas/Blocks"
+          }
+        }
+      },
+      "FileInput": {
+        "type": "object",
+        "required": [
+          "channel_id",
+          "name",
+          "content_type",
+          "size_bytes"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "channel_id": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 255
+          },
+          "content_type": {
+            "type": "string",
+            "maxLength": 128
+          },
+          "size_bytes": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 26214400
+          }
+        }
+      }
+    }
+  }
+}

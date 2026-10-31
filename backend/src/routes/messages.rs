@@ -13,10 +13,10 @@ use crate::{
     },
     db::get_current_txid,
     error::AppError,
-    models::{Channel, ChannelUser, Message, MessageReaction},
+    models::{Attachment, Channel, ChannelUser, Message, MessageReaction},
     routes::response::ApiResponse,
     state::AppState,
-    validation::{normalize_and_validate_emoji, validate_message_content},
+    validation::{normalize_and_validate_emoji, validate_message_content_with_options},
 };
 
 #[derive(Debug, Deserialize)]
@@ -25,6 +25,16 @@ pub struct CreateMessageRequest {
     pub channel_id: String,
     pub content: String,
     pub parent_id: Option<String>,
+    pub attachment_ids: Option<Vec<String>>,
+    #[serde(default = "default_message_kind")]
+    pub kind: String,
+    #[serde(default)]
+    pub broadcast: bool,
+    pub metadata: Option<serde_json::Value>,
+}
+
+fn default_message_kind() -> String {
+    "message".into()
 }
 
 #[derive(Debug, Deserialize)]
@@ -119,14 +129,33 @@ async fn create_message(
     create_message_impl(state, auth_user, payload, true, None).await
 }
 
-pub(super) async fn create_message_impl(
+pub(crate) async fn create_message_impl(
     state: AppState,
     auth_user: AuthUser,
     payload: CreateMessageRequest,
     notify: bool,
     card: Option<String>,
 ) -> Result<Json<ApiResponse<MessageResponse>>, AppError> {
-    validate_message_content(&payload.content)?;
+    let attachment_ids = payload.attachment_ids.unwrap_or_default();
+    const MAX_ATTACHMENTS_PER_MESSAGE: usize = 10;
+    if attachment_ids.len() > MAX_ATTACHMENTS_PER_MESSAGE {
+        return Err(AppError::BadRequest(format!(
+            "Too many attachments: maximum allowed is {MAX_ATTACHMENTS_PER_MESSAGE}, got {}",
+            attachment_ids.len()
+        )));
+    }
+
+    validate_message_content_with_options(&payload.content, !attachment_ids.is_empty())?;
+    if !matches!(payload.kind.as_str(), "message" | "emote")
+        || payload.broadcast && payload.parent_id.is_none()
+    {
+        return Err(AppError::BadRequest(
+            "Invalid message kind or broadcast target".into(),
+        ));
+    }
+    if let Some(metadata) = &payload.metadata {
+        crate::apps::events::object(metadata)?;
+    }
 
     Uuid::parse_str(&payload.channel_id).map_err(|_| {
         AppError::BadRequest(format!(
@@ -140,7 +169,80 @@ pub(super) async fn create_message_impl(
         .map_err(|_| AppError::BadRequest(format!("message id is not a valid UUID: {id}")))?;
 
     let mut db = state.db.clone();
+
+    // 添付ファイルの検証 (外部ストレージへの HeadObject 検証はトランザクション外で実行)
+    let mut verified_attachments = Vec::new();
+    if !attachment_ids.is_empty() {
+        let mut seen = std::collections::HashSet::new();
+        for att_id in &attachment_ids {
+            Uuid::parse_str(att_id).map_err(|_| {
+                AppError::BadRequest(format!("attachment id is not a valid UUID: {att_id}"))
+            })?;
+            if !seen.insert(att_id) {
+                return Err(AppError::BadRequest(format!(
+                    "Duplicate attachment_id in request: {att_id}"
+                )));
+            }
+
+            let att = Attachment::get_by_id(&mut db, att_id.as_str())
+                .await
+                .map_err(|err| {
+                    if err.is_record_not_found() {
+                        AppError::NotFound(format!("Attachment not found: {att_id}"))
+                    } else {
+                        AppError::from(err)
+                    }
+                })?;
+
+            if att.uploader_id != auth_user.id {
+                return Err(AppError::Forbidden(format!(
+                    "Cannot attach file uploaded by another user: {att_id}"
+                )));
+            }
+
+            if att.channel_id != payload.channel_id {
+                return Err(AppError::BadRequest(format!(
+                    "Attachment channel mismatch: expected {}, got {}",
+                    payload.channel_id, att.channel_id
+                )));
+            }
+
+            if att.message_id.is_some() {
+                return Err(AppError::BadRequest(format!(
+                    "Attachment {att_id} is already attached to a message"
+                )));
+            }
+
+            // HeadObject による実体検証
+            crate::storage::verify_uploaded_object(
+                &state.s3_client,
+                &state.config.s3.bucket,
+                &att.storage_key,
+                att.file_size,
+                &att.content_type,
+            )
+            .await?;
+
+            verified_attachments.push(att.id);
+        }
+    }
+
     let mut tx = db.transaction().await?;
+    crate::apps::events::actor_context(&mut tx, &auth_user.id).await?;
+    let options = serde_json::json!({"kind":payload.kind,"broadcast":payload.broadcast,"metadata":payload.metadata});
+    crate::apps::one(
+        &mut tx,
+        "SELECT json_build_object('options',set_config('zoo.message_options',$1,true))::text",
+        &[&options.to_string()],
+    )
+    .await?;
+
+    let principal = crate::apps::one(&mut tx,
+        "SELECT json_build_object('bot',EXISTS(SELECT 1 FROM users WHERE id=$1 AND is_bot),'active',EXISTS(SELECT 1 FROM apps a JOIN app_installations i ON i.app_id=a.id WHERE a.bot_user_id=$1 AND a.status='installed' AND i.active))::text", &[auth_user.id.as_str()]).await?;
+    let bot_actor = principal["bot"] == true;
+    if bot_actor && principal["active"] != true {
+        return Err(AppError::Forbidden("App is not installed".into()));
+    }
 
     // チャンネル存在確認
     let channel = Channel::get_by_id(&mut tx, payload.channel_id.as_str())
@@ -167,7 +269,8 @@ pub(super) async fn create_message_impl(
     }
 
     // プライベートチャンネルの場合、所属していなければ 404 で存在を隠蔽
-    if channel.is_private {
+    if channel.is_private || bot_actor || crate::apps::events::guest(&mut tx, &auth_user.id).await?
+    {
         let membership = ChannelUser::filter(
             ChannelUser::fields()
                 .channel_id()
@@ -186,6 +289,13 @@ pub(super) async fn create_message_impl(
         }
     }
 
+    crate::apps::events::posting(
+        &mut tx,
+        &auth_user.id,
+        &payload.channel_id,
+        state.config.dev_auth_enabled,
+    )
+    .await?;
     // スレッド親メッセージ検証
     let mut parent_author_id: Option<String> = None;
     if let Some(ref parent_id) = payload.parent_id {
@@ -240,6 +350,30 @@ pub(super) async fn create_message_impl(
     .exec(&mut tx)
     .await?;
 
+    // 添付ファイルの紐付け (条件付き原子的 UPDATE)
+    for att_id in &verified_attachments {
+        let rows = toasty::sql::query(
+            "UPDATE attachments SET message_id = $1
+             WHERE id = $2 AND uploader_id = $3 AND channel_id = $4
+               AND message_id IS NULL
+               AND created_at > (now() AT TIME ZONE 'UTC') - INTERVAL '23 hours'
+             RETURNING id",
+        )
+        .bind(&id)
+        .bind(att_id)
+        .bind(&auth_user.id)
+        .bind(&payload.channel_id)
+        .exec(&mut tx)
+        .await?;
+
+        if rows.len() != 1 {
+            let _ = tx.rollback().await;
+            return Err(AppError::BadRequest(format!(
+                "Failed to attach file {att_id}: conflict, already attached, or expired"
+            )));
+        }
+    }
+
     let notifications = if notify {
         crate::notifications::create_message_notifications(
             &mut tx,
@@ -259,13 +393,13 @@ pub(super) async fn create_message_impl(
     Ok(Json(ApiResponse::new(MessageResponse::from(message), txid)))
 }
 
-async fn update_message(
+pub(crate) async fn update_message(
     State(state): State<AppState>,
     auth_user: AuthUser,
     Path(id): Path<String>,
     Json(payload): Json<UpdateMessageRequest>,
 ) -> Result<Json<ApiResponse<MessageResponse>>, AppError> {
-    validate_message_content(&payload.content)?;
+    validate_message_content_with_options(&payload.content, true)?;
 
     Uuid::parse_str(&id)
         .map_err(|_| AppError::BadRequest(format!("message id is not a valid UUID: {id}")))?;
@@ -304,7 +438,7 @@ async fn update_message(
         )));
     }
 
-    if channel.is_private {
+    if channel.is_private || crate::apps::events::guest(&mut tx, &auth_user.id).await? {
         let membership = ChannelUser::filter(
             ChannelUser::fields()
                 .channel_id()
@@ -338,6 +472,15 @@ async fn update_message(
         ));
     }
 
+    if payload.content.trim().is_empty() {
+        let has_attachments = Attachment::filter(Attachment::fields().message_id().eq(id.as_str()))
+            .first()
+            .exec(&mut tx)
+            .await?
+            .is_some();
+        validate_message_content_with_options(&payload.content, has_attachments)?;
+    }
+
     let now = crate::models::now_utc_millis();
 
     Message::update_by_id(id.as_str())
@@ -356,7 +499,7 @@ async fn update_message(
     )))
 }
 
-async fn delete_message(
+pub(crate) async fn delete_message(
     State(state): State<AppState>,
     auth_user: AuthUser,
     Path(id): Path<String>,
@@ -404,7 +547,7 @@ async fn delete_message(
         is_workspace_admin(&mut tx, &auth_user.id, state.config.dev_auth_enabled).await?
     };
 
-    if channel.is_private {
+    if channel.is_private || crate::apps::events::guest(&mut tx, &auth_user.id).await? {
         let membership = ChannelUser::filter(
             ChannelUser::fields()
                 .channel_id()
@@ -492,7 +635,7 @@ async fn list_messages(
         )));
     }
 
-    if channel.is_private {
+    if channel.is_private || crate::apps::events::guest_in_db(&mut db, &auth_user.id).await? {
         let membership = ChannelUser::filter(
             ChannelUser::fields()
                 .channel_id()
@@ -525,7 +668,7 @@ async fn list_messages(
     Ok(Json(res))
 }
 
-async fn add_reaction(
+pub(crate) async fn add_reaction(
     State(state): State<AppState>,
     auth_user: AuthUser,
     Path(id): Path<String>,
@@ -534,7 +677,7 @@ async fn add_reaction(
     Uuid::parse_str(&id)
         .map_err(|_| AppError::BadRequest(format!("message id is not a valid UUID: {id}")))?;
 
-    let normalized_emoji = normalize_and_validate_emoji(&payload.emoji)?;
+    let normalized_emoji = reaction_emoji(&state, &payload.emoji, true).await?;
 
     let mut db = state.db.clone();
     let mut tx = db.transaction().await?;
@@ -576,7 +719,7 @@ async fn add_reaction(
         ));
     }
 
-    if channel.is_private {
+    if channel.is_private || crate::apps::events::guest(&mut tx, &auth_user.id).await? {
         let membership = ChannelUser::filter(
             ChannelUser::fields()
                 .channel_id()
@@ -711,7 +854,7 @@ async fn add_reaction(
     )))
 }
 
-async fn delete_reaction(
+pub(crate) async fn delete_reaction(
     State(state): State<AppState>,
     auth_user: AuthUser,
     Path(id): Path<String>,
@@ -720,7 +863,7 @@ async fn delete_reaction(
     Uuid::parse_str(&id)
         .map_err(|_| AppError::BadRequest(format!("message id is not a valid UUID: {id}")))?;
 
-    let normalized_emoji = normalize_and_validate_emoji(&query.emoji)?;
+    let normalized_emoji = reaction_emoji(&state, &query.emoji, false).await?;
 
     let mut db = state.db.clone();
     let mut tx = db.transaction().await?;
@@ -762,7 +905,7 @@ async fn delete_reaction(
         ));
     }
 
-    if channel.is_private {
+    if channel.is_private || crate::apps::events::guest(&mut tx, &auth_user.id).await? {
         let membership = ChannelUser::filter(
             ChannelUser::fields()
                 .channel_id()
@@ -810,4 +953,34 @@ async fn delete_reaction(
         ReactionResponse::from(reaction),
         txid,
     )))
+}
+
+async fn reaction_emoji(
+    state: &AppState,
+    input: &str,
+    require_existing: bool,
+) -> Result<String, AppError> {
+    if let Ok(emoji) = normalize_and_validate_emoji(input) {
+        return Ok(emoji);
+    }
+    if let Some(name) = input.strip_prefix(':').and_then(|s| s.strip_suffix(':'))
+        && !name.is_empty()
+        && name.len() <= 64
+        && name
+            .bytes()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == b'_' || c == b'-')
+    {
+        if require_existing {
+            let mut db = state.db.clone();
+            let mut tx = db.transaction().await?;
+            crate::apps::one(
+                &mut tx,
+                "SELECT '{}'::text FROM workspace_emojis WHERE name=$1",
+                &[name],
+            )
+            .await?;
+        }
+        return Ok(input.to_owned());
+    }
+    normalize_and_validate_emoji(input)
 }

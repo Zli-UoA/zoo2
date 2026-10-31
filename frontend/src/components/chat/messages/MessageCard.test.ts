@@ -1,7 +1,7 @@
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vite-plus/test";
-import { MessageCard, parseMessageCard } from "./MessageCard";
+import { MessageCard, parseMessageCard, parseMessageCards } from "./MessageCard";
 
 describe("Message card format", () => {
   it("accepts a complete card and preserves Unicode", () => {
@@ -24,6 +24,26 @@ describe("Message card format", () => {
 });
 
 describe("Message card rendering", () => {
+  it("renders all Slack attachments and only permits supported colors", () => {
+    const cards = parseMessageCards(
+      JSON.stringify({
+        cards: [
+          { title: "Ready", color: "good" },
+          { title: "Failed", color: "#ff0000" },
+          { title: "Untrusted", color: "red; background: url(evil)" },
+        ],
+      }),
+    );
+    expect(cards).toHaveLength(3);
+    const html = cards!
+      .map((card) => renderToStaticMarkup(createElement(MessageCard, { card })))
+      .join("");
+    expect(html).toContain("border-left-color:#2eb886");
+    expect(html).toContain("border-left-color:#ff0000");
+    expect(html).not.toContain("evil");
+    expect(parseMessageCards('{"cards":[]}')).toBeNull();
+    expect(parseMessageCards('{"cards":[{"title":"ok"},null]}')).toBeNull();
+  });
   it("escapes external text and excludes unsafe links", () => {
     const card = {
       title: "<script>alert(1)</script>",

@@ -25,6 +25,10 @@ export const Default: Story = {};
 export const Filled: Story = {
   play: async () => {
     await userEvent.type(screen.getByPlaceholderText("新しいチャンネル名"), "new-channel");
+    await userEvent.type(
+      screen.getByPlaceholderText("このチャンネルの目的や話題"),
+      "新しいチャンネルの説明",
+    );
     await userEvent.click(screen.getByRole("checkbox", { name: "非公開にする" }));
     await expect(screen.getByRole("button", { name: "チャンネル作成" })).toBeEnabled();
   },

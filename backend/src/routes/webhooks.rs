@@ -1,48 +1,31 @@
+//! Token authentication and card persistence for Slack-compatible incoming webhooks.
 use super::messages::{CreateMessageRequest, create_message_impl};
-use crate::cards::MessageCard;
-use crate::{auth::AuthUser, error::AppError, models::Message, state::AppState};
-use axum::{
-    Extension, Router,
-    body::Bytes,
-    extract::State,
-    http::{HeaderMap, StatusCode},
-    routing::post,
+use crate::{
+    auth::AuthUser, cards::MessageCard, error::AppError, models::Message, state::AppState,
 };
+use axum::http::StatusCode;
 use hmac::{Hmac, KeyInit, Mac};
-use serde_json::Value;
-#[cfg(test)]
-use serde_json::json;
 use sha2::{Digest, Sha256};
 
-// Loaded once at startup. Never expose the secret in Debug output or responses.
-#[derive(Clone)]
 pub(super) struct Settings {
-    pub(super) secret: String,
     pub(super) channel: String,
     pub(super) user: String,
 }
 
-pub fn router() -> Router<AppState> {
-    let setting = (|| {
-        let get = |key| std::env::var(key).ok().filter(|s| !s.trim().is_empty());
-        Some(Settings {
-            secret: get("GITHUB_WEBHOOK_SECRET")?,
-            channel: get("GITHUB_WEBHOOK_CHANNEL_ID")?,
-            user: get("GITHUB_WEBHOOK_USER_ID")?,
-        })
-    })();
-    Router::new()
-        .route(
-            "/api/webhooks/github",
-            post(receive).layer(axum::extract::DefaultBodyLimit::max(25 * 1024 * 1024)),
-        )
-        .layer(Extension(setting))
+pub(super) const WEBHOOK_TOKEN_CONTEXT: &[u8] = b"zoo:incoming-webhook:v1";
+
+pub(super) fn webhook_token(secret: &str) -> String {
+    let mut mac =
+        Hmac::<Sha256>::new_from_slice(secret.as_bytes()).expect("HMAC accepts any key length");
+    mac.update(WEBHOOK_TOKEN_CONTEXT);
+    mac.finalize()
+        .into_bytes()
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect()
 }
 
-pub(super) fn verify(secret: &str, body: &[u8], signature: &str) -> bool {
-    let Some(hex) = signature.strip_prefix("sha256=") else {
-        return false;
-    };
+pub(super) fn verify_token(secret: &str, hex: &str) -> bool {
     if hex.len() != 64 || !hex.is_ascii() {
         return false;
     }
@@ -55,163 +38,36 @@ pub(super) fn verify(secret: &str, body: &[u8], signature: &str) -> bool {
     };
     let mut mac =
         Hmac::<Sha256>::new_from_slice(secret.as_bytes()).expect("HMAC accepts any key length");
-    mac.update(body);
+    mac.update(WEBHOOK_TOKEN_CONTEXT);
     mac.verify_slice(&bytes).is_ok()
-}
-
-fn card(event: &str, v: &Value) -> Option<MessageCard> {
-    let text = |pointer| {
-        v.pointer(pointer)
-            .and_then(Value::as_str)
-            .unwrap_or("")
-            .chars()
-            .take(2000)
-            .collect::<String>()
-    };
-    let (title, url, description) = match event {
-        "push" => (
-            format!("Push · {}", text("/ref").trim_start_matches("refs/heads/")),
-            text("/compare"),
-            v["commits"]
-                .as_array()
-                .map(|cs| {
-                    cs.iter()
-                        .take(10)
-                        .map(|c| {
-                            format!(
-                                "{} {}",
-                                c["id"]
-                                    .as_str()
-                                    .unwrap_or("")
-                                    .chars()
-                                    .take(7)
-                                    .collect::<String>(),
-                                c["message"]
-                                    .as_str()
-                                    .unwrap_or("")
-                                    .lines()
-                                    .next()
-                                    .unwrap_or("")
-                                    .chars()
-                                    .take(200)
-                                    .collect::<String>()
-                            )
-                        })
-                        .collect::<Vec<_>>()
-                        .join("\n")
-                })
-                .unwrap_or_default(),
-        ),
-        "pull_request" | "issues" => {
-            let key = if event == "issues" {
-                "issue"
-            } else {
-                "pull_request"
-            };
-            let item = &v[key];
-            (
-                format!(
-                    "{} #{} · {} · {}",
-                    if event == "issues" { "Issue" } else { "PR" },
-                    item["number"],
-                    if item["merged"] == true {
-                        "merged".into()
-                    } else {
-                        text("/action")
-                    },
-                    item["title"]
-                        .as_str()
-                        .unwrap_or("")
-                        .chars()
-                        .take(300)
-                        .collect::<String>()
-                ),
-                item["html_url"].as_str().unwrap_or("").to_owned(),
-                item["body"]
-                    .as_str()
-                    .unwrap_or("")
-                    .chars()
-                    .take(2000)
-                    .collect(),
-            )
-        }
-        "release" => (
-            format!(
-                "Release · {} · {}",
-                text("/release/tag_name"),
-                text("/action")
-            ),
-            text("/release/html_url"),
-            text("/release/body"),
-        ),
-        "workflow_run" => (
-            format!(
-                "Actions · {} · {}",
-                text("/workflow_run/name"),
-                v.pointer("/workflow_run/conclusion")
-                    .and_then(Value::as_str)
-                    .unwrap_or_else(|| v
-                        .pointer("/workflow_run/status")
-                        .and_then(Value::as_str)
-                        .unwrap_or(""))
-            ),
-            text("/workflow_run/html_url"),
-            text("/workflow_run/head_branch"),
-        ),
-        _ => return None,
-    };
-    Some(MessageCard {
-        title,
-        url,
-        description,
-        source: "GitHub".into(),
-        context: text("/repository/full_name"),
-        author: text("/sender/login"),
-        badge: event.into(),
-    })
-}
-
-async fn receive(
-    State(state): State<AppState>,
-    Extension(settings): Extension<Option<Settings>>,
-    headers: HeaderMap,
-    body: Bytes,
-) -> Result<StatusCode, AppError> {
-    let settings =
-        settings.ok_or_else(|| AppError::NotFound("GitHub webhook is not configured".into()))?;
-    receive_delivery(state, settings, headers, body).await
-}
-
-pub(super) async fn receive_delivery(
-    state: AppState,
-    settings: Settings,
-    headers: HeaderMap,
-    body: Bytes,
-) -> Result<StatusCode, AppError> {
-    let header = |key| headers.get(key).and_then(|v| v.to_str().ok()).unwrap_or("");
-    if !verify(&settings.secret, &body, header("x-hub-signature-256")) {
-        return Err(AppError::Unauthorized("Invalid webhook signature".into()));
-    }
-    let value: Value = serde_json::from_slice(&body)
-        .map_err(|_| AppError::BadRequest("Invalid JSON payload".into()))?;
-    let event = header("x-github-event");
-    if event == "ping" {
-        return Ok(StatusCode::OK);
-    }
-    let Some(card) = card(event, &value) else {
-        return Ok(StatusCode::NO_CONTENT);
-    };
-    persist_card(state, settings, card, header("x-github-delivery")).await
 }
 
 pub(super) async fn persist_card(
     state: AppState,
     settings: Settings,
-    card: MessageCard,
+    cards: Vec<MessageCard>,
     delivery: &str,
 ) -> Result<StatusCode, AppError> {
+    let mut encoded = Vec::new();
+    for card in &cards {
+        encoded.push(
+            serde_json::from_str::<serde_json::Value>(&card.encode()?)
+                .map_err(|e| AppError::Internal(e.into()))?,
+        );
+    }
+    if encoded.is_empty() {
+        return Err(AppError::BadRequest("Empty webhook message".into()));
+    }
+    let content = message_content(&cards);
+    let card_data = if encoded.len() == 1 {
+        encoded.remove(0)
+    } else {
+        serde_json::json!({"cards": encoded})
+    }
+    .to_string();
     uuid::Uuid::parse_str(delivery)
         .map_err(|_| AppError::BadRequest("Missing or invalid webhook delivery ID".into()))?;
+    // Retain the legacy namespace so retries of existing generic deliveries remain idempotent.
     let digest = Sha256::digest(format!("github:{}:{delivery}", settings.channel));
     let id = uuid::Uuid::from_slice(&digest[..16])
         .expect("16 bytes")
@@ -229,43 +85,78 @@ pub(super) async fn persist_card(
         state,
         AuthUser {
             id: settings.user,
-            user_name: "github".into(),
-            display_name: "GitHub".into(),
+            user_name: "webhook".into(),
+            display_name: "Webhook".into(),
         },
         CreateMessageRequest {
             id: Some(id),
             channel_id: settings.channel,
-            content: card.title.clone(),
+            content,
             parent_id: None,
+            attachment_ids: None,
+            kind: "message".into(),
+            broadcast: false,
+            metadata: None,
         },
         false,
-        Some(card.encode()?),
+        Some(card_data),
     )
     .await?;
     Ok(StatusCode::OK)
+}
+
+/// Keep the notification readable in announcements, admin lists and older clients.
+fn message_content(cards: &[MessageCard]) -> String {
+    cards
+        .iter()
+        .flat_map(|card| {
+            let title = if card.title == "Webhook" && !card.description.is_empty() {
+                ""
+            } else {
+                &card.title
+            };
+            [title, card.description.as_str()]
+        })
+        .filter(|text| !text.is_empty())
+        .collect::<Vec<_>>()
+        .join("\n")
+        .chars()
+        .take(crate::validation::MAX_MESSAGE_CONTENT_LENGTH)
+        .collect()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     #[test]
-    fn github_signature_vector() {
-        let sig = "sha256=757107ea0eb2509fc211221cce984b8a37570b6d7586c22c46f4379c8b043e17";
-        assert!(verify("It's a Secret to Everybody", b"Hello, World!", sig));
-        assert!(!verify("wrong", b"Hello, World!", sig));
-        assert!(!verify("It's a Secret to Everybody", b"changed", sig));
-        assert!(!verify("secret", b"body", "sha256=bad"));
+    fn message_content_includes_slack_text_and_flux_attachment_bodies() {
+        let cards = crate::cards::parse_webhook_cards(br#"{"text":"Deployment results","attachments":[{"text":"Reconciliation failed"},{"title":"Production","text":"Ready"},{"title":"Title only"}]}"#).unwrap();
+        assert_eq!(
+            message_content(&cards),
+            "Deployment results\nReconciliation failed\nProduction\nReady\nTitle only"
+        );
+    }
+
+    #[test]
+    fn message_content_is_bounded_without_truncating_stored_cards_or_splitting_unicode() {
+        let payload = serde_json::json!({"attachments": vec![serde_json::json!({"title": "a".repeat(500), "text": "通知😀".repeat(1000)}); 100]});
+        let cards = crate::cards::parse_webhook_cards(payload.to_string().as_bytes()).unwrap();
+        let content = message_content(&cards);
+        assert_eq!(
+            content.chars().count(),
+            crate::validation::MAX_MESSAGE_CONTENT_LENGTH
+        );
+        assert!(crate::validation::validate_message_content(&content).is_ok());
+        assert!(content.contains("通知😀"));
+        assert_eq!(cards.len(), 100);
+        assert_eq!(cards[99].description, "通知😀".repeat(1000));
     }
     #[test]
-    fn formats_events_and_ignores_unknown_events() {
-        let v = json!({"action":"closed", "pull_request":{"number":42,"merged":true,"title":"Fix","html_url":"https://github.com/a/b/pull/42"}});
-        assert!(card("pull_request", &v).unwrap().title.contains("merged"));
-        assert!(card("unsupported", &v).is_none());
-        assert!(
-            card("push", &json!({"ref":"refs/heads/main","commits":[]}))
-                .unwrap()
-                .title
-                .contains("Push · main")
-        );
+    fn verifies_webhook_url_tokens() {
+        let token = webhook_token("secret");
+        assert!(verify_token("secret", &token));
+        assert!(!verify_token("rotated", &token));
+        assert!(!verify_token("secret", "bad"));
+        assert!(!verify_token("secret", &"0".repeat(64)));
     }
 }

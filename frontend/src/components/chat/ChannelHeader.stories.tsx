@@ -67,6 +67,22 @@ export const LoadingMemberCount: Story = {
   },
 };
 
+export const NoDescription: Story = {
+  args: {
+    channel: { ...general, description: null },
+  },
+};
+
+export const LongDescription: Story = {
+  args: {
+    channel: {
+      ...general,
+      description:
+        "長い説明の表示確認用チャンネルです。目的・参加対象・運用ルールをまとめています。\n二行目も含めて崩れないことを確認します。",
+    },
+  },
+};
+
 export const Mobile: Story = {
   globals: { viewport: { value: "mobile" } },
 };

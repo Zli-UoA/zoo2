@@ -119,8 +119,17 @@ pub fn validate_display_name(name: &str) -> Result<(), AppError> {
 /// - 空文字・空白のみのメッセージは禁止
 /// - 最大 40,000 文字
 pub fn validate_message_content(content: &str) -> Result<(), AppError> {
-    let trimmed = content.trim();
-    if trimmed.is_empty() {
+    validate_message_content_with_options(content, false)
+}
+
+/// メッセージ本文のバリデーション (空本文許容オプション付き):
+/// - `allow_empty` が `false` の場合、空文字・空白のみのメッセージは禁止
+/// - 最大 40,000 文字は常に検証
+pub fn validate_message_content_with_options(
+    content: &str,
+    allow_empty: bool,
+) -> Result<(), AppError> {
+    if !allow_empty && content.trim().is_empty() {
         return Err(AppError::BadRequest(
             "Message content cannot be empty or only whitespace".to_string(),
         ));
@@ -512,5 +521,11 @@ mod tests {
         assert!(validate_message_content(&too_long).is_err());
         let exact = "a".repeat(40_000);
         assert!(validate_message_content(&exact).is_ok());
+
+        // allow_empty = true (添付ファイルありの場合など)
+        assert!(validate_message_content_with_options("", true).is_ok());
+        assert!(validate_message_content_with_options("   \n\t ", true).is_ok());
+        assert!(validate_message_content_with_options(&exact, true).is_ok());
+        assert!(validate_message_content_with_options(&too_long, true).is_err());
     }
 }

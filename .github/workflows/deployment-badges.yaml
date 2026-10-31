@@ -1,0 +1,74 @@
+name: Deployment badges
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    paths:
+      - .github/workflows/deployment-badges.yaml
+      - .github/deployment-badges.json
+      - .github/scripts/deployment-badges*.mjs
+  status:
+  workflow_run:
+    workflows: [Flux production status]
+    types: [completed]
+  schedule:
+    - cron: "27 * * * *"
+  workflow_dispatch:
+
+permissions: {}
+
+jobs:
+  runner:
+    uses: ./.github/workflows/select-runner.yaml
+    permissions:
+      contents: read
+    secrets:
+      runner-status-token: ${{ secrets.RUNNER_STATUS_TOKEN }}
+
+  test:
+    needs: runner
+    if: ${{ !cancelled() && github.event_name == 'pull_request' }}
+    runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-latest' || fromJSON(needs.runner.outputs.runs-on || '"zli-kubecamp-no-docker"') }}
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: "24.22.0"
+      - run: node --test .github/scripts/deployment-badges.test.mjs
+
+  publish:
+    needs: runner
+    if: >-
+      !cancelled() && github.event_name != 'pull_request' &&
+      (github.event_name != 'status' ||
+       startsWith(github.event.context, 'flux/') ||
+       startsWith(github.event.context, 'kustomization/'))
+    runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-latest' || fromJSON(needs.runner.outputs.runs-on || '"zli-kubecamp-no-docker"') }}
+    timeout-minutes: 5
+    concurrency:
+      group: deployment-badges
+      cancel-in-progress: false
+    permissions:
+      contents: read
+      statuses: read
+      deployments: read
+    steps:
+      # workflow_run is privileged: always execute trusted default-branch code.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: main
+          persist-credentials: false
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: "24.22.0"
+      - run: node --test .github/scripts/deployment-badges.test.mjs
+      - name: Publish badge JSON to the shared Gist
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BADGE_GIST_TOKEN: ${{ secrets.BADGE_GIST_TOKEN }}
+        run: node .github/scripts/deployment-badges.mjs

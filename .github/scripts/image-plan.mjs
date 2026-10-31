@@ -30,7 +30,8 @@ export function changedComponents(files) {
   return components.filter(c => shared || files.some(f =>
     f.startsWith(`infra/Dockerfile-${c}-deploy`) ||
     (c === 'migrate' ? f.startsWith('infra/db/') : f.startsWith(`${c}/`)) ||
-    (c === 'frontend' && f === 'infra/frontend-nginx.conf')));
+    (c === 'frontend' && f === 'infra/frontend-nginx.conf') ||
+    (c === 'backend' && f === 'docs/slack-event-coverage.json')));
 }
 
 // listFiles が返す PR 全体の差分から、ビルドが必要なコンポーネントを返す（Preview label ワークフローも使う）。

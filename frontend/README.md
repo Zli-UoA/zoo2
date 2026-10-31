@@ -227,7 +227,7 @@ cd frontend && pnpm test:e2e:oidc
 - モック IdP は起動のたびに署名鍵を生成します。テストを再実行する際は、古い JWKS キャッシュが残らないようバックエンドも再起動してください。
 - CI では `.github/workflows/ci-frontend-auth-e2e.yaml` が PostgreSQL + Electric + Atlas migration + Rust を起動して同じテストを実行します。重いため `pnpm test` / `pnpm test:e2e` からは分離しています。
 
-CSP は `infra/frontend-nginx.conf`（コンテナ起動時に envsubst）で設定します。`script-src` はビルド時のインライン script ハッシュ、`connect-src` は同一オリジン + `CSP_CONNECT_SRC`（IdP のオリジン）、`img-src` は Emoji Kitchen 用の `https://www.gstatic.com` を含みます。ステージングでの設定・確認手順は [インフラの README](../infra/README.md#csp) を参照してください。
+CSP は `infra/frontend-nginx.conf`（コンテナ起動時に envsubst）で設定します。`script-src` はビルド時のインライン script ハッシュ、`connect-src` は同一オリジン + `CSP_CONNECT_SRC`（IdP のオリジン）+ `CSP_STORAGE_SRC`（添付ファイル用ストレージのオリジン）、`img-src` は Emoji Kitchen 用の `https://www.gstatic.com` と `CSP_STORAGE_SRC`・`CSP_APP_IMAGE_SRC` を含みます。ステージングでの設定・確認手順は [インフラの README](../infra/README.md#csp) を参照してください。
 
 `pnpm test:e2e:csp` は、nginx が配信するビルド済みのフロントに対して Playwright を 1 本実行し、`securitypolicyviolation` が 0 件であること、テーマ初期化 script が実行されること（`<html>` の `colorScheme`）を確認します。既定では `http://127.0.0.1:3100` を見るため、CI の `container` ジョブと同じようにイメージを起動してから実行してください。
 
@@ -239,6 +239,12 @@ cd frontend
 E2E_BASE_URL=http://127.0.0.1:3100 pnpm test:e2e:csp
 docker rm -f zoo-frontend-csp-test
 ```
+
+## Storybook の PR プレビュー
+
+PR の作成・更新時に Storybook を Cloudflare Pages へ公開します。
+PR のデプロイ欄または Actions の実行サマリーから開けます。
+初回設定と運用は [Storybook の PR プレビュー](../docs/storybook-preview.md) を参照してください。
 
 ## 現状
 

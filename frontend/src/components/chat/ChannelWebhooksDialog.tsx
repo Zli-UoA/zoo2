@@ -15,8 +15,7 @@ export interface ChannelWebhook {
   id: string;
   name: string;
   path: string;
-  generic_path?: string;
-  secret: string;
+  bot_user_id?: string;
   created_at: string;
 }
 
@@ -61,7 +60,7 @@ function Credential({
             type="button"
             variant="ghost"
             size="icon-sm"
-            aria-label={visible ? t("webhooks.hideSecret") : t("webhooks.showSecret")}
+            aria-label={visible ? t("webhooks.hideUrl") : t("webhooks.showUrl")}
             onClick={() => setVisible(!visible)}
           >
             {visible ? <EyeOffIcon /> : <EyeIcon />}
@@ -95,7 +94,7 @@ export function ChannelWebhooksDialog({
   const [hooks, setHooks] = useState<ChannelWebhook[]>([]);
   const [loading, setLoading] = useState(true);
   const [reload, setReload] = useState(0);
-  const [name, setName] = useState("GitHub");
+  const [name, setName] = useState("Webhook");
   const [busy, setBusy] = useState(false);
   const pending = useRef(false);
   const [error, setError] = useState<string | null>(null);
@@ -178,7 +177,7 @@ export function ChannelWebhooksDialog({
                 void run(async () => {
                   const result = await client.post<ChannelWebhook>(path, { name: name.trim() });
                   setHooks((current) => [...current, result.data]);
-                  setName("GitHub");
+                  setName("Webhook");
                 });
               }}
             >
@@ -206,21 +205,17 @@ export function ChannelWebhooksDialog({
               {hooks.map((hook) => (
                 <li key={hook.id} className="flex flex-col gap-3 rounded-lg border p-3">
                   <h3 className="break-words text-sm font-semibold">{hook.name}</h3>
-                  <Credential
-                    label="GitHub URL"
-                    value={webhookUrl(config.apiBaseUrl, hook.path, window.location.origin)}
+                  <WebhookAppSelection
+                    channelId={channel.id}
+                    hook={hook}
+                    onUpdated={() => setReload((value) => value + 1)}
                   />
-                  {hook.generic_path ? (
-                    <Credential
-                      label={t("webhooks.genericUrl")}
-                      value={webhookUrl(
-                        config.apiBaseUrl,
-                        hook.generic_path,
-                        window.location.origin,
-                      )}
-                    />
-                  ) : null}
-                  <Credential key={hook.secret} label="Secret" value={hook.secret} secret />
+                  <Credential
+                    key={hook.path}
+                    label={t("webhooks.url")}
+                    value={webhookUrl(config.apiBaseUrl, hook.path, window.location.origin)}
+                    secret
+                  />
                   <div className="flex justify-end gap-2">
                     <Button
                       variant="outline"
@@ -289,5 +284,91 @@ export function ChannelWebhooksDialog({
         )}
       </DialogContent>
     </Dialog>
+  );
+}
+
+function WebhookAppSelection({
+  channelId,
+  hook,
+  onUpdated,
+}: {
+  channelId: string;
+  hook: ChannelWebhook;
+  onUpdated: () => void;
+}) {
+  const { t } = useTranslation();
+  const { config } = useCollections();
+  const client = useMemo(() => createConfiguredApiClient(config), [config]);
+  const [apps, setApps] = useState<{ id: string; name: string; bot_user_id: string }[] | null>(
+    null,
+  );
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState(false);
+  async function load() {
+    setBusy(true);
+    try {
+      const list = await client.get<
+        {
+          id: string;
+          name: string;
+          bot_user_id: string;
+          status: string;
+          can_manage: boolean;
+          manifest: { notification_only?: boolean };
+        }[]
+      >("/api/apps");
+      setApps(
+        list.filter(
+          (app) => app.can_manage && app.status === "installed" && app.manifest?.notification_only,
+        ),
+      );
+    } catch {
+      setError(true);
+    } finally {
+      setBusy(false);
+    }
+  }
+  async function associate(id: string) {
+    if (!id || busy) return;
+    setBusy(true);
+    try {
+      await client.post(`/api/channels/${channelId}/webhooks/${hook.id}/app`, { app_id: id });
+      onUpdated();
+    } catch {
+      setError(true);
+    } finally {
+      setBusy(false);
+    }
+  }
+  return (
+    <div className="space-y-1">
+      {apps ? (
+        <label className="flex flex-col gap-1 text-xs">
+          {t("apps.postingApp")}
+          <select
+            className={inputClassName()}
+            disabled={busy}
+            value={apps.find((app) => app.bot_user_id === hook.bot_user_id)?.id ?? ""}
+            onChange={(event) => void associate(event.target.value)}
+          >
+            <option value="">{t("apps.choosePostingApp")}</option>
+            {apps.map((app) => (
+              <option key={app.id} value={app.id}>
+                {app.name}
+              </option>
+            ))}
+          </select>
+        </label>
+      ) : (
+        <Button size="sm" variant="ghost" disabled={busy} onClick={() => void load()}>
+          {t("apps.changePostingApp")}
+        </Button>
+      )}
+      {error ? (
+        <p role="alert" className="text-xs text-destructive">
+          {t("apps.actionError")}
+        </p>
+      ) : null}
+    </div>
   );
 }

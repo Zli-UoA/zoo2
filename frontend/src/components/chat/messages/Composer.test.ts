@@ -130,9 +130,9 @@ describe("composerSendHint", () => {
     expect(composerSendHint("unknown", t)).toBe("Cmd / Ctrl+Enter で送信 / Enter で改行");
   });
 
-  it("タッチ環境ではキーボードではなく送信ボタンを案内する", () => {
+  it("タッチ環境では案内を表示しない", () => {
     for (const platform of ALL_PLATFORMS) {
-      expect(composerSendHint(platform, t, true)).toBe("送信ボタンで送信します");
+      expect(composerSendHint(platform, t, true)).toBe("");
     }
   });
 });

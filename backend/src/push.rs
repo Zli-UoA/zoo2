@@ -200,6 +200,10 @@ async fn deliver(state: &AppState, notifications: Vec<Notification>) -> anyhow::
         }
         let actor = User::get_by_id(&mut db, notification.actor_id.as_str()).await?;
         let channel = Channel::get_by_id(&mut db, notification.channel_id.as_str()).await?;
+        {
+            let mut tx = db.transaction().await?;
+            if crate::apps::one(&mut tx,"SELECT json_build_object('quiet',EXISTS(SELECT 1 FROM user_event_settings WHERE user_id=$1 AND dnd_until>now()))::text",&[&notification.user_id]).await?["quiet"]==true{continue;}
+        }
         let payload = notification_payload(&notification, &actor, &channel, &message);
         let subscriptions = PushSubscription::filter(
             PushSubscription::fields()

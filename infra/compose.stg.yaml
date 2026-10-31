@@ -59,6 +59,11 @@ services:
       # CSP の connect-src に足す IdP のオリジン（空白区切り）。未設定なら同一オリジンのみ。
       # 例: https://idm.example.com
       CSP_CONNECT_SRC: ${CSP_CONNECT_SRC:-}
+      # CSP の connect-src / img-src に足す添付ファイル用ストレージ（R2 等）のオリジン（空白区切り）。
+      CSP_STORAGE_SRC: ${CSP_STORAGE_SRC:-}
+      CSP_APP_IMAGE_SRC: ${CSP_APP_IMAGE_SRC:-}
+      MEDIA_PROXY_URL: ${MEDIA_PROXY_URL:-}
+      SUMMALY_URL: ${SUMMALY_URL:-}
     networks:
       - frontend
 
@@ -77,15 +82,24 @@ services:
       VAPID_PUBLIC_KEY: ${VAPID_PUBLIC_KEY:-}
       VAPID_PRIVATE_KEY: ${VAPID_PRIVATE_KEY:-}
       VAPID_SUBJECT: ${VAPID_SUBJECT:-}
-      GITHUB_WEBHOOK_SECRET: ${GITHUB_WEBHOOK_SECRET:-}
-      GITHUB_WEBHOOK_CHANNEL_ID: ${GITHUB_WEBHOOK_CHANNEL_ID:-}
-      GITHUB_WEBHOOK_USER_ID: ${GITHUB_WEBHOOK_USER_ID:-}
+      APP_S3_ENDPOINT: ${APP_S3_ENDPOINT:-}
+      APP_S3_BUCKET: ${APP_S3_BUCKET:-}
+      APP_S3_REGION: ${APP_S3_REGION:-}
+      APP_S3_ACCESS_KEY_ID: ${APP_S3_ACCESS_KEY_ID:-}
+      APP_S3_SECRET_ACCESS_KEY: ${APP_S3_SECRET_ACCESS_KEY:-}
       # Pass through configured OIDC values; keep missing keys unset so Rust's
       # production validation and OIDC_CLIENT_ID fallback still apply.
       OIDC_ISSUER:
       OIDC_AUDIENCE:
       OIDC_CLIENT_ID:
       OIDC_JWKS_URL:
+      # S3 / Cloudflare R2 storage settings for attachments
+      S3_ENDPOINT:
+      S3_BUCKET:
+      S3_REGION:
+      S3_ACCESS_KEY_ID:
+      S3_SECRET_ACCESS_KEY:
+      S3_FORCE_PATH_STYLE:
     networks:
       - backend
       - backend-egress

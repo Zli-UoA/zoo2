@@ -1,0 +1,88 @@
+name: Terraform R2
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - "infra/terraform/**"
+      - ".github/workflows/terraform-r2.yaml"
+  pull_request:
+    paths:
+      - "infra/terraform/**"
+      - ".github/workflows/terraform-r2.yaml"
+  workflow_dispatch:
+
+defaults:
+  run:
+    working-directory: infra/terraform
+
+jobs:
+  validate:
+    name: Validate
+    runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-latest' || 'zli-kubecamp-no-docker' }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "1.9.0"
+
+      - name: Check Formatting
+        run: terraform fmt -check
+
+      - name: Initialize Terraform
+        run: terraform init -backend=false
+
+      - name: Validate Configuration
+        run: terraform validate
+
+  plan:
+    name: Plan
+    needs: [validate]
+    runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-latest' || 'zli-kubecamp-no-docker' }}
+    if: github.event_name == 'pull_request'
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Check Secrets
+        id: check_secrets
+        run: |
+          if [ -n "${{ secrets.CLOUDFLARE_API_TOKEN }}" ] && [ -n "${{ secrets.CLOUDFLARE_ACCOUNT_ID }}" ]; then
+            echo "has_secrets=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::notice::CLOUDFLARE_API_TOKEN or CLOUDFLARE_ACCOUNT_ID is not configured (e.g. fork PR). Skipping plan."
+            echo "has_secrets=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Setup Terraform
+        if: steps.check_secrets.outputs.has_secrets == 'true'
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "1.9.0"
+
+      - name: Initialize Terraform
+        if: steps.check_secrets.outputs.has_secrets == 'true'
+        run: terraform init -backend=false
+
+      - name: Terraform Plan
+        if: steps.check_secrets.outputs.has_secrets == 'true'
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          TF_VAR_cloudflare_api_token: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          TF_VAR_cloudflare_account_id: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: terraform plan -no-color
+
+  # NOTE [P2 レビュー指摘対応]:
+  # 現在 remote backend (S3/R2 state bucket) が未設定のため、使い捨て GitHub Actions runner 上で
+  # apply すると tfstate が永続化されず、次回以降の実行でバケット重複エラーが発生します。
+  # state 管理用バケットが構築されて remote backend が有効化されるまで、CI での自動 apply は無効化しています。
+  # 変更適用は手元で state を共有した上で実施するか、remote backend 設定後にこのジョブを有効化してください。
+  # apply:
+  #   name: Apply
+  #   needs: validate
+  #   ...
+
