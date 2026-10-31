@@ -4,6 +4,7 @@ on:
     branches: [main]
     paths:
       - "backend/**"
+      - "docs/slack-event-coverage.json"
       - "infra/db/**"
       - "infra/Dockerfile-backend-deploy*"
       - "infra/Dockerfile-migrate-deploy*"
@@ -295,23 +296,47 @@ jobs:
       - name: Validate migrations and upgrade path from base branch
         working-directory: .
         env:
-          DATABASE_URL: postgres://root:password@localhost:5432/zoo?sslmode=disable
           BASE_REF: ${{ github.event_name == 'pull_request' && github.base_ref || '' }}
         run: |
-          docker compose -f infra/db/compose.yml exec -T postgres \
-            psql -U root -d postgres -c "CREATE DATABASE atlas_dev;"
+          psql_exec() {
+            docker compose -f infra/db/compose.yml exec -T postgres psql -q -X -v ON_ERROR_STOP=1 -U root "$@"
+          }
+          for db in atlas_dev from_migrations from_schema; do
+            psql_exec -d postgres -c "DROP DATABASE IF EXISTS $db" -c "CREATE DATABASE $db"
+          done
+
           atlas migrate validate --dir file://infra/db/migrations \
-            --dev-url "postgres://root:password@localhost:5432/atlas_dev?search_path=public&sslmode=disable"
-          schema_diff=$(atlas schema diff \
-            --format '{{ sql . }}' \
-            --from file://infra/db/migrations \
-            --to file://infra/db/schema.sql \
-            --dev-url "postgres://root:password@localhost:5432/atlas_dev?search_path=public&sslmode=disable")
+            --dev-url "${DATABASE_URL%/*}/atlas_dev?search_path=public&sslmode=disable"
+
+          # atlas schema diff は未ログインだと関数を含む schema.sql を読めないため、
+          # マイグレーションと schema.sql をそれぞれ空のDBに適用し、pg_dump の結果を比較します。
+          for f in infra/db/migrations/*.sql; do
+            psql_exec -d from_migrations -1 < "$f" > /dev/null
+          done
+          psql_exec -d from_schema -1 < infra/db/schema.sql > /dev/null
+
+          # schema.sql で表現しないカラム順、REPLICA IDENTITY と空行は比較から除外します。
+          dump_schema() {
+            docker compose -f infra/db/compose.yml exec -T postgres \
+              pg_dump -U root --schema-only --no-owner --no-privileges "$1" |
+              grep -v -e '^$' -e '^\\restrict ' -e '^\\unrestrict ' -e 'REPLICA IDENTITY' |
+              awk '
+                /^CREATE TABLE / { print; in_table = 1; next }
+                in_table && /^\);/ { close("sort"); in_table = 0 }
+                in_table { sub(/,$/, ""); print | "sort"; next }
+                { print }
+              '
+          }
+          schema_diff=$(diff -u <(dump_schema from_migrations) <(dump_schema from_schema)) || true
+          for db in atlas_dev from_migrations from_schema; do
+            psql_exec -d postgres -c "DROP DATABASE $db"
+          done
           if [ -n "$schema_diff" ]; then
             echo "::error::infra/db/schema.sql is out of sync with infra/db/migrations:" >&2
             printf '%s\n' "$schema_diff" >&2
             exit 1
           fi
+
           if [ -n "$BASE_REF" ]; then
             git fetch --no-tags --depth=1 origin "$BASE_REF"
             base_dir=$(mktemp -d)
