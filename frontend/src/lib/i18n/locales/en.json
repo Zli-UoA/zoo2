@@ -144,7 +144,6 @@
     "general": "General",
     "channelTitle": "Channel settings",
     "zooTitle": "Zoo settings",
-    "zooDescription": "Manage members, appearance, notifications, and app integrations.",
     "notifications": "Notifications and installation"
   },
   "common": {
@@ -527,7 +526,6 @@
   },
   "search": {
     "engine": "Search engine",
-    "description": "Used for MFM searches. Saved to your account.",
     "query": "Search query",
     "action": "Search",
     "withEngine": "Search with {{engine}}",

@@ -1,5 +1,11 @@
 import { Link } from "@tanstack/react-router";
-import { useMemo, useRef, type MouseEvent as ReactMouseEvent, type RefObject } from "react";
+import {
+  useEffect,
+  useMemo,
+  useRef,
+  type MouseEvent as ReactMouseEvent,
+  type RefObject,
+} from "react";
 import { useTranslation } from "react-i18next";
 import {
   HeartIcon,
@@ -31,6 +37,12 @@ import {
 import { useNotificationContext } from "./useNotificationContext";
 import { useReadVisibleNotification } from "./useReadVisibleNotification";
 
+export interface NotificationPreviewState {
+  visible: boolean | null;
+  loading: boolean;
+  channelId: string | undefined;
+}
+
 export function NotificationCard({
   group,
   channel,
@@ -38,6 +50,8 @@ export function NotificationCard({
   users,
   onRead,
   scrollRoot,
+  readEnabled = true,
+  onPreviewChange,
 }: {
   group: NotificationGroup;
   channel?: ChannelRow;
@@ -45,6 +59,8 @@ export function NotificationCard({
   users: ReadonlyMap<string, UserRow>;
   onRead: (ids: readonly string[]) => void;
   scrollRoot: RefObject<HTMLDivElement | null>;
+  readEnabled?: boolean;
+  onPreviewChange?: (id: string, state: NotificationPreviewState | null) => void;
 }) {
   const { t } = useTranslation();
   const { locale } = useLocale();
@@ -56,8 +72,21 @@ export function NotificationCard({
     () => group.notifications.filter((row) => !row.is_read).map((row) => row.id),
     [group],
   );
-  const { ref, hasBeenVisible } = useReadVisibleNotification(unreadIds, onRead, scrollRoot);
+  const { ref, hasBeenVisible, isVisible } = useReadVisibleNotification(
+    unreadIds,
+    onRead,
+    scrollRoot,
+    readEnabled,
+  );
   const context = useNotificationContext(channel && hasBeenVisible ? notification.id : null);
+  useEffect(() => {
+    onPreviewChange?.(notification.id, {
+      visible: isVisible,
+      loading: context.isLoading,
+      channelId: channel?.id,
+    });
+    return () => onPreviewChange?.(notification.id, null);
+  }, [notification.id, isVisible, context.isLoading, channel?.id, onPreviewChange]);
   const message = context.data?.message;
   const reactionGroups = isReaction
     ? notificationReactionGroups(context.data?.reactions ?? [], group.actorIds)

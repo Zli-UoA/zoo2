@@ -106,7 +106,16 @@
     },
     {
       "file": "src/components/chat/NotificationsScreen.stories.tsx",
-      "states": ["Default", "SingleUnread", "Empty", "Mobile", "DirectMessages", "Dark"]
+      "states": [
+        "Default",
+        "SingleUnread",
+        "Empty",
+        "Mobile",
+        "DirectMessages",
+        "Dark",
+        "Loading",
+        "BodiesReadyTogether"
+      ]
     },
     {
       "file": "src/components/chat/RenameChannelDialog.stories.tsx",
@@ -667,6 +676,12 @@
       "story": "src/components/theme/ModeToggle.stories.tsx",
       "composed": true,
       "reason": "テーマ選択で単一選択、選択済み状態、矢印キー移動・Enter/Space操作を実部品で確認する。"
+    },
+    {
+      "file": "src/components/ui/spinner.tsx",
+      "story": "src/components/chat/NotificationsScreen.stories.tsx",
+      "composed": true,
+      "reason": "LoadingとBodiesReadyTogetherで、本文取得中の全体Spinnerと取得後の一覧表示を確認する。"
     }
   ]
 }

@@ -144,7 +144,6 @@
     "general": "常规",
     "channelTitle": "频道设置",
     "zooTitle": "Zoo 设置",
-    "zooDescription": "管理成员、显示、通知与 App 集成。",
     "notifications": "通知与安装"
   },
   "common": {
@@ -527,7 +526,6 @@
   },
   "search": {
     "engine": "搜索引擎",
-    "description": "用于 MFM 搜索，保存到您的个人账户。",
     "query": "搜索词",
     "action": "搜索",
     "withEngine": "使用 {{engine}} 搜索",

@@ -1,5 +1,5 @@
 import type { Meta, StoryObj } from "@storybook/react-vite";
-import { expect, screen } from "storybook/test";
+import { expect, screen, waitFor } from "storybook/test";
 
 import { storyCollections, storyNotifications } from "../../../.storybook/fixtures";
 import { ChannelScreen } from "../chat/ChannelScreen";
@@ -58,6 +58,7 @@ export const Notifications: Story = {
     router: { initialEntries: ["/notifications"] },
   },
   play: async () => {
+    await waitFor(() => expect(screen.queryByRole("status")).not.toBeInTheDocument());
     await expect(screen.getByLabelText("チャンネル", { selector: "aside" })).not.toBeVisible();
     const main = screen.getByRole("main").getBoundingClientRect();
     const nav = screen.getByRole("navigation").getBoundingClientRect();

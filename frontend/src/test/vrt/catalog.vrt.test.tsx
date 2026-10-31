@@ -1,3 +1,5 @@
+import { delay, http, HttpResponse } from "msw";
+import { mockServer } from "../browser-setup";
 import { render, screen, waitFor } from "@testing-library/react";
 import { describe, expect, it, vi } from "vite-plus/test";
 import { page } from "vite-plus/test/browser/context";
@@ -342,6 +344,23 @@ describe("catalog surfaces", () => {
     await expect(page).toMatchScreenshot("notification-card-mention-desktop-light");
   });
 
+  it("notifications loading desktop light", async () => {
+    mockServer.use(
+      http.get("*/api/notifications/:id/context", async () => {
+        await delay("infinite");
+        return HttpResponse.json({ message: null, reactions: [] });
+      }),
+    );
+    await renderScreen(
+      { theme: "light", width: 1440, height: 900 },
+      <div style={{ height: 900 }}>
+        <NotificationsScreen />
+      </div>,
+    );
+    await screen.findByRole("status");
+    await expect(page).toMatchScreenshot("notifications-loading-desktop-light");
+  });
+
   for (const state of [
     { theme: "light" as const, width: 1440, height: 900, name: "desktop-light" },
     { theme: "dark" as const, width: 1440, height: 900, name: "desktop-dark" },
@@ -358,6 +377,7 @@ describe("catalog surfaces", () => {
         );
         await screen.findByText(/今日のリリースは 18:00/);
         await screen.findByText(/リリースノートの下書き/);
+        await waitFor(() => expect(screen.queryByRole("status")).toBeNull());
         await document.fonts.ready;
         await expect(page).toMatchScreenshot(`notifications-full-width-${state.name}`);
       } finally {

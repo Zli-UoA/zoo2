@@ -32,12 +32,9 @@ export function ZooSettings() {
         >
           <ArrowLeftIcon />
         </Button>
-        <div className="min-w-0">
-          <h1 id="zoo-settings-title" className="text-lg font-semibold">
-            {t("settings.zooTitle")}
-          </h1>
-          <p className="text-xs text-muted-foreground">{t("settings.zooDescription")}</p>
-        </div>
+        <h1 id="zoo-settings-title" className="min-w-0 text-lg font-semibold">
+          {t("settings.zooTitle")}
+        </h1>
       </header>
       <div className="min-h-0 flex-1 overflow-y-auto p-4 sm:p-6">
         <Tabs.Root
@@ -73,11 +70,7 @@ export function ZooSettings() {
               <SettingRow icon={<LanguagesIcon />} label={t("language.title")}>
                 <LanguageToggle presentation="select" />
               </SettingRow>
-              <SettingRow
-                icon={<SearchIcon />}
-                label={t("search.engine")}
-                description={t("search.description")}
-              >
+              <SettingRow icon={<SearchIcon />} label={t("search.engine")}>
                 <SearchEngineSelect />
               </SettingRow>
               <SettingRow icon={<BellIcon />} label={t("pwa.title")}>

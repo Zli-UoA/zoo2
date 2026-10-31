@@ -1,19 +1,20 @@
 import { useLiveQuery } from "@tanstack/react-db";
 import { useCollections } from "../../lib/electric/collections-context";
 import type { ChannelUserRow } from "../../lib/electric/types";
-import { useCallback, useMemo, useRef } from "react";
+import { useCallback, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { BellIcon } from "lucide-react";
 import { toast } from "sonner";
 
 import { useNotifications } from "../../hooks/useNotifications";
 import { useActiveChannels, useUsers } from "../../hooks/useRealtime";
-import { NotificationCard } from "./notifications/NotificationCard";
+import { Spinner } from "../ui/spinner";
+import { NotificationCard, type NotificationPreviewState } from "./notifications/NotificationCard";
 import { groupNotifications } from "./notifications/groupNotifications";
 
 export function NotificationsScreen() {
   const { t } = useTranslation();
-  const { notifications, unreadCount, markRead, isLoading, isError } = useNotifications();
+  const { notifications, markRead, isLoading, isError } = useNotifications();
   const usersQuery = useUsers();
   const channelsQuery = useActiveChannels();
   const users = useMemo(
@@ -36,6 +37,35 @@ export function NotificationsScreen() {
     return map;
   }, [memberships.data]);
   const groups = useMemo(() => groupNotifications(notifications), [notifications]);
+  const [previews, setPreviews] = useState(() => new Map<string, NotificationPreviewState>());
+  const previewChanged = useCallback((id: string, state: NotificationPreviewState | null) => {
+    setPreviews((current) => {
+      const previous = current.get(id);
+      if (!state && !previous) return current;
+      if (
+        state &&
+        previous?.visible === state.visible &&
+        previous.loading === state.loading &&
+        previous.channelId === state.channelId
+      )
+        return current;
+      const next = new Map(current);
+      if (state) next.set(id, state);
+      else next.delete(id);
+      return next;
+    });
+  }, []);
+  const previewsLoading = groups.some((group) => {
+    const state = previews.get(group.latest.id);
+    if (!state || state.visible === null) return true;
+    return (
+      state.visible &&
+      (state.loading ||
+        (channels.has(group.latest.channel_id) && state.channelId !== group.latest.channel_id))
+    );
+  });
+  const loading =
+    !isError && (isLoading || usersQuery.isLoading || channelsQuery.isLoading || previewsLoading);
   const scrollRoot = useRef<HTMLDivElement>(null);
   const attempted = useRef(new Set<string>());
   const readVisible = useCallback(
@@ -52,7 +82,11 @@ export function NotificationsScreen() {
   );
 
   return (
-    <section className="flex h-full min-h-0 flex-col" aria-labelledby="notifications-title">
+    <section
+      className="relative flex h-full min-h-0 flex-col"
+      aria-labelledby="notifications-title"
+      aria-busy={loading}
+    >
       <header className="flex shrink-0 items-center gap-3 border-b px-4 py-4 sm:px-6">
         <span
           className="flex size-10 shrink-0 items-center justify-center rounded-xl bg-primary text-primary-foreground"
@@ -60,29 +94,27 @@ export function NotificationsScreen() {
         >
           <BellIcon className="size-5" />
         </span>
-        <div>
-          <h1 id="notifications-title" className="text-lg font-semibold">
-            {t("notifications.title")}
-          </h1>
-          <p className="mt-0.5 text-xs text-muted-foreground">
-            {t("notifications.unread", { count: unreadCount })}
-          </p>
-        </div>
+        <h1 id="notifications-title" className="text-lg font-semibold">
+          {t("notifications.title")}
+        </h1>
       </header>
-      <div ref={scrollRoot} className="min-h-0 flex-1 overflow-y-auto" aria-busy={isLoading}>
+      <div ref={scrollRoot} className="min-h-0 flex-1 overflow-y-auto" aria-busy={loading}>
         {isError ? (
           <p className="p-6 text-sm text-destructive" role="alert">
             {t("notifications.loadError")}
           </p>
-        ) : isLoading ? (
-          <p className="p-6 text-sm text-muted-foreground">{t("common.loading")}</p>
-        ) : groups.length === 0 ? (
+        ) : !isLoading && groups.length === 0 ? (
           <div className="flex min-h-72 flex-col items-center justify-center gap-3 p-6 text-center">
             <BellIcon className="size-8 text-muted-foreground" aria-hidden="true" />
             <p className="text-sm text-muted-foreground">{t("notifications.empty")}</p>
           </div>
         ) : (
-          <ul className="w-full" aria-label={t("notifications.title")}>
+          <ul
+            className={`w-full ${loading ? "opacity-0" : ""}`}
+            aria-label={t("notifications.title")}
+            aria-hidden={loading || undefined}
+            inert={loading}
+          >
             {groups.map((group) => (
               <NotificationCard
                 key={group.key}
@@ -92,11 +124,16 @@ export function NotificationsScreen() {
                 members={membersByChannel.get(group.latest.channel_id)}
                 onRead={readVisible}
                 scrollRoot={scrollRoot}
+                readEnabled={!loading}
+                onPreviewChange={previewChanged}
               />
             ))}
           </ul>
         )}
       </div>
+      {loading ? (
+        <Spinner label={t("common.loading")} className="absolute inset-0 z-20 bg-background" />
+      ) : null}
     </section>
   );
 }

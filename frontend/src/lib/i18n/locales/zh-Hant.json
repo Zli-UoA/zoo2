@@ -144,7 +144,6 @@
     "general": "一般",
     "channelTitle": "頻道設定",
     "zooTitle": "Zoo 設定",
-    "zooDescription": "管理成員、顯示、通知與 App 整合。",
     "notifications": "通知與安裝"
   },
   "common": {
@@ -527,7 +526,6 @@
   },
   "search": {
     "engine": "搜尋引擎",
-    "description": "用於 MFM 搜尋，儲存至您的個人帳戶。",
     "query": "搜尋詞",
     "action": "搜尋",
     "withEngine": "使用 {{engine}} 搜尋",

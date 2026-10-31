@@ -144,7 +144,6 @@
     "general": "一般",
     "channelTitle": "チャンネル設定",
     "zooTitle": "Zoo設定",
-    "zooDescription": "メンバー一覧と表示・通知・App連携を管理します。",
     "notifications": "通知とインストール"
   },
   "common": {
@@ -527,7 +526,6 @@
   },
   "search": {
     "engine": "検索エンジン",
-    "description": "MFMの検索に使います。自分のアカウントに保存されます。",
     "query": "検索語",
     "action": "検索",
     "withEngine": "{{engine}}で検索",
