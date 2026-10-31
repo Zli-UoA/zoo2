@@ -23,6 +23,8 @@ function LinkPreview({
 }) {
   const [result, setResult] = useState<{ url: string; data: Preview | null } | null>(null);
   const [failedImage, setFailedImage] = useState<string | null>(null);
+  const [failedIcon, setFailedIcon] = useState<string | null>(null);
+  const [loadedImage, setLoadedImage] = useState<{ src: string; wide: boolean } | null>(null);
   useEffect(() => {
     let active = true;
     const work = acquirePreview(client, `${cacheKey}:${url}`, url);
@@ -35,31 +37,53 @@ function LinkPreview({
     };
   }, [url, client, cacheKey]);
   if (result?.url !== url || !result.data) return null;
-  const { title, description, image } = result.data;
+  const { title, description, image, siteName, icon } = result.data;
   const src = proxyImageUrl(proxy, image);
+  const iconSrc = proxyImageUrl(proxy, icon ?? null);
+  const wide = loadedImage?.src === src && loadedImage.wide && failedImage !== src;
   return (
     <a
       href={url}
       target="_blank"
       rel="noopener noreferrer"
-      className="my-2 flex max-w-xl overflow-hidden rounded-lg border bg-card text-sm shadow-sm outline-none hover:bg-muted/50 focus-visible:ring-2 focus-visible:ring-ring"
+      className={`my-2 flex max-w-xl overflow-hidden rounded-2xl border bg-card text-sm outline-none transition-colors hover:bg-muted/50 focus-visible:ring-2 focus-visible:ring-ring ${wide ? "flex-col" : "flex-row"}`}
     >
       {src && failedImage !== src ? (
-        <img
-          src={src}
-          alt=""
-          loading="lazy"
-          referrerPolicy="no-referrer"
-          className="h-28 w-28 shrink-0 object-cover"
-          onError={() => setFailedImage(src)}
-        />
+        <span className={wide ? "block" : "relative min-h-24 w-24 shrink-0 sm:w-28"}>
+          <img
+            src={src}
+            alt=""
+            loading="lazy"
+            referrerPolicy="no-referrer"
+            className={
+              wide ? "max-h-80 w-full object-cover" : "absolute inset-0 size-full object-cover"
+            }
+            onLoad={(event) => {
+              const img = event.currentTarget;
+              setLoadedImage({ src, wide: img.naturalWidth / img.naturalHeight >= 1.5 });
+            }}
+            onError={() => setFailedImage(src)}
+          />
+        </span>
       ) : null}
-      <span className="flex min-w-0 flex-col gap-1 p-3">
-        <span className="truncate text-xs text-muted-foreground">{new URL(url).hostname}</span>
-        <span className="line-clamp-2 break-words font-semibold text-brand">{title}</span>
+      <span className="flex min-w-0 flex-1 flex-col gap-1 p-3">
+        <span className="line-clamp-2 break-words font-semibold text-foreground">{title}</span>
         {description ? (
           <span className="line-clamp-2 break-words text-muted-foreground">{description}</span>
         ) : null}
+        <span className="mt-1 flex min-w-0 items-center gap-1.5 text-xs text-muted-foreground">
+          {iconSrc && failedIcon !== iconSrc ? (
+            <img
+              src={iconSrc}
+              alt=""
+              loading="lazy"
+              referrerPolicy="no-referrer"
+              className="size-4 shrink-0 rounded-sm object-contain"
+              onError={() => setFailedIcon(iconSrc)}
+            />
+          ) : null}
+          <span className="truncate">{siteName || new URL(url).hostname}</span>
+        </span>
       </span>
     </a>
   );

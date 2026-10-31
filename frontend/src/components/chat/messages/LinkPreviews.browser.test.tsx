@@ -45,18 +45,40 @@ it("renders metadata and loads the thumbnail directly from the runtime proxy end
     title: "Example title",
     description: "Example description",
     image: "https://images.example/cover.png",
+    siteName: "Example Blog",
+    icon: "https://example.com/favicon.ico",
   });
   render(<LinkPreviews content="https://example.com/preview-one" />);
   const card = await screen.findByRole("link", { name: /Example title/ });
   expect(card.getAttribute("href")).toBe("https://example.com/preview-one");
   expect(screen.getByText("Example description")).toBeInTheDocument();
+  expect(screen.getByText("Example Blog")).toBeInTheDocument();
+  expect(screen.queryByText("example.com")).toBeNull();
   await waitFor(() =>
     expect(card.querySelector("img")?.src).toMatch(/^https:\/\/media.example\/\?url=/),
   );
   const img = card.querySelector("img")!;
+  const favicon = card.querySelectorAll("img")[1];
+  expect(new URL(favicon.src).searchParams.get("url")).toBe("https://example.com/favicon.ico");
+  expect(favicon.nextElementSibling).toHaveTextContent("Example Blog");
   expect(new URL(img.src).searchParams.get("url")).toBe("https://images.example/cover.png");
+  for (const [width, height, direction] of [
+    [1200, 630, "flex-col"],
+    [600, 600, "flex-row"],
+    [400, 800, "flex-row"],
+  ] as const) {
+    Object.defineProperties(img, {
+      naturalWidth: { configurable: true, value: width },
+      naturalHeight: { configurable: true, value: height },
+    });
+    fireEvent.load(img);
+    expect(card).toHaveClass(direction);
+  }
   fireEvent.error(img);
+  expect(card.querySelectorAll("img")).toHaveLength(1);
+  fireEvent.error(favicon);
   expect(card.querySelector("img")).toBeNull();
+  expect(card).toHaveClass("flex-row");
   expect(card).toBeInTheDocument();
 });
 

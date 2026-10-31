@@ -2,7 +2,9 @@
 
 投稿・スレッド内のHTTP(S)リンクを最大3件、タイトル・説明付きのカードとして表示します。コード、`<plain>`、MFMのサイレントリンク `?[label](url)` は展開しません。同じURLは1件にまとめます。取得に失敗しても本文リンクは維持します。
 
-フロントは指定の [mei23/summaly](https://github.com/mei23/summaly) の `/url?url=...` からJSONを取得します。`title`・`description` を文字列として描画し、`thumbnail` だけを画像プロクシへ渡します。HTMLやplayerは埋め込みません。SummalyへのリクエストにアプリのCookie・Authorization・Refererを送信しません。
+カードはタイトル・説明・サイト名（Summalyの `sitename`、未設定時はホスト名）の順に表示します。画像の読み込み後、幅÷高さが1.5以上なら画像を上部に、それ以外は左側に配置します。本文のURLはリンクアイコン付きの淡い青色の背景で表示し、表示上の `http://`・`https://` は省略します。リンク先は元のURLを維持します。
+
+フロントは指定の [mei23/summaly](https://github.com/mei23/summaly) の `/url?url=...` からJSONを取得します。`title`・`description`・`sitename` を文字列として描画し、`thumbnail` と `icon` を画像プロクシへ渡します。faviconはサイト名の左に表示し、読み込み失敗時は省略します。HTMLやplayerは埋め込みません。SummalyへのリクエストにアプリのCookie・Authorization・Refererを送信しません。
 
 画像はフロントからmedia-proxy-rsへ `?url=<画像URL>&preview=1&static=1` で取得します。画像プロクシ未設定時はテキストのカードだけを表示します。元のサムネイルのホストへ直接フォールバックしません。
 
