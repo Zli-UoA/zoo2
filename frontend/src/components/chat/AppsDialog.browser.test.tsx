@@ -5,7 +5,11 @@ import { LocaleProvider } from "../i18n/LocaleProvider";
 import { AppsPanel } from "./AppsDialog";
 import "../../styles.css";
 
-const api = vi.hoisted(() => ({ get: vi.fn(), request: vi.fn() }));
+const api = vi.hoisted(() => ({
+  get: vi.fn(),
+  request: vi.fn(),
+  selectedChannelId: "general" as string | null,
+}));
 vi.mock("../../lib/api/client", () => ({ createConfiguredApiClient: () => api }));
 vi.mock("../../lib/electric/collections-context", () => ({
   useCollections: () => ({ config: {} }),
@@ -17,7 +21,9 @@ vi.mock("../../hooks/useRealtime", () => ({
   useUsers: () => ({ data: [] }),
   useActiveChannels: () => ({ data: [] }),
 }));
-vi.mock("../layout/shell-context", () => ({ useShell: () => ({ selectedChannelId: "general" }) }));
+vi.mock("../layout/shell-context", () => ({
+  useShell: () => ({ selectedChannelId: api.selectedChannelId }),
+}));
 vi.mock("@tanstack/react-router", () => ({ useNavigate: () => vi.fn() }));
 const apps = [
   {
@@ -40,6 +46,7 @@ const apps = [
   },
 ];
 beforeEach(() => {
+  api.selectedChannelId = "general";
   api.get
     .mockReset()
     .mockImplementation((path: string) => Promise.resolve(path === "/api/apps" ? apps : []));
@@ -158,6 +165,28 @@ describe("Apps control panel", () => {
       expect(screen.getByRole("textbox", { name })).toBeVisible();
     },
   );
+
+  it.each([null, "general"])("invokes global shortcuts with channel=%s", async (channel) => {
+    api.selectedChannelId = channel;
+    api.get.mockImplementation((path: string) =>
+      Promise.resolve(
+        path === "/api/apps"
+          ? [{ ...apps[0], manifest: { ...apps[0]!.manifest, shortcuts: ["Global shortcut"] } }]
+          : [],
+      ),
+    );
+    panel();
+    await userEvent.click(await screen.findByRole("button", { name: /Alpha/ }));
+    await userEvent.click(screen.getByRole("button", { name: "Global shortcut" }));
+    await waitFor(() =>
+      expect(api.request).toHaveBeenCalledWith(
+        "/api/apps/alpha/invoke",
+        expect.objectContaining({
+          body: expect.objectContaining({ kind: "shortcut", channel_id: channel }),
+        }),
+      ),
+    );
+  });
 
   it("offers retry after loading the catalog fails", async () => {
     api.get.mockRejectedValueOnce(new Error("offline"));

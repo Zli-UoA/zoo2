@@ -125,7 +125,13 @@ export function createCurrentUserStore(
     refresh: () => {
       refreshing ??= resolveCurrentUser(config, options)
         .then((resolved) => {
-          setState({ ...resolved, isLoading: false });
+          setState({
+            ...resolved,
+            // A transient role refresh failure does not invalidate the signed-in identity.
+            // resolveCurrentUser returns error=null for 401, so that path still clears it.
+            currentUserId: resolved.error !== null ? state.currentUserId : resolved.currentUserId,
+            isLoading: false,
+          });
         })
         .finally(() => {
           refreshing = null;

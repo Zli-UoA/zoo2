@@ -252,3 +252,38 @@ it("refreshes administrator status without dropping the current identity and ded
   expect(fetchMock).toHaveBeenCalledTimes(2);
   expect(store.getState().isAdmin).toBe(false);
 });
+
+it.each(["network", "server"])(
+  "keeps the resolved identity after a background %s failure",
+  async (failure) => {
+    setTokenProvider(() => "token-123");
+    const fetchMock = vi
+      .fn<FetchLike>()
+      .mockResolvedValueOnce(jsonResponse(userResponse("user-1", true)))
+      .mockImplementationOnce(async () => {
+        if (failure === "network") throw new TypeError("Network unavailable");
+        return jsonResponse({ error: "Temporary outage" }, 503);
+      });
+    const store = createCurrentUserStore(OIDC_CONFIG, { fetch: fetchMock });
+    await store.ensureLoaded();
+    await store.refresh();
+    expect(store.getState()).toMatchObject({
+      currentUserId: "user-1",
+      isAdmin: false,
+      isLoading: false,
+    });
+    expect(store.getState().error).toContain(failure === "network" ? "Network unavailable" : "503");
+  },
+);
+
+it("clears the resolved identity when a background refresh is unauthorized", async () => {
+  setTokenProvider(() => "token-123");
+  const fetchMock = vi
+    .fn<FetchLike>()
+    .mockResolvedValueOnce(jsonResponse(userResponse("user-1", true)))
+    .mockResolvedValueOnce(jsonResponse({ error: "unauthorized" }, 401));
+  const store = createCurrentUserStore(OIDC_CONFIG, { fetch: fetchMock });
+  await store.ensureLoaded();
+  await store.refresh();
+  expect(store.getState()).toMatchObject({ currentUserId: null, isAdmin: false });
+});

@@ -269,6 +269,8 @@ export function MessagePane({
       return;
     }
     const rootRow = messagesCollection.get(threadRootId);
+    // The root may exist outside the current feed window; let setSince above load it.
+    if (rootRow && !rootRow.deleted_at) return;
     closeThread();
     if (rootRow?.deleted_at) {
       toast.info(t("threads.rootDeleted"), { id: "thread-root-deleted" });

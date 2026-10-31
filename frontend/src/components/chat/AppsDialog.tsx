@@ -313,7 +313,7 @@ function UserAppsDialog({
           name: command,
           values: kind === "command" ? { text: commandArguments[command ?? ""] ?? "" } : {},
           message_id: kind === "shortcut" ? messageId : undefined,
-          channel_id: kind === "home" ? null : targetChannelId,
+          channel_id: kind === "home" ? null : targetChannelId || null,
         },
       }),
     );
