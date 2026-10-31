@@ -1,7 +1,9 @@
 import { useTranslation } from "react-i18next";
 import { DownloadIcon, LoaderCircleIcon, PaperclipIcon } from "lucide-react";
-import { useEffect, useRef, useState, type MouseEvent } from "react";
+import { useEffect, useRef, useState } from "react";
+import { toast } from "sonner";
 
+import { downloadAttachment } from "../../../lib/api/attachments";
 import {
   formatAttachmentSize,
   isInlineImage,
@@ -10,8 +12,8 @@ import {
 import type { AttachmentRow } from "../../../lib/electric/types";
 import { useAttachmentUrl, type AttachmentUrlState } from "../../../hooks/useAttachments";
 import { useLocale } from "../../i18n/LocaleProvider";
+import { Button } from "../../ui/button";
 import { Dialog, DialogContent, DialogTitle } from "../../ui/dialog";
-import { ExternalLink } from "../../ui/external-link";
 import { Spinner } from "../../ui/spinner";
 
 export function MessageAttachments({ attachments }: { attachments: AttachmentRow[] }) {
@@ -62,13 +64,14 @@ function AttachmentImage({
   const { status, url, reload } = state;
   const [broken, setBroken] = useState(false);
   const [open, setOpen] = useState(false);
+  const [dialogFailed, setDialogFailed] = useState(false);
   const retried = useRef(false);
   const dialogRetried = useRef(false);
 
   useEffect(() => {
     if (url) {
       setBroken(false);
-      dialogRetried.current = false;
+      setDialogFailed(false);
     }
   }, [url]);
 
@@ -95,6 +98,8 @@ function AttachmentImage({
             : "block w-fit max-w-full cursor-zoom-in overflow-hidden rounded-lg border bg-muted outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
         }
         onClick={() => {
+          dialogRetried.current = false;
+          setDialogFailed(false);
           if (shouldRefreshAttachmentUrl(state.expiresAt)) {
             void state.getFreshUrl();
           }
@@ -129,15 +134,37 @@ function AttachmentImage({
   return (
     <>
       {thumbnail}
-      <Dialog open={open} onOpenChange={setOpen}>
+      <Dialog
+        open={open}
+        onOpenChange={(next) => {
+          setOpen(next);
+          if (!next) {
+            setDialogFailed(false);
+          }
+        }}
+      >
         <DialogContent className="w-auto max-w-[calc(100vw-2rem)] p-2 sm:max-w-[min(96vw,80rem)]">
           <DialogTitle className="sr-only">{attachment.file_name}</DialogTitle>
-          {status === "loading" || !url ? (
+          {status === "error" || dialogFailed ? (
+            <div className="flex min-h-48 flex-col items-center justify-center gap-3 px-4">
+              <p role="alert" className="text-sm text-destructive">
+                {t("attachments.loadError")}
+              </p>
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                onClick={() => {
+                  dialogRetried.current = false;
+                  setDialogFailed(false);
+                  reload();
+                }}
+              >
+                {t("attachments.retry")}
+              </Button>
+            </div>
+          ) : status === "loading" || !url ? (
             <Spinner label={t("attachments.loading")} className="min-h-64 min-w-64" />
-          ) : status === "error" ? (
-            <p role="alert" className="px-2 py-8 text-center text-sm text-destructive">
-              {t("attachments.loadError")}
-            </p>
           ) : (
             <img
               src={url}
@@ -145,12 +172,15 @@ function AttachmentImage({
               className="mx-auto max-h-[78vh] max-w-full object-contain"
               onLoad={() => {
                 dialogRetried.current = false;
+                setDialogFailed(false);
               }}
               onError={() => {
                 if (!dialogRetried.current) {
                   dialogRetried.current = true;
                   reload();
+                  return;
                 }
+                setDialogFailed(true);
               }}
             />
           )}
@@ -158,44 +188,12 @@ function AttachmentImage({
             <span className="min-w-0 truncate text-xs text-muted-foreground">
               {attachment.file_name}
             </span>
-            {url ? (
-              <ExternalLink
-                href={url}
-                download={attachment.file_name}
-                aria-label={t("attachments.download", { name: attachment.file_name })}
-                title={t("attachments.download", { name: attachment.file_name })}
-                onClick={(event) => handleAttachmentLink(event, state)}
-                className="inline-flex shrink-0 items-center gap-1 text-xs font-medium"
-              >
-                <DownloadIcon className="size-4" />
-                {t("attachments.downloadShort")}
-              </ExternalLink>
-            ) : null}
+            <AttachmentDownloadButton attachment={attachment} state={state} showLabel />
           </div>
         </DialogContent>
       </Dialog>
     </>
   );
-}
-
-function handleAttachmentLink(event: MouseEvent<HTMLAnchorElement>, state: AttachmentUrlState) {
-  if (!shouldRefreshAttachmentUrl(state.expiresAt)) {
-    return;
-  }
-  event.preventDefault();
-  const popup = window.open("about:blank", "_blank");
-  if (!popup) {
-    void state.getFreshUrl();
-    return;
-  }
-  popup.opener = null;
-  void state.getFreshUrl().then((freshUrl) => {
-    if (freshUrl) {
-      popup.location.replace(freshUrl);
-      return;
-    }
-    popup.close();
-  });
 }
 
 function AttachmentFile({ attachment }: { attachment: AttachmentRow }) {
@@ -212,7 +210,7 @@ function AttachmentFileCard({
 }) {
   const { t } = useTranslation();
   const { locale } = useLocale();
-  const { status, url, reload } = state;
+  const { status, reload } = state;
   const label =
     status === "error"
       ? t("attachments.loadError")
@@ -245,18 +243,59 @@ function AttachmentFileCard({
           {t("attachments.retry")}
         </button>
       ) : null}
-      {url ? (
-        <ExternalLink
-          href={url}
-          download={attachment.file_name}
-          aria-label={t("attachments.download", { name: attachment.file_name })}
-          title={t("attachments.download", { name: attachment.file_name })}
-          onClick={(event) => handleAttachmentLink(event, state)}
-          className="rounded p-1 text-muted-foreground hover:bg-muted hover:text-foreground"
-        >
-          <DownloadIcon className="size-4" />
-        </ExternalLink>
-      ) : null}
+      <AttachmentDownloadButton attachment={attachment} state={state} />
     </div>
+  );
+}
+
+function AttachmentDownloadButton({
+  attachment,
+  state,
+  showLabel = false,
+}: {
+  attachment: AttachmentRow;
+  state: AttachmentUrlState;
+  showLabel?: boolean;
+}) {
+  const { t } = useTranslation();
+  const [downloading, setDownloading] = useState(false);
+
+  async function download() {
+    if (downloading) {
+      return;
+    }
+    setDownloading(true);
+    try {
+      const url = await state.getFreshUrl();
+      if (!url) {
+        throw new Error("Attachment URL is unavailable");
+      }
+      await downloadAttachment(url, attachment.file_name);
+    } catch {
+      toast.error(t("attachments.downloadError"));
+    } finally {
+      setDownloading(false);
+    }
+  }
+
+  const label = t("attachments.download", { name: attachment.file_name });
+  return (
+    <Button
+      type="button"
+      variant="ghost"
+      size={showLabel ? "sm" : "icon-sm"}
+      className={showLabel ? "shrink-0 gap-1 text-xs" : "text-muted-foreground"}
+      aria-label={label}
+      title={label}
+      disabled={downloading}
+      onClick={() => void download()}
+    >
+      {downloading ? (
+        <LoaderCircleIcon className="size-4 animate-spin" aria-hidden="true" />
+      ) : (
+        <DownloadIcon className="size-4" aria-hidden="true" />
+      )}
+      {showLabel ? t("attachments.downloadShort") : null}
+    </Button>
   );
 }

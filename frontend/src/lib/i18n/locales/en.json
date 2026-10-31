@@ -217,6 +217,7 @@
     "open": "Open {{name}}",
     "download": "Download {{name}}",
     "downloadShort": "Download",
+    "downloadError": "Could not download the file.",
     "retry": "Try again"
   },
   "threads": {

@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vite-plus/test";
 
 import type { ApiClient } from "./client";
-import { AttachmentUploadError, uploadAttachment } from "./attachments";
+import { AttachmentUploadError, fetchAttachmentBlob, uploadAttachment } from "./attachments";
 
 function fakeFile(overrides: Partial<File> = {}): File {
   return {
@@ -116,5 +116,33 @@ describe("uploadAttachment", () => {
     await expect(
       uploadAttachment(okClient, "channel-1", fakeFile(), fetchImpl as typeof fetch),
     ).rejects.toMatchObject({ reason: "request" });
+  });
+});
+
+describe("fetchAttachmentBlob", () => {
+  it("downloads the attachment bytes without credentials", async () => {
+    const fetchImpl = vi.fn(async () => new Response(new Blob(["attachment"]), { status: 200 }));
+
+    const blob = await fetchAttachmentBlob(
+      "https://attachments.zliusercontent.com/object?signature=test",
+      fetchImpl as typeof fetch,
+    );
+
+    expect(await blob.text()).toBe("attachment");
+    expect(fetchImpl).toHaveBeenCalledWith(
+      "https://attachments.zliusercontent.com/object?signature=test",
+      { credentials: "omit" },
+    );
+  });
+
+  it("rejects non-success responses", async () => {
+    const fetchImpl = vi.fn(async () => new Response(null, { status: 403 }));
+
+    await expect(
+      fetchAttachmentBlob(
+        "https://attachments.zliusercontent.com/object",
+        fetchImpl as typeof fetch,
+      ),
+    ).rejects.toThrow(/403/);
   });
 });

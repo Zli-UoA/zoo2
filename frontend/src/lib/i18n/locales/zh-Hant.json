@@ -217,6 +217,7 @@
     "open": "開啟{{name}}",
     "download": "下載{{name}}",
     "downloadShort": "下載",
+    "downloadError": "無法下載檔案。",
     "retry": "重試"
   },
   "threads": {

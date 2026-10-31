@@ -217,6 +217,7 @@
     "open": "{{name}}を開く",
     "download": "{{name}}をダウンロード",
     "downloadShort": "ダウンロード",
+    "downloadError": "ダウンロードできませんでした。",
     "retry": "再試行"
   },
   "threads": {

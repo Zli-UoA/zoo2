@@ -119,11 +119,16 @@ export function resolveAttachmentContentType(file: Pick<File, "type" | "name">):
   if (DISALLOWED_UPLOAD_EXTENSIONS.has(extension)) {
     return null;
   }
+  const inferred = EXTENSION_TO_CONTENT_TYPE[extension];
   const declared = baseMime(file.type);
-  if (/^[a-z0-9!#$&^_.+-]+\/[a-z0-9!#$&^_.+-]+$/.test(declared)) {
-    return DISALLOWED_UPLOAD_TYPES.has(declared) ? null : declared;
+  if (
+    declared === "application/octet-stream" ||
+    declared === "binary/octet-stream" ||
+    !/^[a-z0-9!#$&^_.+-]+\/[a-z0-9!#$&^_.+-]+$/.test(declared)
+  ) {
+    return inferred ?? "application/octet-stream";
   }
-  return EXTENSION_TO_CONTENT_TYPE[extension] ?? "application/octet-stream";
+  return DISALLOWED_UPLOAD_TYPES.has(declared) ? null : declared;
 }
 
 export function attachmentFilesFromClipboard(

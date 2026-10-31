@@ -42,6 +42,9 @@ describe("resolveAttachmentContentType", () => {
       "application/pdf",
     );
     expect(resolveAttachmentContentType(file("notes.txt", ""))).toBe("text/plain");
+    expect(resolveAttachmentContentType(file("photo.png", "application/octet-stream"))).toBe(
+      "image/png",
+    );
     expect(resolveAttachmentContentType(file("data.bin", ""))).toBe("application/octet-stream");
     expect(resolveAttachmentContentType(file("setup.exe", "application/x-msdownload"))).toBeNull();
     expect(resolveAttachmentContentType(file("run.sh", ""))).toBeNull();
