@@ -3,6 +3,7 @@ import { parse, toString, type MfmNode } from "mfm-js";
 import katex from "katex";
 import hljs from "highlight.js/lib/common";
 import shortcodeData from "../../../lib/emoji/shortcodes.json";
+import { MfmSearch } from "./MfmSearch";
 import { ChannelHashtag } from "./MfmChannels";
 import { messageTextSegments } from "./messageFormat";
 import { functionPresentation, MFM_FUNCTIONS } from "./mfmFunctions";
@@ -202,14 +203,7 @@ function renderNode(
         <ChannelHashtag name={node.props.hashtag} className={linkClass} />
       );
     case "search":
-      return (
-        <div className="mfm-search">
-          {externalLink(
-            `https://www.google.com/search?q=${encodeURIComponent(node.props.query)}`,
-            <>⌕ {node.props.content}</>,
-          )}
-        </div>
-      );
+      return inLink ? node.props.content : <MfmSearch query={node.props.query} />;
     case "fn": {
       const { name, args } = node.props;
       if (!(MFM_FUNCTIONS as readonly string[]).includes(name)) return toString(node);

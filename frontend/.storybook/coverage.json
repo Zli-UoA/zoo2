@@ -334,6 +334,21 @@
     {
       "file": "src/components/ui/select.stories.tsx",
       "states": ["Default", "Disabled", "LongLabel"]
+    },
+    {
+      "file": "src/components/preferences/SearchPreferences.stories.tsx",
+      "states": [
+        "Google",
+        "DuckDuckGo",
+        "Yandex",
+        "Baidu",
+        "ChangeEngine",
+        "Loading",
+        "Saving",
+        "LoadError",
+        "SaveError",
+        "LongQueryMobile"
+      ]
     }
   ],
   "modules": [
@@ -626,6 +641,21 @@
     {
       "file": "src/components/ui/select.tsx",
       "story": "src/components/ui/select.stories.tsx"
+    },
+    {
+      "file": "src/components/preferences/SearchEngineSelect.tsx",
+      "story": "src/components/preferences/SearchPreferences.stories.tsx"
+    },
+    {
+      "file": "src/components/chat/messages/MfmSearch.tsx",
+      "story": "src/components/preferences/SearchPreferences.stories.tsx",
+      "composed": true,
+      "reason": "各検索エンジンの実検索欄と長い検索語を表示し、選択の反映を確認する。"
+    },
+    {
+      "file": "src/components/preferences/SearchPreferences.tsx",
+      "reason": "アカウント単位で設定を読み書きする制御層。保存・再読込・アカウント切替・失敗からの再試行はブラウザテストで検証する。",
+      "checks": ["src/components/preferences/SearchPreferences.browser.test.tsx"]
     }
   ]
 }

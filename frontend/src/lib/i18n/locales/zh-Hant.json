@@ -516,5 +516,15 @@
       "disconnect": "中斷連接"
     },
     "commandArguments": "參數"
+  },
+  "search": {
+    "engine": "搜尋引擎",
+    "description": "用於 MFM 搜尋，儲存至您的個人帳戶。",
+    "query": "搜尋詞",
+    "action": "搜尋",
+    "withEngine": "使用 {{engine}} 搜尋",
+    "loadError": "無法載入搜尋設定。",
+    "saveError": "無法儲存，請重新選擇搜尋引擎。",
+    "retry": "重試"
   }
 }

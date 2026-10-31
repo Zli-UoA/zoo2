@@ -1,7 +1,8 @@
-import { ArrowLeftIcon, BellIcon, LanguagesIcon, PaletteIcon } from "lucide-react";
+import { ArrowLeftIcon, BellIcon, LanguagesIcon, PaletteIcon, SearchIcon } from "lucide-react";
 import { Tabs } from "@base-ui/react/tabs";
 import { useNavigate, useRouterState } from "@tanstack/react-router";
 import { useTranslation } from "react-i18next";
+import { SearchEngineSelect } from "../preferences/SearchEngineSelect";
 import { LanguageToggle } from "../i18n/LanguageToggle";
 import { ModeToggle } from "../theme/ModeToggle";
 import { PwaControls } from "../pwa/PwaControls";
@@ -71,6 +72,13 @@ export function ZooSettings() {
               </SettingRow>
               <SettingRow icon={<LanguagesIcon />} label={t("language.title")}>
                 <LanguageToggle presentation="select" />
+              </SettingRow>
+              <SettingRow
+                icon={<SearchIcon />}
+                label={t("search.engine")}
+                description={t("search.description")}
+              >
+                <SearchEngineSelect />
               </SettingRow>
               <SettingRow icon={<BellIcon />} label={t("pwa.title")}>
                 <PwaControls presentation="select" />

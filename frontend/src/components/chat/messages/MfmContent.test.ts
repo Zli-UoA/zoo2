@@ -1,12 +1,15 @@
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vite-plus/test";
+import { LocaleProvider } from "../../i18n/LocaleProvider";
 import { MfmChannelsProvider } from "./MfmChannels";
 import { parse } from "mfm-js";
 import { MfmContent, type MfmContentProps } from "./MfmContent";
 
 const render = (content: string, options: Omit<MfmContentProps, "content"> = {}) =>
-  renderToStaticMarkup(createElement(MfmContent, { content, ...options }));
+  renderToStaticMarkup(
+    createElement(LocaleProvider, { children: createElement(MfmContent, { content, ...options }) }),
+  );
 
 describe("MfmContent", () => {
   it("styles raw URLs as inline links while preserving destinations and custom labels", () => {
@@ -150,7 +153,11 @@ describe("MfmContent", () => {
   it("renders remote mentions, hashtags and search without automatically fetching external services", () => {
     expect(render("@alice@example.com")).toContain('href="https://example.com/@alice"');
     expect(render("#猫")).toBe("#猫");
-    expect(render("猫 検索")).toContain("https://www.google.com/search?q=%E7%8C%AB");
+    const search = render("猫 検索");
+    expect(search).toContain('action="https://www.google.com/search"');
+    expect(search).toContain('name="q"');
+    expect(search).toContain('readOnly=""');
+    expect(search).toContain('value="猫"');
   });
   it("links only exact existing channel names, including inside decorations", () => {
     const channels = [

@@ -516,5 +516,15 @@
       "disconnect": "接続を解除"
     },
     "commandArguments": "引数"
+  },
+  "search": {
+    "engine": "検索エンジン",
+    "description": "MFMの検索に使います。自分のアカウントに保存されます。",
+    "query": "検索語",
+    "action": "検索",
+    "withEngine": "{{engine}}で検索",
+    "loadError": "検索設定を読み込めませんでした。",
+    "saveError": "保存できませんでした。もう一度選択してください。",
+    "retry": "再試行"
   }
 }

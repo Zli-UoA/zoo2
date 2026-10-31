@@ -64,6 +64,10 @@ pub fn router() -> Router<AppState> {
     Router::new()
         .route("/api/users", post(create_user).get(list_users))
         .route("/api/users/me", get(get_me).patch(update_me))
+        .route(
+            "/api/users/me/preferences",
+            get(get_preferences).patch(update_preferences),
+        )
         .route("/api/users/admins", get(list_admin_users))
         .route("/api/users/{id}/admin", patch(update_admin))
         .route("/api/users/{id}", get(get_user_by_id))
@@ -217,6 +221,56 @@ async fn get_me(
         user: UserResponse::from(user),
         is_admin,
     }))
+}
+
+/// The first-party preference endpoint only exposes supported personal settings.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum SearchEngine {
+    #[default]
+    Google,
+    DuckDuckGo,
+    Yandex,
+    Baidu,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PersonalPreferences {
+    pub search_engine: SearchEngine,
+}
+
+async fn get_preferences(
+    State(state): State<AppState>,
+    auth_user: AuthUser,
+) -> Result<Json<PersonalPreferences>, AppError> {
+    let mut db = state.db.clone();
+    let mut tx = db.transaction().await?;
+    let value = crate::apps::one(&mut tx,
+        "SELECT jsonb_build_object('search_engine', (SELECT preferences::jsonb->>'search_engine' FROM user_event_settings WHERE user_id=$1))::text",
+        &[&auth_user.id]).await?;
+    let search_engine = serde_json::from_value(value["search_engine"].clone()).unwrap_or_default();
+    tx.commit().await?;
+    Ok(Json(PersonalPreferences { search_engine }))
+}
+
+async fn update_preferences(
+    State(state): State<AppState>,
+    auth_user: AuthUser,
+    Json(payload): Json<PersonalPreferences>,
+) -> Result<Json<ApiResponse<PersonalPreferences>>, AppError> {
+    let mut db = state.db.clone();
+    let mut tx = db.transaction().await?;
+    let engine = serde_json::to_value(payload.search_engine)
+        .map_err(|err| AppError::Internal(err.into()))?;
+    // Merge in SQL so concurrent updates cannot overwrite unrelated App preferences.
+    toasty::sql::statement(
+        "INSERT INTO user_event_settings(user_id,preferences) VALUES($1,jsonb_build_object('search_engine',$2::text)::text) \
+         ON CONFLICT(user_id) DO UPDATE SET preferences=(user_event_settings.preferences::jsonb || jsonb_build_object('search_engine',$2::text))::text",
+    ).bind(auth_user.id.as_str()).bind(engine.as_str().unwrap()).exec(&mut tx).await?;
+    let txid = get_current_txid(&mut tx).await?;
+    tx.commit().await?;
+    Ok(Json(ApiResponse::new(payload, txid)))
 }
 
 async fn update_me(

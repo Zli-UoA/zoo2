@@ -516,5 +516,15 @@
       "disconnect": "Disconnect"
     },
     "commandArguments": "Arguments"
+  },
+  "search": {
+    "engine": "Search engine",
+    "description": "Used for MFM searches. Saved to your account.",
+    "query": "Search query",
+    "action": "Search",
+    "withEngine": "Search with {{engine}}",
+    "loadError": "Could not load search preferences.",
+    "saveError": "Could not save. Select an engine to try again.",
+    "retry": "Retry"
   }
 }

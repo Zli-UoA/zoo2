@@ -13,6 +13,9 @@ import { describe, expect, it, vi } from "vite-plus/test";
 import { AppShell } from "./AppShell";
 import { useShell } from "./shell-context";
 
+vi.mock("../preferences/SearchPreferences", () => ({
+  SearchPreferencesProvider: ({ children }: { children: import("react").ReactNode }) => children,
+}));
 vi.mock("../pwa/PwaControls", () => ({
   PwaProvider: ({ children }: { children: import("react").ReactNode }) => children,
 }));

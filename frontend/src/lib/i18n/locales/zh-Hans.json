@@ -516,5 +516,15 @@
       "disconnect": "断开连接"
     },
     "commandArguments": "参数"
+  },
+  "search": {
+    "engine": "搜索引擎",
+    "description": "用于 MFM 搜索，保存到您的个人账户。",
+    "query": "搜索词",
+    "action": "搜索",
+    "withEngine": "使用 {{engine}} 搜索",
+    "loadError": "无法加载搜索设置。",
+    "saveError": "无法保存，请重新选择搜索引擎。",
+    "retry": "重试"
   }
 }
