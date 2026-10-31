@@ -72,7 +72,8 @@
         "LoadingMemberCount",
         "NoDescription",
         "LongDescription",
-        "Mobile"
+        "Mobile",
+        "WebhookSettingsOpen"
       ]
     },
     {

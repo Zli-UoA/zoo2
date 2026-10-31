@@ -13,6 +13,7 @@ test("built Storybook renders Kotlin samples, updates controls, and isolates sta
   const frame = page.frameLocator('iframe[title="Compose component catalog"]');
   await expect(page.locator("[data-compose-catalog-state=ready]")).toBeVisible({ timeout: 90_000 });
   await expect(frame.getByText("こんにちは。今日のリリース", { exact: false })).toBeVisible();
+  const originalFrame = await page.locator("iframe").elementHandle();
   // The same iframe receives Controls changes without starting a second Compose scene.
   await page.evaluate(() => {
     const channel = (
@@ -26,6 +27,7 @@ test("built Storybook renders Kotlin samples, updates controls, and isolates sta
     });
   });
   await expect(frame.getByText("Kotlin Controls update", { exact: false })).toBeVisible();
+  expect(await originalFrame!.evaluate((element) => element.isConnected)).toBe(true);
   await page.goto(
     "/iframe.html?id=features-compose-chat--composer&viewMode=story&globals=locale:en;theme:dark",
   );
@@ -53,6 +55,10 @@ test("built Storybook renders Kotlin samples, updates controls, and isolates sta
   await expect(frame.getByRole("textbox")).toBeVisible();
   await expect(frame.getByText("😀", { exact: true }).first()).toBeVisible({ timeout: 30_000 });
   await expect(page.locator("iframe")).toHaveJSProperty("clientWidth", 390);
+  await page.goto("/iframe.html?id=features-compose-chat--long-message&viewMode=story");
+  await expect(page.locator("[data-compose-catalog-state=ready]")).toBeVisible({ timeout: 90_000 });
+  await expect(frame.getByText("長い日本語の本文とURL", { exact: false }).first()).toBeVisible();
+  await page.screenshot({ path: test.info().outputPath("compose-long-message-mobile.png") });
   await page.goto("/iframe.html?id=features-compose-chat--rich-text&viewMode=story");
   await expect(page.locator("[data-compose-catalog-state=ready]")).toBeVisible({ timeout: 90_000 });
   await expect(frame.getByText("Compose Multiplatform", { exact: false })).toBeVisible();

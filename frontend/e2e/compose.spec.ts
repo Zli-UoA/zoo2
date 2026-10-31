@@ -54,7 +54,7 @@ async function openApps(page: Page, native: boolean) {
 }
 async function closeApps(page: Page, native: boolean) {
   if (native) await page.keyboard.press("Escape");
-  else await page.getByRole("link", { name: "チャンネル", exact: true }).click();
+  else await page.getByRole("button", { name: "チャンネル一覧へ戻る", exact: true }).click();
 }
 
 async function nativeInput(page: Page) {
@@ -334,7 +334,7 @@ test("Compose entry points keep React settings accessible and restore the select
   expect(await page.evaluate(() => localStorage.getItem("zoo-frontend"))).toBe("compose");
   await page.getByRole("tab", { name: "App・連携", exact: true }).click();
   await expect(page.getByRole("button", { name: "Appを作成", exact: true })).toBeVisible();
-  await page.getByRole("link", { name: "チャンネル", exact: true }).click();
+  await page.getByRole("button", { name: "チャンネル一覧へ戻る", exact: true }).click();
   await expect(page.locator("[data-compose-shell]")).toBeVisible({ timeout: 90_000 });
   await expect(page.getByRole("button", { name: "general", exact: true })).toBeVisible();
 });
