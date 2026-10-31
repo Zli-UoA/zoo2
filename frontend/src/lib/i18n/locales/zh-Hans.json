@@ -344,6 +344,24 @@
       "clickable": "点击事件"
     }
   },
+  "bubbleChat": {
+    "title": "Bubble Chat",
+    "description": "输入的文字会实时显示在此房间中",
+    "emptyTitle": "当前没有人在输入",
+    "emptyDescription": "在下方输入框中打字，即可实时显示为对话气泡。",
+    "placeholder": "在此输入即可实时共享…",
+    "inputLabel": "实时消息输入",
+    "clear": "清空输入",
+    "hint": "无需发送按钮，点击清空按钮或按 Cmd / Ctrl+Enter 可清空输入；气泡会在稍后淡出消失。",
+    "typingSummary": "{{names}}正在输入",
+    "participants": "参与者",
+    "participantsTitle": "参与者 ({{count}})",
+    "noParticipants": "暂无参与者",
+    "typing": "正在输入",
+    "active": "在房间中",
+    "you": "你",
+    "closeParticipants": "关闭参与者列表"
+  },
   "dms": {
     "title": "私信",
     "createTitle": "新建私信",

@@ -41,8 +41,11 @@ export function AppShell({ children }: { children: ReactNode }) {
   const channelsQuery = useActiveChannels();
   const channels = channelsQuery.data ?? [];
 
-  const isNotifications = useRouterState({
-    select: (state) => state.location.pathname === "/notifications",
+  const isStandaloneScreen = useRouterState({
+    select: (state) =>
+      state.location.pathname === "/notifications" ||
+      state.location.pathname === "/bubble" ||
+      state.location.pathname === "/bubble-chat",
   });
   const selectedChannelId = useRouterState({
     select: (state) => {
@@ -71,10 +74,10 @@ export function AppShell({ children }: { children: ReactNode }) {
     }
   }
 
-  // チャンネル・通知を開いたら狭幅でもメイン画面へ、ホームではサイドバーへ戻す。
+  // チャンネル・通知・Bubble Chat を開いたら狭幅でもメイン画面へ、ホームではサイドバーへ戻す。
   useEffect(() => {
-    setPane(selectedChannelId || isNotifications ? "chat" : "sidebar");
-  }, [selectedChannelId, isNotifications]);
+    setPane(selectedChannelId || isStandaloneScreen ? "chat" : "sidebar");
+  }, [selectedChannelId, isStandaloneScreen]);
 
   // ワイドから狭幅へ縮んだときに、ペインで開いていたメンバーが
   // そのままダイアログとして出ないように閉じる。コミット前に反映するため
@@ -130,8 +133,8 @@ export function AppShell({ children }: { children: ReactNode }) {
     [pane, membersOpen, threadRootId, openThread, closeThread, selectedChannelId],
   );
 
-  const showSidebar = !isNotifications && pane === "sidebar";
-  const showChat = isNotifications || pane === "chat";
+  const showSidebar = !isStandaloneScreen && pane === "sidebar";
+  const showChat = isStandaloneScreen || pane === "chat";
 
   return (
     <ShellContext.Provider value={value}>

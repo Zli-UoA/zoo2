@@ -13,6 +13,7 @@ import { Route as ShellRouteImport } from './routes/_shell'
 import { Route as RealtimeRouteImport } from './routes/realtime'
 import { Route as ShellIndexRouteImport } from './routes/_shell.index'
 import { Route as ShellAppsAuthorizeRouteImport } from './routes/_shell.apps-authorize'
+import { Route as ShellBubbleRouteImport } from './routes/_shell.bubble'
 import { Route as ShellNotificationsRouteImport } from './routes/_shell.notifications'
 import { Route as ShellAppsAppIdRouteImport } from './routes/_shell.apps.$appId'
 import { Route as ShellChannelsChannelIdRouteImport } from './routes/_shell.channels.$channelId'
@@ -36,6 +37,11 @@ const ShellAppsAuthorizeRoute = ShellAppsAuthorizeRouteImport.update({
   path: '/apps-authorize',
   getParentRoute: () => ShellRoute,
 } as any)
+const ShellBubbleRoute = ShellBubbleRouteImport.update({
+  id: '/bubble',
+  path: '/bubble',
+  getParentRoute: () => ShellRoute,
+} as any)
 const ShellNotificationsRoute = ShellNotificationsRouteImport.update({
   id: '/notifications',
   path: '/notifications',
@@ -56,6 +62,7 @@ export interface FileRoutesByFullPath {
   '/': typeof ShellIndexRoute
   '/realtime': typeof RealtimeRoute
   '/apps-authorize': typeof ShellAppsAuthorizeRoute
+  '/bubble': typeof ShellBubbleRoute
   '/notifications': typeof ShellNotificationsRoute
   '/apps/$appId': typeof ShellAppsAppIdRoute
   '/channels/$channelId': typeof ShellChannelsChannelIdRoute
@@ -63,6 +70,7 @@ export interface FileRoutesByFullPath {
 export interface FileRoutesByTo {
   '/realtime': typeof RealtimeRoute
   '/apps-authorize': typeof ShellAppsAuthorizeRoute
+  '/bubble': typeof ShellBubbleRoute
   '/notifications': typeof ShellNotificationsRoute
   '/': typeof ShellIndexRoute
   '/apps/$appId': typeof ShellAppsAppIdRoute
@@ -73,6 +81,7 @@ export interface FileRoutesById {
   '/_shell': typeof ShellRouteWithChildren
   '/realtime': typeof RealtimeRoute
   '/_shell/apps-authorize': typeof ShellAppsAuthorizeRoute
+  '/_shell/bubble': typeof ShellBubbleRoute
   '/_shell/notifications': typeof ShellNotificationsRoute
   '/_shell/': typeof ShellIndexRoute
   '/_shell/apps/$appId': typeof ShellAppsAppIdRoute
@@ -84,6 +93,7 @@ export interface FileRouteTypes {
     | '/'
     | '/realtime'
     | '/apps-authorize'
+    | '/bubble'
     | '/notifications'
     | '/apps/$appId'
     | '/channels/$channelId'
@@ -91,6 +101,7 @@ export interface FileRouteTypes {
   to:
     | '/realtime'
     | '/apps-authorize'
+    | '/bubble'
     | '/notifications'
     | '/'
     | '/apps/$appId'
@@ -100,6 +111,7 @@ export interface FileRouteTypes {
     | '/_shell'
     | '/realtime'
     | '/_shell/apps-authorize'
+    | '/_shell/bubble'
     | '/_shell/notifications'
     | '/_shell/'
     | '/_shell/apps/$appId'
@@ -141,6 +153,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ShellAppsAuthorizeRouteImport
       parentRoute: typeof ShellRoute
     }
+    '/_shell/bubble': {
+      id: '/_shell/bubble'
+      path: '/bubble'
+      fullPath: '/bubble'
+      preLoaderRoute: typeof ShellBubbleRouteImport
+      parentRoute: typeof ShellRoute
+    }
     '/_shell/notifications': {
       id: '/_shell/notifications'
       path: '/notifications'
@@ -167,6 +186,7 @@ declare module '@tanstack/react-router' {
 
 interface ShellRouteChildren {
   ShellAppsAuthorizeRoute: typeof ShellAppsAuthorizeRoute
+  ShellBubbleRoute: typeof ShellBubbleRoute
   ShellNotificationsRoute: typeof ShellNotificationsRoute
   ShellIndexRoute: typeof ShellIndexRoute
   ShellAppsAppIdRoute: typeof ShellAppsAppIdRoute
@@ -175,6 +195,7 @@ interface ShellRouteChildren {
 
 const ShellRouteChildren: ShellRouteChildren = {
   ShellAppsAuthorizeRoute: ShellAppsAuthorizeRoute,
+  ShellBubbleRoute: ShellBubbleRoute,
   ShellNotificationsRoute: ShellNotificationsRoute,
   ShellIndexRoute: ShellIndexRoute,
   ShellAppsAppIdRoute: ShellAppsAppIdRoute,

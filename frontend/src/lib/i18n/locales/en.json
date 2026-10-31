@@ -344,6 +344,24 @@
       "clickable": "Click event"
     }
   },
+  "bubbleChat": {
+    "title": "Bubble Chat",
+    "description": "A room where text appears in real time as you type",
+    "emptyTitle": "No one is typing right now",
+    "emptyDescription": "Start typing below to show your speech bubble in real time.",
+    "placeholder": "Type here to share in real time…",
+    "inputLabel": "Real-time message input",
+    "clear": "Clear input",
+    "hint": "No send button—use the clear button or Cmd / Ctrl+Enter to clear your draft; bubbles fade out after a short delay.",
+    "typingSummary": "{{names}} typing",
+    "participants": "Participants",
+    "participantsTitle": "Participants ({{count}})",
+    "noParticipants": "No participants",
+    "typing": "Typing",
+    "active": "In room",
+    "you": "You",
+    "closeParticipants": "Close participants list"
+  },
   "dms": {
     "title": "Direct messages",
     "createTitle": "New direct message",

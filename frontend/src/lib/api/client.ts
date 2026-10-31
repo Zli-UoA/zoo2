@@ -90,6 +90,7 @@ export interface RequestOptions {
   body?: unknown;
   headers?: Record<string, string>;
   signal?: AbortSignal;
+  keepalive?: boolean;
 }
 
 export interface ApiClient {
@@ -145,6 +146,7 @@ export function createApiClient(options: ApiClientOptions = {}): ApiClient {
       headers,
       body: hasBody ? JSON.stringify(requestOptions.body) : undefined,
       signal: requestOptions.signal,
+      keepalive: requestOptions.keepalive,
     });
 
     const body = parseBody(await response.text());

@@ -344,6 +344,24 @@
       "clickable": "點擊事件"
     }
   },
+  "bubbleChat": {
+    "title": "Bubble Chat",
+    "description": "打緊嘅字會即時顯示喺呢個房入面",
+    "emptyTitle": "而家冇人打緊字",
+    "emptyDescription": "喺下面輸入欄打字，就會即時變成對話氣泡顯示出嚟。",
+    "placeholder": "喺度打字就會即時分享…",
+    "inputLabel": "即時訊息輸入",
+    "clear": "清除輸入",
+    "hint": "唔使撳發送，撳清除掣或者 Cmd / Ctrl+Enter 可以清除輸入；氣泡會喺一陣之後淡出消失。",
+    "typingSummary": "{{names}}輸入緊",
+    "participants": "參加者",
+    "participantsTitle": "參加者 ({{count}})",
+    "noParticipants": "冇參加者",
+    "typing": "輸入緊",
+    "active": "喺房入面",
+    "you": "你",
+    "closeParticipants": "關閉參加者名單"
+  },
   "dms": {
     "title": "私訊",
     "createTitle": "新開私訊",
