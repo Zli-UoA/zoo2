@@ -195,7 +195,10 @@
     "count_one": "{{count}} 個訊息",
     "count_other": "{{count}} 個訊息",
     "announcement": "{{author}} 傳咗新訊息：「{{excerpt}}」",
-    "announcementAuthor": "{{author}} 傳咗新訊息"
+    "announcementAuthor": "{{author}} 傳咗新訊息",
+    "copyRaw": "複製原文",
+    "copied": "已複製原文",
+    "copyFailed": "複製唔到原文"
   },
   "threads": {
     "title": "子討論",

@@ -1,5 +1,5 @@
 import type { Meta, StoryObj } from "@storybook/react-vite";
-import { expect, fn, userEvent, within } from "storybook/test";
+import { expect, fn, screen, userEvent, waitFor, within } from "storybook/test";
 
 import { StoryShell } from "../../../../.storybook/shell";
 import { MessageRow } from "./MessageRow";
@@ -183,5 +183,27 @@ export const AppMessage: Story = {
         ]),
       },
     },
+  },
+};
+
+export const CopyOriginalMenu: Story = {
+  parameters: { a11y: { test: "error" } },
+  args: {
+    isOwn: false,
+    canReact: false,
+    item: {
+      ...item,
+      message: {
+        ...item.message,
+        content: "**整形前の本文**\n[リンク](https://example.com)\n:smile:",
+      },
+    },
+  },
+  play: async ({ canvasElement }) => {
+    within(canvasElement).getByRole("button", { name: "その他の操作" }).focus();
+    await userEvent.keyboard("{Enter}");
+    await waitFor(() =>
+      expect(screen.getByRole("menuitem", { name: "原文をコピー" })).toBeVisible(),
+    );
   },
 };

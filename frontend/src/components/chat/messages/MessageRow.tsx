@@ -1,9 +1,11 @@
 import { useEffect, useRef, useState } from "react";
 import { MessageCard, parseMessageCards } from "./MessageCard";
 import { useTranslation } from "react-i18next";
+import { toast } from "sonner";
 import { cn } from "cn";
 import {
   BotIcon,
+  CopyIcon,
   MessageSquarePlusIcon,
   MessageSquareTextIcon,
   MoreHorizontalIcon,
@@ -146,6 +148,15 @@ export function MessageRow({
   const { t } = useTranslation();
   const { locale } = useLocale();
   const { message } = item;
+
+  async function copyRawMessage() {
+    try {
+      await navigator.clipboard.writeText(message.content);
+      toast.success(t("messages.copied"));
+    } catch {
+      toast.error(t("messages.copyFailed"));
+    }
+  }
 
   const [menuOpen, setMenuOpen] = useState(false);
   const hold = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -416,6 +427,10 @@ export function MessageRow({
                 <MoreHorizontalIcon />
               </DropdownMenuTrigger>
               <DropdownMenuContent align="end">
+                <DropdownMenuItem onClick={() => void copyRawMessage()}>
+                  <CopyIcon />
+                  {t("messages.copyRaw")}
+                </DropdownMenuItem>
                 <DropdownMenuItem
                   onClick={() =>
                     window.dispatchEvent(

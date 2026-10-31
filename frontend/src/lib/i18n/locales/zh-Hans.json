@@ -195,7 +195,10 @@
     "count_one": "{{count}} 条消息",
     "count_other": "{{count}} 条消息",
     "announcement": "{{author}} 的新消息：“{{excerpt}}”",
-    "announcementAuthor": "{{author}} 的新消息"
+    "announcementAuthor": "{{author}} 的新消息",
+    "copyRaw": "复制原文",
+    "copied": "已复制原文",
+    "copyFailed": "无法复制原文"
   },
   "threads": {
     "title": "子线程",

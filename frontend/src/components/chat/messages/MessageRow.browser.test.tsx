@@ -1,6 +1,7 @@
 import "../../../styles.css";
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { toast } from "sonner";
 import { describe, expect, it, vi } from "vite-plus/test";
 
 import { LocaleProvider } from "../../i18n/LocaleProvider";
@@ -310,4 +311,46 @@ it("shows an app identity and opens its profile without treating it as a person"
   } finally {
     window.removeEventListener("zoo:open-app", opened);
   }
+});
+
+describe("copy original message", () => {
+  const raw = "  **太字** と [リンク](https://example.com/path?a=1)\n\n:smile: $[spin 原文]  ";
+  it.each([null, "thread-root"])(
+    "copies unformatted content from a read-only message with parent=%s",
+    async (parent_id) => {
+      const copy = vi.spyOn(navigator.clipboard, "writeText").mockResolvedValue();
+      const success = vi.spyOn(toast, "success").mockReturnValue("copy-success");
+      try {
+        renderRow(buildItem({ content: raw, parent_id }));
+        screen.getByRole("button", { name: "その他の操作" }).focus();
+        await userEvent.keyboard("{Enter}");
+        await userEvent.click(screen.getByRole("menuitem", { name: "原文をコピー" }));
+        await waitFor(() => expect(copy).toHaveBeenCalledWith(raw));
+        expect(copy).toHaveBeenCalledOnce();
+        await waitFor(() => expect(success).toHaveBeenCalledWith("原文をコピーしました"));
+      } finally {
+        copy.mockRestore();
+        success.mockRestore();
+      }
+    },
+  );
+  it("reports a denied clipboard write without reporting success", async () => {
+    const copy = vi
+      .spyOn(navigator.clipboard, "writeText")
+      .mockRejectedValue(new DOMException("Denied", "NotAllowedError"));
+    const error = vi.spyOn(toast, "error").mockReturnValue("copy-error");
+    const success = vi.spyOn(toast, "success").mockReturnValue("copy-success");
+    try {
+      renderRow(buildItem({ content: raw }));
+      screen.getByRole("button", { name: "その他の操作" }).focus();
+      await userEvent.keyboard("{Enter}");
+      await userEvent.click(screen.getByRole("menuitem", { name: "原文をコピー" }));
+      await waitFor(() => expect(error).toHaveBeenCalledWith("原文をコピーできませんでした"));
+      expect(success).not.toHaveBeenCalled();
+    } finally {
+      copy.mockRestore();
+      error.mockRestore();
+      success.mockRestore();
+    }
+  });
 });

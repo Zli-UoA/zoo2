@@ -156,7 +156,8 @@
         "LongMessage",
         "Card",
         "Mobile",
-        "AppMessage"
+        "AppMessage",
+        "CopyOriginalMenu"
       ]
     },
     {

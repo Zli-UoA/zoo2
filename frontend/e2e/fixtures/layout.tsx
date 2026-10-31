@@ -1,3 +1,4 @@
+import { rawCopyMessage } from "./message-content";
 import { useState } from "react";
 import { createRoot } from "react-dom/client";
 import { LocaleProvider } from "../../src/components/i18n/LocaleProvider";
@@ -14,7 +15,12 @@ function Layout() {
       user_id: "me",
       display_name: "Alice",
       parent_id: null,
-      content: i === 39 ? "Message 39" : `Message ${i}\n` + "Original line\n".repeat((i % 4) + 1),
+      content:
+        i === 37 && new URLSearchParams(window.location.search).has("raw-copy")
+          ? rawCopyMessage
+          : i === 39
+            ? "Message 39"
+            : `Message ${i}\n` + "Original line\n".repeat((i % 4) + 1),
       created_at: "2026-01-02 00:00:00.000",
     })),
   );

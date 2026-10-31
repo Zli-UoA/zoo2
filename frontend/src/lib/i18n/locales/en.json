@@ -195,7 +195,10 @@
     "count_one": "{{count}} message",
     "count_other": "{{count}} messages",
     "announcement": "New message from {{author}}: “{{excerpt}}”",
-    "announcementAuthor": "New message from {{author}}"
+    "announcementAuthor": "New message from {{author}}",
+    "copyRaw": "Copy original text",
+    "copied": "Original text copied",
+    "copyFailed": "Could not copy the original text"
   },
   "threads": {
     "title": "Thread",

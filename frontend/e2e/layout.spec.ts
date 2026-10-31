@@ -1,3 +1,4 @@
+import { rawCopyMessage } from "./fixtures/message-content";
 import { expect, test, type Page } from "@playwright/test";
 
 async function expectNoOverlap(page: Page) {
@@ -242,4 +243,17 @@ test("hover preserves a short grouped row and centers its timestamp", async ({
   const toolbar = row.locator("[data-message-toolbar]");
   await expect(toolbar.getByRole("button", { name: "More actions" })).toBeVisible();
   await expect(toolbar.getByRole("button", { name: "Edit", exact: true })).toBeVisible();
+});
+
+test("copies the original text from the upper-right message menu", async ({ page, context }) => {
+  await context.grantPermissions(["clipboard-read", "clipboard-write"]);
+  await page.goto("/e2e/fixtures/layout.html?raw-copy");
+  const row = page.locator('[data-index="37"]');
+  await expect(row).toBeVisible();
+  await expect(row).not.toContainText("**bold**");
+  const more = row.getByRole("button", { name: "More actions" });
+  await more.focus();
+  await more.click();
+  await page.getByRole("menuitem", { name: "Copy original text", exact: true }).click();
+  await expect.poll(() => page.evaluate(() => navigator.clipboard.readText())).toBe(rawCopyMessage);
 });

@@ -1,5 +1,5 @@
 import type { Meta, StoryObj } from "@storybook/react-vite";
-import { expect, fn, screen, userEvent } from "storybook/test";
+import { expect, fn, screen, userEvent, waitFor } from "storybook/test";
 import { StoryShell } from "../../../.storybook/shell";
 import { storyCollections } from "../../../.storybook/fixtures";
 import { CreateDmDialog } from "./CreateDmDialog";
@@ -24,7 +24,9 @@ export const Selected: Story = {
     const search = await screen.findByRole("combobox");
     await userEvent.type(search, "Bob");
     await userEvent.click(await screen.findByRole("option", { name: /Bob/ }));
-    await expect(screen.getByRole("button", { name: /Bob.*削除|Bob.*外す/ })).toBeVisible();
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: /Bob.*削除|Bob.*外す/ })).toBeVisible(),
+    );
   },
 };
 export const SearchEmpty: Story = {
