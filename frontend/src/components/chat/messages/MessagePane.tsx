@@ -6,6 +6,7 @@ import { toast } from "sonner";
 import { useChannelCommands } from "../../../hooks/useChannelCommands";
 import { useCurrentUser } from "../../../hooks/useCurrentUser";
 import { useKitchenCatalog } from "../../../hooks/useKitchenCatalog";
+import { useAttachmentUpload, useMessageAttachments } from "../../../hooks/useAttachments";
 import {
   useChannelMembers,
   useUsers,
@@ -14,6 +15,7 @@ import {
 } from "../../../hooks/useRealtime";
 import { useReplyCounts, useThreadFeed } from "../../../hooks/useThread";
 import { useWriteRunner } from "../../../hooks/useWriteRunner";
+import { groupAttachmentsByMessage } from "../../../lib/attachments";
 import { useCollections } from "../../../lib/electric/collections-context";
 import { expandWindowSince, messageWindowStart } from "../../../lib/electric/messageWindow";
 import type { MessageRow } from "../../../lib/electric/types";
@@ -117,6 +119,12 @@ export function MessagePane({
   const messagesQuery = useMessageFeed(channelId, { since });
   const feed = messagesQuery.data ?? [];
   const reactionsQuery = useMessageReactions(channelId);
+  const attachmentsQuery = useMessageAttachments(channelId);
+  const attachmentsByMessage = useMemo(
+    () => groupAttachmentsByMessage(attachmentsQuery.data ?? []),
+    [attachmentsQuery.data],
+  );
+  const uploadAttachment = useAttachmentUpload(channelId);
   const { currentUserId } = useCurrentUser();
   const commandSuggestions = useChannelCommands(channelId, currentUserId);
   const { isOnline } = useOfflineStatus();
@@ -337,21 +345,31 @@ export function MessagePane({
   );
 
   const handleSend = useCallback(
-    async (content: string, commandAppId?: string): Promise<boolean> => {
-      const commandResult = await runCommand(content, commandAppId);
-      if (commandResult !== null) return commandResult;
+    async (
+      content: string,
+      commandAppId?: string,
+      attachmentIds: string[] = [],
+    ): Promise<boolean> => {
+      if (attachmentIds.length === 0) {
+        const commandResult = await runCommand(content, commandAppId);
+        if (commandResult !== null) return commandResult;
+      }
       const id = crypto.randomUUID();
+      const metadata = attachmentIds.length > 0 ? { attachment_ids: attachmentIds } : undefined;
       await run(() =>
-        messagesCollection.insert({
-          id,
-          user_id: currentUserId ?? "",
-          channel_id: channelId,
-          content,
-          created_at: nowIso(),
-          updated_at: null,
-          deleted_at: null,
-          parent_id: null,
-        }),
+        messagesCollection.insert(
+          {
+            id,
+            user_id: currentUserId ?? "",
+            channel_id: channelId,
+            content,
+            created_at: nowIso(),
+            updated_at: null,
+            deleted_at: null,
+            parent_id: null,
+          },
+          metadata ? { metadata } : undefined,
+        ),
       );
       // `run` は失敗を握ってロールバックするため、確定後に楽観行が残っているかで
       // 成否を判定する（Composer が失敗時に下書きを復元できるようにする）。
@@ -361,29 +379,39 @@ export function MessagePane({
   );
 
   const handleSendReply = useCallback(
-    async (content: string, commandAppId?: string): Promise<boolean> => {
+    async (
+      content: string,
+      commandAppId?: string,
+      attachmentIds: string[] = [],
+    ): Promise<boolean> => {
       if (readOnly || !isMember) {
         toast.info(t("messages.joinToPostDescription"), { id: "thread-reply-join-required" });
         return false;
       }
-      const commandResult = await runCommand(content, commandAppId);
-      if (commandResult !== null) return commandResult;
+      if (attachmentIds.length === 0) {
+        const commandResult = await runCommand(content, commandAppId);
+        if (commandResult !== null) return commandResult;
+      }
       const rootId = threadRootId;
       if (!rootId) {
         return false;
       }
       const id = crypto.randomUUID();
+      const metadata = attachmentIds.length > 0 ? { attachment_ids: attachmentIds } : undefined;
       await run(() =>
-        messagesCollection.insert({
-          id,
-          user_id: currentUserId ?? "",
-          channel_id: channelId,
-          content,
-          created_at: nowIso(),
-          updated_at: null,
-          deleted_at: null,
-          parent_id: rootId,
-        }),
+        messagesCollection.insert(
+          {
+            id,
+            user_id: currentUserId ?? "",
+            channel_id: channelId,
+            content,
+            created_at: nowIso(),
+            updated_at: null,
+            deleted_at: null,
+            parent_id: rootId,
+          },
+          metadata ? { metadata } : undefined,
+        ),
       );
       return messagesCollection.get(id) !== undefined;
     },
@@ -486,6 +514,7 @@ export function MessagePane({
           onSaveEdit={handleSaveEdit}
           onRequestDelete={setPendingDeleteId}
           reactions={reactionGroups}
+          attachments={attachmentsByMessage}
           kitchenCatalog={catalog}
           canReact={
             !readOnly && !!currentUserId && !reactionsQuery.isLoading && !reactionsQuery.isError
@@ -512,6 +541,7 @@ export function MessagePane({
               mentionMemberIds={mentionMemberIds}
               key={channelId}
               onSend={handleSend}
+              onUploadAttachment={uploadAttachment}
               onTyping={typing.onTyping}
               disabled={readOnly || !isOnline}
               placeholder={isOnline ? undefined : t("offline.composeDisabled")}
@@ -546,6 +576,8 @@ export function MessagePane({
           currentUserId={readOnly ? null : currentUserId}
           canModerate={canModerate}
           reactions={reactionGroups}
+          attachments={attachmentsByMessage}
+          onUploadAttachment={uploadAttachment}
           kitchenCatalog={catalog}
           canReact={
             !readOnly && !!currentUserId && !reactionsQuery.isLoading && !reactionsQuery.isError

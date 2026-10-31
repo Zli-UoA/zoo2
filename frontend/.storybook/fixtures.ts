@@ -3,6 +3,7 @@ import { createCollection, localOnlyCollectionOptions } from "@tanstack/react-db
 import { DEFAULT_CONFIG, type AppConfig } from "../src/lib/config";
 import type { CollectionsBundle } from "../src/lib/electric/collections";
 import type {
+  AttachmentRow,
   ChannelRow,
   ChannelUserRow,
   MessageReactionRow,
@@ -19,6 +20,7 @@ export interface StoryCollectionsInput {
   messages?: MessageRow[];
   reactions?: MessageReactionRow[];
   notifications?: NotificationRow[];
+  attachments?: AttachmentRow[];
   config?: Partial<AppConfig>;
 }
 
@@ -87,6 +89,7 @@ export function createStoryCollections(input: StoryCollectionsInput = {}): Colle
     input.reactions ?? [],
     (row) => channelByMessage.get(row.message_id) ?? "",
   );
+  const attachmentsByChannel = groupBy(input.attachments ?? [], (row) => row.channel_id);
 
   const messageCache = new Map<string, ReturnType<typeof createStoryMessageCollection>>();
   for (const channel of input.channels ?? []) {
@@ -104,6 +107,16 @@ export function createStoryCollections(input: StoryCollectionsInput = {}): Colle
       reactionCache.set(
         channel.id,
         createStoryReactionCollection(reactionsByChannel.get(channel.id) ?? []),
+      );
+    }
+  }
+
+  const attachmentCache = new Map<string, ReturnType<typeof createStoryAttachmentCollection>>();
+  for (const channel of input.channels ?? []) {
+    if (!attachmentCache.has(channel.id)) {
+      attachmentCache.set(
+        channel.id,
+        createStoryAttachmentCollection(attachmentsByChannel.get(channel.id) ?? []),
       );
     }
   }
@@ -146,6 +159,14 @@ export function createStoryCollections(input: StoryCollectionsInput = {}): Colle
       }
       return collection as unknown as ReturnType<CollectionsBundle["reactions"]>;
     },
+    attachments: (channelId: string) => {
+      let collection = attachmentCache.get(channelId);
+      if (!collection) {
+        collection = createStoryAttachmentCollection([]);
+        attachmentCache.set(channelId, collection);
+      }
+      return collection as unknown as ReturnType<CollectionsBundle["attachments"]>;
+    },
   };
 
   return bundle as unknown as CollectionsBundle;
@@ -161,6 +182,10 @@ function createStoryReactionCollection(rows: MessageReactionRow[]) {
 
 function createStoryNotificationCollection(rows: NotificationRow[]) {
   return rowsCollection<NotificationRow>("notifications", (row) => row.id, rows);
+}
+
+function createStoryAttachmentCollection(rows: AttachmentRow[]) {
+  return rowsCollection<AttachmentRow>("attachments", (row) => row.id, rows);
 }
 
 export const DEFAULT_CURRENT_USER_ID = "user-alice";

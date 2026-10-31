@@ -6,7 +6,8 @@ export type TableName =
   | "messages"
   | "message_reactions"
   | "channel_user"
-  | "notifications";
+  | "notifications"
+  | "attachments";
 
 export type UserRow = {
   id: string;
@@ -75,6 +76,18 @@ export type NotificationRow = {
   created_at: TimestampString;
 };
 
+export type AttachmentRow = {
+  id: string;
+  message_id: string | null;
+  uploader_id: string;
+  channel_id: string;
+  file_name: string;
+  file_size: string | number;
+  content_type: string;
+  storage_key: string;
+  created_at: TimestampString;
+};
+
 export type TableRowMap = {
   notifications: NotificationRow;
   users: UserRow;
@@ -82,4 +95,5 @@ export type TableRowMap = {
   messages: MessageRow;
   message_reactions: MessageReactionRow;
   channel_user: ChannelUserRow;
+  attachments: AttachmentRow;
 };

@@ -114,6 +114,52 @@ export const CommandSuggestions: Story = {
     await expect(args.onSend).toHaveBeenCalledWith("/echo hello", "notes");
   },
 };
+function pasteImage(target: HTMLElement) {
+  const clipboardData = new DataTransfer();
+  clipboardData.items.add(
+    new File([new Uint8Array([1, 2, 3, 4])], "screenshot.png", { type: "image/png" }),
+  );
+  target.dispatchEvent(
+    new ClipboardEvent("paste", { clipboardData, bubbles: true, cancelable: true }),
+  );
+}
+
+export const WithAttachments: Story = {
+  parameters: { a11y: { test: "error" } },
+  args: {
+    onUploadAttachment: fn(async () => ({
+      id: "attachment-1",
+      file_name: "screenshot.png",
+      file_size: 4,
+      content_type: "image/png",
+    })),
+  },
+  play: async ({ canvasElement, args }) => {
+    const canvas = within(canvasElement);
+    pasteImage(canvas.getByRole("textbox"));
+    await expect(await canvas.findByRole("img", { name: "screenshot.png" })).toBeVisible();
+    await userEvent.click(canvas.getByRole("button", { name: "送信" }));
+    await expect(args.onSend).toHaveBeenCalledWith("", undefined, ["attachment-1"]);
+  },
+};
+
+export const AttachmentUploadError: Story = {
+  parameters: { a11y: { test: "error" } },
+  args: {
+    onUploadAttachment: fn(async () => {
+      throw new Error("upload failed");
+    }),
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    pasteImage(canvas.getByRole("textbox"));
+    await expect(await canvas.findByRole("alert")).toHaveTextContent(
+      "画像をアップロードできませんでした。",
+    );
+    await expect(canvas.queryByRole("img", { name: "screenshot.png" })).toBeNull();
+  },
+};
+
 export const ChannelInsertion: Story = {
   parameters: { a11y: { test: "error" } },
   globals: { viewport: { value: "mobile" } },

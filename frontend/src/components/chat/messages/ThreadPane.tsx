@@ -3,7 +3,9 @@ import { ArrowLeftIcon, XIcon } from "lucide-react";
 import { useEffect, useMemo, useRef } from "react";
 
 import type { CommandSuggestion } from "./composerSuggestions";
+import type { UploadedAttachment } from "../../../lib/api/attachments";
 import type { KitchenCatalog } from "../../../lib/emoji/kitchen";
+import type { AttachmentRow } from "../../../lib/electric/types";
 import type { ReactionGroup } from "../../../lib/emoji/reactions";
 import { Button } from "../../ui/button";
 
@@ -34,6 +36,7 @@ export interface ThreadPaneProps {
   canModerate?: boolean;
   readOnly?: boolean;
   reactions: Map<string, ReactionGroup[]>;
+  attachments?: Map<string, AttachmentRow[]>;
   kitchenCatalog: KitchenCatalog | null;
   canReact: boolean;
   onReaction: (messageId: string, emoji: string) => void;
@@ -45,7 +48,12 @@ export interface ThreadPaneProps {
   onCancelEdit: () => void;
   onSaveEdit: () => void;
   onRequestDelete: (id: string) => void;
-  onSendReply: (content: string, commandAppId?: string) => Promise<boolean>;
+  onUploadAttachment?: (file: File) => Promise<UploadedAttachment>;
+  onSendReply: (
+    content: string,
+    commandAppId?: string,
+    attachmentIds?: string[],
+  ) => Promise<boolean>;
   /** 上端付近で古い返信を読み足す。 */
   onLoadOlder?: () => void;
   /** 取得失敗時の再試行。 */
@@ -78,6 +86,7 @@ export function ThreadPane({
   canModerate = false,
   readOnly = false,
   reactions,
+  attachments,
   kitchenCatalog,
   canReact,
   onReaction,
@@ -89,6 +98,7 @@ export function ThreadPane({
   onCancelEdit,
   onSaveEdit,
   onRequestDelete,
+  onUploadAttachment,
   onSendReply,
   onLoadOlder,
   onRetry,
@@ -179,6 +189,7 @@ export function ThreadPane({
           onSaveEdit={onSaveEdit}
           onRequestDelete={() => onRequestDelete(root.id)}
           reactions={reactions.get(root.id) ?? []}
+          attachments={attachments?.get(root.id) ?? []}
           kitchenCatalog={kitchenCatalog}
           canReact={canReact}
           onReaction={(emoji) => onReaction(root.id, emoji)}
@@ -250,6 +261,7 @@ export function ThreadPane({
                   onSaveEdit={onSaveEdit}
                   onRequestDelete={() => onRequestDelete(item.message.id)}
                   reactions={reactions.get(item.message.id) ?? []}
+                  attachments={attachments?.get(item.message.id) ?? []}
                   kitchenCatalog={kitchenCatalog}
                   canReact={canReact}
                   onReaction={(emoji) => onReaction(item.message.id, emoji)}
@@ -272,6 +284,7 @@ export function ThreadPane({
             disabled={!isMember || isOffline}
             onTyping={onTyping}
             onSend={onSendReply}
+            onUploadAttachment={onUploadAttachment}
             placeholder={isOffline ? t("offline.composeDisabled") : t("threads.compose")}
             ariaLabel={t("threads.compose")}
           />

@@ -141,6 +141,20 @@ export const storybookApiHandlers = [
     });
   }),
   http.get("*/api/push/config", () => HttpResponse.json({ publicKey: null })),
+  http.get("*/api/attachments/:attachmentId/url", ({ params }) => {
+    const id = String(params.attachmentId);
+    const image = `data:image/svg+xml;charset=utf-8,${encodeURIComponent(kitchenPreview)}`;
+    return HttpResponse.json({
+      data: {
+        id,
+        download_url: image,
+        file_name: "screenshot.png",
+        file_size: 184_320,
+        content_type: "image/png",
+      },
+      txid: null,
+    });
+  }),
   http.get("https://www.gstatic.com/**", () =>
     HttpResponse.text(kitchenPreview, { headers: { "Content-Type": "image/svg+xml" } }),
   ),

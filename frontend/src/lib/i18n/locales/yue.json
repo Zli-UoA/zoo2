@@ -201,6 +201,21 @@
     "copyFailed": "複製唔到原文",
     "edited": "已編輯"
   },
+  "attachments": {
+    "add": "附加圖片",
+    "selected": "要附加嘅圖片",
+    "remove": "移除{{name}}",
+    "unsupported": "可以附加 PNG、JPEG、WebP 或 GIF 圖片。",
+    "tooLarge": "圖片大細唔可以超過 {{max}} MB。",
+    "tooMany": "最多可以附加 {{max}} 張圖片。",
+    "uploading": "正在上傳圖片…",
+    "uploadError": "上傳唔到圖片。",
+    "loading": "載入緊…",
+    "loadError": "載入唔到",
+    "open": "開啟{{name}}",
+    "download": "下載{{name}}",
+    "retry": "再試"
+  },
   "threads": {
     "title": "子討論",
     "close": "閂咗個子討論",

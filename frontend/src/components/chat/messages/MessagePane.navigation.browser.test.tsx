@@ -34,6 +34,7 @@ vi.mock("../../../lib/electric/collections-context", () => ({
   useCollections: () => ({
     messages: () => collection,
     reactions: () => collection,
+    attachments: () => collection,
     channelUsers: {},
     config: {},
   }),
@@ -60,6 +61,10 @@ vi.mock("../../../hooks/useRealtime", () => ({
     isLoading: false,
     isError: false,
   }),
+}));
+vi.mock("../../../hooks/useAttachments", () => ({
+  useMessageAttachments: () => ({ data: fixture.empty }),
+  useAttachmentUpload: () => vi.fn(),
 }));
 vi.mock("../../../hooks/useThread", () => ({
   useReplyCounts: () => new Map(),

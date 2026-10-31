@@ -135,7 +135,9 @@
         "Mobile",
         "ChannelSuggestions",
         "CommandSuggestions",
-        "ChannelInsertion"
+        "ChannelInsertion",
+        "WithAttachments",
+        "AttachmentUploadError"
       ]
     },
     {
@@ -183,7 +185,8 @@
         "Mobile",
         "AppMessage",
         "CopyOriginalMenu",
-        "Edited"
+        "Edited",
+        "WithAttachments"
       ]
     },
     {
@@ -516,6 +519,12 @@
     {
       "file": "src/components/chat/messages/MessageCard.tsx",
       "story": "src/components/chat/messages/MessageCard.stories.tsx"
+    },
+    {
+      "file": "src/components/chat/messages/MessageAttachments.tsx",
+      "story": "src/components/chat/messages/MessageRow.stories.tsx",
+      "composed": true,
+      "reason": "WithAttachmentsで画像とファイルの実表示・読み込み状態を確認する。"
     },
     {
       "file": "src/components/chat/messages/MessageList.tsx",
