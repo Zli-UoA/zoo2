@@ -89,7 +89,6 @@ export function ChannelSidebar({
         <CollapsibleSection
           title={t("channels.title")}
           icon={<HashIcon />}
-          count={sidebarLoading ? "…" : sidebarChannels.length}
           actions={
             <div className="flex items-center gap-0.5">
               <Button
