@@ -109,6 +109,30 @@ test("keyboard viewport resize and pan keep the composer visible and restore on 
   await expect(shell).toHaveCSS("height", `${fullHeight}px`);
 });
 
+test("keyboard is detected even when innerHeight shrinks with it (iOS Safari)", async ({
+  page,
+}) => {
+  await page.addInitScript(() => {
+    const viewport = new EventTarget();
+    Object.assign(viewport, { height: window.innerHeight, offsetTop: 0, scale: 1 });
+    Object.defineProperty(window, "visualViewport", { value: viewport });
+  });
+  await page.goto("/e2e/fixtures/layout.html");
+  const shell = page.getByTestId("shell");
+  await page.getByRole("textbox", { name: "Write a message" }).focus();
+  await page.evaluate(() => {
+    // iOS Safari ではキーボード表示で innerHeight も visualViewport と同じ高さに縮む。
+    Object.defineProperty(window, "innerHeight", { value: 380, configurable: true });
+    Object.assign(window.visualViewport!, { height: 380, offsetTop: 35 });
+    window.visualViewport!.dispatchEvent(new Event("resize"));
+    window.visualViewport!.dispatchEvent(new Event("scroll"));
+  });
+  await expect(shell).toHaveCSS("height", "380px");
+  await expect(shell).toHaveCSS("top", "35px");
+  const composer = await page.getByRole("textbox", { name: "Write a message" }).boundingBox();
+  expect(composer!.y + composer!.height).toBeLessThanOrEqual(415);
+});
+
 test("page bounce without keyboard does not move the shell", async ({ page }) => {
   await page.addInitScript(() => {
     // iOS のバウンスでは高さを変えずに offsetTop だけが動く。
