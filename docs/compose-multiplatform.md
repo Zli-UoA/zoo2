@@ -204,3 +204,7 @@ pnpm exec playwright test --config playwright.compose-storybook.config.ts
 Reactを変更する場合は同じPRでComposeの機能・表示・操作を反映し、両実装を検証します。
 main取り込み時は競合がない変更も照合します。翻訳・fixture・アイコンは共通の所有先を使い、
 Kotlinの描画を再生成してからカタログと操作テストを実行します。
+
+## Android ターゲット
+
+`-Pzoo.android=true` で同じ commonMain を Android から利用できます。起動・認証・端末 API は `androidApp`、expect/actual の実装は `src/androidMain` に置きます。ビルドと対応範囲は [Android 版](android.md) を参照してください。

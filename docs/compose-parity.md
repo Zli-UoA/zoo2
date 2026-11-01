@@ -74,3 +74,7 @@ UIの精度は「極端に違わなければ問題ない」という指定に従
 - その他のバケットの失敗内容は未確認。全380状態の登録検査の成功は、全状態の描画・操作成功を保証しない。
 
 これらは未解決として残し、対象機能を変更する際に該当Storyに絞って再現・修正する。
+
+## Android での共通実装
+
+Android 版は `ZooApp`・`Session`・`Repository` と既存の画面／状態／API を commonMain から直接使用します。React／Compose Web の画面・API・Story の契約は変更しません。プラットフォーム接続と Android 固有の未対応事項は [Android 版](android.md) に記載します。Android の追加だけを理由に Web の既存 Story を複製しません。
