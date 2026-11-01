@@ -621,6 +621,13 @@
       "public": "Zoo内のHome・ローカルタイムラインに表示します。外部には配送しません。",
       "unlisted": "ローカルタイムラインには載せず、自分のHomeに表示します。外部には配送しません。",
       "followers": "自分のHomeにのみ表示します。外部には配送しません。"
-    }
+    },
+    "userSearch": "ユーザーを検索",
+    "search": "検索",
+    "noUsers": "ユーザーが見つかりません",
+    "userDetails": "ユーザー詳細",
+    "joinedAt": "登録日: {{date}}",
+    "pullRefresh": "引っ張って更新",
+    "releaseRefresh": "離して更新"
   }
 }

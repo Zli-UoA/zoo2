@@ -18,7 +18,7 @@ import { useMediaQuery } from "../layout/useMediaQuery";
 import { Button } from "../ui/button";
 import { Textarea } from "../ui/textarea";
 import { Select } from "../ui/select";
-import { Dialog, DialogContent, DialogDescription, DialogTitle, DialogTrigger } from "../ui/dialog";
+import { Dialog, DialogContent, DialogTitle, DialogTrigger } from "../ui/dialog";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -224,7 +224,7 @@ export function HomeComposer({
               onChange={(e) => setContent(e.target.value)}
               disabled={sending}
               aria-label={t("home.compose")}
-              aria-describedby="home-post-description home-post-count"
+              aria-describedby="home-post-count"
               aria-invalid={length > 1000 || undefined}
               placeholder={t("home.placeholder")}
               className="min-h-40 flex-1 resize-none border-0 p-0 shadow-none focus-visible:ring-0 md:min-h-48"
@@ -260,13 +260,6 @@ export function HomeComposer({
                 {length} / 1000
               </span>
             </div>
-            <DialogDescription id="home-post-description" className="text-xs">
-              {t(
-                federated
-                  ? `home.audienceHint.${visibility}`
-                  : `home.localAudienceHint.${visibility}`,
-              )}
-            </DialogDescription>
             {failed ? (
               <p role="alert" className="text-sm text-destructive">
                 {t("home.sendError")}

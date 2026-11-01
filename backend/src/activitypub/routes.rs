@@ -42,6 +42,7 @@ pub fn router() -> Router<AppState> {
             get(follows).post(follow).delete(unfollow),
         )
         .route("/api/activitypub/status", get(status))
+        .route("/api/activitypub/search", get(search))
 }
 async fn local_user(state: &AppState, id: &str) -> Result<Value, AppError> {
     let mut db = state.db.clone();
@@ -228,4 +229,31 @@ async fn status(State(state): State<AppState>, user: AuthUser) -> Result<Json<Va
     Ok(Json(
         json!({"enabled":configured,"actor":if configured{Some(actor_id(&user.id)?)}else{None},"delivery":counts}),
     ))
+}
+
+#[derive(Deserialize)]
+struct Search {
+    q: String,
+}
+async fn search(
+    State(state): State<AppState>,
+    user: AuthUser,
+    Query(input): Query<Search>,
+) -> Result<Json<Vec<Value>>, AppError> {
+    let term = input.q.trim();
+    if term.is_empty() || term.len() > 2048 {
+        return Err(AppError::BadRequest("Invalid search".into()));
+    }
+    if term.starts_with("https://") || term.trim_start_matches('@').contains('@') {
+        base_url()?;
+        keys(&state, &user.id).await?;
+        let remote = resolve(&state, &user.id, term).await?;
+        return Ok(Json(vec![
+            json!({"id":remote["id"],"user_name":remote["user_name"],"display_name":remote["display_name"],"remote":true,"url":remote["id"]}),
+        ]));
+    }
+    let mut db = state.db.clone();
+    let mut tx = db.transaction().await?;
+    let rows = query(&mut tx, "SELECT json_build_object('id',id,'user_name',user_name,'display_name',display_name,'created_at',created_at,'remote',false)::text FROM users WHERE NOT is_bot AND (strpos(lower(user_name),lower($1))>0 OR strpos(lower(display_name),lower($1))>0) ORDER BY user_name LIMIT 30", &[term.trim_start_matches('@')]).await?;
+    Ok(Json(rows))
 }

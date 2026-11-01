@@ -432,7 +432,12 @@
         "DraftPreserved",
         "FederationToggle",
         "FederationUnavailable",
-        "Sending"
+        "Sending",
+        "UserSearch",
+        "Realtime",
+        "PullToRefresh",
+        "UserSearchEmpty",
+        "UserSearchError"
       ]
     }
   ],

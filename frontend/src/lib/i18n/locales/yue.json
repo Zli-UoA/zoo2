@@ -621,6 +621,13 @@
       "public": "喺 Zoo 首頁同本機時間線顯示，唔會傳送去其他伺服器。",
       "unlisted": "只喺自己嘅首頁顯示，唔會列入本機時間線，亦唔會傳送去其他伺服器。",
       "followers": "只喺自己嘅首頁顯示，唔會傳送去其他伺服器。"
-    }
+    },
+    "userSearch": "搜尋用戶",
+    "search": "搜尋",
+    "noUsers": "搵唔到用戶",
+    "userDetails": "用戶詳情",
+    "joinedAt": "加入日期：{{date}}",
+    "pullRefresh": "向下拉更新",
+    "releaseRefresh": "放手更新"
   }
 }

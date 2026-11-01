@@ -172,3 +172,112 @@ async fn public_posts_are_separate_and_owner_deleted() -> anyhow::Result<()> {
     }
     Ok(())
 }
+
+#[tokio::test]
+async fn live_updates_follow_committed_database_changes_and_require_authentication()
+-> anyhow::Result<()> {
+    use futures_util::{SinkExt, StreamExt};
+    use std::time::Duration;
+    use tokio_tungstenite::tungstenite::Message;
+    let mut config = Config::from_env();
+    config.dev_auth_enabled = true;
+    let mut db = init_db(&config.database_url).await?;
+    let alice = uuid::Uuid::new_v4().to_string();
+    toasty::sql::statement(
+        "INSERT INTO users (id,user_name,display_name) VALUES ($1,$1,'Live profile')",
+    )
+    .bind(alice.as_str())
+    .exec(&mut db)
+    .await?;
+    let state = AppState::new(db.clone(), config.clone());
+    let app = create_router(state);
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+    let address = listener.local_addr()?;
+    let served = app.clone();
+    let server = tokio::spawn(async move { axum::serve(listener, served).await.unwrap() });
+    let (mut socket, _) =
+        tokio_tungstenite::connect_async(format!("ws://{address}/api/home/live")).await?;
+    socket
+        .send(Message::Text(
+            json!({"x-dev-user":alice}).to_string().into(),
+        ))
+        .await?;
+    // First snapshot request, then listener-ready snapshot: closes the LISTEN startup race.
+    for _ in 0..2 {
+        tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                let frame = socket.next().await.unwrap().unwrap();
+                if let Message::Text(text) = frame {
+                    assert_eq!(text, "refresh");
+                    break;
+                }
+                socket.flush().await.unwrap();
+            }
+        })
+        .await?;
+    }
+    let post = uuid::Uuid::new_v4().to_string();
+    for sql in [
+        "INSERT INTO home_posts(id,user_id,content) VALUES($1,$2,'private contents stay out of the socket')",
+        "UPDATE home_posts SET content='edited' WHERE id=$1 AND user_id=$2",
+        "DELETE FROM home_posts WHERE id=$1 AND user_id=$2",
+    ] {
+        // Write through a separate DB connection, as another backend or an inbox worker would.
+        let (external, connection) =
+            tokio_postgres::connect(&config.database_url, tokio_postgres::NoTls).await?;
+        let driver = tokio::spawn(connection);
+        external.execute(sql, &[&post, &alice]).await?;
+        tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                let frame = socket.next().await.unwrap().unwrap();
+                if let Message::Text(text) = frame {
+                    assert_eq!(text, "refresh");
+                    break;
+                }
+                socket.flush().await.unwrap();
+            }
+        })
+        .await?;
+        driver.abort();
+    }
+    let (status, users) = request(
+        &app,
+        "GET",
+        Some(&alice),
+        &format!("/api/activitypub/search?q={alice}"),
+        None,
+    )
+    .await?;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(users[0]["display_name"], "Live profile");
+    assert!(users[0].get("public_key").is_none());
+    assert_eq!(users[0]["remote"], false);
+    socket.close(None).await?;
+    server.abort();
+
+    config.dev_auth_enabled = false;
+    config.oidc = None;
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+    let address = listener.local_addr()?;
+    let denied_app = create_router(AppState::new(db.clone(), config));
+    let server = tokio::spawn(async move { axum::serve(listener, denied_app).await.unwrap() });
+    let (mut socket, _) =
+        tokio_tungstenite::connect_async(format!("ws://{address}/api/home/live")).await?;
+    socket
+        .send(Message::Text(
+            json!({"x-dev-user":alice}).to_string().into(),
+        ))
+        .await?;
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while let Some(Ok(frame)) = socket.next().await {
+            assert!(!frame.is_text(), "unauthenticated socket received an event");
+        }
+    })
+    .await?;
+    server.abort();
+    toasty::sql::statement("DELETE FROM users WHERE id=$1")
+        .bind(alice)
+        .exec(&mut db)
+        .await?;
+    Ok(())
+}

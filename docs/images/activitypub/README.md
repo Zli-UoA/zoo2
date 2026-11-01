@@ -7,6 +7,9 @@ Storybookの架空データで撮影したサンプルです。実サービス�
 | [home-timeline.png](home-timeline.png) | Homeと右下の投稿ボタン | 1200 × 900 |
 | [composer-desktop.png](composer-desktop.png) | PCの投稿ダイアログ | 1200 × 900 |
 | [composer-mobile.png](composer-mobile.png) | スマホの全画面投稿フォーム | 390 × 844 |
+| [user-search.png](user-search.png) | ユーザー検索後の詳細表示 | 1100 × 800 |
 | [composer-dark.png](composer-dark.png) | ダークテーマの投稿ダイアログ | 1100 × 800 |
 
 `Pages/Shell` の `Home` / `DarkHome` を開き、右下の投稿ボタンからフォームを表示しています。公開範囲・連合・投稿の順に右上のアイコンが並びます。
+
+`Pages/Home` の `UserSearch` では、右上の人＋虫眼鏡から検索し、ユーザー詳細を表示しています。投稿フォームの下部には説明文を表示しません。

@@ -476,6 +476,22 @@ async fn signed_federation_follow_create_update_delete_replay() -> anyhow::Resul
     let key = PKey::from_rsa(Rsa::generate(2048)?)?;
     let pem = String::from_utf8(key.public_key_to_pem()?)?;
     toasty::sql::statement("INSERT INTO apub_actors(id,inbox,followers_url,user_name,display_name,key_id,public_key) VALUES($1,$2,$3,'remote','Remote',$4,$5)").bind(remote.as_str()).bind(format!("{remote}/inbox")).bind(format!("{remote}/followers")).bind(key_id.as_str()).bind(pem).exec(&mut db).await?;
+    let encoded =
+        percent_encoding::utf8_percent_encode(&remote, percent_encoding::NON_ALPHANUMERIC);
+    let (status, found) = request(
+        &app,
+        "GET",
+        Some(&alice),
+        &format!("/api/activitypub/search?q={encoded}"),
+        None,
+    )
+    .await?;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(found[0]["id"], remote);
+    assert_eq!(found[0]["display_name"], "Remote");
+    assert_eq!(found[0]["remote"], true);
+    assert!(found[0].get("public_key").is_none());
+    assert!(found[0].get("inbox").is_none());
     let local = format!("https://zoo.example.com/api/activitypub/users/{alice}");
     let activity = |kind: &str, object: Value| json!({"@context":"https://www.w3.org/ns/activitystreams","id":format!("{remote}/activities/{}",uuid::Uuid::new_v4()),"actor":remote,"type":kind,"object":object});
     let follow = activity("Follow", json!(local));

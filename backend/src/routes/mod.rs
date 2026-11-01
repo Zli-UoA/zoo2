@@ -5,6 +5,7 @@ pub mod channels;
 pub mod dms;
 pub mod health;
 pub mod home;
+pub mod home_live;
 pub mod messages;
 pub mod notifications;
 pub mod push;

@@ -621,6 +621,13 @@
       "public": "Visible on Zoo Home and the local timeline. Not delivered to other servers.",
       "unlisted": "Visible on your Home, excluded from the local timeline. Not delivered to other servers.",
       "followers": "Visible only on your Home. Not delivered to other servers."
-    }
+    },
+    "userSearch": "Search users",
+    "search": "Search",
+    "noUsers": "No users found",
+    "userDetails": "User details",
+    "joinedAt": "Joined: {{date}}",
+    "pullRefresh": "Pull to refresh",
+    "releaseRefresh": "Release to refresh"
   }
 }

@@ -621,6 +621,13 @@
       "public": "在 Zoo 首页和本地时间线显示，不发送到其他服务器。",
       "unlisted": "仅在自己的首页显示，不列入本地时间线，也不发送到其他服务器。",
       "followers": "仅在自己的首页显示，不发送到其他服务器。"
-    }
+    },
+    "userSearch": "搜索用户",
+    "search": "搜索",
+    "noUsers": "未找到用户",
+    "userDetails": "用户详情",
+    "joinedAt": "加入日期：{{date}}",
+    "pullRefresh": "下拉刷新",
+    "releaseRefresh": "松开刷新"
   }
 }

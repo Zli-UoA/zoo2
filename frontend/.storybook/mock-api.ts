@@ -1,4 +1,4 @@
-import { http, HttpResponse } from "msw";
+import { http, HttpResponse, ws } from "msw";
 
 // Emoji Kitchen のプレビューとして使う、猫耳付きのスマイリー。
 const kitchenPreview = `<svg xmlns="http://www.w3.org/2000/svg" width="72" height="72" viewBox="0 0 72 72">
@@ -81,6 +81,7 @@ const notificationContexts: Record<string, NotificationContextFixture> = {
 };
 
 export const storybookApiHandlers = [
+  ws.link("*/api/home/live").addEventListener("connection", () => {}),
   http.get("*/api/activitypub/status", () =>
     HttpResponse.json({
       enabled: true,

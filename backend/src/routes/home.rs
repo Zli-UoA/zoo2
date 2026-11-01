@@ -18,6 +18,7 @@ use serde_json::{Value, json};
 struct Page {
     before: Option<String>,
     timeline: Option<String>,
+    limit: Option<usize>,
 }
 #[derive(Deserialize)]
 struct NewPost {
@@ -42,6 +43,7 @@ struct Settings {
 pub fn router() -> Router<AppState> {
     Router::new()
         .route("/api/home", get(list).post(create))
+        .route("/api/home/live", get(super::home_live::upgrade))
         .route("/api/home/settings", get(settings).put(update_settings))
         .route("/api/home/{id}", patch(edit).delete(delete))
 }
@@ -182,8 +184,8 @@ async fn list(
       WHERE $3='home' AND p.deleted_at IS NULL AND NOT a.blocked
         AND EXISTS(SELECT 1 FROM apub_remote_recipients WHERE post_id=p.id AND user_id=$1)
         AND EXISTS(SELECT 1 FROM apub_follows WHERE user_id=$1 AND actor_id=p.actor_id AND direction='outgoing' AND accepted)
-    ) SELECT row_to_json(f)::text FROM feed f WHERE ($2='' OR (created_at,id)<(SELECT created_at,id FROM feed WHERE id=$2)) ORDER BY created_at DESC,id DESC LIMIT 50"#,
-    &[&user.id,page.before.as_deref().unwrap_or(""),timeline,if guest{"true"}else{"false"}]).await?;
+    ) SELECT row_to_json(f)::text FROM feed f WHERE ($2='' OR (created_at,id)<(SELECT created_at,id FROM feed WHERE id=$2)) ORDER BY created_at DESC,id DESC LIMIT $5::integer"#,
+    &[&user.id,page.before.as_deref().unwrap_or(""),timeline,if guest{"true"}else{"false"}, &page.limit.unwrap_or(50).clamp(1, 500).to_string()]).await?;
     Ok(Json(rows))
 }
 async fn settings(State(state): State<AppState>, user: AuthUser) -> Result<Json<Value>, AppError> {
