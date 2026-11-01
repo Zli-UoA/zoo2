@@ -2,6 +2,8 @@ import type { Meta, StoryObj } from "@storybook/react-vite";
 import { expect, fn, screen, userEvent, waitFor, within } from "storybook/test";
 
 import { StoryShell } from "../../../../.storybook/shell";
+import { storyUsers } from "../../../../.storybook/fixtures";
+import { reactionUserLabel } from "../../../lib/emoji/reactions";
 import type { AttachmentRow } from "../../../lib/electric/types";
 import { MessageRow } from "./MessageRow";
 import type { MessageItem } from "./messageGrouping";
@@ -27,6 +29,10 @@ const longContent = Array.from(
   (_, index) =>
     `${index + 1}. リリース手順の確認項目です。担当者と期限を確認してから次へ進んでください。`,
 ).join("\n");
+const reactionUsers = Object.fromEntries(
+  storyUsers.map((user) => [user.id, reactionUserLabel(user)]),
+);
+const reactionIds = storyUsers.slice(0, 3).map((user) => user.id);
 
 const meta = {
   title: "Features/Chat/MessageRow",
@@ -94,10 +100,63 @@ export const WithReactions: Story = {
     replyCount: 4,
     onOpenThread: fn(),
     reactions: [
-      { emoji: "👍", count: 3, ownId: "reaction-1" },
-      { emoji: "🎉", count: 1, ownId: null },
-      { emoji: "kitchen:1f431_1f600", count: 2, ownId: null },
+      {
+        emoji: "👍",
+        count: 3,
+        ownId: "reaction-1",
+        userIds: reactionIds,
+        userNames: reactionUsers,
+      },
+      {
+        emoji: "🎉",
+        count: 1,
+        ownId: null,
+        userIds: reactionIds.slice(0, 1),
+        userNames: reactionUsers,
+      },
+      {
+        emoji: "kitchen:1f431_1f600",
+        count: 2,
+        ownId: null,
+        userIds: reactionIds.slice(0, 2),
+        userNames: reactionUsers,
+      },
     ],
+  },
+};
+
+export const ReactionUsers: Story = {
+  globals: { viewport: { value: "mobile" } },
+  parameters: { a11y: { test: "error" } },
+  args: {
+    reactions: [
+      {
+        emoji: "👍",
+        count: 2,
+        ownId: null,
+        userIds: ["long", "user-bob"],
+        userNames: { ...reactionUsers, long: `${"A".repeat(80)} (@longname)` },
+      },
+    ],
+  },
+  play: async ({ canvasElement }) => {
+    await userEvent.click(
+      within(canvasElement).getByRole("button", { name: "👍 にリアクションしたユーザーを表示" }),
+    );
+    const dialog = await screen.findByRole("dialog");
+    await waitFor(() => expect(within(dialog).getByText(/@longname/)).toBeVisible());
+    await waitFor(() => expect(within(dialog).getByText(/@bob/)).toBeVisible());
+  },
+};
+
+export const ReactionUsersHover: Story = {
+  parameters: { a11y: { test: "error" } },
+  args: WithReactions.args,
+  play: async ({ canvasElement }) => {
+    const chip = within(canvasElement).getByRole("button", { name: /👍 3 件/ });
+    await userEvent.hover(chip);
+    const tooltip = await screen.findByRole("tooltip");
+    await expect(tooltip).toHaveTextContent("@alice");
   },
 };
 
@@ -211,7 +270,15 @@ export const Mobile: Story = {
     isOwn: true,
     replyCount: 2,
     onOpenThread: fn(),
-    reactions: [{ emoji: "👍", count: 2, ownId: "reaction-1" }],
+    reactions: [
+      {
+        emoji: "👍",
+        count: 2,
+        ownId: "reaction-1",
+        userIds: reactionIds.slice(0, 2),
+        userNames: reactionUsers,
+      },
+    ],
   },
 };
 
@@ -289,5 +356,33 @@ export const Edited: Story = {
       "href",
       "https://example.com/guide",
     );
+  },
+};
+
+export const ActivityPubPublic: Story = {
+  parameters: { a11y: { test: "error" } },
+  args: { item: { ...item, message: { ...item.message, apub: true, apub_visibility: "public" } } },
+  play: async ({ canvasElement }) => {
+    await expect(within(canvasElement).getByRole("img", { name: "ActivityPub" })).toBeVisible();
+    await expect(within(canvasElement).getByText("パブリック", { exact: true })).toBeVisible();
+  },
+};
+export const ActivityPubUnlisted: Story = {
+  ...ActivityPubPublic,
+  args: {
+    item: { ...item, message: { ...item.message, apub: true, apub_visibility: "unlisted" } },
+  },
+  play: async ({ canvasElement }) => {
+    await expect(within(canvasElement).getByText("ホーム", { exact: true })).toBeVisible();
+  },
+};
+export const ActivityPubGrouped: Story = {
+  ...ActivityPubPublic,
+  args: {
+    item: {
+      ...item,
+      isGroupStart: false,
+      message: { ...item.message, apub: true, apub_visibility: "public" },
+    },
   },
 };

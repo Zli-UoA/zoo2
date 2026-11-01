@@ -7,6 +7,7 @@ import { cn } from "cn";
 import {
   ActivityIcon,
   HashIcon,
+  HomeIcon,
   LogOutIcon,
   MessageCircleMoreIcon,
   type LucideIcon,
@@ -32,7 +33,7 @@ function RailLink({
   label,
   exact = false,
 }: {
-  to: "/" | "/bubble" | "/realtime";
+  to: "/home" | "/" | "/bubble" | "/realtime";
   icon: LucideIcon;
   label: string;
   exact?: boolean;
@@ -98,6 +99,7 @@ export function LeftRail() {
       <PaneHeader className="mb-1 w-full justify-center px-0">
         <img src="/icons/zoo.svg" alt="Zoo" width={36} height={36} className="size-9 rounded-xl" />
       </PaneHeader>
+      <RailLink to="/home" icon={HomeIcon} label={t("home.title")} exact />
       <RailLink to="/" icon={HashIcon} label={t("channels.title")} exact />
       <NotificationsButton />
       <RailLink to="/bubble" icon={MessageCircleMoreIcon} label={t("bubbleChat.title")} exact />

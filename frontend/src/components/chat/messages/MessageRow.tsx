@@ -1,3 +1,4 @@
+import { ActivityPubBadge } from "../../home/ActivityPubBadge";
 import { useEffect, useId, useRef, useState } from "react";
 import { MessageCard, parseMessageCards } from "./MessageCard";
 import { useTranslation } from "react-i18next";
@@ -12,6 +13,7 @@ import {
   PencilIcon,
   SmilePlusIcon,
   TrashIcon,
+  UsersRoundIcon,
 } from "lucide-react";
 import { MfmContent } from "./MfmContent";
 import { LinkPreviews } from "./LinkPreviews.tsx";
@@ -32,6 +34,7 @@ import {
 } from "../../ui/dropdown-menu";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "../../ui/tooltip";
 import { Textarea } from "../../ui/textarea";
+import { Dialog, DialogContent, DialogTitle } from "../../ui/dialog";
 import { normalizeUtcTimestamp } from "../../../lib/timestamps";
 import { authorLabel, formatDateSeparator, formatTime, fullTimestamp } from "./messageFormat";
 import type { MessageItem } from "./messageGrouping";
@@ -193,6 +196,23 @@ export function MessageRow({
   }
 
   const [menuOpen, setMenuOpen] = useState(false);
+  const [reactionUsersKey, setReactionUsersKey] = useState<string | null>(null);
+  const selectedReaction = reactions.find(
+    (reaction) => reactionKey(reaction.emoji) === reactionUsersKey,
+  );
+  useEffect(() => {
+    if (reactionUsersKey !== null && !selectedReaction) setReactionUsersKey(null);
+  }, [reactionUsersKey, selectedReaction]);
+  function reactionUserLabels(reaction: ReactionGroup): string[] {
+    const ids = reaction.userIds ?? [];
+    const labels = ids.flatMap((id) => (reaction.userNames?.[id] ? [reaction.userNames[id]] : []));
+    if (ids.some((id) => !reaction.userNames?.[id])) {
+      labels.push(
+        t(reaction.usersLoading ? "reactions.usersLoading" : "reactions.userUnavailable"),
+      );
+    }
+    return labels;
+  }
   const hold = useRef<ReturnType<typeof setTimeout> | null>(null);
   const longPressed = useRef(false);
   const origin = useRef({ x: 0, y: 0 });
@@ -289,9 +309,9 @@ export function MessageRow({
         )}
 
         <div className="min-w-0 flex-1">
-          {item.isGroupStart ? (
-            <div className="flex items-baseline gap-2">
-              <AuthorIdentity message={message} />
+          {item.isGroupStart || message.apub ? (
+            <div className="flex flex-wrap items-baseline gap-2">
+              {item.isGroupStart ? <AuthorIdentity message={message} /> : null}
               <time
                 className="shrink-0 text-[11px] text-muted-foreground tabular-nums"
                 dateTime={normalizeUtcTimestamp(message.created_at)}
@@ -299,6 +319,9 @@ export function MessageRow({
               >
                 {formatTime(message.created_at, locale)}
               </time>
+              {message.apub ? (
+                <ActivityPubBadge visibility={message.apub_visibility ?? "public"} />
+              ) : null}
             </div>
           ) : null}
 
@@ -362,33 +385,60 @@ export function MessageRow({
                   aria-label={t("reactions.groupLabel")}
                 >
                   {reactions.map((reaction) => (
-                    <button
-                      key={reactionKey(reaction.emoji)}
-                      type="button"
-                      className={cn(
-                        "inline-flex min-h-8 items-center gap-1 rounded-full border px-2 text-xs transition-colors hover:bg-muted disabled:opacity-50",
-                        reaction.ownId &&
-                          "border-brand/40 bg-brand-muted text-brand-muted-foreground",
-                      )}
-                      aria-pressed={!!reaction.ownId}
-                      disabled={!canReact}
-                      aria-label={
-                        reaction.ownId
-                          ? t("reactions.chipMine", {
-                              emoji: kitchenLabel(reaction.emoji),
-                              count: reaction.count,
-                            })
-                          : t("reactions.chip", {
-                              emoji: kitchenLabel(reaction.emoji),
-                              count: reaction.count,
-                            })
-                      }
-                      title={kitchenLabel(reaction.emoji)}
-                      onClick={() => onReaction(reaction.emoji)}
-                    >
-                      <ReactionEmoji emoji={reaction.emoji} catalog={kitchenCatalog} />
-                      <span className="tabular-nums">{reaction.count}</span>
-                    </button>
+                    <div key={reactionKey(reaction.emoji)} className="inline-flex items-center">
+                      <TooltipProvider>
+                        <Tooltip>
+                          <TooltipTrigger
+                            render={
+                              <button
+                                type="button"
+                                className={cn(
+                                  "inline-flex min-h-8 items-center gap-1 rounded-full border px-2 text-xs transition-colors hover:bg-muted aria-disabled:opacity-50",
+                                  reaction.ownId &&
+                                    "border-brand/40 bg-brand-muted text-brand-muted-foreground",
+                                )}
+                                aria-pressed={!!reaction.ownId}
+                                aria-disabled={!canReact}
+                                aria-label={
+                                  reaction.ownId
+                                    ? t("reactions.chipMine", {
+                                        emoji: kitchenLabel(reaction.emoji),
+                                        count: reaction.count,
+                                      })
+                                    : t("reactions.chip", {
+                                        emoji: kitchenLabel(reaction.emoji),
+                                        count: reaction.count,
+                                      })
+                                }
+                                onClick={() => {
+                                  if (canReact) onReaction(reaction.emoji);
+                                }}
+                              />
+                            }
+                          >
+                            <ReactionEmoji emoji={reaction.emoji} catalog={kitchenCatalog} />
+                            <span className="tabular-nums">{reaction.count}</span>
+                          </TooltipTrigger>
+                          <TooltipContent
+                            role="tooltip"
+                            className="hidden md:flex max-h-64 max-w-xs overflow-y-auto [overflow-wrap:anywhere]"
+                          >
+                            <span>{reactionUserLabels(reaction).join(", ")}</span>
+                          </TooltipContent>
+                        </Tooltip>
+                      </TooltipProvider>
+                      <button
+                        type="button"
+                        className="inline-flex size-10 items-center justify-center rounded-full text-muted-foreground hover:bg-muted focus-visible:ring-2 focus-visible:ring-ring md:sr-only md:focus-visible:not-sr-only md:focus-visible:size-10 md:[@media(hover:none)]:not-sr-only md:[@media(hover:none)]:size-10 md:[@media(any-pointer:coarse)]:not-sr-only md:[@media(any-pointer:coarse)]:size-10"
+                        aria-label={t("reactions.showUsers", {
+                          emoji: kitchenLabel(reaction.emoji),
+                        })}
+                        title={t("reactions.showUsers", { emoji: kitchenLabel(reaction.emoji) })}
+                        onClick={() => setReactionUsersKey(reactionKey(reaction.emoji))}
+                      >
+                        <UsersRoundIcon className="size-4" aria-hidden="true" />
+                      </button>
+                    </div>
                   ))}
                   <Button
                     variant="ghost"
@@ -509,6 +559,27 @@ export function MessageRow({
           </div>
         ) : null}
       </div>
+      <Dialog
+        open={reactionUsersKey !== null && !!selectedReaction}
+        onOpenChange={(open) => {
+          if (!open) setReactionUsersKey(null);
+        }}
+      >
+        <DialogContent>
+          <DialogTitle>
+            {t("reactions.usersTitle", {
+              emoji: selectedReaction ? kitchenLabel(selectedReaction.emoji) : "",
+            })}
+          </DialogTitle>
+          <ul className="space-y-2" aria-live="polite">
+            {(selectedReaction ? reactionUserLabels(selectedReaction) : []).map((label, index) => (
+              <li key={index} className="[overflow-wrap:anywhere]">
+                {label}
+              </li>
+            ))}
+          </ul>
+        </DialogContent>
+      </Dialog>
     </>
   );
 }

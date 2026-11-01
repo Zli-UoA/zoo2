@@ -1,3 +1,4 @@
+pub mod activitypub;
 pub mod apps;
 pub mod auth;
 pub mod cards;

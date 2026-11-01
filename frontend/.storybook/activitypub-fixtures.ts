@@ -1,0 +1,62 @@
+import type { ActivityPubNotification } from "../src/hooks/useActivityPubNotifications";
+export const activityPubNotifications: ActivityPubNotification[] = [
+  {
+    id: "request-peer",
+    actor_id: "https://social.example/users/bob",
+    display_name: "Bob",
+    kind: "follow_request",
+    activity_id: "https://social.example/follows/1",
+    post_id: null,
+    content: null,
+    is_read: false,
+    created_at: "2026-11-01T10:00:00Z",
+    pending: true,
+  },
+  {
+    id: "accepted-peer",
+    actor_id: "https://social.example/users/carol",
+    display_name: "Carol",
+    kind: "follow_accepted",
+    activity_id: "https://social.example/accepts/1",
+    post_id: null,
+    content: null,
+    is_read: false,
+    created_at: "2026-11-01T09:00:00Z",
+    pending: false,
+  },
+  {
+    id: "like-peer",
+    actor_id: "https://social.example/users/dave",
+    display_name: "Dave",
+    kind: "like",
+    activity_id: "https://social.example/likes/1",
+    post_id: "home-post",
+    content: "週末の開発メモです。",
+    is_read: false,
+    created_at: "2026-11-01T08:00:00Z",
+    pending: false,
+  },
+];
+
+export const blobcat = {
+  name: ":blobcat:",
+  url: "https://misskey.example/emoji/blobcat.png",
+  id: "https://misskey.example/emojis/blobcat",
+  image_id: "a".repeat(64),
+};
+export const misskeyPost = {
+  id: "https://misskey.example/notes/note1",
+  user_id: "https://misskey.example/users/alice",
+  user_name: "alice@misskey.example",
+  display_name: "Alice :blobcat:",
+  content: "Misskeyからこんにちは :blobcat:",
+  created_at: "2026-11-01T10:00:00Z",
+  apub: true,
+  visibility: "public",
+  remote: true,
+  url: "https://misskey.example/notes/note1",
+  emojis: [blobcat],
+  actor_emojis: [blobcat],
+  likes: 2,
+  reactions: [{ reaction: ":blobcat:", emoji: blobcat, count: 2, selected: false }],
+};

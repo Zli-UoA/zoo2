@@ -1,6 +1,7 @@
+import { activityPubNotifications } from "../../../.storybook/activitypub-fixtures";
 import type { Decorator, Meta, StoryObj } from "@storybook/react-vite";
-import { expect, screen, waitFor, within } from "storybook/test";
-import { delay, http, HttpResponse } from "msw";
+import { expect, screen, userEvent, waitFor, within } from "storybook/test";
+import { delay, http, HttpResponse, ws } from "msw";
 import { useLayoutEffect, type ReactNode } from "react";
 
 import { StoryShell } from "../../../.storybook/shell";
@@ -255,5 +256,187 @@ export const LoadingOnScroll: Story = {
     scrollRoot.scrollTop = 0;
     await waitFor(() => expect(screen.queryByRole("status")).not.toBeInTheDocument());
     await expect(screen.getByText("本文 scroll-0")).toBeVisible();
+  },
+};
+
+let apubItems = structuredClone(activityPubNotifications);
+const apubHandlers = [
+  http.get("*/api/activitypub/notifications", () =>
+    HttpResponse.json({
+      items: apubItems,
+      unread_count: apubItems.filter((item) => !item.is_read).length,
+    }),
+  ),
+  http.post("*/api/activitypub/follows/respond", async ({ request }) => {
+    const body = (await request.json()) as { actor: string; activity_id: string; accept: boolean };
+    await expect(body.actor).toBe(activityPubNotifications[0].actor_id);
+    await expect(body.activity_id).toBe(activityPubNotifications[0].activity_id);
+    apubItems = apubItems.map((item) =>
+      item.activity_id === body.activity_id ? { ...item, pending: false, is_read: true } : item,
+    );
+    return HttpResponse.json({ ok: true });
+  }),
+  http.post("*/api/activitypub/notifications/read", async ({ request }) => {
+    const body = (await request.json()) as { id?: string };
+    apubItems = apubItems.map((item) =>
+      !body.id || item.id === body.id ? { ...item, is_read: true } : item,
+    );
+    return HttpResponse.json({ ok: true });
+  }),
+];
+export const FollowRequests: Story = {
+  beforeEach: () => {
+    apubItems = structuredClone(activityPubNotifications);
+  },
+  parameters: {
+    collections: { ...storyCollections, notifications: [] },
+    msw: { handlers: apubHandlers },
+  },
+  play: async () => {
+    const panel = within(await screen.findByRole("region", { name: "ホームの通知" }));
+    await expect(await panel.findByText(/フォロー申請が届きました/)).toBeVisible();
+    await expect(panel.getByRole("button", { name: "承認" })).toBeVisible();
+    await expect(panel.getByRole("button", { name: "拒否" })).toBeVisible();
+    await expect(panel.getByText(/フォローが承認されました/)).toBeVisible();
+    await expect(panel.getByText(/投稿にリアクションしました/)).toBeVisible();
+  },
+};
+export const ApproveFollow: Story = {
+  ...FollowRequests,
+  play: async () => {
+    const panel = within(await screen.findByRole("region", { name: "ホームの通知" }));
+    await userEvent.click(await panel.findByRole("button", { name: "承認" }));
+    await waitFor(() =>
+      expect(panel.queryByRole("button", { name: "承認" })).not.toBeInTheDocument(),
+    );
+    await expect(apubItems[0].is_read).toBe(true);
+    await userEvent.click(panel.getByRole("button", { name: "すべて既読にする" }));
+    await waitFor(() =>
+      expect(panel.queryByRole("button", { name: "すべて既読にする" })).not.toBeInTheDocument(),
+    );
+  },
+};
+export const RejectFollow: Story = {
+  ...FollowRequests,
+  play: async () => {
+    const panel = within(await screen.findByRole("region", { name: "ホームの通知" }));
+    await userEvent.click(await panel.findByRole("button", { name: "拒否" }));
+    await waitFor(() =>
+      expect(panel.queryByRole("button", { name: "拒否" })).not.toBeInTheDocument(),
+    );
+    await expect(apubItems[0].pending).toBe(false);
+  },
+};
+export const FollowDecisionError: Story = {
+  ...FollowRequests,
+  parameters: {
+    ...FollowRequests.parameters,
+    msw: {
+      handlers: [
+        http.post(
+          "*/api/activitypub/follows/respond",
+          () => new HttpResponse(null, { status: 500 }),
+        ),
+        ...apubHandlers,
+      ],
+    },
+  },
+  play: async () => {
+    const panel = within(await screen.findByRole("region", { name: "ホームの通知" }));
+    await userEvent.click(await panel.findByRole("button", { name: "承認" }));
+    await expect(await panel.findByRole("alert")).toBeVisible();
+    await waitFor(() => expect(panel.getByRole("button", { name: "承認" })).toBeEnabled());
+  },
+};
+export const MobileFollowRequests: Story = {
+  ...FollowRequests,
+  globals: { viewport: { value: "mobile" } },
+};
+
+export const HomeNotificationsError: Story = {
+  parameters: {
+    msw: {
+      handlers: [
+        http.get("*/api/activitypub/notifications", () => new HttpResponse(null, { status: 500 })),
+      ],
+    },
+  },
+  play: async () => {
+    const panel = within(await screen.findByRole("region", { name: "ホームの通知" }));
+    await expect(await panel.findByRole("alert")).toBeVisible();
+    await expect(panel.getByRole("button", { name: "更新" })).toBeVisible();
+  },
+};
+const notificationsLive = ws.link("*/api/home/live");
+let liveItems: typeof activityPubNotifications = [];
+let notificationConnection = false;
+export const LiveFollowRequest: Story = {
+  beforeEach: () => {
+    liveItems = [];
+    notificationConnection = false;
+  },
+  parameters: {
+    msw: {
+      handlers: [
+        http.get("*/api/activitypub/notifications", () =>
+          HttpResponse.json({ items: liveItems, unread_count: liveItems.length }),
+        ),
+        notificationsLive.addEventListener("connection", ({ client }) => {
+          client.addEventListener("message", () => {
+            notificationConnection = true;
+            client.send("refresh");
+          });
+        }),
+      ],
+    },
+  },
+  play: async () => {
+    await waitFor(() => expect(notificationConnection).toBe(true));
+    liveItems = structuredClone(activityPubNotifications);
+    notificationsLive.broadcast("refresh");
+    const panel = within(await screen.findByRole("region", { name: "ホームの通知" }));
+    await expect(await panel.findByRole("button", { name: "承認" })).toBeVisible();
+  },
+};
+
+let pagedRequestApproved = false;
+export const OlderFollowRequests: Story = {
+  beforeEach: () => {
+    pagedRequestApproved = false;
+  },
+  parameters: {
+    msw: {
+      handlers: [
+        http.get("*/api/activitypub/notifications", ({ request }) => {
+          const older = new URL(request.url).searchParams.get("before");
+          const item = {
+            ...activityPubNotifications[0],
+            id: "older-follow-request",
+            display_name: "Older peer",
+            activity_id: "https://social.example/follows/older",
+            pending: !pagedRequestApproved,
+          };
+          return HttpResponse.json({
+            items: older ? [item] : [activityPubNotifications[1]],
+            unread_count: 0,
+            next_cursor: older ? null : "accepted-peer",
+          });
+        }),
+        http.post("*/api/activitypub/follows/respond", async ({ request }) => {
+          const decision = (await request.json()) as { activity_id: string; accept: boolean };
+          if (decision.activity_id !== "https://social.example/follows/older" || !decision.accept)
+            return new HttpResponse(null, { status: 400 });
+          pagedRequestApproved = true;
+          return HttpResponse.json({ ok: true });
+        }),
+      ],
+    },
+  },
+  play: async () => {
+    const panel = within(await screen.findByRole("region", { name: "ホームの通知" }));
+    await userEvent.click(await panel.findByRole("button", { name: "過去の通知を読む" }));
+    await expect(await panel.findByText("Older peer")).toBeVisible();
+    await userEvent.click(await panel.findByRole("button", { name: "承認" }));
+    await waitFor(() => expect(pagedRequestApproved).toBe(true));
   },
 };

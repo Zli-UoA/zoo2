@@ -1,13 +1,12 @@
-import { useLayoutEffect, useRef } from "react";
+import { useLayoutEffect, useState } from "react";
 
-/** ソフトキーボード表示時も、シェルを実際に見えている領域へ収める。 */
-export function useVisualViewport() {
-  const ref = useRef<HTMLDivElement>(null);
+/** ソフトキーボード表示時も、シェルや全画面ダイアログを実際に見えている領域へ収める。 */
+export function useVisualViewport(active = true) {
+  const [element, setElement] = useState<HTMLDivElement | null>(null);
 
   useLayoutEffect(() => {
     const viewport = window.visualViewport;
-    const element = ref.current;
-    if (!viewport || !element) return;
+    if (!active || !viewport || !element) return;
 
     const update = () => {
       // ピンチズーム中はレイアウトを縮めず、ブラウザの拡大操作に任せる。
@@ -32,7 +31,7 @@ export function useVisualViewport() {
       element.style.removeProperty("height");
       element.style.removeProperty("top");
     };
-  }, []);
+  }, [active, element]);
 
-  return ref;
+  return setElement;
 }

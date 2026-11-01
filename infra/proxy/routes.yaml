@@ -8,7 +8,7 @@ http:
       middlewares: [app-private-response, strip-dev-headers]
       service: backend
     api:
-      rule: 'Path(`/api`) || PathPrefix(`/api/`)'
+      rule: 'Path(`/api`) || PathPrefix(`/api/`) || Path(`/.well-known/webfinger`)'
       priority: 100
       entryPoints: [web]
       middlewares: [private-response, strip-dev-headers]

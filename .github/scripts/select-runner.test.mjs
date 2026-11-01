@@ -41,7 +41,8 @@ const cases = [
   ['same-repo PR prefers kubecamp', {event: 'pull_request', payload: pull('Zli-UoA/repo'), runners: [camp(), arc()]}, K, A],
   ['trusted pull_request_target can use kubecamp', {event: 'pull_request_target', payload: pull('someone/repo'), runners: [camp(), arc()]}, K, A],
 ];
-for (const [name, input, expected, dockerExpected] of cases) {
+// Docker jobs always use hosted; the ARC/hosted column now applies to large jobs only.
+for (const [name, input, expected, largeExpected] of cases) {
   test(`select-runner: ${name}`, async () => {
     const outputs = {};
     let calls = 0;
@@ -56,7 +57,7 @@ for (const [name, input, expected, dockerExpected] of cases) {
         if (input.error) throw Object.assign(new Error('private response must not be logged'), {status: 403});
         return input.runners;
       }});
-    assert.deepEqual(outputs, {'runs-on': expected, 'docker-runs-on': dockerExpected});
+    assert.deepEqual(outputs, {'runs-on': expected, 'docker-runs-on': H, 'large-runs-on': largeExpected});
     assert.equal(calls, input.token === false || input.event === 'pull_request' && expected === H ? 0 : 1);
   });
 }
@@ -89,6 +90,9 @@ test('every workload uses the right output and protects fork PRs', () => {
         assert.doesNotMatch(block, /^    needs:.*\brunner\b|needs\.runner\./m, `${file}/${id}: selector dependency`);
       } else {
         assert.ok(block.includes(`needs.runner.outputs.${large ? 'large-runs-on' : docker ? 'docker-runs-on' : 'runs-on'}`), `${file}/${id}: wrong pool`);
+        if (docker) {
+          assert.ok(block.includes(`docker-runs-on || '"${H}"'`), `${file}/${id}: Docker fallback must be hosted`);
+        }
       }
       const line = block.split('\n').find(x => x.startsWith('    runs-on:'));
       if (line) {
@@ -108,7 +112,8 @@ test('selector host overrides do not override workload priorities', () => {
 });
 
 test('large jobs use the ARC/hosted output when kubecamp memory is insufficient', () => {
-  assert.match(yaml, /large-runs-on:\n\s+description: [^\n]+\n\s+value: \$\{\{ jobs.select.outputs.docker-runs-on \}\}/);
+  assert.match(yaml, /large-runs-on:\n\s+description: [^\n]+\n\s+value: \$\{\{ jobs.select.outputs.large-runs-on \}\}/);
+  assert.match(yaml, /large-runs-on: \$\{\{ steps.select.outputs.large-runs-on \}\}/);
 });
 
 test('fixed-only workflows do not create a selector job', () => {

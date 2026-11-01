@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vite-plus/test";
 
-import { groupReactions } from "./reactions";
+import { groupReactions, reactionUserLabel } from "./reactions";
 
 const row = {
   id: "r1",
@@ -11,6 +11,10 @@ const row = {
 };
 
 describe("reaction groups", () => {
+  it("distinguishes users with the same display name by username", () => {
+    expect(reactionUserLabel({ display_name: "Alex", user_name: "alex1" })).toBe("Alex (@alex1)");
+    expect(reactionUserLabel({ display_name: "Alex", user_name: "alex2" })).toBe("Alex (@alex2)");
+  });
   it("counts people, combines equivalent Kitchen spellings and identifies only my reaction", () => {
     const result = groupReactions(
       [
@@ -21,8 +25,12 @@ describe("reaction groups", () => {
       ],
       "u1",
     );
-    expect(result.get("m1")).toEqual([{ emoji: row.emoji, count: 2, ownId: "r1" }]);
-    expect(result.get("m2")).toEqual([{ emoji: row.emoji, count: 1, ownId: null }]);
+    expect(result.get("m1")).toEqual([
+      { emoji: row.emoji, count: 2, ownId: "r1", userIds: ["u1", "u2"] },
+    ]);
+    expect(result.get("m2")).toEqual([
+      { emoji: row.emoji, count: 1, ownId: null, userIds: ["u2"] },
+    ]);
     expect(groupReactions([row], null).get("m1")?.[0].ownId).toBeNull();
   });
 });

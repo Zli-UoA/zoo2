@@ -7,7 +7,7 @@ import {
   RouterProvider,
 } from "@tanstack/react-router";
 import { setupWorker } from "msw/browser";
-import type { RequestHandler } from "msw";
+import type { RequestHandler, WebSocketHandler } from "msw";
 import { useMemo, useState, type ReactNode } from "react";
 
 import { LocaleProvider } from "../src/components/i18n/LocaleProvider";
@@ -60,6 +60,7 @@ export function StoryRouter({
       path: "settings",
       validateSearch: (search: Record<string, unknown>) => search,
     });
+    const homeRoute = createRoute({ getParentRoute: () => rootRoute, path: "home" });
     const notificationsRoute = createRoute({
       getParentRoute: () => rootRoute,
       path: "notifications",
@@ -68,6 +69,7 @@ export function StoryRouter({
     const consentRoute = createRoute({ getParentRoute: () => rootRoute, path: "apps-authorize" });
     return createRouter({
       routeTree: rootRoute.addChildren([
+        homeRoute,
         channelRoute,
         settingsRoute,
         notificationsRoute,
@@ -136,7 +138,10 @@ export function startStorybookWorker(): Promise<void> {
 }
 
 export const withMsw: Decorator = (Story, context) => {
-  const handlers = (context.parameters.msw?.handlers ?? []) as RequestHandler[];
+  const handlers = (context.parameters.msw?.handlers ?? []) as (
+    | RequestHandler
+    | WebSocketHandler
+  )[];
   // MSW は先に一致したハンドラーを使うため、Story 固有のハンドラーを先に置く。
   worker.resetHandlers(...handlers, ...storybookApiHandlers);
   return <Story />;

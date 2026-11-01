@@ -20,7 +20,7 @@ import { useCollections } from "../../../lib/electric/collections-context";
 import { expandWindowSince, messageWindowStart } from "../../../lib/electric/messageWindow";
 import type { MessageRow } from "../../../lib/electric/types";
 import type { ChannelUserWriteMetadata } from "../../../lib/electric/writes";
-import { groupReactions } from "../../../lib/emoji/reactions";
+import { groupReactions, reactionUserLabel } from "../../../lib/emoji/reactions";
 import { useOfflineStatus } from "../../../lib/offline/offline-context";
 import { reactionKey } from "../../../lib/emoji/kitchen";
 import { nowIso } from "../../../lib/time";
@@ -103,7 +103,8 @@ export function MessagePane({
   const { t } = useTranslation();
   const { messages, channelUsers, reactions, config } = useCollections();
   const appClient = useMemo(() => createConfiguredApiClient(config), [config]);
-  const mentionUsers = (useUsers().data ?? []).filter(
+  const usersQuery = useUsers();
+  const mentionUsers = (usersQuery.data ?? []).filter(
     (user) => !user.is_bot || user.bot_mentionable,
   );
   const members = useChannelMembers(channelId).data;
@@ -133,10 +134,19 @@ export function MessagePane({
 
   const [reactionMessageId, setReactionMessageId] = useState<string | null>(null);
   const reactionRows = reactionsQuery.data ?? [];
-  const reactionGroups = useMemo(
-    () => groupReactions(reactionRows, currentUserId),
-    [reactionRows, currentUserId],
-  );
+  const reactionGroups = useMemo(() => {
+    const names = Object.fromEntries(
+      (usersQuery.data ?? []).map((user) => [user.id, reactionUserLabel(user)]),
+    );
+    const groups = groupReactions(reactionRows, currentUserId);
+    for (const reactions of groups.values()) {
+      for (const reaction of reactions) {
+        reaction.userNames = names;
+        reaction.usersLoading = usersQuery.isLoading;
+      }
+    }
+    return groups;
+  }, [reactionRows, currentUserId, usersQuery.data, usersQuery.isLoading]);
   const { catalog } = useKitchenCatalog(
     reactionRows.some((row) => row.emoji.startsWith("kitchen:")),
   );

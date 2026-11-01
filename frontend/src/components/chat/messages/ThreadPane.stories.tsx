@@ -3,7 +3,8 @@ import type { Meta, StoryObj } from "@storybook/react-vite";
 import { expect, fn, userEvent, within } from "storybook/test";
 
 import { MfmChannelsProvider } from "./MfmChannels";
-import { storyChannels } from "../../../../.storybook/fixtures";
+import { storyChannels, storyUsers } from "../../../../.storybook/fixtures";
+import { reactionUserLabel } from "../../../lib/emoji/reactions";
 import { storyCommands, storyDeploymentCard } from "../../../../.storybook/app-fixtures";
 import { ThreadPane } from "./ThreadPane";
 import type { FeedMessage } from "./messageFormat";
@@ -99,7 +100,22 @@ export const Empty: Story = {};
 export const WithReplies: Story = {
   args: {
     replies,
-    reactions: new Map([["reply-1", [{ emoji: "👍", count: 2, ownId: null }]]]),
+    reactions: new Map([
+      [
+        "reply-1",
+        [
+          {
+            emoji: "👍",
+            count: 2,
+            ownId: null,
+            userIds: storyUsers.slice(0, 2).map((user) => user.id),
+            userNames: Object.fromEntries(
+              storyUsers.map((user) => [user.id, reactionUserLabel(user)]),
+            ),
+          },
+        ],
+      ],
+    ]),
   },
 };
 

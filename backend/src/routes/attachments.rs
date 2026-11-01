@@ -254,6 +254,7 @@ async fn presign_attachment(
         payload.file_size,
         &payload.content_type,
         Duration::from_secs(state.config.s3.presigned_put_expiry_secs),
+        state.config.s3.public_endpoint.as_deref(),
     )
     .await?;
 
@@ -372,6 +373,7 @@ async fn get_attachment_url(
         &attachment.content_type,
         &attachment.file_name,
         Duration::from_secs(state.config.s3.presigned_get_expiry_secs),
+        state.config.s3.public_endpoint.as_deref(),
     )
     .await?;
 

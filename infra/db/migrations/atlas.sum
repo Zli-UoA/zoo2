@@ -1,4 +1,4 @@
-h1:87J8DvgUb/mxr2biv7Gmxw6g4BzAt9cgM7tvA+4Mgb0=
+h1:zz+qd5O2YbDDTBcFeITrv9hJTt3mcs/sDFbkAcasZXs=
 20261008000000_initial.sql h1:v3rZATh+MriHOzHYMS+oLMrabKMd7J8aLKuEYdsKNfc=
 20261015110156_snake_case_and_replica_identity.sql h1:gWKFhGTel2djLDzitJiG+ufrbKEjusudna0EhabxkZU=
 20261016171538_create_user_identities.sql h1:h8btCK61sRc0EaVuiKnON59nR594VVKdLtl8nes3KKc=
@@ -19,3 +19,11 @@ h1:87J8DvgUb/mxr2biv7Gmxw6g4BzAt9cgM7tvA+4Mgb0=
 20261029000000_preserve_terminal_events_and_dispatch_fairly.sql h1:VgJWoMMqVRpcyBdmZkZs6tG3XFPeYAlnQZ2JE/FaQeY=
 20261031000000_create_attachments.sql h1:NmKnzy4Od7pOjaqDxKxKHtRtEm9GeHVMD418Mqt0aCo=
 20261101000000_create_bubble_chat_presence.sql h1:68RCqZqtiIgFzRg+C5kHv4HCTNd3vYhwdDBTdJLVS0M=
+20261101010000_create_home_posts.sql h1:91HQ3hrU7/s3QBxmN0QdZP4H6HOLOU4w1EazSmFwsTI=
+20261101020000_activitypub.sql h1:IRIuq9Okuqw8Gxzqrogb7Jq9xR2KJ4auBCukfXVBmSo=
+20261101030000_decouple_home_federation.sql h1:l90DDSZnGoAa6dbhghGupF/1GpWi+D18lqNVRnF/nV4=
+20261101040000_home_live.sql h1:jBKFO1LXluiaZopPyQG+/OU5pM5D38MCWQThbL6R9UI=
+20261101050000_apub_interactions.sql h1:aKDB2ZHRg2h8m/FwwMCglYPsZHwrHRrNDaW3pN0gllU=
+20261101060000_social_actions.sql h1:ARMHA41A8w3NMF89pTmSI+MBDItxEGPzfbhw0P7JL2c=
+20261101070000_review_hardening.sql h1:BX7Ss+Ox4hNXF3+pIyuU4mkOzckJ+0EMe06kEcTgLEk=
+20261101080000_verify_note_origin.sql h1:4/fzkLC/dpCypqpFPi+RvCbRqILo12Ko2w8ZdD/WKJc=

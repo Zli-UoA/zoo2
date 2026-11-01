@@ -1,3 +1,5 @@
+import { useActivityPubNotifications } from "../../hooks/useActivityPubNotifications";
+import { ActivityPubNotifications } from "../home/ActivityPubNotifications";
 import { useLiveQuery } from "@tanstack/react-db";
 import { useCollections } from "../../lib/electric/collections-context";
 import type { ChannelUserRow } from "../../lib/electric/types";
@@ -15,6 +17,7 @@ import { groupNotifications } from "./notifications/groupNotifications";
 
 export function NotificationsScreen() {
   const { t } = useTranslation();
+  const apub = useActivityPubNotifications();
   const { notifications, markRead, isLoading, isError } = useNotifications();
   const usersQuery = useUsers();
   const channelsQuery = useActiveChannels();
@@ -100,11 +103,16 @@ export function NotificationsScreen() {
         title={t("notifications.title")}
       />
       <div ref={scrollRoot} className="min-h-0 flex-1 overflow-y-auto" aria-busy={loading}>
+        <ActivityPubNotifications notifications={apub} />
         {isError ? (
           <p className="p-6 text-sm text-destructive" role="alert">
             {t("notifications.loadError")}
           </p>
-        ) : !isLoading && groups.length === 0 ? (
+        ) : !isLoading &&
+          !apub.loading &&
+          !apub.error &&
+          !apub.items.length &&
+          groups.length === 0 ? (
           <div className="flex min-h-72 flex-col items-center justify-center gap-3 p-6 text-center">
             <BellIcon className="size-8 text-muted-foreground" aria-hidden="true" />
             <p className="text-sm text-muted-foreground">{t("notifications.empty")}</p>
@@ -135,7 +143,7 @@ export function NotificationsScreen() {
           <Spinner label={t("common.loading")} className="sticky bottom-0 bg-background py-4" />
         ) : null}
       </div>
-      {initialLoading ? (
+      {initialLoading && !apub.items.length ? (
         <Spinner label={t("common.loading")} className="absolute inset-0 z-20 bg-background" />
       ) : null}
     </section>
