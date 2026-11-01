@@ -34,6 +34,7 @@ const cases = [
   ['private out of minutes uses ARC', {payload: privateRepo, usage: [usage('AuthZ', 1000), usage('repo', 900)]}, A, A],
   ['private out of minutes still prefers kubecamp', {payload: privateRepo, runners: [camp()], usage: [usage('AuthZ', 1900)]}, K, A],
   ['public and non-Linux usage is not counted', {payload: privateRepo, usage: [usage('zoo2', 9000), usage('repo', 9000, 'Actions storage'), usage('repo', 10)]}, H, H],
+  ['documented billing format is counted', {payload: {repository: {private: true}}, usage: [{...usage('Zli-UoA/Repo', 1900), product: 'Actions'}]}, A, A],
   ['unknown visibility is checked as private', {payload: {}, usage: [usage('repo', 1900)]}, A, A],
   ['private without billing access uses ARC', {payload: privateRepo, billingError: true}, A, A],
   ['private without token uses ARC', {payload: privateRepo, token: false}, K, A],
