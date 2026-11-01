@@ -95,17 +95,6 @@ impl ShapeStream {
             });
         }
         let response = error_for_status(response).await?;
-        self.cache_buster = None;
-        if let Some(handle) = header(&headers, "electric-handle") {
-            self.handle = Some(handle);
-        }
-        if let Some(offset) = header(&headers, "electric-offset") {
-            self.offset = offset;
-        }
-        if let Some(cursor) = header(&headers, "electric-cursor") {
-            self.cursor = Some(cursor);
-        }
-
         let messages: Vec<Message> = if status == StatusCode::NO_CONTENT {
             Vec::new()
         } else {
@@ -116,6 +105,18 @@ impl ShapeStream {
                 serde_json::from_str(&body).context("シェイプの応答を解釈できません")?
             }
         };
+
+        // 本文を読めてから位置を進める。途中で切れたら同じ位置から取り直す。
+        self.cache_buster = None;
+        if let Some(handle) = header(&headers, "electric-handle") {
+            self.handle = Some(handle);
+        }
+        if let Some(offset) = header(&headers, "electric-offset") {
+            self.offset = offset;
+        }
+        if let Some(cursor) = header(&headers, "electric-cursor") {
+            self.cursor = Some(cursor);
+        }
 
         let mut batch = Batch {
             up_to_date: headers.contains_key("electric-up-to-date")
@@ -319,6 +320,27 @@ mod tests {
         assert_eq!(stream.offset, "-1");
         assert!(stream.cache_buster.is_some());
         assert!(!stream.live);
+    }
+
+    #[tokio::test]
+    async fn keeps_position_when_body_is_unreadable() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .insert_header("electric-handle", "h1")
+                    .insert_header("electric-offset", "5_0")
+                    .insert_header("electric-cursor", "c1")
+                    .set_body_string("[{\"headers\":"),
+            )
+            .mount(&server)
+            .await;
+
+        let mut stream = stream(&server);
+        assert!(stream.next_batch().await.is_err());
+        assert_eq!(stream.offset, "-1");
+        assert_eq!(stream.handle, None);
+        assert_eq!(stream.cursor, None);
     }
 
     #[tokio::test]
