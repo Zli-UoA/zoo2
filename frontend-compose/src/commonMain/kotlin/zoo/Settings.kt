@@ -39,19 +39,12 @@ fun searchUrl(engine: String, query: String): String {
 
 @Composable
 fun ZooSettings(app: Session, users: List<Row>) {
-    val settingsScope = rememberCoroutineScope()
-    val channelRules =
-        remember(app) {
-            ChannelTimelineSettingsController(settingsScope) { method, body ->
-                app.api.request("/api/home/settings", method, body).jsonObject
-            }
-        }
-    LaunchedEffect(channelRules) { channelRules.load() }
-    DisposableEffect(channelRules) { onDispose { channelRules.close() } }
-    val tab = app.query["tab"].takeIf { it in listOf("apps", "members") } ?: "general"
+    val tab =
+        app.query["tab"].takeIf { it in listOf("apps", "members", "activitypub") } ?: "general"
     val tabs =
         listOf(
             "general" to "settings.general",
+            "activitypub" to "ActivityPub",
             "apps" to "apps.title",
             "members" to "members.title",
         )
@@ -148,14 +141,8 @@ fun ZooSettings(app: Session, users: List<Row>) {
                 when (tab) {
                     "apps" -> Apps(app, embedded = true)
                     "members" -> WorkspaceMembers(app, users)
-                    else ->
-                        Column(
-                            Modifier.fillMaxWidth(),
-                            verticalArrangement = Arrangement.spacedBy(16.dp),
-                        ) {
-                            GeneralSettings(app)
-                            ChannelTimelineSettings(app, channelRules)
-                        }
+                    "activitypub" -> ActivityPubSettingsTab(app)
+                    else -> GeneralSettings(app)
                 }
             }
         }
@@ -519,5 +506,30 @@ fun WorkspaceMembers(app: Session, users: List<Row>) {
             },
             { scope.launch { changeRole(user, wasAdmin) } },
         )
+    }
+}
+
+@Composable
+private fun ActivityPubSettingsTab(app: Session) {
+    val settingsScope = rememberCoroutineScope()
+    val channelRules =
+        remember(app) {
+            ChannelTimelineSettingsController(settingsScope) { method, body ->
+                app.api.request("/api/home/settings", method, body).jsonObject
+            }
+        }
+    LaunchedEffect(channelRules) { channelRules.load() }
+    DisposableEffect(channelRules) { onDispose { channelRules.close() } }
+    val profile =
+        remember(app) {
+            ActivityPubSettingsController(settingsScope) { method, body ->
+                app.api.request("/api/activitypub/profile", method, body).jsonObject
+            }
+        }
+    LaunchedEffect(profile) { profile.load() }
+    DisposableEffect(profile) { onDispose { profile.close() } }
+    Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(16.dp)) {
+        ActivityPubSettings(app, profile)
+        ChannelTimelineSettings(app, channelRules)
     }
 }

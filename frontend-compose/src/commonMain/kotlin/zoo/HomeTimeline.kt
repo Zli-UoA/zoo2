@@ -6,7 +6,12 @@ import kotlinx.coroutines.*
 
 /** Owns the retained paging window; live refreshes wait for an outstanding older page. */
 @Stable
-class HomeTimeline(private val app: Session, private val scope: CoroutineScope) {
+class HomeTimeline(
+    private val app: Session,
+    private val scope: CoroutineScope,
+    private val postId: String? = null,
+    private val actorId: String? = null,
+) {
     var timeline by mutableStateOf("home")
         private set
 
@@ -68,7 +73,13 @@ class HomeTimeline(private val app: Session, private val scope: CoroutineScope) 
                     var before = ""
                     var more: Boolean
                     do {
-                        val page = app.api.request(path(size, before)).rows()
+                        val page =
+                            if (postId != null)
+                                listOf(
+                                    app.api.request("/api/home/${postId.encodeURLParameter()}")
+                                        as Row
+                                )
+                            else app.api.request(path(size, before)).rows()
                         result.addAll(page.filter { row -> result.none { key(it) == key(row) } })
                         more = page.size >= size
                         before = page.lastOrNull()?.let(::key).orEmpty()
@@ -127,10 +138,13 @@ class HomeTimeline(private val app: Session, private val scope: CoroutineScope) 
             }
     }
 
-    private fun path(size: Int, before: String) =
-        "/api/home?timeline=${timeline.encodeURLParameter()}" +
-            (if (size != 50) "&limit=$size" else "") +
-            (if (before.isNotEmpty()) "&before=${before.encodeURLParameter()}" else "")
+    fun close() {
+        generation++
+        refreshJob?.cancel()
+        olderJob?.cancel()
+    }
+
+    private fun path(size: Int, before: String) = homeTimelinePath(timeline, actorId, size, before)
 
     companion object {
         fun key(row: Row): String = row.text("entry_id").ifEmpty { row.text("id") }
@@ -143,3 +157,15 @@ class HomeTimeline(private val app: Session, private val scope: CoroutineScope) 
         }
     }
 }
+
+internal fun homeTimelinePath(
+    timeline: String,
+    actorId: String?,
+    size: Int = 50,
+    before: String = "",
+): String =
+    "/api/home?timeline=" +
+        (if (actorId != null) "social&author=${actorId.encodeURLParameter()}"
+        else timeline.encodeURLParameter()) +
+        (if (size != 50) "&limit=$size" else "") +
+        (if (before.isNotEmpty()) "&before=${before.encodeURLParameter()}" else "")

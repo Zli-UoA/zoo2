@@ -202,18 +202,17 @@ function messageInteractions(component: string, state: string): Record<string, u
       { action: "callback", name: "onSendReply", args: ["/github", "github"] },
     ];
   if (component === "MessageRow") {
-    if (state in activityPubMessageStates)
+    if (state in activityPubMessageStates) {
+      const audience =
+        activityPubMessageStates[state as keyof typeof activityPubMessageStates] === "unlisted"
+          ? "ホーム"
+          : "パブリック";
       return [
         wait("img", "ActivityPub"),
-        {
-          action: "wait",
-          text:
-            activityPubMessageStates[state as keyof typeof activityPubMessageStates] === "unlisted"
-              ? "ホーム"
-              : "パブリック",
-          exact: true,
-        },
+        { action: "wait", role: "img", name: audience, sameCenterYAs: { role: "time" } },
+        { action: "wait", text: audience, exact: true, state: "hidden" },
       ];
+    }
     if (state === "Edited")
       return [
         { action: "hover", role: "img", name: "編集済み", exact: true },

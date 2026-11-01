@@ -25,6 +25,9 @@ class HomeComposerStateTest {
             "The opening gesture focuses the retained editor synchronously",
         )
         state.close()
+        assertFalse(state.opened, "Closing removes the form from the visible interaction tree")
+        assertEquals("途中まで書いた下書き", state.content)
+        assertEquals("general", state.channelId)
         state.reply(obj("id" to "remote-post", "visibility" to "followers", "apub" to true))
         assertTrue(state.opened)
         assertEquals("途中まで書いた下書き", state.content)

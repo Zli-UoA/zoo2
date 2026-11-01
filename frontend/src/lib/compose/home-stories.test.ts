@@ -35,6 +35,20 @@ describe("Home uses the existing stories and their real API", () => {
   it("maps exactly the exports without a fallback that hides missing states", () => {
     expect(Object.keys(homeInteractions).sort()).toEqual(exports.map(kebab).sort());
   });
+  it.each([
+    ["SinglePost", { postId: "post-1" }],
+    ["UserProfile", { actorId: "https://social.example/users/alice" }],
+  ])("passes %s route arguments to the real Kotlin screen", (name, args) => {
+    const context: Selection = {
+      id: `pages-home--${kebab(name as string)}`,
+      title: "Pages/Home",
+      name: name as string,
+      args: args as Record<string, unknown>,
+      parameters: {},
+      globals: {},
+    };
+    expect(homeOptions(context, base)?.fixture?.args).toEqual(args);
+  });
   it("retains server acknowledgement and websocket race assertions", () => {
     expect(homeInteractions.submit.at(-1)).toMatchObject({ action: "wait", text: "公開する近況" });
     expect(

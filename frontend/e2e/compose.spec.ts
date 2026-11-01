@@ -665,7 +665,12 @@ for (const implementation of ["react", "compose"] as const) {
     const animation = page.getByRole("img", { name: "animation.gif", exact: true });
     await expect(animation).toBeVisible();
     const firstFrame = await animation.screenshot();
-    await expect.poll(async () => firstFrame.equals(await animation.screenshot())).toBe(false);
+    // Avoid sampling the same phase of this GIF's 50ms frames / 100ms loop.
+    await expect
+      .poll(async () => firstFrame.equals(await animation.screenshot()), {
+        intervals: [17, 29, 43, 71, 113],
+      })
+      .toBe(false);
     await page
       .getByRole("button", { name: "animation.gifを削除", exact: true })
       .click({ force: native });
@@ -676,6 +681,10 @@ for (const implementation of ["react", "compose"] as const) {
     const fileSend = page.getByRole("button", { name: "送信", exact: true }).last();
     await expect(fileSend).toBeVisible();
     await expect(fileSend).toBeEnabled();
+    // Upload completion can replace Compose's accessibility projection. Settle its
+    // target before the forced canvas click, which skips Playwright's stability check.
+    await fileSend.scrollIntoViewIfNeeded();
+    await expect(fileSend).toBeInViewport({ ratio: 1 });
     await fileSend.click({ force: native });
     const fileDownload = page.getByRole("button", { name: "notes.pdfをダウンロード", exact: true });
     await expect(fileDownload).toBeVisible();

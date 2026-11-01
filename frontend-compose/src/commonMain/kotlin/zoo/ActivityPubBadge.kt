@@ -13,7 +13,7 @@ import androidx.compose.ui.unit.*
 
 /** Shared federated-post identity, using the same CC0 Simple Icons path as React. */
 @Composable
-fun ActivityPubBadge(app: Session, visibility: String) {
+fun ActivityPubBadge(app: Session, visibility: String, modifier: Modifier = Modifier) {
     val audience = visibility.takeIf { it in setOf("unlisted", "followers", "local") } ?: "public"
     val path = remember {
         PathParser()
@@ -25,12 +25,12 @@ fun ActivityPubBadge(app: Session, visibility: String) {
     val color = MaterialTheme.colorScheme.onSurfaceVariant
     Hint("ActivityPub · ${app.t("home.visibility.$audience")}") { hint ->
         Row(
-            hint,
+            modifier.then(hint),
             horizontalArrangement = Arrangement.spacedBy(4.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
             Canvas(
-                Modifier.size(16.dp).then(webControlModifier("img")).semantics {
+                Modifier.size(14.dp).then(webControlModifier("img")).semantics {
                     role = Role.Image
                     contentDescription = "ActivityPub"
                 }
@@ -39,7 +39,16 @@ fun ActivityPubBadge(app: Session, visibility: String) {
                     drawPath(path, color)
                 }
             }
-            Text(app.t("home.visibility.$audience"), size = 12.sp, muted = true)
+            Icon(
+                when (audience) {
+                    "public" -> "globe"
+                    "followers" -> "lock-keyhole"
+                    else -> "home"
+                },
+                app.t("home.visibility.$audience"),
+                Modifier.size(14.dp).then(webControlModifier("img")),
+                color,
+            )
         }
     }
 }

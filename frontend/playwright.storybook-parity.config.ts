@@ -26,7 +26,7 @@ export default defineConfig({
   snapshotPathTemplate: `${outputDir}/reference/{projectName}/{testFilePath}/{testName}/{arg}{ext}`,
   updateSnapshots: "none",
   fullyParallel: true,
-  workers: process.env.CI ? 2 : 2,
+  workers: process.env.CI ? 4 : 2,
   timeout: 90 * 60_000,
   expect: {
     timeout: 15_000,

@@ -13,15 +13,33 @@ import io.ktor.http.encodeURLParameter
 import kotlinx.coroutines.*
 
 @Composable
-fun HomeScreen(app: Session, fixture: Row? = null, args: Row = obj()) {
+fun HomeScreen(
+    app: Session,
+    fixture: Row? = null,
+    args: Row = obj(),
+    postId: String? = null,
+    actorId: String? = null,
+) {
+    val selectedPost =
+        postId
+            ?: args.text("postId").takeIf { it.isNotEmpty() }
+            ?: homeRouteId(app.env.path, "posts")
+    val selectedActor =
+        actorId
+            ?: args.text("actorId").takeIf { it.isNotEmpty() }
+            ?: homeRouteId(app.env.path, "users")
     val scope = rememberCoroutineScope()
-    val feed = remember(app) { HomeTimeline(app, scope) }
+    val feed =
+        remember(app, selectedPost, selectedActor) {
+            HomeTimeline(app, scope, selectedPost, selectedActor)
+        }
     val scroll = rememberLazyListState()
     val composer = rememberHomeComposerState()
     var enabled by remember { mutableStateOf(false) }
     var controlsError by remember { mutableStateOf(false) }
     var follows by remember { mutableStateOf<List<Row>>(emptyList()) }
     var search by remember { mutableStateOf(false) }
+    LaunchedEffect(selectedPost, selectedActor) { search = false }
     var reaction by remember { mutableStateOf<Row?>(null) }
     var pending by remember { mutableStateOf(false) }
     var actionError by remember { mutableStateOf("") }
@@ -71,21 +89,30 @@ fun HomeScreen(app: Session, fixture: Row? = null, args: Row = obj()) {
             }
         }
     }
-    LaunchedEffect(app) {
+    LaunchedEffect(app, feed) {
         feed.refresh()
         controls()
     }
-    DisposableEffect(app) {
+    DisposableEffect(app, feed) {
         val dispose =
             app.homeLive.subscribe {
                 feed.refresh(true)
                 scope.launch { controls() }
             }
-        onDispose(dispose)
+        onDispose {
+            dispose()
+            feed.close()
+        }
     }
     Box(Modifier.fillMaxSize()) {
         Column(Modifier.fillMaxSize()) {
-            ScreenHeader("home", app.t("home.title")) {
+            ScreenHeader(
+                "home",
+                app.t(
+                    if (selectedPost != null) "activitypubSettings.post"
+                    else if (selectedActor != null) "home.userDetails" else "home.title"
+                ),
+            ) {
                 IconButton("user-search", app.t("home.userSearch")) { search = true }
                 IconButton("refresh-cw", app.t("home.refresh")) {
                     feed.refresh()
@@ -136,6 +163,11 @@ fun HomeScreen(app: Session, fixture: Row? = null, args: Row = obj()) {
             ) {
                 item {
                     HomeWidth {
+                        selectedActor?.let { ActivityPubProfile(app, it) }
+                        if (selectedPost != null || selectedActor != null)
+                            NativeLink("/home", Modifier.padding(12.dp)) {
+                                Text(app.t("home.title"), color = LocalLinkColor.current)
+                            }
                         if (pull > 0)
                             Text(
                                 app.t(
@@ -143,20 +175,22 @@ fun HomeScreen(app: Session, fixture: Row? = null, args: Row = obj()) {
                                 ),
                                 Modifier.padding(16.dp),
                             )
-                        Row(
-                            Modifier.fillMaxWidth().padding(12.dp),
-                            horizontalArrangement = Arrangement.spacedBy(8.dp),
-                        ) {
-                            listOf("home", "local", "social").forEach { value ->
-                                Button(
-                                    app.t("home.timelineLabels.$value"),
-                                    selected = feed.timeline == value,
-                                    variant = if (feed.timeline == value) "secondary" else "ghost",
-                                ) {
-                                    feed.select(value)
+                        if (selectedPost == null && selectedActor == null)
+                            Row(
+                                Modifier.fillMaxWidth().padding(12.dp),
+                                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            ) {
+                                listOf("home", "local", "social").forEach { value ->
+                                    Button(
+                                        app.t("home.timelineLabels.$value"),
+                                        selected = feed.timeline == value,
+                                        variant =
+                                            if (feed.timeline == value) "secondary" else "ghost",
+                                    ) {
+                                        feed.select(value)
+                                    }
                                 }
                             }
-                        }
                         HorizontalDivider()
                     }
                 }
@@ -307,4 +341,11 @@ private fun HomeWidth(content: @Composable ColumnScope.() -> Unit) {
     Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.TopCenter) {
         Column(Modifier.widthIn(max = 672.dp).fillMaxWidth(), content = content)
     }
+}
+
+internal fun homeRouteId(path: String, section: String): String? {
+    val clean = path.substringBefore('?').substringBefore('#')
+    val prefix = "/home/$section/"
+    if (!clean.startsWith(prefix)) return null
+    return clean.removePrefix(prefix).takeIf { it.isNotEmpty() && '/' !in it }?.decodeURLPart()
 }

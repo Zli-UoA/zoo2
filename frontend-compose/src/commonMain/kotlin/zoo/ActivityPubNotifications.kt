@@ -2,17 +2,23 @@ package zoo
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.hoverable
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.interaction.collectIsHoveredAsState
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.heading
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import io.ktor.http.encodeURLParameter
@@ -201,21 +207,59 @@ fun ActivityPubNotifications(
                                 .padding(12.dp),
                             verticalArrangement = Arrangement.spacedBy(8.dp),
                         ) {
-                            FlowRow(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                                ActivityPubText(
-                                    item.text("display_name"),
-                                    item["actor_emojis"]?.rows().orEmpty(),
-                                    textStyle =
-                                        androidx.compose.ui.text.TextStyle(
-                                            fontWeight = FontWeight.Bold,
-                                            fontSize = 14.sp,
-                                            lineHeight = 20.sp,
+                            val profile =
+                                "/home/users/${item.text("actor_id").removePrefix("local:").encodeURLParameter()}"
+                            val authorInteractions =
+                                remember(item.text("id")) { MutableInteractionSource() }
+                            val authorHovered by authorInteractions.collectIsHoveredAsState()
+                            var avatarFocused by remember(item.text("id")) { mutableStateOf(false) }
+                            Row(
+                                horizontalArrangement = Arrangement.spacedBy(12.dp),
+                                verticalAlignment = androidx.compose.ui.Alignment.CenterVertically,
+                            ) {
+                                NativeLink(
+                                    profile,
+                                    Modifier.size(32.dp)
+                                        .onFocusChanged { avatarFocused = it.isFocused }
+                                        .then(
+                                            if (avatarFocused && FocusInputModality.keyboard)
+                                                Modifier.border(
+                                                    2.dp,
+                                                    MaterialTheme.colorScheme.outline,
+                                                    CircleShape,
+                                                )
+                                            else Modifier
                                         ),
-                                )
-                                Text(
-                                    app.t("home.notificationKinds.${item.text("kind")}"),
-                                    size = 14.sp,
-                                )
+                                ) {
+                                    ActivityPubAvatar(
+                                        item["avatar"] as? JsonObject,
+                                        item.text("display_name"),
+                                    )
+                                }
+                                FlowRow(
+                                    Modifier.weight(1f),
+                                    horizontalArrangement = Arrangement.spacedBy(4.dp),
+                                ) {
+                                    NativeLink(profile, Modifier.hoverable(authorInteractions)) {
+                                        ActivityPubText(
+                                            item.text("display_name"),
+                                            item["actor_emojis"]?.rows().orEmpty(),
+                                            textStyle =
+                                                androidx.compose.ui.text.TextStyle(
+                                                    textDecoration =
+                                                        if (authorHovered) TextDecoration.Underline
+                                                        else TextDecoration.None,
+                                                    fontWeight = FontWeight.Bold,
+                                                    fontSize = 14.sp,
+                                                    lineHeight = 20.sp,
+                                                ),
+                                        )
+                                    }
+                                    Text(
+                                        app.t("home.notificationKinds.${item.text("kind")}"),
+                                        size = 14.sp,
+                                    )
+                                }
                             }
                             Text(
                                 app.platform.fullTimestamp(item.text("created_at")),

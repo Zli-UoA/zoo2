@@ -270,12 +270,17 @@ test("native attachments render from the existing shared story", async ({ page }
   await expect(frame.getByText("release-notes.pdf", { exact: true })).toBeVisible();
   await page.screenshot({ path: test.info().outputPath("compose-attachment-grid-wide.png") });
   await page.setViewportSize({ width: 390, height: 844 });
-  await page.screenshot({ path: test.info().outputPath("compose-attachment-grid-mobile.png") });
   const previewImage = frame.getByRole("button", {
     name: "screenshot.pngをプレビュー",
     exact: true,
   });
   await expect(previewImage).toBeVisible();
+  // Resize reaches the iframe and then Compose's projected accessibility bounds.
+  // Wait for the actual target to settle inside the mobile viewport before clicking.
+  await previewImage.scrollIntoViewIfNeeded();
+  await expect(previewImage).toBeInViewport({ ratio: 1 });
+  await page.screenshot({ path: test.info().outputPath("compose-attachment-grid-mobile.png") });
+  // The canvas owns pointer input; the accessibility proxy is intentionally transparent.
   await previewImage.click({ force: true });
   await expect(frame.getByRole("img", { name: "screenshot.png", exact: true })).toBeVisible();
   await page.screenshot({ path: test.info().outputPath("compose-attachment-preview-mobile.png") });

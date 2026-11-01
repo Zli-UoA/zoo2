@@ -30,6 +30,7 @@ export type NativeInteraction = Scope & {
   urlIncludes?: string;
   sameWidthAs?: Scope;
   sameHeightAs?: Scope;
+  sameCenterYAs?: Scope;
   containedBy?: Scope;
   includeHidden?: boolean;
   value?: string;
@@ -256,6 +257,14 @@ function assertWait(
     const reference = target(current.ownerDocument, { ...scope, action: "wait" });
     if (Math.abs(bounds[axis] - reference.getBoundingClientRect()[axis]) > 0.5)
       throw new Error(`Native ${axis} differs from reference`);
+  }
+  if (step.sameCenterYAs) {
+    const reference = target(current.ownerDocument, {
+      ...step.sameCenterYAs,
+      action: "wait",
+    }).getBoundingClientRect();
+    if (Math.abs(bounds.y + bounds.height / 2 - reference.y - reference.height / 2) > 1)
+      throw new Error("Native vertical center differs from reference");
   }
   if (step.containedBy) {
     const reference = target(current.ownerDocument, {

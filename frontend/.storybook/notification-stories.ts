@@ -1,3 +1,4 @@
+import { activityPubNotifications } from "./activitypub-fixtures";
 import { createStoryConfig, type StoryCollectionsInput } from "./fixtures";
 import {
   notificationComparisonText,
@@ -49,6 +50,17 @@ function notificationInteractions(title: string, name: string): NativeInteractio
         apubButton("拒否"),
         visible("フォローが承認されました"),
         visible("投稿にリアクションしました"),
+        { action: "wait", role: "img", name: "Bob" },
+        {
+          action: "wait",
+          role: "link",
+          name: "Bob",
+          count: 2,
+          all: true,
+          attributes: {
+            href: `/home/users/${encodeURIComponent(activityPubNotifications[0].actor_id)}`,
+          },
+        },
       ];
     if (name === "Approve Follow")
       return [

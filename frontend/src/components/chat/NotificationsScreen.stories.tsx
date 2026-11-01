@@ -342,6 +342,14 @@ export const FollowRequests: Story = {
     await expect(panel.getByRole("button", { name: "拒否" })).toBeVisible();
     await expect(panel.getByText(/フォローが承認されました/)).toBeVisible();
     await expect(panel.getByText(/投稿にリアクションしました/)).toBeVisible();
+    await expect(panel.getByRole("img", { name: "Bob" })).toBeVisible();
+    const profileLinks = panel.getAllByRole("link", { name: "Bob" });
+    await expect(profileLinks).toHaveLength(2);
+    for (const link of profileLinks)
+      await expect(link).toHaveAttribute(
+        "href",
+        `/home/users/${encodeURIComponent(activityPubNotifications[0].actor_id)}`,
+      );
   }),
 };
 export const ApproveFollow: Story = {

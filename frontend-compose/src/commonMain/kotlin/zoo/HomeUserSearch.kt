@@ -81,12 +81,20 @@ fun HomeUserSearch(
                     verticalArrangement = Arrangement.spacedBy(8.dp),
                 ) {
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        Avatar(user, size = 32.dp)
-                        Column {
-                            ActivityPubText(
+                        val profile = "/home/users/${user.text("id").encodeURLParameter()}"
+                        NativeLink(profile) {
+                            ActivityPubAvatar(
+                                if (user.flag("remote")) user["avatar"] as? Row else null,
                                 user.text("display_name").ifEmpty { user.text("user_name") },
-                                user.homeRows("emojis"),
                             )
+                        }
+                        Column {
+                            NativeLink(profile) {
+                                ActivityPubText(
+                                    user.text("display_name").ifEmpty { user.text("user_name") },
+                                    user.homeRows("emojis"),
+                                )
+                            }
                             FederatedAccount(
                                 user.text("user_name"),
                                 user.text("id"),

@@ -7,6 +7,7 @@ import androidx.compose.foundation.text.appendInlineContent
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.*
@@ -139,3 +140,45 @@ fun FederatedAccount(
 
 internal fun Row.homeRows(key: String): List<Row> =
     (get(key) as? kotlinx.serialization.json.JsonArray)?.mapNotNull { it as? Row }.orEmpty()
+
+/** Remote images always use the server cache; malformed IDs keep the ordinary initials. */
+@Composable
+fun ActivityPubAvatar(avatar: Row?, name: String, modifier: Modifier = Modifier) {
+    val app = LocalApp.current
+    val id = avatar?.text("image_id").orEmpty()
+    val valid = Regex("^[a-f0-9]{64}$").matches(id)
+    var bitmap by remember(id) { mutableStateOf<androidx.compose.ui.graphics.ImageBitmap?>(null) }
+    var loading by remember(id) { mutableStateOf(valid) }
+    LaunchedEffect(id) {
+        if (valid)
+            try {
+                val bytes =
+                    app.image(endpoint(app.config.apiBaseUrl, "/api/activitypub/emoji-images/$id"))
+                app.platform.imageFrames(bytes).collect {
+                    bitmap = it
+                    loading = false
+                }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (_: Exception) {
+                loading = false
+            }
+    }
+    Box(
+        modifier
+            .size(32.dp)
+            .clip(androidx.compose.foundation.shape.CircleShape)
+            .then(
+                webControlModifier("img", busy = loading, attributes = mapOf("aria-label" to name))
+            )
+    ) {
+        if (bitmap != null)
+            Image(
+                bitmap!!,
+                null,
+                Modifier.fillMaxSize(),
+                contentScale = androidx.compose.ui.layout.ContentScale.Crop,
+            )
+        else Avatar(obj("display_name" to name), size = 32.dp)
+    }
+}

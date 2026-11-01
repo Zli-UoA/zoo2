@@ -79,6 +79,31 @@ export const nativeHomeChecks = {
     ).toEqual(["返信 0", "リポスト 0", "リアクション 0", "投稿の操作"]);
     await expect(queryAllByRole(group, "time")).toHaveLength(0);
   },
+  async homeAvatarLinks() {
+    const article = element("article");
+    const links = queryAllByRole(article, "link");
+    await expect(links.some((link) => link.getAttribute("href")?.includes("/home/users/"))).toBe(
+      true,
+    );
+    const postLinks = links.filter((link) => link.getAttribute("href")?.includes("/home/posts/"));
+    await expect(postLinks.length).toBeGreaterThanOrEqual(1);
+    const times = queryAllByRole(article, "time");
+    await expect(times.length).toBeGreaterThanOrEqual(1);
+    await expect(
+      times.every((time) =>
+        postLinks.some((link) => {
+          const outer = link.getBoundingClientRect(),
+            inner = time.getBoundingClientRect();
+          return (
+            outer.left <= inner.left &&
+            outer.right >= inner.right &&
+            outer.top <= inner.top &&
+            outer.bottom >= inner.bottom
+          );
+        }),
+      ),
+    ).toBe(true);
+  },
   async homeChannelMetadata() {
     const link = element("link", "#general");
     const times = elements("time");

@@ -340,7 +340,9 @@ export const ActivityPubPublic: Story = {
   parameters: { a11y: { test: "error" } },
   args: { item: { ...item, message: { ...item.message, apub: true, apub_visibility: "public" } } },
   play: playForImplementation(async ({ canvasElement }) => {
-    await expect(within(canvasElement).getByRole("img", { name: "ActivityPub" })).toBeVisible();
+    await expect(
+      await within(canvasElement).findByRole("img", { name: "ActivityPub" }),
+    ).toBeVisible();
     await expect(within(canvasElement).getByRole("img", { name: "パブリック" })).toBeVisible();
     const icon = within(canvasElement).getByRole("img", { name: "パブリック" });
     const metadata = icon.closest("[title]")!.parentElement!;
@@ -359,7 +361,7 @@ export const ActivityPubUnlisted: Story = {
     item: { ...item, message: { ...item.message, apub: true, apub_visibility: "unlisted" } },
   },
   play: playForImplementation(async ({ canvasElement }) => {
-    await expect(within(canvasElement).getByRole("img", { name: "ホーム" })).toBeVisible();
+    await expect(await within(canvasElement).findByRole("img", { name: "ホーム" })).toBeVisible();
   }),
 };
 export const ActivityPubGrouped: Story = {

@@ -59,7 +59,7 @@ fun ZooApp(app: Session) {
     val notifications by app.repo.notifications.rows.collectAsState()
     val loading by app.repo.channels.loading.collectAsState()
     val channel = channels.find { it.text("id") == app.channelId }
-    val isHome = app.env.path.substringBefore('?') == "/home"
+    val isHome = isHomePath(app.env.path)
     val isNotifications = app.env.path.startsWith("/notifications")
     val isSettings = app.env.path.startsWith("/settings")
     val isBubble = app.env.path.startsWith("/bubble")

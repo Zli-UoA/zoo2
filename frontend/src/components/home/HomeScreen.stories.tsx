@@ -1223,7 +1223,7 @@ export const RemoteAvatar: Story = {
   parameters: {
     msw: { handlers: [http.get("*/api/home", () => HttpResponse.json([avatarPost]))] },
   },
-  play: async ({ canvasElement }) => {
+  play: playForImplementation(async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     const avatar = await canvas.findByRole("img", { name: "Remote Alice" });
     await waitFor(() => expect(avatar.querySelector("img")?.naturalWidth).toBeGreaterThan(0));
@@ -1236,7 +1236,7 @@ export const RemoteAvatar: Story = {
     );
     const time = row.querySelector("time")!;
     await expect(time.closest("a")?.getAttribute("href")).toContain("/home/posts/");
-  },
+  }),
 };
 export const RemoteAvatarFallback: Story = {
   parameters: {
@@ -1252,33 +1252,33 @@ export const RemoteAvatarFallback: Story = {
       ],
     },
   },
-  play: async ({ canvasElement }) => {
+  play: playForImplementation(async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     await expect(await canvas.findByText("RA", { exact: true })).toBeVisible();
     await expect(canvas.getByRole("img", { name: "Remote Alice" }).querySelector("img")).toBeNull();
-  },
+  }),
 };
 export const SinglePost: Story = {
   args: { postId: posts[0].id },
   parameters: {
     msw: { handlers: [http.get("*/api/home/:id", () => HttpResponse.json(posts[0]))] },
   },
-  play: async ({ canvasElement }) => {
+  play: playForImplementation(async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     await expect(await canvas.findByText(/Homeから最初の公開投稿です/)).toBeVisible();
     await expect(canvas.getAllByRole("article")).toHaveLength(1);
     await expect(canvas.queryByRole("button", { name: "ローカル" })).not.toBeInTheDocument();
-  },
+  }),
 };
 export const SinglePostMissing: Story = {
   args: { postId: "missing" },
   parameters: {
     msw: { handlers: [http.get("*/api/home/:id", () => new HttpResponse(null, { status: 404 }))] },
   },
-  play: async ({ canvasElement }) => {
+  play: playForImplementation(async ({ canvasElement }) => {
     await expect(await within(canvasElement).findByRole("alert")).toBeVisible();
     await expect(within(canvasElement).queryByRole("article")).not.toBeInTheDocument();
-  },
+  }),
 };
 let profileFollowing: boolean | null = null;
 export const UserProfile: Story = {
@@ -1309,12 +1309,12 @@ export const UserProfile: Story = {
       ],
     },
   },
-  play: async ({ canvasElement }) => {
+  play: playForImplementation(async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     await expect(await canvas.findByText("リモートユーザーの自己紹介です")).toBeVisible();
     await userEvent.click(canvas.getByRole("button", { name: "フォロー" }));
     await expect(await canvas.findByText("承認待ち", { exact: true })).toBeVisible();
-  },
+  }),
 };
 export const MobileUserProfile: Story = {
   ...UserProfile,
@@ -1330,7 +1330,7 @@ export const UserProfileError: Story = {
       ],
     },
   },
-  play: async ({ canvasElement }) => {
+  play: playForImplementation(async ({ canvasElement }) => {
     await expect(await within(canvasElement).findByRole("alert")).toBeVisible();
-  },
+  }),
 };

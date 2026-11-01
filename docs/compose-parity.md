@@ -16,7 +16,7 @@ Reactを機能・UI・操作の基準とする。変更時は [compose-react-par
 | URLカード・メディアプロキシ | `LinkPreviews`, `summaly`, `linkPreviewRequests`, `linkPreviewEndpoints` | `LinkPreviews.kt`, `Chat.kt` | 既存LinkPreviews StoryのKotlin表示、公開HTTPの認証非送信と操作E2E |
 | 絵文字・Emoji Kitchen・リアクション | `ReactionPicker`, `emoji/` | `Kitchen.kt`, `RichText.kt`, `Chat.kt`, `ReactionChip.kt` | ContentTest、ReactionUsersTest、既存ReactionPicker / ReactionUsers StoryのKotlin表示 |
 | 通知のグループ化・遅延取得・追加読み込み・既読 | `NotificationsScreen`, `notifications/` | `Notifications.kt` | 既存Notifications StoryのKotlin表示、通知E2E |
-| Home・連合投稿・ソーシャル操作 | `home/HomeScreen`, `HomeComposer`, `HomeReactionPicker`, `ActivityPubEmoji`, `useHomeLive` | `HomeScreen.kt`, `HomeComposer.kt`, `HomeTimeline.kt`, `HomePostCard.kt`, `HomeActivityPub.kt`, `HomeReactionPicker.kt`, `HomeUserSearch.kt`, `HomeLive.kt` | 既存Home全40 Storyと両実装の操作・画像、Composer状態テスト |
+| Home・連合投稿・ソーシャル操作 | `home/HomeScreen`, `HomeComposer`, `HomeReactionPicker`, `ActivityPubEmoji`, `useHomeLive` | `HomeScreen.kt`, `HomeComposer.kt`, `HomeTimeline.kt`, `HomePostCard.kt`, `HomeActivityPub.kt`, `HomeReactionPicker.kt`, `HomeUserSearch.kt`, `HomeLive.kt` | 既存Home全47 Storyと両実装の操作・画像、Composer状態テスト |
 | 連合通知・フォロー承認・チャンネル共有設定 | `ActivityPubNotifications`, `ZooSettings` | `ActivityPubNotifications.kt`, `ChannelTimelineSettings.kt` | 既存通知・設定Story、状態/API契約テスト |
 | Bubble Chat | `BubbleChatScreen`, `useBubbleChat` | `Bubble.kt` | ParityTransportTest、既存BubbleChat StoryのKotlin表示、共有・クリア・pagehide E2E |
 | App・Webhook・フォーム・権限 | `AppsDialog`, `AppBlocks`, `ChannelWebhooksDialog` | `Integrations.kt`, `Channels.kt` | CRUD E2E、API・ブロック契約テスト |
@@ -25,6 +25,8 @@ Reactを機能・UI・操作の基準とする。変更時は [compose-react-par
 | 翻訳・デザイントークン・アイコン・データ | `lib/i18n`, CSS、Lucide、Emojibase | `Ui.kt`, `IconData.kt`、共有翻訳・生成資源 | 全ロケールの共通辞書、`sync-compose-assets.mjs`、カタログツールバー |
 
 ## main取り込み時の照合
+
+- `f3784dc` のActivityPubプロフィール設定・投稿/ユーザー詳細ルート・リモートアバター・プロフィールリンク・公開範囲アイコンを共通Kotlinへ反映。Home詳細は `HomeDetail.kt`、設定は `ActivityPubSettings.kt` を使い、既存の投稿カード・通知・API境界と共有する。HomeComposerの閉状態メニュー解放と、モバイル詳細ルートのペイン選択も追従する。追加された12状態を既存Storybookの切替へ登録する。
 
 - `c1efff0` まで取り込み済み。`54cb528` のHome・ActivityPub投稿/返信/リアクション/フォロー/通知・タイムライン設定と追加Storyを共通Kotlinへ反映する。`useVisualViewport` のcallback ref変更もComposeのホスト接続へ反映する。`c1efff0` のTUIは独立クライアントで、WebのUI・API契約に追加変更はない。
 
@@ -55,6 +57,6 @@ Playwrightは共通のHTTPS API fixtureを使い、同じ利用者操作と送�
 実バックエンド、実OIDC、全Appの失敗・競合、スクリーンリーダー、各OSのIME・タッチ、MFM・数式の全構文、全画面の画像一致は別途確認が必要。
 全StoryのReact/Kotlin実描画・操作検証をCIの必須チェックとして実行する。両実装の画像を成果物へ保存し、目立つ配置・寸法・配色・状態の差を確認する。機能エラーや描画失敗は許容しない。
 
-Storybookは既存Storyの上部implementationツールバーで切り替える。`.storybook/kotlin-stories.ts` と領域別adapterから全368状態へ同じ引数と共有fixtureを渡す。`story-coverage.test.ts` は既存CSFの全exportを照合し、登録漏れを失敗させる。ReactのplayとKotlin iframeの実操作を同じ状態まで実行し、`playwright.storybook-parity.config.ts` で同じデータ・時刻・画面幅・テーマ・言語の画像を比較する。別Featuresカテゴリへ複製しない。
+Storybookは既存Storyの上部implementationツールバーで切り替える。`.storybook/kotlin-stories.ts` と領域別adapterから全380状態へ同じ引数と共有fixtureを渡す。`story-coverage.test.ts` は既存CSFの全exportを照合し、登録漏れを失敗させる。ReactのplayとKotlin iframeの実操作を同じ状態まで実行し、`playwright.storybook-parity.config.ts` で同じデータ・時刻・画面幅・テーマ・言語の画像を比較する。別Featuresカテゴリへ複製しない。
 
 UIの精度は「極端に違わなければ問題ない」という指定に従う。フォントのアンチエイリアスや微小な画素差は移植の完了条件にせず、独自の文字描画エンジンも追加しない。通常の比較は全Storyの操作と画像保存を行い、デスクトップ・モバイルの主要領域は実際の矩形も照合する。画素比較が必要な診断だけ `STORYBOOK_PARITY_VISUAL=strict` を指定する。比較ブラウザーは通常のChromiumと同じフォント計測を使う `channel: "chromium"` とし、legacy headless shellの文字幅整数丸めを実装側で再現しない。

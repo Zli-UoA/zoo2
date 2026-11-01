@@ -1,5 +1,8 @@
 import {
   channelRuleInitialPattern,
+  activityPubProfileInitial,
+  activityPubProfileSaved,
+  activityPubProfileRejectedName,
   channelRuleSavedPattern,
 } from "../../../.storybook/preference-fixtures";
 import { playForImplementation } from "../../../.storybook/play-for-implementation";
@@ -9,6 +12,10 @@ import { http, HttpResponse } from "msw";
 import { appHandlers } from "../../../.storybook/app-fixtures";
 import { AppShell } from "./AppShell";
 import { ZooSettings } from "./ZooSettings";
+
+const readOnlyChannelSettings = http.get("*/api/home/settings", () =>
+  HttpResponse.json({ can_manage: false, ltl_channel_pattern: "" }),
+);
 
 const meta = {
   title: "Pages/ZooSettings",
@@ -97,6 +104,13 @@ export const ChannelRule: Story = {
     msw: {
       handlers: [
         ...appHandlers,
+        http.get("*/api/activitypub/profile", () =>
+          HttpResponse.json({
+            display_name: activityPubProfileInitial.display_name,
+            default_display_name: "Alice",
+            summary: activityPubProfileInitial.summary,
+          }),
+        ),
         http.get("*/api/home/settings", () =>
           HttpResponse.json({ can_manage: true, ltl_channel_pattern: savedPattern }),
         ),
@@ -110,11 +124,15 @@ export const ChannelRule: Story = {
   },
   play: playForImplementation(
     async () => {
-      await userEvent.click(screen.getByRole("tab", { name: "ActivityPub" }));
+      await userEvent.click(await screen.findByRole("tab", { name: "ActivityPub" }));
       const field = await screen.findByRole("textbox", { name: "LTLに流すチャンネル名のルール" });
       await userEvent.clear(field);
       await userEvent.type(field, channelRuleSavedPattern);
-      await userEvent.click(within(screen.getByRole("textbox", { name: "LTLに流すチャンネル名のルール" }).closest("form")!).getByRole("button", { name: "保存" }));
+      await userEvent.click(
+        within(
+          screen.getByRole("textbox", { name: "LTLに流すチャンネル名のルール" }).closest("form")!,
+        ).getByRole("button", { name: "保存" }),
+      );
       await waitFor(() => expect(savedPattern).toBe(channelRuleSavedPattern));
       await expect(field).toHaveValue(channelRuleSavedPattern);
     },
@@ -133,6 +151,13 @@ export const ChannelRuleError: Story = {
     msw: {
       handlers: [
         ...appHandlers,
+        http.get("*/api/activitypub/profile", () =>
+          HttpResponse.json({
+            display_name: activityPubProfileInitial.display_name,
+            default_display_name: "Alice",
+            summary: activityPubProfileInitial.summary,
+          }),
+        ),
         http.get("*/api/home/settings", () =>
           ++ruleLoads === 1
             ? new HttpResponse(null, { status: 500 })
@@ -147,13 +172,17 @@ export const ChannelRuleError: Story = {
   },
   play: playForImplementation(
     async () => {
-      await userEvent.click(screen.getByRole("tab", { name: "ActivityPub" }));
+      await userEvent.click(await screen.findByRole("tab", { name: "ActivityPub" }));
       await expect(await screen.findByRole("alert")).toBeVisible();
       await userEvent.click(screen.getByRole("button", { name: "更新" }));
       await expect(
         await screen.findByRole("textbox", { name: "LTLに流すチャンネル名のルール" }),
       ).toBeVisible();
-      await userEvent.click(within(screen.getByRole("textbox", { name: "LTLに流すチャンネル名のルール" }).closest("form")!).getByRole("button", { name: "保存" }));
+      await userEvent.click(
+        within(
+          screen.getByRole("textbox", { name: "LTLに流すチャンネル名のルール" }).closest("form")!,
+        ).getByRole("button", { name: "保存" }),
+      );
       await expect(await screen.findByRole("alert")).toBeVisible();
     },
     async () => {
@@ -163,12 +192,13 @@ export const ChannelRuleError: Story = {
 };
 
 let savedProfile = {
-  display_name: "Federated Alice",
-  summary: "Zooで開発しています",
+  display_name: activityPubProfileInitial.display_name,
+  summary: activityPubProfileInitial.summary,
   default_display_name: "Alice",
 };
 const profileHandlers = [
   ...appHandlers,
+  readOnlyChannelSettings,
   http.get("*/api/activitypub/profile", () => HttpResponse.json(savedProfile)),
   http.put("*/api/activitypub/profile", async ({ request }) => {
     const body = (await request.json()) as { display_name: string; summary: string };
@@ -179,30 +209,36 @@ const profileHandlers = [
 export const ActivityPub: Story = {
   beforeEach: () => {
     savedProfile = {
-      display_name: "Federated Alice",
-      summary: "Zooで開発しています",
+      display_name: activityPubProfileInitial.display_name,
+      summary: activityPubProfileInitial.summary,
       default_display_name: "Alice",
     };
   },
   parameters: { msw: { handlers: profileHandlers } },
-  play: async () => {
-    await userEvent.click(screen.getByRole("tab", { name: "ActivityPub" }));
-    const field = await screen.findByRole("textbox", { name: "APub表示名" });
-    await expect(field).toHaveValue("Federated Alice");
-    await userEvent.clear(field);
-    await userEvent.type(field, "連合のアリス");
-    const bio = screen.getByRole("textbox", { name: "自己紹介" });
-    await userEvent.clear(bio);
-    await userEvent.type(bio, "公開プロフィールです");
-    await userEvent.click(screen.getByRole("button", { name: "保存" }));
-    await expect(await screen.findByRole("status")).toHaveTextContent("保存しました");
-    await expect(savedProfile.display_name).toBe("連合のアリス");
-    await expect(savedProfile.summary).toBe("公開プロフィールです");
-    await userEvent.clear(field);
-    await userEvent.click(screen.getByRole("button", { name: "保存" }));
-    await waitFor(() => expect(savedProfile.display_name).toBe(""));
-    await expect(field).toHaveAttribute("placeholder", "Alice");
-  },
+  play: playForImplementation(
+    async () => {
+      await userEvent.click(await screen.findByRole("tab", { name: "ActivityPub" }));
+      const field = await screen.findByRole("textbox", { name: "APub表示名" });
+      await expect(field).toHaveValue(activityPubProfileInitial.display_name);
+      await userEvent.clear(field);
+      await userEvent.type(field, activityPubProfileSaved.display_name);
+      const bio = screen.getByRole("textbox", { name: "自己紹介" });
+      await userEvent.clear(bio);
+      await userEvent.type(bio, activityPubProfileSaved.summary);
+      await userEvent.click(within(field.closest("form")!).getByRole("button", { name: "保存" }));
+      await expect(await screen.findByRole("status")).toHaveTextContent("保存しました");
+      await expect(savedProfile.display_name).toBe(activityPubProfileSaved.display_name);
+      await expect(savedProfile.summary).toBe(activityPubProfileSaved.summary);
+      await userEvent.clear(field);
+      await userEvent.click(within(field.closest("form")!).getByRole("button", { name: "保存" }));
+      await waitFor(() => expect(savedProfile.display_name).toBe(""));
+      await expect(field).toHaveAttribute("placeholder", "Alice");
+    },
+    async () => {
+      await waitFor(() => expect(savedProfile.display_name).toBe(""));
+      await expect(savedProfile.summary).toBe(activityPubProfileSaved.summary);
+    },
+  ),
 };
 export const ActivityPubMobile: Story = {
   ...ActivityPub,
@@ -213,30 +249,33 @@ export const ActivityPubLoading: Story = {
     msw: {
       handlers: [
         http.get("*/api/activitypub/profile", () => new Promise(() => {})),
+        readOnlyChannelSettings,
         ...appHandlers,
       ],
     },
   },
-  play: async () => {
-    await userEvent.click(screen.getByRole("tab", { name: "ActivityPub" }));
+  play: playForImplementation(async () => {
+    await userEvent.click(await screen.findByRole("tab", { name: "ActivityPub" }));
     await expect(await screen.findByRole("status")).toHaveTextContent("読み込み中");
-  },
+  }),
 };
 export const ActivityPubError: Story = {
   parameters: {
     msw: {
       handlers: [
         http.get("*/api/activitypub/profile", () => new HttpResponse(null, { status: 500 })),
+        readOnlyChannelSettings,
         ...appHandlers,
       ],
     },
   },
-  play: async () => {
-    await userEvent.click(screen.getByRole("tab", { name: "ActivityPub" }));
+  play: playForImplementation(async () => {
+    await userEvent.click(await screen.findByRole("tab", { name: "ActivityPub" }));
     await expect(await screen.findByRole("alert")).toBeVisible();
-  },
+  }),
 };
 export const ActivityPubSaveError: Story = {
+  beforeEach: ActivityPub.beforeEach,
   parameters: {
     msw: {
       handlers: [
@@ -245,13 +284,13 @@ export const ActivityPubSaveError: Story = {
       ],
     },
   },
-  play: async () => {
-    await userEvent.click(screen.getByRole("tab", { name: "ActivityPub" }));
+  play: playForImplementation(async () => {
+    await userEvent.click(await screen.findByRole("tab", { name: "ActivityPub" }));
     const field = await screen.findByRole("textbox", { name: "APub表示名" });
     await userEvent.clear(field);
-    await userEvent.type(field, "保存前の名前");
-    await userEvent.click(screen.getByRole("button", { name: "保存" }));
+    await userEvent.type(field, activityPubProfileRejectedName);
+    await userEvent.click(within(field.closest("form")!).getByRole("button", { name: "保存" }));
     await expect(await screen.findByRole("alert")).toBeVisible();
-    await expect(field).toHaveValue("保存前の名前");
-  },
+    await expect(field).toHaveValue(activityPubProfileRejectedName);
+  }),
 };

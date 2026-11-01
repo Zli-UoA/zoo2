@@ -4,6 +4,15 @@ import kotlin.test.*
 import kotlinx.serialization.json.*
 
 class ModelTest {
+    @Test
+    fun homeDetailsKeepTheHomePaneWithoutMatchingOtherRoutes() {
+        assertTrue(isHomePath("/home?frontend=compose"))
+        assertTrue(isHomePath("/home/posts/remote%2Fpost"))
+        assertTrue(isHomePath("/home/users/remote%3Aactor?frontend=compose"))
+        assertFalse(isHomePath("/home-other"))
+        assertFalse(isHomePath("/channels/home"))
+    }
+
     private fun row(value: String): Row = json.parseToJsonElement(value).jsonObject
 
     @Test

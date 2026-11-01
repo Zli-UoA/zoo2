@@ -784,6 +784,7 @@ fun Field(
         buildMap<String, String> {
             if (invalid) put("aria-invalid", "true")
             if (readOnly) put("aria-readonly", "true")
+            put("aria-placeholder", placeholder.orEmpty())
             putAll(inputAttributes)
         }
     Column(modifier, verticalArrangement = Arrangement.spacedBy(4.dp)) {

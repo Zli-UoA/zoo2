@@ -675,6 +675,7 @@ internal fun Message(
                         FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                             if (!grouped)
                                 Row(
+                                    Modifier.align(Alignment.CenterVertically),
                                     verticalAlignment = Alignment.CenterVertically,
                                     horizontalArrangement = Arrangement.spacedBy(6.dp),
                                 ) {
@@ -708,14 +709,20 @@ internal fun Message(
                                 hintModifier ->
                                 Text(
                                     app.platform.time(message.text("created_at")),
-                                    hintModifier,
+                                    hintModifier
+                                        .align(Alignment.CenterVertically)
+                                        .then(webControlModifier("time")),
                                     small = true,
                                     muted = true,
                                     size = 11.sp,
                                 )
                             }
                             if (message.flag("apub"))
-                                ActivityPubBadge(app, message.text("apub_visibility"))
+                                ActivityPubBadge(
+                                    app,
+                                    message.text("apub_visibility"),
+                                    Modifier.align(Alignment.CenterVertically),
+                                )
                         }
                     if (editing) {
                         Column(

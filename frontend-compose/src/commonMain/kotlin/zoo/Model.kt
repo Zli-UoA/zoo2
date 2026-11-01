@@ -176,3 +176,8 @@ fun groupedWith(previous: Row?, current: Row): Boolean {
     val later = timestampMillis(current.text("created_at")) ?: return false
     return later - earlier in 0..300_000
 }
+
+internal fun isHomePath(path: String): Boolean {
+    val route = path.substringBefore('?')
+    return route == "/home" || route.startsWith("/home/posts/") || route.startsWith("/home/users/")
+}

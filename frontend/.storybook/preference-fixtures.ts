@@ -23,3 +23,14 @@ export const pushStoryPresets = {
 
 export const channelRuleInitialPattern = "ltl-%";
 export const channelRuleSavedPattern = "public-%";
+
+export const activityPubProfileInitial = {
+  display_name: "Federated Alice",
+  default_display_name: "Alice",
+  summary: "Zooで開発しています",
+};
+export const activityPubProfileSaved = {
+  display_name: "連合のアリス",
+  summary: "公開プロフィールです",
+};
+export const activityPubProfileRejectedName = "保存前の名前";

@@ -87,7 +87,13 @@ fun ChannelTimelineSettings(app: Session, state: ChannelTimelineSettingsControll
     SettingsSection(app.t("home.channelRule"), app.t("home.ruleHint")) {
         if (state.canManage)
             CssFlowRow(
-                Modifier.fillMaxWidth(),
+                Modifier.fillMaxWidth()
+                    .then(
+                        webControlModifier(
+                            "form",
+                            attributes = mapOf("aria-label" to app.t("home.channelRule")),
+                        )
+                    ),
                 verticalAlignment = Alignment.CenterVertically,
                 verticalGap = 8.dp,
             ) {
@@ -111,7 +117,7 @@ fun ChannelTimelineSettings(app: Session, state: ChannelTimelineSettingsControll
                             } else false
                         },
                     showLabel = false,
-                    placeholder = "public-%",
+                    placeholder = "^public-.*$",
                     enabled = !state.pending,
                     maxLength = 200,
                     onComposition = { composing = it },

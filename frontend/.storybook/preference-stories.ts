@@ -2,6 +2,9 @@ import type { NativeInteraction } from "./native-interactions";
 import {
   searchDemoQuery,
   channelRuleInitialPattern,
+  activityPubProfileInitial,
+  activityPubProfileSaved,
+  activityPubProfileRejectedName,
   channelRuleSavedPattern,
   longSearchDemoQuery,
   pushStoryControls,
@@ -55,6 +58,8 @@ export function preferenceOptions(
     } else if (name === "Members") {
       click("tab", "メンバー");
       wait("button", "管理者にする", { index: 0, enabled: true });
+    } else if (name.startsWith("Activity Pub") || name.startsWith("Channel Rule")) {
+      click("tab", "ActivityPub");
     } else {
       wait("heading", "Zoo設定");
       wait("group", "テーマ");
@@ -75,8 +80,11 @@ export function preferenceOptions(
       value: channelRuleSavedPattern,
       exact: true,
     });
-    click("button", "保存");
-    wait("button", "保存", { enabled: true });
+    click("button", "保存", { within: { role: "form", name: "LTLに流すチャンネル名のルール" } });
+    wait("button", "保存", {
+      enabled: true,
+      within: { role: "form", name: "LTLに流すチャンネル名のルール" },
+    });
     wait("textbox", "LTLに流すチャンネル名のルール", { valueExact: channelRuleSavedPattern });
   }
   if (kind === "settings" && name === "Channel Rule Error") {
@@ -86,9 +94,58 @@ export function preferenceOptions(
       enabled: true,
       valueExact: channelRuleInitialPattern,
     });
-    click("button", "保存");
+    click("button", "保存", { within: { role: "form", name: "LTLに流すチャンネル名のルール" } });
     wait("alert", "", { exact: false });
-    wait("button", "保存", { enabled: true });
+    wait("button", "保存", {
+      enabled: true,
+      within: { role: "form", name: "LTLに流すチャンネル名のルール" },
+    });
+  }
+  if (kind === "settings" && name.startsWith("Activity Pub")) {
+    const profileForm = { role: "form", name: "ActivityPub" };
+    if (name === "Activity Pub Loading") wait("status", "", { exact: false, text: "読み込み中" });
+    else if (name === "Activity Pub Error") wait("alert", "", { exact: false });
+    else {
+      wait("textbox", "APub表示名", { valueExact: activityPubProfileInitial.display_name });
+      interactions.push({
+        action: "type",
+        role: "textbox",
+        name: "APub表示名",
+        value:
+          name === "Activity Pub Save Error"
+            ? activityPubProfileRejectedName
+            : activityPubProfileSaved.display_name,
+        exact: true,
+      });
+      if (name !== "Activity Pub Save Error")
+        interactions.push({
+          action: "type",
+          role: "textbox",
+          name: "自己紹介",
+          value: activityPubProfileSaved.summary,
+          exact: true,
+        });
+      click("button", "保存", { within: profileForm });
+      if (name === "Activity Pub Save Error") {
+        wait("alert", "", { exact: false });
+        wait("textbox", "APub表示名", { valueExact: activityPubProfileRejectedName });
+      } else {
+        wait("status", "", { exact: false });
+        interactions.push({
+          action: "type",
+          role: "textbox",
+          name: "APub表示名",
+          value: "",
+          exact: true,
+        });
+        click("button", "保存", { within: profileForm });
+        wait("textbox", "APub表示名", {
+          valueExact: "",
+          attributes: { "aria-placeholder": "Alice" },
+        });
+        wait("status", "", { exact: false });
+      }
+    }
   }
   if (kind === "members") {
     if (name === "Load Error") {

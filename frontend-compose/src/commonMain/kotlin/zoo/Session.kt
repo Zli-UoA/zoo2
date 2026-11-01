@@ -40,7 +40,7 @@ class Session(val repo: Repository, val scope: CoroutineScope, initial: Environm
             if (
                 initial.path.startsWith("/channels/") ||
                     initial.path.startsWith("/notifications") ||
-                    initial.path.substringBefore('?') == "/home"
+                    isHomePath(initial.path)
             )
                 "chat"
             else "sidebar"
@@ -178,7 +178,7 @@ class Session(val repo: Repository, val scope: CoroutineScope, initial: Environm
                 if (
                     channelId != null ||
                         next.path.startsWith("/notifications") ||
-                        next.path.substringBefore('?') == "/home"
+                        isHomePath(next.path)
                 )
                     "chat"
                 else "sidebar"
@@ -190,11 +190,7 @@ class Session(val repo: Repository, val scope: CoroutineScope, initial: Environm
         activityPubNotifications.ensureLoaded()
         searchPreferences.ensureLoaded()
         pane =
-            if (
-                channelId != null ||
-                    env.path.startsWith("/notifications") ||
-                    env.path.substringBefore('?') == "/home"
-            )
+            if (channelId != null || env.path.startsWith("/notifications") || isHomePath(env.path))
                 "chat"
             else "sidebar"
         scope.launch {

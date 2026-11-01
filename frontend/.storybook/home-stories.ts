@@ -267,6 +267,25 @@ export const homeInteractions: Record<string, Step[]> = {
     button("リポストを取り消す 1", { index: 0 }),
     wait("Aliceさんがリポスト", { state: "hidden" }),
   ],
+  "remote-avatar": [
+    role("img", "Remote Alice", { busy: false }),
+    wait("RA", { state: "hidden" }),
+    fixture("homeAvatarLinks"),
+  ],
+  "remote-avatar-fallback": [role("img", "Remote Alice", { busy: false }), wait("RA")],
+  "single-post": [
+    wait(homePosts[0].content.split("\n")[0], { exact: false }),
+    role("article", undefined, { count: 1 }),
+    role("button", "ローカル", { state: "hidden" }),
+  ],
+  "single-post-missing": [role("alert"), role("article", undefined, { count: 0 })],
+  "user-profile": [wait("リモートユーザーの自己紹介です"), button("フォロー"), wait("承認待ち")],
+  "mobile-user-profile": [
+    wait("リモートユーザーの自己紹介です"),
+    button("フォロー"),
+    wait("承認待ち"),
+  ],
+  "user-profile-error": [role("alert")],
   "misskey-custom-emoji": [wait("@misskey.example", { exact: false }), fixture("homeEmojiImages")],
   "misskey-react": [
     button("リアクション 2"),

@@ -114,7 +114,7 @@ jobs:
           echo "Cold opt-in frontend container build: $((SECONDS - started)) seconds" >> "$GITHUB_STEP_SUMMARY"
       - name: Check opt-in assets and conditional CSP
         run: |
-          docker run -d --name zoo-compose-ci -p 127.0.0.1:3101:3000 zoo-compose-ci
+          docker run -d --name zoo-compose-ci -p 127.0.0.1:3101:3000 -e MEDIA_PROXY_URL=https://media-proxy.example/ zoo-compose-ci
           for attempt in $(seq 1 30); do
             if curl -fsS http://127.0.0.1:3101/ > /dev/null; then break; fi
             sleep 1
@@ -122,6 +122,7 @@ jobs:
           curl -fsS -D /tmp/compose-headers http://127.0.0.1:3101/compose/zoo-compose.js -o /tmp/compose-entry.js
           test -s /tmp/compose-entry.js
           grep -q "connect-src.*https://www.gstatic.com" /tmp/compose-headers
+          grep -q "connect-src[^;]*https://media-proxy.example" /tmp/compose-headers
           docker exec zoo-compose-ci sh -c 'test -n "$(find /usr/share/nginx/html/compose -name "*.wasm")"'
           test "$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:3101/compose/missing.js)" = 404
       - name: Container logs

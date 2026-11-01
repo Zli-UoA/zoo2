@@ -45,39 +45,46 @@ fun HomePostCard(
                 )
             }
         Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-            Avatar(
-                obj(
-                    "id" to post.text("user_id"),
-                    "display_name" to post.text("display_name").ifEmpty { post.text("user_name") },
-                ),
-                size = 32.dp,
-            )
+            val profile = "/home/users/${post.text("user_id").encodeURLParameter()}"
+            NativeLink(profile) {
+                ActivityPubAvatar(
+                    if (post.flag("remote")) post["avatar"] as? Row else null,
+                    post.text("display_name").ifEmpty { post.text("user_name") },
+                )
+            }
             Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 FlowRow(
                     horizontalArrangement = Arrangement.spacedBy(8.dp),
                     verticalArrangement = Arrangement.spacedBy(2.dp),
                 ) {
-                    ActivityPubText(
-                        post.text("display_name").ifEmpty { post.text("user_name") },
-                        post.homeRows("actor_emojis"),
-                        textStyle = TextStyle(fontSize = 14.sp, fontWeight = FontWeight.SemiBold),
-                    )
-                    FederatedAccount(
-                        post.text("user_name"),
-                        post.text("user_id"),
-                        post.flag("remote"),
-                    )
-                    Text(
-                        app.platform.fullTimestamp(post.text("created_at")),
-                        Modifier.then(
-                            webControlModifier(
-                                "time",
-                                attributes = mapOf("datetime" to post.text("created_at")),
-                            )
-                        ),
-                        size = 12.sp,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
+                    NativeLink(profile) {
+                        ActivityPubText(
+                            post.text("display_name").ifEmpty { post.text("user_name") },
+                            post.homeRows("actor_emojis"),
+                            textStyle =
+                                TextStyle(fontSize = 14.sp, fontWeight = FontWeight.SemiBold),
+                        )
+                    }
+                    NativeLink(profile) {
+                        FederatedAccount(
+                            post.text("user_name"),
+                            post.text("user_id"),
+                            post.flag("remote"),
+                        )
+                    }
+                    NativeLink("/home/posts/${post.text("id").encodeURLParameter()}") {
+                        Text(
+                            app.platform.fullTimestamp(post.text("created_at")),
+                            Modifier.then(
+                                webControlModifier(
+                                    "time",
+                                    attributes = mapOf("datetime" to post.text("created_at")),
+                                )
+                            ),
+                            size = 12.sp,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
                     if (!post.flag("remote") && post.text("channel_id").isNotEmpty())
                         NativeLink(
                             "/channels/${post.text("channel_id")}?message=${post.text("id")}"

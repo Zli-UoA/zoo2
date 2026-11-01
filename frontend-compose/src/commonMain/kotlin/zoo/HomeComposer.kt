@@ -197,6 +197,7 @@ fun HomeComposer(
                         "${app.t("home.audience")}: ${app.t("home.visibility.${state.visibility}")}",
                         audienceIcon,
                         !state.sending,
+                        visible = state.opened,
                     ) { close ->
                         listOf(
                                 "public" to "globe",
@@ -225,6 +226,7 @@ fun HomeComposer(
                         app.t(if (federated) "home.federationOn" else "home.federationOff"),
                         if (federated) "network" else "unplug",
                         !state.sending,
+                        visible = state.opened,
                     ) { close ->
                         HomePostChoice(
                             app.t("home.federationOn"),
@@ -389,9 +391,12 @@ private fun HomePostMenu(
     label: String,
     icon: String,
     enabled: Boolean,
+    visible: Boolean,
     content: @Composable ColumnScope.(() -> Unit) -> Unit,
 ) {
-    var open by remember { mutableStateOf(false) }
+    // The retained editor must not retain transient portals when its form closes.
+    // React unmounts DialogContent on close; reset menus at that same boundary.
+    var open by remember(visible) { mutableStateOf(false) }
     var anchor by remember { mutableStateOf(Rect.Zero) }
     IconButton(
         icon,
@@ -401,7 +406,7 @@ private fun HomePostMenu(
     ) {
         open = true
     }
-    if (open)
+    if (visible && open)
         OverlayRegistration(
             label,
             { open = false },
