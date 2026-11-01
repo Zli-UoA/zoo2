@@ -266,6 +266,7 @@ curl -fsSI https://<公開ホスト>/ | grep -i content-security-policy
 - リクエストは Tunnel → `127.0.0.1:18080` → Traefik の順で入ります。`/api` と `/api/*` は priority 100 の `api` ルーターで Rust へ、それ以外はフロントへ流れます。Cloudflare のレート制限は `/api/*` を含む公開ホスト全体に適用し、Tunnel 以外の公開経路を作らないでください。
 - この接続先は HTTP なので Origin Server Name は不要です。ルーティングはパスで行い、HTTP Host Header の上書きも不要です。ブラウザからの公開 URL は HTTPS を使います。
 - `frontend`・`backend` にドメインやホストポートを追加しないでください。`frontend` は `frontend` ネットワークにだけ参加します（proxy のホストポート公開に使うため、このネットワークは `internal` にしていません）。Rust は内部ネットワークと Kanidm Discovery/JWKS 用の outbound ネットワークだけに参加します。
+- ActivityPubの絵文字画像の利用者別レート制限は、`ACTIVITYPUB_CLOUDFLARE_TUNNEL=true` のとき `CF-Connecting-IP` を使います。Composeは隔離されたTunnel専用オリジンとして既定で有効にします。Cloudflare側で訪問者IPヘッダーを削除しないでください。Pseudo IPv4の上書きモードでは `CF-Connecting-IPv6` も保持します。Tunnel以外の公開経路を設ける構成では、この設定を無効にしてください。Rustは設定が有効でも公開IPからの直結リクエストのCFヘッダーを信頼せず、IP情報が不明なTunnel接続をプロキシ共通の枠へまとめません。
 - 現在は Traefik・Rust ともに `X-Forwarded-*` ヘッダを認証やルーティングに使わないため、`forwardedHeaders.trustedIPs` は設定していません。将来、監査ログや IP 単位のレート制限などでクライアント IP を参照する必要が出た場合は、`proxy` の command に `--entrypoints.web.forwardedheaders.trustedips` を追加し、`proxy` から見える cloudflared の接続元 IP/CIDR（Docker ブリッジのゲートウェイ IP 等、`0.0.0.0/0` は不可）に限定して設定してください。
 
 デプロイ後はホストで `curl -f http://127.0.0.1:18080/` を実行し、次に Tunnel の公開 URL から画面を確認します。Rust にプロキシ以外の公開経路がないことも確認してください。

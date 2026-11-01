@@ -16,6 +16,8 @@ export interface FeedMessage {
   app_attachments?: string | null;
   app_unfurls?: string | null;
   app_origin_id?: string | null;
+  apub?: boolean;
+  apub_visibility?: string | null;
   is_bot?: boolean | null;
   app_id?: string | null;
   avatar_url?: string | null;

@@ -59,19 +59,24 @@ function groupBy<Row>(rows: Row[], key: (row: Row) => string): Map<string, Row[]
   return grouped;
 }
 
+/** コレクションとKotlinプレビューで同じ実効設定を使う。 */
+export function createStoryConfig(input: StoryCollectionsInput = {}): AppConfig {
+  const currentUserId = input.currentUserId ?? DEFAULT_CURRENT_USER_ID;
+  return {
+    ...DEFAULT_CONFIG,
+    ...input.config,
+    txidMode: "skip",
+    devUserId: currentUserId,
+  };
+}
+
 /**
  * Storybook / VRT 用のローカルコレクションを作る。
  * アプリの Electric コレクションと同じ公開 API（get / insert / update / delete /
  * live query）を満たすため、画面コンポーネントはそのまま描画できる。
  */
 export function createStoryCollections(input: StoryCollectionsInput = {}): CollectionsBundle {
-  const currentUserId = input.currentUserId ?? DEFAULT_CURRENT_USER_ID;
-  const config: AppConfig = {
-    ...DEFAULT_CONFIG,
-    ...input.config,
-    txidMode: "skip",
-    devUserId: currentUserId,
-  };
+  const config = createStoryConfig(input);
 
   const channels = rowsCollection<ChannelRow>("channels", (row) => row.id, input.channels ?? []);
   const users = rowsCollection<UserRow>("users", (row) => row.id, input.users ?? []);

@@ -204,6 +204,7 @@ jobs:
       ELECTRIC_PORT: "0"
       S3_PORT: "0"
       S3_CONSOLE_PORT: "0"
+      ACTIVITYPUB_BASE_URL: https://zoo.example.com
     needs: runner
     runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-latest' || fromJSON(needs.runner.outputs.docker-runs-on || '"ubuntu-latest"') }}
     defaults:
@@ -302,6 +303,7 @@ jobs:
           DEV_AUTH_ENABLED: "true"
         run: |
           cargo test --test '*'
+          cargo test --lib activitypub:: -- --include-ignored --test-threads=1
 
       - name: Show container logs
         if: failure()

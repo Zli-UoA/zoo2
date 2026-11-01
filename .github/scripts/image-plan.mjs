@@ -37,7 +37,7 @@ const frontendInfraFiles = ['infra/frontend-nginx.conf', 'infra/csp-hashes.mjs',
 function componentFile(c, f) {
   return f.startsWith(`infra/Dockerfile-${c}-deploy`) ||
     (c === 'migrate' ? f.startsWith('infra/db/') : f.startsWith(`${c}/`)) ||
-    (c === 'frontend' && frontendInfraFiles.includes(f)) ||
+    (c === 'frontend' && (frontendInfraFiles.includes(f) || f.startsWith('frontend-compose/'))) ||
     (c === 'backend' && f === 'docs/slack-event-coverage.json');
 }
 

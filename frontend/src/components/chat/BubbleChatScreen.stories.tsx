@@ -1,3 +1,5 @@
+import { storySurfaces } from "../../../.storybook/story-surfaces";
+import { playForImplementation } from "../../../.storybook/play-for-implementation";
 import type { Meta, StoryObj } from "@storybook/react-vite";
 import { bubbleChatHandlers } from "../../../.storybook/bubble-fixtures";
 import { expect, screen, userEvent, waitFor, within } from "storybook/test";
@@ -16,7 +18,7 @@ const meta = {
   decorators: [
     (Story) => (
       <StoryShell selectedChannelId={null} initialPane="chat">
-        <div className="h-[720px] overflow-hidden bg-background">
+        <div className={storySurfaces["Pages/BubbleChat"]}>
           <Story />
         </div>
       </StoryShell>
@@ -33,7 +35,7 @@ export const ActiveConversation: Story = {
       handlers: bubbleChatHandlers,
     },
   },
-  play: async () => {
+  play: playForImplementation(async () => {
     await expect(
       await screen.findByText("今日のミーティングは何時からでしたっけ？"),
     ).toBeInTheDocument();
@@ -48,15 +50,15 @@ export const ActiveConversation: Story = {
     await expect(input).toHaveValue("");
     // 入力欄は即座にクリアされるが、吹き出しは破裂アニメーションのため少しの間表示される
     await expect(await within(list).findByText("ありがとう！準備してきます")).toBeInTheDocument();
-  },
+  }),
 };
 
 export const Empty: Story = {
-  play: async () => {
+  play: playForImplementation(async () => {
     await expect(
       await screen.findByText("現在入力中のユーザーはいません", { selector: "p" }),
     ).toBeInTheDocument();
-  },
+  }),
 };
 
 export const Mobile: Story = {
@@ -70,20 +72,20 @@ export const Mobile: Story = {
 
 export const Participants: Story = {
   parameters: { msw: { handlers: bubbleChatHandlers } },
-  play: async () => {
+  play: playForImplementation(async () => {
     await screen.findByText("今日のミーティングは何時からでしたっけ？");
     await userEvent.click(screen.getByRole("button", { name: /^参加者 / }));
     const panel = await screen.findByRole("complementary", { name: "参加者" });
     await expect(within(panel).getByText("@bob")).toBeVisible();
-  },
+  }),
 };
 export const MobileParticipants: Story = {
   globals: { viewport: { value: "mobile" } },
   parameters: { msw: { handlers: bubbleChatHandlers } },
-  play: async () => {
+  play: playForImplementation(async () => {
     await screen.findByText("今日のミーティングは何時からでしたっけ？");
     await userEvent.click(screen.getByRole("button", { name: /^参加者 / }));
     const dialog = await screen.findByRole("dialog");
     await waitFor(() => expect(within(dialog).getByText("@bob")).toBeVisible());
-  },
+  }),
 };

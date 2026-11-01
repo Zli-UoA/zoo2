@@ -2,11 +2,12 @@ import { toast } from "sonner";
 import { useShell } from "./shell-context";
 import { disablePush } from "../../lib/pwa/push";
 import { useTranslation } from "react-i18next";
-import { Link } from "@tanstack/react-router";
+import { Link, useRouterState } from "@tanstack/react-router";
 import { cn } from "cn";
 import {
   ActivityIcon,
   HashIcon,
+  HomeIcon,
   LogOutIcon,
   MessageCircleMoreIcon,
   type LucideIcon,
@@ -26,13 +27,19 @@ import { NotificationsButton } from "../chat/NotificationsButton";
 import { initials } from "../chat/format";
 import { PaneHeader } from "./PaneHeader";
 
+import {
+  selectedFrontend,
+  switchFrontend,
+  supportsComposePath,
+} from "../../lib/experimentalFrontend";
+
 function RailLink({
   to,
   icon: Icon,
   label,
   exact = false,
 }: {
-  to: "/" | "/bubble" | "/realtime";
+  to: "/home" | "/" | "/bubble" | "/realtime";
   icon: LucideIcon;
   label: string;
   exact?: boolean;
@@ -55,6 +62,8 @@ function RailLink({
  * 画面幅に関わらず表示し、狭幅でも操作の入口を保つ。
  */
 export function LeftRail() {
+  const path = useRouterState({ select: (state) => state.location.pathname });
+  const compose = selectedFrontend() === "compose";
   const { t } = useTranslation();
   const shell = useShell();
   const { config } = useCollections();
@@ -98,6 +107,7 @@ export function LeftRail() {
       <PaneHeader className="mb-1 w-full justify-center px-0">
         <img src="/icons/zoo.svg" alt="Zoo" width={36} height={36} className="size-9 rounded-xl" />
       </PaneHeader>
+      <RailLink to="/home" icon={HomeIcon} label={t("home.title")} exact />
       <RailLink to="/" icon={HashIcon} label={t("channels.title")} exact />
       <NotificationsButton />
       <RailLink to="/bubble" icon={MessageCircleMoreIcon} label={t("bubbleChat.title")} exact />
@@ -108,6 +118,19 @@ export function LeftRail() {
       ) : null}
 
       <div className="mt-auto flex flex-col items-center gap-2">
+        {supportsComposePath(path) ? (
+          <Button
+            variant="ghost"
+            size="icon-sm"
+            title={t(compose ? "experimental.useReact" : "experimental.useCompose")}
+            aria-label={t(compose ? "experimental.useReact" : "experimental.useCompose")}
+            onClick={() => switchFrontend(compose ? "react" : "compose")}
+            data-frontend-switch
+          >
+            <span aria-hidden="true">{compose ? "R" : "K"}</span>
+          </Button>
+        ) : null}
+
         <Link
           to="/settings"
           search={{ channel: shell.selectedChannelId ?? undefined }}

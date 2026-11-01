@@ -595,6 +595,9 @@ dependencies = [
  "emojis",
  "futures-util",
  "hmac 0.13.0",
+ "html-escape",
+ "http-signature-normalization",
+ "httpdate",
  "jiff",
  "jsonwebtoken",
  "openssl",
@@ -1881,6 +1884,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "html-escape"
+version = "0.2.15"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c9356095b4b41197bba32173600e1582792cda618f65d12f68e2e77d273413c5"
+
+[[package]]
 name = "http"
 version = "0.2.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1933,6 +1942,15 @@ dependencies = [
  "http 1.5.0",
  "http-body 1.1.0",
  "pin-project-lite",
+]
+
+[[package]]
+name = "http-signature-normalization"
+version = "0.7.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1d64b64f40e439fcc8ca141f77df31869c11ea93dd97adaa8216d4c7b9a66235"
+dependencies = [
+ "httpdate",
 ]
 
 [[package]]

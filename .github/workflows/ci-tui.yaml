@@ -1,0 +1,60 @@
+name: CI TUI
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - "tui/**"
+      - "rust-toolchain.toml"
+      - ".github/workflows/ci-tui.yaml"
+      - ".github/workflows/select-runner.yaml"
+  push:
+    branches: [main]
+    paths:
+      - "tui/**"
+      - "rust-toolchain.toml"
+      - ".github/workflows/ci-tui.yaml"
+      - ".github/workflows/select-runner.yaml"
+permissions:
+  contents: read
+concurrency:
+  group: tui-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+# TUI は DB や Electric を使わないので、Docker 不要の実行先で fmt・clippy・テストをまとめて行います。
+jobs:
+  runner:
+    uses: ./.github/workflows/select-runner.yaml
+    secrets:
+      runner-status-token: ${{ secrets.RUNNER_STATUS_TOKEN }}
+
+  check:
+    needs: runner
+    runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-latest' || fromJSON(needs.runner.outputs.runs-on || '"zli-kubecamp-no-docker"') }}
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: ./tui
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+      - name: Read Rust toolchain
+        id: rust-toolchain
+        working-directory: .
+        # Install only the toolchain pinned in rust-toolchain.toml, not stable as well.
+        run: echo "channel=$(sed -n 's/^channel = "\(.*\)"$/\1/p' rust-toolchain.toml)" >> "$GITHUB_OUTPUT"
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ steps.rust-toolchain.outputs.channel }}
+          components: clippy, rustfmt
+      - name: Restore Cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: tui
+      - name: format check
+        run: cargo fmt --check
+      - name: lint check
+        run: cargo clippy --all-targets --locked -- -D warnings
+      - name: test
+        run: cargo test --locked
+      - name: build
+        run: cargo build --locked --release

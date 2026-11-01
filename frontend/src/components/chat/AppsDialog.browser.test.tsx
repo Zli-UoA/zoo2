@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vite-plus/test";
 import { LocaleProvider } from "../i18n/LocaleProvider";
@@ -79,7 +79,9 @@ describe("Apps control panel", () => {
     await userEvent.click(screen.getByRole("tab", { name: "管理・開発" }));
     expect(screen.getByRole("button", { name: "トークンを発行" })).toBeVisible();
     expect(screen.queryByRole("button", { name: "承認を申請" })).toBeNull();
-    expect(screen.getByText("messages:write")).toBeVisible();
+    // The exiting overview panel can coexist during the tab transition.
+    const management = screen.getByRole("tabpanel", { name: "管理・開発" });
+    await waitFor(() => expect(within(management).getByText("messages:write")).toBeVisible());
   });
 
   it("lets users cancel editing and reports malformed manifests before sending", async () => {

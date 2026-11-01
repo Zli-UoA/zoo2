@@ -1,3 +1,4 @@
+import { ActivityPubBadge } from "../../home/ActivityPubBadge";
 import { useEffect, useId, useRef, useState } from "react";
 import { MessageCard, parseMessageCards } from "./MessageCard";
 import { useTranslation } from "react-i18next";
@@ -308,9 +309,9 @@ export function MessageRow({
         )}
 
         <div className="min-w-0 flex-1">
-          {item.isGroupStart ? (
-            <div className="flex items-baseline gap-2">
-              <AuthorIdentity message={message} />
+          {item.isGroupStart || message.apub ? (
+            <div className="flex flex-wrap items-center gap-2">
+              {item.isGroupStart ? <AuthorIdentity message={message} /> : null}
               <time
                 className="shrink-0 text-[11px] text-muted-foreground tabular-nums"
                 dateTime={normalizeUtcTimestamp(message.created_at)}
@@ -318,6 +319,9 @@ export function MessageRow({
               >
                 {formatTime(message.created_at, locale)}
               </time>
+              {message.apub ? (
+                <ActivityPubBadge visibility={message.apub_visibility ?? "public"} />
+              ) : null}
             </div>
           ) : null}
 

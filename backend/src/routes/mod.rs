@@ -4,6 +4,8 @@ pub mod channel_webhooks;
 pub mod channels;
 pub mod dms;
 pub mod health;
+pub mod home;
+pub mod home_live;
 pub mod messages;
 pub mod notifications;
 pub mod push;
@@ -60,6 +62,8 @@ pub fn create_router(state: AppState) -> Router {
 
     Router::new()
         .merge(health::router())
+        .merge(home::router())
+        .merge(crate::activitypub::router())
         .merge(crate::apps::management::router())
         .merge(crate::apps::api::router())
         .merge(crate::apps::oauth::router())

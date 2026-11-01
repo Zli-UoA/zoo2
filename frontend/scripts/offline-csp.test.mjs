@@ -26,8 +26,9 @@ const nginx = await readFile(new URL("../../infra/frontend-nginx.conf", import.m
 const policies = [...nginx.matchAll(/add_header Content-Security-Policy "([^"]+)" always;/g)].map(
   (match) => match[1].replace(/\$\{CSP_[A-Z0-9_]+\}/g, ""),
 );
-assert.equal(policies.length, 2);
-assert.equal(policies[0], policies[1], "Document and Worker policies must agree");
+assert.equal(policies.length, 3);
+for (const policy of policies)
+  assert.equal(policies[0], policy, "Document, Compose and Worker policies must agree");
 const oldPolicy = policies[0]
   .replace(" 'wasm-unsafe-eval'", "")
   .replace("connect-src 'self' data:", "connect-src 'self'");

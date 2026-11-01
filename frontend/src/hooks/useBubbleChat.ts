@@ -200,18 +200,12 @@ export function useBubbleChat(enabled = true) {
         hasPendingWrite = false;
         const requestSeq = ++seq;
         const sentAt = Date.now() + serverTimeOffset;
-        void client
-          .request(path, {
-            method: "POST",
-            body: {
-              session_id: sessionId,
-              seq: requestSeq,
-              content: "",
-              sent_at: sentAt,
-            },
-            keepalive: true,
-          })
-          .catch(() => {});
+        const body = { session_id: sessionId, seq: requestSeq, content: "", sent_at: sentAt };
+        void (
+          client.keepalive
+            ? client.keepalive(path, body)
+            : client.request(path, { method: "POST", body, keepalive: true })
+        ).catch(() => {});
       }
     };
 
@@ -305,7 +299,7 @@ export function useBubbleChat(enabled = true) {
           activePollAbortController = null;
         }
         setIsSharing(false);
-        stop();
+        clearKeepalive();
         setEntries([]);
       } else {
         clearTimeout(pollTimer);
@@ -325,7 +319,8 @@ export function useBubbleChat(enabled = true) {
     };
 
     document.addEventListener("visibilitychange", onVisibilityChange);
-    window.addEventListener("pagehide", onPageHide);
+    window.addEventListener("beforeunload", onPageHide, true);
+    window.addEventListener("pagehide", onPageHide, true);
     void poll();
 
     return () => {
@@ -340,7 +335,8 @@ export function useBubbleChat(enabled = true) {
         activePollAbortController = null;
       }
       document.removeEventListener("visibilitychange", onVisibilityChange);
-      window.removeEventListener("pagehide", onPageHide);
+      window.removeEventListener("beforeunload", onPageHide, true);
+      window.removeEventListener("pagehide", onPageHide, true);
     };
   }, [client, enabled]);
 

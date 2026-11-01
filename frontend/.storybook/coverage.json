@@ -52,7 +52,8 @@
         "LoadingMemberCount",
         "NoDescription",
         "LongDescription",
-        "Mobile"
+        "Mobile",
+        "WebhookSettingsOpen"
       ]
     },
     {
@@ -117,7 +118,15 @@
         "MessageLayoutComparisonMobile",
         "Loading",
         "BodiesReadyTogether",
-        "LoadingOnScroll"
+        "LoadingOnScroll",
+        "FollowRequests",
+        "ApproveFollow",
+        "RejectFollow",
+        "FollowDecisionError",
+        "MobileFollowRequests",
+        "HomeNotificationsError",
+        "LiveFollowRequest",
+        "OlderFollowRequests"
       ]
     },
     {
@@ -141,7 +150,8 @@
         "ChannelInsertion",
         "WithAttachments",
         "WithFileAttachment",
-        "AttachmentUploadError"
+        "AttachmentUploadError",
+        "SendError"
       ]
     },
     {
@@ -193,7 +203,11 @@
         "AppMessage",
         "CopyOriginalMenu",
         "Edited",
-        "WithAttachments"
+        "WithAttachments",
+        "ActivityPubPublic",
+        "ActivityPubUnlisted",
+        "ActivityPubGrouped",
+        "Grouped"
       ]
     },
     {
@@ -260,7 +274,13 @@
         "DarkNotifications",
         "BubbleChat",
         "MobileBubbleChat",
-        "MobileMembers"
+        "MobileMembers",
+        "Home",
+        "MobileHome",
+        "DarkHome",
+        "EmptyHome",
+        "MobileEmptyHome",
+        "FederatedUnread"
       ]
     },
     {
@@ -287,7 +307,21 @@
     },
     {
       "file": "src/components/layout/ZooSettings.stories.tsx",
-      "states": ["General", "Apps", "AppsMobile", "Management", "Members", "GeneralMobile"]
+      "states": [
+        "General",
+        "Apps",
+        "AppsMobile",
+        "Management",
+        "Members",
+        "GeneralMobile",
+        "ChannelRule",
+        "ChannelRuleError",
+        "ActivityPub",
+        "ActivityPubMobile",
+        "ActivityPubLoading",
+        "ActivityPubError",
+        "ActivityPubSaveError"
+      ]
     },
     {
       "file": "src/components/offline/OfflineBanner.stories.tsx",
@@ -400,6 +434,58 @@
     {
       "file": "src/components/chat/BubbleChatScreen.stories.tsx",
       "states": ["ActiveConversation", "Empty", "Mobile", "Participants", "MobileParticipants"]
+    },
+    {
+      "file": "src/components/home/HomeScreen.stories.tsx",
+      "states": [
+        "Default",
+        "Mobile",
+        "Empty",
+        "Loading",
+        "LoadError",
+        "Submit",
+        "SendError",
+        "OlderPosts",
+        "DeletePost",
+        "Federated",
+        "CrossPost",
+        "FollowersOnly",
+        "FollowRemote",
+        "EditPost",
+        "FederationError",
+        "VisibilityMenu",
+        "Composer",
+        "MobileComposer",
+        "DraftPreserved",
+        "FederationToggle",
+        "FederationUnavailable",
+        "Sending",
+        "UserSearch",
+        "Realtime",
+        "PullToRefresh",
+        "UserSearchEmpty",
+        "UserSearchError",
+        "TimelineSwitch",
+        "Like",
+        "LikeError",
+        "ActionBar",
+        "Reply",
+        "MobileReply",
+        "PrivateReply",
+        "Repost",
+        "MisskeyCustomEmoji",
+        "MisskeyReact",
+        "MobileMisskey",
+        "EmojiFallback",
+        "LiveWhileLoadingOlder",
+        "RemoteAvatar",
+        "RemoteAvatarFallback",
+        "SinglePost",
+        "SinglePostMissing",
+        "UserProfile",
+        "MobileUserProfile",
+        "UserProfileError"
+      ]
     }
   ],
   "modules": [
@@ -593,7 +679,8 @@
     },
     {
       "file": "src/components/layout/LeftRail.tsx",
-      "story": "src/components/layout/LeftRail.stories.tsx"
+      "story": "src/components/layout/LeftRail.stories.tsx",
+      "reason": "DefaultとMobileで、環境変数に依存せずCompose切り替えボタンが表示されることを確認する。"
     },
     {
       "file": "src/components/layout/PaneHeader.tsx",
@@ -743,6 +830,57 @@
       "story": "src/components/chat/messages/Composer.stories.tsx",
       "composed": true,
       "reason": "共通入力枠を通常投稿・Bubble Chatで使い、補完と入力・消去・モバイル表示を各Storyで確認する。"
+    },
+    {
+      "file": "src/components/home/HomeScreen.tsx",
+      "story": "src/components/home/HomeScreen.stories.tsx"
+    },
+    {
+      "file": "src/components/home/ActivityPubBadge.tsx",
+      "story": "src/components/chat/messages/MessageRow.stories.tsx",
+      "composed": true,
+      "reason": "ActivityPubPublic/Unlisted/Groupedでチャンネル投稿の実アイコンと公開範囲を確認する。HomeのFederated/CrossPostでは表示しないことを確認する。"
+    },
+    {
+      "file": "src/components/home/HomeComposer.tsx",
+      "story": "src/components/home/HomeScreen.stories.tsx",
+      "composed": true,
+      "reason": "Composer/MobileComposerで実フォームの起動と配置を、Submit/SendError/FederationToggleで送信・下書き・公開範囲と連合の独立性を確認する。"
+    },
+    {
+      "file": "src/components/home/ActivityPubNotifications.tsx",
+      "story": "src/components/chat/NotificationsScreen.stories.tsx",
+      "composed": true,
+      "reason": "FollowRequests/ApproveFollow/RejectFollowで申請・承認・拒否といいね通知、既読化、MobileFollowRequestsでスマホ配置を確認する。"
+    },
+    {
+      "file": "src/components/home/ActivityPubEmoji.tsx",
+      "story": "src/components/home/HomeScreen.stories.tsx",
+      "composed": true,
+      "reason": "MisskeyCustomEmoji/MobileMisskeyで本文・表示名・リアクションの絵文字とID表記を、EmojiFallbackで画像取得失敗を確認する。"
+    },
+    {
+      "file": "src/components/home/HomeReactionPicker.tsx",
+      "story": "src/components/home/HomeScreen.stories.tsx",
+      "composed": true,
+      "reason": "LikeとMisskeyReactでUnicode・Misskeyカタログからの選択と取り消しを実フォームで確認する。"
+    },
+    {
+      "file": "src/components/home/ActivityPubAvatar.tsx",
+      "story": "src/components/home/HomeScreen.stories.tsx",
+      "composed": true,
+      "reason": "RemoteAvatar/RemoteAvatarFallbackで安全なプロキシ画像と画像欠損時の頭文字を確認する。"
+    },
+    {
+      "file": "src/components/home/ActivityPubProfile.tsx",
+      "story": "src/components/home/HomeScreen.stories.tsx",
+      "composed": true,
+      "reason": "UserProfile/MobileUserProfile/UserProfileErrorでユーザー情報とフォロー申請・取得失敗を確認する。"
+    },
+    {
+      "file": "src/components/experimental/ComposeFrontend.tsx",
+      "reason": "認証・OPFS・ルーターとKotlin/Wasmを接続する制御層。カタログで覆えない起動・ユーザー別保存・失敗復帰・CSPを専用E2Eで検証する。",
+      "checks": ["e2e/compose.spec.ts", "e2e/compose-production.spec.ts"]
     }
   ]
 }
