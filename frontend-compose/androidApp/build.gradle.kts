@@ -11,12 +11,23 @@ android {
         applicationId = "works.zli.zoo"
         minSdk = 26
         targetSdk = 35
-        versionCode = 1
-        versionName = "0.1.0"
+        versionCode = providers.gradleProperty("zoo.android.versionCode").orNull?.toInt() ?: 1
+        versionName = providers.gradleProperty("zoo.android.versionName").orNull ?: "0.1.0"
     }
     buildFeatures {
+        aidl = true
         compose = true
         buildConfig = true
+    }
+    val signingPath = providers.environmentVariable("ZOO_ANDROID_KEYSTORE").orNull
+    if (signingPath != null) {
+        signingConfigs.create("distribution") {
+            storeFile = file(signingPath)
+            storePassword = providers.environmentVariable("ZOO_ANDROID_STORE_PASSWORD").get()
+            keyAlias = providers.environmentVariable("ZOO_ANDROID_KEY_ALIAS").get()
+            keyPassword = providers.environmentVariable("ZOO_ANDROID_KEY_PASSWORD").get()
+        }
+        buildTypes.getByName("release").signingConfig = signingConfigs.getByName("distribution")
     }
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
@@ -27,6 +38,9 @@ android {
 
 dependencies {
     implementation(project(":"))
+    implementation("dev.rikka.shizuku:api:13.1.5")
+    implementation("dev.rikka.shizuku:provider:13.1.5")
+    implementation("androidx.work:work-runtime-ktx:2.10.1")
     implementation("com.caverock:androidsvg-aar:1.4")
     implementation("androidx.activity:activity-compose:1.10.1")
     implementation("org.jetbrains.compose.material3:material3:1.9.0")

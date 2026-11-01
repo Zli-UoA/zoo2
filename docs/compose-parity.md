@@ -26,6 +26,12 @@ Reactを機能・UI・操作の基準とする。変更時は [compose-react-par
 
 ## main取り込み時の照合
 
+- `6514c43` のTUIリリースと `d326387` の開発シェル更新を取り込みました。Runnerテストの競合はTUIのリリース対象とAndroidのHosted登録を両方維持して解消し、28件成功しています。更新情報生成テストも2件成功しています。React／Composeの画面・API変更はありません。
+
+- `794f891` のRunner選択変更を取り込み、Androidのビルド・配布ジョブのHosted登録を維持しました。このコミットにReact／Composeの画面・API変更はありません。Runner構成テスト28件とAndroid更新情報生成テスト2件で確認しています。
+
+- `9dbc553` のSafariキーボード検出修正を取り込みました。Reactの `AppShell` とComposeの `ComposeFrontend` は同じ `useVisualViewport` を使うため、両方に反映されます。キーボード表示・復帰、innerHeightも縮む場合、バウンス時の回帰テストをデスクトップ／モバイルで実行し、6件成功しています。
+
 - 遅延URLカードの拡大後、Reactは初回の未読位置を判定した後、仮想リストの高さをDOMへ反映してから末尾追従を補正する。上へスクロールした状態や編集中は追従を強制しない。Kotlinは既存の `Chat.kt` の測定サイズ監視と `pinned` 判定で同じ挙動を保ち、両実装を `compose.spec.ts` の遅延URLカード検証で確認する。
 
 - `f3784dc` のActivityPubプロフィール設定・投稿/ユーザー詳細ルート・リモートアバター・プロフィールリンク・公開範囲アイコンを共通Kotlinへ反映。Home詳細は `HomeDetail.kt`、設定は `ActivityPubSettings.kt` を使い、既存の投稿カード・通知・API境界と共有する。HomeComposerの閉状態メニュー解放と、モバイル詳細ルートのペイン選択も追従する。追加された12状態を既存Storybookの切替へ登録する。

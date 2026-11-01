@@ -54,3 +54,49 @@ issuer は `https://account.zli.works/api/auth` です。
   Bubble Chat のタブ離脱通知、アニメーション画像の複数フレーム再生は未対応です。
 
 Web と Android の画面実装は共通ですが、タッチ操作・IME・権限別の全画面の実機検証は別途必要です。
+
+## Shizuku による main の自動更新
+
+「アプリの更新」から Shizuku の使用を許可し、「自動更新」を有効にします。
+ログイン前でも設定できます。Shizuku は別途インストールし、サービスを起動しておく必要があります。
+端末の再起動などで Shizuku が停止した場合は、再び起動してください。
+自動更新の有効化だけで Shizuku の権限を自動取得することはありません。
+
+- main の各コミットでテスト・lint 後に固定鍵で署名した release APK をビルドし、
+  GitHub Releases の開発版 `android-main` へ配布します。初回配布は main の CI Android を
+  `workflow_dispatch` で手動実行しても作成できます。
+- APK は `zoo-android-main-<commit SHA>.apk`、更新情報は `update.json` です。
+  更新情報には実際のビルドのコミット・バージョン・サイズ・SHA-256 が入ります。
+  `android-main` タグ自体は初回作成時のコミットを指す固定の配布チャンネルです。
+- バージョンコードは main の first-parent コミット数です。完全な Git 履歴を取得して採番し、
+  新しい main が存在する古い実行結果は配布しません。過去のバージョンへ自動で戻しません。
+- WorkManager が6時間ごとに、従量制ではないネットワークと十分なバッテリーがあるときに確認します。
+  OS のバックグラウンド制限によって実行時刻は遅れることがあります。
+  「今すぐ更新を確認・適用」は接続中のネットワークで実行します。
+- インストール前にパッケージ名・新しいバージョン・ファイルサイズ・SHA-256・現在の APK と
+  同じ署名鍵であることを確認します。APK はアプリ専用キャッシュへ保存し、読み取り用の
+  ファイルディスクリプターを Shizuku の UserService へ渡してインストールします。
+- 更新によりアプリのプロセスが終了するため、更新後は再起動・再ログインが必要です。
+  アプリのデータとアカウント別の下書きは維持されます。自動更新は初期状態では無効です。
+- debug APK は署名が異なるため対象外です。最初に署名付き release APK を導入してください。
+  debug 版を削除して入れ替える場合は、そのアプリ内データも削除されます。
+
+### 継続署名の設定
+
+GitHub の Repository Actions Secrets に次の4個を登録します。
+
+| Secret | 内容 |
+| --- | --- |
+| `ANDROID_KEYSTORE_BASE64` | 継続して使用する keystore ファイルの Base64（改行なし） |
+| `ANDROID_STORE_PASSWORD` | keystore のパスワード |
+| `ANDROID_KEY_ALIAS` | 署名鍵の alias |
+| `ANDROID_KEY_PASSWORD` | 署名鍵のパスワード |
+
+署名鍵は Git 管理に含めません。鍵一式を安全な場所へ保存し、同じ鍵を使い続けてください。
+Secrets がない場合、main の配布ジョブは失敗し、署名の異なる APK を代わりに配布しません。
+ローカルで署名する場合は `ZOO_ANDROID_KEYSTORE`（ファイルパス）、
+`ZOO_ANDROID_STORE_PASSWORD`、`ZOO_ANDROID_KEY_ALIAS`、`ZOO_ANDROID_KEY_PASSWORD` を
+設定し、`-Pzoo.android.versionCode=<整数>` と `-Pzoo.android.versionName=<表示名>` を指定して
+`:androidApp:assembleRelease` を実行します。
+
+Shizuku を使用するインストールは、実際に Shizuku が稼働する Android 端末での検証が必要です。

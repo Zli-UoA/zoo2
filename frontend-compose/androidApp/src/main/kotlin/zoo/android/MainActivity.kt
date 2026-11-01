@@ -28,6 +28,9 @@ import io.ktor.http.*
 import kotlinx.coroutines.*
 import kotlinx.serialization.json.*
 import zoo.*
+import zoo.android.update.AndroidUpdateFrame
+import zoo.android.update.UpdatePreferences
+import zoo.android.update.UpdateScheduler
 
 class MainActivity : ComponentActivity() {
     private var fileResult: CompletableDeferred<List<Uri>>? = null
@@ -51,6 +54,7 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        if (UpdatePreferences(this).enabled) UpdateScheduler.configure(this, true)
         setContent { AndroidApp() }
     }
 
@@ -60,124 +64,127 @@ class MainActivity : ComponentActivity() {
         val dark = isSystemInDarkTheme()
         val current = active
         DisposableEffect(Unit) { onDispose { active?.close() } }
-        if (current == null) {
-            MaterialTheme(colorScheme = if (dark) darkColorScheme() else lightColorScheme()) {
-                Login { base, issuer, client, resource, code ->
-                    val http =
-                        HttpClient(OkHttp) {
-                            followRedirects = false
-                            install(HttpTimeout) {
-                                requestTimeoutMillis = 120_000
-                                socketTimeoutMillis = 90_000
-                            }
-                        }
-                    try {
-                        val auth = DeviceAuth(http)
-                        auth.login(issuer, client, resource, code)
-                        val authHeaders = auth.headers()
-                        val response =
-                            http.get(endpoint(base, "/api/users/me")) {
-                                headers {
-                                    authHeaders.forEach { (key, value) -> append(key, value) }
+        AndroidUpdateFrame(this, current?.platform?.env?.dark ?: dark) {
+            if (current == null) {
+                MaterialTheme(colorScheme = if (dark) darkColorScheme() else lightColorScheme()) {
+                    Login { base, issuer, client, resource, code ->
+                        val http =
+                            HttpClient(OkHttp) {
+                                followRedirects = false
+                                install(HttpTimeout) {
+                                    requestTimeoutMillis = 120_000
+                                    socketTimeoutMillis = 90_000
                                 }
                             }
-                        check(response.status.value in 200..299) {
-                            "Zoo に接続できません (HTTP ${response.status.value})"
-                        }
-                        val me = json.parseToJsonElement(response.bodyAsText()).jsonObject
-                        val lifetime = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
-                        val platform =
-                            AndroidPlatform(
-                                this@MainActivity,
-                                http,
-                                auth,
-                                base,
-                                me.text("id"),
-                                {
-                                    active?.close()
-                                    active = null
-                                },
-                                ::chooseFiles,
-                            )
-                        platform.systemDark(dark)
-                        val config =
-                            Config(
-                                base,
-                                "/api/shapes",
-                                me.text("id"),
-                                me.flag("is_admin"),
-                                assetsBaseUrl = base,
-                            )
-                        val session =
-                            Session(
-                                Repository(config, platform, http, lifetime),
-                                lifetime,
-                                platform.env,
-                            )
-                        active = RunningSession(session, platform, lifetime)
-                        session.start()
-                    } catch (failure: Throwable) {
-                        http.close()
-                        throw failure
-                    }
-                }
-            }
-        } else {
-            val platform = current.platform
-            LaunchedEffect(platform.env, dark) {
-                platform.systemDark(dark)
-                current.session.update(platform.env)
-            }
-            DisposableEffect(current) {
-                val observer = LifecycleEventObserver { _, _ ->
-                    platform.visible(lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED))
-                }
-                lifecycle.addObserver(observer)
-                val connectivity = getSystemService(android.net.ConnectivityManager::class.java)
-                fun updateOnline() = runOnUiThread {
-                    platform.online(
-                        connectivity.activeNetwork?.let {
-                            connectivity
-                                .getNetworkCapabilities(it)
-                                ?.hasCapability(
-                                    android.net.NetworkCapabilities.NET_CAPABILITY_INTERNET
+                        try {
+                            val auth = DeviceAuth(http)
+                            auth.login(issuer, client, resource, code)
+                            val authHeaders = auth.headers()
+                            val response =
+                                http.get(endpoint(base, "/api/users/me")) {
+                                    headers {
+                                        authHeaders.forEach { (key, value) -> append(key, value) }
+                                    }
+                                }
+                            check(response.status.value in 200..299) {
+                                "Zoo に接続できません (HTTP ${response.status.value})"
+                            }
+                            val me = json.parseToJsonElement(response.bodyAsText()).jsonObject
+                            val lifetime =
+                                CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
+                            val platform =
+                                AndroidPlatform(
+                                    this@MainActivity,
+                                    http,
+                                    auth,
+                                    base,
+                                    me.text("id"),
+                                    {
+                                        active?.close()
+                                        active = null
+                                    },
+                                    ::chooseFiles,
                                 )
-                        } == true
-                    )
-                }
-                val callback =
-                    object : android.net.ConnectivityManager.NetworkCallback() {
-                        override fun onAvailable(network: android.net.Network) = updateOnline()
-
-                        override fun onLost(network: android.net.Network) = updateOnline()
-
-                        override fun onCapabilitiesChanged(
-                            network: android.net.Network,
-                            caps: android.net.NetworkCapabilities,
-                        ) = updateOnline()
+                            platform.systemDark(dark)
+                            val config =
+                                Config(
+                                    base,
+                                    "/api/shapes",
+                                    me.text("id"),
+                                    me.flag("is_admin"),
+                                    assetsBaseUrl = base,
+                                )
+                            val session =
+                                Session(
+                                    Repository(config, platform, http, lifetime),
+                                    lifetime,
+                                    platform.env,
+                                )
+                            active = RunningSession(session, platform, lifetime)
+                            session.start()
+                        } catch (failure: Throwable) {
+                            http.close()
+                            throw failure
+                        }
                     }
-                connectivity.registerDefaultNetworkCallback(callback)
-                updateOnline()
-                onDispose {
-                    lifecycle.removeObserver(observer)
-                    connectivity.unregisterNetworkCallback(callback)
                 }
-            }
-            BackHandler {
-                when {
-                    current.session.escape() -> Unit
-                    current.session.thread != null -> current.session.thread = null
-                    platform.back() -> Unit
-                    else -> finish()
+            } else {
+                val platform = current.platform
+                LaunchedEffect(platform.env, dark) {
+                    platform.systemDark(dark)
+                    current.session.update(platform.env)
                 }
-            }
-            CompositionLocalProvider(
-                LocalWebPlatform provides platform,
-                LocalApp provides current.session,
-            ) {
-                ZooTheme(platform.env.dark, locale = platform.env.locale) {
-                    Box(Modifier.fillMaxSize().safeDrawingPadding().imePadding()) {
-                        NativeWindow(current.session) { ZooApp(current.session) }
+                DisposableEffect(current) {
+                    val observer = LifecycleEventObserver { _, _ ->
+                        platform.visible(lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED))
+                    }
+                    lifecycle.addObserver(observer)
+                    val connectivity = getSystemService(android.net.ConnectivityManager::class.java)
+                    fun updateOnline() = runOnUiThread {
+                        platform.online(
+                            connectivity.activeNetwork?.let {
+                                connectivity
+                                    .getNetworkCapabilities(it)
+                                    ?.hasCapability(
+                                        android.net.NetworkCapabilities.NET_CAPABILITY_INTERNET
+                                    )
+                            } == true
+                        )
+                    }
+                    val callback =
+                        object : android.net.ConnectivityManager.NetworkCallback() {
+                            override fun onAvailable(network: android.net.Network) = updateOnline()
+
+                            override fun onLost(network: android.net.Network) = updateOnline()
+
+                            override fun onCapabilitiesChanged(
+                                network: android.net.Network,
+                                caps: android.net.NetworkCapabilities,
+                            ) = updateOnline()
+                        }
+                    connectivity.registerDefaultNetworkCallback(callback)
+                    updateOnline()
+                    onDispose {
+                        lifecycle.removeObserver(observer)
+                        connectivity.unregisterNetworkCallback(callback)
+                    }
+                }
+                BackHandler {
+                    when {
+                        current.session.escape() -> Unit
+                        current.session.thread != null -> current.session.thread = null
+                        platform.back() -> Unit
+                        else -> finish()
+                    }
+                }
+                CompositionLocalProvider(
+                    LocalWebPlatform provides platform,
+                    LocalApp provides current.session,
+                ) {
+                    ZooTheme(platform.env.dark, locale = platform.env.locale) {
+                        Box(Modifier.fillMaxSize().safeDrawingPadding().imePadding()) {
+                            NativeWindow(current.session) { ZooApp(current.session) }
+                        }
                     }
                 }
             }
