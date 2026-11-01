@@ -15,10 +15,9 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  # 各 CI の pull_request.paths を読み、キューの base からの差分に当てはまるものだけを実行する。
-  # パスの一覧は各 workflow にだけ書き、ここには重複させない。
+  # キューの base からの差分に当てはまる CI だけを実行する（.github/scripts/merge-queue-changes.mjs）。
   changes:
-    runs-on: ubuntu-latest
+    runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-latest' || 'zli-kubecamp-no-docker' }}
     timeout-minutes: 5
     outputs:
       ci-backend: ${{ steps.match.outputs.ci-backend }}
@@ -34,28 +33,7 @@ jobs:
       - id: match
         env:
           BASE_SHA: ${{ github.event.merge_group.base_sha }}
-        run: |
-          git fetch --no-tags --depth=1 origin "$BASE_SHA"
-          mapfile -t changed < <(git diff --name-only "$BASE_SHA" HEAD)
-          printf 'changed: %s\n' "${changed[@]}"
-
-          for workflow in ci-backend ci-frontend ci-frontend-auth-e2e ci-compose ci-tui ci-github-bot ci-flux-status terraform-r2; do
-            mapfile -t patterns < <(yq '.on.pull_request.paths[]' ".github/workflows/$workflow.yaml")
-            # この workflow 自体の変更では、呼び出し方が変わるのですべて実行する。
-            patterns+=(".github/workflows/merge-queue.yaml")
-            run=false
-            for file in "${changed[@]}"; do
-              for pattern in "${patterns[@]}"; do
-                # bash の * は / にも一致するので、GitHub の paths より広く当てはまる側に倒れる。
-                # shellcheck disable=SC2053
-                if [[ $file == $pattern ]]; then
-                  run=true
-                  break 2
-                fi
-              done
-            done
-            echo "$workflow=$run" | tee -a "$GITHUB_OUTPUT"
-          done
+        run: node .github/scripts/merge-queue-changes.mjs
 
   ci-backend:
     needs: changes
@@ -121,7 +99,7 @@ jobs:
       - ci-flux-status
       - terraform-r2
     if: ${{ !cancelled() }}
-    runs-on: ubuntu-latest
+    runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-latest' || 'zli-kubecamp-no-docker' }}
     timeout-minutes: 5
     permissions:
       statuses: write
