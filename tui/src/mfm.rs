@@ -40,11 +40,15 @@ pub fn render(content: &str, me: Option<&str>) -> Vec<Line<'static>> {
             None => (None, line, Style::new()),
         };
         let mut spans: Vec<Span<'static>> = prefix.into_iter().collect();
-        Inline { me }.parse(body, base, &mut spans);
+        Inline { me }.parse(body, base, 0, &mut spans);
         lines.push(Line::from(spans));
     }
     lines
 }
+
+/// 入れ子にした記法を解析する深さの上限。これより深い部分は文字のまま表示する。
+/// Misskey の `nestLimit` と同じ値。
+const MAX_DEPTH: usize = 20;
 
 struct Inline<'a> {
     me: Option<&'a str>,
@@ -70,13 +74,13 @@ const WRAPPERS: &[(&str, &str, Style)] = &[
 ];
 
 impl Inline<'_> {
-    fn parse(&self, text: &str, base: Style, out: &mut Vec<Span<'static>>) {
+    fn parse(&self, text: &str, base: Style, depth: usize, out: &mut Vec<Span<'static>>) {
         let mut plain = String::new();
         let mut i = 0;
         while i < text.len() {
             let rest = &text[i..];
             let previous = text[..i].chars().next_back();
-            if let Some((consumed, spans)) = self.token(rest, previous, base) {
+            if let Some((consumed, spans)) = self.token(rest, previous, base, depth) {
                 flush(&mut plain, base, out);
                 out.extend(spans);
                 i += consumed;
@@ -95,17 +99,19 @@ impl Inline<'_> {
         rest: &str,
         previous: Option<char>,
         base: Style,
+        depth: usize,
     ) -> Option<(usize, Vec<Span<'static>>)> {
+        let nestable = depth < MAX_DEPTH;
         if let Some(inner) = between(rest, "`", "`").filter(|inner| !inner.contains('\n')) {
             return Some((
                 inner.len() + 2,
                 vec![Span::styled(inner.to_string(), base.patch(CODE))],
             ));
         }
-        for (open, close, style) in WRAPPERS {
+        for (open, close, style) in WRAPPERS.iter().filter(|_| nestable) {
             if let Some(inner) = between(rest, open, close).filter(|inner| !inner.is_empty()) {
                 let mut spans = Vec::new();
-                self.parse(inner, base.patch(*style), &mut spans);
+                self.parse(inner, base.patch(*style), depth + 1, &mut spans);
                 return Some((open.len() + inner.len() + close.len(), spans));
             }
         }
@@ -121,8 +127,8 @@ impl Inline<'_> {
                 vec![Span::styled(inner.to_string(), base.patch(MATH))],
             ));
         }
-        if rest.starts_with("$[") {
-            return self.function(rest, base);
+        if nestable && rest.starts_with("$[") {
+            return self.function(rest, base, depth);
         }
         if rest.starts_with('[') || rest.starts_with("?[") {
             return link(rest, base);
@@ -157,17 +163,22 @@ impl Inline<'_> {
     }
 
     /// `$[name.args text]`。対応する `]` までを探し、中身の text だけを解析する。
-    fn function(&self, rest: &str, base: Style) -> Option<(usize, Vec<Span<'static>>)> {
-        let mut depth = 0usize;
+    fn function(
+        &self,
+        rest: &str,
+        base: Style,
+        depth: usize,
+    ) -> Option<(usize, Vec<Span<'static>>)> {
+        let mut brackets = 0usize;
         let mut end = None;
         for (index, ch) in rest.char_indices().skip(2) {
             match ch {
-                '[' => depth += 1,
-                ']' if depth == 0 => {
+                '[' => brackets += 1,
+                ']' if brackets == 0 => {
                     end = Some(index);
                     break;
                 }
-                ']' => depth -= 1,
+                ']' => brackets -= 1,
                 _ => {}
             }
         }
@@ -181,7 +192,7 @@ impl Inline<'_> {
             return Some((end + 1, unixtime(body, base)));
         }
         let mut spans = Vec::new();
-        self.parse(body, base, &mut spans);
+        self.parse(body, base, depth + 1, &mut spans);
         Some((end + 1, spans))
     }
 
@@ -343,6 +354,20 @@ mod tests {
             ["hi **raw**"]
         );
         assert_eq!(texts("$[ broken"), ["$[ broken"]);
+    }
+
+    #[test]
+    fn stops_nesting_at_depth_limit() {
+        // backend の文字数上限に収まる深い入れ子でも、スタックを使い切らない。
+        let depth = 7_999;
+        let content = format!("{}hi{}", "$[x ".repeat(depth), "]".repeat(depth));
+        let text = texts(&content).concat();
+        assert!(text.starts_with("$[x "), "上限より深い部分は文字のまま出る");
+        assert!(text.contains("hi"));
+
+        let bold = format!("{}hi{}", "<b>".repeat(depth), "</b>".repeat(depth));
+        assert!(texts(&bold).concat().contains("hi"));
+        assert_eq!(texts("$[x $[y ok]]"), ["ok"]);
     }
 
     #[test]
