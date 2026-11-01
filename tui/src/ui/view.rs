@@ -570,6 +570,19 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn pastes_newlines_into_composer_without_sending() {
+        let mut app = app();
+        press(&mut app, KeyCode::Enter);
+        app.on_terminal_event(Event::Paste("無視".into()));
+        assert!(app.composer.is_empty());
+
+        press(&mut app, KeyCode::Char('i'));
+        app.on_terminal_event(Event::Paste("1行目\r\n2行目\r3行目".into()));
+        assert_eq!(app.mode, Mode::Insert);
+        assert_eq!(app.composer.lines(), ["1行目", "2行目", "3行目"]);
+    }
+
+    #[tokio::test]
     async fn resubscribing_drops_rows_of_the_stopped_shape() {
         let mut app = app();
         press(&mut app, KeyCode::Enter);

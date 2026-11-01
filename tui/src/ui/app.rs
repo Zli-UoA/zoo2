@@ -408,8 +408,10 @@ impl App {
     }
 
     pub fn on_terminal_event(&mut self, event: Event) {
-        let Event::Key(key) = event else {
-            return;
+        let key = match event {
+            Event::Key(key) => key,
+            Event::Paste(text) => return self.on_paste(&text),
+            _ => return,
         };
         if key.kind != KeyEventKind::Press {
             return;
@@ -498,6 +500,19 @@ impl App {
                     self.touch_typing();
                 }
             }
+        }
+    }
+
+    /// 貼り付けは改行を含めて入力欄に入れ、送信はしない。入力中でなければ、キー操作と
+    /// 取り違えないよう無視する。
+    fn on_paste(&mut self, text: &str) {
+        if self.mode != Mode::Insert {
+            return;
+        }
+        // 端末によっては改行を CR だけで送ってくる。
+        let text = text.replace("\r\n", "\n").replace('\r', "\n");
+        if self.composer.insert_str(text) {
+            self.touch_typing();
         }
     }
 
