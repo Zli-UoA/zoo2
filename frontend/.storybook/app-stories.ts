@@ -89,6 +89,15 @@ export function appOptions(
       state: "hidden",
     });
   }
+  if (title === "Features/Channels/Webhooks") {
+    if (name === "Default") {
+      // Compose also projects the editable name's value as text, unlike <input>.
+      interactions.push({ action: "wait", text: "Webhook", exact: true, count: 2 });
+      wait("button", "Webhook URLを表示");
+    }
+    if (name === "Empty")
+      interactions.push({ action: "wait", text: "Webhookはまだありません。", exact: true });
+  }
   if (title === "Features/Apps/Catalog") {
     if (name === "Search Empty") {
       wait("button", "Echo Bot", "visible", false);

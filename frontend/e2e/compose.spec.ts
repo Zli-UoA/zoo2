@@ -14,10 +14,13 @@ async function open(
     localStorage.setItem("zoo-theme", "light");
   });
   await page.clock.setFixedTime(new Date("2026-10-31T01:00:00Z"));
-  await page.goto(`${path}?frontend=${implementation}`);
-  await expect(page.getByText(readyText, { exact: false })).toBeVisible({
-    timeout: 90_000,
-  });
+  const target = new URL(path, "http://compose.invalid");
+  target.searchParams.set("frontend", implementation);
+  await page.goto(target.pathname + target.search + target.hash);
+  if (readyText)
+    await expect(page.getByText(readyText, { exact: false })).toBeVisible({
+      timeout: 90_000,
+    });
   if (implementation === "compose")
     await expect(page.locator("[data-compose-shell]")).toBeVisible();
   await page.evaluate(async () => {
@@ -27,13 +30,18 @@ async function open(
 
 async function channelAction(page: Page, native: boolean, action: "edit" | "webhook") {
   const settings = page.getByRole("dialog", { name: "チャンネル設定", exact: true });
-  if (!(await settings.isVisible()))
-    await page
-      .getByRole("button", { name: "チャンネル設定", exact: true })
-      .click({ force: native });
-  await settings
-    .getByRole("button", { name: action === "edit" ? "編集" : "開く", exact: true })
-    .click({ force: native });
+  if (!(await settings.isVisible())) {
+    const trigger = page.getByRole("button", { name: "チャンネル設定", exact: true });
+    await expect(trigger).toBeVisible();
+    await trigger.click({ force: native });
+  }
+  await expect(settings).toBeVisible();
+  const button = settings.getByRole("button", {
+    name: action === "edit" ? "編集" : "開く",
+    exact: true,
+  });
+  await expect(button).toBeVisible();
+  await button.click({ force: native });
 }
 async function closeChannelSettings(page: Page, _native: boolean) {
   await page.keyboard.press("Escape");
@@ -62,6 +70,7 @@ async function nativeInput(page: Page) {
 }
 
 async function fillNative(page: Page, locator: ReturnType<Page["getByRole"]>, value: string) {
+  await expect(locator).toBeVisible();
   const existing = (await locator.textContent()) ?? "";
   await locator.click({ force: true });
   // Compose applies focus and selection to its backing input asynchronously.
@@ -177,8 +186,11 @@ for (const implementation of ["react", "compose"] as const) {
     await request.post("https://127.0.0.1:4187/__reset");
     await open(page, implementation);
     const native = implementation === "compose";
-    const click = async (name: string) =>
-      page.getByRole("button", { name, exact: true }).click({ force: native });
+    const click = async (name: string) => {
+      const button = page.getByRole("button", { name, exact: true });
+      await expect(button).toBeVisible();
+      await button.click({ force: native });
+    };
     const fill = async (name: string, value: string) => {
       const input = page.getByRole("textbox", { name, exact: true });
       if (!native) await input.fill(value);
@@ -599,9 +611,9 @@ for (const implementation of ["react", "compose"] as const) {
     if (native)
       await expect(page.getByRole("img", { name: "upload.png", exact: true })).toBeHidden();
     else await expect(page.getByRole("dialog")).toBeHidden();
-    await page
-      .getByRole("button", { name: /1 件の返信（スレッドを開く）/ })
-      .click({ force: native });
+    const replyButton = page.getByRole("button", { name: /1 件の返信（スレッドを開く）/ });
+    await expect(replyButton).toBeVisible();
+    await replyButton.click({ force: native });
     const composer = page.getByRole("textbox", { name: "返信を送信", exact: true });
     await expect(composer).toBeVisible();
     if (native) await fillNative(page, composer, "");
@@ -730,3 +742,69 @@ test.describe("missing Compose assets", () => {
     expect(await page.evaluate(() => localStorage.getItem("zoo-frontend"))).toBe("react");
   });
 });
+
+for (const implementation of ["react", "compose"] as const) {
+  test(`${implementation}: mobile members direct URL, close and history preserve channel context`, async ({
+    page,
+    request,
+  }) => {
+    await request.post("https://127.0.0.1:4187/__reset");
+    await page.setViewportSize({ width: 390, height: 844 });
+    await open(page, implementation, "/channels/c1?members=true&message=m1", "");
+    const native = implementation === "compose";
+    const members = page.getByRole("heading", { name: "メンバー", exact: true, level: 1 });
+    await expect(members).toBeVisible({ timeout: 90_000 });
+    const initialIndex = await page.evaluate(() => window.history.state?.__TSR_index);
+    await page
+      .getByRole("button", { name: "チャンネルに戻る", exact: true })
+      .click({ force: native });
+    await expect(members).toBeHidden();
+    await expect.poll(() => new URL(page.url()).searchParams.get("members")).toBeNull();
+    expect(new URL(page.url()).searchParams.get("message")).toBe("m1");
+    expect(await page.evaluate(() => window.history.state?.__TSR_index)).toBe(initialIndex);
+    await page.getByRole("button", { name: /^メンバー / }).click({ force: native });
+    await expect(members).toBeVisible();
+    expect(new URL(page.url()).searchParams.get("members")).toBe("true");
+    expect(await page.evaluate(() => window.history.state?.zooMembersParent)).toBe("c1");
+    await page
+      .getByRole("button", { name: "チャンネルに戻る", exact: true })
+      .click({ force: native });
+    await expect(members).toBeHidden();
+    expect(await page.evaluate(() => window.history.state?.__TSR_index)).toBe(initialIndex);
+    await page.goForward();
+    await expect(members).toBeVisible();
+    await page.goBack();
+    await expect(members).toBeHidden();
+    await expect(page.getByRole("heading", { name: "general", exact: true })).toBeVisible();
+    expect(new URL(page.url()).searchParams.get("message")).toBe("m1");
+  });
+
+  test(`${implementation}: desktop members stay local and close when layout changes`, async ({
+    page,
+    request,
+  }) => {
+    await request.post("https://127.0.0.1:4187/__reset");
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await open(page, implementation, "/channels/c1?members=true&message=m1");
+    const native = implementation === "compose";
+    await expect.poll(() => new URL(page.url()).searchParams.get("members")).toBeNull();
+    expect(new URL(page.url()).searchParams.get("message")).toBe("m1");
+    const initialIndex = await page.evaluate(() => window.history.state?.__TSR_index);
+    const members = page.getByRole("heading", { name: "メンバー", exact: true, level: 3 });
+    await expect(members).toBeHidden();
+    const toggle = page.getByRole("button", { name: /^メンバー / });
+    await toggle.click({ force: native });
+    await expect(members).toBeVisible();
+    expect(new URL(page.url()).searchParams.get("members")).toBeNull();
+    expect(await page.evaluate(() => window.history.state?.__TSR_index)).toBe(initialIndex);
+    await toggle.click({ force: native });
+    await expect(members).toBeHidden();
+    await toggle.click({ force: native });
+    await expect(members).toBeVisible();
+    await page.setViewportSize({ width: 390, height: 844 });
+    await expect(members).toBeHidden();
+    await expect(page.getByRole("heading", { name: "メンバー", level: 1 })).toBeHidden();
+    await expect(page.getByRole("heading", { name: "general", exact: true })).toBeVisible();
+    expect(new URL(page.url()).searchParams.get("members")).toBeNull();
+  });
+}

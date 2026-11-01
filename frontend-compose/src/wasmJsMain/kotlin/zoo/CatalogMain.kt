@@ -27,6 +27,9 @@ private external fun formatNotification(value: String, locale: String): String
 @JsFun("(payload) => globalThis.zooCatalog.callback(payload)")
 private external fun storyCallback(payload: String): Promise<JsString>
 
+@JsFun("(payload) => navigator.clipboard.writeText(payload).then(() => '')")
+private external fun copyCatalogText(payload: String): Promise<JsString>
+
 @JsFun(
     """async url => {const response=await fetch(url,{credentials:'omit',referrerPolicy:'no-referrer'});if(!response.ok)throw new Error('Image HTTP '+response.status);const blob=await response.blob();const source=URL.createObjectURL(blob);try{const img=new Image();img.src=source;await img.decode();const canvas=document.createElement('canvas');canvas.width=img.naturalWidth;canvas.height=img.naturalHeight;canvas.getContext('2d').drawImage(img,0,0);return canvas.toDataURL('image/png').split(',')[1];}finally{URL.revokeObjectURL(source);} }"""
 )
@@ -87,6 +90,26 @@ private fun startCatalog() {
     lateinit var app: Session
     lateinit var refresh: () -> Unit
     val files = BrowserFileBridge(catalogFileBridge())
+    val navigationHistory = mutableListOf<Pair<String, Row>>()
+    var navigationIndex = 0
+    var hostPath = options.text("path")
+    fun catalogNavigate(path: String, state: Row, replace: Boolean) {
+        if (navigationHistory.isEmpty()) navigationHistory.add(app.env.path to app.env.historyState)
+        if (!replace) {
+            while (navigationHistory.size > navigationIndex + 1) navigationHistory.removeAt(
+                navigationHistory.lastIndex
+            )
+            navigationIndex++
+        }
+        val entry = path to JsonObject(state + ("__TSR_index" to JsonPrimitive(navigationIndex)))
+        if (replace) navigationHistory[navigationIndex] = entry else navigationHistory.add(entry)
+        catalogNavigationIntent(path, false)
+        options =
+            JsonObject(
+                options + mapOf("path" to JsonPrimitive(path), "historyState" to entry.second)
+            )
+        refresh()
+    }
     val platform =
         object : Platform {
             override fun fileTarget(id: String, bounds: String, receive: (String) -> Boolean) =
@@ -173,11 +196,12 @@ private fun startCatalog() {
 
             override fun now() = webCurrentTime()
 
-            override fun navigate(path: String) {
-                catalogNavigationIntent(path, false)
-                options = JsonObject(options + ("path" to JsonPrimitive(path)))
-                refresh()
-            }
+            override fun navigate(path: String) =
+                catalogNavigate(path, JsonObject(emptyMap()), false)
+
+            override fun navigate(path: String, state: Row) = catalogNavigate(path, state, false)
+
+            override fun replace(path: String) = catalogNavigate(path, JsonObject(emptyMap()), true)
 
             override fun action(name: String) {
                 when {
@@ -194,7 +218,20 @@ private fun startCatalog() {
                         return
                     }
                     name == "back" -> {
-                        navigate("/")
+                        if (navigationIndex > 0) {
+                            navigationIndex--
+                            val entry = navigationHistory[navigationIndex]
+                            catalogNavigationIntent(entry.first, false)
+                            options =
+                                JsonObject(
+                                    options +
+                                        mapOf(
+                                            "path" to JsonPrimitive(entry.first),
+                                            "historyState" to entry.second,
+                                        )
+                                )
+                            refresh()
+                        } else replace("/")
                         return
                     }
                     name.startsWith("fileFocus:") || name.startsWith("fileRelease:") -> {
@@ -290,6 +327,7 @@ private fun startCatalog() {
                                 .awaitBrowser<JsString>()
                                 .toString()
                         else "{}"
+                    "copy" -> copyCatalogText(payload).awaitBrowser<JsString>().toString()
                     "storyCallback" -> storyCallback(payload).awaitBrowser<JsString>().toString()
                     "publicGet" ->
                         fixturePublic(json.parseToJsonElement(payload).jsonObject.text("url"))
@@ -407,6 +445,7 @@ private fun startCatalog() {
                 else options.flag("focused"),
             reducedMotion = options.flag("reducedMotion"),
             theme = options.text("theme").ifEmpty { if (options.flag("dark")) "dark" else "light" },
+            historyState = options.nested("historyState"),
         )
     app = Session(Repository(config, platform, http, scope), scope, environment())
     refresh = { app.update(environment()) }
@@ -432,7 +471,19 @@ private fun startCatalog() {
     }
     catalogReady(
         { raw ->
-            options = json.parseToJsonElement(raw).jsonObject
+            val incoming = json.parseToJsonElement(raw).jsonObject
+            val incomingPath = incoming.text("path")
+            options =
+                if (incomingPath == hostPath) {
+                    JsonObject(
+                        incoming + options.filterKeys { it == "path" || it == "historyState" }
+                    )
+                } else {
+                    hostPath = incomingPath
+                    navigationHistory.clear()
+                    navigationIndex = 0
+                    incoming
+                }
             refresh()
         },
         {

@@ -116,6 +116,11 @@ for (const implementation of ["react", "kotlin"] as const) {
     const dialog = root.getByRole("dialog", { name: "新しいダイレクトメッセージ", exact: true });
     const search = root.getByRole("combobox");
     await fill(page, search, "Bob", implementation);
+    await page.keyboard.press("Escape");
+    await value(search, "", implementation);
+    await expect(dialog).toBeVisible();
+    expect(await closeCalls(page, id)).toEqual([]);
+    await fill(page, search, "Bob", implementation);
     await root.getByRole("option", { name: /^Bob/ }).click({ force: implementation === "kotlin" });
     const selected = root.getByRole("button", { name: /Bob.*削除|Bob.*外す/ });
     await expect(selected).toBeVisible();

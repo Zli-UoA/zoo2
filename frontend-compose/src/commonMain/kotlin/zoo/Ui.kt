@@ -994,6 +994,7 @@ fun Panel(
     alert: Boolean = false,
     description: String = "",
     footer: (@Composable () -> Unit)? = null,
+    onEscape: (() -> Boolean)? = null,
     content: @Composable ColumnScope.() -> Unit,
 ) {
     OverlayRegistration(
@@ -1004,6 +1005,7 @@ fun Panel(
         alert = alert,
         description = description,
         footer = footer,
+        onEscape = onEscape,
     )
 }
 

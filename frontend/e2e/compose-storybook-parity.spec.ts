@@ -359,13 +359,23 @@ for (let bucket = 0; bucket < buckets; bucket++)
       await observe(page);
       await page.mouse.move(-100, -100);
       page.on("pageerror", (error) => errors.push(error.message));
+      page.on("requestfailed", (request) =>
+        consoleErrors.push({
+          implementation,
+          text: `Request failed: ${request.failure()?.errorText ?? "unknown"}`,
+          location: { url: request.url(), lineNumber: 0, columnNumber: 0 },
+        }),
+      );
       page.on("console", (message) => {
-        if (message.type() === "error")
+        if (message.type() === "error") {
+          if (/IllegalStateException: Node \d+ not found/.test(message.text()))
+            errors.push(message.text());
           consoleErrors.push({
             implementation,
             text: message.text(),
             location: message.location(),
           });
+        }
       });
     }
     try {

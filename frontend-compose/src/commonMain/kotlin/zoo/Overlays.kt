@@ -41,6 +41,7 @@ class OverlaySlot {
     var title by mutableStateOf("")
     var width by mutableStateOf(512.dp)
     var anchor by mutableStateOf<Rect?>(null)
+    var onEscape: (() -> Boolean)? = null
     var close: () -> Unit = {}
     var body by mutableStateOf<@Composable ColumnScope.() -> Unit>({})
 }
@@ -60,6 +61,7 @@ fun OverlayRegistration(
     placementAbove: Boolean = false,
     alignEnd: Boolean = false,
     anchorOffset: Dp = 0.dp,
+    onEscape: (() -> Boolean)? = null,
     body: @Composable ColumnScope.() -> Unit,
 ) {
     val app = LocalApp.current
@@ -75,6 +77,7 @@ fun OverlayRegistration(
         slot.placementAbove = placementAbove
         slot.alignEnd = alignEnd
         slot.anchorOffset = anchorOffset
+        slot.onEscape = onEscape
         slot.close = close
         slot.width = width
         slot.anchor = anchor
@@ -124,14 +127,8 @@ private fun OverlayCard(slot: OverlaySlot) {
         else androidx.compose.ui.graphics.Color.Transparent
     val input =
         if (slot.nonModal || slot.tooltip) Modifier
-        else
-            Modifier.pointerInput(slot) { detectTapGestures { if (!slot.alert) slot.close() } }
-                .onKeyEvent {
-                    if (it.type == KeyEventType.KeyDown && it.key == Key.Escape) {
-                        app.escape()
-                        true
-                    } else false
-                }
+        else Modifier.pointerInput(slot) { detectTapGestures { if (!slot.alert) slot.close() } }
+
     BoxWithConstraints(Modifier.fillMaxSize().background(backdrop).then(input)) {
         val screenWidth = maxWidth
         val screenHeight = maxHeight
@@ -224,7 +221,18 @@ private fun OverlayCard(slot: OverlaySlot) {
                     if (slot.nonModal || slot.tooltip) Modifier
                     else Modifier.focusRequester(focus).focusable()
                 )
-                .then(webControlModifier(role))
+                .then(
+                    webControlModifier(
+                        role,
+                        attributes =
+                            if (slot.tooltip) emptyMap()
+                            else
+                                buildMap {
+                                    put("aria-label", slot.title)
+                                    if (anchor == null && !slot.nonModal) put("aria-modal", "true")
+                                },
+                    )
+                )
                 .then(
                     if (slot.tooltip) Modifier
                     else Modifier.pointerInput(slot) { detectTapGestures {} }

@@ -246,6 +246,13 @@ fun ChannelDialog(
         ::close,
         width = if (kind in setOf("browse", "dm")) 448.dp else 384.dp,
         footer = formFooter,
+        onEscape = {
+            if (!busy && kind in setOf("browse", "dm") && search.isNotEmpty()) {
+                search = ""
+                activeCandidate = 0
+                true
+            } else false
+        },
         alert = kind == "leave" || kind == "moderate",
         description =
             if (kind == "create") app.t("channels.visibilityHelp")

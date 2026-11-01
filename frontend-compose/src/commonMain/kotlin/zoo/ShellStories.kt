@@ -59,7 +59,6 @@ fun ShellStory(app: Session, options: Row) {
         val narrow = viewportWidth < 768.dp
         when (title) {
             "Pages/Shell" -> {
-                LaunchedEffect(state) { app.membersOpen = fixture.flag("membersOpen") }
                 ZooApp(app)
             }
             "Pages/Welcome" -> Welcome(app)

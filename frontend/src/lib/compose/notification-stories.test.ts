@@ -156,11 +156,11 @@ describe("native notification plays", () => {
     ).toBe(true);
     expect(steps.slice(release).some((step) => step.count === 4)).toBe(true);
   });
-  it("verifies selection suppression, ordinary navigation and modifier navigation", () => {
+  it("verifies ordinary and modifier navigation alongside the dedicated Canvas selection test", () => {
     const steps = interactions("Features/Notifications/Row", "Native Interactions");
-    expect(steps.filter((step) => step.action === "pointer")).toHaveLength(3);
+    expect(steps.filter((step) => step.action === "pointer")).toHaveLength(2);
     expect(steps.filter((step) => step.action === "navigation").map((step) => step.count)).toEqual([
-      0, 1, 2,
+      1, 2,
     ]);
     expect(steps.some((step) => step.action === "pointer" && step.ctrlKey)).toBe(true);
   });

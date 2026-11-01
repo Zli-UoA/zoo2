@@ -70,23 +70,17 @@ fun ZooApp(app: Session) {
         val width = maxWidth
         val narrow = width < 768.dp
         val wide = width >= 1024.dp
-        var wasWide by remember { mutableStateOf(wide) }
-        if (wasWide != wide) {
-            wasWide = wide
-            if (!wide) app.membersOpen = false else if (app.membersOpen) app.thread = null
-        }
-        if (channel?.flag("is_dm") == true && !channel.text("channel_name").startsWith("dm:group:"))
-            app.membersOpen = false
+        app.configureMembersLayout(wide)
+        LaunchedEffect(wide, app.env.path) { if (wide) app.removeMembersRequest() }
+        if (wide && channel?.flag("is_dm") == true) app.membersOpen = false
+        val membersChannel = channel?.takeUnless { it.flag("is_dm") }
+        val showMembersScreen = app.membersOpen && !wide && membersChannel != null
         Row(Modifier.fillMaxSize()) {
-            if (!isSettings && !(app.membersOpen && !wide && channel != null)) {
+            if (!isSettings && !showMembersScreen) {
                 Rail(app, notifications.count { !it.flag("is_read") }, narrow)
                 VerticalDivider()
             }
-            if (
-                !fullPage &&
-                    (!narrow || app.pane == "sidebar") &&
-                    !(app.membersOpen && !wide && channel != null)
-            ) {
+            if (!fullPage && (!narrow || app.pane == "sidebar") && !showMembersScreen) {
                 Sidebar(
                     app,
                     channels,
@@ -101,8 +95,8 @@ fun ZooApp(app: Session) {
             if (!narrow || fullPage || app.pane == "chat")
                 Column(Modifier.weight(1f).fillMaxHeight().then(webControlModifier("main"))) {
                     when {
-                        app.membersOpen && !wide && channel != null ->
-                            ChannelMembersScreen(app, channel, users, members)
+                        showMembersScreen ->
+                            ChannelMembersScreen(app, membersChannel!!, users, members)
                         isSettings -> ZooSettings(app, users)
                         isBubble -> BubbleChat(app, users)
                         isNotifications -> Notifications(app, notifications, users)
@@ -120,15 +114,10 @@ fun ZooApp(app: Session) {
                         }
                     }
                 }
-            if (
-                wide &&
-                    app.membersOpen &&
-                    channel != null &&
-                    (!channel.flag("is_dm") || channel.text("channel_name").startsWith("dm:group:"))
-            ) {
+            if (wide && app.membersOpen && membersChannel != null) {
                 VerticalDivider()
                 Column(Modifier.width(if (width >= 1280.dp) 320.dp else 288.dp).fillMaxHeight()) {
-                    Members(app, channel, users, members, Modifier.fillMaxSize())
+                    Members(app, membersChannel, users, members, Modifier.fillMaxSize())
                 }
             }
         }

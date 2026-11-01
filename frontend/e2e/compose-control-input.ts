@@ -7,6 +7,7 @@ export async function fillControl(
   implementation: Implementation,
 ) {
   if (implementation === "react") return field.fill(value);
+  await expect(field).toBeVisible();
   const previous = (await field.textContent()) ?? "";
   await field.click({ force: true });
   const owner = () =>

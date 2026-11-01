@@ -33,7 +33,7 @@ type Update = (environment: string) => void;
 interface ComposeBridge {
   config: string;
   headers: () => Promise<string>;
-  navigate: (path: string, replace?: boolean) => void;
+  navigate: (path: string, replace?: boolean, state?: Record<string, unknown>) => void;
   fileTarget: (id: string, bounds: string, receive: (raw: string) => boolean) => void;
   forgetFileTarget: (id: string) => void;
   cache: ComposeCache;
@@ -99,6 +99,7 @@ export interface NativeStatus {
 export function ComposeRuntime({ config, status }: { config: AppConfig; status?: NativeStatus }) {
   const router = useRouter();
   const location = useRouterState({ select: (state) => state.location.href });
+  const historyState = useRouterState({ select: (state) => state.location.state });
   const { t } = useTranslation();
   const theme = useTheme();
   const language = useLocale();
@@ -109,11 +110,21 @@ export function ComposeRuntime({ config, status }: { config: AppConfig; status?:
   const [cacheError, setCacheError] = useState<string | null>(null);
   const updateRef = useRef<Update | null>(null);
   const escapeRef = useRef<(() => void) | null>(null);
-  const stateRef = useRef({ location, theme, language, t, offline, status, cacheError });
-  stateRef.current = { location, theme, language, t, offline, status, cacheError };
+  const stateRef = useRef({
+    location,
+    historyState,
+    theme,
+    language,
+    t,
+    offline,
+    status,
+    cacheError,
+  });
+  stateRef.current = { location, historyState, theme, language, t, offline, status, cacheError };
   const environment = () =>
     JSON.stringify({
       path: stateRef.current.location,
+      historyState: stateRef.current.historyState,
       theme: stateRef.current.theme.theme,
       dark: stateRef.current.theme.resolvedTheme === "dark",
       online: navigator.onLine,
@@ -193,10 +204,10 @@ export function ComposeRuntime({ config, status }: { config: AppConfig; status?:
             Object.fromEntries(await buildAuthHeaders({ devUserId: config.devUserId })),
           );
         },
-        navigate: (path, replace = false) => {
+        navigate: (path, replace = false, state) => {
           if (path.startsWith("/") && !path.startsWith("//")) {
-            if (replace) router.history.replace(path);
-            else router.history.push(path);
+            if (replace) router.history.replace(path, state);
+            else router.history.push(path, state);
             void router.load().catch(() => setError(true));
           }
         },
@@ -506,6 +517,7 @@ export function ComposeRuntime({ config, status }: { config: AppConfig; status?:
     updateRef.current?.(environment());
   }, [
     location,
+    historyState,
     theme.resolvedTheme,
     theme.theme,
     language.locale,

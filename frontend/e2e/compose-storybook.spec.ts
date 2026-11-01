@@ -311,3 +311,182 @@ test("native settings, Bubble and notifications use the existing story fixtures"
   await expect(frame.getByText("今日のリリースは 18:00", { exact: false })).toBeVisible();
   await page.screenshot({ path: test.info().outputPath("compose-notifications-mobile.png") });
 });
+
+test.describe("Kotlin message touch gestures", () => {
+  test.use({
+    baseURL: process.env.STORYBOOK_PARITY_URL ?? "http://127.0.0.1:6008",
+    viewport: { width: 390, height: 844 },
+    hasTouch: true,
+    isMobile: true,
+    permissions: ["clipboard-read", "clipboard-write"],
+  });
+  async function openTouchMessage(page: Page) {
+    await page.addInitScript(() => {
+      const state = window as typeof window & {
+        __messageMenuOverlay?: boolean;
+        __messageMenuCallbacks: { name: string; args: unknown[] }[];
+      };
+      state.__messageMenuCallbacks = [];
+      addEventListener("message", (event) => {
+        if (event.origin !== location.origin) return;
+        if (event.data?.type === "zoo-compose-catalog-overlay")
+          state.__messageMenuOverlay = event.data.open === true;
+        if (event.data?.type === "zoo-compose-catalog-callback")
+          state.__messageMenuCallbacks.push(JSON.parse(String(event.data.payload)));
+      });
+    });
+    await page.goto(`/iframe.html?id=features-chat-messagerow--default&${nativeQuery};locale:ja`);
+    await expect(page.locator("[data-compose-catalog-state=ready]")).toBeVisible({
+      timeout: 90_000,
+    });
+    const frame = page.frames().find((item) => item.url().includes("/compose-catalog.html"));
+    if (!frame) throw new Error("Native message frame is missing");
+    await frame.evaluate(() => {
+      const state = window as typeof window & { __messageMenuReplies: { ok: boolean }[] };
+      state.__messageMenuReplies = [];
+      addEventListener("message", (event) => {
+        if (
+          event.origin === location.origin &&
+          event.data?.type === "zoo-compose-catalog-callback-result"
+        )
+          state.__messageMenuReplies.push(event.data);
+      });
+    });
+    const body = frame.getByText(/こんにちは/).last();
+    await expect(body).toBeVisible();
+    const session = await page.context().newCDPSession(page);
+    const dispatch = async (
+      type: "touchStart" | "touchMove" | "touchEnd",
+      point?: { x: number; y: number },
+    ) => {
+      if (type !== "touchEnd" && !point) throw new Error("Touch coordinates are missing");
+      await session.send("Input.dispatchTouchEvent", {
+        type,
+        touchPoints: type === "touchEnd" ? [] : [{ x: point!.x, y: point!.y, id: 1 }],
+      });
+    };
+    const tap = async (target: import("@playwright/test").Locator) => {
+      const bounds = await target.boundingBox();
+      if (!bounds) throw new Error("Native touch target has no bounds");
+      await dispatch("touchStart", {
+        x: bounds.x + bounds.width / 2,
+        y: bounds.y + bounds.height / 2,
+      });
+      await dispatch("touchEnd");
+    };
+    const hold = async () => {
+      const bounds = await body.boundingBox();
+      if (!bounds) throw new Error("Native message has no bounds");
+      await dispatch("touchStart", { x: bounds.x + 20, y: bounds.y + 8 });
+      await expect(frame.getByRole("menu")).toBeVisible();
+      await dispatch("touchEnd");
+      await page.evaluate(
+        () =>
+          new Promise<void>((resolve) =>
+            requestAnimationFrame(() => requestAnimationFrame(() => resolve())),
+          ),
+      );
+      await expect
+        .poll(() =>
+          page.evaluate(
+            () =>
+              (window as typeof window & { __messageMenuOverlay?: boolean }).__messageMenuOverlay,
+          ),
+        )
+        .toBe(true);
+      await expect(frame.getByRole("menuitem", { name: "リアクションを追加" })).toBeVisible();
+    };
+    const pickReaction = async () => {
+      await tap(frame.getByRole("menuitem", { name: "リアクションを追加" }));
+      await expect
+        .poll(() =>
+          page.evaluate(
+            () =>
+              (
+                window as typeof window & {
+                  __messageMenuCallbacks: { name: string; args: unknown[] }[];
+                }
+              ).__messageMenuCallbacks,
+          ),
+        )
+        .toContainEqual({ name: "onPickReaction", args: [] });
+      await expect
+        .poll(() =>
+          frame.evaluate(() =>
+            (
+              window as typeof window & { __messageMenuReplies: { ok: boolean }[] }
+            ).__messageMenuReplies.some((reply) => reply.ok),
+          ),
+        )
+        .toBe(true);
+      await expect(frame.getByRole("menu")).toBeHidden();
+    };
+    return { frame, body, session, dispatch, tap, hold, pickReaction };
+  }
+
+  test("a held message menu remains usable after releasing the touch", async ({ page }) => {
+    const message = await openTouchMessage(page);
+    await message.hold();
+    await message.pickReaction();
+    await message.session.detach();
+  });
+  test("Canvas text supports real mouse selection and keyboard copying", async ({ page }) => {
+    const message = await openTouchMessage(page);
+    const bounds = await message.body.boundingBox();
+    if (!bounds) throw new Error("Native selection target has no bounds");
+    await page.mouse.move(bounds.x + 2, bounds.y + 10);
+    await page.mouse.down();
+    await page.mouse.move(bounds.x + 180, bounds.y + 10, { steps: 20 });
+    await page.mouse.up();
+    // Select the real Canvas text, not its intentionally user-select:none AX proxy.
+    await message.frame.evaluate(() => navigator.clipboard.writeText(""));
+    await page.keyboard.press("Control+c");
+    await expect
+      .poll(() => message.frame.evaluate(() => navigator.clipboard.readText()))
+      .toContain("こんにちは");
+    const selected = await message.frame.evaluate(() => navigator.clipboard.readText());
+    expect(await message.body.textContent()).toContain(selected);
+    await message.session.detach();
+  });
+  test("dragging or holding an inline link does not open the message menu", async ({ page }) => {
+    for (const gesture of ["drag", "link"] as const) {
+      const message = await openTouchMessage(page);
+      const target =
+        gesture === "link"
+          ? message.frame.getByRole("link", { name: "example.com/docs", exact: true })
+          : message.body;
+      const bounds = await target.boundingBox();
+      if (!bounds) throw new Error("Native gesture target has no bounds");
+      const point = { x: bounds.x + 20, y: bounds.y + 8 };
+      await message.dispatch("touchStart", point);
+      if (gesture === "drag") await message.dispatch("touchMove", { x: point.x + 24, y: point.y });
+      // An actual negative hold must outlast the product's 500ms gesture deadline.
+      await page.waitForTimeout(650);
+      await expect(message.frame.getByRole("menu")).toBeHidden();
+      await message.dispatch("touchEnd");
+      await expect(message.frame.getByRole("menu")).toBeHidden();
+      await expect
+        .poll(() =>
+          page.evaluate(
+            () =>
+              (window as typeof window & { __messageMenuOverlay?: boolean }).__messageMenuOverlay,
+          ),
+        )
+        .toBe(false);
+      await message.session.detach();
+    }
+  });
+  test("copying a message writes its original source into the real clipboard", async ({ page }) => {
+    const message = await openTouchMessage(page);
+    await message.hold();
+    // The actual touch focuses the iframe before using its real Clipboard API.
+    await message.frame.evaluate(() => navigator.clipboard.writeText(""));
+    await message.tap(message.frame.getByRole("menuitem", { name: "原文をコピー" }));
+    await expect
+      .poll(() => message.frame.evaluate(() => navigator.clipboard.readText()))
+      .toBe(
+        "こんにちは。今日のリリースは 18:00 です。詳細は https://example.com/docs を参照してください。",
+      );
+    await message.session.detach();
+  });
+});

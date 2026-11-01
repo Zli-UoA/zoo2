@@ -82,6 +82,8 @@ interface Platform {
 
     fun navigate(path: String)
 
+    fun navigate(path: String, state: Row) = navigate(path)
+
     fun replace(path: String) = navigate(path)
 
     fun translate(key: String, args: Map<String, String> = emptyMap()): String
@@ -136,6 +138,7 @@ data class Environment(
     val persistenceStatus: String = "ready",
     val persistenceError: String = "",
     val theme: String = "system",
+    val historyState: Row = JsonObject(emptyMap()),
 )
 
 fun endpoint(base: String, path: String): String = base.trimEnd('/') + "/" + path.trimStart('/')

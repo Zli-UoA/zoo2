@@ -22,14 +22,12 @@ export type NativeInteraction = Scope & {
     | "scroll"
     | "fixture"
     | "pointer"
-    | "selection"
     | "navigation"
     | "overflow";
   deltaY?: number;
   ctrlKey?: boolean;
   newTab?: boolean;
   urlIncludes?: string;
-  selection?: "set" | "clear";
   sameWidthAs?: Scope;
   sameHeightAs?: Scope;
   containedBy?: Scope;
@@ -292,7 +290,6 @@ export async function runNativeInteractions(
   interactions: unknown[],
   storyArgs: Record<string, unknown> = {},
 ): Promise<void> {
-  let ownedSelection = false;
   let lastTarget: HTMLElement | null = null;
   const navigationIntents: { url: string; newTab: boolean }[] = [];
   const navigationWindow = windowOf(frame);
@@ -330,7 +327,6 @@ export async function runNativeInteractions(
           "scroll",
           "fixture",
           "pointer",
-          "selection",
           "navigation",
           "overflow",
         ].includes(step.action)
@@ -352,10 +348,6 @@ export async function runNativeInteractions(
           if (step.newTab !== undefined && last?.newTab !== step.newTab)
             throw new Error("Native new-tab intent differs");
         });
-        continue;
-      }
-      if (step.action === "selection" && step.selection === "clear") {
-        document.getSelection()?.removeAllRanges();
         continue;
       }
       if (step.action === "overflow") {
@@ -538,22 +530,6 @@ export async function runNativeInteractions(
         element.focus();
         element.click();
         await painted();
-        continue;
-      }
-      if (step.action === "selection") {
-        const walker = document.createTreeWalker(element, win.NodeFilter.SHOW_TEXT);
-        let node: Node | null;
-        while ((node = walker.nextNode())) if ((node.textContent?.length ?? 0) > 8) break;
-        if (!node) throw new Error("Native selection target has no selectable text");
-        const range = document.createRange();
-        range.setStart(node, 1);
-        range.setEnd(node, 8);
-        const selection = document.getSelection();
-        if (!selection) throw new Error("Native document selection is unavailable");
-        selection.removeAllRanges();
-        selection.addRange(range);
-        ownedSelection = true;
-        if (!selection.toString()) throw new Error("Native text selection is empty");
         continue;
       }
       if (step.action === "pointer") {
@@ -824,6 +800,5 @@ export async function runNativeInteractions(
     await painted();
   } finally {
     navigationWindow.removeEventListener("zoo:navigation-intent", onNavigation);
-    if (ownedSelection) navigationWindow.getSelection()?.removeAllRanges();
   }
 }

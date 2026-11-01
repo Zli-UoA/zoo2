@@ -289,8 +289,8 @@ function messageInteractions(component: string, state: string): Record<string, u
               wait(
                 "button",
                 state === "With File Attachment"
-                  ? "release-notes.pdf を選択から外す"
-                  : "screenshot.png を選択から外す",
+                  ? "release-notes.pdfを削除"
+                  : "screenshot.pngを削除",
               ),
               { action: "wait", role: "button", name: "送信", enabled: true },
               click("button", "送信"),

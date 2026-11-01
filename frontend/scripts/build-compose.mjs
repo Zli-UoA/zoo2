@@ -9,7 +9,13 @@ const result = spawnSync(
     "wasmJsBrowserDistribution",
     ...(process.env.ZOO_COMPOSE_SYSTEM_NODE === "true" ? ["-Pzoo.systemNode=true"] : []),
   ],
-  { cwd: project, stdio: "inherit", shell: process.platform === "win32" },
+  {
+    cwd: project,
+    stdio: "inherit",
+    shell: process.platform === "win32",
+    // Binaryen otherwise sizes its worker pool from host CPUs, even in a smaller container.
+    env: { ...process.env, BINARYEN_CORES: process.env.BINARYEN_CORES ?? "1" },
+  },
 );
 if (result.error) throw result.error;
 if (result.status !== 0) process.exit(result.status ?? 1);

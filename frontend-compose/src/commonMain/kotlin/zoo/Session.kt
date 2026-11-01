@@ -24,8 +24,23 @@ class Session(val repo: Repository, val scope: CoroutineScope, initial: Environm
     var dialog by mutableStateOf<String?>(null)
     var appDetailId by mutableStateOf<String?>(null)
     var thread by mutableStateOf<String?>(null)
-    var membersOpen by mutableStateOf(false)
-    var pane by mutableStateOf("sidebar")
+    private var membersPanelOpen by mutableStateOf(false)
+    private var membersWide by mutableStateOf<Boolean?>(null)
+    val membersRequested: Boolean
+        get() = query["members"] == "true"
+
+    var membersOpen: Boolean
+        get() = if (membersWide == true) membersPanelOpen else membersRequested
+        set(value) {
+            setMembersOpen(value, membersWide == true)
+        }
+
+    var pane by
+        mutableStateOf(
+            if (initial.path.startsWith("/channels/") || initial.path.startsWith("/notifications"))
+                "chat"
+            else "sidebar"
+        )
     private val toastController =
         NativeToastController(scope).also { it.setVisible(initial.visible) }
     val toastState: NativeToastState?
@@ -98,7 +113,8 @@ class Session(val repo: Repository, val scope: CoroutineScope, initial: Environm
     fun escape() {
         if (lastEscape?.elapsedNow()?.inWholeMilliseconds?.let { it < 100 } == true) return
         lastEscape = kotlin.time.TimeSource.Monotonic.markNow()
-        overlays.lastOrNull()?.close?.invoke()
+        val top = overlays.lastOrNull { !it.tooltip } ?: return
+        if (top.onEscape?.invoke() != true) top.close()
     }
 
     fun navigate(path: String) = platform.navigate(path)
@@ -287,13 +303,57 @@ class Session(val repo: Repository, val scope: CoroutineScope, initial: Environm
         }
     }
 
+    fun configureMembersLayout(wide: Boolean) {
+        if (membersWide != wide) {
+            membersWide = wide
+            membersPanelOpen = false
+        }
+    }
+
+    private fun membersPath(open: Boolean): String =
+        URLBuilder("https://zoo.invalid${env.path}")
+            .apply {
+                parameters.remove("members")
+                if (open) parameters.append("members", "true")
+            }
+            .buildString()
+            .removePrefix("https://zoo.invalid")
+
+    fun removeMembersRequest() {
+        if (membersRequested) platform.replace(membersPath(false))
+    }
+
+    fun setMembersOpen(open: Boolean, wide: Boolean) {
+        configureMembersLayout(wide)
+        if (wide) {
+            membersPanelOpen = open
+            return
+        }
+        val channel = channelId ?: return
+        if (membersRequested == open) return
+        if (open) {
+            platform.navigate(
+                membersPath(true),
+                JsonObject(env.historyState + ("zooMembersParent" to JsonPrimitive(channel))),
+            )
+        } else if (
+            env.historyState.text("zooMembersParent") == channel &&
+                (env.historyState.text("__TSR_index").toIntOrNull() ?: 0) > 0
+        ) {
+            platform.action("back")
+        } else {
+            platform.replace(membersPath(false))
+        }
+    }
+
     fun openThread(id: String, wide: Boolean) {
         thread = id
-        if (wide) membersOpen = false
+        if (wide) setMembersOpen(false, true)
     }
 
     fun openMembers(wide: Boolean) {
-        membersOpen = !membersOpen
+        configureMembersLayout(wide)
+        setMembersOpen(!membersOpen, wide)
         if (membersOpen && wide) thread = null
     }
 

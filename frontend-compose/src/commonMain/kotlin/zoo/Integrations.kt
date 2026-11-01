@@ -449,6 +449,7 @@ fun Apps(
                                                         .jsonObject
                                                 selected = result.text("id")
                                                 editing = false
+                                                management = true
                                                 revision++
                                             }
                                     }
@@ -546,6 +547,7 @@ fun Apps(
                                                         info,
                                                     )
                                                 editing = true
+                                                management = false
                                             }
                                             val actions = buildList {
                                                 if (

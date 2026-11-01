@@ -122,7 +122,12 @@ fun Notifications(app: Session, notifications: List<Row>, users: List<Row>) {
                             }
                             .focusProperties { onEnter = { if (initialMask) cancelFocusChange() } }
                             .focusGroup()
-                            .then(webControlModifier("list"))
+                            .then(
+                                webControlModifier(
+                                    "list",
+                                    attributes = mapOf("aria-hidden" to initialMask.toString()),
+                                )
+                            )
                             .alpha(if (initialMask) 0f else 1f)
                             .semantics {
                                 contentDescription = app.t("notifications.title")

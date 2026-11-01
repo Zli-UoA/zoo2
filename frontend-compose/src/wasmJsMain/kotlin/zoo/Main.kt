@@ -37,6 +37,9 @@ private external fun cacheWrite(bridge: JsAny, key: String, value: String): Prom
 @JsFun("(bridge, path) => bridge.navigate(path)")
 private external fun navigateTo(bridge: JsAny, path: String)
 
+@JsFun("(bridge, path, state) => bridge.navigate(path, false, JSON.parse(state))")
+private external fun navigateStateTo(bridge: JsAny, path: String, state: String)
+
 @JsFun("(bridge, path) => bridge.navigate(path, true)")
 private external fun replaceTo(bridge: JsAny, path: String)
 
@@ -130,6 +133,9 @@ private class BrowserPlatform(private val bridge: JsAny) : Platform {
 
     override fun navigate(path: String) = navigateTo(bridge, path)
 
+    override fun navigate(path: String, state: Row) =
+        navigateStateTo(bridge, path, state.toString())
+
     override fun replace(path: String) = replaceTo(bridge, path)
 
     override fun translate(key: String, args: Map<String, String>) =
@@ -182,6 +188,7 @@ private fun environment(raw: String): Environment {
         r.text("persistenceStatus"),
         r.text("persistenceError"),
         r.text("theme").ifEmpty { "system" },
+        r.nested("historyState"),
     )
 }
 

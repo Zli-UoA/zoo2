@@ -9,6 +9,8 @@
 JDK 21、Node、pnpm、初回ビルド時のGradle / Maven / npm / GitHubへの接続が必要です。
 WebのビルドにAndroid SDKやXcodeは不要です。
 
+Compose Multiplatformは1.11.1、KotlinはCompose 1.11.1が依存するWasm標準ライブラリとコンパイラのバージョンを揃え、2.3.20を使用します。Web向けの最低要件は2.3.10ですが、Wasmコンパイルでは標準ライブラリと同じ2.3.20が必要です。以前のComposeには、画面やダイアログを再表示すると操作ノードのキャッシュが不整合になり、Webのアクセシビリティ情報が失われる不具合がありました。公開修正版へ更新し、ライブラリ内部への独自パッチは加えていません。
+
 ```sh
 cd frontend
 pnpm install --frozen-lockfile

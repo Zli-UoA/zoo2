@@ -29,6 +29,8 @@ jobs:
 
   web:
     needs: runner
+    env:
+      BINARYEN_CORES: "1"
     runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-latest' || fromJSON(needs.runner.outputs.large-runs-on || '"zli-k8s"') }}
     steps:
       - uses: actions/checkout@v7
