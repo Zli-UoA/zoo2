@@ -22,7 +22,7 @@ resource "cloudflare_r2_bucket_cors" "prod" {
       allowed = {
         origins = var.prod_cors_origins
         methods = ["GET", "PUT", "HEAD"]
-        headers = ["Content-Type", "Content-Length", "x-amz-*"]
+        headers = ["Content-Type", "Content-Length", "If-None-Match", "x-amz-*"]
       }
       expose_headers  = ["ETag"]
       max_age_seconds = 3600
@@ -71,7 +71,7 @@ resource "cloudflare_r2_bucket_cors" "stg" {
       allowed = {
         origins = var.stg_cors_origins
         methods = ["GET", "PUT", "HEAD"]
-        headers = ["Content-Type", "Content-Length", "x-amz-*"]
+        headers = ["Content-Type", "Content-Length", "If-None-Match", "x-amz-*"]
       }
       expose_headers  = ["ETag"]
       max_age_seconds = 3600

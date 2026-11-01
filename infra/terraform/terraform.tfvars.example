@@ -5,5 +5,4 @@ cloudflare_account_id = "c9918f2caa050736a07867e6f968c0a2"
 r2_location           = "apac"
 prod_bucket_name      = "zoo-attachments-prod"
 stg_bucket_name       = "zoo-attachments-stg"
-prod_cors_origins     = ["https://zoo.example.com"]
-stg_cors_origins      = ["https://stg.zoo.example.com", "https://*.preview.zoo.example.com"]
+# CORS の許可オリジンは CI の plan と揃えるため variables.tf の既定値で管理します。ここで上書きしないでください。

@@ -167,7 +167,20 @@ tofu plan
 ```
 
 `cloudflare_r2_bucket_cors` と `cloudflare_r2_bucket_lifecycle` は Cloudflare provider v5 が import に対応していないため、`plan` には 4 つとも create として出ます。
-これらはバケットの設定を上書きするだけなので、`plan` の内容（CORS のオリジン・lifecycle のルール）が現在の設定と一致することをダッシュボードで確認してから `tofu apply` してください。
+apply するとバケットの CORS と lifecycle が `plan` の内容で置き換わります。先に現在の設定を確認し、`plan` と一致することを確かめてください。
+
+```bash
+# ダッシュボードの R2 > バケット > Settings > CORS Policy / Object lifecycle rules でも確認できる
+npx wrangler r2 bucket cors list zoo-attachments-prod
+npx wrangler r2 bucket cors list zoo-attachments-stg
+npx wrangler r2 bucket lifecycle list zoo-attachments-prod
+npx wrangler r2 bucket lifecycle list zoo-attachments-stg
+```
+
+- **一致しない場合は apply しないでください。** 実環境に合わせて `r2.tf` や `variables.tf` の既定値を直す PR を先に出します。CORS が合わないと、ブラウザからの Direct PUT がプリフライトで拒否され、添付をアップロードできなくなります。
+- CORS の許可オリジンは `variables.tf` の既定値（本番 `https://zli.chat`、Preview `https://zoo2-pr-*.zli.chat`）で管理しています。CI の plan は `terraform.tfvars` を使わないため、tfvars で上書きすると CI と手元の plan が食い違います。
+- 許可ヘッダーの `If-None-Match` は、backend が上書き禁止の条件として署名するため必要です（`backend/src/apps/files.rs`、`docs/apps.md`）。
+
 apply 後にもう一度 `tofu plan` を実行し、No changes になることを確認します。
 
 ## passphrase の入れ替え

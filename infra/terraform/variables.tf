@@ -29,17 +29,14 @@ variable "stg_bucket_name" {
 
 variable "prod_cors_origins" {
   type        = list(string)
-  description = "Allowed origins for production R2 bucket CORS"
-  default     = ["https://zoo.example.com"]
+  description = "Allowed origins for production R2 bucket CORS (public host of zoo2)"
+  default     = ["https://zli.chat"]
 }
 
 variable "stg_cors_origins" {
   type        = list(string)
-  description = "Allowed origins for staging / preview R2 bucket CORS (e.g. https://stg.zoo.example.com, or specific preview domains like https://zoo2-pr-<id>.<APP_DOMAIN> via tfvars)"
-  default = [
-    "https://stg.zoo.example.com",
-    "https://*.preview.zoo.example.com"
-  ]
+  description = "Allowed origins for staging / preview R2 bucket CORS (preview environments are https://zoo2-pr-<PR number>.zli.chat)"
+  default     = ["https://zoo2-pr-*.zli.chat"]
 }
 
 variable "state_passphrase" {
