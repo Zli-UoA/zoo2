@@ -7,7 +7,7 @@ use crossterm::event::{DisableBracketedPaste, EnableBracketedPaste, EventStream}
 use futures_util::StreamExt;
 use tokio::sync::mpsc;
 
-use crate::{api::ApiClient, http::Credentials};
+use crate::{api::ApiClient, config, http::Credentials, update};
 pub use app::App;
 
 /// チャット画面を開き、終了するまでイベントを処理する。
@@ -15,6 +15,7 @@ pub async fn run(
     http: reqwest::Client,
     api_base_url: String,
     credentials: Credentials,
+    check_updates: bool,
 ) -> Result<()> {
     let api = ApiClient::new(http.clone(), &api_base_url, credentials.clone());
     // 画面を開く前に自分を確かめる。認証の失敗をターミナルの通常表示で伝えるため。
@@ -22,6 +23,7 @@ pub async fn run(
 
     let (shape_tx, mut shape_rx) = mpsc::unbounded_channel();
     let (app_tx, mut app_rx) = mpsc::unbounded_channel();
+    let updates = check_updates.then(|| spawn_update_check(http.clone(), app_tx.clone()));
     let mut app = App::new(api, http, api_base_url, credentials, me, shape_tx, app_tx);
 
     let mut terminal = ratatui::init();
@@ -53,7 +55,39 @@ pub async fn run(
             break Ok(());
         }
     };
+    if let Some(updates) = updates {
+        updates.abort();
+    }
     let _ = crossterm::execute!(std::io::stdout(), DisableBracketedPaste);
     ratatui::restore();
     result
+}
+
+/// 起動時と、そのあと一定の間隔で新しい版を調べ、見つかれば画面に知らせる。
+/// 調べられなかったときは何も出さない。
+fn spawn_update_check(
+    http: reqwest::Client,
+    tx: mpsc::UnboundedSender<app::AppEvent>,
+) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
+        let cache = config::config_dir().map(|dir| {
+            let _ = std::fs::create_dir_all(&dir);
+            update::cache_path(&dir)
+        });
+        loop {
+            let now = jiff::Timestamp::now().as_second();
+            if let Ok(Some(version)) = update::check(
+                &http,
+                update::RELEASES_URL,
+                cache.as_deref(),
+                update::CURRENT_VERSION,
+                now,
+            )
+            .await
+            {
+                let _ = tx.send(app::AppEvent::UpdateAvailable(version));
+            }
+            tokio::time::sleep(update::CHECK_INTERVAL).await;
+        }
+    })
 }
