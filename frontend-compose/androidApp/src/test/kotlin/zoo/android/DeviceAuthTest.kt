@@ -48,6 +48,9 @@ class DeviceAuthTest {
                         }
                     respond(
                         response,
+                        status =
+                            if (response.contains("\"error\"")) HttpStatusCode.BadRequest
+                            else HttpStatusCode.OK,
                         headers = headersOf(HttpHeaders.ContentType, "application/json"),
                     )
                 }
@@ -127,6 +130,103 @@ class DeviceAuthTest {
             assertEquals(listOf<String?>("initial", "rotated"), refreshes)
         } finally {
             http.close()
+        }
+    }
+
+    @Test
+    fun deviceAuthorizationErrorsIdentifyTheConfigurationWithoutEchoingServerDetails() = runTest {
+        for ((code, hint) in
+            listOf(
+                "unauthorized_client" to "デバイスコード認証",
+                "invalid_target" to "Resource",
+                "invalid_scope" to "offline_access",
+            )) {
+            val http =
+                HttpClient(
+                    MockEngine { request ->
+                        if (request.url.encodedPath == "/.well-known/openid-configuration")
+                            respond(discovery())
+                        else
+                            respond(
+                                """{"error":"$code","error_description":"sensitive server text"}""",
+                                HttpStatusCode.BadRequest,
+                            )
+                    }
+                )
+            try {
+                val failure =
+                    assertFailsWith<LoginFailure> {
+                        DeviceAuth(http).login("https://id.example", "client", "") { _, _ ->
+                            fail("No device code expected")
+                        }
+                    }
+                assertContains(failure.message.orEmpty(), "確認コードの発行")
+                assertContains(failure.message.orEmpty(), "HTTP 400")
+                assertContains(failure.message.orEmpty(), code)
+                assertContains(failure.message.orEmpty(), hint)
+                assertFalse(failure.message.orEmpty().contains("sensitive server text"))
+            } finally {
+                http.close()
+            }
+        }
+    }
+
+    @Test
+    fun tokenExchangeFailureKeepsTheStageAndOAuthCode() = runTest {
+        val http =
+            HttpClient(
+                MockEngine { request ->
+                    when (request.url.encodedPath) {
+                        "/.well-known/openid-configuration" -> respond(discovery())
+                        "/device" -> respond(device)
+                        else ->
+                            respond(
+                                """{"error":"invalid_client","error_description":"hidden token response"}""",
+                                HttpStatusCode.Unauthorized,
+                            )
+                    }
+                }
+            )
+        try {
+            val failure =
+                assertFailsWith<LoginFailure> {
+                    DeviceAuth(http).login("https://id.example", "client", "") { _, _ -> }
+                }
+            assertContains(failure.message.orEmpty(), "トークンの取得")
+            assertContains(failure.message.orEmpty(), "HTTP 401 / invalid_client")
+            assertFalse(failure.message.orEmpty().contains("hidden token response"))
+        } finally {
+            http.close()
+        }
+    }
+
+    @Test
+    fun unexpectedServerResponsesDoNotAppearInTheLoginMessage() = runTest {
+        for (body in
+            listOf(
+                """{"error":"sensitive_unknown_code","error_description":"sensitive details"}""",
+                "<html>sensitive details</html>",
+            )) {
+            val http =
+                HttpClient(
+                    MockEngine { request ->
+                        if (request.url.encodedPath == "/.well-known/openid-configuration")
+                            respond(discovery())
+                        else respond(body, HttpStatusCode.Forbidden)
+                    }
+                )
+            try {
+                val failure =
+                    assertFailsWith<LoginFailure> {
+                        DeviceAuth(http).login("https://id.example", "client", "") { _, _ ->
+                            fail()
+                        }
+                    }
+                assertContains(failure.message.orEmpty(), "HTTP 403")
+                assertFalse(failure.message.orEmpty().contains("sensitive"))
+            } finally {
+                http.close()
+            }
         }
     }
 }

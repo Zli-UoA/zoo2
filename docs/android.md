@@ -33,7 +33,14 @@ resource（backend の `OIDC_AUDIENCE` と同じ値）を入力します。
 
 IdP にデバイス認可（RFC 8628）と refresh token を許可した public client を登録してください。
 client ID は自動作成しません。既定の接続先は `https://zli.chat`、
-issuer は `https://account.zli.works/api/auth` です。
+issuer は `https://account.zli.works/api/auth`、Resource / audience は `https://zli.chat/api` です。
+AuthZ では Public client の登録に加え、編集画面でデバイスコード認証を許可し、
+`openid profile offline_access` と対象 API の利用を許可してください。
+Public client であることだけでは、デバイスコード認証は許可されません。
+
+ログイン時の OAuth エラーは HTTP ステータス・エラーコードと確認すべき設定を表示します。
+`unauthorized_client` はデバイスコードの許可、`invalid_target` は Resource と API の紐付けを
+確認してください。保存済みの接続設定を直す場合は、起動画面で編集してからログインし直します。
 
 アクセストークンと refresh token はメモリだけで保持し、有効期限の60秒前から更新します。
 アプリのプロセス終了後は再ログインが必要です。ログアウトはローカルセッションを終了し、
