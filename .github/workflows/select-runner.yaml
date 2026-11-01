@@ -46,9 +46,11 @@ jobs:
             const SCALE_SET = 'zli-k8s';
             const HOSTED = 'ubuntu-latest';
             // Included minutes of GitHub Free for private repositories; the margin
-            // covers billing lag and jobs started after the check.
+            // covers billing lag and jobs started after the check. Every OS draws on
+            // the same allowance by price, so usage is counted in Linux minutes.
             const HOSTED_INCLUDED_MINUTES = 2000;
             const HOSTED_MARGIN_MINUTES = 100;
+            const LINUX_MINUTE_PRICE = 0.006;
             const org = context.repo.owner;
             const request = {timeout: 10000};
             const use = (runsOn, hostedRunsOn, reason) => {
@@ -78,11 +80,13 @@ jobs:
                 const {data} = await github.request(endpoint, {
                   org, year: now.getUTCFullYear(), month: now.getUTCMonth() + 1, request,
                 });
-                const minutes = (data.usageItems || [])
+                const amount = (data.usageItems || [])
                   // Responses have used both 'actions' / 'repo' and 'Actions' / 'owner/repo'.
-                  .filter(i => /^actions$/i.test(i.product) && /linux/i.test(i.sku) &&
+                  // Compute is billed in minutes; storage is not part of the allowance.
+                  .filter(i => /^actions$/i.test(i.product) && /^minutes$/i.test(i.unitType) &&
                     names.has(String(i.repositoryName).split('/').pop().toLowerCase()))
-                  .reduce((sum, i) => sum + i.quantity, 0);
+                  .reduce((sum, i) => sum + i.grossAmount, 0);
+                const minutes = amount / LINUX_MINUTE_PRICE;
                 return [minutes < HOSTED_INCLUDED_MINUTES - HOSTED_MARGIN_MINUTES,
                   `private hosted minutes ${Math.round(minutes)}/${HOSTED_INCLUDED_MINUTES}`];
               } catch (error) {

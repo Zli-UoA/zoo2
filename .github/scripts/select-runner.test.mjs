@@ -13,7 +13,11 @@ const H = 'ubuntu-latest';
 const arc = (name = 'a', state = {}) => ({name: `zli-k8s-${name}`, status: 'online', busy: false, labels: [{name: A}], ...state});
 const camp = (state = {}) => ({name: 'kubecamp-runner-no-docker-1', status: 'online', busy: false, labels: [{name: K}], ...state});
 const pull = repo => ({pull_request: {head: {repo: {full_name: repo}}}});
-const usage = (repositoryName, quantity, sku = 'Actions Linux') => ({product: 'actions', sku, repositoryName, quantity});
+const PRICES = {'Actions Linux': 0.006, 'Actions Windows': 0.01, 'Actions storage': 0.00033602};
+const usage = (repositoryName, quantity, sku = 'Actions Linux') => ({
+  product: 'actions', sku, repositoryName, quantity, grossAmount: quantity * PRICES[sku],
+  unitType: sku === 'Actions storage' ? 'GigabyteHours' : 'Minutes',
+});
 const privateRepo = {repository: {private: true}};
 const privateRepos = [{name: 'AuthZ'}, {name: 'repo'}];
 
@@ -33,7 +37,8 @@ const cases = [
   ['private within included minutes uses hosted', {payload: privateRepo, usage: [usage('AuthZ', 1000), usage('repo', 899)]}, H, H],
   ['private out of minutes uses ARC', {payload: privateRepo, usage: [usage('AuthZ', 1000), usage('repo', 900)]}, A, A],
   ['private out of minutes still prefers kubecamp', {payload: privateRepo, runners: [camp()], usage: [usage('AuthZ', 1900)]}, K, A],
-  ['public and non-Linux usage is not counted', {payload: privateRepo, usage: [usage('zoo2', 9000), usage('repo', 9000, 'Actions storage'), usage('repo', 10)]}, H, H],
+  ['other OS usage counts by price', {payload: privateRepo, usage: [usage('repo', 1500, 'Actions Windows')]}, A, A],
+  ['public repositories and storage are not counted', {payload: privateRepo, usage: [usage('zoo2', 9000), usage('repo', 9000, 'Actions storage'), usage('repo', 10)]}, H, H],
   ['documented billing format is counted', {payload: {repository: {private: true}}, usage: [{...usage('Zli-UoA/Repo', 1900), product: 'Actions'}]}, A, A],
   ['unknown visibility is checked as private', {payload: {}, usage: [usage('repo', 1900)]}, A, A],
   ['billing access error names the call and permissions', {payload: privateRepo, billingError: true,
