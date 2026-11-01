@@ -24,7 +24,7 @@ type Story = StoryObj<typeof meta>;
 export const Default: Story = {
   play: playForImplementation(async ({ canvasElement }) => {
     const canvas = within(canvasElement);
-    await expect(canvas.getByRole("heading", { name: "メンバー", level: 1 })).toBeVisible();
+    await expect(await canvas.findByRole("heading", { name: "メンバー", level: 1 })).toBeVisible();
     await expect(canvas.getByRole("button", { name: "チャンネルに戻る" })).toBeVisible();
     await expect(canvas.queryByRole("dialog")).not.toBeInTheDocument();
   }),

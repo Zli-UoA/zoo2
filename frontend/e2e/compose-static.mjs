@@ -56,6 +56,7 @@ const mime = {
   ".png": "image/png",
   ".svg": "image/svg+xml",
   ".ttf": "font/ttf",
+  ".otf": "font/otf",
   ".woff2": "font/woff2",
   ".webmanifest": "application/manifest+json",
 };

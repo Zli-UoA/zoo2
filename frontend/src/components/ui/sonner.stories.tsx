@@ -1,7 +1,8 @@
+import { toastExample } from "../../../.storybook/primitive-fixtures";
 import { playForImplementation } from "../../../.storybook/play-for-implementation";
 import type { Meta, StoryObj } from "@storybook/react-vite";
 import { toast } from "sonner";
-import { expect, screen, userEvent, waitFor } from "storybook/test";
+import { expect, within, userEvent, waitFor } from "storybook/test";
 import { Toaster } from "./sonner";
 import { Button } from "./button";
 const meta = {
@@ -12,10 +13,10 @@ const meta = {
     <div className="p-4">
       <Button
         onClick={() =>
-          toast.success("変更を保存しました", { id: "storybook-toast", duration: Infinity })
+          toast.success(toastExample.content, { id: "storybook-toast", duration: Infinity })
         }
       >
-        保存
+        {toastExample.trigger}
       </Button>
       <Toaster />
     </div>
@@ -30,8 +31,10 @@ const meta = {
 export default meta;
 type Story = StoryObj<typeof meta>;
 export const Success: Story = {
-  play: playForImplementation(async () => {
-    await userEvent.click(screen.getByRole("button", { name: "保存" }));
-    await waitFor(() => expect(screen.getByText("変更を保存しました")).toBeVisible());
+  play: playForImplementation(async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const portal = within(canvasElement.ownerDocument.body);
+    await userEvent.click(await canvas.findByRole("button", { name: "保存" }));
+    await waitFor(() => expect(portal.getByText("変更を保存しました")).toBeVisible());
   }),
 };

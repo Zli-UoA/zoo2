@@ -152,7 +152,7 @@ export const Completions: Story = {
   parameters: { a11y: { test: "error" } },
   play: playForImplementation(async ({ canvasElement, args }) => {
     const canvas = within(canvasElement);
-    const input = canvas.getByRole("textbox");
+    const input = await canvas.findByRole("textbox");
     await userEvent.type(input, "#gen");
     await userEvent.click(canvas.getByRole("option", { name: "#general" }));
     await expect(input).toHaveValue("#general ");
@@ -184,7 +184,9 @@ export const AppCard: Story = {
   },
   play: playForImplementation(async ({ canvasElement }) => {
     const canvas = within(canvasElement);
-    await expect(canvas.getByRole("link", { name: storyDeploymentCard.title })).toBeVisible();
+    await expect(
+      await canvas.findByRole("link", { name: storyDeploymentCard.title }),
+    ).toBeVisible();
     await expect(
       canvas.queryByText("Plain fallback for card-capable clients"),
     ).not.toBeInTheDocument();

@@ -5,7 +5,9 @@ export default defineConfig({
   workers: 1,
   timeout: 120_000,
   outputDir: "./test-results/compose-storybook",
+  // Match Karma and normal Chromium; legacy headless-shell rounds font advances.
   use: {
+    channel: "chromium",
     baseURL: "http://127.0.0.1:6008",
     viewport: { width: 1440, height: 900 },
     trace: "retain-on-failure",

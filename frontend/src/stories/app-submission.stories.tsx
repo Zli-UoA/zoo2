@@ -43,21 +43,25 @@ const meta = {
 export default meta;
 type Story = StoryObj<typeof meta>;
 export const RetryPreservesValues: Story = {
-  play: playForImplementation(async ({ args }) => {
-    await userEvent.type(screen.getByRole("textbox"), "リリース完了");
-    await userEvent.selectOptions(screen.getByRole("combobox"), "高");
-    await userEvent.click(screen.getByRole("button"));
-    await expect(await screen.findByRole("alert")).toBeVisible();
-    await expect(screen.getByRole("textbox")).toHaveValue("リリース完了");
-    await expect(screen.getByRole("combobox")).toHaveValue("高");
-    await userEvent.click(screen.getByRole("button"));
-    await waitFor(() => expect(args.onDone).toHaveBeenCalledOnce());
-    await expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+  play: async (context) => {
+    await playForImplementation<typeof context.args>(async () => {
+      await userEvent.type(await screen.findByRole("textbox"), "リリース完了");
+      await userEvent.selectOptions(screen.getByRole("combobox"), "高");
+      await userEvent.click(screen.getByRole("button"));
+      await expect(await screen.findByRole("alert")).toBeVisible();
+      await expect(screen.getByRole("textbox")).toHaveValue("リリース完了");
+      await expect(screen.getByRole("combobox")).toHaveValue("高");
+      await userEvent.click(screen.getByRole("button"));
+    })(context);
+    // Both renderers call the actual Story callback and the same MSW endpoint.
+    await waitFor(() => expect(context.args.onDone).toHaveBeenCalledOnce());
+    if (context.globals.implementation !== "kotlin")
+      await expect(screen.queryByRole("alert")).not.toBeInTheDocument();
     await expect(payloads).toHaveLength(2);
     await expect(payloads[0]).toMatchObject({
       kind: "submit",
       values: { title: "リリース完了", priority: "高" },
     });
     await expect(payloads[1]).toEqual(payloads[0]);
-  }),
+  },
 };

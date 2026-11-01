@@ -41,6 +41,8 @@ Reactを機能・UI・操作の基準とする。変更時は [compose-react-par
 
 Playwrightは共通のHTTPS API fixtureを使い、同じ利用者操作と送信内容を両実装で確認する。
 実バックエンド、実OIDC、全Appの失敗・競合、スクリーンリーダー、各OSのIME・タッチ、MFM・数式の全構文、全画面の画像一致は別途確認が必要。
-既存の画像比較は不一致を記録する参考ステップであり、必須の機能テストの代用にしない。
+全StoryのReact/Kotlin実描画・操作検証をCIの必須チェックとして実行する。両実装の画像を成果物へ保存し、目立つ配置・寸法・配色・状態の差を確認する。機能エラーや描画失敗は許容しない。
 
-Storybookは既存Storyの上部implementationツールバーで切り替える。`.storybook/kotlin-stories.ts` に登録した状態へ同じ引数と共有fixtureを渡し、未登録時は明示する。React版playの維持とKotlin iframeの操作検証を分け、別Featuresカテゴリへ複製しない。
+Storybookは既存Storyの上部implementationツールバーで切り替える。`.storybook/kotlin-stories.ts` と領域別adapterから全309状態へ同じ引数と共有fixtureを渡す。`story-coverage.test.ts` は既存CSFの全exportを照合し、登録漏れを失敗させる。ReactのplayとKotlin iframeの実操作を同じ状態まで実行し、`playwright.storybook-parity.config.ts` で同じデータ・時刻・画面幅・テーマ・言語の画像を比較する。別Featuresカテゴリへ複製しない。
+
+UIの精度は「極端に違わなければ問題ない」という指定に従う。フォントのアンチエイリアスや微小な画素差は移植の完了条件にせず、独自の文字描画エンジンも追加しない。通常の比較は全Storyの操作と画像保存を行い、デスクトップ・モバイルの主要領域は実際の矩形も照合する。画素比較が必要な診断だけ `STORYBOOK_PARITY_VISUAL=strict` を指定する。比較ブラウザーは通常のChromiumと同じフォント計測を使う `channel: "chromium"` とし、legacy headless shellの文字幅整数丸めを実装側で再現しない。

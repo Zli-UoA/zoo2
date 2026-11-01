@@ -43,7 +43,7 @@ fun ScreenHeader(
                 .background(
                     if (primaryIcon) MaterialTheme.colorScheme.primary
                     else MaterialTheme.colorScheme.secondaryContainer,
-                    RoundedCornerShape(8.dp),
+                    RoundedCornerShape(10.dp),
                 ),
             contentAlignment = Alignment.Center,
         ) {
@@ -59,7 +59,10 @@ fun ScreenHeader(
         Column(Modifier.weight(1f)) {
             Text(
                 title,
-                Modifier.semantics { heading() },
+                Modifier.then(
+                        webControlModifier("heading", attributes = mapOf("aria-level" to "1"))
+                    )
+                    .semantics { heading() },
                 weight = FontWeight.SemiBold,
                 maxLines = 1,
             )

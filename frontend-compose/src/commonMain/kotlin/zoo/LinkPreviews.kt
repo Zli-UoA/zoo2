@@ -9,7 +9,6 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.layout.ContentScale
-import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import io.ktor.http.*
@@ -228,14 +227,18 @@ private fun PreviewCard(app: Session, url: String, preview: PreviewData, media: 
     val icon = proxyImageUrl(media, preview.icon)
     var bitmap by remember(image) { mutableStateOf<ImageBitmap?>(null) }
     var iconBitmap by remember(icon) { mutableStateOf<ImageBitmap?>(null) }
+    var imageComplete by remember(image) { mutableStateOf(image == null) }
     LaunchedEffect(image) {
         bitmap = null
+        imageComplete = image == null
         if (image != null)
             try {
                 bitmap = app.image(image).decodeToImageBitmap()
             } catch (e: CancellationException) {
                 throw e
-            } catch (_: Exception) {}
+            } catch (_: Exception) {} finally {
+                imageComplete = true
+            }
     }
     LaunchedEffect(icon) {
         iconBitmap = null
@@ -252,7 +255,7 @@ private fun PreviewCard(app: Session, url: String, preview: PreviewData, media: 
             Text(preview.title, weight = FontWeight.SemiBold, maxLines = 2)
             if (preview.description.isNotEmpty())
                 Text(preview.description, muted = true, maxLines = 2)
-            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+            Row(Modifier.padding(top = 4.dp), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                 iconBitmap?.let {
                     Image(it, null, Modifier.size(16.dp), contentScale = ContentScale.Fit)
                 }
@@ -260,13 +263,15 @@ private fun PreviewCard(app: Session, url: String, preview: PreviewData, media: 
             }
         }
     }
-    Box(
-        Modifier.widthIn(max = 384.dp)
-            .fillMaxWidth()
-            .padding(vertical = 8.dp)
-            .clip(RoundedCornerShape(8.dp))
-            .border(1.dp, MaterialTheme.colorScheme.outline, RoundedCornerShape(8.dp))
-            .clickable(role = Role.Button) { app.platform.action("open:$url") }
+    NativeLink(
+        url,
+        busy = !imageComplete,
+        modifier =
+            Modifier.widthIn(max = 384.dp)
+                .fillMaxWidth()
+                .padding(vertical = 8.dp)
+                .clip(RoundedCornerShape(8.dp))
+                .border(1.dp, MaterialTheme.colorScheme.outline, RoundedCornerShape(8.dp)),
     ) {
         if (wide)
             Column {
@@ -281,12 +286,14 @@ private fun PreviewCard(app: Session, url: String, preview: PreviewData, media: 
                 text()
             }
         else
-            Row {
+            Row(Modifier.height(IntrinsicSize.Min)) {
                 bitmap?.let {
                     Image(
                         it,
                         null,
-                        Modifier.width(112.dp).height(112.dp),
+                        Modifier.width(if (LocalViewportWidth.current < 640f) 96.dp else 112.dp)
+                            .fillMaxHeight()
+                            .heightIn(min = 96.dp),
                         contentScale = ContentScale.Crop,
                     )
                 }

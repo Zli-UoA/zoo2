@@ -11,6 +11,8 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.boundsInRoot
 import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalWindowInfo
 import androidx.compose.ui.semantics.*
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.*
@@ -20,7 +22,11 @@ import kotlinx.serialization.json.*
 @Composable
 fun ZooApp(app: Session) {
     if (app.env.path.substringBefore('?') == "/realtime") {
-        Column(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background)) {
+        Column(
+            Modifier.fillMaxSize()
+                .focusInputModality()
+                .background(MaterialTheme.colorScheme.background)
+        ) {
             Column(
                 Modifier.widthIn(max = 896.dp)
                     .fillMaxWidth()
@@ -46,7 +52,8 @@ fun ZooApp(app: Session) {
         }
         return
     }
-    val channels by app.repo.channels.rows.collectAsState()
+    val channelRows by app.repo.channels.rows.collectAsState()
+    val channels = visibleChannels(channelRows)
     val users by app.repo.users.rows.collectAsState()
     val members by app.repo.members.rows.collectAsState()
     val notifications by app.repo.notifications.rows.collectAsState()
@@ -55,8 +62,11 @@ fun ZooApp(app: Session) {
     val isNotifications = app.env.path.startsWith("/notifications")
     val isSettings = app.env.path.startsWith("/settings")
     val isBubble = app.env.path.startsWith("/bubble")
-    val fullPage = isNotifications || isSettings || isBubble
-    BoxWithConstraints(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background)) {
+    val fullPage =
+        isNotifications || isSettings || isBubble || app.env.path.startsWith("/apps-authorize")
+    BoxWithConstraints(
+        Modifier.fillMaxSize().focusInputModality().background(MaterialTheme.colorScheme.background)
+    ) {
         val width = maxWidth
         val narrow = width < 768.dp
         val wide = width >= 1024.dp
@@ -68,11 +78,15 @@ fun ZooApp(app: Session) {
         if (channel?.flag("is_dm") == true && !channel.text("channel_name").startsWith("dm:group:"))
             app.membersOpen = false
         Row(Modifier.fillMaxSize()) {
-            if (!isSettings) {
+            if (!isSettings && !(app.membersOpen && !wide && channel != null)) {
                 Rail(app, notifications.count { !it.flag("is_read") }, narrow)
                 VerticalDivider()
             }
-            if (!isSettings && (!narrow || (!fullPage && app.pane == "sidebar"))) {
+            if (
+                !fullPage &&
+                    (!narrow || app.pane == "sidebar") &&
+                    !(app.membersOpen && !wide && channel != null)
+            ) {
                 Sidebar(
                     app,
                     channels,
@@ -80,12 +94,15 @@ fun ZooApp(app: Session) {
                     members,
                     loading,
                     if (narrow) Modifier.weight(1f) else Modifier.width(287.dp),
+                    narrow = narrow,
                 )
                 VerticalDivider()
             }
             if (!narrow || fullPage || app.pane == "chat")
-                Column(Modifier.weight(1f).fillMaxHeight()) {
+                Column(Modifier.weight(1f).fillMaxHeight().then(webControlModifier("main"))) {
                     when {
+                        app.membersOpen && !wide && channel != null ->
+                            ChannelMembersScreen(app, channel, users, members)
                         isSettings -> ZooSettings(app, users)
                         isBubble -> BubbleChat(app, users)
                         isNotifications -> Notifications(app, notifications, users)
@@ -111,148 +128,19 @@ fun ZooApp(app: Session) {
             ) {
                 VerticalDivider()
                 Column(Modifier.width(if (width >= 1280.dp) 320.dp else 288.dp).fillMaxHeight()) {
-                    PaneHeader {
-                        Text(
-                            app.t("members.title"),
-                            Modifier.weight(1f),
-                            weight = FontWeight.SemiBold,
-                        )
-                        IconButton("x", app.t("common.close")) { app.membersOpen = false }
-                    }
-                    HorizontalDivider()
-                    Box(Modifier.weight(1f).verticalScroll(rememberScrollState())) {
-                        Members(app, channel, users, members, Modifier.fillMaxWidth())
-                    }
+                    Members(app, channel, users, members, Modifier.fillMaxSize())
                 }
             }
         }
-        if (!app.env.online || app.env.persistenceStatus == "error")
-            Surface(
-                Modifier.align(Alignment.TopCenter)
-                    .padding(top = 8.dp, start = 12.dp, end = 12.dp)
-                    .widthIn(max = 576.dp)
-                    .semantics { liveRegion = LiveRegionMode.Polite },
-                color = MaterialTheme.colorScheme.background,
-                shape = RoundedCornerShape(8.dp),
-                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline),
-                shadowElevation = 4.dp,
-            ) {
-                Row(
-                    Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    verticalAlignment = Alignment.Top,
-                ) {
-                    Icon("cloud-off", modifier = Modifier.padding(top = 2.dp).size(16.dp))
-                    Column(Modifier.weight(1f, fill = false)) {
-                        Text(
-                            app.t(
-                                if (!app.env.online) "offline.bannerTitle"
-                                else "offline.persistenceErrorTitle"
-                            ),
-                            weight = FontWeight.Medium,
-                        )
-                        Text(
-                            if (!app.env.online) app.t("offline.bannerDescription")
-                            else
-                                app.env.persistenceError.ifEmpty {
-                                    app.t("offline.persistenceErrorDescription")
-                                },
-                            small = true,
-                            muted = true,
-                        )
-                    }
-                    Button(
-                        app.t("offline.retry"),
-                        modifier =
-                            Modifier.border(
-                                1.dp,
-                                MaterialTheme.colorScheme.outline,
-                                RoundedCornerShape(8.dp),
-                            ),
-                    ) {
-                        app.platform.action("retryOffline")
-                    }
-                }
-            }
-        app.toast?.let { message ->
-            Surface(
-                Modifier.align(Alignment.BottomEnd).padding(24.dp).widthIn(max = 360.dp),
-                color = MaterialTheme.colorScheme.background,
-                shape = RoundedCornerShape(8.dp),
-                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline),
-                shadowElevation = 4.dp,
-            ) {
-                Row(Modifier.padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
-                    Text(message, Modifier.weight(1f))
-                    IconButton("x", app.t("common.close")) { app.toast = null }
-                }
-            }
-        }
-        if (app.membersOpen && !wide && channel != null)
-            Panel(app.t("members.title"), { app.membersOpen = false }) {
-                Members(app, channel, users, members, Modifier.heightIn(max = 520.dp))
-            }
-        when (val dialog = app.dialog) {
-            "create",
-            "browse",
-            "dm",
-            "rename",
-            "moderate",
-            "leave" -> ChannelDialog(app, dialog, channel, channels, users, members)
-            "channel-settings" ->
-                if (channel != null)
-                    Panel(app.t("settings.channelTitle"), { app.dialog = null }) {
-                        Row(
-                            Modifier.fillMaxWidth(),
-                            verticalAlignment = Alignment.CenterVertically,
-                        ) {
-                            Text(app.t("channels.editTitle"), Modifier.weight(1f))
-                            Button(
-                                app.t("messages.edit"),
-                                canManage(channel, app.config.userId, app.config.isAdmin) &&
-                                    !channel.present("archive_at"),
-                            ) {
-                                app.dialog = "rename"
-                            }
-                        }
-                        HorizontalDivider()
-                        Row(
-                            Modifier.fillMaxWidth(),
-                            verticalAlignment = Alignment.CenterVertically,
-                        ) {
-                            Text(app.t("webhooks.title"), Modifier.weight(1f))
-                            Button(app.t("common.open")) { app.dialog = "webhooks" }
-                        }
-                    }
-            "message-admin" -> if (channel != null) MessageAdministration(app, channel)
-            "apps" -> Apps(app)
-            "webhooks" -> if (channel != null) Webhooks(app, channel)
-            "theme" ->
-                Panel(app.t("theme.title"), { app.dialog = null }, 192.dp) {
-                    listOf("light", "dark", "system").forEach { mode ->
-                        Button(app.t("theme.$mode")) {
-                            app.platform.action("theme:$mode")
-                            app.dialog = null
-                        }
-                    }
-                }
-            "language" ->
-                Panel(app.t("language.title"), { app.dialog = null }, 192.dp) {
-                    listOf(
-                            "ja" to "日本語",
-                            "en" to "English",
-                            "zh-Hant" to "繁體中文",
-                            "zh-Hans" to "简体中文",
-                            "yue" to "廣東話",
-                        )
-                        .forEach { (key, label) ->
-                            Button(label) {
-                                app.platform.action("locale:$key")
-                                app.dialog = null
-                            }
-                        }
-                }
-        }
+        OfflineBanner(
+            app,
+            obj(
+                "isOnline" to app.env.online,
+                "persistenceStatus" to app.env.persistenceStatus,
+                "persistenceError" to app.env.persistenceError,
+            ),
+        )
+        AppDialogs(app, channel, channels, users, members)
         AppSurfaces(app)
         val appRoute =
             app.env.path
@@ -263,16 +151,139 @@ fun ZooApp(app: Session) {
             Apps(app, appRoute, close = { app.navigate("/") })
         if (app.config.previewUsers.isNotEmpty())
             PreviewUsers(app, Modifier.align(Alignment.BottomEnd).padding(12.dp))
-        OverlayHost(app)
     }
 }
 
 @Composable
-private fun Rail(app: Session, unread: Int, narrow: Boolean) {
+internal fun AppDialogs(
+    app: Session,
+    channel: Row?,
+    channels: List<Row>,
+    users: List<Row>,
+    members: List<Row>,
+) {
+    when (val dialog = app.dialog) {
+        "create",
+        "browse",
+        "dm",
+        "rename",
+        "moderate",
+        "leave" -> ChannelDialog(app, dialog, channel, channels, users, members)
+        "channel-settings" ->
+            if (channel != null)
+                Panel(
+                    app.t("settings.channelTitle"),
+                    { app.dialog = null },
+                    512.dp,
+                    description = channel.text("channel_name"),
+                ) {
+                    Column(
+                        Modifier.fillMaxWidth()
+                            .border(
+                                1.dp,
+                                MaterialTheme.colorScheme.outline,
+                                RoundedCornerShape(10.dp),
+                            )
+                    ) {
+                        SettingRow(
+                            app.t("channels.editTitle"),
+                            channel.text("description").trim().ifEmpty {
+                                app.t("channels.noDescription")
+                            },
+                        ) {
+                            Button(
+                                app.t("messages.edit"),
+                                !channel.present("archive_at"),
+                                variant = "outline",
+                                icon = "pencil",
+                            ) {
+                                app.dialog = "rename"
+                            }
+                        }
+                        HorizontalDivider()
+                        SettingRow(app.t("webhooks.title")) {
+                            Button(app.t("common.open"), variant = "outline", icon = "webhook") {
+                                app.dialog = "webhooks"
+                            }
+                        }
+                    }
+                    SettingsSection("") {
+                        Text(
+                            app.t(
+                                if (channel.present("archive_at")) "moderation.unarchive"
+                                else "moderation.archive"
+                            ),
+                            weight = FontWeight.Medium,
+                        )
+                        Text(
+                            app.t(
+                                if (channel.present("archive_at")) "moderation.unarchiveDescription"
+                                else "moderation.archiveDescription"
+                            ),
+                            small = true,
+                            muted = true,
+                        )
+                        Button(
+                            app.t(
+                                if (channel.present("archive_at")) "moderation.unarchive"
+                                else "moderation.archive"
+                            ),
+                            variant =
+                                if (channel.present("archive_at")) "outline" else "destructive",
+                            icon = "archive",
+                        ) {
+                            app.dialog = "moderate"
+                        }
+                    }
+                }
+        "message-admin" -> if (channel != null) MessageAdministration(app, channel)
+        "apps" ->
+            Apps(
+                app,
+                initial = app.appDetailId,
+                close = {
+                    app.dialog = null
+                    app.appDetailId = null
+                    app.target = null
+                },
+            )
+        "webhooks" -> if (channel != null) Webhooks(app, channel)
+        "theme" ->
+            Panel(app.t("theme.title"), { app.dialog = null }, 192.dp) {
+                listOf("light", "dark", "system").forEach { mode ->
+                    Button(app.t("theme.$mode")) {
+                        app.platform.action("theme:$mode")
+                        app.dialog = null
+                    }
+                }
+            }
+        "language" ->
+            Panel(app.t("language.title"), { app.dialog = null }, 192.dp) {
+                listOf(
+                        "ja" to "日本語",
+                        "en" to "English",
+                        "zh-Hant" to "繁體中文",
+                        "zh-Hans" to "简体中文",
+                        "yue" to "廣東話",
+                    )
+                    .forEach { (key, label) ->
+                        Button(label) {
+                            app.platform.action("locale:$key")
+                            app.dialog = null
+                        }
+                    }
+            }
+    }
+}
+
+@Composable
+internal fun Rail(app: Session, unread: Int, narrow: Boolean) {
     Column(
         Modifier.width(if (narrow) 55.dp else 63.dp)
             .fillMaxHeight()
-            .background(MaterialTheme.colorScheme.surface)
+            .then(webControlModifier("navigation"))
+            .semantics { contentDescription = app.t("nav.main") }
+            .background(if (app.env.dark) Color(0xff141414) else Color(0xfffafaf8))
             .padding(bottom = 12.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.spacedBy(4.dp),
@@ -281,76 +292,32 @@ private fun Rail(app: Session, unread: Int, narrow: Boolean) {
             Box(Modifier.fillMaxWidth().height(60.dp), contentAlignment = Alignment.Center) {
                 Box(
                     Modifier.size(36.dp)
-                        .clip(RoundedCornerShape(12.dp))
+                        .clip(RoundedCornerShape(14.dp))
                         .background(MaterialTheme.colorScheme.secondary),
                     contentAlignment = Alignment.Center,
                 ) {
-                    Icon("paw-print", "Zoo", color = Color.White)
+                    BrandLogo(Modifier.fillMaxSize())
                 }
             }
             HorizontalDivider()
             Spacer(Modifier.height(4.dp))
         }
-        IconButton(
-            "hash",
-            app.t("channels.title"),
-            selected = app.env.path.substringBefore('?') == "/",
-            size = 40.dp,
-        ) {
-            app.navigate("/")
-        }
-        Box {
-            IconButton(
-                "bell",
-                app.t("notifications.label"),
-                selected = app.env.path.startsWith("/notifications"),
-                size = 40.dp,
-            ) {
-                app.navigate("/notifications")
-            }
-            if (unread > 0)
-                Box(
-                    Modifier.align(Alignment.TopEnd)
-                        .offset(x = 4.dp, y = (-4).dp)
-                        .clip(RoundedCornerShape(12.dp))
-                        .background(Color(0xffe7000b))
-                        .height(16.dp)
-                        .widthIn(min = 16.dp)
-                        .padding(horizontal = 4.dp),
-                    contentAlignment = Alignment.Center,
-                ) {
-                    Text(
-                        if (unread > 99) "99+" else unread.toString(),
-                        small = true,
-                        size = 10.sp,
-                        color = Color.White,
-                    )
-                }
-        }
-        IconButton("message-circle-more", app.t("bubbleChat.title"), size = 40.dp) {
-            app.navigate("/bubble")
-        }
-        if (app.env.development)
-            IconButton("activity", app.t("sync.title"), size = 40.dp) { app.navigate("/realtime") }
+        RailLink(app, "/", "hash", app.t("channels.title"))
+        NotificationsButton(app, unread)
+        RailLink(app, "/bubble", "message-circle-more", app.t("bubbleChat.title"))
+        if (app.env.development) RailLink(app, "/realtime", "activity", app.t("sync.title"))
         Spacer(Modifier.weight(1f))
         Column(
             horizontalAlignment = Alignment.CenterHorizontally,
             verticalArrangement = Arrangement.spacedBy(8.dp),
         ) {
-            Box(
-                Modifier.size(28.dp)
-                    .clickable(role = Role.Button) { app.platform.action("react") }
-                    .semantics {
-                        contentDescription = app.t("experimental.useReact")
-                        testTag = "frontend-switch"
-                    },
-                contentAlignment = Alignment.Center,
-            ) {
-                Text("R")
-            }
-            IconButton("settings", app.t("settings.zooTitle"), size = 40.dp) {
-                app.navigate("/settings" + (app.channelId?.let { "?channel=$it" } ?: ""))
-            }
+            FrontendSwitch(app)
+            RailLink(
+                app,
+                "/settings" + (app.channelId?.let { "?channel=$it" } ?: ""),
+                "settings",
+                app.t("settings.zooTitle"),
+            )
             HorizontalDivider(Modifier.width(24.dp))
             val people by app.repo.users.rows.collectAsState()
             Avatar(people.find { it.text("id") == app.config.userId }, Modifier.size(24.dp))
@@ -363,130 +330,125 @@ private fun Rail(app: Session, unread: Int, narrow: Boolean) {
 }
 
 @Composable
-private fun Sidebar(
+internal fun Sidebar(
     app: Session,
     rows: List<Row>,
     users: List<Row>,
     memberships: List<Row>,
     loading: Boolean,
     modifier: Modifier,
+    error: Boolean = false,
+    narrow: Boolean = false,
 ) {
-    val channels = visibleChannels(rows)
+    val channels = rows.filterNot { it.present("deleted_at") }
     val joined = channels.filter { isMember(memberships, it.text("id"), app.config.userId) }
-    Column(modifier.fillMaxHeight().background(MaterialTheme.colorScheme.surface)) {
-        PaneHeader(horizontalPadding = 12.dp) {
-            Text(app.t("channels.title"), weight = FontWeight.SemiBold)
-            Text(
-                if (loading) "…" else joined.count { !it.flag("is_dm") }.toString(),
-                Modifier.weight(1f).padding(start = 8.dp),
-                muted = true,
-                small = true,
-            )
-            IconButton(
-                "search",
-                app.t("channels.browseTitle"),
-                !loading && channels.any { !it.flag("is_dm") },
-                size = 28.dp,
-            ) {
-                app.dialog = "browse"
-            }
-            IconButton("plus", app.t("channels.createTitle"), size = 28.dp) {
-                app.dialog = "create"
-            }
-        }
-        LazyColumn(Modifier.weight(1f).padding(horizontal = 8.dp)) {
-            if (loading)
-                items(5) {
-                    Box(
-                        Modifier.fillMaxWidth()
-                            .padding(bottom = 4.dp)
-                            .height(36.dp)
-                            .clip(RoundedCornerShape(8.dp))
-                            .background(MaterialTheme.colorScheme.surfaceVariant)
-                    )
-                }
-            if (!loading && joined.none { !it.flag("is_dm") })
-                item {
-                    Text(app.t("channels.noJoined"), Modifier.padding(8.dp), muted = true)
-                    Button(app.t("channels.browseTitle")) { app.dialog = "browse" }
-                }
-            items(joined.filterNot { it.flag("is_dm") }, key = { it.text("id") }) { channel ->
-                ChannelLink(app, channel, channel.text("channel_name"))
-            }
-            item {
-                HorizontalDivider(Modifier.padding(start = 4.dp, end = 4.dp, top = 6.dp))
-                Row(
-                    Modifier.padding(horizontal = 4.dp, vertical = 8.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    Text(app.t("dms.title"), weight = FontWeight.Medium, small = true, muted = true)
-                    Text(
-                        joined.count { it.flag("is_dm") }.toString(),
-                        Modifier.weight(1f).padding(start = 8.dp),
-                        small = true,
-                        muted = true,
-                    )
-                    IconButton("plus", app.t("dms.createTitle"), size = 44.dp) { app.dialog = "dm" }
-                }
-            }
-            if (!loading && joined.none { it.flag("is_dm") })
-                item {
-                    Column(
-                        Modifier.padding(horizontal = 8.dp, vertical = 12.dp),
-                        verticalArrangement = Arrangement.spacedBy(8.dp),
+    BoxWithConstraints(
+        modifier
+            .fillMaxHeight()
+            .then(webControlModifier("complementary"))
+            .semantics { contentDescription = app.t("channels.title") }
+            .background(if (app.env.dark) Color(0xff141414) else Color(0xfffafaf8))
+    ) {
+        Column(
+            Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(vertical = 4.dp)
+        ) {
+            CollapsibleSection(
+                app.t("channels.title"),
+                icon = "hash",
+                actions = {
+                    IconButton(
+                        "search",
+                        app.t("channels.browseTitle"),
+                        !loading && channels.any { !it.flag("is_dm") },
+                        size = 28.dp,
+                        color = MaterialTheme.colorScheme.onSurface,
                     ) {
-                        Text(app.t("dms.empty"), muted = true)
-                        Button(
-                            "+ " + app.t("dms.newAction"),
-                            modifier =
-                                Modifier.heightIn(min = 44.dp)
-                                    .background(
-                                        MaterialTheme.colorScheme.background,
-                                        RoundedCornerShape(8.dp),
-                                    )
-                                    .border(
-                                        1.dp,
-                                        MaterialTheme.colorScheme.outline,
-                                        RoundedCornerShape(8.dp),
-                                    ),
-                        ) {
-                            app.dialog = "dm"
-                        }
+                        app.dialog = "browse"
+                    }
+                    IconButton(
+                        "plus",
+                        app.t("channels.createTitle"),
+                        size = 28.dp,
+                        color = MaterialTheme.colorScheme.onSurface,
+                    ) {
+                        app.dialog = "create"
+                    }
+                },
+            ) {
+                Column(
+                    Modifier.fillMaxWidth().padding(start = 8.dp, end = 8.dp, bottom = 8.dp),
+                    verticalArrangement = Arrangement.spacedBy(2.dp),
+                ) {
+                    when {
+                        loading ->
+                            repeat(5) {
+                                Box(
+                                    Modifier.fillMaxWidth()
+                                        .height(if (narrow) 36.dp else 32.dp)
+                                        .background(
+                                            MaterialTheme.colorScheme.surfaceVariant,
+                                            RoundedCornerShape(8.dp),
+                                        )
+                                )
+                            }
+                        error ->
+                            Text(
+                                app.t("channels.loadError"),
+                                Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
+                                small = true,
+                                color = MaterialTheme.colorScheme.error,
+                            )
+                        channels.none { !it.flag("is_dm") } ->
+                            Column(
+                                Modifier.padding(8.dp),
+                                verticalArrangement = Arrangement.spacedBy(8.dp),
+                            ) {
+                                Text(app.t("channels.empty"), muted = true)
+                                Button(
+                                    app.t("channels.createAction"),
+                                    variant = "outline",
+                                    size = "sm",
+                                    icon = "plus",
+                                ) {
+                                    app.dialog = "create"
+                                }
+                            }
+                        joined.none { !it.flag("is_dm") } ->
+                            Column(
+                                Modifier.padding(8.dp),
+                                verticalArrangement = Arrangement.spacedBy(8.dp),
+                            ) {
+                                Text(app.t("channels.noJoined"), muted = true)
+                                Button(
+                                    app.t("channels.browseTitle"),
+                                    variant = "outline",
+                                    size = "sm",
+                                    icon = "search",
+                                ) {
+                                    app.dialog = "browse"
+                                }
+                            }
+                        else ->
+                            joined
+                                .filterNot { it.flag("is_dm") }
+                                .forEach { channel ->
+                                    ChannelLink(app, channel, channel.text("channel_name"))
+                                }
                     }
                 }
-            items(joined.filter { it.flag("is_dm") }, key = { it.text("id") }) { channel ->
-                val ids =
-                    memberships
-                        .filter {
-                            it.text("channel_id") == channel.text("id") &&
-                                it.text("user_id") != app.config.userId
-                        }
-                        .map { it.text("user_id") }
-                        .toSet()
-                ChannelLink(
-                    app,
-                    channel,
-                    users
-                        .filter { it.text("id") in ids }
-                        .joinToString(", ") { author(it) }
-                        .ifEmpty { app.t("dms.untitled") },
-                )
             }
-        }
-        if (app.env.development) {
-            HorizontalDivider()
-            Column(
-                Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp),
-                verticalArrangement = Arrangement.spacedBy(8.dp),
-            ) {
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    DebugBadge("Shape: ${app.config.shapeMode}")
-                    DebugBadge("txid: ${app.config.txidMode}")
-                }
-                DebugBadge(
-                    "${app.t("sync.user")}: ${if (app.env.oidc) app.t("sync.oidc") else app.config.userId}"
-                )
-            }
+            DmSidebar(
+                app,
+                joined.filter { it.flag("is_dm") },
+                users,
+                memberships,
+                loading,
+                error,
+                false,
+                app.channelId.orEmpty(),
+                app.unread,
+                narrow,
+            )
         }
     }
 }
@@ -503,11 +465,19 @@ private fun DebugBadge(value: String) {
 }
 
 @Composable
-private fun ChannelLink(app: Session, channel: Row, title: String) {
+internal fun ChannelLink(app: Session, channel: Row, title: String) {
     val selected = app.channelId == channel.text("id")
+    val windowWidth = LocalWindowInfo.current.containerSize.width
+    val narrow = with(LocalDensity.current) { windowWidth.toDp() < 768.dp }
     Row(
         Modifier.fillMaxWidth()
-            .padding(bottom = 2.dp)
+            .height(if (narrow) 36.dp else 32.dp)
+            .then(
+                webControlModifier(
+                    "link",
+                    attributes = if (selected) mapOf("aria-current" to "page") else emptyMap(),
+                )
+            )
             .clip(RoundedCornerShape(8.dp))
             .background(
                 if (selected) MaterialTheme.colorScheme.secondaryContainer else Color.Transparent
@@ -516,12 +486,14 @@ private fun ChannelLink(app: Session, channel: Row, title: String) {
                 app.navigate("/channels/${channel.text("id")}")
                 app.pane = "chat"
             }
-            .padding(horizontal = 10.dp, vertical = 8.dp),
+            .padding(horizontal = 8.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Icon(
-            if (channel.flag("is_dm")) "messages-square"
-            else if (channel.flag("is_private")) "lock" else "hash",
+            if (channel.flag("is_dm")) {
+                if (channel.text("channel_name").startsWith("dm:group:")) "users"
+                else "messages-square"
+            } else if (channel.flag("is_private")) "lock" else "hash",
             modifier =
                 Modifier.size(
                     if (channel.flag("is_dm")) 24.dp
@@ -537,7 +509,7 @@ private fun ChannelLink(app: Session, channel: Row, title: String) {
             muted = !selected,
             maxLines = 1,
             weight =
-                if (selected) FontWeight.Medium
+                if (selected) FontWeight.SemiBold
                 else if (channel.text("id") in app.unread) FontWeight.SemiBold else null,
             color =
                 if (selected) MaterialTheme.colorScheme.onSecondaryContainer else Color.Unspecified,
@@ -547,6 +519,8 @@ private fun ChannelLink(app: Session, channel: Row, title: String) {
                 Modifier.size(8.dp)
                     .clip(RoundedCornerShape(4.dp))
                     .background(MaterialTheme.colorScheme.secondary)
+                    .then(webControlModifier("img"))
+                    .semantics { contentDescription = app.t("channels.unread") }
             )
         if (channel.present("archive_at"))
             Icon("archive", app.t("moderation.archived"), Modifier.size(12.dp))
@@ -554,124 +528,162 @@ private fun ChannelLink(app: Session, channel: Row, title: String) {
 }
 
 @Composable
-private fun Welcome(app: Session) {
-    Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+internal fun Welcome(app: Session) {
+    Box(Modifier.fillMaxSize().padding(24.dp), contentAlignment = Alignment.Center) {
         Column(
-            Modifier.widthIn(max = 448.dp).padding(24.dp),
+            Modifier.widthIn(max = 448.dp),
             horizontalAlignment = Alignment.CenterHorizontally,
             verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
             Box(
                 Modifier.size(48.dp)
-                    .clip(RoundedCornerShape(16.dp))
+                    .clip(RoundedCornerShape(18.dp))
                     .background(MaterialTheme.colorScheme.secondary),
                 contentAlignment = Alignment.Center,
             ) {
-                Icon("hash", modifier = Modifier.size(24.dp), color = Color.White)
+                BrandLogo(Modifier.fillMaxSize())
             }
-            Text(app.t("welcome.title"), weight = FontWeight.SemiBold, size = 20.sp)
-            Text(app.t("welcome.description"), muted = true)
+            Text(
+                app.t("welcome.title"),
+                Modifier.then(
+                        webControlModifier("heading", attributes = mapOf("aria-level" to "1"))
+                    )
+                    .semantics { heading() },
+                weight = FontWeight.SemiBold,
+                size = 20.sp,
+                letterSpacing = (-0.5).sp,
+            )
+            Text(
+                app.t("welcome.description"),
+                muted = true,
+                textAlign = androidx.compose.ui.text.style.TextAlign.Center,
+            )
         }
     }
 }
 
 @Composable
-private fun Header(
+internal fun Header(
     app: Session,
     channel: Row,
     users: List<Row>,
     memberships: List<Row>,
     narrow: Boolean,
     wide: Boolean,
+    presentation: Row = JsonObject(emptyMap()),
 ) {
     val id = channel.text("id")
     val manage = canManage(channel, app.config.userId, app.config.isAdmin)
+    val count =
+        if ("memberCount" in presentation) presentation.text("memberCount")
+        else memberships.count { it.text("channel_id") == id }.toString()
+    val showCount =
+        "memberCount" in presentation ||
+            !channel.flag("is_private") ||
+            isMember(memberships, id, app.config.userId)
     PaneHeader {
-        if (narrow)
+        if (narrow) {
             IconButton("arrow-left", app.t("channels.back"), size = 44.dp) { app.pane = "sidebar" }
+            Spacer(Modifier.width(12.dp))
+        }
         Box(
             Modifier.size(32.dp)
-                .clip(RoundedCornerShape(8.dp))
+                .clip(RoundedCornerShape(10.dp))
                 .background(MaterialTheme.colorScheme.surfaceVariant),
             contentAlignment = Alignment.Center,
         ) {
             Icon(
-                if (channel.flag("is_dm")) "messages-square"
-                else if (channel.flag("is_private")) "lock" else "hash",
+                if (channel.flag("is_dm")) {
+                    if (channel.text("channel_name").startsWith("dm:group:")) "users"
+                    else "messages-square"
+                } else if (channel.flag("is_private")) "lock" else "hash",
                 modifier = Modifier.size(16.dp),
             )
         }
         Spacer(Modifier.width(12.dp))
         Column(Modifier.weight(1f)) {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                Text(
+                    presentation.text("displayTitle").ifEmpty {
+                        if (channel.flag("is_dm")) dmTitle(app, channel, users, memberships)
+                        else channel.text("channel_name")
+                    },
+                    Modifier.then(
+                            webControlModifier("heading", attributes = mapOf("aria-level" to "2"))
+                        )
+                        .semantics { heading() },
+                    weight = FontWeight.SemiBold,
+                    maxLines = 1,
+                )
+                if (channel.present("archive_at") && !channel.flag("is_dm"))
+                    ChannelArchiveBadge(app)
+            }
             Text(
-                if (channel.flag("is_dm")) dmTitle(app, channel, users, memberships)
-                else channel.text("channel_name"),
-                weight = FontWeight.SemiBold,
-            )
-            Text(
-                channel.text("description").ifEmpty { app.t("channels.noDescription") },
+                presentation.text("subtitle").ifEmpty {
+                    channel.text("description").trim().ifEmpty { app.t("channels.noDescription") }
+                },
                 muted = true,
                 small = true,
                 maxLines = 1,
             )
         }
+        Spacer(Modifier.width(12.dp))
         if (!channel.flag("is_dm"))
             Row(
                 Modifier.height(28.dp)
+                    .then(webControlModifier("button", expanded = app.membersOpen))
                     .clip(RoundedCornerShape(8.dp))
-                    .border(1.dp, MaterialTheme.colorScheme.outline, RoundedCornerShape(8.dp))
+                    .background(
+                        if (app.env.dark) Color.White.copy(alpha = .045f) else Color.Transparent,
+                        RoundedCornerShape(8.dp),
+                    )
+                    .border(
+                        1.dp,
+                        if (app.env.dark) Color.White.copy(alpha = .15f)
+                        else MaterialTheme.colorScheme.outline,
+                        RoundedCornerShape(8.dp),
+                    )
                     .clickable(role = Role.Button) { app.openMembers(wide) }
                     .semantics {
                         contentDescription =
                             app.t("members.title") +
-                                " " +
-                                memberships.count { it.text("channel_id") == id }
+                                if (showCount && count.isNotEmpty()) " $count" else ""
                     }
-                    .padding(horizontal = 10.dp),
+                    .padding(horizontal = 11.dp),
                 horizontalArrangement = Arrangement.spacedBy(4.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                Icon("users", modifier = Modifier.size(14.dp))
-                if (!narrow) Text(app.t("members.title"), small = true)
-                Text(
-                    memberships.count { it.text("channel_id") == id }.toString(),
-                    small = true,
-                    muted = true,
+                Icon(
+                    "users",
+                    modifier = Modifier.size(14.dp),
+                    color = MaterialTheme.colorScheme.onSurface,
                 )
+                if (!narrow) Text(app.t("members.title"), size = 12.8.sp)
+                if (showCount) Text(count.ifEmpty { "…" }, size = 12.8.sp, muted = true)
             }
         Spacer(Modifier.width(4.dp))
-        val actions = mutableListOf<MenuAction>()
-        if (channel.flag("is_dm") && channel.text("channel_name").startsWith("dm:group:"))
-            actions += MenuAction("users", app.t("members.title")) { app.openMembers(wide) }
-        if (manage && !channel.flag("is_dm")) {
-            actions +=
-                MenuAction("shield-alert", app.t("moderation.messageAdmin")) {
-                    app.dialog = "message-admin"
-                }
-            actions += MenuAction("pencil", app.t("channels.editTitle")) { app.dialog = "rename" }
-            actions +=
-                MenuAction(
-                    "archive",
-                    app.t(
-                        if (channel.present("archive_at")) "moderation.unarchive"
-                        else "moderation.archive"
-                    ),
-                    app.env.online,
-                ) {
-                    app.dialog = "moderate"
-                }
-            actions += MenuAction("webhook", app.t("webhooks.title")) { app.dialog = "webhooks" }
-        }
-        if (isMember(memberships, id, app.config.userId))
-            actions +=
-                MenuAction("log-out", app.t("members.leave"), app.env.online) {
-                    app.dialog = "leave"
-                }
         if (manage && !channel.flag("is_dm"))
-            IconButton("settings", app.t("settings.channelTitle")) {
+            IconButton(
+                "settings",
+                app.t("settings.channelTitle"),
+                size = if (narrow) 44.dp else 32.dp,
+                color = MaterialTheme.colorScheme.onSurface,
+            ) {
                 app.dialog = "channel-settings"
             }
-        Menu(app.t("moderation.manageChannel"), actions)
+        if (channel.flag("is_dm"))
+            Menu(
+                app.t("dms.menu"),
+                listOf(
+                    MenuAction("log-out", app.t("dms.leave"), app.config.userId.isNotEmpty()) {
+                        app.dialog = "leave"
+                    }
+                ),
+                size = if (narrow) 44.dp else 28.dp,
+            )
     }
 }
 

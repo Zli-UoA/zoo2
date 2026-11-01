@@ -1,3 +1,5 @@
+import { githubFeedCards } from "../../../../.storybook/message-fixtures";
+import { storySurfaces } from "../../../../.storybook/story-surfaces";
 import { playForImplementation } from "../../../../.storybook/play-for-implementation";
 import { expect, userEvent, within } from "storybook/test";
 import { storyDeploymentCard } from "../../../../.storybook/app-fixtures";
@@ -25,7 +27,7 @@ const meta = {
   },
   decorators: [
     (Story) => (
-      <div className="mx-auto max-w-3xl bg-background p-6">
+      <div className={storySurfaces["Features/Chat/MessageCard"]}>
         <Story />
       </div>
     ),
@@ -70,41 +72,12 @@ export const GitHubFeed: Story = {
   args: { card: storyDeploymentCard },
   render: () => (
     <div className="max-w-2xl space-y-7 p-4">
-      <section>
-        <p className="text-sm">Deployment to storybook-pr-271 by Kai-Z-JP</p>
-        <MessageCard card={storyDeploymentCard} attachment />
-      </section>
-      <section>
-        <p className="text-sm">1 new commit pushed to main by Kai-Z-JP</p>
-        <MessageCard
-          attachment
-          card={{
-            ...storyDeploymentCard,
-            title: "Zli-UoA/zoo2 · 103eb20",
-            color: "#24292f",
-            fields: [
-              {
-                title: "103eb20",
-                value: "fix: preserve queued webhooks while Zoo credentials are revoked (#271)",
-                url: "https://github.com/Zli-UoA/zoo2/commit/103eb20",
-              },
-            ],
-          }}
-        />
-      </section>
-      <section>
-        <p className="text-sm">Pull request merged by Kai-Z-JP</p>
-        <MessageCard
-          attachment
-          card={{
-            ...storyDeploymentCard,
-            title: "#271 fix: Zoo 資格情報の失効中も Bot の受信キューを保持する",
-            color: "#8250df",
-            url: "https://github.com/Zli-UoA/zoo2/pull/271",
-            fields: [],
-          }}
-        />
-      </section>
+      {githubFeedCards.map(({ body, card }) => (
+        <section key={body}>
+          <p className="text-sm">{body}</p>
+          <MessageCard card={card} attachment />
+        </section>
+      ))}
     </div>
   ),
 };

@@ -305,7 +305,7 @@ jobs:
         run: pnpm test:vrt
 
       - name: storybook test
-        run: pnpm test:storybook
+        run: pnpm test:storybook --run --maxWorkers=1 --fileParallelism=false
 
       - name: build storybook
         run: pnpm build-storybook

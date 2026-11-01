@@ -1,3 +1,4 @@
+import { storySurfaces } from "../../../../.storybook/story-surfaces";
 import { playForImplementation } from "../../../../.storybook/play-for-implementation";
 import type { Meta, StoryObj } from "@storybook/react-vite";
 import { http, HttpResponse } from "msw";
@@ -41,7 +42,7 @@ const meta = {
   },
   decorators: [
     (Story) => (
-      <div className="mx-auto max-w-4xl p-4">
+      <div className={storySurfaces["Features/Chat/LinkPreviews"]}>
         <Story />
       </div>
     ),

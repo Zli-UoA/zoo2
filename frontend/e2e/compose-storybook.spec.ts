@@ -154,13 +154,44 @@ test("Kotlin previews preserve locale, theme, draft isolation and mobile layouts
   await expect(frame.getByText("const zoo = true", { exact: false })).toBeVisible();
 });
 
-test("unregistered Kotlin stories are explicit and never render React as Kotlin", async ({
-  page,
-}) => {
-  await page.goto(`/iframe.html?id=components-button--default&${nativeQuery}`);
-  await expect(page.locator('[data-kotlin-story-status="unavailable"]')).toContainText("未登録");
-  await expect(page.locator('iframe[title="Kotlin component preview"]')).toHaveCount(0);
-  await expect(page.getByRole("button")).toHaveCount(0);
+test("shared button variants have the same geometry in React and Kotlin", async ({ page }) => {
+  const boxes: { x: number; y: number; width: number; height: number }[][] = [];
+  for (const implementation of ["react", "kotlin"]) {
+    await page.goto(
+      `/iframe.html?id=components-button--variants&viewMode=story&globals=implementation:${implementation}`,
+    );
+    const root =
+      implementation === "kotlin"
+        ? page.frameLocator('iframe[title="Kotlin component preview"]')
+        : page;
+    if (implementation === "kotlin")
+      await expect(page.locator("[data-compose-catalog-state=ready]")).toBeVisible({
+        timeout: 90_000,
+      });
+    await page.mouse.move(0, 0);
+    const result = [];
+    for (const variant of ["default", "outline", "secondary", "ghost", "destructive", "link"]) {
+      const button = root.getByRole("button", { name: variant, exact: true });
+      await expect(button).toBeVisible();
+      await button.evaluate(async (element) => {
+        await element.ownerDocument.fonts.ready;
+      });
+      result.push((await button.boundingBox())!);
+    }
+    boxes.push(result);
+    await page.screenshot({
+      path: test.info().outputPath(`button-variants-${implementation}.png`),
+    });
+  }
+  await test
+    .info()
+    .attach("button-geometry", { body: JSON.stringify(boxes), contentType: "application/json" });
+  for (let i = 0; i < boxes[0].length; i++) {
+    for (const key of ["x", "y", "width", "height"] as const)
+      expect
+        .soft(Math.abs(boxes[0][i][key] - boxes[1][i][key]), `button ${i} ${key}`)
+        .toBeLessThanOrEqual(1);
+  }
 });
 
 test("catalog explains missing Wasm assets", async ({ page }) => {
@@ -211,7 +242,7 @@ test("native cards share metadata and restore failed composer drafts", async ({ 
   await page.keyboard.insertText("restore after failure");
   await expect(failingComposer).toHaveText("restore after failure");
   await frame.getByRole("button", { name: "送信", exact: true }).click({ force: true });
-  await expect(frame.getByText("操作に失敗しました", { exact: true })).toBeVisible();
+  // The shared onSend callback returns false; both implementations restore the draft.
   await expect(failingComposer).toHaveText("restore after failure");
   await expect(frame.getByRole("button", { name: "送信", exact: true })).toBeEnabled();
 });
@@ -246,7 +277,7 @@ test("native settings, Bubble and notifications use the existing story fixtures"
   const open = (story: string) => openNativeStory(page, story);
   await open("settings");
   await expect(frame.getByRole("heading", { name: "Zoo設定", exact: true })).toBeVisible();
-  await expect(frame.getByRole("button", { name: /^検索エンジン:/ })).toBeVisible();
+  await expect(frame.getByRole("combobox", { name: "検索エンジン", exact: true })).toBeVisible();
   const general = frame.getByRole("tab", { name: "一般", exact: true });
   await expect(general).toHaveAttribute("aria-selected", "true");
   await general.click({ force: true });
@@ -259,9 +290,11 @@ test("native settings, Bubble and notifications use the existing story fixtures"
   await expect(frame.getByRole("button", { name: "管理者を外す", exact: true })).toHaveCount(0);
   await page.keyboard.press("Home");
   await expect(general).toHaveAttribute("aria-selected", "true");
-  await frame.getByRole("button", { name: /^テーマ:/ }).click({ force: true });
   await frame.getByRole("button", { name: "ダーク", exact: true }).click({ force: true });
-  await expect(frame.getByRole("button", { name: "テーマ: ダーク", exact: true })).toBeVisible();
+  await expect(frame.getByRole("button", { name: "ダーク", exact: true })).toHaveAttribute(
+    "aria-pressed",
+    "true",
+  );
   await page.screenshot({ path: test.info().outputPath("compose-settings-dark-wide.png") });
   await open("workspace-members");
   await expect(

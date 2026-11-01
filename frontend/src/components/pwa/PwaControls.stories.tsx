@@ -1,6 +1,8 @@
+import { pushStoryControls, pushStoryPresets } from "../../../.storybook/preference-fixtures";
+import { preferenceSurfaces } from "../../../.storybook/preference-stories";
 import { playForImplementation } from "../../../.storybook/play-for-implementation";
 import type { Meta, StoryObj } from "@storybook/react-vite";
-import { expect, fn, screen, userEvent } from "storybook/test";
+import { expect, screen, userEvent, waitFor } from "storybook/test";
 import { useEffect, type ReactNode } from "react";
 
 import { PwaProvider, PwaControls, PushNotificationSelect } from "./PwaControls";
@@ -24,7 +26,7 @@ const meta = {
   parameters: { a11y: { test: "todo" } },
   decorators: [
     (Story) => (
-      <div className="flex min-h-72 items-center justify-center gap-2 bg-background p-6">
+      <div className={preferenceSurfaces["Features/Preferences/PWA"]}>
         <Story />
       </div>
     ),
@@ -36,7 +38,7 @@ type Story = StoryObj<typeof meta>;
 
 export const Default: Story = {
   play: playForImplementation(async () => {
-    await expect(screen.getByRole("button", { name: /プッシュ通知/ })).toBeDisabled();
+    await expect(await screen.findByRole("button", { name: /プッシュ通知/ })).toBeDisabled();
   }),
 };
 
@@ -55,40 +57,32 @@ export const InstallAvailable: Story = {
   }),
 };
 
-const push = {
-  label: "プッシュ通知を有効にする",
-  enabled: false,
-  busy: false,
-  supported: true,
-  publicKey: "storybook-key",
-  blocked: false,
-  toggle: fn(async () => {}),
-};
+const push = pushStoryControls;
 export const SelectOff: Story = {
   parameters: { a11y: { test: "error" } },
-  render: () => <PushNotificationSelect push={push} />,
-  play: playForImplementation(async () => {
-    const select = screen.getByRole("combobox", { name: "プッシュ通知" });
-    await expect(select).toHaveValue("off");
-    await userEvent.selectOptions(select, "on");
-    await expect(push.toggle).toHaveBeenCalledOnce();
-  }),
+  render: () => <PushNotificationSelect push={pushStoryPresets["Select Off"]} />,
+  play: async (context) => {
+    await playForImplementation(async () => {
+      const select = await screen.findByRole("combobox", { name: "プッシュ通知" });
+      await expect(select).toHaveValue("off");
+      await userEvent.selectOptions(select, "on");
+      await expect(push.toggle).toHaveBeenCalledOnce();
+    })(context);
+    if (context.globals.implementation === "kotlin")
+      await waitFor(() => expect(push.toggle).toHaveBeenCalledOnce());
+  },
 };
 export const SelectOn: Story = {
   parameters: { a11y: { test: "error" } },
-  render: () => <PushNotificationSelect push={{ ...push, enabled: true }} />,
+  render: () => <PushNotificationSelect push={pushStoryPresets["Select On"]} />,
 };
 export const SelectBusy: Story = {
   parameters: { a11y: { test: "error" } },
-  render: () => <PushNotificationSelect push={{ ...push, busy: true }} />,
+  render: () => <PushNotificationSelect push={pushStoryPresets["Select Busy"]} />,
 };
 export const SelectBlocked: Story = {
   parameters: { a11y: { test: "error" } },
-  render: () => (
-    <PushNotificationSelect
-      push={{ ...push, blocked: true, label: "ブラウザーの設定で通知を許可してください" }}
-    />
-  ),
+  render: () => <PushNotificationSelect push={pushStoryPresets["Select Blocked"]} />,
 };
 export const SelectUnavailable: Story = {
   args: { presentation: "select" },

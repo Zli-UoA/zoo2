@@ -1,3 +1,4 @@
+import { dialogSamples } from "../../../.storybook/dialog-fixtures";
 import { playForImplementation } from "../../../.storybook/play-for-implementation";
 import type { Meta, StoryObj } from "@storybook/react-vite";
 import { expect, screen } from "storybook/test";
@@ -19,20 +20,20 @@ function DialogDemo({ defaultOpen = false }: { defaultOpen?: boolean }) {
   return (
     <div className="flex min-h-96 items-center justify-center bg-background p-6">
       <Dialog open={open} onOpenChange={setOpen}>
-        <DialogTrigger render={<Button variant="outline" />}>ダイアログを開く</DialogTrigger>
+        <DialogTrigger render={<Button variant="outline" />}>
+          {dialogSamples.dialog.trigger}
+        </DialogTrigger>
         <DialogContent>
           <DialogHeader>
-            <DialogTitle>チャンネルを削除しますか？</DialogTitle>
-            <DialogDescription>
-              この操作は取り消せません。チャンネルの履歴もすべて削除されます。
-            </DialogDescription>
+            <DialogTitle>{dialogSamples.dialog.title}</DialogTitle>
+            <DialogDescription>{dialogSamples.dialog.description}</DialogDescription>
           </DialogHeader>
           <DialogFooter>
             <Button variant="outline" onClick={() => setOpen(false)}>
-              キャンセル
+              {dialogSamples.dialog.cancel}
             </Button>
             <Button variant="destructive" onClick={() => setOpen(false)}>
-              削除する
+              {dialogSamples.dialog.confirm}
             </Button>
           </DialogFooter>
         </DialogContent>

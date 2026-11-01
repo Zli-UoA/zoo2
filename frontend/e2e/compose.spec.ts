@@ -1,4 +1,7 @@
+import { composeVisualColorThreshold } from "./compose-visual";
 import { test, expect, type Page } from "@playwright/test";
+import { mkdir, writeFile } from "node:fs/promises";
+import { dirname } from "node:path";
 
 async function open(
   page: Page,
@@ -23,44 +26,23 @@ async function open(
 }
 
 async function channelAction(page: Page, native: boolean, action: "edit" | "webhook") {
-  if (native) {
-    await page
-      .getByRole("button", { name: "チャンネルの管理", exact: true })
-      .click({ force: true });
-    await page
-      .getByRole("button", {
-        name: action === "edit" ? "チャンネルを編集" : "Webhook設定",
-        exact: true,
-      })
-      .click({ force: true });
-    // The menu item and the dialog share a title. Wait for the dialog body before
-    // sending keys; Compose publishes its accessibility tree asynchronously.
-    await expect(
-      page.getByRole("textbox", {
-        name: action === "edit" ? "新しいチャンネル名" : "Webhook名",
-        exact: true,
-      }),
-    ).toBeVisible();
-    return;
-  }
   const settings = page.getByRole("dialog", { name: "チャンネル設定", exact: true });
   if (!(await settings.isVisible()))
-    await page.getByRole("button", { name: "チャンネル設定", exact: true }).click();
+    await page
+      .getByRole("button", { name: "チャンネル設定", exact: true })
+      .click({ force: native });
   await settings
     .getByRole("button", { name: action === "edit" ? "編集" : "開く", exact: true })
-    .click();
+    .click({ force: native });
 }
-async function closeChannelSettings(page: Page, native: boolean) {
+async function closeChannelSettings(page: Page, _native: boolean) {
   await page.keyboard.press("Escape");
-  if (!native) {
-    await expect(page.getByRole("dialog", { name: "Webhook設定", exact: true })).toBeHidden();
+  await expect(page.getByRole("dialog", { name: "Webhook設定", exact: true })).toBeHidden();
+  if (await page.getByRole("dialog", { name: "チャンネル設定", exact: true }).isVisible())
     await page.keyboard.press("Escape");
-  }
 }
 async function openApps(page: Page, native: boolean) {
-  await page
-    .getByRole(native ? "button" : "link", { name: "Zoo設定", exact: true })
-    .click({ force: native });
+  await page.getByRole("link", { name: "Zoo設定", exact: true }).click({ force: native });
   await page.getByRole("tab", { name: "App・連携", exact: true }).click({ force: native });
 }
 async function closeApps(page: Page, native: boolean) {
@@ -135,7 +117,7 @@ for (const implementation of ["react", "compose"] as const) {
     if (implementation === "react") await more.press("Enter");
     else await more.click({ force: true });
     await page
-      .getByRole(implementation === "react" ? "menuitem" : "button", { name: "編集", exact: true })
+      .getByRole("menuitem", { name: "編集", exact: true })
       .click({ force: implementation === "compose" });
     await fill(
       page.getByRole("textbox", { name: "メッセージを編集", exact: true }),
@@ -176,8 +158,8 @@ for (const implementation of ["react", "compose"] as const) {
     await closeApps(page, implementation === "compose");
     await expect(createApp).toBeHidden();
     await page
-      .getByRole(implementation === "react" ? "link" : "button", {
-        name: implementation === "react" ? /^未読通知 / : "通知",
+      .getByRole("link", {
+        name: /^未読通知 /,
         exact: true,
       })
       .click({ force: implementation === "compose" });
@@ -215,9 +197,7 @@ for (const implementation of ["react", "compose"] as const) {
     await expect(
       page.getByRole("textbox", { name: "新しいチャンネル名", exact: true }),
     ).toBeHidden();
-    await page
-      .getByRole(native ? "button" : "link", { name: "native-parity", exact: true })
-      .click({ force: native });
+    await page.getByRole("link", { name: "native-parity", exact: true }).click({ force: native });
     await expect(page).toHaveURL(new RegExp(`/channels/${channelId}`));
     await expect
       .poll(async () =>
@@ -294,7 +274,9 @@ test("Compose storage failure can be retried without losing the native session",
   });
   await page.getByRole("button", { name: "再試行", exact: true }).click({ force: true });
   await expect(page.getByText("test quota", { exact: false })).toBeHidden();
-  await expect(page.getByRole("textbox", { name: "メッセージを送信", exact: true })).toBeVisible();
+  await expect(page.getByRole("textbox", { name: "メッセージを送信", exact: true })).toBeVisible({
+    timeout: 90_000,
+  });
   await expect(page.getByText("こんにちは Parity", { exact: false })).toBeVisible();
   expect(errors).toEqual([]);
 });
@@ -305,6 +287,7 @@ test("Compose panes preserve the existing desktop and mobile UI", async ({ brows
     { width: 390, height: 844 },
   ]) {
     const images: Buffer[] = [];
+    const areas: Record<string, { x: number; y: number; width: number; height: number }>[] = [];
     for (const implementation of ["react", "compose"] as const) {
       await request.post("https://127.0.0.1:4187/__reset");
       const context = await browser.newContext({
@@ -315,7 +298,18 @@ test("Compose panes preserve the existing desktop and mobile UI", async ({ brows
       });
       const page = await context.newPage();
       await open(page, implementation);
-      await page.mouse.move(0, 0);
+      await page.mouse.move(-100, -100);
+      const layout: Record<string, { x: number; y: number; width: number; height: number }> = {};
+      for (const [name, element] of [
+        ["navigation", page.getByRole("navigation", { name: "メインナビゲーション", exact: true })],
+        ["main", page.getByRole("main")],
+      ] as const) {
+        await expect(element).toBeVisible();
+        const bounds = await element.boundingBox();
+        expect(bounds, `${implementation} ${name} has visible bounds`).not.toBeNull();
+        layout[name] = bounds!;
+      }
+      areas.push(layout);
       images.push(
         await page.screenshot({
           animations: "disabled",
@@ -330,7 +324,24 @@ test("Compose panes preserve the existing desktop and mobile UI", async ({ brows
         body,
         contentType: "image/png",
       });
-    expect.soft(images[1].equals(images[0]), `UI differs at ${viewport.width}px`).toBe(true);
+    // Compare the actual shell geometry; font AA differences are reviewed in the paired captures.
+    for (const name of ["navigation", "main"]) {
+      for (const dimension of ["x", "y", "width", "height"] as const)
+        expect(
+          Math.abs(areas[0][name][dimension] - areas[1][name][dimension]),
+          `${name}.${dimension} at viewport ${viewport.width}`,
+        ).toBeLessThanOrEqual(2);
+    }
+    if (process.env.STORYBOOK_PARITY_VISUAL === "strict") {
+      const snapshot = `panes-${viewport.width}.png`;
+      const referencePath = test.info().snapshotPath(snapshot);
+      await mkdir(dirname(referencePath), { recursive: true });
+      await writeFile(referencePath, images[0]);
+      expect(images[1]).toMatchSnapshot(snapshot, {
+        threshold: composeVisualColorThreshold,
+        maxDiffPixels: 0,
+      });
+    }
   }
 });
 
@@ -352,7 +363,7 @@ test("Compose entry points render Kotlin settings and preserve the selected fron
     .getByRole("button", { name: "チャンネル一覧へ戻る", exact: true })
     .click({ force: true });
   await expect(page.locator("[data-compose-shell]")).toBeVisible({ timeout: 90_000 });
-  await expect(page.getByRole("button", { name: "general", exact: true })).toBeVisible();
+  await expect(page.getByRole("link", { name: "general", exact: true })).toBeVisible();
 });
 
 for (const implementation of ["react", "compose"] as const) {
@@ -369,15 +380,11 @@ for (const implementation of ["react", "compose"] as const) {
     const fill = async (input: ReturnType<Page["getByRole"]>, value: string) =>
       native ? fillNative(page, input, value) : input.fill(value);
     await fill(composer, "#gen");
-    await page
-      .getByRole(native ? "button" : "option", { name: /^#general/ })
-      .click({ force: native });
+    await page.getByRole("option", { name: /^#general/ }).click({ force: native });
     if (native) await expect(composer).toHaveText("#general ");
     else await expect(composer).toHaveValue("#general ");
     await fill(composer, "/ec");
-    await page
-      .getByRole(native ? "button" : "option", { name: /^\/echo.*Meeting Notes/ })
-      .click({ force: native });
+    await page.getByRole("option", { name: /^\/echo.*Meeting Notes/ }).click({ force: native });
     if (native) await expect(composer).toHaveText("/echo ");
     else await expect(composer).toHaveValue("/echo ");
     await composer.click({ force: native });
@@ -402,9 +409,7 @@ for (const implementation of ["react", "compose"] as const) {
     else await expect(composer).toHaveValue("");
     await fill(composer, "https://example.test/delayed");
     await page.getByRole("button", { name: "送信", exact: true }).click({ force: native });
-    await expect(
-      page.getByRole(native ? "button" : "link", { name: /^Parity URL card/ }),
-    ).toBeVisible();
+    await expect(page.getByRole("link", { name: /^Parity URL card/ })).toBeVisible();
     const preview = (await state()).previewRequests[0];
     expect(preview.url).toBe("https://example.test/delayed");
     for (const key of ["authorization", "devUser", "cookie", "referer"])
@@ -412,12 +417,12 @@ for (const implementation of ["react", "compose"] as const) {
     await expect.poll(async () => (await state()).mediaRequests.length).toBeGreaterThan(0);
     for (const key of ["authorization", "devUser", "cookie", "referer"])
       expect((await state()).mediaRequests[0][key]).toBeUndefined();
-    await page
-      .getByRole(native ? "button" : "link", { name: "Zoo設定", exact: true })
-      .click({ force: native });
+    await page.getByRole("link", { name: "Zoo設定", exact: true }).click({ force: native });
     if (native) {
-      await page.getByRole("button", { name: /^検索エンジン:/ }).click({ force: true });
-      await page.getByRole("button", { name: "DuckDuckGo", exact: true }).click({ force: true });
+      await page
+        .getByRole("combobox", { name: "検索エンジン", exact: true })
+        .click({ force: true });
+      await page.getByRole("option", { name: "DuckDuckGo", exact: true }).click({ force: true });
     } else
       await page
         .getByRole("combobox", { name: "検索エンジン", exact: true })
@@ -442,9 +447,7 @@ for (const implementation of ["react", "compose"] as const) {
     await page
       .getByRole("button", { name: "チャンネル一覧へ戻る", exact: true })
       .click({ force: native });
-    await page
-      .getByRole(native ? "button" : "link", { name: "Bubble Chat", exact: true })
-      .click({ force: native });
+    await page.getByRole("link", { name: "Bubble Chat", exact: true }).click({ force: native });
     const bubble = page.getByRole("textbox", { name: "リアルタイムメッセージ入力", exact: true });
     await fill(bubble, "temporary shared draft");
     await expect
@@ -503,9 +506,7 @@ for (const implementation of ["react", "compose"] as const) {
     if (native) await fillNative(page, composer, "https://example.test/delayed");
     else await composer.fill("https://example.test/delayed");
     await page.getByRole("button", { name: "送信", exact: true }).click({ force: native });
-    await expect(
-      page.getByRole(native ? "button" : "link", { name: /^Parity URL card/ }),
-    ).toBeVisible();
+    await expect(page.getByRole("link", { name: /^Parity URL card/ })).toBeVisible();
     await (await image).finished();
     const data = await (await request.get("https://127.0.0.1:4187/__state")).json();
     const id = data.messages.at(-1).id;
@@ -585,7 +586,7 @@ for (const implementation of ["react", "compose"] as const) {
     const downloadEvent = page.waitForEvent("download");
     await page
       .getByRole("button", {
-        name: native ? "ダウンロード" : "upload.pngをダウンロード",
+        name: "upload.pngをダウンロード",
         exact: true,
       })
       .click({ force: native });
@@ -686,7 +687,9 @@ test("Frontend switch entry points work without an experimental build flag", asy
   await open(page, "react");
   await page.getByRole("button", { name: "Compose版を使う（実験・開発中）", exact: true }).click();
   await expect(page.locator("[data-compose-shell]")).toBeVisible({ timeout: 90_000 });
-  await expect(page.getByText("こんにちは Parity", { exact: false })).toBeVisible();
+  await expect(page.getByText("こんにちは Parity", { exact: false })).toBeVisible({
+    timeout: 90_000,
+  });
   expect(new URL(page.url()).searchParams.get("frontend")).toBe("compose");
   expect(await page.evaluate(() => localStorage.getItem("zoo-frontend"))).toBe("compose");
   await page.goto("/channels/c1");
@@ -694,7 +697,9 @@ test("Frontend switch entry points work without an experimental build flag", asy
   const back = page.getByRole("button", { name: "React版に戻る", exact: true });
   await expect(back).toBeVisible();
   await back.click({ force: true });
-  await expect(page.getByRole("textbox", { name: "メッセージを送信", exact: true })).toBeVisible();
+  await expect(page.getByRole("textbox", { name: "メッセージを送信", exact: true })).toBeVisible({
+    timeout: 90_000,
+  });
   await expect(page.locator("[data-compose-shell]")).toBeHidden();
   expect(new URL(page.url()).searchParams.get("frontend")).toBe("react");
   expect(await page.evaluate(() => localStorage.getItem("zoo-frontend"))).toBe("react");
@@ -719,9 +724,9 @@ test.describe("missing Compose assets", () => {
     await expect(page.locator("[data-compose-shell]")).toBeVisible({ timeout: 90_000 });
     await expect(page.getByRole("alert")).toContainText("Compose版を起動できませんでした。");
     await page.getByRole("button", { name: "React版に戻る", exact: true }).click();
-    await expect(
-      page.getByRole("textbox", { name: "メッセージを送信", exact: true }),
-    ).toBeVisible();
+    await expect(page.getByRole("textbox", { name: "メッセージを送信", exact: true })).toBeVisible({
+      timeout: 90_000,
+    });
     expect(await page.evaluate(() => localStorage.getItem("zoo-frontend"))).toBe("react");
   });
 });

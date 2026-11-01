@@ -5,7 +5,9 @@ export default defineConfig({
   workers: 1,
   outputDir: "./test-results/compose-production",
   timeout: 120_000,
+  // Match Karma and normal Chromium; legacy headless-shell rounds font advances.
   use: {
+    channel: "chromium",
     baseURL: "https://127.0.0.1:4188",
     ignoreHTTPSErrors: true,
     launchOptions: { args: ["--ignore-certificate-errors"] },

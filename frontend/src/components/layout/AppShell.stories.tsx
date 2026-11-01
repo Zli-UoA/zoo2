@@ -38,7 +38,7 @@ async function expectAlignedHeaders() {
 
 export const Welcome: Story = {
   play: playForImplementation(async () => {
-    await expect(screen.getByLabelText("チャンネル", { selector: "aside" })).toBeVisible();
+    await expect(await screen.findByLabelText("チャンネル", { selector: "aside" })).toBeVisible();
   }),
 };
 
@@ -51,7 +51,7 @@ export const Channel: Story = {
   },
   play: playForImplementation(async () => {
     await expect(await screen.findByText(/今日のリリースは 18:00/)).toBeInTheDocument();
-    await expect(screen.getByLabelText("チャンネル", { selector: "aside" })).toBeVisible();
+    await expect(await screen.findByLabelText("チャンネル", { selector: "aside" })).toBeVisible();
     await expectAlignedHeaders();
   }),
 };
@@ -94,6 +94,7 @@ export const Notifications: Story = {
     router: { initialEntries: ["/notifications"] },
   },
   play: playForImplementation(async () => {
+    await screen.findByRole("region", { name: "通知" });
     await waitFor(() => expect(screen.queryByRole("status")).not.toBeInTheDocument());
     await expect(screen.getByLabelText("チャンネル", { selector: "aside" })).not.toBeVisible();
     const main = screen.getByRole("main").getBoundingClientRect();

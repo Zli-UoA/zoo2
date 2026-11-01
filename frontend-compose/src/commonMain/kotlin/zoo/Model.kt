@@ -49,11 +49,26 @@ interface Platform {
 
     fun forgetFileTarget(id: String) {}
 
-    fun controlSemantics(id: String, role: String, enabled: Boolean, selected: Boolean?) {}
+    fun controlSemantics(
+        id: String,
+        role: String,
+        enabled: Boolean,
+        selected: Boolean?,
+        expanded: Boolean? = null,
+        attributes: Map<String, String> = emptyMap(),
+    ) {}
+
+    fun controlFocus(id: String, focus: () -> Unit) {}
 
     fun forgetControlSemantics(id: String) {}
 
+    fun outsideClick(id: String, bounds: String, close: () -> Unit) {}
+
+    fun forgetOutsideClick(id: String) {}
+
     suspend fun image(url: String): ByteArray? = null
+
+    suspend fun rasterizeSvg(svg: String, width: Int, height: Int): ByteArray? = null
 
     suspend fun headers(): Map<String, String>
 
@@ -74,6 +89,10 @@ interface Platform {
     fun action(name: String)
 
     fun time(timestamp: String): String
+
+    fun fullTimestamp(timestamp: String): String = "${day(timestamp)} ${time(timestamp)}"
+
+    fun notificationTime(timestamp: String): String = "${day(timestamp)} ${time(timestamp)}"
 
     fun day(timestamp: String): String
 

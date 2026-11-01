@@ -5,6 +5,9 @@ const send = (state, defaultMessage) =>
     { type: "zoo-compose-catalog-status", state, defaultMessage },
     location.origin,
   );
+const callbackSession = crypto.randomUUID();
+let callbackSequence = 0;
+const callbacks = new Map();
 let update;
 let close;
 let started = false;
@@ -15,8 +18,50 @@ function fail(message) {
   status.textContent = `${labels["experimental.catalogLoadError"] ?? message} ${labels["experimental.catalogBuildHint"] ?? "Install JDK 21 and run pnpm build:compose in frontend."}`;
   send("error");
 }
+let browserFiles;
+let focusedFileTarget = "";
+const fileTargets = new Map();
+const fileWaiters = [];
+const filesReady = () =>
+  browserFiles
+    ? Promise.resolve(browserFiles)
+    : new Promise((resolve, reject) => fileWaiters.push({ resolve, reject }));
 globalThis.zooCatalog = {
   options: {},
+  installFiles(files) {
+    browserFiles = files;
+    for (const [id, target] of fileTargets) files.target(id, target.bounds, target.receive);
+    files.focus(focusedFileTarget);
+    for (const pending of fileWaiters.splice(0)) pending.resolve(files);
+  },
+  fileTarget(id, bounds, receive) {
+    fileTargets.set(id, { bounds, receive });
+    browserFiles?.target(id, bounds, receive);
+  },
+  forgetFileTarget(id) {
+    fileTargets.delete(id);
+    browserFiles?.forget(id);
+    if (focusedFileTarget === id) focusedFileTarget = "";
+  },
+  action(name) {
+    if (name.startsWith("fileFocus:")) {
+      focusedFileTarget = name.slice(10);
+      browserFiles?.focus(focusedFileTarget);
+    } else if (name.startsWith("fileRelease:")) browserFiles?.release(name.slice(12));
+  },
+  async invoke(name, payload) {
+    return (await filesReady()).invoke(name, payload);
+  },
+  callback(payload) {
+    return new Promise((resolve, reject) => {
+      const requestId = ++callbackSequence;
+      callbacks.set(requestId, { resolve, reject });
+      parent.postMessage(
+        { type: "zoo-compose-catalog-callback", session: callbackSession, requestId, payload },
+        location.origin,
+      );
+    });
+  },
   ready(next, dispose) {
     update = next;
     close = dispose;
@@ -26,8 +71,35 @@ globalThis.zooCatalog = {
     status.hidden = true;
     send("ready", defaultMessage);
   },
+  scroll(top) {
+    parent.postMessage({ type: "zoo-compose-catalog-scroll", top }, location.origin);
+  },
+  measured(width, height) {
+    parent.postMessage({ type: "zoo-compose-catalog-size", width, height }, location.origin);
+  },
+  preference(action) {
+    const [name, value] = action.split(":");
+    parent.postMessage({ type: "zoo-compose-catalog-preference", name, value }, location.origin);
+  },
+  overlay(open) {
+    parent.postMessage({ type: "zoo-compose-catalog-overlay", open }, location.origin);
+  },
 };
 window.addEventListener("message", (event) => {
+  if (
+    event.origin === location.origin &&
+    event.source === parent &&
+    event.data?.type === "zoo-compose-catalog-callback-result" &&
+    event.data.session === callbackSession
+  ) {
+    const pending = callbacks.get(event.data.requestId);
+    if (pending) {
+      callbacks.delete(event.data.requestId);
+      if (event.data.ok) pending.resolve(event.data.result);
+      else pending.reject(new Error(event.data.error));
+    }
+    return;
+  }
   if (
     event.origin !== location.origin ||
     event.source !== parent ||
@@ -39,6 +111,7 @@ window.addEventListener("message", (event) => {
   document.documentElement.lang = options.locale;
   if (!status.hidden)
     status.textContent = options.labels?.["experimental.catalogLoading"] ?? "Compose…";
+  globalThis.__PARITY_OPTIONS__ = options;
   if (update) update(JSON.stringify(options));
   if (!started) {
     started = true;
@@ -54,5 +127,16 @@ window.addEventListener("message", (event) => {
     document.head.append(script);
   }
 });
-window.addEventListener("pagehide", () => close?.(), { once: true });
+window.addEventListener(
+  "pagehide",
+  () => {
+    close?.();
+    for (const pending of callbacks.values()) pending.reject(new Error("Catalog disposed"));
+    callbacks.clear();
+    browserFiles?.close();
+    for (const pending of fileWaiters.splice(0)) pending.reject(new Error("Catalog disposed"));
+    fileTargets.clear();
+  },
+  { once: true },
+);
 send("waiting");

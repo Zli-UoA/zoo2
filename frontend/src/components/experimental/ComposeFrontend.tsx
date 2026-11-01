@@ -1,3 +1,4 @@
+import { applyComposeInputHints } from "../../lib/compose/input-hints";
 import { createComposeFiles } from "../../lib/compose/files";
 import { useEffect, useRef, useState } from "react";
 import { useRouter, useRouterState } from "@tanstack/react-router";
@@ -38,6 +39,8 @@ interface ComposeBridge {
   cache: ComposeCache;
   translate: (key: string, args: string) => string;
   format: (value: string, day: boolean, offset: number) => string;
+  notificationTime: (value: string) => string;
+  fullTimestamp: (value: string) => string;
   action: (name: string) => void;
   invoke: (name: string, payload: string) => Promise<string>;
   authStatus: (status: number) => void;
@@ -132,6 +135,7 @@ export function ComposeRuntime({ config, status }: { config: AppConfig; status?:
   useEffect(() => {
     let cancelled = false;
     let dispose: (() => void) | undefined;
+    let clearInputHints: (() => void) | undefined;
     let root: HTMLDivElement | undefined;
     let ownBridge: ComposeBridge | undefined;
     const readyTimeout = setTimeout(() => {
@@ -201,6 +205,24 @@ export function ComposeRuntime({ config, status }: { config: AppConfig; status?:
           if (typeof values.count === "string") values.count = Number(values.count);
           return String(stateRef.current.t(key, { defaultValue: key, ...values }));
         },
+        fullTimestamp: (value) =>
+          new Date(
+            /[Z+-]\d|Z$/.test(value.slice(10)) ? value : `${value.replace(" ", "T")}Z`,
+          ).toLocaleString(stateRef.current.language.locale),
+        notificationTime: (value) => {
+          const date = new Date(
+            /[Z+-]\d|Z$/.test(value.slice(10)) ? value : `${value.replace(" ", "T")}Z`,
+          );
+          return Number.isNaN(date.getTime())
+            ? value
+            : new Intl.DateTimeFormat(stateRef.current.language.locale, {
+                month: "short",
+                day: "numeric",
+                hour: "2-digit",
+                minute: "2-digit",
+                hourCycle: "h23",
+              }).format(date);
+        },
         format: (value, day, offset) => {
           const date = new Date(
             /[Z+-]\d|Z$/.test(value.slice(10)) ? value : `${value.replace(" ", "T")}Z`,
@@ -212,10 +234,18 @@ export function ComposeRuntime({ config, status }: { config: AppConfig; status?:
                 stateRef.current.language.locale,
                 day
                   ? { year: "numeric", month: "long", day: "numeric", weekday: "short" }
-                  : { hour: "2-digit", minute: "2-digit" },
+                  : { hour: "2-digit", minute: "2-digit", hourCycle: "h23" },
               ).format(date);
         },
         action: (name) => {
+          if (name === "back") {
+            if ((window.history.state?.__TSR_index ?? 0) > 0) router.history.back();
+            else {
+              router.history.replace("/");
+              void router.load().catch(() => setError(true));
+            }
+            return;
+          }
           if (name.startsWith("fileFocus:")) fileBrowser.focus(name.slice(10));
           if (name.startsWith("fileRelease:")) fileBrowser.release(name.slice(12));
           if (name.startsWith("mfm:"))
@@ -418,6 +448,7 @@ export function ComposeRuntime({ config, status }: { config: AppConfig; status?:
       if (cancelled) return;
       root = document.createElement("div");
       root.id = "zoo-compose-root";
+      clearInputHints = applyComposeInputHints(root);
       root.style.width = "100%";
       root.style.height = "100%";
       document.getElementById("zoo-compose-host")?.append(root);
@@ -459,6 +490,7 @@ export function ComposeRuntime({ config, status }: { config: AppConfig; status?:
       escapeRef.current = null;
       window.removeEventListener("keydown", escape);
       dispose?.();
+      clearInputHints?.();
       root?.remove();
       if (globalThis.__zooCompose === ownBridge) delete globalThis.__zooCompose;
       window.removeEventListener("beforeinstallprompt", onInstall);

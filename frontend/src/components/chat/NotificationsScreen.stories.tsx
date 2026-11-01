@@ -1,4 +1,9 @@
 import { activityPubNotifications } from "../../../.storybook/activitypub-fixtures";
+import {
+  notificationComparisonText,
+  notificationComparisonLabel,
+} from "../../../.storybook/notification-fixtures";
+import { storySurfaces } from "../../../.storybook/story-surfaces";
 import { playForImplementation } from "../../../.storybook/play-for-implementation";
 import type { Decorator, Meta, StoryObj } from "@storybook/react-vite";
 import { expect, screen, userEvent, waitFor, within } from "storybook/test";
@@ -38,18 +43,31 @@ const withUnreadPreview: Decorator = (Story) => (
   </UnreadPreview>
 );
 
+// A missing spinner also matches the period before React commits its first render.
+// Wait for the actual list and its visible state before asserting loading has ended.
+async function readyNotificationsList() {
+  const region = await screen.findByRole("region", { name: "通知" });
+  const list = await within(region).findByRole("list", { name: "通知" });
+  await waitFor(async () => {
+    await expect(list).toBeVisible();
+    await expect(screen.queryByRole("status")).not.toBeInTheDocument();
+  });
+  return list;
+}
+
 const meta = {
   title: "Pages/Notifications",
   component: NotificationsScreen,
   tags: ["autodocs"],
   parameters: { a11y: { test: "error" } },
   play: playForImplementation(async () => {
+    await screen.findByRole("region", { name: "通知" });
     await waitFor(() => expect(screen.queryByRole("status")).not.toBeInTheDocument());
   }),
   decorators: [
     (Story) => (
       <StoryShell selectedChannelId={null} initialPane="chat">
-        <div className="h-[720px] overflow-hidden bg-background">
+        <div className={storySurfaces["Pages/Notifications"]}>
           <Story />
         </div>
       </StoryShell>
@@ -63,6 +81,7 @@ type Story = StoryObj<typeof meta>;
 export const Default: Story = {
   decorators: [withUnreadPreview],
   play: playForImplementation(async () => {
+    await readyNotificationsList();
     await waitFor(() => expect(screen.queryByRole("status")).not.toBeInTheDocument());
     await expect(await screen.findByText(/今日のリリースは 18:00/)).toBeVisible();
     const list = screen.getByRole("list", { name: "通知" });
@@ -112,6 +131,7 @@ export const DirectMessages: Story = {
     },
   },
   play: playForImplementation(async () => {
+    await readyNotificationsList();
     await waitFor(() => expect(screen.queryByRole("status")).not.toBeInTheDocument());
     await expect(await screen.findByText("Admin, Bob, Carol +1")).toBeVisible();
     await expect(await screen.findByText("Bob", { selector: "p > span" })).toBeVisible();
@@ -125,16 +145,17 @@ export const MessageLayoutComparison: Story = {
   decorators: [withUnreadPreview],
   render: () => (
     <div className="grid h-full grid-cols-1 grid-rows-2 md:grid-cols-2 md:grid-rows-1">
-      <section aria-label="メッセージ表示の比較用">
+      <section aria-label={notificationComparisonLabel}>
         <ChannelHeader channel={storyChannels[0]!} memberCount={3} />
         <div className="p-3">
-          <MessageBody content="通知とメッセージの本文サイズ・行間を比較します。" />
+          <MessageBody content={notificationComparisonText} />
         </div>
       </section>
       <NotificationsScreen />
     </div>
   ),
   play: playForImplementation(async () => {
+    await readyNotificationsList();
     await waitFor(() => expect(screen.queryByRole("status")).not.toBeInTheDocument());
     const notification = screen.getByRole("region", { name: "通知" });
     const message = screen.getByRole("region", { name: "メッセージ表示の比較用" });
@@ -180,12 +201,23 @@ export const Loading: Story = {
     await waitFor(() => expect(list.querySelectorAll(":scope > [data-unread]")).toHaveLength(3));
   }),
 };
+// Both implementations hold the same real context response until their play has
+// observed the initial mask. A timer cannot guarantee that observation on Wasm startup.
+let releaseNotificationBodies = () => {};
+let notificationBodies = Promise.resolve();
 export const BodiesReadyTogether: Story = {
+  beforeEach: () => {
+    notificationBodies = new Promise<void>((resolve) => {
+      releaseNotificationBodies = resolve;
+    });
+    return () => releaseNotificationBodies();
+  },
   parameters: {
+    fixtureControls: { releaseBodies: () => releaseNotificationBodies() },
     msw: {
       handlers: [
         http.get("*/api/notifications/:id/context", async ({ params }) => {
-          await delay(params.id === "notification-mention" ? 400 : 20);
+          await notificationBodies;
           return HttpResponse.json({
             message: {
               id: String(params.id),
@@ -203,6 +235,7 @@ export const BodiesReadyTogether: Story = {
     await expect(
       within(screen.getByRole("region", { name: "通知" })).getByRole("list", { hidden: true }),
     ).not.toBeVisible();
+    releaseNotificationBodies();
     await waitFor(() => expect(screen.queryByRole("status")).not.toBeInTheDocument());
     await expect(screen.getByRole("list", { name: "通知" })).toBeVisible();
     await expect(screen.getByText("本文 notification-mention")).toBeVisible();
@@ -239,6 +272,7 @@ export const LoadingOnScroll: Story = {
     },
   },
   play: playForImplementation(async () => {
+    await readyNotificationsList();
     await waitFor(() => expect(screen.queryByRole("status")).not.toBeInTheDocument());
     const list = screen.getByRole("list", { name: "通知" });
     const scrollRoot = list.parentElement!;

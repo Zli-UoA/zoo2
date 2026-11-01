@@ -32,9 +32,11 @@ describe("existing Storybook stories rendered in Kotlin", () => {
       }),
     )!;
     expect(options.fixture?.reactions).toEqual([
-      { id: "reaction-0-bob", message_id: "m", user_id: "bob", emoji: "👍" },
-      { id: "reaction-0-long", message_id: "m", user_id: "long", emoji: "👍" },
+      { id: expect.any(String), message_id: "m", user_id: "bob", emoji: "👍" },
+      { id: expect.any(String), message_id: "m", user_id: "long", emoji: "👍" },
     ]);
+    const reactions = options.fixture?.reactions as { id: string }[];
+    expect(new Set(reactions.map(({ id }) => id)).size).toBe(reactions.length);
     expect(options.fixture?.users).toContainEqual({
       id: "long",
       display_name: "A".repeat(80),
@@ -55,12 +57,29 @@ describe("existing Storybook stories rendered in Kotlin", () => {
       attachments: [attachment],
     });
     const options = kotlinOptions(input)!;
-    expect(options.content).toBe(message.content);
-    expect(options.grouped).toBe(true);
-    expect(options.fixture?.attachments).toEqual([attachment]);
+    const args = options.fixture?.args as Record<string, unknown>;
+    expect(args.item).toEqual({ message, isGroupStart: false });
+    expect(args.attachments).toEqual([attachment]);
     expect(input.args.item).toEqual({ message, isGroupStart: false });
     expect(options.locale).toBe("en");
     expect(options.dark).toBe(true);
+  });
+
+  it("retains the shared MessagePane reactions and explicit membership Control", () => {
+    const reactions = [{ id: "r", message_id: "m", user_id: "alice", emoji: "👍" }];
+    const options = kotlinOptions(
+      story(
+        "Features/Chat/MessagePane",
+        "Not Joined",
+        {
+          channelId: "channel-general",
+          isMember: false,
+        },
+        { collections: { reactions } },
+      ),
+    )!;
+    expect(options.fixture?.reactions).toEqual(reactions);
+    expect(options.fixture?.args).toMatchObject({ isMember: false });
   });
 
   it("updates the disabled Composer through its existing Controls", () => {
@@ -81,16 +100,19 @@ describe("existing Storybook stories rendered in Kotlin", () => {
   it("passes the current card and App blocks rather than unrelated sample content", () => {
     const card = { title: "Shared deployment", fields: [{ title: "status", value: "done" }] };
     expect(
-      kotlinOptions(story("Features/Chat/MessageCard", "Deployment", { card }))?.fixture?.card,
-    ).toBe(card);
+      (
+        kotlinOptions(story("Features/Chat/MessageCard", "Deployment", { card }))?.fixture
+          ?.args as Record<string, unknown>
+      )?.card,
+    ).toEqual(card);
     const blocks = [{ type: "card", card }];
     expect(kotlinOptions(story("Features/Apps/Blocks", "Card", { blocks }))?.fixture?.blocks).toBe(
       blocks,
     );
   });
 
-  it("does not claim unregistered components or unsupported states are Kotlin previews", () => {
-    expect(kotlinOptions(story("Components/Button", "Default"))).toBeNull();
-    expect(kotlinOptions(story("Features/Chat/MessageRow", "Editing"))).toBeNull();
+  it("rejects unknown components instead of substituting another Kotlin component", () => {
+    expect(kotlinOptions(story("Components/Unknown", "Default"))).toBeNull();
+    expect(kotlinOptions(story("Components/Button", "Default"))?.sample).toBe("button");
   });
 });

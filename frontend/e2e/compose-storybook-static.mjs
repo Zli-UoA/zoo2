@@ -1,7 +1,8 @@
 import { createServer } from "node:http";
 import { readFile } from "node:fs/promises";
 import { resolve, extname, sep } from "node:path";
-const root = resolve("storybook-static");
+const root = resolve(process.env.STORYBOOK_STATIC_DIR ?? "storybook-static");
+const port = Number(process.env.STORYBOOK_STATIC_PORT ?? 6008);
 const mime = {
   ".js": "text/javascript",
   ".mjs": "text/javascript",
@@ -10,13 +11,14 @@ const mime = {
   ".css": "text/css",
   ".wasm": "application/wasm",
   ".ttf": "font/ttf",
+  ".otf": "font/otf",
   ".woff2": "font/woff2",
   ".svg": "image/svg+xml",
   ".png": "image/png",
 };
 createServer(async (req, res) => {
   try {
-    const url = new URL(req.url, "http://127.0.0.1:6008");
+    const url = new URL(req.url, `http://127.0.0.1:${port}`);
     const file = resolve(
       root,
       "." + decodeURIComponent(url.pathname === "/" ? "/index.html" : url.pathname),
@@ -31,4 +33,4 @@ createServer(async (req, res) => {
   } catch {
     res.writeHead(404).end();
   }
-}).listen(6008, "127.0.0.1");
+}).listen(port, "127.0.0.1");

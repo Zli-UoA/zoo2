@@ -1,13 +1,19 @@
 /** Browser file/window primitives. Kotlin owns validation, upload orchestration and every visible UI. */
 export function createComposeFiles(viewport: HTMLElement) {
+  const owner = viewport.ownerDocument;
+  const view = owner.defaultView ?? window;
   const files = new Map<string, File>();
-  const targets = new Map<string, { enabled: boolean; receive: (raw: string) => boolean }>();
+  type Bounds = { left: number; top: number; width: number; height: number };
+  const targets = new Map<
+    string,
+    { enabled: boolean; bounds?: Bounds; receive: (raw: string) => boolean }
+  >();
   const uploads = new Map<string, AbortController>();
   let focused: string | undefined;
   let cancelled = false;
   let pickerOwner: string | undefined;
   let finishPicker: ((value: string) => void) | undefined;
-  const input = document.createElement("input");
+  const input = owner.createElement("input");
   input.type = "file";
   input.hidden = true;
   viewport.append(input);
@@ -35,12 +41,36 @@ export function createComposeFiles(viewport: HTMLElement) {
     ),
   ];
   const paste = (event: ClipboardEvent) => {
-    const target = focused ? targets.get(focused) : undefined;
-    if (!target?.enabled || !event.composedPath().includes(viewport)) return;
+    if (!event.composedPath().includes(viewport)) return;
+    let target = focused ? targets.get(focused) : undefined;
+    // A paste explicitly dispatched to an unfocused logical textbox has an owner
+    // too. Resolve its Kotlin-registered bounds without creating or focusing an
+    // invisible browser editor. Real focused-input paste retains its usual route.
+    if (!focused) {
+      const element = event.target as HTMLElement | null;
+      if (!element || !["textbox", "searchbox"].includes(element.getAttribute?.("role") ?? ""))
+        return;
+      const rect = element.getBoundingClientRect();
+      if (!rect.width || !rect.height) return;
+      const x = rect.left + rect.width / 2,
+        y = rect.top + rect.height / 2;
+      const candidates = [...targets.values()].filter(
+        ({ enabled, bounds }) =>
+          enabled &&
+          bounds &&
+          x >= bounds.left &&
+          x <= bounds.left + bounds.width &&
+          y >= bounds.top &&
+          y <= bounds.top + bounds.height,
+      );
+      if (candidates.length !== 1) return;
+      target = candidates[0];
+    }
+    if (!target?.enabled) return;
     const values = clipboard(event.clipboardData);
     if (values.length && target.receive(describe(values, "paste"))) event.preventDefault();
   };
-  document.addEventListener("paste", paste, true);
+  owner.addEventListener("paste", paste, true);
   const base64 = (bytes: Uint8Array) => {
     let result = "";
     for (let offset = 0; offset < bytes.length; offset += 32768)
@@ -58,6 +88,7 @@ export function createComposeFiles(viewport: HTMLElement) {
       const state = JSON.parse(raw);
       targets.set(id, {
         enabled: state.enabled,
+        bounds: state.bounds,
         receive,
       });
     },
@@ -82,6 +113,7 @@ export function createComposeFiles(viewport: HTMLElement) {
       if (name === "pickFiles") {
         const options = JSON.parse(payload);
         pickerOwner = options.owner;
+        if (!input.isConnected) viewport.append(input);
         input.accept = options.accept;
         input.multiple = options.multiple;
         finishPicker?.("{}");
@@ -130,15 +162,15 @@ export function createComposeFiles(viewport: HTMLElement) {
           if (!response.ok) throw new Error(`Download failed: ${response.status}`);
           const objectUrl = URL.createObjectURL(await response.blob());
           try {
-            const anchor = document.createElement("a");
+            const anchor = owner.createElement("a");
             anchor.href = objectUrl;
             anchor.download = fileName;
             anchor.rel = "noopener";
-            document.body.append(anchor);
+            owner.body.append(anchor);
             anchor.click();
             anchor.remove();
           } finally {
-            window.setTimeout(() => URL.revokeObjectURL(objectUrl), 1000);
+            view.setTimeout(() => URL.revokeObjectURL(objectUrl), 1000);
           }
         } finally {
           uploads.delete(key);
@@ -155,7 +187,7 @@ export function createComposeFiles(viewport: HTMLElement) {
       targets.clear();
       uploads.clear();
       input.remove();
-      document.removeEventListener("paste", paste, true);
+      owner.removeEventListener("paste", paste, true);
     },
   };
 }

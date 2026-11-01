@@ -7,6 +7,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.*
 import androidx.compose.ui.*
+import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.semantics.*
 import androidx.compose.ui.unit.*
@@ -52,49 +53,74 @@ fun ReactionChip(
     val mine = rows.any { it.text("user_id") == app.config.userId }
     Box {
         Row(verticalAlignment = Alignment.CenterVertically) {
-            Row(
-                Modifier.heightIn(min = 32.dp)
-                    .border(1.dp, MaterialTheme.colorScheme.outline, RoundedCornerShape(16.dp))
-                    .background(
-                        if (mine) MaterialTheme.colorScheme.secondaryContainer
-                        else MaterialTheme.colorScheme.surface,
-                        RoundedCornerShape(16.dp),
+            Hint(labels.joinToString(", ")) { hintModifier ->
+                Row(
+                    hintModifier
+                        .heightIn(min = 32.dp)
+                        .then(webControlModifier("button", enabled = editable, selected = mine))
+                        .border(
+                            1.dp,
+                            if (mine) MaterialTheme.colorScheme.secondary.copy(alpha = .4f)
+                            else MaterialTheme.colorScheme.outline,
+                            RoundedCornerShape(16.dp),
+                        )
+                        .background(
+                            if (mine) MaterialTheme.colorScheme.secondaryContainer
+                            else MaterialTheme.colorScheme.surface,
+                            RoundedCornerShape(16.dp),
+                        )
+                        .hoverable(interaction)
+                        .onFocusChanged { focused = it.hasFocus }
+                        .clickable(role = Role.Button) { if (editable) toggle() }
+                        .semantics {
+                            contentDescription =
+                                app.t(
+                                    if (mine) "reactions.chipMine" else "reactions.chip",
+                                    "emoji" to kitchenLabel(emoji),
+                                    "count" to count.toString(),
+                                )
+                            selected = mine
+                        }
+                        .padding(horizontal = 8.dp, vertical = 2.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    ReactionEmoji(emoji)
+                    Text(
+                        count.toString(),
+                        Modifier.padding(start = 4.dp),
+                        small = true,
+                        color =
+                            if (mine) MaterialTheme.colorScheme.onSecondaryContainer
+                            else MaterialTheme.colorScheme.onBackground,
                     )
-                    .hoverable(interaction)
-                    .onFocusChanged { focused = it.hasFocus }
-                    .clickable(role = Role.Button) { if (editable) toggle() }
-                    .semantics {
-                        contentDescription =
-                            app.t(
-                                if (mine) "reactions.chipMine" else "reactions.chip",
-                                "emoji" to emoji,
-                                "count" to count.toString(),
-                            )
-                        selected = mine
-                    }
-                    .padding(horizontal = 8.dp, vertical = 2.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                ReactionEmoji(emoji)
-                Text(count.toString(), Modifier.padding(start = 4.dp), small = true)
+                }
             }
             // Keep the user list reachable by keyboard, touch and while reactions are disabled.
-            IconButton("users", app.t("reactions.showUsers", "emoji" to emoji), size = 40.dp) {
-                showUsers = true
+            Box(
+                Modifier.size(
+                        if (app.env.touch || LocalViewportWidth.current < 768f || focused) 40.dp
+                        else 1.dp
+                    )
+                    .clipToBounds()
+                    .onFocusChanged { focused = it.hasFocus }
+            ) {
+                IconButton(
+                    "users-round",
+                    app.t("reactions.showUsers", "emoji" to kitchenLabel(emoji)),
+                    size = 40.dp,
+                ) {
+                    showUsers = true
+                }
             }
         }
-        if (wide && (hovered || focused))
-            Box(
-                Modifier.offset(y = 40.dp)
-                    .background(MaterialTheme.colorScheme.surfaceVariant)
-                    .padding(8.dp)
-            ) {
-                Text(labels.joinToString(", "), small = true)
-            }
     }
     LaunchedEffect(rows) { if (rows.isEmpty()) showUsers = false }
     if (showUsers && rows.isNotEmpty())
-        Panel(app.t("reactions.usersTitle", "emoji" to emoji), { showUsers = false }) {
+        Panel(
+            app.t("reactions.usersTitle", "emoji" to kitchenLabel(emoji)),
+            { showUsers = false },
+            width = 512.dp,
+        ) {
             Column(
                 Modifier.heightIn(max = 400.dp).verticalScroll(rememberScrollState()),
                 verticalArrangement = Arrangement.spacedBy(8.dp),

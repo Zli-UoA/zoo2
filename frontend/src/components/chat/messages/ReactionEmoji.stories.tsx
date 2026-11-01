@@ -1,17 +1,11 @@
+import { reactionKitchenCatalog } from "../../../../.storybook/message-fixtures";
 import { playForImplementation } from "../../../../.storybook/play-for-implementation";
 import type { Meta, StoryObj } from "@storybook/react-vite";
 import { http, HttpResponse } from "msw";
 import { expect, waitFor } from "storybook/test";
 import type { KitchenCatalog } from "../../../lib/emoji/kitchen";
 import { ReactionEmoji } from "./ReactionEmoji";
-const catalog: KitchenCatalog = {
-  emojis: [
-    ["1f600", "😀", "grinning face"],
-    ["1f431", "🐱", "cat face"],
-  ],
-  dates: ["20260101"],
-  pairs: { "0_1": 0 },
-};
+const catalog: KitchenCatalog = reactionKitchenCatalog;
 const meta = {
   title: "Features/Chat/ReactionEmoji",
   component: ReactionEmoji,

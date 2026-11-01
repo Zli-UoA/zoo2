@@ -22,14 +22,40 @@ class Session(val repo: Repository, val scope: CoroutineScope, initial: Environm
     var env by mutableStateOf(initial)
     val overlays = mutableStateListOf<OverlaySlot>()
     var dialog by mutableStateOf<String?>(null)
+    var appDetailId by mutableStateOf<String?>(null)
     var thread by mutableStateOf<String?>(null)
     var membersOpen by mutableStateOf(false)
     var pane by mutableStateOf("sidebar")
-    var toast by mutableStateOf<String?>(null)
+    private val toastController =
+        NativeToastController(scope).also { it.setVisible(initial.visible) }
+    val toastState: NativeToastState?
+        get() = toastController.current
+
+    var toast: String?
+        get() = toastState?.message
+        set(value) {
+            if (value == null) dismissToast() else showToast(value, ToastKind.Error)
+        }
+
+    fun showToast(
+        message: String,
+        kind: ToastKind = ToastKind.Default,
+        durationMillis: Long? = 4_000L,
+    ) = toastController.show(message, kind, durationMillis)
+
+    fun dismissToast(serial: Long? = null) = toastController.dismiss(serial)
+
+    fun setToastHovered(serial: Long, hovered: Boolean) =
+        toastController.setHovered(serial, hovered)
+
     var pending by mutableStateOf<Set<String>>(emptySet())
     var unread by mutableStateOf<Set<String>>(emptySet())
     var admins by mutableStateOf<Set<String>>(emptySet())
     var searchEngine by mutableStateOf("google")
+    private val preferenceState = lazy { SearchPreferencesController(this, scope) }
+    val searchPreferences
+        get() = preferenceState.value
+
     var surfaces by mutableStateOf<List<Row>>(emptyList())
     var capabilities by mutableStateOf<JsonObject>(JsonObject(emptyMap()))
     var target by mutableStateOf<String?>(null)
@@ -77,6 +103,12 @@ class Session(val repo: Repository, val scope: CoroutineScope, initial: Environm
 
     fun navigate(path: String) = platform.navigate(path)
 
+    fun openApp(id: String) {
+        target = null
+        appDetailId = id
+        dialog = "apps"
+    }
+
     fun run(key: String = platform.uuid(), task: suspend () -> Unit) {
         if (key in pending) return
         pending = pending + key
@@ -121,6 +153,7 @@ class Session(val repo: Repository, val scope: CoroutineScope, initial: Environm
     fun update(next: Environment) {
         val old = env
         env = next
+        toastController.setVisible(next.visible)
         if (old.path.substringBefore('?') != next.path.substringBefore('?')) {
             thread = null
             pane =
@@ -131,17 +164,7 @@ class Session(val repo: Repository, val scope: CoroutineScope, initial: Environm
     }
 
     fun start() {
-        scope.launch {
-            try {
-                searchEngine =
-                    api.request("/api/users/me/preferences")
-                        .jsonObject
-                        .text("search_engine")
-                        .takeIf { it in searchEngines } ?: "google"
-            } catch (e: CancellationException) {
-                throw e
-            } catch (_: Exception) {}
-        }
+        searchPreferences.ensureLoaded()
         pane = if (channelId != null || env.path.startsWith("/notifications")) "chat" else "sidebar"
         scope.launch {
             while (isActive) {
@@ -275,6 +298,8 @@ class Session(val repo: Repository, val scope: CoroutineScope, initial: Environm
     }
 
     fun close() {
+        toastController.close()
+        if (preferenceState.isInitialized()) preferenceState.value.close()
         assetClient.close()
         repo.close()
     }

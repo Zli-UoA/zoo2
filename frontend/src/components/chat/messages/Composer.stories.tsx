@@ -1,3 +1,4 @@
+import { storySurfaces } from "../../../../.storybook/story-surfaces";
 import { playForImplementation } from "../../../../.storybook/play-for-implementation";
 import type { Meta, StoryObj } from "@storybook/react-vite";
 import { expect, fn, userEvent, within } from "storybook/test";
@@ -44,7 +45,7 @@ const meta = {
   },
   decorators: [
     (Story) => (
-      <div className="mx-auto max-w-3xl bg-background">
+      <div className={storySurfaces["Features/Chat/Composer"]}>
         <MfmChannelsProvider channels={storyChannels}>
           <Story />
         </MfmChannelsProvider>
@@ -64,14 +65,14 @@ export const Disabled: Story = {
   },
   play: playForImplementation(async ({ canvasElement }) => {
     const canvas = within(canvasElement);
-    await expect(canvas.getByRole("textbox")).toBeDisabled();
+    await expect(await canvas.findByRole("textbox")).toBeDisabled();
   }),
 };
 
 export const Multiline: Story = {
   play: playForImplementation(async ({ canvasElement }) => {
     const canvas = within(canvasElement);
-    const textarea = canvas.getByRole("textbox");
+    const textarea = await canvas.findByRole("textbox");
     await userEvent.type(textarea, "1行目{enter}2行目{enter}3行目");
     await expect(textarea).toHaveValue("1行目\n2行目\n3行目");
   }),
@@ -80,7 +81,7 @@ export const Multiline: Story = {
 export const MentionSuggestions: Story = {
   play: playForImplementation(async ({ canvasElement }) => {
     const canvas = within(canvasElement);
-    await userEvent.type(canvas.getByRole("textbox"), "@al");
+    await userEvent.type(await canvas.findByRole("textbox"), "@al");
     await expect(canvas.getByRole("listbox", { name: "メンション候補" })).toBeVisible();
   }),
 };
@@ -96,7 +97,7 @@ export const ChannelSuggestions: Story = {
   parameters: { a11y: { test: "error" } },
   play: playForImplementation(async ({ canvasElement }) => {
     const canvas = within(canvasElement);
-    await userEvent.type(canvas.getByRole("textbox"), "詳しくは #gen");
+    await userEvent.type(await canvas.findByRole("textbox"), "詳しくは #gen");
     await expect(canvas.getByRole("listbox", { name: "チャンネル候補" })).toBeVisible();
     await expect(canvas.getByRole("option", { name: "#general" })).toBeVisible();
   }),
@@ -105,7 +106,7 @@ export const CommandSuggestions: Story = {
   parameters: { a11y: { test: "error" } },
   play: playForImplementation(async ({ canvasElement, args }) => {
     const canvas = within(canvasElement);
-    const input = canvas.getByRole("textbox");
+    const input = await canvas.findByRole("textbox");
     await userEvent.type(input, "/ec");
     await expect(canvas.getByRole("listbox", { name: "コマンド候補" })).toBeVisible();
     await userEvent.click(canvas.getByRole("option", { name: "/echo Meeting Notes" }));
@@ -144,7 +145,7 @@ export const WithAttachments: Story = {
   },
   play: playForImplementation(async ({ canvasElement, args }) => {
     const canvas = within(canvasElement);
-    pasteImage(canvas.getByRole("textbox"));
+    pasteImage(await canvas.findByRole("textbox"));
     await expect(await canvas.findByRole("img", { name: "screenshot.png" })).toBeVisible();
     await userEvent.click(canvas.getByRole("button", { name: "送信" }));
     await expect(args.onSend).toHaveBeenCalledWith("", undefined, ["attachment-1"]);
@@ -164,7 +165,7 @@ export const WithFileAttachment: Story = {
   play: playForImplementation(async ({ canvasElement, args }) => {
     const canvas = within(canvasElement);
     pasteFile(
-      canvas.getByRole("textbox"),
+      await canvas.findByRole("textbox"),
       new File([new Uint8Array([1, 2, 3, 4, 5])], "release-notes.pdf", {
         type: "application/pdf",
       }),
@@ -184,7 +185,7 @@ export const AttachmentUploadError: Story = {
   },
   play: playForImplementation(async ({ canvasElement }) => {
     const canvas = within(canvasElement);
-    pasteImage(canvas.getByRole("textbox"));
+    pasteImage(await canvas.findByRole("textbox"));
     await expect(await canvas.findByRole("alert")).toHaveTextContent(
       "ファイルをアップロードできませんでした。",
     );
@@ -197,7 +198,7 @@ export const ChannelInsertion: Story = {
   globals: { viewport: { value: "mobile" } },
   play: playForImplementation(async ({ canvasElement }) => {
     const canvas = within(canvasElement);
-    const input = canvas.getByRole("textbox");
+    const input = await canvas.findByRole("textbox");
     await userEvent.type(input, "#gen");
     await userEvent.keyboard("{Tab}");
     await expect(input).toHaveValue("#general ");
@@ -209,7 +210,7 @@ export const SendError: Story = {
   args: { onSend: fn(async () => false) },
   play: playForImplementation(async ({ canvasElement }) => {
     const canvas = within(canvasElement);
-    const input = canvas.getByRole("textbox");
+    const input = await canvas.findByRole("textbox");
     await userEvent.type(input, "Catalog send failure");
     await userEvent.click(canvas.getByRole("button", { name: "送信" }));
     await expect(input).toHaveValue("Catalog send failure");

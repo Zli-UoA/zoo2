@@ -182,6 +182,9 @@ export function MessageList({
     getScrollElement: () => scrollRef.current,
     estimateSize: () => ESTIMATED_ROW_HEIGHT,
     overscan: 8,
+    // Commit measured row sizes outside ResizeObserver delivery: anchoring can scroll
+    // and synchronously render a different virtual range during that delivery.
+    useAnimationFrameWithResizeObserver: true,
     getItemKey: (index) => items[index]?.message.id ?? index,
     // URLカードや画像の遅延読込で行が伸びても、最下部付近なら末尾を維持する。
     // 編集中は入力欄の高さが変わるため、編集中の位置を保つ。

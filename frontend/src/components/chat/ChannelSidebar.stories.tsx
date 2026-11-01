@@ -117,8 +117,8 @@ export const Sections: Story = {
   },
   play: playForImplementation(async ({ canvasElement }) => {
     const canvas = within(canvasElement);
-    const regular = canvas.getByRole("button", { name: "チャンネル" });
-    const direct = canvas.getByRole("button", { name: "ダイレクトメッセージ" });
+    const regular = await canvas.findByRole("button", { name: "チャンネル" });
+    const direct = await canvas.findByRole("button", { name: "ダイレクトメッセージ" });
     const regularLink = await canvas.findByRole("link", { name: "general" });
     const directLink = await canvas.findByRole("link", { name: "Bob" });
     await expect(regularLink.getBoundingClientRect().height).toBe(

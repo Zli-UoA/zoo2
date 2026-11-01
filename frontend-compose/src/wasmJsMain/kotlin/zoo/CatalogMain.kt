@@ -19,6 +19,19 @@ import kotlinx.serialization.json.*
 )
 private external fun catalogBoot(boot: () -> Unit)
 
+@JsFun(
+    "(value, locale) => { const date = new Date(value.replace(' ', 'T').replace(/(?<!Z)(?<![+-][0-9]{2}:[0-9]{2})$/, 'Z')); return Number.isNaN(date.getTime()) ? value : new Intl.DateTimeFormat(locale, {month:'short',day:'numeric',hour:'2-digit',minute:'2-digit',hourCycle:'h23'}).format(date); }"
+)
+private external fun formatNotification(value: String, locale: String): String
+
+@JsFun("(payload) => globalThis.zooCatalog.callback(payload)")
+private external fun storyCallback(payload: String): Promise<JsString>
+
+@JsFun(
+    """async url => {const response=await fetch(url,{credentials:'omit',referrerPolicy:'no-referrer'});if(!response.ok)throw new Error('Image HTTP '+response.status);const blob=await response.blob();const source=URL.createObjectURL(blob);try{const img=new Image();img.src=source;await img.decode();const canvas=document.createElement('canvas');canvas.width=img.naturalWidth;canvas.height=img.naturalHeight;canvas.getContext('2d').drawImage(img,0,0);return canvas.toDataURL('image/png').split(',')[1];}finally{URL.revokeObjectURL(source);} }"""
+)
+private external fun catalogImage(url: String): Promise<JsString>
+
 @JsFun("() => JSON.stringify(globalThis.zooCatalog.options)")
 private external fun catalogOptions(): String
 
@@ -27,6 +40,26 @@ private external fun catalogReady(update: (String) -> Unit, close: () -> Unit)
 
 @JsFun("(message) => globalThis.zooCatalog.painted(message)")
 private external fun catalogPainted(message: String)
+
+@JsFun("(width,height) => globalThis.zooCatalog.measured(width,height)")
+private external fun catalogMeasured(width: Double, height: Double)
+
+@JsFun("(action) => globalThis.zooCatalog.preference(action)")
+private external fun catalogPreference(action: String)
+
+@JsFun("(top) => globalThis.zooCatalog.scroll(top)") private external fun catalogScroll(top: Double)
+
+@JsFun("(open) => globalThis.zooCatalog.overlay(open)")
+private external fun catalogOverlay(open: Boolean)
+
+@JsFun("() => globalThis.zooCatalog") private external fun catalogFileBridge(): JsAny
+
+@JsFun(
+    "(url,newTab) => { dispatchEvent(new CustomEvent('zoo:navigation-intent',{detail:{url,newTab}})); if(newTab) window.open(url,'_blank','noopener,noreferrer'); }"
+)
+private external fun catalogNavigationIntent(url: String, newTab: Boolean)
+
+@JsFun("() => location.reload()") private external fun reloadCatalogPage()
 
 @JsFun("() => matchMedia('(prefers-color-scheme: dark)').matches")
 private external fun systemDark(): Boolean
@@ -53,44 +86,140 @@ private fun startCatalog() {
     var sequence = 0
     lateinit var app: Session
     lateinit var refresh: () -> Unit
+    val files = BrowserFileBridge(catalogFileBridge())
     val platform =
         object : Platform {
+            override fun fileTarget(id: String, bounds: String, receive: (String) -> Boolean) =
+                files.target(id, bounds, receive)
+
+            override fun forgetFileTarget(id: String) = files.forget(id)
+
             override fun controlSemantics(
                 id: String,
                 role: String,
                 enabled: Boolean,
                 selected: Boolean?,
-            ) = webControl(id, role, enabled, selected)
+                expanded: Boolean?,
+                attributes: Map<String, String>,
+            ) = webControl(id, role, enabled, selected, expanded, attributes)
+
+            override fun outsideClick(id: String, bounds: String, close: () -> Unit) =
+                observeOutsideClick(id, bounds, close)
+
+            override fun forgetOutsideClick(id: String) = removeOutsideClick(id)
+
+            override fun controlFocus(id: String, focus: () -> Unit) = webControlFocus(id, focus)
 
             override fun forgetControlSemantics(id: String) = forgetWebControl(id)
 
+            override suspend fun image(url: String): ByteArray =
+                kotlin.io.encoding.Base64.decode(
+                    catalogImage(url).awaitBrowser<JsString>().toString()
+                )
+
+            override suspend fun rasterizeSvg(svg: String, width: Int, height: Int): ByteArray =
+                browserRasterizeSvg(svg, width, height)
+
             override suspend fun headers() = emptyMap<String, String>()
 
-            override suspend fun readCache(key: String): String? =
-                when {
-                    key.contains(":channels:") ->
-                        (options.nested("fixture")["channels"]
-                                ?: JsonArray(listOf(CatalogSamples.channel)))
-                            .toString()
-                    key.contains(":users:") ->
-                        (options.nested("fixture")["users"] ?: JsonArray(CatalogSamples.users))
-                            .toString()
-                    else -> "[]"
-                }
+            override suspend fun readCache(key: String): String? {
+                val fixture = options.nested("fixture")
+                val fields =
+                    mapOf(
+                        "channels" to "channels",
+                        "users" to "users",
+                        "channel_users" to "channelUsers",
+                        "messages" to "messages",
+                        "message_reactions" to "reactions",
+                        "attachments" to "attachments",
+                        "notifications" to "notifications",
+                    )
+                val table = fields.keys.firstOrNull { key.contains(":$it:") } ?: return "[]"
+                if (fixture.array("loadingTables").any { it.jsonPrimitive.content == table })
+                    return null
+                val rows =
+                    (fixture[fields.getValue(table)] as? JsonArray)?.map { it.jsonObject }
+                        ?: when (table) {
+                            "users" -> CatalogSamples.users
+                            "channels" -> listOf(CatalogSamples.channel)
+                            else -> emptyList()
+                        }
+                val channelId = Regex("channel_id=([^,\\]]+)").find(key)?.groupValues?.get(1)
+                val selected =
+                    if (
+                        channelId == null ||
+                            table !in listOf("messages", "attachments", "message_reactions")
+                    )
+                        rows
+                    else {
+                        val ids =
+                            fixture
+                                .array("messages")
+                                .map { it.jsonObject }
+                                .filter { it.text("channel_id") == channelId }
+                                .map { it.text("id") }
+                                .toSet()
+                        rows.filter {
+                            if (table == "messages") it.text("channel_id") == channelId
+                            else it.text("message_id") in ids || it.text("channel_id") == channelId
+                        }
+                    }
+                return JsonArray(selected).toString()
+            }
 
             override suspend fun writeCache(key: String, value: String) {}
 
             override fun uuid() = "catalog-${++sequence}"
 
-            override fun now() = "2026-01-02T09:00:00Z"
+            override fun now() = webCurrentTime()
 
             override fun navigate(path: String) {
+                catalogNavigationIntent(path, false)
                 options = JsonObject(options + ("path" to JsonPrimitive(path)))
                 refresh()
             }
 
             override fun action(name: String) {
                 when {
+                    name == "react" || name == "compose" -> {
+                        catalogPreference("frontend:$name")
+                        return
+                    }
+                    name.startsWith("open:") -> {
+                        catalogNavigationIntent(name.substringAfter(':'), true)
+                        return
+                    }
+                    name == "reload" -> {
+                        reloadCatalogPage()
+                        return
+                    }
+                    name == "back" -> {
+                        navigate("/")
+                        return
+                    }
+                    name.startsWith("fileFocus:") || name.startsWith("fileRelease:") -> {
+                        files.action(name)
+                        return
+                    }
+                    name.startsWith("catalog-overlay:") -> {
+                        catalogOverlay(name.substringAfter(':') == "true")
+                        return
+                    }
+                    name.startsWith("catalog-scroll:") -> {
+                        name
+                            .substringAfter(':')
+                            .toDoubleOrNull()
+                            ?.takeIf { it.isFinite() && it >= 0 }
+                            ?.let(::catalogScroll)
+                        return
+                    }
+                    name.startsWith("catalog-size:") -> {
+                        catalogMeasured(
+                            name.split(':')[1].toDouble(),
+                            name.split(':')[2].toDouble(),
+                        )
+                        return
+                    }
                     name.startsWith("theme:") -> {
                         val theme = name.substringAfter(':')
                         options =
@@ -112,12 +241,24 @@ private fun startCatalog() {
                             )
                     else -> return
                 }
+                catalogPreference(name)
                 refresh()
             }
 
-            override fun time(timestamp: String) = "09:00"
+            override fun time(timestamp: String) =
+                webFormatDate(timestamp, options.text("locale"), "time", 0)
 
-            override fun day(timestamp: String) = "2026-01-02"
+            override fun notificationTime(timestamp: String) =
+                formatNotification(timestamp, options.text("locale"))
+
+            override fun day(timestamp: String) =
+                webFormatDate(timestamp, options.text("locale"), "day", 0)
+
+            override fun previousDay(timestamp: String) =
+                webFormatDate(timestamp, options.text("locale"), "day", -1)
+
+            override fun fullTimestamp(timestamp: String) =
+                webFormatDate(timestamp, options.text("locale"), "full", 0)
 
             override fun translate(key: String, args: Map<String, String>): String {
                 val labels =
@@ -136,6 +277,20 @@ private fun startCatalog() {
 
             override suspend fun invoke(name: String, payload: String): String =
                 when (name) {
+                    "pickFiles",
+                    "fileRead",
+                    "filePut",
+                    "attachmentDownload" -> files.invoke(name, payload)
+                    "push" ->
+                        if (options.nested("fixture").flag("pushToggleCallback"))
+                            storyCallback(
+                                    obj("name" to "pushToggle", "args" to JsonArray(emptyList()))
+                                        .toString()
+                                )
+                                .awaitBrowser<JsString>()
+                                .toString()
+                        else "{}"
+                    "storyCallback" -> storyCallback(payload).awaitBrowser<JsString>().toString()
                     "publicGet" ->
                         fixturePublic(json.parseToJsonElement(payload).jsonObject.text("url"))
                             .awaitBrowser<JsString>()
@@ -223,7 +378,7 @@ private fun startCatalog() {
         )
     val config =
         Config(
-            "https://catalog.invalid",
+            options.text("origin").ifEmpty { "https://catalog.invalid" },
             "",
             options.nested("fixture").text("currentUserId").ifEmpty { "alice" },
             options.nested("fixture").flag("isAdmin"),
@@ -242,10 +397,15 @@ private fun startCatalog() {
                     }
                 },
             dark = options.flag("dark"),
+            touch = options.flag("touch"),
+            mac = options.flag("mac"),
             locale = options.text("locale"),
-            visible = options.text("sample") == "bubble",
-            focused = false,
-            reducedMotion = true,
+            visible = options.flag("visible"),
+            focused =
+                if (options.nested("fixture").containsKey("focused"))
+                    options.nested("fixture").flag("focused")
+                else options.flag("focused"),
+            reducedMotion = options.flag("reducedMotion"),
             theme = options.text("theme").ifEmpty { if (options.flag("dark")) "dark" else "light" },
         )
     app = Session(Repository(config, platform, http, scope), scope, environment())
@@ -254,10 +414,15 @@ private fun startCatalog() {
     ComposeViewport(document.getElementById("zoo-compose-root")!!) {
         val fontsReady = zooFontsReady()
         if (active && fontsReady) {
-            ZooTheme(options.flag("dark")) {
+            ZooTheme(
+                options.flag("dark"),
+                viewportWidth = options.text("viewportWidth").toFloatOrNull(),
+                locale = environment().locale,
+            ) {
                 CompositionLocalProvider(
                     LocalApp provides app,
                     LocalWebPlatform provides platform,
+                    LocalFrontendMode provides options.text("frontend").ifEmpty { "react" },
                 ) {
                     Catalog(app, options)
                 }

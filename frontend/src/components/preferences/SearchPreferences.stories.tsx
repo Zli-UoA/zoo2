@@ -1,3 +1,5 @@
+import { searchDemoQuery, longSearchDemoQuery } from "../../../.storybook/preference-fixtures";
+import { preferenceSurfaces } from "../../../.storybook/preference-stories";
 import { playForImplementation } from "../../../.storybook/play-for-implementation";
 import type { Meta, StoryObj } from "@storybook/react-vite";
 import { expect, screen, userEvent, waitFor } from "storybook/test";
@@ -14,10 +16,10 @@ const meta = {
   decorators: [
     (Story) => (
       <SearchPreferencesProvider>
-        <div className="mx-auto max-w-xl space-y-4 p-4">
+        <div className={preferenceSurfaces["Features/Preferences/MfmSearch"]}>
           <Story />
           <div className="mfm-body text-sm">
-            <MfmContent content="猫 café & zoo 検索" />
+            <MfmContent content={`${searchDemoQuery} 検索`} />
           </div>
         </div>
       </SearchPreferencesProvider>
@@ -88,7 +90,7 @@ export const Loading: Story = {
     },
   },
   play: playForImplementation(async () => {
-    await expect(screen.getByRole("combobox")).toBeDisabled();
+    await expect(await screen.findByRole("combobox")).toBeDisabled();
   }),
 };
 export const Saving: Story = {
@@ -105,7 +107,7 @@ export const Saving: Story = {
   play: playForImplementation(async () => {
     await waitFor(() => expect(screen.getByRole("combobox")).toBeEnabled());
     await userEvent.selectOptions(screen.getByRole("combobox"), "yandex");
-    await expect(screen.getByRole("combobox")).toBeDisabled();
+    await expect(await screen.findByRole("combobox")).toBeDisabled();
     await expect(screen.getByRole("combobox")).toHaveAttribute("aria-busy", "true");
   }),
 };
@@ -121,7 +123,7 @@ export const LoadError: Story = {
     await expect(await screen.findByRole("alert")).toHaveTextContent(
       "検索設定を読み込めませんでした。",
     );
-    await expect(screen.getByRole("combobox")).toBeDisabled();
+    await expect(await screen.findByRole("combobox")).toBeDisabled();
     await expect(screen.getByRole("button", { name: "再試行" })).toBeEnabled();
   }),
 };
@@ -150,12 +152,12 @@ export const LongQueryMobile: Story = {
     <>
       <SearchEngineSelect />
       <div className="mfm-body text-sm">
-        <MfmContent content={`${"長い検索語abcdefgh ".repeat(25)}検索`} />
+        <MfmContent content={`${longSearchDemoQuery} 検索`} />
       </div>
     </>
   ),
   play: playForImplementation(async () => {
-    const searches = screen.getAllByRole("textbox").map((field) => field.closest("form")!);
+    const searches = (await screen.findAllByRole("textbox")).map((field) => field.closest("form")!);
     for (const search of searches) {
       await expect(search.scrollWidth).toBeLessThanOrEqual(search.clientWidth);
       await expect(search.getBoundingClientRect().right).toBeLessThanOrEqual(

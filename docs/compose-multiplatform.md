@@ -38,7 +38,11 @@ cd frontend-compose
 以降はService Workerで保存した静的ファイルを再利用します。
 `pnpm build:compose` はビルド成功後に `frontend/public/compose/` を置換します。
 生成物・依存ソース・フォントバイナリ・GradleキャッシュはGit管理対象外です。
-フォントは `frontend-compose/fonts.lock` のURLとSHA-256で固定し、Gradleがビルド時に取得します。
+フォントは `frontend-compose/fonts.lock` のURLとSHA-256で固定し、Gradleがビルド時に取得します。日本語にはブラウザーのNoto Sans CJK JPと同じCFFのRegular/Bold原本を使い、変換版の可変TTFによる字形の差を避けています。CSSの中間weightに対応するRegular/Boldの選択も共通Kotlin側で定義します。
+CSSではGeistの行ボックスを基準に日本語のフォールバック字形を描画しますが、Composeは明示した各フォントのascent/descentを使うため、混在行が1px高くなり日本語のベースラインも下がります。`normalizeComposeFonts` は検証済み原本を変更せず、`build/normalizedFonts/` にCSS用の派生フォントを生成します。Notoのhhea/OS2行メトリクスだけをGeistのUPEM比に合わせ、CFF字形・cmap・横/縦のadvanceテーブルの不変性とSFNTチェックサムを検査します。派生フォントのfamily/fullname/unique名は `ZooC` で識別し、CFF/PostScript名と著作権・OFLは保持します。フォントの生データや生成結果はGitへ同梱しません。
+
+`generateComposeFontCoverage` は固定原本Geist/EmojiのcmapからKotlinの字形カバレッジを生成します。通常の文字はGeistに字形があれば優先し、日本語・絵文字へフォールバックします。VS16・ZWJ・肌色・国旗・キーキャップを含む絵文字列は分割しません。手書きのUnicode範囲で句読点や省略記号を別フォントへ割り当てることを避けています。
+
 生成先は `frontend-compose/build/generated/composeResources/` です。ライセンス文書は配布物に含めます。
 
 ## 実装の配置

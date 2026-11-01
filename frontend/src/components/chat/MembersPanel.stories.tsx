@@ -33,7 +33,7 @@ export const Default: Story = {};
 
 export const AddCandidates: Story = {
   play: playForImplementation(async () => {
-    const input = screen.getByRole("combobox", { name: "メンバーを追加" });
+    const input = await screen.findByRole("combobox", { name: "メンバーを追加" });
     await userEvent.click(input);
     await expect(screen.getByRole("listbox", { name: "メンバー候補" })).toBeVisible();
   }),

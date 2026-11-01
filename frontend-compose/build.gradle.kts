@@ -112,10 +112,19 @@ val downloadComposeFonts by tasks.registering {
         }
     }
 }
+apply(from = "gradle/font-tools.gradle.kts")
+kotlin.sourceSets.named("commonMain") {
+    kotlin.srcDir(tasks.named("generateComposeFontCoverage"))
+}
+
+val normalizedFontOutput = layout.buildDirectory.dir("normalizedFonts")
 val catalogResources by tasks.registering(Sync::class) {
-    dependsOn(downloadComposeFonts)
+    dependsOn(tasks.named("normalizeComposeFonts"))
     from("src/commonMain/composeResources")
-    from(fontOutput) { into("font") }
+    from(normalizedFontOutput) {
+        include(file("fonts.lock").readLines().filter { it.isNotBlank() && !it.startsWith("#") }.map { it.substringBefore('|') })
+        into("font")
+    }
     into(layout.buildDirectory.dir("generated/composeResources"))
 }
 compose.resources {

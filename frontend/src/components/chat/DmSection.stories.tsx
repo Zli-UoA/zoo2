@@ -37,6 +37,7 @@ export const Empty: Story = {
   args: { channels: [] },
   play: playForImplementation(async ({ canvasElement }) => {
     const canvas = within(canvasElement);
+    await canvas.findByRole("button", { name: "ダイレクトメッセージ" });
     await expect(canvas.queryByRole("button", { name: "DMを始める" })).not.toBeInTheDocument();
     await expect(canvas.getByRole("button", { name: "ダイレクトメッセージ" })).toHaveAttribute(
       "aria-expanded",

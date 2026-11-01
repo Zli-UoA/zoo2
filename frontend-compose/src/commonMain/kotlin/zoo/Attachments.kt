@@ -16,6 +16,7 @@ import androidx.compose.ui.layout.*
 import androidx.compose.ui.semantics.*
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import io.ktor.http.*
 import kotlin.io.encoding.Base64
 import kotlin.math.round
@@ -225,7 +226,12 @@ class AttachmentDraft(val file: Row, val name: String, val type: String) {
     var previewJob: Job? = null
 }
 
-class AttachmentDrafts(private val app: Session, val channel: String, parentScope: CoroutineScope) {
+class AttachmentDrafts(
+    private val app: Session,
+    val channel: String,
+    parentScope: CoroutineScope,
+    private val upload: (suspend (Row) -> Row)? = null,
+) {
     private val job = SupervisorJob(parentScope.coroutineContext[Job])
     private val scope = CoroutineScope(parentScope.coroutineContext + job)
     val owner = app.platform.uuid()
@@ -233,11 +239,25 @@ class AttachmentDrafts(private val app: Session, val channel: String, parentScop
     private val owned = mutableMapOf<String, AttachmentDraft>()
     var error by mutableStateOf<String?>(null)
     var enabled = false
+    var acceptFiles = true
+    private var bounds: Row = JsonObject(emptyMap())
+
+    fun updateBounds(left: Float, top: Float, width: Float, height: Float) {
+        val next = obj("left" to left, "top" to top, "width" to width, "height" to height)
+        if (bounds != next) {
+            bounds = next
+            bind()
+        }
+    }
 
     fun bind() =
         app.platform.fileTarget(
             owner,
-            buildJsonObject { put("enabled", enabled) }.toString(),
+            buildJsonObject {
+                    put("enabled", enabled && acceptFiles)
+                    put("bounds", bounds)
+                }
+                .toString(),
             ::add,
         )
 
@@ -250,7 +270,11 @@ class AttachmentDrafts(private val app: Session, val channel: String, parentScop
         candidates.forEach { file ->
             val key = "${file.text("name")}:${file.text("size")}:${file.text("type")}"
             val mime = attachmentType(file.text("name"), file.text("type"))
-            if (!enabled || data.text("origin") == "paste" && (mime == null || !seen.add(key))) {
+            if (
+                !enabled ||
+                    !acceptFiles ||
+                    data.text("origin") == "paste" && (mime == null || !seen.add(key))
+            ) {
                 app.platform.action("fileRelease:${file.text("id")}")
                 return@forEach
             }
@@ -291,31 +315,37 @@ class AttachmentDrafts(private val app: Session, val channel: String, parentScop
                     }
             scope.launch {
                 try {
-                    val presign =
-                        attachmentPayload(
-                            app.api.request(
-                                "/api/attachments/presign",
-                                "POST",
-                                buildJsonObject {
-                                    put("channel_id", channel)
-                                    put("file_name", draft.name)
-                                    put("file_size", file.text("size").toLong())
-                                    put("content_type", mime)
-                                },
+                    if (upload != null) {
+                        val result = upload(file)
+                        if (draft in items) draft.uploaded = result
+                    } else {
+                        val presign =
+                            attachmentPayload(
+                                app.api.request(
+                                    "/api/attachments/presign",
+                                    "POST",
+                                    buildJsonObject {
+                                        put("channel_id", channel)
+                                        put("file_name", draft.name)
+                                        put("file_size", file.text("size").toLong())
+                                        put("content_type", mime)
+                                    },
+                                )
                             )
+                        if (draft !in items) return@launch
+                        require(presign.text("attachment_id").isNotEmpty())
+                        app.platform.invoke(
+                            "filePut",
+                            obj(
+                                    "id" to file.text("id"),
+                                    "url" to presign.text("upload_url"),
+                                    "type" to mime,
+                                )
+                                .toString(),
                         )
-                    if (draft !in items) return@launch
-                    require(presign.text("attachment_id").isNotEmpty())
-                    app.platform.invoke(
-                        "filePut",
-                        obj(
-                                "id" to file.text("id"),
-                                "url" to presign.text("upload_url"),
-                                "type" to mime,
-                            )
-                            .toString(),
-                    )
-                    if (draft in items) draft.uploaded = obj("id" to presign.text("attachment_id"))
+                        if (draft in items)
+                            draft.uploaded = obj("id" to presign.text("attachment_id"))
+                    }
                 } catch (e: CancellationException) {
                     throw e
                 } catch (_: Exception) {
@@ -377,9 +407,10 @@ fun rememberAttachmentDrafts(
     channel: String,
     key: String,
     enabled: Boolean,
+    upload: (suspend (Row) -> Row)? = null,
 ): AttachmentDrafts {
     val scope = rememberCoroutineScope()
-    val drafts = remember(key) { AttachmentDrafts(app, channel, scope) }
+    val drafts = remember(key) { AttachmentDrafts(app, channel, scope, upload) }
     drafts.enabled = enabled && app.dialog == null && app.overlays.isEmpty()
     SideEffect { drafts.bind() }
     DisposableEffect(drafts) { onDispose { drafts.close() } }
@@ -390,12 +421,14 @@ fun rememberAttachmentDrafts(
 fun DraftAttachments(app: Session, drafts: AttachmentDrafts) {
     if (drafts.items.isNotEmpty())
         FlowRow(
+            modifier = Modifier.padding(bottom = 8.dp),
             horizontalArrangement = Arrangement.spacedBy(8.dp),
             verticalArrangement = Arrangement.spacedBy(8.dp),
         ) {
             drafts.items.forEach { draft ->
                 Box(
-                    Modifier.size(80.dp)
+                    (if (draft.type in imageTypes) Modifier.size(80.dp)
+                        else Modifier.width(224.dp).height(80.dp))
                         .background(
                             MaterialTheme.colorScheme.surfaceVariant,
                             RoundedCornerShape(8.dp),
@@ -411,9 +444,26 @@ fun DraftAttachments(app: Session, drafts: AttachmentDrafts) {
                         )
                     }
                     if (draft.type !in imageTypes)
-                        Column(Modifier.padding(8.dp).align(Alignment.Center)) {
-                            Icon("paperclip")
-                            Text(draft.name, small = true, maxLines = 2)
+                        Row(
+                            Modifier.padding(start = 8.dp, end = 36.dp)
+                                .align(Alignment.CenterStart),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Icon("paperclip", modifier = Modifier.size(20.dp))
+                            Column {
+                                Text(
+                                    draft.name,
+                                    small = true,
+                                    maxLines = 1,
+                                    weight = androidx.compose.ui.text.font.FontWeight.Medium,
+                                )
+                                Text(
+                                    attachmentSize(draft.file.text("size")),
+                                    size = 11.sp,
+                                    muted = true,
+                                )
+                            }
                         }
                     if (draft.uploaded == null)
                         Text(
@@ -436,7 +486,9 @@ fun DraftAttachments(app: Session, drafts: AttachmentDrafts) {
     drafts.error?.let {
         Text(
             it,
-            Modifier.semantics { liveRegion = LiveRegionMode.Assertive },
+            Modifier.padding(bottom = 8.dp, start = 4.dp)
+                .then(webControlModifier("alert"))
+                .semantics { liveRegion = LiveRegionMode.Assertive },
             small = true,
             color = MaterialTheme.colorScheme.error,
         )
@@ -623,7 +675,12 @@ private fun AttachmentPreview(app: Session, file: Row, close: () -> Unit) {
             }
         Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
             Text(file.text("file_name"), Modifier.weight(1f), small = true)
-            Button(app.t("attachments.downloadShort")) { app.attachmentLinks.download(file) }
+            Button(
+                app.t("attachments.downloadShort"),
+                accessibleLabel = app.t("attachments.download", "name" to file.text("file_name")),
+            ) {
+                app.attachmentLinks.download(file)
+            }
         }
     }
 }

@@ -48,7 +48,7 @@ export const Pending: Story = {
     },
   },
   play: playForImplementation(async () => {
-    await userEvent.type(screen.getByRole("textbox"), "リリース完了");
+    await userEvent.type(await screen.findByRole("textbox"), "リリース完了");
     await userEvent.click(screen.getByRole("button"));
     await expect(screen.getByRole("button")).toBeDisabled();
   }),
@@ -60,7 +60,7 @@ export const Failed: Story = {
     },
   },
   play: playForImplementation(async () => {
-    await userEvent.type(screen.getByRole("textbox"), "リリース完了");
+    await userEvent.type(await screen.findByRole("textbox"), "リリース完了");
     await userEvent.click(screen.getByRole("button"));
     await expect(await screen.findByRole("alert")).toBeVisible();
     await expect(screen.getByRole("textbox")).toHaveValue("リリース完了");
@@ -82,7 +82,9 @@ export const Card: Story = {
     blocks: [{ type: "card", card: storyDeploymentCard }],
   },
   play: playForImplementation(async () => {
-    await expect(screen.getByRole("link", { name: storyDeploymentCard.title })).toBeVisible();
+    await expect(
+      await screen.findByRole("link", { name: storyDeploymentCard.title }),
+    ).toBeVisible();
     await expect(
       screen.getByRole("link", { name: "3968f64 (fix/github-bot-paused-queue)" }),
     ).toHaveClass("text-link");

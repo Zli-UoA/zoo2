@@ -11,9 +11,14 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.*
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.focus.*
 import androidx.compose.ui.graphics.*
 import androidx.compose.ui.input.key.*
+import androidx.compose.ui.layout.boundsInWindow
+import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalViewConfiguration
 import androidx.compose.ui.semantics.*
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.*
@@ -24,36 +29,64 @@ import kotlinx.serialization.json.*
 import org.jetbrains.compose.resources.decodeToImageBitmap
 
 @Composable
-fun Avatar(user: Row?, modifier: Modifier = Modifier) {
+fun Avatar(
+    user: Row?,
+    modifier: Modifier = Modifier,
+    size: Dp = 32.dp,
+    fallback: String? = null,
+    badge: Boolean = false,
+) {
     val name = user?.let(::author).orEmpty().ifEmpty { "?" }
-    BoxWithConstraints(
-        modifier
-            .size(32.dp)
-            .clip(CircleShape)
-            .background(MaterialTheme.colorScheme.surfaceVariant)
-            .border(1.dp, MaterialTheme.colorScheme.outline, CircleShape),
-        contentAlignment = Alignment.Center,
-    ) {
-        val url = user?.text("avatar_url").orEmpty()
-        if (url.isNotEmpty()) RemoteImage(url, name, Modifier.fillMaxSize())
-        else if (user?.flag("is_bot") == true) Icon("bot", modifier = Modifier.size(16.dp))
-        else
-            Text(
-                name
-                    .trim()
-                    .split(Regex("\\s+"))
-                    .take(2)
-                    .joinToString("") { it.take(1) }
-                    .uppercase(),
-                small = true,
-                size = if (maxWidth > 24.dp) 14.sp else 12.sp,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
+    val colors = MaterialTheme.colorScheme
+    Box(modifier.size(size)) {
+        BoxWithConstraints(
+            Modifier.matchParentSize()
+                .clip(CircleShape)
+                .background(colors.surfaceVariant)
+                .border(1.dp, colors.outline, CircleShape),
+            contentAlignment = Alignment.Center,
+        ) {
+            val url = user?.text("avatar_url").orEmpty()
+            if (url.isNotEmpty()) RemoteImage(url, name, Modifier.fillMaxSize())
+            else if (user?.flag("is_bot") == true) Icon("bot", modifier = Modifier.size(16.dp))
+            else
+                Text(
+                    fallback
+                        ?: name
+                            .trim()
+                            .split(Regex("\\s+"))
+                            .take(2)
+                            .joinToString("") { it.take(1) }
+                            .uppercase(),
+                    small = true,
+                    size = if (maxWidth > 24.dp) 14.sp else 12.sp,
+                    lineHeight = if (maxWidth > 24.dp) 20.sp else 16.sp,
+                    color = colors.onSurfaceVariant,
+                )
+        }
+        if (badge)
+            Box(
+                Modifier.align(Alignment.BottomEnd)
+                    .size(10.dp)
+                    .drawBehind {
+                        drawCircle(
+                            colors.background,
+                            radius = this.size.minDimension / 2 + 2.dp.toPx(),
+                        )
+                    }
+                    .background(colors.primary, CircleShape)
             )
     }
 }
 
 @Composable
-fun RemoteImage(url: String, label: String, modifier: Modifier = Modifier) {
+fun RemoteImage(
+    url: String,
+    label: String,
+    modifier: Modifier = Modifier,
+    onLoaded: (() -> Unit)? = null,
+    onError: (() -> Unit)? = null,
+) {
     val app = LocalApp.current
     var bitmap by remember(url) { mutableStateOf<ImageBitmap?>(null) }
     LaunchedEffect(url) {
@@ -62,11 +95,15 @@ fun RemoteImage(url: String, label: String, modifier: Modifier = Modifier) {
                 url.startsWith("https://") ||
                     url.startsWith("http://") ||
                     (url.startsWith("/") && !url.startsWith("//"))
-            )
+            ) {
                 bitmap = app.image(url).decodeToImageBitmap()
+                onLoaded?.invoke()
+            }
         } catch (e: CancellationException) {
             throw e
-        } catch (_: Exception) {}
+        } catch (_: Exception) {
+            onError?.invoke()
+        }
     }
     bitmap?.let { Image(it, label, modifier) }
         ?: Box(
@@ -85,6 +122,7 @@ fun Chat(
     members: List<Row>,
     wide: Boolean,
     modifier: Modifier = Modifier,
+    membershipOverride: Boolean? = null,
 ) {
     val id = channel.text("id")
     val table = remember(id) { app.repo.messages(id) }
@@ -93,7 +131,7 @@ fun Chat(
     val loading by table.loading.collectAsState()
     val error by table.error.collectAsState()
     val reactions by app.repo.reactions(id).rows.collectAsState()
-    val joined = isMember(members, id, app.config.userId)
+    val joined = membershipOverride ?: isMember(members, id, app.config.userId)
     val canPost = joined && !channel.present("archive_at") && app.env.online
     LaunchedEffect(id, app.env.visible, app.env.online) {
         if (app.env.online && app.env.visible) {
@@ -129,29 +167,6 @@ fun Chat(
         Row(modifier.fillMaxWidth()) {
             if (wide || app.thread == null)
                 Column(Modifier.weight(1f).fillMaxHeight()) {
-                    Row(
-                        Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(12.dp),
-                    ) {
-                        Text(app.t("messages.title"), weight = FontWeight.SemiBold)
-                        Text(
-                            if (loading) "…"
-                            else
-                                app.t(
-                                    "messages.count",
-                                    "count" to visibleMessages(all).size.toString(),
-                                ),
-                            Modifier.background(
-                                    MaterialTheme.colorScheme.surfaceVariant,
-                                    RoundedCornerShape(3.dp),
-                                )
-                                .padding(horizontal = 8.dp, vertical = 2.dp),
-                            small = true,
-                            muted = true,
-                        )
-                    }
-                    HorizontalDivider()
                     MessageList(
                         app,
                         channel,
@@ -161,13 +176,11 @@ fun Chat(
                         null,
                         wide,
                         Modifier.weight(1f),
+                        isLoading = loading,
+                        isError = error != null,
+                        canCompose = canPost,
+                        retry = { table.refresh() },
                     )
-                    if (error != null) {
-                        Text(app.t("messages.loadError"), Modifier.padding(12.dp))
-                        Button(app.t("offline.retry")) { table.refresh() }
-                    }
-                    if (loading && all.isEmpty())
-                        Text(app.t("common.loading"), Modifier.padding(16.dp), muted = true)
                     when {
                         channel.present("archive_at") ->
                             Text(
@@ -175,84 +188,124 @@ fun Chat(
                                 Modifier.padding(16.dp),
                                 muted = true,
                             )
-                        !joined ->
-                            Row(
-                                Modifier.padding(16.dp),
-                                verticalAlignment = Alignment.CenterVertically,
-                            ) {
-                                Text(
-                                    app.t(
-                                        if (channel.flag("is_private")) "channels.privateMessages"
-                                        else "messages.joinToPostDescription"
-                                    ),
-                                    Modifier.weight(1f),
-                                    muted = true,
-                                )
-                                if (!channel.flag("is_private"))
-                                    Button(
-                                        app.t("messages.joinToPost"),
-                                        app.env.online,
-                                        primary = true,
-                                    ) {
-                                        app.run("join:$id") {
-                                            val row =
-                                                obj(
-                                                    "channel_id" to id,
-                                                    "user_id" to app.config.userId,
-                                                )
-                                            app.repo.members.write(
-                                                app.api,
-                                                "/api/channels/$id/join",
-                                                "POST",
-                                                obj(),
-                                                row,
-                                            )
-                                        }
-                                    }
-                            }
+                        !joined -> JoinToPostPrompt(app, channel)
                         else -> Composer(app, id, null, users, canPost)
                     }
                 }
             app.thread?.let { parent ->
                 if (wide) VerticalDivider()
-                Column(
-                    if (wide) Modifier.width(384.dp).fillMaxHeight()
-                    else Modifier.weight(1f).fillMaxHeight()
-                ) {
-                    Row(
-                        Modifier.fillMaxWidth().height(56.dp).padding(horizontal = 16.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        Text(
-                            app.t("threads.title"),
-                            Modifier.weight(1f),
-                            weight = FontWeight.SemiBold,
+                ThreadSurface(
+                    app,
+                    visibleMessages(all, parent).size,
+                    loading,
+                    close = { app.thread = null },
+                    root = {
+                        all.find { it.text("id") == parent && !it.present("deleted_at") }
+                            ?.let {
+                                Message(
+                                    app,
+                                    channel,
+                                    it,
+                                    all,
+                                    reactions,
+                                    users,
+                                    false,
+                                    wide,
+                                    canOpenThread = false,
+                                )
+                            }
+                    },
+                    replies = {
+                        MessageList(
+                            app,
+                            channel,
+                            all,
+                            reactions,
+                            users,
+                            parent,
+                            wide,
+                            Modifier.fillMaxSize(),
+                            isLoading = loading,
+                            isError = error != null,
+                            canCompose = canPost,
+                            retry = { table.refresh() },
                         )
-                        IconButton("x", app.t("threads.close")) { app.thread = null }
-                    }
-                    HorizontalDivider()
-                    all.find { it.text("id") == parent && !it.present("deleted_at") }
-                        ?.let { Message(app, channel, it, all, reactions, users, false, wide) }
-                    MessageList(
-                        app,
-                        channel,
-                        all,
-                        reactions,
-                        users,
-                        parent,
-                        wide,
-                        Modifier.weight(1f),
-                    )
-                    if (joined && !channel.present("archive_at"))
-                        Composer(app, id, parent, users, canPost)
-                }
+                    },
+                    composer =
+                        if (joined && !channel.present("archive_at")) {
+                            { Composer(app, id, parent, users, canPost) }
+                        } else null,
+                )
             }
         }
     }
 }
 
 @Composable
-private fun MessageList(
+private fun JoinToPostPrompt(app: Session, channel: Row) {
+    val id = channel.text("id")
+    val colors = MaterialTheme.colorScheme
+    Column(Modifier.fillMaxWidth()) {
+        HorizontalDivider()
+        Column(
+            Modifier.padding(12.dp)
+                .fillMaxWidth()
+                .background(colors.surfaceVariant.copy(alpha = .3f), RoundedCornerShape(14.dp))
+                .drawBehind {
+                    drawRoundRect(
+                        colors.outline,
+                        androidx.compose.ui.geometry.Offset(.5.dp.toPx(), .5.dp.toPx()),
+                        androidx.compose.ui.geometry.Size(
+                            size.width - 1.dp.toPx(),
+                            size.height - 1.dp.toPx(),
+                        ),
+                        androidx.compose.ui.geometry.CornerRadius(13.5.dp.toPx()),
+                        style =
+                            androidx.compose.ui.graphics.drawscope.Stroke(
+                                1.dp.toPx(),
+                                pathEffect =
+                                    PathEffect.dashPathEffect(
+                                        floatArrayOf(3.dp.toPx(), 3.dp.toPx())
+                                    ),
+                            ),
+                    )
+                }
+                .padding(17.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+        ) {
+            Text(
+                app.t(
+                    if (channel.flag("is_private")) "channels.privateMessages"
+                    else "messages.joinToPostDescription"
+                ),
+                muted = true,
+                textAlign = androidx.compose.ui.text.style.TextAlign.Center,
+            )
+            if (!channel.flag("is_private"))
+                Button(
+                    app.t("messages.joinToPost"),
+                    app.env.online && "join:$id" !in app.pending,
+                    primary = true,
+                    size = "sm",
+                ) {
+                    app.run("join:$id") {
+                        val row = obj("channel_id" to id, "user_id" to app.config.userId)
+                        app.repo.members.write(
+                            app.api,
+                            "/api/channels/$id/join",
+                            "POST",
+                            obj(),
+                            row,
+                        )
+                    }
+                }
+        }
+    }
+}
+
+@Composable
+internal fun MessageList(
     app: Session,
     channel: Row,
     all: List<Row>,
@@ -261,8 +314,42 @@ private fun MessageList(
     parent: String?,
     wide: Boolean,
     modifier: Modifier,
+    isLoading: Boolean = false,
+    isError: Boolean = false,
+    canCompose: Boolean = true,
+    editingId: String? = null,
+    editingText: String? = null,
+    canReact: Boolean = true,
+    retry: (() -> Unit)? = null,
+    readState: Boolean = true,
+    callbacks: ((Row) -> MessageCallbacks)? = null,
 ) {
     val messages = visibleMessages(all, parent)
+    var readBoundary by remember(channel.text("id")) { mutableStateOf<Long?>(null) }
+    var readReady by remember(channel.text("id")) { mutableStateOf(false) }
+    LaunchedEffect(channel.text("id"), readState, parent) {
+        if (readState && parent == null) {
+            try {
+                val initial =
+                    app.api.request("/api/channels/${channel.text("id")}/read-state").jsonObject
+                readBoundary = timestampMillis(initial.text("last_read_at")) ?: 0L
+            } catch (e: CancellationException) {
+                throw e
+            } catch (_: Exception) {}
+        }
+        readReady = true
+    }
+    val firstUnreadId =
+        if (readState && parent == null)
+            readBoundary?.let { boundary ->
+                messages
+                    .firstOrNull {
+                        it.text("user_id") != app.config.userId &&
+                            (timestampMillis(it.text("created_at")) ?: 0L) > boundary
+                    }
+                    ?.text("id")
+            }
+        else null
     val state = rememberLazyListState()
     LaunchedEffect(app.query["message"], messages.size) {
         val index = messages.indexOfFirst { it.text("id") == app.query["message"] }
@@ -303,8 +390,15 @@ private fun MessageList(
         snapshotFlow { state.layoutInfo.visibleItemsInfo.map { it.key to it.size } }
             .collect { if (pinned && !state.isScrollInProgress && state.canScrollForward) bottom() }
     }
-    LaunchedEffect(channel.text("id"), parent, app.env.visible, app.env.online, all.size) {
-        if (parent == null && app.env.visible && app.env.online) {
+    LaunchedEffect(
+        channel.text("id"),
+        parent,
+        app.env.visible,
+        app.env.online,
+        all.size,
+        readReady,
+    ) {
+        if (readReady && readState && parent == null && app.env.visible && app.env.online) {
             var lastRead: String? = null
             snapshotFlow { state.layoutInfo.visibleItemsInfo.map { it.key.toString() } }
                 .collect { keys ->
@@ -327,69 +421,125 @@ private fun MessageList(
         }
     }
     Box(modifier.fillMaxWidth()) {
-        LazyColumn(
-            Modifier.fillMaxSize(),
-            state = state,
-            contentPadding = PaddingValues(vertical = 12.dp),
-        ) {
-            if (messages.isEmpty())
-                item {
-                    Box(Modifier.fillParentMaxSize(), contentAlignment = Alignment.Center) {
-                        Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                            Text(app.t("messages.empty"), muted = true)
-                            Text(app.t("messages.first"), small = true, muted = true)
+        if (parent != null && messages.isEmpty()) {
+            Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text(
+                    app.t(
+                        if (isLoading) "threads.repliesLoading"
+                        else if (isError) "threads.loadError" else "threads.empty"
+                    ),
+                    size = 12.sp,
+                    muted = !isError,
+                    color =
+                        if (isError) MaterialTheme.colorScheme.error
+                        else MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                if (isError && retry != null)
+                    Button(app.t("offline.retry"), variant = "outline", size = "sm", click = retry)
+            }
+        } else if (isLoading && messages.isEmpty()) MessageLoadingSkeleton()
+        else if (isError && messages.isEmpty())
+            MessageEmptyState(app, "messages.loadError", "messages.retryHelp", true, retry)
+        else
+            LazyColumn(
+                Modifier.fillMaxSize(),
+                state = state,
+                contentPadding =
+                    PaddingValues(horizontal = 8.dp, vertical = if (parent != null) 8.dp else 12.dp),
+            ) {
+                if (messages.isEmpty())
+                    item {
+                        Box(Modifier.fillParentMaxSize(), contentAlignment = Alignment.Center) {
+                            Column(
+                                horizontalAlignment = Alignment.CenterHorizontally,
+                                verticalArrangement = Arrangement.spacedBy(8.dp),
+                            ) {
+                                Text(app.t("messages.empty"), weight = FontWeight.Medium)
+                                if (canCompose)
+                                    Text(app.t("messages.first"), small = true, muted = true)
+                            }
                         }
                     }
-                }
-            messages.forEachIndexed { index, row ->
-                val previous = messages.getOrNull(index - 1)
-                item("date:${row.text("id")}") {
-                    if (
-                        previous == null ||
-                            app.platform.day(previous.text("created_at")) !=
-                                app.platform.day(row.text("created_at"))
-                    )
-                        Row(
-                            Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 8.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(12.dp),
-                        ) {
-                            HorizontalDivider(Modifier.weight(1f))
-                            Box(
-                                Modifier.height(21.dp)
-                                    .border(
-                                        1.dp,
-                                        MaterialTheme.colorScheme.outline,
-                                        RoundedCornerShape(12.dp),
-                                    )
-                                    .padding(horizontal = 10.dp),
-                                contentAlignment = Alignment.Center,
+                messages.forEachIndexed { index, row ->
+                    val previous = messages.getOrNull(index - 1)
+                    item("date:${row.text("id")}") {
+                        if (
+                            parent == null &&
+                                (previous == null ||
+                                    app.platform.day(previous.text("created_at")) !=
+                                        app.platform.day(row.text("created_at")))
+                        )
+                            Row(
+                                Modifier.fillMaxWidth().padding(vertical = 8.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(12.dp),
                             ) {
+                                HorizontalDivider(Modifier.weight(1f))
+                                Box(
+                                    Modifier.height(23.dp)
+                                        .border(
+                                            1.dp,
+                                            MaterialTheme.colorScheme.outline,
+                                            RoundedCornerShape(12.dp),
+                                        )
+                                        .padding(horizontal = 10.dp),
+                                    contentAlignment = Alignment.Center,
+                                ) {
+                                    Text(
+                                        app.dayLabel(row.text("created_at")),
+                                        small = true,
+                                        muted = true,
+                                        size = 11.sp,
+                                        weight = FontWeight.Medium,
+                                    )
+                                }
+                                HorizontalDivider(Modifier.weight(1f))
+                            }
+                    }
+                    item(row.text("id")) {
+                        if (row.text("id") == firstUnreadId)
+                            Row(
+                                Modifier.fillMaxWidth()
+                                    .then(webControlModifier("separator"))
+                                    .semantics { contentDescription = app.t("messages.new") }
+                                    .padding(vertical = 8.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            ) {
+                                HorizontalDivider(
+                                    Modifier.weight(1f),
+                                    color = MaterialTheme.colorScheme.error,
+                                )
                                 Text(
-                                    app.dayLabel(row.text("created_at")),
+                                    app.t("messages.new"),
                                     small = true,
-                                    muted = true,
-                                    size = 11.sp,
-                                    weight = FontWeight.Medium,
+                                    weight = FontWeight.SemiBold,
+                                    color = MaterialTheme.colorScheme.error,
+                                )
+                                HorizontalDivider(
+                                    Modifier.width(24.dp),
+                                    color = MaterialTheme.colorScheme.error,
                                 )
                             }
-                            HorizontalDivider(Modifier.weight(1f))
-                        }
-                }
-                item(row.text("id")) {
-                    Message(
-                        app,
-                        channel,
-                        row,
-                        all,
-                        reactions,
-                        users,
-                        groupedWith(previous, row),
-                        wide,
-                    )
+                        Message(
+                            app,
+                            channel,
+                            row,
+                            all,
+                            reactions,
+                            users,
+                            row.text("id") != firstUnreadId && groupedWith(previous, row),
+                            wide,
+                            initialEditing = editingId == row.text("id"),
+                            initialEditingText = editingText.takeIf { editingId == row.text("id") },
+                            canReact = canReact,
+                            callbacks = callbacks?.invoke(row),
+                            groupEnd =
+                                messages.getOrNull(index + 1)?.let { !groupedWith(row, it) } ?: true,
+                        )
+                    }
                 }
             }
-        }
         if (newBelow)
             Button(
                 app.t("messages.new"),
@@ -401,6 +551,17 @@ private fun MessageList(
     }
 }
 
+class MessageCallbacks(
+    val startEdit: (() -> Unit)? = null,
+    val cancelEdit: (() -> Unit)? = null,
+    val saveEdit: (() -> Unit)? = null,
+    val requestDelete: (() -> Unit)? = null,
+    val openThread: (() -> Unit)? = null,
+    val pickReaction: (() -> Unit)? = null,
+    val reaction: ((String) -> Unit)? = null,
+    val changeText: ((String) -> Unit)? = null,
+)
+
 @Composable
 internal fun Message(
     app: Session,
@@ -411,193 +572,452 @@ internal fun Message(
     users: List<Row>,
     grouped: Boolean,
     wide: Boolean,
+    initialEditing: Boolean = false,
+    initialEditingText: String? = null,
+    groupEnd: Boolean = true,
+    canReact: Boolean = true,
+    callbacks: MessageCallbacks? = null,
+    ownOverride: Boolean? = null,
+    canOpenThread: Boolean = true,
 ) {
     val id = message.text("id")
-    val user = users.find { it.text("id") == message.text("user_id") }
-    val mine = message.text("user_id") == app.config.userId
+    val user =
+        JsonObject(
+            users.find { it.text("id") == message.text("user_id") }.orEmpty() +
+                message.filterKeys {
+                    it in setOf("display_name", "user_name", "avatar_url", "is_bot")
+                }
+        )
+    val mine = ownOverride ?: (message.text("user_id") == app.config.userId)
     val editable = app.env.online && !channel.present("archive_at")
-    var editing by remember(id) { mutableStateOf(false) }
-    var content by remember(message.text("content")) { mutableStateOf(message.text("content")) }
+    var editing by remember(id, initialEditing) { mutableStateOf(initialEditing) }
+    var content by
+        remember(message.text("content"), initialEditingText) {
+            mutableStateOf(initialEditingText ?: message.text("content"))
+        }
     var deleting by remember(id) { mutableStateOf(false) }
     var picker by remember(id) { mutableStateOf(false) }
     val interaction = remember { MutableInteractionSource() }
     val hovered by interaction.collectIsHoveredAsState()
     var focused by remember { mutableStateOf(false) }
-    Box(Modifier.semantics { testTag = "message:$id" }.fillMaxWidth().hoverable(interaction)) {
-        Row(
-            Modifier.fillMaxWidth()
-                .padding(horizontal = 20.dp, vertical = if (grouped) 0.dp else 6.dp),
-            horizontalArrangement = Arrangement.spacedBy(12.dp),
+    var menuOpen by remember(id) { mutableStateOf(false) }
+    val gestureArbitration = remember(id) { MessageGestureArbitration() }
+    val viewConfiguration = LocalViewConfiguration.current
+    val selectionConfiguration =
+        remember(viewConfiguration, gestureArbitration) {
+            gestureArbitration.selectionConfiguration(viewConfiguration)
+        }
+    val openThread = {
+        if (callbacks?.openThread != null) callbacks.openThread.invoke()
+        else app.openThread(id, wide)
+    }
+    val startEdit = {
+        if (callbacks?.startEdit != null) callbacks.startEdit.invoke() else editing = true
+    }
+    val requestDelete = {
+        if (callbacks?.requestDelete != null) callbacks.requestDelete.invoke() else deleting = true
+    }
+    val pickReaction = {
+        if (callbacks?.pickReaction != null) callbacks.pickReaction.invoke() else picker = true
+    }
+    val showThread =
+        canOpenThread &&
+            message.text("parent_id").isEmpty() &&
+            (callbacks == null || callbacks.openThread != null)
+    val canDelete =
+        mine ||
+            (callbacks == null &&
+                !channel.flag("is_dm") &&
+                canManage(channel, app.config.userId, app.config.isAdmin))
+    CompositionLocalProvider(LocalViewConfiguration provides selectionConfiguration) {
+        Box(
+            Modifier.messageHold(!editing, gestureArbitration) { menuOpen = true }
+                .semantics { testTag = "message:$id" }
+                .fillMaxWidth()
+                .background(
+                    if (hovered || focused)
+                        MaterialTheme.colorScheme.surfaceVariant.copy(alpha = .6f)
+                    else Color.Transparent,
+                    RoundedCornerShape(8.dp),
+                )
+                .hoverable(interaction)
         ) {
-            if (grouped) Spacer(Modifier.width(32.dp))
-            else Avatar(user, Modifier.padding(top = 2.dp))
-            Column(Modifier.weight(1f)) {
-                if (!grouped)
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+            Row(
+                Modifier.fillMaxWidth()
+                    .padding(
+                        start = 12.dp,
+                        end = 12.dp,
+                        top = if (grouped) 0.dp else 6.dp,
+                        bottom = if (groupEnd) 6.dp else 0.dp,
+                    ),
+                horizontalArrangement = Arrangement.spacedBy(12.dp),
+            ) {
+                if (grouped)
+                    Box(
+                        Modifier.width(32.dp).height(22.75.dp).graphicsLayer {
+                            alpha = if (hovered || focused || menuOpen) 1f else 0f
+                        },
+                        contentAlignment = Alignment.CenterEnd,
                     ) {
-                        Text(
-                            user?.let(::author) ?: message.text("user_id"),
-                            weight = FontWeight.SemiBold,
-                        )
-                        Text(
-                            app.platform.time(message.text("created_at")),
-                            small = true,
-                            muted = true,
-                            size = 11.sp,
-                        )
-                        if (message.present("app_id")) Text("APP", small = true, muted = true)
-                    }
-                if (editing) {
-                    Field(content, app.t("messages.editLabel"), singleLine = false) { content = it }
-                    Row {
-                        Button(app.t("common.cancelShort")) { editing = false }
-                        Button(
-                            app.t("common.save"),
-                            content.isNotBlank() && editable && "edit:$id" !in app.pending,
-                            primary = true,
-                        ) {
-                            app.run("edit:$id") {
-                                val row =
-                                    JsonObject(message + ("content" to JsonPrimitive(content)))
-                                app.repo
-                                    .messages(channel.text("id"))
-                                    .write(
-                                        app.api,
-                                        "/api/messages/$id",
-                                        "PATCH",
-                                        obj("content" to content),
-                                        row,
-                                    )
-                                editing = false
-                            }
+                        Hint(app.platform.fullTimestamp(message.text("created_at"))) { hintModifier
+                            ->
+                            Text(
+                                app.platform.time(message.text("created_at")),
+                                hintModifier,
+                                size = 10.sp,
+                                muted = true,
+                            )
                         }
                     }
-                } else {
-                    val cards = messageCards(message["card"])
-                    val blockCards =
-                        parseBlocks(message["app_blocks"]).any { it.text("type") == "card" }
-                    if (!blockCards) {
-                        if (cards != null) cards.forEach { MessageCard(it) }
-                        else {
-                            if (message.text("content").isNotEmpty()) {
-                                RichText(message.text("content"), users)
-                                LinkPreviews(app, message.text("content"))
-                            }
-                        }
-                    }
-                    MessageAppContent(app, message)
-                    MessageAttachments(
-                        app,
-                        LocalAttachments.current
-                            .filter { it.text("message_id") == id }
-                            .sortedBy { it.text("created_at") },
-                    )
-                }
-                val groups =
-                    reactions
-                        .filter { it.text("message_id") == id }
-                        .groupBy { reactionKey(it.text("emoji")) }
-                Row(
-                    horizontalArrangement = Arrangement.spacedBy(4.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    groups.forEach { (emoji, rows) ->
-                        ReactionChip(app, emoji, rows, users, editable, wide) {
-                            toggleReaction(app, channel.text("id"), id, emoji, rows)
-                        }
-                    }
-                    val replies =
-                        all.count { it.text("parent_id") == id && !it.present("deleted_at") }
-                    if (message.text("parent_id").isEmpty() && replies > 0)
+                else Avatar(user, Modifier.padding(top = 2.dp))
+                Column(Modifier.weight(1f)) {
+                    if (!grouped)
                         Row(
-                            Modifier.height(22.dp)
-                                .clip(RoundedCornerShape(12.dp))
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        ) {
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                            ) {
+                                val identity =
+                                    if (message.flag("is_bot") && message.present("app_id"))
+                                        Modifier.then(webControlModifier("button")).clickable(
+                                            role = Role.Button
+                                        ) {
+                                            app.openApp(message.text("app_id"))
+                                        }
+                                    else Modifier
+                                Text(
+                                    author(user).ifEmpty { message.text("user_id") },
+                                    identity,
+                                    weight = FontWeight.SemiBold,
+                                )
+                                if (message.flag("is_bot"))
+                                    Text(
+                                        "APP",
+                                        Modifier.background(
+                                                MaterialTheme.colorScheme.surfaceVariant,
+                                                RoundedCornerShape(4.dp),
+                                            )
+                                            .padding(horizontal = 4.dp, vertical = 2.dp),
+                                        size = 9.sp,
+                                        weight = FontWeight.SemiBold,
+                                        muted = true,
+                                    )
+                            }
+                            Hint(app.platform.fullTimestamp(message.text("created_at"))) {
+                                hintModifier ->
+                                Text(
+                                    app.platform.time(message.text("created_at")),
+                                    hintModifier,
+                                    small = true,
+                                    muted = true,
+                                    size = 11.sp,
+                                )
+                            }
+                        }
+                    if (editing) {
+                        Column(
+                            Modifier.padding(top = 4.dp)
                                 .border(
                                     1.dp,
-                                    MaterialTheme.colorScheme.secondary.copy(alpha = .3f),
-                                    RoundedCornerShape(12.dp),
+                                    MaterialTheme.colorScheme.outline,
+                                    RoundedCornerShape(8.dp),
                                 )
                                 .background(
-                                    MaterialTheme.colorScheme.secondaryContainer.copy(alpha = .5f)
+                                    MaterialTheme.colorScheme.background,
+                                    RoundedCornerShape(8.dp),
                                 )
-                                .clickable(role = Role.Button) { app.openThread(id, wide) }
-                                .semantics {
-                                    contentDescription =
-                                        app.t(
-                                            "threads.openWithCount",
-                                            "count" to replies.toString(),
-                                        )
-                                }
-                                .padding(horizontal = 8.dp, vertical = 2.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(4.dp),
+                                .padding(8.dp),
+                            verticalArrangement = Arrangement.spacedBy(8.dp),
                         ) {
-                            Icon(
-                                "message-square-text",
-                                modifier = Modifier.size(14.dp),
-                                color = MaterialTheme.colorScheme.onSecondaryContainer,
-                            )
-                            Text(
-                                app.t("threads.replyCount", "count" to replies.toString()),
-                                small = true,
-                                color = MaterialTheme.colorScheme.onSecondaryContainer,
-                            )
+                            Field(
+                                content,
+                                app.t("messages.editLabel"),
+                                modifier =
+                                    Modifier.onPreviewKeyEvent {
+                                        if (
+                                            it.type == KeyEventType.KeyDown && it.key == Key.Escape
+                                        ) {
+                                            if (callbacks?.cancelEdit != null)
+                                                callbacks.cancelEdit.invoke()
+                                            else editing = false
+                                            true
+                                        } else false
+                                    },
+                                singleLine = false,
+                                showLabel = false,
+                                autoFocus = true,
+                                minimumHeight = 36.dp,
+                            ) {
+                                if (callbacks?.changeText != null) callbacks.changeText.invoke(it)
+                                else content = it
+                            }
+                            Row(
+                                Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.End),
+                            ) {
+                                Button(
+                                    app.t("common.cancelShort"),
+                                    size = "sm",
+                                    variant = "ghost",
+                                ) {
+                                    if (callbacks?.cancelEdit != null) callbacks.cancelEdit.invoke()
+                                    else editing = false
+                                }
+                                Button(
+                                    app.t("common.save"),
+                                    content.isNotBlank() && editable && "edit:$id" !in app.pending,
+                                    primary = true,
+                                    size = "sm",
+                                ) {
+                                    if (callbacks?.saveEdit != null) callbacks.saveEdit.invoke()
+                                    else
+                                        app.run("edit:$id") {
+                                            val row =
+                                                JsonObject(
+                                                    message + ("content" to JsonPrimitive(content))
+                                                )
+                                            app.repo
+                                                .messages(channel.text("id"))
+                                                .write(
+                                                    app.api,
+                                                    "/api/messages/$id",
+                                                    "PATCH",
+                                                    obj("content" to content),
+                                                    row,
+                                                )
+                                            editing = false
+                                        }
+                                }
+                            }
                         }
+                    } else {
+                        val cards = messageCards(message["card"])
+                        val blockCards =
+                            parseBlocks(message["app_blocks"]).any { it.text("type") == "card" }
+                        if (!blockCards) {
+                            if (cards != null) cards.forEach { MessageCard(it) }
+                            else {
+                                if (message.text("content").isNotEmpty()) {
+                                    CompositionLocalProvider(
+                                        LocalMfmStyle provides
+                                            androidx.compose.ui.text.TextStyle(
+                                                lineHeight = 22.75.sp
+                                            )
+                                    ) {
+                                        RichText(
+                                            message.text("content"),
+                                            users,
+                                            editedAt =
+                                                message.text("updated_at").takeIf {
+                                                    it.isNotEmpty()
+                                                },
+                                        )
+                                    }
+                                    LinkPreviews(app, message.text("content"))
+                                }
+                            }
+                        }
+                        MessageAppContent(app, message)
+                        MessageAttachments(
+                            app,
+                            LocalAttachments.current
+                                .filter { it.text("message_id") == id }
+                                .sortedBy { it.text("created_at") },
+                        )
+                    }
+                    if (!editing) {
+                        val replies =
+                            all.count { it.text("parent_id") == id && !it.present("deleted_at") }
+                        if (showThread && replies > 0)
+                            Row(
+                                Modifier.padding(top = 4.dp)
+                                    .height(22.dp)
+                                    .clip(RoundedCornerShape(12.dp))
+                                    .border(
+                                        1.dp,
+                                        MaterialTheme.colorScheme.secondary.copy(alpha = .3f),
+                                        RoundedCornerShape(12.dp),
+                                    )
+                                    .background(
+                                        MaterialTheme.colorScheme.secondaryContainer.copy(
+                                            alpha = .5f
+                                        )
+                                    )
+                                    .clickable(role = Role.Button) {
+                                        if (callbacks?.openThread != null)
+                                            callbacks.openThread.invoke()
+                                        else app.openThread(id, wide)
+                                    }
+                                    .semantics {
+                                        contentDescription =
+                                            app.t(
+                                                "threads.openWithCount",
+                                                "count" to replies.toString(),
+                                            )
+                                    }
+                                    .padding(horizontal = 8.dp, vertical = 2.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(4.dp),
+                            ) {
+                                Icon(
+                                    "message-square-text",
+                                    modifier = Modifier.size(14.dp),
+                                    color = MaterialTheme.colorScheme.onSecondaryContainer,
+                                )
+                                Text(
+                                    app.t("threads.replyCount", "count" to replies.toString()),
+                                    small = true,
+                                    color = MaterialTheme.colorScheme.onSecondaryContainer,
+                                )
+                            }
+                        val groups =
+                            reactions
+                                .filter { it.text("message_id") == id }
+                                .groupBy { reactionKey(it.text("emoji")) }
+                        if (groups.isNotEmpty())
+                            FlowRow(
+                                Modifier.padding(vertical = 4.dp)
+                                    .then(
+                                        webControlModifier(
+                                            "group",
+                                            attributes =
+                                                mapOf("aria-label" to app.t("reactions.groupLabel")),
+                                        )
+                                    ),
+                                horizontalArrangement = Arrangement.spacedBy(4.dp),
+                                verticalArrangement = Arrangement.spacedBy(4.dp),
+                            ) {
+                                groups.forEach { (emoji, rows) ->
+                                    ReactionChip(
+                                        app,
+                                        emoji,
+                                        rows,
+                                        users,
+                                        editable && canReact,
+                                        wide,
+                                    ) {
+                                        if (callbacks?.reaction != null)
+                                            callbacks.reaction.invoke(emoji)
+                                        else
+                                            toggleReaction(app, channel.text("id"), id, emoji, rows)
+                                    }
+                                }
+                                IconButton(
+                                    "smile-plus",
+                                    app.t("reactions.add"),
+                                    editable && canReact,
+                                    size = 24.dp,
+                                    click = pickReaction,
+                                )
+                            }
+                    }
                 }
             }
-        }
-        Row(
-            Modifier.align(Alignment.TopEnd)
-                .padding(end = 14.dp)
-                .graphicsLayer { alpha = if (hovered || focused || app.env.touch) 1f else 0f }
-                .onFocusChanged { focused = it.hasFocus }
-                .focusGroup()
-                .background(MaterialTheme.colorScheme.background)
-                .border(1.dp, MaterialTheme.colorScheme.outline, RoundedCornerShape(8.dp))
-        ) {
-            IconButton("smile-plus", app.t("reactions.add"), editable, size = 24.dp) {
-                picker = true
-            }
-            Menu(
-                app.t("messages.more"),
-                buildList {
-                    if (message.text("parent_id").isEmpty())
-                        add(
-                            MenuAction("message-square-text", app.t("threads.open")) {
-                                app.openThread(id, wide)
-                            }
+            if (!editing)
+                Row(
+                    Modifier.align(Alignment.TopEnd)
+                        .padding(end = 6.dp)
+                        .graphicsLayer { alpha = if (hovered || focused || menuOpen) 1f else 0f }
+                        .onFocusChanged { focused = it.hasFocus }
+                        .focusGroup()
+                        .background(MaterialTheme.colorScheme.background, RoundedCornerShape(8.dp))
+                        .border(1.dp, MaterialTheme.colorScheme.outline, RoundedCornerShape(8.dp))
+                        .padding(2.dp),
+                    horizontalArrangement = Arrangement.spacedBy(2.dp),
+                ) {
+                    if (!app.env.touch) {
+                        IconButton(
+                            "smile-plus",
+                            app.t("reactions.add"),
+                            editable && canReact,
+                            size = 24.dp,
+                            click = pickReaction,
                         )
-                    if (mine)
-                        add(
-                            MenuAction("pencil", app.t("messages.edit"), editable) {
-                                editing = true
-                            }
-                        )
-                    if (
-                        mine ||
-                            !channel.flag("is_dm") &&
-                                canManage(channel, app.config.userId, app.config.isAdmin)
+                        if (showThread)
+                            IconButton(
+                                "message-square-plus",
+                                app.t("threads.open"),
+                                size = 24.dp,
+                                click = openThread,
+                            )
+                        if (mine)
+                            IconButton(
+                                "pencil",
+                                app.t("messages.edit"),
+                                size = 24.dp,
+                                click = startEdit,
+                            )
+                        if (canDelete)
+                            IconButton(
+                                "trash-2",
+                                app.t("messages.delete"),
+                                size = 24.dp,
+                                click = requestDelete,
+                            )
+                    }
+                    Menu(
+                        app.t("messages.more"),
+                        buildList {
+                            add(
+                                MenuAction("copy", app.t("messages.copyRaw")) {
+                                    app.run {
+                                        try {
+                                            app.platform.invoke("copy", message.text("content"))
+                                            app.showToast(
+                                                app.t("messages.copied"),
+                                                ToastKind.Success,
+                                            )
+                                        } catch (e: CancellationException) {
+                                            throw e
+                                        } catch (_: Exception) {
+                                            app.toast = app.t("messages.copyFailed")
+                                        }
+                                    }
+                                }
+                            )
+                            add(
+                                MenuAction("bot", app.t("apps.messageActions")) {
+                                    app.target = id
+                                    app.dialog = "apps"
+                                }
+                            )
+                            add(
+                                MenuAction(
+                                    "smile-plus",
+                                    app.t("reactions.add"),
+                                    editable && canReact,
+                                    pickReaction,
+                                )
+                            )
+                            if (showThread)
+                                add(
+                                    MenuAction(
+                                        "message-square-plus",
+                                        app.t("threads.open"),
+                                        action = openThread,
+                                    )
+                                )
+                            if (mine)
+                                add(
+                                    MenuAction("pencil", app.t("messages.edit"), action = startEdit)
+                                )
+                            if (canDelete)
+                                add(
+                                    MenuAction(
+                                        "trash-2",
+                                        app.t("messages.delete"),
+                                        action = requestDelete,
+                                    )
+                                )
+                        },
+                        size = 24.dp,
+                        controlledOpen = menuOpen,
+                        onOpenChange = { menuOpen = it },
                     )
-                        add(
-                            MenuAction("trash-2", app.t("messages.delete"), editable) {
-                                deleting = true
-                            }
-                        )
-                    add(
-                        MenuAction("copy", app.t("apps.copy")) {
-                            app.run { app.platform.invoke("copy", message.text("content")) }
-                        }
-                    )
-                    add(
-                        MenuAction("bot", app.t("apps.messageActions"), app.env.online) {
-                            app.target = id
-                            app.dialog = "apps"
-                        }
-                    )
-                },
-            )
+                }
         }
     }
     if (deleting)
@@ -670,34 +1090,96 @@ private fun toggleReaction(
 }
 
 @Composable
+fun TypingStatus(app: Session, names: List<String>) {
+    Box(
+        Modifier.fillMaxWidth()
+            .heightIn(min = 24.dp)
+            .padding(horizontal = 16.dp)
+            .then(
+                webControlModifier(
+                    "status",
+                    attributes = mapOf("aria-live" to "polite", "aria-atomic" to "true"),
+                )
+            )
+    ) {
+        if (names.isNotEmpty())
+            Text(
+                app.t(
+                    "messages.typing",
+                    "names" to names.joinToString(app.t("messages.typingSeparator")),
+                ),
+                small = true,
+                muted = true,
+            )
+    }
+}
+
+@Composable
 internal fun Composer(
     app: Session,
     channel: String,
     parent: String?,
     users: List<Row>,
     enabled: Boolean,
+    initialValue: String = "",
+    sendMessage: (suspend (String, String?, List<String>) -> Boolean)? = null,
+    uploadAttachment: (suspend (Row) -> Row)? = null,
+    allowAttachments: Boolean = true,
+    showTyping: Boolean = true,
+    placeholder: String? = null,
+    ariaLabel: String? = null,
+    commandOptions: List<Row>? = null,
+    mentionMemberIds: Set<String>? = null,
+    onTyping: ((Boolean) -> Unit)? = null,
+    onRequestCommands: (() -> Unit)? = null,
 ) {
     val key = "draft:$channel:${parent.orEmpty()}"
-    var value by remember(key) { mutableStateOf("") }
+    var value by remember(key, initialValue) { mutableStateOf(initialValue) }
     var picker by remember(key) { mutableStateOf(false) }
     var composing by remember(key) { mutableStateOf(false) }
     var caret by remember(key) { mutableStateOf(0) }
     var selection by remember(key) { mutableStateOf<Int?>(null) }
     var activeOption by remember(key) { mutableStateOf(0) }
     var dismissed by remember(key) { mutableStateOf(false) }
+    var typingActive by remember(key) { mutableStateOf(false) }
+    val composerFocusRequester = remember { FocusRequester() }
+    var focusReturn by remember(key) { mutableIntStateOf(0) }
+    fun updateTyping(active: Boolean) {
+        typingActive = active
+        onTyping?.invoke(active)
+    }
+    LaunchedEffect(focusReturn) {
+        if (focusReturn > 0 && enabled) {
+            withFrameNanos {}
+            composerFocusRequester.requestFocus()
+        }
+    }
     val memberships by app.repo.members.rows.collectAsState()
     val channels by app.repo.channels.rows.collectAsState()
     var commands by remember(channel) { mutableStateOf<List<Row>>(emptyList()) }
-    val attachments = rememberAttachmentDrafts(app, channel, key, enabled)
+    val attachments = rememberAttachmentDrafts(app, channel, key, enabled, uploadAttachment)
+    attachments.acceptFiles = allowAttachments
+    val density = LocalDensity.current.density
     var sendError by remember(key) { mutableStateOf<String?>(null) }
     var selectedCommand by remember(key) { mutableStateOf<CompletionOption?>(null) }
-    LaunchedEffect(channel, app.env.online, value.startsWith("/")) {
-        if (app.env.online && value.startsWith("/"))
+    LaunchedEffect(
+        channel,
+        app.env.online,
+        enabled,
+        value.startsWith("/"),
+        commandOptions,
+        onRequestCommands,
+    ) {
+        if (app.env.online && enabled && value.startsWith("/"))
             try {
-                commands =
-                    app.api
-                        .request("/api/apps/commands?channel_id=${channel.encodeURLParameter()}")
-                        .rows()
+                if (onRequestCommands != null) onRequestCommands()
+                else if (commandOptions == null)
+                    commands =
+                        app.api
+                            .request(
+                                "/api/apps/commands?channel_id=${channel.encodeURLParameter()}"
+                            )
+                            .rows()
             } catch (e: CancellationException) {
                 throw e
             } catch (_: Exception) {}
@@ -707,12 +1189,13 @@ internal fun Composer(
         completionOptions(
             range,
             users,
-            memberships
-                .filter { it.text("channel_id") == channel }
-                .map { it.text("user_id") }
-                .toSet(),
+            mentionMemberIds
+                ?: memberships
+                    .filter { it.text("channel_id") == channel }
+                    .map { it.text("user_id") }
+                    .toSet(),
             channels,
-            commands,
+            commandOptions ?: commands,
         )
     fun choose(option: CompletionOption) {
         if (range != null) {
@@ -722,6 +1205,8 @@ internal fun Composer(
             caret = position
             selection = position
             dismissed = true
+            updateTyping(true)
+            focusReturn++
         }
     }
 
@@ -738,8 +1223,8 @@ internal fun Composer(
         delay(250)
         app.platform.invoke("storageWrite", obj("key" to key, "value" to value).toString())
     }
-    LaunchedEffect(value.isNotEmpty(), enabled, app.env.visible) {
-        if (value.isNotEmpty() && enabled && app.env.visible) {
+    LaunchedEffect(typingActive, enabled, app.env.visible, onTyping) {
+        if (onTyping == null && typingActive && enabled && app.env.visible) {
             try {
                 while (isActive) {
                     try {
@@ -799,6 +1284,7 @@ internal fun Composer(
         if (attachments.canSend(value) && key !in app.pending && !composing) {
             val sent = value
             val commandAppId = selectedCommand?.appId
+            updateTyping(false)
             val drafts = attachments.items.toList()
             val attachmentIds = drafts.mapNotNull { it.uploaded?.text("id") }
             attachments.items.clear()
@@ -807,8 +1293,18 @@ internal fun Composer(
             value = ""
             caret = 0
             app.run(key) {
-                if (!app.send(channel, sent.trim(), parent, commandAppId, attachmentIds)) {
-                    sendError = app.toast ?: app.t("common.writeError")
+                val successful =
+                    try {
+                        sendMessage?.invoke(sent.trim(), commandAppId, attachmentIds)
+                            ?: app.send(channel, sent.trim(), parent, commandAppId, attachmentIds)
+                    } catch (e: CancellationException) {
+                        throw e
+                    } catch (_: Exception) {
+                        false
+                    }
+                if (!successful) {
+                    sendError =
+                        if (sendMessage != null) null else app.toast ?: app.t("common.writeError")
                     app.toast = null
                     attachments.items.addAll(drafts)
                     if (value.isEmpty()) {
@@ -820,9 +1316,19 @@ internal fun Composer(
         }
         Unit
     }
+    if (showTyping) TypingStatus(app, typing)
+    val composerBorder = MaterialTheme.colorScheme.outline
     Column(
         Modifier.fillMaxWidth()
-            .border(BorderStroke(1.dp, MaterialTheme.colorScheme.outline))
+            .drawBehind {
+                drawLine(
+                    composerBorder,
+                    androidx.compose.ui.geometry.Offset(0f, .5.dp.toPx()),
+                    androidx.compose.ui.geometry.Offset(size.width, .5.dp.toPx()),
+                    1.dp.toPx(),
+                )
+            }
+            .padding(top = 1.dp)
             .padding(horizontal = 12.dp, vertical = 12.dp)
     ) {
         sendError?.let { error ->
@@ -840,99 +1346,155 @@ internal fun Composer(
             }
         }
         DraftAttachments(app, attachments)
-        if (typing.isNotEmpty())
-            Text(
-                app.t(
-                    "messages.typing",
-                    "names" to typing.joinToString(app.t("messages.typingSeparator")),
-                ),
-                small = true,
-                muted = true,
-            )
         if (options.isNotEmpty())
             Column(
                 Modifier.fillMaxWidth()
+                    .padding(bottom = 8.dp)
                     .heightIn(max = 192.dp)
                     .verticalScroll(rememberScrollState())
+                    .then(
+                        webControlModifier(
+                            "listbox",
+                            attributes =
+                                mapOf(
+                                    "aria-label" to
+                                        app.t(
+                                            when (range?.kind) {
+                                                "command" -> "composer.commands"
+                                                "channel" -> "composer.channels"
+                                                "mfm" -> "mfm.suggestions"
+                                                else -> "mentions.suggestions"
+                                            }
+                                        )
+                                ),
+                        )
+                    )
                     .border(1.dp, MaterialTheme.colorScheme.outline, RoundedCornerShape(8.dp))
                     .padding(4.dp)
             ) {
                 options.forEachIndexed { index, option ->
-                    Button(
-                        "${when(range?.kind) { "mfm" -> "$[${option.name}]"
- "channel" -> "#${option.name}"
- "command" -> "/${option.name}"
- else -> "@${option.name}" }}   ${if (range?.mfm == true) app.t(option.label) else option.label}",
-                        modifier =
-                            Modifier.fillMaxWidth()
-                                .background(
-                                    if (index == activeOption)
-                                        MaterialTheme.colorScheme.surfaceVariant
-                                    else Color.Transparent
-                                ),
+                    val optionName =
+                        when (range?.kind) {
+                            "mfm" -> "$[${option.name}]"
+                            "channel" -> "#${option.name}"
+                            "command" -> "/${option.name}"
+                            else -> "@${option.name}"
+                        }
+                    val optionLabel = if (range?.mfm == true) app.t(option.label) else option.label
+                    Row(
+                        Modifier.fillMaxWidth()
+                            .then(
+                                webControlModifier(
+                                    "option",
+                                    selected = index == activeOption,
+                                    attributes =
+                                        mapOf(
+                                            "aria-label" to
+                                                if (optionLabel.isBlank()) optionName
+                                                else "$optionName $optionLabel"
+                                        ),
+                                )
+                            )
+                            .background(
+                                if (index == activeOption) MaterialTheme.colorScheme.surfaceVariant
+                                else Color.Transparent,
+                                RoundedCornerShape(4.dp),
+                            )
+                            .clickable { choose(option) }
+                            .padding(horizontal = 8.dp, vertical = 4.dp),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
                     ) {
-                        choose(option)
+                        androidx.compose.material3.Text(
+                            fontText(
+                                optionName,
+                                LocalFonts.current.copy(latin = LocalFonts.current.mono),
+                            ),
+                            style =
+                                MaterialTheme.typography.bodyMedium.copy(
+                                    fontFamily = LocalFonts.current.mono
+                                ),
+                            color = MaterialTheme.colorScheme.onBackground,
+                        )
+                        if (optionLabel.isNotBlank()) Text(optionLabel, muted = true, maxLines = 1)
                     }
                 }
             }
-        Row(
-            Modifier.fillMaxWidth()
-                .border(1.dp, MaterialTheme.colorScheme.outline, RoundedCornerShape(12.dp))
-                .padding(6.dp),
-            verticalAlignment = Alignment.Bottom,
-        ) {
-            IconButton(
-                "image-plus",
-                app.t("attachments.add"),
-                enabled && attachments.items.size < MAX_ATTACHMENTS,
-                size = if (app.env.touch) 44.dp else 36.dp,
-            ) {
-                attachments.pick()
-            }
+        ComposerFrame(Modifier.fillMaxWidth()) {
+            if (allowAttachments)
+                IconButton(
+                    "paperclip",
+                    app.t("attachments.add"),
+                    enabled && attachments.items.size < MAX_ATTACHMENTS,
+                    color = MaterialTheme.colorScheme.onBackground,
+                    size = if (app.env.touch) 44.dp else 36.dp,
+                ) {
+                    attachments.pick()
+                }
             Field(
                 value,
-                app.t(if (parent == null) "messages.compose" else "threads.compose"),
-                Modifier.weight(1f).onPreviewKeyEvent {
-                    if (composing || it.type != KeyEventType.KeyDown) false
-                    else if (
-                        options.isNotEmpty() &&
-                            !it.isCtrlPressed &&
-                            !it.isMetaPressed &&
-                            !it.isShiftPressed
-                    )
-                        when (it.key) {
-                            Key.DirectionDown -> {
-                                activeOption = (activeOption + 1) % options.size
-                                true
+                ariaLabel
+                    ?: placeholder
+                    ?: app.t(if (parent == null) "messages.compose" else "threads.compose"),
+                Modifier.weight(1f)
+                    .onGloballyPositioned { coordinates ->
+                        val bounds = coordinates.boundsInWindow()
+                        attachments.updateBounds(
+                            bounds.left / density,
+                            bounds.top / density,
+                            bounds.width / density,
+                            bounds.height / density,
+                        )
+                    }
+                    .onPreviewKeyEvent {
+                        if (composing || it.type != KeyEventType.KeyDown) false
+                        else if (
+                            options.isNotEmpty() &&
+                                !it.isCtrlPressed &&
+                                !it.isMetaPressed &&
+                                !it.isShiftPressed
+                        )
+                            when (it.key) {
+                                Key.DirectionDown -> {
+                                    activeOption = (activeOption + 1) % options.size
+                                    true
+                                }
+                                Key.DirectionUp -> {
+                                    activeOption = (activeOption + options.size - 1) % options.size
+                                    true
+                                }
+                                Key.Tab,
+                                Key.Enter -> {
+                                    choose(options[activeOption.coerceIn(0, options.lastIndex)])
+                                    true
+                                }
+                                Key.Escape -> {
+                                    dismissed = true
+                                    true
+                                }
+                                else -> false
                             }
-                            Key.DirectionUp -> {
-                                activeOption = (activeOption + options.size - 1) % options.size
-                                true
-                            }
-                            Key.Tab,
-                            Key.Enter -> {
-                                choose(options[activeOption.coerceIn(0, options.lastIndex)])
-                                true
-                            }
-                            Key.Escape -> {
-                                dismissed = true
-                                true
-                            }
-                            else -> false
-                        }
-                    else if (
-                        !it.isShiftPressed &&
-                            it.key == Key.Enter &&
-                            (if (app.env.mac) it.isMetaPressed else it.isCtrlPressed)
-                    ) {
-                        send()
-                        true
-                    } else false
-                },
+                        else if (
+                            !it.isShiftPressed &&
+                                it.key == Key.Enter &&
+                                (if (app.env.mac) it.isMetaPressed else it.isCtrlPressed)
+                        ) {
+                            send()
+                            true
+                        } else false
+                    },
                 singleLine = false,
+                enabled = enabled,
                 readOnly = !enabled,
+                placeholder =
+                    placeholder
+                        ?: app.t(if (parent == null) "messages.compose" else "threads.compose"),
+                focusRequester = composerFocusRequester,
+                onBlur = {
+                    dismissed = true
+                    updateTyping(false)
+                },
                 onComposition = { composing = it },
-                fileOwner = attachments.owner,
+                fileOwner = attachments.owner.takeIf { allowAttachments },
                 chrome = false,
                 selection = selection,
                 onSelection = {
@@ -941,6 +1503,7 @@ internal fun Composer(
                 },
             ) {
                 value = it
+                updateTyping(it.trim().isNotEmpty())
                 if (selectedCommand?.let { command -> !it.startsWith("/${command.name} ") } == true)
                     selectedCommand = null
                 dismissed = false
@@ -951,21 +1514,29 @@ internal fun Composer(
                 Modifier.padding(bottom = 4.dp)
                     .then(webControlModifier("button", canSubmit))
                     .size(if (app.env.touch) 44.dp else 36.dp)
-                    .clip(RoundedCornerShape(8.dp))
+                    .padding(1.dp)
+                    .clip(RoundedCornerShape(9.dp))
                     .background(
                         if (canSubmit) MaterialTheme.colorScheme.primary
-                        else MaterialTheme.colorScheme.primary.copy(alpha = .5f)
+                        else MaterialTheme.colorScheme.surfaceVariant
                     )
                     .clickable(canSubmit, role = Role.Button, onClick = send),
                 contentAlignment = Alignment.Center,
             ) {
-                Icon("send", app.t("messages.send"), color = MaterialTheme.colorScheme.onPrimary)
+                Icon(
+                    "send",
+                    app.t("messages.send"),
+                    modifier = Modifier.size(16.dp),
+                    color =
+                        if (canSubmit) MaterialTheme.colorScheme.onPrimary
+                        else MaterialTheme.colorScheme.onSurfaceVariant,
+                )
             }
         }
         if (!app.env.touch)
             Text(
                 app.t(if (app.env.mac) "composer.mac" else "composer.ctrl"),
-                Modifier.padding(top = 8.dp, start = 4.dp),
+                Modifier.padding(top = 6.dp, start = 4.dp),
                 muted = true,
                 small = true,
                 size = 11.sp,
@@ -976,4 +1547,53 @@ internal fun Composer(
             value += it
             picker = false
         }
+}
+
+@Composable
+internal fun MessageLoadingSkeleton() {
+    val color = MaterialTheme.colorScheme.surfaceVariant
+    Column(
+        Modifier.fillMaxWidth().padding(16.dp),
+        verticalArrangement = Arrangement.spacedBy(16.dp),
+    ) {
+        repeat(6) {
+            Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                Box(Modifier.size(36.dp).background(color, CircleShape))
+                Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Box(Modifier.size(112.dp, 12.dp).background(color, RoundedCornerShape(8.dp)))
+                    Box(
+                        Modifier.widthIn(max = 448.dp)
+                            .fillMaxWidth()
+                            .height(16.dp)
+                            .background(color, RoundedCornerShape(8.dp))
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+internal fun MessageEmptyState(
+    app: Session,
+    title: String,
+    description: String?,
+    destructive: Boolean = false,
+    retry: (() -> Unit)? = null,
+) {
+    Box(Modifier.fillMaxSize().padding(24.dp), contentAlignment = Alignment.Center) {
+        Column(
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            Text(
+                app.t(title),
+                weight = FontWeight.Medium,
+                color = if (destructive) MaterialTheme.colorScheme.error else Color.Unspecified,
+            )
+            if (description != null) Text(app.t(description), small = true, muted = true)
+            if (retry != null)
+                Button(app.t("offline.retry"), variant = "outline", size = "sm", click = retry)
+        }
+    }
 }

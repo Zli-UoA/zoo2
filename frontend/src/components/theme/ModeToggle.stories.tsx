@@ -1,3 +1,4 @@
+import { preferenceSurfaces } from "../../../.storybook/preference-stories";
 import { playForImplementation } from "../../../.storybook/play-for-implementation";
 import type { Meta, StoryObj } from "@storybook/react-vite";
 import { expect, screen, userEvent, waitFor, within } from "storybook/test";
@@ -11,7 +12,7 @@ const meta = {
   parameters: { a11y: { test: "error" } },
   decorators: [
     (Story) => (
-      <div className="flex min-h-72 items-center justify-center bg-background p-6">
+      <div className={preferenceSurfaces["Features/Preferences/Theme"]}>
         <Story />
       </div>
     ),
@@ -22,7 +23,7 @@ type Story = StoryObj<typeof meta>;
 
 export const Default: Story = {
   play: playForImplementation(async () => {
-    const group = within(screen.getByRole("group", { name: "テーマ" }));
+    const group = within(await screen.findByRole("group", { name: "テーマ" }));
     await expect(group.getAllByRole("button")).toHaveLength(3);
     await expect(
       group
@@ -36,7 +37,7 @@ export const Default: Story = {
 };
 export const Dark: Story = {
   play: playForImplementation(async () => {
-    const dark = screen.getByRole("button", { name: "ダーク" });
+    const dark = await screen.findByRole("button", { name: "ダーク" });
     await userEvent.click(dark);
     await expect(dark).toHaveAttribute("aria-pressed", "true");
     await expect(document.documentElement).toHaveClass("dark");
@@ -48,6 +49,7 @@ export const Dark: Story = {
 export const KeyboardSelection: Story = {
   globals: { theme: "light" },
   play: playForImplementation(async () => {
+    await screen.findByRole("button", { name: "ライト" });
     await userEvent.tab();
     await expect(screen.getByRole("button", { name: "ライト" })).toHaveFocus();
     await userEvent.keyboard("{ArrowRight}{ArrowRight}{Enter}");
@@ -66,7 +68,7 @@ export const KeyboardSelection: Story = {
 };
 export const Explanation: Story = {
   play: playForImplementation(async () => {
-    await userEvent.hover(screen.getByRole("button", { name: "システム" }));
+    await userEvent.hover(await screen.findByRole("button", { name: "システム" }));
     const tooltip = await screen.findByText("システム");
     await waitFor(() => expect(tooltip).toBeVisible());
   }),

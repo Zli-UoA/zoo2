@@ -61,7 +61,7 @@ export const Default: Story = {
 
 export const Kitchen: Story = {
   play: playForImplementation(async () => {
-    await userEvent.click(screen.getByRole("tab", { name: "Emoji Kitchen" }));
+    await userEvent.click(await screen.findByRole("tab", { name: "Emoji Kitchen" }));
     await waitFor(
       () => expect(screen.getByRole("combobox", { name: "1つ目の絵文字" })).toBeVisible(),
       { timeout: 5000 },
@@ -71,7 +71,7 @@ export const Kitchen: Story = {
 
 export const SearchEmpty: Story = {
   play: playForImplementation(async () => {
-    const search = screen.getByPlaceholderText("絵文字を検索");
+    const search = await screen.findByPlaceholderText("絵文字を検索");
     await userEvent.type(search, "zzzzzzzz");
     await expect(await screen.findByText("一致する絵文字がありません")).toBeVisible();
   }),
@@ -98,7 +98,7 @@ export const KitchenLoading: Story = {
     },
   },
   play: playForImplementation(async () => {
-    await userEvent.click(screen.getByRole("tab", { name: "Emoji Kitchen" }));
+    await userEvent.click(await screen.findByRole("tab", { name: "Emoji Kitchen" }));
   }),
 };
 

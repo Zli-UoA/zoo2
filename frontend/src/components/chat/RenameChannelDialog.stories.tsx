@@ -25,7 +25,7 @@ export const Default: Story = {};
 
 export const Filled: Story = {
   play: playForImplementation(async () => {
-    const input = screen.getByRole("textbox", { name: "新しいチャンネル名" });
+    const input = await screen.findByRole("textbox", { name: "新しいチャンネル名" });
     await userEvent.clear(input);
     await userEvent.type(input, "general-renamed");
     const description = screen.getByRole("textbox", { name: "説明（任意）" });

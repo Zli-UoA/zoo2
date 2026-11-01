@@ -84,24 +84,37 @@ export const CommandCompletion: Story = {
     commandLookup.mockClear();
     commandInvocation.mockClear();
   },
-  play: playForImplementation(async ({ canvasElement }) => {
-    const canvas = within(canvasElement);
-    const input = await canvas.findByRole("textbox");
-    await userEvent.type(input, "/ec");
-    await userEvent.click(await canvas.findByRole("option", { name: "/echo Meeting Notes" }));
-    // Composer restores the caret on the next animation frame after completion.
-    await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
-    await userEvent.type(input, "hello");
-    await userEvent.click(canvas.getByRole("button", { name: "送信" }));
-    await waitFor(() =>
-      expect(commandInvocation).toHaveBeenCalledWith("notes", {
-        kind: "command",
-        name: "echo",
-        channel_id: "channel-general",
-        values: { text: "hello" },
-      }),
-    );
-    await expect(commandLookup).toHaveBeenCalledWith("channel-general");
-    await expect(input).toHaveValue("");
-  }),
+  play: async (context) => {
+    await playForImplementation(async ({ canvasElement }) => {
+      const canvas = within(canvasElement);
+      const input = await canvas.findByRole("textbox");
+      await userEvent.type(input, "/ec");
+      await userEvent.click(await canvas.findByRole("option", { name: "/echo Meeting Notes" }));
+      // Composer restores the caret on the next animation frame after completion.
+      await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+      await userEvent.type(input, "hello");
+      await userEvent.click(canvas.getByRole("button", { name: "送信" }));
+      await waitFor(() =>
+        expect(commandInvocation).toHaveBeenCalledWith("notes", {
+          kind: "command",
+          name: "echo",
+          channel_id: "channel-general",
+          values: { text: "hello" },
+        }),
+      );
+      await expect(commandLookup).toHaveBeenCalledWith("channel-general");
+      await expect(input).toHaveValue("");
+    })(context);
+    if (context.globals.implementation === "kotlin") {
+      await waitFor(() =>
+        expect(commandInvocation).toHaveBeenCalledWith("notes", {
+          kind: "command",
+          name: "echo",
+          channel_id: "channel-general",
+          values: { text: "hello" },
+        }),
+      );
+      await expect(commandLookup).toHaveBeenCalledWith("channel-general");
+    }
+  },
 };

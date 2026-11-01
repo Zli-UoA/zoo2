@@ -42,7 +42,7 @@ export const General: Story = {
 };
 export const Apps: Story = {
   play: playForImplementation(async () => {
-    await userEvent.click(screen.getByRole("tab", { name: "App・連携" }));
+    await userEvent.click(await screen.findByRole("tab", { name: "App・連携" }));
     await userEvent.click(await screen.findByRole("button", { name: /Echo Bot/ }));
     await expect(screen.getByRole("button", { name: "メッセージ" })).toBeVisible();
   }),
@@ -75,7 +75,7 @@ export const Members: Story = {
     },
   },
   play: playForImplementation(async () => {
-    await userEvent.click(screen.getByRole("tab", { name: "メンバー" }));
+    await userEvent.click(await screen.findByRole("tab", { name: "メンバー" }));
     await waitFor(() =>
       expect(screen.getAllByRole("button", { name: "管理者にする" }).length).toBeGreaterThan(0),
     );

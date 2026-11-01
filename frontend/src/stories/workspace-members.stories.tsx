@@ -1,3 +1,4 @@
+import { preferenceSurfaces } from "../../.storybook/preference-stories";
 import { playForImplementation } from "../../.storybook/play-for-implementation";
 import type { Meta, StoryObj } from "@storybook/react-vite";
 import { http, HttpResponse } from "msw";
@@ -30,7 +31,7 @@ const meta = {
   },
   decorators: [
     (Story) => (
-      <div className="mx-auto max-w-2xl p-4">
+      <div className={preferenceSurfaces["Flows/Workspace/ChangeRole"]}>
         <Story />
       </div>
     ),

@@ -1,3 +1,4 @@
+import { storySurfaces } from "../../../../.storybook/story-surfaces";
 import { playForImplementation } from "../../../../.storybook/play-for-implementation";
 import { expect, within } from "storybook/test";
 import type { Meta, StoryObj } from "@storybook/react-vite";
@@ -10,7 +11,7 @@ const meta = {
   parameters: { a11y: { test: "error" } },
   decorators: [
     (Story) => (
-      <div className="mx-auto max-w-2xl whitespace-pre-wrap break-words bg-background p-4 text-sm text-foreground">
+      <div className={storySurfaces["Features/Chat/MessageContent"]}>
         <MfmChannelsProvider channels={storyChannels}>
           <Story />
         </MfmChannelsProvider>
@@ -59,7 +60,7 @@ export const Headings: Story = {
   play: playForImplementation(async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     for (let level = 1; level <= 6; level++) {
-      await expect(canvas.getByRole("heading", { level })).toBeVisible();
+      await expect(await canvas.findByRole("heading", { level })).toBeVisible();
     }
     await expect(canvas.getByRole("link", { name: "ドキュメント" })).toHaveAttribute(
       "href",

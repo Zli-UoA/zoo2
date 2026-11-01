@@ -10,6 +10,9 @@ const names = [
   "search",
   "plus",
   "users",
+  "users-round",
+  "message-square-plus",
+  "chevron-up",
   "messages-square",
   "message-square-text",
   "ellipsis",
@@ -20,6 +23,13 @@ const names = [
   "download",
   "log-out",
   "sun",
+  "palette",
+  "heart",
+  "at-sign",
+  "message-circle",
+  "user-round",
+  "arrow-up-right",
+  "loader-circle",
   "moon",
   "languages",
   "send",
@@ -30,6 +40,7 @@ const names = [
   "archive",
   "trash-2",
   "pencil",
+  "eraser",
   "smile-plus",
   "activity",
   "monitor",
@@ -41,6 +52,7 @@ const names = [
   "shield-alert",
   "refresh-cw",
   "chevron-down",
+  "chevron-right",
   "external-link",
 ];
 const rows = [];
@@ -95,3 +107,5 @@ await cp(
   new URL("../src/lib/emoji/emoji-kitchen.json", import.meta.url),
   new URL("emoji-kitchen.json", dest),
 );
+
+await import("./sync-compose-brand.mjs");

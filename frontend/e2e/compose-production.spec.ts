@@ -44,7 +44,8 @@ test("native Compose starts under deployment CSP and reloads cached messages off
             assets.filter((u) => u.endsWith(".wasm")).length >= 2 &&
             [
               "Geist.ttf",
-              "NotoSansJP.ttf",
+              "NotoSansJPRegular.otf",
+              "NotoSansJPBold.otf",
               "NotoColorEmoji.ttf",
               "LiberationMono.ttf",
               "KaTeXMain.ttf",

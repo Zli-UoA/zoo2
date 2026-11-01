@@ -42,7 +42,7 @@ export const Default: Story = {};
 
 export const ControlPanelOpen: Story = {
   play: playForImplementation(async () => {
-    await userEvent.click(screen.getByRole("button", { name: "チャンネル設定" }));
+    await userEvent.click(await screen.findByRole("button", { name: "チャンネル設定" }));
     await expect(await screen.findByRole("dialog")).toBeInTheDocument();
   }),
 };
@@ -90,7 +90,7 @@ export const Mobile: Story = {
 
 export const WebhookSettingsOpen: Story = {
   play: playForImplementation(async () => {
-    await userEvent.click(screen.getByRole("button", { name: "チャンネル設定" }));
+    await userEvent.click(await screen.findByRole("button", { name: "チャンネル設定" }));
     const settings = await screen.findByRole("dialog", { name: "チャンネル設定" });
     await userEvent.click(within(settings).getByRole("button", { name: /^開く$/ }));
     await waitFor(async () => {

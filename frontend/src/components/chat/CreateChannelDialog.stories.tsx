@@ -25,7 +25,7 @@ export const Default: Story = {};
 
 export const Filled: Story = {
   play: playForImplementation(async () => {
-    await userEvent.type(screen.getByPlaceholderText("新しいチャンネル名"), "new-channel");
+    await userEvent.type(await screen.findByPlaceholderText("新しいチャンネル名"), "new-channel");
     await userEvent.type(
       screen.getByPlaceholderText("このチャンネルの目的や話題"),
       "新しいチャンネルの説明",

@@ -36,8 +36,8 @@ export const WithActions: Story = {
   },
   play: playForImplementation(async ({ canvasElement }) => {
     const canvas = within(canvasElement);
-    const toggle = canvas.getByRole("button", { name: "チャンネル" });
-    await userEvent.click(canvas.getByRole("button", { name: "チャンネルを作成" }));
+    const toggle = await canvas.findByRole("button", { name: "チャンネル" });
+    await userEvent.click(await canvas.findByRole("button", { name: "チャンネルを作成" }));
     await expect(toggle).toHaveAttribute("aria-expanded", "true");
     await userEvent.click(toggle);
     await expect(canvas.getByText("general / design")).not.toBeVisible();

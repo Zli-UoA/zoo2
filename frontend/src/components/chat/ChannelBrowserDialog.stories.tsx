@@ -43,7 +43,7 @@ export const Default: Story = {
 
 export const SearchEmpty: Story = {
   play: playForImplementation(async () => {
-    await userEvent.type(screen.getByRole("searchbox"), "zzzz");
+    await userEvent.type(await screen.findByRole("searchbox"), "zzzz");
     await expect(screen.getByText("一致するチャンネルがありません。")).toBeInTheDocument();
   }),
 };

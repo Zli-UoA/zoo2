@@ -1,3 +1,4 @@
+import { storySurfaces } from "../../../../.storybook/story-surfaces";
 import { playForImplementation } from "../../../../.storybook/play-for-implementation";
 import type { Meta, StoryObj } from "@storybook/react-vite";
 import { expect, fn, screen, userEvent, waitFor, within } from "storybook/test";
@@ -65,7 +66,7 @@ const meta = {
   },
   decorators: [
     (Story) => (
-      <div className="mx-auto max-w-3xl bg-background py-8">
+      <div className={storySurfaces["Features/Chat/MessageRow"]}>
         <Story />
       </div>
     ),
@@ -90,7 +91,7 @@ export const HoverActions: Story = {
   },
   play: playForImplementation(async ({ canvasElement }) => {
     const canvas = within(canvasElement);
-    await userEvent.hover(canvas.getByText(/こんにちは/));
+    await userEvent.hover(await canvas.findByText(/こんにちは/));
     await expect(canvas.getByRole("button", { name: "編集" })).toBeInTheDocument();
   }),
 };
@@ -142,7 +143,9 @@ export const ReactionUsers: Story = {
   },
   play: playForImplementation(async ({ canvasElement }) => {
     await userEvent.click(
-      within(canvasElement).getByRole("button", { name: "👍 にリアクションしたユーザーを表示" }),
+      await within(canvasElement).findByRole("button", {
+        name: "👍 にリアクションしたユーザーを表示",
+      }),
     );
     const dialog = await screen.findByRole("dialog");
     await waitFor(() => expect(within(dialog).getByText(/@longname/)).toBeVisible());
@@ -154,7 +157,7 @@ export const ReactionUsersHover: Story = {
   parameters: { a11y: { test: "error" } },
   args: WithReactions.args,
   play: playForImplementation(async ({ canvasElement }) => {
-    const chip = within(canvasElement).getByRole("button", { name: /👍 3 件/ });
+    const chip = await within(canvasElement).findByRole("button", { name: /👍 3 件/ });
     await userEvent.hover(chip);
     const tooltip = await screen.findByRole("tooltip");
     await expect(tooltip).toHaveTextContent("@alice");
@@ -168,7 +171,7 @@ export const ReplyCount: Story = {
   },
   play: playForImplementation(async ({ canvasElement }) => {
     const canvas = within(canvasElement);
-    await expect(canvas.getByRole("button", { name: /3 件の返信/ })).toBeVisible();
+    await expect(await canvas.findByRole("button", { name: /3 件の返信/ })).toBeVisible();
   }),
 };
 
@@ -259,7 +262,9 @@ export const AppMessage: Story = {
     ),
   ],
   play: playForImplementation(async ({ canvasElement }) => {
-    await expect(within(canvasElement).getByRole("button", { name: "詳細を確認" })).toBeVisible();
+    await expect(
+      await within(canvasElement).findByRole("button", { name: "詳細を確認" }),
+    ).toBeVisible();
   }),
   parameters: { a11y: { test: "error" } },
   args: {
@@ -294,7 +299,7 @@ export const CopyOriginalMenu: Story = {
     },
   },
   play: playForImplementation(async ({ canvasElement }) => {
-    within(canvasElement).getByRole("button", { name: "その他の操作" }).focus();
+    (await within(canvasElement).findByRole("button", { name: "その他の操作" })).focus();
     await userEvent.keyboard("{Enter}");
     await waitFor(() =>
       expect(screen.getByRole("menuitem", { name: "原文をコピー" })).toBeVisible(),
@@ -316,7 +321,7 @@ export const Edited: Story = {
   },
   play: playForImplementation(async ({ canvasElement }) => {
     const canvas = within(canvasElement);
-    const marker = canvas.getByRole("img", { name: "編集済み" });
+    const marker = await canvas.findByRole("img", { name: "編集済み" });
     await expect(marker).toBeVisible();
     await userEvent.hover(marker);
     await expect(await screen.findByRole("tooltip")).toHaveTextContent("2026");

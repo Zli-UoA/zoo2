@@ -47,10 +47,16 @@ private external fun authStatus(bridge: JsAny, status: Int)
 private external fun translateText(bridge: JsAny, key: String, args: String): String
 
 @JsFun("(bridge, name) => bridge.action(name)")
-private external fun browserAction(bridge: JsAny, name: String)
+internal external fun browserAction(bridge: JsAny, name: String)
 
 @JsFun("(bridge, name, payload) => bridge.invoke(name, payload)")
-private external fun browserInvoke(bridge: JsAny, name: String, payload: String): Promise<JsString>
+internal external fun browserInvoke(bridge: JsAny, name: String, payload: String): Promise<JsString>
+
+@JsFun("(bridge, value) => bridge.notificationTime(value)")
+private external fun browserNotificationTime(bridge: JsAny, value: String): String
+
+@JsFun("(bridge, value) => bridge.fullTimestamp(value)")
+private external fun browserFullTimestamp(bridge: JsAny, value: String): String
 
 @JsFun("(bridge, value, day, offset) => bridge.format(value, day, offset)")
 private external fun formatTime(bridge: JsAny, value: String, day: Boolean, offset: Int): String
@@ -73,33 +79,40 @@ internal suspend fun <T : JsAny?> Promise<T>.awaitBrowser(): T =
         throw IllegalStateException(error.message, error)
     }
 
-@JsFun("(bridge, id, bounds, receive) => bridge.fileTarget(id, bounds, receive)")
-private external fun registerFiles(
-    bridge: JsAny,
-    id: String,
-    bounds: String,
-    receive: (String) -> Boolean,
-)
-
-@JsFun("(bridge, id) => bridge.forgetFileTarget(id)")
-private external fun forgetFiles(bridge: JsAny, id: String)
-
 private class BrowserPlatform(private val bridge: JsAny) : Platform {
+    private val files = BrowserFileBridge(bridge)
+
     override fun imageFrames(bytes: ByteArray) = webImageFrames(bytes)
 
     override fun fileTarget(id: String, bounds: String, receive: (String) -> Boolean) =
-        registerFiles(bridge, id, bounds, receive)
+        files.target(id, bounds, receive)
 
-    override fun forgetFileTarget(id: String) = forgetFiles(bridge, id)
+    override fun forgetFileTarget(id: String) = files.forget(id)
 
-    override fun controlSemantics(id: String, role: String, enabled: Boolean, selected: Boolean?) =
-        webControl(id, role, enabled, selected)
+    override fun controlSemantics(
+        id: String,
+        role: String,
+        enabled: Boolean,
+        selected: Boolean?,
+        expanded: Boolean?,
+        attributes: Map<String, String>,
+    ) = webControl(id, role, enabled, selected, expanded, attributes)
+
+    override fun outsideClick(id: String, bounds: String, close: () -> Unit) =
+        observeOutsideClick(id, bounds, close)
+
+    override fun forgetOutsideClick(id: String) = removeOutsideClick(id)
+
+    override fun controlFocus(id: String, focus: () -> Unit) = webControlFocus(id, focus)
 
     override fun forgetControlSemantics(id: String) = forgetWebControl(id)
 
     @OptIn(kotlin.io.encoding.ExperimentalEncodingApi::class)
     override suspend fun image(url: String): ByteArray =
         kotlin.io.encoding.Base64.decode(invoke("publicImage", url))
+
+    override suspend fun rasterizeSvg(svg: String, width: Int, height: Int): ByteArray =
+        browserRasterizeSvg(svg, width, height)
 
     override suspend fun headers(): Map<String, String> =
         json.decodeFromString(authHeaders(bridge).awaitBrowser<JsString>().toString())
@@ -142,6 +155,10 @@ private class BrowserPlatform(private val bridge: JsAny) : Platform {
     }
 
     override fun time(timestamp: String) = formatTime(bridge, timestamp, false, 0)
+
+    override fun notificationTime(timestamp: String) = browserNotificationTime(bridge, timestamp)
+
+    override fun fullTimestamp(timestamp: String) = browserFullTimestamp(bridge, timestamp)
 
     override fun day(timestamp: String) = formatTime(bridge, timestamp, true, 0)
 
@@ -232,8 +249,11 @@ private fun startSession() {
         if (active && fontsReady) {
             LaunchedEffect(Unit) { paintReady(bridge) }
             CompositionLocalProvider(LocalWebPlatform provides platform) {
-                ZooTheme(environment(envRaw).dark) {
-                    if (app != null) CompositionLocalProvider(LocalApp provides app) { ZooApp(app) }
+                ZooTheme(environment(envRaw).dark, locale = environment(envRaw).locale) {
+                    if (app != null)
+                        CompositionLocalProvider(LocalApp provides app) {
+                            NativeWindow(app) { ZooApp(app) }
+                        }
                     else NativeStatus(platform, json.parseToJsonElement(envRaw).jsonObject)
                 }
             }
@@ -264,9 +284,9 @@ internal fun zooFontsReady(): Boolean {
             preloadFont(Res.font.Geist).value,
             preloadFont(Res.font.Geist, FontWeight.Medium).value,
             preloadFont(Res.font.Geist, FontWeight.SemiBold).value,
-            preloadFont(Res.font.NotoSansJP).value,
-            preloadFont(Res.font.NotoSansJP, FontWeight.Medium).value,
-            preloadFont(Res.font.NotoSansJP, FontWeight.SemiBold).value,
+            preloadFont(Res.font.NotoSansJPRegular).value,
+            preloadFont(Res.font.NotoSansJPRegular, FontWeight.Medium).value,
+            preloadFont(Res.font.NotoSansJPBold, FontWeight.SemiBold).value,
             preloadFont(Res.font.NotoColorEmoji).value,
             preloadFont(Res.font.LiberationMono).value,
             preloadFont(Res.font.KaTeXMain).value,

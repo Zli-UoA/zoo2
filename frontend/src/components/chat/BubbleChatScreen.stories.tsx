@@ -1,3 +1,4 @@
+import { storySurfaces } from "../../../.storybook/story-surfaces";
 import { playForImplementation } from "../../../.storybook/play-for-implementation";
 import type { Meta, StoryObj } from "@storybook/react-vite";
 import { bubbleChatHandlers } from "../../../.storybook/bubble-fixtures";
@@ -17,7 +18,7 @@ const meta = {
   decorators: [
     (Story) => (
       <StoryShell selectedChannelId={null} initialPane="chat">
-        <div className="h-[720px] overflow-hidden bg-background">
+        <div className={storySurfaces["Pages/BubbleChat"]}>
           <Story />
         </div>
       </StoryShell>

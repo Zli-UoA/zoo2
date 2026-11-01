@@ -5,9 +5,14 @@ export default defineConfig({
   testMatch: /compose\.spec\.ts$/,
   workers: 1,
   outputDir: "./test-results/compose",
+  snapshotPathTemplate:
+    "{testDir}/../test-results/compose/reference/{testFilePath}/{testName}/{arg}{ext}",
+  updateSnapshots: "none",
   fullyParallel: false,
   timeout: 120_000,
+  // Match Karma and normal Chromium; legacy headless-shell rounds font advances.
   use: {
+    channel: "chromium",
     ignoreHTTPSErrors: true,
     launchOptions: { args: ["--ignore-certificate-errors"] },
     actionTimeout: 15_000,
