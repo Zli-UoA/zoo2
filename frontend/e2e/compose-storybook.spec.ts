@@ -300,6 +300,12 @@ test("native settings, Bubble and notifications use the existing story fixtures"
   await expect(general).toHaveAttribute("aria-selected", "true");
   await general.click({ force: true });
   await page.keyboard.press("End");
+  // 最後のタブは全員に出る「Slack 連携」(管理者以外には Slack 取り込みタブは出ない)
+  await expect(frame.getByRole("tab", { name: "Slack 連携", exact: true })).toHaveAttribute(
+    "aria-selected",
+    "true",
+  );
+  await page.keyboard.press("ArrowLeft");
   await expect(frame.getByRole("tab", { name: "メンバー", exact: true })).toHaveAttribute(
     "aria-selected",
     "true",
