@@ -151,7 +151,7 @@ jobs:
   apply:
     name: Apply
     needs: [validate]
-    runs-on: zli-kubecamp-no-docker
+    runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-latest' || 'zli-kubecamp-no-docker' }}
     if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
     # apply は 1 つずつ実行し、途中で取り消しません。
     concurrency:
