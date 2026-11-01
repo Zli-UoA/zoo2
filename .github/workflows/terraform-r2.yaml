@@ -118,7 +118,8 @@ jobs:
             const marker = `<!-- tofu-plan:${process.env.TOFU_DIR} -->`;
             const output = fs.readFileSync(process.env.PLAN_LOG, 'utf8');
             const ok = process.env.PLAN_EXITCODE === '0';
-            const summary = output.split('\n').find(l => /^(Plan:|No changes\.|Error:)/.test(l)) ?? '';
+            // 失敗したときは途中の Plan: 行ではなく、最初のエラーを見出しにします。
+            const summary = output.split('\n').find(l => (ok ? /^(Plan:|No changes\.)/ : /^Error:/).test(l)) ?? '';
             // コメントは 65536 文字まで。
             const limit = 60000;
             const shown = output.length > limit ? `${output.slice(0, limit)}\n…（以降は省略。全体はログにあります）` : output;
