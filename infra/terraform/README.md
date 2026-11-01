@@ -86,8 +86,8 @@ brew install opentofu sops age
 | --- | --- |
 | `TF_VAR_state_passphrase` | state 暗号化の passphrase（上記の `sops decrypt`） |
 | `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` | `zcp-terraform-state` に読み書きできる R2 の S3 API トークン |
-| `TF_VAR_cloudflare_api_token` | `Account` > `R2 Storage` > `Edit` 権限を持つ Cloudflare API Token |
-| `TF_VAR_cloudflare_account_id` | Cloudflare Account ID（`terraform.tfvars` に書いても可） |
+| `TF_VAR_cloudflare_api_token` | `Account` > `Workers R2 Storage` > `Edit` 権限を持つ Account API Token（CI の `TF_CLOUDFLARE_API_TOKEN` と同じもの） |
+| `TF_VAR_cloudflare_account_id` | 不要。既定値は Zli の `c9918f2caa050736a07867e6f968c0a2` |
 
 アカウント ID やバケット名、CORS 許可オリジンなど秘密でないパラメータは `terraform.tfvars` に書けます。`terraform.tfvars` は `.gitignore` で除外されています。
 
@@ -240,9 +240,9 @@ state には鍵のメタデータが `encrypted_metadata_alias`（初期値 `zoo
 
 | Secret | 用途 |
 | --- | --- |
-| `CLOUDFLARE_API_TOKEN` | Cloudflare API Token |
-| `CLOUDFLARE_ACCOUNT_ID` | Cloudflare Account ID |
+| `TF_CLOUDFLARE_API_TOKEN` | Account API Tokens で作った、Account の Workers R2 Storage: Edit だけのトークン |
 | `TF_STATE_AWS_ACCESS_KEY_ID` / `TF_STATE_AWS_SECRET_ACCESS_KEY` | state バケット用 R2 S3 API トークン |
 | `TF_STATE_PASSPHRASE` | state 暗号化の passphrase |
 
-Secrets はリポジトリの Secrets なので、書き込み権限があればどのブランチのワークフローからでも読み出せます。`CLOUDFLARE_API_TOKEN` は R2 Storage の Edit 権限だけにしてください。
+Secrets はリポジトリの Secrets なので、書き込み権限があればどのブランチのワークフローからでも読み出せます。`TF_CLOUDFLARE_API_TOKEN` は R2 Storage の Edit 権限だけにしてください。
+`CLOUDFLARE_API_TOKEN`・`CLOUDFLARE_ACCOUNT_ID` は Storybook の deploy（`cd-storybook.yaml`）用です。OpenTofu では使わないので、OpenTofu 用のトークンで上書きしないでください。

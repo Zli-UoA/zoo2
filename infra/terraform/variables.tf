@@ -6,7 +6,8 @@ variable "cloudflare_api_token" {
 
 variable "cloudflare_account_id" {
   type        = string
-  description = "Cloudflare Account ID"
+  description = "Cloudflare Account ID (Zli)"
+  default     = "c9918f2caa050736a07867e6f968c0a2"
 }
 
 # API は大文字で返すので、小文字にすると差分になり、バケットの再作成（全オブジェクトの削除）が計画されます。
