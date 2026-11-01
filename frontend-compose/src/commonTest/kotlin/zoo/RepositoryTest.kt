@@ -87,6 +87,21 @@ class RepositoryTest {
     }
 
     @Test
+    fun browserFetchErrorIsRecoverableByFeatureEffects() = runTest {
+        val failure = Error("Fail to fetch")
+        val http = HttpClient(MockEngine { throw failure })
+        try {
+            val error =
+                assertFailsWith<IllegalStateException> {
+                    ZooApi(config, FakePlatform(), http).request("/api/channels/c1/read-state")
+                }
+            assertSame(failure, error.cause)
+        } finally {
+            http.close()
+        }
+    }
+
+    @Test
     fun initialShapeIsMaterializedAndAFailedWriteRollsBackOnlyItsOwnOptimisticRow() = runTest {
         val platform = FakePlatform()
         var initialRequests = 0
@@ -151,6 +166,46 @@ class RepositoryTest {
             assertTrue(platform.readKeys.single().contains(":alice:messages:"))
             platform.saved.await()
             assertTrue(platform.cache.values.any { it.contains("server") })
+        } finally {
+            table.close()
+            http.close()
+        }
+    }
+
+    @Test
+    fun emptyInitialSnapshotIsPersistedWithoutAStateFlowChange() = runTest {
+        val platform = FakePlatform()
+        val http =
+            HttpClient(
+                MockEngine { request ->
+                    if (request.url.parameters["offset"] != "-1") awaitCancellation()
+                    respond(
+                        """[{"headers":{"control":"up-to-date"}}]""",
+                        headers =
+                            headersOf(
+                                "electric-handle" to listOf("empty-handle"),
+                                "electric-offset" to listOf("0_0"),
+                                "electric-cursor" to listOf("1"),
+                                "electric-schema" to listOf("{}"),
+                                "content-type" to listOf("application/json"),
+                            ),
+                    )
+                }
+            )
+        val table =
+            SyncedTable(
+                "messages",
+                config,
+                platform,
+                http,
+                backgroundScope,
+                mapOf("channel_id" to "channel-a"),
+                options,
+            )
+        try {
+            table.loading.first { !it }
+            runCurrent()
+            assertEquals(listOf("[]"), platform.cache.values.toList())
         } finally {
             table.close()
             http.close()

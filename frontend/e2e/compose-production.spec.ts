@@ -78,6 +78,23 @@ test("native Compose starts under deployment CSP and reloads cached messages off
       );
       throw error;
     });
+  // Asset caching and data persistence finish independently. Verify the durable
+  // message snapshot before disconnecting and reloading the page.
+  await expect
+    .poll(
+      () =>
+        page.evaluate(async () => {
+          const bridge = window.__zooCompose;
+          if (!bridge) return null;
+          const config = JSON.parse(bridge.config) as Record<string, string>;
+          const environment = JSON.parse(config.environment) as { persistenceStatus: string };
+          if (environment.persistenceStatus !== "ready") return null;
+          const key = `zoo-compose:v1:${config.apiBaseUrl}:${config.shapeProxyPath}:${config.shapeMode}:${config.electricShapeUrl}:${config.userId}:messages:[channel_id=c1]`;
+          return bridge.cache.read(key);
+        }),
+      { timeout: 45_000, message: "The message snapshot must be stored before going offline" },
+    )
+    .toContain("こんにちは Parity");
   expect(violations).toEqual([]);
   await context.setOffline(true);
   await page.reload({ waitUntil: "domcontentloaded" });
