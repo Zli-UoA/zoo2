@@ -15,6 +15,7 @@ import type { Meta, StoryObj } from "@storybook/react-vite";
 import { delay, http, HttpResponse, ws } from "msw";
 import { expect, fireEvent, screen, userEvent, waitFor, within } from "storybook/test";
 import { HomeScreen } from "./HomeScreen";
+import { HomeComposer } from "./HomeComposer";
 import { homePosts as posts, homeHandlers } from "../../../.storybook/home-fixtures";
 
 const postSettingsKey = homePostSettingsKey(DEFAULT_CONFIG.apiBaseUrl, DEFAULT_CURRENT_USER_ID);
@@ -1520,5 +1521,34 @@ export const RememberedAccountIsolation: Story = {
     await expect(form.getByRole("button", { name: "公開範囲: ホーム" })).toBeVisible();
     await expect(form.getByRole("button", { name: "連合あり" })).toBeVisible();
     await expect(form.getByRole("combobox", { name: "同期先チャンネル" })).toHaveValue("");
+  },
+};
+
+let postedWithoutIdentity = false;
+export const PostingWithoutSavedIdentity: Story = {
+  beforeEach: () => {
+    postedWithoutIdentity = false;
+  },
+  render: () => (
+    <div className="relative h-full">
+      <HomeComposer
+        settingsKey={null}
+        federationEnabled={false}
+        onPost={async () => {
+          postedWithoutIdentity = true;
+        }}
+      />
+    </div>
+  ),
+  play: async ({ canvasElement }) => {
+    const form = await openComposer(canvasElement);
+    await userEvent.type(
+      form.getByRole("textbox", { name: "近況を投稿" }),
+      "保存先がなくても投稿できます",
+    );
+    await userEvent.click(form.getByRole("button", { name: "投稿" }));
+    await expectComposerClosed();
+    await expect(postedWithoutIdentity).toBe(true);
+    await expect(localStorage.getItem(postSettingsKey)).toBeNull();
   },
 };

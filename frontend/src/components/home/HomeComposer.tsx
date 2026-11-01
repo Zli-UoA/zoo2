@@ -112,14 +112,7 @@ export function HomeComposer({
   ] as const;
 
   const submit = async () => {
-    if (
-      !settingsKey ||
-      channelSelectionPending ||
-      inFlight.current ||
-      !content.trim() ||
-      length > 1000
-    )
-      return;
+    if (channelSelectionPending || inFlight.current || !content.trim() || length > 1000) return;
     inFlight.current = true;
     setSending(true);
     setFailed(false);
@@ -152,7 +145,7 @@ export function HomeComposer({
     ref,
     () => ({
       reply: (post) => {
-        if (!settingsKey || inFlight.current) return;
+        if (inFlight.current) return;
         const show = () => {
           setReplyTo(post);
           setChannelId("");
@@ -165,7 +158,7 @@ export function HomeComposer({
         } else show();
       },
     }),
-    [isDesktop, settingsKey],
+    [isDesktop],
   );
 
   return (
@@ -184,7 +177,6 @@ export function HomeComposer({
         render={
           <Button
             size="icon-lg"
-            disabled={!settingsKey}
             className="absolute right-5 bottom-[max(1.25rem,env(safe-area-inset-bottom))] z-20 size-14 rounded-full shadow-lg transition-transform hover:-translate-y-0.5 md:right-8 md:bottom-8"
             aria-label={t("home.openComposer")}
             title={t("home.openComposer")}

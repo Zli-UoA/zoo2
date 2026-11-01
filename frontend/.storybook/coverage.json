@@ -490,7 +490,8 @@
         "RememberTimeline",
         "RememberedReplyConstraints",
         "RememberedChannelUnavailable",
-        "RememberedAccountIsolation"
+        "RememberedAccountIsolation",
+        "PostingWithoutSavedIdentity"
       ]
     }
   ],
