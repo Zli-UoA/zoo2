@@ -121,8 +121,8 @@ E2EはローカルのHTTPS API fixtureを使用します。開発時は同じポ
 実際のOIDCプロバイダー、プッシュサービス、Appの接続先、全APIの失敗・競合条件を保証するものではありません。
 `compose.spec.ts` の画面比較は既存Reactと同じデータ・時刻・画面サイズで画像を比較します。
 UI差分が残る間、この比較を完全互換の証明として扱わないでください。
-CIでは機能・CSP・オフライン試験を必須にし、完全一致の画像比較は失敗を記録する追加ステップとして
-`continue-on-error: true` で実行し、結果をartifactに保存します。
+CIではKotlinのテスト・ビルド、主要操作・API契約・CSP・オフライン試験を必須にします。
+全StoryのReact/Kotlin描画・操作・画像保存は長時間かかるためCIでは実行せず、明示的に依頼された場合だけ手動で実行します。
 
 現在の数式実装は独自のKotlinパーサーで、KaTeXの全命令・マクロとの互換性はありません。
 MFMの構文解析・効果とコードハイライトも独自実装であり、既存ライブラリの全入力との同一出力を
@@ -173,7 +173,7 @@ Kotlin専用のFeaturesカテゴリや、同じ状態を複製した別Storyは�
 Controlsの引数、テーマ、言語、幅は両版で共有します。対応表は `.storybook/kotlin-stories.ts`、
 切り替えは `.storybook/implementation.tsx` が所有します。Kotlinは同じ入力とコレクションfixture、
 MSWのAPI応答を使用し、Ktor MockEngineからStorybook内のモックへ接続します。
-対応済みの引数だけをKotlinのオプションへ変換します。全Story・全状態のKotlin登録完了を意味するものではありません。
+引数はKotlinのオプションへ変換します。全Storyの登録は `story-coverage.test.ts` で検査しますが、登録済みであることだけで全画面の表示一致を保証するものではありません。
 
 ```sh
 cd frontend
