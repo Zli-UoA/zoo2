@@ -570,6 +570,25 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn resubscribing_drops_rows_of_the_stopped_shape() {
+        let mut app = app();
+        press(&mut app, KeyCode::Enter);
+        assert_eq!(app.store.reaction_groups("c1", "m1", "u1").len(), 1);
+        let id = ShapeId::Reactions("c1".into());
+        // 購読が 404 などで止まった状態にする。
+        app.subscriptions[&id].abort();
+        while !app.subscriptions[&id].is_finished() {
+            tokio::task::yield_now().await;
+        }
+        app.on_shape(ShapeEvent::Failed(id.clone(), "404".into()));
+        app.open_channel("c1".into());
+        assert!(app.store.reaction_groups("c1", "m1", "u1").is_empty());
+        // 動いている購読は作り直さないので、メッセージはそのまま残る。
+        assert!(!app.store.root_messages("c1").is_empty());
+        assert!(!app.store.is_synced(&id));
+    }
+
+    #[tokio::test]
     async fn restores_failed_edit_with_its_target() {
         let mut app = app();
         press(&mut app, KeyCode::Enter);

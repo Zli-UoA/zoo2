@@ -12,7 +12,7 @@ use tui_textarea::TextArea;
 
 use crate::{
     api::{ApiClient, Me, ReadState, TypingUser},
-    electric::{self, ShapeEvent, ShapeId},
+    electric::{self, Batch, ShapeEvent, ShapeId},
     http::Credentials,
     store::Store,
 };
@@ -97,7 +97,7 @@ pub struct App {
     credentials: Credentials,
     pub me: Me,
     pub store: Store,
-    subscriptions: HashMap<ShapeId, JoinHandle<()>>,
+    pub(super) subscriptions: HashMap<ShapeId, JoinHandle<()>>,
     shape_tx: mpsc::UnboundedSender<ShapeEvent>,
     app_tx: mpsc::UnboundedSender<AppEvent>,
 
@@ -183,6 +183,17 @@ impl App {
         {
             return;
         }
+        // 止まった購読を作り直すときは最初から取り直すので、止まっていた間の行は捨てる。
+        // 物理削除された行は新しいスナップショットに現れないため、捨てないと残り続ける。
+        if self.subscriptions.contains_key(&id) {
+            self.store.apply(
+                &id,
+                Batch {
+                    reset: true,
+                    ..Default::default()
+                },
+            );
+        }
         let task = electric::spawn(
             self.http.clone(),
             &self.api_base_url,
@@ -214,7 +225,6 @@ impl App {
         match event {
             ShapeEvent::Batch(id, batch) => self.store.apply(&id, batch),
             ShapeEvent::Failed(id, err) => {
-                self.subscriptions.remove(&id);
                 self.notify(format!("同期を停止しました ({id:?}): {err}"));
             }
         }
