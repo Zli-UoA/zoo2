@@ -683,6 +683,7 @@ async fn import(s: &AppState, job: &Job, lease: &Lease) -> Result<(), AppError> 
     exec(
         &mut tx,
         "UPDATE slack_import_jobs SET status=$3,processed_messages=$4::bigint,total_files=$5::bigint,\
+         processed_files=(SELECT count(*) FROM slack_files WHERE job_id=$1 AND status<>'pending'),\
          attempts=0,error=NULL,lease_until=NULL,lease_token=NULL,available_at=now(),updated_at=now(),\
          finished_at=CASE WHEN $3='completed' THEN now() END WHERE id=$1 AND lease_token=$2",
         &[
@@ -862,7 +863,9 @@ async fn insert_message(
             "INSERT INTO slack_files(team_id,slack_file_id,job_id,message_id,channel_id,uploader_id,\
              name,mimetype,size,url_private_download) \
              SELECT $1,$2,$3,$4,$5,$6,$7,$8,$9::bigint,$10 WHERE EXISTS(SELECT 1 FROM messages WHERE id=$4) \
-             ON CONFLICT DO NOTHING",
+             ON CONFLICT (team_id,slack_file_id,message_id) DO UPDATE SET job_id=EXCLUDED.job_id,\
+             status='pending',attempts=0,error=NULL,updated_at=now() \
+             WHERE slack_files.status IN ('pending','failed')",
             &[
                 &ctx.team,
                 &file.id,
@@ -959,9 +962,10 @@ async fn fetch_files(s: &AppState, job: &Job, lease: &Lease) -> Result<(), AppEr
                 .await?;
                 exec(
                     &mut tx,
-                    "UPDATE slack_import_jobs SET processed_files=(SELECT count(*) FROM slack_files \
-                     WHERE job_id=$1 AND status<>'pending'),updated_at=now() WHERE id=$1 AND lease_token=$2",
-                    &[&job.id, &job.token],
+                    // 全件を数え直さず、処理済みになった分だけ進める
+                    "UPDATE slack_import_jobs SET processed_files=processed_files+CASE WHEN $3='pending' THEN 0 ELSE 1 END,\
+                     updated_at=now() WHERE id=$1 AND lease_token=$2",
+                    &[&job.id, &job.token, status],
                 )
                 .await?;
                 tx.commit().await?;

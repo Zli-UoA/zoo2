@@ -130,6 +130,27 @@ pub(crate) async fn ensure_same_target(
     }
 }
 
+/// 状態が想定どおりのときだけ更新する。別の操作 (開始と取り消しなど) と重なって
+/// 状態が変わっていたら更新せず 409 にする。
+async fn transition(
+    tx: &mut toasty::Transaction<'_>,
+    sql: &str,
+    params: &[&str],
+) -> Result<(), AppError> {
+    let updated = query(
+        tx,
+        &format!("{sql} RETURNING json_build_object('id',id)::text"),
+        params,
+    )
+    .await?;
+    if updated.is_empty() {
+        return Err(AppError::Conflict(
+            "The import changed state in the meantime; reload and try again".into(),
+        ));
+    }
+    Ok(())
+}
+
 async fn load_job(tx: &mut toasty::Transaction<'_>, id: &str) -> Result<Value, AppError> {
     query(
         tx,
@@ -252,11 +273,11 @@ async fn uploaded(
         ZIP_CONTENT_TYPE,
     )
     .await?;
-    toasty::sql::statement(
+    transition(
+        &mut tx,
         "UPDATE slack_import_jobs SET status='analyzing',available_at=now(),attempts=0,error=NULL,updated_at=now() WHERE id=$1 AND status='uploading'",
+        &[&id],
     )
-    .bind(id.as_str())
-    .exec(&mut tx)
     .await?;
     let job = load_job(&mut tx, &id).await?;
     tx.commit().await?;
@@ -363,12 +384,11 @@ async fn start(
 
     let mappings =
         serde_json::to_string(&body.mappings).map_err(|e| AppError::Internal(e.into()))?;
-    toasty::sql::statement(
+    transition(
+        &mut tx,
         "UPDATE slack_import_jobs SET status='importing',mappings=$2,available_at=now(),attempts=0,error=NULL,processed_messages=0,updated_at=now() WHERE id=$1 AND status='awaiting_mapping'",
+        &[&id, &mappings],
     )
-    .bind(id.as_str())
-    .bind(mappings)
-    .exec(&mut tx)
     .await?;
     let job = load_job(&mut tx, &id).await?;
     tx.commit().await?;
@@ -404,11 +424,11 @@ async fn fetch_files(
     .bind(id.as_str())
     .exec(&mut tx)
     .await?;
-    toasty::sql::statement(
-        "UPDATE slack_import_jobs SET status='fetching_files',available_at=now(),attempts=0,error=NULL,finished_at=NULL,updated_at=now() WHERE id=$1 AND status='completed'",
+    transition(
+        &mut tx,
+        "UPDATE slack_import_jobs SET status='fetching_files',processed_files=(SELECT count(*) FROM slack_files WHERE job_id=$1 AND status<>'pending'),available_at=now(),attempts=0,error=NULL,finished_at=NULL,updated_at=now() WHERE id=$1 AND status='completed'",
+        &[&id],
     )
-    .bind(id.as_str())
-    .exec(&mut tx)
     .await?;
     let job = load_job(&mut tx, &id).await?;
     tx.commit().await?;
@@ -431,11 +451,11 @@ async fn cancel(
             "An import in status '{status}' cannot be cancelled"
         )));
     }
-    toasty::sql::statement(
-        "UPDATE slack_import_jobs SET status='cancelled',lease_until=NULL,lease_token=NULL,finished_at=now(),updated_at=now() WHERE id=$1",
+    transition(
+        &mut tx,
+        "UPDATE slack_import_jobs SET status='cancelled',lease_until=NULL,lease_token=NULL,finished_at=now(),updated_at=now() WHERE id=$1 AND status IN ('uploading','awaiting_mapping','failed')",
+        &[&id],
     )
-    .bind(id.as_str())
-    .exec(&mut tx)
     .await?;
     let job = load_job(&mut tx, &id).await?;
     tx.commit().await?;

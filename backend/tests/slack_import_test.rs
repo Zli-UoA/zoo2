@@ -17,6 +17,10 @@ use backend::{
     state::AppState, storage::ensure_bucket_exists,
 };
 
+/// ワーカーの run_once は DB 上のどのジョブでも拾うため、設定 (添付取得のトークンなど) の違う
+/// テスト同士が互いのジョブを処理しないよう、このファイルのテストは順に実行する。
+static SERIAL: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
 async fn request(
     app: &Router,
     method: &str,
@@ -145,6 +149,7 @@ async fn upload(state: &AppState, app: &Router, admin: &str, zip: &[u8]) -> Valu
 
 #[tokio::test]
 async fn test_slack_export_import_flow() -> anyhow::Result<()> {
+    let _serial = SERIAL.lock().await;
     dotenvy::dotenv().ok();
     dotenvy::from_filename("../.env").ok();
 
@@ -453,6 +458,19 @@ async fn test_slack_export_import_flow() -> anyhow::Result<()> {
             .is_err()
     );
 
+    // 失敗したジョブに残った添付を想定し、1 件を取得失敗の状態に戻しておく
+    {
+        let mut db = state.db.clone();
+        let mut tx = db.transaction().await?;
+        toasty::sql::statement(
+            "UPDATE slack_files SET status='failed',attachment_id=NULL WHERE team_id=$1 AND slack_file_id='F3'",
+        )
+        .bind(team.as_str())
+        .exec(&mut tx)
+        .await?;
+        tx.commit().await?;
+    }
+
     // 同じエクスポートをもう一度取り込んでも重複しない
     let again = upload(&state, &app, &admin, &zip).await;
     let channels = again["analysis"]["channels"].as_array().unwrap();
@@ -483,7 +501,16 @@ async fn test_slack_export_import_flow() -> anyhow::Result<()> {
     )
     .await?;
     assert_eq!(status, StatusCode::OK);
-    drive(&state, &app, &admin, &again_id, "completed").await;
+    let again_done = drive(&state, &app, &admin, &again_id, "completed").await;
+    // 取得に失敗していた添付は新しいジョブに引き継がれ、取得し直される
+    let handed = sql(
+        &state,
+        "SELECT json_build_object('job_id',job_id,'status',status)::text FROM slack_files WHERE team_id=$1 AND slack_file_id='F3'",
+        &[&team],
+    )
+    .await?;
+    assert_eq!(handed[0], json!({"job_id": again_id, "status": "done"}));
+    assert_eq!(again_done["processed_files"], 1, "{again_done}");
     let count = sql(
         &state,
         "SELECT json_build_object('n',count(*))::text FROM messages WHERE channel_id=$1",
@@ -523,6 +550,7 @@ async fn test_slack_export_import_flow() -> anyhow::Result<()> {
 
 #[tokio::test]
 async fn test_slack_import_rejects_invalid_archives_and_can_be_cancelled() -> anyhow::Result<()> {
+    let _serial = SERIAL.lock().await;
     dotenvy::dotenv().ok();
     dotenvy::from_filename("../.env").ok();
     let mut config = Config::from_env();
@@ -634,6 +662,7 @@ async fn test_slack_import_rejects_invalid_archives_and_can_be_cancelled() -> an
 
 #[tokio::test]
 async fn test_slack_reimport_relinks_replies_and_serializes_targets() -> anyhow::Result<()> {
+    let _serial = SERIAL.lock().await;
     dotenvy::dotenv().ok();
     dotenvy::from_filename("../.env").ok();
     let mut config = Config::from_env();
