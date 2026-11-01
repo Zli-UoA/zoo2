@@ -124,6 +124,8 @@ fun completionOptions(
             users
                 .filter {
                     it.text("id") in memberIds &&
+                        // Slack から取り込んだ未連携のプレースホルダなど、無効化済みのユーザーは選ばせない
+                        !it.flag("is_deactivated") &&
                         Regex("[a-zA-Z0-9._-]+").matches(it.text("user_name")) &&
                         it.text("user_name").lowercase() !in setOf("channel", "here")
                 }

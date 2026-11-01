@@ -376,6 +376,7 @@ fun WorkspaceMembers(app: Session, users: List<Row>) {
         users
             .filter {
                 !it.flag("is_bot") &&
+                    !it.flag("is_deactivated") &&
                     (author(it) + " " + it.text("user_name")).contains(query.trim(), true)
             }
             .sortedWith { left, right ->
