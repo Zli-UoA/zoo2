@@ -1,3 +1,4 @@
+import { playForImplementation } from "../../../.storybook/play-for-implementation";
 import type { Meta, StoryObj } from "@storybook/react-vite";
 import { delay, http, HttpResponse } from "msw";
 import { expect, fn, screen, userEvent, waitFor, within } from "storybook/test";
@@ -69,20 +70,20 @@ export const NotLinked: Story = {
       ],
     },
   },
-  play: async ({ args }) => {
+  play: playForImplementation(async ({ args }) => {
     await userEvent.click(await screen.findByRole("button", { name: "Slack と連携" }));
     await waitFor(() =>
       expect(args.navigateTo).toHaveBeenCalledWith("https://slack.com/oauth/v2/authorize?state=x"),
     );
-  },
+  }),
 };
 
 export const Linked: Story = {
   parameters: { msw: { handlers: [linked] } },
-  play: async () => {
+  play: playForImplementation(async () => {
     await userEvent.click(await screen.findByRole("button", { name: "連携を解除" }));
     await expect(await screen.findByRole("alertdialog")).toBeVisible();
-  },
+  }),
 };
 
 export const NotConfigured: Story = {
@@ -93,10 +94,10 @@ export const NotConfigured: Story = {
       ],
     },
   },
-  play: async () => {
+  play: playForImplementation(async () => {
     await expect(await screen.findByText(/設定されていません/)).toBeVisible();
     await expect(screen.queryByRole("button", { name: "Slack と連携" })).not.toBeInTheDocument();
-  },
+  }),
 };
 
 export const LoadError: Story = {
@@ -105,19 +106,19 @@ export const LoadError: Story = {
       handlers: [http.get("*/api/slack/link", () => new HttpResponse(null, { status: 500 }))],
     },
   },
-  play: async () => {
+  play: playForImplementation(async () => {
     await expect(await screen.findByRole("alert")).toBeVisible();
-  },
+  }),
 };
 
 export const AdminManifest: Story = {
   parameters: { msw: { handlers: [admin, notLinked, manifest] } },
-  play: async () => {
+  play: playForImplementation(async () => {
     const manifest = await screen.findByRole<HTMLTextAreaElement>("textbox", {
       name: "Slack アプリの manifest",
     });
     await waitFor(() => expect(manifest.value).toContain("/api/slack/oauth/callback"));
-  },
+  }),
 };
 
 export const ReturnedWithError: Story = {
@@ -125,11 +126,11 @@ export const ReturnedWithError: Story = {
     router: { initialEntries: ["/settings?tab=slack&slack=error&reason=already_linked"] },
     msw: { handlers: [notLinked] },
   },
-  play: async () => {
+  play: playForImplementation(async () => {
     await expect(await screen.findByRole("alert")).toHaveTextContent(
       "別の Zoo アカウントと連携済み",
     );
-  },
+  }),
 };
 
 export const ReturnedFromSlack: Story = {
@@ -157,13 +158,13 @@ export const ReturnedFromSlack: Story = {
       ],
     },
   },
-  play: async () => {
+  play: playForImplementation(async () => {
     await expect(await screen.findByText("Zli の alice として連携しています。")).toBeVisible();
     // 遅れて届いた連携前の状態で上書きしない
     await new Promise((resolve) => setTimeout(resolve, 500));
     await expect(screen.getByText("Zli の alice として連携しています。")).toBeVisible();
     await expect(screen.queryByRole("button", { name: "Slack と連携" })).not.toBeInTheDocument();
-  },
+  }),
 };
 
 export const UnlinkError: Story = {
@@ -177,13 +178,13 @@ export const UnlinkError: Story = {
       ],
     },
   },
-  play: async () => {
+  play: playForImplementation(async () => {
     await userEvent.click(await screen.findByRole("button", { name: "連携を解除" }));
     const dialog = await screen.findByRole("alertdialog");
     await waitFor(() => expect(dialog).toBeVisible());
     await userEvent.click(within(dialog).getByRole("button", { name: "連携を解除" }));
     await expect(await screen.findByText(/連携は残っています/)).toBeVisible();
-  },
+  }),
 };
 
 export const ReturnedFromSlackFailed: Story = {
@@ -198,17 +199,17 @@ export const ReturnedFromSlackFailed: Story = {
       ],
     },
   },
-  play: async () => {
+  play: playForImplementation(async () => {
     await expect(await screen.findByRole("alert")).toHaveTextContent("有効期限");
     // 連携をやり直せる
     await expect(await screen.findByRole("button", { name: "Slack と連携" })).toBeVisible();
-  },
+  }),
 };
 
 export const Mobile: Story = {
   parameters: Linked.parameters,
   globals: { viewport: { value: "mobile" } },
-  play: async () => {
+  play: playForImplementation(async () => {
     await expect(await screen.findByRole("button", { name: "連携を解除" })).toBeVisible();
-  },
+  }),
 };

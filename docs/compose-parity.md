@@ -19,6 +19,7 @@ Reactを機能・UI・操作の基準とする。変更時は [compose-react-par
 | Home・連合投稿・ソーシャル操作 | `home/HomeScreen`, `HomeComposer`, `HomeReactionPicker`, `ActivityPubEmoji`, `useHomeLive` | `HomeScreen.kt`, `HomeComposer.kt`, `HomeTimeline.kt`, `HomePostCard.kt`, `HomeActivityPub.kt`, `HomeReactionPicker.kt`, `HomeUserSearch.kt`, `HomeLive.kt` | 既存Home全47 Storyと両実装の操作・画像、Composer状態テスト |
 | 連合通知・フォロー承認・チャンネル共有設定 | `ActivityPubNotifications`, `ZooSettings` | `ActivityPubNotifications.kt`, `ChannelTimelineSettings.kt` | 既存通知・設定Story、状態/API契約テスト |
 | Slack取り込み (#295) | `SlackImportPanel`, `lib/api/slackImport` | `SlackImport.kt`, `Settings.kt`（管理者だけの「Slack 取り込み」タブ） | SlackImportTest、既存SlackImport全11 StoryのKotlin表示・操作。ZIPのアップロードは既存の `pickFiles` / `filePut` を使うため、React版と違って進み具合（%）は出さず、アップロード中の状態だけを表示する |
+| Slackアカウント連携 (#291) | `SlackLinkPanel`, `lib/api/slackLink` | `SlackLink.kt`, `Settings.kt`（全員に出る「Slack 連携」タブ） | SlackLinkTest、既存SlackLink全10 StoryのKotlin表示・操作。Slack からの戻り（`?code=&state=`）は同じく設定画面で受け、ログイン中のユーザーとして完了する |
 | Bubble Chat | `BubbleChatScreen`, `useBubbleChat` | `Bubble.kt` | ParityTransportTest、既存BubbleChat StoryのKotlin表示、共有・クリア・pagehide E2E |
 | App・Webhook・フォーム・権限 | `AppsDialog`, `AppBlocks`, `ChannelWebhooksDialog` | `Integrations.kt`, `Channels.kt` | CRUD E2E、API・ブロック契約テスト |
 | API・Electric・保存・再接続 | `lib/api`, `lib/electric`, `lib/offline` | `Repository.kt`, `Session.kt` | RepositoryTest、保存エラー・CSP・オフラインE2E |

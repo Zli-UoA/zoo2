@@ -20,6 +20,16 @@ fun PreferenceStory(app: Session, options: Row) {
         "settings" -> ZooSettings(app, users)
         "members" -> WorkspaceMembers(app, users)
         "slackimport" -> SlackImportPanel(app)
+        // Storybook では Slack へ移動せず、Story の navigateTo を呼ぶ
+        "slacklink" ->
+            SlackLinkPanel(app) { url ->
+                if (fixture.array("callbacks").any { it.jsonPrimitive.content == "navigateTo" })
+                    app.platform.invoke(
+                        "storyCallback",
+                        obj("name" to "navigateTo", "args" to JsonArray(listOf(JsonPrimitive(url))))
+                            .toString(),
+                    )
+            }
         "mfmsearch" ->
             Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(16.dp)) {
                 Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.TopEnd) {
