@@ -40,6 +40,8 @@ pub enum AppEvent {
         content: String,
     },
     ReadStates(Vec<ReadState>),
+    /// GitHub Releases に新しい版がある。
+    UpdateAvailable(String),
     Typing {
         channel_id: String,
         parent_id: Option<String>,
@@ -126,6 +128,8 @@ pub struct App {
     /// 送信に失敗した本文。古い順。
     pub failed_drafts: Vec<FailedDraft>,
     pub notice: Option<(String, Instant)>,
+    /// 新しい版があれば、その版。ステータス行に出し続ける。
+    pub update_available: Option<String>,
     pub should_quit: bool,
 
     /// 未読のあるチャンネル。
@@ -174,6 +178,7 @@ impl App {
             target: Target::Channel,
             failed_drafts: Vec::new(),
             notice: None,
+            update_available: None,
             should_quit: false,
             unread: HashSet::new(),
             marked_read: HashMap::new(),
@@ -284,6 +289,7 @@ impl App {
                 }
                 self.mark_current_read();
             }
+            AppEvent::UpdateAvailable(version) => self.update_available = Some(version),
             AppEvent::Typing {
                 channel_id,
                 parent_id,

@@ -232,12 +232,20 @@ zoo2-tui
 | `oidc_client_id` | `ZOO_OIDC_CLIENT_ID` | なし | AuthZ に登録した TUI 用クライアントの ID |
 | `oidc_resource` | `ZOO_OIDC_RESOURCE` | なし | 要求する resource (RFC 8707)。backend の `OIDC_AUDIENCE` と同じ値にする |
 | `oidc_scope` | `ZOO_OIDC_SCOPE` | `openid profile offline_access` | 要求するスコープ |
+| `check_updates` | `ZOO_CHECK_UPDATES` | `true` | 起動時に新しい版を調べる。`false` で調べない |
 
 `oidc_issuer` と `oidc_client_id` の両方があれば OIDC、どちらもなければ dev モードで接続します。
 
 AuthZ には、デバイスコードと refresh_token のグラントを許可した public client を登録しておく必要があります。スコープは `openid profile offline_access`、resource は backend の `OIDC_AUDIENCE` と同じ値です。
 
 ## 更新とアンインストール
+
+起動中は、GitHub Releases に新しい版が出ていないかを起動時と6時間おきに調べます。新しい版があれば、画面下のステータス行に「新しい版 vX.Y.Z があります」と出ます。自動では入れ替えないので、下の表の方法で更新してください。
+
+- 問い合わせ先は GitHub の公開 API (`api.github.com`) です。送るのは TUI の版を含む User-Agent だけで、zoo2 のアカウントやトークンは送りません。
+- 結果は設定ディレクトリの `update-check.json` に覚え、6時間以内は問い合わせ直しません。
+- 調べられなかったとき (オフラインなど) は何も出しません。
+- 調べたくないときは `config.toml` に `check_updates = false` を書くか、`ZOO_CHECK_UPDATES=false` を指定します。
 
 | 入れ方 | 更新 | アンインストール |
 |---|---|---|
@@ -304,6 +312,7 @@ make tui-check
 - `src/mfm.rs`: MFM の簡易レンダラ
 - `src/auth/`: デバイスコードログインとトークンの保存・更新
 - `src/ui/`: 画面の状態、キー操作、描画
+- `src/update.rs`: GitHub Releases の新しい版の確認
 
 ### リリース
 

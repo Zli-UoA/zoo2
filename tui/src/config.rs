@@ -13,6 +13,8 @@ const DEFAULT_SCOPE: &str = "openid profile offline_access";
 pub struct Config {
     pub api_base_url: String,
     pub auth: AuthConfig,
+    /// 起動時に GitHub Releases の新しい版を調べるか。
+    pub check_updates: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -42,6 +44,7 @@ struct FileConfig {
     oidc_client_id: Option<String>,
     oidc_resource: Option<String>,
     oidc_scope: Option<String>,
+    check_updates: Option<bool>,
 }
 
 impl Config {
@@ -111,7 +114,20 @@ fn resolve(file: FileConfig, env: &HashMap<String, String>) -> Result<Config> {
         },
     };
 
-    Ok(Config { api_base_url, auth })
+    let check_updates = match pick("ZOO_CHECK_UPDATES", None) {
+        Some(value) => match value.to_ascii_lowercase().as_str() {
+            "1" | "true" | "yes" | "on" => true,
+            "0" | "false" | "no" | "off" => false,
+            _ => bail!("ZOO_CHECK_UPDATES は true か false にしてください: {value}"),
+        },
+        None => file.check_updates.unwrap_or(true),
+    };
+
+    Ok(Config {
+        api_base_url,
+        auth,
+        check_updates,
+    })
 }
 
 #[cfg(test)]
@@ -185,6 +201,29 @@ mod tests {
         )
         .unwrap();
         assert!(matches!(config.auth, AuthConfig::Dev { .. }));
+    }
+
+    #[test]
+    fn update_check_is_on_unless_disabled() {
+        assert!(
+            resolve(FileConfig::default(), &env(&[]))
+                .unwrap()
+                .check_updates
+        );
+        let file = FileConfig {
+            check_updates: Some(false),
+            ..Default::default()
+        };
+        assert!(!resolve(file, &env(&[])).unwrap().check_updates);
+        let config = resolve(FileConfig::default(), &env(&[("ZOO_CHECK_UPDATES", "off")]));
+        assert!(!config.unwrap().check_updates);
+        assert!(
+            resolve(
+                FileConfig::default(),
+                &env(&[("ZOO_CHECK_UPDATES", "maybe")])
+            )
+            .is_err()
+        );
     }
 
     #[test]
