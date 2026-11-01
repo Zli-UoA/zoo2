@@ -185,7 +185,7 @@ export const UnlinkError: Story = {
     const dialog = await screen.findByRole("alertdialog");
     await waitFor(() => expect(dialog).toBeVisible());
     await userEvent.click(within(dialog).getByRole("button", { name: "連携を解除" }));
-    await expect(await screen.findByText(/連携は残っています/)).toBeVisible();
+    await expect(await within(dialog).findByText(/連携は残っています/)).toBeVisible();
   }),
 };
 

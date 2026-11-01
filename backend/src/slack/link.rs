@@ -276,7 +276,11 @@ async fn complete(
     .await;
     if let Err(e) = result {
         drop(tx);
-        discard(&s, &token).await;
+        // 同じ Slack ユーザーがすでに連携済みなら、受け取ったトークンは既存の連携と同じ認可に属する。
+        // トークンのローテーションを使っていないので、失効させると既存の連携まで使えなくなる。
+        if !linked_elsewhere(&s, &team.id, &authed.id).await {
+            discard(&s, &token).await;
+        }
         return Err(e);
     }
     let state = link_state(&mut tx, &s, &user.id).await?;
@@ -336,6 +340,22 @@ async fn revoke(s: &AppState, token: &str) -> Result<(), AppError> {
     Err(failed(
         body["error"].as_str().unwrap_or("unknown").to_string(),
     ))
+}
+
+/// この Slack ユーザーに有効な連携がすでにあるか (判定できなければ、失効させないよう true)
+async fn linked_elsewhere(s: &AppState, team: &str, slack_user: &str) -> bool {
+    let mut db = s.db.clone();
+    let Ok(mut tx) = db.transaction().await else {
+        return true;
+    };
+    query(
+        &mut tx,
+        "SELECT json_build_object('user_id',user_id)::text FROM slack_user_links WHERE team_id=$1 AND slack_user_id=$2",
+        &[team, slack_user],
+    )
+    .await
+    .map(|rows| !rows.is_empty())
+    .unwrap_or(true)
 }
 
 /// 連携できなかったときに受け取ったトークンを片付ける (失敗しても連携の失敗理由を優先する)

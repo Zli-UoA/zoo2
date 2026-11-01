@@ -142,7 +142,14 @@ export function SlackLinkPanel({ navigateTo = (url: string) => window.location.a
                 team: state.link.team_name || state.link.team_id,
               })}
             </p>
-            <Button variant="outline" disabled={pending} onClick={() => setConfirmUnlink(true)}>
+            <Button
+              variant="outline"
+              disabled={pending}
+              onClick={() => {
+                setError("");
+                setConfirmUnlink(true);
+              }}
+            >
               <UnlinkIcon />
               {t("slackLink.unlink")}
             </Button>
@@ -168,6 +175,8 @@ export function SlackLinkPanel({ navigateTo = (url: string) => window.location.a
         description={t("slackLink.unlinkDescription")}
         confirmLabel={t("slackLink.unlink")}
         pending={pending}
+        // 背後のパネルはモーダルの裏になるので、解除できなかった理由はダイアログにも出す
+        error={error === t("slackLink.unlinkFailed") ? error : undefined}
         onConfirm={unlink}
       />
     </div>

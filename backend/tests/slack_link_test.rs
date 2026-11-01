@@ -150,6 +150,23 @@ async fn test_slack_account_link_reassigns_placeholder() -> anyhow::Result<()> {
         .mount(&slack)
         .await;
 
+    // 連携済みの Slack ユーザーとの競合で拒否したときは、既存の連携の認可を消さないよう失効させない
+    Mock::given(method("POST"))
+        .and(path("/auth.revoke"))
+        .and(header_is("authorization", "Bearer xoxp-code-carol"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"ok": true})))
+        .expect(0)
+        .mount(&slack)
+        .await;
+    // 別のワークスペースのトークンは使わないので失効させる
+    Mock::given(method("POST"))
+        .and(path("/auth.revoke"))
+        .and(header_is("authorization", "Bearer xoxp-code-other-team"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"ok": true})))
+        .expect(1)
+        .mount(&slack)
+        .await;
+
     let mut config = Config::from_env();
     config.dev_auth_enabled = true;
     config.slack.client_id = Some("cid".into());
