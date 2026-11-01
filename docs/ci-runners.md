@@ -1,12 +1,16 @@
 # CI のRunner選択
 
-軽量ジョブはkubecamp固定、空き状況による切り替えを残すDocker不要ジョブは **kubecamp → zli-k8s → GitHub-hosted** の順に実行先を選びます。kubecampのラベルは `zli-kubecamp-no-docker`、zoo2 ARCのラベルは `zli-k8s` です。Docker daemonが必要なジョブは、空き状況にかかわらず **GitHub-hosted** で実行します。zli-k8sのDinDはzoo2クラスタのetcdと同じディスクに書き込み、API停止の原因になっていたためです。kubecampはPodSecurityでprivilegedを許可しないため、DinDを置けません。zoo2はpublicリポジトリなので、GitHub-hostedの標準Runnerは無料です。
+軽量ジョブはkubecamp固定です。空き状況による切り替えを残すDocker不要ジョブは、**kubecamp → GitHub-hosted → zli-k8s** の順に実行先を選びます。kubecampのラベルは `zli-kubecamp-no-docker`、zoo2 ARCのラベルは `zli-k8s` です。Docker daemonが必要なジョブとkubecampのメモリに収まらないジョブは、kubecampを飛ばして **GitHub-hosted → zli-k8s** の順に選びます。zli-k8sのDinDはzoo2クラスタのetcdと同じディスクに書き込み、API停止の原因になっていたので、zli-k8sは最後の受け皿です。kubecampはPodSecurityでprivilegedを許可しないため、DinDを置けません。
 
-自動選択が必要なworkflowだけに置く `runner` ジョブが、checkoutせずにorgのRunner一覧を取得します。`runs-on` 出力はDocker不要用、`docker-runs-on` 出力はDocker必須用で、常に `ubuntu-latest` を返します。`large-runs-on` はkubecampの2GiBを超えるジョブ用で、ARC → Hostedの選択を使います。次の条件で選びます。
+zoo2はpublicリポジトリなので、GitHub-hostedの標準Runnerは無料で、分数の上限もありません。zli-k8sへ進むのは、privateリポジトリでGitHub Freeの無料枠（月2,000分）を使い切りそうな場合だけです。AuthZとzoo2-infraも同じ判定を使います。
+
+自動選択が必要なworkflowだけに置く `runner` ジョブが、checkoutせずにorgのRunner一覧を取得します。`runs-on` 出力はDocker不要用、`docker-runs-on` 出力はDocker必須用、`large-runs-on` はkubecampの2GiBを超えるジョブ用です。`docker-runs-on` と `large-runs-on` は同じ値を返します。次の条件で選びます。
 
 1. onlineかつidleのkubecamp Runnerがあれば、自動選択対象のDocker不要ジョブを割り当てます。
-2. kubecampが不在または全台busyなら、idleのARC Runnerを使います。登録台数から増設余地を推測せず、idleがある場合だけARCを選びます。
-3. ARCが不在、または全台busyならGitHub-hostedを選びます。
+2. kubecampが不在または全台busyなら、GitHub-hostedを選びます。Docker必須ジョブと大容量ジョブは常にここから選びます。
+3. GitHub-hostedを使えないと判断した場合だけ、zli-k8sを選びます。ARCの空きは見ず、zli-k8sのキューで順番を待ちます。
+
+GitHub-hostedを使えるかは、リポジトリの公開範囲で決めます。publicなら常に使えます。privateか公開範囲が分からない場合は、Billing API（`GET /organizations/{org}/settings/billing/usage`）で当月のActions Linuxの分数を合計します。合計の対象はorgのprivateリポジトリの分だけです。合計が1,900分（無料枠2,000分から、使用量の反映遅れの分を引いた値）未満ならGitHub-hostedを、それ以上ならzli-k8sを選びます。orgには `prevent_further_usage` 付きの$0 budgetがあり、無料枠を使い切るとGitHub-hostedのジョブは開始できないためです。
 
 forkの `pull_request` は、選択処理と各ジョブの両方でGitHub-hostedに固定します。`pull_request_target` は既定ブランチのコードだけを実行し、PRのコードをcheckoutしません。Runner Groupはアクセス範囲の管理に使えますが、Group自体に順序付きfallbackを指定する機能はありません。[GitHubの実行先指定](https://docs.github.com/en/actions/how-tos/write-workflows/choose-where-workflows-run/choose-the-runner-for-a-job)
 
@@ -18,13 +22,13 @@ forkの `pull_request` は、選択処理と各ジョブの両方でGitHub-hoste
 
 ## 状態確認用の認証
 
-各リポジトリのRepository Secret `RUNNER_STATUS_TOKEN` に登録します。publicリポジトリではOrg Secretの共有も使えますが、GitHub FreeのprivateリポジトリはOrg Secretを利用できません。fine-grained PATならOrganization permissionsのSelf-hosted runners: Read-onlyを使います。判定ジョブ以外には渡しません。
+各リポジトリのRepository Secret `RUNNER_STATUS_TOKEN` に登録します。publicリポジトリではOrg Secretの共有も使えますが、GitHub FreeのprivateリポジトリはOrg Secretを利用できません。fine-grained PATならOrganization permissionsのSelf-hosted runners: Read-onlyを使います。privateリポジトリで無料枠を判定するには、さらにOrganization permissionsのAdministration: Read-only（Billing API用。発行者はorg ownerかbilling manager）と、Repository accessのAll repositories（privateリポジトリ一覧の取得用）が必要です。判定ジョブ以外には渡しません。
 
-トークン不足・API障害で状態を確認できない場合、Docker必須ジョブは通常どおりGitHub-hostedで実行します。Docker不要ジョブはkubecamp、大容量ジョブはARCを選びます。障害を確認できていないため、この2つは最初の適格なself-hosted poolで待機する扱いです。そのpoolに利用可能なRunnerがなければ、GitHub-hostedへ切り替えずにキューで待ち続ける可能性があります。
+トークン不足・API障害でkubecampの状態を確認できない場合、Docker不要ジョブはkubecampで待機します。Docker必須ジョブと大容量ジョブは、publicリポジトリなら通常どおりGitHub-hostedで実行します。privateリポジトリでトークン不足や権限不足のために無料枠を確認できない場合は、課金で止まらないようzli-k8sを選びます。
 
 判定の失敗は、どこで失敗したかで扱いが変わります。
 
-- selector内の `select` ジョブが失敗した場合: `continue-on-error` で成功扱いになり、出力が空になります。各ジョブの `runs-on` のfallbackが使われ、上と同じ実行先（Docker必須ジョブはGitHub-hosted）になります。
+- selector内の `select` ジョブが失敗した場合: `continue-on-error` で成功扱いになり、出力が空になります。各ジョブの `runs-on` のfallbackが使われます。Docker不要ジョブはkubecamp、Docker必須ジョブはGitHub-hosted、大容量ジョブはzli-k8sです。
 - 呼び出し側の `runner` ジョブ自体がfailure・skipped・cancelledになった場合: 後続ジョブは `needs` の成功条件を満たさずskipされます。`runs-on` のfallbackには到達しません。Re-run all jobsで選び直してください。
 - 判定ジョブがキュー待ちの間は、後続ジョブも待ちます。
 
@@ -40,7 +44,7 @@ kubecampは1ジョブごとの使い捨てPodです。7台の補充は毎分のC
 - Docker不要: Rustのbuild／lint／単体テスト、frontendのcheck／単体検証、イメージ計画、ラベル付与、イメージ清掃、Flux通知、Storybookのbuild／deploy、automerge gate。
 - イメージのpromote／publishはregistryのmanifestを操作するだけです。常設CLIの `docker buildx imagetools` と `docker login` を使い、daemonを起動するsetup-buildxは実行しません。kubecampのDocker daemonがない実Runnerで、公開manifestのinspect成功を確認しました。実際のタグ更新・発行は別途CIで確認します。
 
-Storybookを含む `browser-test` は、1CPU・2GiB制約で直列化・heap制限でもOOMを再現したため `large-runs-on` を使います。Dockerは不要ですが、必要なメモリを持つARC（Runner limit 6GiB）またはHostedを選びます。テスト内容や失敗条件は維持します。
+Storybookを含む `browser-test` は、1CPU・2GiB制約で直列化・heap制限でもOOMを再現したため `large-runs-on` を使います。Dockerは不要ですが、必要なメモリを持つHosted、またはARC（Runner limit 6GiB）を選びます。テスト内容や失敗条件は維持します。
 
 ## kubecamp固定と自動選択
 
