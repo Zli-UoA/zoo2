@@ -66,7 +66,8 @@ export function SlackLinkPanel({ navigateTo = (url: string) => window.location.a
     handled.current = result;
     void navigate({ to: "/settings", search: { tab: "slack" }, replace: true });
     const fail = (reason: string) => {
-      toast.error(t(LINK_ERRORS[reason as keyof typeof LINK_ERRORS] ?? LINK_ERRORS.failed));
+      // toast は消えるので、理由が分かるようパネル内に残す
+      setError(t(LINK_ERRORS[reason as keyof typeof LINK_ERRORS] ?? LINK_ERRORS.failed));
     };
     if (result.status === "error") {
       fail(result.reason);

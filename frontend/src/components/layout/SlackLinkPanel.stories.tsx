@@ -1,6 +1,6 @@
 import type { Meta, StoryObj } from "@storybook/react-vite";
 import { http, HttpResponse } from "msw";
-import { expect, fn, screen, userEvent } from "storybook/test";
+import { expect, fn, screen, userEvent, waitFor } from "storybook/test";
 import { SlackLinkPanel } from "./SlackLinkPanel";
 
 const notLinked = http.get("*/api/slack/link", () =>
@@ -71,8 +71,8 @@ export const NotLinked: Story = {
   },
   play: async ({ args }) => {
     await userEvent.click(await screen.findByRole("button", { name: "Slack と連携" }));
-    await expect(args.navigateTo).toHaveBeenCalledWith(
-      "https://slack.com/oauth/v2/authorize?state=x",
+    await waitFor(() =>
+      expect(args.navigateTo).toHaveBeenCalledWith("https://slack.com/oauth/v2/authorize?state=x"),
     );
   },
 };
@@ -113,9 +113,10 @@ export const LoadError: Story = {
 export const AdminManifest: Story = {
   parameters: { msw: { handlers: [admin, notLinked, manifest] } },
   play: async () => {
-    await expect(
-      await screen.findByRole("textbox", { name: "Slack アプリの manifest" }),
-    ).toHaveValue(expect.stringContaining("oauth/callback"));
+    const manifest = await screen.findByRole<HTMLTextAreaElement>("textbox", {
+      name: "Slack アプリの manifest",
+    });
+    await waitFor(() => expect(manifest.value).toContain("/api/slack/oauth/callback"));
   },
 };
 
@@ -125,7 +126,9 @@ export const ReturnedWithError: Story = {
     msw: { handlers: [notLinked] },
   },
   play: async () => {
-    await expect(await screen.findByText(/別の Zoo アカウントと連携済み/)).toBeVisible();
+    await expect(await screen.findByRole("alert")).toHaveTextContent(
+      "別の Zoo アカウントと連携済み",
+    );
   },
 };
 
@@ -155,4 +158,10 @@ export const ReturnedFromSlack: Story = {
   },
 };
 
-export const Mobile: Story = { ...Linked, globals: { viewport: { value: "mobile" } } };
+export const Mobile: Story = {
+  parameters: Linked.parameters,
+  globals: { viewport: { value: "mobile" } },
+  play: async () => {
+    await expect(await screen.findByRole("button", { name: "連携を解除" })).toBeVisible();
+  },
+};
