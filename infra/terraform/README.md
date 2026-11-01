@@ -52,7 +52,7 @@ brew install opentofu sops age
 
 ## age 鍵の登録
 
-1. 自分の鍵を作り、公開鍵（`age1…`）を確認します。秘密鍵（`AGE-SECRET-KEY-1…`）は Git・Issue・チャットに貼りません。
+1. 自分の age 鍵を作り、公開鍵（`age1…`）を確認します。秘密鍵（`AGE-SECRET-KEY-1…`）は Git・Issue・チャットに貼りません。
 
    ```bash
    mkdir -p ~/.config/sops/age
@@ -60,7 +60,11 @@ brew install opentofu sops age
    age-keygen -y ~/.config/sops/age/keys.txt   # 公開鍵（age1…）
    ```
 
-2. 公開鍵をリポジトリ直下の [`.sops.yaml`](../../.sops.yaml) の `age:` にカンマ区切りで追加する PR を出します。
+   age 鍵が無ければ、SSH の ed25519 鍵でも登録できます。公開鍵（`~/.ssh/id_ed25519.pub` の `ssh-ed25519 AAAA…`、コメント部分は除く）をそのまま使います。
+   復号時、sops は `SOPS_AGE_SSH_PRIVATE_KEY_FILE` の秘密鍵を使い、未設定なら `~/.ssh/id_ed25519` を試します。
+   パスフレーズ付きの SSH 鍵は端末から入力できない環境では復号に失敗するため、CI などの非対話環境では使えません。
+
+2. 公開鍵（`age1…` または `ssh-ed25519 AAAA…`）をリポジトリ直下の [`.sops.yaml`](../../.sops.yaml) の `age:` にカンマ区切りで追加する PR を出します。
 
 3. 既に登録済みのメンバーが、その PR のブランチで passphrase を新しい鍵向けに再暗号化してコミットします。
 
