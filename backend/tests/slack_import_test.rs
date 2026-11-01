@@ -228,6 +228,22 @@ async fn test_slack_export_import_flow() -> anyhow::Result<()> {
     .await?;
     assert_eq!(status, StatusCode::OK);
 
+    // 既存チャンネルには、取り込む過去ログより新しい通常の投稿があり、管理者はまだ読んでいない
+    let newer = uuid::Uuid::new_v4().to_string();
+    {
+        let mut db = state.db.clone();
+        let mut tx = db.transaction().await?;
+        toasty::sql::statement(
+            "INSERT INTO messages(id,user_id,channel_id,content,created_at) VALUES($1,$2,$3,'newer','2026-01-01 00:00:00')",
+        )
+        .bind(newer.as_str())
+        .bind(admin.as_str())
+        .bind(existing.as_str())
+        .exec(&mut tx)
+        .await?;
+        tx.commit().await?;
+    }
+
     let team = format!("T{}", uuid::Uuid::new_v4().simple());
     let suffix = uuid::Uuid::new_v4().simple().to_string();
     let random = format!("random-{suffix}");
@@ -408,13 +424,14 @@ async fn test_slack_export_import_flow() -> anyhow::Result<()> {
         &[&existing],
     )
     .await?;
-    assert_eq!(in_existing.len(), 1);
+    assert_eq!(in_existing.len(), 2);
     let read = sql(
         &state,
         "SELECT json_build_object('at',last_read_at)::text FROM channel_read_states WHERE user_id=$1 AND channel_id=$2",
         &[&admin, &existing],
     )
     .await?;
+    // 取り込んだ過去ログの最新までで止め、2026 年の通常の投稿は未読のまま残す
     assert_eq!(read[0]["at"], "2024-01-02T01:46:40");
     let cursor = sql(
         &state,

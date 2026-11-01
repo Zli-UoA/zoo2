@@ -621,18 +621,20 @@ async fn import(s: &AppState, job: &Job, lease: &Lease) -> Result<(), AppError> 
             tx.commit().await?;
         }
 
-        // 既存メンバーに過去ログが未読として大量に出ないよう、既読位置を最新に合わせる
+        // 既存メンバーに過去ログが未読として大量に出ないよう、既読位置を取り込んだ過去ログの最新まで進める。
+        // チャンネル全体の最新ではなく同期カーソルを使い、それより新しい通常の投稿の未読は残す。
         let mut tx = db.transaction().await?;
         suppress_app_events(&mut tx).await?;
         exec(
             &mut tx,
             "INSERT INTO channel_read_states(user_id,channel_id,last_read_at) \
              SELECT cu.user_id,cu.channel_id,m.latest FROM channel_user cu JOIN users u ON u.id=cu.user_id \
-             CROSS JOIN (SELECT max(created_at) AS latest FROM messages WHERE channel_id=$1) m \
-             WHERE cu.channel_id=$1 AND NOT u.is_deactivated AND m.latest IS NOT NULL \
+             CROSS JOIN (SELECT (to_timestamp(last_ts::numeric) AT TIME ZONE 'UTC')::timestamp(3) AS latest \
+             FROM slack_channels WHERE team_id=$2 AND slack_channel_id=$3 AND last_ts IS NOT NULL) m \
+             WHERE cu.channel_id=$1 AND NOT u.is_deactivated \
              ON CONFLICT (user_id,channel_id) DO UPDATE \
              SET last_read_at=GREATEST(channel_read_states.last_read_at,EXCLUDED.last_read_at)",
-            &[channel_id],
+            &[channel_id, &team, &channel.id],
         )
         .await?;
         if *created && channel.is_archived {
