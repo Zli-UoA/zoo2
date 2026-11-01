@@ -118,6 +118,9 @@ pub struct App {
     /// 選択中のメッセージがペインより長いときの、メッセージ内の表示位置。
     pub inner_scroll: usize,
     pub thread: Option<ThreadView>,
+    /// 直近の描画でタイムラインに出ていた最も新しいメッセージ (チャンネル, メッセージ)。
+    /// 既読はここまでしか進めない。
+    pub newest_shown: Option<(String, String)>,
     pub composer: TextArea<'static>,
     pub target: Target,
     /// 送信に失敗した本文。古い順。
@@ -166,6 +169,7 @@ impl App {
             scroll: 0,
             inner_scroll: 0,
             thread: None,
+            newest_shown: None,
             composer: new_composer(),
             target: Target::Channel,
             failed_drafts: Vec::new(),
@@ -341,6 +345,11 @@ impl App {
         let Some(latest) = self.store.latest_root(&channel_id).map(|m| m.id.clone()) else {
             return;
         };
+        // 古いメッセージを読み返している間は、画面に出ていない新着を既読にしない。
+        // backend は既読位置を戻さないので、表示してから送る。
+        if self.newest_shown.as_ref() != Some(&(channel_id.clone(), latest.clone())) {
+            return;
+        }
         self.unread.remove(&channel_id);
         if self.marked_read.get(&channel_id) == Some(&latest) {
             return;

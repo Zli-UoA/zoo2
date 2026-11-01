@@ -190,6 +190,11 @@ fn draw_messages(frame: &mut Frame, app: &mut App, area: Rect) {
     };
     app.scroll = scroll;
     app.inner_scroll = inner_scroll;
+    app.newest_shown = built
+        .ranges
+        .iter()
+        .rfind(|(_, range)| range.start < scroll + height)
+        .map(|(id, _)| (channel_id.clone(), id.clone()));
     let visible: Vec<Line> = built.lines.into_iter().skip(scroll).take(height).collect();
     frame.render_widget(Paragraph::new(visible), inner);
 }
@@ -568,6 +573,31 @@ mod tests {
         assert!(render(&mut app).contains("リアクション: tada"));
         press(&mut app, KeyCode::Esc);
         assert_eq!(app.mode, Mode::Normal);
+    }
+
+    #[tokio::test]
+    async fn marks_read_only_after_showing_the_latest_message() {
+        let mut app = app();
+        app.on_app_event(AppEvent::ReadStates(vec![ReadState {
+            channel_id: "c1".into(),
+            has_unread: true,
+        }]));
+        press(&mut app, KeyCode::Enter);
+        // まだ描画していないので、最新を見たとは言えない。
+        app.on_tick();
+        assert!(app.unread.contains("c1"));
+
+        render(&mut app);
+        app.on_tick();
+        assert!(!app.unread.contains("c1"));
+
+        // 古いメッセージだけが見えているときは、新着が届いても既読にしない。
+        app.newest_shown = Some(("c1".into(), "m0".into()));
+        app.on_app_event(AppEvent::ReadStates(vec![ReadState {
+            channel_id: "c1".into(),
+            has_unread: true,
+        }]));
+        assert!(app.unread.contains("c1"));
     }
 
     #[tokio::test]
