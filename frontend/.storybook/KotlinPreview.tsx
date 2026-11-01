@@ -252,7 +252,9 @@ export function KotlinPreview(props: KotlinPreviewProps) {
   useEffect(() => {
     if (!expanded || !placeholder.current) return;
     const measure = () => {
-      const rect = placeholder.current!.getBoundingClientRect();
+      const element = placeholder.current;
+      if (!element) return;
+      const rect = element.getBoundingClientRect();
       setOverlayBounds((previous) =>
         previous &&
         (previous.x !== rect.x ||
@@ -276,7 +278,9 @@ export function KotlinPreview(props: KotlinPreviewProps) {
   useEffect(() => {
     if (!placeholder.current) return;
     const measure = () => {
-      const rect = placeholder.current!.getBoundingClientRect();
+      const element = placeholder.current;
+      if (!element) return;
+      const rect = element.getBoundingClientRect();
       const next = { x: rect.x, y: rect.y, width: rect.width, height: rect.height };
       setNormalBounds((previous) =>
         previous?.x === next.x &&

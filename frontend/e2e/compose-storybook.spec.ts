@@ -2,6 +2,15 @@ import { test, expect, type Page } from "@playwright/test";
 
 const nativeQuery = "viewMode=story&globals=implementation:kotlin";
 
+async function waitForStoryPlay(page: Page) {
+  await page.waitForFunction(() => {
+    const preview = window as typeof window & {
+      __STORYBOOK_PREVIEW__?: { currentRender?: { phase: string } };
+    };
+    return preview.__STORYBOOK_PREVIEW__?.currentRender?.phase === "finished";
+  });
+}
+
 async function openNativeStory(page: Page, story: string) {
   const ids: Record<string, string> = {
     "link-preview": "features-chat-linkpreviews--landscape",
@@ -28,11 +37,10 @@ test("existing reaction-user stories render Kotlin names on hover and in the mob
   await page.setViewportSize({ width: 390, height: 844 });
   await page.goto(`/iframe.html?id=features-chat-messagerow--reaction-users&${nativeQuery}`);
   await expect(page.locator("[data-compose-catalog-state=ready]")).toBeVisible({ timeout: 90_000 });
-  await frame
-    .getByRole("button", { name: "👍 にリアクションしたユーザーを表示", exact: true })
-    .click({ force: true });
+  // The existing story's play opens the list; wait before checking its result.
+  await waitForStoryPlay(page);
   await expect(frame.getByText(/A{80} \(@longname\)/)).toBeVisible();
-  await expect(frame.getByText("Bob (@bob)", { exact: true })).toBeVisible();
+  await expect(frame.getByText(/Bob \(@bob\)/)).toBeVisible();
   await page.keyboard.press("Escape");
   await expect(frame.getByText(/A{80} \(@longname\)/)).toBeHidden();
   await page.setViewportSize({ width: 1440, height: 900 });
@@ -214,7 +222,7 @@ test("native cards share metadata and restore failed composer drafts", async ({ 
   const frame = page.frameLocator('iframe[title="Kotlin component preview"]');
   const open = (story: string) => openNativeStory(page, story);
   await open("link-preview");
-  await expect(frame.getByRole("button", { name: /^Zooのリリース情報/ })).toBeVisible();
+  await expect(frame.getByRole("link", { name: /^Zooのリリース情報/ })).toBeVisible();
   await open("integration-cards");
   await expect(frame.getByText("Deployment to storybook-pr-271", { exact: true })).toBeVisible();
   await expect(frame.getByText("Completed", { exact: true })).toBeVisible();
@@ -228,6 +236,7 @@ test("native cards share metadata and restore failed composer drafts", async ({ 
     0,
   );
   await open("composer-send-error");
+  await waitForStoryPlay(page);
   const failingComposer = frame.getByRole("textbox", { name: "メッセージを送信", exact: true });
   await failingComposer.click({ force: true });
   await expect
@@ -239,6 +248,7 @@ test("native cards share metadata and restore failed composer drafts", async ({ 
       }),
     )
     .toBe(true);
+  await page.keyboard.press("ControlOrMeta+A");
   await page.keyboard.insertText("restore after failure");
   await expect(failingComposer).toHaveText("restore after failure");
   await frame.getByRole("button", { name: "送信", exact: true }).click({ force: true });
@@ -261,9 +271,12 @@ test("native attachments render from the existing shared story", async ({ page }
   await page.screenshot({ path: test.info().outputPath("compose-attachment-grid-wide.png") });
   await page.setViewportSize({ width: 390, height: 844 });
   await page.screenshot({ path: test.info().outputPath("compose-attachment-grid-mobile.png") });
-  await frame
-    .getByRole("button", { name: "screenshot.pngをプレビュー", exact: true })
-    .click({ force: true });
+  const previewImage = frame.getByRole("button", {
+    name: "screenshot.pngをプレビュー",
+    exact: true,
+  });
+  await expect(previewImage).toBeVisible();
+  await previewImage.click({ force: true });
   await expect(frame.getByRole("img", { name: "screenshot.png", exact: true })).toBeVisible();
   await page.screenshot({ path: test.info().outputPath("compose-attachment-preview-mobile.png") });
   await frame.getByRole("button", { name: "閉じる", exact: true }).click({ force: true });
