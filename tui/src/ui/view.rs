@@ -336,6 +336,7 @@ const HELP: &[(&str, &str)] = &[
     ("r", "リアクションを付ける / 外す"),
     ("J / L", "チャンネルに参加 / 退出"),
     ("/", "チャンネルを検索"),
+    ("R", "送れなかった本文を入力欄に戻す"),
     ("q / Ctrl+C", "終了"),
 ];
 
@@ -611,9 +612,12 @@ mod tests {
             content: "直した返信".into(),
         };
 
+        // 別のチャンネルの失敗は入力欄に入れず、保存しておく。
         app.on_app_event(failed("c2"));
         assert!(app.composer.is_empty());
-        assert!(render(&mut app).contains("入力欄に戻せませんでした"));
+        assert_eq!(app.failed_drafts.len(), 1);
+        assert!(render(&mut app).contains("送れなかった本文を保存しました"));
+        app.failed_drafts.clear();
 
         app.on_app_event(failed("c1"));
         press(&mut app, KeyCode::Char('i'));
@@ -621,6 +625,35 @@ mod tests {
         assert_eq!(app.target, Target::Edit("r1".into()));
         assert_eq!(app.composer.lines(), ["直した返信"]);
         assert!(render(&mut app).contains("メッセージを編集"));
+    }
+
+    #[tokio::test]
+    async fn keeps_failed_draft_while_writing_the_next_one() {
+        let mut app = app();
+        press(&mut app, KeyCode::Enter);
+        press(&mut app, KeyCode::Char('i'));
+        app.composer.insert_str("次の本文");
+
+        app.on_app_event(AppEvent::RestoreDraft {
+            channel_id: "c1".into(),
+            target: Target::Channel,
+            content: "先の本文".into(),
+        });
+        assert_eq!(app.composer.lines(), ["次の本文"]);
+        assert_eq!(app.failed_drafts.len(), 1);
+
+        // 書きかけがある間は戻さない。
+        press(&mut app, KeyCode::Esc);
+        press(&mut app, KeyCode::Char('R'));
+        assert_eq!(app.composer.lines(), ["次の本文"]);
+        assert!(render(&mut app).contains("書きかけの下書きがあります"));
+
+        app.composer = tui_textarea::TextArea::default();
+        press(&mut app, KeyCode::Char('R'));
+        assert_eq!(app.mode, Mode::Insert);
+        assert_eq!(app.target, Target::Channel);
+        assert_eq!(app.composer.lines(), ["先の本文"]);
+        assert!(app.failed_drafts.is_empty());
     }
 
     #[tokio::test]

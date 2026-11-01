@@ -33,8 +33,7 @@ const INNER_SCROLL_STEP: usize = 10;
 #[derive(Debug)]
 pub enum AppEvent {
     Notice(String),
-    /// 送信に失敗した下書きを入力欄に戻す。
-    /// 送信に失敗した本文を、送り先と一緒に入力欄へ戻す。
+    /// 送信に失敗した本文を、送り先と一緒に入力欄へ戻すか、戻せないときは保存しておく。
     RestoreDraft {
         channel_id: String,
         target: Target,
@@ -82,6 +81,14 @@ pub enum Target {
     Edit(String),
 }
 
+/// 送信に失敗し、入力欄に戻せなかった本文。`R` で入力欄に戻して送り直す。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FailedDraft {
+    pub channel_id: String,
+    pub target: Target,
+    pub content: String,
+}
+
 pub struct ThreadView {
     pub root_id: String,
     pub selected: Option<String>,
@@ -113,6 +120,8 @@ pub struct App {
     pub thread: Option<ThreadView>,
     pub composer: TextArea<'static>,
     pub target: Target,
+    /// 送信に失敗した本文。古い順。
+    pub failed_drafts: Vec<FailedDraft>,
     pub notice: Option<(String, Instant)>,
     pub should_quit: bool,
 
@@ -159,6 +168,7 @@ impl App {
             thread: None,
             composer: new_composer(),
             target: Target::Channel,
+            failed_drafts: Vec::new(),
             notice: None,
             should_quit: false,
             unread: HashSet::new(),
@@ -241,13 +251,21 @@ impl App {
                 target,
                 content,
             } => {
-                if self.current.as_deref() != Some(channel_id.as_str()) {
-                    self.notify(
-                        "別のチャンネルに移ったため、送れなかった本文を入力欄に戻せませんでした",
-                    );
-                } else if self.composer.is_empty() {
+                // 入力欄に書きかけの本文があるか別のチャンネルにいるときは、上書きせずに取っておく。
+                if self.current.as_deref() == Some(channel_id.as_str()) && self.composer.is_empty()
+                {
                     self.composer = composer_with(&content);
                     self.target = target;
+                } else {
+                    self.failed_drafts.push(FailedDraft {
+                        channel_id,
+                        target,
+                        content,
+                    });
+                    self.notify(format!(
+                        "送れなかった本文を保存しました ({}件)。R で入力欄に戻せます",
+                        self.failed_drafts.len()
+                    ));
                 }
             }
             AppEvent::ReadStates(states) => {
@@ -478,6 +496,7 @@ impl App {
             KeyCode::Char('J') => self.join_or_leave(true),
             KeyCode::Char('L') => self.join_or_leave(false),
             KeyCode::Char('/') => self.mode = Mode::Search(String::new()),
+            KeyCode::Char('R') => self.restore_failed_draft(),
             _ => {}
         }
     }
@@ -768,6 +787,32 @@ impl App {
             }
             self.target = target;
         }
+        self.mode = Mode::Insert;
+    }
+
+    /// 保存した失敗の本文を新しい順に1件、送り先のチャンネルを開いて入力欄に戻す。
+    fn restore_failed_draft(&mut self) {
+        if self.failed_drafts.is_empty() {
+            self.notify("送れなかった本文はありません");
+            return;
+        }
+        if !self.composer.is_empty() {
+            self.notify("書きかけの下書きがあります。送信するか消してから戻してください");
+            return;
+        }
+        // 開いているチャンネルのものを優先する。
+        let index = self
+            .failed_drafts
+            .iter()
+            .rposition(|draft| self.current.as_deref() == Some(draft.channel_id.as_str()))
+            .unwrap_or(self.failed_drafts.len() - 1);
+        let draft = self.failed_drafts.remove(index);
+        if self.current.as_deref() != Some(draft.channel_id.as_str()) {
+            self.open_channel(draft.channel_id);
+            self.focus = Focus::Messages;
+        }
+        self.composer = composer_with(&draft.content);
+        self.target = draft.target;
         self.mode = Mode::Insert;
     }
 
