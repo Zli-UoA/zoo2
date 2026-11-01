@@ -117,12 +117,41 @@ remote backend を有効にする前の state は手元にしかありません�
 
 ### 手元に Terraform の state（`terraform.tfstate`）がある場合
 
-`infra/terraform/terraform.tfstate` を置いたまま、上記の環境変数を設定して実行します。state は暗号化されて R2 に移ります。
+`enforced = true` のままでは平文の state を読めないため、移行のあいだだけ平文を読む fallback を足します（[Pre-existing project](https://opentofu.org/docs/v1.11/language/state/encryption/#pre-existing-project)）。
 
-```bash
-tofu init -migrate-state
-tofu plan   # No changes を確認
-```
+1. `versions.tf` の `encryption` を一時的に次のように変えます（コミットしません）。`unencrypted` を fallback に置くときは `enforced` を外す必要があります。
+
+   ```hcl
+   method "unencrypted" "migrate" {}
+
+   state {
+     method = method.aes_gcm.state
+     fallback {
+       method = method.unencrypted.migrate
+     }
+   }
+
+   plan {
+     method = method.aes_gcm.state
+     fallback {
+       method = method.unencrypted.migrate
+     }
+   }
+   ```
+
+2. `infra/terraform/terraform.tfstate` を置いたまま、上記の環境変数を設定して実行します。平文の state を読み、暗号化して R2 に書きます。
+
+   ```bash
+   tofu init -migrate-state
+   ```
+
+3. `versions.tf` を元に戻し（`unencrypted` と `fallback` を削除し、`enforced = true` に戻す）、暗号化した state だけで読めることを確認します。
+
+   ```bash
+   git checkout versions.tf
+   tofu init
+   tofu plan   # No changes を確認
+   ```
 
 確認後、手元の `terraform.tfstate`（と `.backup`）は削除してください。
 
