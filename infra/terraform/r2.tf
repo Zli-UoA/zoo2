@@ -6,10 +6,21 @@ provider "cloudflare" {
 # 1. 本番環境 R2 バケット (zoo-attachments-prod)
 # -----------------------------------------------------------------------------
 
+# 手で作った既存のバケットを取り込みます。ID は <account_id>/<bucket_name>/<jurisdiction>。
+import {
+  to = cloudflare_r2_bucket.prod
+  id = "${var.cloudflare_account_id}/${var.prod_bucket_name}/default"
+}
+
 resource "cloudflare_r2_bucket" "prod" {
   account_id = var.cloudflare_account_id
   name       = var.prod_bucket_name
   location   = var.r2_location
+
+  # 削除や再作成（location の変更など）をすると添付ファイルがすべて失われるため、destroy を拒否します。
+  lifecycle {
+    prevent_destroy = true
+  }
 }
 
 resource "cloudflare_r2_bucket_cors" "prod" {
@@ -55,10 +66,21 @@ resource "cloudflare_r2_bucket_lifecycle" "prod" {
 # 2. ステージング / Preview 環境 R2 バケット (zoo-attachments-stg)
 # -----------------------------------------------------------------------------
 
+# 手で作った既存のバケットを取り込みます。ID は <account_id>/<bucket_name>/<jurisdiction>。
+import {
+  to = cloudflare_r2_bucket.stg
+  id = "${var.cloudflare_account_id}/${var.stg_bucket_name}/default"
+}
+
 resource "cloudflare_r2_bucket" "stg" {
   account_id = var.cloudflare_account_id
   name       = var.stg_bucket_name
   location   = var.r2_location
+
+  # 削除や再作成（location の変更など）をすると添付ファイルがすべて失われるため、destroy を拒否します。
+  lifecycle {
+    prevent_destroy = true
+  }
 }
 
 resource "cloudflare_r2_bucket_cors" "stg" {

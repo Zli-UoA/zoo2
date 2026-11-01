@@ -9,10 +9,11 @@ variable "cloudflare_account_id" {
   description = "Cloudflare Account ID"
 }
 
+# API は大文字で返すので、小文字にすると差分になり、バケットの再作成（全オブジェクトの削除）が計画されます。
 variable "r2_location" {
   type        = string
   description = "R2 Bucket Location Hint (APAC, WNAM, ENAM, WEUR, EEUR)"
-  default     = "apac"
+  default     = "APAC"
 }
 
 variable "prod_bucket_name" {

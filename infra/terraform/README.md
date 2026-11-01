@@ -11,8 +11,8 @@ Zoo アプリケーションのファイル・画像添付機能で使用する 
 
 このディレクトリ（zoo2 リポジトリ）が所有するリソースです。
 
-- `zoo-attachments-prod` (本番環境用バケット, Location: `apac`)
-- `zoo-attachments-stg` (ステージング / Preview環境用バケット, Location: `apac`)
+- `zoo-attachments-prod` (本番環境用バケット, Location: `APAC`)
+- `zoo-attachments-stg` (ステージング / Preview環境用バケット, Location: `APAC`)
 - 各バケットの CORS ルール（ブラウザからの Direct PUT / GET 許可）
 - 不完全マルチパートアップロードの自動破棄ルール（7日）
 
@@ -38,12 +38,12 @@ passphrase はリポジトリごとに別です。
 
 ## 必要なツール
 
-- OpenTofu 1.10 以上（CI は 1.11.14）
+- OpenTofu 1.10 以上（CI はリポジトリの `nix develop` と同じ 1.13.1）
 - [sops](https://github.com/getsops/sops) と [age](https://github.com/FiloSottile/age)
 
 ```bash
-# Nix
-nix shell nixpkgs#opentofu nixpkgs#sops nixpkgs#age
+# Nix（リポジトリ直下の開発シェルに 3 つとも入っています）
+nix develop
 # Homebrew
 brew install opentofu sops age
 ```
@@ -113,7 +113,8 @@ tofu apply
 
 ## State の移行（初回のみ）
 
-remote backend を有効にする前の state は手元にしかありません。`zcp-terraform-state` と鍵が揃ってから、どちらかの手順で一度だけ移行します。
+remote backend を有効にする前の state は手元にしかありません。`zcp-terraform-state` と鍵が揃ってから、どちらかの方法で一度だけ移行します。
+どちらの場合も、マージ前に PR の plan コメントで内容を確認します。マージすると CI がそのまま apply します。
 
 ### 手元に Terraform の state（`terraform.tfstate`）がある場合
 
@@ -157,17 +158,14 @@ remote backend を有効にする前の state は手元にしかありません�
 
 ### state が無い場合
 
-既存のバケットを import します。ID は `<account_id>/<bucket_name>/<jurisdiction>` で、jurisdiction は `default` です。
+既存のバケットは [`r2.tf`](r2.tf) の `import` ブロックで取り込みます。ID は `<account_id>/<bucket_name>/<jurisdiction>` で、jurisdiction は `default` です。手で `tofu import` する必要はありません。
+state にすでにあるバケットには、`import` ブロックは何もしません。
 
-```bash
-tofu init
-tofu import cloudflare_r2_bucket.prod "c9918f2caa050736a07867e6f968c0a2/zoo-attachments-prod/default"
-tofu import cloudflare_r2_bucket.stg  "c9918f2caa050736a07867e6f968c0a2/zoo-attachments-stg/default"
-tofu plan
-```
+PR の plan コメント（または手元の `tofu plan`）は `2 to import, 4 to add, 0 to change, 0 to destroy` になるはずです。
+バケットに change や replace が出たら、マージしないでください。`location` は大文字の `APAC` で一致します。小文字にすると再作成になり、`prevent_destroy` で plan が失敗します。
 
-`cloudflare_r2_bucket_cors` と `cloudflare_r2_bucket_lifecycle` は Cloudflare provider v5 が import に対応していないため、`plan` には 4 つとも create として出ます。
-apply するとバケットの CORS と lifecycle が `plan` の内容で置き換わります。先に現在の設定を確認し、`plan` と一致することを確かめてください。
+`cloudflare_r2_bucket_cors` と `cloudflare_r2_bucket_lifecycle` は Cloudflare provider v5 が import に対応していないため、4 つとも create として出ます。
+apply するとバケットの CORS と lifecycle が `plan` の内容で置き換わります。マージ前に現在の設定を確認し、`plan` と一致することを確かめてください。
 
 ```bash
 # ダッシュボードの R2 > バケット > Settings > CORS Policy / Object lifecycle rules でも確認できる
@@ -177,11 +175,11 @@ npx wrangler r2 bucket lifecycle list zoo-attachments-prod
 npx wrangler r2 bucket lifecycle list zoo-attachments-stg
 ```
 
-- **一致しない場合は apply しないでください。** 実環境に合わせて `r2.tf` や `variables.tf` の既定値を直す PR を先に出します。CORS が合わないと、ブラウザからの Direct PUT がプリフライトで拒否され、添付をアップロードできなくなります。
+- **一致しない場合はマージしないでください。** 実環境に合わせて `r2.tf` や `variables.tf` の既定値を直す PR を先に出します。CORS が合わないと、ブラウザからの Direct PUT がプリフライトで拒否され、添付をアップロードできなくなります。
 - CORS の許可オリジンは `variables.tf` の既定値（本番 `https://zli.chat`、Preview `https://zoo2-pr-*.zli.chat`）で管理しています。CI の plan は `terraform.tfvars` を使わないため、tfvars で上書きすると CI と手元の plan が食い違います。
 - 許可ヘッダーの `If-None-Match` は、backend が上書き禁止の条件として署名するため必要です（`backend/src/apps/files.rs`、`docs/apps.md`）。
 
-apply 後にもう一度 `tofu plan` を実行し、No changes になることを確認します。
+マージ後、Actions の Apply ジョブが成功したことを確認します。次に `infra/terraform/` を変更する PR の plan コメント（または手元の `tofu plan`）が No changes になれば移行は完了です。
 
 ## passphrase の入れ替え
 
@@ -235,8 +233,10 @@ state には鍵のメタデータが `encrypted_metadata_alias`（初期値 `zoo
 
 ## GitHub Actions
 `.github/workflows/terraform-r2.yaml` にて以下を実行します:
-- PR 時: `tofu fmt -check`, `tofu validate`, `tofu plan`
-- `plan` は以下の Secrets がすべて揃っている場合のみ実行し、fork PR などではスキップします。
+- PR 時: `tofu fmt -check`, `tofu validate`, `tofu plan`。plan の結果を PR にコメントし、push のたびに同じコメントを書き換えます。
+- `main` へのマージ時: main でもう一度 plan してから `tofu apply` します。PR のコメント後に main が進んでいれば、apply の内容はコメントと異なることがあります。結果は Actions のログで確認します。
+- apply は同時に 1 つだけ実行し、途中で取り消しません。
+- `plan` は以下の Secrets がすべて揃っている場合のみ実行し、fork PR などではスキップします。`apply` は Secrets が無いと失敗します。Secrets を登録した後、Actions から main で手動実行（workflow_dispatch）すると apply できます。
 
 | Secret | 用途 |
 | --- | --- |
@@ -245,4 +245,4 @@ state には鍵のメタデータが `encrypted_metadata_alias`（初期値 `zoo
 | `TF_STATE_AWS_ACCESS_KEY_ID` / `TF_STATE_AWS_SECRET_ACCESS_KEY` | state バケット用 R2 S3 API トークン |
 | `TF_STATE_PASSPHRASE` | state 暗号化の passphrase |
 
-- `main` マージ時の `apply` ジョブは、state の移行が済んで `plan` が差分なしになるまでコメントアウトしています。
+Secrets はリポジトリの Secrets なので、書き込み権限があればどのブランチのワークフローからでも読み出せます。`CLOUDFLARE_API_TOKEN` は R2 Storage の Edit 権限だけにしてください。
