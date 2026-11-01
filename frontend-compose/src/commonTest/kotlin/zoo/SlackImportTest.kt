@@ -133,6 +133,27 @@ class SlackImportTest {
     }
 
     @Test
+    fun aRejectedActionReloadsTheCurrentState() = runTest {
+        val requests = mutableListOf<String>()
+        val state =
+            SlackImportController(backgroundScope) { path, method, _ ->
+                requests += "$method $path"
+                if (method == "POST")
+                    throw ApiException(409, obj("error" to "The export is not waiting for channel mappings"))
+                obj("imports" to JsonArray(listOf(job("new", "importing"))))
+            }
+        state.start("new", listOf(obj("slack_channel_id" to "C1", "action" to "skip")))
+        runCurrent()
+        assertEquals(
+            listOf("POST /api/admin/slack-imports/new/start", "GET /api/admin/slack-imports"),
+            requests,
+        )
+        assertEquals("importing", state.cards.single().text("status"))
+        assertEquals(409, state.failure?.status)
+        state.close()
+    }
+
+    @Test
     fun uploadCreatesThePutsAndAsksForAnalysis() = runTest {
         val requests = mutableListOf<String>()
         val puts = mutableListOf<String>()

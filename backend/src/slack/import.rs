@@ -5,7 +5,10 @@
 //! 3. 解析後 (`awaiting_mapping`)、チャンネルの対応付けを `POST .../{id}/start` で送る
 //! 4. ワーカー (`slack::worker`) が取り込み、添付ファイルの取得まで進める
 
-use std::{collections::HashSet, time::Duration};
+use std::{
+    collections::{HashMap, HashSet},
+    time::Duration,
+};
 
 use axum::{
     Json, Router,
@@ -305,24 +308,37 @@ async fn start(
         ));
     }
     let team = job["team_id"].as_str().unwrap_or_default().to_string();
-    let known: HashSet<&str> = job["analysis"]["channels"]
+    // Slack チャンネル ID → (非公開か, 件数)
+    let known: HashMap<&str, (bool, i64)> = job["analysis"]["channels"]
         .as_array()
         .map(|c| {
             c.iter()
-                .filter_map(|c| c["slack_channel_id"].as_str())
+                .filter_map(|c| {
+                    Some((
+                        c["slack_channel_id"].as_str()?,
+                        (
+                            c["is_private"].as_bool().unwrap_or(false),
+                            c["message_count"].as_i64().unwrap_or(0),
+                        ),
+                    ))
+                })
                 .collect()
         })
         .unwrap_or_default();
+    let mut total_messages = 0i64;
 
     let mut seen_channels = HashSet::new();
     let mut new_names = HashSet::new();
     let mut targets = HashSet::new();
     for mapping in &body.mappings {
-        if !known.contains(mapping.slack_channel_id.as_str()) {
+        let Some(&(slack_private, count)) = known.get(mapping.slack_channel_id.as_str()) else {
             return Err(AppError::BadRequest(format!(
                 "Unknown Slack channel {}",
                 mapping.slack_channel_id
             )));
+        };
+        if !matches!(mapping.action, MappingAction::Skip) {
+            total_messages += count;
         }
         if !seen_channels.insert(mapping.slack_channel_id.as_str()) {
             return Err(AppError::BadRequest(format!(
@@ -332,7 +348,14 @@ async fn start(
         }
         ensure_same_target(&mut tx, &team, mapping).await?;
         match &mapping.action {
-            MappingAction::Create { name, .. } => {
+            MappingAction::Create { name, is_private } => {
+                // 非公開チャンネルの履歴を、メンバー以外も読める公開チャンネルに出さない
+                if slack_private && *is_private == Some(false) {
+                    return Err(AppError::BadRequest(format!(
+                        "Private Slack channel {} must be imported into a private channel",
+                        mapping.slack_channel_id
+                    )));
+                }
                 validate_channel_name(name)?;
                 if !new_names.insert(name.as_str()) {
                     return Err(AppError::BadRequest(format!(
@@ -356,13 +379,19 @@ async fn start(
             MappingAction::Existing { channel_id } => {
                 let found = query(
                     &mut tx,
-                    "SELECT json_build_object('id',id)::text FROM channels WHERE id=$1 AND NOT is_dm AND deleted_at IS NULL",
+                    "SELECT json_build_object('is_private',is_private)::text FROM channels WHERE id=$1 AND NOT is_dm AND deleted_at IS NULL",
                     &[channel_id],
                 )
                 .await?;
-                if found.is_empty() {
+                let Some(found) = found.first() else {
                     return Err(AppError::BadRequest(format!(
                         "Channel {channel_id} does not exist"
+                    )));
+                };
+                if slack_private && found["is_private"] != true {
+                    return Err(AppError::BadRequest(format!(
+                        "Private Slack channel {} must be imported into a private channel",
+                        mapping.slack_channel_id
                     )));
                 }
                 if !targets.insert(channel_id.as_str()) {
@@ -386,8 +415,8 @@ async fn start(
         serde_json::to_string(&body.mappings).map_err(|e| AppError::Internal(e.into()))?;
     transition(
         &mut tx,
-        "UPDATE slack_import_jobs SET status='importing',mappings=$2,available_at=now(),attempts=0,error=NULL,processed_messages=0,updated_at=now() WHERE id=$1 AND status='awaiting_mapping'",
-        &[&id, &mappings],
+        "UPDATE slack_import_jobs SET status='importing',mappings=$2,available_at=now(),attempts=0,error=NULL,processed_messages=0,total_messages=$3::bigint,updated_at=now() WHERE id=$1 AND status='awaiting_mapping'",
+        &[&id, &mappings, &total_messages.to_string()],
     )
     .await?;
     let job = load_job(&mut tx, &id).await?;

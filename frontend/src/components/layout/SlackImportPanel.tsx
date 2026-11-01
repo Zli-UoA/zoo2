@@ -59,6 +59,11 @@ export function SlackImportPanel({ put }: { put?: PutWithProgress }) {
   }, [client, revision, running, t]);
 
   const reload = () => setRevision((value) => value + 1);
+  // 失敗の多くは別のタブ・管理者が先に状態を変えたため (409) なので、一覧を取り直して今の状態を見せる
+  const fail = (cause: unknown) => {
+    setError(describeImportError(cause, t));
+    reload();
+  };
   const replace = (job: SlackImport) =>
     setImports((current) => [job, ...(current ?? []).filter((item) => item.id !== job.id)]);
 
@@ -111,13 +116,7 @@ export function SlackImportPanel({ put }: { put?: PutWithProgress }) {
 
       {imports === null && !error ? <Spinner label={t("slackImport.loading")} /> : null}
       {cards.map((job) => (
-        <ImportCard
-          key={job.id}
-          job={job}
-          onChange={replace}
-          onError={(cause) => setError(describeImportError(cause, t))}
-          client={client}
-        />
+        <ImportCard key={job.id} job={job} onChange={replace} onError={fail} client={client} />
       ))}
       {history.length > 0 ? (
         <SettingsSection title={t("slackImport.history")}>
@@ -130,12 +129,7 @@ export function SlackImportPanel({ put }: { put?: PutWithProgress }) {
                   {new Date(job.created_at).toLocaleString()}
                 </span>
                 {retryableFiles(job) > 0 ? (
-                  <FileSummary
-                    job={job}
-                    client={client}
-                    onChange={replace}
-                    onError={(cause) => setError(describeImportError(cause, t))}
-                  />
+                  <FileSummary job={job} client={client} onChange={replace} onError={fail} />
                 ) : null}
               </li>
             ))}
@@ -315,6 +309,12 @@ function MappingForm({
       <ul className="divide-y rounded-md border">
         {channels.map((channel, index) => {
           const mapping = mappings[index];
+          // 非公開チャンネルの履歴は、メンバー以外も読める公開チャンネルには入れない
+          const choices = channel.is_private
+            ? targets.filter(
+                (target) => target.is_private || target.id === channel.existing_channel?.id,
+              )
+            : targets;
           const id = `slack-import-${channel.slack_channel_id}`;
           return (
             <li key={channel.slack_channel_id} className="flex flex-wrap items-center gap-2 p-3">
@@ -349,7 +349,7 @@ function MappingForm({
                     update(index, {
                       ...base,
                       action,
-                      channel_id: channel.existing_channel?.id ?? targets[0]?.id ?? "",
+                      channel_id: channel.existing_channel?.id ?? choices[0]?.id ?? "",
                     });
                   else
                     update(index, {
@@ -369,7 +369,7 @@ function MappingForm({
                 </option>
                 <option
                   value="existing"
-                  disabled={targets.length === 0 || !!channel.deleted_channel}
+                  disabled={choices.length === 0 || !!channel.deleted_channel}
                 >
                   {t("slackImport.actionExisting")}
                 </option>
@@ -395,7 +395,7 @@ function MappingForm({
                     update(index, { ...mapping, channel_id: event.target.value })
                   }
                 >
-                  {targets.map((target) => (
+                  {choices.map((target) => (
                     <option key={target.id} value={target.id}>
                       #{target.channel_name}
                     </option>

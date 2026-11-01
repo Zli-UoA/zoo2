@@ -59,6 +59,15 @@ export function filterMemberCandidates({
 }
 
 /** 作成者を先頭に固定し、残りは表示名のABC順。同名はユーザー名・IDで安定化する。 */
+/** Slack 取り込みのプレースホルダなど、無効化されたユーザーをメンバー一覧と人数から外す */
+export function withoutDeactivatedMembers<T extends { user_id: string }>(
+  members: T[],
+  users: Pick<UserRow, "id" | "is_deactivated">[],
+): T[] {
+  const deactivated = new Set(users.filter((user) => user.is_deactivated).map((user) => user.id));
+  return deactivated.size ? members.filter((member) => !deactivated.has(member.user_id)) : members;
+}
+
 export function sortChannelMembers(
   members: ChannelUserRow[],
   users: UserRow[],

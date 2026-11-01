@@ -832,3 +832,210 @@ async fn test_slack_reimport_relinks_replies_and_serializes_targets() -> anyhow:
     assert!(!card[0]["card"].as_str().unwrap().contains("link preview"));
     Ok(())
 }
+
+#[tokio::test]
+async fn test_slack_import_guards_private_channels_and_restores_threads() -> anyhow::Result<()> {
+    let _serial = SERIAL.lock().await;
+    dotenvy::dotenv().ok();
+    dotenvy::from_filename("../.env").ok();
+    let mut config = Config::from_env();
+    config.dev_auth_enabled = true;
+    let db = init_db(&config.database_url).await?;
+    let state = AppState::new(db.clone(), config.clone());
+    ensure_bucket_exists(&state.s3_client, &config.s3.bucket).await;
+    let app = create_router(state.clone());
+    let admin = create_user(&app, "slack_admin4").await?;
+    {
+        let mut db = db.clone();
+        let mut tx = db.transaction().await?;
+        toasty::create!(UserRole {
+            user_id: admin.as_str(),
+            role_id: "role_admin",
+        })
+        .exec(&mut tx)
+        .await?;
+        tx.commit().await?;
+    }
+
+    // team_id がどこにもない ZIP は、どのワークスペースか決められないので失敗にする
+    let anonymous = build_zip(&[
+        ("users.json".into(), json!([{"id":"U1","name":"alice"}])),
+        ("channels.json".into(), json!([{"id":"C1","name":"general"}])),
+    ]);
+    let (_, created) = request(
+        &app,
+        "POST",
+        "/api/admin/slack-imports",
+        &admin,
+        Some(json!({"file_name": "anonymous.zip", "file_size": anonymous.len()})),
+    )
+    .await?;
+    reqwest::Client::new()
+        .put(created["upload_url"].as_str().unwrap())
+        .header("content-type", "application/zip")
+        .body(anonymous)
+        .send()
+        .await?
+        .error_for_status()?;
+    let anonymous_id = created["import"]["id"].as_str().unwrap().to_string();
+    request(
+        &app,
+        "POST",
+        &format!("/api/admin/slack-imports/{anonymous_id}/uploaded"),
+        &admin,
+        None,
+    )
+    .await?;
+    let mut job = Value::Null;
+    for _ in 0..100 {
+        backend::slack::worker::run_once(&state).await?;
+        job = request(
+            &app,
+            "GET",
+            &format!("/api/admin/slack-imports/{anonymous_id}"),
+            &admin,
+            None,
+        )
+        .await?
+        .1;
+        if job["status"] == "failed" {
+            break;
+        }
+    }
+    assert_eq!(job["status"], "failed", "{job}");
+
+    let team = format!("T{}", uuid::Uuid::new_v4().simple());
+    let suffix = uuid::Uuid::new_v4().simple().to_string();
+    let users = json!([
+        {"id":"U1","team_id":team,"name":"alice"},
+        {"id":"U2","team_id":team,"name":"bob"},
+        {"id":"U9","team_id":team,"name":"carol"}
+    ]);
+    let channels = json!([
+        {"id":"C1","name":"general","members":["U1"]},
+        {"id":"C2","name":"random","members":["U1"]}
+    ]);
+    let groups = json!([{"id":"G1","name":"secret","members":["U1"]}]);
+    let parent_ts = "1704070000.000100";
+    let reply_ts = "1704160000.000200";
+    let reply = json!({"ts":reply_ts,"user":"U2","text":"reply","thread_ts":parent_ts});
+    let first = build_zip(&[
+        ("users.json".into(), users.clone()),
+        ("channels.json".into(), channels.clone()),
+        ("groups.json".into(), groups.clone()),
+        (
+            "general/2024-01-02.json".into(),
+            json!([
+                reply,
+                // メンションされただけの人もプレースホルダとして解決される
+                {"ts":"1704160100.000300","user":"U1","text":"hi <@U9>"},
+                // http のリンクしかない bot のカードも、リンクを外して取り込む
+                {"ts":"1704160200.000400","bot_id":"B1","subtype":"bot_message","username":"ci","text":"",
+                 "attachments":[{"title":"Build","title_link":"http://ci.example.com/1","fallback":"Build passed"}]}
+            ]),
+        ),
+        ("random/2024-01-02.json".into(), json!([{"ts":"1704160000.000500","user":"U1","text":"x"}])),
+        ("secret/2024-01-02.json".into(), json!([{"ts":"1704160000.000600","user":"U1","text":"s"}])),
+    ]);
+    let analyzed = upload(&state, &app, &admin, &first).await;
+    let id = analyzed["id"].as_str().unwrap().to_string();
+
+    // 非公開チャンネルを公開チャンネルとして作る・公開チャンネルへ入れる指定は拒否する
+    let public = uuid::Uuid::new_v4().to_string();
+    let (status, _) = request(
+        &app,
+        "POST",
+        "/api/channels",
+        &admin,
+        Some(json!({"id": public, "channel_name": format!("public_{suffix}"), "is_private": false})),
+    )
+    .await?;
+    assert_eq!(status, StatusCode::OK);
+    for mapping in [
+        json!({"slack_channel_id":"G1","action":"create","name":format!("secret-{suffix}"),"is_private":false}),
+        json!({"slack_channel_id":"G1","action":"existing","channel_id":public}),
+    ] {
+        let (status, body) = request(
+            &app,
+            "POST",
+            &format!("/api/admin/slack-imports/{id}/start"),
+            &admin,
+            Some(json!({ "mappings": [mapping] })),
+        )
+        .await?;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    }
+
+    // 件数は選んだチャンネルの分だけ数える
+    let (status, started) = request(
+        &app,
+        "POST",
+        &format!("/api/admin/slack-imports/{id}/start"),
+        &admin,
+        Some(json!({"mappings":[
+            {"slack_channel_id":"C1","action":"create","name":format!("general-{suffix}")},
+            {"slack_channel_id":"C2","action":"skip"},
+            {"slack_channel_id":"G1","action":"create","name":format!("secret-{suffix}"),"is_private":true}
+        ]})),
+    )
+    .await?;
+    assert_eq!(status, StatusCode::OK, "{started}");
+    assert_eq!(started["total_messages"], 4);
+    let done = drive(&state, &app, &admin, &id, "completed").await;
+    assert_eq!(done["processed_messages"], 4);
+
+    let message = |ts: &str| backend::slack::message_id(&team, "C1", ts);
+    let rows = sql(
+        &state,
+        "SELECT json_build_object('content',m.content,'card',m.card,'user_name',u.user_name)::text \
+         FROM messages m JOIN users u ON u.id=m.user_id WHERE m.id=$1",
+        &[&message("1704160200.000400")],
+    )
+    .await?;
+    assert_eq!(rows.len(), 1, "the http-only card must be imported");
+    assert!(!rows[0]["card"].as_str().unwrap_or_default().contains("http://"));
+    assert!(rows[0]["content"].as_str().unwrap().contains("Build"));
+    let rows = sql(
+        &state,
+        "SELECT json_build_object('content',content)::text FROM messages WHERE id=$1",
+        &[&message("1704160100.000300")],
+    )
+    .await?;
+    let mention = rows[0]["content"].as_str().unwrap();
+    assert!(mention.starts_with("hi @slack-carol"), "{mention}");
+
+    // 親だけの ZIP を後から取り込んでも、replies に挙がっている返信がスレッドに戻る
+    let parent_only = build_zip(&[
+        ("users.json".into(), users),
+        ("channels.json".into(), channels),
+        (
+            "general/2024-01-01.json".into(),
+            json!([{"ts":parent_ts,"user":"U1","text":"parent","thread_ts":parent_ts,
+                    "replies":[{"user":"U2","ts":reply_ts}]}]),
+        ),
+    ]);
+    let again = upload(&state, &app, &admin, &parent_only).await;
+    let again_id = again["id"].as_str().unwrap().to_string();
+    let general = backend::slack::channel_id(&team, "C1");
+    let (status, body) = request(
+        &app,
+        "POST",
+        &format!("/api/admin/slack-imports/{again_id}/start"),
+        &admin,
+        Some(json!({"mappings":[
+            {"slack_channel_id":"C1","action":"existing","channel_id":general},
+            {"slack_channel_id":"C2","action":"skip"}
+        ]})),
+    )
+    .await?;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    drive(&state, &app, &admin, &again_id, "completed").await;
+    let rows = sql(
+        &state,
+        "SELECT json_build_object('parent_id',parent_id)::text FROM messages WHERE id=$1",
+        &[&message(reply_ts)],
+    )
+    .await?;
+    assert_eq!(rows[0]["parent_id"], json!(message(parent_ts)));
+    Ok(())
+}

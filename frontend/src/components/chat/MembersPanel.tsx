@@ -34,6 +34,7 @@ import { PaneHeader } from "../layout/PaneHeader";
 import {
   filterMemberCandidates,
   sortChannelMembers,
+  withoutDeactivatedMembers,
   sortUsersByLabel,
   userLabel,
 } from "./memberCandidates";
@@ -87,7 +88,11 @@ export function MembersPanel({
   const userMap = new Map((usersQuery.data ?? []).map((user) => [user.id, user]));
   const members = useMemo(
     () =>
-      sortChannelMembers(membersQuery.data ?? [], usersQuery.data ?? [], channel.created_user_id),
+      sortChannelMembers(
+        withoutDeactivatedMembers(membersQuery.data ?? [], usersQuery.data ?? []),
+        usersQuery.data ?? [],
+        channel.created_user_id,
+      ),
     [membersQuery.data, usersQuery.data, channel.created_user_id],
   );
   const userNames = useMemo(() => {

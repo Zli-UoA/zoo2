@@ -1752,7 +1752,7 @@ CREATE TABLE slack_files (
     ON UPDATE CASCADE ON DELETE RESTRICT
 );
 
-CREATE INDEX idx_slack_files_pending ON slack_files (job_id) WHERE status = 'pending';
+CREATE INDEX idx_slack_files_job_status ON slack_files (job_id, status);
 
 -- 過去ログの一括取り込みでアプリへイベントを大量配送しないよう、
 -- トランザクション内で zoo.suppress_app_events=on のときは app_emit を素通りさせる。

@@ -173,6 +173,8 @@ class SlackImportController(
                 throw cause
             } catch (cause: Exception) {
                 failure = slackImportFailure(cause)
+                // 多くは別の画面で先に状態が変わったため (409) なので、一覧を取り直して今の状態を見せる
+                load()
             } finally {
                 pending = false
             }
@@ -460,12 +462,19 @@ private fun SlackImportMappingForm(
                 val name = channel.text("name")
                 val existing = channel["existing_channel"] as? JsonObject
                 val deleted = channel.text("deleted_channel").isNotEmpty()
+                // 非公開チャンネルの履歴は、メンバー以外も読める公開チャンネルには入れない
+                val choices =
+                    if (channel.flag("is_private"))
+                        targets.filter {
+                            it.flag("is_private") || it.text("id") == existing?.text("id")
+                        }
+                    else targets
                 // 以前取り込んだチャンネルは同じ取り込み先にしか入れられない (メッセージ ID が変わらないため)
                 val actions =
                     actionLabels.keys.filter {
                         when (it) {
                             "create" -> existing == null && !deleted
-                            "existing" -> targets.isNotEmpty() && !deleted
+                            "existing" -> choices.isNotEmpty() && !deleted
                             else -> true
                         }
                     }
@@ -532,7 +541,7 @@ private fun SlackImportMappingForm(
                                             "action" to "existing",
                                             "channel_id" to
                                                 (existing?.text("id")
-                                                    ?: targets.firstOrNull()?.text("id")
+                                                    ?: choices.firstOrNull()?.text("id")
                                                     ?: ""),
                                         )
                                     else ->
@@ -557,7 +566,8 @@ private fun SlackImportMappingForm(
                                     update(index, JsonObject(mapping + ("name" to JsonPrimitive(it))))
                                 }
                             "existing" -> {
-                                val labels = targets.associate { it.text("id") to "#${it.text("channel_name")}" }
+                                val labels =
+                                    choices.associate { it.text("id") to "#${it.text("channel_name")}" }
                                 SelectField(
                                     app.t("slackImport.targetChannel", "name" to name),
                                     labels[mapping.text("channel_id")] ?: "",

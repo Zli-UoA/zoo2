@@ -33,6 +33,8 @@ use crate::{
 
 /// これを超えて失敗したジョブは `failed` にする
 const MAX_ATTEMPTS: i64 = 5;
+/// リースを失ったとき (別の台が同じジョブを処理している) のエラー。一意制約違反の Conflict と区別する
+const LEASE_LOST: &str = "Slack import lease was lost";
 const LEASE_SQL: &str = "interval '2 minutes'";
 const HEARTBEAT: Duration = Duration::from_secs(30);
 /// 添付 1 件あたりの取得失敗の上限
@@ -40,10 +42,17 @@ const MAX_FILE_ATTEMPTS: i64 = 3;
 
 pub async fn worker(s: AppState) {
     let mut ticks = tokio::time::interval(Duration::from_secs(2));
+    let mut passes = 0u32;
     loop {
         ticks.tick().await;
+        passes = passes.wrapping_add(1);
         if let Err(e) = run_once(&s).await {
             tracing::warn!(error = %e, "Slack import worker failed");
+        }
+        if passes.is_multiple_of(1800)
+            && let Err(e) = cleanup(&s).await
+        {
+            tracing::warn!(error = %e, "Slack import cleanup failed");
         }
     }
 }
@@ -85,12 +94,23 @@ async fn claim(s: &AppState) -> Result<Option<Job>, AppError> {
     let mut db = s.db.clone();
     let mut tx = db.transaction().await?;
     let token = uuid::Uuid::new_v4().to_string();
+    // 処理中にプロセスが落ちると fail() を通らないので、試行回数の上限はここでも見る
+    let exhausted = query(
+        &mut tx,
+        "UPDATE slack_import_jobs SET status='failed',finished_at=now(),lease_until=NULL,lease_token=NULL,\
+         updated_at=now(),error=COALESCE(error,'The import stopped repeatedly and was given up') \
+         WHERE status IN ('analyzing','importing','fetching_files') AND attempts>=$1::integer \
+         AND (lease_until IS NULL OR lease_until<now()) \
+         RETURNING json_build_object('key',storage_key)::text",
+        &[&MAX_ATTEMPTS.to_string()],
+    )
+    .await?;
     let rows = query(
         &mut tx,
         &format!(
             "WITH c AS (SELECT id FROM slack_import_jobs \
              WHERE status IN ('analyzing','importing','fetching_files') AND available_at<=now() \
-             AND (lease_until IS NULL OR lease_until<now()) \
+             AND (lease_until IS NULL OR lease_until<now()) AND attempts<{MAX_ATTEMPTS} \
              ORDER BY created_at,id FOR UPDATE SKIP LOCKED LIMIT 1) \
              UPDATE slack_import_jobs j SET attempts=j.attempts+1,lease_until=now()+{LEASE_SQL},\
              lease_token=$1,updated_at=now() FROM c WHERE j.id=c.id \
@@ -102,6 +122,9 @@ async fn claim(s: &AppState) -> Result<Option<Job>, AppError> {
     )
     .await?;
     tx.commit().await?;
+    for job in exhausted {
+        discard_zip(s, job["key"].as_str().unwrap_or_default()).await;
+    }
     rows.into_iter()
         .next()
         .map(|v| serde_json::from_value(v).map_err(|e| AppError::Internal(e.into())))
@@ -140,7 +163,7 @@ impl Lease {
 
     fn check(&self) -> Result<(), AppError> {
         if self.lost.load(Ordering::SeqCst) {
-            return Err(AppError::Conflict("Slack import lease was lost".into()));
+            return Err(AppError::Conflict(LEASE_LOST.into()));
         }
         Ok(())
     }
@@ -195,19 +218,20 @@ async fn suppress_app_events(tx: &mut toasty::Transaction<'_>) -> Result<(), App
 async fn fail(s: &AppState, job: &Job, error: &AppError) -> Result<(), AppError> {
     // ZIP の中身の不備はやり直しても直らない
     let permanent = matches!(error, AppError::BadRequest(_));
-    let lost = matches!(error, AppError::Conflict(_));
+    let lost = matches!(error, AppError::Conflict(message) if message == LEASE_LOST);
     if lost {
         return Ok(());
     }
     let mut db = s.db.clone();
     let mut tx = db.transaction().await?;
-    exec(
+    let failed = query(
         &mut tx,
         "UPDATE slack_import_jobs SET error=$3,lease_until=NULL,lease_token=NULL,updated_at=now(),\
          status=CASE WHEN $4::boolean OR attempts>=$5::integer THEN 'failed' ELSE status END,\
          finished_at=CASE WHEN $4::boolean OR attempts>=$5::integer THEN now() END,\
          available_at=now()+make_interval(secs=>LEAST(600,10*power(2,attempts))::integer) \
-         WHERE id=$1 AND lease_token=$2",
+         WHERE id=$1 AND lease_token=$2 \
+         RETURNING json_build_object('failed',status='failed','key',storage_key)::text",
         &[
             &job.id,
             &job.token,
@@ -218,7 +242,48 @@ async fn fail(s: &AppState, job: &Job, error: &AppError) -> Result<(), AppError>
     )
     .await?;
     tx.commit().await?;
+    // 失敗したジョブはやり直せないので、置いてある ZIP を消す
+    for row in failed.iter().filter(|r| r["failed"] == true) {
+        discard_zip(s, row["key"].as_str().unwrap_or_default()).await;
+    }
     Ok(())
+}
+
+/// ストレージに置いた ZIP を消す (失敗しても取り込みの結果には影響しない)
+async fn discard_zip(s: &AppState, key: &str) {
+    if key.is_empty() {
+        return;
+    }
+    if let Err(e) = delete_storage_object(&s.s3_client, &s.config.s3.bucket, key).await {
+        tracing::warn!(key, error = %e, "Failed to delete a Slack export");
+    }
+}
+
+/// アップロードされないまま残ったジョブを取り消し、置きかけの ZIP を消す
+pub async fn cleanup(s: &AppState) -> Result<(), AppError> {
+    let mut db = s.db.clone();
+    let mut tx = db.transaction().await?;
+    let stale = query(
+        &mut tx,
+        "UPDATE slack_import_jobs SET status='cancelled',finished_at=now(),updated_at=now() \
+         WHERE status='uploading' AND created_at<now()-interval '1 day' \
+         RETURNING json_build_object('key',storage_key)::text",
+        &[],
+    )
+    .await?;
+    tx.commit().await?;
+    for row in stale {
+        discard_zip(s, row["key"].as_str().unwrap_or_default()).await;
+    }
+    Ok(())
+}
+
+async fn blocking<T: Send + 'static>(
+    work: impl FnOnce() -> Result<T, AppError> + Send + 'static,
+) -> Result<T, AppError> {
+    tokio::task::spawn_blocking(work)
+        .await
+        .map_err(|e| AppError::Internal(e.into()))?
 }
 
 /// ストレージから ZIP を一時ファイルに落とす。破棄時に消す。
@@ -234,7 +299,11 @@ impl Drop for TempZip {
 
 async fn download(s: &AppState, key: &str) -> Result<TempZip, AppError> {
     let tmp = TempZip {
-        path: std::env::temp_dir().join(format!("zoo-slack-import-{}.zip", uuid::Uuid::new_v4())),
+        path: s
+            .config
+            .slack
+            .import_tmp_dir
+            .join(format!("zoo-slack-import-{}.zip", uuid::Uuid::new_v4())),
     };
     let object = s
         .s3_client
@@ -419,7 +488,11 @@ async fn ensure_user(
         .filter(|u| u.starts_with("https://"))
         .unwrap_or("");
 
-    let base = sanitize_for_user_name(handle, &id);
+    // 実在の Zoo のユーザー名を先に取らないよう、プレースホルダには slack- を付ける
+    let base = sanitize_for_user_name(
+        &format!("slack-{}", sanitize_for_user_name(handle, &id)),
+        &id,
+    );
     let suffix = id.replace('-', "");
     let mut user_name = None;
     for candidate in std::iter::once(base.clone())
@@ -485,10 +558,16 @@ async fn import(s: &AppState, job: &Job, lease: &Lease) -> Result<(), AppError> 
         .map_err(|e| AppError::BadRequest(format!("Invalid mappings: {e}")))?;
     let tmp = download(s, &job.storage_key).await?;
     lease.check()?;
-    let mut archive = ExportArchive::open(&tmp.path)?;
-    let slack_users = archive.users()?;
-    let slack_channels: HashMap<String, SlackChannel> = archive
-        .channels()?
+    // ZIP の展開と JSON の解析は重いので、async のワーカースレッドを止めないよう別スレッドで行う
+    let path = tmp.path.clone();
+    let (mut archive, slack_users, slack_channels) = blocking(move || {
+        let mut archive = ExportArchive::open(&path)?;
+        let users = archive.users()?;
+        let channels = archive.channels()?;
+        Ok((archive, users, channels))
+    })
+    .await?;
+    let slack_channels: HashMap<String, SlackChannel> = slack_channels
         .into_iter()
         .map(|c| (c.id.clone(), c))
         .collect();
@@ -504,16 +583,8 @@ async fn import(s: &AppState, job: &Job, lease: &Lease) -> Result<(), AppError> 
     };
     let mut db = s.db.clone();
 
-    // ユーザーを先にそろえ、本文のメンションを解決できるようにする
-    for chunk in slack_users.chunks(200) {
-        lease.check()?;
-        let mut tx = db.transaction().await?;
-        suppress_app_events(&mut tx).await?;
-        for user in chunk {
-            ctx.user(&mut tx, &user.id, None).await?;
-        }
-        tx.commit().await?;
-    }
+    // プレースホルダは、選んだチャンネルのメンバー・投稿者・リアクション・メンションに出る人だけを作る
+    // (users.json の全員を作ると、大きいワークスペースで users の同期量が増えるため)
 
     // 取り込み先チャンネルを決める
     let mut targets = Vec::new();
@@ -553,7 +624,8 @@ async fn import(s: &AppState, job: &Job, lease: &Lease) -> Result<(), AppError> 
                         &team,
                         channel,
                         name,
-                        is_private.unwrap_or(channel.is_private),
+                        // 非公開チャンネルは常に非公開で作る (start で拒否済みだが、古いジョブにも備える)
+                        channel.is_private || is_private.unwrap_or(false),
                         &job.created_by,
                     )
                     .await?
@@ -561,14 +633,20 @@ async fn import(s: &AppState, job: &Job, lease: &Lease) -> Result<(), AppError> 
                 MappingAction::Existing { channel_id } => {
                     let found = one(
                         &mut tx,
-                        "SELECT json_build_object('id',id,'name',channel_name)::text FROM channels \
-                         WHERE id=$1 AND NOT is_dm AND deleted_at IS NULL",
+                        "SELECT json_build_object('id',id,'name',channel_name,'is_private',is_private)::text \
+                         FROM channels WHERE id=$1 AND NOT is_dm AND deleted_at IS NULL",
                         &[channel_id],
                     )
                     .await
                     .map_err(|_| {
                         AppError::BadRequest(format!("Channel {channel_id} no longer exists"))
                     })?;
+                    if channel.is_private && found["is_private"] != true {
+                        return Err(AppError::BadRequest(format!(
+                            "Private Slack channel {} must be imported into a private channel",
+                            channel.id
+                        )));
+                    }
                     (
                         channel_id.clone(),
                         found["name"].as_str().unwrap_or_default().to_string(),
@@ -611,7 +689,13 @@ async fn import(s: &AppState, job: &Job, lease: &Lease) -> Result<(), AppError> 
 
         for entry in archive.day_files(channel) {
             lease.check()?;
-            let messages = archive.messages(&entry)?;
+            let (returned, messages) = blocking(move || {
+                let mut archive = archive;
+                let messages = archive.messages(&entry)?;
+                Ok((archive, messages))
+            })
+            .await?;
+            archive = returned;
             let mut tx = db.transaction().await?;
             suppress_app_events(&mut tx).await?;
             let mut last_ts = None;
@@ -790,12 +874,20 @@ async fn insert_message(
         .map(|e| e.ts.as_str())
         .filter(|ts| super::is_valid_ts(ts))
         .unwrap_or("");
+    // メンションされた人のプレースホルダを先に作り、本文の <@U…> を解決できるようにする
+    for mentioned in super::convert::mentioned_users(&message.text) {
+        ctx.user(tx, &mentioned, None).await?;
+    }
     let cards = message.cards();
     let card = crate::cards::encode_cards(&cards)?.unwrap_or_default();
     let mut content = mrkdwn_to_mfm(&message.text, &*ctx);
-    // 本文がカードにしかない bot 投稿は、カードの内容を本文にも入れる (通知・一覧・旧クライアント用)
+    // 本文がカードにしかない bot 投稿は、カードの内容を本文にも入れる (通知・一覧・旧クライアント用)。
+    // カードにできなかったときも、fallback などの文字列を残して投稿が欠けないようにする。
     if content.trim().is_empty() {
         content = crate::cards::cards_content(&cards);
+    }
+    if content.trim().is_empty() {
+        content = super::convert::truncate_content(message.attachments_text());
     }
     // 期間を区切った ZIP では返信だけが先に入ることがある。後から親を取り込んだら、返信をスレッドに戻す。
     exec(
@@ -821,6 +913,25 @@ async fn insert_message(
         ],
     )
     .await?;
+
+    // 親だけを後から取り込んだときも、先に入っていた返信をスレッドに戻す
+    if parent.is_empty() && !message.replies.is_empty() {
+        let replies: Vec<String> = message
+            .replies
+            .iter()
+            .filter(|r| r.ts != message.ts && super::is_valid_ts(&r.ts))
+            .map(|r| super::message_id(&ctx.team, slack_channel, &r.ts))
+            .collect();
+        exec(
+            tx,
+            "UPDATE messages m SET parent_id=$1 FROM (SELECT jsonb_array_elements_text($3::jsonb) AS id) r \
+             WHERE m.id=r.id AND m.channel_id=$2 AND m.parent_id IS NULL AND m.id<>$1 \
+             AND EXISTS(SELECT 1 FROM messages p WHERE p.id=$1 AND p.parent_id IS NULL) \
+             AND NOT EXISTS(SELECT 1 FROM messages c WHERE c.parent_id=m.id)",
+            &[&id, channel_id, &serde_json::to_string(&replies).unwrap_or_default()],
+        )
+        .await?;
+    }
 
     for reaction in &message.reactions {
         let Some(emoji) = reaction_emoji(&reaction.name) else {
