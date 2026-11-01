@@ -11,6 +11,8 @@ description: Zooのフロントエンドを実装・修正・リファクタリ�
 
 UIの状態とStoryの粒度は [storybook-coverage](../storybook-coverage/SKILL.md) に従う。このスキルは共通化の判断と実装方針を扱い、Storybookの分類・監査手順はそちらを参照する。
 
+React・Composeいずれかの変更とmain取り込みでは、[compose-react-parity](../compose-react-parity/SKILL.md) に従い、両実装の機能・表示・操作を同じPRで揃える。
+
 ## 共通化の判断
 
 - 新しい表示や操作を追加する前に、既存の部品・hook・純粋関数・fixtureを検索する。名前だけでなく、責務と利用者から見た挙動が一致するかを確認する。

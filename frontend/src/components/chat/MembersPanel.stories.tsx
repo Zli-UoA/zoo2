@@ -1,3 +1,4 @@
+import { playForImplementation } from "../../../.storybook/play-for-implementation";
 import type { Meta, StoryObj } from "@storybook/react-vite";
 import { expect, screen, userEvent } from "storybook/test";
 
@@ -31,11 +32,11 @@ type Story = StoryObj<typeof meta>;
 export const Default: Story = {};
 
 export const AddCandidates: Story = {
-  play: async () => {
-    const input = screen.getByRole("combobox", { name: "メンバーを追加" });
+  play: playForImplementation(async () => {
+    const input = await screen.findByRole("combobox", { name: "メンバーを追加" });
     await userEvent.click(input);
     await expect(screen.getByRole("listbox", { name: "メンバー候補" })).toBeVisible();
-  },
+  }),
 };
 
 export const Archived: Story = {

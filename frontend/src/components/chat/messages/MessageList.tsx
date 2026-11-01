@@ -182,6 +182,9 @@ export function MessageList({
     getScrollElement: () => scrollRef.current,
     estimateSize: () => ESTIMATED_ROW_HEIGHT,
     overscan: 8,
+    // Commit measured row sizes outside ResizeObserver delivery: anchoring can scroll
+    // and synchronously render a different virtual range during that delivery.
+    useAnimationFrameWithResizeObserver: true,
     getItemKey: (index) => items[index]?.message.id ?? index,
     // URLカードや画像の遅延読込で行が伸びても、最下部付近なら末尾を維持する。
     // 編集中は入力欄の高さが変わるため、編集中の位置を保つ。
@@ -224,6 +227,8 @@ export function MessageList({
     },
     [items.length, virtualizer],
   );
+
+  const totalSize = virtualizer.getTotalSize();
 
   const handleScroll = useCallback(() => {
     const element = scrollRef.current;
@@ -335,6 +340,13 @@ export function MessageList({
     snapshotRef.current = next;
     return () => stopRestoring?.();
   }, [items, currentUserId, scrollToBottom, t, firstUnreadId, virtualizer, captureScrollAnchor]);
+
+  // Decide the initial unread position before following resized rows.
+  useLayoutEffect(() => {
+    // ResizeObserver can request a bottom adjustment before the sizer grows,
+    // which the browser clamps. Reapply after committing the measured height.
+    if (atBottomRef.current && editingId === null) scrollToBottom();
+  }, [totalSize, editingId, scrollToBottom]);
 
   // Also capture after measurements commit, not just when the user scrolls.
   useLayoutEffect(() => {
@@ -449,11 +461,7 @@ export function MessageList({
           data-testid="message-scroll"
           className="h-full overflow-y-auto overscroll-contain px-2 py-3 [overflow-anchor:none]"
         >
-          <div
-            role="list"
-            className="relative w-full"
-            style={{ height: virtualizer.getTotalSize() }}
-          >
+          <div role="list" className="relative w-full" style={{ height: totalSize }}>
             {virtualizer.getVirtualItems().map((virtualRow) => {
               const item = items[virtualRow.index];
               if (!item) {

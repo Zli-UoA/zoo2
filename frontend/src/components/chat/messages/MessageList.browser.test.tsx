@@ -1,4 +1,5 @@
 import "../../../styles.css";
+import { useLayoutEffect } from "react";
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, expect, it, vi } from "vite-plus/test";
 import { http, HttpResponse } from "msw";
@@ -8,6 +9,7 @@ import type { LinkPreviewData } from "../../../lib/summaly";
 import { mockServer, startMockServer } from "../../../test/browser-setup";
 import { LocaleProvider } from "../../i18n/LocaleProvider";
 import { MessageList } from "./MessageList";
+import type { FeedMessage } from "./messageFormat";
 
 const config = { ...DEFAULT_CONFIG, summalyUrl: "https://scroll.example/summaly" };
 const api = vi.hoisted(() => ({ get: vi.fn() }));
@@ -138,3 +140,94 @@ it.each(["bottom", "returned", "visible", "above"] as const)(
     expect(screen.queryByRole("button", { name: "新着メッセージ" })).toBeNull();
   },
 );
+
+it("keeps an initial unread boundary without marking later messages read when the cursor arrives first", async () => {
+  await startMockServer();
+  const writes: unknown[] = [];
+  const cursor = {
+    channel_id: "initial-unread",
+    last_read_at: "2026-01-02T00:00:09Z",
+    has_unread: true,
+  };
+  mockServer.use(
+    http.get("*/api/channels/initial-unread/read-state", () => HttpResponse.json(cursor)),
+    http.post("*/api/channels/initial-unread/read-state", async ({ request }) => {
+      writes.push(await request.json());
+      return HttpResponse.json({
+        data: { ...cursor, last_read_at: "2026-01-02T00:00:39Z" },
+        txid: "1",
+      });
+    }),
+  );
+  const focus = vi.spyOn(document, "hasFocus").mockReturnValue(true);
+  const visibility = vi.spyOn(document, "visibilityState", "get").mockReturnValue("visible");
+  const noop = () => {};
+  const list = (messages: FeedMessage[]) => (
+    <LocaleProvider>
+      <div className="flex h-[400px] w-[360px] flex-col">
+        <MessageList
+          channelId="initial-unread"
+          messages={messages}
+          isLoading={false}
+          isError={false}
+          currentUserId="me"
+          editingId={null}
+          editingText=""
+          onEditingTextChange={noop}
+          onStartEdit={noop}
+          onCancelEdit={noop}
+          onSaveEdit={noop}
+          onRequestDelete={noop}
+          reactions={new Map()}
+          kitchenCatalog={null}
+          canReact={false}
+          onReaction={noop}
+          onPickReaction={noop}
+          replyCounts={new Map()}
+          onOpenThread={noop}
+        />
+      </div>
+    </LocaleProvider>
+  );
+  function Arrival({ messages }: { messages: FeedMessage[] }) {
+    useLayoutEffect(() => {
+      // A browser scroll event can arrive after this commit, before the queued
+      // unread-position frame. Keep that ordering deterministic without setting scrollTop.
+      if (messages.length) fireEvent.scroll(screen.getByTestId("message-scroll"));
+    }, [messages]);
+    return list(messages);
+  }
+  try {
+    const view = render(<Arrival messages={[]} />);
+    // The empty state appears only after the real read-state request has settled.
+    await screen.findByText("まだメッセージがありません");
+    view.rerender(
+      <Arrival
+        messages={Array.from({ length: 40 }, (_, index) => ({
+          id: String(index),
+          user_id: "other",
+          display_name: "Alice",
+          parent_id: null,
+          created_at: `2026-01-02T00:00:${String(index).padStart(2, "0")}Z`,
+          content: `Message ${index}`,
+        }))}
+      />,
+    );
+    const boundary = await screen.findByRole("separator", { name: "新着メッセージ" });
+    const scroller = screen.getByTestId("message-scroll");
+    await waitFor(() => {
+      const viewport = scroller.getBoundingClientRect();
+      const marker = boundary.getBoundingClientRect();
+      expect(marker.top).toBeGreaterThanOrEqual(viewport.top - 1);
+      expect(marker.bottom).toBeLessThanOrEqual(viewport.bottom + 1);
+      expect(scroller.scrollHeight - scroller.clientHeight - scroller.scrollTop).toBeGreaterThan(
+        48,
+      );
+    });
+    await nextFrame();
+    expect(writes).toEqual([]);
+  } finally {
+    focus.mockRestore();
+    visibility.mockRestore();
+  }
+});

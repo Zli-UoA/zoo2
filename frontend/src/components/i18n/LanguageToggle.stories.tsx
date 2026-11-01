@@ -1,3 +1,5 @@
+import { preferenceSurfaces } from "../../../.storybook/preference-stories";
+import { playForImplementation } from "../../../.storybook/play-for-implementation";
 import type { Meta, StoryObj } from "@storybook/react-vite";
 import { expect, screen, userEvent } from "storybook/test";
 
@@ -10,7 +12,7 @@ const meta = {
   parameters: { a11y: { test: "error" } },
   decorators: [
     (Story) => (
-      <div className="flex min-h-72 items-center justify-center bg-background p-6">
+      <div className={preferenceSurfaces["Features/Preferences/Language"]}>
         <Story />
       </div>
     ),
@@ -23,20 +25,20 @@ type Story = StoryObj<typeof meta>;
 export const Default: Story = {};
 
 export const Open: Story = {
-  play: async () => {
-    await userEvent.click(screen.getByRole("button", { name: "言語を切り替える" }));
+  play: playForImplementation(async () => {
+    await userEvent.click(await screen.findByRole("button", { name: "言語を切り替える" }));
     await expect(await screen.findByRole("menuitemradio", { name: "日本語" })).toBeInTheDocument();
-  },
+  }),
 };
 
 export const SelectControl: Story = {
   args: { presentation: "select" },
-  play: async () => {
-    const select = screen.getByRole("combobox", { name: "言語" });
+  play: playForImplementation(async () => {
+    const select = await screen.findByRole("combobox", { name: "言語" });
     await expect(screen.getAllByRole("option")).toHaveLength(5);
     await userEvent.selectOptions(select, "en");
     await expect(await screen.findByRole("combobox", { name: "Language" })).toHaveValue("en");
     await userEvent.selectOptions(select, "ja");
     await expect(await screen.findByRole("combobox", { name: "言語" })).toHaveValue("ja");
-  },
+  }),
 };

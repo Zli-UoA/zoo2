@@ -165,6 +165,7 @@ export function Composer({
   const fileInputRef = useRef<HTMLInputElement>(null);
   const composingRef = useRef(false);
   const draftVersion = useRef(0);
+  const pendingSuggestionCaret = useRef<number | null>(null);
   const listId = useId();
   const channels = useMfmChannels();
   const [selectedCommand, setSelectedCommand] = useState<CommandSuggestion | null>(null);
@@ -226,16 +227,22 @@ export function Composer({
     setCaret(next.caret);
     setDismissed(true);
     onTyping?.(true);
-    requestAnimationFrame(() => {
-      textareaRef.current?.focus();
-      textareaRef.current?.setSelectionRange(next.caret, next.caret);
-    });
+    pendingSuggestionCaret.current = next.caret;
   }
   const [platform] = useState(() => detectComposerPlatform());
   // タッチ端末には Ctrl / Cmd が無いため、キーボードショートカットを案内しない。
   const isTouch = useMediaQuery("(hover: none)");
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const listRef = useRef<HTMLUListElement>(null);
+  // Apply the suggestion caret during commit, before another input event can
+  // arrive. A deferred animation frame can move it into newly typed text.
+  useLayoutEffect(() => {
+    const position = pendingSuggestionCaret.current;
+    if (position === null) return;
+    pendingSuggestionCaret.current = null;
+    textareaRef.current?.focus();
+    textareaRef.current?.setSelectionRange(position, position);
+  });
   useLayoutEffect(() => {
     listRef.current?.querySelector('[aria-selected="true"]')?.scrollIntoView({ block: "nearest" });
   }, [selectedOption, options.length]);

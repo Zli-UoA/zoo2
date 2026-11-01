@@ -1,3 +1,4 @@
+import { playForImplementation } from "../../../../.storybook/play-for-implementation";
 import type { Meta, StoryObj } from "@storybook/react-vite";
 import { delay, http, HttpResponse } from "msw";
 import { expect, fn, screen, waitFor, within } from "storybook/test";
@@ -141,11 +142,11 @@ export const UnreadSeparator: Story = {
       ],
     },
   },
-  play: async () => {
+  play: playForImplementation(async () => {
     await expect(
       await screen.findByRole("separator", { name: "新着メッセージ" }),
     ).toBeInTheDocument();
-  },
+  }),
 };
 
 export const LongMessages: Story = {
@@ -200,7 +201,7 @@ export const DelayedLinkPreview: Story = {
       ],
     },
   },
-  play: async ({ canvasElement }) => {
+  play: playForImplementation(async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     const card = await canvas.findByRole("link", { name: /Delayed URL card/ });
     await waitFor(() => expect(card).toHaveClass("flex-col"));
@@ -210,5 +211,5 @@ export const DelayedLinkPreview: Story = {
         scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight,
       ).toBeLessThanOrEqual(1),
     );
-  },
+  }),
 };

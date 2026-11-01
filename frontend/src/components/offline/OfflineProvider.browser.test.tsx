@@ -3,6 +3,7 @@ import { beforeEach, expect, it, vi } from "vite-plus/test";
 
 import type { AppConfig } from "../../lib/config";
 import type { CurrentUserState } from "../../lib/currentUser";
+import { useOfflineStatus } from "../../lib/offline/offline-context";
 import { OfflineProvider } from "./OfflineProvider";
 
 const mocks = vi.hoisted(() => ({
@@ -11,6 +12,7 @@ const mocks = vi.hoisted(() => ({
   online: true,
   prepare: vi.fn(async () => {}),
   open: vi.fn(async () => ({ persistence: {} })),
+  remove: vi.fn(async () => {}),
 }));
 vi.mock("../../lib/pwa/worker-registration", () => ({ prepareOfflineWorker: mocks.prepare }));
 vi.mock("../../lib/offline/online", () => ({ useOnlineStatus: () => mocks.online }));
@@ -28,7 +30,7 @@ vi.mock("../../lib/electric/collections", () => ({ getCollections: () => ({}) })
 vi.mock("../../lib/offline/persistence", () => ({
   openOfflinePersistence: mocks.open,
   retryPendingOfflineDeletion: async () => {},
-  removeOfflineDatabase: async () => {},
+  removeOfflineDatabase: mocks.remove,
   OfflinePersistenceUnavailableError: class extends Error {},
 }));
 vi.mock("../layout/ShellSkeleton", () => ({ ShellSkeleton: () => <p>Loading</p> }));
@@ -37,6 +39,8 @@ beforeEach(() => {
   mocks.state = { currentUserId: null, isLoading: true, isAdmin: false, error: null };
   mocks.online = true;
   mocks.open.mockClear();
+  mocks.remove.mockReset();
+  mocks.remove.mockResolvedValue(undefined);
   mocks.prepare.mockReset();
   mocks.prepare.mockResolvedValue(undefined);
 });
@@ -116,3 +120,27 @@ it("waits for the controlling Service Worker update before opening SQLite", asyn
   await screen.findByRole("button", { name: "Ready" });
   expect(mocks.open).toHaveBeenCalledTimes(1);
 });
+
+function ClearUserData() {
+  const { clearUserData } = useOfflineStatus();
+  return <button onClick={() => void clearUserData().catch(() => {})}>Log out</button>;
+}
+it.each([false, true])(
+  "React logout clears only this user's Compose drafts even if OPFS deletion fails: %s",
+  async (fails) => {
+    mocks.state = { currentUserId: "user-a", isLoading: false, isAdmin: false, error: null };
+    localStorage.setItem("zoo-compose:user-a:draft:private:", "private draft");
+    localStorage.setItem("zoo-compose:user-ab:draft:private:", "other user's draft");
+    if (fails) mocks.remove.mockRejectedValueOnce(new Error("OPFS unavailable"));
+    render(
+      <OfflineProvider config={{ devUserId: null, oidc: {} } as AppConfig}>
+        <ClearUserData />
+      </OfflineProvider>,
+    );
+    const button = await screen.findByRole("button", { name: "Log out" });
+    await act(async () => button.click());
+    expect(mocks.remove).toHaveBeenCalledExactlyOnceWith("user-user-a");
+    expect(localStorage.getItem("zoo-compose:user-a:draft:private:")).toBeNull();
+    expect(localStorage.getItem("zoo-compose:user-ab:draft:private:")).toBe("other user's draft");
+  },
+);
