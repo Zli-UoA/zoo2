@@ -707,5 +707,34 @@
     "start_other": "{{count}} チャンネルを取り込む",
     "forbidden": "取り込みは管理者だけが行えます。",
     "failed": "取り込みの操作に失敗しました。"
+  },
+  "slackLink": {
+    "tab": "Slack 連携",
+    "title": "Slack アカウント",
+    "description": "Slack アカウントを連携すると、Slack から取り込んだあなたの過去の投稿が、この Zoo アカウントの投稿になります。",
+    "loading": "連携状態を読み込み中",
+    "loadError": "連携状態を読み込めませんでした。",
+    "notConfigured": "このワークスペースでは Slack 連携が設定されていません。管理者に問い合わせてください。",
+    "linkedAs": "{{team}} の {{name}} として連携しています。",
+    "link": "Slack と連携",
+    "unlink": "連携を解除",
+    "unlinkTitle": "Slack との連携を解除しますか？",
+    "unlinkDescription": "Slack のトークンを無効にして削除します。付け替え済みの投稿は、あなたの投稿のまま残ります。",
+    "linked": "Slack アカウントを連携しました。",
+    "unlinked": "Slack との連携を解除しました。",
+    "errors": {
+      "denied": "Slack での許可がキャンセルされました。",
+      "invalid_state": "連携の有効期限が切れたか、不正な要求です。もう一度お試しください。",
+      "team_mismatch": "このワークスペースとは別の Slack ワークスペースのアカウントです。",
+      "already_linked": "この Slack アカウントは別の Zoo アカウントと連携済みです。",
+      "failed": "Slack との連携に失敗しました。"
+    },
+    "manifestTitle": "Slack アプリの manifest",
+    "manifestDescription": "Slack の「Create New App」→「From an app manifest」に貼り付けてアプリを作り、ワークスペースにインストールします。発行された Client ID と Client Secret をサーバーに設定してください。",
+    "manifestNotConfigured": "サーバーに Slack アプリがまだ設定されていません。リダイレクト URL は SLACK_OAUTH_REDIRECT_URL を設定すると正しい値になります。",
+    "manifestError": "manifest を読み込めませんでした。",
+    "copyManifest": "manifest をコピー",
+    "manifestCopied": "manifest をコピーしました。",
+    "manifestCopyFailed": "コピーできませんでした。"
   }
 }

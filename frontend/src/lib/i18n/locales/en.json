@@ -707,5 +707,34 @@
     "start_other": "Import {{count}} channels",
     "forbidden": "Only admins can import from Slack.",
     "failed": "The import request failed."
+  },
+  "slackLink": {
+    "tab": "Slack account",
+    "title": "Slack account",
+    "description": "Link your Slack account so that your past posts imported from Slack belong to this Zoo account.",
+    "loading": "Loading link status",
+    "loadError": "Couldn't load the link status.",
+    "notConfigured": "Slack linking isn't set up for this workspace. Ask an admin.",
+    "linkedAs": "Linked to {{team}} as {{name}}.",
+    "link": "Link with Slack",
+    "unlink": "Unlink",
+    "unlinkTitle": "Unlink your Slack account?",
+    "unlinkDescription": "The Slack token is revoked and deleted. Posts already moved to you stay yours.",
+    "linked": "Your Slack account is linked.",
+    "unlinked": "Your Slack account is unlinked.",
+    "errors": {
+      "denied": "Authorization was cancelled in Slack.",
+      "invalid_state": "The link request expired or is invalid. Please try again.",
+      "team_mismatch": "That account belongs to a different Slack workspace.",
+      "already_linked": "This Slack account is already linked to another Zoo account.",
+      "failed": "Couldn't link with Slack."
+    },
+    "manifestTitle": "Slack app manifest",
+    "manifestDescription": "Paste this into Slack's “Create New App” → “From an app manifest”, then install the app to your workspace. Set the issued Client ID and Client Secret on the server.",
+    "manifestNotConfigured": "No Slack app is configured on the server yet. The redirect URL becomes correct once SLACK_OAUTH_REDIRECT_URL is set.",
+    "manifestError": "Couldn't load the manifest.",
+    "copyManifest": "Copy manifest",
+    "manifestCopied": "Manifest copied.",
+    "manifestCopyFailed": "Couldn't copy."
   }
 }

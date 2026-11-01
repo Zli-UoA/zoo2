@@ -707,5 +707,34 @@
     "start_other": "导入 {{count}} 个频道",
     "forbidden": "只有管理员可以从 Slack 导入。",
     "failed": "导入操作失败。"
+  },
+  "slackLink": {
+    "tab": "Slack 关联",
+    "title": "Slack 账号",
+    "description": "关联 Slack 账号后，从 Slack 导入的你过去的帖子会归到这个 Zoo 账号。",
+    "loading": "正在加载关联状态",
+    "loadError": "无法加载关联状态。",
+    "notConfigured": "这个工作区尚未设置 Slack 关联。请联系管理员。",
+    "linkedAs": "已以 {{team}} 的 {{name}} 关联。",
+    "link": "与 Slack 关联",
+    "unlink": "解除关联",
+    "unlinkTitle": "要解除与 Slack 的关联吗？",
+    "unlinkDescription": "将撤销并删除 Slack 令牌。已转移的帖子仍属于你。",
+    "linked": "已关联 Slack 账号。",
+    "unlinked": "已解除与 Slack 的关联。",
+    "errors": {
+      "denied": "已在 Slack 取消授权。",
+      "invalid_state": "关联请求已过期或无效。请重试。",
+      "team_mismatch": "这是其他 Slack 工作区的账号。",
+      "already_linked": "这个 Slack 账号已关联到其他 Zoo 账号。",
+      "failed": "无法与 Slack 关联。"
+    },
+    "manifestTitle": "Slack 应用 manifest",
+    "manifestDescription": "将它粘贴到 Slack 的“Create New App”→“From an app manifest”创建应用，并安装到工作区。再将获得的 Client ID 和 Client Secret 设置到服务器。",
+    "manifestNotConfigured": "服务器尚未设置 Slack 应用。设置 SLACK_OAUTH_REDIRECT_URL 后，重定向网址才会正确。",
+    "manifestError": "无法加载 manifest。",
+    "copyManifest": "复制 manifest",
+    "manifestCopied": "已复制 manifest。",
+    "manifestCopyFailed": "无法复制。"
   }
 }

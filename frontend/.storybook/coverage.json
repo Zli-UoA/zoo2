@@ -289,6 +289,19 @@
       "states": ["Default", "Mobile"]
     },
     {
+      "file": "src/components/layout/SlackLinkPanel.stories.tsx",
+      "states": [
+        "NotLinked",
+        "Linked",
+        "NotConfigured",
+        "LoadError",
+        "AdminManifest",
+        "ReturnedWithError",
+        "ReturnedFromSlack",
+        "Mobile"
+      ]
+    },
+    {
       "file": "src/components/layout/SlackImportPanel.stories.tsx",
       "states": [
         "Empty",
@@ -691,6 +704,10 @@
     {
       "file": "src/components/layout/ShellSkeleton.tsx",
       "story": "src/components/layout/ShellSkeleton.stories.tsx"
+    },
+    {
+      "file": "src/components/layout/SlackLinkPanel.tsx",
+      "story": "src/components/layout/SlackLinkPanel.stories.tsx"
     },
     {
       "file": "src/components/layout/SlackImportPanel.tsx",

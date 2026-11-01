@@ -97,6 +97,19 @@ pub struct SlackConfig {
     pub import_bot_token: Option<String>,
     /// 添付ファイルの取得を許可する URL の接頭辞 (SSRF 対策。テストではモックに差し替える)
     pub files_base_url: String,
+    /// ワークスペースで作った Slack アプリ (#291 アカウント連携)
+    pub client_id: Option<String>,
+    pub client_secret: Option<String>,
+    /// 連携できる Slack ワークスペース。未設定なら制限しない
+    pub team_id: Option<String>,
+    /// Slack に登録するリダイレクト URL (バックエンドの `/api/slack/oauth/callback`)
+    pub oauth_redirect_url: Option<String>,
+    /// 連携後に戻るフロントエンドのオリジン。空なら同一オリジンの相対パスに戻す
+    pub frontend_url: String,
+    /// ユーザートークンの暗号化と state の署名に使う 32 バイトの鍵 (base64)
+    pub token_encryption_key: Option<String>,
+    /// Slack Web API の接頭辞 (テストではモックに差し替える)
+    pub api_base_url: String,
 }
 
 impl Default for SlackConfig {
@@ -105,6 +118,13 @@ impl Default for SlackConfig {
             import_max_zip_size: DEFAULT_SLACK_IMPORT_MAX_ZIP_SIZE,
             import_bot_token: None,
             files_base_url: DEFAULT_SLACK_FILES_BASE_URL.to_string(),
+            client_id: None,
+            client_secret: None,
+            team_id: None,
+            oauth_redirect_url: None,
+            frontend_url: String::new(),
+            token_encryption_key: None,
+            api_base_url: DEFAULT_SLACK_API_BASE_URL.to_string(),
         }
     }
 }
@@ -118,6 +138,19 @@ impl fmt::Debug for SlackConfig {
                 &self.import_bot_token.as_ref().map(|_| "[REDACTED]"),
             )
             .field("files_base_url", &self.files_base_url)
+            .field("client_id", &self.client_id)
+            .field(
+                "client_secret",
+                &self.client_secret.as_ref().map(|_| "[REDACTED]"),
+            )
+            .field("team_id", &self.team_id)
+            .field("oauth_redirect_url", &self.oauth_redirect_url)
+            .field("frontend_url", &self.frontend_url)
+            .field(
+                "token_encryption_key",
+                &self.token_encryption_key.as_ref().map(|_| "[REDACTED]"),
+            )
+            .field("api_base_url", &self.api_base_url)
             .finish()
     }
 }
@@ -125,8 +158,51 @@ impl fmt::Debug for SlackConfig {
 /// 単一 PUT で R2 / S3 にアップロードできる上限 (5 GiB)
 pub(crate) const DEFAULT_SLACK_IMPORT_MAX_ZIP_SIZE: u64 = 5 * 1024 * 1024 * 1024;
 pub(crate) const DEFAULT_SLACK_FILES_BASE_URL: &str = "https://files.slack.com/";
+pub(crate) const DEFAULT_SLACK_API_BASE_URL: &str = "https://slack.com/api";
 
 impl SlackConfig {
+    /// アカウント連携に必要な設定がそろっているか
+    pub fn oauth_enabled(&self) -> bool {
+        self.client_id.is_some()
+            && self.client_secret.is_some()
+            && self.oauth_redirect_url.is_some()
+            && self.encryption_key().is_some()
+    }
+
+    /// `SLACK_TOKEN_ENCRYPTION_KEY` を 32 バイトの鍵として読む
+    pub fn encryption_key(&self) -> Option<[u8; 32]> {
+        use base64::Engine;
+        let raw = self.token_encryption_key.as_deref()?;
+        base64::engine::general_purpose::STANDARD
+            .decode(raw.trim())
+            .ok()?
+            .try_into()
+            .ok()
+    }
+
+    fn validate(&self, environment: &str) -> Result<(), String> {
+        let any = self.client_id.is_some()
+            || self.client_secret.is_some()
+            || self.oauth_redirect_url.is_some()
+            || self.token_encryption_key.is_some();
+        if !any {
+            return Ok(());
+        }
+        if !self.oauth_enabled() {
+            return Err(
+                "SLACK_CLIENT_ID, SLACK_CLIENT_SECRET, SLACK_OAUTH_REDIRECT_URL and a base64 32-byte SLACK_TOKEN_ENCRYPTION_KEY must be set together"
+                    .to_string(),
+            );
+        }
+        let redirect = self.oauth_redirect_url.as_deref().unwrap_or_default();
+        let parsed = reqwest::Url::parse(redirect)
+            .map_err(|e| format!("SLACK_OAUTH_REDIRECT_URL is not a valid URL: {e}"))?;
+        if environment == "production" && parsed.scheme() != "https" {
+            return Err("SLACK_OAUTH_REDIRECT_URL must use https in production".to_string());
+        }
+        Ok(())
+    }
+
     fn from_env() -> Self {
         let import_max_zip_size = env::var("SLACK_IMPORT_MAX_ZIP_SIZE")
             .ok()
@@ -139,10 +215,22 @@ impl SlackConfig {
             .ok()
             .filter(|v| !v.trim().is_empty())
             .unwrap_or_else(|| DEFAULT_SLACK_FILES_BASE_URL.to_string());
+        let optional = |name: &str| env::var(name).ok().filter(|v| !v.trim().is_empty());
         Self {
             import_max_zip_size,
             import_bot_token,
             files_base_url,
+            client_id: optional("SLACK_CLIENT_ID"),
+            client_secret: optional("SLACK_CLIENT_SECRET"),
+            team_id: optional("SLACK_TEAM_ID"),
+            oauth_redirect_url: optional("SLACK_OAUTH_REDIRECT_URL"),
+            frontend_url: optional("SLACK_FRONTEND_URL")
+                .map(|v| v.trim_end_matches('/').to_string())
+                .unwrap_or_default(),
+            token_encryption_key: optional("SLACK_TOKEN_ENCRYPTION_KEY"),
+            api_base_url: optional("SLACK_API_BASE_URL")
+                .map(|v| v.trim_end_matches('/').to_string())
+                .unwrap_or_else(|| DEFAULT_SLACK_API_BASE_URL.to_string()),
         }
     }
 }
@@ -368,6 +456,7 @@ impl Config {
                 "SLACK_IMPORT_MAX_ZIP_SIZE must be between 1 and {DEFAULT_SLACK_IMPORT_MAX_ZIP_SIZE} bytes"
             ));
         }
+        self.slack.validate(&self.environment)?;
 
         if self.environment == "production" {
             if self.oidc.is_none() {

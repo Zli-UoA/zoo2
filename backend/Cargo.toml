@@ -35,6 +35,7 @@ sha2 = "0.11"
 regex = "1"
 base64 = "0.22"
 ece = "2.4"
+aes-gcm = "0.10"
 zip = { version = "2", default-features = false, features = ["deflate"] }
 # Statically link OpenSSL so the distroless runtime needs no shared libcrypto.
 openssl = { version = "0.10", features = ["vendored"] }

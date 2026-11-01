@@ -707,5 +707,34 @@
     "start_other": "匯入 {{count}} 個頻道",
     "forbidden": "只有管理員可以從 Slack 匯入。",
     "failed": "匯入操作失敗。"
+  },
+  "slackLink": {
+    "tab": "Slack 連結",
+    "title": "Slack 帳號",
+    "description": "連結 Slack 帳號後，從 Slack 匯入的你過去的貼文會歸到這個 Zoo 帳號。",
+    "loading": "正在載入連結狀態",
+    "loadError": "無法載入連結狀態。",
+    "notConfigured": "這個工作區尚未設定 Slack 連結。請聯絡管理員。",
+    "linkedAs": "已以 {{team}} 的 {{name}} 連結。",
+    "link": "與 Slack 連結",
+    "unlink": "解除連結",
+    "unlinkTitle": "要解除與 Slack 的連結嗎？",
+    "unlinkDescription": "將撤銷並刪除 Slack 權杖。已轉移的貼文仍屬於你。",
+    "linked": "已連結 Slack 帳號。",
+    "unlinked": "已解除與 Slack 的連結。",
+    "errors": {
+      "denied": "已在 Slack 取消授權。",
+      "invalid_state": "連結要求已過期或無效。請再試一次。",
+      "team_mismatch": "這是其他 Slack 工作區的帳號。",
+      "already_linked": "這個 Slack 帳號已連結到其他 Zoo 帳號。",
+      "failed": "無法與 Slack 連結。"
+    },
+    "manifestTitle": "Slack 應用程式 manifest",
+    "manifestDescription": "將它貼到 Slack 的「Create New App」→「From an app manifest」建立應用程式，並安裝到工作區。再將取得的 Client ID 與 Client Secret 設定到伺服器。",
+    "manifestNotConfigured": "伺服器尚未設定 Slack 應用程式。設定 SLACK_OAUTH_REDIRECT_URL 後，重新導向網址才會正確。",
+    "manifestError": "無法載入 manifest。",
+    "copyManifest": "複製 manifest",
+    "manifestCopied": "已複製 manifest。",
+    "manifestCopyFailed": "無法複製。"
   }
 }

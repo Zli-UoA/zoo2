@@ -1,4 +1,4 @@
-# Slack からの取り込み
+# Slack からの取り込みとアカウント連携
 
 Slack のエクスポート ZIP をアップロードすると、チャンネル・メッセージ・スレッド・リアクション・添付ファイルを Zoo に取り込めます。取り込みはワークスペース管理者だけが行えます。Slack 連携の全体像は Zli-UoA/zoo2#115 を参照してください。
 
@@ -38,7 +38,7 @@ ZIP には公開チャンネル（`channels.json`）が入ります。プラン�
 
 ### Slack ユーザーの扱い
 
-Slack ユーザーは、Zoo 上では「無効化済み」のプレースホルダユーザーとして作ります。プレースホルダはログインできず、メンバー一覧・メンション候補・DM の候補には出ません。Slack アカウントと Zoo アカウントを連携すると（Zli-UoA/zoo2#291）、プレースホルダの投稿は本人に付け替わります。
+Slack ユーザーは、Zoo 上では「無効化済み」のプレースホルダユーザーとして作ります。プレースホルダはログインできず、メンバー一覧・メンション候補・DM の候補には出ません。各ユーザーが Slack アカウントを連携すると（後述）、プレースホルダの投稿は本人に付け替わります。すでに連携済みのユーザーの投稿は、取り込んだ時点で本人の投稿になります。
 
 ### 添付ファイル
 
@@ -59,3 +59,43 @@ Slack のエクスポート ZIP には、添付ファイルの実体が入って
 | `SLACK_FILES_BASE_URL` | `https://files.slack.com/` | 添付ファイルを取得してよい URL の接頭辞 |
 
 ZIP は添付ファイルと同じバケット（`S3_*`）の `slack-imports/` の下に一時的に置きます。ブラウザから直接 PUT するため、バケットの CORS で PUT を許可しておく必要があります（`infra/terraform/r2.tf` で設定済みです）。ワーカーは解析と取り込みのために ZIP を一時ディレクトリへダウンロードするので、ZIP と同じ程度の空き容量が必要です。
+
+## Slack アカウントの連携
+
+各ユーザーは、自分の Slack アカウントを Zoo アカウントに連携できます。管理者の作業は、最初に Slack アプリを 1 つ作ることだけです。
+
+### 管理者: Slack アプリを作る
+
+Slack の配布アプリ（Marketplace の審査を通っていないもの）は `conversations.history` などのレート制限が厳しいため、ワークスペースごとに社内アプリ（internal app）を作ります。
+
+1. 「Zoo設定」→「Slack 連携」を開き、「Slack アプリの manifest」をコピーします。この欄は管理者にだけ表示されます。
+2. <https://api.slack.com/apps> で「Create New App」→「From an app manifest」を選び、ワークスペースを選んで manifest を貼り付けます。
+3. アプリをワークスペースにインストールし、「Basic Information」の Client ID と Client Secret を控えます。
+4. バックエンドに次の環境変数を設定して再起動します。
+
+| 環境変数 | 内容 |
+| --- | --- |
+| `SLACK_CLIENT_ID` / `SLACK_CLIENT_SECRET` | Slack アプリの Client ID と Client Secret |
+| `SLACK_OAUTH_REDIRECT_URL` | `https://<バックエンドの公開URL>/api/slack/oauth/callback`。manifest の `redirect_urls` と一致させます |
+| `SLACK_TOKEN_ENCRYPTION_KEY` | ユーザートークンの暗号化と state の署名に使う 32 バイトの鍵（base64）。`openssl rand -base64 32` などで作ります |
+| `SLACK_TEAM_ID` | 連携を許可する Slack ワークスペースの ID（`T…`）。任意ですが設定を推奨します |
+| `SLACK_FRONTEND_URL` | 連携後に戻るフロントエンドのオリジン。フロントとバックエンドが同一オリジンなら不要です |
+
+`SLACK_CLIENT_ID`・`SLACK_CLIENT_SECRET`・`SLACK_OAUTH_REDIRECT_URL`・`SLACK_TOKEN_ENCRYPTION_KEY` は 4 つそろえて設定してください。一部だけだと起動時にエラーになります。鍵を変えると保存済みのトークンは読めなくなるので、各ユーザーに連携し直してもらう必要があります。
+
+### ユーザー: 連携する
+
+1. 「Zoo設定」→「Slack 連携」で「Slack と連携」を押します。
+2. Slack で内容を確認して許可すると、Zoo の設定画面に戻り、連携が完了します。
+3. 取り込み済みの過去ログにあなたのプレースホルダがあれば、その投稿・リアクション・参加チャンネルがあなたのものになります。新しく参加したチャンネルの過去ログは既読の状態になります。
+
+1 つの Slack アカウントは 1 つの Zoo アカウントにだけ連携できます。連携を解除すると Slack のトークンを無効にして削除しますが、付け替えた投稿は元に戻しません。同じ Slack アカウントは、解除後も同じ Zoo アカウントにだけ連携し直せます。
+
+### 仕組み
+
+- Slack から戻るリダイレクト先（`/api/slack/oauth/callback`）ではトークンを交換しません。`code` と `state` を付けて設定画面に戻し、フロントがログイン中のユーザーとして `POST /api/slack/oauth/complete` を呼びます。サーバーは、state に署名された「連携を始めたユーザー」と呼び出したユーザーが一致するときだけ連携します。他人が作った認可 URL を踏まされても、その人の Zoo アカウントに自分の Slack アカウントが連携されることはありません。
+- state は 10 分で期限が切れます。
+- ユーザートークンは AES-256-GCM で暗号化して `slack_user_links` に保存します。この表は Electric の Shape に含めません。
+- 付け替えの間は App へのイベント配送を止めます。
+
+マイグレーション `20261102010000_create_slack_user_links.sql` を適用してください。
