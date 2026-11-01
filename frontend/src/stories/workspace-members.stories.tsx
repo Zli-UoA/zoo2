@@ -1,3 +1,5 @@
+import { preferenceSurfaces } from "../../.storybook/preference-stories";
+import { playForImplementation } from "../../.storybook/play-for-implementation";
 import type { Meta, StoryObj } from "@storybook/react-vite";
 import { http, HttpResponse } from "msw";
 import { expect, screen, userEvent, waitFor, within } from "storybook/test";
@@ -29,7 +31,7 @@ const meta = {
   },
   decorators: [
     (Story) => (
-      <div className="mx-auto max-w-2xl p-4">
+      <div className={preferenceSurfaces["Flows/Workspace/ChangeRole"]}>
         <Story />
       </div>
     ),
@@ -38,7 +40,7 @@ const meta = {
 export default meta;
 type Story = StoryObj<typeof meta>;
 export const GrantAndRevoke: Story = {
-  play: async () => {
+  play: playForImplementation(async () => {
     const bob = (await screen.findByText("@bob")).closest("li")!;
     const makeAdmin = await within(bob).findByRole("button", { name: "管理者にする" });
     await waitFor(() => expect(makeAdmin).toBeEnabled());
@@ -53,7 +55,7 @@ export const GrantAndRevoke: Story = {
       within(await screen.findByRole("alertdialog")).getByRole("button", { name: "管理者を外す" }),
     );
     await expect(await within(bob).findByRole("button", { name: "管理者にする" })).toBeEnabled();
-  },
+  }),
 };
 export const RejectedLastAdmin: Story = {
   parameters: {
@@ -75,7 +77,7 @@ export const RejectedLastAdmin: Story = {
       ],
     },
   },
-  play: async () => {
+  play: playForImplementation(async () => {
     const bob = (await screen.findByText("@bob")).closest("li")!;
     const makeAdmin = await within(bob).findByRole("button", { name: "管理者を外す" });
     await waitFor(() => expect(makeAdmin).toBeEnabled());
@@ -84,5 +86,5 @@ export const RejectedLastAdmin: Story = {
       within(await screen.findByRole("alertdialog")).getByRole("button", { name: "管理者を外す" }),
     );
     await waitFor(() => expect(screen.getByRole("alert")).toBeVisible());
-  },
+  }),
 };

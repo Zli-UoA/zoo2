@@ -676,5 +676,13 @@
     "editProfile": "プロフィールを編集",
     "originalProfile": "元のプロフィール",
     "post": "投稿"
+  },
+  "experimental": {
+    "useCompose": "Compose版を使う（実験・開発中）",
+    "useReact": "React版に戻る",
+    "loadError": "Compose版を起動できませんでした。React版に戻ってください。",
+    "catalogLoading": "Composeを読み込んでいます…",
+    "catalogLoadError": "Composeの配布物を取得できませんでした。",
+    "catalogBuildHint": "JDK 21を用意し、frontendで pnpm build:compose を実行してください。"
   }
 }

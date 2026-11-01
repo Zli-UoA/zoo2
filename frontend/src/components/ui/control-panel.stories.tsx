@@ -1,3 +1,4 @@
+import { storySurfaces } from "../../../.storybook/story-surfaces";
 import type { Meta, StoryObj } from "@storybook/react-vite";
 import { SettingsSection, SettingRow } from "./control-panel";
 import { Button } from "./button";
@@ -7,7 +8,7 @@ const meta = {
   parameters: { a11y: { test: "error" } },
   decorators: [
     (Story) => (
-      <div className="mx-auto max-w-xl p-4">
+      <div className={storySurfaces["Components/ControlPanel"]}>
         <Story />
       </div>
     ),

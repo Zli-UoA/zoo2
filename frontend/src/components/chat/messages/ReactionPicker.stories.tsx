@@ -1,3 +1,4 @@
+import { playForImplementation } from "../../../../.storybook/play-for-implementation";
 import type { Meta, StoryObj } from "@storybook/react-vite";
 import { delay, http, HttpResponse } from "msw";
 import { expect, fn, screen, userEvent, waitFor, within } from "storybook/test";
@@ -46,7 +47,7 @@ export default meta;
 type Story = StoryObj<typeof meta>;
 
 export const Default: Story = {
-  play: async () => {
+  play: playForImplementation(async () => {
     const dialog = await screen.findByRole("dialog", {}, { timeout: 5000 });
     // The first open fetches the emoji catalogue and mounts a virtual grid.
     // Wait for that grid rather than applying Testing Library's 1s default.
@@ -55,25 +56,25 @@ export const Default: Story = {
     await expect(rows.every((row) => Number(row.getAttribute("aria-rowindex")) >= 1)).toBe(true);
     const cells = await picker.findAllByRole("gridcell", {}, { timeout: 5000 });
     await expect(cells.every((cell) => Number(cell.getAttribute("aria-colindex")) >= 1)).toBe(true);
-  },
+  }),
 };
 
 export const Kitchen: Story = {
-  play: async () => {
-    await userEvent.click(screen.getByRole("tab", { name: "Emoji Kitchen" }));
+  play: playForImplementation(async () => {
+    await userEvent.click(await screen.findByRole("tab", { name: "Emoji Kitchen" }));
     await waitFor(
       () => expect(screen.getByRole("combobox", { name: "1つ目の絵文字" })).toBeVisible(),
       { timeout: 5000 },
     );
-  },
+  }),
 };
 
 export const SearchEmpty: Story = {
-  play: async () => {
-    const search = screen.getByPlaceholderText("絵文字を検索");
+  play: playForImplementation(async () => {
+    const search = await screen.findByPlaceholderText("絵文字を検索");
     await userEvent.type(search, "zzzzzzzz");
     await expect(await screen.findByText("一致する絵文字がありません")).toBeVisible();
-  },
+  }),
 };
 
 export const Recents: Story = {
@@ -96,9 +97,9 @@ export const KitchenLoading: Story = {
       ],
     },
   },
-  play: async () => {
-    await userEvent.click(screen.getByRole("tab", { name: "Emoji Kitchen" }));
-  },
+  play: playForImplementation(async () => {
+    await userEvent.click(await screen.findByRole("tab", { name: "Emoji Kitchen" }));
+  }),
 };
 
 export const Mobile: Story = {

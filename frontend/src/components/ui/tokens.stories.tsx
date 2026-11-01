@@ -1,17 +1,7 @@
+import { tokenPairs } from "../../../.storybook/primitive-fixtures";
 import type { Meta, StoryObj } from "@storybook/react-vite";
 import { Button } from "./button";
-const pairs = [
-  ["background", "foreground"],
-  ["card", "card-foreground"],
-  ["popover", "popover-foreground"],
-  ["primary", "primary-foreground"],
-  ["primary-hover", "primary-foreground"],
-  ["secondary", "secondary-foreground"],
-  ["muted", "muted-foreground"],
-  ["accent", "accent-foreground"],
-  ["brand", "brand-foreground"],
-  ["brand-muted", "brand-muted-foreground"],
-];
+const pairs = tokenPairs;
 function Tokens() {
   return (
     <main className="space-y-6 bg-background p-6 text-foreground">

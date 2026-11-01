@@ -211,13 +211,26 @@ export function ChannelHeader({
           </DialogHeader>
           <div className="divide-y rounded-lg border">
             <SettingRow label={t("channels.editTitle")} description={displaySubtitle}>
-              <Button variant="outline" disabled={isArchived} onClick={() => setRenameOpen(true)}>
+              <Button
+                variant="outline"
+                disabled={isArchived}
+                onClick={() => {
+                  setSettingsOpen(false);
+                  setRenameOpen(true);
+                }}
+              >
                 <PencilIcon />
                 {t("messages.edit")}
               </Button>
             </SettingRow>
             <SettingRow label={t("webhooks.title")}>
-              <Button variant="outline" onClick={() => setWebhooksOpen(true)}>
+              <Button
+                variant="outline"
+                onClick={() => {
+                  setSettingsOpen(false);
+                  setWebhooksOpen(true);
+                }}
+              >
                 <WebhookIcon />
                 {t("common.open")}
               </Button>

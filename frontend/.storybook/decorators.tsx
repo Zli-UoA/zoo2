@@ -8,7 +8,7 @@ import {
 } from "@tanstack/react-router";
 import { setupWorker } from "msw/browser";
 import type { RequestHandler, WebSocketHandler } from "msw";
-import { useMemo, useState, type ReactNode } from "react";
+import { createContext, useContext, useMemo, useState, type ReactNode } from "react";
 
 import { LocaleProvider } from "../src/components/i18n/LocaleProvider";
 import { ThemeProvider } from "../src/components/theme/ThemeProvider";
@@ -41,6 +41,11 @@ export const withCollections: Decorator = (Story, context) => {
   );
 };
 
+const StoryContent = createContext<ReactNode>(null);
+function StoryRouteContent() {
+  return <>{useContext(StoryContent)}</>;
+}
+
 export function StoryRouter({
   children,
   initialEntries = ["/"],
@@ -50,7 +55,7 @@ export function StoryRouter({
 }) {
   const entriesKey = initialEntries.join("\n");
   const router = useMemo(() => {
-    const rootRoute = createRootRoute({ component: () => <>{children}</> });
+    const rootRoute = createRootRoute({ component: StoryRouteContent });
     const channelRoute = createRoute({
       getParentRoute: () => rootRoute,
       path: "channels/$channelId",
@@ -80,8 +85,12 @@ export function StoryRouter({
       ]),
       history: createMemoryHistory({ initialEntries: entriesKey.split("\n") }),
     });
-  }, [children, entriesKey]);
-  return <RouterProvider router={router} />;
+  }, [entriesKey]);
+  return (
+    <StoryContent.Provider value={children}>
+      <RouterProvider router={router} />
+    </StoryContent.Provider>
+  );
 }
 
 function Providers({

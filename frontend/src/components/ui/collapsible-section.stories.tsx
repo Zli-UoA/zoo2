@@ -1,3 +1,4 @@
+import { playForImplementation } from "../../../.storybook/play-for-implementation";
 import type { Meta, StoryObj } from "@storybook/react-vite";
 import { HashIcon, PlusIcon } from "lucide-react";
 import { expect, fn, userEvent, within } from "storybook/test";
@@ -33,10 +34,10 @@ export const WithActions: Story = {
       </Button>
     ),
   },
-  play: async ({ canvasElement }) => {
+  play: playForImplementation(async ({ canvasElement }) => {
     const canvas = within(canvasElement);
-    const toggle = canvas.getByRole("button", { name: "チャンネル" });
-    await userEvent.click(canvas.getByRole("button", { name: "チャンネルを作成" }));
+    const toggle = await canvas.findByRole("button", { name: "チャンネル" });
+    await userEvent.click(await canvas.findByRole("button", { name: "チャンネルを作成" }));
     await expect(toggle).toHaveAttribute("aria-expanded", "true");
     await userEvent.click(toggle);
     await expect(canvas.getByText("general / design")).not.toBeVisible();
@@ -44,5 +45,5 @@ export const WithActions: Story = {
     await expect(canvas.getByText("general / design")).toBeVisible();
     await userEvent.keyboard(" ");
     await expect(toggle).toHaveAttribute("aria-expanded", "false");
-  },
+  }),
 };
