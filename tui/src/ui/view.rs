@@ -180,12 +180,13 @@ fn draw_messages(frame: &mut Frame, app: &mut App, area: Rect) {
     };
     let built = timeline::build(&messages, &ctx, inner.width);
     let height = usize::from(inner.height);
-    let scroll = match app.selected.as_deref().and_then(|id| built.range_of(id)) {
-        Some(range) => timeline::scroll_to(app.scroll, range, height),
+    let (scroll, inner_scroll) = match app.selected.as_deref().and_then(|id| built.range_of(id)) {
+        Some(range) => timeline::scroll_to(app.scroll, range, height, app.inner_scroll),
         // 未選択なら最新を表示し続ける。
-        None => built.lines.len().saturating_sub(height),
+        None => (built.lines.len().saturating_sub(height), 0),
     };
     app.scroll = scroll;
+    app.inner_scroll = inner_scroll;
     let visible: Vec<Line> = built.lines.into_iter().skip(scroll).take(height).collect();
     frame.render_widget(Paragraph::new(visible), inner);
 }
@@ -216,12 +217,14 @@ fn draw_thread(frame: &mut Frame, app: &mut App, area: Rect) {
     };
     let built = timeline::build(&messages, &ctx, inner.width);
     let height = usize::from(inner.height);
-    let scroll = match thread.selected.as_deref().and_then(|id| built.range_of(id)) {
-        Some(range) => timeline::scroll_to(thread.scroll, range, height),
-        None => built.lines.len().saturating_sub(height),
+    let (scroll, inner_scroll) = match thread.selected.as_deref().and_then(|id| built.range_of(id))
+    {
+        Some(range) => timeline::scroll_to(thread.scroll, range, height, thread.inner_scroll),
+        None => (built.lines.len().saturating_sub(height), 0),
     };
     if let Some(thread) = app.thread.as_mut() {
         thread.scroll = scroll;
+        thread.inner_scroll = inner_scroll;
     }
     let visible: Vec<Line> = built.lines.into_iter().skip(scroll).take(height).collect();
     frame.render_widget(Paragraph::new(visible), inner);
@@ -318,6 +321,7 @@ const HELP: &[(&str, &str)] = &[
     ("Tab / Shift+Tab", "ペインを移動"),
     ("j k / ↓ ↑", "選択を移動"),
     ("g / G", "先頭 / 末尾へ"),
+    ("Ctrl+D / Ctrl+U", "長いメッセージの中を下 / 上へ"),
     ("Enter", "チャンネルを開く / スレッドを開く"),
     ("Esc", "選択を外す / スレッドを閉じる"),
     ("i", "書く (スレッドでは返信)"),

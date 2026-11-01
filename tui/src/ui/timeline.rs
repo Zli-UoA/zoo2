@@ -186,14 +186,26 @@ pub fn wrap(line: Line<'static>, width: usize) -> Vec<Line<'static>> {
 }
 
 /// `range` が高さ `height` の表示領域に入るよう、スクロール位置を調整する。
-pub fn scroll_to(scroll: usize, range: Range<usize>, height: usize) -> usize {
-    if range.start < scroll || range.len() > height {
+/// `range` が領域より長いときは、先頭から `inner` 行進めた位置を出す。`inner` は
+/// 末尾が見える位置で止め、詰めた値も返す。
+pub fn scroll_to(
+    scroll: usize,
+    range: Range<usize>,
+    height: usize,
+    inner: usize,
+) -> (usize, usize) {
+    if range.len() > height {
+        let inner = inner.min(range.len() - height);
+        return (range.start + inner, inner);
+    }
+    let scroll = if range.start < scroll {
         range.start
     } else if range.end > scroll + height {
         range.end - height
     } else {
         scroll
-    }
+    };
+    (scroll, 0)
 }
 
 #[cfg(test)]
@@ -213,10 +225,15 @@ mod tests {
 
     #[test]
     fn scroll_keeps_range_visible() {
-        assert_eq!(scroll_to(10, 2..4, 5), 2);
-        assert_eq!(scroll_to(0, 6..8, 5), 3);
-        assert_eq!(scroll_to(3, 4..6, 5), 3);
-        assert_eq!(scroll_to(0, 6..20, 5), 6);
+        assert_eq!(scroll_to(10, 2..4, 5, 0), (2, 0));
+        assert_eq!(scroll_to(0, 6..8, 5, 0), (3, 0));
+        assert_eq!(scroll_to(3, 4..6, 5, 0), (3, 0));
+        assert_eq!(scroll_to(0, 6..20, 5, 0), (6, 0));
+        // 長いメッセージの中は末尾が見える位置までしか進まない。
+        assert_eq!(scroll_to(0, 6..20, 5, 4), (10, 4));
+        assert_eq!(scroll_to(0, 6..20, 5, 99), (15, 9));
+        // 収まるメッセージでは内側の位置を使わない。
+        assert_eq!(scroll_to(3, 4..6, 5, 7), (3, 0));
     }
 
     #[test]

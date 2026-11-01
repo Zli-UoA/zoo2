@@ -26,6 +26,8 @@ const TYPING_POLL_EVERY: u64 = 3;
 /// 入力中の通知は2秒に1回まで送り、3秒止まったら取り消す。
 const TYPING_SEND_INTERVAL: Duration = Duration::from_secs(2);
 const TYPING_IDLE: Duration = Duration::from_secs(3);
+/// 長いメッセージの中を1回で動かす行数。
+const INNER_SCROLL_STEP: usize = 10;
 
 /// 非同期の API 呼び出しから画面に返す結果。
 #[derive(Debug)]
@@ -84,6 +86,8 @@ pub struct ThreadView {
     pub root_id: String,
     pub selected: Option<String>,
     pub scroll: usize,
+    /// 選択中のメッセージがペインより長いときの、メッセージ内の表示位置。
+    pub inner_scroll: usize,
 }
 
 pub struct App {
@@ -104,6 +108,8 @@ pub struct App {
     /// 選択中のルートメッセージ。None なら最新を追う。
     pub selected: Option<String>,
     pub scroll: usize,
+    /// 選択中のメッセージがペインより長いときの、メッセージ内の表示位置。
+    pub inner_scroll: usize,
     pub thread: Option<ThreadView>,
     pub composer: TextArea<'static>,
     pub target: Target,
@@ -149,6 +155,7 @@ impl App {
             current: None,
             selected: None,
             scroll: 0,
+            inner_scroll: 0,
             thread: None,
             composer: new_composer(),
             target: Target::Channel,
@@ -435,6 +442,14 @@ impl App {
             KeyCode::Char('k') | KeyCode::Up => self.move_selection(-1),
             KeyCode::Char('g') | KeyCode::Home => self.move_selection(isize::MIN),
             KeyCode::Char('G') | KeyCode::End => self.move_selection(isize::MAX),
+            KeyCode::Char('d') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                self.scroll_inside(true)
+            }
+            KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                self.scroll_inside(false)
+            }
+            KeyCode::PageDown => self.scroll_inside(true),
+            KeyCode::PageUp => self.scroll_inside(false),
             KeyCode::Enter => self.activate(),
             KeyCode::Esc => self.back(),
             KeyCode::Char('i') => self.start_compose(),
@@ -594,6 +609,7 @@ impl App {
                     .map(|message| message.id.clone())
                     .collect();
                 self.selected = move_id(&ids, self.selected.as_deref(), delta);
+                self.inner_scroll = 0;
             }
             Focus::Thread => {
                 let (Some(channel_id), Some(thread)) = (self.current.clone(), self.thread.as_mut())
@@ -608,8 +624,26 @@ impl App {
                         .map(|message| message.id.clone()),
                 );
                 thread.selected = move_id(&ids, thread.selected.as_deref(), delta);
+                thread.inner_scroll = 0;
             }
         }
+    }
+
+    /// ペインより長いメッセージの中を動かす。行き過ぎは描画時に詰める。
+    fn scroll_inside(&mut self, down: bool) {
+        let inner = match self.focus {
+            Focus::Messages if self.selected.is_some() => &mut self.inner_scroll,
+            Focus::Thread => match self.thread.as_mut() {
+                Some(thread) if thread.selected.is_some() => &mut thread.inner_scroll,
+                _ => return,
+            },
+            _ => return,
+        };
+        *inner = if down {
+            inner.saturating_add(INNER_SCROLL_STEP)
+        } else {
+            inner.saturating_sub(INNER_SCROLL_STEP)
+        };
     }
 
     fn activate(&mut self) {
@@ -621,6 +655,7 @@ impl App {
                         root_id,
                         selected: None,
                         scroll: 0,
+                        inner_scroll: 0,
                     });
                     self.focus = Focus::Thread;
                 }
