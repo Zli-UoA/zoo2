@@ -8,7 +8,8 @@ use ratatui::{
     style::{Color, Modifier, Style},
     text::{Line, Span},
 };
-use unicode_width::UnicodeWidthChar;
+use unicode_segmentation::UnicodeSegmentation;
+use unicode_width::UnicodeWidthStr;
 
 use crate::{
     electric::rows::Message,
@@ -165,6 +166,7 @@ pub fn local(at: DateTime) -> Option<Zoned> {
 }
 
 /// 文字の表示幅で折り返す。日本語は単語の区切りがないため、文字単位で折る。
+/// ZWJ でつないだ絵文字などを途中で分けないよう、書記素クラスタを1文字として数える。
 pub fn wrap(line: Line<'static>, width: usize) -> Vec<Line<'static>> {
     let width = width.max(1);
     let mut lines = Vec::new();
@@ -172,8 +174,8 @@ pub fn wrap(line: Line<'static>, width: usize) -> Vec<Line<'static>> {
     let mut used = 0;
     for span in line.spans {
         let mut chunk = String::new();
-        for ch in span.content.chars() {
-            let w = ch.width().unwrap_or(0);
+        for grapheme in span.content.graphemes(true) {
+            let w = grapheme.width();
             if used + w > width && used > 0 {
                 if !chunk.is_empty() {
                     current.push(Span::styled(std::mem::take(&mut chunk), span.style));
@@ -181,7 +183,7 @@ pub fn wrap(line: Line<'static>, width: usize) -> Vec<Line<'static>> {
                 lines.push(Line::from(std::mem::take(&mut current)).style(line.style));
                 used = 0;
             }
-            chunk.push(ch);
+            chunk.push_str(grapheme);
             used += w;
         }
         if !chunk.is_empty() {
@@ -221,6 +223,19 @@ mod tests {
 
     use super::*;
     use crate::electric::{Batch, Change, ShapeId};
+
+    #[test]
+    fn keeps_grapheme_clusters_together() {
+        let family = "👨\u{200d}👩\u{200d}👧\u{200d}👦";
+        let line = Line::from(format!("aaaa{family}b"));
+        let wrapped: Vec<String> = wrap(line, 6).iter().map(|l| l.to_string()).collect();
+        assert_eq!(wrapped, [format!("aaaa{family}"), "b".to_string()]);
+
+        let thumbs = "👍🏽";
+        let line = Line::from(format!("aaaaa{thumbs}"));
+        let wrapped: Vec<String> = wrap(line, 6).iter().map(|l| l.to_string()).collect();
+        assert_eq!(wrapped, ["aaaaa".to_string(), thumbs.to_string()]);
+    }
 
     #[test]
     fn wraps_by_display_width() {
