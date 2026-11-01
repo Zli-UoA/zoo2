@@ -37,11 +37,13 @@ describe("defaultMappings", () => {
           slack_channel_id: "C2",
           existing_channel: { id: "channel-random", name: "random" },
         }),
+        channel({ slack_channel_id: "C3", deleted_channel: "old-random" }),
       ]),
     ).toEqual([
       { slack_channel_id: "C1", action: "create", name: "slack-general", is_private: false },
       { slack_channel_id: "G1", action: "create", name: "secret", is_private: true },
       { slack_channel_id: "C2", action: "existing", channel_id: "channel-random" },
+      { slack_channel_id: "C3", action: "skip" },
     ]);
   });
 });

@@ -23,6 +23,8 @@ export interface SlackChannelSummary {
   name_taken: boolean;
   /** 以前の取り込みで対応付けた zoo チャンネル */
   existing_channel: { id: string; name: string } | null;
+  /** 以前の取り込み先が削除済みならその名前。過去ログが残っているため取り込み直せない */
+  deleted_channel?: string | null;
 }
 
 export interface SlackImport {
@@ -157,17 +159,19 @@ export function retryableFiles(job: SlackImport): number {
 /** 解析結果から、初期状態の対応付けを作る */
 export function defaultMappings(channels: SlackChannelSummary[]): SlackChannelMapping[] {
   return channels.map((channel) =>
-    channel.existing_channel
-      ? {
-          slack_channel_id: channel.slack_channel_id,
-          action: "existing",
-          channel_id: channel.existing_channel.id,
-        }
-      : {
-          slack_channel_id: channel.slack_channel_id,
-          action: "create",
-          name: channel.suggested_name,
-          is_private: channel.is_private,
-        },
+    channel.deleted_channel
+      ? { slack_channel_id: channel.slack_channel_id, action: "skip" }
+      : channel.existing_channel
+        ? {
+            slack_channel_id: channel.slack_channel_id,
+            action: "existing",
+            channel_id: channel.existing_channel.id,
+          }
+        : {
+            slack_channel_id: channel.slack_channel_id,
+            action: "create",
+            name: channel.suggested_name,
+            is_private: channel.is_private,
+          },
   );
 }

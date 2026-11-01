@@ -711,6 +711,7 @@
     "summary": "搵到 {{channels}} 個頻道、{{users}} 位用戶。請揀匯入位置。",
     "private": "私人",
     "channelStats": "{{messages}} 條訊息 · {{members}} 位成員",
+    "deletedTarget": "之前嘅匯入位置 #{{name}} 已經刪咗，所以唔可以再匯入。",
     "actionFor": "#{{name}} 嘅匯入方式",
     "actionCreate": "新頻道",
     "actionExisting": "現有頻道",

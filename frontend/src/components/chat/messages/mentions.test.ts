@@ -41,6 +41,13 @@ describe("mentions", () => {
     expect(mentionOptions(users, ids, "アリ")).toEqual([{ name: "alice", label: "アリス" }]);
     expect(mentionOptions(users, ids, "BO")[0]?.name).toBe("bob");
   });
+  it("leaves deactivated users such as imported Slack placeholders out of the candidates", () => {
+    const placeholder = { ...user("u3", "alice_slack", "Alice (Slack)"), is_deactivated: true };
+    const users = [user("u1", "alice"), placeholder];
+    expect(
+      mentionOptions(users, new Set(["u1", "u3"]), "alice").map((option) => option.name),
+    ).toEqual(["alice"]);
+  });
   it("replaces only the token at the caret and preserves following text", () => {
     const text = "Hi (@al) next";
     const range = mentionQuery(text, 7)!;

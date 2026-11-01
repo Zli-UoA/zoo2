@@ -711,6 +711,7 @@
     "summary": "找到 {{channels}} 个频道、{{users}} 位用户。请选择导入位置。",
     "private": "私密",
     "channelStats": "{{messages}} 条消息 · {{members}} 位成员",
+    "deletedTarget": "之前的导入位置 #{{name}} 已被删除，因此无法再次导入。",
     "actionFor": "#{{name}} 的导入方式",
     "actionCreate": "新频道",
     "actionExisting": "现有频道",

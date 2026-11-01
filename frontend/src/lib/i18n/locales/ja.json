@@ -711,6 +711,7 @@
     "summary": "{{channels}} チャンネル、{{users}} ユーザーが見つかりました。取り込み先を選んでください。",
     "private": "非公開",
     "channelStats": "{{messages}} 件・{{members}} 人",
+    "deletedTarget": "以前の取り込み先 #{{name}} が削除されているため、取り込み直せません。",
     "actionFor": "#{{name}} の取り込み方",
     "actionCreate": "新しいチャンネル",
     "actionExisting": "既存のチャンネル",

@@ -280,14 +280,23 @@ async fn analyze(s: &AppState, job: &Job, lease: &Lease) -> Result<(), AppError>
         // 以前取り込んだチャンネルは同じ zoo チャンネルへ続けて入れる
         let mapped = query(
             &mut tx,
-            "SELECT json_build_object('id',c.id,'name',c.channel_name)::text FROM slack_channels s \
-             JOIN channels c ON c.id=s.channel_id \
-             WHERE s.team_id=$1 AND s.slack_channel_id=$2 AND c.deleted_at IS NULL",
+            "SELECT json_build_object('id',c.id,'name',c.channel_name,'deleted',c.deleted_at IS NOT NULL)::text \
+             FROM slack_channels s JOIN channels c ON c.id=s.channel_id \
+             WHERE s.team_id=$1 AND s.slack_channel_id=$2",
             &[&team, &channel.slack_channel_id],
         )
         .await?
         .into_iter()
         .next();
+        // 以前の取り込み先が削除済みなら取り込み直せない (メッセージ ID が残っているため)
+        let deleted = mapped
+            .as_ref()
+            .filter(|m| m["deleted"] == true)
+            .map(|m| m["name"].clone());
+        let mapped = mapped.filter(|m| m["deleted"] != true).map(|mut m| {
+            m.as_object_mut().map(|o| o.remove("deleted"));
+            m
+        });
         let name_taken = !query(
             &mut tx,
             "SELECT json_build_object('id',id)::text FROM channels WHERE channel_name=$1",
@@ -304,6 +313,7 @@ async fn analyze(s: &AppState, job: &Job, lease: &Lease) -> Result<(), AppError>
         entry["suggested_name"] = json!(suggested_name);
         entry["name_taken"] = json!(name_taken);
         entry["existing_channel"] = mapped.unwrap_or(Value::Null);
+        entry["deleted_channel"] = deleted.unwrap_or(Value::Null);
         entries.push(entry);
     }
     let analysis = json!({ "team_id": team, "user_count": user_count, "channels": entries });

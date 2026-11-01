@@ -711,6 +711,7 @@
     "summary": "Found {{channels}} channels and {{users}} users. Choose where to import them.",
     "private": "Private",
     "channelStats": "{{messages}} messages · {{members}} members",
+    "deletedTarget": "This was imported into #{{name}}, which has been deleted, so it can't be imported again.",
     "actionFor": "How to import #{{name}}",
     "actionCreate": "New channel",
     "actionExisting": "Existing channel",
