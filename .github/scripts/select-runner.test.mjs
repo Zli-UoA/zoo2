@@ -92,8 +92,8 @@ for (const [name, input, expected, hostedExpected] of cases) {
 
 const fixedJobs = {"flux-status.yaml": ["report"], "cd-preview-label.yaml": ["label"], "cd-image-cleanup.yaml": ["cleanup"], "ci-flux-status.yaml": ["test"], "cd-images.yaml": ["plan", "promote", "publish"], "cd-storybook.yaml": ["deploy"], "terraform-r2.yaml": ["validate", "plan"], "ci-frontend.yaml": ["check", "unit-test"], "automerge-gate.yaml": ["gate"]};
 const dockerJobs = {"ci-compose.yaml": ["container"], "ci-github-bot.yaml": ["test", "publish"], "ci-backend.yaml": ["deploy-image", "e2e"], "ci-frontend.yaml": ["container", "proxy"], "ci-frontend-auth-e2e.yaml": ["oidc-e2e"], "cd-images.yaml": ["build"]};
-// Kotlin/Wasm compilation must remain hosted after self-hosted communication loss.
-const hostedJobs = {"ci-compose.yaml": ["web"], "cd-storybook.yaml": ["build"]};
+// Kotlin builds use hosted runners for memory and the preinstalled Android SDK.
+const hostedJobs = {"ci-compose.yaml": ["web"], "ci-android.yaml": ["android"], "cd-storybook.yaml": ["build"]};
 // macOS 向けのビルドがあるため、GitHub ホストの実行先だけを使うジョブ。PR では動かないワークフローに限る。
 const releaseJobs = {"cd-tui-release.yaml": ["version", "build", "release"]};
 test('every workload uses the right output and protects fork PRs', () => {
