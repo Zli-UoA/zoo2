@@ -564,5 +564,63 @@
   "cards": {
     "showMore": "もっと見る",
     "showLess": "折りたたむ"
+  },
+  "home": {
+    "title": "Home",
+    "refresh": "更新",
+    "compose": "近況を投稿",
+    "placeholder": "いまどうしてる？",
+    "post": "投稿",
+    "sending": "投稿中…",
+    "sendError": "投稿できませんでした。下書きは残っています。もう一度お試しください。",
+    "loadError": "タイムラインを取得できませんでした。",
+    "loading": "読み込み中…",
+    "empty": "まだ投稿がありません",
+    "emptyHint": "最初の近況をみんなに共有しましょう。",
+    "timeline": "Homeタイムライン",
+    "delete": "投稿を削除",
+    "deleteDescription": "この公開投稿を削除しますか？Zooの外部に保存されたコピーは残る場合があります。",
+    "deleteError": "削除できませんでした。もう一度お試しください。",
+    "older": "過去の投稿を読む",
+    "audience": "公開範囲",
+    "channel": "同期先チャンネル",
+    "noChannel": "紐づけなし",
+    "visibility": {
+      "local": "ローカルのみ",
+      "public": "パブリック",
+      "unlisted": "ホーム",
+      "followers": "フォロワー限定"
+    },
+    "audienceHint": {
+      "local": "Zoo内だけに表示します。外部には配送しません。",
+      "public": "誰でも閲覧でき、外部のフォロワーにも配送します。",
+      "unlisted": "外部に配送しますが、公開タイムライン・Outbox一覧には載せません。URLを知っている人は閲覧できます。",
+      "followers": "外部のフォロワーだけに配送します。チャンネルには紐づけできません。"
+    },
+    "federation": "ActivityPub・チャンネル連携",
+    "federationDisabled": "連合を有効にするには管理者による公開URLの設定が必要です。",
+    "delivery": "配送待ち {{pending}}件 · 配送失敗 {{failed}}件",
+    "remoteAccount": "外部アカウントまたはActor URL",
+    "follow": "フォロー",
+    "unfollow": "フォロー解除",
+    "following": "フォロー中",
+    "followPending": "承認待ち",
+    "channelRule": "LTLに流すチャンネル名のルール",
+    "ruleHint": "% は任意の文字列、_ は任意の1文字。空欄で無効。変更後の新規メッセージから適用し、非公開・DMは除外します。Apubを有効にしない投稿は外部へ配送しません。",
+    "save": "保存",
+    "controlsError": "操作または設定の取得に失敗しました。もう一度お試しください。",
+    "localTimeline": "ローカルタイムライン",
+    "edit": "投稿を編集",
+    "original": "元の投稿",
+    "attachmentsOnly": "本文のない投稿です。内容は元のチャンネルで確認できます。",
+    "openComposer": "投稿を書く",
+    "postOptions": "投稿設定",
+    "federationOn": "連合あり",
+    "federationOff": "連合なし",
+    "localAudienceHint": {
+      "public": "Zoo内のHome・ローカルタイムラインに表示します。外部には配送しません。",
+      "unlisted": "ローカルタイムラインには載せず、自分のHomeに表示します。外部には配送しません。",
+      "followers": "自分のHomeにのみ表示します。外部には配送しません。"
+    }
   }
 }

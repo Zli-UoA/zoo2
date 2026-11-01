@@ -60,6 +60,7 @@ export function StoryRouter({
       path: "settings",
       validateSearch: (search: Record<string, unknown>) => search,
     });
+    const homeRoute = createRoute({ getParentRoute: () => rootRoute, path: "home" });
     const notificationsRoute = createRoute({
       getParentRoute: () => rootRoute,
       path: "notifications",
@@ -68,6 +69,7 @@ export function StoryRouter({
     const consentRoute = createRoute({ getParentRoute: () => rootRoute, path: "apps-authorize" });
     return createRouter({
       routeTree: rootRoute.addChildren([
+        homeRoute,
         channelRoute,
         settingsRoute,
         notificationsRoute,

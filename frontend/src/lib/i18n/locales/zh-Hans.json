@@ -564,5 +564,63 @@
   "cards": {
     "showMore": "展开全文",
     "showLess": "收起"
+  },
+  "home": {
+    "title": "首页",
+    "refresh": "刷新",
+    "compose": "分享近况",
+    "placeholder": "有什么新鲜事？",
+    "post": "发布",
+    "sending": "发布中…",
+    "sendError": "发布失败，草稿已保留，请重试。",
+    "loadError": "无法加载时间线。",
+    "loading": "加载中…",
+    "empty": "还没有帖子",
+    "emptyHint": "分享第一条近况吧。",
+    "timeline": "首页时间线",
+    "delete": "删除帖子",
+    "deleteDescription": "删除这条公开帖子？Zoo 以外保存的副本可能仍会保留。",
+    "deleteError": "无法删除，请重试。",
+    "older": "加载较早的帖子",
+    "audience": "可见范围",
+    "channel": "同步发布到频道",
+    "noChannel": "不关联频道",
+    "visibility": {
+      "local": "仅本地",
+      "public": "公开",
+      "unlisted": "主页",
+      "followers": "仅关注者"
+    },
+    "audienceHint": {
+      "local": "仅在 Zoo 内显示，不发送到其他服务器。",
+      "public": "任何人都可阅读，并发送给远程关注者。",
+      "unlisted": "发送到远程，但不列入公开时间线和 Outbox。知道链接的人可阅读。",
+      "followers": "仅发送给远程关注者，不能关联频道。"
+    },
+    "federation": "ActivityPub 和频道",
+    "federationDisabled": "管理员需配置公开 URL 才能启用联合。",
+    "delivery": "待发送 {{pending}} · 失败 {{failed}}",
+    "remoteAccount": "远程账号或 Actor URL",
+    "follow": "关注",
+    "unfollow": "取消关注",
+    "following": "已关注",
+    "followPending": "等待接受",
+    "channelRule": "本地时间线的频道名称规则",
+    "ruleHint": "% 匹配任意字符串，_ 匹配一个字符。留空禁用。仅应用于保存后的新消息，不包含私密频道和私信。未启用 ActivityPub 的帖子不会发送到外部。",
+    "save": "保存",
+    "controlsError": "操作或设置请求失败，请重试。",
+    "localTimeline": "本地时间线",
+    "edit": "编辑帖子",
+    "original": "原帖",
+    "attachmentsOnly": "此帖子没有文字，请在原频道查看内容。",
+    "openComposer": "撰写帖子",
+    "postOptions": "发布设置",
+    "federationOn": "开启联合",
+    "federationOff": "关闭联合",
+    "localAudienceHint": {
+      "public": "在 Zoo 首页和本地时间线显示，不发送到其他服务器。",
+      "unlisted": "仅在自己的首页显示，不列入本地时间线，也不发送到其他服务器。",
+      "followers": "仅在自己的首页显示，不发送到其他服务器。"
+    }
   }
 }

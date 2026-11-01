@@ -193,7 +193,10 @@
         "AppMessage",
         "CopyOriginalMenu",
         "Edited",
-        "WithAttachments"
+        "WithAttachments",
+        "ActivityPubPublic",
+        "ActivityPubUnlisted",
+        "ActivityPubGrouped"
       ]
     },
     {
@@ -260,7 +263,10 @@
         "DarkNotifications",
         "BubbleChat",
         "MobileBubbleChat",
-        "MobileMembers"
+        "MobileMembers",
+        "Home",
+        "MobileHome",
+        "DarkHome"
       ]
     },
     {
@@ -400,6 +406,34 @@
     {
       "file": "src/components/chat/BubbleChatScreen.stories.tsx",
       "states": ["ActiveConversation", "Empty", "Mobile", "Participants", "MobileParticipants"]
+    },
+    {
+      "file": "src/components/home/HomeScreen.stories.tsx",
+      "states": [
+        "Default",
+        "Mobile",
+        "Empty",
+        "Loading",
+        "LoadError",
+        "Submit",
+        "SendError",
+        "OlderPosts",
+        "DeletePost",
+        "Federated",
+        "CrossPost",
+        "FollowersOnly",
+        "FollowRemote",
+        "ChannelRule",
+        "EditPost",
+        "FederationError",
+        "VisibilityMenu",
+        "Composer",
+        "MobileComposer",
+        "DraftPreserved",
+        "FederationToggle",
+        "FederationUnavailable",
+        "Sending"
+      ]
     }
   ],
   "modules": [
@@ -743,6 +777,22 @@
       "story": "src/components/chat/messages/Composer.stories.tsx",
       "composed": true,
       "reason": "共通入力枠を通常投稿・Bubble Chatで使い、補完と入力・消去・モバイル表示を各Storyで確認する。"
+    },
+    {
+      "file": "src/components/home/HomeScreen.tsx",
+      "story": "src/components/home/HomeScreen.stories.tsx"
+    },
+    {
+      "file": "src/components/home/ActivityPubBadge.tsx",
+      "story": "src/components/chat/messages/MessageRow.stories.tsx",
+      "composed": true,
+      "reason": "ActivityPubPublic/Unlisted/Groupedでチャンネル投稿の実アイコンと公開範囲を確認する。HomeのFederated/CrossPostでは表示しないことを確認する。"
+    },
+    {
+      "file": "src/components/home/HomeComposer.tsx",
+      "story": "src/components/home/HomeScreen.stories.tsx",
+      "composed": true,
+      "reason": "Composer/MobileComposerで実フォームの起動と配置を、Submit/SendError/FederationToggleで送信・下書き・公開範囲と連合の独立性を確認する。"
     }
   ]
 }

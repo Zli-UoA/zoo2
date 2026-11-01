@@ -81,6 +81,17 @@ const notificationContexts: Record<string, NotificationContextFixture> = {
 };
 
 export const storybookApiHandlers = [
+  http.get("*/api/activitypub/status", () =>
+    HttpResponse.json({
+      enabled: true,
+      actor: "https://zoo.example/api/activitypub/users/user-alice",
+      delivery: { pending: 0, failed: 0 },
+    }),
+  ),
+  http.get("*/api/activitypub/follows", () => HttpResponse.json([])),
+  http.get("*/api/home/settings", () =>
+    HttpResponse.json({ ltl_channel_pattern: "", can_manage: false }),
+  ),
   http.get("*/api/apps/commands", () => HttpResponse.json([])),
   http.get("*/api/users/me/preferences", () => HttpResponse.json({ search_engine: "google" })),
   http.patch("*/api/users/me/preferences", async ({ request }) =>

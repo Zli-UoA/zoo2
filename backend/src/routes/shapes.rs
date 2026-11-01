@@ -142,7 +142,7 @@ async fn proxy_shape(
             .get("_app_metadata_allowed")
             .is_some_and(|v| v == "false")
     {
-        params.push(("columns".into(),"id,user_id,channel_id,content,card,created_at,updated_at,deleted_at,parent_id,app_blocks,app_attachments,app_unfurls,app_origin_id,message_kind,broadcast".into()));
+        params.push(("columns".into(),"id,user_id,channel_id,content,card,created_at,updated_at,deleted_at,parent_id,app_blocks,app_attachments,app_unfurls,app_origin_id,message_kind,broadcast,home_post_id,apub,apub_visibility".into()));
     }
 
     if let Some(w) = where_clause {

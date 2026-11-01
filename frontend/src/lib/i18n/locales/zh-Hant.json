@@ -564,5 +564,63 @@
   "cards": {
     "showMore": "展開全文",
     "showLess": "收合"
+  },
+  "home": {
+    "title": "首頁",
+    "refresh": "重新整理",
+    "compose": "分享近況",
+    "placeholder": "有什麼新鮮事？",
+    "post": "發佈",
+    "sending": "發佈中…",
+    "sendError": "發佈失敗，草稿已保留，請重試。",
+    "loadError": "無法載入時間軸。",
+    "loading": "載入中…",
+    "empty": "還沒有貼文",
+    "emptyHint": "分享第一則近況吧。",
+    "timeline": "首頁時間軸",
+    "delete": "刪除貼文",
+    "deleteDescription": "刪除這則公開貼文？Zoo 以外儲存的副本可能仍會保留。",
+    "deleteError": "無法刪除，請重試。",
+    "older": "載入較早的貼文",
+    "audience": "可見範圍",
+    "channel": "同步發佈到頻道",
+    "noChannel": "不關聯頻道",
+    "visibility": {
+      "local": "僅本機",
+      "public": "公開",
+      "unlisted": "首頁",
+      "followers": "僅追蹤者"
+    },
+    "audienceHint": {
+      "local": "僅在 Zoo 內顯示，不傳送到其他伺服器。",
+      "public": "任何人都可閱讀，並傳送給遠端追蹤者。",
+      "unlisted": "傳送到遠端，但不列入公開時間軸和 Outbox。知道連結的人可閱讀。",
+      "followers": "僅傳送給遠端追蹤者，不能關聯頻道。"
+    },
+    "federation": "ActivityPub 與頻道",
+    "federationDisabled": "管理員需設定公開 URL 才能啟用聯合。",
+    "delivery": "待傳送 {{pending}} · 失敗 {{failed}}",
+    "remoteAccount": "遠端帳號或 Actor URL",
+    "follow": "追蹤",
+    "unfollow": "取消追蹤",
+    "following": "已追蹤",
+    "followPending": "等待接受",
+    "channelRule": "本機時間軸的頻道名稱規則",
+    "ruleHint": "% 比對任意字串，_ 比對一個字元。留空停用。僅套用至儲存後的新訊息，不含私人頻道和私訊。未啟用 ActivityPub 的貼文不會傳送到外部。",
+    "save": "儲存",
+    "controlsError": "操作或設定請求失敗，請重試。",
+    "localTimeline": "本機時間軸",
+    "edit": "編輯貼文",
+    "original": "原貼文",
+    "attachmentsOnly": "此貼文沒有文字，請在原頻道查看內容。",
+    "openComposer": "撰寫貼文",
+    "postOptions": "發佈設定",
+    "federationOn": "開啟聯合",
+    "federationOff": "關閉聯合",
+    "localAudienceHint": {
+      "public": "在 Zoo 首頁和本機時間軸顯示，不傳送到其他伺服器。",
+      "unlisted": "僅在自己的首頁顯示，不列入本機時間軸，也不傳送到其他伺服器。",
+      "followers": "僅在自己的首頁顯示，不傳送到其他伺服器。"
+    }
   }
 }

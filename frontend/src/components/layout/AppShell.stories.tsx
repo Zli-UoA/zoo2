@@ -1,3 +1,5 @@
+import { HomeScreen } from "../home/HomeScreen";
+import { homeHandlers } from "../../../.storybook/home-fixtures";
 import { BubbleChatScreen } from "../chat/BubbleChatScreen";
 import { bubbleChatHandlers } from "../../../.storybook/bubble-fixtures";
 import type { Meta, StoryObj } from "@storybook/react-vite";
@@ -170,3 +172,26 @@ export const MobileMembers: Story = {
     await expect(screen.getByLabelText("メインナビゲーション")).not.toBeVisible();
   },
 };
+
+export const Home: Story = {
+  args: { children: <HomeScreen /> },
+  parameters: {
+    a11y: { test: "error" },
+    router: { initialEntries: ["/home"] },
+    msw: { handlers: homeHandlers },
+  },
+  play: async () => {
+    await expect(await screen.findByText(/Homeから最初の公開投稿です/)).toBeVisible();
+    await expect(screen.getByRole("link", { name: "Home" })).toHaveAttribute(
+      "data-status",
+      "active",
+    );
+    await expect(screen.getByLabelText("チャンネル", { selector: "aside" })).not.toBeVisible();
+    await expectAlignedHeaders();
+    const main = screen.getByRole("main").getBoundingClientRect();
+    const rail = screen.getByRole("navigation").getBoundingClientRect();
+    await expect(main.x).toBe(rail.right);
+  },
+};
+export const MobileHome: Story = { ...Home, globals: { viewport: { value: "mobile" } } };
+export const DarkHome: Story = { ...Home, globals: { theme: "dark" } };
