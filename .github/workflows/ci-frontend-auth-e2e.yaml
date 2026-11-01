@@ -82,7 +82,7 @@ jobs:
         uses: actions/cache@v6
         with:
           path: ~/.cache/ms-playwright
-          key: playwright-${{ runner.os }}-${{ hashFiles('frontend/pnpm-lock.yaml') }}
+          key: playwright-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('frontend/pnpm-lock.yaml') }}
 
       # The self-hosted runner image already has the system libraries.
       - name: Install Playwright browser
@@ -102,7 +102,7 @@ jobs:
         uses: Swatinem/rust-cache@v2
         with:
           workspaces: backend
-          # Reuse the debug build cache of ci-backend.yaml's build job.
+          # Kept apart from ci-backend.yaml's check job, which also caches clippy and tests.
           shared-key: backend-debug
           # Keep the build cache even when the E2E test fails.
           cache-on-failure: true

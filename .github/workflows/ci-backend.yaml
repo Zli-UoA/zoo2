@@ -34,36 +34,9 @@ jobs:
     secrets:
       runner-status-token: ${{ secrets.RUNNER_STATUS_TOKEN }}
 
-  build:
-    needs: runner
-    runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-latest' || fromJSON(needs.runner.outputs.runs-on || '"zli-kubecamp-no-docker"') }}
-    defaults:
-      run:
-        working-directory: ./backend
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v7
-      - name: Read Rust toolchain
-        id: rust-toolchain
-        working-directory: .
-        # Install only the toolchain pinned in rust-toolchain.toml, not stable as well.
-        run: echo "channel=$(sed -n 's/^channel = "\(.*\)"$/\1/p' rust-toolchain.toml)" >> "$GITHUB_OUTPUT"
-      - name: Setup Rust
-        uses: dtolnay/rust-toolchain@master
-        with:
-          toolchain: ${{ steps.rust-toolchain.outputs.channel }}
-      - name: Restore Cache
-        uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: backend
-          # Shared with oidc-e2e in ci-frontend-auth-e2e.yaml, which runs the same
-          # debug build.
-          shared-key: backend-debug
-      - name: Build project
-        run: |
-          cargo build
-
-  lint:
+  # fmt, clippy, build and unit tests share one job so the Rust cache is
+  # restored once; on kubecamp the restore takes longer than the build itself.
+  check:
     needs: runner
     runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-latest' || fromJSON(needs.runner.outputs.runs-on || '"zli-kubecamp-no-docker"') }}
     defaults:
@@ -82,46 +55,21 @@ jobs:
         with:
           toolchain: ${{ steps.rust-toolchain.outputs.channel }}
           components: clippy, rustfmt
-
       - name: Restore Cache
         uses: Swatinem/rust-cache@v2
         with:
           workspaces: backend
-
-      - name: lint check
-        run: |
-          cargo clippy
+          # Not shared with oidc-e2e (backend-debug): cache keys are immutable, and
+          # its build-only save would keep clippy and test artifacts out of this one.
+          shared-key: backend-check
       - name: format check
-        run: |
-          cargo fmt --check
-
-  unit-test:
-    needs: runner
-    runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-latest' || fromJSON(needs.runner.outputs.runs-on || '"zli-kubecamp-no-docker"') }}
-    defaults:
-      run:
-        working-directory: ./backend
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v7
-      - name: Read Rust toolchain
-        id: rust-toolchain
-        working-directory: .
-        # Install only the toolchain pinned in rust-toolchain.toml, not stable as well.
-        run: echo "channel=$(sed -n 's/^channel = "\(.*\)"$/\1/p' rust-toolchain.toml)" >> "$GITHUB_OUTPUT"
-      - name: Setup Rust
-        uses: dtolnay/rust-toolchain@master
-        with:
-          toolchain: ${{ steps.rust-toolchain.outputs.channel }}
-
-      - name: Restore Cache
-        uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: backend
-
+        run: cargo fmt --check
+      - name: lint check
+        run: cargo clippy
+      - name: Build project
+        run: cargo build
       - name: unit test
-        run: |
-          cargo test --lib
+        run: cargo test --lib
 
   deploy-image:
     needs: runner
