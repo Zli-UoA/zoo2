@@ -78,6 +78,7 @@ pub fn create_router(state: AppState) -> Router {
         .merge(dms::router())
         .merge(messages::router())
         .merge(attachments::router())
+        .merge(crate::slack::import::router())
         .merge(typing::router())
         .merge(bubble_chat::router())
         .merge(notifications::router())

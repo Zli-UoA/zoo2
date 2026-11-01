@@ -46,6 +46,7 @@ async fn main() -> anyhow::Result<()> {
     // ルーター構築
     let delivery_worker = tokio::spawn(backend::apps::delivery::worker(state.clone()));
     let federation_worker = tokio::spawn(backend::activitypub::worker(state.clone()));
+    let slack_import_worker = tokio::spawn(backend::slack::worker::worker(state.clone()));
     let app = create_router(state);
 
     // サーバーバインド
@@ -62,6 +63,7 @@ async fn main() -> anyhow::Result<()> {
 
     federation_worker.abort();
     delivery_worker.abort();
+    slack_import_worker.abort();
     tracing::info!("Server shut down gracefully");
     Ok(())
 }

@@ -88,6 +88,65 @@ impl fmt::Debug for S3Config {
     }
 }
 
+/// Slack 連携の設定 (#295 ZIP インポート)
+#[derive(Clone)]
+pub struct SlackConfig {
+    /// 管理者がアップロードできるエクスポート ZIP の上限 (バイト)
+    pub import_max_zip_size: u64,
+    /// エクスポートに実体が含まれない添付ファイルを取得するためのトークン (`files:read`)
+    pub import_bot_token: Option<String>,
+    /// 添付ファイルの取得を許可する URL の接頭辞 (SSRF 対策。テストではモックに差し替える)
+    pub files_base_url: String,
+}
+
+impl Default for SlackConfig {
+    fn default() -> Self {
+        Self {
+            import_max_zip_size: DEFAULT_SLACK_IMPORT_MAX_ZIP_SIZE,
+            import_bot_token: None,
+            files_base_url: DEFAULT_SLACK_FILES_BASE_URL.to_string(),
+        }
+    }
+}
+
+impl fmt::Debug for SlackConfig {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("SlackConfig")
+            .field("import_max_zip_size", &self.import_max_zip_size)
+            .field(
+                "import_bot_token",
+                &self.import_bot_token.as_ref().map(|_| "[REDACTED]"),
+            )
+            .field("files_base_url", &self.files_base_url)
+            .finish()
+    }
+}
+
+/// 単一 PUT で R2 / S3 にアップロードできる上限 (5 GiB)
+pub(crate) const DEFAULT_SLACK_IMPORT_MAX_ZIP_SIZE: u64 = 5 * 1024 * 1024 * 1024;
+pub(crate) const DEFAULT_SLACK_FILES_BASE_URL: &str = "https://files.slack.com/";
+
+impl SlackConfig {
+    fn from_env() -> Self {
+        let import_max_zip_size = env::var("SLACK_IMPORT_MAX_ZIP_SIZE")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(DEFAULT_SLACK_IMPORT_MAX_ZIP_SIZE);
+        let import_bot_token = env::var("SLACK_IMPORT_BOT_TOKEN")
+            .ok()
+            .filter(|v| !v.trim().is_empty());
+        let files_base_url = env::var("SLACK_FILES_BASE_URL")
+            .ok()
+            .filter(|v| !v.trim().is_empty())
+            .unwrap_or_else(|| DEFAULT_SLACK_FILES_BASE_URL.to_string());
+        Self {
+            import_max_zip_size,
+            import_bot_token,
+            files_base_url,
+        }
+    }
+}
+
 #[derive(Clone)]
 pub struct Config {
     pub database_url: String,
@@ -100,6 +159,7 @@ pub struct Config {
     pub environment: String,
     pub cors_allowed_origins: Vec<String>,
     pub s3: S3Config,
+    pub slack: SlackConfig,
 }
 
 impl fmt::Debug for Config {
@@ -118,6 +178,7 @@ impl fmt::Debug for Config {
             .field("environment", &self.environment)
             .field("cors_allowed_origins", &self.cors_allowed_origins)
             .field("s3", &self.s3)
+            .field("slack", &self.slack)
             .finish()
     }
 }
@@ -251,6 +312,7 @@ impl Config {
             environment,
             cors_allowed_origins,
             s3,
+            slack: SlackConfig::from_env(),
         }
     }
 
@@ -297,6 +359,14 @@ impl Config {
                         .to_string(),
                 );
             }
+        }
+
+        if self.slack.import_max_zip_size == 0
+            || self.slack.import_max_zip_size > DEFAULT_SLACK_IMPORT_MAX_ZIP_SIZE
+        {
+            return Err(format!(
+                "SLACK_IMPORT_MAX_ZIP_SIZE must be between 1 and {DEFAULT_SLACK_IMPORT_MAX_ZIP_SIZE} bytes"
+            ));
         }
 
         if self.environment == "production" {
@@ -376,6 +446,7 @@ mod tests {
             environment: "production".to_string(),
             cors_allowed_origins: vec!["https://zoo.example.com".to_string()],
             s3: dummy_s3_config(),
+            slack: SlackConfig::default(),
         };
         let debug_str = format!("{config:?}");
         assert!(!debug_str.contains("super_secret_password"));
@@ -402,6 +473,7 @@ mod tests {
             environment: "production".to_string(),
             cors_allowed_origins: vec![],
             s3: dummy_s3_config(),
+            slack: SlackConfig::default(),
         };
         assert!(prod_no_oidc.validate().is_err());
 
@@ -480,6 +552,7 @@ mod tests {
             environment: "production".to_string(),
             cors_allowed_origins: vec![],
             s3: dummy_s3_config(),
+            slack: SlackConfig::default(),
         };
         assert!(config.validate().is_err());
     }
@@ -505,6 +578,7 @@ mod tests {
             environment: "production".to_string(),
             cors_allowed_origins: vec![],
             s3: dummy_s3_config(),
+            slack: SlackConfig::default(),
         };
         assert!(config.validate().is_ok());
 
@@ -540,6 +614,7 @@ mod tests {
             environment: "development".to_string(),
             cors_allowed_origins: vec![],
             s3: dummy_s3_config(),
+            slack: SlackConfig::default(),
         };
 
         // 境界値 OK (1 秒、604,800 秒 = 7 日)
@@ -662,6 +737,7 @@ mod tests {
             environment: "development".to_string(),
             cors_allowed_origins: vec![],
             s3: dummy_s3_config(),
+            slack: SlackConfig::default(),
         };
 
         // None は OK

@@ -141,3 +141,28 @@ export const ChannelRuleError: Story = {
     await expect(await screen.findByRole("alert")).toBeVisible();
   },
 };
+
+export const SlackImport: Story = {
+  parameters: {
+    msw: {
+      handlers: [
+        http.get("*/api/users/me", () =>
+          HttpResponse.json({
+            id: "user-alice",
+            user_name: "alice",
+            display_name: "Alice",
+            is_admin: true,
+          }),
+        ),
+        http.get("*/api/admin/slack-imports", () => HttpResponse.json({ imports: [] })),
+        ...appHandlers,
+      ],
+    },
+  },
+  play: async () => {
+    await userEvent.click(await screen.findByRole("tab", { name: "Slack 取り込み" }));
+    await expect(
+      await screen.findByRole("button", { name: "ZIP を選んでアップロード" }),
+    ).toBeVisible();
+  },
+};

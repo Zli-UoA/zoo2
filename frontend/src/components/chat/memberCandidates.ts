@@ -45,7 +45,7 @@ export function filterMemberCandidates({
   const memberIds = new Set(members.map((member) => member.user_id));
   const needle = query.trim().toLowerCase();
   return users
-    .filter((user) => !user.is_bot && !memberIds.has(user.id))
+    .filter((user) => !user.is_bot && !user.is_deactivated && !memberIds.has(user.id))
     .filter((user) => {
       if (!needle) {
         return true;
