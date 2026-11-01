@@ -173,7 +173,7 @@ pub(super) async fn resolve_announce(
     let mut tx = db.transaction().await?;
     note_identity::reconcile(&mut tx, object, &author, Some(&proof)).await?;
     emoji::remember(&mut tx, &emojis).await?;
-    toasty::sql::statement("INSERT INTO apub_remote_posts(id,actor_id,content,visibility,published,updated_at,emojis,origin_verified) SELECT $1,$2,$3,$4,$5::timestamptz,$6::timestamptz,$7::jsonb,true WHERE NOT EXISTS(SELECT 1 FROM apub_remote_tombstones WHERE id=$1 AND actor_id=$2) ON CONFLICT(id) DO UPDATE SET origin_verified=true WHERE apub_remote_posts.actor_id=EXCLUDED.actor_id").bind(object).bind(author).bind(emoji::plain_content(string(&note,"content")?)).bind(visibility).bind(published.to_string()).bind(updated.to_string()).bind(json!(emojis).to_string()).exec(&mut tx).await?;
+    toasty::sql::statement("INSERT INTO apub_remote_posts(id,actor_id,content,visibility,published,updated_at,emojis,origin_verified) SELECT $1,$2,$3,$4,$5::timestamptz,$6::timestamptz,$7::jsonb,true WHERE NOT EXISTS(SELECT 1 FROM apub_remote_tombstones WHERE id=$1 AND actor_id=$2) ON CONFLICT(id) DO UPDATE SET origin_verified=true WHERE apub_remote_posts.actor_id=EXCLUDED.actor_id").bind(object).bind(author).bind(emoji::note_content(&note)?).bind(visibility).bind(published.to_string()).bind(updated.to_string()).bind(json!(emojis).to_string()).exec(&mut tx).await?;
     tx.commit().await?;
     Ok(())
 }
@@ -188,9 +188,7 @@ pub(super) fn validate_public_note(
             "Announced Note identity mismatch".into(),
         ));
     }
-    if string(note, "content")?.len() > 128 * 1024 {
-        return Err(AppError::BadRequest("Note too large".into()));
-    }
+    emoji::note_content(note)?;
     let has = |key: &str| {
         note[key].as_str() == Some(PUBLIC)
             || note[key]

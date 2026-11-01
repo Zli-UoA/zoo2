@@ -2359,3 +2359,58 @@ async fn apub_profile_is_independent_updates_followers_and_detail_respects_audie
         .await?;
     Ok(())
 }
+
+#[tokio::test]
+async fn misskey_mfm_sources_survive_create_update_and_local_note_export() -> anyhow::Result<()> {
+    let _serial = PROTOCOL_SERIAL.lock().await;
+    let mut f = protocol_fixture().await?;
+    follow_peer(&mut f).await?;
+    let id = format!("{}/notes/mfm", f.remote);
+    let mfm = "**太字** $[ruby 漢字 かんじ] :blobcat:\n`literal`";
+    let mut note = json!({"id":id,"type":"Note","attributedTo":f.remote,"content":"<p>HTML fallback</p>","source":{"mediaType":"text/x.misskeymarkdown","content":mfm},"published":"2026-01-01T00:00:00Z","to":["https://www.w3.org/ns/activitystreams#Public"]});
+    assert_eq!(
+        receive_peer(&f, &peer_activity(&f, "Create", note.clone())).await?,
+        StatusCode::ACCEPTED
+    );
+    let path = format!(
+        "/api/home/{}",
+        percent_encoding::utf8_percent_encode(&id, percent_encoding::NON_ALPHANUMERIC)
+    );
+    assert_eq!(
+        request(&f.app, "GET", Some(&f.user), &path, None).await?.1["content"],
+        mfm
+    );
+    note.as_object_mut().unwrap().remove("source");
+    note["_misskey_content"] = json!("~~更新~~ $[fg.color=ff0000 赤]");
+    note["updated"] = json!("2026-01-02T00:00:00Z");
+    assert_eq!(
+        receive_peer(&f, &peer_activity(&f, "Update", note.clone())).await?,
+        StatusCode::ACCEPTED
+    );
+    assert_eq!(
+        request(&f.app, "GET", Some(&f.user), &path, None).await?.1["content"],
+        note["_misskey_content"]
+    );
+    let (_, local) = request(
+        &f.app,
+        "POST",
+        Some(&f.user),
+        "/api/home",
+        Some(json!({"content":mfm,"apub":true,"visibility":"public"})),
+    )
+    .await?;
+    let (_, export) = request(
+        &f.app,
+        "GET",
+        None,
+        &format!("/api/activitypub/notes/{}", local["id"].as_str().unwrap()),
+        None,
+    )
+    .await?;
+    assert_eq!(export["source"]["mediaType"], "text/x.misskeymarkdown");
+    assert_eq!(export["source"]["content"], mfm);
+    assert_eq!(export["_misskey_content"], mfm);
+    assert!(export["content"].as_str().unwrap().contains("<br>"));
+    finish_protocol(&mut f).await?;
+    Ok(())
+}

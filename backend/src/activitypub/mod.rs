@@ -103,7 +103,7 @@ pub fn note_value(post: &Value) -> Result<Value, AppError> {
         _ => return Err(AppError::NotFound("Local post".into())),
     };
     let content = html_escape::encode_safe(string(post, "content")?).replace('\n', "<br>");
-    let mut note = json!({"@context":CONTEXT,"type":"Note","id":format!("{}/api/activitypub/notes/{id}",base_url()?),"attributedTo":author,"published":post["created_at"],"updated":post["updated_at"],"content":content,"mediaType":"text/html","likes":format!("{}/api/activitypub/notes/{id}/likes",base_url()?),"to":to,"cc":cc});
+    let mut note = json!({"@context":[CONTEXT,{"_misskey_content":"https://misskey-hub.net/ns#_misskey_content"}],"source":{"content":post["content"],"mediaType":"text/x.misskeymarkdown"},"_misskey_content":post["content"],"type":"Note","id":format!("{}/api/activitypub/notes/{id}",base_url()?),"attributedTo":author,"published":post["created_at"],"updated":post["updated_at"],"content":content,"mediaType":"text/html","likes":format!("{}/api/activitypub/notes/{id}/likes",base_url()?),"to":to,"cc":cc});
     if let Some(parent) = post["parent_uri"].as_str() {
         note["inReplyTo"] = json!(parent);
     }

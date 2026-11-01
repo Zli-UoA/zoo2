@@ -6,7 +6,12 @@ import { createConfiguredApiClient } from "../../lib/api/client";
 import { useCurrentUser } from "../../hooks/useCurrentUser";
 import { useHomeLive } from "../../hooks/useHomeLive";
 import { ActivityPubAvatar, type RemoteAvatar } from "./ActivityPubAvatar";
-import { ActivityPubText, FederatedAccount, type CustomEmoji } from "./ActivityPubEmoji";
+import {
+  ActivityPubText,
+  ActivityPubContent,
+  FederatedAccount,
+  type CustomEmoji,
+} from "./ActivityPubEmoji";
 import { Button } from "../ui/button";
 import { ExternalLink } from "../ui/external-link";
 
@@ -87,9 +92,9 @@ export function ActivityPubProfile({ actorId }: { actorId: string }) {
             </div>
           </div>
           {account.summary ? (
-            <p className="whitespace-pre-wrap break-words text-sm">
-              <ActivityPubText text={account.summary} emojis={account.emojis} />
-            </p>
+            <div className="mfm-body whitespace-pre-wrap break-words text-sm leading-relaxed">
+              <ActivityPubContent text={account.summary} emojis={account.emojis} />
+            </div>
           ) : null}
           <div className="flex flex-wrap items-center gap-3">
             {account.remote ? (

@@ -226,11 +226,7 @@ pub(super) async fn receive_verified(
                     "Reply broadens private audience".into(),
                 ));
             }
-            let raw = string(object, "content")?;
-            if raw.len() > 128 * 1024 {
-                return Err(AppError::BadRequest("Note too large".into()));
-            }
-            let content = emoji::plain_content(raw);
+            let content = emoji::note_content(object)?;
             let note_emojis = emoji::tags(&object["tag"]);
             emoji::remember(&mut tx, &note_emojis).await?;
             let published = object["published"]

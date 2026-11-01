@@ -5,6 +5,7 @@ import {
 } from "../../lib/homeTimeline";
 import {
   ActivityPubText,
+  ActivityPubContent,
   ActivityPubEmoji,
   FederatedAccount,
   type CustomEmoji,
@@ -13,6 +14,12 @@ import { ActivityPubProfile } from "./ActivityPubProfile";
 import { HomeReactionPicker, type ReactionChoice } from "./HomeReactionPicker";
 import { useHomeLive } from "../../hooks/useHomeLive";
 import { Link } from "@tanstack/react-router";
+import {
+  homePostSettingsKey,
+  homeTimelineKey,
+  loadHomeTimeline,
+  saveHomeTimeline,
+} from "../../lib/homePreferences";
 import { HomeComposer, type HomeComposerHandle } from "./HomeComposer";
 import { Input } from "../ui/input";
 import { ExternalLink } from "../ui/external-link";
@@ -76,15 +83,26 @@ export interface HomePost {
   repost_created_at?: string;
 }
 
-export function HomeScreen({ postId, actorId }: { postId?: string; actorId?: string }) {
+type HomeScreenProps = { postId?: string; actorId?: string };
+export function HomeScreen(props: HomeScreenProps) {
+  const { currentUserId } = useCurrentUser();
+  return <HomeScreenContent key={currentUserId} {...props} currentUserId={currentUserId} />;
+}
+function HomeScreenContent({
+  postId,
+  actorId,
+  currentUserId,
+}: HomeScreenProps & { currentUserId: string | null }) {
   const { t, i18n } = useTranslation();
   const { config } = useCollections();
   const client = useMemo(() => createConfiguredApiClient(config), [config]);
-  const { currentUserId } = useCurrentUser();
   const composerRef = useRef<HomeComposerHandle>(null);
   const [reactionPost, setReactionPost] = useState<HomePost | null>(null);
   const [pendingRepost, setPendingRepost] = useState<string | null>(null);
-  const [timeline, setTimeline] = useState("home");
+  const timelineStorageKey = currentUserId
+    ? homeTimelineKey(config.apiBaseUrl, currentUserId)
+    : null;
+  const [timeline, setTimeline] = useState(() => loadHomeTimeline(timelineStorageKey));
   const timelineQuery = actorId ? `social&author=${encodeURIComponent(actorId)}` : timeline;
   const [federation, setFederation] = useState<{
     enabled: boolean;
@@ -377,7 +395,10 @@ export function HomeScreen({ postId, actorId }: { postId?: string; actorId?: str
                   key={value}
                   variant={timeline === value ? "secondary" : "ghost"}
                   aria-pressed={timeline === value}
-                  onClick={() => setTimeline(value)}
+                  onClick={() => {
+                    setTimeline(value);
+                    saveHomeTimeline(timelineStorageKey, value);
+                  }}
                 >
                   {t(`home.timelineLabels.${value}`)}
                 </Button>
@@ -542,12 +563,12 @@ export function HomeScreen({ postId, actorId }: { postId?: string; actorId?: str
                           ) : null}
                         </form>
                       ) : (
-                        <p className="mt-2 whitespace-pre-wrap break-words text-sm [overflow-wrap:anywhere]">
-                          <ActivityPubText
+                        <div className="mfm-body mt-2 whitespace-pre-wrap break-words text-sm leading-relaxed [overflow-wrap:anywhere]">
+                          <ActivityPubContent
                             text={post.content.trim() ? post.content : t("home.attachmentsOnly")}
                             emojis={post.emojis}
                           />
-                        </p>
+                        </div>
                       )}
                       {post.reactions?.length ? (
                         <div className="mt-2 flex flex-wrap gap-1">
@@ -853,6 +874,8 @@ export function HomeScreen({ postId, actorId }: { postId?: string; actorId?: str
         />
       ) : null}
       <HomeComposer
+        key={currentUserId ? homePostSettingsKey(config.apiBaseUrl, currentUserId) : "loading"}
+        settingsKey={currentUserId ? homePostSettingsKey(config.apiBaseUrl, currentUserId) : null}
         ref={composerRef}
         federationEnabled={federation.enabled}
         onPost={async (post) => {

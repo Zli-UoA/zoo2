@@ -16,7 +16,7 @@ Reactを機能・UI・操作の基準とする。変更時は [compose-react-par
 | URLカード・メディアプロキシ | `LinkPreviews`, `summaly`, `linkPreviewRequests`, `linkPreviewEndpoints` | `LinkPreviews.kt`, `Chat.kt` | 既存LinkPreviews StoryのKotlin表示、公開HTTPの認証非送信と操作E2E |
 | 絵文字・Emoji Kitchen・リアクション | `ReactionPicker`, `emoji/` | `Kitchen.kt`, `RichText.kt`, `Chat.kt`, `ReactionChip.kt` | ContentTest、ReactionUsersTest、既存ReactionPicker / ReactionUsers StoryのKotlin表示 |
 | 通知のグループ化・遅延取得・追加読み込み・既読 | `NotificationsScreen`, `notifications/` | `Notifications.kt` | 既存Notifications StoryのKotlin表示、通知E2E |
-| Home・連合投稿・ソーシャル操作 | `home/HomeScreen`, `HomeComposer`, `HomeReactionPicker`, `ActivityPubEmoji`, `useHomeLive` | `HomeScreen.kt`, `HomeComposer.kt`, `HomeTimeline.kt`, `HomePostCard.kt`, `HomeActivityPub.kt`, `HomeReactionPicker.kt`, `HomeUserSearch.kt`, `HomeLive.kt` | 既存Home全47 Storyと両実装の操作・画像、Composer状態テスト |
+| Home・連合投稿・ソーシャル操作 | `home/HomeScreen`, `HomeComposer`, `HomeReactionPicker`, `ActivityPubEmoji`, `useHomeLive` | `HomeScreen.kt`, `HomeComposer.kt`, `HomeTimeline.kt`, `HomePostCard.kt`, `HomeActivityPub.kt`, `HomeReactionPicker.kt`, `HomeUserSearch.kt`, `HomeLive.kt` | Homeの既存・追加Storyと両実装の操作・画像、Composer状態・設定保存テスト |
 | 連合通知・フォロー承認・チャンネル共有設定 | `ActivityPubNotifications`, `ZooSettings` | `ActivityPubNotifications.kt`, `ChannelTimelineSettings.kt` | 既存通知・設定Story、状態/API契約テスト |
 | Bubble Chat | `BubbleChatScreen`, `useBubbleChat` | `Bubble.kt` | ParityTransportTest、既存BubbleChat StoryのKotlin表示、共有・クリア・pagehide E2E |
 | App・Webhook・フォーム・権限 | `AppsDialog`, `AppBlocks`, `ChannelWebhooksDialog` | `Integrations.kt`, `Channels.kt` | CRUD E2E、API・ブロック契約テスト |
@@ -25,6 +25,10 @@ Reactを機能・UI・操作の基準とする。変更時は [compose-react-par
 | 翻訳・デザイントークン・アイコン・データ | `lib/i18n`, CSS、Lucide、Emojibase | `Ui.kt`, `IconData.kt`、共有翻訳・生成資源 | 全ロケールの共通辞書、`sync-compose-assets.mjs`、カタログツールバー |
 
 ## main取り込み時の照合
+
+- `7b0418c` まで取り込み、追加されたAndroid対応を維持しました。今回のHome変更では、Reactの `ActivityPubContent` とKotlinの同名部品から、それぞれチャンネル共通のMFM描画へ接続しています。投稿本文・単独投稿・プロフィール・返信プレビュー・通知本文が対象です。リモート絵文字は既存プロキシを使い、コード内のショートコードは文字列のまま表示します。
+- 投稿成功時の公開範囲・連合・同期先と、選択したTLタブの保存をKotlinにも実装しました。アカウント・接続先ごとにキーを分け、既存Platformの保存境界を使います。両実装間で保存データを共有する仕様ではありません。
+- 追加したHome／通知のStoryで、PC・390pxのMFM表示と、設定保存・再表示・返信制約・チャンネル無効化・アカウント分離・保存先未解決時の投稿を検証します。HTMLだけで届く連合本文は従来どおりテキストへ変換し、明示的なMisskey MFMの元本文がある場合に装飾を保持します。全MFM構文の互換性や画素単位の一致は保証していません。
 
 - `6514c43` のTUIリリースと `d326387` の開発シェル更新を取り込みました。Runnerテストの競合はTUIのリリース対象とAndroidのHosted登録を両方維持して解消し、28件成功しています。更新情報生成テストも2件成功しています。React／Composeの画面・API変更はありません。
 

@@ -13,6 +13,8 @@ export interface MfmContentProps {
   content: string;
   /** Registered custom emoji: name -> same-origin image URL. Unknown names stay readable. */
   emojiUrls?: Readonly<Record<string, string>>;
+  /** Trusted renderer for registered emoji, including proxied federation images. */
+  renderEmoji?: (name: string) => ReactNode;
   /** Application event, never evaluated as JavaScript. */
   onClickEvent?: (event: string) => void;
 }
@@ -144,7 +146,11 @@ function renderNode(
     case "unicodeEmoji":
       return node.props.emoji;
     case "emojiCode":
-      return <EmojiCode name={node.props.name} emojiUrls={options.emojiUrls} />;
+      return (
+        options.renderEmoji?.(node.props.name) ?? (
+          <EmojiCode name={node.props.name} emojiUrls={options.emojiUrls} />
+        )
+      );
     case "bold":
       return <strong>{children()}</strong>;
     case "italic":
