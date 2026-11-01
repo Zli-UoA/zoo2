@@ -17,6 +17,7 @@ zoo2 をターミナルから使うチャットクライアントです。Rust �
 - [更新とアンインストール](#更新とアンインストール)
 - [困ったとき](#困ったとき)
 - [開発](#開発)
+- [ライセンス](#ライセンス)
 
 ## インストール
 
@@ -309,3 +310,7 @@ make tui-check
 1. `tui/Cargo.toml` の `version` を上げ、`Cargo.lock` を更新して (`cargo check`) PR を出します。
 2. main に入ると [CD TUI Release](../.github/workflows/cd-tui-release.yaml) が動き、Linux (musl) と macOS 向けにビルドします。そして deb、rpm、Arch Linux 用の `PKGBUILD`、`SHA256SUMS` を添えて `tui-v<version>` のリリースを作ります。
 3. 同じ version のリリースがすでにあるときは何もしません。version を上げずに `tui/` だけ変えても、リリースは作られません。
+
+## ライセンス
+
+zoo2 TUI (`tui/` 配下) は [MIT License](LICENSE) で配布します。
