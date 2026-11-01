@@ -9,6 +9,7 @@ use base64::{Engine, engine::general_purpose::STANDARD};
 use openssl::{hash::MessageDigest, pkey::PKey, rsa::Rsa, sign::Signer};
 use serde_json::{Value, json};
 use tower::ServiceExt;
+static PROTOCOL_SERIAL: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 async fn request(
     app: &Router,
@@ -82,6 +83,7 @@ async fn value(db: &mut toasty::Db, sql: &str, args: &[&str]) -> anyhow::Result<
 
 #[tokio::test]
 async fn channel_crossposting_visibility_and_ltl() -> anyhow::Result<()> {
+    let _serial = PROTOCOL_SERIAL.lock().await;
     let mut cfg = Config::from_env();
     cfg.dev_auth_enabled = true;
     let mut db = init_db(&cfg.database_url).await?;
@@ -458,6 +460,7 @@ async fn channel_crossposting_visibility_and_ltl() -> anyhow::Result<()> {
 
 #[tokio::test]
 async fn signed_federation_follow_create_update_delete_replay() -> anyhow::Result<()> {
+    let _serial = PROTOCOL_SERIAL.lock().await;
     let mut cfg = Config::from_env();
     cfg.dev_auth_enabled = true;
     let mut db = init_db(&cfg.database_url).await?;
@@ -507,6 +510,16 @@ async fn signed_federation_follow_create_update_delete_replay() -> anyhow::Resul
         inbox(&app, &alice, &follow, &key, &key_id, false).await?,
         StatusCode::ACCEPTED
     );
+    assert_eq!(value(&mut db,"SELECT json_build_object('count',count(*))::text FROM apub_deliveries WHERE user_id=$1",&[&alice]).await?["count"],0);
+    let (status, _) = request(
+        &app,
+        "POST",
+        Some(&alice),
+        "/api/activitypub/follows/respond",
+        Some(json!({"actor":remote,"activity_id":follow["id"],"accept":true})),
+    )
+    .await?;
+    assert_eq!(status, StatusCode::OK);
     assert_eq!(value(&mut db,"SELECT json_build_object('count',count(*))::text FROM apub_deliveries WHERE user_id=$1",&[&alice]).await?["count"],1);
     let (_, local_post) = request(
         &app,
@@ -735,6 +748,588 @@ async fn signed_federation_follow_create_update_delete_replay() -> anyhow::Resul
     toasty::sql::statement("DELETE FROM apub_actors WHERE id=$1")
         .bind(remote)
         .exec(&mut db)
+        .await?;
+    Ok(())
+}
+
+struct ProtocolFixture {
+    app: Router,
+    db: toasty::Db,
+    user: String,
+    other: String,
+    remote: String,
+    key: PKey<openssl::pkey::Private>,
+    key_id: String,
+}
+async fn protocol_fixture() -> anyhow::Result<ProtocolFixture> {
+    let mut cfg = Config::from_env();
+    cfg.dev_auth_enabled = true;
+    let mut db = init_db(&cfg.database_url).await?;
+    let user = uuid::Uuid::new_v4().to_string();
+    let other = uuid::Uuid::new_v4().to_string();
+    for id in [&user, &other] {
+        toasty::sql::statement("INSERT INTO users(id,user_name,display_name) VALUES($1,$1,$1)")
+            .bind(id.as_str())
+            .exec(&mut db)
+            .await?;
+    }
+    let remote = format!("https://remote.example/users/{}", uuid::Uuid::new_v4());
+    let key_id = format!("{remote}#key");
+    let key = PKey::from_rsa(Rsa::generate(2048)?)?;
+    toasty::sql::statement("INSERT INTO apub_actors(id,inbox,followers_url,user_name,display_name,key_id,public_key) VALUES($1,$2,$3,'peer','Peer',$4,$5)")
+        .bind(remote.as_str()).bind(format!("{remote}/inbox")).bind(format!("{remote}/followers")).bind(key_id.as_str()).bind(String::from_utf8(key.public_key_to_pem()?)?).exec(&mut db).await?;
+    let app = create_router(AppState::new(db.clone(), cfg));
+    Ok(ProtocolFixture {
+        app,
+        db,
+        user,
+        other,
+        remote,
+        key,
+        key_id,
+    })
+}
+fn peer_activity(f: &ProtocolFixture, kind: &str, object: Value) -> Value {
+    json!({"@context":"https://www.w3.org/ns/activitystreams","id":format!("{}/activities/{}",f.remote,uuid::Uuid::new_v4()),"type":kind,"actor":f.remote,"object":object})
+}
+async fn protocol_post(
+    f: &ProtocolFixture,
+    visibility: &str,
+    apub: bool,
+) -> anyhow::Result<String> {
+    let (status, body) = request(
+        &f.app,
+        "POST",
+        Some(&f.user),
+        "/api/home",
+        Some(json!({"content":"protocol test","visibility":visibility,"apub":apub})),
+    )
+    .await?;
+    assert_eq!(status, StatusCode::CREATED);
+    Ok(body["id"].as_str().unwrap().to_string())
+}
+async fn receive_peer(f: &ProtocolFixture, activity: &Value) -> anyhow::Result<StatusCode> {
+    inbox(&f.app, &f.user, activity, &f.key, &f.key_id, false).await
+}
+
+#[tokio::test]
+async fn protocol_manual_follow_requires_owner_consent_and_preserves_original_activity()
+-> anyhow::Result<()> {
+    let _serial = PROTOCOL_SERIAL.lock().await;
+    let mut f = protocol_fixture().await?;
+    let local = format!("https://zoo.example.com/api/activitypub/users/{}", f.user);
+    let (_, actor) = request(
+        &f.app,
+        "GET",
+        None,
+        &format!("/api/activitypub/users/{}", f.user),
+        None,
+    )
+    .await?;
+    assert_eq!(actor["manuallyApprovesFollowers"], true);
+    assert_eq!(actor["publicKey"]["owner"], local);
+    let follow = peer_activity(&f, "Follow", json!(local));
+    for _ in 0..2 {
+        assert_eq!(receive_peer(&f, &follow).await?, StatusCode::ACCEPTED);
+    }
+    let (_, notifications) = request(
+        &f.app,
+        "GET",
+        Some(&f.user),
+        "/api/activitypub/notifications",
+        None,
+    )
+    .await?;
+    assert_eq!(notifications["unread_count"], 1);
+    assert_eq!(notifications["items"][0]["pending"], true);
+    assert_eq!(
+        value(
+            &mut f.db,
+            "SELECT json_build_object('n',count(*))::text FROM apub_deliveries WHERE user_id=$1",
+            &[&f.user]
+        )
+        .await?["n"],
+        0
+    );
+    toasty::sql::statement("INSERT INTO apub_notifications(id,user_id,actor_id,activity_id,kind) SELECT gen_random_uuid()::text,$1,$2,gen_random_uuid()::text,'like' FROM generate_series(1,101)").bind(f.user.as_str()).bind(f.remote.as_str()).exec(&mut f.db).await?;
+    let (_, page) = request(
+        &f.app,
+        "GET",
+        Some(&f.user),
+        "/api/activitypub/notifications",
+        None,
+    )
+    .await?;
+    assert_eq!(page["items"].as_array().unwrap().len(), 100);
+    assert_eq!(
+        page["items"][0]["pending"], true,
+        "new likes buried an actionable follow request"
+    );
+    let private = protocol_post(&f, "followers", true).await?;
+    assert_eq!(
+        value(
+            &mut f.db,
+            "SELECT json_build_object('n',count(*))::text FROM apub_deliveries WHERE user_id=$1",
+            &[&f.user]
+        )
+        .await?["n"],
+        0,
+        "unapproved follower received private post"
+    );
+    let decision = json!({"actor":f.remote,"activity_id":follow["id"],"accept":true});
+    assert_eq!(
+        request(
+            &f.app,
+            "POST",
+            Some(&f.other),
+            "/api/activitypub/follows/respond",
+            Some(decision.clone())
+        )
+        .await?
+        .0,
+        StatusCode::NOT_FOUND
+    );
+    let (first, second) = tokio::join!(
+        request(
+            &f.app,
+            "POST",
+            Some(&f.user),
+            "/api/activitypub/follows/respond",
+            Some(decision.clone())
+        ),
+        request(
+            &f.app,
+            "POST",
+            Some(&f.user),
+            "/api/activitypub/follows/respond",
+            Some(decision.clone())
+        )
+    );
+    let statuses = [first?.0, second?.0];
+    assert_eq!(statuses.iter().filter(|s| **s == StatusCode::OK).count(), 1);
+    assert_eq!(
+        statuses
+            .iter()
+            .filter(|s| **s == StatusCode::NOT_FOUND)
+            .count(),
+        1
+    );
+    let queued=value(&mut f.db,"SELECT row_to_json(d)::text FROM apub_deliveries d WHERE user_id=$1 ORDER BY sequence LIMIT 1",&[&f.user]).await?;
+    let accept: Value = serde_json::from_str(queued["payload"].as_str().unwrap())?;
+    assert_eq!(accept["type"], "Accept");
+    assert_eq!(accept["object"], follow);
+    assert_eq!(accept["actor"], local);
+    assert_eq!(accept["to"], json!([f.remote]));
+    assert_eq!(
+        request(
+            &f.app,
+            "POST",
+            Some(&f.user),
+            "/api/activitypub/follows/respond",
+            Some(decision)
+        )
+        .await?
+        .0,
+        StatusCode::NOT_FOUND,
+        "duplicate approval must not queue twice"
+    );
+    let (_, followers) = request(
+        &f.app,
+        "GET",
+        None,
+        &format!("/api/activitypub/users/{}/followers", f.user),
+        None,
+    )
+    .await?;
+    assert_eq!(followers["totalItems"], 1);
+    let newer = protocol_post(&f, "followers", true).await?;
+    let snapshot=value(&mut f.db,"SELECT row_to_json(d)::text FROM apub_deliveries d WHERE user_id=$1 ORDER BY sequence DESC LIMIT 1",&[&f.user]).await?;
+    let created: Value = serde_json::from_str(snapshot["payload"].as_str().unwrap())?;
+    assert_eq!(
+        backend::activitypub::note_value(&created["zoo_post"])?["id"],
+        format!("https://zoo.example.com/api/activitypub/notes/{newer}")
+    );
+    assert_eq!(
+        backend::activitypub::note_value(&created["zoo_post"])?["to"],
+        json!([format!("{local}/followers")])
+    );
+    assert!(!created.to_string().contains("activitystreams#Public"));
+    let undo = peer_activity(&f, "Undo", follow["id"].clone());
+    assert_eq!(receive_peer(&f, &undo).await?, StatusCode::ACCEPTED);
+    let (_, followers) = request(
+        &f.app,
+        "GET",
+        None,
+        &format!("/api/activitypub/users/{}/followers", f.user),
+        None,
+    )
+    .await?;
+    assert_eq!(followers["totalItems"], 0);
+    let request2 = peer_activity(&f, "Follow", json!(local));
+    assert_eq!(receive_peer(&f, &request2).await?, StatusCode::ACCEPTED);
+    let reject = json!({"actor":f.remote,"activity_id":request2["id"],"accept":false});
+    assert_eq!(
+        request(
+            &f.app,
+            "POST",
+            Some(&f.user),
+            "/api/activitypub/follows/respond",
+            Some(reject)
+        )
+        .await?
+        .0,
+        StatusCode::OK
+    );
+    let rejected=value(&mut f.db,"SELECT row_to_json(d)::text FROM apub_deliveries d WHERE user_id=$1 ORDER BY sequence DESC LIMIT 1",&[&f.user]).await?;
+    let rejection: Value = serde_json::from_str(rejected["payload"].as_str().unwrap())?;
+    assert_eq!(rejection["type"], "Reject");
+    assert_eq!(rejection["object"], request2);
+    // Undo arriving before Follow must not resurrect a cancelled relationship.
+    let future = peer_activity(&f, "Follow", json!(local));
+    let cancel = peer_activity(&f, "Undo", future["id"].clone());
+    assert_eq!(receive_peer(&f, &cancel).await?, StatusCode::ACCEPTED);
+    assert_eq!(receive_peer(&f, &future).await?, StatusCode::ACCEPTED);
+    assert_eq!(value(&mut f.db,"SELECT json_build_object('n',count(*))::text FROM apub_follows WHERE user_id=$1 AND direction='incoming'",&[&f.user]).await?["n"],0);
+    assert_eq!(
+        request(
+            &f.app,
+            "GET",
+            None,
+            &format!("/api/activitypub/notes/{private}"),
+            None
+        )
+        .await?
+        .0,
+        StatusCode::NOT_FOUND
+    );
+    toasty::sql::statement("DELETE FROM users WHERE id=$1 OR id=$2")
+        .bind(f.user.as_str())
+        .bind(f.other.as_str())
+        .exec(&mut f.db)
+        .await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn protocol_like_undo_enforces_actor_ownership_audience_and_notification_isolation()
+-> anyhow::Result<()> {
+    let _serial = PROTOCOL_SERIAL.lock().await;
+    let mut f = protocol_fixture().await?;
+    let post = protocol_post(&f, "public", true).await?;
+    let note = format!("https://zoo.example.com/api/activitypub/notes/{post}");
+    let (_, wire_note) = request(
+        &f.app,
+        "GET",
+        None,
+        &format!("/api/activitypub/notes/{post}"),
+        None,
+    )
+    .await?;
+    assert_eq!(wire_note["type"], "Note");
+    assert_eq!(wire_note["likes"], format!("{note}/likes"));
+    wire_note["published"]
+        .as_str()
+        .unwrap()
+        .parse::<jiff::Timestamp>()?;
+    let like = peer_activity(&f, "Like", json!(note));
+    for _ in 0..2 {
+        assert_eq!(receive_peer(&f, &like).await?, StatusCode::ACCEPTED);
+    }
+    let (_, feed) = request(&f.app, "GET", Some(&f.user), "/api/home", None).await?;
+    assert_eq!(
+        feed.as_array()
+            .unwrap()
+            .iter()
+            .find(|p| p["id"] == post)
+            .unwrap()["likes"],
+        1
+    );
+    let (_, collection) = request(
+        &f.app,
+        "GET",
+        None,
+        &format!("/api/activitypub/notes/{post}/likes"),
+        None,
+    )
+    .await?;
+    assert_eq!(collection["type"], "Collection");
+    assert_eq!(collection["totalItems"], 1);
+    let (_, notifications) = request(
+        &f.app,
+        "GET",
+        Some(&f.user),
+        "/api/activitypub/notifications",
+        None,
+    )
+    .await?;
+    assert_eq!(notifications["items"].as_array().unwrap().len(), 1);
+    assert_eq!(notifications["items"][0]["kind"], "like");
+    let notification = notifications["items"][0]["id"].clone();
+    request(
+        &f.app,
+        "POST",
+        Some(&f.other),
+        "/api/activitypub/notifications/read",
+        Some(json!({"id":notification})),
+    )
+    .await?;
+    let (_, notifications) = request(
+        &f.app,
+        "GET",
+        Some(&f.user),
+        "/api/activitypub/notifications",
+        None,
+    )
+    .await?;
+    assert_eq!(notifications["unread_count"], 1);
+    let (_, others) = request(
+        &f.app,
+        "GET",
+        Some(&f.other),
+        "/api/activitypub/notifications",
+        None,
+    )
+    .await?;
+    assert_eq!(others["items"], json!([]));
+    let mut forged = like.clone();
+    forged["actor"] = json!("https://other.example/actor");
+    let bad = peer_activity(&f, "Undo", forged);
+    assert_eq!(receive_peer(&f, &bad).await?, StatusCode::BAD_REQUEST);
+    let undo = peer_activity(&f, "Undo", like["id"].clone());
+    assert_eq!(receive_peer(&f, &undo).await?, StatusCode::ACCEPTED);
+    assert_eq!(receive_peer(&f, &like).await?, StatusCode::ACCEPTED);
+    assert_eq!(
+        value(
+            &mut f.db,
+            "SELECT json_build_object('n',count(*))::text FROM apub_reactions WHERE post_id=$1",
+            &[&post]
+        )
+        .await?["n"],
+        0
+    );
+    let first_like = peer_activity(&f, "Like", json!(note));
+    let replacement = peer_activity(&f, "Like", json!(note));
+    assert_eq!(receive_peer(&f, &first_like).await?, StatusCode::ACCEPTED);
+    assert_eq!(receive_peer(&f, &replacement).await?, StatusCode::ACCEPTED);
+    let old_undo = peer_activity(&f, "Undo", first_like);
+    assert_eq!(receive_peer(&f, &old_undo).await?, StatusCode::ACCEPTED);
+    assert_eq!(
+        value(
+            &mut f.db,
+            "SELECT json_build_object('n',count(*))::text FROM apub_reactions WHERE post_id=$1",
+            &[&post]
+        )
+        .await?["n"],
+        1,
+        "old Undo removed the replacement Like"
+    );
+    let latest_undo = peer_activity(&f, "Undo", replacement);
+    assert_eq!(receive_peer(&f, &latest_undo).await?, StatusCode::ACCEPTED);
+    let future = peer_activity(&f, "Like", json!(note));
+    let cancel = peer_activity(&f, "Undo", future.clone());
+    assert_eq!(receive_peer(&f, &cancel).await?, StatusCode::ACCEPTED);
+    assert_eq!(receive_peer(&f, &future).await?, StatusCode::ACCEPTED);
+    assert_eq!(
+        value(
+            &mut f.db,
+            "SELECT json_build_object('n',count(*))::text FROM apub_reactions WHERE post_id=$1",
+            &[&post]
+        )
+        .await?["n"],
+        0
+    );
+    for (visibility, apub) in [("public", false), ("followers", true)] {
+        let private = protocol_post(&f, visibility, apub).await?;
+        let unauthorized = peer_activity(
+            &f,
+            "Like",
+            json!(format!(
+                "https://zoo.example.com/api/activitypub/notes/{private}"
+            )),
+        );
+        assert_eq!(
+            receive_peer(&f, &unauthorized).await?,
+            StatusCode::NOT_FOUND
+        );
+        if visibility == "followers" {
+            assert_eq!(
+                request(
+                    &f.app,
+                    "POST",
+                    Some(&f.other),
+                    "/api/activitypub/reactions",
+                    Some(json!({"post_id":private}))
+                )
+                .await?
+                .0,
+                StatusCode::NOT_FOUND
+            );
+        }
+    }
+    let body = json!({"post_id":post});
+    for _ in 0..2 {
+        assert_eq!(
+            request(
+                &f.app,
+                "POST",
+                Some(&f.other),
+                "/api/activitypub/reactions",
+                Some(body.clone())
+            )
+            .await?
+            .0,
+            StatusCode::OK
+        );
+    }
+    assert_eq!(
+        value(
+            &mut f.db,
+            "SELECT json_build_object('n',count(*))::text FROM apub_reactions WHERE post_id=$1",
+            &[&post]
+        )
+        .await?["n"],
+        1
+    );
+    for _ in 0..2 {
+        assert_eq!(
+            request(
+                &f.app,
+                "DELETE",
+                Some(&f.other),
+                "/api/activitypub/reactions",
+                Some(body.clone())
+            )
+            .await?
+            .0,
+            StatusCode::OK
+        );
+    }
+    assert_eq!(
+        value(
+            &mut f.db,
+            "SELECT json_build_object('n',count(*))::text FROM apub_reactions WHERE post_id=$1",
+            &[&post]
+        )
+        .await?["n"],
+        0
+    );
+    toasty::sql::statement("DELETE FROM users WHERE id=$1 OR id=$2")
+        .bind(f.user.as_str())
+        .bind(f.other.as_str())
+        .exec(&mut f.db)
+        .await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn protocol_outgoing_like_and_undo_use_stable_object_actor_and_private_recipient()
+-> anyhow::Result<()> {
+    let _serial = PROTOCOL_SERIAL.lock().await;
+    let mut f = protocol_fixture().await?;
+    let follow_id = format!(
+        "https://zoo.example.com/api/activitypub/activities/{}",
+        uuid::Uuid::new_v4()
+    );
+    toasty::sql::statement("INSERT INTO apub_follows(user_id,actor_id,direction,activity_id) VALUES($1,$2,'outgoing',$3)").bind(f.user.as_str()).bind(f.remote.as_str()).bind(follow_id.as_str()).exec(&mut f.db).await?;
+    let wrong = peer_activity(
+        &f,
+        "Accept",
+        json!({"type":"Follow","id":follow_id,"actor":"https://impostor.example/actor","object":f.remote}),
+    );
+    assert_eq!(receive_peer(&f, &wrong).await?, StatusCode::BAD_REQUEST);
+    let accepted = peer_activity(&f, "Accept", json!(follow_id));
+    for _ in 0..2 {
+        assert_eq!(receive_peer(&f, &accepted).await?, StatusCode::ACCEPTED);
+    }
+    let (_, notifications) = request(
+        &f.app,
+        "GET",
+        Some(&f.user),
+        "/api/activitypub/notifications",
+        None,
+    )
+    .await?;
+    assert_eq!(notifications["items"].as_array().unwrap().len(), 1);
+    assert_eq!(notifications["items"][0]["kind"], "follow_accepted");
+    let post = format!("{}/notes/{}", f.remote, uuid::Uuid::new_v4());
+    let note = json!({"type":"Note","id":post,"attributedTo":f.remote,"content":"<p>Private &amp; safe</p>","published":"2026-01-01T00:00:00Z","to":[format!("{}/followers",f.remote)]});
+    let create = peer_activity(&f, "Create", note);
+    assert_eq!(receive_peer(&f, &create).await?, StatusCode::ACCEPTED);
+    let body = json!({"post_id":post});
+    assert_eq!(
+        request(
+            &f.app,
+            "POST",
+            Some(&f.other),
+            "/api/activitypub/reactions",
+            Some(body.clone())
+        )
+        .await?
+        .0,
+        StatusCode::NOT_FOUND
+    );
+    for _ in 0..2 {
+        assert_eq!(
+            request(
+                &f.app,
+                "POST",
+                Some(&f.user),
+                "/api/activitypub/reactions",
+                Some(body.clone())
+            )
+            .await?
+            .0,
+            StatusCode::OK
+        );
+    }
+    let queued=value(&mut f.db,"SELECT row_to_json(d)::text FROM apub_deliveries d WHERE user_id=$1 ORDER BY sequence LIMIT 1",&[&f.user]).await?;
+    let like: Value = serde_json::from_str(queued["payload"].as_str().unwrap())?;
+    assert_eq!(like["type"], "Like");
+    assert_eq!(like["object"], post);
+    assert_eq!(
+        like["actor"],
+        format!("https://zoo.example.com/api/activitypub/users/{}", f.user)
+    );
+    assert_eq!(like["to"], json!([f.remote]));
+    assert!(!like.to_string().contains("activitystreams#Public"));
+    // Retract remains available after access is lost, and only emits a single Undo.
+    toasty::sql::statement("DELETE FROM apub_follows WHERE user_id=$1 AND direction='outgoing'")
+        .bind(f.user.as_str())
+        .exec(&mut f.db)
+        .await?;
+    for _ in 0..2 {
+        assert_eq!(
+            request(
+                &f.app,
+                "DELETE",
+                Some(&f.user),
+                "/api/activitypub/reactions",
+                Some(body.clone())
+            )
+            .await?
+            .0,
+            StatusCode::OK
+        );
+    }
+    let queued=value(&mut f.db,"SELECT row_to_json(d)::text FROM apub_deliveries d WHERE user_id=$1 ORDER BY sequence DESC LIMIT 1",&[&f.user]).await?;
+    let undo: Value = serde_json::from_str(queued["payload"].as_str().unwrap())?;
+    assert_eq!(undo["type"], "Undo");
+    assert_eq!(undo["object"], like);
+    assert_eq!(undo["actor"], like["actor"]);
+    assert_eq!(undo["to"], like["to"]);
+    assert_eq!(
+        value(
+            &mut f.db,
+            "SELECT json_build_object('n',count(*))::text FROM apub_deliveries WHERE user_id=$1",
+            &[&f.user]
+        )
+        .await?["n"],
+        2
+    );
+    toasty::sql::statement("DELETE FROM users WHERE id=$1 OR id=$2")
+        .bind(f.user.as_str())
+        .bind(f.other.as_str())
+        .exec(&mut f.db)
         .await?;
     Ok(())
 }

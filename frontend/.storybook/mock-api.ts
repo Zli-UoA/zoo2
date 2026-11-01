@@ -81,6 +81,9 @@ const notificationContexts: Record<string, NotificationContextFixture> = {
 };
 
 export const storybookApiHandlers = [
+  http.get("*/api/activitypub/notifications", () =>
+    HttpResponse.json({ items: [], unread_count: 0 }),
+  ),
   ws.link("*/api/home/live").addEventListener("connection", () => {}),
   http.get("*/api/activitypub/status", () =>
     HttpResponse.json({

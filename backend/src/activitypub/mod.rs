@@ -1,5 +1,6 @@
 //! Zoo federation: durable delivery, signed inboxes, local channel-linked posts.
 mod inbox;
+mod interactions;
 mod routes;
 mod transport;
 use crate::{
@@ -97,7 +98,7 @@ pub fn note_value(post: &Value) -> Result<Value, AppError> {
     };
     let content = html_escape::encode_safe(string(post, "content")?).replace('\n', "<br>");
     Ok(
-        json!({"@context":CONTEXT,"type":"Note","id":format!("{}/api/activitypub/notes/{id}",base_url()?),"attributedTo":author,"published":post["created_at"],"updated":post["updated_at"],"content":content,"mediaType":"text/html","to":to,"cc":cc}),
+        json!({"@context":CONTEXT,"type":"Note","id":format!("{}/api/activitypub/notes/{id}",base_url()?),"attributedTo":author,"published":post["created_at"],"updated":post["updated_at"],"content":content,"mediaType":"text/html","likes":format!("{}/api/activitypub/notes/{id}/likes",base_url()?),"to":to,"cc":cc}),
     )
 }
 fn delivery_activity(payload: &Value) -> Result<Value, AppError> {

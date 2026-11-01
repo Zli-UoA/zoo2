@@ -767,3 +767,61 @@ export const TimelineSwitch: Story = {
     }
   },
 };
+
+let liked = false;
+export const Like: Story = {
+  beforeEach: () => {
+    liked = false;
+  },
+  parameters: {
+    msw: {
+      handlers: [
+        http.get("*/api/home", () =>
+          HttpResponse.json([{ ...posts[0], likes: liked ? 1 : 0, liked }]),
+        ),
+        http.post("*/api/activitypub/reactions", async ({ request }) => {
+          const body = (await request.json()) as { post_id: string };
+          await expect(body.post_id).toBe(posts[0].id);
+          liked = true;
+          return HttpResponse.json({ ok: true });
+        }),
+        http.delete("*/api/activitypub/reactions", () => {
+          liked = false;
+          return HttpResponse.json({ ok: true });
+        }),
+      ],
+    },
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await userEvent.click(await canvas.findByRole("button", { name: /^いいね \d/ }));
+    await expect(await canvas.findByRole("button", { name: /^いいねを取り消す/ })).toHaveAttribute(
+      "aria-pressed",
+      "true",
+    );
+    await userEvent.click(canvas.getByRole("button", { name: /^いいねを取り消す/ }));
+    await expect(await canvas.findByRole("button", { name: /^いいね \d/ })).toHaveAttribute(
+      "aria-pressed",
+      "false",
+    );
+  },
+};
+export const LikeError: Story = {
+  parameters: {
+    msw: {
+      handlers: [
+        http.get("*/api/home", () => HttpResponse.json([posts[0]])),
+        http.post("*/api/activitypub/reactions", () => new HttpResponse(null, { status: 500 })),
+      ],
+    },
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await userEvent.click(await canvas.findByRole("button", { name: /^いいね \d/ }));
+    await expect(await canvas.findByRole("alert")).toBeVisible();
+    await expect(canvas.getByRole("button", { name: /^いいね \d/ })).toHaveAttribute(
+      "aria-pressed",
+      "false",
+    );
+  },
+};

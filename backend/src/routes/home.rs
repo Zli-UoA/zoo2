@@ -185,7 +185,7 @@ async fn list(
       WHERE $3 IN ('home','social') AND p.deleted_at IS NULL AND NOT a.blocked
         AND EXISTS(SELECT 1 FROM apub_remote_recipients WHERE post_id=p.id AND user_id=$1)
         AND EXISTS(SELECT 1 FROM apub_follows WHERE user_id=$1 AND actor_id=p.actor_id AND direction='outgoing' AND accepted)
-    ) SELECT row_to_json(f)::text FROM feed f WHERE ($2='' OR (created_at,id)<(SELECT created_at,id FROM feed WHERE id=$2)) ORDER BY created_at DESC,id DESC LIMIT $5::integer"#,
+    ) SELECT (row_to_json(f)::jsonb || jsonb_build_object('likes',(SELECT count(*) FROM apub_reactions r WHERE r.post_id=f.id),'liked',EXISTS(SELECT 1 FROM apub_reactions r WHERE r.post_id=f.id AND r.user_id=$1)))::text FROM feed f WHERE ($2='' OR (created_at,id)<(SELECT created_at,id FROM feed WHERE id=$2)) ORDER BY created_at DESC,id DESC LIMIT $5::integer"#,
     &[&user.id,page.before.as_deref().unwrap_or(""),timeline,if guest{"true"}else{"false"}, &page.limit.unwrap_or(50).clamp(1, 500).to_string()]).await?;
     Ok(Json(rows))
 }

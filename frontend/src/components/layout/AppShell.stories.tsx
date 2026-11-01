@@ -1,3 +1,4 @@
+import { activityPubNotifications } from "../../../.storybook/activitypub-fixtures";
 import { http, HttpResponse } from "msw";
 import { HomeScreen } from "../home/HomeScreen";
 import { homeHandlers } from "../../../.storybook/home-fixtures";
@@ -217,3 +218,21 @@ export const EmptyHome: Story = {
   },
 };
 export const MobileEmptyHome: Story = { ...EmptyHome, globals: { viewport: { value: "mobile" } } };
+
+export const FederatedUnread: Story = {
+  ...Home,
+  parameters: {
+    ...Home.parameters,
+    msw: {
+      handlers: [
+        ...homeHandlers,
+        http.get("*/api/activitypub/notifications", () =>
+          HttpResponse.json({ items: activityPubNotifications, unread_count: 3 }),
+        ),
+      ],
+    },
+  },
+  play: async () => {
+    await expect(await screen.findByRole("link", { name: "未読通知 6 件" })).toBeVisible();
+  },
+};

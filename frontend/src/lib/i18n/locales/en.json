@@ -634,6 +634,18 @@
       "home": "Home",
       "local": "Local",
       "social": "Social"
+    },
+    "apubNotifications": "Home notifications",
+    "readAll": "Mark all read",
+    "approve": "Approve",
+    "reject": "Reject",
+    "markRead": "Mark read",
+    "like": "Like",
+    "unlike": "Unlike",
+    "notificationKinds": {
+      "follow_request": "requested to follow you",
+      "follow_accepted": "accepted your follow request",
+      "like": "liked your post"
     }
   }
 }

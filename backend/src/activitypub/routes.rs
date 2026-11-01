@@ -27,6 +27,7 @@ struct FollowRequest {
 
 pub fn router() -> Router<AppState> {
     Router::new()
+        .merge(interactions::router())
         .route("/.well-known/webfinger", get(webfinger))
         .route("/api/activitypub/users/{id}", get(actor))
         .route("/api/activitypub/users/{id}/outbox", get(outbox))
@@ -37,6 +38,7 @@ pub fn router() -> Router<AppState> {
             post(inbox::receive).layer(DefaultBodyLimit::max(256 * 1024)),
         )
         .route("/api/activitypub/notes/{id}", get(note))
+        .route("/api/activitypub/notes/{id}/likes", get(likes))
         .route(
             "/api/activitypub/follows",
             get(follows).post(follow).delete(unfollow),
@@ -58,7 +60,7 @@ async fn actor(
     let key = keys(&state, &id).await?;
     let actor = actor_id(&id)?;
     Ok(response(
-        json!({"@context":[CONTEXT,"https://w3id.org/security/v1"],"type":"Person","id":actor,"preferredUsername":user["user_name"],"name":user["display_name"],"inbox":format!("{actor}/inbox"),"outbox":format!("{actor}/outbox"),"followers":format!("{actor}/followers"),"following":format!("{actor}/following"),"manuallyApprovesFollowers":false,"publicKey":{"id":format!("{actor}#main-key"),"owner":actor,"publicKeyPem":key["public_key"]}}),
+        json!({"@context":[CONTEXT,"https://w3id.org/security/v1",{"manuallyApprovesFollowers":"as:manuallyApprovesFollowers"}],"type":"Person","id":actor,"preferredUsername":user["user_name"],"name":user["display_name"],"inbox":format!("{actor}/inbox"),"outbox":format!("{actor}/outbox"),"followers":format!("{actor}/followers"),"following":format!("{actor}/following"),"manuallyApprovesFollowers":true,"publicKey":{"id":format!("{actor}#main-key"),"owner":actor,"publicKeyPem":key["public_key"]}}),
     ))
 }
 async fn webfinger(
@@ -150,7 +152,7 @@ async fn collection(
 async fn follows(State(state): State<AppState>, user: AuthUser) -> Result<Json<Value>, AppError> {
     let mut db = state.db.clone();
     let mut tx = db.transaction().await?;
-    Ok(Json(json!(query(&mut tx,"SELECT json_build_object('actor_id',f.actor_id,'accepted',f.accepted,'direction',f.direction,'user_name',a.user_name,'display_name',a.display_name)::text FROM apub_follows f JOIN apub_actors a ON a.id=f.actor_id WHERE f.user_id=$1 ORDER BY a.user_name LIMIT 500",&[&user.id]).await?)))
+    Ok(Json(json!(query(&mut tx,"SELECT json_build_object('actor_id',f.actor_id,'activity_id',f.activity_id,'accepted',f.accepted,'direction',f.direction,'user_name',a.user_name,'display_name',a.display_name)::text FROM apub_follows f JOIN apub_actors a ON a.id=f.actor_id WHERE f.user_id=$1 ORDER BY a.user_name LIMIT 500",&[&user.id]).await?)))
 }
 async fn resolve(state: &AppState, user: &str, input: &str) -> Result<Value, AppError> {
     if input.len() > 2048 || input.contains('\0') {
@@ -256,4 +258,22 @@ async fn search(
     let mut tx = db.transaction().await?;
     let rows = query(&mut tx, "SELECT json_build_object('id',id,'user_name',user_name,'display_name',display_name,'created_at',created_at,'remote',false)::text FROM users WHERE NOT is_bot AND (strpos(lower(user_name),lower($1))>0 OR strpos(lower(display_name),lower($1))>0) ORDER BY user_name LIMIT 30", &[term.trim_start_matches('@')]).await?;
     Ok(Json(rows))
+}
+
+async fn likes(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> Result<Response, AppError> {
+    let mut db = state.db.clone();
+    let mut tx = db.transaction().await?;
+    one(&mut tx,"SELECT '{}'::text FROM home_posts WHERE id=$1 AND apub AND deleted_at IS NULL AND visibility IN ('public','unlisted')",&[&id]).await?;
+    let count = one(
+        &mut tx,
+        "SELECT json_build_object('count',count(*))::text FROM apub_reactions WHERE post_id=$1",
+        &[&id],
+    )
+    .await?;
+    Ok(response(
+        json!({"@context":CONTEXT,"id":format!("{}/api/activitypub/notes/{id}/likes",base_url()?),"type":"Collection","totalItems":count["count"]}),
+    ))
 }

@@ -634,6 +634,18 @@
       "home": "首页",
       "local": "本地",
       "social": "社交"
+    },
+    "apubNotifications": "首页通知",
+    "readAll": "全部标为已读",
+    "approve": "批准",
+    "reject": "拒绝",
+    "markRead": "标为已读",
+    "like": "喜欢",
+    "unlike": "取消喜欢",
+    "notificationKinds": {
+      "follow_request": "请求关注你",
+      "follow_accepted": "批准了你的关注请求",
+      "like": "喜欢了你的帖子"
     }
   }
 }

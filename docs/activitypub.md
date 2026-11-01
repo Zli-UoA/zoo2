@@ -27,7 +27,7 @@ Zoo設定の「一般」で、ワークスペース管理者がLTLへ流すチ�
 
 ## 連合の設定
 
-1. DB migrations `20261101010000_create_home_posts.sql`、`20261101020000_activitypub.sql`、`20261101030000_decouple_home_federation.sql`、`20261101040000_home_live.sql` を適用します。
+1. DB migrations `20261101010000_create_home_posts.sql`、`20261101020000_activitypub.sql`、`20261101030000_decouple_home_federation.sql`、`20261101040000_home_live.sql`、`20261101050000_apub_interactions.sql` を適用します。
 2. バックエンドの `ACTIVITYPUB_BASE_URL=https://zoo.example.com` に外部公開する正規オリジンを設定します。パス・クエリは不可です。設定が不正な場合は起動時にエラーになります。
 3. 公開HTTPSから `/api/activitypub/` と `/.well-known/webfinger` をバックエンドへ到達させます。リポジトリのTraefik設定には反映済みです。
 4. バックエンドから、外部サーバーの公開IP・HTTPS/443への通信とDNS解決を許可します。リダイレクト・プライベートIPへの接続は拒否し、DNS結果を接続先へ固定します。
@@ -38,7 +38,7 @@ Zoo設定の「一般」で、ワークスペース管理者がLTLへ流すチ�
 
 ## フォローと送受信
 
-Home右上の人＋虫眼鏡アイコンからユーザー検索を開きます。Zoo内のユーザー名・表示名、または `@user@server`・HTTPSのActor URLで検索するとユーザー詳細を表示し、外部ユーザーは詳細からフォローできます。リモートからのAcceptを受け取るまで「承認待ち」と表示します。フォロー解除はUndoを配送します。外部からZooユーザーへのFollowは自動受理し、署名付きAcceptを配送します。外部からの検索には `@<Zooのユーザー名>@<Zooのホスト>` を使用します。
+Home右上の人＋虫眼鏡アイコンからユーザー検索を開きます。Zoo内のユーザー名・表示名、または `@user@server`・HTTPSのActor URLで検索するとユーザー詳細を表示し、外部ユーザーは詳細からフォローできます。リモートからのAcceptを受け取るまで「承認待ち」と表示します。フォロー解除はUndoを配送します。外部からZooユーザーへのFollowは承認待ちとして保存します。通知画面から本人が承認すると元のFollowをobjectに持つAccept、拒否するとRejectを配送します。Actorは `manuallyApprovesFollowers: true` を公開します。承認前の相手には公開・非公開いずれの投稿も配送しません。既存の承認済みフォロワーは移行時も保持します。外部からの検索には `@<Zooのユーザー名>@<Zooのホスト>` を使用します。
 
 実装済みのActivityはFollow／Accept／Reject／Undo(Follow)／Create(Note)／Update(Note)／Delete(Note)です。署名はRSA-SHA256の従来形式のHTTP Signatureに対応します。RFC 9421のみを使う相手との互換性は対象外です。受信ではHTTP署名、SHA-256 Digest、日時、Actor・鍵の所有者、オブジェクトの投稿者とオリジンを検証します。受理記録と本文の更新は同一トランザクションで確定し、重複受信を抑止します。削除後に遅延したCreateが届いても復活させません。受信本文はHTMLからテキストに変換し、Reactのテキストとして描画します。
 
@@ -62,7 +62,7 @@ Home右上の人＋虫眼鏡アイコンからユーザー検索を開きます�
 
 ## 検証と対応範囲
 
-ローカルの署名付きActorを用いたプロトコル試験で、Follow/Accept、送受信キュー、署名不正、受信Create/Update/Delete、リプレイ拒否、閲覧者ごとの隔離、チャンネルとの編集・削除同期を検証します。
+ローカルの署名付きActorを用いたプロトコル試験で、Follow/Accept/Reject/Undo、Like/Undo、送受信キュー、署名不正、受信Create/Update/Delete、リプレイ時の重複処理防止、閲覧者ごとの隔離、チャンネルとの編集・削除同期を検証します。
 
 ```sh
 cd backend
@@ -74,7 +74,7 @@ cargo test --test activitypub_test --test home_test -- --test-threads=1
 cargo test --lib activitypub:: -- --include-ignored --test-threads=1
 ```
 
-実サービスのMastodon・Misskeyとの相互接続試験は別途必要です。現時点ではDM、Announce、Like、添付ファイルの連合、外部返信のチャンネル取り込み、ローカルユーザー同士のFollow、共有Inbox、NodeInfo、Actor移行・鍵ローテーションの管理UIは対象外です。外部Actorの鍵は5分キャッシュします。鍵変更時は再取得まで検証が失敗する場合があります。
+実サービスのMastodon・Misskeyとの相互接続試験は別途必要です。現時点ではDM、Announce、絵文字リアクション拡張、添付ファイルの連合、外部返信のチャンネル取り込み、ローカルユーザー同士のFollow、共有Inbox、NodeInfo、Actor移行・鍵ローテーションの管理UIは対象外です。外部Actorの鍵は5分キャッシュします。鍵変更時は再取得まで検証が失敗する場合があります。
 
 画面のサンプルは [PC・スマホの画像](images/activitypub/README.md) を参照してください。
 
@@ -85,3 +85,25 @@ cargo test --lib activitypub:: -- --include-ignored --test-threads=1
 バックエンドごとに1本のPostgreSQL LISTEN接続を共有します。DBのコミットに合わせたNOTIFYにより、別プロセスでの投稿・チャンネル同期・Inbox受信も配信します。DB接続が復旧した場合も再取得を通知します。リバースプロキシは `/api/home/live` のWebSocket Upgradeを通してください。
 
 自分の投稿の編集・削除は時刻右の3点メニューから操作します。投稿ボタンは投稿数に関わらずTL右下に配置します。スマホではフォームを開くタップ内で同期的に入力欄へフォーカスし、キーボードを呼び出します。実際のIMEの描画タイミングはOSとブラウザに依存します。
+
+
+## いいねと通知
+
+Homeのハートから投稿にいいね・取り消しができます。外部投稿へのいいねはActivityStreamsの `Like`、取り消しは元のLikeをobjectに含む `Undo` を、投稿者のInboxだけに署名付きで配送します。外部から自分の投稿へのLike/Undoも受信し、TLの件数を更新します。公開・未収載Noteの `likes` は人数だけを返すCollectionです。フォロワー限定・連合なしの投稿のCollectionは公開しません。Zoo内だけのいいねは連合設定がなくても利用できます。
+
+通知画面の「ホームの通知」に、フォロー申請、フォロー承認、いいねを表示します。ベルの未読件数には既存のチャンネル通知とホーム通知を合算します。通知はWebSocketで更新し、個別・一括で既読にできます。最大100件を表示し、未処理のフォロー申請を優先します。一括既読は表示外の古い通知にも適用します。申請への承認・拒否は通知の所有者のみ操作でき、承認待ちの状態とActivity IDを確認して排他制御します。この通知はアプリ内通知で、ホーム通知のWeb Push配送は未対応です。
+
+### ActivityPubの重点テスト
+
+[ActivityPubのServer-to-Server Interactions](https://www.w3.org/TR/activitypub/#server-to-server-interactions) と [ActivityStreams 2.0 Vocabulary](https://www.w3.org/TR/activitystreams-vocabulary/) に基づき、対応しているActivityについて以下を検証します。完全なJSON-LD処理や公式の完全適合認証を行うものではありません。
+
+- Actor・Note・CollectionのID、公開鍵のowner、RFC 3339の日時、HTMLのエスケープ。
+- 3種類の公開範囲 × Create/Update/Deleteの送信スナップショット、to/cc、ActorとattributedTo、Tombstone、再送時のActivity ID維持。
+- 承認前には配送しないこと、Accept/Rejectが元のFollowを参照すること、同時承認でAcceptを二重発行しないこと、古い申請や他人の申請を操作できないこと。
+- Like/Undoの所有Actor・対象Note・宛先、文字列と埋め込みオブジェクトによるUndo、順序が逆転したUndo、重複受信、古いUndoと新しいLikeの分離。
+- フォロワー限定Note・受信者限定の外部Noteの閲覧とリアクション、通知のユーザー間隔離・既読権限。
+- OpenSSLで独立に組み立てた受信署名と、模擬HTTPサーバーへの署名付きAccept/Reject/Like/Undoの実バイト列・Content-Typeの照合。署名方式は既存のMastodon互換HTTP Signatureで、RFC 9421形式は未対応です。
+
+`backend/tests/activitypub_test.rs` と `backend/src/activitypub/tests.rs` が主な検証箇所です。上記のコマンドでDBを必要とする試験を明示的に実行します。実際のMastodon・Misskeyとの相互接続試験は未実施です。
+
+互換性の制限として、Actor・公開鍵・Inbox・followers・受信Activity/NoteのIDは同一オリジンの構成に限定します。これらが別オリジンとなるサーバーや、独自JSON-LD表現を含むすべての実装との互換性は保証していません。

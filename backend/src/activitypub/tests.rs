@@ -132,3 +132,115 @@ fn addressing_respects_each_visibility() -> anyhow::Result<()> {
     assert!(note_value(&p).is_err());
     Ok(())
 }
+
+#[test]
+#[ignore = "requires ACTIVITYPUB_BASE_URL"]
+fn protocol_wire_snapshot_matrix_preserves_addressing_identity_and_tombstones() -> anyhow::Result<()>
+{
+    let base = base_url()?;
+    for visibility in ["public", "unlisted", "followers"] {
+        let post = json!({"id":"protocol-post","user_id":"protocol-author","content":"<script>unsafe</script>\nA & B","created_at":"2026-01-01T00:00:00Z","updated_at":"2026-01-02T00:00:00Z","visibility":visibility});
+        let note = note_value(&post)?;
+        assert_eq!(note["type"], "Note");
+        assert_eq!(
+            note["attributedTo"],
+            format!("{base}/api/activitypub/users/protocol-author")
+        );
+        assert!(!note["content"].as_str().unwrap().contains("<script>"));
+        assert!(note["content"].as_str().unwrap().contains("<br>"));
+        note["published"]
+            .as_str()
+            .unwrap()
+            .parse::<jiff::Timestamp>()?;
+        for kind in ["Create", "Update", "Delete"] {
+            let payload = json!({"type":kind,"activity_id":"stable-activity","zoo_post":post});
+            let activity = delivery_activity(&payload)?;
+            assert_eq!(
+                delivery_activity(&payload)?,
+                activity,
+                "retry changed activity identity"
+            );
+            assert_eq!(activity["@context"], CONTEXT);
+            assert_eq!(activity["type"], kind);
+            assert_eq!(
+                activity["id"],
+                format!("{base}/api/activitypub/activities/stable-activity")
+            );
+            assert_eq!(activity["actor"], note["attributedTo"]);
+            assert_eq!(activity["to"], note["to"]);
+            assert_eq!(activity["cc"], note["cc"]);
+            assert_eq!(activity["object"]["id"], note["id"]);
+            if kind == "Delete" {
+                assert_eq!(activity["object"]["type"], "Tombstone");
+                assert!(activity["object"].get("content").is_none());
+            } else {
+                assert_eq!(activity["object"], note);
+            }
+            if visibility == "followers" {
+                assert!(!activity.to_string().contains(PUBLIC));
+            }
+        }
+    }
+    Ok(())
+}
+
+#[tokio::test]
+#[ignore = "requires migrated PostgreSQL and ACTIVITYPUB_BASE_URL"]
+async fn protocol_signed_interaction_wire_roundtrip() -> anyhow::Result<()> {
+    let config = crate::config::Config::from_env();
+    let mut db = crate::db::init_db(&config.database_url).await?;
+    let state = AppState::new(db.clone(), config);
+    let user = uuid::Uuid::new_v4().to_string();
+    toasty::sql::statement("INSERT INTO users(id,user_name,display_name) VALUES($1,$1,$1)")
+        .bind(user.as_str())
+        .exec(&mut db)
+        .await?;
+    let key = keys(&state, &user).await?;
+    let local = actor_id(&user)?;
+    let remote = "https://peer.example/users/remote";
+    let follow = json!({"id":"https://peer.example/follows/1","type":"Follow","actor":remote,"object":local});
+    let like = json!({"@context":CONTEXT,"id":format!("{local}/likes/1"),"type":"Like","actor":local,"object":"https://peer.example/notes/1","to":[remote]});
+    let activities = [
+        json!({"@context":CONTEXT,"id":format!("{local}/accept/1"),"type":"Accept","actor":local,"object":follow,"to":[remote]}),
+        json!({"@context":CONTEXT,"id":format!("{local}/reject/1"),"type":"Reject","actor":local,"object":follow,"to":[remote]}),
+        like.clone(),
+        json!({"@context":CONTEXT,"id":format!("{local}/undo/1"),"type":"Undo","actor":local,"object":like,"to":[remote]}),
+    ];
+    let server = MockServer::start().await;
+    let verifier = json!({"key_id":format!("{local}#main-key"),"public_key":key["public_key"]});
+    let expected = activities.clone();
+    Mock::given(method("POST"))
+        .and(path("/inbox"))
+        .respond_with(move |request: &wiremock::Request| {
+            assert_eq!(request.headers.get("content-type").unwrap(), CONTENT_TYPE);
+            transport::verify_headers(&request.headers, "/inbox", &request.body, &verifier)
+                .unwrap();
+            let activity: Value = serde_json::from_slice(&request.body).unwrap();
+            assert!(
+                expected.contains(&activity),
+                "wire activity differs from the durable original"
+            );
+            ResponseTemplate::new(202)
+        })
+        .expect(4)
+        .mount(&server)
+        .await;
+    let url = reqwest::Url::parse(&format!("{}/inbox", server.uri()))?;
+    for activity in activities {
+        let response = transport::request_with_client(
+            &state,
+            Some(&user),
+            reqwest::Method::POST,
+            &url,
+            Some(&activity),
+            &reqwest::Client::new(),
+        )
+        .await?;
+        assert_eq!(response.status(), 202);
+    }
+    toasty::sql::statement("DELETE FROM users WHERE id=$1")
+        .bind(user)
+        .exec(&mut db)
+        .await?;
+    Ok(())
+}

@@ -1,3 +1,4 @@
+import { useHomeLive } from "../../hooks/useHomeLive";
 import { Link } from "@tanstack/react-router";
 import { HomeComposer } from "./HomeComposer";
 import { Input } from "../ui/input";
@@ -12,8 +13,9 @@ import {
   Trash2Icon,
   PencilIcon,
   MoreHorizontalIcon,
+  HeartIcon,
 } from "lucide-react";
-import { buildAuthHeaders, createConfiguredApiClient } from "../../lib/api/client";
+import { createConfiguredApiClient } from "../../lib/api/client";
 import { useCollections } from "../../lib/electric/collections-context";
 import { useCurrentUser } from "../../hooks/useCurrentUser";
 import { ScreenHeader } from "../layout/PaneHeader";
@@ -44,6 +46,8 @@ export interface HomePost {
   channel_name?: string | null;
   remote?: boolean;
   url?: string | null;
+  likes?: number;
+  liked?: boolean;
 }
 
 export function HomeScreen() {
@@ -113,6 +117,8 @@ export function HomeScreen() {
   const [loadingOlder, setLoadingOlder] = useState(false);
   const [hasMore, setHasMore] = useState(false);
   const [error, setError] = useState(false);
+  const [pendingLike, setPendingLike] = useState<string | null>(null);
+  const [reactionError, setReactionError] = useState<string | null>(null);
   const [deleteId, setDeleteId] = useState<string | null>(null);
   const [deleting, setDeleting] = useState(false);
   const [deleteError, setDeleteError] = useState(false);
@@ -194,67 +200,16 @@ export function HomeScreen() {
     setLoading(true);
     setPosts([]);
     void refresh();
-    let stopped = false;
-    let socket: WebSocket | undefined;
-    let retry: ReturnType<typeof setTimeout> | undefined;
-    let pending: ReturnType<typeof setTimeout> | undefined;
-    let attempts = 0;
-    let connecting = false;
-    const connect = async () => {
-      if (stopped || connecting || (socket && socket.readyState !== WebSocket.CLOSED)) return;
-      connecting = true;
-      try {
-        const headers = await buildAuthHeaders({ devUserId: config.devUserId });
-        if (stopped) return;
-        const url = new URL(`${config.apiBaseUrl.replace(/\/$/, "")}/api/home/live`, location.href);
-        url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
-        const connection = new WebSocket(url);
-        socket = connection;
-        connection.onopen = () =>
-          connection.send(JSON.stringify(Object.fromEntries(headers.entries())));
-        socket.onmessage = (event) => {
-          if (event.data !== "refresh") return;
-          attempts = 0;
-          if (pending) return;
-          pending = setTimeout(() => {
-            pending = undefined;
-            void refresh(true);
-          }, 100);
-        };
-        socket.onclose = () => {
-          if (!stopped)
-            retry = setTimeout(() => void connect(), Math.min(1000 * 2 ** attempts++, 15000));
-        };
-      } catch {
-        if (!stopped) retry = setTimeout(() => void connect(), 3000);
-      } finally {
-        connecting = false;
-      }
-    };
-    void connect();
-    const resume = () => {
-      if (document.visibilityState === "visible") {
-        void refresh(true);
-        if (!socket || socket.readyState === WebSocket.CLOSED) {
-          clearTimeout(retry);
-          void connect();
-        }
-      }
-    };
-    document.addEventListener("visibilitychange", resume);
-    window.addEventListener("online", resume);
     return () => {
-      stopped = true;
-      clearTimeout(retry);
-      clearTimeout(pending);
-      socket?.close();
-      document.removeEventListener("visibilitychange", resume);
-      window.removeEventListener("online", resume);
       generation.current++;
       refreshRequest.current?.abort();
       olderRequest.current?.abort();
     };
-  }, [refresh, config.apiBaseUrl, config.devUserId]);
+  }, [refresh]);
+  useHomeLive(() => {
+    void refresh(true);
+    void loadControls();
+  });
 
   const older = async () => {
     if (loadingOlder || !posts.length) return;
@@ -514,6 +469,35 @@ export function HomeScreen() {
                           {post.content.trim() ? post.content : t("home.attachmentsOnly")}
                         </p>
                       )}
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        className="mt-2"
+                        aria-label={`${t(post.liked ? "home.unlike" : "home.like")} ${post.likes ?? 0}`}
+                        aria-pressed={post.liked ?? false}
+                        disabled={pendingLike !== null}
+                        onClick={() => {
+                          if (pendingLike) return;
+                          setPendingLike(post.id);
+                          setReactionError(null);
+                          void client
+                            .request("/api/activitypub/reactions", {
+                              method: post.liked ? "DELETE" : "POST",
+                              body: { post_id: post.id },
+                            })
+                            .then(() => refresh(true))
+                            .catch(() => setReactionError(post.id))
+                            .finally(() => setPendingLike(null));
+                        }}
+                      >
+                        <HeartIcon className={post.liked ? "fill-current" : undefined} />
+                        <span>{post.likes ?? 0}</span>
+                      </Button>
+                      {reactionError === post.id ? (
+                        <p role="alert" className="text-xs text-destructive">
+                          {t("home.controlsError")}
+                        </p>
+                      ) : null}
                       {post.remote && post.url?.startsWith("https://") ? (
                         <ExternalLink className="text-xs" href={post.url}>
                           {t("home.original")}

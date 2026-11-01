@@ -65,6 +65,8 @@ pub(super) async fn receive_verified(
     let id = string(activity, "id")?;
     let mut db = state.db.clone();
     let mut tx = db.transaction().await?;
+    // Serialize relationship changes and Undo tombstones for this actor and inbox.
+    query(&mut tx,"SELECT '{}'::text FROM (SELECT pg_advisory_xact_lock(hashtextextended($1 || ':' || $2,0))) locked", &[user,actor_id]).await?;
     // The receipt and all effects commit together. Replays cannot repeat delivery or resurrect posts.
     let inserted=query(&mut tx,"INSERT INTO apub_inbox_receipts(id,actor_id,user_id) VALUES($1,$2,$3) ON CONFLICT DO NOTHING RETURNING '{}'::text",&[id,actor_id,user]).await?;
     if inserted.is_empty() {
@@ -75,26 +77,69 @@ pub(super) async fn receive_verified(
             if object_id(&activity["object"]) != Some(local.as_str()) {
                 return Err(AppError::BadRequest("Wrong follow target".into()));
             }
-            toasty::sql::statement("INSERT INTO apub_follows(user_id,actor_id,direction,activity_id,accepted) VALUES($1,$2,'incoming',$3,true) ON CONFLICT(user_id,actor_id,direction) DO UPDATE SET activity_id=EXCLUDED.activity_id,accepted=true").bind(user).bind(actor_id).bind(id).exec(&mut tx).await?;
-            let accept = json!({"@context":CONTEXT,"id":format!("{}/api/activitypub/activities/{}",base_url()?,uuid::Uuid::new_v4()),"type":"Accept","actor":local,"object":activity,"to":[actor_id]});
-            queue(&mut tx, user, actor_id, &accept).await?;
+            let undone=query(&mut tx,"SELECT '{}'::text FROM apub_undone_activities WHERE activity_id=$1 AND actor_id=$2 AND user_id=$3", &[id,actor_id,user]).await?;
+            if undone.is_empty() {
+                let relation=one(&mut tx,"INSERT INTO apub_follows(user_id,actor_id,direction,activity_id,activity_json) VALUES($1,$2,'incoming',$3,$4) ON CONFLICT(user_id,actor_id,direction) DO UPDATE SET activity_id=EXCLUDED.activity_id,activity_json=EXCLUDED.activity_json RETURNING row_to_json(apub_follows)::text", &[user,actor_id,id,&activity.to_string()]).await?;
+                if relation["accepted"] == true {
+                    let accept = json!({"@context":CONTEXT,"id":format!("{}/api/activitypub/activities/{}",base_url()?,uuid::Uuid::new_v4()),"type":"Accept","actor":local,"object":activity,"to":[actor_id]});
+                    queue(&mut tx, user, actor_id, &accept).await?;
+                } else {
+                    interactions::notify(&mut tx, user, actor_id, id, "follow_request", "").await?;
+                }
+            }
         }
         "Accept" | "Reject" => {
             let followed = object_id(&activity["object"])
                 .ok_or_else(|| AppError::BadRequest("Invalid follow response".into()))?;
+            if activity["object"].is_object()
+                && (activity["object"]["type"] != "Follow"
+                    || object_id(&activity["object"]["actor"]) != Some(local.as_str())
+                    || object_id(&activity["object"]["object"]) != Some(actor_id))
+            {
+                return Err(AppError::BadRequest("Invalid embedded Follow".into()));
+            }
             if activity["type"] == "Accept" {
-                toasty::sql::statement("UPDATE apub_follows SET accepted=true WHERE user_id=$1 AND actor_id=$2 AND direction='outgoing' AND activity_id=$3").bind(user).bind(actor_id).bind(followed).exec(&mut tx).await?;
+                let changed=query(&mut tx,"UPDATE apub_follows SET accepted=true WHERE user_id=$1 AND actor_id=$2 AND direction='outgoing' AND activity_id=$3 AND NOT accepted RETURNING '{}'::text",&[user,actor_id,followed]).await?;
+                if !changed.is_empty() {
+                    interactions::notify(&mut tx, user, actor_id, id, "follow_accepted", "")
+                        .await?;
+                }
             } else {
                 toasty::sql::statement("DELETE FROM apub_follows WHERE user_id=$1 AND actor_id=$2 AND direction='outgoing' AND activity_id=$3").bind(user).bind(actor_id).bind(followed).exec(&mut tx).await?;
             }
         }
         "Undo" => {
             let object = &activity["object"];
-            if object["type"] == "Follow"
-                && object["actor"] == actor_id
-                && object_id(&object["object"]) == Some(local.as_str())
+            let undone = object_id(object)
+                .ok_or_else(|| AppError::BadRequest("Missing Undo object".into()))?;
+            if undone.len() > 2048
+                || !same_origin(undone, actor_id)
+                || (object.is_object() && object_id(&object["actor"]) != Some(actor_id))
             {
-                toasty::sql::statement("DELETE FROM apub_follows WHERE user_id=$1 AND actor_id=$2 AND direction='incoming' AND activity_id=$3").bind(user).bind(actor_id).bind(string(object,"id")?).exec(&mut tx).await?;
+                return Err(AppError::BadRequest(
+                    "Undo actor does not own activity".into(),
+                ));
+            }
+            toasty::sql::statement("INSERT INTO apub_undone_activities(activity_id,actor_id,user_id) VALUES($1,$2,$3) ON CONFLICT DO NOTHING").bind(undone).bind(actor_id).bind(user).exec(&mut tx).await?;
+            toasty::sql::statement("DELETE FROM apub_follows WHERE user_id=$1 AND actor_id=$2 AND direction='incoming' AND activity_id=$3").bind(user).bind(actor_id).bind(undone).exec(&mut tx).await?;
+            toasty::sql::statement("DELETE FROM apub_reactions r USING home_posts p WHERE r.activity_id=$1 AND r.actor_id=$2 AND r.user_id IS NULL AND r.post_id=p.id AND p.user_id=$3").bind(undone).bind(actor_id).bind(user).exec(&mut tx).await?;
+            toasty::sql::statement("UPDATE apub_notifications SET is_read=true WHERE user_id=$1 AND actor_id=$2 AND activity_id=$3").bind(user).bind(actor_id).bind(undone).exec(&mut tx).await?;
+        }
+        "Like" => {
+            let object = object_id(&activity["object"])
+                .ok_or_else(|| AppError::BadRequest("Missing Like object".into()))?;
+            let prefix = format!("{}/api/activitypub/notes/", base_url()?);
+            let post = object
+                .strip_prefix(&prefix)
+                .filter(|id| !id.is_empty() && !id.contains(['/', '?', '#']))
+                .ok_or_else(|| AppError::BadRequest("Unknown Like target".into()))?;
+            one(&mut tx,"SELECT '{}'::text FROM home_posts p WHERE p.id=$1 AND p.user_id=$2 AND p.apub AND p.deleted_at IS NULL AND (p.visibility IN ('public','unlisted') OR EXISTS(SELECT 1 FROM apub_follows WHERE user_id=$2 AND actor_id=$3 AND direction='incoming' AND accepted))", &[post,user,actor_id]).await?;
+            let undone=query(&mut tx,"SELECT '{}'::text FROM apub_undone_activities WHERE activity_id=$1 AND actor_id=$2 AND user_id=$3", &[id,actor_id,user]).await?;
+            if undone.is_empty() {
+                let inserted=query(&mut tx,"INSERT INTO apub_reactions(post_id,actor_id,activity_id,activity_json) VALUES($1,$2,$3,$4) ON CONFLICT(post_id,actor_id) DO UPDATE SET activity_id=EXCLUDED.activity_id,activity_json=EXCLUDED.activity_json RETURNING json_build_object('inserted',xmax=0)::text", &[post,actor_id,id,&activity.to_string()]).await?;
+                if inserted.first().is_some_and(|row| row["inserted"] == true) {
+                    interactions::notify(&mut tx, user, actor_id, id, "like", post).await?;
+                }
             }
         }
         "Create" | "Update" => {
@@ -113,8 +158,10 @@ pub(super) async fn receive_verified(
                     "Actor is not followed by inbox owner".into(),
                 ));
             }
-            let to = audience(object, "to");
-            let cc = audience(object, "cc");
+            let mut to = audience(object, "to");
+            to.extend(audience(activity, "to"));
+            let mut cc = audience(object, "cc");
+            cc.extend(audience(activity, "cc"));
             let visibility = if to.contains(&PUBLIC) {
                 "public"
             } else if cc.contains(&PUBLIC) {

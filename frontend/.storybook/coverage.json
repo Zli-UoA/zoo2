@@ -117,7 +117,14 @@
         "MessageLayoutComparisonMobile",
         "Loading",
         "BodiesReadyTogether",
-        "LoadingOnScroll"
+        "LoadingOnScroll",
+        "FollowRequests",
+        "ApproveFollow",
+        "RejectFollow",
+        "FollowDecisionError",
+        "MobileFollowRequests",
+        "HomeNotificationsError",
+        "LiveFollowRequest"
       ]
     },
     {
@@ -268,7 +275,8 @@
         "MobileHome",
         "DarkHome",
         "EmptyHome",
-        "MobileEmptyHome"
+        "MobileEmptyHome",
+        "FederatedUnread"
       ]
     },
     {
@@ -448,7 +456,9 @@
         "PullToRefresh",
         "UserSearchEmpty",
         "UserSearchError",
-        "TimelineSwitch"
+        "TimelineSwitch",
+        "Like",
+        "LikeError"
       ]
     }
   ],
@@ -809,6 +819,12 @@
       "story": "src/components/home/HomeScreen.stories.tsx",
       "composed": true,
       "reason": "Composer/MobileComposerで実フォームの起動と配置を、Submit/SendError/FederationToggleで送信・下書き・公開範囲と連合の独立性を確認する。"
+    },
+    {
+      "file": "src/components/home/ActivityPubNotifications.tsx",
+      "story": "src/components/chat/NotificationsScreen.stories.tsx",
+      "composed": true,
+      "reason": "FollowRequests/ApproveFollow/RejectFollowで申請・承認・拒否といいね通知、既読化、MobileFollowRequestsでスマホ配置を確認する。"
     }
   ]
 }

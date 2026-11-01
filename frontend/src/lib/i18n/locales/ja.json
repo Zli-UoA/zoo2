@@ -634,6 +634,18 @@
       "home": "ホーム",
       "local": "ローカル",
       "social": "ソーシャル"
+    },
+    "apubNotifications": "ホームの通知",
+    "readAll": "すべて既読にする",
+    "approve": "承認",
+    "reject": "拒否",
+    "markRead": "既読にする",
+    "like": "いいね",
+    "unlike": "いいねを取り消す",
+    "notificationKinds": {
+      "follow_request": "さんからフォロー申請が届きました",
+      "follow_accepted": "さんへのフォローが承認されました",
+      "like": "さんが投稿にいいねしました"
     }
   }
 }

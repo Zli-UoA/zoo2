@@ -634,6 +634,18 @@
       "home": "首頁",
       "local": "本地",
       "social": "社交"
+    },
+    "apubNotifications": "首頁通知",
+    "readAll": "全部標為已讀",
+    "approve": "批准",
+    "reject": "拒絕",
+    "markRead": "標為已讀",
+    "like": "喜歡",
+    "unlike": "取消喜歡",
+    "notificationKinds": {
+      "follow_request": "請求追蹤你",
+      "follow_accepted": "批准了你的追蹤請求",
+      "like": "喜歡了你的貼文"
     }
   }
 }

@@ -4,6 +4,9 @@ Storybookの架空データで撮影したサンプルです。実サービス�
 
 | 画像 | 画面 | ビューポート |
 | --- | --- | --- |
+| [follow-requests-desktop.png](follow-requests-desktop.png) | フォロー申請の承認・拒否、承認といいねの通知 | 1100 × 720 |
+| [follow-requests-mobile.png](follow-requests-mobile.png) | スマホのホーム通知と承認操作 | 390 × 720 |
+| [home-like.png](home-like.png) | 投稿へのいいねと件数表示 | 1200 × 720 |
 | [home-timeline.png](home-timeline.png) | Homeと右下の投稿ボタン | 1200 × 900 |
 | [home-empty.png](home-empty.png) | 投稿0件のスマホTLと右下の投稿ボタン | 390 × 844 |
 | [timeline-social.png](timeline-social.png) | ソーシャルTLの切り替え | 1200 × 900 |
@@ -19,3 +22,5 @@ Storybookの架空データで撮影したサンプルです。実サービス�
 `Pages/Home` の `UserSearch` では、右上の人＋虫眼鏡から検索し、ユーザー詳細を表示しています。投稿フォームの下部には説明文を表示しません。
 
 TLはホーム・ローカル・ソーシャルを選択できます。投稿の操作は3点メニュー、連合設定は公開範囲と同様の選択メニューです。`MobileEmptyHome` で投稿0件時も投稿ボタンが下端に配置されることを確認しています。
+
+`Pages/Notifications` の `FollowRequests` と `Pages/Home` の `Like` を操作して追加画像を撮影しています。連合先への実配送の画像ではありません。
