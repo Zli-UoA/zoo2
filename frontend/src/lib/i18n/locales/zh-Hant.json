@@ -606,7 +606,7 @@
     "following": "已追蹤",
     "followPending": "等待接受",
     "channelRule": "本機時間軸的頻道名稱規則",
-    "ruleHint": "% 比對任意字串，_ 比對一個字元。留空停用。僅套用至儲存後的新訊息，不含私人頻道和私訊。未啟用 ActivityPub 的貼文不會傳送到外部。",
+    "ruleHint": "使用正規表示式（例如 ^public-.*$）。用 ^ 和 $ 比對完整名稱。留空停用。僅套用至新訊息，不含私人頻道和私訊。未啟用 ActivityPub 的貼文不會傳送到外部。",
     "save": "儲存",
     "controlsError": "操作或設定請求失敗，請重試。",
     "localTimeline": "本機時間軸",
@@ -665,5 +665,16 @@
     "cancelReply": "取消回覆",
     "repostedBy": "{{name}} 轉發了",
     "quickReactions": "常用反應"
+  },
+  "activitypubSettings": {
+    "description": "設定在聯邦網路中使用的顯示名稱。",
+    "displayName": "APub 顯示名稱",
+    "nameHint": "最多100個字元。留空則使用一般顯示名稱。",
+    "saved": "已儲存",
+    "loading": "載入中…",
+    "bio": "自我介紹",
+    "editProfile": "編輯個人檔案",
+    "originalProfile": "原始個人檔案",
+    "post": "貼文"
   }
 }
