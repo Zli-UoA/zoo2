@@ -185,10 +185,53 @@ apply 後にもう一度 `tofu plan` を実行し、No changes になること�
 
 ## passphrase の入れ替え
 
-1. `versions.tf` の `encryption` に旧 passphrase 用の `key_provider` / `method` を一時的に足し、`state` と `plan` に `fallback` として指定します（[Key and method rollover](https://opentofu.org/docs/language/state/encryption/#key-and-method-rollover)）。
-2. `sops edit state-passphrase.sops.yaml` で新しい値（`openssl rand -base64 48`）に書き換えます。
-3. 新旧両方の passphrase を渡して `tofu apply` し、state を新しい passphrase で書き直します。
-4. `fallback` を外し、GitHub Secrets の `TF_STATE_PASSPHRASE` を更新します。
+state には鍵のメタデータが `encrypted_metadata_alias`（初期値 `zoo2-v1`）の名前で保存されます。
+旧 passphrase の provider にも同じ alias を付けないと既存の state を読めないため、入れ替えるたびに alias の番号を 1 つ上げます。以下は `zoo2-v1` から `zoo2-v2` に入れ替える例です（[Key and method rollover](https://opentofu.org/docs/language/state/encryption/#key-and-method-rollover)）。
+
+1. 旧 passphrase を控えてから、`sops edit state-passphrase.sops.yaml` で新しい値（`openssl rand -base64 48`）に書き換えます。
+
+   ```bash
+   export TF_VAR_state_passphrase_old="$(sops decrypt --extract '["passphrase"]' state-passphrase.sops.yaml)"
+   sops edit state-passphrase.sops.yaml
+   export TF_VAR_state_passphrase="$(sops decrypt --extract '["passphrase"]' state-passphrase.sops.yaml)"
+   ```
+
+2. `versions.tf` と `variables.tf` を一時的に次のように変えます。旧 passphrase の provider は旧 alias（`zoo2-v1`）、今の provider は新しい alias（`zoo2-v2`）にします。
+
+   ```hcl
+   # variables.tf
+   variable "state_passphrase_old" {
+     type      = string
+     sensitive = true
+   }
+
+   # versions.tf の encryption
+   key_provider "pbkdf2" "old" {
+     passphrase               = var.state_passphrase_old
+     encrypted_metadata_alias = "zoo2-v1"
+   }
+   key_provider "pbkdf2" "state" {
+     passphrase               = var.state_passphrase
+     encrypted_metadata_alias = "zoo2-v2"
+   }
+   method "aes_gcm" "old" {
+     keys = key_provider.pbkdf2.old
+   }
+   # method "aes_gcm" "state" は変えない
+
+   state {
+     method   = method.aes_gcm.state
+     enforced = true
+     fallback {
+       method = method.aes_gcm.old
+     }
+   }
+   # plan も同じく fallback を足す
+   ```
+
+3. `tofu apply` を実行します。リソースに差分が無くても、state は新しい passphrase で書き直されます。
+4. `old` の provider・method、`fallback`、`state_passphrase_old` を削除し、alias を `zoo2-v2` のまま残して `tofu plan` が通ることを確かめます。
+5. `versions.tf` と `state-passphrase.sops.yaml` の変更をコミットし、GitHub Secrets の `TF_STATE_PASSPHRASE` を新しい値に更新します。
 
 ## GitHub Actions
 `.github/workflows/terraform-r2.yaml` にて以下を実行します:

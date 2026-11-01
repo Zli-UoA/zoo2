@@ -31,6 +31,8 @@ terraform {
   encryption {
     key_provider "pbkdf2" "state" {
       passphrase = var.state_passphrase
+      # state に保存する鍵メタデータの名前。passphrase を入れ替えるときに番号を上げる（README.md 参照）。
+      encrypted_metadata_alias = "zoo2-v1"
     }
 
     method "aes_gcm" "state" {
