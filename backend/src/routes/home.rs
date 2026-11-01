@@ -10,7 +10,7 @@ use axum::{
     Json, Router,
     extract::{Path, Query, State},
     http::StatusCode,
-    routing::{get, patch},
+    routing::get,
 };
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -19,6 +19,8 @@ struct Page {
     before: Option<String>,
     timeline: Option<String>,
     limit: Option<usize>,
+    post_id: Option<String>,
+    author: Option<String>,
 }
 #[derive(Deserialize)]
 struct NewPost {
@@ -46,7 +48,7 @@ pub fn router() -> Router<AppState> {
         .route("/api/home", get(list).post(create))
         .route("/api/home/live", get(super::home_live::upgrade))
         .route("/api/home/settings", get(settings).put(update_settings))
-        .route("/api/home/{id}", patch(edit).delete(delete))
+        .route("/api/home/{id}", get(detail).patch(edit).delete(delete))
 }
 fn validate_content(content: &str) -> Result<(), AppError> {
     if content.trim().is_empty() || content.chars().count() > 1000 || content.contains('\0') {
@@ -231,14 +233,14 @@ async fn list(
     let mut tx = db.transaction().await?;
     let guest = crate::apps::events::guest(&mut tx, &user.id).await?;
     let rows=query(&mut tx,r#"WITH base AS (
-      SELECT p.id,p.user_id,u.user_name,u.display_name,p.content,p.created_at,p.updated_at,p.apub,p.visibility,p.channel_id,c.channel_name,false AS remote,NULL::text AS url,p.parent_id,'[]'::jsonb AS emojis,'[]'::jsonb AS actor_emojis,(p.user_id=$1 OR p.reply_user_id=$1) AS own,true AS original_visible
-      FROM home_posts p JOIN users u ON u.id=p.user_id LEFT JOIN channels c ON c.id=p.channel_id
+      SELECT p.id,p.user_id,u.user_name,CASE WHEN p.apub THEN COALESCE(profile.display_name,u.display_name) ELSE u.display_name END AS display_name,p.content,p.created_at,p.updated_at,p.apub,p.visibility,p.channel_id,c.channel_name,false AS remote,NULL::text AS url,p.parent_id,'[]'::jsonb AS emojis,'[]'::jsonb AS actor_emojis,(p.user_id=$1 OR p.reply_user_id=$1) AS own,true AS original_visible,NULL::jsonb AS avatar
+      FROM home_posts p JOIN users u ON u.id=p.user_id LEFT JOIN apub_profiles profile ON profile.user_id=u.id LEFT JOIN channels c ON c.id=p.channel_id
       WHERE p.deleted_at IS NULL AND (p.visibility IN ('local','public') OR p.user_id=$1 OR p.reply_user_id=$1)
         AND (p.channel_id IS NULL OR NOT c.is_private AND NOT c.is_dm AND c.deleted_at IS NULL)
         AND (NOT $4::boolean OR p.user_id=$1 OR p.reply_user_id=$1 OR EXISTS(SELECT 1 FROM channel_user WHERE channel_id=p.channel_id AND user_id=$1))
       UNION ALL
       SELECT p.id,p.actor_id,a.user_name || '@' || split_part(a.id,'/',3),a.display_name,p.content,p.published,p.updated_at,true,p.visibility,NULL,NULL,true,p.id,p.parent_id,p.emojis,a.emojis,false,
-        (EXISTS(SELECT 1 FROM apub_remote_recipients WHERE post_id=p.id AND user_id=$1) AND (EXISTS(SELECT 1 FROM apub_follows WHERE user_id=$1 AND actor_id=p.actor_id AND direction='outgoing' AND accepted) OR EXISTS(SELECT 1 FROM home_posts parent WHERE parent.id=p.parent_id AND parent.user_id=$1)))
+        (EXISTS(SELECT 1 FROM apub_remote_recipients WHERE post_id=p.id AND user_id=$1) AND (EXISTS(SELECT 1 FROM apub_follows WHERE user_id=$1 AND actor_id=p.actor_id AND direction='outgoing' AND accepted) OR EXISTS(SELECT 1 FROM home_posts parent WHERE parent.id=p.parent_id AND parent.user_id=$1))),a.avatar
       FROM apub_remote_posts p JOIN apub_actors a ON a.id=p.actor_id
       WHERE p.deleted_at IS NULL AND NOT a.blocked AND (
         (EXISTS(SELECT 1 FROM apub_remote_recipients WHERE post_id=p.id AND user_id=$1) AND (EXISTS(SELECT 1 FROM apub_follows WHERE user_id=$1 AND actor_id=p.actor_id AND direction='outgoing' AND accepted) OR EXISTS(SELECT 1 FROM home_posts parent WHERE parent.id=p.parent_id AND parent.user_id=$1)))
@@ -246,11 +248,11 @@ async fn list(
       )
     ), entries AS (
       SELECT row_to_json(b)::jsonb AS post,b.id,b.id AS entry_id,b.created_at AS sort_at
-      FROM base b WHERE b.original_visible AND ($3='social' OR $3='local' AND NOT b.remote AND b.visibility IN ('public','local') OR $3='home' AND (b.remote OR b.own))
+      FROM base b WHERE (b.original_visible OR $6<>'') AND ($6<>'' OR $3='social' OR $3='local' AND NOT b.remote AND b.visibility IN ('public','local') OR $3='home' AND (b.remote OR b.own))
       UNION ALL
       SELECT row_to_json(b)::jsonb || jsonb_build_object('reposted_by',COALESCE(u.display_name::text,a.display_name),'reposter_actor',r.actor_id,'repost_created_at',r.created_at),b.id,'repost:'||r.activity_id,r.created_at
       FROM apub_reposts r JOIN base b ON b.id=r.post_id LEFT JOIN users u ON u.id=r.user_id LEFT JOIN apub_actors a ON a.id=r.actor_id
-      WHERE b.visibility IN ('public','unlisted','local') AND (r.user_id IS NOT NULL OR NOT a.blocked) AND (
+      WHERE $6='' AND b.visibility IN ('public','unlisted','local') AND (r.user_id IS NOT NULL OR NOT a.blocked) AND (
         (r.user_id=$1 AND $3 IN ('home','social'))
         OR (r.user_id IS NOT NULL AND r.visibility IN ('public','local') AND $3 IN ('local','social') AND (NOT $4::boolean OR r.user_id=$1))
         OR (r.user_id IS NULL AND $3 IN ('home','social') AND EXISTS(SELECT 1 FROM apub_repost_recipients WHERE activity_id=r.activity_id AND user_id=$1) AND EXISTS(SELECT 1 FROM apub_follows WHERE user_id=$1 AND actor_id=r.actor_id AND direction='outgoing' AND accepted))
@@ -265,12 +267,31 @@ async fn list(
       'replies',(SELECT count(*) FROM base replies WHERE replies.parent_id=f.id AND replies.original_visible),
       'reposts',(SELECT count(*) FROM apub_reposts r WHERE r.post_id=f.id AND (r.visibility IN ('public','local') OR r.user_id=$1 OR EXISTS(SELECT 1 FROM apub_repost_recipients WHERE activity_id=r.activity_id AND user_id=$1))),
       'reposted',EXISTS(SELECT 1 FROM apub_reposts WHERE post_id=f.id AND user_id=$1)
-    ))::text FROM entries f WHERE ($2='' OR (f.sort_at,f.entry_id)<(SELECT sort_at,entry_id FROM entries WHERE entry_id=$2)) ORDER BY f.sort_at DESC,f.entry_id DESC LIMIT $5::integer"#,
-    &[&user.id,page.before.as_deref().unwrap_or(""),timeline,if guest{"true"}else{"false"},&page.limit.unwrap_or(50).clamp(1,500).to_string()]).await?;
+    ))::text FROM entries f WHERE ($6='' OR f.id=$6) AND ($7='' OR f.post->>'user_id'=$7) AND ($2='' OR (f.sort_at,f.entry_id)<(SELECT sort_at,entry_id FROM entries WHERE entry_id=$2)) ORDER BY f.sort_at DESC,f.entry_id DESC LIMIT $5::integer"#,
+    &[&user.id,page.before.as_deref().unwrap_or(""),timeline,if guest{"true"}else{"false"},&page.limit.unwrap_or(50).clamp(1,500).to_string(),page.post_id.as_deref().unwrap_or(""),page.author.as_deref().unwrap_or("")]).await?;
 
     activitypub::remember_display_emojis(&mut tx, &rows).await?;
     tx.commit().await?;
     Ok(Json(rows))
+}
+async fn detail(
+    State(state): State<AppState>,
+    user: AuthUser,
+    Path(id): Path<String>,
+) -> Result<Json<Value>, AppError> {
+    let Json(rows) = list(
+        State(state),
+        user,
+        Query(Page {
+            post_id: Some(id),
+            ..Page::default()
+        }),
+    )
+    .await?;
+    rows.into_iter()
+        .next()
+        .map(Json)
+        .ok_or_else(|| AppError::NotFound("Post".into()))
 }
 async fn settings(State(state): State<AppState>, user: AuthUser) -> Result<Json<Value>, AppError> {
     let mut db = state.db.clone();
@@ -302,6 +323,17 @@ async fn update_settings(
         .await?
     {
         return Err(AppError::Forbidden("Administrator required".into()));
+    }
+    let validation = one(
+        &mut tx,
+        "SELECT json_build_object('valid',valid_ltl_channel_regex($1))::text",
+        &[&body.ltl_channel_pattern],
+    )
+    .await?;
+    if validation["valid"] != true {
+        return Err(AppError::BadRequest(
+            "Invalid channel regular expression".into(),
+        ));
     }
     let updated=one(&mut tx,"UPDATE activitypub_settings SET ltl_channel_pattern=$1 RETURNING row_to_json(activitypub_settings)::text",&[&body.ltl_channel_pattern]).await?;
     tx.commit().await?;

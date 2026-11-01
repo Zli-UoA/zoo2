@@ -101,6 +101,9 @@ export const storybookApiHandlers = [
       delivery: { pending: 0, failed: 0 },
     }),
   ),
+  http.get("*/api/activitypub/profile", () =>
+    HttpResponse.json({ display_name: "", default_display_name: "Alice", summary: "" }),
+  ),
   http.get("*/api/activitypub/follows", () => HttpResponse.json([])),
   http.get("*/api/home/settings", () =>
     HttpResponse.json({ ltl_channel_pattern: "", can_manage: false }),

@@ -364,7 +364,16 @@ export const ActivityPubPublic: Story = {
   args: { item: { ...item, message: { ...item.message, apub: true, apub_visibility: "public" } } },
   play: async ({ canvasElement }) => {
     await expect(within(canvasElement).getByRole("img", { name: "ActivityPub" })).toBeVisible();
-    await expect(within(canvasElement).getByText("パブリック", { exact: true })).toBeVisible();
+    await expect(within(canvasElement).getByRole("img", { name: "パブリック" })).toBeVisible();
+    const icon = within(canvasElement).getByRole("img", { name: "パブリック" });
+    const metadata = icon.closest("[title]")!.parentElement!;
+    const time = metadata.querySelector("time")!;
+    const center = (el: Element) => {
+      const rect = el.getBoundingClientRect();
+      return rect.y + rect.height / 2;
+    };
+    await expect(Math.abs(center(icon) - center(time))).toBeLessThanOrEqual(1);
+    await expect(metadata.textContent).not.toContain("パブリック");
   },
 };
 export const ActivityPubUnlisted: Story = {
@@ -373,7 +382,7 @@ export const ActivityPubUnlisted: Story = {
     item: { ...item, message: { ...item.message, apub: true, apub_visibility: "unlisted" } },
   },
   play: async ({ canvasElement }) => {
-    await expect(within(canvasElement).getByText("ホーム", { exact: true })).toBeVisible();
+    await expect(within(canvasElement).getByRole("img", { name: "ホーム" })).toBeVisible();
   },
 };
 export const ActivityPubGrouped: Story = {

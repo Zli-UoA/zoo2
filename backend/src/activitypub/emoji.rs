@@ -25,6 +25,24 @@ fn https(value: &str) -> bool {
             && value.len() <= 2048
     })
 }
+// Actor icons share the bounded, DNS-pinned image proxy/cache used by custom emoji.
+pub(super) fn avatar(value: &Value) -> Option<Value> {
+    let values = value
+        .as_array()
+        .map(Vec::as_slice)
+        .unwrap_or_else(|| std::slice::from_ref(value));
+    values.iter().take(8).find_map(|image| {
+        let url = image["url"].as_str()?;
+        if !https(url) {
+            return None;
+        }
+        let image_id = openssl::sha::sha256(url.as_bytes())
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect::<String>();
+        Some(json!({"url":url,"image_id":image_id}))
+    })
+}
 pub(super) fn tags(value: &Value) -> Vec<Value> {
     static NAME: std::sync::LazyLock<regex::Regex> =
         std::sync::LazyLock::new(|| regex::Regex::new(r"^:[A-Za-z0-9_+\-]{1,100}:$").unwrap());
@@ -283,4 +301,27 @@ pub(super) fn plain_content(raw: &str) -> String {
         .unwrap()
         .replace_all(&lines, "");
     html_escape::decode_html_entities(&plain).into_owned()
+}
+
+#[cfg(test)]
+mod avatar_tests {
+    use super::*;
+    #[test]
+    fn actor_icons_use_registered_https_image_ids() {
+        let icon = json!({"type":"Image","url":"https://cdn.peer.example/avatar.png"});
+        let value = avatar(&icon).unwrap();
+        assert_eq!(value["url"], icon["url"]);
+        assert_eq!(value["image_id"].as_str().unwrap().len(), 64);
+        assert_eq!(avatar(&json!([icon])), Some(value));
+        for url in [
+            "http://peer.example/icon.png",
+            "data:image/png;base64,eA==",
+            "javascript:alert(1)",
+            "https://user:password@peer.example/icon.png",
+            "https://peer.example:8443/icon.png",
+        ] {
+            assert!(avatar(&json!({"url":url})).is_none());
+        }
+        assert!(avatar(&Value::Null).is_none());
+    }
 }

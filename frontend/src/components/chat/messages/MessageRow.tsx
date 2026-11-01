@@ -310,7 +310,7 @@ export function MessageRow({
 
         <div className="min-w-0 flex-1">
           {item.isGroupStart || message.apub ? (
-            <div className="flex flex-wrap items-baseline gap-2">
+            <div className="flex flex-wrap items-center gap-2">
               {item.isGroupStart ? <AuthorIdentity message={message} /> : null}
               <time
                 className="shrink-0 text-[11px] text-muted-foreground tabular-nums"

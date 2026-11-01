@@ -28,6 +28,7 @@ struct FollowRequest {
 pub fn router() -> Router<AppState> {
     Router::new()
         .merge(interactions::router())
+        .merge(profile::router())
         .merge(emoji::router())
         .merge(reposts::router())
         .route("/.well-known/webfinger", get(webfinger))
@@ -48,10 +49,10 @@ pub fn router() -> Router<AppState> {
         .route("/api/activitypub/status", get(status))
         .route("/api/activitypub/search", get(search))
 }
-async fn local_user(state: &AppState, id: &str) -> Result<Value, AppError> {
+pub(super) async fn local_user(state: &AppState, id: &str) -> Result<Value, AppError> {
     let mut db = state.db.clone();
     let mut tx = db.transaction().await?;
-    one(&mut tx,"SELECT json_build_object('id',id,'user_name',user_name,'display_name',display_name)::text FROM users WHERE id=$1 AND NOT is_bot",&[id]).await
+    one(&mut tx,"SELECT json_build_object('id',u.id,'user_name',u.user_name,'display_name',COALESCE(p.display_name,u.display_name),'summary',COALESCE(p.summary,''))::text FROM users u LEFT JOIN apub_profiles p ON p.user_id=u.id WHERE u.id=$1 AND NOT u.is_bot",&[id]).await
 }
 async fn actor(
     State(state): State<AppState>,
@@ -61,10 +62,12 @@ async fn actor(
     let user = local_user(&state, &id).await?;
     let key = keys(&state, &id).await?;
     let actor = actor_id(&id)?;
-    Ok(response(
-        json!({"@context":[CONTEXT,"https://w3id.org/security/v1",{"manuallyApprovesFollowers":"as:manuallyApprovesFollowers"}],"type":"Person","id":actor,"preferredUsername":user["user_name"],"name":user["display_name"],"inbox":format!("{actor}/inbox"),"outbox":format!("{actor}/outbox"),"followers":format!("{actor}/followers"),"following":format!("{actor}/following"),"manuallyApprovesFollowers":true,"publicKey":{"id":format!("{actor}#main-key"),"owner":actor,"publicKeyPem":key["public_key"]}}),
-    ))
+    Ok(response(actor_value(&user, &key, &actor)))
 }
+pub(super) fn actor_value(user: &Value, key: &Value, actor: &str) -> Value {
+    json!({"@context":[CONTEXT,"https://w3id.org/security/v1",{"manuallyApprovesFollowers":"as:manuallyApprovesFollowers"}],"type":"Person","id":actor,"preferredUsername":user["user_name"],"name":user["display_name"],"summary":html_escape::encode_safe(user["summary"].as_str().unwrap_or("")),"inbox":format!("{actor}/inbox"),"outbox":format!("{actor}/outbox"),"followers":format!("{actor}/followers"),"following":format!("{actor}/following"),"manuallyApprovesFollowers":true,"publicKey":{"id":format!("{actor}#main-key"),"owner":actor,"publicKeyPem":key["public_key"]}})
+}
+
 async fn webfinger(
     State(state): State<AppState>,
     Query(q): Query<Resource>,
@@ -253,12 +256,12 @@ async fn search(
         keys(&state, &user.id).await?;
         let remote = resolve(&state, &user.id, term).await?;
         return Ok(Json(vec![
-            json!({"id":remote["id"],"user_name":remote["user_name"],"display_name":remote["display_name"],"emojis":remote["emojis"],"remote":true,"url":remote["id"]}),
+            json!({"id":remote["id"],"user_name":remote["user_name"],"display_name":remote["display_name"],"emojis":remote["emojis"],"avatar":remote["avatar"],"remote":true,"url":remote["id"]}),
         ]));
     }
     let mut db = state.db.clone();
     let mut tx = db.transaction().await?;
-    let rows = query(&mut tx, "SELECT json_build_object('id',id,'user_name',user_name,'display_name',display_name,'created_at',created_at,'remote',false)::text FROM users WHERE NOT is_bot AND (strpos(lower(user_name),lower($1))>0 OR strpos(lower(display_name),lower($1))>0) ORDER BY user_name LIMIT 30", &[term.trim_start_matches('@')]).await?;
+    let rows = query(&mut tx, "SELECT json_build_object('id',u.id,'user_name',u.user_name,'display_name',COALESCE(p.display_name,u.display_name),'created_at',u.created_at,'remote',false)::text FROM users u LEFT JOIN apub_profiles p ON p.user_id=u.id WHERE NOT u.is_bot AND (strpos(lower(u.user_name),lower($1))>0 OR strpos(lower(COALESCE(p.display_name,u.display_name)),lower($1))>0) ORDER BY u.user_name LIMIT 30", &[term.trim_start_matches('@')]).await?;
     Ok(Json(rows))
 }
 

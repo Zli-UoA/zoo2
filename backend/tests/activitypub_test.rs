@@ -315,7 +315,7 @@ async fn channel_crossposting_visibility_and_ltl() -> anyhow::Result<()> {
         StatusCode::BAD_REQUEST
     );
     // Pattern streams new public root messages locally, without enabling federation.
-    toasty::sql::statement("UPDATE activitypub_settings SET ltl_channel_pattern='ltl-%'")
+    toasty::sql::statement("UPDATE activitypub_settings SET ltl_channel_pattern='^ltl-.*$'")
         .exec(&mut db)
         .await?;
     let message = uuid::Uuid::new_v4().to_string();
@@ -2029,5 +2029,251 @@ async fn timeline_sort_keys_preserve_microseconds_inside_a_single_millisecond() 
     assert_eq!(posts[1]["id"], older);
     assert_eq!(posts[1]["sort_key"], "1767225600000001");
     finish_protocol(&mut f).await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn apub_profile_is_independent_updates_followers_and_detail_respects_audience()
+-> anyhow::Result<()> {
+    let _serial = PROTOCOL_SERIAL.lock().await;
+    let mut cfg = Config::from_env();
+    cfg.dev_auth_enabled = true;
+    let mut db = init_db(&cfg.database_url).await?;
+    let app = create_router(AppState::new(db.clone(), cfg.clone()));
+    let alice = uuid::Uuid::new_v4().to_string();
+    let bob = uuid::Uuid::new_v4().to_string();
+    for id in [&alice, &bob] {
+        toasty::sql::statement(
+            "INSERT INTO users(id,user_name,display_name) VALUES($1,$1,'Chat name')",
+        )
+        .bind(id.as_str())
+        .exec(&mut db)
+        .await?;
+    }
+    let remote = format!("https://peer.example/users/{alice}");
+    toasty::sql::statement("INSERT INTO apub_actors(id,inbox,followers_url,user_name,display_name,key_id,public_key,avatar,summary) VALUES($1,$1,$1,'peer','Peer',$1,'test',$2::jsonb,'Remote bio')")
+        .bind(remote.as_str()).bind(json!({"image_id":"b".repeat(64),"url":"https://cdn.peer.example/avatar.png"}).to_string()).exec(&mut db).await?;
+    toasty::sql::statement("INSERT INTO apub_follows(user_id,actor_id,direction,accepted,activity_id) VALUES($1,$2,'incoming',true,$3)").bind(alice.as_str()).bind(remote.as_str()).bind(uuid::Uuid::new_v4().to_string()).exec(&mut db).await?;
+    toasty::sql::statement("INSERT INTO user_role(user_id,role_id) VALUES($1,'role_admin')")
+        .bind(alice.as_str())
+        .exec(&mut db)
+        .await?;
+    let pattern = "^(public|ltl)-[a-z]+$";
+    assert_eq!(
+        request(
+            &app,
+            "PUT",
+            Some(&alice),
+            "/api/home/settings",
+            Some(json!({"ltl_channel_pattern":pattern}))
+        )
+        .await?
+        .0,
+        StatusCode::OK
+    );
+    assert_eq!(
+        request(
+            &app,
+            "PUT",
+            Some(&alice),
+            "/api/home/settings",
+            Some(json!({"ltl_channel_pattern":"["}))
+        )
+        .await?
+        .0,
+        StatusCode::BAD_REQUEST
+    );
+    let setting = request(&app, "GET", Some(&alice), "/api/home/settings", None)
+        .await?
+        .1;
+    assert_eq!(setting["ltl_channel_pattern"], pattern);
+    let matches=value(&mut db,"SELECT json_build_object('yes',channel_matches_ltl('public-news',$1),'no',channel_matches_ltl('private-news',$1),'literal',channel_matches_ltl('public-news','public-%'),'invalid',channel_matches_ltl('public-news','['),'disabled',channel_matches_ltl('public-news',''))::text",&[pattern]).await?;
+    assert_eq!(
+        matches,
+        json!({"yes":true,"no":false,"literal":false,"invalid":false,"disabled":false})
+    );
+    toasty::sql::statement("UPDATE activitypub_settings SET ltl_channel_pattern=''")
+        .exec(&mut db)
+        .await?;
+    let path = "/api/activitypub/profile";
+    assert_eq!(
+        request(&app, "GET", Some(&alice), path, None).await?.1["display_name"],
+        ""
+    );
+    let (status,profile) = request(&app,"PUT",Some(&alice),path,Some(json!({"display_name":"  Federation name  ","summary":"Bio <safe>\nnext line","user_id":bob}))).await?;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(profile["display_name"], "Federation name");
+    assert_eq!(
+        request(&app, "GET", Some(&bob), path, None).await?.1["display_name"],
+        ""
+    );
+    assert_eq!(
+        value(
+            &mut db,
+            "SELECT json_build_object('name',display_name)::text FROM users WHERE id=$1",
+            &[&alice]
+        )
+        .await?["name"],
+        "Chat name"
+    );
+    let actor = request(
+        &app,
+        "GET",
+        None,
+        &format!("/api/activitypub/users/{alice}"),
+        None,
+    )
+    .await?
+    .1;
+    assert_eq!(actor["name"], "Federation name");
+    assert_eq!(actor["preferredUsername"], alice);
+    assert_eq!(actor["summary"], "Bio &lt;safe&gt;\nnext line");
+    let delivery = value(&mut db,"SELECT payload::jsonb::text FROM apub_deliveries WHERE user_id=$1 AND actor_id=$2 ORDER BY created_at DESC LIMIT 1",&[&alice,&remote]).await?;
+    assert_eq!(delivery["type"], "Update");
+    assert_eq!(delivery["object"]["name"], "Federation name");
+    assert_eq!(delivery["object"]["id"], actor["id"]);
+    assert_eq!(delivery["object"]["publicKey"], actor["publicKey"]);
+    assert_eq!(
+        delivery["to"][0],
+        format!("{}/followers", actor["id"].as_str().unwrap())
+    );
+    let (_, post) = request(
+        &app,
+        "POST",
+        Some(&alice),
+        "/api/home",
+        Some(json!({"content":"Profile test","apub":true,"visibility":"public"})),
+    )
+    .await?;
+    let id = post["id"].as_str().unwrap();
+    let detail = request(&app, "GET", Some(&bob), &format!("/api/home/{id}"), None).await?;
+    assert_eq!(detail.0, StatusCode::OK);
+    assert_eq!(detail.1["display_name"], "Federation name");
+    let own = request(
+        &app,
+        "GET",
+        Some(&alice),
+        &format!("/api/home?timeline=social&author={alice}"),
+        None,
+    )
+    .await?
+    .1;
+    assert!(
+        own.as_array()
+            .unwrap()
+            .iter()
+            .all(|p| p["user_id"] == alice)
+    );
+    let (_, private) = request(
+        &app,
+        "POST",
+        Some(&alice),
+        "/api/home",
+        Some(json!({"content":"private","apub":true,"visibility":"followers"})),
+    )
+    .await?;
+    let private_id = private["id"].as_str().unwrap();
+    assert_eq!(
+        request(
+            &app,
+            "GET",
+            Some(&bob),
+            &format!("/api/home/{private_id}"),
+            None
+        )
+        .await?
+        .0,
+        StatusCode::NOT_FOUND
+    );
+    assert_eq!(
+        request(
+            &app,
+            "GET",
+            Some(&alice),
+            &format!("/api/home/{private_id}"),
+            None
+        )
+        .await?
+        .0,
+        StatusCode::OK
+    );
+    let account = request(
+        &app,
+        "GET",
+        Some(&alice),
+        &format!(
+            "/api/activitypub/accounts?actor={}",
+            percent_encoding::utf8_percent_encode(&remote, percent_encoding::NON_ALPHANUMERIC)
+        ),
+        None,
+    )
+    .await?
+    .1;
+    assert_eq!(account["avatar"]["image_id"], "b".repeat(64));
+    assert_eq!(account["summary"], "Remote bio");
+    for body in [
+        json!({"display_name":"a".repeat(101)}),
+        json!({"display_name":"bad\nname"}),
+        json!({"display_name":"ok","summary":"a".repeat(1001)}),
+    ] {
+        assert_eq!(
+            request(&app, "PUT", Some(&alice), path, Some(body))
+                .await?
+                .0,
+            StatusCode::BAD_REQUEST
+        );
+    }
+    request(
+        &app,
+        "PUT",
+        Some(&alice),
+        path,
+        Some(json!({"display_name":"","summary":""})),
+    )
+    .await?;
+    assert_eq!(
+        request(
+            &app,
+            "GET",
+            None,
+            &format!("/api/activitypub/users/{alice}"),
+            None
+        )
+        .await?
+        .1["name"],
+        "Chat name"
+    );
+    cfg.dev_auth_enabled = false;
+    let protected = create_router(AppState::new(db.clone(), cfg));
+    assert_eq!(
+        request(
+            &protected,
+            "PUT",
+            None,
+            path,
+            Some(json!({"display_name":"intruder"}))
+        )
+        .await?
+        .0,
+        StatusCode::UNAUTHORIZED
+    );
+    toasty::sql::statement("DELETE FROM user_role WHERE user_id=$1")
+        .bind(alice.as_str())
+        .exec(&mut db)
+        .await?;
+    for id in [&alice, &bob] {
+        toasty::sql::statement("DELETE FROM home_posts WHERE user_id=$1")
+            .bind(id.as_str())
+            .exec(&mut db)
+            .await?;
+        toasty::sql::statement("DELETE FROM users WHERE id=$1")
+            .bind(id.as_str())
+            .exec(&mut db)
+            .await?;
+    }
+    toasty::sql::statement("DELETE FROM apub_actors WHERE id=$1")
+        .bind(remote.as_str())
+        .exec(&mut db)
+        .await?;
     Ok(())
 }
