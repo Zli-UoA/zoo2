@@ -228,7 +228,7 @@ export const Federated: Story = {
     await canvas.findByText("外部のフォロー先から届いた投稿です。");
     await expect(canvas.queryByRole("img", { name: "ActivityPub" })).not.toBeInTheDocument();
     const channel = canvas.getByRole("link", { name: "#general" });
-    await expect(channel.previousElementSibling?.tagName).toBe("TIME");
+    await expect(channel.previousElementSibling?.querySelector("time")?.tagName).toBe("TIME");
     await expect(canvas.getAllByRole("link", { name: "#general" })).toHaveLength(1);
   },
 };
@@ -294,7 +294,7 @@ export const CrossPost: Story = {
     await expect(canvas.queryByRole("img", { name: "ActivityPub" })).not.toBeInTheDocument();
     await expect(canvas.getByRole("link", { name: "#general" })).toBeVisible();
     const channel = canvas.getByRole("link", { name: "#general" });
-    await expect(channel.previousElementSibling?.tagName).toBe("TIME");
+    await expect(channel.previousElementSibling?.querySelector("time")?.tagName).toBe("TIME");
   },
 };
 export const FollowersOnly: Story = {
@@ -710,7 +710,12 @@ export const PullToRefresh: Story = {
     await fireEvent.touchMove(root, {
       touches: [new Touch({ identifier: 1, target: root, clientY: 180 })],
     });
-    await expect(await canvas.findByText("離して更新")).toBeVisible();
+    const indicator = await canvas.findByText("離して更新");
+    await expect(indicator).toBeVisible();
+    const tabs = canvas.getByRole("button", { name: "ソーシャル" }).parentElement!;
+    await expect(indicator.getBoundingClientRect().top).toBeGreaterThanOrEqual(
+      tabs.getBoundingClientRect().bottom,
+    );
     pullRefreshed = true;
     await fireEvent.touchEnd(root, { touches: [] });
     await expect(await canvas.findByText("引っ張って最新の投稿を取得しました")).toBeVisible();
@@ -1151,5 +1156,126 @@ export const LiveWhileLoadingOlder: Story = {
     await expect(await canvas.findByText(oldLivePost.content)).toBeInTheDocument();
     await waitFor(() => expect(retainedReloads).toBeGreaterThan(0));
     await expect(canvas.getByText(oldLivePost.content)).toBeInTheDocument();
+  },
+};
+
+const avatarPost = {
+  ...misskeyPost,
+  display_name: "Remote Alice",
+  avatar: { image_id: "c".repeat(64) },
+};
+export const RemoteAvatar: Story = {
+  parameters: {
+    msw: { handlers: [http.get("*/api/home", () => HttpResponse.json([avatarPost]))] },
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const avatar = await canvas.findByRole("img", { name: "Remote Alice" });
+    await waitFor(() => expect(avatar.querySelector("img")?.naturalWidth).toBeGreaterThan(0));
+    const image = avatar.querySelector("img")!;
+    await expect(image.getAttribute("src")).toContain("/api/activitypub/emoji-images/");
+    const row = canvas.getByRole("article");
+    const links = within(row).getAllByRole("link");
+    await expect(links.some((link) => link.getAttribute("href")?.includes("/home/users/"))).toBe(
+      true,
+    );
+    const time = row.querySelector("time")!;
+    await expect(time.closest("a")?.getAttribute("href")).toContain("/home/posts/");
+  },
+};
+export const RemoteAvatarFallback: Story = {
+  parameters: {
+    msw: {
+      handlers: [
+        http.get("*/api/home", () =>
+          HttpResponse.json([{ ...avatarPost, avatar: { image_id: "d".repeat(64) } }]),
+        ),
+        http.get(
+          "*/api/activitypub/emoji-images/:id",
+          () => new HttpResponse(null, { status: 404 }),
+        ),
+      ],
+    },
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expect(await canvas.findByText("RA", { exact: true })).toBeVisible();
+    await expect(canvas.getByRole("img", { name: "Remote Alice" }).querySelector("img")).toBeNull();
+  },
+};
+export const SinglePost: Story = {
+  args: { postId: posts[0].id },
+  parameters: {
+    msw: { handlers: [http.get("*/api/home/:id", () => HttpResponse.json(posts[0]))] },
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expect(await canvas.findByText(/Homeから最初の公開投稿です/)).toBeVisible();
+    await expect(canvas.getAllByRole("article")).toHaveLength(1);
+    await expect(canvas.queryByRole("button", { name: "ローカル" })).not.toBeInTheDocument();
+  },
+};
+export const SinglePostMissing: Story = {
+  args: { postId: "missing" },
+  parameters: {
+    msw: { handlers: [http.get("*/api/home/:id", () => new HttpResponse(null, { status: 404 }))] },
+  },
+  play: async ({ canvasElement }) => {
+    await expect(await within(canvasElement).findByRole("alert")).toBeVisible();
+    await expect(within(canvasElement).queryByRole("article")).not.toBeInTheDocument();
+  },
+};
+let profileFollowing: boolean | null = null;
+export const UserProfile: Story = {
+  args: { actorId: avatarPost.user_id },
+  beforeEach: () => {
+    profileFollowing = null;
+  },
+  parameters: {
+    msw: {
+      handlers: [
+        http.get("*/api/home", () => HttpResponse.json([avatarPost])),
+        http.get("*/api/activitypub/accounts", () =>
+          HttpResponse.json({
+            id: avatarPost.user_id,
+            user_name: "alice",
+            display_name: avatarPost.display_name,
+            avatar: avatarPost.avatar,
+            summary: "リモートユーザーの自己紹介です",
+            remote: true,
+            url: avatarPost.user_id,
+            following: profileFollowing,
+          }),
+        ),
+        http.post("*/api/activitypub/follows", () => {
+          profileFollowing = false;
+          return HttpResponse.json({ ok: true });
+        }),
+      ],
+    },
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expect(await canvas.findByText("リモートユーザーの自己紹介です")).toBeVisible();
+    await userEvent.click(canvas.getByRole("button", { name: "フォロー" }));
+    await expect(await canvas.findByText("承認待ち", { exact: true })).toBeVisible();
+  },
+};
+export const MobileUserProfile: Story = {
+  ...UserProfile,
+  globals: { viewport: { value: "mobile" } },
+};
+export const UserProfileError: Story = {
+  args: { actorId: "missing" },
+  parameters: {
+    msw: {
+      handlers: [
+        http.get("*/api/home", () => HttpResponse.json([])),
+        http.get("*/api/activitypub/accounts", () => new HttpResponse(null, { status: 404 })),
+      ],
+    },
+  },
+  play: async ({ canvasElement }) => {
+    await expect(await within(canvasElement).findByRole("alert")).toBeVisible();
   },
 };

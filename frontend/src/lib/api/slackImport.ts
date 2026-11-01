@@ -37,6 +37,8 @@ export interface SlackImport {
   total_files: number;
   processed_files: number;
   pending_files: number;
+  /** 取得に 3 回失敗した添付。「添付ファイルを取得」で再取得できる */
+  failed_files: number;
   error: string | null;
   created_at: string;
   finished_at: string | null;
@@ -145,6 +147,11 @@ export async function uploadSlackExport(
     signal,
   );
   return client.request<SlackImport>(`${BASE}/${created.import.id}/uploaded`, { method: "POST" });
+}
+
+/** 「添付ファイルを取得」でやり直せる件数 */
+export function retryableFiles(job: SlackImport): number {
+  return job.status === "completed" ? job.pending_files + job.failed_files : 0;
 }
 
 /** 解析結果から、初期状態の対応付けを作る */

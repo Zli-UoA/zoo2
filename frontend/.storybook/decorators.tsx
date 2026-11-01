@@ -70,6 +70,8 @@ export function StoryRouter({
     return createRouter({
       routeTree: rootRoute.addChildren([
         homeRoute,
+        createRoute({ getParentRoute: () => rootRoute, path: "home/posts/$postId" }),
+        createRoute({ getParentRoute: () => rootRoute, path: "home/users/$actorId" }),
         channelRoute,
         settingsRoute,
         notificationsRoute,

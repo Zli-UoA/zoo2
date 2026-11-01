@@ -514,6 +514,10 @@ async fn import(s: &AppState, job: &Job, lease: &Lease) -> Result<(), AppError> 
             let Some(channel) = slack_channels.get(&mapping.slack_channel_id) else {
                 continue;
             };
+            // 開始後に別のジョブが同じチャンネルを取り込んだ場合も、取り込み先はずらさない
+            super::import::ensure_same_target(&mut tx, &team, mapping)
+                .await
+                .map_err(|e| AppError::BadRequest(e.to_string()))?;
             let target = match &mapping.action {
                 MappingAction::Skip => continue,
                 MappingAction::Create { name, is_private } => {
@@ -883,7 +887,7 @@ async fn fetch_files(s: &AppState, job: &Job, lease: &Lease) -> Result<(), AppEr
                 "SELECT json_build_object('team_id',team_id,'slack_file_id',slack_file_id,\
                  'message_id',message_id,'channel_id',channel_id,'uploader_id',uploader_id,'name',name,\
                  'mimetype',mimetype,'size',size,'url',url_private_download,'attempts',attempts)::text \
-                 FROM slack_files WHERE job_id=$1 AND status='pending' ORDER BY created_at,slack_file_id LIMIT 20",
+                 FROM slack_files WHERE job_id=$1 AND status='pending' ORDER BY created_at,slack_file_id,message_id LIMIT 20",
                 &[&job.id],
             )
             .await?;
@@ -909,8 +913,15 @@ async fn fetch_files(s: &AppState, job: &Job, lease: &Lease) -> Result<(), AppEr
                     &mut tx,
                     "UPDATE slack_files SET status=$3,attachment_id=NULLIF($4,''),error=NULLIF($5,''),\
                      attempts=attempts+CASE WHEN $3 IN ('pending','failed') THEN 1 ELSE 0 END,updated_at=now() \
-                     WHERE team_id=$1 AND slack_file_id=$2",
-                    &[&file.team_id, &file.slack_file_id, status, &attachment, &error],
+                     WHERE team_id=$1 AND slack_file_id=$2 AND message_id=$6",
+                    &[
+                        &file.team_id,
+                        &file.slack_file_id,
+                        status,
+                        &attachment,
+                        &error,
+                        &file.message_id,
+                    ],
                 )
                 .await?;
                 exec(
@@ -991,7 +1002,11 @@ async fn fetch_one(
         return Ok(FileOutcome::Skipped(format!("File exceeds {max} bytes")));
     }
 
-    let attachment = super::attachment_id(&file.team_id, &file.slack_file_id);
+    // 同じファイルを共有するメッセージごとに添付を作る
+    let attachment = super::attachment_id(
+        &file.team_id,
+        &format!("{}:{}", file.slack_file_id, file.message_id),
+    );
     let key = format!("attachments/{}/{attachment}", file.channel_id);
     let size = bytes.len();
     s.s3_client

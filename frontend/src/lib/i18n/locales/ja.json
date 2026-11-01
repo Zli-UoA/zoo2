@@ -606,7 +606,7 @@
     "following": "フォロー中",
     "followPending": "承認待ち",
     "channelRule": "LTLに流すチャンネル名のルール",
-    "ruleHint": "% は任意の文字列、_ は任意の1文字。空欄で無効。変更後の新規メッセージから適用し、非公開・DMは除外します。Apubを有効にしない投稿は外部へ配送しません。",
+    "ruleHint": "正規表現で指定（例: ^public-.*$）。部分一致のため、名前全体を指定する場合は ^ と $ を使います。空欄で無効。変更後の新規メッセージから適用し、非公開・DMは除外します。Apubを有効にしない投稿は外部へ配送しません。",
     "save": "保存",
     "controlsError": "操作または設定の取得に失敗しました。もう一度お試しください。",
     "localTimeline": "ローカルタイムライン",
@@ -666,6 +666,17 @@
     "repostedBy": "{{name}}さんがリポスト",
     "quickReactions": "よく使うリアクション"
   },
+  "activitypubSettings": {
+    "description": "連合先で使う表示名を設定します。",
+    "displayName": "APub表示名",
+    "nameHint": "100文字以内。空欄にすると通常の表示名を使用します。",
+    "saved": "保存しました",
+    "loading": "読み込み中…",
+    "bio": "自己紹介",
+    "editProfile": "プロフィールを編集",
+    "originalProfile": "元のプロフィール",
+    "post": "投稿"
+  },
   "slackImport": {
     "tab": "Slack 取り込み",
     "title": "Slack から取り込む",
@@ -690,7 +701,10 @@
     "completed_other": "{{count}} 件のメッセージを取り込みました。",
     "pendingFiles_one": "{{count}} 件の添付ファイルが未取得です。取得用のトークンを設定してから取得してください。",
     "pendingFiles_other": "{{count}} 件の添付ファイルが未取得です。取得用のトークンを設定してから取得してください。",
+    "failedFiles_one": "{{count}} 件の添付ファイルを取得できませんでした。トークンの権限を確かめてから取得し直してください。",
+    "failedFiles_other": "{{count}} 件の添付ファイルを取得できませんでした。トークンの権限を確かめてから取得し直してください。",
     "fetchFiles": "添付ファイルを取得",
+    "fetchFilesFor": "{{name}} の添付ファイルを取得",
     "cancel": "取り消す",
     "cancelTitle": "取り込みを取り消しますか？",
     "cancelDescription": "アップロードした ZIP を削除します。取り込み済みのメッセージは残ります。",

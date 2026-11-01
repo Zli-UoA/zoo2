@@ -606,7 +606,7 @@
     "following": "已关注",
     "followPending": "等待接受",
     "channelRule": "本地时间线的频道名称规则",
-    "ruleHint": "% 匹配任意字符串，_ 匹配一个字符。留空禁用。仅应用于保存后的新消息，不包含私密频道和私信。未启用 ActivityPub 的帖子不会发送到外部。",
+    "ruleHint": "使用正则表达式（例如 ^public-.*$）。用 ^ 和 $ 匹配完整名称。留空禁用。仅应用于新消息，不包含私密频道和私信。未启用 ActivityPub 的帖子不会发送到外部。",
     "save": "保存",
     "controlsError": "操作或设置请求失败，请重试。",
     "localTimeline": "本地时间线",
@@ -666,6 +666,17 @@
     "repostedBy": "{{name}} 转发了",
     "quickReactions": "常用回应"
   },
+  "activitypubSettings": {
+    "description": "设置在联合网络中使用的显示名称。",
+    "displayName": "APub 显示名称",
+    "nameHint": "最多100个字符。留空则使用常规显示名称。",
+    "saved": "已保存",
+    "loading": "正在加载…",
+    "bio": "个人简介",
+    "editProfile": "编辑个人资料",
+    "originalProfile": "原始个人资料",
+    "post": "帖子"
+  },
   "slackImport": {
     "tab": "Slack 导入",
     "title": "从 Slack 导入",
@@ -690,7 +701,10 @@
     "completed_other": "已导入 {{count}} 条消息。",
     "pendingFiles_one": "还有 {{count}} 个附件未获取。请先设置获取用的令牌再获取。",
     "pendingFiles_other": "还有 {{count}} 个附件未获取。请先设置获取用的令牌再获取。",
+    "failedFiles_one": "有 {{count}} 个附件无法获取。请确认令牌的权限后重新获取。",
+    "failedFiles_other": "有 {{count}} 个附件无法获取。请确认令牌的权限后重新获取。",
     "fetchFiles": "获取附件",
+    "fetchFilesFor": "获取 {{name}} 的附件",
     "cancel": "取消导入",
     "cancelTitle": "要取消这次导入吗？",
     "cancelDescription": "将删除已上传的 ZIP。已导入的消息会保留。",

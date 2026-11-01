@@ -606,7 +606,7 @@
     "following": "Following",
     "followPending": "Awaiting acceptance",
     "channelRule": "Channel name rule for the local timeline",
-    "ruleHint": "% matches any string; _ matches one character. Leave empty to disable. Applies to new messages after saving; excludes private channels and DMs. Posts without ActivityPub enabled are never federated.",
+    "ruleHint": "Use a regular expression (e.g. ^public-.*$). Use ^ and $ to match the whole name. Leave empty to disable. Applies to new messages only; excludes private channels and DMs. Posts without ActivityPub enabled are never federated.",
     "save": "Save",
     "controlsError": "The operation or settings request failed. Please try again.",
     "localTimeline": "Local timeline",
@@ -666,6 +666,17 @@
     "repostedBy": "Reposted by {{name}}",
     "quickReactions": "Quick reactions"
   },
+  "activitypubSettings": {
+    "description": "Choose your display name for federation.",
+    "displayName": "APub display name",
+    "nameHint": "Up to 100 characters. Leave blank to use your regular display name.",
+    "saved": "Saved",
+    "loading": "Loading…",
+    "bio": "Bio",
+    "editProfile": "Edit profile",
+    "originalProfile": "Original profile",
+    "post": "Post"
+  },
   "slackImport": {
     "tab": "Slack import",
     "title": "Import from Slack",
@@ -690,7 +701,10 @@
     "completed_other": "Imported {{count}} messages.",
     "pendingFiles_one": "{{count}} attachment has not been fetched. Configure the fetch token, then fetch it.",
     "pendingFiles_other": "{{count}} attachments have not been fetched. Configure the fetch token, then fetch them.",
+    "failedFiles_one": "{{count}} attachment couldn't be fetched. Check the token's permissions, then fetch again.",
+    "failedFiles_other": "{{count}} attachments couldn't be fetched. Check the token's permissions, then fetch again.",
     "fetchFiles": "Fetch attachments",
+    "fetchFilesFor": "Fetch attachments for {{name}}",
     "cancel": "Cancel import",
     "cancelTitle": "Cancel this import?",
     "cancelDescription": "The uploaded ZIP will be deleted. Messages that were already imported stay.",

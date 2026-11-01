@@ -312,6 +312,7 @@
         "Analyzing",
         "Importing",
         "CompletedWithPendingFiles",
+        "HistoryWithFailedFiles",
         "Failed",
         "Mobile"
       ]
@@ -341,6 +342,11 @@
         "GeneralMobile",
         "ChannelRule",
         "ChannelRuleError",
+        "ActivityPub",
+        "ActivityPubMobile",
+        "ActivityPubLoading",
+        "ActivityPubError",
+        "ActivityPubSaveError",
         "SlackImport"
       ]
     },
@@ -498,7 +504,14 @@
         "MisskeyReact",
         "MobileMisskey",
         "EmojiFallback",
-        "LiveWhileLoadingOlder"
+        "LiveWhileLoadingOlder",
+        "RemoteAvatar",
+        "RemoteAvatarFallback",
+        "SinglePost",
+        "SinglePostMissing",
+        "UserProfile",
+        "MobileUserProfile",
+        "UserProfileError"
       ]
     }
   ],
@@ -885,6 +898,18 @@
       "story": "src/components/home/HomeScreen.stories.tsx",
       "composed": true,
       "reason": "LikeとMisskeyReactでUnicode・Misskeyカタログからの選択と取り消しを実フォームで確認する。"
+    },
+    {
+      "file": "src/components/home/ActivityPubAvatar.tsx",
+      "story": "src/components/home/HomeScreen.stories.tsx",
+      "composed": true,
+      "reason": "RemoteAvatar/RemoteAvatarFallbackで安全なプロキシ画像と画像欠損時の頭文字を確認する。"
+    },
+    {
+      "file": "src/components/home/ActivityPubProfile.tsx",
+      "story": "src/components/home/HomeScreen.stories.tsx",
+      "composed": true,
+      "reason": "UserProfile/MobileUserProfile/UserProfileErrorでユーザー情報とフォロー申請・取得失敗を確認する。"
     }
   ]
 }

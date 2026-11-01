@@ -159,6 +159,24 @@ async fn test_slack_export_import_flow() -> anyhow::Result<()> {
         )
         .mount(&files)
         .await;
+    // F3 は 3 回失敗してから取得できるようになる (トークンの権限を直した想定)
+    Mock::given(method("GET"))
+        .and(path("/files/F3/broken.txt"))
+        .respond_with(ResponseTemplate::new(403))
+        .up_to_n_times(3)
+        .with_priority(1)
+        .mount(&files)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/files/F3/broken.txt"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("content-type", "text/plain")
+                .set_body_bytes(b"fixed".to_vec()),
+        )
+        .with_priority(2)
+        .mount(&files)
+        .await;
 
     let mut config = Config::from_env();
     config.dev_auth_enabled = true;
@@ -237,7 +255,10 @@ async fn test_slack_export_import_flow() -> anyhow::Result<()> {
                 {"ts":"1704070200.000300","user":"U1","subtype":"channel_join","text":"<@U1> has joined"},
                 {"ts":"1704070300.000400","user":"U1","text":"",
                  "files":[{"id":"F1","name":"notes.txt","mimetype":"text/plain","size":10,"url_private_download":format!("{}/files/F1/notes.txt", files.uri())}]},
-                {"ts":"1704070400.000500","bot_id":"B1","subtype":"bot_message","username":"deploybot","text":"deployed"}
+                {"ts":"1704070400.000500","bot_id":"B1","subtype":"bot_message","username":"deploybot","text":"deployed"},
+                {"ts":"1704070500.000600","user":"U2","text":"shared again",
+                 "files":[{"id":"F1","name":"notes.txt","mimetype":"text/plain","size":10,"url_private_download":format!("{}/files/F1/notes.txt", files.uri())},
+                          {"id":"F3","name":"broken.txt","mimetype":"text/plain","size":5,"url_private_download":format!("{}/files/F3/broken.txt", files.uri())}]}
             ]),
         ),
         (
@@ -248,11 +269,11 @@ async fn test_slack_export_import_flow() -> anyhow::Result<()> {
 
     let job = upload(&state, &app, &admin, &zip).await;
     assert_eq!(job["team_id"], team.as_str());
-    assert_eq!(job["total_messages"], 5);
+    assert_eq!(job["total_messages"], 6);
     let channels = job["analysis"]["channels"].as_array().unwrap();
     // general は予約語なので名前を変える提案になる
     assert_eq!(channels[0]["suggested_name"], "slack-general");
-    assert_eq!(channels[0]["message_count"], 4);
+    assert_eq!(channels[0]["message_count"], 5);
     let id = job["id"].as_str().unwrap().to_string();
     let general_name = format!("slack-general-{suffix}");
 
@@ -280,10 +301,23 @@ async fn test_slack_export_import_flow() -> anyhow::Result<()> {
     .await?;
     assert_eq!(status, StatusCode::OK, "{started}");
     let done = drive(&state, &app, &admin, &id, "completed").await;
-    assert_eq!(done["processed_messages"], 5);
-    assert_eq!(done["total_files"], 1);
-    assert_eq!(done["processed_files"], 1);
+    assert_eq!(done["processed_messages"], 6);
+    assert_eq!(done["total_files"], 3);
+    assert_eq!(done["processed_files"], 3);
     assert_eq!(done["pending_files"], 0);
+    // F3 は取得に失敗したまま完了し、管理者が取得し直せる
+    assert_eq!(done["failed_files"], 1, "{done}");
+    let (status, _) = request(
+        &app,
+        "POST",
+        &format!("/api/admin/slack-imports/{id}/fetch-files"),
+        &admin,
+        None,
+    )
+    .await?;
+    assert_eq!(status, StatusCode::OK);
+    let done = drive(&state, &app, &admin, &id, "completed").await;
+    assert_eq!(done["failed_files"], 0, "{done}");
 
     let general = backend::slack::channel_id(&team, "C1");
     let messages = sql(
@@ -294,7 +328,7 @@ async fn test_slack_export_import_flow() -> anyhow::Result<()> {
         &[&general],
     )
     .await?;
-    assert_eq!(messages.len(), 4);
+    assert_eq!(messages.len(), 5);
     let root = &messages[0];
     assert_eq!(
         root["id"],
@@ -342,6 +376,17 @@ async fn test_slack_export_import_flow() -> anyhow::Result<()> {
     .await?;
     assert_eq!(attachments.len(), 1);
     assert_eq!(attachments[0]["name"], "notes.txt");
+    // 同じ F1 を共有する別のメッセージにも、それぞれ添付が付く
+    let shared = sql(
+        &state,
+        "SELECT json_build_object('name',file_name)::text FROM attachments WHERE message_id=$1 ORDER BY file_name",
+        &[messages[4]["id"].as_str().unwrap()],
+    )
+    .await?;
+    assert_eq!(
+        shared,
+        vec![json!({"name": "broken.txt"}), json!({"name": "notes.txt"})]
+    );
     assert_eq!(attachments[0]["size"], 10);
     let stored = state
         .s3_client
@@ -377,7 +422,7 @@ async fn test_slack_export_import_flow() -> anyhow::Result<()> {
         &[&team],
     )
     .await?;
-    assert_eq!(cursor[0]["ts"], "1704070400.000500");
+    assert_eq!(cursor[0]["ts"], "1704070500.000600");
 
     // ZIP は取り込み後に消える
     assert!(
@@ -397,6 +442,18 @@ async fn test_slack_export_import_flow() -> anyhow::Result<()> {
     assert_eq!(channels[0]["existing_channel"]["id"], general.as_str());
     assert_eq!(channels[1]["existing_channel"]["id"], existing.as_str());
     let again_id = again["id"].as_str().unwrap().to_string();
+    // 以前と別の取り込み先にはできない (過去ログが移らないため)
+    let (status, body) = request(
+        &app,
+        "POST",
+        &format!("/api/admin/slack-imports/{again_id}/start"),
+        &admin,
+        Some(json!({"mappings":[
+            {"slack_channel_id":"C2","action":"create","name":format!("moved-{suffix}")}
+        ]})),
+    )
+    .await?;
+    assert_eq!(status, StatusCode::CONFLICT, "{body}");
     let (status, _) = request(
         &app,
         "POST",
@@ -416,7 +473,7 @@ async fn test_slack_export_import_flow() -> anyhow::Result<()> {
         &[&general],
     )
     .await?;
-    assert_eq!(count[0]["n"], 4);
+    assert_eq!(count[0]["n"], 5);
     Ok(())
 }
 
