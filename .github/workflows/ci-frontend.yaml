@@ -1,5 +1,7 @@
 name: CI Frontend
 on:
+  # merge-queue.yaml がマージキューで呼び出す。
+  workflow_call:
   push:
     branches: [main]
     paths:
@@ -27,7 +29,7 @@ on:
       - ".github/workflows/select-runner.yaml"
   workflow_dispatch:
 concurrency:
-  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  group: ci-frontend-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 # runner ジョブがDocker不要用とDocker必須用の実行先を選びます。
 jobs:

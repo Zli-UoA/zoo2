@@ -1,5 +1,7 @@
 name: CI GitHub Bot
 on:
+  # merge-queue.yaml がマージキューで呼び出す。
+  workflow_call:
   workflow_dispatch:
   pull_request:
     paths:

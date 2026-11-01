@@ -1,6 +1,8 @@
 name: Validate Flux production status
 
 on:
+  # merge-queue.yaml がマージキューで呼び出す。
+  workflow_call:
   pull_request:
     paths:
       - .github/scripts/flux-status*.mjs

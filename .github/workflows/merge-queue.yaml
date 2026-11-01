@@ -1,0 +1,146 @@
+name: Merge queue
+
+# マージキューの各エントリーで、main と合わせた状態の CI を実行する。
+# automerge-gate は merge_group に対応していないため、必須チェックの
+# automerge-gate/all-passed はこの workflow の all-passed ジョブが付ける。
+on:
+  merge_group:
+    types: [checks_requested]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: merge-queue-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # 各 CI の pull_request.paths を読み、キューの base からの差分に当てはまるものだけを実行する。
+  # パスの一覧は各 workflow にだけ書き、ここには重複させない。
+  changes:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      ci-backend: ${{ steps.match.outputs.ci-backend }}
+      ci-frontend: ${{ steps.match.outputs.ci-frontend }}
+      ci-frontend-auth-e2e: ${{ steps.match.outputs.ci-frontend-auth-e2e }}
+      ci-compose: ${{ steps.match.outputs.ci-compose }}
+      ci-tui: ${{ steps.match.outputs.ci-tui }}
+      ci-github-bot: ${{ steps.match.outputs.ci-github-bot }}
+      ci-flux-status: ${{ steps.match.outputs.ci-flux-status }}
+      terraform-r2: ${{ steps.match.outputs.terraform-r2 }}
+    steps:
+      - uses: actions/checkout@v7
+      - id: match
+        env:
+          BASE_SHA: ${{ github.event.merge_group.base_sha }}
+        run: |
+          git fetch --no-tags --depth=1 origin "$BASE_SHA"
+          mapfile -t changed < <(git diff --name-only "$BASE_SHA" HEAD)
+          printf 'changed: %s\n' "${changed[@]}"
+
+          for workflow in ci-backend ci-frontend ci-frontend-auth-e2e ci-compose ci-tui ci-github-bot ci-flux-status terraform-r2; do
+            mapfile -t patterns < <(yq '.on.pull_request.paths[]' ".github/workflows/$workflow.yaml")
+            # この workflow 自体の変更では、呼び出し方が変わるのですべて実行する。
+            patterns+=(".github/workflows/merge-queue.yaml")
+            run=false
+            for file in "${changed[@]}"; do
+              for pattern in "${patterns[@]}"; do
+                # bash の * は / にも一致するので、GitHub の paths より広く当てはまる側に倒れる。
+                # shellcheck disable=SC2053
+                if [[ $file == $pattern ]]; then
+                  run=true
+                  break 2
+                fi
+              done
+            done
+            echo "$workflow=$run" | tee -a "$GITHUB_OUTPUT"
+          done
+
+  ci-backend:
+    needs: changes
+    if: needs.changes.outputs.ci-backend == 'true'
+    uses: ./.github/workflows/ci-backend.yaml
+    secrets: inherit
+
+  ci-frontend:
+    needs: changes
+    if: needs.changes.outputs.ci-frontend == 'true'
+    uses: ./.github/workflows/ci-frontend.yaml
+    secrets: inherit
+
+  ci-frontend-auth-e2e:
+    needs: changes
+    if: needs.changes.outputs.ci-frontend-auth-e2e == 'true'
+    uses: ./.github/workflows/ci-frontend-auth-e2e.yaml
+    secrets: inherit
+
+  ci-compose:
+    needs: changes
+    if: needs.changes.outputs.ci-compose == 'true'
+    uses: ./.github/workflows/ci-compose.yaml
+    secrets: inherit
+
+  ci-tui:
+    needs: changes
+    if: needs.changes.outputs.ci-tui == 'true'
+    uses: ./.github/workflows/ci-tui.yaml
+    secrets: inherit
+
+  ci-github-bot:
+    needs: changes
+    if: needs.changes.outputs.ci-github-bot == 'true'
+    uses: ./.github/workflows/ci-github-bot.yaml
+    secrets: inherit
+    # publish ジョブは main でだけ動くが、宣言している権限を呼び出し側でも許す必要がある。
+    permissions:
+      contents: read
+      packages: write
+
+  ci-flux-status:
+    needs: changes
+    if: needs.changes.outputs.ci-flux-status == 'true'
+    uses: ./.github/workflows/ci-flux-status.yaml
+    secrets: inherit
+
+  terraform-r2:
+    needs: changes
+    if: needs.changes.outputs.terraform-r2 == 'true'
+    uses: ./.github/workflows/terraform-r2.yaml
+    secrets: inherit
+
+  all-passed:
+    needs:
+      - changes
+      - ci-backend
+      - ci-frontend
+      - ci-frontend-auth-e2e
+      - ci-compose
+      - ci-tui
+      - ci-github-bot
+      - ci-flux-status
+      - terraform-r2
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      statuses: write
+    steps:
+      - uses: actions/github-script@v9
+        env:
+          NEEDS: ${{ toJSON(needs) }}
+        with:
+          script: |
+            const needs = JSON.parse(process.env.NEEDS);
+            const failed = Object.entries(needs)
+              .filter(([, job]) => !['success', 'skipped'].includes(job.result))
+              .map(([name]) => name);
+            await github.rest.repos.createCommitStatus({
+              ...context.repo,
+              sha: context.sha,
+              state: failed.length ? 'failure' : 'success',
+              context: 'automerge-gate/all-passed',
+              description: failed.length ? `Failed: ${failed.join(', ')}`.slice(0, 140) : 'All merge queue checks passed',
+              target_url: `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`,
+            });
+            if (failed.length) core.setFailed(`Failed: ${failed.join(', ')}`);

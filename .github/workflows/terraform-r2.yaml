@@ -1,6 +1,8 @@
 name: Terraform R2
 
 on:
+  # merge-queue.yaml がマージキューで呼び出す。
+  workflow_call:
   push:
     branches:
       - main
