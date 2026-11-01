@@ -228,6 +228,13 @@ export function MessageList({
     [items.length, virtualizer],
   );
 
+  const totalSize = virtualizer.getTotalSize();
+  useLayoutEffect(() => {
+    // ResizeObserver can request a bottom adjustment before the sizer grows,
+    // which the browser clamps. Reapply after committing the measured height.
+    if (atBottomRef.current && editingId === null) scrollToBottom();
+  }, [totalSize, editingId, scrollToBottom]);
+
   const handleScroll = useCallback(() => {
     const element = scrollRef.current;
     if (!element) {
@@ -452,11 +459,7 @@ export function MessageList({
           data-testid="message-scroll"
           className="h-full overflow-y-auto overscroll-contain px-2 py-3 [overflow-anchor:none]"
         >
-          <div
-            role="list"
-            className="relative w-full"
-            style={{ height: virtualizer.getTotalSize() }}
-          >
+          <div role="list" className="relative w-full" style={{ height: totalSize }}>
             {virtualizer.getVirtualItems().map((virtualRow) => {
               const item = items[virtualRow.index];
               if (!item) {

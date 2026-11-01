@@ -26,6 +26,8 @@ Reactを機能・UI・操作の基準とする。変更時は [compose-react-par
 
 ## main取り込み時の照合
 
+- 遅延URLカードの拡大後、Reactは仮想リストの高さをDOMへ反映してから末尾追従を補正する。上へスクロールした状態や編集中は追従を強制しない。Kotlinは既存の `Chat.kt` の測定サイズ監視と `pinned` 判定で同じ挙動を保ち、両実装を `compose.spec.ts` の遅延URLカード検証で確認する。
+
 - `f3784dc` のActivityPubプロフィール設定・投稿/ユーザー詳細ルート・リモートアバター・プロフィールリンク・公開範囲アイコンを共通Kotlinへ反映。Home詳細は `HomeDetail.kt`、設定は `ActivityPubSettings.kt` を使い、既存の投稿カード・通知・API境界と共有する。HomeComposerの閉状態メニュー解放と、モバイル詳細ルートのペイン選択も追従する。追加された12状態を既存Storybookの切替へ登録する。
 
 - `c1efff0` まで取り込み済み。`54cb528` のHome・ActivityPub投稿/返信/リアクション/フォロー/通知・タイムライン設定と追加Storyを共通Kotlinへ反映する。`useVisualViewport` のcallback ref変更もComposeのホスト接続へ反映する。`c1efff0` のTUIは独立クライアントで、WebのUI・API契約に追加変更はない。
