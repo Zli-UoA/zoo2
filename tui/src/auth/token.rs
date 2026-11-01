@@ -7,7 +7,7 @@ use std::{
     pin::Pin,
 };
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, anyhow};
 use serde::{Deserialize, Serialize};
 use tokio::sync::Mutex;
 
@@ -149,8 +149,17 @@ impl TokenManager {
         ];
         let response = match token_request(&self.http, discovery, &self.oidc, form).await? {
             TokenResult::Ok(response) => response,
-            // invalid_grant などは refresh_token が使えないので、再ログインしてもらう。
-            TokenResult::Err { .. } => return Err(HttpError::Unauthorized.into()),
+            // refresh_token やクライアントが使えなくなったときは、再ログインしてもらう。
+            TokenResult::Err { error, .. } if needs_login(&error) => {
+                return Err(HttpError::Unauthorized.into());
+            }
+            // server_error などは一時的なものとして、呼び出し側に再試行させる。
+            TokenResult::Err { error, description } => {
+                return Err(anyhow!(
+                    "トークンを更新できませんでした: {}",
+                    description.unwrap_or(error)
+                ));
+            }
         };
         let mut tokens = StoredTokens::new(&self.oidc, response, now());
         // ローテーションしない IdP では refresh_token が返らないので、前のものを使い続ける。
@@ -159,6 +168,14 @@ impl TokenManager {
         state.tokens = tokens;
         Ok(state.tokens.access_token.clone())
     }
+}
+
+/// 同じ refresh_token で再試行しても回復しないエラー (RFC 6749 5.2)。
+fn needs_login(error: &str) -> bool {
+    matches!(
+        error,
+        "invalid_grant" | "invalid_client" | "unauthorized_client" | "unsupported_grant_type"
+    )
 }
 
 impl BearerSource for TokenManager {
@@ -315,5 +332,26 @@ mod tests {
                 Some(HttpError::Unauthorized)
             ));
         }
+    }
+
+    #[tokio::test]
+    async fn treats_server_error_as_transient() {
+        let server = MockServer::start().await;
+        let config = oidc(&issuer(&server).await);
+        Mock::given(method("POST"))
+            .respond_with(
+                ResponseTemplate::new(503).set_body_json(json!({ "error": "server_error" })),
+            )
+            .mount(&server)
+            .await;
+
+        let manager = TokenManager::new(
+            reqwest::Client::new(),
+            config.clone(),
+            temp_path("transient"),
+            tokens(&config, now() - 1, Some("rt")),
+        );
+        let err = manager.access_token().await.unwrap_err();
+        assert!(err.downcast_ref::<HttpError>().is_none(), "{err}");
     }
 }
