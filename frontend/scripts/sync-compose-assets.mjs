@@ -65,6 +65,9 @@ const names = [
   "chevron-down",
   "chevron-right",
   "external-link",
+  "upload",
+  "link",
+  "unlink",
 ];
 const rows = [];
 for (const name of names) {

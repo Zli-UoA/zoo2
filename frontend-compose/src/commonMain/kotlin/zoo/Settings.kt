@@ -39,16 +39,16 @@ fun searchUrl(engine: String, query: String): String {
 
 @Composable
 fun ZooSettings(app: Session, users: List<Row>) {
-    val tab =
-        app.query["tab"].takeIf { it in listOf("apps", "members", "activitypub") } ?: "general"
+    // 管理者向けのタブは、権限がなければ一般タブに戻す (React の ZooSettings と同じ)
     val tabs =
         listOf(
             "general" to "settings.general",
             "activitypub" to "ActivityPub",
             "apps" to "apps.title",
             "members" to "members.title",
-        )
-    val tabFocus = remember { List(tabs.size) { FocusRequester() } }
+        ) + if (app.config.isAdmin) listOf("slack-import" to "slackImport.tab") else emptyList()
+    val tab = app.query["tab"].takeIf { value -> tabs.any { it.first == value } } ?: "general"
+    val tabFocus = remember(tabs.size) { List(tabs.size) { FocusRequester() } }
     fun selectTab(value: String) {
         val builder =
             io.ktor.http.URLBuilder("https://zoo.invalid${app.env.path}").apply {
@@ -142,6 +142,7 @@ fun ZooSettings(app: Session, users: List<Row>) {
                     "apps" -> Apps(app, embedded = true)
                     "members" -> WorkspaceMembers(app, users)
                     "activitypub" -> ActivityPubSettingsTab(app)
+                    "slack-import" -> SlackImportPanel(app)
                     else -> GeneralSettings(app)
                 }
             }

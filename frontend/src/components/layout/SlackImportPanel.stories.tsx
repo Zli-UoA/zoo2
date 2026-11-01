@@ -1,3 +1,4 @@
+import { playForImplementation } from "../../../.storybook/play-for-implementation";
 import type { Meta, StoryObj } from "@storybook/react-vite";
 import { delay, http, HttpResponse } from "msw";
 import { expect, screen, userEvent, waitFor, within } from "storybook/test";
@@ -92,11 +93,11 @@ type Story = StoryObj<typeof meta>;
 
 export const Empty: Story = {
   parameters: { msw: { handlers: [list()] } },
-  play: async () => {
+  play: playForImplementation(async () => {
     await expect(
       await screen.findByRole("button", { name: "ZIP を選んでアップロード" }),
     ).toBeEnabled();
-  },
+  }),
 };
 
 export const Loading: Story = {
@@ -125,14 +126,14 @@ export const LoadError: Story = {
       ],
     },
   },
-  play: async () => {
+  play: playForImplementation(async () => {
     await expect(await screen.findByRole("alert")).toHaveTextContent("管理者だけ");
-  },
+  }),
 };
 
 export const Mapping: Story = {
   parameters: { msw: { handlers: [list(base)] } },
-  play: async () => {
+  play: playForImplementation(async () => {
     const name = await screen.findByRole("textbox", { name: "#general の新しいチャンネル名" });
     await expect(name).toHaveValue("slack-general");
     await userEvent.selectOptions(
@@ -147,7 +148,7 @@ export const Mapping: Story = {
     );
     // 以前取り込んだ #random は同じ取り込み先に固定する
     await expect(screen.getByRole("combobox", { name: "#random の取り込み先" })).toBeDisabled();
-  },
+  }),
 };
 
 export const StartError: Story = {
@@ -161,10 +162,10 @@ export const StartError: Story = {
       ],
     },
   },
-  play: async () => {
+  play: playForImplementation(async () => {
     await userEvent.click(await screen.findByRole("button", { name: "3 チャンネルを取り込む" }));
     await expect(await screen.findByRole("alert")).toHaveTextContent("already taken");
-  },
+  }),
 };
 
 export const Analyzing: Story = {
@@ -177,9 +178,9 @@ export const Importing: Story = {
   parameters: {
     msw: { handlers: [list({ ...base, status: "importing", processed_messages: 4_210 })] },
   },
-  play: async () => {
+  play: playForImplementation(async () => {
     await expect(await screen.findByRole("progressbar")).toHaveAttribute("aria-valuenow", "33");
-  },
+  }),
 };
 
 export const CompletedWithPendingFiles: Story = {
@@ -201,14 +202,14 @@ export const CompletedWithPendingFiles: Story = {
       ],
     },
   },
-  play: async () => {
+  play: playForImplementation(async () => {
     await expect(
       await screen.findByRole("button", { name: `${base.file_name} の添付ファイルを取得` }),
     ).toBeVisible();
     await expect(screen.getByText(/2 件の添付ファイルを取得できませんでした/)).toBeVisible();
     const history = screen.getByRole("heading", { name: "履歴" }).closest("section")!;
     await expect(within(history).getByText("old.zip")).toBeVisible();
-  },
+  }),
 };
 
 let refetched = "";
@@ -236,12 +237,12 @@ export const HistoryWithFailedFiles: Story = {
       ],
     },
   },
-  play: async () => {
+  play: playForImplementation(async () => {
     await userEvent.click(
       await screen.findByRole("button", { name: "old.zip の添付ファイルを取得" }),
     );
     await waitFor(() => expect(refetched).toBe("import-1"));
-  },
+  }),
 };
 
 export const Failed: Story = {
@@ -257,12 +258,12 @@ export const Failed: Story = {
       ],
     },
   },
-  play: async () => {
+  play: playForImplementation(async () => {
     await userEvent.click(await screen.findByRole("button", { name: "取り消す" }));
     // 開くアニメーションの途中は不可視と判定されるため、表示されきるまで待つ
     const dialog = await screen.findByRole("alertdialog");
     await waitFor(() => expect(dialog).toBeVisible());
-  },
+  }),
 };
 
 export const Mobile: Story = { ...Mapping, globals: { viewport: { value: "mobile" } } };
