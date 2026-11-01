@@ -3,21 +3,11 @@
   "stories": [
     {
       "file": "src/components/SyncStatus.stories.tsx",
-      "states": [
-        "Proxy",
-        "Direct",
-        "Oidc"
-      ]
+      "states": ["Proxy", "Direct", "Oidc"]
     },
     {
       "file": "src/components/chat/AppBlocks.stories.tsx",
-      "states": [
-        "Default",
-        "Pending",
-        "Failed",
-        "InvalidBlocks",
-        "Card"
-      ]
+      "states": ["Default", "Pending", "Failed", "InvalidBlocks", "Card"]
     },
     {
       "file": "src/components/chat/AppConnections.stories.tsx",
@@ -32,13 +22,7 @@
     },
     {
       "file": "src/components/chat/AppConsent.stories.tsx",
-      "states": [
-        "Default",
-        "Loading",
-        "LoadError",
-        "InvalidRequest",
-        "Mobile"
-      ]
+      "states": ["Default", "Loading", "LoadError", "InvalidRequest", "Mobile"]
     },
     {
       "file": "src/components/chat/AppsDialog.stories.tsx",
@@ -56,11 +40,7 @@
     },
     {
       "file": "src/components/chat/ChannelBrowserDialog.stories.tsx",
-      "states": [
-        "Default",
-        "SearchEmpty",
-        "Closed"
-      ]
+      "states": ["Default", "SearchEmpty", "Closed"]
     },
     {
       "file": "src/components/chat/ChannelHeader.stories.tsx",
@@ -78,14 +58,7 @@
     },
     {
       "file": "src/components/chat/ChannelScreen.stories.tsx",
-      "states": [
-        "Default",
-        "PrivateChannel",
-        "Archived",
-        "NotFound",
-        "Mobile",
-        "CommandCompletion"
-      ]
+      "states": ["Default", "PrivateChannel", "Archived", "NotFound", "Mobile", "CommandCompletion"]
     },
     {
       "file": "src/components/chat/ChannelSidebar.stories.tsx",
@@ -102,75 +75,35 @@
     },
     {
       "file": "src/components/chat/ChannelWebhooksDialog.stories.tsx",
-      "states": [
-        "Default",
-        "Empty",
-        "Archived",
-        "LoadError"
-      ]
+      "states": ["Default", "Empty", "Archived", "LoadError"]
     },
     {
       "file": "src/components/chat/CreateChannelDialog.stories.tsx",
-      "states": [
-        "Default",
-        "Filled",
-        "Closed"
-      ]
+      "states": ["Default", "Filled", "Closed"]
     },
     {
       "file": "src/components/chat/CreateDmDialog.stories.tsx",
-      "states": [
-        "Default",
-        "Selected",
-        "SearchEmpty",
-        "Empty",
-        "Mobile"
-      ]
+      "states": ["Default", "Selected", "SearchEmpty", "Empty", "Mobile"]
     },
     {
       "file": "src/components/chat/DmListItem.stories.tsx",
-      "states": [
-        "Default",
-        "Active",
-        "Unread",
-        "LongName"
-      ]
+      "states": ["Default", "Active", "Unread", "LongName"]
     },
     {
       "file": "src/components/chat/DmSection.stories.tsx",
-      "states": [
-        "Default",
-        "Empty",
-        "Loading",
-        "LoadError",
-        "UsersError",
-        "Unread",
-        "Group"
-      ]
+      "states": ["Default", "Empty", "Loading", "LoadError", "UsersError", "Unread", "Group"]
     },
     {
       "file": "src/components/chat/MembersScreen.stories.tsx",
-      "states": [
-        "Default",
-        "PublicNotJoined"
-      ]
+      "states": ["Default", "PublicNotJoined"]
     },
     {
       "file": "src/components/chat/MembersPanel.stories.tsx",
-      "states": [
-        "Default",
-        "AddCandidates",
-        "Archived",
-        "PrivateNotJoined"
-      ]
+      "states": ["Default", "AddCandidates", "Archived", "PrivateNotJoined"]
     },
     {
       "file": "src/components/chat/NotificationsButton.stories.tsx",
-      "states": [
-        "Unread",
-        "SingleUnread",
-        "AllRead"
-      ]
+      "states": ["Unread", "SingleUnread", "AllRead"]
     },
     {
       "file": "src/components/chat/NotificationsScreen.stories.tsx",
@@ -198,18 +131,11 @@
     },
     {
       "file": "src/components/chat/RenameChannelDialog.stories.tsx",
-      "states": [
-        "Default",
-        "Filled",
-        "EmptyDescription"
-      ]
+      "states": ["Default", "Filled", "EmptyDescription"]
     },
     {
       "file": "src/components/chat/WelcomePanel.stories.tsx",
-      "states": [
-        "Default",
-        "Mobile"
-      ]
+      "states": ["Default", "Mobile"]
     },
     {
       "file": "src/components/chat/messages/Composer.stories.tsx",
@@ -230,12 +156,7 @@
     },
     {
       "file": "src/components/chat/messages/LinkPreviews.stories.tsx",
-      "states": [
-        "Landscape",
-        "Portrait",
-        "TextOnly",
-        "Mobile"
-      ]
+      "states": ["Landscape", "Portrait", "TextOnly", "Mobile"]
     },
     {
       "file": "src/components/chat/messages/MessageCard.stories.tsx",
@@ -263,12 +184,7 @@
     },
     {
       "file": "src/components/chat/messages/MessagePane.stories.tsx",
-      "states": [
-        "Default",
-        "ThreadOpen",
-        "NotJoined",
-        "Mobile"
-      ]
+      "states": ["Default", "ThreadOpen", "NotJoined", "Mobile"]
     },
     {
       "file": "src/components/chat/messages/MessageRow.stories.tsx",
@@ -309,44 +225,19 @@
     },
     {
       "file": "src/components/chat/messages/ReactionEmoji.stories.tsx",
-      "states": [
-        "Unicode",
-        "Kitchen",
-        "KitchenLoading",
-        "CustomMissing",
-        "ConsistentSize"
-      ]
+      "states": ["Unicode", "Kitchen", "KitchenLoading", "CustomMissing", "ConsistentSize"]
     },
     {
       "file": "src/components/chat/messages/ReactionPicker.stories.tsx",
-      "states": [
-        "Default",
-        "Kitchen",
-        "SearchEmpty",
-        "Recents",
-        "KitchenLoading",
-        "Mobile"
-      ]
+      "states": ["Default", "Kitchen", "SearchEmpty", "Recents", "KitchenLoading", "Mobile"]
     },
     {
       "file": "src/components/chat/messages/ThreadPane.stories.tsx",
-      "states": [
-        "Empty",
-        "WithReplies",
-        "Loading",
-        "Error",
-        "Mobile",
-        "Completions",
-        "AppCard"
-      ]
+      "states": ["Empty", "WithReplies", "Loading", "Error", "Mobile", "Completions", "AppCard"]
     },
     {
       "file": "src/components/chat/messages/TypingIndicator.stories.tsx",
-      "states": [
-        "Empty",
-        "Single",
-        "Multiple"
-      ]
+      "states": ["Empty", "Single", "Multiple"]
     },
     {
       "file": "src/components/chat/notifications/NotificationCard.stories.tsx",
@@ -367,11 +258,7 @@
     },
     {
       "file": "src/components/i18n/LanguageToggle.stories.tsx",
-      "states": [
-        "Default",
-        "Open",
-        "SelectControl"
-      ]
+      "states": ["Default", "Open", "SelectControl"]
     },
     {
       "file": "src/components/layout/AppShell.stories.tsx",
@@ -398,17 +285,11 @@
     },
     {
       "file": "src/components/layout/LeftRail.stories.tsx",
-      "states": [
-        "Default",
-        "Mobile"
-      ]
+      "states": ["Default", "Mobile"]
     },
     {
       "file": "src/components/layout/ShellSkeleton.stories.tsx",
-      "states": [
-        "Default",
-        "Mobile"
-      ]
+      "states": ["Default", "Mobile"]
     },
     {
       "file": "src/components/layout/WorkspaceMembers.stories.tsx",
@@ -444,12 +325,7 @@
     },
     {
       "file": "src/components/offline/OfflineBanner.stories.tsx",
-      "states": [
-        "Online",
-        "Offline",
-        "PersistenceError",
-        "Mobile"
-      ]
+      "states": ["Online", "Offline", "PersistenceError", "Mobile"]
     },
     {
       "file": "src/components/pwa/PwaControls.stories.tsx",
@@ -466,153 +342,79 @@
     },
     {
       "file": "src/components/theme/ModeToggle.stories.tsx",
-      "states": [
-        "Default",
-        "Dark",
-        "KeyboardSelection",
-        "Explanation"
-      ]
+      "states": ["Default", "Dark", "KeyboardSelection", "Explanation"]
     },
     {
       "file": "src/components/ui/alert-dialog.stories.tsx",
-      "states": [
-        "Default",
-        "Open"
-      ]
+      "states": ["Default", "Open"]
     },
     {
       "file": "src/components/ui/avatar.stories.tsx",
-      "states": [
-        "Default",
-        "Sizes",
-        "Badge",
-        "Group"
-      ]
+      "states": ["Default", "Sizes", "Badge", "Group"]
     },
     {
       "file": "src/components/ui/button.stories.tsx",
-      "states": [
-        "Default",
-        "Variants",
-        "Sizes",
-        "Disabled",
-        "WithIcon",
-        "DisabledDark"
-      ]
+      "states": ["Default", "Variants", "Sizes", "Disabled", "WithIcon", "DisabledDark"]
     },
     {
       "file": "src/components/ui/confirm-action-dialog.stories.tsx",
-      "states": [
-        "Default",
-        "Pending",
-        "Failed"
-      ]
+      "states": ["Default", "Pending", "Failed"]
     },
     {
       "file": "src/components/ui/control-panel.stories.tsx",
-      "states": [
-        "Default",
-        "LongDescription",
-        "Mobile"
-      ]
+      "states": ["Default", "LongDescription", "Mobile"]
     },
     {
       "file": "src/components/ui/dialog.stories.tsx",
-      "states": [
-        "Default",
-        "Open"
-      ]
+      "states": ["Default", "Open"]
     },
     {
       "file": "src/components/ui/dropdown-menu.stories.tsx",
-      "states": [
-        "Default",
-        "Open",
-        "IconOnlyTrigger"
-      ]
+      "states": ["Default", "Open", "IconOnlyTrigger"]
     },
     {
       "file": "src/components/ui/input.stories.tsx",
-      "states": [
-        "Default",
-        "Disabled",
-        "Invalid",
-        "LongValue",
-        "KeyboardInput"
-      ]
+      "states": ["Default", "Disabled", "Invalid", "LongValue", "KeyboardInput"]
     },
     {
       "file": "src/components/ui/scroll-area.stories.tsx",
-      "states": [
-        "Overflow",
-        "ShortContent"
-      ]
+      "states": ["Overflow", "ShortContent"]
     },
     {
       "file": "src/components/ui/skeleton.stories.tsx",
-      "states": [
-        "Text",
-        "Avatar"
-      ]
+      "states": ["Text", "Avatar"]
     },
     {
       "file": "src/components/ui/sonner.stories.tsx",
-      "states": [
-        "Success"
-      ]
+      "states": ["Success"]
     },
     {
       "file": "src/components/ui/textarea.stories.tsx",
-      "states": [
-        "Default",
-        "WithValue",
-        "Disabled",
-        "Invalid",
-        "LongText"
-      ]
+      "states": ["Default", "WithValue", "Disabled", "Invalid", "LongText"]
     },
     {
       "file": "src/components/ui/tokens.stories.tsx",
-      "states": [
-        "Default",
-        "Dark"
-      ]
+      "states": ["Default", "Dark"]
     },
     {
       "file": "src/components/ui/tooltip.stories.tsx",
-      "states": [
-        "Default",
-        "Open"
-      ]
+      "states": ["Default", "Open"]
     },
     {
       "file": "src/stories/app-submission.stories.tsx",
-      "states": [
-        "RetryPreservesValues"
-      ]
+      "states": ["RetryPreservesValues"]
     },
     {
       "file": "src/stories/workspace-members.stories.tsx",
-      "states": [
-        "GrantAndRevoke",
-        "RejectedLastAdmin"
-      ]
+      "states": ["GrantAndRevoke", "RejectedLastAdmin"]
     },
     {
       "file": "src/components/ui/collapsible-section.stories.tsx",
-      "states": [
-        "Default",
-        "Closed",
-        "WithActions"
-      ]
+      "states": ["Default", "Closed", "WithActions"]
     },
     {
       "file": "src/components/ui/select.stories.tsx",
-      "states": [
-        "Default",
-        "Disabled",
-        "LongLabel"
-      ]
+      "states": ["Default", "Disabled", "LongLabel"]
     },
     {
       "file": "src/components/preferences/SearchPreferences.stories.tsx",
@@ -631,13 +433,7 @@
     },
     {
       "file": "src/components/chat/BubbleChatScreen.stories.tsx",
-      "states": [
-        "ActiveConversation",
-        "Empty",
-        "Mobile",
-        "Participants",
-        "MobileParticipants"
-      ]
+      "states": ["ActiveConversation", "Empty", "Mobile", "Participants", "MobileParticipants"]
     },
     {
       "file": "src/components/home/HomeScreen.stories.tsx",
@@ -700,17 +496,12 @@
     {
       "file": "src/components/auth/AuthGate.tsx",
       "reason": "OIDC設定と外部リダイレクトに依存する認証境界。ログイン・期限切れ・再認証は専用IdPのE2Eで確認する。",
-      "checks": [
-        "e2e/oidc.spec.ts"
-      ]
+      "checks": ["e2e/oidc.spec.ts"]
     },
     {
       "file": "src/components/auth/PreviewUserSwitcher.tsx",
       "reason": "プレビュー専用ビルドフラグとページ再読込を伴う開発補助UI。通常カタログの環境では表示されない。",
-      "checks": [
-        "src/lib/preview.test.ts",
-        "e2e/oidc.spec.ts"
-      ]
+      "checks": ["src/lib/preview.test.ts", "e2e/oidc.spec.ts"]
     },
     {
       "file": "src/components/chat/AppBlocks.tsx",
@@ -739,9 +530,7 @@
     {
       "file": "src/components/chat/AppSurfaceHost.tsx",
       "reason": "イベント受信とポーリングでダイアログを起動する制御層。表面のフォームはBlocks、起動はブラウザ統合テストで確認する。",
-      "checks": [
-        "src/components/chat/AppInteraction.browser.test.tsx"
-      ]
+      "checks": ["src/components/chat/AppInteraction.browser.test.tsx"]
     },
     {
       "file": "src/components/chat/AppsDialog.tsx",
@@ -882,9 +671,7 @@
     {
       "file": "src/components/i18n/LocaleProvider.tsx",
       "reason": "全Storyの共通デコレータで使用する言語制御層。切替状態はLanguageToggleとProviderテストで確認する。",
-      "checks": [
-        "src/components/i18n/LocaleProvider.test.ts"
-      ]
+      "checks": ["src/components/i18n/LocaleProvider.test.ts"]
     },
     {
       "file": "src/components/layout/AppShell.tsx",
@@ -920,9 +707,7 @@
     {
       "file": "src/components/offline/OfflineProvider.tsx",
       "reason": "永続化・接続状態を供給する制御層。表示はOfflineBanner、OPFS初期化と再試行はブラウザテストで確認する。",
-      "checks": [
-        "src/components/offline/OfflineProvider.browser.test.tsx"
-      ]
+      "checks": ["src/components/offline/OfflineProvider.browser.test.tsx"]
     },
     {
       "file": "src/components/pwa/PwaControls.tsx",
@@ -935,9 +720,7 @@
     {
       "file": "src/components/theme/ThemeProvider.tsx",
       "reason": "全Storyの共通デコレータで使用するテーマ制御層。設定の解決はthemeテストで確認する。",
-      "checks": [
-        "src/components/theme/theme.test.ts"
-      ]
+      "checks": ["src/components/theme/theme.test.ts"]
     },
     {
       "file": "src/components/ui/alert-dialog.tsx",
@@ -1018,9 +801,7 @@
     {
       "file": "src/components/preferences/SearchPreferences.tsx",
       "reason": "アカウント単位で設定を読み書きする制御層。保存・再読込・アカウント切替・失敗からの再試行はブラウザテストで検証する。",
-      "checks": [
-        "src/components/preferences/SearchPreferences.browser.test.tsx"
-      ]
+      "checks": ["src/components/preferences/SearchPreferences.browser.test.tsx"]
     },
     {
       "file": "src/components/ui/button-group.tsx",
@@ -1099,10 +880,7 @@
     {
       "file": "src/components/experimental/ComposeFrontend.tsx",
       "reason": "認証・OPFS・ルーターとKotlin/Wasmを接続する制御層。カタログで覆えない起動・ユーザー別保存・失敗復帰・CSPを専用E2Eで検証する。",
-      "checks": [
-        "e2e/compose.spec.ts",
-        "e2e/compose-production.spec.ts"
-      ]
+      "checks": ["e2e/compose.spec.ts", "e2e/compose-production.spec.ts"]
     }
   ]
 }

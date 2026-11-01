@@ -78,6 +78,10 @@ type Story = StoryObj<typeof meta>;
 
 export const Default: Story = {};
 
+export const Grouped: Story = {
+  args: { item: { ...item, isGroupStart: false } },
+};
+
 export const OwnMessage: Story = {
   args: {
     isOwn: true,
@@ -335,7 +339,7 @@ export const Edited: Story = {
 export const ActivityPubPublic: Story = {
   parameters: { a11y: { test: "error" } },
   args: { item: { ...item, message: { ...item.message, apub: true, apub_visibility: "public" } } },
-  play: async ({ canvasElement }) => {
+  play: playForImplementation(async ({ canvasElement }) => {
     await expect(within(canvasElement).getByRole("img", { name: "ActivityPub" })).toBeVisible();
     await expect(within(canvasElement).getByRole("img", { name: "パブリック" })).toBeVisible();
     const icon = within(canvasElement).getByRole("img", { name: "パブリック" });
@@ -347,16 +351,16 @@ export const ActivityPubPublic: Story = {
     };
     await expect(Math.abs(center(icon) - center(time))).toBeLessThanOrEqual(1);
     await expect(metadata.textContent).not.toContain("パブリック");
-  },
+  }),
 };
 export const ActivityPubUnlisted: Story = {
   ...ActivityPubPublic,
   args: {
     item: { ...item, message: { ...item.message, apub: true, apub_visibility: "unlisted" } },
   },
-  play: async ({ canvasElement }) => {
+  play: playForImplementation(async ({ canvasElement }) => {
     await expect(within(canvasElement).getByRole("img", { name: "ホーム" })).toBeVisible();
-  },
+  }),
 };
 export const ActivityPubGrouped: Story = {
   ...ActivityPubPublic,

@@ -1,5 +1,9 @@
 import { createStoryConfig, type StoryCollectionsInput } from "./fixtures";
-import { notificationComparisonText, notificationComparisonLabel } from "./notification-fixtures";
+import {
+  notificationComparisonText,
+  notificationComparisonLabel,
+  notificationComparisonMemberCount,
+} from "./notification-fixtures";
 import type { KotlinPreviewProps } from "./KotlinPreview";
 import type { NativeInteraction } from "./native-interactions";
 import type { Selection } from "./kotlin-stories";
@@ -29,6 +33,62 @@ function notificationInteractions(title: string, name: string): NativeInteractio
     { action: "wait", role: "status", state: "hidden" },
   ];
   if (title === "Pages/Notifications") {
+    const panel = { role: "region", name: "ホームの通知" };
+    const apubReady: NativeInteraction[] = [{ action: "wait", ...panel }];
+    const apubButton = (name: string, action: "click" | "wait" = "wait"): NativeInteraction => ({
+      action,
+      role: "button",
+      name,
+      within: panel,
+    });
+    if (["Follow Requests", "Mobile Follow Requests"].includes(name))
+      return [
+        ...apubReady,
+        visible("フォロー申請が届きました"),
+        apubButton("承認"),
+        apubButton("拒否"),
+        visible("フォローが承認されました"),
+        visible("投稿にリアクションしました"),
+      ];
+    if (name === "Approve Follow")
+      return [
+        ...apubReady,
+        apubButton("承認", "click"),
+        { ...apubButton("承認"), state: "hidden" },
+        { action: "fixture", name: "assertFollowRead" },
+        apubButton("すべて既読にする", "click"),
+        { ...apubButton("すべて既読にする"), state: "hidden" },
+      ];
+    if (name === "Reject Follow")
+      return [
+        ...apubReady,
+        apubButton("拒否", "click"),
+        { ...apubButton("拒否"), state: "hidden" },
+        { action: "fixture", name: "assertFollowRejected" },
+      ];
+    if (name === "Follow Decision Error")
+      return [
+        ...apubReady,
+        apubButton("承認", "click"),
+        { action: "wait", role: "alert", within: panel },
+        { ...apubButton("承認"), enabled: true },
+      ];
+    if (name === "Home Notifications Error")
+      return [...apubReady, { action: "wait", role: "alert", within: panel }, apubButton("更新")];
+    if (name === "Live Follow Request")
+      return [
+        { action: "fixture", name: "publishFollowRequest" },
+        ...apubReady,
+        apubButton("承認"),
+      ];
+    if (name === "Older Follow Requests")
+      return [
+        ...apubReady,
+        apubButton("過去の通知を読む", "click"),
+        visible("Older peer"),
+        apubButton("承認", "click"),
+        { action: "fixture", name: "assertOlderFollowApproved" },
+      ];
     if (name === "Loading")
       return [
         { action: "wait", role: "region", name: "通知" },
@@ -58,7 +118,8 @@ function notificationInteractions(title: string, name: string): NativeInteractio
           name: "general",
           exact: false,
         },
-        visible("今日のリリースは 18:00"),
+        visible(notificationComparisonText),
+        visible("デプロイ後に確認します"),
         { action: "overflow" },
       ];
     if (name === "Loading On Scroll")
@@ -189,8 +250,10 @@ export function notificationOptions(
       fixture: {
         ...fixture,
         view: "screen",
+        sharedApi: true,
         comparisonText: notificationComparisonText,
         comparisonLabel: notificationComparisonLabel,
+        comparisonMemberCount: notificationComparisonMemberCount,
         ...([
           "Default",
           "Mobile",

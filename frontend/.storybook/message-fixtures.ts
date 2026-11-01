@@ -35,3 +35,9 @@ export const reactionKitchenCatalog = {
   dates: ["20260101"],
   pairs: { "0_1": 0 },
 };
+
+export const activityPubMessageStates = {
+  "Activity Pub Public": "public",
+  "Activity Pub Unlisted": "unlisted",
+  "Activity Pub Grouped": "public",
+} as const;

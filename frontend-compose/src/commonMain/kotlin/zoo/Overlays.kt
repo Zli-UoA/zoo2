@@ -19,6 +19,7 @@ import androidx.compose.ui.input.key.*
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.*
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.semantics.*
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.*
@@ -29,7 +30,11 @@ private var overlaySequence = 0
 @Stable
 class OverlaySlot {
     val id = "overlay-${++overlaySequence}"
+    var visible by mutableStateOf(true)
+    var focusEnabled: (() -> Boolean)? = null
     var role: String? = null
+    var customChrome = false
+    var fullScreen = false
     var nonModal = false
     var tooltip = false
     var placementAbove = false
@@ -57,6 +62,10 @@ fun OverlayRegistration(
     footer: (@Composable () -> Unit)? = null,
     role: String? = null,
     nonModal: Boolean = false,
+    customChrome: Boolean = false,
+    visible: Boolean = true,
+    focusEnabled: (() -> Boolean)? = null,
+    fullScreen: Boolean = false,
     tooltip: Boolean = false,
     placementAbove: Boolean = false,
     alignEnd: Boolean = false,
@@ -67,11 +76,15 @@ fun OverlayRegistration(
     val app = LocalApp.current
     val slot = remember { OverlaySlot() }
     SideEffect {
+        slot.visible = visible
+        slot.focusEnabled = focusEnabled
         slot.title = title
         slot.alert = alert
         slot.description = description
         slot.footer = footer
         slot.role = role
+        slot.customChrome = customChrome
+        slot.fullScreen = fullScreen
         slot.nonModal = nonModal
         slot.tooltip = tooltip
         slot.placementAbove = placementAbove
@@ -99,13 +112,20 @@ private fun OverlayCard(slot: OverlaySlot) {
     val app = LocalApp.current
     val focus = remember { FocusRequester() }
     val density = LocalDensity.current
+    val focusManager = LocalFocusManager.current
+    var cardHasFocus by remember { mutableStateOf(false) }
     var measured by remember { mutableStateOf(IntSize.Zero) }
     var bounds by remember { mutableStateOf(Rect.Zero) }
     // Request the popup surface, never its fullscreen backdrop. Keep this effect before
     // composing the body so a body's initial field-focus effect can take focus afterwards.
-    LaunchedEffect(slot) { if (!slot.nonModal && !slot.tooltip) focus.requestFocus() }
+    LaunchedEffect(slot) {
+        if (slot.visible && !slot.nonModal && !slot.tooltip) focus.requestFocus()
+    }
+    LaunchedEffect(slot.visible) {
+        if (!slot.visible && cardHasFocus) focusManager.clearFocus(force = true)
+    }
     SideEffect {
-        if (slot.nonModal && !slot.tooltip && bounds.width > 0)
+        if (slot.visible && slot.nonModal && !slot.tooltip && bounds.width > 0)
             with(density) {
                 app.platform.outsideClick(
                     slot.id,
@@ -119,17 +139,42 @@ private fun OverlayCard(slot: OverlaySlot) {
                     slot.close,
                 )
             }
+        else if (!slot.visible) app.platform.forgetOutsideClick(slot.id)
     }
     DisposableEffect(slot) { onDispose { app.platform.forgetOutsideClick(slot.id) } }
     val backdrop =
-        if (slot.anchor == null && !slot.nonModal)
+        if (slot.visible && slot.anchor == null && !slot.nonModal)
             androidx.compose.ui.graphics.Color.Black.copy(alpha = .1f)
         else androidx.compose.ui.graphics.Color.Transparent
     val input =
-        if (slot.nonModal || slot.tooltip) Modifier
+        if (!slot.visible || slot.nonModal || slot.tooltip) Modifier
         else Modifier.pointerInput(slot) { detectTapGestures { if (!slot.alert) slot.close() } }
 
-    BoxWithConstraints(Modifier.fillMaxSize().background(backdrop).then(input)) {
+    // Keep one real editor placed while closed so a user gesture can request focus
+    // synchronously. It is outside the hit area and absent from accessibility/Tab.
+    val retained =
+        if (slot.visible) Modifier else Modifier.clearAndSetSemantics { hideFromAccessibility() }
+    val retentionFocus =
+        if (slot.focusEnabled == null) Modifier
+        else
+            Modifier.onFocusChanged { cardHasFocus = it.hasFocus }
+                .focusProperties {
+                    onEnter = {
+                        if (!(slot.focusEnabled?.invoke() ?: slot.visible)) cancelFocusChange()
+                    }
+                }
+                .focusGroup()
+    BoxWithConstraints(
+        Modifier.fillMaxSize()
+            .graphicsLayer {
+                alpha = if (slot.visible) 1f else 0f
+                translationX = if (slot.visible) 0f else size.width * 2f + 1f
+            }
+            .then(retained)
+            .then(retentionFocus)
+            .background(backdrop)
+            .then(input)
+    ) {
         val screenWidth = maxWidth
         val screenHeight = maxHeight
         val anchor = slot.anchor
@@ -163,7 +208,9 @@ private fun OverlayCard(slot: OverlaySlot) {
                 }
             } ?: 8.dp
         val position =
-            if (anchor == null) Modifier.align(Alignment.Center)
+            if (slot.fullScreen)
+                Modifier.align(Alignment.TopStart).offset(y = app.env.visualViewportTop.dp)
+            else if (anchor == null) Modifier.align(Alignment.Center)
             else if (slot.tooltip) Modifier.offset(tooltipLeft, tooltipTop)
             else
                 with(density) {
@@ -187,13 +234,21 @@ private fun OverlayCard(slot: OverlaySlot) {
         val width =
             if (slot.alert && screenWidth < 640.dp) slot.width.coerceAtMost(320.dp) else slot.width
         val size =
-            if (slot.tooltip) Modifier.widthIn(max = width.coerceAtMost(screenWidth - 16.dp))
+            if (slot.fullScreen)
+                Modifier.fillMaxWidth()
+                    .height(
+                        app.env.visualViewportHeight
+                            ?.takeIf { it.isFinite() && it >= 0f }
+                            ?.dp
+                            ?.coerceAtMost(screenHeight) ?: screenHeight
+                    )
+            else if (slot.tooltip) Modifier.widthIn(max = width.coerceAtMost(screenWidth - 16.dp))
             else Modifier.width(width.coerceAtMost(screenWidth - 32.dp))
         val role =
             slot.role ?: if (slot.alert) "alertdialog" else if (anchor == null) "dialog" else "menu"
         val menuRingColor = MaterialTheme.colorScheme.onSurface.copy(alpha = .1f)
         val menuRing =
-            if (!slot.tooltip)
+            if (!slot.tooltip && !slot.fullScreen)
                 Modifier.drawBehind {
                     val stroke = 1.dp.toPx()
                     drawRoundRect(
@@ -206,7 +261,10 @@ private fun OverlayCard(slot: OverlaySlot) {
                 }
             else Modifier
         val cardShape =
-            RoundedCornerShape(if (slot.tooltip) 8.dp else if (anchor == null) 14.dp else 10.dp)
+            RoundedCornerShape(
+                if (slot.fullScreen) 0.dp
+                else if (slot.tooltip) 8.dp else if (anchor == null) 14.dp else 10.dp
+            )
         Surface(
             position
                 .then(menuRing)
@@ -251,6 +309,13 @@ private fun OverlayCard(slot: OverlaySlot) {
         ) {
             if (slot.tooltip)
                 Column(Modifier.padding(horizontal = 12.dp, vertical = 6.dp)) { slot.body(this) }
+            else if (slot.customChrome)
+                Column(
+                    if (slot.fullScreen) Modifier.fillMaxSize()
+                    else Modifier.heightIn(max = screenHeight - 32.dp)
+                ) {
+                    slot.body(this)
+                }
             else
                 Column(Modifier.heightIn(max = screenHeight - 32.dp)) {
                     Column(

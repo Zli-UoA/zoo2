@@ -450,6 +450,8 @@ private fun startCatalog() {
             reducedMotion = options.flag("reducedMotion"),
             theme = options.text("theme").ifEmpty { if (options.flag("dark")) "dark" else "light" },
             historyState = options.nested("historyState"),
+            visualViewportHeight = options.text("visualViewportHeight").toFloatOrNull(),
+            visualViewportTop = options.text("visualViewportTop").toFloatOrNull() ?: 0f,
         )
     app = Session(Repository(config, platform, http, scope), scope, environment())
     refresh = { app.update(environment()) }

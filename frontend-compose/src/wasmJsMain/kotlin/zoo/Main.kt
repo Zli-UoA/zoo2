@@ -189,6 +189,8 @@ private fun environment(raw: String): Environment {
         r.text("persistenceError"),
         r.text("theme").ifEmpty { "system" },
         r.nested("historyState"),
+        r.text("visualViewportHeight").toFloatOrNull(),
+        r.text("visualViewportTop").toFloatOrNull() ?: 0f,
     )
 }
 

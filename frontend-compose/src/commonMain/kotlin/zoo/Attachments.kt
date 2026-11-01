@@ -411,7 +411,7 @@ fun rememberAttachmentDrafts(
 ): AttachmentDrafts {
     val scope = rememberCoroutineScope()
     val drafts = remember(key) { AttachmentDrafts(app, channel, scope, upload) }
-    drafts.enabled = enabled && app.dialog == null && app.overlays.isEmpty()
+    drafts.enabled = enabled && app.dialog == null && app.overlays.none { it.visible }
     SideEffect { drafts.bind() }
     DisposableEffect(drafts) { onDispose { drafts.close() } }
     return drafts

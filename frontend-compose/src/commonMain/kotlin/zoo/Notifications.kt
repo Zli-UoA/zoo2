@@ -55,6 +55,8 @@ private fun notificationGroupKey(rows: List<Row>): String {
 @Composable
 fun Notifications(app: Session, notifications: List<Row>, users: List<Row>) {
     val groups = notificationGroups(notifications)
+    val apub = app.activityPubNotifications
+    LaunchedEffect(apub) { apub.ensureLoaded() }
     val initialLoading by app.repo.notifications.loading.collectAsState()
     val loadError by app.repo.notifications.error.collectAsState()
     val usersLoading by app.repo.users.loading.collectAsState()
@@ -71,7 +73,9 @@ fun Notifications(app: Session, notifications: List<Row>, users: List<Row>) {
                     val overlap =
                         minOf(item.offset + item.size, layout.viewportEndOffset) -
                             maxOf(item.offset, layout.viewportStartOffset)
-                    overlap > 0 && overlap.toFloat() / item.size.coerceAtLeast(1) >= .1f
+                    item.key != "activitypub-notifications" &&
+                        overlap > 0 &&
+                        overlap.toFloat() / item.size.coerceAtLeast(1) >= .1f
                 }
                 .map { it.key.toString() }
                 .toSet()
@@ -92,6 +96,7 @@ fun Notifications(app: Session, notifications: List<Row>, users: List<Row>) {
         if (!loading && (groups.isEmpty() || visible.isNotEmpty())) hasLoaded = true
     }
     val initialMask = loading && !hasLoaded
+    val maskWholeList = initialMask && apub.items.isEmpty()
     Box(
         Modifier.fillMaxSize().then(webControlModifier("region")).semantics {
             contentDescription = app.t("notifications.title")
@@ -100,43 +105,45 @@ fun Notifications(app: Session, notifications: List<Row>, users: List<Row>) {
         Column(Modifier.fillMaxSize()) {
             ScreenHeader("bell", app.t("notifications.title"), primaryIcon = true)
             HorizontalDivider()
-            if (loadError != null) {
-                Text(
-                    app.t("notifications.loadError"),
-                    Modifier.padding(24.dp),
-                    color = MaterialTheme.colorScheme.error,
-                )
-            }
-            if (loadError == null)
-                Box(Modifier.weight(1f)) {
-                    LazyColumn(
-                        Modifier.fillMaxSize()
-                            .pointerInput(initialMask) {
-                                if (initialMask)
-                                    awaitPointerEventScope {
-                                        while (true) {
-                                            val event = awaitPointerEvent(PointerEventPass.Initial)
-                                            event.changes.forEach { it.consume() }
-                                        }
+            Box(Modifier.weight(1f)) {
+                LazyColumn(
+                    Modifier.fillMaxSize()
+                        .pointerInput(maskWholeList) {
+                            if (maskWholeList)
+                                awaitPointerEventScope {
+                                    while (true) {
+                                        val event = awaitPointerEvent(PointerEventPass.Initial)
+                                        event.changes.forEach { it.consume() }
                                     }
-                            }
-                            .focusProperties { onEnter = { if (initialMask) cancelFocusChange() } }
-                            .focusGroup()
-                            .then(
-                                webControlModifier(
-                                    "list",
-                                    attributes = mapOf("aria-hidden" to initialMask.toString()),
-                                )
+                                }
+                        }
+                        .focusProperties { onEnter = { if (maskWholeList) cancelFocusChange() } }
+                        .focusGroup()
+                        .then(
+                            webControlModifier(
+                                "list",
+                                attributes = mapOf("aria-hidden" to maskWholeList.toString()),
                             )
-                            .alpha(if (initialMask) 0f else 1f)
-                            .semantics {
-                                contentDescription = app.t("notifications.title")
-                                if (initialMask) invisibleToUser()
-                            },
-                        state = scroll,
-                        userScrollEnabled = !initialMask,
-                        contentPadding = PaddingValues(0.dp),
-                    ) {
+                        )
+                        .alpha(if (maskWholeList) 0f else 1f)
+                        .semantics {
+                            contentDescription = app.t("notifications.title")
+                            if (maskWholeList) invisibleToUser()
+                        },
+                    state = scroll,
+                    userScrollEnabled = !maskWholeList,
+                    contentPadding = PaddingValues(0.dp),
+                ) {
+                    item("activitypub-notifications") { ActivityPubNotifications(app, apub) }
+                    if (loadError != null)
+                        item("local-notification-error") {
+                            Text(
+                                app.t("notifications.loadError"),
+                                Modifier.padding(24.dp).then(webControlModifier("alert")),
+                                color = MaterialTheme.colorScheme.error,
+                            )
+                        }
+                    if (loadError == null)
                         items(groups, key = ::notificationGroupKey) { rows ->
                             NotificationCard(
                                 app,
@@ -149,30 +156,37 @@ fun Notifications(app: Session, notifications: List<Row>, users: List<Row>) {
                                 interactive = !initialMask,
                             )
                         }
-                    }
-                    if (groups.isEmpty() && !initialLoading)
-                        Column(
-                            Modifier.fillMaxWidth().heightIn(min = 288.dp).padding(24.dp),
-                            horizontalAlignment = Alignment.CenterHorizontally,
-                            verticalArrangement = Arrangement.Center,
-                        ) {
-                            Icon("bell", modifier = Modifier.size(32.dp))
-                            Spacer(Modifier.height(12.dp))
-                            Text(app.t("notifications.empty"), muted = true)
-                        }
-                    if (loading && !initialMask)
-                        Box(
-                            Modifier.fillMaxWidth()
-                                .align(Alignment.BottomCenter)
-                                .background(MaterialTheme.colorScheme.background)
-                                .padding(vertical = 16.dp),
-                            contentAlignment = Alignment.Center,
-                        ) {
-                            NotificationSpinner(app)
-                        }
                 }
+                if (
+                    loadError == null &&
+                        groups.isEmpty() &&
+                        !initialLoading &&
+                        !apub.loading &&
+                        !apub.error &&
+                        apub.items.isEmpty()
+                )
+                    Column(
+                        Modifier.fillMaxWidth().heightIn(min = 288.dp).padding(24.dp),
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        verticalArrangement = Arrangement.Center,
+                    ) {
+                        Icon("bell", modifier = Modifier.size(32.dp))
+                        Spacer(Modifier.height(12.dp))
+                        Text(app.t("notifications.empty"), muted = true)
+                    }
+                if (loading && !initialMask)
+                    Box(
+                        Modifier.fillMaxWidth()
+                            .align(Alignment.BottomCenter)
+                            .background(MaterialTheme.colorScheme.background)
+                            .padding(vertical = 16.dp),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        NotificationSpinner(app)
+                    }
+            }
         }
-        if (initialMask)
+        if (maskWholeList)
             Box(
                 Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background),
                 contentAlignment = Alignment.Center,
@@ -315,10 +329,19 @@ fun NotificationCard(
             "count" to (actors.size - 1).toString(),
         )
     BoxWithConstraints(
-        Modifier.fillMaxWidth().then(webControlModifier("listitem")).semantics {
-            contentDescription = notificationLabel
-            isTraversalGroup = true
-        }
+        Modifier.fillMaxWidth()
+            .alpha(if (interactive) 1f else 0f)
+            .then(
+                webControlModifier(
+                    "listitem",
+                    attributes = mapOf("aria-hidden" to (!interactive).toString()),
+                )
+            )
+            .semantics {
+                if (!interactive) invisibleToUser()
+                contentDescription = notificationLabel
+                isTraversalGroup = true
+            }
     ) {
         val mobile = maxWidth < 640.dp
         val colors = MaterialTheme.colorScheme

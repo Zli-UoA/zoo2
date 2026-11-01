@@ -1,5 +1,16 @@
 import { readFile, writeFile, mkdir, cp } from "node:fs/promises";
 const names = [
+  "square-pen",
+  "globe",
+  "lock-keyhole",
+  "network",
+  "unplug",
+  "home",
+  "user-search",
+  "arrow-down",
+  "reply",
+  "repeat-2",
+
   "settings",
   "image-plus",
   "paperclip",

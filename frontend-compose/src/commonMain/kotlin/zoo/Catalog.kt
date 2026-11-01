@@ -42,8 +42,10 @@ fun Catalog(app: Session, options: Row) {
     LaunchedEffect(hasMeasured, measuredWidth, measuredHeight) {
         if (hasMeasured) app.platform.action("catalog-size:$measuredWidth:$measuredHeight")
     }
-    val overlayOpen = app.overlays.isNotEmpty() || app.toastState != null
-    LaunchedEffect(overlayOpen) { app.platform.action("catalog-overlay:$overlayOpen") }
+    val overlayOpen = app.overlays.any { it.visible } || app.toastState != null
+    // Re-announce after controlled args change as well as open/close. The host
+    // must receive the current clipping state when an existing preview reopens.
+    LaunchedEffect(overlayOpen, fixture) { app.platform.action("catalog-overlay:$overlayOpen") }
     val overlayBounds = options.nested("overlayBounds")
     val normalBounds = options.nested("normalBounds")
     val bounds = if (normalBounds.isNotEmpty()) normalBounds else overlayBounds
@@ -101,6 +103,7 @@ fun Catalog(app: Session, options: Row) {
                 "app-story" -> AppStory(app, options)
                 "preference-story" -> PreferenceStory(app, options)
                 "notification-story" -> NotificationStory(app, options)
+                "home-story" -> HomeScreen(app, fixture, fixture.nested("args"))
                 "dialog-demo",
                 "confirm" -> {
                     var open by

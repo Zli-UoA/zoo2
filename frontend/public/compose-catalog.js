@@ -29,6 +29,17 @@ const filesReady = () =>
     : new Promise((resolve, reject) => fileWaiters.push({ resolve, reject }));
 globalThis.zooCatalog = {
   options: {},
+  createWebSocket(url) {
+    // MSW intercepts sockets in the Storybook window. Share that browser
+    // transport while all authentication, subscriptions and UI stay in Kotlin.
+    let owner = window;
+    try {
+      if (parent.location.origin === location.origin) owner = parent;
+    } catch {
+      // A standalone catalog or unrelated parent uses its own transport.
+    }
+    return new owner.WebSocket(url);
+  },
   installFiles(files) {
     browserFiles = files;
     for (const [id, target] of fileTargets) files.target(id, target.bounds, target.receive);

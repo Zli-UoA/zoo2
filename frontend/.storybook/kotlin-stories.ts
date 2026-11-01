@@ -1,4 +1,5 @@
 import { avatarStoryInitials } from "./basic-fixtures";
+import { homeOptions } from "./home-stories";
 import { primitiveOptions } from "./primitive-stories";
 import { messageOptions } from "./message-stories";
 import { shellOptions } from "./shell-stories";
@@ -49,6 +50,7 @@ export function kotlinOptions(context: Selection): KotlinPreviewProps | null {
     fixture,
   };
   for (const adapter of [
+    homeOptions,
     primitiveOptions,
     messageOptions,
     shellOptions,

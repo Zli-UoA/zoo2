@@ -57,6 +57,8 @@ fun NotificationStory(app: Session, options: Row) {
                                 fixture.array("channelUsers").map { it.jsonObject },
                                 !wide,
                                 wide,
+                                presentation =
+                                    obj("memberCount" to fixture.text("comparisonMemberCount")),
                             )
                             HorizontalDivider()
                             Box(Modifier.padding(12.dp)) {

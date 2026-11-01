@@ -40,7 +40,8 @@ export interface KotlinPreviewProps {
     | "shell-story"
     | "app-story"
     | "preference-story"
-    | "notification-story";
+    | "notification-story"
+    | "home-story";
   fixture?: Record<string, unknown>;
   path?: string;
   content: string;
@@ -81,6 +82,12 @@ export function KotlinPreview(props: KotlinPreviewProps) {
     mac,
     viewportWidth: window.innerWidth,
     viewportHeight: window.innerHeight,
+    visualViewportHeight:
+      window.visualViewport?.scale === 1 ? window.visualViewport.height : window.innerHeight,
+    visualViewportTop:
+      window.visualViewport?.scale === 1 && window.innerHeight - window.visualViewport.height >= 1
+        ? window.visualViewport.offsetTop
+        : 0,
     focused: document.hasFocus(),
     visible: document.visibilityState === "visible",
     reducedMotion: window.matchMedia("(prefers-reduced-motion: reduce)").matches,
@@ -94,6 +101,13 @@ export function KotlinPreview(props: KotlinPreviewProps) {
           mac,
           viewportWidth: window.innerWidth,
           viewportHeight: window.innerHeight,
+          visualViewportHeight:
+            window.visualViewport?.scale === 1 ? window.visualViewport.height : window.innerHeight,
+          visualViewportTop:
+            window.visualViewport?.scale === 1 &&
+            window.innerHeight - window.visualViewport.height >= 1
+              ? window.visualViewport.offsetTop
+              : 0,
           focused: document.hasFocus(),
           visible: document.visibilityState === "visible",
           reducedMotion: media.matches,
@@ -102,10 +116,14 @@ export function KotlinPreview(props: KotlinPreviewProps) {
       });
     update();
     for (const event of ["resize", "focus", "blur"]) window.addEventListener(event, update);
+    window.visualViewport?.addEventListener("resize", update);
+    window.visualViewport?.addEventListener("scroll", update);
     document.addEventListener("visibilitychange", update);
     media.addEventListener("change", update);
     return () => {
       for (const event of ["resize", "focus", "blur"]) window.removeEventListener(event, update);
+      window.visualViewport?.removeEventListener("resize", update);
+      window.visualViewport?.removeEventListener("scroll", update);
       document.removeEventListener("visibilitychange", update);
       media.removeEventListener("change", update);
     };
@@ -202,7 +220,14 @@ export function KotlinPreview(props: KotlinPreviewProps) {
       if (event.data.type === "zoo-compose-catalog-overlay") {
         if (event.data.open === true && placeholder.current) {
           const rect = placeholder.current.getBoundingClientRect();
-          setOverlayBounds({ x: rect.x, y: rect.y, width: rect.width, height: rect.height });
+          setOverlayBounds((previous) =>
+            previous?.x === rect.x &&
+            previous.y === rect.y &&
+            previous.width === rect.width &&
+            previous.height === rect.height
+              ? previous
+              : { x: rect.x, y: rect.y, width: rect.width, height: rect.height },
+          );
         } else if (event.data.open === false) setOverlayBounds(null);
         return;
       }

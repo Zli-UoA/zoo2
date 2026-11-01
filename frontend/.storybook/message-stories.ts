@@ -1,6 +1,10 @@
 import { storyDeploymentCard } from "./app-fixtures";
 import kitchenCatalogUrl from "../src/lib/emoji/emoji-kitchen.json?url";
-import { githubFeedCards, reactionKitchenCatalog } from "./message-fixtures";
+import {
+  activityPubMessageStates,
+  githubFeedCards,
+  reactionKitchenCatalog,
+} from "./message-fixtures";
 import type { KotlinPreviewProps } from "./KotlinPreview";
 import type { Selection } from "./kotlin-stories";
 
@@ -198,6 +202,18 @@ function messageInteractions(component: string, state: string): Record<string, u
       { action: "callback", name: "onSendReply", args: ["/github", "github"] },
     ];
   if (component === "MessageRow") {
+    if (state in activityPubMessageStates)
+      return [
+        wait("img", "ActivityPub"),
+        {
+          action: "wait",
+          text:
+            activityPubMessageStates[state as keyof typeof activityPubMessageStates] === "unlisted"
+              ? "ホーム"
+              : "パブリック",
+          exact: true,
+        },
+      ];
     if (state === "Edited")
       return [
         { action: "hover", role: "img", name: "編集済み", exact: true },

@@ -2,6 +2,7 @@ import { activityPubNotifications } from "../../../.storybook/activitypub-fixtur
 import {
   notificationComparisonText,
   notificationComparisonLabel,
+  notificationComparisonMemberCount,
 } from "../../../.storybook/notification-fixtures";
 import { storySurfaces } from "../../../.storybook/story-surfaces";
 import { playForImplementation } from "../../../.storybook/play-for-implementation";
@@ -146,7 +147,10 @@ export const MessageLayoutComparison: Story = {
   render: () => (
     <div className="grid h-full grid-cols-1 grid-rows-2 md:grid-cols-2 md:grid-rows-1">
       <section aria-label={notificationComparisonLabel}>
-        <ChannelHeader channel={storyChannels[0]!} memberCount={3} />
+        <ChannelHeader
+          channel={storyChannels[0]!}
+          memberCount={notificationComparisonMemberCount}
+        />
         <div className="p-3">
           <MessageBody content={notificationComparisonText} />
         </div>
@@ -326,19 +330,23 @@ export const FollowRequests: Story = {
   parameters: {
     collections: { ...storyCollections, notifications: [] },
     msw: { handlers: apubHandlers },
+    fixtureControls: {
+      assertFollowRead: () => expect(apubItems[0].is_read).toBe(true),
+      assertFollowRejected: () => expect(apubItems[0].pending).toBe(false),
+    },
   },
-  play: async () => {
+  play: playForImplementation(async () => {
     const panel = within(await screen.findByRole("region", { name: "ホームの通知" }));
     await expect(await panel.findByText(/フォロー申請が届きました/)).toBeVisible();
     await expect(panel.getByRole("button", { name: "承認" })).toBeVisible();
     await expect(panel.getByRole("button", { name: "拒否" })).toBeVisible();
     await expect(panel.getByText(/フォローが承認されました/)).toBeVisible();
     await expect(panel.getByText(/投稿にリアクションしました/)).toBeVisible();
-  },
+  }),
 };
 export const ApproveFollow: Story = {
   ...FollowRequests,
-  play: async () => {
+  play: playForImplementation(async () => {
     const panel = within(await screen.findByRole("region", { name: "ホームの通知" }));
     await userEvent.click(await panel.findByRole("button", { name: "承認" }));
     await waitFor(() =>
@@ -349,18 +357,18 @@ export const ApproveFollow: Story = {
     await waitFor(() =>
       expect(panel.queryByRole("button", { name: "すべて既読にする" })).not.toBeInTheDocument(),
     );
-  },
+  }),
 };
 export const RejectFollow: Story = {
   ...FollowRequests,
-  play: async () => {
+  play: playForImplementation(async () => {
     const panel = within(await screen.findByRole("region", { name: "ホームの通知" }));
     await userEvent.click(await panel.findByRole("button", { name: "拒否" }));
     await waitFor(() =>
       expect(panel.queryByRole("button", { name: "拒否" })).not.toBeInTheDocument(),
     );
     await expect(apubItems[0].pending).toBe(false);
-  },
+  }),
 };
 export const FollowDecisionError: Story = {
   ...FollowRequests,
@@ -376,12 +384,12 @@ export const FollowDecisionError: Story = {
       ],
     },
   },
-  play: async () => {
+  play: playForImplementation(async () => {
     const panel = within(await screen.findByRole("region", { name: "ホームの通知" }));
     await userEvent.click(await panel.findByRole("button", { name: "承認" }));
     await expect(await panel.findByRole("alert")).toBeVisible();
     await waitFor(() => expect(panel.getByRole("button", { name: "承認" })).toBeEnabled());
-  },
+  }),
 };
 export const MobileFollowRequests: Story = {
   ...FollowRequests,
@@ -396,11 +404,11 @@ export const HomeNotificationsError: Story = {
       ],
     },
   },
-  play: async () => {
+  play: playForImplementation(async () => {
     const panel = within(await screen.findByRole("region", { name: "ホームの通知" }));
     await expect(await panel.findByRole("alert")).toBeVisible();
     await expect(panel.getByRole("button", { name: "更新" })).toBeVisible();
-  },
+  }),
 };
 const notificationsLive = ws.link("*/api/home/live");
 let liveItems: typeof activityPubNotifications = [];
@@ -411,6 +419,13 @@ export const LiveFollowRequest: Story = {
     notificationConnection = false;
   },
   parameters: {
+    fixtureControls: {
+      publishFollowRequest: async () => {
+        await waitFor(() => expect(notificationConnection).toBe(true));
+        liveItems = structuredClone(activityPubNotifications);
+        notificationsLive.broadcast("refresh");
+      },
+    },
     msw: {
       handlers: [
         http.get("*/api/activitypub/notifications", () =>
@@ -425,13 +440,13 @@ export const LiveFollowRequest: Story = {
       ],
     },
   },
-  play: async () => {
+  play: playForImplementation(async () => {
     await waitFor(() => expect(notificationConnection).toBe(true));
     liveItems = structuredClone(activityPubNotifications);
     notificationsLive.broadcast("refresh");
     const panel = within(await screen.findByRole("region", { name: "ホームの通知" }));
     await expect(await panel.findByRole("button", { name: "承認" })).toBeVisible();
-  },
+  }),
 };
 
 let pagedRequestApproved = false;
@@ -440,6 +455,9 @@ export const OlderFollowRequests: Story = {
     pagedRequestApproved = false;
   },
   parameters: {
+    fixtureControls: {
+      assertOlderFollowApproved: () => waitFor(() => expect(pagedRequestApproved).toBe(true)),
+    },
     msw: {
       handlers: [
         http.get("*/api/activitypub/notifications", ({ request }) => {
@@ -467,11 +485,11 @@ export const OlderFollowRequests: Story = {
       ],
     },
   },
-  play: async () => {
+  play: playForImplementation(async () => {
     const panel = within(await screen.findByRole("region", { name: "ホームの通知" }));
     await userEvent.click(await panel.findByRole("button", { name: "過去の通知を読む" }));
     await expect(await panel.findByText("Older peer")).toBeVisible();
     await userEvent.click(await panel.findByRole("button", { name: "承認" }));
     await waitFor(() => expect(pagedRequestApproved).toBe(true));
-  },
+  }),
 };

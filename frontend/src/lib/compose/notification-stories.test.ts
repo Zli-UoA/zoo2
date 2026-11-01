@@ -120,6 +120,14 @@ describe("native notification plays", () => {
       "Loading",
       "Bodies Ready Together",
       "Loading On Scroll",
+      "Follow Requests",
+      "Approve Follow",
+      "Reject Follow",
+      "Follow Decision Error",
+      "Mobile Follow Requests",
+      "Home Notifications Error",
+      "Live Follow Request",
+      "Older Follow Requests",
     ].map((name) => ["Pages/Notifications", name]),
     ...[
       "Mention",
@@ -163,5 +171,43 @@ describe("native notification plays", () => {
       1, 2,
     ]);
     expect(steps.some((step) => step.action === "pointer" && step.ctrlKey)).toBe(true);
+  });
+});
+
+describe("ActivityPub notification story operations", () => {
+  const steps = (name: string) =>
+    notificationOptions(selection("Pages/Notifications", name), base)!.fixture!
+      .interactions as NativeInteraction[];
+  it("sends approvals and all-read through controls and asserts the shared MSW result", () => {
+    expect(
+      steps("Approve Follow")
+        .filter((step) => step.action === "click")
+        .map((step) => step.name),
+    ).toEqual(["承認", "すべて既読にする"]);
+    expect(
+      steps("Approve Follow").some(
+        (step) => step.action === "fixture" && step.name === "assertFollowRead",
+      ),
+    ).toBe(true);
+    expect(
+      notificationOptions(selection("Pages/Notifications", "Approve Follow"), base)?.fixture
+        ?.sharedApi,
+    ).toBe(true);
+  });
+  it("publishes real websocket invalidations and paginates before approving older requests", () => {
+    expect(steps("Live Follow Request")[0]).toMatchObject({
+      action: "fixture",
+      name: "publishFollowRequest",
+    });
+    expect(
+      steps("Older Follow Requests")
+        .filter((step) => step.action === "click")
+        .map((step) => step.name),
+    ).toEqual(["過去の通知を読む", "承認"]);
+    expect(
+      steps("Older Follow Requests").some(
+        (step) => step.action === "fixture" && step.name === "assertOlderFollowApproved",
+      ),
+    ).toBe(true);
   });
 });

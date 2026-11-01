@@ -1,6 +1,8 @@
 import type { NativeInteraction } from "./native-interactions";
 import {
   searchDemoQuery,
+  channelRuleInitialPattern,
+  channelRuleSavedPattern,
   longSearchDemoQuery,
   pushStoryControls,
   pushStoryPresets,
@@ -60,6 +62,33 @@ export function preferenceOptions(
       wait("combobox", "検索エンジン", { enabled: true });
       wait("combobox", "プッシュ通知", { enabled: false });
     }
+  }
+  if (kind === "settings" && name === "Channel Rule") {
+    wait("textbox", "LTLに流すチャンネル名のルール", {
+      enabled: true,
+      valueExact: channelRuleInitialPattern,
+    });
+    interactions.push({
+      action: "type",
+      role: "textbox",
+      name: "LTLに流すチャンネル名のルール",
+      value: channelRuleSavedPattern,
+      exact: true,
+    });
+    click("button", "保存");
+    wait("button", "保存", { enabled: true });
+    wait("textbox", "LTLに流すチャンネル名のルール", { valueExact: channelRuleSavedPattern });
+  }
+  if (kind === "settings" && name === "Channel Rule Error") {
+    wait("alert", "", { exact: false });
+    click("button", "更新");
+    wait("textbox", "LTLに流すチャンネル名のルール", {
+      enabled: true,
+      valueExact: channelRuleInitialPattern,
+    });
+    click("button", "保存");
+    wait("alert", "", { exact: false });
+    wait("button", "保存", { enabled: true });
   }
   if (kind === "members") {
     if (name === "Load Error") {
@@ -206,6 +235,7 @@ export function preferenceOptions(
     ...base.fixture,
     kind,
     state,
+    sharedApi: true,
     interactions,
     pushToggleCallback: pushState !== undefined,
     searchQuery: searchDemoQuery,

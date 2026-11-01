@@ -671,41 +671,39 @@ internal fun Message(
                     }
                 else Avatar(user, Modifier.padding(top = 2.dp))
                 Column(Modifier.weight(1f)) {
-                    if (!grouped)
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(8.dp),
-                        ) {
-                            Row(
-                                verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.spacedBy(6.dp),
-                            ) {
-                                val identity =
-                                    if (message.flag("is_bot") && message.present("app_id"))
-                                        Modifier.then(webControlModifier("button")).clickable(
-                                            role = Role.Button
-                                        ) {
-                                            app.openApp(message.text("app_id"))
-                                        }
-                                    else Modifier
-                                Text(
-                                    author(user).ifEmpty { message.text("user_id") },
-                                    identity,
-                                    weight = FontWeight.SemiBold,
-                                )
-                                if (message.flag("is_bot"))
+                    if (!grouped || message.flag("apub"))
+                        FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            if (!grouped)
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                                ) {
+                                    val identity =
+                                        if (message.flag("is_bot") && message.present("app_id"))
+                                            Modifier.then(webControlModifier("button")).clickable(
+                                                role = Role.Button
+                                            ) {
+                                                app.openApp(message.text("app_id"))
+                                            }
+                                        else Modifier
                                     Text(
-                                        "APP",
-                                        Modifier.background(
-                                                MaterialTheme.colorScheme.surfaceVariant,
-                                                RoundedCornerShape(4.dp),
-                                            )
-                                            .padding(horizontal = 4.dp, vertical = 2.dp),
-                                        size = 9.sp,
+                                        author(user).ifEmpty { message.text("user_id") },
+                                        identity,
                                         weight = FontWeight.SemiBold,
-                                        muted = true,
                                     )
-                            }
+                                    if (message.flag("is_bot"))
+                                        Text(
+                                            "APP",
+                                            Modifier.background(
+                                                    MaterialTheme.colorScheme.surfaceVariant,
+                                                    RoundedCornerShape(4.dp),
+                                                )
+                                                .padding(horizontal = 4.dp, vertical = 2.dp),
+                                            size = 9.sp,
+                                            weight = FontWeight.SemiBold,
+                                            muted = true,
+                                        )
+                                }
                             Hint(app.platform.fullTimestamp(message.text("created_at"))) {
                                 hintModifier ->
                                 Text(
@@ -716,6 +714,8 @@ internal fun Message(
                                     size = 11.sp,
                                 )
                             }
+                            if (message.flag("apub"))
+                                ActivityPubBadge(app, message.text("apub_visibility"))
                         }
                     if (editing) {
                         Column(

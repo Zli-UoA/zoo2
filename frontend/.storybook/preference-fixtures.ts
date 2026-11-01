@@ -20,3 +20,6 @@ export const pushStoryPresets = {
   "Select Busy": { ...pushStoryControls, busy: true },
   "Select Blocked": { ...pushStoryControls, blocked: true, label: blockedPushLabel },
 };
+
+export const channelRuleInitialPattern = "ltl-%";
+export const channelRuleSavedPattern = "public-%";

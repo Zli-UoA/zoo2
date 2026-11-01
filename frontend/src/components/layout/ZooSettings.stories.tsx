@@ -1,3 +1,7 @@
+import {
+  channelRuleInitialPattern,
+  channelRuleSavedPattern,
+} from "../../../.storybook/preference-fixtures";
 import { playForImplementation } from "../../../.storybook/play-for-implementation";
 import type { Meta, StoryObj } from "@storybook/react-vite";
 import { expect, screen, userEvent, waitFor, within } from "storybook/test";
@@ -84,10 +88,10 @@ export const Members: Story = {
 
 export const GeneralMobile: Story = { ...General, globals: { viewport: { value: "mobile" } } };
 
-let savedPattern = "^ltl-.*$";
+let savedPattern = channelRuleInitialPattern;
 export const ChannelRule: Story = {
   beforeEach: () => {
-    savedPattern = "^ltl-.*$";
+    savedPattern = channelRuleInitialPattern;
   },
   parameters: {
     msw: {
@@ -104,15 +108,20 @@ export const ChannelRule: Story = {
       ],
     },
   },
-  play: async () => {
-    await userEvent.click(screen.getByRole("tab", { name: "ActivityPub" }));
-    const field = await screen.findByRole("textbox", { name: "LTLに流すチャンネル名のルール" });
-    await userEvent.clear(field);
-    await userEvent.type(field, "^public-.*$");
-    await userEvent.click(within(field.closest("form")!).getByRole("button", { name: "保存" }));
-    await waitFor(() => expect(savedPattern).toBe("^public-.*$"));
-    await expect(field).toHaveValue("^public-.*$");
-  },
+  play: playForImplementation(
+    async () => {
+      await userEvent.click(screen.getByRole("tab", { name: "ActivityPub" }));
+      const field = await screen.findByRole("textbox", { name: "LTLに流すチャンネル名のルール" });
+      await userEvent.clear(field);
+      await userEvent.type(field, channelRuleSavedPattern);
+      await userEvent.click(within(screen.getByRole("textbox", { name: "LTLに流すチャンネル名のルール" }).closest("form")!).getByRole("button", { name: "保存" }));
+      await waitFor(() => expect(savedPattern).toBe(channelRuleSavedPattern));
+      await expect(field).toHaveValue(channelRuleSavedPattern);
+    },
+    async () => {
+      await waitFor(() => expect(savedPattern).toBe(channelRuleSavedPattern));
+    },
+  ),
 };
 
 let ruleLoads = 0;
@@ -127,23 +136,30 @@ export const ChannelRuleError: Story = {
         http.get("*/api/home/settings", () =>
           ++ruleLoads === 1
             ? new HttpResponse(null, { status: 500 })
-            : HttpResponse.json({ can_manage: true, ltl_channel_pattern: "^ltl-.*$" }),
+            : HttpResponse.json({
+                can_manage: true,
+                ltl_channel_pattern: channelRuleInitialPattern,
+              }),
         ),
         http.put("*/api/home/settings", () => new HttpResponse(null, { status: 500 })),
       ],
     },
   },
-  play: async () => {
-    await userEvent.click(screen.getByRole("tab", { name: "ActivityPub" }));
-    await expect(await screen.findByRole("alert")).toBeVisible();
-    await userEvent.click(screen.getByRole("button", { name: "更新" }));
-    await expect(
-      await screen.findByRole("textbox", { name: "LTLに流すチャンネル名のルール" }),
-    ).toBeVisible();
-    const ruleField = screen.getByRole("textbox", { name: "LTLに流すチャンネル名のルール" });
-    await userEvent.click(within(ruleField.closest("form")!).getByRole("button", { name: "保存" }));
-    await expect(await screen.findByRole("alert")).toBeVisible();
-  },
+  play: playForImplementation(
+    async () => {
+      await userEvent.click(screen.getByRole("tab", { name: "ActivityPub" }));
+      await expect(await screen.findByRole("alert")).toBeVisible();
+      await userEvent.click(screen.getByRole("button", { name: "更新" }));
+      await expect(
+        await screen.findByRole("textbox", { name: "LTLに流すチャンネル名のルール" }),
+      ).toBeVisible();
+      await userEvent.click(within(screen.getByRole("textbox", { name: "LTLに流すチャンネル名のルール" }).closest("form")!).getByRole("button", { name: "保存" }));
+      await expect(await screen.findByRole("alert")).toBeVisible();
+    },
+    async () => {
+      await expect(ruleLoads).toBe(2);
+    },
+  ),
 };
 
 let savedProfile = {

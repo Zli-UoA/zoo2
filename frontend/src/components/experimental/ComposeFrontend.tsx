@@ -1,6 +1,6 @@
 import { applyComposeInputHints } from "../../lib/compose/input-hints";
 import { createComposeFiles } from "../../lib/compose/files";
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useRouter, useRouterState } from "@tanstack/react-router";
 import { useTranslation } from "react-i18next";
 import { ApiError, buildAuthHeaders, createConfiguredApiClient } from "../../lib/api/client";
@@ -104,7 +104,15 @@ export function ComposeRuntime({ config, status }: { config: AppConfig; status?:
   const theme = useTheme();
   const language = useLocale();
   const offline = useOfflineStatus();
-  const viewportRef = useVisualViewport();
+  const setVisualViewport = useVisualViewport();
+  const viewportRef = useRef<HTMLDivElement | null>(null);
+  const attachViewport = useCallback(
+    (element: HTMLDivElement | null) => {
+      viewportRef.current = element;
+      setVisualViewport(element);
+    },
+    [setVisualViewport],
+  );
   const [error, setError] = useState(false);
   const [loaded, setLoaded] = useState(false);
   const [cacheError, setCacheError] = useState<string | null>(null);
@@ -140,6 +148,10 @@ export function ComposeRuntime({ config, status }: { config: AppConfig; status?:
       persistenceError:
         stateRef.current.cacheError ?? stateRef.current.offline.persistenceError ?? "",
       reducedMotion: window.matchMedia("(prefers-reduced-motion: reduce)").matches,
+      visualViewportHeight:
+        window.visualViewport?.scale === 1 ? window.visualViewport.height : window.innerHeight,
+      // useVisualViewport already offsets this root; native overlays use its origin.
+      visualViewportTop: 0,
       status: stateRef.current.status?.phase ?? "",
       statusMessage: stateRef.current.status?.message ?? "",
     });
@@ -492,7 +504,10 @@ export function ComposeRuntime({ config, status }: { config: AppConfig; status?:
     };
     // Route modal Escape before a backing editor or a disposed focus target consumes it.
     window.addEventListener("keydown", escape, true);
-    const resize = new ResizeObserver(() => window.dispatchEvent(new Event("resize")));
+    const resize = new ResizeObserver(() => {
+      update();
+      window.dispatchEvent(new Event("resize"));
+    });
     if (viewportRef.current) resize.observe(viewportRef.current);
     return () => {
       cancelled = true;
@@ -532,7 +547,7 @@ export function ComposeRuntime({ config, status }: { config: AppConfig; status?:
   ]);
   return (
     <div
-      ref={viewportRef}
+      ref={attachViewport}
       className="fixed inset-x-0 top-0 h-dvh w-full overflow-hidden bg-background text-foreground"
       data-app-shell
       data-compose-shell

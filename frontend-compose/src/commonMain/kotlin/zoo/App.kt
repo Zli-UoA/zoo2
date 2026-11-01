@@ -59,11 +59,16 @@ fun ZooApp(app: Session) {
     val notifications by app.repo.notifications.rows.collectAsState()
     val loading by app.repo.channels.loading.collectAsState()
     val channel = channels.find { it.text("id") == app.channelId }
+    val isHome = app.env.path.substringBefore('?') == "/home"
     val isNotifications = app.env.path.startsWith("/notifications")
     val isSettings = app.env.path.startsWith("/settings")
     val isBubble = app.env.path.startsWith("/bubble")
     val fullPage =
-        isNotifications || isSettings || isBubble || app.env.path.startsWith("/apps-authorize")
+        isHome ||
+            isNotifications ||
+            isSettings ||
+            isBubble ||
+            app.env.path.startsWith("/apps-authorize")
     BoxWithConstraints(
         Modifier.fillMaxSize().focusInputModality().background(MaterialTheme.colorScheme.background)
     ) {
@@ -97,6 +102,7 @@ fun ZooApp(app: Session) {
                     when {
                         showMembersScreen ->
                             ChannelMembersScreen(app, membersChannel!!, users, members)
+                        isHome -> HomeScreen(app)
                         isSettings -> ZooSettings(app, users)
                         isBubble -> BubbleChat(app, users)
                         isNotifications -> Notifications(app, notifications, users)
@@ -267,6 +273,7 @@ internal fun AppDialogs(
 
 @Composable
 internal fun Rail(app: Session, unread: Int, narrow: Boolean) {
+    LaunchedEffect(app) { app.activityPubNotifications.ensureLoaded() }
     Column(
         Modifier.width(if (narrow) 55.dp else 63.dp)
             .fillMaxHeight()
@@ -291,8 +298,9 @@ internal fun Rail(app: Session, unread: Int, narrow: Boolean) {
             HorizontalDivider()
             Spacer(Modifier.height(4.dp))
         }
+        RailLink(app, "/home", "home", app.t("home.title"))
         RailLink(app, "/", "hash", app.t("channels.title"))
-        NotificationsButton(app, unread)
+        NotificationsButton(app, unread + app.activityPubNotifications.unreadCount)
         RailLink(app, "/bubble", "message-circle-more", app.t("bubbleChat.title"))
         if (app.env.development) RailLink(app, "/realtime", "activity", app.t("sync.title"))
         Spacer(Modifier.weight(1f))

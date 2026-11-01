@@ -679,6 +679,7 @@ fun EmojiPicker(
     initialKitchen: Boolean = false,
     initialRecents: List<String>? = null,
     kitchenCatalogUrl: String? = null,
+    embedded: Boolean = false,
     select: (String) -> Unit,
 ) {
     var query by remember(initialSearch) { mutableStateOf(initialSearch) }
@@ -757,13 +758,7 @@ fun EmojiPicker(
             Text(value, size = 20.sp)
         }
     }
-    Panel(
-        app.t("reactions.add"),
-        close,
-        448.dp,
-        description =
-            app.t(if (kitchen) "reactions.kitchenDescription" else "reactions.emojiDescription"),
-    ) {
+    val content: @Composable ColumnScope.() -> Unit = pickerContent@{
         Row(
             Modifier.fillMaxWidth()
                 .background(
@@ -792,7 +787,7 @@ fun EmojiPicker(
         }
         if (kitchen) {
             KitchenPicker(app, ::choose, kitchenCatalogUrl)
-            return@Panel
+            return@pickerContent
         }
         if (recents.isNotEmpty()) {
             androidx.compose.foundation.layout.FlowRow(
@@ -915,6 +910,18 @@ fun EmojiPicker(
                 }
         }
     }
+    if (embedded) Column(Modifier.fillMaxWidth(), content = content)
+    else
+        Panel(
+            app.t("reactions.add"),
+            close,
+            448.dp,
+            description =
+                app.t(
+                    if (kitchen) "reactions.kitchenDescription" else "reactions.emojiDescription"
+                ),
+            content = content,
+        )
 }
 
 /** Find balanced MFM functions without swallowing nested closing brackets. */

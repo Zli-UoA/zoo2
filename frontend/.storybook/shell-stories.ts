@@ -217,6 +217,30 @@ export function shellOptions(
     if (name.includes("Bubble Chat")) path = "/bubble";
     fixture.membersOpen =
       new URL(path, "http://storybook.local").searchParams.get("members") === "true";
+    if (
+      [
+        "Home",
+        "Mobile Home",
+        "Dark Home",
+        "Empty Home",
+        "Mobile Empty Home",
+        "Federated Unread",
+      ].includes(name)
+    ) {
+      path = "/home";
+      fixture.sharedApi = true;
+      interactions.push(
+        {
+          action: "wait",
+          text: name.includes("Empty") ? "まだ投稿がありません" : "Homeから最初の公開投稿です",
+          exact: name.includes("Empty"),
+        },
+        { ...wait("link", "Home"), attributes: { "data-status": "active" } },
+        wait("complementary", "チャンネル", "hidden"),
+        wait("button", "投稿を書く"),
+      );
+      if (name === "Federated Unread") interactions.push(wait("link", "未読通知 6 件"));
+    }
     if (name === "Welcome") interactions.push(wait("complementary", "チャンネル"));
     if (["Channel", "Channel With Members"].includes(name))
       interactions.push(

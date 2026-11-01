@@ -37,7 +37,11 @@ class Session(val repo: Repository, val scope: CoroutineScope, initial: Environm
 
     var pane by
         mutableStateOf(
-            if (initial.path.startsWith("/channels/") || initial.path.startsWith("/notifications"))
+            if (
+                initial.path.startsWith("/channels/") ||
+                    initial.path.startsWith("/notifications") ||
+                    initial.path.substringBefore('?') == "/home"
+            )
                 "chat"
             else "sidebar"
         )
@@ -76,6 +80,7 @@ class Session(val repo: Repository, val scope: CoroutineScope, initial: Environm
     var target by mutableStateOf<String?>(null)
     private val assetClient = HttpClient()
     val assets = mutableMapOf<String, JsonElement>()
+    val activityPubNotifications by lazy { ActivityPubNotificationsState(this) }
     val previews = PreviewLoader(this)
     val attachmentLinks = AttachmentLinks(this)
     val channelId: String?
@@ -109,7 +114,7 @@ class Session(val repo: Repository, val scope: CoroutineScope, initial: Environm
     }
 
     fun escape(): Boolean {
-        val top = overlays.lastOrNull { !it.tooltip } ?: return false
+        val top = overlays.lastOrNull { it.visible && !it.tooltip } ?: return false
         if (top.onEscape?.invoke() != true) top.close()
         return true
     }
@@ -170,15 +175,28 @@ class Session(val repo: Repository, val scope: CoroutineScope, initial: Environm
         if (old.path.substringBefore('?') != next.path.substringBefore('?')) {
             thread = null
             pane =
-                if (channelId != null || next.path.startsWith("/notifications")) "chat"
+                if (
+                    channelId != null ||
+                        next.path.startsWith("/notifications") ||
+                        next.path.substringBefore('?') == "/home"
+                )
+                    "chat"
                 else "sidebar"
         }
         if (!old.online && next.online) repo.refresh()
     }
 
     fun start() {
+        activityPubNotifications.ensureLoaded()
         searchPreferences.ensureLoaded()
-        pane = if (channelId != null || env.path.startsWith("/notifications")) "chat" else "sidebar"
+        pane =
+            if (
+                channelId != null ||
+                    env.path.startsWith("/notifications") ||
+                    env.path.substringBefore('?') == "/home"
+            )
+                "chat"
+            else "sidebar"
         scope.launch {
             while (isActive) {
                 if (env.online && env.visible) {
@@ -354,7 +372,13 @@ class Session(val repo: Repository, val scope: CoroutineScope, initial: Environm
         if (membersOpen && wide) thread = null
     }
 
+    private val homeLiveState = lazy { HomeLive(this) }
+    val homeLive: HomeLive
+        get() = homeLiveState.value
+
     fun close() {
+        if (homeLiveState.isInitialized()) homeLiveState.value.close()
+        activityPubNotifications.close()
         toastController.close()
         if (preferenceState.isInitialized()) preferenceState.value.close()
         assetClient.close()

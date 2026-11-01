@@ -184,7 +184,7 @@ export const Home: Story = {
     router: { initialEntries: ["/home"] },
     msw: { handlers: homeHandlers },
   },
-  play: async () => {
+  play: playForImplementation(async () => {
     await expect(await screen.findByText(/Homeから最初の公開投稿です/)).toBeVisible();
     await expect(screen.getByRole("link", { name: "Home" })).toHaveAttribute(
       "data-status",
@@ -199,7 +199,7 @@ export const Home: Story = {
     await expect(main.bottom - button.bottom).toBeGreaterThanOrEqual(19);
     await expect(main.bottom - button.bottom).toBeLessThanOrEqual(33);
     await expect(main.bottom).toBe(window.innerHeight);
-  },
+  }),
 };
 export const MobileHome: Story = { ...Home, globals: { viewport: { value: "mobile" } } };
 export const DarkHome: Story = { ...Home, globals: { theme: "dark" } };
@@ -210,14 +210,14 @@ export const EmptyHome: Story = {
     ...Home.parameters,
     msw: { handlers: [http.get("*/api/home", () => HttpResponse.json([]))] },
   },
-  play: async () => {
+  play: playForImplementation(async () => {
     await expect(await screen.findByText("まだ投稿がありません")).toBeVisible();
     const main = screen.getByRole("main").getBoundingClientRect();
     const button = screen.getByRole("button", { name: "投稿を書く" }).getBoundingClientRect();
     await expect(main.bottom - button.bottom).toBeGreaterThanOrEqual(19);
     await expect(main.bottom - button.bottom).toBeLessThanOrEqual(33);
     await expect(main.bottom).toBe(window.innerHeight);
-  },
+  }),
 };
 export const MobileEmptyHome: Story = { ...EmptyHome, globals: { viewport: { value: "mobile" } } };
 
@@ -234,7 +234,7 @@ export const FederatedUnread: Story = {
       ],
     },
   },
-  play: async () => {
+  play: playForImplementation(async () => {
     await expect(await screen.findByRole("link", { name: "未読通知 6 件" })).toBeVisible();
-  },
+  }),
 };

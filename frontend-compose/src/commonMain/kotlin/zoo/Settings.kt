@@ -39,6 +39,15 @@ fun searchUrl(engine: String, query: String): String {
 
 @Composable
 fun ZooSettings(app: Session, users: List<Row>) {
+    val settingsScope = rememberCoroutineScope()
+    val channelRules =
+        remember(app) {
+            ChannelTimelineSettingsController(settingsScope) { method, body ->
+                app.api.request("/api/home/settings", method, body).jsonObject
+            }
+        }
+    LaunchedEffect(channelRules) { channelRules.load() }
+    DisposableEffect(channelRules) { onDispose { channelRules.close() } }
     val tab = app.query["tab"].takeIf { it in listOf("apps", "members") } ?: "general"
     val tabs =
         listOf(
@@ -139,7 +148,14 @@ fun ZooSettings(app: Session, users: List<Row>) {
                 when (tab) {
                     "apps" -> Apps(app, embedded = true)
                     "members" -> WorkspaceMembers(app, users)
-                    else -> GeneralSettings(app)
+                    else ->
+                        Column(
+                            Modifier.fillMaxWidth(),
+                            verticalArrangement = Arrangement.spacedBy(16.dp),
+                        ) {
+                            GeneralSettings(app)
+                            ChannelTimelineSettings(app, channelRules)
+                        }
                 }
             }
         }

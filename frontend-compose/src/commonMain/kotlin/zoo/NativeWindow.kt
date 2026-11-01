@@ -19,7 +19,8 @@ fun NativeWindow(
     modifier: Modifier = Modifier,
     content: @Composable BoxScope.() -> Unit,
 ) {
-    val modalOpen = app.overlays.any { it.anchor == null && !it.nonModal && !it.tooltip }
+    val modalOpen =
+        app.overlays.any { it.visible && it.anchor == null && !it.nonModal && !it.tooltip }
     val rootFocus = remember { FocusRequester() }
     var hasFocus by remember { mutableStateOf(false) }
     val windowFocused = LocalWindowInfo.current.isWindowFocused
@@ -40,7 +41,7 @@ fun NativeWindow(
                 if (
                     it.type == KeyEventType.KeyDown &&
                         it.key == Key.Escape &&
-                        app.overlays.any { slot -> !slot.tooltip }
+                        app.overlays.any { slot -> slot.visible && !slot.tooltip }
                 ) {
                     app.escape()
                     true

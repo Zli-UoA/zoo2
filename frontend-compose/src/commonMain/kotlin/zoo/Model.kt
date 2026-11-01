@@ -139,6 +139,8 @@ data class Environment(
     val persistenceError: String = "",
     val theme: String = "system",
     val historyState: Row = JsonObject(emptyMap()),
+    val visualViewportHeight: Float? = null,
+    val visualViewportTop: Float = 0f,
 )
 
 fun endpoint(base: String, path: String): String = base.trimEnd('/') + "/" + path.trimStart('/')

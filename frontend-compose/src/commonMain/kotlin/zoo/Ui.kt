@@ -716,8 +716,11 @@ fun Field(
     autoFocus: Boolean = false,
     focusRequester: androidx.compose.ui.focus.FocusRequester? = null,
     minimumHeight: Dp? = null,
+    maximumHeight: Dp? = null,
     contentPadding: PaddingValues? = null,
     resizable: Boolean = chrome && !singleLine,
+    maxLength: Int? = null,
+    inputAttributes: Map<String, String> = emptyMap(),
     change: (String) -> Unit,
 ) {
     val density = LocalDensity.current
@@ -730,6 +733,7 @@ fun Field(
     var focused by remember { mutableStateOf(false) }
     val blur by rememberUpdatedState(onBlur)
     var editing by remember { mutableStateOf(TextFieldValue(value)) }
+    var committedEditing by remember { mutableStateOf(TextFieldValue(value)) }
     val layout = remember { arrayOfNulls<TextLayoutResult>(1) }
     val viewport = LocalViewportWidth.current
     val colors = MaterialTheme.colorScheme
@@ -767,17 +771,20 @@ fun Field(
         )
     LaunchedEffect(autoFocus, enabled) { if (autoFocus && enabled) requester.requestFocus() }
     LaunchedEffect(value, selection) {
-        if (editing.text != value || selection != null && editing.selection.start != selection)
+        if (editing.text != value || selection != null && editing.selection.start != selection) {
             editing =
                 TextFieldValue(
                     value,
                     TextRange((selection ?: value.length).coerceIn(0, value.length)),
                 )
+            committedEditing = editing
+        }
     }
     val attributes =
         buildMap<String, String> {
             if (invalid) put("aria-invalid", "true")
             if (readOnly) put("aria-readonly", "true")
+            putAll(inputAttributes)
         }
     Column(modifier, verticalArrangement = Arrangement.spacedBy(4.dp)) {
         if (showLabel) Text(label, small = true)
@@ -785,10 +792,12 @@ fun Field(
             BasicTextField(
                 editing,
                 {
-                    editing = it
-                    onComposition(it.composition != null)
-                    onSelection(if (it.selection.collapsed) it.selection.end else -1)
-                    change(it.text)
+                    val accepted = limitFieldEdit(committedEditing, it, maxLength)
+                    editing = accepted
+                    if (accepted.composition == null) committedEditing = accepted
+                    onComposition(accepted.composition != null)
+                    onSelection(if (accepted.selection.collapsed) accepted.selection.end else -1)
+                    change(accepted.text)
                 },
                 modifier =
                     Modifier.then(
@@ -844,7 +853,7 @@ fun Field(
                             else
                                 Modifier.heightIn(
                                     min = minimumHeight ?: if (!chrome) 44.dp else 64.dp,
-                                    max = if (chrome) Dp.Infinity else 200.dp,
+                                    max = maximumHeight ?: if (chrome) Dp.Infinity else 200.dp,
                                 )
                         )
                         .graphicsLayer { alpha = if (!enabled && !singleLine) .5f else 1f }

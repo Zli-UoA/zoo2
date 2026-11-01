@@ -53,6 +53,7 @@ private fun applyControls() {
             val values =
                 linkedMapOf<String, String?>(
                     "role" to state.role,
+                    "data-status" to null,
                     "aria-expanded" to state.expanded?.toString(),
                     "aria-disabled" to (!state.enabled).toString(),
                     "aria-selected" to
@@ -92,6 +93,8 @@ private fun applyControls() {
                     it.startsWith("aria-") ||
                         it == "href" ||
                         it == "title" ||
+                        it == "datetime" ||
+                        it == "data-status" ||
                         it == "target" ||
                         it == "rel"
                 }
