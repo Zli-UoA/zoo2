@@ -164,8 +164,10 @@ impl TokenManager {
         let mut tokens = StoredTokens::new(&self.oidc, response, now());
         // ローテーションしない IdP では refresh_token が返らないので、前のものを使い続ける。
         tokens.refresh_token = tokens.refresh_token.or(Some(refresh_token));
-        save(&self.path, &tokens)?;
+        // 交換済みの refresh_token は IdP 側で失効しているので、保存に失敗しても新しい方を使い続ける。
+        // 保存の失敗は呼び出し側に伝えるが、次の呼び出しではトークンを交換し直さない。
         state.tokens = tokens;
+        save(&self.path, &state.tokens)?;
         Ok(state.tokens.access_token.clone())
     }
 }
