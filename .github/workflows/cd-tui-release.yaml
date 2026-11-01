@@ -97,8 +97,8 @@ jobs:
       - name: Archive
         run: |
           mkdir -p ../dist stage
-          cp target/${{ matrix.target }}/release/zoo2-tui README.md stage/
-          tar -czf ../dist/zoo2-tui-${{ matrix.name }}.tar.gz -C stage zoo2-tui README.md
+          cp target/${{ matrix.target }}/release/zoo2-tui README.md LICENSE stage/
+          tar -czf ../dist/zoo2-tui-${{ matrix.name }}.tar.gz -C stage zoo2-tui README.md LICENSE
       - name: Install packagers
         if: runner.os == 'Linux'
         uses: taiki-e/install-action@v2
