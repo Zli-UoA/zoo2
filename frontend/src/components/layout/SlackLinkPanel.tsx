@@ -83,7 +83,16 @@ export function SlackLinkPanel({ navigateTo = (url: string) => window.location.a
         setState(value);
         toast.success(t("slackLink.linked"));
       })
-      .catch((cause) => fail(slackLinkErrorReason(cause instanceof ApiError ? cause.status : null)))
+      .catch((cause) => {
+        fail(slackLinkErrorReason(cause instanceof ApiError ? cause.status : null));
+        // 初期の読み込みは捨てているので、連携をやり直せるよう状態を読み直す
+        const started = ++revision.current;
+        getSlackLink(client)
+          .then((value) => {
+            if (revision.current === started) setState(value);
+          })
+          .catch(() => setError(t("slackLink.loadError")));
+      })
       .finally(() => setPending(false));
   }, [result, client, navigate, t]);
 

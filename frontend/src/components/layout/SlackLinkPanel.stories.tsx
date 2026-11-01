@@ -186,6 +186,25 @@ export const UnlinkError: Story = {
   },
 };
 
+export const ReturnedFromSlackFailed: Story = {
+  parameters: {
+    router: { initialEntries: ["/settings?tab=slack&code=abc&state=expired"] },
+    msw: {
+      handlers: [
+        notLinked,
+        http.post("*/api/slack/oauth/complete", () =>
+          HttpResponse.json({ error: "invalid_state" }, { status: 400 }),
+        ),
+      ],
+    },
+  },
+  play: async () => {
+    await expect(await screen.findByRole("alert")).toHaveTextContent("有効期限");
+    // 連携をやり直せる
+    await expect(await screen.findByRole("button", { name: "Slack と連携" })).toBeVisible();
+  },
+};
+
 export const Mobile: Story = {
   parameters: Linked.parameters,
   globals: { viewport: { value: "mobile" } },
