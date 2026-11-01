@@ -41,3 +41,9 @@ variable "stg_cors_origins" {
     "https://*.preview.zoo.example.com"
   ]
 }
+
+variable "state_passphrase" {
+  type        = string
+  description = "Passphrase for OpenTofu state and plan encryption (decrypt state-passphrase.sops.yaml with sops)"
+  sensitive   = true
+}

@@ -1,7 +1,7 @@
-# API トークンは環境変数 TF_VAR_cloudflare_api_token で渡すことを推奨します。
-# ファイルに記載する場合はコミットしないようご注意ください（.gitignore で除外されます）。
-# cloudflare_api_token  = "your-cloudflare-api-token"
-cloudflare_account_id = "your-cloudflare-account-id"
+# 秘密情報はファイルに書かず環境変数で渡してください（README.md 参照）。
+#   TF_VAR_cloudflare_api_token, TF_VAR_state_passphrase, AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY
+# terraform.tfvars は .gitignore で除外されます。
+cloudflare_account_id = "c9918f2caa050736a07867e6f968c0a2"
 r2_location           = "apac"
 prod_bucket_name      = "zoo-attachments-prod"
 stg_bucket_name       = "zoo-attachments-stg"
