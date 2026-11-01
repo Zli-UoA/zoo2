@@ -59,9 +59,9 @@ jobs:
         uses: Swatinem/rust-cache@v2
         with:
           workspaces: backend
-          # Shared with oidc-e2e in ci-frontend-auth-e2e.yaml, which runs the same
-          # debug build.
-          shared-key: backend-debug
+          # Not shared with oidc-e2e (backend-debug): cache keys are immutable, and
+          # its build-only save would keep clippy and test artifacts out of this one.
+          shared-key: backend-check
       - name: format check
         run: cargo fmt --check
       - name: lint check

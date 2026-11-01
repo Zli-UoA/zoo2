@@ -68,7 +68,7 @@ jobs:
         uses: actions/cache@v6
         with:
           path: ~/.cache/ms-playwright
-          key: playwright-${{ runner.os }}-${{ hashFiles('frontend/pnpm-lock.yaml') }}
+          key: playwright-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('frontend/pnpm-lock.yaml') }}
 
       # The self-hosted runner image already has the system libraries.
       - name: Install Playwright browser
@@ -215,7 +215,7 @@ jobs:
         uses: actions/cache@v6
         with:
           path: ~/.cache/ms-playwright
-          key: playwright-firefox-chromium-${{ runner.os }}-${{ hashFiles('frontend/pnpm-lock.yaml') }}
+          key: playwright-firefox-chromium-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('frontend/pnpm-lock.yaml') }}
 
       # The self-hosted runner image already has the system libraries.
       - name: Install Playwright Firefox and Chromium
@@ -289,7 +289,7 @@ jobs:
         uses: actions/cache@v6
         with:
           path: ~/.cache/ms-playwright
-          key: playwright-${{ runner.os }}-${{ hashFiles('frontend/pnpm-lock.yaml') }}
+          key: playwright-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('frontend/pnpm-lock.yaml') }}
 
       # The self-hosted runner image already has the system libraries.
       - name: Install Playwright Chromium
