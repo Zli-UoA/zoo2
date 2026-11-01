@@ -11,6 +11,44 @@ import kotlinx.serialization.json.*
 
 @OptIn(ExperimentalCoroutinesApi::class)
 class ParityTransportTest {
+    @Test
+    fun escapeClearsQueryBeforeClosingOnTheNextKey() = runTest {
+        val http = HttpClient(MockEngine { respond("{}") })
+        val app =
+            Session(
+                Repository(
+                    Config("https://zoo.test", "/shapes", "alice", false),
+                    Browser(),
+                    http,
+                    backgroundScope,
+                ),
+                backgroundScope,
+                Environment(),
+            )
+        var query = "member"
+        var closed = 0
+        val dialog = OverlaySlot()
+        dialog.onEscape = {
+            if (query.isNotEmpty()) {
+                query = ""
+                true
+            } else false
+        }
+        dialog.close = {
+            closed++
+            app.overlays.remove(dialog)
+        }
+        app.overlays.add(dialog)
+        assertTrue(app.escape())
+        assertEquals("", query)
+        assertEquals(0, closed)
+        assertTrue(app.escape())
+        assertEquals(1, closed)
+        assertFalse(app.escape())
+        app.close()
+        http.close()
+    }
+
     private class Browser : Platform {
         val exits = mutableListOf<Row>()
         private var sequence = 0

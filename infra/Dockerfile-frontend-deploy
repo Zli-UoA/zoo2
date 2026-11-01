@@ -1,4 +1,8 @@
 FROM eclipse-temurin:21-jdk-jammy AS compose-build
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends libatomic1 && \
+    rm -rf /var/lib/apt/lists/*
+ENV BINARYEN_CORES=1
 WORKDIR /compose
 COPY frontend-compose/ ./
 ARG VITE_EXPERIMENTAL_COMPOSE="false"

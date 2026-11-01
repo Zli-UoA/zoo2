@@ -84,8 +84,8 @@ export const CommandCompletion: Story = {
     commandLookup.mockClear();
     commandInvocation.mockClear();
   },
-  play: async (context) => {
-    await playForImplementation(async ({ canvasElement }) => {
+  play: playForImplementation(
+    async ({ canvasElement }) => {
       const canvas = within(canvasElement);
       const input = await canvas.findByRole("textbox");
       await userEvent.type(input, "/ec");
@@ -104,17 +104,19 @@ export const CommandCompletion: Story = {
       );
       await expect(commandLookup).toHaveBeenCalledWith("channel-general");
       await expect(input).toHaveValue("");
-    })(context);
-    if (context.globals.implementation === "kotlin") {
-      await waitFor(() =>
-        expect(commandInvocation).toHaveBeenCalledWith("notes", {
-          kind: "command",
-          name: "echo",
-          channel_id: "channel-general",
-          values: { text: "hello" },
-        }),
-      );
-      await expect(commandLookup).toHaveBeenCalledWith("channel-general");
-    }
-  },
+    },
+    async (context) => {
+      if (context.globals.implementation === "kotlin") {
+        await waitFor(() =>
+          expect(commandInvocation).toHaveBeenCalledWith("notes", {
+            kind: "command",
+            name: "echo",
+            channel_id: "channel-general",
+            values: { text: "hello" },
+          }),
+        );
+        await expect(commandLookup).toHaveBeenCalledWith("channel-general");
+      }
+    },
+  ),
 };

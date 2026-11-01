@@ -10,6 +10,7 @@ let callbackSequence = 0;
 const callbacks = new Map();
 let update;
 let close;
+let escape;
 let started = false;
 const timeout = setTimeout(() => fail("Composeの読み込みがタイムアウトしました。"), 90_000);
 function fail(message) {
@@ -62,9 +63,10 @@ globalThis.zooCatalog = {
       );
     });
   },
-  ready(next, dispose) {
+  ready(next, dispose, handleEscape) {
     update = next;
     close = dispose;
+    escape = handleEscape;
   },
   painted(defaultMessage) {
     clearTimeout(timeout);
@@ -127,9 +129,23 @@ window.addEventListener("message", (event) => {
     document.head.append(script);
   }
 });
+const routeEscape = (event) => {
+  if (
+    event.key === "Escape" &&
+    !event.isComposing &&
+    event.keyCode !== 229 &&
+    !event.defaultPrevented &&
+    escape?.()
+  ) {
+    event.preventDefault();
+    event.stopPropagation();
+  }
+};
+window.addEventListener("keydown", routeEscape, true);
 window.addEventListener(
   "pagehide",
   () => {
+    window.removeEventListener("keydown", routeEscape, true);
     close?.();
     for (const pending of callbacks.values()) pending.reject(new Error("Catalog disposed"));
     callbacks.clear();

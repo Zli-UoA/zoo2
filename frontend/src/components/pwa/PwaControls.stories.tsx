@@ -61,16 +61,18 @@ const push = pushStoryControls;
 export const SelectOff: Story = {
   parameters: { a11y: { test: "error" } },
   render: () => <PushNotificationSelect push={pushStoryPresets["Select Off"]} />,
-  play: async (context) => {
-    await playForImplementation(async () => {
+  play: playForImplementation(
+    async () => {
       const select = await screen.findByRole("combobox", { name: "プッシュ通知" });
       await expect(select).toHaveValue("off");
       await userEvent.selectOptions(select, "on");
       await expect(push.toggle).toHaveBeenCalledOnce();
-    })(context);
-    if (context.globals.implementation === "kotlin")
-      await waitFor(() => expect(push.toggle).toHaveBeenCalledOnce());
-  },
+    },
+    async (context) => {
+      if (context.globals.implementation === "kotlin")
+        await waitFor(() => expect(push.toggle).toHaveBeenCalledOnce());
+    },
+  ),
 };
 export const SelectOn: Story = {
   parameters: { a11y: { test: "error" } },

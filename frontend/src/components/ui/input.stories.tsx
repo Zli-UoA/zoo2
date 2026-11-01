@@ -15,25 +15,27 @@ export const Disabled: Story = { args: { disabled: true, value: "general" } };
 export const Invalid: Story = { args: { "aria-invalid": true, defaultValue: "使えない名前" } };
 export const LongValue: Story = { args: { defaultValue: "very-long-channel-name-".repeat(8) } };
 export const KeyboardInput: Story = {
-  play: async (context) => {
-    await playForImplementation<typeof context.args>(async ({ canvasElement }) => {
+  play: playForImplementation(
+    async ({ canvasElement }) => {
       const input = await within(canvasElement).findByRole("textbox");
       await userEvent.type(input, "design-system");
       await expect(input).toHaveValue("design-system");
       await expect(input).toHaveAttribute("data-1p-ignore");
-    })(context);
-    if (context.globals.implementation === "kotlin") {
-      const frame = context.canvasElement.querySelector<HTMLIFrameElement>(
-        'iframe[title="Kotlin component preview"]',
-      );
-      if (!frame?.contentDocument) throw new Error("Kotlin input preview is missing");
-      await waitFor(async () => {
-        let active = frame.contentDocument!.activeElement;
-        while (active?.shadowRoot?.activeElement) active = active.shadowRoot.activeElement;
-        if (active?.tagName !== "INPUT" && active?.tagName !== "TEXTAREA")
-          throw new Error("Native browser input owner is not focused");
-        await expect(active).toHaveAttribute("data-1p-ignore");
-      });
-    }
-  },
+    },
+    async (context) => {
+      if (context.globals.implementation === "kotlin") {
+        const frame = context.canvasElement.querySelector<HTMLIFrameElement>(
+          'iframe[title="Kotlin component preview"]',
+        );
+        if (!frame?.contentDocument) throw new Error("Kotlin input preview is missing");
+        await waitFor(async () => {
+          let active = frame.contentDocument!.activeElement;
+          while (active?.shadowRoot?.activeElement) active = active.shadowRoot.activeElement;
+          if (active?.tagName !== "INPUT" && active?.tagName !== "TEXTAREA")
+            throw new Error("Native browser input owner is not focused");
+          await expect(active).toHaveAttribute("data-1p-ignore");
+        });
+      }
+    },
+  ),
 };

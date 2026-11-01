@@ -54,6 +54,14 @@ async function setOpen(page: Page, storyId: string, open: boolean) {
     },
     { storyId, open },
   );
+  const preview = page.locator('iframe[title="Kotlin component preview"]');
+  if (await preview.count()) {
+    // The projected accessibility tree can briefly be empty during a redraw.
+    // Wait for the catalog's committed overlay state before changing props again.
+    await expect
+      .poll(() => preview.evaluate((frame) => frame.style.clipPath === "none"))
+      .toBe(open);
+  }
 }
 for (const implementation of ["react", "kotlin"] as const) {
   test(`${implementation}: controlled open props hide and reopen without resetting edits`, async ({
@@ -121,7 +129,9 @@ for (const implementation of ["react", "kotlin"] as const) {
     await expect(dialog).toBeVisible();
     expect(await closeCalls(page, id)).toEqual([]);
     await fill(page, search, "Bob", implementation);
-    await root.getByRole("option", { name: /^Bob/ }).click({ force: implementation === "kotlin" });
+    const bob = root.getByRole("option", { name: /\bBob\b/ });
+    await expect(bob).toBeVisible();
+    await bob.click({ force: implementation === "kotlin" });
     const selected = root.getByRole("button", { name: /Bob.*削除|Bob.*外す/ });
     await expect(selected).toBeVisible();
     await dialog

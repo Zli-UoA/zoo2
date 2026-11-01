@@ -38,8 +38,12 @@ private external fun catalogImage(url: String): Promise<JsString>
 @JsFun("() => JSON.stringify(globalThis.zooCatalog.options)")
 private external fun catalogOptions(): String
 
-@JsFun("(update, close) => globalThis.zooCatalog.ready(update, close)")
-private external fun catalogReady(update: (String) -> Unit, close: () -> Unit)
+@JsFun("(update, close, escape) => globalThis.zooCatalog.ready(update, close, escape)")
+private external fun catalogReady(
+    update: (String) -> Unit,
+    close: () -> Unit,
+    escape: () -> Boolean,
+)
 
 @JsFun("(message) => globalThis.zooCatalog.painted(message)")
 private external fun catalogPainted(message: String)
@@ -491,5 +495,6 @@ private fun startCatalog() {
             app.close()
             scope.cancel()
         },
+        { app.escape() },
     )
 }

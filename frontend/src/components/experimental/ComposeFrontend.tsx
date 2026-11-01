@@ -44,7 +44,7 @@ interface ComposeBridge {
   action: (name: string) => void;
   invoke: (name: string, payload: string) => Promise<string>;
   authStatus: (status: number) => void;
-  ready: (update: Update, dispose: () => void, escape: () => void) => void;
+  ready: (update: Update, dispose: () => void, escape: () => boolean) => void;
   paintReady: () => void;
 }
 declare global {
@@ -109,7 +109,7 @@ export function ComposeRuntime({ config, status }: { config: AppConfig; status?:
   const [loaded, setLoaded] = useState(false);
   const [cacheError, setCacheError] = useState<string | null>(null);
   const updateRef = useRef<Update | null>(null);
-  const escapeRef = useRef<(() => void) | null>(null);
+  const escapeRef = useRef<(() => boolean) | null>(null);
   const stateRef = useRef({
     location,
     historyState,
@@ -483,11 +483,15 @@ export function ComposeRuntime({ config, status }: { config: AppConfig; status?:
         event.key === "Escape" &&
         !event.isComposing &&
         event.keyCode !== 229 &&
-        !event.defaultPrevented
-      )
-        escapeRef.current?.();
+        !event.defaultPrevented &&
+        escapeRef.current?.()
+      ) {
+        event.preventDefault();
+        event.stopPropagation();
+      }
     };
-    window.addEventListener("keydown", escape);
+    // Route modal Escape before a backing editor or a disposed focus target consumes it.
+    window.addEventListener("keydown", escape, true);
     const resize = new ResizeObserver(() => window.dispatchEvent(new Event("resize")));
     if (viewportRef.current) resize.observe(viewportRef.current);
     return () => {
@@ -499,7 +503,7 @@ export function ComposeRuntime({ config, status }: { config: AppConfig; status?:
       resize.disconnect();
       updateRef.current = null;
       escapeRef.current = null;
-      window.removeEventListener("keydown", escape);
+      window.removeEventListener("keydown", escape, true);
       dispose?.();
       clearInputHints?.();
       root?.remove();

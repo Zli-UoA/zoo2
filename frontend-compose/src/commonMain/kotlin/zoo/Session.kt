@@ -108,13 +108,10 @@ class Session(val repo: Repository, val scope: CoroutineScope, initial: Environm
         }
     }
 
-    private var lastEscape: kotlin.time.TimeMark? = null
-
-    fun escape() {
-        if (lastEscape?.elapsedNow()?.inWholeMilliseconds?.let { it < 100 } == true) return
-        lastEscape = kotlin.time.TimeSource.Monotonic.markNow()
-        val top = overlays.lastOrNull { !it.tooltip } ?: return
+    fun escape(): Boolean {
+        val top = overlays.lastOrNull { !it.tooltip } ?: return false
         if (top.onEscape?.invoke() != true) top.close()
+        return true
     }
 
     fun navigate(path: String) = platform.navigate(path)

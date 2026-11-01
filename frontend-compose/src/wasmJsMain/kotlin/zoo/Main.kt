@@ -71,7 +71,7 @@ private external fun ready(
     bridge: JsAny,
     update: (String) -> Unit,
     dispose: () -> Unit,
-    escape: () -> Unit,
+    escape: () -> Boolean,
 )
 
 /** JS failures must enter the Kotlin Exception hierarchy so feature retries can handle them. */
@@ -279,7 +279,7 @@ private fun startSession() {
             http.close()
             scope.cancel()
         },
-        { app?.escape() },
+        { app?.escape() ?: false },
     )
 }
 

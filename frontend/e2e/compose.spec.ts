@@ -166,12 +166,9 @@ for (const implementation of ["react", "compose"] as const) {
     await expect(createApp).toBeVisible();
     await closeApps(page, implementation === "compose");
     await expect(createApp).toBeHidden();
-    await page
-      .getByRole("link", {
-        name: /^未読通知 /,
-        exact: true,
-      })
-      .click({ force: implementation === "compose" });
+    const notifications = page.getByRole("link", { name: /^未読通知 /, exact: true });
+    await expect(notifications).toBeVisible();
+    await notifications.click({ force: implementation === "compose" });
     await expect(
       implementation === "react"
         ? page.getByRole("heading", { name: "通知", exact: true })
@@ -440,7 +437,9 @@ for (const implementation of ["react", "compose"] as const) {
         .getByRole("combobox", { name: "検索エンジン", exact: true })
         .selectOption("duckduckgo");
     await expect.poll(async () => (await state()).preferences.search_engine).toBe("duckduckgo");
-    await page.getByRole("tab", { name: "メンバー", exact: true }).click({ force: native });
+    const membersTab = page.getByRole("tab", { name: "メンバー", exact: true });
+    await expect(membersTab).toBeVisible();
+    await membersTab.click({ force: native });
     await expect(
       page.getByRole("button", { name: "管理者を外す", exact: true }).first(),
     ).toBeDisabled();
