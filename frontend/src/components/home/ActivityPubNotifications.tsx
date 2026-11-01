@@ -1,3 +1,4 @@
+import { ActivityPubEmoji, ActivityPubText } from "./ActivityPubEmoji";
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import { useActivityPubNotifications } from "../../hooks/useActivityPubNotifications";
@@ -56,11 +57,19 @@ export function ActivityPubNotifications({
             data-unread={!item.is_read || undefined}
           >
             <p className="break-words text-sm">
-              <strong>{item.display_name}</strong> {t(`home.notificationKinds.${item.kind}`)}
+              <strong>
+                <ActivityPubText text={item.display_name} emojis={item.actor_emojis} />
+              </strong>{" "}
+              {t(`home.notificationKinds.${item.kind}`)}
             </p>
             <time className="text-xs text-muted-foreground" dateTime={item.created_at}>
               {new Date(item.created_at).toLocaleString(i18n.language)}
             </time>
+            {item.kind === "like" && item.reaction ? (
+              <p className="text-lg">
+                {item.emoji ? <ActivityPubEmoji emoji={item.emoji} /> : item.reaction}
+              </p>
+            ) : null}
             {item.content ? (
               <p className="line-clamp-3 whitespace-pre-wrap break-words text-sm">{item.content}</p>
             ) : null}

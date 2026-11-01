@@ -1,3 +1,4 @@
+import { blobcat, misskeyPost } from "../../../.storybook/activitypub-fixtures";
 import type { Meta, StoryObj } from "@storybook/react-vite";
 import { delay, http, HttpResponse, ws } from "msw";
 import { expect, fireEvent, screen, userEvent, waitFor, within } from "storybook/test";
@@ -175,7 +176,11 @@ export const DeletePost: Story = {
   },
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
-    await userEvent.click(await canvas.findByRole("button", { name: "投稿の操作" }));
+    await userEvent.click(
+      within(
+        (await canvas.findByText(/Homeから最初の公開投稿です。/)).closest("article")!,
+      ).getByRole("button", { name: "投稿の操作" }),
+    );
     await userEvent.click(await screen.findByRole("menuitem", { name: "投稿を削除" }));
     const dialog = await screen.findByRole("alertdialog");
     await userEvent.click(within(dialog).getByRole("button", { name: "投稿を削除" }));
@@ -384,7 +389,11 @@ export const EditPost: Story = {
   },
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
-    await userEvent.click(await canvas.findByRole("button", { name: "投稿の操作" }));
+    await userEvent.click(
+      within(
+        (await canvas.findByText(/Homeから最初の公開投稿です。/)).closest("article")!,
+      ).getByRole("button", { name: "投稿の操作" }),
+    );
     await userEvent.click(await screen.findByRole("menuitem", { name: "投稿を編集" }));
     const field = canvas.getByRole("textbox", { name: "投稿を編集" });
     await userEvent.clear(field);
@@ -777,7 +786,14 @@ export const Like: Story = {
     msw: {
       handlers: [
         http.get("*/api/home", () =>
-          HttpResponse.json([{ ...posts[0], likes: liked ? 1 : 0, liked }]),
+          HttpResponse.json([
+            {
+              ...posts[0],
+              likes: liked ? 1 : 0,
+              liked,
+              reactions: liked ? [{ reaction: "❤️", emoji: null, count: 1, selected: true }] : [],
+            },
+          ]),
         ),
         http.post("*/api/activitypub/reactions", async ({ request }) => {
           const body = (await request.json()) as { post_id: string };
@@ -794,16 +810,22 @@ export const Like: Story = {
   },
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
-    await userEvent.click(await canvas.findByRole("button", { name: /^いいね \d/ }));
-    await expect(await canvas.findByRole("button", { name: /^いいねを取り消す/ })).toHaveAttribute(
+    await userEvent.click(await canvas.findByRole("button", { name: "リアクション 0" }));
+    const picker = within(await screen.findByRole("dialog", { name: "リアクション" }));
+    await userEvent.click(
+      within(picker.getByRole("group", { name: "よく使うリアクション" })).getByRole("button", {
+        name: "❤️",
+      }),
+    );
+    await expect(await canvas.findByRole("button", { name: "❤️ 1" })).toHaveAttribute(
       "aria-pressed",
       "true",
     );
-    await userEvent.click(canvas.getByRole("button", { name: /^いいねを取り消す/ }));
-    await expect(await canvas.findByRole("button", { name: /^いいね \d/ })).toHaveAttribute(
-      "aria-pressed",
-      "false",
+    await userEvent.click(canvas.getByRole("button", { name: "❤️ 1" }));
+    await waitFor(() =>
+      expect(canvas.queryByRole("button", { name: "❤️ 1" })).not.toBeInTheDocument(),
     );
+    await expect(canvas.getByRole("button", { name: "リアクション 0" })).toBeVisible();
   },
 };
 export const LikeError: Story = {
@@ -817,11 +839,244 @@ export const LikeError: Story = {
   },
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
-    await userEvent.click(await canvas.findByRole("button", { name: /^いいね \d/ }));
+    await userEvent.click(await canvas.findByRole("button", { name: "リアクション 0" }));
+    const picker = within(await screen.findByRole("dialog", { name: "リアクション" }));
+    await userEvent.click(
+      within(picker.getByRole("group", { name: "よく使うリアクション" })).getByRole("button", {
+        name: "❤️",
+      }),
+    );
     await expect(await canvas.findByRole("alert")).toBeVisible();
-    await expect(canvas.getByRole("button", { name: /^いいね \d/ })).toHaveAttribute(
+  },
+};
+
+export const ActionBar: Story = {
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const group = await canvas.findByRole("group", { name: "投稿のアクション" });
+    await expect(
+      within(group)
+        .getAllByRole("button")
+        .map((button) => button.getAttribute("aria-label")),
+    ).toEqual(["返信 0", "リポスト 0", "リアクション 0", "投稿の操作"]);
+    await expect(group.querySelector("time")).toBeNull();
+    await userEvent.click(within(group).getByRole("button", { name: "投稿の操作" }));
+    await waitFor(() => expect(screen.getByRole("menuitem", { name: "投稿を編集" })).toBeVisible());
+  },
+};
+let sentReply = false;
+export const Reply: Story = {
+  beforeEach: () => {
+    sentReply = false;
+  },
+  parameters: {
+    msw: {
+      handlers: [
+        http.get("*/api/home", () =>
+          HttpResponse.json(
+            sentReply
+              ? [
+                  { ...posts[0], id: "reply", parent_id: posts[0].id, content: "返信のメッセージ" },
+                  { ...posts[0], apub: true, visibility: "public", replies: 1 },
+                ]
+              : [{ ...posts[0], apub: true, visibility: "public" }],
+          ),
+        ),
+        http.post("*/api/home", async ({ request }) => {
+          const body = (await request.json()) as { in_reply_to: string; content: string };
+          await expect(body.in_reply_to).toBe(posts[0].id);
+          await expect(body.content).toBe("返信のメッセージ");
+          sentReply = true;
+          return HttpResponse.json({ id: "reply" }, { status: 201 });
+        }),
+      ],
+    },
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    let focused = false;
+    const observe = () => {
+      focused = document.activeElement?.getAttribute("aria-label") === "近況を投稿";
+    };
+    document.addEventListener("click", observe);
+    try {
+      await userEvent.click(await canvas.findByRole("button", { name: "返信 0" }));
+    } finally {
+      document.removeEventListener("click", observe);
+    }
+    if (innerWidth < 768) await expect(focused).toBe(true);
+    const form = within(await screen.findByRole("dialog", { name: "近況を投稿" }));
+    await waitFor(()=>expect(form.getByText("Aliceさんに返信")).toBeVisible());
+    await userEvent.type(form.getByRole("textbox", { name: "近況を投稿" }), "返信のメッセージ");
+    await userEvent.click(form.getByRole("button", { name: "投稿" }));
+    await expectComposerClosed();
+    await expect(await canvas.findByText("返信のメッセージ")).toBeVisible();
+  },
+};
+export const MobileReply: Story = { ...Reply, globals: { viewport: { value: "mobile" } } };
+export const PrivateReply: Story = {
+  parameters: {
+    msw: {
+      handlers: [
+        http.get("*/api/home", () =>
+          HttpResponse.json([{ ...posts[0], apub: true, visibility: "followers" }]),
+        ),
+      ],
+    },
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expect(await canvas.findByRole("button", { name: "リポスト 0" })).toBeDisabled();
+    await userEvent.click(canvas.getByRole("button", { name: "返信 0" }));
+    const form = within(await screen.findByRole("dialog", { name: "近況を投稿" }));
+    await userEvent.click(form.getByRole("button", { name: "公開範囲: フォロワー限定" }));
+    await expect(await screen.findByRole("menuitemradio", { name: "パブリック" })).toHaveAttribute(
+      "aria-disabled",
+      "true",
+    );
+    await expect(screen.getByRole("menuitemradio", { name: "ホーム" })).toHaveAttribute(
+      "aria-disabled",
+      "true",
+    );
+  },
+};
+let reposted = false;
+export const Repost: Story = {
+  beforeEach: () => {
+    reposted = false;
+  },
+  parameters: {
+    msw: {
+      handlers: [
+        http.get("*/api/home", () => {
+          const post = { ...posts[0], reposts: reposted ? 1 : 0, reposted };
+          return HttpResponse.json(
+            reposted ? [{ ...post, entry_id: "repost:mine", reposted_by: "Alice" }, post] : [post],
+          );
+        }),
+        http.post("*/api/activitypub/reposts", () => {
+          reposted = true;
+          return HttpResponse.json({ ok: true });
+        }),
+        http.delete("*/api/activitypub/reposts", () => {
+          reposted = false;
+          return HttpResponse.json({ ok: true });
+        }),
+      ],
+    },
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await userEvent.click(await canvas.findByRole("button", { name: "リポスト 0" }));
+    await expect(await canvas.findByText("Aliceさんがリポスト")).toBeVisible();
+    const buttons = await canvas.findAllByRole("button", { name: "リポストを取り消す 1" });
+    await userEvent.click(buttons[0]);
+    await waitFor(() => expect(canvas.queryByText("Aliceさんがリポスト")).not.toBeInTheDocument());
+  },
+};
+
+let customSelected = false;
+const misskeyHandlers = [
+  http.get("*/api/home", () =>
+    HttpResponse.json([
+      {
+        ...misskeyPost,
+        likes: customSelected ? 3 : 2,
+        reactions: [
+          {
+            reaction: blobcat.name,
+            emoji: blobcat,
+            count: customSelected ? 3 : 2,
+            selected: customSelected,
+          },
+        ],
+      },
+    ]),
+  ),
+  http.get("*/api/activitypub/reaction-options", () =>
+    HttpResponse.json({ software: "misskey", emojis: [blobcat] }),
+  ),
+  http.post("*/api/activitypub/reactions", async ({ request }) => {
+    const body = (await request.json()) as { reaction: string; emoji_id: string };
+    await expect(body.reaction).toBe(blobcat.name);
+    await expect(body.emoji_id).toBe(blobcat.image_id);
+    customSelected = true;
+    return HttpResponse.json({ ok: true });
+  }),
+  http.delete("*/api/activitypub/reactions", () => {
+    customSelected = false;
+    return HttpResponse.json({ ok: true });
+  }),
+];
+export const MisskeyCustomEmoji: Story = {
+  beforeEach: () => {
+    customSelected = false;
+  },
+  parameters: { msw: { handlers: misskeyHandlers } },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const host = await canvas.findByText("@misskey.example");
+    await expect(host).toHaveClass("text-muted-foreground");
+    await expect(host.parentElement).toHaveTextContent("@alice@misskey.example");
+    const images = await canvas.findAllByRole("img", { name: ":blobcat:" });
+    await expect(images).toHaveLength(3);
+    await waitFor(() =>
+      expect(images.every((image) => (image as HTMLImageElement).naturalWidth > 0)).toBe(true),
+    );
+    await expect(
+      images.every((image) =>
+        image.getAttribute("src")?.includes("/api/activitypub/emoji-images/"),
+      ),
+    ).toBe(true);
+  },
+};
+export const MisskeyReact: Story = {
+  ...MisskeyCustomEmoji,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await userEvent.click(await canvas.findByRole("button", { name: "リアクション 2" }));
+    const picker = within(await screen.findByRole("dialog", { name: "リアクション" }));
+    await userEvent.click(await picker.findByRole("button", { name: ":blobcat:" }));
+    const reaction = await canvas.findByRole("button", { name: ":blobcat: 3" });
+    await expect(reaction).toHaveAttribute("aria-pressed", "true");
+    await userEvent.click(reaction);
+    await expect(await canvas.findByRole("button", { name: ":blobcat: 2" })).toHaveAttribute(
       "aria-pressed",
       "false",
     );
+  },
+};
+export const MobileMisskey: Story = {
+  ...MisskeyCustomEmoji,
+  globals: { viewport: { value: "mobile" } },
+};
+export const EmojiFallback: Story = {
+  ...MisskeyCustomEmoji,
+  parameters: {
+    msw: {
+      handlers: [
+        http.get(
+          "*/api/activitypub/emoji-images/:id",
+          () => new HttpResponse(null, { status: 404 }),
+        ),
+        http.get("*/api/home", () => {
+          const e = { ...blobcat, image_id: "f".repeat(64) };
+          return HttpResponse.json([
+            {
+              ...misskeyPost,
+              emojis: [e],
+              actor_emojis: [e],
+              reactions: [{ reaction: e.name, emoji: e, count: 2, selected: false }],
+            },
+          ]);
+        }),
+        ...misskeyHandlers,
+      ],
+    },
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await waitFor(() => expect(canvas.getAllByText(":blobcat:").length).toBeGreaterThanOrEqual(2));
+    await expect(canvas.queryByRole("img", { name: ":blobcat:" })).not.toBeInTheDocument();
   },
 };

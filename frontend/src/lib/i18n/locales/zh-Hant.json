@@ -645,7 +645,24 @@
     "notificationKinds": {
       "follow_request": "請求追蹤你",
       "follow_accepted": "批准了你的追蹤請求",
-      "like": "喜歡了你的貼文"
-    }
+      "like": "回應了你的貼文",
+      "reply": "回覆了你的貼文",
+      "repost": "轉發了你的貼文"
+    },
+    "actions": "貼文操作",
+    "reply": "回覆",
+    "repost": "轉發",
+    "undoRepost": "取消轉發",
+    "react": "反應",
+    "copyContent": "複製內文",
+    "privateRepost": "僅追蹤者可見的貼文不能轉發",
+    "customEmojis": "自訂表情",
+    "searchEmoji": "搜尋表情",
+    "noEmojis": "沒有可用的自訂表情",
+    "emojiSearchMore": "請按名稱搜尋更多表情",
+    "replyTo": "回覆 {{name}}",
+    "cancelReply": "取消回覆",
+    "repostedBy": "{{name}} 轉發了",
+    "quickReactions": "常用反應"
   }
 }

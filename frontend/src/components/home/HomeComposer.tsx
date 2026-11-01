@@ -1,5 +1,6 @@
+import { ActivityPubText, type CustomEmoji } from "./ActivityPubEmoji";
 import { flushSync } from "react-dom";
-import { useRef, useState } from "react";
+import { useImperativeHandle, useRef, useState, type Ref } from "react";
 import { useTranslation } from "react-i18next";
 import {
   ArrowLeftIcon,
@@ -33,15 +34,31 @@ export interface HomePostInput {
   apub: boolean;
   visibility: "public" | "unlisted" | "followers";
   channel_id: string | null;
+  in_reply_to?: string;
 }
 
+export interface ReplyTarget {
+  emojis?: CustomEmoji[];
+  actor_emojis?: CustomEmoji[];
+  id: string;
+  display_name: string;
+  content: string;
+  visibility?: string;
+  apub?: boolean;
+  remote?: boolean;
+}
+export interface HomeComposerHandle {
+  reply: (post: ReplyTarget) => void;
+}
 /** One draft and one form, shown as a desktop dialog or a mobile screen. */
 export function HomeComposer({
   federationEnabled,
   onPost,
+  ref,
 }: {
   federationEnabled: boolean;
   onPost: (post: HomePostInput) => Promise<void>;
+  ref?: Ref<HomeComposerHandle>;
 }) {
   const { t } = useTranslation();
   const isDesktop = useMediaQuery("(min-width: 768px)");
@@ -49,6 +66,7 @@ export function HomeComposer({
   const { joinedChannelIds } = useMyChannelMemberships();
   const [open, setOpen] = useState(false);
   const viewportRef = useVisualViewport(open && !isDesktop);
+  const [replyTo, setReplyTo] = useState<ReplyTarget | null>(null);
   const [content, setContent] = useState("");
   const [visibility, setVisibility] = useState<HomePostInput["visibility"]>("unlisted");
   const [federatePreference, setFederatePreference] = useState<boolean | null>(null);
@@ -57,7 +75,7 @@ export function HomeComposer({
   const [failed, setFailed] = useState(false);
   const inFlight = useRef(false);
   const inputRef = useRef<HTMLTextAreaElement>(null);
-  const federated = federationEnabled && (federatePreference ?? true);
+  const federated = federationEnabled && replyTo?.apub !== false && (federatePreference ?? true);
   const length = Array.from(content).length;
   const AudienceIcon =
     visibility === "public" ? GlobeIcon : visibility === "followers" ? LockKeyholeIcon : HomeIcon;
@@ -75,7 +93,14 @@ export function HomeComposer({
     setSending(true);
     setFailed(false);
     try {
-      await onPost({ content, apub: federated, visibility, channel_id: channelId || null });
+      await onPost({
+        content,
+        apub: federated,
+        visibility,
+        channel_id: channelId || null,
+        ...(replyTo ? { in_reply_to: replyTo.id } : {}),
+      });
+      setReplyTo(null);
       setContent("");
       setOpen(false);
     } catch {
@@ -85,6 +110,32 @@ export function HomeComposer({
       setSending(false);
     }
   };
+
+  useImperativeHandle(
+    ref,
+    () => ({
+      reply: (post) => {
+        if (inFlight.current) return;
+        const show = () => {
+          setReplyTo(post);
+          setChannelId("");
+          setVisibility(
+            post.visibility === "followers"
+              ? "followers"
+              : post.visibility === "public"
+                ? "public"
+                : "unlisted",
+          );
+          setOpen(true);
+        };
+        if (!isDesktop) {
+          flushSync(show);
+          inputRef.current?.focus({ preventScroll: true });
+        } else show();
+      },
+    }),
+    [isDesktop],
+  );
 
   return (
     <Dialog
@@ -185,7 +236,15 @@ export function HomeComposer({
                     }}
                   >
                     {options.map(({ value, icon: Icon }) => (
-                      <DropdownMenuRadioItem key={value} value={value} closeOnClick>
+                      <DropdownMenuRadioItem
+                        key={value}
+                        value={value}
+                        disabled={
+                          (replyTo?.visibility === "followers" && value !== "followers") ||
+                          (replyTo?.visibility === "unlisted" && value === "public")
+                        }
+                        closeOnClick
+                      >
                         <Icon aria-hidden="true" />
                         {t(`home.visibility.${value}`)}
                       </DropdownMenuRadioItem>
@@ -213,7 +272,11 @@ export function HomeComposer({
                     value={federated ? "on" : "off"}
                     onValueChange={(value) => setFederatePreference(value === "on")}
                   >
-                    <DropdownMenuRadioItem value="on" disabled={!federationEnabled} closeOnClick>
+                    <DropdownMenuRadioItem
+                      value="on"
+                      disabled={!federationEnabled || replyTo?.apub === false}
+                      closeOnClick
+                    >
                       <NetworkIcon aria-hidden="true" />
                       {t("home.federationOn")}
                     </DropdownMenuRadioItem>
@@ -245,6 +308,31 @@ export function HomeComposer({
             </div>
           </header>
           <div className="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto p-4 pb-[max(1rem,env(safe-area-inset-bottom))]">
+            {replyTo ? (
+              <div className="flex items-start gap-2 rounded-lg bg-muted p-3 text-xs">
+                <div className="min-w-0 flex-1">
+                  <p className="font-medium">
+                    <ActivityPubText
+                      text={t("home.replyTo", { name: replyTo.display_name })}
+                      emojis={replyTo.actor_emojis}
+                    />
+                  </p>
+                  <p className="mt-1 line-clamp-2 break-words text-muted-foreground">
+                    <ActivityPubText text={replyTo.content} emojis={replyTo.emojis} />
+                  </p>
+                </div>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="icon-sm"
+                  disabled={sending}
+                  aria-label={t("home.cancelReply")}
+                  onClick={() => setReplyTo(null)}
+                >
+                  <XIcon />
+                </Button>
+              </div>
+            ) : null}
             <Textarea
               ref={inputRef}
               value={content}

@@ -81,6 +81,15 @@ const notificationContexts: Record<string, NotificationContextFixture> = {
 };
 
 export const storybookApiHandlers = [
+  http.get("*/api/activitypub/reaction-options", () =>
+    HttpResponse.json({ software: "zoo", emojis: [] }),
+  ),
+  http.get("*/api/activitypub/emoji-images/:id", () =>
+    HttpResponse.text(
+      '<svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 32 32"><path fill="#ffcf00" d="M4 15 5 3l9 7h4l9-7 1 12v9c0 8-24 8-24 0Z"/><circle cx="11" cy="20" r="2"/><circle cx="22" cy="20" r="2"/></svg>',
+      { headers: { "content-type": "image/svg+xml" } },
+    ),
+  ),
   http.get("*/api/activitypub/notifications", () =>
     HttpResponse.json({ items: [], unread_count: 0 }),
   ),

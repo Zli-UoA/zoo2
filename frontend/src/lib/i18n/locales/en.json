@@ -645,7 +645,24 @@
     "notificationKinds": {
       "follow_request": "requested to follow you",
       "follow_accepted": "accepted your follow request",
-      "like": "liked your post"
-    }
+      "like": "reacted to your post",
+      "reply": "replied to your post",
+      "repost": "reposted your post"
+    },
+    "actions": "Post actions",
+    "reply": "Reply",
+    "repost": "Repost",
+    "undoRepost": "Undo repost",
+    "react": "React",
+    "copyContent": "Copy text",
+    "privateRepost": "Followers-only posts cannot be reposted",
+    "customEmojis": "Custom emoji",
+    "searchEmoji": "Search emoji",
+    "noEmojis": "No custom emoji available",
+    "emojiSearchMore": "Search by name to find more",
+    "replyTo": "Replying to {{name}}",
+    "cancelReply": "Cancel reply",
+    "repostedBy": "Reposted by {{name}}",
+    "quickReactions": "Quick reactions"
   }
 }

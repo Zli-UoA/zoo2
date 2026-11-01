@@ -458,7 +458,16 @@
         "UserSearchError",
         "TimelineSwitch",
         "Like",
-        "LikeError"
+        "LikeError",
+        "ActionBar",
+        "Reply",
+        "MobileReply",
+        "PrivateReply",
+        "Repost",
+        "MisskeyCustomEmoji",
+        "MisskeyReact",
+        "MobileMisskey",
+        "EmojiFallback"
       ]
     }
   ],
@@ -825,6 +834,18 @@
       "story": "src/components/chat/NotificationsScreen.stories.tsx",
       "composed": true,
       "reason": "FollowRequests/ApproveFollow/RejectFollowで申請・承認・拒否といいね通知、既読化、MobileFollowRequestsでスマホ配置を確認する。"
+    },
+    {
+      "file": "src/components/home/ActivityPubEmoji.tsx",
+      "story": "src/components/home/HomeScreen.stories.tsx",
+      "composed": true,
+      "reason": "MisskeyCustomEmoji/MobileMisskeyで本文・表示名・リアクションの絵文字とID表記を、EmojiFallbackで画像取得失敗を確認する。"
+    },
+    {
+      "file": "src/components/home/HomeReactionPicker.tsx",
+      "story": "src/components/home/HomeScreen.stories.tsx",
+      "composed": true,
+      "reason": "LikeとMisskeyReactでUnicode・Misskeyカタログからの選択と取り消しを実フォームで確認する。"
     }
   ]
 }

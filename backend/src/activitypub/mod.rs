@@ -1,6 +1,8 @@
 //! Zoo federation: durable delivery, signed inboxes, local channel-linked posts.
+mod emoji;
 mod inbox;
-mod interactions;
+pub(crate) mod interactions;
+mod reposts;
 mod routes;
 mod transport;
 use crate::{
@@ -97,9 +99,18 @@ pub fn note_value(post: &Value) -> Result<Value, AppError> {
         _ => return Err(AppError::NotFound("Local post".into())),
     };
     let content = html_escape::encode_safe(string(post, "content")?).replace('\n', "<br>");
-    Ok(
-        json!({"@context":CONTEXT,"type":"Note","id":format!("{}/api/activitypub/notes/{id}",base_url()?),"attributedTo":author,"published":post["created_at"],"updated":post["updated_at"],"content":content,"mediaType":"text/html","likes":format!("{}/api/activitypub/notes/{id}/likes",base_url()?),"to":to,"cc":cc}),
-    )
+    let mut note = json!({"@context":CONTEXT,"type":"Note","id":format!("{}/api/activitypub/notes/{id}",base_url()?),"attributedTo":author,"published":post["created_at"],"updated":post["updated_at"],"content":content,"mediaType":"text/html","likes":format!("{}/api/activitypub/notes/{id}/likes",base_url()?),"to":to,"cc":cc});
+    if let Some(parent) = post["parent_uri"].as_str() {
+        note["inReplyTo"] = json!(parent);
+    }
+    if let Some(recipient) = post["reply_actor"].as_str() {
+        let cc = note["cc"].as_array_mut().unwrap();
+        if !cc.iter().any(|v| v == recipient) {
+            cc.push(json!(recipient));
+        }
+        note["tag"] = json!([{"type":"Mention","href":recipient,"name":recipient}]);
+    }
+    Ok(note)
 }
 fn delivery_activity(payload: &Value) -> Result<Value, AppError> {
     if payload.get("zoo_post").is_none() {
@@ -193,7 +204,9 @@ async fn remote_actor(
         return Err(AppError::BadRequest("Invalid followers collection".into()));
     }
     let mut tx = db.transaction().await?;
-    let actor=one(&mut tx,"INSERT INTO apub_actors(id,inbox,followers_url,user_name,display_name,key_id,public_key) VALUES($1,$2,$3,$4,$5,$6,$7) ON CONFLICT(id) DO UPDATE SET inbox=EXCLUDED.inbox,followers_url=EXCLUDED.followers_url,user_name=EXCLUDED.user_name,display_name=EXCLUDED.display_name,key_id=EXCLUDED.key_id,public_key=EXCLUDED.public_key,fetched_at=now() RETURNING row_to_json(apub_actors)::text",&[id,inbox,followers,username,display,key_id,pem]).await?;
+    let actor_emojis = emoji::tags(&doc["tag"]);
+    emoji::remember(&mut tx, &actor_emojis).await?;
+    let actor=one(&mut tx,"INSERT INTO apub_actors(id,inbox,followers_url,user_name,display_name,key_id,public_key,emojis) VALUES($1,$2,$3,$4,$5,$6,$7,$8::jsonb) ON CONFLICT(id) DO UPDATE SET inbox=EXCLUDED.inbox,followers_url=EXCLUDED.followers_url,user_name=EXCLUDED.user_name,display_name=EXCLUDED.display_name,key_id=EXCLUDED.key_id,public_key=EXCLUDED.public_key,emojis=EXCLUDED.emojis,fetched_at=now() RETURNING row_to_json(apub_actors)::text",&[id,inbox,followers,username,display,key_id,pem,&json!(actor_emojis).to_string()]).await?;
     if actor["blocked"] == true {
         return Err(AppError::Forbidden("Actor is blocked".into()));
     }

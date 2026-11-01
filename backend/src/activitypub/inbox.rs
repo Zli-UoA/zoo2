@@ -40,6 +40,9 @@ pub async fn receive(
     transport::validate_envelope(&headers, target, &body)?;
     let remote = remote_actor(&state, Some(&user), actor, false).await?;
     transport::verify_headers(&headers, target, &body, &remote)?;
+    if activity["type"] == "Announce" {
+        reposts::resolve_announce(&state, &user, &activity).await?;
+    }
     receive_verified(&state, &user, &remote, &activity).await?;
     Ok(StatusCode::ACCEPTED)
 }
@@ -65,8 +68,8 @@ pub(super) async fn receive_verified(
     let id = string(activity, "id")?;
     let mut db = state.db.clone();
     let mut tx = db.transaction().await?;
-    // Serialize relationship changes and Undo tombstones for this actor and inbox.
-    query(&mut tx,"SELECT '{}'::text FROM (SELECT pg_advisory_xact_lock(hashtextextended($1 || ':' || $2,0))) locked", &[user,actor_id]).await?;
+    // Notes and reposts are shared across inbox recipients; serialize by the verified actor.
+    query(&mut tx,"SELECT '{}'::text FROM (SELECT pg_advisory_xact_lock(hashtextextended('inbox-actor:' || $1,0))) locked", &[actor_id]).await?;
     // The receipt and all effects commit together. Replays cannot repeat delivery or resurrect posts.
     let inserted=query(&mut tx,"INSERT INTO apub_inbox_receipts(id,actor_id,user_id) VALUES($1,$2,$3) ON CONFLICT DO NOTHING RETURNING '{}'::text",&[id,actor_id,user]).await?;
     if inserted.is_empty() {
@@ -123,6 +126,13 @@ pub(super) async fn receive_verified(
             toasty::sql::statement("INSERT INTO apub_undone_activities(activity_id,actor_id,user_id) VALUES($1,$2,$3) ON CONFLICT DO NOTHING").bind(undone).bind(actor_id).bind(user).exec(&mut tx).await?;
             toasty::sql::statement("DELETE FROM apub_follows WHERE user_id=$1 AND actor_id=$2 AND direction='incoming' AND activity_id=$3").bind(user).bind(actor_id).bind(undone).exec(&mut tx).await?;
             toasty::sql::statement("DELETE FROM apub_reactions r USING home_posts p WHERE r.activity_id=$1 AND r.actor_id=$2 AND r.user_id IS NULL AND r.post_id=p.id AND p.user_id=$3").bind(undone).bind(actor_id).bind(user).exec(&mut tx).await?;
+            toasty::sql::statement(
+                "DELETE FROM apub_reposts WHERE actor_id=$1 AND activity_id=$2 AND user_id IS NULL",
+            )
+            .bind(actor_id)
+            .bind(undone)
+            .exec(&mut tx)
+            .await?;
             toasty::sql::statement("UPDATE apub_notifications SET is_read=true WHERE user_id=$1 AND actor_id=$2 AND activity_id=$3").bind(user).bind(actor_id).bind(undone).exec(&mut tx).await?;
         }
         "Like" => {
@@ -133,12 +143,17 @@ pub(super) async fn receive_verified(
                 .strip_prefix(&prefix)
                 .filter(|id| !id.is_empty() && !id.contains(['/', '?', '#']))
                 .ok_or_else(|| AppError::BadRequest("Unknown Like target".into()))?;
-            one(&mut tx,"SELECT '{}'::text FROM home_posts p WHERE p.id=$1 AND p.user_id=$2 AND p.apub AND p.deleted_at IS NULL AND (p.visibility IN ('public','unlisted') OR EXISTS(SELECT 1 FROM apub_follows WHERE user_id=$2 AND actor_id=$3 AND direction='incoming' AND accepted))", &[post,user,actor_id]).await?;
+            one(&mut tx,"SELECT '{}'::text FROM home_posts p WHERE p.id=$1 AND p.user_id=$2 AND p.apub AND p.deleted_at IS NULL AND (p.visibility IN ('public','unlisted') OR p.reply_actor=$3 OR EXISTS(SELECT 1 FROM apub_follows WHERE user_id=$2 AND actor_id=$3 AND direction='incoming' AND accepted))", &[post,user,actor_id]).await?;
             let undone=query(&mut tx,"SELECT '{}'::text FROM apub_undone_activities WHERE activity_id=$1 AND actor_id=$2 AND user_id=$3", &[id,actor_id,user]).await?;
             if undone.is_empty() {
-                let inserted=query(&mut tx,"INSERT INTO apub_reactions(post_id,actor_id,activity_id,activity_json) VALUES($1,$2,$3,$4) ON CONFLICT(post_id,actor_id) DO UPDATE SET activity_id=EXCLUDED.activity_id,activity_json=EXCLUDED.activity_json RETURNING json_build_object('inserted',xmax=0)::text", &[post,actor_id,id,&activity.to_string()]).await?;
+                let (reaction, reaction_emoji) = emoji::reaction(activity)?;
+                if let Some(e) = &reaction_emoji {
+                    emoji::remember(&mut tx, std::slice::from_ref(e)).await?;
+                }
+                let inserted=query(&mut tx,"INSERT INTO apub_reactions(post_id,actor_id,activity_id,activity_json,reaction,emoji) VALUES($1,$2,$3,$4,$5,$6::jsonb) ON CONFLICT(post_id,actor_id) DO UPDATE SET activity_id=EXCLUDED.activity_id,activity_json=EXCLUDED.activity_json,reaction=EXCLUDED.reaction,emoji=EXCLUDED.emoji RETURNING json_build_object('inserted',xmax=0)::text", &[post,actor_id,id,&activity.to_string(),&reaction,&json!(reaction_emoji).to_string()]).await?;
                 if inserted.first().is_some_and(|row| row["inserted"] == true) {
                     interactions::notify(&mut tx, user, actor_id, id, "like", post).await?;
+                    toasty::sql::statement("UPDATE apub_notifications SET reaction=$2,emoji=$3::jsonb WHERE activity_id=$1 AND user_id=$4").bind(id).bind(reaction).bind(json!(reaction_emoji).to_string()).bind(user).exec(&mut tx).await?;
                 }
             }
         }
@@ -152,10 +167,20 @@ pub(super) async fn receive_verified(
             {
                 return Err(AppError::BadRequest("Invalid note attribution".into()));
             }
-            let followed=query(&mut tx,"SELECT json_build_object('user_id',user_id)::text FROM apub_follows WHERE actor_id=$1 AND direction='outgoing' AND accepted",&[actor_id]).await?;
-            if !followed.iter().any(|f| f["user_id"] == user) {
+            let parent_uri = object["inReplyTo"]
+                .as_str()
+                .or_else(|| object["inReplyTo"]["id"].as_str());
+            let prefix = format!("{}/api/activitypub/notes/", base_url()?);
+            let parent_id = parent_uri.map(|uri| uri.strip_prefix(&prefix).unwrap_or(uri));
+            let parents = if let Some(parent) = parent_id {
+                query(&mut tx,"SELECT row_to_json(p)::text FROM home_posts p WHERE p.id=$1 AND p.user_id=$2 AND p.apub AND p.deleted_at IS NULL AND (p.visibility IN ('public','unlisted') OR p.reply_actor=$3 OR EXISTS(SELECT 1 FROM apub_follows WHERE user_id=$2 AND actor_id=$3 AND direction='incoming' AND accepted))",&[parent,user,actor_id]).await?
+            } else {
+                vec![]
+            };
+            let followed=query(&mut tx,"SELECT '{}'::text FROM apub_follows WHERE user_id=$1 AND actor_id=$2 AND direction='outgoing' AND accepted",&[user,actor_id]).await?;
+            if followed.is_empty() && parents.is_empty() {
                 return Err(AppError::Forbidden(
-                    "Actor is not followed by inbox owner".into(),
+                    "Actor is not followed and Note is not an authorized reply".into(),
                 ));
             }
             let mut to = audience(object, "to");
@@ -168,6 +193,8 @@ pub(super) async fn receive_verified(
                 "unlisted"
             } else if to.contains(&string(actor, "followers_url")?)
                 || cc.contains(&string(actor, "followers_url")?)
+                || (!parents.is_empty()
+                    && (to.contains(&local.as_str()) || cc.contains(&local.as_str())))
             {
                 "followers"
             } else {
@@ -175,17 +202,22 @@ pub(super) async fn receive_verified(
                     "Direct messages are not supported".into(),
                 ));
             };
+            if parents
+                .first()
+                .is_some_and(|p| p["visibility"] == "followers")
+                && visibility != "followers"
+            {
+                return Err(AppError::BadRequest(
+                    "Reply broadens private audience".into(),
+                ));
+            }
             let raw = string(object, "content")?;
             if raw.len() > 128 * 1024 {
                 return Err(AppError::BadRequest("Note too large".into()));
             }
-            let linebreaks = regex::Regex::new("(?i)<br\\s*/?>|</p>")
-                .unwrap()
-                .replace_all(raw, "\n");
-            let stripped = regex::Regex::new("<[^>]*>")
-                .unwrap()
-                .replace_all(&linebreaks, "");
-            let content = html_escape::decode_html_entities(&stripped).into_owned();
+            let content = emoji::plain_content(raw);
+            let note_emojis = emoji::tags(&object["tag"]);
+            emoji::remember(&mut tx, &note_emojis).await?;
             let published = object["published"]
                 .as_str()
                 .unwrap_or("")
@@ -201,12 +233,53 @@ pub(super) async fn receive_verified(
                 return Err(AppError::BadRequest("Future note timestamp".into()));
             }
             if activity["type"] == "Create" {
-                toasty::sql::statement("INSERT INTO apub_remote_posts(id,actor_id,content,visibility,published,updated_at) VALUES($1,$2,$3,$4,$5::timestamptz,$6::timestamptz) ON CONFLICT DO NOTHING").bind(post_id).bind(actor_id).bind(content).bind(visibility).bind(published.to_string()).bind(updated.to_string()).exec(&mut tx).await?;
+                toasty::sql::statement("INSERT INTO apub_remote_posts(id,actor_id,content,visibility,published,updated_at,parent_id,emojis) VALUES($1,$2,$3,$4,$5::timestamptz,$6::timestamptz,NULLIF($7,''),$8::jsonb) ON CONFLICT DO NOTHING").bind(post_id).bind(actor_id).bind(content).bind(visibility).bind(published.to_string()).bind(updated.to_string()).bind(parent_id.unwrap_or("")).bind(json!(note_emojis).to_string()).exec(&mut tx).await?;
             } else {
-                toasty::sql::statement("UPDATE apub_remote_posts SET content=$3,visibility=$4,updated_at=$5::timestamptz WHERE id=$1 AND actor_id=$2 AND deleted_at IS NULL AND updated_at<$5::timestamptz").bind(post_id).bind(actor_id).bind(content).bind(visibility).bind(updated.to_string()).exec(&mut tx).await?;
+                toasty::sql::statement("UPDATE apub_remote_posts SET content=$3,visibility=$4,updated_at=$5::timestamptz,parent_id=NULLIF($6,''),emojis=$7::jsonb WHERE id=$1 AND actor_id=$2 AND deleted_at IS NULL AND updated_at<$5::timestamptz").bind(post_id).bind(actor_id).bind(content).bind(visibility).bind(updated.to_string()).bind(parent_id.unwrap_or("")).bind(json!(note_emojis).to_string()).exec(&mut tx).await?;
+            }
+            if activity["type"] == "Create" && !parents.is_empty() {
+                interactions::notify(&mut tx, user, actor_id, id, "reply", post_id).await?;
             }
             // Per-recipient inboxes preserve audience isolation, even for followers-only notes.
             toasty::sql::statement("INSERT INTO apub_remote_recipients(post_id,user_id) SELECT id,$2 FROM apub_remote_posts WHERE id=$1 AND actor_id=$3 ON CONFLICT DO NOTHING").bind(post_id).bind(user).bind(actor_id).exec(&mut tx).await?;
+        }
+        "Announce" => {
+            let original = object_id(&activity["object"])
+                .ok_or_else(|| AppError::BadRequest("Missing Announce object".into()))?;
+            let prefix = format!("{}/api/activitypub/notes/", base_url()?);
+            let post_id = original.strip_prefix(&prefix).unwrap_or(original);
+            let target=one(&mut tx,"SELECT json_build_object('author',p.user_id,'local',true)::text FROM home_posts p WHERE p.id=$1 AND p.apub AND p.deleted_at IS NULL AND p.visibility IN ('public','unlisted') UNION ALL SELECT json_build_object('author',p.actor_id,'local',false)::text FROM apub_remote_posts p JOIN apub_actors a ON a.id=p.actor_id WHERE p.id=$1 AND p.deleted_at IS NULL AND NOT a.blocked AND p.visibility IN ('public','unlisted')",&[post_id]).await?;
+            let following=query(&mut tx,"SELECT '{}'::text FROM apub_follows WHERE user_id=$1 AND actor_id=$2 AND direction='outgoing' AND accepted",&[user,actor_id]).await?;
+            if following.is_empty() && !(target["local"] == true && target["author"] == user) {
+                return Err(AppError::Forbidden("Unsolicited Announce".into()));
+            }
+            let to = audience(activity, "to");
+            let cc = audience(activity, "cc");
+            let visibility = if to.contains(&PUBLIC) {
+                "public"
+            } else if cc.contains(&PUBLIC) {
+                "unlisted"
+            } else if to.contains(&string(actor, "followers_url")?) {
+                "followers"
+            } else {
+                return Err(AppError::BadRequest("Unsupported Announce audience".into()));
+            };
+            let undone=query(&mut tx,"SELECT '{}'::text FROM apub_undone_activities WHERE activity_id=$1 AND actor_id=$2",&[id,actor_id]).await?;
+            if undone.is_empty() {
+                toasty::sql::statement(
+                    "DELETE FROM apub_reposts WHERE post_id=$1 AND actor_id=$2 AND activity_id<>$3",
+                )
+                .bind(post_id)
+                .bind(actor_id)
+                .bind(id)
+                .exec(&mut tx)
+                .await?;
+                let inserted=query(&mut tx,"INSERT INTO apub_reposts(post_id,actor_id,activity_id,activity_json,visibility) VALUES($1,$2,$3,$4,$5) ON CONFLICT DO NOTHING RETURNING '{}'::text",&[post_id,actor_id,id,&activity.to_string(),visibility]).await?;
+                toasty::sql::statement("INSERT INTO apub_repost_recipients(activity_id,user_id) VALUES($1,$2) ON CONFLICT DO NOTHING").bind(id).bind(user).exec(&mut tx).await?;
+                if !inserted.is_empty() && target["local"] == true && target["author"] == user {
+                    interactions::notify(&mut tx, user, actor_id, id, "repost", post_id).await?;
+                }
+            }
         }
         "Delete" => {
             let post = object_id(&activity["object"])

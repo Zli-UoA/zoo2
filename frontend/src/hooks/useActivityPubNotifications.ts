@@ -6,13 +6,16 @@ export interface ActivityPubNotification {
   id: string;
   actor_id: string;
   display_name: string;
-  kind: "follow_request" | "follow_accepted" | "like";
+  kind: "follow_request" | "follow_accepted" | "like" | "reply" | "repost";
   activity_id: string;
   post_id: string | null;
   content: string | null;
   is_read: boolean;
   created_at: string;
   pending: boolean;
+  actor_emojis?: import("../components/home/ActivityPubEmoji").CustomEmoji[];
+  reaction?: string | null;
+  emoji?: import("../components/home/ActivityPubEmoji").CustomEmoji | null;
 }
 export function useActivityPubNotifications() {
   const { config } = useCollections();

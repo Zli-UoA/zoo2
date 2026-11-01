@@ -1,6 +1,13 @@
+import {
+  ActivityPubText,
+  ActivityPubEmoji,
+  FederatedAccount,
+  type CustomEmoji,
+} from "./ActivityPubEmoji";
+import { HomeReactionPicker, type ReactionChoice } from "./HomeReactionPicker";
 import { useHomeLive } from "../../hooks/useHomeLive";
 import { Link } from "@tanstack/react-router";
-import { HomeComposer } from "./HomeComposer";
+import { HomeComposer, type HomeComposerHandle } from "./HomeComposer";
 import { Input } from "../ui/input";
 import { ExternalLink } from "../ui/external-link";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
@@ -13,7 +20,9 @@ import {
   Trash2Icon,
   PencilIcon,
   MoreHorizontalIcon,
-  HeartIcon,
+  ReplyIcon,
+  Repeat2Icon,
+  SmilePlusIcon,
 } from "lucide-react";
 import { createConfiguredApiClient } from "../../lib/api/client";
 import { useCollections } from "../../lib/electric/collections-context";
@@ -48,6 +57,15 @@ export interface HomePost {
   url?: string | null;
   likes?: number;
   liked?: boolean;
+  entry_id?: string;
+  parent_id?: string | null;
+  emojis?: CustomEmoji[];
+  actor_emojis?: CustomEmoji[];
+  reactions?: { reaction: string; emoji: CustomEmoji | null; count: number; selected: boolean }[];
+  replies?: number;
+  reposts?: number;
+  reposted?: boolean;
+  reposted_by?: string | null;
 }
 
 export function HomeScreen() {
@@ -55,6 +73,9 @@ export function HomeScreen() {
   const { config } = useCollections();
   const client = useMemo(() => createConfiguredApiClient(config), [config]);
   const { currentUserId } = useCurrentUser();
+  const composerRef = useRef<HomeComposerHandle>(null);
+  const [reactionPost, setReactionPost] = useState<HomePost | null>(null);
+  const [pendingRepost, setPendingRepost] = useState<string | null>(null);
   const [timeline, setTimeline] = useState("home");
   const [federation, setFederation] = useState<{
     enabled: boolean;
@@ -71,6 +92,7 @@ export function HomeScreen() {
         remote: boolean;
         url?: string;
         created_at?: string;
+        emojis?: CustomEmoji[];
       }[]
     | null
   >(null);
@@ -157,7 +179,7 @@ export function HomeScreen() {
         while (rows.length < limit) {
           const size = Math.min(500, limit - rows.length);
           const before = rows.length
-            ? `&before=${encodeURIComponent(rows[rows.length - 1].id)}`
+            ? `&before=${encodeURIComponent(rows[rows.length - 1].entry_id ?? rows[rows.length - 1].id)}`
             : "";
           const page = await client.get<HomePost[]>(
             `/api/home?timeline=${timeline}${size !== 50 ? `&limit=${size}` : ""}${before}`,
@@ -175,7 +197,7 @@ export function HomeScreen() {
           const first = Array.from(root.querySelectorAll<HTMLElement>("[data-home-post]")).find(
             (node) =>
               node.getBoundingClientRect().bottom > top &&
-              rows.some((post) => post.id === node.dataset.homePost),
+              rows.some((post) => (post.entry_id ?? post.id) === node.dataset.homePost),
           );
           if (first)
             anchor.current = {
@@ -219,14 +241,16 @@ export function HomeScreen() {
     olderRequest.current = controller;
     try {
       const rows = await client.get<HomePost[]>(
-        `/api/home?timeline=${timeline}&before=${encodeURIComponent(posts[posts.length - 1].id)}`,
+        `/api/home?timeline=${timeline}&before=${encodeURIComponent(posts[posts.length - 1].entry_id ?? posts[posts.length - 1].id)}`,
         { signal: controller.signal },
       );
       if (version !== generation.current) return;
       loadedCount.current += rows.length;
       setPosts((current) => [
         ...current,
-        ...rows.filter((p) => !current.some((old) => old.id === p.id)),
+        ...rows.filter(
+          (p) => !current.some((old) => (old.entry_id ?? old.id) === (p.entry_id ?? p.id)),
+        ),
       ]);
       setHasMore(rows.length === 50);
       setError(false);
@@ -238,6 +262,19 @@ export function HomeScreen() {
         setLoadingOlder(false);
       }
     }
+  };
+  const react = (post: HomePost, choice: ReactionChoice, remove = false) => {
+    if (pendingLike) return;
+    setPendingLike(post.id);
+    setReactionError(null);
+    void client
+      .request("/api/activitypub/reactions", {
+        method: remove ? "DELETE" : "POST",
+        body: { post_id: post.id, ...choice },
+      })
+      .then(() => refresh(true))
+      .catch(() => setReactionError(post.id))
+      .finally(() => setPendingLike(null));
   };
   return (
     <section className="relative flex min-h-0 flex-1 flex-col" aria-labelledby="home-title">
@@ -347,7 +384,17 @@ export function HomeScreen() {
           ) : (
             <ol aria-label={t("home.timeline")}>
               {posts.map((post) => (
-                <li key={post.id} data-home-post={post.id} className="border-b p-4">
+                <li
+                  key={post.entry_id ?? post.id}
+                  data-home-post={post.entry_id ?? post.id}
+                  className="border-b p-4"
+                >
+                  {post.reposted_by ? (
+                    <p className="mb-2 flex items-center gap-2 text-xs text-muted-foreground">
+                      <Repeat2Icon className="size-3" />
+                      {t("home.repostedBy", { name: post.reposted_by })}
+                    </p>
+                  ) : null}
                   <article className="flex min-w-0 gap-3">
                     <Avatar>
                       <AvatarFallback>
@@ -357,9 +404,16 @@ export function HomeScreen() {
                     <div className="min-w-0 flex-1">
                       <div className="flex flex-wrap items-baseline gap-x-2 gap-y-1 text-xs text-muted-foreground">
                         <span className="break-all text-sm font-semibold text-foreground">
-                          {post.display_name || post.user_name}
+                          <ActivityPubText
+                            text={post.display_name || post.user_name}
+                            emojis={post.actor_emojis}
+                          />
                         </span>
-                        <span className="break-all">@{post.user_name}</span>
+                        <FederatedAccount
+                          userName={post.user_name}
+                          actorId={post.user_id}
+                          remote={post.remote}
+                        />
                         <span className="inline-flex min-w-0 max-w-full items-baseline gap-2">
                           <time className="shrink-0" dateTime={post.created_at}>
                             {new Date(post.created_at).toLocaleString(i18n.language)}
@@ -376,47 +430,8 @@ export function HomeScreen() {
                             </Link>
                           ) : null}
                         </span>
-                        {post.user_id === currentUserId && !post.remote ? (
-                          <div className="ml-auto">
-                            <DropdownMenu>
-                              <DropdownMenuTrigger
-                                render={
-                                  <Button
-                                    variant="ghost"
-                                    size="icon-sm"
-                                    aria-label={t("home.postActions")}
-                                  />
-                                }
-                              >
-                                <MoreHorizontalIcon />
-                              </DropdownMenuTrigger>
-                              <DropdownMenuContent align="end">
-                                <DropdownMenuItem
-                                  onClick={() => {
-                                    setEditingId(post.id);
-                                    setEditText(post.content);
-                                    setEditError(false);
-                                  }}
-                                >
-                                  <PencilIcon />
-                                  {t("home.edit")}
-                                </DropdownMenuItem>
-                                <DropdownMenuItem
-                                  variant="destructive"
-                                  onClick={() => {
-                                    setDeleteError(false);
-                                    setDeleteId(post.id);
-                                  }}
-                                >
-                                  <Trash2Icon />
-                                  {t("home.delete")}
-                                </DropdownMenuItem>
-                              </DropdownMenuContent>
-                            </DropdownMenu>
-                          </div>
-                        ) : null}
                       </div>
-                      {editingId === post.id ? (
+                      {editingId === (post.entry_id ?? post.id) ? (
                         <form
                           className="mt-2 space-y-2"
                           onSubmit={(e) => {
@@ -466,33 +481,145 @@ export function HomeScreen() {
                         </form>
                       ) : (
                         <p className="mt-2 whitespace-pre-wrap break-words text-sm [overflow-wrap:anywhere]">
-                          {post.content.trim() ? post.content : t("home.attachmentsOnly")}
+                          <ActivityPubText
+                            text={post.content.trim() ? post.content : t("home.attachmentsOnly")}
+                            emojis={post.emojis}
+                          />
                         </p>
                       )}
-                      <Button
-                        variant="ghost"
-                        size="sm"
-                        className="mt-2"
-                        aria-label={`${t(post.liked ? "home.unlike" : "home.like")} ${post.likes ?? 0}`}
-                        aria-pressed={post.liked ?? false}
-                        disabled={pendingLike !== null}
-                        onClick={() => {
-                          if (pendingLike) return;
-                          setPendingLike(post.id);
-                          setReactionError(null);
-                          void client
-                            .request("/api/activitypub/reactions", {
-                              method: post.liked ? "DELETE" : "POST",
-                              body: { post_id: post.id },
-                            })
-                            .then(() => refresh(true))
-                            .catch(() => setReactionError(post.id))
-                            .finally(() => setPendingLike(null));
-                        }}
+                      {post.reactions?.length ? (
+                        <div className="mt-2 flex flex-wrap gap-1">
+                          {post.reactions.map((r) => (
+                            <Button
+                              key={`${r.reaction}:${r.emoji?.image_id ?? ""}`}
+                              variant={r.selected ? "secondary" : "outline"}
+                              size="sm"
+                              aria-label={`${r.reaction} ${r.count}`}
+                              aria-pressed={r.selected}
+                              disabled={pendingLike !== null}
+                              onClick={() =>
+                                react(
+                                  post,
+                                  {
+                                    reaction: r.reaction,
+                                    ...(r.emoji ? { emoji_id: r.emoji.image_id } : {}),
+                                  },
+                                  r.selected,
+                                )
+                              }
+                            >
+                              {r.emoji ? (
+                                <ActivityPubEmoji emoji={r.emoji} />
+                              ) : (
+                                <span>{r.reaction}</span>
+                              )}
+                              <span>{r.count}</span>
+                            </Button>
+                          ))}
+                        </div>
+                      ) : null}
+                      <div
+                        role="group"
+                        aria-label={t("home.actions")}
+                        className="mt-2 flex items-center justify-between gap-2 text-muted-foreground"
                       >
-                        <HeartIcon className={post.liked ? "fill-current" : undefined} />
-                        <span>{post.likes ?? 0}</span>
-                      </Button>
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          aria-label={`${t("home.reply")} ${post.replies ?? 0}`}
+                          onClick={() => composerRef.current?.reply(post)}
+                        >
+                          <ReplyIcon />
+                          <span>{post.replies ?? 0}</span>
+                        </Button>
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          aria-label={`${t(post.reposted ? "home.undoRepost" : "home.repost")} ${post.reposts ?? 0}`}
+                          aria-pressed={post.reposted ?? false}
+                          disabled={pendingRepost !== null || post.visibility === "followers"}
+                          title={
+                            post.visibility === "followers" ? t("home.privateRepost") : undefined
+                          }
+                          onClick={() => {
+                            if (pendingRepost) return;
+                            setPendingRepost(post.id);
+                            setReactionError(null);
+                            void client
+                              .request("/api/activitypub/reposts", {
+                                method: post.reposted ? "DELETE" : "POST",
+                                body: { post_id: post.id },
+                              })
+                              .then(() => refresh(true))
+                              .catch(() => setReactionError(post.id))
+                              .finally(() => setPendingRepost(null));
+                          }}
+                        >
+                          <Repeat2Icon />
+                          <span>{post.reposts ?? 0}</span>
+                        </Button>
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          aria-label={`${t("home.react")} ${post.likes ?? 0}`}
+                          onClick={() => setReactionPost(post)}
+                        >
+                          <SmilePlusIcon />
+                          <span>{post.likes ?? 0}</span>
+                        </Button>
+                        <DropdownMenu>
+                          <DropdownMenuTrigger
+                            render={
+                              <Button
+                                variant="ghost"
+                                size="icon-sm"
+                                aria-label={t("home.postActions")}
+                              />
+                            }
+                          >
+                            <MoreHorizontalIcon />
+                          </DropdownMenuTrigger>
+                          <DropdownMenuContent align="end">
+                            {post.user_id === currentUserId && !post.remote ? (
+                              <>
+                                <DropdownMenuItem
+                                  onClick={() => {
+                                    setEditingId(post.entry_id ?? post.id);
+                                    setEditText(post.content);
+                                    setEditError(false);
+                                  }}
+                                >
+                                  <PencilIcon />
+                                  {t("home.edit")}
+                                </DropdownMenuItem>
+                                <DropdownMenuItem
+                                  variant="destructive"
+                                  onClick={() => {
+                                    setDeleteError(false);
+                                    setDeleteId(post.id);
+                                  }}
+                                >
+                                  <Trash2Icon />
+                                  {t("home.delete")}
+                                </DropdownMenuItem>
+                              </>
+                            ) : null}
+                            <DropdownMenuItem
+                              onClick={() => {
+                                if (!navigator.clipboard) {
+                                  setReactionError(post.id);
+                                  return;
+                                }
+                                void navigator.clipboard
+                                  .writeText(post.content)
+                                  .catch(() => setReactionError(post.id));
+                              }}
+                            >
+                              {t("home.copyContent")}
+                            </DropdownMenuItem>
+                          </DropdownMenuContent>
+                        </DropdownMenu>
+                      </div>
                       {reactionError === post.id ? (
                         <p role="alert" className="text-xs text-destructive">
                           {t("home.controlsError")}
@@ -589,11 +716,17 @@ export function HomeScreen() {
                     </Avatar>
                     <div className="min-w-0">
                       <h3 className="break-all font-semibold">
-                        {user.display_name || user.user_name}
+                        <ActivityPubText
+                          text={user.display_name || user.user_name}
+                          emojis={user.emojis}
+                        />
                       </h3>
                       <p className="break-all text-sm text-muted-foreground">
-                        @{user.user_name}
-                        {user.remote ? `@${new URL(user.id).host}` : ""}
+                        <FederatedAccount
+                          userName={user.user_name}
+                          actorId={user.id}
+                          remote={user.remote}
+                        />
                       </p>
                     </div>
                   </div>
@@ -636,7 +769,17 @@ export function HomeScreen() {
           </div>
         </DialogContent>
       </Dialog>
+      {reactionPost ? (
+        <HomeReactionPicker
+          key={reactionPost.id}
+          postId={reactionPost.id}
+          remote={reactionPost.remote}
+          onClose={() => setReactionPost(null)}
+          onSelect={(choice) => react(reactionPost, choice)}
+        />
+      ) : null}
       <HomeComposer
+        ref={composerRef}
         federationEnabled={federation.enabled}
         onPost={async (post) => {
           await client.request("/api/home", { method: "POST", body: post });

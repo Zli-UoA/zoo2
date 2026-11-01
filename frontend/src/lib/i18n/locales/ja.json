@@ -645,7 +645,24 @@
     "notificationKinds": {
       "follow_request": "さんからフォロー申請が届きました",
       "follow_accepted": "さんへのフォローが承認されました",
-      "like": "さんが投稿にいいねしました"
-    }
+      "like": "さんが投稿にリアクションしました",
+      "reply": "さんが投稿に返信しました",
+      "repost": "さんが投稿をリポストしました"
+    },
+    "actions": "投稿のアクション",
+    "reply": "返信",
+    "repost": "リポスト",
+    "undoRepost": "リポストを取り消す",
+    "react": "リアクション",
+    "copyContent": "本文をコピー",
+    "privateRepost": "フォロワー限定の投稿はリポストできません",
+    "customEmojis": "カスタム絵文字",
+    "searchEmoji": "絵文字を検索",
+    "noEmojis": "利用できるカスタム絵文字はありません",
+    "emojiSearchMore": "続きは名前で検索してください",
+    "replyTo": "{{name}}さんに返信",
+    "cancelReply": "返信先を解除",
+    "repostedBy": "{{name}}さんがリポスト",
+    "quickReactions": "よく使うリアクション"
   }
 }

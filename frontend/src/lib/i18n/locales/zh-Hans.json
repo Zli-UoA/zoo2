@@ -645,7 +645,24 @@
     "notificationKinds": {
       "follow_request": "请求关注你",
       "follow_accepted": "批准了你的关注请求",
-      "like": "喜欢了你的帖子"
-    }
+      "like": "回应了你的帖子",
+      "reply": "回复了你的帖子",
+      "repost": "转发了你的帖子"
+    },
+    "actions": "帖子操作",
+    "reply": "回复",
+    "repost": "转发",
+    "undoRepost": "取消转发",
+    "react": "回应",
+    "copyContent": "复制正文",
+    "privateRepost": "仅关注者可见的帖子不能转发",
+    "customEmojis": "自定义表情",
+    "searchEmoji": "搜索表情",
+    "noEmojis": "没有可用的自定义表情",
+    "emojiSearchMore": "请按名称搜索更多表情",
+    "replyTo": "回复 {{name}}",
+    "cancelReply": "取消回复",
+    "repostedBy": "{{name}} 转发了",
+    "quickReactions": "常用回应"
   }
 }

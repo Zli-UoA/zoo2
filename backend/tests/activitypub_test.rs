@@ -1333,3 +1333,485 @@ async fn protocol_outgoing_like_and_undo_use_stable_object_actor_and_private_rec
         .await?;
     Ok(())
 }
+
+async fn follow_peer(f: &mut ProtocolFixture) -> anyhow::Result<()> {
+    toasty::sql::statement("INSERT INTO apub_follows(user_id,actor_id,direction,activity_id,accepted) VALUES($1,$2,'outgoing',$3,true) ON CONFLICT(user_id,actor_id,direction) DO UPDATE SET accepted=true")
+        .bind(f.user.as_str()).bind(f.remote.as_str()).bind(format!("https://zoo.example.com/activities/{}",uuid::Uuid::new_v4())).exec(&mut f.db).await?;
+    Ok(())
+}
+async fn finish_protocol(f: &mut ProtocolFixture) -> anyhow::Result<()> {
+    toasty::sql::statement("DELETE FROM users WHERE id=$1 OR id=$2")
+        .bind(f.user.as_str())
+        .bind(f.other.as_str())
+        .exec(&mut f.db)
+        .await?;
+    Ok(())
+}
+#[tokio::test]
+async fn misskey_custom_reactions_preserve_tags_replace_with_undo_and_proxy_only_known_images()
+-> anyhow::Result<()> {
+    let _serial = PROTOCOL_SERIAL.lock().await;
+    let mut f = protocol_fixture().await?;
+    follow_peer(&mut f).await?;
+    let post = format!("{}/notes/custom", f.remote);
+    let tag = json!({"id":format!("{}/emojis/blobcat",f.remote),"type":"Emoji","name":":blobcat:","icon":{"type":"Image","url":"https://cdn.remote.example/blobcat.png"}});
+    let note = json!({"id":post,"type":"Note","attributedTo":f.remote,"content":"<p>Hello <img src=\"https://cdn.remote.example/blobcat.png\" alt=\":blobcat:\"></p>","published":"2026-01-01T00:00:00Z","to":["https://www.w3.org/ns/activitystreams#Public"],"tag":[tag]});
+    let create = peer_activity(&f, "Create", note);
+    assert_eq!(receive_peer(&f, &create).await?, StatusCode::ACCEPTED);
+    let (_, feed) = request(&f.app, "GET", Some(&f.user), "/api/home", None).await?;
+    let remote = feed
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|p| p["id"] == post)
+        .unwrap();
+    assert!(remote["content"].as_str().unwrap().contains(":blobcat:"));
+    let emoji = remote["emojis"][0].clone();
+    assert_eq!(emoji["name"], ":blobcat:");
+    assert_eq!(emoji["image_id"].as_str().unwrap().len(), 64);
+    toasty::sql::statement("INSERT INTO apub_emoji_catalog(origin,software,emojis) VALUES('https://remote.example','misskey',$1::jsonb) ON CONFLICT(origin) DO UPDATE SET emojis=EXCLUDED.emojis,software='misskey',fetched_at=now()")
+        .bind(json!([emoji]).to_string()).exec(&mut f.db).await?;
+    let encoded = percent_encoding::utf8_percent_encode(&post, percent_encoding::NON_ALPHANUMERIC);
+    let (status, options) = request(
+        &f.app,
+        "GET",
+        Some(&f.user),
+        &format!("/api/activitypub/reaction-options?post_id={encoded}"),
+        None,
+    )
+    .await?;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(options["emojis"][0], emoji);
+    assert_eq!(
+        request(
+            &f.app,
+            "GET",
+            Some(&f.other),
+            &format!("/api/activitypub/reaction-options?post_id={encoded}"),
+            None
+        )
+        .await?
+        .0,
+        StatusCode::NOT_FOUND
+    );
+    let body = json!({"post_id":post,"reaction":":blobcat:","emoji_id":emoji["image_id"]});
+    for _ in 0..2 {
+        assert_eq!(
+            request(
+                &f.app,
+                "POST",
+                Some(&f.user),
+                "/api/activitypub/reactions",
+                Some(body.clone())
+            )
+            .await?
+            .0,
+            StatusCode::OK
+        );
+    }
+    let row=value(&mut f.db,"SELECT row_to_json(d)::text FROM apub_deliveries d WHERE user_id=$1 ORDER BY sequence LIMIT 1",&[&f.user]).await?;
+    let like: Value = serde_json::from_str(row["payload"].as_str().unwrap())?;
+    assert_eq!(like["type"], "Like");
+    assert_eq!(like["_misskey_reaction"], ":blobcat:");
+    assert_eq!(like["content"], ":blobcat:");
+    assert_eq!(like["tag"][0]["icon"]["url"], tag["icon"]["url"]);
+    assert_eq!(like["object"], post);
+    assert_eq!(
+        request(
+            &f.app,
+            "POST",
+            Some(&f.user),
+            "/api/activitypub/reactions",
+            Some(json!({"post_id":post,"reaction":"👍"}))
+        )
+        .await?
+        .0,
+        StatusCode::OK
+    );
+    let mut tx = f.db.transaction().await?;
+    let queued = backend::apps::query(
+        &mut tx,
+        "SELECT payload FROM apub_deliveries WHERE user_id=$1 ORDER BY sequence",
+        &[&f.user],
+    )
+    .await?;
+    drop(tx);
+    assert_eq!(queued.len(), 3);
+    assert_eq!(queued[1]["type"], "Undo");
+    assert_eq!(queued[1]["object"], like);
+    assert_eq!(queued[2]["_misskey_reaction"], "👍");
+    assert_eq!(
+        request(
+            &f.app,
+            "POST",
+            Some(&f.user),
+            "/api/activitypub/reactions",
+            Some(json!({"post_id":post,"reaction":":blobcat:","emoji_id":"unknown"}))
+        )
+        .await?
+        .0,
+        StatusCode::BAD_REQUEST
+    );
+    let local = protocol_post(&f, "public", true).await?;
+    let mut incoming = peer_activity(
+        &f,
+        "Like",
+        json!(format!(
+            "https://zoo.example.com/api/activitypub/notes/{local}"
+        )),
+    );
+    incoming["_misskey_reaction"] = json!(":blobcat:");
+    incoming["content"] = json!(":blobcat:");
+    incoming["tag"] = json!([tag]);
+    assert_eq!(receive_peer(&f, &incoming).await?, StatusCode::ACCEPTED);
+    let (_, feed) = request(&f.app, "GET", Some(&f.user), "/api/home", None).await?;
+    let local_row = feed
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|p| p["id"] == local)
+        .unwrap();
+    assert_eq!(local_row["reactions"][0]["reaction"], ":blobcat:");
+    assert_eq!(
+        local_row["reactions"][0]["emoji"]["image_id"],
+        emoji["image_id"]
+    );
+    let undo = peer_activity(&f, "Undo", incoming["id"].clone());
+    assert_eq!(receive_peer(&f, &undo).await?, StatusCode::ACCEPTED);
+    toasty::sql::statement("INSERT INTO apub_emoji_images(id,url) VALUES('private-test','https://127.0.0.1/secret') ON CONFLICT DO NOTHING").exec(&mut f.db).await?;
+    assert_eq!(
+        request(
+            &f.app,
+            "GET",
+            None,
+            "/api/activitypub/emoji-images/private-test",
+            None
+        )
+        .await?
+        .0,
+        StatusCode::BAD_REQUEST
+    );
+    assert_eq!(
+        request(
+            &f.app,
+            "GET",
+            None,
+            "/api/activitypub/emoji-images/unregistered?url=https://example.com",
+            None
+        )
+        .await?
+        .0,
+        StatusCode::NOT_FOUND
+    );
+    finish_protocol(&mut f).await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn reply_preserves_parent_recipient_and_audience_including_nonfollowed_author()
+-> anyhow::Result<()> {
+    let _serial = PROTOCOL_SERIAL.lock().await;
+    let mut f = protocol_fixture().await?;
+    let parent = protocol_post(&f, "public", true).await?;
+    let local_actor = format!("https://zoo.example.com/api/activitypub/users/{}", f.user);
+    let remote_reply = format!("{}/notes/reply", f.remote);
+    let note = json!({"id":remote_reply,"type":"Note","attributedTo":f.remote,"inReplyTo":format!("https://zoo.example.com/api/activitypub/notes/{parent}"),"content":"<p>Reply from an actor not followed</p>","published":"2026-01-01T00:00:00Z","to":["https://www.w3.org/ns/activitystreams#Public"],"cc":[local_actor]});
+    assert_eq!(
+        receive_peer(&f, &peer_activity(&f, "Create", note)).await?,
+        StatusCode::ACCEPTED
+    );
+    let (_, feed) = request(&f.app, "GET", Some(&f.user), "/api/home", None).await?;
+    assert!(
+        feed.as_array()
+            .unwrap()
+            .iter()
+            .any(|p| p["id"] == remote_reply)
+    );
+    assert_eq!(
+        feed.as_array()
+            .unwrap()
+            .iter()
+            .find(|p| p["id"] == parent)
+            .unwrap()["replies"],
+        1
+    );
+    let (_, other) = request(
+        &f.app,
+        "GET",
+        Some(&f.other),
+        "/api/home?timeline=social",
+        None,
+    )
+    .await?;
+    assert!(
+        !other
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|p| p["id"] == remote_reply)
+    );
+    let(status,response)=request(&f.app,"POST",Some(&f.user),"/api/home",Some(json!({"content":"Reply back","visibility":"public","apub":true,"in_reply_to":remote_reply}))).await?;
+    assert_eq!(status, StatusCode::CREATED);
+    let reply = response["id"].as_str().unwrap();
+    let (_, wire) = request(
+        &f.app,
+        "GET",
+        None,
+        &format!("/api/activitypub/notes/{reply}"),
+        None,
+    )
+    .await?;
+    assert_eq!(wire["inReplyTo"], remote_reply);
+    assert!(wire["cc"].as_array().unwrap().contains(&json!(f.remote)));
+    assert_eq!(wire["tag"][0]["href"], f.remote);
+    let queued=value(&mut f.db,"SELECT row_to_json(d)::text FROM apub_deliveries d WHERE user_id=$1 ORDER BY sequence LIMIT 1",&[&f.user]).await?;
+    assert_eq!(queued["actor_id"], f.remote);
+    request(
+        &f.app,
+        "PATCH",
+        Some(&f.user),
+        &format!("/api/home/{reply}"),
+        Some(json!({"content":"Edited reply"})),
+    )
+    .await?;
+    request(
+        &f.app,
+        "DELETE",
+        Some(&f.user),
+        &format!("/api/home/{reply}"),
+        None,
+    )
+    .await?;
+    let mut tx = f.db.transaction().await?;
+    let deliveries = backend::apps::query(
+        &mut tx,
+        "SELECT payload FROM apub_deliveries WHERE user_id=$1 ORDER BY sequence",
+        &[&f.user],
+    )
+    .await?;
+    drop(tx);
+    assert_eq!(
+        deliveries
+            .iter()
+            .map(|d| d["type"].as_str().unwrap())
+            .collect::<Vec<_>>(),
+        vec!["Create", "Update", "Delete"]
+    );
+    let private = protocol_post(&f, "followers", true).await?;
+    assert_eq!(request(&f.app,"POST",Some(&f.user),"/api/home",Some(json!({"content":"Public leak","visibility":"public","apub":true,"in_reply_to":private}))).await?.0,StatusCode::BAD_REQUEST);
+    let plain = protocol_post(&f, "public", false).await?;
+    assert_eq!(request(&f.app,"POST",Some(&f.user),"/api/home",Some(json!({"content":"Federated local-only reply","visibility":"public","apub":true,"in_reply_to":plain}))).await?.0,StatusCode::BAD_REQUEST);
+    let(status,other_reply)=request(&f.app,"POST",Some(&f.other),"/api/home",Some(json!({"content":"Local response","visibility":"unlisted","apub":false,"in_reply_to":plain}))).await?;
+    assert_eq!(status, StatusCode::CREATED);
+    let (_, feed) = request(&f.app, "GET", Some(&f.user), "/api/home", None).await?;
+    assert!(
+        feed.as_array()
+            .unwrap()
+            .iter()
+            .any(|p| p["id"] == other_reply["id"])
+    );
+    finish_protocol(&mut f).await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn reposts_create_distinct_feed_entries_cursor_and_announces_but_never_private_objects()
+-> anyhow::Result<()> {
+    let _serial = PROTOCOL_SERIAL.lock().await;
+    let mut f = protocol_fixture().await?;
+    let parent = protocol_post(&f, "public", false).await?;
+    let body = json!({"post_id":parent});
+    assert_eq!(
+        request(
+            &f.app,
+            "POST",
+            Some(&f.other),
+            "/api/activitypub/reposts",
+            Some(body.clone())
+        )
+        .await?
+        .0,
+        StatusCode::OK
+    );
+    let (_, feed) = request(&f.app, "GET", Some(&f.other), "/api/home", None).await?;
+    let share = feed
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|p| p["id"] == parent)
+        .unwrap();
+    assert!(share["entry_id"].as_str().unwrap().starts_with("repost:"));
+    assert!(share["reposted_by"].is_string());
+    assert_eq!(share["reposted"], true);
+    let (_, first) = request(
+        &f.app,
+        "GET",
+        Some(&f.user),
+        "/api/home?timeline=local&limit=1",
+        None,
+    )
+    .await?;
+    let cursor = percent_encoding::utf8_percent_encode(
+        first[0]["entry_id"].as_str().unwrap(),
+        percent_encoding::NON_ALPHANUMERIC,
+    );
+    let (_, second) = request(
+        &f.app,
+        "GET",
+        Some(&f.user),
+        &format!("/api/home?timeline=local&limit=1&before={cursor}"),
+        None,
+    )
+    .await?;
+    assert_ne!(first[0]["entry_id"], second[0]["entry_id"]);
+    for _ in 0..2 {
+        assert_eq!(
+            request(
+                &f.app,
+                "DELETE",
+                Some(&f.other),
+                "/api/activitypub/reposts",
+                Some(body.clone())
+            )
+            .await?
+            .0,
+            StatusCode::OK
+        );
+    }
+    let private = protocol_post(&f, "followers", true).await?;
+    assert_eq!(
+        request(
+            &f.app,
+            "POST",
+            Some(&f.user),
+            "/api/activitypub/reposts",
+            Some(json!({"post_id":private}))
+        )
+        .await?
+        .0,
+        StatusCode::BAD_REQUEST
+    );
+    follow_peer(&mut f).await?;
+    let remote_post = format!("{}/notes/public-repost", f.remote);
+    let create = peer_activity(
+        &f,
+        "Create",
+        json!({"type":"Note","id":remote_post,"attributedTo":f.remote,"content":"<p>Public original</p>","published":"2026-01-01T00:00:00Z","to":["https://www.w3.org/ns/activitystreams#Public"]}),
+    );
+    assert_eq!(receive_peer(&f, &create).await?, StatusCode::ACCEPTED);
+    let body = json!({"post_id":remote_post});
+    for _ in 0..2 {
+        assert_eq!(
+            request(
+                &f.app,
+                "POST",
+                Some(&f.user),
+                "/api/activitypub/reposts",
+                Some(body.clone())
+            )
+            .await?
+            .0,
+            StatusCode::OK
+        );
+    }
+    let row=value(&mut f.db,"SELECT row_to_json(d)::text FROM apub_deliveries d WHERE user_id=$1 ORDER BY sequence LIMIT 1",&[&f.user]).await?;
+    let announce: Value = serde_json::from_str(row["payload"].as_str().unwrap())?;
+    assert_eq!(announce["type"], "Announce");
+    assert_eq!(announce["object"], remote_post);
+    assert_eq!(
+        announce["to"],
+        json!(["https://www.w3.org/ns/activitystreams#Public"])
+    );
+    let (_, social) = request(
+        &f.app,
+        "GET",
+        Some(&f.other),
+        "/api/home?timeline=social",
+        None,
+    )
+    .await?;
+    assert!(
+        social
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|p| p["id"] == remote_post && p["reposted_by"].is_string())
+    );
+    assert_eq!(
+        request(
+            &f.app,
+            "POST",
+            Some(&f.other),
+            "/api/activitypub/reactions",
+            Some(json!({"post_id":remote_post}))
+        )
+        .await?
+        .0,
+        StatusCode::OK
+    );
+    assert_eq!(
+        request(
+            &f.app,
+            "DELETE",
+            Some(&f.user),
+            "/api/activitypub/reposts",
+            Some(body)
+        )
+        .await?
+        .0,
+        StatusCode::OK
+    );
+    let row=value(&mut f.db,"SELECT row_to_json(d)::text FROM apub_deliveries d WHERE user_id=$1 ORDER BY sequence DESC LIMIT 1",&[&f.user]).await?;
+    let undo: Value = serde_json::from_str(row["payload"].as_str().unwrap())?;
+    assert_eq!(undo["type"], "Undo");
+    assert_eq!(undo["object"], announce);
+    assert_eq!(undo["to"], announce["to"]);
+    let own = protocol_post(&f, "public", true).await?;
+    let mut incoming = peer_activity(
+        &f,
+        "Announce",
+        json!(format!(
+            "https://zoo.example.com/api/activitypub/notes/{own}"
+        )),
+    );
+    incoming["to"] = json!(["https://www.w3.org/ns/activitystreams#Public"]);
+    assert_eq!(receive_peer(&f, &incoming).await?, StatusCode::ACCEPTED);
+    let (_, feed) = request(&f.app, "GET", Some(&f.user), "/api/home", None).await?;
+    assert_eq!(
+        feed.as_array()
+            .unwrap()
+            .iter()
+            .find(|p| p["id"] == own)
+            .unwrap()["reposts"],
+        1
+    );
+    let cancel = peer_activity(&f, "Undo", incoming["id"].clone());
+    assert_eq!(receive_peer(&f, &cancel).await?, StatusCode::ACCEPTED);
+    assert_eq!(receive_peer(&f, &incoming).await?, StatusCode::ACCEPTED);
+    assert_eq!(
+        value(
+            &mut f.db,
+            "SELECT json_build_object('n',count(*))::text FROM apub_reposts WHERE post_id=$1",
+            &[&own]
+        )
+        .await?["n"],
+        0
+    );
+    toasty::sql::statement("INSERT INTO apub_follows(user_id,actor_id,direction,activity_id,accepted) VALUES($1,$2,'outgoing',$3,true)").bind(f.other.as_str()).bind(f.remote.as_str()).bind(format!("https://zoo.example.com/follows/{}",uuid::Uuid::new_v4())).exec(&mut f.db).await?;
+    assert_eq!(
+        inbox(&f.app, &f.other, &incoming, &f.key, &f.key_id, false).await?,
+        StatusCode::ACCEPTED
+    );
+    assert_eq!(
+        value(
+            &mut f.db,
+            "SELECT json_build_object('n',count(*))::text FROM apub_reposts WHERE post_id=$1",
+            &[&own]
+        )
+        .await?["n"],
+        0,
+        "delivery to another inbox resurrected an undone Announce"
+    );
+    finish_protocol(&mut f).await?;
+    Ok(())
+}

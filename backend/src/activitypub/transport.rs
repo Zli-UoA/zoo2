@@ -174,13 +174,36 @@ pub async fn fetch_json(
     user: Option<&str>,
     url: &str,
 ) -> Result<Value, AppError> {
-    let mut response = request(state, user, reqwest::Method::GET, url, None).await?;
+    fetch_json_limit(state, user, url, 256 * 1024).await
+}
+pub(super) async fn fetch_json_limit(
+    state: &AppState,
+    user: Option<&str>,
+    url: &str,
+    limit: usize,
+) -> Result<Value, AppError> {
+    let response = request(state, user, reqwest::Method::GET, url, None).await?;
+    read_json(response, limit).await
+}
+pub(super) async fn fetch_public_json(url: &str, limit: usize) -> Result<Value, AppError> {
+    let url = reqwest::Url::parse(url).map_err(internal)?;
+    let response = safe_client(&url)
+        .await?
+        .get(url)
+        .header("Accept", "application/json")
+        .header("User-Agent", "Zoo-ActivityPub/1.0")
+        .send()
+        .await
+        .map_err(internal)?;
+    read_json(response, limit).await
+}
+async fn read_json(mut response: reqwest::Response, limit: usize) -> Result<Value, AppError> {
     if !response.status().is_success() {
         return Err(AppError::BadGateway("Remote resource unavailable".into()));
     }
     let mut data = Vec::new();
     while let Some(chunk) = response.chunk().await.map_err(internal)? {
-        if data.len() + chunk.len() > 256 * 1024 {
+        if data.len() + chunk.len() > limit {
             return Err(AppError::BadGateway("Remote document too large".into()));
         }
         data.extend_from_slice(&chunk);

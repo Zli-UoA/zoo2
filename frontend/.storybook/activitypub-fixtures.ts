@@ -37,3 +37,26 @@ export const activityPubNotifications: ActivityPubNotification[] = [
     pending: false,
   },
 ];
+
+export const blobcat = {
+  name: ":blobcat:",
+  url: "https://misskey.example/emoji/blobcat.png",
+  id: "https://misskey.example/emojis/blobcat",
+  image_id: "a".repeat(64),
+};
+export const misskeyPost = {
+  id: "https://misskey.example/notes/note1",
+  user_id: "https://misskey.example/users/alice",
+  user_name: "alice@misskey.example",
+  display_name: "Alice :blobcat:",
+  content: "Misskeyからこんにちは :blobcat:",
+  created_at: "2026-11-01T10:00:00Z",
+  apub: true,
+  visibility: "public",
+  remote: true,
+  url: "https://misskey.example/notes/note1",
+  emojis: [blobcat],
+  actor_emojis: [blobcat],
+  likes: 2,
+  reactions: [{ reaction: ":blobcat:", emoji: blobcat, count: 2, selected: false }],
+};

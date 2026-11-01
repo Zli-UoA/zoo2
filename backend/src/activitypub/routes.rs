@@ -28,6 +28,8 @@ struct FollowRequest {
 pub fn router() -> Router<AppState> {
     Router::new()
         .merge(interactions::router())
+        .merge(emoji::router())
+        .merge(reposts::router())
         .route("/.well-known/webfinger", get(webfinger))
         .route("/api/activitypub/users/{id}", get(actor))
         .route("/api/activitypub/users/{id}/outbox", get(outbox))
@@ -251,7 +253,7 @@ async fn search(
         keys(&state, &user.id).await?;
         let remote = resolve(&state, &user.id, term).await?;
         return Ok(Json(vec![
-            json!({"id":remote["id"],"user_name":remote["user_name"],"display_name":remote["display_name"],"remote":true,"url":remote["id"]}),
+            json!({"id":remote["id"],"user_name":remote["user_name"],"display_name":remote["display_name"],"emojis":remote["emojis"],"remote":true,"url":remote["id"]}),
         ]));
     }
     let mut db = state.db.clone();

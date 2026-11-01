@@ -298,7 +298,7 @@ export const FollowRequests: Story = {
     await expect(panel.getByRole("button", { name: "承認" })).toBeVisible();
     await expect(panel.getByRole("button", { name: "拒否" })).toBeVisible();
     await expect(panel.getByText(/フォローが承認されました/)).toBeVisible();
-    await expect(panel.getByText(/投稿にいいねしました/)).toBeVisible();
+    await expect(panel.getByText(/投稿にリアクションしました/)).toBeVisible();
   },
 };
 export const ApproveFollow: Story = {

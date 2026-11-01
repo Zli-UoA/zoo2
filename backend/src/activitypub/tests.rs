@@ -200,12 +200,15 @@ async fn protocol_signed_interaction_wire_roundtrip() -> anyhow::Result<()> {
     let remote = "https://peer.example/users/remote";
     let follow = json!({"id":"https://peer.example/follows/1","type":"Follow","actor":remote,"object":local});
     let like = json!({"@context":CONTEXT,"id":format!("{local}/likes/1"),"type":"Like","actor":local,"object":"https://peer.example/notes/1","to":[remote]});
-    let activities = [
+    let mut activities = vec![
         json!({"@context":CONTEXT,"id":format!("{local}/accept/1"),"type":"Accept","actor":local,"object":follow,"to":[remote]}),
         json!({"@context":CONTEXT,"id":format!("{local}/reject/1"),"type":"Reject","actor":local,"object":follow,"to":[remote]}),
         like.clone(),
         json!({"@context":CONTEXT,"id":format!("{local}/undo/1"),"type":"Undo","actor":local,"object":like,"to":[remote]}),
     ];
+    let custom = json!({"@context":[CONTEXT,{"Emoji":"http://joinmastodon.org/ns#Emoji","_misskey_reaction":"https://misskey-hub.net/ns#_misskey_reaction"}],"id":format!("{local}/custom-like/1"),"type":"Like","actor":local,"object":"https://peer.example/notes/1","content":":blobcat:","_misskey_reaction":":blobcat:","tag":[{"type":"Emoji","id":"https://peer.example/emojis/blobcat","name":":blobcat:","icon":{"type":"Image","url":"https://cdn.peer.example/blobcat.png"}}],"to":[remote]});
+    activities.push(custom.clone());
+    activities.push(json!({"@context":CONTEXT,"id":format!("{local}/custom-undo/1"),"type":"Undo","actor":local,"object":custom,"to":[remote]}));
     let server = MockServer::start().await;
     let verifier = json!({"key_id":format!("{local}#main-key"),"public_key":key["public_key"]});
     let expected = activities.clone();
@@ -222,7 +225,7 @@ async fn protocol_signed_interaction_wire_roundtrip() -> anyhow::Result<()> {
             );
             ResponseTemplate::new(202)
         })
-        .expect(4)
+        .expect(6)
         .mount(&server)
         .await;
     let url = reqwest::Url::parse(&format!("{}/inbox", server.uri()))?;
@@ -243,4 +246,72 @@ async fn protocol_signed_interaction_wire_roundtrip() -> anyhow::Result<()> {
         .exec(&mut db)
         .await?;
     Ok(())
+}
+
+#[test]
+fn misskey_tags_keep_shortcodes_and_reject_unsafe_or_invalid_image_metadata() {
+    let tag = json!({"type":"Emoji","name":":blobcat:","id":"https://misskey.example/emojis/blobcat","icon":{"url":"https://cdn.example/blobcat.png"}});
+    let parsed = emoji::tags(&json!([tag]));
+    assert_eq!(parsed.len(), 1);
+    assert_eq!(parsed[0]["image_id"].as_str().unwrap().len(), 64);
+    let activity =
+        json!({"type":"Like","_misskey_reaction":":blobcat:","content":":blobcat:","tag":[tag]});
+    let (name, descriptor) = emoji::reaction(&activity).unwrap();
+    assert_eq!(name, ":blobcat:");
+    assert_eq!(descriptor.unwrap()["url"], tag["icon"]["url"]);
+    assert_eq!(
+        emoji::plain_content("<p>Hello <img src=\"https://cdn.example/x\" alt=\":blobcat:\"></p>"),
+        "Hello :blobcat:\n"
+    );
+    for url in [
+        "javascript:alert(1)",
+        "data:image/svg+xml,evil",
+        "https://user:password@example.com/image",
+        "http://example.com/image",
+    ] {
+        let mut bad = tag.clone();
+        bad["icon"]["url"] = json!(url);
+        assert!(emoji::tags(&json!([bad])).is_empty());
+    }
+    let mut invalid = activity.clone();
+    invalid["tag"] = json!([]);
+    assert!(emoji::reaction(&invalid).is_err());
+    assert_eq!(
+        emoji::reaction(&json!({"type":"Like","content":"A favourite, not an emoji extension"}))
+            .unwrap()
+            .0,
+        "❤️"
+    );
+    assert_eq!(
+        emoji::reaction(&json!({"_misskey_reaction":"👍"}))
+            .unwrap()
+            .0,
+        "👍"
+    );
+}
+
+#[test]
+fn public_announces_never_trust_third_party_identity_or_private_note_audiences() {
+    let object = "https://peer.example/notes/original";
+    let valid = json!({"id":object,"type":"Note","attributedTo":"https://peer.example/users/author","content":"Public original","to":[PUBLIC],"published":"2026-01-01T00:00:00Z","updated":"2026-01-02T00:00:00Z"});
+    let (_, visibility, published, updated) =
+        reposts::validate_public_note(&valid, object).unwrap();
+    assert_eq!(visibility, "public");
+    assert!(updated > published);
+    let mut private = valid.clone();
+    private["to"] = json!(["https://peer.example/users/author/followers"]);
+    assert!(reposts::validate_public_note(&private, object).is_err());
+    private["cc"] = json!([PUBLIC]);
+    assert_eq!(
+        reposts::validate_public_note(&private, object).unwrap().1,
+        "unlisted"
+    );
+    let mut forged = valid.clone();
+    forged["attributedTo"] = json!("https://impostor.example/actor");
+    assert!(reposts::validate_public_note(&forged, object).is_err());
+    assert!(reposts::validate_public_note(&valid, "https://peer.example/notes/different").is_err());
+    let mut future = valid.clone();
+    future["updated"] =
+        json!((jiff::Timestamp::now() + jiff::SignedDuration::from_secs(600)).to_string());
+    assert!(reposts::validate_public_note(&future, object).is_err());
 }
