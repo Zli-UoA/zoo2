@@ -10,7 +10,11 @@ use ratatui::{
 };
 use unicode_width::UnicodeWidthChar;
 
-use crate::{electric::rows::Message, mfm, store::Store};
+use crate::{
+    electric::rows::Message,
+    mfm,
+    store::{ReactionGroup, Store},
+};
 
 const INDENT: usize = 2;
 const SELECTED: Style = Style::new().bg(Color::Rgb(40, 44, 52));
@@ -35,11 +39,12 @@ impl Timeline {
 
 pub struct Context<'a> {
     pub store: &'a Store,
-    pub me_id: &'a str,
     pub me_name: &'a str,
     pub selected: Option<&'a str>,
     /// タイムラインでは返信数を出し、スレッドでは出さない。
     pub reply_counts: Option<&'a HashMap<String, usize>>,
+    /// メッセージ ID ごとのリアクション。`Store::reaction_groups_by_message` で描画前に1回だけ作る。
+    pub reactions: &'a HashMap<String, Vec<ReactionGroup>>,
 }
 
 pub fn build(messages: &[&Message], ctx: &Context, width: u16) -> Timeline {
@@ -97,8 +102,10 @@ fn message_lines(message: &Message, created: Option<&Zoned>, ctx: &Context) -> V
     lines.extend(mfm::render(&message.content, Some(ctx.me_name)));
 
     let reactions = ctx
-        .store
-        .reaction_groups(&message.channel_id, &message.id, ctx.me_id);
+        .reactions
+        .get(&message.id)
+        .map(Vec::as_slice)
+        .unwrap_or_default();
     if !reactions.is_empty() {
         let mut spans = Vec::new();
         for group in reactions {
@@ -261,10 +268,10 @@ mod tests {
         let counts = HashMap::from([("m2".to_string(), 3)]);
         let ctx = Context {
             store: &store,
-            me_id: "u1",
             me_name: "alice",
             selected: Some("m2"),
             reply_counts: Some(&counts),
+            reactions: &HashMap::new(),
         };
         let timeline = build(&messages, &ctx, 40);
 

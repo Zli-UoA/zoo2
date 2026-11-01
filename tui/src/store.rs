@@ -183,36 +183,69 @@ impl Store {
         message_id: &str,
         me: &str,
     ) -> Vec<ReactionGroup> {
-        let mut reactions: Vec<&Reaction> = self
+        let reactions = self
             .reactions
             .get(channel_id)
             .into_iter()
             .flat_map(|rows| rows.values())
-            .filter(|reaction| reaction.message_id == message_id)
-            .collect();
-        reactions.sort_by(|a, b| (a.created_at, &a.id).cmp(&(b.created_at, &b.id)));
-
-        let mut groups: Vec<ReactionGroup> = Vec::new();
-        for reaction in reactions {
-            let group = match groups
-                .iter_mut()
-                .find(|group| group.emoji == reaction.emoji)
-            {
-                Some(group) => group,
-                None => {
-                    groups.push(ReactionGroup {
-                        emoji: reaction.emoji.clone(),
-                        count: 0,
-                        mine: false,
-                    });
-                    groups.last_mut().expect("直前に追加した")
-                }
-            };
-            group.count += 1;
-            group.mine |= reaction.user_id == me;
-        }
-        groups
+            .filter(|reaction| reaction.message_id == message_id);
+        group_reactions(reactions, me)
     }
+
+    /// チャンネル内の全メッセージのリアクションを、メッセージ ID ごとに1回でまとめる。
+    /// 描画のたびにメッセージごとに全リアクションを走査しないためのもの。
+    pub fn reaction_groups_by_message(
+        &self,
+        channel_id: &str,
+        me: &str,
+    ) -> HashMap<String, Vec<ReactionGroup>> {
+        let mut by_message: HashMap<&str, Vec<&Reaction>> = HashMap::new();
+        for reaction in self
+            .reactions
+            .get(channel_id)
+            .into_iter()
+            .flat_map(|rows| rows.values())
+        {
+            by_message
+                .entry(reaction.message_id.as_str())
+                .or_default()
+                .push(reaction);
+        }
+        by_message
+            .into_iter()
+            .map(|(message_id, reactions)| (message_id.to_string(), group_reactions(reactions, me)))
+            .collect()
+    }
+}
+
+/// 絵文字ごとにまとめ、最初に付いた順に並べる。
+fn group_reactions<'a>(
+    reactions: impl IntoIterator<Item = &'a Reaction>,
+    me: &str,
+) -> Vec<ReactionGroup> {
+    let mut reactions: Vec<&Reaction> = reactions.into_iter().collect();
+    reactions.sort_by(|a, b| (a.created_at, &a.id).cmp(&(b.created_at, &b.id)));
+
+    let mut groups: Vec<ReactionGroup> = Vec::new();
+    for reaction in reactions {
+        let group = match groups
+            .iter_mut()
+            .find(|group| group.emoji == reaction.emoji)
+        {
+            Some(group) => group,
+            None => {
+                groups.push(ReactionGroup {
+                    emoji: reaction.emoji.clone(),
+                    count: 0,
+                    mine: false,
+                });
+                groups.last_mut().expect("直前に追加した")
+            }
+        };
+        group.count += 1;
+        group.mine |= reaction.user_id == me;
+    }
+    groups
 }
 
 fn apply_rows<T: FromRow>(
@@ -416,6 +449,9 @@ mod tests {
                 },
             ]
         );
+        let by_message = store.reaction_groups_by_message("c1", "u1");
+        assert_eq!(by_message.len(), 1);
+        assert_eq!(by_message["m1"], store.reaction_groups("c1", "m1", "u1"));
         assert_eq!(store.invalid_rows, 1);
     }
 }

@@ -171,12 +171,15 @@ fn draw_messages(frame: &mut Frame, app: &mut App, area: Rect) {
         return;
     }
     let counts = app.store.reply_counts(&channel_id);
+    let reactions = app
+        .store
+        .reaction_groups_by_message(&channel_id, &app.me.id);
     let ctx = Context {
         store: &app.store,
-        me_id: &app.me.id,
         me_name: &app.me.user_name,
         selected: app.selected.as_deref(),
         reply_counts: Some(&counts),
+        reactions: &reactions,
     };
     let built = timeline::build(&messages, &ctx, inner.width);
     let height = usize::from(inner.height);
@@ -208,12 +211,15 @@ fn draw_thread(frame: &mut Frame, app: &mut App, area: Rect) {
     };
     let mut messages = vec![root];
     messages.extend(app.store.replies(&channel_id, &thread.root_id));
+    let reactions = app
+        .store
+        .reaction_groups_by_message(&channel_id, &app.me.id);
     let ctx = Context {
         store: &app.store,
-        me_id: &app.me.id,
         me_name: &app.me.user_name,
         selected: thread.selected.as_deref(),
         reply_counts: None,
+        reactions: &reactions,
     };
     let built = timeline::build(&messages, &ctx, inner.width);
     let height = usize::from(inner.height);
