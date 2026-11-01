@@ -68,6 +68,8 @@ const meta = {
           apub: false,
           channel_id: "channel-general",
         }),
+      homeSavedTimeline: (value: string) =>
+        waitFor(() => expect(localStorage.getItem(timelineSettingsKey)).toBe(value)),
       homeRememberedTimeline: () => expect(localStorage.getItem(timelineSettingsKey)).toBe("home"),
       homeUnavailableChannel: () => expect(rememberedPost).toMatchObject({ channel_id: null }),
       homeNoSavedIdentity: async () => {

@@ -144,7 +144,7 @@ fun HomeComposer(
             .then(
                 webControlModifier(
                     "button",
-                    attributes = mapOf("aria-label" to app.t("home.openComposer")),
+                    attributes = mapOf("aria-label" to app.t("home.openComposer"), "aria-disabled" to (!state.preferencesReady).toString()),
                 )
             )
             .clickable(enabled = state.preferencesReady, role = Role.Button) { state.open() }
