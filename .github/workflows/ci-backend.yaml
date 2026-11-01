@@ -1,5 +1,7 @@
 name: CI
 on:
+  # merge-queue.yaml がマージキューで呼び出す。
+  workflow_call:
   push:
     branches: [main]
     paths:
@@ -25,7 +27,7 @@ on:
       - ".github/workflows/select-runner.yaml"
   workflow_dispatch:
 concurrency:
-  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  group: ci-backend-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 # runner ジョブがDocker不要用とDocker必須用の実行先を選びます。
 jobs:
@@ -38,7 +40,7 @@ jobs:
   # restored once; on kubecamp the restore takes longer than the build itself.
   check:
     needs: runner
-    runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-latest' || fromJSON(needs.runner.outputs.runs-on || '"zli-kubecamp-no-docker"') }}
+    runs-on: ${{ (github.event.pull_request.head.repo.fork || github.event_name == 'merge_group') && 'ubuntu-latest' || fromJSON(needs.runner.outputs.runs-on || '"zli-kubecamp-no-docker"') }}
     defaults:
       run:
         working-directory: ./backend
@@ -73,7 +75,7 @@ jobs:
 
   deploy-image:
     needs: runner
-    runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-latest' || fromJSON(needs.runner.outputs.docker-runs-on || '"ubuntu-latest"') }}
+    runs-on: ${{ (github.event.pull_request.head.repo.fork || github.event_name == 'merge_group') && 'ubuntu-latest' || fromJSON(needs.runner.outputs.docker-runs-on || '"ubuntu-latest"') }}
     # A cold build also needs time to extract and save the cache mounts.
     timeout-minutes: 60
     env:
@@ -206,7 +208,7 @@ jobs:
       S3_CONSOLE_PORT: "0"
       ACTIVITYPUB_BASE_URL: https://zoo.example.com
     needs: runner
-    runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-latest' || fromJSON(needs.runner.outputs.docker-runs-on || '"ubuntu-latest"') }}
+    runs-on: ${{ (github.event.pull_request.head.repo.fork || github.event_name == 'merge_group') && 'ubuntu-latest' || fromJSON(needs.runner.outputs.docker-runs-on || '"ubuntu-latest"') }}
     defaults:
       run:
         working-directory: ./backend
@@ -245,7 +247,7 @@ jobs:
       - name: Validate migrations and upgrade path from base branch
         working-directory: .
         env:
-          BASE_REF: ${{ github.event_name == 'pull_request' && github.base_ref || '' }}
+          BASE_REF: ${{ github.event_name == 'pull_request' && github.base_ref || github.event.merge_group.base_ref || '' }}
         run: |
           psql_exec() {
             docker compose -f infra/db/compose.yml exec -T postgres psql -q -X -v ON_ERROR_STOP=1 -U root "$@"

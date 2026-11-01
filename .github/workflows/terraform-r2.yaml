@@ -2,6 +2,8 @@ name: OpenTofu R2
 
 # PR では plan の結果をコメントし、main へのマージで apply します（infra/terraform/README.md）。
 on:
+  # merge-queue.yaml がマージキューで呼び出す。
+  workflow_call:
   push:
     branches:
       - main
@@ -28,7 +30,7 @@ env:
 jobs:
   validate:
     name: Validate
-    runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-latest' || 'zli-kubecamp-no-docker' }}
+    runs-on: ${{ (github.event.pull_request.head.repo.fork || github.event_name == 'merge_group') && 'ubuntu-latest' || 'zli-kubecamp-no-docker' }}
     steps:
       - name: Checkout
         uses: actions/checkout@v7
@@ -51,7 +53,7 @@ jobs:
   plan:
     name: Plan
     needs: [validate]
-    runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-latest' || 'zli-kubecamp-no-docker' }}
+    runs-on: ${{ (github.event.pull_request.head.repo.fork || github.event_name == 'merge_group') && 'ubuntu-latest' || 'zli-kubecamp-no-docker' }}
     if: github.event_name == 'pull_request'
     concurrency:
       group: terraform-r2-plan-${{ github.ref }}

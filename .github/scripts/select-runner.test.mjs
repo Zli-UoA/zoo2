@@ -93,9 +93,13 @@ for (const [name, input, expected, hostedExpected] of cases) {
 const fixedJobs = {"flux-status.yaml": ["report"], "cd-preview-label.yaml": ["label"], "cd-image-cleanup.yaml": ["cleanup"], "ci-flux-status.yaml": ["test"], "cd-images.yaml": ["plan", "promote", "publish"], "cd-storybook.yaml": ["deploy"], "terraform-r2.yaml": ["apply", "plan", "validate"], "ci-frontend.yaml": ["check", "unit-test"], "automerge-gate.yaml": ["gate"]};
 const dockerJobs = {"ci-compose.yaml": ["container"], "ci-github-bot.yaml": ["test", "publish"], "ci-backend.yaml": ["deploy-image", "e2e"], "ci-frontend.yaml": ["container", "proxy"], "ci-frontend-auth-e2e.yaml": ["oidc-e2e"], "cd-images.yaml": ["build"]};
 // Kotlin builds use hosted runners for memory and the preinstalled Android SDK.
-const hostedJobs = {"ci-compose.yaml": ["web"], "ci-android.yaml": ["android", "publish-main"], "cd-storybook.yaml": ["build"]};
+const hostedJobs = {"ci-compose.yaml": ["web"], "ci-android.yaml": ["android", "publish-main"], "cd-storybook.yaml": ["build"],
+  // merge_group には fork の情報がなく、キューに入った PR のコードを self-hosted で動かさない。
+  "merge-queue.yaml": ["changes", "all-passed"]};
 // macOS 向けのビルドがあるため、GitHub ホストの実行先だけを使うジョブ。PR では動かないワークフローに限る。
 const releaseJobs = {"cd-tui-release.yaml": ["version", "build", "release"]};
+const queued = new Set(['merge-queue.yaml', ...[...readFileSync(new URL('.github/workflows/merge-queue.yaml', root), 'utf8')
+  .matchAll(/^    uses: \.\/\.github\/workflows\/([\w-]+\.yaml)$/gm)].map(m => m[1])]);
 test('every workload uses the right output and protects fork PRs', () => {
   const dir = new URL('.github/workflows/', root);
   let checked = 0;
@@ -106,6 +110,8 @@ test('every workload uses the right output and protects fork PRs', () => {
     for (let i = 0; i < matches.length; i++) {
       const id = matches[i][1];
       const block = jobs.slice(matches[i].index, matches[i + 1]?.index);
+      // reusable workflow の呼び出しは実行先を持たず、呼び出し先の workflow で検証する。
+      if (id !== 'runner' && /^    uses: \.\/\.github\/workflows\//m.test(block)) continue;
       if (id === 'runner') {
         assert.ok(!block.includes('if: vars.CI_RUNNER'), `${file}: manual variable must not skip selection`);
         continue;
@@ -139,7 +145,9 @@ test('every workload uses the right output and protects fork PRs', () => {
       }
       const line = block.split('\n').find(x => x.startsWith('    runs-on:'));
       if (line && !hosted) {
-        assert.ok(line.includes(`github.event.pull_request.head.repo.fork && '${H}' ||`), `${file}/${id}: fork guard`);
+        // merge_group には元 PR の fork 情報がないため、キューで動く workflow は常に GitHub-hosted にする。
+        const fork = queued.has(file) ? "(github.event.pull_request.head.repo.fork || github.event_name == 'merge_group')" : 'github.event.pull_request.head.repo.fork';
+        assert.ok(line.includes(`${fork} && '${H}' ||`), `${file}/${id}: fork guard`);
       }
       if (/docker\/(?:setup-buildx|build-push)-action|docker (?:run|compose|build)\b|scripts\/test-(?:alertmanager|log-sanitization)/.test(block)) {
         assert.ok(docker, `${file}/${id}: Docker daemon use routed to kubecamp`);

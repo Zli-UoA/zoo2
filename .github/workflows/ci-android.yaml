@@ -1,5 +1,7 @@
 name: CI Android
 on:
+  # merge-queue.yaml がマージキューで呼び出す。
+  workflow_call:
   pull_request:
     paths:
       - "frontend-compose/**"
@@ -13,7 +15,7 @@ on:
 permissions:
   contents: read
 concurrency:
-  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  group: ci-android-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 jobs:
   android:

@@ -14,6 +14,8 @@ GitHub-hostedを使えるかは、リポジトリの公開範囲で決めます�
 
 forkの `pull_request` は、選択処理と各ジョブの両方でGitHub-hostedに固定します。`pull_request_target` は既定ブランチのコードだけを実行し、PRのコードをcheckoutしません。Runner Groupはアクセス範囲の管理に使えますが、Group自体に順序付きfallbackを指定する機能はありません。[GitHubの実行先指定](https://docs.github.com/en/actions/how-tos/write-workflows/choose-where-workflows-run/choose-the-runner-for-a-job)
 
+マージキュー（`merge_group`）には元PRがforkかどうかの情報がなく、fork PRのコードもキューでは同じ条件で実行されます。そのため、`merge-queue.yaml` とそこから呼び出すworkflowは、`github.event_name == 'merge_group'` のときも各ジョブと選択処理をGitHub-hostedに固定します。
+
 ## 判定ジョブの実行先
 
 判定前にはRunnerの状態が分からないため、判定ジョブ自身の実行先は固定です。Actions variableの `CI_SELECTOR_RUNNER`、既存の `CI_RUNNER`、GitHub-hostedの順で指定値を使います。**CI_RUNNERは判定をスキップする指定ではなく、判定ジョブの起動先に変更しました。** 本体ジョブの優先順位は上記の順になります。
