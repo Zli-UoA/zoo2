@@ -1,3 +1,4 @@
+import { playForImplementation } from "../../../.storybook/play-for-implementation";
 import type { Meta, StoryObj } from "@storybook/react-vite";
 import { expect, fn, screen, userEvent } from "storybook/test";
 
@@ -34,17 +35,17 @@ export default meta;
 type Story = StoryObj<typeof meta>;
 
 export const Default: Story = {
-  play: async () => {
+  play: playForImplementation(async () => {
     await expect(await screen.findByText("random")).toBeInTheDocument();
     await expect(screen.getByRole("link", { name: /random/ })).toBeInTheDocument();
-  },
+  }),
 };
 
 export const SearchEmpty: Story = {
-  play: async () => {
-    await userEvent.type(screen.getByRole("searchbox"), "zzzz");
+  play: playForImplementation(async () => {
+    await userEvent.type(await screen.findByRole("searchbox"), "zzzz");
     await expect(screen.getByText("一致するチャンネルがありません。")).toBeInTheDocument();
-  },
+  }),
 };
 
 export const Closed: Story = {

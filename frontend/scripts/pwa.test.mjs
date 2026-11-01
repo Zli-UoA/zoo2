@@ -513,3 +513,35 @@ test("unversioned assets still revalidate the HTTP cache", async () => {
   await fetchThrough(handlers, new Request(url));
   assert.deepEqual(requests, [{ url, cache: "reload" }]);
 });
+
+test("Compose assets validate against the Cache API without rewriting unchanged bodies", async () => {
+  let mode = "first";
+  let requestHeaders;
+  const w = worker({
+    fetch: async (request, options) => {
+      assert.equal(options.cache, "no-store");
+      requestHeaders = request.headers;
+      if (mode === "offline") throw new TypeError("offline");
+      if (mode === "304") return new Response(null, { status: 304 });
+      return basicResponse(mode === "changed" ? "new-font" : "font", {
+        headers: { etag: mode === "changed" ? '"v2"' : '"v1"' },
+      });
+    },
+  });
+  const request = new Request(`${ORIGIN}/compose/font.ttf`);
+  assert.equal(await (await fetchThrough(w.handlers, request)).text(), "font");
+  const stored = () =>
+    [...w.cacheContext.stores.values()].map((store) => store.get(request.url)).find(Boolean);
+  const original = stored();
+  mode = "304";
+  assert.equal(await (await fetchThrough(w.handlers, request)).text(), "font");
+  assert.equal(requestHeaders.get("if-none-match"), '"v1"');
+  assert.equal(stored(), original);
+  mode = "first";
+  await fetchThrough(w.handlers, request);
+  assert.equal(stored(), original);
+  mode = "changed";
+  assert.equal(await (await fetchThrough(w.handlers, request)).text(), "new-font");
+  mode = "offline";
+  assert.equal(await (await fetchThrough(w.handlers, request)).text(), "new-font");
+});

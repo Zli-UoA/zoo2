@@ -1,3 +1,5 @@
+import { storySurfaces } from "../../../../.storybook/story-surfaces";
+import { playForImplementation } from "../../../../.storybook/play-for-implementation";
 import { expect, within } from "storybook/test";
 import type { Meta, StoryObj } from "@storybook/react-vite";
 import { MfmChannelsProvider } from "./MfmChannels";
@@ -9,7 +11,7 @@ const meta = {
   parameters: { a11y: { test: "error" } },
   decorators: [
     (Story) => (
-      <div className="mx-auto max-w-2xl whitespace-pre-wrap break-words bg-background p-4 text-sm text-foreground">
+      <div className={storySurfaces["Features/Chat/MessageContent"]}>
         <MfmChannelsProvider channels={storyChannels}>
           <Story />
         </MfmChannelsProvider>
@@ -55,10 +57,10 @@ export const Headings: Story = {
     content:
       "# リリースのお知らせ\n通常の本文です。\n## **変更点**と[ドキュメント](https://example.com/docs)\n### チャンネル #general\n#### 小さな見出し\n##### 補足\n###### 詳細\n\n```md\n# コード内はそのまま\n```\n<plain>## 装飾しない</plain>",
   },
-  play: async ({ canvasElement }) => {
+  play: playForImplementation(async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     for (let level = 1; level <= 6; level++) {
-      await expect(canvas.getByRole("heading", { level })).toBeVisible();
+      await expect(await canvas.findByRole("heading", { level })).toBeVisible();
     }
     await expect(canvas.getByRole("link", { name: "ドキュメント" })).toHaveAttribute(
       "href",
@@ -67,5 +69,5 @@ export const Headings: Story = {
     await expect(canvas.getByText("# コード内はそのまま")).toBeVisible();
     await expect(canvasElement).toHaveTextContent("## 装飾しない");
     await expect(canvas.getAllByRole("heading")).toHaveLength(6);
-  },
+  }),
 };

@@ -1449,6 +1449,19 @@ BEGIN
   RETURN NEW;
 END $$;
 CREATE TRIGGER home_post_sync AFTER INSERT OR UPDATE ON home_posts FOR EACH ROW EXECUTE FUNCTION sync_home_post();
+CREATE FUNCTION valid_ltl_channel_regex(pattern text) RETURNS boolean LANGUAGE plpgsql IMMUTABLE AS $$
+BEGIN
+  PERFORM '' ~ pattern;
+  RETURN true;
+EXCEPTION WHEN invalid_regular_expression THEN
+  RETURN false;
+END $$;
+CREATE FUNCTION channel_matches_ltl(channel_name text, pattern text) RETURNS boolean LANGUAGE plpgsql IMMUTABLE AS $$
+BEGIN
+  RETURN pattern<>'' AND channel_name ~ pattern;
+EXCEPTION WHEN invalid_regular_expression THEN
+  RETURN false;
+END $$;
 CREATE FUNCTION sync_channel_home_post() RETURNS trigger LANGUAGE plpgsql AS $$
 BEGIN
   IF NEW.home_post_id IS NOT NULL THEN
@@ -1457,7 +1470,7 @@ BEGIN
   ELSIF TG_OP='INSERT' AND NEW.deleted_at IS NULL AND EXISTS (
     SELECT 1 FROM channels c CROSS JOIN activitypub_settings s WHERE c.id=NEW.channel_id
       AND NOT c.is_private AND NOT c.is_dm AND c.deleted_at IS NULL
-      AND s.ltl_channel_pattern<>'' AND c.channel_name LIKE s.ltl_channel_pattern ESCAPE ''
+      AND channel_matches_ltl(c.channel_name,s.ltl_channel_pattern)
   ) THEN
     INSERT INTO home_posts(id,user_id,content,channel_id,created_at)
       VALUES(NEW.id,NEW.user_id,NEW.content,NEW.channel_id,NEW.created_at AT TIME ZONE 'UTC') ON CONFLICT DO NOTHING;
@@ -1623,3 +1636,11 @@ ALTER TABLE apub_emoji_images ADD COLUMN last_seen_at timestamptz NOT NULL DEFAU
 CREATE INDEX apub_emoji_images_last_seen ON apub_emoji_images(last_seen_at);
 
 ALTER TABLE apub_remote_posts ADD COLUMN origin_verified boolean NOT NULL DEFAULT false;
+
+CREATE TABLE apub_profiles (
+  user_id text PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+  summary text NOT NULL DEFAULT '' CHECK (char_length(summary)<=1000),
+  display_name text CHECK (display_name IS NULL OR (char_length(display_name) BETWEEN 1 AND 100))
+);
+ALTER TABLE apub_actors ADD COLUMN avatar jsonb, ADD COLUMN summary text NOT NULL DEFAULT '';
+CREATE TRIGGER apub_profiles_home_live AFTER INSERT OR UPDATE OR DELETE ON apub_profiles FOR EACH STATEMENT EXECUTE FUNCTION notify_home_timeline();

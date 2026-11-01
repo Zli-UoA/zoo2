@@ -36,6 +36,17 @@ for (const file of storyFiles) {
     true,
     ts.ScriptKind.TSX,
   );
+  function checkPlay(node) {
+    if (ts.isPropertyAssignment(node) && node.name.getText(ast) === "play") {
+      const value = node.initializer;
+      check(
+        !ts.isArrowFunction(value) && !ts.isFunctionExpression(value),
+        `${file}: play must use playForImplementation so Kotlin selection does not run React DOM assertions`,
+      );
+    }
+    ts.forEachChild(node, checkPlay);
+  }
+  checkPlay(ast);
   let title;
   const states = new Set();
   for (const node of ast.statements) {

@@ -101,6 +101,9 @@ export const storybookApiHandlers = [
       delivery: { pending: 0, failed: 0 },
     }),
   ),
+  http.get("*/api/activitypub/profile", () =>
+    HttpResponse.json({ display_name: "", default_display_name: "Alice", summary: "" }),
+  ),
   http.get("*/api/activitypub/follows", () => HttpResponse.json([])),
   http.get("*/api/home/settings", () =>
     HttpResponse.json({ ltl_channel_pattern: "", can_manage: false }),
@@ -167,7 +170,7 @@ export const storybookApiHandlers = [
   http.get("*/api/push/config", () => HttpResponse.json({ publicKey: null })),
   http.get("*/api/attachments/:attachmentId/url", ({ params }) => {
     const id = String(params.attachmentId);
-    const image = `data:image/svg+xml;charset=utf-8,${encodeURIComponent(kitchenPreview)}`;
+    const image = new URL("/icons/icon-192.png", globalThis.location.href).href;
     return HttpResponse.json({
       data: {
         id,

@@ -8,17 +8,12 @@ permissions:
   contents: read
 
 jobs:
-  runner:
-    uses: ./.github/workflows/select-runner.yaml
-    secrets:
-      runner-status-token: ${{ secrets.RUNNER_STATUS_TOKEN }}
-
   build:
-    needs: runner
     # Fork PRs cannot access the Cloudflare secrets needed by the deploy job.
     if: github.event.pull_request.head.repo.full_name == github.repository
-    runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-latest' || fromJSON(needs.runner.outputs.runs-on || '"zli-kubecamp-no-docker"') }}
-    timeout-minutes: 15
+    # Kotlin/Wasm needs a reliable hosted runner after self-hosted communication loss.
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
     defaults:
       run:
         working-directory: frontend
@@ -43,6 +38,18 @@ jobs:
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
+
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: "21"
+
+      - uses: gradle/actions/setup-gradle@v4
+
+      - name: Build Compose catalog assets
+        env:
+          ZOO_COMPOSE_SYSTEM_NODE: "true"
+        run: pnpm build:compose
 
       - name: Build Storybook
         run: pnpm build-storybook

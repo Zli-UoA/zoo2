@@ -1,3 +1,6 @@
+import { searchDemoQuery, longSearchDemoQuery } from "../../../.storybook/preference-fixtures";
+import { preferenceSurfaces } from "../../../.storybook/preference-stories";
+import { playForImplementation } from "../../../.storybook/play-for-implementation";
 import type { Meta, StoryObj } from "@storybook/react-vite";
 import { expect, screen, userEvent, waitFor } from "storybook/test";
 import { delay, http, HttpResponse } from "msw";
@@ -13,10 +16,10 @@ const meta = {
   decorators: [
     (Story) => (
       <SearchPreferencesProvider>
-        <div className="mx-auto max-w-xl space-y-4 p-4">
+        <div className={preferenceSurfaces["Features/Preferences/MfmSearch"]}>
           <Story />
           <div className="mfm-body text-sm">
-            <MfmContent content="猫 café & zoo 検索" />
+            <MfmContent content={`${searchDemoQuery} 検索`} />
           </div>
         </div>
       </SearchPreferencesProvider>
@@ -27,7 +30,7 @@ export default meta;
 type Story = StoryObj<typeof meta>;
 
 export const Google: Story = {
-  play: async () => {
+  play: playForImplementation(async () => {
     await waitFor(() =>
       expect(screen.getByRole("combobox", { name: "検索エンジン" })).toBeEnabled(),
     );
@@ -37,7 +40,7 @@ export const Google: Story = {
       "action",
       SEARCH_ENGINES.google.action,
     );
-  },
+  }),
 };
 const selected = (engine: SearchEngine): Story => ({
   parameters: {
@@ -47,7 +50,7 @@ const selected = (engine: SearchEngine): Story => ({
       ],
     },
   },
-  play: async () => {
+  play: playForImplementation(async () => {
     await waitFor(() => expect(screen.getByRole("combobox")).toHaveValue(engine));
     await expect(screen.getByRole("textbox").closest("form")!).toHaveAttribute(
       "action",
@@ -57,13 +60,13 @@ const selected = (engine: SearchEngine): Story => ({
       "name",
       SEARCH_ENGINES[engine].parameter,
     );
-  },
+  }),
 });
 export const DuckDuckGo: Story = selected("duckduckgo");
 export const Yandex: Story = selected("yandex");
 export const Baidu: Story = selected("baidu");
 export const ChangeEngine: Story = {
-  play: async () => {
+  play: playForImplementation(async () => {
     await waitFor(() => expect(screen.getByRole("combobox")).toBeEnabled());
     await userEvent.selectOptions(screen.getByRole("combobox"), "yandex");
     await waitFor(() =>
@@ -73,7 +76,7 @@ export const ChangeEngine: Story = {
       ),
     );
     await expect(screen.getByRole("textbox")).toHaveAttribute("name", "text");
-  },
+  }),
 };
 export const Loading: Story = {
   parameters: {
@@ -86,9 +89,9 @@ export const Loading: Story = {
       ],
     },
   },
-  play: async () => {
-    await expect(screen.getByRole("combobox")).toBeDisabled();
-  },
+  play: playForImplementation(async () => {
+    await expect(await screen.findByRole("combobox")).toBeDisabled();
+  }),
 };
 export const Saving: Story = {
   parameters: {
@@ -101,12 +104,12 @@ export const Saving: Story = {
       ],
     },
   },
-  play: async () => {
+  play: playForImplementation(async () => {
     await waitFor(() => expect(screen.getByRole("combobox")).toBeEnabled());
     await userEvent.selectOptions(screen.getByRole("combobox"), "yandex");
-    await expect(screen.getByRole("combobox")).toBeDisabled();
+    await expect(await screen.findByRole("combobox")).toBeDisabled();
     await expect(screen.getByRole("combobox")).toHaveAttribute("aria-busy", "true");
-  },
+  }),
 };
 export const LoadError: Story = {
   parameters: {
@@ -116,13 +119,13 @@ export const LoadError: Story = {
       ],
     },
   },
-  play: async () => {
+  play: playForImplementation(async () => {
     await expect(await screen.findByRole("alert")).toHaveTextContent(
       "検索設定を読み込めませんでした。",
     );
-    await expect(screen.getByRole("combobox")).toBeDisabled();
+    await expect(await screen.findByRole("combobox")).toBeDisabled();
     await expect(screen.getByRole("button", { name: "再試行" })).toBeEnabled();
-  },
+  }),
 };
 export const SaveError: Story = {
   parameters: {
@@ -132,7 +135,7 @@ export const SaveError: Story = {
       ],
     },
   },
-  play: async () => {
+  play: playForImplementation(async () => {
     await waitFor(() => expect(screen.getByRole("combobox")).toBeEnabled());
     await userEvent.selectOptions(screen.getByRole("combobox"), "baidu");
     await expect(await screen.findByRole("alert")).toHaveTextContent("保存できませんでした。");
@@ -141,7 +144,7 @@ export const SaveError: Story = {
       "action",
       SEARCH_ENGINES.google.action,
     );
-  },
+  }),
 };
 export const LongQueryMobile: Story = {
   globals: { viewport: { value: "mobile" } },
@@ -149,17 +152,17 @@ export const LongQueryMobile: Story = {
     <>
       <SearchEngineSelect />
       <div className="mfm-body text-sm">
-        <MfmContent content={`${"長い検索語abcdefgh ".repeat(25)}検索`} />
+        <MfmContent content={`${longSearchDemoQuery} 検索`} />
       </div>
     </>
   ),
-  play: async () => {
-    const searches = screen.getAllByRole("textbox").map((field) => field.closest("form")!);
+  play: playForImplementation(async () => {
+    const searches = (await screen.findAllByRole("textbox")).map((field) => field.closest("form")!);
     for (const search of searches) {
       await expect(search.scrollWidth).toBeLessThanOrEqual(search.clientWidth);
       await expect(search.getBoundingClientRect().right).toBeLessThanOrEqual(
         document.documentElement.clientWidth,
       );
     }
-  },
+  }),
 };

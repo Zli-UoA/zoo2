@@ -1,3 +1,5 @@
+import { dropdownExample } from "../../../.storybook/primitive-fixtures";
+import { playForImplementation } from "../../../.storybook/play-for-implementation";
 import type { Meta, StoryObj } from "@storybook/react-vite";
 import {
   ArchiveIcon,
@@ -6,7 +8,7 @@ import {
   ShieldAlertIcon,
   TrashIcon,
 } from "lucide-react";
-import { expect, screen, within } from "storybook/test";
+import { expect, within } from "storybook/test";
 import { useState } from "react";
 
 import { Button } from "./button";
@@ -24,25 +26,25 @@ function DropdownDemo({ defaultOpen = false }: { defaultOpen?: boolean }) {
     <div className="flex min-h-72 items-start justify-center bg-background p-12">
       <DropdownMenu open={open} onOpenChange={setOpen}>
         <DropdownMenuTrigger render={<Button variant="outline" />}>
-          チャンネル操作
+          {dropdownExample.trigger}
         </DropdownMenuTrigger>
         <DropdownMenuContent align="center">
           <DropdownMenuItem>
             <PencilIcon />
-            名前を変更
+            {dropdownExample.items[0].label}
           </DropdownMenuItem>
           <DropdownMenuItem>
             <ArchiveIcon />
-            アーカイブ
+            {dropdownExample.items[1].label}
           </DropdownMenuItem>
           <DropdownMenuItem>
             <ShieldAlertIcon />
-            チャンネル設定
+            {dropdownExample.items[2].label}
           </DropdownMenuItem>
           <DropdownMenuSeparator />
           <DropdownMenuItem variant="destructive">
             <TrashIcon />
-            削除
+            {dropdownExample.items[3].label}
           </DropdownMenuItem>
         </DropdownMenuContent>
       </DropdownMenu>
@@ -62,20 +64,20 @@ function IconOnlyDropdownDemo() {
         <DropdownMenuContent align="center">
           <DropdownMenuItem>
             <PencilIcon />
-            名前を変更
+            {dropdownExample.items[0].label}
           </DropdownMenuItem>
           <DropdownMenuItem>
             <ArchiveIcon />
-            アーカイブ
+            {dropdownExample.items[1].label}
           </DropdownMenuItem>
           <DropdownMenuItem>
             <ShieldAlertIcon />
-            チャンネル設定
+            {dropdownExample.items[2].label}
           </DropdownMenuItem>
           <DropdownMenuSeparator />
           <DropdownMenuItem variant="destructive">
             <TrashIcon />
-            削除
+            {dropdownExample.items[3].label}
           </DropdownMenuItem>
         </DropdownMenuContent>
       </DropdownMenu>
@@ -98,19 +100,21 @@ export const Default: Story = {};
 
 export const Open: Story = {
   render: () => <DropdownDemo defaultOpen />,
-  play: async () => {
+  play: playForImplementation(async ({ canvasElement }) => {
+    const portal = within(canvasElement.ownerDocument.body);
     await expect(
-      await screen.findByRole("menuitem", { name: "名前を変更" }, { timeout: 3000 }),
+      await portal.findByRole("menuitem", { name: "名前を変更" }, { timeout: 3000 }),
     ).toBeInTheDocument();
-  },
+  }),
 };
 
 export const IconOnlyTrigger: Story = {
   render: () => <IconOnlyDropdownDemo />,
-  play: async () => {
-    const menu = await screen.findByRole("menu");
+  play: playForImplementation(async ({ canvasElement }) => {
+    const portal = within(canvasElement.ownerDocument.body);
+    const menu = await portal.findByRole("menu");
     const item = within(menu).getByRole("menuitem", { name: "チャンネル設定" });
     await expect(getComputedStyle(item).whiteSpace).toBe("nowrap");
     await expect(menu.offsetWidth).toBeGreaterThanOrEqual(176);
-  },
+  }),
 };

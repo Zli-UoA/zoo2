@@ -1,3 +1,4 @@
+import { playForImplementation } from "../../../../.storybook/play-for-implementation";
 import type { Meta, StoryObj } from "@storybook/react-vite";
 import { expect, fn, screen, spyOn, userEvent, waitFor } from "storybook/test";
 import { delay, http, HttpResponse } from "msw";
@@ -65,9 +66,9 @@ export default meta;
 type Story = StoryObj<typeof meta>;
 
 export const Mention: Story = {
-  play: async () => {
+  play: playForImplementation(async () => {
     await expect(await screen.findByText(/今日のリリースは 18:00/)).toBeInTheDocument();
-  },
+  }),
 };
 
 export const Reply: Story = {
@@ -98,14 +99,14 @@ export const DirectMessage: Story = {
       actorIds: ["user-bob"],
     },
   },
-  play: async () => {
+  play: playForImplementation(async () => {
     await expect(await screen.findByText("Bob", { selector: "p > span" })).toBeVisible();
     await expect(screen.queryByText(/#dm:/)).not.toBeInTheDocument();
     await expect(await screen.findByRole("link", { name: /個別に確認/ })).toHaveAttribute(
       "href",
       expect.stringContaining("/channels/channel-dm?"),
     );
-  },
+  }),
 };
 export const GroupDirectMessage: Story = {
   args: {
@@ -118,20 +119,20 @@ export const GroupDirectMessage: Story = {
       actorIds: ["user-bob"],
     },
   },
-  play: async () => {
+  play: playForImplementation(async () => {
     await expect(await screen.findByText("Admin, Bob, Carol +1")).toBeVisible();
     await expect(screen.queryByText(/dm:group:/)).not.toBeInTheDocument();
-  },
+  }),
 };
 export const DmMetadataPending: Story = {
   ...DirectMessage,
   args: { ...DirectMessage.args, users: new Map() },
-  play: async () => {
+  play: playForImplementation(async () => {
     await expect(
       await screen.findByText("ダイレクトメッセージ", { selector: "p > span" }),
     ).toBeVisible();
     await expect(screen.queryByText(/#dm:/)).not.toBeInTheDocument();
-  },
+  }),
 };
 
 export const GroupedReactions: Story = {
@@ -168,7 +169,7 @@ export const GroupedReactions: Story = {
       ],
     },
   },
-  play: async () => {
+  play: playForImplementation(async () => {
     await expect(await screen.findByText("Bob さんほか1人")).toBeVisible();
     await expect(await screen.findByLabelText("👀 2")).toBeVisible();
     await expect(screen.getByRole("link", { name: "example.com/release" })).toHaveAttribute(
@@ -180,7 +181,7 @@ export const GroupedReactions: Story = {
     await expect(
       document.elementFromPoint(bounds.x + bounds.width / 2, bounds.y + bounds.height / 2),
     ).toBe(external);
-  },
+  }),
 };
 export const Loading: Story = {
   parameters: {
@@ -193,9 +194,9 @@ export const Loading: Story = {
       ],
     },
   },
-  play: async () => {
+  play: playForImplementation(async () => {
     await expect(await screen.findByText("読み込み中…")).toBeVisible();
-  },
+  }),
 };
 export const Unavailable: Story = {
   parameters: {
@@ -207,10 +208,10 @@ export const Unavailable: Story = {
       ],
     },
   },
-  play: async () => {
+  play: playForImplementation(async () => {
     await expect(await screen.findByText("メッセージが削除されたか、閲覧できません")).toBeVisible();
     await expect(screen.queryByRole("link")).not.toBeInTheDocument();
-  },
+  }),
 };
 export const LongContentMobile: Story = {
   globals: { viewport: { value: "mobile" } },
@@ -239,18 +240,18 @@ export const LongContentMobile: Story = {
       ],
     },
   },
-  play: async () => {
+  play: playForImplementation(async () => {
     await screen.findByText("確認をお願いします", { selector: "strong" });
     await waitFor(() =>
       expect(document.documentElement.scrollWidth).toBe(document.documentElement.clientWidth),
     );
     const quote = document.querySelector("blockquote")!;
     await expect(quote.scrollWidth).toBeLessThanOrEqual(quote.clientWidth);
-  },
+  }),
 };
 
 export const NativeInteractions: Story = {
-  play: async () => {
+  play: playForImplementation(async () => {
     const user = userEvent.setup();
     const external = await screen.findByRole("link", { name: "example.com/docs" });
     const preview = external.closest(".mfm-body")!;
@@ -303,5 +304,5 @@ export const NativeInteractions: Story = {
       selection.removeAllRanges();
       destination.removeEventListener("click", navigate);
     }
-  },
+  }),
 };
