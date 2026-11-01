@@ -229,11 +229,6 @@ export function MessageList({
   );
 
   const totalSize = virtualizer.getTotalSize();
-  useLayoutEffect(() => {
-    // ResizeObserver can request a bottom adjustment before the sizer grows,
-    // which the browser clamps. Reapply after committing the measured height.
-    if (atBottomRef.current && editingId === null) scrollToBottom();
-  }, [totalSize, editingId, scrollToBottom]);
 
   const handleScroll = useCallback(() => {
     const element = scrollRef.current;
@@ -345,6 +340,13 @@ export function MessageList({
     snapshotRef.current = next;
     return () => stopRestoring?.();
   }, [items, currentUserId, scrollToBottom, t, firstUnreadId, virtualizer, captureScrollAnchor]);
+
+  // Decide the initial unread position before following resized rows.
+  useLayoutEffect(() => {
+    // ResizeObserver can request a bottom adjustment before the sizer grows,
+    // which the browser clamps. Reapply after committing the measured height.
+    if (atBottomRef.current && editingId === null) scrollToBottom();
+  }, [totalSize, editingId, scrollToBottom]);
 
   // Also capture after measurements commit, not just when the user scrolls.
   useLayoutEffect(() => {
