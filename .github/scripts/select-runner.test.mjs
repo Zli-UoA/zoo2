@@ -90,10 +90,12 @@ for (const [name, input, expected, hostedExpected] of cases) {
   });
 }
 
-const fixedJobs = {"flux-status.yaml": ["report"], "cd-preview-label.yaml": ["label"], "cd-image-cleanup.yaml": ["cleanup"], "ci-flux-status.yaml": ["test"], "cd-images.yaml": ["plan", "promote", "publish"], "cd-storybook.yaml": ["deploy"], "terraform-r2.yaml": ["validate", "plan"], "ci-frontend.yaml": ["check", "unit-test"], "automerge-gate.yaml": ["gate"], "merge-queue.yaml": ["changes", "all-passed"]};
+const fixedJobs = {"flux-status.yaml": ["report"], "cd-preview-label.yaml": ["label"], "cd-image-cleanup.yaml": ["cleanup"], "ci-flux-status.yaml": ["test"], "cd-images.yaml": ["plan", "promote", "publish"], "cd-storybook.yaml": ["deploy"], "terraform-r2.yaml": ["validate", "plan"], "ci-frontend.yaml": ["check", "unit-test"], "automerge-gate.yaml": ["gate"]};
 const dockerJobs = {"ci-compose.yaml": ["container"], "ci-github-bot.yaml": ["test", "publish"], "ci-backend.yaml": ["deploy-image", "e2e"], "ci-frontend.yaml": ["container", "proxy"], "ci-frontend-auth-e2e.yaml": ["oidc-e2e"], "cd-images.yaml": ["build"]};
 // Kotlin/Wasm compilation must remain hosted after self-hosted communication loss.
-const hostedJobs = {"ci-compose.yaml": ["web"], "cd-storybook.yaml": ["build"]};
+const hostedJobs = {"ci-compose.yaml": ["web"], "cd-storybook.yaml": ["build"],
+  // merge_group には fork の情報がなく、キューに入った PR のコードを self-hosted で動かさない。
+  "merge-queue.yaml": ["changes", "all-passed"]};
 // macOS 向けのビルドがあるため、GitHub ホストの実行先だけを使うジョブ。PR では動かないワークフローに限る。
 const releaseJobs = {"cd-tui-release.yaml": ["version", "build", "release"]};
 const queued = new Set(['merge-queue.yaml', ...[...readFileSync(new URL('.github/workflows/merge-queue.yaml', root), 'utf8')
@@ -182,7 +184,7 @@ test('fixed-only workflows do not create a selector job', () => {
     const text = readFileSync(new URL(`.github/workflows/${file}`, root), 'utf8');
     const jobs = text.split(/^jobs:\s*$/m)[1];
     const names = [...jobs.matchAll(/^  ([\w-]+):\s*$/gm)].map(m => m[1]);
-    if (["cd-images.yaml", "cd-storybook.yaml", "ci-frontend.yaml", "merge-queue.yaml"].includes(file)) continue;
+    if (["cd-images.yaml", "cd-storybook.yaml", "ci-frontend.yaml"].includes(file)) continue;
     assert.deepEqual(names.sort(), [...ids].sort(), `${file}: only fixed jobs are expected`);
     assert.doesNotMatch(jobs, /^  runner:/m);
   }

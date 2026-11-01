@@ -17,7 +17,8 @@ concurrency:
 jobs:
   # キューの base からの差分に当てはまる CI だけを実行する（.github/scripts/merge-queue-changes.mjs）。
   changes:
-    runs-on: ${{ (github.event.pull_request.head.repo.fork || github.event_name == 'merge_group') && 'ubuntu-latest' || 'zli-kubecamp-no-docker' }}
+    # merge_group でしか動かず、キューに入った PR のコードを扱うので、常に GitHub-hosted で実行する。
+    runs-on: ubuntu-latest
     timeout-minutes: 5
     outputs:
       ci-backend: ${{ steps.match.outputs.ci-backend }}
@@ -99,7 +100,8 @@ jobs:
       - ci-flux-status
       - terraform-r2
     if: ${{ !cancelled() }}
-    runs-on: ${{ (github.event.pull_request.head.repo.fork || github.event_name == 'merge_group') && 'ubuntu-latest' || 'zli-kubecamp-no-docker' }}
+    # merge_group でしか動かず、キューに入った PR のコードを扱うので、常に GitHub-hosted で実行する。
+    runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
       statuses: write
