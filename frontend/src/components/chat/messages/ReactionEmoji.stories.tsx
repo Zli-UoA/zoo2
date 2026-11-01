@@ -1,16 +1,11 @@
+import { reactionKitchenCatalog } from "../../../../.storybook/message-fixtures";
+import { playForImplementation } from "../../../../.storybook/play-for-implementation";
 import type { Meta, StoryObj } from "@storybook/react-vite";
 import { http, HttpResponse } from "msw";
 import { expect, waitFor } from "storybook/test";
 import type { KitchenCatalog } from "../../../lib/emoji/kitchen";
 import { ReactionEmoji } from "./ReactionEmoji";
-const catalog: KitchenCatalog = {
-  emojis: [
-    ["1f600", "😀", "grinning face"],
-    ["1f431", "🐱", "cat face"],
-  ],
-  dates: ["20260101"],
-  pairs: { "0_1": 0 },
-};
+const catalog: KitchenCatalog = reactionKitchenCatalog;
 const meta = {
   title: "Features/Chat/ReactionEmoji",
   component: ReactionEmoji,
@@ -38,7 +33,7 @@ export const ConsistentSize: Story = {
       <ReactionEmoji emoji="kitchen:1f600_1f431" catalog={null} />
     </div>
   ),
-  play: async ({ canvasElement }) => {
+  play: playForImplementation(async ({ canvasElement }) => {
     const image = canvasElement.querySelector("img")!;
     await waitFor(() => expect(image.naturalWidth).toBeGreaterThan(0));
     for (const element of canvasElement.firstElementChild!.children) {
@@ -47,5 +42,5 @@ export const ConsistentSize: Story = {
     }
     await expect(image).toHaveAttribute("width", "20");
     await expect(image).toHaveAttribute("height", "20");
-  },
+  }),
 };

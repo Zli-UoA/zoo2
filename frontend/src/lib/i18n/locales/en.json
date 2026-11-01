@@ -606,7 +606,7 @@
     "following": "Following",
     "followPending": "Awaiting acceptance",
     "channelRule": "Channel name rule for the local timeline",
-    "ruleHint": "% matches any string; _ matches one character. Leave empty to disable. Applies to new messages after saving; excludes private channels and DMs. Posts without ActivityPub enabled are never federated.",
+    "ruleHint": "Use a regular expression (e.g. ^public-.*$). Use ^ and $ to match the whole name. Leave empty to disable. Applies to new messages only; excludes private channels and DMs. Posts without ActivityPub enabled are never federated.",
     "save": "Save",
     "controlsError": "The operation or settings request failed. Please try again.",
     "localTimeline": "Local timeline",
@@ -665,5 +665,24 @@
     "cancelReply": "Cancel reply",
     "repostedBy": "Reposted by {{name}}",
     "quickReactions": "Quick reactions"
+  },
+  "activitypubSettings": {
+    "description": "Choose your display name for federation.",
+    "displayName": "APub display name",
+    "nameHint": "Up to 100 characters. Leave blank to use your regular display name.",
+    "saved": "Saved",
+    "loading": "Loading…",
+    "bio": "Bio",
+    "editProfile": "Edit profile",
+    "originalProfile": "Original profile",
+    "post": "Post"
+  },
+  "experimental": {
+    "useCompose": "Use Compose (experimental, in development)",
+    "useReact": "Return to React",
+    "loadError": "Could not start Compose. Return to the React frontend.",
+    "catalogLoading": "Loading Compose…",
+    "catalogLoadError": "Could not load the Compose distribution.",
+    "catalogBuildHint": "Install JDK 21, then run pnpm build:compose in frontend."
   }
 }

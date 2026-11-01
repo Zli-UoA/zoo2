@@ -1,4 +1,6 @@
+import { Link } from "@tanstack/react-router";
 import { ActivityPubEmoji, ActivityPubText } from "./ActivityPubEmoji";
+import { ActivityPubAvatar } from "./ActivityPubAvatar";
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import { useActivityPubNotifications } from "../../hooks/useActivityPubNotifications";
@@ -57,12 +59,27 @@ export function ActivityPubNotifications({
             className="space-y-2 rounded-lg border p-3 data-[unread]:bg-accent/50"
             data-unread={!item.is_read || undefined}
           >
-            <p className="break-words text-sm">
-              <strong>
-                <ActivityPubText text={item.display_name} emojis={item.actor_emojis} />
-              </strong>{" "}
-              {t(`home.notificationKinds.${item.kind}`)}
-            </p>
+            <div className="flex items-center gap-3">
+              <Link
+                to="/home/users/$actorId"
+                params={{ actorId: item.actor_id.replace(/^local:/, "") }}
+                className="shrink-0 rounded-full focus-visible:ring-2 focus-visible:ring-ring"
+              >
+                <ActivityPubAvatar avatar={item.avatar} name={item.display_name} />
+              </Link>
+              <p className="min-w-0 break-words text-sm">
+                <strong>
+                  <Link
+                    to="/home/users/$actorId"
+                    params={{ actorId: item.actor_id.replace(/^local:/, "") }}
+                    className="hover:underline"
+                  >
+                    <ActivityPubText text={item.display_name} emojis={item.actor_emojis} />
+                  </Link>
+                </strong>{" "}
+                {t(`home.notificationKinds.${item.kind}`)}
+              </p>
+            </div>
             <time className="text-xs text-muted-foreground" dateTime={item.created_at}>
               {new Date(item.created_at).toLocaleString(i18n.language)}
             </time>

@@ -16,3 +16,14 @@
 
 - フロントエンドの実装・修正・リファクタリングでは `.agents/skills/frontend-consistency/SKILL.md` に従う。
 - mainの取り込みでフロントエンドを調整するときも、既存の共通UI・機能部品・処理を優先し、新機能と既存の表示・操作方針を両立させる。
+
+# ReactとCompose Webの追従
+
+- React版・Compose Web版の機能、UI、API、状態管理を変更する場合、およびmainを取り込む場合は `.agents/skills/compose-react-parity/SKILL.md` に従う。
+- Reactの変更はCompose Webへの反映と両実装の検証を同じPRに含めて完了する。実験版であることを追従の省略理由にしない。
+
+# 開発環境 (flake.nix)
+
+- ビルド・テスト・生成に新しいソフトウェア（言語のランタイム、コンパイラ、CLI、ブラウザーなど）を使う場合は、`flake.nix` の開発シェルにも追加し、`nix develop` の中で実行できることを確認する。
+- 必要な環境変数（`JAVA_HOME`、`CHROME_BIN` など）も開発シェルで設定する。手元のPATHやNixストアのパスを直接指定する手順を前提にしない。
+- CIで別の方法（`actions/setup-*` など）を使う場合も、開発シェルと版・設定をそろえる。プラットフォームによって入れられないものは、対象を限定して追加する。

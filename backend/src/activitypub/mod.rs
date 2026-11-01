@@ -5,6 +5,7 @@ mod emoji_cache;
 mod inbox;
 pub(crate) mod interactions;
 mod note_identity;
+mod profile;
 mod reposts;
 mod routes;
 mod transport;
@@ -207,7 +208,7 @@ async fn load_remote_actor(
         return Err(AppError::BadRequest("Invalid followers collection".into()));
     }
     Ok((
-        json!({"id":id,"inbox":inbox,"followers_url":followers,"user_name":username,"display_name":display,"key_id":key_id,"public_key":pem,"emojis":emoji::tags(&doc["tag"])}),
+        json!({"id":id,"inbox":inbox,"followers_url":followers,"user_name":username,"display_name":display,"key_id":key_id,"public_key":pem,"emojis":emoji::tags(&doc["tag"]),"avatar":emoji::avatar(&doc["icon"]),"summary":emoji::plain_content(doc["summary"].as_str().unwrap_or("")).chars().take(1000).collect::<String>()}),
         true,
     ))
 }
@@ -216,7 +217,10 @@ async fn save_remote_actor(state: &AppState, candidate: &Value) -> Result<Value,
     let mut tx = db.transaction().await?;
     let actor_emojis = candidate["emojis"].as_array().cloned().unwrap_or_default();
     emoji::remember(&mut tx, &actor_emojis).await?;
-    let actor=one(&mut tx,"INSERT INTO apub_actors(id,inbox,followers_url,user_name,display_name,key_id,public_key,emojis) VALUES($1,$2,$3,$4,$5,$6,$7,$8::jsonb) ON CONFLICT(id) DO UPDATE SET inbox=EXCLUDED.inbox,followers_url=EXCLUDED.followers_url,user_name=EXCLUDED.user_name,display_name=EXCLUDED.display_name,key_id=EXCLUDED.key_id,public_key=EXCLUDED.public_key,emojis=EXCLUDED.emojis,fetched_at=now() RETURNING row_to_json(apub_actors)::text",&[string(candidate,"id")?,string(candidate,"inbox")?,string(candidate,"followers_url")?,string(candidate,"user_name")?,string(candidate,"display_name")?,string(candidate,"key_id")?,string(candidate,"public_key")?,&json!(actor_emojis).to_string()]).await?;
+    if candidate["avatar"].is_object() {
+        emoji::remember(&mut tx, &[candidate["avatar"].clone()]).await?;
+    }
+    let actor=one(&mut tx,"INSERT INTO apub_actors(id,inbox,followers_url,user_name,display_name,key_id,public_key,emojis,avatar,summary) VALUES($1,$2,$3,$4,$5,$6,$7,$8::jsonb,$9::jsonb,$10) ON CONFLICT(id) DO UPDATE SET inbox=EXCLUDED.inbox,followers_url=EXCLUDED.followers_url,user_name=EXCLUDED.user_name,display_name=EXCLUDED.display_name,key_id=EXCLUDED.key_id,public_key=EXCLUDED.public_key,emojis=EXCLUDED.emojis,avatar=EXCLUDED.avatar,summary=EXCLUDED.summary,fetched_at=now() RETURNING row_to_json(apub_actors)::text",&[string(candidate,"id")?,string(candidate,"inbox")?,string(candidate,"followers_url")?,string(candidate,"user_name")?,string(candidate,"display_name")?,string(candidate,"key_id")?,string(candidate,"public_key")?,&json!(actor_emojis).to_string(),&candidate["avatar"].to_string(),candidate["summary"].as_str().unwrap_or("")]).await?;
     if actor["blocked"] == true {
         return Err(AppError::Forbidden("Actor is blocked".into()));
     }
@@ -246,6 +250,9 @@ pub(crate) async fn remember_display_emojis(
             if let Some(values) = item[key].as_array() {
                 emojis.extend(values.iter().cloned());
             }
+        }
+        if item["avatar"].is_object() {
+            emojis.push(item["avatar"].clone());
         }
         if item["emoji"].is_object() {
             emojis.push(item["emoji"].clone());

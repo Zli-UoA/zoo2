@@ -47,7 +47,7 @@ PR ごとのデプロイは同時に1件だけ実行し、実行中・待機中�
 
 - `pnpm build-storybook` の生成物だけを配信します。Storybook のモック API を
   使用するため、バックエンドや本番ログインの設定は不要です。
-- ビルドは既存の runner 選択に従います。デプロイは毎回新しい GitHub-hosted
+- Kotlin/Wasmを含むビルドは GitHub-hosted Ubuntu に固定します。デプロイは毎回新しい GitHub-hosted
   runner で行い、Cloudflare の認証情報を持つジョブでは PR のコードを checkout
   したり、PR の依存関係・ビルドスクリプトを実行したりしません。
 - ダウンロードした生成物の直下から `_worker.js`（ディレクトリの場合も含む）、
@@ -97,3 +97,7 @@ preview だけを削除し、production や他の PR のデプロイは削除し
 削除後は固定 URL と各デプロイ URL が Storybook を返さないことを確認し、GitHub の
 Settings → Environments から対応する `storybook-pr-<PR番号>` も削除します。
 この手順は API の仕様に基づきます。実際のプロジェクトでの削除は未検証です。
+
+既存Storyを開き、上部のimplementationツールバーでReact / Kotlin (Compose)を切り替えます。PRプレビューのビルドではJDK 21で
+Kotlin/Wasmの配布物も生成します。ローカルでは `cd frontend && pnpm build:compose` を実行してから
+Storybookを起動してください。構成と検証手順は [実装比較](compose-multiplatform.md#storybookでの実装比較) を参照してください。

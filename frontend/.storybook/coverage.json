@@ -52,7 +52,8 @@
         "LoadingMemberCount",
         "NoDescription",
         "LongDescription",
-        "Mobile"
+        "Mobile",
+        "WebhookSettingsOpen"
       ]
     },
     {
@@ -149,7 +150,8 @@
         "ChannelInsertion",
         "WithAttachments",
         "WithFileAttachment",
-        "AttachmentUploadError"
+        "AttachmentUploadError",
+        "SendError"
       ]
     },
     {
@@ -204,7 +206,8 @@
         "WithAttachments",
         "ActivityPubPublic",
         "ActivityPubUnlisted",
-        "ActivityPubGrouped"
+        "ActivityPubGrouped",
+        "Grouped"
       ]
     },
     {
@@ -312,7 +315,12 @@
         "Members",
         "GeneralMobile",
         "ChannelRule",
-        "ChannelRuleError"
+        "ChannelRuleError",
+        "ActivityPub",
+        "ActivityPubMobile",
+        "ActivityPubLoading",
+        "ActivityPubError",
+        "ActivityPubSaveError"
       ]
     },
     {
@@ -469,7 +477,14 @@
         "MisskeyReact",
         "MobileMisskey",
         "EmojiFallback",
-        "LiveWhileLoadingOlder"
+        "LiveWhileLoadingOlder",
+        "RemoteAvatar",
+        "RemoteAvatarFallback",
+        "SinglePost",
+        "SinglePostMissing",
+        "UserProfile",
+        "MobileUserProfile",
+        "UserProfileError"
       ]
     }
   ],
@@ -664,7 +679,8 @@
     },
     {
       "file": "src/components/layout/LeftRail.tsx",
-      "story": "src/components/layout/LeftRail.stories.tsx"
+      "story": "src/components/layout/LeftRail.stories.tsx",
+      "reason": "DefaultとMobileで、環境変数に依存せずCompose切り替えボタンが表示されることを確認する。"
     },
     {
       "file": "src/components/layout/PaneHeader.tsx",
@@ -848,6 +864,23 @@
       "story": "src/components/home/HomeScreen.stories.tsx",
       "composed": true,
       "reason": "LikeとMisskeyReactでUnicode・Misskeyカタログからの選択と取り消しを実フォームで確認する。"
+    },
+    {
+      "file": "src/components/home/ActivityPubAvatar.tsx",
+      "story": "src/components/home/HomeScreen.stories.tsx",
+      "composed": true,
+      "reason": "RemoteAvatar/RemoteAvatarFallbackで安全なプロキシ画像と画像欠損時の頭文字を確認する。"
+    },
+    {
+      "file": "src/components/home/ActivityPubProfile.tsx",
+      "story": "src/components/home/HomeScreen.stories.tsx",
+      "composed": true,
+      "reason": "UserProfile/MobileUserProfile/UserProfileErrorでユーザー情報とフォロー申請・取得失敗を確認する。"
+    },
+    {
+      "file": "src/components/experimental/ComposeFrontend.tsx",
+      "reason": "認証・OPFS・ルーターとKotlin/Wasmを接続する制御層。カタログで覆えない起動・ユーザー別保存・失敗復帰・CSPを専用E2Eで検証する。",
+      "checks": ["e2e/compose.spec.ts", "e2e/compose-production.spec.ts"]
     }
   ]
 }

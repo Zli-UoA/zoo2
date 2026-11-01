@@ -18,6 +18,7 @@ import {
   forgetOfflineUserId,
   markOfflineDeletionPending,
   rememberOfflineUserId,
+  readLastOfflineUserId,
   resolveOfflineNamespace,
 } from "../../lib/offline/identity";
 import { useOnlineStatus } from "../../lib/offline/online";
@@ -33,11 +34,14 @@ import {
   retryPendingOfflineDeletion,
 } from "../../lib/offline/persistence";
 import { prepareOfflineWorker } from "../../lib/pwa/worker-registration";
+import { clearComposeUserStorage } from "../../lib/compose/storage";
+import { startAssetCaching } from "../../lib/pwa/cache-assets";
+import { Button } from "../ui/button";
 import { ShellSkeleton } from "../layout/ShellSkeleton";
 
 interface ReadyState {
   key: string;
-  bundle: CollectionsBundle;
+  bundle: CollectionsBundle | null;
   persistenceStatus: OfflinePersistenceStatus;
   persistenceError: string | null;
 }
@@ -55,7 +59,17 @@ function describeError(error: unknown): string {
  * オフラインは保存済みの名前空間で起動する。初期化途中の再マウントで
  * 入力中のフォームを消さず、別ユーザーのキャッシュも混ぜない。
  */
-export function OfflineProvider({ config, children }: { config: AppConfig; children: ReactNode }) {
+export function OfflineProvider({
+  config,
+  children,
+  collectionFactory = getCollections,
+  renderStatus,
+}: {
+  config: AppConfig;
+  children: ReactNode;
+  collectionFactory?: typeof getCollections | null;
+  renderStatus?: (phase: "loading" | "error", retry: () => void) => ReactNode;
+}) {
   const { t } = useTranslation();
   const isOnline = useOnlineStatus();
   const userStore = getCurrentUserStore(config);
@@ -81,41 +95,7 @@ export function OfflineProvider({ config, children }: { config: AppConfig; child
 
   // 初回ロード時に Service Worker が制御していなかった assets（フォントや
   // 動的 import の OPFS worker など）も、後から SW のキャッシュへ送る。
-  useEffect(() => {
-    if (typeof navigator === "undefined" || !("serviceWorker" in navigator)) {
-      return;
-    }
-    let cancelled = false;
-    const send = () => {
-      if (cancelled) return;
-      const controller = navigator.serviceWorker.controller;
-      if (!controller) return;
-      const urls = new Set<string>();
-      for (const entry of performance.getEntriesByType("resource")) {
-        try {
-          const url = new URL(entry.name);
-          if (url.origin === window.location.origin && url.pathname.startsWith("/assets/")) {
-            urls.add(url.pathname);
-          }
-        } catch {
-          /* Ignore malformed resource timings. */
-        }
-      }
-      if (urls.size > 0) {
-        controller.postMessage({ type: "CACHE_ASSETS", urls: [...urls] });
-      }
-    };
-    const timers = [window.setTimeout(send, 1_000), window.setTimeout(send, 4_000)];
-    navigator.serviceWorker.addEventListener("controllerchange", send);
-    window.addEventListener("load", send);
-    void navigator.serviceWorker.ready.then(send).catch(() => {});
-    return () => {
-      cancelled = true;
-      for (const timer of timers) window.clearTimeout(timer);
-      navigator.serviceWorker.removeEventListener("controllerchange", send);
-      window.removeEventListener("load", send);
-    };
-  }, []);
+  useEffect(startAssetCaching, []);
 
   // OPFS 接続は pagehide で閉じられる。bfcache から復元された場合は
   // 古い接続を使い続けず、アプリを読み直して新しい接続を作る。
@@ -169,7 +149,7 @@ export function OfflineProvider({ config, children }: { config: AppConfig; child
         persistenceStatus =
           error instanceof OfflinePersistenceUnavailableError ? "unavailable" : "error";
       }
-      const bundle = getCollections(config, { persistence, namespace });
+      const bundle = collectionFactory?.(config, { persistence, namespace }) ?? null;
       if (!cancelled) {
         setReady({ key, bundle, persistenceStatus, persistenceError });
       }
@@ -177,17 +157,18 @@ export function OfflineProvider({ config, children }: { config: AppConfig; child
     return () => {
       cancelled = true;
     };
-  }, [config, namespace, retryToken, key, waitingForUser, userUnavailable]);
+  }, [config, namespace, retryToken, key, waitingForUser, userUnavailable, collectionFactory]);
 
   const retryPersistence = useCallback(() => setRetryToken((token) => token + 1), []);
   const clearUserData = useCallback(async () => {
     // 削除に失敗しても、次のオフライン起動が前のユーザーの DB を選ばないよう
     // 先に lastUser を消す。未完了の削除は次の起動で再試行する。
+    clearComposeUserStorage(config.devUserId || currentUserId || readLastOfflineUserId());
     forgetOfflineUserId(currentUserId);
     markOfflineDeletionPending(namespace);
     await removeOfflineDatabase(namespace);
     clearPendingOfflineDeletion();
-  }, [currentUserId, namespace]);
+  }, [config.devUserId, currentUserId, namespace]);
 
   const value = useMemo<OfflineContextValue>(
     () => ({
@@ -202,23 +183,29 @@ export function OfflineProvider({ config, children }: { config: AppConfig; child
   );
 
   if (userUnavailable) {
+    if (renderStatus)
+      return renderStatus("error", () => {
+        void userStore.ensureLoaded();
+      });
     return (
       <div role="alert" className="flex h-dvh flex-col items-center justify-center gap-3 p-6">
         <p>{t("offline.userErrorTitle")}</p>
-        <button type="button" onClick={() => void userStore.ensureLoaded()}>
-          {t("offline.retry")}
-        </button>
+        <Button onClick={() => void userStore.ensureLoaded()}>{t("offline.retry")}</Button>
       </div>
     );
   }
 
   if (waitingForUser || !ready || ready.key !== key) {
-    return <ShellSkeleton />;
+    return renderStatus?.("loading", retryPersistence) ?? <ShellSkeleton />;
   }
 
   return (
     <OfflineContext.Provider value={value}>
-      <CollectionsProvider value={ready.bundle}>{children}</CollectionsProvider>
+      {ready.bundle ? (
+        <CollectionsProvider value={ready.bundle}>{children}</CollectionsProvider>
+      ) : (
+        children
+      )}
     </OfflineContext.Provider>
   );
 }

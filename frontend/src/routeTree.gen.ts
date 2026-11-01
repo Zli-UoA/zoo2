@@ -19,6 +19,8 @@ import { Route as ShellNotificationsRouteImport } from './routes/_shell.notifica
 import { Route as ShellSettingsRouteImport } from './routes/_shell.settings'
 import { Route as ShellAppsAppIdRouteImport } from './routes/_shell.apps.$appId'
 import { Route as ShellChannelsChannelIdRouteImport } from './routes/_shell.channels.$channelId'
+import { Route as ShellHomePostsPostIdRouteImport } from './routes/_shell.home_.posts.$postId'
+import { Route as ShellHomeUsersActorIdRouteImport } from './routes/_shell.home_.users.$actorId'
 
 const ShellRoute = ShellRouteImport.update({
   id: '/_shell',
@@ -69,6 +71,16 @@ const ShellChannelsChannelIdRoute = ShellChannelsChannelIdRouteImport.update({
   path: '/channels/$channelId',
   getParentRoute: () => ShellRoute,
 } as any)
+const ShellHomePostsPostIdRoute = ShellHomePostsPostIdRouteImport.update({
+  id: '/home_/posts/$postId',
+  path: '/home/posts/$postId',
+  getParentRoute: () => ShellRoute,
+} as any)
+const ShellHomeUsersActorIdRoute = ShellHomeUsersActorIdRouteImport.update({
+  id: '/home_/users/$actorId',
+  path: '/home/users/$actorId',
+  getParentRoute: () => ShellRoute,
+} as any)
 
 export interface FileRoutesByFullPath {
   '/': typeof ShellIndexRoute
@@ -80,6 +92,8 @@ export interface FileRoutesByFullPath {
   '/settings': typeof ShellSettingsRoute
   '/apps/$appId': typeof ShellAppsAppIdRoute
   '/channels/$channelId': typeof ShellChannelsChannelIdRoute
+  '/home/posts/$postId': typeof ShellHomePostsPostIdRoute
+  '/home/users/$actorId': typeof ShellHomeUsersActorIdRoute
 }
 export interface FileRoutesByTo {
   '/realtime': typeof RealtimeRoute
@@ -91,6 +105,8 @@ export interface FileRoutesByTo {
   '/': typeof ShellIndexRoute
   '/apps/$appId': typeof ShellAppsAppIdRoute
   '/channels/$channelId': typeof ShellChannelsChannelIdRoute
+  '/home/posts/$postId': typeof ShellHomePostsPostIdRoute
+  '/home/users/$actorId': typeof ShellHomeUsersActorIdRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
@@ -104,6 +120,8 @@ export interface FileRoutesById {
   '/_shell/': typeof ShellIndexRoute
   '/_shell/apps/$appId': typeof ShellAppsAppIdRoute
   '/_shell/channels/$channelId': typeof ShellChannelsChannelIdRoute
+  '/_shell/home_/posts/$postId': typeof ShellHomePostsPostIdRoute
+  '/_shell/home_/users/$actorId': typeof ShellHomeUsersActorIdRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
@@ -117,6 +135,8 @@ export interface FileRouteTypes {
     | '/settings'
     | '/apps/$appId'
     | '/channels/$channelId'
+    | '/home/posts/$postId'
+    | '/home/users/$actorId'
   fileRoutesByTo: FileRoutesByTo
   to:
     | '/realtime'
@@ -128,6 +148,8 @@ export interface FileRouteTypes {
     | '/'
     | '/apps/$appId'
     | '/channels/$channelId'
+    | '/home/posts/$postId'
+    | '/home/users/$actorId'
   id:
     | '__root__'
     | '/_shell'
@@ -140,6 +162,8 @@ export interface FileRouteTypes {
     | '/_shell/'
     | '/_shell/apps/$appId'
     | '/_shell/channels/$channelId'
+    | '/_shell/home_/posts/$postId'
+    | '/_shell/home_/users/$actorId'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
@@ -219,6 +243,20 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ShellChannelsChannelIdRouteImport
       parentRoute: typeof ShellRoute
     }
+    '/_shell/home_/posts/$postId': {
+      id: '/_shell/home_/posts/$postId'
+      path: '/home/posts/$postId'
+      fullPath: '/home/posts/$postId'
+      preLoaderRoute: typeof ShellHomePostsPostIdRouteImport
+      parentRoute: typeof ShellRoute
+    }
+    '/_shell/home_/users/$actorId': {
+      id: '/_shell/home_/users/$actorId'
+      path: '/home/users/$actorId'
+      fullPath: '/home/users/$actorId'
+      preLoaderRoute: typeof ShellHomeUsersActorIdRouteImport
+      parentRoute: typeof ShellRoute
+    }
   }
 }
 
@@ -231,6 +269,8 @@ interface ShellRouteChildren {
   ShellIndexRoute: typeof ShellIndexRoute
   ShellAppsAppIdRoute: typeof ShellAppsAppIdRoute
   ShellChannelsChannelIdRoute: typeof ShellChannelsChannelIdRoute
+  ShellHomePostsPostIdRoute: typeof ShellHomePostsPostIdRoute
+  ShellHomeUsersActorIdRoute: typeof ShellHomeUsersActorIdRoute
 }
 
 const ShellRouteChildren: ShellRouteChildren = {
@@ -242,6 +282,8 @@ const ShellRouteChildren: ShellRouteChildren = {
   ShellIndexRoute: ShellIndexRoute,
   ShellAppsAppIdRoute: ShellAppsAppIdRoute,
   ShellChannelsChannelIdRoute: ShellChannelsChannelIdRoute,
+  ShellHomePostsPostIdRoute: ShellHomePostsPostIdRoute,
+  ShellHomeUsersActorIdRoute: ShellHomeUsersActorIdRoute,
 }
 
 const ShellRouteWithChildren = ShellRoute._addFileChildren(ShellRouteChildren)

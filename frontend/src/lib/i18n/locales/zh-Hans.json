@@ -606,7 +606,7 @@
     "following": "已关注",
     "followPending": "等待接受",
     "channelRule": "本地时间线的频道名称规则",
-    "ruleHint": "% 匹配任意字符串，_ 匹配一个字符。留空禁用。仅应用于保存后的新消息，不包含私密频道和私信。未启用 ActivityPub 的帖子不会发送到外部。",
+    "ruleHint": "使用正则表达式（例如 ^public-.*$）。用 ^ 和 $ 匹配完整名称。留空禁用。仅应用于新消息，不包含私密频道和私信。未启用 ActivityPub 的帖子不会发送到外部。",
     "save": "保存",
     "controlsError": "操作或设置请求失败，请重试。",
     "localTimeline": "本地时间线",
@@ -665,5 +665,24 @@
     "cancelReply": "取消回复",
     "repostedBy": "{{name}} 转发了",
     "quickReactions": "常用回应"
+  },
+  "activitypubSettings": {
+    "description": "设置在联合网络中使用的显示名称。",
+    "displayName": "APub 显示名称",
+    "nameHint": "最多100个字符。留空则使用常规显示名称。",
+    "saved": "已保存",
+    "loading": "正在加载…",
+    "bio": "个人简介",
+    "editProfile": "编辑个人资料",
+    "originalProfile": "原始个人资料",
+    "post": "帖子"
+  },
+  "experimental": {
+    "useCompose": "使用 Compose（实验・开发中）",
+    "useReact": "返回 React",
+    "loadError": "无法启动 Compose。请返回 React 前端。",
+    "catalogLoading": "正在加载 Compose…",
+    "catalogLoadError": "无法加载 Compose 发布文件。",
+    "catalogBuildHint": "请安装 JDK 21，然后在 frontend 运行 pnpm build:compose。"
   }
 }

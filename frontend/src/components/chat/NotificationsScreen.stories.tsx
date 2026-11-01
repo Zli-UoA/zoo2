@@ -1,4 +1,11 @@
 import { activityPubNotifications } from "../../../.storybook/activitypub-fixtures";
+import {
+  notificationComparisonText,
+  notificationComparisonLabel,
+  notificationComparisonMemberCount,
+} from "../../../.storybook/notification-fixtures";
+import { storySurfaces } from "../../../.storybook/story-surfaces";
+import { playForImplementation } from "../../../.storybook/play-for-implementation";
 import type { Decorator, Meta, StoryObj } from "@storybook/react-vite";
 import { expect, screen, userEvent, waitFor, within } from "storybook/test";
 import { delay, http, HttpResponse, ws } from "msw";
@@ -37,18 +44,31 @@ const withUnreadPreview: Decorator = (Story) => (
   </UnreadPreview>
 );
 
+// A missing spinner also matches the period before React commits its first render.
+// Wait for the actual list and its visible state before asserting loading has ended.
+async function readyNotificationsList() {
+  const region = await screen.findByRole("region", { name: "通知" });
+  const list = await within(region).findByRole("list", { name: "通知" });
+  await waitFor(async () => {
+    await expect(list).toBeVisible();
+    await expect(screen.queryByRole("status")).not.toBeInTheDocument();
+  });
+  return list;
+}
+
 const meta = {
   title: "Pages/Notifications",
   component: NotificationsScreen,
   tags: ["autodocs"],
   parameters: { a11y: { test: "error" } },
-  play: async () => {
+  play: playForImplementation(async () => {
+    await screen.findByRole("region", { name: "通知" });
     await waitFor(() => expect(screen.queryByRole("status")).not.toBeInTheDocument());
-  },
+  }),
   decorators: [
     (Story) => (
       <StoryShell selectedChannelId={null} initialPane="chat">
-        <div className="h-[720px] overflow-hidden bg-background">
+        <div className={storySurfaces["Pages/Notifications"]}>
           <Story />
         </div>
       </StoryShell>
@@ -61,7 +81,8 @@ type Story = StoryObj<typeof meta>;
 
 export const Default: Story = {
   decorators: [withUnreadPreview],
-  play: async () => {
+  play: playForImplementation(async () => {
+    await readyNotificationsList();
     await waitFor(() => expect(screen.queryByRole("status")).not.toBeInTheDocument());
     await expect(await screen.findByText(/今日のリリースは 18:00/)).toBeVisible();
     const list = screen.getByRole("list", { name: "通知" });
@@ -73,7 +94,7 @@ export const Default: Story = {
       "target",
       "_blank",
     );
-  },
+  }),
 };
 
 export const SingleUnread: Story = {
@@ -110,12 +131,13 @@ export const DirectMessages: Story = {
       notifications: storyDmNotifications,
     },
   },
-  play: async () => {
+  play: playForImplementation(async () => {
+    await readyNotificationsList();
     await waitFor(() => expect(screen.queryByRole("status")).not.toBeInTheDocument());
     await expect(await screen.findByText("Admin, Bob, Carol +1")).toBeVisible();
     await expect(await screen.findByText("Bob", { selector: "p > span" })).toBeVisible();
     await expect(screen.queryByText(/#dm:/)).not.toBeInTheDocument();
-  },
+  }),
 };
 
 export const Dark: Story = { ...Default, globals: { theme: "dark" } };
@@ -124,16 +146,20 @@ export const MessageLayoutComparison: Story = {
   decorators: [withUnreadPreview],
   render: () => (
     <div className="grid h-full grid-cols-1 grid-rows-2 md:grid-cols-2 md:grid-rows-1">
-      <section aria-label="メッセージ表示の比較用">
-        <ChannelHeader channel={storyChannels[0]!} memberCount={3} />
+      <section aria-label={notificationComparisonLabel}>
+        <ChannelHeader
+          channel={storyChannels[0]!}
+          memberCount={notificationComparisonMemberCount}
+        />
         <div className="p-3">
-          <MessageBody content="通知とメッセージの本文サイズ・行間を比較します。" />
+          <MessageBody content={notificationComparisonText} />
         </div>
       </section>
       <NotificationsScreen />
     </div>
   ),
-  play: async () => {
+  play: playForImplementation(async () => {
+    await readyNotificationsList();
     await waitFor(() => expect(screen.queryByRole("status")).not.toBeInTheDocument());
     const notification = screen.getByRole("region", { name: "通知" });
     const message = screen.getByRole("region", { name: "メッセージ表示の比較用" });
@@ -150,7 +176,7 @@ export const MessageLayoutComparison: Story = {
     await expect(notificationBody.fontSize).toBe(messageBody.fontSize);
     await expect(notificationBody.lineHeight).toBe(messageBody.lineHeight);
     await expect(getComputedStyle(notification.querySelector("time")!).fontSize).toBe("11px");
-  },
+  }),
 };
 
 export const MessageLayoutComparisonMobile: Story = {
@@ -169,7 +195,7 @@ export const Loading: Story = {
       ],
     },
   },
-  play: async () => {
+  play: playForImplementation(async () => {
     await expect(await screen.findByRole("status")).toBeVisible();
     const list = within(screen.getByRole("region", { name: "通知" })).getByRole("list", {
       hidden: true,
@@ -177,14 +203,25 @@ export const Loading: Story = {
     await expect(list).toHaveAttribute("inert");
     await expect(list).not.toBeVisible();
     await waitFor(() => expect(list.querySelectorAll(":scope > [data-unread]")).toHaveLength(3));
-  },
+  }),
 };
+// Both implementations hold the same real context response until their play has
+// observed the initial mask. A timer cannot guarantee that observation on Wasm startup.
+let releaseNotificationBodies = () => {};
+let notificationBodies = Promise.resolve();
 export const BodiesReadyTogether: Story = {
+  beforeEach: () => {
+    notificationBodies = new Promise<void>((resolve) => {
+      releaseNotificationBodies = resolve;
+    });
+    return () => releaseNotificationBodies();
+  },
   parameters: {
+    fixtureControls: { releaseBodies: () => releaseNotificationBodies() },
     msw: {
       handlers: [
         http.get("*/api/notifications/:id/context", async ({ params }) => {
-          await delay(params.id === "notification-mention" ? 400 : 20);
+          await notificationBodies;
           return HttpResponse.json({
             message: {
               id: String(params.id),
@@ -197,16 +234,17 @@ export const BodiesReadyTogether: Story = {
       ],
     },
   },
-  play: async () => {
+  play: playForImplementation(async () => {
     await expect(await screen.findByRole("status")).toBeVisible();
     await expect(
       within(screen.getByRole("region", { name: "通知" })).getByRole("list", { hidden: true }),
     ).not.toBeVisible();
+    releaseNotificationBodies();
     await waitFor(() => expect(screen.queryByRole("status")).not.toBeInTheDocument());
     await expect(screen.getByRole("list", { name: "通知" })).toBeVisible();
     await expect(screen.getByText("本文 notification-mention")).toBeVisible();
     await expect(screen.getAllByText(/^本文 notification-/)).toHaveLength(4);
-  },
+  }),
 };
 
 export const LoadingOnScroll: Story = {
@@ -237,7 +275,8 @@ export const LoadingOnScroll: Story = {
       ],
     },
   },
-  play: async () => {
+  play: playForImplementation(async () => {
+    await readyNotificationsList();
     await waitFor(() => expect(screen.queryByRole("status")).not.toBeInTheDocument());
     const list = screen.getByRole("list", { name: "通知" });
     const scrollRoot = list.parentElement!;
@@ -256,7 +295,7 @@ export const LoadingOnScroll: Story = {
     scrollRoot.scrollTop = 0;
     await waitFor(() => expect(screen.queryByRole("status")).not.toBeInTheDocument());
     await expect(screen.getByText("本文 scroll-0")).toBeVisible();
-  },
+  }),
 };
 
 let apubItems = structuredClone(activityPubNotifications);
@@ -291,19 +330,31 @@ export const FollowRequests: Story = {
   parameters: {
     collections: { ...storyCollections, notifications: [] },
     msw: { handlers: apubHandlers },
+    fixtureControls: {
+      assertFollowRead: () => expect(apubItems[0].is_read).toBe(true),
+      assertFollowRejected: () => expect(apubItems[0].pending).toBe(false),
+    },
   },
-  play: async () => {
+  play: playForImplementation(async () => {
     const panel = within(await screen.findByRole("region", { name: "ホームの通知" }));
     await expect(await panel.findByText(/フォロー申請が届きました/)).toBeVisible();
     await expect(panel.getByRole("button", { name: "承認" })).toBeVisible();
     await expect(panel.getByRole("button", { name: "拒否" })).toBeVisible();
     await expect(panel.getByText(/フォローが承認されました/)).toBeVisible();
     await expect(panel.getByText(/投稿にリアクションしました/)).toBeVisible();
-  },
+    await expect(panel.getByRole("img", { name: "Bob" })).toBeVisible();
+    const profileLinks = panel.getAllByRole("link", { name: "Bob" });
+    await expect(profileLinks).toHaveLength(2);
+    for (const link of profileLinks)
+      await expect(link).toHaveAttribute(
+        "href",
+        `/home/users/${encodeURIComponent(activityPubNotifications[0].actor_id)}`,
+      );
+  }),
 };
 export const ApproveFollow: Story = {
   ...FollowRequests,
-  play: async () => {
+  play: playForImplementation(async () => {
     const panel = within(await screen.findByRole("region", { name: "ホームの通知" }));
     await userEvent.click(await panel.findByRole("button", { name: "承認" }));
     await waitFor(() =>
@@ -314,18 +365,18 @@ export const ApproveFollow: Story = {
     await waitFor(() =>
       expect(panel.queryByRole("button", { name: "すべて既読にする" })).not.toBeInTheDocument(),
     );
-  },
+  }),
 };
 export const RejectFollow: Story = {
   ...FollowRequests,
-  play: async () => {
+  play: playForImplementation(async () => {
     const panel = within(await screen.findByRole("region", { name: "ホームの通知" }));
     await userEvent.click(await panel.findByRole("button", { name: "拒否" }));
     await waitFor(() =>
       expect(panel.queryByRole("button", { name: "拒否" })).not.toBeInTheDocument(),
     );
     await expect(apubItems[0].pending).toBe(false);
-  },
+  }),
 };
 export const FollowDecisionError: Story = {
   ...FollowRequests,
@@ -341,12 +392,12 @@ export const FollowDecisionError: Story = {
       ],
     },
   },
-  play: async () => {
+  play: playForImplementation(async () => {
     const panel = within(await screen.findByRole("region", { name: "ホームの通知" }));
     await userEvent.click(await panel.findByRole("button", { name: "承認" }));
     await expect(await panel.findByRole("alert")).toBeVisible();
     await waitFor(() => expect(panel.getByRole("button", { name: "承認" })).toBeEnabled());
-  },
+  }),
 };
 export const MobileFollowRequests: Story = {
   ...FollowRequests,
@@ -361,11 +412,11 @@ export const HomeNotificationsError: Story = {
       ],
     },
   },
-  play: async () => {
+  play: playForImplementation(async () => {
     const panel = within(await screen.findByRole("region", { name: "ホームの通知" }));
     await expect(await panel.findByRole("alert")).toBeVisible();
     await expect(panel.getByRole("button", { name: "更新" })).toBeVisible();
-  },
+  }),
 };
 const notificationsLive = ws.link("*/api/home/live");
 let liveItems: typeof activityPubNotifications = [];
@@ -376,6 +427,13 @@ export const LiveFollowRequest: Story = {
     notificationConnection = false;
   },
   parameters: {
+    fixtureControls: {
+      publishFollowRequest: async () => {
+        await waitFor(() => expect(notificationConnection).toBe(true));
+        liveItems = structuredClone(activityPubNotifications);
+        notificationsLive.broadcast("refresh");
+      },
+    },
     msw: {
       handlers: [
         http.get("*/api/activitypub/notifications", () =>
@@ -390,13 +448,13 @@ export const LiveFollowRequest: Story = {
       ],
     },
   },
-  play: async () => {
+  play: playForImplementation(async () => {
     await waitFor(() => expect(notificationConnection).toBe(true));
     liveItems = structuredClone(activityPubNotifications);
     notificationsLive.broadcast("refresh");
     const panel = within(await screen.findByRole("region", { name: "ホームの通知" }));
     await expect(await panel.findByRole("button", { name: "承認" })).toBeVisible();
-  },
+  }),
 };
 
 let pagedRequestApproved = false;
@@ -405,6 +463,9 @@ export const OlderFollowRequests: Story = {
     pagedRequestApproved = false;
   },
   parameters: {
+    fixtureControls: {
+      assertOlderFollowApproved: () => waitFor(() => expect(pagedRequestApproved).toBe(true)),
+    },
     msw: {
       handlers: [
         http.get("*/api/activitypub/notifications", ({ request }) => {
@@ -432,11 +493,11 @@ export const OlderFollowRequests: Story = {
       ],
     },
   },
-  play: async () => {
+  play: playForImplementation(async () => {
     const panel = within(await screen.findByRole("region", { name: "ホームの通知" }));
     await userEvent.click(await panel.findByRole("button", { name: "過去の通知を読む" }));
     await expect(await panel.findByText("Older peer")).toBeVisible();
     await userEvent.click(await panel.findByRole("button", { name: "承認" }));
     await waitFor(() => expect(pagedRequestApproved).toBe(true));
-  },
+  }),
 };
