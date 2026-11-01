@@ -31,8 +31,10 @@ internal class DeviceAuth(private val http: HttpClient) {
         clientId = client
         resource = audience
         val discoveryResponse = http.get("${issuer.trimEnd('/')}/.well-known/openid-configuration")
-        check(discoveryResponse.status.value in 200..299) { "認証先の設定を取得できません" }
-        val discovery = json.parseToJsonElement(discoveryResponse.bodyAsText()).jsonObject
+        if (discoveryResponse.status.value !in 200..299) {
+            throw LoginFailure("認証先の設定を取得できません (HTTP ${discoveryResponse.status.value})")
+        }
+        val discovery = discoveryResponse.loginJson("認証先の設定取得")
         require(discovery.text("issuer").trimEnd('/') == issuer.trimEnd('/')) { "issuer が一致しません" }
         endpoint = discovery.text("token_endpoint")
         val deviceEndpoint = discovery.text("device_authorization_endpoint")
@@ -49,8 +51,10 @@ internal class DeviceAuth(private val http: HttpClient) {
                     if (audience.isNotBlank()) append("resource", audience)
                 },
             )
-        check(response.status.value in 200..299) { "ログインを開始できません。クライアントの設定を確認してください" }
-        val device = json.parseToJsonElement(response.bodyAsText()).jsonObject
+        val device = response.loginJson("確認コードの発行")
+        if (response.status.value !in 200..299) {
+            throw oauthLoginFailure("確認コードの発行", response.status.value, device.text("error"))
+        }
         val link =
             device.text("verification_uri_complete").ifEmpty { device.text("verification_uri") }
         require(Url(link).protocol == URLProtocol.HTTPS)
@@ -59,7 +63,8 @@ internal class DeviceAuth(private val http: HttpClient) {
         var interval = (device.text("interval").toLongOrNull() ?: 5).coerceAtLeast(1) * 1000
         while (System.currentTimeMillis() < deadline) {
             delay(interval)
-            check(System.currentTimeMillis() < deadline) { "コードの期限が切れました" }
+            if (System.currentTimeMillis() >= deadline)
+                throw LoginFailure("コードの期限が切れました。ログインし直してください")
             val result =
                 exchange(
                     mapOf(
@@ -74,10 +79,10 @@ internal class DeviceAuth(private val http: HttpClient) {
                 }
                 "authorization_pending" -> Unit
                 "slow_down" -> interval += 5000
-                else -> error("ログインが拒否されたか、コードの期限が切れました")
+                else -> throw oauthLoginFailure("ログイン", null, result.text("error"))
             }
         }
-        error("コードの期限が切れました")
+        throw LoginFailure("コードの期限が切れました。ログインし直してください")
     }
 
     private suspend fun exchange(fields: Map<String, String>): Row {
@@ -90,13 +95,19 @@ internal class DeviceAuth(private val http: HttpClient) {
                     fields.forEach { (k, v) -> append(k, v) }
                 },
             )
-        val result = json.parseToJsonElement(response.bodyAsText()).jsonObject
-        check(response.status.value in 200..299 || result.present("error")) { "認証サーバーに接続できません" }
+        val result = response.loginJson("トークンの取得")
+        val error = result.text("error")
+        val pending = error in setOf("authorization_pending", "slow_down")
+        if (!pending && (response.status.value !in 200..299 || error.isNotEmpty())) {
+            throw oauthLoginFailure("トークンの取得", response.status.value, error)
+        }
         return result
     }
 
     private fun accept(result: Row) {
-        check(!result.present("error") && result.present("access_token")) { "ログインし直してください" }
+        if (result.present("error") || !result.present("access_token")) {
+            throw LoginFailure("認証サーバーからトークンを取得できませんでした。ログインし直してください")
+        }
         token = result.text("access_token")
         refresh = result.text("refresh_token").ifEmpty { refresh }
         expires =
@@ -111,4 +122,34 @@ internal class DeviceAuth(private val http: HttpClient) {
             }
             mapOf("Authorization" to "Bearer $token")
         }
+}
+
+/** Only locally constructed messages are safe to show in the login screen. */
+internal class LoginFailure(message: String) : IllegalStateException(message)
+
+private suspend fun HttpResponse.loginJson(stage: String): Row {
+    val raw = bodyAsText()
+    return try {
+        json.parseToJsonElement(raw).jsonObject
+    } catch (_: Exception) {
+        throw LoginFailure("$stage に失敗しました (HTTP ${status.value})。認証サーバーの応答を確認してください")
+    }
+}
+
+private fun oauthLoginFailure(stage: String, status: Int?, code: String): LoginFailure {
+    val hint =
+        when (code) {
+            "unauthorized_client" -> "AuthZ で Public client のデバイスコード認証を許可してください"
+            "invalid_target" -> "Resource / audience と、AuthZ の API 設定・クライアントへの紐付けを確認してください"
+            "invalid_scope" -> "openid profile offline_access の利用が許可されているか確認してください"
+            "invalid_client" -> "Client ID と、クライアントが有効な Public client であることを確認してください"
+            "access_denied" -> "ブラウザーでログインが拒否されました。もう一度ログインしてください"
+            "expired_token" -> "確認コードの期限が切れました。もう一度ログインしてください"
+            "invalid_grant" -> "認証情報が無効か、期限が切れています。もう一度ログインしてください"
+            else -> null
+        }
+    // Do not echo error_description, response bodies, or unrecognized server values.
+    val details =
+        listOfNotNull(status?.let { "HTTP $it" }, code.takeIf { hint != null }).joinToString(" / ")
+    return LoginFailure("$stage に失敗しました ($details)。${hint ?: "認証サーバーの設定を確認してください"}")
 }

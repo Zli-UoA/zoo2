@@ -86,8 +86,8 @@ class MainActivity : ComponentActivity() {
                                         authHeaders.forEach { (key, value) -> append(key, value) }
                                     }
                                 }
-                            check(response.status.value in 200..299) {
-                                "Zoo に接続できません (HTTP ${response.status.value})"
+                            if (response.status.value !in 200..299) {
+                                throw LoginFailure("Zoo に接続できません (HTTP ${response.status.value})")
                             }
                             val me = json.parseToJsonElement(response.bodyAsText()).jsonObject
                             val lifetime =
@@ -206,7 +206,7 @@ class MainActivity : ComponentActivity() {
         }
         var client by rememberSaveable { mutableStateOf(prefs.getString("client", "").orEmpty()) }
         var resource by rememberSaveable {
-            mutableStateOf(prefs.getString("resource", "https://zli.chat").orEmpty())
+            mutableStateOf(prefs.getString("resource", "https://zli.chat/api").orEmpty())
         }
         var code by remember { mutableStateOf("") }
         var link by remember { mutableStateOf("") }
@@ -314,6 +314,8 @@ class MainActivity : ComponentActivity() {
                                         }
                                     } catch (e: CancellationException) {
                                         throw e
+                                    } catch (failure: LoginFailure) {
+                                        error = failure.message.orEmpty()
                                     } catch (_: Exception) {
                                         error = "ログインできません。接続先・client ID・コードの期限とネットワークを確認してください。"
                                     } finally {
