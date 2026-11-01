@@ -20,12 +20,12 @@ Zoo アプリケーションのファイル・画像添付機能で使用する 
 
 | 項目 | 値 |
 | --- | --- |
-| バケット | `zoo-terraform-state`（Zli アカウント `c9918f2caa050736a07867e6f968c0a2`, APAC） |
+| バケット | `zcp-terraform-state`（Zli アカウント `c9918f2caa050736a07867e6f968c0a2`, APAC） |
 | key | `r2/terraform.tfstate` |
 | ロック | `use_lockfile = true`（S3 ネイティブロック、`.tflock` オブジェクト） |
 | 暗号化 | OpenTofu の state encryption（`pbkdf2` + `aes_gcm`、state・plan とも `enforced`） |
 
-`zoo-terraform-state` は 3 リポジトリで共用し、key で分けています。他リポジトリの key には触れないでください。
+`zcp-terraform-state` は 3 リポジトリで共用し、key で分けています。他リポジトリの key には触れないでください。
 
 | リポジトリ | key | 所有リソース |
 | --- | --- | --- |
@@ -85,7 +85,7 @@ brew install opentofu sops age
 | 変数 | 内容 |
 | --- | --- |
 | `TF_VAR_state_passphrase` | state 暗号化の passphrase（上記の `sops decrypt`） |
-| `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` | `zoo-terraform-state` に読み書きできる R2 の S3 API トークン |
+| `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` | `zcp-terraform-state` に読み書きできる R2 の S3 API トークン |
 | `TF_VAR_cloudflare_api_token` | `Account` > `R2 Storage` > `Edit` 権限を持つ Cloudflare API Token |
 | `TF_VAR_cloudflare_account_id` | Cloudflare Account ID（`terraform.tfvars` に書いても可） |
 
@@ -113,7 +113,7 @@ tofu apply
 
 ## State の移行（初回のみ）
 
-remote backend を有効にする前の state は手元にしかありません。`zoo-terraform-state` と鍵が揃ってから、どちらかの手順で一度だけ移行します。
+remote backend を有効にする前の state は手元にしかありません。`zcp-terraform-state` と鍵が揃ってから、どちらかの手順で一度だけ移行します。
 
 ### 手元に Terraform の state（`terraform.tfstate`）がある場合
 

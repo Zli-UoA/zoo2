@@ -8,10 +8,10 @@ terraform {
     }
   }
 
-  # state は Zli アカウントの共有バケット zoo-terraform-state に置く（zoo2-infra・zeee と key を分けて共用）。
+  # state は Zli アカウントの共有バケット zcp-terraform-state に置く（zoo2-infra・zeee と key を分けて共用）。
   # 認証は AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY（R2 の S3 API トークン）で渡す。
   backend "s3" {
-    bucket = "zoo-terraform-state"
+    bucket = "zcp-terraform-state"
     key    = "r2/terraform.tfstate"
     region = "auto"
     endpoints = {

@@ -86,7 +86,7 @@ jobs:
         run: tofu plan -input=false -lock=false -no-color
 
   # NOTE:
-  # remote backend (R2 の zoo-terraform-state) は設定済みですが、state の移行（infra/terraform/README.md）が
+  # remote backend (R2 の zcp-terraform-state) は設定済みですが、state の移行（infra/terraform/README.md）が
   # 済むまで CI での自動 apply は無効化しています。移行後に手元で plan が差分なしになることを確認してから有効化してください。
   # apply:
   #   name: Apply
