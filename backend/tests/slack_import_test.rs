@@ -699,7 +699,18 @@ async fn test_slack_reimport_relinks_replies_and_serializes_targets() -> anyhow:
     let both = build_zip(&[
         ("users.json".into(), users),
         ("channels.json".into(), channels),
-        ("general/2024-01-01.json".into(), json!([parent])),
+        (
+            "general/2024-01-01.json".into(),
+            json!([
+                parent,
+                // 本文がカード (attachments) にしかない bot 投稿
+                {"ts":"1704070100.000300","bot_id":"B1","subtype":"bot_message","username":"deploybot","text":"",
+                 "attachments":[
+                    {"title":"Deploy","text":"production is ready","color":"good","fields":[{"title":"env","value":"prod"}]},
+                    {"from_url":"https://example.com","title":"unfurl","text":"link preview"}
+                 ]}
+            ]),
+        ),
         ("general/2024-01-02.json".into(), json!([reply])),
     ]);
 
@@ -802,5 +813,22 @@ async fn test_slack_reimport_relinks_replies_and_serializes_targets() -> anyhow:
         parent_of(rows),
         json!(backend::slack::message_id(&team, "C1", "1704070000.000100"))
     );
+
+    // カードだけの bot 投稿も取り込まれ、カードと本文が保存される (リンクの展開は除く)
+    let card = sql(
+        &state,
+        "SELECT json_build_object('content',content,'card',card)::text FROM messages WHERE id=$1",
+        &[&backend::slack::message_id(
+            &team,
+            "C1",
+            "1704070100.000300",
+        )],
+    )
+    .await?;
+    assert_eq!(card.len(), 1, "the card-only bot message must be imported");
+    assert_eq!(card[0]["content"], "Deploy\nproduction is ready\nenv: prod");
+    let stored: Value = serde_json::from_str(card[0]["card"].as_str().unwrap())?;
+    assert_eq!(stored["title"], "Deploy");
+    assert!(!card[0]["card"].as_str().unwrap().contains("link preview"));
     Ok(())
 }

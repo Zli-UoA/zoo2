@@ -795,19 +795,35 @@ async fn insert_message(
         .map(|e| e.ts.as_str())
         .filter(|ts| super::is_valid_ts(ts))
         .unwrap_or("");
-    let content = mrkdwn_to_mfm(&message.text, &*ctx);
+    let cards = message.cards();
+    let card = crate::cards::encode_cards(&cards)?.unwrap_or_default();
+    let mut content = mrkdwn_to_mfm(&message.text, &*ctx);
+    // 本文がカードにしかない bot 投稿は、カードの内容を本文にも入れる (通知・一覧・旧クライアント用)
+    if content.trim().is_empty() {
+        content = crate::cards::cards_content(&cards);
+    }
     // 期間を区切った ZIP では返信だけが先に入ることがある。後から親を取り込んだら、返信をスレッドに戻す。
     exec(
         tx,
-        "INSERT INTO messages(id,user_id,channel_id,content,created_at,updated_at,parent_id) \
+        "INSERT INTO messages(id,user_id,channel_id,content,created_at,updated_at,parent_id,card) \
          VALUES($1,$2,$3,$4,(to_timestamp($5::numeric) AT TIME ZONE 'UTC')::timestamp(3),\
          CASE WHEN $6='' THEN NULL ELSE (to_timestamp($6::numeric) AT TIME ZONE 'UTC')::timestamp(3) END,\
-         (SELECT m.id FROM messages m WHERE m.id=NULLIF($7,'') AND m.channel_id=$3 AND m.parent_id IS NULL)) \
+         (SELECT m.id FROM messages m WHERE m.id=NULLIF($7,'') AND m.channel_id=$3 AND m.parent_id IS NULL),\
+         NULLIF($8,'')) \
          ON CONFLICT (id) DO UPDATE SET parent_id=EXCLUDED.parent_id \
          WHERE messages.parent_id IS NULL AND EXCLUDED.parent_id IS NOT NULL \
          AND messages.channel_id=EXCLUDED.channel_id \
          AND NOT EXISTS(SELECT 1 FROM messages r WHERE r.parent_id=messages.id)",
-        &[&id, &user.id, channel_id, &content, &message.ts, edited, &parent],
+        &[
+            &id,
+            &user.id,
+            channel_id,
+            &content,
+            &message.ts,
+            edited,
+            &parent,
+            &card,
+        ],
     )
     .await?;
 

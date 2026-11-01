@@ -312,10 +312,10 @@ export const SlackImport: Story = {
       ],
     },
   },
-  play: async () => {
+  play: playForImplementation(async () => {
     await userEvent.click(await screen.findByRole("tab", { name: "Slack 取り込み" }));
     await expect(
       await screen.findByRole("button", { name: "ZIP を選んでアップロード" }),
     ).toBeVisible();
-  },
+  }),
 };

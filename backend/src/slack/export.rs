@@ -104,6 +104,9 @@ pub struct SlackMessage {
     pub files: Vec<SlackFile>,
     #[serde(default)]
     pub bot_profile: Option<SlackBotProfile>,
+    /// bot 投稿のカード (旧形式の attachments)。本文がここにしかない投稿もある
+    #[serde(default)]
+    pub attachments: Vec<serde_json::Value>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -187,7 +190,22 @@ impl SlackMessage {
                 .subtype
                 .as_deref()
                 .is_some_and(|s| SKIPPED_SUBTYPES.contains(&s))
-            && (!self.text.trim().is_empty() || !self.files.is_empty())
+            && (!self.text.trim().is_empty() || !self.files.is_empty() || !self.cards().is_empty())
+    }
+
+    /// attachments を zoo のカードにする。リンクの展開 (unfurl) は zoo 側で表示するので除き、
+    /// 読み取れないものは 1 件ずつ捨てる。
+    pub fn cards(&self) -> Vec<crate::cards::MessageCard> {
+        self.attachments
+            .iter()
+            .filter(|a| a.get("from_url").is_none() && a.get("is_app_unfurl").is_none())
+            .filter_map(|a| {
+                let body = serde_json::json!({ "attachments": [a] }).to_string();
+                crate::cards::parse_webhook_cards(body.as_bytes()).ok()
+            })
+            .flatten()
+            .take(100)
+            .collect()
     }
 
     /// スレッドの返信なら親の ts
