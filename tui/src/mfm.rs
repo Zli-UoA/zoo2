@@ -75,12 +75,13 @@ const WRAPPERS: &[(&str, &str, Style)] = &[
 
 impl Inline<'_> {
     fn parse(&self, text: &str, base: Style, depth: usize, out: &mut Vec<Span<'static>>) {
+        let mut scan = Scan::new(text);
         let mut plain = String::new();
         let mut i = 0;
         while i < text.len() {
             let rest = &text[i..];
             let previous = text[..i].chars().next_back();
-            if let Some((consumed, spans)) = self.token(rest, previous, base, depth) {
+            if let Some((consumed, spans)) = self.token(&mut scan, i, previous, base, depth) {
                 flush(&mut plain, base, out);
                 out.extend(spans);
                 i += consumed;
@@ -93,45 +94,53 @@ impl Inline<'_> {
         flush(&mut plain, base, out);
     }
 
-    /// `rest` の先頭が記法なら、消費したバイト数と変換結果を返す。
+    /// `scan.text[i..]` の先頭が記法なら、消費したバイト数と変換結果を返す。
     fn token(
         &self,
-        rest: &str,
+        scan: &mut Scan,
+        i: usize,
         previous: Option<char>,
         base: Style,
         depth: usize,
     ) -> Option<(usize, Vec<Span<'static>>)> {
+        let rest = &scan.text[i..];
         let nestable = depth < MAX_DEPTH;
-        if let Some(inner) = between(rest, "`", "`").filter(|inner| !inner.contains('\n')) {
+        if let Some(inner) = scan
+            .between(i, "`", "`")
+            .filter(|inner| !inner.contains('\n'))
+        {
             return Some((
                 inner.len() + 2,
                 vec![Span::styled(inner.to_string(), base.patch(CODE))],
             ));
         }
         for (open, close, style) in WRAPPERS.iter().filter(|_| nestable) {
-            if let Some(inner) = between(rest, open, close).filter(|inner| !inner.is_empty()) {
+            if let Some(inner) = scan
+                .between(i, open, close)
+                .filter(|inner| !inner.is_empty())
+            {
                 let mut spans = Vec::new();
                 self.parse(inner, base.patch(*style), depth + 1, &mut spans);
                 return Some((open.len() + inner.len() + close.len(), spans));
             }
         }
-        if let Some(inner) = between(rest, "<plain>", "</plain>") {
+        if let Some(inner) = scan.between(i, "<plain>", "</plain>") {
             return Some((
                 inner.len() + 15,
                 vec![Span::styled(inner.to_string(), base)],
             ));
         }
-        if let Some(inner) = between(rest, "\\(", "\\)") {
+        if let Some(inner) = scan.between(i, "\\(", "\\)") {
             return Some((
                 inner.len() + 4,
                 vec![Span::styled(inner.to_string(), base.patch(MATH))],
             ));
         }
         if nestable && rest.starts_with("$[") {
-            return self.function(rest, base, depth);
+            return self.function(scan, i, base, depth);
         }
         if rest.starts_with('[') || rest.starts_with("?[") {
-            return link(rest, base);
+            return link(scan, i, base);
         }
         let at_boundary = previous.is_none_or(is_boundary);
         if at_boundary && (rest.starts_with("https://") || rest.starts_with("http://")) {
@@ -157,7 +166,7 @@ impl Inline<'_> {
             }
         }
         if rest.starts_with(':') {
-            return shortcode(rest, base);
+            return shortcode(scan, i, base);
         }
         None
     }
@@ -165,24 +174,13 @@ impl Inline<'_> {
     /// `$[name.args text]`。対応する `]` までを探し、中身の text だけを解析する。
     fn function(
         &self,
-        rest: &str,
+        scan: &mut Scan,
+        i: usize,
         base: Style,
         depth: usize,
     ) -> Option<(usize, Vec<Span<'static>>)> {
-        let mut brackets = 0usize;
-        let mut end = None;
-        for (index, ch) in rest.char_indices().skip(2) {
-            match ch {
-                '[' => brackets += 1,
-                ']' if brackets == 0 => {
-                    end = Some(index);
-                    break;
-                }
-                ']' => brackets -= 1,
-                _ => {}
-            }
-        }
-        let end = end?;
+        let end = scan.closing_bracket(i + 1)? - i;
+        let rest = &scan.text[i..];
         let inner = &rest[2..end];
         let (name, body) = inner.split_once(' ').unwrap_or((inner, ""));
         if name.is_empty() {
@@ -225,10 +223,73 @@ fn flush(plain: &mut String, style: Style, out: &mut Vec<Span<'static>>) {
     }
 }
 
-fn between<'t>(text: &'t str, open: &str, close: &str) -> Option<&'t str> {
-    let rest = text.strip_prefix(open)?;
-    let end = rest.find(close)?;
-    Some(&rest[..end])
+/// 1行分の本文の走査結果を覚えておき、閉じ記号の探索を本文の長さに比例する量に抑える。
+/// 閉じ記号のない開き記号が並んでも、同じ範囲を何度も探し直さない。
+struct Scan<'t> {
+    text: &'t str,
+    /// 閉じ記号ごとの、直近の探索の開始位置と見つかった位置。
+    found: Vec<(&'static str, usize, Option<usize>)>,
+    /// `[` の位置から対応する `]` の位置。初めて必要になったときに一度だけ求める。
+    brackets: Option<std::collections::HashMap<usize, usize>>,
+}
+
+impl<'t> Scan<'t> {
+    fn new(text: &'t str) -> Self {
+        Self {
+            text,
+            found: Vec::new(),
+            brackets: None,
+        }
+    }
+
+    /// `from` 以降で最初に `close` が現れる位置。
+    fn find(&mut self, close: &'static str, from: usize) -> Option<usize> {
+        let cached = self.found.iter_mut().find(|(c, _, _)| *c == close);
+        if let Some((_, start, found)) = &cached
+            && *start <= from
+            && found.is_none_or(|found| found >= from)
+        {
+            return *found;
+        }
+        let found = self.text[from..].find(close).map(|index| from + index);
+        match cached {
+            Some(entry) => *entry = (close, from, found),
+            None => self.found.push((close, from, found)),
+        }
+        found
+    }
+
+    /// `i` から `open` で始まるなら、次の `close` までの中身。
+    fn between(&mut self, i: usize, open: &str, close: &'static str) -> Option<&'t str> {
+        if !self.text[i..].starts_with(open) {
+            return None;
+        }
+        let start = i + open.len();
+        let end = self.find(close, start)?;
+        Some(&self.text[start..end])
+    }
+
+    /// `open` にある `[` に対応する `]` の位置。
+    fn closing_bracket(&mut self, open: usize) -> Option<usize> {
+        let text = self.text;
+        let brackets = self.brackets.get_or_insert_with(|| {
+            let mut pairs = std::collections::HashMap::new();
+            let mut stack = Vec::new();
+            for (index, ch) in text.char_indices() {
+                match ch {
+                    '[' => stack.push(index),
+                    ']' => {
+                        if let Some(start) = stack.pop() {
+                            pairs.insert(start, index);
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            pairs
+        });
+        brackets.get(&open).copied()
+    }
 }
 
 fn is_boundary(ch: char) -> bool {
@@ -237,28 +298,38 @@ fn is_boundary(ch: char) -> bool {
 
 /// URL の末尾の句読点と、対応しない閉じ括弧を除く。
 fn trim_url(url: &str) -> &str {
+    let count = |ch: char| url.chars().filter(|c| *c == ch).count();
+    // 括弧の数は一度だけ数え、末尾を削るたびに減らす。
+    let (open_paren, mut close_paren) = (count('('), count(')'));
+    let (open_bracket, mut close_bracket) = (count('['), count(']'));
     let mut url = url;
     loop {
         let Some(last) = url.chars().next_back() else {
             return url;
         };
-        let unbalanced = |open: char, close: char| {
-            last == close && url.matches(open).count() < url.matches(close).count()
+        let trim = match last {
+            ')' => open_paren < close_paren,
+            ']' => open_bracket < close_bracket,
+            '(' | '[' => false,
+            _ => ".,!?;:'\"".contains(last),
         };
-        if ".,!?;:'\"".contains(last) || unbalanced('(', ')') || unbalanced('[', ']') {
-            url = &url[..url.len() - last.len_utf8()];
-        } else {
+        if !trim {
             return url;
         }
+        match last {
+            ')' => close_paren -= 1,
+            ']' => close_bracket -= 1,
+            _ => {}
+        }
+        url = &url[..url.len() - last.len_utf8()];
     }
 }
 
 /// `[label](url)` と `?[label](url)`。ターミナルでは URL を開けないので、ラベルの後に URL を添える。
-fn link(rest: &str, base: Style) -> Option<(usize, Vec<Span<'static>>)> {
-    let offset = usize::from(rest.starts_with('?'));
-    let label = between(&rest[offset..], "[", "]")?;
-    let after = &rest[offset + label.len() + 2..];
-    let url = between(after, "(", ")")?;
+fn link(scan: &mut Scan, i: usize, base: Style) -> Option<(usize, Vec<Span<'static>>)> {
+    let offset = usize::from(scan.text[i..].starts_with('?'));
+    let label = scan.between(i + offset, "[", "]")?;
+    let url = scan.between(i + offset + label.len() + 2, "(", ")")?;
     if !(url.starts_with("https://") || url.starts_with("http://")) || label.contains('\n') {
         return None;
     }
@@ -273,8 +344,8 @@ fn link(rest: &str, base: Style) -> Option<(usize, Vec<Span<'static>>)> {
     Some((consumed, spans))
 }
 
-fn shortcode(rest: &str, base: Style) -> Option<(usize, Vec<Span<'static>>)> {
-    let name = between(rest, ":", ":")?;
+fn shortcode(scan: &mut Scan, i: usize, base: Style) -> Option<(usize, Vec<Span<'static>>)> {
+    let name = scan.between(i, ":", ":")?;
     if name.is_empty()
         || !name
             .chars()
@@ -368,6 +439,19 @@ mod tests {
         let bold = format!("{}hi{}", "<b>".repeat(depth), "</b>".repeat(depth));
         assert!(texts(&bold).concat().contains("hi"));
         assert_eq!(texts("$[x $[y ok]]"), ["ok"]);
+    }
+
+    #[test]
+    fn unclosed_markup_does_not_rescan_the_line() {
+        // 閉じ記号のない開き記号を backend の上限近くまで並べても、すぐに描画し終える。
+        let started = std::time::Instant::now();
+        for unit in ["$[", "<b>", "[", "?[", "\\(", "<plain>"] {
+            let content = unit.repeat(40_000 / unit.len());
+            assert_eq!(texts(&content).concat(), content);
+        }
+        let url = format!("(https://a.example/{}", ")".repeat(40_000));
+        assert_eq!(texts(&url).concat(), url);
+        assert!(started.elapsed() < std::time::Duration::from_secs(2));
     }
 
     #[test]
