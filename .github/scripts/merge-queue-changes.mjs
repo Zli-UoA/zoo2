@@ -33,7 +33,7 @@ export function selectWorkflows(changed, readWorkflow) {
 if (import.meta.url === pathToFileURL(process.argv[1]).href) {
   const base = process.env.BASE_SHA;
   execFileSync('git', ['fetch', '--no-tags', '--depth=1', 'origin', base], { stdio: 'inherit' });
-  const changed = execFileSync('git', ['diff', '--name-only', base, 'HEAD'], { encoding: 'utf8' }).split('\n').filter(Boolean);
+  const changed = execFileSync('git', ['diff', '--name-only', '-z', base, 'HEAD'], { encoding: 'utf8' }).split('\0').filter(Boolean);
   console.log(`changed:\n${changed.join('\n')}`);
   const selected = selectWorkflows(changed, workflow => readFileSync(`.github/workflows/${workflow}.yaml`, 'utf8'));
   for (const [workflow, run] of Object.entries(selected)) {
