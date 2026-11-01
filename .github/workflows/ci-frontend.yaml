@@ -38,7 +38,7 @@ jobs:
 
   container:
     needs: runner
-    runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-latest' || fromJSON(needs.runner.outputs.docker-runs-on || '"zli-k8s"') }}
+    runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-latest' || fromJSON(needs.runner.outputs.docker-runs-on || '"ubuntu-latest"') }}
     env:
       POSTGRES_PASSWORD: container-test
       # envsubst で CSP に埋め込まれることを確認するためのダミー IdP・ストレージオリジン。
@@ -156,7 +156,7 @@ jobs:
 
   proxy:
     needs: runner
-    runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-latest' || fromJSON(needs.runner.outputs.docker-runs-on || '"zli-k8s"') }}
+    runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-latest' || fromJSON(needs.runner.outputs.docker-runs-on || '"ubuntu-latest"') }}
     env:
       POSTGRES_PASSWORD: proxy-test
       PROXY_PORT: 18080

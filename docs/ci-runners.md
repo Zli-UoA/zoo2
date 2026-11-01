@@ -1,8 +1,8 @@
 # CI のRunner選択
 
-軽量ジョブはkubecamp固定、空き状況による切り替えを残すDocker不要ジョブは **kubecamp → zli-k8s → GitHub-hosted** の順に実行先を選びます。kubecampのラベルは `zli-kubecamp-no-docker`、zoo2 ARCのラベルは `zli-k8s` です。Docker daemonが必要なジョブは **zli-k8s → GitHub-hosted** の順です。
+軽量ジョブはkubecamp固定、空き状況による切り替えを残すDocker不要ジョブは **kubecamp → zli-k8s → GitHub-hosted** の順に実行先を選びます。kubecampのラベルは `zli-kubecamp-no-docker`、zoo2 ARCのラベルは `zli-k8s` です。Docker daemonが必要なジョブは、空き状況にかかわらず **GitHub-hosted** で実行します。zli-k8sのDinDはzoo2クラスタのetcdと同じディスクに書き込み、API停止の原因になっていたためです。kubecampはPodSecurityでprivilegedを許可しないため、DinDを置けません。zoo2はpublicリポジトリなので、GitHub-hostedの標準Runnerは無料です。
 
-自動選択が必要なworkflowだけに置く `runner` ジョブが、checkoutせずにorgのRunner一覧を取得します。`runs-on` 出力はDocker不要用、`docker-runs-on` 出力はDocker必須用です。`large-runs-on` はkubecampの2GiBを超えるジョブ用で、同じARC → Hostedの選択を使います。次の条件で選びます。
+自動選択が必要なworkflowだけに置く `runner` ジョブが、checkoutせずにorgのRunner一覧を取得します。`runs-on` 出力はDocker不要用、`docker-runs-on` 出力はDocker必須用で、常に `ubuntu-latest` を返します。`large-runs-on` はkubecampの2GiBを超えるジョブ用で、ARC → Hostedの選択を使います。次の条件で選びます。
 
 1. onlineかつidleのkubecamp Runnerがあれば、自動選択対象のDocker不要ジョブを割り当てます。
 2. kubecampが不在または全台busyなら、idleのARC Runnerを使います。登録台数から増設余地を推測せず、idleがある場合だけARCを選びます。
@@ -20,7 +20,13 @@ forkの `pull_request` は、選択処理と各ジョブの両方でGitHub-hoste
 
 各リポジトリのRepository Secret `RUNNER_STATUS_TOKEN` に登録します。publicリポジトリではOrg Secretの共有も使えますが、GitHub FreeのprivateリポジトリはOrg Secretを利用できません。fine-grained PATならOrganization permissionsのSelf-hosted runners: Read-onlyを使います。判定ジョブ以外には渡しません。
 
-トークン不足・API障害で状態を確認できない場合、または判定が失敗して出力を返さない場合は、Docker不要ジョブはkubecamp、Docker必須ジョブはARCを選びます。障害を確認できていないため、最初の適格なself-hosted poolで待機する扱いです。利用可能なRunnerがなければキューで待ち続ける可能性があります。
+トークン不足・API障害で状態を確認できない場合、Docker必須ジョブは通常どおりGitHub-hostedで実行します。Docker不要ジョブはkubecamp、大容量ジョブはARCを選びます。障害を確認できていないため、この2つは最初の適格なself-hosted poolで待機する扱いです。そのpoolに利用可能なRunnerがなければ、GitHub-hostedへ切り替えずにキューで待ち続ける可能性があります。
+
+判定の失敗は、どこで失敗したかで扱いが変わります。
+
+- selector内の `select` ジョブが失敗した場合: `continue-on-error` で成功扱いになり、出力が空になります。各ジョブの `runs-on` のfallbackが使われ、上と同じ実行先（Docker必須ジョブはGitHub-hosted）になります。
+- 呼び出し側の `runner` ジョブ自体がfailure・skipped・cancelledになった場合: 後続ジョブは `needs` の成功条件を満たさずskipされます。`runs-on` のfallbackには到達しません。Re-run all jobsで選び直してください。
+- 判定ジョブがキュー待ちの間は、後続ジョブも待ちます。
 
 ## 選択のタイミングと検証
 

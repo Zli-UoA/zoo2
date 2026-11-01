@@ -1,6 +1,7 @@
 name: Select runner
 
-# Workload priority: kubecamp -> zli-k8s -> hosted; Docker jobs skip kubecamp.
+# Workload priority: kubecamp -> zli-k8s -> hosted. Docker jobs always use
+# hosted: DinD on zli-k8s shares the etcd disks of the zoo2 cluster.
 # CI_RUNNER now only chooses the selector host, not the workload destination.
 on:
   workflow_call:
@@ -16,7 +17,7 @@ on:
         value: ${{ jobs.select.outputs.docker-runs-on }}
       large-runs-on:
         description: JSON for jobs exceeding the 2GiB kubecamp memory limit
-        value: ${{ jobs.select.outputs.docker-runs-on }}
+        value: ${{ jobs.select.outputs.large-runs-on }}
 
 permissions:
   contents: read
@@ -30,6 +31,7 @@ jobs:
     outputs:
       runs-on: ${{ steps.select.outputs.runs-on }}
       docker-runs-on: ${{ steps.select.outputs.docker-runs-on }}
+      large-runs-on: ${{ steps.select.outputs.large-runs-on }}
     steps:
       # No checkout: the status token never reaches repository code.
       - uses: actions/github-script@v8
@@ -42,10 +44,11 @@ jobs:
             const KUBECAMP = 'zli-kubecamp-no-docker';
             const SCALE_SET = 'zli-k8s';
             const HOSTED = 'ubuntu-latest';
-            const use = (runsOn, dockerRunsOn, reason) => {
+            const use = (runsOn, largeRunsOn, reason) => {
               core.setOutput('runs-on', JSON.stringify(runsOn));
-              core.setOutput('docker-runs-on', JSON.stringify(dockerRunsOn));
-              core.info(`Docker-free: ${runsOn}; Docker: ${dockerRunsOn}: ${reason}`);
+              core.setOutput('docker-runs-on', JSON.stringify(HOSTED));
+              core.setOutput('large-runs-on', JSON.stringify(largeRunsOn));
+              core.info(`Docker-free: ${runsOn}; large: ${largeRunsOn}; Docker: ${HOSTED}: ${reason}`);
             };
             const pr = context.payload.pull_request;
             // Fork code uses hosted runners; pull_request_target never checks out PR code.
@@ -71,6 +74,6 @@ jobs:
             const arc = online.filter(r => r.name.startsWith(`${SCALE_SET}-`) || hasLabel(r, SCALE_SET));
             // Ephemeral registrations do not reveal assigned jobs; only an idle ARC is available.
             const arcAvailable = arc.some(r => !r.busy);
-            const dockerRunsOn = arcAvailable ? SCALE_SET : HOSTED;
-            return use(kubecamp.length > 0 ? KUBECAMP : dockerRunsOn, dockerRunsOn,
+            const arcRunsOn = arcAvailable ? SCALE_SET : HOSTED;
+            return use(kubecamp.length > 0 ? KUBECAMP : arcRunsOn, arcRunsOn,
               `${kubecamp.length} idle kubecamp, ${arc.length} online ARC, ${arc.filter(r => !r.busy).length} idle ARC`);
