@@ -13,7 +13,9 @@ export function useVisualViewport(active = true) {
       if (viewport.scale !== 1) return;
       // キーボードが出ていなければ h-dvh / top-0 に任せる。iOS のバウンスで
       // 動いた offsetTop を拾うと、シェルごと指に追従してずれるため。
-      if (window.innerHeight - viewport.height < 1) {
+      // iOS Safari の innerHeight はキーボードで縮むので、縮まないレイアウト
+      // ビューポートの高さ（clientHeight）と比べる。
+      if (document.documentElement.clientHeight - viewport.height < 1) {
         element.style.removeProperty("height");
         element.style.removeProperty("top");
         if (window.scrollY !== 0) window.scrollTo(0, 0);
