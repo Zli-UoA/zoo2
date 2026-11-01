@@ -47,6 +47,17 @@ fun ActivityPubEmoji(
             ?: Box(modifier.size(size))
 }
 
+internal val LocalActivityPubEmojis = staticCompositionLocalOf<List<Row>> { emptyList() }
+
+@Composable
+fun ActivityPubContent(text: String, emojis: List<Row> = emptyList(), modifier: Modifier = Modifier,
+    textStyle: TextStyle = TextStyle.Default, maxLines: Int = Int.MAX_VALUE) {
+    CompositionLocalProvider(LocalActivityPubEmojis provides emojis,
+        LocalMfmStyle provides LocalMfmStyle.current.merge(textStyle)) {
+        Box(modifier) { RichText(text, maxLines = maxLines) }
+    }
+}
+
 @Composable
 fun ActivityPubText(
     text: String,

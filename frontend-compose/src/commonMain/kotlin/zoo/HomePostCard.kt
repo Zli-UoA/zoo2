@@ -142,7 +142,7 @@ fun HomePostCard(
                         Button(app.t("common.cancel"), enabled = !saving) { editing = false }
                     }
                 } else
-                    ActivityPubText(
+                    ActivityPubContent(
                         post.text("content").ifEmpty { app.t("home.attachmentsOnly") },
                         post.homeRows("emojis"),
                         textStyle = TextStyle(fontSize = 14.sp, lineHeight = 20.sp),

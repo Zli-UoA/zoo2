@@ -4,7 +4,7 @@ import {
   replyVisibility,
   type HomePostSettings,
 } from "../../lib/homePreferences";
-import { ActivityPubText, type CustomEmoji } from "./ActivityPubEmoji";
+import { ActivityPubText, ActivityPubContent, type CustomEmoji } from "./ActivityPubEmoji";
 import { flushSync } from "react-dom";
 import { useImperativeHandle, useRef, useState, type Ref } from "react";
 import { useTranslation } from "react-i18next";
@@ -342,9 +342,9 @@ export function HomeComposer({
                         emojis={replyTo.actor_emojis}
                       />
                     </p>
-                    <p className="mt-1 line-clamp-2 break-words text-muted-foreground">
-                      <ActivityPubText text={replyTo.content} emojis={replyTo.emojis} />
-                    </p>
+                    <div className="mfm-body mt-1 line-clamp-2 break-words text-muted-foreground">
+                      <ActivityPubContent text={replyTo.content} emojis={replyTo.emojis} />
+                    </div>
                   </div>
                   <Button
                     type="button"

@@ -90,6 +90,7 @@ fun HomeScreen(
         }
     }
     LaunchedEffect(app, feed) {
+        feed.restoreSelection()
         feed.refresh()
         controls()
     }
@@ -348,4 +349,23 @@ internal fun homeRouteId(path: String, section: String): String? {
     val prefix = "/home/$section/"
     if (!clean.startsWith(prefix)) return null
     return clean.removePrefix(prefix).takeIf { it.isNotEmpty() && '/' !in it }?.decodeURLPart()
+}
+
+/** Catalog remounts the real screen to verify local preferences across navigation. */
+@Composable
+fun HomeStory(app: Session, fixture: Row) {
+    val state = fixture.text("state").replace(" ", "")
+    var generation by remember(fixture) { mutableStateOf(0) }
+    if (state == "PostingWithoutSavedIdentity") {
+        val composer = remember { HomeComposerState() }
+        Box(Modifier.fillMaxSize()) {
+            HomeComposer(app, false, composer, Modifier.align(Alignment.BottomEnd)) {
+                app.api.request("/api/home", "POST", it)
+            }
+        }
+    } else Column(Modifier.fillMaxSize()) {
+        if (state in listOf("RememberPostSettings", "RememberPostSettingsMobile", "RememberTimeline"))
+            Button("画面を再表示") { generation++ }
+        key(generation) { HomeScreen(app, fixture, fixture.nested("args")) }
+    }
 }

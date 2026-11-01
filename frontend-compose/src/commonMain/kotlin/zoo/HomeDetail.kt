@@ -81,7 +81,7 @@ fun ActivityPubProfile(app: Session, actorId: String) {
                 }
             }
             if (value.text("summary").isNotEmpty())
-                ActivityPubText(value.text("summary"), value.homeRows("emojis"))
+                ActivityPubContent(value.text("summary"), value.homeRows("emojis"))
             FlowRow(
                 horizontalArrangement = Arrangement.spacedBy(12.dp),
                 verticalArrangement = Arrangement.spacedBy(8.dp),

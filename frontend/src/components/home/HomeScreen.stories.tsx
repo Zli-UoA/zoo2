@@ -48,6 +48,23 @@ const meta = {
     a11y: { test: "error" },
     fixtureControls: {
       ...nativeHomeChecks,
+      homeStorageRead: (key: string) => localStorage.getItem(key) ?? "",
+      homeStorageWrite: ({ key, value }: { key: string; value: string }) => {
+        localStorage.setItem(key, value);
+        return "";
+      },
+      homeRememberedPost: () =>
+        expect(JSON.parse(localStorage.getItem(postSettingsKey)!)).toEqual({
+          visibility: "public",
+          apub: false,
+          channel_id: "channel-general",
+        }),
+      homeRememberedTimeline: () => expect(localStorage.getItem(timelineSettingsKey)).toBe("home"),
+      homeUnavailableChannel: () => expect(rememberedPost).toMatchObject({ channel_id: null }),
+      homeNoSavedIdentity: async () => {
+        await expect(postedWithoutIdentity).toBe(true);
+        await expect(localStorage.getItem(postSettingsKey)).toBeNull();
+      },
       homeLiveReady: () => waitFor(() => expect(liveAuthenticated).toBe(true)),
       homeLiveAdd: () => {
         livePosts = [
@@ -1387,7 +1404,7 @@ export const RememberPostSettings: Story = {
       ],
     },
   },
-  play: async ({ canvasElement }) => {
+  play: playForImplementation(async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     const form = await openComposer(canvasElement);
     await userEvent.click(form.getByRole("button", { name: /^公開範囲:/ }));
@@ -1415,7 +1432,7 @@ export const RememberPostSettings: Story = {
       "channel-general",
     );
     await expect(reopened.getByRole("textbox", { name: "近況を投稿" })).toHaveValue("");
-  },
+  }),
 };
 export const RememberPostSettingsMobile: Story = {
   ...RememberPostSettings,
@@ -1423,15 +1440,15 @@ export const RememberPostSettingsMobile: Story = {
 };
 export const RememberTimeline: Story = {
   render: (args) => <RemountableHome {...args} />,
-  play: async ({ canvasElement }) => {
+  play: playForImplementation(async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     for (const name of ["ローカル", "ソーシャル", "ホーム"]) {
-      await userEvent.click(canvas.getByRole("button", { name }));
+      await userEvent.click(await canvas.findByRole("button", { name }));
       await userEvent.click(canvas.getByRole("button", { name: "画面を再表示" }));
       await expect(canvas.getByRole("button", { name })).toHaveAttribute("aria-pressed", "true");
     }
     await expect(localStorage.getItem(timelineSettingsKey)).toBe("home");
-  },
+  }),
 };
 export const RememberedReplyConstraints: Story = {
   beforeEach: () =>
@@ -1448,7 +1465,7 @@ export const RememberedReplyConstraints: Story = {
       ],
     },
   },
-  play: async ({ canvasElement }) => {
+  play: playForImplementation(async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     await userEvent.click(await canvas.findByRole("button", { name: "返信 0" }));
     const form = await visibleDialog("近況を投稿");
@@ -1461,7 +1478,7 @@ export const RememberedReplyConstraints: Story = {
       "aria-disabled",
       "true",
     );
-  },
+  }),
 };
 export const RememberedChannelUnavailable: Story = {
   beforeEach: () => {
@@ -1482,7 +1499,7 @@ export const RememberedChannelUnavailable: Story = {
       ],
     },
   },
-  play: async ({ canvasElement }) => {
+  play: playForImplementation(async ({ canvasElement }) => {
     const form = await openComposer(canvasElement);
     await expect(form.getByRole("combobox", { name: "同期先チャンネル" })).toHaveValue("");
     await expect(form.queryByRole("option", { name: "#secret" })).not.toBeInTheDocument();
@@ -1490,7 +1507,7 @@ export const RememberedChannelUnavailable: Story = {
     await userEvent.click(form.getByRole("button", { name: "投稿" }));
     await expectComposerClosed();
     await expect(rememberedPost).toMatchObject({ channel_id: null });
-  },
+  }),
 };
 export const RememberedAccountIsolation: Story = {
   beforeEach: () => {
@@ -1511,9 +1528,9 @@ export const RememberedAccountIsolation: Story = {
       ],
     },
   },
-  play: async ({ canvasElement }) => {
+  play: playForImplementation(async ({ canvasElement }) => {
     const canvas = within(canvasElement);
-    await expect(canvas.getByRole("button", { name: "ホーム" })).toHaveAttribute(
+    await expect(await canvas.findByRole("button", { name: "ホーム" })).toHaveAttribute(
       "aria-pressed",
       "true",
     );
@@ -1521,13 +1538,23 @@ export const RememberedAccountIsolation: Story = {
     await expect(form.getByRole("button", { name: "公開範囲: ホーム" })).toBeVisible();
     await expect(form.getByRole("button", { name: "連合あり" })).toBeVisible();
     await expect(form.getByRole("combobox", { name: "同期先チャンネル" })).toHaveValue("");
-  },
+  }),
 };
 
 let postedWithoutIdentity = false;
 export const PostingWithoutSavedIdentity: Story = {
   beforeEach: () => {
     postedWithoutIdentity = false;
+  },
+  parameters: {
+    msw: {
+      handlers: [
+        http.post("*/api/home", () => {
+          postedWithoutIdentity = true;
+          return HttpResponse.json({ id: "without-identity" }, { status: 201 });
+        }),
+      ],
+    },
   },
   render: () => (
     <div className="relative h-full">
@@ -1540,7 +1567,7 @@ export const PostingWithoutSavedIdentity: Story = {
       />
     </div>
   ),
-  play: async ({ canvasElement }) => {
+  play: playForImplementation(async ({ canvasElement }) => {
     const form = await openComposer(canvasElement);
     await userEvent.type(
       form.getByRole("textbox", { name: "近況を投稿" }),
@@ -1550,5 +1577,83 @@ export const PostingWithoutSavedIdentity: Story = {
     await expectComposerClosed();
     await expect(postedWithoutIdentity).toBe(true);
     await expect(localStorage.getItem(postSettingsKey)).toBeNull();
+  }),
+};
+
+const mfmPost = {
+  ...misskeyPost,
+  display_name: "MFMのユーザー",
+  actor_emojis: [],
+  reactions: [],
+  content: [
+    "**太字 :blobcat:** <i>斜体</i> ~~取り消し~~",
+    "[資料](https://example.com/docs)",
+    "$[ruby 漢字 かんじ] $[fg.color=006600 色文字]",
+    "`literal :blobcat:`",
+    "```ts",
+    "const decorated = true;",
+    "```",
+    "\\(x^2 + y^2\\)",
+    "<script>alert('unsafe')</script>",
+  ].join("\n"),
+};
+const mfmPostHandlers = [http.get("*/api/home", () => HttpResponse.json([mfmPost]))];
+async function checkMfmPost(canvasElement: HTMLElement) {
+  const canvas = within(canvasElement);
+  const strong = await canvas.findByText("太字");
+  await expect(strong.tagName).toBe("STRONG");
+  await expect(canvas.getByText("斜体").tagName).toBe("EM");
+  await expect(canvas.getByText("取り消し").tagName).toBe("DEL");
+  await expect(canvas.getByRole("link", { name: "資料" })).toHaveAttribute(
+    "href",
+    "https://example.com/docs",
+  );
+  await expect(canvas.getByText("かんじ").tagName).toBe("RT");
+  await expect(canvasElement.querySelector(".mfm-function")).toBeInTheDocument();
+  await expect(canvasElement.querySelector(".katex")).toBeInTheDocument();
+  await expect(canvas.getByText("literal :blobcat:").tagName).toBe("CODE");
+  await expect(canvasElement.querySelector("pre code")?.textContent).toContain(
+    "const decorated = true;",
+  );
+  const emoji = canvas.getByRole("img", { name: ":blobcat:" });
+  await expect(emoji.getAttribute("src")).toContain("/api/activitypub/emoji-images/");
+  await expect(canvas.getAllByRole("img", { name: ":blobcat:" })).toHaveLength(1);
+  await expect(canvasElement.querySelector("script")).toBeNull();
+  const body = canvasElement.querySelector<HTMLElement>(".mfm-body")!;
+  await expect(body.scrollWidth).toBeLessThanOrEqual(body.clientWidth);
+}
+export const MfmDecoratedPost: Story = {
+  parameters: { msw: { handlers: mfmPostHandlers } },
+  play: playForImplementation(async ({ canvasElement }) => checkMfmPost(canvasElement)),
+};
+export const MfmDecoratedPostMobile: Story = {
+  ...MfmDecoratedPost,
+  globals: { viewport: { value: "mobile" } },
+};
+export const MfmSinglePost: Story = {
+  args: { postId: mfmPost.id },
+  parameters: { msw: { handlers: [http.get("*/api/home/:id", () => HttpResponse.json(mfmPost))] } },
+  play: playForImplementation(async ({ canvasElement }) => checkMfmPost(canvasElement)),
+};
+
+export const MfmUserProfile: Story = {
+  args: { actorId: mfmPost.user_id },
+  parameters: {
+    msw: {
+      handlers: [
+        http.get("*/api/home", () => HttpResponse.json([])),
+        http.get("*/api/activitypub/accounts", () =>
+          HttpResponse.json({
+            id: mfmPost.user_id,
+            user_name: "alice",
+            display_name: "MFMプロフィール",
+            remote: true,
+            summary: mfmPost.content,
+            emojis: [blobcat],
+          }),
+        ),
+      ],
+    },
   },
+  play: playForImplementation(async ({ canvasElement }) => checkMfmPost(canvasElement)),
 };

@@ -39,6 +39,7 @@ class HomeComposerStateTest {
     @Test
     fun sendingPreventsCloseAndReplacingTheReply() {
         val state = HomeComposerState()
+        state.visibility = "public"
         state.reply(obj("id" to "first", "visibility" to "public"))
         var focusCalls = 0
         state.focusOnOpen = { focusCalls++ }

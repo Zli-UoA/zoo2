@@ -1,5 +1,5 @@
 import { Link } from "@tanstack/react-router";
-import { ActivityPubEmoji, ActivityPubText } from "./ActivityPubEmoji";
+import { ActivityPubEmoji, ActivityPubText, ActivityPubContent } from "./ActivityPubEmoji";
 import { ActivityPubAvatar } from "./ActivityPubAvatar";
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
@@ -89,7 +89,9 @@ export function ActivityPubNotifications({
               </p>
             ) : null}
             {item.content ? (
-              <p className="line-clamp-3 whitespace-pre-wrap break-words text-sm">{item.content}</p>
+              <div className="mfm-body line-clamp-3 whitespace-pre-wrap break-words text-sm leading-relaxed">
+                <ActivityPubContent text={item.content} emojis={item.content_emojis} />
+              </div>
             ) : null}
             <div className="flex flex-wrap gap-2">
               {item.kind === "follow_request" && item.pending ? (

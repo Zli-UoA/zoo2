@@ -5,6 +5,7 @@ import {
 } from "../../lib/homeTimeline";
 import {
   ActivityPubText,
+  ActivityPubContent,
   ActivityPubEmoji,
   FederatedAccount,
   type CustomEmoji,
@@ -562,12 +563,12 @@ function HomeScreenContent({
                           ) : null}
                         </form>
                       ) : (
-                        <p className="mt-2 whitespace-pre-wrap break-words text-sm [overflow-wrap:anywhere]">
-                          <ActivityPubText
+                        <div className="mfm-body mt-2 whitespace-pre-wrap break-words text-sm leading-relaxed [overflow-wrap:anywhere]">
+                          <ActivityPubContent
                             text={post.content.trim() ? post.content : t("home.attachmentsOnly")}
                             emojis={post.emojis}
                           />
-                        </p>
+                        </div>
                       )}
                       {post.reactions?.length ? (
                         <div className="mt-2 flex flex-wrap gap-1">

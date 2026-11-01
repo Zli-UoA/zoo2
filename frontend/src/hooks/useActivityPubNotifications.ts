@@ -11,6 +11,7 @@ export interface ActivityPubNotification {
   activity_id: string;
   post_id: string | null;
   content: string | null;
+  content_emojis?: import("../components/home/ActivityPubEmoji").CustomEmoji[];
   is_read: boolean;
   created_at: string;
   pending: boolean;

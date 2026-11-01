@@ -126,7 +126,8 @@
         "MobileFollowRequests",
         "HomeNotificationsError",
         "LiveFollowRequest",
-        "OlderFollowRequests"
+        "OlderFollowRequests",
+        "ActivityPubMfmReply"
       ]
     },
     {
@@ -491,7 +492,11 @@
         "RememberedReplyConstraints",
         "RememberedChannelUnavailable",
         "RememberedAccountIsolation",
-        "PostingWithoutSavedIdentity"
+        "PostingWithoutSavedIdentity",
+        "MfmDecoratedPost",
+        "MfmDecoratedPostMobile",
+        "MfmSinglePost",
+        "MfmUserProfile"
       ]
     }
   ],
@@ -864,7 +869,7 @@
       "file": "src/components/home/ActivityPubEmoji.tsx",
       "story": "src/components/home/HomeScreen.stories.tsx",
       "composed": true,
-      "reason": "MisskeyCustomEmoji/MobileMisskeyで本文・表示名・リアクションの絵文字とID表記を、EmojiFallbackで画像取得失敗を確認する。"
+      "reason": "MisskeyCustomEmoji/MobileMisskeyで本文・表示名・リアクションの絵文字とID表記を、EmojiFallbackで画像取得失敗を確認する。MfmDecoratedPost/MfmSinglePostで共通MFM描画とコード内絵文字の非展開、MfmUserProfileで自己紹介の装飾を確認する。"
     },
     {
       "file": "src/components/home/HomeReactionPicker.tsx",
