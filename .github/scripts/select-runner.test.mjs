@@ -36,7 +36,9 @@ const cases = [
   ['public and non-Linux usage is not counted', {payload: privateRepo, usage: [usage('zoo2', 9000), usage('repo', 9000, 'Actions storage'), usage('repo', 10)]}, H, H],
   ['documented billing format is counted', {payload: {repository: {private: true}}, usage: [{...usage('Zli-UoA/Repo', 1900), product: 'Actions'}]}, A, A],
   ['unknown visibility is checked as private', {payload: {}, usage: [usage('repo', 1900)]}, A, A],
-  ['private without billing access uses ARC', {payload: privateRepo, billingError: true}, A, A],
+  ['billing access error names the call and permissions', {payload: privateRepo, billingError: true,
+    warning: 'Hosted minutes unavailable: GET /organizations/{org}/settings/billing/usage (403; accepted permissions: administration=read)'}, A, A],
+  ['repository list error names the call', {payload: privateRepo, reposError: true, warning: 'Hosted minutes unavailable: GET /orgs/{org}/repos (403)'}, A, A],
   ['private without token uses ARC', {payload: privateRepo, token: false}, K, A],
 ];
 for (const [name, input, expected, hostedExpected] of cases) {
@@ -56,6 +58,7 @@ for (const [name, input, expected, hostedExpected] of cases) {
         assert.equal(params.request.timeout, 10000);
         if (method === rest.repos.listForOrg) {
           calls.repos++;
+          if (input.reposError) throw Object.assign(new Error('private response must not be logged'), {status: 403});
           assert.equal(params.type, 'private');
           return privateRepos;
         }
@@ -67,7 +70,7 @@ for (const [name, input, expected, hostedExpected] of cases) {
         assert.equal(route, 'GET /organizations/{org}/settings/billing/usage');
         assert.equal(params.org, 'Zli-UoA');
         assert.ok(params.year >= 2026 && params.month >= 1 && params.month <= 12);
-        if (input.billingError) throw Object.assign(new Error('private response must not be logged'), {status: 403});
+        if (input.billingError) throw Object.assign(new Error('private response must not be logged'), {status: 403, response: {headers: {'x-accepted-github-permissions': 'administration=read'}}});
         return {data: {usageItems: input.usage || []}};
       }});
     assert.deepEqual(outputs, {'runs-on': expected, 'docker-runs-on': hostedExpected, 'large-runs-on': hostedExpected});
@@ -75,9 +78,10 @@ for (const [name, input, expected, hostedExpected] of cases) {
     assert.deepEqual(calls, {
       runners: fork || input.token === false ? 0 : 1,
       repos: checksMinutes ? 1 : 0,
-      billing: checksMinutes ? 1 : 0,
+      billing: checksMinutes && !input.reposError ? 1 : 0,
     });
     assert.ok(warnings.every(m => !m.includes('private response')));
+    if (input.warning) assert.deepEqual(warnings, [input.warning]);
   });
 }
 

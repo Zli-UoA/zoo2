@@ -68,11 +68,14 @@ jobs:
             const checkHosted = async () => {
               if (context.payload.repository?.private === false) return [true, 'public repository'];
               if (!hasToken) return [false, 'hosted minutes unknown'];
+              // Name the failing call and the permissions GitHub accepts for it.
+              let endpoint = 'GET /orgs/{org}/repos';
               try {
                 const repos = await github.paginate(github.rest.repos.listForOrg, {org, type: 'private', per_page: 100, request});
                 const names = new Set(repos.map(r => r.name.toLowerCase()));
                 const now = new Date();
-                const {data} = await github.request('GET /organizations/{org}/settings/billing/usage', {
+                endpoint = 'GET /organizations/{org}/settings/billing/usage';
+                const {data} = await github.request(endpoint, {
                   org, year: now.getUTCFullYear(), month: now.getUTCMonth() + 1, request,
                 });
                 const minutes = (data.usageItems || [])
@@ -83,7 +86,9 @@ jobs:
                 return [minutes < HOSTED_INCLUDED_MINUTES - HOSTED_MARGIN_MINUTES,
                   `private hosted minutes ${Math.round(minutes)}/${HOSTED_INCLUDED_MINUTES}`];
               } catch (error) {
-                core.warning(`Hosted minutes unavailable (${error.status || 'network error'})`);
+                const accepted = error.response?.headers?.['x-accepted-github-permissions'];
+                core.warning(`Hosted minutes unavailable: ${endpoint} (${error.status || 'network error'}` +
+                  `${accepted ? `; accepted permissions: ${accepted}` : ''})`);
                 return [false, 'hosted minutes unavailable'];
               }
             };
