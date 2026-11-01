@@ -257,6 +257,7 @@ async fn list(
       )
     ) SELECT (f.post - 'own' - 'original_visible' || jsonb_build_object(
       'entry_id',f.entry_id,
+      'sort_key',(extract(epoch FROM f.sort_at)*1000000)::bigint::text,
       'likes',(SELECT count(*) FROM apub_reactions WHERE post_id=f.id),
       'liked',EXISTS(SELECT 1 FROM apub_reactions WHERE post_id=f.id AND user_id=$1),
       'my_reaction',(SELECT reaction FROM apub_reactions WHERE post_id=f.id AND user_id=$1 LIMIT 1),

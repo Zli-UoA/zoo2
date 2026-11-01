@@ -230,3 +230,24 @@ mod tests {
         }
     }
 }
+
+#[cfg(test)]
+mod tunnel_budget_tests {
+    use super::*;
+    #[test]
+    fn visitors_behind_one_tunnel_have_independent_quotas() {
+        let proxy = Some("172.18.0.2".parse().unwrap());
+        let mut headers = axum::http::HeaderMap::new();
+        headers.insert("cf-connecting-ip", "8.8.8.8".parse().unwrap());
+        let first = super::super::client_ip::resolve(proxy, &headers, true).unwrap();
+        headers.insert("cf-connecting-ip", "1.1.1.1".parse().unwrap());
+        let second = super::super::client_ip::resolve(proxy, &headers, true).unwrap();
+        let mut budget = Cache::default();
+        let now = Instant::now();
+        for _ in 0..240 {
+            assert!(budget.allow(first, now));
+        }
+        assert!(!budget.allow(first, now));
+        assert!(budget.allow(second, now));
+    }
+}

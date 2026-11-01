@@ -78,6 +78,8 @@ services:
       ELECTRIC_URL: http://electric:3000
       PORT: ${PORT:-8000}
       ACTIVITYPUB_BASE_URL: ${ACTIVITYPUB_BASE_URL:-}
+      # Origin is isolated; Cloudflare Tunnel is the only public ingress.
+      ACTIVITYPUB_CLOUDFLARE_TUNNEL: ${ACTIVITYPUB_CLOUDFLARE_TUNNEL:-true}
       ENVIRONMENT: production
       DEV_AUTH_ENABLED: "false"
       VAPID_PUBLIC_KEY: ${VAPID_PUBLIC_KEY:-}

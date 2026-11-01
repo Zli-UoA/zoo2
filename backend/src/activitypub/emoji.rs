@@ -198,6 +198,14 @@ async fn image(
         .extensions()
         .get::<axum::extract::ConnectInfo<std::net::SocketAddr>>()
         .map(|v| v.0.ip());
+    let peer = client_ip::resolve(
+        peer,
+        request.headers(),
+        matches!(
+            std::env::var("ACTIVITYPUB_CLOUDFLARE_TUNNEL").as_deref(),
+            Ok("true" | "1")
+        ),
+    )?;
     let mut db = state.db.clone();
     let mut tx = db.transaction().await?;
     let image = one(
@@ -208,7 +216,20 @@ async fn image(
     .await?;
     drop(tx);
     let url = reqwest::Url::parse(string(&image, "url")?).map_err(internal)?;
-    let cached = emoji_cache::get(&id, peer, || load_image(url)).await?;
+    let cached = match emoji_cache::get(&id, peer, || load_image(url)).await {
+        Err(AppError::RateLimited) => {
+            return Ok((
+                axum::http::StatusCode::TOO_MANY_REQUESTS,
+                [
+                    (header::RETRY_AFTER, "60"),
+                    (header::CACHE_CONTROL, "no-store"),
+                ],
+                Json(json!({"error":"Rate limit exceeded"})),
+            )
+                .into_response());
+        }
+        result => result?,
+    };
     Ok(([(header::CONTENT_TYPE,cached.mime.as_str()),(header::CACHE_CONTROL,"public, max-age=300"),(header::X_CONTENT_TYPE_OPTIONS,"nosniff"),(header::CONTENT_SECURITY_POLICY,"sandbox; default-src 'none'; style-src 'unsafe-inline'; img-src data:; frame-ancestors 'none'")],cached.bytes).into_response())
 }
 async fn load_image(url: reqwest::Url) -> Result<emoji_cache::Image, AppError> {

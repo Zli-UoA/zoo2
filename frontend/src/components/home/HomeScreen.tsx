@@ -1,4 +1,9 @@
 import {
+  timelinePosition,
+  reachedTimelineTail,
+  type TimelinePosition,
+} from "../../lib/homeTimeline";
+import {
   ActivityPubText,
   ActivityPubEmoji,
   FederatedAccount,
@@ -58,6 +63,7 @@ export interface HomePost {
   likes?: number;
   liked?: boolean;
   entry_id?: string;
+  sort_key?: string;
   parent_id?: string | null;
   emojis?: CustomEmoji[];
   actor_emojis?: CustomEmoji[];
@@ -165,7 +171,7 @@ export function HomeScreen() {
     anchor.current = null;
   }, [posts]);
   const loadedCount = useRef(50);
-  const loadedTail = useRef<{ id: string; at: number } | null>(null);
+  const loadedTail = useRef<TimelinePosition | null>(null);
   const deferredRefresh = useRef(false);
   const refresh = useCallback(
     async (retain = false) => {
@@ -196,11 +202,7 @@ export function HomeScreen() {
             { signal: controller.signal },
           );
           rows.push(...page);
-          const last = rows.at(-1);
-          if (tail && last) {
-            const at = Date.parse(last.repost_created_at ?? last.created_at);
-            reachedTail = at < tail.at || (at === tail.at && (last.entry_id ?? last.id) <= tail.id);
-          }
+          reachedTail = reachedTimelineTail(rows, tail);
           more = page.length === size;
           if (!more) break;
         }
@@ -222,12 +224,7 @@ export function HomeScreen() {
         }
         loadedCount.current = rows.length;
         const last = rows.at(-1);
-        loadedTail.current = last
-          ? {
-              id: last.entry_id ?? last.id,
-              at: Date.parse(last.repost_created_at ?? last.created_at),
-            }
-          : null;
+        loadedTail.current = last ? timelinePosition(last) : null;
         setPosts(rows);
         setHasMore(more);
         setError(false);
@@ -270,11 +267,7 @@ export function HomeScreen() {
       if (version !== generation.current) return;
       loadedCount.current += rows.length;
       const last = rows.at(-1);
-      if (last)
-        loadedTail.current = {
-          id: last.entry_id ?? last.id,
-          at: Date.parse(last.repost_created_at ?? last.created_at),
-        };
+      if (last) loadedTail.current = timelinePosition(last);
       setPosts((current) => [
         ...current,
         ...rows.filter(

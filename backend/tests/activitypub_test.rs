@@ -2004,3 +2004,30 @@ async fn more_than_one_page_of_pending_follows_remains_actionable_after_mark_all
     finish_protocol(&mut f).await?;
     Ok(())
 }
+
+#[tokio::test]
+async fn timeline_sort_keys_preserve_microseconds_inside_a_single_millisecond() -> anyhow::Result<()>
+{
+    let _serial = PROTOCOL_SERIAL.lock().await;
+    let mut f = protocol_fixture().await?;
+    let older = protocol_post(&f, "public", false).await?;
+    let newer = protocol_post(&f, "public", false).await?;
+    for (id, time) in [
+        (&older, "2026-01-01T00:00:00.000001Z"),
+        (&newer, "2026-01-01T00:00:00.000002Z"),
+    ] {
+        toasty::sql::statement("UPDATE home_posts SET created_at=$2::timestamptz WHERE id=$1")
+            .bind(id.as_str())
+            .bind(time)
+            .exec(&mut f.db)
+            .await?;
+    }
+    let (status, posts) = request(&f.app, "GET", Some(&f.user), "/api/home", None).await?;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(posts[0]["id"], newer);
+    assert_eq!(posts[0]["sort_key"], "1767225600000002");
+    assert_eq!(posts[1]["id"], older);
+    assert_eq!(posts[1]["sort_key"], "1767225600000001");
+    finish_protocol(&mut f).await?;
+    Ok(())
+}

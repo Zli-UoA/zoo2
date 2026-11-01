@@ -1621,3 +1621,5 @@ INSERT INTO apub_remote_tombstones(id,actor_id) SELECT id,actor_id FROM apub_rem
 DELETE FROM apub_remote_posts WHERE deleted_at IS NOT NULL;
 ALTER TABLE apub_emoji_images ADD COLUMN last_seen_at timestamptz NOT NULL DEFAULT now();
 CREATE INDEX apub_emoji_images_last_seen ON apub_emoji_images(last_seen_at);
+
+ALTER TABLE apub_remote_posts ADD COLUMN origin_verified boolean NOT NULL DEFAULT false;

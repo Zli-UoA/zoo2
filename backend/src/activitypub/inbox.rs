@@ -77,6 +77,7 @@ pub(super) async fn receive_verified(
     actor: &Value,
     activity: &Value,
 ) -> Result<(), AppError> {
+    let origin_proof = note_identity::proof_for_activity(state, user, activity).await?;
     let actor_id = string(actor, "id")?;
     let local = super::actor_id(user)?;
     let id = string(activity, "id")?;
@@ -246,8 +247,10 @@ pub(super) async fn receive_verified(
             if updated > jiff::Timestamp::now() + jiff::SignedDuration::from_secs(300) {
                 return Err(AppError::BadRequest("Future note timestamp".into()));
             }
-            if activity["type"] == "Create" {
-                toasty::sql::statement("INSERT INTO apub_remote_posts(id,actor_id,content,visibility,published,updated_at,parent_id,emojis) SELECT $1,$2,$3,$4,$5::timestamptz,$6::timestamptz,NULLIF($7,''),$8::jsonb WHERE NOT EXISTS(SELECT 1 FROM apub_remote_tombstones WHERE id=$1 AND actor_id=$2) ON CONFLICT DO NOTHING").bind(post_id).bind(actor_id).bind(content).bind(visibility).bind(published.to_string()).bind(updated.to_string()).bind(parent_id.unwrap_or("")).bind(json!(note_emojis).to_string()).exec(&mut tx).await?;
+            let origin_verified =
+                note_identity::reconcile(&mut tx, post_id, actor_id, origin_proof.as_ref()).await?;
+            if activity["type"] == "Create" || origin_proof.is_some() {
+                toasty::sql::statement("INSERT INTO apub_remote_posts(id,actor_id,content,visibility,published,updated_at,parent_id,emojis,origin_verified) SELECT $1,$2,$3,$4,$5::timestamptz,$6::timestamptz,NULLIF($7,''),$8::jsonb,$9::boolean WHERE NOT EXISTS(SELECT 1 FROM apub_remote_tombstones WHERE id=$1 AND actor_id=$2) ON CONFLICT(id) DO UPDATE SET origin_verified=apub_remote_posts.origin_verified OR EXCLUDED.origin_verified WHERE apub_remote_posts.actor_id=EXCLUDED.actor_id").bind(post_id).bind(actor_id).bind(content).bind(visibility).bind(published.to_string()).bind(updated.to_string()).bind(parent_id.unwrap_or("")).bind(json!(note_emojis).to_string()).bind(origin_verified.to_string()).exec(&mut tx).await?;
             } else {
                 toasty::sql::statement("UPDATE apub_remote_posts SET content=$3,visibility=$4,updated_at=$5::timestamptz,parent_id=NULLIF($6,''),emojis=$7::jsonb WHERE id=$1 AND actor_id=$2 AND deleted_at IS NULL AND updated_at<$5::timestamptz").bind(post_id).bind(actor_id).bind(content).bind(visibility).bind(updated.to_string()).bind(parent_id.unwrap_or("")).bind(json!(note_emojis).to_string()).exec(&mut tx).await?;
             }
@@ -301,6 +304,7 @@ pub(super) async fn receive_verified(
             if !same_origin(post, actor_id) {
                 return Err(AppError::BadRequest("Wrong delete origin".into()));
             }
+            note_identity::lock(&mut tx, post).await?;
             toasty::sql::statement("INSERT INTO apub_remote_tombstones(id,actor_id) VALUES($1,$2) ON CONFLICT DO NOTHING").bind(post).bind(actor_id).exec(&mut tx).await?;
             toasty::sql::statement(
                 "UPDATE apub_remote_posts SET deleted_at=now() WHERE id=$1 AND actor_id=$2",
