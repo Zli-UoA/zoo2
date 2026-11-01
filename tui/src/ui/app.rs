@@ -32,7 +32,12 @@ const TYPING_IDLE: Duration = Duration::from_secs(3);
 pub enum AppEvent {
     Notice(String),
     /// 送信に失敗した下書きを入力欄に戻す。
-    RestoreDraft(String),
+    /// 送信に失敗した本文を、送り先と一緒に入力欄へ戻す。
+    RestoreDraft {
+        channel_id: String,
+        target: Target,
+        content: String,
+    },
     ReadStates(Vec<ReadState>),
     Typing {
         channel_id: String,
@@ -214,9 +219,18 @@ impl App {
     pub fn on_app_event(&mut self, event: AppEvent) {
         match event {
             AppEvent::Notice(message) => self.notify(message),
-            AppEvent::RestoreDraft(draft) => {
-                if self.composer.is_empty() {
-                    self.composer = composer_with(&draft);
+            AppEvent::RestoreDraft {
+                channel_id,
+                target,
+                content,
+            } => {
+                if self.current.as_deref() != Some(channel_id.as_str()) {
+                    self.notify(
+                        "別のチャンネルに移ったため、送れなかった本文を入力欄に戻せませんでした",
+                    );
+                } else if self.composer.is_empty() {
+                    self.composer = composer_with(&content);
+                    self.target = target;
                 }
             }
             AppEvent::ReadStates(states) => {
@@ -635,6 +649,10 @@ impl App {
             self.selected = None;
             self.scroll = 0;
             self.thread = None;
+            // 編集中の本文は元のメッセージのものなので、別のチャンネルへは持ち越さない。
+            if matches!(self.target, Target::Edit(_)) {
+                self.composer = new_composer();
+            }
             self.target = Target::Channel;
         }
         self.subscribe(ShapeId::Messages(channel_id.clone()));
@@ -673,6 +691,11 @@ impl App {
             .is_some_and(|c| c.archive_at.is_some())
         {
             self.notify("アーカイブされたチャンネルには投稿できません");
+            return;
+        }
+        // 書きかけの編集 (送信に失敗して戻ったものを含む) は、編集のまま続ける。
+        if matches!(self.target, Target::Edit(_)) && !self.composer.is_empty() {
+            self.mode = Mode::Insert;
             return;
         }
         let target = match (&self.thread, self.focus) {
@@ -786,7 +809,11 @@ impl App {
             };
             if let Err(err) = result {
                 let _ = tx.send(AppEvent::Notice(format!("送信に失敗しました: {err}")));
-                let _ = tx.send(AppEvent::RestoreDraft(content));
+                let _ = tx.send(AppEvent::RestoreDraft {
+                    channel_id,
+                    target,
+                    content,
+                });
             }
         });
     }

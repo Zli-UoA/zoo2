@@ -560,6 +560,28 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn restores_failed_edit_with_its_target() {
+        let mut app = app();
+        press(&mut app, KeyCode::Enter);
+        let failed = |channel_id: &str| AppEvent::RestoreDraft {
+            channel_id: channel_id.into(),
+            target: Target::Edit("r1".into()),
+            content: "直した返信".into(),
+        };
+
+        app.on_app_event(failed("c2"));
+        assert!(app.composer.is_empty());
+        assert!(render(&mut app).contains("入力欄に戻せませんでした"));
+
+        app.on_app_event(failed("c1"));
+        press(&mut app, KeyCode::Char('i'));
+        assert_eq!(app.mode, Mode::Insert);
+        assert_eq!(app.target, Target::Edit("r1".into()));
+        assert_eq!(app.composer.lines(), ["直した返信"]);
+        assert!(render(&mut app).contains("メッセージを編集"));
+    }
+
+    #[tokio::test]
     async fn guards_edit_of_others_and_shows_help_and_search() {
         let mut app = app();
         press(&mut app, KeyCode::Enter);
