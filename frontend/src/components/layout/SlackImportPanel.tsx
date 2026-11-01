@@ -198,7 +198,10 @@ function ImportCard({
         <MappingForm
           key={form}
           channels={job.analysis.channels}
-          userCount={job.analysis.user_count}
+          summary={t("slackImport.summary", {
+            channels: job.analysis.channels.length,
+            users: job.analysis.user_count,
+          })}
           pending={pending}
           onSubmit={async (mappings) => {
             if (pending) return;
@@ -214,36 +217,9 @@ function ImportCard({
           }}
         />
       ) : null}
-      {job.status === "importing" ? (
-        <Progress
-          label={t("slackImport.progressMessages", {
-            done: job.processed_messages,
-            total: job.total_messages,
-          })}
-          value={job.total_messages > 0 ? job.processed_messages / job.total_messages : 0}
-        />
-      ) : null}
-      {job.status === "fetching_files" ? (
-        <Progress
-          label={t("slackImport.progressFiles", {
-            done: job.processed_files,
-            total: job.total_files,
-          })}
-          value={job.total_files > 0 ? job.processed_files / job.total_files : 0}
-        />
-      ) : null}
-      {job.status === "completed" ? (
-        <div className="space-y-2 text-sm">
-          <p>{t("slackImport.completed", { count: job.processed_messages })}</p>
-          {retryableFiles(job) > 0 ? (
-            <FileSummary job={job} client={client} onChange={onChange} onError={onError} />
-          ) : null}
-        </div>
-      ) : null}
-      {job.status === "failed" && job.error ? (
-        <p role="alert" className="break-words text-sm text-destructive">
-          {job.error}
-        </p>
+      <SlackImportRunStatus job={job} />
+      {job.status === "completed" && retryableFiles(job) > 0 ? (
+        <FileSummary job={job} client={client} onChange={onChange} onError={onError} />
       ) : null}
       {cancellable && exported ? (
         <Button variant="ghost" disabled={pending} onClick={() => setConfirmCancel(true)}>
@@ -318,20 +294,26 @@ function FileSummary({
   );
 }
 
-function MappingForm({
+/**
+ * チャンネルごとの取り込み方を選ぶフォーム。管理者はすべての既存チャンネルを取り込み先に選べる。
+ * `targetsFor` を渡すと、チャンネルごとに選べる既存チャンネルを絞る (各ユーザーによる取り込み)。
+ */
+export function MappingForm({
   channels,
-  userCount,
+  summary,
   pending,
   onSubmit,
+  targetsFor,
 }: {
   channels: SlackChannelSummary[];
-  userCount: number;
+  summary: string;
   pending: boolean;
   onSubmit: (mappings: SlackChannelMapping[]) => void | Promise<void>;
+  targetsFor?: (channel: SlackChannelSummary) => MappingTarget[];
 }) {
   const { t } = useTranslation();
   const zooChannels = useActiveChannels();
-  const targets = (zooChannels.data ?? []).filter((channel) => !channel.is_dm);
+  const targets: MappingTarget[] = (zooChannels.data ?? []).filter((channel) => !channel.is_dm);
   const [mappings, setMappings] = useState(() => defaultMappings(channels));
   const update = (index: number, mapping: SlackChannelMapping) =>
     setMappings((current) => current.map((item, i) => (i === index ? mapping : item)));
@@ -345,18 +327,18 @@ function MappingForm({
         void onSubmit(mappings);
       }}
     >
-      <p className="text-sm text-muted-foreground">
-        {t("slackImport.summary", { channels: channels.length, users: userCount })}
-      </p>
+      <p className="text-sm text-muted-foreground">{summary}</p>
       <ul className="divide-y rounded-md border">
         {channels.map((channel, index) => {
           const mapping = mappings[index];
           // 非公開チャンネルの履歴は、メンバー以外も読める公開チャンネルには入れない
-          const choices = channel.is_private
-            ? targets.filter(
-                (target) => target.is_private || target.id === channel.existing_channel?.id,
-              )
-            : targets;
+          const choices = targetsFor
+            ? targetsFor(channel)
+            : channel.is_private
+              ? targets.filter(
+                  (target) => target.is_private || target.id === channel.existing_channel?.id,
+                )
+              : targets;
           const id = `slack-import-${channel.slack_channel_id}`;
           return (
             <li key={channel.slack_channel_id} className="flex flex-wrap items-center gap-2 p-3">
@@ -452,6 +434,43 @@ function MappingForm({
   );
 }
 
+/** 取り込みのジョブの進み具合・結果・失敗の理由 */
+export function SlackImportRunStatus({ job }: { job: SlackImport }) {
+  const { t } = useTranslation();
+  return (
+    <>
+      {job.status === "importing" ? (
+        <Progress
+          label={t("slackImport.progressMessages", {
+            done: job.processed_messages,
+            total: job.total_messages,
+          })}
+          value={job.total_messages > 0 ? job.processed_messages / job.total_messages : 0}
+        />
+      ) : null}
+      {job.status === "fetching_files" ? (
+        <Progress
+          label={t("slackImport.progressFiles", {
+            done: job.processed_files,
+            total: job.total_files,
+          })}
+          value={job.total_files > 0 ? job.processed_files / job.total_files : 0}
+        />
+      ) : null}
+      {job.status === "completed" ? (
+        <p className="text-sm">{t("slackImport.completed", { count: job.processed_messages })}</p>
+      ) : null}
+      {job.status === "failed" && job.error ? (
+        <p role="alert" className="break-words text-sm text-destructive">
+          {job.error}
+        </p>
+      ) : null}
+    </>
+  );
+}
+
+type MappingTarget = { id: string; channel_name: string; is_private: boolean };
+
 function Progress({ label, value }: { label: string; value: number }) {
   const percent = Math.round(Math.min(1, Math.max(0, value)) * 100);
   return (
@@ -476,9 +495,10 @@ function jobTitle(job: SlackImport, t: TFunction): string {
   return isSlackExport(job) ? job.file_name : t("slackImport.runTitle", { name: job.file_name });
 }
 
-export function describeImportError(cause: unknown, t: TFunction): string {
+/** 失敗の理由。`admin` なら 403 は「管理者だけ」と出し、各ユーザーの取り込みではサーバーの理由を出す */
+export function describeImportError(cause: unknown, t: TFunction, admin = true): string {
   if (cause instanceof ApiError) {
-    if (cause.status === 403) return t("slackImport.forbidden");
+    if (admin && cause.status === 403) return t("slackImport.forbidden");
     const body = cause.body;
     if (body && typeof body === "object" && "error" in body) {
       const message = (body as { error: unknown }).error;

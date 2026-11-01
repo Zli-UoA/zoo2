@@ -216,3 +216,34 @@ export function mappingFor(
     return { ...base, action, channel_id: channel.existing_channel?.id ?? targets[0]?.id ?? "" };
   return { ...base, action, name: channel.suggested_name, is_private: channel.is_private };
 }
+
+/** 連携したユーザーが作った Slack チャンネル。`targets` は取り込み先に選べる既存チャンネル */
+export interface OwnSlackChannel extends SlackChannelSummary {
+  targets: { id: string; name: string; is_private: boolean }[];
+}
+
+/** 連携したユーザーが、保存済みの ZIP から自分のチャンネルを取り込むための情報 */
+export interface OwnSlackImports {
+  /** 取り込みに使う ZIP。管理者がまだ保存していなければ null */
+  export: { id: string; file_name: string; created_at: string } | null;
+  channels: OwnSlackChannel[];
+  /** 自分が始めた取り込み (新しい順) */
+  imports: SlackImport[];
+}
+
+export function getOwnSlackImports(
+  client: ApiClient,
+  signal?: AbortSignal,
+): Promise<OwnSlackImports> {
+  return client.get<OwnSlackImports>("/api/slack/imports", { signal });
+}
+
+export function startOwnSlackImport(
+  client: ApiClient,
+  mappings: SlackChannelMapping[],
+): Promise<SlackImport> {
+  return client.request<SlackImport>("/api/slack/imports", {
+    method: "POST",
+    body: { mappings },
+  });
+}

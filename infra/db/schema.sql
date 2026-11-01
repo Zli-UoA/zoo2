@@ -1804,3 +1804,27 @@ BEGIN
    VALUES(gen_random_uuid()::text,event_uuid,installation.id,channel,event_name,envelope::text,definition.required_scope,effective_subject,identity,COALESCE(identity=departed,false)) ON CONFLICT(installation_id,event_id) DO NOTHING;
  END LOOP;
 END $$;
+
+-- 各ユーザーによる Slack アカウントの連携 (#291)
+-- ユーザートークンは AES-256-GCM で暗号化して保存する。Electric の Shape には載せない。
+CREATE TABLE slack_user_links (
+  user_id text NOT NULL,
+  team_id text NOT NULL,
+  team_name text NOT NULL DEFAULT '',
+  slack_user_id text NOT NULL,
+  slack_user_name text NOT NULL DEFAULT '',
+  access_token_enc text NOT NULL,
+  scopes text NOT NULL DEFAULT '',
+  created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now(),
+  PRIMARY KEY (user_id),
+  CONSTRAINT slack_user_links_slack_user_key UNIQUE (team_id, slack_user_id),
+  CONSTRAINT slack_user_links_user_id_fkey
+    FOREIGN KEY (user_id) REFERENCES users (id)
+    ON UPDATE CASCADE ON DELETE CASCADE
+);
+
+-- Slack アカウント連携の付け替え (slack::link::move_content) は、プレースホルダの投稿・添付を
+-- 投稿者で引く。連携済みユーザーごとに投稿テーブルを全件走査しないよう、インデックスを足す。
+CREATE INDEX idx_messages_user_id ON messages (user_id);
+CREATE INDEX idx_slack_files_uploader_id ON slack_files (uploader_id);

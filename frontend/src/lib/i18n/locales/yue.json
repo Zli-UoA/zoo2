@@ -733,5 +733,42 @@
     "dismiss": "移去歷史紀錄",
     "runTitle": "由 {{name}} 匯入",
     "importedTo": "已經匯入到 #{{name}}"
+  },
+  "slackLink": {
+    "tab": "Slack 連結",
+    "title": "Slack 帳戶",
+    "description": "連結 Slack 帳戶之後，由 Slack 匯入嘅你以前嘅帖文會歸返呢個 Zoo 帳戶。",
+    "loading": "載入緊連結狀態",
+    "loadError": "載入唔到連結狀態。",
+    "notConfigured": "呢個工作區未設定 Slack 連結。請搵管理員。",
+    "linkedAs": "已經以 {{team}} 嘅 {{name}} 連結。",
+    "link": "同 Slack 連結",
+    "unlink": "解除連結",
+    "unlinkTitle": "要解除同 Slack 嘅連結？",
+    "unlinkDescription": "會撤銷同刪除 Slack 權杖。已經轉咗嘅帖文仍然係你嘅。",
+    "linked": "已經連結 Slack 帳戶。",
+    "unlinked": "已經解除同 Slack 嘅連結。",
+    "unlinkFailed": "解除唔到連結。Slack 撤銷唔到權杖，所以連結仲喺度。請再試。",
+    "errors": {
+      "denied": "喺 Slack 取消咗授權。",
+      "invalid_state": "連結要求過咗期或者無效。請再試。",
+      "team_mismatch": "呢個係其他 Slack 工作區嘅帳戶。",
+      "already_linked": "呢個 Slack 帳戶已經連結咗其他 Zoo 帳戶。",
+      "failed": "同 Slack 連結唔到。"
+    },
+    "manifestTitle": "Slack 應用程式 manifest",
+    "manifestDescription": "將佢貼去 Slack 嘅「Create New App」→「From an app manifest」建立應用程式，再安裝去工作區。之後將攞到嘅 Client ID 同 Client Secret 設定落伺服器。",
+    "manifestNotConfigured": "伺服器未設定 Slack 應用程式。設定咗 SLACK_OAUTH_REDIRECT_URL 之後，重新導向網址先會啱。",
+    "manifestError": "載入唔到 manifest。",
+    "copyManifest": "複製 manifest",
+    "manifestCopied": "複製咗 manifest。",
+    "manifestCopyFailed": "複製唔到。",
+    "importTitle": "由 Slack 匯入",
+    "importDescription": "可以由管理員保存嘅 Slack 匯出入面，匯入你喺 Slack 開嘅頻道嘅歷史紀錄。匯入位置可以揀你已經加入咗嘅同名頻道，或者開新頻道。",
+    "importLoading": "載入緊可以匯入嘅頻道",
+    "importNoExport": "管理員保存 Slack 匯出之後，你就可以喺度匯入自己嘅頻道。",
+    "importNoChannels": "保存咗嘅匯出入面冇你開嘅頻道。",
+    "importSummary_one": "{{name}} 入面有 {{count}} 個你開嘅頻道。請揀要匯入嘅頻道。",
+    "importSummary_other": "{{name}} 入面有 {{count}} 個你開嘅頻道。請揀要匯入嘅頻道。"
   }
 }

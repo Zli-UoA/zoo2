@@ -15,6 +15,7 @@ import { PwaControls } from "../pwa/PwaControls";
 import { AppsPanel } from "../chat/AppsDialog";
 import { WorkspaceMembers } from "./WorkspaceMembers";
 import { SlackImportPanel } from "./SlackImportPanel";
+import { SlackLinkPanel } from "./SlackLinkPanel";
 import { useCurrentUser } from "../../hooks/useCurrentUser";
 import type { SettingsTab } from "../../routes/_shell.settings";
 import { Button } from "../ui/button";
@@ -79,6 +80,9 @@ export function ZooSettings() {
             <Tabs.Tab value="members" className={panelTabClassName}>
               {t("members.title")}
             </Tabs.Tab>
+            <Tabs.Tab value="slack" className={panelTabClassName}>
+              {t("slackLink.tab")}
+            </Tabs.Tab>
             {isAdmin ? (
               <Tabs.Tab value="slack-import" className={panelTabClassName}>
                 {t("slackImport.tab")}
@@ -112,6 +116,10 @@ export function ZooSettings() {
           </Tabs.Panel>
           <Tabs.Panel value="members" className="min-h-0">
             <WorkspaceMembers />
+          </Tabs.Panel>
+          <Tabs.Panel value="slack" className="min-h-0">
+            <h2 className="sr-only">{t("slackLink.tab")}</h2>
+            <SlackLinkPanel />
           </Tabs.Panel>
           {isAdmin ? (
             <Tabs.Panel value="slack-import" className="min-h-0">

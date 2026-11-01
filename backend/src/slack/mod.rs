@@ -1,7 +1,10 @@
 //! Slack 連携 (#115)。取り込み状態と Slack ID の対応表は Electric の Shape に載せない。
 pub mod convert;
+pub mod crypto;
 pub mod export;
 pub mod import;
+pub mod link;
+pub mod self_import;
 pub mod worker;
 
 use sha2::{Digest, Sha256};

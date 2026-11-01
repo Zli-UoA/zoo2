@@ -733,5 +733,42 @@
     "dismiss": "Move to history",
     "runTitle": "Import from {{name}}",
     "importedTo": "Imported into #{{name}}"
+  },
+  "slackLink": {
+    "tab": "Slack account",
+    "title": "Slack account",
+    "description": "Link your Slack account so that your past posts imported from Slack belong to this Zoo account.",
+    "loading": "Loading link status",
+    "loadError": "Couldn't load the link status.",
+    "notConfigured": "Slack linking isn't set up for this workspace. Ask an admin.",
+    "linkedAs": "Linked to {{team}} as {{name}}.",
+    "link": "Link with Slack",
+    "unlink": "Unlink",
+    "unlinkTitle": "Unlink your Slack account?",
+    "unlinkDescription": "The Slack token is revoked and deleted. Posts already moved to you stay yours.",
+    "linked": "Your Slack account is linked.",
+    "unlinked": "Your Slack account is unlinked.",
+    "unlinkFailed": "Couldn't unlink. Slack didn't revoke the token, so the link was kept. Please try again.",
+    "errors": {
+      "denied": "Authorization was cancelled in Slack.",
+      "invalid_state": "The link request expired or is invalid. Please try again.",
+      "team_mismatch": "That account belongs to a different Slack workspace.",
+      "already_linked": "This Slack account is already linked to another Zoo account.",
+      "failed": "Couldn't link with Slack."
+    },
+    "manifestTitle": "Slack app manifest",
+    "manifestDescription": "Paste this into Slack's “Create New App” → “From an app manifest”, then install the app to your workspace. Set the issued Client ID and Client Secret on the server.",
+    "manifestNotConfigured": "No Slack app is configured on the server yet. The redirect URL becomes correct once SLACK_OAUTH_REDIRECT_URL is set.",
+    "manifestError": "Couldn't load the manifest.",
+    "copyManifest": "Copy manifest",
+    "manifestCopied": "Manifest copied.",
+    "manifestCopyFailed": "Couldn't copy.",
+    "importTitle": "Import from Slack",
+    "importDescription": "Import the history of the Slack channels you created from the Slack export saved by an admin. Import each into a channel with the same name that you have joined, or into a new channel.",
+    "importLoading": "Loading the channels you can import",
+    "importNoExport": "Once an admin saves a Slack export, you can import your channels here.",
+    "importNoChannels": "The saved export has no channels that you created.",
+    "importSummary_one": "{{name}} has {{count}} channel that you created. Choose the channels to import.",
+    "importSummary_other": "{{name}} has {{count}} channels that you created. Choose the channels to import."
   }
 }

@@ -752,6 +752,11 @@ async fn import(s: &AppState, job: &Job, lease: &Lease) -> Result<(), AppError> 
         tx.commit().await?;
     }
 
+    // 取り込み中に連携した人の分も含め、連携済みの人の投稿をプレースホルダから本人へ移す
+    let mut tx = db.transaction().await?;
+    super::link::reconcile_team(&mut tx, &team).await?;
+    tx.commit().await?;
+
     // 添付の取得へ進む。トークンがなければ保留のまま完了にする。
     let mut tx = db.transaction().await?;
     let pending = one(
@@ -1096,6 +1101,12 @@ async fn fetch_files(s: &AppState, job: &Job, lease: &Lease) -> Result<(), AppEr
                 tx.commit().await?;
             }
         }
+    }
+    // 取得中に連携した人の添付も本人へ移す
+    if let Some(team) = job.team_id.as_deref() {
+        let mut tx = db.transaction().await?;
+        super::link::reconcile_team(&mut tx, team).await?;
+        tx.commit().await?;
     }
     let mut tx = db.transaction().await?;
     exec(

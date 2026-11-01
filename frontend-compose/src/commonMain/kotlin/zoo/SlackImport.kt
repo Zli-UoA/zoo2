@@ -372,51 +372,28 @@ private fun SlackImportCard(app: Session, state: SlackImportController, job: Row
             "ready" ->
                 (job["analysis"] as? JsonObject)?.let { analysis ->
                     key(state.started) {
-                        SlackImportMappingForm(app, state, job.text("id"), analysis)
+                        val channels = analysis.array("channels").rows()
+                        SlackImportMappingForm(
+                            app,
+                            channels,
+                            app.t(
+                                "slackImport.summary",
+                                "channels" to channels.size.toString(),
+                                "users" to analysis.text("user_count"),
+                            ),
+                            state.pending,
+                        ) {
+                            state.start(job.text("id"), it)
+                        }
                     }
                 }
-            "importing" -> {
-                val done = job.text("processed_messages").toLongOrNull() ?: 0L
-                val total = job.text("total_messages").toLongOrNull() ?: 0L
-                SlackImportProgress(
-                    app.t(
-                        "slackImport.progressMessages",
-                        "done" to done.toString(),
-                        "total" to total.toString(),
-                    ),
-                    if (total > 0) done.toFloat() / total else 0f,
-                )
-            }
-            "fetching_files" -> {
-                val done = job.text("processed_files").toLongOrNull() ?: 0L
-                val total = job.text("total_files").toLongOrNull() ?: 0L
-                SlackImportProgress(
-                    app.t(
-                        "slackImport.progressFiles",
-                        "done" to done.toString(),
-                        "total" to total.toString(),
-                    ),
-                    if (total > 0) done.toFloat() / total else 0f,
-                )
-            }
+            "importing",
+            "fetching_files",
+            "failed" -> SlackImportRunStatus(app, job)
             "completed" -> {
-                Text(
-                    app.t("slackImport.completed", "count" to job.text("processed_messages")),
-                    small = true,
-                )
+                SlackImportRunStatus(app, job)
                 if (slackImportRetryableFiles(job) > 0) SlackImportFileSummary(app, state, job)
             }
-            "failed" ->
-                job.text("error")
-                    .takeIf(String::isNotEmpty)
-                    ?.let {
-                        Text(
-                            it,
-                            Modifier.then(webControlModifier("alert")),
-                            small = true,
-                            color = MaterialTheme.colorScheme.error,
-                        )
-                    }
         }
         if (exported && status in setOf("uploading", "ready", "failed"))
             Button(app.t("slackImport.cancel"), enabled = !state.pending) { confirmCancel = true }
@@ -465,20 +442,76 @@ private fun SlackImportFileSummary(app: Session, state: SlackImportController, j
     }
 }
 
+/** 取り込みのジョブの進み具合・結果・失敗の理由 (React の `SlackImportRunStatus`) */
 @Composable
-private fun SlackImportMappingForm(
+internal fun SlackImportRunStatus(app: Session, job: Row) {
+    when (job.text("status")) {
+        "importing" -> {
+            val done = job.text("processed_messages").toLongOrNull() ?: 0L
+            val total = job.text("total_messages").toLongOrNull() ?: 0L
+            SlackImportProgress(
+                app.t(
+                    "slackImport.progressMessages",
+                    "done" to done.toString(),
+                    "total" to total.toString(),
+                ),
+                if (total > 0) done.toFloat() / total else 0f,
+            )
+        }
+        "fetching_files" -> {
+            val done = job.text("processed_files").toLongOrNull() ?: 0L
+            val total = job.text("total_files").toLongOrNull() ?: 0L
+            SlackImportProgress(
+                app.t(
+                    "slackImport.progressFiles",
+                    "done" to done.toString(),
+                    "total" to total.toString(),
+                ),
+                if (total > 0) done.toFloat() / total else 0f,
+            )
+        }
+        "completed" ->
+            Text(
+                app.t("slackImport.completed", "count" to job.text("processed_messages")),
+                small = true,
+            )
+        "failed" ->
+            job.text("error")
+                .takeIf(String::isNotEmpty)
+                ?.let {
+                    Text(
+                        it,
+                        Modifier.then(webControlModifier("alert")),
+                        small = true,
+                        color = MaterialTheme.colorScheme.error,
+                    )
+                }
+    }
+}
+
+/**
+ * チャンネルごとの取り込み方を選ぶフォーム (React の `MappingForm`)。管理者はすべての既存チャンネルを
+ * 取り込み先に選べる。`targetsFor` を渡すと、チャンネルごとに選べる既存チャンネルを絞る (各ユーザーによる取り込み)。
+ */
+@Composable
+internal fun SlackImportMappingForm(
     app: Session,
-    state: SlackImportController,
-    id: String,
-    analysis: Row,
+    channels: List<Row>,
+    summary: String,
+    pending: Boolean,
+    targetsFor: ((Row) -> List<Row>)? = null,
+    onSubmit: (List<Row>) -> Unit,
 ) {
-    val channels = analysis.array("channels").rows()
     val zooChannels by app.repo.channels.rows.collectAsState()
     val targets =
         zooChannels
             .filter { !it.flag("is_dm") && it.text("deleted_at").isEmpty() }
             .sortedBy { it.text("channel_name") }
-    var mappings by remember(id) { mutableStateOf(slackImportDefaultMappings(channels)) }
+    // 読み直しで内容が変わっても、同じチャンネルの並びなら選んだ内容を残す
+    var mappings by
+        remember(channels.map { it.text("slack_channel_id") }) {
+            mutableStateOf(slackImportDefaultMappings(channels))
+        }
     fun update(index: Int, mapping: Row) {
         mappings = mappings.mapIndexed { i, item -> if (i == index) mapping else item }
     }
@@ -493,15 +526,7 @@ private fun SlackImportMappingForm(
         Modifier.fillMaxWidth().then(webControlModifier("form")),
         verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
-        Text(
-            app.t(
-                "slackImport.summary",
-                "channels" to channels.size.toString(),
-                "users" to analysis.text("user_count"),
-            ),
-            
-            muted = true,
-        )
+        Text(summary, muted = true)
         Column(
             Modifier.fillMaxWidth()
                 .border(1.dp, MaterialTheme.colorScheme.outline, RoundedCornerShape(8.dp))
@@ -515,7 +540,8 @@ private fun SlackImportMappingForm(
                 val deleted = channel.text("deleted_channel").isNotEmpty()
                 // 非公開チャンネルの履歴は、メンバー以外も読める公開チャンネルには入れない
                 val choices =
-                    if (channel.flag("is_private"))
+                    if (targetsFor != null) targetsFor(channel)
+                    else if (channel.flag("is_private"))
                         targets.filter {
                             it.flag("is_private") || it.text("id") == existing?.text("id")
                         }
@@ -584,7 +610,7 @@ private fun SlackImportMappingForm(
                             app.t("slackImport.actionFor", "name" to name),
                             actionLabels.getValue(mapping.text("action")),
                             actions.map(actionLabels::getValue),
-                            enabled = !state.pending && actions.size > 1,
+                            enabled = !pending && actions.size > 1,
                             allowEmpty = false,
                         ) { label ->
                             val action = actionLabels.entries.first { it.value == label }.key
@@ -597,7 +623,7 @@ private fun SlackImportMappingForm(
                                     app.t("slackImport.channelName", "name" to name),
                                     Modifier.widthIn(max = 192.dp),
                                     showLabel = false,
-                                    enabled = !state.pending,
+                                    enabled = !pending,
                                 ) {
                                     update(index, JsonObject(mapping + ("name" to JsonPrimitive(it))))
                                 }
@@ -608,7 +634,7 @@ private fun SlackImportMappingForm(
                                     app.t("slackImport.targetChannel", "name" to name),
                                     labels[mapping.text("channel_id")] ?: "",
                                     labels.values.toList(),
-                                    enabled = !state.pending && existing == null,
+                                    enabled = !pending && existing == null,
                                     allowEmpty = false,
                                 ) { label ->
                                     val target = labels.entries.first { it.value == label }.key
@@ -645,15 +671,15 @@ private fun SlackImportMappingForm(
         Button(
             app.t("slackImport.start", "count" to selected.toString()),
             primary = true,
-            enabled = !state.pending && selected > 0,
+            enabled = !pending && selected > 0,
         ) {
-            state.start(id, mappings)
+            onSubmit(mappings)
         }
     }
 }
 
 @Composable
-private fun SlackImportProgress(label: String, value: Float) {
+internal fun SlackImportProgress(label: String, value: Float) {
     // React の Math.round と同じく四捨五入する
     val percent = (value.coerceIn(0f, 1f) * 100).roundToInt()
     // 中身のない Box は Web のアクセシビリティ木に出ないので、ラベルを含む外側を progressbar にする

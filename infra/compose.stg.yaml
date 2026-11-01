@@ -108,6 +108,12 @@ services:
       # Slack エクスポートの取り込み (docs/slack-import.md)
       SLACK_IMPORT_MAX_ZIP_SIZE:
       SLACK_IMPORT_BOT_TOKEN:
+      SLACK_CLIENT_ID:
+      SLACK_CLIENT_SECRET:
+      SLACK_TEAM_ID:
+      SLACK_OAUTH_REDIRECT_URL:
+      SLACK_FRONTEND_URL:
+      SLACK_TOKEN_ENCRYPTION_KEY:
     networks:
       - backend
       - backend-egress

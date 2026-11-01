@@ -16,6 +16,7 @@ import type { Selection } from "./kotlin-stories";
 export const preferenceSurfaces = {
   "Features/Workspace/Members": "mx-auto max-w-2xl p-4",
   "Features/Workspace/SlackImport": "mx-auto max-w-2xl p-4",
+  "Features/Workspace/SlackLink": "mx-auto max-w-2xl p-4",
   "Flows/Workspace/ChangeRole": "mx-auto max-w-2xl p-4",
   "Features/Preferences/MfmSearch": "mx-auto max-w-xl space-y-4 p-4",
   "Features/Preferences/PWA": "flex min-h-72 items-center justify-center gap-2 bg-background p-6",
@@ -27,7 +28,7 @@ export function preferenceOptions(
   context: Selection,
   base: KotlinPreviewProps,
 ): KotlinPreviewProps | null {
-  const { title, name, args } = context;
+  const { title, name, args, parameters } = context;
   if (!(title in preferenceSurfaces) && title !== "Pages/ZooSettings") return null;
   const kind =
     title === "Pages/ZooSettings"
@@ -317,6 +318,47 @@ export function preferenceOptions(
       wait("alertdialog", "", { exact: false });
     }
   }
+  if (kind === "slacklink") {
+    const dialog = { role: "alertdialog", name: "Slack との連携を解除しますか？" };
+    if (name === "Not Linked") {
+      click("button", "Slack と連携");
+      interactions.push({
+        action: "callback",
+        name: "navigateTo",
+        args: ["https://slack.com/oauth/v2/authorize?state=x"],
+      });
+    } else if (name === "Linked") {
+      click("button", "連携を解除");
+      wait("alertdialog", "", { exact: false });
+    } else if (name === "Load Error") wait("alert", "", { exact: false });
+    else if (name === "Not Configured") {
+      // 設定がないときは連携ボタンを出さない
+      wait("status", "", { exact: false, count: 0 });
+      wait("button", "Slack と連携", { count: 0 });
+    } else if (name === "Admin Manifest") wait("textbox", "Slack アプリの manifest");
+    else if (name === "Returned With Error")
+      wait("alert", "", { exact: false, text: "別の Zoo アカウントと連携済み" });
+    else if (name === "Returned From Slack" || name === "Mobile")
+      wait("button", "連携を解除", { enabled: true });
+    else if (name === "Unlink Error") {
+      click("button", "連携を解除");
+      wait("alertdialog", "", { exact: false });
+      click("button", "連携を解除", { within: dialog });
+      // 背後のパネルはモーダルの裏になるので、ダイアログ内のエラーで確かめる
+      wait("alert", "", { exact: false, text: "連携は残っています", within: dialog });
+    } else if (name === "Returned From Slack Failed") {
+      wait("alert", "", { exact: false, text: "有効期限" });
+      wait("button", "Slack と連携", { enabled: true });
+    } else if (name === "Own Import") {
+      select("#design の取り込み方", "既存のチャンネル");
+      wait("combobox", "#design の取り込み先", { value: "#design" });
+      select("#secret の取り込み方", "新しいチャンネル");
+      click("button", "2 チャンネルを取り込む");
+      wait("progressbar", "", { exact: false, attributes: { "aria-valuenow": "33" } });
+    } else if (name === "Own Import No Channels") {
+      wait("button", "連携を解除", { enabled: true });
+    }
+  }
   if (kind === "pwa" && name === "Default")
     wait("button", "プッシュ通知", { exact: false, enabled: false });
   if (kind === "pwa" && name.includes("Install Available"))
@@ -339,6 +381,7 @@ export function preferenceOptions(
     isAdmin:
       kind === "slackimport" ||
       (kind === "settings" && name === "Slack Import") ||
+      (kind === "slacklink" && name === "Admin Manifest") ||
       [
         "Admin",
         "Mobile",
@@ -367,7 +410,12 @@ export function preferenceOptions(
     surfaceClassName: preferenceSurfaces[title as keyof typeof preferenceSurfaces],
     fullHeight: title === "Pages/ZooSettings",
     path:
-      title === "Pages/ZooSettings" ? "/settings?tab=general&channel=channel-general" : base.path,
+      title === "Pages/ZooSettings"
+        ? "/settings?tab=general&channel=channel-general"
+        : kind === "slacklink"
+          ? // Slack からの戻り (?code=&state= など) を Story と同じ URL で始める
+            (parameters.router?.initialEntries?.[0] ?? "/settings?tab=slack")
+          : base.path,
     fixture,
   };
 }
