@@ -15,6 +15,7 @@ import type { Selection } from "./kotlin-stories";
 
 export const preferenceSurfaces = {
   "Features/Workspace/Members": "mx-auto max-w-2xl p-4",
+  "Features/Workspace/SlackImport": "mx-auto max-w-2xl p-4",
   "Flows/Workspace/ChangeRole": "mx-auto max-w-2xl p-4",
   "Features/Preferences/MfmSearch": "mx-auto max-w-xl space-y-4 p-4",
   "Features/Preferences/PWA": "flex min-h-72 items-center justify-center gap-2 bg-background p-6",
@@ -60,6 +61,9 @@ export function preferenceOptions(
       wait("button", "管理者にする", { index: 0, enabled: true });
     } else if (name.startsWith("Activity Pub") || name.startsWith("Channel Rule")) {
       click("tab", "ActivityPub");
+    } else if (name === "Slack Import") {
+      click("tab", "Slack 取り込み");
+      wait("button", "ZIP を選んでアップロード", { enabled: true });
     } else {
       wait("heading", "Zoo設定");
       wait("group", "テーマ");
@@ -279,6 +283,40 @@ export function preferenceOptions(
       wait("combobox", "言語");
     }
   }
+  if (kind === "slackimport") {
+    const exportName = "Zli Slack export Jan 1 2024 - Nov 1 2026.zip";
+    if (name === "Empty") wait("button", "ZIP を選んでアップロード", { enabled: true });
+    else if (name === "Load Error") wait("alert", "", { exact: false, text: "管理者だけ" });
+    else if (name === "Mapping" || name === "Mobile") {
+      // 取り込むチャンネルは管理者が選ぶので、初めはどれも取り込まない
+      wait("button", "0 チャンネルを取り込む", { enabled: false });
+      select("#general の取り込み方", "新しいチャンネル");
+      wait("textbox", "#general の新しいチャンネル名", { valueExact: "slack-general" });
+      wait("button", "1 チャンネルを取り込む", { enabled: true });
+      // 以前取り込んだ #random は同じ取り込み先に固定する
+      select("#random の取り込み方", "既存のチャンネル");
+      wait("combobox", "#random の取り込み先", { enabled: false });
+    } else if (name === "Started") {
+      select("#general の取り込み方", "新しいチャンネル");
+      click("button", "1 チャンネルを取り込む");
+      wait("progressbar", "", { exact: false });
+      wait("button", "0 チャンネルを取り込む", { enabled: false });
+    } else if (name === "Start Error") {
+      select("#general の取り込み方", "新しいチャンネル");
+      click("button", "1 チャンネルを取り込む");
+      wait("alert", "", { exact: false, text: "already taken" });
+    } else if (name === "Failed Import") {
+      wait("button", "履歴に移す", { enabled: true });
+    } else if (name === "Importing")
+      wait("progressbar", "", { exact: false, attributes: { "aria-valuenow": "33" } });
+    else if (name === "Completed With Pending Files")
+      wait("button", `${exportName} の添付ファイルを取得`, { enabled: true });
+    else if (name === "History With Failed Files") click("button", "old.zip の添付ファイルを取得");
+    else if (name === "Failed") {
+      click("button", "ZIP を削除");
+      wait("alertdialog", "", { exact: false });
+    }
+  }
   if (kind === "pwa" && name === "Default")
     wait("button", "プッシュ通知", { exact: false, enabled: false });
   if (kind === "pwa" && name.includes("Install Available"))
@@ -297,15 +335,19 @@ export function preferenceOptions(
     pushToggleCallback: pushState !== undefined,
     searchQuery: searchDemoQuery,
     longSearchQuery: name === "Long Query Mobile" ? longSearchDemoQuery : "",
-    isAdmin: [
-      "Admin",
-      "Mobile",
-      "Protected Admin",
-      "Last Admin",
-      "Members",
-      "Grant And Revoke",
-      "Rejected Last Admin",
-    ].includes(name),
+    // Slack 取り込みは管理者だけが使う
+    isAdmin:
+      kind === "slackimport" ||
+      (kind === "settings" && name === "Slack Import") ||
+      [
+        "Admin",
+        "Mobile",
+        "Protected Admin",
+        "Last Admin",
+        "Members",
+        "Grant And Revoke",
+        "Rejected Last Admin",
+      ].includes(name),
     presentation: args.presentation ?? (name.startsWith("Select ") ? "select" : "icon"),
     capabilities: {
       installAvailable: name.includes("Install Available"),

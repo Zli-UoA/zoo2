@@ -84,12 +84,12 @@ export interface DmCandidateFilter<
 }
 
 export function filterDmCandidates<
-  T extends Pick<UserRow, "id" | "display_name" | "user_name" | "is_bot">,
+  T extends Pick<UserRow, "id" | "display_name" | "user_name" | "is_bot" | "is_deactivated">,
 >({ users, currentUserId, selectedIds, query }: DmCandidateFilter<T>): T[] {
   const selected = new Set(selectedIds);
   const needle = query.trim().toLowerCase();
   return users
-    .filter((user) => !user.is_bot)
+    .filter((user) => !user.is_bot && !user.is_deactivated)
     .filter((user) => user.id !== currentUserId && !selected.has(user.id))
     .filter((user) => {
       if (!needle) {

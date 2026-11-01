@@ -70,6 +70,7 @@ export const USER_SCHEMA: ShapeSchema<UserRow> = {
     user_name: "text",
     display_name: "varchar",
     is_bot: "bool",
+    is_deactivated: "bool",
     app_id: "text",
     avatar_url: "text",
     bot_mentionable: "bool",

@@ -1,0 +1,628 @@
+//! 管理者による Slack エクスポート ZIP の取り込み API (#295)。
+//!
+//! 1. `POST /api/admin/slack-imports` でジョブを作り、R2 への presigned PUT を受け取る
+//! 2. ブラウザが ZIP を直接 PUT し、`POST .../{id}/uploaded` で解析を依頼する
+//! 3. 解析が終わると、エクスポートは `ready` のまま残る (管理者が消すか、新しい ZIP に置き換わるまで)
+//! 4. 管理者は `POST .../{id}/start` で任意のチャンネルを取り込める。取り込みのたびに、エクスポートを
+//!    `source_id` に持つ別のジョブを作り、ワーカー (`slack::worker`) が取り込みと添付ファイルの取得を進める。
+//!    各ユーザーも、連携した Slack アカウントで作ったチャンネルを同じ仕組みで取り込める (`slack::link`)。
+
+use std::{
+    collections::{HashMap, HashSet},
+    time::Duration,
+};
+
+use axum::{
+    Json, Router,
+    extract::{Path, State},
+    routing::{get, post},
+};
+use serde::{Deserialize, Serialize};
+use serde_json::{Value, json};
+
+use crate::{
+    apps::query,
+    auth::{AuthUser, rbac::is_workspace_admin},
+    error::AppError,
+    state::AppState,
+    storage::{delete_storage_object, generate_presigned_put_url, verify_uploaded_object},
+    validation::validate_channel_name,
+};
+
+pub const ZIP_CONTENT_TYPE: &str = "application/zip";
+
+pub fn router() -> Router<AppState> {
+    Router::new()
+        .route("/api/admin/slack-imports", get(list).post(create))
+        .route("/api/admin/slack-imports/{id}", get(show).delete(cancel))
+        .route("/api/admin/slack-imports/{id}/uploaded", post(uploaded))
+        .route("/api/admin/slack-imports/{id}/start", post(start))
+        .route(
+            "/api/admin/slack-imports/{id}/fetch-files",
+            post(fetch_files),
+        )
+        .layer(axum::middleware::map_response(crate::apps::no_store))
+}
+
+/// チャンネルごとの取り込み先
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Mapping {
+    pub slack_channel_id: String,
+    #[serde(flatten)]
+    pub action: MappingAction,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "action", rename_all = "snake_case")]
+pub enum MappingAction {
+    Create {
+        name: String,
+        #[serde(default)]
+        is_private: Option<bool>,
+    },
+    Existing {
+        channel_id: String,
+    },
+    Skip,
+}
+
+pub(crate) const JOB_JSON: &str = "json_build_object('id',j.id,'status',j.status,'file_name',j.file_name,\
+'file_size',j.file_size,'team_id',j.team_id,'analysis',j.analysis::jsonb,'mappings',j.mappings::jsonb,\
+'total_messages',j.total_messages,'processed_messages',j.processed_messages,\
+'total_files',j.total_files,'processed_files',j.processed_files,\
+'pending_files',(SELECT count(*) FROM slack_files f WHERE f.job_id=j.id AND f.status='pending'),\
+'failed_files',(SELECT count(*) FROM slack_files f WHERE f.job_id=j.id AND f.status='failed'),\
+'error',j.error,'created_by',j.created_by,'created_at',j.created_at,'updated_at',j.updated_at,\
+'finished_at',j.finished_at,'source_id',j.source_id)::text";
+
+async fn require_admin(
+    tx: &mut toasty::Transaction<'_>,
+    state: &AppState,
+    user: &AuthUser,
+) -> Result<(), AppError> {
+    if !is_workspace_admin(tx, &user.id, state.config.dev_auth_enabled).await? {
+        return Err(AppError::Forbidden(
+            "Only workspace admins can import from Slack".into(),
+        ));
+    }
+    Ok(())
+}
+
+impl Mapping {
+    /// 取り込み先の zoo チャンネル ID (作成するチャンネルは決定的 ID)
+    pub fn target(&self, team: &str) -> Option<String> {
+        match &self.action {
+            MappingAction::Create { .. } => Some(super::channel_id(team, &self.slack_channel_id)),
+            MappingAction::Existing { channel_id } => Some(channel_id.clone()),
+            MappingAction::Skip => None,
+        }
+    }
+}
+
+/// 以前の取り込みと別の zoo チャンネルへ入れようとしていないか確かめる。
+/// メッセージ ID は取り込み先によらず決まるため、取り込み先を変えると過去ログが移らない。
+/// 以前の取り込み先が削除済みなら、過去ログはそこに残ったままなので取り込み直せない。
+pub(crate) async fn ensure_same_target(
+    tx: &mut toasty::Transaction<'_>,
+    team: &str,
+    mapping: &Mapping,
+) -> Result<(), AppError> {
+    let Some(target) = mapping.target(team) else {
+        return Ok(());
+    };
+    let previous = query(
+        tx,
+        "SELECT json_build_object('id',c.id,'name',c.channel_name,'deleted',c.deleted_at IS NOT NULL)::text \
+         FROM slack_channels s JOIN channels c ON c.id=s.channel_id \
+         WHERE s.team_id=$1 AND s.slack_channel_id=$2",
+        &[team, &mapping.slack_channel_id],
+    )
+    .await?
+    .into_iter()
+    .next();
+    match previous {
+        Some(previous) if previous["deleted"] == true => Err(AppError::Conflict(format!(
+            "Slack channel {} was imported into #{}, which has been deleted; skip it",
+            mapping.slack_channel_id,
+            previous["name"].as_str().unwrap_or_default()
+        ))),
+        Some(previous) if previous["id"] != target.as_str() => Err(AppError::Conflict(format!(
+            "Slack channel {} was already imported into #{}; import it into the same channel or skip it",
+            mapping.slack_channel_id,
+            previous["name"].as_str().unwrap_or_default()
+        ))),
+        _ => Ok(()),
+    }
+}
+
+/// 状態が想定どおりのときだけ更新する。別の操作 (開始と取り消しなど) と重なって
+/// 状態が変わっていたら更新せず 409 にする。
+async fn transition(
+    tx: &mut toasty::Transaction<'_>,
+    sql: &str,
+    params: &[&str],
+) -> Result<(), AppError> {
+    let updated = query(
+        tx,
+        &format!("{sql} RETURNING json_build_object('id',id)::text"),
+        params,
+    )
+    .await?;
+    if updated.is_empty() {
+        return Err(AppError::Conflict(
+            "The import changed state in the meantime; reload and try again".into(),
+        ));
+    }
+    Ok(())
+}
+
+pub(crate) async fn load_job(
+    tx: &mut toasty::Transaction<'_>,
+    id: &str,
+) -> Result<Value, AppError> {
+    let job = query(
+        tx,
+        &format!("SELECT {JOB_JSON} FROM slack_import_jobs j WHERE j.id=$1"),
+        &[id],
+    )
+    .await?
+    .into_iter()
+    .next()
+    .ok_or_else(|| AppError::NotFound("Slack import not found".into()))?;
+    annotate(tx, job).await
+}
+
+/// 取り込みに使えるエクスポートなら、チャンネルの一覧に今の Zoo 側の状態を足す
+async fn annotate(tx: &mut toasty::Transaction<'_>, mut job: Value) -> Result<Value, AppError> {
+    if job["status"] != "ready" || !job["source_id"].is_null() {
+        return Ok(job);
+    }
+    let team = job["team_id"].as_str().unwrap_or_default().to_string();
+    let channels = annotate_channels(tx, &team, &job["analysis"]["channels"]).await?;
+    job["analysis"]["channels"] = Value::Array(channels);
+    Ok(job)
+}
+
+/// 解析したチャンネルに、以前の取り込み先 (`existing_channel`、削除済みなら `deleted_channel`)、
+/// 同じ名前の Zoo チャンネル (`same_name_channel`)、新しく作るときの名前 (`suggested_name`) を足す。
+/// これらは取り込むときの状態で決まるので、解析結果には保存しない。
+pub(crate) async fn annotate_channels(
+    tx: &mut toasty::Transaction<'_>,
+    team: &str,
+    channels: &Value,
+) -> Result<Vec<Value>, AppError> {
+    if !channels.is_array() {
+        return Ok(Vec::new());
+    }
+    let rows = query(
+        tx,
+        "SELECT (e.c || jsonb_build_object(\
+         'existing_channel',(SELECT jsonb_build_object('id',c.id,'name',c.channel_name,'is_private',c.is_private) \
+          FROM slack_channels s JOIN channels c ON c.id=s.channel_id \
+          WHERE s.team_id=$1 AND s.slack_channel_id=e.c->>'slack_channel_id' AND c.deleted_at IS NULL),\
+         'deleted_channel',(SELECT c.channel_name FROM slack_channels s JOIN channels c ON c.id=s.channel_id \
+          WHERE s.team_id=$1 AND s.slack_channel_id=e.c->>'slack_channel_id' AND c.deleted_at IS NOT NULL),\
+         'same_name_channel',(SELECT jsonb_build_object('id',c.id,'name',c.channel_name,'is_private',c.is_private) \
+          FROM channels c WHERE c.channel_name=e.c->>'name' AND c.deleted_at IS NULL AND NOT c.is_dm),\
+         'name_taken',EXISTS(SELECT 1 FROM channels c WHERE c.channel_name=e.c->>'name')))::text \
+         FROM jsonb_array_elements($2::jsonb) WITH ORDINALITY e(c,n) ORDER BY e.n",
+        &[team, &channels.to_string()],
+    )
+    .await?;
+    Ok(rows
+        .into_iter()
+        .map(|mut entry| {
+            let name = entry["name"].as_str().unwrap_or_default().to_string();
+            let suggested = if validate_channel_name(&name).is_ok() && entry["name_taken"] != true {
+                name
+            } else {
+                format!("slack-{name}")
+            };
+            entry["suggested_name"] = json!(suggested);
+            entry
+        })
+        .collect())
+}
+
+async fn list(State(s): State<AppState>, user: AuthUser) -> Result<Json<Value>, AppError> {
+    let mut db = s.db.clone();
+    let mut tx = db.transaction().await?;
+    require_admin(&mut tx, &s, &user).await?;
+    let rows = query(
+        &mut tx,
+        &format!("SELECT {JOB_JSON} FROM slack_import_jobs j ORDER BY j.created_at DESC LIMIT 50"),
+        &[],
+    )
+    .await?;
+    let mut jobs = Vec::with_capacity(rows.len());
+    for job in rows {
+        jobs.push(annotate(&mut tx, job).await?);
+    }
+    tx.commit().await?;
+    Ok(Json(json!({ "imports": jobs })))
+}
+
+async fn show(
+    State(s): State<AppState>,
+    user: AuthUser,
+    Path(id): Path<String>,
+) -> Result<Json<Value>, AppError> {
+    let mut db = s.db.clone();
+    let mut tx = db.transaction().await?;
+    require_admin(&mut tx, &s, &user).await?;
+    let job = load_job(&mut tx, &id).await?;
+    tx.commit().await?;
+    Ok(Json(job))
+}
+
+#[derive(Deserialize)]
+struct CreateRequest {
+    file_name: String,
+    file_size: i64,
+}
+
+async fn create(
+    State(s): State<AppState>,
+    user: AuthUser,
+    Json(body): Json<CreateRequest>,
+) -> Result<Json<Value>, AppError> {
+    let file_name = body.file_name.trim();
+    if file_name.is_empty()
+        || file_name.chars().count() > 255
+        || file_name.chars().any(char::is_control)
+    {
+        return Err(AppError::BadRequest("Invalid file name".into()));
+    }
+    let max = s.config.slack.import_max_zip_size;
+    if body.file_size <= 0 || body.file_size as u64 > max {
+        return Err(AppError::BadRequest(format!(
+            "file_size must be between 1 and {max} bytes"
+        )));
+    }
+
+    let mut db = s.db.clone();
+    let mut tx = db.transaction().await?;
+    require_admin(&mut tx, &s, &user).await?;
+    let id = uuid::Uuid::new_v4().to_string();
+    let key = format!("slack-imports/{id}/export.zip");
+    toasty::sql::statement(
+        "INSERT INTO slack_import_jobs(id,created_by,file_name,file_size,storage_key) VALUES($1,$2,$3,$4::bigint,$5)",
+    )
+    .bind(id.as_str())
+    .bind(user.id.as_str())
+    .bind(file_name)
+    .bind(body.file_size.to_string())
+    .bind(key.as_str())
+    .exec(&mut tx)
+    .await?;
+
+    let upload_url = generate_presigned_put_url(
+        &s.s3_client,
+        &s.config.s3.bucket,
+        &key,
+        body.file_size,
+        ZIP_CONTENT_TYPE,
+        Duration::from_secs(s.config.s3.presigned_put_expiry_secs),
+        s.config.s3.public_endpoint.as_deref(),
+    )
+    .await?;
+    let job = load_job(&mut tx, &id).await?;
+    tx.commit().await?;
+    Ok(Json(json!({
+        "import": job,
+        "upload_url": upload_url,
+        "upload_headers": { "content-type": ZIP_CONTENT_TYPE },
+    })))
+}
+
+async fn uploaded(
+    State(s): State<AppState>,
+    user: AuthUser,
+    Path(id): Path<String>,
+) -> Result<Json<Value>, AppError> {
+    let mut db = s.db.clone();
+    let mut tx = db.transaction().await?;
+    require_admin(&mut tx, &s, &user).await?;
+    let job = load_job(&mut tx, &id).await?;
+    if job["status"] != "uploading" {
+        return Err(AppError::Conflict(
+            "The export has already been uploaded".into(),
+        ));
+    }
+    let key = format!("slack-imports/{id}/export.zip");
+    verify_uploaded_object(
+        &s.s3_client,
+        &s.config.s3.bucket,
+        &key,
+        job["file_size"].as_i64().unwrap_or(-1),
+        ZIP_CONTENT_TYPE,
+    )
+    .await?;
+    transition(
+        &mut tx,
+        "UPDATE slack_import_jobs SET status='analyzing',available_at=now(),attempts=0,error=NULL,updated_at=now() WHERE id=$1 AND status='uploading'",
+        &[&id],
+    )
+    .await?;
+    let job = load_job(&mut tx, &id).await?;
+    tx.commit().await?;
+    Ok(Json(job))
+}
+
+#[derive(Deserialize)]
+pub(crate) struct StartRequest {
+    pub mappings: Vec<Mapping>,
+}
+
+/// 保存したエクスポートから、選んだチャンネルを取り込むジョブを作る (管理者は任意のチャンネルを選べる)
+async fn start(
+    State(s): State<AppState>,
+    user: AuthUser,
+    Path(id): Path<String>,
+    Json(body): Json<StartRequest>,
+) -> Result<Json<Value>, AppError> {
+    let mut db = s.db.clone();
+    let mut tx = db.transaction().await?;
+    require_admin(&mut tx, &s, &user).await?;
+    let export = lock_export(&mut tx, &id).await?;
+    let total = validate_mappings(&mut tx, &export, &body.mappings).await?;
+    let run = create_run(&mut tx, &export, &user.id, &body.mappings, total).await?;
+    tx.commit().await?;
+    Ok(Json(run))
+}
+
+/// 取り込みに使えるエクスポートを、取り消し・置き換えと入れ違わないようロックして読む
+pub(crate) async fn lock_export(
+    tx: &mut toasty::Transaction<'_>,
+    id: &str,
+) -> Result<Value, AppError> {
+    let locked = query(
+        tx,
+        "SELECT json_build_object('id',id)::text FROM slack_import_jobs \
+         WHERE id=$1 AND source_id IS NULL AND status='ready' FOR UPDATE",
+        &[id],
+    )
+    .await?;
+    if locked.is_empty() {
+        return Err(AppError::Conflict(
+            "The export is not ready to import; reload and try again".into(),
+        ));
+    }
+    load_job(tx, id).await
+}
+
+/// 対応付けを検証し、取り込むメッセージの件数を返す
+pub(crate) async fn validate_mappings(
+    tx: &mut toasty::Transaction<'_>,
+    export: &Value,
+    mappings: &[Mapping],
+) -> Result<i64, AppError> {
+    let team = export["team_id"].as_str().unwrap_or_default().to_string();
+    // Slack チャンネル ID → (非公開か, 件数)
+    let known: HashMap<&str, (bool, i64)> = export["analysis"]["channels"]
+        .as_array()
+        .map(|c| {
+            c.iter()
+                .filter_map(|c| {
+                    Some((
+                        c["slack_channel_id"].as_str()?,
+                        (
+                            c["is_private"].as_bool().unwrap_or(false),
+                            c["message_count"].as_i64().unwrap_or(0),
+                        ),
+                    ))
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    let mut total_messages = 0i64;
+    let mut seen_channels = HashSet::new();
+    let mut new_names = HashSet::new();
+    let mut targets = HashSet::new();
+    for mapping in mappings {
+        let Some(&(slack_private, count)) = known.get(mapping.slack_channel_id.as_str()) else {
+            return Err(AppError::BadRequest(format!(
+                "Unknown Slack channel {}",
+                mapping.slack_channel_id
+            )));
+        };
+        if !matches!(mapping.action, MappingAction::Skip) {
+            total_messages += count;
+        }
+        if !seen_channels.insert(mapping.slack_channel_id.as_str()) {
+            return Err(AppError::BadRequest(format!(
+                "Slack channel {} is mapped twice",
+                mapping.slack_channel_id
+            )));
+        }
+        ensure_same_target(tx, &team, mapping).await?;
+        match &mapping.action {
+            MappingAction::Create { name, is_private } => {
+                // 非公開チャンネルの履歴を、メンバー以外も読める公開チャンネルに出さない
+                if slack_private && *is_private == Some(false) {
+                    return Err(AppError::BadRequest(format!(
+                        "Private Slack channel {} must be imported into a private channel",
+                        mapping.slack_channel_id
+                    )));
+                }
+                validate_channel_name(name)?;
+                if !new_names.insert(name.as_str()) {
+                    return Err(AppError::BadRequest(format!(
+                        "Channel name '{name}' is used twice"
+                    )));
+                }
+                // 同じ Slack チャンネルの再取り込みで作ったチャンネルなら衝突とみなさない
+                let own = super::channel_id(&team, &mapping.slack_channel_id);
+                let taken = query(
+                    tx,
+                    "SELECT json_build_object('id',id)::text FROM channels WHERE channel_name=$1 AND id<>$2",
+                    &[name, &own],
+                )
+                .await?;
+                if !taken.is_empty() {
+                    return Err(AppError::Conflict(format!(
+                        "Channel name '{name}' is already taken"
+                    )));
+                }
+            }
+            MappingAction::Existing { channel_id } => {
+                let found = query(
+                    tx,
+                    "SELECT json_build_object('is_private',is_private)::text FROM channels WHERE id=$1 AND NOT is_dm AND deleted_at IS NULL",
+                    &[channel_id],
+                )
+                .await?;
+                let Some(found) = found.first() else {
+                    return Err(AppError::BadRequest(format!(
+                        "Channel {channel_id} does not exist"
+                    )));
+                };
+                if slack_private && found["is_private"] != true {
+                    return Err(AppError::BadRequest(format!(
+                        "Private Slack channel {} must be imported into a private channel",
+                        mapping.slack_channel_id
+                    )));
+                }
+                if !targets.insert(channel_id.as_str()) {
+                    return Err(AppError::BadRequest(format!(
+                        "Channel {channel_id} is a target of two Slack channels"
+                    )));
+                }
+            }
+            MappingAction::Skip => {}
+        }
+    }
+    if !mappings
+        .iter()
+        .any(|m| !matches!(m.action, MappingAction::Skip))
+    {
+        return Err(AppError::BadRequest("Select at least one channel".into()));
+    }
+    Ok(total_messages)
+}
+
+/// エクスポートの ZIP を使って取り込むジョブを作る。`created_by` が新しく作るチャンネルの作成者になる。
+pub(crate) async fn create_run(
+    tx: &mut toasty::Transaction<'_>,
+    export: &Value,
+    created_by: &str,
+    mappings: &[Mapping],
+    total_messages: i64,
+) -> Result<Value, AppError> {
+    let id = uuid::Uuid::new_v4().to_string();
+    let mappings = serde_json::to_string(mappings).map_err(|e| AppError::Internal(e.into()))?;
+    toasty::sql::statement(
+        "INSERT INTO slack_import_jobs(id,created_by,status,file_name,file_size,storage_key,team_id,\
+         mappings,total_messages,source_id) \
+         SELECT $1,$2,'importing',file_name,file_size,storage_key,team_id,$3,$4::bigint,id \
+         FROM slack_import_jobs WHERE id=$5",
+    )
+    .bind(id.as_str())
+    .bind(created_by)
+    .bind(mappings.as_str())
+    .bind(total_messages.to_string())
+    .bind(export["id"].as_str().unwrap_or_default())
+    .exec(tx)
+    .await?;
+    load_job(tx, &id).await
+}
+
+/// トークン設定後に、未取得・取得に失敗した添付ファイルの取得をやり直す
+async fn fetch_files(
+    State(s): State<AppState>,
+    user: AuthUser,
+    Path(id): Path<String>,
+) -> Result<Json<Value>, AppError> {
+    if s.config.slack.import_bot_token.is_none() {
+        return Err(AppError::BadRequest(
+            "SLACK_IMPORT_BOT_TOKEN is not configured".into(),
+        ));
+    }
+    let mut db = s.db.clone();
+    let mut tx = db.transaction().await?;
+    require_admin(&mut tx, &s, &user).await?;
+    let job = load_job(&mut tx, &id).await?;
+    let retryable =
+        job["pending_files"].as_i64().unwrap_or(0) + job["failed_files"].as_i64().unwrap_or(0);
+    if job["status"] != "completed" || retryable == 0 {
+        return Err(AppError::Conflict(
+            "There are no pending files to fetch".into(),
+        ));
+    }
+    // トークンの権限を直した後などに備え、失敗した添付も試行回数を戻して再取得する
+    toasty::sql::statement(
+        "UPDATE slack_files SET status='pending',attempts=0,error=NULL,updated_at=now() WHERE job_id=$1 AND status='failed'",
+    )
+    .bind(id.as_str())
+    .exec(&mut tx)
+    .await?;
+    transition(
+        &mut tx,
+        "UPDATE slack_import_jobs SET status='fetching_files',processed_files=(SELECT count(*) FROM slack_files WHERE job_id=$1 AND status<>'pending'),available_at=now(),attempts=0,error=NULL,finished_at=NULL,updated_at=now() WHERE id=$1 AND status='completed'",
+        &[&id],
+    )
+    .await?;
+    let job = load_job(&mut tx, &id).await?;
+    tx.commit().await?;
+    Ok(Json(job))
+}
+
+/// エクスポートを消す (ZIP も消す)。失敗した取り込みのジョブは履歴へ移す。
+async fn cancel(
+    State(s): State<AppState>,
+    user: AuthUser,
+    Path(id): Path<String>,
+) -> Result<Json<Value>, AppError> {
+    let mut db = s.db.clone();
+    let mut tx = db.transaction().await?;
+    require_admin(&mut tx, &s, &user).await?;
+    // 取り込みの開始 (lock_export) と入れ違わないよう、先に行をロックする
+    query(
+        &mut tx,
+        "SELECT json_build_object('id',id)::text FROM slack_import_jobs WHERE id=$1 FOR UPDATE",
+        &[&id],
+    )
+    .await?;
+    let job = load_job(&mut tx, &id).await?;
+    let status = job["status"].as_str().unwrap_or_default();
+    let export = job["source_id"].is_null();
+    let allowed = if export {
+        matches!(status, "uploading" | "ready" | "failed")
+    } else {
+        status == "failed"
+    };
+    if !allowed {
+        return Err(AppError::Conflict(format!(
+            "An import in status '{status}' cannot be cancelled"
+        )));
+    }
+    // 取り込み中のジョブはこの ZIP を読むので、終わるまで消さない
+    if export
+        && !query(
+            &mut tx,
+            "SELECT json_build_object('id',id)::text FROM slack_import_jobs WHERE source_id=$1 AND status='importing'",
+            &[&id],
+        )
+        .await?
+        .is_empty()
+    {
+        return Err(AppError::Conflict(
+            "An import from this export is still running".into(),
+        ));
+    }
+    transition(
+        &mut tx,
+        "UPDATE slack_import_jobs SET status='cancelled',lease_until=NULL,lease_token=NULL,finished_at=now(),updated_at=now() WHERE id=$1 AND status IN ('uploading','ready','failed')",
+        &[&id],
+    )
+    .await?;
+    let job = load_job(&mut tx, &id).await?;
+    tx.commit().await?;
+    if export {
+        let key = format!("slack-imports/{id}/export.zip");
+        if let Err(e) = delete_storage_object(&s.s3_client, &s.config.s3.bucket, &key).await {
+            tracing::warn!(error = %e, import_id = %id, "Failed to delete cancelled Slack export");
+        }
+    }
+    Ok(Json(job))
+}

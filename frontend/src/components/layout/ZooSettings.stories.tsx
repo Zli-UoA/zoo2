@@ -294,3 +294,28 @@ export const ActivityPubSaveError: Story = {
     await expect(field).toHaveValue(activityPubProfileRejectedName);
   }),
 };
+
+export const SlackImport: Story = {
+  parameters: {
+    msw: {
+      handlers: [
+        http.get("*/api/users/me", () =>
+          HttpResponse.json({
+            id: "user-alice",
+            user_name: "alice",
+            display_name: "Alice",
+            is_admin: true,
+          }),
+        ),
+        http.get("*/api/admin/slack-imports", () => HttpResponse.json({ imports: [] })),
+        ...appHandlers,
+      ],
+    },
+  },
+  play: playForImplementation(async () => {
+    await userEvent.click(await screen.findByRole("tab", { name: "Slack 取り込み" }));
+    await expect(
+      await screen.findByRole("button", { name: "ZIP を選んでアップロード" }),
+    ).toBeVisible();
+  }),
+};

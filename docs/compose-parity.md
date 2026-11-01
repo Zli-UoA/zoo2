@@ -18,6 +18,7 @@ Reactを機能・UI・操作の基準とする。変更時は [compose-react-par
 | 通知のグループ化・遅延取得・追加読み込み・既読 | `NotificationsScreen`, `notifications/` | `Notifications.kt` | 既存Notifications StoryのKotlin表示、通知E2E |
 | Home・連合投稿・ソーシャル操作 | `home/HomeScreen`, `HomeComposer`, `HomeReactionPicker`, `ActivityPubEmoji`, `useHomeLive` | `HomeScreen.kt`, `HomeComposer.kt`, `HomeTimeline.kt`, `HomePostCard.kt`, `HomeActivityPub.kt`, `HomeReactionPicker.kt`, `HomeUserSearch.kt`, `HomeLive.kt` | 既存Home全47 Storyと両実装の操作・画像、Composer状態テスト |
 | 連合通知・フォロー承認・チャンネル共有設定 | `ActivityPubNotifications`, `ZooSettings` | `ActivityPubNotifications.kt`, `ChannelTimelineSettings.kt` | 既存通知・設定Story、状態/API契約テスト |
+| Slack取り込み (#295) | `SlackImportPanel`, `lib/api/slackImport` | `SlackImport.kt`, `Settings.kt`（管理者だけの「Slack 取り込み」タブ） | SlackImportTest、既存SlackImport全11 StoryのKotlin表示・操作。ZIPのアップロードは既存の `pickFiles` / `filePut` を使うため、React版と違って進み具合（%）は出さず、アップロード中の状態だけを表示する |
 | Bubble Chat | `BubbleChatScreen`, `useBubbleChat` | `Bubble.kt` | ParityTransportTest、既存BubbleChat StoryのKotlin表示、共有・クリア・pagehide E2E |
 | App・Webhook・フォーム・権限 | `AppsDialog`, `AppBlocks`, `ChannelWebhooksDialog` | `Integrations.kt`, `Channels.kt` | CRUD E2E、API・ブロック契約テスト |
 | API・Electric・保存・再接続 | `lib/api`, `lib/electric`, `lib/offline` | `Repository.kt`, `Session.kt` | RepositoryTest、保存エラー・CSP・オフラインE2E |

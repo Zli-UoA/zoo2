@@ -7,6 +7,7 @@ import {
   sortUsersByLabel,
   sortChannelMembers,
   userLabel,
+  withoutDeactivatedMembers,
 } from "./memberCandidates";
 
 function user(id: string, user_name: string, display_name = ""): UserRow {
@@ -101,6 +102,18 @@ describe("integration accounts", () => {
         (u) => u.id,
       ),
     ).toEqual(["human"]);
+  });
+});
+
+describe("withoutDeactivatedMembers", () => {
+  it("leaves Slack placeholders out of the member list and count", () => {
+    const users = [user("a", "alice"), { ...user("p", "slack-bob"), is_deactivated: true }];
+    const members = [member("a"), member("p"), member("loading")];
+    expect(withoutDeactivatedMembers(members, users).map((entry) => entry.user_id)).toEqual([
+      "a",
+      "loading",
+    ]);
+    expect(withoutDeactivatedMembers(members, [])).toBe(members);
   });
 });
 

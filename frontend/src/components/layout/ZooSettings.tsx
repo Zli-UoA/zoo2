@@ -14,22 +14,27 @@ import { ModeToggle } from "../theme/ModeToggle";
 import { PwaControls } from "../pwa/PwaControls";
 import { AppsPanel } from "../chat/AppsDialog";
 import { WorkspaceMembers } from "./WorkspaceMembers";
+import { SlackImportPanel } from "./SlackImportPanel";
+import { useCurrentUser } from "../../hooks/useCurrentUser";
+import type { SettingsTab } from "../../routes/_shell.settings";
 import { Button } from "../ui/button";
 import { SettingRow, panelTabClassName } from "../ui/control-panel";
 import { useShell } from "./shell-context";
 import { PaneHeader } from "./PaneHeader";
+
+const ADMIN_TABS: readonly SettingsTab[] = ["slack-import"];
 
 export function ZooSettings() {
   const { t } = useTranslation();
   const shell = useShell();
   const navigate = useNavigate();
   const search = useRouterState({
-    select: (state) => state.location.search as { tab?: string; channel?: string },
+    select: (state) => state.location.search as { tab?: SettingsTab; channel?: string },
   });
-  const tab =
-    search.tab === "apps" || search.tab === "members" || search.tab === "activitypub"
-      ? search.tab
-      : "general";
+  const { isAdmin } = useCurrentUser();
+  // 管理者向けのタブは、権限がなければ一般タブに戻す
+  const tab: SettingsTab =
+    search.tab && (isAdmin || !ADMIN_TABS.includes(search.tab)) ? search.tab : "general";
   return (
     <section className="flex h-full min-h-0 flex-col" aria-labelledby="zoo-settings-title">
       <PaneHeader>
@@ -52,7 +57,7 @@ export function ZooSettings() {
           onValueChange={(value) =>
             void navigate({
               to: "/settings",
-              search: { ...search, tab: value as "general" | "apps" | "members" | "activitypub" },
+              search: { ...search, tab: value as SettingsTab },
               replace: true,
             })
           }
@@ -74,6 +79,11 @@ export function ZooSettings() {
             <Tabs.Tab value="members" className={panelTabClassName}>
               {t("members.title")}
             </Tabs.Tab>
+            {isAdmin ? (
+              <Tabs.Tab value="slack-import" className={panelTabClassName}>
+                {t("slackImport.tab")}
+              </Tabs.Tab>
+            ) : null}
           </Tabs.List>
           <Tabs.Panel value="general" keepMounted className="min-h-0 data-[hidden]:hidden">
             <h2 className="sr-only">{t("settings.general")}</h2>
@@ -103,6 +113,12 @@ export function ZooSettings() {
           <Tabs.Panel value="members" className="min-h-0">
             <WorkspaceMembers />
           </Tabs.Panel>
+          {isAdmin ? (
+            <Tabs.Panel value="slack-import" className="min-h-0">
+              <h2 className="sr-only">{t("slackImport.tab")}</h2>
+              <SlackImportPanel />
+            </Tabs.Panel>
+          ) : null}
         </Tabs.Root>
       </div>
     </section>

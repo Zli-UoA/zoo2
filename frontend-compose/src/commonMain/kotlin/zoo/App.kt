@@ -573,7 +573,13 @@ internal fun Header(
     val manage = canManage(channel, app.config.userId, app.config.isAdmin)
     val count =
         if ("memberCount" in presentation) presentation.text("memberCount")
-        else memberships.count { it.text("channel_id") == id }.toString()
+        else {
+            // Slack 取り込みのプレースホルダ (無効化済み) は人数に入れない
+            val deactivated = users.filter { it.flag("is_deactivated") }.map { it.text("id") }.toSet()
+            memberships
+                .count { it.text("channel_id") == id && it.text("user_id") !in deactivated }
+                .toString()
+        }
     val showCount =
         "memberCount" in presentation ||
             !channel.flag("is_private") ||

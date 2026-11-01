@@ -113,4 +113,18 @@ class ContentTest {
                 .filter { it !in listOf("channel", "here") },
         )
     }
+
+    @Test
+    fun completionLeavesDeactivatedPlaceholdersOut() {
+        val users =
+            listOf(
+                obj("id" to "a", "user_name" to "alice"),
+                obj("id" to "s", "user_name" to "alice_slack", "is_deactivated" to true),
+            )
+        assertEquals(
+            listOf("alice"),
+            completionOptions(CompletionRange(0, 2, "alice", false), users, setOf("a", "s"))
+                .map { it.name },
+        )
+    }
 }
