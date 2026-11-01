@@ -1871,3 +1871,136 @@ async fn remote_reply_notifications_include_content_only_for_recipient_until_del
     finish_protocol(&mut f).await?;
     Ok(())
 }
+
+#[tokio::test]
+async fn same_origin_actor_cannot_reserve_another_actors_activity_or_deleted_note()
+-> anyhow::Result<()> {
+    let _serial = PROTOCOL_SERIAL.lock().await;
+    let mut f = protocol_fixture().await?;
+    let parent = protocol_post(&f, "public", true).await?;
+    let victim = format!("https://remote.example/users/{}", uuid::Uuid::new_v4());
+    let key_id = format!("{victim}#key");
+    toasty::sql::statement("INSERT INTO apub_actors(id,inbox,followers_url,user_name,display_name,key_id,public_key) VALUES($1,$1,$1,'victim','Victim',$2,$3)").bind(victim.as_str()).bind(key_id.as_str()).bind(String::from_utf8(f.key.public_key_to_pem()?)?).exec(&mut f.db).await?;
+    let activity_id = format!("{victim}/activities/create");
+    let note_id = format!("{victim}/notes/real");
+    let mut forged = peer_activity(&f, "Add", json!("ignored"));
+    forged["id"] = json!(activity_id);
+    assert_eq!(receive_peer(&f, &forged).await?, StatusCode::ACCEPTED);
+    assert_eq!(
+        receive_peer(
+            &f,
+            &peer_activity(&f, "Delete", json!({"id":note_id,"type":"Tombstone"}))
+        )
+        .await?,
+        StatusCode::ACCEPTED
+    );
+    let note = json!({"id":note_id,"type":"Note","attributedTo":victim,"content":"<p>Real author</p>","published":"2026-01-01T00:00:00Z","inReplyTo":format!("https://zoo.example.com/api/activitypub/notes/{parent}"),"to":["https://www.w3.org/ns/activitystreams#Public"]});
+    let activity = json!({"id":activity_id,"type":"Create","actor":victim,"object":note});
+    assert_eq!(
+        inbox(&f.app, &f.user, &activity, &f.key, &key_id, false).await?,
+        StatusCode::ACCEPTED
+    );
+    let stored = value(
+        &mut f.db,
+        "SELECT row_to_json(p)::text FROM apub_remote_posts p WHERE id=$1",
+        &[&note_id],
+    )
+    .await?;
+    assert_eq!(stored["actor_id"], victim);
+    assert!(stored["deleted_at"].is_null());
+    let deletion = json!({"id":format!("{victim}/activities/delete"),"type":"Delete","actor":victim,"object":note_id});
+    assert_eq!(
+        inbox(&f.app, &f.user, &deletion, &f.key, &key_id, false).await?,
+        StatusCode::ACCEPTED
+    );
+    let mut recreate = activity.clone();
+    recreate["id"] = json!(format!("{victim}/activities/recreate"));
+    assert_eq!(
+        inbox(&f.app, &f.user, &recreate, &f.key, &key_id, false).await?,
+        StatusCode::ACCEPTED
+    );
+    assert!(
+        !value(
+            &mut f.db,
+            "SELECT row_to_json(p)::text FROM apub_remote_posts p WHERE id=$1",
+            &[&note_id]
+        )
+        .await?["deleted_at"]
+            .is_null()
+    );
+    let early = format!("{}/notes/early", f.remote);
+    assert_eq!(
+        receive_peer(&f, &peer_activity(&f, "Delete", json!(early))).await?,
+        StatusCode::ACCEPTED
+    );
+    let mut early_note = note;
+    early_note["id"] = json!(early);
+    early_note["attributedTo"] = json!(f.remote);
+    assert_eq!(
+        receive_peer(&f, &peer_activity(&f, "Create", early_note)).await?,
+        StatusCode::ACCEPTED
+    );
+    assert_eq!(
+        value(
+            &mut f.db,
+            "SELECT json_build_object('n',count(*))::text FROM apub_remote_posts WHERE id=$1",
+            &[&early]
+        )
+        .await?["n"],
+        0
+    );
+    finish_protocol(&mut f).await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn more_than_one_page_of_pending_follows_remains_actionable_after_mark_all_read()
+-> anyhow::Result<()> {
+    let _serial = PROTOCOL_SERIAL.lock().await;
+    let mut f = protocol_fixture().await?;
+    toasty::sql::statement("INSERT INTO apub_actors(id,inbox,followers_url,user_name,display_name,key_id,public_key) SELECT $1||'/pending/'||n,$1,$1,'pending','Pending',$1,$2 FROM generate_series(1,105) n").bind(f.remote.as_str()).bind(String::from_utf8(f.key.public_key_to_pem()?)?).exec(&mut f.db).await?;
+    toasty::sql::statement("INSERT INTO apub_follows(user_id,actor_id,direction,activity_id) SELECT $1,$2||'/pending/'||n,'incoming',$2||'/follow/'||n FROM generate_series(1,105) n").bind(f.user.as_str()).bind(f.remote.as_str()).exec(&mut f.db).await?;
+    toasty::sql::statement("INSERT INTO apub_notifications(id,user_id,actor_id,activity_id,kind) SELECT gen_random_uuid()::text,user_id,actor_id,activity_id,'follow_request' FROM apub_follows WHERE user_id=$1").bind(f.user.as_str()).exec(&mut f.db).await?;
+    assert_eq!(
+        request(
+            &f.app,
+            "POST",
+            Some(&f.user),
+            "/api/activitypub/notifications/read",
+            Some(json!({}))
+        )
+        .await?
+        .0,
+        StatusCode::OK
+    );
+    let (_, first) = request(
+        &f.app,
+        "GET",
+        Some(&f.user),
+        "/api/activitypub/notifications",
+        None,
+    )
+    .await?;
+    assert_eq!(first["items"].as_array().unwrap().len(), 100);
+    let cursor = first["next_cursor"].as_str().unwrap();
+    let path = format!("/api/activitypub/notifications?before={cursor}");
+    let (_, second) = request(&f.app, "GET", Some(&f.user), &path, None).await?;
+    assert_eq!(second["items"].as_array().unwrap().len(), 5);
+    assert!(second["next_cursor"].is_null());
+    for item in second["items"].as_array().unwrap() {
+        assert_eq!(item["pending"], true);
+        assert!(
+            !first["items"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|v| v["id"] == item["id"])
+        );
+    }
+    let target = &second["items"][4];
+    assert_eq!(request(&f.app,"POST",Some(&f.user),"/api/activitypub/follows/respond",Some(json!({"actor":target["actor_id"],"activity_id":target["activity_id"],"accept":true}))).await?.0,StatusCode::OK);
+    let (_, other) = request(&f.app, "GET", Some(&f.other), &path, None).await?;
+    assert!(other["items"].as_array().unwrap().is_empty());
+    finish_protocol(&mut f).await?;
+    Ok(())
+}

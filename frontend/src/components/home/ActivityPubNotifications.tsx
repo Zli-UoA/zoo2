@@ -10,7 +10,8 @@ export function ActivityPubNotifications({
   notifications: ReturnType<typeof useActivityPubNotifications>;
 }) {
   const { t, i18n } = useTranslation();
-  const { items, unread_count, error, refresh, act } = notifications;
+  const { items, unread_count, error, refresh, act, next_cursor, loadingMore, loadMore } =
+    notifications;
   const [pending, setPending] = useState(false);
   const [failed, setFailed] = useState(false);
   const action = async (path: string, body: unknown) => {
@@ -121,6 +122,16 @@ export function ActivityPubNotifications({
           </li>
         ))}
       </ul>
+      {next_cursor ? (
+        <Button
+          className="mt-3"
+          variant="outline"
+          disabled={pending || loadingMore}
+          onClick={() => void loadMore()}
+        >
+          {t(loadingMore ? "home.loading" : "home.moreNotifications")}
+        </Button>
+      ) : null}
     </section>
   );
 }

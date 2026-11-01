@@ -38,13 +38,27 @@ pub async fn receive(
         .map(|v| v.as_str())
         .unwrap_or(uri.path());
     transport::validate_envelope(&headers, target, &body)?;
-    let remote = remote_actor(&state, Some(&user), actor, false).await?;
-    transport::verify_headers(&headers, target, &body, &remote)?;
+    let (remote, fetched) = load_remote_actor(&state, Some(&user), actor, false).await?;
+    verify_and_store_actor(&state, &headers, target, &body, &remote, fetched).await?;
     if activity["type"] == "Announce" {
         reposts::resolve_announce(&state, &user, &activity).await?;
     }
     receive_verified(&state, &user, &remote, &activity).await?;
     Ok(StatusCode::ACCEPTED)
+}
+pub(super) async fn verify_and_store_actor(
+    state: &AppState,
+    headers: &HeaderMap,
+    target: &str,
+    body: &[u8],
+    candidate: &Value,
+    fetched: bool,
+) -> Result<(), AppError> {
+    transport::verify_headers(headers, target, body, candidate)?;
+    if fetched {
+        save_remote_actor(state, candidate).await?;
+    }
+    Ok(())
 }
 fn object_id(v: &Value) -> Option<&str> {
     v.as_str().or_else(|| v["id"].as_str())
@@ -233,11 +247,11 @@ pub(super) async fn receive_verified(
                 return Err(AppError::BadRequest("Future note timestamp".into()));
             }
             if activity["type"] == "Create" {
-                toasty::sql::statement("INSERT INTO apub_remote_posts(id,actor_id,content,visibility,published,updated_at,parent_id,emojis) VALUES($1,$2,$3,$4,$5::timestamptz,$6::timestamptz,NULLIF($7,''),$8::jsonb) ON CONFLICT DO NOTHING").bind(post_id).bind(actor_id).bind(content).bind(visibility).bind(published.to_string()).bind(updated.to_string()).bind(parent_id.unwrap_or("")).bind(json!(note_emojis).to_string()).exec(&mut tx).await?;
+                toasty::sql::statement("INSERT INTO apub_remote_posts(id,actor_id,content,visibility,published,updated_at,parent_id,emojis) SELECT $1,$2,$3,$4,$5::timestamptz,$6::timestamptz,NULLIF($7,''),$8::jsonb WHERE NOT EXISTS(SELECT 1 FROM apub_remote_tombstones WHERE id=$1 AND actor_id=$2) ON CONFLICT DO NOTHING").bind(post_id).bind(actor_id).bind(content).bind(visibility).bind(published.to_string()).bind(updated.to_string()).bind(parent_id.unwrap_or("")).bind(json!(note_emojis).to_string()).exec(&mut tx).await?;
             } else {
                 toasty::sql::statement("UPDATE apub_remote_posts SET content=$3,visibility=$4,updated_at=$5::timestamptz,parent_id=NULLIF($6,''),emojis=$7::jsonb WHERE id=$1 AND actor_id=$2 AND deleted_at IS NULL AND updated_at<$5::timestamptz").bind(post_id).bind(actor_id).bind(content).bind(visibility).bind(updated.to_string()).bind(parent_id.unwrap_or("")).bind(json!(note_emojis).to_string()).exec(&mut tx).await?;
             }
-            if activity["type"] == "Create" && !parents.is_empty() {
+            if activity["type"] == "Create" && !parents.is_empty() && !query(&mut tx,"SELECT '{}'::text FROM apub_remote_posts WHERE id=$1 AND actor_id=$2 AND deleted_at IS NULL",&[post_id,actor_id]).await?.is_empty() {
                 interactions::notify(&mut tx, user, actor_id, id, "reply", post_id).await?;
             }
             // Per-recipient inboxes preserve audience isolation, even for followers-only notes.
@@ -287,7 +301,14 @@ pub(super) async fn receive_verified(
             if !same_origin(post, actor_id) {
                 return Err(AppError::BadRequest("Wrong delete origin".into()));
             }
-            toasty::sql::statement("INSERT INTO apub_remote_posts(id,actor_id,content,visibility,published,updated_at,deleted_at) VALUES($1,$2,'','public',now(),now(),now()) ON CONFLICT(id) DO UPDATE SET deleted_at=now() WHERE apub_remote_posts.actor_id=EXCLUDED.actor_id").bind(post).bind(actor_id).exec(&mut tx).await?;
+            toasty::sql::statement("INSERT INTO apub_remote_tombstones(id,actor_id) VALUES($1,$2) ON CONFLICT DO NOTHING").bind(post).bind(actor_id).exec(&mut tx).await?;
+            toasty::sql::statement(
+                "UPDATE apub_remote_posts SET deleted_at=now() WHERE id=$1 AND actor_id=$2",
+            )
+            .bind(post)
+            .bind(actor_id)
+            .exec(&mut tx)
+            .await?;
         }
         _ => {}
     }

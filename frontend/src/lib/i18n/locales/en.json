@@ -639,6 +639,7 @@
     "readAll": "Mark all read",
     "approve": "Approve",
     "reject": "Reject",
+    "moreNotifications": "Load older notifications",
     "markRead": "Mark read",
     "like": "Like",
     "unlike": "Unlike",

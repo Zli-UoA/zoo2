@@ -171,7 +171,7 @@ pub(super) async fn resolve_announce(
     let emojis = emoji::tags(&note["tag"]);
     let mut tx = db.transaction().await?;
     emoji::remember(&mut tx, &emojis).await?;
-    toasty::sql::statement("INSERT INTO apub_remote_posts(id,actor_id,content,visibility,published,updated_at,emojis) VALUES($1,$2,$3,$4,$5::timestamptz,$6::timestamptz,$7::jsonb) ON CONFLICT DO NOTHING").bind(object).bind(author).bind(emoji::plain_content(string(&note,"content")?)).bind(visibility).bind(published.to_string()).bind(updated.to_string()).bind(json!(emojis).to_string()).exec(&mut tx).await?;
+    toasty::sql::statement("INSERT INTO apub_remote_posts(id,actor_id,content,visibility,published,updated_at,emojis) SELECT $1,$2,$3,$4,$5::timestamptz,$6::timestamptz,$7::jsonb WHERE NOT EXISTS(SELECT 1 FROM apub_remote_tombstones WHERE id=$1 AND actor_id=$2) ON CONFLICT DO NOTHING").bind(object).bind(author).bind(emoji::plain_content(string(&note,"content")?)).bind(visibility).bind(published.to_string()).bind(updated.to_string()).bind(json!(emojis).to_string()).exec(&mut tx).await?;
     tx.commit().await?;
     Ok(())
 }

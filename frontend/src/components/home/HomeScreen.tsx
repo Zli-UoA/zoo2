@@ -66,6 +66,7 @@ export interface HomePost {
   reposts?: number;
   reposted?: boolean;
   reposted_by?: string | null;
+  repost_created_at?: string;
 }
 
 export function HomeScreen() {
@@ -164,8 +165,15 @@ export function HomeScreen() {
     anchor.current = null;
   }, [posts]);
   const loadedCount = useRef(50);
+  const loadedTail = useRef<{ id: string; at: number } | null>(null);
+  const deferredRefresh = useRef(false);
   const refresh = useCallback(
     async (retain = false) => {
+      if (retain && olderRequest.current) {
+        deferredRefresh.current = true;
+        return;
+      }
+      deferredRefresh.current = false;
       const limit = retain ? Math.max(50, loadedCount.current) : 50;
       const version = ++generation.current;
       refreshRequest.current?.abort();
@@ -175,9 +183,11 @@ export function HomeScreen() {
       refreshRequest.current = controller;
       try {
         const rows: HomePost[] = [];
+        const tail = retain ? loadedTail.current : null;
+        let reachedTail = !tail;
         let more = false;
-        while (rows.length < limit) {
-          const size = Math.min(500, limit - rows.length);
+        while (rows.length < limit || !reachedTail) {
+          const size = Math.min(500, Math.max(50, limit - rows.length));
           const before = rows.length
             ? `&before=${encodeURIComponent(rows[rows.length - 1].entry_id ?? rows[rows.length - 1].id)}`
             : "";
@@ -186,6 +196,11 @@ export function HomeScreen() {
             { signal: controller.signal },
           );
           rows.push(...page);
+          const last = rows.at(-1);
+          if (tail && last) {
+            const at = Date.parse(last.repost_created_at ?? last.created_at);
+            reachedTail = at < tail.at || (at === tail.at && (last.entry_id ?? last.id) <= tail.id);
+          }
           more = page.length === size;
           if (!more) break;
         }
@@ -206,6 +221,13 @@ export function HomeScreen() {
             };
         }
         loadedCount.current = rows.length;
+        const last = rows.at(-1);
+        loadedTail.current = last
+          ? {
+              id: last.entry_id ?? last.id,
+              at: Date.parse(last.repost_created_at ?? last.created_at),
+            }
+          : null;
         setPosts(rows);
         setHasMore(more);
         setError(false);
@@ -224,6 +246,7 @@ export function HomeScreen() {
     void refresh();
     return () => {
       generation.current++;
+      deferredRefresh.current = false;
       refreshRequest.current?.abort();
       olderRequest.current?.abort();
     };
@@ -246,6 +269,12 @@ export function HomeScreen() {
       );
       if (version !== generation.current) return;
       loadedCount.current += rows.length;
+      const last = rows.at(-1);
+      if (last)
+        loadedTail.current = {
+          id: last.entry_id ?? last.id,
+          at: Date.parse(last.repost_created_at ?? last.created_at),
+        };
       setPosts((current) => [
         ...current,
         ...rows.filter(
@@ -260,6 +289,7 @@ export function HomeScreen() {
       if (olderRequest.current === controller) {
         olderRequest.current = null;
         setLoadingOlder(false);
+        if (deferredRefresh.current) void refresh(true);
       }
     }
   };

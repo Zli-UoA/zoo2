@@ -639,6 +639,7 @@
     "readAll": "全部标为已读",
     "approve": "批准",
     "reject": "拒绝",
+    "moreNotifications": "加载更早的通知",
     "markRead": "标为已读",
     "like": "喜欢",
     "unlike": "取消喜欢",

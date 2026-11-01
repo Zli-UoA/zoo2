@@ -124,7 +124,8 @@
         "FollowDecisionError",
         "MobileFollowRequests",
         "HomeNotificationsError",
-        "LiveFollowRequest"
+        "LiveFollowRequest",
+        "OlderFollowRequests"
       ]
     },
     {
@@ -467,7 +468,8 @@
         "MisskeyCustomEmoji",
         "MisskeyReact",
         "MobileMisskey",
-        "EmojiFallback"
+        "EmojiFallback",
+        "LiveWhileLoadingOlder"
       ]
     }
   ],

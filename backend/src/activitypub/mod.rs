@@ -1,5 +1,6 @@
 //! Zoo federation: durable delivery, signed inboxes, local channel-linked posts.
 mod emoji;
+mod emoji_cache;
 mod inbox;
 pub(crate) mod interactions;
 mod reposts;
@@ -149,12 +150,12 @@ fn same_origin(a: &str, b: &str) -> bool {
         _ => false,
     }
 }
-async fn remote_actor(
+async fn load_remote_actor(
     state: &AppState,
     user: Option<&str>,
     id: &str,
     force: bool,
-) -> Result<Value, AppError> {
+) -> Result<(Value, bool), AppError> {
     let mut db = state.db.clone();
     let mut tx = db.transaction().await?;
     let rows=query(&mut tx,"SELECT row_to_json(a)::text FROM apub_actors a WHERE id=$1 AND fetched_at>now()-interval '5 minutes'",&[id]).await?;
@@ -162,7 +163,7 @@ async fn remote_actor(
         if a["blocked"] == true {
             return Err(AppError::Forbidden("Actor is blocked".into()));
         }
-        return Ok(a);
+        return Ok((a, false));
     }
     drop(tx);
     if same_origin(id, &base_url()?) {
@@ -203,15 +204,66 @@ async fn remote_actor(
     if !same_origin(followers, id) {
         return Err(AppError::BadRequest("Invalid followers collection".into()));
     }
+    Ok((
+        json!({"id":id,"inbox":inbox,"followers_url":followers,"user_name":username,"display_name":display,"key_id":key_id,"public_key":pem,"emojis":emoji::tags(&doc["tag"])}),
+        true,
+    ))
+}
+async fn save_remote_actor(state: &AppState, candidate: &Value) -> Result<Value, AppError> {
+    let mut db = state.db.clone();
     let mut tx = db.transaction().await?;
-    let actor_emojis = emoji::tags(&doc["tag"]);
+    let actor_emojis = candidate["emojis"].as_array().cloned().unwrap_or_default();
     emoji::remember(&mut tx, &actor_emojis).await?;
-    let actor=one(&mut tx,"INSERT INTO apub_actors(id,inbox,followers_url,user_name,display_name,key_id,public_key,emojis) VALUES($1,$2,$3,$4,$5,$6,$7,$8::jsonb) ON CONFLICT(id) DO UPDATE SET inbox=EXCLUDED.inbox,followers_url=EXCLUDED.followers_url,user_name=EXCLUDED.user_name,display_name=EXCLUDED.display_name,key_id=EXCLUDED.key_id,public_key=EXCLUDED.public_key,emojis=EXCLUDED.emojis,fetched_at=now() RETURNING row_to_json(apub_actors)::text",&[id,inbox,followers,username,display,key_id,pem,&json!(actor_emojis).to_string()]).await?;
+    let actor=one(&mut tx,"INSERT INTO apub_actors(id,inbox,followers_url,user_name,display_name,key_id,public_key,emojis) VALUES($1,$2,$3,$4,$5,$6,$7,$8::jsonb) ON CONFLICT(id) DO UPDATE SET inbox=EXCLUDED.inbox,followers_url=EXCLUDED.followers_url,user_name=EXCLUDED.user_name,display_name=EXCLUDED.display_name,key_id=EXCLUDED.key_id,public_key=EXCLUDED.public_key,emojis=EXCLUDED.emojis,fetched_at=now() RETURNING row_to_json(apub_actors)::text",&[string(candidate,"id")?,string(candidate,"inbox")?,string(candidate,"followers_url")?,string(candidate,"user_name")?,string(candidate,"display_name")?,string(candidate,"key_id")?,string(candidate,"public_key")?,&json!(actor_emojis).to_string()]).await?;
     if actor["blocked"] == true {
         return Err(AppError::Forbidden("Actor is blocked".into()));
     }
     tx.commit().await?;
     Ok(actor)
+}
+async fn remote_actor(
+    state: &AppState,
+    user: Option<&str>,
+    id: &str,
+    force: bool,
+) -> Result<Value, AppError> {
+    let (candidate, fetched) = load_remote_actor(state, user, id, force).await?;
+    if fetched {
+        save_remote_actor(state, &candidate).await
+    } else {
+        Ok(candidate)
+    }
+}
+pub(crate) async fn remember_display_emojis(
+    tx: &mut toasty::Transaction<'_>,
+    items: &[Value],
+) -> Result<(), AppError> {
+    let mut emojis = vec![];
+    for item in items {
+        for key in ["emojis", "actor_emojis"] {
+            if let Some(values) = item[key].as_array() {
+                emojis.extend(values.iter().cloned());
+            }
+        }
+        if item["emoji"].is_object() {
+            emojis.push(item["emoji"].clone());
+        }
+        if let Some(reactions) = item["reactions"].as_array() {
+            for reaction in reactions {
+                if reaction["emoji"].is_object() {
+                    emojis.push(reaction["emoji"].clone());
+                }
+            }
+        }
+    }
+    // Tags are already normalized and authorized by the containing feed/notification query.
+    // Multiple rows may refer to the same URL; avoid PostgreSQL updating it twice in one insert.
+    emojis.sort_by_key(|v| v["image_id"].as_str().unwrap_or("").to_owned());
+    emojis.dedup_by(|a, b| a["image_id"] == b["image_id"]);
+    if !emojis.is_empty() {
+        emoji::remember(tx, &emojis).await?;
+    }
+    Ok(())
 }
 pub async fn worker(state: AppState) {
     loop {

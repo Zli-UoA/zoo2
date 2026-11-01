@@ -9,7 +9,7 @@ use axum::{
     routing::get,
 };
 use serde::Deserialize;
-static IMAGES: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(8);
+
 pub fn router() -> Router<AppState> {
     Router::new()
         .route("/api/activitypub/reaction-options", get(options))
@@ -47,7 +47,12 @@ pub(super) async fn remember(
     tx: &mut toasty::Transaction<'_>,
     emojis: &[Value],
 ) -> Result<(), AppError> {
-    toasty::sql::statement("INSERT INTO apub_emoji_images(id,url) SELECT e->>'image_id',e->>'url' FROM jsonb_array_elements($1::jsonb) e ON CONFLICT DO NOTHING").bind(json!(emojis).to_string()).exec(tx).await?;
+    toasty::sql::statement("INSERT INTO apub_emoji_images(id,url) SELECT DISTINCT e->>'image_id',e->>'url' FROM jsonb_array_elements($1::jsonb) e ON CONFLICT(id) DO UPDATE SET last_seen_at=now() WHERE apub_emoji_images.last_seen_at<now()-interval '1 day'").bind(json!(emojis).to_string()).exec(&mut *tx).await?;
+    toasty::sql::statement(
+        "DELETE FROM apub_emoji_images WHERE last_seen_at<now()-interval '30 days'",
+    )
+    .exec(tx)
+    .await?;
     Ok(())
 }
 pub(super) fn reaction(activity: &Value) -> Result<(String, Option<Value>), AppError> {
@@ -104,6 +109,15 @@ async fn options(
     query(&mut tx,"SELECT '{}'::text FROM (SELECT pg_advisory_xact_lock(hashtextextended('emoji:'||$1,0))) locked",&[&origin]).await?;
     let cached=query(&mut tx,"SELECT row_to_json(c)::text FROM apub_emoji_catalog c WHERE origin=$1 AND fetched_at>now()-interval '1 hour'",&[&origin]).await?;
     if let Some(c) = cached.first() {
+        remember(
+            &mut tx,
+            c["emojis"]
+                .as_array()
+                .map(Vec::as_slice)
+                .unwrap_or_default(),
+        )
+        .await?;
+        tx.commit().await?;
         return Ok(Json(json!({"software":c["software"],"emojis":c["emojis"]})));
     }
     let mut software = String::new();
@@ -178,11 +192,12 @@ async fn options(
 async fn image(
     State(state): State<AppState>,
     Path(id): Path<String>,
+    request: axum::extract::Request,
 ) -> Result<Response, AppError> {
-    let _permit = tokio::time::timeout(std::time::Duration::from_secs(15), IMAGES.acquire())
-        .await
-        .map_err(|_| AppError::RateLimited)?
-        .map_err(|_| AppError::RateLimited)?;
+    let peer = request
+        .extensions()
+        .get::<axum::extract::ConnectInfo<std::net::SocketAddr>>()
+        .map(|v| v.0.ip());
     let mut db = state.db.clone();
     let mut tx = db.transaction().await?;
     let image = one(
@@ -193,6 +208,10 @@ async fn image(
     .await?;
     drop(tx);
     let url = reqwest::Url::parse(string(&image, "url")?).map_err(internal)?;
+    let cached = emoji_cache::get(&id, peer, || load_image(url)).await?;
+    Ok(([(header::CONTENT_TYPE,cached.mime.as_str()),(header::CACHE_CONTROL,"public, max-age=300"),(header::X_CONTENT_TYPE_OPTIONS,"nosniff"),(header::CONTENT_SECURITY_POLICY,"sandbox; default-src 'none'; style-src 'unsafe-inline'; img-src data:; frame-ancestors 'none'")],cached.bytes).into_response())
+}
+async fn load_image(url: reqwest::Url) -> Result<emoji_cache::Image, AppError> {
     let mut response = transport::safe_client(&url)
         .await?
         .get(url)
@@ -229,7 +248,7 @@ async fn image(
         }
         data.extend_from_slice(&chunk);
     }
-    Ok(([(header::CONTENT_TYPE,mime.as_str()),(header::CACHE_CONTROL,"public, max-age=3600"),(header::X_CONTENT_TYPE_OPTIONS,"nosniff"),(header::CONTENT_SECURITY_POLICY,"sandbox; default-src 'none'; style-src 'unsafe-inline'; img-src data:; frame-ancestors 'none'")],data).into_response())
+    Ok(emoji_cache::Image { mime, bytes: data })
 }
 
 pub(super) fn plain_content(raw: &str) -> String {

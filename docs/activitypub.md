@@ -27,7 +27,7 @@ Zoo設定の「一般」で、ワークスペース管理者がLTLへ流すチ�
 
 ## 連合の設定
 
-1. DB migrations `20261101010000_create_home_posts.sql`、`20261101020000_activitypub.sql`、`20261101030000_decouple_home_federation.sql`、`20261101040000_home_live.sql`、`20261101050000_apub_interactions.sql`、`20261101060000_social_actions.sql` を適用します。
+1. DB migrations `20261101010000_create_home_posts.sql`、`20261101020000_activitypub.sql`、`20261101030000_decouple_home_federation.sql`、`20261101040000_home_live.sql`、`20261101050000_apub_interactions.sql`、`20261101060000_social_actions.sql`、`20261101070000_review_hardening.sql` を適用します。
 2. バックエンドの `ACTIVITYPUB_BASE_URL=https://zoo.example.com` に外部公開する正規オリジンを設定します。パス・クエリは不可です。設定が不正な場合は起動時にエラーになります。
 3. 公開HTTPSから `/api/activitypub/` と `/.well-known/webfinger` をバックエンドへ到達させます。リポジトリのTraefik設定には反映済みです。
 4. バックエンドから、外部サーバーの公開IP・HTTPS/443への通信とDNS解決を許可します。リダイレクト・プライベートIPへの接続は拒否し、DNS結果を接続先へ固定します。
@@ -91,7 +91,7 @@ cargo test --lib activitypub:: -- --include-ignored --test-threads=1
 
 Homeの投稿下のリアクションボタンから絵文字を選択できます。自分のリアクションを押すと取り消せます。外部投稿へのいいねはActivityStreamsの `Like`、取り消しは元のLikeをobjectに含む `Undo` を、投稿者のInboxだけに署名付きで配送します。外部から自分の投稿へのLike/Undoも受信し、TLの件数を更新します。公開・未収載Noteの `likes` は人数だけを返すCollectionです。フォロワー限定・連合なしの投稿のCollectionは公開しません。Zoo内だけのいいねは連合設定がなくても利用できます。
 
-通知画面の「ホームの通知」に、フォロー申請、フォロー承認、いいねを表示します。ベルの未読件数には既存のチャンネル通知とホーム通知を合算します。通知はWebSocketで更新し、個別・一括で既読にできます。最大100件を表示し、未処理のフォロー申請を優先します。一括既読は表示外の古い通知にも適用します。申請への承認・拒否は通知の所有者のみ操作でき、承認待ちの状態とActivity IDを確認して排他制御します。この通知はアプリ内通知で、ホーム通知のWeb Push配送は未対応です。
+通知画面の「ホームの通知」に、フォロー申請、フォロー承認、いいねを表示します。ベルの未読件数には既存のチャンネル通知とホーム通知を合算します。通知はWebSocketで更新し、個別・一括で既読にできます。1ページ100件を表示し、「過去の通知を読む」から続きを取得できます。未処理のフォロー申請を優先し、100件を超えた申請も既読状態にかかわらず承認・拒否できます。一括既読は表示外の古い通知にも適用します。申請への承認・拒否は通知の所有者のみ操作でき、承認待ちの状態とActivity IDを確認して排他制御します。この通知はアプリ内通知で、ホーム通知のWeb Push配送は未対応です。
 
 ### ActivityPubの重点テスト
 
@@ -120,7 +120,7 @@ Homeの投稿下のリアクションボタンから絵文字を選択できま�
 
 Misskeyの形式は [ApRendererService](https://github.com/misskey-dev/misskey/blob/develop/packages/backend/src/core/activitypub/ApRendererService.ts)、[ApInboxService](https://github.com/misskey-dev/misskey/blob/develop/packages/backend/src/core/activitypub/ApInboxService.ts)、[emojis API](https://github.com/misskey-dev/misskey/blob/develop/packages/backend/src/server/api/endpoints/emojis.ts) の公開実装と照合しています。実際のMisskeyサーバーとの相互接続試験は未実施です。
 
-絵文字画像は、受信タグ・カタログから登録した画像IDだけをZooのプロキシで公開します。任意URLの画像プロキシにはしません。HTTPS・公開IP・DNS固定・リダイレクト禁止を適用し、画像は最大2 MiB、同時取得8件に制限します。SVGを含む対応画像には `nosniff` とsandboxのCSPを付けます。
+絵文字画像は、受信タグ・カタログから登録した画像IDだけをZooのプロキシで公開します。任意URLの画像プロキシにはしません。HTTPS・公開IP・DNS固定・リダイレクト禁止を適用し、画像は最大2 MiB、同時取得8件に制限します。サーバー側では成功した画像を5分、取得失敗を30秒キャッシュし、最大128件・合計32 MiBまで保持します。キャッシュにない画像の取得は接続元IPごとに毎分240件、プロセス全体で毎分960件までです。リバースプロキシ経由では接続元IPの枠を共有します。画像登録は未使用30日で削除し、認証済みのTL・通知・カタログ閲覧時に使用中の登録を更新します。SVGを含む対応画像には `nosniff` とsandboxのCSPを付けます。
 
 APIの追加・拡張：
 
@@ -131,3 +131,12 @@ APIの追加・拡張：
 - `GET /api/activitypub/emoji-images/<登録済み画像ID>`：制限付きの画像取得。
 
 追加テストではMisskey形式のタグ・Like/Undo、リアクション変更順序、画像の内部IPへの取得拒否、返信先の権限と公開範囲、直接配送先へのUpdate/Delete、Announce/UndoとTLページ送りを検証します。
+
+
+## レビューで追加した保護
+
+受信履歴はActivity ID・Actor・受信ユーザーの組で管理します。未知のNoteのDeleteはActorを含む別の削除記録に保存し、同じオリジンの別ActorによるIDの先取りで本来の投稿を抑止しないようにします。新しく取得したActor情報と絵文字URLは、Inbox署名の検証成功後に保存します。
+
+Homeの追加読み込み中に届いたlive refreshは、読み込み完了後へ延期します。再取得では既に読み込んだ末尾の時刻・IDまで取得し、新着の追加で古い投稿が押し出されないようにします。明示的な更新とTL切り替えでは進行中の取得を取り消します。
+
+DB migrationは既存の運用と同じforward-onlyです。適用前にDBをバックアップしてください。アプリだけ切り戻す場合も追加テーブルをその場で削除せず、修正migrationでの復旧かバックアップからの復元を選びます。ActivityPubの秘密鍵を含むDBバックアップにはアクセス制限が必要です。

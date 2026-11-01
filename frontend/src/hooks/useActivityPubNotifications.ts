@@ -20,15 +20,21 @@ export interface ActivityPubNotification {
 export function useActivityPubNotifications() {
   const { config } = useCollections();
   const client = useMemo(() => createConfiguredApiClient(config), [config]);
-  const [data, setData] = useState<{ items: ActivityPubNotification[]; unread_count: number }>({
+  const [data, setData] = useState<{
+    items: ActivityPubNotification[];
+    unread_count: number;
+    next_cursor?: string | null;
+  }>({
     items: [],
     unread_count: 0,
   });
   const [loading, setLoading] = useState(true);
+  const [loadingMore, setLoadingMore] = useState(false);
   const [error, setError] = useState(false);
   const request = useRef<AbortController | null>(null);
   const refresh = useCallback(async () => {
     request.current?.abort();
+    setLoadingMore(false);
     const controller = new AbortController();
     request.current = controller;
     try {
@@ -50,9 +56,36 @@ export function useActivityPubNotifications() {
     return () => request.current?.abort();
   }, [refresh]);
   useHomeLive(() => void refresh());
+  const loadMore = async () => {
+    if (!data.next_cursor || loadingMore || loading) return;
+    setLoadingMore(true);
+    request.current?.abort();
+    const controller = new AbortController();
+    request.current = controller;
+    try {
+      const next = await client.get<typeof data>(
+        `/api/activitypub/notifications?before=${encodeURIComponent(data.next_cursor)}`,
+        { signal: controller.signal },
+      );
+      if (!controller.signal.aborted) {
+        setData((current) => ({
+          ...next,
+          items: [
+            ...current.items,
+            ...next.items.filter((item) => !current.items.some((old) => old.id === item.id)),
+          ],
+        }));
+        setError(false);
+      }
+    } catch {
+      if (!controller.signal.aborted) setError(true);
+    } finally {
+      if (!controller.signal.aborted) setLoadingMore(false);
+    }
+  };
   const act = async (path: string, body: unknown) => {
     await client.request(path, { method: "POST", body });
     await refresh();
   };
-  return { ...data, error, loading, refresh, act };
+  return { ...data, error, loading, loadingMore, loadMore, refresh, act };
 }

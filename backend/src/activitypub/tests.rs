@@ -315,3 +315,118 @@ fn public_announces_never_trust_third_party_identity_or_private_note_audiences()
         json!((jiff::Timestamp::now() + jiff::SignedDuration::from_secs(600)).to_string());
     assert!(reposts::validate_public_note(&future, object).is_err());
 }
+
+#[tokio::test]
+#[ignore = "requires migrated PostgreSQL and ACTIVITYPUB_BASE_URL"]
+async fn actor_and_emoji_registration_requires_a_valid_inbox_signature() -> anyhow::Result<()> {
+    let config = crate::config::Config::from_env();
+    let mut db = crate::db::init_db(&config.database_url).await?;
+    let state = AppState::new(db.clone(), config);
+    let user = uuid::Uuid::new_v4().to_string();
+    toasty::sql::statement("INSERT INTO users(id,user_name,display_name) VALUES($1,$1,$1)")
+        .bind(user.as_str())
+        .exec(&mut db)
+        .await?;
+    let key = keys(&state, &user).await?;
+    let remote = format!("https://remote.example/users/{}", uuid::Uuid::new_v4());
+    let emojis = emoji::tags(
+        &json!([{"type":"Emoji","name":":test:","icon":{"url":format!("https://cdn.remote.example/{}.png",uuid::Uuid::new_v4())}}]),
+    );
+    let candidate = json!({"id":remote,"inbox":format!("{remote}/inbox"),"followers_url":format!("{remote}/followers"),"user_name":"remote","display_name":"Remote","key_id":format!("{remote}#main-key"),"public_key":key["public_key"],"emojis":emojis});
+    let body = b"{}";
+    let url = reqwest::Url::parse("https://zoo.example.com/inbox")?;
+    let signed = transport::sign_headers(
+        "POST",
+        &url,
+        Some(body),
+        &remote,
+        string(&key, "private_key")?,
+    )?;
+    let headers: axum::http::HeaderMap = signed
+        .iter()
+        .map(|(k, v)| {
+            Ok((
+                axum::http::HeaderName::from_bytes(k.as_bytes())?,
+                axum::http::HeaderValue::from_str(v)?,
+            ))
+        })
+        .collect::<Result<_, anyhow::Error>>()?;
+    assert!(
+        inbox::verify_and_store_actor(&state, &headers, "/inbox", b"tampered", &candidate, true)
+            .await
+            .is_err()
+    );
+    let mut tx = db.transaction().await?;
+    assert!(
+        query(
+            &mut tx,
+            "SELECT '{}'::text FROM apub_actors WHERE id=$1",
+            &[&remote]
+        )
+        .await?
+        .is_empty()
+    );
+    assert!(
+        query(
+            &mut tx,
+            "SELECT '{}'::text FROM apub_emoji_images WHERE id=$1",
+            &[string(&emojis[0], "image_id")?]
+        )
+        .await?
+        .is_empty()
+    );
+    drop(tx);
+    inbox::verify_and_store_actor(&state, &headers, "/inbox", body, &candidate, true).await?;
+    let mut tx = db.transaction().await?;
+    assert_eq!(
+        query(
+            &mut tx,
+            "SELECT '{}'::text FROM apub_actors WHERE id=$1",
+            &[&remote]
+        )
+        .await?
+        .len(),
+        1
+    );
+    assert_eq!(
+        query(
+            &mut tx,
+            "SELECT '{}'::text FROM apub_emoji_images WHERE id=$1",
+            &[string(&emojis[0], "image_id")?]
+        )
+        .await?
+        .len(),
+        1
+    );
+    toasty::sql::statement(
+        "UPDATE apub_emoji_images SET last_seen_at=now()-interval '31 days' WHERE id=$1",
+    )
+    .bind(string(&emojis[0], "image_id")?)
+    .exec(&mut tx)
+    .await?;
+    // Viewing an authorized post renews its emoji instead of expiring a still-used URL.
+    remember_display_emojis(&mut tx, &[json!({"emojis":emojis})]).await?;
+    assert_eq!(query(&mut tx,"SELECT '{}'::text FROM apub_emoji_images WHERE id=$1 AND last_seen_at>now()-interval '1 day'",&[string(&emojis[0],"image_id")?]).await?.len(),1);
+    toasty::sql::statement(
+        "UPDATE apub_emoji_images SET last_seen_at=now()-interval '31 days' WHERE id=$1",
+    )
+    .bind(string(&emojis[0], "image_id")?)
+    .exec(&mut tx)
+    .await?;
+    emoji::remember(&mut tx, &[]).await?;
+    assert!(
+        query(
+            &mut tx,
+            "SELECT '{}'::text FROM apub_emoji_images WHERE id=$1",
+            &[string(&emojis[0], "image_id")?]
+        )
+        .await?
+        .is_empty()
+    );
+    tx.commit().await?;
+    toasty::sql::statement("DELETE FROM users WHERE id=$1")
+        .bind(user)
+        .exec(&mut db)
+        .await?;
+    Ok(())
+}

@@ -398,3 +398,45 @@ export const LiveFollowRequest: Story = {
     await expect(await panel.findByRole("button", { name: "承認" })).toBeVisible();
   },
 };
+
+let pagedRequestApproved = false;
+export const OlderFollowRequests: Story = {
+  beforeEach: () => {
+    pagedRequestApproved = false;
+  },
+  parameters: {
+    msw: {
+      handlers: [
+        http.get("*/api/activitypub/notifications", ({ request }) => {
+          const older = new URL(request.url).searchParams.get("before");
+          const item = {
+            ...activityPubNotifications[0],
+            id: "older-follow-request",
+            display_name: "Older peer",
+            activity_id: "https://social.example/follows/older",
+            pending: !pagedRequestApproved,
+          };
+          return HttpResponse.json({
+            items: older ? [item] : [activityPubNotifications[1]],
+            unread_count: 0,
+            next_cursor: older ? null : "accepted-peer",
+          });
+        }),
+        http.post("*/api/activitypub/follows/respond", async ({ request }) => {
+          const decision = (await request.json()) as { activity_id: string; accept: boolean };
+          if (decision.activity_id !== "https://social.example/follows/older" || !decision.accept)
+            return new HttpResponse(null, { status: 400 });
+          pagedRequestApproved = true;
+          return HttpResponse.json({ ok: true });
+        }),
+      ],
+    },
+  },
+  play: async () => {
+    const panel = within(await screen.findByRole("region", { name: "ホームの通知" }));
+    await userEvent.click(await panel.findByRole("button", { name: "過去の通知を読む" }));
+    await expect(await panel.findByText("Older peer")).toBeVisible();
+    await userEvent.click(await panel.findByRole("button", { name: "承認" }));
+    await waitFor(() => expect(pagedRequestApproved).toBe(true));
+  },
+};

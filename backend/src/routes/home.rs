@@ -267,6 +267,8 @@ async fn list(
     ))::text FROM entries f WHERE ($2='' OR (f.sort_at,f.entry_id)<(SELECT sort_at,entry_id FROM entries WHERE entry_id=$2)) ORDER BY f.sort_at DESC,f.entry_id DESC LIMIT $5::integer"#,
     &[&user.id,page.before.as_deref().unwrap_or(""),timeline,if guest{"true"}else{"false"},&page.limit.unwrap_or(50).clamp(1,500).to_string()]).await?;
 
+    activitypub::remember_display_emojis(&mut tx, &rows).await?;
+    tx.commit().await?;
     Ok(Json(rows))
 }
 async fn settings(State(state): State<AppState>, user: AuthUser) -> Result<Json<Value>, AppError> {

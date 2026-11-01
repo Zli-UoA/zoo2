@@ -22,6 +22,11 @@ const meta = {
 } satisfies Meta<typeof HomeScreen>;
 export default meta;
 type Story = StoryObj<typeof meta>;
+async function visibleDialog(name: string) {
+  const dialog = await screen.findByRole("dialog", { name });
+  await waitFor(() => expect(getComputedStyle(dialog).opacity).toBe("1"));
+  return within(dialog);
+}
 async function openComposer(canvasElement: HTMLElement) {
   await userEvent.click(within(canvasElement).getByRole("button", { name: "投稿を書く" }));
   const dialog = await screen.findByRole("dialog", { name: "近況を投稿" });
@@ -354,7 +359,7 @@ export const FollowRemote: Story = {
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     await userEvent.click(canvas.getByRole("button", { name: "ユーザーを検索" }));
-    const dialog = within(await screen.findByRole("dialog", { name: "ユーザーを検索" }));
+    const dialog = await visibleDialog("ユーザーを検索");
     const account = dialog.getByRole("textbox", { name: "ユーザーを検索" });
     await userEvent.type(account, "@bob@social.example");
     await userEvent.click(dialog.getByRole("button", { name: "検索" }));
@@ -417,8 +422,8 @@ export const FederationError: Story = {
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     await userEvent.click(canvas.getByRole("button", { name: "ユーザーを検索" }));
-    const dialog = within(await screen.findByRole("dialog", { name: "ユーザーを検索" }));
-    await expect(await dialog.findByRole("alert")).toBeVisible();
+    const dialog = await visibleDialog("ユーザーを検索");
+    await waitFor(() => expect(dialog.getByRole("alert")).toBeVisible());
   },
 };
 
@@ -622,7 +627,7 @@ export const UserSearch: Story = {
   },
   play: async ({ canvasElement }) => {
     await userEvent.click(within(canvasElement).getByRole("button", { name: "ユーザーを検索" }));
-    const dialog = within(await screen.findByRole("dialog", { name: "ユーザーを検索" }));
+    const dialog = await visibleDialog("ユーザーを検索");
     await userEvent.type(dialog.getByRole("textbox"), "alice");
     await userEvent.click(dialog.getByRole("button", { name: "検索" }));
     const details = within(await dialog.findByRole("article", { name: "ユーザー詳細" }));
@@ -724,7 +729,7 @@ export const UserSearchEmpty: Story = {
   },
   play: async ({ canvasElement }) => {
     await userEvent.click(within(canvasElement).getByRole("button", { name: "ユーザーを検索" }));
-    const dialog = within(await screen.findByRole("dialog", { name: "ユーザーを検索" }));
+    const dialog = await visibleDialog("ユーザーを検索");
     await userEvent.type(dialog.getByRole("textbox"), "nobody");
     await userEvent.click(dialog.getByRole("button", { name: "検索" }));
     await expect(await dialog.findByText("ユーザーが見つかりません")).toBeVisible();
@@ -739,7 +744,7 @@ export const UserSearchError: Story = {
   },
   play: async ({ canvasElement }) => {
     await userEvent.click(within(canvasElement).getByRole("button", { name: "ユーザーを検索" }));
-    const dialog = within(await screen.findByRole("dialog", { name: "ユーザーを検索" }));
+    const dialog = await visibleDialog("ユーザーを検索");
     await userEvent.type(dialog.getByRole("textbox"), "@bob@social.example");
     await userEvent.click(dialog.getByRole("button", { name: "検索" }));
     await expect(await dialog.findByRole("alert")).toBeVisible();
@@ -811,7 +816,7 @@ export const Like: Story = {
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     await userEvent.click(await canvas.findByRole("button", { name: "リアクション 0" }));
-    const picker = within(await screen.findByRole("dialog", { name: "リアクション" }));
+    const picker = await visibleDialog("リアクション");
     await userEvent.click(
       within(picker.getByRole("group", { name: "よく使うリアクション" })).getByRole("button", {
         name: "❤️",
@@ -840,7 +845,7 @@ export const LikeError: Story = {
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     await userEvent.click(await canvas.findByRole("button", { name: "リアクション 0" }));
-    const picker = within(await screen.findByRole("dialog", { name: "リアクション" }));
+    const picker = await visibleDialog("リアクション");
     await userEvent.click(
       within(picker.getByRole("group", { name: "よく使うリアクション" })).getByRole("button", {
         name: "❤️",
@@ -905,7 +910,7 @@ export const Reply: Story = {
       document.removeEventListener("click", observe);
     }
     if (innerWidth < 768) await expect(focused).toBe(true);
-    const form = within(await screen.findByRole("dialog", { name: "近況を投稿" }));
+    const form = await visibleDialog("近況を投稿");
     await waitFor(() => expect(form.getByText("Aliceさんに返信")).toBeVisible());
     await userEvent.type(form.getByRole("textbox", { name: "近況を投稿" }), "返信のメッセージ");
     await userEvent.click(form.getByRole("button", { name: "投稿" }));
@@ -928,7 +933,7 @@ export const PrivateReply: Story = {
     const canvas = within(canvasElement);
     await expect(await canvas.findByRole("button", { name: "リポスト 0" })).toBeDisabled();
     await userEvent.click(canvas.getByRole("button", { name: "返信 0" }));
-    const form = within(await screen.findByRole("dialog", { name: "近況を投稿" }));
+    const form = await visibleDialog("近況を投稿");
     await userEvent.click(form.getByRole("button", { name: "公開範囲: フォロワー限定" }));
     await expect(await screen.findByRole("menuitemradio", { name: "パブリック" })).toHaveAttribute(
       "aria-disabled",
@@ -1035,7 +1040,7 @@ export const MisskeyReact: Story = {
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     await userEvent.click(await canvas.findByRole("button", { name: "リアクション 2" }));
-    const picker = within(await screen.findByRole("dialog", { name: "リアクション" }));
+    const picker = await visibleDialog("リアクション");
     await userEvent.click(await picker.findByRole("button", { name: ":blobcat:" }));
     const reaction = await canvas.findByRole("button", { name: ":blobcat: 3" });
     await expect(reaction).toHaveAttribute("aria-pressed", "true");
@@ -1078,5 +1083,73 @@ export const EmojiFallback: Story = {
     const canvas = within(canvasElement);
     await waitFor(() => expect(canvas.getAllByText(":blobcat:").length).toBeGreaterThanOrEqual(2));
     await expect(canvas.queryByRole("img", { name: ":blobcat:" })).not.toBeInTheDocument();
+  },
+};
+
+let releaseOlderPage: (() => void) | undefined;
+let olderPageStarted = false;
+let olderLiveConnected = false;
+let olderControlLoads = 0;
+let retainedReloads = 0;
+const olderLive = ws.link("*/api/home/live");
+const firstPage = Array.from({ length: 50 }, (_, index) => ({
+  ...posts[0],
+  id: `older-live-${index}`,
+  content: `投稿 ${index}`,
+}));
+const oldLivePost = {
+  ...posts[1],
+  id: "older-live-tail",
+  content: "更新と競合しても残る過去の投稿",
+};
+export const LiveWhileLoadingOlder: Story = {
+  beforeEach: () => {
+    releaseOlderPage = undefined;
+    olderPageStarted = false;
+    olderLiveConnected = false;
+    olderControlLoads = 0;
+    retainedReloads = 0;
+  },
+  parameters: {
+    msw: {
+      handlers: [
+        http.get("*/api/home", async ({ request }) => {
+          const url = new URL(request.url);
+          if (url.searchParams.has("before")) {
+            olderPageStarted = true;
+            await new Promise<void>((resolve) => {
+              releaseOlderPage = resolve;
+            });
+            return HttpResponse.json([oldLivePost]);
+          }
+          if (Number(url.searchParams.get("limit")) > 50) {
+            retainedReloads++;
+            return HttpResponse.json([...firstPage, oldLivePost]);
+          }
+          return HttpResponse.json(firstPage);
+        }),
+        http.get("*/api/activitypub/status", () => {
+          olderControlLoads++;
+          return HttpResponse.json({ enabled: true });
+        }),
+        olderLive.addEventListener("connection", ({ client }) => {
+          client.addEventListener("message", () => {
+            olderLiveConnected = true;
+          });
+        }),
+      ],
+    },
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await waitFor(() => expect(olderLiveConnected).toBe(true));
+    await userEvent.click(await canvas.findByRole("button", { name: "過去の投稿を読む" }));
+    await waitFor(() => expect(olderPageStarted).toBe(true));
+    olderLive.broadcast("refresh");
+    await waitFor(() => expect(olderControlLoads).toBeGreaterThanOrEqual(2));
+    releaseOlderPage?.();
+    await expect(await canvas.findByText(oldLivePost.content)).toBeInTheDocument();
+    await waitFor(() => expect(retainedReloads).toBeGreaterThan(0));
+    await expect(canvas.getByText(oldLivePost.content)).toBeInTheDocument();
   },
 };

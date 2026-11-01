@@ -3,7 +3,7 @@ use super::*;
 use crate::auth::AuthUser;
 use axum::{
     Json, Router,
-    extract::State,
+    extract::{Query, State},
     routing::{get, post},
 };
 use serde::Deserialize;
@@ -214,15 +214,33 @@ async fn unlike(
     tx.commit().await?;
     Ok(Json(json!({"ok":true})))
 }
+#[derive(Default, Deserialize)]
+struct NotificationPage {
+    before: Option<String>,
+}
 async fn notifications(
     State(state): State<AppState>,
     user: AuthUser,
+    Query(page): Query<NotificationPage>,
 ) -> Result<Json<Value>, AppError> {
     let mut db = state.db.clone();
     let mut tx = db.transaction().await?;
-    let rows=query(&mut tx,"SELECT json_build_object('id',n.id,'actor_id',n.actor_id,'display_name',COALESCE(a.display_name,u.display_name,n.actor_id),'actor_emojis',COALESCE(a.emojis,'[]'::jsonb),'kind',n.kind,'activity_id',n.activity_id,'post_id',n.post_id,'reaction',n.reaction,'emoji',n.emoji,'content',CASE WHEN p.id IS NOT NULL AND p.deleted_at IS NULL THEN p.content WHEN rp.id IS NOT NULL AND rp.deleted_at IS NULL THEN rp.content ELSE NULL END,'is_read',n.is_read,'created_at',n.created_at,'pending',EXISTS(SELECT 1 FROM apub_follows f WHERE f.user_id=n.user_id AND f.actor_id=n.actor_id AND f.activity_id=n.activity_id AND f.direction='incoming' AND NOT f.accepted))::text FROM apub_notifications n LEFT JOIN apub_actors a ON a.id=n.actor_id LEFT JOIN users u ON 'local:' || u.id=n.actor_id LEFT JOIN home_posts p ON p.id=n.post_id AND (p.user_id=n.user_id OR p.reply_user_id=n.user_id) AND (p.channel_id IS NULL OR EXISTS(SELECT 1 FROM channels c WHERE c.id=p.channel_id AND NOT c.is_private AND c.deleted_at IS NULL)) LEFT JOIN apub_remote_posts rp ON rp.id=n.post_id AND EXISTS(SELECT 1 FROM apub_remote_recipients recipient WHERE recipient.post_id=rp.id AND recipient.user_id=n.user_id) WHERE n.user_id=$1 ORDER BY EXISTS(SELECT 1 FROM apub_follows f WHERE f.user_id=n.user_id AND f.actor_id=n.actor_id AND f.activity_id=n.activity_id AND f.direction='incoming' AND NOT f.accepted) DESC,n.created_at DESC,n.id DESC LIMIT 100",&[&user.id]).await?;
+    let mut rows=query(&mut tx,"WITH notices AS (SELECT v.*, (v.item->>'pending')::boolean AS pending,(v.item->>'created_at')::timestamptz AS created_at,v.item->>'id' AS id FROM (SELECT json_build_object('id',n.id,'actor_id',n.actor_id,'display_name',COALESCE(a.display_name,u.display_name,n.actor_id),'actor_emojis',COALESCE(a.emojis,'[]'::jsonb),'kind',n.kind,'activity_id',n.activity_id,'post_id',n.post_id,'reaction',n.reaction,'emoji',n.emoji,'content',CASE WHEN p.id IS NOT NULL AND p.deleted_at IS NULL THEN p.content WHEN rp.id IS NOT NULL AND rp.deleted_at IS NULL THEN rp.content ELSE NULL END,'is_read',n.is_read,'created_at',n.created_at,'pending',EXISTS(SELECT 1 FROM apub_follows f WHERE f.user_id=n.user_id AND f.actor_id=n.actor_id AND f.activity_id=n.activity_id AND f.direction='incoming' AND NOT f.accepted)) AS item FROM apub_notifications n LEFT JOIN apub_actors a ON a.id=n.actor_id LEFT JOIN users u ON 'local:' || u.id=n.actor_id LEFT JOIN home_posts p ON p.id=n.post_id AND (p.user_id=n.user_id OR p.reply_user_id=n.user_id) AND (p.channel_id IS NULL OR EXISTS(SELECT 1 FROM channels c WHERE c.id=p.channel_id AND NOT c.is_private AND c.deleted_at IS NULL)) LEFT JOIN apub_remote_posts rp ON rp.id=n.post_id AND EXISTS(SELECT 1 FROM apub_remote_recipients recipient WHERE recipient.post_id=rp.id AND recipient.user_id=n.user_id) WHERE n.user_id=$1) v) SELECT item::text FROM notices n WHERE ($2='' OR (n.pending,n.created_at,n.id)<(SELECT pending,created_at,id FROM notices WHERE id=$2)) ORDER BY n.pending DESC,n.created_at DESC,n.id DESC LIMIT 101",&[&user.id,page.before.as_deref().unwrap_or("")]).await?;
+    let more = rows.len() > 100;
+    rows.truncate(100);
+    let next_cursor = if more {
+        rows.last()
+            .and_then(|v| v["id"].as_str())
+            .map(str::to_owned)
+    } else {
+        None
+    };
     let count=one(&mut tx,"SELECT json_build_object('count',count(*))::text FROM apub_notifications WHERE user_id=$1 AND NOT is_read",&[&user.id]).await?;
-    Ok(Json(json!({"items":rows,"unread_count":count["count"]})))
+    remember_display_emojis(&mut tx, &rows).await?;
+    tx.commit().await?;
+    Ok(Json(
+        json!({"items":rows,"unread_count":count["count"],"next_cursor":next_cursor}),
+    ))
 }
 #[derive(Deserialize)]
 struct Read {
