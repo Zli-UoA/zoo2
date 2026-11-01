@@ -1,10 +1,15 @@
 import type { ApiClient } from "./client";
 
-/** バックエンドの `slack_import_jobs.status` */
+/**
+ * バックエンドの `slack_import_jobs.status`。
+ * エクスポート (アップロードした ZIP) は uploading → analyzing → ready で、管理者が消すか新しい ZIP に
+ * 置き換わるまで ready のまま残る。取り込みのたびに、エクスポートを `source_id` に持つジョブを作り、
+ * importing → fetching_files → completed と進む。
+ */
 export type SlackImportStatus =
   | "uploading"
   | "analyzing"
-  | "awaiting_mapping"
+  | "ready"
   | "importing"
   | "fetching_files"
   | "completed"
@@ -17,12 +22,16 @@ export interface SlackChannelSummary {
   is_private: boolean;
   is_archived: boolean;
   members: number;
+  /** チャンネルを作った Slack ユーザー */
+  creator: string;
   message_count: number;
   /** zoo で使える名前の候補。予約語や既存チャンネルと重なると `slack-` を付ける */
   suggested_name: string;
   name_taken: boolean;
   /** 以前の取り込みで対応付けた zoo チャンネル */
-  existing_channel: { id: string; name: string } | null;
+  existing_channel: { id: string; name: string; is_private?: boolean } | null;
+  /** Slack と同じ名前の zoo チャンネル */
+  same_name_channel?: { id: string; name: string; is_private: boolean } | null;
   /** 以前の取り込み先が削除済みならその名前。過去ログが残っているため取り込み直せない */
   deleted_channel?: string | null;
 }
@@ -44,6 +53,8 @@ export interface SlackImport {
   error: string | null;
   created_at: string;
   finished_at: string | null;
+  /** 取り込みのジョブなら、ZIP を読むエクスポートの ID。エクスポート自身は null */
+  source_id: string | null;
 }
 
 export type SlackChannelMapping =
@@ -151,18 +162,29 @@ export async function uploadSlackExport(
   return client.request<SlackImport>(`${BASE}/${created.import.id}/uploaded`, { method: "POST" });
 }
 
+/** エクスポート (アップロードした ZIP) か。取り込みのジョブは `source_id` を持つ */
+export function isSlackExport(job: SlackImport): boolean {
+  return !job.source_id;
+}
+
 /**
- * カードで操作できるように出す取り込みと、履歴に回す取り込みに分ける。
- * 別の管理者やタブが同時に始めた取り込みも操作できるよう、完了・取り消し以外はすべてカードにする。
- * 未完了がなければ、最新の完了した取り込みの結果をカードで出す。
+ * カードで操作できるように出すものと、履歴に回すものに分ける。
+ * 保存中・保存済みのエクスポートと、進行中・失敗した取り込みはすべてカードにする
+ * (別の管理者やタブが始めたものも操作できるように)。
+ * 進行中の取り込みがなければ、最新の完了した取り込みの結果もカードで出す。
  */
 export function splitSlackImports(imports: SlackImport[]): {
   cards: SlackImport[];
   history: SlackImport[];
 } {
-  const open = imports.filter((job) => job.status !== "completed" && job.status !== "cancelled");
-  const latest = imports.find((job) => job.status === "completed");
-  const cards = open.length > 0 ? open : latest ? [latest] : [];
+  const exports = imports.filter(
+    (job) => isSlackExport(job) && job.status !== "cancelled" && job.status !== "completed",
+  );
+  const runs = imports.filter(
+    (job) => !isSlackExport(job) && job.status !== "completed" && job.status !== "cancelled",
+  );
+  const latest = imports.find((job) => !isSlackExport(job) && job.status === "completed");
+  const cards = [...exports, ...(runs.length > 0 ? runs : latest ? [latest] : [])];
   return { cards, history: imports.filter((job) => !cards.includes(job)) };
 }
 
@@ -171,22 +193,26 @@ export function retryableFiles(job: SlackImport): number {
   return job.status === "completed" ? job.pending_files + job.failed_files : 0;
 }
 
-/** 解析結果から、初期状態の対応付けを作る */
+/** 保存した ZIP から取り込むチャンネルは管理者が選ぶので、初めはどれも取り込まない */
 export function defaultMappings(channels: SlackChannelSummary[]): SlackChannelMapping[] {
-  return channels.map((channel) =>
-    channel.deleted_channel
-      ? { slack_channel_id: channel.slack_channel_id, action: "skip" }
-      : channel.existing_channel
-        ? {
-            slack_channel_id: channel.slack_channel_id,
-            action: "existing",
-            channel_id: channel.existing_channel.id,
-          }
-        : {
-            slack_channel_id: channel.slack_channel_id,
-            action: "create",
-            name: channel.suggested_name,
-            is_private: channel.is_private,
-          },
-  );
+  return channels.map((channel) => ({
+    slack_channel_id: channel.slack_channel_id,
+    action: "skip",
+  }));
+}
+
+/**
+ * 取り込み方を選んだときの対応付け。以前取り込んだチャンネルは同じ取り込み先に固定する
+ * (メッセージ ID が変わらないため)。`targets` は選べる既存チャンネル。
+ */
+export function mappingFor(
+  channel: SlackChannelSummary,
+  action: SlackChannelMapping["action"],
+  targets: { id: string }[],
+): SlackChannelMapping {
+  const base = { slack_channel_id: channel.slack_channel_id };
+  if (action === "skip") return { ...base, action };
+  if (action === "existing")
+    return { ...base, action, channel_id: channel.existing_channel?.id ?? targets[0]?.id ?? "" };
+  return { ...base, action, name: channel.suggested_name, is_private: channel.is_private };
 }

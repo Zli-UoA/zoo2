@@ -1670,18 +1670,24 @@ CREATE TABLE slack_import_jobs (
   created_at timestamptz NOT NULL DEFAULT now(),
   updated_at timestamptz NOT NULL DEFAULT now(),
   finished_at timestamptz,
+  -- 取り込みのジョブなら、ZIP を読むエクスポート (NULL ならエクスポート自身)
+  source_id text,
   PRIMARY KEY (id),
   CONSTRAINT slack_import_jobs_status_check CHECK (status IN (
-    'uploading', 'analyzing', 'awaiting_mapping', 'importing',
+    'uploading', 'analyzing', 'ready', 'importing',
     'fetching_files', 'completed', 'failed', 'cancelled'
   )),
   CONSTRAINT slack_import_jobs_created_by_fkey
     FOREIGN KEY (created_by) REFERENCES users (id)
+    ON UPDATE CASCADE ON DELETE RESTRICT,
+  CONSTRAINT slack_import_jobs_source_id_fkey
+    FOREIGN KEY (source_id) REFERENCES slack_import_jobs (id)
     ON UPDATE CASCADE ON DELETE RESTRICT
 );
 
 CREATE INDEX idx_slack_import_jobs_runnable ON slack_import_jobs (available_at)
   WHERE status IN ('analyzing', 'importing', 'fetching_files');
+CREATE INDEX idx_slack_import_jobs_source_id ON slack_import_jobs (source_id);
 
 -- Slack ユーザーと zoo ユーザーの対応。linked=false はプレースホルダ。
 CREATE TABLE slack_users (

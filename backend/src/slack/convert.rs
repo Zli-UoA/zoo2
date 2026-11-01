@@ -45,7 +45,9 @@ pub fn mentioned_users(text: &str) -> Vec<String> {
         let id = &token[..end];
         let valid = id.len() > 1
             && id.starts_with(['U', 'W'])
-            && id.bytes().all(|b| b.is_ascii_uppercase() || b.is_ascii_digit());
+            && id
+                .bytes()
+                .all(|b| b.is_ascii_uppercase() || b.is_ascii_digit());
         if valid && !found.iter().any(|f| f == id) {
             found.push(id.to_string());
         }

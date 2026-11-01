@@ -15,7 +15,7 @@ use std::{
 };
 
 use serde::Deserialize;
-use serde_json::{Value, json};
+use serde_json::json;
 
 use super::{
     convert::{Resolver, mrkdwn_to_mfm, reaction_emoji},
@@ -101,7 +101,7 @@ async fn claim(s: &AppState) -> Result<Option<Job>, AppError> {
          updated_at=now(),error=COALESCE(error,'The import stopped repeatedly and was given up') \
          WHERE status IN ('analyzing','importing','fetching_files') AND attempts>=$1::integer \
          AND (lease_until IS NULL OR lease_until<now()) \
-         RETURNING json_build_object('key',storage_key)::text",
+         RETURNING json_build_object('key',CASE WHEN source_id IS NULL THEN storage_key END)::text",
         &[&MAX_ATTEMPTS.to_string()],
     )
     .await?;
@@ -231,7 +231,8 @@ async fn fail(s: &AppState, job: &Job, error: &AppError) -> Result<(), AppError>
          finished_at=CASE WHEN $4::boolean OR attempts>=$5::integer THEN now() END,\
          available_at=now()+make_interval(secs=>LEAST(600,10*power(2,attempts))::integer) \
          WHERE id=$1 AND lease_token=$2 \
-         RETURNING json_build_object('failed',status='failed','key',storage_key)::text",
+         RETURNING json_build_object('failed',status='failed',\
+         'key',CASE WHEN source_id IS NULL THEN storage_key END)::text",
         &[
             &job.id,
             &job.token,
@@ -242,7 +243,7 @@ async fn fail(s: &AppState, job: &Job, error: &AppError) -> Result<(), AppError>
     )
     .await?;
     tx.commit().await?;
-    // 失敗したジョブはやり直せないので、置いてある ZIP を消す
+    // 解析に失敗したエクスポートは使えないので ZIP を消す (取り込みのジョブは ZIP を共有しているので消さない)
     for row in failed.iter().filter(|r| r["failed"] == true) {
         discard_zip(s, row["key"].as_str().unwrap_or_default()).await;
     }
@@ -259,8 +260,45 @@ async fn discard_zip(s: &AppState, key: &str) {
     }
 }
 
+/// 新しいエクスポートが解析済みになった古いエクスポートを片付け、ZIP を消す。
+/// 取り込み中のジョブが使っているものは、終わってから片付ける。
+pub async fn retire_superseded(s: &AppState) -> Result<(), AppError> {
+    let mut db = s.db.clone();
+    let mut tx = db.transaction().await?;
+    // 先に行をロックして、取り込みの開始 (import::create_run) と入れ違わないようにする
+    let candidates = query(
+        &mut tx,
+        "SELECT json_build_object('id',o.id)::text FROM slack_import_jobs o \
+         WHERE o.source_id IS NULL AND o.status='ready' AND EXISTS(SELECT 1 FROM slack_import_jobs n \
+         WHERE n.source_id IS NULL AND n.status='ready' AND n.team_id=o.team_id AND (n.created_at,n.id)>(o.created_at,o.id)) \
+         FOR UPDATE OF o SKIP LOCKED",
+        &[],
+    )
+    .await?;
+    let mut keys = Vec::new();
+    for candidate in candidates {
+        keys.extend(
+            query(
+                &mut tx,
+                "UPDATE slack_import_jobs SET status='cancelled',finished_at=now(),updated_at=now() \
+                 WHERE id=$1 AND status='ready' AND NOT EXISTS(SELECT 1 FROM slack_import_jobs r \
+                 WHERE r.source_id=$1 AND r.status='importing') \
+                 RETURNING json_build_object('key',storage_key)::text",
+                &[candidate["id"].as_str().unwrap_or_default()],
+            )
+            .await?,
+        );
+    }
+    tx.commit().await?;
+    for row in keys {
+        discard_zip(s, row["key"].as_str().unwrap_or_default()).await;
+    }
+    Ok(())
+}
+
 /// アップロードされないまま残ったジョブを取り消し、置きかけの ZIP を消す
 pub async fn cleanup(s: &AppState) -> Result<(), AppError> {
+    retire_superseded(s).await?;
     let mut db = s.db.clone();
     let mut tx = db.transaction().await?;
     let stale = query(
@@ -346,49 +384,13 @@ async fn analyze(s: &AppState, job: &Job, lease: &Lease) -> Result<(), AppError>
     let mut total = 0u64;
     for channel in channels {
         total += channel.message_count;
-        // 以前取り込んだチャンネルは同じ zoo チャンネルへ続けて入れる
-        let mapped = query(
-            &mut tx,
-            "SELECT json_build_object('id',c.id,'name',c.channel_name,'deleted',c.deleted_at IS NOT NULL)::text \
-             FROM slack_channels s JOIN channels c ON c.id=s.channel_id \
-             WHERE s.team_id=$1 AND s.slack_channel_id=$2",
-            &[&team, &channel.slack_channel_id],
-        )
-        .await?
-        .into_iter()
-        .next();
-        // 以前の取り込み先が削除済みなら取り込み直せない (メッセージ ID が残っているため)
-        let deleted = mapped
-            .as_ref()
-            .filter(|m| m["deleted"] == true)
-            .map(|m| m["name"].clone());
-        let mapped = mapped.filter(|m| m["deleted"] != true).map(|mut m| {
-            m.as_object_mut().map(|o| o.remove("deleted"));
-            m
-        });
-        let name_taken = !query(
-            &mut tx,
-            "SELECT json_build_object('id',id)::text FROM channels WHERE channel_name=$1",
-            &[&channel.name],
-        )
-        .await?
-        .is_empty();
-        let suggested_name = if validate_channel_name(&channel.name).is_ok() && !name_taken {
-            channel.name.clone()
-        } else {
-            format!("slack-{}", channel.name)
-        };
-        let mut entry = serde_json::to_value(&channel).map_err(|e| AppError::Internal(e.into()))?;
-        entry["suggested_name"] = json!(suggested_name);
-        entry["name_taken"] = json!(name_taken);
-        entry["existing_channel"] = mapped.unwrap_or(Value::Null);
-        entry["deleted_channel"] = deleted.unwrap_or(Value::Null);
-        entries.push(entry);
+        entries.push(serde_json::to_value(&channel).map_err(|e| AppError::Internal(e.into()))?);
     }
+    // 以前の取り込み先や名前の衝突は、取り込むときの状態で決まるので読み出し時に足す (import::annotate_channels)
     let analysis = json!({ "team_id": team, "user_count": user_count, "channels": entries });
     exec(
         &mut tx,
-        "UPDATE slack_import_jobs SET status='awaiting_mapping',team_id=$3,analysis=$4,\
+        "UPDATE slack_import_jobs SET status='ready',team_id=$3,analysis=$4,\
          total_messages=$5::bigint,attempts=0,error=NULL,lease_until=NULL,lease_token=NULL,updated_at=now() \
          WHERE id=$1 AND lease_token=$2",
         &[
@@ -401,7 +403,8 @@ async fn analyze(s: &AppState, job: &Job, lease: &Lease) -> Result<(), AppError>
     )
     .await?;
     tx.commit().await?;
-    Ok(())
+    // 同じワークスペースの古いエクスポートは置き換える
+    retire_superseded(s).await
 }
 
 // ---------------------------------------------------------------------------
@@ -780,12 +783,7 @@ async fn import(s: &AppState, job: &Job, lease: &Lease) -> Result<(), AppError> 
     )
     .await?;
     tx.commit().await?;
-
-    // 取り込み後は ZIP を残さない
-    if let Err(e) = delete_storage_object(&s.s3_client, &s.config.s3.bucket, &job.storage_key).await
-    {
-        tracing::warn!(import_id = %job.id, error = %e, "Failed to delete imported Slack export");
-    }
+    // ZIP はエクスポートとして残し、管理者が消すか新しい ZIP に置き換わるまで使う
     Ok(())
 }
 

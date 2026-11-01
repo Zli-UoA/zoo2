@@ -144,7 +144,20 @@ async fn upload(state: &AppState, app: &Router, admin: &str, zip: &[u8]) -> Valu
     .await
     .unwrap();
     assert_eq!(status, StatusCode::OK, "{job}");
-    drive(state, app, admin, &id, "awaiting_mapping").await
+    drive(state, app, admin, &id, "ready").await
+}
+
+/// 保存したエクスポートから取り込みを始め、取り込みのジョブを返す
+async fn start(app: &Router, admin: &str, export: &str, mappings: Value) -> (StatusCode, Value) {
+    request(
+        app,
+        "POST",
+        &format!("/api/admin/slack-imports/{export}/start"),
+        admin,
+        Some(json!({ "mappings": mappings })),
+    )
+    .await
+    .unwrap()
 }
 
 #[tokio::test]
@@ -309,19 +322,20 @@ async fn test_slack_export_import_flow() -> anyhow::Result<()> {
     .await?;
     assert_eq!(status, StatusCode::BAD_REQUEST);
 
-    let (status, started) = request(
+    let (status, started) = start(
         &app,
-        "POST",
-        &format!("/api/admin/slack-imports/{id}/start"),
         &admin,
-        Some(json!({"mappings":[
+        &id,
+        json!([
             {"slack_channel_id":"C1","action":"create","name":general_name},
             {"slack_channel_id":"C2","action":"existing","channel_id":existing}
-        ]})),
+        ]),
     )
-    .await?;
+    .await;
     assert_eq!(status, StatusCode::OK, "{started}");
-    let done = drive(&state, &app, &admin, &id, "completed").await;
+    assert_eq!(started["source_id"], id.as_str());
+    let run = started["id"].as_str().unwrap().to_string();
+    let done = drive(&state, &app, &admin, &run, "completed").await;
     assert_eq!(done["processed_messages"], 6);
     assert_eq!(done["total_files"], 3);
     assert_eq!(done["processed_files"], 3);
@@ -331,13 +345,13 @@ async fn test_slack_export_import_flow() -> anyhow::Result<()> {
     let (status, _) = request(
         &app,
         "POST",
-        &format!("/api/admin/slack-imports/{id}/fetch-files"),
+        &format!("/api/admin/slack-imports/{run}/fetch-files"),
         &admin,
         None,
     )
     .await?;
     assert_eq!(status, StatusCode::OK);
-    let done = drive(&state, &app, &admin, &id, "completed").await;
+    let done = drive(&state, &app, &admin, &run, "completed").await;
     assert_eq!(done["failed_files"], 0, "{done}");
 
     let general = backend::slack::channel_id(&team, "C1");
@@ -446,16 +460,33 @@ async fn test_slack_export_import_flow() -> anyhow::Result<()> {
     .await?;
     assert_eq!(cursor[0]["ts"], "1704070500.000600");
 
-    // ZIP は取り込み後に消える
-    assert!(
-        state
-            .s3_client
-            .head_object()
-            .bucket(&config.s3.bucket)
-            .key(format!("slack-imports/{id}/export.zip"))
-            .send()
-            .await
-            .is_err()
+    // エクスポートと ZIP は残り、続けて別のチャンネルも取り込める
+    let zip_exists = |key: String| {
+        let client = state.s3_client.clone();
+        let bucket = config.s3.bucket.clone();
+        async move {
+            client
+                .head_object()
+                .bucket(bucket)
+                .key(key)
+                .send()
+                .await
+                .is_ok()
+        }
+    };
+    assert!(zip_exists(format!("slack-imports/{id}/export.zip")).await);
+    let (_, export) = request(
+        &app,
+        "GET",
+        &format!("/api/admin/slack-imports/{id}"),
+        &admin,
+        None,
+    )
+    .await?;
+    assert_eq!(export["status"], "ready");
+    assert_eq!(
+        export["analysis"]["channels"][0]["existing_channel"]["id"],
+        general.as_str()
     );
 
     // 失敗したジョブに残った添付を想定し、1 件を取得失敗の状態に戻しておく
@@ -471,8 +502,26 @@ async fn test_slack_export_import_flow() -> anyhow::Result<()> {
         tx.commit().await?;
     }
 
-    // 同じエクスポートをもう一度取り込んでも重複しない
+    // 同じエクスポートをもう一度取り込んでも重複しない。新しい ZIP は古いエクスポートを置き換える
     let again = upload(&state, &app, &admin, &zip).await;
+    let (_, old) = request(
+        &app,
+        "GET",
+        &format!("/api/admin/slack-imports/{id}"),
+        &admin,
+        None,
+    )
+    .await?;
+    assert_eq!(old["status"], "cancelled");
+    assert!(!zip_exists(format!("slack-imports/{id}/export.zip")).await);
+    let (status, _) = start(
+        &app,
+        &admin,
+        &id,
+        json!([{"slack_channel_id":"C1","action":"existing","channel_id":general}]),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT);
     let channels = again["analysis"]["channels"].as_array().unwrap();
     assert_eq!(channels[0]["existing_channel"]["id"], general.as_str());
     assert_eq!(channels[1]["existing_channel"]["id"], existing.as_str());
@@ -489,18 +538,18 @@ async fn test_slack_export_import_flow() -> anyhow::Result<()> {
     )
     .await?;
     assert_eq!(status, StatusCode::CONFLICT, "{body}");
-    let (status, _) = request(
+    let (status, again_run) = start(
         &app,
-        "POST",
-        &format!("/api/admin/slack-imports/{again_id}/start"),
         &admin,
-        Some(json!({"mappings":[
+        &again_id,
+        json!([
             {"slack_channel_id":"C1","action":"existing","channel_id":general},
             {"slack_channel_id":"C2","action":"skip"}
-        ]})),
+        ]),
     )
-    .await?;
+    .await;
     assert_eq!(status, StatusCode::OK);
+    let again_id = again_run["id"].as_str().unwrap().to_string();
     let again_done = drive(&state, &app, &admin, &again_id, "completed").await;
     // 取得に失敗していた添付は新しいジョブに引き継がれ、取得し直される
     let handed = sql(
@@ -715,10 +764,8 @@ async fn test_slack_reimport_relinks_replies_and_serializes_targets() -> anyhow:
     ]);
 
     // 同じ Slack チャンネルを別々の取り込み先へ入れるジョブを、どちらも開始してしまう
-    let first = upload(&state, &app, &admin, &replies_only).await;
-    let second = upload(&state, &app, &admin, &replies_only).await;
-    let first_id = first["id"].as_str().unwrap().to_string();
-    let second_id = second["id"].as_str().unwrap().to_string();
+    let export = upload(&state, &app, &admin, &replies_only).await;
+    let export_id = export["id"].as_str().unwrap().to_string();
     let other = uuid::Uuid::new_v4().to_string();
     let (status, _) = request(
         &app,
@@ -729,26 +776,16 @@ async fn test_slack_reimport_relinks_replies_and_serializes_targets() -> anyhow:
     )
     .await?;
     assert_eq!(status, StatusCode::OK);
-    for (id, mapping) in [
-        (
-            &first_id,
-            json!({"slack_channel_id":"C1","action":"create","name":format!("first-{suffix}")}),
-        ),
-        (
-            &second_id,
-            json!({"slack_channel_id":"C1","action":"existing","channel_id":other}),
-        ),
+    let mut runs = Vec::new();
+    for mapping in [
+        json!({"slack_channel_id":"C1","action":"create","name":format!("first-{suffix}")}),
+        json!({"slack_channel_id":"C1","action":"existing","channel_id":other}),
     ] {
-        let (status, body) = request(
-            &app,
-            "POST",
-            &format!("/api/admin/slack-imports/{id}/start"),
-            &admin,
-            Some(json!({ "mappings": [mapping] })),
-        )
-        .await?;
+        let (status, body) = start(&app, &admin, &export_id, json!([mapping])).await;
         assert_eq!(status, StatusCode::OK, "{body}");
+        runs.push(body["id"].as_str().unwrap().to_string());
     }
+    let (first_id, second_id) = (runs[0].clone(), runs[1].clone());
     // 先に処理されたほうだけが成功し、もう一方は取り込み先が食い違うので失敗する
     drive(&state, &app, &admin, &first_id, "completed").await;
     let mut failed = Value::Null;
@@ -792,17 +829,22 @@ async fn test_slack_reimport_relinks_replies_and_serializes_targets() -> anyhow:
 
     // 親を含む ZIP を取り込み直すと、返信がスレッドに戻る
     let again = upload(&state, &app, &admin, &both).await;
-    let again_id = again["id"].as_str().unwrap().to_string();
-    let (status, body) = request(
+    let (status, body) = start(
         &app,
-        "POST",
-        &format!("/api/admin/slack-imports/{again_id}/start"),
         &admin,
-        Some(json!({"mappings":[{"slack_channel_id":"C1","action":"existing","channel_id":general}]})),
+        again["id"].as_str().unwrap(),
+        json!([{"slack_channel_id":"C1","action":"existing","channel_id":general}]),
     )
-    .await?;
+    .await;
     assert_eq!(status, StatusCode::OK, "{body}");
-    drive(&state, &app, &admin, &again_id, "completed").await;
+    drive(
+        &state,
+        &app,
+        &admin,
+        body["id"].as_str().unwrap(),
+        "completed",
+    )
+    .await;
     let rows = sql(
         &state,
         "SELECT json_build_object('parent_id',parent_id)::text FROM messages WHERE id=$1",
@@ -860,7 +902,10 @@ async fn test_slack_import_guards_private_channels_and_restores_threads() -> any
     // team_id がどこにもない ZIP は、どのワークスペースか決められないので失敗にする
     let anonymous = build_zip(&[
         ("users.json".into(), json!([{"id":"U1","name":"alice"}])),
-        ("channels.json".into(), json!([{"id":"C1","name":"general"}])),
+        (
+            "channels.json".into(),
+            json!([{"id":"C1","name":"general"}]),
+        ),
     ]);
     let (_, created) = request(
         &app,
@@ -934,8 +979,14 @@ async fn test_slack_import_guards_private_channels_and_restores_threads() -> any
                  "attachments":[{"title":"Build","title_link":"http://ci.example.com/1","fallback":"Build passed"}]}
             ]),
         ),
-        ("random/2024-01-02.json".into(), json!([{"ts":"1704160000.000500","user":"U1","text":"x"}])),
-        ("secret/2024-01-02.json".into(), json!([{"ts":"1704160000.000600","user":"U1","text":"s"}])),
+        (
+            "random/2024-01-02.json".into(),
+            json!([{"ts":"1704160000.000500","user":"U1","text":"x"}]),
+        ),
+        (
+            "secret/2024-01-02.json".into(),
+            json!([{"ts":"1704160000.000600","user":"U1","text":"s"}]),
+        ),
     ]);
     let analyzed = upload(&state, &app, &admin, &first).await;
     let id = analyzed["id"].as_str().unwrap().to_string();
@@ -947,7 +998,9 @@ async fn test_slack_import_guards_private_channels_and_restores_threads() -> any
         "POST",
         "/api/channels",
         &admin,
-        Some(json!({"id": public, "channel_name": format!("public_{suffix}"), "is_private": false})),
+        Some(
+            json!({"id": public, "channel_name": format!("public_{suffix}"), "is_private": false}),
+        ),
     )
     .await?;
     assert_eq!(status, StatusCode::OK);
@@ -967,21 +1020,31 @@ async fn test_slack_import_guards_private_channels_and_restores_threads() -> any
     }
 
     // 件数は選んだチャンネルの分だけ数える
-    let (status, started) = request(
+    let (status, started) = start(
         &app,
-        "POST",
-        &format!("/api/admin/slack-imports/{id}/start"),
         &admin,
-        Some(json!({"mappings":[
+        &id,
+        json!([
             {"slack_channel_id":"C1","action":"create","name":format!("general-{suffix}")},
             {"slack_channel_id":"C2","action":"skip"},
             {"slack_channel_id":"G1","action":"create","name":format!("secret-{suffix}"),"is_private":true}
-        ]})),
+        ]),
     )
-    .await?;
+    .await;
     assert_eq!(status, StatusCode::OK, "{started}");
     assert_eq!(started["total_messages"], 4);
-    let done = drive(&state, &app, &admin, &id, "completed").await;
+    let run = started["id"].as_str().unwrap().to_string();
+    // 取り込み中はエクスポートを消せない (ZIP を読んでいるため)
+    let (status, _) = request(
+        &app,
+        "DELETE",
+        &format!("/api/admin/slack-imports/{id}"),
+        &admin,
+        None,
+    )
+    .await?;
+    assert_eq!(status, StatusCode::CONFLICT);
+    let done = drive(&state, &app, &admin, &run, "completed").await;
     assert_eq!(done["processed_messages"], 4);
 
     let message = |ts: &str| backend::slack::message_id(&team, "C1", ts);
@@ -993,7 +1056,12 @@ async fn test_slack_import_guards_private_channels_and_restores_threads() -> any
     )
     .await?;
     assert_eq!(rows.len(), 1, "the http-only card must be imported");
-    assert!(!rows[0]["card"].as_str().unwrap_or_default().contains("http://"));
+    assert!(
+        !rows[0]["card"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("http://")
+    );
     assert!(rows[0]["content"].as_str().unwrap().contains("Build"));
     let rows = sql(
         &state,
@@ -1015,21 +1083,26 @@ async fn test_slack_import_guards_private_channels_and_restores_threads() -> any
         ),
     ]);
     let again = upload(&state, &app, &admin, &parent_only).await;
-    let again_id = again["id"].as_str().unwrap().to_string();
     let general = backend::slack::channel_id(&team, "C1");
-    let (status, body) = request(
+    let (status, body) = start(
         &app,
-        "POST",
-        &format!("/api/admin/slack-imports/{again_id}/start"),
         &admin,
-        Some(json!({"mappings":[
+        again["id"].as_str().unwrap(),
+        json!([
             {"slack_channel_id":"C1","action":"existing","channel_id":general},
             {"slack_channel_id":"C2","action":"skip"}
-        ]})),
+        ]),
     )
-    .await?;
+    .await;
     assert_eq!(status, StatusCode::OK, "{body}");
-    drive(&state, &app, &admin, &again_id, "completed").await;
+    drive(
+        &state,
+        &app,
+        &admin,
+        body["id"].as_str().unwrap(),
+        "completed",
+    )
+    .await;
     let rows = sql(
         &state,
         "SELECT json_build_object('parent_id',parent_id)::text FROM messages WHERE id=$1",

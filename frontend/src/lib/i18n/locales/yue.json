@@ -688,7 +688,7 @@
   "slackImport": {
     "tab": "Slack 匯入",
     "title": "由 Slack 匯入",
-    "description": "上載喺 Slack 管理設定匯出嘅 ZIP，就可以將頻道同訊息匯入 Zoo。",
+    "description": "上載喺 Slack 管理設定匯出嘅 ZIP，就可以保存喺 Zoo。你可以喺度匯入任何頻道；成員連結 Slack 帳戶之後，可以匯入自己開嘅頻道。",
     "chooseFile": "揀選並上載 ZIP",
     "uploading": "上載緊…",
     "loading": "載入緊匯入紀錄",
@@ -696,7 +696,7 @@
     "status": {
       "uploading": "上載緊",
       "analyzing": "分析緊",
-      "awaiting_mapping": "等緊頻道對應",
+      "ready": "可以匯入",
       "importing": "匯入緊",
       "fetching_files": "攞緊附件",
       "completed": "完成咗",
@@ -713,10 +713,10 @@
     "failedFiles_other": "有 {{count}} 個附件攞唔到。請睇清楚權杖嘅權限再攞過。",
     "fetchFiles": "攞附件",
     "fetchFilesFor": "攞 {{name}} 嘅附件",
-    "cancel": "取消匯入",
-    "cancelTitle": "要取消今次匯入？",
-    "cancelDescription": "會刪除上載咗嘅 ZIP。已經匯入嘅訊息會保留。",
-    "summary": "搵到 {{channels}} 個頻道、{{users}} 位用戶。請揀匯入位置。",
+    "cancel": "刪除 ZIP",
+    "cancelTitle": "要刪除保存咗嘅 ZIP？",
+    "cancelDescription": "已經匯入嘅訊息會保留，但係管理員同成員都唔可以再由呢個 ZIP 匯入。",
+    "summary": "搵到 {{channels}} 個頻道、{{users}} 位用戶。請揀要匯入嘅頻道。",
     "private": "私人",
     "channelStats": "{{messages}} 條訊息 · {{members}} 位成員",
     "deletedTarget": "之前嘅匯入位置 #{{name}} 已經刪咗，所以唔可以再匯入。",
@@ -729,6 +729,9 @@
     "start_one": "匯入 {{count}} 個頻道",
     "start_other": "匯入 {{count}} 個頻道",
     "forbidden": "只有管理員先可以由 Slack 匯入。",
-    "failed": "匯入操作失敗。"
+    "failed": "匯入操作失敗。",
+    "dismiss": "移去歷史紀錄",
+    "runTitle": "由 {{name}} 匯入",
+    "importedTo": "已經匯入到 #{{name}}"
   }
 }

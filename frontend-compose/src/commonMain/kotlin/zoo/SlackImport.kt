@@ -18,14 +18,20 @@ import kotlinx.serialization.json.*
 /** ワーカーが処理中で、結果を待つ必要がある状態 (React の `SLACK_IMPORT_RUNNING`) */
 val slackImportRunning = setOf("uploading", "analyzing", "importing", "fetching_files")
 
+/** エクスポート (アップロードした ZIP) か。取り込みのジョブは `source_id` を持つ (React の `isSlackExport`) */
+fun isSlackExport(job: Row): Boolean = job.text("source_id").isEmpty()
+
 /**
- * カードで操作できるように出す取り込みと、履歴に回す取り込みに分ける (React の `splitSlackImports`)。
- * 完了・取り消し以外はすべてカードにし、未完了がなければ最新の完了した取り込みをカードにする。
+ * カードで操作できるように出すものと、履歴に回すものに分ける (React の `splitSlackImports`)。
+ * 保存中・保存済みのエクスポートと、進行中・失敗した取り込みはすべてカードにし、
+ * 進行中の取り込みがなければ最新の完了した取り込みもカードにする。
  */
 fun splitSlackImports(imports: List<Row>): Pair<List<Row>, List<Row>> {
-    val open = imports.filter { it.text("status") !in setOf("completed", "cancelled") }
-    val latest = imports.firstOrNull { it.text("status") == "completed" }
-    val cards = open.ifEmpty { listOfNotNull(latest) }
+    val finished = setOf("completed", "cancelled")
+    val exports = imports.filter { isSlackExport(it) && it.text("status") !in finished }
+    val runs = imports.filter { !isSlackExport(it) && it.text("status") !in finished }
+    val latest = imports.firstOrNull { !isSlackExport(it) && it.text("status") == "completed" }
+    val cards = exports + runs.ifEmpty { listOfNotNull(latest) }
     return cards to imports.filter { job -> cards.none { it === job } }
 }
 
@@ -38,29 +44,40 @@ fun slackImportRetryableFiles(job: Row): Int =
 
 private fun Int?.orZero() = this ?: 0
 
-/** 解析結果から、初期状態の対応付けを作る (React の `defaultMappings`) */
+/** 保存した ZIP から取り込むチャンネルは管理者が選ぶので、初めはどれも取り込まない (React の `defaultMappings`) */
 fun slackImportDefaultMappings(channels: List<Row>): List<Row> =
-    channels.map { channel ->
-        val id = channel.text("slack_channel_id")
-        val existing = channel["existing_channel"] as? JsonObject
-        when {
-            channel.text("deleted_channel").isNotEmpty() ->
-                obj("slack_channel_id" to id, "action" to "skip")
-            existing != null ->
-                obj(
-                    "slack_channel_id" to id,
-                    "action" to "existing",
-                    "channel_id" to existing.text("id"),
-                )
-            else ->
-                obj(
-                    "slack_channel_id" to id,
-                    "action" to "create",
-                    "name" to channel.text("suggested_name"),
-                    "is_private" to channel.flag("is_private"),
-                )
-        }
+    channels.map { obj("slack_channel_id" to it.text("slack_channel_id"), "action" to "skip") }
+
+/**
+ * 取り込み方を選んだときの対応付け (React の `mappingFor`)。以前取り込んだチャンネルは同じ取り込み先に
+ * 固定する (メッセージ ID が変わらないため)。`targets` は選べる既存チャンネル。
+ */
+fun slackImportMappingFor(channel: Row, action: String, targets: List<Row>): Row {
+    val id = channel.text("slack_channel_id")
+    val existing = channel["existing_channel"] as? JsonObject
+    return when (action) {
+        "skip" -> obj("slack_channel_id" to id, "action" to "skip")
+        "existing" ->
+            obj(
+                "slack_channel_id" to id,
+                "action" to "existing",
+                "channel_id" to
+                    (existing?.text("id") ?: targets.firstOrNull()?.text("id") ?: ""),
+            )
+        else ->
+            obj(
+                "slack_channel_id" to id,
+                "action" to "create",
+                "name" to channel.text("suggested_name"),
+                "is_private" to channel.flag("is_private"),
+            )
     }
+}
+
+/** 取り込みのジョブは、どの ZIP からの取り込みかを名前に出す */
+private fun slackImportTitle(app: Session, job: Row): String =
+    if (isSlackExport(job)) job.text("file_name")
+    else app.t("slackImport.runTitle", "name" to job.text("file_name"))
 
 /** 失敗の理由。React の `describeImportError` と同じく、403 と `{error}` を見分ける */
 data class SlackImportFailure(val status: Int?, val message: String?)
@@ -109,10 +126,16 @@ class SlackImportController(
     val history
         get() = splitSlackImports(imports.orEmpty()).second
 
-    /** 処理中か対応付け待ちのものがあれば、新しい ZIP は選べない */
+    /** 解析が終わるまでは次の ZIP を受け付けない (解析が終わると古い ZIP を置き換える) */
     val busy
         get() =
-            cards.any { it.text("status").let { s -> s in slackImportRunning || s == "awaiting_mapping" } }
+            cards.any {
+                isSlackExport(it) && it.text("status").let { s -> s == "uploading" || s == "analyzing" }
+            }
+
+    /** 取り込みを始めるたびに進める。対応付けのフォームを戻し、続けて別のチャンネルを選べるようにする */
+    var started by mutableStateOf(0)
+        private set
 
     fun load() {
         if (!lifetime.isActive) return
@@ -181,12 +204,33 @@ class SlackImportController(
         }
     }
 
-    fun start(id: String, mappings: List<Row>) =
-        act(
-            "/api/admin/slack-imports/$id/start",
-            "POST",
-            obj("mappings" to JsonArray(mappings)),
-        )
+    /** 保存した ZIP から取り込みを始める。エクスポートは残り、取り込みのジョブが増える */
+    fun start(id: String, mappings: List<Row>) {
+        if (pending || !lifetime.isActive) return
+        pending = true
+        scope.launch {
+            try {
+                replace(
+                    request(
+                            "/api/admin/slack-imports/$id/start",
+                            "POST",
+                            obj("mappings" to JsonArray(mappings)),
+                        )
+                        .jsonObject
+                )
+                started++
+                // 以前の取り込み先などの表示を新しくする
+                load()
+            } catch (cause: CancellationException) {
+                throw cause
+            } catch (cause: Exception) {
+                failure = slackImportFailure(cause)
+                load()
+            } finally {
+                pending = false
+            }
+        }
+    }
 
     fun cancel(id: String) = act("/api/admin/slack-imports/$id", "DELETE")
 
@@ -294,7 +338,7 @@ fun SlackImportPanel(app: Session) {
                             verticalArrangement = Arrangement.spacedBy(8.dp),
                         ) {
                             CssFlowRow(Modifier.fillMaxWidth()) {
-                                Text(job.text("file_name"), small = true)
+                                Text(slackImportTitle(app, job), small = true)
                                 Text(
                                     "${app.t("slackImport.status.${job.text("status")}")} · " +
                                         app.platform.fullTimestamp(job.text("created_at")),
@@ -315,7 +359,8 @@ fun SlackImportPanel(app: Session) {
 private fun SlackImportCard(app: Session, state: SlackImportController, job: Row) {
     val status = job.text("status")
     var confirmCancel by remember { mutableStateOf(false) }
-    SettingsSection(job.text("file_name"), app.t("slackImport.status.$status")) {
+    val exported = isSlackExport(job)
+    SettingsSection(slackImportTitle(app, job), app.t("slackImport.status.$status")) {
         when (status) {
             "analyzing",
             "uploading" ->
@@ -324,9 +369,11 @@ private fun SlackImportCard(app: Session, state: SlackImportController, job: Row
                     Modifier.then(webControlModifier("status")),
                     muted = true,
                 )
-            "awaiting_mapping" ->
+            "ready" ->
                 (job["analysis"] as? JsonObject)?.let { analysis ->
-                    SlackImportMappingForm(app, state, job.text("id"), analysis)
+                    key(state.started) {
+                        SlackImportMappingForm(app, state, job.text("id"), analysis)
+                    }
                 }
             "importing" -> {
                 val done = job.text("processed_messages").toLongOrNull() ?: 0L
@@ -371,8 +418,12 @@ private fun SlackImportCard(app: Session, state: SlackImportController, job: Row
                         )
                     }
         }
-        if (status in setOf("uploading", "awaiting_mapping", "failed"))
+        if (exported && status in setOf("uploading", "ready", "failed"))
             Button(app.t("slackImport.cancel"), enabled = !state.pending) { confirmCancel = true }
+        if (!exported && status == "failed")
+            Button(app.t("slackImport.dismiss"), enabled = !state.pending) {
+                state.cancel(job.text("id"))
+            }
     }
     if (confirmCancel)
         ConfirmationPanel(
@@ -510,6 +561,12 @@ private fun SlackImportMappingForm(
                                 small = true,
                                 muted = true,
                             )
+                            if (existing != null)
+                                Text(
+                                    app.t("slackImport.importedTo", "name" to existing.text("name")),
+                                    small = true,
+                                    muted = true,
+                                )
                             if (deleted)
                                 Text(
                                     app.t(
@@ -530,29 +587,8 @@ private fun SlackImportMappingForm(
                             enabled = !state.pending && actions.size > 1,
                             allowEmpty = false,
                         ) { label ->
-                            val base = channel.text("slack_channel_id")
-                            update(
-                                index,
-                                when (actionLabels.entries.first { it.value == label }.key) {
-                                    "skip" -> obj("slack_channel_id" to base, "action" to "skip")
-                                    "existing" ->
-                                        obj(
-                                            "slack_channel_id" to base,
-                                            "action" to "existing",
-                                            "channel_id" to
-                                                (existing?.text("id")
-                                                    ?: choices.firstOrNull()?.text("id")
-                                                    ?: ""),
-                                        )
-                                    else ->
-                                        obj(
-                                            "slack_channel_id" to base,
-                                            "action" to "create",
-                                            "name" to channel.text("suggested_name"),
-                                            "is_private" to channel.flag("is_private"),
-                                        )
-                                },
-                            )
+                            val action = actionLabels.entries.first { it.value == label }.key
+                            update(index, slackImportMappingFor(channel, action, choices))
                         }
                         when (mapping.text("action")) {
                             "create" ->

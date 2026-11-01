@@ -72,6 +72,9 @@ pub struct SlackChannel {
     pub created: i64,
     #[serde(default)]
     pub members: Vec<String>,
+    /// チャンネルを作った Slack ユーザー (各ユーザーが自分のチャンネルを取り込むときに使う)
+    #[serde(default)]
+    pub creator: String,
     #[serde(default)]
     pub purpose: SlackText,
     #[serde(default)]
@@ -222,7 +225,11 @@ impl SlackMessage {
                     .filter(|s| !s.is_empty())
                     .collect::<Vec<_>>()
                     .join("\n");
-                let main = if main.is_empty() { text("fallback").to_string() } else { main };
+                let main = if main.is_empty() {
+                    text("fallback").to_string()
+                } else {
+                    main
+                };
                 [text("title").to_string(), main]
             })
             .filter(|s| !s.is_empty())
@@ -266,7 +273,11 @@ fn sanitize_attachment(attachment: &serde_json::Value) -> serde_json::Value {
         return value;
     };
     let text = |object: &serde_json::Map<String, serde_json::Value>, key: &str| {
-        object.get(key).and_then(|v| v.as_str()).unwrap_or("").to_string()
+        object
+            .get(key)
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string()
     };
     if !text(object, "title_link").starts_with("https://") {
         object.remove("title_link");
@@ -276,7 +287,12 @@ fn sanitize_attachment(attachment: &serde_json::Value) -> serde_json::Value {
     {
         object.remove("color");
     }
-    for (key, limit) in [("title", 500), ("footer", 2000), ("author_name", 2000), ("fallback", 3000)] {
+    for (key, limit) in [
+        ("title", 500),
+        ("footer", 2000),
+        ("author_name", 2000),
+        ("fallback", 3000),
+    ] {
         let clipped = clip(&text(object, key), limit);
         if object.contains_key(key) {
             object.insert(key.into(), clipped.into());
@@ -321,6 +337,7 @@ pub struct ChannelSummary {
     pub is_private: bool,
     pub is_archived: bool,
     pub members: usize,
+    pub creator: String,
     pub message_count: u64,
 }
 
@@ -486,6 +503,7 @@ impl<R: Read + Seek> ExportArchive<R> {
                 is_private: channel.is_private,
                 is_archived: channel.is_archived,
                 members: channel.members.len(),
+                creator: channel.creator.clone(),
                 message_count: count,
             });
         }

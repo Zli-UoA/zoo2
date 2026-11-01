@@ -11,38 +11,42 @@ class SlackImportTest {
         obj("id" to id, "status" to status, "file_name" to "$id.zip", *extra)
 
     @Test
-    fun defaultMappingsFollowPreviousAndDeletedTargets() {
-        val mappings =
-            slackImportDefaultMappings(
-                listOf(
-                    obj(
-                        "slack_channel_id" to "C1",
-                        "suggested_name" to "slack-general",
-                        "is_private" to false,
-                    ),
-                    obj(
-                        "slack_channel_id" to "C2",
-                        "existing_channel" to obj("id" to "channel-random", "name" to "random"),
-                    ),
-                    obj("slack_channel_id" to "C3", "deleted_channel" to "old-design"),
-                )
+    fun mappingsStartSkippedAndFollowPreviousTargets() {
+        val general =
+            obj(
+                "slack_channel_id" to "C1",
+                "suggested_name" to "slack-general",
+                "is_private" to true,
+            )
+        val random =
+            obj(
+                "slack_channel_id" to "C2",
+                "existing_channel" to obj("id" to "channel-random", "name" to "random"),
             )
         assertEquals(
             listOf(
-                obj(
-                    "slack_channel_id" to "C1",
-                    "action" to "create",
-                    "name" to "slack-general",
-                    "is_private" to false,
-                ),
-                obj(
-                    "slack_channel_id" to "C2",
-                    "action" to "existing",
-                    "channel_id" to "channel-random",
-                ),
-                obj("slack_channel_id" to "C3", "action" to "skip"),
+                obj("slack_channel_id" to "C1", "action" to "skip"),
+                obj("slack_channel_id" to "C2", "action" to "skip"),
             ),
-            mappings,
+            slackImportDefaultMappings(listOf(general, random)),
+        )
+        val targets = listOf(obj("id" to "channel-other"))
+        assertEquals(
+            obj(
+                "slack_channel_id" to "C1",
+                "action" to "create",
+                "name" to "slack-general",
+                "is_private" to true,
+            ),
+            slackImportMappingFor(general, "create", targets),
+        )
+        assertEquals(
+            "channel-random",
+            slackImportMappingFor(random, "existing", targets).text("channel_id"),
+        )
+        assertEquals(
+            "channel-other",
+            slackImportMappingFor(general, "existing", targets).text("channel_id"),
         )
     }
 
@@ -58,27 +62,34 @@ class SlackImportTest {
     }
 
     @Test
-    fun everyUnfinishedImportStaysOperable() {
+    fun savedExportsAndUnfinishedImportsStayOperable() {
         val (cards, history) =
             splitSlackImports(
                 listOf(
-                    job("b", "awaiting_mapping"),
-                    job("a", "awaiting_mapping"),
-                    job("z", "completed"),
+                    job("run-b", "importing", "source_id" to "export"),
+                    job("run-a", "failed", "source_id" to "export"),
+                    job("export", "ready"),
+                    job("run-z", "completed", "source_id" to "export"),
+                    job("old", "cancelled"),
                 )
             )
-        assertEquals(listOf("b", "a"), cards.map { it.text("id") })
-        assertEquals(listOf("z"), history.map { it.text("id") })
+        assertEquals(listOf("export", "run-b", "run-a"), cards.map { it.text("id") })
+        assertEquals(listOf("run-z", "old"), history.map { it.text("id") })
         val (latest, rest) =
             splitSlackImports(
-                listOf(job("c", "cancelled"), job("b", "completed"), job("a", "completed"))
+                listOf(
+                    job("export", "ready"),
+                    job("run-b", "completed", "source_id" to "export"),
+                    job("run-a", "completed", "source_id" to "export"),
+                )
             )
-        assertEquals(listOf("b"), latest.map { it.text("id") })
-        assertEquals(listOf("c", "a"), rest.map { it.text("id") })
+        assertEquals(listOf("export", "run-b"), latest.map { it.text("id") })
+        assertEquals(listOf("run-a"), rest.map { it.text("id") })
     }
 
     @Test
-    fun loadKeepsActiveAndHistoryAndStartReplacesTheJob() = runTest {
+    fun startAddsAnImportAndKeepsTheExport() = runTest {
+        var startedOnServer = false
         val requests = mutableListOf<Pair<String, String>>()
         val state =
             SlackImportController(backgroundScope) { path, method, _ ->
@@ -88,24 +99,32 @@ class SlackImportTest {
                         obj(
                             "imports" to
                                 JsonArray(
-                                    listOf(
-                                        job("new", "awaiting_mapping"),
+                                    listOfNotNull(
+                                        job("run", "importing", "source_id" to "new").takeIf {
+                                            startedOnServer
+                                        },
+                                        job("new", "ready"),
                                         job("old", "cancelled"),
                                     )
                                 )
                         )
-                    else -> job("new", "importing")
+                    else -> {
+                        startedOnServer = true
+                        job("run", "importing", "source_id" to "new")
+                    }
                 }
             }
         state.load()
         runCurrent()
         assertEquals(listOf("new"), state.cards.map { it.text("id") })
         assertEquals(listOf("old"), state.history.map { it.text("id") })
-        assertTrue(state.busy, "a new ZIP waits until the mapping is decided")
-        state.start("new", listOf(obj("slack_channel_id" to "C1", "action" to "skip")))
+        assertFalse(state.busy, "a saved ZIP does not block the next upload")
+        state.start("new", listOf(obj("slack_channel_id" to "C1", "action" to "create")))
         runCurrent()
-        assertEquals("POST" to "/api/admin/slack-imports/new/start", requests.last())
-        assertEquals("importing", state.cards.single().text("status"))
+        assertTrue("POST" to "/api/admin/slack-imports/new/start" in requests)
+        assertEquals("GET" to "/api/admin/slack-imports", requests.last())
+        assertEquals(listOf("new", "run"), state.cards.map { it.text("id") })
+        assertEquals(1, state.started)
         assertTrue(state.running)
         state.close()
     }

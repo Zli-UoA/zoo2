@@ -688,7 +688,7 @@
   "slackImport": {
     "tab": "Slack 取り込み",
     "title": "Slack から取り込む",
-    "description": "Slack の管理画面で書き出したエクスポートの ZIP をアップロードすると、チャンネルとメッセージを Zoo に取り込みます。",
+    "description": "Slack の管理画面で書き出したエクスポートの ZIP をアップロードすると、Zoo に保存します。ここでは任意のチャンネルを取り込めます。各メンバーは、Slack アカウントを連携すると自分が作ったチャンネルを取り込めます。",
     "chooseFile": "ZIP を選んでアップロード",
     "uploading": "アップロード中…",
     "loading": "取り込みの履歴を読み込み中",
@@ -696,7 +696,7 @@
     "status": {
       "uploading": "アップロード中",
       "analyzing": "解析中",
-      "awaiting_mapping": "チャンネルの対応付け待ち",
+      "ready": "取り込み可能",
       "importing": "取り込み中",
       "fetching_files": "添付ファイルを取得中",
       "completed": "完了",
@@ -713,10 +713,10 @@
     "failedFiles_other": "{{count}} 件の添付ファイルを取得できませんでした。トークンの権限を確かめてから取得し直してください。",
     "fetchFiles": "添付ファイルを取得",
     "fetchFilesFor": "{{name}} の添付ファイルを取得",
-    "cancel": "取り消す",
-    "cancelTitle": "取り込みを取り消しますか？",
-    "cancelDescription": "アップロードした ZIP を削除します。取り込み済みのメッセージは残ります。",
-    "summary": "{{channels}} チャンネル、{{users}} ユーザーが見つかりました。取り込み先を選んでください。",
+    "cancel": "ZIP を削除",
+    "cancelTitle": "保存した ZIP を削除しますか？",
+    "cancelDescription": "取り込み済みのメッセージは残りますが、この ZIP からは管理者もメンバーも取り込めなくなります。",
+    "summary": "{{channels}} チャンネル、{{users}} ユーザーが見つかりました。取り込むチャンネルを選んでください。",
     "private": "非公開",
     "channelStats": "{{messages}} 件・{{members}} 人",
     "deletedTarget": "以前の取り込み先 #{{name}} が削除されているため、取り込み直せません。",
@@ -729,6 +729,9 @@
     "start_one": "{{count}} チャンネルを取り込む",
     "start_other": "{{count}} チャンネルを取り込む",
     "forbidden": "取り込みは管理者だけが行えます。",
-    "failed": "取り込みの操作に失敗しました。"
+    "failed": "取り込みの操作に失敗しました。",
+    "dismiss": "履歴に移す",
+    "runTitle": "{{name}} からの取り込み",
+    "importedTo": "取り込み先: #{{name}}"
   }
 }
