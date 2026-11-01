@@ -63,6 +63,8 @@ for (const [name, input, expected, largeExpected] of cases) {
 }
 
 const fixedJobs = {"flux-status.yaml": ["report"], "cd-preview-label.yaml": ["label"], "cd-image-cleanup.yaml": ["cleanup"], "ci-flux-status.yaml": ["test"], "cd-images.yaml": ["plan", "promote", "publish"], "cd-storybook.yaml": ["deploy"], "terraform-r2.yaml": ["validate", "plan"], "ci-frontend.yaml": ["check", "unit-test"], "automerge-gate.yaml": ["gate"]};
+// macOS 向けのビルドがあるため、GitHub ホストの実行先だけを使うジョブ。PR では動かないワークフローに限る。
+const hostedJobs = {"cd-tui-release.yaml": ["version", "build", "release"]};
 const dockerJobs = {"ci-github-bot.yaml": ["test", "publish"], "ci-backend.yaml": ["deploy-image", "e2e"], "ci-frontend.yaml": ["container", "proxy"], "ci-frontend-auth-e2e.yaml": ["oidc-e2e"], "cd-images.yaml": ["build"]};
 test('every workload uses the right output and protects fork PRs', () => {
   const dir = new URL('.github/workflows/', root);
@@ -80,6 +82,13 @@ test('every workload uses the right output and protects fork PRs', () => {
       }
       if (file === 'container.yml') {
         assert.match(block, /fromJSON\(inputs\.runs-on\)/);
+        continue;
+      }
+      if ((hostedJobs[file] || []).includes(id)) {
+        assert.doesNotMatch(text.split(/^jobs:\s*$/m)[0], /pull_request/, `${file}: hosted-only workflows must not run on PRs`);
+        assert.match(block, /^    runs-on: (?:ubuntu-latest|\$\{\{ matrix\.os \}\})$/m, `${file}/${id}: hosted pool`);
+        assert.doesNotMatch(block, /needs\.runner\./, `${file}/${id}: selector dependency`);
+        checked++;
         continue;
       }
       const docker = (dockerJobs[file] || []).includes(id);
