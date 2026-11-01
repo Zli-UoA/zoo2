@@ -60,6 +60,10 @@
             atlas
             # Compose Web (frontend-compose) の Gradle ビルド。Gradle 本体はラッパーを使う
             jdk21
+            # infra/terraform（R2）。CI の TOFU_VERSION はこの版にそろえる
+            opentofu
+            sops
+            age
           ] ++ pkgs.lib.optionals pkgs.stdenv.hostPlatform.isLinux [ zooChrome ];
           RUST_SRC_PATH = "${pkgs.rust.packages.stable.rustPlatform.rustLibSrc}";
           JAVA_HOME = "${pkgs.jdk21}";

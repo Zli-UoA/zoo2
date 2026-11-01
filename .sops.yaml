@@ -1,0 +1,7 @@
+# Recipients that can decrypt every *.sops.yaml (infra/terraform/README.md).
+# Member keys only (age1… or ssh-ed25519 AAAA…), same as zoo2-infra's .sops.yaml minus the Flux cluster key.
+# After changing this list, run `sops updatekeys -y infra/terraform/state-passphrase.sops.yaml`.
+creation_rules:
+  - path_regex: infra/terraform/.*\.sops\.yaml$
+    age: >-
+      age10fxdv4f4nd20wsjsnjrfu652p9ntqp7frg3rphger7746nkshe2sg5fhaj
