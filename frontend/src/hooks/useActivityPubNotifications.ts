@@ -6,6 +6,7 @@ export interface ActivityPubNotification {
   id: string;
   actor_id: string;
   display_name: string;
+  avatar?: import("../components/home/ActivityPubAvatar").RemoteAvatar | null;
   kind: "follow_request" | "follow_accepted" | "like" | "reply" | "repost";
   activity_id: string;
   post_id: string | null;

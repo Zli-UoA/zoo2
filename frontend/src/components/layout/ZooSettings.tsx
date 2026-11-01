@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { createConfiguredApiClient } from "../../lib/api/client";
 import { useCollections } from "../../lib/electric/collections-context";
+import { Textarea } from "../ui/textarea";
 import { Input } from "../ui/input";
 import { SettingsSection } from "../ui/control-panel";
 import { ArrowLeftIcon, BellIcon, LanguagesIcon, PaletteIcon, SearchIcon } from "lucide-react";
@@ -16,12 +17,12 @@ import { WorkspaceMembers } from "./WorkspaceMembers";
 import { SlackImportPanel } from "./SlackImportPanel";
 import { useCurrentUser } from "../../hooks/useCurrentUser";
 import type { SettingsTab } from "../../routes/_shell.settings";
-
-const ADMIN_TABS: readonly SettingsTab[] = ["slack-import"];
 import { Button } from "../ui/button";
 import { SettingRow, panelTabClassName } from "../ui/control-panel";
 import { useShell } from "./shell-context";
 import { PaneHeader } from "./PaneHeader";
+
+const ADMIN_TABS: readonly SettingsTab[] = ["slack-import"];
 
 export function ZooSettings() {
   const { t } = useTranslation();
@@ -69,6 +70,9 @@ export function ZooSettings() {
             <Tabs.Tab value="general" className={panelTabClassName}>
               {t("settings.general")}
             </Tabs.Tab>
+            <Tabs.Tab value="activitypub" className={panelTabClassName}>
+              ActivityPub
+            </Tabs.Tab>
             <Tabs.Tab value="apps" className={panelTabClassName}>
               {t("apps.title")}
             </Tabs.Tab>
@@ -97,6 +101,10 @@ export function ZooSettings() {
                 <PwaControls presentation="select" />
               </SettingRow>
             </div>
+          </Tabs.Panel>
+          <Tabs.Panel value="activitypub" className="min-h-0">
+            <h2 className="sr-only">ActivityPub</h2>
+            <ActivityPubSettings />
             <ChannelTimelineSettings />
           </Tabs.Panel>
           <Tabs.Panel value="apps" className="min-h-0">
@@ -169,7 +177,7 @@ function ChannelTimelineSettings() {
             aria-label={t("home.channelRule")}
             value={pattern}
             onChange={(event) => setPattern(event.target.value)}
-            placeholder="public-%"
+            placeholder="^public-.*$"
             maxLength={200}
             disabled={pending}
           />
@@ -184,6 +192,128 @@ function ChannelTimelineSettings() {
           <Button variant="link" onClick={() => void load()}>
             {t("home.refresh")}
           </Button>
+        </p>
+      ) : null}
+    </SettingsSection>
+  );
+}
+
+function ActivityPubSettings() {
+  const { t } = useTranslation();
+  const { config } = useCollections();
+  const client = useMemo(() => createConfiguredApiClient(config), [config]);
+  const [profile, setProfile] = useState<{
+    display_name: string;
+    default_display_name: string;
+    summary: string;
+  } | null>(null);
+  const [name, setName] = useState("");
+  const [summary, setSummary] = useState("");
+  const [failed, setFailed] = useState(false);
+  const [pending, setPending] = useState(false);
+  const [saved, setSaved] = useState(false);
+  const load = useCallback(
+    async (signal?: AbortSignal) => {
+      setFailed(false);
+      try {
+        const value = await client.get<NonNullable<typeof profile>>("/api/activitypub/profile", {
+          signal,
+        });
+        if (signal?.aborted) return;
+        setProfile(value);
+        setName(value.display_name);
+        setSummary(value.summary);
+      } catch {
+        if (!signal?.aborted) setFailed(true);
+      }
+    },
+    [client],
+  );
+  useEffect(() => {
+    const controller = new AbortController();
+    void load(controller.signal);
+    return () => controller.abort();
+  }, [load]);
+  return (
+    <SettingsSection title="ActivityPub" description={t("activitypubSettings.description")}>
+      {profile ? (
+        <form
+          className="space-y-3"
+          onSubmit={(event) => {
+            event.preventDefault();
+            if (pending) return;
+            setPending(true);
+            setFailed(false);
+            setSaved(false);
+            void client
+              .request<NonNullable<typeof profile>>("/api/activitypub/profile", {
+                method: "PUT",
+                body: { display_name: name, summary },
+              })
+              .then((value) => {
+                setProfile(value);
+                setName(value.display_name);
+                setSummary(value.summary);
+                setSaved(true);
+              })
+              .catch(() => setFailed(true))
+              .finally(() => setPending(false));
+          }}
+        >
+          <label className="block space-y-2 text-sm">
+            <span className="block">{t("activitypubSettings.displayName")}</span>
+            <Input
+              className="w-full"
+              value={name}
+              onChange={(event) => {
+                setName(event.target.value);
+                setSaved(false);
+              }}
+              placeholder={profile.default_display_name}
+              disabled={pending}
+              aria-describedby="apub-display-name-hint"
+            />
+          </label>
+          <p id="apub-display-name-hint" className="text-sm text-muted-foreground">
+            {t("activitypubSettings.nameHint")}
+          </p>
+          <label className="block space-y-2 text-sm">
+            <span className="block">{t("activitypubSettings.bio")}</span>
+            <Textarea
+              value={summary}
+              onChange={(event) => {
+                setSummary(event.target.value);
+                setSaved(false);
+              }}
+              disabled={pending}
+              rows={4}
+            />
+          </label>
+          <Button
+            type="submit"
+            disabled={
+              pending || Array.from(name.trim()).length > 100 || Array.from(summary).length > 1000
+            }
+          >
+            {t("home.save")}
+          </Button>
+          {saved ? (
+            <p role="status" className="text-sm">
+              {t("activitypubSettings.saved")}
+            </p>
+          ) : null}
+        </form>
+      ) : !failed ? (
+        <p role="status">{t("activitypubSettings.loading")}</p>
+      ) : null}
+      {failed ? (
+        <p role="alert" className="text-sm text-destructive">
+          {t("home.controlsError")}{" "}
+          {!profile ? (
+            <Button variant="link" onClick={() => void load()}>
+              {t("home.refresh")}
+            </Button>
+          ) : null}
         </p>
       ) : null}
     </SettingsSection>

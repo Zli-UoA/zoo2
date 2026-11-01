@@ -1,0 +1,39 @@
+[package]
+name = "zoo2-tui"
+version = "0.1.0"
+edition = "2024"
+
+[profile.release]
+strip = true
+
+[dependencies]
+anyhow = "1"
+thiserror = "2"
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "sync", "time"] }
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "0.8"
+url = "2"
+directories = "6"
+jiff = "0.2"
+ratatui = "0.29"
+crossterm = { version = "0.28", features = ["event-stream"] }
+futures-util = "0.3"
+tui-textarea = "0.7"
+unicode-segmentation = "1.13"
+unicode-width = "0.2"
+emojis = "0.6"
+uuid = { version = "1", features = ["v4"] }
+
+
+[dev-dependencies]
+wiremock = "0.6"
+
+[lib]
+name = "zoo2_tui"
+path = "src/lib.rs"
+
+[[bin]]
+name = "zoo2-tui"
+path = "src/main.rs"

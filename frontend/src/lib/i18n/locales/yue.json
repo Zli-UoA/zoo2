@@ -606,7 +606,7 @@
     "following": "追蹤中",
     "followPending": "等候接受",
     "channelRule": "本機時間線嘅頻道名稱規則",
-    "ruleHint": "% 代表任意字串，_ 代表一個字元。留空就停用。只套用到儲存後嘅新訊息，唔包括私人頻道同私訊。未啟用 ActivityPub 嘅帖文唔會傳送去外部。",
+    "ruleHint": "用正規表達式（例如 ^public-.*$）。用 ^ 同 $ 比對完整名稱。留空就停用。只套用到新訊息，唔包括私人頻道同私訊。未啟用 ActivityPub 嘅帖文唔會傳送去外部。",
     "save": "儲存",
     "controlsError": "操作或設定請求失敗，請再試。",
     "localTimeline": "本機時間線",
@@ -665,6 +665,17 @@
     "cancelReply": "取消回覆",
     "repostedBy": "{{name}} 轉發咗",
     "quickReactions": "常用反應"
+  },
+  "activitypubSettings": {
+    "description": "設定喺聯邦網絡用嘅顯示名稱。",
+    "displayName": "APub 顯示名稱",
+    "nameHint": "最多100個字。留空就用一般顯示名稱。",
+    "saved": "已儲存",
+    "loading": "載入中…",
+    "bio": "自我介紹",
+    "editProfile": "編輯個人檔案",
+    "originalProfile": "原本嘅個人檔案",
+    "post": "帖文"
   },
   "slackImport": {
     "tab": "Slack 匯入",

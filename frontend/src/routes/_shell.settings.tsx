@@ -1,7 +1,7 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { ZooSettings } from "../components/layout/ZooSettings";
 
-export const SETTINGS_TABS = ["general", "apps", "members", "slack-import"] as const;
+export const SETTINGS_TABS = ["general", "apps", "members", "activitypub", "slack-import"] as const;
 export type SettingsTab = (typeof SETTINGS_TABS)[number];
 
 export const Route = createFileRoute("/_shell/settings")({

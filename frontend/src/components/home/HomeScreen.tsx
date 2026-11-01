@@ -9,6 +9,7 @@ import {
   FederatedAccount,
   type CustomEmoji,
 } from "./ActivityPubEmoji";
+import { ActivityPubProfile } from "./ActivityPubProfile";
 import { HomeReactionPicker, type ReactionChoice } from "./HomeReactionPicker";
 import { useHomeLive } from "../../hooks/useHomeLive";
 import { Link } from "@tanstack/react-router";
@@ -33,7 +34,7 @@ import { createConfiguredApiClient } from "../../lib/api/client";
 import { useCollections } from "../../lib/electric/collections-context";
 import { useCurrentUser } from "../../hooks/useCurrentUser";
 import { ScreenHeader } from "../layout/PaneHeader";
-import { Avatar, AvatarFallback } from "../ui/avatar";
+import { ActivityPubAvatar, type RemoteAvatar } from "./ActivityPubAvatar";
 import { Button } from "../ui/button";
 import { Textarea } from "../ui/textarea";
 import { Spinner } from "../ui/spinner";
@@ -45,7 +46,6 @@ import {
   DropdownMenuContent,
   DropdownMenuItem,
 } from "../ui/dropdown-menu";
-import { initials } from "../chat/format";
 
 export interface HomePost {
   id: string;
@@ -67,6 +67,7 @@ export interface HomePost {
   parent_id?: string | null;
   emojis?: CustomEmoji[];
   actor_emojis?: CustomEmoji[];
+  avatar?: RemoteAvatar | null;
   reactions?: { reaction: string; emoji: CustomEmoji | null; count: number; selected: boolean }[];
   replies?: number;
   reposts?: number;
@@ -75,7 +76,7 @@ export interface HomePost {
   repost_created_at?: string;
 }
 
-export function HomeScreen() {
+export function HomeScreen({ postId, actorId }: { postId?: string; actorId?: string }) {
   const { t, i18n } = useTranslation();
   const { config } = useCollections();
   const client = useMemo(() => createConfiguredApiClient(config), [config]);
@@ -84,6 +85,7 @@ export function HomeScreen() {
   const [reactionPost, setReactionPost] = useState<HomePost | null>(null);
   const [pendingRepost, setPendingRepost] = useState<string | null>(null);
   const [timeline, setTimeline] = useState("home");
+  const timelineQuery = actorId ? `social&author=${encodeURIComponent(actorId)}` : timeline;
   const [federation, setFederation] = useState<{
     enabled: boolean;
   }>({ enabled: false });
@@ -100,6 +102,7 @@ export function HomeScreen() {
         url?: string;
         created_at?: string;
         emojis?: CustomEmoji[];
+        avatar?: RemoteAvatar | null;
       }[]
     | null
   >(null);
@@ -197,10 +200,16 @@ export function HomeScreen() {
           const before = rows.length
             ? `&before=${encodeURIComponent(rows[rows.length - 1].entry_id ?? rows[rows.length - 1].id)}`
             : "";
-          const page = await client.get<HomePost[]>(
-            `/api/home?timeline=${timeline}${size !== 50 ? `&limit=${size}` : ""}${before}`,
-            { signal: controller.signal },
-          );
+          const page = postId
+            ? [
+                await client.get<HomePost>(`/api/home/${encodeURIComponent(postId)}`, {
+                  signal: controller.signal,
+                }),
+              ]
+            : await client.get<HomePost[]>(
+                `/api/home?timeline=${timelineQuery}${size !== 50 ? `&limit=${size}` : ""}${before}`,
+                { signal: controller.signal },
+              );
           rows.push(...page);
           reachedTail = reachedTimelineTail(rows, tail);
           more = page.length === size;
@@ -234,7 +243,7 @@ export function HomeScreen() {
         if (version === generation.current) setLoading(false);
       }
     },
-    [client, timeline],
+    [client, timelineQuery, postId],
   );
 
   useEffect(() => {
@@ -261,7 +270,7 @@ export function HomeScreen() {
     olderRequest.current = controller;
     try {
       const rows = await client.get<HomePost[]>(
-        `/api/home?timeline=${timeline}&before=${encodeURIComponent(posts[posts.length - 1].entry_id ?? posts[posts.length - 1].id)}`,
+        `/api/home?timeline=${timelineQuery}&before=${encodeURIComponent(posts[posts.length - 1].entry_id ?? posts[posts.length - 1].id)}`,
         { signal: controller.signal },
       );
       if (version !== generation.current) return;
@@ -304,7 +313,7 @@ export function HomeScreen() {
       <ScreenHeader
         icon={HomeIcon}
         titleId="home-title"
-        title={t("home.title")}
+        title={t(postId ? "activitypubSettings.post" : actorId ? "home.userDetails" : "home.title")}
         actions={
           <>
             <Button
@@ -359,33 +368,42 @@ export function HomeScreen() {
           } else setPull(0);
         }}
       >
-        {pull > 0 || pulling ? (
-          <div
-            role="status"
-            className="flex items-center justify-center gap-2 text-xs text-muted-foreground md:hidden"
-            style={{ height: pulling ? 60 : pull }}
-          >
-            {pulling ? (
-              <RefreshCwIcon className="size-4 animate-spin" />
-            ) : (
-              <ArrowDownIcon className="size-4" />
-            )}
-            {t(pulling ? "home.loading" : pull >= 60 ? "home.releaseRefresh" : "home.pullRefresh")}
-          </div>
-        ) : null}
         <div className="mx-auto w-full max-w-2xl">
-          <div className="flex gap-2 border-b p-3" aria-label={t("home.timeline")}>
-            {(["home", "local", "social"] as const).map((value) => (
-              <Button
-                key={value}
-                variant={timeline === value ? "secondary" : "ghost"}
-                aria-pressed={timeline === value}
-                onClick={() => setTimeline(value)}
-              >
-                {t(`home.timelineLabels.${value}`)}
-              </Button>
-            ))}
-          </div>
+          {actorId ? <ActivityPubProfile actorId={actorId} /> : null}
+          {!postId && !actorId ? (
+            <div className="flex gap-2 border-b p-3" aria-label={t("home.timeline")}>
+              {(["home", "local", "social"] as const).map((value) => (
+                <Button
+                  key={value}
+                  variant={timeline === value ? "secondary" : "ghost"}
+                  aria-pressed={timeline === value}
+                  onClick={() => setTimeline(value)}
+                >
+                  {t(`home.timelineLabels.${value}`)}
+                </Button>
+              ))}
+            </div>
+          ) : (
+            <Link to="/home" className="inline-block p-3 text-sm text-link">
+              {t("home.title")}
+            </Link>
+          )}
+          {pull > 0 || pulling ? (
+            <div
+              role="status"
+              className="flex items-center justify-center gap-2 text-xs text-muted-foreground md:hidden"
+              style={{ height: pulling ? 60 : pull }}
+            >
+              {pulling ? (
+                <RefreshCwIcon className="size-4 animate-spin" />
+              ) : (
+                <ArrowDownIcon className="size-4" />
+              )}
+              {t(
+                pulling ? "home.loading" : pull >= 60 ? "home.releaseRefresh" : "home.pullRefresh",
+              )}
+            </div>
+          ) : null}
           {error ? (
             <p role="alert" className="p-4 text-sm text-destructive">
               {t("home.loadError")}{" "}
@@ -419,28 +437,49 @@ export function HomeScreen() {
                     </p>
                   ) : null}
                   <article className="flex min-w-0 gap-3">
-                    <Avatar>
-                      <AvatarFallback>
-                        {initials(post.display_name || post.user_name)}
-                      </AvatarFallback>
-                    </Avatar>
+                    <Link
+                      to="/home/users/$actorId"
+                      params={{ actorId: post.user_id }}
+                      className="shrink-0 rounded-full focus-visible:ring-2 focus-visible:ring-ring"
+                    >
+                      <ActivityPubAvatar
+                        avatar={post.remote ? post.avatar : null}
+                        name={post.display_name || post.user_name}
+                      />
+                    </Link>
                     <div className="min-w-0 flex-1">
                       <div className="flex flex-wrap items-baseline gap-x-2 gap-y-1 text-xs text-muted-foreground">
-                        <span className="break-all text-sm font-semibold text-foreground">
+                        <Link
+                          to="/home/users/$actorId"
+                          params={{ actorId: post.user_id }}
+                          className="break-all text-sm font-semibold text-foreground hover:underline"
+                        >
                           <ActivityPubText
                             text={post.display_name || post.user_name}
                             emojis={post.actor_emojis}
                           />
-                        </span>
-                        <FederatedAccount
-                          userName={post.user_name}
-                          actorId={post.user_id}
-                          remote={post.remote}
-                        />
+                        </Link>
+                        <Link
+                          to="/home/users/$actorId"
+                          params={{ actorId: post.user_id }}
+                          className="hover:underline"
+                        >
+                          <FederatedAccount
+                            userName={post.user_name}
+                            actorId={post.user_id}
+                            remote={post.remote}
+                          />
+                        </Link>
                         <span className="inline-flex min-w-0 max-w-full items-baseline gap-2">
-                          <time className="shrink-0" dateTime={post.created_at}>
-                            {new Date(post.created_at).toLocaleString(i18n.language)}
-                          </time>
+                          <Link
+                            to="/home/posts/$postId"
+                            params={{ postId: post.id }}
+                            className="shrink-0 hover:underline"
+                          >
+                            <time dateTime={post.created_at}>
+                              {new Date(post.created_at).toLocaleString(i18n.language)}
+                            </time>
+                          </Link>
                           {post.channel_id && !post.remote ? (
                             <Link
                               className="min-w-0 truncate text-link"
@@ -732,17 +771,29 @@ export function HomeScreen() {
                   className="space-y-2 rounded-lg border p-4"
                 >
                   <div className="flex items-center gap-3">
-                    <Avatar>
-                      <AvatarFallback>
-                        {initials(user.display_name || user.user_name)}
-                      </AvatarFallback>
-                    </Avatar>
+                    <Link
+                      to="/home/users/$actorId"
+                      params={{ actorId: user.id }}
+                      onClick={() => setSearchOpen(false)}
+                    >
+                      <ActivityPubAvatar
+                        avatar={user.remote ? user.avatar : null}
+                        name={user.display_name || user.user_name}
+                      />
+                    </Link>
                     <div className="min-w-0">
                       <h3 className="break-all font-semibold">
-                        <ActivityPubText
-                          text={user.display_name || user.user_name}
-                          emojis={user.emojis}
-                        />
+                        <Link
+                          to="/home/users/$actorId"
+                          params={{ actorId: user.id }}
+                          onClick={() => setSearchOpen(false)}
+                          className="hover:underline"
+                        >
+                          <ActivityPubText
+                            text={user.display_name || user.user_name}
+                            emojis={user.emojis}
+                          />
+                        </Link>
                       </h3>
                       <p className="break-all text-sm text-muted-foreground">
                         <FederatedAccount
