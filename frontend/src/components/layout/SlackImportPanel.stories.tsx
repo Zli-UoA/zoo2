@@ -47,6 +47,18 @@ const base: SlackImport = {
         name_taken: false,
         existing_channel: null,
       },
+      {
+        slack_channel_id: "C3",
+        name: "design",
+        is_private: false,
+        is_archived: false,
+        members: 8,
+        message_count: 120,
+        suggested_name: "design",
+        name_taken: false,
+        existing_channel: null,
+        deleted_channel: "slack-design",
+      },
     ],
   },
   total_messages: 12_925,
@@ -128,6 +140,11 @@ export const Mapping: Story = {
       "skip",
     );
     await expect(screen.getByRole("button", { name: "2 チャンネルを取り込む" })).toBeEnabled();
+    // 取り込み先が削除済みの #design は取り込まない
+    await expect(screen.getByText(/#slack-design が削除されている/)).toBeVisible();
+    await expect(screen.getByRole("combobox", { name: "#design の取り込み方" })).toHaveValue(
+      "skip",
+    );
     // 以前取り込んだ #random は同じ取り込み先に固定する
     await expect(screen.getByRole("combobox", { name: "#random の取り込み先" })).toBeDisabled();
   },
@@ -242,7 +259,9 @@ export const Failed: Story = {
   },
   play: async () => {
     await userEvent.click(await screen.findByRole("button", { name: "取り消す" }));
-    await expect(await screen.findByRole("alertdialog")).toBeVisible();
+    // 開くアニメーションの途中は不可視と判定されるため、表示されきるまで待つ
+    const dialog = await screen.findByRole("alertdialog");
+    await waitFor(() => expect(dialog).toBeVisible());
   },
 };
 

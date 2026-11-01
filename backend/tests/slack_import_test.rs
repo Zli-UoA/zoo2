@@ -474,6 +474,33 @@ async fn test_slack_export_import_flow() -> anyhow::Result<()> {
     )
     .await?;
     assert_eq!(count[0]["n"], 5);
+
+    // 取り込み先を削除した後は、過去ログが残っているので取り込み直せない
+    {
+        let mut db = state.db.clone();
+        let mut tx = db.transaction().await?;
+        toasty::sql::statement("UPDATE channels SET deleted_at=CURRENT_TIMESTAMP WHERE id=$1")
+            .bind(general.as_str())
+            .exec(&mut tx)
+            .await?;
+        tx.commit().await?;
+    }
+    let third = upload(&state, &app, &admin, &zip).await;
+    let general_entry = &third["analysis"]["channels"][0];
+    assert_eq!(general_entry["existing_channel"], Value::Null);
+    assert_eq!(general_entry["deleted_channel"], general_name.as_str());
+    let third_id = third["id"].as_str().unwrap().to_string();
+    let (status, body) = request(
+        &app,
+        "POST",
+        &format!("/api/admin/slack-imports/{third_id}/start"),
+        &admin,
+        Some(json!({"mappings":[
+            {"slack_channel_id":"C1","action":"create","name":format!("again-{suffix}")}
+        ]})),
+    )
+    .await?;
+    assert_eq!(status, StatusCode::CONFLICT, "{body}");
     Ok(())
 }
 

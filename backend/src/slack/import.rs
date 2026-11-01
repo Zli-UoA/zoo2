@@ -96,6 +96,7 @@ impl Mapping {
 
 /// 以前の取り込みと別の zoo チャンネルへ入れようとしていないか確かめる。
 /// メッセージ ID は取り込み先によらず決まるため、取り込み先を変えると過去ログが移らない。
+/// 以前の取り込み先が削除済みなら、過去ログはそこに残ったままなので取り込み直せない。
 pub(crate) async fn ensure_same_target(
     tx: &mut toasty::Transaction<'_>,
     team: &str,
@@ -106,15 +107,20 @@ pub(crate) async fn ensure_same_target(
     };
     let previous = query(
         tx,
-        "SELECT json_build_object('id',c.id,'name',c.channel_name)::text FROM slack_channels s \
-         JOIN channels c ON c.id=s.channel_id \
-         WHERE s.team_id=$1 AND s.slack_channel_id=$2 AND c.deleted_at IS NULL",
+        "SELECT json_build_object('id',c.id,'name',c.channel_name,'deleted',c.deleted_at IS NOT NULL)::text \
+         FROM slack_channels s JOIN channels c ON c.id=s.channel_id \
+         WHERE s.team_id=$1 AND s.slack_channel_id=$2",
         &[team, &mapping.slack_channel_id],
     )
     .await?
     .into_iter()
     .next();
     match previous {
+        Some(previous) if previous["deleted"] == true => Err(AppError::Conflict(format!(
+            "Slack channel {} was imported into #{}, which has been deleted; skip it",
+            mapping.slack_channel_id,
+            previous["name"].as_str().unwrap_or_default()
+        ))),
         Some(previous) if previous["id"] != target.as_str() => Err(AppError::Conflict(format!(
             "Slack channel {} was already imported into #{}; import it into the same channel or skip it",
             mapping.slack_channel_id,

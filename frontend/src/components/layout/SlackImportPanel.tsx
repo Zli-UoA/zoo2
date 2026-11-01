@@ -331,6 +331,11 @@ function MappingForm({
                     members: channel.members,
                   })}
                 </p>
+                {channel.deleted_channel ? (
+                  <p className="text-xs text-destructive">
+                    {t("slackImport.deletedTarget", { name: channel.deleted_channel })}
+                  </p>
+                ) : null}
               </div>
               <Select
                 aria-label={t("slackImport.actionFor", { name: channel.name })}
@@ -356,10 +361,16 @@ function MappingForm({
                 }}
               >
                 {/* 以前取り込んだチャンネルは同じ取り込み先にしか入れられない (メッセージ ID が変わらないため) */}
-                <option value="create" disabled={!!channel.existing_channel}>
+                <option
+                  value="create"
+                  disabled={!!channel.existing_channel || !!channel.deleted_channel}
+                >
                   {t("slackImport.actionCreate")}
                 </option>
-                <option value="existing" disabled={targets.length === 0}>
+                <option
+                  value="existing"
+                  disabled={targets.length === 0 || !!channel.deleted_channel}
+                >
                   {t("slackImport.actionExisting")}
                 </option>
                 <option value="skip">{t("slackImport.actionSkip")}</option>
