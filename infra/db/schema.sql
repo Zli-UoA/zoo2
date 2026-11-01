@@ -4,7 +4,7 @@ CREATE TABLE users (
   display_name varchar(255) NOT NULL,
   created_at timestamp(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at timestamp(3),
-  PRIMARY KEY (id),
+  CONSTRAINT "User_pkey" PRIMARY KEY (id),
   CONSTRAINT users_user_name_key UNIQUE (user_name)
 );
 
@@ -19,7 +19,7 @@ CREATE TABLE channels (
   updated_at timestamp(3),
   archive_at timestamp(3),
   deleted_at timestamp(3),
-  PRIMARY KEY (id),
+  CONSTRAINT "Channel_pkey" PRIMARY KEY (id),
   CONSTRAINT channels_channel_name_key UNIQUE (channel_name),
   CONSTRAINT channels_created_user_id_fkey
     FOREIGN KEY (created_user_id) REFERENCES users (id)
@@ -38,7 +38,7 @@ CREATE TABLE messages (
   updated_at timestamp(3),
   deleted_at timestamp(3),
   parent_id text,
-  PRIMARY KEY (id),
+  CONSTRAINT "Message_pkey" PRIMARY KEY (id),
   CONSTRAINT messages_user_id_fkey
     FOREIGN KEY (user_id) REFERENCES users (id)
     ON UPDATE CASCADE ON DELETE RESTRICT,
@@ -54,7 +54,7 @@ CREATE TABLE channel_user (
   user_id text NOT NULL,
   channel_id text NOT NULL,
   joined_at timestamp(3) NOT NULL,
-  PRIMARY KEY (user_id, channel_id),
+  CONSTRAINT "ChannelUser_pkey" PRIMARY KEY (user_id, channel_id),
   CONSTRAINT channel_user_user_id_fkey
     FOREIGN KEY (user_id) REFERENCES users (id)
     ON UPDATE CASCADE ON DELETE RESTRICT,
@@ -66,14 +66,14 @@ CREATE TABLE channel_user (
 CREATE TABLE role (
   id text NOT NULL,
   role_name varchar(255) NOT NULL,
-  PRIMARY KEY (id),
+  CONSTRAINT "Role_pkey" PRIMARY KEY (id),
   CONSTRAINT role_role_name_key UNIQUE (role_name)
 );
 
 CREATE TABLE user_role (
   user_id text NOT NULL,
   role_id text NOT NULL,
-  PRIMARY KEY (user_id, role_id),
+  CONSTRAINT "UserRole_pkey" PRIMARY KEY (user_id, role_id),
   CONSTRAINT user_role_user_id_fkey
     FOREIGN KEY (user_id) REFERENCES users (id)
     ON UPDATE CASCADE ON DELETE RESTRICT,

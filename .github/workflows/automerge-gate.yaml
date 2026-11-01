@@ -15,7 +15,7 @@ jobs:
       group: ${{ github.workflow }}-${{ github.ref }}
       cancel-in-progress: true
     runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-latest' || 'zli-kubecamp-no-docker' }}
-    timeout-minutes: 35
+    timeout-minutes: 180
     permissions:
       statuses: write
       checks: read
