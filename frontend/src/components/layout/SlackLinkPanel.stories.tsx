@@ -1,5 +1,5 @@
 import type { Meta, StoryObj } from "@storybook/react-vite";
-import { http, HttpResponse } from "msw";
+import { delay, http, HttpResponse } from "msw";
 import { expect, fn, screen, userEvent, waitFor, within } from "storybook/test";
 import { SlackLinkPanel } from "./SlackLinkPanel";
 
@@ -137,7 +137,11 @@ export const ReturnedFromSlack: Story = {
     router: { initialEntries: ["/settings?tab=slack&code=abc&state=signed"] },
     msw: {
       handlers: [
-        notLinked,
+        // 連携前の状態を返す初期の読み込みが、完了処理より遅れて届く
+        http.get("*/api/slack/link", async () => {
+          await delay(300);
+          return HttpResponse.json({ configured: true, link: null });
+        }),
         http.post("*/api/slack/oauth/complete", () =>
           HttpResponse.json({
             configured: true,
@@ -155,6 +159,10 @@ export const ReturnedFromSlack: Story = {
   },
   play: async () => {
     await expect(await screen.findByText("Zli の alice として連携しています。")).toBeVisible();
+    // 遅れて届いた連携前の状態で上書きしない
+    await new Promise((resolve) => setTimeout(resolve, 500));
+    await expect(screen.getByText("Zli の alice として連携しています。")).toBeVisible();
+    await expect(screen.queryByRole("button", { name: "Slack と連携" })).not.toBeInTheDocument();
   },
 };
 

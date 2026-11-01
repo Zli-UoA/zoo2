@@ -44,12 +44,15 @@ export function SlackLinkPanel({ navigateTo = (url: string) => window.location.a
   const [error, setError] = useState("");
   const [pending, setPending] = useState(false);
   const [confirmUnlink, setConfirmUnlink] = useState(false);
+  // 連携の完了・解除で状態を書き換えるたびに進める。それより前に始めた読み込みの結果は捨てる。
+  const revision = useRef(0);
 
   useEffect(() => {
     const controller = new AbortController();
+    const started = revision.current;
     getSlackLink(client, controller.signal)
       .then((value) => {
-        if (!controller.signal.aborted) setState(value);
+        if (!controller.signal.aborted && revision.current === started) setState(value);
       })
       .catch(() => {
         if (!controller.signal.aborted) setError(t("slackLink.loadError"));
@@ -74,6 +77,7 @@ export function SlackLinkPanel({ navigateTo = (url: string) => window.location.a
       return;
     }
     setPending(true);
+    revision.current += 1;
     completeSlackLink(client, result.code, result.state)
       .then((value) => {
         setState(value);
@@ -100,7 +104,9 @@ export function SlackLinkPanel({ navigateTo = (url: string) => window.location.a
     setPending(true);
     setError("");
     try {
-      setState(await unlinkSlack(client));
+      const next = await unlinkSlack(client);
+      revision.current += 1;
+      setState(next);
       setConfirmUnlink(false);
       toast.success(t("slackLink.unlinked"));
     } catch {
