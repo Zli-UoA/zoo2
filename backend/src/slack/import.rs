@@ -66,6 +66,7 @@ const JOB_JSON: &str = "json_build_object('id',j.id,'status',j.status,'file_name
 'total_messages',j.total_messages,'processed_messages',j.processed_messages,\
 'total_files',j.total_files,'processed_files',j.processed_files,\
 'pending_files',(SELECT count(*) FROM slack_files f WHERE f.job_id=j.id AND f.status='pending'),\
+'failed_files',(SELECT count(*) FROM slack_files f WHERE f.job_id=j.id AND f.status='failed'),\
 'error',j.error,'created_by',j.created_by,'created_at',j.created_at,'updated_at',j.updated_at,\
 'finished_at',j.finished_at)::text";
 
@@ -80,6 +81,47 @@ async fn require_admin(
         ));
     }
     Ok(())
+}
+
+impl Mapping {
+    /// 取り込み先の zoo チャンネル ID (作成するチャンネルは決定的 ID)
+    pub fn target(&self, team: &str) -> Option<String> {
+        match &self.action {
+            MappingAction::Create { .. } => Some(super::channel_id(team, &self.slack_channel_id)),
+            MappingAction::Existing { channel_id } => Some(channel_id.clone()),
+            MappingAction::Skip => None,
+        }
+    }
+}
+
+/// 以前の取り込みと別の zoo チャンネルへ入れようとしていないか確かめる。
+/// メッセージ ID は取り込み先によらず決まるため、取り込み先を変えると過去ログが移らない。
+pub(crate) async fn ensure_same_target(
+    tx: &mut toasty::Transaction<'_>,
+    team: &str,
+    mapping: &Mapping,
+) -> Result<(), AppError> {
+    let Some(target) = mapping.target(team) else {
+        return Ok(());
+    };
+    let previous = query(
+        tx,
+        "SELECT json_build_object('id',c.id,'name',c.channel_name)::text FROM slack_channels s \
+         JOIN channels c ON c.id=s.channel_id \
+         WHERE s.team_id=$1 AND s.slack_channel_id=$2 AND c.deleted_at IS NULL",
+        &[team, &mapping.slack_channel_id],
+    )
+    .await?
+    .into_iter()
+    .next();
+    match previous {
+        Some(previous) if previous["id"] != target.as_str() => Err(AppError::Conflict(format!(
+            "Slack channel {} was already imported into #{}; import it into the same channel or skip it",
+            mapping.slack_channel_id,
+            previous["name"].as_str().unwrap_or_default()
+        ))),
+        _ => Ok(()),
+    }
 }
 
 async fn load_job(tx: &mut toasty::Transaction<'_>, id: &str) -> Result<Value, AppError> {
@@ -261,6 +303,7 @@ async fn start(
                 mapping.slack_channel_id
             )));
         }
+        ensure_same_target(&mut tx, &team, mapping).await?;
         match &mapping.action {
             MappingAction::Create { name, .. } => {
                 validate_channel_name(name)?;
@@ -326,7 +369,7 @@ async fn start(
     Ok(Json(job))
 }
 
-/// トークン設定後に、保留中の添付ファイルの取得をやり直す
+/// トークン設定後に、未取得・取得に失敗した添付ファイルの取得をやり直す
 async fn fetch_files(
     State(s): State<AppState>,
     user: AuthUser,
@@ -341,11 +384,20 @@ async fn fetch_files(
     let mut tx = db.transaction().await?;
     require_admin(&mut tx, &s, &user).await?;
     let job = load_job(&mut tx, &id).await?;
-    if job["status"] != "completed" || job["pending_files"].as_i64().unwrap_or(0) == 0 {
+    let retryable =
+        job["pending_files"].as_i64().unwrap_or(0) + job["failed_files"].as_i64().unwrap_or(0);
+    if job["status"] != "completed" || retryable == 0 {
         return Err(AppError::Conflict(
             "There are no pending files to fetch".into(),
         ));
     }
+    // トークンの権限を直した後などに備え、失敗した添付も試行回数を戻して再取得する
+    toasty::sql::statement(
+        "UPDATE slack_files SET status='pending',attempts=0,error=NULL,updated_at=now() WHERE job_id=$1 AND status='failed'",
+    )
+    .bind(id.as_str())
+    .exec(&mut tx)
+    .await?;
     toasty::sql::statement(
         "UPDATE slack_import_jobs SET status='fetching_files',available_at=now(),attempts=0,error=NULL,finished_at=NULL,updated_at=now() WHERE id=$1 AND status='completed'",
     )

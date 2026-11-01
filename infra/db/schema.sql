@@ -1718,6 +1718,7 @@ CREATE TABLE slack_channels (
 CREATE INDEX idx_slack_channels_channel_id ON slack_channels (channel_id);
 
 -- エクスポートに実体が含まれない添付ファイル。トークンで取得して attachments に移す。
+-- 同じファイルが複数のメッセージに共有されることがあるため、メッセージごとに 1 行持つ。
 CREATE TABLE slack_files (
   team_id text NOT NULL,
   slack_file_id text NOT NULL,
@@ -1735,7 +1736,7 @@ CREATE TABLE slack_files (
   attempts integer NOT NULL DEFAULT 0,
   created_at timestamptz NOT NULL DEFAULT now(),
   updated_at timestamptz NOT NULL DEFAULT now(),
-  PRIMARY KEY (team_id, slack_file_id),
+  PRIMARY KEY (team_id, slack_file_id, message_id),
   CONSTRAINT slack_files_status_check CHECK (status IN ('pending', 'done', 'skipped', 'failed')),
   CONSTRAINT slack_files_job_id_fkey
     FOREIGN KEY (job_id) REFERENCES slack_import_jobs (id)

@@ -299,6 +299,7 @@
         "Analyzing",
         "Importing",
         "CompletedWithPendingFiles",
+        "HistoryWithFailedFiles",
         "Failed",
         "Mobile"
       ]

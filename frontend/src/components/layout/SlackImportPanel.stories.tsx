@@ -1,6 +1,6 @@
 import type { Meta, StoryObj } from "@storybook/react-vite";
 import { delay, http, HttpResponse } from "msw";
-import { expect, screen, userEvent, within } from "storybook/test";
+import { expect, screen, userEvent, waitFor, within } from "storybook/test";
 import type { SlackImport } from "../../lib/api/slackImport";
 import { SlackImportPanel } from "./SlackImportPanel";
 
@@ -54,6 +54,7 @@ const base: SlackImport = {
   total_files: 0,
   processed_files: 0,
   pending_files: 0,
+  failed_files: 0,
   error: null,
   created_at: "2026-11-01T09:00:00Z",
   finished_at: null,
@@ -127,6 +128,8 @@ export const Mapping: Story = {
       "skip",
     );
     await expect(screen.getByRole("button", { name: "2 チャンネルを取り込む" })).toBeEnabled();
+    // 以前取り込んだ #random は同じ取り込み先に固定する
+    await expect(screen.getByRole("combobox", { name: "#random の取り込み先" })).toBeDisabled();
   },
 };
 
@@ -172,7 +175,8 @@ export const CompletedWithPendingFiles: Story = {
             status: "completed",
             processed_messages: 12_925,
             total_files: 18,
-            pending_files: 18,
+            pending_files: 16,
+            failed_files: 2,
             finished_at: "2026-11-01T09:30:00Z",
           },
           { ...base, id: "import-0", status: "cancelled", file_name: "old.zip" },
@@ -181,9 +185,45 @@ export const CompletedWithPendingFiles: Story = {
     },
   },
   play: async () => {
-    await expect(await screen.findByRole("button", { name: "添付ファイルを取得" })).toBeVisible();
+    await expect(
+      await screen.findByRole("button", { name: `${base.file_name} の添付ファイルを取得` }),
+    ).toBeVisible();
+    await expect(screen.getByText(/2 件の添付ファイルを取得できませんでした/)).toBeVisible();
     const history = screen.getByRole("heading", { name: "履歴" }).closest("section")!;
     await expect(within(history).getByText("old.zip")).toBeVisible();
+  },
+};
+
+let refetched = "";
+export const HistoryWithFailedFiles: Story = {
+  beforeEach: () => {
+    refetched = "";
+  },
+  parameters: {
+    msw: {
+      handlers: [
+        list(
+          { ...base, id: "import-2", status: "completed", file_name: "new.zip" },
+          {
+            ...base,
+            id: "import-1",
+            status: "completed",
+            file_name: "old.zip",
+            failed_files: 3,
+          },
+        ),
+        http.post("*/api/admin/slack-imports/:id/fetch-files", ({ params }) => {
+          refetched = String(params.id);
+          return HttpResponse.json({ ...base, id: "import-1", status: "fetching_files" });
+        }),
+      ],
+    },
+  },
+  play: async () => {
+    await userEvent.click(
+      await screen.findByRole("button", { name: "old.zip の添付ファイルを取得" }),
+    );
+    await waitFor(() => expect(refetched).toBe("import-1"));
   },
 };
 

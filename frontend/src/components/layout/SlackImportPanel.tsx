@@ -10,6 +10,7 @@ import {
   defaultMappings,
   fetchSlackImportFiles,
   listSlackImports,
+  retryableFiles,
   startSlackImport,
   uploadSlackExport,
   type PutWithProgress,
@@ -122,12 +123,20 @@ export function SlackImportPanel({ put }: { put?: PutWithProgress }) {
         <SettingsSection title={t("slackImport.history")}>
           <ul className="divide-y text-sm">
             {history.map((job) => (
-              <li key={job.id} className="flex flex-wrap justify-between gap-2 py-2">
+              <li key={job.id} className="flex flex-wrap items-center justify-between gap-2 py-2">
                 <span className="min-w-0 break-all">{job.file_name}</span>
                 <span className="text-muted-foreground">
                   {t(`slackImport.status.${job.status}`)} ·{" "}
                   {new Date(job.created_at).toLocaleString()}
                 </span>
+                {retryableFiles(job) > 0 ? (
+                  <FileSummary
+                    job={job}
+                    client={client}
+                    onChange={replace}
+                    onError={(cause) => setError(describeImportError(cause, t))}
+                  />
+                ) : null}
               </li>
             ))}
           </ul>
@@ -199,19 +208,8 @@ function ImportCard({
       {job.status === "completed" ? (
         <div className="space-y-2 text-sm">
           <p>{t("slackImport.completed", { count: job.processed_messages })}</p>
-          {job.pending_files > 0 ? (
-            <>
-              <p className="text-muted-foreground">
-                {t("slackImport.pendingFiles", { count: job.pending_files })}
-              </p>
-              <Button
-                variant="outline"
-                disabled={pending}
-                onClick={() => void run(() => fetchSlackImportFiles(client, job.id))}
-              >
-                {t("slackImport.fetchFiles")}
-              </Button>
-            </>
+          {retryableFiles(job) > 0 ? (
+            <FileSummary job={job} client={client} onChange={onChange} onError={onError} />
           ) : null}
         </div>
       ) : null}
@@ -238,6 +236,49 @@ function ImportCard({
         }}
       />
     </SettingsSection>
+  );
+}
+
+/** 未取得・取得失敗の添付の件数と、取得し直す操作。履歴の取り込みからも使う。 */
+function FileSummary({
+  job,
+  client,
+  onChange,
+  onError,
+}: {
+  job: SlackImport;
+  client: ReturnType<typeof createConfiguredApiClient>;
+  onChange: (job: SlackImport) => void;
+  onError: (cause: unknown) => void;
+}) {
+  const { t } = useTranslation();
+  const [pending, setPending] = useState(false);
+  return (
+    <div className="w-full space-y-2 text-sm">
+      {job.pending_files > 0 ? (
+        <p className="text-muted-foreground">
+          {t("slackImport.pendingFiles", { count: job.pending_files })}
+        </p>
+      ) : null}
+      {job.failed_files > 0 ? (
+        <p className="text-destructive">
+          {t("slackImport.failedFiles", { count: job.failed_files })}
+        </p>
+      ) : null}
+      <Button
+        variant="outline"
+        disabled={pending}
+        aria-label={t("slackImport.fetchFilesFor", { name: job.file_name })}
+        onClick={() => {
+          setPending(true);
+          fetchSlackImportFiles(client, job.id)
+            .then(onChange, onError)
+            .finally(() => setPending(false));
+        }}
+      >
+        {t("slackImport.fetchFiles")}
+      </Button>
+    </div>
   );
 }
 
@@ -314,7 +355,10 @@ function MappingForm({
                     });
                 }}
               >
-                <option value="create">{t("slackImport.actionCreate")}</option>
+                {/* 以前取り込んだチャンネルは同じ取り込み先にしか入れられない (メッセージ ID が変わらないため) */}
+                <option value="create" disabled={!!channel.existing_channel}>
+                  {t("slackImport.actionCreate")}
+                </option>
                 <option value="existing" disabled={targets.length === 0}>
                   {t("slackImport.actionExisting")}
                 </option>
@@ -335,7 +379,7 @@ function MappingForm({
                   aria-label={t("slackImport.targetChannel", { name: channel.name })}
                   className="w-48"
                   value={mapping.channel_id}
-                  disabled={pending}
+                  disabled={pending || !!channel.existing_channel}
                   onChange={(event) =>
                     update(index, { ...mapping, channel_id: event.target.value })
                   }
