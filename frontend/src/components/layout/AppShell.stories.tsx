@@ -2,6 +2,7 @@ import { activityPubNotifications } from "../../../.storybook/activitypub-fixtur
 import { http, HttpResponse } from "msw";
 import { HomeScreen } from "../home/HomeScreen";
 import { homeHandlers } from "../../../.storybook/home-fixtures";
+import { playForImplementation } from "../../../.storybook/play-for-implementation";
 import { BubbleChatScreen } from "../chat/BubbleChatScreen";
 import { bubbleChatHandlers } from "../../../.storybook/bubble-fixtures";
 import type { Meta, StoryObj } from "@storybook/react-vite";
@@ -36,9 +37,9 @@ async function expectAlignedHeaders() {
 }
 
 export const Welcome: Story = {
-  play: async () => {
-    await expect(screen.getByLabelText("チャンネル", { selector: "aside" })).toBeVisible();
-  },
+  play: playForImplementation(async () => {
+    await expect(await screen.findByLabelText("チャンネル", { selector: "aside" })).toBeVisible();
+  }),
 };
 
 export const Channel: Story = {
@@ -48,11 +49,11 @@ export const Channel: Story = {
   parameters: {
     router: { initialEntries: ["/channels/channel-general"] },
   },
-  play: async () => {
+  play: playForImplementation(async () => {
     await expect(await screen.findByText(/今日のリリースは 18:00/)).toBeInTheDocument();
-    await expect(screen.getByLabelText("チャンネル", { selector: "aside" })).toBeVisible();
+    await expect(await screen.findByLabelText("チャンネル", { selector: "aside" })).toBeVisible();
     await expectAlignedHeaders();
-  },
+  }),
 };
 
 export const MobileChannel: Story = {
@@ -63,15 +64,15 @@ export const MobileChannel: Story = {
   parameters: {
     router: { initialEntries: ["/channels/channel-general"] },
   },
-  play: async () => {
+  play: playForImplementation(async () => {
     await screen.findByRole("heading", { name: "general" });
     await expectAlignedHeaders();
-  },
+  }),
 };
 
 export const ChannelWithMembers: Story = {
   ...Channel,
-  play: async (context) => {
+  play: playForImplementation(async (context) => {
     await Channel.play?.(context);
     await userEvent.click(screen.getByRole("button", { name: /^メンバー / }));
     const membersHeader = (
@@ -81,7 +82,7 @@ export const ChannelWithMembers: Story = {
     await expect(membersHeader.getBoundingClientRect().bottom).toBe(
       railHeader.getBoundingClientRect().bottom,
     );
-  },
+  }),
 };
 
 export const Notifications: Story = {
@@ -92,7 +93,8 @@ export const Notifications: Story = {
     a11y: { test: "error" },
     router: { initialEntries: ["/notifications"] },
   },
-  play: async () => {
+  play: playForImplementation(async () => {
+    await screen.findByRole("region", { name: "通知" });
     await waitFor(() => expect(screen.queryByRole("status")).not.toBeInTheDocument());
     await expect(screen.getByLabelText("チャンネル", { selector: "aside" })).not.toBeVisible();
     const main = screen.getByRole("main").getBoundingClientRect();
@@ -100,7 +102,7 @@ export const Notifications: Story = {
     await expect(main.x).toBe(nav.right);
     await expect(main.right).toBe(document.documentElement.clientWidth);
     await expectAlignedHeaders();
-  },
+  }),
 };
 
 export const NotificationsSingleUnread: Story = {
@@ -143,7 +145,7 @@ export const BubbleChat: Story = {
     router: { initialEntries: ["/bubble"] },
     msw: { handlers: bubbleChatHandlers },
   },
-  play: async () => {
+  play: playForImplementation(async () => {
     await expect(
       await screen.findByRole("textbox", { name: "リアルタイムメッセージ入力" }),
     ).toBeVisible();
@@ -153,7 +155,7 @@ export const BubbleChat: Story = {
       "active",
     );
     await expectAlignedHeaders();
-  },
+  }),
 };
 
 export const MobileBubbleChat: Story = {
@@ -168,11 +170,11 @@ export const MobileMembers: Story = {
     a11y: { test: "error" },
     router: { initialEntries: ["/channels/channel-general?members=true"] },
   },
-  play: async () => {
+  play: playForImplementation(async () => {
     await expect(await screen.findByRole("heading", { name: "メンバー", level: 1 })).toBeVisible();
     await expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
     await expect(screen.getByLabelText("メインナビゲーション")).not.toBeVisible();
-  },
+  }),
 };
 
 export const Home: Story = {
@@ -182,7 +184,7 @@ export const Home: Story = {
     router: { initialEntries: ["/home"] },
     msw: { handlers: homeHandlers },
   },
-  play: async () => {
+  play: playForImplementation(async () => {
     await expect(await screen.findByText(/Homeから最初の公開投稿です/)).toBeVisible();
     await expect(screen.getByRole("link", { name: "Home" })).toHaveAttribute(
       "data-status",
@@ -197,7 +199,7 @@ export const Home: Story = {
     await expect(main.bottom - button.bottom).toBeGreaterThanOrEqual(19);
     await expect(main.bottom - button.bottom).toBeLessThanOrEqual(33);
     await expect(main.bottom).toBe(window.innerHeight);
-  },
+  }),
 };
 export const MobileHome: Story = { ...Home, globals: { viewport: { value: "mobile" } } };
 export const DarkHome: Story = { ...Home, globals: { theme: "dark" } };
@@ -208,14 +210,14 @@ export const EmptyHome: Story = {
     ...Home.parameters,
     msw: { handlers: [http.get("*/api/home", () => HttpResponse.json([]))] },
   },
-  play: async () => {
+  play: playForImplementation(async () => {
     await expect(await screen.findByText("まだ投稿がありません")).toBeVisible();
     const main = screen.getByRole("main").getBoundingClientRect();
     const button = screen.getByRole("button", { name: "投稿を書く" }).getBoundingClientRect();
     await expect(main.bottom - button.bottom).toBeGreaterThanOrEqual(19);
     await expect(main.bottom - button.bottom).toBeLessThanOrEqual(33);
     await expect(main.bottom).toBe(window.innerHeight);
-  },
+  }),
 };
 export const MobileEmptyHome: Story = { ...EmptyHome, globals: { viewport: { value: "mobile" } } };
 
@@ -232,7 +234,7 @@ export const FederatedUnread: Story = {
       ],
     },
   },
-  play: async () => {
+  play: playForImplementation(async () => {
     await expect(await screen.findByRole("link", { name: "未読通知 6 件" })).toBeVisible();
-  },
+  }),
 };

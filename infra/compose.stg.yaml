@@ -46,6 +46,7 @@ services:
       context: .
       dockerfile: infra/Dockerfile-frontend-deploy
       args:
+        VITE_EXPERIMENTAL_COMPOSE: ${VITE_EXPERIMENTAL_COMPOSE:-false}
         VITE_API_BASE_URL: ""
         # SPA の OIDC PKCE 設定。未設定（空）なら dev の X-Dev-User のまま。
         VITE_OIDC_ISSUER: ${VITE_OIDC_ISSUER:-}

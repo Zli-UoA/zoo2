@@ -1,10 +1,12 @@
+import { storySurfaces } from "../../../../.storybook/story-surfaces";
+import { playForImplementation } from "../../../../.storybook/play-for-implementation";
 import type { Meta, StoryObj } from "@storybook/react-vite";
 import { expect, fn, screen, userEvent, waitFor, within } from "storybook/test";
 
 import { StoryShell } from "../../../../.storybook/shell";
 import { storyUsers } from "../../../../.storybook/fixtures";
 import { reactionUserLabel } from "../../../lib/emoji/reactions";
-import type { AttachmentRow } from "../../../lib/electric/types";
+import { storyAttachments } from "../../../../.storybook/attachment-fixtures";
 import { MessageRow } from "./MessageRow";
 import type { MessageItem } from "./messageGrouping";
 
@@ -64,7 +66,7 @@ const meta = {
   },
   decorators: [
     (Story) => (
-      <div className="mx-auto max-w-3xl bg-background py-8">
+      <div className={storySurfaces["Features/Chat/MessageRow"]}>
         <Story />
       </div>
     ),
@@ -75,6 +77,10 @@ export default meta;
 type Story = StoryObj<typeof meta>;
 
 export const Default: Story = {};
+
+export const Grouped: Story = {
+  args: { item: { ...item, isGroupStart: false } },
+};
 
 export const OwnMessage: Story = {
   args: {
@@ -87,11 +93,11 @@ export const HoverActions: Story = {
     isOwn: true,
     onOpenThread: fn(),
   },
-  play: async ({ canvasElement }) => {
+  play: playForImplementation(async ({ canvasElement }) => {
     const canvas = within(canvasElement);
-    await userEvent.hover(canvas.getByText(/こんにちは/));
+    await userEvent.hover(await canvas.findByText(/こんにちは/));
     await expect(canvas.getByRole("button", { name: "編集" })).toBeInTheDocument();
-  },
+  }),
 };
 
 export const WithReactions: Story = {
@@ -139,25 +145,27 @@ export const ReactionUsers: Story = {
       },
     ],
   },
-  play: async ({ canvasElement }) => {
+  play: playForImplementation(async ({ canvasElement }) => {
     await userEvent.click(
-      within(canvasElement).getByRole("button", { name: "👍 にリアクションしたユーザーを表示" }),
+      await within(canvasElement).findByRole("button", {
+        name: "👍 にリアクションしたユーザーを表示",
+      }),
     );
     const dialog = await screen.findByRole("dialog");
     await waitFor(() => expect(within(dialog).getByText(/@longname/)).toBeVisible());
     await waitFor(() => expect(within(dialog).getByText(/@bob/)).toBeVisible());
-  },
+  }),
 };
 
 export const ReactionUsersHover: Story = {
   parameters: { a11y: { test: "error" } },
   args: WithReactions.args,
-  play: async ({ canvasElement }) => {
-    const chip = within(canvasElement).getByRole("button", { name: /👍 3 件/ });
+  play: playForImplementation(async ({ canvasElement }) => {
+    const chip = await within(canvasElement).findByRole("button", { name: /👍 3 件/ });
     await userEvent.hover(chip);
     const tooltip = await screen.findByRole("tooltip");
     await expect(tooltip).toHaveTextContent("@alice");
-  },
+  }),
 };
 
 export const ReplyCount: Story = {
@@ -165,10 +173,10 @@ export const ReplyCount: Story = {
     replyCount: 3,
     onOpenThread: fn(),
   },
-  play: async ({ canvasElement }) => {
+  play: playForImplementation(async ({ canvasElement }) => {
     const canvas = within(canvasElement);
-    await expect(canvas.getByRole("button", { name: /3 件の返信/ })).toBeVisible();
-  },
+    await expect(await canvas.findByRole("button", { name: /3 件の返信/ })).toBeVisible();
+  }),
 };
 
 export const Editing: Story = {
@@ -206,42 +214,6 @@ export const Card: Story = {
   },
 };
 
-const attachmentRows: AttachmentRow[] = [
-  {
-    id: "attachment-image-1",
-    message_id: "message-1",
-    uploader_id: "user-1",
-    channel_id: "channel-general",
-    file_name: "screenshot.png",
-    file_size: "184320",
-    content_type: "image/png",
-    storage_key: "attachments/channel-general/attachment-image-1",
-    created_at: "2026-01-02 09:00:00.000",
-  },
-  {
-    id: "attachment-image-2",
-    message_id: "message-1",
-    uploader_id: "user-1",
-    channel_id: "channel-general",
-    file_name: "diagram.png",
-    file_size: "98304",
-    content_type: "image/png",
-    storage_key: "attachments/channel-general/attachment-image-2",
-    created_at: "2026-01-02 09:00:01.000",
-  },
-  {
-    id: "attachment-file",
-    message_id: "message-1",
-    uploader_id: "user-1",
-    channel_id: "channel-general",
-    file_name: "release-notes.pdf",
-    file_size: "524288",
-    content_type: "application/pdf",
-    storage_key: "attachments/channel-general/attachment-file",
-    created_at: "2026-01-02 09:00:02.000",
-  },
-];
-
 export const WithAttachments: Story = {
   parameters: { a11y: { test: "error" } },
   args: {
@@ -249,19 +221,22 @@ export const WithAttachments: Story = {
       ...item,
       message: { ...item.message, content: "スクリーンショットを共有します。" },
     },
-    attachments: attachmentRows,
+    attachments: storyAttachments,
   },
-  play: async ({ canvasElement }) => {
+  play: playForImplementation(async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     await userEvent.click(
       await canvas.findByRole("button", { name: "screenshot.pngをプレビュー" }),
     );
     const dialog = await screen.findByRole("dialog");
-    const preview = within(dialog).getByRole("img", { name: "screenshot.png" });
-    await waitFor(() => expect(preview).toBeVisible());
+    await waitFor(async () => {
+      const preview = within(dialog).getByRole("img", { name: "screenshot.png" });
+      await expect(preview).toBeVisible();
+      await expect((preview as HTMLImageElement).naturalWidth).toBeGreaterThan(0);
+    });
     await userEvent.click(within(dialog).getByRole("button", { name: "閉じる" }));
     await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
-  },
+  }),
 };
 
 export const Mobile: Story = {
@@ -290,9 +265,11 @@ export const AppMessage: Story = {
       </StoryShell>
     ),
   ],
-  play: async ({ canvasElement }) => {
-    await expect(within(canvasElement).getByRole("button", { name: "詳細を確認" })).toBeVisible();
-  },
+  play: playForImplementation(async ({ canvasElement }) => {
+    await expect(
+      await within(canvasElement).findByRole("button", { name: "詳細を確認" }),
+    ).toBeVisible();
+  }),
   parameters: { a11y: { test: "error" } },
   args: {
     item: {
@@ -325,13 +302,13 @@ export const CopyOriginalMenu: Story = {
       },
     },
   },
-  play: async ({ canvasElement }) => {
-    within(canvasElement).getByRole("button", { name: "その他の操作" }).focus();
+  play: playForImplementation(async ({ canvasElement }) => {
+    (await within(canvasElement).findByRole("button", { name: "その他の操作" })).focus();
     await userEvent.keyboard("{Enter}");
     await waitFor(() =>
       expect(screen.getByRole("menuitem", { name: "原文をコピー" })).toBeVisible(),
     );
-  },
+  }),
 };
 
 export const Edited: Story = {
@@ -346,9 +323,9 @@ export const Edited: Story = {
       },
     },
   },
-  play: async ({ canvasElement }) => {
+  play: playForImplementation(async ({ canvasElement }) => {
     const canvas = within(canvasElement);
-    const marker = canvas.getByRole("img", { name: "編集済み" });
+    const marker = await canvas.findByRole("img", { name: "編集済み" });
     await expect(marker).toBeVisible();
     await userEvent.hover(marker);
     await expect(await screen.findByRole("tooltip")).toHaveTextContent("2026");
@@ -356,14 +333,16 @@ export const Edited: Story = {
       "href",
       "https://example.com/guide",
     );
-  },
+  }),
 };
 
 export const ActivityPubPublic: Story = {
   parameters: { a11y: { test: "error" } },
   args: { item: { ...item, message: { ...item.message, apub: true, apub_visibility: "public" } } },
-  play: async ({ canvasElement }) => {
-    await expect(within(canvasElement).getByRole("img", { name: "ActivityPub" })).toBeVisible();
+  play: playForImplementation(async ({ canvasElement }) => {
+    await expect(
+      await within(canvasElement).findByRole("img", { name: "ActivityPub" }),
+    ).toBeVisible();
     await expect(within(canvasElement).getByRole("img", { name: "パブリック" })).toBeVisible();
     const icon = within(canvasElement).getByRole("img", { name: "パブリック" });
     const metadata = icon.closest("[title]")!.parentElement!;
@@ -374,16 +353,16 @@ export const ActivityPubPublic: Story = {
     };
     await expect(Math.abs(center(icon) - center(time))).toBeLessThanOrEqual(1);
     await expect(metadata.textContent).not.toContain("パブリック");
-  },
+  }),
 };
 export const ActivityPubUnlisted: Story = {
   ...ActivityPubPublic,
   args: {
     item: { ...item, message: { ...item.message, apub: true, apub_visibility: "unlisted" } },
   },
-  play: async ({ canvasElement }) => {
-    await expect(within(canvasElement).getByRole("img", { name: "ホーム" })).toBeVisible();
-  },
+  play: playForImplementation(async ({ canvasElement }) => {
+    await expect(await within(canvasElement).findByRole("img", { name: "ホーム" })).toBeVisible();
+  }),
 };
 export const ActivityPubGrouped: Story = {
   ...ActivityPubPublic,

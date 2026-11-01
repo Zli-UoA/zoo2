@@ -31,7 +31,9 @@
     "build-storybook": "storybook build",
     "test:storybook": "vp test --project storybook",
     "check:storybook": "node scripts/storybook-audit.mjs",
-    "generate:icons": "node scripts/generate-brand-icons.mjs"
+    "generate:icons": "node scripts/generate-brand-icons.mjs",
+    "build:compose": "node scripts/build-compose.mjs",
+    "test:e2e:compose": "playwright test --config playwright.compose.config.ts"
   },
   "dependencies": {
     "@base-ui/react": "^1.9.0",

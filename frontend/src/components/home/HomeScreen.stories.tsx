@@ -1,3 +1,5 @@
+import { playForImplementation } from "../../../.storybook/play-for-implementation";
+import { nativeHomeChecks } from "../../../.storybook/home-native-checks";
 import { blobcat, misskeyPost } from "../../../.storybook/activitypub-fixtures";
 import type { Meta, StoryObj } from "@storybook/react-vite";
 import { delay, http, HttpResponse, ws } from "msw";
@@ -10,6 +12,41 @@ const meta = {
   component: HomeScreen,
   parameters: {
     a11y: { test: "error" },
+    fixtureControls: {
+      ...nativeHomeChecks,
+      homeLiveReady: () => waitFor(() => expect(liveAuthenticated).toBe(true)),
+      homeLiveAdd: () => {
+        livePosts = [
+          { ...posts[0], id: "live-post", content: "別端末から届いた新しい投稿" },
+          ...posts,
+        ];
+        live.broadcast("refresh");
+      },
+      homeLiveEdit: () => {
+        livePosts = [
+          { ...posts[0], id: "live-post", content: "編集がリアルタイムで反映されます" },
+          posts[1],
+        ];
+        live.broadcast("refresh");
+      },
+      homeLiveReconnect: () => {
+        livePosts = [{ ...posts[0], id: "reconnected", content: "再接続後の最新投稿" }];
+        for (const client of live.clients) client.close(1000);
+      },
+      homePullFinish: () => {
+        pullRefreshed = true;
+        nativeHomeChecks.homePullFinish();
+      },
+      homeOlderLiveReady: () => waitFor(() => expect(olderLiveConnected).toBe(true)),
+      homeOlderRefresh: async () => {
+        await waitFor(() => expect(olderPageStarted).toBe(true));
+        olderLive.broadcast("refresh");
+        await waitFor(() => expect(olderControlLoads).toBeGreaterThanOrEqual(2));
+        if (!releaseOlderPage) throw new Error("Older page request did not start");
+        releaseOlderPage();
+      },
+      homeOlderRetained: () => waitFor(() => expect(retainedReloads).toBeGreaterThan(0)),
+    },
     msw: { handlers: homeHandlers },
   },
   decorators: [
@@ -28,7 +65,7 @@ async function visibleDialog(name: string) {
   return within(dialog);
 }
 async function openComposer(canvasElement: HTMLElement) {
-  await userEvent.click(within(canvasElement).getByRole("button", { name: "投稿を書く" }));
+  await userEvent.click(await within(canvasElement).findByRole("button", { name: "投稿を書く" }));
   const dialog = await screen.findByRole("dialog", { name: "近況を投稿" });
   const form = within(dialog);
   await waitFor(() => expect(getComputedStyle(dialog).opacity).toBe("1"));
@@ -42,7 +79,7 @@ async function expectComposerClosed() {
 }
 
 export const Default: Story = {
-  play: async ({ canvasElement }) => {
+  play: playForImplementation(async ({ canvasElement }) => {
     await expect(
       await within(canvasElement).findByText(/Homeから最初の公開投稿です/),
     ).toBeVisible();
@@ -56,13 +93,21 @@ export const Default: Story = {
     await expect(
       within(canvasElement).queryByText(/zoo\.example\/api\/activitypub\/users/),
     ).not.toBeInTheDocument();
-  },
+  }),
 };
 export const Mobile: Story = { ...Default, globals: { viewport: { value: "mobile" } } };
 export const Empty: Story = {
+  play: playForImplementation(async ({ canvasElement }) => {
+    await expect(await within(canvasElement).findByText("まだ投稿がありません")).toBeVisible();
+  }),
   parameters: { msw: { handlers: [http.get("*/api/home", () => HttpResponse.json([]))] } },
 };
 export const Loading: Story = {
+  play: playForImplementation(async ({ canvasElement }) => {
+    const status = await within(canvasElement).findByRole("status");
+    await expect(status).toBeVisible();
+    await expect(status).toHaveTextContent("読み込み中…");
+  }),
   parameters: {
     msw: {
       handlers: [
@@ -75,6 +120,10 @@ export const Loading: Story = {
   },
 };
 export const LoadError: Story = {
+  play: playForImplementation(async ({ canvasElement }) => {
+    await expect(await within(canvasElement).findByRole("alert")).toBeVisible();
+    await expect(within(canvasElement).queryByText("まだ投稿がありません")).not.toBeInTheDocument();
+  }),
   parameters: {
     msw: { handlers: [http.get("*/api/home", () => new HttpResponse(null, { status: 500 }))] },
   },
@@ -108,7 +157,7 @@ export const Submit: Story = {
       ],
     },
   },
-  play: async ({ canvasElement }) => {
+  play: playForImplementation(async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     const form = await openComposer(canvasElement);
     const field = form.getByRole("textbox", { name: "近況を投稿" });
@@ -116,7 +165,7 @@ export const Submit: Story = {
     await userEvent.click(form.getByRole("button", { name: /^投稿$/ }));
     await expectComposerClosed();
     await expect(await canvas.findByText("公開する近況")).toBeVisible();
-  },
+  }),
 };
 export const SendError: Story = {
   parameters: {
@@ -127,14 +176,14 @@ export const SendError: Story = {
       ],
     },
   },
-  play: async ({ canvasElement }) => {
+  play: playForImplementation(async ({ canvasElement }) => {
     const form = await openComposer(canvasElement);
     const field = form.getByRole("textbox", { name: "近況を投稿" });
     await userEvent.type(field, "残しておく下書き");
     await userEvent.click(form.getByRole("button", { name: /^投稿$/ }));
     await expect(await form.findByRole("alert")).toBeVisible();
     await expect(field).toHaveValue("残しておく下書き");
-  },
+  }),
 };
 
 export const OlderPosts: Story = {
@@ -154,14 +203,14 @@ export const OlderPosts: Story = {
       ],
     },
   },
-  play: async ({ canvasElement }) => {
+  play: playForImplementation(async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     await userEvent.click(await canvas.findByRole("button", { name: "過去の投稿を読む" }));
     await expect(await canvas.findByText("過去の投稿を読み込みました")).toBeVisible();
     await expect(
       canvas.queryByRole("button", { name: "過去の投稿を読む" }),
     ).not.toBeInTheDocument();
-  },
+  }),
 };
 let deleted = false;
 export const DeletePost: Story = {
@@ -179,7 +228,7 @@ export const DeletePost: Story = {
       ],
     },
   },
-  play: async ({ canvasElement }) => {
+  play: playForImplementation(async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     await userEvent.click(
       within(
@@ -192,7 +241,7 @@ export const DeletePost: Story = {
     await waitFor(() =>
       expect(canvas.queryByText(/Homeから最初の公開投稿です/)).not.toBeInTheDocument(),
     );
-  },
+  }),
 };
 
 export const Federated: Story = {
@@ -223,14 +272,14 @@ export const Federated: Story = {
       ],
     },
   },
-  play: async ({ canvasElement }) => {
+  play: playForImplementation(async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     await canvas.findByText("外部のフォロー先から届いた投稿です。");
     await expect(canvas.queryByRole("img", { name: "ActivityPub" })).not.toBeInTheDocument();
     const channel = canvas.getByRole("link", { name: "#general" });
     await expect(channel.previousElementSibling?.querySelector("time")?.tagName).toBe("TIME");
     await expect(canvas.getAllByRole("link", { name: "#general" })).toHaveLength(1);
-  },
+  }),
 };
 let crossPosted = false;
 export const CrossPost: Story = {
@@ -271,7 +320,7 @@ export const CrossPost: Story = {
       ],
     },
   },
-  play: async ({ canvasElement }) => {
+  play: playForImplementation(async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     const form = await openComposer(canvasElement);
     await userEvent.click(form.getByRole("button", { name: /^公開範囲:/ }));
@@ -295,10 +344,10 @@ export const CrossPost: Story = {
     await expect(canvas.getByRole("link", { name: "#general" })).toBeVisible();
     const channel = canvas.getByRole("link", { name: "#general" });
     await expect(channel.previousElementSibling?.querySelector("time")?.tagName).toBe("TIME");
-  },
+  }),
 };
 export const FollowersOnly: Story = {
-  play: async ({ canvasElement }) => {
+  play: playForImplementation(async ({ canvasElement }) => {
     const form = await openComposer(canvasElement);
     const channel = form.getByRole("combobox", { name: "同期先チャンネル" });
     await userEvent.selectOptions(channel, "channel-general");
@@ -313,7 +362,7 @@ export const FollowersOnly: Story = {
     await waitFor(() =>
       expect(document.querySelector('[data-slot="dropdown-menu-content"]')).not.toBeInTheDocument(),
     );
-  },
+  }),
 };
 let followed = false;
 export const FollowRemote: Story = {
@@ -356,9 +405,9 @@ export const FollowRemote: Story = {
       ],
     },
   },
-  play: async ({ canvasElement }) => {
+  play: playForImplementation(async ({ canvasElement }) => {
     const canvas = within(canvasElement);
-    await userEvent.click(canvas.getByRole("button", { name: "ユーザーを検索" }));
+    await userEvent.click(await canvas.findByRole("button", { name: "ユーザーを検索" }));
     const dialog = await visibleDialog("ユーザーを検索");
     const account = dialog.getByRole("textbox", { name: "ユーザーを検索" });
     await userEvent.type(account, "@bob@social.example");
@@ -367,7 +416,7 @@ export const FollowRemote: Story = {
     await expect(details.getByText("Bob @ social.example")).toBeVisible();
     await userEvent.click(details.getByRole("button", { name: /^フォロー$/ }));
     await expect(await details.findByText("承認待ち")).toBeVisible();
-  },
+  }),
 };
 
 let editedContent: string | null = null;
@@ -392,7 +441,7 @@ export const EditPost: Story = {
       ],
     },
   },
-  play: async ({ canvasElement }) => {
+  play: playForImplementation(async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     await userEvent.click(
       within(
@@ -408,7 +457,7 @@ export const EditPost: Story = {
       expect(canvas.queryByRole("textbox", { name: "投稿を編集" })).not.toBeInTheDocument(),
     );
     await expect(await canvas.findByText("編集した近況です")).toBeVisible();
-  },
+  }),
 };
 export const FederationError: Story = {
   parameters: {
@@ -419,16 +468,16 @@ export const FederationError: Story = {
       ],
     },
   },
-  play: async ({ canvasElement }) => {
+  play: playForImplementation(async ({ canvasElement }) => {
     const canvas = within(canvasElement);
-    await userEvent.click(canvas.getByRole("button", { name: "ユーザーを検索" }));
+    await userEvent.click(await canvas.findByRole("button", { name: "ユーザーを検索" }));
     const dialog = await visibleDialog("ユーザーを検索");
     await waitFor(() => expect(dialog.getByRole("alert")).toBeVisible());
-  },
+  }),
 };
 
 export const VisibilityMenu: Story = {
-  play: async ({ canvasElement }) => {
+  play: playForImplementation(async ({ canvasElement }) => {
     const form = await openComposer(canvasElement);
     const toolbar = form.getByRole("group", { name: "投稿設定" });
     const buttons = within(toolbar).getAllByRole("button");
@@ -452,21 +501,21 @@ export const VisibilityMenu: Story = {
       "true",
     );
     await expect(items.every((item) => item.querySelector("svg"))).toBe(true);
-  },
+  }),
 };
 
 export const Composer: Story = {
-  play: async ({ canvasElement }) => {
+  play: playForImplementation(async ({ canvasElement }) => {
     const form = await openComposer(canvasElement);
     await expect(form.getByRole("group", { name: "投稿設定" })).toBeVisible();
     const box = screen.getByRole("dialog", { name: "近況を投稿" }).getBoundingClientRect();
     await expect(box.left).toBeGreaterThan(0);
     await expect(box.width).toBeLessThan(window.innerWidth);
-  },
+  }),
 };
 export const MobileComposer: Story = {
   globals: { viewport: { value: "mobile" } },
-  play: async ({ canvasElement }) => {
+  play: playForImplementation(async ({ canvasElement }) => {
     let focusedDuringClick = false;
     const captureFocus = () => {
       focusedDuringClick = document.activeElement?.getAttribute("aria-label") === "近況を投稿";
@@ -501,10 +550,10 @@ export const MobileComposer: Story = {
       else Reflect.deleteProperty(viewport, "height");
       viewport.dispatchEvent(new Event("resize"));
     }
-  },
+  }),
 };
 export const DraftPreserved: Story = {
-  play: async ({ canvasElement }) => {
+  play: playForImplementation(async ({ canvasElement }) => {
     const form = await openComposer(canvasElement);
     await userEvent.type(form.getByRole("textbox", { name: "近況を投稿" }), "途中まで書いた下書き");
     await userEvent.click(form.getByRole("button", { name: "閉じる" }));
@@ -513,7 +562,7 @@ export const DraftPreserved: Story = {
     await expect(reopened.getByRole("textbox", { name: "近況を投稿" })).toHaveValue(
       "途中まで書いた下書き",
     );
-  },
+  }),
 };
 let localPost = false;
 export const FederationToggle: Story = {
@@ -541,7 +590,7 @@ export const FederationToggle: Story = {
       ],
     },
   },
-  play: async ({ canvasElement }) => {
+  play: playForImplementation(async ({ canvasElement }) => {
     const form = await openComposer(canvasElement);
     const toggle = await form.findByRole("button", { name: "連合あり" });
     await userEvent.click(toggle);
@@ -556,7 +605,7 @@ export const FederationToggle: Story = {
     await userEvent.click(form.getByRole("button", { name: /^投稿$/ }));
     await expectComposerClosed();
     await expect(await within(canvasElement).findByText("連合しないホーム投稿")).toBeVisible();
-  },
+  }),
 };
 export const FederationUnavailable: Story = {
   ...FederationToggle,
@@ -568,7 +617,7 @@ export const FederationUnavailable: Story = {
       ],
     },
   },
-  play: async ({ canvasElement }) => {
+  play: playForImplementation(async ({ canvasElement }) => {
     const form = await openComposer(canvasElement);
     await userEvent.click(form.getByRole("button", { name: "連合なし" }));
     await expect(await screen.findByRole("menuitemradio", { name: "連合あり" })).toHaveAttribute(
@@ -580,7 +629,7 @@ export const FederationUnavailable: Story = {
     await userEvent.click(form.getByRole("button", { name: /^投稿$/ }));
     await expectComposerClosed();
     await expect(await within(canvasElement).findByText("連合しないホーム投稿")).toBeVisible();
-  },
+  }),
 };
 
 export const Sending: Story = {
@@ -595,7 +644,7 @@ export const Sending: Story = {
       ],
     },
   },
-  play: async ({ canvasElement }) => {
+  play: playForImplementation(async ({ canvasElement }) => {
     const form = await openComposer(canvasElement);
     await userEvent.type(form.getByRole("textbox", { name: "近況を投稿" }), "送信中の投稿");
     await userEvent.click(form.getByRole("button", { name: /^投稿$/ }));
@@ -603,7 +652,7 @@ export const Sending: Story = {
     await expect(form.getByRole("button", { name: "閉じる" })).toBeDisabled();
     await userEvent.keyboard("{Escape}");
     await expect(screen.getByRole("dialog", { name: "近況を投稿" })).toBeVisible();
-  },
+  }),
 };
 
 export const UserSearch: Story = {
@@ -625,15 +674,17 @@ export const UserSearch: Story = {
       ],
     },
   },
-  play: async ({ canvasElement }) => {
-    await userEvent.click(within(canvasElement).getByRole("button", { name: "ユーザーを検索" }));
+  play: playForImplementation(async ({ canvasElement }) => {
+    await userEvent.click(
+      await within(canvasElement).findByRole("button", { name: "ユーザーを検索" }),
+    );
     const dialog = await visibleDialog("ユーザーを検索");
     await userEvent.type(dialog.getByRole("textbox"), "alice");
     await userEvent.click(dialog.getByRole("button", { name: "検索" }));
     const details = within(await dialog.findByRole("article", { name: "ユーザー詳細" }));
     await expect(details.getByText("Alice")).toBeVisible();
     await expect(details.getByText(/登録日:/)).toBeVisible();
-  },
+  }),
 };
 
 const live = ws.link("*/api/home/live");
@@ -657,7 +708,7 @@ export const Realtime: Story = {
       ],
     },
   },
-  play: async ({ canvasElement }) => {
+  play: playForImplementation(async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     await expect(await canvas.findByText(/Homeから最初の公開投稿です。/)).toBeVisible();
     await waitFor(() => expect(liveAuthenticated).toBe(true));
@@ -678,7 +729,7 @@ export const Realtime: Story = {
     await expect(
       await canvas.findByText("再接続後の最新投稿", {}, { timeout: 5000 }),
     ).toBeVisible();
-  },
+  }),
 };
 
 let pullRefreshed = false;
@@ -700,7 +751,7 @@ export const PullToRefresh: Story = {
       ],
     },
   },
-  play: async ({ canvasElement }) => {
+  play: playForImplementation(async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     await canvas.findByText(/Homeから最初の公開投稿です。/);
     const root = canvasElement.querySelector(".overflow-y-auto")!;
@@ -720,7 +771,7 @@ export const PullToRefresh: Story = {
     await fireEvent.touchEnd(root, { touches: [] });
     await expect(await canvas.findByText("引っ張って最新の投稿を取得しました")).toBeVisible();
     await waitFor(() => expect(canvas.queryByRole("status")).not.toBeInTheDocument());
-  },
+  }),
 };
 
 export const UserSearchEmpty: Story = {
@@ -732,13 +783,15 @@ export const UserSearchEmpty: Story = {
       ],
     },
   },
-  play: async ({ canvasElement }) => {
-    await userEvent.click(within(canvasElement).getByRole("button", { name: "ユーザーを検索" }));
+  play: playForImplementation(async ({ canvasElement }) => {
+    await userEvent.click(
+      await within(canvasElement).findByRole("button", { name: "ユーザーを検索" }),
+    );
     const dialog = await visibleDialog("ユーザーを検索");
     await userEvent.type(dialog.getByRole("textbox"), "nobody");
     await userEvent.click(dialog.getByRole("button", { name: "検索" }));
     await expect(await dialog.findByText("ユーザーが見つかりません")).toBeVisible();
-  },
+  }),
 };
 
 export const UserSearchError: Story = {
@@ -747,13 +800,15 @@ export const UserSearchError: Story = {
       handlers: [...homeHandlers, http.get("*/api/activitypub/search", () => HttpResponse.error())],
     },
   },
-  play: async ({ canvasElement }) => {
-    await userEvent.click(within(canvasElement).getByRole("button", { name: "ユーザーを検索" }));
+  play: playForImplementation(async ({ canvasElement }) => {
+    await userEvent.click(
+      await within(canvasElement).findByRole("button", { name: "ユーザーを検索" }),
+    );
     const dialog = await visibleDialog("ユーザーを検索");
     await userEvent.type(dialog.getByRole("textbox"), "@bob@social.example");
     await userEvent.click(dialog.getByRole("button", { name: "検索" }));
     await expect(await dialog.findByRole("alert")).toBeVisible();
-  },
+  }),
 };
 
 export const TimelineSwitch: Story = {
@@ -777,14 +832,14 @@ export const TimelineSwitch: Story = {
       ],
     },
   },
-  play: async ({ canvasElement }) => {
+  play: playForImplementation(async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     for (const name of ["ホーム", "ローカル", "ソーシャル", "ホーム"]) {
-      await userEvent.click(canvas.getByRole("button", { name }));
+      await userEvent.click(await canvas.findByRole("button", { name }));
       await expect(await canvas.findByText(`${name}の投稿`)).toBeVisible();
       await expect(canvas.getByRole("button", { name })).toHaveAttribute("aria-pressed", "true");
     }
-  },
+  }),
 };
 
 let liked = false;
@@ -818,7 +873,7 @@ export const Like: Story = {
       ],
     },
   },
-  play: async ({ canvasElement }) => {
+  play: playForImplementation(async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     await userEvent.click(await canvas.findByRole("button", { name: "リアクション 0" }));
     const picker = await visibleDialog("リアクション");
@@ -836,7 +891,7 @@ export const Like: Story = {
       expect(canvas.queryByRole("button", { name: "❤️ 1" })).not.toBeInTheDocument(),
     );
     await expect(canvas.getByRole("button", { name: "リアクション 0" })).toBeVisible();
-  },
+  }),
 };
 export const LikeError: Story = {
   parameters: {
@@ -847,7 +902,7 @@ export const LikeError: Story = {
       ],
     },
   },
-  play: async ({ canvasElement }) => {
+  play: playForImplementation(async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     await userEvent.click(await canvas.findByRole("button", { name: "リアクション 0" }));
     const picker = await visibleDialog("リアクション");
@@ -857,11 +912,11 @@ export const LikeError: Story = {
       }),
     );
     await expect(await canvas.findByRole("alert")).toBeVisible();
-  },
+  }),
 };
 
 export const ActionBar: Story = {
-  play: async ({ canvasElement }) => {
+  play: playForImplementation(async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     const group = await canvas.findByRole("group", { name: "投稿のアクション" });
     await expect(
@@ -872,7 +927,7 @@ export const ActionBar: Story = {
     await expect(group.querySelector("time")).toBeNull();
     await userEvent.click(within(group).getByRole("button", { name: "投稿の操作" }));
     await waitFor(() => expect(screen.getByRole("menuitem", { name: "投稿を編集" })).toBeVisible());
-  },
+  }),
 };
 let sentReply = false;
 export const Reply: Story = {
@@ -902,7 +957,7 @@ export const Reply: Story = {
       ],
     },
   },
-  play: async ({ canvasElement }) => {
+  play: playForImplementation(async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     let focused = false;
     const observe = () => {
@@ -921,7 +976,7 @@ export const Reply: Story = {
     await userEvent.click(form.getByRole("button", { name: "投稿" }));
     await expectComposerClosed();
     await expect(await canvas.findByText("返信のメッセージ")).toBeVisible();
-  },
+  }),
 };
 export const MobileReply: Story = { ...Reply, globals: { viewport: { value: "mobile" } } };
 export const PrivateReply: Story = {
@@ -934,7 +989,7 @@ export const PrivateReply: Story = {
       ],
     },
   },
-  play: async ({ canvasElement }) => {
+  play: playForImplementation(async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     await expect(await canvas.findByRole("button", { name: "リポスト 0" })).toBeDisabled();
     await userEvent.click(canvas.getByRole("button", { name: "返信 0" }));
@@ -948,7 +1003,7 @@ export const PrivateReply: Story = {
       "aria-disabled",
       "true",
     );
-  },
+  }),
 };
 let reposted = false;
 export const Repost: Story = {
@@ -975,14 +1030,14 @@ export const Repost: Story = {
       ],
     },
   },
-  play: async ({ canvasElement }) => {
+  play: playForImplementation(async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     await userEvent.click(await canvas.findByRole("button", { name: "リポスト 0" }));
     await expect(await canvas.findByText("Aliceさんがリポスト")).toBeVisible();
     const buttons = await canvas.findAllByRole("button", { name: "リポストを取り消す 1" });
     await userEvent.click(buttons[0]);
     await waitFor(() => expect(canvas.queryByText("Aliceさんがリポスト")).not.toBeInTheDocument());
-  },
+  }),
 };
 
 let customSelected = false;
@@ -1023,7 +1078,7 @@ export const MisskeyCustomEmoji: Story = {
     customSelected = false;
   },
   parameters: { msw: { handlers: misskeyHandlers } },
-  play: async ({ canvasElement }) => {
+  play: playForImplementation(async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     const host = await canvas.findByText("@misskey.example");
     await expect(host).toHaveClass("text-muted-foreground");
@@ -1038,11 +1093,11 @@ export const MisskeyCustomEmoji: Story = {
         image.getAttribute("src")?.includes("/api/activitypub/emoji-images/"),
       ),
     ).toBe(true);
-  },
+  }),
 };
 export const MisskeyReact: Story = {
   ...MisskeyCustomEmoji,
-  play: async ({ canvasElement }) => {
+  play: playForImplementation(async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     await userEvent.click(await canvas.findByRole("button", { name: "リアクション 2" }));
     const picker = await visibleDialog("リアクション");
@@ -1054,7 +1109,7 @@ export const MisskeyReact: Story = {
       "aria-pressed",
       "false",
     );
-  },
+  }),
 };
 export const MobileMisskey: Story = {
   ...MisskeyCustomEmoji,
@@ -1084,11 +1139,11 @@ export const EmojiFallback: Story = {
       ],
     },
   },
-  play: async ({ canvasElement }) => {
+  play: playForImplementation(async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     await waitFor(() => expect(canvas.getAllByText(":blobcat:").length).toBeGreaterThanOrEqual(2));
     await expect(canvas.queryByRole("img", { name: ":blobcat:" })).not.toBeInTheDocument();
-  },
+  }),
 };
 
 let releaseOlderPage: (() => void) | undefined;
@@ -1145,7 +1200,7 @@ export const LiveWhileLoadingOlder: Story = {
       ],
     },
   },
-  play: async ({ canvasElement }) => {
+  play: playForImplementation(async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     await waitFor(() => expect(olderLiveConnected).toBe(true));
     await userEvent.click(await canvas.findByRole("button", { name: "過去の投稿を読む" }));
@@ -1156,7 +1211,7 @@ export const LiveWhileLoadingOlder: Story = {
     await expect(await canvas.findByText(oldLivePost.content)).toBeInTheDocument();
     await waitFor(() => expect(retainedReloads).toBeGreaterThan(0));
     await expect(canvas.getByText(oldLivePost.content)).toBeInTheDocument();
-  },
+  }),
 };
 
 const avatarPost = {
@@ -1168,7 +1223,7 @@ export const RemoteAvatar: Story = {
   parameters: {
     msw: { handlers: [http.get("*/api/home", () => HttpResponse.json([avatarPost]))] },
   },
-  play: async ({ canvasElement }) => {
+  play: playForImplementation(async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     const avatar = await canvas.findByRole("img", { name: "Remote Alice" });
     await waitFor(() => expect(avatar.querySelector("img")?.naturalWidth).toBeGreaterThan(0));
@@ -1181,7 +1236,7 @@ export const RemoteAvatar: Story = {
     );
     const time = row.querySelector("time")!;
     await expect(time.closest("a")?.getAttribute("href")).toContain("/home/posts/");
-  },
+  }),
 };
 export const RemoteAvatarFallback: Story = {
   parameters: {
@@ -1197,33 +1252,33 @@ export const RemoteAvatarFallback: Story = {
       ],
     },
   },
-  play: async ({ canvasElement }) => {
+  play: playForImplementation(async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     await expect(await canvas.findByText("RA", { exact: true })).toBeVisible();
     await expect(canvas.getByRole("img", { name: "Remote Alice" }).querySelector("img")).toBeNull();
-  },
+  }),
 };
 export const SinglePost: Story = {
   args: { postId: posts[0].id },
   parameters: {
     msw: { handlers: [http.get("*/api/home/:id", () => HttpResponse.json(posts[0]))] },
   },
-  play: async ({ canvasElement }) => {
+  play: playForImplementation(async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     await expect(await canvas.findByText(/Homeから最初の公開投稿です/)).toBeVisible();
     await expect(canvas.getAllByRole("article")).toHaveLength(1);
     await expect(canvas.queryByRole("button", { name: "ローカル" })).not.toBeInTheDocument();
-  },
+  }),
 };
 export const SinglePostMissing: Story = {
   args: { postId: "missing" },
   parameters: {
     msw: { handlers: [http.get("*/api/home/:id", () => new HttpResponse(null, { status: 404 }))] },
   },
-  play: async ({ canvasElement }) => {
+  play: playForImplementation(async ({ canvasElement }) => {
     await expect(await within(canvasElement).findByRole("alert")).toBeVisible();
     await expect(within(canvasElement).queryByRole("article")).not.toBeInTheDocument();
-  },
+  }),
 };
 let profileFollowing: boolean | null = null;
 export const UserProfile: Story = {
@@ -1254,12 +1309,12 @@ export const UserProfile: Story = {
       ],
     },
   },
-  play: async ({ canvasElement }) => {
+  play: playForImplementation(async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     await expect(await canvas.findByText("リモートユーザーの自己紹介です")).toBeVisible();
     await userEvent.click(canvas.getByRole("button", { name: "フォロー" }));
     await expect(await canvas.findByText("承認待ち", { exact: true })).toBeVisible();
-  },
+  }),
 };
 export const MobileUserProfile: Story = {
   ...UserProfile,
@@ -1275,7 +1330,7 @@ export const UserProfileError: Story = {
       ],
     },
   },
-  play: async ({ canvasElement }) => {
+  play: playForImplementation(async ({ canvasElement }) => {
     await expect(await within(canvasElement).findByRole("alert")).toBeVisible();
-  },
+  }),
 };

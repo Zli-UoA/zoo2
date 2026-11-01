@@ -677,6 +677,14 @@
     "originalProfile": "原始個人檔案",
     "post": "貼文"
   },
+  "experimental": {
+    "useCompose": "使用 Compose（實驗・開發中）",
+    "useReact": "返回 React",
+    "loadError": "無法啟動 Compose。請返回 React 前端。",
+    "catalogLoading": "正在載入 Compose…",
+    "catalogLoadError": "無法載入 Compose 發佈檔。",
+    "catalogBuildHint": "請安裝 JDK 21，然後在 frontend 執行 pnpm build:compose。"
+  },
   "slackImport": {
     "tab": "Slack 匯入",
     "title": "從 Slack 匯入",

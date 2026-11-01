@@ -1,3 +1,4 @@
+import { playForImplementation } from "../../../.storybook/play-for-implementation";
 import { storyDeploymentCard } from "../../../.storybook/app-fixtures";
 import type { Meta, StoryObj } from "@storybook/react-vite";
 import { delay, http, HttpResponse } from "msw";
@@ -46,11 +47,11 @@ export const Pending: Story = {
       ],
     },
   },
-  play: async () => {
-    await userEvent.type(screen.getByRole("textbox"), "リリース完了");
+  play: playForImplementation(async () => {
+    await userEvent.type(await screen.findByRole("textbox"), "リリース完了");
     await userEvent.click(screen.getByRole("button"));
     await expect(screen.getByRole("button")).toBeDisabled();
-  },
+  }),
 };
 export const Failed: Story = {
   parameters: {
@@ -58,12 +59,12 @@ export const Failed: Story = {
       handlers: [http.post("*/api/apps/:id/invoke", () => new HttpResponse(null, { status: 500 }))],
     },
   },
-  play: async () => {
-    await userEvent.type(screen.getByRole("textbox"), "リリース完了");
+  play: playForImplementation(async () => {
+    await userEvent.type(await screen.findByRole("textbox"), "リリース完了");
     await userEvent.click(screen.getByRole("button"));
     await expect(await screen.findByRole("alert")).toBeVisible();
     await expect(screen.getByRole("textbox")).toHaveValue("リリース完了");
-  },
+  }),
 };
 export const InvalidBlocks: Story = {
   args: {
@@ -80,10 +81,12 @@ export const Card: Story = {
     submit: false,
     blocks: [{ type: "card", card: storyDeploymentCard }],
   },
-  play: async () => {
-    await expect(screen.getByRole("link", { name: storyDeploymentCard.title })).toBeVisible();
+  play: playForImplementation(async () => {
+    await expect(
+      await screen.findByRole("link", { name: storyDeploymentCard.title }),
+    ).toBeVisible();
     await expect(
       screen.getByRole("link", { name: "3968f64 (fix/github-bot-paused-queue)" }),
     ).toHaveClass("text-link");
-  },
+  }),
 };

@@ -63,7 +63,9 @@ for (const [name, input, expected, largeExpected] of cases) {
 }
 
 const fixedJobs = {"flux-status.yaml": ["report"], "cd-preview-label.yaml": ["label"], "cd-image-cleanup.yaml": ["cleanup"], "ci-flux-status.yaml": ["test"], "cd-images.yaml": ["plan", "promote", "publish"], "cd-storybook.yaml": ["deploy"], "terraform-r2.yaml": ["validate", "plan"], "ci-frontend.yaml": ["check", "unit-test"], "automerge-gate.yaml": ["gate"]};
-const dockerJobs = {"ci-github-bot.yaml": ["test", "publish"], "ci-backend.yaml": ["deploy-image", "e2e"], "ci-frontend.yaml": ["container", "proxy"], "ci-frontend-auth-e2e.yaml": ["oidc-e2e"], "cd-images.yaml": ["build"]};
+const dockerJobs = {"ci-compose.yaml": ["container"], "ci-github-bot.yaml": ["test", "publish"], "ci-backend.yaml": ["deploy-image", "e2e"], "ci-frontend.yaml": ["container", "proxy"], "ci-frontend-auth-e2e.yaml": ["oidc-e2e"], "cd-images.yaml": ["build"]};
+// Kotlin/Wasm compilation must remain hosted after self-hosted communication loss.
+const hostedJobs = {"ci-compose.yaml": ["web"], "cd-storybook.yaml": ["build"]};
 test('every workload uses the right output and protects fork PRs', () => {
   const dir = new URL('.github/workflows/', root);
   let checked = 0;
@@ -84,8 +86,12 @@ test('every workload uses the right output and protects fork PRs', () => {
       }
       const docker = (dockerJobs[file] || []).includes(id);
       const large = file === 'ci-frontend.yaml' && id === 'browser-test';
+      const hosted = (hostedJobs[file] || []).includes(id);
       const fixed = (fixedJobs[file] || []).includes(id);
-      if (fixed) {
+      if (hosted) {
+        assert.match(block, /^    runs-on: ubuntu-latest$/m, `${file}/${id}: hosted for all PRs`);
+        assert.doesNotMatch(block, /^    needs:.*\brunner\b|needs\.runner\./m, `${file}/${id}: selector dependency`);
+      } else if (fixed) {
         assert.match(block, /runs-on:.*\|\| 'zli-kubecamp-no-docker' \}\}/, `${file}/${id}: fixed pool`);
         assert.doesNotMatch(block, /^    needs:.*\brunner\b|needs\.runner\./m, `${file}/${id}: selector dependency`);
       } else {
@@ -95,7 +101,7 @@ test('every workload uses the right output and protects fork PRs', () => {
         }
       }
       const line = block.split('\n').find(x => x.startsWith('    runs-on:'));
-      if (line) {
+      if (line && !hosted) {
         assert.ok(line.includes(`github.event.pull_request.head.repo.fork && '${H}' ||`), `${file}/${id}: fork guard`);
       }
       if (/docker\/(?:setup-buildx|build-push)-action|docker (?:run|compose|build)\b|scripts\/test-(?:alertmanager|log-sanitization)/.test(block)) {
@@ -105,6 +111,18 @@ test('every workload uses the right output and protects fork PRs', () => {
     }
   }
   assert.ok(checked > 0);
+});
+test('Kotlin build workflows keep hosted builds independent of runner selection', () => {
+  const storybook = readFileSync(new URL('.github/workflows/cd-storybook.yaml', root), 'utf8');
+  assert.doesNotMatch(storybook, /^  runner:/m);
+  for (const [file, ids] of Object.entries(hostedJobs)) {
+    const text = readFileSync(new URL(`.github/workflows/${file}`, root), 'utf8');
+    for (const id of ids) {
+      const block = text.split(`  ${id}:\n`)[1].split(/^  [\w-]+:\s*$/m)[0];
+      assert.match(block, /^    runs-on: ubuntu-latest$/m);
+      assert.doesNotMatch(block, /needs\.runner|^    needs: runner$/m);
+    }
+  }
 });
 test('selector host overrides do not override workload priorities', () => {
   assert.match(yaml, /vars\.CI_SELECTOR_RUNNER \|\| vars\.CI_RUNNER/);

@@ -1,3 +1,4 @@
+import { playForImplementation } from "../../../../.storybook/play-for-implementation";
 import { StoryShell } from "../../../../.storybook/shell";
 import type { Meta, StoryObj } from "@storybook/react-vite";
 import { expect, fn, userEvent, within } from "storybook/test";
@@ -149,9 +150,9 @@ export const Mobile: Story = {
 
 export const Completions: Story = {
   parameters: { a11y: { test: "error" } },
-  play: async ({ canvasElement, args }) => {
+  play: playForImplementation(async ({ canvasElement, args }) => {
     const canvas = within(canvasElement);
-    const input = canvas.getByRole("textbox");
+    const input = await canvas.findByRole("textbox");
     await userEvent.type(input, "#gen");
     await userEvent.click(canvas.getByRole("option", { name: "#general" }));
     await expect(input).toHaveValue("#general ");
@@ -161,7 +162,7 @@ export const Completions: Story = {
     await expect(input).toHaveValue("/github ");
     await userEvent.click(canvas.getByRole("button", { name: "送信" }));
     await expect(args.onSendReply).toHaveBeenCalledWith("/github", "github");
-  },
+  }),
 };
 
 export const AppCard: Story = {
@@ -181,11 +182,13 @@ export const AppCard: Story = {
       app_blocks: JSON.stringify([{ type: "card", card: storyDeploymentCard }]),
     },
   },
-  play: async ({ canvasElement }) => {
+  play: playForImplementation(async ({ canvasElement }) => {
     const canvas = within(canvasElement);
-    await expect(canvas.getByRole("link", { name: storyDeploymentCard.title })).toBeVisible();
+    await expect(
+      await canvas.findByRole("link", { name: storyDeploymentCard.title }),
+    ).toBeVisible();
     await expect(
       canvas.queryByText("Plain fallback for card-capable clients"),
     ).not.toBeInTheDocument();
-  },
+  }),
 };
