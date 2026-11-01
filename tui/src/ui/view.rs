@@ -322,6 +322,12 @@ fn draw_status(frame: &mut Frame, app: &App, area: Rect) {
                 Style::new().fg(Color::Red),
             ));
         }
+        if let Some(version) = &app.update_available {
+            spans.push(Span::styled(
+                format!("  新しい版 v{version} があります"),
+                Style::new().fg(Color::Green),
+            ));
+        }
         spans.push(Span::styled("  ?: ヘルプ  q: 終了", DIM));
         Line::from(spans)
     };
@@ -598,6 +604,14 @@ mod tests {
             has_unread: true,
         }]));
         assert!(app.unread.contains("c1"));
+    }
+
+    #[tokio::test]
+    async fn shows_available_update_in_status_line() {
+        let mut app = app();
+        assert!(!render(&mut app).contains("新しい版"));
+        app.on_app_event(AppEvent::UpdateAvailable("0.2.0".into()));
+        assert!(render(&mut app).contains("新しい版 v0.2.0 があります"));
     }
 
     #[tokio::test]

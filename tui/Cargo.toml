@@ -2,6 +2,11 @@
 name = "zoo2-tui"
 version = "0.1.0"
 edition = "2024"
+license = "MIT"
+description = "zoo2 をターミナルから使うチャットクライアント"
+homepage = "https://github.com/Zli-UoA/zoo2/tree/main/tui"
+repository = "https://github.com/Zli-UoA/zoo2"
+readme = "README.md"
 
 [profile.release]
 strip = true
@@ -26,6 +31,27 @@ unicode-width = "0.2"
 emojis = "0.6"
 uuid = { version = "1", features = ["v4"] }
 
+
+# リリース用の .deb と .rpm。CD TUI Release で musl の静的バイナリから作る。
+# `--target` を付けると、`target/release` は `target/<triple>/release` に読み替えられる。
+[package.metadata.deb]
+maintainer = "Zli-UoA <https://github.com/Zli-UoA>"
+section = "net"
+extended-description = "ターミナルで zoo2 のチャンネルを読み書きする TUI クライアント。AuthZ のデバイスコードでログインする。"
+assets = [
+    ["target/release/zoo2-tui", "usr/bin/", "755"],
+    ["README.md", "usr/share/doc/zoo2-tui/README.md", "644"],
+]
+license-file = ["LICENSE", "0"]
+copyright = "2026 Zli-UoA"
+
+[package.metadata.generate-rpm]
+auto-req = "disabled"
+assets = [
+    { source = "target/release/zoo2-tui", dest = "/usr/bin/zoo2-tui", mode = "755" },
+    { source = "README.md", dest = "/usr/share/doc/zoo2-tui/README.md", mode = "644", doc = true },
+    { source = "LICENSE", dest = "/usr/share/licenses/zoo2-tui/LICENSE", mode = "644", doc = true },
+]
 
 [dev-dependencies]
 wiremock = "0.6"
