@@ -906,7 +906,7 @@ export const Reply: Story = {
     }
     if (innerWidth < 768) await expect(focused).toBe(true);
     const form = within(await screen.findByRole("dialog", { name: "近況を投稿" }));
-    await waitFor(()=>expect(form.getByText("Aliceさんに返信")).toBeVisible());
+    await waitFor(() => expect(form.getByText("Aliceさんに返信")).toBeVisible());
     await userEvent.type(form.getByRole("textbox", { name: "近況を投稿" }), "返信のメッセージ");
     await userEvent.click(form.getByRole("button", { name: "投稿" }));
     await expectComposerClosed();
