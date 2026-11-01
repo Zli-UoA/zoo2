@@ -24,3 +24,5 @@ dependencyResolutionManagement {
 }
 rootProject.name = "zoo-compose"
 include(":electric4k")
+
+if (providers.gradleProperty("zoo.android").orNull == "true") include(":androidApp")

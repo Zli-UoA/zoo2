@@ -21,3 +21,5 @@ GitHub のコメント・状態変更を Zoo に通知する外部 Bot は [GitH
 ターミナルから使うチャットクライアントは [zoo2 TUI](tui/README.md) を参照してください。
 
 Home・チャンネル連携と ActivityPub の対応範囲・設定は [Home / ActivityPub](docs/activitypub.md) を参照してください。
+
+Compose Multiplatform を使う [Android 版](docs/android.md) のビルド・認証設定も参照してください。

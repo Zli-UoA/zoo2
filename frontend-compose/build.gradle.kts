@@ -4,14 +4,20 @@ import java.io.IOException
 import org.jetbrains.kotlin.gradle.targets.wasm.nodejs.WasmNodeJsEnvSpec
 
 plugins {
+    id("com.android.library") version "8.11.1" apply false
+    id("com.android.application") version "8.11.1" apply false
     kotlin("multiplatform") version "2.3.20"
     kotlin("plugin.serialization") version "2.3.20"
     id("org.jetbrains.compose") version "1.11.1"
     id("org.jetbrains.kotlin.plugin.compose") version "2.3.20"
 }
 
+val androidEnabled = providers.gradleProperty("zoo.android").orNull == "true"
+if (androidEnabled) apply(plugin = "com.android.library")
+
 kotlin {
     compilerOptions { optIn.addAll("kotlin.time.ExperimentalTime", "kotlin.js.ExperimentalWasmJsInterop") }
+    if (androidEnabled) androidTarget { compilerOptions { jvmTarget.set(org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_17) } }
     @OptIn(org.jetbrains.kotlin.gradle.ExperimentalWasmDsl::class)
     wasmJs {
         outputModuleName.set("zoo-compose")
@@ -35,6 +41,7 @@ kotlin {
             implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.8.1")
             implementation("org.jetbrains.kotlinx:kotlinx-datetime:0.7.1-0.6.x-compat")
         }
+        if (androidEnabled) named("androidMain") { dependencies { implementation("io.ktor:ktor-client-okhttp:3.1.3"); implementation("com.squareup.okhttp3:okhttp:4.12.0") } }
         wasmJsMain.dependencies {
             implementation("io.ktor:ktor-client-js:3.1.3")
             implementation("io.ktor:ktor-client-mock:3.1.3")
@@ -129,4 +136,11 @@ val catalogResources by tasks.registering(Sync::class) {
 }
 compose.resources {
     customDirectory("commonMain", catalogResources.map { layout.buildDirectory.dir("generated/composeResources").get() })
+}
+
+if (androidEnabled) extensions.configure<com.android.build.gradle.LibraryExtension> {
+    namespace = "works.zli.zoo.shared"
+    compileSdk = 35
+    defaultConfig { minSdk = 26 }
+    compileOptions { sourceCompatibility = JavaVersion.VERSION_17; targetCompatibility = JavaVersion.VERSION_17 }
 }

@@ -1,0 +1,109 @@
+name: CI Android
+on:
+  pull_request:
+    paths:
+      - "frontend-compose/**"
+      - "frontend/src/lib/i18n/locales/**"
+      - "frontend/public/icons/**"
+      - ".github/workflows/ci-android.yaml"
+      - ".github/scripts/android-update-manifest*.py"
+  push:
+    branches: [main]
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+jobs:
+  android:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: "21"
+      - uses: android-actions/setup-android@v3
+        with:
+          cmdline-tools-version: 13114758
+          packages: platform-tools platforms;android-35 build-tools;35.0.0
+          log-accepted-android-sdk-licenses: false
+      - uses: gradle/actions/setup-gradle@v4
+      - name: Test update manifest generation
+        run: python3 .github/scripts/android-update-manifest.test.py
+      - name: Build, test and lint Android
+        working-directory: frontend-compose
+        run: ./gradlew --no-daemon -Pzoo.android=true :androidApp:assembleDebug :androidApp:testDebugUnitTest :androidApp:lintDebug testDebugUnitTest
+      - uses: actions/upload-artifact@v4
+        with:
+          name: zoo-android-debug
+          path: frontend-compose/androidApp/build/outputs/apk/debug/*.apk
+
+  publish-main:
+    if: github.ref == 'refs/heads/main' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
+    needs: android
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    concurrency:
+      group: android-main-release
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: "21"
+      - uses: android-actions/setup-android@v3
+        with:
+          cmdline-tools-version: 13114758
+          packages: platform-tools platforms;android-35 build-tools;35.0.0
+          log-accepted-android-sdk-licenses: false
+      - uses: gradle/actions/setup-gradle@v4
+      - name: Build with the persistent Android signing key
+        working-directory: frontend-compose
+        env:
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          ZOO_ANDROID_KEYSTORE: ${{ runner.temp }}/zoo-release.jks
+          ZOO_ANDROID_STORE_PASSWORD: ${{ secrets.ANDROID_STORE_PASSWORD }}
+          ZOO_ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ZOO_ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          : "${ANDROID_KEYSTORE_BASE64:?Configure ANDROID_KEYSTORE_BASE64}"
+          : "${ZOO_ANDROID_STORE_PASSWORD:?Configure ANDROID_STORE_PASSWORD}"
+          : "${ZOO_ANDROID_KEY_ALIAS:?Configure ANDROID_KEY_ALIAS}"
+          : "${ZOO_ANDROID_KEY_PASSWORD:?Configure ANDROID_KEY_PASSWORD}"
+          python3 - <<'PY'
+          import base64, os
+          from pathlib import Path
+          path = Path(os.environ['ZOO_ANDROID_KEYSTORE'])
+          path.write_bytes(base64.b64decode(os.environ['ANDROID_KEYSTORE_BASE64'], validate=True))
+          path.chmod(0o600)
+          PY
+          version_code=$(git rev-list --first-parent --count HEAD)
+          version_name="main.${version_code}-${GITHUB_SHA:0:7}"
+          ./gradlew --no-daemon -Pzoo.android=true -Pzoo.android.versionCode="$version_code" -Pzoo.android.versionName="$version_name" :androidApp:assembleRelease :androidApp:testReleaseUnitTest :androidApp:lintRelease
+          apk="$RUNNER_TEMP/zoo-android-main-$GITHUB_SHA.apk"
+          cp androidApp/build/outputs/apk/release/androidApp-release.apk "$apk"
+          "$ANDROID_HOME/build-tools/35.0.0/apksigner" verify "$apk"
+          python3 ../.github/scripts/android-update-manifest.py "$apk" "$version_code" "$version_name" "$GITHUB_SHA" "$RUNNER_TEMP/update.json"
+      - name: Publish the main update channel
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          latest=$(gh api "repos/$GITHUB_REPOSITORY/commits/main" --jq .sha)
+          if [ "$latest" != "$GITHUB_SHA" ]; then
+            echo "A newer main commit exists; skip this older build."
+            exit 0
+          fi
+          if ! gh release view android-main --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release create android-main --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --prerelease --title "Android main" --notes "main の署名付き Android ビルド。更新対象のコミットとバージョンは update.json を参照してください。"
+          fi
+          gh release upload android-main "$RUNNER_TEMP/zoo-android-main-$GITHUB_SHA.apk" --repo "$GITHUB_REPOSITORY" --clobber
+          gh release upload android-main "$RUNNER_TEMP/update.json" --repo "$GITHUB_REPOSITORY" --clobber
+      - name: Remove the signing key
+        if: always()
+        run: python3 -c 'import os; from pathlib import Path; (Path(os.environ["RUNNER_TEMP"]) / "zoo-release.jks").unlink(missing_ok=True)'

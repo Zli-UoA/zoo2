@@ -95,7 +95,9 @@ class RepositoryTest {
                 assertFailsWith<IllegalStateException> {
                     ZooApi(config, FakePlatform(), http).request("/api/channels/c1/read-state")
                 }
-            assertSame(failure, error.cause)
+            // JVM coroutine stacktrace recovery may copy the Error and keep the
+            // original as its cause. The transport failure must remain in the chain.
+            assertTrue(generateSequence(error.cause) { it.cause }.any { it === failure })
         } finally {
             http.close()
         }
