@@ -16,4 +16,6 @@ App・Botの開発、認証、イベント配信、既存Webhookの移行は [Ap
 
 GitHub のコメント・状態変更を Zoo に通知する外部 Bot は [GitHub 通知 Bot](apps/github-bot/README.md) を参照してください。
 
+ターミナルから使うチャットクライアントは [zoo2 TUI](tui/README.md) を参照してください。
+
 Home・チャンネル連携と ActivityPub の対応範囲・設定は [Home / ActivityPub](docs/activitypub.md) を参照してください。
