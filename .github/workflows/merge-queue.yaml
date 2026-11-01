@@ -29,6 +29,7 @@ jobs:
       ci-github-bot: ${{ steps.match.outputs.ci-github-bot }}
       ci-flux-status: ${{ steps.match.outputs.ci-flux-status }}
       terraform-r2: ${{ steps.match.outputs.terraform-r2 }}
+      ci-android: ${{ steps.match.outputs.ci-android }}
     steps:
       - uses: actions/checkout@v7
       - id: match
@@ -88,6 +89,15 @@ jobs:
     uses: ./.github/workflows/terraform-r2.yaml
     secrets: inherit
 
+  ci-android:
+    needs: changes
+    if: needs.changes.outputs.ci-android == 'true'
+    uses: ./.github/workflows/ci-android.yaml
+    secrets: inherit
+    # publish-main ジョブは main でだけ動くが、宣言している権限を呼び出し側でも許す必要がある。
+    permissions:
+      contents: write
+
   all-passed:
     needs:
       - changes
@@ -99,6 +109,7 @@ jobs:
       - ci-github-bot
       - ci-flux-status
       - terraform-r2
+      - ci-android
     if: ${{ !cancelled() }}
     # merge_group でしか動かず、キューに入った PR のコードを扱うので、常に GitHub-hosted で実行する。
     runs-on: ubuntu-latest

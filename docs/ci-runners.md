@@ -52,6 +52,6 @@ Storybookを含む `browser-test` は、1CPU・2GiB制約で直列化・heap制�
 
 軽量処理は `zli-kubecamp-no-docker` に固定し、selectorを待たずに起動する。全7台がbusyならkubecampで順番待ちし、ARCやHostedへは切り替えない。fork PRはHostedを使う。
 
-固定対象はFlux通知・通知スクリプト検証、ラベル操作、イメージ清掃、イメージplan/promote/publish、Terraform Validate/Plan、frontend check/単体テスト、Storybook deploy、automerge gate。Rust build/lint/単体テストは通常の空き状況選択を残す。Compose WebとKotlinを含むStorybook buildはGitHub-hosted Ubuntuに固定し、selectorに依存しない。Docker処理はDocker用、大容量browser-testは大容量用を使う。
+固定対象はFlux通知・通知スクリプト検証、ラベル操作、イメージ清掃、イメージplan/promote/publish、Terraform Validate/Plan、frontend check/単体テスト、Storybook deploy、automerge gate。Rust build/lint/単体テストは通常の空き状況選択を残す。Compose Web・AndroidとKotlinを含むStorybook buildはGitHub-hosted Ubuntuに固定し、selectorに依存しない。Docker処理はDocker用、大容量browser-testは大容量用を使う。
 
 状態確認の実効性: zoo2 #263のselectorログで `HAS_STATUS_TOKEN: true` と実際のRunner件数取得を確認済み。publicリポジトリへのOrg Secret共有が有効であり、Repository Secret一覧だけでは未設定と判断しない。

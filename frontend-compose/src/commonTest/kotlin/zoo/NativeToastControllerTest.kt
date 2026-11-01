@@ -11,7 +11,10 @@ class NativeToastControllerTest {
     fun successAndErrorUseParsableSonnerAssetsWhileDefaultHasNoIcon() {
         assertNull(nativeToastIconPath(ToastKind.Default))
         for (kind in listOf(ToastKind.Success, ToastKind.Error)) {
-            assertFalse(PathParser().parsePathString(nativeToastIconPath(kind)!!).toPath().isEmpty)
+            // Parsing SVG nodes is common code; creating an Android Path needs a device.
+            assertTrue(
+                PathParser().parsePathString(nativeToastIconPath(kind)!!).toNodes().isNotEmpty()
+            )
         }
     }
 
