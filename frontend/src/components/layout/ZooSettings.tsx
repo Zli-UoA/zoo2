@@ -115,6 +115,7 @@ export function ZooSettings() {
           </Tabs.Panel>
           {isAdmin ? (
             <Tabs.Panel value="slack-import" className="min-h-0">
+              <h2 className="sr-only">{t("slackImport.tab")}</h2>
               <SlackImportPanel />
             </Tabs.Panel>
           ) : null}
