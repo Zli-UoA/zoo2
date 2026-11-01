@@ -1714,6 +1714,35 @@ async fn reposts_create_distinct_feed_entries_cursor_and_announces_but_never_pri
             StatusCode::OK
         );
     }
+    let remote_author =
+        percent_encoding::utf8_percent_encode(&f.remote, percent_encoding::NON_ALPHANUMERIC);
+    let (_, remote_profile) = request(
+        &f.app,
+        "GET",
+        Some(&f.user),
+        &format!("/api/home?timeline=social&author={remote_author}"),
+        None,
+    )
+    .await?;
+    let originals: Vec<_> = remote_profile
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|p| p["id"] == remote_post)
+        .collect();
+    assert_eq!(
+        originals.len(),
+        1,
+        "remote profile duplicated the locally reposted original"
+    );
+    assert_eq!(originals[0]["entry_id"], remote_post);
+    assert!(
+        remote_profile
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|p| p.get("reposted_by").is_none())
+    );
     let row=value(&mut f.db,"SELECT row_to_json(d)::text FROM apub_deliveries d WHERE user_id=$1 ORDER BY sequence LIMIT 1",&[&f.user]).await?;
     let announce: Value = serde_json::from_str(row["payload"].as_str().unwrap())?;
     assert_eq!(announce["type"], "Announce");
@@ -1784,6 +1813,57 @@ async fn reposts_create_distinct_feed_entries_cursor_and_announces_but_never_pri
             .find(|p| p["id"] == own)
             .unwrap()["reposts"],
         1
+    );
+    assert_eq!(
+        request(
+            &f.app,
+            "POST",
+            Some(&f.other),
+            "/api/activitypub/reposts",
+            Some(json!({"post_id":own}))
+        )
+        .await?
+        .0,
+        StatusCode::OK
+    );
+    let (_, author_posts) = request(
+        &f.app,
+        "GET",
+        Some(&f.user),
+        &format!("/api/home?timeline=social&author={}", f.user),
+        None,
+    )
+    .await?;
+    let originals: Vec<_> = author_posts
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|p| p["id"] == own)
+        .collect();
+    assert_eq!(
+        originals.len(),
+        1,
+        "profile duplicated an original for local/remote reposters"
+    );
+    assert_eq!(originals[0]["entry_id"], own);
+    assert!(
+        author_posts
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|p| p.get("reposted_by").is_none())
+    );
+    assert_eq!(
+        request(
+            &f.app,
+            "DELETE",
+            Some(&f.other),
+            "/api/activitypub/reposts",
+            Some(json!({"post_id":own}))
+        )
+        .await?
+        .0,
+        StatusCode::OK
     );
     let cancel = peer_activity(&f, "Undo", incoming["id"].clone());
     assert_eq!(receive_peer(&f, &cancel).await?, StatusCode::ACCEPTED);
@@ -2127,10 +2207,12 @@ async fn apub_profile_is_independent_updates_followers_and_detail_respects_audie
     .1;
     assert_eq!(actor["name"], "Federation name");
     assert_eq!(actor["preferredUsername"], alice);
-    assert_eq!(actor["summary"], "Bio &lt;safe&gt;\nnext line");
+    assert_eq!(actor["summary"], "Bio &lt;safe&gt;<br>next line");
+    assert_eq!(profile["summary"], "Bio <safe>\nnext line");
     let delivery = value(&mut db,"SELECT payload::jsonb::text FROM apub_deliveries WHERE user_id=$1 AND actor_id=$2 ORDER BY created_at DESC LIMIT 1",&[&alice,&remote]).await?;
     assert_eq!(delivery["type"], "Update");
     assert_eq!(delivery["object"]["name"], "Federation name");
+    assert_eq!(delivery["object"]["summary"], actor["summary"]);
     assert_eq!(delivery["object"]["id"], actor["id"]);
     assert_eq!(delivery["object"]["publicKey"], actor["publicKey"]);
     assert_eq!(

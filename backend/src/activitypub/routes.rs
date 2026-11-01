@@ -65,7 +65,7 @@ async fn actor(
     Ok(response(actor_value(&user, &key, &actor)))
 }
 pub(super) fn actor_value(user: &Value, key: &Value, actor: &str) -> Value {
-    json!({"@context":[CONTEXT,"https://w3id.org/security/v1",{"manuallyApprovesFollowers":"as:manuallyApprovesFollowers"}],"type":"Person","id":actor,"preferredUsername":user["user_name"],"name":user["display_name"],"summary":html_escape::encode_safe(user["summary"].as_str().unwrap_or("")),"inbox":format!("{actor}/inbox"),"outbox":format!("{actor}/outbox"),"followers":format!("{actor}/followers"),"following":format!("{actor}/following"),"manuallyApprovesFollowers":true,"publicKey":{"id":format!("{actor}#main-key"),"owner":actor,"publicKeyPem":key["public_key"]}})
+    json!({"@context":[CONTEXT,"https://w3id.org/security/v1",{"manuallyApprovesFollowers":"as:manuallyApprovesFollowers"}],"type":"Person","id":actor,"preferredUsername":user["user_name"],"name":user["display_name"],"summary":html_escape::encode_safe(user["summary"].as_str().unwrap_or("")).replace('\n', "<br>"),"inbox":format!("{actor}/inbox"),"outbox":format!("{actor}/outbox"),"followers":format!("{actor}/followers"),"following":format!("{actor}/following"),"manuallyApprovesFollowers":true,"publicKey":{"id":format!("{actor}#main-key"),"owner":actor,"publicKeyPem":key["public_key"]}})
 }
 
 async fn webfinger(
