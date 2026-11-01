@@ -65,6 +65,8 @@ jobs:
       TF_VAR_state_passphrase: ${{ secrets.TF_STATE_PASSPHRASE }}
       # Storybook の deploy が使う CLOUDFLARE_API_TOKEN とは別の、R2 Storage: Edit だけのトークンです。
       TF_VAR_cloudflare_api_token: ${{ secrets.TF_CLOUDFLARE_API_TOKEN }}
+      # self-hosted runner の環境変数に依存しないよう、対象アカウントを固定します。
+      TF_VAR_cloudflare_account_id: c9918f2caa050736a07867e6f968c0a2
     steps:
       # fork PR には Secrets が渡らないので plan を skip します。
       - name: Check Secrets
@@ -164,6 +166,8 @@ jobs:
       TF_VAR_state_passphrase: ${{ secrets.TF_STATE_PASSPHRASE }}
       # Storybook の deploy が使う CLOUDFLARE_API_TOKEN とは別の、R2 Storage: Edit だけのトークンです。
       TF_VAR_cloudflare_api_token: ${{ secrets.TF_CLOUDFLARE_API_TOKEN }}
+      # self-hosted runner の環境変数に依存しないよう、対象アカウントを固定します。
+      TF_VAR_cloudflare_account_id: c9918f2caa050736a07867e6f968c0a2
     steps:
       # skip ではなく失敗させ、マージが apply されていないことを main に残します。
       - name: Check Secrets
