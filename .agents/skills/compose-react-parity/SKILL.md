@@ -35,7 +35,7 @@ UIは共通Kotlinへ実装する。React画面へのフォールバック、Reac
 - 両実装それぞれの共通部品を使い、通常投稿・返信・通知・App内で同じ挙動を共有する。判断基準は [frontend-consistency](../frontend-consistency/SKILL.md) を使う。
 - 同じfixture・操作・時刻・言語・テーマでReactとComposeを検証する。広い画面・390px・狭いスレッド内、長文・URL・絵文字を確認する。
 - [storybook-coverage](../storybook-coverage/SKILL.md) に従い、変更する状態のReact Storyと実Kotlinを描画するカタログを更新する。Canvasは親DOMのaxeで検証できたことにしない。
-- Reactの変更でCI Compose Webが実行されることを確認する。Kotlin/Wasmを生成するジョブは2GiBの小容量ランナーへ送らず、既存の大容量用ランナー選択を使う。
+- Reactの変更でCI Compose Webが実行されることを確認する。Kotlin/Wasmを生成するCompose Web・StorybookビルドはGitHubホストのUbuntuランナーで実行する。セルフホストで生成中の通信断を確認したため、一般用・2GiBの小容量ランナーへ戻さない。
 - 常用CIは登録漏れの検査、Kotlinの契約テスト・ビルド、主要操作のスモーク・API契約、CSP・オフライン検証を使う。`playwright.storybook-parity.config.ts` による全件実行は含めない。
 - Kotlinの契約テスト、`wasmJsBrowserTest`・`wasmJsBrowserDistribution`、フロントのformat・型・lint、Storybook監査・操作・ビルド、関連する両実装のPlaywrightを実行する。Kotlin成果物を再生成してからブラウザー検証する。
 - 機能・操作の不一致をテストの除外、skip、continue-on-error、期待値の削除で隠さない。既存の画像比較の不一致を、別の機能も未検証でよい理由にしない。画像比較が失敗している間はUI完全一致を宣言しない。

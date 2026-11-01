@@ -59,6 +59,8 @@ Playwrightは共通のHTTPS API fixtureを使い、同じ利用者操作と送�
 実バックエンド、実OIDC、全Appの失敗・競合、スクリーンリーダー、各OSのIME・タッチ、MFM・数式の全構文、全画面の画像一致は別途確認が必要。
 常用CIはStoryの登録漏れ、Kotlinの契約テスト・ビルド、主要操作のスモーク・API契約、CSP・オフラインを検証する。長時間かかる全StoryのReact/Kotlin描画・操作・画像保存はCIから外し、明示的な依頼がある場合だけ手動で実行する。
 
+Compose WebとStorybookのKotlin生成はGitHubホストのUbuntuランナーを使う。セルフホストでは生成中にランナーとGitHubの通信断が発生したため、この2ジョブは一般用ランナーの選択から分離する。
+
 Storybookは既存Storyの上部implementationツールバーで切り替える。`.storybook/kotlin-stories.ts` と領域別adapterから全380状態へ同じ引数と共有fixtureを渡す。`story-coverage.test.ts` は既存CSFの全exportを照合し、登録漏れを失敗させる。変更範囲の比較には `playwright.storybook-parity.config.ts` と `STORYBOOK_PARITY_FILTER` を使い、同じデータ・時刻・画面幅・テーマ・言語で確認できる。別Featuresカテゴリへ複製しない。
 
 UIの精度は「極端に違わなければ問題ない」という指定に従う。フォントのアンチエイリアスや微小な画素差は移植の完了条件にせず、独自の文字描画エンジンも追加しない。通常の比較は変更範囲に絞り、全件検証を毎回の作業やCIの完了条件にしない。画素比較が必要な明示的な診断だけ `STORYBOOK_PARITY_VISUAL=strict` を指定する。比較ブラウザーは通常のChromiumと同じフォント計測を使う `channel: "chromium"` とし、legacy headless shellの文字幅整数丸めを実装側で再現しない。

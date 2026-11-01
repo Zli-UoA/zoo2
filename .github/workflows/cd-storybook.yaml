@@ -8,16 +8,11 @@ permissions:
   contents: read
 
 jobs:
-  runner:
-    uses: ./.github/workflows/select-runner.yaml
-    secrets:
-      runner-status-token: ${{ secrets.RUNNER_STATUS_TOKEN }}
-
   build:
-    needs: runner
     # Fork PRs cannot access the Cloudflare secrets needed by the deploy job.
     if: github.event.pull_request.head.repo.full_name == github.repository
-    runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-latest' || fromJSON(needs.runner.outputs.large-runs-on || '"zli-k8s"') }}
+    # Kotlin/Wasm needs a reliable hosted runner after self-hosted communication loss.
+    runs-on: ubuntu-latest
     timeout-minutes: 25
     defaults:
       run:

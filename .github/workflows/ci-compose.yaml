@@ -28,10 +28,10 @@ jobs:
       runner-status-token: ${{ secrets.RUNNER_STATUS_TOKEN }}
 
   web:
-    needs: runner
     env:
       BINARYEN_CORES: "1"
-    runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-latest' || fromJSON(needs.runner.outputs.large-runs-on || '"zli-k8s"') }}
+    # Kotlin/Wasm needs a reliable hosted runner after self-hosted communication loss.
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-java@v5
