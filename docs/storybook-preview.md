@@ -47,7 +47,7 @@ PR ごとのデプロイは同時に1件だけ実行し、実行中・待機中�
 
 - `pnpm build-storybook` の生成物だけを配信します。Storybook のモック API を
   使用するため、バックエンドや本番ログインの設定は不要です。
-- ビルドは既存の runner 選択に従います。デプロイは毎回新しい GitHub-hosted
+- Kotlin/Wasmを含むビルドは GitHub-hosted Ubuntu に固定します。デプロイは毎回新しい GitHub-hosted
   runner で行い、Cloudflare の認証情報を持つジョブでは PR のコードを checkout
   したり、PR の依存関係・ビルドスクリプトを実行したりしません。
 - ダウンロードした生成物の直下から `_worker.js`（ディレクトリの場合も含む）、

@@ -64,3 +64,13 @@ Compose WebとStorybookのKotlin生成はGitHubホストのUbuntuランナーを
 Storybookは既存Storyの上部implementationツールバーで切り替える。`.storybook/kotlin-stories.ts` と領域別adapterから全380状態へ同じ引数と共有fixtureを渡す。`story-coverage.test.ts` は既存CSFの全exportを照合し、登録漏れを失敗させる。変更範囲の比較には `playwright.storybook-parity.config.ts` と `STORYBOOK_PARITY_FILTER` を使い、同じデータ・時刻・画面幅・テーマ・言語で確認できる。別Featuresカテゴリへ複製しない。
 
 UIの精度は「極端に違わなければ問題ない」という指定に従う。フォントのアンチエイリアスや微小な画素差は移植の完了条件にせず、独自の文字描画エンジンも追加しない。通常の比較は変更範囲に絞り、全件検証を毎回の作業やCIの完了条件にしない。画素比較が必要な明示的な診断だけ `STORYBOOK_PARITY_VISUAL=strict` を指定する。比較ブラウザーは通常のChromiumと同じフォント計測を使う `channel: "chromium"` とし、legacy headless shellの文字幅整数丸めを実装側で再現しない。
+
+## 全件診断で検出された未解決項目
+
+全件診断 run 41303314647（9654ce8）は8バケット中7件が失敗した。全件診断を常用CIから外す判断は実行時間に関する依頼に従うもので、これらの成功や修正完了を意味しない。
+
+- `features-channels-sidebar--unread-and-archived`: Kotlinで未読表示の `img 未読メッセージあり` が見つからない。
+- `features-chat-composer--with-file-attachment` と `features-chat-messagecontent--headings`: KotlinのStory完了待ちが90秒でタイムアウトした。描画・playのどちらが原因かは未確定。
+- その他のバケットの失敗内容は未確認。全380状態の登録検査の成功は、全状態の描画・操作成功を保証しない。
+
+これらは未解決として残し、対象機能を変更する際に該当Storyに絞って再現・修正する。
