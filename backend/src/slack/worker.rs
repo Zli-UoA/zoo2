@@ -520,6 +520,23 @@ async fn import(s: &AppState, job: &Job, lease: &Lease) -> Result<(), AppError> 
     {
         let mut tx = db.transaction().await?;
         suppress_app_events(&mut tx).await?;
+        // 別のジョブが同じ Slack チャンネルを並行して別の取り込み先へ入れないよう、
+        // 確認と登録を Slack チャンネル単位で排他する。デッドロックしないよう ID の順に取る。
+        let mut locked: Vec<&str> = mappings
+            .iter()
+            .filter(|m| !matches!(m.action, MappingAction::Skip))
+            .map(|m| m.slack_channel_id.as_str())
+            .collect();
+        locked.sort_unstable();
+        locked.dedup();
+        for slack_channel in locked {
+            one(
+                &mut tx,
+                "SELECT json_build_object('locked',pg_advisory_xact_lock(hashtextextended($1,0)) IS NULL)::text",
+                &[&format!("slack-channel:{team}:{slack_channel}")],
+            )
+            .await?;
+        }
         for mapping in &mappings {
             let Some(channel) = slack_channels.get(&mapping.slack_channel_id) else {
                 continue;
@@ -778,13 +795,17 @@ async fn insert_message(
         .filter(|ts| super::is_valid_ts(ts))
         .unwrap_or("");
     let content = mrkdwn_to_mfm(&message.text, &*ctx);
+    // 期間を区切った ZIP では返信だけが先に入ることがある。後から親を取り込んだら、返信をスレッドに戻す。
     exec(
         tx,
         "INSERT INTO messages(id,user_id,channel_id,content,created_at,updated_at,parent_id) \
          VALUES($1,$2,$3,$4,(to_timestamp($5::numeric) AT TIME ZONE 'UTC')::timestamp(3),\
          CASE WHEN $6='' THEN NULL ELSE (to_timestamp($6::numeric) AT TIME ZONE 'UTC')::timestamp(3) END,\
          (SELECT m.id FROM messages m WHERE m.id=NULLIF($7,'') AND m.channel_id=$3 AND m.parent_id IS NULL)) \
-         ON CONFLICT (id) DO NOTHING",
+         ON CONFLICT (id) DO UPDATE SET parent_id=EXCLUDED.parent_id \
+         WHERE messages.parent_id IS NULL AND EXCLUDED.parent_id IS NOT NULL \
+         AND messages.channel_id=EXCLUDED.channel_id \
+         AND NOT EXISTS(SELECT 1 FROM messages r WHERE r.parent_id=messages.id)",
         &[&id, &user.id, channel_id, &content, &message.ts, edited, &parent],
     )
     .await?;
