@@ -20,6 +20,15 @@ import { homePosts as posts, homeHandlers } from "../../../.storybook/home-fixtu
 
 const postSettingsKey = homePostSettingsKey(DEFAULT_CONFIG.apiBaseUrl, DEFAULT_CURRENT_USER_ID);
 const timelineSettingsKey = homeTimelineKey(DEFAULT_CONFIG.apiBaseUrl, DEFAULT_CURRENT_USER_ID);
+// Native catalog requests use the preview origin; React fixtures use DEFAULT_CONFIG.
+function nativePreferenceFixtureKey(key: string) {
+  const prefix = [HOME_POST_SETTINGS_PREFIX, HOME_TIMELINE_PREFIX].find((value) =>
+    key.startsWith(value),
+  );
+  if (!prefix) throw new Error("Unexpected Home preference key");
+  const [, userId] = JSON.parse(key.slice(prefix.length)) as [string, string];
+  return prefix + JSON.stringify([DEFAULT_CONFIG.apiBaseUrl, userId]);
+}
 function clearHomePreferences() {
   for (let index = localStorage.length - 1; index >= 0; index--) {
     const key = localStorage.key(index)!;
@@ -48,9 +57,9 @@ const meta = {
     a11y: { test: "error" },
     fixtureControls: {
       ...nativeHomeChecks,
-      homeStorageRead: (key: string) => localStorage.getItem(key) ?? "",
+      homeStorageRead: (key: string) => localStorage.getItem(nativePreferenceFixtureKey(key)) ?? "",
       homeStorageWrite: ({ key, value }: { key: string; value: string }) => {
-        localStorage.setItem(key, value);
+        localStorage.setItem(nativePreferenceFixtureKey(key), value);
         return "";
       },
       homeRememberedPost: () =>
