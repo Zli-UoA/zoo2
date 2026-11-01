@@ -118,6 +118,7 @@ export function ZooSettings() {
             <WorkspaceMembers />
           </Tabs.Panel>
           <Tabs.Panel value="slack" className="min-h-0">
+            <h2 className="sr-only">{t("slackLink.tab")}</h2>
             <SlackLinkPanel />
           </Tabs.Panel>
           {isAdmin ? (
