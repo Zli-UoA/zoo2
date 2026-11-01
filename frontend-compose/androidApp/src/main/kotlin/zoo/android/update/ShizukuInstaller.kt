@@ -20,14 +20,14 @@ internal fun shizukuReady(): Boolean =
     }
 
 internal class ShizukuInstaller(private val context: Context) {
-    suspend fun install(file: File): String = coroutineScope {
+    suspend fun install(file: File): String {
         check(shizukuReady()) { "Shizuku を起動し、Zoo に使用を許可してください" }
         val connected = CompletableDeferred<IUpdateInstaller>()
         val args =
             Shizuku.UserServiceArgs(
                     ComponentName(context.packageName, UpdateInstallerService::class.java.name)
                 )
-                .daemon(false)
+                .daemon(true)
                 .processNameSuffix("updater")
                 .version(works.zli.zoo.BuildConfig.VERSION_CODE)
         val connection =
@@ -40,20 +40,23 @@ internal class ShizukuInstaller(private val context: Context) {
                     connected.completeExceptionally(IllegalStateException("Shizuku との接続が切れました"))
                 }
             }
-        try {
-            withContext(Dispatchers.Main) { Shizuku.bindUserService(args, connection) }
-            val installer = withTimeout(20_000) { connected.await() }
-            withContext(Dispatchers.IO) {
-                ParcelFileDescriptor.open(file, ParcelFileDescriptor.MODE_READ_ONLY).use {
-                    // The service has its own watchdog; Binder calls themselves are not
-                    // cancellable.
-                    installer.install(it, file.length(), android.os.Process.myUid() / 100000)
+        return installerSession(
+            connect = {
+                withContext(Dispatchers.Main) { Shizuku.bindUserService(args, connection) }
+                withTimeout(20_000) { connected.await() }
+            },
+            install = { installer ->
+                withContext(Dispatchers.IO) {
+                    ParcelFileDescriptor.open(file, ParcelFileDescriptor.MODE_READ_ONLY).use {
+                        // The service has its own watchdog; Binder calls themselves are not
+                        // cancellable.
+                        installer.install(it, file.length(), android.os.Process.myUid() / 100000)
+                    }
                 }
-            }
-        } finally {
-            withContext(NonCancellable + Dispatchers.Main) {
-                runCatching { Shizuku.unbindUserService(args, connection, true) }
-            }
-        }
+            },
+            disconnect = {
+                withContext(Dispatchers.Main) { Shizuku.unbindUserService(args, connection, true) }
+            },
+        )
     }
 }

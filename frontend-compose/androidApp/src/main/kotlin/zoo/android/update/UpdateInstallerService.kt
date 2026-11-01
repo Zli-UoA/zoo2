@@ -9,6 +9,19 @@ import java.util.concurrent.TimeUnit
  */
 @Keep
 class UpdateInstallerService : IUpdateInstaller.Stub() {
+    init {
+        // Self-update kills the client before its finally block can unbind this daemon.
+        // Bound the daemon lifetime even when that client never returns.
+        Thread {
+                Thread.sleep(180_000)
+                kotlin.system.exitProcess(0)
+            }
+            .apply {
+                isDaemon = true
+                start()
+            }
+    }
+
     override fun destroy() {
         kotlin.system.exitProcess(0)
     }
