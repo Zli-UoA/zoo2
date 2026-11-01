@@ -30,7 +30,7 @@ jobs:
 
   check:
     needs: runner
-    runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-latest' || fromJSON(needs.runner.outputs.runs-on || '"zli-kubecamp-no-docker"') }}
+    runs-on: ${{ (github.event.pull_request.head.repo.fork || github.event_name == 'merge_group') && 'ubuntu-latest' || fromJSON(needs.runner.outputs.runs-on || '"zli-kubecamp-no-docker"') }}
     timeout-minutes: 20
     defaults:
       run:

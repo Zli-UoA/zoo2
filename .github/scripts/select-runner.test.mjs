@@ -96,6 +96,8 @@ const dockerJobs = {"ci-compose.yaml": ["container"], "ci-github-bot.yaml": ["te
 const hostedJobs = {"ci-compose.yaml": ["web"], "cd-storybook.yaml": ["build"]};
 // macOS 向けのビルドがあるため、GitHub ホストの実行先だけを使うジョブ。PR では動かないワークフローに限る。
 const releaseJobs = {"cd-tui-release.yaml": ["version", "build", "release"]};
+const queued = new Set(['merge-queue.yaml', ...[...readFileSync(new URL('.github/workflows/merge-queue.yaml', root), 'utf8')
+  .matchAll(/^    uses: \.\/\.github\/workflows\/([\w-]+\.yaml)$/gm)].map(m => m[1])]);
 test('every workload uses the right output and protects fork PRs', () => {
   const dir = new URL('.github/workflows/', root);
   let checked = 0;
@@ -141,7 +143,9 @@ test('every workload uses the right output and protects fork PRs', () => {
       }
       const line = block.split('\n').find(x => x.startsWith('    runs-on:'));
       if (line && !hosted) {
-        assert.ok(line.includes(`github.event.pull_request.head.repo.fork && '${H}' ||`), `${file}/${id}: fork guard`);
+        // merge_group には元 PR の fork 情報がないため、キューで動く workflow は常に GitHub-hosted にする。
+        const fork = queued.has(file) ? "(github.event.pull_request.head.repo.fork || github.event_name == 'merge_group')" : 'github.event.pull_request.head.repo.fork';
+        assert.ok(line.includes(`${fork} && '${H}' ||`), `${file}/${id}: fork guard`);
       }
       if (/docker\/(?:setup-buildx|build-push)-action|docker (?:run|compose|build)\b|scripts\/test-(?:alertmanager|log-sanitization)/.test(block)) {
         assert.ok(docker, `${file}/${id}: Docker daemon use routed to kubecamp`);

@@ -40,7 +40,7 @@ jobs:
 
   container:
     needs: runner
-    runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-latest' || fromJSON(needs.runner.outputs.docker-runs-on || '"ubuntu-latest"') }}
+    runs-on: ${{ (github.event.pull_request.head.repo.fork || github.event_name == 'merge_group') && 'ubuntu-latest' || fromJSON(needs.runner.outputs.docker-runs-on || '"ubuntu-latest"') }}
     env:
       POSTGRES_PASSWORD: container-test
       # envsubst で CSP に埋め込まれることを確認するためのダミー IdP・ストレージオリジン。
@@ -161,7 +161,7 @@ jobs:
 
   proxy:
     needs: runner
-    runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-latest' || fromJSON(needs.runner.outputs.docker-runs-on || '"ubuntu-latest"') }}
+    runs-on: ${{ (github.event.pull_request.head.repo.fork || github.event_name == 'merge_group') && 'ubuntu-latest' || fromJSON(needs.runner.outputs.docker-runs-on || '"ubuntu-latest"') }}
     env:
       POSTGRES_PASSWORD: proxy-test
       PROXY_PORT: 18080
@@ -184,7 +184,7 @@ jobs:
         run: docker compose --project-directory . -f infra/compose.stg.yaml -f infra/proxy/test/compose.yaml down
 
   check:
-    runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-latest' || 'zli-kubecamp-no-docker' }}
+    runs-on: ${{ (github.event.pull_request.head.repo.fork || github.event_name == 'merge_group') && 'ubuntu-latest' || 'zli-kubecamp-no-docker' }}
     defaults:
       run:
         working-directory: ./frontend
@@ -238,7 +238,7 @@ jobs:
         run: pnpm test:e2e:layout
 
   unit-test:
-    runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-latest' || 'zli-kubecamp-no-docker' }}
+    runs-on: ${{ (github.event.pull_request.head.repo.fork || github.event_name == 'merge_group') && 'ubuntu-latest' || 'zli-kubecamp-no-docker' }}
     defaults:
       run:
         working-directory: ./frontend
@@ -267,7 +267,7 @@ jobs:
   browser-test:
     needs: runner
     # Storybook exceeds the 2GiB kubecamp limit, even with a single test page.
-    runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-latest' || fromJSON(needs.runner.outputs.large-runs-on || '"zli-k8s"') }}
+    runs-on: ${{ (github.event.pull_request.head.repo.fork || github.event_name == 'merge_group') && 'ubuntu-latest' || fromJSON(needs.runner.outputs.large-runs-on || '"zli-k8s"') }}
     defaults:
       run:
         working-directory: ./frontend

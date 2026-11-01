@@ -26,7 +26,7 @@ concurrency:
 
 jobs:
   test:
-    runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-latest' || 'zli-kubecamp-no-docker' }}
+    runs-on: ${{ (github.event.pull_request.head.repo.fork || github.event_name == 'merge_group') && 'ubuntu-latest' || 'zli-kubecamp-no-docker' }}
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
