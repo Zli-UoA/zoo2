@@ -1,3 +1,9 @@
+import {
+  loadHomePostSettings,
+  saveHomePostSettings,
+  replyVisibility,
+  type HomePostSettings,
+} from "../../lib/homePreferences";
 import { ActivityPubText, type CustomEmoji } from "./ActivityPubEmoji";
 import { flushSync } from "react-dom";
 import { useImperativeHandle, useRef, useState, type Ref } from "react";
@@ -32,7 +38,7 @@ import {
 export interface HomePostInput {
   content: string;
   apub: boolean;
-  visibility: "public" | "unlisted" | "followers";
+  visibility: HomePostSettings["visibility"];
   channel_id: string | null;
   in_reply_to?: string;
 }
@@ -52,10 +58,12 @@ export interface HomeComposerHandle {
 }
 /** One draft and one form, shown as a desktop dialog or a mobile screen. */
 export function HomeComposer({
+  settingsKey,
   federationEnabled,
   onPost,
   ref,
 }: {
+  settingsKey: string | null;
   federationEnabled: boolean;
   onPost: (post: HomePostInput) => Promise<void>;
   ref?: Ref<HomeComposerHandle>;
@@ -63,19 +71,35 @@ export function HomeComposer({
   const { t } = useTranslation();
   const isDesktop = useMediaQuery("(min-width: 768px)");
   const channelsQuery = useActiveChannels();
-  const { joinedChannelIds } = useMyChannelMemberships();
+  const { joinedChannelIds, isLoading: membershipsLoading } = useMyChannelMemberships();
   const [open, setOpen] = useState(false);
   const viewportRef = useVisualViewport(open && !isDesktop);
   const [replyTo, setReplyTo] = useState<ReplyTarget | null>(null);
   const [content, setContent] = useState("");
-  const [visibility, setVisibility] = useState<HomePostInput["visibility"]>("unlisted");
-  const [federatePreference, setFederatePreference] = useState<boolean | null>(null);
-  const [channelId, setChannelId] = useState("");
+  const [previousSettings] = useState(() => loadHomePostSettings(settingsKey));
+  const [visibility, setVisibility] = useState(previousSettings.visibility);
+  const [federatePreference, setFederatePreference] = useState(previousSettings.apub);
+  const [channelId, setChannelId] = useState(previousSettings.channel_id ?? "");
+  const availableChannels = (channelsQuery.data ?? []).filter(
+    (channel) =>
+      !channel.is_private &&
+      !channel.is_dm &&
+      !channel.archive_at &&
+      joinedChannelIds.has(channel.id),
+  );
+  const selectedChannelId =
+    visibility !== "followers" && availableChannels.some((channel) => channel.id === channelId)
+      ? channelId
+      : "";
+  const channelSelectionPending =
+    channelId !== "" &&
+    visibility !== "followers" &&
+    (channelsQuery.isLoading || membershipsLoading);
   const [sending, setSending] = useState(false);
   const [failed, setFailed] = useState(false);
   const inFlight = useRef(false);
   const inputRef = useRef<HTMLTextAreaElement>(null);
-  const federated = federationEnabled && replyTo?.apub !== false && (federatePreference ?? true);
+  const federated = federationEnabled && replyTo?.apub !== false && federatePreference;
   const length = Array.from(content).length;
   const AudienceIcon =
     visibility === "public" ? GlobeIcon : visibility === "followers" ? LockKeyholeIcon : HomeIcon;
@@ -88,18 +112,31 @@ export function HomeComposer({
   ] as const;
 
   const submit = async () => {
-    if (inFlight.current || !content.trim() || length > 1000) return;
+    if (
+      !settingsKey ||
+      channelSelectionPending ||
+      inFlight.current ||
+      !content.trim() ||
+      length > 1000
+    )
+      return;
     inFlight.current = true;
     setSending(true);
     setFailed(false);
     try {
-      await onPost({
-        content,
+      const settings: HomePostSettings = {
         apub: federated,
         visibility,
-        channel_id: channelId || null,
+        channel_id: selectedChannelId || null,
+      };
+      await onPost({
+        content,
+        ...settings,
         ...(replyTo ? { in_reply_to: replyTo.id } : {}),
       });
+      saveHomePostSettings(settingsKey, settings);
+      setFederatePreference(settings.apub);
+      setChannelId(settings.channel_id ?? "");
       setReplyTo(null);
       setContent("");
       setOpen(false);
@@ -115,17 +152,11 @@ export function HomeComposer({
     ref,
     () => ({
       reply: (post) => {
-        if (inFlight.current) return;
+        if (!settingsKey || inFlight.current) return;
         const show = () => {
           setReplyTo(post);
           setChannelId("");
-          setVisibility(
-            post.visibility === "followers"
-              ? "followers"
-              : post.visibility === "public"
-                ? "public"
-                : "unlisted",
-          );
+          setVisibility((current) => replyVisibility(current, post.visibility));
           setOpen(true);
         };
         if (!isDesktop) {
@@ -134,7 +165,7 @@ export function HomeComposer({
         } else show();
       },
     }),
-    [isDesktop],
+    [isDesktop, settingsKey],
   );
 
   return (
@@ -153,6 +184,7 @@ export function HomeComposer({
         render={
           <Button
             size="icon-lg"
+            disabled={!settingsKey}
             className="absolute right-5 bottom-[max(1.25rem,env(safe-area-inset-bottom))] z-20 size-14 rounded-full shadow-lg transition-transform hover:-translate-y-0.5 md:right-8 md:bottom-8"
             aria-label={t("home.openComposer")}
             title={t("home.openComposer")}
@@ -296,7 +328,7 @@ export function HomeComposer({
                 <Button
                   type="submit"
                   size="icon"
-                  disabled={sending || !content.trim() || length > 1000}
+                  disabled={sending || channelSelectionPending || !content.trim() || length > 1000}
                   aria-label={t(sending ? "home.sending" : "home.post")}
                   title={t(sending ? "home.sending" : "home.post")}
                 >
@@ -350,21 +382,16 @@ export function HomeComposer({
                   {t("home.channel")}
                   <Select
                     aria-label={t("home.channel")}
-                    value={channelId}
-                    disabled={sending || visibility === "followers"}
+                    value={selectedChannelId}
+                    disabled={sending || channelSelectionPending || visibility === "followers"}
                     onChange={(e) => setChannelId(e.target.value)}
                   >
                     <option value="">{t("home.noChannel")}</option>
-                    {(channelsQuery.data ?? [])
-                      .filter(
-                        (c) =>
-                          !c.is_private && !c.is_dm && !c.archive_at && joinedChannelIds.has(c.id),
-                      )
-                      .map((c) => (
-                        <option key={c.id} value={c.id}>
-                          #{c.channel_name}
-                        </option>
-                      ))}
+                    {availableChannels.map((channel) => (
+                      <option key={channel.id} value={channel.id}>
+                        #{channel.channel_name}
+                      </option>
+                    ))}
                   </Select>
                 </label>
                 <span

@@ -1,5 +1,15 @@
 import { playForImplementation } from "../../../.storybook/play-for-implementation";
 import { nativeHomeChecks } from "../../../.storybook/home-native-checks";
+import { useState } from "react";
+import { Button } from "../ui/button";
+import { DEFAULT_CONFIG } from "../../lib/config";
+import { DEFAULT_CURRENT_USER_ID, storyCollections } from "../../../.storybook/fixtures";
+import {
+  HOME_POST_SETTINGS_PREFIX,
+  HOME_TIMELINE_PREFIX,
+  homePostSettingsKey,
+  homeTimelineKey,
+} from "../../lib/homePreferences";
 import { blobcat, misskeyPost } from "../../../.storybook/activitypub-fixtures";
 import type { Meta, StoryObj } from "@storybook/react-vite";
 import { delay, http, HttpResponse, ws } from "msw";
@@ -7,9 +17,32 @@ import { expect, fireEvent, screen, userEvent, waitFor, within } from "storybook
 import { HomeScreen } from "./HomeScreen";
 import { homePosts as posts, homeHandlers } from "../../../.storybook/home-fixtures";
 
+const postSettingsKey = homePostSettingsKey(DEFAULT_CONFIG.apiBaseUrl, DEFAULT_CURRENT_USER_ID);
+const timelineSettingsKey = homeTimelineKey(DEFAULT_CONFIG.apiBaseUrl, DEFAULT_CURRENT_USER_ID);
+function clearHomePreferences() {
+  for (let index = localStorage.length - 1; index >= 0; index--) {
+    const key = localStorage.key(index)!;
+    if (key.startsWith(HOME_POST_SETTINGS_PREFIX) || key.startsWith(HOME_TIMELINE_PREFIX))
+      localStorage.removeItem(key);
+  }
+}
+function RemountableHome(props: Parameters<typeof HomeScreen>[0]) {
+  const [version, setVersion] = useState(0);
+  return (
+    <>
+      <Button onClick={() => setVersion((value) => value + 1)}>画面を再表示</Button>
+      <HomeScreen {...props} key={version} />
+    </>
+  );
+}
+
 const meta = {
   title: "Pages/Home",
   component: HomeScreen,
+  beforeEach: () => {
+    clearHomePreferences();
+    return clearHomePreferences;
+  },
   parameters: {
     a11y: { test: "error" },
     fixtureControls: {
@@ -183,6 +216,7 @@ export const SendError: Story = {
     await userEvent.click(form.getByRole("button", { name: /^投稿$/ }));
     await expect(await form.findByRole("alert")).toBeVisible();
     await expect(field).toHaveValue("残しておく下書き");
+    await expect(localStorage.getItem(postSettingsKey)).toBeNull();
   }),
 };
 
@@ -1333,4 +1367,158 @@ export const UserProfileError: Story = {
   play: playForImplementation(async ({ canvasElement }) => {
     await expect(await within(canvasElement).findByRole("alert")).toBeVisible();
   }),
+};
+
+let rememberedPost: Record<string, unknown> | null = null;
+export const RememberPostSettings: Story = {
+  render: (args) => <RemountableHome {...args} />,
+  beforeEach: () => {
+    rememberedPost = null;
+  },
+  parameters: {
+    msw: {
+      handlers: [
+        ...homeHandlers,
+        http.post("*/api/home", async ({ request }) => {
+          rememberedPost = (await request.json()) as Record<string, unknown>;
+          return HttpResponse.json({ id: "remembered" }, { status: 201 });
+        }),
+      ],
+    },
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const form = await openComposer(canvasElement);
+    await userEvent.click(form.getByRole("button", { name: /^公開範囲:/ }));
+    await userEvent.click(await screen.findByRole("menuitemradio", { name: "パブリック" }));
+    await userEvent.click(form.getByRole("button", { name: "連合あり" }));
+    await userEvent.click(await screen.findByRole("menuitemradio", { name: "連合なし" }));
+    await userEvent.selectOptions(
+      form.getByRole("combobox", { name: "同期先チャンネル" }),
+      "channel-general",
+    );
+    await userEvent.type(
+      form.getByRole("textbox", { name: "近況を投稿" }),
+      "端末に本文は保存しません",
+    );
+    await userEvent.click(form.getByRole("button", { name: "投稿" }));
+    await expectComposerClosed();
+    const expected = { visibility: "public", apub: false, channel_id: "channel-general" };
+    await expect(rememberedPost).toMatchObject(expected);
+    await expect(JSON.parse(localStorage.getItem(postSettingsKey)!)).toEqual(expected);
+    await userEvent.click(canvas.getByRole("button", { name: "画面を再表示" }));
+    const reopened = await openComposer(canvasElement);
+    await expect(reopened.getByRole("button", { name: "公開範囲: パブリック" })).toBeVisible();
+    await expect(reopened.getByRole("button", { name: "連合なし" })).toBeVisible();
+    await expect(reopened.getByRole("combobox", { name: "同期先チャンネル" })).toHaveValue(
+      "channel-general",
+    );
+    await expect(reopened.getByRole("textbox", { name: "近況を投稿" })).toHaveValue("");
+  },
+};
+export const RememberPostSettingsMobile: Story = {
+  ...RememberPostSettings,
+  globals: { viewport: { value: "mobile" } },
+};
+export const RememberTimeline: Story = {
+  render: (args) => <RemountableHome {...args} />,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    for (const name of ["ローカル", "ソーシャル", "ホーム"]) {
+      await userEvent.click(canvas.getByRole("button", { name }));
+      await userEvent.click(canvas.getByRole("button", { name: "画面を再表示" }));
+      await expect(canvas.getByRole("button", { name })).toHaveAttribute("aria-pressed", "true");
+    }
+    await expect(localStorage.getItem(timelineSettingsKey)).toBe("home");
+  },
+};
+export const RememberedReplyConstraints: Story = {
+  beforeEach: () =>
+    localStorage.setItem(
+      postSettingsKey,
+      JSON.stringify({ visibility: "public", apub: true, channel_id: "channel-general" }),
+    ),
+  parameters: {
+    msw: {
+      handlers: [
+        http.get("*/api/home", () =>
+          HttpResponse.json([{ ...posts[0], apub: false, visibility: "followers" }]),
+        ),
+      ],
+    },
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await userEvent.click(await canvas.findByRole("button", { name: "返信 0" }));
+    const form = await visibleDialog("近況を投稿");
+    await expect(form.getByRole("button", { name: "公開範囲: フォロワー限定" })).toBeVisible();
+    await expect(form.getByRole("button", { name: "連合なし" })).toBeVisible();
+    await expect(form.getByRole("combobox", { name: "同期先チャンネル" })).toHaveValue("");
+    await expect(form.getByRole("combobox", { name: "同期先チャンネル" })).toBeDisabled();
+    await userEvent.click(form.getByRole("button", { name: /^公開範囲:/ }));
+    await expect(await screen.findByRole("menuitemradio", { name: "パブリック" })).toHaveAttribute(
+      "aria-disabled",
+      "true",
+    );
+  },
+};
+export const RememberedChannelUnavailable: Story = {
+  beforeEach: () => {
+    rememberedPost = null;
+    localStorage.setItem(
+      postSettingsKey,
+      JSON.stringify({ visibility: "public", apub: false, channel_id: "channel-secret" }),
+    );
+  },
+  parameters: {
+    msw: {
+      handlers: [
+        ...homeHandlers,
+        http.post("*/api/home", async ({ request }) => {
+          rememberedPost = (await request.json()) as Record<string, unknown>;
+          return HttpResponse.json({ id: "no-channel" }, { status: 201 });
+        }),
+      ],
+    },
+  },
+  play: async ({ canvasElement }) => {
+    const form = await openComposer(canvasElement);
+    await expect(form.getByRole("combobox", { name: "同期先チャンネル" })).toHaveValue("");
+    await expect(form.queryByRole("option", { name: "#secret" })).not.toBeInTheDocument();
+    await userEvent.type(form.getByRole("textbox", { name: "近況を投稿" }), "同期なしで投稿");
+    await userEvent.click(form.getByRole("button", { name: "投稿" }));
+    await expectComposerClosed();
+    await expect(rememberedPost).toMatchObject({ channel_id: null });
+  },
+};
+export const RememberedAccountIsolation: Story = {
+  beforeEach: () => {
+    localStorage.setItem(
+      postSettingsKey,
+      JSON.stringify({ visibility: "public", apub: false, channel_id: "channel-general" }),
+    );
+    localStorage.setItem(timelineSettingsKey, "local");
+  },
+  parameters: {
+    collections: { ...storyCollections, currentUserId: "user-bob" },
+    msw: {
+      handlers: [
+        ...homeHandlers,
+        http.get("*/api/users/me", () =>
+          HttpResponse.json({ id: "user-bob", user_name: "bob", display_name: "Bob" }),
+        ),
+      ],
+    },
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expect(canvas.getByRole("button", { name: "ホーム" })).toHaveAttribute(
+      "aria-pressed",
+      "true",
+    );
+    const form = await openComposer(canvasElement);
+    await expect(form.getByRole("button", { name: "公開範囲: ホーム" })).toBeVisible();
+    await expect(form.getByRole("button", { name: "連合あり" })).toBeVisible();
+    await expect(form.getByRole("combobox", { name: "同期先チャンネル" })).toHaveValue("");
+  },
 };
