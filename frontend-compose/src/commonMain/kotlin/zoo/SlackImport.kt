@@ -18,6 +18,17 @@ import kotlinx.serialization.json.*
 /** ワーカーが処理中で、結果を待つ必要がある状態 (React の `SLACK_IMPORT_RUNNING`) */
 val slackImportRunning = setOf("uploading", "analyzing", "importing", "fetching_files")
 
+/**
+ * カードで操作できるように出す取り込みと、履歴に回す取り込みに分ける (React の `splitSlackImports`)。
+ * 完了・取り消し以外はすべてカードにし、未完了がなければ最新の完了した取り込みをカードにする。
+ */
+fun splitSlackImports(imports: List<Row>): Pair<List<Row>, List<Row>> {
+    val open = imports.filter { it.text("status") !in setOf("completed", "cancelled") }
+    val latest = imports.firstOrNull { it.text("status") == "completed" }
+    val cards = open.ifEmpty { listOfNotNull(latest) }
+    return cards to imports.filter { job -> cards.none { it === job } }
+}
+
 /** 「添付ファイルを取得」でやり直せる件数 (React の `retryableFiles`) */
 fun slackImportRetryableFiles(job: Row): Int =
     if (job.text("status") == "completed")
@@ -91,17 +102,17 @@ class SlackImportController(
     val running
         get() = imports?.any { it.text("status") in slackImportRunning } == true
 
-    /** 取り消し済み以外の最新の取り込み。新しい ZIP はこれが終わるまで選べない */
-    val active
-        get() = imports?.firstOrNull { it.text("status") != "cancelled" }
+    /** カードで操作できるように出す取り込み (未完了のものすべて) */
+    val cards
+        get() = splitSlackImports(imports.orEmpty()).first
 
     val history
-        get() = imports.orEmpty().filter { it !== active }
+        get() = splitSlackImports(imports.orEmpty()).second
 
+    /** 処理中か対応付け待ちのものがあれば、新しい ZIP は選べない */
     val busy
         get() =
-            active?.text("status")?.let { it in slackImportRunning || it == "awaiting_mapping" } ==
-                true
+            cards.any { it.text("status").let { s -> s in slackImportRunning || s == "awaiting_mapping" } }
 
     fun load() {
         if (!lifetime.isActive) return
@@ -267,7 +278,7 @@ fun SlackImportPanel(app: Session) {
                 },
                 muted = true,
             )
-        state.active?.let { job -> key(job.text("id")) { SlackImportCard(app, state, job) } }
+        state.cards.forEach { job -> key(job.text("id")) { SlackImportCard(app, state, job) } }
         val history = state.history
         if (history.isNotEmpty())
             SettingsSection(app.t("slackImport.history")) {

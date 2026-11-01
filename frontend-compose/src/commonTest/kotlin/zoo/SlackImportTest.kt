@@ -58,6 +58,26 @@ class SlackImportTest {
     }
 
     @Test
+    fun everyUnfinishedImportStaysOperable() {
+        val (cards, history) =
+            splitSlackImports(
+                listOf(
+                    job("b", "awaiting_mapping"),
+                    job("a", "awaiting_mapping"),
+                    job("z", "completed"),
+                )
+            )
+        assertEquals(listOf("b", "a"), cards.map { it.text("id") })
+        assertEquals(listOf("z"), history.map { it.text("id") })
+        val (latest, rest) =
+            splitSlackImports(
+                listOf(job("c", "cancelled"), job("b", "completed"), job("a", "completed"))
+            )
+        assertEquals(listOf("b"), latest.map { it.text("id") })
+        assertEquals(listOf("c", "a"), rest.map { it.text("id") })
+    }
+
+    @Test
     fun loadKeepsActiveAndHistoryAndStartReplacesTheJob() = runTest {
         val requests = mutableListOf<Pair<String, String>>()
         val state =
@@ -79,13 +99,13 @@ class SlackImportTest {
             }
         state.load()
         runCurrent()
-        assertEquals("new", state.active?.text("id"))
+        assertEquals(listOf("new"), state.cards.map { it.text("id") })
         assertEquals(listOf("old"), state.history.map { it.text("id") })
         assertTrue(state.busy, "a new ZIP waits until the mapping is decided")
         state.start("new", listOf(obj("slack_channel_id" to "C1", "action" to "skip")))
         runCurrent()
         assertEquals("POST" to "/api/admin/slack-imports/new/start", requests.last())
-        assertEquals("importing", state.active?.text("status"))
+        assertEquals("importing", state.cards.single().text("status"))
         assertTrue(state.running)
         state.close()
     }
@@ -137,7 +157,7 @@ class SlackImportTest {
             listOf("POST /api/admin/slack-imports", "POST /api/admin/slack-imports/new/uploaded"),
             requests,
         )
-        assertEquals("analyzing", state.active?.text("status"))
+        assertEquals("analyzing", state.cards.single().text("status"))
         assertNull(state.uploading)
         state.close()
     }

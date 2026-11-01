@@ -400,6 +400,7 @@ fun ChannelDialog(
                             .filter {
                                 it.text("id") != app.config.userId &&
                                     !it.flag("is_bot") &&
+                                    !it.flag("is_deactivated") &&
                                     it.text("id") !in selected &&
                                     (author(it).contains(search.trim(), true) ||
                                         it.text("user_name").contains(search.trim(), true))
@@ -693,6 +694,7 @@ fun Members(
         users
             .filter {
                 !it.flag("is_bot") &&
+                    !it.flag("is_deactivated") &&
                     it.text("id") !in ids &&
                     (author(it).contains(search, true) ||
                         it.text("user_name").contains(search, true))

@@ -10,6 +10,7 @@ import {
   defaultMappings,
   fetchSlackImportFiles,
   listSlackImports,
+  splitSlackImports,
   retryableFiles,
   startSlackImport,
   uploadSlackExport,
@@ -76,11 +77,10 @@ export function SlackImportPanel({ put }: { put?: PutWithProgress }) {
     }
   }
 
-  const active = imports?.find((job) => job.status !== "cancelled");
-  const history = imports?.filter((job) => job !== active) ?? [];
-  const busy =
-    active &&
-    (SLACK_IMPORT_RUNNING.includes(active.status) || active.status === "awaiting_mapping");
+  const { cards, history } = splitSlackImports(imports ?? []);
+  const busy = cards.some(
+    (job) => SLACK_IMPORT_RUNNING.includes(job.status) || job.status === "awaiting_mapping",
+  );
 
   return (
     <div className="space-y-4">
@@ -110,15 +110,15 @@ export function SlackImportPanel({ put }: { put?: PutWithProgress }) {
       </SettingsSection>
 
       {imports === null && !error ? <Spinner label={t("slackImport.loading")} /> : null}
-      {active ? (
+      {cards.map((job) => (
         <ImportCard
-          key={active.id}
-          job={active}
+          key={job.id}
+          job={job}
           onChange={replace}
           onError={(cause) => setError(describeImportError(cause, t))}
           client={client}
         />
-      ) : null}
+      ))}
       {history.length > 0 ? (
         <SettingsSection title={t("slackImport.history")}>
           <ul className="divide-y text-sm">

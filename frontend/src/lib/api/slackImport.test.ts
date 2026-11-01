@@ -4,8 +4,10 @@ import type { ApiClient } from "./client";
 import {
   defaultMappings,
   uploadSlackExport,
+  splitSlackImports,
   type PutWithProgress,
   type SlackChannelSummary,
+  type SlackImport,
 } from "./slackImport";
 
 function channel(overrides: Partial<SlackChannelSummary>): SlackChannelSummary {
@@ -45,6 +47,28 @@ describe("defaultMappings", () => {
       { slack_channel_id: "C2", action: "existing", channel_id: "channel-random" },
       { slack_channel_id: "C3", action: "skip" },
     ]);
+  });
+});
+
+describe("splitSlackImports", () => {
+  const job = (id: string, status: SlackImport["status"]) => ({ id, status }) as SlackImport;
+
+  it("keeps every unfinished import operable, oldest included", () => {
+    const imports = [
+      job("b", "awaiting_mapping"),
+      job("a", "awaiting_mapping"),
+      job("z", "completed"),
+    ];
+    const { cards, history } = splitSlackImports(imports);
+    expect(cards.map((j) => j.id)).toEqual(["b", "a"]);
+    expect(history.map((j) => j.id)).toEqual(["z"]);
+  });
+
+  it("shows the latest completed import when nothing is unfinished", () => {
+    const imports = [job("c", "cancelled"), job("b", "completed"), job("a", "completed")];
+    const { cards, history } = splitSlackImports(imports);
+    expect(cards.map((j) => j.id)).toEqual(["b"]);
+    expect(history.map((j) => j.id)).toEqual(["c", "a"]);
   });
 });
 

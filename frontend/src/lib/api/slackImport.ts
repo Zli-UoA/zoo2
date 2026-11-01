@@ -151,6 +151,21 @@ export async function uploadSlackExport(
   return client.request<SlackImport>(`${BASE}/${created.import.id}/uploaded`, { method: "POST" });
 }
 
+/**
+ * カードで操作できるように出す取り込みと、履歴に回す取り込みに分ける。
+ * 別の管理者やタブが同時に始めた取り込みも操作できるよう、完了・取り消し以外はすべてカードにする。
+ * 未完了がなければ、最新の完了した取り込みの結果をカードで出す。
+ */
+export function splitSlackImports(imports: SlackImport[]): {
+  cards: SlackImport[];
+  history: SlackImport[];
+} {
+  const open = imports.filter((job) => job.status !== "completed" && job.status !== "cancelled");
+  const latest = imports.find((job) => job.status === "completed");
+  const cards = open.length > 0 ? open : latest ? [latest] : [];
+  return { cards, history: imports.filter((job) => !cards.includes(job)) };
+}
+
 /** 「添付ファイルを取得」でやり直せる件数 */
 export function retryableFiles(job: SlackImport): number {
   return job.status === "completed" ? job.pending_files + job.failed_files : 0;
