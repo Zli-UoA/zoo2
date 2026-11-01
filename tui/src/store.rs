@@ -13,6 +13,9 @@ use crate::electric::{
 pub struct Store {
     channels: HashMap<String, Channel>,
     users: HashMap<String, User>,
+    /// 行はシェイプのキーで持つので、id から引くための索引を別に持つ。
+    channel_keys: HashMap<String, String>,
+    user_keys: HashMap<String, String>,
     channel_users: HashMap<String, ChannelUser>,
     messages: HashMap<String, HashMap<String, Message>>,
     reactions: HashMap<String, HashMap<String, Reaction>>,
@@ -57,6 +60,11 @@ impl Store {
             ),
         }
         self.invalid_rows += invalid;
+        match id {
+            ShapeId::Channels => self.channel_keys = index(&self.channels, |c| &c.id),
+            ShapeId::Users => self.user_keys = index(&self.users, |u| &u.id),
+            _ => {}
+        }
         if batch.reset {
             self.synced.remove(id);
         }
@@ -84,13 +92,11 @@ impl Store {
     }
 
     pub fn channel(&self, channel_id: &str) -> Option<&Channel> {
-        self.channels
-            .values()
-            .find(|channel| channel.id == channel_id)
+        self.channels.get(self.channel_keys.get(channel_id)?)
     }
 
     pub fn user(&self, user_id: &str) -> Option<&User> {
-        self.users.values().find(|user| user.id == user_id)
+        self.users.get(self.user_keys.get(user_id)?)
     }
 
     /// 表示名。`display_name`、`user_name`、id の順に使う (frontend の `messageFormat.ts` と同じ)。
@@ -248,6 +254,13 @@ fn group_reactions<'a>(
     groups
 }
 
+/// 行の id からシェイプのキーへの索引。
+fn index<T>(rows: &HashMap<String, T>, id: impl Fn(&T) -> &String) -> HashMap<String, String> {
+    rows.iter()
+        .map(|(key, row)| (id(row).clone(), key.clone()))
+        .collect()
+}
+
 fn apply_rows<T: FromRow>(
     rows: &mut HashMap<String, T>,
     reset: bool,
@@ -365,6 +378,25 @@ mod tests {
         );
         assert!(store.root_messages("c1").is_empty());
         assert!(!store.is_synced(&id));
+    }
+
+    #[test]
+    fn looks_up_rows_by_id_not_shape_key() {
+        let mut store = Store::default();
+        let key = "\"public\".\"users\"/\"u1\"";
+        store.apply(
+            &ShapeId::Users,
+            batch(vec![upsert(
+                key,
+                json!({ "id": "u1", "user_name": "alice", "display_name": "" }),
+            )]),
+        );
+        assert_eq!(store.display_name("u1"), "alice");
+        store.apply(
+            &ShapeId::Users,
+            batch(vec![Change::Delete { key: key.into() }]),
+        );
+        assert_eq!(store.display_name("u1"), "u1");
     }
 
     #[test]
