@@ -131,10 +131,21 @@ async fn test_slack_account_link_reassigns_placeholder() -> anyhow::Result<()> {
 
     let team = format!("T{}", uuid::Uuid::new_v4().simple());
     let slack = mock_slack(&team).await;
+    // 最初の失効は Slack 側の一時的なエラーで失敗し、2 回目で成功する
+    Mock::given(method("POST"))
+        .and(path("/auth.revoke"))
+        .and(header_is("authorization", "Bearer xoxp-code-alice"))
+        .respond_with(ResponseTemplate::new(429))
+        .up_to_n_times(1)
+        .with_priority(1)
+        .expect(1)
+        .mount(&slack)
+        .await;
     Mock::given(method("POST"))
         .and(path("/auth.revoke"))
         .and(header_is("authorization", "Bearer xoxp-code-alice"))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({"ok": true})))
+        .with_priority(2)
         .expect(1)
         .mount(&slack)
         .await;
@@ -326,6 +337,29 @@ async fn test_slack_account_link_reassigns_placeholder() -> anyhow::Result<()> {
         "xoxp-code-alice"
     );
 
+    // 取り込み中に連携した場合、ワーカーがキャッシュしたプレースホルダへ書き込みが続くことがある。
+    // 取り込みの最後に呼ぶ reconcile_team で、その分も本人へ移る。
+    let late = uuid::Uuid::new_v4().to_string();
+    exec(
+        &state,
+        "INSERT INTO messages(id,user_id,channel_id,content,created_at) VALUES($1,$2,$3,'late import','2024-01-02 00:00:00')",
+        &[&late, &placeholder, &channel],
+    )
+    .await?;
+    {
+        let mut db = state.db.clone();
+        let mut tx = db.transaction().await?;
+        backend::slack::link::reconcile_team(&mut tx, &team).await?;
+        tx.commit().await?;
+    }
+    let owner = sql(
+        &state,
+        "SELECT json_build_object('user_id',user_id)::text FROM messages WHERE id=$1",
+        &[&late],
+    )
+    .await?;
+    assert_eq!(owner[0]["user_id"], alice.as_str());
+
     // 同じ Slack アカウントは別の Zoo ユーザーに連携できない
     let (_, started, _) =
         request(&app, "POST", "/api/slack/oauth/start", Some(&carol), None).await?;
@@ -350,6 +384,12 @@ async fn test_slack_account_link_reassigns_placeholder() -> anyhow::Result<()> {
     )
     .await?;
     assert_eq!(status, StatusCode::FORBIDDEN);
+
+    // 失効に失敗したら連携 (トークン) を残し、もう一度解除して再試行できる
+    let (status, _, _) = request(&app, "DELETE", "/api/slack/link", Some(&alice), None).await?;
+    assert_eq!(status, StatusCode::BAD_GATEWAY);
+    let (_, still, _) = request(&app, "GET", "/api/slack/link", Some(&alice), None).await?;
+    assert_eq!(still["link"]["slack_user_id"], "U1");
 
     // 解除するとトークンを無効にして消す。付け替えた投稿は残る。
     let (status, unlinked, _) =

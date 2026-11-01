@@ -737,6 +737,7 @@
     "unlinkDescription": "The Slack token is revoked and deleted. Posts already moved to you stay yours.",
     "linked": "Your Slack account is linked.",
     "unlinked": "Your Slack account is unlinked.",
+    "unlinkFailed": "Couldn't unlink. Slack didn't revoke the token, so the link was kept. Please try again.",
     "errors": {
       "denied": "Authorization was cancelled in Slack.",
       "invalid_state": "The link request expired or is invalid. Please try again.",

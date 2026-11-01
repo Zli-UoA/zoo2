@@ -256,7 +256,7 @@ async fn complete(
         ));
     };
     if slack.team_id.as_deref().is_some_and(|t| t != team.id) {
-        revoke(&s, &token).await;
+        discard(&s, &token).await;
         return Err(AppError::Forbidden("team_mismatch".into()));
     }
     let slack_user_name = user_name(&s, &token, &authed.id).await;
@@ -276,7 +276,7 @@ async fn complete(
     .await;
     if let Err(e) = result {
         drop(tx);
-        revoke(&s, &token).await;
+        discard(&s, &token).await;
         return Err(e);
     }
     let state = link_state(&mut tx, &s, &user.id).await?;
@@ -312,15 +312,36 @@ async fn user_name(s: &AppState, token: &str, slack_user: &str) -> String {
     .to_string()
 }
 
-async fn revoke(s: &AppState, token: &str) {
-    let Ok(client) = http() else { return };
-    if let Err(e) = client
+/// トークンを失効させる。すでに無効なトークンも失効済みとして扱う。
+async fn revoke(s: &AppState, token: &str) -> Result<(), AppError> {
+    let failed =
+        |detail: String| AppError::BadGateway(format!("Slack token revocation failed: {detail}"));
+    let response = http()?
         .post(format!("{}/auth.revoke", s.config.slack.api_base_url))
         .bearer_auth(token)
         .send()
         .await
-    {
-        tracing::warn!(error = %e, "Failed to revoke Slack token");
+        .map_err(|e| failed(e.to_string()))?;
+    if !response.status().is_success() {
+        return Err(failed(response.status().to_string()));
+    }
+    let body: Value = response.json().await.map_err(|e| failed(e.to_string()))?;
+    let already_invalid = matches!(
+        body["error"].as_str(),
+        Some("invalid_auth" | "token_revoked" | "account_inactive" | "not_authed")
+    );
+    if body["ok"] == true || already_invalid {
+        return Ok(());
+    }
+    Err(failed(
+        body["error"].as_str().unwrap_or("unknown").to_string(),
+    ))
+}
+
+/// 連携できなかったときに受け取ったトークンを片付ける (失敗しても連携の失敗理由を優先する)
+async fn discard(s: &AppState, token: &str) {
+    if let Err(e) = revoke(s, token).await {
+        tracing::warn!(error = %e, "Failed to revoke an unused Slack token");
     }
 }
 
@@ -376,15 +397,16 @@ async fn link_account(
     reassign(tx, &team.id, slack_user, slack_user_name, user).await
 }
 
-/// ZIP 取り込みで作ったプレースホルダの投稿・リアクション・参加チャンネルを本人へ移す。
-/// プレースホルダがまだなければ、後の取り込みが最初から本人の投稿になるよう対応だけ作る。
-pub async fn reassign(
+/// プレースホルダ `from` の投稿・リアクション・参加チャンネル・添付を `to` へ移す。
+/// 何度呼んでも同じ結果になる (残っていた分だけが移る)。
+pub async fn move_content(
     tx: &mut toasty::Transaction<'_>,
-    team: &str,
-    slack_user: &str,
-    slack_user_name: &str,
-    user: &str,
+    from: &str,
+    to: &str,
 ) -> Result<(), AppError> {
+    if from == to {
+        return Ok(());
+    }
     // 付け替えで App へイベントを大量配送しない
     one(
         tx,
@@ -392,35 +414,6 @@ pub async fn reassign(
         &[],
     )
     .await?;
-    let placeholder = query(
-        tx,
-        "SELECT json_build_object('user_id',user_id,'linked',linked)::text FROM slack_users \
-         WHERE team_id=$1 AND slack_user_id=$2 FOR UPDATE",
-        &[team, slack_user],
-    )
-    .await?
-    .into_iter()
-    .next();
-    let Some(placeholder) = placeholder else {
-        exec(
-            tx,
-            "INSERT INTO slack_users(team_id,slack_user_id,user_id,linked,name) VALUES($1,$2,$3,true,$4)",
-            &[team, slack_user, user, slack_user_name],
-        )
-        .await?;
-        return Ok(());
-    };
-    let from = placeholder["user_id"]
-        .as_str()
-        .unwrap_or_default()
-        .to_string();
-    if from == user {
-        return Ok(());
-    }
-    if placeholder["linked"] == true {
-        return Err(AppError::Conflict("already_linked".into()));
-    }
-    let from = from.as_str();
     for sql in [
         "UPDATE messages SET user_id=$2 WHERE user_id=$1",
         // 本人が同じ絵文字を付けていれば重複を消してから移す
@@ -441,34 +434,111 @@ pub async fn reassign(
         "UPDATE slack_files SET uploader_id=$2 WHERE uploader_id=$1",
         "UPDATE home_posts SET user_id=$2 WHERE user_id=$1",
     ] {
-        exec(tx, sql, &[from, user]).await?;
+        exec(tx, sql, &[from, to]).await?;
     }
     // プレースホルダの users 行は残す (他の表から参照されている可能性があるため)。無効化済みのまま。
-    exec(
+    Ok(())
+}
+
+/// ZIP 取り込みで作ったプレースホルダの投稿・リアクション・参加チャンネルを本人へ移す。
+/// プレースホルダがまだなければ、後の取り込みが最初から本人の投稿になるよう対応だけ作る。
+///
+/// 取り込みの途中で連携した場合、ワーカーがキャッシュしたプレースホルダへ書き込みが続くことがある。
+/// そのためプレースホルダは決定的 ID (`slack::user_id`) で特定し、再連携や取り込み完了時の
+/// [`reconcile_team`] でも残りを回収できるようにしている。
+pub async fn reassign(
+    tx: &mut toasty::Transaction<'_>,
+    team: &str,
+    slack_user: &str,
+    slack_user_name: &str,
+    user: &str,
+) -> Result<(), AppError> {
+    let mapping = query(
         tx,
-        "UPDATE slack_users SET user_id=$3,linked=true,updated_at=now() WHERE team_id=$1 AND slack_user_id=$2",
-        &[team, slack_user, user],
+        "SELECT json_build_object('user_id',user_id,'linked',linked)::text FROM slack_users \
+         WHERE team_id=$1 AND slack_user_id=$2 FOR UPDATE",
+        &[team, slack_user],
     )
-    .await
+    .await?
+    .into_iter()
+    .next();
+    match mapping {
+        None => {
+            exec(
+                tx,
+                "INSERT INTO slack_users(team_id,slack_user_id,user_id,linked,name) VALUES($1,$2,$3,true,$4)",
+                &[team, slack_user, user, slack_user_name],
+            )
+            .await?;
+        }
+        Some(m) if m["linked"] == true && m["user_id"] != user => {
+            return Err(AppError::Conflict("already_linked".into()));
+        }
+        Some(_) => {
+            exec(
+                tx,
+                "UPDATE slack_users SET user_id=$3,linked=true,updated_at=now() WHERE team_id=$1 AND slack_user_id=$2",
+                &[team, slack_user, user],
+            )
+            .await?;
+        }
+    }
+    move_content(tx, &super::user_id(team, slack_user), user).await
+}
+
+/// 連携済みの Slack ユーザーについて、プレースホルダに残った分を本人へ移す。
+/// 取り込みと添付取得の最後に呼び、取り込み中に連携した人の書き込みも回収する。
+pub async fn reconcile_team(tx: &mut toasty::Transaction<'_>, team: &str) -> Result<(), AppError> {
+    let linked = query(
+        tx,
+        "SELECT json_build_object('slack_user_id',slack_user_id,'user_id',user_id)::text \
+         FROM slack_users WHERE team_id=$1 AND linked",
+        &[team],
+    )
+    .await?;
+    for row in linked {
+        let slack_user = row["slack_user_id"].as_str().unwrap_or_default();
+        let user = row["user_id"].as_str().unwrap_or_default();
+        move_content(tx, &super::user_id(team, slack_user), user).await?;
+    }
+    Ok(())
 }
 
 async fn unlink(State(s): State<AppState>, user: AuthUser) -> Result<Json<Value>, AppError> {
     let mut db = s.db.clone();
     let mut tx = db.transaction().await?;
-    let removed = query(
+    let link = query(
         &mut tx,
-        "DELETE FROM slack_user_links WHERE user_id=$1 RETURNING json_build_object('token',access_token_enc)::text",
+        "SELECT json_build_object('token',access_token_enc)::text FROM slack_user_links WHERE user_id=$1 FOR UPDATE",
         &[&user.id],
     )
-    .await?;
+    .await?
+    .into_iter()
+    .next();
+    if let Some(link) = link {
+        // 失効を確かめてから削除する。失敗したらトークンを残し、もう一度解除して再試行できるようにする。
+        // 鍵を変えて復号できないトークンは失効させようがないので、そのまま削除する。
+        match s
+            .config
+            .slack
+            .encryption_key()
+            .map(|key| decrypt(&key, link["token"].as_str().unwrap_or_default()))
+        {
+            Some(Ok(token)) => revoke(&s, &token).await?,
+            _ => {
+                tracing::warn!(user_id = %user.id, "Deleting a Slack token that cannot be decrypted")
+            }
+        }
+        exec(
+            &mut tx,
+            "DELETE FROM slack_user_links WHERE user_id=$1",
+            &[&user.id],
+        )
+        .await?;
+    }
     let state = link_state(&mut tx, &s, &user.id).await?;
     tx.commit().await?;
     // 付け替えた投稿と slack_users の対応はそのまま残す (同じ人が再連携できる)
-    if let (Some(row), Some(key)) = (removed.first(), s.config.slack.encryption_key())
-        && let Ok(token) = decrypt(&key, row["token"].as_str().unwrap_or_default())
-    {
-        revoke(&s, &token).await;
-    }
     Ok(Json(state))
 }
 

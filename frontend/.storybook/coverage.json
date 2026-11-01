@@ -298,6 +298,7 @@
         "AdminManifest",
         "ReturnedWithError",
         "ReturnedFromSlack",
+        "UnlinkError",
         "Mobile"
       ]
     },

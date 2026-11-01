@@ -737,6 +737,7 @@
     "unlinkDescription": "會撤銷同刪除 Slack 權杖。已經轉咗嘅帖文仍然係你嘅。",
     "linked": "已經連結 Slack 帳戶。",
     "unlinked": "已經解除同 Slack 嘅連結。",
+    "unlinkFailed": "解除唔到連結。Slack 撤銷唔到權杖，所以連結仲喺度。請再試。",
     "errors": {
       "denied": "喺 Slack 取消咗授權。",
       "invalid_state": "連結要求過咗期或者無效。請再試。",

@@ -1,6 +1,6 @@
 import type { Meta, StoryObj } from "@storybook/react-vite";
 import { http, HttpResponse } from "msw";
-import { expect, fn, screen, userEvent, waitFor } from "storybook/test";
+import { expect, fn, screen, userEvent, waitFor, within } from "storybook/test";
 import { SlackLinkPanel } from "./SlackLinkPanel";
 
 const notLinked = http.get("*/api/slack/link", () =>
@@ -155,6 +155,26 @@ export const ReturnedFromSlack: Story = {
   },
   play: async () => {
     await expect(await screen.findByText("Zli の alice として連携しています。")).toBeVisible();
+  },
+};
+
+export const UnlinkError: Story = {
+  parameters: {
+    msw: {
+      handlers: [
+        linked,
+        http.delete("*/api/slack/link", () =>
+          HttpResponse.json({ error: "Slack token revocation failed" }, { status: 502 }),
+        ),
+      ],
+    },
+  },
+  play: async () => {
+    await userEvent.click(await screen.findByRole("button", { name: "連携を解除" }));
+    const dialog = await screen.findByRole("alertdialog");
+    await waitFor(() => expect(dialog).toBeVisible());
+    await userEvent.click(within(dialog).getByRole("button", { name: "連携を解除" }));
+    await expect(await screen.findByText(/連携は残っています/)).toBeVisible();
   },
 };
 

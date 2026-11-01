@@ -104,7 +104,7 @@ export function SlackLinkPanel({ navigateTo = (url: string) => window.location.a
       setConfirmUnlink(false);
       toast.success(t("slackLink.unlinked"));
     } catch {
-      setError(t("slackLink.errors.failed"));
+      setError(t("slackLink.unlinkFailed"));
     } finally {
       setPending(false);
     }

@@ -737,6 +737,7 @@
     "unlinkDescription": "将撤销并删除 Slack 令牌。已转移的帖子仍属于你。",
     "linked": "已关联 Slack 账号。",
     "unlinked": "已解除与 Slack 的关联。",
+    "unlinkFailed": "无法解除关联。Slack 未能撤销令牌，因此关联仍保留。请重试。",
     "errors": {
       "denied": "已在 Slack 取消授权。",
       "invalid_state": "关联请求已过期或无效。请重试。",
