@@ -295,7 +295,16 @@
     },
     {
       "file": "src/components/layout/ZooSettings.stories.tsx",
-      "states": ["General", "Apps", "AppsMobile", "Management", "Members", "GeneralMobile"]
+      "states": [
+        "General",
+        "Apps",
+        "AppsMobile",
+        "Management",
+        "Members",
+        "GeneralMobile",
+        "ChannelRule",
+        "ChannelRuleError"
+      ]
     },
     {
       "file": "src/components/offline/OfflineBanner.stories.tsx",
@@ -425,7 +434,6 @@
         "CrossPost",
         "FollowersOnly",
         "FollowRemote",
-        "ChannelRule",
         "EditPost",
         "FederationError",
         "VisibilityMenu",

@@ -82,3 +82,62 @@ export const Members: Story = {
 };
 
 export const GeneralMobile: Story = { ...General, globals: { viewport: { value: "mobile" } } };
+
+let savedPattern = "ltl-%";
+export const ChannelRule: Story = {
+  beforeEach: () => {
+    savedPattern = "ltl-%";
+  },
+  parameters: {
+    msw: {
+      handlers: [
+        ...appHandlers,
+        http.get("*/api/home/settings", () =>
+          HttpResponse.json({ can_manage: true, ltl_channel_pattern: savedPattern }),
+        ),
+        http.put("*/api/home/settings", async ({ request }) => {
+          const body = (await request.json()) as { ltl_channel_pattern: string };
+          savedPattern = body.ltl_channel_pattern;
+          return HttpResponse.json({ ltl_channel_pattern: savedPattern });
+        }),
+      ],
+    },
+  },
+  play: async () => {
+    const field = await screen.findByRole("textbox", { name: "LTLに流すチャンネル名のルール" });
+    await userEvent.clear(field);
+    await userEvent.type(field, "public-%");
+    await userEvent.click(screen.getByRole("button", { name: "保存" }));
+    await waitFor(() => expect(savedPattern).toBe("public-%"));
+    await expect(field).toHaveValue("public-%");
+  },
+};
+
+let ruleLoads = 0;
+export const ChannelRuleError: Story = {
+  beforeEach: () => {
+    ruleLoads = 0;
+  },
+  parameters: {
+    msw: {
+      handlers: [
+        ...appHandlers,
+        http.get("*/api/home/settings", () =>
+          ++ruleLoads === 1
+            ? new HttpResponse(null, { status: 500 })
+            : HttpResponse.json({ can_manage: true, ltl_channel_pattern: "ltl-%" }),
+        ),
+        http.put("*/api/home/settings", () => new HttpResponse(null, { status: 500 })),
+      ],
+    },
+  },
+  play: async () => {
+    await expect(await screen.findByRole("alert")).toBeVisible();
+    await userEvent.click(screen.getByRole("button", { name: "更新" }));
+    await expect(
+      await screen.findByRole("textbox", { name: "LTLに流すチャンネル名のルール" }),
+    ).toBeVisible();
+    await userEvent.click(screen.getByRole("button", { name: "保存" }));
+    await expect(await screen.findByRole("alert")).toBeVisible();
+  },
+};

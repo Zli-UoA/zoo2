@@ -54,8 +54,6 @@ export function HomeScreen() {
   const [timeline, setTimeline] = useState("home");
   const [federation, setFederation] = useState<{
     enabled: boolean;
-    actor?: string;
-    delivery?: { pending: number; failed: number };
   }>({ enabled: false });
   const [follows, setFollows] = useState<
     { actor_id: string; display_name: string; accepted: boolean; direction: string }[]
@@ -79,8 +77,6 @@ export function HomeScreen() {
   const [pulling, setPulling] = useState(false);
   const touchStart = useRef<number | null>(null);
   const [account, setAccount] = useState("");
-  const [pattern, setPattern] = useState("");
-  const [canManage, setCanManage] = useState(false);
   const [controlsPending, setControlsPending] = useState(false);
   const [controlsError, setControlsError] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
@@ -91,14 +87,9 @@ export function HomeScreen() {
     const results = await Promise.allSettled([
       client.get<typeof federation>("/api/activitypub/status"),
       client.get<typeof follows>("/api/activitypub/follows"),
-      client.get<{ ltl_channel_pattern: string; can_manage: boolean }>("/api/home/settings"),
     ]);
     if (results[0].status === "fulfilled") setFederation(results[0].value);
     if (results[1].status === "fulfilled") setFollows(results[1].value);
-    if (results[2].status === "fulfilled") {
-      setPattern(results[2].value.ltl_channel_pattern);
-      setCanManage(results[2].value.can_manage);
-    }
     setControlsError(results.some((r) => r.status === "rejected"));
   }, [client]);
   useEffect(() => {
@@ -368,78 +359,6 @@ export function HomeScreen() {
           </div>
         ) : null}
         <div className="mx-auto w-full max-w-2xl">
-          <details className="border-b p-4 text-sm">
-            <summary className="cursor-pointer">{t("home.federation")}</summary>
-            <div className="mt-3 space-y-3">
-              <p className="break-all text-xs text-muted-foreground">
-                {federation.enabled ? federation.actor : t("home.federationDisabled")}
-              </p>
-              {federation.delivery ? (
-                <p className="text-xs">{t("home.delivery", federation.delivery)}</p>
-              ) : null}
-              <ul className="space-y-2">
-                {follows
-                  .filter((f) => f.direction === "outgoing")
-                  .map((f) => (
-                    <li key={f.actor_id} className="flex items-center gap-2">
-                      <span className="min-w-0 flex-1 break-all text-xs">
-                        {f.display_name} · {t(f.accepted ? "home.following" : "home.followPending")}
-                      </span>
-                      <Button
-                        size="sm"
-                        variant="outline"
-                        disabled={controlsPending}
-                        onClick={() =>
-                          void controlAction(() =>
-                            client.request("/api/activitypub/follows", {
-                              method: "DELETE",
-                              body: { actor: f.actor_id },
-                            }),
-                          )
-                        }
-                      >
-                        {t("home.unfollow")}
-                      </Button>
-                    </li>
-                  ))}
-              </ul>
-              {canManage ? (
-                <form
-                  className="space-y-2"
-                  onSubmit={(e) => {
-                    e.preventDefault();
-                    void controlAction(() =>
-                      client.request("/api/home/settings", {
-                        method: "PUT",
-                        body: { ltl_channel_pattern: pattern },
-                      }),
-                    );
-                  }}
-                >
-                  <label htmlFor="ltl-pattern" className="text-xs">
-                    {t("home.channelRule")}
-                  </label>
-                  <Input
-                    id="ltl-pattern"
-                    value={pattern}
-                    onChange={(e) => setPattern(e.target.value)}
-                    placeholder="public-%"
-                    maxLength={200}
-                    disabled={controlsPending}
-                  />
-                  <p className="text-xs text-muted-foreground">{t("home.ruleHint")}</p>
-                  <Button disabled={controlsPending} type="submit" variant="outline">
-                    {t("home.save")}
-                  </Button>
-                </form>
-              ) : null}
-              {controlsError ? (
-                <p role="alert" className="text-xs text-destructive">
-                  {t("home.controlsError")}
-                </p>
-              ) : null}
-            </div>
-          </details>
           <div className="flex gap-2 border-b p-3" aria-label={t("home.timeline")}>
             {(["home", "local", "social"] as const).map((value) => (
               <Button

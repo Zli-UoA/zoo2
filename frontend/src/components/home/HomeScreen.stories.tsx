@@ -44,6 +44,12 @@ export const Default: Story = {
       within(canvasElement).queryByRole("textbox", { name: "近況を投稿" }),
     ).not.toBeInTheDocument();
     await expect(within(canvasElement).getByRole("button", { name: "投稿を書く" })).toBeVisible();
+    await expect(
+      within(canvasElement).queryByText("ActivityPub・チャンネル連携"),
+    ).not.toBeInTheDocument();
+    await expect(
+      within(canvasElement).queryByText(/zoo\.example\/api\/activitypub\/users/),
+    ).not.toBeInTheDocument();
   },
 };
 export const Mobile: Story = { ...Default, globals: { viewport: { value: "mobile" } } };
@@ -354,37 +360,6 @@ export const FollowRemote: Story = {
   },
 };
 
-let savedPattern = "ltl-%";
-export const ChannelRule: Story = {
-  beforeEach: () => {
-    savedPattern = "ltl-%";
-  },
-  parameters: {
-    msw: {
-      handlers: [
-        http.get("*/api/home", () => HttpResponse.json(posts)),
-        http.get("*/api/home/settings", () =>
-          HttpResponse.json({ ltl_channel_pattern: savedPattern, can_manage: true }),
-        ),
-        http.put("*/api/home/settings", async ({ request }) => {
-          const body = (await request.json()) as { ltl_channel_pattern: string };
-          savedPattern = body.ltl_channel_pattern;
-          return HttpResponse.json({ ltl_channel_pattern: savedPattern });
-        }),
-      ],
-    },
-  },
-  play: async ({ canvasElement }) => {
-    const canvas = within(canvasElement);
-    await userEvent.click(canvas.getByText("ActivityPub・チャンネル連携"));
-    const field = await canvas.findByRole("textbox", { name: "LTLに流すチャンネル名のルール" });
-    await userEvent.clear(field);
-    await userEvent.type(field, "public-%");
-    await userEvent.click(canvas.getByRole("button", { name: "保存" }));
-    await waitFor(() => expect(savedPattern).toBe("public-%"));
-    await expect(field).toHaveValue("public-%");
-  },
-};
 let editedContent: string | null = null;
 export const EditPost: Story = {
   beforeEach: () => {
@@ -432,8 +407,9 @@ export const FederationError: Story = {
   },
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
-    await userEvent.click(canvas.getByText("ActivityPub・チャンネル連携"));
-    await expect(await canvas.findByRole("alert")).toBeVisible();
+    await userEvent.click(canvas.getByRole("button", { name: "ユーザーを検索" }));
+    const dialog = within(await screen.findByRole("dialog", { name: "ユーザーを検索" }));
+    await expect(await dialog.findByRole("alert")).toBeVisible();
   },
 };
 
