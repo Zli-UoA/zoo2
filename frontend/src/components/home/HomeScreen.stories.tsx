@@ -13,7 +13,7 @@ const meta = {
   },
   decorators: [
     (Story) => (
-      <div className="h-[720px] bg-background">
+      <div className="flex h-[720px] flex-col bg-background">
         <Story />
       </div>
     ),
@@ -169,7 +169,8 @@ export const DeletePost: Story = {
   },
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
-    await userEvent.click(await canvas.findByRole("button", { name: "投稿を削除" }));
+    await userEvent.click(await canvas.findByRole("button", { name: "投稿の操作" }));
+    await userEvent.click(await screen.findByRole("menuitem", { name: "投稿を削除" }));
     const dialog = await screen.findByRole("alertdialog");
     await userEvent.click(within(dialog).getByRole("button", { name: "投稿を削除" }));
     await waitFor(() =>
@@ -408,7 +409,8 @@ export const EditPost: Story = {
   },
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
-    await userEvent.click(await canvas.findByRole("button", { name: "投稿を編集" }));
+    await userEvent.click(await canvas.findByRole("button", { name: "投稿の操作" }));
+    await userEvent.click(await screen.findByRole("menuitem", { name: "投稿を編集" }));
     const field = canvas.getByRole("textbox", { name: "投稿を編集" });
     await userEvent.clear(field);
     await userEvent.type(field, "編集した近況です");
@@ -475,7 +477,17 @@ export const Composer: Story = {
 export const MobileComposer: Story = {
   globals: { viewport: { value: "mobile" } },
   play: async ({ canvasElement }) => {
-    await openComposer(canvasElement);
+    let focusedDuringClick = false;
+    const captureFocus = () => {
+      focusedDuringClick = document.activeElement?.getAttribute("aria-label") === "近況を投稿";
+    };
+    document.addEventListener("click", captureFocus);
+    try {
+      await openComposer(canvasElement);
+    } finally {
+      document.removeEventListener("click", captureFocus);
+    }
+    await expect(focusedDuringClick).toBe(true);
     await waitFor(async () => {
       const box = screen.getByRole("dialog", { name: "近況を投稿" }).getBoundingClientRect();
       await expect(Math.abs(box.left)).toBeLessThan(1);
@@ -543,10 +555,12 @@ export const FederationToggle: Story = {
     const form = await openComposer(canvasElement);
     const toggle = await form.findByRole("button", { name: "連合あり" });
     await userEvent.click(toggle);
-    await expect(form.getByRole("button", { name: "連合なし" })).toHaveAttribute(
-      "aria-pressed",
-      "false",
+    await expect(await screen.findByRole("menuitemradio", { name: "連合あり" })).toHaveAttribute(
+      "aria-checked",
+      "true",
     );
+    await userEvent.click(screen.getByRole("menuitemradio", { name: "連合なし" }));
+    await expect(form.getByRole("button", { name: "連合なし" })).toBeVisible();
     await expect(form.getByRole("button", { name: "公開範囲: ホーム" })).toBeVisible();
     await userEvent.type(form.getByRole("textbox", { name: "近況を投稿" }), "連合しないホーム投稿");
     await userEvent.click(form.getByRole("button", { name: /^投稿$/ }));
@@ -566,7 +580,12 @@ export const FederationUnavailable: Story = {
   },
   play: async ({ canvasElement }) => {
     const form = await openComposer(canvasElement);
-    await expect(form.getByRole("button", { name: "連合なし" })).toBeDisabled();
+    await userEvent.click(form.getByRole("button", { name: "連合なし" }));
+    await expect(await screen.findByRole("menuitemradio", { name: "連合あり" })).toHaveAttribute(
+      "aria-disabled",
+      "true",
+    );
+    await userEvent.click(screen.getByRole("menuitemradio", { name: "連合なし" }));
     await userEvent.type(form.getByRole("textbox", { name: "近況を投稿" }), "連合しないホーム投稿");
     await userEvent.click(form.getByRole("button", { name: /^投稿$/ }));
     await expectComposerClosed();
@@ -739,5 +758,36 @@ export const UserSearchError: Story = {
     await userEvent.type(dialog.getByRole("textbox"), "@bob@social.example");
     await userEvent.click(dialog.getByRole("button", { name: "検索" }));
     await expect(await dialog.findByRole("alert")).toBeVisible();
+  },
+};
+
+export const TimelineSwitch: Story = {
+  parameters: {
+    msw: {
+      handlers: [
+        http.get("*/api/home", ({ request }) => {
+          const timeline = new URL(request.url).searchParams.get("timeline");
+          return HttpResponse.json([
+            {
+              ...posts[0],
+              content:
+                timeline === "social"
+                  ? "ソーシャルの投稿"
+                  : timeline === "local"
+                    ? "ローカルの投稿"
+                    : "ホームの投稿",
+            },
+          ]);
+        }),
+      ],
+    },
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    for (const name of ["ホーム", "ローカル", "ソーシャル", "ホーム"]) {
+      await userEvent.click(canvas.getByRole("button", { name }));
+      await expect(await canvas.findByText(`${name}の投稿`)).toBeVisible();
+      await expect(canvas.getByRole("button", { name })).toHaveAttribute("aria-pressed", "true");
+    }
   },
 };

@@ -1,3 +1,4 @@
+import { flushSync } from "react-dom";
 import { useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import {
@@ -89,7 +90,12 @@ export function HomeComposer({
     <Dialog
       open={open}
       onOpenChange={(next) => {
-        if (!inFlight.current) setOpen(next);
+        if (inFlight.current) return;
+        if (next && !isDesktop) {
+          // Mount and focus within the opening gesture so mobile browsers can show the IME.
+          flushSync(() => setOpen(true));
+          inputRef.current?.focus({ preventScroll: true });
+        } else setOpen(next);
       }}
     >
       <DialogTrigger
@@ -107,8 +113,8 @@ export function HomeComposer({
       <DialogContent
         ref={viewportRef}
         showCloseButton={false}
-        initialFocus={inputRef}
-        className="flex flex-col gap-0 overflow-hidden p-0 max-md:top-0 max-md:h-dvh sm:max-w-xl"
+        initialFocus={isDesktop ? inputRef : false}
+        className="flex flex-col gap-0 overflow-hidden p-0 max-md:top-0 max-md:h-dvh max-md:animate-none sm:max-w-xl"
         style={
           isDesktop
             ? undefined
@@ -122,6 +128,7 @@ export function HomeComposer({
                 height: "100dvh",
                 maxHeight: "none",
                 borderRadius: 0,
+                animation: "none",
               }
         }
       >
@@ -186,22 +193,42 @@ export function HomeComposer({
                   </DropdownMenuRadioGroup>
                 </DropdownMenuContent>
               </DropdownMenu>
-              <Button
-                type="button"
-                variant={federated ? "secondary" : "ghost"}
-                size="icon"
-                disabled={sending || !federationEnabled}
-                aria-label={t(federated ? "home.federationOn" : "home.federationOff")}
-                aria-pressed={federated}
-                title={
-                  federationEnabled
-                    ? t(federated ? "home.federationOn" : "home.federationOff")
-                    : t("home.federationDisabled")
-                }
-                onClick={() => setFederatePreference(!federated)}
-              >
-                <FederationIcon aria-hidden="true" />
-              </Button>
+              <DropdownMenu>
+                <DropdownMenuTrigger
+                  render={
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="icon"
+                      disabled={sending}
+                      aria-label={t(federated ? "home.federationOn" : "home.federationOff")}
+                      title={t(federated ? "home.federationOn" : "home.federationOff")}
+                    />
+                  }
+                >
+                  <FederationIcon aria-hidden="true" />
+                </DropdownMenuTrigger>
+                <DropdownMenuContent align="end">
+                  <DropdownMenuRadioGroup
+                    value={federated ? "on" : "off"}
+                    onValueChange={(value) => setFederatePreference(value === "on")}
+                  >
+                    <DropdownMenuRadioItem value="on" disabled={!federationEnabled} closeOnClick>
+                      <NetworkIcon aria-hidden="true" />
+                      {t("home.federationOn")}
+                    </DropdownMenuRadioItem>
+                    <DropdownMenuRadioItem value="off" closeOnClick>
+                      <UnplugIcon aria-hidden="true" />
+                      {t("home.federationOff")}
+                    </DropdownMenuRadioItem>
+                  </DropdownMenuRadioGroup>
+                  {!federationEnabled ? (
+                    <p className="max-w-60 px-2 py-1 text-xs text-muted-foreground">
+                      {t("home.federationDisabled")}
+                    </p>
+                  ) : null}
+                </DropdownMenuContent>
+              </DropdownMenu>
               <Button
                 type="submit"
                 size="icon"

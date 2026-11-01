@@ -249,7 +249,12 @@ export function AppShell({ children }: { children: ReactNode }) {
                   }
                 />
               </div>
-              <main className={cn("min-w-0 flex-1 flex-col", showChat ? "flex" : "hidden md:flex")}>
+              <main
+                className={cn(
+                  "min-h-0 min-w-0 flex-1 flex-col",
+                  showChat ? "flex" : "hidden md:flex",
+                )}
+              >
                 <div className={showMembersScreen ? "hidden" : "contents"}>{children}</div>
                 {showMembersScreen && membersChannel ? (
                   <MembersPanel

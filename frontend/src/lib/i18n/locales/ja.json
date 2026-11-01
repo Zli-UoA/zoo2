@@ -628,6 +628,12 @@
     "userDetails": "ユーザー詳細",
     "joinedAt": "登録日: {{date}}",
     "pullRefresh": "引っ張って更新",
-    "releaseRefresh": "離して更新"
+    "releaseRefresh": "離して更新",
+    "postActions": "投稿の操作",
+    "timelineLabels": {
+      "home": "ホーム",
+      "local": "ローカル",
+      "social": "ソーシャル"
+    }
   }
 }

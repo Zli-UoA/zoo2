@@ -1,3 +1,4 @@
+import { http, HttpResponse } from "msw";
 import { HomeScreen } from "../home/HomeScreen";
 import { homeHandlers } from "../../../.storybook/home-fixtures";
 import { BubbleChatScreen } from "../chat/BubbleChatScreen";
@@ -191,7 +192,28 @@ export const Home: Story = {
     const main = screen.getByRole("main").getBoundingClientRect();
     const rail = screen.getByRole("navigation").getBoundingClientRect();
     await expect(main.x).toBe(rail.right);
+    const button = screen.getByRole("button", { name: "投稿を書く" }).getBoundingClientRect();
+    await expect(main.bottom - button.bottom).toBeGreaterThanOrEqual(19);
+    await expect(main.bottom - button.bottom).toBeLessThanOrEqual(33);
+    await expect(main.bottom).toBe(window.innerHeight);
   },
 };
 export const MobileHome: Story = { ...Home, globals: { viewport: { value: "mobile" } } };
 export const DarkHome: Story = { ...Home, globals: { theme: "dark" } };
+
+export const EmptyHome: Story = {
+  ...Home,
+  parameters: {
+    ...Home.parameters,
+    msw: { handlers: [http.get("*/api/home", () => HttpResponse.json([]))] },
+  },
+  play: async () => {
+    await expect(await screen.findByText("まだ投稿がありません")).toBeVisible();
+    const main = screen.getByRole("main").getBoundingClientRect();
+    const button = screen.getByRole("button", { name: "投稿を書く" }).getBoundingClientRect();
+    await expect(main.bottom - button.bottom).toBeGreaterThanOrEqual(19);
+    await expect(main.bottom - button.bottom).toBeLessThanOrEqual(33);
+    await expect(main.bottom).toBe(window.innerHeight);
+  },
+};
+export const MobileEmptyHome: Story = { ...EmptyHome, globals: { viewport: { value: "mobile" } } };

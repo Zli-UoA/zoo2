@@ -628,6 +628,12 @@
     "userDetails": "使用者詳情",
     "joinedAt": "加入日期：{{date}}",
     "pullRefresh": "下拉重新整理",
-    "releaseRefresh": "放開重新整理"
+    "releaseRefresh": "放開重新整理",
+    "postActions": "貼文操作",
+    "timelineLabels": {
+      "home": "首頁",
+      "local": "本地",
+      "social": "社交"
+    }
   }
 }

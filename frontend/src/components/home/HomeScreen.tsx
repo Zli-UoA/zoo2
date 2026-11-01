@@ -11,6 +11,7 @@ import {
   ArrowDownIcon,
   Trash2Icon,
   PencilIcon,
+  MoreHorizontalIcon,
 } from "lucide-react";
 import { buildAuthHeaders, createConfiguredApiClient } from "../../lib/api/client";
 import { useCollections } from "../../lib/electric/collections-context";
@@ -22,6 +23,12 @@ import { Textarea } from "../ui/textarea";
 import { Spinner } from "../ui/spinner";
 import { ConfirmActionDialog } from "../ui/confirm-action-dialog";
 import { Dialog, DialogContent, DialogTitle } from "../ui/dialog";
+import {
+  DropdownMenu,
+  DropdownMenuTrigger,
+  DropdownMenuContent,
+  DropdownMenuItem,
+} from "../ui/dropdown-menu";
 import { initials } from "../chat/format";
 
 export interface HomePost {
@@ -287,7 +294,7 @@ export function HomeScreen() {
     }
   };
   return (
-    <section className="relative flex h-full min-h-0 flex-col" aria-labelledby="home-title">
+    <section className="relative flex min-h-0 flex-1 flex-col" aria-labelledby="home-title">
       <ScreenHeader
         icon={HomeIcon}
         titleId="home-title"
@@ -434,20 +441,16 @@ export function HomeScreen() {
             </div>
           </details>
           <div className="flex gap-2 border-b p-3" aria-label={t("home.timeline")}>
-            <Button
-              variant={timeline === "home" ? "secondary" : "ghost"}
-              aria-pressed={timeline === "home"}
-              onClick={() => setTimeline("home")}
-            >
-              {t("home.title")}
-            </Button>
-            <Button
-              variant={timeline === "local" ? "secondary" : "ghost"}
-              aria-pressed={timeline === "local"}
-              onClick={() => setTimeline("local")}
-            >
-              {t("home.localTimeline")}
-            </Button>
+            {(["home", "local", "social"] as const).map((value) => (
+              <Button
+                key={value}
+                variant={timeline === value ? "secondary" : "ghost"}
+                aria-pressed={timeline === value}
+                onClick={() => setTimeline(value)}
+              >
+                {t(`home.timelineLabels.${value}`)}
+              </Button>
+            ))}
           </div>
           {error ? (
             <p role="alert" className="p-4 text-sm text-destructive">
@@ -499,35 +502,45 @@ export function HomeScreen() {
                             </Link>
                           ) : null}
                         </span>
-                        <span className="ml-auto inline-flex items-center gap-1">
-                          {post.user_id === currentUserId && !post.remote ? (
-                            <Button
-                              variant="ghost"
-                              size="icon-sm"
-                              aria-label={t("home.edit")}
-                              onClick={() => {
-                                setEditingId(post.id);
-                                setEditText(post.content);
-                                setEditError(false);
-                              }}
-                            >
-                              <PencilIcon />
-                            </Button>
-                          ) : null}
-                          {post.user_id === currentUserId && !post.remote ? (
-                            <Button
-                              variant="ghost"
-                              size="icon-sm"
-                              aria-label={t("home.delete")}
-                              onClick={() => {
-                                setDeleteError(false);
-                                setDeleteId(post.id);
-                              }}
-                            >
-                              <Trash2Icon />
-                            </Button>
-                          ) : null}
-                        </span>
+                        {post.user_id === currentUserId && !post.remote ? (
+                          <div className="ml-auto">
+                            <DropdownMenu>
+                              <DropdownMenuTrigger
+                                render={
+                                  <Button
+                                    variant="ghost"
+                                    size="icon-sm"
+                                    aria-label={t("home.postActions")}
+                                  />
+                                }
+                              >
+                                <MoreHorizontalIcon />
+                              </DropdownMenuTrigger>
+                              <DropdownMenuContent align="end">
+                                <DropdownMenuItem
+                                  onClick={() => {
+                                    setEditingId(post.id);
+                                    setEditText(post.content);
+                                    setEditError(false);
+                                  }}
+                                >
+                                  <PencilIcon />
+                                  {t("home.edit")}
+                                </DropdownMenuItem>
+                                <DropdownMenuItem
+                                  variant="destructive"
+                                  onClick={() => {
+                                    setDeleteError(false);
+                                    setDeleteId(post.id);
+                                  }}
+                                >
+                                  <Trash2Icon />
+                                  {t("home.delete")}
+                                </DropdownMenuItem>
+                              </DropdownMenuContent>
+                            </DropdownMenu>
+                          </div>
+                        ) : null}
                       </div>
                       {editingId === post.id ? (
                         <form

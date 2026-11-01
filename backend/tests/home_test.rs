@@ -84,7 +84,19 @@ async fn public_posts_are_separate_and_owner_deleted() -> anyhow::Result<()> {
     .await?;
     assert_eq!(status, StatusCode::CREATED);
     let id = created["id"].as_str().unwrap();
-    let (_, timeline) = request(&app, "GET", Some(&bob), "/api/home", None).await?;
+    let (_, home) = request(&app, "GET", Some(&bob), "/api/home?timeline=home", None).await?;
+    assert!(!home.as_array().unwrap().iter().any(|post| post["id"] == id));
+    let (_, social) = request(&app, "GET", Some(&bob), "/api/home?timeline=social", None).await?;
+    assert!(
+        social
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|post| post["id"] == id)
+    );
+    let (_, own) = request(&app, "GET", Some(&alice), "/api/home?timeline=home", None).await?;
+    assert!(own.as_array().unwrap().iter().any(|post| post["id"] == id));
+    let (_, timeline) = request(&app, "GET", Some(&bob), "/api/home?timeline=local", None).await?;
     assert!(
         timeline
             .as_array()

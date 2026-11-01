@@ -155,7 +155,7 @@ async fn channel_crossposting_visibility_and_ltl() -> anyhow::Result<()> {
             .0,
             StatusCode::NOT_FOUND
         );
-        let (_, home) = request(&app, "GET", Some(&bob), "/api/home", None).await?;
+        let (_, home) = request(&app, "GET", Some(&bob), "/api/home?timeline=social", None).await?;
         assert_eq!(
             home.as_array().unwrap().iter().any(|p| p["id"] == id),
             audience == "public"
@@ -273,7 +273,7 @@ async fn channel_crossposting_visibility_and_ltl() -> anyhow::Result<()> {
                 StatusCode::NOT_FOUND
             }
         );
-        let (_, feed) = request(&app, "GET", Some(&bob), "/api/home", None).await?;
+        let (_, feed) = request(&app, "GET", Some(&bob), "/api/home?timeline=social", None).await?;
         assert_eq!(
             feed.as_array().unwrap().iter().any(|p| p["id"] == pid),
             visibility == "local"
@@ -603,6 +603,24 @@ async fn signed_federation_follow_create_update_delete_replay() -> anyhow::Resul
         inbox(&app, &bob, &create, &key, &key_id, false).await?,
         StatusCode::FORBIDDEN
     );
+    let (_, local_feed) =
+        request(&app, "GET", Some(&alice), "/api/home?timeline=local", None).await?;
+    assert!(
+        !local_feed
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|p| p["id"] == note_id)
+    );
+    let (_, social_feed) =
+        request(&app, "GET", Some(&alice), "/api/home?timeline=social", None).await?;
+    assert!(
+        social_feed
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|p| p["id"] == note_id)
+    );
     let (_, feed) = request(&app, "GET", Some(&alice), "/api/home", None).await?;
     assert!(
         feed.as_array()
@@ -610,7 +628,7 @@ async fn signed_federation_follow_create_update_delete_replay() -> anyhow::Resul
             .iter()
             .any(|p| p["id"] == note_id && p["content"] == "Hello & Zoo\n")
     );
-    let (_, feed) = request(&app, "GET", Some(&bob), "/api/home", None).await?;
+    let (_, feed) = request(&app, "GET", Some(&bob), "/api/home?timeline=social", None).await?;
     assert!(!feed.as_array().unwrap().iter().any(|p| p["id"] == note_id));
     let mut update = note.clone();
     update["content"] = json!("Edited");

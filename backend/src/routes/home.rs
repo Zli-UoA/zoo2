@@ -166,7 +166,7 @@ async fn list(
     Query(page): Query<Page>,
 ) -> Result<Json<Vec<Value>>, AppError> {
     let timeline = page.timeline.as_deref().unwrap_or("home");
-    if !matches!(timeline, "home" | "local") {
+    if !matches!(timeline, "home" | "local" | "social") {
         return Err(AppError::BadRequest("Unknown timeline".into()));
     }
     let mut db = state.db.clone();
@@ -175,13 +175,14 @@ async fn list(
     let rows=query(&mut tx,r#"WITH feed AS (
       SELECT p.id,p.user_id,u.user_name,u.display_name,p.content,p.created_at,p.updated_at,p.apub,p.visibility,p.channel_id,c.channel_name,false AS remote,NULL::text AS url
       FROM home_posts p JOIN users u ON u.id=p.user_id LEFT JOIN channels c ON c.id=p.channel_id
-      WHERE p.deleted_at IS NULL AND (p.visibility IN ('local','public') OR p.user_id=$1 AND $3='home')
+      WHERE p.deleted_at IS NULL AND (p.visibility IN ('local','public') OR p.user_id=$1 AND $3 IN ('home','social'))
+        AND ($3 <> 'home' OR p.user_id=$1)
         AND (p.channel_id IS NULL OR NOT c.is_private AND NOT c.is_dm AND c.deleted_at IS NULL)
         AND (NOT $4::boolean OR p.user_id=$1 OR EXISTS(SELECT 1 FROM channel_user WHERE channel_id=p.channel_id AND user_id=$1))
       UNION ALL
       SELECT p.id,p.actor_id,a.user_name || '@' || split_part(a.id,'/',3),a.display_name,p.content,p.published,p.updated_at,true,p.visibility,NULL,NULL,true,p.id
       FROM apub_remote_posts p JOIN apub_actors a ON a.id=p.actor_id
-      WHERE $3='home' AND p.deleted_at IS NULL AND NOT a.blocked
+      WHERE $3 IN ('home','social') AND p.deleted_at IS NULL AND NOT a.blocked
         AND EXISTS(SELECT 1 FROM apub_remote_recipients WHERE post_id=p.id AND user_id=$1)
         AND EXISTS(SELECT 1 FROM apub_follows WHERE user_id=$1 AND actor_id=p.actor_id AND direction='outgoing' AND accepted)
     ) SELECT row_to_json(f)::text FROM feed f WHERE ($2='' OR (created_at,id)<(SELECT created_at,id FROM feed WHERE id=$2)) ORDER BY created_at DESC,id DESC LIMIT $5::integer"#,

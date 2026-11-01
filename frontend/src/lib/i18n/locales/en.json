@@ -628,6 +628,12 @@
     "userDetails": "User details",
     "joinedAt": "Joined: {{date}}",
     "pullRefresh": "Pull to refresh",
-    "releaseRefresh": "Release to refresh"
+    "releaseRefresh": "Release to refresh",
+    "postActions": "Post actions",
+    "timelineLabels": {
+      "home": "Home",
+      "local": "Local",
+      "social": "Social"
+    }
   }
 }

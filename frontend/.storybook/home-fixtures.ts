@@ -19,4 +19,11 @@ export const homePosts: HomePost[] = [
   },
 ];
 
-export const homeHandlers = [http.get("*/api/home", () => HttpResponse.json(homePosts))];
+export const homeHandlers = [
+  http.get("*/api/home", ({ request }) => {
+    const timeline = new URL(request.url).searchParams.get("timeline") ?? "home";
+    return HttpResponse.json(
+      timeline === "home" ? homePosts.filter((post) => post.user_id === "user-alice") : homePosts,
+    );
+  }),
+];

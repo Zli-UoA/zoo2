@@ -266,7 +266,9 @@
         "MobileMembers",
         "Home",
         "MobileHome",
-        "DarkHome"
+        "DarkHome",
+        "EmptyHome",
+        "MobileEmptyHome"
       ]
     },
     {
@@ -437,7 +439,8 @@
         "Realtime",
         "PullToRefresh",
         "UserSearchEmpty",
-        "UserSearchError"
+        "UserSearchError",
+        "TimelineSwitch"
       ]
     }
   ],
