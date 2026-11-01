@@ -1,7 +1,8 @@
 name: Select runner
 
-# Workload priority: kubecamp -> zli-k8s -> hosted. Docker jobs always use
-# hosted: DinD on zli-k8s shares the etcd disks of the zoo2 cluster.
+# Workload priority: kubecamp -> hosted -> zli-k8s. Docker and large jobs skip
+# kubecamp. Hosted is free for this public repository; zli-k8s is the fallback
+# only when the private-repository included minutes run out.
 # CI_RUNNER now only chooses the selector host, not the workload destination.
 on:
   workflow_call:
@@ -44,36 +45,71 @@ jobs:
             const KUBECAMP = 'zli-kubecamp-no-docker';
             const SCALE_SET = 'zli-k8s';
             const HOSTED = 'ubuntu-latest';
-            const use = (runsOn, largeRunsOn, reason) => {
+            // Included minutes of GitHub Free for private repositories; the margin
+            // covers billing lag and jobs started after the check. Every OS draws on
+            // the same allowance by price, so usage is counted in Linux minutes.
+            const HOSTED_INCLUDED_MINUTES = 2000;
+            const HOSTED_MARGIN_MINUTES = 100;
+            const LINUX_MINUTE_PRICE = 0.006;
+            const org = context.repo.owner;
+            const request = {timeout: 10000};
+            const use = (runsOn, hostedRunsOn, reason) => {
               core.setOutput('runs-on', JSON.stringify(runsOn));
-              core.setOutput('docker-runs-on', JSON.stringify(HOSTED));
-              core.setOutput('large-runs-on', JSON.stringify(largeRunsOn));
-              core.info(`Docker-free: ${runsOn}; large: ${largeRunsOn}; Docker: ${HOSTED}: ${reason}`);
+              core.setOutput('docker-runs-on', JSON.stringify(hostedRunsOn));
+              core.setOutput('large-runs-on', JSON.stringify(hostedRunsOn));
+              core.info(`Docker-free: ${runsOn}; Docker/large: ${hostedRunsOn}: ${reason}`);
             };
             const pr = context.payload.pull_request;
             // Fork code uses hosted runners; pull_request_target never checks out PR code.
             if (context.eventName === 'pull_request' && pr.head.repo.full_name !== `${context.repo.owner}/${context.repo.repo}`) {
               return use(HOSTED, HOSTED, 'fork pull request');
             }
-            // Unknown availability keeps the first eligible self-hosted pool.
-            if (process.env.HAS_STATUS_TOKEN !== 'true') {
-              return use(KUBECAMP, SCALE_SET, 'RUNNER_STATUS_TOKEN is not set');
+            const hasToken = process.env.HAS_STATUS_TOKEN === 'true';
+            // Hosted is free for public repositories. Private ones share the monthly
+            // included minutes and cannot start hosted jobs once they run out.
+            const checkHosted = async () => {
+              if (context.payload.repository?.private === false) return [true, 'public repository'];
+              if (!hasToken) return [false, 'hosted minutes unknown'];
+              // Name the failing call and the permissions GitHub accepts for it.
+              let endpoint = 'GET /orgs/{org}/repos';
+              try {
+                const repos = await github.paginate(github.rest.repos.listForOrg, {org, type: 'private', per_page: 100, request});
+                const names = new Set(repos.map(r => r.name.toLowerCase()));
+                const now = new Date();
+                endpoint = 'GET /organizations/{org}/settings/billing/usage';
+                const {data} = await github.request(endpoint, {
+                  org, year: now.getUTCFullYear(), month: now.getUTCMonth() + 1, request,
+                });
+                const amount = (data.usageItems || [])
+                  // Responses have used both 'actions' / 'repo' and 'Actions' / 'owner/repo'.
+                  // Compute is billed in minutes; storage is not part of the allowance.
+                  .filter(i => /^actions$/i.test(i.product) && /^minutes$/i.test(i.unitType) &&
+                    names.has(String(i.repositoryName).split('/').pop().toLowerCase()))
+                  .reduce((sum, i) => sum + i.grossAmount, 0);
+                const minutes = amount / LINUX_MINUTE_PRICE;
+                return [minutes < HOSTED_INCLUDED_MINUTES - HOSTED_MARGIN_MINUTES,
+                  `private hosted minutes ${Math.round(minutes)}/${HOSTED_INCLUDED_MINUTES}`];
+              } catch (error) {
+                const accepted = error.response?.headers?.['x-accepted-github-permissions'];
+                core.warning(`Hosted minutes unavailable: ${endpoint} (${error.status || 'network error'}` +
+                  `${accepted ? `; accepted permissions: ${accepted}` : ''})`);
+                return [false, 'hosted minutes unavailable'];
+              }
+            };
+            const [hostedAvailable, minutes] = await checkHosted();
+            const hostedRunsOn = hostedAvailable ? HOSTED : SCALE_SET;
+            // Unknown kubecamp availability keeps the first eligible pool.
+            if (!hasToken) {
+              return use(KUBECAMP, hostedRunsOn, `RUNNER_STATUS_TOKEN is not set; ${minutes}`);
             }
             let runners;
             try {
-              runners = await github.paginate(github.rest.actions.listSelfHostedRunnersForOrg, {
-                org: context.repo.owner, per_page: 100, request: {timeout: 10000},
-              });
+              runners = await github.paginate(github.rest.actions.listSelfHostedRunnersForOrg, {org, per_page: 100, request});
             } catch (error) {
               core.warning(`Runner status unavailable (${error.status || 'network error'})`);
-              return use(KUBECAMP, SCALE_SET, 'runner status unavailable');
+              return use(KUBECAMP, hostedRunsOn, `runner status unavailable; ${minutes}`);
             }
-            const online = runners.filter(r => r.status === 'online');
-            const hasLabel = (r, name) => (r.labels || []).some(l => l.name === name);
-            const kubecamp = online.filter(r => hasLabel(r, KUBECAMP) && !r.busy);
-            const arc = online.filter(r => r.name.startsWith(`${SCALE_SET}-`) || hasLabel(r, SCALE_SET));
-            // Ephemeral registrations do not reveal assigned jobs; only an idle ARC is available.
-            const arcAvailable = arc.some(r => !r.busy);
-            const arcRunsOn = arcAvailable ? SCALE_SET : HOSTED;
-            return use(kubecamp.length > 0 ? KUBECAMP : arcRunsOn, arcRunsOn,
-              `${kubecamp.length} idle kubecamp, ${arc.length} online ARC, ${arc.filter(r => !r.busy).length} idle ARC`);
+            const kubecamp = runners.filter(r => r.status === 'online' && !r.busy &&
+              (r.labels || []).some(l => l.name === KUBECAMP));
+            return use(kubecamp.length > 0 ? KUBECAMP : hostedRunsOn, hostedRunsOn,
+              `${kubecamp.length} idle kubecamp; ${minutes}`);
