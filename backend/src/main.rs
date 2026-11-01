@@ -28,6 +28,9 @@ async fn main() -> anyhow::Result<()> {
     );
 
     backend::push::PushConfig::from_env()?;
+    if std::env::var("ACTIVITYPUB_BASE_URL").is_ok_and(|v| !v.is_empty()) {
+        backend::activitypub::base_url()?;
+    }
 
     // データベース接続初期化 (Toasty ORM)
     let db = init_db(&config.database_url).await?;
@@ -42,6 +45,7 @@ async fn main() -> anyhow::Result<()> {
 
     // ルーター構築
     let delivery_worker = tokio::spawn(backend::apps::delivery::worker(state.clone()));
+    let federation_worker = tokio::spawn(backend::activitypub::worker(state.clone()));
     let app = create_router(state);
 
     // サーバーバインド
@@ -49,10 +53,14 @@ async fn main() -> anyhow::Result<()> {
     tracing::info!("Server listening on http://{}", addr);
 
     let listener = tokio::net::TcpListener::bind(addr).await?;
-    axum::serve(listener, app)
-        .with_graceful_shutdown(shutdown_signal())
-        .await?;
+    axum::serve(
+        listener,
+        app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+    )
+    .with_graceful_shutdown(shutdown_signal())
+    .await?;
 
+    federation_worker.abort();
     delivery_worker.abort();
     tracing::info!("Server shut down gracefully");
     Ok(())

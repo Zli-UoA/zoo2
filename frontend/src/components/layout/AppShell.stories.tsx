@@ -1,3 +1,7 @@
+import { activityPubNotifications } from "../../../.storybook/activitypub-fixtures";
+import { http, HttpResponse } from "msw";
+import { HomeScreen } from "../home/HomeScreen";
+import { homeHandlers } from "../../../.storybook/home-fixtures";
 import { BubbleChatScreen } from "../chat/BubbleChatScreen";
 import { bubbleChatHandlers } from "../../../.storybook/bubble-fixtures";
 import type { Meta, StoryObj } from "@storybook/react-vite";
@@ -168,5 +172,67 @@ export const MobileMembers: Story = {
     await expect(await screen.findByRole("heading", { name: "メンバー", level: 1 })).toBeVisible();
     await expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
     await expect(screen.getByLabelText("メインナビゲーション")).not.toBeVisible();
+  },
+};
+
+export const Home: Story = {
+  args: { children: <HomeScreen /> },
+  parameters: {
+    a11y: { test: "error" },
+    router: { initialEntries: ["/home"] },
+    msw: { handlers: homeHandlers },
+  },
+  play: async () => {
+    await expect(await screen.findByText(/Homeから最初の公開投稿です/)).toBeVisible();
+    await expect(screen.getByRole("link", { name: "Home" })).toHaveAttribute(
+      "data-status",
+      "active",
+    );
+    await expect(screen.getByLabelText("チャンネル", { selector: "aside" })).not.toBeVisible();
+    await expectAlignedHeaders();
+    const main = screen.getByRole("main").getBoundingClientRect();
+    const rail = screen.getByRole("navigation").getBoundingClientRect();
+    await expect(main.x).toBe(rail.right);
+    const button = screen.getByRole("button", { name: "投稿を書く" }).getBoundingClientRect();
+    await expect(main.bottom - button.bottom).toBeGreaterThanOrEqual(19);
+    await expect(main.bottom - button.bottom).toBeLessThanOrEqual(33);
+    await expect(main.bottom).toBe(window.innerHeight);
+  },
+};
+export const MobileHome: Story = { ...Home, globals: { viewport: { value: "mobile" } } };
+export const DarkHome: Story = { ...Home, globals: { theme: "dark" } };
+
+export const EmptyHome: Story = {
+  ...Home,
+  parameters: {
+    ...Home.parameters,
+    msw: { handlers: [http.get("*/api/home", () => HttpResponse.json([]))] },
+  },
+  play: async () => {
+    await expect(await screen.findByText("まだ投稿がありません")).toBeVisible();
+    const main = screen.getByRole("main").getBoundingClientRect();
+    const button = screen.getByRole("button", { name: "投稿を書く" }).getBoundingClientRect();
+    await expect(main.bottom - button.bottom).toBeGreaterThanOrEqual(19);
+    await expect(main.bottom - button.bottom).toBeLessThanOrEqual(33);
+    await expect(main.bottom).toBe(window.innerHeight);
+  },
+};
+export const MobileEmptyHome: Story = { ...EmptyHome, globals: { viewport: { value: "mobile" } } };
+
+export const FederatedUnread: Story = {
+  ...Home,
+  parameters: {
+    ...Home.parameters,
+    msw: {
+      handlers: [
+        ...homeHandlers,
+        http.get("*/api/activitypub/notifications", () =>
+          HttpResponse.json({ items: activityPubNotifications, unread_count: 3 }),
+        ),
+      ],
+    },
+  },
+  play: async () => {
+    await expect(await screen.findByRole("link", { name: "未読通知 6 件" })).toBeVisible();
   },
 };

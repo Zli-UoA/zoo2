@@ -44,6 +44,9 @@ export type MessageRow = {
   app_attachments?: string | null;
   app_unfurls?: string | null;
   app_origin_id?: string | null;
+  home_post_id?: string | null;
+  apub?: boolean;
+  apub_visibility?: string | null;
   created_at: TimestampString;
   updated_at: TimestampString | null;
   deleted_at: TimestampString | null;

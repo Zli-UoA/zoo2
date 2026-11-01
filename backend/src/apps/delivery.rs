@@ -260,7 +260,7 @@ async fn terminal_socket(s: &AppState, ws: &mut WebSocket, installation: &str) {
     }
 }
 
-fn public_ip(ip: IpAddr) -> bool {
+pub(crate) fn public_ip(ip: IpAddr) -> bool {
     match ip {
         IpAddr::V4(v) => {
             let o = v.octets();

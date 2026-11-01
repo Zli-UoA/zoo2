@@ -358,3 +358,31 @@ export const Edited: Story = {
     );
   },
 };
+
+export const ActivityPubPublic: Story = {
+  parameters: { a11y: { test: "error" } },
+  args: { item: { ...item, message: { ...item.message, apub: true, apub_visibility: "public" } } },
+  play: async ({ canvasElement }) => {
+    await expect(within(canvasElement).getByRole("img", { name: "ActivityPub" })).toBeVisible();
+    await expect(within(canvasElement).getByText("パブリック", { exact: true })).toBeVisible();
+  },
+};
+export const ActivityPubUnlisted: Story = {
+  ...ActivityPubPublic,
+  args: {
+    item: { ...item, message: { ...item.message, apub: true, apub_visibility: "unlisted" } },
+  },
+  play: async ({ canvasElement }) => {
+    await expect(within(canvasElement).getByText("ホーム", { exact: true })).toBeVisible();
+  },
+};
+export const ActivityPubGrouped: Story = {
+  ...ActivityPubPublic,
+  args: {
+    item: {
+      ...item,
+      isGroupStart: false,
+      message: { ...item.message, apub: true, apub_visibility: "public" },
+    },
+  },
+};

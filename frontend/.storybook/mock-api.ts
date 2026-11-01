@@ -1,4 +1,4 @@
-import { http, HttpResponse } from "msw";
+import { http, HttpResponse, ws } from "msw";
 
 // Emoji Kitchen のプレビューとして使う、猫耳付きのスマイリー。
 const kitchenPreview = `<svg xmlns="http://www.w3.org/2000/svg" width="72" height="72" viewBox="0 0 72 72">
@@ -81,6 +81,30 @@ const notificationContexts: Record<string, NotificationContextFixture> = {
 };
 
 export const storybookApiHandlers = [
+  http.get("*/api/activitypub/reaction-options", () =>
+    HttpResponse.json({ software: "zoo", emojis: [] }),
+  ),
+  http.get("*/api/activitypub/emoji-images/:id", () =>
+    HttpResponse.text(
+      '<svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 32 32"><path fill="#ffcf00" d="M4 15 5 3l9 7h4l9-7 1 12v9c0 8-24 8-24 0Z"/><circle cx="11" cy="20" r="2"/><circle cx="22" cy="20" r="2"/></svg>',
+      { headers: { "content-type": "image/svg+xml" } },
+    ),
+  ),
+  http.get("*/api/activitypub/notifications", () =>
+    HttpResponse.json({ items: [], unread_count: 0 }),
+  ),
+  ws.link("*/api/home/live").addEventListener("connection", () => {}),
+  http.get("*/api/activitypub/status", () =>
+    HttpResponse.json({
+      enabled: true,
+      actor: "https://zoo.example/api/activitypub/users/user-alice",
+      delivery: { pending: 0, failed: 0 },
+    }),
+  ),
+  http.get("*/api/activitypub/follows", () => HttpResponse.json([])),
+  http.get("*/api/home/settings", () =>
+    HttpResponse.json({ ltl_channel_pattern: "", can_manage: false }),
+  ),
   http.get("*/api/apps/commands", () => HttpResponse.json([])),
   http.get("*/api/users/me/preferences", () => HttpResponse.json({ search_engine: "google" })),
   http.patch("*/api/users/me/preferences", async ({ request }) =>

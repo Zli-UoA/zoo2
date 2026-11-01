@@ -26,6 +26,8 @@ export interface MessageResponse {
   user_id: string;
   channel_id: string;
   content: string;
+  apub?: boolean;
+  apub_visibility?: string | null;
   created_at: TimestampString;
   updated_at: TimestampString | null;
   deleted_at: TimestampString | null;

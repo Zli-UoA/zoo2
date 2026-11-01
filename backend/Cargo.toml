@@ -38,6 +38,10 @@ ece = "2.4"
 # Statically link OpenSSL so the distroless runtime needs no shared libcrypto.
 openssl = { version = "0.10", features = ["vendored"] }
 
+http-signature-normalization = "0.7.1"
+httpdate = "1"
+html-escape = "0.2"
+
 [dev-dependencies]
 wiremock = "0.6"
 tokio-tungstenite = "0.29"

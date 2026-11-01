@@ -10,6 +10,9 @@ pub struct Message {
     pub channel_id: String,
     pub content: String,
     pub card: Option<String>,
+    #[serde(default)]
+    pub apub: bool,
+    pub apub_visibility: Option<String>,
     pub created_at: jiff::civil::DateTime,
     pub updated_at: Option<jiff::civil::DateTime>,
     pub deleted_at: Option<jiff::civil::DateTime>,

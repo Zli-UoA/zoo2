@@ -74,6 +74,7 @@ impl UserResolutionCache {
 
 #[derive(Clone)]
 pub struct AppState {
+    pub home_live: crate::routes::home_live::HomeLive,
     pub db: toasty::Db,
     pub config: Config,
     pub http_client: reqwest::Client,
@@ -92,6 +93,7 @@ impl AppState {
         let user_cache = UserResolutionCache::new();
 
         Self {
+            home_live: Default::default(),
             db,
             config,
             http_client,
@@ -135,6 +137,7 @@ impl AppState {
         let jwks_verifier = JwksVerifier::new(http_client.clone());
         let user_cache = UserResolutionCache::new();
         Self {
+            home_live: Default::default(),
             db,
             config,
             http_client,
@@ -158,6 +161,7 @@ impl AppState {
         let s3_client = crate::storage::create_s3_client(&config.s3);
         let user_cache = UserResolutionCache::new();
         Self {
+            home_live: Default::default(),
             db,
             config,
             http_client,
@@ -179,6 +183,7 @@ impl AppState {
         let s3_client = crate::storage::create_s3_client(&config.s3);
         let user_cache = UserResolutionCache::new();
         Self {
+            home_live: Default::default(),
             db,
             config,
             http_client,

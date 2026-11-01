@@ -1,4 +1,5 @@
 import type { Preview } from "@storybook/react-vite";
+import { configure } from "storybook/test";
 
 import "../src/styles.css";
 import { startStorybookWorker, withCollections, withMsw, withProviders } from "./decorators";
@@ -15,6 +16,9 @@ if (typeof window !== "undefined") {
 
 const preview: Preview = {
   beforeAll: async () => {
+    // CI runs multiple browser stories concurrently; wait for real DOM updates
+    // without failing after Testing Library's default one-second deadline.
+    configure({ asyncUtilTimeout: 5000 });
     await startStorybookWorker();
   },
   parameters: {
