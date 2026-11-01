@@ -82,7 +82,9 @@ export const Linked: Story = {
   parameters: { msw: { handlers: [linked] } },
   play: playForImplementation(async () => {
     await userEvent.click(await screen.findByRole("button", { name: "連携を解除" }));
-    await expect(await screen.findByRole("alertdialog")).toBeVisible();
+    // 開くアニメーションの途中は不可視と判定されるため、表示されきるまで待つ
+    const dialog = await screen.findByRole("alertdialog");
+    await waitFor(() => expect(dialog).toBeVisible());
   }),
 };
 
