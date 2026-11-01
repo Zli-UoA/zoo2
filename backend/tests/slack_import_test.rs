@@ -631,3 +631,147 @@ async fn test_slack_import_rejects_invalid_archives_and_can_be_cancelled() -> an
     assert!(job["error"].as_str().unwrap().contains("channels.json"));
     Ok(())
 }
+
+#[tokio::test]
+async fn test_slack_reimport_relinks_replies_and_serializes_targets() -> anyhow::Result<()> {
+    dotenvy::dotenv().ok();
+    dotenvy::from_filename("../.env").ok();
+    let mut config = Config::from_env();
+    config.dev_auth_enabled = true;
+    let db = init_db(&config.database_url).await?;
+    let state = AppState::new(db.clone(), config.clone());
+    ensure_bucket_exists(&state.s3_client, &config.s3.bucket).await;
+    let app = create_router(state.clone());
+    let admin = create_user(&app, "slack_admin3").await?;
+    {
+        let mut db = db.clone();
+        let mut tx = db.transaction().await?;
+        toasty::create!(UserRole {
+            user_id: admin.as_str(),
+            role_id: "role_admin",
+        })
+        .exec(&mut tx)
+        .await?;
+        tx.commit().await?;
+    }
+
+    let team = format!("T{}", uuid::Uuid::new_v4().simple());
+    let suffix = uuid::Uuid::new_v4().simple().to_string();
+    let users = json!([{"id":"U1","team_id":team,"name":"alice"}]);
+    let channels = json!([{"id":"C1","name":"general","members":["U1"]}]);
+    let parent = json!({"ts":"1704070000.000100","user":"U1","text":"parent","thread_ts":"1704070000.000100"});
+    let reply = json!({"ts":"1704160000.000200","user":"U1","text":"reply","thread_ts":"1704070000.000100"});
+    // 1 回目は返信だけ (親は期間外)
+    let replies_only = build_zip(&[
+        ("users.json".into(), users.clone()),
+        ("channels.json".into(), channels.clone()),
+        ("general/2024-01-02.json".into(), json!([reply.clone()])),
+    ]);
+    let both = build_zip(&[
+        ("users.json".into(), users),
+        ("channels.json".into(), channels),
+        ("general/2024-01-01.json".into(), json!([parent])),
+        ("general/2024-01-02.json".into(), json!([reply])),
+    ]);
+
+    // 同じ Slack チャンネルを別々の取り込み先へ入れるジョブを、どちらも開始してしまう
+    let first = upload(&state, &app, &admin, &replies_only).await;
+    let second = upload(&state, &app, &admin, &replies_only).await;
+    let first_id = first["id"].as_str().unwrap().to_string();
+    let second_id = second["id"].as_str().unwrap().to_string();
+    let other = uuid::Uuid::new_v4().to_string();
+    let (status, _) = request(
+        &app,
+        "POST",
+        "/api/channels",
+        &admin,
+        Some(json!({"id": other, "channel_name": format!("other_{suffix}"), "is_private": false})),
+    )
+    .await?;
+    assert_eq!(status, StatusCode::OK);
+    for (id, mapping) in [
+        (
+            &first_id,
+            json!({"slack_channel_id":"C1","action":"create","name":format!("first-{suffix}")}),
+        ),
+        (
+            &second_id,
+            json!({"slack_channel_id":"C1","action":"existing","channel_id":other}),
+        ),
+    ] {
+        let (status, body) = request(
+            &app,
+            "POST",
+            &format!("/api/admin/slack-imports/{id}/start"),
+            &admin,
+            Some(json!({ "mappings": [mapping] })),
+        )
+        .await?;
+        assert_eq!(status, StatusCode::OK, "{body}");
+    }
+    // 先に処理されたほうだけが成功し、もう一方は取り込み先が食い違うので失敗する
+    drive(&state, &app, &admin, &first_id, "completed").await;
+    let mut failed = Value::Null;
+    for _ in 0..100 {
+        backend::slack::worker::run_once(&state).await?;
+        failed = request(
+            &app,
+            "GET",
+            &format!("/api/admin/slack-imports/{second_id}"),
+            &admin,
+            None,
+        )
+        .await?
+        .1;
+        if failed["status"] == "failed" {
+            break;
+        }
+    }
+    assert_eq!(failed["status"], "failed", "{failed}");
+    assert!(
+        failed["error"]
+            .as_str()
+            .unwrap()
+            .contains("already imported")
+    );
+
+    let general = backend::slack::channel_id(&team, "C1");
+    let reply_id = backend::slack::message_id(&team, "C1", "1704160000.000200");
+    let parent_of = |rows: Vec<Value>| rows[0]["parent_id"].clone();
+    let rows = sql(
+        &state,
+        "SELECT json_build_object('parent_id',parent_id)::text FROM messages WHERE id=$1",
+        &[&reply_id],
+    )
+    .await?;
+    assert_eq!(
+        parent_of(rows),
+        Value::Null,
+        "the reply is a root until its parent arrives"
+    );
+
+    // 親を含む ZIP を取り込み直すと、返信がスレッドに戻る
+    let again = upload(&state, &app, &admin, &both).await;
+    let again_id = again["id"].as_str().unwrap().to_string();
+    let (status, body) = request(
+        &app,
+        "POST",
+        &format!("/api/admin/slack-imports/{again_id}/start"),
+        &admin,
+        Some(json!({"mappings":[{"slack_channel_id":"C1","action":"existing","channel_id":general}]})),
+    )
+    .await?;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    drive(&state, &app, &admin, &again_id, "completed").await;
+    let rows = sql(
+        &state,
+        "SELECT json_build_object('parent_id',parent_id)::text FROM messages WHERE id=$1",
+        &[&reply_id],
+    )
+    .await?;
+    assert_eq!(
+        parent_of(rows),
+        json!(backend::slack::message_id(&team, "C1", "1704070000.000100"))
+    );
+    Ok(())
+}
