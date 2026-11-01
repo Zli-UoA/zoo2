@@ -1815,3 +1815,59 @@ async fn reposts_create_distinct_feed_entries_cursor_and_announces_but_never_pri
     finish_protocol(&mut f).await?;
     Ok(())
 }
+
+#[tokio::test]
+async fn remote_reply_notifications_include_content_only_for_recipient_until_deleted()
+-> anyhow::Result<()> {
+    let _serial = PROTOCOL_SERIAL.lock().await;
+    let mut f = protocol_fixture().await?;
+    let parent = protocol_post(&f, "public", true).await?;
+    let remote_reply = format!("{}/notes/notification-reply", f.remote);
+    let note = json!({"id":remote_reply,"type":"Note","attributedTo":f.remote,"inReplyTo":format!("https://zoo.example.com/api/activitypub/notes/{parent}"),"content":"<p>Reply notification content</p>","published":"2026-01-01T00:00:00Z","to":["https://www.w3.org/ns/activitystreams#Public"]});
+    assert_eq!(
+        receive_peer(&f, &peer_activity(&f, "Create", note)).await?,
+        StatusCode::ACCEPTED
+    );
+    let (status, notices) = request(
+        &f.app,
+        "GET",
+        Some(&f.user),
+        "/api/activitypub/notifications",
+        None,
+    )
+    .await?;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(notices["items"][0]["kind"], "reply");
+    assert_eq!(notices["items"][0]["post_id"], remote_reply);
+    let actual = notices["items"][0]["content"].clone();
+    assert_eq!(actual, "Reply notification content\n");
+    let (_, other) = request(
+        &f.app,
+        "GET",
+        Some(&f.other),
+        "/api/activitypub/notifications",
+        None,
+    )
+    .await?;
+    assert!(other["items"].as_array().unwrap().is_empty());
+    assert_eq!(
+        receive_peer(
+            &f,
+            &peer_activity(&f, "Delete", json!({"id":remote_reply,"type":"Tombstone"}))
+        )
+        .await?,
+        StatusCode::ACCEPTED
+    );
+    let (_, notices) = request(
+        &f.app,
+        "GET",
+        Some(&f.user),
+        "/api/activitypub/notifications",
+        None,
+    )
+    .await?;
+    assert_eq!(notices["items"][0]["kind"], "reply");
+    assert!(notices["items"][0]["content"].is_null());
+    finish_protocol(&mut f).await?;
+    Ok(())
+}
