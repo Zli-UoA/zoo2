@@ -1,0 +1,156 @@
+name: CD TUI Release
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - "tui/**"
+      - "rust-toolchain.toml"
+      - ".github/workflows/cd-tui-release.yaml"
+permissions:
+  contents: read
+concurrency:
+  group: tui-release
+  cancel-in-progress: false
+# tui/Cargo.toml の version を上げて main に入れると、tui-v<version> のタグで GitHub Release を作ります。
+# 同じ version のリリースがすでにあれば何もしません。
+# macOS 向けも作るため、self-hosted ではなく GitHub ホストの実行先を使います。
+jobs:
+  version:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      tag: ${{ steps.version.outputs.tag }}
+      release: ${{ steps.version.outputs.release }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+      - name: Check version
+        id: version
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          version=$(sed -n 's/^version = "\(.*\)"$/\1/p' tui/Cargo.toml | head -n 1)
+          tag="tui-v$version"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          if gh release view "$tag" > /dev/null 2>&1; then
+            echo "$tag はリリース済みです。tui/Cargo.toml の version を上げると次のリリースを作ります。" >> "$GITHUB_STEP_SUMMARY"
+            echo "release=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "release=true" >> "$GITHUB_OUTPUT"
+          fi
+
+  build:
+    needs: version
+    if: needs.version.outputs.release == 'true'
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - name: x86_64-linux
+            target: x86_64-unknown-linux-musl
+            os: ubuntu-24.04
+            deb-arch: amd64
+            rpm-arch: x86_64
+          - name: aarch64-linux
+            target: aarch64-unknown-linux-musl
+            os: ubuntu-24.04-arm
+            deb-arch: arm64
+            rpm-arch: aarch64
+          - name: x86_64-macos
+            target: x86_64-apple-darwin
+            os: macos-15
+          - name: aarch64-macos
+            target: aarch64-apple-darwin
+            os: macos-15
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    defaults:
+      run:
+        working-directory: ./tui
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+      - name: Read Rust toolchain
+        id: rust-toolchain
+        working-directory: .
+        run: echo "channel=$(sed -n 's/^channel = "\(.*\)"$/\1/p' rust-toolchain.toml)" >> "$GITHUB_OUTPUT"
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ steps.rust-toolchain.outputs.channel }}
+          targets: ${{ matrix.target }}
+      - name: Install musl
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y musl-tools
+      - name: Restore Cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: tui
+          key: ${{ matrix.target }}
+      # Linux は musl で静的リンクし、glibc の版に関係なく動くようにします。
+      - name: Build
+        run: cargo build --locked --release --target ${{ matrix.target }}
+      - name: Archive
+        run: |
+          mkdir -p ../dist stage
+          cp target/${{ matrix.target }}/release/zoo2-tui README.md stage/
+          tar -czf ../dist/zoo2-tui-${{ matrix.name }}.tar.gz -C stage zoo2-tui README.md
+      - name: Install packagers
+        if: runner.os == 'Linux'
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-deb,cargo-generate-rpm
+      - name: Package deb and rpm
+        if: runner.os == 'Linux'
+        run: |
+          cargo deb --no-build --no-strip --target ${{ matrix.target }} \
+            --output ../dist/zoo2-tui_${{ matrix.deb-arch }}.deb
+          # CentOS 7 の rpm は zstd の payload を読めないので gzip にします。
+          cargo generate-rpm --target ${{ matrix.target }} --payload-compress gzip \
+            --output ../dist/zoo2-tui.${{ matrix.rpm-arch }}.rpm
+      - name: Upload
+        uses: actions/upload-artifact@v7
+        with:
+          name: zoo2-tui-${{ matrix.name }}
+          path: dist/*
+          if-no-files-found: error
+
+  release:
+    needs: [version, build]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+      - name: Download
+        uses: actions/download-artifact@v8
+        with:
+          path: dist
+          merge-multiple: true
+      # Arch Linux 向けに、このリリースのアーカイブを指す PKGBUILD を添付します。
+      - name: Generate PKGBUILD and checksums
+        run: |
+          sha() { sha256sum "dist/$1" | cut -d ' ' -f 1; }
+          sed -e "s/@VERSION@/${{ needs.version.outputs.version }}/" \
+            -e "s/@SHA256_X86_64@/$(sha zoo2-tui-x86_64-linux.tar.gz)/" \
+            -e "s/@SHA256_AARCH64@/$(sha zoo2-tui-aarch64-linux.tar.gz)/" \
+            tui/packaging/arch/PKGBUILD.in > dist/PKGBUILD
+          (cd dist && sha256sum -- * > SHA256SUMS)
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ needs.version.outputs.tag }}
+          VERSION: ${{ needs.version.outputs.version }}
+        run: |
+          gh release create "$TAG" dist/* \
+            --target "$GITHUB_SHA" \
+            --title "zoo2 TUI v$VERSION" \
+            --notes "インストール方法は [tui/README.md](https://github.com/$GH_REPO/blob/$TAG/tui/README.md#インストール) を参照してください。" \
+            --latest
