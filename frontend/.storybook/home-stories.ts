@@ -85,7 +85,7 @@ const rememberPosting: Step[] = [
   ...opened,
   role("button", "公開範囲: パブリック"),
   role("button", "連合なし"),
-  role("combobox", "同期先チャンネル"),
+  role("combobox", "同期先チャンネル", { valueExact: "#general" }),
   role("textbox", "近況を投稿", { valueExact: "" }),
 ];
 const mfmChecks: Step[] = [
