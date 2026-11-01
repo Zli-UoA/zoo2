@@ -1,3 +1,5 @@
+import { avatarStoryInitials } from "../../../.storybook/basic-fixtures";
+import { storySurfaces } from "../../../.storybook/story-surfaces";
 import type { Meta, StoryObj } from "@storybook/react-vite";
 
 import { Avatar, AvatarBadge, AvatarFallback, AvatarGroup, AvatarGroupCount } from "./avatar";
@@ -15,7 +17,7 @@ const meta = {
   },
   decorators: [
     (Story) => (
-      <div className="bg-background p-6">
+      <div className={storySurfaces["Components/Avatar"]}>
         <Story />
       </div>
     ),
@@ -28,7 +30,7 @@ type Story = StoryObj<typeof meta>;
 export const Default: Story = {
   render: (args) => (
     <Avatar {...args}>
-      <AvatarFallback>AL</AvatarFallback>
+      <AvatarFallback>{avatarStoryInitials.default}</AvatarFallback>
     </Avatar>
   ),
 };
@@ -38,7 +40,9 @@ export const Sizes: Story = {
     <div className="flex items-end gap-3">
       {(["sm", "default", "lg"] as const).map((size) => (
         <Avatar key={size} size={size}>
-          <AvatarFallback>{size === "sm" ? "S" : size === "lg" ? "L" : "M"}</AvatarFallback>
+          <AvatarFallback>
+            {avatarStoryInitials.sizes[size === "sm" ? 0 : size === "lg" ? 2 : 1]}
+          </AvatarFallback>
         </Avatar>
       ))}
     </div>
@@ -48,7 +52,7 @@ export const Sizes: Story = {
 export const Badge: Story = {
   render: () => (
     <Avatar>
-      <AvatarFallback>BO</AvatarFallback>
+      <AvatarFallback>{avatarStoryInitials.badge}</AvatarFallback>
       <AvatarBadge />
     </Avatar>
   ),
@@ -58,15 +62,15 @@ export const Group: Story = {
   render: () => (
     <AvatarGroup>
       <Avatar size="sm">
-        <AvatarFallback>AL</AvatarFallback>
+        <AvatarFallback>{avatarStoryInitials.group[0]}</AvatarFallback>
       </Avatar>
       <Avatar size="sm">
-        <AvatarFallback>BO</AvatarFallback>
+        <AvatarFallback>{avatarStoryInitials.group[1]}</AvatarFallback>
       </Avatar>
       <Avatar size="sm">
-        <AvatarFallback>CA</AvatarFallback>
+        <AvatarFallback>{avatarStoryInitials.group[2]}</AvatarFallback>
       </Avatar>
-      <AvatarGroupCount>+5</AvatarGroupCount>
+      <AvatarGroupCount>{avatarStoryInitials.count}</AvatarGroupCount>
     </AvatarGroup>
   ),
 };

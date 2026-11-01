@@ -97,6 +97,7 @@ const config = defineConfig({
       {
         extends: true,
         plugins: [storybookTest({ configDir: path.join(dirname, ".storybook") })],
+        optimizeDeps: { include: ["@testing-library/react"] },
         test: {
           name: "storybook",
           setupFiles: ["./.storybook/vitest.setup.ts"],

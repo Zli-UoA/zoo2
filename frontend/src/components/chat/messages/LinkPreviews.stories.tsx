@@ -1,3 +1,5 @@
+import { storySurfaces } from "../../../../.storybook/story-surfaces";
+import { playForImplementation } from "../../../../.storybook/play-for-implementation";
 import type { Meta, StoryObj } from "@storybook/react-vite";
 import { http, HttpResponse } from "msw";
 import { expect, within } from "storybook/test";
@@ -40,7 +42,7 @@ const meta = {
   },
   decorators: [
     (Story) => (
-      <div className="mx-auto max-w-4xl p-4">
+      <div className={storySurfaces["Features/Chat/LinkPreviews"]}>
         <Story />
       </div>
     ),
@@ -50,10 +52,10 @@ const meta = {
 export default meta;
 type Story = StoryObj<typeof meta>;
 export const Landscape: Story = {
-  play: async ({ canvasElement }) => {
+  play: playForImplementation(async ({ canvasElement }) => {
     const card = await within(canvasElement).findByRole("link", { name: /Zooのリリース情報/ });
     await expect(card.getBoundingClientRect().width).toBeLessThanOrEqual(384);
-  },
+  }),
 };
 export const Portrait: Story = { args: { content: "https://example.com/portrait" } };
 export const TextOnly: Story = { args: { content: "https://example.com/text" } };

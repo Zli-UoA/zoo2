@@ -352,31 +352,34 @@ describe("useBubbleChat", () => {
     resolveSecondInput({ ok: true });
   });
 
-  it("aborts in-flight request and sends keepalive clear on pagehide", async () => {
-    let capturedSignal: AbortSignal | undefined;
-    mocks.request.mockImplementationOnce((_path, options) => {
-      capturedSignal = options?.signal;
-      return new Promise(() => {}); // hung in flight
-    });
+  it.each(["beforeunload", "pagehide"])(
+    "aborts in-flight request and sends keepalive clear on %s",
+    async (event) => {
+      let capturedSignal: AbortSignal | undefined;
+      mocks.request.mockImplementationOnce((_path, options) => {
+        capturedSignal = options?.signal;
+        return new Promise(() => {}); // hung in flight
+      });
 
-    await flush(() => root.render(createElement(Probe)));
-    await flush(() => state.setContent("移動前テキスト"));
+      await flush(() => root.render(createElement(Probe)));
+      await flush(() => state.setContent("移動前テキスト"));
 
-    expect(capturedSignal?.aborted).toBe(false);
+      expect(capturedSignal?.aborted).toBe(false);
 
-    await flush(() => window.dispatchEvent(new Event("pagehide")));
+      await flush(() => window.dispatchEvent(new Event(event)));
 
-    expect(capturedSignal?.aborted).toBe(true);
-    const lastCall = mocks.request.mock.calls.at(-1);
-    expect(lastCall).toBeDefined();
-    expect(lastCall?.[1].keepalive).toBe(true);
-    expect(lastCall?.[1].body).toEqual({
-      session_id: expect.any(String),
-      seq: 2,
-      content: "",
-      sent_at: expect.any(Number),
-    });
-  });
+      expect(capturedSignal?.aborted).toBe(true);
+      const lastCall = mocks.request.mock.calls.at(-1);
+      expect(lastCall).toBeDefined();
+      expect(lastCall?.[1].keepalive).toBe(true);
+      expect(lastCall?.[1].body).toEqual({
+        session_id: expect.any(String),
+        seq: 2,
+        content: "",
+        sent_at: expect.any(Number),
+      });
+    },
+  );
 
   it("aborts in-flight GET on visibility change to hidden, ignores stale results, and maintains single poll loop", async () => {
     let capturedSignal: AbortSignal | undefined;

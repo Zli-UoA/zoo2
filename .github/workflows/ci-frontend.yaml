@@ -94,6 +94,9 @@ jobs:
             # script はビルド時のインライン script ハッシュで許可し、unsafe-inline は使わない。
             printf "%s" "$headers" | grep -q "script-src 'self' 'wasm-unsafe-eval' 'sha256-"
             printf "%s" "$headers" | grep -q "connect-src 'self' data: https://id.example https://storage.example"
+            # Compose disabled: its image-fetch origins must not widen connect-src.
+            connect=$(printf "%s" "$headers" | sed -n 's/.*connect-src \([^;]*\).*/\1/p')
+            case "$connect" in *www.gstatic.com*) echo "Compose CSP leaked into a React-only image" >&2; exit 1 ;; esac
             # Emoji Kitchen の合成画像（#82）とストレージオリジンを許可する。
             printf "%s" "$headers" | grep -q "img-src 'self' data: blob: https://www.gstatic.com https://storage.example"
           done
@@ -302,7 +305,7 @@ jobs:
         run: pnpm test:vrt
 
       - name: storybook test
-        run: pnpm test:storybook
+        run: pnpm test:storybook --run --maxWorkers=1 --fileParallelism=false
 
       - name: build storybook
         run: pnpm build-storybook

@@ -1,3 +1,4 @@
+import { playForImplementation } from "../../../.storybook/play-for-implementation";
 import type { Meta, StoryObj } from "@storybook/react-vite";
 import { delay, http, HttpResponse } from "msw";
 import { expect, screen } from "storybook/test";
@@ -49,11 +50,11 @@ const meta = {
 export default meta;
 type Story = StoryObj<typeof meta>;
 export const Default: Story = {
-  play: async () => {
+  play: playForImplementation(async () => {
     await expect(await screen.findByRole("heading", { name: "Release Tracker" })).toBeVisible();
     await expect(screen.getAllByRole("checkbox")).toHaveLength(2);
     await expect(screen.getByLabelText("チャンネル", { selector: "aside" })).not.toBeVisible();
-  },
+  }),
 };
 export const Loading: Story = {
   parameters: {
@@ -75,9 +76,9 @@ export const LoadError: Story = {
       ],
     },
   },
-  play: async () => {
+  play: playForImplementation(async () => {
     await expect(await screen.findByRole("alert")).toBeVisible();
-  },
+  }),
 };
 export const InvalidRequest: Story = {
   parameters: {
@@ -89,8 +90,8 @@ export const InvalidRequest: Story = {
       ],
     },
   },
-  play: async () => {
+  play: playForImplementation(async () => {
     await expect(await screen.findByRole("alert")).toBeVisible();
-  },
+  }),
 };
 export const Mobile: Story = { ...Default, globals: { viewport: { value: "mobile" } } };

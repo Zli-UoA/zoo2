@@ -81,7 +81,7 @@ describe("Apps control panel", () => {
     expect(screen.queryByRole("button", { name: "承認を申請" })).toBeNull();
     // The exiting overview panel can coexist during the tab transition.
     const management = screen.getByRole("tabpanel", { name: "管理・開発" });
-    expect(within(management).getByText("messages:write")).toBeVisible();
+    await waitFor(() => expect(within(management).getByText("messages:write")).toBeVisible());
   });
 
   it("lets users cancel editing and reports malformed manifests before sending", async () => {

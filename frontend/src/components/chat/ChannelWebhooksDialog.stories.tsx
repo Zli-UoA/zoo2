@@ -1,3 +1,4 @@
+import { playForImplementation } from "../../../.storybook/play-for-implementation";
 import type { Meta, StoryObj } from "@storybook/react-vite";
 import { http, HttpResponse } from "msw";
 import { expect, fn, screen } from "storybook/test";
@@ -23,10 +24,10 @@ export default meta;
 type Story = StoryObj<typeof meta>;
 
 export const Default: Story = {
-  play: async () => {
+  play: playForImplementation(async () => {
     await expect(await screen.findByText("Webhook")).toBeInTheDocument();
     await expect(screen.getByRole("button", { name: "Webhook URLを表示" })).toBeInTheDocument();
-  },
+  }),
 };
 
 export const Empty: Story = {
@@ -39,9 +40,9 @@ export const Empty: Story = {
       ],
     },
   },
-  play: async () => {
+  play: playForImplementation(async () => {
     await expect(await screen.findByText("Webhookはまだありません。")).toBeInTheDocument();
-  },
+  }),
 };
 
 export const Archived: Story = {

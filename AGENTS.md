@@ -16,3 +16,8 @@
 
 - フロントエンドの実装・修正・リファクタリングでは `.agents/skills/frontend-consistency/SKILL.md` に従う。
 - mainの取り込みでフロントエンドを調整するときも、既存の共通UI・機能部品・処理を優先し、新機能と既存の表示・操作方針を両立させる。
+
+# ReactとCompose Webの追従
+
+- React版・Compose Web版の機能、UI、API、状態管理を変更する場合、およびmainを取り込む場合は `.agents/skills/compose-react-parity/SKILL.md` に従う。
+- Reactの変更はCompose Webへの反映と両実装の検証を同じPRに含めて完了する。実験版であることを追従の省略理由にしない。

@@ -12,58 +12,88 @@ const A = 'zli-k8s';
 const H = 'ubuntu-latest';
 const arc = (name = 'a', state = {}) => ({name: `zli-k8s-${name}`, status: 'online', busy: false, labels: [{name: A}], ...state});
 const camp = (state = {}) => ({name: 'kubecamp-runner-no-docker-1', status: 'online', busy: false, labels: [{name: K}], ...state});
-const busy = (n) => arc(n, {busy: true});
 const pull = repo => ({pull_request: {head: {repo: {full_name: repo}}}});
+const PRICES = {'Actions Linux': 0.006, 'Actions Windows': 0.01, 'Actions storage': 0.00033602};
+const usage = (repositoryName, quantity, sku = 'Actions Linux') => ({
+  product: 'actions', sku, repositoryName, quantity, grossAmount: quantity * PRICES[sku],
+  unitType: sku === 'Actions storage' ? 'GigabyteHours' : 'Minutes',
+});
+const privateRepo = {repository: {private: true}};
+const privateRepos = [{name: 'AuthZ'}, {name: 'repo'}];
 
 const cases = [
-  ['kubecamp before idle ARC', {runners: [camp(), arc()]}, K, A],
-  ['kubecamp without ARC', {runners: [camp()]}, K, H],
-  ['kubecamp before full ARC', {runners: [camp(), busy('a'), busy('b')]}, K, H],
-  ['busy kubecamp falls back to ARC', {runners: [camp({busy: true}), arc()]}, A, A],
-  ['busy kubecamp and single busy ARC use hosted', {runners: [camp({busy: true}), busy('a')]}, H, H],
-  ['busy pools fall back to hosted', {runners: [camp({busy: true}), busy('a'), busy('b')]}, H, H],
-  ['offline kubecamp is ignored', {runners: [camp({status: 'offline'}), arc()]}, A, A],
-  ['idle ARC', {runners: [arc()]}, A, A],
-  ['single busy ARC uses hosted during replacement', {runners: [busy('a')]}, H, H],
-  ['full ARC', {runners: [busy('a'), busy('b')]}, H, H],
-  ['ARC idle alongside busy', {runners: [busy('a'), arc('b')]}, A, A],
-  ['offline ARC cannot scale', {runners: [arc('a', {status: 'offline'})]}, H, H],
+  ['kubecamp first', {runners: [camp(), arc()]}, K, H],
+  ['busy kubecamp falls back to hosted before ARC', {runners: [camp({busy: true}), arc()]}, H, H],
+  ['offline kubecamp is ignored', {runners: [camp({status: 'offline'}), arc()]}, H, H],
   ['no runners', {runners: []}, H, H],
-  ['unrelated runners', {runners: [arc('other', {name: 'other', labels: [{name: 'self-hosted'}]})]}, H, H],
   ['kubecamp name needs its routing label', {runners: [camp({labels: []})]}, H, H],
   ['kubecamp label matches another name', {runners: [camp({name: 'another'})]}, K, H],
-  ['ARC matches scale set name', {runners: [arc('a', {labels: []})]}, A, A],
-  ['ARC matches label', {runners: [arc('a', {name: 'another'})]}, A, A],
   ['missing labels are safe', {runners: [camp({labels: undefined})]}, H, H],
-  ['API error keeps first eligible pools', {error: true}, K, A],
-  ['missing token keeps first eligible pools', {token: false}, K, A],
+  ['API error keeps kubecamp', {error: true}, K, H],
+  ['missing token keeps kubecamp', {token: false}, K, H],
   ['fork PR is hosted', {event: 'pull_request', payload: pull('someone/repo')}, H, H],
-  ['same-repo PR prefers kubecamp', {event: 'pull_request', payload: pull('Zli-UoA/repo'), runners: [camp(), arc()]}, K, A],
-  ['trusted pull_request_target can use kubecamp', {event: 'pull_request_target', payload: pull('someone/repo'), runners: [camp(), arc()]}, K, A],
+  ['same-repo PR prefers kubecamp', {event: 'pull_request', payload: {...pull('Zli-UoA/repo'), repository: {private: false}}, runners: [camp()]}, K, H],
+  ['trusted pull_request_target can use kubecamp', {event: 'pull_request_target', payload: {...pull('someone/repo'), repository: {private: false}}, runners: [camp()]}, K, H],
+  ['private within included minutes uses hosted', {payload: privateRepo, usage: [usage('AuthZ', 1000), usage('repo', 899)]}, H, H],
+  ['private out of minutes uses ARC', {payload: privateRepo, usage: [usage('AuthZ', 1000), usage('repo', 900)]}, A, A],
+  ['private out of minutes still prefers kubecamp', {payload: privateRepo, runners: [camp()], usage: [usage('AuthZ', 1900)]}, K, A],
+  ['other OS usage counts by price', {payload: privateRepo, usage: [usage('repo', 1500, 'Actions Windows')]}, A, A],
+  ['public repositories and storage are not counted', {payload: privateRepo, usage: [usage('zoo2', 9000), usage('repo', 9000, 'Actions storage'), usage('repo', 10)]}, H, H],
+  ['documented billing format is counted', {payload: {repository: {private: true}}, usage: [{...usage('Zli-UoA/Repo', 1900), product: 'Actions'}]}, A, A],
+  ['unknown visibility is checked as private', {payload: {}, usage: [usage('repo', 1900)]}, A, A],
+  ['billing access error names the call and permissions', {payload: privateRepo, billingError: true,
+    warning: 'Hosted minutes unavailable: GET /organizations/{org}/settings/billing/usage (403; accepted permissions: administration=read)'}, A, A],
+  ['repository list error names the call', {payload: privateRepo, reposError: true, warning: 'Hosted minutes unavailable: GET /orgs/{org}/repos (403)'}, A, A],
+  ['private without token uses ARC', {payload: privateRepo, token: false}, K, A],
 ];
-// Docker jobs always use hosted; the ARC/hosted column now applies to large jobs only.
-for (const [name, input, expected, largeExpected] of cases) {
+for (const [name, input, expected, hostedExpected] of cases) {
   test(`select-runner: ${name}`, async () => {
     const outputs = {};
-    let calls = 0;
+    const calls = {runners: 0, repos: 0, billing: 0};
+    const warnings = [];
+    const payload = input.payload || {repository: {private: false}};
+    const fork = input.event === 'pull_request' && payload.pull_request.head.repo.full_name !== 'Zli-UoA/repo';
     process.env.HAS_STATUS_TOKEN = String(input.token !== false);
-    await select({setOutput(key, value) {outputs[key] = JSON.parse(value);}, info() {}, warning() {}},
-      {eventName: input.event || 'push', payload: input.payload || {}, repo: {owner: 'Zli-UoA', repo: 'repo'}},
-      {rest: {actions: {listSelfHostedRunnersForOrg: {}}}, paginate: async (_, params) => {
-        calls++;
+    const rest = {actions: {listSelfHostedRunnersForOrg: {}}, repos: {listForOrg: {}}};
+    await select({setOutput(key, value) {outputs[key] = JSON.parse(value);}, info() {}, warning(m) {warnings.push(m);}},
+      {eventName: input.event || 'push', payload, repo: {owner: 'Zli-UoA', repo: 'repo'}},
+      {rest, paginate: async (method, params) => {
         assert.equal(params.org, 'Zli-UoA');
         assert.equal(params.per_page, 100);
         assert.equal(params.request.timeout, 10000);
+        if (method === rest.repos.listForOrg) {
+          calls.repos++;
+          if (input.reposError) throw Object.assign(new Error('private response must not be logged'), {status: 403});
+          assert.equal(params.type, 'private');
+          return privateRepos;
+        }
+        calls.runners++;
         if (input.error) throw Object.assign(new Error('private response must not be logged'), {status: 403});
-        return input.runners;
+        return input.runners || [];
+      }, request: async (route, params) => {
+        calls.billing++;
+        assert.equal(route, 'GET /organizations/{org}/settings/billing/usage');
+        assert.equal(params.org, 'Zli-UoA');
+        assert.ok(params.year >= 2026 && params.month >= 1 && params.month <= 12);
+        if (input.billingError) throw Object.assign(new Error('private response must not be logged'), {status: 403, response: {headers: {'x-accepted-github-permissions': 'administration=read'}}});
+        return {data: {usageItems: input.usage || []}};
       }});
-    assert.deepEqual(outputs, {'runs-on': expected, 'docker-runs-on': H, 'large-runs-on': largeExpected});
-    assert.equal(calls, input.token === false || input.event === 'pull_request' && expected === H ? 0 : 1);
+    assert.deepEqual(outputs, {'runs-on': expected, 'docker-runs-on': hostedExpected, 'large-runs-on': hostedExpected});
+    const checksMinutes = !fork && input.token !== false && payload.repository?.private !== false;
+    assert.deepEqual(calls, {
+      runners: fork || input.token === false ? 0 : 1,
+      repos: checksMinutes ? 1 : 0,
+      billing: checksMinutes && !input.reposError ? 1 : 0,
+    });
+    assert.ok(warnings.every(m => !m.includes('private response')));
+    if (input.warning) assert.deepEqual(warnings, [input.warning]);
   });
 }
 
 const fixedJobs = {"flux-status.yaml": ["report"], "cd-preview-label.yaml": ["label"], "cd-image-cleanup.yaml": ["cleanup"], "ci-flux-status.yaml": ["test"], "cd-images.yaml": ["plan", "promote", "publish"], "cd-storybook.yaml": ["deploy"], "terraform-r2.yaml": ["validate", "plan"], "ci-frontend.yaml": ["check", "unit-test"], "automerge-gate.yaml": ["gate"]};
-const dockerJobs = {"ci-github-bot.yaml": ["test", "publish"], "ci-backend.yaml": ["deploy-image", "e2e"], "ci-frontend.yaml": ["container", "proxy"], "ci-frontend-auth-e2e.yaml": ["oidc-e2e"], "cd-images.yaml": ["build"]};
+const dockerJobs = {"ci-compose.yaml": ["container"], "ci-github-bot.yaml": ["test", "publish"], "ci-backend.yaml": ["deploy-image", "e2e"], "ci-frontend.yaml": ["container", "proxy"], "ci-frontend-auth-e2e.yaml": ["oidc-e2e"], "cd-images.yaml": ["build"]};
+// Kotlin/Wasm compilation must remain hosted after self-hosted communication loss.
+const hostedJobs = {"ci-compose.yaml": ["web"], "cd-storybook.yaml": ["build"]};
 test('every workload uses the right output and protects fork PRs', () => {
   const dir = new URL('.github/workflows/', root);
   let checked = 0;
@@ -84,8 +114,12 @@ test('every workload uses the right output and protects fork PRs', () => {
       }
       const docker = (dockerJobs[file] || []).includes(id);
       const large = file === 'ci-frontend.yaml' && id === 'browser-test';
+      const hosted = (hostedJobs[file] || []).includes(id);
       const fixed = (fixedJobs[file] || []).includes(id);
-      if (fixed) {
+      if (hosted) {
+        assert.match(block, /^    runs-on: ubuntu-latest$/m, `${file}/${id}: hosted for all PRs`);
+        assert.doesNotMatch(block, /^    needs:.*\brunner\b|needs\.runner\./m, `${file}/${id}: selector dependency`);
+      } else if (fixed) {
         assert.match(block, /runs-on:.*\|\| 'zli-kubecamp-no-docker' \}\}/, `${file}/${id}: fixed pool`);
         assert.doesNotMatch(block, /^    needs:.*\brunner\b|needs\.runner\./m, `${file}/${id}: selector dependency`);
       } else {
@@ -95,7 +129,7 @@ test('every workload uses the right output and protects fork PRs', () => {
         }
       }
       const line = block.split('\n').find(x => x.startsWith('    runs-on:'));
-      if (line) {
+      if (line && !hosted) {
         assert.ok(line.includes(`github.event.pull_request.head.repo.fork && '${H}' ||`), `${file}/${id}: fork guard`);
       }
       if (/docker\/(?:setup-buildx|build-push)-action|docker (?:run|compose|build)\b|scripts\/test-(?:alertmanager|log-sanitization)/.test(block)) {
@@ -105,6 +139,18 @@ test('every workload uses the right output and protects fork PRs', () => {
     }
   }
   assert.ok(checked > 0);
+});
+test('Kotlin build workflows keep hosted builds independent of runner selection', () => {
+  const storybook = readFileSync(new URL('.github/workflows/cd-storybook.yaml', root), 'utf8');
+  assert.doesNotMatch(storybook, /^  runner:/m);
+  for (const [file, ids] of Object.entries(hostedJobs)) {
+    const text = readFileSync(new URL(`.github/workflows/${file}`, root), 'utf8');
+    for (const id of ids) {
+      const block = text.split(`  ${id}:\n`)[1].split(/^  [\w-]+:\s*$/m)[0];
+      assert.match(block, /^    runs-on: ubuntu-latest$/m);
+      assert.doesNotMatch(block, /needs\.runner|^    needs: runner$/m);
+    }
+  }
 });
 test('selector host overrides do not override workload priorities', () => {
   assert.match(yaml, /vars\.CI_SELECTOR_RUNNER \|\| vars\.CI_RUNNER/);
