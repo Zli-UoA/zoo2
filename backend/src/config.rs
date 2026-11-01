@@ -110,6 +110,8 @@ pub struct SlackConfig {
     pub token_encryption_key: Option<String>,
     /// Slack Web API の接頭辞 (テストではモックに差し替える)
     pub api_base_url: String,
+    /// ZIP を展開のために一時保存するディレクトリ。読み取り専用のルートでは書き込める場所を指定する
+    pub import_tmp_dir: std::path::PathBuf,
 }
 
 impl Default for SlackConfig {
@@ -125,6 +127,7 @@ impl Default for SlackConfig {
             frontend_url: String::new(),
             token_encryption_key: None,
             api_base_url: DEFAULT_SLACK_API_BASE_URL.to_string(),
+            import_tmp_dir: std::env::temp_dir(),
         }
     }
 }
@@ -151,6 +154,7 @@ impl fmt::Debug for SlackConfig {
                 &self.token_encryption_key.as_ref().map(|_| "[REDACTED]"),
             )
             .field("api_base_url", &self.api_base_url)
+            .field("import_tmp_dir", &self.import_tmp_dir)
             .finish()
     }
 }
@@ -216,6 +220,11 @@ impl SlackConfig {
             .filter(|v| !v.trim().is_empty())
             .unwrap_or_else(|| DEFAULT_SLACK_FILES_BASE_URL.to_string());
         let optional = |name: &str| env::var(name).ok().filter(|v| !v.trim().is_empty());
+        let import_tmp_dir = env::var("SLACK_IMPORT_TMP_DIR")
+            .ok()
+            .filter(|v| !v.trim().is_empty())
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(std::env::temp_dir);
         Self {
             import_max_zip_size,
             import_bot_token,
@@ -231,6 +240,7 @@ impl SlackConfig {
             api_base_url: optional("SLACK_API_BASE_URL")
                 .map(|v| v.trim_end_matches('/').to_string())
                 .unwrap_or_else(|| DEFAULT_SLACK_API_BASE_URL.to_string()),
+            import_tmp_dir,
         }
     }
 }

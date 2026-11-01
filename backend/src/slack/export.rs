@@ -16,7 +16,8 @@ use zip::ZipArchive;
 use crate::error::AppError;
 
 /// JSON 1 ファイルあたりの上限。壊れた / 悪意ある ZIP でメモリを使い切らないようにする。
-const MAX_JSON_ENTRY_SIZE: u64 = 256 * 1024 * 1024;
+/// 読み込んだバイト列と解析後の構造を同時に持つので、backend の memory limit (512Mi) より十分小さくする。
+const MAX_JSON_ENTRY_SIZE: u64 = 64 * 1024 * 1024;
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct SlackUser {
@@ -71,6 +72,9 @@ pub struct SlackChannel {
     pub created: i64,
     #[serde(default)]
     pub members: Vec<String>,
+    /// チャンネルを作った Slack ユーザー (各ユーザーが自分のチャンネルを取り込むときに使う)
+    #[serde(default)]
+    pub creator: String,
     #[serde(default)]
     pub purpose: SlackText,
     #[serde(default)]
@@ -107,6 +111,15 @@ pub struct SlackMessage {
     /// bot 投稿のカード (旧形式の attachments)。本文がここにしかない投稿もある
     #[serde(default)]
     pub attachments: Vec<serde_json::Value>,
+    /// スレッドの親なら、返信の ts の一覧 (エクスポートに含まれる場合)
+    #[serde(default)]
+    pub replies: Vec<SlackReplyRef>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct SlackReplyRef {
+    #[serde(default)]
+    pub ts: String,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -190,7 +203,38 @@ impl SlackMessage {
                 .subtype
                 .as_deref()
                 .is_some_and(|s| SKIPPED_SUBTYPES.contains(&s))
-            && (!self.text.trim().is_empty() || !self.files.is_empty() || !self.cards().is_empty())
+            && (!self.text.trim().is_empty()
+                || !self.files.is_empty()
+                || !self.attachments_text().is_empty())
+    }
+
+    /// リンクの展開 (unfurl) を除いた attachments
+    fn own_attachments(&self) -> impl Iterator<Item = &serde_json::Value> {
+        self.attachments
+            .iter()
+            .filter(|a| a.get("from_url").is_none() && a.get("is_app_unfurl").is_none())
+    }
+
+    /// カードにできなかったときに本文へ残す文字列 (fallback・タイトル・本文)
+    pub fn attachments_text(&self) -> String {
+        self.own_attachments()
+            .flat_map(|a| {
+                let text = |key: &str| a.get(key).and_then(|v| v.as_str()).unwrap_or("").trim();
+                let main = [text("pretext"), text("text")]
+                    .into_iter()
+                    .filter(|s| !s.is_empty())
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                let main = if main.is_empty() {
+                    text("fallback").to_string()
+                } else {
+                    main
+                };
+                [text("title").to_string(), main]
+            })
+            .filter(|s| !s.is_empty())
+            .collect::<Vec<_>>()
+            .join("\n")
     }
 
     /// attachments を zoo のカードにする。リンクの展開 (unfurl) は zoo 側で表示するので除き、
@@ -199,6 +243,7 @@ impl SlackMessage {
         self.attachments
             .iter()
             .filter(|a| a.get("from_url").is_none() && a.get("is_app_unfurl").is_none())
+            .map(sanitize_attachment)
             .filter_map(|a| {
                 let body = serde_json::json!({ "attachments": [a] }).to_string();
                 crate::cards::parse_webhook_cards(body.as_bytes()).ok()
@@ -216,6 +261,75 @@ impl SlackMessage {
     }
 }
 
+fn clip(value: &str, limit: usize) -> String {
+    value.chars().take(limit).collect()
+}
+
+/// Webhook と同じカードの検証 (`MessageCard::encode`) に通る形へ直す。
+/// 取り込みでは元のデータを直せないので、拒否せずにリンクを外したり切り詰めたりする。
+fn sanitize_attachment(attachment: &serde_json::Value) -> serde_json::Value {
+    let mut value = attachment.clone();
+    let Some(object) = value.as_object_mut() else {
+        return value;
+    };
+    let text = |object: &serde_json::Map<String, serde_json::Value>, key: &str| {
+        object
+            .get(key)
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string()
+    };
+    if !text(object, "title_link").starts_with("https://") {
+        object.remove("title_link");
+    }
+    if !text(object, "color").is_empty()
+        && crate::cards::normalize_color(&text(object, "color")).is_none()
+    {
+        object.remove("color");
+    }
+    for (key, limit) in [
+        ("title", 500),
+        ("footer", 2000),
+        ("author_name", 2000),
+        ("fallback", 3000),
+    ] {
+        let clipped = clip(&text(object, key), limit);
+        if object.contains_key(key) {
+            object.insert(key.into(), clipped.into());
+        }
+    }
+    // pretext・text・fields を連結した本文が 4000 文字に収まるよう、fields → pretext → text の順に枠を取る
+    let fields: Vec<serde_json::Value> = object
+        .get("fields")
+        .and_then(|v| v.as_array())
+        .map(|fields| {
+            fields
+                .iter()
+                .take(10)
+                .map(|f| {
+                    let get = |k: &str| f.get(k).and_then(|v| v.as_str()).unwrap_or("");
+                    serde_json::json!({ "title": clip(get("title"), 50), "value": clip(get("value"), 200) })
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    let used: usize = fields
+        .iter()
+        .map(|f| {
+            f["title"].as_str().unwrap_or("").chars().count()
+                + f["value"].as_str().unwrap_or("").chars().count()
+                + 3
+        })
+        .sum();
+    let pretext = clip(&text(object, "pretext"), 500);
+    let budget = 3900usize.saturating_sub(used + pretext.chars().count());
+    let body = clip(&text(object, "text"), budget);
+    object.insert("fields".into(), fields.into());
+    object.insert("pretext".into(), pretext.into());
+    object.insert("text".into(), body.into());
+    value
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ChannelSummary {
     pub slack_channel_id: String,
@@ -223,6 +337,7 @@ pub struct ChannelSummary {
     pub is_private: bool,
     pub is_archived: bool,
     pub members: usize,
+    pub creator: String,
     pub message_count: u64,
 }
 
@@ -353,12 +468,24 @@ impl<R: Read + Seek> ExportArchive<R> {
     /// チャンネル一覧と取り込み対象のメッセージ数を数える
     pub fn summarize(&mut self) -> Result<(String, Vec<ChannelSummary>, usize), AppError> {
         let users = self.users()?;
-        let team_id = users
-            .iter()
-            .map(|u| u.team_id.as_str())
-            .find(|t| !t.is_empty())
-            .unwrap_or("unknown")
-            .to_string();
+        // 共有チャンネルなどで別のワークスペースのユーザーが混ざることがあるので、最も多い team_id を使う。
+        // 取れない ZIP は連携 (#291) で付け替えられないので受け付けない。
+        let mut counts: HashMap<&str, usize> = HashMap::new();
+        for user in &users {
+            if !user.team_id.is_empty() {
+                *counts.entry(user.team_id.as_str()).or_default() += 1;
+            }
+        }
+        let team_id = counts
+            .into_iter()
+            .max_by(|a, b| a.1.cmp(&b.1).then(b.0.cmp(a.0)))
+            .map(|(team, _)| team.to_string())
+            .ok_or_else(|| {
+                AppError::BadRequest(
+                    "users.json does not contain a team_id; export the workspace from Slack again"
+                        .into(),
+                )
+            })?;
         let channels = self.channels()?;
         let mut summaries = Vec::with_capacity(channels.len());
         for channel in channels {
@@ -376,6 +503,7 @@ impl<R: Read + Seek> ExportArchive<R> {
                 is_private: channel.is_private,
                 is_archived: channel.is_archived,
                 members: channel.members.len(),
+                creator: channel.creator.clone(),
                 message_count: count,
             });
         }

@@ -688,7 +688,7 @@
   "slackImport": {
     "tab": "Slack 匯入",
     "title": "從 Slack 匯入",
-    "description": "上傳從 Slack 管理設定匯出的 ZIP，即可將頻道與訊息匯入 Zoo。",
+    "description": "上傳從 Slack 管理設定匯出的 ZIP，即可將其保存在 Zoo 中。你可以在這裡匯入任意頻道；成員連結 Slack 帳號後，可以匯入自己建立的頻道。",
     "chooseFile": "選擇並上傳 ZIP",
     "uploading": "上傳中…",
     "loading": "正在載入匯入紀錄",
@@ -696,7 +696,7 @@
     "status": {
       "uploading": "上傳中",
       "analyzing": "分析中",
-      "awaiting_mapping": "等待頻道對應",
+      "ready": "可匯入",
       "importing": "匯入中",
       "fetching_files": "正在取得附件",
       "completed": "已完成",
@@ -713,10 +713,10 @@
     "failedFiles_other": "有 {{count}} 個附件無法取得。請確認權杖的權限後再重新取得。",
     "fetchFiles": "取得附件",
     "fetchFilesFor": "取得 {{name}} 的附件",
-    "cancel": "取消匯入",
-    "cancelTitle": "要取消這次匯入嗎？",
-    "cancelDescription": "將刪除已上傳的 ZIP。已匯入的訊息會保留。",
-    "summary": "找到 {{channels}} 個頻道、{{users}} 位使用者。請選擇匯入位置。",
+    "cancel": "刪除 ZIP",
+    "cancelTitle": "要刪除已保存的 ZIP 嗎？",
+    "cancelDescription": "已匯入的訊息會保留，但管理員和成員都無法再從這個 ZIP 匯入。",
+    "summary": "找到 {{channels}} 個頻道、{{users}} 位使用者。請選擇要匯入的頻道。",
     "private": "私人",
     "channelStats": "{{messages}} 則訊息 · {{members}} 位成員",
     "deletedTarget": "先前的匯入位置 #{{name}} 已被刪除，因此無法再次匯入。",
@@ -729,7 +729,10 @@
     "start_one": "匯入 {{count}} 個頻道",
     "start_other": "匯入 {{count}} 個頻道",
     "forbidden": "只有管理員可以從 Slack 匯入。",
-    "failed": "匯入操作失敗。"
+    "failed": "匯入操作失敗。",
+    "dismiss": "移到歷史紀錄",
+    "runTitle": "從 {{name}} 匯入",
+    "importedTo": "已匯入到 #{{name}}"
   },
   "slackLink": {
     "tab": "Slack 連結",
@@ -759,6 +762,13 @@
     "manifestError": "無法載入 manifest。",
     "copyManifest": "複製 manifest",
     "manifestCopied": "已複製 manifest。",
-    "manifestCopyFailed": "無法複製。"
+    "manifestCopyFailed": "無法複製。",
+    "importTitle": "從 Slack 匯入",
+    "importDescription": "可以從管理員保存的 Slack 匯出中，匯入你在 Slack 建立的頻道的歷史紀錄。匯入位置可以選擇你已加入的同名頻道，或新建頻道。",
+    "importLoading": "正在載入可匯入的頻道",
+    "importNoExport": "管理員保存 Slack 匯出後，你可以在這裡匯入自己的頻道。",
+    "importNoChannels": "已保存的匯出中沒有你建立的頻道。",
+    "importSummary_one": "{{name}} 中有 {{count}} 個你建立的頻道。請選擇要匯入的頻道。",
+    "importSummary_other": "{{name}} 中有 {{count}} 個你建立的頻道。請選擇要匯入的頻道。"
   }
 }

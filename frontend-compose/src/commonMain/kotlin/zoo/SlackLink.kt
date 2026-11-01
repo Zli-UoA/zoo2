@@ -243,6 +243,7 @@ fun SlackLinkPanel(
                 )
             }
         }
+        if (link != null) SlackOwnImportSection(app)
         if (app.config.isAdmin) SlackManifestSection(app)
     }
     if (confirmUnlink)
@@ -255,6 +256,155 @@ fun SlackLinkPanel(
             { confirmUnlink = false },
             { state.unlink { confirmUnlink = false } },
         )
+}
+
+/**
+ * 連携した Slack アカウントで作ったチャンネルを、管理者が保存した ZIP から取り込む。
+ * React の `SlackLinkPanel` の `OwnImportSection` に対応する。
+ */
+class SlackOwnImportController(
+    parent: CoroutineScope,
+    private val request: suspend (path: String, method: String, body: JsonElement?) -> JsonElement,
+) {
+    private val lifetime = SupervisorJob(parent.coroutineContext[Job])
+    private val scope = CoroutineScope(parent.coroutineContext + lifetime)
+    private var generation = 0
+
+    /** `{export, channels, imports}` */
+    var data by mutableStateOf<Row?>(null)
+        private set
+
+    var failure by mutableStateOf<SlackImportFailure?>(null)
+        private set
+
+    var pending by mutableStateOf(false)
+        private set
+
+    /** 取り込みを始めるたびに進める。フォームを戻し、続けて別のチャンネルを選べるようにする */
+    var started by mutableStateOf(0)
+        private set
+
+    /** 自分が始めた最新の取り込み */
+    val latest
+        get() = data?.array("imports")?.rows()?.firstOrNull()
+
+    val running
+        get() = latest?.text("status") in slackImportRunning
+
+    fun load() {
+        if (!lifetime.isActive) return
+        val version = ++generation
+        scope.launch {
+            try {
+                val value = request("/api/slack/imports", "GET", null).jsonObject
+                if (version == generation) data = value
+            } catch (cause: CancellationException) {
+                throw cause
+            } catch (cause: Exception) {
+                if (version == generation) failure = slackImportFailure(cause)
+            }
+        }
+    }
+
+    fun start(mappings: List<Row>) {
+        if (pending || !lifetime.isActive) return
+        pending = true
+        failure = null
+        scope.launch {
+            try {
+                val run = request("/api/slack/imports", "POST", obj("mappings" to JsonArray(mappings)))
+                data?.let { current ->
+                    generation++
+                    data =
+                        JsonObject(
+                            current +
+                                ("imports" to JsonArray(listOf(run) + current.array("imports")))
+                        )
+                }
+                started++
+            } catch (cause: CancellationException) {
+                throw cause
+            } catch (cause: Exception) {
+                failure = slackImportFailure(cause)
+            } finally {
+                pending = false
+                load()
+            }
+        }
+    }
+
+    fun close() {
+        generation++
+        lifetime.cancel()
+    }
+}
+
+@Composable
+private fun SlackOwnImportSection(app: Session) {
+    val scope = rememberCoroutineScope()
+    val state =
+        remember(app) {
+            SlackOwnImportController(scope) { path, method, body -> app.api.request(path, method, body) }
+        }
+    LaunchedEffect(state) { state.load() }
+    DisposableEffect(state) { onDispose { state.close() } }
+    // 取り込み中は 2 秒ごとに読み直す
+    LaunchedEffect(state, state.running) {
+        while (state.running) {
+            delay(2_000)
+            state.load()
+        }
+    }
+    val data = state.data
+    val export = data?.get("export") as? JsonObject
+    val channels = data?.array("channels")?.rows().orEmpty()
+    SettingsSection(app.t("slackLink.importTitle"), app.t("slackLink.importDescription")) {
+        if (data == null && state.failure == null)
+            Text(
+                app.t("slackLink.importLoading"),
+                Modifier.then(webControlModifier("status")).semantics {
+                    liveRegion = LiveRegionMode.Polite
+                },
+                muted = true,
+            )
+        if (data != null && export == null)
+            Text(app.t("slackLink.importNoExport"), small = true, muted = true)
+        if (export != null && channels.isEmpty())
+            Text(app.t("slackLink.importNoChannels"), small = true, muted = true)
+        if (export != null && channels.isNotEmpty())
+            key(state.started) {
+                SlackImportMappingForm(
+                    app,
+                    channels,
+                    app.t(
+                        "slackLink.importSummary",
+                        "name" to export.text("file_name"),
+                        "count" to channels.size.toString(),
+                    ),
+                    state.pending || state.running,
+                    targetsFor = { channel ->
+                        channel.array("targets").rows().map {
+                            obj(
+                                "id" to it.text("id"),
+                                "channel_name" to it.text("name"),
+                                "is_private" to it.flag("is_private"),
+                            )
+                        }
+                    },
+                ) {
+                    state.start(it)
+                }
+            }
+        state.latest?.let { SlackImportRunStatus(app, it) }
+        state.failure?.let {
+            Text(
+                it.message ?: app.t("slackImport.failed"),
+                Modifier.then(webControlModifier("alert")),
+                small = true,
+                color = MaterialTheme.colorScheme.error,
+            )
+        }
+    }
 }
 
 /** 管理者向け: ワークスペースで作る Slack アプリの App Manifest */

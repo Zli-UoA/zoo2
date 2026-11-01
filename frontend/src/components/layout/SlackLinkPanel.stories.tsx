@@ -19,6 +19,62 @@ const linked = http.get("*/api/slack/link", () =>
     },
   }),
 );
+// 管理者がまだ ZIP を保存していない
+const noExport = http.get("*/api/slack/imports", () =>
+  HttpResponse.json({ export: null, channels: [], imports: [] }),
+);
+const exported = {
+  id: "import-1",
+  file_name: "Zli Slack export Jan 1 2024 - Nov 1 2026.zip",
+  created_at: "2026-11-01T09:00:00Z",
+};
+const ownChannel = (overrides: Record<string, unknown>) => ({
+  slack_channel_id: "C1",
+  name: "design",
+  is_private: false,
+  is_archived: false,
+  members: 8,
+  creator: "U1",
+  message_count: 120,
+  suggested_name: "slack-design",
+  name_taken: true,
+  existing_channel: null,
+  same_name_channel: { id: "channel-design", name: "design", is_private: false },
+  targets: [{ id: "channel-design", name: "design", is_private: false }],
+  ...overrides,
+});
+const ownChannels = [
+  ownChannel({}),
+  ownChannel({
+    slack_channel_id: "G1",
+    name: "secret",
+    is_private: true,
+    members: 3,
+    message_count: 12,
+    suggested_name: "secret",
+    name_taken: false,
+    same_name_channel: null,
+    targets: [],
+  }),
+];
+const run = {
+  id: "run-1",
+  status: "importing",
+  file_name: exported.file_name,
+  file_size: 1,
+  team_id: "T1",
+  analysis: null,
+  total_messages: 132,
+  processed_messages: 44,
+  total_files: 0,
+  processed_files: 0,
+  pending_files: 0,
+  failed_files: 0,
+  error: null,
+  created_at: "2026-11-02T09:00:00Z",
+  finished_at: null,
+  source_id: "import-1",
+};
 const admin = http.get("*/api/users/me", () =>
   HttpResponse.json({
     id: "user-alice",
@@ -79,7 +135,7 @@ export const NotLinked: Story = {
 };
 
 export const Linked: Story = {
-  parameters: { msw: { handlers: [linked] } },
+  parameters: { msw: { handlers: [linked, noExport] } },
   play: playForImplementation(async () => {
     await userEvent.click(await screen.findByRole("button", { name: "連携を解除" }));
     // 開くアニメーションの途中は不可視と判定されるため、表示されきるまで待つ
@@ -140,6 +196,7 @@ export const ReturnedFromSlack: Story = {
     router: { initialEntries: ["/settings?tab=slack&code=abc&state=signed"] },
     msw: {
       handlers: [
+        noExport,
         // 連携前の状態を返す初期の読み込みが、完了処理より遅れて届く
         http.get("*/api/slack/link", async () => {
           await delay(300);
@@ -174,6 +231,7 @@ export const UnlinkError: Story = {
     msw: {
       handlers: [
         linked,
+        noExport,
         http.delete("*/api/slack/link", () =>
           HttpResponse.json({ error: "Slack token revocation failed" }, { status: 502 }),
         ),
@@ -213,5 +271,62 @@ export const Mobile: Story = {
   globals: { viewport: { value: "mobile" } },
   play: playForImplementation(async () => {
     await expect(await screen.findByRole("button", { name: "連携を解除" })).toBeVisible();
+  }),
+};
+
+let ownStarted = false;
+export const OwnImport: Story = {
+  beforeEach: () => {
+    ownStarted = false;
+  },
+  parameters: {
+    msw: {
+      handlers: [
+        linked,
+        http.get("*/api/slack/imports", () =>
+          HttpResponse.json({
+            export: exported,
+            channels: ownChannels,
+            imports: ownStarted ? [run] : [],
+          }),
+        ),
+        http.post("*/api/slack/imports", () => {
+          ownStarted = true;
+          return HttpResponse.json(run);
+        }),
+      ],
+    },
+  },
+  play: playForImplementation(async () => {
+    // 自分が作ったチャンネルだけが並び、同じ名前の参加中のチャンネルか、新しいチャンネルを選べる
+    await userEvent.selectOptions(
+      await screen.findByRole("combobox", { name: "#design の取り込み方" }),
+      "existing",
+    );
+    await expect(screen.getByRole("combobox", { name: "#design の取り込み先" })).toHaveValue(
+      "channel-design",
+    );
+    await userEvent.selectOptions(
+      screen.getByRole("combobox", { name: "#secret の取り込み方" }),
+      "create",
+    );
+    await userEvent.click(screen.getByRole("button", { name: "2 チャンネルを取り込む" }));
+    await expect(await screen.findByRole("progressbar")).toHaveAttribute("aria-valuenow", "33");
+  }),
+};
+
+export const OwnImportNoChannels: Story = {
+  parameters: {
+    msw: {
+      handlers: [
+        linked,
+        http.get("*/api/slack/imports", () =>
+          HttpResponse.json({ export: exported, channels: [], imports: [] }),
+        ),
+      ],
+    },
+  },
+  play: playForImplementation(async () => {
+    await expect(await screen.findByText(/あなたが作ったチャンネルはありません/)).toBeVisible();
   }),
 };

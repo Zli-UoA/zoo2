@@ -36,6 +36,25 @@ pub fn mrkdwn_to_mfm(text: &str, resolver: &impl Resolver) -> String {
     truncate_content(out)
 }
 
+/// 本文でメンションされている Slack ユーザー ID (`<@U123>` / `<@W123|name>`) を出現順・重複なしで返す
+pub fn mentioned_users(text: &str) -> Vec<String> {
+    let mut found: Vec<String> = Vec::new();
+    for (index, _) in text.match_indices("<@") {
+        let token = &text[index + 2..];
+        let end = token.find(['>', '|']).unwrap_or(token.len());
+        let id = &token[..end];
+        let valid = id.len() > 1
+            && id.starts_with(['U', 'W'])
+            && id
+                .bytes()
+                .all(|b| b.is_ascii_uppercase() || b.is_ascii_digit());
+        if valid && !found.iter().any(|f| f == id) {
+            found.push(id.to_string());
+        }
+    }
+    found
+}
+
 fn convert_token(token: &str, resolver: &impl Resolver) -> String {
     let (target, label) = match token.split_once('|') {
         Some((t, l)) => (t, Some(unescape(l))),
@@ -113,6 +132,14 @@ mod tests {
         fn channel_name(&self, id: &str) -> Option<String> {
             (id == "C1").then(|| "random".to_string())
         }
+    }
+
+    #[test]
+    fn collects_mentioned_users_once() {
+        assert_eq!(
+            mentioned_users("<@U1> <@W2|bob> <@U1> <@lower> <#C1> <@U3"),
+            vec!["U1", "W2", "U3"]
+        );
     }
 
     #[test]

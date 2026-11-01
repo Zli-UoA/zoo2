@@ -289,22 +289,32 @@ export function preferenceOptions(
     if (name === "Empty") wait("button", "ZIP を選んでアップロード", { enabled: true });
     else if (name === "Load Error") wait("alert", "", { exact: false, text: "管理者だけ" });
     else if (name === "Mapping" || name === "Mobile") {
+      // 取り込むチャンネルは管理者が選ぶので、初めはどれも取り込まない
+      wait("button", "0 チャンネルを取り込む", { enabled: false });
+      select("#general の取り込み方", "新しいチャンネル");
       wait("textbox", "#general の新しいチャンネル名", { valueExact: "slack-general" });
-      select("#general の取り込み方", "取り込まない");
-      wait("button", "2 チャンネルを取り込む", { enabled: true });
-      // 以前取り込んだ #random は同じ取り込み先に固定し、取り込み先が削除済みの #design は取り込まない
+      wait("button", "1 チャンネルを取り込む", { enabled: true });
+      // 以前取り込んだ #random は同じ取り込み先に固定する
+      select("#random の取り込み方", "既存のチャンネル");
       wait("combobox", "#random の取り込み先", { enabled: false });
-      wait("combobox", "#design の取り込み方", { value: "取り込まない" });
+    } else if (name === "Started") {
+      select("#general の取り込み方", "新しいチャンネル");
+      click("button", "1 チャンネルを取り込む");
+      wait("progressbar", "", { exact: false });
+      wait("button", "0 チャンネルを取り込む", { enabled: false });
     } else if (name === "Start Error") {
-      click("button", "3 チャンネルを取り込む");
+      select("#general の取り込み方", "新しいチャンネル");
+      click("button", "1 チャンネルを取り込む");
       wait("alert", "", { exact: false, text: "already taken" });
+    } else if (name === "Failed Import") {
+      wait("button", "履歴に移す", { enabled: true });
     } else if (name === "Importing")
       wait("progressbar", "", { exact: false, attributes: { "aria-valuenow": "33" } });
     else if (name === "Completed With Pending Files")
       wait("button", `${exportName} の添付ファイルを取得`, { enabled: true });
     else if (name === "History With Failed Files") click("button", "old.zip の添付ファイルを取得");
     else if (name === "Failed") {
-      click("button", "取り消す");
+      click("button", "ZIP を削除");
       wait("alertdialog", "", { exact: false });
     }
   }
@@ -339,6 +349,14 @@ export function preferenceOptions(
     } else if (name === "Returned From Slack Failed") {
       wait("alert", "", { exact: false, text: "有効期限" });
       wait("button", "Slack と連携", { enabled: true });
+    } else if (name === "Own Import") {
+      select("#design の取り込み方", "既存のチャンネル");
+      wait("combobox", "#design の取り込み先", { value: "#design" });
+      select("#secret の取り込み方", "新しいチャンネル");
+      click("button", "2 チャンネルを取り込む");
+      wait("progressbar", "", { exact: false, attributes: { "aria-valuenow": "33" } });
+    } else if (name === "Own Import No Channels") {
+      wait("button", "連携を解除", { enabled: true });
     }
   }
   if (kind === "pwa" && name === "Default")

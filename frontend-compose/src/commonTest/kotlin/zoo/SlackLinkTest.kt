@@ -98,4 +98,49 @@ class SlackLinkTest {
         assertEquals("slackLink.errors.failed", state.error)
         state.close()
     }
+
+    @Test
+    fun ownImportStartsAnImportAndShowsServerReasons() = runTest {
+        val run = obj("id" to "run", "status" to "importing", "source_id" to "export")
+        var imports = listOf<JsonElement>()
+        var reject = true
+        val requests = mutableListOf<String>()
+        val state =
+            SlackOwnImportController(backgroundScope) { path, method, _ ->
+                requests += "$method $path"
+                if (method == "POST") {
+                    if (reject)
+                        throw ApiException(
+                            403,
+                            obj("error" to "You can only import Slack channels you created (C2)"),
+                        )
+                    imports = listOf(run)
+                    run
+                } else
+                    obj(
+                        "export" to obj("id" to "export", "file_name" to "export.zip"),
+                        "channels" to JsonArray(listOf(obj("slack_channel_id" to "C1"))),
+                        "imports" to JsonArray(imports),
+                    )
+            }
+        state.load()
+        runCurrent()
+        assertFalse(state.running)
+        val mappings = listOf(obj("slack_channel_id" to "C1", "action" to "create"))
+        state.start(mappings)
+        runCurrent()
+        // 各ユーザーの取り込みでは、403 も「管理者だけ」ではなくサーバーの理由を出す
+        assertEquals(403, state.failure?.status)
+        assertEquals("You can only import Slack channels you created (C2)", state.failure?.message)
+        assertEquals(0, state.started)
+        reject = false
+        state.start(mappings)
+        runCurrent()
+        assertNull(state.failure)
+        assertEquals(1, state.started)
+        assertEquals("run", state.latest?.text("id"))
+        assertTrue(state.running)
+        assertEquals("GET /api/slack/imports", requests.last())
+        state.close()
+    }
 }

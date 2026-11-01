@@ -7,7 +7,7 @@ import { SlackImportPanel } from "./SlackImportPanel";
 
 const base: SlackImport = {
   id: "import-1",
-  status: "awaiting_mapping",
+  status: "ready",
   file_name: "Zli Slack export Jan 1 2024 - Nov 1 2026.zip",
   file_size: 12_345_678,
   team_id: "T1",
@@ -17,6 +17,7 @@ const base: SlackImport = {
     channels: [
       {
         slack_channel_id: "C1",
+        creator: "U1",
         name: "general",
         is_private: false,
         is_archived: false,
@@ -28,6 +29,7 @@ const base: SlackImport = {
       },
       {
         slack_channel_id: "C2",
+        creator: "U2",
         name: "random",
         is_private: false,
         is_archived: false,
@@ -39,6 +41,7 @@ const base: SlackImport = {
       },
       {
         slack_channel_id: "G1",
+        creator: "U3",
         name: "very-long-private-channel-name-for-the-infrastructure-working-group",
         is_private: true,
         is_archived: false,
@@ -50,6 +53,7 @@ const base: SlackImport = {
       },
       {
         slack_channel_id: "C3",
+        creator: "U1",
         name: "design",
         is_private: false,
         is_archived: false,
@@ -71,7 +75,18 @@ const base: SlackImport = {
   error: null,
   created_at: "2026-11-01T09:00:00Z",
   finished_at: null,
+  source_id: null,
 };
+
+/** 保存した ZIP (base) からの取り込み */
+const run = (overrides: Partial<SlackImport>): SlackImport => ({
+  ...base,
+  id: "run-1",
+  status: "importing",
+  analysis: null,
+  source_id: base.id,
+  ...overrides,
+});
 
 const list = (...imports: SlackImport[]) =>
   http.get("*/api/admin/slack-imports", () => HttpResponse.json({ imports }));
@@ -134,20 +149,56 @@ export const LoadError: Story = {
 export const Mapping: Story = {
   parameters: { msw: { handlers: [list(base)] } },
   play: playForImplementation(async () => {
-    const name = await screen.findByRole("textbox", { name: "#general の新しいチャンネル名" });
-    await expect(name).toHaveValue("slack-general");
+    // 取り込むチャンネルは管理者が選ぶので、初めはどれも取り込まない
+    const start = await screen.findByRole("button", { name: "0 チャンネルを取り込む" });
+    await expect(start).toBeDisabled();
     await userEvent.selectOptions(
       screen.getByRole("combobox", { name: "#general の取り込み方" }),
-      "skip",
+      "create",
     );
-    await expect(screen.getByRole("button", { name: "2 チャンネルを取り込む" })).toBeEnabled();
+    await expect(
+      screen.getByRole("textbox", { name: "#general の新しいチャンネル名" }),
+    ).toHaveValue("slack-general");
+    await expect(screen.getByRole("button", { name: "1 チャンネルを取り込む" })).toBeEnabled();
     // 取り込み先が削除済みの #design は取り込まない
     await expect(screen.getByText(/#slack-design が削除されている/)).toBeVisible();
-    await expect(screen.getByRole("combobox", { name: "#design の取り込み方" })).toHaveValue(
-      "skip",
-    );
     // 以前取り込んだ #random は同じ取り込み先に固定する
+    await expect(screen.getByText("取り込み先: #random")).toBeVisible();
+    await userEvent.selectOptions(
+      screen.getByRole("combobox", { name: "#random の取り込み方" }),
+      "existing",
+    );
     await expect(screen.getByRole("combobox", { name: "#random の取り込み先" })).toBeDisabled();
+  }),
+};
+
+let started = false;
+export const Started: Story = {
+  beforeEach: () => {
+    started = false;
+  },
+  parameters: {
+    msw: {
+      handlers: [
+        http.get("*/api/admin/slack-imports", () =>
+          HttpResponse.json({ imports: started ? [run({}), base] : [base] }),
+        ),
+        http.post("*/api/admin/slack-imports/import-1/start", () => {
+          started = true;
+          return HttpResponse.json(run({}));
+        }),
+      ],
+    },
+  },
+  play: playForImplementation(async () => {
+    await userEvent.selectOptions(
+      await screen.findByRole("combobox", { name: "#general の取り込み方" }),
+      "create",
+    );
+    await userEvent.click(screen.getByRole("button", { name: "1 チャンネルを取り込む" }));
+    // 取り込みの進み具合が出て、ZIP はそのまま残り、続けて別のチャンネルを選べる
+    await expect(await screen.findByRole("progressbar")).toBeVisible();
+    await expect(screen.getByRole("button", { name: "0 チャンネルを取り込む" })).toBeDisabled();
   }),
 };
 
@@ -163,7 +214,11 @@ export const StartError: Story = {
     },
   },
   play: playForImplementation(async () => {
-    await userEvent.click(await screen.findByRole("button", { name: "3 チャンネルを取り込む" }));
+    await userEvent.selectOptions(
+      await screen.findByRole("combobox", { name: "#general の取り込み方" }),
+      "create",
+    );
+    await userEvent.click(screen.getByRole("button", { name: "1 チャンネルを取り込む" }));
     await expect(await screen.findByRole("alert")).toHaveTextContent("already taken");
   }),
 };
@@ -176,7 +231,7 @@ export const Analyzing: Story = {
 
 export const Importing: Story = {
   parameters: {
-    msw: { handlers: [list({ ...base, status: "importing", processed_messages: 4_210 })] },
+    msw: { handlers: [list(run({ processed_messages: 4_210 }), base)] },
   },
   play: playForImplementation(async () => {
     await expect(await screen.findByRole("progressbar")).toHaveAttribute("aria-valuenow", "33");
@@ -188,15 +243,15 @@ export const CompletedWithPendingFiles: Story = {
     msw: {
       handlers: [
         list(
-          {
-            ...base,
+          run({
             status: "completed",
             processed_messages: 12_925,
             total_files: 18,
             pending_files: 16,
             failed_files: 2,
             finished_at: "2026-11-01T09:30:00Z",
-          },
+          }),
+          base,
           { ...base, id: "import-0", status: "cancelled", file_name: "old.zip" },
         ),
       ],
@@ -221,18 +276,12 @@ export const HistoryWithFailedFiles: Story = {
     msw: {
       handlers: [
         list(
-          { ...base, id: "import-2", status: "completed", file_name: "new.zip" },
-          {
-            ...base,
-            id: "import-1",
-            status: "completed",
-            file_name: "old.zip",
-            failed_files: 3,
-          },
+          run({ id: "run-2", status: "completed", file_name: "new.zip" }),
+          run({ id: "run-1", status: "completed", file_name: "old.zip", failed_files: 3 }),
         ),
         http.post("*/api/admin/slack-imports/:id/fetch-files", ({ params }) => {
           refetched = String(params.id);
-          return HttpResponse.json({ ...base, id: "import-1", status: "fetching_files" });
+          return HttpResponse.json(run({ id: "run-1", status: "fetching_files" }));
         }),
       ],
     },
@@ -241,7 +290,7 @@ export const HistoryWithFailedFiles: Story = {
     await userEvent.click(
       await screen.findByRole("button", { name: "old.zip の添付ファイルを取得" }),
     );
-    await waitFor(() => expect(refetched).toBe("import-1"));
+    await waitFor(() => expect(refetched).toBe("run-1"));
   }),
 };
 
@@ -259,10 +308,24 @@ export const Failed: Story = {
     },
   },
   play: playForImplementation(async () => {
-    await userEvent.click(await screen.findByRole("button", { name: "取り消す" }));
+    await userEvent.click(await screen.findByRole("button", { name: "ZIP を削除" }));
     // 開くアニメーションの途中は不可視と判定されるため、表示されきるまで待つ
     const dialog = await screen.findByRole("alertdialog");
     await waitFor(() => expect(dialog).toBeVisible());
+  }),
+};
+
+export const FailedImport: Story = {
+  parameters: {
+    msw: {
+      handlers: [
+        list(run({ status: "failed", error: "Slack channel C1 was already imported" }), base),
+      ],
+    },
+  },
+  play: playForImplementation(async () => {
+    await expect(await screen.findByText(/already imported/)).toBeVisible();
+    await expect(screen.getByRole("button", { name: "履歴に移す" })).toBeEnabled();
   }),
 };
 

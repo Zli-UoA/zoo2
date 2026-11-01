@@ -688,7 +688,7 @@
   "slackImport": {
     "tab": "Slack import",
     "title": "Import from Slack",
-    "description": "Upload the export ZIP downloaded from Slack's admin settings to import its channels and messages into Zoo.",
+    "description": "Upload the export ZIP downloaded from Slack's admin settings to store it in Zoo. You can import any of its channels here, and members who link their Slack account can import the channels they created.",
     "chooseFile": "Choose and upload ZIP",
     "uploading": "Uploading…",
     "loading": "Loading import history",
@@ -696,7 +696,7 @@
     "status": {
       "uploading": "Uploading",
       "analyzing": "Analyzing",
-      "awaiting_mapping": "Waiting for channel mapping",
+      "ready": "Ready to import",
       "importing": "Importing",
       "fetching_files": "Fetching attachments",
       "completed": "Completed",
@@ -713,10 +713,10 @@
     "failedFiles_other": "{{count}} attachments couldn't be fetched. Check the token's permissions, then fetch again.",
     "fetchFiles": "Fetch attachments",
     "fetchFilesFor": "Fetch attachments for {{name}}",
-    "cancel": "Cancel import",
-    "cancelTitle": "Cancel this import?",
-    "cancelDescription": "The uploaded ZIP will be deleted. Messages that were already imported stay.",
-    "summary": "Found {{channels}} channels and {{users}} users. Choose where to import them.",
+    "cancel": "Delete ZIP",
+    "cancelTitle": "Delete the stored ZIP?",
+    "cancelDescription": "Messages that were already imported stay, but neither admins nor members can import from this ZIP anymore.",
+    "summary": "Found {{channels}} channels and {{users}} users. Choose the channels to import.",
     "private": "Private",
     "channelStats": "{{messages}} messages · {{members}} members",
     "deletedTarget": "This was imported into #{{name}}, which has been deleted, so it can't be imported again.",
@@ -729,7 +729,10 @@
     "start_one": "Import {{count}} channel",
     "start_other": "Import {{count}} channels",
     "forbidden": "Only admins can import from Slack.",
-    "failed": "The import request failed."
+    "failed": "The import request failed.",
+    "dismiss": "Move to history",
+    "runTitle": "Import from {{name}}",
+    "importedTo": "Imported into #{{name}}"
   },
   "slackLink": {
     "tab": "Slack account",
@@ -759,6 +762,13 @@
     "manifestError": "Couldn't load the manifest.",
     "copyManifest": "Copy manifest",
     "manifestCopied": "Manifest copied.",
-    "manifestCopyFailed": "Couldn't copy."
+    "manifestCopyFailed": "Couldn't copy.",
+    "importTitle": "Import from Slack",
+    "importDescription": "Import the history of the Slack channels you created from the Slack export saved by an admin. Import each into a channel with the same name that you have joined, or into a new channel.",
+    "importLoading": "Loading the channels you can import",
+    "importNoExport": "Once an admin saves a Slack export, you can import your channels here.",
+    "importNoChannels": "The saved export has no channels that you created.",
+    "importSummary_one": "{{name}} has {{count}} channel that you created. Choose the channels to import.",
+    "importSummary_other": "{{name}} has {{count}} channels that you created. Choose the channels to import."
   }
 }

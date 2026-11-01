@@ -737,7 +737,9 @@ fun Members(
                 if (asScreen) Text("#${channel.text("channel_name")}", muted = true, small = true)
             }
             Text(
-                if (canView) users.count { it.text("id") in ids && !it.flag("is_bot") }.toString()
+                if (canView) users.count {
+                    it.text("id") in ids && !it.flag("is_bot") && !it.flag("is_deactivated")
+                }.toString()
                 else "—",
                 Modifier.background(
                         MaterialTheme.colorScheme.surfaceVariant,
@@ -771,8 +773,9 @@ fun Members(
                 verticalArrangement = Arrangement.spacedBy(2.dp),
             ) {
                 items(
+                    // Slack 取り込みのプレースホルダ (無効化済み) はメンバーとして出さない
                     users
-                        .filter { it.text("id") in ids }
+                        .filter { it.text("id") in ids && !it.flag("is_deactivated") }
                         .sortedWith { left, right ->
                             val creatorId = channel.text("created_user_id")
                             when {

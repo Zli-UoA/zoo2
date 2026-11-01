@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from "vite-plus/test";
 import type { ApiClient } from "./client";
 import {
   defaultMappings,
+  mappingFor,
   uploadSlackExport,
   splitSlackImports,
   type PutWithProgress,
@@ -17,6 +18,7 @@ function channel(overrides: Partial<SlackChannelSummary>): SlackChannelSummary {
     is_private: false,
     is_archived: false,
     members: 1,
+    creator: "U1",
     message_count: 1,
     suggested_name: "slack-general",
     name_taken: false,
@@ -26,49 +28,63 @@ function channel(overrides: Partial<SlackChannelSummary>): SlackChannelSummary {
 }
 
 describe("defaultMappings", () => {
-  it("continues into a previously mapped channel and otherwise creates one", () => {
-    expect(
-      defaultMappings([
-        channel({}),
-        channel({
-          slack_channel_id: "G1",
-          is_private: true,
-          suggested_name: "secret",
-        }),
-        channel({
-          slack_channel_id: "C2",
-          existing_channel: { id: "channel-random", name: "random" },
-        }),
-        channel({ slack_channel_id: "C3", deleted_channel: "old-random" }),
-      ]),
-    ).toEqual([
-      { slack_channel_id: "C1", action: "create", name: "slack-general", is_private: false },
-      { slack_channel_id: "G1", action: "create", name: "secret", is_private: true },
-      { slack_channel_id: "C2", action: "existing", channel_id: "channel-random" },
-      { slack_channel_id: "C3", action: "skip" },
+  it("imports nothing until the admin picks channels", () => {
+    expect(defaultMappings([channel({}), channel({ slack_channel_id: "C2" })])).toEqual([
+      { slack_channel_id: "C1", action: "skip" },
+      { slack_channel_id: "C2", action: "skip" },
     ]);
   });
 });
 
-describe("splitSlackImports", () => {
-  const job = (id: string, status: SlackImport["status"]) => ({ id, status }) as SlackImport;
+describe("mappingFor", () => {
+  const targets = [{ id: "channel-random" }];
+  it("creates with the suggested name and keeps private channels private", () => {
+    expect(mappingFor(channel({ is_private: true }), "create", targets)).toEqual({
+      slack_channel_id: "C1",
+      action: "create",
+      name: "slack-general",
+      is_private: true,
+    });
+  });
+  it("keeps the previous target for a channel imported before", () => {
+    const imported = channel({ existing_channel: { id: "channel-old", name: "old" } });
+    expect(mappingFor(imported, "existing", targets)).toEqual({
+      slack_channel_id: "C1",
+      action: "existing",
+      channel_id: "channel-old",
+    });
+    expect(mappingFor(channel({}), "existing", targets)).toMatchObject({
+      channel_id: "channel-random",
+    });
+  });
+});
 
-  it("keeps every unfinished import operable, oldest included", () => {
+describe("splitSlackImports", () => {
+  const job = (id: string, status: SlackImport["status"], source_id: string | null = null) =>
+    ({ id, status, source_id }) as SlackImport;
+
+  it("keeps saved exports and unfinished imports operable", () => {
     const imports = [
-      job("b", "awaiting_mapping"),
-      job("a", "awaiting_mapping"),
-      job("z", "completed"),
+      job("run-b", "importing", "export"),
+      job("run-a", "failed", "export"),
+      job("export", "ready"),
+      job("run-z", "completed", "export"),
+      job("old", "cancelled"),
     ];
     const { cards, history } = splitSlackImports(imports);
-    expect(cards.map((j) => j.id)).toEqual(["b", "a"]);
-    expect(history.map((j) => j.id)).toEqual(["z"]);
+    expect(cards.map((j) => j.id)).toEqual(["export", "run-b", "run-a"]);
+    expect(history.map((j) => j.id)).toEqual(["run-z", "old"]);
   });
 
-  it("shows the latest completed import when nothing is unfinished", () => {
-    const imports = [job("c", "cancelled"), job("b", "completed"), job("a", "completed")];
+  it("shows the latest completed import when nothing is running", () => {
+    const imports = [
+      job("export", "ready"),
+      job("run-b", "completed", "export"),
+      job("run-a", "completed", "export"),
+    ];
     const { cards, history } = splitSlackImports(imports);
-    expect(cards.map((j) => j.id)).toEqual(["b"]);
-    expect(history.map((j) => j.id)).toEqual(["c", "a"]);
+    expect(cards.map((j) => j.id)).toEqual(["export", "run-b"]);
+    expect(history.map((j) => j.id)).toEqual(["run-a"]);
   });
 });
 

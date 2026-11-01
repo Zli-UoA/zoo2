@@ -16,12 +16,19 @@ import {
   type SlackLinkResult,
   type SlackLinkState,
 } from "../../lib/api/slackLink";
+import {
+  SLACK_IMPORT_RUNNING,
+  getOwnSlackImports,
+  startOwnSlackImport,
+  type OwnSlackImports,
+} from "../../lib/api/slackImport";
 import { useCollections } from "../../lib/electric/collections-context";
 import { Button } from "../ui/button";
 import { ConfirmActionDialog } from "../ui/confirm-action-dialog";
 import { SettingsSection } from "../ui/control-panel";
 import { Spinner } from "../ui/spinner";
 import { Textarea } from "../ui/textarea";
+import { MappingForm, SlackImportRunStatus, describeImportError } from "./SlackImportPanel";
 
 const LINK_ERRORS = {
   denied: "slackLink.errors.denied",
@@ -167,6 +174,7 @@ export function SlackLinkPanel({ navigateTo = (url: string) => window.location.a
           </p>
         ) : null}
       </SettingsSection>
+      {state?.link ? <OwnImportSection client={client} /> : null}
       {isAdmin ? <SlackManifestSection client={client} /> : null}
       <ConfirmActionDialog
         open={confirmUnlink}
@@ -180,6 +188,100 @@ export function SlackLinkPanel({ navigateTo = (url: string) => window.location.a
         onConfirm={unlink}
       />
     </div>
+  );
+}
+
+const POLL_INTERVAL_MS = 2_000;
+
+/** 連携した Slack アカウントで作ったチャンネルを、管理者が保存した ZIP から取り込む */
+function OwnImportSection({ client }: { client: ReturnType<typeof createConfiguredApiClient> }) {
+  const { t } = useTranslation();
+  const [data, setData] = useState<OwnSlackImports | null>(null);
+  const [error, setError] = useState("");
+  const [pending, setPending] = useState(false);
+  const [revision, setRevision] = useState(0);
+  // 取り込みを始めたら選択を戻し、続けて別のチャンネルを選べるようにする
+  const [form, setForm] = useState(0);
+  const latest = data?.imports[0];
+  const running = !!latest && SLACK_IMPORT_RUNNING.includes(latest.status);
+
+  useEffect(() => {
+    const controller = new AbortController();
+    const load = () =>
+      getOwnSlackImports(client, controller.signal)
+        .then((value) => {
+          if (!controller.signal.aborted) setData(value);
+        })
+        .catch((cause) => {
+          if (!controller.signal.aborted) setError(describeImportError(cause, t, false));
+        });
+    void load();
+    const timer = running ? window.setInterval(load, POLL_INTERVAL_MS) : undefined;
+    return () => {
+      controller.abort();
+      window.clearInterval(timer);
+    };
+  }, [client, revision, running, t]);
+
+  return (
+    <SettingsSection
+      title={t("slackLink.importTitle")}
+      description={t("slackLink.importDescription")}
+    >
+      {data === null && !error ? (
+        <Spinner label={t("slackLink.importLoading")} className="justify-start" />
+      ) : null}
+      {data && !data.export ? (
+        <p className="text-sm text-muted-foreground">{t("slackLink.importNoExport")}</p>
+      ) : null}
+      {data?.export && data.channels.length === 0 ? (
+        <p className="text-sm text-muted-foreground">{t("slackLink.importNoChannels")}</p>
+      ) : null}
+      {data?.export && data.channels.length > 0 ? (
+        <MappingForm
+          key={form}
+          channels={data.channels}
+          summary={t("slackLink.importSummary", {
+            name: data.export.file_name,
+            count: data.channels.length,
+          })}
+          pending={pending || running}
+          targetsFor={(channel) =>
+            (
+              data.channels.find((own) => own.slack_channel_id === channel.slack_channel_id)
+                ?.targets ?? []
+            ).map((target) => ({
+              id: target.id,
+              channel_name: target.name,
+              is_private: target.is_private,
+            }))
+          }
+          onSubmit={async (mappings) => {
+            if (pending) return;
+            setPending(true);
+            setError("");
+            try {
+              const started = await startOwnSlackImport(client, mappings);
+              setData((current) =>
+                current ? { ...current, imports: [started, ...current.imports] } : current,
+              );
+              setForm((value) => value + 1);
+            } catch (cause) {
+              setError(describeImportError(cause, t, false));
+            } finally {
+              setPending(false);
+              setRevision((value) => value + 1);
+            }
+          }}
+        />
+      ) : null}
+      {latest ? <SlackImportRunStatus job={latest} /> : null}
+      {error ? (
+        <p role="alert" className="text-sm text-destructive">
+          {error}
+        </p>
+      ) : null}
+    </SettingsSection>
   );
 }
 
