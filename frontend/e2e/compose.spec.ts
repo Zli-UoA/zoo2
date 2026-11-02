@@ -849,6 +849,9 @@ for (const implementation of ["react", "compose"] as const) {
     const state = await (await request.get("https://127.0.0.1:4187/__state")).json();
     expect(state.messages.at(-1)).toMatchObject({ parent_id: "m2", content: "入れ子の返信" });
     await page.reload();
+    await expect(page.getByRole("heading", { name: "general", exact: true })).toBeVisible({
+      timeout: 90000,
+    });
     await expect(page.getByText("返信の本文", { exact: true })).toBeVisible();
     await expect(page.getByText("入れ子の返信", { exact: true })).toBeVisible();
   });
