@@ -27,3 +27,14 @@ export const homeHandlers = [
     );
   }),
 ];
+
+export const visibilityPosts: HomePost[] = ["public", "unlisted", "followers", "local"].map(
+  (visibility, index) => ({
+    ...homePosts[0]!,
+    id: `visibility-${visibility}`,
+    apub: visibility !== "local",
+    visibility,
+    content: `visibility-${visibility}`,
+    created_at: `2026-11-01T${String(10 - index).padStart(2, "0")}:00:00Z`,
+  }),
+);

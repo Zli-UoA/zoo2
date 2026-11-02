@@ -90,6 +90,7 @@ fun HomePostCard(
                             post.flag("remote"),
                         )
                     }
+                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     NativeLink("/home/posts/${post.text("id").encodeURLParameter()}") {
                         Text(
                             app.platform.fullTimestamp(post.text("created_at")),
@@ -102,6 +103,8 @@ fun HomePostCard(
                             size = 12.sp,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
+                    }
+                    ActivityPubBadge(app, post.text("visibility").ifEmpty { "local" }, federated = post.flag("apub") || post.flag("remote"))
                     }
                     if (!post.flag("remote") && post.text("channel_id").isNotEmpty())
                         NativeLink(
@@ -179,7 +182,7 @@ fun HomePostCard(
                                 Modifier.then(
                                         webControlModifier(
                                             "button",
-                                            enabled = !pending,
+                                            enabled = !pending && (item["can_react"] != kotlinx.serialization.json.JsonPrimitive(false) || item.flag("selected")),
                                             selected = item.flag("selected"),
                                             attributes = mapOf("aria-label" to label),
                                         )
@@ -195,13 +198,13 @@ fun HomePostCard(
                                         MaterialTheme.colorScheme.outlineVariant,
                                         androidx.compose.foundation.shape.RoundedCornerShape(6.dp),
                                     )
-                                    .clickable(enabled = !pending) { toggleReaction(item) }
+                                    .clickable(enabled = !pending && (item["can_react"] != kotlinx.serialization.json.JsonPrimitive(false) || item.flag("selected"))) { toggleReaction(item) }
                                     .padding(horizontal = 8.dp, vertical = 4.dp),
                                 verticalAlignment = Alignment.CenterVertically,
                                 horizontalArrangement = Arrangement.spacedBy(4.dp),
                             ) {
                                 (item["emoji"] as? Row)?.let { ActivityPubEmoji(it, 18.dp) }
-                                    ?: Text(item.text("reaction"))
+                                    ?: ReactionEmoji(item.text("reaction"), size = 18.dp)
                                 Text(item.text("count"), size = 12.sp)
                             }
                         }

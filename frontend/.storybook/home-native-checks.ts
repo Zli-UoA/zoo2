@@ -214,6 +214,9 @@ export const nativeHomeChecks = {
       );
       await expect(occurrences).toBeGreaterThanOrEqual(2);
       await expect(elements("img", ":blobcat:")).toHaveLength(0);
+      const chip = elements("button", ":blobcat: 2")[0];
+      await expect(chip).toBeDefined();
+      await expect(chip).toHaveAttribute("aria-disabled", "true");
     });
   },
   async homeEmojiImages() {

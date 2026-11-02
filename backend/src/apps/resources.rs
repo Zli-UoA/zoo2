@@ -30,6 +30,14 @@ pub fn router() -> Router<AppState> {
         .route("/api/stars", get(stars).post(add_star))
         .route("/api/stars/{kind}/{id}", delete(remove_star))
         .route("/api/emojis", get(emojis).post(put_emoji))
+        .route(
+            "/api/emojis/upload",
+            get(upload_named_emoji)
+                .post(upload_emoji)
+                .delete(remove_upload_named_emoji)
+                .layer(axum::extract::DefaultBodyLimit::max(3 * 1024 * 1024)),
+        )
+        .route("/api/emoji-images/{id}", get(emoji_image))
         .route("/api/emojis/{name}", get(emoji).delete(remove_emoji))
         .route("/api/workspace", get(workspace).patch(update_workspace))
         .route("/api/usergroups", get(groups).post(create_group))
@@ -88,6 +96,13 @@ pub fn router() -> Router<AppState> {
         .route("/api/apps/v1/stars", get(stars).post(add_star))
         .route("/api/apps/v1/stars/{kind}/{id}", delete(remove_star))
         .route("/api/apps/v1/emojis", get(emojis).post(put_emoji))
+        .route(
+            "/api/apps/v1/emojis/upload",
+            get(upload_named_emoji)
+                .post(upload_emoji)
+                .delete(remove_upload_named_emoji)
+                .layer(axum::extract::DefaultBodyLimit::max(3 * 1024 * 1024)),
+        )
         .route(
             "/api/apps/v1/emojis/{name}",
             get(emoji).delete(remove_emoji),
@@ -560,6 +575,13 @@ async fn emojis(State(s): State<AppState>, a: Actor) -> Result<Json<Value>, AppE
         .await?
     )))
 }
+// Static upload routes must retain GET/DELETE for the valid shortcode `upload`.
+async fn upload_named_emoji(s: State<AppState>, a: Actor) -> Result<Json<Value>, AppError> {
+    emoji(s, a, Path("upload".to_owned())).await
+}
+async fn remove_upload_named_emoji(s: State<AppState>, a: Actor) -> Result<Json<Value>, AppError> {
+    remove_emoji(s, a, Path("upload".to_owned())).await
+}
 async fn emoji(
     State(s): State<AppState>,
     a: Actor,
@@ -569,12 +591,9 @@ async fn emoji(
     let mut db = s.db.clone();
     let mut tx = db.transaction().await?;
     Ok(Json(
-        one(
-            &mut tx,
-            "SELECT row_to_json(e)::text FROM workspace_emojis e WHERE name=$1",
-            &[&name],
-        )
-        .await?,
+        resolve_workspace_emoji(&mut tx, &name)
+            .await?
+            .ok_or_else(|| AppError::NotFound("Emoji not found".into()))?,
     ))
 }
 #[derive(Deserialize)]
@@ -582,11 +601,16 @@ async fn emoji(
 struct Emoji {
     name: String,
     url: String,
+    previous_name: Option<String>,
+    #[serde(default)]
+    category: String,
+    #[serde(default)]
+    aliases: Vec<String>,
 }
 async fn put_emoji(
     State(s): State<AppState>,
     a: Actor,
-    Json(b): Json<Emoji>,
+    Json(mut b): Json<Emoji>,
 ) -> Result<Json<Value>, AppError> {
     a.require("emoji:write")?;
     if b.name.is_empty()
@@ -598,7 +622,11 @@ async fn put_emoji(
     {
         return Err(AppError::BadRequest("Invalid emoji name".into()));
     }
-    validate_https(&b.url)?;
+    if !managed_emoji_url(&b.url) {
+        return Err(AppError::BadRequest(
+            "Upload the emoji image to object storage first".into(),
+        ));
+    }
     let mut db = s.db.clone();
     let mut tx = db.transaction().await?;
     if events::guest(&mut tx, &a.user.id).await? {
@@ -606,10 +634,15 @@ async fn put_emoji(
             "Guests cannot manage workspace emojis".into(),
         ));
     }
+    let previous = b.previous_name.as_deref().unwrap_or(&b.name);
+    if previous != b.name && !b.aliases.iter().any(|a| a == previous) {
+        b.aliases.push(previous.to_owned());
+    }
+    validate_emoji_metadata(&mut tx, &b.name, previous, &b.category, &b.aliases).await?;
     let existing = query(
         &mut tx,
         "SELECT row_to_json(e)::text FROM workspace_emojis e WHERE name=$1 FOR UPDATE",
-        &[&b.name],
+        &[previous],
     )
     .await?;
     if let Some(old) = existing.first()
@@ -617,7 +650,27 @@ async fn put_emoji(
     {
         a.admin(&mut tx, &s).await?;
     }
-    let v=one(&mut tx,"INSERT INTO workspace_emojis(name,url,created_by) VALUES($1,$2,$3) ON CONFLICT(name) DO UPDATE SET url=EXCLUDED.url,updated_at=now() RETURNING row_to_json(workspace_emojis)::text",&[&b.name,&b.url,&a.user.id]).await?;
+    if b.previous_name.is_some() && existing.is_empty() {
+        return Err(AppError::NotFound("Emoji not found".into()));
+    }
+    if previous != b.name {
+        if !query(
+            &mut tx,
+            "SELECT '{}'::text FROM workspace_emojis WHERE name=$1",
+            &[&b.name],
+        )
+        .await?
+        .is_empty()
+        {
+            return Err(AppError::BadRequest("Emoji name already exists".into()));
+        }
+        toasty::sql::statement("UPDATE workspace_emojis SET name=$2 WHERE name=$1")
+            .bind(previous)
+            .bind(b.name.as_str())
+            .exec(&mut tx)
+            .await?;
+    }
+    let v=one(&mut tx,"INSERT INTO workspace_emojis(name,url,created_by,category,aliases) VALUES($1,$2,$3,$4,$5::jsonb) ON CONFLICT(name) DO UPDATE SET url=EXCLUDED.url,category=EXCLUDED.category,aliases=EXCLUDED.aliases,updated_at=now() RETURNING row_to_json(workspace_emojis)::text",&[&b.name,&b.url,&a.user.id,&b.category,&json!(b.aliases).to_string()]).await?;
     tx.commit().await?;
     Ok(Json(v))
 }
@@ -629,6 +682,11 @@ async fn remove_emoji(
     a.require("emoji:write")?;
     let mut db = s.db.clone();
     let mut tx = db.transaction().await?;
+    if events::guest(&mut tx, &a.user.id).await? {
+        return Err(AppError::Forbidden(
+            "Guests cannot manage workspace emojis".into(),
+        ));
+    }
     let e = one(
         &mut tx,
         "SELECT row_to_json(e)::text FROM workspace_emojis e WHERE name=$1 FOR UPDATE",
@@ -1631,4 +1689,245 @@ async fn public_download(
     Ok(axum::response::Redirect::temporary(
         value["url"].as_str().unwrap(),
     ))
+}
+
+// The registry keeps stable public URLs; image bytes use the same private bucket as attachments.
+fn managed_emoji_url(url: &str) -> bool {
+    url.strip_prefix("/api/emoji-images/")
+        .is_some_and(|id| uuid::Uuid::parse_str(id).is_ok())
+}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct EmojiUpload {
+    name: String,
+    previous_name: Option<String>,
+    #[serde(default)]
+    category: String,
+    #[serde(default)]
+    aliases: Vec<String>,
+    content_type: String,
+    data: String,
+}
+async fn upload_emoji(
+    State(s): State<AppState>,
+    a: Actor,
+    Json(mut b): Json<EmojiUpload>,
+) -> Result<Json<Value>, AppError> {
+    use base64::Engine;
+    a.require("emoji:write")?;
+    if b.name.is_empty()
+        || b.name.len() > 64
+        || !b
+            .name
+            .bytes()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == b'_' || c == b'-')
+    {
+        return Err(AppError::BadRequest("Invalid emoji name".into()));
+    }
+    if !matches!(
+        b.content_type.as_str(),
+        "image/png" | "image/jpeg" | "image/gif" | "image/webp"
+    ) {
+        return Err(AppError::BadRequest("Unsupported emoji image".into()));
+    }
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(&b.data)
+        .map_err(|_| AppError::BadRequest("Invalid image data".into()))?;
+    if bytes.is_empty()
+        || bytes.len() > 2 * 1024 * 1024
+        || bytes.len() as u64 > s.config.s3.max_file_size
+    {
+        return Err(AppError::BadRequest(
+            "Emoji image must be between 1 byte and 2 MiB".into(),
+        ));
+    }
+    // Only passive raster formats are accepted, including animated GIF/WebP; no square crop.
+    let valid = match b.content_type.as_str() {
+        "image/png" => bytes.starts_with(b"\x89PNG\r\n\x1a\n"),
+        "image/jpeg" => bytes.starts_with(&[0xff, 0xd8, 0xff]),
+        "image/gif" => bytes.starts_with(b"GIF87a") || bytes.starts_with(b"GIF89a"),
+        "image/webp" => bytes.starts_with(b"RIFF") && bytes.get(8..12) == Some(b"WEBP"),
+        _ => false,
+    };
+    if !valid {
+        return Err(AppError::BadRequest(
+            "Image format does not match content type".into(),
+        ));
+    }
+    let mut db = s.db.clone();
+    let mut tx = db.transaction().await?;
+    if events::guest(&mut tx, &a.user.id).await? {
+        return Err(AppError::Forbidden(
+            "Guests cannot manage workspace emojis".into(),
+        ));
+    }
+    let previous = b.previous_name.as_deref().unwrap_or(&b.name);
+    if previous != b.name && !b.aliases.iter().any(|a| a == previous) {
+        b.aliases.push(previous.to_owned());
+    }
+    validate_emoji_metadata(&mut tx, &b.name, previous, &b.category, &b.aliases).await?;
+    let old = query(
+        &mut tx,
+        "SELECT row_to_json(e)::text FROM workspace_emojis e WHERE name=$1 FOR UPDATE",
+        &[previous],
+    )
+    .await?;
+    if b.previous_name.is_some() && old.is_empty() {
+        return Err(AppError::NotFound("Emoji not found".into()));
+    }
+    if old.first().is_some_and(|e| e["created_by"] != a.user.id) {
+        a.admin(&mut tx, &s).await?;
+    }
+    if previous != b.name
+        && !query(
+            &mut tx,
+            "SELECT '{}'::text FROM workspace_emojis WHERE name=$1",
+            &[&b.name],
+        )
+        .await?
+        .is_empty()
+    {
+        return Err(AppError::BadRequest("Emoji name already exists".into()));
+    }
+    let id = uuid::Uuid::new_v4();
+    let key = format!("custom-emojis/{id}");
+    s.s3_client
+        .put_object()
+        .bucket(&s.config.s3.bucket)
+        .key(&key)
+        .content_type(&b.content_type)
+        .body(bytes.into())
+        .send()
+        .await
+        .map_err(|e| {
+            tracing::warn!(error=?e,"Emoji upload failed");
+            AppError::Internal(anyhow::anyhow!("Emoji upload failed"))
+        })?;
+    let url = format!("/api/emoji-images/{id}");
+    let result = async {
+        if previous != b.name {
+            toasty::sql::statement("UPDATE workspace_emojis SET name=$2 WHERE name=$1").bind(previous).bind(b.name.as_str()).exec(&mut tx).await?;
+        }
+        let value = one(&mut tx,"INSERT INTO workspace_emojis(name,url,created_by,category,aliases) VALUES($1,$2,$3,$4,$5::jsonb) ON CONFLICT(name) DO UPDATE SET url=EXCLUDED.url,category=EXCLUDED.category,aliases=EXCLUDED.aliases,updated_at=now() RETURNING row_to_json(workspace_emojis)::text", &[&b.name,&url,&a.user.id,&b.category,&json!(b.aliases).to_string()]).await?;
+        tx.commit().await?;
+        Ok::<_, AppError>(value)
+    }.await;
+    if result.is_err() {
+        let _ = s
+            .s3_client
+            .delete_object()
+            .bucket(&s.config.s3.bucket)
+            .key(&key)
+            .send()
+            .await;
+    }
+    result.map(Json)
+}
+async fn emoji_image(
+    State(s): State<AppState>,
+    Path(id): Path<String>,
+    request: axum::extract::Request,
+) -> Result<axum::response::Response, AppError> {
+    use crate::activitypub::{client_ip, emoji_cache};
+    use axum::response::IntoResponse;
+    let id = uuid::Uuid::parse_str(&id)
+        .map_err(|_| AppError::NotFound("Emoji image not found".into()))?;
+    let peer = request
+        .extensions()
+        .get::<axum::extract::ConnectInfo<std::net::SocketAddr>>()
+        .map(|v| v.0.ip());
+    let peer = client_ip::resolve(
+        peer,
+        request.headers(),
+        matches!(
+            std::env::var("ACTIVITYPUB_CLOUDFLARE_TUNNEL").as_deref(),
+            Ok("true" | "1")
+        ),
+    )?;
+    let image = emoji_cache::get(&format!("local:{id}"), peer, || async {
+        let image = s
+            .s3_client
+            .get_object()
+            .bucket(&s.config.s3.bucket)
+            .key(format!("custom-emojis/{id}"))
+            .send()
+            .await
+            .map_err(|_| AppError::NotFound("Emoji image not found".into()))?;
+        let mime = image
+            .content_type()
+            .unwrap_or("application/octet-stream")
+            .to_owned();
+        let bytes = image
+            .body
+            .collect()
+            .await
+            .map_err(|_| AppError::Internal(anyhow::anyhow!("Emoji image read failed")))?
+            .into_bytes()
+            .to_vec();
+        Ok(emoji_cache::Image { mime, bytes })
+    })
+    .await?;
+    Ok((
+        [
+            ("content-type", image.mime.as_str()),
+            ("cache-control", "public, max-age=31536000, immutable"),
+            ("x-content-type-options", "nosniff"),
+        ],
+        image.bytes,
+    )
+        .into_response())
+}
+
+pub(crate) async fn resolve_workspace_emoji(
+    tx: &mut toasty::Transaction<'_>,
+    name: &str,
+) -> Result<Option<Value>, AppError> {
+    Ok(query(tx, "SELECT row_to_json(e)::text FROM workspace_emojis e WHERE name=$1 OR aliases ? $1 ORDER BY (name=$1) DESC,name LIMIT 1", &[name]).await?.into_iter().next())
+}
+async fn validate_emoji_metadata(
+    tx: &mut toasty::Transaction<'_>,
+    name: &str,
+    previous: &str,
+    category: &str,
+    aliases: &[String],
+) -> Result<(), AppError> {
+    if category.chars().count() > 100
+        || category.chars().any(char::is_control)
+        || aliases.len() > 32
+        || aliases.iter().any(|a| {
+            a.is_empty()
+                || a.trim() != a
+                || a.chars().count() > 100
+                || a.chars().any(char::is_control)
+                || a.contains(':')
+        })
+    {
+        return Err(AppError::BadRequest(
+            "Invalid emoji category or aliases".into(),
+        ));
+    }
+    // Serialize registry edits so names and aliases cannot race each other.
+    query(tx,"SELECT '{}'::text FROM (SELECT pg_advisory_xact_lock(hashtextextended('workspace-emojis',0))) locked",&[]).await?;
+    let existing = query(
+        tx,
+        "SELECT row_to_json(e)::text FROM workspace_emojis e WHERE name<>$1 AND name<>$2",
+        &[previous, name],
+    )
+    .await?;
+    for e in existing {
+        let other = e["name"].as_str().unwrap_or("");
+        let other_aliases = e["aliases"].as_array();
+        if aliases.iter().any(|a| a == other)
+            || other_aliases.is_some_and(|values| {
+                values
+                    .iter()
+                    .any(|v| v == name || aliases.iter().any(|a| v == a.as_str()))
+            })
+        {
+            return Err(AppError::BadRequest(
+                "Emoji name or alias already exists".into(),
+            ));
+        }
+    }
+    Ok(())
 }

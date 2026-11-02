@@ -25,14 +25,14 @@ fun ActivityPubEmoji(
 ) {
     val app = LocalApp.current
     val id = emoji.text("image_id")
-    var failed by remember(id) { mutableStateOf(!Regex("^[a-f0-9]{64}$").matches(id)) }
+    var failed by remember(id) { mutableStateOf(!emoji.flag("local") && !Regex("^[a-f0-9]{64}$").matches(id)) }
     var bitmap by remember(id) { mutableStateOf<androidx.compose.ui.graphics.ImageBitmap?>(null) }
     LaunchedEffect(id) {
         if (!failed)
             try {
                 val bytes =
-                    app.image(endpoint(app.config.apiBaseUrl, "/api/activitypub/emoji-images/$id"))
-                app.platform.imageFrames(bytes).collect { bitmap = it }
+                    app.image(if (emoji.flag("local")) { val url = emoji.text("url"); if (url.startsWith("/")) endpoint(app.config.apiBaseUrl, url) else url } else endpoint(app.config.apiBaseUrl, "/api/activitypub/emoji-images/$id"))
+                app.platform.imageFrames(bytes).collect { bitmap = it; app.emojiRatios[id] = (it.width.toFloat() / it.height).coerceIn(0.1f, 8f) }
             } catch (e: CancellationException) {
                 throw e
             } catch (_: Exception) {
@@ -43,7 +43,7 @@ fun ActivityPubEmoji(
     }
     if (failed) Text(emoji.text("name"), modifier)
     else
-        bitmap?.let { Image(it, emoji.text("name"), modifier.size(size)) }
+        bitmap?.let { Image(it, emoji.text("name"), modifier.height(size).width(size * (app.emojiRatios[id] ?: 1f))) }
             ?: Box(modifier.size(size))
 }
 
@@ -80,7 +80,7 @@ fun ActivityPubText(
             if (
                 emoji == null ||
                     failed[emoji.text("image_id")] == true ||
-                    !Regex("^[a-f0-9]{64}$").matches(emoji.text("image_id"))
+                    (!emoji.flag("local") && !Regex("^[a-f0-9]{64}$").matches(emoji.text("image_id")))
             )
                 append(fontText(match.value, fonts, style.fontWeight))
             else {
@@ -104,7 +104,7 @@ fun ActivityPubText(
         inlineContent =
             parts.mapValues { (_, emoji) ->
                 InlineTextContent(
-                    Placeholder(1.3.em, 1.3.em, PlaceholderVerticalAlign.TextCenter)
+                    Placeholder((1.3f * (LocalApp.current.emojiRatios[emoji.text("image_id")] ?: 1f)).em, 1.3.em, PlaceholderVerticalAlign.TextCenter)
                 ) {
                     ActivityPubEmoji(
                         emoji,

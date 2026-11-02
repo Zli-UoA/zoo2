@@ -722,7 +722,7 @@ CREATE TABLE user_event_settings(
 CREATE TABLE conversation_views(user_id text NOT NULL REFERENCES users(id),channel_id text NOT NULL REFERENCES channels(id),is_open boolean NOT NULL DEFAULT true,PRIMARY KEY(user_id,channel_id));
 CREATE TABLE channel_pins(channel_id text NOT NULL REFERENCES channels(id),item_type text NOT NULL CHECK(item_type IN('message','file')),item_id text NOT NULL,created_by text NOT NULL REFERENCES users(id),created_at timestamptz NOT NULL DEFAULT now(),PRIMARY KEY(channel_id,item_type,item_id));
 CREATE TABLE saved_items(user_id text NOT NULL REFERENCES users(id),item_type text NOT NULL CHECK(item_type IN('message','channel','file')),item_id text NOT NULL,channel_id text REFERENCES channels(id),created_at timestamptz NOT NULL DEFAULT now(),PRIMARY KEY(user_id,item_type,item_id));
-CREATE TABLE workspace_emojis(name text PRIMARY KEY,url text NOT NULL,created_by text NOT NULL REFERENCES users(id),updated_at timestamptz NOT NULL DEFAULT now());
+CREATE TABLE workspace_emojis(name text PRIMARY KEY,url text NOT NULL,created_by text NOT NULL REFERENCES users(id),updated_at timestamptz NOT NULL DEFAULT now(),category text NOT NULL DEFAULT '',aliases jsonb NOT NULL DEFAULT '[]'::jsonb);
 CREATE TABLE workspace_settings(id text PRIMARY KEY CHECK(id='workspace'),name text NOT NULL DEFAULT 'Zoo',preferences text NOT NULL DEFAULT '{}',profile_fields text NOT NULL DEFAULT '[]');
 INSERT INTO workspace_settings(id) VALUES('workspace');
 CREATE TABLE usergroups(id text PRIMARY KEY,name text NOT NULL,handle text NOT NULL UNIQUE,description text NOT NULL DEFAULT '',active boolean NOT NULL DEFAULT true,created_by text NOT NULL REFERENCES users(id),created_at timestamptz NOT NULL DEFAULT now());
@@ -1520,7 +1520,8 @@ CREATE TRIGGER apub_follows_home_live AFTER INSERT OR UPDATE OR DELETE ON apub_f
 CREATE TRIGGER apub_actors_home_live AFTER INSERT OR UPDATE OR DELETE ON apub_actors FOR EACH STATEMENT EXECUTE FUNCTION notify_home_timeline();
 CREATE TRIGGER channels_home_live AFTER INSERT OR UPDATE OR DELETE ON channels FOR EACH STATEMENT EXECUTE FUNCTION notify_home_timeline();
 CREATE TRIGGER channel_user_home_live AFTER INSERT OR UPDATE OR DELETE ON channel_user FOR EACH STATEMENT EXECUTE FUNCTION notify_home_timeline();
-CREATE TRIGGER users_home_live AFTER INSERT OR UPDATE OR DELETE ON users FOR EACH STATEMENT EXECUTE FUNCTION notify_home_timeline();
+CREATE TRIGGER users_home_live AFTER INSERT OR DELETE ON users FOR EACH ROW EXECUTE FUNCTION notify_home_timeline();
+CREATE TRIGGER users_update_home_live AFTER UPDATE ON users FOR EACH ROW WHEN (OLD.* IS DISTINCT FROM NEW.*) EXECUTE FUNCTION notify_home_timeline();
 CREATE TRIGGER user_role_home_live AFTER INSERT OR UPDATE OR DELETE ON user_role FOR EACH STATEMENT EXECUTE FUNCTION notify_home_timeline();
 ALTER TABLE apub_follows ADD COLUMN activity_json text;
 CREATE TABLE apub_reactions (
@@ -1649,4 +1650,33 @@ CREATE TABLE apub_profiles (
 ALTER TABLE apub_actors ADD COLUMN avatar jsonb, ADD COLUMN summary text NOT NULL DEFAULT '';
 CREATE TRIGGER apub_profiles_home_live AFTER INSERT OR UPDATE OR DELETE ON apub_profiles FOR EACH STATEMENT EXECUTE FUNCTION notify_home_timeline();
 
-CREATE TRIGGER message_reactions_home_live AFTER INSERT OR UPDATE OR DELETE ON message_reactions FOR EACH STATEMENT EXECUTE FUNCTION notify_home_timeline();
+-- Keep legacy local Home reactions available in the channel during rolling upgrades.
+CREATE FUNCTION sync_linked_post_reaction() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+  IF TG_OP <> 'INSERT' AND OLD.user_id IS NOT NULL THEN
+    IF TG_OP = 'DELETE' OR (OLD.post_id,OLD.user_id,OLD.reaction) IS DISTINCT FROM (NEW.post_id,NEW.user_id,NEW.reaction) THEN
+      DELETE FROM message_reactions r USING home_posts p WHERE p.id=OLD.post_id AND p.channel_id IS NOT NULL
+        AND r.message_id=p.id AND r.user_id=OLD.user_id AND r.emoji=OLD.reaction;
+    END IF;
+  END IF;
+  IF TG_OP <> 'DELETE' AND NEW.user_id IS NOT NULL THEN
+    INSERT INTO message_reactions(id,message_id,user_id,emoji,created_at)
+      SELECT gen_random_uuid()::text,p.id,NEW.user_id,NEW.reaction,NEW.created_at AT TIME ZONE 'UTC'
+      FROM home_posts p JOIN messages m ON m.id=p.id WHERE p.id=NEW.post_id AND p.channel_id IS NOT NULL
+        AND p.deleted_at IS NULL AND m.deleted_at IS NULL
+      ON CONFLICT(message_id,user_id,emoji) DO NOTHING;
+  END IF;
+  RETURN NULL;
+END $$;
+CREATE TRIGGER linked_post_reaction_sync AFTER INSERT OR UPDATE OR DELETE ON apub_reactions
+  FOR EACH ROW EXECUTE FUNCTION sync_linked_post_reaction();
+
+CREATE FUNCTION notify_linked_message_reaction() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+  IF EXISTS(SELECT 1 FROM home_posts WHERE id=CASE WHEN TG_OP='DELETE' THEN OLD.message_id ELSE NEW.message_id END AND channel_id IS NOT NULL) THEN
+    PERFORM pg_notify('home_timeline','');
+  END IF;
+  RETURN NULL;
+END $$;
+CREATE TRIGGER linked_message_reaction_live AFTER INSERT OR DELETE ON message_reactions
+  FOR EACH ROW EXECUTE FUNCTION notify_linked_message_reaction();

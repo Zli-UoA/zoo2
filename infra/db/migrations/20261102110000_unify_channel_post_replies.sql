@@ -53,13 +53,3 @@ END $$;
 UPDATE home_posts p SET parent_id=m.parent_id
 FROM messages m WHERE m.id=p.id AND m.parent_id IS NOT NULL AND p.parent_id IS DISTINCT FROM m.parent_id;
 
--- Local channel reactions have one owner; remote actors remain in the federation store.
-INSERT INTO message_reactions(id,message_id,user_id,emoji,created_at)
-SELECT gen_random_uuid()::text,r.post_id,r.user_id,r.reaction,r.created_at AT TIME ZONE 'UTC'
-FROM apub_reactions r JOIN home_posts p ON p.id=r.post_id
-WHERE p.channel_id IS NOT NULL AND r.user_id IS NOT NULL AND (r.emoji IS NULL OR r.emoji='null'::jsonb)
-ON CONFLICT(message_id,user_id,emoji) DO NOTHING;
-DELETE FROM apub_reactions r USING home_posts p
-WHERE p.id=r.post_id AND p.channel_id IS NOT NULL AND r.user_id IS NOT NULL AND (r.emoji IS NULL OR r.emoji='null'::jsonb);
-
-CREATE TRIGGER message_reactions_home_live AFTER INSERT OR UPDATE OR DELETE ON message_reactions FOR EACH STATEMENT EXECUTE FUNCTION notify_home_timeline();

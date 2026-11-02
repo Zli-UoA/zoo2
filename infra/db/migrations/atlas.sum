@@ -1,4 +1,4 @@
-h1:kgIIZ3hqdyPH9r82hgQ1cTbfeos4t8Vh9bqLXHlViE4=
+h1:Owjxo/ZaKdMH7zRP/mwE2GF90YMb+UcaRtVEmnnF8Hs=
 20261008000000_initial.sql h1:v3rZATh+MriHOzHYMS+oLMrabKMd7J8aLKuEYdsKNfc=
 20261015110156_snake_case_and_replica_identity.sql h1:gWKFhGTel2djLDzitJiG+ufrbKEjusudna0EhabxkZU=
 20261016171538_create_user_identities.sql h1:h8btCK61sRc0EaVuiKnON59nR594VVKdLtl8nes3KKc=
@@ -29,4 +29,7 @@ h1:kgIIZ3hqdyPH9r82hgQ1cTbfeos4t8Vh9bqLXHlViE4=
 20261101080000_verify_note_origin.sql h1:4/fzkLC/dpCypqpFPi+RvCbRqILo12Ko2w8ZdD/WKJc=
 20261101100000_apub_profiles.sql h1:jLdYHbn2gx8921mPCGIBFfNIeGGfjaimygw1As5+XBA=
 20261101110000_ltl_channel_regex.sql h1:aJb3A/xXh9w+f6n1wsmyLuOKp2B2CcEmspEmAZU2yQE=
-20261102000000_unify_channel_post_replies.sql h1:z6DD6goAPYzQoPUAdgRMTaTtJglN//QrxfFr2pMtEYw=
+20261102070000_custom_emoji_metadata.sql h1:dRGB1Ecfq5YRQ+8755Czyio+M0c05GmbDM2dxPM7m00=
+20261102080000_shared_channel_post_reactions.sql h1:QSoqCDyQFA7t0A7y3cQ1mvOAad3KcTvFX7c/ThNdD38=
+20261102100000_users_home_live_changed_rows.sql h1:g4vPWcXzNhjO+DfDOpsLZS1VdTlWiJaC103N90GmFdk=
+20261102110000_unify_channel_post_replies.sql h1:5FPmn/6A7iy9JCHobkUVX80nfb2BTmIJa2RT44W5hAc=

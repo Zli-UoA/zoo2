@@ -19,6 +19,30 @@ class Session(val repo: Repository, val scope: CoroutineScope, initial: Environm
     val config
         get() = repo.config
 
+    var workspaceEmojis by mutableStateOf<List<Row>>(emptyList())
+        private set
+    var workspaceEmojiLoading by mutableStateOf(false)
+        private set
+    var workspaceEmojiError by mutableStateOf(false)
+        private set
+    private var workspaceEmojisLoaded = false
+    private val workspaceEmojiMutex = kotlinx.coroutines.sync.Mutex()
+    val emojiRatios = mutableStateMapOf<String, Float>()
+    suspend fun loadWorkspaceEmojis(force: Boolean = false) {
+        workspaceEmojiMutex.lock()
+        try {
+            if ((!workspaceEmojisLoaded && !workspaceEmojiError) || force) {
+                workspaceEmojiLoading = true
+                workspaceEmojiError = false
+                try {
+                    workspaceEmojis = api.request("/api/emojis").rows()
+                    workspaceEmojisLoaded = true
+                } catch (e: CancellationException) { throw e }
+                catch (e: Exception) { workspaceEmojiError = true; throw e }
+                finally { workspaceEmojiLoading = false }
+            }
+        } finally { workspaceEmojiMutex.unlock() }
+    }
     var env by mutableStateOf(initial)
     val overlays = mutableStateListOf<OverlaySlot>()
     var dialog by mutableStateOf<String?>(null)

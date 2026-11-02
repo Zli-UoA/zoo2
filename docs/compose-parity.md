@@ -100,6 +100,34 @@ Android 版は `ZooApp`・`Session`・`Repository` と既存の画面／状態�
 ## チャンネル連携投稿と会話ツリー
 
 Homeの投稿詳細は共通の `/api/home/{id}/thread` から、閲覧可能な祖先・対象投稿・返信をツリー順で取得する。Reactの `HomeScreen`、Kotlinの `HomeTimeline` / `HomePostCard` が同じ `tree_depth` を使い、最大6段の字下げとTLでの返信先表示、本文から詳細への移動に対応する。既存の `SinglePost` Storyを祖先・子・孫の4投稿へ拡張した。
-チャンネルに紐づく投稿の編集・削除・ローカルユーザーの通常絵文字リアクションはメッセージAPIの権限検証と保存処理を共有し、Homeの返信は同じチャンネルを引き継ぐ。連合の配送・リモートアクターと連合カスタム絵文字のリアクション記録は引き続きActivityPub側が管理する。
+チャンネルに紐づく投稿の編集・削除はメッセージAPIの権限検証と保存処理を共有し、Homeの返信は同じチャンネルを引き継ぐ。リアクションはmainのカスタム絵文字・外部リアクションを含む共通実装を維持する。
 チャンネルのスレッド内でも返信の子スレッドを開けるよう、Reactの `ThreadPane` とKotlinの `Chat` に同じ操作を追加した。
-検証: Reactの型・lint・format、Storybook監査・ビルド、Home/ThreadPaneのStory操作、Kotlin/Wasmのコンパイル・配布ビルド・ブラウザー単体テスト74件、Home・ActivityPub・リアクション・スレッドのAPI統合テスト25件を確認した。会話ツリーと返信先表示は両実装の1440px/390pxで専用Playwrightの4ケースを実行し、字下げ・画面幅・モバイルでのスクロール・返信先リンクを確認した。
+検証: Reactの型・lint・format、Storybook監査・ビルド、Home/ThreadPaneのStory操作、Kotlin/Wasmのコンパイル・配布ビルド・ブラウザー単体テスト、Home・ActivityPub・リアクション・スレッドのAPI統合テスト28件を確認した。会話ツリーと返信先表示は両実装の1440px/390pxで専用Playwrightの4ケースを実行し、字下げ・画面幅・モバイルでのスクロール・返信先リンクを確認した。
+
+## カスタム絵文字
+
+Reactの `ZooSettings`・`CustomEmojiPicker`・`MfmContent`・`ReactionEmoji` と、共通Kotlinの `CustomEmojis.kt`・`Settings.kt`・`RichText.kt`・`Kitchen.kt` を対応させています。両実装から同じ登録・画像アップロード・編集・削除APIを使い、カテゴリ・エイリアス検索、本文・リアクション、非正方形画像を扱います。公開プロフィールはAPIが返すEmojiタグを使います。画像は共通のS3互換バケットの専用prefixに保存し、リモート絵文字の自動カタログ取得は両UIから使われるAPIごと削除しています。
+
+確認対象はZooSettingsのCustomEmojis・Mobile・Empty・Error、リアクション選択、Kotlinのコンパイル・ブラウザテスト、バックエンドの保存・権限・エイリアス解決とMisskeyプロトコルの回帰テストです。実際のMisskeyサーバーとの相互接続試験は実施していません。
+
+検証結果: Reactユニット822件、Kotlinブラウザ74件、ZooSettingsのStory17件、追加4状態のReact/Kotlin操作・表示確認、S3互換ストレージを使う登録・編集・権限テスト、ActivityPub結合16件、通常リアクション結合6件が成功しました。390pxで横方向のはみ出しがないことと、3:1画像の保存・表示、Composeからのファイル選択・アップロードも確認しています。型・lint・Storybook監査、Compose配布ビルド、Storybookビルド、マイグレーション検証が成功しています。画像の完全一致や実Misskeyサーバーとの接続は検証していません。
+
+## チャンネル紐付け投稿の共有リアクション・公開範囲
+
+Reactの `useMessageReactions` とKotlinの `Chat` は、Electricのローカルリアクションへ、権限確認済みAPIの連合リアクションを合流させます。Reactの `useFederatedReactions` とKotlinの `ChannelReactions.kt` はHomeの変更通知で再取得し、画面移動時に購読を解放します。外部アカウント名、同じ絵文字の件数、登録済み／未登録の外部画像の区別を両実装で揃えています。
+
+TLの `HomeScreen` / `HomePostCard` ではチャンネルと共通の `ActivityPubBadge` を日時横に配置します。追加したVisibilityBadges・MobileとFederatedReactions、および既存Federated・CrossPostのStoryを確認対象としています。
+
+今回の検証結果: Reactユニット825件、Kotlinブラウザ75件、Home / MessagePaneのStory65件、追加・変更5状態のReact/Kotlin操作・表示確認、ActivityPub結合17件、通常リアクション結合6件が成功しました。型・lint・format・Storybook監査・ビルド、Compose配布ビルド、マイグレーションの検証に加え、空DBにマイグレーションを再適用したスキーマと `schema.sql` の一致も確認しています。390pxの両実装で日時と公開範囲アイコンの隣接を確認しました。
+
+### PR #311 レビュー対応
+
+React `useFederatedReactions` と共通Kotlin `ChannelReactions` はHome通知をまとめ、初回取得後の再取得を最短5秒間隔に制限する。チャンネル変更・画面破棄では保留処理を停止する。Homeのリアクションチップは両実装ともAPIの `can_react` を反映し、チャンネル紐付け投稿の未登録外部絵文字を無効にする（自分の既存リアクションの取り消しは許可）。単独・外部投稿の受信済み絵文字は同じAPIで再利用する。
+
+共有 `EmojiFallback` Storyは画像失敗時の文字表示と紐付け投稿の無効チップをReact・実Kotlinで検証する。再取得通知の集約はReactの仮想時計テスト、通知元はPostgreSQLの無変更更新／実更新テストで確認する。
+
+検証: Kotlinブラウザ契約75件・Wasm配布ビルド成功。React Home Story60件成功。共有3状態（MisskeyCustomEmoji・MobileMisskey・EmojiFallback）は再生成したKotlin成果物で両実装のplayと描画を検証し、全件成功。画像差分の完全一致はこの検証の対象外。
+
+実アプリのReact・Compose共通E2E全19件も成功。新規の連合リアクションAPIをE2Eモックに追加し、Webhook登録では入力のリセットと一覧反映を順に確認する。
+
+CIの待機処理を調整: 連合リアクションのユーザー一覧はDOM生成後の表示完了まで待つ。Composeのダイアログ契約テストは、再描画でアクセシビリティノードの矩形が一時的になくなる場合、ネイティブのポインター操作を最大5秒再試行する。キャンセル通知・入力リセット・編集保持のアサーションは維持する。

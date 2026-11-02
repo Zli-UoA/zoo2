@@ -18,7 +18,7 @@ fun reactionUserLabel(user: Row): String =
     else "@${user.text("user_name")}"
 
 fun reactionUserLabels(rows: List<Row>, users: List<Row>, unavailable: String): List<String> {
-    val byId = users.associateBy { it.text("id") }
+    val byId = rows.filter { it.text("user_name").isNotEmpty() }.associateBy { it.text("user_id") } + users.associateBy { it.text("id") }
     val ids = rows.map { it.text("user_id") }.distinct()
     return ids.mapNotNull { byId[it]?.let(::reactionUserLabel) } +
         if (ids.any { it !in byId }) listOf(unavailable) else emptyList()

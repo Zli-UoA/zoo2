@@ -111,14 +111,35 @@ async fn like(
     Json(body): Json<Reaction>,
 ) -> Result<Json<Value>, AppError> {
     let target = target(&state, &user, &body.post_id).await?;
-    if target["channel_id"].is_string() && body.emoji_id.is_none() {
+    if target["channel_id"].is_string() {
+        let reaction = body.reaction.as_deref().unwrap_or("❤️");
+        if reaction.starts_with(':')
+            && let Some(image) = &body.emoji_id
+        {
+            let mut db = state.db.clone();
+            let mut tx = db.transaction().await?;
+            let registered = emoji::workspace_options(&mut tx).await?;
+            if !registered.iter().any(|e| {
+                e["image_id"] == image.as_str()
+                    && (e["name"] == reaction
+                        || e["aliases"].as_array().is_some_and(|aliases| {
+                            aliases
+                                .iter()
+                                .any(|a| a.as_str() == Some(reaction.trim_matches(':')))
+                        }))
+            }) {
+                return Err(AppError::BadRequest(
+                    "Unknown or unavailable custom emoji".into(),
+                ));
+            }
+        }
         let _ = crate::routes::messages::add_reaction(
             State(state),
             user,
             axum::extract::Path(body.post_id),
             Json(crate::routes::messages::AddReactionRequest {
                 id: None,
-                emoji: body.reaction.unwrap_or_else(|| "❤️".into()),
+                emoji: reaction.to_owned(),
             }),
         )
         .await?;
@@ -137,28 +158,37 @@ async fn like(
     let requested = body.reaction.as_deref().unwrap_or("❤️");
     let mut selected = None;
     if requested.starts_with(':') {
-        let image = body
-            .emoji_id
-            .as_deref()
-            .ok_or_else(|| AppError::BadRequest("Missing custom emoji identity".into()))?;
-        let origin = if remote {
-            reqwest::Url::parse(string(&target, "author")?)
-                .map_err(internal)?
-                .origin()
-                .ascii_serialization()
-        } else {
-            String::new()
-        };
-        let catalog=query(&mut tx,"SELECT e::text FROM apub_emoji_catalog c CROSS JOIN LATERAL jsonb_array_elements(c.emojis) e WHERE c.origin=$1 AND e->>'image_id'=$2 AND e->>'name'=$3 UNION ALL SELECT emoji::text FROM apub_reactions WHERE post_id=$4 AND emoji->>'image_id'=$2 AND emoji->>'name'=$3 UNION ALL SELECT e::text FROM apub_remote_posts p CROSS JOIN LATERAL jsonb_array_elements(p.emojis) e WHERE p.id=$4 AND e->>'image_id'=$2 AND e->>'name'=$3 LIMIT 1", &[&origin,image,requested,&body.post_id]).await?;
-        selected = catalog.into_iter().next();
+        selected = emoji::workspace_options(&mut tx)
+            .await?
+            .into_iter()
+            .find(|e| {
+                (e["name"] == requested
+                    || e["aliases"].as_array().is_some_and(|aliases| {
+                        aliases
+                            .iter()
+                            .any(|a| a.as_str() == Some(requested.trim_matches(':')))
+                    }))
+                    && body
+                        .emoji_id
+                        .as_ref()
+                        .is_none_or(|id| e["image_id"] == id.as_str())
+            });
+        if selected.is_none()
+            && let Some(image_id) = body.emoji_id.as_ref()
+        {
+            selected = emoji::received_options(&mut tx, &body.post_id)
+                .await?
+                .into_iter()
+                .find(|e| e["name"] == requested && e["image_id"] == image_id.as_str());
+        }
         if selected.is_none() {
             return Err(AppError::BadRequest(
                 "Unknown or unavailable custom emoji".into(),
             ));
         }
     }
-    let normalized = if selected.is_some() {
-        requested.to_owned()
+    let normalized = if let Some(e) = &selected {
+        string(e, "name")?.to_owned()
     } else {
         emojis::get(requested)
             .filter(|_| requested.chars().count() <= 32)
@@ -217,27 +247,40 @@ async fn unlike(
     user: AuthUser,
     Json(body): Json<Reaction>,
 ) -> Result<Json<Value>, AppError> {
-    let mut lookup_db = state.db.clone();
-    let mut lookup_tx = lookup_db.transaction().await?;
+    let mut db = state.db.clone();
+    let mut tx = db.transaction().await?;
     let linked = query(
-        &mut lookup_tx,
+        &mut tx,
         "SELECT '{}'::text FROM home_posts WHERE id=$1 AND channel_id IS NOT NULL",
         &[&body.post_id],
     )
     .await?;
-    drop(lookup_tx);
-    if !linked.is_empty() && body.emoji_id.is_none() {
-        let _ = crate::routes::messages::delete_reaction(
-            State(state),
-            user,
-            axum::extract::Path(body.post_id),
-            Query(crate::routes::messages::DeleteReactionQuery {
-                emoji: body.reaction.unwrap_or_else(|| "❤️".into()),
-            }),
-        )
-        .await?;
+    if !linked.is_empty() {
+        let reactions = if let Some(reaction) = &body.reaction {
+            vec![json!({"emoji":reaction})]
+        } else {
+            query(&mut tx,"SELECT json_build_object('emoji',emoji)::text FROM message_reactions WHERE message_id=$1 AND user_id=$2",&[&body.post_id,&user.id]).await?
+        };
+        drop(tx);
+        for reaction in reactions {
+            let result = crate::routes::messages::delete_reaction(
+                State(state.clone()),
+                user.clone(),
+                axum::extract::Path(body.post_id.clone()),
+                axum::extract::Query(crate::routes::messages::DeleteReactionQuery {
+                    emoji: string(&reaction, "emoji")?.to_owned(),
+                }),
+            )
+            .await;
+            if let Err(e) = result
+                && !matches!(e, AppError::NotFound(_))
+            {
+                return Err(e);
+            }
+        }
         return Ok(Json(json!({"ok":true})));
     }
+    drop(tx);
     // The owner can always retract their Like, even after unfollowing or a Note deletion.
     let mut db = state.db.clone();
     let mut tx = db.transaction().await?;
