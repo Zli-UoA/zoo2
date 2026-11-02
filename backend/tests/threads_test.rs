@@ -93,7 +93,7 @@ async fn test_thread_reply_creation_and_validation() -> anyhow::Result<()> {
     assert_eq!(json["data"]["parent_id"], root_message_id);
     assert!(json["txid"].is_string());
 
-    // 5. スレッド返信 1 に対する再返信 (多段ネスト) を試行 -> 400 Bad Request
+    // 5. Homeと同じく、返信への再返信も元の投稿との関係を保持する
     let nested_reply_payload = json!({
         "channel_id": channel_id_1,
         "content": "Nested reply to reply 1",
@@ -106,7 +106,10 @@ async fn test_thread_reply_creation_and_validation() -> anyhow::Result<()> {
         .header("X-Dev-User", &alice_id)
         .body(Body::from(serde_json::to_vec(&nested_reply_payload)?))?;
     let resp = app.clone().oneshot(req).await?;
-    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = to_bytes(resp.into_body(), usize::MAX).await?;
+    let nested: Value = serde_json::from_slice(&body)?;
+    assert_eq!(nested["data"]["parent_id"], reply_1_id);
 
     // 6. チャンネル 2 作成
     let channel_id_2 = uuid::Uuid::new_v4().to_string();

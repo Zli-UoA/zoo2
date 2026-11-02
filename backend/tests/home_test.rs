@@ -346,3 +346,483 @@ async fn user_home_invalidations_require_changed_rows() -> anyhow::Result<()> {
     driver.abort();
     Ok(())
 }
+
+#[tokio::test]
+async fn channel_posts_share_reactions_replies_and_visible_conversation() -> anyhow::Result<()> {
+    let mut config = Config::from_env();
+    config.dev_auth_enabled = true;
+    let mut db = init_db(&config.database_url).await?;
+    let app = create_router(AppState::new(db.clone(), config));
+    let user = uuid::Uuid::new_v4().to_string();
+    toasty::sql::statement("INSERT INTO users(id,user_name,display_name) VALUES($1,$1,$1)")
+        .bind(user.as_str())
+        .exec(&mut db)
+        .await?;
+    let channel = uuid::Uuid::new_v4().to_string();
+    let (status, _) = request(
+        &app,
+        "POST",
+        Some(&user),
+        "/api/channels",
+        Some(json!({
+            "id":channel,"channel_name":format!("conversation-{channel}"),"is_private":false
+        })),
+    )
+    .await?;
+    assert_eq!(status, StatusCode::OK);
+    let (status, root) = request(
+        &app,
+        "POST",
+        Some(&user),
+        "/api/home",
+        Some(json!({
+            "channel_id":channel,"content":"root"
+        })),
+    )
+    .await?;
+    assert_eq!(status, StatusCode::CREATED);
+    let root = root["id"].as_str().unwrap();
+    let (status, child) = request(
+        &app,
+        "POST",
+        Some(&user),
+        "/api/home",
+        Some(json!({
+            "in_reply_to":root,"content":"child"
+        })),
+    )
+    .await?;
+    assert_eq!(status, StatusCode::CREATED);
+    let child = child["id"].as_str().unwrap();
+    let (status, grandchild) = request(
+        &app,
+        "POST",
+        Some(&user),
+        "/api/messages",
+        Some(json!({
+            "channel_id":channel,"parent_id":child,"content":"grandchild"
+        })),
+    )
+    .await?;
+    assert_eq!(status, StatusCode::OK);
+    let grandchild = grandchild["data"]["id"].as_str().unwrap();
+    let (status, _) = request(
+        &app,
+        "POST",
+        Some(&user),
+        "/api/activitypub/reactions",
+        Some(json!({
+            "post_id":root,"reaction":"👍"
+        })),
+    )
+    .await?;
+    assert_eq!(status, StatusCode::OK);
+    let (_, post) = request(&app, "GET", Some(&user), &format!("/api/home/{root}"), None).await?;
+    assert_eq!(post["reactions"][0]["count"], 1);
+    assert_eq!(post["reactions"][0]["selected"], true);
+    let (status, _) = request(
+        &app,
+        "DELETE",
+        Some(&user),
+        &format!("/api/messages/{root}/reactions?emoji=%F0%9F%91%8D"),
+        None,
+    )
+    .await?;
+    assert_eq!(status, StatusCode::OK);
+    let (_, post) = request(&app, "GET", Some(&user), &format!("/api/home/{root}"), None).await?;
+    assert_eq!(post["likes"], 0);
+    let (status, thread) = request(
+        &app,
+        "GET",
+        Some(&user),
+        &format!("/api/home/{child}/thread"),
+        None,
+    )
+    .await?;
+    assert_eq!(status, StatusCode::OK);
+    let ids: Vec<_> = thread
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|p| p["id"].as_str().unwrap())
+        .collect();
+    assert_eq!(ids, vec![root, child, grandchild]);
+    assert_eq!(thread[2]["tree_depth"], 2);
+    let (_, post) = request(
+        &app,
+        "GET",
+        Some(&user),
+        &format!("/api/home/{child}"),
+        None,
+    )
+    .await?;
+    assert_eq!(post["parent"]["id"], root);
+    let (_, messages) = request(
+        &app,
+        "GET",
+        Some(&user),
+        &format!("/api/messages?channel_id={channel}"),
+        None,
+    )
+    .await?;
+    assert_eq!(
+        messages
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|m| m["id"] == child)
+            .unwrap()["parent_id"],
+        root
+    );
+    // A reply hidden by its audience must not be exposed through the tree or preview.
+    let hidden = uuid::Uuid::new_v4().to_string();
+    let other = uuid::Uuid::new_v4().to_string();
+    toasty::sql::statement("INSERT INTO users(id,user_name,display_name) VALUES($1,$1,$1)")
+        .bind(other.as_str())
+        .exec(&mut db)
+        .await?;
+    toasty::sql::statement("INSERT INTO home_posts(id,user_id,content,visibility,parent_id) VALUES($1,$2,'hidden','unlisted',$3)")
+        .bind(hidden.as_str()).bind(other.as_str()).bind(root).exec(&mut db).await?;
+    let (_, thread) = request(
+        &app,
+        "GET",
+        Some(&user),
+        &format!("/api/home/{root}/thread"),
+        None,
+    )
+    .await?;
+    assert!(!thread.as_array().unwrap().iter().any(|p| p["id"] == hidden));
+    assert_eq!(
+        request(
+            &app,
+            "GET",
+            Some(&user),
+            &format!("/api/home/{hidden}/thread"),
+            None
+        )
+        .await?
+        .0,
+        StatusCode::NOT_FOUND
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn home_returns_attachment_metadata_for_visible_posts_and_reply_previews()
+-> anyhow::Result<()> {
+    let mut config = Config::from_env();
+    config.dev_auth_enabled = true;
+    let mut db = init_db(&config.database_url).await?;
+    let app = create_router(AppState::new(db.clone(), config));
+    let owner = uuid::Uuid::new_v4().to_string();
+    let viewer = uuid::Uuid::new_v4().to_string();
+    for user in [&owner, &viewer] {
+        toasty::sql::statement("INSERT INTO users(id,user_name,display_name) VALUES($1,$1,$1)")
+            .bind(user.as_str())
+            .exec(&mut db)
+            .await?;
+    }
+    let channel = uuid::Uuid::new_v4().to_string();
+    let private = uuid::Uuid::new_v4().to_string();
+    for (id, is_private) in [(&channel, false), (&private, true)] {
+        toasty::sql::statement("INSERT INTO channels(id,channel_name,created_user_id,is_private) VALUES($1,$1,$2,$3::boolean)")
+            .bind(id.as_str()).bind(owner.as_str()).bind(is_private.to_string()).exec(&mut db).await?;
+    }
+    toasty::sql::statement(
+        "INSERT INTO channel_user(user_id,channel_id,joined_at) VALUES($1,$2,now())",
+    )
+    .bind(owner.as_str())
+    .bind(channel.as_str())
+    .exec(&mut db)
+    .await?;
+    let image_post = uuid::Uuid::new_v4().to_string();
+    toasty::sql::statement(
+        "INSERT INTO home_posts(id,user_id,content,channel_id) VALUES($1,$2,'',$3)",
+    )
+    .bind(image_post.as_str())
+    .bind(owner.as_str())
+    .bind(channel.as_str())
+    .exec(&mut db)
+    .await?;
+    let private_post = uuid::Uuid::new_v4().to_string();
+    toasty::sql::statement(
+        "INSERT INTO messages(id,user_id,content,channel_id) VALUES($1,$2,'',$3)",
+    )
+    .bind(private_post.as_str())
+    .bind(owner.as_str())
+    .bind(private.as_str())
+    .exec(&mut db)
+    .await?;
+    let mut attachment_ids = Vec::new();
+    for (message, channel_id) in [(&image_post, &channel), (&private_post, &private)] {
+        let id = uuid::Uuid::new_v4().to_string();
+        toasty::sql::statement("INSERT INTO attachments(id,message_id,uploader_id,channel_id,file_name,file_size,content_type,storage_key) VALUES($1,$2,$3,$4,'photo.png',1024,'image/png',$5)")
+            .bind(id.as_str()).bind(message.as_str()).bind(owner.as_str()).bind(channel_id.as_str()).bind(format!("attachments/{id}")).exec(&mut db).await?;
+        attachment_ids.push(id);
+    }
+    let (status, post) = request(
+        &app,
+        "GET",
+        Some(&viewer),
+        &format!("/api/home/{image_post}"),
+        None,
+    )
+    .await?;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(post["content"], "");
+    assert_eq!(post["attachments"].as_array().unwrap().len(), 1);
+    assert_eq!(
+        post["attachments"][0],
+        json!({"id":attachment_ids[0],"file_name":"photo.png","file_size":1024,"content_type":"image/png"})
+    );
+    let (status, reply) = request(
+        &app,
+        "POST",
+        Some(&owner),
+        "/api/home",
+        Some(json!({"content":"reply to image","in_reply_to":image_post})),
+    )
+    .await?;
+    assert_eq!(status, StatusCode::CREATED);
+    let reply_id = reply["id"].as_str().unwrap();
+    let (_, reply) = request(
+        &app,
+        "GET",
+        Some(&viewer),
+        &format!("/api/home/{reply_id}"),
+        None,
+    )
+    .await?;
+    assert_eq!(reply["parent"]["attachments"], post["attachments"]);
+    let (_, feed) = request(
+        &app,
+        "GET",
+        Some(&viewer),
+        &format!("/api/home?timeline=social&author={owner}"),
+        None,
+    )
+    .await?;
+    assert_eq!(
+        feed.as_array()
+            .unwrap()
+            .iter()
+            .find(|p| p["id"] == image_post)
+            .unwrap()["attachments"],
+        post["attachments"]
+    );
+    assert!(!feed.to_string().contains(&attachment_ids[1]));
+    let (_, thread) = request(
+        &app,
+        "GET",
+        Some(&viewer),
+        &format!("/api/home/{reply_id}/thread"),
+        None,
+    )
+    .await?;
+    assert_eq!(thread[0]["attachments"], post["attachments"]);
+    assert_eq!(
+        request(
+            &app,
+            "GET",
+            Some(&viewer),
+            &format!("/api/home/{private_post}"),
+            None
+        )
+        .await?
+        .0,
+        StatusCode::NOT_FOUND
+    );
+    let (status, _) = request(
+        &app,
+        "DELETE",
+        Some(&owner),
+        &format!("/api/messages/{image_post}"),
+        None,
+    )
+    .await?;
+    assert_eq!(status, StatusCode::OK);
+    let (_, feed) = request(
+        &app,
+        "GET",
+        Some(&viewer),
+        "/api/home?timeline=social",
+        None,
+    )
+    .await?;
+    assert!(!feed.to_string().contains(&attachment_ids[0]));
+    Ok(())
+}
+
+#[tokio::test]
+async fn replies_derive_the_channel_from_the_parent_and_nonmembers_can_reply_in_home()
+-> anyhow::Result<()> {
+    let mut config = Config::from_env();
+    config.dev_auth_enabled = true;
+    let mut db = init_db(&config.database_url).await?;
+    let app = create_router(AppState::new(db.clone(), config));
+    let owner = uuid::Uuid::new_v4().to_string();
+    let member = uuid::Uuid::new_v4().to_string();
+    let outsider = uuid::Uuid::new_v4().to_string();
+    for id in [&owner, &member, &outsider] {
+        toasty::sql::statement("INSERT INTO users(id,user_name,display_name) VALUES($1,$1,$1)")
+            .bind(id.as_str())
+            .exec(&mut db)
+            .await?;
+    }
+    let channel = uuid::Uuid::new_v4().to_string();
+    toasty::sql::statement(
+        "INSERT INTO channels(id,channel_name,created_user_id,is_private) VALUES($1,$1,$2,false)",
+    )
+    .bind(channel.as_str())
+    .bind(owner.as_str())
+    .exec(&mut db)
+    .await?;
+    for user in [&owner, &member] {
+        toasty::sql::statement(
+            "INSERT INTO channel_user(user_id,channel_id,joined_at) VALUES($1,$2,now())",
+        )
+        .bind(user.as_str())
+        .bind(channel.as_str())
+        .exec(&mut db)
+        .await?;
+    }
+    let (status, parent) = request(
+        &app,
+        "POST",
+        Some(&owner),
+        "/api/home",
+        Some(json!({"content":"Channel parent","channel_id":channel})),
+    )
+    .await?;
+    assert_eq!(status, StatusCode::CREATED);
+    let parent_id = parent["id"].as_str().unwrap();
+    for (actor, expected_channel) in [(&member, Some(channel.as_str())), (&outsider, None)] {
+        let (status, reply)=request(&app,"POST",Some(actor),"/api/home",Some(json!({"content":"reply","in_reply_to":parent_id,"channel_id":"stale-composer-preference"}))).await?;
+        assert_eq!(status, StatusCode::CREATED, "{reply}");
+        let reply_id = reply["id"].as_str().unwrap();
+        let (_, detail) = request(
+            &app,
+            "GET",
+            Some(actor),
+            &format!("/api/home/{reply_id}"),
+            None,
+        )
+        .await?;
+        assert_eq!(detail["channel_id"], json!(expected_channel));
+        assert_eq!(detail["parent_id"], parent_id);
+        let mut tx = db.transaction().await?;
+        let rows=backend::apps::query(&mut tx,"SELECT json_build_object('source',source)::text FROM notification_events WHERE user_id=$1 AND (message_id=$2 OR post_id=$2)",&[&owner,reply_id]).await?;
+        assert_eq!(
+            rows.len(),
+            1,
+            "one logical reply must create one notification"
+        );
+        assert_eq!(
+            rows[0]["source"],
+            if expected_channel.is_some() {
+                "channel"
+            } else {
+                "activitypub"
+            }
+        );
+    }
+    let (_, plain) = request(
+        &app,
+        "POST",
+        Some(&owner),
+        "/api/home",
+        Some(json!({"content":"Home parent"})),
+    )
+    .await?;
+    let (status, reply) = request(
+        &app,
+        "POST",
+        Some(&member),
+        "/api/home",
+        Some(json!({"content":"Home reply","in_reply_to":plain["id"],"channel_id":channel})),
+    )
+    .await?;
+    assert_eq!(status, StatusCode::CREATED);
+    let (_, detail) = request(
+        &app,
+        "GET",
+        Some(&member),
+        &format!("/api/home/{}", reply["id"].as_str().unwrap()),
+        None,
+    )
+    .await?;
+    assert!(detail["channel_id"].is_null());
+    Ok(())
+}
+
+#[tokio::test]
+async fn reply_link_migration_repairs_legacy_placement_and_missing_descendants()
+-> anyhow::Result<()> {
+    let config = Config::from_env();
+    let (mut client, connection) =
+        tokio_postgres::connect(&config.database_url, tokio_postgres::NoTls).await?;
+    let driver = tokio::spawn(connection);
+    let tx = client.transaction().await?;
+    let owner = uuid::Uuid::new_v4().to_string();
+    let channel = uuid::Uuid::new_v4().to_string();
+    let ids: Vec<_> = (0..4).map(|_| uuid::Uuid::new_v4().to_string()).collect();
+    tx.execute(
+        "INSERT INTO users(id,user_name,display_name) VALUES($1::text,$1::text,'Legacy')",
+        &[&owner],
+    )
+    .await?;
+    tx.execute(
+        "INSERT INTO channels(id,channel_name,created_user_id,is_private) VALUES($1::text,$1::text,$2,false)",
+        &[&channel, &owner],
+    )
+    .await?;
+    tx.execute("INSERT INTO home_posts(id,user_id,channel_id,content,visibility) VALUES($1,$2,$3,'parent','unlisted')",&[&ids[0],&owner,&channel]).await?;
+    tx.execute("INSERT INTO home_posts(id,user_id,channel_id,content,parent_id,visibility) VALUES($1,$2,$3,'legacy reply',$4,'unlisted')",&[&ids[1],&owner,&channel,&ids[0]]).await?;
+    tx.execute("UPDATE messages SET parent_id=NULL WHERE id=$1", &[&ids[1]])
+        .await?;
+    for index in 2..4 {
+        tx.execute("INSERT INTO messages(id,user_id,channel_id,content,parent_id) VALUES($1,$2,$3,'missing descendant',$4)",&[&ids[index],&owner,&channel,&ids[index-1]]).await?;
+        tx.execute("DELETE FROM home_posts WHERE id=$1", &[&ids[index]])
+            .await?;
+        tx.execute(
+            "UPDATE messages SET home_post_id=NULL WHERE id=$1",
+            &[&ids[index]],
+        )
+        .await?;
+    }
+    tx.batch_execute(include_str!(
+        "../../infra/db/migrations/20261102150000_repair_reply_links.sql"
+    ))
+    .await?;
+    let parent: String = tx
+        .query_one("SELECT parent_id FROM messages WHERE id=$1", &[&ids[1]])
+        .await?
+        .get(0);
+    assert_eq!(parent, ids[0]);
+    for index in 2..4 {
+        let row = tx
+            .query_one(
+                "SELECT parent_id,visibility,apub,reply_user_id FROM home_posts WHERE id=$1",
+                &[&ids[index]],
+            )
+            .await?;
+        assert_eq!(row.get::<_, String>(0), ids[index - 1]);
+        assert_eq!(row.get::<_, String>(1), "unlisted");
+        assert!(!row.get::<_, bool>(2));
+        assert_eq!(row.get::<_, String>(3), owner);
+    }
+    // An edit after the migration no longer changes the already-reconciled placement.
+    tx.execute(
+        "UPDATE messages SET content='edited' WHERE id=$1",
+        &[&ids[1]],
+    )
+    .await?;
+    let parent: String = tx
+        .query_one("SELECT parent_id FROM messages WHERE id=$1", &[&ids[1]])
+        .await?
+        .get(0);
+    assert_eq!(parent, ids[0]);
+    tx.rollback().await?;
+    driver.abort();
+    Ok(())
+}

@@ -20,6 +20,7 @@ import {
   homePosts as posts,
   homeHandlers,
   visibilityPosts,
+  homeImageOnlyPost,
 } from "../../../.storybook/home-fixtures";
 
 const postSettingsKey = homePostSettingsKey(DEFAULT_CONFIG.apiBaseUrl, DEFAULT_CURRENT_USER_ID);
@@ -1332,19 +1333,47 @@ export const RemoteAvatarFallback: Story = {
 export const SinglePost: Story = {
   args: { postId: posts[0].id },
   parameters: {
-    msw: { handlers: [http.get("*/api/home/:id", () => HttpResponse.json(posts[0]))] },
+    msw: {
+      handlers: [
+        http.get("*/api/home/:id/thread", () =>
+          HttpResponse.json([
+            { ...posts[1], id: "ancestor", content: "返信元の投稿", tree_depth: 0 },
+            { ...posts[0], parent_id: "ancestor", tree_depth: 1 },
+            {
+              ...posts[1],
+              id: "child",
+              content: "投稿への返信",
+              parent_id: posts[0].id,
+              tree_depth: 2,
+            },
+            {
+              ...posts[1],
+              id: "grandchild",
+              content: "返信への返信",
+              parent_id: "child",
+              tree_depth: 3,
+            },
+          ]),
+        ),
+      ],
+    },
   },
   play: playForImplementation(async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     await expect(await canvas.findByText(/Homeから最初の公開投稿です/)).toBeVisible();
-    await expect(canvas.getAllByRole("article")).toHaveLength(1);
+    await expect(canvas.getAllByRole("article")).toHaveLength(4);
+    await expect(canvas.getByText("返信元の投稿")).toBeVisible();
+    await expect(canvas.getByText("投稿への返信")).toBeVisible();
+    await expect(canvas.getByText("返信への返信")).toBeVisible();
     await expect(canvas.queryByRole("button", { name: "ローカル" })).not.toBeInTheDocument();
   }),
 };
 export const SinglePostMissing: Story = {
   args: { postId: "missing" },
   parameters: {
-    msw: { handlers: [http.get("*/api/home/:id", () => new HttpResponse(null, { status: 404 }))] },
+    msw: {
+      handlers: [http.get("*/api/home/:id/thread", () => new HttpResponse(null, { status: 404 }))],
+    },
   },
   play: playForImplementation(async ({ canvasElement }) => {
     await expect(await within(canvasElement).findByRole("alert")).toBeVisible();
@@ -1651,7 +1680,9 @@ export const MfmDecoratedPostMobile: Story = {
 };
 export const MfmSinglePost: Story = {
   args: { postId: mfmPost.id },
-  parameters: { msw: { handlers: [http.get("*/api/home/:id", () => HttpResponse.json(mfmPost))] } },
+  parameters: {
+    msw: { handlers: [http.get("*/api/home/:id/thread", () => HttpResponse.json([mfmPost]))] },
+  },
   play: playForImplementation(async ({ canvasElement }) => checkMfmPost(canvasElement)),
 };
 
@@ -1675,6 +1706,34 @@ export const MfmUserProfile: Story = {
     },
   },
   play: playForImplementation(async ({ canvasElement }) => checkMfmPost(canvasElement)),
+};
+
+export const TimelineReply: Story = {
+  parameters: {
+    msw: {
+      handlers: [
+        http.get("*/api/home", () =>
+          HttpResponse.json([
+            {
+              ...posts[0],
+              content: "TLに表示される返信",
+              parent_id: posts[1].id,
+              parent: { ...posts[1], content: "TLに表示される返信先" },
+            },
+          ]),
+        ),
+      ],
+    },
+  },
+  play: playForImplementation(async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expect(await canvas.findByText("TLに表示される返信")).toBeVisible();
+    await expect(canvas.getByText("TLに表示される返信先")).toBeVisible();
+    await expect(canvas.getByRole("link", { name: /さんに返信/ })).toHaveAttribute(
+      "href",
+      `/home/posts/${posts[1].id}`,
+    );
+  }),
 };
 
 export const VisibilityBadges: Story = {
@@ -1703,4 +1762,122 @@ export const VisibilityBadges: Story = {
 export const VisibilityBadgesMobile: Story = {
   ...VisibilityBadges,
   globals: { viewport: { value: "mobile" } },
+};
+
+async function checkHomeImage(canvasElement: HTMLElement) {
+  const canvas = within(canvasElement);
+  const preview = await canvas.findByRole("button", { name: "home-photo.pngをプレビュー" });
+  await expect(preview).toBeVisible();
+  await expect(canvas.queryByText(/本文のない投稿です/)).not.toBeInTheDocument();
+  await userEvent.click(preview);
+  const dialog = await screen.findByRole("dialog", { name: "home-photo.png" });
+  await waitFor(() => expect(dialog).toBeVisible());
+  await userEvent.keyboard("{Escape}");
+  await waitFor(() =>
+    expect(screen.queryByRole("dialog", { name: "home-photo.png" })).not.toBeInTheDocument(),
+  );
+}
+
+export const ImageOnly: Story = {
+  parameters: {
+    msw: { handlers: [http.get("*/api/home", () => HttpResponse.json([homeImageOnlyPost]))] },
+  },
+  play: playForImplementation(async ({ canvasElement }) => checkHomeImage(canvasElement)),
+};
+export const ImageOnlyDetail: Story = {
+  ...ImageOnly,
+  args: { postId: homeImageOnlyPost.id },
+  parameters: {
+    msw: {
+      handlers: [http.get("*/api/home/:id/thread", () => HttpResponse.json([homeImageOnlyPost]))],
+    },
+  },
+};
+export const ReplyToImageOnly: Story = {
+  ...ImageOnly,
+  parameters: {
+    msw: {
+      handlers: [
+        http.get("*/api/home", () =>
+          HttpResponse.json([
+            {
+              ...posts[0],
+              content: "画像への返信",
+              parent_id: homeImageOnlyPost.id,
+              parent: homeImageOnlyPost,
+            },
+          ]),
+        ),
+      ],
+    },
+  },
+};
+export const TextWithImage: Story = {
+  ...ImageOnly,
+  parameters: {
+    msw: {
+      handlers: [
+        http.get("*/api/home", () =>
+          HttpResponse.json([
+            {
+              ...homeImageOnlyPost,
+              content: "画像と本文の投稿",
+            },
+          ]),
+        ),
+      ],
+    },
+  },
+  play: playForImplementation(async ({ canvasElement }) => {
+    await checkHomeImage(canvasElement);
+    await expect(within(canvasElement).getByText("画像と本文の投稿")).toBeVisible();
+  }),
+};
+
+let channelReplySent = false;
+export const ChannelReplyAudience: Story = {
+  beforeEach: () => {
+    channelReplySent = false;
+    localStorage.setItem(
+      postSettingsKey,
+      JSON.stringify({ visibility: "followers", apub: false, channel_id: "channel-general" }),
+    );
+  },
+  parameters: {
+    fixtureControls: {
+      homeChannelReplyPosted: () => waitFor(() => expect(channelReplySent).toBe(true)),
+    },
+    msw: {
+      handlers: [
+        http.get("*/api/home", () =>
+          HttpResponse.json([
+            { ...posts[0], channel_id: "channel-general", visibility: "unlisted", apub: false },
+          ]),
+        ),
+        http.post("*/api/home", async ({ request }) => {
+          await expect(await request.json()).toMatchObject({
+            in_reply_to: posts[0].id,
+            channel_id: null,
+            visibility: "unlisted",
+          });
+          channelReplySent = true;
+          return HttpResponse.json({ id: "channel-reply" }, { status: 201 });
+        }),
+      ],
+    },
+  },
+  play: playForImplementation(async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await userEvent.click(await canvas.findByRole("button", { name: "返信 0" }));
+    const form = await visibleDialog("近況を投稿");
+    await userEvent.click(form.getByRole("button", { name: "公開範囲: ホーム" }));
+    await expect(
+      await screen.findByRole("menuitemradio", { name: "フォロワー限定" }),
+    ).toHaveAttribute("aria-disabled", "true");
+    await userEvent.keyboard("{Escape}");
+    await userEvent.type(form.getByRole("textbox", { name: "近況を投稿" }), "チャンネルへの返信");
+    await userEvent.click(form.getByRole("button", { name: /^投稿$/ }));
+    await expectComposerClosed();
+    await waitFor(() => expect(channelReplySent).toBe(true));
+  }),
 };

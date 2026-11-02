@@ -34,7 +34,7 @@ function notificationInteractions(title: string, name: string): NativeInteractio
     { action: "wait", role: "status", state: "hidden" },
   ];
   if (title === "Pages/Notifications") {
-    const panel = { role: "region", name: "ホームの通知" };
+    const panel = { role: "region", name: "通知" };
     const apubReady: NativeInteraction[] = [{ action: "wait", ...panel }];
     const apubButton = (name: string, action: "click" | "wait" = "wait"): NativeInteraction => ({
       action,
@@ -46,16 +46,21 @@ function notificationInteractions(title: string, name: string): NativeInteractio
       return [
         ...apubReady,
         visible("装飾付きの返信"),
-        { action: "wait", role: "img", name: ":blobcat:" },
+        {
+          action: "wait",
+          role: "img",
+          name: ":blobcat:",
+          within: { role: "listitem", name: "Bob さんが投稿に返信しました" },
+        },
       ];
     if (["Follow Requests", "Mobile Follow Requests"].includes(name))
       return [
         ...apubReady,
-        visible("フォロー申請が届きました"),
+        { action: "wait", role: "listitem", name: "Bob さんからフォロー申請が届きました" },
         apubButton("承認"),
         apubButton("拒否"),
-        visible("フォローが承認されました"),
-        visible("投稿にリアクションしました"),
+        { action: "wait", role: "listitem", name: "Carol さんへのフォローが承認されました" },
+        { action: "wait", role: "listitem", name: "Dave さんが投稿にリアクションしました" },
         { action: "wait", role: "img", name: "Bob" },
         {
           action: "wait",
@@ -107,6 +112,23 @@ function notificationInteractions(title: string, name: string): NativeInteractio
         apubButton("承認", "click"),
         { action: "fixture", name: "assertOlderFollowApproved" },
       ];
+    if (["Unified Timeline", "Unified Timeline Mobile"].includes(name))
+      return [
+        ...ready,
+        { action: "wait", role: "listitem", name: "Remote Fox さんが投稿にリアクションしました" },
+        { action: "wait", role: "listitem", name: "Remote Reply さんが投稿に返信しました" },
+        {
+          action: "wait",
+          role: "img",
+          name: "🦊",
+          within: { role: "listitem", name: "Remote Fox さんが投稿にリアクションしました" },
+        },
+        absent("ホームの通知"),
+      ];
+    if (name === "Custom Reaction Badge")
+      return [...ready, { action: "wait", role: "img", name: ":blobcat:", all: true }];
+    if (name === "Unified Auto Read")
+      return [...ready, { action: "fixture", name: "assertFederatedAutoRead" }];
     if (name === "Loading")
       return [
         { action: "wait", role: "region", name: "通知" },
@@ -172,7 +194,7 @@ function notificationInteractions(title: string, name: string): NativeInteractio
           within: { role: "list", name: "通知" },
           directWithin: true,
           all: true,
-          sameWidthAs: { role: "list", name: "通知" },
+          containedBy: { role: "list", name: "通知" },
         },
         {
           action: "wait",
@@ -269,11 +291,20 @@ export function notificationOptions(
         ...fixture,
         view: "screen",
         sharedApi: true,
+        ...(name === "Unified Auto Read" ? { focused: true, visible: true } : {}),
         comparisonText: notificationComparisonText,
         comparisonLabel: notificationComparisonLabel,
         comparisonMemberCount: notificationComparisonMemberCount,
         ...([
           "Default",
+          "Follow Requests",
+          "Approve Follow",
+          "Reject Follow",
+          "Follow Decision Error",
+          "Mobile Follow Requests",
+          "Unified Timeline",
+          "Unified Timeline Mobile",
+          "Custom Reaction Badge",
           "Mobile",
           "Direct Messages",
           "Dark",

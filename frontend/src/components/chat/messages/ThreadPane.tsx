@@ -31,6 +31,8 @@ export interface ThreadPaneProps {
   onTyping?: (active: boolean) => void;
   root: FeedMessage;
   replies: FeedMessage[];
+  replyCounts?: Map<string, number>;
+  onOpenThread?: (messageId: string) => void;
   isLoading: boolean;
   isError: boolean;
   currentUserId: string | null;
@@ -81,6 +83,8 @@ export function ThreadPane({
   onTyping,
   root,
   replies,
+  replyCounts,
+  onOpenThread,
   isLoading,
   isError,
   currentUserId,
@@ -261,6 +265,8 @@ export function ThreadPane({
                   onCancelEdit={onCancelEdit}
                   onSaveEdit={onSaveEdit}
                   onRequestDelete={() => onRequestDelete(item.message.id)}
+                  replyCount={replyCounts?.get(item.message.id) ?? 0}
+                  onOpenThread={onOpenThread ? () => onOpenThread(item.message.id) : undefined}
                   reactions={reactions.get(item.message.id) ?? []}
                   attachments={attachments?.get(item.message.id) ?? []}
                   kitchenCatalog={kitchenCatalog}

@@ -514,3 +514,254 @@ test.describe("Kotlin message touch gestures", () => {
     await message.session.detach();
   });
 });
+
+for (const implementation of ["react", "kotlin"] as const) {
+  for (const width of [1440, 390]) {
+    test(`Home conversations show ancestors, nested replies and timeline context: ${implementation} ${width}`, async ({
+      page,
+    }, testInfo) => {
+      await page.setViewportSize({ width, height: 900 });
+      const open = async (story: string) => {
+        await page.goto(
+          `/iframe.html?id=pages-home--${story}&viewMode=story&globals=implementation:${implementation}`,
+        );
+        if (implementation === "kotlin") {
+          await expect(page.locator("[data-compose-catalog-state=ready]")).toBeVisible({
+            timeout: 90_000,
+          });
+        }
+        await waitForStoryPlay(page);
+        return implementation === "kotlin"
+          ? page.frameLocator('iframe[title="Kotlin component preview"]')
+          : page;
+      };
+      const tree = await open("single-post");
+      await expect(tree.getByRole("article")).toHaveCount(4);
+      await expect(tree.getByText("返信元の投稿", { exact: true })).toBeVisible();
+      const bounds = await Promise.all(
+        [0, 1, 2, 3].map((index) => tree.getByRole("article").nth(index).boundingBox()),
+      );
+      for (let index = 1; index < bounds.length; index++) {
+        expect(bounds[index]!.x).toBeGreaterThan(bounds[index - 1]!.x);
+        expect(bounds[index]!.x + bounds[index]!.width).toBeLessThanOrEqual(width + 1);
+      }
+      await page.screenshot({ path: testInfo.outputPath("conversation.png") });
+      // Canvas marks text outside its scroll viewport hidden in the accessibility tree.
+      await page.mouse.move(width / 2, 500);
+      await page.mouse.wheel(0, 650);
+      await expect(tree.getByText("返信への返信", { exact: true })).toBeVisible();
+      const timeline = await open("timeline-reply");
+      await expect(timeline.getByText("TLに表示される返信先", { exact: true })).toBeVisible();
+      await expect(timeline.getByRole("link", { name: /さんに返信/ })).toHaveAttribute(
+        "href",
+        "/home/posts/home-long",
+      );
+      await page.screenshot({ path: testInfo.outputPath("reply-context.png") });
+    });
+  }
+}
+
+for (const implementation of ["react", "kotlin"] as const) {
+  for (const width of [1440, 390]) {
+    test(`Home image attachments replace empty-body notices: ${implementation} ${width}`, async ({
+      page,
+    }, testInfo) => {
+      await page.setViewportSize({ width, height: 900 });
+      for (const story of [
+        "image-only",
+        "image-only-detail",
+        "reply-to-image-only",
+        "text-with-image",
+      ]) {
+        await page.goto(
+          `/iframe.html?id=pages-home--${story}&viewMode=story&globals=implementation:${implementation}`,
+        );
+        if (implementation === "kotlin") {
+          await expect(page.locator("[data-compose-catalog-state=ready]")).toBeVisible({
+            timeout: 90_000,
+          });
+        }
+        await waitForStoryPlay(page);
+        const screen =
+          implementation === "kotlin"
+            ? page.frameLocator('iframe[title="Kotlin component preview"]')
+            : page;
+        const preview = screen.getByRole("button", {
+          name: "home-photo.pngをプレビュー",
+          exact: true,
+        });
+        await expect(preview).toBeVisible();
+        await expect(screen.getByText(/本文のない投稿です/)).toHaveCount(0);
+        const bounds = await preview.boundingBox();
+        expect(bounds!.x + bounds!.width).toBeLessThanOrEqual(width + 1);
+        if (story === "text-with-image")
+          await expect(screen.getByText("画像と本文の投稿", { exact: true })).toBeVisible();
+        // Compose's semantic target sits beneath its Canvas; click the rendered coordinates.
+        await preview.click({ force: implementation === "kotlin" });
+        await expect(
+          screen.getByRole("dialog", { name: "home-photo.png", exact: true }),
+        ).toBeVisible();
+        await page.keyboard.press("Escape");
+        await expect(
+          screen.getByRole("dialog", { name: "home-photo.png", exact: true }),
+        ).toHaveCount(0);
+        await page.screenshot({ path: testInfo.outputPath(`${story}.png`) });
+      }
+    });
+  }
+}
+
+for (const implementation of ["react", "kotlin"] as const) {
+  for (const width of [1440, 390]) {
+    test(`Unified notifications interleave sources and auto-read visible cards: ${implementation} ${width}`, async ({
+      page,
+    }, testInfo) => {
+      await page.setViewportSize({ width, height: 900 });
+      const open = async (story: string) => {
+        await page.goto(
+          `/iframe.html?id=pages-notifications--${story}&viewMode=story&globals=implementation:${implementation}`,
+        );
+        if (implementation === "kotlin")
+          await expect(page.locator("[data-compose-catalog-state=ready]")).toBeVisible({
+            timeout: 90000,
+          });
+        await waitForStoryPlay(page);
+        return implementation === "kotlin"
+          ? page.frameLocator('iframe[title="Kotlin component preview"]')
+          : page;
+      };
+      const screen = await open("unified-timeline");
+      const labels = [
+        /Bob.*メンション/,
+        /Remote Fox.*リアクション/,
+        /Remote Reply.*返信/,
+        /Bob.*リアクション/,
+      ];
+      const rows = labels.map((name) => screen.getByRole("listitem", { name }));
+      const bounds = await Promise.all(rows.map((row) => row.boundingBox()));
+      for (let index = 0; index < bounds.length; index++) {
+        expect(bounds[index]!.x + bounds[index]!.width).toBeLessThanOrEqual(width + 1);
+        if (index) expect(bounds[index]!.y).toBeGreaterThan(bounds[index - 1]!.y);
+      }
+      // Compose projects card and badge semantics separately; verify their actual placement.
+      const remoteBadge = screen.getByRole("img", { name: "🦊", exact: true });
+      const localBadge = screen.getByRole("img", { name: "🎉", exact: true });
+      await expect(remoteBadge).toHaveCount(1);
+      await expect(localBadge).toHaveCount(1);
+      for (const [badge, index] of [
+        [remoteBadge, 1],
+        [localBadge, 3],
+      ] as const) {
+        const position = await badge.boundingBox();
+        expect(position!.x).toBeGreaterThan(bounds[index]!.x);
+        expect(position!.x + position!.width).toBeLessThan(bounds[index]!.x + 76);
+        expect(position!.y).toBeGreaterThan(bounds[index]!.y + 12);
+        expect(position!.y + position!.height).toBeLessThan(bounds[index]!.y + 70);
+      }
+      await expect(screen.getByRole("heading", { name: "ホームの通知" })).toHaveCount(0);
+      await expect(screen.getByRole("button", { name: "すべて既読にする" })).toHaveCount(1);
+      await page.screenshot({ path: testInfo.outputPath("unified-notifications.png") });
+      const custom = await open("custom-reaction-badge");
+      const customBadge = custom.getByRole("img", { name: ":blobcat:", exact: true }).first();
+      await expect(customBadge).toHaveAttribute("aria-label", ":blobcat:");
+      const customBounds = await customBadge.boundingBox();
+      expect(customBounds!.width).toBeLessThanOrEqual(20);
+      await page.screenshot({ path: testInfo.outputPath("custom-reaction-badge.png") });
+      const requests: unknown[] = [];
+      page.on("request", (request) => {
+        if (
+          request.url().endsWith("/api/activitypub/notifications/read") &&
+          request.method() === "POST"
+        )
+          requests.push(request.postDataJSON());
+      });
+      await open("unified-auto-read");
+      expect(requests.length).toBeGreaterThan(0);
+      for (const body of requests) expect(body).toHaveProperty("ids");
+      await page.screenshot({ path: testInfo.outputPath("visible-notifications-read.png") });
+    });
+  }
+}
+
+for (const story of [
+  "approve-follow",
+  "reject-follow",
+  "older-follow-requests",
+  "follow-decision-error",
+]) {
+  test(`Unified Kotlin notification controls: ${story}`, async ({ page }) => {
+    await page.goto(`/iframe.html?id=pages-notifications--${story}&${nativeQuery}`);
+    await expect(page.locator("[data-compose-catalog-state=ready]")).toBeVisible({
+      timeout: 90000,
+    });
+    await waitForStoryPlay(page);
+    const screen = page.frameLocator('iframe[title="Kotlin component preview"]');
+    if (story === "follow-decision-error") {
+      await expect(screen.getByRole("alert")).toBeVisible();
+      await expect(screen.getByRole("button", { name: "承認", exact: true })).toBeEnabled();
+    } else {
+      await expect(screen.getByRole("button", { name: "承認", exact: true })).toHaveCount(0);
+      await expect(screen.getByRole("button", { name: "拒否", exact: true })).toHaveCount(0);
+    }
+  });
+}
+
+for (const implementation of ["react", "kotlin"] as const) {
+  for (const width of [1440, 390]) {
+    test(`Channel reply audience respects saved preferences: ${implementation} ${width}`, async ({
+      page,
+    }) => {
+      await page.setViewportSize({ width, height: 900 });
+      const posts: unknown[] = [];
+      page.on("request", (request) => {
+        if (request.url().endsWith("/api/home") && request.method() === "POST")
+          posts.push(request.postDataJSON());
+      });
+      await page.goto(
+        `/iframe.html?id=pages-home--channel-reply-audience&viewMode=story&globals=implementation:${implementation}`,
+      );
+      if (implementation === "kotlin")
+        await expect(page.locator("[data-compose-catalog-state=ready]")).toBeVisible({
+          timeout: 90000,
+        });
+      await waitForStoryPlay(page);
+      expect(posts).toContainEqual(
+        expect.objectContaining({
+          in_reply_to: "home-post",
+          channel_id: null,
+          visibility: "unlisted",
+        }),
+      );
+    });
+  }
+}
+
+for (const width of [1440, 390]) {
+  test(`Kotlin image-only post opens its detail from card padding: ${width}`, async ({ page }) => {
+    await page.setViewportSize({ width, height: 900 });
+    await page.goto(`/iframe.html?id=pages-home--image-only&${nativeQuery}`);
+    await expect(page.locator("[data-compose-catalog-state=ready]")).toBeVisible({
+      timeout: 90000,
+    });
+    await waitForStoryPlay(page);
+    const screen = page.frameLocator('iframe[title="Kotlin component preview"]');
+    await screen.locator("body").evaluate(() => {
+      window.addEventListener("zoo:navigation-intent", (event) => {
+        (window as typeof window & { __paddingNavigation?: string }).__paddingNavigation = (
+          event as CustomEvent<{ url: string }>
+        ).detail.url;
+      });
+    });
+    const bounds = await screen.getByRole("article").boundingBox();
+    await page.mouse.click(bounds!.x + bounds!.width - 4, bounds!.y + 4);
+    await expect
+      .poll(() =>
+        screen
+          .locator("body")
+          .evaluate(
+            () => (window as typeof window & { __paddingNavigation?: string }).__paddingNavigation,
+          ),
+      )
+      .toContain("/home/posts/home-image-only");
+  });
+}

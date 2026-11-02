@@ -13,7 +13,7 @@ import {
   useMessageFeed,
   useMessageReactions,
 } from "../../../hooks/useRealtime";
-import { useReplyCounts, useThreadFeed } from "../../../hooks/useThread";
+import { useReplyCounts, useThreadFeed, useThreadRoot } from "../../../hooks/useThread";
 import { useWriteRunner } from "../../../hooks/useWriteRunner";
 import { groupAttachmentsByMessage } from "../../../lib/attachments";
 import { useCollections } from "../../../lib/electric/collections-context";
@@ -203,10 +203,8 @@ export function MessagePane({
     threadRootId,
     !readOnly && isMember && !!currentUserId && !!threadRootId,
   );
-  const threadRoot = useMemo(
-    () => feed.find((message) => message.id === threadRootId) ?? null,
-    [feed, threadRootId],
-  );
+  const threadRootQuery = useThreadRoot(channelId, threadRootId);
+  const threadRoot = threadRootQuery.data?.[0] ?? null;
 
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editingText, setEditingText] = useState("");
@@ -582,6 +580,8 @@ export function MessagePane({
           onTyping={threadTyping.onTyping}
           root={threadRoot}
           replies={threadReplies}
+          replyCounts={replyCounts}
+          onOpenThread={openThread}
           isLoading={threadQuery.isLoading}
           isError={threadQuery.isError}
           currentUserId={readOnly ? null : currentUserId}

@@ -148,7 +148,7 @@ pub(super) async fn receive_verified(
             .bind(undone)
             .exec(&mut tx)
             .await?;
-            toasty::sql::statement("UPDATE apub_notifications SET is_read=true WHERE user_id=$1 AND actor_id=$2 AND activity_id=$3").bind(user).bind(actor_id).bind(undone).exec(&mut tx).await?;
+            toasty::sql::statement("UPDATE federated_notifications SET is_read=true WHERE user_id=$1 AND actor_id=$2 AND activity_id=$3").bind(user).bind(actor_id).bind(undone).exec(&mut tx).await?;
         }
         "Like" => {
             let object = object_id(&activity["object"])
@@ -168,7 +168,7 @@ pub(super) async fn receive_verified(
                 let inserted=query(&mut tx,"INSERT INTO apub_reactions(post_id,actor_id,activity_id,activity_json,reaction,emoji) VALUES($1,$2,$3,$4,$5,$6::jsonb) ON CONFLICT(post_id,actor_id) DO UPDATE SET activity_id=EXCLUDED.activity_id,activity_json=EXCLUDED.activity_json,reaction=EXCLUDED.reaction,emoji=EXCLUDED.emoji RETURNING json_build_object('inserted',xmax=0)::text", &[post,actor_id,id,&activity.to_string(),&reaction,&json!(reaction_emoji).to_string()]).await?;
                 if inserted.first().is_some_and(|row| row["inserted"] == true) {
                     interactions::notify(&mut tx, user, actor_id, id, "like", post).await?;
-                    toasty::sql::statement("UPDATE apub_notifications SET reaction=$2,emoji=$3::jsonb WHERE activity_id=$1 AND user_id=$4").bind(id).bind(reaction).bind(json!(reaction_emoji).to_string()).bind(user).exec(&mut tx).await?;
+                    toasty::sql::statement("UPDATE federated_notifications SET reaction=$2,emoji=$3::jsonb WHERE activity_id=$1 AND user_id=$4").bind(id).bind(reaction).bind(json!(reaction_emoji).to_string()).bind(user).exec(&mut tx).await?;
                 }
             }
         }

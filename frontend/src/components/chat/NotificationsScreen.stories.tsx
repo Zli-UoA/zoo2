@@ -38,6 +38,23 @@ function UnreadPreview({ children }: { children: ReactNode }) {
   return <>{children}</>;
 }
 
+function ForegroundPreview({ children }: { children: ReactNode }) {
+  useLayoutEffect(() => {
+    const original = document.hasFocus.bind(document);
+    document.hasFocus = () => true;
+    window.dispatchEvent(new Event("focus"));
+    return () => {
+      document.hasFocus = original;
+    };
+  }, []);
+  return <>{children}</>;
+}
+const withForegroundPreview: Decorator = (Story) => (
+  <ForegroundPreview>
+    <Story />
+  </ForegroundPreview>
+);
+
 const withUnreadPreview: Decorator = (Story) => (
   <UnreadPreview>
     <Story />
@@ -89,7 +106,7 @@ export const Default: Story = {
     const region = screen.getByRole("region", { name: "通知" });
     await expect(list.getBoundingClientRect().width).toBe(region.getBoundingClientRect().width);
     for (const row of Array.from(list.children))
-      await expect(row.getBoundingClientRect().width).toBe(list.getBoundingClientRect().width);
+      await expect(row.getBoundingClientRect().width).toBe(list.getBoundingClientRect().width - 32);
     await expect(within(list).getByRole("link", { name: "example.com/docs" })).toHaveAttribute(
       "target",
       "_blank",
@@ -316,14 +333,17 @@ const apubHandlers = [
     return HttpResponse.json({ ok: true });
   }),
   http.post("*/api/activitypub/notifications/read", async ({ request }) => {
-    const body = (await request.json()) as { id?: string };
+    const body = (await request.json()) as { id?: string; ids?: string[] };
     apubItems = apubItems.map((item) =>
-      !body.id || item.id === body.id ? { ...item, is_read: true } : item,
+      (body.ids ? body.ids.includes(item.id) : !body.id || item.id === body.id)
+        ? { ...item, is_read: true }
+        : item,
     );
     return HttpResponse.json({ ok: true });
   }),
 ];
 export const FollowRequests: Story = {
+  decorators: [withUnreadPreview],
   beforeEach: () => {
     apubItems = structuredClone(activityPubNotifications);
   },
@@ -336,12 +356,13 @@ export const FollowRequests: Story = {
     },
   },
   play: playForImplementation(async () => {
-    const panel = within(await screen.findByRole("region", { name: "ホームの通知" }));
-    await expect(await panel.findByText(/フォロー申請が届きました/)).toBeVisible();
+    const panel = within(await screen.findByRole("region", { name: "通知" }));
+    await expect(await panel.findByRole("listitem", { name: /Bob.*フォロー申請/ })).toBeVisible();
     await expect(panel.getByRole("button", { name: "承認" })).toBeVisible();
     await expect(panel.getByRole("button", { name: "拒否" })).toBeVisible();
-    await expect(panel.getByText(/フォローが承認されました/)).toBeVisible();
-    await expect(panel.getByText(/投稿にリアクションしました/)).toBeVisible();
+    await expect(panel.getByRole("listitem", { name: /Carol.*フォローが承認/ })).toBeVisible();
+    await expect(panel.getByRole("listitem", { name: /Dave.*リアクション/ })).toBeVisible();
+    await expect(panel.queryByText("投稿にリアクションしました")).not.toBeInTheDocument();
     await expect(panel.getByRole("img", { name: "Bob" })).toBeVisible();
     const profileLinks = panel.getAllByRole("link", { name: "Bob" });
     await expect(profileLinks).toHaveLength(2);
@@ -355,7 +376,7 @@ export const FollowRequests: Story = {
 export const ApproveFollow: Story = {
   ...FollowRequests,
   play: playForImplementation(async () => {
-    const panel = within(await screen.findByRole("region", { name: "ホームの通知" }));
+    const panel = within(await screen.findByRole("region", { name: "通知" }));
     await userEvent.click(await panel.findByRole("button", { name: "承認" }));
     await waitFor(() =>
       expect(panel.queryByRole("button", { name: "承認" })).not.toBeInTheDocument(),
@@ -370,7 +391,7 @@ export const ApproveFollow: Story = {
 export const RejectFollow: Story = {
   ...FollowRequests,
   play: playForImplementation(async () => {
-    const panel = within(await screen.findByRole("region", { name: "ホームの通知" }));
+    const panel = within(await screen.findByRole("region", { name: "通知" }));
     await userEvent.click(await panel.findByRole("button", { name: "拒否" }));
     await waitFor(() =>
       expect(panel.queryByRole("button", { name: "拒否" })).not.toBeInTheDocument(),
@@ -393,7 +414,7 @@ export const FollowDecisionError: Story = {
     },
   },
   play: playForImplementation(async () => {
-    const panel = within(await screen.findByRole("region", { name: "ホームの通知" }));
+    const panel = within(await screen.findByRole("region", { name: "通知" }));
     await userEvent.click(await panel.findByRole("button", { name: "承認" }));
     await expect(await panel.findByRole("alert")).toBeVisible();
     await waitFor(() => expect(panel.getByRole("button", { name: "承認" })).toBeEnabled());
@@ -413,7 +434,7 @@ export const HomeNotificationsError: Story = {
     },
   },
   play: playForImplementation(async () => {
-    const panel = within(await screen.findByRole("region", { name: "ホームの通知" }));
+    const panel = within(await screen.findByRole("region", { name: "通知" }));
     await expect(await panel.findByRole("alert")).toBeVisible();
     await expect(panel.getByRole("button", { name: "更新" })).toBeVisible();
   }),
@@ -452,7 +473,7 @@ export const LiveFollowRequest: Story = {
     await waitFor(() => expect(notificationConnection).toBe(true));
     liveItems = structuredClone(activityPubNotifications);
     notificationsLive.broadcast("refresh");
-    const panel = within(await screen.findByRole("region", { name: "ホームの通知" }));
+    const panel = within(await screen.findByRole("region", { name: "通知" }));
     await expect(await panel.findByRole("button", { name: "承認" })).toBeVisible();
   }),
 };
@@ -494,7 +515,7 @@ export const OlderFollowRequests: Story = {
     },
   },
   play: playForImplementation(async () => {
-    const panel = within(await screen.findByRole("region", { name: "ホームの通知" }));
+    const panel = within(await screen.findByRole("region", { name: "通知" }));
     await userEvent.click(await panel.findByRole("button", { name: "過去の通知を読む" }));
     await expect(await panel.findByText("Older peer")).toBeVisible();
     await userEvent.click(await panel.findByRole("button", { name: "承認" }));
@@ -527,9 +548,147 @@ export const ActivityPubMfmReply: Story = {
   play: playForImplementation(async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     await expect((await canvas.findByText("装飾付きの返信")).tagName).toBe("STRONG");
-    await expect(canvas.getByRole("img", { name: ":blobcat:" })).toHaveAttribute(
+    const card = within(await canvas.findByRole("listitem", { name: /Bob.*返信/ }));
+    await expect(card.getByRole("img", { name: ":blobcat:" })).toHaveAttribute(
       "src",
       expect.stringContaining("/api/activitypub/emoji-images/"),
     );
+  }),
+};
+
+const mixedLocal = [
+  { ...storyNotifications[0]!, created_at: "2026-11-01T12:00:00Z" },
+  { ...storyNotifications[2]!, created_at: "2026-11-01T10:00:00Z" },
+];
+const mixedRemote = [
+  {
+    ...activityPubNotifications[2]!,
+    id: "remote-reaction",
+    display_name: "Remote Fox",
+    reaction: "🦊",
+    created_at: "2026-11-01T11:30:00Z",
+  },
+  {
+    ...activityPubNotifications[2]!,
+    id: "remote-reply",
+    display_name: "Remote Reply",
+    kind: "reply" as const,
+    content: "外部から届いた返信",
+    created_at: "2026-11-01T11:00:00Z",
+  },
+  { ...activityPubNotifications[0]!, created_at: "2026-11-01T09:00:00Z" },
+];
+export const UnifiedTimeline: Story = {
+  decorators: [withUnreadPreview],
+  parameters: {
+    collections: { ...storyCollections, notifications: mixedLocal },
+    msw: {
+      handlers: [
+        http.get("*/api/activitypub/notifications", () =>
+          HttpResponse.json({ items: mixedRemote, unread_count: 3 }),
+        ),
+      ],
+    },
+  },
+  play: playForImplementation(async () => {
+    const list = await readyNotificationsList();
+    const rows = Array.from(list.children);
+    await expect(rows).toHaveLength(5);
+    await expect(rows.map((row) => row.getAttribute("aria-label"))).toEqual([
+      expect.stringMatching(/Bob.*メンション/),
+      expect.stringMatching(/Remote Fox.*リアクション/),
+      expect.stringMatching(/Remote Reply.*返信/),
+      expect.stringMatching(/Bob.*リアクション/),
+      expect.stringMatching(/Bob.*フォロー申請/),
+    ]);
+    await expect(rows[1].querySelector("[data-notification-reaction]")).toHaveTextContent("🦊");
+    await expect(rows[3].querySelector("[data-notification-reaction]")).not.toBeNull();
+    await expect(
+      within(list).queryByText("さんが投稿にリアクションしました"),
+    ).not.toBeInTheDocument();
+    await expect(screen.queryByRole("heading", { name: "ホームの通知" })).not.toBeInTheDocument();
+  }),
+};
+export const UnifiedTimelineMobile: Story = {
+  ...UnifiedTimeline,
+  globals: { viewport: { value: "mobile" } },
+};
+
+let automaticallyRead: string[] = [];
+let autoItems = structuredClone(mixedRemote);
+export const UnifiedAutoRead: Story = {
+  decorators: [withForegroundPreview],
+  beforeEach: () => {
+    automaticallyRead = [];
+    autoItems = structuredClone(mixedRemote);
+  },
+  parameters: {
+    collections: { ...storyCollections, notifications: mixedLocal },
+    fixtureControls: {
+      assertFederatedAutoRead: () =>
+        waitFor(() => expect(automaticallyRead.length).toBeGreaterThan(0)),
+    },
+    msw: {
+      handlers: [
+        http.patch("*/api/notifications/:id/read", () =>
+          HttpResponse.json({ data: { is_read: true }, txid: null }),
+        ),
+        http.get("*/api/activitypub/notifications", () =>
+          HttpResponse.json({
+            items: autoItems,
+            unread_count: autoItems.filter((row) => !row.is_read).length,
+          }),
+        ),
+        http.post("*/api/activitypub/notifications/read", async ({ request }) => {
+          const body = (await request.json()) as { ids?: string[] };
+          if (!body.ids?.length) return new HttpResponse(null, { status: 400 });
+          automaticallyRead.push(...body.ids);
+          autoItems = autoItems.map((item) =>
+            body.ids!.includes(item.id) ? { ...item, is_read: true } : item,
+          );
+          return HttpResponse.json({ ok: true });
+        }),
+      ],
+    },
+  },
+  play: playForImplementation(async () => {
+    await readyNotificationsList();
+    await waitFor(() => expect(automaticallyRead).toContain("remote-reaction"));
+    await waitFor(() => expect(automaticallyRead).toContain("remote-reply"));
+    await expect(autoItems.find((row) => row.id === "remote-reaction")?.is_read).toBe(true);
+  }),
+};
+
+export const CustomReactionBadge: Story = {
+  decorators: [withUnreadPreview],
+  parameters: {
+    collections: { ...storyCollections, notifications: [] },
+    msw: {
+      handlers: [
+        http.get("*/api/activitypub/notifications", () =>
+          HttpResponse.json({
+            items: [
+              {
+                ...mixedRemote[0],
+                display_name: "Remote Blob",
+                reaction: blobcat.name,
+                emoji: blobcat,
+              },
+            ],
+            unread_count: 1,
+          }),
+        ),
+      ],
+    },
+  },
+  play: playForImplementation(async () => {
+    const list = await readyNotificationsList();
+    const badge = list.querySelector("[data-notification-reaction]")!;
+    await expect(badge).toHaveAttribute("aria-label", blobcat.name);
+    await expect(badge.querySelector("img")).toHaveAttribute(
+      "src",
+      expect.stringContaining("/api/activitypub/emoji-images/"),
+    );
+    await expect(badge.getBoundingClientRect().width).toBeLessThanOrEqual(20);
   }),
 };

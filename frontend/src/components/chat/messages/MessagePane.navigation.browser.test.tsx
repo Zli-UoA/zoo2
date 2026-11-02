@@ -9,7 +9,7 @@ const fixture = vi.hoisted(() => {
     channel_id: "general",
     user_id: "alice",
     content: "Old thread",
-    parent_id: null,
+    parent_id: null as string | null,
     created_at: "2020-01-01T00:00:00.000Z",
     updated_at: null,
     deleted_at: null as string | null,
@@ -63,7 +63,10 @@ vi.mock("../../../hooks/useRealtime", () => ({
   useMessageReactions: () => ({ data: fixture.reactions, isLoading: false, isError: false }),
   useMessageFeed: (_channel: string, { since }: { since: string }) => ({
     data:
-      fixture.exists && !fixture.root.deleted_at && since <= fixture.root.created_at
+      fixture.exists &&
+      !fixture.root.deleted_at &&
+      !fixture.root.parent_id &&
+      since <= fixture.root.created_at
         ? fixture.rows
         : fixture.empty,
     isLoading: false,
@@ -76,6 +79,9 @@ vi.mock("../../../hooks/useAttachments", () => ({
 }));
 vi.mock("../../../hooks/useThread", () => ({
   useReplyCounts: () => new Map(),
+  useThreadRoot: () => ({
+    data: fixture.exists && !fixture.root.deleted_at ? fixture.rows : fixture.empty,
+  }),
   useThreadFeed: () => ({ data: fixture.empty, isLoading: false, isError: false }),
 }));
 vi.mock("../../../hooks/useTyping", () => ({
@@ -109,6 +115,7 @@ vi.mock("./ReactionPicker", () => ({ ReactionPicker: () => null }));
 beforeEach(() => {
   fixture.exists = true;
   fixture.root.deleted_at = null;
+  fixture.root.parent_id = null;
   fixture.users = [];
   fixture.reactions = [];
   fixture.closeThread.mockClear();
@@ -133,6 +140,16 @@ describe("thread URLs outside the initial message window", () => {
     expect(await screen.findByText("Alice (@alice)")).toBeTruthy();
   });
   it("waits for an existing older root instead of closing its thread", async () => {
+    render(
+      <LocaleProvider>
+        <MessagePane channelId="general" isMember={false} />
+      </LocaleProvider>,
+    );
+    await screen.findByText("Old thread");
+    expect(fixture.closeThread).not.toHaveBeenCalled();
+  });
+  it("keeps a reply visible when it becomes the root of a child thread", async () => {
+    fixture.root.parent_id = "ancestor";
     render(
       <LocaleProvider>
         <MessagePane channelId="general" isMember={false} />
