@@ -1,6 +1,7 @@
 import { expect, test, type Page } from "@playwright/test";
 import {
   fillControl as fill,
+  clickControl as click,
   expectControlValue as value,
   type Implementation,
 } from "./compose-control-input";
@@ -91,11 +92,9 @@ for (const implementation of ["react", "kotlin"] as const) {
     await fill(page, name, "contract-channel", implementation);
     await fill(page, description, "contract description", implementation);
     const privacy = root.getByRole("checkbox", { name: "非公開にする", exact: true });
-    await privacy.click({ force: implementation === "kotlin" });
+    await click(privacy, implementation);
     await expect(privacy).toBeChecked();
-    await dialog
-      .getByRole("button", { name: "キャンセル", exact: true })
-      .click({ force: implementation === "kotlin" });
+    await click(dialog.getByRole("button", { name: "キャンセル", exact: true }), implementation);
     await expect.poll(() => closeCalls(page, id)).toEqual([[false]]);
     await expect(dialog).toBeVisible();
     await value(name, "", implementation);
@@ -110,9 +109,7 @@ for (const implementation of ["react", "kotlin"] as const) {
     const description = root.getByRole("textbox", { name: "説明（任意）", exact: true });
     await fill(page, name, "contract-renamed", implementation);
     await fill(page, description, "edited description", implementation);
-    await dialog
-      .getByRole("button", { name: "キャンセル", exact: true })
-      .click({ force: implementation === "kotlin" });
+    await click(dialog.getByRole("button", { name: "キャンセル", exact: true }), implementation);
     await expect.poll(() => closeCalls(page, id)).toEqual([[false]]);
     await expect(dialog).toBeVisible();
     await value(name, "contract-renamed", implementation);
@@ -131,12 +128,10 @@ for (const implementation of ["react", "kotlin"] as const) {
     await fill(page, search, "Bob", implementation);
     const bob = root.getByRole("option", { name: /\bBob\b/ });
     await expect(bob).toBeVisible();
-    await bob.click({ force: implementation === "kotlin" });
+    await click(bob, implementation);
     const selected = root.getByRole("button", { name: /Bob.*削除|Bob.*外す/ });
     await expect(selected).toBeVisible();
-    await dialog
-      .getByRole("button", { name: "キャンセル", exact: true })
-      .click({ force: implementation === "kotlin" });
+    await click(dialog.getByRole("button", { name: "キャンセル", exact: true }), implementation);
     await expect.poll(() => closeCalls(page, id)).toEqual([[false]]);
     await expect(dialog).toBeVisible();
     await expect(selected).toBeHidden();

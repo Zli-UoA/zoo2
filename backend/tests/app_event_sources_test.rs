@@ -1888,11 +1888,18 @@ async fn http_dispatch_batches_messages_and_keeps_revocation_only_apps_eligible(
         )
         .await;
     }
-    let state = f.state.clone();
-    let worker = tokio::spawn(async move { apps::delivery::worker(state).await });
-    let result=tokio::time::timeout(std::time::Duration::from_secs(2),async{loop{let mut db=f.state.db.clone();let mut tx=db.transaction().await.unwrap();let count=apps::one(&mut tx,"SELECT json_build_object('attempted',count(*))::text FROM app_deliveries WHERE installation_id=$1 AND event_type='message.created' AND attempts>0",&[&f.installation]).await.unwrap();if count["attempted"].as_u64().unwrap()>=12 {break;}tokio::time::sleep(std::time::Duration::from_millis(20)).await;}}).await;
-    worker.abort();
-    result?;
+    // Exercise a complete batch directly. Counting twelve attempts after one pass
+    // detects a one-event-per-tick regression without relying on CI finishing in 2s.
+    tokio::time::timeout(
+        std::time::Duration::from_secs(15),
+        apps::delivery::http_pass(&f.state),
+    )
+    .await??;
+    let mut db = f.state.db.clone();
+    let mut tx = db.transaction().await?;
+    let count = apps::one(&mut tx, "SELECT json_build_object('attempted',count(*))::text FROM app_deliveries WHERE installation_id=$1 AND event_type='message.created' AND attempts>0", &[&f.installation]).await?;
+    assert_eq!(count["attempted"], 12);
+    drop(tx);
     ok(
         &f.app,
         "POST",
@@ -1901,11 +1908,17 @@ async fn http_dispatch_batches_messages_and_keeps_revocation_only_apps_eligible(
         Value::Null,
     )
     .await;
-    let state = f.state.clone();
-    let worker = tokio::spawn(async move { apps::delivery::worker(state).await });
-    let result=tokio::time::timeout(std::time::Duration::from_secs(2),async{loop{let mut db=f.state.db.clone();let mut tx=db.transaction().await.unwrap();let count=apps::one(&mut tx,"SELECT json_build_object('attempted',count(*))::text FROM app_deliveries WHERE installation_id=$1 AND event_type='tokens.revoked' AND attempts>0",&[&f.installation]).await.unwrap();if count["attempted"].as_u64().unwrap()>0 {break;}tokio::time::sleep(std::time::Duration::from_millis(20)).await;}}).await;
-    worker.abort();
-    result?;
+    tokio::time::timeout(
+        std::time::Duration::from_secs(15),
+        apps::delivery::http_pass(&f.state),
+    )
+    .await??;
+    let mut tx = db.transaction().await?;
+    let count = apps::one(&mut tx, "SELECT json_build_object('attempted',count(*))::text FROM app_deliveries WHERE installation_id=$1 AND event_type='tokens.revoked' AND attempts>0", &[&f.installation]).await?;
+    assert_eq!(
+        count["attempted"], 1,
+        "disabled Apps must still dispatch revocation events"
+    );
     Ok(())
 }
 

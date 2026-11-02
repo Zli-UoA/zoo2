@@ -2,7 +2,7 @@ import { http, HttpResponse } from "msw";
 import { federatedReactionFixture } from "../../../../.storybook/message-fixtures";
 import { playForImplementation } from "../../../../.storybook/play-for-implementation";
 import type { Meta, StoryObj } from "@storybook/react-vite";
-import { expect, screen, userEvent } from "storybook/test";
+import { expect, screen, userEvent, waitFor } from "storybook/test";
 import type { ReactNode } from "react";
 
 import { StoryShell } from "../../../../.storybook/shell";
@@ -85,6 +85,6 @@ export const FederatedReactions: Story = {
     ).toBeVisible();
     const users = screen.getAllByRole("button", { name: "👍 にリアクションしたユーザーを表示" });
     await userEvent.click(users[0]!);
-    await expect(await screen.findByText("Peer (@peer@remote.example)")).toBeVisible();
+    await waitFor(() => expect(screen.getByText("Peer (@peer@remote.example)")).toBeVisible());
   }),
 };
