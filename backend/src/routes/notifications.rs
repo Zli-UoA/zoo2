@@ -61,6 +61,10 @@ pub struct ReadAllResponse {
 
 pub fn router() -> Router<AppState> {
     Router::new()
+        .route(
+            "/api/notifications/read",
+            post(mark_selected_notifications_read),
+        )
         .route("/api/notifications/{id}/context", get(notification_context))
         .route(
             "/api/notifications/{id}/read",
@@ -217,19 +221,51 @@ async fn mark_notification_read(
         )));
     }
 
-    Notification::update_by_id(id.as_str())
-        .is_read(true)
-        .exec(&mut tx)
-        .await?;
+    let result =
+        crate::notifications::mark_read(&mut tx, &auth_user.id, Some(&[id]), Some("channel"), None)
+            .await?;
 
     let mut updated = notification;
     updated.is_read = true;
 
-    let txid = get_current_txid(&mut tx).await?;
+    let txid = if result.channel_changed {
+        Some(get_current_txid(&mut tx).await?)
+    } else {
+        None
+    };
     tx.commit().await?;
 
     Ok(Json(ApiResponse::new(
         NotificationResponse::from(updated),
+        txid,
+    )))
+}
+
+#[derive(Deserialize)]
+struct ReadNotificationsRequest {
+    ids: Vec<String>,
+}
+
+/// Source-independent selection; omitted IDs must never accidentally mean read-all.
+async fn mark_selected_notifications_read(
+    State(state): State<AppState>,
+    auth_user: AuthUser,
+    Json(body): Json<ReadNotificationsRequest>,
+) -> Result<Json<ApiResponse<ReadAllResponse>>, AppError> {
+    let mut db = state.db.clone();
+    let mut tx = db.transaction().await?;
+    let result =
+        crate::notifications::mark_read(&mut tx, &auth_user.id, Some(&body.ids), None, None)
+            .await?;
+    let updated_count = result.updated_count;
+    let txid = if result.channel_changed {
+        Some(get_current_txid(&mut tx).await?)
+    } else {
+        None
+    };
+    tx.commit().await?;
+    Ok(Json(ApiResponse::new(
+        ReadAllResponse { updated_count },
         txid,
     )))
 }
@@ -257,21 +293,16 @@ async fn mark_all_notifications_read(
     let mut db = state.db.clone();
     let mut tx = db.transaction().await?;
 
-    let sql = if let Some(ref ch_id) = channel_id_opt {
-        format!(
-            "UPDATE notifications SET is_read = true WHERE user_id = '{}' AND channel_id = '{}' AND is_read = false RETURNING id",
-            auth_user.id, ch_id
-        )
-    } else {
-        format!(
-            "UPDATE notifications SET is_read = true WHERE user_id = '{}' AND is_read = false RETURNING id",
-            auth_user.id
-        )
-    };
+    let result = crate::notifications::mark_read(
+        &mut tx,
+        &auth_user.id,
+        None,
+        None,
+        channel_id_opt.as_deref(),
+    )
+    .await?;
 
-    let rows = toasty::sql::query(&sql).exec(&mut tx).await?;
-    let updated_count = rows.len();
-
+    let updated_count = result.updated_count;
     if updated_count == 0 {
         return Ok(Json(ApiResponse::new(
             ReadAllResponse { updated_count: 0 },
@@ -279,7 +310,11 @@ async fn mark_all_notifications_read(
         )));
     }
 
-    let txid = get_current_txid(&mut tx).await?;
+    let txid = if result.channel_changed {
+        Some(get_current_txid(&mut tx).await?)
+    } else {
+        None
+    };
     tx.commit().await?;
 
     Ok(Json(ApiResponse::new(

@@ -6,6 +6,63 @@ use crate::{
     models::{Channel, ChannelUser, Message, Notification, User, now_utc_millis},
 };
 
+pub(crate) async fn create_federated_notification(
+    tx: &mut toasty::Transaction<'_>,
+    user: &str,
+    actor: &str,
+    activity: &str,
+    kind: &str,
+    post: &str,
+) -> Result<(), AppError> {
+    toasty::sql::statement("INSERT INTO notification_events(id,user_id,actor_id,activity_id,notification_type,post_id,source) VALUES($1,$2,$3,$4,$5,NULLIF($6,''),'activitypub') ON CONFLICT DO NOTHING")
+        .bind(uuid::Uuid::new_v4().to_string()).bind(user).bind(actor).bind(activity).bind(kind).bind(post).exec(tx).await?;
+    Ok(())
+}
+pub struct InboxReadResult {
+    pub updated_count: usize,
+    /// Only return an Electric acknowledgement when the channel Shape can observe it.
+    pub channel_changed: bool,
+}
+
+/// Shared inbox mutation for channel and federated notifications. A missing selection
+/// means all matching rows; an empty selection is deliberately a no-op.
+pub async fn mark_read(
+    tx: &mut toasty::Transaction<'_>,
+    user: &str,
+    ids: Option<&[String]>,
+    source: Option<&str>,
+    channel: Option<&str>,
+) -> Result<InboxReadResult, AppError> {
+    if ids.is_some_and(|ids| ids.len() > 500) {
+        return Err(AppError::BadRequest(
+            "Too many notifications selected".into(),
+        ));
+    }
+    let ids_json = serde_json::json!(ids).to_string();
+    let rows = toasty::sql::query(
+        "UPDATE notification_events SET is_read=true
+         WHERE user_id=$1 AND NOT is_read
+           AND ($2::jsonb='null'::jsonb OR id IN (
+             SELECT jsonb_array_elements_text(CASE WHEN $2::jsonb='null'::jsonb THEN '[]'::jsonb ELSE $2::jsonb END)))
+           AND ($3='' OR source=$3) AND ($4='' OR channel_id=$4)
+         RETURNING source",
+    )
+    .bind(user)
+    .bind(ids_json)
+    .bind(source.unwrap_or_default())
+    .bind(channel.unwrap_or_default())
+    .exec(tx)
+    .await?;
+    let channel_changed = rows.iter().any(|row| {
+        matches!(row, toasty::stmt::Value::Record(record)
+            if matches!(record.fields.first(), Some(toasty::stmt::Value::String(source)) if source == "channel"))
+    });
+    Ok(InboxReadResult {
+        updated_count: rows.len(),
+        channel_changed,
+    })
+}
+
 #[derive(Debug, PartialEq, Eq, Clone)]
 pub struct MentionUserCandidate {
     pub raw: String,

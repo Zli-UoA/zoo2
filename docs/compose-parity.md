@@ -144,3 +144,5 @@ Reactの `useUnifiedNotifications` / `unifiedNotificationFeed` と、Kotlinの `
 ActivityPubの追加ページは既読・承認・WebSocket更新で破棄せず保持し、未取得ページより古いチャンネル通知を先に出さない。`UnifiedTimeline` / `UnifiedTimelineMobile` / `UnifiedAutoRead` と既存の承認・拒否・追加読み込みStory、両実装の専用Playwrightを検証先とする。
 
 検証: 通知関連のReact単体テスト67件・Story操作39件、API統合テスト23件、Kotlinブラウザーテスト79件とWasm配布ビルドが成功。React/Composeの1440px・390pxで新着順・アバター右下の通常／カスタム絵文字・選択IDによる自動既読を確認し、Composeの承認・拒否・追加ページ・失敗時操作も4ケース成功。フロントエンドのformat・型・lint、Storybook監査・ビルドも成功。
+
+通知のDB管理は `notification_events` に統合した。既存のReact/Compose用DTO・通知Shapeの8列は保ち、Shapeの参照先と既読APIの保存先を共通化した。クライアントの変更は不要で、両実装の全件既読が同じDB上の状態に反映される。移行・互換テーブル・API契約は [notifications.md](notifications.md) を参照する。
