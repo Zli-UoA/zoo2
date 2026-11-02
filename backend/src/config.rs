@@ -621,6 +621,7 @@ mod tests {
             dev_auth_enabled: false,
             environment: "production".to_string(),
             cors_allowed_origins: vec![],
+            webrtc_ice_servers_json: "[]".to_string(),
             s3: dummy_s3_config(),
         };
         assert!(config.validate().is_ok());
@@ -656,6 +657,7 @@ mod tests {
             dev_auth_enabled: true,
             environment: "development".to_string(),
             cors_allowed_origins: vec![],
+            webrtc_ice_servers_json: "[]".to_string(),
             s3: dummy_s3_config(),
         };
 
@@ -708,6 +710,7 @@ mod tests {
             environment: "development".to_string(),
             cors_allowed_origins: vec![],
             webrtc_ice_servers_json: json.to_string(),
+            s3: dummy_s3_config(),
         };
 
         // 正常系: 有効な STUN / TURN

@@ -652,3 +652,128 @@ async fn test_local_session_overwrite_and_unauthorized_unregister_prevention() -
 
     Ok(())
 }
+
+#[tokio::test]
+async fn test_guest_call_access_restrictions() -> anyhow::Result<()> {
+    dotenvy::dotenv().ok();
+    dotenvy::from_filename("../.env").ok();
+    let mut config = Config::from_env();
+    config.dev_auth_enabled = true;
+    let mut db = init_db(&config.database_url).await?;
+    let state = AppState::new(db.clone(), config.clone());
+    let app = create_router(state.clone());
+
+    let owner = uuid::Uuid::new_v4().to_string();
+    let guest = uuid::Uuid::new_v4().to_string();
+    let public_ch = uuid::Uuid::new_v4().to_string();
+
+    let mut tx = db.transaction().await?;
+    toasty::sql::statement(
+        "INSERT INTO users (id, user_name, display_name) VALUES ($1, $1, 'Owner')",
+    )
+    .bind(owner.as_str())
+    .exec(&mut tx)
+    .await?;
+
+    toasty::sql::statement(
+        "INSERT INTO users (id, user_name, display_name, guest_kind) VALUES ($1, $1, 'Guest', 'multi')",
+    )
+    .bind(guest.as_str())
+    .exec(&mut tx)
+    .await?;
+
+    toasty::sql::statement(
+        "INSERT INTO channels (id, channel_name, created_user_id, is_private) VALUES ($1, $1, $2, false)",
+    )
+    .bind(public_ch.as_str())
+    .bind(owner.as_str())
+    .exec(&mut tx)
+    .await?;
+
+    toasty::sql::statement(
+        "INSERT INTO channel_user (channel_id, user_id, joined_at) VALUES ($1, $2, statement_timestamp())",
+    )
+    .bind(public_ch.as_str())
+    .bind(owner.as_str())
+    .exec(&mut tx)
+    .await?;
+    tx.commit().await?;
+
+    // 公開チャンネルに通話セッションを配置
+    let session_owner = uuid::Uuid::new_v4();
+    toasty::sql::statement(
+        "INSERT INTO call_presence (
+            channel_id, session_id, user_id, user_name, display_name, is_muted, joined_at, expires_at
+         ) VALUES ($1, $2::uuid, $3, 'Owner', 'Owner', false, '2026-01-01T00:00:00Z', statement_timestamp() + interval '30 seconds')",
+    )
+    .bind(public_ch.clone())
+    .bind(session_owner.to_string())
+    .bind(owner.clone())
+    .exec(&mut db)
+    .await?;
+
+    // 1. 通常メンバー (Owner) は公開チャンネル通話を取得可能 (200 OK)
+    let (status, _) = request(
+        &app,
+        &owner,
+        "GET",
+        &format!("/api/channels/{public_ch}/call"),
+        None,
+    )
+    .await?;
+    assert_eq!(status, StatusCode::OK);
+
+    // 2. guest は未所属の公開チャンネル通話にアクセス不可 (404 Not Found) ([P1])
+    let (status, _) = request(
+        &app,
+        &guest,
+        "GET",
+        &format!("/api/channels/{public_ch}/call"),
+        None,
+    )
+    .await?;
+    assert_eq!(
+        status,
+        StatusCode::NOT_FOUND,
+        "Guest not belonging to public channel must be rejected with 404"
+    );
+
+    // 3. guest のアクティブ通話一覧 (GET /api/calls/active) に未所属公開チャンネルが含まれないこと ([P1])
+    let (status, body) = request(&app, &guest, "GET", "/api/calls/active", None).await?;
+    assert_eq!(status, StatusCode::OK);
+    let list = body.as_array().expect("array expected");
+    assert!(
+        !list.iter().any(|item| item["channel_id"] == public_ch),
+        "Guest must not see calls in public channels they haven't joined"
+    );
+
+    // 4. guest が公開チャンネルに参加した後はアクセス可能になること
+    toasty::sql::statement(
+        "INSERT INTO channel_user (channel_id, user_id, joined_at) VALUES ($1, $2, statement_timestamp())",
+    )
+    .bind(public_ch.as_str())
+    .bind(guest.as_str())
+    .exec(&mut db)
+    .await?;
+
+    let (status, body) = request(
+        &app,
+        &guest,
+        "GET",
+        &format!("/api/channels/{public_ch}/call"),
+        None,
+    )
+    .await?;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["is_active"], true);
+
+    let (status, body) = request(&app, &guest, "GET", "/api/calls/active", None).await?;
+    assert_eq!(status, StatusCode::OK);
+    let list = body.as_array().expect("array expected");
+    assert!(
+        list.iter().any(|item| item["channel_id"] == public_ch),
+        "Guest should see call after joining the channel"
+    );
+
+    Ok(())
+}

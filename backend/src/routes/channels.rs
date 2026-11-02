@@ -365,7 +365,7 @@ pub(crate) async fn delete_channel(
     let txid = get_current_txid(&mut tx).await?;
     tx.commit().await?;
 
-    state.call_registry.close_room(&state.db, &id).await;
+    state.call_registry.close_room(&state.db, &id).await?;
 
     Ok(Json(ApiResponse::new(
         ChannelResponse::from(deleted_channel),
@@ -803,7 +803,7 @@ pub(crate) async fn archive_channel(
     let txid = get_current_txid(&mut tx).await?;
     tx.commit().await?;
 
-    state.call_registry.close_room(&state.db, &id).await;
+    state.call_registry.close_room(&state.db, &id).await?;
 
     Ok(Json(ApiResponse::new(ChannelResponse::from(updated), txid)))
 }

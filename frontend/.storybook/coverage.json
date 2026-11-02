@@ -517,6 +517,10 @@
         "Mobile",
         "Pagination"
       ]
+    },
+    {
+      "file": "src/components/chat/CallBar.stories.tsx",
+      "states": ["Default", "Connecting", "Muted", "Speaking", "MultipleParticipants"]
     }
   ],
   "modules": [
@@ -566,6 +570,10 @@
     {
       "file": "src/components/chat/AppsDialog.tsx",
       "story": "src/components/chat/AppsDialog.stories.tsx"
+    },
+    {
+      "file": "src/components/chat/CallBar.tsx",
+      "story": "src/components/chat/CallBar.stories.tsx"
     },
     {
       "file": "src/components/chat/ChannelBrowserDialog.tsx",

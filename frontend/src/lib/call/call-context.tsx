@@ -36,7 +36,7 @@ const defaultCallContext: CallContextValue = {
   toggleMute: async () => {},
 };
 
-const CallContext = createContext<CallContextValue | null>(null);
+export const CallContext = createContext<CallContextValue | null>(null);
 
 function createVolumeMeter(
   stream: MediaStream,
@@ -135,6 +135,10 @@ export function CallProvider({ config: explicitConfig, children }: CallProviderP
   const callGenerationRef = useRef(0);
   const leftSessionIdsRef = useRef<Set<string>>(new Set());
   const cachedAuthHeadersRef = useRef<Headers | null>(null);
+  const lastHandledOffersRef = useRef<
+    Map<string, { signalId?: string; sdp: string; answerSdp?: string }>
+  >(new Map());
+  const muteSerialQueueRef = useRef<Promise<void>>(Promise.resolve());
 
   const sendSignalWithRetry = useCallback(
     async (
@@ -144,6 +148,19 @@ export function CallProvider({ config: explicitConfig, children }: CallProviderP
       signal: unknown,
       retries = 2,
     ) => {
+      // signal に signal_id がなければ付与して再試行間でも同一 ID を保持 ([P2])
+      const signalPayload =
+        typeof signal === "object" && signal !== null
+          ? {
+              signal_id:
+                (signal as { signal_id?: string }).signal_id ??
+                (typeof crypto !== "undefined" && crypto.randomUUID
+                  ? crypto.randomUUID()
+                  : `${Date.now()}-${Math.random()}`),
+              ...signal,
+            }
+          : signal;
+
       for (let attempt = 0; attempt <= retries; attempt++) {
         try {
           await apiClient.request(`/api/channels/${channelId}/call/signal`, {
@@ -151,7 +168,7 @@ export function CallProvider({ config: explicitConfig, children }: CallProviderP
             body: {
               session_id: mySessionId,
               target_session_id: targetSessionId,
-              signal,
+              signal: signalPayload,
             },
           });
           return;
@@ -204,6 +221,8 @@ export function CallProvider({ config: explicitConfig, children }: CallProviderP
     pendingEarlyCandidatesRef.current.clear();
     sessionUserMapRef.current.clear();
     leftSessionIdsRef.current.clear();
+    lastHandledOffersRef.current.clear();
+    muteSerialQueueRef.current = Promise.resolve();
   }, []);
 
   const closeMedia = useCallback(() => {
@@ -314,7 +333,7 @@ export function CallProvider({ config: explicitConfig, children }: CallProviderP
     const sessionId = sessionIdRef.current;
     if (!channelId || !sessionId || !localStreamRef.current) return;
 
-    const nextMuted = !isMuted;
+    const nextMuted = !isMutedRef.current;
     isMutedRef.current = nextMuted;
     for (const track of localStreamRef.current.getAudioTracks()) {
       track.enabled = !nextMuted;
@@ -326,13 +345,25 @@ export function CallProvider({ config: explicitConfig, children }: CallProviderP
       prev.map((p) => (p.session_id === sessionId ? { ...p, is_muted: nextMuted } : p)),
     );
 
-    try {
-      await apiClient.request(`/api/channels/${channelId}/call/state`, {
-        method: "POST",
-        body: { session_id: sessionId, is_muted: nextMuted },
+    // 要求を直列化キューで順次送信し、並列 POST による追い越し・逆転を排除 ([P2])
+    const currentPromise = muteSerialQueueRef.current
+      .then(async () => {
+        const currentChannel = currentChannelIdRef.current;
+        const currentSession = sessionIdRef.current;
+        if (!currentChannel || !currentSession) return;
+        const targetMuted = isMutedRef.current;
+        await apiClient.request(`/api/channels/${currentChannel}/call/state`, {
+          method: "POST",
+          body: { session_id: currentSession, is_muted: targetMuted },
+        });
+      })
+      .catch((err) => {
+        console.error("Failed to sync mute state to server", err);
       });
-    } catch {}
-  }, [apiClient, isMuted]);
+
+    muteSerialQueueRef.current = currentPromise;
+    await currentPromise;
+  }, [apiClient]);
 
   const updateSpeakingUser = useCallback((userId: string, isSpeaking: boolean) => {
     setSpeakingUserIds((prev) => {
@@ -668,6 +699,29 @@ export function CallProvider({ config: explicitConfig, children }: CallProviderP
             if (!fromSid || !signal) return;
 
             if (signal.type === "offer" && signal.sdp) {
+              const lastHandled = lastHandledOffersRef.current.get(fromSid);
+              const signalId = (signal as { signal_id?: string }).signal_id;
+              const isDuplicate =
+                lastHandled &&
+                ((signalId && lastHandled.signalId === signalId) || lastHandled.sdp === signal.sdp);
+
+              const existingEntry = peersRef.current.get(fromSid);
+              if (isDuplicate && existingEntry && existingEntry.pc.signalingState !== "closed") {
+                // 再送された同一 Offer の重複処理を防止 ([P2]):
+                // 既存の PeerConnection を破壊せず、生成済み Answer を再送するか処理をスキップする
+                if (lastHandled.answerSdp) {
+                  try {
+                    await sendSignalWithRetry(channelId, mySessionId, fromSid, {
+                      type: "answer",
+                      sdp: lastHandled.answerSdp,
+                    });
+                  } catch (reErr) {
+                    console.error("Failed to resend answer for duplicated offer", reErr);
+                  }
+                }
+                return;
+              }
+
               const targetUserId =
                 sessionUserMapRef.current.get(fromSid) ??
                 participantsRef.current.find((p) => p.session_id === fromSid)?.user_id ??
@@ -696,6 +750,12 @@ export function CallProvider({ config: explicitConfig, children }: CallProviderP
 
                 const answer = await pc.createAnswer();
                 await pc.setLocalDescription(answer);
+
+                lastHandledOffersRef.current.set(fromSid, {
+                  signalId,
+                  sdp: signal.sdp,
+                  answerSdp: answer.sdp,
+                });
 
                 await sendSignalWithRetry(channelId, mySessionId, fromSid, {
                   type: "answer",
@@ -816,29 +876,45 @@ export function CallProvider({ config: explicitConfig, children }: CallProviderP
               // 既に PeerConnection が存在する場合は重複作成しない。
               // セッション ID の辞書順比較で小さい側のみが Offer を送信する。
               for (const p of validRoomParticipants) {
+                if (callGenerationRef.current !== currentGen) return;
                 if (p.session_id === mySessionId) continue;
                 if (peersRef.current.has(p.session_id)) continue;
                 if (mySessionId.localeCompare(p.session_id) < 0) {
                   const pc = createPeer(channelId, mySessionId, p.session_id, p.user_id, ice);
                   try {
                     const offer = await pc.createOffer();
+                    if (callGenerationRef.current !== currentGen) {
+                      pc.close();
+                      return;
+                    }
                     await pc.setLocalDescription(offer);
+                    if (callGenerationRef.current !== currentGen) {
+                      pc.close();
+                      return;
+                    }
                     await sendSignalWithRetry(channelId, mySessionId, p.session_id, {
                       type: "offer",
                       sdp: offer.sdp,
                     });
+                    if (callGenerationRef.current !== currentGen) {
+                      pc.close();
+                      return;
+                    }
                   } catch (offerErr) {
                     console.error("Failed to send offer", offerErr);
                   }
                 }
               }
 
+              if (callGenerationRef.current !== currentGen) return;
               hasReceivedRoomState = true;
 
               // room_state 到着前に受信した先行イベントを順次再生 ([P2])
               while (pendingEarlyEvents.length > 0) {
+                if (callGenerationRef.current !== currentGen) return;
                 const pending = pendingEarlyEvents.shift()!;
                 await handleNonRoomStateEvent(pending.eventType, pending.data);
+                if (callGenerationRef.current !== currentGen) return;
               }
             } else if (!hasReceivedRoomState) {
               // room_state 受信前の場合: participant_left は即時記録し、イベントは保留 ([P2])
