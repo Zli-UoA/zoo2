@@ -112,3 +112,11 @@ Reactの `useMessageReactions` とKotlinの `Chat` は、Electricのローカル
 TLの `HomeScreen` / `HomePostCard` ではチャンネルと共通の `ActivityPubBadge` を日時横に配置します。追加したVisibilityBadges・MobileとFederatedReactions、および既存Federated・CrossPostのStoryを確認対象としています。
 
 今回の検証結果: Reactユニット825件、Kotlinブラウザ75件、Home / MessagePaneのStory65件、追加・変更5状態のReact/Kotlin操作・表示確認、ActivityPub結合17件、通常リアクション結合6件が成功しました。型・lint・format・Storybook監査・ビルド、Compose配布ビルド、マイグレーションの検証に加え、空DBにマイグレーションを再適用したスキーマと `schema.sql` の一致も確認しています。390pxの両実装で日時と公開範囲アイコンの隣接を確認しました。
+
+### PR #311 レビュー対応
+
+React `useFederatedReactions` と共通Kotlin `ChannelReactions` はHome通知をまとめ、初回取得後の再取得を最短5秒間隔に制限する。チャンネル変更・画面破棄では保留処理を停止する。Homeのリアクションチップは両実装ともAPIの `can_react` を反映し、チャンネル紐付け投稿の未登録外部絵文字を無効にする（自分の既存リアクションの取り消しは許可）。単独・外部投稿の受信済み絵文字は同じAPIで再利用する。
+
+共有 `EmojiFallback` Storyは画像失敗時の文字表示と紐付け投稿の無効チップをReact・実Kotlinで検証する。再取得通知の集約はReactの仮想時計テスト、通知元はPostgreSQLの無変更更新／実更新テストで確認する。
+
+検証: Kotlinブラウザ契約75件・Wasm配布ビルド成功。React Home Story60件成功。共有3状態（MisskeyCustomEmoji・MobileMisskey・EmojiFallback）は再生成したKotlin成果物で両実装のplayと描画を検証し、全件成功。画像差分の完全一致はこの検証の対象外。

@@ -32,7 +32,10 @@ pub fn router() -> Router<AppState> {
         .route("/api/emojis", get(emojis).post(put_emoji))
         .route(
             "/api/emojis/upload",
-            post(upload_emoji).layer(axum::extract::DefaultBodyLimit::max(3 * 1024 * 1024)),
+            get(upload_named_emoji)
+                .post(upload_emoji)
+                .delete(remove_upload_named_emoji)
+                .layer(axum::extract::DefaultBodyLimit::max(3 * 1024 * 1024)),
         )
         .route("/api/emoji-images/{id}", get(emoji_image))
         .route("/api/emojis/{name}", get(emoji).delete(remove_emoji))
@@ -95,7 +98,10 @@ pub fn router() -> Router<AppState> {
         .route("/api/apps/v1/emojis", get(emojis).post(put_emoji))
         .route(
             "/api/apps/v1/emojis/upload",
-            post(upload_emoji).layer(axum::extract::DefaultBodyLimit::max(3 * 1024 * 1024)),
+            get(upload_named_emoji)
+                .post(upload_emoji)
+                .delete(remove_upload_named_emoji)
+                .layer(axum::extract::DefaultBodyLimit::max(3 * 1024 * 1024)),
         )
         .route(
             "/api/apps/v1/emojis/{name}",
@@ -568,6 +574,13 @@ async fn emojis(State(s): State<AppState>, a: Actor) -> Result<Json<Value>, AppE
         )
         .await?
     )))
+}
+// Static upload routes must retain GET/DELETE for the valid shortcode `upload`.
+async fn upload_named_emoji(s: State<AppState>, a: Actor) -> Result<Json<Value>, AppError> {
+    emoji(s, a, Path("upload".to_owned())).await
+}
+async fn remove_upload_named_emoji(s: State<AppState>, a: Actor) -> Result<Json<Value>, AppError> {
+    remove_emoji(s, a, Path("upload".to_owned())).await
 }
 async fn emoji(
     State(s): State<AppState>,
@@ -1813,35 +1826,54 @@ async fn upload_emoji(
 async fn emoji_image(
     State(s): State<AppState>,
     Path(id): Path<String>,
+    request: axum::extract::Request,
 ) -> Result<axum::response::Response, AppError> {
+    use crate::activitypub::{client_ip, emoji_cache};
     use axum::response::IntoResponse;
     let id = uuid::Uuid::parse_str(&id)
         .map_err(|_| AppError::NotFound("Emoji image not found".into()))?;
-    let image = s
-        .s3_client
-        .get_object()
-        .bucket(&s.config.s3.bucket)
-        .key(format!("custom-emojis/{id}"))
-        .send()
-        .await
-        .map_err(|_| AppError::NotFound("Emoji image not found".into()))?;
-    let mime = image
-        .content_type()
-        .unwrap_or("application/octet-stream")
-        .to_owned();
-    let bytes = image
-        .body
-        .collect()
-        .await
-        .map_err(|_| AppError::Internal(anyhow::anyhow!("Emoji image read failed")))?
-        .into_bytes();
+    let peer = request
+        .extensions()
+        .get::<axum::extract::ConnectInfo<std::net::SocketAddr>>()
+        .map(|v| v.0.ip());
+    let peer = client_ip::resolve(
+        peer,
+        request.headers(),
+        matches!(
+            std::env::var("ACTIVITYPUB_CLOUDFLARE_TUNNEL").as_deref(),
+            Ok("true" | "1")
+        ),
+    )?;
+    let image = emoji_cache::get(&format!("local:{id}"), peer, || async {
+        let image = s
+            .s3_client
+            .get_object()
+            .bucket(&s.config.s3.bucket)
+            .key(format!("custom-emojis/{id}"))
+            .send()
+            .await
+            .map_err(|_| AppError::NotFound("Emoji image not found".into()))?;
+        let mime = image
+            .content_type()
+            .unwrap_or("application/octet-stream")
+            .to_owned();
+        let bytes = image
+            .body
+            .collect()
+            .await
+            .map_err(|_| AppError::Internal(anyhow::anyhow!("Emoji image read failed")))?
+            .into_bytes()
+            .to_vec();
+        Ok(emoji_cache::Image { mime, bytes })
+    })
+    .await?;
     Ok((
         [
-            ("content-type", mime.as_str()),
+            ("content-type", image.mime.as_str()),
             ("cache-control", "public, max-age=31536000, immutable"),
             ("x-content-type-options", "nosniff"),
         ],
-        bytes,
+        image.bytes,
     )
         .into_response())
 }

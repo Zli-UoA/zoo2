@@ -1494,6 +1494,50 @@ async fn misskey_custom_reactions_preserve_tags_replace_with_undo_and_proxy_only
         local_row["reactions"][0]["emoji"]["image_id"],
         remote_emoji["image_id"]
     );
+    // A received descriptor is reusable without being imported into the registry.
+    assert_eq!(
+        request(
+            &f.app,
+            "POST",
+            Some(&f.user),
+            "/api/activitypub/reactions",
+            Some(
+                json!({"post_id":post,"reaction":":blobcat:","emoji_id":remote_emoji["image_id"]})
+            )
+        )
+        .await?
+        .0,
+        StatusCode::OK
+    );
+    let (_, received_options) = request(
+        &f.app,
+        "GET",
+        Some(&f.user),
+        &format!("/api/activitypub/reaction-options?post_id={encoded}"),
+        None,
+    )
+    .await?;
+    assert!(
+        received_options["emojis"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|e| e["image_id"] == remote_emoji["image_id"])
+    );
+    assert_eq!(
+        request(
+            &f.app,
+            "POST",
+            Some(&f.user),
+            "/api/activitypub/reactions",
+            Some(
+                json!({"post_id":local,"reaction":":blobcat:","emoji_id":remote_emoji["image_id"]})
+            )
+        )
+        .await?
+        .0,
+        StatusCode::OK
+    );
     let undo = peer_activity(&f, "Undo", incoming["id"].clone());
     assert_eq!(receive_peer(&f, &undo).await?, StatusCode::ACCEPTED);
     toasty::sql::statement("INSERT INTO apub_emoji_images(id,url) VALUES('private-test','https://127.0.0.1/secret') ON CONFLICT DO NOTHING").exec(&mut f.db).await?;
@@ -2761,6 +2805,22 @@ async fn channel_linked_posts_share_local_and_remote_reactions() -> anyhow::Resu
     )
     .await?;
     assert!(overlay[0]["emoji"].as_str().unwrap().starts_with("apub:"));
+    let (_, feed) = request(&f.app, "GET", Some(&f.user), "/api/home", None).await?;
+    let linked = feed
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|p| p["id"] == id)
+        .unwrap();
+    let foreign = linked["reactions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|r| r["reaction"] == ":remote_cat:")
+        .unwrap();
+    assert_eq!(foreign["can_react"], false);
+    assert_eq!(request(&f.app,"POST",Some(&f.user),"/api/activitypub/reactions",Some(json!({"post_id":id,"reaction":":remote_cat:","emoji_id":foreign["emoji"]["image_id"]}))).await?.0,StatusCode::BAD_REQUEST);
+
     assert!(
         overlay[0]["emoji"]
             .as_str()

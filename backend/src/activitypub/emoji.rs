@@ -1,4 +1,4 @@
-//! Misskey's Emoji tags and reaction catalog. Images never bypass the server's DNS/SSRF policy.
+//! Misskey's Emoji tags and received reaction options. Images never bypass the server's DNS/SSRF policy.
 use super::*;
 use crate::auth::AuthUser;
 use axum::{
@@ -110,11 +110,29 @@ async fn options(
     user: AuthUser,
     Query(input): Query<Options>,
 ) -> Result<Json<Value>, AppError> {
-    interactions::target(&state, &user, &input.post_id).await?;
+    let target = interactions::target(&state, &user, &input.post_id).await?;
     let mut db = state.db.clone();
     let mut tx = db.transaction().await?;
-    let values = workspace_options(&mut tx).await?;
+    let mut values = workspace_options(&mut tx).await?;
+    if target["channel_id"].is_null() {
+        for descriptor in received_options(&mut tx, &input.post_id).await? {
+            if !values
+                .iter()
+                .any(|e| e["image_id"] == descriptor["image_id"] && e["name"] == descriptor["name"])
+            {
+                values.push(descriptor);
+            }
+        }
+    }
     Ok(Json(json!({"software":"zoo","emojis":values})))
+}
+
+// Only descriptors already received on this authorized target; never fetch a catalog.
+pub(super) async fn received_options(
+    tx: &mut toasty::Transaction<'_>,
+    post_id: &str,
+) -> Result<Vec<Value>, AppError> {
+    query(tx, "SELECT e::text FROM apub_remote_posts p CROSS JOIN LATERAL jsonb_array_elements(p.emojis) e WHERE p.id=$1 UNION SELECT emoji::text FROM apub_reactions WHERE post_id=$1 AND emoji IS NOT NULL", &[post_id]).await
 }
 
 pub(crate) async fn workspace_options(

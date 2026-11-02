@@ -78,7 +78,13 @@ export interface HomePost {
   emojis?: CustomEmoji[];
   actor_emojis?: CustomEmoji[];
   avatar?: RemoteAvatar | null;
-  reactions?: { reaction: string; emoji: CustomEmoji | null; count: number; selected: boolean }[];
+  reactions?: {
+    reaction: string;
+    emoji: CustomEmoji | null;
+    count: number;
+    selected: boolean;
+    can_react?: boolean;
+  }[];
   replies?: number;
   reposts?: number;
   reposted?: boolean;
@@ -584,7 +590,9 @@ function HomeScreenContent({
                               size="sm"
                               aria-label={`${r.reaction} ${r.count}`}
                               aria-pressed={r.selected}
-                              disabled={pendingLike !== null}
+                              disabled={
+                                pendingLike !== null || (r.can_react === false && !r.selected)
+                              }
                               onClick={() =>
                                 react(
                                   post,

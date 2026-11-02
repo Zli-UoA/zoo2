@@ -1,8 +1,8 @@
 //! Zoo federation: durable delivery, signed inboxes, local channel-linked posts.
 pub(crate) mod channel_reactions;
-mod client_ip;
+pub(crate) mod client_ip;
 mod emoji;
-mod emoji_cache;
+pub(crate) mod emoji_cache;
 mod inbox;
 pub(crate) mod interactions;
 mod note_identity;

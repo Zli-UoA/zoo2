@@ -1198,7 +1198,10 @@ export const EmojiFallback: Story = {
               ...misskeyPost,
               emojis: [e],
               actor_emojis: [e],
-              reactions: [{ reaction: e.name, emoji: e, count: 2, selected: false }],
+              channel_id: "channel-general",
+              reactions: [
+                { reaction: e.name, emoji: e, count: 2, selected: false, can_react: false },
+              ],
             },
           ]);
         }),
@@ -1210,6 +1213,7 @@ export const EmojiFallback: Story = {
     const canvas = within(canvasElement);
     await waitFor(() => expect(canvas.getAllByText(":blobcat:").length).toBeGreaterThanOrEqual(2));
     await expect(canvas.queryByRole("img", { name: ":blobcat:" })).not.toBeInTheDocument();
+    await expect(canvas.getByRole("button", { name: ":blobcat: 2" })).toBeDisabled();
   }),
 };
 

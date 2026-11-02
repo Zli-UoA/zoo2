@@ -173,6 +173,14 @@ async fn like(
                         .as_ref()
                         .is_none_or(|id| e["image_id"] == id.as_str())
             });
+        if selected.is_none()
+            && let Some(image_id) = body.emoji_id.as_ref()
+        {
+            selected = emoji::received_options(&mut tx, &body.post_id)
+                .await?
+                .into_iter()
+                .find(|e| e["name"] == requested && e["image_id"] == image_id.as_str());
+        }
         if selected.is_none() {
             return Err(AppError::BadRequest(
                 "Unknown or unavailable custom emoji".into(),
@@ -264,10 +272,10 @@ async fn unlike(
                 }),
             )
             .await;
-            if let Err(e) = result {
-                if !matches!(e, AppError::NotFound(_)) {
-                    return Err(e);
-                }
+            if let Err(e) = result
+                && !matches!(e, AppError::NotFound(_))
+            {
+                return Err(e);
             }
         }
         return Ok(Json(json!({"ok":true})));

@@ -684,7 +684,7 @@ pub(crate) async fn add_reaction(
     Uuid::parse_str(&id)
         .map_err(|_| AppError::BadRequest(format!("message id is not a valid UUID: {id}")))?;
 
-    let normalized_emoji = reaction_emoji(&state, &payload.emoji, true).await?;
+    let normalized_emoji = reaction_emoji(&state, &id, &payload.emoji, true).await?;
 
     let mut db = state.db.clone();
     let mut tx = db.transaction().await?;
@@ -870,7 +870,7 @@ pub(crate) async fn delete_reaction(
     Uuid::parse_str(&id)
         .map_err(|_| AppError::BadRequest(format!("message id is not a valid UUID: {id}")))?;
 
-    let normalized_emoji = reaction_emoji(&state, &query.emoji, false).await?;
+    let normalized_emoji = reaction_emoji(&state, &id, &query.emoji, false).await?;
 
     let mut db = state.db.clone();
     let mut tx = db.transaction().await?;
@@ -965,6 +965,7 @@ pub(crate) async fn delete_reaction(
 
 async fn reaction_emoji(
     state: &AppState,
+    message_id: &str,
     input: &str,
     require_existing: bool,
 ) -> Result<String, AppError> {
@@ -976,8 +977,24 @@ async fn reaction_emoji(
         let mut db = state.db.clone();
         let mut tx = db.transaction().await?;
         if let Some(emoji) = crate::apps::resources::resolve_workspace_emoji(&mut tx, name).await? {
+            // Keep a message's existing spelling across registry renames so old chips,
+            // aliases and the picker all join the same reaction group.
+            let canonical = format!(":{}:", emoji["name"].as_str().unwrap());
+            let mut spellings = vec![canonical.clone()];
+            if let Some(aliases) = emoji["aliases"].as_array() {
+                spellings.extend(
+                    aliases
+                        .iter()
+                        .filter_map(|a| a.as_str())
+                        .map(|a| format!(":{a}:")),
+                );
+            }
+            let rows = crate::apps::query(&mut tx, "SELECT to_json(emoji)::text FROM message_reactions WHERE message_id=$1 AND emoji IN (SELECT jsonb_array_elements_text($2::jsonb)) ORDER BY created_at,id LIMIT 1", &[message_id, &serde_json::json!(spellings).to_string()]).await?;
+            if let Some(name) = rows.first().and_then(|row| row.as_str()) {
+                return Ok(name.to_owned());
+            }
             return Ok(if require_existing {
-                format!(":{}:", emoji["name"].as_str().unwrap())
+                canonical
             } else {
                 input.trim().to_owned()
             });

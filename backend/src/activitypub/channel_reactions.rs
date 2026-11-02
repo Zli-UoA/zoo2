@@ -57,28 +57,40 @@ pub(crate) async fn decorate(
 ) -> Result<(), AppError> {
     let registered = emoji::workspace_options(tx).await?;
     for post in posts {
+        let linked = !post["channel_id"].is_null();
         let Some(reactions) = post["reactions"].as_array_mut() else {
             continue;
         };
         let mut merged: Vec<Value> = vec![];
         for mut reaction in std::mem::take(reactions) {
-            if !reaction["emoji"].is_object() {
-                if let Some(emoji) = registered
-                    .iter()
-                    .find(|emoji| emoji["name"] == reaction["reaction"])
-                {
-                    reaction["emoji"] = emoji.clone();
-                }
+            if !reaction["emoji"].is_object()
+                && let Some(emoji) = registered.iter().find(|emoji| {
+                    emoji["name"] == reaction["reaction"]
+                        || emoji["aliases"].as_array().is_some_and(|aliases| {
+                            aliases.iter().any(|a| {
+                                a.as_str()
+                                    .is_some_and(|a| reaction["reaction"] == format!(":{a}:"))
+                            })
+                        })
+                })
+            {
+                reaction["emoji"] = emoji.clone();
             }
-            if reaction["emoji"].is_object() {
-                if let Some(local) = registered
+            if reaction["emoji"].is_object()
+                && let Some(local) = registered
                     .iter()
                     .find(|e| e["image_id"] == reaction["emoji"]["image_id"])
-                {
-                    reaction["emoji"] = local.clone();
-                    reaction["reaction"] = local["name"].clone();
-                }
+            {
+                reaction["emoji"] = local.clone();
+                reaction["reaction"] = local["name"].clone();
             }
+            reaction["can_react"] = json!(
+                !linked
+                    || !reaction["emoji"].is_object()
+                    || registered
+                        .iter()
+                        .any(|e| e["image_id"] == reaction["emoji"]["image_id"])
+            );
             if let Some(existing) = merged.iter_mut().find(|r| {
                 r["reaction"] == reaction["reaction"]
                     && r["emoji"]["image_id"] == reaction["emoji"]["image_id"]

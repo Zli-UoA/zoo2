@@ -161,7 +161,7 @@ fun HomePostCard(
                                 Modifier.then(
                                         webControlModifier(
                                             "button",
-                                            enabled = !pending,
+                                            enabled = !pending && (item["can_react"] != kotlinx.serialization.json.JsonPrimitive(false) || item.flag("selected")),
                                             selected = item.flag("selected"),
                                             attributes = mapOf("aria-label" to label),
                                         )
@@ -177,7 +177,7 @@ fun HomePostCard(
                                         MaterialTheme.colorScheme.outlineVariant,
                                         androidx.compose.foundation.shape.RoundedCornerShape(6.dp),
                                     )
-                                    .clickable(enabled = !pending) { toggleReaction(item) }
+                                    .clickable(enabled = !pending && (item["can_react"] != kotlinx.serialization.json.JsonPrimitive(false) || item.flag("selected"))) { toggleReaction(item) }
                                     .padding(horizontal = 8.dp, vertical = 4.dp),
                                 verticalAlignment = Alignment.CenterVertically,
                                 horizontalArrangement = Arrangement.spacedBy(4.dp),

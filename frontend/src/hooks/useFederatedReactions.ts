@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createConfiguredApiClient } from "../lib/api/client";
 import { useCollections } from "../lib/electric/collections-context";
 import type { MessageReactionRow } from "../lib/electric/types";
+import { coalescedRefresh } from "../lib/coalescedRefresh";
 import { useHomeLive } from "./useHomeLive";
 
 export type FederatedReactionRow = MessageReactionRow & { display_name: string; user_name: string };
@@ -25,6 +26,7 @@ export function useFederatedReactions(channelId: string) {
         { signal: controller.signal },
       )
       .then((rows) => {
+        if (!Array.isArray(rows)) throw new Error("Invalid federated reaction response");
         if (!controller.signal.aborted) setState({ channel: channelId, rows, failed: false });
       })
       .catch(() => {
@@ -36,10 +38,18 @@ export function useFederatedReactions(channelId: string) {
           }));
       });
   }, [client, channelId]);
+  const schedule = useRef<() => void>(() => {});
   useEffect(() => {
-    refresh();
-    return () => request.current?.abort();
+    const scheduler = coalescedRefresh(refresh);
+    schedule.current = scheduler.request;
+    scheduler.request();
+    return () => {
+      schedule.current = () => {};
+      scheduler.dispose();
+      request.current?.abort();
+    };
   }, [refresh]);
-  useHomeLive(refresh);
+  const invalidate = useCallback(() => schedule.current(), []);
+  useHomeLive(invalidate);
   return state.channel === channelId ? state : { channel: channelId, rows: [], failed: false };
 }

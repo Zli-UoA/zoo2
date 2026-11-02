@@ -2261,6 +2261,41 @@ async fn custom_emoji_storage_metadata_aliases_and_permissions() -> anyhow::Resu
     assert_eq!(image.status(), StatusCode::OK);
     assert_eq!(image.headers()["content-type"], "image/png");
     assert_eq!(to_bytes(image.into_body(), usize::MAX).await?, bytes);
+    // The public route must serve a hot image without another object-store read.
+    f.state
+        .s3_client
+        .delete_object()
+        .bucket(&f.state.config.s3.bucket)
+        .key(format!("custom-emojis/{id}"))
+        .send()
+        .await?;
+    let cached = f
+        .app
+        .clone()
+        .oneshot(Request::builder().uri(url).body(Body::empty())?)
+        .await?;
+    assert_eq!(cached.status(), StatusCode::OK);
+    assert_eq!(to_bytes(cached.into_body(), usize::MAX).await?, bytes);
+    f.state
+        .s3_client
+        .put_object()
+        .bucket(&f.state.config.s3.bucket)
+        .key(format!("custom-emojis/{id}"))
+        .content_type("image/png")
+        .body(bytes.to_vec().into())
+        .send()
+        .await?;
+    let missing = f
+        .app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri(format!("/api/emoji-images/{}", Uuid::new_v4()))
+                .body(Body::empty())?,
+        )
+        .await?;
+    assert_eq!(missing.status(), StatusCode::NOT_FOUND);
+
     assert_eq!(
         request(
             &f.app,
@@ -2329,10 +2364,34 @@ async fn custom_emoji_storage_metadata_aliases_and_permissions() -> anyhow::Resu
         .await["name"],
         renamed
     );
+    // Both an old chip and the renamed picker entry must join the existing group.
+    for spelling in [&name, &renamed] {
+        let joined = ok(
+            &f.app,
+            "POST",
+            &format!("/api/messages/{mid}/reactions"),
+            &f.other,
+            json!({"emoji":format!(":{spelling}:")}),
+        )
+        .await;
+        assert_eq!(joined["data"]["emoji"], format!(":{name}:"));
+    }
+    let joined = ok(
+        &f.app,
+        "POST",
+        &format!("/api/messages/{mid}/reactions"),
+        &f.owner,
+        json!({"emoji":format!(":{renamed}:")}),
+    )
+    .await;
+    assert!(
+        joined["txid"].is_null(),
+        "renamed selection must not add another chip"
+    );
     ok(
         &f.app,
         "DELETE",
-        &format!("/api/messages/{mid}/reactions?emoji=%3A{name}%3A"),
+        &format!("/api/messages/{mid}/reactions?emoji=%3A{renamed}%3A"),
         &f.owner,
         Value::Null,
     )
@@ -2398,5 +2457,32 @@ async fn custom_emoji_storage_metadata_aliases_and_permissions() -> anyhow::Resu
         .key(format!("custom-emojis/{id}"))
         .send()
         .await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn upload_shortcode_remains_readable_and_removable() -> anyhow::Result<()> {
+    let f = fixture().await?;
+    backend::storage::ensure_bucket_exists(&f.state.s3_client, &f.state.config.s3.bucket).await;
+    for prefix in ["/api/emojis", "/api/apps/v1/emojis"] {
+        ok(&f.app, "POST", &format!("{prefix}/upload"), &f.owner, json!({"name":"upload","content_type":"image/png","data":"iVBORw0KGgoAAAANSUhEUgAAAAMAAAABCAYAAAAb4BS0AAAADklEQVR4nGP438DwH4YBMWYHe7X3S+QAAAAASUVORK5CYII="})).await;
+        let emoji = ok(
+            &f.app,
+            "GET",
+            &format!("{prefix}/upload"),
+            &f.owner,
+            Value::Null,
+        )
+        .await;
+        assert_eq!(emoji["name"], "upload");
+        ok(
+            &f.app,
+            "DELETE",
+            &format!("{prefix}/upload"),
+            &f.owner,
+            Value::Null,
+        )
+        .await;
+    }
     Ok(())
 }
