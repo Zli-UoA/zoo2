@@ -304,7 +304,7 @@ internal fun Rail(app: Session, unread: Int, narrow: Boolean) {
         }
         RailLink(app, "/home", "home", app.t("home.title"))
         RailLink(app, "/", "hash", app.t("channels.title"))
-        NotificationsButton(app, unread + app.activityPubNotifications.unreadCount)
+        NotificationsButton(app, unread + app.activityPubNotifications.unreadCount - unifiedNotificationFeed(app.repo.notifications.rows.value, app.activityPubNotifications.items).duplicateUnreadCount)
         RailLink(app, "/bubble", "message-circle-more", app.t("bubbleChat.title"))
         if (app.env.development) RailLink(app, "/realtime", "activity", app.t("sync.title"))
         Spacer(Modifier.weight(1f))

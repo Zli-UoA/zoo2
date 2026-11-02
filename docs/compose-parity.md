@@ -97,6 +97,13 @@ Android 版は `ZooApp`・`Session`・`Repository` と既存の画面／状態�
 
 検証済み: フロントの型/lint/formatとビルド、Storybook監査・Kotlin登録検査・ビルド、公開画面のReact Story 8件、共有部分の既存Home Story 6件、公開APIの結合テスト2件、KotlinのRepository/PublicProfile契約テスト8件、Wasm配布用ビルド。公開画面の実ブラウザE2EはReact/Compose各4件で、1280px・390px、匿名のHTTP要求、ページ送り、失敗後の再試行、長文と明暗テーマを確認した。Kotlinの公開プロフィールと既存プロフィールの選択したStoryも実際のCanvasで確認した。
 
+## チャンネル連携投稿と会話ツリー
+
+Homeの投稿詳細は共通の `/api/home/{id}/thread` から、閲覧可能な祖先・対象投稿・返信をツリー順で取得する。Reactの `HomeScreen`、Kotlinの `HomeTimeline` / `HomePostCard` が同じ `tree_depth` を使い、最大6段の字下げとTLでの返信先表示、本文から詳細への移動に対応する。既存の `SinglePost` Storyを祖先・子・孫の4投稿へ拡張した。
+チャンネルに紐づく投稿の編集・削除はメッセージAPIの権限検証と保存処理を共有し、Homeの返信は同じチャンネルを引き継ぐ。リアクションはmainのカスタム絵文字・外部リアクションを含む共通実装を維持する。
+チャンネルのスレッド内でも返信の子スレッドを開けるよう、Reactの `ThreadPane` とKotlinの `Chat` に同じ操作を追加した。
+検証: Reactの型・lint・format、Storybook監査・ビルド、Home/ThreadPaneのStory操作、Kotlin/Wasmのコンパイル・配布ビルド・ブラウザー単体テスト75件、Home・ActivityPub・リアクション・スレッドのAPI統合テスト28件を確認した。会話ツリーと返信先表示は両実装の1440px/390pxで専用Playwrightの4ケースを実行し、字下げ・画面幅・モバイルでのスクロール・返信先リンクを確認した。
+
 ## カスタム絵文字
 
 Reactの `ZooSettings`・`CustomEmojiPicker`・`MfmContent`・`ReactionEmoji` と、共通Kotlinの `CustomEmojis.kt`・`Settings.kt`・`RichText.kt`・`Kitchen.kt` を対応させています。両実装から同じ登録・画像アップロード・編集・削除APIを使い、カテゴリ・エイリアス検索、本文・リアクション、非正方形画像を扱います。公開プロフィールはAPIが返すEmojiタグを使います。画像は共通のS3互換バケットの専用prefixに保存し、リモート絵文字の自動カタログ取得は両UIから使われるAPIごと削除しています。
@@ -124,3 +131,27 @@ React `useFederatedReactions` と共通Kotlin `ChannelReactions` はHome通知�
 実アプリのReact・Compose共通E2E全19件も成功。新規の連合リアクションAPIをE2Eモックに追加し、Webhook登録では入力のリセットと一覧反映を順に確認する。
 
 CIの待機処理を調整: 連合リアクションのユーザー一覧はDOM生成後の表示完了まで待つ。Composeのダイアログ契約テストは、再描画でアクセシビリティノードの矩形が一時的になくなる場合、ネイティブのポインター操作を最大5秒再試行する。キャンセル通知・入力リセット・編集保持のアサーションは維持する。
+
+## Homeの画像のみの投稿
+
+Reactの `HomePostContent` は本文がある場合だけMFMを描画し、添付には共通の `MessageAttachments` を使う。Kotlinの `HomePostCard` も通常投稿と返信先プレビューで同じ添付部品を使い、空本文の案内文を挿入しない。Home APIの `attachments` は表示用メタデータだけを返し、画像URLの取得は両実装とも既存の添付APIを使う。
+`ImageOnly`・`ImageOnlyDetail`・`ReplyToImageOnly`・`TextWithImage` Storyで本文と添付の組み合わせ、拡大プレビューを確認する。公開プロフィールは空本文の案内文を表示しないが、認証が必要なチャンネル添付の匿名公開は追加しない。
+検証: Reactの4 Story、添付・Home Story登録の単体テスト79件、Home/ActivityPub APIテスト22件、Kotlinブラウザーテスト75件と配布ビルドが成功。画像のみ・本文付き・詳細・返信先の4状態を、React/Composeの1440px・390pxで画像の表示・拡大・閉じる操作まで確認した。
+
+## 統合通知一覧
+
+Reactの `useUnifiedNotifications` / `unifiedNotificationFeed` と、Kotlinの `unifiedNotificationFeed` / `Notifications` は、チャンネルとActivityPubを同じ時刻順で扱う。カードは枠・未読状態・アバター右下の実リアクションを共通化し、説明文はアクセシブル名として保持する。前面・フォーカス・可視領域の判定を両方へ適用し、選択既読と全既読を共通操作にした。ローカルの二重通知は一枚にまとめ、両方の記録を更新する。
+ActivityPubの追加ページは既読・承認・WebSocket更新で破棄せず保持し、未取得ページより古いチャンネル通知を先に出さない。`UnifiedTimeline` / `UnifiedTimelineMobile` / `UnifiedAutoRead` と既存の承認・拒否・追加読み込みStory、両実装の専用Playwrightを検証先とする。
+
+検証: 通知関連のReact単体テスト67件・Story操作39件、API統合テスト23件、Kotlinブラウザーテスト79件とWasm配布ビルドが成功。React/Composeの1440px・390pxで新着順・アバター右下の通常／カスタム絵文字・選択IDによる自動既読を確認し、Composeの承認・拒否・追加ページ・失敗時操作も4ケース成功。フロントエンドのformat・型・lint、Storybook監査・ビルドも成功。
+
+通知のDB管理は `notification_events` に統合した。既存のReact/Compose用DTO・通知Shapeの8列は保ち、Shapeの参照先と既読APIの保存先を共通化した。クライアントの変更は不要で、両実装の全件既読が同じDB上の状態に反映される。移行・互換テーブル・API契約は [notifications.md](notifications.md) を参照する。
+
+
+## PR #312 レビュー・CI対応
+
+Reactはスレッドのルートを返信を含む同じメッセージコレクションから解決する。Composeは `?thread=<返信ID>` を開く際にもルートを復元する。両実装のHome返信フォームは保存済みチャンネルを送らず、チャンネル連携投稿でフォロワー限定を選択できない。Composeの投稿カードは本文・時刻に加えて余白からも詳細を開く。
+
+検証先: `compose.spec.ts` の子スレッドへの返信・再読み込みと添付の再試行、`ChannelReplyAudience` Storyの両実装・PC/モバイル、画像のみ投稿の余白クリック。通知の新UIに合わせて3枚のVRT基準画像を実描画を確認して更新し、VRT全19件が成功した。Kotlinブラウザーテスト80件、Home／通知DB／typing APIテスト12件、返信リンクの移行、Atlasのdev DB再生・全スキーマ比較も確認した。
+
+再生成したCompose成果物で、子スレッドへの投稿と再読み込みを両実装で確認した。返信フォーム4ケース、画像のみ投稿の余白クリック2ケース、添付操作2ケース、子スレッド2ケースの計10ケースが成功した。既存のブラウザーテストのモックも新しいルート取得hookに追従させ、全124件が成功した。

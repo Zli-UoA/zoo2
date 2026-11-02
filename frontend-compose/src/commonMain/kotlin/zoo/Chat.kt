@@ -159,6 +159,10 @@ fun Chat(
             }
         }
     }
+    LaunchedEffect(id, app.query["thread"]) {
+        val requested = app.query["thread"]
+        if (requested != null) app.openThread(requested, wide) else app.thread = null
+    }
     LaunchedEffect(id, app.query["message"], all.size) {
         val target = app.query["message"]
         all.find { it.text("id") == target }
@@ -624,9 +628,7 @@ internal fun Message(
         if (callbacks?.pickReaction != null) callbacks.pickReaction.invoke() else picker = true
     }
     val showThread =
-        canOpenThread &&
-            message.text("parent_id").isEmpty() &&
-            (callbacks == null || callbacks.openThread != null)
+        canOpenThread && (callbacks == null || callbacks.openThread != null)
     val canDelete =
         mine ||
             (callbacks == null &&

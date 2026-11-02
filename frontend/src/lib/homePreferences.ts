@@ -51,7 +51,10 @@ export function saveHomePostSettings(key: string | null, settings: HomePostSetti
 export function replyVisibility(
   visibility: HomePostSettings["visibility"],
   parent?: string,
+  channelLinked = false,
 ): HomePostSettings["visibility"] {
+  if (channelLinked && visibility === "followers")
+    return parent === "unlisted" ? "unlisted" : "public";
   if (parent === "followers") return "followers";
   return parent === "unlisted" && visibility === "public" ? "unlisted" : visibility;
 }

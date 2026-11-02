@@ -108,6 +108,10 @@
     {
       "file": "src/components/chat/NotificationsScreen.stories.tsx",
       "states": [
+        "UnifiedTimeline",
+        "UnifiedTimelineMobile",
+        "UnifiedAutoRead",
+        "CustomReactionBadge",
         "Default",
         "SingleUnread",
         "Empty",
@@ -485,6 +489,11 @@
         "LiveWhileLoadingOlder",
         "RemoteAvatar",
         "RemoteAvatarFallback",
+        "ImageOnly",
+        "ImageOnlyDetail",
+        "ReplyToImageOnly",
+        "TextWithImage",
+        "TimelineReply",
         "SinglePost",
         "SinglePostMissing",
         "UserProfile",
@@ -494,6 +503,7 @@
         "RememberPostSettingsMobile",
         "RememberTimeline",
         "RememberedReplyConstraints",
+        "ChannelReplyAudience",
         "RememberedChannelUnavailable",
         "RememberedAccountIsolation",
         "PostingWithoutSavedIdentity",
@@ -882,7 +892,7 @@
       "file": "src/components/home/ActivityPubNotifications.tsx",
       "story": "src/components/chat/NotificationsScreen.stories.tsx",
       "composed": true,
-      "reason": "FollowRequests/ApproveFollow/RejectFollowで申請・承認・拒否といいね通知、既読化、MobileFollowRequestsでスマホ配置を確認する。"
+      "reason": "UnifiedTimeline/Mobileで混在時刻順と枠・実リアクション、UnifiedAutoReadで可視通知の選択既読、CustomReactionBadgeでカスタム絵文字のバッジを確認する。FollowRequests/ApproveFollow/RejectFollowで承認・拒否も維持する。"
     },
     {
       "file": "src/components/home/ActivityPubEmoji.tsx",
@@ -927,9 +937,9 @@
     },
     {
       "file": "src/components/home/HomePostContent.tsx",
-      "story": "src/components/public/PublicProfile.stories.tsx",
+      "story": "src/components/home/HomeScreen.stories.tsx",
       "composed": true,
-      "reason": "Homeと公開プロフィールで共有するMFM本文・リンク・絵文字の描画。"
+      "reason": "MfmDecoratedPostで共通MFM本文・リンク・絵文字を、ImageOnly/ImageOnlyDetail/ReplyToImageOnly/TextWithImageで空本文・添付表示・画像プレビューを確認する。"
     }
   ]
 }
