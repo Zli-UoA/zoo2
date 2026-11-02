@@ -416,6 +416,7 @@
     "speaking": "Speaking",
     "connecting": "Connecting…",
     "connected": "Connected",
+    "reconnecting": "Call server is reconnecting. Please try again shortly.",
     "participantCount": "{{count}} in call",
     "full": "Call room is full (max 6 participants)",
     "archived": "Calls are disabled in archived channels",

@@ -17,6 +17,25 @@ vi.mock("../../hooks/useCurrentUser", () => ({
   }),
 }));
 
+vi.mock("../../hooks/useRealtime", () => ({
+  useUsers: () => ({ data: [], isLoading: false, isError: false }),
+}));
+
+vi.mock("../electric/collections-context", () => ({
+  useCollections: () => ({
+    channelUsers: {},
+    users: {},
+  }),
+  useOptionalCollections: () => ({
+    channelUsers: {},
+    users: {},
+  }),
+}));
+
+vi.mock("@tanstack/react-db", () => ({
+  useLiveQuery: () => ({ data: [] }),
+}));
+
 const testConfig = resolveConfig({ DEV: true, VITE_DEV_USER_ID: "dev-user-1" });
 
 let root: Root;

@@ -1,17 +1,34 @@
+import { useLiveQuery } from "@tanstack/react-db";
 import { Link } from "@tanstack/react-router";
 import { HeadphonesIcon, MicIcon, MicOffIcon, PhoneOffIcon } from "lucide-react";
+import { useMemo } from "react";
 import { useTranslation } from "react-i18next";
 
+import { useCurrentUser } from "../../hooks/useCurrentUser";
 import { useCall } from "../../lib/call/call-context";
+import { useOptionalCollections } from "../../lib/electric/collections-context";
 import type { ChannelRow } from "../../lib/electric/types";
+import { isLocale } from "../../lib/i18n/locale";
 import { Button } from "../ui/button";
+import { formatDmDisplayName, resolveDmDisplayName } from "./dm";
 
 interface CallBarProps {
   channels?: ChannelRow[];
 }
 
 export function CallBar({ channels = [] }: CallBarProps) {
-  const { t } = useTranslation();
+  const { t, i18n } = useTranslation();
+  const locale = isLocale(i18n.language) ? i18n.language : "ja";
+  const { currentUserId } = useCurrentUser();
+  const collections = useOptionalCollections();
+  const users =
+    useLiveQuery((q) => (collections ? q.from({ users: collections.users }) : undefined))?.data ??
+    [];
+  const memberships =
+    useLiveQuery((q) =>
+      collections ? q.from({ channelUsers: collections.channelUsers }) : undefined,
+    )?.data ?? [];
+
   const {
     currentChannelId,
     connectionState,
@@ -22,12 +39,25 @@ export function CallBar({ channels = [] }: CallBarProps) {
     leaveCall,
   } = useCall();
 
+  const channel = channels.find((c) => c.id === currentChannelId);
+
+  const channelName = useMemo(() => {
+    if (!channel) return t("call.inCall");
+    if (!channel.is_dm) return channel.channel_name;
+    const members = memberships.filter((cu) => cu.channel_id === channel.id);
+    const resolved = resolveDmDisplayName({
+      channelName: channel.channel_name,
+      members,
+      users,
+      currentUserId,
+      locale,
+    });
+    return formatDmDisplayName(resolved, t);
+  }, [channel, currentUserId, locale, memberships, t, users]);
+
   if (!currentChannelId || connectionState === "idle") {
     return null;
   }
-
-  const channel = channels.find((c) => c.id === currentChannelId);
-  const channelName = channel ? channel.channel_name : t("call.inCall");
 
   return (
     <aside

@@ -777,3 +777,197 @@ async fn test_guest_call_access_restrictions() -> anyhow::Result<()> {
 
     Ok(())
 }
+
+#[tokio::test]
+async fn test_call_stream_lifecycle_and_room_closure() -> anyhow::Result<()> {
+    dotenvy::dotenv().ok();
+    dotenvy::from_filename("../.env").ok();
+    let mut config = Config::from_env();
+    config.dev_auth_enabled = true;
+    let mut db = init_db(&config.database_url).await?;
+    let state = AppState::new(db.clone(), config.clone());
+    let app = create_router(state.clone());
+
+    let alice = uuid::Uuid::new_v4().to_string();
+    let bob = uuid::Uuid::new_v4().to_string();
+    let channel_id = uuid::Uuid::new_v4().to_string();
+
+    let mut tx = db.transaction().await?;
+    for (id, name) in [(&alice, "Alice"), (&bob, "Bob")] {
+        toasty::sql::statement(
+            "INSERT INTO users (id, user_name, display_name) VALUES ($1, $1, $2)",
+        )
+        .bind(id.as_str())
+        .bind(name)
+        .exec(&mut tx)
+        .await?;
+    }
+    toasty::sql::statement(
+        "INSERT INTO channels (id, channel_name, created_user_id, is_private) VALUES ($1, $1, $2, false)",
+    )
+    .bind(channel_id.as_str())
+    .bind(alice.as_str())
+    .exec(&mut tx)
+    .await?;
+    toasty::sql::statement(
+        "INSERT INTO channel_user (channel_id, user_id, joined_at) VALUES ($1, $2, statement_timestamp())",
+    )
+    .bind(channel_id.as_str())
+    .bind(alice.as_str())
+    .exec(&mut tx)
+    .await?;
+    toasty::sql::statement(
+        "INSERT INTO channel_user (channel_id, user_id, joined_at) VALUES ($1, $2, statement_timestamp())",
+    )
+    .bind(channel_id.as_str())
+    .bind(bob.as_str())
+    .exec(&mut tx)
+    .await?;
+    tx.commit().await?;
+
+    let session_alice = uuid::Uuid::new_v4();
+
+    // 1. LISTEN 停止中の 503 検証 ([P1], [P2])
+    state.call_registry.set_listening(false);
+    let stream_path = format!(
+        "/api/channels/{channel_id}/call/stream?session_id={session_alice}"
+    );
+    let req_503 = Request::builder()
+        .method("GET")
+        .uri(&stream_path)
+        .header("X-Dev-User", &alice)
+        .body(Body::empty())?;
+    let res_503 = app.clone().oneshot(req_503).await?;
+    assert_eq!(res_503.status(), StatusCode::SERVICE_UNAVAILABLE);
+
+    // 2. リスナー復帰と参加登録の結合検証
+    state.call_registry.set_listening(true);
+    state.call_registry.set_db(db.clone()).await;
+
+    let req_200 = Request::builder()
+        .method("GET")
+        .uri(&stream_path)
+        .header("X-Dev-User", &alice)
+        .body(Body::empty())?;
+    let _res_200 = app.clone().oneshot(req_200).await?;
+    assert_eq!(_res_200.status(), StatusCode::OK);
+
+    // 3. Bob を別セッションとして登録
+    let session_bob = uuid::Uuid::new_v4();
+    let (tx_bob, mut rx_bob) = tokio::sync::mpsc::channel(256);
+    state
+        .call_registry
+        .register_local_session(session_bob, channel_id.clone(), bob.clone(), tx_bob)
+        .await;
+
+    toasty::sql::statement(
+        "INSERT INTO call_presence (
+            channel_id, session_id, user_id, user_name, display_name, is_muted, joined_at, expires_at
+         ) VALUES ($1, $2::uuid, $3, 'Bob', 'Bob', false, '2026-01-01T00:00:00Z', statement_timestamp() + interval '30 seconds')",
+    )
+    .bind(channel_id.clone())
+    .bind(session_bob.to_string())
+    .bind(bob.clone())
+    .exec(&mut db)
+    .await?;
+
+    // 4. Alice の退出 (POST /call/leave) による presence 削除 & ParticipantLeft 通知発行の検証 ([P3])
+    let (status, _) = request(
+        &app,
+        &alice,
+        "POST",
+        &format!("/api/channels/{channel_id}/call/leave"),
+        Some(serde_json::json!({ "session_id": session_alice })),
+    )
+    .await?;
+    assert_eq!(status, StatusCode::OK);
+
+    // Alice の presence が削除されていること
+    let alice_rows = toasty::sql::query(
+        "SELECT session_id::text FROM call_presence WHERE channel_id = $1 AND session_id = $2::uuid",
+    )
+    .bind(channel_id.clone())
+    .bind(session_alice.to_string())
+    .exec(&mut db)
+    .await?;
+    assert!(alice_rows.is_empty());
+
+    // Bob のセッションに Alice の ParticipantLeft が届くこと
+    let received = tokio::time::timeout(Duration::from_millis(500), async {
+        while let Some(evt) = rx_bob.recv().await {
+            if let backend::routes::calls::CallServerEvent::ParticipantLeft { session_id, .. } = evt
+                && session_id == session_alice
+            {
+                return true;
+            }
+        }
+        false
+    })
+    .await;
+    assert_eq!(received, Ok(true));
+
+    // 5. close_room による全 presence 削除
+    state.call_registry.close_room(&db, &channel_id).await?;
+
+    let remaining = toasty::sql::query(
+        "SELECT session_id::text FROM call_presence WHERE channel_id = $1",
+    )
+    .bind(channel_id.clone())
+    .exec(&mut db)
+    .await?;
+    assert!(remaining.is_empty());
+
+    // 6. キックによる presence 削除の検証
+    let charlie = uuid::Uuid::new_v4().to_string();
+    toasty::sql::statement(
+        "INSERT INTO users (id, user_name, display_name) VALUES ($1, $1, 'Charlie')",
+    )
+    .bind(charlie.as_str())
+    .exec(&mut db)
+    .await?;
+    toasty::sql::statement(
+        "INSERT INTO channel_user (channel_id, user_id, joined_at) VALUES ($1, $2, statement_timestamp())",
+    )
+    .bind(channel_id.as_str())
+    .bind(charlie.as_str())
+    .exec(&mut db)
+    .await?;
+
+    let session_charlie = uuid::Uuid::new_v4();
+    let (tx_charlie, _rx_charlie) = tokio::sync::mpsc::channel(256);
+    state
+        .call_registry
+        .register_local_session(session_charlie, channel_id.clone(), charlie.clone(), tx_charlie)
+        .await;
+    toasty::sql::statement(
+        "INSERT INTO call_presence (
+            channel_id, session_id, user_id, user_name, display_name, is_muted, joined_at, expires_at
+         ) VALUES ($1, $2::uuid, $3, 'Charlie', 'Charlie', false, '2026-01-01T00:00:00Z', statement_timestamp() + interval '30 seconds')",
+    )
+    .bind(channel_id.clone())
+    .bind(session_charlie.to_string())
+    .bind(charlie.clone())
+    .exec(&mut db)
+    .await?;
+
+    let (status, _) = request(
+        &app,
+        &alice,
+        "DELETE",
+        &format!("/api/channels/{channel_id}/users/{charlie}"),
+        None,
+    )
+    .await?;
+    assert_eq!(status, StatusCode::OK);
+
+    let charlie_rows = toasty::sql::query(
+        "SELECT session_id::text FROM call_presence WHERE channel_id = $1 AND user_id = $2",
+    )
+    .bind(channel_id.clone())
+    .bind(charlie.clone())
+    .exec(&mut db)
+    .await?;
+    assert!(charlie_rows.is_empty());
+
+    Ok(())
+}

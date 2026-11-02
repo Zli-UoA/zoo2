@@ -213,6 +213,8 @@ pub struct CallRegistry {
     local_sessions: Arc<RwLock<HashMap<Uuid, LocalSession>>>,
     db: Arc<RwLock<Option<toasty::Db>>>,
     is_listening: Arc<std::sync::atomic::AtomicBool>,
+    listener_epoch: Arc<std::sync::atomic::AtomicU64>,
+    active_listener_generation: Arc<std::sync::atomic::AtomicU64>,
 }
 
 impl Default for CallRegistry {
@@ -221,6 +223,8 @@ impl Default for CallRegistry {
             local_sessions: Arc::new(RwLock::new(HashMap::new())),
             db: Arc::new(RwLock::new(None)),
             is_listening: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            listener_epoch: Arc::new(std::sync::atomic::AtomicU64::new(0)),
+            active_listener_generation: Arc::new(std::sync::atomic::AtomicU64::new(0)),
         }
     }
 }
@@ -234,9 +238,25 @@ impl CallRegistry {
         self.is_listening.load(std::sync::atomic::Ordering::SeqCst)
     }
 
+    pub fn active_listener_generation(&self) -> u64 {
+        self.active_listener_generation
+            .load(std::sync::atomic::Ordering::SeqCst)
+    }
+
     pub fn set_listening(&self, val: bool) {
         self.is_listening
             .store(val, std::sync::atomic::Ordering::SeqCst);
+        if val {
+            let next_gen = self
+                .listener_epoch
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+                + 1;
+            self.active_listener_generation
+                .store(next_gen, std::sync::atomic::Ordering::SeqCst);
+        } else {
+            self.active_listener_generation
+                .store(0, std::sync::atomic::Ordering::SeqCst);
+        }
     }
 
     pub async fn set_db(&self, db: toasty::Db) {
@@ -1011,7 +1031,8 @@ async fn call_stream(
     Query(query): Query<StreamQuery>,
 ) -> Result<Sse<impl Stream<Item = Result<Event, Infallible>>>, AppError> {
     // LISTEN 未接続または再接続中は新規参加を拒否 ([P1])
-    if !state.call_registry.is_listening() {
+    let start_listener_gen = state.call_registry.active_listener_generation();
+    if start_listener_gen == 0 || !state.call_registry.is_listening() {
         return Err(AppError::ServiceUnavailable(
             "Call signaling service is reconnecting".into(),
         ));
@@ -1281,6 +1302,16 @@ async fn call_stream(
         db: state.db.clone(),
         cleaned_up: Arc::new(std::sync::atomic::AtomicBool::new(false)),
     };
+
+    // コミット直後にリスナー世代を再検証 ([P2]):
+    // 参加処理中に LISTEN 接続の切断・再接続が発生していた場合は未同期セッションの残留を防ぐため即座に破棄
+    let current_listener_gen = state.call_registry.active_listener_generation();
+    if current_listener_gen == 0 || current_listener_gen != start_listener_gen {
+        guard.cleanup().await;
+        return Err(AppError::ServiceUnavailable(
+            "Call signaling service reconnected during join".into(),
+        ));
+    }
 
     // 7. コミット直後のセッション生存再確認および権限再確認 ([P1], [P2])
     let verify_rows = toasty::sql::query(

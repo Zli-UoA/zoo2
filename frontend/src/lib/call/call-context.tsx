@@ -284,14 +284,14 @@ export function CallProvider({ config: explicitConfig, children }: CallProviderP
       setSpeakingUserIds(new Set());
       void pollActiveCalls();
 
-      // サーバーへの退出リクエストはメディア停止後に送信（待たされてもマイク停止に影響しない）
+      // サーバーへの退出リクエストはメディア停止後に送信（待たされてもマイク停止や通話切替に影響しないよう非同期発火 [P3]）
       if (channelId && sessionId) {
-        try {
-          await apiClient.request(`/api/channels/${channelId}/call/leave`, {
+        void apiClient
+          .request(`/api/channels/${channelId}/call/leave`, {
             method: "POST",
             body: { session_id: sessionId },
-          });
-        } catch {}
+          })
+          .catch(() => {});
       }
     },
     [apiClient, cleanupPeers, closeMedia, pollActiveCalls],
@@ -598,6 +598,8 @@ export function CallProvider({ config: explicitConfig, children }: CallProviderP
             errorText = t("call.archived");
           } else if (response.status === 404) {
             errorText = t("call.notFound");
+          } else if (response.status === 503) {
+            errorText = t("call.reconnecting");
           } else {
             try {
               const parsed = JSON.parse(body);
@@ -852,18 +854,23 @@ export function CallProvider({ config: explicitConfig, children }: CallProviderP
               setParticipants((prev) => {
                 const map = new Map<string, CallParticipant>();
                 for (const p of validRoomParticipants) {
-                  map.set(p.session_id, p);
+                  const isSelf = p.session_id === mySessionId;
+                  map.set(p.session_id, isSelf ? { ...p, is_muted: isMutedRef.current } : p);
                 }
                 for (const p of prev) {
                   if (!map.has(p.session_id) && !leftSessionIds.has(p.session_id)) {
-                    map.set(p.session_id, p);
+                    const isSelf = p.session_id === mySessionId;
+                    map.set(p.session_id, isSelf ? { ...p, is_muted: isMutedRef.current } : p);
                   }
                 }
                 return Array.from(map.values());
               });
 
-              // 接続完了前に設定されたミュート状態をバックエンドに即時反映 ([P2])
+              // 接続完了前に設定されたミュート状態をバックエンドに即時反映 ([P2], [P3])
               if (isMutedRef.current) {
+                setParticipants((prev) =>
+                  prev.map((p) => (p.session_id === mySessionId ? { ...p, is_muted: true } : p)),
+                );
                 void apiClient
                   .request(`/api/channels/${channelId}/call/state`, {
                     method: "POST",
