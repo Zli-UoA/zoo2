@@ -102,7 +102,7 @@ Android 版は `ZooApp`・`Session`・`Repository` と既存の画面／状態�
 Homeの投稿詳細は共通の `/api/home/{id}/thread` から、閲覧可能な祖先・対象投稿・返信をツリー順で取得する。Reactの `HomeScreen`、Kotlinの `HomeTimeline` / `HomePostCard` が同じ `tree_depth` を使い、最大6段の字下げとTLでの返信先表示、本文から詳細への移動に対応する。既存の `SinglePost` Storyを祖先・子・孫の4投稿へ拡張した。
 チャンネルに紐づく投稿の編集・削除はメッセージAPIの権限検証と保存処理を共有し、Homeの返信は同じチャンネルを引き継ぐ。リアクションはmainのカスタム絵文字・外部リアクションを含む共通実装を維持する。
 チャンネルのスレッド内でも返信の子スレッドを開けるよう、Reactの `ThreadPane` とKotlinの `Chat` に同じ操作を追加した。
-検証: Reactの型・lint・format、Storybook監査・ビルド、Home/ThreadPaneのStory操作、Kotlin/Wasmのコンパイル・配布ビルド・ブラウザー単体テスト、Home・ActivityPub・リアクション・スレッドのAPI統合テスト28件を確認した。会話ツリーと返信先表示は両実装の1440px/390pxで専用Playwrightの4ケースを実行し、字下げ・画面幅・モバイルでのスクロール・返信先リンクを確認した。
+検証: Reactの型・lint・format、Storybook監査・ビルド、Home/ThreadPaneのStory操作、Kotlin/Wasmのコンパイル・配布ビルド・ブラウザー単体テスト75件、Home・ActivityPub・リアクション・スレッドのAPI統合テスト28件を確認した。会話ツリーと返信先表示は両実装の1440px/390pxで専用Playwrightの4ケースを実行し、字下げ・画面幅・モバイルでのスクロール・返信先リンクを確認した。
 
 ## カスタム絵文字
 

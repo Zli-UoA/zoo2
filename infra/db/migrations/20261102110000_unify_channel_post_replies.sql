@@ -52,4 +52,3 @@ END $$;
 -- Preserve existing channel replies in Home, without changing their audience.
 UPDATE home_posts p SET parent_id=m.parent_id
 FROM messages m WHERE m.id=p.id AND m.parent_id IS NOT NULL AND p.parent_id IS DISTINCT FROM m.parent_id;
-
