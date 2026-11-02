@@ -108,6 +108,10 @@
     {
       "file": "src/components/chat/NotificationsScreen.stories.tsx",
       "states": [
+        "UnifiedTimeline",
+        "UnifiedTimelineMobile",
+        "UnifiedAutoRead",
+        "CustomReactionBadge",
         "Default",
         "SingleUnread",
         "Empty",
@@ -887,7 +891,7 @@
       "file": "src/components/home/ActivityPubNotifications.tsx",
       "story": "src/components/chat/NotificationsScreen.stories.tsx",
       "composed": true,
-      "reason": "FollowRequests/ApproveFollow/RejectFollowで申請・承認・拒否といいね通知、既読化、MobileFollowRequestsでスマホ配置を確認する。"
+      "reason": "UnifiedTimeline/Mobileで混在時刻順と枠・実リアクション、UnifiedAutoReadで可視通知の選択既読、CustomReactionBadgeでカスタム絵文字のバッジを確認する。FollowRequests/ApproveFollow/RejectFollowで承認・拒否も維持する。"
     },
     {
       "file": "src/components/home/ActivityPubEmoji.tsx",

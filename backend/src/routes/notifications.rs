@@ -145,19 +145,26 @@ async fn notification_context(
     .await?
     .filter(|message| message.deleted_at.is_none());
     let reactions = if message.is_some() && notification.notification_type == "reaction" {
-        MessageReaction::filter(
+        let mut reactions = MessageReaction::filter(
             MessageReaction::fields()
                 .message_id()
                 .eq(notification.message_id.as_str()),
         )
         .exec(&mut tx)
-        .await?
-        .into_iter()
-        .map(|row| PreviewReaction {
-            user_id: row.user_id,
-            emoji: row.emoji,
-        })
-        .collect()
+        .await?;
+        // The avatar badge uses the latest actor's most recent remaining reaction.
+        reactions.sort_by(|a, b| {
+            b.created_at
+                .cmp(&a.created_at)
+                .then_with(|| b.id.cmp(&a.id))
+        });
+        reactions
+            .into_iter()
+            .map(|row| PreviewReaction {
+                user_id: row.user_id,
+                emoji: row.emoji,
+            })
+            .collect()
     } else {
         Vec::new()
     };

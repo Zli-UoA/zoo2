@@ -604,3 +604,98 @@ for (const implementation of ["react", "kotlin"] as const) {
     });
   }
 }
+
+for (const implementation of ["react", "kotlin"] as const) {
+  for (const width of [1440, 390]) {
+    test(`Unified notifications interleave sources and auto-read visible cards: ${implementation} ${width}`, async ({
+      page,
+    }, testInfo) => {
+      await page.setViewportSize({ width, height: 900 });
+      const open = async (story: string) => {
+        await page.goto(
+          `/iframe.html?id=pages-notifications--${story}&viewMode=story&globals=implementation:${implementation}`,
+        );
+        if (implementation === "kotlin")
+          await expect(page.locator("[data-compose-catalog-state=ready]")).toBeVisible({
+            timeout: 90000,
+          });
+        await waitForStoryPlay(page);
+        return implementation === "kotlin"
+          ? page.frameLocator('iframe[title="Kotlin component preview"]')
+          : page;
+      };
+      const screen = await open("unified-timeline");
+      const labels = [
+        /Bob.*メンション/,
+        /Remote Fox.*リアクション/,
+        /Remote Reply.*返信/,
+        /Bob.*リアクション/,
+      ];
+      const rows = labels.map((name) => screen.getByRole("listitem", { name }));
+      const bounds = await Promise.all(rows.map((row) => row.boundingBox()));
+      for (let index = 0; index < bounds.length; index++) {
+        expect(bounds[index]!.x + bounds[index]!.width).toBeLessThanOrEqual(width + 1);
+        if (index) expect(bounds[index]!.y).toBeGreaterThan(bounds[index - 1]!.y);
+      }
+      // Compose projects card and badge semantics separately; verify their actual placement.
+      const remoteBadge = screen.getByRole("img", { name: "🦊", exact: true });
+      const localBadge = screen.getByRole("img", { name: "🎉", exact: true });
+      await expect(remoteBadge).toHaveCount(1);
+      await expect(localBadge).toHaveCount(1);
+      for (const [badge, index] of [
+        [remoteBadge, 1],
+        [localBadge, 3],
+      ] as const) {
+        const position = await badge.boundingBox();
+        expect(position!.x).toBeGreaterThan(bounds[index]!.x);
+        expect(position!.x + position!.width).toBeLessThan(bounds[index]!.x + 76);
+        expect(position!.y).toBeGreaterThan(bounds[index]!.y + 12);
+        expect(position!.y + position!.height).toBeLessThan(bounds[index]!.y + 70);
+      }
+      await expect(screen.getByRole("heading", { name: "ホームの通知" })).toHaveCount(0);
+      await expect(screen.getByRole("button", { name: "すべて既読にする" })).toHaveCount(1);
+      await page.screenshot({ path: testInfo.outputPath("unified-notifications.png") });
+      const custom = await open("custom-reaction-badge");
+      const customBadge = custom.getByRole("img", { name: ":blobcat:", exact: true }).first();
+      await expect(customBadge).toHaveAttribute("aria-label", ":blobcat:");
+      const customBounds = await customBadge.boundingBox();
+      expect(customBounds!.width).toBeLessThanOrEqual(20);
+      await page.screenshot({ path: testInfo.outputPath("custom-reaction-badge.png") });
+      const requests: unknown[] = [];
+      page.on("request", (request) => {
+        if (
+          request.url().endsWith("/api/activitypub/notifications/read") &&
+          request.method() === "POST"
+        )
+          requests.push(request.postDataJSON());
+      });
+      await open("unified-auto-read");
+      expect(requests.length).toBeGreaterThan(0);
+      for (const body of requests) expect(body).toHaveProperty("ids");
+      await page.screenshot({ path: testInfo.outputPath("visible-notifications-read.png") });
+    });
+  }
+}
+
+for (const story of [
+  "approve-follow",
+  "reject-follow",
+  "older-follow-requests",
+  "follow-decision-error",
+]) {
+  test(`Unified Kotlin notification controls: ${story}`, async ({ page }) => {
+    await page.goto(`/iframe.html?id=pages-notifications--${story}&${nativeQuery}`);
+    await expect(page.locator("[data-compose-catalog-state=ready]")).toBeVisible({
+      timeout: 90000,
+    });
+    await waitForStoryPlay(page);
+    const screen = page.frameLocator('iframe[title="Kotlin component preview"]');
+    if (story === "follow-decision-error") {
+      await expect(screen.getByRole("alert")).toBeVisible();
+      await expect(screen.getByRole("button", { name: "承認", exact: true })).toBeEnabled();
+    } else {
+      await expect(screen.getByRole("button", { name: "承認", exact: true })).toHaveCount(0);
+      await expect(screen.getByRole("button", { name: "拒否", exact: true })).toHaveCount(0);
+    }
+  });
+}
