@@ -1,3 +1,4 @@
+import { clickControl, fillControl } from "./compose-control-input";
 import { composeVisualColorThreshold } from "./compose-visual";
 import { test, expect, type Page } from "@playwright/test";
 import { mkdir, writeFile } from "node:fs/promises";
@@ -33,7 +34,7 @@ async function channelAction(page: Page, native: boolean, action: "edit" | "webh
   if (!(await settings.isVisible())) {
     const trigger = page.getByRole("button", { name: "チャンネル設定", exact: true });
     await expect(trigger).toBeVisible();
-    await trigger.click({ force: native });
+    await clickControl(trigger, native ? "kotlin" : "react");
   }
   await expect(settings).toBeVisible();
   const button = settings.getByRole("button", {
@@ -41,7 +42,7 @@ async function channelAction(page: Page, native: boolean, action: "edit" | "webh
     exact: true,
   });
   await expect(button).toBeVisible();
-  await button.click({ force: native });
+  await clickControl(button, native ? "kotlin" : "react");
 }
 async function closeChannelSettings(page: Page, _native: boolean) {
   await page.keyboard.press("Escape");
@@ -70,26 +71,7 @@ async function nativeInput(page: Page) {
 }
 
 async function fillNative(page: Page, locator: ReturnType<Page["getByRole"]>, value: string) {
-  await expect(locator).toBeVisible();
-  const existing = (await locator.textContent()) ?? "";
-  await locator.click({ force: true });
-  // Compose applies focus and selection to its backing input asynchronously.
-  await expect.poll(async () => (await nativeInput(page))?.value).toBe(existing);
-  await page.keyboard.press("ControlOrMeta+A");
-  // Compose's Web input processor commits queued key events on the next animation frame.
-  await page.evaluate(
-    () =>
-      new Promise<void>((resolve) =>
-        requestAnimationFrame(() => requestAnimationFrame(() => resolve())),
-      ),
-  );
-  await expect
-    .poll(() => nativeInput(page))
-    .toEqual({ value: existing, start: 0, end: existing.length });
-  await page.keyboard.press("Backspace");
-  await expect(locator).toHaveText("");
-  await page.keyboard.insertText(value);
-  await expect(locator).toHaveText(value);
+  await fillControl(page, locator, value, "kotlin");
 }
 
 for (const implementation of ["react", "compose"] as const) {
@@ -186,7 +168,7 @@ for (const implementation of ["react", "compose"] as const) {
     const click = async (name: string) => {
       const button = page.getByRole("button", { name, exact: true });
       await expect(button).toBeVisible();
-      await button.click({ force: native });
+      await clickControl(button, native ? "kotlin" : "react");
     };
     const fill = async (name: string, value: string) => {
       const input = page.getByRole("textbox", { name, exact: true });
