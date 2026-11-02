@@ -508,11 +508,19 @@ async fn rewrite_mentions(
         })
         .collect();
     let pattern = format!("(^|[^A-Za-z0-9_.@-])@{escaped}(?![A-Za-z0-9_-]|\\.+[A-Za-z0-9_-])");
+    // 書き換えると本文の上限を超える投稿は、切り詰めずにそのまま残す (Home への同期の CHECK にも掛かるため)
     exec(
         tx,
-        "UPDATE messages SET content=regexp_replace(content,$1,'\\1@'||$2,'g') \
-         WHERE strpos(content,'@'||$3)>0 AND channel_id IN (SELECT channel_id FROM slack_channels)",
-        &[&pattern, new, old],
+        "UPDATE messages m SET content=r.content FROM (\
+         SELECT id,regexp_replace(content,$1,'\\1@'||$2,'g') AS content FROM messages \
+         WHERE strpos(content,'@'||$3)>0 AND channel_id IN (SELECT channel_id FROM slack_channels)) r \
+         WHERE m.id=r.id AND m.content<>r.content AND char_length(r.content)<=$4::integer",
+        &[
+            &pattern,
+            new,
+            old,
+            &crate::validation::MAX_MESSAGE_CONTENT_LENGTH.to_string(),
+        ],
     )
     .await?;
     Ok(())

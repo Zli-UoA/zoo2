@@ -702,7 +702,7 @@ async fn import(s: &AppState, job: &Job, lease: &Lease) -> Result<(), AppError> 
     }
 
     let mut processed = 0u64;
-    for (channel, channel_id, created) in &targets {
+    for (channel, channel_id, _) in &targets {
         lease.check()?;
         {
             let mut tx = db.transaction().await?;
@@ -773,14 +773,6 @@ async fn import(s: &AppState, job: &Job, lease: &Lease) -> Result<(), AppError> 
             &[channel_id, &team, &channel.id],
         )
         .await?;
-        if *created && channel.is_archived {
-            exec(
-                &mut tx,
-                "UPDATE channels SET archive_at=CURRENT_TIMESTAMP WHERE id=$1 AND archive_at IS NULL",
-                &[channel_id],
-            )
-            .await?;
-        }
         tx.commit().await?;
     }
 
@@ -804,6 +796,18 @@ async fn import(s: &AppState, job: &Job, lease: &Lease) -> Result<(), AppError> 
     } else {
         "completed"
     };
+    // Slack でアーカイブ済みのチャンネルは、作った取り込み先も最後にまとめてアーカイブする。
+    // 途中でアーカイブすると、再開したときに取り込み先の確認 (`ensure_can_import`) で止まるため。
+    for (channel, channel_id, created) in &targets {
+        if *created && channel.is_archived {
+            exec(
+                &mut tx,
+                "UPDATE channels SET archive_at=CURRENT_TIMESTAMP WHERE id=$1 AND archive_at IS NULL",
+                &[channel_id],
+            )
+            .await?;
+        }
+    }
     exec(
         &mut tx,
         "UPDATE slack_import_jobs SET status=$3,processed_messages=$4::bigint,total_files=$5::bigint,\

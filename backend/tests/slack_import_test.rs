@@ -1303,7 +1303,14 @@ async fn test_linked_users_import_their_own_channels() -> anyhow::Result<()> {
         ),
         (
             "groups.json".into(),
-            json!([{"id":"G1","name":format!("secret-{suffix}"),"creator":"U1","members":["U1"]}]),
+            json!([
+                {"id":"G1","name":format!("secret-{suffix}"),"creator":"U1","members":["U1"]},
+                {"id":"G2","name":format!("old-{suffix}"),"creator":"U1","members":["U1"],"is_archived":true}
+            ]),
+        ),
+        (
+            format!("old-{suffix}/2024-01-01.json"),
+            json!([{"ts":"1704070000.000400","user":"U1","text":"archived"}]),
         ),
         (
             format!("{shared}/2024-01-01.json"),
@@ -1342,7 +1349,11 @@ async fn test_linked_users_import_their_own_channels() -> anyhow::Result<()> {
         .iter()
         .map(|c| c["slack_channel_id"].as_str().unwrap())
         .collect();
-    assert_eq!(ids, vec!["C1", "G1"], "only the channels alice created");
+    assert_eq!(
+        ids,
+        vec!["C1", "G1", "G2"],
+        "only the channels alice created"
+    );
     assert_eq!(
         own["channels"][0]["targets"],
         json!([]),
@@ -1508,6 +1519,29 @@ async fn test_linked_users_import_their_own_channels() -> anyhow::Result<()> {
     )
     .await;
     assert_eq!(status, StatusCode::FORBIDDEN);
+
+    // Slack でアーカイブ済みのチャンネルは、取り込みの最後に取り込み先もアーカイブする
+    // (途中でアーカイブすると、再開したときに取り込み先の確認で止まるため)
+    let (status, run) =
+        import(json!([{"slack_channel_id":"G2","action":"create","name":format!("old-{suffix}")}]))
+            .await;
+    assert_eq!(status, StatusCode::OK, "{run}");
+    drive(
+        &state,
+        &app,
+        &admin,
+        run["id"].as_str().unwrap(),
+        "completed",
+    )
+    .await;
+    let old = sql(
+        &state,
+        "SELECT json_build_object('archived',c.archive_at IS NOT NULL,\
+         'messages',(SELECT count(*) FROM messages m WHERE m.channel_id=c.id))::text FROM channels c WHERE c.id=$1",
+        &[&backend::slack::channel_id(&team, "G2")],
+    )
+    .await?;
+    assert_eq!(old[0], json!({"archived": true, "messages": 1}));
 
     // ゲストは、通常の API と同じくチャンネルを作れない
     exec("UPDATE users SET is_guest=true WHERE id=$2 AND $1<>$3").await;
