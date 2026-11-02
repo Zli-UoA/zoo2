@@ -289,7 +289,7 @@ async fn mutations_produce_authorized_events_and_private_state_requires_consent(
         "POST",
         "/api/emojis",
         u,
-        json!({"name":ename,"url":"https://example.com/emoji.png"}),
+        json!({"name":ename,"url":format!("/api/emoji-images/{}",Uuid::new_v4())}),
     )
     .await;
     ok(
@@ -2203,5 +2203,197 @@ async fn http_selection_skips_inaccessible_events_and_rotates_beyond_one_page() 
         }
     }
     tx.commit().await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn custom_emoji_storage_metadata_aliases_and_permissions() -> anyhow::Result<()> {
+    let f = fixture().await?;
+    backend::storage::ensure_bucket_exists(&f.state.s3_client, &f.state.config.s3.bucket).await;
+    let name = format!("custom_{}", Uuid::new_v4().simple());
+    let alias = format!("alias_{}", Uuid::new_v4().simple());
+    let payload = json!({"name":name,"category":"Greetings","aliases":[alias,"挨拶"],"content_type":"image/png","data":"iVBORw0KGgoAAAANSUhEUgAAAAMAAAABCAYAAAAb4BS0AAAADklEQVR4nGP438DwH4YBMWYHe7X3S+QAAAAASUVORK5CYII="});
+    let emoji = ok(
+        &f.app,
+        "POST",
+        "/api/emojis/upload",
+        &f.owner,
+        payload.clone(),
+    )
+    .await;
+    assert_eq!(emoji["category"], "Greetings");
+    assert_eq!(
+        request(
+            &f.app,
+            "POST",
+            "/api/emojis",
+            &f.owner,
+            json!({"name":name,"url":"https://example.com/external.png"})
+        )
+        .await
+        .0,
+        StatusCode::BAD_REQUEST
+    );
+
+    assert_eq!(emoji["aliases"], json!([alias, "挨拶"]));
+    let url = emoji["url"].as_str().unwrap();
+    let id = url.strip_prefix("/api/emoji-images/").unwrap();
+    assert!(Uuid::parse_str(id).is_ok());
+    let stored = f
+        .state
+        .s3_client
+        .get_object()
+        .bucket(&f.state.config.s3.bucket)
+        .key(format!("custom-emojis/{id}"))
+        .send()
+        .await?;
+    assert_eq!(stored.content_type(), Some("image/png"));
+    let bytes = stored.body.collect().await?.into_bytes();
+    assert_eq!(&bytes[16..24], &[0, 0, 0, 3, 0, 0, 0, 1]); // 3:1 is preserved.
+    let image = f
+        .app
+        .clone()
+        .oneshot(Request::builder().uri(url).body(Body::empty())?)
+        .await?;
+    assert_eq!(image.status(), StatusCode::OK);
+    assert_eq!(image.headers()["content-type"], "image/png");
+    assert_eq!(to_bytes(image.into_body(), usize::MAX).await?, bytes);
+    assert_eq!(
+        request(
+            &f.app,
+            "POST",
+            "/api/emojis/upload",
+            &f.other,
+            payload.clone()
+        )
+        .await
+        .0,
+        StatusCode::FORBIDDEN
+    );
+    let mut invalid = payload.clone();
+    invalid["data"] = json!("aGVsbG8=");
+    assert_eq!(
+        request(&f.app, "POST", "/api/emojis/upload", &f.owner, invalid)
+            .await
+            .0,
+        StatusCode::BAD_REQUEST
+    );
+    let mut collision = payload.clone();
+    collision["name"] = json!(format!("other_{}", Uuid::new_v4().simple()));
+    assert_eq!(
+        request(&f.app, "POST", "/api/emojis/upload", &f.owner, collision)
+            .await
+            .0,
+        StatusCode::BAD_REQUEST
+    );
+    let message = ok(&f.app,"POST","/api/messages",&f.owner,json!({"id":Uuid::new_v4().to_string(),"channel_id":f.channel,"content":format!(":{alias}:")})).await;
+    let mid = message["data"]["id"].as_str().unwrap();
+    let reaction = ok(
+        &f.app,
+        "POST",
+        &format!("/api/messages/{mid}/reactions"),
+        &f.owner,
+        json!({"emoji":format!(":{alias}:")}),
+    )
+    .await;
+    assert_eq!(reaction["data"]["emoji"], format!(":{name}:"));
+    let renamed = format!("renamed_{}", Uuid::new_v4().simple());
+    let updated = ok(
+        &f.app,
+        "POST",
+        "/api/emojis",
+        &f.owner,
+        json!({"name":renamed,"previous_name":name,"url":url,"category":"Zoo","aliases":[alias]}),
+    )
+    .await;
+    assert_eq!(updated["name"], renamed);
+    assert_eq!(updated["url"], url);
+    assert_eq!(updated["category"], "Zoo");
+    assert!(
+        updated["aliases"]
+            .as_array()
+            .unwrap()
+            .contains(&json!(name))
+    );
+    assert_eq!(
+        ok(
+            &f.app,
+            "GET",
+            &format!("/api/emojis/{name}"),
+            &f.owner,
+            Value::Null
+        )
+        .await["name"],
+        renamed
+    );
+    ok(
+        &f.app,
+        "DELETE",
+        &format!("/api/messages/{mid}/reactions?emoji=%3A{name}%3A"),
+        &f.owner,
+        Value::Null,
+    )
+    .await;
+
+    assert_eq!(
+        request(
+            &f.app,
+            "DELETE",
+            &format!("/api/emojis/{renamed}"),
+            &f.other,
+            Value::Null
+        )
+        .await
+        .0,
+        StatusCode::FORBIDDEN
+    );
+    let mut db = f.state.db.clone();
+    toasty::sql::statement("UPDATE users SET guest_kind='multi' WHERE id=$1")
+        .bind(f.owner.as_str())
+        .exec(&mut db)
+        .await?;
+    assert_eq!(
+        request(
+            &f.app,
+            "DELETE",
+            &format!("/api/emojis/{renamed}"),
+            &f.owner,
+            Value::Null
+        )
+        .await
+        .0,
+        StatusCode::FORBIDDEN
+    );
+    toasty::sql::statement("UPDATE users SET guest_kind='none' WHERE id=$1")
+        .bind(f.owner.as_str())
+        .exec(&mut db)
+        .await?;
+    ok(
+        &f.app,
+        "DELETE",
+        &format!("/api/emojis/{renamed}"),
+        &f.owner,
+        Value::Null,
+    )
+    .await;
+    assert_eq!(
+        request(
+            &f.app,
+            "GET",
+            &format!("/api/emojis/{renamed}"),
+            &f.owner,
+            Value::Null
+        )
+        .await
+        .0,
+        StatusCode::NOT_FOUND
+    );
+    f.state
+        .s3_client
+        .delete_object()
+        .bucket(&f.state.config.s3.bucket)
+        .key(format!("custom-emojis/{id}"))
+        .send()
+        .await?;
     Ok(())
 }

@@ -2,6 +2,7 @@ import { createElement, Fragment, useEffect, useMemo, useState, type ReactNode }
 import { parse, toString, type MfmNode } from "mfm-js";
 import katex from "katex";
 import hljs from "highlight.js/lib/common";
+import { useWorkspaceEmojis } from "../../../lib/emoji/workspace";
 import shortcodeData from "../../../lib/emoji/shortcodes.json";
 import { ExternalLink, inlineLinkClassName } from "../../ui/external-link";
 import { MfmSearch } from "./MfmSearch";
@@ -81,7 +82,7 @@ function EmojiCode({
   }, [emojiUrls]);
   const urls = emojiUrls ?? registry;
   const url = Object.hasOwn(urls, name) ? urls[name] : undefined;
-  if (url && /^\/(?!\/)/.test(url))
+  if (url && (/^\/(?!\/)/.test(url) || /^https?:\/\//.test(url)))
     return <img className="mfm-custom-emoji" src={url} alt={`:${name}:`} loading="lazy" />;
   return Object.hasOwn(shortcodes, name) ? shortcodes[name] : `:${name}:`;
 }
@@ -335,12 +336,25 @@ function messageBlocks(nodes: MfmNode[]): MessageBlock[] {
 }
 
 export function MfmContent({ content, ...options }: MfmContentProps) {
+  const workspace = useWorkspaceEmojis(/:[a-z0-9_-]+:/.test(content));
+  const emojiUrls = Object.fromEntries(
+    workspace.emojis.flatMap((e) =>
+      [e.name, ...(e.aliases ?? [])].map((name) => [name, workspace.imageUrl(e.url)]),
+    ),
+  );
+  const resolvedOptions = {
+    ...options,
+    emojiUrls:
+      workspace.emojis.length || options.emojiUrls
+        ? { ...emojiUrls, ...options.emojiUrls }
+        : undefined,
+  };
   const blocks = useMemo(() => messageBlocks(parse(content, { nestLimit: 20 })), [content]);
   return (
     <>
       {blocks.map((block, index) => {
         const body = block.nodes.map((node, childIndex) => (
-          <Fragment key={childIndex}>{renderNode(node, options)}</Fragment>
+          <Fragment key={childIndex}>{renderNode(node, resolvedOptions)}</Fragment>
         ));
         return (
           <Fragment key={index}>

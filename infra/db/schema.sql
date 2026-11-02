@@ -722,7 +722,7 @@ CREATE TABLE user_event_settings(
 CREATE TABLE conversation_views(user_id text NOT NULL REFERENCES users(id),channel_id text NOT NULL REFERENCES channels(id),is_open boolean NOT NULL DEFAULT true,PRIMARY KEY(user_id,channel_id));
 CREATE TABLE channel_pins(channel_id text NOT NULL REFERENCES channels(id),item_type text NOT NULL CHECK(item_type IN('message','file')),item_id text NOT NULL,created_by text NOT NULL REFERENCES users(id),created_at timestamptz NOT NULL DEFAULT now(),PRIMARY KEY(channel_id,item_type,item_id));
 CREATE TABLE saved_items(user_id text NOT NULL REFERENCES users(id),item_type text NOT NULL CHECK(item_type IN('message','channel','file')),item_id text NOT NULL,channel_id text REFERENCES channels(id),created_at timestamptz NOT NULL DEFAULT now(),PRIMARY KEY(user_id,item_type,item_id));
-CREATE TABLE workspace_emojis(name text PRIMARY KEY,url text NOT NULL,created_by text NOT NULL REFERENCES users(id),updated_at timestamptz NOT NULL DEFAULT now());
+CREATE TABLE workspace_emojis(name text PRIMARY KEY,url text NOT NULL,created_by text NOT NULL REFERENCES users(id),updated_at timestamptz NOT NULL DEFAULT now(),category text NOT NULL DEFAULT '',aliases jsonb NOT NULL DEFAULT '[]'::jsonb);
 CREATE TABLE workspace_settings(id text PRIMARY KEY CHECK(id='workspace'),name text NOT NULL DEFAULT 'Zoo',preferences text NOT NULL DEFAULT '{}',profile_fields text NOT NULL DEFAULT '[]');
 INSERT INTO workspace_settings(id) VALUES('workspace');
 CREATE TABLE usergroups(id text PRIMARY KEY,name text NOT NULL,handle text NOT NULL UNIQUE,description text NOT NULL DEFAULT '',active boolean NOT NULL DEFAULT true,created_by text NOT NULL REFERENCES users(id),created_at timestamptz NOT NULL DEFAULT now());

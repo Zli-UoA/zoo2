@@ -54,7 +54,11 @@ export function HomeReactionPicker({
       });
     return () => controller.abort();
   }, [client, postId, attempt]);
-  const filtered = emojis.filter((e) => e.name.toLowerCase().includes(search.toLowerCase()));
+  const filtered = emojis.filter((e) =>
+    [e.name, e.category ?? "", ...(e.aliases ?? [])].some((value) =>
+      value.toLowerCase().includes(search.toLowerCase()),
+    ),
+  );
   const select = (value: ReactionChoice) => {
     onSelect(value);
     onClose();
@@ -118,17 +122,29 @@ export function HomeReactionPicker({
                 {filtered.length === 0 ? (
                   <p className="text-sm text-muted-foreground">{t("home.noEmojis")}</p>
                 ) : null}
-                <div className="grid min-h-0 grid-cols-6 content-start gap-1 overflow-y-auto">
-                  {filtered.slice(0, 200).map((e) => (
-                    <Button
-                      key={`${e.name}:${e.image_id}`}
-                      variant="ghost"
-                      size="icon-lg"
-                      aria-label={e.name}
-                      onClick={() => select({ reaction: e.name, emoji_id: e.image_id })}
-                    >
-                      <ActivityPubEmoji emoji={e} className="size-7 object-contain" />
-                    </Button>
+                <div className="flex min-h-0 flex-wrap content-start gap-1 overflow-y-auto">
+                  {[...new Set(filtered.map((e) => e.category ?? ""))].map((category) => (
+                    <section key={category} className="w-full">
+                      <h3 className="text-sm text-muted-foreground">
+                        {category || t("customEmoji.uncategorized")}
+                      </h3>
+                      <div className="flex flex-wrap gap-1">
+                        {filtered
+                          .slice(0, 200)
+                          .filter((e) => (e.category ?? "") === category)
+                          .map((e) => (
+                            <Button
+                              key={`${e.name}:${e.image_id}`}
+                              variant="ghost"
+                              className="h-10 w-auto min-w-10 max-w-56"
+                              aria-label={e.name}
+                              onClick={() => select({ reaction: e.name, emoji_id: e.image_id })}
+                            >
+                              <ActivityPubEmoji emoji={e} className="size-7 object-contain" />
+                            </Button>
+                          ))}
+                      </div>
+                    </section>
                   ))}
                 </div>
                 {filtered.length > 200 ? (

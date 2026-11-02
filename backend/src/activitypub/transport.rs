@@ -185,18 +185,6 @@ pub(super) async fn fetch_json_limit(
     let response = request(state, user, reqwest::Method::GET, url, None).await?;
     read_json(response, limit).await
 }
-pub(super) async fn fetch_public_json(url: &str, limit: usize) -> Result<Value, AppError> {
-    let url = reqwest::Url::parse(url).map_err(internal)?;
-    let response = safe_client(&url)
-        .await?
-        .get(url)
-        .header("Accept", "application/json")
-        .header("User-Agent", "Zoo-ActivityPub/1.0")
-        .send()
-        .await
-        .map_err(internal)?;
-    read_json(response, limit).await
-}
 async fn read_json(mut response: reqwest::Response, limit: usize) -> Result<Value, AppError> {
     if !response.status().is_success() {
         return Err(AppError::BadGateway("Remote resource unavailable".into()));

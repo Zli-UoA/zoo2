@@ -124,28 +124,29 @@ async fn like(
     let requested = body.reaction.as_deref().unwrap_or("❤️");
     let mut selected = None;
     if requested.starts_with(':') {
-        let image = body
-            .emoji_id
-            .as_deref()
-            .ok_or_else(|| AppError::BadRequest("Missing custom emoji identity".into()))?;
-        let origin = if remote {
-            reqwest::Url::parse(string(&target, "author")?)
-                .map_err(internal)?
-                .origin()
-                .ascii_serialization()
-        } else {
-            String::new()
-        };
-        let catalog=query(&mut tx,"SELECT e::text FROM apub_emoji_catalog c CROSS JOIN LATERAL jsonb_array_elements(c.emojis) e WHERE c.origin=$1 AND e->>'image_id'=$2 AND e->>'name'=$3 UNION ALL SELECT emoji::text FROM apub_reactions WHERE post_id=$4 AND emoji->>'image_id'=$2 AND emoji->>'name'=$3 UNION ALL SELECT e::text FROM apub_remote_posts p CROSS JOIN LATERAL jsonb_array_elements(p.emojis) e WHERE p.id=$4 AND e->>'image_id'=$2 AND e->>'name'=$3 LIMIT 1", &[&origin,image,requested,&body.post_id]).await?;
-        selected = catalog.into_iter().next();
+        selected = emoji::workspace_options(&mut tx)
+            .await?
+            .into_iter()
+            .find(|e| {
+                (e["name"] == requested
+                    || e["aliases"].as_array().is_some_and(|aliases| {
+                        aliases
+                            .iter()
+                            .any(|a| a.as_str() == Some(requested.trim_matches(':')))
+                    }))
+                    && body
+                        .emoji_id
+                        .as_ref()
+                        .is_none_or(|id| e["image_id"] == id.as_str())
+            });
         if selected.is_none() {
             return Err(AppError::BadRequest(
                 "Unknown or unavailable custom emoji".into(),
             ));
         }
     }
-    let normalized = if selected.is_some() {
-        requested.to_owned()
+    let normalized = if let Some(e) = &selected {
+        string(e, "name")?.to_owned()
     } else {
         emojis::get(requested)
             .filter(|_| requested.chars().count() <= 32)

@@ -321,7 +321,11 @@
         "ActivityPubMobile",
         "ActivityPubLoading",
         "ActivityPubError",
-        "ActivityPubSaveError"
+        "ActivityPubSaveError",
+        "CustomEmojis",
+        "CustomEmojisMobile",
+        "CustomEmojisEmpty",
+        "CustomEmojisError"
       ]
     },
     {

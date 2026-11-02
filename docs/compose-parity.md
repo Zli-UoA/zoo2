@@ -96,3 +96,11 @@ Android 版は `ZooApp`・`Session`・`Repository` と既存の画面／状態�
 ブラウザでActor URLを開くと公開ルートへ移動し、連携クライアント向けのJSONは維持する。公開APIの20件ページ送り、空・読込・404・失敗・再試行・長文・スマホのStoryを追加。Composeの公開SessionはShape同期・個人用キャッシュ・通知/設定/在席APIを開始しない。公開HTTPはReactのcredentials omitとComposeの匿名ブリッジを使い、認証済み画面へ移動すると公開Runtimeを解放して通常のAuthGateを開始する。
 
 検証済み: フロントの型/lint/formatとビルド、Storybook監査・Kotlin登録検査・ビルド、公開画面のReact Story 8件、共有部分の既存Home Story 6件、公開APIの結合テスト2件、KotlinのRepository/PublicProfile契約テスト8件、Wasm配布用ビルド。公開画面の実ブラウザE2EはReact/Compose各4件で、1280px・390px、匿名のHTTP要求、ページ送り、失敗後の再試行、長文と明暗テーマを確認した。Kotlinの公開プロフィールと既存プロフィールの選択したStoryも実際のCanvasで確認した。
+
+## カスタム絵文字
+
+Reactの `ZooSettings`・`CustomEmojiPicker`・`MfmContent`・`ReactionEmoji` と、共通Kotlinの `CustomEmojis.kt`・`Settings.kt`・`RichText.kt`・`Kitchen.kt` を対応させています。両実装から同じ登録・画像アップロード・編集・削除APIを使い、カテゴリ・エイリアス検索、本文・リアクション、非正方形画像を扱います。公開プロフィールはAPIが返すEmojiタグを使います。画像は共通のS3互換バケットの専用prefixに保存し、リモート絵文字の自動カタログ取得は両UIから使われるAPIごと削除しています。
+
+確認対象はZooSettingsのCustomEmojis・Mobile・Empty・Error、リアクション選択、Kotlinのコンパイル・ブラウザテスト、バックエンドの保存・権限・エイリアス解決とMisskeyプロトコルの回帰テストです。実際のMisskeyサーバーとの相互接続試験は実施していません。
+
+検証結果: Reactユニット822件、Kotlinブラウザ74件、ZooSettingsのStory17件、追加4状態のReact/Kotlin操作・表示確認、S3互換ストレージを使う登録・編集・権限テスト、ActivityPub結合16件、通常リアクション結合6件が成功しました。390pxで横方向のはみ出しがないことと、3:1画像の保存・表示、Composeからのファイル選択・アップロードも確認しています。型・lint・Storybook監査、Compose配布ビルド、Storybookビルド、マイグレーション検証が成功しています。画像の完全一致や実Misskeyサーバーとの接続は検証していません。

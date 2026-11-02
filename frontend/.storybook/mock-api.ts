@@ -1,3 +1,4 @@
+import { customEmojiFixture, customEmojiImageBase64 } from "./preference-fixtures";
 import { http, HttpResponse, ws } from "msw";
 
 // Emoji Kitchen のプレビューとして使う、猫耳付きのスマイリー。
@@ -81,6 +82,14 @@ const notificationContexts: Record<string, NotificationContextFixture> = {
 };
 
 export const storybookApiHandlers = [
+  http.get(
+    `*${customEmojiFixture.url}`,
+    () =>
+      new HttpResponse(
+        Uint8Array.from(atob(customEmojiImageBase64), (c) => c.charCodeAt(0)).buffer,
+        { headers: { "content-type": "image/png" } },
+      ),
+  ),
   http.get("*/api/activitypub/reaction-options", () =>
     HttpResponse.json({ software: "zoo", emojis: [] }),
   ),

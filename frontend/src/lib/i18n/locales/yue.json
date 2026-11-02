@@ -697,5 +697,16 @@
     "latest": "最新帖文",
     "older": "較早嘅帖文",
     "notFound": "搵唔到呢個個人檔案。"
+  },
+  "customEmoji": {
+    "hint": "名稱可用小寫字母、數字、_ 同 -。支援 PNG、JPEG、GIF、WebP，上限 2 MiB，保留原本長闊比例。",
+    "name": "名稱",
+    "image": "圖片",
+    "edit": "編輯",
+    "remove": "刪除",
+    "cancel": "取消",
+    "category": "分類",
+    "aliases": "別名（逗號分隔）",
+    "uncategorized": "未分類"
   }
 }

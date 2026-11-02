@@ -1,7 +1,6 @@
-import { useEffect, useMemo, useState } from "react";
+import { useState } from "react";
 
-import { useCollections } from "../../../lib/electric/collections-context";
-import { createConfiguredApiClient } from "../../../lib/api/client";
+import { useWorkspaceEmojis } from "../../../lib/emoji/workspace";
 import type { KitchenCatalog } from "../../../lib/emoji/kitchen";
 import { kitchenImageUrl, kitchenLabel, kitchenParts } from "../../../lib/emoji/kitchen";
 
@@ -64,32 +63,21 @@ export function ReactionEmoji({
 }
 
 function CustomReactionEmoji({ name, size }: { name: string; size: number }) {
-  const { config } = useCollections();
-  const client = useMemo(() => createConfiguredApiClient(config), [config]);
-  const [url, setUrl] = useState<string | null>(null);
-  useEffect(() => {
-    const controller = new AbortController();
-    void client
-      .get<{ url: string }>(`/api/emojis/${encodeURIComponent(name)}`, {
-        signal: controller.signal,
-      })
-      .then((emoji) => {
-        if (emoji.url.startsWith("https://")) setUrl(emoji.url);
-      })
-      .catch(() => {});
-    return () => controller.abort();
-  }, [client, name]);
-  return url ? (
+  const { emojis, imageUrl } = useWorkspaceEmojis();
+  const emoji = emojis.find((value) => value.name === name || value.aliases?.includes(name));
+  const url = emoji ? imageUrl(emoji.url) : null;
+  const [failedUrl, setFailedUrl] = useState<string | null>(null);
+  return url && failedUrl !== url ? (
     <img
       src={url}
       alt={`:${name}:`}
       width={size}
       height={size}
       className="shrink-0 object-contain"
-      style={{ width: size, height: size }}
+      style={{ width: "auto", maxWidth: size * 8, height: size }}
       loading="lazy"
       referrerPolicy="no-referrer"
-      onError={() => setUrl(null)}
+      onError={() => setFailedUrl(url)}
     />
   ) : (
     <span>{`:${name}:`}</span>

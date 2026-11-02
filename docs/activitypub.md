@@ -4,7 +4,7 @@
 
 投稿が成功したときの公開範囲・連合の有無・同期先チャンネルを、この端末のlocalStorageにアカウント・接続先ごとに保存します。再読み込みや別画面から戻った際にも引き継ぎます。本文や返信先は保存しません。利用できなくなったチャンネルは同期先から外し、返信では元投稿より公開範囲を広げません。TLの「ホーム・ローカル・ソーシャル」も選択時に保存して復元します。ブラウザの保存領域を消すと既定値へ戻ります。
 
-投稿本文・自己紹介・通知の本文・返信プレビューは、チャンネルと同じMFM描画を使います。太字・斜体・取り消し線、リンク、コード、数式、ルビなどのMFM関数に対応し、カスタム絵文字は引き続き画像プロキシ経由で表示します。コード内の絵文字コードは展開しません。Misskeyの `source`（`text/x.misskeymarkdown`）または `_misskey_content` が付いた受信Noteは元のMFMを保持し、送信NoteにもMFMの元本文を付与します。HTMLだけの受信Noteは従来どおりテキストへ変換し、外部HTMLをそのまま描画しません。
+投稿本文・自己紹介・通知の本文・返信プレビューは、チャンネルと同じMFM描画を使います。太字・斜体・取り消し線、リンク、コード、数式、ルビなどのMFM関数に対応し、リモートのカスタム絵文字は画像プロキシ経由で表示し、Zooで登録した絵文字はオブジェクトストレージから配信します。コード内の絵文字コードは展開しません。Misskeyの `source`（`text/x.misskeymarkdown`）または `_misskey_content` が付いた受信Noteは元のMFMを保持し、送信NoteにもMFMの元本文を付与します。HTMLだけの受信Noteは従来どおりテキストへ変換し、外部HTMLをそのまま描画しません。
 
 ## プロフィールと投稿画面
 
@@ -131,18 +131,21 @@ Homeの投稿下のリアクションボタンから絵文字を選択できま�
 
 - 返信ボタンは既存の投稿フォームを返信先付きで開きます。スマホではタップ内で入力欄へ同期フォーカスします。元投稿が連合なしなら返信も連合なし、フォロワー限定なら返信もフォロワー限定とし、未収載への返信を公開へ拡大することも拒否します。配送するNoteには `inReplyTo` と元の投稿者へのMention・ccを含め、フォローされていない相手にも返信・編集・削除を直接配送します。
 - リポストは `Announce`、取り消しは元のAnnounceをobjectに持つ `Undo` です。自分のリポストはTLに元投稿と区別できる項目として並び、カーソルは項目ごとのIDを使います。フォロワー限定の投稿のリポストは拒否し、元投稿の削除や公開範囲の変更後はアクセスできない本文を表示しません。第三者のAnnounceの埋め込み内容は信用せず、未知の元投稿は公開HTTPSの正規URLから取得して、ID・attributedTo・公開範囲を確認します。
-- リアクションの選択では共通のUnicode絵文字ピッカーと、Misskeyのカスタム絵文字一覧を使います。Misskeyと一部の互換実装はNodeInfoで識別し、公開 `GET /api/emojis` を取得します。カタログが取得できない場合も、その投稿のEmojiタグや受信済みリアクションを利用できます。カタログは最大8 MiB／10000件、選択画面は検索結果の先頭200件を表示します。
+- リアクションの選択では共通のUnicode絵文字ピッカーと、Zoo設定で登録したカスタム絵文字を使います。NodeInfoや連合先の `/api/emojis` を取得する自動取り込みは行いません。受信Note・Actor・Likeに添付されたEmojiタグの表示は維持します。旧カタログテーブルは互換性のため残し、読み書きしません。自動取り込みの削除用マイグレーションはありません。
+- Zoo設定の「カスタム絵文字」で、画像の追加・差し替え、名前・カテゴリ・エイリアスの編集、削除ができます。名前は英小文字・数字・`_`・`-`、最大64バイトです。カテゴリは最大100文字、エイリアスは最大32件・各100文字で、カンマ区切りで編集します。日本語のエイリアスは検索に利用でき、英数字等のショートコードに使えるエイリアスは本文・リアクションにも使えます。リアクション送信時は正式名へ解決します。名前変更時は旧名をエイリアスに残します。一般メンバーは自分の登録を編集・削除でき、管理者は他の登録も管理できます。ゲストは管理できません。
+- 登録画像はPNG・JPEG・GIF・WebP、最大2 MiBです。添付画像と同じS3互換バケットの `custom-emojis/<UUID>` に保存し、公開URL `/api/emoji-images/<UUID>` から配信します。正方形へ切り抜かず縦横比を保ちます。画像差し替え時には新しいUUIDを発行します。すでに連合した投稿内の画像URLを維持するため、差し替え・登録削除では過去の画像オブジェクトを削除しません。
+- 送信Noteは本文中の正式名・エイリアスに対応する `Emoji` タグ（`name`、`id`、`icon.type=Image`、公開画像URL）を添付し、Misskey向けのMFM sourceも保持します。カテゴリ・エイリアス一覧はZoo内の管理・検索用であり、ActivityPub共通規格として連合先へ同期されるものではありません。
 - Misskeyの形式に合わせ、`Like.content`・`Like._misskey_reaction` に絵文字を入れ、カスタム絵文字はEmojiタグを添付します。一人につき一つのリアクションを保持し、変更時は元のLikeのUndoと新しいLikeを順序付きで配送します。連合先の受付設定によっては、先方で通常のいいねへ変換される場合があります。表示件数はZooで把握している受信・操作分で、連合先サーバー全体の集計値ではありません。
 
 Misskeyの形式は [ApRendererService](https://github.com/misskey-dev/misskey/blob/develop/packages/backend/src/core/activitypub/ApRendererService.ts)、[ApInboxService](https://github.com/misskey-dev/misskey/blob/develop/packages/backend/src/core/activitypub/ApInboxService.ts)、[emojis API](https://github.com/misskey-dev/misskey/blob/develop/packages/backend/src/server/api/endpoints/emojis.ts) の公開実装と照合しています。実際のMisskeyサーバーとの相互接続試験は未実施です。
 
-絵文字画像は、受信タグ・カタログから登録した画像IDだけをZooのプロキシで公開します。任意URLの画像プロキシにはしません。HTTPS・公開IP・DNS固定・リダイレクト禁止を適用し、画像は最大2 MiB、同時取得8件に制限します。サーバー側では成功した画像を5分、取得失敗を30秒キャッシュし、最大128件・合計32 MiBまで保持します。キャッシュにない画像の取得は接続元IPごとに毎分240件、プロセス全体で毎分960件までです。Cloudflare Tunnel用の隔離されたオリジンでは `ACTIVITYPUB_CLOUDFLARE_TUNNEL=true` とし、プライベートIP・loopbackのプロキシ接続から届く `CF-Connecting-IP` を利用者ごとの制限に使います。`compose.stg.yaml` はこの構成を既定で有効にします。CloudflareのPseudo IPv4による上書き時には `CF-Connecting-IPv6` の実IPv6を使用します。公開IPからの直結、または設定が無効な場合は転送ヘッダーを信頼せずTCP接続元を使います。Tunnel設定でヘッダーや接続元が不明な場合は400とし、プロキシ全体の共有枠には戻しません。429には `Retry-After: 60` と `Cache-Control: no-store` を返します。画像登録は未使用30日で削除し、認証済みのTL・通知・カタログ閲覧時に使用中の登録を更新します。SVGを含む対応画像には `nosniff` とsandboxのCSPを付けます。
+絵文字画像は、受信タグ・カタログから登録した画像IDだけをZooのプロキシで公開します。任意URLの画像プロキシにはしません。HTTPS・公開IP・DNS固定・リダイレクト禁止を適用し、画像は最大2 MiB、同時取得8件に制限します。サーバー側では成功した画像を5分、取得失敗を30秒キャッシュし、最大128件・合計32 MiBまで保持します。キャッシュにない画像の取得は接続元IPごとに毎分240件、プロセス全体で毎分960件までです。Cloudflare Tunnel用の隔離されたオリジンでは `ACTIVITYPUB_CLOUDFLARE_TUNNEL=true` とし、プライベートIP・loopbackのプロキシ接続から届く `CF-Connecting-IP` を利用者ごとの制限に使います。`compose.stg.yaml` はこの構成を既定で有効にします。CloudflareのPseudo IPv4による上書き時には `CF-Connecting-IPv6` の実IPv6を使用します。公開IPからの直結、または設定が無効な場合は転送ヘッダーを信頼せずTCP接続元を使います。Tunnel設定でヘッダーや接続元が不明な場合は400とし、プロキシ全体の共有枠には戻しません。429には `Retry-After: 60` と `Cache-Control: no-store` を返します。画像登録は未使用30日で削除し、認証済みのTL・通知の閲覧時に使用中の登録を更新します。SVGを含む対応画像には `nosniff` とsandboxのCSPを付けます。
 
 APIの追加・拡張：
 
 - `POST /api/home` の `in_reply_to`：返信先のHome投稿IDまたは受信Note URI。
 - `POST/DELETE /api/activitypub/reposts`：`{ "post_id": "..." }`。
-- `POST /api/activitypub/reactions`：`post_id` に加え `reaction`、カスタムの場合は選択肢から得た `emoji_id` を指定。DELETEで自分のリアクションを取り消します。
+- `POST /api/activitypub/reactions`：`post_id` に加え `reaction`、カスタムの場合は登録済みの正式名またはエイリアスを指定でき、選択肢から得た `emoji_id` も指定可能。DELETEで自分のリアクションを取り消します。
 - `GET /api/activitypub/reaction-options?post_id=...`：閲覧できる投稿のリアクション用絵文字一覧。
 - `GET /api/activitypub/emoji-images/<登録済み画像ID>`：制限付きの画像取得。
 
@@ -167,3 +170,13 @@ Note IDが別Actorのキャッシュ行と衝突した場合は、そのIDをHTT
 React版はメイン画面と同じ `ActivityPubProfileDetails`・`HomePostContent` と、共通のAvatar・Button・Inputを使います。Compose版もメインのプロフィール・MFM描画・ZooMark・Button・Fieldを使います。翻訳・テーマ・日時の表示方針はそれぞれのメイン画面と共有します。公開画面ではAuthGate・OIDC・現在ユーザーの取得・Electric購読・個人用キャッシュを初期化しません。「Zooでプロフィールを開く」から認証済み画面へ移動すると通常の認証フローになります。
 
 公開データは `GET /api/activitypub/users/<user-id>/profile?before=<post-id>` で取得します。`account`・`posts`・`next_cursor` を返します。本人の公開かつ連合あり（`apub=true`, `visibility=public`）の削除されていない投稿を、新しい順に20件ずつ表示します。未収載・フォロワー限定・連合なし・他ユーザーの投稿とフォロワー一覧は含めません。`before` は同じユーザーの公開連合投稿だけを受け付け、同時刻の投稿はIDで順序を確定します。
+
+## カスタム絵文字のAPI
+
+- `GET /api/emojis`、`GET /api/emojis/<名前またはエイリアス>`：`name`・`url`・`category`・`aliases` を取得。
+- `POST /api/emojis/upload`：`name`・`content_type`・Base64の画像 `data`・任意の `previous_name`・`category`・`aliases` を送信。画像を保存して登録する。`previous_name` は編集対象の正式名。
+- `POST /api/emojis`：保存済み画像の `url` と名前・メタデータを更新。外部画像URLの直接登録は受け付けない。
+- `DELETE /api/emojis/<正式名>`：登録を削除。
+- アプリ用には同じ操作を `/api/apps/v1/emojis` 配下で提供し、`emoji:read` / `emoji:write` のスコープを確認する。
+
+カテゴリ・エイリアス保存用のマイグレーションは既存テーブルにデフォルト付きの列を追加するだけで、既存登録や旧アプリの書き込みと互換性を保ちます。

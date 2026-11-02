@@ -940,7 +940,8 @@ pub(crate) async fn delete_reaction(
             .and(
                 MessageReaction::fields()
                     .emoji()
-                    .eq(normalized_emoji.as_str()),
+                    .eq(normalized_emoji.as_str())
+                    .or(MessageReaction::fields().emoji().eq(query.emoji.trim())),
             ),
     )
     .first()
@@ -967,27 +968,27 @@ async fn reaction_emoji(
     input: &str,
     require_existing: bool,
 ) -> Result<String, AppError> {
-    if let Ok(emoji) = normalize_and_validate_emoji(input) {
-        return Ok(emoji);
-    }
-    if let Some(name) = input.strip_prefix(':').and_then(|s| s.strip_suffix(':'))
-        && !name.is_empty()
-        && name.len() <= 64
-        && name
-            .bytes()
-            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == b'_' || c == b'-')
+    if let Some(name) = input
+        .trim()
+        .strip_prefix(':')
+        .and_then(|s| s.strip_suffix(':'))
     {
-        if require_existing {
-            let mut db = state.db.clone();
-            let mut tx = db.transaction().await?;
-            crate::apps::one(
-                &mut tx,
-                "SELECT '{}'::text FROM workspace_emojis WHERE name=$1",
-                &[name],
-            )
-            .await?;
+        let mut db = state.db.clone();
+        let mut tx = db.transaction().await?;
+        if let Some(emoji) = crate::apps::resources::resolve_workspace_emoji(&mut tx, name).await? {
+            return Ok(if require_existing {
+                format!(":{}:", emoji["name"].as_str().unwrap())
+            } else {
+                input.trim().to_owned()
+            });
         }
-        return Ok(input.to_owned());
+        if !require_existing {
+            return normalize_and_validate_emoji(input);
+        }
     }
-    normalize_and_validate_emoji(input)
+    let normalized = normalize_and_validate_emoji(input)?;
+    if normalized.starts_with(':') {
+        return Err(AppError::BadRequest("Unknown custom emoji".into()));
+    }
+    Ok(normalized)
 }

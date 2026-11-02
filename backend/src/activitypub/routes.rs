@@ -131,7 +131,9 @@ async fn note(State(state): State<AppState>, Path(id): Path<String>) -> Result<R
     if !post["deleted_at"].is_null() {
         return Ok((StatusCode::GONE,response(json!({"@context":CONTEXT,"type":"Tombstone","id":format!("{}/api/activitypub/notes/{id}",base_url()?)}))).into_response());
     }
-    Ok(response(note_value(&post)?))
+    Ok(response(note_value(
+        &with_workspace_emojis(&mut tx, &post).await?,
+    )?))
 }
 async fn outbox(
     State(state): State<AppState>,
@@ -148,7 +150,11 @@ async fn outbox(
     let mut db = state.db.clone();
     let mut tx = db.transaction().await?;
     let rows=query(&mut tx,"SELECT row_to_json(p)::text FROM home_posts p WHERE user_id=$1 AND apub AND visibility='public' AND deleted_at IS NULL AND ($2='' OR (created_at,id)<(SELECT created_at,id FROM home_posts WHERE id=$2)) ORDER BY created_at DESC,id DESC LIMIT 50",&[&id,page.before.as_deref().unwrap_or("")]).await?;
-    let items=rows.iter().map(|p|{let note=note_value(p)?;Ok(json!({"type":"Create","id":format!("{}#create",string(&note,"id")?),"actor":actor_id(&id)?,"published":p["created_at"],"to":note["to"],"cc":note["cc"],"object":note}))}).collect::<Result<Vec<Value>,AppError>>()?;
+    let mut items = vec![];
+    for p in &rows {
+        let note = note_value(&with_workspace_emojis(&mut tx, p).await?)?;
+        items.push(json!({"type":"Create","id":format!("{}#create",string(&note,"id")?),"actor":actor_id(&id)?,"published":p["created_at"],"to":note["to"],"cc":note["cc"],"object":note}));
+    }
     let mut result = json!({"@context":CONTEXT,"type":"OrderedCollectionPage","id":format!("{url}?page=true{}",page.before.as_ref().map(|s|format!("&before={}",percent_encoding::utf8_percent_encode(s,percent_encoding::NON_ALPHANUMERIC))).unwrap_or_default()),"partOf":url,"orderedItems":items});
     if rows.len() == 50 {
         result["next"] = json!(format!(

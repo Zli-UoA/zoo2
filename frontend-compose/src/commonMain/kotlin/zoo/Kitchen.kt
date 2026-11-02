@@ -102,17 +102,14 @@ fun ReactionEmoji(
         remember(value, catalog) {
             mutableStateOf<String?>(catalog?.let { kitchenImage(it, value) })
         }
+    if (Regex("^:[a-z0-9_-]{1,64}:$").matches(value)) {
+        val name = value.removeSurrounding(":")
+        val emoji = workspaceEmojis(app).find { it.text("name") == name || it.array("aliases").any { alias -> alias.jsonPrimitive.content == name } }
+        if (emoji == null) Text(value, modifier) else ActivityPubEmoji(workspaceEmoji(emoji), size, modifier)
+        return
+    }
     LaunchedEffect(value, catalog, loadCatalog) {
-        if (Regex("^:[a-z0-9_-]{1,64}:$").matches(value)) {
-            try {
-                url =
-                    app.api
-                        .request("/api/emojis/${value.removeSurrounding(":")}")
-                        .jsonObject
-                        .text("url")
-                        .takeIf { it.startsWith("https://") }
-            } catch (_: Exception) {}
-        } else if (value.startsWith("kitchen:") && catalog == null && loadCatalog) {
+        if (value.startsWith("kitchen:") && catalog == null && loadCatalog) {
             try {
                 url =
                     kitchenImage(

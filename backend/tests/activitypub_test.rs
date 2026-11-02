@@ -1340,6 +1340,11 @@ async fn follow_peer(f: &mut ProtocolFixture) -> anyhow::Result<()> {
     Ok(())
 }
 async fn finish_protocol(f: &mut ProtocolFixture) -> anyhow::Result<()> {
+    toasty::sql::statement("DELETE FROM workspace_emojis WHERE created_by=$1 OR created_by=$2")
+        .bind(f.user.as_str())
+        .bind(f.other.as_str())
+        .exec(&mut f.db)
+        .await?;
     toasty::sql::statement("DELETE FROM users WHERE id=$1 OR id=$2")
         .bind(f.user.as_str())
         .bind(f.other.as_str())
@@ -1367,10 +1372,13 @@ async fn misskey_custom_reactions_preserve_tags_replace_with_undo_and_proxy_only
         .unwrap();
     assert!(remote["content"].as_str().unwrap().contains(":blobcat:"));
     let emoji = remote["emojis"][0].clone();
+    let remote_emoji = emoji.clone();
     assert_eq!(emoji["name"], ":blobcat:");
     assert_eq!(emoji["image_id"].as_str().unwrap().len(), 64);
     toasty::sql::statement("INSERT INTO apub_emoji_catalog(origin,software,emojis) VALUES('https://remote.example','misskey',$1::jsonb) ON CONFLICT(origin) DO UPDATE SET emojis=EXCLUDED.emojis,software='misskey',fetched_at=now()")
         .bind(json!([emoji]).to_string()).exec(&mut f.db).await?;
+    let image_url = format!("/api/emoji-images/{}", uuid::Uuid::new_v4());
+    toasty::sql::statement("INSERT INTO workspace_emojis(name,url,created_by,category,aliases) VALUES('blobcat',$1,$2,'cats','[\"cat_alias\"]'::jsonb)").bind(image_url.as_str()).bind(f.user.as_str()).exec(&mut f.db).await?;
     let encoded = percent_encoding::utf8_percent_encode(&post, percent_encoding::NON_ALPHANUMERIC);
     let (status, options) = request(
         &f.app,
@@ -1381,7 +1389,17 @@ async fn misskey_custom_reactions_preserve_tags_replace_with_undo_and_proxy_only
     )
     .await?;
     assert_eq!(status, StatusCode::OK);
-    assert_eq!(options["emojis"][0], emoji);
+    let emoji = options["emojis"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|e| e["name"] == ":blobcat:")
+        .unwrap()
+        .clone();
+    assert_eq!(emoji["local"], true);
+    assert_eq!(emoji["category"], "cats");
+    assert_eq!(emoji["aliases"], json!(["cat_alias"]));
+    assert_ne!(emoji["url"], tag["icon"]["url"]);
     assert_eq!(
         request(
             &f.app,
@@ -1414,7 +1432,7 @@ async fn misskey_custom_reactions_preserve_tags_replace_with_undo_and_proxy_only
     assert_eq!(like["type"], "Like");
     assert_eq!(like["_misskey_reaction"], ":blobcat:");
     assert_eq!(like["content"], ":blobcat:");
-    assert_eq!(like["tag"][0]["icon"]["url"], tag["icon"]["url"]);
+    assert_eq!(like["tag"][0]["icon"]["url"], emoji["url"]);
     assert_eq!(like["object"], post);
     assert_eq!(
         request(
@@ -1474,7 +1492,7 @@ async fn misskey_custom_reactions_preserve_tags_replace_with_undo_and_proxy_only
     assert_eq!(local_row["reactions"][0]["reaction"], ":blobcat:");
     assert_eq!(
         local_row["reactions"][0]["emoji"]["image_id"],
-        emoji["image_id"]
+        remote_emoji["image_id"]
     );
     let undo = peer_activity(&f, "Undo", incoming["id"].clone());
     assert_eq!(receive_peer(&f, &undo).await?, StatusCode::ACCEPTED);
@@ -2545,4 +2563,44 @@ async fn anonymous_profile_only_lists_public_federated_posts_with_stable_paginat
     .await?;
     assert_eq!(status, StatusCode::NOT_FOUND);
     Ok(())
+}
+
+#[tokio::test]
+async fn outbound_notes_include_misskey_emoji_tags_for_names_and_aliases() -> anyhow::Result<()> {
+    let _serial = PROTOCOL_SERIAL.lock().await;
+    let mut f = protocol_fixture().await?;
+    let image = format!("/api/emoji-images/{}", uuid::Uuid::new_v4());
+    toasty::sql::statement("INSERT INTO workspace_emojis(name,url,created_by,category,aliases) VALUES('zoo_wave',$1,$2,'Greetings','[\"zoo_hello\"]'::jsonb)").bind(image.as_str()).bind(f.user.as_str()).exec(&mut f.db).await?;
+    let id = protocol_post(&f, "public", true).await?;
+    toasty::sql::statement(
+        "UPDATE home_posts SET content='Hello :zoo_wave: :zoo_hello:' WHERE id=$1",
+    )
+    .bind(id.as_str())
+    .exec(&mut f.db)
+    .await?;
+    let (status, note) = request(
+        &f.app,
+        "GET",
+        None,
+        &format!("/api/activitypub/notes/{id}"),
+        None,
+    )
+    .await?;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(note["source"]["mediaType"], "text/x.misskeymarkdown");
+    for name in [":zoo_wave:", ":zoo_hello:"] {
+        let tag = note["tag"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|tag| tag["name"] == name)
+            .unwrap();
+        assert_eq!(tag["type"], "Emoji");
+        assert_eq!(tag["icon"]["type"], "Image");
+        assert_eq!(
+            tag["icon"]["url"],
+            format!("https://zoo.example.com{image}")
+        );
+    }
+    finish_protocol(&mut f).await
 }
