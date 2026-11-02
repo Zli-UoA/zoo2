@@ -21,6 +21,10 @@ import kotlinx.serialization.json.*
 
 @Composable
 fun ZooApp(app: Session) {
+    if (isPublicProfilePath(app.env.path)) {
+        PublicProfileScreen(app)
+        return
+    }
     if (app.env.path.substringBefore('?') == "/realtime") {
         Column(
             Modifier.fillMaxSize()

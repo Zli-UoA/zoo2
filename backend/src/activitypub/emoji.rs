@@ -290,6 +290,20 @@ async fn load_image(url: reqwest::Url) -> Result<emoji_cache::Image, AppError> {
     Ok(emoji_cache::Image { mime, bytes: data })
 }
 
+pub(super) fn note_content(note: &Value) -> Result<String, AppError> {
+    let html = string(note, "content")?;
+    let source = (note["source"]["mediaType"] == "text/x.misskeymarkdown")
+        .then(|| note["source"]["content"].as_str())
+        .flatten()
+        .or_else(|| note["_misskey_content"].as_str());
+    if html.len() > 128 * 1024 || source.is_some_and(|value| value.len() > 128 * 1024) {
+        return Err(AppError::BadRequest("Note too large".into()));
+    }
+    Ok(source
+        .map(str::to_owned)
+        .unwrap_or_else(|| plain_content(html)))
+}
+
 pub(super) fn plain_content(raw: &str) -> String {
     let alt = regex::Regex::new(r#"(?is)<img\b[^>]*\balt=["']([^"']*)["'][^>]*>"#)
         .unwrap()

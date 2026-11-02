@@ -1,5 +1,7 @@
 name: CI GitHub Bot
 on:
+  # merge-queue.yaml がマージキューで呼び出す。
+  workflow_call:
   workflow_dispatch:
   pull_request:
     paths:
@@ -26,7 +28,7 @@ jobs:
       runner-status-token: ${{ secrets.RUNNER_STATUS_TOKEN }}
   test:
     needs: runner
-    runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-latest' || fromJSON(needs.runner.outputs.docker-runs-on || '"ubuntu-latest"') }}
+    runs-on: ${{ (github.event.pull_request.head.repo.fork || github.event_name == 'merge_group') && 'ubuntu-latest' || fromJSON(needs.runner.outputs.docker-runs-on || '"ubuntu-latest"') }}
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v7
@@ -60,7 +62,7 @@ jobs:
   publish:
     needs: [runner, test]
     if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
-    runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-latest' || fromJSON(needs.runner.outputs.docker-runs-on || '"ubuntu-latest"') }}
+    runs-on: ${{ (github.event.pull_request.head.repo.fork || github.event_name == 'merge_group') && 'ubuntu-latest' || fromJSON(needs.runner.outputs.docker-runs-on || '"ubuntu-latest"') }}
     timeout-minutes: 15
     permissions:
       contents: read

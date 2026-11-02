@@ -126,7 +126,8 @@
         "MobileFollowRequests",
         "HomeNotificationsError",
         "LiveFollowRequest",
-        "OlderFollowRequests"
+        "OlderFollowRequests",
+        "ActivityPubMfmReply"
       ]
     },
     {
@@ -501,7 +502,31 @@
         "SinglePostMissing",
         "UserProfile",
         "MobileUserProfile",
-        "UserProfileError"
+        "UserProfileError",
+        "RememberPostSettings",
+        "RememberPostSettingsMobile",
+        "RememberTimeline",
+        "RememberedReplyConstraints",
+        "RememberedChannelUnavailable",
+        "RememberedAccountIsolation",
+        "PostingWithoutSavedIdentity",
+        "MfmDecoratedPost",
+        "MfmDecoratedPostMobile",
+        "MfmSinglePost",
+        "MfmUserProfile"
+      ]
+    },
+    {
+      "file": "src/components/public/PublicProfile.stories.tsx",
+      "states": [
+        "Default",
+        "Empty",
+        "Loading",
+        "LoadError",
+        "NotFound",
+        "LongContent",
+        "Mobile",
+        "Pagination"
       ]
     }
   ],
@@ -878,7 +903,7 @@
       "file": "src/components/home/ActivityPubEmoji.tsx",
       "story": "src/components/home/HomeScreen.stories.tsx",
       "composed": true,
-      "reason": "MisskeyCustomEmoji/MobileMisskeyで本文・表示名・リアクションの絵文字とID表記を、EmojiFallbackで画像取得失敗を確認する。"
+      "reason": "MisskeyCustomEmoji/MobileMisskeyで本文・表示名・リアクションの絵文字とID表記を、EmojiFallbackで画像取得失敗を確認する。MfmDecoratedPost/MfmSinglePostで共通MFM描画とコード内絵文字の非展開、MfmUserProfileで自己紹介の装飾を確認する。"
     },
     {
       "file": "src/components/home/HomeReactionPicker.tsx",
@@ -902,6 +927,24 @@
       "file": "src/components/experimental/ComposeFrontend.tsx",
       "reason": "認証・OPFS・ルーターとKotlin/Wasmを接続する制御層。カタログで覆えない起動・ユーザー別保存・失敗復帰・CSPを専用E2Eで検証する。",
       "checks": ["e2e/compose.spec.ts", "e2e/compose-production.spec.ts"]
+    },
+    {
+      "file": "src/components/public/PublicProfile.tsx",
+      "story": "src/components/public/PublicProfile.stories.tsx",
+      "composed": true,
+      "reason": "公開プロフィールの正常・空・読込・失敗・再試行・404・長文・スマホ・ページ送り。"
+    },
+    {
+      "file": "src/components/home/ActivityPubProfileDetails.tsx",
+      "story": "src/components/public/PublicProfile.stories.tsx",
+      "composed": true,
+      "reason": "認証済みプロフィールと公開プロフィールで共有する名前・自己紹介の描画。"
+    },
+    {
+      "file": "src/components/home/HomePostContent.tsx",
+      "story": "src/components/public/PublicProfile.stories.tsx",
+      "composed": true,
+      "reason": "Homeと公開プロフィールで共有するMFM本文・リンク・絵文字の描画。"
     }
   ]
 }

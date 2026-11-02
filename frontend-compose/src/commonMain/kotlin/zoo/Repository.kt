@@ -60,6 +60,7 @@ class SyncedTable(
     scope: CoroutineScope,
     private val params: Map<String, String> = emptyMap(),
     private val streamOptions: ShapeStreamOptions = ShapeStreamOptions(liveSse = true),
+    private val synchronize: Boolean = true,
 ) {
     private val tableScope =
         CoroutineScope(scope.coroutineContext + SupervisorJob(scope.coroutineContext[Job]))
@@ -92,6 +93,10 @@ class SyncedTable(
         "zoo-compose:v1:${config.apiBaseUrl}:${config.shapeProxyPath}:${config.shapeMode}:${config.electricShapeUrl}:${config.userId}:$name:${params.entries.sortedBy { it.key }}"
     private val worker =
         tableScope.launch {
+            if (!synchronize) {
+                loading.value = false
+                return@launch
+            }
             try {
                 platform.readCache(cacheKey)?.let { raw ->
                     serverRows.value = json.parseToJsonElement(raw).jsonArray.map { it.jsonObject }
@@ -281,12 +286,13 @@ class Repository(
     val platform: Platform,
     private val http: HttpClient,
     private val scope: CoroutineScope,
+    private val synchronize: Boolean = true,
 ) {
     val api = ZooApi(config, platform, http)
-    val channels = SyncedTable("channels", config, platform, http, scope)
-    val users = SyncedTable("users", config, platform, http, scope)
-    val members = SyncedTable("channel_users", config, platform, http, scope)
-    val notifications = SyncedTable("notifications", config, platform, http, scope)
+    val channels = SyncedTable("channels", config, platform, http, scope, synchronize = synchronize)
+    val users = SyncedTable("users", config, platform, http, scope, synchronize = synchronize)
+    val members = SyncedTable("channel_users", config, platform, http, scope, synchronize = synchronize)
+    val notifications = SyncedTable("notifications", config, platform, http, scope, synchronize = synchronize)
     private val dynamic = mutableMapOf<Pair<String, String>, SyncedTable>()
 
     fun table(name: String, channelId: String = ""): SyncedTable =
@@ -307,6 +313,7 @@ class Repository(
                         http,
                         scope,
                         mapOf("channel_id" to channelId),
+                        synchronize = synchronize,
                     )
                 }
             else -> error("Unknown Shape resource")

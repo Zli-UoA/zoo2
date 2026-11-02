@@ -430,3 +430,19 @@ async fn actor_and_emoji_registration_requires_a_valid_inbox_signature() -> anyh
         .await?;
     Ok(())
 }
+
+#[test]
+fn mfm_note_source_is_explicit_bounded_and_html_stays_plain() {
+    let mfm = "**bold** $[ruby 漢字 かんじ] :blobcat:";
+    let mut note = json!({"content":"<p><strong>bold</strong></p>","source":{"mediaType":"text/x.misskeymarkdown","content":mfm},"_misskey_content":"legacy"});
+    assert_eq!(emoji::note_content(&note).unwrap(), mfm);
+    note["source"]["mediaType"] = json!("text/html");
+    assert_eq!(emoji::note_content(&note).unwrap(), "legacy");
+    note.as_object_mut().unwrap().remove("_misskey_content");
+    assert_eq!(emoji::note_content(&note).unwrap(), "bold\n");
+    note["source"] = json!({"mediaType":"text/x.misskeymarkdown","content":"x".repeat(128*1024+1)});
+    assert!(emoji::note_content(&note).is_err());
+    note["source"] = Value::Null;
+    note["content"] = json!("x".repeat(128 * 1024 + 1));
+    assert!(emoji::note_content(&note).is_err());
+}

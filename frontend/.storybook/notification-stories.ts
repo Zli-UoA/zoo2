@@ -42,6 +42,12 @@ function notificationInteractions(title: string, name: string): NativeInteractio
       name,
       within: panel,
     });
+    if (name === "Activity Pub Mfm Reply")
+      return [
+        ...apubReady,
+        visible("装飾付きの返信"),
+        { action: "wait", role: "img", name: ":blobcat:" },
+      ];
     if (["Follow Requests", "Mobile Follow Requests"].includes(name))
       return [
         ...apubReady,

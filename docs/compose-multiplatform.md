@@ -7,7 +7,7 @@
 ## 実行と切り替え
 
 JDK 21、Node、pnpm、初回ビルド時のGradle / Maven / npm / GitHubへの接続が必要です。
-WebのビルドにAndroid SDKやXcodeは不要です。
+WebのビルドにAndroid SDKやXcodeは不要です。`nix develop` の開発シェルには JDK 21（`JAVA_HOME`）と、Linux ではテスト用の Chromium（`CHROME_BIN`、CI と同じく `--no-sandbox` 付き）が入っています。
 
 Compose Multiplatformは1.11.1、KotlinはCompose 1.11.1が依存するWasm標準ライブラリとコンパイラのバージョンを揃え、2.3.20を使用します。Web向けの最低要件は2.3.10ですが、Wasmコンパイルでは標準ライブラリと同じ2.3.20が必要です。以前のComposeには、画面やダイアログを再表示すると操作ノードのキャッシュが不整合になり、Webのアクセシビリティ情報が失われる不具合がありました。公開修正版へ更新し、ライブラリ内部への独自パッチは加えていません。
 
@@ -29,7 +29,7 @@ pnpm dev
 
 ```sh
 cd frontend-compose
-./gradlew wasmJsBrowserTest # Chrome/Chromiumが必要。必要に応じてCHROME_BINを指定
+./gradlew wasmJsBrowserTest # Chrome/Chromiumが必要。nix develop では CHROME_BIN を設定済み
 ./gradlew wasmJsBrowserDistribution
 ```
 
@@ -204,3 +204,7 @@ pnpm exec playwright test --config playwright.compose-storybook.config.ts
 Reactを変更する場合は同じPRでComposeの機能・表示・操作を反映し、両実装を検証します。
 main取り込み時は競合がない変更も照合します。翻訳・fixture・アイコンは共通の所有先を使い、
 Kotlinの描画を再生成してからカタログと操作テストを実行します。
+
+## Android ターゲット
+
+`-Pzoo.android=true` で同じ commonMain を Android から利用できます。起動・認証・端末 API は `androidApp`、expect/actual の実装は `src/androidMain` に置きます。ビルドと対応範囲は [Android 版](android.md) を参照してください。

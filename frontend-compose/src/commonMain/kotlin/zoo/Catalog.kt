@@ -103,7 +103,8 @@ fun Catalog(app: Session, options: Row) {
                 "app-story" -> AppStory(app, options)
                 "preference-story" -> PreferenceStory(app, options)
                 "notification-story" -> NotificationStory(app, options)
-                "home-story" -> HomeScreen(app, fixture, fixture.nested("args"))
+                "home-story" -> HomeStory(app, fixture)
+                "public-profile-story" -> PublicProfileScreen(app, fixture.nested("args").text("userId").ifEmpty { "alice" })
                 "dialog-demo",
                 "confirm" -> {
                     var open by

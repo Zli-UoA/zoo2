@@ -60,6 +60,22 @@ class RepositoryTest {
         )
 
     @Test
+    fun publicSessionDoesNotReadPrivateCachesOrStartShapeRequests() = runTest {
+        val platform = FakePlatform()
+        var requests = 0
+        val http = HttpClient(MockEngine { requests++; error("Unexpected private request") })
+        val repo = Repository(config, platform, http, backgroundScope, synchronize = false)
+        val app = Session(repo, backgroundScope, Environment(path = "/public/users/alice"))
+        app.start()
+        runCurrent()
+        assertEquals(0, requests)
+        assertTrue(platform.readKeys.isEmpty())
+        app.close()
+        runCurrent()
+        assertEquals(0, requests)
+    }
+
+    @Test
     fun restResolvesAuthenticationForEachRequestAndDoesNotSendSecretsInTheUrl() = runTest {
         val platform = FakePlatform()
         val tokens = mutableListOf<String?>()
@@ -95,7 +111,9 @@ class RepositoryTest {
                 assertFailsWith<IllegalStateException> {
                     ZooApi(config, FakePlatform(), http).request("/api/channels/c1/read-state")
                 }
-            assertSame(failure, error.cause)
+            // JVM coroutine stacktrace recovery may copy the Error and keep the
+            // original as its cause. The transport failure must remain in the chain.
+            assertTrue(generateSequence(error.cause) { it.cause }.any { it === failure })
         } finally {
             http.close()
         }

@@ -1,4 +1,10 @@
-import { ClientOnly, HeadContent, Scripts, createRootRoute } from "@tanstack/react-router";
+import {
+  ClientOnly,
+  HeadContent,
+  Scripts,
+  createRootRoute,
+  useRouterState,
+} from "@tanstack/react-router";
 import { TanStackRouterDevtoolsPanel } from "@tanstack/react-router-devtools";
 import { TanStackDevtools } from "@tanstack/react-devtools";
 
@@ -59,8 +65,7 @@ function RootDocument({ children }: { children: React.ReactNode }) {
           <LocaleProvider>
             <ThemeProvider>
               <TooltipProvider>
-                <AuthGate>{children}</AuthGate>
-                <PreviewUserSwitcher />
+                <RouteAccess>{children}</RouteAccess>
                 <Toaster />
               </TooltipProvider>
             </ThemeProvider>
@@ -80,5 +85,17 @@ function RootDocument({ children }: { children: React.ReactNode }) {
         <Scripts />
       </body>
     </html>
+  );
+}
+
+function RouteAccess({ children }: { children: React.ReactNode }) {
+  const path = useRouterState({ select: (state) => state.location.pathname });
+  return /^\/public\/users\/[^/]+\/?$/.test(path) ? (
+    <>{children}</>
+  ) : (
+    <AuthGate>
+      {children}
+      <PreviewUserSwitcher />
+    </AuthGate>
   );
 }

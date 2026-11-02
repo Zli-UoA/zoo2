@@ -6,3 +6,4 @@ pub mod http;
 pub mod mfm;
 pub mod store;
 pub mod ui;
+pub mod update;

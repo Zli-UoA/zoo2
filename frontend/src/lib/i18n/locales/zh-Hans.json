@@ -733,5 +733,18 @@
     "dismiss": "移到历史记录",
     "runTitle": "从 {{name}} 导入",
     "importedTo": "已导入到 #{{name}}"
+  },
+  "publicProfile": {
+    "followTitle": "从你的服务器关注",
+    "followDescription": "在 Mastodon、Misskey 或其他 ActivityPub 应用中搜索此账号，然后发送关注请求。",
+    "accountAddress": "账号地址",
+    "approvalRequired": "关注请求需要批准。",
+    "openInZoo": "在 Zoo 中打开个人资料",
+    "posts": "公开帖子",
+    "empty": "暂无公开帖子。",
+    "pagination": "公开帖子分页",
+    "latest": "最新帖子",
+    "older": "更早的帖子",
+    "notFound": "找不到此个人资料。"
   }
 }

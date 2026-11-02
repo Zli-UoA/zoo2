@@ -1,3 +1,4 @@
+import { ActivityPubProfileDetails } from "./ActivityPubProfileDetails";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link } from "@tanstack/react-router";
 import { useTranslation } from "react-i18next";
@@ -6,7 +7,7 @@ import { createConfiguredApiClient } from "../../lib/api/client";
 import { useCurrentUser } from "../../hooks/useCurrentUser";
 import { useHomeLive } from "../../hooks/useHomeLive";
 import { ActivityPubAvatar, type RemoteAvatar } from "./ActivityPubAvatar";
-import { ActivityPubText, FederatedAccount, type CustomEmoji } from "./ActivityPubEmoji";
+import { type CustomEmoji } from "./ActivityPubEmoji";
 import { Button } from "../ui/button";
 import { ExternalLink } from "../ui/external-link";
 
@@ -67,30 +68,15 @@ export function ActivityPubProfile({ actorId }: { actorId: string }) {
       ) : null}
       {account ? (
         <>
-          <div className="flex items-center gap-3">
-            <ActivityPubAvatar
-              name={account.display_name || account.user_name}
-              avatar={account.avatar}
-            />
-            <div className="min-w-0">
-              <h2 className="break-words text-lg font-semibold">
-                <ActivityPubText
-                  text={account.display_name || account.user_name}
-                  emojis={account.emojis}
-                />
-              </h2>
-              <FederatedAccount
-                userName={account.user_name}
-                actorId={account.id}
-                remote={account.remote}
+          <ActivityPubProfileDetails
+            account={account}
+            avatar={
+              <ActivityPubAvatar
+                name={account.display_name || account.user_name}
+                avatar={account.avatar}
               />
-            </div>
-          </div>
-          {account.summary ? (
-            <p className="whitespace-pre-wrap break-words text-sm">
-              <ActivityPubText text={account.summary} emojis={account.emojis} />
-            </p>
-          ) : null}
+            }
+          />
           <div className="flex flex-wrap items-center gap-3">
             {account.remote ? (
               <Button

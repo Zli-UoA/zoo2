@@ -1,4 +1,4 @@
-import { activityPubNotifications } from "../../../.storybook/activitypub-fixtures";
+import { blobcat, activityPubNotifications } from "../../../.storybook/activitypub-fixtures";
 import {
   notificationComparisonText,
   notificationComparisonLabel,
@@ -499,5 +499,37 @@ export const OlderFollowRequests: Story = {
     await expect(await panel.findByText("Older peer")).toBeVisible();
     await userEvent.click(await panel.findByRole("button", { name: "承認" }));
     await waitFor(() => expect(pagedRequestApproved).toBe(true));
+  }),
+};
+
+export const ActivityPubMfmReply: Story = {
+  parameters: {
+    msw: {
+      handlers: [
+        http.get("*/api/activitypub/notifications", () =>
+          HttpResponse.json({
+            items: [
+              {
+                ...activityPubNotifications[0],
+                id: "mfm-reply",
+                kind: "reply",
+                pending: false,
+                content: "**装飾付きの返信** :blobcat:",
+                content_emojis: [blobcat],
+              },
+            ],
+            unread_count: 1,
+          }),
+        ),
+      ],
+    },
+  },
+  play: playForImplementation(async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expect((await canvas.findByText("装飾付きの返信")).tagName).toBe("STRONG");
+    await expect(canvas.getByRole("img", { name: ":blobcat:" })).toHaveAttribute(
+      "src",
+      expect.stringContaining("/api/activitypub/emoji-images/"),
+    );
   }),
 };

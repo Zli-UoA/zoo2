@@ -733,5 +733,18 @@
     "dismiss": "移去歷史紀錄",
     "runTitle": "由 {{name}} 匯入",
     "importedTo": "已經匯入到 #{{name}}"
+  },
+  "publicProfile": {
+    "followTitle": "由你嘅伺服器追蹤",
+    "followDescription": "喺 Mastodon、Misskey 或其他 ActivityPub 應用程式搜尋呢個帳戶，再傳送追蹤請求。",
+    "accountAddress": "帳戶地址",
+    "approvalRequired": "追蹤請求需要批准。",
+    "openInZoo": "喺 Zoo 開啟個人檔案",
+    "posts": "公開帖文",
+    "empty": "未有公開帖文。",
+    "pagination": "公開帖文分頁",
+    "latest": "最新帖文",
+    "older": "較早嘅帖文",
+    "notFound": "搵唔到呢個個人檔案。"
   }
 }

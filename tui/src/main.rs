@@ -75,7 +75,7 @@ async fn run() -> Result<()> {
             )))
         }
     };
-    ui::run(http, config.api_base_url, credentials).await
+    ui::run(http, config.api_base_url, credentials, config.check_updates).await
 }
 
 async fn login() -> Result<()> {

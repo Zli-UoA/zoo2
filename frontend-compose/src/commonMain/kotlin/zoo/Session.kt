@@ -187,6 +187,7 @@ class Session(val repo: Repository, val scope: CoroutineScope, initial: Environm
     }
 
     fun start() {
+        if (isPublicProfilePath(env.path)) return
         activityPubNotifications.ensureLoaded()
         searchPreferences.ensureLoaded()
         pane =

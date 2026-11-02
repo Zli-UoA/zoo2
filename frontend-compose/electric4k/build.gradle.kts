@@ -1,9 +1,13 @@
 import java.security.MessageDigest
 
 plugins {
+    id("com.android.library") apply false
     kotlin("multiplatform")
     kotlin("plugin.serialization")
 }
+
+val androidEnabled = providers.gradleProperty("zoo.android").orNull == "true"
+if (androidEnabled) apply(plugin = "com.android.library")
 
 // Resolve a public, immutable source archive through Gradle's normal dependency cache.
 // No library source, submodule or local Maven publication is committed to this repository.
@@ -37,13 +41,14 @@ val unpackUpstream by tasks.registering(Sync::class) {
     }) {
         eachFile { relativePath = RelativePath(true, *relativePath.segments.drop(1).toTypedArray()) }
         includeEmptyDirs = false
-        include("*/src/commonMain/**", "*/src/wasmJsMain/**", "*/LICENSE", "*/NOTICE")
+        include("*/src/commonMain/**", "*/src/wasmJsMain/**", "*/src/androidMain/**", "*/LICENSE", "*/NOTICE")
     }
     into(layout.buildDirectory.dir("upstream"))
 }
 
 kotlin {
     compilerOptions { optIn.addAll("kotlin.time.ExperimentalTime", "kotlin.js.ExperimentalWasmJsInterop") }
+    if (androidEnabled) androidTarget { compilerOptions { jvmTarget.set(org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_17) } }
     @OptIn(org.jetbrains.kotlin.gradle.ExperimentalWasmDsl::class)
     wasmJs { browser() }
     sourceSets {
@@ -55,6 +60,10 @@ kotlin {
                 api("org.jetbrains.kotlinx:kotlinx-serialization-json:1.8.1")
                 implementation("org.jetbrains.kotlinx:kotlinx-datetime:0.7.1-0.6.x-compat")
             }
+        }
+        if (androidEnabled) named("androidMain") {
+            kotlin.srcDir(unpackUpstream.map { it.destinationDir.resolve("src/androidMain/kotlin") })
+            dependencies { implementation("io.ktor:ktor-client-okhttp:3.1.3") }
         }
         wasmJsMain {
             kotlin.srcDir(unpackUpstream.map { it.destinationDir.resolve("src/wasmJsMain/kotlin") })
@@ -69,4 +78,11 @@ rootProject.tasks.named<Copy>("wasmJsProcessResources") {
         include("LICENSE", "NOTICE")
         into("licenses/electric4k")
     }
+}
+
+if (androidEnabled) extensions.configure<com.android.build.gradle.LibraryExtension> {
+    namespace = "works.zli.zoo.electric4k"
+    compileSdk = 35
+    defaultConfig { minSdk = 26 }
+    compileOptions { sourceCompatibility = JavaVersion.VERSION_17; targetCompatibility = JavaVersion.VERSION_17 }
 }

@@ -2208,6 +2208,61 @@ async fn apub_profile_is_independent_updates_followers_and_detail_respects_audie
     assert_eq!(actor["name"], "Federation name");
     assert_eq!(actor["preferredUsername"], alice);
     assert_eq!(actor["summary"], "Bio &lt;safe&gt;<br>next line");
+    assert!(actor["url"].as_str().unwrap().contains("/public/users/"));
+    let public_profile = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri(format!("/api/activitypub/users/{alice}"))
+                .header("accept", "text/html,application/xhtml+xml,*/*;q=0.8")
+                .body(Body::empty())?,
+        )
+        .await?;
+    assert_eq!(public_profile.status(), StatusCode::TEMPORARY_REDIRECT);
+    assert_eq!(
+        public_profile.headers()["location"],
+        actor["url"].as_str().unwrap()
+    );
+    assert_eq!(public_profile.headers()["vary"], "Accept");
+    let (_, public_data) = request(
+        &app,
+        "GET",
+        None,
+        &format!("/api/activitypub/users/{alice}/profile"),
+        None,
+    )
+    .await?;
+    assert_eq!(public_data["account"]["display_name"], "Federation name");
+    assert_eq!(public_data["account"]["summary"], "Bio <safe>\nnext line");
+    let missing = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/api/activitypub/users/nonexistent-public-profile")
+                .header("accept", "text/html")
+                .body(Body::empty())?,
+        )
+        .await?;
+    assert_eq!(missing.status(), StatusCode::NOT_FOUND);
+    let (_, webfinger) = request(
+        &app,
+        "GET",
+        None,
+        &format!("/.well-known/webfinger?resource=acct:{alice}@zoo.example.com"),
+        None,
+    )
+    .await?;
+    assert!(
+        webfinger["links"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(
+                |link| link["rel"] == "http://webfinger.net/rel/profile-page"
+                    && link["type"] == "text/html"
+                    && link["href"] == actor["url"]
+            )
+    );
     assert_eq!(profile["summary"], "Bio <safe>\nnext line");
     let delivery = value(&mut db,"SELECT payload::jsonb::text FROM apub_deliveries WHERE user_id=$1 AND actor_id=$2 ORDER BY created_at DESC LIMIT 1",&[&alice,&remote]).await?;
     assert_eq!(delivery["type"], "Update");
@@ -2357,5 +2412,137 @@ async fn apub_profile_is_independent_updates_followers_and_detail_respects_audie
         .bind(remote.as_str())
         .exec(&mut db)
         .await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn misskey_mfm_sources_survive_create_update_and_local_note_export() -> anyhow::Result<()> {
+    let _serial = PROTOCOL_SERIAL.lock().await;
+    let mut f = protocol_fixture().await?;
+    follow_peer(&mut f).await?;
+    let id = format!("{}/notes/mfm", f.remote);
+    let mfm = "**太字** $[ruby 漢字 かんじ] :blobcat:\n`literal`";
+    let mut note = json!({"id":id,"type":"Note","attributedTo":f.remote,"content":"<p>HTML fallback</p>","source":{"mediaType":"text/x.misskeymarkdown","content":mfm},"published":"2026-01-01T00:00:00Z","to":["https://www.w3.org/ns/activitystreams#Public"]});
+    assert_eq!(
+        receive_peer(&f, &peer_activity(&f, "Create", note.clone())).await?,
+        StatusCode::ACCEPTED
+    );
+    let path = format!(
+        "/api/home/{}",
+        percent_encoding::utf8_percent_encode(&id, percent_encoding::NON_ALPHANUMERIC)
+    );
+    assert_eq!(
+        request(&f.app, "GET", Some(&f.user), &path, None).await?.1["content"],
+        mfm
+    );
+    note.as_object_mut().unwrap().remove("source");
+    note["_misskey_content"] = json!("~~更新~~ $[fg.color=ff0000 赤]");
+    note["updated"] = json!("2026-01-02T00:00:00Z");
+    assert_eq!(
+        receive_peer(&f, &peer_activity(&f, "Update", note.clone())).await?,
+        StatusCode::ACCEPTED
+    );
+    assert_eq!(
+        request(&f.app, "GET", Some(&f.user), &path, None).await?.1["content"],
+        note["_misskey_content"]
+    );
+    let (_, local) = request(
+        &f.app,
+        "POST",
+        Some(&f.user),
+        "/api/home",
+        Some(json!({"content":mfm,"apub":true,"visibility":"public"})),
+    )
+    .await?;
+    let (_, export) = request(
+        &f.app,
+        "GET",
+        None,
+        &format!("/api/activitypub/notes/{}", local["id"].as_str().unwrap()),
+        None,
+    )
+    .await?;
+    assert_eq!(export["source"]["mediaType"], "text/x.misskeymarkdown");
+    assert_eq!(export["source"]["content"], mfm);
+    assert_eq!(export["_misskey_content"], mfm);
+    assert!(export["content"].as_str().unwrap().contains("<br>"));
+    finish_protocol(&mut f).await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn anonymous_profile_only_lists_public_federated_posts_with_stable_pagination()
+-> anyhow::Result<()> {
+    let _serial = PROTOCOL_SERIAL.lock().await;
+    let cfg = Config::from_env();
+    let mut db = init_db(&cfg.database_url).await?;
+    let app = create_router(AppState::new(db.clone(), cfg));
+    let alice = uuid::Uuid::new_v4().to_string();
+    let bob = uuid::Uuid::new_v4().to_string();
+    for id in [&alice, &bob] {
+        toasty::sql::statement(
+            "INSERT INTO users(id,user_name,display_name) VALUES($1,$1,'Public profile')",
+        )
+        .bind(id.as_str())
+        .exec(&mut db)
+        .await?;
+    }
+    // Equal timestamps exercise the ID tie breaker across the page boundary.
+    for i in 0..21 {
+        toasty::sql::statement("INSERT INTO home_posts(id,user_id,content,apub,visibility,created_at) VALUES($1,$2,$3,true,'public','2026-11-02T12:34:56Z')")
+            .bind(format!("{alice}-{i:02}" )).bind(alice.as_str()).bind(format!("visible-public-{i:02}")).exec(&mut db).await?;
+    }
+    for (name, author, apub, visibility, deleted) in [
+        ("unlisted", &alice, "true", "unlisted", "false"),
+        ("followers", &alice, "true", "followers", "false"),
+        ("nonfederated", &alice, "false", "public", "false"),
+        ("deleted", &alice, "true", "public", "true"),
+        ("otherauthor", &bob, "true", "public", "false"),
+    ] {
+        toasty::sql::statement("INSERT INTO home_posts(id,user_id,content,apub,visibility,deleted_at) VALUES($1,$2,$3,$4::boolean,$5,CASE WHEN $6::boolean THEN now() END)")
+            .bind(format!("{alice}-{name}")).bind(author.as_str()).bind(format!("hidden-{name}")).bind(apub).bind(visibility).bind(deleted).exec(&mut db).await?;
+    }
+    let profile_path = format!("/api/activitypub/users/{alice}/profile");
+    let (status, data) = request(&app, "GET", None, &profile_path, None).await?;
+    assert_eq!(status, StatusCode::OK);
+    let posts = data["posts"].as_array().unwrap();
+    assert_eq!(posts.len(), 20);
+    assert_eq!(posts[0]["content"], "visible-public-20");
+    assert_eq!(posts[19]["content"], "visible-public-01");
+    assert!(!data.to_string().contains("hidden-"));
+    let cursor = format!("{alice}-01");
+    assert_eq!(data["next_cursor"], cursor);
+    let encoded =
+        percent_encoding::utf8_percent_encode(&cursor, percent_encoding::NON_ALPHANUMERIC);
+    let (_, older) = request(
+        &app,
+        "GET",
+        None,
+        &format!("{profile_path}?before={encoded}"),
+        None,
+    )
+    .await?;
+    let posts = older["posts"].as_array().unwrap();
+    assert_eq!(posts.len(), 1);
+    assert_eq!(posts[0]["content"], "visible-public-00");
+    assert!(older["next_cursor"].is_null());
+    let (_, invalid_cursor) = request(
+        &app,
+        "GET",
+        None,
+        &format!("{profile_path}?before={alice}-followers"),
+        None,
+    )
+    .await?;
+    assert!(invalid_cursor["posts"].as_array().unwrap().is_empty());
+    let (status, _) = request(
+        &app,
+        "GET",
+        None,
+        "/api/activitypub/users/nonexistent-public-profile/profile",
+        None,
+    )
+    .await?;
+    assert_eq!(status, StatusCode::NOT_FOUND);
     Ok(())
 }

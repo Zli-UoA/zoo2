@@ -1,3 +1,4 @@
+import { MfmContent } from "../chat/messages/MfmContent";
 import { useState } from "react";
 import { useCollections } from "../../lib/electric/collections-context";
 import { joinUrl } from "../../lib/config";
@@ -28,6 +29,24 @@ export function ActivityPubEmoji({
       decoding="async"
       referrerPolicy="no-referrer"
       onError={() => setFailed(emoji.image_id)}
+    />
+  );
+}
+/** Same MFM parser and rendering as channels, retaining remote emoji proxy/fallbacks. */
+export function ActivityPubContent({
+  text,
+  emojis = [],
+}: {
+  text: string;
+  emojis?: CustomEmoji[];
+}) {
+  return (
+    <MfmContent
+      content={text}
+      renderEmoji={(name) => {
+        const emoji = emojis.find((value) => value.name === `:${name}:`);
+        return emoji ? <ActivityPubEmoji emoji={emoji} className="mfm-custom-emoji" /> : undefined;
+      }}
     />
   );
 }

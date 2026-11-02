@@ -32,10 +32,23 @@ function activeEditor() {
   while (current?.shadowRoot?.activeElement) current = current.shadowRoot.activeElement;
   return current?.tagName === "INPUT" || current?.tagName === "TEXTAREA" ? current : null;
 }
+let previousComposer: HTMLElement | undefined;
+let previousComposerId: string | undefined;
 let finishPull: (() => void) | undefined;
 let focusedDuringClick = false;
 let stopFocusObservation: (() => void) | undefined;
 export const nativeHomeChecks = {
+  homeBeforeRemount() {
+    previousComposer = element("button", "投稿を書く");
+    previousComposerId = previousComposer.id;
+  },
+  async homeAfterRemount() {
+    await waitFor(async () => {
+      const current = element("button", "投稿を書く");
+      await expect(current !== previousComposer || current.id !== previousComposerId).toBe(true);
+      await expect(current.getAttribute("aria-disabled")).toBe("false");
+    });
+  },
   homeObserveComposerFocus() {
     stopFocusObservation?.();
     focusedDuringClick = false;
