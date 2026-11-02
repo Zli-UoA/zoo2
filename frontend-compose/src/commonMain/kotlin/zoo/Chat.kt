@@ -130,7 +130,9 @@ fun Chat(
     val all by table.rows.collectAsState()
     val loading by table.loading.collectAsState()
     val error by table.error.collectAsState()
-    val reactions by app.repo.reactions(id).rows.collectAsState()
+    val nativeReactions by app.repo.reactions(id).rows.collectAsState()
+    val (federatedReactions, federatedReactionError) = federatedChannelReactions(app, id)
+    val reactions = nativeReactions + federatedReactions
     val joined = membershipOverride ?: isMember(members, id, app.config.userId)
     val canPost = joined && !channel.present("archive_at") && app.env.online
     LaunchedEffect(id, app.env.visible, app.env.online) {
@@ -167,6 +169,7 @@ fun Chat(
         Row(modifier.fillMaxWidth()) {
             if (wide || app.thread == null)
                 Column(Modifier.weight(1f).fillMaxHeight()) {
+                    if (federatedReactionError) Text(app.t("reactions.fetchError"), Modifier.padding(8.dp).then(webControlModifier("alert")))
                     MessageList(
                         app,
                         channel,
@@ -903,7 +906,7 @@ internal fun Message(
                                         emoji,
                                         rows,
                                         users,
-                                        editable && canReact,
+                                        editable && canReact && !emoji.startsWith("apub:"),
                                         wide,
                                     ) {
                                         if (callbacks?.reaction != null)

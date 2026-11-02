@@ -1,3 +1,4 @@
+import { ActivityPubEmoji } from "../../home/ActivityPubEmoji";
 import { useState } from "react";
 
 import { useWorkspaceEmojis } from "../../../lib/emoji/workspace";
@@ -24,6 +25,16 @@ export function ReactionEmoji({
   const [failedUrl, setFailedUrl] = useState<string | null>(null);
   const label = kitchenLabel(emoji);
   const kitchen = kitchenParts(emoji);
+  const remote = /^apub:([a-f0-9]{64}):(:[A-Za-z0-9_+-]+:)$/.exec(emoji);
+  if (remote)
+    return (
+      <span style={{ fontSize: size, height: size }} className="inline-flex shrink-0">
+        <ActivityPubEmoji
+          emoji={{ image_id: remote[1]!, name: remote[2]!, url: "" }}
+          className="inline-block h-[1em] object-contain"
+        />
+      </span>
+    );
   if (/^:[a-z0-9_-]{1,64}:$/.test(emoji))
     return <CustomReactionEmoji name={emoji.slice(1, -1)} size={size} />;
   if (!kitchen)

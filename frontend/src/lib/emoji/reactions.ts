@@ -15,14 +15,20 @@ export interface ReactionGroup {
 }
 
 export function groupReactions(
-  rows: MessageReactionRow[],
+  rows: (MessageReactionRow & { display_name?: string; user_name?: string })[],
   currentUserId: string | null,
 ): Map<string, ReactionGroup[]> {
   const messages = new Map<
     string,
     Map<string, { emoji: string; users: Set<string>; ownId: string | null }>
   >();
+  const names: Record<string, string> = {};
   for (const row of rows) {
+    if (row.user_name)
+      names[row.user_id] = reactionUserLabel({
+        display_name: row.display_name ?? "",
+        user_name: row.user_name,
+      });
     let groups = messages.get(row.message_id);
     if (!groups) {
       groups = new Map();
@@ -45,6 +51,7 @@ export function groupReactions(
         count: users.size,
         ownId,
         userIds: Array.from(users),
+        ...(Object.keys(names).length ? { userNames: names } : {}),
       })),
     ]),
   );

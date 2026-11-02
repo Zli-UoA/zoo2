@@ -30,6 +30,7 @@ pub fn router() -> Router<AppState> {
         .merge(interactions::router())
         .merge(profile::router())
         .merge(emoji::router())
+        .merge(channel_reactions::router())
         .merge(reposts::router())
         .route("/.well-known/webfinger", get(webfinger))
         .route("/api/activitypub/users/{id}", get(actor))
@@ -311,7 +312,7 @@ async fn likes(
     one(&mut tx,"SELECT '{}'::text FROM home_posts WHERE id=$1 AND apub AND deleted_at IS NULL AND visibility IN ('public','unlisted')",&[&id]).await?;
     let count = one(
         &mut tx,
-        "SELECT json_build_object('count',count(*))::text FROM apub_reactions WHERE post_id=$1",
+        "SELECT json_build_object('count',(SELECT count(*) FROM apub_reactions r WHERE r.post_id=$1 AND NOT EXISTS(SELECT 1 FROM apub_actors a WHERE a.id=r.actor_id AND a.blocked) AND (r.user_id IS NULL OR NOT EXISTS(SELECT 1 FROM home_posts WHERE id=$1 AND channel_id IS NOT NULL)))+(SELECT count(*) FROM message_reactions r JOIN home_posts p ON p.id=r.message_id WHERE p.id=$1 AND p.channel_id IS NOT NULL))::text",
         &[&id],
     )
     .await?;

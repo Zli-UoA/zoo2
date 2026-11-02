@@ -104,3 +104,11 @@ Reactの `ZooSettings`・`CustomEmojiPicker`・`MfmContent`・`ReactionEmoji` �
 確認対象はZooSettingsのCustomEmojis・Mobile・Empty・Error、リアクション選択、Kotlinのコンパイル・ブラウザテスト、バックエンドの保存・権限・エイリアス解決とMisskeyプロトコルの回帰テストです。実際のMisskeyサーバーとの相互接続試験は実施していません。
 
 検証結果: Reactユニット822件、Kotlinブラウザ74件、ZooSettingsのStory17件、追加4状態のReact/Kotlin操作・表示確認、S3互換ストレージを使う登録・編集・権限テスト、ActivityPub結合16件、通常リアクション結合6件が成功しました。390pxで横方向のはみ出しがないことと、3:1画像の保存・表示、Composeからのファイル選択・アップロードも確認しています。型・lint・Storybook監査、Compose配布ビルド、Storybookビルド、マイグレーション検証が成功しています。画像の完全一致や実Misskeyサーバーとの接続は検証していません。
+
+## チャンネル紐付け投稿の共有リアクション・公開範囲
+
+Reactの `useMessageReactions` とKotlinの `Chat` は、Electricのローカルリアクションへ、権限確認済みAPIの連合リアクションを合流させます。Reactの `useFederatedReactions` とKotlinの `ChannelReactions.kt` はHomeの変更通知で再取得し、画面移動時に購読を解放します。外部アカウント名、同じ絵文字の件数、登録済み／未登録の外部画像の区別を両実装で揃えています。
+
+TLの `HomeScreen` / `HomePostCard` ではチャンネルと共通の `ActivityPubBadge` を日時横に配置します。追加したVisibilityBadges・MobileとFederatedReactions、および既存Federated・CrossPostのStoryを確認対象としています。
+
+今回の検証結果: Reactユニット825件、Kotlinブラウザ75件、Home / MessagePaneのStory65件、追加・変更5状態のReact/Kotlin操作・表示確認、ActivityPub結合17件、通常リアクション結合6件が成功しました。型・lint・format・Storybook監査・ビルド、Compose配布ビルド、マイグレーションの検証に加え、空DBにマイグレーションを再適用したスキーマと `schema.sql` の一致も確認しています。390pxの両実装で日時と公開範囲アイコンの隣接を確認しました。

@@ -2604,3 +2604,264 @@ async fn outbound_notes_include_misskey_emoji_tags_for_names_and_aliases() -> an
     }
     finish_protocol(&mut f).await
 }
+
+#[tokio::test]
+async fn channel_linked_posts_share_local_and_remote_reactions() -> anyhow::Result<()> {
+    let _serial = PROTOCOL_SERIAL.lock().await;
+    let mut f = protocol_fixture().await?;
+    let channel = uuid::Uuid::new_v4().to_string();
+    let (status, _) = request(
+        &f.app,
+        "POST",
+        Some(&f.user),
+        "/api/channels",
+        Some(json!({"id":channel,"channel_name":format!("shared-{}",channel),"is_private":false})),
+    )
+    .await?;
+    assert_eq!(status, StatusCode::OK);
+    let (status,post) = request(&f.app,"POST",Some(&f.user),"/api/home",Some(json!({"content":"shared reactions","apub":true,"visibility":"public","channel_id":channel}))).await?;
+    assert_eq!(status, StatusCode::CREATED);
+    let id = post["id"].as_str().unwrap();
+    let native = format!("/api/messages/{id}/reactions");
+    assert_eq!(
+        request(
+            &f.app,
+            "POST",
+            Some(&f.user),
+            &native,
+            Some(json!({"emoji":"👍"}))
+        )
+        .await?
+        .0,
+        StatusCode::OK
+    );
+    for reaction in ["🎉", "👍", "👍"] {
+        assert_eq!(
+            request(
+                &f.app,
+                "POST",
+                Some(&f.user),
+                "/api/activitypub/reactions",
+                Some(json!({"post_id":id,"reaction":reaction}))
+            )
+            .await?
+            .0,
+            StatusCode::OK
+        );
+    }
+    assert_eq!(
+        request(
+            &f.app,
+            "POST",
+            Some(&f.other),
+            &native,
+            Some(json!({"emoji":"👍"}))
+        )
+        .await?
+        .0,
+        StatusCode::OK
+    );
+    let (_, home) = request(
+        &f.app,
+        "GET",
+        Some(&f.user),
+        &format!("/api/home/{id}"),
+        None,
+    )
+    .await?;
+    assert_eq!(home["likes"], 3);
+    let groups = home["reactions"].as_array().unwrap();
+    assert_eq!(
+        groups.iter().find(|r| r["reaction"] == "👍").unwrap()["count"],
+        2
+    );
+    assert!(groups.iter().all(|r| r["selected"] == true));
+    assert_eq!(
+        request(
+            &f.app,
+            "DELETE",
+            Some(&f.user),
+            "/api/activitypub/reactions",
+            Some(json!({"post_id":id,"reaction":"👍"}))
+        )
+        .await?
+        .0,
+        StatusCode::OK
+    );
+    let count=value(&mut f.db,"SELECT json_build_object('count',count(*))::text FROM message_reactions WHERE message_id=$1",&[id]).await?;
+    assert_eq!(count["count"], 2);
+    let object = format!("https://zoo.example.com/api/activitypub/notes/{id}");
+    let mut incoming = peer_activity(&f, "Like", json!(object));
+    incoming["_misskey_reaction"] = json!("👍");
+    assert_eq!(receive_peer(&f, &incoming).await?, StatusCode::ACCEPTED);
+    let (status, remote) = request(
+        &f.app,
+        "GET",
+        Some(&f.other),
+        &format!("/api/channels/{channel}/federated-reactions"),
+        None,
+    )
+    .await?;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(remote.as_array().unwrap().len(), 1);
+    assert_eq!(remote[0]["message_id"], id);
+    assert_eq!(remote[0]["emoji"], "👍");
+    assert_eq!(remote[0]["user_id"], f.remote);
+    let (_, home) = request(
+        &f.app,
+        "GET",
+        Some(&f.user),
+        &format!("/api/home/{id}"),
+        None,
+    )
+    .await?;
+    assert_eq!(home["likes"], 3);
+    assert_eq!(
+        home["reactions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|r| r["reaction"] == "👍")
+            .unwrap()["count"],
+        2
+    );
+    let (_, likes) = request(
+        &f.app,
+        "GET",
+        None,
+        &format!("/api/activitypub/notes/{id}/likes"),
+        None,
+    )
+    .await?;
+    assert_eq!(likes["totalItems"], 3);
+    let undo = peer_activity(&f, "Undo", incoming);
+    assert_eq!(receive_peer(&f, &undo).await?, StatusCode::ACCEPTED);
+    assert_eq!(
+        request(
+            &f.app,
+            "GET",
+            Some(&f.user),
+            &format!("/api/channels/{channel}/federated-reactions"),
+            None
+        )
+        .await?
+        .1,
+        json!([])
+    );
+    let mut custom = peer_activity(&f, "Like", json!(object));
+    custom["_misskey_reaction"] = json!(":remote_cat:");
+    custom["tag"] = json!([{"type":"Emoji","name":":remote_cat:","icon":{"url":"https://cdn.remote.example/cat.png"}}]);
+    assert_eq!(receive_peer(&f, &custom).await?, StatusCode::ACCEPTED);
+    let (_, overlay) = request(
+        &f.app,
+        "GET",
+        Some(&f.user),
+        &format!("/api/channels/{channel}/federated-reactions"),
+        None,
+    )
+    .await?;
+    assert!(overlay[0]["emoji"].as_str().unwrap().starts_with("apub:"));
+    assert!(
+        overlay[0]["emoji"]
+            .as_str()
+            .unwrap()
+            .ends_with(":remote_cat:")
+    );
+    toasty::sql::statement("UPDATE users SET guest_kind='multi' WHERE id=$1")
+        .bind(f.other.as_str())
+        .exec(&mut f.db)
+        .await?;
+    assert_eq!(
+        request(
+            &f.app,
+            "GET",
+            Some(&f.other),
+            &format!("/api/channels/{channel}/federated-reactions"),
+            None
+        )
+        .await?
+        .0,
+        StatusCode::NOT_FOUND
+    );
+    toasty::sql::statement("UPDATE users SET guest_kind='none' WHERE id=$1")
+        .bind(f.other.as_str())
+        .exec(&mut f.db)
+        .await?;
+    toasty::sql::statement("UPDATE apub_actors SET blocked=true WHERE id=$1")
+        .bind(f.remote.as_str())
+        .exec(&mut f.db)
+        .await?;
+    assert_eq!(
+        request(
+            &f.app,
+            "GET",
+            Some(&f.user),
+            &format!("/api/channels/{channel}/federated-reactions"),
+            None
+        )
+        .await?
+        .1,
+        json!([])
+    );
+    toasty::sql::statement("UPDATE apub_actors SET blocked=false WHERE id=$1")
+        .bind(f.remote.as_str())
+        .exec(&mut f.db)
+        .await?;
+    assert_eq!(
+        receive_peer(&f, &peer_activity(&f, "Undo", custom)).await?,
+        StatusCode::ACCEPTED
+    );
+    // Legacy Home writes during a rolling deployment mirror into the native table.
+    let activity = uuid::Uuid::new_v4().to_string();
+    toasty::sql::statement("INSERT INTO apub_reactions(post_id,actor_id,user_id,activity_id,activity_json,reaction) VALUES($1,$2,$3,$4,'{}','😊')").bind(id).bind(format!("local:{}",f.user)).bind(f.user.as_str()).bind(activity.as_str()).exec(&mut f.db).await?;
+    let (_, home) = request(
+        &f.app,
+        "GET",
+        Some(&f.user),
+        &format!("/api/home/{id}"),
+        None,
+    )
+    .await?;
+    assert_eq!(
+        home["likes"], 3,
+        "Legacy and native copies must not be counted twice"
+    );
+    toasty::sql::statement("DELETE FROM apub_reactions WHERE activity_id=$1")
+        .bind(activity)
+        .exec(&mut f.db)
+        .await?;
+    // Both entry points obey the channel's archive restriction.
+    toasty::sql::statement("UPDATE channels SET archive_at=CURRENT_TIMESTAMP WHERE id=$1")
+        .bind(channel.as_str())
+        .exec(&mut f.db)
+        .await?;
+    assert_eq!(
+        request(
+            &f.app,
+            "POST",
+            Some(&f.user),
+            "/api/activitypub/reactions",
+            Some(json!({"post_id":id,"reaction":"😊"}))
+        )
+        .await?
+        .0,
+        StatusCode::BAD_REQUEST
+    );
+    toasty::sql::statement("DELETE FROM messages WHERE channel_id=$1")
+        .bind(channel.as_str())
+        .exec(&mut f.db)
+        .await?;
+    toasty::sql::statement("DELETE FROM home_posts WHERE channel_id=$1")
+        .bind(channel.as_str())
+        .exec(&mut f.db)
+        .await?;
+    toasty::sql::statement("DELETE FROM channel_user WHERE channel_id=$1")
+        .bind(channel.as_str())
+        .exec(&mut f.db)
+        .await?;
+    toasty::sql::statement("DELETE FROM channels WHERE id=$1")
+        .bind(channel.as_str())
+        .exec(&mut f.db)
+        .await?;
+    finish_protocol(&mut f).await
+}

@@ -1,3 +1,5 @@
+import { http, HttpResponse } from "msw";
+import { federatedReactionFixture } from "../../../../.storybook/message-fixtures";
 import { playForImplementation } from "../../../../.storybook/play-for-implementation";
 import type { Meta, StoryObj } from "@storybook/react-vite";
 import { expect, screen, userEvent } from "storybook/test";
@@ -63,4 +65,26 @@ export const NotJoined: Story = {
 
 export const Mobile: Story = {
   globals: { viewport: { value: "mobile" } },
+};
+
+export const FederatedReactions: Story = {
+  parameters: {
+    sharedApi: true,
+    a11y: { test: "error" },
+    msw: {
+      handlers: [
+        http.get("*/api/channels/:id/federated-reactions", () =>
+          HttpResponse.json([federatedReactionFixture]),
+        ),
+      ],
+    },
+  },
+  play: playForImplementation(async () => {
+    await expect(
+      await screen.findByRole("button", { name: "👍 3 件（自分もリアクション済み）" }),
+    ).toBeVisible();
+    const users = screen.getAllByRole("button", { name: "👍 にリアクションしたユーザーを表示" });
+    await userEvent.click(users[0]!);
+    await expect(await screen.findByText("Peer (@peer@remote.example)")).toBeVisible();
+  }),
 };

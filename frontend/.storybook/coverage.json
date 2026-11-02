@@ -185,7 +185,7 @@
     },
     {
       "file": "src/components/chat/messages/MessagePane.stories.tsx",
-      "states": ["Default", "ThreadOpen", "NotJoined", "Mobile"]
+      "states": ["Default", "ThreadOpen", "NotJoined", "Mobile", "FederatedReactions"]
     },
     {
       "file": "src/components/chat/messages/MessageRow.stories.tsx",
@@ -500,7 +500,9 @@
         "MfmDecoratedPost",
         "MfmDecoratedPostMobile",
         "MfmSinglePost",
-        "MfmUserProfile"
+        "MfmUserProfile",
+        "VisibilityBadges",
+        "VisibilityBadgesMobile"
       ]
     },
     {

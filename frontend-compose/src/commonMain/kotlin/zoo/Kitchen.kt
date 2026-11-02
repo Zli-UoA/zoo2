@@ -47,6 +47,7 @@ fun reactionKey(value: String): String {
 }
 
 fun kitchenLabel(value: String): String {
+    if (Regex("^apub:[a-f0-9]{64}:").containsMatchIn(value)) return value.drop(70)
     if (!value.startsWith("kitchen:")) return value
     val parts = value.removePrefix("kitchen:").split('_').takeIf { it.size == 2 } ?: return value
     return parts
@@ -102,6 +103,11 @@ fun ReactionEmoji(
         remember(value, catalog) {
             mutableStateOf<String?>(catalog?.let { kitchenImage(it, value) })
         }
+    val remote = Regex("^apub:([a-f0-9]{64}):(:[A-Za-z0-9_+-]+:)$").matchEntire(value)
+    if (remote != null) {
+        ActivityPubEmoji(obj("image_id" to remote.groupValues[1], "name" to remote.groupValues[2]), size, modifier)
+        return
+    }
     if (Regex("^:[a-z0-9_-]{1,64}:$").matches(value)) {
         val name = value.removeSurrounding(":")
         val emoji = workspaceEmojis(app).find { it.text("name") == name || it.array("aliases").any { alias -> alias.jsonPrimitive.content == name } }

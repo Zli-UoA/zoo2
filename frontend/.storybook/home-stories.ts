@@ -101,6 +101,18 @@ const mfmChecks: Step[] = [
 ];
 
 export const homeInteractions: Record<string, Step[]> = {
+  "visibility-badges": [
+    role("img", "パブリック"),
+    role("img", "ホーム"),
+    role("img", "フォロワー限定"),
+    role("img", "ローカルのみ"),
+  ],
+  "visibility-badges-mobile": [
+    role("img", "パブリック"),
+    role("img", "ホーム"),
+    role("img", "フォロワー限定"),
+    role("img", "ローカルのみ"),
+  ],
   "remember-post-settings": rememberPosting,
   "remember-post-settings-mobile": rememberPosting,
   "remember-timeline": [
@@ -185,7 +197,7 @@ export const homeInteractions: Record<string, Step[]> = {
   ],
   federated: [
     wait("外部のフォロー先から届いた投稿です。"),
-    role("img", "ActivityPub", { state: "hidden" }),
+    role("img", "ActivityPub", { count: 2 }),
     role("link", "#general", { count: 1 }),
     fixture("homeChannelMetadata"),
   ],
@@ -199,7 +211,7 @@ export const homeInteractions: Record<string, Step[]> = {
     send,
     closed,
     wait("同じ投稿を連合とチャンネルに"),
-    role("img", "ActivityPub", { state: "hidden" }),
+    role("img", "ActivityPub"),
     role("link", "#general"),
     fixture("homeChannelMetadata"),
   ],
