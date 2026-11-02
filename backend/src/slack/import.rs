@@ -230,7 +230,15 @@ async fn list(State(s): State<AppState>, user: AuthUser) -> Result<Json<Value>, 
     require_admin(&mut tx, &s, &user).await?;
     let rows = query(
         &mut tx,
-        &format!("SELECT {JOB_JSON} FROM slack_import_jobs j ORDER BY j.created_at DESC LIMIT 50"),
+        // 保存中の ZIP と、取り込み中・失敗したジョブは画面から操作するので、件数に関係なく必ず返す。
+        // 件数の制限は、完了・取り消し済みの履歴にだけかける
+        &format!(
+            "SELECT {JOB_JSON} FROM slack_import_jobs j \
+             WHERE j.status NOT IN ('completed','cancelled') \
+             OR j.id IN (SELECT id FROM slack_import_jobs WHERE status IN ('completed','cancelled') \
+             ORDER BY created_at DESC,id DESC LIMIT 50) \
+             ORDER BY j.created_at DESC,j.id DESC"
+        ),
         &[],
     )
     .await?;

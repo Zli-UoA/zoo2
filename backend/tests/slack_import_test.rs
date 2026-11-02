@@ -765,6 +765,34 @@ async fn test_slack_reimport_relinks_replies_and_serializes_targets() -> anyhow:
 
     // 同じ Slack チャンネルを別々の取り込み先へ入れるジョブを、どちらも開始してしまう
     let export = upload(&state, &app, &admin, &replies_only).await;
+    // 同じ ZIP から何度取り込んでも、保存中の ZIP は一覧から押し出されない
+    {
+        let mut db = state.db.clone();
+        let mut tx = db.transaction().await?;
+        toasty::sql::statement(
+            "INSERT INTO slack_import_jobs(id,created_by,status,file_name,file_size,storage_key,team_id,source_id) \
+             SELECT gen_random_uuid()::text,created_by,'completed',file_name,file_size,storage_key,team_id,id \
+             FROM slack_import_jobs, generate_series(1,60) WHERE id=$1",
+        )
+        .bind(export["id"].as_str().unwrap())
+        .exec(&mut tx)
+        .await?;
+        tx.commit().await?;
+    }
+    let (status, listed) = request(&app, "GET", "/api/admin/slack-imports", &admin, None).await?;
+    assert_eq!(status, StatusCode::OK);
+    let listed = listed["imports"].as_array().unwrap();
+    assert!(
+        listed.iter().any(|job| job["id"] == export["id"]),
+        "the stored export stays listed"
+    );
+    assert!(
+        listed
+            .iter()
+            .filter(|job| job["status"] == "completed")
+            .count()
+            <= 50
+    );
     let export_id = export["id"].as_str().unwrap().to_string();
     let other = uuid::Uuid::new_v4().to_string();
     let (status, _) = request(
