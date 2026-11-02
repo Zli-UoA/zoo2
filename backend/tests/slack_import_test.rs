@@ -1461,7 +1461,43 @@ async fn test_linked_users_import_their_own_channels() -> anyhow::Result<()> {
     // 以前の取り込み先から外されたら、取り込み直して戻ることはできない
     exec("UPDATE channels SET created_user_id=$2 WHERE id=$1 AND $2<>$3").await;
     assert_eq!(targets().await[0]["id"], g1.as_str());
+    // 開始した後で外された場合も、ワーカーが取り込みで戻さない
+    let (status, run) =
+        import(json!([{"slack_channel_id":"G1","action":"existing","channel_id":g1}])).await;
+    assert_eq!(status, StatusCode::OK, "{run}");
+    let run = run["id"].as_str().unwrap().to_string();
     exec("DELETE FROM channel_user WHERE channel_id=$1 AND user_id=$2 AND $2<>$3").await;
+    let mut job = Value::Null;
+    for _ in 0..100 {
+        backend::slack::worker::run_once(&state).await?;
+        job = request(
+            &app,
+            "GET",
+            &format!("/api/admin/slack-imports/{run}"),
+            &admin,
+            None,
+        )
+        .await?
+        .1;
+        if job["status"] == "failed" || job["status"] == "completed" {
+            break;
+        }
+    }
+    assert_eq!(job["status"], "failed", "{job}");
+    assert!(
+        job["error"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("no longer"),
+        "{job}"
+    );
+    let rejoined = sql(
+        &state,
+        "SELECT json_build_object('user_id',user_id)::text FROM channel_user WHERE channel_id=$1 AND user_id=$2",
+        &[&g1, &alice],
+    )
+    .await?;
+    assert!(rejoined.is_empty(), "{rejoined:?}");
     assert_eq!(targets().await, json!([]));
     let (status, _) =
         import(json!([{"slack_channel_id":"G1","action":"existing","channel_id":g1}])).await;

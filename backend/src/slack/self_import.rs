@@ -69,7 +69,7 @@ async fn latest_export(
 /// `channel_id` に、取り込みで履歴とメンバーを足してよいか。
 /// 取り込みは ZIP のメンバーも `channel_user` に足すので、参加していることに加えて、
 /// 通常のメンバー追加と同じ権限 (`rbac::can_add_member`) を求める。
-async fn can_import_into(
+pub(crate) async fn can_import_into(
     tx: &mut toasty::Transaction<'_>,
     channel_id: &str,
     user_id: &str,
