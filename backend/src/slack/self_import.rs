@@ -68,7 +68,7 @@ async fn latest_export(
 
 /// `channel_id` に、取り込みで履歴とメンバーを足してよいか。
 /// 取り込みは ZIP のメンバーも `channel_user` に足すので、参加していることに加えて、
-/// 通常のメンバー追加と同じ権限 (`rbac::can_add_member`) を求める。
+/// 通常のメンバー追加と同じ権限 (`rbac::can_add_member`) と、通常の投稿と同じ投稿権限を求める。
 pub(crate) async fn can_import_into(
     tx: &mut toasty::Transaction<'_>,
     channel_id: &str,
@@ -79,6 +79,7 @@ pub(crate) async fn can_import_into(
     let Some(row) = query(
         tx,
         "SELECT json_build_object('creator',c.created_user_id,'private',c.is_private,'dm',c.is_dm,\
+         'policy',c.posting_policy,\
          'joined',EXISTS(SELECT 1 FROM channel_user cu WHERE cu.channel_id=c.id AND cu.user_id=$2))::text \
          FROM channels c WHERE c.id=$1 AND c.deleted_at IS NULL AND c.archive_at IS NULL",
         &[channel_id, user_id],
@@ -90,8 +91,11 @@ pub(crate) async fn can_import_into(
     };
     let private = row["private"] == true;
     let joined = row["joined"] == true;
+    // 投稿を管理者に限ったチャンネルには、通常の投稿 (`apps::events::posting`) と同じく管理者しか書き込めない
+    let can_post = row["policy"] != "managers" || row["creator"] == user_id || admin;
     // 非公開チャンネルの履歴は、公開チャンネルには入れない
     Ok(joined
+        && can_post
         && (!slack_private || private)
         && crate::auth::rbac::can_add_member(
             private,

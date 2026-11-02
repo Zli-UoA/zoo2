@@ -8,7 +8,7 @@
 //!    (他人が作った認可 URL を踏まされても、その人のアカウントに連携されない)
 //! 4. 連携したら、ZIP 取り込みで作ったプレースホルダの投稿などを本人へ付け替える
 
-use std::time::Duration;
+use std::{collections::HashMap, time::Duration};
 
 use axum::{
     Json, Router,
@@ -473,57 +473,113 @@ pub async fn move_content(
     ] {
         exec(tx, sql, &[from, to]).await?;
     }
-    rewrite_mentions(tx, from, to).await?;
     // プレースホルダの users 行は残す (他の表から参照されている可能性があるため)。無効化済みのまま。
     Ok(())
 }
 
 /// 取り込んだ本文の `@プレースホルダ` を、本人のユーザー名に書き換える。
 /// 取り込みでは `<@U…>` をその時点のユーザー名で本文に保存するため、連携前に取り込んだ過去ログは
-/// プレースホルダを指したままになる。対象は Slack から取り込んだチャンネルの投稿に限る。
+/// プレースホルダを指したままになる。`pairs` は (プレースホルダ, 本人) の組で、チームの取り込み先の
+/// 投稿をまとめて 1 回だけ読み、対応表で置き換える (連携した人ごとに履歴を走査しない)。
 async fn rewrite_mentions(
     tx: &mut toasty::Transaction<'_>,
-    from: &str,
-    to: &str,
+    team: &str,
+    pairs: &[(String, String)],
 ) -> Result<(), AppError> {
-    let names = one(
-        tx,
-        "SELECT json_build_object('from',(SELECT user_name FROM users WHERE id=$1),\
-         'to',(SELECT user_name FROM users WHERE id=$2))::text",
-        &[from, to],
-    )
-    .await?;
-    let (Some(old), Some(new)) = (names["from"].as_str(), names["to"].as_str()) else {
-        return Ok(());
-    };
-    if old == new {
+    if pairs.is_empty() {
         return Ok(());
     }
-    // `notifications::extract_mentions` と同じく、名前は英数字と `.`・`-`・`_` で、末尾の `.` は句読点とみなす
-    let escaped: String = old
-        .chars()
-        .flat_map(|c| {
-            let escape = !c.is_ascii_alphanumeric();
-            escape.then_some('\\').into_iter().chain(std::iter::once(c))
-        })
-        .collect();
-    let pattern = format!("(^|[^A-Za-z0-9_.@-])@{escaped}(?![A-Za-z0-9_-]|\\.+[A-Za-z0-9_-])");
-    // 書き換えると本文の上限を超える投稿は、切り詰めずにそのまま残す (Home への同期の CHECK にも掛かるため)
-    exec(
+    let pairs = serde_json::to_string(
+        &pairs
+            .iter()
+            .map(|(from, to)| json!({"f": from, "t": to}))
+            .collect::<Vec<_>>(),
+    )
+    .map_err(|e| AppError::Internal(e.into()))?;
+    let names: HashMap<String, String> = query(
         tx,
-        "UPDATE messages m SET content=r.content FROM (\
-         SELECT id,regexp_replace(content,$1,'\\1@'||$2,'g') AS content FROM messages \
-         WHERE strpos(content,'@'||$3)>0 AND channel_id IN (SELECT channel_id FROM slack_channels)) r \
-         WHERE m.id=r.id AND m.content<>r.content AND char_length(r.content)<=$4::integer",
-        &[
-            &pattern,
-            new,
-            old,
-            &crate::validation::MAX_MESSAGE_CONTENT_LENGTH.to_string(),
-        ],
+        "SELECT json_build_object('from',p.user_name,'to',u.user_name)::text \
+         FROM json_to_recordset($1::json) AS x(f text,t text) \
+         JOIN users p ON p.id=x.f JOIN users u ON u.id=x.t WHERE p.user_name<>u.user_name",
+        &[&pairs],
+    )
+    .await?
+    .into_iter()
+    .filter_map(|row| {
+        Some((
+            row["from"].as_str()?.to_string(),
+            row["to"].as_str()?.to_string(),
+        ))
+    })
+    .collect();
+    if names.is_empty() {
+        return Ok(());
+    }
+    // プレースホルダの名前は slack- で始まるので、それを含む投稿だけを読む
+    let needle = if names.keys().all(|name| name.starts_with("slack-")) {
+        "@slack-"
+    } else {
+        "@"
+    };
+    let rows = query(
+        tx,
+        "SELECT json_build_object('id',id,'content',content)::text FROM messages \
+         WHERE channel_id IN (SELECT channel_id FROM slack_channels WHERE team_id=$1) AND strpos(content,$2)>0",
+        &[team, needle],
     )
     .await?;
+    for row in rows {
+        let (Some(id), Some(content)) = (row["id"].as_str(), row["content"].as_str()) else {
+            continue;
+        };
+        let Some(rewritten) = replace_mentions(content, &names) else {
+            continue;
+        };
+        // 書き換えると本文の上限を超える投稿は、切り詰めずにそのまま残す (Home への同期の CHECK にも掛かるため)
+        if rewritten.chars().count() > crate::validation::MAX_MESSAGE_CONTENT_LENGTH {
+            continue;
+        }
+        exec(
+            tx,
+            "UPDATE messages SET content=$2 WHERE id=$1",
+            &[id, &rewritten],
+        )
+        .await?;
+    }
     Ok(())
+}
+
+/// `content` の `@name` のうち `names` にあるものを置き換える。変わらなければ `None`。
+/// `notifications::extract_mentions` と同じく、名前は英数字と `.`・`-`・`_` で、末尾の `.` は句読点とみなす。
+/// 直前が名前の文字や `@` のもの (メールアドレスなど) はメンションとみなさない。
+fn replace_mentions(content: &str, names: &HashMap<String, String>) -> Option<String> {
+    let is_name = |c: char| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_');
+    let chars: Vec<char> = content.chars().collect();
+    let mut out = String::with_capacity(content.len());
+    let mut changed = false;
+    let mut i = 0;
+    while i < chars.len() {
+        let boundary = i == 0 || !(is_name(chars[i - 1]) || chars[i - 1] == '@');
+        if chars[i] == '@' && boundary {
+            let mut end = i + 1;
+            while end < chars.len() && is_name(chars[end]) {
+                end += 1;
+            }
+            let token: String = chars[i + 1..end].iter().collect();
+            let name = token.trim_end_matches('.');
+            if let Some(replacement) = names.get(name) {
+                out.push('@');
+                out.push_str(replacement);
+                out.push_str(&token[name.len()..]);
+                changed = true;
+                i = end;
+                continue;
+            }
+        }
+        out.push(chars[i]);
+        i += 1;
+    }
+    changed.then_some(out)
 }
 
 /// ZIP 取り込みで作ったプレースホルダの投稿・リアクション・参加チャンネルを本人へ移す。
@@ -569,7 +625,9 @@ pub async fn reassign(
             .await?;
         }
     }
-    move_content(tx, &super::user_id(team, slack_user), user).await
+    let placeholder = super::user_id(team, slack_user);
+    move_content(tx, &placeholder, user).await?;
+    rewrite_mentions(tx, team, &[(placeholder, user.to_string())]).await
 }
 
 /// 連携済みの Slack ユーザーについて、プレースホルダに残った分を本人へ移す。
@@ -582,12 +640,15 @@ pub async fn reconcile_team(tx: &mut toasty::Transaction<'_>, team: &str) -> Res
         &[team],
     )
     .await?;
+    let mut pairs = Vec::with_capacity(linked.len());
     for row in linked {
         let slack_user = row["slack_user_id"].as_str().unwrap_or_default();
         let user = row["user_id"].as_str().unwrap_or_default();
-        move_content(tx, &super::user_id(team, slack_user), user).await?;
+        let placeholder = super::user_id(team, slack_user);
+        move_content(tx, &placeholder, user).await?;
+        pairs.push((placeholder, user.to_string()));
     }
-    Ok(())
+    rewrite_mentions(tx, team, &pairs).await
 }
 
 async fn unlink(State(s): State<AppState>, user: AuthUser) -> Result<Json<Value>, AppError> {
@@ -665,4 +726,26 @@ async fn manifest(State(s): State<AppState>, user: AuthUser) -> Result<Json<Valu
             },
         },
     })))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn replace_mentions_follows_mention_boundaries() {
+        let names = HashMap::from([("slack-a.b".to_string(), "alice".to_string())]);
+        assert_eq!(
+            replace_mentions("@slack-a.b hi (@slack-a.b), @slack-a.b. ok", &names).as_deref(),
+            Some("@alice hi (@alice), @alice. ok")
+        );
+        // 名前の続き・メールアドレス・別の人は書き換えない
+        assert_eq!(
+            replace_mentions(
+                "@slack-a.bc @slack-a.b.c mail@slack-a.b @@slack-a.b",
+                &names
+            ),
+            None
+        );
+    }
 }

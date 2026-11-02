@@ -1440,6 +1440,25 @@ async fn test_linked_users_import_their_own_channels() -> anyhow::Result<()> {
     let g1 = backend::slack::channel_id(&team, "G1");
     assert_eq!(own["channels"][1]["targets"][0]["id"], g1.as_str());
 
+    // 投稿を管理者に限ったチャンネルには、通常の投稿と同じく一般メンバーは取り込めない
+    sql(
+        &state,
+        "UPDATE channels SET posting_policy='managers' WHERE id=$1 RETURNING json_build_object('id',id)::text",
+        &[&same],
+    )
+    .await?;
+    let (_, own) = request(&app, "GET", "/api/slack/imports", &alice, None).await?;
+    assert_eq!(own["channels"][0]["targets"], json!([]));
+    let (status, _) =
+        import(json!([{"slack_channel_id":"C1","action":"existing","channel_id":same}])).await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    sql(
+        &state,
+        "UPDATE channels SET posting_policy='members' WHERE id=$1 RETURNING json_build_object('id',id)::text",
+        &[&same],
+    )
+    .await?;
+
     // 取り込みは ZIP のメンバーも足すので、取り込み先は現在の参加状況とメンバー追加の権限で絞る
     let targets = || async {
         let (_, own) = request(&app, "GET", "/api/slack/imports", &alice, None)
