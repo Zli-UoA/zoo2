@@ -34,3 +34,13 @@ export const activityPubProfileSaved = {
   summary: "公開プロフィールです",
 };
 export const activityPubProfileRejectedName = "保存前の名前";
+
+export const customEmojiFixture = {
+  name: "zoo_wave",
+  url: "/api/emoji-images/30a12e81-bc91-4574-b89b-8b87c08c0884",
+  category: "Zoo",
+  aliases: ["hello", "挨拶"],
+};
+
+export const customEmojiImageBase64 =
+  "iVBORw0KGgoAAAANSUhEUgAAAAMAAAABCAYAAAAb4BS0AAAADklEQVR4nGP438DwH4YBMWYHe7X3S+QAAAAASUVORK5CYII=";

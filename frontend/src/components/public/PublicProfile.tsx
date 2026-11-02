@@ -10,7 +10,12 @@ import { joinUrl, resolvePublicConfig } from "../../lib/config";
 
 export interface PublicProfileData {
   account: Omit<ProfileDetails, "remote"> & { actor_id: string; url: string };
-  posts: { id: string; content: string; created_at: string }[];
+  posts: {
+    id: string;
+    content: string;
+    created_at: string;
+    emojis?: import("../home/ActivityPubEmoji").CustomEmoji[];
+  }[];
   next_cursor: string | null;
 }
 
@@ -122,7 +127,7 @@ export function PublicProfile({ userId, before }: { userId: string; before?: str
                       {new Date(post.created_at).toLocaleString(i18n.language)}
                     </time>
                   </a>
-                  <HomePostContent content={post.content} />
+                  <HomePostContent content={post.content} emojis={post.emojis} />
                 </article>
               ))}
               {!data.posts.length ? (

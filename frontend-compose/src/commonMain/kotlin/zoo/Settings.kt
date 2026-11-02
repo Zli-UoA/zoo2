@@ -44,6 +44,7 @@ fun ZooSettings(app: Session, users: List<Row>) {
         listOf(
             "general" to "settings.general",
             "activitypub" to "ActivityPub",
+            "emojis" to "home.customEmojis",
             "apps" to "apps.title",
             "members" to "members.title",
         ) + if (app.config.isAdmin) listOf("slack-import" to "slackImport.tab") else emptyList()
@@ -83,7 +84,7 @@ fun ZooSettings(app: Session, users: List<Row>) {
                 Modifier.weight(1f).verticalScroll(rememberScrollState()).padding(contentPadding),
                 verticalArrangement = Arrangement.spacedBy(16.dp),
             ) {
-                Row(
+                FlowRow(
                     Modifier.fillMaxWidth()
                         .then(webControlModifier("tablist"))
                         .onPreviewKeyEvent { event ->
@@ -139,6 +140,7 @@ fun ZooSettings(app: Session, users: List<Row>) {
                     }
                 }
                 when (tab) {
+                    "emojis" -> CustomEmojiSettings(app)
                     "apps" -> Apps(app, embedded = true)
                     "members" -> WorkspaceMembers(app, users)
                     "activitypub" -> ActivityPubSettingsTab(app)

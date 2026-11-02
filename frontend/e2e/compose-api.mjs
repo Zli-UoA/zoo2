@@ -583,6 +583,10 @@ const server = createSecureServer(tls, async (req, res) => {
   if (chan) {
     const row = state.channels.find((c) => c.id === chan[1]);
     const action = chan[2];
+    if (action === "federated-reactions" && req.method === "GET") {
+      appResponse(res, [], false);
+      return;
+    }
     tx++;
     if (action === "join" || action === "users") {
       const member = {

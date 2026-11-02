@@ -684,7 +684,7 @@ pub(crate) async fn add_reaction(
     Uuid::parse_str(&id)
         .map_err(|_| AppError::BadRequest(format!("message id is not a valid UUID: {id}")))?;
 
-    let normalized_emoji = reaction_emoji(&state, &payload.emoji, true).await?;
+    let normalized_emoji = reaction_emoji(&state, &id, &payload.emoji, true).await?;
 
     let mut db = state.db.clone();
     let mut tx = db.transaction().await?;
@@ -870,7 +870,7 @@ pub(crate) async fn delete_reaction(
     Uuid::parse_str(&id)
         .map_err(|_| AppError::BadRequest(format!("message id is not a valid UUID: {id}")))?;
 
-    let normalized_emoji = reaction_emoji(&state, &query.emoji, false).await?;
+    let normalized_emoji = reaction_emoji(&state, &id, &query.emoji, false).await?;
 
     let mut db = state.db.clone();
     let mut tx = db.transaction().await?;
@@ -940,7 +940,8 @@ pub(crate) async fn delete_reaction(
             .and(
                 MessageReaction::fields()
                     .emoji()
-                    .eq(normalized_emoji.as_str()),
+                    .eq(normalized_emoji.as_str())
+                    .or(MessageReaction::fields().emoji().eq(query.emoji.trim())),
             ),
     )
     .first()
@@ -964,30 +965,47 @@ pub(crate) async fn delete_reaction(
 
 async fn reaction_emoji(
     state: &AppState,
+    message_id: &str,
     input: &str,
     require_existing: bool,
 ) -> Result<String, AppError> {
-    if let Ok(emoji) = normalize_and_validate_emoji(input) {
-        return Ok(emoji);
-    }
-    if let Some(name) = input.strip_prefix(':').and_then(|s| s.strip_suffix(':'))
-        && !name.is_empty()
-        && name.len() <= 64
-        && name
-            .bytes()
-            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == b'_' || c == b'-')
+    if let Some(name) = input
+        .trim()
+        .strip_prefix(':')
+        .and_then(|s| s.strip_suffix(':'))
     {
-        if require_existing {
-            let mut db = state.db.clone();
-            let mut tx = db.transaction().await?;
-            crate::apps::one(
-                &mut tx,
-                "SELECT '{}'::text FROM workspace_emojis WHERE name=$1",
-                &[name],
-            )
-            .await?;
+        let mut db = state.db.clone();
+        let mut tx = db.transaction().await?;
+        if let Some(emoji) = crate::apps::resources::resolve_workspace_emoji(&mut tx, name).await? {
+            // Keep a message's existing spelling across registry renames so old chips,
+            // aliases and the picker all join the same reaction group.
+            let canonical = format!(":{}:", emoji["name"].as_str().unwrap());
+            let mut spellings = vec![canonical.clone()];
+            if let Some(aliases) = emoji["aliases"].as_array() {
+                spellings.extend(
+                    aliases
+                        .iter()
+                        .filter_map(|a| a.as_str())
+                        .map(|a| format!(":{a}:")),
+                );
+            }
+            let rows = crate::apps::query(&mut tx, "SELECT to_json(emoji)::text FROM message_reactions WHERE message_id=$1 AND emoji IN (SELECT jsonb_array_elements_text($2::jsonb)) ORDER BY created_at,id LIMIT 1", &[message_id, &serde_json::json!(spellings).to_string()]).await?;
+            if let Some(name) = rows.first().and_then(|row| row.as_str()) {
+                return Ok(name.to_owned());
+            }
+            return Ok(if require_existing {
+                canonical
+            } else {
+                input.trim().to_owned()
+            });
         }
-        return Ok(input.to_owned());
+        if !require_existing {
+            return normalize_and_validate_emoji(input);
+        }
     }
-    normalize_and_validate_emoji(input)
+    let normalized = normalize_and_validate_emoji(input)?;
+    if normalized.starts_with(':') {
+        return Err(AppError::BadRequest("Unknown custom emoji".into()));
+    }
+    Ok(normalized)
 }

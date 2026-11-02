@@ -746,5 +746,16 @@
     "latest": "Latest posts",
     "older": "Older posts",
     "notFound": "This profile could not be found."
+  },
+  "customEmoji": {
+    "hint": "Use lowercase letters, digits, _ and -. PNG, JPEG, GIF or WebP, up to 2 MiB. Original aspect ratio is preserved.",
+    "name": "Name",
+    "image": "Image",
+    "edit": "Edit",
+    "remove": "Delete",
+    "cancel": "Cancel",
+    "category": "Category",
+    "aliases": "Aliases (comma separated)",
+    "uncategorized": "Uncategorized"
   }
 }

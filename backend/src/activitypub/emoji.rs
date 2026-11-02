@@ -1,4 +1,4 @@
-//! Misskey's Emoji tags and reaction catalog. Images never bypass the server's DNS/SSRF policy.
+//! Misskey's Emoji tags and received reaction options. Images never bypass the server's DNS/SSRF policy.
 use super::*;
 use crate::auth::AuthUser;
 use axum::{
@@ -111,102 +111,47 @@ async fn options(
     Query(input): Query<Options>,
 ) -> Result<Json<Value>, AppError> {
     let target = interactions::target(&state, &user, &input.post_id).await?;
-    if target["remote"] != true {
-        let mut db = state.db.clone();
-        let mut tx = db.transaction().await?;
-        let values=query(&mut tx,"SELECT DISTINCT emoji::text FROM apub_reactions WHERE post_id=$1 AND jsonb_typeof(emoji)='object'",&[&input.post_id]).await?;
-        return Ok(Json(json!({"software":"zoo","emojis":values})));
-    }
-    let actor = string(&target, "author")?;
-    let origin = reqwest::Url::parse(actor)
-        .map_err(internal)?
-        .origin()
-        .ascii_serialization();
     let mut db = state.db.clone();
     let mut tx = db.transaction().await?;
-    query(&mut tx,"SELECT '{}'::text FROM (SELECT pg_advisory_xact_lock(hashtextextended('emoji:'||$1,0))) locked",&[&origin]).await?;
-    let cached=query(&mut tx,"SELECT row_to_json(c)::text FROM apub_emoji_catalog c WHERE origin=$1 AND fetched_at>now()-interval '1 hour'",&[&origin]).await?;
-    if let Some(c) = cached.first() {
-        remember(
-            &mut tx,
-            c["emojis"]
-                .as_array()
-                .map(Vec::as_slice)
-                .unwrap_or_default(),
-        )
-        .await?;
-        tx.commit().await?;
-        return Ok(Json(json!({"software":c["software"],"emojis":c["emojis"]})));
-    }
-    let mut software = String::new();
-    let mut values = vec![];
-    if let Ok(discovery) =
-        transport::fetch_public_json(&format!("{origin}/.well-known/nodeinfo"), 256 * 1024).await
-        && let Some(link) = discovery["links"]
-            .as_array()
-            .and_then(|links| {
-                links.iter().find(|v| {
-                    v["rel"]
-                        .as_str()
-                        .is_some_and(|s| s.ends_with("/2.0") || s.ends_with("/2.1"))
-                })
-            })
-            .and_then(|v| v["href"].as_str())
-        && same_origin(link, &origin)
-        && let Ok(info) = transport::fetch_public_json(link, 256 * 1024).await
-    {
-        software = info["software"]["name"]
-            .as_str()
-            .unwrap_or("")
-            .to_ascii_lowercase();
-    }
-    if matches!(
-        software.as_str(),
-        "misskey" | "sharkey" | "iceshrimp" | "firefish"
-    ) && let Ok(catalog) =
-        transport::fetch_public_json(&format!("{origin}/api/emojis"), 8 * 1024 * 1024).await
-        && let Some(emojis) = catalog["emojis"].as_array()
-    {
-        for e in emojis.iter().take(10000) {
-            if e["localOnly"] == true
-                || e["roleIdsThatCanBeUsedThisEmojiAsReaction"]
-                    .as_array()
-                    .is_some_and(|v| !v.is_empty())
+    let mut values = workspace_options(&mut tx).await?;
+    if target["channel_id"].is_null() {
+        for descriptor in received_options(&mut tx, &input.post_id).await? {
+            if !values
+                .iter()
+                .any(|e| e["image_id"] == descriptor["image_id"] && e["name"] == descriptor["name"])
             {
-                continue;
+                values.push(descriptor);
             }
-            let name = e["name"].as_str().unwrap_or("");
-            values.extend(tags(&json!({"type":"Emoji","id":format!("{origin}/emojis/{name}"),"name":format!(":{name}:"),"icon":{"url":e["url"]}})));
         }
     }
-    // Note tags remain usable when a peer does not expose a catalog.
-    let known = query(
-        &mut tx,
-        "SELECT json_build_object('emojis',emojis)::text FROM apub_remote_posts WHERE id=$1",
-        &[&input.post_id],
+    Ok(Json(json!({"software":"zoo","emojis":values})))
+}
+
+// Only descriptors already received on this authorized target; never fetch a catalog.
+pub(super) async fn received_options(
+    tx: &mut toasty::Transaction<'_>,
+    post_id: &str,
+) -> Result<Vec<Value>, AppError> {
+    query(tx, "SELECT e::text FROM apub_remote_posts p CROSS JOIN LATERAL jsonb_array_elements(p.emojis) e WHERE p.id=$1 UNION SELECT emoji::text FROM apub_reactions WHERE post_id=$1 AND emoji IS NOT NULL", &[post_id]).await
+}
+
+pub(crate) async fn workspace_options(
+    tx: &mut toasty::Transaction<'_>,
+) -> Result<Vec<Value>, AppError> {
+    let rows = query(
+        tx,
+        "SELECT row_to_json(e)::text FROM workspace_emojis e ORDER BY name",
+        &[],
     )
     .await?;
-    if let Some(note) = known.first()
-        && let Some(es) = note["emojis"].as_array()
-    {
-        for e in es {
-            if !values.iter().any(|v| v["name"] == e["name"]) {
-                values.push(e.clone());
-            }
-        }
-    }
-    remember(&mut tx, &values).await?;
-    if !software.is_empty()
-        && !(matches!(
-            software.as_str(),
-            "misskey" | "sharkey" | "iceshrimp" | "firefish"
-        ) && values.is_empty())
-    {
-        toasty::sql::statement("INSERT INTO apub_emoji_catalog(origin,software,emojis) VALUES($1,$2,$3::jsonb) ON CONFLICT(origin) DO UPDATE SET software=EXCLUDED.software,emojis=EXCLUDED.emojis,fetched_at=now()").bind(origin).bind(software.as_str()).bind(json!(values).to_string()).exec(&mut tx).await?;
-    }
-    tx.commit().await?;
-    Ok(Json(json!({"software":software,"emojis":values})))
+    rows.into_iter().map(|e| {
+        let url = string(&e, "url")?;
+        let url = if url.starts_with('/') { format!("{}{url}", base_url().unwrap_or_default()) } else { url.to_owned() };
+        let image_id = openssl::sha::sha256(url.as_bytes()).iter().map(|b| format!("{b:02x}")).collect::<String>();
+        Ok(json!({"name":format!(":{}:",string(&e,"name")?),"url":url,"id":url,"image_id":image_id,"local":true,"category":e["category"],"aliases":e["aliases"]}))
+    }).collect()
 }
+
 async fn image(
     State(state): State<AppState>,
     Path(id): Path<String>,

@@ -1,3 +1,6 @@
+import { useKitchenCatalog } from "../../hooks/useKitchenCatalog";
+import { ReactionEmoji } from "../chat/messages/ReactionEmoji";
+import { ActivityPubBadge } from "./ActivityPubBadge";
 import { HomePostContent } from "./HomePostContent";
 import {
   timelinePosition,
@@ -75,7 +78,13 @@ export interface HomePost {
   emojis?: CustomEmoji[];
   actor_emojis?: CustomEmoji[];
   avatar?: RemoteAvatar | null;
-  reactions?: { reaction: string; emoji: CustomEmoji | null; count: number; selected: boolean }[];
+  reactions?: {
+    reaction: string;
+    emoji: CustomEmoji | null;
+    count: number;
+    selected: boolean;
+    can_react?: boolean;
+  }[];
   replies?: number;
   reposts?: number;
   reposted?: boolean;
@@ -163,6 +172,9 @@ function HomeScreenContent({
     }
   };
   const [posts, setPosts] = useState<HomePost[]>([]);
+  const { catalog } = useKitchenCatalog(
+    posts.some((post) => post.reactions?.some((r) => r.reaction.startsWith("kitchen:"))),
+  );
   const [loading, setLoading] = useState(true);
   const [loadingOlder, setLoadingOlder] = useState(false);
   const [hasMore, setHasMore] = useState(false);
@@ -491,7 +503,7 @@ function HomeScreenContent({
                             remote={post.remote}
                           />
                         </Link>
-                        <span className="inline-flex min-w-0 max-w-full items-baseline gap-2">
+                        <span className="inline-flex min-w-0 max-w-full items-center gap-2">
                           <Link
                             to="/home/posts/$postId"
                             params={{ postId: post.id }}
@@ -501,6 +513,10 @@ function HomeScreenContent({
                               {new Date(post.created_at).toLocaleString(i18n.language)}
                             </time>
                           </Link>
+                          <ActivityPubBadge
+                            visibility={post.visibility ?? "local"}
+                            federated={post.apub ?? post.remote ?? false}
+                          />
                           {post.channel_id && !post.remote ? (
                             <Link
                               className="min-w-0 truncate text-link"
@@ -574,7 +590,9 @@ function HomeScreenContent({
                               size="sm"
                               aria-label={`${r.reaction} ${r.count}`}
                               aria-pressed={r.selected}
-                              disabled={pendingLike !== null}
+                              disabled={
+                                pendingLike !== null || (r.can_react === false && !r.selected)
+                              }
                               onClick={() =>
                                 react(
                                   post,
@@ -589,7 +607,7 @@ function HomeScreenContent({
                               {r.emoji ? (
                                 <ActivityPubEmoji emoji={r.emoji} />
                               ) : (
-                                <span>{r.reaction}</span>
+                                <ReactionEmoji emoji={r.reaction} catalog={catalog} />
                               )}
                               <span>{r.count}</span>
                             </Button>

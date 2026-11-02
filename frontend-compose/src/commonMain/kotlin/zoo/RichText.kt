@@ -272,7 +272,8 @@ private fun InlineParagraph(
             }
             .toMap()
     val mentions = mutableMapOf<String, String>()
-    val remoteEmojis = LocalActivityPubEmojis.current
+    val registeredEmojis = workspaceEmojis(app).flatMap { item -> listOf(workspaceEmoji(item)) + item.array("aliases").map { alias -> buildJsonObject { workspaceEmoji(item).forEach { (key, value) -> put(key,value) }; put("name", ":${alias.jsonPrimitive.content}:") } } }
+    val remoteEmojis = LocalActivityPubEmojis.current + registeredEmojis
     val failedEmojis = remember(remoteEmojis) { mutableStateMapOf<String, Boolean>() }
     val emojiParts = mutableMapOf<String, Row>()
     val text = buildAnnotatedString {
@@ -285,7 +286,7 @@ private fun InlineParagraph(
                 var value = token.value
                 if (token.kind == "emoji") {
                     val remote = remoteEmojis.find { it.text("name") == value }
-                    if (remote != null && Regex("^[a-f0-9]{64}$").matches(remote.text("image_id")) && failedEmojis[remote.text("image_id")] != true) {
+                    if (remote != null && (remote.flag("local") || Regex("^[a-f0-9]{64}$").matches(remote.text("image_id"))) && failedEmojis[remote.text("image_id")] != true) {
                         val id = "apub-emoji-${emojiParts.size}"
                         emojiParts[id] = remote
                         appendInlineContent(id, value)
@@ -443,7 +444,7 @@ private fun InlineParagraph(
             inlineContent =
                 content +
                     emojiParts.mapValues { (_, emoji) ->
-                        androidx.compose.foundation.text.InlineTextContent(Placeholder(1.5.em, 1.5.em, PlaceholderVerticalAlign.TextCenter)) {
+                        androidx.compose.foundation.text.InlineTextContent(Placeholder((1.5f * (app.emojiRatios[emoji.text("image_id")] ?: 1f)).em, 1.5.em, PlaceholderVerticalAlign.TextCenter)) {
                             ActivityPubEmoji(emoji, with(density) { 21.sp.toDp() }, onFailure = { failedEmojis[emoji.text("image_id")] = true })
                         }
                     } +
@@ -698,6 +699,7 @@ fun EmojiPicker(
     embedded: Boolean = false,
     select: (String) -> Unit,
 ) {
+    val customEmojis = workspaceEmojis(app)
     var query by remember(initialSearch) { mutableStateOf(initialSearch) }
     var emojis by remember(app.env.locale) { mutableStateOf<List<Row>>(emptyList()) }
     var recents by remember { mutableStateOf<List<String>>(emptyList()) }
@@ -705,6 +707,7 @@ fun EmojiPicker(
     var loading by remember(app.env.locale) { mutableStateOf(true) }
     var tone by remember { mutableStateOf("") }
     var kitchen by remember(initialKitchen) { mutableStateOf(initialKitchen) }
+    var custom by remember { mutableStateOf(false) }
     LaunchedEffect(app.env.locale) {
         try {
             val locale =
@@ -790,20 +793,44 @@ fun EmojiPicker(
                     app.t(key),
                     modifier =
                         Modifier.weight(1f)
-                            .then(webControlModifier("tab", selected = kitchen == tab))
+                            .then(webControlModifier("tab", selected = !custom && kitchen == tab))
                             .background(
-                                if (kitchen == tab) MaterialTheme.colorScheme.background
+                                if (!custom && kitchen == tab) MaterialTheme.colorScheme.background
                                 else androidx.compose.ui.graphics.Color.Transparent,
                                 androidx.compose.foundation.shape.RoundedCornerShape(6.dp),
                             ),
                 ) {
                     kitchen = tab
+                    custom = false
                 }
             }
+            Button(app.t("home.customEmojis"), modifier = Modifier.weight(1f).then(webControlModifier("tab", selected = custom))) { custom = true; kitchen = false }
         }
         if (kitchen) {
             KitchenPicker(app, ::choose, kitchenCatalogUrl)
             return@pickerContent
+        }
+        if (custom) {
+        Field(query, app.t("home.searchEmoji"), Modifier.fillMaxWidth()) { query = it }
+        val customMatches = customEmojis.filter { (listOf(it.text("name"), it.text("category")) + it.array("aliases").map { alias -> alias.jsonPrimitive.content }).any { text -> text.contains(query, ignoreCase = true) } }
+        if (customMatches.isNotEmpty()) {
+            Text(app.t("home.customEmojis"), small = true)
+            FlowRow(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                customMatches.groupBy { it.text("category") }.forEach { (category, items) ->
+                    Text(category.ifEmpty { app.t("customEmoji.uncategorized") }, Modifier.fillMaxWidth(), small = true)
+                    items.forEach { emoji ->
+                    val value = ":${emoji.text("name")}:"
+                    Box(Modifier.height(36.dp).clickable(role = androidx.compose.ui.semantics.Role.Button) { choose(value) }.semantics { contentDescription = value }) { ActivityPubEmoji(workspaceEmoji(emoji), 28.dp) }
+                    }
+                }
+            }
+        }
+        if (app.workspaceEmojiLoading) Text(app.t("home.loading"), Modifier.then(webControlModifier("status")))
+        else if (app.workspaceEmojiError) {
+            Text(app.t("home.controlsError"), Modifier.then(webControlModifier("alert")))
+            Button(app.t("home.refresh")) { app.run { app.loadWorkspaceEmojis(true) } }
+        } else if (customMatches.isEmpty()) Text(app.t("home.noEmojis"))
+        return@pickerContent
         }
         if (recents.isNotEmpty()) {
             androidx.compose.foundation.layout.FlowRow(

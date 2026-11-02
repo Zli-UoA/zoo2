@@ -232,7 +232,12 @@ async fn list(
     let mut db = state.db.clone();
     let mut tx = db.transaction().await?;
     let guest = crate::apps::events::guest(&mut tx, &user.id).await?;
-    let rows=query(&mut tx,r#"WITH base AS (
+    let mut rows=query(&mut tx,r#"WITH shared_reactions AS NOT MATERIALIZED (
+      SELECT r.post_id,r.user_id,r.reaction,r.emoji,r.created_at FROM apub_reactions r
+      WHERE (r.user_id IS NULL OR NOT EXISTS(SELECT 1 FROM home_posts p WHERE p.id=r.post_id AND p.channel_id IS NOT NULL)) AND NOT EXISTS(SELECT 1 FROM apub_actors a WHERE a.id=r.actor_id AND a.blocked)
+      UNION ALL
+      SELECT p.id,r.user_id,r.emoji,NULL::jsonb,r.created_at AT TIME ZONE 'UTC' FROM message_reactions r JOIN home_posts p ON p.id=r.message_id AND p.channel_id IS NOT NULL
+    ), base AS (
       SELECT p.id,p.user_id,u.user_name,CASE WHEN p.apub THEN COALESCE(profile.display_name,u.display_name) ELSE u.display_name END AS display_name,p.content,p.created_at,p.updated_at,p.apub,p.visibility,p.channel_id,c.channel_name,false AS remote,NULL::text AS url,p.parent_id,'[]'::jsonb AS emojis,'[]'::jsonb AS actor_emojis,(p.user_id=$1 OR p.reply_user_id=$1) AS own,true AS original_visible,NULL::jsonb AS avatar
       FROM home_posts p JOIN users u ON u.id=p.user_id LEFT JOIN apub_profiles profile ON profile.user_id=u.id LEFT JOIN channels c ON c.id=p.channel_id
       WHERE p.deleted_at IS NULL AND (p.visibility IN ('local','public') OR p.user_id=$1 OR p.reply_user_id=$1)
@@ -260,16 +265,17 @@ async fn list(
     ) SELECT (f.post - 'own' - 'original_visible' || jsonb_build_object(
       'entry_id',f.entry_id,
       'sort_key',(extract(epoch FROM f.sort_at)*1000000)::bigint::text,
-      'likes',(SELECT count(*) FROM apub_reactions WHERE post_id=f.id),
-      'liked',EXISTS(SELECT 1 FROM apub_reactions WHERE post_id=f.id AND user_id=$1),
-      'my_reaction',(SELECT reaction FROM apub_reactions WHERE post_id=f.id AND user_id=$1 LIMIT 1),
-      'reactions',(SELECT COALESCE(jsonb_agg(jsonb_build_object('reaction',reaction,'emoji',emoji,'count',n,'selected',COALESCE(selected,false))),'[]'::jsonb) FROM (SELECT reaction,emoji,count(*) AS n,bool_or(user_id=$1) AS selected FROM apub_reactions WHERE post_id=f.id GROUP BY reaction,emoji ORDER BY min(created_at)) grouped),
+      'likes',(SELECT count(*) FROM shared_reactions WHERE post_id=f.id),
+      'liked',EXISTS(SELECT 1 FROM shared_reactions WHERE post_id=f.id AND user_id=$1),
+      'my_reaction',(SELECT reaction FROM shared_reactions WHERE post_id=f.id AND user_id=$1 LIMIT 1),
+      'reactions',(SELECT COALESCE(jsonb_agg(jsonb_build_object('reaction',reaction,'emoji',emoji,'count',n,'selected',COALESCE(selected,false))),'[]'::jsonb) FROM (SELECT reaction,emoji,count(*) AS n,bool_or(user_id=$1) AS selected FROM shared_reactions WHERE post_id=f.id GROUP BY reaction,emoji ORDER BY min(created_at)) grouped),
       'replies',(SELECT count(*) FROM base replies WHERE replies.parent_id=f.id AND replies.original_visible),
       'reposts',(SELECT count(*) FROM apub_reposts r WHERE r.post_id=f.id AND (r.visibility IN ('public','local') OR r.user_id=$1 OR EXISTS(SELECT 1 FROM apub_repost_recipients WHERE activity_id=r.activity_id AND user_id=$1))),
       'reposted',EXISTS(SELECT 1 FROM apub_reposts WHERE post_id=f.id AND user_id=$1)
     ))::text FROM entries f WHERE ($6='' OR f.id=$6) AND ($7='' OR f.post->>'user_id'=$7) AND ($2='' OR (f.sort_at,f.entry_id)<(SELECT sort_at,entry_id FROM entries WHERE entry_id=$2)) ORDER BY f.sort_at DESC,f.entry_id DESC LIMIT $5::integer"#,
     &[&user.id,page.before.as_deref().unwrap_or(""),timeline,if guest{"true"}else{"false"},&page.limit.unwrap_or(50).clamp(1,500).to_string(),page.post_id.as_deref().unwrap_or(""),page.author.as_deref().unwrap_or("")]).await?;
 
+    activitypub::channel_reactions::decorate(&mut tx, &mut rows).await?;
     activitypub::remember_display_emojis(&mut tx, &rows).await?;
     tx.commit().await?;
     Ok(Json(rows))

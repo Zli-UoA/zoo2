@@ -1,4 +1,6 @@
 import {
+  customEmojiFixture,
+  customEmojiImageBase64,
   channelRuleInitialPattern,
   activityPubProfileInitial,
   activityPubProfileSaved,
@@ -317,5 +319,68 @@ export const SlackImport: Story = {
     await expect(
       await screen.findByRole("button", { name: "ZIP を選んでアップロード" }),
     ).toBeVisible();
+  }),
+};
+
+export const CustomEmojis: Story = {
+  beforeEach: () => {
+    savedEmoji = { ...customEmojiFixture };
+  },
+  parameters: {
+    msw: {
+      handlers: [
+        http.get("*/api/emojis", () => HttpResponse.json([savedEmoji])),
+        http.post("*/api/emojis/upload", async ({ request }) => {
+          const body = (await request.json()) as typeof savedEmoji & { data: string };
+          if (body.data !== customEmojiImageBase64) return new HttpResponse(null, { status: 400 });
+          savedEmoji = {
+            ...savedEmoji,
+            name: body.name,
+            category: body.category,
+            aliases: body.aliases,
+          };
+          return HttpResponse.json(savedEmoji);
+        }),
+        http.post("*/api/emojis", async ({ request }) => {
+          const body = (await request.json()) as typeof savedEmoji;
+          savedEmoji = { ...savedEmoji, ...body };
+          return HttpResponse.json(savedEmoji);
+        }),
+      ],
+    },
+  },
+  play: playForImplementation(async () => {
+    await userEvent.click(await screen.findByRole("tab", { name: "カスタム絵文字" }));
+    await userEvent.click(await screen.findByRole("button", { name: "編集" }));
+    const category = screen.getByRole("textbox", { name: "カテゴリ" });
+    await userEvent.clear(category);
+    await userEvent.type(category, "Greeting");
+    const aliases = screen.getByRole("textbox", { name: "エイリアス（カンマ区切り）" });
+    await userEvent.clear(aliases);
+    await userEvent.type(aliases, "hello, wave");
+    await userEvent.click(screen.getByRole("button", { name: "保存" }));
+    await waitFor(() => expect(screen.getByText("Greeting · hello, wave")).toBeVisible());
+  }),
+};
+let savedEmoji = { ...customEmojiFixture };
+export const CustomEmojisMobile: Story = {
+  ...CustomEmojis,
+  globals: { viewport: { value: "mobile" } },
+};
+export const CustomEmojisEmpty: Story = {
+  parameters: { msw: { handlers: [http.get("*/api/emojis", () => HttpResponse.json([]))] } },
+  play: playForImplementation(async () => {
+    await userEvent.click(await screen.findByRole("tab", { name: "カスタム絵文字" }));
+    await expect(await screen.findByText("利用できるカスタム絵文字はありません")).toBeVisible();
+  }),
+};
+export const CustomEmojisError: Story = {
+  parameters: {
+    msw: { handlers: [http.get("*/api/emojis", () => new HttpResponse(null, { status: 500 }))] },
+  },
+  play: playForImplementation(async () => {
+    await userEvent.click(await screen.findByRole("tab", { name: "カスタム絵文字" }));
+    await expect(await screen.findByRole("alert")).toBeVisible();
+    await expect(screen.getByRole("button", { name: "更新" })).toBeVisible();
   }),
 };

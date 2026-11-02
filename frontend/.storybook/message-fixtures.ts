@@ -41,3 +41,13 @@ export const activityPubMessageStates = {
   "Activity Pub Unlisted": "unlisted",
   "Activity Pub Grouped": "public",
 } as const;
+
+export const federatedReactionFixture = {
+  id: "remote-like",
+  message_id: "message-hello",
+  user_id: "https://remote.example/users/peer",
+  emoji: "👍",
+  created_at: "2026-11-01T10:00:00Z",
+  display_name: "Peer",
+  user_name: "peer@remote.example",
+};

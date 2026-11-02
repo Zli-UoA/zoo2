@@ -1,3 +1,5 @@
+import { http, HttpResponse } from "msw";
+import { mockServer, startMockServer } from "../../../test/browser-setup";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { ReactNode } from "react";
@@ -74,12 +76,42 @@ function renderPicker() {
 }
 
 describe("ReactionPicker", () => {
-  it("shows both tabs and selects an emoji while recording it as recent", async () => {
+  it("searches registered custom emoji by alias and selects its canonical name", async () => {
+    await startMockServer();
+    mockServer.use(
+      http.get("*/api/emojis", () =>
+        HttpResponse.json([
+          {
+            name: "party-parrot",
+            url: "https://www.gstatic.com/party-parrot.png",
+            category: "Greetings",
+            aliases: ["挨拶"],
+          },
+          {
+            name: "other",
+            url: "https://www.gstatic.com/other.png",
+            category: "Other",
+            aliases: [],
+          },
+        ]),
+      ),
+    );
+    const { onSelect, onOpenChange } = renderPicker();
+    await userEvent.click(screen.getByRole("tab", { name: "カスタム絵文字" }));
+    await screen.findByRole("button", { name: ":party-parrot:" });
+    await userEvent.type(screen.getByRole("textbox", { name: "絵文字を検索" }), "挨拶");
+    expect(screen.queryByRole("button", { name: ":other:" })).toBeNull();
+    await userEvent.click(screen.getByRole("button", { name: ":party-parrot:" }));
+    expect(onSelect).toHaveBeenCalledWith(":party-parrot:");
+    expect(onOpenChange).toHaveBeenCalledWith(false);
+  });
+  it("shows all tabs and selects an emoji while recording it as recent", async () => {
     const { onSelect, onOpenChange } = renderPicker();
 
     expect(screen.getAllByRole("tab").map((tab) => tab.textContent)).toEqual([
       "絵文字",
       "Emoji Kitchen",
+      "カスタム絵文字",
     ]);
 
     await userEvent.click(screen.getByTestId("mock-emoji"));
