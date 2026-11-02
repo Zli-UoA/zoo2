@@ -1,3 +1,4 @@
+import { useFederatedReactions } from "./useFederatedReactions";
 import { eq, isNull, useLiveQuery } from "@tanstack/react-db";
 import { useEffect, useMemo, useState } from "react";
 
@@ -61,7 +62,10 @@ export function useChannelMembers(channelId: string | null) {
 /** チャンネル内のメッセージへのリアクションを購読する。 */
 export function useMessageReactions(channelId: string) {
   const { reactions } = useCollections();
-  return useLiveQuery((q) => q.from({ reactions: reactions(channelId) }));
+  const native = useLiveQuery((q) => q.from({ reactions: reactions(channelId) }));
+  const remote = useFederatedReactions(channelId);
+  const data = useMemo(() => [...(native.data ?? []), ...remote.rows], [native.data, remote.rows]);
+  return { ...native, data, federatedError: remote.failed };
 }
 
 export interface WorkspaceAdminIds {

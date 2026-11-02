@@ -7,6 +7,9 @@ export interface CustomEmoji {
   url: string;
   id?: string | null;
   image_id: string;
+  local?: boolean;
+  category?: string;
+  aliases?: string[];
 }
 export function ActivityPubEmoji({
   emoji,
@@ -17,6 +20,17 @@ export function ActivityPubEmoji({
 }) {
   const { config } = useCollections();
   const [failed, setFailed] = useState<string | null>(null);
+  if (emoji.local && (/^https?:\/\//.test(emoji.url) || /^\/(?!\/)/.test(emoji.url)))
+    return (
+      <img
+        src={emoji.url.startsWith("/") ? joinUrl(config.apiBaseUrl, emoji.url) : emoji.url}
+        alt={emoji.name}
+        title={emoji.name}
+        className={className}
+        style={{ width: "auto", maxWidth: "8em" }}
+        loading="lazy"
+      />
+    );
   if (failed === emoji.image_id || !/^[a-f0-9]{64}$/.test(emoji.image_id))
     return <span>{emoji.name}</span>;
   return (
@@ -25,6 +39,7 @@ export function ActivityPubEmoji({
       alt={emoji.name}
       title={emoji.name}
       className={className}
+      style={{ width: "auto", maxWidth: "8em" }}
       loading="lazy"
       decoding="async"
       referrerPolicy="no-referrer"

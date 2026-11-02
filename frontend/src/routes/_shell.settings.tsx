@@ -6,6 +6,7 @@ export const SETTINGS_TABS = [
   "apps",
   "members",
   "activitypub",
+  "emojis",
   "slack",
   "slack-import",
 ] as const;

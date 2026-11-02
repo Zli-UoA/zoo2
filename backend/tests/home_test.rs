@@ -293,3 +293,56 @@ async fn live_updates_follow_committed_database_changes_and_require_authenticati
         .await?;
     Ok(())
 }
+
+#[tokio::test]
+async fn user_home_invalidations_require_changed_rows() -> anyhow::Result<()> {
+    let config = Config::from_env();
+    let (mut client, connection) =
+        tokio_postgres::connect(&config.database_url, tokio_postgres::NoTls).await?;
+    let driver = tokio::spawn(connection);
+    let tx = client.transaction().await?;
+    let id = uuid::Uuid::new_v4().to_string();
+    tx.execute(
+        "INSERT INTO users(id,user_name,display_name) VALUES($1,$1,'Original')",
+        &[&id],
+    )
+    .await?;
+    // Probe actual trigger calls inside a rolled-back transaction. Other sessions
+    // continue to see the original function, and no test notification leaks out.
+    tx.batch_execute(
+        "CREATE TEMP TABLE home_notice_probe(value integer);
+        CREATE OR REPLACE FUNCTION notify_home_timeline() RETURNS trigger LANGUAGE plpgsql AS $$
+        BEGIN INSERT INTO pg_temp.home_notice_probe VALUES(1); RETURN NULL; END; $$;",
+    )
+    .await?;
+    tx.execute(
+        "UPDATE users SET display_name='No matching row' WHERE id=$1",
+        &[&format!("missing-{id}")],
+    )
+    .await?;
+    tx.execute(
+        "UPDATE users SET display_name=display_name WHERE id=$1",
+        &[&id],
+    )
+    .await?;
+    assert_eq!(
+        tx.query_one("SELECT count(*) FROM home_notice_probe", &[])
+            .await?
+            .get::<_, i64>(0),
+        0
+    );
+    tx.execute(
+        "UPDATE users SET display_name='Changed' WHERE id=$1",
+        &[&id],
+    )
+    .await?;
+    assert_eq!(
+        tx.query_one("SELECT count(*) FROM home_notice_probe", &[])
+            .await?
+            .get::<_, i64>(0),
+        1
+    );
+    tx.rollback().await?;
+    driver.abort();
+    Ok(())
+}

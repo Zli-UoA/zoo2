@@ -24,4 +24,11 @@ class ReactionUsersTest {
         assertEquals(listOf("loading"), reactionUserLabels(rows, emptyList(), "loading"))
         assertEquals(emptyList(), reactionUserLabels(emptyList(), emptyList(), "loading"))
     }
+    @Test
+    fun federatedActorsKeepTheirAccountNamesAlongsideLocalUsers() {
+        val rows = listOf(obj("user_id" to "local"), obj("user_id" to "https://remote.example/users/peer", "display_name" to "Peer", "user_name" to "peer@remote.example"))
+        val users = listOf(obj("id" to "local", "display_name" to "Local", "user_name" to "local"))
+        assertEquals(listOf("Local (@local)", "Peer (@peer@remote.example)"), reactionUserLabels(rows, users, "unavailable"))
+        assertEquals(":blobcat:", kitchenLabel("apub:${"a".repeat(64)}::blobcat:"))
+    }
 }

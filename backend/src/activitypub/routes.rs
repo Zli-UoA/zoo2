@@ -30,6 +30,7 @@ pub fn router() -> Router<AppState> {
         .merge(interactions::router())
         .merge(profile::router())
         .merge(emoji::router())
+        .merge(channel_reactions::router())
         .merge(reposts::router())
         .route("/.well-known/webfinger", get(webfinger))
         .route("/api/activitypub/users/{id}", get(actor))
@@ -131,7 +132,9 @@ async fn note(State(state): State<AppState>, Path(id): Path<String>) -> Result<R
     if !post["deleted_at"].is_null() {
         return Ok((StatusCode::GONE,response(json!({"@context":CONTEXT,"type":"Tombstone","id":format!("{}/api/activitypub/notes/{id}",base_url()?)}))).into_response());
     }
-    Ok(response(note_value(&post)?))
+    Ok(response(note_value(
+        &with_workspace_emojis(&mut tx, &post).await?,
+    )?))
 }
 async fn outbox(
     State(state): State<AppState>,
@@ -148,7 +151,11 @@ async fn outbox(
     let mut db = state.db.clone();
     let mut tx = db.transaction().await?;
     let rows=query(&mut tx,"SELECT row_to_json(p)::text FROM home_posts p WHERE user_id=$1 AND apub AND visibility='public' AND deleted_at IS NULL AND ($2='' OR (created_at,id)<(SELECT created_at,id FROM home_posts WHERE id=$2)) ORDER BY created_at DESC,id DESC LIMIT 50",&[&id,page.before.as_deref().unwrap_or("")]).await?;
-    let items=rows.iter().map(|p|{let note=note_value(p)?;Ok(json!({"type":"Create","id":format!("{}#create",string(&note,"id")?),"actor":actor_id(&id)?,"published":p["created_at"],"to":note["to"],"cc":note["cc"],"object":note}))}).collect::<Result<Vec<Value>,AppError>>()?;
+    let mut items = vec![];
+    for p in &rows {
+        let note = note_value(&with_workspace_emojis(&mut tx, p).await?)?;
+        items.push(json!({"type":"Create","id":format!("{}#create",string(&note,"id")?),"actor":actor_id(&id)?,"published":p["created_at"],"to":note["to"],"cc":note["cc"],"object":note}));
+    }
     let mut result = json!({"@context":CONTEXT,"type":"OrderedCollectionPage","id":format!("{url}?page=true{}",page.before.as_ref().map(|s|format!("&before={}",percent_encoding::utf8_percent_encode(s,percent_encoding::NON_ALPHANUMERIC))).unwrap_or_default()),"partOf":url,"orderedItems":items});
     if rows.len() == 50 {
         result["next"] = json!(format!(
@@ -305,7 +312,7 @@ async fn likes(
     one(&mut tx,"SELECT '{}'::text FROM home_posts WHERE id=$1 AND apub AND deleted_at IS NULL AND visibility IN ('public','unlisted')",&[&id]).await?;
     let count = one(
         &mut tx,
-        "SELECT json_build_object('count',count(*))::text FROM apub_reactions WHERE post_id=$1",
+        "SELECT json_build_object('count',(SELECT count(*) FROM apub_reactions r WHERE r.post_id=$1 AND NOT EXISTS(SELECT 1 FROM apub_actors a WHERE a.id=r.actor_id AND a.blocked) AND (r.user_id IS NULL OR NOT EXISTS(SELECT 1 FROM home_posts WHERE id=$1 AND channel_id IS NOT NULL)))+(SELECT count(*) FROM message_reactions r JOIN home_posts p ON p.id=r.message_id WHERE p.id=$1 AND p.channel_id IS NOT NULL))::text",
         &[&id],
     )
     .await?;

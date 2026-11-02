@@ -784,5 +784,16 @@
     "latest": "最新帖子",
     "older": "更早的帖子",
     "notFound": "找不到此个人资料。"
+  },
+  "customEmoji": {
+    "hint": "名称可使用小写字母、数字、_ 和 -。支持 PNG、JPEG、GIF、WebP，最大 2 MiB，保留原始宽高比。",
+    "name": "名称",
+    "image": "图片",
+    "edit": "编辑",
+    "remove": "删除",
+    "cancel": "取消",
+    "category": "分类",
+    "aliases": "别名（逗号分隔）",
+    "uncategorized": "未分类"
   }
 }

@@ -1,3 +1,6 @@
+import { useWorkspaceEmojis } from "../../../lib/emoji/workspace";
+import { Input } from "../../ui/input";
+import { Button } from "../../ui/button";
 import { noAutofill } from "../../ui/autofill";
 import { EmojiPicker as Frimousse } from "frimousse";
 import { SearchIcon } from "lucide-react";
@@ -179,5 +182,61 @@ export function EmojiPicker({ onSelect }: { onSelect: (emoji: string) => void })
         />
       </Frimousse.Viewport>
     </Frimousse.Root>
+  );
+}
+
+export function CustomEmojiPicker({ onSelect }: { onSelect: (value: string) => void }) {
+  const { t } = useTranslation();
+  const { emojis, loading, failed, retry, imageUrl } = useWorkspaceEmojis();
+  const [query, setQuery] = useState("");
+  const filtered = emojis.filter((e) =>
+    [e.name, e.category, ...(e.aliases ?? [])].some((value) =>
+      value?.toLowerCase().includes(query.toLowerCase()),
+    ),
+  );
+  return (
+    <div className="flex min-h-0 flex-col gap-3">
+      <Input
+        value={query}
+        onChange={(e) => setQuery(e.target.value)}
+        aria-label={t("home.searchEmoji")}
+        placeholder={t("home.searchEmoji")}
+      />
+      {loading ? <p role="status">{t("home.loading")}</p> : null}
+      {failed ? (
+        <p role="alert">
+          {t("home.controlsError")} <Button onClick={retry}>{t("home.refresh")}</Button>
+        </p>
+      ) : null}
+      {!loading && !failed && !filtered.length ? <p>{t("home.noEmojis")}</p> : null}
+      <div className="space-y-3 overflow-y-auto">
+        {[...new Set(filtered.map((e) => e.category ?? ""))].map((category) => (
+          <section key={category}>
+            <h3 className="text-sm text-muted-foreground">
+              {category || t("customEmoji.uncategorized")}
+            </h3>
+            <div className="flex flex-wrap gap-2">
+              {filtered
+                .filter((e) => (e.category ?? "") === category)
+                .map((e) => (
+                  <Button
+                    key={e.name}
+                    variant="ghost"
+                    aria-label={`:${e.name}:`}
+                    title={`:${e.name}:`}
+                    onClick={() => onSelect(`:${e.name}:`)}
+                  >
+                    <img
+                      src={imageUrl(e.url)}
+                      alt={`:${e.name}:`}
+                      className="h-7 w-auto max-w-40 object-contain"
+                    />
+                  </Button>
+                ))}
+            </div>
+          </section>
+        ))}
+      </div>
+    </div>
   );
 }

@@ -100,6 +100,7 @@ export function messageOptions(
       ...base.fixture,
       ...(data(collections) as Record<string, unknown>),
       component,
+      sharedApi: context.parameters.sharedApi === true,
       kitchenCatalogUrl,
       feed: context.name === "Git Hub Feed" ? githubFeedCards : undefined,
       state: context.name,
@@ -127,6 +128,18 @@ function messageInteractions(component: string, state: string): Record<string, u
     ...(name === undefined ? {} : { name }),
     ...extra,
   });
+  if (component === "MessagePane" && state === "Federated Reactions")
+    return [
+      wait("button", "👍 3 件（自分もリアクション済み）"),
+      {
+        action: "click",
+        role: "button",
+        name: "👍 にリアクションしたユーザーを表示",
+        index: 0,
+        exact: true,
+      },
+      { action: "wait", text: "Peer (@peer@remote.example)", exact: true },
+    ];
   if (component === "MessagePane" && state === "Default")
     return [
       { action: "wait", text: "今日のリリースは 18:00", exact: false },

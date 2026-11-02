@@ -230,6 +230,9 @@ for (const implementation of ["react", "compose"] as const) {
     await channelAction(page, native, "webhook");
     await fill("Webhook名", "Parity hook");
     await click("作成");
+    const webhookName = page.getByRole("textbox", { name: "Webhook名", exact: true });
+    if (native) await expect(webhookName).toHaveText("Webhook");
+    else await expect(webhookName).toHaveValue("Webhook");
     await expect(page.getByText("Parity hook", { exact: true })).toBeVisible();
     await click("Webhook URLを再発行");
     await click("実行");

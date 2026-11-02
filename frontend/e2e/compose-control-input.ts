@@ -34,3 +34,13 @@ export async function expectControlValue(
   if (implementation === "react") await expect(field).toHaveValue(expected);
   else await expect(field).toHaveText(expected);
 }
+
+/** Native semantics can lose their layout box for a frame during recomposition. */
+export async function clickControl(control: Locator, implementation: Implementation) {
+  if (implementation === "react") return control.click();
+  // Canvas overlays require force, which skips Playwright's usual visibility
+  // retries. Retry the pointer action until a committed native node is available.
+  await expect(async () => {
+    await control.click({ force: true });
+  }).toPass({ timeout: 5000, intervals: [50, 100, 250] });
+}

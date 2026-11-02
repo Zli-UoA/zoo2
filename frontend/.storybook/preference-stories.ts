@@ -57,6 +57,29 @@ export function preferenceOptions(
         click("tab", "管理・開発");
         wait("button", "トークンを発行");
       } else wait("button", "メッセージ");
+    } else if (name.startsWith("Custom Emojis")) {
+      click("tab", "カスタム絵文字");
+      if (name === "Custom Emojis Error") wait("alert", "", { exact: false });
+      else if (name === "Custom Emojis Empty") wait("button", "保存", { enabled: false });
+      else {
+        click("button", "編集");
+        interactions.push({
+          action: "type",
+          role: "textbox",
+          name: "カテゴリ",
+          value: "Greeting",
+          exact: true,
+        });
+        interactions.push({
+          action: "type",
+          role: "textbox",
+          name: "エイリアス（カンマ区切り）",
+          value: "hello, wave",
+          exact: true,
+        });
+        click("button", "保存");
+        wait("textbox", "カテゴリ", { valueExact: "" });
+      }
     } else if (name === "Members") {
       click("tab", "メンバー");
       wait("button", "管理者にする", { index: 0, enabled: true });

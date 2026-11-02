@@ -8,7 +8,7 @@ use std::{
     time::Instant,
 };
 #[derive(Clone)]
-pub(super) struct Image {
+pub(crate) struct Image {
     pub mime: String,
     pub bytes: Vec<u8>,
 }
@@ -85,12 +85,14 @@ fn result(value: Result<Image, u16>) -> Result<Image, AppError> {
     value.map_err(|status| {
         if status == 400 {
             AppError::BadRequest("Emoji image unavailable".into())
+        } else if status == 404 {
+            AppError::NotFound("Emoji image unavailable".into())
         } else {
             AppError::BadGateway("Emoji image unavailable".into())
         }
     })
 }
-pub(super) async fn get<F, Fut>(
+pub(crate) async fn get<F, Fut>(
     id: &str,
     client: Option<IpAddr>,
     fetch: F,
@@ -118,6 +120,8 @@ where
     let value = fetch().await.map_err(|e| {
         if matches!(e, AppError::BadRequest(_)) {
             400
+        } else if matches!(e, AppError::NotFound(_)) {
+            404
         } else {
             502
         }
