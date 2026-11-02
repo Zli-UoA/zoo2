@@ -159,3 +159,11 @@ DB migrationは既存の運用と同じforward-onlyです。適用前にDBをバ
 
 
 Note IDが別Actorのキャッシュ行と衝突した場合は、そのIDをHTTPSで再取得して原本の `attributedTo` を確認します。最初に届いたActorだけでは所有者を確定しません。誤った行を置き換える場合は、旧行への受信権限・リアクション・リポスト・通知も破棄します。原本確認済みのIDは別Actorへ引き渡しません。Announceの既知行による取得省略も、原本確認済みの場合だけに限定します。ネットワーク取得はDB接続を保持せず行い、競合が後から発生した場合は受信履歴を確定せず再送で原本確認を行います。
+
+## 外部サービスから開く公開プロフィール
+
+`/public/users/<user-id>` はログイン不要のプロフィールです。Actorの `url` とWebFingerの `http://webfinger.net/rel/profile-page` はこのURLを指します。既存のActor URL `/api/activitypub/users/<user-id>` をブラウザ（`Accept: text/html`）で開いた場合も、この画面へリダイレクトします。`application/activity+json`・`application/ld+json` の要求、Accept省略、`*/*` には引き続きActor JSONを返し、表現の切り替えには `Vary: Accept` を付けます。
+
+React版はメイン画面と同じ `ActivityPubProfileDetails`・`HomePostContent` と、共通のAvatar・Button・Inputを使います。Compose版もメインのプロフィール・MFM描画・ZooMark・Button・Fieldを使います。翻訳・テーマ・日時の表示方針はそれぞれのメイン画面と共有します。公開画面ではAuthGate・OIDC・現在ユーザーの取得・Electric購読・個人用キャッシュを初期化しません。「Zooでプロフィールを開く」から認証済み画面へ移動すると通常の認証フローになります。
+
+公開データは `GET /api/activitypub/users/<user-id>/profile?before=<post-id>` で取得します。`account`・`posts`・`next_cursor` を返します。本人の公開かつ連合あり（`apub=true`, `visibility=public`）の削除されていない投稿を、新しい順に20件ずつ表示します。未収載・フォロワー限定・連合なし・他ユーザーの投稿とフォロワー一覧は含めません。`before` は同じユーザーの公開連合投稿だけを受け付け、同時刻の投稿はIDで順序を確定します。

@@ -88,3 +88,11 @@ UIの精度は「極端に違わなければ問題ない」という指定に従
 ## Android での共通実装
 
 Android 版は `ZooApp`・`Session`・`Repository` と既存の画面／状態／API を commonMain から直接使用します。React／Compose Web の画面・API・Story の契約は変更しません。プラットフォーム接続と Android 固有の未対応事項は [Android 版](android.md) に記載します。Android の追加だけを理由に Web の既存 Story を複製しません。
+
+## 未ログインの公開プロフィール
+
+`/public/users/<user-id>` をReact・Compose両方に実装。プロフィールの名前・自己紹介はそれぞれのメイン画面と同じ `ActivityPubProfileDetails` を使い、投稿本文はReactの `HomePostContent`（内部は既存ActivityPubContent/MfmContent）とComposeの既存ActivityPubContentを使う。ボタン・入力欄・アバター・テーマ・翻訳も共通部品を使用する。独自のRust HTML/CSS描画は廃止。
+
+ブラウザでActor URLを開くと公開ルートへ移動し、連携クライアント向けのJSONは維持する。公開APIの20件ページ送り、空・読込・404・失敗・再試行・長文・スマホのStoryを追加。Composeの公開SessionはShape同期・個人用キャッシュ・通知/設定/在席APIを開始しない。公開HTTPはReactのcredentials omitとComposeの匿名ブリッジを使い、認証済み画面へ移動すると公開Runtimeを解放して通常のAuthGateを開始する。
+
+検証済み: フロントの型/lint/formatとビルド、Storybook監査・Kotlin登録検査・ビルド、公開画面のReact Story 8件、共有部分の既存Home Story 6件、公開APIの結合テスト2件、KotlinのRepository/PublicProfile契約テスト8件、Wasm配布用ビルド。公開画面の実ブラウザE2EはReact/Compose各4件で、1280px・390px、匿名のHTTP要求、ページ送り、失敗後の再試行、長文と明暗テーマを確認した。Kotlinの公開プロフィールと既存プロフィールの選択したStoryも実際のCanvasで確認した。

@@ -96,7 +96,15 @@ export interface NativeStatus {
   message?: string;
   retry: () => void;
 }
-export function ComposeRuntime({ config, status }: { config: AppConfig; status?: NativeStatus }) {
+export function ComposeRuntime({
+  config,
+  status,
+  anonymous = false,
+}: {
+  config: AppConfig;
+  status?: NativeStatus;
+  anonymous?: boolean;
+}) {
   const router = useRouter();
   const location = useRouterState({ select: (state) => state.location.href });
   const historyState = useRouterState({ select: (state) => state.location.state });
@@ -180,14 +188,16 @@ export function ComposeRuntime({ config, status }: { config: AppConfig; status?:
     };
     const update = () => updateRef.current?.(environment());
     const start = async () => {
-      const user = getCurrentUserStore(config).getState();
+      const user = anonymous
+        ? { currentUserId: "anonymous", isAdmin: false }
+        : getCurrentUserStore(config).getState();
       const userId =
         user.currentUserId ??
         (!navigator.onLine ? readLastOfflineUserId() : null) ??
         config.devUserId ??
         "anonymous";
       const database =
-        offline.persistenceStatus === "ready"
+        !anonymous && offline.persistenceStatus === "ready"
           ? (await openOfflinePersistence(offline.namespace)).database
           : null;
       if (cancelled) return;
@@ -212,6 +222,7 @@ export function ComposeRuntime({ config, status }: { config: AppConfig; status?:
         forgetFileTarget: (id) => fileBrowser.forget(id),
         headers: async () => {
           if (cancelled) throw new Error("Compose frontend was disposed");
+          if (anonymous) return "{}";
           return JSON.stringify(
             Object.fromEntries(await buildAuthHeaders({ devUserId: config.devUserId })),
           );
@@ -445,7 +456,7 @@ export function ComposeRuntime({ config, status }: { config: AppConfig; status?:
           return "{}";
         },
         authStatus: (status) => {
-          if (!cancelled) {
+          if (!cancelled && !anonymous) {
             if (status === 401) notifyUnauthorized();
             else if (status >= 200 && status < 300) notifyAuthorized();
           }
@@ -531,7 +542,7 @@ export function ComposeRuntime({ config, status }: { config: AppConfig; status?:
       window.removeEventListener("offline", update);
       document.removeEventListener("visibilitychange", visibilityChanged);
     };
-  }, [config, offline.namespace, offline.persistenceStatus, router]);
+  }, [config, offline.namespace, offline.persistenceStatus, router, anonymous]);
   useEffect(() => {
     updateRef.current?.(environment());
   }, [

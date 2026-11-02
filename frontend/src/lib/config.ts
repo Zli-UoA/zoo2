@@ -162,6 +162,18 @@ export function resolveTxidMode(configured: string | undefined): TxidMode {
   );
 }
 
+/** Anonymous pages only need public endpoints, never development identity or OIDC settings. */
+export function resolvePublicConfig(env: ConfigEnv = readEnv()): AppConfig {
+  return {
+    ...DEFAULT_CONFIG,
+    apiBaseUrl: env.VITE_API_BASE_URL ?? DEFAULT_CONFIG.apiBaseUrl,
+    mediaProxyUrl: env.VITE_MEDIA_PROXY_URL ?? "",
+    summalyUrl: env.VITE_SUMMALY_URL ?? "",
+    devUserId: null,
+    oidc: null,
+  };
+}
+
 export function resolveConfig(
   env: ConfigEnv = readEnv(),
   overrides: Partial<AppConfig> = {},

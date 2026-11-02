@@ -684,5 +684,18 @@
     "catalogLoading": "Loading Compose…",
     "catalogLoadError": "Could not load the Compose distribution.",
     "catalogBuildHint": "Install JDK 21, then run pnpm build:compose in frontend."
+  },
+  "publicProfile": {
+    "followTitle": "Follow from your server",
+    "followDescription": "Search for this account in Mastodon, Misskey, or another ActivityPub app, then send a follow request.",
+    "accountAddress": "Account address",
+    "approvalRequired": "Follow requests require approval.",
+    "openInZoo": "Open profile in Zoo",
+    "posts": "Public posts",
+    "empty": "No public posts yet.",
+    "pagination": "Public posts pagination",
+    "latest": "Latest posts",
+    "older": "Older posts",
+    "notFound": "This profile could not be found."
   }
 }

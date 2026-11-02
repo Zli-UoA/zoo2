@@ -59,29 +59,7 @@ fun ActivityPubProfile(app: Session, actorId: String) {
             Button(app.t("home.refresh")) { load() }
         }
         account?.let { value ->
-            Row(
-                horizontalArrangement = Arrangement.spacedBy(12.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                ActivityPubAvatar(
-                    value["avatar"] as? Row,
-                    value.text("display_name").ifEmpty { value.text("user_name") },
-                )
-                Column(Modifier.weight(1f)) {
-                    ActivityPubText(
-                        value.text("display_name").ifEmpty { value.text("user_name") },
-                        value.homeRows("emojis"),
-                        textStyle = TextStyle(fontSize = 18.sp, fontWeight = FontWeight.SemiBold),
-                    )
-                    FederatedAccount(
-                        value.text("user_name"),
-                        value.text("id"),
-                        value.flag("remote"),
-                    )
-                }
-            }
-            if (value.text("summary").isNotEmpty())
-                ActivityPubContent(value.text("summary"), value.homeRows("emojis"))
+            ActivityPubProfileDetails(value)
             FlowRow(
                 horizontalArrangement = Arrangement.spacedBy(12.dp),
                 verticalArrangement = Arrangement.spacedBy(8.dp),
