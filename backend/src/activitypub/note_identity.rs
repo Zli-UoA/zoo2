@@ -116,7 +116,7 @@ pub(super) async fn reconcile(
     for sql in [
         "DELETE FROM apub_reactions WHERE post_id=$1",
         "DELETE FROM apub_reposts WHERE post_id=$1",
-        "DELETE FROM apub_notifications WHERE post_id=$1",
+        "DELETE FROM federated_notifications WHERE post_id=$1",
         "DELETE FROM apub_remote_posts WHERE id=$1",
     ] {
         toasty::sql::statement(sql).bind(id).exec(&mut *tx).await?;

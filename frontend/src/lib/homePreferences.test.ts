@@ -110,3 +110,8 @@ it("never widens a saved audience when opening a reply", () => {
   expect(replyVisibility("followers", "public")).toBe("followers");
   expect(replyVisibility("unlisted", "public")).toBe("unlisted");
 });
+
+it("limits channel replies to a channel-compatible audience", () => {
+  expect(replyVisibility("followers", "public", true)).toBe("public");
+  expect(replyVisibility("followers", "unlisted", true)).toBe("unlisted");
+});

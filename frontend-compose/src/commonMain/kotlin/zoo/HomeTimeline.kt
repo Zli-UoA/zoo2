@@ -84,13 +84,10 @@ class HomeTimeline(
                     do {
                         val page =
                             if (postId != null)
-                                listOf(
-                                    app.api.request("/api/home/${postId.encodeURLParameter()}")
-                                        as Row
-                                )
+                                app.api.request("/api/home/${postId.encodeURLParameter()}/thread").rows()
                             else app.api.request(path(size, before)).rows()
                         result.addAll(page.filter { row -> result.none { key(it) == key(row) } })
-                        more = page.size >= size
+                        more = postId == null && page.size >= size
                         before = page.lastOrNull()?.let(::key).orEmpty()
                         val reached =
                             retainedTail == null ||

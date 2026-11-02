@@ -5,18 +5,18 @@ import { toast } from "sonner";
 
 import { downloadAttachment } from "../../../lib/api/attachments";
 import {
+  type AttachmentMetadata,
   formatAttachmentSize,
   isInlineImage,
   shouldRefreshAttachmentUrl,
 } from "../../../lib/attachments";
-import type { AttachmentRow } from "../../../lib/electric/types";
 import { useAttachmentUrl, type AttachmentUrlState } from "../../../hooks/useAttachments";
 import { useLocale } from "../../i18n/LocaleProvider";
 import { Button } from "../../ui/button";
 import { Dialog, DialogContent, DialogTitle } from "../../ui/dialog";
 import { Spinner } from "../../ui/spinner";
 
-export function MessageAttachments({ attachments }: { attachments: AttachmentRow[] }) {
+export function MessageAttachments({ attachments }: { attachments: AttachmentMetadata[] }) {
   if (attachments.length === 0) {
     return null;
   }
@@ -56,7 +56,7 @@ function AttachmentImage({
   attachment,
   multiple,
 }: {
-  attachment: AttachmentRow;
+  attachment: AttachmentMetadata;
   multiple: boolean;
 }) {
   const { t } = useTranslation();
@@ -196,7 +196,7 @@ function AttachmentImage({
   );
 }
 
-function AttachmentFile({ attachment }: { attachment: AttachmentRow }) {
+function AttachmentFile({ attachment }: { attachment: AttachmentMetadata }) {
   const state = useAttachmentUrl(attachment.id);
   return <AttachmentFileCard attachment={attachment} state={state} />;
 }
@@ -205,7 +205,7 @@ function AttachmentFileCard({
   attachment,
   state,
 }: {
-  attachment: AttachmentRow;
+  attachment: AttachmentMetadata;
   state: AttachmentUrlState;
 }) {
   const { t } = useTranslation();
@@ -253,7 +253,7 @@ function AttachmentDownloadButton({
   state,
   showLabel = false,
 }: {
-  attachment: AttachmentRow;
+  attachment: AttachmentMetadata;
   state: AttachmentUrlState;
   showLabel?: boolean;
 }) {

@@ -68,7 +68,7 @@ async fn authorize(
                     e.into()
                 }
             })?;
-        if root.channel_id != channel_id || root.deleted_at.is_some() || root.parent_id.is_some() {
+        if root.channel_id != channel_id || root.deleted_at.is_some() {
             return Err(AppError::NotFound("Thread not found".into()));
         }
     }

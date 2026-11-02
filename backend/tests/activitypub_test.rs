@@ -862,8 +862,25 @@ async fn protocol_manual_follow_requires_owner_consent_and_preserves_original_ac
     .await?;
     assert_eq!(page["items"].as_array().unwrap().len(), 100);
     assert_eq!(
-        page["items"][0]["pending"], true,
-        "new likes buried an actionable follow request"
+        page["items"][0]["pending"], false,
+        "Newer reactions sort before older pending requests"
+    );
+    let cursor = page["next_cursor"].as_str().unwrap();
+    let (_, older) = request(
+        &f.app,
+        "GET",
+        Some(&f.user),
+        &format!("/api/activitypub/notifications?before={cursor}"),
+        None,
+    )
+    .await?;
+    assert!(
+        older["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|item| item["activity_id"] == follow["id"] && item["pending"] == true),
+        "Pending requests remain actionable in chronological pagination"
     );
     let private = protocol_post(&f, "followers", true).await?;
     assert_eq!(
@@ -2924,4 +2941,114 @@ async fn channel_linked_posts_share_local_and_remote_reactions() -> anyhow::Resu
         .exec(&mut f.db)
         .await?;
     finish_protocol(&mut f).await
+}
+
+#[tokio::test]
+async fn notification_batch_reads_only_selected_owned_ids_and_preserves_cursor_order()
+-> anyhow::Result<()> {
+    let _serial = PROTOCOL_SERIAL.lock().await;
+    let mut f = protocol_fixture().await?;
+    let one = uuid::Uuid::new_v4().to_string();
+    let two = uuid::Uuid::new_v4().to_string();
+    let foreign = uuid::Uuid::new_v4().to_string();
+    for (id, user) in [(&one, &f.user), (&two, &f.user), (&foreign, &f.other)] {
+        toasty::sql::statement("INSERT INTO apub_notifications(id,user_id,actor_id,activity_id,kind) VALUES($1,$2,$3,$1,'like')")
+            .bind(id.as_str()).bind(user.as_str()).bind(f.remote.as_str()).exec(&mut f.db).await?;
+    }
+    let (_, before) = request(
+        &f.app,
+        "GET",
+        Some(&f.user),
+        "/api/activitypub/notifications",
+        None,
+    )
+    .await?;
+    assert_eq!(
+        request(
+            &f.app,
+            "POST",
+            Some(&f.user),
+            "/api/activitypub/notifications/read",
+            Some(json!({"ids":[one,foreign]}))
+        )
+        .await?
+        .0,
+        StatusCode::OK
+    );
+    assert_eq!(
+        request(
+            &f.app,
+            "POST",
+            Some(&f.user),
+            "/api/activitypub/notifications/read",
+            Some(json!({"ids":[]}))
+        )
+        .await?
+        .0,
+        StatusCode::OK
+    );
+    let (_, after) = request(
+        &f.app,
+        "GET",
+        Some(&f.user),
+        "/api/activitypub/notifications",
+        None,
+    )
+    .await?;
+    assert_eq!(
+        before["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| &v["id"])
+            .collect::<Vec<_>>(),
+        after["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| &v["id"])
+            .collect::<Vec<_>>()
+    );
+    assert_eq!(after["unread_count"], 1);
+    assert_eq!(
+        after["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|v| v["id"] == one)
+            .unwrap()["is_read"],
+        true
+    );
+    assert_eq!(
+        after["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|v| v["id"] == two)
+            .unwrap()["is_read"],
+        false
+    );
+    let (_, other) = request(
+        &f.app,
+        "GET",
+        Some(&f.other),
+        "/api/activitypub/notifications",
+        None,
+    )
+    .await?;
+    assert_eq!(other["items"][0]["is_read"], false);
+    assert_eq!(
+        request(
+            &f.app,
+            "POST",
+            Some(&f.user),
+            "/api/activitypub/notifications/read",
+            Some(json!({"id":one,"ids":[two]}))
+        )
+        .await?
+        .0,
+        StatusCode::BAD_REQUEST
+    );
+    finish_protocol(&mut f).await?;
+    Ok(())
 }

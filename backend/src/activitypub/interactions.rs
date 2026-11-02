@@ -16,18 +16,8 @@ pub fn router() -> Router<AppState> {
         .route("/api/activitypub/notifications/read", post(read))
 }
 
-pub(crate) async fn notify(
-    tx: &mut toasty::Transaction<'_>,
-    user: &str,
-    actor: &str,
-    activity: &str,
-    kind: &str,
-    post: &str,
-) -> Result<(), AppError> {
-    toasty::sql::statement("INSERT INTO apub_notifications(id,user_id,actor_id,activity_id,kind,post_id) VALUES($1,$2,$3,$4,$5,NULLIF($6,'')) ON CONFLICT DO NOTHING")
-        .bind(uuid::Uuid::new_v4().to_string()).bind(user).bind(actor).bind(activity).bind(kind).bind(post).exec(tx).await?;
-    Ok(())
-}
+pub(crate) use crate::notifications::create_federated_notification as notify;
+
 fn activity_id() -> Result<String, AppError> {
     Ok(format!(
         "{}/api/activitypub/activities/{}",
@@ -65,7 +55,7 @@ async fn respond(
         .exec(&mut tx)
         .await?;
     }
-    toasty::sql::statement("UPDATE apub_notifications SET is_read=true WHERE user_id=$1 AND activity_id=$2 AND kind='follow_request'").bind(user.id).bind(body.activity_id).exec(&mut tx).await?;
+    toasty::sql::statement("UPDATE federated_notifications SET is_read=true WHERE user_id=$1 AND activity_id=$2 AND kind='follow_request'").bind(user.id).bind(body.activity_id).exec(&mut tx).await?;
     tx.commit().await?;
     Ok(Json(json!({"ok":true})))
 }
@@ -98,7 +88,7 @@ pub(super) async fn undo_reaction(
         queue(tx,user,author,&json!({"@context":CONTEXT,"id":activity_id()?,"type":"Undo","actor":activity["actor"],"object":activity,"to":[author]})).await?;
     }
     toasty::sql::statement(
-        "UPDATE apub_notifications SET is_read=true WHERE activity_id=$1 AND kind='like'",
+        "UPDATE federated_notifications SET is_read=true WHERE activity_id=$1 AND kind='like'",
     )
     .bind(string(row, "activity_id")?)
     .exec(tx)
@@ -231,7 +221,7 @@ async fn like(
         )
         .await?;
         toasty::sql::statement(
-            "UPDATE apub_notifications SET reaction=$2,emoji=$3::jsonb WHERE activity_id=$1",
+            "UPDATE federated_notifications SET reaction=$2,emoji=$3::jsonb WHERE activity_id=$1",
         )
         .bind(id)
         .bind(normalized)
@@ -302,7 +292,7 @@ async fn notifications(
 ) -> Result<Json<Value>, AppError> {
     let mut db = state.db.clone();
     let mut tx = db.transaction().await?;
-    let mut rows=query(&mut tx,"WITH notices AS (SELECT v.*, (v.item->>'pending')::boolean AS pending,(v.item->>'created_at')::timestamptz AS created_at,v.item->>'id' AS id FROM (SELECT json_build_object('id',n.id,'actor_id',n.actor_id,'display_name',COALESCE(a.display_name,profile.display_name,u.display_name,n.actor_id),'actor_emojis',COALESCE(a.emojis,'[]'::jsonb),'avatar',a.avatar,'kind',n.kind,'activity_id',n.activity_id,'post_id',n.post_id,'reaction',n.reaction,'emoji',n.emoji,'content',CASE WHEN p.id IS NOT NULL AND p.deleted_at IS NULL THEN p.content WHEN rp.id IS NOT NULL AND rp.deleted_at IS NULL THEN rp.content ELSE NULL END,'content_emojis',CASE WHEN rp.id IS NOT NULL AND rp.deleted_at IS NULL THEN rp.emojis ELSE '[]'::jsonb END,'is_read',n.is_read,'created_at',n.created_at,'pending',EXISTS(SELECT 1 FROM apub_follows f WHERE f.user_id=n.user_id AND f.actor_id=n.actor_id AND f.activity_id=n.activity_id AND f.direction='incoming' AND NOT f.accepted)) AS item FROM apub_notifications n LEFT JOIN apub_actors a ON a.id=n.actor_id LEFT JOIN users u ON 'local:' || u.id=n.actor_id LEFT JOIN apub_profiles profile ON profile.user_id=u.id LEFT JOIN home_posts p ON p.id=n.post_id AND (p.user_id=n.user_id OR p.reply_user_id=n.user_id) AND (p.channel_id IS NULL OR EXISTS(SELECT 1 FROM channels c WHERE c.id=p.channel_id AND NOT c.is_private AND c.deleted_at IS NULL)) LEFT JOIN apub_remote_posts rp ON rp.id=n.post_id AND EXISTS(SELECT 1 FROM apub_remote_recipients recipient WHERE recipient.post_id=rp.id AND recipient.user_id=n.user_id) WHERE n.user_id=$1) v) SELECT item::text FROM notices n WHERE ($2='' OR (n.pending,n.created_at,n.id)<(SELECT pending,created_at,id FROM notices WHERE id=$2)) ORDER BY n.pending DESC,n.created_at DESC,n.id DESC LIMIT 101",&[&user.id,page.before.as_deref().unwrap_or("")]).await?;
+    let mut rows=query(&mut tx,"WITH notices AS (SELECT v.*, (v.item->>'pending')::boolean AS pending,(v.item->>'created_at')::timestamptz AS created_at,v.item->>'id' AS id FROM (SELECT json_build_object('id',n.id,'actor_id',n.actor_id,'display_name',COALESCE(a.display_name,profile.display_name,u.display_name,n.actor_id),'actor_emojis',COALESCE(a.emojis,'[]'::jsonb),'avatar',a.avatar,'kind',n.kind,'activity_id',n.activity_id,'post_id',n.post_id,'reaction',n.reaction,'emoji',n.emoji,'content',CASE WHEN p.id IS NOT NULL AND p.deleted_at IS NULL THEN p.content WHEN rp.id IS NOT NULL AND rp.deleted_at IS NULL THEN rp.content ELSE NULL END,'content_emojis',CASE WHEN rp.id IS NOT NULL AND rp.deleted_at IS NULL THEN rp.emojis ELSE '[]'::jsonb END,'is_read',n.is_read,'created_at',n.created_at,'pending',EXISTS(SELECT 1 FROM apub_follows f WHERE f.user_id=n.user_id AND f.actor_id=n.actor_id AND f.activity_id=n.activity_id AND f.direction='incoming' AND NOT f.accepted)) AS item FROM federated_notifications n LEFT JOIN apub_actors a ON a.id=n.actor_id LEFT JOIN users u ON 'local:' || u.id=n.actor_id LEFT JOIN apub_profiles profile ON profile.user_id=u.id LEFT JOIN home_posts p ON p.id=n.post_id AND (p.user_id=n.user_id OR p.reply_user_id=n.user_id) AND (p.channel_id IS NULL OR EXISTS(SELECT 1 FROM channels c WHERE c.id=p.channel_id AND NOT c.is_private AND c.deleted_at IS NULL)) LEFT JOIN apub_remote_posts rp ON rp.id=n.post_id AND EXISTS(SELECT 1 FROM apub_remote_recipients recipient WHERE recipient.post_id=rp.id AND recipient.user_id=n.user_id) WHERE n.user_id=$1) v) SELECT item::text FROM notices n WHERE ($2='' OR (n.created_at,n.id)<(SELECT created_at,id FROM notices WHERE id=$2)) ORDER BY n.created_at DESC,n.id DESC LIMIT 101",&[&user.id,page.before.as_deref().unwrap_or("")]).await?;
     let more = rows.len() > 100;
     rows.truncate(100);
     let next_cursor = if more {
@@ -312,7 +302,7 @@ async fn notifications(
     } else {
         None
     };
-    let count=one(&mut tx,"SELECT json_build_object('count',count(*))::text FROM apub_notifications WHERE user_id=$1 AND NOT is_read",&[&user.id]).await?;
+    let count=one(&mut tx,"SELECT json_build_object('count',count(*))::text FROM federated_notifications WHERE user_id=$1 AND NOT is_read",&[&user.id]).await?;
     remember_display_emojis(&mut tx, &rows).await?;
     tx.commit().await?;
     Ok(Json(
@@ -322,13 +312,33 @@ async fn notifications(
 #[derive(Deserialize)]
 struct Read {
     id: Option<String>,
+    ids: Option<Vec<String>>,
 }
 async fn read(
     State(state): State<AppState>,
     user: AuthUser,
     Json(body): Json<Read>,
 ) -> Result<Json<Value>, AppError> {
+    if body.id.is_some() && body.ids.is_some()
+        || body.ids.as_ref().is_some_and(|ids| ids.len() > 500)
+    {
+        return Err(AppError::BadRequest(
+            "Invalid notification selection".into(),
+        ));
+    }
     let mut db = state.db.clone();
-    toasty::sql::statement("UPDATE apub_notifications SET is_read=true WHERE user_id=$1 AND ($2='' OR id=$2) AND NOT is_read").bind(user.id).bind(body.id.unwrap_or_default()).exec(&mut db).await?;
+    let mut tx = db.transaction().await?;
+    let selected = body
+        .ids
+        .or_else(|| body.id.filter(|id| !id.is_empty()).map(|id| vec![id]));
+    crate::notifications::mark_read(
+        &mut tx,
+        &user.id,
+        selected.as_deref(),
+        Some("activitypub"),
+        None,
+    )
+    .await?;
+    tx.commit().await?;
     Ok(Json(json!({"ok":true})))
 }

@@ -74,7 +74,7 @@ pub(crate) fn channels_shape_where(user_id: &str) -> (String, Vec<(&'static str,
 /// キック・退出やメッセージ・チャンネル削除が行われた場合、ElectricSQL の move-out 機構によりクライアントから即座に通知が除外される。
 pub(crate) fn notifications_shape_where(user_id: &str) -> (String, Vec<(&'static str, &str)>) {
     (
-        "user_id = $1 AND message_id IN (SELECT id FROM messages WHERE deleted_at IS NULL) AND channel_id IN (SELECT id FROM channels WHERE deleted_at IS NULL AND (is_private = false OR id IN (SELECT channel_id FROM channel_user WHERE user_id = $1)))"
+        "source = 'channel' AND user_id = $1 AND message_id IN (SELECT id FROM messages WHERE deleted_at IS NULL) AND channel_id IN (SELECT id FROM channels WHERE deleted_at IS NULL AND (is_private = false OR id IN (SELECT channel_id FROM channel_user WHERE user_id = $1)))"
             .to_string(),
         vec![("params[1]", user_id)],
     )
@@ -490,7 +490,11 @@ async fn notifications_shape(
     auth_user: AuthUser,
     Query(raw_query): Query<HashMap<String, String>>,
 ) -> Result<Response, AppError> {
-    let (mut where_clause, extra_params) = notifications_shape_where(auth_user.id.as_str());
+    let (mut where_clause, mut extra_params) = notifications_shape_where(auth_user.id.as_str());
+    extra_params.push((
+        "columns",
+        "id,user_id,actor_id,channel_id,message_id,notification_type,is_read,created_at",
+    ));
     let mut db = state.db.clone();
     if crate::apps::events::guest_in_db(&mut db, &auth_user.id).await? {
         where_clause = where_clause.replace("is_private = false OR ", "");
@@ -498,7 +502,7 @@ async fn notifications_shape(
 
     proxy_shape(
         &state,
-        "notifications",
+        "notification_events",
         Some(&where_clause),
         &extra_params,
         &raw_query,
@@ -648,6 +652,7 @@ mod tests {
         let (clause, params) = notifications_shape_where(user_id);
 
         assert!(clause.contains("user_id = $1"));
+        assert!(clause.contains("source = 'channel'"));
         assert!(
             clause.contains("message_id IN (SELECT id FROM messages WHERE deleted_at IS NULL)")
         );

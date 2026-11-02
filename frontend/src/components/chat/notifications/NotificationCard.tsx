@@ -5,10 +5,11 @@ import {
   useRef,
   type MouseEvent as ReactMouseEvent,
   type RefObject,
+  type ComponentProps,
 } from "react";
 import { useTranslation } from "react-i18next";
 import {
-  HeartIcon,
+  SmilePlusIcon,
   MessageCircleIcon,
   AtSignIcon,
   UserRoundIcon,
@@ -91,6 +92,9 @@ export function NotificationCard({
   const reactionGroups = isReaction
     ? notificationReactionGroups(context.data?.reactions ?? [], group.actorIds)
     : [];
+  const avatarReaction = isReaction
+    ? notificationReactionGroups(context.data?.reactions ?? [], [group.actorIds[0]!])[0]?.emoji
+    : undefined;
   const { catalog } = useKitchenCatalog(
     reactionGroups.some((reaction) => kitchenParts(reaction.emoji) !== null),
   );
@@ -113,7 +117,7 @@ export function NotificationCard({
           { actor },
         );
   const Icon = isReaction
-    ? HeartIcon
+    ? SmilePlusIcon
     : notification.notification_type === "mention"
       ? AtSignIcon
       : MessageCircleIcon;
@@ -195,12 +199,6 @@ export function NotificationCard({
   const destination = (
     <p className="flex min-w-0 items-center gap-1.5 text-xs text-muted-foreground">
       <ContextIcon className="size-4 shrink-0" aria-hidden="true" />
-      {contextLabel !== channelLabel ? (
-        <>
-          <span className="min-w-0 truncate">{contextLabel}</span>
-          <span aria-hidden="true">·</span>
-        </>
-      ) : null}
       <span className="min-w-0 truncate font-medium">{channelLabel}</span>
       {channel && message ? (
         <ArrowUpRightIcon className="size-3.5 shrink-0" aria-hidden="true" />
@@ -208,12 +206,12 @@ export function NotificationCard({
     </p>
   );
   return (
-    <li
+    <NotificationCardFrame
       ref={ref}
       aria-label={label}
       data-unread={unreadIds.length > 0 || undefined}
       onClick={openFromRow}
-      className={`group w-full border-b px-4 py-5 transition-colors hover:bg-muted/40 sm:px-5 sm:py-3 ${channel && message ? "cursor-pointer" : ""}`}
+      className={channel && message ? "cursor-pointer" : ""}
     >
       <div className="flex items-start gap-3">
         <div className="relative shrink-0">
@@ -225,7 +223,18 @@ export function NotificationCard({
             className="size-10 sm:size-9"
           />
           <span className="absolute -right-1 -bottom-1 flex size-5 items-center justify-center rounded-full bg-muted text-muted-foreground ring-2 ring-background">
-            <Icon className="size-3" aria-hidden="true" />
+            {avatarReaction ? (
+              <span
+                role="img"
+                aria-label={kitchenLabel(avatarReaction)}
+                className="flex size-4 items-center justify-center overflow-hidden [&_img]:max-w-full! [&_img]:object-contain"
+                data-notification-reaction
+              >
+                <ReactionEmoji emoji={avatarReaction} catalog={catalog} size={16} />
+              </span>
+            ) : (
+              <Icon className="size-3" aria-hidden="true" />
+            )}
           </span>
         </div>
         <div className="min-w-0 flex-1 space-y-2 sm:space-y-1">
@@ -250,22 +259,7 @@ export function NotificationCard({
                 {dateFormatter.format(parseUtcTimestamp(notification.created_at))}
               </time>
             </div>
-            <span className="flex w-14 shrink-0 justify-end">
-              {unreadIds.length ? (
-                <span className="rounded-full bg-primary px-2 py-0.5 text-[10px] font-semibold text-primary-foreground">
-                  {t("notifications.unreadStatus")}
-                </span>
-              ) : (
-                <span
-                  role="img"
-                  aria-label={t("notifications.readStatus")}
-                  title={t("notifications.readStatus")}
-                  className="text-muted-foreground"
-                >
-                  <CheckCheckIcon className="size-4" aria-hidden="true" />
-                </span>
-              )}
-            </span>
+            <NotificationReadStatus read={!unreadIds.length} />
           </div>
           {channel && message ? (
             <blockquote>
@@ -313,6 +307,35 @@ export function NotificationCard({
           ) : null}
         </div>
       </div>
-    </li>
+    </NotificationCardFrame>
+  );
+}
+
+/** Shared bordered surface for channel and federated notification cards. */
+export function NotificationCardFrame({ className = "", ...props }: ComponentProps<"li">) {
+  return (
+    <li
+      {...props}
+      className={`group w-full rounded-lg border p-3 transition-colors data-[unread]:bg-accent/50 hover:bg-muted/40 ${className}`}
+    />
+  );
+}
+
+export function NotificationReadStatus({ read }: { read: boolean }) {
+  const { t } = useTranslation();
+  return read ? (
+    <span
+      role="img"
+      aria-label={t("notifications.readStatus")}
+      className="shrink-0 text-muted-foreground"
+    >
+      <CheckCheckIcon className="size-4" aria-hidden="true" />
+    </span>
+  ) : (
+    <span
+      className="size-2 shrink-0 rounded-full bg-primary"
+      role="img"
+      aria-label={t("notifications.unreadStatus")}
+    />
   );
 }

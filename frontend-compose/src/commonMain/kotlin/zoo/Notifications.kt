@@ -34,7 +34,7 @@ import kotlinx.serialization.json.*
 fun notificationGroups(rows: List<Row>): List<List<Row>> =
     rows
         .sortedWith(
-            compareByDescending<Row> { timestampMillis(it.text("created_at")) }
+            compareByDescending<Row> { notificationTimestamp(it.text("created_at")) }
                 .thenByDescending { it.text("id") }
         )
         .groupBy {
@@ -52,10 +52,88 @@ private fun notificationGroupKey(rows: List<Row>): String {
     else "notification:${row.text("id")}"
 }
 
+internal fun notificationTimestamp(value: String): Long {
+    val fraction = Regex("""[T ]\d{2}:\d{2}:\d{2}\.(\d+)""").find(value)?.groupValues?.get(1).orEmpty()
+    return (timestampMillis(value) ?: 0L) * 1000 + (fraction.padEnd(6, '0').substring(3, 6).toLongOrNull() ?: 0L)
+}
+
+internal data class NotificationMirror(val channelId: String, val item: Row, val channelUnread: Boolean)
+internal data class UnifiedNotificationEntry(val key: String, val createdAt: String, val channel: List<Row>? = null, val item: Row? = null, val mirrors: List<NotificationMirror> = emptyList())
+internal data class UnifiedNotificationFeed(val entries: List<UnifiedNotificationEntry>, val mirrors: List<NotificationMirror>, val duplicateUnreadCount: Int)
+
+internal fun unifiedNotificationFeed(rows: List<Row>, federated: List<Row>, hasOlder: Boolean = false): UnifiedNotificationFeed {
+    val channels = notificationGroups(rows).map { UnifiedNotificationEntry("channel:${notificationGroupKey(it)}", it.first().text("created_at"), channel = it) }.toMutableList()
+    val matches = mutableMapOf<String, Pair<Int, Row>>()
+    channels.forEachIndexed { index, entry -> entry.channel!!.forEach { row ->
+        val kind = when(row.text("notification_type")) { "reaction" -> "like"; "reply", "mention" -> "reply"; else -> null }
+        if (kind != null) matches["$kind:${row.text("actor_id")}:${row.text("message_id")}"] = index to row
+    } }
+    val remote = mutableListOf<UnifiedNotificationEntry>()
+    federated.forEach { item ->
+        val match = if (item.text("actor_id").startsWith("local:")) matches["${item.text("kind")}:${item.text("actor_id").removePrefix("local:")}:${item.text("post_id")}"] else null
+        if (match != null) {
+            val entry = channels[match.first]
+            channels[match.first] = entry.copy(
+                mirrors = entry.mirrors + NotificationMirror(match.second.text("id"), item, !match.second.flag("is_read")),
+            )
+        } else remote += UnifiedNotificationEntry("activitypub:${item.text("id")}", item.text("created_at"), item = item)
+    }
+    val mirrors = channels.flatMap { it.mirrors }
+    val cutoff = if (hasOlder) federated.minOfOrNull { notificationTimestamp(it.text("created_at")) } ?: Long.MIN_VALUE else Long.MIN_VALUE
+    val entries = channels.map { entry -> entry.copy(channel = entry.channel!!.map { row ->
+        if (entry.mirrors.any { it.channelId == row.text("id") && !it.item.flag("is_read") }) JsonObject(row + ("is_read" to JsonPrimitive(false))) else row
+    }) } + remote
+    return UnifiedNotificationFeed(entries.filter { notificationTimestamp(it.createdAt) >= cutoff }.sortedWith(compareByDescending<UnifiedNotificationEntry> { notificationTimestamp(it.createdAt) }.thenByDescending { it.key }), mirrors, mirrors.count { !it.item.flag("is_read") && it.channelUnread })
+}
+
+@Composable
+internal fun Modifier.notificationSurface(read: Boolean): Modifier {
+    val colors = MaterialTheme.colorScheme
+    val shape = RoundedCornerShape(8.dp)
+    return fillMaxWidth().clip(shape).background(if (read) colors.background else colors.secondaryContainer.copy(alpha = .5f)).border(1.dp, colors.outlineVariant, shape)
+}
+
+@Composable
+internal fun NotificationReadStatus(app: Session, read: Boolean) {
+    if (read) Icon("check-check", app.t("notifications.readStatus"), Modifier.size(16.dp))
+    else Box(Modifier.size(8.dp).background(MaterialTheme.colorScheme.primary, CircleShape).then(webControlModifier("img", attributes = mapOf("aria-label" to app.t("notifications.unreadStatus")))))
+}
+
 @Composable
 fun Notifications(app: Session, notifications: List<Row>, users: List<Row>) {
-    val groups = notificationGroups(notifications)
     val apub = app.activityPubNotifications
+    val feed = unifiedNotificationFeed(notifications, apub.items, apub.nextCursor != null)
+    val groups = feed.entries.mapNotNull { it.channel }
+    var reading by remember { mutableStateOf(false) }
+    val attempted = remember { mutableSetOf<String>() }
+    val pendingReads = remember { mutableSetOf<String>() }
+    var readJob by remember { mutableStateOf<Job?>(null) }
+    fun read(ids: List<String>) {
+        ids.filter { attempted.add(it) }.forEach { pendingReads.add(it) }
+        if (pendingReads.isEmpty() || readJob?.isActive == true) return
+        readJob = app.scope.launch {
+          while (pendingReads.isNotEmpty()) {
+            delay(1)
+            val selected = pendingReads.toList(); pendingReads.clear()
+            val local = selected.filterNot { it.startsWith("activitypub:") }
+            val remote = selected.filter { it.startsWith("activitypub:") }.map { it.removePrefix("activitypub:") }.toMutableSet()
+            feed.mirrors.filter { it.channelId in local }.forEach { remote.add(it.item.text("id")) }
+            var failed = false
+            for (id in local) {
+                try { app.api.request("/api/notifications/$id/read", "PATCH", obj()) }
+                catch (e: CancellationException) { throw e }
+                catch (_: Exception) { failed = true }
+            }
+            if (remote.isNotEmpty()) {
+                try { apub.markRead(remote.toList()) }
+                catch (e: CancellationException) { throw e }
+                catch (_: Exception) { failed = true }
+            }
+            if (failed) app.toast = app.t("notifications.readError")
+          }
+        }
+    }
+    DisposableEffect(app) { onDispose { readJob?.cancel() } }
     LaunchedEffect(apub) { apub.ensureLoaded() }
     val initialLoading by app.repo.notifications.loading.collectAsState()
     val loadError by app.repo.notifications.error.collectAsState()
@@ -73,8 +151,7 @@ fun Notifications(app: Session, notifications: List<Row>, users: List<Row>) {
                     val overlap =
                         minOf(item.offset + item.size, layout.viewportEndOffset) -
                             maxOf(item.offset, layout.viewportStartOffset)
-                    item.key != "activitypub-notifications" &&
-                        overlap > 0 &&
+                    overlap > 0 &&
                         overlap.toFloat() / item.size.coerceAtLeast(1) >= .1f
                 }
                 .map { it.key.toString() }
@@ -83,27 +160,38 @@ fun Notifications(app: Session, notifications: List<Row>, users: List<Row>) {
     }
     var hasLoaded by remember { mutableStateOf(false) }
     val loading =
-        loadError == null &&
+        apub.loading || loadError == null &&
             (initialLoading ||
                 usersLoading ||
                 channelsLoading ||
                 (!hasLoaded && groups.isNotEmpty() && visible.isEmpty()) ||
                 groups.any {
-                    notificationGroupKey(it) in visible &&
+                    "channel:${notificationGroupKey(it)}" in visible &&
                         contextLoading[it.first().text("id")] != false
                 })
     LaunchedEffect(loading, visible) {
         if (!loading && (groups.isEmpty() || visible.isNotEmpty())) hasLoaded = true
     }
     val initialMask = loading && !hasLoaded
-    val maskWholeList = initialMask && apub.items.isEmpty()
+    val maskWholeList = initialMask
     Box(
         Modifier.fillMaxSize().then(webControlModifier("region")).semantics {
             contentDescription = app.t("notifications.title")
         }
     ) {
         Column(Modifier.fillMaxSize()) {
-            ScreenHeader("bell", app.t("notifications.title"), primaryIcon = true)
+            ScreenHeader("bell", app.t("notifications.title"), primaryIcon = true) {
+                if (notifications.count { !it.flag("is_read") } + apub.unreadCount - feed.duplicateUnreadCount > 0)
+                    Button(app.t("home.readAll"), variant = "ghost", size = "sm", enabled = !reading) {
+                        reading = true
+                        app.scope.launch {
+                            try { app.api.request("/api/notifications/read-all", "POST", obj()); apub.markRead() }
+                            catch (e: CancellationException) { throw e }
+                            catch (_: Exception) { app.toast = app.t("notifications.readError") }
+                            finally { reading = false }
+                        }
+                    }
+            }
             HorizontalDivider()
             Box(Modifier.weight(1f)) {
                 LazyColumn(
@@ -132,9 +220,15 @@ fun Notifications(app: Session, notifications: List<Row>, users: List<Row>) {
                         },
                     state = scroll,
                     userScrollEnabled = !maskWholeList,
-                    contentPadding = PaddingValues(0.dp),
+                    contentPadding = PaddingValues(16.dp),
+                    verticalArrangement = Arrangement.spacedBy(12.dp),
                 ) {
-                    item("activitypub-notifications") { ActivityPubNotifications(app, apub) }
+                    if (apub.error) item("activitypub-error") {
+                        Row {
+                            Text(app.t("home.controlsError"), Modifier.then(webControlModifier("alert")))
+                            Button(app.t("home.refresh"), variant = "link") { apub.refresh() }
+                        }
+                    }
                     if (loadError != null)
                         item("local-notification-error") {
                             Text(
@@ -143,19 +237,16 @@ fun Notifications(app: Session, notifications: List<Row>, users: List<Row>) {
                                 color = MaterialTheme.colorScheme.error,
                             )
                         }
-                    if (loadError == null)
-                        items(groups, key = ::notificationGroupKey) { rows ->
-                            NotificationCard(
-                                app,
-                                rows,
-                                users,
-                                notificationGroupKey(rows) in visible,
-                                !loading,
-                                onLoading = { contextLoading[rows.first().text("id")] = it },
-                                contextCache = contextCache,
-                                interactive = !initialMask,
-                            )
-                        }
+                    items(feed.entries, key = { it.key }) { entry ->
+                        if (entry.channel != null) NotificationCard(
+                            app, entry.channel, users, entry.key in visible, !loading,
+                            onLoading = { contextLoading[entry.channel.first().text("id")] = it },
+                            contextCache = contextCache, interactive = !initialMask, onRead = ::read,
+                        ) else ActivityPubNotificationCard(app, entry.item!!, apub, entry.key in visible, !loading, ::read)
+                    }
+                    if (apub.nextCursor != null) item("older-notifications") {
+                        Button(app.t(if (apub.loadingMore) "home.loading" else "home.moreNotifications"), variant = "outline", enabled = !apub.loadingMore) { apub.loadMore() }
+                    }
                 }
                 if (
                     loadError == null &&
@@ -329,7 +420,7 @@ fun NotificationCard(
             "count" to (actors.size - 1).toString(),
         )
     BoxWithConstraints(
-        Modifier.fillMaxWidth()
+        Modifier.notificationSurface(read)
             .alpha(if (interactive) 1f else 0f)
             .then(
                 webControlModifier(
@@ -347,7 +438,7 @@ fun NotificationCard(
         val colors = MaterialTheme.colorScheme
         val type = row.text("notification_type")
         val icon =
-            if (type == "reaction") "heart"
+            if (type == "reaction") "smile-plus"
             else if (type == "mention") "at-sign" else "message-circle"
         val contextKey =
             when (type) {
@@ -375,8 +466,8 @@ fun NotificationCard(
                     else Modifier
                 )
                 .padding(
-                    horizontal = if (mobile) 16.dp else 20.dp,
-                    vertical = if (mobile) 20.dp else 12.dp,
+                    horizontal = 12.dp,
+                    vertical = 12.dp,
                 ),
             horizontalArrangement = Arrangement.spacedBy(12.dp),
         ) {
@@ -395,7 +486,9 @@ fun NotificationCard(
                         .background(colors.surfaceVariant, CircleShape),
                     contentAlignment = Alignment.Center,
                 ) {
-                    Icon(icon, modifier = Modifier.size(12.dp))
+                    val reaction = if (type == "reaction") context?.get("reactions")?.rows()?.firstOrNull { it.text("user_id") == actors.first() }?.text("emoji")?.takeIf { it.isNotEmpty() } else null
+                    if (reaction != null) Box(Modifier.then(webControlModifier("img", attributes = mapOf("aria-label" to reaction, "data-notification-reaction" to "")))) { ReactionEmoji(reaction, Modifier.size(16.dp)) }
+                    else Icon(icon, modifier = Modifier.size(12.dp))
                 }
             }
             Column(
@@ -448,24 +541,7 @@ fun NotificationCard(
                             )
                         }
                     }
-                    Box(Modifier.width(56.dp), contentAlignment = Alignment.CenterEnd) {
-                        if (!read)
-                            Text(
-                                app.t("notifications.unreadStatus"),
-                                Modifier.background(colors.primary, RoundedCornerShape(50))
-                                    .padding(horizontal = 8.dp, vertical = 2.dp),
-                                color = colors.onPrimary,
-                                weight = FontWeight.SemiBold,
-                                size = 10.sp,
-                                lineHeight = 15.sp,
-                            )
-                        else
-                            Icon(
-                                "check-check",
-                                app.t("notifications.readStatus"),
-                                Modifier.size(16.dp),
-                            )
-                    }
+                    NotificationReadStatus(app, read)
                 }
                 if (message != null && channel != null)
                     Box(Modifier.fillMaxWidth()) {
@@ -496,7 +572,7 @@ fun NotificationCard(
                             if (channel.text("channel_name").startsWith("dm:group:")) "users"
                             else "user-round"
                         else icon,
-                        app.t("notifications.$contextKey").takeIf { it != label },
+                        null,
                         label,
                         channel != null && message != null,
                     )
@@ -596,7 +672,6 @@ fun NotificationCard(
             }
         }
     }
-    HorizontalDivider()
 }
 
 fun quotePreview(value: String): String {
