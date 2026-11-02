@@ -473,7 +473,48 @@ pub async fn move_content(
     ] {
         exec(tx, sql, &[from, to]).await?;
     }
+    rewrite_mentions(tx, from, to).await?;
     // プレースホルダの users 行は残す (他の表から参照されている可能性があるため)。無効化済みのまま。
+    Ok(())
+}
+
+/// 取り込んだ本文の `@プレースホルダ` を、本人のユーザー名に書き換える。
+/// 取り込みでは `<@U…>` をその時点のユーザー名で本文に保存するため、連携前に取り込んだ過去ログは
+/// プレースホルダを指したままになる。対象は Slack から取り込んだチャンネルの投稿に限る。
+async fn rewrite_mentions(
+    tx: &mut toasty::Transaction<'_>,
+    from: &str,
+    to: &str,
+) -> Result<(), AppError> {
+    let names = one(
+        tx,
+        "SELECT json_build_object('from',(SELECT user_name FROM users WHERE id=$1),\
+         'to',(SELECT user_name FROM users WHERE id=$2))::text",
+        &[from, to],
+    )
+    .await?;
+    let (Some(old), Some(new)) = (names["from"].as_str(), names["to"].as_str()) else {
+        return Ok(());
+    };
+    if old == new {
+        return Ok(());
+    }
+    // `notifications::extract_mentions` と同じく、名前は英数字と `.`・`-`・`_` で、末尾の `.` は句読点とみなす
+    let escaped: String = old
+        .chars()
+        .flat_map(|c| {
+            let escape = !c.is_ascii_alphanumeric();
+            escape.then_some('\\').into_iter().chain(std::iter::once(c))
+        })
+        .collect();
+    let pattern = format!("(^|[^A-Za-z0-9_.@-])@{escaped}(?![A-Za-z0-9_-]|\\.+[A-Za-z0-9_-])");
+    exec(
+        tx,
+        "UPDATE messages SET content=regexp_replace(content,$1,'\\1@'||$2,'g') \
+         WHERE strpos(content,'@'||$3)>0 AND channel_id IN (SELECT channel_id FROM slack_channels)",
+        &[&pattern, new, old],
+    )
+    .await?;
     Ok(())
 }
 

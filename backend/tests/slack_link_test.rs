@@ -195,10 +195,11 @@ async fn test_slack_account_link_reassigns_placeholder() -> anyhow::Result<()> {
 
     // ZIP 取り込みで作られるのと同じ形のプレースホルダと投稿
     let placeholder = backend::slack::user_id(&team, "U1");
+    let placeholder_name = format!("slack-alice.{}", uuid::Uuid::new_v4().simple());
     exec(
         &state,
         "INSERT INTO users(id,user_name,display_name,guest_kind) VALUES($1,$2,'alice (Slack)','deactivated')",
-        &[&placeholder, &format!("slack_{}", uuid::Uuid::new_v4().simple())],
+        &[&placeholder, &placeholder_name],
     )
     .await?;
     exec(
@@ -228,6 +229,42 @@ async fn test_slack_account_link_reassigns_placeholder() -> anyhow::Result<()> {
         &state,
         "INSERT INTO messages(id,user_id,channel_id,content,created_at) VALUES($1,$2,$3,'from slack','2024-01-01 00:00:00')",
         &[&message, &placeholder, &channel],
+    )
+    .await?;
+    // 取り込んだ本文のメンションは、取り込み時点のプレースホルダの名前で保存されている
+    exec(
+        &state,
+        "INSERT INTO slack_channels(team_id,slack_channel_id,channel_id) VALUES($1,'C1',$2)",
+        &[&team, &channel],
+    )
+    .await?;
+    let p = &placeholder_name;
+    let mentions = format!("@{p} hi (@{p}), @{p}. @{p}x @{p}.more mail@{p}");
+    let (mentioned, unrelated) = (
+        uuid::Uuid::new_v4().to_string(),
+        uuid::Uuid::new_v4().to_string(),
+    );
+    exec(
+        &state,
+        "INSERT INTO messages(id,user_id,channel_id,content,created_at) VALUES($1,$2,$3,$4,'2024-01-01 00:00:01')",
+        &[&mentioned, &bob, &channel, &mentions],
+    )
+    .await?;
+    // Slack から取り込んでいないチャンネルの本文は書き換えない
+    let other = uuid::Uuid::new_v4().to_string();
+    let (status, _, _) = request(
+        &app,
+        "POST",
+        "/api/channels",
+        Some(&bob),
+        Some(json!({"id": other, "channel_name": format!("other_{}", uuid::Uuid::new_v4().simple()), "is_private": false})),
+    )
+    .await?;
+    assert_eq!(status, StatusCode::OK);
+    exec(
+        &state,
+        "INSERT INTO messages(id,user_id,channel_id,content,created_at) VALUES($1,$2,$3,$4,'2024-01-01 00:00:02')",
+        &[&unrelated, &bob, &other, &format!("@{p}")],
     )
     .await?;
     // 同じ絵文字を本人とプレースホルダの両方が付けている
@@ -343,6 +380,36 @@ async fn test_slack_account_link_reassigns_placeholder() -> anyhow::Result<()> {
     .await?;
     assert!(members.iter().any(|m| m["user_id"] == alice.as_str()));
     assert!(!members.iter().any(|m| m["user_id"] == placeholder.as_str()));
+    let content = |id: String| {
+        let state = state.clone();
+        async move {
+            sql(
+                &state,
+                "SELECT json_build_object('content',content)::text FROM messages WHERE id=$1",
+                &[&id],
+            )
+            .await
+            .unwrap()[0]["content"]
+                .as_str()
+                .unwrap()
+                .to_string()
+        }
+    };
+    let alice_name = sql(
+        &state,
+        "SELECT json_build_object('name',user_name)::text FROM users WHERE id=$1",
+        &[&alice],
+    )
+    .await?[0]["name"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let a = &alice_name;
+    assert_eq!(
+        content(mentioned.clone()).await,
+        format!("@{a} hi (@{a}), @{a}. @{p}x @{p}.more mail@{p}")
+    );
+    assert_eq!(content(unrelated.clone()).await, format!("@{p}"));
     let mapping = sql(
         &state,
         "SELECT json_build_object('user_id',user_id,'linked',linked)::text FROM slack_users WHERE team_id=$1 AND slack_user_id='U1'",
