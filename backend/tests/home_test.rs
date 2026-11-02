@@ -293,3 +293,163 @@ async fn live_updates_follow_committed_database_changes_and_require_authenticati
         .await?;
     Ok(())
 }
+
+#[tokio::test]
+async fn channel_posts_share_reactions_replies_and_visible_conversation() -> anyhow::Result<()> {
+    let mut config = Config::from_env();
+    config.dev_auth_enabled = true;
+    let mut db = init_db(&config.database_url).await?;
+    let app = create_router(AppState::new(db.clone(), config));
+    let user = uuid::Uuid::new_v4().to_string();
+    toasty::sql::statement("INSERT INTO users(id,user_name,display_name) VALUES($1,$1,$1)")
+        .bind(user.as_str())
+        .exec(&mut db)
+        .await?;
+    let channel = uuid::Uuid::new_v4().to_string();
+    let (status, _) = request(
+        &app,
+        "POST",
+        Some(&user),
+        "/api/channels",
+        Some(json!({
+            "id":channel,"channel_name":format!("conversation-{channel}"),"is_private":false
+        })),
+    )
+    .await?;
+    assert_eq!(status, StatusCode::OK);
+    let (status, root) = request(
+        &app,
+        "POST",
+        Some(&user),
+        "/api/home",
+        Some(json!({
+            "channel_id":channel,"content":"root"
+        })),
+    )
+    .await?;
+    assert_eq!(status, StatusCode::CREATED);
+    let root = root["id"].as_str().unwrap();
+    let (status, child) = request(
+        &app,
+        "POST",
+        Some(&user),
+        "/api/home",
+        Some(json!({
+            "in_reply_to":root,"content":"child"
+        })),
+    )
+    .await?;
+    assert_eq!(status, StatusCode::CREATED);
+    let child = child["id"].as_str().unwrap();
+    let (status, grandchild) = request(
+        &app,
+        "POST",
+        Some(&user),
+        "/api/messages",
+        Some(json!({
+            "channel_id":channel,"parent_id":child,"content":"grandchild"
+        })),
+    )
+    .await?;
+    assert_eq!(status, StatusCode::OK);
+    let grandchild = grandchild["data"]["id"].as_str().unwrap();
+    let (status, _) = request(
+        &app,
+        "POST",
+        Some(&user),
+        "/api/activitypub/reactions",
+        Some(json!({
+            "post_id":root,"reaction":"👍"
+        })),
+    )
+    .await?;
+    assert_eq!(status, StatusCode::OK);
+    let (_, post) = request(&app, "GET", Some(&user), &format!("/api/home/{root}"), None).await?;
+    assert_eq!(post["reactions"][0]["count"], 1);
+    assert_eq!(post["reactions"][0]["selected"], true);
+    let (status, _) = request(
+        &app,
+        "DELETE",
+        Some(&user),
+        &format!("/api/messages/{root}/reactions?emoji=%F0%9F%91%8D"),
+        None,
+    )
+    .await?;
+    assert_eq!(status, StatusCode::OK);
+    let (_, post) = request(&app, "GET", Some(&user), &format!("/api/home/{root}"), None).await?;
+    assert_eq!(post["likes"], 0);
+    let (status, thread) = request(
+        &app,
+        "GET",
+        Some(&user),
+        &format!("/api/home/{child}/thread"),
+        None,
+    )
+    .await?;
+    assert_eq!(status, StatusCode::OK);
+    let ids: Vec<_> = thread
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|p| p["id"].as_str().unwrap())
+        .collect();
+    assert_eq!(ids, vec![root, child, grandchild]);
+    assert_eq!(thread[2]["tree_depth"], 2);
+    let (_, post) = request(
+        &app,
+        "GET",
+        Some(&user),
+        &format!("/api/home/{child}"),
+        None,
+    )
+    .await?;
+    assert_eq!(post["parent"]["id"], root);
+    let (_, messages) = request(
+        &app,
+        "GET",
+        Some(&user),
+        &format!("/api/messages?channel_id={channel}"),
+        None,
+    )
+    .await?;
+    assert_eq!(
+        messages
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|m| m["id"] == child)
+            .unwrap()["parent_id"],
+        root
+    );
+    // A reply hidden by its audience must not be exposed through the tree or preview.
+    let hidden = uuid::Uuid::new_v4().to_string();
+    let other = uuid::Uuid::new_v4().to_string();
+    toasty::sql::statement("INSERT INTO users(id,user_name,display_name) VALUES($1,$1,$1)")
+        .bind(other.as_str())
+        .exec(&mut db)
+        .await?;
+    toasty::sql::statement("INSERT INTO home_posts(id,user_id,content,visibility,parent_id) VALUES($1,$2,'hidden','unlisted',$3)")
+        .bind(hidden.as_str()).bind(other.as_str()).bind(root).exec(&mut db).await?;
+    let (_, thread) = request(
+        &app,
+        "GET",
+        Some(&user),
+        &format!("/api/home/{root}/thread"),
+        None,
+    )
+    .await?;
+    assert!(!thread.as_array().unwrap().iter().any(|p| p["id"] == hidden));
+    assert_eq!(
+        request(
+            &app,
+            "GET",
+            Some(&user),
+            &format!("/api/home/{hidden}/thread"),
+            None
+        )
+        .await?
+        .0,
+        StatusCode::NOT_FOUND
+    );
+    Ok(())
+}

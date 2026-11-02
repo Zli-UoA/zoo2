@@ -24,6 +24,7 @@ fun HomePostCard(
     repost: () -> Unit,
     remove: () -> Unit,
     edited: () -> Unit,
+    showParent: Boolean = true,
 ) {
     val scope = rememberCoroutineScope()
     var editing by remember(post.text("id")) { mutableStateOf(false) }
@@ -35,6 +36,23 @@ fun HomePostCard(
         Modifier.fillMaxWidth().then(webControlModifier("article")).padding(16.dp),
         verticalArrangement = Arrangement.spacedBy(8.dp),
     ) {
+        if (showParent && post.text("parent_id").isNotEmpty()) {
+            val parent = post["parent"] as? Row
+            val name = parent?.text("display_name")?.ifEmpty { parent.text("user_name") }
+                ?: app.t("activitypubSettings.post")
+            Column(Modifier.fillMaxWidth().padding(start = 12.dp, bottom = 8.dp)) {
+                NativeLink("/home/posts/${post.text("parent_id").encodeURLParameter()}") {
+                    Text(app.t("home.replyTo", "name" to name), size = 12.sp)
+                }
+                parent?.let {
+                    ActivityPubContent(
+                        it.text("content"),
+                        it.homeRows("emojis"),
+                        textStyle = TextStyle(fontSize = 14.sp, lineHeight = 20.sp),
+                    )
+                }
+            }
+        }
         if (post.present("reposted_by"))
             Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
                 Icon("repeat-2", modifier = Modifier.size(12.dp))
@@ -141,12 +159,15 @@ fun HomePostCard(
                         }
                         Button(app.t("common.cancel"), enabled = !saving) { editing = false }
                     }
-                } else
-                    ActivityPubContent(
-                        post.text("content").ifEmpty { app.t("home.attachmentsOnly") },
-                        post.homeRows("emojis"),
-                        textStyle = TextStyle(fontSize = 14.sp, lineHeight = 20.sp),
-                    )
+                } else {
+                    NativeLink("/home/posts/${post.text("id").encodeURLParameter()}") {
+                        ActivityPubContent(
+                            post.text("content").ifEmpty { app.t("home.attachmentsOnly") },
+                            post.homeRows("emojis"),
+                            textStyle = TextStyle(fontSize = 14.sp, lineHeight = 20.sp),
+                        )
+                    }
+                }
                 if (post.homeRows("reactions").isNotEmpty())
                     FlowRow(
                         horizontalArrangement = Arrangement.spacedBy(4.dp),

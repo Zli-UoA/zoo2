@@ -327,14 +327,6 @@ pub(crate) async fn create_message_impl(
             )));
         }
 
-        // Slack 準拠: スレッド返信に対する再返信（木構造ネスト）は禁止
-        if parent.parent_id.is_some() {
-            return Err(AppError::BadRequest(
-                "Nested thread replies are not supported; reply to the parent message directly"
-                    .into(),
-            ));
-        }
-
         parent_author_id = Some(parent.user_id);
     }
 

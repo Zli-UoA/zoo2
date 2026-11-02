@@ -508,3 +508,49 @@ test.describe("Kotlin message touch gestures", () => {
     await message.session.detach();
   });
 });
+
+for (const implementation of ["react", "kotlin"] as const) {
+  for (const width of [1440, 390]) {
+    test(`Home conversations show ancestors, nested replies and timeline context: ${implementation} ${width}`, async ({
+      page,
+    }, testInfo) => {
+      await page.setViewportSize({ width, height: 900 });
+      const open = async (story: string) => {
+        await page.goto(
+          `/iframe.html?id=pages-home--${story}&viewMode=story&globals=implementation:${implementation}`,
+        );
+        if (implementation === "kotlin") {
+          await expect(page.locator("[data-compose-catalog-state=ready]")).toBeVisible({
+            timeout: 90_000,
+          });
+        }
+        await waitForStoryPlay(page);
+        return implementation === "kotlin"
+          ? page.frameLocator('iframe[title="Kotlin component preview"]')
+          : page;
+      };
+      const tree = await open("single-post");
+      await expect(tree.getByRole("article")).toHaveCount(4);
+      await expect(tree.getByText("返信元の投稿", { exact: true })).toBeVisible();
+      const bounds = await Promise.all(
+        [0, 1, 2, 3].map((index) => tree.getByRole("article").nth(index).boundingBox()),
+      );
+      for (let index = 1; index < bounds.length; index++) {
+        expect(bounds[index]!.x).toBeGreaterThan(bounds[index - 1]!.x);
+        expect(bounds[index]!.x + bounds[index]!.width).toBeLessThanOrEqual(width + 1);
+      }
+      await page.screenshot({ path: testInfo.outputPath("conversation.png") });
+      // Canvas marks text outside its scroll viewport hidden in the accessibility tree.
+      await page.mouse.move(width / 2, 500);
+      await page.mouse.wheel(0, 650);
+      await expect(tree.getByText("返信への返信", { exact: true })).toBeVisible();
+      const timeline = await open("timeline-reply");
+      await expect(timeline.getByText("TLに表示される返信先", { exact: true })).toBeVisible();
+      await expect(timeline.getByRole("link", { name: /さんに返信/ })).toHaveAttribute(
+        "href",
+        "/home/posts/home-long",
+      );
+      await page.screenshot({ path: testInfo.outputPath("reply-context.png") });
+    });
+  }
+}

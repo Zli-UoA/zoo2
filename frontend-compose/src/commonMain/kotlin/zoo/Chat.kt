@@ -621,9 +621,7 @@ internal fun Message(
         if (callbacks?.pickReaction != null) callbacks.pickReaction.invoke() else picker = true
     }
     val showThread =
-        canOpenThread &&
-            message.text("parent_id").isEmpty() &&
-            (callbacks == null || callbacks.openThread != null)
+        canOpenThread && (callbacks == null || callbacks.openThread != null)
     val canDelete =
         mine ||
             (callbacks == null &&

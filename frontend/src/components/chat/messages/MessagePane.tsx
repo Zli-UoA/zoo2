@@ -581,6 +581,8 @@ export function MessagePane({
           onTyping={threadTyping.onTyping}
           root={threadRoot}
           replies={threadReplies}
+          replyCounts={replyCounts}
+          onOpenThread={openThread}
           isLoading={threadQuery.isLoading}
           isError={threadQuery.isError}
           currentUserId={readOnly ? null : currentUserId}

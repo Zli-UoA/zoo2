@@ -96,3 +96,10 @@ Android 版は `ZooApp`・`Session`・`Repository` と既存の画面／状態�
 ブラウザでActor URLを開くと公開ルートへ移動し、連携クライアント向けのJSONは維持する。公開APIの20件ページ送り、空・読込・404・失敗・再試行・長文・スマホのStoryを追加。Composeの公開SessionはShape同期・個人用キャッシュ・通知/設定/在席APIを開始しない。公開HTTPはReactのcredentials omitとComposeの匿名ブリッジを使い、認証済み画面へ移動すると公開Runtimeを解放して通常のAuthGateを開始する。
 
 検証済み: フロントの型/lint/formatとビルド、Storybook監査・Kotlin登録検査・ビルド、公開画面のReact Story 8件、共有部分の既存Home Story 6件、公開APIの結合テスト2件、KotlinのRepository/PublicProfile契約テスト8件、Wasm配布用ビルド。公開画面の実ブラウザE2EはReact/Compose各4件で、1280px・390px、匿名のHTTP要求、ページ送り、失敗後の再試行、長文と明暗テーマを確認した。Kotlinの公開プロフィールと既存プロフィールの選択したStoryも実際のCanvasで確認した。
+
+## チャンネル連携投稿と会話ツリー
+
+Homeの投稿詳細は共通の `/api/home/{id}/thread` から、閲覧可能な祖先・対象投稿・返信をツリー順で取得する。Reactの `HomeScreen`、Kotlinの `HomeTimeline` / `HomePostCard` が同じ `tree_depth` を使い、最大6段の字下げとTLでの返信先表示、本文から詳細への移動に対応する。既存の `SinglePost` Storyを祖先・子・孫の4投稿へ拡張した。
+チャンネルに紐づく投稿の編集・削除・ローカルユーザーの通常絵文字リアクションはメッセージAPIの権限検証と保存処理を共有し、Homeの返信は同じチャンネルを引き継ぐ。連合の配送・リモートアクターと連合カスタム絵文字のリアクション記録は引き続きActivityPub側が管理する。
+チャンネルのスレッド内でも返信の子スレッドを開けるよう、Reactの `ThreadPane` とKotlinの `Chat` に同じ操作を追加した。
+検証: Reactの型・lint・format、Storybook監査・ビルド、Home/ThreadPaneのStory操作、Kotlin/Wasmのコンパイル・配布ビルド・ブラウザー単体テスト74件、Home・ActivityPub・リアクション・スレッドのAPI統合テスト25件を確認した。会話ツリーと返信先表示は両実装の1440px/390pxで専用Playwrightの4ケースを実行し、字下げ・画面幅・モバイルでのスクロール・返信先リンクを確認した。

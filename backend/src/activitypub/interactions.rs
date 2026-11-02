@@ -80,7 +80,7 @@ pub(crate) async fn target(state: &AppState, user: &AuthUser, id: &str) -> Resul
     let mut db = state.db.clone();
     let mut tx = db.transaction().await?;
     let guest = crate::apps::events::guest(&mut tx, &user.id).await?;
-    one(&mut tx,"SELECT json_build_object('id',p.id,'author',p.user_id,'apub',p.apub,'visibility',p.visibility,'remote',false)::text FROM home_posts p LEFT JOIN channels c ON c.id=p.channel_id WHERE p.id=$1 AND p.deleted_at IS NULL AND (p.visibility IN ('local','public') OR p.user_id=$2 OR p.reply_user_id=$2) AND (p.channel_id IS NULL OR NOT c.is_private AND NOT c.is_dm AND c.deleted_at IS NULL) AND (NOT $3::boolean OR p.user_id=$2 OR p.reply_user_id=$2 OR EXISTS(SELECT 1 FROM channel_user WHERE channel_id=p.channel_id AND user_id=$2)) UNION ALL SELECT json_build_object('id',p.id,'author',p.actor_id,'apub',true,'visibility',p.visibility,'remote',true)::text FROM apub_remote_posts p JOIN apub_actors a ON a.id=p.actor_id WHERE p.id=$1 AND p.deleted_at IS NULL AND NOT a.blocked AND ((EXISTS(SELECT 1 FROM apub_remote_recipients WHERE post_id=p.id AND user_id=$2) AND (EXISTS(SELECT 1 FROM apub_follows WHERE user_id=$2 AND actor_id=p.actor_id AND direction='outgoing' AND accepted) OR EXISTS(SELECT 1 FROM home_posts parent WHERE parent.id=p.parent_id AND parent.user_id=$2))) OR (p.visibility IN ('public','unlisted') AND EXISTS(SELECT 1 FROM apub_reposts r WHERE r.post_id=p.id AND ((r.user_id IS NOT NULL AND r.visibility IN ('public','local') AND (NOT $3::boolean OR r.user_id=$2)) OR (r.user_id IS NULL AND EXISTS(SELECT 1 FROM apub_repost_recipients WHERE activity_id=r.activity_id AND user_id=$2) AND EXISTS(SELECT 1 FROM apub_follows WHERE user_id=$2 AND actor_id=r.actor_id AND direction='outgoing' AND accepted))))))", &[id,&user.id,if guest{"true"}else{"false"}]).await
+    one(&mut tx,"SELECT json_build_object('id',p.id,'author',p.user_id,'apub',p.apub,'visibility',p.visibility,'remote',false,'channel_id',p.channel_id)::text FROM home_posts p LEFT JOIN channels c ON c.id=p.channel_id WHERE p.id=$1 AND p.deleted_at IS NULL AND (p.visibility IN ('local','public') OR p.user_id=$2 OR p.reply_user_id=$2) AND (p.channel_id IS NULL OR NOT c.is_private AND NOT c.is_dm AND c.deleted_at IS NULL) AND (NOT $3::boolean OR p.user_id=$2 OR p.reply_user_id=$2 OR EXISTS(SELECT 1 FROM channel_user WHERE channel_id=p.channel_id AND user_id=$2)) UNION ALL SELECT json_build_object('id',p.id,'author',p.actor_id,'apub',true,'visibility',p.visibility,'remote',true)::text FROM apub_remote_posts p JOIN apub_actors a ON a.id=p.actor_id WHERE p.id=$1 AND p.deleted_at IS NULL AND NOT a.blocked AND ((EXISTS(SELECT 1 FROM apub_remote_recipients WHERE post_id=p.id AND user_id=$2) AND (EXISTS(SELECT 1 FROM apub_follows WHERE user_id=$2 AND actor_id=p.actor_id AND direction='outgoing' AND accepted) OR EXISTS(SELECT 1 FROM home_posts parent WHERE parent.id=p.parent_id AND parent.user_id=$2))) OR (p.visibility IN ('public','unlisted') AND EXISTS(SELECT 1 FROM apub_reposts r WHERE r.post_id=p.id AND ((r.user_id IS NOT NULL AND r.visibility IN ('public','local') AND (NOT $3::boolean OR r.user_id=$2)) OR (r.user_id IS NULL AND EXISTS(SELECT 1 FROM apub_repost_recipients WHERE activity_id=r.activity_id AND user_id=$2) AND EXISTS(SELECT 1 FROM apub_follows WHERE user_id=$2 AND actor_id=r.actor_id AND direction='outgoing' AND accepted))))))", &[id,&user.id,if guest{"true"}else{"false"}]).await
 }
 pub(super) async fn undo_reaction(
     tx: &mut toasty::Transaction<'_>,
@@ -111,6 +111,19 @@ async fn like(
     Json(body): Json<Reaction>,
 ) -> Result<Json<Value>, AppError> {
     let target = target(&state, &user, &body.post_id).await?;
+    if target["channel_id"].is_string() && body.emoji_id.is_none() {
+        let _ = crate::routes::messages::add_reaction(
+            State(state),
+            user,
+            axum::extract::Path(body.post_id),
+            Json(crate::routes::messages::AddReactionRequest {
+                id: None,
+                emoji: body.reaction.unwrap_or_else(|| "❤️".into()),
+            }),
+        )
+        .await?;
+        return Ok(Json(json!({"ok":true})));
+    }
     let remote = target["remote"] == true;
     let actor = if remote {
         keys(&state, &user.id).await?;
@@ -204,6 +217,27 @@ async fn unlike(
     user: AuthUser,
     Json(body): Json<Reaction>,
 ) -> Result<Json<Value>, AppError> {
+    let mut lookup_db = state.db.clone();
+    let mut lookup_tx = lookup_db.transaction().await?;
+    let linked = query(
+        &mut lookup_tx,
+        "SELECT '{}'::text FROM home_posts WHERE id=$1 AND channel_id IS NOT NULL",
+        &[&body.post_id],
+    )
+    .await?;
+    drop(lookup_tx);
+    if !linked.is_empty() && body.emoji_id.is_none() {
+        let _ = crate::routes::messages::delete_reaction(
+            State(state),
+            user,
+            axum::extract::Path(body.post_id),
+            Query(crate::routes::messages::DeleteReactionQuery {
+                emoji: body.reaction.unwrap_or_else(|| "❤️".into()),
+            }),
+        )
+        .await?;
+        return Ok(Json(json!({"ok":true})));
+    }
     // The owner can always retract their Like, even after unfollowing or a Note deletion.
     let mut db = state.db.clone();
     let mut tx = db.transaction().await?;

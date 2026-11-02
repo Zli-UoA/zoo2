@@ -230,39 +230,45 @@ fun HomeScreen(
                     }
                 items(feed.posts, key = { HomeTimeline.key(it) }) { post ->
                     HomeWidth {
-                        HomePostCard(
-                            app,
-                            post,
-                            pending,
-                            actionError == post.text("id"),
-                            reply = { composer.reply(post) },
-                            react = { reaction = post },
-                            toggleReaction = { item ->
-                                mutate(
-                                    post,
-                                    "/api/activitypub/reactions",
-                                    if (item.flag("selected")) "DELETE" else "POST",
-                                    obj(
-                                        "post_id" to post.text("id"),
-                                        "reaction" to item.text("reaction"),
-                                        "emoji_id" to (item["emoji"] as? Row)?.get("image_id"),
-                                    ),
-                                )
-                            },
-                            repost = {
-                                mutate(
-                                    post,
-                                    "/api/activitypub/reposts",
-                                    if (post.flag("reposted")) "DELETE" else "POST",
-                                    obj("post_id" to post.text("id")),
-                                )
-                            },
-                            remove = {
-                                delete = post
-                                deleteError = false
-                            },
-                            edited = { feed.refresh() },
-                        )
+                        val depth = if (selectedPost != null)
+                            post.text("tree_depth").toIntOrNull()?.coerceIn(0, 6) ?: 0
+                        else 0
+                        Box(Modifier.padding(start = (depth * 16).dp)) {
+                            HomePostCard(
+                                app,
+                                post,
+                                pending,
+                                actionError == post.text("id"),
+                                reply = { composer.reply(post) },
+                                react = { reaction = post },
+                                toggleReaction = { item ->
+                                    mutate(
+                                        post,
+                                        "/api/activitypub/reactions",
+                                        if (item.flag("selected")) "DELETE" else "POST",
+                                        obj(
+                                            "post_id" to post.text("id"),
+                                            "reaction" to item.text("reaction"),
+                                            "emoji_id" to (item["emoji"] as? Row)?.get("image_id"),
+                                        ),
+                                    )
+                                },
+                                repost = {
+                                    mutate(
+                                        post,
+                                        "/api/activitypub/reposts",
+                                        if (post.flag("reposted")) "DELETE" else "POST",
+                                        obj("post_id" to post.text("id")),
+                                    )
+                                },
+                                remove = {
+                                    delete = post
+                                    deleteError = false
+                                },
+                                edited = { feed.refresh() },
+                                showParent = selectedPost == null,
+                            )
+                        }
                     }
                 }
                 if (feed.hasMore)

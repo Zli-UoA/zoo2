@@ -13,7 +13,7 @@ import {
 import { ActivityPubProfile } from "./ActivityPubProfile";
 import { HomeReactionPicker, type ReactionChoice } from "./HomeReactionPicker";
 import { useHomeLive } from "../../hooks/useHomeLive";
-import { Link } from "@tanstack/react-router";
+import { Link, useNavigate } from "@tanstack/react-router";
 import {
   homePostSettingsKey,
   homeTimelineKey,
@@ -72,6 +72,8 @@ export interface HomePost {
   entry_id?: string;
   sort_key?: string;
   parent_id?: string | null;
+  parent?: HomePost | null;
+  tree_depth?: number;
   emojis?: CustomEmoji[];
   actor_emojis?: CustomEmoji[];
   avatar?: RemoteAvatar | null;
@@ -94,6 +96,7 @@ function HomeScreenContent({
   currentUserId,
 }: HomeScreenProps & { currentUserId: string | null }) {
   const { t, i18n } = useTranslation();
+  const navigate = useNavigate();
   const { config } = useCollections();
   const client = useMemo(() => createConfiguredApiClient(config), [config]);
   const composerRef = useRef<HomeComposerHandle>(null);
@@ -219,18 +222,16 @@ function HomeScreenContent({
             ? `&before=${encodeURIComponent(rows[rows.length - 1].entry_id ?? rows[rows.length - 1].id)}`
             : "";
           const page = postId
-            ? [
-                await client.get<HomePost>(`/api/home/${encodeURIComponent(postId)}`, {
-                  signal: controller.signal,
-                }),
-              ]
+            ? await client.get<HomePost[]>(`/api/home/${encodeURIComponent(postId)}/thread`, {
+                signal: controller.signal,
+              })
             : await client.get<HomePost[]>(
                 `/api/home?timeline=${timelineQuery}${size !== 50 ? `&limit=${size}` : ""}${before}`,
                 { signal: controller.signal },
               );
           rows.push(...page);
           reachedTail = reachedTimelineTail(rows, tail);
-          more = page.length === size;
+          more = !postId && page.length === size;
           if (!more) break;
         }
         if (version !== generation.current) return;
@@ -450,14 +451,56 @@ function HomeScreenContent({
                   key={post.entry_id ?? post.id}
                   data-home-post={post.entry_id ?? post.id}
                   className="border-b p-4"
+                  style={
+                    postId
+                      ? { marginInlineStart: `${Math.min(post.tree_depth ?? 0, 6) * 16}px` }
+                      : undefined
+                  }
+                  aria-current={postId === post.id ? "true" : undefined}
                 >
+                  {!postId && post.parent_id ? (
+                    <div className="mb-3 rounded border-s-2 ps-3 text-sm text-muted-foreground">
+                      <Link
+                        to="/home/posts/$postId"
+                        params={{ postId: post.parent_id }}
+                        className="flex items-center gap-1 hover:underline"
+                      >
+                        <ReplyIcon className="size-3" />
+                        {t("home.replyTo", {
+                          name:
+                            post.parent?.display_name ||
+                            post.parent?.user_name ||
+                            t("activitypubSettings.post"),
+                        })}
+                      </Link>
+                      {post.parent ? (
+                        <HomePostContent
+                          content={post.parent.content}
+                          emojis={post.parent.emojis}
+                        />
+                      ) : null}
+                    </div>
+                  ) : null}
                   {post.reposted_by ? (
                     <p className="mb-2 flex items-center gap-2 text-xs text-muted-foreground">
                       <Repeat2Icon className="size-3" />
                       {t("home.repostedBy", { name: post.reposted_by })}
                     </p>
                   ) : null}
-                  <article className="flex min-w-0 gap-3">
+                  <article
+                    className="flex min-w-0 cursor-pointer gap-3"
+                    onClick={(event) => {
+                      if (editingId === (post.entry_id ?? post.id)) return;
+                      if (
+                        (event.target as HTMLElement).closest(
+                          "a,button,input,textarea,[role=button],pre",
+                        ) ||
+                        window.getSelection()?.toString()
+                      )
+                        return;
+                      void navigate({ to: "/home/posts/$postId", params: { postId: post.id } });
+                    }}
+                  >
                     <Link
                       to="/home/users/$actorId"
                       params={{ actorId: post.user_id }}

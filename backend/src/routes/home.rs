@@ -21,6 +21,8 @@ struct Page {
     limit: Option<usize>,
     post_id: Option<String>,
     author: Option<String>,
+    #[serde(default)]
+    thread: bool,
 }
 #[derive(Deserialize)]
 struct NewPost {
@@ -49,6 +51,7 @@ pub fn router() -> Router<AppState> {
         .route("/api/home/live", get(super::home_live::upgrade))
         .route("/api/home/settings", get(settings).put(update_settings))
         .route("/api/home/{id}", get(detail).patch(edit).delete(delete))
+        .route("/api/home/{id}/thread", get(thread))
 }
 fn validate_content(content: &str) -> Result<(), AppError> {
     if content.trim().is_empty() || content.chars().count() > 1000 || content.contains('\0') {
@@ -61,7 +64,7 @@ fn validate_content(content: &str) -> Result<(), AppError> {
 async fn create(
     State(state): State<AppState>,
     user: AuthUser,
-    Json(body): Json<NewPost>,
+    Json(mut body): Json<NewPost>,
 ) -> Result<(StatusCode, Json<Value>), AppError> {
     validate_content(&body.content)?;
     if !matches!(
@@ -93,6 +96,28 @@ async fn create(
                 "Reply audience cannot exceed the original post".into(),
             ));
         }
+    }
+    // A reply to a channel post belongs to that same conversation in both views.
+    if let Some(parent_channel) = parent.as_ref().and_then(|p| p["channel_id"].as_str()) {
+        if body
+            .channel_id
+            .as_deref()
+            .is_some_and(|c| c != parent_channel)
+        {
+            return Err(AppError::BadRequest(
+                "Reply channel must match its parent".into(),
+            ));
+        }
+        body.channel_id = Some(parent_channel.to_owned());
+    } else if parent.is_some() && body.channel_id.is_some() {
+        return Err(AppError::BadRequest(
+            "A channel reply requires a parent in the same channel".into(),
+        ));
+    }
+    if body.channel_id.is_some() && body.visibility == "followers" {
+        return Err(AppError::BadRequest(
+            "Channel replies cannot use a followers-only audience".into(),
+        ));
     }
     let parent_uri = parent.as_ref().and_then(|p| {
         if p["remote"] == true {
@@ -156,7 +181,7 @@ async fn create(
     }
     let notifications = if body.channel_id.is_some() {
         let message = crate::models::Message::get_by_id(&mut tx, id.as_str()).await?;
-        crate::notifications::create_message_notifications(&mut tx, &message, &user.id, None)
+        crate::notifications::create_message_notifications(&mut tx, &message, &user.id, reply_user)
             .await?
     } else {
         vec![]
@@ -194,7 +219,20 @@ async fn edit(
     }
     let mut db = state.db.clone();
     let mut tx = db.transaction().await?;
-    mutable_post(&mut tx, &state, &user, &id).await?;
+    let p = mutable_post(&mut tx, &state, &user, &id).await?;
+    if p["channel_id"].is_string() {
+        drop(tx);
+        let _ = crate::routes::messages::update_message(
+            State(state),
+            user,
+            Path(id),
+            Json(crate::routes::messages::UpdateMessageRequest {
+                content: body.content,
+            }),
+        )
+        .await?;
+        return Ok(StatusCode::NO_CONTENT);
+    }
     toasty::sql::statement("UPDATE home_posts SET content=$2,updated_at=now() WHERE id=$1")
         .bind(id)
         .bind(body.content)
@@ -232,9 +270,9 @@ async fn list(
     let mut db = state.db.clone();
     let mut tx = db.transaction().await?;
     let guest = crate::apps::events::guest(&mut tx, &user.id).await?;
-    let rows=query(&mut tx,r#"WITH base AS (
-      SELECT p.id,p.user_id,u.user_name,CASE WHEN p.apub THEN COALESCE(profile.display_name,u.display_name) ELSE u.display_name END AS display_name,p.content,p.created_at,p.updated_at,p.apub,p.visibility,p.channel_id,c.channel_name,false AS remote,NULL::text AS url,p.parent_id,'[]'::jsonb AS emojis,'[]'::jsonb AS actor_emojis,(p.user_id=$1 OR p.reply_user_id=$1) AS own,true AS original_visible,NULL::jsonb AS avatar
-      FROM home_posts p JOIN users u ON u.id=p.user_id LEFT JOIN apub_profiles profile ON profile.user_id=u.id LEFT JOIN channels c ON c.id=p.channel_id
+    let rows=query(&mut tx,r#"WITH RECURSIVE base AS (
+      SELECT p.id,p.user_id,u.user_name,CASE WHEN p.apub THEN COALESCE(profile.display_name,u.display_name) ELSE u.display_name END AS display_name,p.content,p.created_at,p.updated_at,p.apub,p.visibility,p.channel_id,c.channel_name,false AS remote,NULL::text AS url,COALESCE(m.parent_id,p.parent_id) AS parent_id,'[]'::jsonb AS emojis,'[]'::jsonb AS actor_emojis,(p.user_id=$1 OR p.reply_user_id=$1) AS own,true AS original_visible,NULL::jsonb AS avatar
+      FROM home_posts p JOIN users u ON u.id=p.user_id LEFT JOIN apub_profiles profile ON profile.user_id=u.id LEFT JOIN channels c ON c.id=p.channel_id LEFT JOIN messages m ON m.id=p.id
       WHERE p.deleted_at IS NULL AND (p.visibility IN ('local','public') OR p.user_id=$1 OR p.reply_user_id=$1)
         AND (p.channel_id IS NULL OR NOT c.is_private AND NOT c.is_dm AND c.deleted_at IS NULL)
         AND (NOT $4::boolean OR p.user_id=$1 OR p.reply_user_id=$1 OR EXISTS(SELECT 1 FROM channel_user WHERE channel_id=p.channel_id AND user_id=$1))
@@ -246,6 +284,21 @@ async fn list(
         (EXISTS(SELECT 1 FROM apub_remote_recipients WHERE post_id=p.id AND user_id=$1) AND (EXISTS(SELECT 1 FROM apub_follows WHERE user_id=$1 AND actor_id=p.actor_id AND direction='outgoing' AND accepted) OR EXISTS(SELECT 1 FROM home_posts parent WHERE parent.id=p.parent_id AND parent.user_id=$1)))
         OR (p.visibility IN ('public','unlisted') AND EXISTS(SELECT 1 FROM apub_reposts r WHERE r.post_id=p.id AND ((r.user_id IS NOT NULL AND r.visibility IN ('local','public') AND (NOT $4::boolean OR r.user_id=$1)) OR (r.user_id IS NULL AND EXISTS(SELECT 1 FROM apub_repost_recipients WHERE activity_id=r.activity_id AND user_id=$1) AND EXISTS(SELECT 1 FROM apub_follows WHERE user_id=$1 AND actor_id=r.actor_id AND direction='outgoing' AND accepted)))))
       )
+    ), reactions AS (
+      SELECT r.post_id,r.user_id,r.reaction,r.emoji,r.created_at FROM apub_reactions r
+      UNION ALL
+      SELECT r.message_id,r.user_id,r.emoji,'null'::jsonb,r.created_at AT TIME ZONE 'UTC' FROM message_reactions r
+      WHERE EXISTS(SELECT 1 FROM base b WHERE b.id=r.message_id AND b.channel_id IS NOT NULL)
+    ), ancestors AS (
+      SELECT b.id,b.parent_id,ARRAY[b.id] AS visited,0 AS depth FROM base b WHERE b.id=$6
+      UNION ALL
+      SELECT b.id,b.parent_id,a.visited||b.id,a.depth+1 FROM ancestors a JOIN base b ON b.id=a.parent_id
+      WHERE NOT b.id=ANY(a.visited) AND a.depth<100 AND b.original_visible
+    ), descendants AS (
+      SELECT b.id,ARRAY[b.id] AS visited,ARRAY[b.created_at::text||b.id] AS path,0 AS depth FROM base b WHERE b.id=$6
+      UNION ALL
+      SELECT b.id,d.visited||b.id,d.path||(b.created_at::text||b.id),d.depth+1 FROM descendants d JOIN base b ON b.parent_id=d.id
+      WHERE NOT b.id=ANY(d.visited) AND d.depth<100 AND b.original_visible
     ), entries AS (
       SELECT row_to_json(b)::jsonb AS post,b.id,b.id AS entry_id,b.created_at AS sort_at
       FROM base b WHERE (b.original_visible OR $6<>'') AND ($6<>'' OR $3='social' OR $3='local' AND NOT b.remote AND b.visibility IN ('public','local') OR $3='home' AND (b.remote OR b.own))
@@ -259,17 +312,24 @@ async fn list(
       )
     ) SELECT (f.post - 'own' - 'original_visible' || jsonb_build_object(
       'entry_id',f.entry_id,
+      'parent',(SELECT row_to_json(parent)::jsonb - 'own' - 'original_visible' FROM base parent WHERE parent.id=f.post->>'parent_id' AND parent.original_visible),
+      'tree_depth',CASE WHEN $8::boolean THEN (SELECT max(depth) FROM ancestors) + COALESCE((SELECT -depth FROM ancestors WHERE id=f.id),(SELECT depth FROM descendants WHERE id=f.id),0) ELSE 0 END,
       'sort_key',(extract(epoch FROM f.sort_at)*1000000)::bigint::text,
-      'likes',(SELECT count(*) FROM apub_reactions WHERE post_id=f.id),
-      'liked',EXISTS(SELECT 1 FROM apub_reactions WHERE post_id=f.id AND user_id=$1),
-      'my_reaction',(SELECT reaction FROM apub_reactions WHERE post_id=f.id AND user_id=$1 LIMIT 1),
-      'reactions',(SELECT COALESCE(jsonb_agg(jsonb_build_object('reaction',reaction,'emoji',emoji,'count',n,'selected',COALESCE(selected,false))),'[]'::jsonb) FROM (SELECT reaction,emoji,count(*) AS n,bool_or(user_id=$1) AS selected FROM apub_reactions WHERE post_id=f.id GROUP BY reaction,emoji ORDER BY min(created_at)) grouped),
+      'likes',(SELECT count(*) FROM reactions WHERE post_id=f.id),
+      'liked',EXISTS(SELECT 1 FROM reactions WHERE post_id=f.id AND user_id=$1),
+      'my_reaction',(SELECT reaction FROM reactions WHERE post_id=f.id AND user_id=$1 LIMIT 1),
+      'reactions',(SELECT COALESCE(jsonb_agg(jsonb_build_object('reaction',reaction,'emoji',emoji,'count',n,'selected',COALESCE(selected,false))),'[]'::jsonb) FROM (SELECT reaction,emoji,count(*) AS n,bool_or(user_id=$1) AS selected FROM reactions WHERE post_id=f.id GROUP BY reaction,emoji ORDER BY min(created_at)) grouped),
       'replies',(SELECT count(*) FROM base replies WHERE replies.parent_id=f.id AND replies.original_visible),
       'reposts',(SELECT count(*) FROM apub_reposts r WHERE r.post_id=f.id AND (r.visibility IN ('public','local') OR r.user_id=$1 OR EXISTS(SELECT 1 FROM apub_repost_recipients WHERE activity_id=r.activity_id AND user_id=$1))),
       'reposted',EXISTS(SELECT 1 FROM apub_reposts WHERE post_id=f.id AND user_id=$1)
-    ))::text FROM entries f WHERE ($6='' OR f.id=$6) AND ($7='' OR f.post->>'user_id'=$7) AND ($2='' OR (f.sort_at,f.entry_id)<(SELECT sort_at,entry_id FROM entries WHERE entry_id=$2)) ORDER BY f.sort_at DESC,f.entry_id DESC LIMIT $5::integer"#,
-    &[&user.id,page.before.as_deref().unwrap_or(""),timeline,if guest{"true"}else{"false"},&page.limit.unwrap_or(50).clamp(1,500).to_string(),page.post_id.as_deref().unwrap_or(""),page.author.as_deref().unwrap_or("")]).await?;
+    ))::text FROM entries f WHERE ($6='' OR f.id=$6 OR $8::boolean AND (f.id IN (SELECT id FROM ancestors) OR f.id IN (SELECT id FROM descendants))) AND ($7='' OR f.post->>'user_id'=$7) AND ($2='' OR (f.sort_at,f.entry_id)<(SELECT sort_at,entry_id FROM entries WHERE entry_id=$2)) ORDER BY CASE WHEN $8::boolean THEN COALESCE((SELECT -depth FROM ancestors WHERE id=f.id),1) ELSE 0 END, CASE WHEN $8::boolean THEN (SELECT path FROM descendants WHERE id=f.id) END, f.sort_at DESC,f.entry_id DESC LIMIT $5::integer"#,
+    &[&user.id,page.before.as_deref().unwrap_or(""),timeline,if guest{"true"}else{"false"},&page.limit.unwrap_or(50).clamp(1,500).to_string(),page.post_id.as_deref().unwrap_or(""),page.author.as_deref().unwrap_or(""),if page.thread{"true"}else{"false"}]).await?;
 
+    let parents: Vec<Value> = rows
+        .iter()
+        .filter_map(|row| row.get("parent").filter(|p| p.is_object()).cloned())
+        .collect();
+    activitypub::remember_display_emojis(&mut tx, &parents).await?;
     activitypub::remember_display_emojis(&mut tx, &rows).await?;
     tx.commit().await?;
     Ok(Json(rows))
@@ -292,6 +352,25 @@ async fn detail(
         .next()
         .map(Json)
         .ok_or_else(|| AppError::NotFound("Post".into()))
+}
+// Uses the same audience-filtered base as the timeline; inaccessible parents and replies are omitted.
+async fn thread(
+    State(state): State<AppState>,
+    user: AuthUser,
+    Path(id): Path<String>,
+) -> Result<Json<Vec<Value>>, AppError> {
+    let _ = detail(State(state.clone()), user.clone(), Path(id.clone())).await?;
+    list(
+        State(state),
+        user,
+        Query(Page {
+            post_id: Some(id),
+            thread: true,
+            limit: Some(500),
+            ..Page::default()
+        }),
+    )
+    .await
 }
 async fn settings(State(state): State<AppState>, user: AuthUser) -> Result<Json<Value>, AppError> {
     let mut db = state.db.clone();

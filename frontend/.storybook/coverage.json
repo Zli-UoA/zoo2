@@ -481,6 +481,7 @@
         "LiveWhileLoadingOlder",
         "RemoteAvatar",
         "RemoteAvatarFallback",
+        "TimelineReply",
         "SinglePost",
         "SinglePostMissing",
         "UserProfile",

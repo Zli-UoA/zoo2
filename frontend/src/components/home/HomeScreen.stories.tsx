@@ -1324,19 +1324,47 @@ export const RemoteAvatarFallback: Story = {
 export const SinglePost: Story = {
   args: { postId: posts[0].id },
   parameters: {
-    msw: { handlers: [http.get("*/api/home/:id", () => HttpResponse.json(posts[0]))] },
+    msw: {
+      handlers: [
+        http.get("*/api/home/:id/thread", () =>
+          HttpResponse.json([
+            { ...posts[1], id: "ancestor", content: "返信元の投稿", tree_depth: 0 },
+            { ...posts[0], parent_id: "ancestor", tree_depth: 1 },
+            {
+              ...posts[1],
+              id: "child",
+              content: "投稿への返信",
+              parent_id: posts[0].id,
+              tree_depth: 2,
+            },
+            {
+              ...posts[1],
+              id: "grandchild",
+              content: "返信への返信",
+              parent_id: "child",
+              tree_depth: 3,
+            },
+          ]),
+        ),
+      ],
+    },
   },
   play: playForImplementation(async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     await expect(await canvas.findByText(/Homeから最初の公開投稿です/)).toBeVisible();
-    await expect(canvas.getAllByRole("article")).toHaveLength(1);
+    await expect(canvas.getAllByRole("article")).toHaveLength(4);
+    await expect(canvas.getByText("返信元の投稿")).toBeVisible();
+    await expect(canvas.getByText("投稿への返信")).toBeVisible();
+    await expect(canvas.getByText("返信への返信")).toBeVisible();
     await expect(canvas.queryByRole("button", { name: "ローカル" })).not.toBeInTheDocument();
   }),
 };
 export const SinglePostMissing: Story = {
   args: { postId: "missing" },
   parameters: {
-    msw: { handlers: [http.get("*/api/home/:id", () => new HttpResponse(null, { status: 404 }))] },
+    msw: {
+      handlers: [http.get("*/api/home/:id/thread", () => new HttpResponse(null, { status: 404 }))],
+    },
   },
   play: playForImplementation(async ({ canvasElement }) => {
     await expect(await within(canvasElement).findByRole("alert")).toBeVisible();
@@ -1643,7 +1671,9 @@ export const MfmDecoratedPostMobile: Story = {
 };
 export const MfmSinglePost: Story = {
   args: { postId: mfmPost.id },
-  parameters: { msw: { handlers: [http.get("*/api/home/:id", () => HttpResponse.json(mfmPost))] } },
+  parameters: {
+    msw: { handlers: [http.get("*/api/home/:id/thread", () => HttpResponse.json([mfmPost]))] },
+  },
   play: playForImplementation(async ({ canvasElement }) => checkMfmPost(canvasElement)),
 };
 
@@ -1667,4 +1697,32 @@ export const MfmUserProfile: Story = {
     },
   },
   play: playForImplementation(async ({ canvasElement }) => checkMfmPost(canvasElement)),
+};
+
+export const TimelineReply: Story = {
+  parameters: {
+    msw: {
+      handlers: [
+        http.get("*/api/home", () =>
+          HttpResponse.json([
+            {
+              ...posts[0],
+              content: "TLに表示される返信",
+              parent_id: posts[1].id,
+              parent: { ...posts[1], content: "TLに表示される返信先" },
+            },
+          ]),
+        ),
+      ],
+    },
+  },
+  play: playForImplementation(async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expect(await canvas.findByText("TLに表示される返信")).toBeVisible();
+    await expect(canvas.getByText("TLに表示される返信先")).toBeVisible();
+    await expect(canvas.getByRole("link", { name: /さんに返信/ })).toHaveAttribute(
+      "href",
+      `/home/posts/${posts[1].id}`,
+    );
+  }),
 };
