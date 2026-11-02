@@ -120,3 +120,5 @@ React `useFederatedReactions` と共通Kotlin `ChannelReactions` はHome通知�
 共有 `EmojiFallback` Storyは画像失敗時の文字表示と紐付け投稿の無効チップをReact・実Kotlinで検証する。再取得通知の集約はReactの仮想時計テスト、通知元はPostgreSQLの無変更更新／実更新テストで確認する。
 
 検証: Kotlinブラウザ契約75件・Wasm配布ビルド成功。React Home Story60件成功。共有3状態（MisskeyCustomEmoji・MobileMisskey・EmojiFallback）は再生成したKotlin成果物で両実装のplayと描画を検証し、全件成功。画像差分の完全一致はこの検証の対象外。
+
+実アプリのReact・Compose共通E2E全19件も成功。新規の連合リアクションAPIをE2Eモックに追加し、Webhook登録では入力のリセットと一覧反映を順に確認する。

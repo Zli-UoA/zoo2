@@ -10,13 +10,13 @@ export function coalescedRefresh(refresh: () => void, interval = 5000) {
     refresh();
   };
   return {
-    request() {
+    request: () => {
       if (disposed || timer !== undefined) return;
       const remaining = interval - (Date.now() - last);
       if (remaining <= 0) run();
       else timer = setTimeout(run, remaining);
     },
-    dispose() {
+    dispose: () => {
       disposed = true;
       clearTimeout(timer);
     },
