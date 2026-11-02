@@ -239,3 +239,13 @@ describe("messageFeedQuery since window", () => {
     expect(result.map((row) => row.id)).toEqual(["reply-new"]);
   });
 });
+
+it("resolves a reply as a thread root and joins its author", async () => {
+  const sources = makeCollections([{ ...messages[0], parent_id: "parent" }], users);
+  const result = await queryOnce((q) =>
+    messageFeedQuery(q, sources, { parentId: null, messageId: "message-1" }),
+  );
+  expect(result).toHaveLength(1);
+  expect(result[0].parent_id).toBe("parent");
+  expect(result[0].display_name).toBe("Alice");
+});

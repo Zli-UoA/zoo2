@@ -152,6 +152,37 @@ async fn test_presence_across_independent_instances() -> anyhow::Result<()> {
         .0,
         StatusCode::NOT_FOUND
     );
+    let nested = uuid::Uuid::new_v4().to_string();
+    toasty::sql::statement("INSERT INTO messages(id,channel_id,user_id,content,parent_id) VALUES($1,$2,$3,'nested',$4)")
+        .bind(nested.as_str()).bind(channel.as_str()).bind(alice.as_str()).bind(root.as_str()).exec(&mut db).await?;
+    assert_eq!(
+        request(
+            &app_a,
+            &alice,
+            &path,
+            Some(update(&session2, Some(&nested), true))
+        )
+        .await?
+        .0,
+        StatusCode::OK
+    );
+    let nested_path = format!("{path}?parent_id={nested}");
+    assert_eq!(request(&app_b, &bob, &nested_path, None).await?.1, expected);
+    assert_eq!(
+        request(&app_b, &outsider, &nested_path, None).await?.0,
+        StatusCode::NOT_FOUND
+    );
+    assert_eq!(
+        request(
+            &app_a,
+            &alice,
+            &path,
+            Some(update(&session2, Some(&nested), false))
+        )
+        .await?
+        .0,
+        StatusCode::OK
+    );
     let wrong_thread = format!("/api/channels/{other}/typing?parent_id={root}");
     assert_eq!(
         request(&app_b, &bob, &wrong_thread, None).await?.0,

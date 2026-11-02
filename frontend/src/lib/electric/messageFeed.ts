@@ -32,6 +32,7 @@ export interface ReplyCountSources {
  */
 export interface MessageFeedScope {
   parentId: string | null;
+  messageId?: string;
   since?: TimestampString;
 }
 
@@ -54,8 +55,9 @@ export function messageFeedQuery(
     .from({ messages: sources.messages })
     .join({ users: sources.users }, ({ messages, users }) => eq(messages.user_id, users.id))
     .where(({ messages }) => {
-      const parent =
-        scope.parentId === null
+      const parent = scope.messageId
+        ? eq(messages.id, scope.messageId)
+        : scope.parentId === null
           ? isNull(messages.parent_id)
           : eq(messages.parent_id, scope.parentId);
       return scope.since

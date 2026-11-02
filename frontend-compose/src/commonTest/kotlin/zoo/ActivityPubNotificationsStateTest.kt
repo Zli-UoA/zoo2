@@ -96,7 +96,7 @@ class ActivityPubNotificationsStateTest {
         runCurrent()
         assertEquals(listOf(body.toString()), writes)
         assertEquals(0, state.unreadCount)
-        assertEquals(listOf("one"), state.items.map { it.text("id") })
+        assertEquals(listOf("one", "two"), state.items.map { it.text("id") }, "Approval refresh retains already loaded older notifications")
         assertFalse(state.loadingMore)
         app.close()
     }
@@ -150,4 +150,31 @@ class ActivityPubNotificationsStateTest {
         assertEquals(3, state.unreadCount)
         app.close()
     }
+    @Test
+    fun selectedReadAcknowledgesOnlyVisibleIdsAndRollsBackFailures() = runTest {
+        var reject = false
+        val writes = mutableListOf<String>()
+        val app = app { request ->
+            if (request.url.encodedPath !in setOf("/api/activitypub/notifications", "/api/activitypub/notifications/read")) awaitCancellation()
+            if (request.method == HttpMethod.Post) {
+                writes += request.body.toByteArray().decodeToString()
+                respond("{}", if (reject) HttpStatusCode.InternalServerError else HttpStatusCode.OK)
+            } else respond("""{"items":[{"id":"one","is_read":false},{"id":"two","is_read":false}],"unread_count":2}""")
+        }
+        val state = ActivityPubNotificationsState(app, subscribe = { {} })
+        state.ensureLoaded(); runCurrent()
+        val first = backgroundScope.async { state.markRead(listOf("one")) }
+        runCurrent(); first.await()
+        assertTrue(state.items[0].flag("is_read"))
+        assertFalse(state.items[1].flag("is_read"))
+        assertEquals(1, state.unreadCount)
+        assertEquals(listOf("""{"ids":["one"]}"""), writes)
+        reject = true
+        val failed = backgroundScope.async { runCatching { state.markRead(listOf("two")) } }
+        runCurrent(); assertTrue(failed.await().isFailure)
+        assertFalse(state.items[1].flag("is_read"))
+        assertEquals(1, state.unreadCount)
+        app.close()
+    }
+
 }

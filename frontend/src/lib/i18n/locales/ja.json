@@ -612,7 +612,6 @@
     "localTimeline": "ローカルタイムライン",
     "edit": "投稿を編集",
     "original": "元の投稿",
-    "attachmentsOnly": "本文のない投稿です。内容は元のチャンネルで確認できます。",
     "openComposer": "投稿を書く",
     "postOptions": "投稿設定",
     "federationOn": "連合あり",

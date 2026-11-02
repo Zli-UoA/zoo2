@@ -103,6 +103,13 @@ export const storybookApiHandlers = [
   http.get("*/api/activitypub/notifications", () =>
     HttpResponse.json({ items: [], unread_count: 0 }),
   ),
+  http.post("*/api/activitypub/notifications/read", () => HttpResponse.json({ ok: true })),
+  http.patch("*/api/notifications/:id/read", () =>
+    HttpResponse.json({ data: { is_read: true }, txid: null }),
+  ),
+  http.post("*/api/notifications/read-all", () =>
+    HttpResponse.json({ data: { updated_count: 0 }, txid: null }),
+  ),
   ws.link("*/api/home/live").addEventListener("connection", () => {}),
   http.get("*/api/activitypub/status", () =>
     HttpResponse.json({

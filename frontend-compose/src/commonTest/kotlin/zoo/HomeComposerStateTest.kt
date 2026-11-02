@@ -37,6 +37,16 @@ class HomeComposerStateTest {
     }
 
     @Test
+    fun channelReplyReplacesFollowersAudienceAndNeverKeepsSavedChannel() {
+        val state = HomeComposerState()
+        state.visibility = "followers"
+        state.channelId = "saved-other-channel"
+        state.reply(obj("id" to "reply", "channel_id" to "parent-channel", "visibility" to "unlisted"))
+        assertEquals("unlisted", state.visibility)
+        assertEquals("", state.channelId)
+    }
+
+    @Test
     fun sendingPreventsCloseAndReplacingTheReply() {
         val state = HomeComposerState()
         state.visibility = "public"

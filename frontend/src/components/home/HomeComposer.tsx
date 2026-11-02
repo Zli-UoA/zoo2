@@ -52,6 +52,7 @@ export interface ReplyTarget {
   visibility?: string;
   apub?: boolean;
   remote?: boolean;
+  channel_id?: string | null;
 }
 export interface HomeComposerHandle {
   reply: (post: ReplyTarget) => void;
@@ -125,7 +126,7 @@ export function HomeComposer({
       await onPost({
         content,
         ...settings,
-        ...(replyTo ? { in_reply_to: replyTo.id } : {}),
+        ...(replyTo ? { in_reply_to: replyTo.id, channel_id: null } : {}),
       });
       saveHomePostSettings(settingsKey, settings);
       setFederatePreference(settings.apub);
@@ -149,7 +150,7 @@ export function HomeComposer({
         const show = () => {
           setReplyTo(post);
           setChannelId("");
-          setVisibility((current) => replyVisibility(current, post.visibility));
+          setVisibility((current) => replyVisibility(current, post.visibility, !!post.channel_id));
           setOpen(true);
         };
         if (!isDesktop) {
@@ -265,6 +266,7 @@ export function HomeComposer({
                           key={value}
                           value={value}
                           disabled={
+                            (!!replyTo?.channel_id && value === "followers") ||
                             (replyTo?.visibility === "followers" && value !== "followers") ||
                             (replyTo?.visibility === "unlisted" && value === "public")
                           }

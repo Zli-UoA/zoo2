@@ -1,15 +1,25 @@
-import { useTranslation } from "react-i18next";
 import { ActivityPubContent, type CustomEmoji } from "./ActivityPubEmoji";
+import { MessageAttachments } from "../chat/messages/MessageAttachments";
+import type { AttachmentMetadata } from "../../lib/attachments";
 
-/** The same MFM, emoji and link rendering in Home and public profiles. */
-export function HomePostContent({ content, emojis }: { content: string; emojis?: CustomEmoji[] }) {
-  const { t } = useTranslation();
+/** Home reuses channel text and attachment rendering, including image previews. */
+export function HomePostContent({
+  content,
+  emojis,
+  attachments = [],
+}: {
+  content: string;
+  emojis?: CustomEmoji[];
+  attachments?: AttachmentMetadata[];
+}) {
   return (
-    <div className="mfm-body mt-2 whitespace-pre-wrap break-words text-sm leading-relaxed [overflow-wrap:anywhere]">
-      <ActivityPubContent
-        text={content.trim() ? content : t("home.attachmentsOnly")}
-        emojis={emojis}
-      />
-    </div>
+    <>
+      {content.trim() ? (
+        <div className="mfm-body mt-2 whitespace-pre-wrap break-words text-sm leading-relaxed [overflow-wrap:anywhere]">
+          <ActivityPubContent text={content} emojis={emojis} />
+        </div>
+      ) : null}
+      <MessageAttachments attachments={attachments} />
+    </>
   );
 }

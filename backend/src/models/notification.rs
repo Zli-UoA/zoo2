@@ -2,7 +2,8 @@ use serde::{Deserialize, Serialize};
 use toasty::Model;
 
 #[derive(Debug, Clone, Model, Serialize, Deserialize)]
-#[table = "notifications"]
+// Storage-free channel projection of the common notification_events inbox.
+#[table = "channel_notifications"]
 pub struct Notification {
     #[key]
     pub id: String,
