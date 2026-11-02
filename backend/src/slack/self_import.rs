@@ -13,7 +13,12 @@ use super::import::{
     JOB_JSON, Mapping, MappingAction, StartRequest, create_run, load_job, lock_export,
     validate_mappings,
 };
-use crate::{apps::query, auth::AuthUser, error::AppError, state::AppState};
+use crate::{
+    apps::query,
+    auth::{AuthUser, rbac::is_workspace_admin},
+    error::AppError,
+    state::AppState,
+};
 
 pub fn router() -> Router<AppState> {
     Router::new()
@@ -61,12 +66,50 @@ async fn latest_export(
     .and_then(|row| row["id"].as_str().map(str::to_string)))
 }
 
+/// `channel_id` に、取り込みで履歴とメンバーを足してよいか。
+/// 取り込みは ZIP のメンバーも `channel_user` に足すので、参加していることに加えて、
+/// 通常のメンバー追加と同じ権限 (`rbac::can_add_member`) を求める。
+async fn can_import_into(
+    tx: &mut toasty::Transaction<'_>,
+    channel_id: &str,
+    user_id: &str,
+    admin: bool,
+    slack_private: bool,
+) -> Result<bool, AppError> {
+    let Some(row) = query(
+        tx,
+        "SELECT json_build_object('creator',c.created_user_id,'private',c.is_private,'dm',c.is_dm,\
+         'joined',EXISTS(SELECT 1 FROM channel_user cu WHERE cu.channel_id=c.id AND cu.user_id=$2))::text \
+         FROM channels c WHERE c.id=$1 AND c.deleted_at IS NULL AND c.archive_at IS NULL",
+        &[channel_id, user_id],
+    )
+    .await?
+    .into_iter()
+    .next() else {
+        return Ok(false);
+    };
+    let private = row["private"] == true;
+    let joined = row["joined"] == true;
+    // 非公開チャンネルの履歴は、公開チャンネルには入れない
+    Ok(joined
+        && (!slack_private || private)
+        && crate::auth::rbac::can_add_member(
+            private,
+            row["creator"].as_str().unwrap_or_default(),
+            user_id,
+            joined,
+            admin,
+            row["dm"] == true,
+        ))
+}
+
 /// 自分が作った Slack チャンネルと、それぞれに選べる既存の取り込み先 (`targets`)
 async fn own_channels(
     tx: &mut toasty::Transaction<'_>,
     export: &Value,
     slack_user: &str,
     user_id: &str,
+    admin: bool,
 ) -> Result<Vec<Value>, AppError> {
     let mut channels = Vec::new();
     for channel in export["analysis"]["channels"]
@@ -77,29 +120,25 @@ async fn own_channels(
         if channel["creator"] != slack_user || channel["deleted_channel"].is_string() {
             continue;
         }
-        let private = channel["is_private"] == true;
-        let targets = if channel["existing_channel"].is_object() {
-            // 以前に取り込んだチャンネルは、その取り込み先にしか入れられない
-            vec![channel["existing_channel"].clone()]
-        } else if let Some(same) = channel["same_name_channel"].as_object() {
-            // 他人のチャンネルに勝手に履歴を足さないよう、自分が参加しているものだけを選べる。
-            // 非公開チャンネルの履歴は、公開チャンネルには入れない。
-            let joined = !query(
+        // 以前に取り込んだチャンネルは、その取り込み先にしか入れられない。
+        // それ以外は、他人のチャンネルに勝手に履歴を足さないよう、同名で自分が参加しているものだけを選べる。
+        // どちらも、現在の参加状況とメンバー追加の権限を確かめる。
+        let candidate = channel["existing_channel"]
+            .as_object()
+            .or_else(|| channel["same_name_channel"].as_object());
+        let mut targets = Vec::new();
+        if let Some(target) = candidate
+            && can_import_into(
                 tx,
-                "SELECT json_build_object('id',channel_id)::text FROM channel_user \
-                 WHERE channel_id=$1 AND user_id=$2",
-                &[same["id"].as_str().unwrap_or_default(), user_id],
+                target["id"].as_str().unwrap_or_default(),
+                user_id,
+                admin,
+                channel["is_private"] == true,
             )
             .await?
-            .is_empty();
-            if joined && (!private || same["is_private"] == true) {
-                vec![Value::Object(same.clone())]
-            } else {
-                Vec::new()
-            }
-        } else {
-            Vec::new()
-        };
+        {
+            targets.push(Value::Object(target.clone()));
+        }
         let mut entry = channel.clone();
         entry["targets"] = Value::Array(targets);
         channels.push(entry);
@@ -116,7 +155,8 @@ async fn list(State(s): State<AppState>, user: AuthUser) -> Result<Json<Value>, 
         && let Some(id) = latest_export(&mut tx, &team).await?
     {
         let job = load_job(&mut tx, &id).await?;
-        channels = own_channels(&mut tx, &job, &slack_user, &user.id).await?;
+        let admin = is_workspace_admin(&mut tx, &user.id, s.config.dev_auth_enabled).await?;
+        channels = own_channels(&mut tx, &job, &slack_user, &user.id, admin).await?;
         export = json!({
             "id": job["id"],
             "file_name": job["file_name"],
@@ -159,7 +199,18 @@ async fn start(
         ));
     };
     let export = lock_export(&mut tx, &id).await?;
-    let channels = own_channels(&mut tx, &export, &slack_user, &user.id).await?;
+    let admin = is_workspace_admin(&mut tx, &user.id, s.config.dev_auth_enabled).await?;
+    let channels = own_channels(&mut tx, &export, &slack_user, &user.id, admin).await?;
+    // 通常のチャンネル作成 (`routes::channels::create_channel`) と同じく、ゲストは作れない
+    let creates = body
+        .mappings
+        .iter()
+        .any(|m| matches!(m.action, MappingAction::Create { .. }));
+    if creates && crate::apps::events::guest(&mut tx, &user.id).await? {
+        return Err(AppError::Forbidden(
+            "Guests cannot create channels by importing from Slack".into(),
+        ));
+    }
     let own: HashMap<&str, &Value> = channels
         .iter()
         .filter_map(|c| Some((c["slack_channel_id"].as_str()?, c)))
@@ -179,7 +230,7 @@ async fn start(
                     .is_some_and(|t| t.iter().any(|t| t["id"] == channel_id.as_str()));
                 if !allowed {
                     return Err(AppError::Forbidden(format!(
-                        "Slack channel {} can only be imported into a channel with the same name that you have joined",
+                        "Slack channel {} can only be imported into a channel with the same name that you have joined and can add members to",
                         mapping.slack_channel_id
                     )));
                 }

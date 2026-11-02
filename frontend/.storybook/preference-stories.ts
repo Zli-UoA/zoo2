@@ -355,6 +355,9 @@ export function preferenceOptions(
       select("#secret の取り込み方", "新しいチャンネル");
       click("button", "2 チャンネルを取り込む");
       wait("progressbar", "", { exact: false, attributes: { "aria-valuenow": "33" } });
+    } else if (name === "Own Import Channels Changed") {
+      // ポーリングで増えたチャンネルにも、選択欄ができる
+      wait("combobox", "#secret の取り込み方", { value: "取り込まない" });
     } else if (name === "Own Import No Channels") {
       wait("button", "連携を解除", { enabled: true });
     }

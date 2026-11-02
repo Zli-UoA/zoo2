@@ -315,6 +315,33 @@ export const OwnImport: Story = {
   }),
 };
 
+let ownPolls = 0;
+export const OwnImportChannelsChanged: Story = {
+  beforeEach: () => {
+    ownPolls = 0;
+  },
+  parameters: {
+    msw: {
+      handlers: [
+        linked,
+        // 取り込み中に管理者が新しい ZIP を保存し、自分が作ったチャンネルが増える
+        http.get("*/api/slack/imports", () =>
+          HttpResponse.json({
+            export: exported,
+            channels: ownPolls++ === 0 ? ownChannels.slice(0, 1) : ownChannels,
+            imports: [run],
+          }),
+        ),
+      ],
+    },
+  },
+  play: playForImplementation(async () => {
+    await expect(
+      await screen.findByRole("combobox", { name: "#secret の取り込み方" }, { timeout: 5_000 }),
+    ).toHaveValue("skip");
+  }),
+};
+
 export const OwnImportNoChannels: Story = {
   parameters: {
     msw: {

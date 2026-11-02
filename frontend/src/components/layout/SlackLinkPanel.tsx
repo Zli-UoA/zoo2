@@ -239,7 +239,8 @@ function OwnImportSection({ client }: { client: ReturnType<typeof createConfigur
       ) : null}
       {data?.export && data.channels.length > 0 ? (
         <MappingForm
-          key={form}
+          // 管理者が新しい ZIP を保存すると、ポーリングでチャンネルの並びが変わる。選択状態は並びごとに作り直す
+          key={`${form}:${data.channels.map((channel) => channel.slack_channel_id).join(",")}`}
           channels={data.channels}
           summary={t("slackLink.importSummary", {
             name: data.export.file_name,

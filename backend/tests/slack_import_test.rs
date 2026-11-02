@@ -1299,5 +1299,54 @@ async fn test_linked_users_import_their_own_channels() -> anyhow::Result<()> {
         own["channels"][1]["existing_channel"]["id"],
         backend::slack::channel_id(&team, "G1")
     );
+    let g1 = backend::slack::channel_id(&team, "G1");
+    assert_eq!(own["channels"][1]["targets"][0]["id"], g1.as_str());
+
+    // 取り込みは ZIP のメンバーも足すので、取り込み先は現在の参加状況とメンバー追加の権限で絞る
+    let targets = || async {
+        let (_, own) = request(&app, "GET", "/api/slack/imports", &alice, None)
+            .await
+            .unwrap();
+        own["channels"][1]["targets"].clone()
+    };
+    let exec = |statement: &'static str| {
+        let db = db.clone();
+        let (alice, admin, g1) = (alice.clone(), admin.clone(), g1.clone());
+        async move {
+            let mut db = db;
+            let mut tx = db.transaction().await.unwrap();
+            toasty::sql::statement(statement)
+                .bind(g1.as_str())
+                .bind(alice.as_str())
+                .bind(admin.as_str())
+                .exec(&mut tx)
+                .await
+                .unwrap();
+            tx.commit().await.unwrap();
+        }
+    };
+    // 非公開チャンネルの一般メンバーは、メンバーを追加できない
+    exec("UPDATE channels SET created_user_id=$3 WHERE id=$1 AND $2<>$3").await;
+    assert_eq!(targets().await, json!([]));
+    let (status, _) =
+        import(json!([{"slack_channel_id":"G1","action":"existing","channel_id":g1}])).await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    // 以前の取り込み先から外されたら、取り込み直して戻ることはできない
+    exec("UPDATE channels SET created_user_id=$2 WHERE id=$1 AND $2<>$3").await;
+    assert_eq!(targets().await[0]["id"], g1.as_str());
+    exec("DELETE FROM channel_user WHERE channel_id=$1 AND user_id=$2 AND $2<>$3").await;
+    assert_eq!(targets().await, json!([]));
+    let (status, _) =
+        import(json!([{"slack_channel_id":"G1","action":"existing","channel_id":g1}])).await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+
+    // ゲストは、通常の API と同じくチャンネルを作れない
+    exec("UPDATE users SET is_guest=true WHERE id=$2 AND $1<>$3").await;
+    let (status, body) = import(
+        json!([{"slack_channel_id":"C1","action":"create","name":format!("guest-{suffix}")}]),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    assert!(body.to_string().contains("Guests"), "{body}");
     Ok(())
 }
