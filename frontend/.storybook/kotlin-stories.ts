@@ -49,6 +49,33 @@ export function kotlinOptions(context: Selection): KotlinPreviewProps | null {
     dark: globals.theme === "dark",
     fixture,
   };
+  if (title === "Pages/PublicProfile") {
+    const checks: Record<string, unknown[]> = {
+      Default: [
+        { action: "wait", text: "Alice / アリス" },
+        { action: "wait", text: "公開の投稿" },
+      ],
+      Empty: [{ action: "wait", text: "公開の投稿はまだありません。" }],
+      Loading: [{ action: "wait", role: "status" }],
+      "Load Error": [
+        { action: "wait", role: "alert" },
+        { action: "click", role: "button", name: "更新", exact: true },
+        { action: "wait", text: "Alice / アリス" },
+      ],
+      "Not Found": [{ action: "wait", text: "プロフィールが見つかりません。" }],
+      "Long Content": [{ action: "wait", text: "公開の投稿" }],
+      Mobile: [{ action: "wait", text: "Alice / アリス" }],
+      Pagination: [{ action: "wait", role: "link", name: "最新の投稿" }],
+    };
+    return {
+      ...base,
+      sample: "public-profile-story",
+      path: `/public/users/alice${typeof args.before === "string" ? `?before=${encodeURIComponent(args.before)}` : ""}`,
+      fullHeight: true,
+      surfaceClassName: "h-[720px] min-w-0 bg-background",
+      fixture: { ...base.fixture, sharedApi: true, args, interactions: checks[name] ?? [] },
+    };
+  }
   for (const adapter of [
     homeOptions,
     primitiveOptions,

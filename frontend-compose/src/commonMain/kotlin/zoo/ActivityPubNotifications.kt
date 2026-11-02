@@ -273,7 +273,7 @@ fun ActivityPubNotifications(
                                 else Text(item.text("reaction"), size = 18.sp, lineHeight = 28.sp)
                             }
                             if (item.text("content").isNotEmpty())
-                                Text(item.text("content"), size = 14.sp, maxLines = 3)
+                                ActivityPubContent(item.text("content"), item.homeRows("content_emojis"), maxLines = 3)
                             FlowRow(
                                 horizontalArrangement = Arrangement.spacedBy(8.dp),
                                 verticalArrangement = Arrangement.spacedBy(8.dp),

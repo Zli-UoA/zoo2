@@ -16,7 +16,7 @@ Reactを機能・UI・操作の基準とする。変更時は [compose-react-par
 | URLカード・メディアプロキシ | `LinkPreviews`, `summaly`, `linkPreviewRequests`, `linkPreviewEndpoints` | `LinkPreviews.kt`, `Chat.kt` | 既存LinkPreviews StoryのKotlin表示、公開HTTPの認証非送信と操作E2E |
 | 絵文字・Emoji Kitchen・リアクション | `ReactionPicker`, `emoji/` | `Kitchen.kt`, `RichText.kt`, `Chat.kt`, `ReactionChip.kt` | ContentTest、ReactionUsersTest、既存ReactionPicker / ReactionUsers StoryのKotlin表示 |
 | 通知のグループ化・遅延取得・追加読み込み・既読 | `NotificationsScreen`, `notifications/` | `Notifications.kt` | 既存Notifications StoryのKotlin表示、通知E2E |
-| Home・連合投稿・ソーシャル操作 | `home/HomeScreen`, `HomeComposer`, `HomeReactionPicker`, `ActivityPubEmoji`, `useHomeLive` | `HomeScreen.kt`, `HomeComposer.kt`, `HomeTimeline.kt`, `HomePostCard.kt`, `HomeActivityPub.kt`, `HomeReactionPicker.kt`, `HomeUserSearch.kt`, `HomeLive.kt` | 既存Home全47 Storyと両実装の操作・画像、Composer状態テスト |
+| Home・連合投稿・ソーシャル操作 | `home/HomeScreen`, `HomeComposer`, `HomeReactionPicker`, `ActivityPubEmoji`, `useHomeLive` | `HomeScreen.kt`, `HomeComposer.kt`, `HomeTimeline.kt`, `HomePostCard.kt`, `HomeActivityPub.kt`, `HomeReactionPicker.kt`, `HomeUserSearch.kt`, `HomeLive.kt` | Homeの既存・追加Storyと両実装の操作・画像、Composer状態・設定保存テスト |
 | 連合通知・フォロー承認・チャンネル共有設定 | `ActivityPubNotifications`, `ZooSettings` | `ActivityPubNotifications.kt`, `ChannelTimelineSettings.kt` | 既存通知・設定Story、状態/API契約テスト |
 | Slack取り込み (#295) | `SlackImportPanel`, `lib/api/slackImport` | `SlackImport.kt`, `Settings.kt`（管理者だけの「Slack 取り込み」タブ） | SlackImportTest、既存SlackImport全11 StoryのKotlin表示・操作。ZIPのアップロードは既存の `pickFiles` / `filePut` を使うため、React版と違って進み具合（%）は出さず、アップロード中の状態だけを表示する |
 | Slackアカウント連携 (#291) | `SlackLinkPanel`, `lib/api/slackLink` | `SlackLink.kt`, `Settings.kt`（全員に出る「Slack 連携」タブ） | SlackLinkTest、既存SlackLink全10 StoryのKotlin表示・操作。Slack からの戻り（`?code=&state=`）は同じく設定画面で受け、ログイン中のユーザーとして完了する |
@@ -27,6 +27,16 @@ Reactを機能・UI・操作の基準とする。変更時は [compose-react-par
 | 翻訳・デザイントークン・アイコン・データ | `lib/i18n`, CSS、Lucide、Emojibase | `Ui.kt`, `IconData.kt`、共有翻訳・生成資源 | 全ロケールの共通辞書、`sync-compose-assets.mjs`、カタログツールバー |
 
 ## main取り込み時の照合
+
+- `7b0418c` まで取り込み、追加されたAndroid対応を維持しました。今回のHome変更では、Reactの `ActivityPubContent` とKotlinの同名部品から、それぞれチャンネル共通のMFM描画へ接続しています。投稿本文・単独投稿・プロフィール・返信プレビュー・通知本文が対象です。リモート絵文字は既存プロキシを使い、コード内のショートコードは文字列のまま表示します。
+- 投稿成功時の公開範囲・連合・同期先と、選択したTLタブの保存をKotlinにも実装しました。アカウント・接続先ごとにキーを分け、既存Platformの保存境界を使います。両実装間で保存データを共有する仕様ではありません。
+- 追加したHome／通知のStoryで、PC・390pxのMFM表示と、設定保存・再表示・返信制約・チャンネル無効化・アカウント分離・保存先未解決時の投稿を検証します。HTMLだけで届く連合本文は従来どおりテキストへ変換し、明示的なMisskey MFMの元本文がある場合に装飾を保持します。全MFM構文の互換性や画素単位の一致は保証していません。
+
+- `6514c43` のTUIリリースと `d326387` の開発シェル更新を取り込みました。Runnerテストの競合はTUIのリリース対象とAndroidのHosted登録を両方維持して解消し、28件成功しています。更新情報生成テストも2件成功しています。React／Composeの画面・API変更はありません。
+
+- `794f891` のRunner選択変更を取り込み、Androidのビルド・配布ジョブのHosted登録を維持しました。このコミットにReact／Composeの画面・API変更はありません。Runner構成テスト28件とAndroid更新情報生成テスト2件で確認しています。
+
+- `9dbc553` のSafariキーボード検出修正を取り込みました。Reactの `AppShell` とComposeの `ComposeFrontend` は同じ `useVisualViewport` を使うため、両方に反映されます。キーボード表示・復帰、innerHeightも縮む場合、バウンス時の回帰テストをデスクトップ／モバイルで実行し、6件成功しています。
 
 - 遅延URLカードの拡大後、Reactは初回の未読位置を判定した後、仮想リストの高さをDOMへ反映してから末尾追従を補正する。上へスクロールした状態や編集中は追従を強制しない。Kotlinは既存の `Chat.kt` の測定サイズ監視と `pinned` 判定で同じ挙動を保ち、両実装を `compose.spec.ts` の遅延URLカード検証で確認する。
 
@@ -76,3 +86,15 @@ UIの精度は「極端に違わなければ問題ない」という指定に従
 - その他のバケットの失敗内容は未確認。全380状態の登録検査の成功は、全状態の描画・操作成功を保証しない。
 
 これらは未解決として残し、対象機能を変更する際に該当Storyに絞って再現・修正する。
+
+## Android での共通実装
+
+Android 版は `ZooApp`・`Session`・`Repository` と既存の画面／状態／API を commonMain から直接使用します。React／Compose Web の画面・API・Story の契約は変更しません。プラットフォーム接続と Android 固有の未対応事項は [Android 版](android.md) に記載します。Android の追加だけを理由に Web の既存 Story を複製しません。
+
+## 未ログインの公開プロフィール
+
+`/public/users/<user-id>` をReact・Compose両方に実装。プロフィールの名前・自己紹介はそれぞれのメイン画面と同じ `ActivityPubProfileDetails` を使い、投稿本文はReactの `HomePostContent`（内部は既存ActivityPubContent/MfmContent）とComposeの既存ActivityPubContentを使う。ボタン・入力欄・アバター・テーマ・翻訳も共通部品を使用する。独自のRust HTML/CSS描画は廃止。
+
+ブラウザでActor URLを開くと公開ルートへ移動し、連携クライアント向けのJSONは維持する。公開APIの20件ページ送り、空・読込・404・失敗・再試行・長文・スマホのStoryを追加。Composeの公開SessionはShape同期・個人用キャッシュ・通知/設定/在席APIを開始しない。公開HTTPはReactのcredentials omitとComposeの匿名ブリッジを使い、認証済み画面へ移動すると公開Runtimeを解放して通常のAuthGateを開始する。
+
+検証済み: フロントの型/lint/formatとビルド、Storybook監査・Kotlin登録検査・ビルド、公開画面のReact Story 8件、共有部分の既存Home Story 6件、公開APIの結合テスト2件、KotlinのRepository/PublicProfile契約テスト8件、Wasm配布用ビルド。公開画面の実ブラウザE2EはReact/Compose各4件で、1280px・390px、匿名のHTTP要求、ページ送り、失敗後の再試行、長文と明暗テーマを確認した。Kotlinの公開プロフィールと既存プロフィールの選択したStoryも実際のCanvasで確認した。

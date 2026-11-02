@@ -1,0 +1,20 @@
+# CD TUI Release が @...@ を埋めて、リリースに PKGBUILD として添付する。
+pkgname=zoo2-tui-bin
+pkgver=@VERSION@
+pkgrel=1
+pkgdesc='zoo2 をターミナルから使うチャットクライアント'
+arch=('x86_64' 'aarch64')
+url='https://github.com/Zli-UoA/zoo2/tree/main/tui'
+license=('MIT')
+provides=('zoo2-tui')
+conflicts=('zoo2-tui')
+source_x86_64=("zoo2-tui-x86_64-linux-$pkgver.tar.gz::https://github.com/Zli-UoA/zoo2/releases/download/tui-v$pkgver/zoo2-tui-x86_64-linux.tar.gz")
+source_aarch64=("zoo2-tui-aarch64-linux-$pkgver.tar.gz::https://github.com/Zli-UoA/zoo2/releases/download/tui-v$pkgver/zoo2-tui-aarch64-linux.tar.gz")
+sha256sums_x86_64=('@SHA256_X86_64@')
+sha256sums_aarch64=('@SHA256_AARCH64@')
+
+package() {
+  install -Dm755 zoo2-tui "$pkgdir/usr/bin/zoo2-tui"
+  install -Dm644 README.md "$pkgdir/usr/share/doc/zoo2-tui/README.md"
+  install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+}

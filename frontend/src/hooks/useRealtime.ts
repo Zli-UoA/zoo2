@@ -118,6 +118,8 @@ export interface MyChannelMemberships {
   joinedChannelIds: ReadonlySet<string>;
   /** 現在ユーザーが解決できているか。false なら参加状態を表示しない。 */
   hasCurrentUser: boolean;
+  /** チャンネル参加状態の初回読み込み中。 */
+  isLoading: boolean;
 }
 
 /**
@@ -141,7 +143,12 @@ export function useMyChannelMemberships(): MyChannelMemberships {
     () => new Set(memberships.map((row) => row.channel_id)),
     [memberships],
   );
-  return { memberships, joinedChannelIds, hasCurrentUser: currentUserId !== null };
+  return {
+    memberships,
+    joinedChannelIds,
+    hasCurrentUser: currentUserId !== null,
+    isLoading: membershipsQuery.isLoading,
+  };
 }
 
 export interface ChannelAccess {

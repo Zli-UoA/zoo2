@@ -337,10 +337,14 @@ private fun startCatalog() {
                         fixturePublic(json.parseToJsonElement(payload).jsonObject.text("url"))
                             .awaitBrowser<JsString>()
                             .toString()
-                    "storageRead" -> storage[payload].orEmpty()
+                    "storageRead" -> if (payload.startsWith("zoo-home-")) {
+                        json.parseToJsonElement(storyCallback(obj("name" to "homeStorageRead", "args" to JsonArray(listOf(JsonPrimitive(payload)))).toString()).awaitBrowser<JsString>().toString()).jsonPrimitive.content
+                    } else storage[payload].orEmpty()
                     "storageWrite" -> {
                         val row = json.parseToJsonElement(payload).jsonObject
-                        storage[row.text("key")] = row.text("value")
+                        if (row.text("key").startsWith("zoo-home-")) {
+                            storyCallback(obj("name" to "homeStorageWrite", "args" to JsonArray(listOf(row))).toString()).awaitBrowser<JsString>()
+                        } else storage[row.text("key")] = row.text("value")
                         ""
                     }
                     else -> "{}"

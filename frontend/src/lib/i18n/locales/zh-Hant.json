@@ -771,5 +771,18 @@
     "importNoChannels": "已保存的匯出中沒有你建立的頻道。",
     "importSummary_one": "{{name}} 中有 {{count}} 個你建立的頻道。請選擇要匯入的頻道。",
     "importSummary_other": "{{name}} 中有 {{count}} 個你建立的頻道。請選擇要匯入的頻道。"
+  },
+  "publicProfile": {
+    "followTitle": "從你的伺服器追蹤",
+    "followDescription": "在 Mastodon、Misskey 或其他 ActivityPub 應用程式搜尋此帳號，然後送出追蹤請求。",
+    "accountAddress": "帳號地址",
+    "approvalRequired": "追蹤請求需要核准。",
+    "openInZoo": "在 Zoo 開啟個人檔案",
+    "posts": "公開貼文",
+    "empty": "尚無公開貼文。",
+    "pagination": "公開貼文分頁",
+    "latest": "最新貼文",
+    "older": "較早的貼文",
+    "notFound": "找不到此個人檔案。"
   }
 }

@@ -272,6 +272,9 @@ private fun InlineParagraph(
             }
             .toMap()
     val mentions = mutableMapOf<String, String>()
+    val remoteEmojis = LocalActivityPubEmojis.current
+    val failedEmojis = remember(remoteEmojis) { mutableStateMapOf<String, Boolean>() }
+    val emojiParts = mutableMapOf<String, Row>()
     val text = buildAnnotatedString {
         fun write(
             source: String,
@@ -280,8 +283,16 @@ private fun InlineParagraph(
         ) {
             parseInline(source).forEach { token ->
                 var value = token.value
-                if (token.kind == "emoji")
+                if (token.kind == "emoji") {
+                    val remote = remoteEmojis.find { it.text("name") == value }
+                    if (remote != null && Regex("^[a-f0-9]{64}$").matches(remote.text("image_id")) && failedEmojis[remote.text("image_id")] != true) {
+                        val id = "apub-emoji-${emojiParts.size}"
+                        emojiParts[id] = remote
+                        appendInlineContent(id, value)
+                        return@forEach
+                    }
                     value = (shortcodes[value.trim(':')] as? JsonPrimitive)?.contentOrNull ?: value
+                }
                 val user = users.find { it.text("user_name") == value.removePrefix("@") }
 
                 val inlineWeight = if (token.kind == "bold") FontWeight.Bold else inheritedWeight
@@ -431,6 +442,11 @@ private fun InlineParagraph(
             overflow = TextOverflow.Ellipsis,
             inlineContent =
                 content +
+                    emojiParts.mapValues { (_, emoji) ->
+                        androidx.compose.foundation.text.InlineTextContent(Placeholder(1.5.em, 1.5.em, PlaceholderVerticalAlign.TextCenter)) {
+                            ActivityPubEmoji(emoji, with(density) { 21.sp.toDp() }, onFailure = { failedEmojis[emoji.text("image_id")] = true })
+                        }
+                    } +
                     mentionContent +
                     if (editedAt != null)
                         mapOf(

@@ -771,5 +771,18 @@
     "importNoChannels": "保存咗嘅匯出入面冇你開嘅頻道。",
     "importSummary_one": "{{name}} 入面有 {{count}} 個你開嘅頻道。請揀要匯入嘅頻道。",
     "importSummary_other": "{{name}} 入面有 {{count}} 個你開嘅頻道。請揀要匯入嘅頻道。"
+  },
+  "publicProfile": {
+    "followTitle": "由你嘅伺服器追蹤",
+    "followDescription": "喺 Mastodon、Misskey 或其他 ActivityPub 應用程式搜尋呢個帳戶，再傳送追蹤請求。",
+    "accountAddress": "帳戶地址",
+    "approvalRequired": "追蹤請求需要批准。",
+    "openInZoo": "喺 Zoo 開啟個人檔案",
+    "posts": "公開帖文",
+    "empty": "未有公開帖文。",
+    "pagination": "公開帖文分頁",
+    "latest": "最新帖文",
+    "older": "較早嘅帖文",
+    "notFound": "搵唔到呢個個人檔案。"
   }
 }

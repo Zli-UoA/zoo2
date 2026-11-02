@@ -6,13 +6,15 @@ variable "cloudflare_api_token" {
 
 variable "cloudflare_account_id" {
   type        = string
-  description = "Cloudflare Account ID"
+  description = "Cloudflare Account ID (Zli)"
+  default     = "c9918f2caa050736a07867e6f968c0a2"
 }
 
+# API は大文字で返すので、小文字にすると差分になり、バケットの再作成（全オブジェクトの削除）が計画されます。
 variable "r2_location" {
   type        = string
   description = "R2 Bucket Location Hint (APAC, WNAM, ENAM, WEUR, EEUR)"
-  default     = "apac"
+  default     = "APAC"
 }
 
 variable "prod_bucket_name" {
@@ -29,15 +31,18 @@ variable "stg_bucket_name" {
 
 variable "prod_cors_origins" {
   type        = list(string)
-  description = "Allowed origins for production R2 bucket CORS"
-  default     = ["https://zoo.example.com"]
+  description = "Allowed origins for production R2 bucket CORS (public host of zoo2)"
+  default     = ["https://zli.chat"]
 }
 
 variable "stg_cors_origins" {
   type        = list(string)
-  description = "Allowed origins for staging / preview R2 bucket CORS (e.g. https://stg.zoo.example.com, or specific preview domains like https://zoo2-pr-<id>.<APP_DOMAIN> via tfvars)"
-  default = [
-    "https://stg.zoo.example.com",
-    "https://*.preview.zoo.example.com"
-  ]
+  description = "Allowed origins for staging / preview R2 bucket CORS (preview environments are https://zoo2-pr-<PR number>.zli.chat)"
+  default     = ["https://zoo2-pr-*.zli.chat"]
+}
+
+variable "state_passphrase" {
+  type        = string
+  description = "Passphrase for OpenTofu state and plan encryption (decrypt state-passphrase.sops.yaml with sops)"
+  sensitive   = true
 }

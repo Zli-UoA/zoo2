@@ -771,5 +771,18 @@
     "importNoChannels": "The saved export has no channels that you created.",
     "importSummary_one": "{{name}} has {{count}} channel that you created. Choose the channels to import.",
     "importSummary_other": "{{name}} has {{count}} channels that you created. Choose the channels to import."
+  },
+  "publicProfile": {
+    "followTitle": "Follow from your server",
+    "followDescription": "Search for this account in Mastodon, Misskey, or another ActivityPub app, then send a follow request.",
+    "accountAddress": "Account address",
+    "approvalRequired": "Follow requests require approval.",
+    "openInZoo": "Open profile in Zoo",
+    "posts": "Public posts",
+    "empty": "No public posts yet.",
+    "pagination": "Public posts pagination",
+    "latest": "Latest posts",
+    "older": "Older posts",
+    "notFound": "This profile could not be found."
   }
 }

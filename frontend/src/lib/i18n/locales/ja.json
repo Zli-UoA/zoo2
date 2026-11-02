@@ -771,5 +771,18 @@
     "importNoChannels": "保存されているエクスポートに、あなたが作ったチャンネルはありません。",
     "importSummary_one": "{{name}} に、あなたが作ったチャンネルが {{count}} 件あります。取り込むチャンネルを選んでください。",
     "importSummary_other": "{{name}} に、あなたが作ったチャンネルが {{count}} 件あります。取り込むチャンネルを選んでください。"
+  },
+  "publicProfile": {
+    "followTitle": "外部サーバーからフォロー",
+    "followDescription": "MastodonやMisskeyなどのActivityPubアプリで、このアカウントを検索してフォロー申請を送れます。",
+    "accountAddress": "アカウントのアドレス",
+    "approvalRequired": "フォローには本人の承認が必要です。",
+    "openInZoo": "Zooでプロフィールを開く",
+    "posts": "公開の投稿",
+    "empty": "公開の投稿はまだありません。",
+    "pagination": "公開投稿のページ切り替え",
+    "latest": "最新の投稿",
+    "older": "過去の投稿",
+    "notFound": "プロフィールが見つかりません。"
   }
 }

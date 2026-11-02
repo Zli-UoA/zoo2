@@ -3,8 +3,8 @@ use crate::auth::AuthUser;
 use axum::{
     Json, Router,
     extract::{DefaultBodyLimit, Path, Query, State},
-    http::{StatusCode, header},
-    response::{IntoResponse, Response},
+    http::{HeaderMap, StatusCode, header},
+    response::{IntoResponse, Redirect, Response},
     routing::{get, post},
 };
 use serde::Deserialize;
@@ -33,6 +33,10 @@ pub fn router() -> Router<AppState> {
         .merge(reposts::router())
         .route("/.well-known/webfinger", get(webfinger))
         .route("/api/activitypub/users/{id}", get(actor))
+        .route(
+            "/api/activitypub/users/{id}/profile",
+            get(public_profile::read),
+        )
         .route("/api/activitypub/users/{id}/outbox", get(outbox))
         .route("/api/activitypub/users/{id}/followers", get(followers))
         .route("/api/activitypub/users/{id}/following", get(following))
@@ -57,15 +61,42 @@ pub(super) async fn local_user(state: &AppState, id: &str) -> Result<Value, AppE
 async fn actor(
     State(state): State<AppState>,
     Path(id): Path<String>,
+    headers: HeaderMap,
+    Query(page): Query<Page>,
 ) -> Result<Response, AppError> {
-    base_url()?;
+    let base = base_url()?;
     let user = local_user(&state, &id).await?;
+    if public_profile::prefers_html(&headers) {
+        let mut url = public_profile::page_url(&base, &id);
+        if let Some(before) = page.before.as_deref() {
+            url.push_str(&format!(
+                "?before={}",
+                percent_encoding::utf8_percent_encode(before, percent_encoding::NON_ALPHANUMERIC)
+            ));
+        }
+        return Ok((
+            [
+                (header::VARY, "Accept"),
+                (header::CACHE_CONTROL, "no-cache"),
+            ],
+            Redirect::temporary(&url),
+        )
+            .into_response());
+    }
     let key = keys(&state, &id).await?;
     let actor = actor_id(&id)?;
-    Ok(response(actor_value(&user, &key, &actor)))
+    let mut result = response(actor_value(&user, &key, &actor));
+    result
+        .headers_mut()
+        .insert(header::VARY, "Accept".parse().unwrap());
+    Ok(result)
 }
 pub(super) fn actor_value(user: &Value, key: &Value, actor: &str) -> Value {
-    json!({"@context":[CONTEXT,"https://w3id.org/security/v1",{"manuallyApprovesFollowers":"as:manuallyApprovesFollowers"}],"type":"Person","id":actor,"preferredUsername":user["user_name"],"name":user["display_name"],"summary":html_escape::encode_safe(user["summary"].as_str().unwrap_or("")).replace('\n', "<br>"),"inbox":format!("{actor}/inbox"),"outbox":format!("{actor}/outbox"),"followers":format!("{actor}/followers"),"following":format!("{actor}/following"),"manuallyApprovesFollowers":true,"publicKey":{"id":format!("{actor}#main-key"),"owner":actor,"publicKeyPem":key["public_key"]}})
+    let profile_url = actor
+        .rsplit_once("/api/activitypub/users/")
+        .map(|(base, id)| public_profile::page_url(base, id))
+        .unwrap_or_else(|| actor.to_owned());
+    json!({"@context":[CONTEXT,"https://w3id.org/security/v1",{"manuallyApprovesFollowers":"as:manuallyApprovesFollowers"}],"type":"Person","id":actor,"url":profile_url,"preferredUsername":user["user_name"],"name":user["display_name"],"summary":html_escape::encode_safe(user["summary"].as_str().unwrap_or("")).replace('\n', "<br>"),"inbox":format!("{actor}/inbox"),"outbox":format!("{actor}/outbox"),"followers":format!("{actor}/followers"),"following":format!("{actor}/following"),"manuallyApprovesFollowers":true,"publicKey":{"id":format!("{actor}#main-key"),"owner":actor,"publicKeyPem":key["public_key"]}})
 }
 
 async fn webfinger(
@@ -90,7 +121,7 @@ async fn webfinger(
         &[account.0],
     )
     .await?;
-    Ok(([(header::CONTENT_TYPE,"application/jrd+json")],Json(json!({"subject":q.resource,"links":[{"rel":"self","type":CONTENT_TYPE,"href":actor_id(string(&u,"id")?)?}]}))).into_response())
+    Ok(([(header::CONTENT_TYPE,"application/jrd+json")],Json(json!({"subject":q.resource,"links":[{"rel":"self","type":CONTENT_TYPE,"href":actor_id(string(&u,"id")?)?},{"rel":"http://webfinger.net/rel/profile-page","type":"text/html","href":public_profile::page_url(&base,string(&u,"id")?)}]}))).into_response())
 }
 async fn note(State(state): State<AppState>, Path(id): Path<String>) -> Result<Response, AppError> {
     base_url()?;

@@ -12,6 +12,7 @@ class HomeTimeline(
     private val postId: String? = null,
     private val actorId: String? = null,
 ) {
+    private val settingsKey = homePreferenceKey(app, "zoo-home-timeline:v1:")
     var timeline by mutableStateOf("home")
         private set
 
@@ -37,9 +38,17 @@ class HomeTimeline(
     private var windowSize = 50
     private var tail: Row? = null
 
+    private var selectionChanged = false
+    suspend fun restoreSelection() {
+        val saved = readHomePreference(app, settingsKey)
+        if (!selectionChanged) timeline = saved.takeIf { it in listOf("home", "local", "social") } ?: "home"
+    }
+
     fun select(value: String) {
         if (timeline == value) return
         timeline = value
+        selectionChanged = true
+        scope.launch { writeHomePreference(app, settingsKey, value) }
         deferred = false
         generation++
         refreshJob?.cancel()

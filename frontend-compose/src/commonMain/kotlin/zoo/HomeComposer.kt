@@ -23,8 +23,9 @@ import kotlinx.serialization.json.*
 
 /** One draft survives closing the composer and switching between a post and a reply. */
 @Stable
-class HomeComposerState {
+class HomeComposerState(internal val settingsKey: String? = null) {
     internal var focusOnOpen: (() -> Unit)? = null
+    internal var preferencesReady by mutableStateOf(settingsKey == null)
 
     var opened by mutableStateOf(false)
         internal set
@@ -51,7 +52,7 @@ class HomeComposerState {
         internal set
 
     fun open() {
-        if (!sending) {
+        if (!sending && preferencesReady) {
             opened = true
             focusOnOpen?.invoke()
         }
@@ -62,17 +63,28 @@ class HomeComposerState {
     }
 
     fun reply(post: Row) {
-        if (sending) return
+        if (sending || !preferencesReady) return
         replyTarget = post
         channelId = ""
-        visibility =
-            post.text("visibility").takeIf { it in listOf("public", "followers") } ?: "unlisted"
+        visibility = homeReplyVisibility(visibility, post.text("visibility"))
         opened = true
         focusOnOpen?.invoke()
     }
 }
 
-@Composable fun rememberHomeComposerState(): HomeComposerState = remember { HomeComposerState() }
+@Composable fun rememberHomeComposerState(): HomeComposerState {
+    val app = LocalApp.current
+    val key = homePreferenceKey(app, "zoo-home-post-settings:v1:")
+    val state = remember(app, key) { HomeComposerState(key) }
+    LaunchedEffect(state) {
+        val saved = parseHomePostSettings(readHomePreference(app, key))
+        state.visibility = saved.text("visibility")
+        state.federationPreference = saved.flag("apub")
+        state.channelId = saved.text("channel_id")
+        state.preferencesReady = true
+    }
+    return state
+}
 
 internal fun homePostLength(content: String): Int {
     var count = 0
@@ -110,6 +122,7 @@ fun HomeComposer(
                 !it.present("archive_at") &&
                 it.text("id") in joined
         }
+    val selectedChannel = state.channelId.takeIf { id -> state.visibility != "followers" && available.any { it.text("id") == id } }.orEmpty()
     val reply = state.replyTarget
     val federated =
         federationEnabled &&
@@ -131,10 +144,10 @@ fun HomeComposer(
             .then(
                 webControlModifier(
                     "button",
-                    attributes = mapOf("aria-label" to app.t("home.openComposer")),
+                    attributes = mapOf("aria-label" to app.t("home.openComposer"), "aria-disabled" to (!state.preferencesReady).toString()),
                 )
             )
-            .clickable(role = Role.Button) { state.open() }
+            .clickable(enabled = state.preferencesReady, role = Role.Button) { state.open() }
             .semantics { contentDescription = app.t("home.openComposer") },
         contentAlignment = Alignment.Center,
     ) {
@@ -266,7 +279,7 @@ fun HomeComposer(
                                 put("visibility", state.visibility)
                                 put(
                                     "channel_id",
-                                    state.channelId.takeIf { it.isNotBlank() }?.let(::JsonPrimitive)
+                                    selectedChannel.takeIf { it.isNotBlank() }?.let(::JsonPrimitive)
                                         ?: JsonNull,
                                 )
                                 state.replyTarget?.let { put("in_reply_to", it.text("id")) }
@@ -274,6 +287,9 @@ fun HomeComposer(
                             scope.launch {
                                 try {
                                     latestPost(payload)
+                                    writeHomePreference(app, state.settingsKey, obj("visibility" to state.visibility, "apub" to federated, "channel_id" to selectedChannel.takeIf { it.isNotBlank() }).toString())
+                                    state.federationPreference = federated
+                                    state.channelId = selectedChannel
                                     state.replyTarget = null
                                     state.content = ""
                                     state.opened = false
@@ -329,7 +345,7 @@ fun HomeComposer(
                                             fontWeight = FontWeight.Medium
                                         ),
                                 )
-                                ActivityPubText(
+                                ActivityPubContent(
                                     reply.text("content"),
                                     emojis =
                                         (reply["emojis"] as? JsonArray)
