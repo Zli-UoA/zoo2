@@ -398,7 +398,7 @@ export function MessageRow({
                                     "border-brand/40 bg-brand-muted text-brand-muted-foreground",
                                 )}
                                 aria-pressed={!!reaction.ownId}
-                                aria-disabled={!canReact}
+                                aria-disabled={!canReact || reaction.emoji.startsWith("apub:")}
                                 aria-label={
                                   reaction.ownId
                                     ? t("reactions.chipMine", {
@@ -411,7 +411,8 @@ export function MessageRow({
                                       })
                                 }
                                 onClick={() => {
-                                  if (canReact) onReaction(reaction.emoji);
+                                  if (canReact && !reaction.emoji.startsWith("apub:"))
+                                    onReaction(reaction.emoji);
                                 }}
                               />
                             }

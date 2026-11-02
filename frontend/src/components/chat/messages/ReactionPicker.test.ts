@@ -7,6 +7,23 @@ import { LocaleProvider } from "../../i18n/LocaleProvider";
 import { RECENT_EMOJIS_STORAGE_KEY } from "../../../lib/emoji/recents";
 import { ReactionPicker } from "./ReactionPicker";
 
+vi.mock("../../../lib/emoji/workspace", () => ({
+  useWorkspaceEmojis: () => ({
+    emojis: [
+      {
+        name: "zoo_wave",
+        url: "/api/emoji-images/fixture",
+        category: "Greetings",
+        aliases: ["挨拶"],
+      },
+    ],
+    loading: false,
+    failed: false,
+    retry: () => {},
+    imageUrl: (url: string) => url,
+  }),
+}));
+
 vi.mock("frimousse", async () => {
   const { createElement: element } = await import("react");
   function Root({
@@ -124,9 +141,28 @@ afterEach(async () => {
 });
 
 describe("ReactionPicker", () => {
-  it("shows both tabs and selects an emoji while recording it as recent", async () => {
+  it("searches custom emoji by alias and selects the canonical name", async () => {
+    await click(buttonWithText("カスタム絵文字"));
+    const input = document.querySelector<HTMLInputElement>('input[aria-label="絵文字を検索"]')!;
+    await flush(() => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(
+        input,
+        "挨拶",
+      );
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    expect(document.body.textContent).toContain("Greetings");
+    await click(document.querySelector('button[aria-label=":zoo_wave:"]')!);
+    expect(selected).toEqual([":zoo_wave:"]);
+    expect(openChanges).toEqual([false]);
+  });
+  it("shows all tabs and selects an emoji while recording it as recent", async () => {
     const tabs = Array.from(document.querySelectorAll('[role="tab"]'));
-    expect(tabs.map((tab) => tab.textContent)).toEqual(["絵文字", "Emoji Kitchen"]);
+    expect(tabs.map((tab) => tab.textContent)).toEqual([
+      "絵文字",
+      "Emoji Kitchen",
+      "カスタム絵文字",
+    ]);
 
     await click(document.querySelector('[data-testid="mock-emoji"]')!);
 

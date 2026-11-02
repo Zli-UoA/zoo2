@@ -40,11 +40,12 @@ fun searchUrl(engine: String, query: String): String {
 @Composable
 fun ZooSettings(app: Session, users: List<Row>) {
     val tab =
-        app.query["tab"].takeIf { it in listOf("apps", "members", "activitypub") } ?: "general"
+        app.query["tab"].takeIf { it in listOf("apps", "members", "activitypub", "emojis") } ?: "general"
     val tabs =
         listOf(
             "general" to "settings.general",
             "activitypub" to "ActivityPub",
+            "emojis" to "home.customEmojis",
             "apps" to "apps.title",
             "members" to "members.title",
         )
@@ -83,7 +84,7 @@ fun ZooSettings(app: Session, users: List<Row>) {
                 Modifier.weight(1f).verticalScroll(rememberScrollState()).padding(contentPadding),
                 verticalArrangement = Arrangement.spacedBy(16.dp),
             ) {
-                Row(
+                FlowRow(
                     Modifier.fillMaxWidth()
                         .then(webControlModifier("tablist"))
                         .onPreviewKeyEvent { event ->
@@ -139,6 +140,7 @@ fun ZooSettings(app: Session, users: List<Row>) {
                     }
                 }
                 when (tab) {
+                    "emojis" -> CustomEmojiSettings(app)
                     "apps" -> Apps(app, embedded = true)
                     "members" -> WorkspaceMembers(app, users)
                     "activitypub" -> ActivityPubSettingsTab(app)

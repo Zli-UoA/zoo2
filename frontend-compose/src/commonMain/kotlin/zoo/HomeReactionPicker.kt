@@ -8,6 +8,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.*
 import io.ktor.http.encodeURLParameter
 import kotlinx.coroutines.CancellationException
+import kotlinx.serialization.json.jsonPrimitive
 
 @Composable
 fun HomeReactionPicker(app: Session, post: Row, close: () -> Unit, select: (Row) -> Unit) {
@@ -84,7 +85,7 @@ fun HomeReactionPicker(app: Session, post: Row, close: () -> Unit, select: (Row)
                 Text(app.t("home.controlsError"), Modifier.then(webControlModifier("alert")))
                 Button(app.t("home.refresh")) { retry++ }
             }
-            val filtered = emojis.filter { it.text("name").contains(query, ignoreCase = true) }
+            val filtered = emojis.filter { (listOf(it.text("name"), it.text("category")) + it.array("aliases").map { alias -> alias.jsonPrimitive.content }).any { text -> text.contains(query, ignoreCase = true) } }
             if (!loading && !failed && filtered.isEmpty()) Text(app.t("home.noEmojis"))
             FlowRow(
                 Modifier.fillMaxWidth()
@@ -92,9 +93,11 @@ fun HomeReactionPicker(app: Session, post: Row, close: () -> Unit, select: (Row)
                     .verticalScroll(rememberScrollState()),
                 horizontalArrangement = Arrangement.spacedBy(4.dp),
             ) {
-                filtered.take(200).forEach { emoji ->
+                filtered.take(200).groupBy { it.text("category") }.forEach { (category, items) ->
+                    Text(category.ifEmpty { app.t("customEmoji.uncategorized") }, Modifier.fillMaxWidth(), small = true)
+                    items.forEach { emoji ->
                     Box(
-                        Modifier.size(40.dp)
+                        Modifier.height(40.dp).widthIn(min = 40.dp, max = 224.dp)
                             .then(
                                 webControlModifier(
                                     "button",
@@ -113,6 +116,7 @@ fun HomeReactionPicker(app: Session, post: Row, close: () -> Unit, select: (Row)
                         contentAlignment = Alignment.Center,
                     ) {
                         ActivityPubEmoji(emoji, 28.dp)
+                    }
                     }
                 }
             }

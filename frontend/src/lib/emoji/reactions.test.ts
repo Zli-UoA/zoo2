@@ -34,3 +34,21 @@ describe("reaction groups", () => {
     expect(groupReactions([row], null).get("m1")?.[0].ownId).toBeNull();
   });
 });
+
+it("combines channel and federated people while retaining external account labels", () => {
+  const remote = {
+    ...row,
+    id: "remote-like",
+    user_id: "https://peer.example/users/alice",
+    emoji: "👍",
+    display_name: "Alice",
+    user_name: "alice@peer.example",
+  };
+  const groups = groupReactions([{ ...row, emoji: "👍" }, remote], "u1").get("m1")!;
+  expect(groups).toHaveLength(1);
+  expect(groups[0]).toMatchObject({
+    count: 2,
+    ownId: "r1",
+    userNames: { [remote.user_id]: "Alice (@alice@peer.example)" },
+  });
+});

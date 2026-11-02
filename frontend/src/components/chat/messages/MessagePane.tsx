@@ -141,7 +141,7 @@ export function MessagePane({
     const groups = groupReactions(reactionRows, currentUserId);
     for (const reactions of groups.values()) {
       for (const reaction of reactions) {
-        reaction.userNames = names;
+        reaction.userNames = { ...reaction.userNames, ...names };
         reaction.usersLoading = usersQuery.isLoading;
       }
     }
@@ -482,13 +482,14 @@ export function MessagePane({
     <section className="relative flex h-full min-h-0">
       <div className="flex min-w-0 flex-1 flex-col">
         {reactionsQuery.isError ||
+        reactionsQuery.federatedError ||
         messagesQuery.isError ||
         messagesQuery.persistedStatus === "error" ? (
           <div
             role="status"
             className="flex flex-wrap items-baseline gap-x-3 gap-y-1 border-b px-4 py-2"
           >
-            {reactionsQuery.isError ? (
+            {reactionsQuery.isError || reactionsQuery.federatedError ? (
               <span className="text-xs text-destructive">{t("reactions.fetchError")}</span>
             ) : null}
             {messagesQuery.isError ? (

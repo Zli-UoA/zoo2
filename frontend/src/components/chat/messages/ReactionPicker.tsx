@@ -10,9 +10,9 @@ import {
   DialogTitle,
 } from "../../ui/dialog";
 import { EmojiKitchenPicker } from "./EmojiKitchenPicker";
-import { EmojiPicker } from "./EmojiPicker";
+import { EmojiPicker, CustomEmojiPicker } from "./EmojiPicker";
 
-type ReactionTab = "emoji" | "kitchen";
+type ReactionTab = "emoji" | "kitchen" | "custom";
 
 const tabClassName =
   "flex-1 rounded-md px-3 py-1.5 text-sm font-medium text-muted-foreground outline-none transition-colors hover:text-foreground focus-visible:ring-3 focus-visible:ring-ring/50 data-[active]:bg-background data-[active]:text-foreground data-[active]:shadow-sm";
@@ -51,7 +51,7 @@ export function ReactionPicker({
         <Tabs.Root
           value={tab}
           onValueChange={(value) => {
-            if (value === "emoji" || value === "kitchen") setTab(value);
+            if (value === "emoji" || value === "kitchen" || value === "custom") setTab(value);
           }}
           className="flex min-h-0 flex-1 flex-col gap-3"
         >
@@ -65,9 +65,15 @@ export function ReactionPicker({
             <Tabs.Tab value="kitchen" className={tabClassName}>
               {t("reactions.tabKitchen")}
             </Tabs.Tab>
+            <Tabs.Tab value="custom" className={tabClassName}>
+              {t("home.customEmojis")}
+            </Tabs.Tab>
           </Tabs.List>
           <Tabs.Panel value="emoji" className="min-h-0 flex-1">
             <EmojiPicker onSelect={select} />
+          </Tabs.Panel>
+          <Tabs.Panel value="custom" className="min-h-0 flex-1">
+            <CustomEmojiPicker onSelect={select} />
           </Tabs.Panel>
           <Tabs.Panel value="kitchen" className="min-h-0 flex-1">
             <EmojiKitchenPicker

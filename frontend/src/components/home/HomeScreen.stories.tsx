@@ -16,7 +16,11 @@ import { delay, http, HttpResponse, ws } from "msw";
 import { expect, fireEvent, screen, userEvent, waitFor, within } from "storybook/test";
 import { HomeScreen } from "./HomeScreen";
 import { HomeComposer } from "./HomeComposer";
-import { homePosts as posts, homeHandlers } from "../../../.storybook/home-fixtures";
+import {
+  homePosts as posts,
+  homeHandlers,
+  visibilityPosts,
+} from "../../../.storybook/home-fixtures";
 
 const postSettingsKey = homePostSettingsKey(DEFAULT_CONFIG.apiBaseUrl, DEFAULT_CURRENT_USER_ID);
 const timelineSettingsKey = homeTimelineKey(DEFAULT_CONFIG.apiBaseUrl, DEFAULT_CURRENT_USER_ID);
@@ -338,9 +342,9 @@ export const Federated: Story = {
   play: playForImplementation(async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     await canvas.findByText("外部のフォロー先から届いた投稿です。");
-    await expect(canvas.queryByRole("img", { name: "ActivityPub" })).not.toBeInTheDocument();
+    await expect(canvas.getAllByRole("img", { name: "ActivityPub" }).length).toBeGreaterThan(0);
     const channel = canvas.getByRole("link", { name: "#general" });
-    await expect(channel.previousElementSibling?.querySelector("time")?.tagName).toBe("TIME");
+    await expect(channel.parentElement?.querySelector("time")?.tagName).toBe("TIME");
     await expect(canvas.getAllByRole("link", { name: "#general" })).toHaveLength(1);
   }),
 };
@@ -403,10 +407,10 @@ export const CrossPost: Story = {
     await userEvent.click(form.getByRole("button", { name: /^投稿$/ }));
     await expectComposerClosed();
     await expect(await canvas.findByText("同じ投稿を連合とチャンネルに")).toBeVisible();
-    await expect(canvas.queryByRole("img", { name: "ActivityPub" })).not.toBeInTheDocument();
+    await expect(canvas.getAllByRole("img", { name: "ActivityPub" }).length).toBeGreaterThan(0);
     await expect(canvas.getByRole("link", { name: "#general" })).toBeVisible();
     const channel = canvas.getByRole("link", { name: "#general" });
-    await expect(channel.previousElementSibling?.querySelector("time")?.tagName).toBe("TIME");
+    await expect(channel.parentElement?.querySelector("time")?.tagName).toBe("TIME");
   }),
 };
 export const FollowersOnly: Story = {
@@ -1194,7 +1198,10 @@ export const EmojiFallback: Story = {
               ...misskeyPost,
               emojis: [e],
               actor_emojis: [e],
-              reactions: [{ reaction: e.name, emoji: e, count: 2, selected: false }],
+              channel_id: "channel-general",
+              reactions: [
+                { reaction: e.name, emoji: e, count: 2, selected: false, can_react: false },
+              ],
             },
           ]);
         }),
@@ -1206,6 +1213,7 @@ export const EmojiFallback: Story = {
     const canvas = within(canvasElement);
     await waitFor(() => expect(canvas.getAllByText(":blobcat:").length).toBeGreaterThanOrEqual(2));
     await expect(canvas.queryByRole("img", { name: ":blobcat:" })).not.toBeInTheDocument();
+    await expect(canvas.getByRole("button", { name: ":blobcat: 2" })).toBeDisabled();
   }),
 };
 
@@ -1667,4 +1675,32 @@ export const MfmUserProfile: Story = {
     },
   },
   play: playForImplementation(async ({ canvasElement }) => checkMfmPost(canvasElement)),
+};
+
+export const VisibilityBadges: Story = {
+  parameters: {
+    msw: { handlers: [http.get("*/api/home", () => HttpResponse.json(visibilityPosts))] },
+  },
+  play: playForImplementation(async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    for (const [index, label] of [
+      "パブリック",
+      "ホーム",
+      "フォロワー限定",
+      "ローカルのみ",
+    ].entries()) {
+      const post = await canvas.findByText(visibilityPosts[index]!.content);
+      const article = post.closest("article")!;
+      const badge = within(article).getByRole("img", { name: label });
+      await expect(badge).toBeVisible();
+      const date = article.querySelector("time")!;
+      await expect(
+        Math.abs(badge.getBoundingClientRect().y - date.getBoundingClientRect().y),
+      ).toBeLessThan(8);
+    }
+  }),
+};
+export const VisibilityBadgesMobile: Story = {
+  ...VisibilityBadges,
+  globals: { viewport: { value: "mobile" } },
 };

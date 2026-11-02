@@ -1,7 +1,8 @@
 //! Zoo federation: durable delivery, signed inboxes, local channel-linked posts.
-mod client_ip;
+pub(crate) mod channel_reactions;
+pub(crate) mod client_ip;
 mod emoji;
-mod emoji_cache;
+pub(crate) mod emoji_cache;
 mod inbox;
 pub(crate) mod interactions;
 mod note_identity;
@@ -115,7 +116,49 @@ pub fn note_value(post: &Value) -> Result<Value, AppError> {
         }
         note["tag"] = json!([{"type":"Mention","href":recipient,"name":recipient}]);
     }
+    if let Some(emojis) = post["emojis"].as_array() {
+        let tags = note
+            .as_object_mut()
+            .unwrap()
+            .entry("tag")
+            .or_insert(json!([]))
+            .as_array_mut()
+            .unwrap();
+        tags.extend(emojis.iter().map(emoji::as_tag));
+        note["@context"] = json!([CONTEXT,{"Emoji":"http://joinmastodon.org/ns#Emoji","_misskey_content":"https://misskey-hub.net/ns#_misskey_content"}]);
+    }
     Ok(note)
+}
+
+async fn with_workspace_emojis(
+    tx: &mut toasty::Transaction<'_>,
+    post: &Value,
+) -> Result<Value, AppError> {
+    let mut post = post.clone();
+    let content = string(&post, "content")?;
+    let mut emojis = vec![];
+    for emoji in emoji::workspace_options(tx).await? {
+        if content.contains(string(&emoji, "name")?) {
+            emojis.push(emoji.clone());
+        }
+        if let Some(aliases) = emoji["aliases"].as_array() {
+            for alias in aliases.iter().filter_map(Value::as_str) {
+                if !alias.bytes().all(|c| {
+                    c.is_ascii_lowercase() || c.is_ascii_digit() || matches!(c, b'_' | b'-')
+                }) {
+                    continue;
+                }
+                let name = format!(":{alias}:");
+                if content.contains(&name) {
+                    let mut tag = emoji.clone();
+                    tag["name"] = json!(name);
+                    emojis.push(tag);
+                }
+            }
+        }
+    }
+    post["emojis"] = json!(emojis);
+    Ok(post)
 }
 fn delivery_activity(payload: &Value) -> Result<Value, AppError> {
     if payload.get("zoo_post").is_none() {
@@ -300,6 +343,12 @@ pub async fn deliver_next(state: &AppState) -> Result<bool, AppError> {
     let payload: Value = serde_json::from_str(string(delivery, "payload")?).map_err(internal)?;
     let result = async {
         let a = remote_actor(state, Some(user), actor, false).await?;
+        let mut payload = payload.clone();
+        if payload.get("zoo_post").is_some() {
+            let mut db = state.db.clone();
+            let mut tx = db.transaction().await?;
+            payload["zoo_post"] = with_workspace_emojis(&mut tx, &payload["zoo_post"]).await?;
+        }
         let activity = delivery_activity(&payload)?;
         transport::request(
             state,

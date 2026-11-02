@@ -2,7 +2,7 @@
 use super::*;
 use axum::http::HeaderMap;
 use std::net::IpAddr;
-pub(super) fn resolve(
+pub(crate) fn resolve(
     peer: Option<IpAddr>,
     headers: &HeaderMap,
     tunnel: bool,

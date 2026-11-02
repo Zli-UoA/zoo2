@@ -697,5 +697,16 @@
     "latest": "最新の投稿",
     "older": "過去の投稿",
     "notFound": "プロフィールが見つかりません。"
+  },
+  "customEmoji": {
+    "hint": "英小文字・数字・_・-の名前で登録できます。PNG・JPEG・GIF・WebP、最大2 MiB。縦横比はそのまま保存します。",
+    "name": "名前",
+    "image": "画像",
+    "edit": "編集",
+    "remove": "削除",
+    "cancel": "キャンセル",
+    "category": "カテゴリ",
+    "aliases": "エイリアス（カンマ区切り）",
+    "uncategorized": "未分類"
   }
 }

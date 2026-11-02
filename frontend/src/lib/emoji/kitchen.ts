@@ -39,6 +39,7 @@ export function kitchenValue(left: string, right: string): string {
 }
 
 export function kitchenLabel(value: string): string {
+  if (/^apub:[a-f0-9]{64}:/.test(value)) return value.slice(70);
   const parts = kitchenParts(value);
   if (!parts) return value;
   return parts

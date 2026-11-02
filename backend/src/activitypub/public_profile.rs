@@ -72,6 +72,9 @@ pub(super) async fn read(
         None
     };
     posts.truncate(20);
+    for post in &mut posts {
+        *post = super::with_workspace_emojis(&mut tx, post).await?;
+    }
     Ok(Json(
         json!({"account":account,"posts":posts,"next_cursor":next_cursor}),
     ))
