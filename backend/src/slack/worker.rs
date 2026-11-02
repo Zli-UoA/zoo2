@@ -839,10 +839,17 @@ async fn create_channel(
     .await?;
     let row = one(
         tx,
-        "SELECT json_build_object('name',channel_name)::text FROM channels WHERE id=$1",
+        "SELECT json_build_object('name',channel_name,'is_private',is_private)::text FROM channels WHERE id=$1",
         &[&id],
     )
     .await?;
+    // 以前公開で取り込んだチャンネルが残っていたら、非公開の履歴は入れない
+    if is_private && row["is_private"] != true {
+        return Err(AppError::BadRequest(format!(
+            "Slack channel {} was imported into a public channel; it cannot be imported as private",
+            channel.id
+        )));
+    }
     Ok((id, row["name"].as_str().unwrap_or(name).to_string()))
 }
 

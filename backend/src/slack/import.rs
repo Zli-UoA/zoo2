@@ -472,6 +472,20 @@ pub(crate) async fn validate_mappings(
                         "Channel name '{name}' is already taken"
                     )));
                 }
+                // 以前公開で取り込んだチャンネルを再利用する場合も、実際の公開範囲を確かめる
+                let private = slack_private || *is_private == Some(true);
+                let reused = query(
+                    tx,
+                    "SELECT json_build_object('is_private',is_private)::text FROM channels WHERE id=$1",
+                    &[&own],
+                )
+                .await?;
+                if private && reused.first().is_some_and(|c| c["is_private"] != true) {
+                    return Err(AppError::BadRequest(format!(
+                        "Slack channel {} was imported into a public channel; it cannot be imported as private",
+                        mapping.slack_channel_id
+                    )));
+                }
             }
             MappingAction::Existing { channel_id } => {
                 let found = query(

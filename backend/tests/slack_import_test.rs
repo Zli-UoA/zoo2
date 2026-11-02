@@ -1138,5 +1138,104 @@ async fn test_slack_import_guards_private_channels_and_restores_threads() -> any
     )
     .await?;
     assert_eq!(rows[0]["parent_id"], json!(message(parent_ts)));
+
+    // 公開で取り込んだ後に Slack 側で非公開になったチャンネルは、create で指定しても公開先へ入れない
+    let users = json!([{"id":"U1","team_id":team,"name":"alice"}]);
+    let turned_private = build_zip(&[
+        ("users.json".into(), users),
+        ("channels.json".into(), json!([])),
+        (
+            "groups.json".into(),
+            json!([
+                {"id":"C1","name":"general","members":["U1"]},
+                {"id":"G1","name":"secret","members":["U1"]}
+            ]),
+        ),
+        (
+            "general/2024-01-03.json".into(),
+            json!([{"ts":"1704250000.000700","user":"U1","text":"now private"}]),
+        ),
+        (
+            "secret/2024-01-03.json".into(),
+            json!([{"ts":"1704250000.000800","user":"U1","text":"still private"}]),
+        ),
+    ]);
+    let analyzed = upload(&state, &app, &admin, &turned_private).await;
+    let export = analyzed["id"].as_str().unwrap().to_string();
+    let (status, body) = start(
+        &app,
+        &admin,
+        &export,
+        json!([
+            {"slack_channel_id":"C1","action":"create","name":format!("general-{suffix}"),"is_private":true},
+            {"slack_channel_id":"G1","action":"skip"}
+        ]),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    let private_message = backend::slack::message_id(&team, "C1", "1704250000.000700");
+    let rows = sql(
+        &state,
+        "SELECT json_build_object('id',id)::text FROM messages WHERE id=$1",
+        &[&private_message],
+    )
+    .await?;
+    assert!(rows.is_empty());
+
+    // 開始後に取り込み先が公開に変わった場合も、ワーカーが非公開の履歴を入れずに失敗させる
+    let secret = backend::slack::channel_id(&team, "G1");
+    let (status, body) = start(
+        &app,
+        &admin,
+        &export,
+        json!([
+            {"slack_channel_id":"C1","action":"skip"},
+            {"slack_channel_id":"G1","action":"create","name":format!("secret-{suffix}"),"is_private":true}
+        ]),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let run = body["id"].as_str().unwrap().to_string();
+    sql(
+        &state,
+        "UPDATE channels SET is_private=false WHERE id=$1 RETURNING json_build_object('id',id)::text",
+        &[&secret],
+    )
+    .await?;
+    let mut job = Value::Null;
+    for _ in 0..100 {
+        backend::slack::worker::run_once(&state).await?;
+        job = request(
+            &app,
+            "GET",
+            &format!("/api/admin/slack-imports/{run}"),
+            &admin,
+            None,
+        )
+        .await?
+        .1;
+        if job["status"] == "failed" {
+            break;
+        }
+    }
+    assert_eq!(job["status"], "failed", "{job}");
+    assert!(
+        job["error"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("public channel"),
+        "{job}"
+    );
+    let rows = sql(
+        &state,
+        "SELECT json_build_object('id',id)::text FROM messages WHERE id=$1",
+        &[&backend::slack::message_id(
+            &team,
+            "G1",
+            "1704250000.000800",
+        )],
+    )
+    .await?;
+    assert!(rows.is_empty());
     Ok(())
 }
