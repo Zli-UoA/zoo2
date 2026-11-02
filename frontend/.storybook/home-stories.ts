@@ -100,6 +100,14 @@ const mfmChecks: Step[] = [
   { action: "overflow" },
 ];
 
+const imageChecks: Step[] = [
+  role("button", "home-photo.pngをプレビュー"),
+  wait("本文のない投稿です。内容は元のチャンネルで確認できます。", { state: "hidden" }),
+  button("home-photo.pngをプレビュー"),
+  role("dialog", "home-photo.png"),
+  { action: "key", key: "Escape" },
+];
+
 export const homeInteractions: Record<string, Step[]> = {
   "visibility-badges": [
     role("img", "パブリック"),
@@ -371,6 +379,10 @@ export const homeInteractions: Record<string, Step[]> = {
     fixture("homeAvatarLinks"),
   ],
   "remote-avatar-fallback": [role("img", "Remote Alice", { busy: false }), wait("RA")],
+  "image-only": imageChecks,
+  "image-only-detail": imageChecks,
+  "reply-to-image-only": [...imageChecks, wait("画像への返信")],
+  "text-with-image": [...imageChecks, wait("画像と本文の投稿")],
   "timeline-reply": [wait("TLに表示される返信"), wait("TLに表示される返信先")],
   "single-post": [
     wait(homePosts[0].content.split("\n")[0], { exact: false }),

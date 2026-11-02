@@ -554,3 +554,53 @@ for (const implementation of ["react", "kotlin"] as const) {
     });
   }
 }
+
+for (const implementation of ["react", "kotlin"] as const) {
+  for (const width of [1440, 390]) {
+    test(`Home image attachments replace empty-body notices: ${implementation} ${width}`, async ({
+      page,
+    }, testInfo) => {
+      await page.setViewportSize({ width, height: 900 });
+      for (const story of [
+        "image-only",
+        "image-only-detail",
+        "reply-to-image-only",
+        "text-with-image",
+      ]) {
+        await page.goto(
+          `/iframe.html?id=pages-home--${story}&viewMode=story&globals=implementation:${implementation}`,
+        );
+        if (implementation === "kotlin") {
+          await expect(page.locator("[data-compose-catalog-state=ready]")).toBeVisible({
+            timeout: 90_000,
+          });
+        }
+        await waitForStoryPlay(page);
+        const screen =
+          implementation === "kotlin"
+            ? page.frameLocator('iframe[title="Kotlin component preview"]')
+            : page;
+        const preview = screen.getByRole("button", {
+          name: "home-photo.pngをプレビュー",
+          exact: true,
+        });
+        await expect(preview).toBeVisible();
+        await expect(screen.getByText(/本文のない投稿です/)).toHaveCount(0);
+        const bounds = await preview.boundingBox();
+        expect(bounds!.x + bounds!.width).toBeLessThanOrEqual(width + 1);
+        if (story === "text-with-image")
+          await expect(screen.getByText("画像と本文の投稿", { exact: true })).toBeVisible();
+        // Compose's semantic target sits beneath its Canvas; click the rendered coordinates.
+        await preview.click({ force: implementation === "kotlin" });
+        await expect(
+          screen.getByRole("dialog", { name: "home-photo.png", exact: true }),
+        ).toBeVisible();
+        await page.keyboard.press("Escape");
+        await expect(
+          screen.getByRole("dialog", { name: "home-photo.png", exact: true }),
+        ).toHaveCount(0);
+        await page.screenshot({ path: testInfo.outputPath(`${story}.png`) });
+      }
+    });
+  }
+}

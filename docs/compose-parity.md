@@ -131,3 +131,9 @@ React `useFederatedReactions` と共通Kotlin `ChannelReactions` はHome通知�
 実アプリのReact・Compose共通E2E全19件も成功。新規の連合リアクションAPIをE2Eモックに追加し、Webhook登録では入力のリセットと一覧反映を順に確認する。
 
 CIの待機処理を調整: 連合リアクションのユーザー一覧はDOM生成後の表示完了まで待つ。Composeのダイアログ契約テストは、再描画でアクセシビリティノードの矩形が一時的になくなる場合、ネイティブのポインター操作を最大5秒再試行する。キャンセル通知・入力リセット・編集保持のアサーションは維持する。
+
+## Homeの画像のみの投稿
+
+Reactの `HomePostContent` は本文がある場合だけMFMを描画し、添付には共通の `MessageAttachments` を使う。Kotlinの `HomePostCard` も通常投稿と返信先プレビューで同じ添付部品を使い、空本文の案内文を挿入しない。Home APIの `attachments` は表示用メタデータだけを返し、画像URLの取得は両実装とも既存の添付APIを使う。
+`ImageOnly`・`ImageOnlyDetail`・`ReplyToImageOnly`・`TextWithImage` Storyで本文と添付の組み合わせ、拡大プレビューを確認する。公開プロフィールは空本文の案内文を表示しないが、認証が必要なチャンネル添付の匿名公開は追加しない。
+検証: Reactの4 Story、添付・Home Story登録の単体テスト79件、Home/ActivityPub APIテスト22件、Kotlinブラウザーテスト75件と配布ビルドが成功。画像のみ・本文付き・詳細・返信先の4状態を、React/Composeの1440px・390pxで画像の表示・拡大・閉じる操作まで確認した。

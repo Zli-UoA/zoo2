@@ -312,7 +312,8 @@ async fn list(
       )
     ) SELECT (f.post - 'own' - 'original_visible' || jsonb_build_object(
       'entry_id',f.entry_id,
-      'parent',(SELECT row_to_json(parent)::jsonb - 'own' - 'original_visible' FROM base parent WHERE parent.id=f.post->>'parent_id' AND parent.original_visible),
+      'attachments',(SELECT COALESCE(jsonb_agg(jsonb_build_object('id',a.id,'file_name',a.file_name,'file_size',a.file_size,'content_type',a.content_type) ORDER BY a.created_at,a.id),'[]'::jsonb) FROM attachments a JOIN messages attachment_message ON attachment_message.id=a.message_id WHERE a.message_id=f.id AND a.channel_id=f.post->>'channel_id' AND attachment_message.channel_id=f.post->>'channel_id' AND attachment_message.deleted_at IS NULL),
+      'parent',(SELECT row_to_json(parent)::jsonb - 'own' - 'original_visible' || jsonb_build_object('attachments',(SELECT COALESCE(jsonb_agg(jsonb_build_object('id',a.id,'file_name',a.file_name,'file_size',a.file_size,'content_type',a.content_type) ORDER BY a.created_at,a.id),'[]'::jsonb) FROM attachments a JOIN messages attachment_message ON attachment_message.id=a.message_id WHERE a.message_id=parent.id AND a.channel_id=parent.channel_id AND attachment_message.channel_id=parent.channel_id AND attachment_message.deleted_at IS NULL)) FROM base parent WHERE parent.id=f.post->>'parent_id' AND parent.original_visible),
       'tree_depth',CASE WHEN $8::boolean THEN (SELECT max(depth) FROM ancestors) + COALESCE((SELECT -depth FROM ancestors WHERE id=f.id),(SELECT depth FROM descendants WHERE id=f.id),0) ELSE 0 END,
       'sort_key',(extract(epoch FROM f.sort_at)*1000000)::bigint::text,
       'likes',(SELECT count(*) FROM shared_reactions WHERE post_id=f.id),

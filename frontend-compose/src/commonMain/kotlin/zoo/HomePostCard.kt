@@ -45,11 +45,12 @@ fun HomePostCard(
                     Text(app.t("home.replyTo", "name" to name), size = 12.sp)
                 }
                 parent?.let {
-                    ActivityPubContent(
+                    if (it.text("content").isNotBlank()) ActivityPubContent(
                         it.text("content"),
                         it.homeRows("emojis"),
                         textStyle = TextStyle(fontSize = 14.sp, lineHeight = 20.sp),
                     )
+                    MessageAttachments(app, it.homeRows("attachments"))
                 }
             }
         }
@@ -162,15 +163,16 @@ fun HomePostCard(
                         }
                         Button(app.t("common.cancel"), enabled = !saving) { editing = false }
                     }
-                } else {
+                } else if (post.text("content").isNotBlank()) {
                     NativeLink("/home/posts/${post.text("id").encodeURLParameter()}") {
                         ActivityPubContent(
-                            post.text("content").ifEmpty { app.t("home.attachmentsOnly") },
+                            post.text("content"),
                             post.homeRows("emojis"),
                             textStyle = TextStyle(fontSize = 14.sp, lineHeight = 20.sp),
                         )
                     }
                 }
+                MessageAttachments(app, post.homeRows("attachments"))
                 if (post.homeRows("reactions").isNotEmpty())
                     FlowRow(
                         horizontalArrangement = Arrangement.spacedBy(4.dp),

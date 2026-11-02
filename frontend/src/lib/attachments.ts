@@ -1,6 +1,12 @@
 import type { AttachmentRow } from "./electric/types";
 import { DEFAULT_LOCALE, INTL_LOCALES, type Locale } from "./i18n/locale";
 
+/** Public metadata needed to render an attachment; storage keys stay on the server. */
+export type AttachmentMetadata = Pick<
+  AttachmentRow,
+  "id" | "file_name" | "file_size" | "content_type"
+>;
+
 export const MAX_ATTACHMENTS_PER_MESSAGE = 10;
 export const MAX_ATTACHMENT_FILE_SIZE = 50 * 1024 * 1024;
 export const ATTACHMENT_URL_FALLBACK_TTL_MS = 4 * 60 * 1000;

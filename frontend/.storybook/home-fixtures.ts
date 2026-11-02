@@ -38,3 +38,18 @@ export const visibilityPosts: HomePost[] = ["public", "unlisted", "followers", "
     created_at: `2026-11-01T${String(10 - index).padStart(2, "0")}:00:00Z`,
   }),
 );
+
+export const homeImageOnlyPost: HomePost = {
+  ...homePosts[0]!,
+  id: "home-image-only",
+  content: "",
+  channel_id: "channel-general",
+  attachments: [
+    {
+      id: "home-image-attachment",
+      file_name: "home-photo.png",
+      file_size: 184320,
+      content_type: "image/png",
+    },
+  ],
+};

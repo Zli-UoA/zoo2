@@ -57,6 +57,8 @@ import {
   DropdownMenuItem,
 } from "../ui/dropdown-menu";
 
+import type { AttachmentMetadata } from "../../lib/attachments";
+
 export interface HomePost {
   id: string;
   user_id: string;
@@ -76,6 +78,7 @@ export interface HomePost {
   sort_key?: string;
   parent_id?: string | null;
   parent?: HomePost | null;
+  attachments?: AttachmentMetadata[];
   tree_depth?: number;
   emojis?: CustomEmoji[];
   actor_emojis?: CustomEmoji[];
@@ -489,6 +492,7 @@ function HomeScreenContent({
                         <HomePostContent
                           content={post.parent.content}
                           emojis={post.parent.emojis}
+                          attachments={post.parent.attachments}
                         />
                       ) : null}
                     </div>
@@ -622,7 +626,11 @@ function HomeScreenContent({
                           ) : null}
                         </form>
                       ) : (
-                        <HomePostContent content={post.content} emojis={post.emojis} />
+                        <HomePostContent
+                          content={post.content}
+                          emojis={post.emojis}
+                          attachments={post.attachments}
+                        />
                       )}
                       {post.reactions?.length ? (
                         <div className="mt-2 flex flex-wrap gap-1">

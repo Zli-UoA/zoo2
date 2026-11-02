@@ -20,6 +20,7 @@ import {
   homePosts as posts,
   homeHandlers,
   visibilityPosts,
+  homeImageOnlyPost,
 } from "../../../.storybook/home-fixtures";
 
 const postSettingsKey = homePostSettingsKey(DEFAULT_CONFIG.apiBaseUrl, DEFAULT_CURRENT_USER_ID);
@@ -1761,4 +1762,74 @@ export const VisibilityBadges: Story = {
 export const VisibilityBadgesMobile: Story = {
   ...VisibilityBadges,
   globals: { viewport: { value: "mobile" } },
+};
+
+async function checkHomeImage(canvasElement: HTMLElement) {
+  const canvas = within(canvasElement);
+  const preview = await canvas.findByRole("button", { name: "home-photo.pngをプレビュー" });
+  await expect(preview).toBeVisible();
+  await expect(canvas.queryByText(/本文のない投稿です/)).not.toBeInTheDocument();
+  await userEvent.click(preview);
+  const dialog = await screen.findByRole("dialog", { name: "home-photo.png" });
+  await waitFor(() => expect(dialog).toBeVisible());
+  await userEvent.keyboard("{Escape}");
+  await waitFor(() =>
+    expect(screen.queryByRole("dialog", { name: "home-photo.png" })).not.toBeInTheDocument(),
+  );
+}
+
+export const ImageOnly: Story = {
+  parameters: {
+    msw: { handlers: [http.get("*/api/home", () => HttpResponse.json([homeImageOnlyPost]))] },
+  },
+  play: playForImplementation(async ({ canvasElement }) => checkHomeImage(canvasElement)),
+};
+export const ImageOnlyDetail: Story = {
+  ...ImageOnly,
+  args: { postId: homeImageOnlyPost.id },
+  parameters: {
+    msw: {
+      handlers: [http.get("*/api/home/:id/thread", () => HttpResponse.json([homeImageOnlyPost]))],
+    },
+  },
+};
+export const ReplyToImageOnly: Story = {
+  ...ImageOnly,
+  parameters: {
+    msw: {
+      handlers: [
+        http.get("*/api/home", () =>
+          HttpResponse.json([
+            {
+              ...posts[0],
+              content: "画像への返信",
+              parent_id: homeImageOnlyPost.id,
+              parent: homeImageOnlyPost,
+            },
+          ]),
+        ),
+      ],
+    },
+  },
+};
+export const TextWithImage: Story = {
+  ...ImageOnly,
+  parameters: {
+    msw: {
+      handlers: [
+        http.get("*/api/home", () =>
+          HttpResponse.json([
+            {
+              ...homeImageOnlyPost,
+              content: "画像と本文の投稿",
+            },
+          ]),
+        ),
+      ],
+    },
+  },
+  play: playForImplementation(async ({ canvasElement }) => {
+    await checkHomeImage(canvasElement);
+    await expect(within(canvasElement).getByText("画像と本文の投稿")).toBeVisible();
+  }),
 };

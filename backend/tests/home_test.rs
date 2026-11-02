@@ -506,3 +506,149 @@ async fn channel_posts_share_reactions_replies_and_visible_conversation() -> any
     );
     Ok(())
 }
+
+#[tokio::test]
+async fn home_returns_attachment_metadata_for_visible_posts_and_reply_previews()
+-> anyhow::Result<()> {
+    let mut config = Config::from_env();
+    config.dev_auth_enabled = true;
+    let mut db = init_db(&config.database_url).await?;
+    let app = create_router(AppState::new(db.clone(), config));
+    let owner = uuid::Uuid::new_v4().to_string();
+    let viewer = uuid::Uuid::new_v4().to_string();
+    for user in [&owner, &viewer] {
+        toasty::sql::statement("INSERT INTO users(id,user_name,display_name) VALUES($1,$1,$1)")
+            .bind(user.as_str())
+            .exec(&mut db)
+            .await?;
+    }
+    let channel = uuid::Uuid::new_v4().to_string();
+    let private = uuid::Uuid::new_v4().to_string();
+    for (id, is_private) in [(&channel, false), (&private, true)] {
+        toasty::sql::statement("INSERT INTO channels(id,channel_name,created_user_id,is_private) VALUES($1,$1,$2,$3::boolean)")
+            .bind(id.as_str()).bind(owner.as_str()).bind(is_private.to_string()).exec(&mut db).await?;
+    }
+    toasty::sql::statement(
+        "INSERT INTO channel_user(user_id,channel_id,joined_at) VALUES($1,$2,now())",
+    )
+    .bind(owner.as_str())
+    .bind(channel.as_str())
+    .exec(&mut db)
+    .await?;
+    let image_post = uuid::Uuid::new_v4().to_string();
+    toasty::sql::statement(
+        "INSERT INTO home_posts(id,user_id,content,channel_id) VALUES($1,$2,'',$3)",
+    )
+    .bind(image_post.as_str())
+    .bind(owner.as_str())
+    .bind(channel.as_str())
+    .exec(&mut db)
+    .await?;
+    let private_post = uuid::Uuid::new_v4().to_string();
+    toasty::sql::statement(
+        "INSERT INTO messages(id,user_id,content,channel_id) VALUES($1,$2,'',$3)",
+    )
+    .bind(private_post.as_str())
+    .bind(owner.as_str())
+    .bind(private.as_str())
+    .exec(&mut db)
+    .await?;
+    let mut attachment_ids = Vec::new();
+    for (message, channel_id) in [(&image_post, &channel), (&private_post, &private)] {
+        let id = uuid::Uuid::new_v4().to_string();
+        toasty::sql::statement("INSERT INTO attachments(id,message_id,uploader_id,channel_id,file_name,file_size,content_type,storage_key) VALUES($1,$2,$3,$4,'photo.png',1024,'image/png',$5)")
+            .bind(id.as_str()).bind(message.as_str()).bind(owner.as_str()).bind(channel_id.as_str()).bind(format!("attachments/{id}")).exec(&mut db).await?;
+        attachment_ids.push(id);
+    }
+    let (status, post) = request(
+        &app,
+        "GET",
+        Some(&viewer),
+        &format!("/api/home/{image_post}"),
+        None,
+    )
+    .await?;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(post["content"], "");
+    assert_eq!(post["attachments"].as_array().unwrap().len(), 1);
+    assert_eq!(
+        post["attachments"][0],
+        json!({"id":attachment_ids[0],"file_name":"photo.png","file_size":1024,"content_type":"image/png"})
+    );
+    let (status, reply) = request(
+        &app,
+        "POST",
+        Some(&owner),
+        "/api/home",
+        Some(json!({"content":"reply to image","in_reply_to":image_post})),
+    )
+    .await?;
+    assert_eq!(status, StatusCode::CREATED);
+    let reply_id = reply["id"].as_str().unwrap();
+    let (_, reply) = request(
+        &app,
+        "GET",
+        Some(&viewer),
+        &format!("/api/home/{reply_id}"),
+        None,
+    )
+    .await?;
+    assert_eq!(reply["parent"]["attachments"], post["attachments"]);
+    let (_, feed) = request(
+        &app,
+        "GET",
+        Some(&viewer),
+        "/api/home?timeline=social",
+        None,
+    )
+    .await?;
+    assert_eq!(
+        feed.as_array()
+            .unwrap()
+            .iter()
+            .find(|p| p["id"] == image_post)
+            .unwrap()["attachments"],
+        post["attachments"]
+    );
+    assert!(!feed.to_string().contains(&attachment_ids[1]));
+    let (_, thread) = request(
+        &app,
+        "GET",
+        Some(&viewer),
+        &format!("/api/home/{reply_id}/thread"),
+        None,
+    )
+    .await?;
+    assert_eq!(thread[0]["attachments"], post["attachments"]);
+    assert_eq!(
+        request(
+            &app,
+            "GET",
+            Some(&viewer),
+            &format!("/api/home/{private_post}"),
+            None
+        )
+        .await?
+        .0,
+        StatusCode::NOT_FOUND
+    );
+    let (status, _) = request(
+        &app,
+        "DELETE",
+        Some(&owner),
+        &format!("/api/messages/{image_post}"),
+        None,
+    )
+    .await?;
+    assert_eq!(status, StatusCode::OK);
+    let (_, feed) = request(
+        &app,
+        "GET",
+        Some(&viewer),
+        "/api/home?timeline=social",
+        None,
+    )
+    .await?;
+    assert!(!feed.to_string().contains(&attachment_ids[0]));
+    Ok(())
+}

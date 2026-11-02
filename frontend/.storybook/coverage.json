@@ -485,6 +485,10 @@
         "LiveWhileLoadingOlder",
         "RemoteAvatar",
         "RemoteAvatarFallback",
+        "ImageOnly",
+        "ImageOnlyDetail",
+        "ReplyToImageOnly",
+        "TextWithImage",
         "TimelineReply",
         "SinglePost",
         "SinglePostMissing",
@@ -928,9 +932,9 @@
     },
     {
       "file": "src/components/home/HomePostContent.tsx",
-      "story": "src/components/public/PublicProfile.stories.tsx",
+      "story": "src/components/home/HomeScreen.stories.tsx",
       "composed": true,
-      "reason": "Homeと公開プロフィールで共有するMFM本文・リンク・絵文字の描画。"
+      "reason": "MfmDecoratedPostで共通MFM本文・リンク・絵文字を、ImageOnly/ImageOnlyDetail/ReplyToImageOnly/TextWithImageで空本文・添付表示・画像プレビューを確認する。"
     }
   ]
 }
