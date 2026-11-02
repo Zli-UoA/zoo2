@@ -246,7 +246,7 @@ private fun startSession() {
     val status = json.parseToJsonElement(envRaw).jsonObject.text("status")
     val app =
         if (status.isEmpty())
-            Session(Repository(config, platform, http, scope), scope, environment(envRaw))
+            Session(Repository(config, platform, http, scope, synchronize = !isPublicProfilePath(environment(envRaw).path)), scope, environment(envRaw))
         else null
     var active by mutableStateOf(true)
     ComposeViewport(document.getElementById("zoo-compose-root")!!) {

@@ -41,7 +41,8 @@ export interface KotlinPreviewProps {
     | "app-story"
     | "preference-story"
     | "notification-story"
-    | "home-story";
+    | "home-story"
+    | "public-profile-story";
   fixture?: Record<string, unknown>;
   path?: string;
   content: string;

@@ -19,6 +19,7 @@ import { Route as ShellNotificationsRouteImport } from './routes/_shell.notifica
 import { Route as ShellSettingsRouteImport } from './routes/_shell.settings'
 import { Route as ShellAppsAppIdRouteImport } from './routes/_shell.apps.$appId'
 import { Route as ShellChannelsChannelIdRouteImport } from './routes/_shell.channels.$channelId'
+import { Route as PublicUsersUserIdRouteImport } from './routes/public.users.$userId'
 import { Route as ShellHomePostsPostIdRouteImport } from './routes/_shell.home_.posts.$postId'
 import { Route as ShellHomeUsersActorIdRouteImport } from './routes/_shell.home_.users.$actorId'
 
@@ -71,6 +72,11 @@ const ShellChannelsChannelIdRoute = ShellChannelsChannelIdRouteImport.update({
   path: '/channels/$channelId',
   getParentRoute: () => ShellRoute,
 } as any)
+const PublicUsersUserIdRoute = PublicUsersUserIdRouteImport.update({
+  id: '/public/users/$userId',
+  path: '/public/users/$userId',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const ShellHomePostsPostIdRoute = ShellHomePostsPostIdRouteImport.update({
   id: '/home_/posts/$postId',
   path: '/home/posts/$postId',
@@ -92,6 +98,7 @@ export interface FileRoutesByFullPath {
   '/settings': typeof ShellSettingsRoute
   '/apps/$appId': typeof ShellAppsAppIdRoute
   '/channels/$channelId': typeof ShellChannelsChannelIdRoute
+  '/public/users/$userId': typeof PublicUsersUserIdRoute
   '/home/posts/$postId': typeof ShellHomePostsPostIdRoute
   '/home/users/$actorId': typeof ShellHomeUsersActorIdRoute
 }
@@ -105,6 +112,7 @@ export interface FileRoutesByTo {
   '/': typeof ShellIndexRoute
   '/apps/$appId': typeof ShellAppsAppIdRoute
   '/channels/$channelId': typeof ShellChannelsChannelIdRoute
+  '/public/users/$userId': typeof PublicUsersUserIdRoute
   '/home/posts/$postId': typeof ShellHomePostsPostIdRoute
   '/home/users/$actorId': typeof ShellHomeUsersActorIdRoute
 }
@@ -120,6 +128,7 @@ export interface FileRoutesById {
   '/_shell/': typeof ShellIndexRoute
   '/_shell/apps/$appId': typeof ShellAppsAppIdRoute
   '/_shell/channels/$channelId': typeof ShellChannelsChannelIdRoute
+  '/public/users/$userId': typeof PublicUsersUserIdRoute
   '/_shell/home_/posts/$postId': typeof ShellHomePostsPostIdRoute
   '/_shell/home_/users/$actorId': typeof ShellHomeUsersActorIdRoute
 }
@@ -135,6 +144,7 @@ export interface FileRouteTypes {
     | '/settings'
     | '/apps/$appId'
     | '/channels/$channelId'
+    | '/public/users/$userId'
     | '/home/posts/$postId'
     | '/home/users/$actorId'
   fileRoutesByTo: FileRoutesByTo
@@ -148,6 +158,7 @@ export interface FileRouteTypes {
     | '/'
     | '/apps/$appId'
     | '/channels/$channelId'
+    | '/public/users/$userId'
     | '/home/posts/$postId'
     | '/home/users/$actorId'
   id:
@@ -162,6 +173,7 @@ export interface FileRouteTypes {
     | '/_shell/'
     | '/_shell/apps/$appId'
     | '/_shell/channels/$channelId'
+    | '/public/users/$userId'
     | '/_shell/home_/posts/$postId'
     | '/_shell/home_/users/$actorId'
   fileRoutesById: FileRoutesById
@@ -169,6 +181,7 @@ export interface FileRouteTypes {
 export interface RootRouteChildren {
   ShellRoute: typeof ShellRouteWithChildren
   RealtimeRoute: typeof RealtimeRoute
+  PublicUsersUserIdRoute: typeof PublicUsersUserIdRoute
 }
 
 declare module '@tanstack/react-router' {
@@ -243,6 +256,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ShellChannelsChannelIdRouteImport
       parentRoute: typeof ShellRoute
     }
+    '/public/users/$userId': {
+      id: '/public/users/$userId'
+      path: '/public/users/$userId'
+      fullPath: '/public/users/$userId'
+      preLoaderRoute: typeof PublicUsersUserIdRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/_shell/home_/posts/$postId': {
       id: '/_shell/home_/posts/$postId'
       path: '/home/posts/$postId'
@@ -291,6 +311,7 @@ const ShellRouteWithChildren = ShellRoute._addFileChildren(ShellRouteChildren)
 const rootRouteChildren: RootRouteChildren = {
   ShellRoute: ShellRouteWithChildren,
   RealtimeRoute: RealtimeRoute,
+  PublicUsersUserIdRoute: PublicUsersUserIdRoute,
 }
 export const routeTree = rootRouteImport
   ._addFileChildren(rootRouteChildren)

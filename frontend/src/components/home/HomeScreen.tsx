@@ -1,3 +1,4 @@
+import { HomePostContent } from "./HomePostContent";
 import {
   timelinePosition,
   reachedTimelineTail,
@@ -5,7 +6,6 @@ import {
 } from "../../lib/homeTimeline";
 import {
   ActivityPubText,
-  ActivityPubContent,
   ActivityPubEmoji,
   FederatedAccount,
   type CustomEmoji,
@@ -563,12 +563,7 @@ function HomeScreenContent({
                           ) : null}
                         </form>
                       ) : (
-                        <div className="mfm-body mt-2 whitespace-pre-wrap break-words text-sm leading-relaxed [overflow-wrap:anywhere]">
-                          <ActivityPubContent
-                            text={post.content.trim() ? post.content : t("home.attachmentsOnly")}
-                            emojis={post.emojis}
-                          />
-                        </div>
+                        <HomePostContent content={post.content} emojis={post.emojis} />
                       )}
                       {post.reactions?.length ? (
                         <div className="mt-2 flex flex-wrap gap-1">

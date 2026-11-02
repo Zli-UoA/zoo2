@@ -6,6 +6,7 @@ mod inbox;
 pub(crate) mod interactions;
 mod note_identity;
 mod profile;
+mod public_profile;
 mod reposts;
 mod routes;
 mod transport;

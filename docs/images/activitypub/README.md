@@ -32,3 +32,7 @@ TLはホーム・ローカル・ソーシャルを選択できます。投稿の
 `Pages/Notifications` の `FollowRequests` と `Pages/Home` の `Like` を操作して追加画像を撮影しています。連合先への実配送の画像ではありません。
 
 `MisskeyCustomEmoji` / `MisskeyReact` / `Reply` / `Repost` で、実際のHomeコンポーネントを操作して追加画像を撮影しています。カスタム絵文字の画像はテスト用の架空データです。投稿下は返信・リポスト・リアクション・3点メニューの順です。
+
+## 公開プロフィール
+
+[公開プロフィールのサンプル一覧](public-profile/README.md)に、React版・Compose版それぞれのPC／スマホ、明暗テーマの画像を掲載しています。この8枚は共通の架空データを本番ビルドに注入して撮影したものです。

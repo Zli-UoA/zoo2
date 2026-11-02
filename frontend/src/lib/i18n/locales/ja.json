@@ -684,5 +684,18 @@
     "catalogLoading": "Composeを読み込んでいます…",
     "catalogLoadError": "Composeの配布物を取得できませんでした。",
     "catalogBuildHint": "JDK 21を用意し、frontendで pnpm build:compose を実行してください。"
+  },
+  "publicProfile": {
+    "followTitle": "外部サーバーからフォロー",
+    "followDescription": "MastodonやMisskeyなどのActivityPubアプリで、このアカウントを検索してフォロー申請を送れます。",
+    "accountAddress": "アカウントのアドレス",
+    "approvalRequired": "フォローには本人の承認が必要です。",
+    "openInZoo": "Zooでプロフィールを開く",
+    "posts": "公開の投稿",
+    "empty": "公開の投稿はまだありません。",
+    "pagination": "公開投稿のページ切り替え",
+    "latest": "最新の投稿",
+    "older": "過去の投稿",
+    "notFound": "プロフィールが見つかりません。"
   }
 }
