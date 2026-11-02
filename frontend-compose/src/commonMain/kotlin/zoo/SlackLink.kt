@@ -25,16 +25,18 @@ fun readSlackLinkResult(query: Map<String, String?>): SlackLinkResult? {
     return null
 }
 
-/** `complete` の失敗理由。サーバーの HTTP ステータスに対応する (React の `slackLinkErrorReason`) */
-fun slackLinkErrorReason(status: Int?): String =
+/** `complete` の失敗理由。サーバーの HTTP ステータス (409 は本文の `error` も) に対応する (React の `slackLinkErrorReason`) */
+fun slackLinkErrorReason(status: Int?, body: JsonObject? = null): String =
     when (status) {
+        409 if body?.text("error") == "linked_other_account" -> "linked_other_account"
         400 -> "invalid_state"
         403 -> "team_mismatch"
         409 -> "already_linked"
         else -> "failed"
     }
 
-private val slackLinkErrors = setOf("denied", "invalid_state", "team_mismatch", "already_linked")
+private val slackLinkErrors =
+    setOf("denied", "invalid_state", "team_mismatch", "already_linked", "linked_other_account")
 
 /** 各ユーザーによる Slack アカウントの連携 (#291)。React の `SlackLinkPanel` に対応する。 */
 class SlackLinkController(
@@ -123,7 +125,7 @@ class SlackLinkController(
                     } catch (cause: Exception) {
                         error =
                             "slackLink.errors." +
-                                slackLinkErrorReason((cause as? ApiException)?.status)
+                                (cause as? ApiException).let { slackLinkErrorReason(it?.status, it?.body) }
                         // 初期の読み込みは捨てているので、連携をやり直せるよう状態を読み直す
                         load()
                     } finally {

@@ -754,6 +754,7 @@
       "invalid_state": "連結要求已過期或無效。請再試一次。",
       "team_mismatch": "這是其他 Slack 工作區的帳號。",
       "already_linked": "這個 Slack 帳號已連結到其他 Zoo 帳號。",
+      "linked_other_account": "你已連結了另一個 Slack 帳號。要切換帳號，請先解除連結。",
       "failed": "無法與 Slack 連結。"
     },
     "manifestTitle": "Slack 應用程式 manifest",

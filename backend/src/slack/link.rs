@@ -378,6 +378,9 @@ async fn exec(
     Ok(())
 }
 
+/// 連携中の Zoo ユーザーが、別の Slack アカウントで連携し直そうとした
+const LINKED_OTHER_ACCOUNT: &str = "linked_other_account";
+
 async fn link_account(
     tx: &mut toasty::Transaction<'_>,
     user: &str,
@@ -399,6 +402,20 @@ async fn link_account(
     .await?;
     if owner.iter().any(|o| o["user_id"] != user) {
         return Err(conflict());
+    }
+    // 別の Slack アカウントへ付け替えると、いまのトークンを失効できないまま失うので、先に解除してもらう
+    let current = query(
+        tx,
+        "SELECT json_build_object('team',team_id,'slack_user',slack_user_id)::text \
+         FROM slack_user_links WHERE user_id=$1 FOR UPDATE",
+        &[user],
+    )
+    .await?;
+    if current
+        .iter()
+        .any(|c| c["team"] != team.id.as_str() || c["slack_user"] != slack_user)
+    {
+        return Err(AppError::Conflict(LINKED_OTHER_ACCOUNT.into()));
     }
 
     exec(

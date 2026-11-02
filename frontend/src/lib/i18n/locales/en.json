@@ -754,6 +754,7 @@
       "invalid_state": "The link request expired or is invalid. Please try again.",
       "team_mismatch": "That account belongs to a different Slack workspace.",
       "already_linked": "This Slack account is already linked to another Zoo account.",
+      "linked_other_account": "You are already linked to a different Slack account. Unlink it first to switch accounts.",
       "failed": "Couldn't link with Slack."
     },
     "manifestTitle": "Slack app manifest",

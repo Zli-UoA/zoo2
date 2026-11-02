@@ -754,6 +754,7 @@
       "invalid_state": "关联请求已过期或无效。请重试。",
       "team_mismatch": "这是其他 Slack 工作区的账号。",
       "already_linked": "这个 Slack 账号已关联到其他 Zoo 账号。",
+      "linked_other_account": "你已关联了另一个 Slack 账号。要切换账号，请先解除关联。",
       "failed": "无法与 Slack 关联。"
     },
     "manifestTitle": "Slack 应用 manifest",

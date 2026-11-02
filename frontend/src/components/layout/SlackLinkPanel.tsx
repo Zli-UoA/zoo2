@@ -35,6 +35,7 @@ const LINK_ERRORS = {
   invalid_state: "slackLink.errors.invalid_state",
   team_mismatch: "slackLink.errors.team_mismatch",
   already_linked: "slackLink.errors.already_linked",
+  linked_other_account: "slackLink.errors.linked_other_account",
   failed: "slackLink.errors.failed",
 } as const;
 
@@ -91,7 +92,11 @@ export function SlackLinkPanel({ navigateTo = (url: string) => window.location.a
         toast.success(t("slackLink.linked"));
       })
       .catch((cause) => {
-        fail(slackLinkErrorReason(cause instanceof ApiError ? cause.status : null));
+        fail(
+          cause instanceof ApiError
+            ? slackLinkErrorReason(cause.status, cause.body)
+            : slackLinkErrorReason(null),
+        );
         // 初期の読み込みは捨てているので、連携をやり直せるよう状態を読み直す
         const started = ++revision.current;
         getSlackLink(client)

@@ -66,8 +66,16 @@ export function readSlackLinkResult(search: Record<string, unknown>): SlackLinkR
   return null;
 }
 
-/** `complete` の失敗理由。サーバーの HTTP ステータスに対応する */
-export function slackLinkErrorReason(status: number | null): string {
+/** `complete` の失敗理由。サーバーの HTTP ステータス (409 は本文の `error` も) に対応する */
+export function slackLinkErrorReason(status: number | null, body?: unknown): string {
+  if (
+    status === 409 &&
+    typeof body === "object" &&
+    body !== null &&
+    (body as { error?: unknown }).error === "linked_other_account"
+  ) {
+    return "linked_other_account";
+  }
   switch (status) {
     case 400:
       return "invalid_state";

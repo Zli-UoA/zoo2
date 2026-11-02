@@ -100,6 +100,7 @@ async fn mock_slack(team: &str) -> MockServer {
     for (code, slack_user, team_id) in [
         ("code-alice", "U1", team),
         ("code-carol", "U1", team),
+        ("code-other-alice", "U3", team),
         ("code-other-team", "U2", "TOTHER"),
     ] {
         Mock::given(method("POST"))
@@ -156,6 +157,14 @@ async fn test_slack_account_link_reassigns_placeholder() -> anyhow::Result<()> {
         .and(header_is("authorization", "Bearer xoxp-code-carol"))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({"ok": true})))
         .expect(0)
+        .mount(&slack)
+        .await;
+    // 別の Slack アカウントへの付け替えは拒否し、受け取ったトークンは使わないので失効させる
+    Mock::given(method("POST"))
+        .and(path("/auth.revoke"))
+        .and(header_is("authorization", "Bearer xoxp-code-other-alice"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"ok": true})))
+        .expect(1)
         .mount(&slack)
         .await;
     // 別のワークスペースのトークンは使わないので失効させる
@@ -401,6 +410,23 @@ async fn test_slack_account_link_reassigns_placeholder() -> anyhow::Result<()> {
     )
     .await?;
     assert_eq!(status, StatusCode::FORBIDDEN);
+
+    // 連携中に別の Slack アカウントで連携し直すと、いまのトークンを失わないよう拒否する
+    let (_, started, _) =
+        request(&app, "POST", "/api/slack/oauth/start", Some(&alice), None).await?;
+    let alice_state = query_param(started["authorize_url"].as_str().unwrap(), "state");
+    let (status, body, _) = request(
+        &app,
+        "POST",
+        "/api/slack/oauth/complete",
+        Some(&alice),
+        Some(json!({"code": "code-other-alice", "state": alice_state})),
+    )
+    .await?;
+    assert_eq!(status, StatusCode::CONFLICT);
+    assert_eq!(body["error"], "linked_other_account");
+    let (_, still, _) = request(&app, "GET", "/api/slack/link", Some(&alice), None).await?;
+    assert_eq!(still["link"]["slack_user_id"], "U1");
 
     // 失効に失敗したら連携 (トークン) を残し、もう一度解除して再試行できる
     let (status, _, _) = request(&app, "DELETE", "/api/slack/link", Some(&alice), None).await?;

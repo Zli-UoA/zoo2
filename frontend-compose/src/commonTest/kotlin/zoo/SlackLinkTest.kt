@@ -29,6 +29,10 @@ class SlackLinkTest {
         assertEquals("invalid_state", slackLinkErrorReason(400))
         assertEquals("team_mismatch", slackLinkErrorReason(403))
         assertEquals("already_linked", slackLinkErrorReason(409))
+        assertEquals(
+            "linked_other_account",
+            slackLinkErrorReason(409, obj("error" to "linked_other_account")),
+        )
         assertEquals("failed", slackLinkErrorReason(502))
     }
 

@@ -754,6 +754,7 @@
       "invalid_state": "連携の有効期限が切れたか、不正な要求です。もう一度お試しください。",
       "team_mismatch": "このワークスペースとは別の Slack ワークスペースのアカウントです。",
       "already_linked": "この Slack アカウントは別の Zoo アカウントと連携済みです。",
+      "linked_other_account": "すでに別の Slack アカウントと連携しています。切り替えるには、先に連携を解除してください。",
       "failed": "Slack との連携に失敗しました。"
     },
     "manifestTitle": "Slack アプリの manifest",

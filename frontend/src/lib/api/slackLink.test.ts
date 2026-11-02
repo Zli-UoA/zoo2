@@ -48,6 +48,9 @@ describe("slackLinkErrorReason", () => {
     expect(slackLinkErrorReason(400)).toBe("invalid_state");
     expect(slackLinkErrorReason(403)).toBe("team_mismatch");
     expect(slackLinkErrorReason(409)).toBe("already_linked");
+    expect(slackLinkErrorReason(409, { error: "linked_other_account" })).toBe(
+      "linked_other_account",
+    );
     expect(slackLinkErrorReason(502)).toBe("failed");
     expect(slackLinkErrorReason(null)).toBe("failed");
   });
