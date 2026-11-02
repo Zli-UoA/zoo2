@@ -829,9 +829,7 @@ async fn test_call_stream_lifecycle_and_room_closure() -> anyhow::Result<()> {
 
     // 1. LISTEN 停止中の 503 検証 ([P1], [P2])
     state.call_registry.set_listening(false);
-    let stream_path = format!(
-        "/api/channels/{channel_id}/call/stream?session_id={session_alice}"
-    );
+    let stream_path = format!("/api/channels/{channel_id}/call/stream?session_id={session_alice}");
     let req_503 = Request::builder()
         .method("GET")
         .uri(&stream_path)
@@ -909,12 +907,11 @@ async fn test_call_stream_lifecycle_and_room_closure() -> anyhow::Result<()> {
     // 5. close_room による全 presence 削除
     state.call_registry.close_room(&db, &channel_id).await?;
 
-    let remaining = toasty::sql::query(
-        "SELECT session_id::text FROM call_presence WHERE channel_id = $1",
-    )
-    .bind(channel_id.clone())
-    .exec(&mut db)
-    .await?;
+    let remaining =
+        toasty::sql::query("SELECT session_id::text FROM call_presence WHERE channel_id = $1")
+            .bind(channel_id.clone())
+            .exec(&mut db)
+            .await?;
     assert!(remaining.is_empty());
 
     // 6. キックによる presence 削除の検証
@@ -937,7 +934,12 @@ async fn test_call_stream_lifecycle_and_room_closure() -> anyhow::Result<()> {
     let (tx_charlie, _rx_charlie) = tokio::sync::mpsc::channel(256);
     state
         .call_registry
-        .register_local_session(session_charlie, channel_id.clone(), charlie.clone(), tx_charlie)
+        .register_local_session(
+            session_charlie,
+            channel_id.clone(),
+            charlie.clone(),
+            tx_charlie,
+        )
         .await;
     toasty::sql::statement(
         "INSERT INTO call_presence (
