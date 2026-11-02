@@ -578,11 +578,19 @@ for (const implementation of ["react", "compose"] as const) {
     await expect.poll(async () => (await state()).uploadRequests.length).toBe(3);
     await expect(page.getByText("ファイルをアップロード中…", { exact: true }).first()).toBeHidden();
     await request.post("https://127.0.0.1:4187/__attachment-failures", { data: { message: true } });
-    await page.getByRole("button", { name: "送信", exact: true }).click({ force: native });
+    await expect(async () => {
+      const send = page.getByRole("button", { name: "送信", exact: true });
+      await expect(send).toBeVisible({ timeout: 1000 });
+      await send.click({ force: native, timeout: 1000 });
+    }).toPass({ timeout: 5000 });
     await expect.poll(async () => (await state()).failMessage).toBe(false);
     await expect(page.getByRole("button", { name: "upload.pngを削除", exact: true })).toBeVisible();
     await expect(page.getByRole("button", { name: "送信", exact: true })).toBeEnabled();
-    await page.getByRole("button", { name: "送信", exact: true }).click({ force: native });
+    await expect(async () => {
+      const send = page.getByRole("button", { name: "送信", exact: true });
+      await expect(send).toBeVisible({ timeout: 1000 });
+      await send.click({ force: native, timeout: 1000 });
+    }).toPass({ timeout: 5000 });
     const link = page.getByRole("button", { name: "upload.pngをプレビュー", exact: true });
     await expect(link).toBeVisible({ timeout: 30000 });
     await expect.poll(async () => (await state()).attachments.length).toBe(1);
@@ -817,5 +825,31 @@ for (const implementation of ["react", "compose"] as const) {
     await expect(page.getByRole("heading", { name: "メンバー", level: 1 })).toBeHidden();
     await expect(page.getByRole("heading", { name: "general", exact: true })).toBeVisible();
     expect(new URL(page.url()).searchParams.get("members")).toBeNull();
+  });
+}
+
+for (const implementation of ["react", "compose"] as const) {
+  test(`${implementation}: nested thread roots remain visible and accept replies`, async ({
+    page,
+    request,
+  }) => {
+    await request.post("https://127.0.0.1:4187/__reset");
+    await open(page, implementation, "/channels/c1?thread=m2");
+    await expect(page.getByText("返信の本文", { exact: true })).toBeVisible();
+    const editor = page.getByRole("textbox", { name: "返信を送信", exact: true });
+    await expect(editor).toBeVisible();
+    if (implementation === "compose") await fillNative(page, editor, "入れ子の返信");
+    else await editor.fill("入れ子の返信");
+    await expect(async () => {
+      const send = page.getByRole("button", { name: "送信", exact: true }).last();
+      await expect(send).toBeVisible({ timeout: 1000 });
+      await send.click({ force: implementation === "compose", timeout: 1000 });
+    }).toPass({ timeout: 5000 });
+    await expect(page.getByText("入れ子の返信", { exact: true })).toBeVisible();
+    const state = await (await request.get("https://127.0.0.1:4187/__state")).json();
+    expect(state.messages.at(-1)).toMatchObject({ parent_id: "m2", content: "入れ子の返信" });
+    await page.reload();
+    await expect(page.getByText("返信の本文", { exact: true })).toBeVisible();
+    await expect(page.getByText("入れ子の返信", { exact: true })).toBeVisible();
   });
 }

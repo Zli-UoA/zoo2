@@ -144,6 +144,17 @@ export const homeInteractions: Record<string, Step[]> = {
     role("button", "ホーム", { pressed: true }),
     fixture("homeRememberedTimeline"),
   ],
+  "channel-reply-audience": [
+    button("返信 0"),
+    role("dialog", "近況を投稿"),
+    button("公開範囲: ホーム"),
+    role("menuitemradio", "フォロワー限定", { enabled: false }),
+    { action: "key", key: "Escape" },
+    type("チャンネルへの返信"),
+    send,
+    closed,
+    fixture("homeChannelReplyPosted"),
+  ],
   "remembered-reply-constraints": [
     button("返信 0"),
     role("dialog", "近況を投稿"),

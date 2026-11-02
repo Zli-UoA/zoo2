@@ -33,7 +33,8 @@ fun HomePostCard(
     var editError by remember { mutableStateOf(false) }
     val own = post.text("user_id") == app.config.userId && !post.flag("remote")
     Column(
-        Modifier.fillMaxWidth().then(webControlModifier("article")).padding(16.dp),
+        Modifier.fillMaxWidth().then(webControlModifier("article"))
+            .nativeNavigation("/home/posts/${post.text("id").encodeURLParameter()}", role = null).padding(16.dp),
         verticalArrangement = Arrangement.spacedBy(8.dp),
     ) {
         if (showParent && post.text("parent_id").isNotEmpty()) {

@@ -34,6 +34,10 @@ CREATE VIEW federated_notifications AS
   FROM notification_events WHERE source = 'activitypub';
 
 -- Preserve IDs, timestamps and read state. Lock both sources for an atomic handover.
+-- Atlas replays statements without a surrounding transaction during validation.
+-- Keep locking, backfill and compatibility-trigger installation atomic in both paths.
+DO $inbox_migration$
+BEGIN
 LOCK TABLE notifications, apub_notifications IN SHARE ROW EXCLUSIVE MODE;
 INSERT INTO notification_events(id,user_id,actor_id,channel_id,message_id,notification_type,is_read,created_at)
   SELECT id,user_id,actor_id,channel_id,message_id,notification_type,is_read,created_at FROM notifications;
@@ -80,3 +84,5 @@ CREATE TRIGGER apub_notifications_sync_inbox AFTER INSERT OR UPDATE OR DELETE ON
   FOR EACH ROW EXECUTE FUNCTION sync_notification_events();
 CREATE TRIGGER notification_events_sync_inbox AFTER INSERT OR UPDATE OR DELETE ON notification_events
   FOR EACH ROW EXECUTE FUNCTION sync_notification_events();
+END;
+$inbox_migration$;

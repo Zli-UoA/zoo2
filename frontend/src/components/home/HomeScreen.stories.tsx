@@ -1833,3 +1833,51 @@ export const TextWithImage: Story = {
     await expect(within(canvasElement).getByText("画像と本文の投稿")).toBeVisible();
   }),
 };
+
+let channelReplySent = false;
+export const ChannelReplyAudience: Story = {
+  beforeEach: () => {
+    channelReplySent = false;
+    localStorage.setItem(
+      postSettingsKey,
+      JSON.stringify({ visibility: "followers", apub: false, channel_id: "channel-general" }),
+    );
+  },
+  parameters: {
+    fixtureControls: {
+      homeChannelReplyPosted: () => waitFor(() => expect(channelReplySent).toBe(true)),
+    },
+    msw: {
+      handlers: [
+        http.get("*/api/home", () =>
+          HttpResponse.json([
+            { ...posts[0], channel_id: "channel-general", visibility: "unlisted", apub: false },
+          ]),
+        ),
+        http.post("*/api/home", async ({ request }) => {
+          await expect(await request.json()).toMatchObject({
+            in_reply_to: posts[0].id,
+            channel_id: null,
+            visibility: "unlisted",
+          });
+          channelReplySent = true;
+          return HttpResponse.json({ id: "channel-reply" }, { status: 201 });
+        }),
+      ],
+    },
+  },
+  play: playForImplementation(async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await userEvent.click(await canvas.findByRole("button", { name: "返信 0" }));
+    const form = await visibleDialog("近況を投稿");
+    await userEvent.click(form.getByRole("button", { name: "公開範囲: ホーム" }));
+    await expect(
+      await screen.findByRole("menuitemradio", { name: "フォロワー限定" }),
+    ).toHaveAttribute("aria-disabled", "true");
+    await userEvent.keyboard("{Escape}");
+    await userEvent.type(form.getByRole("textbox", { name: "近況を投稿" }), "チャンネルへの返信");
+    await userEvent.click(form.getByRole("button", { name: /^投稿$/ }));
+    await expectComposerClosed();
+    await waitFor(() => expect(channelReplySent).toBe(true));
+  }),
+};

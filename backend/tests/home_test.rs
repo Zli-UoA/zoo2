@@ -598,7 +598,7 @@ async fn home_returns_attachment_metadata_for_visible_posts_and_reply_previews()
         &app,
         "GET",
         Some(&viewer),
-        "/api/home?timeline=social",
+        &format!("/api/home?timeline=social&author={owner}"),
         None,
     )
     .await?;
@@ -650,5 +650,179 @@ async fn home_returns_attachment_metadata_for_visible_posts_and_reply_previews()
     )
     .await?;
     assert!(!feed.to_string().contains(&attachment_ids[0]));
+    Ok(())
+}
+
+#[tokio::test]
+async fn replies_derive_the_channel_from_the_parent_and_nonmembers_can_reply_in_home()
+-> anyhow::Result<()> {
+    let mut config = Config::from_env();
+    config.dev_auth_enabled = true;
+    let mut db = init_db(&config.database_url).await?;
+    let app = create_router(AppState::new(db.clone(), config));
+    let owner = uuid::Uuid::new_v4().to_string();
+    let member = uuid::Uuid::new_v4().to_string();
+    let outsider = uuid::Uuid::new_v4().to_string();
+    for id in [&owner, &member, &outsider] {
+        toasty::sql::statement("INSERT INTO users(id,user_name,display_name) VALUES($1,$1,$1)")
+            .bind(id.as_str())
+            .exec(&mut db)
+            .await?;
+    }
+    let channel = uuid::Uuid::new_v4().to_string();
+    toasty::sql::statement(
+        "INSERT INTO channels(id,channel_name,created_user_id,is_private) VALUES($1,$1,$2,false)",
+    )
+    .bind(channel.as_str())
+    .bind(owner.as_str())
+    .exec(&mut db)
+    .await?;
+    for user in [&owner, &member] {
+        toasty::sql::statement(
+            "INSERT INTO channel_user(user_id,channel_id,joined_at) VALUES($1,$2,now())",
+        )
+        .bind(user.as_str())
+        .bind(channel.as_str())
+        .exec(&mut db)
+        .await?;
+    }
+    let (status, parent) = request(
+        &app,
+        "POST",
+        Some(&owner),
+        "/api/home",
+        Some(json!({"content":"Channel parent","channel_id":channel})),
+    )
+    .await?;
+    assert_eq!(status, StatusCode::CREATED);
+    let parent_id = parent["id"].as_str().unwrap();
+    for (actor, expected_channel) in [(&member, Some(channel.as_str())), (&outsider, None)] {
+        let (status, reply)=request(&app,"POST",Some(actor),"/api/home",Some(json!({"content":"reply","in_reply_to":parent_id,"channel_id":"stale-composer-preference"}))).await?;
+        assert_eq!(status, StatusCode::CREATED, "{reply}");
+        let reply_id = reply["id"].as_str().unwrap();
+        let (_, detail) = request(
+            &app,
+            "GET",
+            Some(actor),
+            &format!("/api/home/{reply_id}"),
+            None,
+        )
+        .await?;
+        assert_eq!(detail["channel_id"], json!(expected_channel));
+        assert_eq!(detail["parent_id"], parent_id);
+        let mut tx = db.transaction().await?;
+        let rows=backend::apps::query(&mut tx,"SELECT json_build_object('source',source)::text FROM notification_events WHERE user_id=$1 AND (message_id=$2 OR post_id=$2)",&[&owner,reply_id]).await?;
+        assert_eq!(
+            rows.len(),
+            1,
+            "one logical reply must create one notification"
+        );
+        assert_eq!(
+            rows[0]["source"],
+            if expected_channel.is_some() {
+                "channel"
+            } else {
+                "activitypub"
+            }
+        );
+    }
+    let (_, plain) = request(
+        &app,
+        "POST",
+        Some(&owner),
+        "/api/home",
+        Some(json!({"content":"Home parent"})),
+    )
+    .await?;
+    let (status, reply) = request(
+        &app,
+        "POST",
+        Some(&member),
+        "/api/home",
+        Some(json!({"content":"Home reply","in_reply_to":plain["id"],"channel_id":channel})),
+    )
+    .await?;
+    assert_eq!(status, StatusCode::CREATED);
+    let (_, detail) = request(
+        &app,
+        "GET",
+        Some(&member),
+        &format!("/api/home/{}", reply["id"].as_str().unwrap()),
+        None,
+    )
+    .await?;
+    assert!(detail["channel_id"].is_null());
+    Ok(())
+}
+
+#[tokio::test]
+async fn reply_link_migration_repairs_legacy_placement_and_missing_descendants()
+-> anyhow::Result<()> {
+    let config = Config::from_env();
+    let (mut client, connection) =
+        tokio_postgres::connect(&config.database_url, tokio_postgres::NoTls).await?;
+    let driver = tokio::spawn(connection);
+    let tx = client.transaction().await?;
+    let owner = uuid::Uuid::new_v4().to_string();
+    let channel = uuid::Uuid::new_v4().to_string();
+    let ids: Vec<_> = (0..4).map(|_| uuid::Uuid::new_v4().to_string()).collect();
+    tx.execute(
+        "INSERT INTO users(id,user_name,display_name) VALUES($1::text,$1::text,'Legacy')",
+        &[&owner],
+    )
+    .await?;
+    tx.execute(
+        "INSERT INTO channels(id,channel_name,created_user_id,is_private) VALUES($1::text,$1::text,$2,false)",
+        &[&channel, &owner],
+    )
+    .await?;
+    tx.execute("INSERT INTO home_posts(id,user_id,channel_id,content,visibility) VALUES($1,$2,$3,'parent','unlisted')",&[&ids[0],&owner,&channel]).await?;
+    tx.execute("INSERT INTO home_posts(id,user_id,channel_id,content,parent_id,visibility) VALUES($1,$2,$3,'legacy reply',$4,'unlisted')",&[&ids[1],&owner,&channel,&ids[0]]).await?;
+    tx.execute("UPDATE messages SET parent_id=NULL WHERE id=$1", &[&ids[1]])
+        .await?;
+    for index in 2..4 {
+        tx.execute("INSERT INTO messages(id,user_id,channel_id,content,parent_id) VALUES($1,$2,$3,'missing descendant',$4)",&[&ids[index],&owner,&channel,&ids[index-1]]).await?;
+        tx.execute("DELETE FROM home_posts WHERE id=$1", &[&ids[index]])
+            .await?;
+        tx.execute(
+            "UPDATE messages SET home_post_id=NULL WHERE id=$1",
+            &[&ids[index]],
+        )
+        .await?;
+    }
+    tx.batch_execute(include_str!(
+        "../../infra/db/migrations/20261102150000_repair_reply_links.sql"
+    ))
+    .await?;
+    let parent: String = tx
+        .query_one("SELECT parent_id FROM messages WHERE id=$1", &[&ids[1]])
+        .await?
+        .get(0);
+    assert_eq!(parent, ids[0]);
+    for index in 2..4 {
+        let row = tx
+            .query_one(
+                "SELECT parent_id,visibility,apub,reply_user_id FROM home_posts WHERE id=$1",
+                &[&ids[index]],
+            )
+            .await?;
+        assert_eq!(row.get::<_, String>(0), ids[index - 1]);
+        assert_eq!(row.get::<_, String>(1), "unlisted");
+        assert!(!row.get::<_, bool>(2));
+        assert_eq!(row.get::<_, String>(3), owner);
+    }
+    // An edit after the migration no longer changes the already-reconciled placement.
+    tx.execute(
+        "UPDATE messages SET content='edited' WHERE id=$1",
+        &[&ids[1]],
+    )
+    .await?;
+    let parent: String = tx
+        .query_one("SELECT parent_id FROM messages WHERE id=$1", &[&ids[1]])
+        .await?
+        .get(0);
+    assert_eq!(parent, ids[0]);
+    tx.rollback().await?;
+    driver.abort();
     Ok(())
 }

@@ -66,7 +66,7 @@ class HomeComposerState(internal val settingsKey: String? = null) {
         if (sending || !preferencesReady) return
         replyTarget = post
         channelId = ""
-        visibility = homeReplyVisibility(visibility, post.text("visibility"))
+        visibility = homeReplyVisibility(visibility, post.text("visibility"), post.text("channel_id").isNotBlank())
         opened = true
         focusOnOpen?.invoke()
     }
@@ -219,6 +219,7 @@ fun HomeComposer(
                             )
                             .forEach { (value, icon) ->
                                 val enabled =
+                                    !(reply?.text("channel_id").orEmpty().isNotBlank() && value == "followers") &&
                                     !(reply?.text("visibility") == "followers" &&
                                         value != "followers") &&
                                         !(reply?.text("visibility") == "unlisted" &&

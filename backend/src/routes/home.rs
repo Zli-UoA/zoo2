@@ -97,27 +97,9 @@ async fn create(
             ));
         }
     }
-    // A reply to a channel post belongs to that same conversation in both views.
-    if let Some(parent_channel) = parent.as_ref().and_then(|p| p["channel_id"].as_str()) {
-        if body
-            .channel_id
-            .as_deref()
-            .is_some_and(|c| c != parent_channel)
-        {
-            return Err(AppError::BadRequest(
-                "Reply channel must match its parent".into(),
-            ));
-        }
-        body.channel_id = Some(parent_channel.to_owned());
-    } else if parent.is_some() && body.channel_id.is_some() {
-        return Err(AppError::BadRequest(
-            "A channel reply requires a parent in the same channel".into(),
-        ));
-    }
-    if body.channel_id.is_some() && body.visibility == "followers" {
-        return Err(AppError::BadRequest(
-            "Channel replies cannot use a followers-only audience".into(),
-        ));
+    // The reply target, never a saved composer preference, determines its channel.
+    if let Some(parent) = &parent {
+        body.channel_id = parent["channel_id"].as_str().map(str::to_owned);
     }
     let parent_uri = parent.as_ref().and_then(|p| {
         if p["remote"] == true {
@@ -149,6 +131,23 @@ async fn create(
     }
     let mut db = state.db.clone();
     let mut tx = db.transaction().await?;
+    // A nonmember can still reply to a public channel post in Home. Do not
+    // silently join the channel or bypass channel posting permissions.
+    if parent.is_some()
+        && let Some(channel) = &body.channel_id
+    {
+        let member = query(&mut tx,
+                "SELECT json_build_object('id',user_id)::text FROM channel_user WHERE user_id=$1 AND channel_id=$2",
+                &[&user.id, channel]).await?;
+        if member.is_empty() {
+            body.channel_id = None;
+        }
+    }
+    if body.channel_id.is_some() && body.visibility == "followers" {
+        return Err(AppError::BadRequest(
+            "Channel replies cannot use a followers-only audience".into(),
+        ));
+    }
     if let Some(channel) = &body.channel_id {
         let actor = crate::apps::events::Actor {
             user: user.clone(),
@@ -168,6 +167,7 @@ async fn create(
         .bind(id.as_str()).bind(user.id.as_str()).bind(body.content).bind(body.apub.to_string()).bind(body.visibility).bind(body.channel_id.as_deref().unwrap_or("")).bind(body.in_reply_to.as_deref().unwrap_or("")).bind(parent_uri.as_deref().unwrap_or("")).bind(reply_actor.as_deref().unwrap_or("")).bind(reply_user.unwrap_or("")).exec(&mut tx).await?;
     if let Some(recipient) = reply_user
         && recipient != user.id
+        && body.channel_id.is_none()
     {
         activitypub::interactions::notify(
             &mut tx,

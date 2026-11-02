@@ -39,7 +39,8 @@ internal fun parseHomePostSettings(raw: String): Row {
     return obj("visibility" to visibility, "apub" to apub, "channel_id" to channel)
 }
 
-internal fun homeReplyVisibility(current: String, parent: String): String = when {
+internal fun homeReplyVisibility(current: String, parent: String, channelLinked: Boolean = false): String = when {
+    channelLinked && current == "followers" -> if (parent == "unlisted") "unlisted" else "public"
     parent == "followers" -> "followers"
     parent == "unlisted" && current == "public" -> "unlisted"
     else -> current

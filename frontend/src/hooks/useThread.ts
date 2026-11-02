@@ -18,6 +18,20 @@ export function useThreadFeed(channelId: string | null, rootId: string | null, s
   );
 }
 
+/** Resolve a thread root from the same collection, including nested replies. */
+export function useThreadRoot(channelId: string | null, rootId: string | null) {
+  const { messages, users } = useCollections();
+  return useLiveQuery((q) =>
+    channelId && rootId
+      ? messageFeedQuery(
+          q,
+          { messages: messages(channelId), users },
+          { parentId: null, messageId: rootId },
+        )
+      : undefined,
+  );
+}
+
 /**
  * チャンネル内の返信を `parent_id` ごとに数える。`reply_count` カラムは
  * 持たないため、削除されていない返信の行からクライアントで集計する。

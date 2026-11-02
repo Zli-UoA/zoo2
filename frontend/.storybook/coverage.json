@@ -503,6 +503,7 @@
         "RememberPostSettingsMobile",
         "RememberTimeline",
         "RememberedReplyConstraints",
+        "ChannelReplyAudience",
         "RememberedChannelUnavailable",
         "RememberedAccountIsolation",
         "PostingWithoutSavedIdentity",

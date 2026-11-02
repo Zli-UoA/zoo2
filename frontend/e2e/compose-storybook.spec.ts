@@ -699,3 +699,63 @@ for (const story of [
     }
   });
 }
+
+for (const implementation of ["react", "kotlin"] as const) {
+  for (const width of [1440, 390]) {
+    test(`Channel reply audience respects saved preferences: ${implementation} ${width}`, async ({
+      page,
+    }) => {
+      await page.setViewportSize({ width, height: 900 });
+      const posts: unknown[] = [];
+      page.on("request", (request) => {
+        if (request.url().endsWith("/api/home") && request.method() === "POST")
+          posts.push(request.postDataJSON());
+      });
+      await page.goto(
+        `/iframe.html?id=pages-home--channel-reply-audience&viewMode=story&globals=implementation:${implementation}`,
+      );
+      if (implementation === "kotlin")
+        await expect(page.locator("[data-compose-catalog-state=ready]")).toBeVisible({
+          timeout: 90000,
+        });
+      await waitForStoryPlay(page);
+      expect(posts).toContainEqual(
+        expect.objectContaining({
+          in_reply_to: "home-post",
+          channel_id: null,
+          visibility: "unlisted",
+        }),
+      );
+    });
+  }
+}
+
+for (const width of [1440, 390]) {
+  test(`Kotlin image-only post opens its detail from card padding: ${width}`, async ({ page }) => {
+    await page.setViewportSize({ width, height: 900 });
+    await page.goto(`/iframe.html?id=pages-home--image-only&${nativeQuery}`);
+    await expect(page.locator("[data-compose-catalog-state=ready]")).toBeVisible({
+      timeout: 90000,
+    });
+    await waitForStoryPlay(page);
+    const screen = page.frameLocator('iframe[title="Kotlin component preview"]');
+    await screen.locator("body").evaluate(() => {
+      window.addEventListener("zoo:navigation-intent", (event) => {
+        (window as typeof window & { __paddingNavigation?: string }).__paddingNavigation = (
+          event as CustomEvent<{ url: string }>
+        ).detail.url;
+      });
+    });
+    const bounds = await screen.getByRole("article").boundingBox();
+    await page.mouse.click(bounds!.x + bounds!.width - 4, bounds!.y + 4);
+    await expect
+      .poll(() =>
+        screen
+          .locator("body")
+          .evaluate(
+            () => (window as typeof window & { __paddingNavigation?: string }).__paddingNavigation,
+          ),
+      )
+      .toContain("/home/posts/home-image-only");
+  });
+}

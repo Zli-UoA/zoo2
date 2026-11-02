@@ -146,3 +146,10 @@ ActivityPubの追加ページは既読・承認・WebSocket更新で破棄せず
 検証: 通知関連のReact単体テスト67件・Story操作39件、API統合テスト23件、Kotlinブラウザーテスト79件とWasm配布ビルドが成功。React/Composeの1440px・390pxで新着順・アバター右下の通常／カスタム絵文字・選択IDによる自動既読を確認し、Composeの承認・拒否・追加ページ・失敗時操作も4ケース成功。フロントエンドのformat・型・lint、Storybook監査・ビルドも成功。
 
 通知のDB管理は `notification_events` に統合した。既存のReact/Compose用DTO・通知Shapeの8列は保ち、Shapeの参照先と既読APIの保存先を共通化した。クライアントの変更は不要で、両実装の全件既読が同じDB上の状態に反映される。移行・互換テーブル・API契約は [notifications.md](notifications.md) を参照する。
+
+
+## PR #312 レビュー・CI対応
+
+Reactはスレッドのルートを返信を含む同じメッセージコレクションから解決する。Composeは `?thread=<返信ID>` を開く際にもルートを復元する。両実装のHome返信フォームは保存済みチャンネルを送らず、チャンネル連携投稿でフォロワー限定を選択できない。Composeの投稿カードは本文・時刻に加えて余白からも詳細を開く。
+
+検証先: `compose.spec.ts` の子スレッドへの返信・再読み込みと添付の再試行、`ChannelReplyAudience` Storyの両実装・PC/モバイル、画像のみ投稿の余白クリック。通知の新UIに合わせて3枚のVRT基準画像を実描画を確認して更新し、VRT全19件が成功した。Kotlinブラウザーテスト80件、Home／通知DB／typing APIテスト12件、返信リンクの移行、Atlasのdev DB再生・全スキーマ比較も確認した。

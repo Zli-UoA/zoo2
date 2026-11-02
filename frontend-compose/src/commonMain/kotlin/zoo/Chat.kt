@@ -159,6 +159,10 @@ fun Chat(
             }
         }
     }
+    LaunchedEffect(id, app.query["thread"]) {
+        val requested = app.query["thread"]
+        if (requested != null) app.openThread(requested, wide) else app.thread = null
+    }
     LaunchedEffect(id, app.query["message"], all.size) {
         val target = app.query["message"]
         all.find { it.text("id") == target }
