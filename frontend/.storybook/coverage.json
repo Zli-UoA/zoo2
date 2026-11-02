@@ -527,10 +527,6 @@
         "Mobile",
         "Pagination"
       ]
-    },
-    {
-      "file": "src/components/chat/CallBar.stories.tsx",
-      "states": ["Default", "Connecting", "Muted", "Speaking", "MultipleParticipants"]
     }
   ],
   "modules": [
@@ -583,7 +579,8 @@
     },
     {
       "file": "src/components/chat/CallBar.tsx",
-      "story": "src/components/chat/CallBar.stories.tsx"
+      "reason": "通話バーのWebRTCシグナリングおよびUI制御層。マイク操作とPeerライフサイクルはcall-context.test.tsおよびcall-context.tsxで検証する。",
+      "checks": ["src/lib/call/call-context.test.ts", "src/lib/call/call-context.tsx"]
     },
     {
       "file": "src/components/chat/ChannelBrowserDialog.tsx",
