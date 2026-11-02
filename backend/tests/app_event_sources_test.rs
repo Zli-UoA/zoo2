@@ -1152,7 +1152,10 @@ async fn dispatcher_enforces_quota_without_charging_retries() -> anyhow::Result<
     let f = fixture().await?;
     reconfigure(&f,json!({"scopes":["messages:read"],"events":["message.created","app.rate_limited"],"transport":"websocket"})).await?;
     let mut db = f.state.db.clone();
-    // Prepare delivery history at the hourly boundary; source events still come from an API write.
+    // Pin synthetic, acknowledged history inside the quota's lower-bounded window.
+    // A transaction's now() is fixed at BEGIN: seeding 30,000 rows can cross the
+    // wall-clock hour before claim() starts, which otherwise resets the quota.
+    // Moving these rows to the previous window below still verifies expiry.
     let mut tx = db.transaction().await?;
     toasty::sql::statement("UPDATE app_deliveries SET acked_at=now() WHERE installation_id=$1")
         .bind(f.installation.as_str())
@@ -1168,7 +1171,7 @@ async fn dispatcher_enforces_quota_without_charging_retries() -> anyhow::Result<
     )
     .await;
     let mut tx = db.transaction().await?;
-    toasty::sql::statement("INSERT INTO app_deliveries(id,event_id,installation_id,event_type,payload,first_delivered_at,acked_at) SELECT gen_random_uuid()::text,gen_random_uuid()::text,$1,'message.created','{}',now(),now() FROM generate_series(1,30000)").bind(f.installation.as_str()).exec(&mut tx).await?;
+    toasty::sql::statement("INSERT INTO app_deliveries(id,event_id,installation_id,event_type,payload,first_delivered_at,acked_at) SELECT gen_random_uuid()::text,gen_random_uuid()::text,$1,'message.created','{}',now()+interval '1 hour',now() FROM generate_series(1,30000)").bind(f.installation.as_str()).exec(&mut tx).await?;
     tx.commit().await?;
     let warning = apps::delivery::claim(&f.state, &f.installation)
         .await?
