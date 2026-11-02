@@ -1755,3 +1755,14 @@ CREATE TRIGGER apub_notifications_sync_inbox AFTER INSERT OR UPDATE OR DELETE ON
   FOR EACH ROW EXECUTE FUNCTION sync_notification_events();
 CREATE TRIGGER notification_events_sync_inbox AFTER INSERT OR UPDATE OR DELETE ON notification_events
   FOR EACH ROW EXECUTE FUNCTION sync_notification_events();
+
+-- Home images use unguessable capability URLs, including for federated delivery.
+CREATE TABLE home_images (
+  id text PRIMARY KEY,
+  uploader_id text NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  file_size bigint NOT NULL DEFAULT 0,
+  content_type text NOT NULL,
+  name text NOT NULL
+);
+ALTER TABLE home_posts ADD COLUMN media jsonb NOT NULL DEFAULT '[]'::jsonb;
+ALTER TABLE apub_remote_posts ADD COLUMN media jsonb NOT NULL DEFAULT '[]'::jsonb;

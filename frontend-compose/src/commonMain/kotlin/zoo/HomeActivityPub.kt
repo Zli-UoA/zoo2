@@ -1,5 +1,6 @@
 package zoo
 
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.text.InlineTextContent
@@ -191,5 +192,46 @@ fun ActivityPubAvatar(avatar: Row?, name: String, modifier: Modifier = Modifier)
                 contentScale = androidx.compose.ui.layout.ContentScale.Crop,
             )
         else Avatar(obj("display_name" to name), size = 32.dp)
+    }
+}
+
+/** Both authenticated timelines and public profiles use the same image proxy paths. */
+@Composable
+fun HomeMedia(media: List<Row>) {
+    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        media.chunked(2).forEach { pair ->
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                pair.forEach { item -> HomeMediaImage(item, Modifier.weight(1f)) }
+                if (pair.size == 1) Spacer(Modifier.weight(1f))
+            }
+        }
+    }
+}
+
+@Composable
+private fun HomeMediaImage(item: Row, modifier: Modifier) {
+    val app = LocalApp.current
+    val id = item.text("image_id")
+    val path = if (Regex("^[a-f0-9]{64}$").matches(id)) "/api/activitypub/emoji-images/$id"
+        else item.text("url").takeIf { Regex("^/api/home/images/[a-f0-9-]+$").matches(it) }
+    if (path == null) return
+    val url = endpoint(app.config.apiBaseUrl, path)
+    val label = item.text("name").ifEmpty { app.t("home.image") }
+    var bitmap by remember(url) { mutableStateOf<androidx.compose.ui.graphics.ImageBitmap?>(null) }
+    var failed by remember(url) { mutableStateOf(false) }
+    LaunchedEffect(url) {
+        try {
+            app.platform.imageFrames(app.image(url)).collect { bitmap = it }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (_: Exception) { failed = true }
+    }
+    val frame = bitmap
+    val ratio = frame?.let { it.width.toFloat() / it.height } ?: 1f
+    Box(modifier.heightIn(max = 320.dp).aspectRatio(ratio)
+        .clip(androidx.compose.foundation.shape.RoundedCornerShape(8.dp))
+        .clickable { app.platform.action("open:$url") }) {
+        if (frame != null) Image(frame, label, Modifier.fillMaxSize(), contentScale = androidx.compose.ui.layout.ContentScale.Fit)
+        else if (failed) Text(label)
     }
 }

@@ -97,6 +97,7 @@ fun PublicProfileView(app: Session, userId: String, data: Row?, error: Int?, bef
                         Column(Modifier.card().then(webControlModifier("article"))) {
                             Text(app.platform.fullTimestamp(post.text("created_at")), size = 14.sp, muted = true)
                             ActivityPubContent(post.text("content"), post.homeRows("emojis"), modifier = Modifier.padding(top = 8.dp), textStyle = TextStyle(fontSize = 14.sp, lineHeight = 20.sp))
+                            HomeMedia(post.homeRows("media"))
                         }
                     }
                     if (posts.isEmpty()) Text(app.t("publicProfile.empty"), muted = true)

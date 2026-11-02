@@ -18,6 +18,10 @@ Homeのアイコン・表示名・ユーザー名のリンクはAPubユーザー
 
 リモートActorのiconを保存し、TL・ユーザー情報・検索結果・通知のアバターに使用します。画像は既存のHTTPS画像プロキシ（DNS/SSRF対策、サイズ制限、キャッシュ、IP別制限）を共有し、ブラウザから連合先へ直接読み込みません。画像がない・取得できない場合は頭文字を表示します。アイコンと絵文字は画像キャッシュ・取得回数の上限を共有するため、配備後は両方の表示と429の発生状況を確認します。
 
+Homeの投稿画面では画像の選択・貼り付けと、投稿前の確認・削除ができます。PNG・JPEG・GIF・WebPを各8 MiB、最大10枚まで添付でき、本文のない画像のみの投稿にも対応します。送信に失敗しても画像を含む下書きは保持します。TL・単独投稿・公開プロフィールで画像を表示し、チャンネルへの同時投稿では既存の添付表示を使用します。
+
+`POST /api/home/images` に `name`、`content_type`、Base64の `data` を渡すと画像IDを返します。投稿時は `POST /api/home` の `image_ids` にそのIDを指定します。他の利用者がアップロードしたID、重複、10枚を超える指定は拒否します。画像は `home-images/<UUID>` に保存し、推測困難な公開URL `/api/home/images/<UUID>` から署名付き取得URLへ転送します。このURLは連合先の取得にも使用するため、URLを知る相手は画像を取得できます。公開チャンネルのHome投稿に紐付く既存の添付画像もTLと公開プロフィールへ返します。チャンネルが非公開になった場合は、その添付の取得を拒否します。受信したNoteの `attachment` は画像プロキシ経由で表示します。以前のバージョンが保存せず破棄した添付情報は自動復元しません。
+
 ## 公開範囲
 
 以下の外部配送・Note取得は「連合あり」の場合です。「連合なし」はどの公開範囲でも外部配送・未認証のNote取得を行いません。
@@ -145,7 +149,7 @@ Homeの投稿下のリアクションボタンから絵文字を選択できま�
 
 Misskeyの形式は [ApRendererService](https://github.com/misskey-dev/misskey/blob/develop/packages/backend/src/core/activitypub/ApRendererService.ts)、[ApInboxService](https://github.com/misskey-dev/misskey/blob/develop/packages/backend/src/core/activitypub/ApInboxService.ts)、[emojis API](https://github.com/misskey-dev/misskey/blob/develop/packages/backend/src/server/api/endpoints/emojis.ts) の公開実装と照合しています。実際のMisskeyサーバーとの相互接続試験は未実施です。
 
-絵文字画像は、受信タグ・カタログから登録した画像IDだけをZooのプロキシで公開します。任意URLの画像プロキシにはしません。HTTPS・公開IP・DNS固定・リダイレクト禁止を適用し、画像は最大2 MiB、同時取得8件に制限します。サーバー側では成功した画像を5分、取得失敗を30秒キャッシュし、最大128件・合計32 MiBまで保持します。キャッシュにない画像の取得は接続元IPごとに毎分240件、プロセス全体で毎分960件までです。Cloudflare Tunnel用の隔離されたオリジンでは `ACTIVITYPUB_CLOUDFLARE_TUNNEL=true` とし、プライベートIP・loopbackのプロキシ接続から届く `CF-Connecting-IP` を利用者ごとの制限に使います。`compose.stg.yaml` はこの構成を既定で有効にします。CloudflareのPseudo IPv4による上書き時には `CF-Connecting-IPv6` の実IPv6を使用します。公開IPからの直結、または設定が無効な場合は転送ヘッダーを信頼せずTCP接続元を使います。Tunnel設定でヘッダーや接続元が不明な場合は400とし、プロキシ全体の共有枠には戻しません。429には `Retry-After: 60` と `Cache-Control: no-store` を返します。画像登録は未使用30日で削除し、認証済みのTL・通知の閲覧時に使用中の登録を更新します。SVGを含む対応画像には `nosniff` とsandboxのCSPを付けます。
+絵文字画像は、受信タグ・カタログから登録した画像IDだけをZooのプロキシで公開します。任意URLの画像プロキシにはしません。HTTPS・公開IP・DNS固定・リダイレクト禁止を適用し、画像は最大8 MiB、同時取得8件に制限します。サーバー側では成功した画像を5分、取得失敗を30秒キャッシュし、最大128件・合計32 MiBまで保持します。キャッシュにない画像の取得は接続元IPごとに毎分240件、プロセス全体で毎分960件までです。Cloudflare Tunnel用の隔離されたオリジンでは `ACTIVITYPUB_CLOUDFLARE_TUNNEL=true` とし、プライベートIP・loopbackのプロキシ接続から届く `CF-Connecting-IP` を利用者ごとの制限に使います。`compose.stg.yaml` はこの構成を既定で有効にします。CloudflareのPseudo IPv4による上書き時には `CF-Connecting-IPv6` の実IPv6を使用します。公開IPからの直結、または設定が無効な場合は転送ヘッダーを信頼せずTCP接続元を使います。Tunnel設定でヘッダーや接続元が不明な場合は400とし、プロキシ全体の共有枠には戻しません。429には `Retry-After: 60` と `Cache-Control: no-store` を返します。画像登録は未使用30日で削除し、認証済みのTL・通知の閲覧時に使用中の登録を更新します。SVGを含む対応画像には `nosniff` とsandboxのCSPを付けます。
 
 APIの追加・拡張：
 

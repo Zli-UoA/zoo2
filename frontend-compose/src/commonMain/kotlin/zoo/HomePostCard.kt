@@ -174,6 +174,7 @@ fun HomePostCard(
                     }
                 }
                 MessageAttachments(app, post.homeRows("attachments"))
+                if (post.homeRows("attachments").isEmpty()) HomeMedia(post.homeRows("media"))
                 if (post.homeRows("reactions").isNotEmpty())
                     FlowRow(
                         horizontalArrangement = Arrangement.spacedBy(4.dp),

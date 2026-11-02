@@ -43,6 +43,36 @@ pub(super) fn avatar(value: &Value) -> Option<Value> {
         Some(json!({"url":url,"image_id":image_id}))
     })
 }
+pub(super) fn media(value: &Value) -> Vec<Value> {
+    let values = value
+        .as_array()
+        .map(Vec::as_slice)
+        .unwrap_or_else(|| std::slice::from_ref(value));
+    values
+        .iter()
+        .take(10)
+        .filter_map(|item| {
+            let mime = item["mediaType"].as_str().unwrap_or("");
+            if !matches!(
+                mime,
+                "image/png" | "image/jpeg" | "image/gif" | "image/webp"
+            ) {
+                return None;
+            }
+            let mut image = avatar(item)?;
+            image["media_type"] = json!(mime);
+            image["name"] = json!(
+                item["name"]
+                    .as_str()
+                    .unwrap_or("")
+                    .chars()
+                    .take(1000)
+                    .collect::<String>()
+            );
+            Some(image)
+        })
+        .collect()
+}
 pub(super) fn tags(value: &Value) -> Vec<Value> {
     static NAME: std::sync::LazyLock<regex::Regex> =
         std::sync::LazyLock::new(|| regex::Regex::new(r"^:[A-Za-z0-9_+\-]{1,100}:$").unwrap());
@@ -227,7 +257,8 @@ async fn load_image(url: reqwest::Url) -> Result<emoji_cache::Image, AppError> {
         .await
         .map_err(|_| AppError::BadGateway("Emoji image transfer failed".into()))?
     {
-        if data.len() + chunk.len() > 2 * 1024 * 1024 {
+        // Home photos share this DNS-pinned proxy and the 32 MiB total cache budget.
+        if data.len() + chunk.len() > 8 * 1024 * 1024 {
             return Err(AppError::BadGateway("Emoji image too large".into()));
         }
         data.extend_from_slice(&chunk);

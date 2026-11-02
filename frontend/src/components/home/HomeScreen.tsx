@@ -60,6 +60,7 @@ import {
 import type { AttachmentMetadata } from "../../lib/attachments";
 
 export interface HomePost {
+  media?: import("./HomePostContent").HomeMedia[];
   id: string;
   user_id: string;
   user_name: string;
@@ -630,6 +631,7 @@ function HomeScreenContent({
                           content={post.content}
                           emojis={post.emojis}
                           attachments={post.attachments}
+                          media={post.media}
                         />
                       )}
                       {post.reactions?.length ? (

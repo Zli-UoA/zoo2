@@ -240,6 +240,8 @@ class AttachmentDrafts(
     var error by mutableStateOf<String?>(null)
     var enabled = false
     var acceptFiles = true
+    var acceptedTypes: List<String>? = null
+    var maximumBytes = MAX_ATTACHMENT_BYTES
     private var bounds: Row = JsonObject(emptyMap())
 
     fun updateBounds(left: Float, top: Float, width: Float, height: Float) {
@@ -280,6 +282,8 @@ class AttachmentDrafts(
             }
             handled = true
             val rejected = attachmentRejection(file, items.size)
+                ?: if (acceptedTypes?.let { mime !in it } == true) "unsupported"
+                else if ((file.text("size").toLongOrNull() ?: 0) > maximumBytes) "tooLarge" else null
             if (rejected != null) {
                 if (batchError == null)
                     batchError =
@@ -367,7 +371,7 @@ class AttachmentDrafts(
                     "pickFiles",
                     buildJsonObject {
                             put("owner", owner)
-                            put("accept", "")
+                            put("accept", acceptedTypes?.joinToString(",").orEmpty())
                             put("multiple", true)
                         }
                         .toString(),

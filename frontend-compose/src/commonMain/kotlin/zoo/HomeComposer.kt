@@ -134,6 +134,19 @@ fun HomeComposer(
         state.focusOnOpen = { inputFocus.requestFocus() }
         onDispose { state.focusOnOpen = null }
     }
+    val images = rememberAttachmentDrafts(app, "", "home-images", false) { file ->
+        val mime = attachmentType(file.text("name"), file.text("type"))
+        require(mime in imageTypes && (file.text("size").toLongOrNull() ?: 0) <= 8L * 1024 * 1024)
+        attachmentPayload(app.api.request("/api/home/images", "POST", obj(
+            "name" to file.text("name"),
+            "content_type" to mime,
+            "data" to app.platform.invoke("fileRead", file.text("id")),
+        )))
+    }
+    images.acceptedTypes = imageTypes
+    images.maximumBytes = 8L * 1024 * 1024
+    images.enabled = state.opened && !state.sending
+    val canSend = images.canSend(state.content) && length <= 1000
     val latestPost by rememberUpdatedState(onPost)
     val colors = MaterialTheme.colorScheme
     Box(
@@ -265,17 +278,18 @@ fun HomeComposer(
                     }
                     Button(
                         "",
-                        enabled = !state.sending && state.content.isNotBlank() && length <= 1000,
+                        enabled = !state.sending && canSend,
                         primary = true,
                         size = "icon",
                         icon = if (state.sending) "loader-circle" else "send",
                         accessibleLabel = app.t(if (state.sending) "home.sending" else "home.post"),
                     ) {
-                        if (!state.sending && state.content.isNotBlank() && length <= 1000) {
+                        if (!state.sending && canSend) {
                             state.sending = true
                             state.failed = false
                             val payload = buildJsonObject {
                                 put("content", state.content)
+                                if (images.items.isNotEmpty()) put("image_ids", JsonArray(images.items.map { JsonPrimitive(it.uploaded!!.text("id")) }))
                                 put("apub", federated)
                                 put("visibility", state.visibility)
                                 put(
@@ -292,6 +306,9 @@ fun HomeComposer(
                                     state.federationPreference = federated
                                     state.channelId = selectedChannel
                                     state.replyTarget = null
+                                    images.release(images.items.toList())
+                                    images.items.clear()
+                                    images.error = null
                                     state.content = ""
                                     state.opened = false
                                 } catch (cancelled: CancellationException) {
@@ -379,6 +396,7 @@ fun HomeComposer(
                         placeholder = app.t("home.placeholder"),
                         enabled = !state.sending,
                         invalid = length > 1000,
+                        fileOwner = images.owner,
                         inputAttributes = mapOf("aria-describedby" to "home-post-count"),
                         focusRequester = inputFocus,
                         autoFocus = state.opened,
@@ -389,6 +407,9 @@ fun HomeComposer(
                     ) {
                         state.content = it
                     }
+                    DraftAttachments(app, images)
+                    IconButton("image-plus", app.t("attachments.add"), !state.sending && images.items.size < MAX_ATTACHMENTS) { images.pick() }
+                    images.error?.let { Text(app.t("home.imageError"), Modifier.then(webControlModifier("alert")), color = colors.error) }
                     HomeComposerFooter(app, state, available, length)
 
                     if (state.failed)

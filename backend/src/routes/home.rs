@@ -28,6 +28,8 @@ struct Page {
 struct NewPost {
     content: String,
     #[serde(default)]
+    image_ids: Vec<String>,
+    #[serde(default)]
     apub: bool,
     #[serde(default = "local_visibility")]
     visibility: String,
@@ -48,6 +50,7 @@ struct Settings {
 pub fn router() -> Router<AppState> {
     Router::new()
         .route("/api/home", get(list).post(create))
+        .merge(super::home_images::router())
         .route("/api/home/live", get(super::home_live::upgrade))
         .route("/api/home/settings", get(settings).put(update_settings))
         .route("/api/home/{id}", get(detail).patch(edit).delete(delete))
@@ -66,7 +69,11 @@ async fn create(
     user: AuthUser,
     Json(mut body): Json<NewPost>,
 ) -> Result<(StatusCode, Json<Value>), AppError> {
-    validate_content(&body.content)?;
+    if body.image_ids.is_empty() {
+        validate_content(&body.content)?;
+    } else if body.content.chars().count() > 1000 || body.content.contains('\0') {
+        return Err(AppError::BadRequest("Invalid content".into()));
+    }
     if !matches!(
         body.visibility.as_str(),
         "local" | "public" | "unlisted" | "followers"
@@ -162,9 +169,15 @@ async fn create(
         crate::apps::events::posting(&mut tx, &user.id, channel, state.config.dev_auth_enabled)
             .await?;
     }
+    let media = super::home_images::resolve(&mut tx, &user.id, &body.image_ids).await?;
     let id = uuid::Uuid::new_v4().to_string();
-    toasty::sql::statement("INSERT INTO home_posts(id,user_id,content,apub,visibility,channel_id,parent_id,parent_uri,reply_actor,reply_user_id) VALUES($1,$2,$3,$4::boolean,$5,NULLIF($6,''),NULLIF($7,''),NULLIF($8,''),NULLIF($9,''),NULLIF($10,''))")
-        .bind(id.as_str()).bind(user.id.as_str()).bind(body.content).bind(body.apub.to_string()).bind(body.visibility).bind(body.channel_id.as_deref().unwrap_or("")).bind(body.in_reply_to.as_deref().unwrap_or("")).bind(parent_uri.as_deref().unwrap_or("")).bind(reply_actor.as_deref().unwrap_or("")).bind(reply_user.unwrap_or("")).exec(&mut tx).await?;
+    toasty::sql::statement("INSERT INTO home_posts(id,user_id,content,apub,visibility,channel_id,parent_id,parent_uri,reply_actor,reply_user_id,media) VALUES($1,$2,$3,$4::boolean,$5,NULLIF($6,''),NULLIF($7,''),NULLIF($8,''),NULLIF($9,''),NULLIF($10,''),$11::jsonb)")
+        .bind(id.as_str()).bind(user.id.as_str()).bind(body.content).bind(body.apub.to_string()).bind(body.visibility).bind(body.channel_id.as_deref().unwrap_or("")).bind(body.in_reply_to.as_deref().unwrap_or("")).bind(parent_uri.as_deref().unwrap_or("")).bind(reply_actor.as_deref().unwrap_or("")).bind(reply_user.unwrap_or("")).bind(media.to_string()).exec(&mut tx).await?;
+    if let Some(channel) = &body.channel_id {
+        // The Home trigger has already created the channel message in this transaction.
+        toasty::sql::statement("INSERT INTO attachments(id,message_id,uploader_id,channel_id,file_name,file_size,content_type,storage_key) SELECT gen_random_uuid()::text,$1,$2,$3,name,file_size,content_type,'home-images/' || id FROM home_images WHERE uploader_id=$2 AND id IN (SELECT jsonb_array_elements_text($4::jsonb))")
+            .bind(id.as_str()).bind(user.id.as_str()).bind(channel.as_str()).bind(json!(body.image_ids).to_string()).exec(&mut tx).await?;
+    }
     if let Some(recipient) = reply_user
         && recipient != user.id
         && body.channel_id.is_none()
@@ -213,7 +226,6 @@ async fn edit(
     Path(id): Path<String>,
     Json(body): Json<EditPost>,
 ) -> Result<StatusCode, AppError> {
-    crate::validation::validate_message_content_with_options(&body.content, false)?;
     if body.content.contains('\0') {
         return Err(AppError::BadRequest("Invalid content".into()));
     }
@@ -233,6 +245,10 @@ async fn edit(
         .await?;
         return Ok(StatusCode::NO_CONTENT);
     }
+    crate::validation::validate_message_content_with_options(
+        &body.content,
+        p["media"].as_array().is_some_and(|items| !items.is_empty()),
+    )?;
     toasty::sql::statement("UPDATE home_posts SET content=$2,updated_at=now() WHERE id=$1")
         .bind(id)
         .bind(body.content)
@@ -276,14 +292,14 @@ async fn list(
       UNION ALL
       SELECT p.id,r.user_id,r.emoji,NULL::jsonb,r.created_at AT TIME ZONE 'UTC' FROM message_reactions r JOIN home_posts p ON p.id=r.message_id AND p.channel_id IS NOT NULL
     ), base AS (
-      SELECT p.id,p.user_id,u.user_name,CASE WHEN p.apub THEN COALESCE(profile.display_name,u.display_name) ELSE u.display_name END AS display_name,p.content,p.created_at,p.updated_at,p.apub,p.visibility,p.channel_id,c.channel_name,false AS remote,NULL::text AS url,COALESCE(m.parent_id,p.parent_id) AS parent_id,'[]'::jsonb AS emojis,'[]'::jsonb AS actor_emojis,(p.user_id=$1 OR p.reply_user_id=$1) AS own,true AS original_visible,NULL::jsonb AS avatar
+      SELECT p.id,p.user_id,u.user_name,CASE WHEN p.apub THEN COALESCE(profile.display_name,u.display_name) ELSE u.display_name END AS display_name,p.content,p.created_at,p.updated_at,p.apub,p.visibility,p.channel_id,c.channel_name,false AS remote,NULL::text AS url,COALESCE(m.parent_id,p.parent_id) AS parent_id,'[]'::jsonb AS emojis,'[]'::jsonb AS actor_emojis,(p.user_id=$1 OR p.reply_user_id=$1) AS own,true AS original_visible,NULL::jsonb AS avatar,p.media
       FROM home_posts p JOIN users u ON u.id=p.user_id LEFT JOIN apub_profiles profile ON profile.user_id=u.id LEFT JOIN channels c ON c.id=p.channel_id LEFT JOIN messages m ON m.id=p.id
       WHERE p.deleted_at IS NULL AND (p.visibility IN ('local','public') OR p.user_id=$1 OR p.reply_user_id=$1)
         AND (p.channel_id IS NULL OR NOT c.is_private AND NOT c.is_dm AND c.deleted_at IS NULL)
         AND (NOT $4::boolean OR p.user_id=$1 OR p.reply_user_id=$1 OR EXISTS(SELECT 1 FROM channel_user WHERE channel_id=p.channel_id AND user_id=$1))
       UNION ALL
       SELECT p.id,p.actor_id,a.user_name || '@' || split_part(a.id,'/',3),a.display_name,p.content,p.published,p.updated_at,true,p.visibility,NULL,NULL,true,p.id,p.parent_id,p.emojis,a.emojis,false,
-        (EXISTS(SELECT 1 FROM apub_remote_recipients WHERE post_id=p.id AND user_id=$1) AND (EXISTS(SELECT 1 FROM apub_follows WHERE user_id=$1 AND actor_id=p.actor_id AND direction='outgoing' AND accepted) OR EXISTS(SELECT 1 FROM home_posts parent WHERE parent.id=p.parent_id AND parent.user_id=$1))),a.avatar
+        (EXISTS(SELECT 1 FROM apub_remote_recipients WHERE post_id=p.id AND user_id=$1) AND (EXISTS(SELECT 1 FROM apub_follows WHERE user_id=$1 AND actor_id=p.actor_id AND direction='outgoing' AND accepted) OR EXISTS(SELECT 1 FROM home_posts parent WHERE parent.id=p.parent_id AND parent.user_id=$1))),a.avatar,p.media
       FROM apub_remote_posts p JOIN apub_actors a ON a.id=p.actor_id
       WHERE p.deleted_at IS NULL AND NOT a.blocked AND (
         (EXISTS(SELECT 1 FROM apub_remote_recipients WHERE post_id=p.id AND user_id=$1) AND (EXISTS(SELECT 1 FROM apub_follows WHERE user_id=$1 AND actor_id=p.actor_id AND direction='outgoing' AND accepted) OR EXISTS(SELECT 1 FROM home_posts parent WHERE parent.id=p.parent_id AND parent.user_id=$1)))
@@ -326,6 +342,7 @@ async fn list(
     ))::text FROM entries f WHERE ($6='' OR f.id=$6 OR $8::boolean AND (f.id IN (SELECT id FROM ancestors) OR f.id IN (SELECT id FROM descendants))) AND ($7='' OR f.post->>'user_id'=$7) AND ($2='' OR (f.sort_at,f.entry_id)<(SELECT sort_at,entry_id FROM entries WHERE entry_id=$2)) ORDER BY CASE WHEN $8::boolean THEN COALESCE((SELECT -depth FROM ancestors WHERE id=f.id),1) ELSE 0 END, CASE WHEN $8::boolean THEN (SELECT path FROM descendants WHERE id=f.id) END, f.sort_at DESC,f.entry_id DESC LIMIT $5::integer"#,
     &[&user.id,page.before.as_deref().unwrap_or(""),timeline,if guest{"true"}else{"false"},&page.limit.unwrap_or(50).clamp(1,500).to_string(),page.post_id.as_deref().unwrap_or(""),page.author.as_deref().unwrap_or(""),if page.thread{"true"}else{"false"}]).await?;
 
+    super::home_images::decorate(&mut tx, &mut rows).await?;
     activitypub::channel_reactions::decorate(&mut tx, &mut rows).await?;
     let parents: Vec<Value> = rows
         .iter()

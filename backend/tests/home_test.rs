@@ -826,3 +826,198 @@ async fn reply_link_migration_repairs_legacy_placement_and_missing_descendants()
     driver.abort();
     Ok(())
 }
+
+#[tokio::test]
+async fn home_images_are_owned_and_survive_image_only_posts() -> anyhow::Result<()> {
+    let storage = wiremock::MockServer::start().await;
+    wiremock::Mock::given(wiremock::matchers::method("PUT"))
+        .and(wiremock::matchers::header("content-type", "image/png"))
+        .respond_with(wiremock::ResponseTemplate::new(200))
+        .expect(1)
+        .mount(&storage)
+        .await;
+    let mut config = Config::from_env();
+    config.s3.endpoint = storage.uri();
+    config.s3.force_path_style = true;
+    config.s3.access_key_id = "test-key".into();
+    config.s3.secret_access_key = "test-secret".into();
+    config.dev_auth_enabled = true;
+    let mut db = init_db(&config.database_url).await?;
+    let app = create_router(AppState::new(db.clone(), config));
+    let owner = uuid::Uuid::new_v4().to_string();
+    let other = uuid::Uuid::new_v4().to_string();
+    for id in [&owner, &other] {
+        toasty::sql::statement("INSERT INTO users(id,user_name,display_name) VALUES($1,$1,$1)")
+            .bind(id.as_str())
+            .exec(&mut db)
+            .await?;
+    }
+    let (status, uploaded) = request(&app, "POST", Some(&owner), "/api/home/images", Some(json!({"name":"photo.png","content_type":"image/png","data":"iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg=="}))).await?;
+    assert_eq!(status, StatusCode::OK);
+    let image = uploaded["id"].as_str().unwrap().to_owned();
+    assert_eq!(
+        request(
+            &app,
+            "POST",
+            Some(&owner),
+            "/api/home/images",
+            Some(json!({"name":"bad.png","content_type":"image/png","data":"bm90IGFuIGltYWdl"}))
+        )
+        .await?
+        .0,
+        StatusCode::BAD_REQUEST
+    );
+    for (actor, ids) in [
+        (&other, vec![image.clone()]),
+        (&owner, vec![image.clone(), image.clone()]),
+        (&owner, vec![uuid::Uuid::new_v4().to_string()]),
+        (&owner, vec![image.clone(); 11]),
+    ] {
+        assert_eq!(
+            request(
+                &app,
+                "POST",
+                Some(actor),
+                "/api/home",
+                Some(json!({"content":"","image_ids":ids}))
+            )
+            .await?
+            .0,
+            StatusCode::BAD_REQUEST
+        );
+    }
+    let (status, created) = request(
+        &app,
+        "POST",
+        Some(&owner),
+        "/api/home",
+        Some(json!({"content":"","image_ids":[image]})),
+    )
+    .await?;
+    assert_eq!(status, StatusCode::CREATED);
+    let path = format!("/api/home/{}", created["id"].as_str().unwrap());
+    let (status, post) = request(&app, "GET", Some(&owner), &path, None).await?;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(post["content"], "");
+    assert_eq!(post["media"][0]["name"], "photo.png");
+    assert_eq!(post["media"][0]["url"], format!("/api/home/images/{image}"));
+    let (status, _) = request(
+        &app,
+        "PATCH",
+        Some(&owner),
+        &path,
+        Some(json!({"content":"caption"})),
+    )
+    .await?;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    let (_, post) = request(&app, "GET", Some(&owner), &path, None).await?;
+    assert_eq!(post["media"].as_array().unwrap().len(), 1);
+    let channel = uuid::Uuid::new_v4().to_string();
+    toasty::sql::statement(
+        "INSERT INTO channels(id,channel_name,created_user_id,is_private) VALUES($1,$1,$2,false)",
+    )
+    .bind(channel.as_str())
+    .bind(owner.as_str())
+    .exec(&mut db)
+    .await?;
+    toasty::sql::statement(
+        "INSERT INTO channel_user(user_id,channel_id,joined_at) VALUES($1,$2,now())",
+    )
+    .bind(owner.as_str())
+    .bind(channel.as_str())
+    .exec(&mut db)
+    .await?;
+    let (status, crosspost) = request(
+        &app,
+        "POST",
+        Some(&owner),
+        "/api/home",
+        Some(json!({"content":"","image_ids":[image],"channel_id":channel})),
+    )
+    .await?;
+    assert_eq!(status, StatusCode::CREATED);
+    let attachments = backend::models::Attachment::filter(
+        backend::models::Attachment::fields()
+            .message_id()
+            .eq(crosspost["id"].as_str().unwrap()),
+    )
+    .exec(&mut db)
+    .await?;
+    assert_eq!(attachments.len(), 1);
+    assert_eq!(attachments[0].storage_key, format!("home-images/{image}"));
+    assert!(attachments[0].file_size > 0);
+    // Simulate an existing channel image whose Home row predates media metadata.
+    toasty::sql::statement("UPDATE home_posts SET media='[]'::jsonb WHERE id=$1")
+        .bind(crosspost["id"].as_str().unwrap())
+        .exec(&mut db)
+        .await?;
+    let (_, restored) = request(
+        &app,
+        "GET",
+        Some(&owner),
+        &format!("/api/home/{}", crosspost["id"].as_str().unwrap()),
+        None,
+    )
+    .await?;
+    assert_eq!(restored["media"][0]["name"], "photo.png");
+    let existing_image_url = format!("/api/home/images/{}", attachments[0].id);
+    assert_eq!(restored["media"][0]["url"], existing_image_url);
+    assert_eq!(
+        request(&app, "GET", None, &existing_image_url, None)
+            .await?
+            .0,
+        StatusCode::TEMPORARY_REDIRECT
+    );
+    toasty::sql::statement("UPDATE channels SET is_private=true WHERE id=$1")
+        .bind(channel.as_str())
+        .exec(&mut db)
+        .await?;
+    assert_eq!(
+        request(&app, "GET", None, &existing_image_url, None)
+            .await?
+            .0,
+        StatusCode::NOT_FOUND
+    );
+
+    assert_eq!(
+        request(
+            &app,
+            "GET",
+            None,
+            &format!("/api/home/images/{image}"),
+            None
+        )
+        .await?
+        .0,
+        StatusCode::TEMPORARY_REDIRECT
+    );
+    let (status, federated) = request(
+        &app,
+        "POST",
+        Some(&owner),
+        "/api/home",
+        Some(json!({"content":"","image_ids":[image],"apub":true,"visibility":"public"})),
+    )
+    .await?;
+    assert_eq!(status, StatusCode::CREATED);
+    let (_, note) = request(
+        &app,
+        "GET",
+        None,
+        &format!(
+            "/api/activitypub/notes/{}",
+            federated["id"].as_str().unwrap()
+        ),
+        None,
+    )
+    .await?;
+    assert_eq!(
+        note["attachment"][0]["url"],
+        format!(
+            "{}/api/home/images/{image}",
+            backend::activitypub::base_url()?
+        )
+    );
+    assert_eq!(note["attachment"][0]["mediaType"], "image/png");
+    Ok(())
+}
