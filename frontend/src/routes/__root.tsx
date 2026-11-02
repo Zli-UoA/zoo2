@@ -1,4 +1,10 @@
-import { ClientOnly, HeadContent, Scripts, createRootRoute } from "@tanstack/react-router";
+import {
+  ClientOnly,
+  HeadContent,
+  Scripts,
+  createRootRoute,
+  useRouterState,
+} from "@tanstack/react-router";
 import { TanStackRouterDevtoolsPanel } from "@tanstack/react-router-devtools";
 import { TanStackDevtools } from "@tanstack/react-devtools";
 
@@ -18,7 +24,7 @@ import appCss from "../styles.css?url";
 export const Route = createRootRoute({
   head: () => ({
     meta: [
-      { name: "theme-color", content: "#25635b" },
+      { name: "theme-color", content: "#FFD600" },
       { name: "apple-mobile-web-app-title", content: "Zoo" },
       {
         charSet: "utf-8",
@@ -32,6 +38,9 @@ export const Route = createRootRoute({
       },
     ],
     links: [
+      { rel: "shortcut icon", href: "/favicon.ico" },
+      { rel: "icon", type: "image/png", sizes: "32x32", href: "/icons/favicon-32.png" },
+      { rel: "icon", type: "image/svg+xml", sizes: "any", href: "/icons/zoo.svg" },
       { rel: "manifest", href: "/manifest.webmanifest" },
       { rel: "apple-touch-icon", href: "/icons/icon-180.png" },
       {
@@ -56,8 +65,7 @@ function RootDocument({ children }: { children: React.ReactNode }) {
           <LocaleProvider>
             <ThemeProvider>
               <TooltipProvider>
-                <AuthGate>{children}</AuthGate>
-                <PreviewUserSwitcher />
+                <RouteAccess>{children}</RouteAccess>
                 <Toaster />
               </TooltipProvider>
             </ThemeProvider>
@@ -77,5 +85,17 @@ function RootDocument({ children }: { children: React.ReactNode }) {
         <Scripts />
       </body>
     </html>
+  );
+}
+
+function RouteAccess({ children }: { children: React.ReactNode }) {
+  const path = useRouterState({ select: (state) => state.location.pathname });
+  return /^\/public\/users\/[^/]+\/?$/.test(path) ? (
+    <>{children}</>
+  ) : (
+    <AuthGate>
+      {children}
+      <PreviewUserSwitcher />
+    </AuthGate>
   );
 }

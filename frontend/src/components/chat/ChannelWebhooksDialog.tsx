@@ -1,3 +1,4 @@
+import { Input } from "../ui/input";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { CopyIcon, EyeIcon, EyeOffIcon } from "lucide-react";
@@ -16,7 +17,6 @@ export interface ChannelWebhook {
   name: string;
   path: string;
   bot_user_id?: string;
-  secret: string;
   created_at: string;
 }
 
@@ -47,7 +47,7 @@ function Credential({
     <label className="flex flex-col gap-1 text-xs">
       {label}
       <span className="flex items-center gap-1">
-        <input
+        <Input
           className={`${inputClassName()} min-w-0 flex-1 font-mono text-xs`}
           readOnly
           value={value}
@@ -61,7 +61,7 @@ function Credential({
             type="button"
             variant="ghost"
             size="icon-sm"
-            aria-label={visible ? t("webhooks.hideSecret") : t("webhooks.showSecret")}
+            aria-label={visible ? t("webhooks.hideUrl") : t("webhooks.showUrl")}
             onClick={() => setVisible(!visible)}
           >
             {visible ? <EyeOffIcon /> : <EyeIcon />}
@@ -171,6 +171,7 @@ export function ChannelWebhooksDialog({
         ) : (
           <>
             <form
+              autoComplete="off"
               className="flex items-end gap-2"
               onSubmit={(event) => {
                 event.preventDefault();
@@ -184,7 +185,7 @@ export function ChannelWebhooksDialog({
             >
               <label className="flex min-w-0 flex-1 flex-col gap-1 text-sm">
                 {t("webhooks.name")}
-                <input
+                <Input
                   className={inputClassName()}
                   value={name}
                   maxLength={80}
@@ -212,10 +213,11 @@ export function ChannelWebhooksDialog({
                     onUpdated={() => setReload((value) => value + 1)}
                   />
                   <Credential
-                    label={t("webhooks.genericUrl")}
+                    key={hook.path}
+                    label={t("webhooks.url")}
                     value={webhookUrl(config.apiBaseUrl, hook.path, window.location.origin)}
+                    secret
                   />
-                  <Credential key={hook.secret} label="Secret" value={hook.secret} secret />
                   <div className="flex justify-end gap-2">
                     <Button
                       variant="outline"

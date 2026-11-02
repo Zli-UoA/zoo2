@@ -28,6 +28,7 @@ pub fn router() -> Router<AppState> {
         .route("/api/shapes/users", get(users_shape))
         .route("/api/shapes/channel_users", get(channel_users_shape))
         .route("/api/shapes/notifications", get(notifications_shape))
+        .route("/api/shapes/attachments", get(attachments_shape))
 }
 
 /// クライアントから送信されたクエリパラメータのうち、Electric プロトコルで許可されたものを転送
@@ -98,6 +99,17 @@ pub(crate) fn message_reactions_shape_where(
     )
 }
 
+/// Attachments Shape の where 句とパラメータの純粋組み立て
+///
+/// 親メッセージが紐付けられており (message_id IS NOT NULL)、かつ親メッセージが論理削除されていない
+/// (deleted_at IS NULL) 添付ファイルのみを配信する。親メッセージ削除時は move-out でクライアントから除外される。
+pub(crate) fn attachments_shape_where(channel_id: &str) -> (String, Vec<(&'static str, &str)>) {
+    (
+        "channel_id = $1 AND message_id IN (SELECT id FROM messages WHERE channel_id = $1 AND deleted_at IS NULL)".to_string(),
+        vec![("params[1]", channel_id)],
+    )
+}
+
 /// Channel Users Shape の where 句とパラメータの純粋組み立て
 pub(crate) fn channel_users_shape_where<'a>(
     channel_id: Option<&'a str>,
@@ -130,7 +142,7 @@ async fn proxy_shape(
             .get("_app_metadata_allowed")
             .is_some_and(|v| v == "false")
     {
-        params.push(("columns".into(),"id,user_id,channel_id,content,card,created_at,updated_at,deleted_at,parent_id,app_blocks,app_attachments,app_unfurls,app_origin_id,message_kind,broadcast".into()));
+        params.push(("columns".into(),"id,user_id,channel_id,content,card,created_at,updated_at,deleted_at,parent_id,app_blocks,app_attachments,app_unfurls,app_origin_id,message_kind,broadcast,home_post_id,apub,apub_visibility".into()));
     }
 
     if let Some(w) = where_clause {
@@ -516,9 +528,84 @@ pub(crate) async fn app_channels_shape(
     .await
 }
 
+/// Attachments Shape (channel_id 必須)
+async fn attachments_shape(
+    State(state): State<AppState>,
+    auth_user: AuthUser,
+    Query(raw_query): Query<HashMap<String, String>>,
+) -> Result<Response, AppError> {
+    let channel_id = raw_query
+        .get("channel_id")
+        .ok_or_else(|| AppError::BadRequest("channel_id query parameter is required".into()))?;
+
+    Uuid::parse_str(channel_id).map_err(|_| {
+        AppError::BadRequest(format!("channel_id is not a valid UUID: {channel_id}"))
+    })?;
+
+    // チャンネル存在および閲覧権限チェック
+    let mut db = state.db.clone();
+    let channel = Channel::get_by_id(&mut db, channel_id.as_str())
+        .await
+        .map_err(|err| {
+            if err.is_record_not_found() {
+                AppError::NotFound(format!("Channel not found with id: {channel_id}"))
+            } else {
+                AppError::from(err)
+            }
+        })?;
+
+    if channel.deleted_at.is_some() {
+        return Err(AppError::NotFound(format!(
+            "Channel not found with id: {channel_id}"
+        )));
+    }
+
+    let is_guest = crate::apps::events::guest_in_db(&mut db, &auth_user.id).await?;
+    if channel.is_private || is_guest {
+        let is_member = ChannelUser::filter(
+            ChannelUser::fields()
+                .channel_id()
+                .eq(channel_id.as_str())
+                .and(ChannelUser::fields().user_id().eq(auth_user.id.as_str())),
+        )
+        .first()
+        .exec(&mut db)
+        .await?;
+
+        if is_member.is_none() {
+            return Err(AppError::NotFound(format!(
+                "Channel not found with id: {channel_id}"
+            )));
+        }
+    }
+
+    let (where_clause, extra_params) = attachments_shape_where(channel_id.as_str());
+
+    proxy_shape(
+        &state,
+        "attachments",
+        Some(&where_clause),
+        &extra_params,
+        &raw_query,
+        channel.is_private || is_guest,
+        &auth_user.id,
+    )
+    .await
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_attachments_shape_where() {
+        let (clause, params) = attachments_shape_where("ch-123");
+        assert_eq!(
+            clause,
+            "channel_id = $1 AND message_id IN (SELECT id FROM messages WHERE channel_id = $1 AND deleted_at IS NULL)"
+        );
+        assert_eq!(params, vec![("params[1]", "ch-123")]);
+    }
 
     #[test]
     fn test_filter_electric_params() {

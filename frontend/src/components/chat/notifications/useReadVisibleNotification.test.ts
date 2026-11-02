@@ -28,12 +28,19 @@ it("reads only intersecting cards in a focused visible tab and disconnects on un
   scrollRoot.current = document.createElement("div");
   const onRead = vi.fn();
   const root = createRoot(document.createElement("div"));
-  function Probe({ ids }: { ids: readonly string[] }) {
-    const { ref } = useReadVisibleNotification(ids, onRead, scrollRoot);
+  function Probe({ ids, enabled = true }: { ids: readonly string[]; enabled?: boolean }) {
+    const { ref } = useReadVisibleNotification(ids, onRead, scrollRoot, enabled);
     return createElement("li", { ref });
   }
   try {
-    await act(async () => root.render(createElement(Probe, { ids: ["visible-1", "visible-2"] })));
+    await act(async () =>
+      root.render(createElement(Probe, { ids: ["visible-1", "visible-2"], enabled: false })),
+    );
+    await act(async () => callbacks.at(-1)!([{ isIntersecting: true }]));
+    expect(onRead).not.toHaveBeenCalled();
+    await act(async () =>
+      root.render(createElement(Probe, { ids: ["visible-1", "visible-2"], enabled: true })),
+    );
     expect(observer.mock.calls[0][1]).toMatchObject({ root: scrollRoot.current });
     await act(async () => callbacks.at(-1)!([{ isIntersecting: false }]));
     expect(onRead).not.toHaveBeenCalled();

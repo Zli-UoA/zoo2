@@ -1,6 +1,8 @@
 import type { Preview } from "@storybook/react-vite";
+import { configure } from "storybook/test";
 
 import "../src/styles.css";
+import { withImplementation } from "./implementation";
 import { startStorybookWorker, withCollections, withMsw, withProviders } from "./decorators";
 
 // アプリの Service Worker が MSW の worker を上書きしないよう、Storybook では
@@ -15,6 +17,9 @@ if (typeof window !== "undefined") {
 
 const preview: Preview = {
   beforeAll: async () => {
+    // CI runs multiple browser stories concurrently; wait for real DOM updates
+    // without failing after Testing Library's default one-second deadline.
+    configure({ asyncUtilTimeout: 5000 });
     await startStorybookWorker();
   },
   parameters: {
@@ -48,11 +53,22 @@ const preview: Preview = {
     },
     options: {
       storySort: {
-        order: ["Chat", "Notifications", "Layout", "Foundations", "Screens"],
+        order: ["Foundations", "Components", "Features", "Pages", "Flows"],
       },
     },
   },
   globalTypes: {
+    implementation: {
+      description: "UI implementation",
+      toolbar: {
+        icon: "component",
+        items: [
+          { value: "react", title: "React" },
+          { value: "kotlin", title: "Kotlin (Compose)" },
+        ],
+        dynamicTitle: true,
+      },
+    },
     theme: {
       description: "Theme",
       toolbar: {
@@ -71,13 +87,21 @@ const preview: Preview = {
         items: [
           { value: "ja", title: "日本語" },
           { value: "en", title: "English" },
+          { value: "zh-Hans", title: "简体中文" },
+          { value: "zh-Hant", title: "繁體中文" },
+          { value: "yue", title: "粵語" },
         ],
         dynamicTitle: true,
       },
     },
   },
-  initialGlobals: { theme: "light", locale: "ja", viewport: { value: "desktop" } },
-  decorators: [withProviders, withCollections, withMsw],
+  initialGlobals: {
+    implementation: "react",
+    theme: "light",
+    locale: "ja",
+    viewport: { value: "desktop" },
+  },
+  decorators: [withImplementation, withProviders, withCollections, withMsw],
 };
 
 export default preview;

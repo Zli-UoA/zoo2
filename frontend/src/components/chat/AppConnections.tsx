@@ -1,44 +1,58 @@
+import { Input } from "../ui/input";
 import { useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { useCurrentUser } from "../../hooks/useCurrentUser";
 import { createConfiguredApiClient } from "../../lib/api/client";
 import { useCollections } from "../../lib/electric/collections-context";
 import { useShell } from "../layout/shell-context";
+import { inputClassName } from "../ui/input-styles";
 import { Button } from "../ui/button";
 
 type Session = { id: string; app_id: string; title: string; state: string };
 export function AppConnections({
   appId,
+  channelId,
   connections,
   assistant,
 }: {
   appId: string;
+  channelId?: string | null;
   connections: boolean;
   assistant: boolean;
 }) {
   const { t } = useTranslation();
   const { config } = useCollections();
   const { currentUserId } = useCurrentUser();
-  const { selectedChannelId } = useShell();
+  const shell = useShell();
+  const selectedChannelId = channelId === undefined ? shell.selectedChannelId : channelId;
   const client = useMemo(() => createConfiguredApiClient(config), [config]);
-  const [connection, setConnection] = useState("disconnected");
+  const [connection, setConnection] = useState<string | null>(null);
   const [sessions, setSessions] = useState<Session[]>([]);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const [revision, setRevision] = useState(0);
   useEffect(() => {
+    if (!connections && !assistant) return;
     const controller = new AbortController();
     const load = () => {
       if (connections)
         void client
           .get<{ state: string }>(`/api/apps/${appId}/connection`, { signal: controller.signal })
-          .then((v) => setConnection(v.state))
-          .catch(() => {});
+          .then((v) => {
+            if (!controller.signal.aborted) setConnection(v.state);
+          })
+          .catch(() => {
+            if (!controller.signal.aborted) setError(t("apps.loadError"));
+          });
       if (assistant)
         void client
           .get<Session[]>("/api/assistant-sessions", { signal: controller.signal })
-          .then((v) => setSessions(v.filter((s) => s.app_id === appId)))
-          .catch(() => {});
+          .then((v) => {
+            if (!controller.signal.aborted) setSessions(v.filter((s) => s.app_id === appId));
+          })
+          .catch(() => {
+            if (!controller.signal.aborted) setError(t("apps.loadError"));
+          });
     };
     load();
     const timer = setInterval(load, 2000);
@@ -46,7 +60,7 @@ export function AppConnections({
       controller.abort();
       clearInterval(timer);
     };
-  }, [appId, connections, assistant, client, revision]);
+  }, [appId, connections, assistant, client, revision, t]);
   useEffect(() => {
     if (!assistant || !selectedChannelId) return;
     const controller = new AbortController();
@@ -74,18 +88,21 @@ export function AppConnections({
       setBusy(false);
     }
   }
+  if (!connections && !assistant) return null;
   return (
-    <div className="space-y-2">
+    <div className="space-y-3 rounded-lg border p-3">
       {connections ? (
-        <div className="flex items-center gap-2 text-sm">
+        <div className="flex flex-wrap items-center justify-between gap-2 text-sm">
           <span>
-            {t(
-              `apps.userConnection.${connection === "connected" ? "connected" : connection === "requested" ? "requested" : "disconnected"}`,
-            )}
+            {connection === null
+              ? t("apps.loading")
+              : t(
+                  `apps.userConnection.${connection === "connected" ? "connected" : connection === "requested" ? "requested" : "disconnected"}`,
+                )}
           </span>
           <Button
             variant="outline"
-            disabled={busy}
+            disabled={busy || connection === null}
             onClick={() =>
               void run(`/api/apps/${appId}/connection`, { connect: connection === "disconnected" })
             }
@@ -119,8 +136,10 @@ export function AppConnections({
         ? sessions
             .filter((s) => s.state === "running")
             .map((s) => (
-              <div key={s.id} className="flex items-center gap-2">
-                <input
+              <div key={s.id} className="flex items-center gap-2 rounded-lg bg-muted/40 p-2">
+                <Input
+                  className={`${inputClassName()} min-w-0 flex-1`}
+                  disabled={busy}
                   aria-label={t("apps.assistant.title")}
                   maxLength={200}
                   defaultValue={s.title}

@@ -9,7 +9,7 @@ const POLICY_VERSION = new URL(
   self.location.href || "/sw.js",
   self.location.origin,
 ).searchParams.get("v");
-const POLICY_PREFIX = POLICY_VERSION ? `zoo-shell-${POLICY_VERSION}-` : "zoo-shell-";
+const POLICY_PREFIX = POLICY_VERSION ? `zoo-shell-v3-${POLICY_VERSION}-` : "zoo-shell-";
 const DEFAULT_CACHE = `${POLICY_PREFIX}v2`;
 const CACHE_PREFIX = "zoo-shell-";
 const META_PATH = "/__zoo_shell_meta__";
@@ -21,11 +21,15 @@ const SHELL = [
   "/index.html",
   "/offline.html",
   "/manifest.webmanifest",
+  "/favicon.ico",
+  "/icons/zoo.svg",
+  "/icons/favicon-32.png",
+  "/icons/badge-96.png",
   "/icons/icon-180.png",
   "/icons/icon-192.png",
   "/icons/icon-512.png",
 ];
-const CACHEABLE_PREFIXES = ["/assets/", "/icons/", "/emojibase-data/"];
+const CACHEABLE_PREFIXES = ["/assets/", "/icons/", "/emojibase-data/", "/compose/"];
 
 function isPrivatePath(pathname) {
   return pathname.startsWith("/api/") || pathname.startsWith("/auth/");
@@ -34,7 +38,8 @@ function isPrivatePath(pathname) {
 function isCacheableAsset(url) {
   return (
     CACHEABLE_PREFIXES.some((prefix) => url.pathname.startsWith(prefix)) ||
-    url.pathname === "/manifest.webmanifest"
+    url.pathname === "/manifest.webmanifest" ||
+    url.pathname === "/favicon.ico"
   );
 }
 
@@ -74,9 +79,13 @@ async function findActiveShellCache() {
  * `content-encoding`. Serving that combination makes module scripts fail with
  * ERR_FAILED, so strip the encoding headers before caching.
  */
-async function cacheResponse(cache, request, response) {
+async function cacheResponse(cache, request, response, validators = false) {
   const body = await response.arrayBuffer();
   const headers = new Headers(response.headers);
+  if (validators) {
+    for (const name of ["etag", "last-modified"])
+      if (headers.has(name)) headers.set(`x-zoo-${name}`, headers.get(name));
+  }
   for (const name of [
     "content-encoding",
     "content-length",
@@ -106,6 +115,17 @@ async function cacheResponse(cache, request, response) {
   return sanitized;
 }
 
+// A policy update does not change hashed asset bytes. Give the HTTP cache and CDN
+// a new key as well as the Cache API, otherwise immutable responses keep the old CSP.
+function fetchStaticAsset(request) {
+  if (!POLICY_VERSION) return fetch(request, { cache: "reload" });
+  const url = new URL(typeof request === "string" ? request : request.url, self.location.origin);
+  url.searchParams.set("__zoo_policy", POLICY_VERSION);
+  return fetch(new Request(url.href, typeof request === "string" ? undefined : request), {
+    cache: "reload",
+  });
+}
+
 /**
  * Cache the hashed JS/CSS referenced by the built index. The first page load
  * happens before this worker controls the page, so runtime caching alone would
@@ -125,7 +145,7 @@ async function precacheIndexAssets(cache, response) {
   await Promise.all(
     [...assets].map(async (path) => {
       try {
-        const asset = await fetch(path, { cache: "reload" });
+        const asset = await fetchStaticAsset(path);
         if (asset.ok) await cacheResponse(cache, path, asset);
       } catch {
         /* A later navigation can retry the asset. */
@@ -205,13 +225,38 @@ async function handleAsset(request) {
   const cached = await cache.match(request);
   if (cached) return cached;
   try {
-    const response = await fetch(request);
+    const response = await fetchStaticAsset(request);
     if (response.ok && response.type === "basic") {
       return await cacheResponse(cache, request, response);
     }
     return response;
   } catch {
     return Response.error();
+  }
+}
+
+// The Compose entry and resource names are stable across builds. Revalidate them
+// online so a warmed service worker cannot pin an older Kotlin implementation.
+async function handleComposeAsset(request) {
+  const cache = await caches.open(await findActiveShellCache());
+  const cached = await cache.match(request);
+  const headers = new Headers(request.headers);
+  const etag = cached?.headers.get("x-zoo-etag");
+  const modified = cached?.headers.get("x-zoo-last-modified");
+  if (etag) headers.set("If-None-Match", etag);
+  else if (modified) headers.set("If-Modified-Since", modified);
+  try {
+    // Cache API is the sole persistent copy. Validate explicitly, without also
+    // keeping large fonts/Wasm in the HTTP cache or rewriting unchanged bodies.
+    const response = await fetch(new Request(request, { headers }), { cache: "no-store" });
+    if (cached && response.status === 304) return cached;
+    if (response.ok && response.type === "basic") {
+      if (cached && etag && response.headers.get("etag") === etag) return response;
+      return await cacheResponse(cache, request, response, true);
+    }
+    return response;
+  } catch {
+    return cached || Response.error();
   }
 }
 
@@ -236,7 +281,10 @@ self.addEventListener("message", (event) => {
   const data = event.data;
   if (!data || data.type !== "CACHE_ASSETS" || !Array.isArray(data.urls)) return;
   const urls = data.urls
-    .filter((url) => typeof url === "string" && url.startsWith("/assets/"))
+    .filter(
+      (url) =>
+        typeof url === "string" && (url.startsWith("/assets/") || url.startsWith("/compose/")),
+    )
     .slice(0, 200);
   event.waitUntil(
     (async () => {
@@ -244,7 +292,7 @@ self.addEventListener("message", (event) => {
       for (const url of urls) {
         if (await cache.match(url)) continue;
         try {
-          const response = await fetch(url);
+          const response = await fetchStaticAsset(url);
           if (response.ok && response.type === "basic") {
             await cacheResponse(cache, url, response);
           }
@@ -263,6 +311,8 @@ self.addEventListener("fetch", (event) => {
 
   if (event.request.mode === "navigate") {
     event.respondWith(handleNavigation(event.request));
+  } else if (url.pathname.startsWith("/compose/")) {
+    event.respondWith(handleComposeAsset(event.request));
   } else if (isCacheableAsset(url)) {
     event.respondWith(handleAsset(event.request));
   }
@@ -296,7 +346,7 @@ self.addEventListener("push", (event) => {
     self.registration.showNotification(title, {
       body,
       icon: "/icons/icon-192.png",
-      badge: "/icons/icon-192.png",
+      badge: "/icons/badge-96.png",
       tag: typeof payload.tag === "string" ? payload.tag : "zoo-activity",
       data: { url: typeof payload.url === "string" ? payload.url : "/" },
     }),

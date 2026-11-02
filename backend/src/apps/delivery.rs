@@ -260,7 +260,7 @@ async fn terminal_socket(s: &AppState, ws: &mut WebSocket, installation: &str) {
     }
 }
 
-fn public_ip(ip: IpAddr) -> bool {
+pub(crate) fn public_ip(ip: IpAddr) -> bool {
     match ip {
         IpAddr::V4(v) => {
             let o = v.octets();
@@ -431,7 +431,8 @@ pub async fn http_candidates(s: &AppState) -> Result<Vec<Value>, AppError> {
     Ok(installs)
 }
 
-async fn http_pass(s: &AppState) -> Result<(), AppError> {
+/// Run one bounded dispatch batch, also used by the periodic worker.
+pub async fn http_pass(s: &AppState) -> Result<(), AppError> {
     let installs = http_candidates(s).await?;
     let results = futures_util::stream::iter(installs)
         .map(|i| async move {

@@ -1,10 +1,13 @@
+import { playForImplementation } from "../../../.storybook/play-for-implementation";
+import { expect, fn, userEvent, within } from "storybook/test";
+import { storySurfaces } from "../../../.storybook/story-surfaces";
 import type { Meta, StoryObj } from "@storybook/react-vite";
 import { DownloadIcon, PlusIcon } from "lucide-react";
 
 import { Button } from "./button";
 
 const meta = {
-  title: "Foundations/Button",
+  title: "Components/Button",
   component: Button,
   tags: ["autodocs"],
   parameters: { a11y: { test: "error" } },
@@ -24,10 +27,11 @@ const meta = {
     variant: "default",
     size: "default",
     disabled: false,
+    onClick: fn(),
   },
   decorators: [
     (Story) => (
-      <div className="bg-background p-6">
+      <div className={storySurfaces["Components/Button"]}>
         <Story />
       </div>
     ),
@@ -37,7 +41,12 @@ const meta = {
 export default meta;
 type Story = StoryObj<typeof meta>;
 
-export const Default: Story = {};
+export const Default: Story = {
+  play: playForImplementation(async ({ canvasElement, args }) => {
+    await userEvent.click(await within(canvasElement).findByRole("button", { name: "ボタン" }));
+    await expect(args.onClick).toHaveBeenCalledTimes(1);
+  }),
+};
 
 export const Variants: Story = {
   parameters: { a11y: { test: "todo" } },
@@ -88,3 +97,5 @@ export const WithIcon: Story = {
     ),
   },
 };
+
+export const DisabledDark: Story = { ...Disabled, globals: { theme: "dark" } };

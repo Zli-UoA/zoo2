@@ -4,7 +4,7 @@ import { storyCollections, storyNotifications } from "../../../.storybook/fixtur
 import { NotificationsButton } from "./NotificationsButton";
 
 const meta = {
-  title: "Notifications/NotificationsButton",
+  title: "Features/Notifications/Button",
   component: NotificationsButton,
   tags: ["autodocs"],
   parameters: { a11y: { test: "error" } },

@@ -57,6 +57,10 @@ struct Fixture {
     channel: String,
 }
 async fn fixture() -> anyhow::Result<Fixture> {
+    fixture_with_events(json!(apps::EVENTS)).await
+}
+
+async fn fixture_with_events(events: Value) -> anyhow::Result<Fixture> {
     let mut config = Config::from_env();
     config.dev_auth_enabled = true;
     let state = AppState::new(init_db(&config.database_url).await?, config);
@@ -68,7 +72,7 @@ async fn fixture() -> anyhow::Result<Fixture> {
         let(s,v)=request(&app,"POST","/api/users",actor,json!({"id":actor,"user_name":format!("evt_{}",Uuid::new_v4().simple()),"display_name":"Events"})).await;
         assert!(s == StatusCode::OK || s == StatusCode::CONFLICT, "{v}");
     }
-    let manifest = json!({"scopes":apps::SCOPES,"events":apps::EVENTS,"transport":"websocket","include_bot_events":true,"user_connections":true,"functions":["echo"],"commands":["event"],"shortcuts":["event"],"message_shortcuts":["event"],"link_domains":["example.com"],"dm_enabled":true,"redirect_uris":["https://example.com/callback"]});
+    let manifest = json!({"scopes":apps::SCOPES,"events":events,"transport":"websocket","include_bot_events":true,"user_connections":true,"functions":["echo"],"commands":["event"],"shortcuts":["event"],"message_shortcuts":["event"],"link_domains":["example.com"],"dm_enabled":true,"redirect_uris":["https://example.com/callback"]});
     let created = ok(
         &app,
         "POST",
@@ -285,7 +289,7 @@ async fn mutations_produce_authorized_events_and_private_state_requires_consent(
         "POST",
         "/api/emojis",
         u,
-        json!({"name":ename,"url":"https://example.com/emoji.png"}),
+        json!({"name":ename,"url":format!("/api/emoji-images/{}",Uuid::new_v4())}),
     )
     .await;
     ok(
@@ -1024,9 +1028,16 @@ async fn interaction_callbacks_and_remaining_lifecycle_events() -> anyhow::Resul
 
 #[tokio::test]
 async fn websocket_control_frames_and_scoped_presence_commands() -> anyhow::Result<()> {
+    use anyhow::Context;
     use futures_util::{SinkExt, StreamExt};
     use tokio_tungstenite::tungstenite::Message;
-    let f = fixture().await?;
+    // Avoid unrelated events from other parallel fixtures occupying the socket.
+    let f = fixture_with_events(json!([
+        "app.uninstalled",
+        "tokens.revoked",
+        "app.rate_limited"
+    ]))
+    .await?;
     let ticket = ok(
         &f.app,
         "POST",
@@ -1062,7 +1073,8 @@ async fn websocket_control_frames_and_scoped_presence_commands() -> anyhow::Resu
                 }
             }
         })
-        .await?;
+        .await
+        .with_context(|| format!("waiting for {kind} response"))?;
         assert_eq!(snapshot["type"], "presence_snapshot");
         assert_eq!(snapshot["users"][0]["user_id"], f.owner);
     }
@@ -1084,7 +1096,8 @@ async fn websocket_control_frames_and_scoped_presence_commands() -> anyhow::Resu
             }
         }
     })
-    .await?;
+    .await
+    .context("waiting for active presence subscription update")?;
     exhaust_event_quota(&f).await?;
     ok(
         &f.app,
@@ -1123,7 +1136,8 @@ async fn websocket_control_frames_and_scoped_presence_commands() -> anyhow::Resu
             }
         }
     })
-    .await?;
+    .await
+    .context("waiting for terminal events and goodbye")?;
     assert_eq!(
         terminal_types.first().map(String::as_str),
         Some("app.uninstalled")
@@ -1138,7 +1152,10 @@ async fn dispatcher_enforces_quota_without_charging_retries() -> anyhow::Result<
     let f = fixture().await?;
     reconfigure(&f,json!({"scopes":["messages:read"],"events":["message.created","app.rate_limited"],"transport":"websocket"})).await?;
     let mut db = f.state.db.clone();
-    // Prepare delivery history at the hourly boundary; source events still come from an API write.
+    // Pin synthetic, acknowledged history inside the quota's lower-bounded window.
+    // A transaction's now() is fixed at BEGIN: seeding 30,000 rows can cross the
+    // wall-clock hour before claim() starts, which otherwise resets the quota.
+    // Moving these rows to the previous window below still verifies expiry.
     let mut tx = db.transaction().await?;
     toasty::sql::statement("UPDATE app_deliveries SET acked_at=now() WHERE installation_id=$1")
         .bind(f.installation.as_str())
@@ -1154,7 +1171,7 @@ async fn dispatcher_enforces_quota_without_charging_retries() -> anyhow::Result<
     )
     .await;
     let mut tx = db.transaction().await?;
-    toasty::sql::statement("INSERT INTO app_deliveries(id,event_id,installation_id,event_type,payload,first_delivered_at,acked_at) SELECT gen_random_uuid()::text,gen_random_uuid()::text,$1,'message.created','{}',now(),now() FROM generate_series(1,30000)").bind(f.installation.as_str()).exec(&mut tx).await?;
+    toasty::sql::statement("INSERT INTO app_deliveries(id,event_id,installation_id,event_type,payload,first_delivered_at,acked_at) SELECT gen_random_uuid()::text,gen_random_uuid()::text,$1,'message.created','{}',now()+interval '1 hour',now() FROM generate_series(1,30000)").bind(f.installation.as_str()).exec(&mut tx).await?;
     tx.commit().await?;
     let warning = apps::delivery::claim(&f.state, &f.installation)
         .await?
@@ -1871,11 +1888,18 @@ async fn http_dispatch_batches_messages_and_keeps_revocation_only_apps_eligible(
         )
         .await;
     }
-    let state = f.state.clone();
-    let worker = tokio::spawn(async move { apps::delivery::worker(state).await });
-    let result=tokio::time::timeout(std::time::Duration::from_secs(2),async{loop{let mut db=f.state.db.clone();let mut tx=db.transaction().await.unwrap();let count=apps::one(&mut tx,"SELECT json_build_object('attempted',count(*))::text FROM app_deliveries WHERE installation_id=$1 AND event_type='message.created' AND attempts>0",&[&f.installation]).await.unwrap();if count["attempted"].as_u64().unwrap()>=12 {break;}tokio::time::sleep(std::time::Duration::from_millis(20)).await;}}).await;
-    worker.abort();
-    result?;
+    // Exercise a complete batch directly. Counting twelve attempts after one pass
+    // detects a one-event-per-tick regression without relying on CI finishing in 2s.
+    tokio::time::timeout(
+        std::time::Duration::from_secs(15),
+        apps::delivery::http_pass(&f.state),
+    )
+    .await??;
+    let mut db = f.state.db.clone();
+    let mut tx = db.transaction().await?;
+    let count = apps::one(&mut tx, "SELECT json_build_object('attempted',count(*))::text FROM app_deliveries WHERE installation_id=$1 AND event_type='message.created' AND attempts>0", &[&f.installation]).await?;
+    assert_eq!(count["attempted"], 12);
+    drop(tx);
     ok(
         &f.app,
         "POST",
@@ -1884,11 +1908,17 @@ async fn http_dispatch_batches_messages_and_keeps_revocation_only_apps_eligible(
         Value::Null,
     )
     .await;
-    let state = f.state.clone();
-    let worker = tokio::spawn(async move { apps::delivery::worker(state).await });
-    let result=tokio::time::timeout(std::time::Duration::from_secs(2),async{loop{let mut db=f.state.db.clone();let mut tx=db.transaction().await.unwrap();let count=apps::one(&mut tx,"SELECT json_build_object('attempted',count(*))::text FROM app_deliveries WHERE installation_id=$1 AND event_type='tokens.revoked' AND attempts>0",&[&f.installation]).await.unwrap();if count["attempted"].as_u64().unwrap()>0 {break;}tokio::time::sleep(std::time::Duration::from_millis(20)).await;}}).await;
-    worker.abort();
-    result?;
+    tokio::time::timeout(
+        std::time::Duration::from_secs(15),
+        apps::delivery::http_pass(&f.state),
+    )
+    .await??;
+    let mut tx = db.transaction().await?;
+    let count = apps::one(&mut tx, "SELECT json_build_object('attempted',count(*))::text FROM app_deliveries WHERE installation_id=$1 AND event_type='tokens.revoked' AND attempts>0", &[&f.installation]).await?;
+    assert_eq!(
+        count["attempted"], 1,
+        "disabled Apps must still dispatch revocation events"
+    );
     Ok(())
 }
 
@@ -1896,7 +1926,8 @@ async fn http_dispatch_batches_messages_and_keeps_revocation_only_apps_eligible(
 async fn websocket_slots_and_presence_requests_have_distributed_limits() -> anyhow::Result<()> {
     use futures_util::{SinkExt, StreamExt};
     use tokio_tungstenite::tungstenite::Message;
-    let f = fixture().await?;
+    // This test exercises control requests, not the event delivery queue.
+    let f = fixture_with_events(json!([])).await?;
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
     let address = listener.local_addr()?;
     let app = f.app.clone();
@@ -2188,5 +2219,283 @@ async fn http_selection_skips_inaccessible_events_and_rotates_beyond_one_page() 
         }
     }
     tx.commit().await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn custom_emoji_storage_metadata_aliases_and_permissions() -> anyhow::Result<()> {
+    let f = fixture().await?;
+    backend::storage::ensure_bucket_exists(&f.state.s3_client, &f.state.config.s3.bucket).await;
+    let name = format!("custom_{}", Uuid::new_v4().simple());
+    let alias = format!("alias_{}", Uuid::new_v4().simple());
+    let payload = json!({"name":name,"category":"Greetings","aliases":[alias,"挨拶"],"content_type":"image/png","data":"iVBORw0KGgoAAAANSUhEUgAAAAMAAAABCAYAAAAb4BS0AAAADklEQVR4nGP438DwH4YBMWYHe7X3S+QAAAAASUVORK5CYII="});
+    let emoji = ok(
+        &f.app,
+        "POST",
+        "/api/emojis/upload",
+        &f.owner,
+        payload.clone(),
+    )
+    .await;
+    assert_eq!(emoji["category"], "Greetings");
+    assert_eq!(
+        request(
+            &f.app,
+            "POST",
+            "/api/emojis",
+            &f.owner,
+            json!({"name":name,"url":"https://example.com/external.png"})
+        )
+        .await
+        .0,
+        StatusCode::BAD_REQUEST
+    );
+
+    assert_eq!(emoji["aliases"], json!([alias, "挨拶"]));
+    let url = emoji["url"].as_str().unwrap();
+    let id = url.strip_prefix("/api/emoji-images/").unwrap();
+    assert!(Uuid::parse_str(id).is_ok());
+    let stored = f
+        .state
+        .s3_client
+        .get_object()
+        .bucket(&f.state.config.s3.bucket)
+        .key(format!("custom-emojis/{id}"))
+        .send()
+        .await?;
+    assert_eq!(stored.content_type(), Some("image/png"));
+    let bytes = stored.body.collect().await?.into_bytes();
+    assert_eq!(&bytes[16..24], &[0, 0, 0, 3, 0, 0, 0, 1]); // 3:1 is preserved.
+    let image = f
+        .app
+        .clone()
+        .oneshot(Request::builder().uri(url).body(Body::empty())?)
+        .await?;
+    assert_eq!(image.status(), StatusCode::OK);
+    assert_eq!(image.headers()["content-type"], "image/png");
+    assert_eq!(to_bytes(image.into_body(), usize::MAX).await?, bytes);
+    // The public route must serve a hot image without another object-store read.
+    f.state
+        .s3_client
+        .delete_object()
+        .bucket(&f.state.config.s3.bucket)
+        .key(format!("custom-emojis/{id}"))
+        .send()
+        .await?;
+    let cached = f
+        .app
+        .clone()
+        .oneshot(Request::builder().uri(url).body(Body::empty())?)
+        .await?;
+    assert_eq!(cached.status(), StatusCode::OK);
+    assert_eq!(to_bytes(cached.into_body(), usize::MAX).await?, bytes);
+    f.state
+        .s3_client
+        .put_object()
+        .bucket(&f.state.config.s3.bucket)
+        .key(format!("custom-emojis/{id}"))
+        .content_type("image/png")
+        .body(bytes.to_vec().into())
+        .send()
+        .await?;
+    let missing = f
+        .app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri(format!("/api/emoji-images/{}", Uuid::new_v4()))
+                .body(Body::empty())?,
+        )
+        .await?;
+    assert_eq!(missing.status(), StatusCode::NOT_FOUND);
+
+    assert_eq!(
+        request(
+            &f.app,
+            "POST",
+            "/api/emojis/upload",
+            &f.other,
+            payload.clone()
+        )
+        .await
+        .0,
+        StatusCode::FORBIDDEN
+    );
+    let mut invalid = payload.clone();
+    invalid["data"] = json!("aGVsbG8=");
+    assert_eq!(
+        request(&f.app, "POST", "/api/emojis/upload", &f.owner, invalid)
+            .await
+            .0,
+        StatusCode::BAD_REQUEST
+    );
+    let mut collision = payload.clone();
+    collision["name"] = json!(format!("other_{}", Uuid::new_v4().simple()));
+    assert_eq!(
+        request(&f.app, "POST", "/api/emojis/upload", &f.owner, collision)
+            .await
+            .0,
+        StatusCode::BAD_REQUEST
+    );
+    let message = ok(&f.app,"POST","/api/messages",&f.owner,json!({"id":Uuid::new_v4().to_string(),"channel_id":f.channel,"content":format!(":{alias}:")})).await;
+    let mid = message["data"]["id"].as_str().unwrap();
+    let reaction = ok(
+        &f.app,
+        "POST",
+        &format!("/api/messages/{mid}/reactions"),
+        &f.owner,
+        json!({"emoji":format!(":{alias}:")}),
+    )
+    .await;
+    assert_eq!(reaction["data"]["emoji"], format!(":{name}:"));
+    let renamed = format!("renamed_{}", Uuid::new_v4().simple());
+    let updated = ok(
+        &f.app,
+        "POST",
+        "/api/emojis",
+        &f.owner,
+        json!({"name":renamed,"previous_name":name,"url":url,"category":"Zoo","aliases":[alias]}),
+    )
+    .await;
+    assert_eq!(updated["name"], renamed);
+    assert_eq!(updated["url"], url);
+    assert_eq!(updated["category"], "Zoo");
+    assert!(
+        updated["aliases"]
+            .as_array()
+            .unwrap()
+            .contains(&json!(name))
+    );
+    assert_eq!(
+        ok(
+            &f.app,
+            "GET",
+            &format!("/api/emojis/{name}"),
+            &f.owner,
+            Value::Null
+        )
+        .await["name"],
+        renamed
+    );
+    // Both an old chip and the renamed picker entry must join the existing group.
+    for spelling in [&name, &renamed] {
+        let joined = ok(
+            &f.app,
+            "POST",
+            &format!("/api/messages/{mid}/reactions"),
+            &f.other,
+            json!({"emoji":format!(":{spelling}:")}),
+        )
+        .await;
+        assert_eq!(joined["data"]["emoji"], format!(":{name}:"));
+    }
+    let joined = ok(
+        &f.app,
+        "POST",
+        &format!("/api/messages/{mid}/reactions"),
+        &f.owner,
+        json!({"emoji":format!(":{renamed}:")}),
+    )
+    .await;
+    assert!(
+        joined["txid"].is_null(),
+        "renamed selection must not add another chip"
+    );
+    ok(
+        &f.app,
+        "DELETE",
+        &format!("/api/messages/{mid}/reactions?emoji=%3A{renamed}%3A"),
+        &f.owner,
+        Value::Null,
+    )
+    .await;
+
+    assert_eq!(
+        request(
+            &f.app,
+            "DELETE",
+            &format!("/api/emojis/{renamed}"),
+            &f.other,
+            Value::Null
+        )
+        .await
+        .0,
+        StatusCode::FORBIDDEN
+    );
+    let mut db = f.state.db.clone();
+    toasty::sql::statement("UPDATE users SET guest_kind='multi' WHERE id=$1")
+        .bind(f.owner.as_str())
+        .exec(&mut db)
+        .await?;
+    assert_eq!(
+        request(
+            &f.app,
+            "DELETE",
+            &format!("/api/emojis/{renamed}"),
+            &f.owner,
+            Value::Null
+        )
+        .await
+        .0,
+        StatusCode::FORBIDDEN
+    );
+    toasty::sql::statement("UPDATE users SET guest_kind='none' WHERE id=$1")
+        .bind(f.owner.as_str())
+        .exec(&mut db)
+        .await?;
+    ok(
+        &f.app,
+        "DELETE",
+        &format!("/api/emojis/{renamed}"),
+        &f.owner,
+        Value::Null,
+    )
+    .await;
+    assert_eq!(
+        request(
+            &f.app,
+            "GET",
+            &format!("/api/emojis/{renamed}"),
+            &f.owner,
+            Value::Null
+        )
+        .await
+        .0,
+        StatusCode::NOT_FOUND
+    );
+    f.state
+        .s3_client
+        .delete_object()
+        .bucket(&f.state.config.s3.bucket)
+        .key(format!("custom-emojis/{id}"))
+        .send()
+        .await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn upload_shortcode_remains_readable_and_removable() -> anyhow::Result<()> {
+    let f = fixture().await?;
+    backend::storage::ensure_bucket_exists(&f.state.s3_client, &f.state.config.s3.bucket).await;
+    for prefix in ["/api/emojis", "/api/apps/v1/emojis"] {
+        ok(&f.app, "POST", &format!("{prefix}/upload"), &f.owner, json!({"name":"upload","content_type":"image/png","data":"iVBORw0KGgoAAAANSUhEUgAAAAMAAAABCAYAAAAb4BS0AAAADklEQVR4nGP438DwH4YBMWYHe7X3S+QAAAAASUVORK5CYII="})).await;
+        let emoji = ok(
+            &f.app,
+            "GET",
+            &format!("{prefix}/upload"),
+            &f.owner,
+            Value::Null,
+        )
+        .await;
+        assert_eq!(emoji["name"], "upload");
+        ok(
+            &f.app,
+            "DELETE",
+            &format!("{prefix}/upload"),
+            &f.owner,
+            Value::Null,
+        )
+        .await;
+    }
     Ok(())
 }

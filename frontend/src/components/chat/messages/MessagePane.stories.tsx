@@ -1,5 +1,8 @@
+import { http, HttpResponse } from "msw";
+import { federatedReactionFixture } from "../../../../.storybook/message-fixtures";
+import { playForImplementation } from "../../../../.storybook/play-for-implementation";
 import type { Meta, StoryObj } from "@storybook/react-vite";
-import { expect, screen, userEvent } from "storybook/test";
+import { expect, screen, userEvent, waitFor } from "storybook/test";
 import type { ReactNode } from "react";
 
 import { StoryShell } from "../../../../.storybook/shell";
@@ -16,7 +19,7 @@ function PaneFrame({ children }: { children: ReactNode }) {
 }
 
 const meta = {
-  title: "Chat/MessagePane",
+  title: "Features/Chat/MessagePane",
   component: MessagePane,
   tags: ["autodocs"],
   parameters: { a11y: { test: "todo" } },
@@ -37,16 +40,21 @@ const meta = {
 export default meta;
 type Story = StoryObj<typeof meta>;
 
-export const Default: Story = {};
+export const Default: Story = {
+  play: playForImplementation(async () => {
+    await expect(await screen.findByText(/今日のリリースは 18:00/)).toBeVisible();
+    await expect(screen.queryByRole("heading", { name: "メッセージ" })).not.toBeInTheDocument();
+  }),
+};
 
 export const ThreadOpen: Story = {
-  play: async () => {
+  play: playForImplementation(async () => {
     const replies = await screen.findByRole("button", { name: "2 件の返信（スレッドを開く）" });
     await userEvent.click(replies);
     await expect(
       await screen.findByRole("complementary", { name: "スレッド" }),
     ).toBeInTheDocument();
-  },
+  }),
 };
 
 export const NotJoined: Story = {
@@ -57,4 +65,26 @@ export const NotJoined: Story = {
 
 export const Mobile: Story = {
   globals: { viewport: { value: "mobile" } },
+};
+
+export const FederatedReactions: Story = {
+  parameters: {
+    sharedApi: true,
+    a11y: { test: "error" },
+    msw: {
+      handlers: [
+        http.get("*/api/channels/:id/federated-reactions", () =>
+          HttpResponse.json([federatedReactionFixture]),
+        ),
+      ],
+    },
+  },
+  play: playForImplementation(async () => {
+    await expect(
+      await screen.findByRole("button", { name: "👍 3 件（自分もリアクション済み）" }),
+    ).toBeVisible();
+    const users = screen.getAllByRole("button", { name: "👍 にリアクションしたユーザーを表示" });
+    await userEvent.click(users[0]!);
+    await waitFor(() => expect(screen.getByText("Peer (@peer@remote.example)")).toBeVisible());
+  }),
 };

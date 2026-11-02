@@ -1,3 +1,4 @@
+pub mod attachment;
 pub mod channel_webhook;
 pub use channel_webhook::ChannelWebhook;
 pub mod channel;
@@ -12,6 +13,7 @@ pub mod user;
 pub mod user_identity;
 pub mod user_role;
 
+pub use attachment::Attachment;
 pub use channel::Channel;
 pub use channel_user::ChannelUser;
 pub use message::Message;

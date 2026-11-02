@@ -3,7 +3,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vite-plus/test";
 
 import { LocaleProvider } from "../../i18n/LocaleProvider";
-import { MessageRow, type MessageRowProps } from "./MessageRow";
+import { MessageRow, MessageBody, type MessageRowProps } from "./MessageRow";
 import type { MessageItem } from "./messageGrouping";
 
 function buildItem(overrides: Partial<MessageItem["message"]> = {}): MessageItem {
@@ -51,6 +51,15 @@ function render(item: MessageItem, isOwn = false, props: Partial<MessageRowProps
 }
 
 describe("MessageRow", () => {
+  it("keeps the full text fallback out of the feed when the app provides a card", () => {
+    const html = renderToStaticMarkup(
+      createElement(MessageBody, {
+        content: "Fallback summary",
+        appBlocks: JSON.stringify([{ type: "card", card: { title: "Rendered by AppBlocks" } }]),
+      }),
+    );
+    expect(html).toBe("");
+  });
   it("renders URLs as safe external links", () => {
     const html = render(buildItem({ content: "詳細は https://example.com/docs を参照" }));
     expect(html).toContain('href="https://example.com/docs"');
@@ -109,25 +118,19 @@ describe("MessageRow", () => {
     expect(continued).toMatch(/datetime="2026-01-02T09:00:00\.000Z"/i);
   });
 
-  it("omits the touch actions container when there are no actions", () => {
+  it("never displays a persistent touch toolbar", () => {
     const withoutActions = render(buildItem());
     expect(withoutActions).not.toContain("[@media(hover:none)]:flex");
 
     const withActions = render(buildItem(), false, { onOpenThread: noop });
-    expect(withActions).toContain("[@media(hover:none)]:flex");
+    expect(withActions).not.toContain("[@media(hover:none)]:flex");
   });
 
-  it("keeps the hover actions from stealing clicks while invisible", () => {
-    const html = render(buildItem(), true);
-    // 外枠ごとクリックを通し、表示（ホバー / フォーカス内）のときだけ操作群を戻す。
-    expect(html).toContain("pointer-events-none absolute right-1.5 top-0 flex items-center");
-    expect(html).toContain("pointer-events-none hidden items-center gap-0.5");
-    expect(html).toContain("group-hover/row:pointer-events-auto");
-    expect(html).toContain("group-focus-within/row:pointer-events-auto");
-    expect(html).toContain("group-hover/row:opacity-100");
-    expect(html).toContain("group-focus-within/row:opacity-100");
-    // タッチ用の「⋯」は外枠の指定を打ち消して押せるままにする。
-    expect(html).toContain("pointer-events-auto border bg-popover shadow-sm");
+  it("offers deletion without editing for moderators", () => {
+    const html = render(buildItem(), false, { canDelete: true });
+    expect(html).toContain('aria-label="削除"');
+    expect(html).not.toContain('aria-label="編集"');
+    expect(render(buildItem())).not.toContain('aria-label="削除"');
   });
 });
 

@@ -26,6 +26,8 @@ export interface MessageResponse {
   user_id: string;
   channel_id: string;
   content: string;
+  apub?: boolean;
+  apub_visibility?: string | null;
   created_at: TimestampString;
   updated_at: TimestampString | null;
   deleted_at: TimestampString | null;
@@ -80,6 +82,28 @@ export interface CreateMessageRequest {
   content: string;
   /** 返信先のルートメッセージ。通常メッセージでは省略する。 */
   parent_id?: string;
+  attachment_ids?: string[];
+}
+
+export interface PresignAttachmentRequest {
+  channel_id: string;
+  file_name: string;
+  file_size: number;
+  content_type: string;
+}
+
+export interface PresignAttachmentResponse {
+  attachment_id: string;
+  upload_url: string;
+  storage_key: string;
+}
+
+export interface AttachmentUrlResponse {
+  id: string;
+  download_url: string;
+  file_name: string;
+  file_size: number;
+  content_type: string;
 }
 
 export interface UpdateMessageRequest {

@@ -1,0 +1,6 @@
+interface:
+  display_name: "Storybook設計・カバレッジ"
+  short_description: "5カテゴリと状態単位でStoryを設計し、実UIの不足を補う"
+  default_prompt: "$storybook-coverage を使い、対象UIの状態を棚卸ししてStorybookを整備してください。"
+policy:
+  allow_implicit_invocation: true

@@ -1,13 +1,13 @@
 import { useTranslation } from "react-i18next";
-import { cn } from "cn";
-import { PlusIcon } from "lucide-react";
-import { useId, useMemo } from "react";
+import { PlusIcon, UsersIcon } from "lucide-react";
+import { useMemo } from "react";
 
 import type { ChannelRow, ChannelUserRow, UserRow } from "../../lib/electric/types";
 import { useLocale } from "../i18n/LocaleProvider";
 import { Button } from "../ui/button";
+import { CollapsibleSection } from "../ui/collapsible-section";
 import { Skeleton } from "../ui/skeleton";
-import { resolveDmDisplayName } from "./dm";
+import { formatDmDisplayName, resolveDmDisplayName } from "./dm";
 import { DmListItem } from "./DmListItem";
 
 const SKELETON_ROWS = [0, 1, 2];
@@ -43,7 +43,6 @@ export function DmSection({
 }) {
   const { t } = useTranslation();
   const { locale } = useLocale();
-  const headingId = useId();
 
   const membersByChannel = useMemo(() => {
     const map = new Map<string, ChannelUserRow[]>();
@@ -68,47 +67,34 @@ export function DmSection({
         currentUserId,
         locale,
       });
-      const names = resolved.names.join(", ");
-      const base = names || t("dms.untitled");
-      map.set(
-        channel.id,
-        resolved.remaining > 0
-          ? `${base} ${t("dms.moreNames", { count: resolved.remaining })}`
-          : base,
-      );
+      map.set(channel.id, formatDmDisplayName(resolved, t));
     }
     return map;
   }, [channels, currentUserId, locale, membersByChannel, t, users]);
 
   return (
-    <section className={cn("flex flex-col", className)} aria-labelledby={headingId}>
-      <div className="flex items-center justify-between gap-2 px-3 py-2">
-        <div className="flex items-baseline gap-2">
-          <h2
-            id={headingId}
-            className="font-heading text-xs font-semibold tracking-wide text-muted-foreground"
-          >
-            {t("dms.title")}
-          </h2>
-          <span className="text-xs tabular-nums text-muted-foreground">
-            {loading ? "…" : channels.length}
-          </span>
-        </div>
+    <CollapsibleSection
+      title={t("dms.title")}
+      icon={<UsersIcon />}
+      count={loading ? "…" : channels.length}
+      className={className}
+      actions={
         <Button
           variant="ghost"
-          size="icon"
-          className="size-11"
+          size="icon-sm"
           aria-label={t("dms.createTitle")}
           title={t("dms.createTitle")}
           onClick={onCreate}
         >
           <PlusIcon />
         </Button>
-      </div>
-
+      }
+    >
       <div className="flex flex-col gap-0.5 px-2 pb-2">
         {loading ? (
-          SKELETON_ROWS.map((row) => <Skeleton key={row} className="h-11 w-full rounded-lg" />)
+          SKELETON_ROWS.map((row) => (
+            <Skeleton key={row} className="h-9 w-full rounded-md md:h-8" />
+          ))
         ) : error ? (
           <p className="px-2 py-1 text-xs text-destructive">{t("dms.loadError")}</p>
         ) : usersError ? (
@@ -119,12 +105,8 @@ export function DmSection({
             </Button>
           </div>
         ) : channels.length === 0 ? (
-          <div className="flex flex-col items-start gap-2 px-2 py-3">
+          <div className="flex flex-col items-start gap-2 px-2 py-2">
             <p className="text-sm text-muted-foreground">{t("dms.empty")}</p>
-            <Button variant="outline" size="sm" className="min-h-11" onClick={onCreate}>
-              <PlusIcon />
-              {t("dms.newAction")}
-            </Button>
           </div>
         ) : (
           channels.map((channel) => (
@@ -139,6 +121,6 @@ export function DmSection({
           ))
         )}
       </div>
-    </section>
+    </CollapsibleSection>
   );
 }

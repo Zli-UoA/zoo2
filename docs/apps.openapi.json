@@ -6321,6 +6321,64 @@
           }
         ]
       }
+    },
+    "/api/apps/commands": {
+      "get": {
+        "operationId": "get_api_apps_commands",
+        "summary": "List commands available to the current human in a channel",
+        "security": [
+          {
+            "humanBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "channel_id",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Approved active commands from installed Apps whose bot and current user belong to the channel.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "required": [
+                      "app_id",
+                      "app_name",
+                      "name"
+                    ],
+                    "properties": {
+                      "app_id": {
+                        "type": "string"
+                      },
+                      "app_name": {
+                        "type": "string"
+                      },
+                      "name": {
+                        "type": "string"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication required"
+          },
+          "403": {
+            "description": "Human account required"
+          }
+        }
+      }
     }
   },
   "components": {

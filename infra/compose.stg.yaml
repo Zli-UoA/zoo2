@@ -46,6 +46,7 @@ services:
       context: .
       dockerfile: infra/Dockerfile-frontend-deploy
       args:
+        VITE_EXPERIMENTAL_COMPOSE: ${VITE_EXPERIMENTAL_COMPOSE:-false}
         VITE_API_BASE_URL: ""
         # SPA の OIDC PKCE 設定。未設定（空）なら dev の X-Dev-User のまま。
         VITE_OIDC_ISSUER: ${VITE_OIDC_ISSUER:-}
@@ -59,7 +60,11 @@ services:
       # CSP の connect-src に足す IdP のオリジン（空白区切り）。未設定なら同一オリジンのみ。
       # 例: https://idm.example.com
       CSP_CONNECT_SRC: ${CSP_CONNECT_SRC:-}
+      # CSP の connect-src / img-src に足す添付ファイル用ストレージ（R2 等）のオリジン（空白区切り）。
+      CSP_STORAGE_SRC: ${CSP_STORAGE_SRC:-}
       CSP_APP_IMAGE_SRC: ${CSP_APP_IMAGE_SRC:-}
+      MEDIA_PROXY_URL: ${MEDIA_PROXY_URL:-}
+      SUMMALY_URL: ${SUMMALY_URL:-}
     networks:
       - frontend
 
@@ -73,6 +78,9 @@ services:
       DATABASE_URL: postgresql://${POSTGRES_USER:-zoo}:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}@postgres:5432/${POSTGRES_DB:-zoo}?sslmode=disable
       ELECTRIC_URL: http://electric:3000
       PORT: ${PORT:-8000}
+      ACTIVITYPUB_BASE_URL: ${ACTIVITYPUB_BASE_URL:-}
+      # Origin is isolated; Cloudflare Tunnel is the only public ingress.
+      ACTIVITYPUB_CLOUDFLARE_TUNNEL: ${ACTIVITYPUB_CLOUDFLARE_TUNNEL:-true}
       ENVIRONMENT: production
       DEV_AUTH_ENABLED: "false"
       VAPID_PUBLIC_KEY: ${VAPID_PUBLIC_KEY:-}
@@ -89,6 +97,14 @@ services:
       OIDC_AUDIENCE:
       OIDC_CLIENT_ID:
       OIDC_JWKS_URL:
+      # S3 / Cloudflare R2 storage settings for attachments
+      S3_ENDPOINT:
+      S3_BUCKET:
+      S3_REGION:
+      S3_ACCESS_KEY_ID:
+      S3_SECRET_ACCESS_KEY:
+      S3_FORCE_PATH_STYLE:
+      S3_PUBLIC_ENDPOINT:
     networks:
       - backend
       - backend-egress

@@ -1,0 +1,21 @@
+services:
+  github-bot:
+    build:
+      context: ../..
+      dockerfile: apps/github-bot/Dockerfile
+    image: ${BOT_IMAGE:-ghcr.io/zli-uoa/zoo2-github-bot:latest}
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      BOT_CONFIG: /config/config.json
+      BOT_DATABASE: /data/github-bot.sqlite
+      GITHUB_PRIVATE_KEY_FILE: /run/secrets/github.pem
+    ports:
+      - "${BOT_BIND_ADDRESS:-127.0.0.1}:${PORT:-3001}:${PORT:-3001}"
+    volumes:
+      - ./config.json:/config/config.json:ro
+      - ${GITHUB_PRIVATE_KEY_PATH:?Set GITHUB_PRIVATE_KEY_PATH}:/run/secrets/github.pem:ro
+      - github-bot-data:/data
+    stop_grace_period: 30s
+volumes:
+  github-bot-data:

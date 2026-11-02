@@ -8,19 +8,25 @@ export function MfmChannelsProvider({
   channels,
   children,
 }: {
-  channels: readonly Pick<ChannelRow, "id" | "channel_name" | "deleted_at">[];
+  channels: readonly (Pick<ChannelRow, "id" | "channel_name" | "deleted_at"> & {
+    is_dm?: boolean;
+  })[];
   children: ReactNode;
 }) {
   const byName = useMemo(
     () =>
       new Map(
         channels
-          .filter((channel) => channel.deleted_at === null)
+          .filter((channel) => channel.deleted_at === null && !channel.is_dm)
           .map((channel) => [channel.channel_name, channel.id]),
       ),
     [channels],
   );
   return <MfmChannelsContext.Provider value={byName}>{children}</MfmChannelsContext.Provider>;
+}
+
+export function useMfmChannels() {
+  return useContext(MfmChannelsContext);
 }
 
 export function ChannelHashtag({ name, className }: { name: string; className?: string }) {

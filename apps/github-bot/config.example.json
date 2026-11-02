@@ -1,0 +1,10 @@
+{
+  "repositories": [
+    {
+      "repository": "your-org/your-repo",
+      "installationId": 123456,
+      "channels": ["zoo-channel-uuid"]
+    }
+  ],
+  "users": { "github-login": "zoo-user-uuid" }
+}

@@ -1,3 +1,4 @@
+import { Input } from "../ui/input";
 import { useTranslation } from "react-i18next";
 import { useState, type FormEvent } from "react";
 
@@ -85,8 +86,8 @@ export function CreateChannelDialog({
           <DialogTitle>{t("channels.createTitle")}</DialogTitle>
           <DialogDescription>{t("channels.visibilityHelp")}</DialogDescription>
         </DialogHeader>
-        <form className="flex flex-col gap-3" onSubmit={submit}>
-          <input
+        <form autoComplete="off" className="flex flex-col gap-3" onSubmit={submit}>
+          <Input
             className={inputClassName()}
             placeholder={t("channels.newName")}
             value={name}
@@ -137,7 +138,7 @@ export function CreateChannelDialog({
             </p>
           </div>
           <label className="flex items-center gap-2 text-sm">
-            <input
+            <Input
               type="checkbox"
               checked={isPrivate}
               onChange={(event) => setIsPrivate(event.target.checked)}

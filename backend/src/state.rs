@@ -75,10 +75,12 @@ impl UserResolutionCache {
 
 #[derive(Clone)]
 pub struct AppState {
+    pub home_live: crate::routes::home_live::HomeLive,
     pub db: toasty::Db,
     pub config: Config,
     pub http_client: reqwest::Client,
     pub electric_client: reqwest::Client,
+    pub s3_client: aws_sdk_s3::Client,
     pub jwks_verifier: JwksVerifier,
     pub user_cache: UserResolutionCache,
     pub call_registry: CallRegistry,
@@ -88,6 +90,7 @@ impl AppState {
     pub fn new(db: toasty::Db, config: Config) -> Self {
         let http_client = Self::default_http_client();
         let electric_client = Self::default_electric_client();
+        let s3_client = crate::storage::create_s3_client(&config.s3);
         let jwks_verifier = JwksVerifier::new(http_client.clone());
         let user_cache = UserResolutionCache::new();
         let call_registry = CallRegistry::new();
@@ -95,10 +98,12 @@ impl AppState {
         call_registry.start_sweeper(db.clone());
 
         Self {
+            home_live: Default::default(),
             db,
             config,
             http_client,
             electric_client,
+            s3_client,
             jwks_verifier,
             user_cache,
             call_registry,
@@ -134,16 +139,19 @@ impl AppState {
     /// `electric_client` にはタイムアウトなしの既定クライアント (`Self::default_electric_client()`) が設定されます。
     pub fn with_client(db: toasty::Db, config: Config, http_client: reqwest::Client) -> Self {
         let electric_client = Self::default_electric_client();
+        let s3_client = crate::storage::create_s3_client(&config.s3);
         let jwks_verifier = JwksVerifier::new(http_client.clone());
         let user_cache = UserResolutionCache::new();
         let call_registry = CallRegistry::new();
         call_registry.start_listener(config.database_url.clone());
         call_registry.start_sweeper(db.clone());
         Self {
+            home_live: Default::default(),
             db,
             config,
             http_client,
             electric_client,
+            s3_client,
             jwks_verifier,
             user_cache,
             call_registry,
@@ -160,15 +168,18 @@ impl AppState {
         jwks_verifier: JwksVerifier,
     ) -> Self {
         let electric_client = Self::default_electric_client();
+        let s3_client = crate::storage::create_s3_client(&config.s3);
         let user_cache = UserResolutionCache::new();
         let call_registry = CallRegistry::new();
         call_registry.start_listener(config.database_url.clone());
         call_registry.start_sweeper(db.clone());
         Self {
+            home_live: Default::default(),
             db,
             config,
             http_client,
             electric_client,
+            s3_client,
             jwks_verifier,
             user_cache,
             call_registry,
@@ -183,15 +194,18 @@ impl AppState {
         electric_client: reqwest::Client,
         jwks_verifier: JwksVerifier,
     ) -> Self {
+        let s3_client = crate::storage::create_s3_client(&config.s3);
         let user_cache = UserResolutionCache::new();
         let call_registry = CallRegistry::new();
         call_registry.start_listener(config.database_url.clone());
         call_registry.start_sweeper(db.clone());
         Self {
+            home_live: Default::default(),
             db,
             config,
             http_client,
             electric_client,
+            s3_client,
             jwks_verifier,
             user_cache,
             call_registry,

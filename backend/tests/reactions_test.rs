@@ -293,17 +293,30 @@ async fn test_reaction_normalization_and_formats() -> anyhow::Result<()> {
     let json: Value = serde_json::from_slice(&body)?;
     assert!(json["txid"].is_null());
 
-    // 3. ショートコード形式 (:party_parrot:)
+    // 3. 登録済みカスタム絵文字のショートコード形式
+    let custom_name = format!("party_parrot_{}", uuid::Uuid::new_v4().simple());
+    let mut registry_db = db.clone();
+    toasty::sql::statement("INSERT INTO workspace_emojis(name,url,created_by) VALUES($1,$2,$3)")
+        .bind(custom_name.as_str())
+        .bind(format!("/api/emoji-images/{}", uuid::Uuid::new_v4()))
+        .bind(user_id.as_str())
+        .exec(&mut registry_db)
+        .await?;
     let req = Request::builder()
         .method("POST")
         .uri(format!("/api/messages/{message_id}/reactions"))
         .header("content-type", "application/json")
         .header("X-Dev-User", &user_id)
         .body(Body::from(serde_json::to_vec(
-            &json!({ "emoji": ":party_parrot:" }),
+            &json!({ "emoji": format!(":{custom_name}:") }),
         )?))?;
     let resp = app.clone().oneshot(req).await?;
     assert_eq!(resp.status(), StatusCode::OK);
+
+    toasty::sql::statement("DELETE FROM workspace_emojis WHERE name=$1")
+        .bind(custom_name.as_str())
+        .exec(&mut registry_db)
+        .await?;
 
     // 4. Emoji Kitchen 形式 (kitchen:1f600_1f431)
     let req = Request::builder()

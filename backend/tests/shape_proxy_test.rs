@@ -189,6 +189,57 @@ async fn test_shape_proxy_and_authorization() -> anyhow::Result<()> {
     assert_eq!(resp.status(), StatusCode::OK);
     assert!(resp.headers().contains_key("electric-handle"));
 
+    // 13. Attachments Shape の確認 (プライベートチャンネル非メンバー Charlie は 404 Not Found)
+    let req = Request::builder()
+        .method("GET")
+        .uri(format!(
+            "/api/shapes/attachments?channel_id={private_channel_id}&offset=-1"
+        ))
+        .header("X-Dev-User", &charlie_id)
+        .body(Body::empty())?;
+
+    let resp = app.clone().oneshot(req).await?;
+    assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+
+    // 14. Attachments Shape の確認 (プライベートチャンネルメンバー Bob は 200 OK かつキャッシュ保護ヘッダ付与)
+    let req = Request::builder()
+        .method("GET")
+        .uri(format!(
+            "/api/shapes/attachments?channel_id={private_channel_id}&offset=-1"
+        ))
+        .header("X-Dev-User", &bob_id)
+        .body(Body::empty())?;
+
+    let resp = app.clone().oneshot(req).await?;
+    assert_eq!(resp.status(), StatusCode::OK);
+    assert!(resp.headers().contains_key("electric-handle"));
+
+    let vary = resp
+        .headers()
+        .get("vary")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or_default()
+        .to_lowercase();
+    assert!(
+        vary.contains("authorization"),
+        "vary must contain authorization, got: {vary}"
+    );
+    assert!(
+        vary.contains("x-dev-user"),
+        "vary must contain x-dev-user, got: {vary}"
+    );
+
+    let cache_control = resp
+        .headers()
+        .get("cache-control")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or_default()
+        .to_lowercase();
+    assert!(
+        cache_control.contains("private") && cache_control.contains("no-cache"),
+        "cache-control must contain private and no-cache, got: {cache_control}"
+    );
+
     Ok(())
 }
 

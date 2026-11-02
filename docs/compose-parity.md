@@ -1,0 +1,126 @@
+# React / Compose Web 対応表
+
+Reactを機能・UI・操作の基準とする。変更時は [compose-react-parity](../.agents/skills/compose-react-parity/SKILL.md) に従い、同じPRで両実装と検証を更新する。
+この表は実装の所有先を示すもので、全入力での完全互換や画像の完全一致を保証するものではない。
+
+| 領域 | Reactの主な所有先 | 共通Kotlinの所有先 | 確認先 |
+| --- | --- | --- | --- |
+| シェル・ルート・レール・ヘッダー | `layout/`、`ChannelHeader` | `App.kt`, `PaneHeader.kt`, `Ui.kt`, `Overlays.kt` | 両実装のentry points / CRUD E2E |
+| チャンネル・DM・メンバー・管理 | `ChannelScreen`, `dm`, `WorkspaceMembers` | `Channels.kt`, `Settings.kt` | CRUD・権限境界テスト |
+| Zoo設定・検索エンジン・テーマ・言語 | `ZooSettings`, `preferences/`, `theme/`, `i18n/` | `Settings.kt`, `RichText.kt` | 既存ZooSettings StoryのKotlin表示、設定E2E |
+| 投稿・返信・編集・削除・既読 | `messages/MessagePane`, `MessageRow`, `MessageList` | `Chat.kt`, `Repository.kt` | 投稿・返信E2E、スクロール検証 |
+| メンション・MFM・チャンネル・コマンド補完 | `messages/Composer`, `composerSuggestions`, `suggestionContext` | `Completion.kt`, `Chat.kt`, `Session.kt` | ParityTest、ParityTransportTest、両実装の補完E2E |
+| 本文・MFM・数式・コード | `MfmContent`, `mfm/`, `syntax/` | `RichText.kt`, `MfmEffects.kt`, `Math.kt`, `Syntax.kt` | ContentTest、RichTextカタログ。全構文互換は未確認 |
+| 連携カード・Appカードブロック・添付・unfurl | `MessageCard`, `AppBlocks` | `RichText.kt`, `Integrations.kt` | 既存MessageCard / AppBlocks StoryのKotlin表示、カード契約テスト |
+| ファイル添付・画像プレビュー・署名付きURL | `Composer`, `MessageAttachments`, `useAttachments`, `lib/attachments` | `Attachments.kt`, `AnimatedImages.kt`, `Chat.kt`, `Session.kt`, `Repository.kt`、ブラウザープリミティブ `lib/compose/files.ts` | AttachmentsTest、添付の両実装E2E、既存WithAttachments StoryのKotlin表示 |
+| URLカード・メディアプロキシ | `LinkPreviews`, `summaly`, `linkPreviewRequests`, `linkPreviewEndpoints` | `LinkPreviews.kt`, `Chat.kt` | 既存LinkPreviews StoryのKotlin表示、公開HTTPの認証非送信と操作E2E |
+| 絵文字・Emoji Kitchen・リアクション | `ReactionPicker`, `emoji/` | `Kitchen.kt`, `RichText.kt`, `Chat.kt`, `ReactionChip.kt` | ContentTest、ReactionUsersTest、既存ReactionPicker / ReactionUsers StoryのKotlin表示 |
+| 通知のグループ化・遅延取得・追加読み込み・既読 | `NotificationsScreen`, `notifications/` | `Notifications.kt` | 既存Notifications StoryのKotlin表示、通知E2E |
+| Home・連合投稿・ソーシャル操作 | `home/HomeScreen`, `HomeComposer`, `HomeReactionPicker`, `ActivityPubEmoji`, `useHomeLive` | `HomeScreen.kt`, `HomeComposer.kt`, `HomeTimeline.kt`, `HomePostCard.kt`, `HomeActivityPub.kt`, `HomeReactionPicker.kt`, `HomeUserSearch.kt`, `HomeLive.kt` | Homeの既存・追加Storyと両実装の操作・画像、Composer状態・設定保存テスト |
+| 連合通知・フォロー承認・チャンネル共有設定 | `ActivityPubNotifications`, `ZooSettings` | `ActivityPubNotifications.kt`, `ChannelTimelineSettings.kt` | 既存通知・設定Story、状態/API契約テスト |
+| Bubble Chat | `BubbleChatScreen`, `useBubbleChat` | `Bubble.kt` | ParityTransportTest、既存BubbleChat StoryのKotlin表示、共有・クリア・pagehide E2E |
+| App・Webhook・フォーム・権限 | `AppsDialog`, `AppBlocks`, `ChannelWebhooksDialog` | `Integrations.kt`, `Channels.kt` | CRUD E2E、API・ブロック契約テスト |
+| API・Electric・保存・再接続 | `lib/api`, `lib/electric`, `lib/offline` | `Repository.kt`, `Session.kt` | RepositoryTest、保存エラー・CSP・オフラインE2E |
+| ブラウザー認証・履歴・保存・プッシュ・公開HTTP | `ComposeFrontend`, `lib/compose` | `Platform` / `Main.kt` からホストへ接続、`WebSemantics.kt` でWebのrole・状態を補完 | BrowserInteropTest、OfflineProviderブラウザーテスト、PWA・公開HTTP・ログアウト検証 |
+| 翻訳・デザイントークン・アイコン・データ | `lib/i18n`, CSS、Lucide、Emojibase | `Ui.kt`, `IconData.kt`、共有翻訳・生成資源 | 全ロケールの共通辞書、`sync-compose-assets.mjs`、カタログツールバー |
+
+## main取り込み時の照合
+
+- `7b0418c` まで取り込み、追加されたAndroid対応を維持しました。今回のHome変更では、Reactの `ActivityPubContent` とKotlinの同名部品から、それぞれチャンネル共通のMFM描画へ接続しています。投稿本文・単独投稿・プロフィール・返信プレビュー・通知本文が対象です。リモート絵文字は既存プロキシを使い、コード内のショートコードは文字列のまま表示します。
+- 投稿成功時の公開範囲・連合・同期先と、選択したTLタブの保存をKotlinにも実装しました。アカウント・接続先ごとにキーを分け、既存Platformの保存境界を使います。両実装間で保存データを共有する仕様ではありません。
+- 追加したHome／通知のStoryで、PC・390pxのMFM表示と、設定保存・再表示・返信制約・チャンネル無効化・アカウント分離・保存先未解決時の投稿を検証します。HTMLだけで届く連合本文は従来どおりテキストへ変換し、明示的なMisskey MFMの元本文がある場合に装飾を保持します。全MFM構文の互換性や画素単位の一致は保証していません。
+
+- `6514c43` のTUIリリースと `d326387` の開発シェル更新を取り込みました。Runnerテストの競合はTUIのリリース対象とAndroidのHosted登録を両方維持して解消し、28件成功しています。更新情報生成テストも2件成功しています。React／Composeの画面・API変更はありません。
+
+- `794f891` のRunner選択変更を取り込み、Androidのビルド・配布ジョブのHosted登録を維持しました。このコミットにReact／Composeの画面・API変更はありません。Runner構成テスト28件とAndroid更新情報生成テスト2件で確認しています。
+
+- `9dbc553` のSafariキーボード検出修正を取り込みました。Reactの `AppShell` とComposeの `ComposeFrontend` は同じ `useVisualViewport` を使うため、両方に反映されます。キーボード表示・復帰、innerHeightも縮む場合、バウンス時の回帰テストをデスクトップ／モバイルで実行し、6件成功しています。
+
+- 遅延URLカードの拡大後、Reactは初回の未読位置を判定した後、仮想リストの高さをDOMへ反映してから末尾追従を補正する。上へスクロールした状態や編集中は追従を強制しない。Kotlinは既存の `Chat.kt` の測定サイズ監視と `pinned` 判定で同じ挙動を保ち、両実装を `compose.spec.ts` の遅延URLカード検証で確認する。
+
+- `f3784dc` のActivityPubプロフィール設定・投稿/ユーザー詳細ルート・リモートアバター・プロフィールリンク・公開範囲アイコンを共通Kotlinへ反映。Home詳細は `HomeDetail.kt`、設定は `ActivityPubSettings.kt` を使い、既存の投稿カード・通知・API境界と共有する。HomeComposerの閉状態メニュー解放と、モバイル詳細ルートのペイン選択も追従する。追加された12状態を既存Storybookの切替へ登録する。
+
+- `c1efff0` まで取り込み済み。`54cb528` のHome・ActivityPub投稿/返信/リアクション/フォロー/通知・タイムライン設定と追加Storyを共通Kotlinへ反映する。`useVisualViewport` のcallback ref変更もComposeのホスト接続へ反映する。`c1efff0` のTUIは独立クライアントで、WebのUI・API契約に追加変更はない。
+
+- `95657a4` のCIキャッシュ変更とStorybookの非同期検証待ち時間を取り込み済み。React/ComposeのUI・API・Story状態の追加変更はない。
+
+- `a518f22` まで取り込み済み。`d0b9922` のDocker必須ジョブのランナー選択とPreviewの変更検知を維持し、Compose変更もfrontendの変更として検出する。`ebf8e2b` のS3公開エンドポイントは添付APIが返す署名付きURLの変更で、両フロントはURLを組み直さずそのまま取得・ダウンロードする。`a518f22` のマイグレーション検証はフロントの契約・Storyに変更なし。
+
+- `4983bc3`（URLカード展開時のスクロール保持）: KotlinのLazyColumnでも閲覧中のキー・オフセットを保持し、末尾追従中だけカードの非同期サイズ変更へ追従する。上を読んでいるときの新着はボタンで案内する。
+- `19e6517`（通知）: 14spのヘッダー・本文、既読状態、初回の読込表示と追加取得中の既存項目の保持を共通Kotlinへ反映する。
+- 設定・Bubbleは共通Kotlinのルートとして描画する。設定タブは選択状態・矢印・Home/End・履歴の置換を扱い、カタログでも実際に切り替える。React画面へのフォールバックで対応済みとはしない。
+- `card.cards`、`fields`、Appのcardブロックを扱い、カードを持つ投稿の本文を二重表示しない。Appのファイル添付は既存のダウンロード導線を使う。`c82a7b2` で一般ユーザー向けの画像添付が追加されたため、App添付とは別に移植する。
+
+- `c82a7b2`（画像添付）: ファイル選択・貼り付け、10枚・50MiB・画像MIME制約、アップロード・削除・失敗時の復元、添付だけの投稿とスレッド、Electricの添付同期、署名付きURL更新を共通Kotlinへ反映する。GIF・アニメーションWebPはKotlinのブラウザーアダプターで復号し、解放時に再生を止める。ブラウザー接続はファイル・PUT・ダウンロードのプリミティブだけを提供し、React UIは埋め込まない。
+- `90e7cb4`（共通ヘッダー）: 36pxのロゴと上下12pxを基準に、共通の60dpヘッダーと1dp区切りへ揃える。チャンネル・一覧・通知・Bubble・設定・スレッド・メンバーパネルで共有する。
+- `f319017`（一般ファイル・画像プレビュー）: 画像以外の選択・貼り付け、空ファイル・実行ファイルの拒否、拡張子によるMIME推定、Kotlin製プレビューダイアログの読込・失敗・再試行、Blobによるファイル名付きダウンロードを反映する。
+
+- `6a29bb6`（リアクションしたユーザー）: ユーザー名と表示名、取得中・取得不能の案内、重複排除、PCのホバーとフォーカス時の表示、タッチ・キーボードで開ける一覧を共通Kotlinへ反映する。通常投稿とスレッドで同じ部品を使い、既存ReactionUsers / ReactionUsersHover Storyを上部で切り替えて確認する。
+
+切り替えUIと選択処理は環境変数に依存しない。Compose側のReactに戻る導線は常に表示される。ホストで共有する選択処理を変更した場合は、両実装の往復と保存済み選択を検証する。
+
+## 検証の範囲
+
+Electricの確定スナップショットは、初回・空の結果も保存キューへ渡す。StateFlowの最初の値を捨てる監視には依存せず、保存開始前に届いた初回メッセージもオフラインで復元できるようにする。Wasmのfetchが投げるErrorはHTTP境界でExceptionへ変換し、オフライン時のREST取得失敗がComposeの描画全体を停止させない。キャンセルはそのまま伝播する。SQLite接続の読み書きも接続単位で直列化し、複数Shapeの読み出しが衝突しないようにする。RepositoryTest、接続の並列操作・失敗後の再試行テスト、本番CSP下のオフライン再読み込みで検証する。
+
+Storybookの実装切り替えでは、破棄されたプレビューに届くサイズ監視を無視し、Reactへの復帰時に例外を出さない。既存E2EはCSFのplayによるリアクション一覧表示の完了を待ち、ネイティブの結合されたテキスト、URLカードのlink role、幅変更後の添付プレビューを実際の表示に沿って検証する。
+
+Playwrightは共通のHTTPS API fixtureを使い、同じ利用者操作と送信内容を両実装で確認する。
+実バックエンド、実OIDC、全Appの失敗・競合、スクリーンリーダー、各OSのIME・タッチ、MFM・数式の全構文、全画面の画像一致は別途確認が必要。
+常用CIはStoryの登録漏れ、Kotlinの契約テスト・ビルド、主要操作のスモーク・API契約、CSP・オフラインを検証する。長時間かかる全StoryのReact/Kotlin描画・操作・画像保存はCIから外し、明示的な依頼がある場合だけ手動で実行する。
+
+Compose WebとStorybookのKotlin生成はGitHubホストのUbuntuランナーを使う。セルフホストでは生成中にランナーとGitHubの通信断が発生したため、この2ジョブは一般用ランナーの選択から分離する。
+
+Storybookは既存Storyの上部implementationツールバーで切り替える。`.storybook/kotlin-stories.ts` と領域別adapterから全380状態へ同じ引数と共有fixtureを渡す。`story-coverage.test.ts` は既存CSFの全exportを照合し、登録漏れを失敗させる。変更範囲の比較には `playwright.storybook-parity.config.ts` と `STORYBOOK_PARITY_FILTER` を使い、同じデータ・時刻・画面幅・テーマ・言語で確認できる。別Featuresカテゴリへ複製しない。
+
+UIの精度は「極端に違わなければ問題ない」という指定に従う。フォントのアンチエイリアスや微小な画素差は移植の完了条件にせず、独自の文字描画エンジンも追加しない。通常の比較は変更範囲に絞り、全件検証を毎回の作業やCIの完了条件にしない。画素比較が必要な明示的な診断だけ `STORYBOOK_PARITY_VISUAL=strict` を指定する。比較ブラウザーは通常のChromiumと同じフォント計測を使う `channel: "chromium"` とし、legacy headless shellの文字幅整数丸めを実装側で再現しない。
+
+## 全件診断で検出された未解決項目
+
+全件診断 run 41303314647（9654ce8）は8バケット中7件が失敗した。全件診断を常用CIから外す判断は実行時間に関する依頼に従うもので、これらの成功や修正完了を意味しない。
+
+- `features-channels-sidebar--unread-and-archived`: Kotlinで未読表示の `img 未読メッセージあり` が見つからない。
+- `features-chat-composer--with-file-attachment` と `features-chat-messagecontent--headings`: KotlinのStory完了待ちが90秒でタイムアウトした。描画・playのどちらが原因かは未確定。
+- その他のバケットの失敗内容は未確認。全380状態の登録検査の成功は、全状態の描画・操作成功を保証しない。
+
+これらは未解決として残し、対象機能を変更する際に該当Storyに絞って再現・修正する。
+
+## Android での共通実装
+
+Android 版は `ZooApp`・`Session`・`Repository` と既存の画面／状態／API を commonMain から直接使用します。React／Compose Web の画面・API・Story の契約は変更しません。プラットフォーム接続と Android 固有の未対応事項は [Android 版](android.md) に記載します。Android の追加だけを理由に Web の既存 Story を複製しません。
+
+## 未ログインの公開プロフィール
+
+`/public/users/<user-id>` をReact・Compose両方に実装。プロフィールの名前・自己紹介はそれぞれのメイン画面と同じ `ActivityPubProfileDetails` を使い、投稿本文はReactの `HomePostContent`（内部は既存ActivityPubContent/MfmContent）とComposeの既存ActivityPubContentを使う。ボタン・入力欄・アバター・テーマ・翻訳も共通部品を使用する。独自のRust HTML/CSS描画は廃止。
+
+ブラウザでActor URLを開くと公開ルートへ移動し、連携クライアント向けのJSONは維持する。公開APIの20件ページ送り、空・読込・404・失敗・再試行・長文・スマホのStoryを追加。Composeの公開SessionはShape同期・個人用キャッシュ・通知/設定/在席APIを開始しない。公開HTTPはReactのcredentials omitとComposeの匿名ブリッジを使い、認証済み画面へ移動すると公開Runtimeを解放して通常のAuthGateを開始する。
+
+検証済み: フロントの型/lint/formatとビルド、Storybook監査・Kotlin登録検査・ビルド、公開画面のReact Story 8件、共有部分の既存Home Story 6件、公開APIの結合テスト2件、KotlinのRepository/PublicProfile契約テスト8件、Wasm配布用ビルド。公開画面の実ブラウザE2EはReact/Compose各4件で、1280px・390px、匿名のHTTP要求、ページ送り、失敗後の再試行、長文と明暗テーマを確認した。Kotlinの公開プロフィールと既存プロフィールの選択したStoryも実際のCanvasで確認した。
+
+## カスタム絵文字
+
+Reactの `ZooSettings`・`CustomEmojiPicker`・`MfmContent`・`ReactionEmoji` と、共通Kotlinの `CustomEmojis.kt`・`Settings.kt`・`RichText.kt`・`Kitchen.kt` を対応させています。両実装から同じ登録・画像アップロード・編集・削除APIを使い、カテゴリ・エイリアス検索、本文・リアクション、非正方形画像を扱います。公開プロフィールはAPIが返すEmojiタグを使います。画像は共通のS3互換バケットの専用prefixに保存し、リモート絵文字の自動カタログ取得は両UIから使われるAPIごと削除しています。
+
+確認対象はZooSettingsのCustomEmojis・Mobile・Empty・Error、リアクション選択、Kotlinのコンパイル・ブラウザテスト、バックエンドの保存・権限・エイリアス解決とMisskeyプロトコルの回帰テストです。実際のMisskeyサーバーとの相互接続試験は実施していません。
+
+検証結果: Reactユニット822件、Kotlinブラウザ74件、ZooSettingsのStory17件、追加4状態のReact/Kotlin操作・表示確認、S3互換ストレージを使う登録・編集・権限テスト、ActivityPub結合16件、通常リアクション結合6件が成功しました。390pxで横方向のはみ出しがないことと、3:1画像の保存・表示、Composeからのファイル選択・アップロードも確認しています。型・lint・Storybook監査、Compose配布ビルド、Storybookビルド、マイグレーション検証が成功しています。画像の完全一致や実Misskeyサーバーとの接続は検証していません。
+
+## チャンネル紐付け投稿の共有リアクション・公開範囲
+
+Reactの `useMessageReactions` とKotlinの `Chat` は、Electricのローカルリアクションへ、権限確認済みAPIの連合リアクションを合流させます。Reactの `useFederatedReactions` とKotlinの `ChannelReactions.kt` はHomeの変更通知で再取得し、画面移動時に購読を解放します。外部アカウント名、同じ絵文字の件数、登録済み／未登録の外部画像の区別を両実装で揃えています。
+
+TLの `HomeScreen` / `HomePostCard` ではチャンネルと共通の `ActivityPubBadge` を日時横に配置します。追加したVisibilityBadges・MobileとFederatedReactions、および既存Federated・CrossPostのStoryを確認対象としています。
+
+今回の検証結果: Reactユニット825件、Kotlinブラウザ75件、Home / MessagePaneのStory65件、追加・変更5状態のReact/Kotlin操作・表示確認、ActivityPub結合17件、通常リアクション結合6件が成功しました。型・lint・format・Storybook監査・ビルド、Compose配布ビルド、マイグレーションの検証に加え、空DBにマイグレーションを再適用したスキーマと `schema.sql` の一致も確認しています。390pxの両実装で日時と公開範囲アイコンの隣接を確認しました。
+
+### PR #311 レビュー対応
+
+React `useFederatedReactions` と共通Kotlin `ChannelReactions` はHome通知をまとめ、初回取得後の再取得を最短5秒間隔に制限する。チャンネル変更・画面破棄では保留処理を停止する。Homeのリアクションチップは両実装ともAPIの `can_react` を反映し、チャンネル紐付け投稿の未登録外部絵文字を無効にする（自分の既存リアクションの取り消しは許可）。単独・外部投稿の受信済み絵文字は同じAPIで再利用する。
+
+共有 `EmojiFallback` Storyは画像失敗時の文字表示と紐付け投稿の無効チップをReact・実Kotlinで検証する。再取得通知の集約はReactの仮想時計テスト、通知元はPostgreSQLの無変更更新／実更新テストで確認する。
+
+検証: Kotlinブラウザ契約75件・Wasm配布ビルド成功。React Home Story60件成功。共有3状態（MisskeyCustomEmoji・MobileMisskey・EmojiFallback）は再生成したKotlin成果物で両実装のplayと描画を検証し、全件成功。画像差分の完全一致はこの検証の対象外。
+
+実アプリのReact・Compose共通E2E全19件も成功。新規の連合リアクションAPIをE2Eモックに追加し、Webhook登録では入力のリセットと一覧反映を順に確認する。
+
+CIの待機処理を調整: 連合リアクションのユーザー一覧はDOM生成後の表示完了まで待つ。Composeのダイアログ契約テストは、再描画でアクセシビリティノードの矩形が一時的になくなる場合、ネイティブのポインター操作を最大5秒再試行する。キャンセル通知・入力リセット・編集保持のアサーションは維持する。

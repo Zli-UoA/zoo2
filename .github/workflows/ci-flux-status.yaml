@@ -1,6 +1,8 @@
 name: Validate Flux production status
 
 on:
+  # merge-queue.yaml がマージキューで呼び出す。
+  workflow_call:
   pull_request:
     paths:
       - .github/scripts/flux-status*.mjs
@@ -23,14 +25,8 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  runner:
-    uses: ./.github/workflows/select-runner.yaml
-    secrets:
-      runner-status-token: ${{ secrets.RUNNER_STATUS_TOKEN }}
-
   test:
-    needs: runner
-    runs-on: ${{ fromJSON(needs.runner.outputs.runs-on) }}
+    runs-on: ${{ (github.event.pull_request.head.repo.fork || github.event_name == 'merge_group') && 'ubuntu-latest' || 'zli-kubecamp-no-docker' }}
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4

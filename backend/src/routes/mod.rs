@@ -1,8 +1,12 @@
+pub mod attachments;
+pub mod bubble_chat;
 pub mod calls;
 pub mod channel_webhooks;
 pub mod channels;
 pub mod dms;
 pub mod health;
+pub mod home;
+pub mod home_live;
 pub mod messages;
 pub mod notifications;
 pub mod push;
@@ -59,6 +63,8 @@ pub fn create_router(state: AppState) -> Router {
 
     Router::new()
         .merge(health::router())
+        .merge(home::router())
+        .merge(crate::activitypub::router())
         .merge(crate::apps::management::router())
         .merge(crate::apps::api::router())
         .merge(crate::apps::oauth::router())
@@ -72,7 +78,9 @@ pub fn create_router(state: AppState) -> Router {
         .merge(channels::router())
         .merge(dms::router())
         .merge(messages::router())
+        .merge(attachments::router())
         .merge(typing::router())
+        .merge(bubble_chat::router())
         .merge(calls::router())
         .merge(notifications::router())
         .merge(push::router())
@@ -82,6 +90,8 @@ pub fn create_router(state: AppState) -> Router {
             |request: &axum::http::Request<axum::body::Body>| {
                 let path = if request.uri().path().starts_with("/api/app-responses/") {
                     "/api/app-responses/[redacted]"
+                } else if request.uri().path().starts_with("/api/webhooks/") {
+                    "/api/webhooks/[redacted]"
                 } else {
                     request.uri().path()
                 };

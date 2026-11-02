@@ -6,9 +6,7 @@ use axum::{
 use backend::{
     config::Config, db::init_db, models::Message, routes::create_router, state::AppState,
 };
-use hmac::{Hmac, KeyInit, Mac};
 use serde_json::{Value, json};
-use sha2::Sha256;
 use tower::ServiceExt;
 use uuid::Uuid;
 
@@ -44,24 +42,25 @@ async fn request(
         no_store,
     )
 }
-async fn delivery(app: &Router, path: &str, secret: &str, delivery_id: &str) -> StatusCode {
-    let body = json!({"title":"Deploy notification","source":"Build service"}).to_string();
-    let mut mac = Hmac::<Sha256>::new_from_slice(secret.as_bytes()).unwrap();
-    mac.update(body.as_bytes());
-    let sig = mac
-        .finalize()
-        .into_bytes()
-        .iter()
-        .map(|b| format!("{b:02x}"))
-        .collect::<String>();
+async fn delivery(app: &Router, path: &str, delivery_id: &str) -> StatusCode {
+    slack_delivery(
+        app,
+        path,
+        delivery_id,
+        json!({"attachments":[{"title":"Deploy notification","footer":"Build service"}]}),
+    )
+    .await
+}
+
+async fn slack_delivery(app: &Router, path: &str, delivery_id: &str, body: Value) -> StatusCode {
     app.clone()
         .oneshot(
             Request::builder()
                 .method("POST")
                 .uri(path)
-                .header("x-webhook-signature-256", format!("sha256={sig}"))
+                .header("content-type", "application/json")
                 .header("x-webhook-delivery", delivery_id)
-                .body(Body::from(body))
+                .body(Body::from(body.to_string()))
                 .unwrap(),
         )
         .await
@@ -105,36 +104,35 @@ async fn manages_channel_webhooks_and_credentials() -> anyhow::Result<()> {
     assert!(no_store);
     let hook = &created["data"];
     let id = hook["id"].as_str().unwrap();
-    let secret = hook["secret"].as_str().unwrap();
     let receive = hook["path"].as_str().unwrap();
-    assert_eq!(secret.len(), 64);
-    assert_eq!(receive, format!("/api/webhooks/{id}"));
-    assert_eq!(hook["generic_path"], receive);
+    assert!(receive.starts_with(&format!("/api/webhooks/{id}?token=")));
+    assert!(hook.get("secret").is_none());
+    assert!(hook.get("generic_path").is_none());
+    assert!(hook.get("slack_path").is_none());
     for old in [
         "/api/webhooks/github".to_owned(),
         format!("/api/webhooks/github/{id}"),
     ] {
         assert_eq!(
-            delivery(&app, &old, secret, &Uuid::new_v4().to_string()).await,
+            delivery(&app, &old, &Uuid::new_v4().to_string()).await,
             StatusCode::NOT_FOUND
         );
     }
     let (_, list, no_store) = request(&app, "GET", &path, &owner, Value::Null).await;
     assert!(no_store);
-    assert_eq!(list["data"][0]["secret"], secret);
+    assert_eq!(list["data"][0]["path"], receive);
     assert_eq!(
-        delivery(&app, receive, "wrong", &Uuid::new_v4().to_string()).await,
+        delivery(
+            &app,
+            &format!("/api/webhooks/{id}?token=wrong"),
+            &Uuid::new_v4().to_string()
+        )
+        .await,
         StatusCode::UNAUTHORIZED
     );
     let delivery_id = Uuid::new_v4().to_string();
-    assert_eq!(
-        delivery(&app, receive, secret, &delivery_id).await,
-        StatusCode::OK
-    );
-    assert_eq!(
-        delivery(&app, receive, secret, &delivery_id).await,
-        StatusCode::OK
-    );
+    assert_eq!(delivery(&app, receive, &delivery_id).await, StatusCode::OK);
+    assert_eq!(delivery(&app, receive, &delivery_id).await, StatusCode::OK);
     let messages = Message::filter(Message::fields().channel_id().eq(channel.as_str()))
         .exec(&mut db)
         .await?;
@@ -205,36 +203,141 @@ async fn manages_channel_webhooks_and_credentials() -> anyhow::Result<()> {
     .await;
     assert_eq!(status, StatusCode::OK);
     assert!(edited["data"]["card"].is_null());
-    let generic_path = hook["generic_path"].as_str().unwrap();
-    let generic = json!({"title":"Deploy complete", "source":"Deploy system", "description":"Production is healthy", "url":"https://example.com/deploy/123"}).to_string();
-    let mut mac = Hmac::<Sha256>::new_from_slice(secret.as_bytes()).unwrap();
-    mac.update(generic.as_bytes());
-    let sig = mac
-        .finalize()
-        .into_bytes()
+    // The existing endpoint now accepts only Slack messages, with URL authentication.
+    assert_eq!(
+        slack_delivery(
+            &app,
+            receive,
+            &Uuid::new_v4().to_string(),
+            json!({"title":"Legacy card"})
+        )
+        .await,
+        StatusCode::BAD_REQUEST
+    );
+    assert_eq!(
+        slack_delivery(
+            &app,
+            &format!("/api/webhooks/{id}"),
+            &Uuid::new_v4().to_string(),
+            json!({"text":"Missing token"})
+        )
+        .await,
+        StatusCode::UNAUTHORIZED
+    );
+    assert_eq!(
+        slack_delivery(
+            &app,
+            &format!("/api/webhooks/{id}/slack/removed"),
+            &Uuid::new_v4().to_string(),
+            json!({"text":"Removed route"})
+        )
+        .await,
+        StatusCode::NOT_FOUND
+    );
+    let slack_id = Uuid::new_v4().to_string();
+    let slack = json!({"text":"Flux deployment", "attachments":[
+        {"title":"Ready", "text":"production", "color":"good"},
+        {"title":"Failed", "text":"staging", "color":"#ff0000"}
+    ]});
+    for _ in 0..2 {
+        assert_eq!(
+            slack_delivery(&app, receive, &slack_id, slack.clone()).await,
+            StatusCode::OK
+        );
+    }
+    let messages = Message::filter(Message::fields().channel_id().eq(channel.as_str()))
+        .exec(&mut db)
+        .await?;
+    let slack_messages = messages
         .iter()
-        .map(|b| format!("{b:02x}"))
-        .collect::<String>();
+        .filter(|m| {
+            m.card
+                .as_ref()
+                .is_some_and(|c| c.contains("Flux deployment"))
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(slack_messages.len(), 1);
+    let cards: Value = serde_json::from_str(slack_messages[0].card.as_ref().unwrap())?;
+    assert_eq!(cards["cards"][1]["color"], "#2eb886");
+    assert_eq!(cards["cards"][2]["color"], "#ff0000");
+    assert_eq!(
+        slack_messages[0].content,
+        "Flux deployment\nReady\nproduction\nFailed\nstaging"
+    );
+    // Flux sends credentials as Secret.token, keeping retry error URLs public.
+    let (endpoint, token) = receive.split_once("?token=").unwrap();
+    for (url, authorization, expected) in [
+        (endpoint, format!("Bearer {token}"), StatusCode::OK),
+        (endpoint, "Bearer wrong".into(), StatusCode::UNAUTHORIZED),
+        (receive, "Basic wrong".into(), StatusCode::UNAUTHORIZED),
+        (receive, "Bearer wrong".into(), StatusCode::UNAUTHORIZED),
+    ] {
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(url)
+                    .header("authorization", authorization)
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        r#"{"attachments":[{"text":"Reconciliation failed","color":"danger"}]}"#,
+                    ))
+                    .unwrap(),
+            )
+            .await?;
+        assert_eq!(response.status(), expected);
+    }
+    let max_cards = json!({"attachments": vec![json!({"title":"界".repeat(500)}); 100]});
+    assert_eq!(
+        slack_delivery(&app, receive, &Uuid::new_v4().to_string(), max_cards).await,
+        StatusCode::OK
+    );
+    let stored = Message::filter(Message::fields().channel_id().eq(channel.as_str()))
+        .exec(&mut db)
+        .await?;
+    assert!(stored.iter().any(|m| m.content == "Reconciliation failed"));
+    let long = stored.iter().find(|m| m.content.starts_with("界")).unwrap();
+    assert_eq!(long.content.chars().count(), 40_000);
+    let full: Value = serde_json::from_str(long.card.as_ref().unwrap())?;
+    assert_eq!(full["cards"].as_array().unwrap().len(), 100);
+    assert_eq!(full["cards"][99]["title"], "界".repeat(500));
+    assert_eq!(
+        slack_delivery(
+            &app,
+            &format!("/api/webhooks/{id}?token=invalid"),
+            &slack_id,
+            slack.clone()
+        )
+        .await,
+        StatusCode::UNAUTHORIZED
+    );
+    assert_eq!(
+        slack_delivery(
+            &app,
+            receive,
+            &slack_id,
+            json!({"attachments":[{"text":"x", "color":"invalid"}]})
+        )
+        .await,
+        StatusCode::BAD_REQUEST
+    );
+    // Slack clients do not need custom headers or a delivery ID.
     let response = app
         .clone()
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri(generic_path)
-                .header("x-webhook-signature-256", format!("sha256={sig}"))
-                .header("x-webhook-delivery", Uuid::new_v4().to_string())
-                .body(Body::from(generic))
+                .uri(receive)
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"text":"No custom headers"}"#))
                 .unwrap(),
         )
         .await?;
     assert_eq!(response.status(), StatusCode::OK);
-    let stored = Message::filter(Message::fields().channel_id().eq(channel.as_str()))
-        .exec(&mut db)
-        .await?;
-    assert!(
-        stored
-            .iter()
-            .any(|m| m.card.as_ref().is_some_and(|c| c.contains("Deploy system")))
+    assert_eq!(
+        to_bytes(response.into_body(), usize::MAX).await?.as_ref(),
+        b"ok"
     );
     let item = format!("{path}/{id}");
     assert_eq!(
@@ -252,16 +355,31 @@ async fn manages_channel_webhooks_and_credentials() -> anyhow::Result<()> {
     )
     .await;
     assert_eq!(status, StatusCode::OK);
-    let next = rotated["data"]["secret"].as_str().unwrap();
-    assert_ne!(secret, next);
+    let next = rotated["data"]["path"].as_str().unwrap();
+    assert_ne!(receive, next);
+    for (bearer, expected) in [
+        (token, StatusCode::UNAUTHORIZED),
+        (next.split_once("?token=").unwrap().1, StatusCode::OK),
+    ] {
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(endpoint)
+                    .header("authorization", format!("Bearer {bearer}"))
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"text":"Rotated header token"}"#))
+                    .unwrap(),
+            )
+            .await?;
+        assert_eq!(response.status(), expected);
+    }
     assert_eq!(
-        delivery(&app, receive, secret, &delivery_id).await,
+        delivery(&app, receive, &delivery_id).await,
         StatusCode::UNAUTHORIZED
     );
-    assert_eq!(
-        delivery(&app, receive, next, &delivery_id).await,
-        StatusCode::OK
-    );
+    assert_eq!(delivery(&app, next, &delivery_id).await, StatusCode::OK);
     // A different channel manager cannot use their channel route to access this hook.
     let other = Uuid::new_v4().to_string();
     assert_eq!(request(&app,"POST","/api/channels",&outsider,json!({"id":other,"channel_name":format!("wh_{}",Uuid::new_v4().simple()),"is_private":false})).await.0,StatusCode::OK);
@@ -318,7 +436,11 @@ async fn manages_channel_webhooks_and_credentials() -> anyhow::Result<()> {
         StatusCode::BAD_REQUEST
     );
     assert_eq!(
-        delivery(&app, receive, next, &Uuid::new_v4().to_string()).await,
+        delivery(&app, next, &Uuid::new_v4().to_string()).await,
+        StatusCode::BAD_REQUEST
+    );
+    assert_eq!(
+        slack_delivery(&app, next, &Uuid::new_v4().to_string(), slack.clone()).await,
         StatusCode::BAD_REQUEST
     );
     assert_eq!(
@@ -326,7 +448,11 @@ async fn manages_channel_webhooks_and_credentials() -> anyhow::Result<()> {
         StatusCode::OK
     );
     assert_eq!(
-        delivery(&app, receive, next, &delivery_id).await,
+        delivery(&app, next, &delivery_id).await,
+        StatusCode::NOT_FOUND
+    );
+    assert_eq!(
+        slack_delivery(&app, next, &slack_id, slack).await,
         StatusCode::NOT_FOUND
     );
     let (_, list, _) = request(&app, "GET", &path, &owner, Value::Null).await;

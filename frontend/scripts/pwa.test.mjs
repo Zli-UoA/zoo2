@@ -76,8 +76,12 @@ function worker(overrides = {}) {
     URL,
     Response,
     Headers,
+    Request,
     self: {
-      location: { origin: ORIGIN },
+      location: {
+        origin: ORIGIN,
+        href: `${ORIGIN}/sw.js${overrides.policyVersion ? `?v=${overrides.policyVersion}` : ""}`,
+      },
       navigator: { language: "ja" },
       addEventListener: (type, handler) => handlers.set(type, handler),
       registration: { showNotification: async (...args) => notifications.push(args) },
@@ -128,13 +132,24 @@ test("legacy empty Web Push still displays a generic alert", async () => {
   assert.equal(notifications.length, 1);
   assert.equal(notifications[0][0], "Zoo");
   assert.match(notifications[0][1].body, /新しい通知/);
+  assert.equal(notifications[0][1].icon, "/icons/icon-192.png");
+  assert.equal(notifications[0][1].badge, "/icons/badge-96.png");
 });
 
 test("install precaches the app shell so offline navigation can start the SPA", async () => {
   const { handlers, cacheContext } = worker();
   await dispatch(handlers, "install");
   const shell = cacheContext.storeFor("zoo-shell-v2");
-  for (const path of ["/", "/index.html", "/offline.html", "/manifest.webmanifest"]) {
+  for (const path of [
+    "/",
+    "/index.html",
+    "/offline.html",
+    "/manifest.webmanifest",
+    "/favicon.ico",
+    "/icons/zoo.svg",
+    "/icons/favicon-32.png",
+    "/icons/badge-96.png",
+  ]) {
     assert.ok(shell.has(`${ORIGIN}${path}`), path);
   }
   assert.match(await shell.get(`${ORIGIN}/index.html`).text(), /network:/);
@@ -460,4 +475,73 @@ test("a failed shell download aborts installation instead of replacing the worki
     },
   });
   await assert.rejects(dispatch(handlers, "install"), /without a fresh index/);
+});
+
+test("policy-versioned assets bypass immutable HTTP/CDN caches while preserving the requested cache key", async () => {
+  const requests = [];
+  const { handlers, cacheContext } = worker({
+    policyVersion: "updated-policy",
+    fetch: async (input, init) => {
+      requests.push({ url: requestKey(input), cache: init?.cache });
+      return basicResponse("fresh asset", {
+        headers: { "content-security-policy": "script-src 'self' 'wasm-unsafe-eval'" },
+      });
+    },
+  });
+  const path = `${ORIGIN}/assets/opfs-worker-stable.js`;
+  const response = await fetchThrough(handlers, new Request(path));
+  assert.equal(requests[0].url, `${path}?__zoo_policy=updated-policy`);
+  assert.equal(requests[0].cache, "reload");
+  assert.equal(
+    response.headers.get("content-security-policy"),
+    "script-src 'self' 'wasm-unsafe-eval'",
+  );
+  const cache = await cacheContext.api.open("zoo-shell-v3-updated-policy-v2");
+  assert.ok(await cache.match(path));
+  assert.equal(await cache.match(`${path}?__zoo_policy=updated-policy`), undefined);
+});
+
+test("unversioned assets still revalidate the HTTP cache", async () => {
+  const requests = [];
+  const { handlers } = worker({
+    fetch: async (input, init) => {
+      requests.push({ url: requestKey(input), cache: init?.cache });
+      return basicResponse("asset");
+    },
+  });
+  const url = `${ORIGIN}/assets/unversioned.js`;
+  await fetchThrough(handlers, new Request(url));
+  assert.deepEqual(requests, [{ url, cache: "reload" }]);
+});
+
+test("Compose assets validate against the Cache API without rewriting unchanged bodies", async () => {
+  let mode = "first";
+  let requestHeaders;
+  const w = worker({
+    fetch: async (request, options) => {
+      assert.equal(options.cache, "no-store");
+      requestHeaders = request.headers;
+      if (mode === "offline") throw new TypeError("offline");
+      if (mode === "304") return new Response(null, { status: 304 });
+      return basicResponse(mode === "changed" ? "new-font" : "font", {
+        headers: { etag: mode === "changed" ? '"v2"' : '"v1"' },
+      });
+    },
+  });
+  const request = new Request(`${ORIGIN}/compose/font.ttf`);
+  assert.equal(await (await fetchThrough(w.handlers, request)).text(), "font");
+  const stored = () =>
+    [...w.cacheContext.stores.values()].map((store) => store.get(request.url)).find(Boolean);
+  const original = stored();
+  mode = "304";
+  assert.equal(await (await fetchThrough(w.handlers, request)).text(), "font");
+  assert.equal(requestHeaders.get("if-none-match"), '"v1"');
+  assert.equal(stored(), original);
+  mode = "first";
+  await fetchThrough(w.handlers, request);
+  assert.equal(stored(), original);
+  mode = "changed";
+  assert.equal(await (await fetchThrough(w.handlers, request)).text(), "new-font");
+  mode = "offline";
+  assert.equal(await (await fetchThrough(w.handlers, request)).text(), "new-font");
 });

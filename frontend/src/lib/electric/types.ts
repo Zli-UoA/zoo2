@@ -6,7 +6,8 @@ export type TableName =
   | "messages"
   | "message_reactions"
   | "channel_user"
-  | "notifications";
+  | "notifications"
+  | "attachments";
 
 export type UserRow = {
   id: string;
@@ -43,6 +44,9 @@ export type MessageRow = {
   app_attachments?: string | null;
   app_unfurls?: string | null;
   app_origin_id?: string | null;
+  home_post_id?: string | null;
+  apub?: boolean;
+  apub_visibility?: string | null;
   created_at: TimestampString;
   updated_at: TimestampString | null;
   deleted_at: TimestampString | null;
@@ -75,6 +79,18 @@ export type NotificationRow = {
   created_at: TimestampString;
 };
 
+export type AttachmentRow = {
+  id: string;
+  message_id: string | null;
+  uploader_id: string;
+  channel_id: string;
+  file_name: string;
+  file_size: string | number;
+  content_type: string;
+  storage_key: string;
+  created_at: TimestampString;
+};
+
 export type TableRowMap = {
   notifications: NotificationRow;
   users: UserRow;
@@ -82,4 +98,5 @@ export type TableRowMap = {
   messages: MessageRow;
   message_reactions: MessageReactionRow;
   channel_user: ChannelUserRow;
+  attachments: AttachmentRow;
 };

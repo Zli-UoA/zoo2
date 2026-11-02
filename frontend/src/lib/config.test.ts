@@ -1,3 +1,4 @@
+import { resolvePublicConfig } from "./config";
 import { describe, expect, it } from "vite-plus/test";
 
 import {
@@ -213,5 +214,20 @@ describe("buildShapeUrl", () => {
     expect(buildShapeUrl("messages", config, { offset: -1, live: "true" })).toBe(
       "/api/shapes/messages?offset=-1&live=true",
     );
+  });
+});
+
+describe("anonymous public configuration", () => {
+  it("does not require or propagate an identity or OIDC configuration", () => {
+    const config = resolvePublicConfig({
+      DEV: true,
+      VITE_API_BASE_URL: "/",
+      VITE_DEV_USER_ID: "private-user",
+      VITE_OIDC_ISSUER: "https://idp.example",
+      VITE_OIDC_CLIENT_ID: "zoo",
+    });
+    expect(config.apiBaseUrl).toBe("/");
+    expect(config.devUserId).toBeNull();
+    expect(config.oidc).toBeNull();
   });
 });

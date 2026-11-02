@@ -16,10 +16,13 @@ export interface FeedMessage {
   app_attachments?: string | null;
   app_unfurls?: string | null;
   app_origin_id?: string | null;
+  apub?: boolean;
+  apub_visibility?: string | null;
   is_bot?: boolean | null;
   app_id?: string | null;
   avatar_url?: string | null;
   created_at: string;
+  updated_at?: string | null;
   /** 返信先のルートメッセージ。`null` はチャンネル直下。 */
   parent_id: string | null;
   user_name?: string | null;

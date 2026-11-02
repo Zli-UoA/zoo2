@@ -91,6 +91,23 @@ function readChannelUserMetadata(metadata: unknown): ChannelUserWriteMetadata {
   return { action: "join" };
 }
 
+export interface MessageWriteMetadata {
+  attachment_ids?: string[];
+}
+
+function readMessageMetadata(metadata: unknown): MessageWriteMetadata {
+  if (!metadata || typeof metadata !== "object" || !("attachment_ids" in metadata)) {
+    return {};
+  }
+  const value = (metadata as { attachment_ids?: unknown }).attachment_ids;
+  if (!Array.isArray(value)) {
+    return {};
+  }
+  return {
+    attachment_ids: value.filter((id): id is string => typeof id === "string"),
+  };
+}
+
 /**
  * メッセージの送信・編集・論理削除。
  *
@@ -111,6 +128,10 @@ export function createMessageWrites({ client, txidMode }: WriteDependencies) {
       // 通常メッセージではキー自体を送らない（バックエンドの既定はルート）。
       if (row.parent_id) {
         body.parent_id = row.parent_id;
+      }
+      const attachmentIds = readMessageMetadata(mutation.metadata).attachment_ids;
+      if (attachmentIds?.length) {
+        body.attachment_ids = attachmentIds;
       }
       const { txid } = await client.post<MessageRow>("/api/messages", body);
       await syncTxid({

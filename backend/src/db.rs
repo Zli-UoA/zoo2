@@ -1,6 +1,6 @@
 use crate::models::{
-    Channel, ChannelUser, ChannelWebhook, Message, MessageReaction, Notification, Role, User,
-    UserIdentity, UserRole,
+    Attachment, Channel, ChannelUser, ChannelWebhook, Message, MessageReaction, Notification, Role,
+    User, UserIdentity, UserRole,
 };
 
 pub async fn init_db(database_url: &str) -> Result<toasty::Db, toasty::Error> {
@@ -18,7 +18,8 @@ pub async fn init_db(database_url: &str) -> Result<toasty::Db, toasty::Error> {
             crate::models::PushSubscription,
             ChannelUser,
             Role,
-            UserRole
+            UserRole,
+            Attachment
         ))
         .connect(database_url)
         .await?;

@@ -105,18 +105,16 @@ describe("ChannelHeader", () => {
     expect(screen.getByText(description)).toBeVisible();
   });
 
-  it("uses a machine-readable datetime in the message moderation dialog", async () => {
+  it("opens channel settings without a separate message moderation screen", async () => {
     render(
       <LocaleProvider>
         <ChannelHeader channel={channel} memberCount={3} />
       </LocaleProvider>,
     );
-
-    await userEvent.click(screen.getByRole("button", { name: "チャンネルの管理" }));
-    await userEvent.click(await screen.findByRole("menuitem", { name: "メッセージ管理" }));
-
-    const dialog = await screen.findByRole("dialog");
-    const time = dialog.querySelector("time");
-    expect(time?.getAttribute("datetime")).toBe("2026-01-02T09:00:00.000Z");
+    await userEvent.click(screen.getByRole("button", { name: "チャンネル設定" }));
+    expect(await screen.findByRole("dialog")).toBeVisible();
+    expect(screen.getByText("Webhook設定")).toBeVisible();
+    expect(screen.getByRole("button", { name: "アーカイブ" })).toBeVisible();
+    expect(screen.queryByText("メッセージ管理")).toBeNull();
   });
 });

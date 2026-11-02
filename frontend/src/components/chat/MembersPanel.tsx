@@ -1,6 +1,7 @@
+import { Input } from "../ui/input";
 import { useTranslation } from "react-i18next";
 import { cn } from "cn";
-import { SearchIcon, UserMinusIcon } from "lucide-react";
+import { ArrowLeftIcon, SearchIcon, UserMinusIcon } from "lucide-react";
 import { Fragment, useId, useMemo, useState, type ChangeEvent, type KeyboardEvent } from "react";
 
 import { canKickChannelMember } from "../../hooks/channelPermissions";
@@ -29,7 +30,13 @@ import { ScrollArea } from "../ui/scroll-area";
 import { Skeleton } from "../ui/skeleton";
 import { initials } from "./format";
 import { AppAvatar, openApp } from "./AppIdentity";
-import { filterMemberCandidates, sortUsersByLabel, userLabel } from "./memberCandidates";
+import { PaneHeader } from "../layout/PaneHeader";
+import {
+  filterMemberCandidates,
+  sortChannelMembers,
+  sortUsersByLabel,
+  userLabel,
+} from "./memberCandidates";
 
 const SKELETON_ROWS = [0, 1, 2];
 
@@ -49,7 +56,15 @@ function nowIso(): string {
  * ユーザー名で絞り込んだ候補を選ぶ combobox にしている。選択した時点で
  * `channel_user` に追加する（重複ガードは既存どおり残す）。
  */
-export function MembersPanel({ channel, className }: { channel: ChannelRow; className?: string }) {
+export function MembersPanel({
+  channel,
+  className,
+  onBack,
+}: {
+  channel: ChannelRow;
+  className?: string;
+  onBack?: () => void;
+}) {
   const { t } = useTranslation();
   const { locale } = useLocale();
   const { channelUsers } = useCollections();
@@ -70,8 +85,10 @@ export function MembersPanel({ channel, className }: { channel: ChannelRow; clas
   const creatorLeaveHintId = useId();
 
   const userMap = new Map((usersQuery.data ?? []).map((user) => [user.id, user]));
-  const members = [...(membersQuery.data ?? [])].sort(
-    (a, b) => Number(!!userMap.get(a.user_id)?.is_bot) - Number(!!userMap.get(b.user_id)?.is_bot),
+  const members = useMemo(
+    () =>
+      sortChannelMembers(membersQuery.data ?? [], usersQuery.data ?? [], channel.created_user_id),
+    [membersQuery.data, usersQuery.data, channel.created_user_id],
   );
   const userNames = useMemo(() => {
     const map = new Map<string, string>();
@@ -193,7 +210,7 @@ export function MembersPanel({ channel, className }: { channel: ChannelRow; clas
     setKickTarget(null);
   }
 
-  function handlePanelKeyDown(event: KeyboardEvent<HTMLDivElement>) {
+  function handlePanelKeyDown(event: KeyboardEvent<HTMLElement>) {
     if (event.key !== "Escape" || !isCandidateListOpen) {
       return;
     }
@@ -222,9 +239,32 @@ export function MembersPanel({ channel, className }: { channel: ChannelRow; clas
   }
 
   return (
-    <div className={cn("min-h-0 flex-col bg-background", className)} onKeyDown={handlePanelKeyDown}>
-      <header className="flex items-center justify-between gap-2 border-b px-4 py-3">
-        <h3 className="text-sm font-semibold">{t("members.title")}</h3>
+    <section
+      role={onBack ? "region" : undefined}
+      aria-label={onBack ? t("members.title") : undefined}
+      className={cn("min-h-0 flex-col bg-background", className)}
+      onKeyDown={handlePanelKeyDown}
+    >
+      <PaneHeader className="justify-between gap-2">
+        {onBack ? (
+          <>
+            <Button
+              autoFocus
+              variant="ghost"
+              size="icon-lg"
+              onClick={onBack}
+              aria-label={t("members.back")}
+            >
+              <ArrowLeftIcon />
+            </Button>
+            <div className="min-w-0 flex-1">
+              <h1 className="text-sm font-semibold">{t("members.title")}</h1>
+              <p className="truncate text-xs text-muted-foreground">#{channel.channel_name}</p>
+            </div>
+          </>
+        ) : (
+          <h3 className="text-sm font-semibold">{t("members.title")}</h3>
+        )}
         <span className="rounded bg-muted px-2 py-0.5 text-xs tabular-nums text-muted-foreground">
           {!canViewMembers
             ? "—"
@@ -232,7 +272,7 @@ export function MembersPanel({ channel, className }: { channel: ChannelRow; clas
               ? "…"
               : members.filter((member) => !userMap.get(member.user_id)?.is_bot).length}
         </span>
-      </header>
+      </PaneHeader>
 
       {canViewMembers ? (
         <>
@@ -250,11 +290,9 @@ export function MembersPanel({ channel, className }: { channel: ChannelRow; clas
                       <Skeleton className="h-4 flex-1" />
                     </li>
                   ))
-                : members.map((member, index) => {
+                : members.map((member) => {
                     const bot = userMap.get(member.user_id);
                     const isBot = !!bot?.is_bot;
-                    const startsAppSection =
-                      isBot && (index === 0 || !userMap.get(members[index - 1]!.user_id)?.is_bot);
                     const label = userNames.get(member.user_id) ?? member.user_id;
                     const isCreator = member.user_id === channel.created_user_id;
                     const isMe = member.user_id === currentUserId;
@@ -270,11 +308,6 @@ export function MembersPanel({ channel, className }: { channel: ChannelRow; clas
                       });
                     return (
                       <Fragment key={member.user_id}>
-                        {startsAppSection ? (
-                          <li className="mt-3 px-2 py-1 text-xs font-semibold text-muted-foreground">
-                            {t("apps.title")}
-                          </li>
-                        ) : null}
                         <li className="flex items-center gap-2.5 rounded-lg px-2 py-1.5 hover:bg-accent/60">
                           <AppAvatar label={label} isBot={isBot} src={bot?.avatar_url} size="sm" />
                           <span className="min-w-0 flex-1 truncate text-sm">
@@ -329,7 +362,7 @@ export function MembersPanel({ channel, className }: { channel: ChannelRow; clas
                   aria-hidden="true"
                   className="pointer-events-none absolute top-1/2 left-2.5 size-4 -translate-y-1/2 text-muted-foreground"
                 />
-                <input
+                <Input
                   className={cn(inputClassName(), "w-full pl-8")}
                   placeholder={t("members.search")}
                   value={query}
@@ -487,6 +520,6 @@ export function MembersPanel({ channel, className }: { channel: ChannelRow; clas
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
-    </div>
+    </section>
   );
 }

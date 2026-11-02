@@ -1,4 +1,5 @@
 import type {
+  AttachmentRow,
   ChannelRow,
   ChannelUserRow,
   MessageReactionRow,
@@ -39,7 +40,8 @@ export type ShapeName =
   | "messageReactions"
   | "users"
   | "channelUsers"
-  | "notifications";
+  | "notifications"
+  | "attachments";
 
 export interface ShapeMeta {
   table: TableName;
@@ -53,6 +55,7 @@ export const SHAPE_META: Record<ShapeName, ShapeMeta> = {
   messageReactions: { table: "message_reactions", proxyPath: "message_reactions" },
   users: { table: "users", proxyPath: "users" },
   channelUsers: { table: "channel_user", proxyPath: "channel_users" },
+  attachments: { table: "attachments", proxyPath: "attachments" },
 };
 
 export interface ShapeSchema<Row> {
@@ -103,6 +106,9 @@ export const MESSAGE_SCHEMA: ShapeSchema<MessageRow> = {
     app_attachments: "text",
     app_unfurls: "text",
     app_origin_id: "text",
+    home_post_id: "text",
+    apub: "bool",
+    apub_visibility: "text",
     created_at: "timestamp",
     updated_at: "timestamp",
     deleted_at: "timestamp",
@@ -144,6 +150,21 @@ export const NOTIFICATION_SCHEMA: ShapeSchema<NotificationRow> = {
   },
 };
 
+export const ATTACHMENT_SCHEMA: ShapeSchema<AttachmentRow> = {
+  table: "attachments",
+  columns: {
+    id: "text",
+    message_id: "text",
+    uploader_id: "text",
+    channel_id: "text",
+    file_name: "text",
+    file_size: "int8",
+    content_type: "text",
+    storage_key: "text",
+    created_at: "timestamp",
+  },
+};
+
 export const SHAPE_SCHEMAS: { [K in TableName]: ShapeSchema<TableRowMap[K]> } = {
   notifications: NOTIFICATION_SCHEMA,
   users: USER_SCHEMA,
@@ -151,6 +172,7 @@ export const SHAPE_SCHEMAS: { [K in TableName]: ShapeSchema<TableRowMap[K]> } = 
   messages: MESSAGE_SCHEMA,
   message_reactions: MESSAGE_REACTION_SCHEMA,
   channel_user: CHANNEL_USER_SCHEMA,
+  attachments: ATTACHMENT_SCHEMA,
 };
 
 export function toNumber(value: number | string): number {

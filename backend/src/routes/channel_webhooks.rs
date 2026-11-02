@@ -1,6 +1,6 @@
 use super::{
     response::ApiResponse,
-    webhooks::{Settings, persist_card, verify},
+    webhooks::{Settings, persist_card, verify_token, webhook_token},
 };
 use crate::{
     auth::{
@@ -15,8 +15,8 @@ use crate::{
 use axum::{
     Json, Router,
     body::Bytes,
-    extract::{Path, State},
-    http::{HeaderMap, StatusCode},
+    extract::{Path, Query, State},
+    http::HeaderMap,
     middleware,
     response::Response,
     routing::{delete, get, post},
@@ -30,19 +30,15 @@ pub struct WebhookResponse {
     name: String,
     bot_user_id: String,
     path: String,
-    generic_path: String,
-    secret: String,
     created_at: String,
 }
 impl From<ChannelWebhook> for WebhookResponse {
     fn from(w: ChannelWebhook) -> Self {
         Self {
-            path: format!("/api/webhooks/{}", w.id),
-            generic_path: format!("/api/webhooks/{}", w.id),
+            path: format!("/api/webhooks/{}?token={}", w.id, webhook_token(&w.secret)),
             id: w.id,
             name: w.name,
             bot_user_id: w.user_id.clone(),
-            secret: w.secret,
             created_at: w.created_at.to_string(),
         }
     }
@@ -67,7 +63,7 @@ pub fn router() -> Router<AppState> {
             "/api/channels/{channel_id}/webhooks/{id}/rotate-secret",
             post(rotate),
         )
-        .route("/api/webhooks/{id}", post(receive_generic))
+        .route("/api/webhooks/{id}", post(receive))
         .layer(middleware::map_response(
             |mut response: Response| async move {
                 response.headers_mut().insert(
@@ -251,35 +247,58 @@ async fn rotate(
     Ok(Json(ApiResponse::new(hook.into(), txid)))
 }
 
-async fn receive_generic(
+#[derive(Deserialize)]
+struct WebhookAuthentication {
+    #[serde(default)]
+    token: String,
+}
+
+async fn receive(
     State(state): State<AppState>,
     Path(id): Path<String>,
+    Query(auth): Query<WebhookAuthentication>,
     headers: HeaderMap,
     body: Bytes,
-) -> Result<StatusCode, AppError> {
+) -> Result<&'static str, AppError> {
     let mut db = state.db.clone();
     let hook = ChannelWebhook::filter(ChannelWebhook::fields().id().eq(id.as_str()))
         .first()
         .exec(&mut db)
         .await?
         .ok_or_else(|| AppError::NotFound("Webhook not found".into()))?;
-    let header = |key| headers.get(key).and_then(|v| v.to_str().ok()).unwrap_or("");
-    if !verify(&hook.secret, &body, header("x-webhook-signature-256")) {
-        return Err(AppError::Unauthorized("Invalid webhook signature".into()));
+    // Flux can keep the URL free of credentials and redact Secret.token on errors.
+    // A supplied Authorization header takes precedence, including when invalid.
+    let token = if let Some(value) = headers.get(axum::http::header::AUTHORIZATION) {
+        value
+            .to_str()
+            .ok()
+            .and_then(|value| value.split_once(' '))
+            .filter(|(scheme, _)| scheme.eq_ignore_ascii_case("Bearer"))
+            .map(|(_, token)| token)
+            .ok_or_else(|| AppError::Unauthorized("Invalid webhook token".into()))?
+    } else {
+        &auth.token
+    };
+    if !verify_token(&hook.secret, token) {
+        return Err(AppError::Unauthorized("Invalid webhook token".into()));
     }
-    let card: crate::cards::MessageCard = serde_json::from_slice(&body)
-        .map_err(|_| AppError::BadRequest("Invalid card payload".into()))?;
-    card.encode()?;
+    let cards = crate::cards::parse_webhook_cards(&body)?;
+    let generated_delivery = Uuid::new_v4().to_string();
+    let delivery = headers
+        .get("x-webhook-delivery")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or(&generated_delivery);
     persist_card(
         state,
         Settings {
             channel: hook.channel_id,
             user: hook.user_id,
         },
-        card,
-        header("x-webhook-delivery"),
+        cards,
+        delivery,
     )
-    .await
+    .await?;
+    Ok("ok")
 }
 
 #[derive(Deserialize)]

@@ -1,3 +1,4 @@
+import { Input } from "../ui/input";
 import { useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { createConfiguredApiClient } from "../../lib/api/client";
@@ -85,7 +86,7 @@ export function AppConsent() {
             {requested.map((scope) => (
               <li key={scope}>
                 <label className="flex items-center gap-2 text-sm">
-                  <input
+                  <Input
                     type="checkbox"
                     checked={selected.includes(scope)}
                     onChange={(event) =>

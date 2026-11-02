@@ -1,3 +1,4 @@
+import type { TFunction } from "i18next";
 import type { ChannelUserRow, UserRow } from "../../lib/electric/types";
 import { DEFAULT_LOCALE, INTL_LOCALES, type Locale } from "../../lib/i18n/locale";
 import { userLabel } from "./memberCandidates";
@@ -27,8 +28,8 @@ export function parseOneToOneDmIds(channelName: string): [string, string] | null
 
 export interface DmDisplayNameInput {
   channelName: string;
-  members: Pick<ChannelUserRow, "user_id">[];
-  users: Pick<UserRow, "id" | "display_name" | "user_name">[];
+  members: readonly Pick<ChannelUserRow, "user_id">[];
+  users: readonly Pick<UserRow, "id" | "display_name" | "user_name">[];
   currentUserId: string | null;
   locale?: Locale;
   maxNames?: number;
@@ -63,6 +64,14 @@ export function resolveDmDisplayName({
     names: names.slice(0, limit),
     remaining: Math.max(0, names.length - limit),
   };
+}
+
+/** Shared label for the sidebar, conversation header and notifications. */
+export function formatDmDisplayName(resolved: DmDisplayName, t: TFunction): string {
+  const names = resolved.names.join(", ") || t("dms.untitled");
+  return resolved.remaining > 0
+    ? `${names} ${t("dms.moreNames", { count: resolved.remaining })}`
+    : names;
 }
 
 export interface DmCandidateFilter<
