@@ -236,11 +236,38 @@ async fn start(
                 }
                 MappingAction::Existing { channel_id }
             }
-            // 公開・非公開は Slack に合わせる
-            MappingAction::Create { name, .. } => MappingAction::Create {
-                name,
-                is_private: Some(channel["is_private"] == true),
-            },
+            MappingAction::Create { name, .. } => {
+                // 以前の取り込みで作ったチャンネルがあれば、ワーカーはそこへ入れて本人と ZIP のメンバーを足す。
+                // その場合は既存チャンネルへの取り込みと同じく、参加状況とメンバー追加の権限を確かめる
+                let own_id = super::channel_id(&team, &mapping.slack_channel_id);
+                let exists = !query(
+                    &mut tx,
+                    "SELECT json_build_object('id',id)::text FROM channels WHERE id=$1",
+                    &[&own_id],
+                )
+                .await?
+                .is_empty();
+                if exists
+                    && !can_import_into(
+                        &mut tx,
+                        &own_id,
+                        &user.id,
+                        admin,
+                        channel["is_private"] == true,
+                    )
+                    .await?
+                {
+                    return Err(AppError::Forbidden(format!(
+                        "Slack channel {} was already imported into a channel you cannot add members to",
+                        mapping.slack_channel_id
+                    )));
+                }
+                // 公開・非公開は Slack に合わせる
+                MappingAction::Create {
+                    name,
+                    is_private: Some(channel["is_private"] == true),
+                }
+            }
             MappingAction::Skip => MappingAction::Skip,
         };
         mappings.push(Mapping {

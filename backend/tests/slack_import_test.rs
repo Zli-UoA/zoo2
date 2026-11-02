@@ -1367,6 +1367,12 @@ async fn test_linked_users_import_their_own_channels() -> anyhow::Result<()> {
     let (status, _) =
         import(json!([{"slack_channel_id":"G1","action":"existing","channel_id":g1}])).await;
     assert_eq!(status, StatusCode::FORBIDDEN);
+    // 作り直しを指定しても、以前作ったチャンネルへは戻れない
+    let (status, _) = import(
+        json!([{"slack_channel_id":"G1","action":"create","name":format!("secret-{suffix}")}]),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
 
     // ゲストは、通常の API と同じくチャンネルを作れない
     exec("UPDATE users SET is_guest=true WHERE id=$2 AND $1<>$3").await;
