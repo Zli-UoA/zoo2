@@ -1,7 +1,7 @@
 import type { KotlinPreviewProps } from "./KotlinPreview";
 import type { Selection } from "./kotlin-stories";
 import type { NativeInteraction as Step } from "./native-interactions";
-import { homePosts } from "./home-fixtures";
+import { homePosts, homeImageBase64 } from "./home-fixtures";
 
 const button = (name: string, extra: Partial<Step> = {}): Step => ({
   action: "click",
@@ -109,6 +109,51 @@ const imageChecks: Step[] = [
 ];
 
 export const homeInteractions: Record<string, Step[]> = {
+  "reply-to-media-only": [
+    role("button", "景色.png"),
+    role("button", "remote.png"),
+    wait("ローカル画像への返信"),
+    wait("リモート画像への返信"),
+  ],
+  "with-images": [role("button", "景色.png")],
+  "mobile-images": [role("button", "景色.png")],
+  "image-upload-error": [
+    ...opened,
+    {
+      action: "paste",
+      role: "textbox",
+      name: "近況を投稿",
+      file: { name: "景色.png", type: "image/png", base64: homeImageBase64 },
+    },
+    { action: "wait", role: "alert", count: 1, value: "8MiB" },
+    role("button", "投稿", { within: composer, enabled: false }),
+  ],
+  "image-only-post": [
+    ...opened,
+    {
+      action: "paste",
+      role: "textbox",
+      name: "近況を投稿",
+      file: { name: "景色.png", type: "image/png", base64: homeImageBase64 },
+    },
+    role("button", "投稿", { within: composer, enabled: true }),
+    button("景色.pngを削除"),
+    fixture("homeImageDiscarded"),
+    role("button", "投稿", { within: composer, enabled: false }),
+    {
+      action: "paste",
+      role: "textbox",
+      name: "近況を投稿",
+      file: { name: "景色.png", type: "image/png", base64: homeImageBase64 },
+    },
+    role("button", "投稿", { within: composer, enabled: true }),
+    send,
+    role("alert"),
+    role("button", "景色.pngを削除"),
+    send,
+    closed,
+    fixture("homeImagePosted"),
+  ],
   "visibility-badges": [
     role("img", "パブリック"),
     role("img", "ホーム"),

@@ -566,6 +566,8 @@
     "showLess": "收起"
   },
   "home": {
+    "image": "圖片",
+    "imageError": "加唔到圖片。請揀最多10張PNG、JPEG、GIF或WebP圖片（每張唔超過8MiB），再試一次。",
     "title": "首頁",
     "refresh": "重新整理",
     "compose": "分享近況",

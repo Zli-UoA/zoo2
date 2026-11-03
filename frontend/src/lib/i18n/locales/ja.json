@@ -566,6 +566,8 @@
     "showLess": "折りたたむ"
   },
   "home": {
+    "image": "画像",
+    "imageError": "画像を追加できませんでした。PNG・JPEG・GIF・WebP（各8MiB以下、最大10枚）を選んで再度お試しください。",
     "title": "Home",
     "refresh": "更新",
     "compose": "近況を投稿",

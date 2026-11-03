@@ -566,6 +566,8 @@
     "showLess": "收起"
   },
   "home": {
+    "image": "图片",
+    "imageError": "无法添加图片。请选择最多10张PNG、JPEG、GIF或WebP图片（每张不超过8MiB），然后重试。",
     "title": "首页",
     "refresh": "刷新",
     "compose": "分享近况",

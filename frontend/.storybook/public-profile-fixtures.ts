@@ -33,3 +33,32 @@ export const longPublicProfile: PublicProfileData = {
   posts: [{ ...publicProfile.posts[0]!, content: "https://example.com/".repeat(100) }],
   next_cursor: null,
 };
+
+export const imagePublicProfile: PublicProfileData = {
+  ...publicProfile,
+  posts: [
+    {
+      ...publicProfile.posts[0]!,
+      content: "公開プロフィールの画像投稿です。",
+      media: [
+        {
+          url: "/api/home/images/00000000-0000-4000-8000-000000000001",
+          name: "profile-photo.png",
+          media_type: "image/png",
+        },
+      ],
+    },
+    {
+      ...publicProfile.posts[1]!,
+      content: "",
+      media: [
+        {
+          url: "/api/home/images/00000000-0000-4000-8000-000000000002",
+          name: "image-only.png",
+          media_type: "image/png",
+        },
+      ],
+    },
+  ],
+  next_cursor: null,
+};

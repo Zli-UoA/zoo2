@@ -566,6 +566,8 @@
     "showLess": "Show less"
   },
   "home": {
+    "image": "Image",
+    "imageError": "Could not add image. Choose up to 10 PNG, JPEG, GIF or WebP images (8 MiB each), then try again.",
     "title": "Home",
     "refresh": "Refresh",
     "compose": "Share an update",

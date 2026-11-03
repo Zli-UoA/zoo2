@@ -6,9 +6,10 @@ import {
 } from "../../lib/homePreferences";
 import { ActivityPubText, ActivityPubContent, type CustomEmoji } from "./ActivityPubEmoji";
 import { flushSync } from "react-dom";
-import { useImperativeHandle, useRef, useState, type Ref } from "react";
+import { useEffect, useImperativeHandle, useRef, useState, type Ref } from "react";
 import { useTranslation } from "react-i18next";
 import {
+  ImagePlusIcon,
   ArrowLeftIcon,
   GlobeIcon,
   HomeIcon,
@@ -35,7 +36,12 @@ import {
   DropdownMenuTrigger,
 } from "../ui/dropdown-menu";
 
+import { attachmentFilesFromClipboard, resolveAttachmentContentType } from "../../lib/attachments";
+import { useCollections } from "../../lib/electric/collections-context";
+import { createConfiguredApiClient } from "../../lib/api/client";
+
 export interface HomePostInput {
+  image_ids?: string[];
   content: string;
   apub: boolean;
   visibility: HomePostSettings["visibility"];
@@ -70,6 +76,91 @@ export function HomeComposer({
   ref?: Ref<HomeComposerHandle>;
 }) {
   const { t } = useTranslation();
+  const { config } = useCollections();
+  const discardImage = (id: string) => {
+    void createConfiguredApiClient(config)
+      .request(`/api/home/images/${encodeURIComponent(id)}`, { method: "DELETE" })
+      .catch(() => {});
+  };
+  const [images, setImages] = useState<{ file: File; preview: string; id?: string }[]>([]);
+  const imagesRef = useRef(images);
+  imagesRef.current = images;
+  const [uploading, setUploading] = useState(false);
+  const uploadLock = useRef(false);
+  const [imageError, setImageError] = useState(false);
+  const fileInput = useRef<HTMLInputElement>(null);
+  const uploadController = useRef<AbortController | null>(null);
+  useEffect(
+    () => () => {
+      uploadController.current?.abort();
+      imagesRef.current.forEach((image) => {
+        URL.revokeObjectURL(image.preview);
+        if (image.id) discardImage(image.id);
+      });
+    },
+    [],
+  );
+  const addImages = async (files: File[]) => {
+    if (uploadLock.current || inFlight.current) return;
+    const controller = new AbortController();
+    uploadController.current = controller;
+    uploadLock.current = true;
+    setUploading(true);
+    setImageError(false);
+    try {
+      for (const file of files) {
+        if (controller.signal.aborted) return;
+        const contentType = resolveAttachmentContentType(file);
+        if (
+          imagesRef.current.length >= 10 ||
+          !["image/png", "image/jpeg", "image/gif", "image/webp"].includes(contentType ?? "") ||
+          !file.size ||
+          file.size > 8 * 1024 * 1024
+        ) {
+          setImageError(true);
+          continue;
+        }
+        const draft = { file, preview: URL.createObjectURL(file) };
+        imagesRef.current = [...imagesRef.current, draft];
+        setImages(imagesRef.current);
+        try {
+          const data = await new Promise<string>((resolve, reject) => {
+            const reader = new FileReader();
+            reader.onload = () => {
+              if (typeof reader.result === "string") resolve(reader.result.split(",")[1]!);
+              else reject(new Error("Image read failed"));
+            };
+            reader.onerror = () => reject(reader.error);
+            reader.readAsDataURL(file);
+          });
+          const result = await createConfiguredApiClient(config).request<{ id: string }>(
+            "/api/home/images",
+            {
+              method: "POST",
+              body: { name: file.name, content_type: contentType, data },
+              signal: controller.signal,
+            },
+          );
+          if (controller.signal.aborted) {
+            discardImage(result.id);
+            return;
+          }
+          imagesRef.current = imagesRef.current.map((image) =>
+            image === draft ? { ...image, id: result.id } : image,
+          );
+          setImages(imagesRef.current);
+        } catch {
+          URL.revokeObjectURL(draft.preview);
+          imagesRef.current = imagesRef.current.filter((image) => image !== draft);
+          setImages(imagesRef.current);
+          setImageError(true);
+        }
+      }
+    } finally {
+      uploadLock.current = false;
+      setUploading(false);
+    }
+  };
   const isDesktop = useMediaQuery("(min-width: 768px)");
   const channelsQuery = useActiveChannels();
   const { joinedChannelIds, isLoading: membershipsLoading } = useMyChannelMemberships();
@@ -113,7 +204,14 @@ export function HomeComposer({
   ] as const;
 
   const submit = async () => {
-    if (channelSelectionPending || inFlight.current || !content.trim() || length > 1000) return;
+    if (
+      channelSelectionPending ||
+      inFlight.current ||
+      uploadLock.current ||
+      (!content.trim() && !images.length) ||
+      length > 1000
+    )
+      return;
     inFlight.current = true;
     setSending(true);
     setFailed(false);
@@ -125,6 +223,7 @@ export function HomeComposer({
       };
       await onPost({
         content,
+        ...(images.length ? { image_ids: images.map((image) => image.id!) } : {}),
         ...settings,
         ...(replyTo ? { in_reply_to: replyTo.id, channel_id: null } : {}),
       });
@@ -133,6 +232,10 @@ export function HomeComposer({
       setChannelId(settings.channel_id ?? "");
       setReplyTo(null);
       setContent("");
+      images.forEach((image) => URL.revokeObjectURL(image.preview));
+      setImages([]);
+      imagesRef.current = [];
+      setImageError(false);
       setOpen(false);
     } catch {
       setFailed(true);
@@ -322,7 +425,13 @@ export function HomeComposer({
                 <Button
                   type="submit"
                   size="icon"
-                  disabled={sending || channelSelectionPending || !content.trim() || length > 1000}
+                  disabled={
+                    sending ||
+                    uploading ||
+                    channelSelectionPending ||
+                    (!content.trim() && !images.length) ||
+                    length > 1000
+                  }
                   aria-label={t(sending ? "home.sending" : "home.post")}
                   title={t(sending ? "home.sending" : "home.post")}
                 >
@@ -364,6 +473,15 @@ export function HomeComposer({
                 ref={inputRef}
                 value={content}
                 onChange={(e) => setContent(e.target.value)}
+                onPaste={(event) => {
+                  const files = attachmentFilesFromClipboard(event.clipboardData).filter((file) =>
+                    resolveAttachmentContentType(file)?.startsWith("image/"),
+                  );
+                  if (files.length) {
+                    event.preventDefault();
+                    void addImages(files);
+                  }
+                }}
                 disabled={sending}
                 aria-label={t("home.compose")}
                 aria-describedby="home-post-count"
@@ -371,6 +489,61 @@ export function HomeComposer({
                 placeholder={t("home.placeholder")}
                 className="min-h-40 flex-1 resize-none border-0 p-0 shadow-none focus-visible:ring-0 md:min-h-48"
               />
+              <input
+                ref={fileInput}
+                type="file"
+                accept="image/png,image/jpeg,image/gif,image/webp"
+                multiple
+                hidden
+                onChange={(event) => {
+                  void addImages(Array.from(event.target.files ?? []));
+                  event.target.value = "";
+                }}
+              />
+              <Button
+                type="button"
+                variant="ghost"
+                disabled={sending || uploading || images.length >= 10}
+                onClick={() => fileInput.current?.click()}
+                aria-label={t("attachments.add")}
+              >
+                <ImagePlusIcon aria-hidden="true" />
+                {t("attachments.add")}
+              </Button>
+              {images.length ? (
+                <ul aria-label={t("attachments.selected")} className="flex flex-wrap gap-2">
+                  {images.map((image) => (
+                    <li key={image.preview} className="relative">
+                      <img
+                        src={image.preview}
+                        alt={image.file.name}
+                        className="size-24 rounded object-cover"
+                      />
+                      <Button
+                        type="button"
+                        variant="secondary"
+                        size="icon-sm"
+                        className="absolute right-0 top-0"
+                        disabled={sending || uploading}
+                        aria-label={t("attachments.remove", { name: image.file.name })}
+                        onClick={() => {
+                          URL.revokeObjectURL(image.preview);
+                          if (image.id) discardImage(image.id);
+                          setImages((current) => current.filter((item) => item !== image));
+                        }}
+                      >
+                        <XIcon aria-hidden="true" />
+                      </Button>
+                    </li>
+                  ))}
+                </ul>
+              ) : null}
+              {uploading ? <p role="status">{t("attachments.uploading")}</p> : null}
+              {imageError ? (
+                <p role="alert" className="text-sm text-destructive">
+                  {t("home.imageError")}
+                </p>
+              ) : null}
               <div className="flex flex-wrap items-center justify-between gap-2">
                 <label className="flex min-w-0 items-center gap-2 text-xs">
                   {t("home.channel")}

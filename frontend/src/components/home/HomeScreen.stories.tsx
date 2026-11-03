@@ -18,6 +18,10 @@ import { HomeScreen } from "./HomeScreen";
 import { HomeComposer } from "./HomeComposer";
 import {
   homePosts as posts,
+  homeImageBase64,
+  homeImageId,
+  homeImagePost,
+  homeImageHandler,
   homeHandlers,
   visibilityPosts,
   homeImageOnlyPost,
@@ -1768,6 +1772,7 @@ async function checkHomeImage(canvasElement: HTMLElement) {
   const canvas = within(canvasElement);
   const preview = await canvas.findByRole("button", { name: "home-photo.pngをプレビュー" });
   await expect(preview).toBeVisible();
+  await expect(canvas.queryByRole("link", { name: "home-photo.png" })).not.toBeInTheDocument();
   await expect(canvas.queryByText(/本文のない投稿です/)).not.toBeInTheDocument();
   await userEvent.click(preview);
   const dialog = await screen.findByRole("dialog", { name: "home-photo.png" });
@@ -1879,5 +1884,167 @@ export const ChannelReplyAudience: Story = {
     await userEvent.click(form.getByRole("button", { name: /^投稿$/ }));
     await expectComposerClosed();
     await waitFor(() => expect(channelReplySent).toBe(true));
+  }),
+};
+
+export const WithImages: Story = {
+  parameters: {
+    msw: {
+      handlers: [
+        http.get("*/api/home", () => HttpResponse.json([homeImagePost])),
+        homeImageHandler,
+      ],
+    },
+  },
+  play: playForImplementation(async ({ canvasElement }) => {
+    const image = await within(canvasElement).findByRole("img", { name: "景色.png" });
+    await waitFor(() => expect((image as HTMLImageElement).naturalWidth).toBeGreaterThan(0));
+  }),
+};
+export const MobileImages: Story = { ...WithImages, globals: { viewport: { value: "mobile" } } };
+let homeImagePayload: unknown = null;
+let homeImageAttempts = 0;
+let homeImageDiscards = 0;
+export const ImageOnlyPost: Story = {
+  beforeEach: () => {
+    homeImagePayload = null;
+    homeImageAttempts = 0;
+    homeImageDiscards = 0;
+  },
+  parameters: {
+    fixtureControls: {
+      homeImageDiscarded: () => waitFor(() => expect(homeImageDiscards).toBe(1)),
+      homeImagePosted: () =>
+        expect(homeImagePayload).toMatchObject({ content: "", image_ids: [homeImageId] }),
+    },
+    msw: {
+      handlers: [
+        ...homeHandlers,
+        http.delete("*/api/home/images/:id", () => {
+          homeImageDiscards++;
+          return new HttpResponse(null, { status: 204 });
+        }),
+        http.post("*/api/home/images", () => HttpResponse.json({ id: homeImageId })),
+        http.post("*/api/home", async ({ request }) => {
+          homeImagePayload = await request.json();
+          if (++homeImageAttempts === 1) return new HttpResponse(null, { status: 500 });
+          return HttpResponse.json({ id: "image-post" }, { status: 201 });
+        }),
+      ],
+    },
+  },
+  play: playForImplementation(async ({ canvasElement }) => {
+    const form = await openComposer(canvasElement);
+    const file = new File(
+      [Uint8Array.from(atob(homeImageBase64), (char) => char.charCodeAt(0))],
+      "景色.png",
+      { type: "image/png" },
+    );
+    const transfer = new DataTransfer();
+    transfer.items.add(file);
+    form
+      .getByRole("textbox")
+      .dispatchEvent(
+        new ClipboardEvent("paste", { clipboardData: transfer, bubbles: true, cancelable: true }),
+      );
+    const send = form.getByRole("button", { name: /^投稿$/ });
+    await waitFor(() => expect(send).toBeEnabled());
+    await expect(form.getByRole("img", { name: "景色.png" })).toBeVisible();
+    await userEvent.click(form.getByRole("button", { name: "景色.pngを削除" }));
+    await expect(send).toBeDisabled();
+    await waitFor(() => expect(homeImageDiscards).toBe(1));
+    form
+      .getByRole("textbox")
+      .dispatchEvent(
+        new ClipboardEvent("paste", { clipboardData: transfer, bubbles: true, cancelable: true }),
+      );
+    await waitFor(() => expect(send).toBeEnabled());
+    await userEvent.click(send);
+    await expect(await form.findByRole("alert")).toBeVisible();
+    await expect(form.getByRole("img", { name: "景色.png" })).toBeVisible();
+    await userEvent.click(send);
+    await expectComposerClosed();
+    await expect(homeImagePayload).toMatchObject({ content: "", image_ids: [homeImageId] });
+  }),
+};
+
+export const ReplyToMediaOnly: Story = {
+  parameters: {
+    msw: {
+      handlers: [
+        http.get("*/api/home", () =>
+          HttpResponse.json([
+            {
+              ...posts[0]!,
+              id: "local-image-reply",
+              content: "ローカル画像への返信",
+              parent_id: homeImagePost.id,
+              parent: homeImagePost,
+            },
+            {
+              ...posts[0]!,
+              id: "remote-image-reply",
+              content: "リモート画像への返信",
+              parent_id: "https://remote.example/note",
+              parent: {
+                ...homeImagePost,
+                id: "https://remote.example/note",
+                remote: true,
+                media: [
+                  {
+                    url: "https://remote.example/photo.png",
+                    image_id: "f".repeat(64),
+                    name: "remote.png",
+                    media_type: "image/png",
+                  },
+                ],
+              },
+            },
+          ]),
+        ),
+        homeImageHandler,
+        http.get("*/api/activitypub/media-images/:id", () =>
+          HttpResponse.arrayBuffer(
+            Uint8Array.from(atob(homeImageBase64), (c) => c.charCodeAt(0)).buffer,
+            { headers: { "Content-Type": "image/png" } },
+          ),
+        ),
+      ],
+    },
+  },
+  play: playForImplementation(async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expect(await canvas.findByRole("img", { name: "景色.png" })).toBeVisible();
+    await expect(await canvas.findByRole("img", { name: "remote.png" })).toBeVisible();
+    await expect(canvas.getByText("ローカル画像への返信")).toBeVisible();
+    await expect(canvas.getByText("リモート画像への返信")).toBeVisible();
+  }),
+};
+
+export const ImageUploadError: Story = {
+  parameters: {
+    msw: {
+      handlers: [
+        ...homeHandlers,
+        http.post("*/api/home/images", () => new HttpResponse(null, { status: 500 })),
+      ],
+    },
+  },
+  play: playForImplementation(async ({ canvasElement }) => {
+    const form = await openComposer(canvasElement);
+    const transfer = new DataTransfer();
+    transfer.items.add(
+      new File([Uint8Array.from(atob(homeImageBase64), (c) => c.charCodeAt(0))], "景色.png", {
+        type: "image/png",
+      }),
+    );
+    form
+      .getByRole("textbox")
+      .dispatchEvent(
+        new ClipboardEvent("paste", { clipboardData: transfer, bubbles: true, cancelable: true }),
+      );
+    await expect(await form.findByRole("alert")).toHaveTextContent("8MiB");
+    await expect(form.getAllByRole("alert")).toHaveLength(1);
+    await expect(form.getByRole("button", { name: /^投稿$/ })).toBeDisabled();
   }),
 };
