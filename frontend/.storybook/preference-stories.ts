@@ -55,6 +55,10 @@ export function preferenceOptions(
         click("tab", "管理・開発");
         wait("button", "トークンを発行");
       } else wait("button", "メッセージ");
+    } else if (name.startsWith("Shared Emoji Service")) {
+      click("tab", "カスタム絵文字");
+      if (name.endsWith("Error")) wait("alert", "", { exact: false });
+      else wait("link", "絵文字管理サービスを開く");
     } else if (name.startsWith("Custom Emojis")) {
       click("tab", "カスタム絵文字");
       if (name === "Custom Emojis Error") wait("alert", "", { exact: false });

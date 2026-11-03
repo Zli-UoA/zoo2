@@ -222,3 +222,8 @@ Home通知APIも、閲覧可能で削除されていないローカル投稿の�
 mainのメッセージ編集時のCmd/Ctrl+Enter保存を、Reactの `MessageRow` とComposeの `Chat.kt` の両方に取り込んだ。JOIN済み表示データへの未確定差分の反映は維持する。`compose.spec.ts` の投稿・編集フローと、JOIN済みデータのリアクション・返信数・カスタム絵文字の保留中とロールバックを、再生成したCompose成果物で6ケースを検証し、成功した。バックエンド・DBの内容は、リベース前の検証済みコードと同じである。
 
 TUIは画像やURLカードを描画せず、Shapeの列を明示的に読み取るため、追加の表示用列は既存の読み取りに影響しない。このPRの画像枠・通知カードの変更は追加実装しない。編集時のCtrl+Enterは既存の `on_insert_key` から `submit` を通って保存できる。端末版のEnter送信・Alt/Shift+Enter改行は維持し、`make tui-check` で57テスト・clippy・formatの成功を確認した。
+## 共通絵文字サービス
+
+`EMOJI_SERVICE_URL` 設定時はReactのZooSettingsと共通KotlinのCustomEmojisで管理サービスへの外部リンクを表示する。取得中・失敗・再試行と未設定時の既存管理画面を両方で維持する。両実装のカタログは60秒で再取得し、取得失敗時は表示中の一覧を保持する。`SharedEmojiService` / `SharedEmojiServiceError` を共通Storyに追加する。TUIのリアクション入力も `:custom_name:` を受け付け、実際の存在確認はバックエンドが行う。
+
+検証: React設定画面のStorybook play 19件、関連ブラウザーテスト7件、Story監査・ビルド、Composeの `wasmJsBrowserTest` / `wasmJsBrowserDistribution` が成功。`frontend/scripts/check-shared-emoji-ui.mjs` でReact・実Kotlinの正常・390px・取得失敗を計6ケース検証し、リンクの宛先と旧編集フォームの非表示を確認した。既存の全件parityランナーはStorybook metadata取得でタイムアウトしたため、同じ実Storyを直接開く上記スモークで変更範囲の描画・操作を確認した。

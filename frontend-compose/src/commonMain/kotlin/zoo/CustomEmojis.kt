@@ -10,7 +10,10 @@ import kotlinx.serialization.json.*
 
 @Composable
 fun workspaceEmojis(app: Session): List<Row> {
-    LaunchedEffect(app) { try { app.loadWorkspaceEmojis() } catch (e: CancellationException) { throw e } catch (_: Exception) {} }
+    LaunchedEffect(app) { while (true) {
+        try { app.loadWorkspaceEmojis(true) } catch (e: CancellationException) { throw e } catch (_: Exception) {}
+        kotlinx.coroutines.delay(60_000)
+    } }
     return app.workspaceEmojis
 }
 
@@ -40,6 +43,26 @@ fun emojiRatio(emoji: Row): Float {
 
 @Composable
 fun CustomEmojiSettings(app: Session) {
+    val scope = rememberCoroutineScope()
+    var service by remember { mutableStateOf<Row?>(null) }
+    var failed by remember { mutableStateOf(false) }
+    fun load() { scope.launch {
+        failed = false
+        try { service = app.api.request("/api/emoji-service").jsonObject }
+        catch (e: CancellationException) { throw e } catch (_: Exception) { failed = true }
+    } }
+    LaunchedEffect(app) { load() }
+    if (service != null && service!!.text("url").isEmpty()) { LocalCustomEmojiSettings(app); return }
+    SettingsSection(app.t("home.customEmojis"), app.t("customEmoji.serviceHint")) {
+        val url = service?.text("url").orEmpty()
+        if (url.startsWith("https://") || url.startsWith("http://")) NativeLink(url) { Text(app.t("customEmoji.manageService"), color = LocalLinkColor.current) }
+        if (service == null && !failed) Text(app.t("home.loading"), Modifier.then(webControlModifier("status")))
+        if (failed) { Text(app.t("home.controlsError"), Modifier.then(webControlModifier("alert"))); Button(app.t("home.refresh")) { load() } }
+    }
+}
+
+@Composable
+private fun LocalCustomEmojiSettings(app: Session) {
     val scope = rememberCoroutineScope()
     var name by remember { mutableStateOf("") }
     var category by remember { mutableStateOf("") }

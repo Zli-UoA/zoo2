@@ -32,6 +32,8 @@ async fn main() -> anyhow::Result<()> {
         backend::activitypub::base_url()?;
     }
 
+    backend::emoji_service::service_url()?;
+
     // データベース接続初期化 (Toasty ORM)
     let db = init_db(&config.database_url).await?;
 
@@ -58,6 +60,7 @@ async fn main() -> anyhow::Result<()> {
     let delivery_worker = tokio::spawn(backend::apps::delivery::worker(state.clone()));
     let federation_worker = tokio::spawn(backend::activitypub::worker(state.clone()));
     let home_image_worker = tokio::spawn(backend::routes::home_images::worker(state.clone()));
+    let emoji_worker = tokio::spawn(backend::emoji_service::worker(state.clone()));
     let app = create_router(state);
 
     // サーバーバインド
@@ -73,6 +76,7 @@ async fn main() -> anyhow::Result<()> {
     .await?;
 
     display_worker.abort();
+    emoji_worker.abort();
     home_image_worker.abort();
     federation_worker.abort();
     delivery_worker.abort();

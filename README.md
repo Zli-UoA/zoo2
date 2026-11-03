@@ -23,3 +23,11 @@ GitHub のコメント・状態変更を Zoo に通知する外部 Bot は [GitH
 Home・チャンネル連携と ActivityPub の対応範囲・設定は [Home / ActivityPub](docs/activitypub.md) を参照してください。
 
 Compose Multiplatform を使う [Android 版](docs/android.md) のビルド・認証設定も参照してください。
+
+## 共通カスタム絵文字サービス
+
+バックエンドの `EMOJI_SERVICE_URL` にZli-UoA/emojiの公開オリジン（末尾スラッシュなし）を設定すると、既存の絵文字API・リアクション・ActivityPubが公開カタログを参照する。React・Composeの設定画面はサービスへのリンクに切り替わり、旧管理APIへの書き込みを拒否する。未設定時は既存機能を維持する。
+
+60秒ごとにETagで再検証し、差分を `emoji.changed` へ反映する。取得失敗時は最終成功一覧を保持する。初回取得前の障害時は移行前のDB一覧を使用する。`EMOJI_CACHE_FILE` を永続ボリューム上に設定すると再起動後も最終成功一覧を利用できる。
+
+移行時は管理操作を停止し、`scripts/export-custom-emojis.sql` で登録情報とAuthZの対応をJSON出力する。S3の `custom-emojis/` 配下をファイルとして取得し、`node scripts/export-emoji-manifest.mjs export/rows.json export/images export/manifest.json` でチェックサム付きmanifestを生成する。外部URLと複数のAuthZ対応は自動移行せず明示的に整理する。emojiリポジトリのimportツールで検証・インポートした後に参照先を切り替える。既存画像パスはサービスへリダイレクトするため、画像UUIDの対応も移行する。DBテーブルは後方互換のため保持し、切り替え後に別途撤去する。

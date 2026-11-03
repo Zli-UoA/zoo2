@@ -331,7 +331,10 @@
         "CustomEmojis",
         "CustomEmojisMobile",
         "CustomEmojisEmpty",
-        "CustomEmojisError"
+        "CustomEmojisError",
+        "SharedEmojiService",
+        "SharedEmojiServiceError",
+        "SharedEmojiServiceMobile"
       ]
     },
     {

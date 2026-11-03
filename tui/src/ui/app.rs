@@ -946,6 +946,15 @@ fn resolve_emoji(input: &str) -> Option<String> {
     emojis::get_by_shortcode(name)
         .or_else(|| emojis::get(input))
         .map(|emoji| emoji.as_str().to_string())
+        .or_else(|| {
+            (input.starts_with(':')
+                && input.ends_with(':')
+                && (1..=64).contains(&name.len())
+                && name.bytes().all(|c| {
+                    c.is_ascii_lowercase() || c.is_ascii_digit() || c == b'_' || c == b'-'
+                }))
+            .then(|| format!(":{name}:"))
+        })
 }
 
 fn new_composer() -> TextArea<'static> {
@@ -1002,6 +1011,12 @@ mod tests {
         assert_eq!(resolve_emoji(" tada ").as_deref(), Some("🎉"));
         assert_eq!(resolve_emoji("👍").as_deref(), Some("👍"));
         assert_eq!(resolve_emoji("not-an-emoji"), None);
+        assert_eq!(
+            resolve_emoji(":blobcat_custom:").as_deref(),
+            Some(":blobcat_custom:")
+        );
+        assert_eq!(resolve_emoji(":../cat:"), None);
+        assert_eq!(resolve_emoji("::"), None);
     }
 
     #[test]

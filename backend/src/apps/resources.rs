@@ -29,6 +29,7 @@ pub fn router() -> Router<AppState> {
         )
         .route("/api/stars", get(stars).post(add_star))
         .route("/api/stars/{kind}/{id}", delete(remove_star))
+        .route("/api/emoji-service", get(emoji_service))
         .route("/api/emojis", get(emojis).post(put_emoji))
         .route(
             "/api/emojis/upload",
@@ -562,8 +563,17 @@ async fn remove_star(
     Ok(Json(json!({"ok":true})))
 }
 
+async fn emoji_service(_user: crate::auth::AuthUser) -> Result<Json<Value>, AppError> {
+    Ok(Json(
+        json!({"url":crate::emoji_service::service_url()?.map(|u|u.origin().ascii_serialization())}),
+    ))
+}
+
 async fn emojis(State(s): State<AppState>, a: Actor) -> Result<Json<Value>, AppError> {
     a.require("emoji:read")?;
+    if let Ok(Some(rows)) = crate::emoji_service::catalog().await {
+        return Ok(Json(json!(rows)));
+    }
     let mut db = s.db.clone();
     let mut tx = db.transaction().await?;
     Ok(Json(json!(
@@ -613,6 +623,7 @@ async fn put_emoji(
     Json(mut b): Json<Emoji>,
 ) -> Result<Json<Value>, AppError> {
     a.require("emoji:write")?;
+    crate::emoji_service::writable()?;
     if b.name.is_empty()
         || b.name.len() > 64
         || !b
@@ -680,6 +691,7 @@ async fn remove_emoji(
     Path(name): Path<String>,
 ) -> Result<Json<Value>, AppError> {
     a.require("emoji:write")?;
+    crate::emoji_service::writable()?;
     let mut db = s.db.clone();
     let mut tx = db.transaction().await?;
     if events::guest(&mut tx, &a.user.id).await? {
@@ -1715,6 +1727,7 @@ async fn upload_emoji(
 ) -> Result<Json<Value>, AppError> {
     use base64::Engine;
     a.require("emoji:write")?;
+    crate::emoji_service::writable()?;
     if b.name.is_empty()
         || b.name.len() > 64
         || !b
@@ -1846,6 +1859,17 @@ async fn emoji_image(
     request: axum::extract::Request,
 ) -> Result<axum::response::Response, AppError> {
     use crate::activitypub::{client_ip, emoji_cache};
+    if let Some(origin) = crate::emoji_service::service_url()? {
+        let id = uuid::Uuid::parse_str(&id)
+            .map_err(|_| AppError::NotFound("Emoji image not found".into()))?;
+        return Ok(axum::response::Redirect::temporary(
+            origin
+                .join(&format!("/api/emoji-images/{id}"))
+                .unwrap()
+                .as_str(),
+        )
+        .into_response());
+    }
     use axum::response::IntoResponse;
     let id = uuid::Uuid::parse_str(&id)
         .map_err(|_| AppError::NotFound("Emoji image not found".into()))?;
@@ -1899,6 +1923,14 @@ pub(crate) async fn resolve_workspace_emoji(
     tx: &mut toasty::Transaction<'_>,
     name: &str,
 ) -> Result<Option<Value>, AppError> {
+    if let Ok(Some(rows)) = crate::emoji_service::catalog().await {
+        return Ok(rows.into_iter().find(|e| {
+            e["name"] == name
+                || e["aliases"]
+                    .as_array()
+                    .is_some_and(|a| a.iter().any(|v| v == name))
+        }));
+    }
     Ok(query(tx, "SELECT row_to_json(e)::text FROM workspace_emojis e WHERE name=$1 OR aliases ? $1 ORDER BY (name=$1) DESC,name LIMIT 1", &[name]).await?.into_iter().next())
 }
 async fn validate_emoji_metadata(
