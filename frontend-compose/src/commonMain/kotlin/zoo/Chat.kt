@@ -744,20 +744,55 @@ internal fun Message(
                                 .padding(8.dp),
                             verticalArrangement = Arrangement.spacedBy(8.dp),
                         ) {
+                            var editComposing by remember { mutableStateOf(false) }
+                            val saveEdit: () -> Unit = {
+                                if (callbacks?.saveEdit != null) callbacks.saveEdit.invoke()
+                                else
+                                    app.run("edit:$id") {
+                                        val row =
+                                            JsonObject(
+                                                message + ("content" to JsonPrimitive(content))
+                                            )
+                                        app.repo
+                                            .messages(channel.text("id"))
+                                            .write(
+                                                app.api,
+                                                "/api/messages/$id",
+                                                "PATCH",
+                                                obj("content" to content),
+                                                row,
+                                            )
+                                        editing = false
+                                    }
+                            }
                             Field(
                                 content,
                                 app.t("messages.editLabel"),
                                 modifier =
                                     Modifier.onPreviewKeyEvent {
-                                        if (
-                                            it.type == KeyEventType.KeyDown && it.key == Key.Escape
-                                        ) {
+                                        if (editComposing || it.type != KeyEventType.KeyDown)
+                                            false
+                                        else if (it.key == Key.Escape) {
                                             if (callbacks?.cancelEdit != null)
                                                 callbacks.cancelEdit.invoke()
                                             else editing = false
                                             true
+                                        } else if (
+                                            !it.isShiftPressed &&
+                                                it.key == Key.Enter &&
+                                                (if (app.env.mac) it.isMetaPressed
+                                                else it.isCtrlPressed)
+                                        ) {
+                                            if (
+                                                content.isNotBlank() &&
+                                                    editable &&
+                                                    "edit:$id" !in app.pending
+                                            )
+                                                saveEdit()
+                                            true
                                         } else false
                                     },
+                                onComposition = { editComposing = it },
                                 singleLine = false,
                                 showLabel = false,
                                 autoFocus = true,
@@ -784,24 +819,7 @@ internal fun Message(
                                     primary = true,
                                     size = "sm",
                                 ) {
-                                    if (callbacks?.saveEdit != null) callbacks.saveEdit.invoke()
-                                    else
-                                        app.run("edit:$id") {
-                                            val row =
-                                                JsonObject(
-                                                    message + ("content" to JsonPrimitive(content))
-                                                )
-                                            app.repo
-                                                .messages(channel.text("id"))
-                                                .write(
-                                                    app.api,
-                                                    "/api/messages/$id",
-                                                    "PATCH",
-                                                    obj("content" to content),
-                                                    row,
-                                                )
-                                            editing = false
-                                        }
+                                    saveEdit()
                                 }
                             }
                         }

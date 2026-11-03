@@ -171,3 +171,5 @@ Reactはスレッドのルートを返信を含む同じメッセージコレク
 追加の3指摘では、アップロードの復号許可をblocking taskの終了時に解放する。S3 PUT待ちの3件が復号用の2枠を占有しないことをAPIテストで確認する。ComposeのHomeは `DraftAttachments` のエラー表示を共通の `home.imageError` に差し替え、8 MiBの案内を一つだけ表示する。`HomeMediaImage` のクリック操作には `Role.Button` を明示する。`ImageUploadError` Storyは両実装でアップロード失敗時のalertが一つで、8 MiBの案内を含むことを確認する。
 
 今回の検証範囲: 対象React Story操作4件、React/Composeの対象6状態の操作・描画、Story登録などの単体テスト76件、Kotlinブラウザーテスト80件と配布ビルドが成功した。Home API11件、Rust単体109件（6件除外）と全ターゲットのclippyも成功した。Storybook監査は423状態を確認した。ReactのCRUD E2EはAPI応答後に編集済みチャンネル名の画面反映も待ち、3回連続で成功した。画素単位の一致は検証対象に含めない。
+
+メッセージ編集欄のCmd/Ctrl+Enter保存（#307）: Reactの `MessageRow` は `shouldSendFromKey` でmacOSはCmd+Enter、Windows / LinuxはCtrl+Enterを判定して保存する。Kotlinの `Chat.kt` の編集欄も `app.env.mac` で同じキーを判定し、保存ボタンと同じ処理を呼ぶ。本文が空白のみ、保存中、IME変換中、Shift+Enterは保存しない。EscapeのキャンセルとEnter単独の改行は変えていない。Kotlinは `compileKotlinWasmJs` の成功までをローカルで確認しており、ブラウザー操作の検証はCIに依存する。
