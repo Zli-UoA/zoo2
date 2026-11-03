@@ -1,4 +1,4 @@
-import { readFile, writeFile } from 'node:fs/promises';
+import { readFile, writeFile, readdir } from 'node:fs/promises';
 import { resolve, dirname, relative } from 'node:path';
 import { createHash } from 'node:crypto';
 const [rowsPath, imagesPath, outputPath] = process.argv.slice(2);
@@ -19,5 +19,13 @@ for (const row of rows) {
     sha256: createHash('sha256').update(bytes).digest('hex'), legacy_id: match[1], created_by: row.created_by,
     ...(identity ? { issuer: identity.iss, subject: identity.sub } : {}) });
 }
+const included = new Set(manifest.map(row => row.legacy_id));
+for (const id of (await readdir(imagesPath)).sort()) {
+  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(id) || included.has(id)) continue;
+  const path = resolve(imagesPath, id), image = relative(dirname(resolve(outputPath)), path);
+  if (image.startsWith('..')) throw Error('Images must be inside the manifest directory');
+  const bytes = await readFile(path);
+  manifest.push({ image, legacy_id: id, sha256: createHash('sha256').update(bytes).digest('hex') });
+}
 await writeFile(outputPath, JSON.stringify(manifest, null, 2), { flag: 'wx', mode: 0o600 });
-console.log(JSON.stringify({ exported: manifest.length }));
+console.log(JSON.stringify({ exported: manifest.length, catalog_entries: rows.length, historical_images: manifest.length - rows.length }));
