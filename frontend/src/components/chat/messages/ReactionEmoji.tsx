@@ -36,6 +36,7 @@ export function ReactionEmoji({
         <ActivityPubEmoji
           emoji={{ ...emojis?.[emoji], image_id: remote[1]!, name: remote[2]!, url: "" }}
           className="inline-block h-[1em] object-contain"
+          size={size}
         />
       </span>
     );

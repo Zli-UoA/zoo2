@@ -204,7 +204,10 @@ export const DelayedLinkPreview: Story = {
   play: playForImplementation(async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     const card = await canvas.findByRole("link", { name: /Delayed URL card/ });
-    await waitFor(() => expect(card).toHaveClass("flex-col"));
+    const initial = card.getBoundingClientRect();
+    await waitFor(() => expect(card.querySelector("img")?.naturalWidth).toBe(1200));
+    await expect(card.getBoundingClientRect().height).toBe(initial.height);
+    await expect(card.getBoundingClientRect().width).toBe(initial.width);
     const scroller = canvas.getByTestId("message-scroll");
     await waitFor(() =>
       expect(

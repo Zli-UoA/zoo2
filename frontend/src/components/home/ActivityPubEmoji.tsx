@@ -2,6 +2,7 @@ import { MfmContent } from "../chat/messages/MfmContent";
 import { useState } from "react";
 import { useCollections } from "../../lib/electric/collections-context";
 import { joinUrl } from "../../lib/config";
+import { emojiImageStyle } from "../../lib/emoji/dimensions";
 export interface CustomEmoji {
   width?: number | null;
   height?: number | null;
@@ -16,42 +17,42 @@ export interface CustomEmoji {
 export function ActivityPubEmoji({
   emoji,
   className = "inline-block size-[1.3em] align-middle",
+  size = "1.3em",
 }: {
   emoji: CustomEmoji;
   className?: string;
+  size?: string | number;
 }) {
   const { config } = useCollections();
   const [failed, setFailed] = useState<string | null>(null);
-  const ratio = emoji.width && emoji.height ? emoji.width / emoji.height : 1;
-  const style = { width: "auto", maxWidth: "8em", aspectRatio: String(ratio) };
-  if (emoji.local && (/^https?:\/\//.test(emoji.url) || /^\/(?!\/)/.test(emoji.url)))
-    return (
-      <img
-        src={emoji.url.startsWith("/") ? joinUrl(config.apiBaseUrl, emoji.url) : emoji.url}
-        alt={emoji.name}
-        title={emoji.name}
-        className={className}
-        style={style}
-        loading="lazy"
-      />
-    );
-  if (!/^[a-f0-9]{64}$/.test(emoji.image_id)) return <span>{emoji.name}</span>;
+  const style = { ...emojiImageStyle(emoji, size), maxWidth: "8em" };
+  const local = emoji.local && (/^https?:\/\//.test(emoji.url) || /^\/(?!\/)/.test(emoji.url));
+  if (!local && !/^[a-f0-9]{64}$/.test(emoji.image_id)) return <span>{emoji.name}</span>;
+  const src = local
+    ? emoji.url.startsWith("/")
+      ? joinUrl(config.apiBaseUrl, emoji.url)
+      : emoji.url
+    : joinUrl(config.apiBaseUrl, `/api/activitypub/emoji-images/${emoji.image_id}`);
   return (
-    <img
-      src={
-        failed === emoji.image_id
-          ? undefined
-          : joinUrl(config.apiBaseUrl, `/api/activitypub/emoji-images/${emoji.image_id}`)
-      }
-      alt={emoji.name}
+    <span
+      className={`inline-block ${className}`}
+      style={{ ...style, overflow: "hidden", whiteSpace: "nowrap" }}
       title={emoji.name}
-      className={className}
-      style={style}
-      loading="lazy"
-      decoding="async"
-      referrerPolicy="no-referrer"
-      onError={() => setFailed(emoji.image_id)}
-    />
+    >
+      {failed === emoji.image_id ? (
+        emoji.name
+      ) : (
+        <img
+          src={src}
+          alt={emoji.name}
+          style={{ display: "block", width: "100%", height: "100%", objectFit: "contain" }}
+          loading="lazy"
+          decoding="async"
+          referrerPolicy="no-referrer"
+          onError={() => setFailed(emoji.image_id)}
+        />
+      )}
+    </span>
   );
 }
 /** Same MFM parser and rendering as channels, retaining remote emoji proxy/fallbacks. */
@@ -66,7 +67,9 @@ export function ActivityPubContent({ text, emojis }: { text: string; emojis?: Cu
       }
       renderEmoji={(name) => {
         const emoji = emojis?.find((value) => value.name === `:${name}:`);
-        return emoji ? <ActivityPubEmoji emoji={emoji} className="mfm-custom-emoji" /> : undefined;
+        return emoji ? (
+          <ActivityPubEmoji emoji={emoji} className="mfm-custom-emoji" size="1.5em" />
+        ) : undefined;
       }}
     />
   );

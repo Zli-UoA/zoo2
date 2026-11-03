@@ -108,6 +108,7 @@ export function ActivityPubNotificationCard({
                   <ActivityPubEmoji
                     emoji={item.emoji}
                     className="inline-block size-4 align-middle"
+                    size={16}
                   />
                 ) : (
                   <span className="text-base leading-none">{item.reaction || "❤️"}</span>
