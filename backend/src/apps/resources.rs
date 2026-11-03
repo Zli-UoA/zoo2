@@ -571,15 +571,12 @@ async fn emoji_service(_user: crate::auth::AuthUser) -> Result<Json<Value>, AppE
 
 async fn emojis(State(s): State<AppState>, a: Actor) -> Result<Json<Value>, AppError> {
     a.require("emoji:read")?;
-    if let Ok(Some(rows)) = crate::emoji_service::catalog().await {
-        return Ok(Json(json!(rows)));
-    }
     let mut db = s.db.clone();
     let mut tx = db.transaction().await?;
     Ok(Json(json!(
         query(
             &mut tx,
-            "SELECT row_to_json(e)::text FROM workspace_emojis e ORDER BY name",
+            "SELECT row_to_json(e)::text FROM display_workspace_emojis e ORDER BY name",
             &[]
         )
         .await?
@@ -1923,15 +1920,7 @@ pub(crate) async fn resolve_workspace_emoji(
     tx: &mut toasty::Transaction<'_>,
     name: &str,
 ) -> Result<Option<Value>, AppError> {
-    if let Ok(Some(rows)) = crate::emoji_service::catalog().await {
-        return Ok(rows.into_iter().find(|e| {
-            e["name"] == name
-                || e["aliases"]
-                    .as_array()
-                    .is_some_and(|a| a.iter().any(|v| v == name))
-        }));
-    }
-    Ok(query(tx, "SELECT row_to_json(e)::text FROM workspace_emojis e WHERE name=$1 OR aliases ? $1 ORDER BY (name=$1) DESC,name LIMIT 1", &[name]).await?.into_iter().next())
+    Ok(query(tx, "SELECT row_to_json(e)::text FROM display_workspace_emojis e WHERE name=$1 OR aliases ? $1 ORDER BY (name=$1) DESC,name LIMIT 1", &[name]).await?.into_iter().next())
 }
 async fn validate_emoji_metadata(
     tx: &mut toasty::Transaction<'_>,

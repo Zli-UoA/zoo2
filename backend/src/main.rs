@@ -55,6 +55,8 @@ async fn main() -> anyhow::Result<()> {
         Err(_) => tracing::warn!("Emoji metadata backfill will resume at the next startup"),
     }
 
+    backend::emoji_service::initialize(&state).await?;
+
     // ルーター構築
     let display_worker = tokio::spawn(backend::display_refresh::worker(state.clone()));
     let delivery_worker = tokio::spawn(backend::apps::delivery::worker(state.clone()));

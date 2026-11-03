@@ -227,3 +227,5 @@ TUIは画像やURLカードを描画せず、Shapeの列を明示的に読み取
 `EMOJI_SERVICE_URL` 設定時はReactのZooSettingsと共通KotlinのCustomEmojisで管理サービスへの外部リンクを表示する。取得中・失敗・再試行と未設定時の既存管理画面を両方で維持する。両実装のカタログは60秒で再取得し、取得失敗時は表示中の一覧を保持する。`SharedEmojiService` / `SharedEmojiServiceError` を共通Storyに追加する。TUIのリアクション入力も `:custom_name:` を受け付け、実際の存在確認はバックエンドが行う。
 
 検証: React設定画面のStorybook play 19件、関連ブラウザーテスト7件、Story監査・ビルド、Composeの `wasmJsBrowserTest` / `wasmJsBrowserDistribution` が成功。`frontend/scripts/check-shared-emoji-ui.mjs` でReact・実Kotlinの正常・390px・取得失敗を計6ケース検証し、リンクの宛先と旧編集フォームの非表示を確認した。既存の全件parityランナーはStorybook metadata取得でタイムアウトしたため、同じ実Storyを直接開く上記スモークで変更範囲の描画・操作を確認した。
+
+mainの表示JOINとの統合では、共有カタログを専用のDB読み取り複製へ反映し、既存の表示再確認キューを使う。`workspace_emojis` の作成者と登録情報は変更しない。公開カタログの幅・高さも保存して投稿・通知とAP記述子へ返し、React/Composeの予約領域を維持する。専用PostgreSQLで切り替え・日本語別名・寸法・通知キャッシュ・同一同期の冪等性・旧カタログへの復帰を検証する `emoji_service_test` を追加した。Atlasのdiffは認証要求で実行できず、schema.sqlから追加DDLを作成し、checksum validateと全43マイグレーションの適用、空DBへのschema.sql適用で検証した。
