@@ -93,6 +93,7 @@ async fn display_views_follow_legacy_writes_and_related_updates_atomically() -> 
 #[tokio::test]
 async fn legacy_profile_locks_and_metadata_fanout_do_not_block_other_writers() -> anyhow::Result<()>
 {
+    let _guard = DISPLAY_TESTS.lock().await;
     let config = Config::from_env();
     let (a, ac) = tokio_postgres::connect(&config.database_url, NoTls).await?;
     let (b, bc) = tokio_postgres::connect(&config.database_url, NoTls).await?;
@@ -182,7 +183,17 @@ async fn legacy_profile_locks_and_metadata_fanout_do_not_block_other_writers() -
         )
         .await?
         .get(0);
-    assert_eq!(queued, 20000);
+    // Metadata records small scopes; it does not materialize 20,000 row jobs
+    // inside the profile transaction. Source writes reconcile independently.
+    assert!((1..10).contains(&queued), "bounded source queue: {queued}");
+    let scopes: i64 = a
+        .query_one(
+            "SELECT count(*) FROM display_refresh_queue WHERE kind='user_messages' AND target=$1",
+            &[&id],
+        )
+        .await?
+        .get(0);
+    assert_eq!(scopes, 1);
     // No-op profile SETs do not enqueue work (status-only API updates included).
     a.execute(
         "DELETE FROM display_refresh_queue WHERE target LIKE $1||'%'",
@@ -293,5 +304,232 @@ async fn queue_skips_busy_rows_and_retains_work_after_rollback() -> anyhow::Resu
     assert_eq!(name, "After");
     a.execute("DELETE FROM messages WHERE id=$1", &[&id])
         .await?;
+    Ok(())
+}
+
+async fn queue_client(url: &str) -> anyhow::Result<tokio_postgres::Client> {
+    let (client, connection) = tokio_postgres::connect(url, NoTls).await?;
+    tokio::spawn(connection);
+    Ok(client)
+}
+
+async fn isolate_queue(client: &tokio_postgres::Client, prefix: &str) -> anyhow::Result<()> {
+    client.batch_execute("BEGIN").await?;
+    client.query("SELECT kind,target FROM display_refresh_queue WHERE NOT starts_with(target,$1) FOR UPDATE", &[&prefix]).await?;
+    Ok(())
+}
+
+async fn drain_queue(client: &tokio_postgres::Client) -> anyhow::Result<()> {
+    for _ in 0..1000 {
+        let expanded: bool = client
+            .query_one("SELECT expand_next_display_scope()", &[])
+            .await?
+            .get(0);
+        let refreshed: bool = client
+            .query_one("SELECT refresh_next_display()", &[])
+            .await?
+            .get(0);
+        if !expanded && !refreshed {
+            return Ok(());
+        }
+    }
+    anyhow::bail!("Fixture queue did not converge")
+}
+
+#[tokio::test]
+async fn overlapping_source_and_metadata_commits_converge_in_both_orders() -> anyhow::Result<()> {
+    let _guard = DISPLAY_TESTS.lock().await;
+    let config = Config::from_env();
+    let source = queue_client(&config.database_url).await?;
+    let metadata = queue_client(&config.database_url).await?;
+    let worker = queue_client(&config.database_url).await?;
+    let others = queue_client(&config.database_url).await?;
+    for metadata_commits_first in [true, false] {
+        let id = format!("race-{}", uuid::Uuid::new_v4().simple());
+        let author = format!("{id}-author");
+        let recipient = format!("{id}-recipient");
+        let parent = format!("{id}-parent");
+        let reply = format!("{id}-reply");
+        let emoji = format!("{id}-emoji");
+        let alias = format!("{id}-alias");
+        source.execute("INSERT INTO users(id,user_name,display_name,is_bot) VALUES($1::text,$1::text,'Before',false),($2::text,$2::text,'Recipient',false)", &[&author,&recipient]).await?;
+        source.execute("INSERT INTO channels(id,channel_name,created_user_id,is_private) VALUES($1::text,$1::text,$2,false)", &[&id,&recipient]).await?;
+        source
+            .execute(
+                "INSERT INTO messages(id,user_id,channel_id,content) VALUES($1,$2,$3,'Parent')",
+                &[&parent, &recipient, &id],
+            )
+            .await?;
+        isolate_queue(&others, &id).await?;
+        drain_queue(&worker).await?;
+        source
+            .batch_execute("BEGIN; SET LOCAL statement_timeout='3s'")
+            .await?;
+        metadata
+            .batch_execute("BEGIN; SET LOCAL statement_timeout='3s'")
+            .await?;
+        if !metadata_commits_first {
+            // The metadata trigger runs before the uncommitted source exists.
+            // Its commit will happen only after the source job is consumed.
+            metadata
+                .execute(
+                    "UPDATE users SET display_name='After' WHERE id=$1",
+                    &[&author],
+                )
+                .await?;
+            metadata.execute("INSERT INTO workspace_emojis(name,url,aliases,width,height,created_by) VALUES($1,'/race.png',jsonb_build_array($2::text),120,20,$3)", &[&emoji,&alias,&recipient]).await?;
+        }
+        source.execute("INSERT INTO messages(id,user_id,channel_id,content,parent_id) VALUES($1,$2,$3,':'||$4::text||':',$5)", &[&reply,&author,&id,&alias,&parent]).await?;
+        source.execute("INSERT INTO message_reactions(id,message_id,user_id,emoji) VALUES($1,$2,$3,':'||$4::text||':')", &[&id,&parent,&author,&alias]).await?;
+        source.execute("INSERT INTO notification_events(id,user_id,actor_id,channel_id,message_id,notification_type,source) VALUES($1,$2,$3,$1,$4,'mention','channel')", &[&id,&recipient,&author,&reply]).await?;
+        if metadata_commits_first {
+            // Reproduce the reported order: a post has already cached old
+            // metadata, but remains invisible to the metadata transaction.
+            metadata
+                .execute(
+                    "UPDATE users SET display_name='After' WHERE id=$1",
+                    &[&author],
+                )
+                .await?;
+            metadata.execute("INSERT INTO workspace_emojis(name,url,aliases,width,height,created_by) VALUES($1,'/race.png',jsonb_build_array($2::text),120,20,$3)", &[&emoji,&alias,&recipient]).await?;
+            metadata.batch_execute("COMMIT").await?;
+            // Consuming a scope before the post commits must still be safe.
+            drain_queue(&worker).await?;
+            source.batch_execute("COMMIT").await?;
+        } else {
+            source.batch_execute("COMMIT").await?;
+            drain_queue(&worker).await?;
+            let before: String = worker
+                .query_one(
+                    "SELECT display_data->'author'->>'display_name' FROM messages WHERE id=$1",
+                    &[&reply],
+                )
+                .await?
+                .get(0);
+            assert_eq!(before, "Before");
+            metadata.batch_execute("COMMIT").await?;
+        }
+        drain_queue(&worker).await?;
+        let drift:i64=worker.query_one("SELECT count(*) FROM messages m JOIN message_display v USING(id) WHERE m.channel_id=$1 AND m.display_data IS DISTINCT FROM v.display_data", &[&id]).await?.get(0);
+        assert_eq!(drift, 0, "metadata_commits_first={metadata_commits_first}");
+        let row=worker.query_one("SELECT display_data->'author'->>'display_name',display_data->'emojis'->$2->>'width' FROM messages WHERE id=$1", &[&reply,&alias]).await?;
+        assert_eq!(row.get::<_, String>(0), "After");
+        assert_eq!(row.get::<_, String>(1), "120");
+        let drift:i64=worker.query_one("SELECT count(*) FROM notification_events n JOIN notification_display v USING(id) WHERE n.id=$1 AND n.display_data IS DISTINCT FROM v.display_data", &[&id]).await?.get(0);
+        assert_eq!(
+            drift, 0,
+            "notification metadata_commits_first={metadata_commits_first}"
+        );
+        source
+            .execute("DELETE FROM messages WHERE channel_id=$1", &[&id])
+            .await?;
+        source
+            .execute("DELETE FROM workspace_emojis WHERE name=$1", &[&emoji])
+            .await?;
+        others.batch_execute("COMMIT").await?;
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn deferred_metadata_expands_in_bounded_batches_without_repainting_sources()
+-> anyhow::Result<()> {
+    let _guard = DISPLAY_TESTS.lock().await;
+    let config = Config::from_env();
+    let client = queue_client(&config.database_url).await?;
+    let others = queue_client(&config.database_url).await?;
+    let id = format!("batch-{}", uuid::Uuid::new_v4().simple());
+    client.execute("INSERT INTO users(id,user_name,display_name,is_bot) VALUES($1::text,$1::text,'Before',false)", &[&id]).await?;
+    client.execute("INSERT INTO channels(id,channel_name,created_user_id,is_private) VALUES($1::text,$1::text,$1::text,false)", &[&id]).await?;
+    client
+        .batch_execute("BEGIN; SET LOCAL session_replication_role=replica")
+        .await?;
+    client.execute("INSERT INTO messages(id,user_id,channel_id,content) SELECT $1||i,$1,$1,'batch' FROM generate_series(1,145) i", &[&id]).await?;
+    client.batch_execute("COMMIT").await?;
+    client
+        .execute("UPDATE users SET display_name='After' WHERE id=$1", &[&id])
+        .await?;
+    isolate_queue(&others, &id).await?;
+    let before:i64=client.query_one("SELECT count(*) FROM display_refresh_queue WHERE kind='message' AND starts_with(target,$1)", &[&id]).await?.get(0);
+    assert_eq!(before, 0, "source trigger records only scopes");
+    client
+        .query_one("SELECT expand_next_display_scope()", &[])
+        .await?;
+    let first:i64=client.query_one("SELECT count(*) FROM display_refresh_queue WHERE kind='message' AND starts_with(target,$1)", &[&id]).await?.get(0);
+    assert_eq!(first, 128, "scope expansion is bounded per transaction");
+    let painted: i64 = client
+        .query_one(
+            "SELECT count(*) FROM messages WHERE channel_id=$1 AND display_data<>'{}'::jsonb",
+            &[&id],
+        )
+        .await?
+        .get(0);
+    assert_eq!(
+        painted, 0,
+        "scope expansion does not lock or repaint messages"
+    );
+    drain_queue(&client).await?;
+    let drift:i64=client.query_one("SELECT count(*) FROM messages m JOIN message_display v USING(id) WHERE m.channel_id=$1 AND m.display_data IS DISTINCT FROM v.display_data", &[&id]).await?.get(0);
+    assert_eq!(drift, 0);
+    client
+        .batch_execute("BEGIN; SET LOCAL session_replication_role=replica")
+        .await?;
+    client
+        .execute("DELETE FROM messages WHERE channel_id=$1", &[&id])
+        .await?;
+    client.batch_execute("COMMIT").await?;
+    others.batch_execute("COMMIT").await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_consumed_job_does_not_block_or_erase_a_new_generation() -> anyhow::Result<()> {
+    let _guard = DISPLAY_TESTS.lock().await;
+    let config = Config::from_env();
+    let painter = queue_client(&config.database_url).await?;
+    let writer = queue_client(&config.database_url).await?;
+    let expander = queue_client(&config.database_url).await?;
+    let others = queue_client(&config.database_url).await?;
+    let id = format!("generation-{}", uuid::Uuid::new_v4().simple());
+    writer.execute("INSERT INTO users(id,user_name,display_name,is_bot) VALUES($1::text,$1::text,'Before',false)", &[&id]).await?;
+    writer.execute("INSERT INTO channels(id,channel_name,created_user_id,is_private) VALUES($1::text,$1::text,$1::text,false)", &[&id]).await?;
+    writer
+        .execute(
+            "INSERT INTO messages(id,user_id,channel_id,content) VALUES($1,$1,$1,'body')",
+            &[&id],
+        )
+        .await?;
+    isolate_queue(&others, &id).await?;
+    painter
+        .batch_execute("BEGIN; SELECT refresh_next_display()")
+        .await?;
+    writer
+        .execute("UPDATE users SET display_name='After' WHERE id=$1", &[&id])
+        .await?;
+    expander
+        .batch_execute("SET statement_timeout='1s'; SELECT expand_next_display_scope()")
+        .await?;
+    painter.batch_execute("COMMIT").await?;
+    let queued: bool = writer
+        .query_one(
+            "SELECT EXISTS(SELECT 1 FROM display_refresh_queue WHERE kind='message' AND target=$1)",
+            &[&id],
+        )
+        .await?
+        .get(0);
+    assert!(queued, "new generation survives the old job's commit");
+    drain_queue(&expander).await?;
+    let name: String = writer
+        .query_one(
+            "SELECT display_data->'author'->>'display_name' FROM messages WHERE id=$1",
+            &[&id],
+        )
+        .await?
+        .get(0);
+    assert_eq!(name, "After");
+    writer
+        .execute("DELETE FROM messages WHERE id=$1", &[&id])
+        .await?;
+    others.batch_execute("COMMIT").await?;
     Ok(())
 }

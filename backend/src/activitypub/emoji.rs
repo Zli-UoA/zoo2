@@ -96,6 +96,21 @@ pub(super) async fn remember(
     tx: &mut toasty::Transaction<'_>,
     emojis: &[Value],
 ) -> Result<(), AppError> {
+    // Local images use their direct URL, never the remote proxy registry.
+    // Validate at this shared sink as well as excluding local feed descriptors.
+    let emojis: Vec<_> = emojis
+        .iter()
+        .filter(|emoji| {
+            emoji["local"] != true
+                && emoji["image_id"].as_str().is_some_and(|id| {
+                    id.len() == 64
+                        && id
+                            .bytes()
+                            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+                })
+                && emoji["url"].as_str().is_some_and(https)
+        })
+        .collect();
     toasty::sql::statement("INSERT INTO apub_emoji_images(id,url) SELECT DISTINCT e->>'image_id',e->>'url' FROM jsonb_array_elements($1::jsonb) e ON CONFLICT(id) DO UPDATE SET last_seen_at=now() WHERE apub_emoji_images.last_seen_at<now()-interval '1 day'").bind(json!(emojis).to_string()).exec(&mut *tx).await?;
     toasty::sql::statement(
         "DELETE FROM apub_emoji_images WHERE last_seen_at<now()-interval '30 days' AND NOT EXISTS(SELECT 1 FROM apub_reactions r WHERE r.emoji->>'image_id'=apub_emoji_images.id)",

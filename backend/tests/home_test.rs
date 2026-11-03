@@ -1617,6 +1617,57 @@ async fn local_home_posts_include_joined_workspace_emoji_dimensions() -> anyhow:
     assert_eq!(emoji["width"], 120);
     assert_eq!(emoji["height"], 20);
     assert_eq!(emoji["local"], true);
+    let local_url = emoji["url"].as_str().unwrap();
+    let mut tx = db.transaction().await?;
+    let count = backend::apps::one(
+        &mut tx,
+        "SELECT json_build_object('count',count(*))::text FROM apub_emoji_images WHERE url=$1",
+        &[local_url],
+    )
+    .await?;
+    assert_eq!(
+        count["count"], 0,
+        "local descriptors must not enter the remote proxy registry"
+    );
+    // Model an invalid row left by the prior backend, then successful startup
+    // identity backfill. Both list and detail must keep using the direct URL.
+    toasty::sql::statement("INSERT INTO apub_emoji_images(id,url) VALUES('', $1)")
+        .bind(local_url)
+        .exec(&mut tx)
+        .await?;
+    toasty::sql::statement("UPDATE workspace_emojis SET image_id=$2 WHERE name=$1")
+        .bind(name.as_str())
+        .bind("b".repeat(64))
+        .exec(&mut tx)
+        .await?;
+    tx.commit().await?;
+    for path in [
+        "/api/home?timeline=local".to_owned(),
+        format!("/api/home/{}", post["id"].as_str().unwrap()),
+    ] {
+        let (status, _) = request(&app, "GET", Some(&id), &path, None).await?;
+        assert_eq!(
+            status,
+            StatusCode::OK,
+            "local emoji identity backfill: {path}"
+        );
+    }
+    let mut tx = db.transaction().await?;
+    let count = backend::apps::one(
+        &mut tx,
+        "SELECT json_build_object('count',count(*))::text FROM apub_emoji_images WHERE url=$1",
+        &[local_url],
+    )
+    .await?;
+    assert_eq!(
+        count["count"], 1,
+        "backfill must not attempt another proxy registration"
+    );
+    toasty::sql::statement("DELETE FROM apub_emoji_images WHERE id='' AND url=$1")
+        .bind(local_url)
+        .exec(&mut tx)
+        .await?;
+    tx.commit().await?;
     toasty::sql::statement("DELETE FROM workspace_emojis WHERE name=$1")
         .bind(name)
         .exec(&mut db)

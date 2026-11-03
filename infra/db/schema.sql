@@ -1885,6 +1885,7 @@ BEGIN
     UNION SELECT CASE WHEN TG_OP <> 'DELETE' THEN NEW.parent_id END
   ) targets WHERE id IS NOT NULL ORDER BY id LOOP
     PERFORM refresh_message_display(target);
+    INSERT INTO display_refresh_queue(kind,target) VALUES ('message',target) ON CONFLICT DO NOTHING;
   END LOOP;
   RETURN NULL;
 END;
@@ -1901,6 +1902,7 @@ BEGIN
     UNION SELECT CASE WHEN TG_OP <> 'DELETE' THEN NEW.message_id END
   ) ids WHERE id IS NOT NULL ORDER BY id LOOP
     PERFORM refresh_message_display(target);
+    INSERT INTO display_refresh_queue(kind,target) VALUES ('message',target) ON CONFLICT DO NOTHING;
   END LOOP;
   RETURN NULL;
 END;
@@ -1911,6 +1913,9 @@ CREATE TRIGGER reactions_display AFTER INSERT OR UPDATE OR DELETE ON message_rea
 CREATE FUNCTION sync_notification_display() RETURNS trigger LANGUAGE plpgsql AS $$
 BEGIN
   PERFORM refresh_notification_display(NEW.id);
+  IF NEW.source='channel' THEN
+    INSERT INTO display_refresh_queue(kind,target) VALUES ('notification',NEW.id) ON CONFLICT DO NOTHING;
+  END IF;
   RETURN NULL;
 END;
 $$;
@@ -1921,7 +1926,7 @@ CREATE FUNCTION sync_message_notifications_display() RETURNS trigger LANGUAGE pl
 DECLARE target text;
 BEGIN
   IF current_setting('zoo.display_refresh',true)='metadata' THEN
-    INSERT INTO display_refresh_queue SELECT 'notification',id FROM notification_events
+    INSERT INTO display_refresh_queue(kind,target) SELECT 'notification',id FROM notification_events
       WHERE source='channel' AND message_id=NEW.id ORDER BY id ON CONFLICT DO NOTHING;
     RETURN NULL;
   END IF;
@@ -1962,6 +1967,7 @@ BEGIN
     UNION SELECT CASE WHEN TG_OP <> 'DELETE' THEN NEW.post_id END
   ) ids WHERE id IS NOT NULL ORDER BY id LOOP
     PERFORM refresh_message_display(target);
+    INSERT INTO display_refresh_queue(kind,target) VALUES ('message',target) ON CONFLICT DO NOTHING;
   END LOOP;
   RETURN NULL;
 END;
@@ -1973,44 +1979,38 @@ CREATE TRIGGER federated_reactions_display AFTER INSERT OR UPDATE OR DELETE ON a
 -- Metadata changes enqueue read-model work; they never lock message rows.
 -- Keep this private table out of Electric Shapes and application events.
 CREATE TABLE display_refresh_queue (
-  kind text NOT NULL CHECK (kind IN ('message','notification')),
+  kind text NOT NULL CHECK (kind IN ('message','notification','user_messages','user_notifications','emoji','emoji_image','actor','channel')),
   target text NOT NULL,
-  PRIMARY KEY(kind,target)
+  generation bigint NOT NULL DEFAULT txid_current(),
+  cursor_id text NOT NULL DEFAULT '',
+  PRIMARY KEY(kind,target,generation)
 );
+
+CREATE INDEX display_refresh_scopes_idx ON display_refresh_queue(kind,target,generation)
+  WHERE kind NOT IN ('message','notification');
 
 CREATE FUNCTION sync_user_display() RETURNS trigger LANGUAGE plpgsql SET jit=off AS $$
 BEGIN
   IF ROW(OLD.user_name,OLD.display_name,OLD.avatar_url,OLD.is_bot,OLD.app_id)
     IS NOT DISTINCT FROM ROW(NEW.user_name,NEW.display_name,NEW.avatar_url,NEW.is_bot,NEW.app_id) THEN RETURN NULL; END IF;
-  INSERT INTO display_refresh_queue SELECT 'message',id FROM messages WHERE user_id=NEW.id OR id IN (
-    SELECT message_id FROM message_reactions WHERE user_id=NEW.id
-  ) ORDER BY id ON CONFLICT DO NOTHING;
-  INSERT INTO display_refresh_queue SELECT 'notification',id FROM notification_events
-    WHERE source='channel' AND actor_id=NEW.id ORDER BY id ON CONFLICT DO NOTHING;
+  INSERT INTO display_refresh_queue(kind,target) VALUES
+    ('user_messages',NEW.id),('user_notifications',NEW.id) ON CONFLICT DO NOTHING;
   RETURN NULL;
 END;
 $$;
 
 CREATE FUNCTION sync_emoji_display() RETURNS trigger LANGUAGE plpgsql SET jit=off AS $$
 BEGIN
-  -- Transition tables include deleted names, aliases and old image identities.
-  -- No-op updates (including startup repeats) enqueue nothing.
-  INSERT INTO display_refresh_queue
-  WITH changed AS (
-    SELECT name,url,aliases,width,height,image_id FROM new_emojis
-    EXCEPT SELECT name,url,aliases,width,height,image_id FROM old_emojis
-  ), removed AS (
-    SELECT name,url,aliases,width,height,image_id FROM old_emojis
-    EXCEPT SELECT name,url,aliases,width,height,image_id FROM new_emojis
-  ), affected AS (SELECT * FROM changed UNION SELECT * FROM removed), names AS (
-    SELECT name FROM affected UNION SELECT jsonb_array_elements_text(aliases) FROM affected
-  )
-  SELECT 'message',m.id FROM messages m WHERE
-    EXISTS(SELECT 1 FROM names n WHERE strpos(m.content,':'||n.name||':')>0) OR
-    EXISTS(SELECT 1 FROM message_display_reactions r WHERE r.message_id=m.id AND (
-      r.emoji IN (SELECT ':'||name||':' FROM names) OR
-      r.emoji LIKE 'apub:%' AND split_part(r.emoji,':',2) IN (SELECT image_id FROM affected)
-    )) ORDER BY m.id ON CONFLICT DO NOTHING;
+  PERFORM enqueue_emoji_display_scopes(COALESCE((
+    WITH changed AS (
+      SELECT name,url,aliases,width,height,image_id FROM new_emojis
+      EXCEPT SELECT name,url,aliases,width,height,image_id FROM old_emojis
+    ), removed AS (
+      SELECT name,url,aliases,width,height,image_id FROM old_emojis
+      EXCEPT SELECT name,url,aliases,width,height,image_id FROM new_emojis
+    ), affected AS (SELECT * FROM changed UNION SELECT * FROM removed)
+    SELECT jsonb_agg(to_jsonb(a)) FROM affected a
+  ),'[]'::jsonb));
   RETURN NULL;
 END;
 $$;
@@ -2018,27 +2018,13 @@ $$;
 -- one function while preserving both sides of renames/deletions.
 CREATE FUNCTION sync_emoji_insert_display() RETURNS trigger LANGUAGE plpgsql SET jit=off AS $$
 BEGIN
-  INSERT INTO display_refresh_queue
-    SELECT 'message',m.id FROM messages m WHERE EXISTS (
-      SELECT 1 FROM new_emojis e WHERE strpos(m.content,':'||e.name||':')>0
-        OR EXISTS(SELECT 1 FROM jsonb_array_elements_text(e.aliases) a(name) WHERE strpos(m.content,':'||a.name||':')>0)
-        OR EXISTS(SELECT 1 FROM message_display_reactions r WHERE r.message_id=m.id AND
-          (r.emoji=':'||e.name||':' OR r.emoji IN (SELECT ':'||a||':' FROM jsonb_array_elements_text(e.aliases) a)
-          OR r.emoji LIKE 'apub:%' AND split_part(r.emoji,':',2)=e.image_id))
-    ) ORDER BY m.id ON CONFLICT DO NOTHING;
+  PERFORM enqueue_emoji_display_scopes(COALESCE((SELECT jsonb_agg(to_jsonb(e)) FROM new_emojis e),'[]'::jsonb));
   RETURN NULL;
 END;
 $$;
 CREATE FUNCTION sync_emoji_delete_display() RETURNS trigger LANGUAGE plpgsql SET jit=off AS $$
 BEGIN
-  INSERT INTO display_refresh_queue
-    SELECT 'message',m.id FROM messages m WHERE EXISTS (
-      SELECT 1 FROM old_emojis e WHERE strpos(m.content,':'||e.name||':')>0
-        OR EXISTS(SELECT 1 FROM jsonb_array_elements_text(e.aliases) a(name) WHERE strpos(m.content,':'||a.name||':')>0)
-        OR EXISTS(SELECT 1 FROM message_display_reactions r WHERE r.message_id=m.id AND
-          (r.emoji=':'||e.name||':' OR r.emoji IN (SELECT ':'||a||':' FROM jsonb_array_elements_text(e.aliases) a)
-          OR r.emoji LIKE 'apub:%' AND split_part(r.emoji,':',2)=e.image_id))
-    ) ORDER BY m.id ON CONFLICT DO NOTHING;
+  PERFORM enqueue_emoji_display_scopes(COALESCE((SELECT jsonb_agg(to_jsonb(e)) FROM old_emojis e),'[]'::jsonb));
   RETURN NULL;
 END;
 $$;
@@ -2049,16 +2035,14 @@ CREATE TRIGGER emojis_display_delete AFTER DELETE ON workspace_emojis REFERENCIN
 CREATE FUNCTION sync_federated_actor_display() RETURNS trigger LANGUAGE plpgsql SET jit=off AS $$
 BEGIN
   IF ROW(OLD.user_name,OLD.display_name,OLD.blocked) IS NOT DISTINCT FROM ROW(NEW.user_name,NEW.display_name,NEW.blocked) THEN RETURN NULL; END IF;
-  INSERT INTO display_refresh_queue SELECT DISTINCT 'message',post_id FROM apub_reactions
-    WHERE actor_id=NEW.id ORDER BY post_id ON CONFLICT DO NOTHING;
+  INSERT INTO display_refresh_queue(kind,target) VALUES ('actor',NEW.id) ON CONFLICT DO NOTHING;
   RETURN NULL;
 END;
 $$;
 CREATE FUNCTION sync_channel_notification_display() RETURNS trigger LANGUAGE plpgsql SET jit=off AS $$
 BEGIN
   IF OLD IS NOT DISTINCT FROM NEW THEN RETURN NULL; END IF;
-  INSERT INTO display_refresh_queue SELECT 'notification',id FROM notification_events
-    WHERE source='channel' AND channel_id=NEW.id ORDER BY id ON CONFLICT DO NOTHING;
+  INSERT INTO display_refresh_queue(kind,target) VALUES ('channel',NEW.id) ON CONFLICT DO NOTHING;
   RETURN NULL;
 END;
 $$;
@@ -2068,7 +2052,7 @@ $$;
 CREATE FUNCTION refresh_next_display() RETURNS boolean LANGUAGE plpgsql SET jit=off AS $$
 DECLARE job record;
 BEGIN
-  FOR job IN SELECT * FROM display_refresh_queue ORDER BY kind,target LIMIT 32 FOR UPDATE SKIP LOCKED LOOP
+  FOR job IN SELECT * FROM display_refresh_queue WHERE kind IN ('message','notification') ORDER BY kind,target,generation LIMIT 32 FOR UPDATE SKIP LOCKED LOOP
     IF job.kind='message' THEN
       IF EXISTS(SELECT 1 FROM messages WHERE id=job.target) THEN
         PERFORM 1 FROM messages WHERE id=job.target FOR NO KEY UPDATE SKIP LOCKED;
@@ -2084,7 +2068,7 @@ BEGIN
         PERFORM refresh_notification_display(job.target);
       END IF;
     END IF;
-    DELETE FROM display_refresh_queue WHERE kind=job.kind AND target=job.target;
+    DELETE FROM display_refresh_queue WHERE kind=job.kind AND target=job.target AND generation=job.generation;
     RETURN true;
   END LOOP;
   RETURN false;
@@ -2094,3 +2078,50 @@ $$;
 CREATE TRIGGER users_display AFTER UPDATE OF user_name,display_name,avatar_url,is_bot,app_id ON users FOR EACH ROW EXECUTE FUNCTION sync_user_display();
 CREATE TRIGGER channels_notification_display AFTER UPDATE ON channels FOR EACH ROW EXECUTE FUNCTION sync_channel_notification_display();
 CREATE TRIGGER federated_actors_display AFTER UPDATE OF user_name,display_name,blocked ON apub_actors FOR EACH ROW EXECUTE FUNCTION sync_federated_actor_display();
+
+CREATE FUNCTION enqueue_emoji_display_scopes(changes jsonb) RETURNS void LANGUAGE sql AS $$
+  INSERT INTO display_refresh_queue(kind,target)
+    SELECT 'emoji',e->>'name' FROM jsonb_array_elements(changes) e
+    UNION SELECT 'emoji',jsonb_array_elements_text(e->'aliases') FROM jsonb_array_elements(changes) e
+    UNION SELECT 'emoji_image',e->>'image_id' FROM jsonb_array_elements(changes) e
+      WHERE COALESCE(e->>'image_id','')<>''
+    ON CONFLICT DO NOTHING;
+$$;
+
+CREATE FUNCTION display_scope_targets(scope_kind text,scope_target text)
+RETURNS TABLE(row_kind text,row_id text) LANGUAGE sql STABLE AS $$
+  SELECT 'message'::text,m.id FROM messages m WHERE
+    (scope_kind='user_messages' AND (m.user_id=scope_target OR EXISTS (
+      SELECT 1 FROM message_reactions r WHERE r.message_id=m.id AND r.user_id=scope_target))) OR
+    (scope_kind='emoji' AND (strpos(m.content,':'||scope_target||':')>0 OR EXISTS (
+      SELECT 1 FROM message_display_reactions r WHERE r.message_id=m.id AND r.emoji=':'||scope_target||':'))) OR
+    (scope_kind='emoji_image' AND EXISTS (
+      SELECT 1 FROM apub_reactions r WHERE r.post_id=m.id AND r.emoji->>'image_id'=scope_target)) OR
+    (scope_kind='actor' AND EXISTS (
+      SELECT 1 FROM apub_reactions r WHERE r.post_id=m.id AND r.actor_id=scope_target))
+  UNION ALL
+  SELECT 'notification',n.id FROM notification_events n WHERE n.source='channel' AND (
+    (scope_kind='user_notifications' AND n.actor_id=scope_target) OR
+    (scope_kind='channel' AND n.channel_id=scope_target));
+$$;
+
+CREATE FUNCTION expand_next_display_scope() RETURNS boolean LANGUAGE plpgsql SET jit=off AS $$
+DECLARE job record; item record; last_id text; processed integer := 0;
+BEGIN
+  SELECT * INTO job FROM display_refresh_queue
+    WHERE kind NOT IN ('message','notification') ORDER BY kind,target,generation LIMIT 1 FOR UPDATE SKIP LOCKED;
+  IF NOT FOUND THEN RETURN false; END IF;
+  FOR item IN SELECT * FROM display_scope_targets(job.kind,job.target)
+    WHERE row_id>job.cursor_id ORDER BY row_id LIMIT 128 LOOP
+    INSERT INTO display_refresh_queue(kind,target) VALUES(item.row_kind,item.row_id) ON CONFLICT DO NOTHING;
+    last_id := item.row_id;
+    processed := processed+1;
+  END LOOP;
+  IF processed<128 THEN
+    DELETE FROM display_refresh_queue WHERE kind=job.kind AND target=job.target AND generation=job.generation;
+  ELSE
+    UPDATE display_refresh_queue SET cursor_id=last_id WHERE kind=job.kind AND target=job.target AND generation=job.generation;
+  END IF;
+  RETURN true;
+END;
+$$;

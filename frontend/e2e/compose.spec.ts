@@ -149,7 +149,7 @@ for (const implementation of ["react", "compose"] as const) {
     await expect(createApp).toBeHidden();
     const notifications = page.getByRole("link", { name: /^未読通知 /, exact: true });
     await expect(notifications).toBeVisible();
-    await notifications.click({ force: implementation === "compose" });
+    await clickControl(notifications, implementation === "compose" ? "kotlin" : "react");
     await expect(
       implementation === "react"
         ? page.getByRole("heading", { name: "通知", exact: true })
