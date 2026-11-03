@@ -130,6 +130,29 @@ class SlackImportTest {
     }
 
     @Test
+    fun pollingWaitsForASlowLoadInsteadOfDiscardingIt() = runTest {
+        val responses = mutableListOf<CompletableDeferred<JsonElement>>()
+        val state =
+            SlackImportController(backgroundScope) { _, _, _ ->
+                CompletableDeferred<JsonElement>().also { responses += it }.await()
+            }
+        state.load()
+        runCurrent()
+        // 応答が返る前のポーリングは、新しい読み込みを始めない
+        state.poll()
+        state.poll()
+        runCurrent()
+        assertEquals(1, responses.size)
+        responses[0].complete(obj("imports" to JsonArray(listOf(job("e1", "completed")))))
+        runCurrent()
+        assertEquals(listOf("e1"), state.imports?.map { it.text("id") })
+        state.poll()
+        runCurrent()
+        assertEquals(2, responses.size)
+        state.close()
+    }
+
+    @Test
     fun failuresKeepTheServerMessageAndForbiddenStatus() = runTest {
         var status = 409
         val state =
