@@ -585,6 +585,17 @@ async fn import(s: &AppState, job: &Job, lease: &Lease) -> Result<(), AppError> 
         channel_names: HashMap::new(),
     };
     let mut db = s.db.clone();
+    let admin = {
+        let mut tx = db.transaction().await?;
+        let admin = crate::auth::rbac::is_workspace_admin(
+            &mut tx,
+            &job.created_by,
+            s.config.dev_auth_enabled,
+        )
+        .await?;
+        tx.commit().await?;
+        admin
+    };
 
     // プレースホルダは、選んだチャンネルのメンバー・投稿者・リアクション・メンションに出る人だけを作る
     // (users.json の全員を作ると、大きいワークスペースで users の同期量が増えるため)
@@ -635,6 +646,25 @@ async fn import(s: &AppState, job: &Job, lease: &Lease) -> Result<(), AppError> 
             super::import::ensure_same_target(&mut tx, &team, mapping)
                 .await
                 .map_err(|e| AppError::BadRequest(e.to_string()))?;
+            // 以前の取り込みで作ったチャンネルや既存のチャンネルに入れるなら、開始後に外されていないか確かめる
+            let reused = match &mapping.action {
+                MappingAction::Skip => continue,
+                MappingAction::Existing { channel_id } => Some(channel_id.clone()),
+                MappingAction::Create { .. } => {
+                    let own = super::channel_id(&team, &channel.id);
+                    let exists = !query(
+                        &mut tx,
+                        "SELECT json_build_object('id',id)::text FROM channels WHERE id=$1",
+                        &[&own],
+                    )
+                    .await?
+                    .is_empty();
+                    exists.then_some(own)
+                }
+            };
+            if let Some(channel_id) = &reused {
+                ensure_can_import(&mut tx, job, admin, channel_id, channel).await?;
+            }
             let target = match &mapping.action {
                 MappingAction::Skip => continue,
                 MappingAction::Create { name, is_private } => {
@@ -688,11 +718,13 @@ async fn import(s: &AppState, job: &Job, lease: &Lease) -> Result<(), AppError> 
     }
 
     let mut processed = 0u64;
-    for (channel, channel_id, created) in &targets {
+    for (channel, channel_id, _) in &targets {
         lease.check()?;
         {
             let mut tx = db.transaction().await?;
             suppress_app_events(&mut tx).await?;
+            // メンバーを足す直前にも、実行者がまだ取り込み先にメンバーを足せるか確かめる
+            ensure_can_import(&mut tx, job, admin, channel_id, channel).await?;
             for member in &channel.members {
                 let user = ctx.user(&mut tx, member, None).await?;
                 exec(
@@ -757,16 +789,13 @@ async fn import(s: &AppState, job: &Job, lease: &Lease) -> Result<(), AppError> 
             &[channel_id, &team, &channel.id],
         )
         .await?;
-        if *created && channel.is_archived {
-            exec(
-                &mut tx,
-                "UPDATE channels SET archive_at=CURRENT_TIMESTAMP WHERE id=$1 AND archive_at IS NULL",
-                &[channel_id],
-            )
-            .await?;
-        }
         tx.commit().await?;
     }
+
+    // 取り込み中に連携した人の分も含め、連携済みの人の投稿をプレースホルダから本人へ移す
+    let mut tx = db.transaction().await?;
+    super::link::reconcile_team(&mut tx, &team).await?;
+    tx.commit().await?;
 
     // 添付の取得へ進む。トークンがなければ保留のまま完了にする。
     let mut tx = db.transaction().await?;
@@ -783,6 +812,18 @@ async fn import(s: &AppState, job: &Job, lease: &Lease) -> Result<(), AppError> 
     } else {
         "completed"
     };
+    // Slack でアーカイブ済みのチャンネルは、作った取り込み先も最後にまとめてアーカイブする。
+    // 途中でアーカイブすると、再開したときに取り込み先の確認 (`ensure_can_import`) で止まるため。
+    for (channel, channel_id, created) in &targets {
+        if *created && channel.is_archived {
+            exec(
+                &mut tx,
+                "UPDATE channels SET archive_at=CURRENT_TIMESTAMP WHERE id=$1 AND archive_at IS NULL",
+                &[channel_id],
+            )
+            .await?;
+        }
+    }
     exec(
         &mut tx,
         "UPDATE slack_import_jobs SET status=$3,processed_messages=$4::bigint,total_files=$5::bigint,\
@@ -801,6 +842,33 @@ async fn import(s: &AppState, job: &Job, lease: &Lease) -> Result<(), AppError> 
     tx.commit().await?;
     // ZIP はエクスポートとして残し、管理者が消すか新しい ZIP に置き換わるまで使う
     Ok(())
+}
+
+/// セルフサービスの取り込み (実行者が管理者でないジョブ) では、開始時と同じく取り込み先に参加していて
+/// メンバーを足せることを実行時にも求める。開始後にチャンネルから外された人が、取り込みで戻らないようにする。
+async fn ensure_can_import(
+    tx: &mut toasty::Transaction<'_>,
+    job: &Job,
+    admin: bool,
+    channel_id: &str,
+    channel: &SlackChannel,
+) -> Result<(), AppError> {
+    if admin
+        || super::self_import::can_import_into(
+            tx,
+            channel_id,
+            &job.created_by,
+            false,
+            channel.is_private,
+        )
+        .await?
+    {
+        return Ok(());
+    }
+    Err(AppError::BadRequest(format!(
+        "You can no longer import Slack channel {} into this channel",
+        channel.id
+    )))
 }
 
 async fn create_channel(
@@ -1127,6 +1195,12 @@ async fn fetch_files(s: &AppState, job: &Job, lease: &Lease) -> Result<(), AppEr
                 tx.commit().await?;
             }
         }
+    }
+    // 取得中に連携した人の添付も本人へ移す
+    if let Some(team) = job.team_id.as_deref() {
+        let mut tx = db.transaction().await?;
+        super::link::reconcile_team(&mut tx, team).await?;
+        tx.commit().await?;
     }
     let mut tx = db.transaction().await?;
     exec(

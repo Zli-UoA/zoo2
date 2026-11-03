@@ -1288,3 +1288,336 @@ async fn test_slack_import_guards_private_channels_and_restores_threads() -> any
     assert_eq!(rows[0]["content"], format!("see #general-{suffix}"));
     Ok(())
 }
+
+#[tokio::test]
+async fn test_linked_users_import_their_own_channels() -> anyhow::Result<()> {
+    let _serial = SERIAL.lock().await;
+    dotenvy::dotenv().ok();
+    dotenvy::from_filename("../.env").ok();
+    let mut config = Config::from_env();
+    config.dev_auth_enabled = true;
+    let db = init_db(&config.database_url).await?;
+    let state = AppState::new(db.clone(), config.clone());
+    ensure_bucket_exists(&state.s3_client, &config.s3.bucket).await;
+    let app = create_router(state.clone());
+    let admin = create_user(&app, "slack_admin5").await?;
+    let alice = create_user(&app, "slack_alice").await?;
+    let bob = create_user(&app, "slack_bob").await?;
+    let team = format!("T{}", uuid::Uuid::new_v4().simple());
+    let suffix = uuid::Uuid::new_v4().simple().to_string();
+    {
+        let mut db = db.clone();
+        let mut tx = db.transaction().await?;
+        toasty::create!(UserRole {
+            user_id: admin.as_str(),
+            role_id: "role_admin",
+        })
+        .exec(&mut tx)
+        .await?;
+        // alice は Slack の U1 として連携済み
+        toasty::sql::statement(
+            "INSERT INTO slack_user_links(user_id,team_id,slack_user_id,access_token_enc) VALUES($1,$2,'U1','x')",
+        )
+        .bind(alice.as_str())
+        .bind(team.as_str())
+        .exec(&mut tx)
+        .await?;
+        toasty::sql::statement(
+            "INSERT INTO slack_users(team_id,slack_user_id,user_id,linked) VALUES($1,'U1',$2,true)",
+        )
+        .bind(team.as_str())
+        .bind(alice.as_str())
+        .exec(&mut tx)
+        .await?;
+        tx.commit().await?;
+    }
+
+    // 連携していなければ、取り込めるものはない
+    let (status, none) = request(&app, "GET", "/api/slack/imports", &bob, None).await?;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(none["export"], Value::Null);
+
+    let shared = format!("shared-{suffix}");
+    let zip = build_zip(&[
+        (
+            "users.json".into(),
+            json!([{"id":"U1","team_id":team,"name":"alice"},{"id":"U2","team_id":team,"name":"bob"}]),
+        ),
+        (
+            "channels.json".into(),
+            json!([
+                {"id":"C1","name":shared,"creator":"U1","members":["U1","U2"]},
+                {"id":"C2","name":format!("bobs-{suffix}"),"creator":"U2","members":["U2"]}
+            ]),
+        ),
+        (
+            "groups.json".into(),
+            json!([
+                {"id":"G1","name":format!("secret-{suffix}"),"creator":"U1","members":["U1"]},
+                {"id":"G2","name":format!("old-{suffix}"),"creator":"U1","members":["U1"],"is_archived":true}
+            ]),
+        ),
+        (
+            format!("old-{suffix}/2024-01-01.json"),
+            json!([{"ts":"1704070000.000400","user":"U1","text":"archived"}]),
+        ),
+        (
+            format!("{shared}/2024-01-01.json"),
+            json!([{"ts":"1704070000.000100","user":"U1","text":"mine"}]),
+        ),
+        (
+            format!("bobs-{suffix}/2024-01-01.json"),
+            json!([{"ts":"1704070000.000200","user":"U2","text":"bob"}]),
+        ),
+        (
+            format!("secret-{suffix}/2024-01-01.json"),
+            json!([{"ts":"1704070000.000300","user":"U1","text":"secret"}]),
+        ),
+    ]);
+    // 管理者が ZIP を保存するだけで、取り込みは各ユーザーが行う
+    let export = upload(&state, &app, &admin, &zip).await;
+
+    // Slack と同じ名前の既存チャンネル (alice はまだ参加していない)
+    let same = uuid::Uuid::new_v4().to_string();
+    let (status, _) = request(
+        &app,
+        "POST",
+        "/api/channels",
+        &admin,
+        Some(json!({"id": same, "channel_name": shared, "is_private": false})),
+    )
+    .await?;
+    assert_eq!(status, StatusCode::OK);
+
+    let (status, own) = request(&app, "GET", "/api/slack/imports", &alice, None).await?;
+    assert_eq!(status, StatusCode::OK, "{own}");
+    assert_eq!(own["export"]["id"], export["id"]);
+    let ids: Vec<&str> = own["channels"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|c| c["slack_channel_id"].as_str().unwrap())
+        .collect();
+    assert_eq!(
+        ids,
+        vec!["C1", "G1", "G2"],
+        "only the channels alice created"
+    );
+    assert_eq!(
+        own["channels"][0]["targets"],
+        json!([]),
+        "alice has not joined it"
+    );
+
+    let import = |mappings: Value| {
+        let app = app.clone();
+        let alice = alice.clone();
+        async move {
+            request(
+                &app,
+                "POST",
+                "/api/slack/imports",
+                &alice,
+                Some(json!({ "mappings": mappings })),
+            )
+            .await
+            .unwrap()
+        }
+    };
+    // 他人が作ったチャンネルや、参加していない同名チャンネルには取り込めない
+    let (status, _) = import(
+        json!([{"slack_channel_id":"C2","action":"create","name":format!("taken-{suffix}")}]),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    let (status, _) =
+        import(json!([{"slack_channel_id":"C1","action":"existing","channel_id":same}])).await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+
+    {
+        let mut db = db.clone();
+        let mut tx = db.transaction().await?;
+        toasty::sql::statement(
+            "INSERT INTO channel_user(user_id,channel_id,joined_at) VALUES($1,$2,CURRENT_TIMESTAMP)",
+        )
+        .bind(alice.as_str())
+        .bind(same.as_str())
+        .exec(&mut tx)
+        .await?;
+        tx.commit().await?;
+    }
+    let (_, own) = request(&app, "GET", "/api/slack/imports", &alice, None).await?;
+    assert_eq!(own["channels"][0]["targets"][0]["id"], same.as_str());
+    // 非公開チャンネルは、公開を指定しても非公開で作る
+    let (status, run) = import(json!([
+        {"slack_channel_id":"C1","action":"existing","channel_id":same},
+        {"slack_channel_id":"G1","action":"create","name":format!("secret-{suffix}"),"is_private":false}
+    ]))
+    .await;
+    assert_eq!(status, StatusCode::OK, "{run}");
+    assert_eq!(run["created_by"], alice.as_str());
+    assert_eq!(run["total_messages"], 2);
+    drive(
+        &state,
+        &app,
+        &admin,
+        run["id"].as_str().unwrap(),
+        "completed",
+    )
+    .await;
+
+    let rows = sql(
+        &state,
+        "SELECT json_build_object('channel',channel_id,'user',user_id)::text FROM messages WHERE id=$1",
+        &[&backend::slack::message_id(&team, "C1", "1704070000.000100")],
+    )
+    .await?;
+    assert_eq!(rows[0], json!({"channel": same, "user": alice}));
+    let secret = sql(
+        &state,
+        "SELECT json_build_object('private',is_private,'creator',created_user_id)::text FROM channels WHERE id=$1",
+        &[&backend::slack::channel_id(&team, "G1")],
+    )
+    .await?;
+    assert_eq!(secret[0], json!({"private": true, "creator": alice}));
+    let (_, own) = request(&app, "GET", "/api/slack/imports", &alice, None).await?;
+    assert_eq!(own["imports"][0]["status"], "completed");
+    assert_eq!(
+        own["channels"][1]["existing_channel"]["id"],
+        backend::slack::channel_id(&team, "G1")
+    );
+    let g1 = backend::slack::channel_id(&team, "G1");
+    assert_eq!(own["channels"][1]["targets"][0]["id"], g1.as_str());
+
+    // 投稿を管理者に限ったチャンネルには、通常の投稿と同じく一般メンバーは取り込めない
+    sql(
+        &state,
+        "UPDATE channels SET posting_policy='managers' WHERE id=$1 RETURNING json_build_object('id',id)::text",
+        &[&same],
+    )
+    .await?;
+    let (_, own) = request(&app, "GET", "/api/slack/imports", &alice, None).await?;
+    assert_eq!(own["channels"][0]["targets"], json!([]));
+    let (status, _) =
+        import(json!([{"slack_channel_id":"C1","action":"existing","channel_id":same}])).await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    sql(
+        &state,
+        "UPDATE channels SET posting_policy='members' WHERE id=$1 RETURNING json_build_object('id',id)::text",
+        &[&same],
+    )
+    .await?;
+
+    // 取り込みは ZIP のメンバーも足すので、取り込み先は現在の参加状況とメンバー追加の権限で絞る
+    let targets = || async {
+        let (_, own) = request(&app, "GET", "/api/slack/imports", &alice, None)
+            .await
+            .unwrap();
+        own["channels"][1]["targets"].clone()
+    };
+    let exec = |statement: &'static str| {
+        let db = db.clone();
+        let (alice, admin, g1) = (alice.clone(), admin.clone(), g1.clone());
+        async move {
+            let mut db = db;
+            let mut tx = db.transaction().await.unwrap();
+            toasty::sql::statement(statement)
+                .bind(g1.as_str())
+                .bind(alice.as_str())
+                .bind(admin.as_str())
+                .exec(&mut tx)
+                .await
+                .unwrap();
+            tx.commit().await.unwrap();
+        }
+    };
+    // 非公開チャンネルの一般メンバーは、メンバーを追加できない
+    exec("UPDATE channels SET created_user_id=$3 WHERE id=$1 AND $2<>$3").await;
+    assert_eq!(targets().await, json!([]));
+    let (status, _) =
+        import(json!([{"slack_channel_id":"G1","action":"existing","channel_id":g1}])).await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    // 以前の取り込み先から外されたら、取り込み直して戻ることはできない
+    exec("UPDATE channels SET created_user_id=$2 WHERE id=$1 AND $2<>$3").await;
+    assert_eq!(targets().await[0]["id"], g1.as_str());
+    // 開始した後で外された場合も、ワーカーが取り込みで戻さない
+    let (status, run) =
+        import(json!([{"slack_channel_id":"G1","action":"existing","channel_id":g1}])).await;
+    assert_eq!(status, StatusCode::OK, "{run}");
+    let run = run["id"].as_str().unwrap().to_string();
+    exec("DELETE FROM channel_user WHERE channel_id=$1 AND user_id=$2 AND $2<>$3").await;
+    let mut job = Value::Null;
+    for _ in 0..100 {
+        backend::slack::worker::run_once(&state).await?;
+        job = request(
+            &app,
+            "GET",
+            &format!("/api/admin/slack-imports/{run}"),
+            &admin,
+            None,
+        )
+        .await?
+        .1;
+        if job["status"] == "failed" || job["status"] == "completed" {
+            break;
+        }
+    }
+    assert_eq!(job["status"], "failed", "{job}");
+    assert!(
+        job["error"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("no longer"),
+        "{job}"
+    );
+    let rejoined = sql(
+        &state,
+        "SELECT json_build_object('user_id',user_id)::text FROM channel_user WHERE channel_id=$1 AND user_id=$2",
+        &[&g1, &alice],
+    )
+    .await?;
+    assert!(rejoined.is_empty(), "{rejoined:?}");
+    assert_eq!(targets().await, json!([]));
+    let (status, _) =
+        import(json!([{"slack_channel_id":"G1","action":"existing","channel_id":g1}])).await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    // 作り直しを指定しても、以前作ったチャンネルへは戻れない
+    let (status, _) = import(
+        json!([{"slack_channel_id":"G1","action":"create","name":format!("secret-{suffix}")}]),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+
+    // Slack でアーカイブ済みのチャンネルは、取り込みの最後に取り込み先もアーカイブする
+    // (途中でアーカイブすると、再開したときに取り込み先の確認で止まるため)
+    let (status, run) =
+        import(json!([{"slack_channel_id":"G2","action":"create","name":format!("old-{suffix}")}]))
+            .await;
+    assert_eq!(status, StatusCode::OK, "{run}");
+    drive(
+        &state,
+        &app,
+        &admin,
+        run["id"].as_str().unwrap(),
+        "completed",
+    )
+    .await;
+    let old = sql(
+        &state,
+        "SELECT json_build_object('archived',c.archive_at IS NOT NULL,\
+         'messages',(SELECT count(*) FROM messages m WHERE m.channel_id=c.id))::text FROM channels c WHERE c.id=$1",
+        &[&backend::slack::channel_id(&team, "G2")],
+    )
+    .await?;
+    assert_eq!(old[0], json!({"archived": true, "messages": 1}));
+
+    // ゲストは、通常の API と同じくチャンネルを作れない
+    exec("UPDATE users SET is_guest=true WHERE id=$2 AND $1<>$3").await;
+    let (status, body) = import(
+        json!([{"slack_channel_id":"C1","action":"create","name":format!("guest-{suffix}")}]),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    assert!(body.to_string().contains("Guests"), "{body}");
+    Ok(())
+}

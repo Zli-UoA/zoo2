@@ -47,6 +47,7 @@ fun ZooSettings(app: Session, users: List<Row>) {
             "emojis" to "home.customEmojis",
             "apps" to "apps.title",
             "members" to "members.title",
+            "slack" to "slackLink.tab",
         ) + if (app.config.isAdmin) listOf("slack-import" to "slackImport.tab") else emptyList()
     val tab = app.query["tab"].takeIf { value -> tabs.any { it.first == value } } ?: "general"
     val tabFocus = remember(tabs.size) { List(tabs.size) { FocusRequester() } }
@@ -144,6 +145,7 @@ fun ZooSettings(app: Session, users: List<Row>) {
                     "apps" -> Apps(app, embedded = true)
                     "members" -> WorkspaceMembers(app, users)
                     "activitypub" -> ActivityPubSettingsTab(app)
+                    "slack" -> SlackLinkPanel(app)
                     "slack-import" -> SlackImportPanel(app)
                     else -> GeneralSettings(app)
                 }
