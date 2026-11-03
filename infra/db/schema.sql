@@ -30,6 +30,7 @@ CREATE INDEX idx_channels_is_dm ON channels (is_dm);
 
 
 CREATE TABLE messages (
+  display_data jsonb NOT NULL DEFAULT '{}',
   id text NOT NULL,
   user_id text NOT NULL,
   channel_id text NOT NULL,
@@ -722,7 +723,7 @@ CREATE TABLE user_event_settings(
 CREATE TABLE conversation_views(user_id text NOT NULL REFERENCES users(id),channel_id text NOT NULL REFERENCES channels(id),is_open boolean NOT NULL DEFAULT true,PRIMARY KEY(user_id,channel_id));
 CREATE TABLE channel_pins(channel_id text NOT NULL REFERENCES channels(id),item_type text NOT NULL CHECK(item_type IN('message','file')),item_id text NOT NULL,created_by text NOT NULL REFERENCES users(id),created_at timestamptz NOT NULL DEFAULT now(),PRIMARY KEY(channel_id,item_type,item_id));
 CREATE TABLE saved_items(user_id text NOT NULL REFERENCES users(id),item_type text NOT NULL CHECK(item_type IN('message','channel','file')),item_id text NOT NULL,channel_id text REFERENCES channels(id),created_at timestamptz NOT NULL DEFAULT now(),PRIMARY KEY(user_id,item_type,item_id));
-CREATE TABLE workspace_emojis(name text PRIMARY KEY,url text NOT NULL,created_by text NOT NULL REFERENCES users(id),updated_at timestamptz NOT NULL DEFAULT now(),category text NOT NULL DEFAULT '',aliases jsonb NOT NULL DEFAULT '[]'::jsonb);
+CREATE TABLE workspace_emojis(width integer,height integer,image_id text,name text PRIMARY KEY,url text NOT NULL,created_by text NOT NULL REFERENCES users(id),updated_at timestamptz NOT NULL DEFAULT now(),category text NOT NULL DEFAULT '',aliases jsonb NOT NULL DEFAULT '[]'::jsonb);
 CREATE TABLE workspace_settings(id text PRIMARY KEY CHECK(id='workspace'),name text NOT NULL DEFAULT 'Zoo',preferences text NOT NULL DEFAULT '{}',profile_fields text NOT NULL DEFAULT '[]');
 INSERT INTO workspace_settings(id) VALUES('workspace');
 CREATE TABLE usergroups(id text PRIMARY KEY,name text NOT NULL,handle text NOT NULL UNIQUE,description text NOT NULL DEFAULT '',active boolean NOT NULL DEFAULT true,created_by text NOT NULL REFERENCES users(id),created_at timestamptz NOT NULL DEFAULT now());
@@ -845,8 +846,8 @@ CREATE TRIGGER app_message_options BEFORE INSERT ON messages FOR EACH ROW EXECUT
 CREATE FUNCTION app_message_events_v2() RETURNS trigger LANGUAGE plpgsql AS $$
 DECLARE data jsonb; row_data jsonb; old_data jsonb; installation record;
 BEGIN
- row_data:=CASE WHEN TG_OP='DELETE' THEN to_jsonb(OLD) ELSE to_jsonb(NEW) END;
- old_data:=CASE WHEN TG_OP='INSERT' THEN NULL ELSE to_jsonb(OLD) END;
+ row_data:=(CASE WHEN TG_OP='DELETE' THEN to_jsonb(OLD) ELSE to_jsonb(NEW) END)-'display_data';
+ old_data:=(CASE WHEN TG_OP='INSERT' THEN NULL ELSE to_jsonb(OLD) END)-'display_data';
  data:=row_data||jsonb_build_object('previous',old_data);
  IF TG_OP='INSERT' THEN
   PERFORM app_emit('message.created',data,NEW.user_id,NEW.channel_id);
@@ -1683,6 +1684,7 @@ CREATE TRIGGER linked_message_reaction_live AFTER INSERT OR DELETE ON message_re
 
 -- Canonical inbox. Legacy tables remain rolling-deployment projections only.
 CREATE TABLE notification_events (
+  display_data jsonb NOT NULL DEFAULT '{}',
   id text PRIMARY KEY,
   user_id text NOT NULL REFERENCES users(id) ON UPDATE CASCADE ON DELETE CASCADE,
   source text NOT NULL DEFAULT 'channel' CHECK (source IN ('channel', 'activitypub')),
@@ -1793,3 +1795,184 @@ CREATE INDEX attachments_storage_key ON attachments(storage_key);
 CREATE INDEX home_images_created ON home_images(created_at);
 CREATE INDEX home_image_deletions_uploader ON home_image_deletions(uploader_id);
 CREATE INDEX home_image_deletions_created ON home_image_deletions(created_at);
+-- Display read models, atomically cached for Electric replication.
+CREATE VIEW message_display_reactions AS
+SELECT r.id,r.message_id,r.user_id,r.emoji,r.created_at,u.user_name,u.display_name,NULL::jsonb AS custom_emoji
+FROM message_reactions r JOIN users u ON u.id=r.user_id
+UNION ALL
+SELECT r.activity_id,p.id,r.actor_id,
+  CASE WHEN jsonb_typeof(r.emoji)='object' THEN COALESCE(
+    (SELECT ':'||e.name||':' FROM workspace_emojis e WHERE e.image_id=r.emoji->>'image_id' ORDER BY e.name LIMIT 1),
+    'apub:'||(r.emoji->>'image_id')||':'||(r.emoji->>'name')) ELSE r.reaction END,
+  r.created_at AT TIME ZONE 'UTC',a.user_name||'@'||split_part(a.id,'/',3),a.display_name,r.emoji
+FROM apub_reactions r JOIN home_posts p ON p.id=r.post_id JOIN messages m ON m.id=p.id
+JOIN apub_actors a ON a.id=r.actor_id
+WHERE p.channel_id IS NOT NULL AND p.deleted_at IS NULL AND m.deleted_at IS NULL
+  AND r.user_id IS NULL AND NOT a.blocked;
+
+CREATE VIEW message_display AS
+SELECT m.id, jsonb_build_object(
+  'author', (SELECT jsonb_build_object('id',u.id,'user_name',u.user_name,
+    'display_name',u.display_name,'avatar_url',u.avatar_url,'is_bot',u.is_bot,'app_id',u.app_id)
+    FROM users u WHERE u.id=m.user_id),
+  'emojis', COALESCE((SELECT jsonb_object_agg(names.name,jsonb_build_object('url',e.url,'width',e.width,'height',e.height,'image_id',e.image_id))
+    FROM workspace_emojis e CROSS JOIN LATERAL (
+      SELECT e.name UNION SELECT jsonb_array_elements_text(e.aliases)
+    ) names WHERE strpos(m.content,':'||names.name||':')>0 OR EXISTS (
+      SELECT 1 FROM message_display_reactions r WHERE r.message_id=m.id AND r.emoji=':'||names.name||':'
+    )), '{}'::jsonb) || COALESCE((SELECT jsonb_object_agg(r.emoji,r.custom_emoji) FROM message_display_reactions r WHERE r.message_id=m.id AND r.custom_emoji IS NOT NULL AND r.emoji LIKE 'apub:%'),'{}'::jsonb),
+  'attachments', COALESCE((SELECT jsonb_agg(to_jsonb(a) ORDER BY a.created_at,a.id)
+    FROM attachments a WHERE a.message_id=m.id),'[]'::jsonb),
+  'reactions', COALESCE((SELECT jsonb_agg(to_jsonb(r) ORDER BY r.created_at,r.id)
+    FROM message_display_reactions r WHERE r.message_id=m.id),'[]'::jsonb),
+  'reply_count', (SELECT count(*) FROM messages reply WHERE reply.parent_id=m.id AND reply.deleted_at IS NULL)
+) AS display_data FROM messages m;
+
+CREATE VIEW notification_display AS
+SELECT n.id, jsonb_build_object(
+  'message', CASE WHEN m.deleted_at IS NULL AND m.id IS NOT NULL THEN
+    jsonb_build_object('id',m.id,'user_id',m.user_id,'content',left(m.content,281),
+      'emojis',m.display_data->'emojis') ELSE NULL END,
+  'reactions', CASE WHEN n.notification_type='reaction' AND m.deleted_at IS NULL
+    THEN COALESCE(m.display_data->'reactions','[]'::jsonb) ELSE '[]'::jsonb END,
+  'actor', jsonb_build_object('id',u.id,'user_name',u.user_name,'display_name',u.display_name,
+    'avatar_url',u.avatar_url,'is_bot',u.is_bot,'app_id',u.app_id),
+  'channel', to_jsonb(c)
+) AS display_data
+FROM notification_events n JOIN users u ON u.id=n.actor_id JOIN channels c ON c.id=n.channel_id
+LEFT JOIN messages m ON m.id=n.message_id AND m.channel_id=n.channel_id WHERE n.source='channel';
+
+CREATE FUNCTION refresh_message_display(target text) RETURNS void LANGUAGE plpgsql SET jit=off AS $$
+BEGIN
+  -- Serialize writers for this read model before taking the aggregate snapshot.
+  PERFORM 1 FROM messages WHERE id=target FOR NO KEY UPDATE;
+  UPDATE messages m SET display_data=v.display_data FROM message_display v
+    WHERE m.id=target AND v.id=m.id AND m.display_data IS DISTINCT FROM v.display_data;
+END;
+$$;
+
+CREATE FUNCTION refresh_notification_display(target text) RETURNS void LANGUAGE plpgsql SET jit=off AS $$
+BEGIN
+  PERFORM 1 FROM notification_events WHERE id=target FOR NO KEY UPDATE;
+  UPDATE notification_events n SET display_data=v.display_data FROM notification_display v
+    WHERE n.id=target AND v.id=n.id AND n.display_data IS DISTINCT FROM v.display_data;
+END;
+$$;
+
+CREATE FUNCTION sync_message_display() RETURNS trigger LANGUAGE plpgsql AS $$
+DECLARE target text;
+BEGIN
+  IF TG_OP <> 'DELETE' THEN PERFORM refresh_message_display(NEW.id); END IF;
+  -- A reply can move between roots, be deleted, or be restored.
+  FOR target IN SELECT DISTINCT parent FROM (
+    SELECT CASE WHEN TG_OP <> 'INSERT' THEN OLD.parent_id END AS parent
+    UNION SELECT CASE WHEN TG_OP <> 'DELETE' THEN NEW.parent_id END
+  ) roots WHERE parent IS NOT NULL ORDER BY parent LOOP
+    PERFORM refresh_message_display(target);
+  END LOOP;
+  RETURN NULL;
+END;
+$$;
+CREATE TRIGGER messages_display_insert AFTER INSERT ON messages FOR EACH ROW EXECUTE FUNCTION sync_message_display();
+CREATE TRIGGER messages_display_update AFTER UPDATE OF content,user_id,parent_id,deleted_at ON messages FOR EACH ROW EXECUTE FUNCTION sync_message_display();
+CREATE TRIGGER messages_display_delete AFTER DELETE ON messages FOR EACH ROW EXECUTE FUNCTION sync_message_display();
+
+CREATE FUNCTION sync_message_relation_display() RETURNS trigger LANGUAGE plpgsql AS $$
+DECLARE target text;
+BEGIN
+  FOR target IN SELECT DISTINCT id FROM (
+    SELECT CASE WHEN TG_OP <> 'INSERT' THEN OLD.message_id END AS id
+    UNION SELECT CASE WHEN TG_OP <> 'DELETE' THEN NEW.message_id END
+  ) ids WHERE id IS NOT NULL ORDER BY id LOOP
+    PERFORM refresh_message_display(target);
+  END LOOP;
+  RETURN NULL;
+END;
+$$;
+CREATE TRIGGER attachments_display AFTER INSERT OR UPDATE OR DELETE ON attachments FOR EACH ROW EXECUTE FUNCTION sync_message_relation_display();
+CREATE TRIGGER reactions_display AFTER INSERT OR UPDATE OR DELETE ON message_reactions FOR EACH ROW EXECUTE FUNCTION sync_message_relation_display();
+
+CREATE FUNCTION sync_notification_display() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+  PERFORM refresh_notification_display(NEW.id);
+  RETURN NULL;
+END;
+$$;
+CREATE TRIGGER notifications_display_insert AFTER INSERT ON notification_events FOR EACH ROW EXECUTE FUNCTION sync_notification_display();
+CREATE TRIGGER notifications_display_update AFTER UPDATE OF actor_id,channel_id,message_id,notification_type,source ON notification_events FOR EACH ROW EXECUTE FUNCTION sync_notification_display();
+
+CREATE FUNCTION sync_message_notifications_display() RETURNS trigger LANGUAGE plpgsql AS $$
+DECLARE target text;
+BEGIN
+  FOR target IN SELECT id FROM notification_events WHERE source='channel' AND message_id=NEW.id ORDER BY id LOOP
+    PERFORM refresh_notification_display(target);
+  END LOOP;
+  RETURN NULL;
+END;
+$$;
+CREATE TRIGGER message_notifications_display AFTER UPDATE OF content,user_id,display_data,deleted_at ON messages FOR EACH ROW EXECUTE FUNCTION sync_message_notifications_display();
+
+CREATE FUNCTION sync_user_display() RETURNS trigger LANGUAGE plpgsql AS $$
+DECLARE target text;
+BEGIN
+  FOR target IN SELECT id FROM messages WHERE user_id=NEW.id OR id IN (
+    SELECT message_id FROM message_reactions WHERE user_id=NEW.id
+  ) ORDER BY id LOOP PERFORM refresh_message_display(target); END LOOP;
+  FOR target IN SELECT id FROM notification_events WHERE source='channel' AND actor_id=NEW.id ORDER BY id LOOP
+    PERFORM refresh_notification_display(target);
+  END LOOP;
+  RETURN NULL;
+END;
+$$;
+CREATE TRIGGER users_display AFTER UPDATE OF user_name,display_name,avatar_url,is_bot,app_id ON users FOR EACH ROW EXECUTE FUNCTION sync_user_display();
+
+CREATE FUNCTION sync_emoji_display() RETURNS trigger LANGUAGE plpgsql AS $$
+DECLARE target text;
+BEGIN
+  FOR target IN SELECT id FROM messages WHERE content LIKE '%:%' OR id IN (
+    SELECT message_id FROM message_display_reactions WHERE emoji LIKE ':%' OR emoji LIKE 'apub:%'
+  ) ORDER BY id LOOP PERFORM refresh_message_display(target); END LOOP;
+  RETURN NULL;
+END;
+$$;
+CREATE TRIGGER emojis_display AFTER INSERT OR UPDATE OR DELETE ON workspace_emojis FOR EACH STATEMENT EXECUTE FUNCTION sync_emoji_display();
+
+CREATE FUNCTION sync_channel_notification_display() RETURNS trigger LANGUAGE plpgsql AS $$
+DECLARE target text;
+BEGIN
+  FOR target IN SELECT id FROM notification_events WHERE source='channel' AND channel_id=NEW.id ORDER BY id LOOP
+    PERFORM refresh_notification_display(target);
+  END LOOP;
+  RETURN NULL;
+END;
+$$;
+CREATE TRIGGER channels_notification_display AFTER UPDATE ON channels FOR EACH ROW EXECUTE FUNCTION sync_channel_notification_display();
+
+CREATE FUNCTION sync_federated_reaction_display() RETURNS trigger LANGUAGE plpgsql AS $$
+DECLARE target text;
+BEGIN
+  IF TG_OP <> 'DELETE' AND jsonb_typeof(NEW.emoji)='object' THEN
+    INSERT INTO apub_emoji_images(id,url) VALUES (NEW.emoji->>'image_id',NEW.emoji->>'url')
+      ON CONFLICT(id) DO NOTHING;
+  END IF;
+  FOR target IN SELECT DISTINCT id FROM (
+    SELECT CASE WHEN TG_OP <> 'INSERT' THEN OLD.post_id END AS id
+    UNION SELECT CASE WHEN TG_OP <> 'DELETE' THEN NEW.post_id END
+  ) ids WHERE id IS NOT NULL ORDER BY id LOOP
+    PERFORM refresh_message_display(target);
+  END LOOP;
+  RETURN NULL;
+END;
+$$;
+CREATE TRIGGER federated_reactions_display AFTER INSERT OR UPDATE OR DELETE ON apub_reactions FOR EACH ROW EXECUTE FUNCTION sync_federated_reaction_display();
+
+CREATE FUNCTION sync_federated_actor_display() RETURNS trigger LANGUAGE plpgsql AS $$
+DECLARE target text;
+BEGIN
+  FOR target IN SELECT DISTINCT post_id FROM apub_reactions WHERE actor_id=NEW.id ORDER BY post_id LOOP
+    PERFORM refresh_message_display(target);
+  END LOOP;
+  RETURN NULL;
+END;
+$$;
+CREATE TRIGGER federated_actors_display AFTER UPDATE OF user_name,display_name,blocked ON apub_actors FOR EACH ROW EXECUTE FUNCTION sync_federated_actor_display();

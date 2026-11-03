@@ -34,7 +34,7 @@ fun ActivityPubEmoji(
             try {
                 val bytes =
                     app.image(if (emoji.flag("local")) { val url = emoji.text("url"); if (url.startsWith("/")) endpoint(app.config.apiBaseUrl, url) else url } else endpoint(app.config.apiBaseUrl, "/api/activitypub/emoji-images/$id"))
-                app.platform.imageFrames(bytes).collect { bitmap = it; app.emojiRatios[id] = (it.width.toFloat() / it.height).coerceIn(0.1f, 8f) }
+                app.platform.imageFrames(bytes).collect { bitmap = it }
             } catch (e: CancellationException) {
                 throw e
             } catch (_: Exception) {
@@ -43,18 +43,19 @@ fun ActivityPubEmoji(
             }
         else onFailure?.invoke()
     }
-    if (failed) Text(emoji.text("name"), modifier)
+    val slot = modifier.height(size).width(size * emojiRatio(emoji))
+    if (failed) Text(emoji.text("name"), slot, maxLines = 1)
     else
-        bitmap?.let { Image(it, emoji.text("name"), modifier.height(size).width(size * (app.emojiRatios[id] ?: 1f))) }
-            ?: Box(modifier.size(size))
+        bitmap?.let { Image(it, emoji.text("name"), slot) }
+            ?: Box(slot)
 }
 
 internal val LocalActivityPubEmojis = staticCompositionLocalOf<List<Row>> { emptyList() }
 
 @Composable
-fun ActivityPubContent(text: String, emojis: List<Row> = emptyList(), modifier: Modifier = Modifier,
+fun ActivityPubContent(text: String, emojis: List<Row>? = null, modifier: Modifier = Modifier,
     textStyle: TextStyle = TextStyle.Default, maxLines: Int = Int.MAX_VALUE) {
-    CompositionLocalProvider(LocalActivityPubEmojis provides emojis,
+    CompositionLocalProvider(LocalActivityPubEmojis provides emojis.orEmpty(), LocalJoinedEmojis provides emojis,
         LocalMfmStyle provides LocalMfmStyle.current.merge(textStyle)) {
         Box(modifier) { RichText(text, maxLines = maxLines) }
     }
@@ -68,7 +69,6 @@ fun ActivityPubText(
     textStyle: TextStyle? = null,
     maxLines: Int = Int.MAX_VALUE,
 ) {
-    val failed = remember(emojis) { mutableStateMapOf<String, Boolean>() }
     val fonts = LocalFonts.current
     val style = MaterialTheme.typography.bodyMedium.merge(LocalMfmStyle.current).merge(textStyle)
     val density = LocalDensity.current
@@ -81,7 +81,6 @@ fun ActivityPubText(
             val emoji = emojis.find { it.text("name") == match.value }
             if (
                 emoji == null ||
-                    failed[emoji.text("image_id")] == true ||
                     (!emoji.flag("local") && !Regex("^[a-f0-9]{64}$").matches(emoji.text("image_id")))
             )
                 append(fontText(match.value, fonts, style.fontWeight))
@@ -106,12 +105,11 @@ fun ActivityPubText(
         inlineContent =
             parts.mapValues { (_, emoji) ->
                 InlineTextContent(
-                    Placeholder((1.3f * (LocalApp.current.emojiRatios[emoji.text("image_id")] ?: 1f)).em, 1.3.em, PlaceholderVerticalAlign.TextCenter)
+                    Placeholder((1.3f * emojiRatio(emoji)).em, 1.3.em, PlaceholderVerticalAlign.TextCenter)
                 ) {
                     ActivityPubEmoji(
                         emoji,
                         size,
-                        onFailure = { failed[emoji.text("image_id")] = true },
                     )
                 }
             },

@@ -3,6 +3,8 @@ import { useState } from "react";
 import { useCollections } from "../../lib/electric/collections-context";
 import { joinUrl } from "../../lib/config";
 export interface CustomEmoji {
+  width?: number | null;
+  height?: number | null;
   name: string;
   url: string;
   id?: string | null;
@@ -20,6 +22,8 @@ export function ActivityPubEmoji({
 }) {
   const { config } = useCollections();
   const [failed, setFailed] = useState<string | null>(null);
+  const ratio = emoji.width && emoji.height ? emoji.width / emoji.height : 1;
+  const style = { width: "auto", maxWidth: "8em", aspectRatio: String(ratio) };
   if (emoji.local && (/^https?:\/\//.test(emoji.url) || /^\/(?!\/)/.test(emoji.url)))
     return (
       <img
@@ -27,19 +31,22 @@ export function ActivityPubEmoji({
         alt={emoji.name}
         title={emoji.name}
         className={className}
-        style={{ width: "auto", maxWidth: "8em" }}
+        style={style}
         loading="lazy"
       />
     );
-  if (failed === emoji.image_id || !/^[a-f0-9]{64}$/.test(emoji.image_id))
-    return <span>{emoji.name}</span>;
+  if (!/^[a-f0-9]{64}$/.test(emoji.image_id)) return <span>{emoji.name}</span>;
   return (
     <img
-      src={joinUrl(config.apiBaseUrl, `/api/activitypub/emoji-images/${emoji.image_id}`)}
+      src={
+        failed === emoji.image_id
+          ? undefined
+          : joinUrl(config.apiBaseUrl, `/api/activitypub/emoji-images/${emoji.image_id}`)
+      }
       alt={emoji.name}
       title={emoji.name}
       className={className}
-      style={{ width: "auto", maxWidth: "8em" }}
+      style={style}
       loading="lazy"
       decoding="async"
       referrerPolicy="no-referrer"
@@ -48,18 +55,17 @@ export function ActivityPubEmoji({
   );
 }
 /** Same MFM parser and rendering as channels, retaining remote emoji proxy/fallbacks. */
-export function ActivityPubContent({
-  text,
-  emojis = [],
-}: {
-  text: string;
-  emojis?: CustomEmoji[];
-}) {
+export function ActivityPubContent({ text, emojis }: { text: string; emojis?: CustomEmoji[] }) {
   return (
     <MfmContent
       content={text}
+      emojis={
+        emojis === undefined
+          ? undefined
+          : Object.fromEntries(emojis.map((emoji) => [emoji.name.replace(/^:|:$/g, ""), emoji]))
+      }
       renderEmoji={(name) => {
-        const emoji = emojis.find((value) => value.name === `:${name}:`);
+        const emoji = emojis?.find((value) => value.name === `:${name}:`);
         return emoji ? <ActivityPubEmoji emoji={emoji} className="mfm-custom-emoji" /> : undefined;
       }}
     />

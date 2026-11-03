@@ -4,6 +4,8 @@ import { joinUrl, resolvePublicConfig, type AppConfig } from "../config";
 import { useOptionalCollections } from "../electric/collections-context";
 
 export interface WorkspaceEmoji {
+  width?: number | null;
+  height?: number | null;
   name: string;
   url: string;
   category: string;

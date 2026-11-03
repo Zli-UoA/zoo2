@@ -43,6 +43,16 @@ async fn main() -> anyhow::Result<()> {
         backend::storage::ensure_bucket_exists(&state.s3_client, &config.s3.bucket).await;
     }
 
+    match tokio::time::timeout(
+        std::time::Duration::from_secs(30),
+        backend::storage::image_dimensions::backfill_emojis(&state),
+    )
+    .await
+    {
+        Ok(result) => result?,
+        Err(_) => tracing::warn!("Emoji metadata backfill will resume at the next startup"),
+    }
+
     // ルーター構築
     let delivery_worker = tokio::spawn(backend::apps::delivery::worker(state.clone()));
     let federation_worker = tokio::spawn(backend::activitypub::worker(state.clone()));

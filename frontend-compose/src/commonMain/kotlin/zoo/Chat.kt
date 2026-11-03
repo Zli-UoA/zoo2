@@ -588,9 +588,10 @@ internal fun Message(
     canOpenThread: Boolean = true,
 ) {
     val id = message.text("id")
+    val display = message.nested("display_data").takeIf { it.containsKey("author") }
     val user =
         JsonObject(
-            users.find { it.text("id") == message.text("user_id") }.orEmpty() +
+            (display?.nested("author") ?: users.find { it.text("id") == message.text("user_id") }).orEmpty() +
                 message.filterKeys {
                     it in setOf("display_name", "user_name", "avatar_url", "is_bot")
                 }
@@ -634,7 +635,8 @@ internal fun Message(
             (callbacks == null &&
                 !channel.flag("is_dm") &&
                 canManage(channel, app.config.userId, app.config.isAdmin))
-    CompositionLocalProvider(LocalViewConfiguration provides selectionConfiguration) {
+    CompositionLocalProvider(LocalViewConfiguration provides selectionConfiguration,
+        LocalJoinedEmojis provides display?.let(::joinedEmojis)) {
         Box(
             Modifier.messageHold(!editing, gestureArbitration) { menuOpen = true }
                 .semantics { testTag = "message:$id" }
@@ -853,13 +855,13 @@ internal fun Message(
                         MessageAppContent(app, message)
                         MessageAttachments(
                             app,
-                            LocalAttachments.current
+                            (display?.array("attachments")?.rows() ?: LocalAttachments.current)
                                 .filter { it.text("message_id") == id }
                                 .sortedBy { it.text("created_at") },
                         )
                     }
                     if (!editing) {
-                        val replies =
+                        val replies = display?.text("reply_count")?.toIntOrNull() ?:
                             all.count { it.text("parent_id") == id && !it.present("deleted_at") }
                         if (showThread && replies > 0)
                             Row(
@@ -904,7 +906,7 @@ internal fun Message(
                                 )
                             }
                         val groups =
-                            reactions
+                            (display?.array("reactions")?.rows() ?: reactions)
                                 .filter { it.text("message_id") == id }
                                 .groupBy { reactionKey(it.text("emoji")) }
                         if (groups.isNotEmpty())

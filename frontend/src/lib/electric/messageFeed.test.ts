@@ -76,6 +76,20 @@ function makeCollections(messageRows: MessageRow[], userRows: UserRow[]) {
 }
 
 describe("messageFeedQuery", () => {
+  it("renders the joined author before the users Shape arrives", async () => {
+    const display_data = {
+      author: { id: "user-1", user_name: "alice", display_name: "Joined Alice", avatar_url: null },
+      emojis: {},
+      attachments: [],
+      reactions: [],
+      reply_count: 2,
+    };
+    const result = await queryOnce((q) =>
+      messageFeedQuery(q, makeCollections([{ ...messages[0], display_data }], [])),
+    );
+    expect(result[0].display_name).toBe("Joined Alice");
+    expect(result[0].display_data).toEqual(display_data);
+  });
   it("joins the author and excludes logically deleted messages", async () => {
     const result = await queryOnce((q) => messageFeedQuery(q, makeCollections(messages, users)));
 

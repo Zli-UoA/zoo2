@@ -228,13 +228,13 @@ function notificationInteractions(title: string, name: string): NativeInteractio
     case "Grouped Reactions":
       return [
         visible("Bob さんほか1人"),
-        { action: "wait", role: "listitem", name: "👀 2" },
         {
           action: "wait",
           role: "link",
           name: "example.com/release",
           attributes: { target: "_blank" },
         },
+        { action: "wait", role: "listitem", name: "👀 2", state: "hidden" },
       ];
     case "Loading":
       return [visible("読み込み中…")];

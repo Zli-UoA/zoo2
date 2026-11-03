@@ -2,6 +2,8 @@ import { ActivityPubEmoji } from "../../home/ActivityPubEmoji";
 import { useState } from "react";
 
 import { useWorkspaceEmojis } from "../../../lib/emoji/workspace";
+import type { DisplayEmoji } from "../../../lib/electric/types";
+import { emojiImageStyle } from "../../../lib/emoji/dimensions";
 import type { KitchenCatalog } from "../../../lib/emoji/kitchen";
 import { kitchenImageUrl, kitchenLabel, kitchenParts } from "../../../lib/emoji/kitchen";
 
@@ -16,7 +18,9 @@ export function ReactionEmoji({
   emoji,
   catalog,
   size = 20,
+  emojis,
 }: {
+  emojis?: Record<string, DisplayEmoji>;
   emoji: string;
   catalog: KitchenCatalog | null;
   size?: number;
@@ -30,13 +34,13 @@ export function ReactionEmoji({
     return (
       <span style={{ fontSize: size, height: size }} className="inline-flex shrink-0">
         <ActivityPubEmoji
-          emoji={{ image_id: remote[1]!, name: remote[2]!, url: "" }}
+          emoji={{ ...emojis?.[emoji], image_id: remote[1]!, name: remote[2]!, url: "" }}
           className="inline-block h-[1em] object-contain"
         />
       </span>
     );
   if (/^:[a-z0-9_-]{1,64}:$/.test(emoji))
-    return <CustomReactionEmoji name={emoji.slice(1, -1)} size={size} />;
+    return <CustomReactionEmoji name={emoji.slice(1, -1)} size={size} emojis={emojis} />;
   if (!kitchen)
     return (
       <span
@@ -73,9 +77,20 @@ export function ReactionEmoji({
   );
 }
 
-function CustomReactionEmoji({ name, size }: { name: string; size: number }) {
-  const { emojis, imageUrl } = useWorkspaceEmojis();
-  const emoji = emojis.find((value) => value.name === name || value.aliases?.includes(name));
+function CustomReactionEmoji({
+  name,
+  size,
+  emojis: joined,
+}: {
+  name: string;
+  size: number;
+  emojis?: Record<string, DisplayEmoji>;
+}) {
+  const { emojis, imageUrl } = useWorkspaceEmojis(joined === undefined);
+  const emoji =
+    joined !== undefined
+      ? joined[name]
+      : emojis.find((value) => value.name === name || value.aliases?.includes(name));
   const url = emoji ? imageUrl(emoji.url) : null;
   const [failedUrl, setFailedUrl] = useState<string | null>(null);
   return url && failedUrl !== url ? (
@@ -85,12 +100,16 @@ function CustomReactionEmoji({ name, size }: { name: string; size: number }) {
       width={size}
       height={size}
       className="shrink-0 object-contain"
-      style={{ width: "auto", maxWidth: size * 8, height: size }}
+      style={emojiImageStyle(emoji, size)}
       loading="lazy"
       referrerPolicy="no-referrer"
       onError={() => setFailedUrl(url)}
     />
   ) : (
-    <span>{`:${name}:`}</span>
+    <span
+      className={emoji ? "inline-block shrink-0 align-middle" : undefined}
+      style={emoji ? { ...emojiImageStyle(emoji, size), overflow: "hidden" } : undefined}
+      title={`:${name}:`}
+    >{`:${name}:`}</span>
   );
 }

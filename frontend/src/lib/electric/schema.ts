@@ -97,6 +97,7 @@ export const CHANNEL_SCHEMA: ShapeSchema<ChannelRow> = {
 export const MESSAGE_SCHEMA: ShapeSchema<MessageRow> = {
   table: "messages",
   columns: {
+    display_data: "jsonb",
     id: "text",
     user_id: "text",
     channel_id: "text",
@@ -139,6 +140,7 @@ export const CHANNEL_USER_SCHEMA: ShapeSchema<ChannelUserRow> = {
 export const NOTIFICATION_SCHEMA: ShapeSchema<NotificationRow> = {
   table: "notifications",
   columns: {
+    display_data: "jsonb",
     id: "text",
     user_id: "text",
     actor_id: "text",
@@ -183,6 +185,7 @@ export function coerceElectricValue(type: ElectricType, value: unknown): unknown
   if (value === null || value === undefined) {
     return value;
   }
+  if (type === "jsonb" && typeof value === "string") return JSON.parse(value);
   if (NUMERIC_ELECTRIC_TYPES.has(type) && typeof value === "string") {
     return toNumber(value);
   }

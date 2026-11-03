@@ -26,6 +26,15 @@ Reactを機能・UI・操作の基準とする。変更時は [compose-react-par
 
 ## main取り込み時の照合
 
+- `8815293` の通知保存先共通化と返信ツリー表示を取り込み、通知の表示キャッシュを正規の `notification_events` に接続。通知下部の絵文字一覧は削除し、mainで追加されたアバター上の絵文字は維持する。React／Composeの返信ツリーを維持し、返信数には結合済みデータを優先する。
+
+- 通知カード下部のリアクション絵文字・件数の一覧をReact／Compose双方から削除。通知ラベル・引用本文・移動先を表示する。引用本文中の絵文字は維持する。
+
+- 取得順による投稿・通知のレイアウト変化を抑えるため、`message_display_reactions`・`message_display`・`notification_display` を追加。Electric 1.xはJOINしたVIEWを直接同期できないため、トリガーが同じトランザクションで `messages.display_data`・`notification_events.display_data` へ結果を反映する。投稿者、参照する絵文字と画像寸法、添付、ローカル／連合リアクション、返信数、通知の本文・チャンネル・投稿者をまとめて送る。元のShapeの認可条件を維持し、削除や編集にも追従する。
+- Reactは `messageFeedQuery`・`MfmContent`・`MessageList`・`ThreadPane`・`NotificationCard`、Composeは `Chat.kt`・`RichText.kt`・`Notifications.kt` がこの表示データを優先する。旧キャッシュ・楽観更新には従来の補完処理を残す。絵文字のアップロード時に寸法を保存し、既存画像は起動時に補完する。寸法を取得できない画像も固定枠内で縦横比を保って表示する。
+- DBに保存していない署名付きURLや外部Summalyの応答はSQL JOINできないため、両実装とも添付画像・URLカードの領域を取得前から確保する。URLカードは横並びの固定高とし、失敗時にも元URLへ移動できる枠を残す。添付画像は単独なら4:3、複数なら正方形の枠内に表示する。
+- 確認先: `display_views_test`（旧形式の書き込み、編集・削除、添付、絵文字寸法・別名、連合リアクションとブロック）、`notification_context_test`・`shape_proxy_test`（認可）、Reactの遅延画像・添付・URLカードのブラウザテスト、`ContentTest`・Compose Webのブラウザテスト。`MessageContent/JoinedEmoji` は両実装で同じ横長画像のfixtureを使う。
+
 - `7b0418c` まで取り込み、追加されたAndroid対応を維持しました。今回のHome変更では、Reactの `ActivityPubContent` とKotlinの同名部品から、それぞれチャンネル共通のMFM描画へ接続しています。投稿本文・単独投稿・プロフィール・返信プレビュー・通知本文が対象です。リモート絵文字は既存プロキシを使い、コード内のショートコードは文字列のまま表示します。
 - 投稿成功時の公開範囲・連合・同期先と、選択したTLタブの保存をKotlinにも実装しました。アカウント・接続先ごとにキーを分け、既存Platformの保存境界を使います。両実装間で保存データを共有する仕様ではありません。
 - 追加したHome／通知のStoryで、PC・390pxのMFM表示と、設定保存・再表示・返信制約・チャンネル無効化・アカウント分離・保存先未解決時の投稿を検証します。HTMLだけで届く連合本文は従来どおりテキストへ変換し、明示的なMisskey MFMの元本文がある場合に装飾を保持します。全MFM構文の互換性や画素単位の一致は保証していません。

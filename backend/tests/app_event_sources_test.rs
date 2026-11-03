@@ -10,6 +10,57 @@ use tower::ServiceExt;
 use uuid::Uuid;
 static HTTP_WORKER_TEST_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
+#[tokio::test]
+async fn display_cache_updates_do_not_emit_message_updates() -> anyhow::Result<()> {
+    let f = fixture_with_events(json!(["message.created", "message.updated"])).await?;
+    let message = ok(
+        &f.app,
+        "POST",
+        "/api/messages",
+        &f.owner,
+        json!({"channel_id":f.channel,"content":"Original text"}),
+    )
+    .await;
+    let id = message["data"]["id"].as_str().unwrap();
+    ok(
+        &f.app,
+        "POST",
+        &format!("/api/messages/{id}/reactions"),
+        &f.owner,
+        json!({"emoji":"👍"}),
+    )
+    .await;
+    let before = payloads(&f, &f.channel).await?;
+    assert!(
+        !before
+            .iter()
+            .any(|event| event["type"] == "message.updated"),
+        "Display cache updates must not look like edits: {before:?}"
+    );
+    ok(
+        &f.app,
+        "PATCH",
+        &format!("/api/messages/{id}"),
+        &f.owner,
+        json!({"content":"Edited text"}),
+    )
+    .await;
+    let after = payloads(&f, &f.channel).await?;
+    assert_eq!(
+        after
+            .iter()
+            .filter(|event| event["type"] == "message.updated")
+            .count(),
+        1
+    );
+    assert!(
+        after
+            .iter()
+            .all(|event| !event.to_string().contains("display_data"))
+    );
+    Ok(())
+}
+
 async fn request(
     app: &Router,
     method: &str,
@@ -2238,6 +2289,25 @@ async fn custom_emoji_storage_metadata_aliases_and_permissions() -> anyhow::Resu
     )
     .await;
     assert_eq!(emoji["category"], "Greetings");
+    assert_eq!(emoji["width"], 3);
+    assert_eq!(emoji["height"], 1);
+    // Existing uploads acquire dimensions without being re-uploaded.
+    let mut db = f.state.db.clone();
+    toasty::sql::statement("UPDATE workspace_emojis SET width=NULL,height=NULL WHERE name=$1")
+        .bind(name.as_str())
+        .exec(&mut db)
+        .await?;
+    backend::storage::image_dimensions::backfill_emojis(&f.state).await?;
+    let restored = ok(
+        &f.app,
+        "GET",
+        &format!("/api/emojis/{name}"),
+        &f.owner,
+        json!(null),
+    )
+    .await;
+    assert_eq!(restored["width"], 3);
+    assert_eq!(restored["height"], 1);
     assert_eq!(
         request(
             &f.app,

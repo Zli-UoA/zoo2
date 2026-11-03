@@ -3,6 +3,8 @@ import { parse, toString, type MfmNode } from "mfm-js";
 import katex from "katex";
 import hljs from "highlight.js/lib/common";
 import { useWorkspaceEmojis } from "../../../lib/emoji/workspace";
+import type { DisplayEmoji } from "../../../lib/electric/types";
+import { emojiImageStyle } from "../../../lib/emoji/dimensions";
 import shortcodeData from "../../../lib/emoji/shortcodes.json";
 import { ExternalLink, inlineLinkClassName } from "../../ui/external-link";
 import { MfmSearch } from "./MfmSearch";
@@ -14,6 +16,8 @@ export interface MfmContentProps {
   content: string;
   /** Registered custom emoji: name -> same-origin image URL. Unknown names stay readable. */
   emojiUrls?: Readonly<Record<string, string>>;
+  /** Joined into the message by the server; an empty object is authoritative. */
+  emojis?: Readonly<Record<string, DisplayEmoji>>;
   /** Trusted renderer for registered emoji, including proxied federation images. */
   renderEmoji?: (name: string) => ReactNode;
   /** Application event, never evaluated as JavaScript. */
@@ -65,9 +69,11 @@ function loadRegistry() {
 function EmojiCode({
   name,
   emojiUrls,
+  emojis,
 }: {
   name: string;
   emojiUrls?: MfmContentProps["emojiUrls"];
+  emojis?: MfmContentProps["emojis"];
 }) {
   const [registry, setRegistry] = useState<Readonly<Record<string, string>>>({});
   useEffect(() => {
@@ -83,7 +89,15 @@ function EmojiCode({
   const urls = emojiUrls ?? registry;
   const url = Object.hasOwn(urls, name) ? urls[name] : undefined;
   if (url && (/^\/(?!\/)/.test(url) || /^https?:\/\//.test(url)))
-    return <img className="mfm-custom-emoji" src={url} alt={`:${name}:`} loading="lazy" />;
+    return (
+      <img
+        className="mfm-custom-emoji"
+        style={emojiImageStyle(emojis?.[name], "1.5em")}
+        src={url}
+        alt={`:${name}:`}
+        loading="lazy"
+      />
+    );
   return Object.hasOwn(shortcodes, name) ? shortcodes[name] : `:${name}:`;
 }
 function MathFormula({ formula, block }: { formula: string; block: boolean }) {
@@ -149,7 +163,7 @@ function renderNode(
     case "emojiCode":
       return (
         options.renderEmoji?.(node.props.name) ?? (
-          <EmojiCode name={node.props.name} emojiUrls={options.emojiUrls} />
+          <EmojiCode name={node.props.name} emojiUrls={options.emojiUrls} emojis={options.emojis} />
         )
       );
     case "bold":
@@ -336,7 +350,9 @@ function messageBlocks(nodes: MfmNode[]): MessageBlock[] {
 }
 
 export function MfmContent({ content, ...options }: MfmContentProps) {
-  const workspace = useWorkspaceEmojis(/:[a-z0-9_-]+:/.test(content));
+  const workspace = useWorkspaceEmojis(
+    options.emojis === undefined && /:[a-z0-9_-]+:/.test(content),
+  );
   const emojiUrls = Object.fromEntries(
     workspace.emojis.flatMap((e) =>
       [e.name, ...(e.aliases ?? [])].map((name) => [name, workspace.imageUrl(e.url)]),
@@ -345,8 +361,17 @@ export function MfmContent({ content, ...options }: MfmContentProps) {
   const resolvedOptions = {
     ...options,
     emojiUrls:
-      workspace.emojis.length || options.emojiUrls
-        ? { ...emojiUrls, ...options.emojiUrls }
+      options.emojis !== undefined || workspace.emojis.length || options.emojiUrls
+        ? {
+            ...emojiUrls,
+            ...Object.fromEntries(
+              Object.entries(options.emojis ?? {}).map(([name, emoji]) => [
+                name,
+                workspace.imageUrl(emoji.url),
+              ]),
+            ),
+            ...options.emojiUrls,
+          }
         : undefined,
   };
   const blocks = useMemo(() => messageBlocks(parse(content, { nestLimit: 20 })), [content]);

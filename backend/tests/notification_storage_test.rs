@@ -323,7 +323,7 @@ async fn electric_stream_reads_the_common_store_without_changing_the_client_row_
         .and(query_param("table", "notification_events"))
         .and(query_param(
             "columns",
-            "id,user_id,actor_id,channel_id,message_id,notification_type,is_read,created_at",
+            "id,user_id,actor_id,channel_id,message_id,notification_type,is_read,created_at,display_data",
         ))
         .and(query_param("params[1]", owner.as_str()))
         .respond_with(

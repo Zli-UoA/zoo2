@@ -142,7 +142,7 @@ async fn proxy_shape(
             .get("_app_metadata_allowed")
             .is_some_and(|v| v == "false")
     {
-        params.push(("columns".into(),"id,user_id,channel_id,content,card,created_at,updated_at,deleted_at,parent_id,app_blocks,app_attachments,app_unfurls,app_origin_id,message_kind,broadcast,home_post_id,apub,apub_visibility".into()));
+        params.push(("columns".into(),"id,user_id,channel_id,content,card,created_at,updated_at,deleted_at,parent_id,app_blocks,app_attachments,app_unfurls,app_origin_id,message_kind,broadcast,home_post_id,apub,apub_visibility,display_data".into()));
     }
 
     if let Some(w) = where_clause {
@@ -493,7 +493,7 @@ async fn notifications_shape(
     let (mut where_clause, mut extra_params) = notifications_shape_where(auth_user.id.as_str());
     extra_params.push((
         "columns",
-        "id,user_id,actor_id,channel_id,message_id,notification_type,is_read,created_at",
+        "id,user_id,actor_id,channel_id,message_id,notification_type,is_read,created_at,display_data",
     ));
     let mut db = state.db.clone();
     if crate::apps::events::guest_in_db(&mut db, &auth_user.id).await? {
