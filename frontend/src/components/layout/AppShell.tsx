@@ -6,7 +6,9 @@ import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } fro
 import { usePresence, useConversationView } from "../../hooks/usePresence";
 import { AppSurfaceHost } from "../chat/AppSurfaceHost";
 import { useActiveChannels } from "../../hooks/useRealtime";
+import { useCall } from "../../lib/call/call-context";
 import { MfmChannelsProvider } from "../chat/messages/MfmChannels";
+import { CallBar } from "../chat/CallBar";
 import { ChannelSidebar } from "../chat/ChannelSidebar";
 import { MembersPanel } from "../chat/MembersPanel";
 import { SearchPreferencesProvider } from "../preferences/SearchPreferences";
@@ -47,6 +49,9 @@ export function AppShell({ children }: { children: ReactNode }) {
     },
   });
   const isWide = useMediaQuery("(min-width: 1024px)");
+
+  const call = useCall();
+  const isCallActive = Boolean(call.currentChannelId && call.connectionState !== "idle");
 
   const channelsQuery = useActiveChannels();
   const channels = channelsQuery.data ?? [];
@@ -253,13 +258,14 @@ export function AppShell({ children }: { children: ReactNode }) {
                 className={cn(
                   "min-h-0 min-w-0 flex-1 flex-col",
                   showChat ? "flex" : "hidden md:flex",
+                  isCallActive && "pb-20",
                 )}
               >
                 <div className={showMembersScreen ? "hidden" : "contents"}>{children}</div>
                 {showMembersScreen && membersChannel ? (
                   <MembersPanel
                     channel={membersChannel}
-                    className="flex h-full"
+                    className={cn("flex h-full", isCallActive && "pb-20")}
                     onBack={() => setMembersOpen(false)}
                   />
                 ) : null}
@@ -268,9 +274,13 @@ export function AppShell({ children }: { children: ReactNode }) {
               {isWide && membersOpen && membersChannel ? (
                 <MembersPanel
                   channel={membersChannel}
-                  className="hidden w-72 shrink-0 border-l lg:flex xl:w-80"
+                  className={cn(
+                    "hidden w-72 shrink-0 border-l lg:flex xl:w-80",
+                    isCallActive && "pb-20",
+                  )}
                 />
               ) : null}
+              <CallBar channels={channels} />
             </div>
           </MfmChannelsProvider>
         </ShellContext.Provider>

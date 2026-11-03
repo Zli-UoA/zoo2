@@ -1,4 +1,4 @@
-h1:pM7OhLNxchjimrk4iUq9NN0nQrrQRO9Ngx3fJt+iibo=
+h1:Rmp01/TLf7SNs9jMTFpR9GFHsfH1tUczkqrykV0xupw=
 20261008000000_initial.sql h1:v3rZATh+MriHOzHYMS+oLMrabKMd7J8aLKuEYdsKNfc=
 20261015110156_snake_case_and_replica_identity.sql h1:gWKFhGTel2djLDzitJiG+ufrbKEjusudna0EhabxkZU=
 20261016171538_create_user_identities.sql h1:h8btCK61sRc0EaVuiKnON59nR594VVKdLtl8nes3KKc=
@@ -41,3 +41,5 @@ h1:pM7OhLNxchjimrk4iUq9NN0nQrrQRO9Ngx3fJt+iibo=
 20261103110000_display_reconciliation.sql h1:ZSs8IA6PGL4Np9MAgREutxm3Un91xwdK7IYbs4O5Zvk=
 20261103120000_app_message_display_boundary.sql h1:vTfdP2wmms04IIu0Bk03NWpRSjEIuQMgeaLMcGqosDw=
 20261103130000_display_refresh_retries.sql h1:EpRpASLiFJOhlKENIEDwJ1b3IET2JlDgqPvgt6g+kNU=
+20261103140000_create_call_presence.sql h1:c71YLivThthv/7JB/hnfOBSVBmE5aHIbAJHuMGmMeUQ=
+20261103150000_call_presence_unique_session.sql h1:FJulkemagmDPqK6VBX68CMjkyZZEmRZ44aGWUKz4xlw=
