@@ -425,7 +425,12 @@ for (const implementation of ["react", "compose"] as const) {
     await expect.poll(async () => (await state()).preferences.search_engine).toBe("duckduckgo");
     const membersTab = page.getByRole("tab", { name: "メンバー", exact: true });
     await expect(membersTab).toBeVisible();
-    await membersTab.click({ force: native });
+    // Preference updates can replace the native tab projection during a click.
+    // Selecting the same tab is idempotent; wait for the committed selection.
+    await expect(async () => {
+      await clickControl(membersTab, native ? "kotlin" : "react");
+      await expect(membersTab).toHaveAttribute("aria-selected", "true", { timeout: 1000 });
+    }).toPass({ timeout: 10_000, intervals: [100, 250, 500] });
     await expect(
       page.getByRole("button", { name: "管理者を外す", exact: true }).first(),
     ).toBeDisabled();
