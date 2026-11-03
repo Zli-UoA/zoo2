@@ -404,6 +404,27 @@
       "clickable": "Click event"
     }
   },
+  "call": {
+    "start": "Start call",
+    "join": "Join call",
+    "leave": "Leave call",
+    "inCall": "In call",
+    "mute": "Mute",
+    "unmute": "Unmute",
+    "muted": "Muted",
+    "speaking": "Speaking",
+    "connecting": "Connecting…",
+    "connected": "Connected",
+    "reconnecting": "Call server is reconnecting. Please try again shortly.",
+    "participantCount": "{{count}} in call",
+    "full": "Call room is full (max 6 participants)",
+    "archived": "Calls are disabled in archived channels",
+    "notFound": "Channel not found or access denied",
+    "connectError": "Failed to connect to call",
+    "disconnected": "Call was disconnected",
+    "micPermissionDenied": "Microphone access denied. Please allow microphone permissions in browser settings.",
+    "micNotFound": "No microphone found."
+  },
   "bubbleChat": {
     "title": "Bubble Chat",
     "description": "A room where text appears in real time as you type",
