@@ -64,9 +64,13 @@ async fn run() -> Result<()> {
         AuthConfig::Dev { user_id } => Credentials::Dev(user_id.clone()),
         AuthConfig::Oidc(oidc) => {
             let path = token_file()?;
-            let tokens = token::load(&path, oidc)?.ok_or_else(|| {
-                anyhow!("ログインしていません。先に `zoo2-tui login` を実行してください")
-            })?;
+            let tokens =
+                token::load(&path, oidc, Some(&config.api_base_url))?.ok_or_else(|| {
+                    anyhow!(
+                        "ログインしていません。先に `zoo2-tui login` を実行してください。\
+                     接続先や OIDC の設定を変えたときも、ログインし直してください"
+                    )
+                })?;
             Credentials::Bearer(Arc::new(TokenManager::new(
                 http.clone(),
                 oidc.clone(),
@@ -100,7 +104,7 @@ async fn login() -> Result<()> {
     let response = Poller::default()
         .poll(&http, &discovery, oidc, &authorization)
         .await?;
-    let tokens = StoredTokens::new(oidc, response, token::now());
+    let tokens = StoredTokens::new(oidc, &config.api_base_url, response, token::now());
     let path = token_file()?;
     token::save(&path, &tokens)?;
 
@@ -128,7 +132,8 @@ async fn logout() -> Result<()> {
     let path = token_file()?;
     let http = reqwest::Client::new();
     // IdP 側でも refresh_token を失効させる。失敗しても手元のトークンは消す。
-    if let Some(refresh_token) = token::load(&path, oidc)?.and_then(|tokens| tokens.refresh_token)
+    if let Some(refresh_token) =
+        token::load(&path, oidc, None)?.and_then(|tokens| tokens.refresh_token)
         && let Ok(discovery) = auth::discover(&http, &oidc.issuer).await
         && let Some(endpoint) = discovery.revocation_endpoint
     {
