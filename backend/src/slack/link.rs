@@ -555,7 +555,7 @@ async fn rewrite_mentions(
 
 /// `content` の `@name` のうち `names` にあるものを置き換える。変わらなければ `None`。
 /// `notifications::extract_mentions` と同じく、名前は英数字と `.`・`-`・`_` で、末尾の `.` は句読点とみなす。
-/// 直前が名前の文字や `@` のもの (メールアドレスなど) はメンションとみなさない。
+/// `@` の直前は `notifications::is_mention_boundary` と同じ区切りを求める (メールアドレスや URL の途中は対象外)。
 fn replace_mentions(content: &str, names: &HashMap<String, String>) -> Option<String> {
     let is_name = |c: char| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_');
     let chars: Vec<char> = content.chars().collect();
@@ -563,7 +563,8 @@ fn replace_mentions(content: &str, names: &HashMap<String, String>) -> Option<St
     let mut changed = false;
     let mut i = 0;
     while i < chars.len() {
-        let boundary = i == 0 || !(is_name(chars[i - 1]) || chars[i - 1] == '@');
+        // 通知のメンション判定と同じ区切り (行頭・空白・開き括弧など) のときだけ。URL の途中の @name は書き換えない
+        let boundary = i == 0 || crate::notifications::is_mention_boundary(chars[i - 1]);
         if chars[i] == '@' && boundary {
             let mut end = i + 1;
             while end < chars.len() && is_name(chars[end]) {
@@ -747,6 +748,14 @@ mod tests {
         assert_eq!(
             replace_mentions(
                 "@slack-a.bc @slack-a.b.c mail@slack-a.b @@slack-a.b",
+                &names
+            ),
+            None
+        );
+        // URL や Markdown リンクの移動先の @name も書き換えない
+        assert_eq!(
+            replace_mentions(
+                "https://www.npmjs.com/package/@slack-a.b/tool [x](https://e.x/@slack-a.b)",
                 &names
             ),
             None
