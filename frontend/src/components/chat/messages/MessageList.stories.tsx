@@ -167,6 +167,7 @@ export const DelayedLinkPreview: Story = {
     messages: Array.from({ length: 20 }, (_, index) => ({
       ...longMessages[0],
       id: `preview-scroll-${index}`,
+      created_at: new Date(Date.parse("2026-06-12T03:00:00Z") + index * 1000).toISOString(),
       content:
         index === 19
           ? "https://example.com/delayed-scroll-preview"
