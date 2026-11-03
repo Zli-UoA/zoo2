@@ -182,3 +182,13 @@ Reactはスレッドのルートを返信を含む同じメッセージコレク
 今回の検証範囲: 対象React Story操作4件、React/Composeの対象6状態の操作・描画、Story登録などの単体テスト76件、Kotlinブラウザーテスト80件と配布ビルドが成功した。Home API11件、Rust単体109件（6件除外）と全ターゲットのclippyも成功した。Storybook監査は423状態を確認した。ReactのCRUD E2EはAPI応答後に編集済みチャンネル名の画面反映も待ち、3回連続で成功した。画素単位の一致は検証対象に含めない。
 
 メッセージ編集欄のCmd/Ctrl+Enter保存（#307）: Reactの `MessageRow` は `shouldSendFromKey` でmacOSはCmd+Enter、Windows / LinuxはCtrl+Enterを判定して保存する。Kotlinの `Chat.kt` の編集欄も `app.env.mac` で同じキーを判定し、保存ボタンと同じ処理を呼ぶ。本文が空白のみ、保存中、IME変換中、Shift+Enterは保存しない。EscapeのキャンセルとEnter単独の改行は変えていない。`frontend/e2e/compose.spec.ts` の投稿・編集フローは、React / Composeの両方で「保存」ボタンの代わりに `ControlOrMeta+Enter` で編集を保存し、編集欄が閉じて本文が更新されることを確認する。Kotlinは `compileKotlinWasmJs` の成功までをローカルで確認している。
+
+## PR #316 レビュー対応
+
+- `20261103050000_display_view_updates.sql` は適用済みファイルを変更せず、表示VIEWとトリガーを更新する。通知には対象アクターの最新リアクション1件と、本文・バッジに使う絵文字だけを保存する。無関係なリアクションでは通知行を書き直さない。
+- キャッシュ更新対象は投稿自身と旧・新の返信先をまとめてID順に処理する。ただしUPDATEはトリガー実行前に対象行をロックするため、順序の統一だけでは一括更新とのデッドロックを防げない。`enter_display_group` は行更新とメタデータ更新の実行期間を分け、同じ種類の更新同士は並行させる。トランザクション内でメタデータ更新から行更新へ進むことはできる。逆順の処理は分割するか、最初にメタデータ用の調停を行う。
+- `users`・`workspace_emojis` を明示的に `SELECT ... FOR UPDATE` するAPIは、行をロックする前に `SELECT enter_display_group('metadata')` を実行する。SQLを直接書く処理でも同じ順序を守る。通常のINSERT／UPDATE／DELETEはBEFORE STATEMENTトリガーで調停する。実行待ちのキャンセル時にも、接続へセッションロックを残さない。
+- Reactは `useOptimisticDisplay`、Composeは `OptimisticDisplay.kt` でJOIN済みデータにローカルの未確定差分だけを重ねる。通常一覧・スレッド親投稿・返信で共有し、未取得Shapeを空データとして反映しない。Reactの永続化スキーマは4、Composeの保存キーはv2へ更新する。
+- 検証先は `display_views_test` の並行更新・キャンセル・通知行の更新範囲、`app_event_sources_test` の無関係なボットの同時更新、`optimisticDisplay.test.ts`・`useOptimisticDisplay.browser.test.tsx`・`OptimisticDisplayTest` とする。`compose.spec.ts` の追加2ケースはJOIN済みデータを持つ投稿でAPI応答を保留し、リアクションと返信数の即時反映・失敗時のロールバックを両実装で確認する。
+
+プレビューのDBにリベース前の `20261103000000_display_views.sql` が適用済みの場合、現在の履歴へそのまま更新すると、Atlasは `20261102170429_home_images.sql was added out of order` で停止することをローカルで再現した。クラスタの実ログとの照合は別途必要であり、新規DBへの適用成功をプレビューDBの更新成功とみなさない。previewラベルが外れた環境の削除でもステータスがsuccessになるため、descriptionとFluxの報告も確認する。

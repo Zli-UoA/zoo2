@@ -2569,3 +2569,48 @@ async fn upload_shortcode_remains_readable_and_removable() -> anyhow::Result<()>
     }
     Ok(())
 }
+
+#[tokio::test]
+async fn delayed_emoji_storage_does_not_hold_the_display_metadata_phase() -> anyhow::Result<()> {
+    use base64::Engine;
+    let f = fixture_with_events(json!([])).await?;
+    let storage = wiremock::MockServer::start().await;
+    wiremock::Mock::given(wiremock::matchers::method("PUT"))
+        .respond_with(
+            wiremock::ResponseTemplate::new(200).set_delay(std::time::Duration::from_secs(10)),
+        )
+        .mount(&storage)
+        .await;
+    let mut state = f.state.clone();
+    let mut config = state.config.s3.clone();
+    config.endpoint = storage.uri();
+    state.s3_client = backend::storage::create_s3_client(&config);
+    let app = create_router(state);
+    let name = format!("gate_{}", &uuid::Uuid::new_v4().simple().to_string()[..12]);
+    let body = json!({"name":name,"category":"","aliases":[],"content_type":"image/gif","data":base64::engine::general_purpose::STANDARD.encode(b"GIF89a\x01\x00\x01\x00\x80\x00\x00\x00\x00\x00\xff\xff\xff\x21\xf9\x04\x01\x00\x00\x00\x00\x2c\x00\x00\x00\x00\x01\x00\x01\x00\x00\x02\x02\x44\x01\x00\x3b")});
+    let uploading = tokio::spawn({
+        let app = app.clone();
+        let owner = f.owner.clone();
+        async move { request(&app, "POST", "/api/emojis/upload", &owner, body).await }
+    });
+    tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        while storage.received_requests().await.unwrap().is_empty() {
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await?;
+    tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        ok(
+            &app,
+            "POST",
+            "/api/messages",
+            &f.owner,
+            json!({"channel_id":f.channel,"content":"Not blocked by emoji storage"}),
+        ),
+    )
+    .await?;
+    let (status, _) = uploading.await?;
+    assert_eq!(status, StatusCode::OK);
+    Ok(())
+}

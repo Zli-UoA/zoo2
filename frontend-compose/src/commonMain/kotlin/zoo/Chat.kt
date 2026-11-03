@@ -588,7 +588,14 @@ internal fun Message(
     canOpenThread: Boolean = true,
 ) {
     val id = message.text("id")
-    val display = message.nested("display_data").takeIf { it.containsKey("author") }
+    val messageTable = app.repo.messages(channel.text("id"))
+    val reactionTable = app.repo.reactions(channel.text("id"))
+    val messageEdits by messageTable.optimisticChanges.collectAsState()
+    val reactionEdits by reactionTable.optimisticChanges.collectAsState()
+    val display = message.nested("display_data").takeIf { it.containsKey("author") }?.let {
+        optimisticDisplay(it, id, messageTable.replicatedRows.value, messageEdits,
+            reactionTable.replicatedRows.value, reactionEdits)
+    }
     val user =
         JsonObject(
             (display?.nested("author") ?: users.find { it.text("id") == message.text("user_id") }).orEmpty() +

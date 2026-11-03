@@ -848,3 +848,123 @@ for (const implementation of ["react", "compose"] as const) {
     await expect(page.getByText("入れ子の返信", { exact: true })).toBeVisible();
   });
 }
+
+for (const implementation of ["react", "compose"] as const) {
+  test(`${implementation}: joined display keeps pending reactions and reply counts visible until rollback`, async ({
+    page,
+    request,
+  }) => {
+    const native = implementation === "compose";
+    await request.post("https://127.0.0.1:4187/__reset");
+    await request.post("https://127.0.0.1:4187/__seed", {
+      data: {
+        messages: [
+          {
+            id: "optimistic-display-root",
+            content: "Joined optimistic display",
+            created_at: "2026-10-31 00:00:00.000",
+            display_data: {
+              author: {
+                id: "00000000-0000-0000-0000-000000000001",
+                user_name: "alice",
+                display_name: "Alice",
+              },
+              emojis: {},
+              attachments: [],
+              reply_count: 1,
+              reactions: [
+                {
+                  id: "peer-reaction",
+                  message_id: "optimistic-display-root",
+                  user_id: "00000000-0000-0000-0000-000000000002",
+                  emoji: "👍",
+                  created_at: "2026-10-30 09:00:00.000",
+                  user_name: "bob",
+                  display_name: "Bob",
+                },
+              ],
+            },
+          },
+        ],
+      },
+    });
+    await open(page, implementation, "/channels/c1", "Joined optimistic display");
+    const one = page.getByRole("button", { name: "👍 1 件", exact: true });
+    await expect(one).toBeVisible();
+    let releaseReaction!: () => void;
+    const reactionPending = new Promise<void>((resolve) => {
+      releaseReaction = resolve;
+    });
+    await page.route("**/api/messages/optimistic-display-root/reactions", async (route) => {
+      if (route.request().method() !== "POST") return route.continue();
+      await reactionPending;
+      await route.fulfill({
+        status: 500,
+        contentType: "application/json",
+        headers: { "access-control-allow-origin": "*" },
+        body: JSON.stringify({ error: "Rejected for rollback test" }),
+      });
+    });
+    try {
+      await clickControl(one, native ? "kotlin" : "react");
+      await expect(
+        page.getByRole("button", { name: "👍 2 件（自分もリアクション済み）", exact: true }),
+      ).toBeVisible();
+    } finally {
+      releaseReaction();
+    }
+    await expect(one).toBeVisible();
+    if (native) {
+      const error = page.getByText(
+        "サーバーに接続できませんでした。接続を確認してもう一度お試しください。",
+        { exact: true },
+      );
+      await expect(error).toBeVisible();
+      // Toasts intentionally pause on hover; keep the pointer away so the error
+      // can expire before clicking the reply composer underneath it.
+      await page.mouse.move(0, 0);
+      await expect(error).toBeHidden({ timeout: 10_000 });
+    }
+    const root = page.locator(
+      native
+        ? '[id="message:optimistic-display-root"]'
+        : '[data-message-id="optimistic-display-root"]',
+    );
+    await clickControl(
+      root.getByRole("button", { name: "1 件の返信（スレッドを開く）", exact: true }),
+      native ? "kotlin" : "react",
+    );
+    const reply = page.getByRole("textbox", { name: "返信を送信", exact: true });
+    await fillControl(page, reply, "Pending joined reply", native ? "kotlin" : "react");
+    let releaseReply!: () => void;
+    const replyPending = new Promise<void>((resolve) => {
+      releaseReply = resolve;
+    });
+    await page.route("**/api/messages", async (route) => {
+      if (route.request().method() !== "POST") return route.continue();
+      await replyPending;
+      await route.fulfill({
+        status: 500,
+        contentType: "application/json",
+        headers: { "access-control-allow-origin": "*" },
+        body: JSON.stringify({ error: "Rejected for rollback test" }),
+      });
+    });
+    try {
+      await clickControl(
+        page.getByRole("button", { name: "送信", exact: true }).last(),
+        native ? "kotlin" : "react",
+      );
+      await expect(
+        root.getByRole("button", { name: "2 件の返信（スレッドを開く）", exact: true }),
+      ).toBeVisible();
+    } finally {
+      releaseReply();
+    }
+    await expect(
+      root.getByRole("button", { name: "1 件の返信（スレッドを開く）", exact: true }),
+    ).toBeVisible();
+    if (native) await expect(reply).toHaveText("Pending joined reply");
+    else await expect(reply).toHaveValue("Pending joined reply");
+  });
+}

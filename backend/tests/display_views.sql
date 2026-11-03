@@ -8,7 +8,7 @@ INSERT INTO workspace_emojis(name,url,created_by,aliases,width,height)
  VALUES ('view-wide','/api/emoji-images/wide','view-a','["view-alias"]',120,20);
 INSERT INTO messages(id,user_id,channel_id,content) VALUES ('view-m','view-a','view-c',':view-alias: hello');
 INSERT INTO notifications(id,user_id,actor_id,channel_id,message_id,notification_type)
- VALUES ('view-n','view-b','view-a','view-c','view-m','reaction');
+ VALUES ('view-n','view-a','view-b','view-c','view-m','reaction');
 INSERT INTO message_reactions(id,message_id,user_id,emoji) VALUES ('view-r','view-m','view-b',':view-wide:');
 INSERT INTO messages(id,user_id,channel_id,content,parent_id) VALUES ('view-reply','view-b','view-c','reply','view-m');
 INSERT INTO attachments(id,message_id,uploader_id,channel_id,file_name,file_size,content_type,storage_key)
@@ -20,6 +20,15 @@ DO $$ BEGIN
  IF (SELECT display_data->'message'->'emojis'->'view-wide'->>'height' FROM notification_events WHERE id='view-n') IS DISTINCT FROM '20' THEN RAISE EXCEPTION 'notification emoji'; END IF;
  IF (SELECT display_data->'attachments'->0->>'id' FROM messages WHERE id='view-m') IS DISTINCT FROM 'view-file' THEN RAISE EXCEPTION 'attachment'; END IF;
  IF EXISTS(SELECT 1 FROM messages m JOIN message_display v ON v.id=m.id WHERE m.channel_id='view-c' AND m.display_data IS DISTINCT FROM v.display_data) THEN RAISE EXCEPTION 'projection drift'; END IF;
+END $$;
+-- A notification contains only its actor's badge, and unrelated reactions do
+-- not rewrite its cached row (or replicate it through Electric).
+CREATE TEMP TABLE notification_before AS SELECT ctid AS row_version FROM notification_events WHERE id='view-n';
+INSERT INTO message_reactions(id,message_id,user_id,emoji) VALUES ('view-other','view-m','view-a','👍');
+DO $$ BEGIN
+ IF (SELECT jsonb_array_length(display_data->'reactions') FROM notification_events WHERE id='view-n') <> 1 THEN RAISE EXCEPTION 'notification copied other actors'; END IF;
+ IF (SELECT display_data->'reactions'->0->>'user_id' FROM notification_events WHERE id='view-n') IS DISTINCT FROM 'view-b' THEN RAISE EXCEPTION 'notification badge actor'; END IF;
+ IF (SELECT ctid FROM notification_events WHERE id='view-n') IS DISTINCT FROM (SELECT row_version FROM notification_before) THEN RAISE EXCEPTION 'unrelated reaction rewrote notification'; END IF;
 END $$;
 UPDATE users SET display_name='Updated' WHERE id='view-b';
 UPDATE channels SET channel_name='Renamed' WHERE id='view-c';
