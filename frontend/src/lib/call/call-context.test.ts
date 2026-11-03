@@ -119,4 +119,30 @@ describe("CallContext", () => {
 
     expect(document.querySelector("aside")).toBeNull();
   });
+
+  it("toggleMute does not change state or throw when idle without active media", async () => {
+    let capturedState: ReturnType<typeof useCall> | null = null;
+    function Consumer() {
+      capturedState = useCall();
+      return createElement("div", { id: "rendered-toggle" });
+    }
+
+    act(() => {
+      root.render(
+        createElement(
+          LocaleProvider,
+          null,
+          createElement(CallProvider, { config: testConfig }, createElement(Consumer)),
+        ),
+      );
+    });
+
+    expect(capturedState).not.toBeNull();
+    const state = capturedState!;
+    expect(state.isMuted).toBe(false);
+    await act(async () => {
+      await state.toggleMute();
+    });
+    expect(state.isMuted).toBe(false);
+  });
 });

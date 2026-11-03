@@ -328,6 +328,31 @@ export function CallProvider({ config: explicitConfig, children }: CallProviderP
     };
   }, [config.apiBaseUrl]);
 
+  const syncMuteStateToServer = useCallback(
+    (channelId: string, sessionId: string) => {
+      // 要求を直列化キューで順次送信し、並列 POST による追い越し・逆転を排除 ([P2])
+      const currentPromise = muteSerialQueueRef.current
+        .then(async () => {
+          const currentChannel = currentChannelIdRef.current;
+          const currentSession = sessionIdRef.current;
+          if (!currentChannel || !currentSession) return;
+          if (currentChannel !== channelId || currentSession !== sessionId) return;
+          const targetMuted = isMutedRef.current;
+          await apiClient.request(`/api/channels/${currentChannel}/call/state`, {
+            method: "POST",
+            body: { session_id: currentSession, is_muted: targetMuted },
+          });
+        })
+        .catch((err) => {
+          console.error("Failed to sync mute state to server", err);
+        });
+
+      muteSerialQueueRef.current = currentPromise;
+      return currentPromise;
+    },
+    [apiClient],
+  );
+
   const toggleMute = useCallback(async () => {
     const channelId = currentChannelIdRef.current;
     const sessionId = sessionIdRef.current;
@@ -346,24 +371,8 @@ export function CallProvider({ config: explicitConfig, children }: CallProviderP
     );
 
     // 要求を直列化キューで順次送信し、並列 POST による追い越し・逆転を排除 ([P2])
-    const currentPromise = muteSerialQueueRef.current
-      .then(async () => {
-        const currentChannel = currentChannelIdRef.current;
-        const currentSession = sessionIdRef.current;
-        if (!currentChannel || !currentSession) return;
-        const targetMuted = isMutedRef.current;
-        await apiClient.request(`/api/channels/${currentChannel}/call/state`, {
-          method: "POST",
-          body: { session_id: currentSession, is_muted: targetMuted },
-        });
-      })
-      .catch((err) => {
-        console.error("Failed to sync mute state to server", err);
-      });
-
-    muteSerialQueueRef.current = currentPromise;
-    await currentPromise;
-  }, [apiClient]);
+    await syncMuteStateToServer(channelId, sessionId);
+  }, [syncMuteStateToServer]);
 
   const updateSpeakingUser = useCallback((userId: string, isSpeaking: boolean) => {
     setSpeakingUserIds((prev) => {
@@ -866,17 +875,11 @@ export function CallProvider({ config: explicitConfig, children }: CallProviderP
                 return Array.from(map.values());
               });
 
-              // 接続完了前に設定されたミュート状態をバックエンドに即時反映 ([P2], [P3])
+              // 接続完了前に設定されたミュート状態をバックエンドに即時反映 ([P2])
+              // toggleMute と同一の直列化キュー（muteSerialQueueRef）を通して送信し、
+              // 接続直後のミュート解除との並行送信による逆転・上書きを防止
               if (isMutedRef.current) {
-                setParticipants((prev) =>
-                  prev.map((p) => (p.session_id === mySessionId ? { ...p, is_muted: true } : p)),
-                );
-                void apiClient
-                  .request(`/api/channels/${channelId}/call/state`, {
-                    method: "POST",
-                    body: { session_id: mySessionId, is_muted: true },
-                  })
-                  .catch(() => {});
+                void syncMuteStateToServer(channelId, mySessionId);
               }
 
               // 同時参加時の Offer 衝突 (Glare) 回避 & 冪等性ガード ([P2]):
@@ -992,6 +995,7 @@ export function CallProvider({ config: explicitConfig, children }: CallProviderP
       leaveCall,
       pollActiveCalls,
       sendSignalWithRetry,
+      syncMuteStateToServer,
       t,
       updateSpeakingUser,
     ],
