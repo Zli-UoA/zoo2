@@ -319,7 +319,8 @@ jobs:
 
 
   shared-emoji-projection:
-    runs-on: ubuntu-latest
+    needs: runner
+    runs-on: ${{ (github.event.pull_request.head.repo.fork || github.event_name == 'merge_group') && 'ubuntu-latest' || fromJSON(needs.runner.outputs.docker-runs-on || '"ubuntu-latest"') }}
     timeout-minutes: 45
     services:
       postgres:
