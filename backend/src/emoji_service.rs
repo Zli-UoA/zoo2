@@ -5,7 +5,7 @@ use std::{
     sync::LazyLock,
     time::{Duration, Instant},
 };
-use tokio::sync::{Mutex, RwLock};
+use tokio::sync::Mutex;
 #[derive(Default)]
 struct Cache {
     origin: String,
@@ -14,8 +14,6 @@ struct Cache {
     checked: Option<Instant>,
 }
 static CACHE: LazyLock<Mutex<Cache>> = LazyLock::new(|| Mutex::new(Cache::default()));
-type SharedSnapshot = Option<(String, Vec<Value>)>;
-static SNAPSHOT: LazyLock<RwLock<SharedSnapshot>> = LazyLock::new(|| RwLock::new(None));
 pub fn service_url() -> Result<Option<reqwest::Url>, AppError> {
     let Some(value) = std::env::var("EMOJI_SERVICE_URL")
         .ok()
@@ -62,20 +60,10 @@ fn decode(value: &Value, origin: &reqwest::Url) -> Result<Vec<Value>, AppError> 
         let image = e["image_url"].as_str().ok_or_else(invalid)?;
         if !image_pattern.is_match(image) || !e["category"].is_string() { return Err(invalid()); }
         let url = origin.join(image).map_err(|_| invalid())?;
-        Ok(json!({"name":name,"aliases":aliases,"category":e["category"],"url":url.as_str(),"updated_at":e["updated_at"],"created_by":""}))
+        let image_id = openssl::sha::sha256(url.as_str().as_bytes()).iter().map(|b|format!("{b:02x}")).collect::<String>();
+        let dimension = |key: &str| e[key].as_u64().filter(|v|(1..=4096).contains(v));
+        Ok(json!({"name":name,"aliases":aliases,"category":e["category"],"url":url.as_str(),"updated_at":e["updated_at"],"created_by":"","image_id":image_id,"width":dimension("width"),"height":dimension("height")}))
     }).collect()
-}
-pub async fn catalog() -> Result<Option<Vec<Value>>, AppError> {
-    let Some(origin) = service_url()? else {
-        return Ok(None);
-    };
-    // Once loaded, reads never wait for the background worker's network request.
-    if let Some((source, rows)) = &*SNAPSHOT.read().await
-        && source == origin.as_str()
-    {
-        return Ok(Some(rows.clone()));
-    }
-    refresh_shared().await
 }
 async fn refresh_shared() -> Result<Option<Vec<Value>>, AppError> {
     let Some(origin) = service_url()? else {
@@ -88,9 +76,6 @@ async fn refresh_shared() -> Result<Option<Vec<Value>>, AppError> {
         std::env::var("EMOJI_CACHE_FILE").ok(),
     )
     .await?;
-    if let Some(rows) = &rows {
-        *SNAPSHOT.write().await = Some((origin.to_string(), rows.clone()));
-    }
     Ok(rows)
 }
 async fn refresh(
@@ -198,63 +183,96 @@ async fn refresh(
     }
     Ok(cache.rows.clone())
 }
+/// Keep SQL display joins and API reads on the same atomically committed projection.
+pub async fn project_catalog(
+    state: &AppState,
+    source: Option<&reqwest::Url>,
+    rows: &[Value],
+) -> Result<(), AppError> {
+    let mut db = state.db.clone();
+    let mut tx = db.transaction().await?;
+    crate::apps::query(&mut tx,"SELECT '{}'::text FROM (SELECT pg_advisory_xact_lock(hashtextextended('shared-emoji-projection',0))) locked",&[]).await?;
+    let old = crate::apps::query(
+        &mut tx,
+        "SELECT row_to_json(e)::text FROM display_workspace_emojis e ORDER BY name",
+        &[],
+    )
+    .await?;
+    if source.is_some() {
+        let raw = json!(rows).to_string();
+        toasty::sql::statement("INSERT INTO shared_emojis(name,url,category,aliases,width,height,image_id) SELECT name,url,category,aliases,width,height,image_id FROM jsonb_to_recordset($1::jsonb) AS e(name text,url text,category text,aliases jsonb,width integer,height integer,image_id text) ON CONFLICT(name) DO UPDATE SET url=EXCLUDED.url,category=EXCLUDED.category,aliases=EXCLUDED.aliases,width=EXCLUDED.width,height=EXCLUDED.height,image_id=EXCLUDED.image_id,updated_at=now() WHERE (shared_emojis.url,shared_emojis.category,shared_emojis.aliases,shared_emojis.width,shared_emojis.height,shared_emojis.image_id) IS DISTINCT FROM (EXCLUDED.url,EXCLUDED.category,EXCLUDED.aliases,EXCLUDED.width,EXCLUDED.height,EXCLUDED.image_id)").bind(raw.clone()).exec(&mut tx).await?;
+        toasty::sql::statement("DELETE FROM shared_emojis e WHERE NOT EXISTS(SELECT 1 FROM jsonb_array_elements($1::jsonb) n WHERE n->>'name'=e.name)").bind(raw).exec(&mut tx).await?;
+    }
+    toasty::sql::statement("INSERT INTO shared_emoji_source(id,url) VALUES('workspace',NULLIF($1,'')) ON CONFLICT(id) DO UPDATE SET url=EXCLUDED.url WHERE shared_emoji_source.url IS DISTINCT FROM EXCLUDED.url")
+        .bind(source.map(|u|u.as_str()).unwrap_or("")).exec(&mut tx).await?;
+    let current = crate::apps::query(
+        &mut tx,
+        "SELECT row_to_json(e)::text FROM display_workspace_emojis e ORDER BY name",
+        &[],
+    )
+    .await?;
+    for row in &current {
+        let prior = old.iter().find(|v| v["name"] == row["name"]);
+        if prior.is_none_or(|previous| {
+            [
+                "name", "url", "category", "aliases", "width", "height", "image_id",
+            ]
+            .iter()
+            .any(|key| previous[*key] != row[*key])
+        }) {
+            let mut data = row.clone();
+            data["subtype"] = json!(if prior.is_some() { "change" } else { "add" });
+            crate::apps::events::emit(&mut tx, "emoji.changed", data, None, None, None, None)
+                .await?;
+        }
+    }
+    for row in old
+        .iter()
+        .filter(|r| !current.iter().any(|v| v["name"] == r["name"]))
+    {
+        let mut data = row.clone();
+        data["subtype"] = json!("remove");
+        crate::apps::events::emit(&mut tx, "emoji.changed", data, None, None, None, None).await?;
+    }
+    tx.commit().await?;
+    Ok(())
+}
+pub async fn initialize(state: &AppState) -> Result<(), AppError> {
+    let Some(origin) = service_url()? else {
+        return project_catalog(state, None, &[]).await;
+    };
+    match refresh_shared().await {
+        Ok(Some(rows)) => project_catalog(state, Some(&origin), &rows).await,
+        _ => {
+            // Preserve a previous projection only when it belongs to the configured service.
+            let mut db = state.db.clone();
+            let mut tx = db.transaction().await?;
+            let existing = crate::apps::query(
+                &mut tx,
+                "SELECT row_to_json(s)::text FROM shared_emoji_source s WHERE id='workspace'",
+                &[],
+            )
+            .await?;
+            drop(tx);
+            if existing.first().is_none_or(|r| r["url"] != origin.as_str()) {
+                project_catalog(state, None, &[]).await?;
+            }
+            tracing::warn!(
+                "Shared emoji initial fetch failed; using the persisted read projection or legacy registry"
+            );
+            Ok(())
+        }
+    }
+}
 pub async fn worker(state: AppState) {
     if !matches!(service_url(), Ok(Some(_))) {
         return;
     }
-    let mut previous: Option<Vec<Value>> = None;
     loop {
-        if let Ok(Some(rows)) = refresh_shared().await {
-            if let Some(old) = &previous {
-                let result = async {
-                    let mut db = state.db.clone();
-                    let mut tx = db.transaction().await?;
-                    for row in &rows {
-                        let prior = old.iter().find(|v| v["name"] == row["name"]);
-                        if prior != Some(row) {
-                            let mut data = row.clone();
-                            data["subtype"] = json!(if prior.is_some() { "change" } else { "add" });
-                            crate::apps::events::emit(
-                                &mut tx,
-                                "emoji.changed",
-                                data,
-                                None,
-                                None,
-                                None,
-                                None,
-                            )
-                            .await?;
-                        }
-                    }
-                    for row in old
-                        .iter()
-                        .filter(|r| !rows.iter().any(|v| v["name"] == r["name"]))
-                    {
-                        let mut data = row.clone();
-                        data["subtype"] = json!("remove");
-                        crate::apps::events::emit(
-                            &mut tx,
-                            "emoji.changed",
-                            data,
-                            None,
-                            None,
-                            None,
-                            None,
-                        )
-                        .await?;
-                    }
-                    tx.commit().await?;
-                    Ok::<_, AppError>(())
-                }
-                .await;
-                if result.is_ok() {
-                    previous = Some(rows);
-                } else {
-                    tracing::warn!("Shared emoji change events failed");
-                }
-            } else {
-                previous = Some(rows);
-            }
+        if let (Ok(Some(origin)), Ok(Some(rows))) = (service_url(), refresh_shared().await)
+            && project_catalog(&state, Some(&origin), &rows).await.is_err()
+        {
+            tracing::warn!("Shared emoji projection update failed");
         }
         tokio::time::sleep(Duration::from_secs(60)).await;
     }

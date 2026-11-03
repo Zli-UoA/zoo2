@@ -28,6 +28,6 @@ Compose Multiplatform を使う [Android 版](docs/android.md) のビルド・�
 
 バックエンドの `EMOJI_SERVICE_URL` にZli-UoA/emojiの公開オリジン（末尾スラッシュなし）を設定すると、既存の絵文字API・リアクション・ActivityPubが公開カタログを参照する。React・Composeの設定画面はサービスへのリンクに切り替わり、旧管理APIへの書き込みを拒否する。未設定時は既存機能を維持する。
 
-60秒ごとにETagで再検証し、差分を `emoji.changed` へ反映する。取得失敗時は最終成功一覧を保持する。初回取得前の障害時は移行前のDB一覧を使用する。`EMOJI_CACHE_FILE` を永続ボリューム上に設定すると再起動後も最終成功一覧を利用できる。
+60秒ごとにETagで再検証し、専用の `shared_emojis` 読み取り複製へ反映する。投稿・通知の表示用JOINと絵文字APIは同じ `display_workspace_emojis` ビューを使い、変更を表示再確認キューと `emoji.changed` へ反映する。管理・作成者の正本はサービスだけが持ち、旧登録データは変更しない。取得失敗・再起動後もDB内の最終成功複製を使用し、成功履歴がない場合は旧登録データへフォールバックする。`EMOJI_CACHE_FILE` はHTTPカタログの任意の追加キャッシュとして使える。マイグレーションをバックエンドより先に適用する。
 
 移行時は管理操作を停止し、`scripts/export-custom-emojis.sql` で登録情報とAuthZの対応をJSON出力する。S3の `custom-emojis/` 配下を過去の未参照UUIDも含めてファイルとして取得し、`node scripts/export-emoji-manifest.mjs export/rows.json export/images export/manifest.json` でチェックサム付きmanifestを生成する。外部URLと複数のAuthZ対応は自動移行せず明示的に整理する。emojiリポジトリのimportツールで検証・インポートした後に参照先を切り替える。既存画像パスはサービスへリダイレクトするため、画像UUIDの対応も移行する。DBテーブルは後方互換のため保持し、切り替え後に別途撤去する。

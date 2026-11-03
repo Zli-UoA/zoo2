@@ -184,16 +184,13 @@ pub(super) async fn received_options(
 pub(crate) async fn workspace_options(
     tx: &mut toasty::Transaction<'_>,
 ) -> Result<Vec<Value>, AppError> {
-    let rows = if let Ok(Some(rows)) = crate::emoji_service::catalog().await {
-        rows
-    } else {
-        query(
-            tx,
-            "SELECT row_to_json(e)::text FROM workspace_emojis e ORDER BY name",
-            &[],
-        )
-        .await?
-    };
+    let rows = query(
+        tx,
+        "SELECT row_to_json(e)::text FROM display_workspace_emojis e ORDER BY name",
+        &[],
+    )
+    .await?;
+
     rows.into_iter().map(|e| {
         let url = string(&e, "url")?;
         let url = if url.starts_with('/') { format!("{}{url}", base_url().unwrap_or_default()) } else { url.to_owned() };
