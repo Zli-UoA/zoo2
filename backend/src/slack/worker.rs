@@ -1161,11 +1161,14 @@ async fn fetch_files(s: &AppState, job: &Job, lease: &Lease) -> Result<(), AppEr
                     }
                     Err(e) => ("pending", String::new(), e.to_string()),
                 };
-                exec(
+                // 取得中に再取り込みが行を別のジョブへ移していたら (試行回数も戻っている)、古い結果は書かない。
+                // 添付は決定的 ID で作るので、ここで書かなくても新しいジョブの取得と重複しない。
+                let updated = query(
                     &mut tx,
                     "UPDATE slack_files SET status=$3,attachment_id=NULLIF($4,''),error=NULLIF($5,''),\
                      attempts=attempts+CASE WHEN $3 IN ('pending','failed') THEN 1 ELSE 0 END,updated_at=now() \
-                     WHERE team_id=$1 AND slack_file_id=$2 AND message_id=$6",
+                     WHERE team_id=$1 AND slack_file_id=$2 AND message_id=$6 AND job_id=$7 AND status='pending' \
+                     RETURNING json_build_object('ok',true)::text",
                     &[
                         &file.team_id,
                         &file.slack_file_id,
@@ -1173,9 +1176,14 @@ async fn fetch_files(s: &AppState, job: &Job, lease: &Lease) -> Result<(), AppEr
                         &attachment,
                         &error,
                         &file.message_id,
+                        &job.id,
                     ],
                 )
                 .await?;
+                if updated.is_empty() {
+                    tx.commit().await?;
+                    continue;
+                }
                 exec(
                     &mut tx,
                     // 全件を数え直さず、処理済みになった分だけ進める
