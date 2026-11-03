@@ -8,8 +8,8 @@ use serde::Deserialize;
 const DEFAULT_API_BASE_URL: &str = "https://zli.chat";
 const DEFAULT_OIDC_ISSUER: &str = "https://account.zli.works/api/auth";
 const DEFAULT_OIDC_CLIENT_ID: &str = "ldwuljsObQHzxCdMwnTsYLTrCwgHaRii";
-/// backend の `OIDC_AUDIENCE`。これを要求すると `typ: at+jwt` のアクセストークンが得られる。
-const DEFAULT_OIDC_RESOURCE: &str = "https://zli.chat";
+/// AuthZ に登録した API の URL で、backend の `OIDC_AUDIENCE` と完全に一致させる。これを要求すると `typ: at+jwt` のアクセストークンが得られる。
+const DEFAULT_OIDC_RESOURCE: &str = "https://zli.chat/api";
 /// backend の初回ログインで UserInfo を呼ぶため `profile` を、トークン更新のため `offline_access` を要求する。
 const DEFAULT_SCOPE: &str = "openid profile offline_access";
 
@@ -154,7 +154,7 @@ mod tests {
             AuthConfig::Oidc(OidcConfig {
                 issuer: "https://account.zli.works/api/auth".into(),
                 client_id: DEFAULT_OIDC_CLIENT_ID.into(),
-                resource: Some("https://zli.chat".into()),
+                resource: Some("https://zli.chat/api".into()),
                 scope: DEFAULT_SCOPE.into(),
             })
         );

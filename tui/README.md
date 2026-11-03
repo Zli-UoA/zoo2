@@ -229,7 +229,7 @@ zoo2-tui
 | `dev_user` | `ZOO_DEV_USER` | なし | dev モードのユーザー。指定したときだけ dev モードで接続し、ログインは使わない |
 | `oidc_issuer` | `ZOO_OIDC_ISSUER` | `https://account.zli.works/api/auth` | AuthZ の issuer |
 | `oidc_client_id` | `ZOO_OIDC_CLIENT_ID` | 本番の TUI 用クライアントの ID | AuthZ に登録した TUI 用の public client の ID |
-| `oidc_resource` | `ZOO_OIDC_RESOURCE` | `https://zli.chat` | 要求する resource (RFC 8707)。backend の `OIDC_AUDIENCE` と同じ値にする |
+| `oidc_resource` | `ZOO_OIDC_RESOURCE` | `https://zli.chat/api` | 要求する resource (RFC 8707)。backend の `OIDC_AUDIENCE` と同じ値にする |
 | `oidc_scope` | `ZOO_OIDC_SCOPE` | `openid profile offline_access` | 要求するスコープ |
 | `check_updates` | `ZOO_CHECK_UPDATES` | `true` | 起動時に新しい版を調べる。`false` で調べない |
 
