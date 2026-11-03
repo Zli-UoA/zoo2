@@ -1,4 +1,4 @@
-# コードレビュー
+## Code Review Rules
 
 - このリポジトリでコード変更・差分・コミット・PRのレビューを依頼された場合は、スキル名の明示がなくても `.agents/skills/japanese-code-review/SKILL.md` を読み、その手順と指摘基準に従う。
 - 「レビューして」「この差分を見て」「PRを確認して」や、`review`・`code review` などの依頼を対象とする。
