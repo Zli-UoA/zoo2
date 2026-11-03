@@ -22,6 +22,11 @@
 - React版・Compose Web版の機能、UI、API、状態管理を変更する場合、およびmainを取り込む場合は `.agents/skills/compose-react-parity/SKILL.md` に従う。
 - Reactの変更はCompose Webへの反映と両実装の検証を同じPRに含めて完了する。実験版であることを追従の省略理由にしない。
 
+# TUI版の追従
+
+- フロントエンド・バックエンドの機能、UI、API、Electricのshape、認証を変更する場合、およびmainを取り込む場合は、TUI版（`tui/`）も修正する。
+- TUI版の修正と検証（`make tui-check`）は同じPRに含めて完了する。TUI版に反映しない場合は、その理由をPRの本文に書く。
+
 # 開発環境 (flake.nix)
 
 - ビルド・テスト・生成に新しいソフトウェア（言語のランタイム、コンパイラ、CLI、ブラウザーなど）を使う場合は、`flake.nix` の開発シェルにも追加し、`nix develop` の中で実行できることを確認する。
