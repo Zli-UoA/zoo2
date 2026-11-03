@@ -708,9 +708,13 @@ test("Frontend switch entry points work without an experimental build flag", asy
   expect(await page.evaluate(() => localStorage.getItem("zoo-frontend"))).toBe("compose");
   await page.goto("/channels/c1");
   await expect(page.locator("[data-compose-shell]")).toBeVisible({ timeout: 90_000 });
-  const back = page.getByRole("button", { name: "React版に戻る", exact: true });
-  await expect(back).toBeVisible();
-  await back.click({ force: true });
+  // The loading screen has the same label and disappears when Compose mounts.
+  // Wait for the native switch so this exercises the loaded shell's return path.
+  const back = page
+    .getByRole("navigation", { name: "メインナビゲーション", exact: true })
+    .getByRole("button", { name: "React版に戻る", exact: true });
+  await expect(back).toBeVisible({ timeout: 90_000 });
+  await clickControl(back, "kotlin");
   await expect(page.getByRole("textbox", { name: "メッセージを送信", exact: true })).toBeVisible({
     timeout: 90_000,
   });

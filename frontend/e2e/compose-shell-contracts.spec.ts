@@ -151,7 +151,10 @@ for (const implementation of ["react", "kotlin"] as const) {
       .click({ force: implementation === "kotlin" });
     await value(search, "", implementation);
     await fill(page, search, "zzzz", implementation);
-    await page.keyboard.press("Escape");
+    // Removing the clear button can restore dialog focus after fill completes.
+    // Dispatch Escape to the search field rather than whichever node has focus.
+    if (implementation === "react") await search.press("Escape");
+    else await page.keyboard.press("Escape");
     await value(search, "", implementation);
     expect(await closeCalls(page, id)).toEqual([]);
     await expect(dialog).toBeVisible();
