@@ -13,3 +13,5 @@ pub mod routes;
 pub mod state;
 pub mod storage;
 pub mod validation;
+
+pub mod emoji_service;
