@@ -1,5 +1,7 @@
 import type { MessageRow, MessageReactionRow, MessageDisplayData } from "./types";
 
+import type { WorkspaceEmoji } from "../emoji/workspace";
+
 type Rows<T extends { id: string }> = Pick<ReadonlyMap<string | number, T>, "get" | "keys">;
 export interface DisplayChanges {
   replies: Map<string, number>;
@@ -47,18 +49,27 @@ export function optimisticDisplay(
   display: MessageDisplayData,
   messageId: string,
   changes: DisplayChanges,
+  workspaceEmojis: WorkspaceEmoji[] = [],
 ): MessageDisplayData {
   const replyDelta = changes.replies.get(messageId) ?? 0;
   const updates = changes.reactions.get(messageId);
   if (!replyDelta && !updates?.size) return display;
   const reactions = new Map(display.reactions.map((row) => [row.id, row]));
+  let emojis = display.emojis;
   for (const [id, row] of updates ?? []) {
-    if (row) reactions.set(id, row);
-    else reactions.delete(id);
+    if (row) {
+      reactions.set(id, row);
+      const name = /^:([^:]+):$/.exec(row.emoji)?.[1];
+      const emoji =
+        name &&
+        workspaceEmojis.find((value) => value.name === name || value.aliases?.includes(name));
+      if (name && emoji && !emojis[name]) emojis = { ...emojis, [name]: emoji };
+    } else reactions.delete(id);
   }
   return {
     ...display,
     reactions: [...reactions.values()],
+    emojis,
     reply_count: Math.max(0, display.reply_count + replyDelta),
   };
 }

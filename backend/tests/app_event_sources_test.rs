@@ -2571,7 +2571,7 @@ async fn upload_shortcode_remains_readable_and_removable() -> anyhow::Result<()>
 }
 
 #[tokio::test]
-async fn delayed_emoji_storage_does_not_hold_the_display_metadata_phase() -> anyhow::Result<()> {
+async fn delayed_emoji_storage_does_not_block_message_writes() -> anyhow::Result<()> {
     use base64::Engine;
     let f = fixture_with_events(json!([])).await?;
     let storage = wiremock::MockServer::start().await;
@@ -2612,5 +2612,67 @@ async fn delayed_emoji_storage_does_not_hold_the_display_metadata_phase() -> any
     .await?;
     let (status, _) = uploading.await?;
     assert_eq!(status, StatusCode::OK);
+    Ok(())
+}
+
+#[tokio::test]
+async fn emoji_backfill_commits_successes_before_the_startup_deadline() -> anyhow::Result<()> {
+    use base64::Engine;
+    let f = fixture_with_events(json!([])).await?;
+    let storage = wiremock::MockServer::start().await;
+    let fast = Uuid::new_v4().to_string();
+    let slow: Vec<String> = (0..17).map(|_| Uuid::new_v4().to_string()).collect();
+    let bytes=base64::engine::general_purpose::STANDARD.decode("iVBORw0KGgoAAAANSUhEUgAAAAMAAAABCAYAAAAb4BS0AAAADklEQVR4nGP438DwH4YBMWYHe7X3S+QAAAAASUVORK5CYII=")?;
+    wiremock::Mock::given(wiremock::matchers::method("GET"))
+        .and(wiremock::matchers::path_regex(format!(
+            "/custom-emojis/{fast}$"
+        )))
+        .respond_with(wiremock::ResponseTemplate::new(200).set_body_bytes(bytes))
+        .mount(&storage)
+        .await;
+    wiremock::Mock::given(wiremock::matchers::method("GET"))
+        .and(wiremock::matchers::path_regex(format!(
+            "/custom-emojis/({})$",
+            slow.join("|")
+        )))
+        .respond_with(
+            wiremock::ResponseTemplate::new(200)
+                .set_body_bytes(vec![0])
+                .set_delay(std::time::Duration::from_secs(11)),
+        )
+        .mount(&storage)
+        .await;
+    let mut state = f.state.clone();
+    let mut config = state.config.s3.clone();
+    config.endpoint = storage.uri();
+    state.s3_client = backend::storage::create_s3_client(&config);
+    let mut db = state.db.clone();
+    for id in std::iter::once(&fast).chain(slow.iter()) {
+        toasty::sql::statement(
+            "INSERT INTO workspace_emojis(name,url,created_by) VALUES($1,$2,$3)",
+        )
+        .bind(format!("budget_{id}"))
+        .bind(format!("/api/emoji-images/{id}"))
+        .bind(f.owner.as_str())
+        .exec(&mut db)
+        .await?;
+    }
+    // Seventeen slow reads need three waves at concurrency eight. The former
+    // collect-all implementation cannot commit the fast result within 25s.
+    tokio::time::timeout(
+        std::time::Duration::from_secs(25),
+        backend::storage::image_dimensions::backfill_emojis(&state),
+    )
+    .await??;
+    let mut tx = db.transaction().await?;
+    let restored=apps::one(&mut tx,"SELECT json_build_object('width',width,'height',height)::text FROM workspace_emojis WHERE name=$1",&[&format!("budget_{fast}")]).await?;
+    assert_eq!(restored, json!({"width":3,"height":1}));
+    toasty::sql::statement(
+        "DELETE FROM workspace_emojis WHERE created_by=$1 AND name LIKE 'budget_%'",
+    )
+    .bind(f.owner)
+    .exec(&mut tx)
+    .await?;
+    tx.commit().await?;
     Ok(())
 }

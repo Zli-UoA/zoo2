@@ -1,8 +1,13 @@
 use backend::config::Config;
 use tokio_postgres::NoTls;
 
+// These fixtures exercise the shared durable queue. Their internal connections
+// run concurrently, but fixtures must not drain or lock each other's jobs.
+static DISPLAY_TESTS: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
 #[tokio::test]
 async fn simultaneous_reactions_do_not_deadlock_on_foreign_key_locks() -> anyhow::Result<()> {
+    let _guard = DISPLAY_TESTS.lock().await;
     let config = Config::from_env();
     let (a, ac) = tokio_postgres::connect(&config.database_url, NoTls).await?;
     let (b, bc) = tokio_postgres::connect(&config.database_url, NoTls).await?;
@@ -72,6 +77,7 @@ async fn simultaneous_reactions_do_not_deadlock_on_foreign_key_locks() -> anyhow
 
 #[tokio::test]
 async fn display_views_follow_legacy_writes_and_related_updates_atomically() -> anyhow::Result<()> {
+    let _guard = DISPLAY_TESTS.lock().await;
     let config = Config::from_env();
     let (client, connection) = tokio_postgres::connect(&config.database_url, NoTls).await?;
     let task = tokio::spawn(connection);
@@ -85,126 +91,207 @@ async fn display_views_follow_legacy_writes_and_related_updates_atomically() -> 
 }
 
 #[tokio::test]
-async fn metadata_refresh_and_reply_edits_take_the_gate_before_row_locks() -> anyhow::Result<()> {
+async fn legacy_profile_locks_and_metadata_fanout_do_not_block_other_writers() -> anyhow::Result<()>
+{
     let config = Config::from_env();
     let (a, ac) = tokio_postgres::connect(&config.database_url, NoTls).await?;
     let (b, bc) = tokio_postgres::connect(&config.database_url, NoTls).await?;
-    let (observer, oc) = tokio_postgres::connect(&config.database_url, NoTls).await?;
     tokio::spawn(ac);
     tokio::spawn(bc);
+    let (observer, oc) = tokio_postgres::connect(&config.database_url, NoTls).await?;
     tokio::spawn(oc);
-    let prefix = format!("gate-{}", uuid::Uuid::new_v4().simple());
-    let parent = format!("{prefix}-a-parent");
-    let child = format!("{prefix}-z-child");
+    let pid: i32 = b.query_one("SELECT pg_backend_pid()", &[]).await?.get(0);
+    b.batch_execute("SET statement_timeout='2s'").await?;
+    let id = format!("queue-{}", uuid::Uuid::new_v4().simple());
     a.execute(
         "INSERT INTO users(id,user_name,display_name,is_bot) VALUES($1::text,$1::text,'Before',false)",
-        &[&prefix],
+        &[&id],
     )
     .await?;
     a.execute(
         "INSERT INTO channels(id,channel_name,created_user_id,is_private) VALUES($1::text,$1::text,$1::text,false)",
-        &[&prefix],
+        &[&id],
     )
     .await?;
     a.execute(
-        "INSERT INTO messages(id,user_id,channel_id,content) VALUES($1::text,$2::text,$2::text,':gate:')",
-        &[&parent, &prefix],
+        "INSERT INTO workspace_emojis(name,url,created_by) VALUES($1::text,'/wide.png',$1::text)",
+        &[&id],
     )
     .await?;
-    a.execute("INSERT INTO messages(id,user_id,channel_id,content,parent_id) VALUES($1::text,$2::text,$2::text,':gate:',$3::text)", &[&child,&prefix,&parent]).await?;
-    a.execute(
-        "INSERT INTO workspace_emojis(name,url,created_by) VALUES($1::text,'/gate.png',$1::text)",
-        &[&prefix],
-    )
-    .await?;
-    // Give both rows an actual emoji dependency, regardless of UUID in the name.
-    a.execute(
-        "UPDATE messages SET content=':'||$1::text||':' WHERE channel_id=$1::text",
-        &[&prefix],
-    )
-    .await?;
-    let pid: i32 = b.query_one("SELECT pg_backend_pid()", &[]).await?.get(0);
-    for metadata_first in [false, true] {
-        for profile in [false, true] {
-            let metadata = if profile {
-                format!("UPDATE users SET display_name=display_name||'x' WHERE id='{prefix}'")
-            } else {
-                format!(
-                    "UPDATE workspace_emojis SET width=COALESCE(width,0)+1 WHERE name='{prefix}'"
-                )
-            };
-            let edit = format!("UPDATE messages SET content=content||' edit' WHERE id='{child}'");
-            let (first, second) = if metadata_first {
-                (&metadata, &edit)
-            } else {
-                (&edit, &metadata)
-            };
-            a.batch_execute("BEGIN; SET LOCAL statement_timeout='5s'")
-                .await?;
-            b.batch_execute("BEGIN; SET LOCAL statement_timeout='5s'")
-                .await?;
-            a.batch_execute(first).await?;
-            let write = b.batch_execute(second);
-            let release = async {
-                tokio::time::timeout(std::time::Duration::from_secs(3), async {
-                    loop {
-                        let waiting: bool = observer.query_one("SELECT EXISTS(SELECT 1 FROM pg_locks WHERE pid=$1 AND locktype='advisory' AND NOT granted)", &[&pid]).await?.get(0);
-                        if waiting { break Ok::<_,tokio_postgres::Error>(()); }
-                        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-                    }
-                }).await??;
-                a.batch_execute("COMMIT").await?;
-                Ok::<_, anyhow::Error>(())
-            };
-            let (written, released) = tokio::join!(write, release);
-            released?;
-            written?;
-            b.batch_execute("COMMIT").await?;
-            let drift: i64 = observer.query_one("SELECT count(*) FROM messages m JOIN message_display v USING(id) WHERE m.channel_id=$1 AND m.display_data IS DISTINCT FROM v.display_data", &[&prefix]).await?.get(0);
-            assert_eq!(
-                drift, 0,
-                "metadata_first={metadata_first}, profile={profile}"
-            );
-        }
-    }
-    a.execute("DELETE FROM messages WHERE channel_id=$1", &[&prefix])
+    // Seed without expensive per-row display projections: exactly the fan-out
+    // that made the former metadata phase stop all message writes.
+    a.batch_execute("BEGIN; SET LOCAL session_replication_role=replica")
         .await?;
-    a.execute("DELETE FROM workspace_emojis WHERE name=$1", &[&prefix])
+    a.execute("INSERT INTO messages(id,user_id,channel_id,content) SELECT $1||i,$1,$1,':'||$1||':' FROM generate_series(1,20000) i", &[&id]).await?;
+    a.batch_execute("COMMIT").await?;
+    a.batch_execute("BEGIN; SET LOCAL statement_timeout='2s'")
         .await?;
+    // Same order as the backend deployed before this PR: take the user row
+    // first. There is no application gate or new function call in this path.
+    a.query_one("SELECT id FROM users WHERE id=$1 FOR UPDATE", &[&id])
+        .await?;
+    a.execute("UPDATE users SET display_name='After' WHERE id=$1", &[&id])
+        .await?;
+    let write = async {
+        b.batch_execute("BEGIN; SET LOCAL statement_timeout='2s'")
+            .await?;
+        b.execute(
+            "INSERT INTO messages(id,user_id,channel_id,content) VALUES($1||'-new',$1,$1,'new')",
+            &[&id],
+        )
+        .await?;
+        b.batch_execute("COMMIT").await?;
+        Ok::<_, anyhow::Error>(())
+    };
+    let release = async {
+        // Observe the legacy FK lock wait before allowing the profile UPDATE
+        // to finish. The former global gate deadlocked in exactly this order.
+        tokio::time::timeout(std::time::Duration::from_secs(1), async {
+            loop {
+                let waiting:bool = observer.query_one("SELECT EXISTS(SELECT 1 FROM pg_stat_activity WHERE pid=$1 AND wait_event_type='Lock')", &[&pid]).await?.get(0);
+                if waiting { break Ok::<_,tokio_postgres::Error>(()); }
+                tokio::task::yield_now().await;
+            }
+        }).await??;
+        a.execute(
+            "UPDATE workspace_emojis SET width=120,height=20 WHERE name=$1",
+            &[&id],
+        )
+        .await?;
+        a.batch_execute("COMMIT").await?;
+        Ok::<_, anyhow::Error>(())
+    };
+    let (written, released) = tokio::join!(write, release);
+    released?;
+    written?;
+    // Metadata jobs are still queued. Holding another metadata transaction open
+    // must allow writes by the same user to finish without waiting for fan-out.
+    a.batch_execute("BEGIN").await?;
     a.execute(
-        "UPDATE channels SET deleted_at=now() WHERE id=$1",
-        &[&prefix],
+        "UPDATE workspace_emojis SET width=240 WHERE name=$1",
+        &[&id],
     )
     .await?;
+    b.execute("INSERT INTO messages(id,user_id,channel_id,content) VALUES($1||'-independent',$1,$1,'other')", &[&id]).await?;
+    b.execute("INSERT INTO message_reactions(id,message_id,user_id,emoji) VALUES($1,$1||'-independent',$1,'👍')", &[&id]).await?;
+    a.batch_execute("COMMIT").await?;
+    let queued: i64 = a
+        .query_one(
+            "SELECT count(*) FROM display_refresh_queue WHERE target LIKE $1||'%'",
+            &[&id],
+        )
+        .await?
+        .get(0);
+    assert_eq!(queued, 20000);
+    // No-op profile SETs do not enqueue work (status-only API updates included).
+    a.execute(
+        "DELETE FROM display_refresh_queue WHERE target LIKE $1||'%'",
+        &[&id],
+    )
+    .await?;
+    a.execute(
+        "UPDATE users SET display_name=display_name WHERE id=$1",
+        &[&id],
+    )
+    .await?;
+    let count: i64 = a
+        .query_one(
+            "SELECT count(*) FROM display_refresh_queue WHERE target LIKE $1||'%'",
+            &[&id],
+        )
+        .await?
+        .get(0);
+    assert_eq!(count, 0);
+    // Only generated rows bypassed source triggers. Remove normal writes with
+    // their normal cascades, then bulk-remove just that synthetic workload.
+    a.execute(
+        "DELETE FROM messages WHERE id IN ($1||'-new',$1||'-independent')",
+        &[&id],
+    )
+    .await?;
+    a.batch_execute("BEGIN; SET LOCAL session_replication_role=replica")
+        .await?;
+    a.execute("DELETE FROM messages WHERE channel_id=$1", &[&id])
+        .await?;
+    a.batch_execute("COMMIT").await?;
+    a.execute("DELETE FROM workspace_emojis WHERE name=$1", &[&id])
+        .await?;
     Ok(())
 }
 
 #[tokio::test]
-async fn canceled_phase_entry_does_not_leak_session_locks() -> anyhow::Result<()> {
+async fn queue_skips_busy_rows_and_retains_work_after_rollback() -> anyhow::Result<()> {
+    let _guard = DISPLAY_TESTS.lock().await;
     let config = Config::from_env();
     let (a, ac) = tokio_postgres::connect(&config.database_url, NoTls).await?;
     let (b, bc) = tokio_postgres::connect(&config.database_url, NoTls).await?;
     tokio::spawn(ac);
     tokio::spawn(bc);
-    a.batch_execute("BEGIN; SELECT enter_display_group('metadata')")
-        .await?;
-    b.batch_execute("BEGIN; SET LOCAL statement_timeout='100ms'")
-        .await?;
-    let error = b
-        .batch_execute("SELECT enter_display_group('row')")
-        .await
-        .unwrap_err();
-    assert_eq!(
-        error.code(),
-        Some(&tokio_postgres::error::SqlState::QUERY_CANCELED)
-    );
-    b.batch_execute("ROLLBACK").await?;
-    let leaked: i64 = b.query_one("SELECT count(*) FROM pg_locks WHERE pid=pg_backend_pid() AND locktype='advisory' AND classid=2063231026 AND granted", &[]).await?.get(0);
-    assert_eq!(leaked, 0);
-    a.batch_execute("COMMIT").await?;
-    b.batch_execute(
-        "BEGIN; SET LOCAL statement_timeout='1s'; SELECT enter_display_group('row'); COMMIT",
+    let id = format!("queue-busy-{}", uuid::Uuid::new_v4().simple());
+    a.execute(
+        "INSERT INTO users(id,user_name,display_name,is_bot) VALUES($1::text,$1::text,'Before',false)",
+        &[&id],
     )
     .await?;
+    a.execute(
+        "INSERT INTO channels(id,channel_name,created_user_id,is_private) VALUES($1::text,$1::text,$1::text,false)",
+        &[&id],
+    )
+    .await?;
+    a.execute(
+        "INSERT INTO messages(id,user_id,channel_id,content) VALUES($1,$1,$1,'body')",
+        &[&id],
+    )
+    .await?;
+    a.execute("UPDATE users SET display_name='After' WHERE id=$1", &[&id])
+        .await?;
+    a.batch_execute("BEGIN").await?;
+    a.query_one("SELECT id FROM messages WHERE id=$1 FOR UPDATE", &[&id])
+        .await?;
+    b.batch_execute(
+        "BEGIN; SET LOCAL statement_timeout='1s'; SELECT refresh_next_display(); COMMIT",
+    )
+    .await?;
+    let exists: bool = b
+        .query_one(
+            "SELECT EXISTS(SELECT 1 FROM display_refresh_queue WHERE target=$1)",
+            &[&id],
+        )
+        .await?
+        .get(0);
+    assert!(exists, "busy job must remain durable");
+    a.batch_execute("COMMIT").await?;
+    // Lock other suites' jobs without deleting them. The second connection
+    // skips them and can process only this test's row.
+    a.batch_execute("BEGIN").await?;
+    a.query(
+        "SELECT kind,target FROM display_refresh_queue WHERE target<>$1 FOR UPDATE",
+        &[&id],
+    )
+    .await?;
+    b.batch_execute("BEGIN; SELECT refresh_next_display(); ROLLBACK")
+        .await?;
+    let name: String = a
+        .query_one(
+            "SELECT display_data->'author'->>'display_name' FROM messages WHERE id=$1",
+            &[&id],
+        )
+        .await?
+        .get(0);
+    assert_eq!(name, "Before");
+    let state =
+        backend::state::AppState::new(backend::db::init_db(&config.database_url).await?, config);
+    assert!(backend::display_refresh::refresh_one(&state).await?);
+    a.batch_execute("COMMIT").await?;
+    let name: String = a
+        .query_one(
+            "SELECT display_data->'author'->>'display_name' FROM messages WHERE id=$1",
+            &[&id],
+        )
+        .await?
+        .get(0);
+    assert_eq!(name, "After");
+    a.execute("DELETE FROM messages WHERE id=$1", &[&id])
+        .await?;
     Ok(())
 }

@@ -1,3 +1,4 @@
+import { useWorkspaceEmojis } from "../lib/emoji/workspace";
 import { useLiveQuery } from "@tanstack/react-db";
 import { useMemo } from "react";
 import { useCollections } from "../lib/electric/collections-context";
@@ -16,8 +17,8 @@ export function useOptimisticDisplay<T extends { id: string; display_data?: Mess
   const reactionRows = useLiveQuery((q) =>
     channelId ? q.from({ row: reactions(channelId) }) : undefined,
   );
-  return useMemo(() => {
-    if (!channelId || !data) return data;
+  const changes = useMemo(() => {
+    if (!channelId) return undefined;
     const messageTable = messages(channelId);
     const reactionTable = reactions(channelId);
     // `base` is TanStack DB's public authoritative state, before optimistic writes.
@@ -25,19 +26,21 @@ export function useOptimisticDisplay<T extends { id: string; display_data?: Mess
     // looks like an optimistic deletion of all the base rows.
     const localMessages = new Map(messageTable.entries());
     const localReactions = new Map(reactionTable.entries());
-    const changes = displayChanges(
-      messageTable.base,
-      localMessages,
-      reactionTable.base,
-      localReactions,
-    );
+    return displayChanges(messageTable.base, localMessages, reactionTable.base, localReactions);
+  }, [channelId, messages, reactions, messageRows.data, reactionRows.data]);
+  const pendingCustom = [...(changes?.reactions.values() ?? [])].some((rows) =>
+    [...rows.values()].some((row) => row?.emoji.startsWith(":")),
+  );
+  const { emojis } = useWorkspaceEmojis(pendingCustom);
+  return useMemo(() => {
+    if (!data || !changes) return data;
     return data.map((row) =>
       row.display_data
         ? {
             ...row,
-            display_data: optimisticDisplay(row.display_data, row.id, changes),
+            display_data: optimisticDisplay(row.display_data, row.id, changes, emojis),
           }
         : row,
     );
-  }, [channelId, data, messages, reactions, messageRows.data, reactionRows.data]);
+  }, [data, changes, emojis]);
 }

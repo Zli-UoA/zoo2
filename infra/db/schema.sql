@@ -1810,6 +1810,13 @@ JOIN apub_actors a ON a.id=r.actor_id
 WHERE p.channel_id IS NOT NULL AND p.deleted_at IS NULL AND m.deleted_at IS NULL
   AND r.user_id IS NULL AND NOT a.blocked;
 
+CREATE FUNCTION message_content_emojis(content text) RETURNS jsonb LANGUAGE sql STABLE AS $$
+  SELECT COALESCE(jsonb_object_agg(names.name,jsonb_build_object('url',e.url,'width',e.width,'height',e.height,'image_id',e.image_id)), '{}'::jsonb)
+  FROM workspace_emojis e CROSS JOIN LATERAL (
+    SELECT e.name UNION SELECT jsonb_array_elements_text(e.aliases)
+  ) names WHERE strpos(content,':'||names.name||':')>0;
+$$;
+
 CREATE VIEW message_display AS
 SELECT m.id, jsonb_build_object(
   'author', (SELECT jsonb_build_object('id',u.id,'user_name',u.user_name,
@@ -1913,6 +1920,11 @@ CREATE TRIGGER notifications_display_update AFTER UPDATE OF actor_id,channel_id,
 CREATE FUNCTION sync_message_notifications_display() RETURNS trigger LANGUAGE plpgsql AS $$
 DECLARE target text;
 BEGIN
+  IF current_setting('zoo.display_refresh',true)='metadata' THEN
+    INSERT INTO display_refresh_queue SELECT 'notification',id FROM notification_events
+      WHERE source='channel' AND message_id=NEW.id ORDER BY id ON CONFLICT DO NOTHING;
+    RETURN NULL;
+  END IF;
   FOR target IN SELECT n.id FROM notification_events n
     WHERE n.source='channel' AND n.message_id=NEW.id AND (
       OLD.content IS DISTINCT FROM NEW.content OR OLD.user_id IS DISTINCT FROM NEW.user_id OR
@@ -1935,41 +1947,8 @@ END;
 $$;
 CREATE TRIGGER message_notifications_display AFTER UPDATE OF content,user_id,display_data,deleted_at ON messages FOR EACH ROW EXECUTE FUNCTION sync_message_notifications_display();
 
-CREATE FUNCTION sync_user_display() RETURNS trigger LANGUAGE plpgsql AS $$
-DECLARE target text;
-BEGIN
-  FOR target IN SELECT id FROM messages WHERE user_id=NEW.id OR id IN (
-    SELECT message_id FROM message_reactions WHERE user_id=NEW.id
-  ) ORDER BY id LOOP PERFORM refresh_message_display(target); END LOOP;
-  FOR target IN SELECT id FROM notification_events WHERE source='channel' AND actor_id=NEW.id ORDER BY id LOOP
-    PERFORM refresh_notification_display(target);
-  END LOOP;
-  RETURN NULL;
-END;
-$$;
-CREATE TRIGGER users_display AFTER UPDATE OF user_name,display_name,avatar_url,is_bot,app_id ON users FOR EACH ROW EXECUTE FUNCTION sync_user_display();
 
-CREATE FUNCTION sync_emoji_display() RETURNS trigger LANGUAGE plpgsql AS $$
-DECLARE target text;
-BEGIN
-  FOR target IN SELECT id FROM messages WHERE content LIKE '%:%' OR id IN (
-    SELECT message_id FROM message_display_reactions WHERE emoji LIKE ':%' OR emoji LIKE 'apub:%'
-  ) ORDER BY id LOOP PERFORM refresh_message_display(target); END LOOP;
-  RETURN NULL;
-END;
-$$;
-CREATE TRIGGER emojis_display AFTER INSERT OR UPDATE OR DELETE ON workspace_emojis FOR EACH STATEMENT EXECUTE FUNCTION sync_emoji_display();
 
-CREATE FUNCTION sync_channel_notification_display() RETURNS trigger LANGUAGE plpgsql AS $$
-DECLARE target text;
-BEGIN
-  FOR target IN SELECT id FROM notification_events WHERE source='channel' AND channel_id=NEW.id ORDER BY id LOOP
-    PERFORM refresh_notification_display(target);
-  END LOOP;
-  RETURN NULL;
-END;
-$$;
-CREATE TRIGGER channels_notification_display AFTER UPDATE ON channels FOR EACH ROW EXECUTE FUNCTION sync_channel_notification_display();
 
 CREATE FUNCTION sync_federated_reaction_display() RETURNS trigger LANGUAGE plpgsql AS $$
 DECLARE target text;
@@ -1989,56 +1968,129 @@ END;
 $$;
 CREATE TRIGGER federated_reactions_display AFTER INSERT OR UPDATE OR DELETE ON apub_reactions FOR EACH ROW EXECUTE FUNCTION sync_federated_reaction_display();
 
-CREATE FUNCTION sync_federated_actor_display() RETURNS trigger LANGUAGE plpgsql AS $$
-DECLARE target text;
-BEGIN
-  FOR target IN SELECT DISTINCT post_id FROM apub_reactions WHERE actor_id=NEW.id ORDER BY post_id LOOP
-    PERFORM refresh_message_display(target);
-  END LOOP;
-  RETURN NULL;
-END;
-$$;
-CREATE TRIGGER federated_actors_display AFTER UPDATE OF user_name,display_name,blocked ON apub_actors FOR EACH ROW EXECUTE FUNCTION sync_federated_actor_display();
 
--- A phase lock lets unrelated row writers run concurrently, and unrelated
--- metadata writers run concurrently, but never crosses those two lock orders.
--- Session locks are held only while entering a phase and are exception-safe;
--- the shared phase token itself is released automatically with the transaction.
-CREATE FUNCTION enter_display_group(writer text) RETURNS void LANGUAGE plpgsql AS $$
-DECLARE held text := current_setting('zoo.display_writer', true);
-        own_key integer; other_key integer;
+
+-- Metadata changes enqueue read-model work; they never lock message rows.
+-- Keep this private table out of Electric Shapes and application events.
+CREATE TABLE display_refresh_queue (
+  kind text NOT NULL CHECK (kind IN ('message','notification')),
+  target text NOT NULL,
+  PRIMARY KEY(kind,target)
+);
+
+CREATE FUNCTION sync_user_display() RETURNS trigger LANGUAGE plpgsql SET jit=off AS $$
 BEGIN
-  IF held='metadata' OR held=writer THEN RETURN; END IF;
-  IF held='row' THEN
-    RAISE EXCEPTION 'Lock display metadata before modifying messages' USING ERRCODE='40P01';
-  END IF;
-  own_key := CASE WHEN writer='metadata' THEN 31602 ELSE 31601 END;
-  other_key := CASE WHEN writer='metadata' THEN 31601 ELSE 31602 END;
-  BEGIN
-    PERFORM pg_advisory_lock(2063231026,31600);
-    PERFORM pg_advisory_lock(2063231026,other_key);
-    PERFORM pg_advisory_xact_lock_shared(2063231026,own_key);
-    PERFORM set_config('zoo.display_writer',writer,true);
-    PERFORM pg_advisory_unlock(2063231026,other_key);
-    PERFORM pg_advisory_unlock(2063231026,31600);
-  EXCEPTION WHEN query_canceled OR assert_failure OR OTHERS THEN
-    PERFORM pg_advisory_unlock(2063231026,l.objid::integer) FROM pg_locks l
-      WHERE l.pid=pg_backend_pid() AND l.locktype='advisory' AND l.classid=2063231026
-        AND l.objsubid=2 AND l.objid IN (31600,other_key) AND l.mode='ExclusiveLock' AND l.granted;
-    RAISE;
-  END;
-END;
-$$;
-CREATE FUNCTION lock_display_metadata() RETURNS trigger LANGUAGE plpgsql AS $$
-BEGIN
-  PERFORM enter_display_group(TG_ARGV[0]);
+  IF ROW(OLD.user_name,OLD.display_name,OLD.avatar_url,OLD.is_bot,OLD.app_id)
+    IS NOT DISTINCT FROM ROW(NEW.user_name,NEW.display_name,NEW.avatar_url,NEW.is_bot,NEW.app_id) THEN RETURN NULL; END IF;
+  INSERT INTO display_refresh_queue SELECT 'message',id FROM messages WHERE user_id=NEW.id OR id IN (
+    SELECT message_id FROM message_reactions WHERE user_id=NEW.id
+  ) ORDER BY id ON CONFLICT DO NOTHING;
+  INSERT INTO display_refresh_queue SELECT 'notification',id FROM notification_events
+    WHERE source='channel' AND actor_id=NEW.id ORDER BY id ON CONFLICT DO NOTHING;
   RETURN NULL;
 END;
 $$;
-CREATE TRIGGER messages_display_gate BEFORE INSERT OR UPDATE OR DELETE ON messages FOR EACH STATEMENT EXECUTE FUNCTION lock_display_metadata('row');
-CREATE TRIGGER reactions_display_gate BEFORE INSERT OR UPDATE OR DELETE ON message_reactions FOR EACH STATEMENT EXECUTE FUNCTION lock_display_metadata('row');
-CREATE TRIGGER attachments_display_gate BEFORE INSERT OR UPDATE OR DELETE ON attachments FOR EACH STATEMENT EXECUTE FUNCTION lock_display_metadata('row');
-CREATE TRIGGER federated_reactions_display_gate BEFORE INSERT OR UPDATE OR DELETE ON apub_reactions FOR EACH STATEMENT EXECUTE FUNCTION lock_display_metadata('row');
-CREATE TRIGGER users_display_gate BEFORE UPDATE OF user_name,display_name,avatar_url,is_bot,app_id ON users FOR EACH STATEMENT EXECUTE FUNCTION lock_display_metadata('metadata');
-CREATE TRIGGER emojis_display_gate BEFORE INSERT OR UPDATE OR DELETE ON workspace_emojis FOR EACH STATEMENT EXECUTE FUNCTION lock_display_metadata('metadata');
-CREATE TRIGGER federated_actors_display_gate BEFORE UPDATE OF user_name,display_name,blocked ON apub_actors FOR EACH STATEMENT EXECUTE FUNCTION lock_display_metadata('metadata');
+
+CREATE FUNCTION sync_emoji_display() RETURNS trigger LANGUAGE plpgsql SET jit=off AS $$
+BEGIN
+  -- Transition tables include deleted names, aliases and old image identities.
+  -- No-op updates (including startup repeats) enqueue nothing.
+  INSERT INTO display_refresh_queue
+  WITH changed AS (
+    SELECT name,url,aliases,width,height,image_id FROM new_emojis
+    EXCEPT SELECT name,url,aliases,width,height,image_id FROM old_emojis
+  ), removed AS (
+    SELECT name,url,aliases,width,height,image_id FROM old_emojis
+    EXCEPT SELECT name,url,aliases,width,height,image_id FROM new_emojis
+  ), affected AS (SELECT * FROM changed UNION SELECT * FROM removed), names AS (
+    SELECT name FROM affected UNION SELECT jsonb_array_elements_text(aliases) FROM affected
+  )
+  SELECT 'message',m.id FROM messages m WHERE
+    EXISTS(SELECT 1 FROM names n WHERE strpos(m.content,':'||n.name||':')>0) OR
+    EXISTS(SELECT 1 FROM message_display_reactions r WHERE r.message_id=m.id AND (
+      r.emoji IN (SELECT ':'||name||':' FROM names) OR
+      r.emoji LIKE 'apub:%' AND split_part(r.emoji,':',2) IN (SELECT image_id FROM affected)
+    )) ORDER BY m.id ON CONFLICT DO NOTHING;
+  RETURN NULL;
+END;
+$$;
+-- A common transition-table shape for all three operations keeps filtering in
+-- one function while preserving both sides of renames/deletions.
+CREATE FUNCTION sync_emoji_insert_display() RETURNS trigger LANGUAGE plpgsql SET jit=off AS $$
+BEGIN
+  INSERT INTO display_refresh_queue
+    SELECT 'message',m.id FROM messages m WHERE EXISTS (
+      SELECT 1 FROM new_emojis e WHERE strpos(m.content,':'||e.name||':')>0
+        OR EXISTS(SELECT 1 FROM jsonb_array_elements_text(e.aliases) a(name) WHERE strpos(m.content,':'||a.name||':')>0)
+        OR EXISTS(SELECT 1 FROM message_display_reactions r WHERE r.message_id=m.id AND
+          (r.emoji=':'||e.name||':' OR r.emoji IN (SELECT ':'||a||':' FROM jsonb_array_elements_text(e.aliases) a)
+          OR r.emoji LIKE 'apub:%' AND split_part(r.emoji,':',2)=e.image_id))
+    ) ORDER BY m.id ON CONFLICT DO NOTHING;
+  RETURN NULL;
+END;
+$$;
+CREATE FUNCTION sync_emoji_delete_display() RETURNS trigger LANGUAGE plpgsql SET jit=off AS $$
+BEGIN
+  INSERT INTO display_refresh_queue
+    SELECT 'message',m.id FROM messages m WHERE EXISTS (
+      SELECT 1 FROM old_emojis e WHERE strpos(m.content,':'||e.name||':')>0
+        OR EXISTS(SELECT 1 FROM jsonb_array_elements_text(e.aliases) a(name) WHERE strpos(m.content,':'||a.name||':')>0)
+        OR EXISTS(SELECT 1 FROM message_display_reactions r WHERE r.message_id=m.id AND
+          (r.emoji=':'||e.name||':' OR r.emoji IN (SELECT ':'||a||':' FROM jsonb_array_elements_text(e.aliases) a)
+          OR r.emoji LIKE 'apub:%' AND split_part(r.emoji,':',2)=e.image_id))
+    ) ORDER BY m.id ON CONFLICT DO NOTHING;
+  RETURN NULL;
+END;
+$$;
+CREATE TRIGGER emojis_display_update AFTER UPDATE ON workspace_emojis REFERENCING OLD TABLE AS old_emojis NEW TABLE AS new_emojis FOR EACH STATEMENT EXECUTE FUNCTION sync_emoji_display();
+CREATE TRIGGER emojis_display_insert AFTER INSERT ON workspace_emojis REFERENCING NEW TABLE AS new_emojis FOR EACH STATEMENT EXECUTE FUNCTION sync_emoji_insert_display();
+CREATE TRIGGER emojis_display_delete AFTER DELETE ON workspace_emojis REFERENCING OLD TABLE AS old_emojis FOR EACH STATEMENT EXECUTE FUNCTION sync_emoji_delete_display();
+
+CREATE FUNCTION sync_federated_actor_display() RETURNS trigger LANGUAGE plpgsql SET jit=off AS $$
+BEGIN
+  IF ROW(OLD.user_name,OLD.display_name,OLD.blocked) IS NOT DISTINCT FROM ROW(NEW.user_name,NEW.display_name,NEW.blocked) THEN RETURN NULL; END IF;
+  INSERT INTO display_refresh_queue SELECT DISTINCT 'message',post_id FROM apub_reactions
+    WHERE actor_id=NEW.id ORDER BY post_id ON CONFLICT DO NOTHING;
+  RETURN NULL;
+END;
+$$;
+CREATE FUNCTION sync_channel_notification_display() RETURNS trigger LANGUAGE plpgsql SET jit=off AS $$
+BEGIN
+  IF OLD IS NOT DISTINCT FROM NEW THEN RETURN NULL; END IF;
+  INSERT INTO display_refresh_queue SELECT 'notification',id FROM notification_events
+    WHERE source='channel' AND channel_id=NEW.id ORDER BY id ON CONFLICT DO NOTHING;
+  RETURN NULL;
+END;
+$$;
+
+-- One item per transaction: no workspace-wide gate and no multi-message lock
+-- order to invert with old backends. Busy rows are retried on a later pass.
+CREATE FUNCTION refresh_next_display() RETURNS boolean LANGUAGE plpgsql SET jit=off AS $$
+DECLARE job record;
+BEGIN
+  FOR job IN SELECT * FROM display_refresh_queue ORDER BY kind,target LIMIT 32 FOR UPDATE SKIP LOCKED LOOP
+    IF job.kind='message' THEN
+      IF EXISTS(SELECT 1 FROM messages WHERE id=job.target) THEN
+        PERFORM 1 FROM messages WHERE id=job.target FOR NO KEY UPDATE SKIP LOCKED;
+        IF NOT FOUND THEN CONTINUE; END IF;
+        PERFORM set_config('zoo.display_refresh','metadata',true);
+        PERFORM refresh_message_display(job.target);
+        PERFORM set_config('zoo.display_refresh','',true);
+      END IF;
+    ELSE
+      IF EXISTS(SELECT 1 FROM notification_events WHERE id=job.target) THEN
+        PERFORM 1 FROM notification_events WHERE id=job.target FOR NO KEY UPDATE SKIP LOCKED;
+        IF NOT FOUND THEN CONTINUE; END IF;
+        PERFORM refresh_notification_display(job.target);
+      END IF;
+    END IF;
+    DELETE FROM display_refresh_queue WHERE kind=job.kind AND target=job.target;
+    RETURN true;
+  END LOOP;
+  RETURN false;
+END;
+$$;
+
+CREATE TRIGGER users_display AFTER UPDATE OF user_name,display_name,avatar_url,is_bot,app_id ON users FOR EACH ROW EXECUTE FUNCTION sync_user_display();
+CREATE TRIGGER channels_notification_display AFTER UPDATE ON channels FOR EACH ROW EXECUTE FUNCTION sync_channel_notification_display();
+CREATE TRIGGER federated_actors_display AFTER UPDATE OF user_name,display_name,blocked ON apub_actors FOR EACH ROW EXECUTE FUNCTION sync_federated_actor_display();

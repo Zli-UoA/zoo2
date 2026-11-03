@@ -968,3 +968,120 @@ for (const implementation of ["react", "compose"] as const) {
     else await expect(reply).toHaveValue("Pending joined reply");
   });
 }
+
+for (const implementation of ["react", "compose"] as const) {
+  test(`${implementation}: pending custom reaction keeps picker image dimensions before sync`, async ({
+    page,
+    request,
+  }) => {
+    const native = implementation === "compose";
+    await request.post("https://127.0.0.1:4187/__reset");
+    await request.post("https://127.0.0.1:4187/__seed", {
+      data: {
+        messages: [
+          {
+            id: "custom-pending-root",
+            content: "Pending custom reaction",
+            display_data: {
+              author: {
+                id: "00000000-0000-0000-0000-000000000001",
+                user_name: "alice",
+                display_name: "Alice",
+              },
+              emojis: {},
+              attachments: [],
+              reactions: [],
+              reply_count: 0,
+            },
+          },
+        ],
+      },
+    });
+    await page.route("**/api/emojis", (route) =>
+      route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        headers: { "access-control-allow-origin": "*" },
+        body: JSON.stringify([
+          {
+            name: "wide",
+            url: "/api/emoji-images/wide",
+            width: 120,
+            height: 20,
+            aliases: [],
+            category: "Test",
+          },
+        ]),
+      }),
+    );
+    await page.route("**/api/emoji-images/wide", (route) =>
+      route.fulfill({
+        status: 200,
+        contentType: "image/png",
+        headers: { "access-control-allow-origin": "*" },
+        body: Buffer.from(
+          "iVBORw0KGgoAAAANSUhEUgAAAAMAAAABCAYAAAAb4BS0AAAADklEQVR4nGP438DwH4YBMWYHe7X3S+QAAAAASUVORK5CYII=",
+          "base64",
+        ),
+      }),
+    );
+    await open(page, implementation, "/channels/c1", "Pending custom reaction");
+    const root = page.locator(
+      native ? '[id="message:custom-pending-root"]' : '[data-message-id="custom-pending-root"]',
+    );
+    if (!native) await root.hover();
+    await clickControl(
+      root.getByRole("button", { name: "リアクションを追加", exact: true }).first(),
+      native ? "kotlin" : "react",
+    );
+    await clickControl(
+      page.getByRole("tab", { name: "カスタム絵文字", exact: true }),
+      native ? "kotlin" : "react",
+    );
+    const choice = page.getByRole("button", {
+      name: native ? /^:wide:(?:, :wide:)?$/ : ":wide:",
+      exact: true,
+    });
+    await expect(choice).toBeVisible();
+    // The picker has fetched metadata. The pending chip must reuse it even if
+    // any subsequent registry request fails while the mutation is held.
+    await page.route("**/api/emojis", (route) => route.abort());
+    let release!: () => void;
+    const pending = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    await page.route("**/api/messages/custom-pending-root/reactions", async (route) => {
+      await pending;
+      await route.fulfill({
+        status: 500,
+        contentType: "application/json",
+        headers: { "access-control-allow-origin": "*" },
+        body: '{"error":"rollback"}',
+      });
+    });
+    try {
+      await clickControl(choice, native ? "kotlin" : "react");
+      const chip = root.getByRole("button", {
+        name: /^:wide: 1 件（自分もリアクション済み）/,
+      });
+      await expect(chip).toBeVisible();
+      if (native) {
+        // Compose merges the image's semantics into its clickable parent. Its
+        // actual Canvas bounds must reserve the six-to-one image, not text.
+        await expect
+          .poll(async () => (await chip.boundingBox())?.width ?? 0)
+          .toBeGreaterThanOrEqual(120);
+      } else {
+        const image = chip.getByRole("img", { name: ":wide:", exact: true });
+        await expect(image).toBeVisible();
+        await expect(image).toHaveCSS("width", "120px");
+        await expect(image).toHaveCSS("height", "20px");
+      }
+    } finally {
+      release();
+    }
+    await expect(
+      root.getByRole("button", { name: /^:wide: 1 件（自分もリアクション済み）/ }),
+    ).toBeHidden();
+  });
+}

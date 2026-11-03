@@ -38,24 +38,43 @@ pub async fn backfill_emojis(state: &AppState) -> Result<(), AppError> {
         };
         crate::apps::query(&mut tx, sql, &[]).await?
     };
-    stream::iter(values)
-        .for_each_concurrent(8, |emoji| async move {
-            if !matches!(
-                tokio::time::timeout(
-                    std::time::Duration::from_secs(10),
-                    backfill_one(state, &emoji)
-                )
-                .await,
-                Ok(Ok(()))
-            ) {
-                tracing::warn!(name=?emoji["name"], "Could not backfill emoji dimensions");
+    // Leave time inside the startup's 30s budget to commit successful reads.
+    // Otherwise a large/slow registry would lose the whole batch on every boot.
+    let read_budget = tokio::time::sleep(std::time::Duration::from_secs(20));
+    // Fetch headers first; publish one statement so the transition-table
+    // trigger runs once, with only the actually changed emoji names.
+    let updates = stream::iter(values)
+        .map(|emoji| async move {
+            match tokio::time::timeout(std::time::Duration::from_secs(10), read_one(state, &emoji))
+                .await
+            {
+                Ok(Ok(value)) => Some(value),
+                _ => {
+                    tracing::warn!(name=?emoji["name"], "Could not backfill emoji dimensions");
+                    None
+                }
             }
         })
+        .buffer_unordered(8)
+        .filter_map(|value| async move { value })
+        .take_until(read_budget)
+        .collect::<Vec<_>>()
         .await;
+    if !updates.is_empty() {
+        let mut db = state.db.clone();
+        let mut tx = db.transaction().await?;
+        toasty::sql::statement("UPDATE workspace_emojis e SET width=v.width,height=v.height,image_id=COALESCE(NULLIF(v.image_id,''),e.image_id) FROM jsonb_to_recordset($1::jsonb) AS v(url text,width integer,height integer,image_id text) WHERE e.url=v.url AND ROW(e.width,e.height,e.image_id) IS DISTINCT FROM ROW(v.width,v.height,COALESCE(NULLIF(v.image_id,''),e.image_id))")
+            .bind(serde_json::to_string(&updates).expect("serializable emoji metadata"))
+            .exec(&mut tx).await?;
+        tx.commit().await?;
+    }
     Ok(())
 }
 
-async fn backfill_one(state: &AppState, emoji: &serde_json::Value) -> anyhow::Result<()> {
+async fn read_one(
+    state: &AppState,
+    emoji: &serde_json::Value,
+) -> anyhow::Result<serde_json::Value> {
     let url = emoji["url"]
         .as_str()
         .ok_or_else(|| anyhow::anyhow!("Missing emoji URL"))?;
@@ -83,12 +102,9 @@ async fn backfill_one(state: &AppState, emoji: &serde_json::Value) -> anyhow::Re
         let bytes = object.body.collect().await?.into_bytes();
         dimensions(&bytes).ok_or_else(|| anyhow::anyhow!("Invalid emoji image"))?
     };
-    let mut db = state.db.clone();
-    let mut tx = db.transaction().await?;
-    toasty::sql::statement("UPDATE workspace_emojis SET width=$2,height=$3,image_id=COALESCE(NULLIF($4,''),image_id) WHERE url=$1")
-        .bind(url).bind(width).bind(height).bind(emoji_image_id(url).unwrap_or_default()).exec(&mut tx).await?;
-    tx.commit().await?;
-    Ok(())
+    Ok(
+        serde_json::json!({"url":url,"width":width,"height":height,"image_id":emoji_image_id(url).unwrap_or_default()}),
+    )
 }
 
 #[cfg(test)]

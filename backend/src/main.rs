@@ -54,6 +54,7 @@ async fn main() -> anyhow::Result<()> {
     }
 
     // ルーター構築
+    let display_worker = tokio::spawn(backend::display_refresh::worker(state.clone()));
     let delivery_worker = tokio::spawn(backend::apps::delivery::worker(state.clone()));
     let federation_worker = tokio::spawn(backend::activitypub::worker(state.clone()));
     let home_image_worker = tokio::spawn(backend::routes::home_images::worker(state.clone()));
@@ -71,6 +72,7 @@ async fn main() -> anyhow::Result<()> {
     .with_graceful_shutdown(shutdown_signal())
     .await?;
 
+    display_worker.abort();
     home_image_worker.abort();
     federation_worker.abort();
     delivery_worker.abort();

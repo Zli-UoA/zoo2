@@ -24,6 +24,7 @@ function controlled<T extends { id: string }>(rows: T[], pending: Promise<void>)
 let messages: ReturnType<typeof controlled<MessageRow>>;
 let reactions: ReturnType<typeof controlled<MessageReactionRow>>;
 vi.mock("../lib/electric/collections-context", () => ({
+  useOptionalCollections: () => null,
   useCollections: () => ({ messages: () => messages, reactions: () => reactions }),
 }));
 

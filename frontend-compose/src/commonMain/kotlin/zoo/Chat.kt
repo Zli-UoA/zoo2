@@ -594,7 +594,7 @@ internal fun Message(
     val reactionEdits by reactionTable.optimisticChanges.collectAsState()
     val display = message.nested("display_data").takeIf { it.containsKey("author") }?.let {
         optimisticDisplay(it, id, messageTable.replicatedRows.value, messageEdits,
-            reactionTable.replicatedRows.value, reactionEdits)
+            reactionTable.replicatedRows.value, reactionEdits, app.workspaceEmojis)
     }
     val user =
         JsonObject(

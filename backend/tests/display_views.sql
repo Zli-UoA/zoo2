@@ -21,6 +21,13 @@ DO $$ BEGIN
  IF (SELECT display_data->'attachments'->0->>'id' FROM messages WHERE id='view-m') IS DISTINCT FROM 'view-file' THEN RAISE EXCEPTION 'attachment'; END IF;
  IF EXISTS(SELECT 1 FROM messages m JOIN message_display v ON v.id=m.id WHERE m.channel_id='view-c' AND m.display_data IS DISTINCT FROM v.display_data) THEN RAISE EXCEPTION 'projection drift'; END IF;
 END $$;
+-- Adding/updating an unused emoji must not enqueue every colon-containing row.
+INSERT INTO workspace_emojis(name,url,created_by) VALUES ('view-unused','/unused.png','view-a');
+UPDATE workspace_emojis SET width=100,height=20 WHERE name='view-unused';
+DELETE FROM workspace_emojis WHERE name='view-unused';
+DO $$ BEGIN
+ IF EXISTS(SELECT 1 FROM display_refresh_queue WHERE target IN ('view-m','view-reply')) THEN RAISE EXCEPTION 'unrelated emoji fan-out'; END IF;
+END $$;
 -- A notification contains only its actor's badge, and unrelated reactions do
 -- not rewrite its cached row (or replicate it through Electric).
 CREATE TEMP TABLE notification_before AS SELECT ctid AS row_version FROM notification_events WHERE id='view-n';
@@ -39,6 +46,7 @@ DO $$ BEGIN
  IF (SELECT display_data->'message'->>'content' FROM notification_events WHERE id='view-n') IS DISTINCT FROM 'Edited :view-alias:' THEN RAISE EXCEPTION 'message edit must refresh without another related write'; END IF;
 END $$;
 DELETE FROM attachments WHERE id='view-file';
+DO $$ BEGIN WHILE refresh_next_display() LOOP END LOOP; END $$;
 DO $$ BEGIN
  IF (SELECT display_data->>'reply_count' FROM messages WHERE id='view-m') IS DISTINCT FROM '0' THEN RAISE EXCEPTION 'deleted reply'; END IF;
  IF (SELECT display_data->'reactions'->0->>'display_name' FROM notification_events WHERE id='view-n') IS DISTINCT FROM 'Updated' THEN RAISE EXCEPTION 'reaction user update'; END IF;
@@ -61,11 +69,13 @@ DO $$ BEGIN
  IF NOT EXISTS(SELECT 1 FROM apub_emoji_images WHERE id=repeat('a',64)) THEN RAISE EXCEPTION 'emoji proxy not registered'; END IF;
 END $$;
 UPDATE apub_actors SET blocked=true WHERE id='https://view-peer.example/actor';
+DO $$ BEGIN WHILE refresh_next_display() LOOP END LOOP; END $$;
 DO $$ BEGIN
  IF (SELECT display_data->'reactions' FROM messages WHERE id='view-post') IS DISTINCT FROM '[]'::jsonb THEN RAISE EXCEPTION 'blocked actor'; END IF;
 END $$;
 UPDATE apub_actors SET blocked=false WHERE id='https://view-peer.example/actor';
 UPDATE workspace_emojis SET image_id=repeat('a',64) WHERE name='view-wide';
+DO $$ BEGIN WHILE refresh_next_display() LOOP END LOOP; END $$;
 DO $$ BEGIN
  IF (SELECT display_data->'reactions'->0->>'emoji' FROM messages WHERE id='view-post') IS DISTINCT FROM ':view-wide:' THEN RAISE EXCEPTION 'local emoji identity'; END IF;
 END $$;

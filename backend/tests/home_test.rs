@@ -1580,3 +1580,46 @@ async fn home_image_upload_failure_and_interruption_leave_durable_cleanup() -> a
     }
     Ok(())
 }
+
+#[tokio::test]
+async fn local_home_posts_include_joined_workspace_emoji_dimensions() -> anyhow::Result<()> {
+    let mut config = Config::from_env();
+    config.dev_auth_enabled = true;
+    let mut db = init_db(&config.database_url).await?;
+    let app = create_router(AppState::new(db.clone(), config));
+    let id = uuid::Uuid::new_v4().to_string();
+    toasty::sql::statement("INSERT INTO users(id,user_name,display_name) VALUES($1,$1,$1)")
+        .bind(id.as_str())
+        .exec(&mut db)
+        .await?;
+    let name = format!("wide-{}", uuid::Uuid::new_v4().simple());
+    let alias = format!("alias-{}", uuid::Uuid::new_v4().simple());
+    toasty::sql::statement("INSERT INTO workspace_emojis(name,url,aliases,width,height,created_by) VALUES($1,'/api/emoji-images/test',jsonb_build_array($2::text),120,20,$3)")
+        .bind(name.as_str()).bind(alias.as_str()).bind(id.as_str()).exec(&mut db).await?;
+    let (status, post) = request(
+        &app,
+        "POST",
+        Some(&id),
+        "/api/home",
+        Some(json!({"content":format!(":{alias}:"),"visibility":"public"})),
+    )
+    .await?;
+    assert_eq!(status, StatusCode::CREATED);
+    let (_, rows) = request(&app, "GET", Some(&id), "/api/home?timeline=local", None).await?;
+    let row = rows
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|row| row["id"] == post["id"])
+        .unwrap();
+    let emoji = &row["emojis"][0];
+    assert_eq!(emoji["name"], format!(":{alias}:"));
+    assert_eq!(emoji["width"], 120);
+    assert_eq!(emoji["height"], 20);
+    assert_eq!(emoji["local"], true);
+    toasty::sql::statement("DELETE FROM workspace_emojis WHERE name=$1")
+        .bind(name)
+        .exec(&mut db)
+        .await?;
+    Ok(())
+}

@@ -81,4 +81,35 @@ describe("joined display optimistic deltas", () => {
     );
     expect(optimisticDisplay(display, "root", deleted).reply_count).toBe(9);
   });
+  it("includes picker metadata for a newly added custom reaction and removes it on rollback", () => {
+    const own = { ...reaction, emoji: ":alias:" };
+    const delta = displayChanges(
+      map<MessageRow>(),
+      map<MessageRow>(),
+      map<MessageReactionRow>(),
+      map(own),
+    );
+    const emoji = {
+      name: "wide",
+      url: "/wide.gif",
+      width: 120,
+      height: 20,
+      aliases: ["alias"],
+      category: "",
+    };
+    expect(optimisticDisplay(display, "root", delta, [emoji]).emojis.alias).toEqual(emoji);
+    expect(
+      optimisticDisplay(
+        display,
+        "root",
+        displayChanges(
+          map<MessageRow>(),
+          map<MessageRow>(),
+          map<MessageReactionRow>(),
+          map<MessageReactionRow>(),
+        ),
+        [emoji],
+      ),
+    ).toBe(display);
+  });
 });

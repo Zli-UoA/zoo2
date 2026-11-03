@@ -185,10 +185,18 @@ Reactはスレッドのルートを返信を含む同じメッセージコレク
 
 ## PR #316 レビュー対応
 
-- `20261103050000_display_view_updates.sql` は適用済みファイルを変更せず、表示VIEWとトリガーを更新する。通知には対象アクターの最新リアクション1件と、本文・バッジに使う絵文字だけを保存する。無関係なリアクションでは通知行を書き直さない。
-- キャッシュ更新対象は投稿自身と旧・新の返信先をまとめてID順に処理する。ただしUPDATEはトリガー実行前に対象行をロックするため、順序の統一だけでは一括更新とのデッドロックを防げない。`enter_display_group` は行更新とメタデータ更新の実行期間を分け、同じ種類の更新同士は並行させる。トランザクション内でメタデータ更新から行更新へ進むことはできる。逆順の処理は分割するか、最初にメタデータ用の調停を行う。
-- `users`・`workspace_emojis` を明示的に `SELECT ... FOR UPDATE` するAPIは、行をロックする前に `SELECT enter_display_group('metadata')` を実行する。SQLを直接書く処理でも同じ順序を守る。通常のINSERT／UPDATE／DELETEはBEFORE STATEMENTトリガーで調停する。実行待ちのキャンセル時にも、接続へセッションロックを残さない。
-- Reactは `useOptimisticDisplay`、Composeは `OptimisticDisplay.kt` でJOIN済みデータにローカルの未確定差分だけを重ねる。通常一覧・スレッド親投稿・返信で共有し、未取得Shapeを空データとして反映しない。Reactの永続化スキーマは4、Composeの保存キーはv2へ更新する。
-- 検証先は `display_views_test` の並行更新・キャンセル・通知行の更新範囲、`app_event_sources_test` の無関係なボットの同時更新、`optimisticDisplay.test.ts`・`useOptimisticDisplay.browser.test.tsx`・`OptimisticDisplayTest` とする。`compose.spec.ts` の追加2ケースはJOIN済みデータを持つ投稿でAPI応答を保留し、リアクションと返信数の即時反映・失敗時のロールバックを両実装で確認する。
+- main未適用の表示マイグレーションを `20261103000200_display_views.sql` にまとめた。DBから旧バックエンドが見える時点で、メタデータ更新はキュー登録だけを行う。全体フェーズロックやアプリ側の事前取得は使わず、旧経路の `users FOR UPDATE` と投稿が重なってもロック順序を逆転させない。mainの適用済みファイルは変更しない。
+- 投稿・リアクション・添付・返信数は書き込みと同じトランザクションでVIEWから反映する。プロフィール・チャンネル・連合アクター・絵文字の変更は `display_refresh_queue` に対象IDを登録し、`display_refresh::worker` が1行ずつ別トランザクションで再計算する。ロック中の行はSKIP LOCKEDで後回しにし、200msのタイムアウト時はロールバックして再試行する。メタデータ由来の通知更新も個別ジョブへ分ける。再起動してもキューは残る。旧バックエンドの稼働中に登録したジョブは、新バックエンドの起動後に処理する。
+- 表示項目が変わらないプロフィール更新は何もしない。絵文字の遷移テーブルから変更された名前・別名・画像IDを抽出し、関係する投稿だけを登録する。起動時はS3から寸法を先に取得し、取得成功分を1文で更新する。読み取りは20秒で区切り、起動時の30秒制限で取得成功分まで失わないよう、DBへの反映時間を残す。
+- 通知には対象アクターの最新リアクション1件と、本文・バッジに使う絵文字だけを保存する。無関係なリアクションでは通知行を書き直さない。通知下部の一覧は削除した。
+- Reactは `useOptimisticDisplay`、Composeは `OptimisticDisplay.kt` でJOIN済みデータに未確定差分だけを重ねる。カスタムリアクションの追加にはピッカーで取得したURL・寸法も重ね、別のHTTP取得を待たずに画像として描画する。ロールバックで差分を除く。Reactの永続化スキーマは4、Composeの保存キーはv2とする。
+- Homeのローカル投稿には `message_content_emojis` で本文の名前・別名に対応する絵文字を結合する。Reactの `ActivityPubContent` とComposeの同名コンポーネントは、同じURL・寸法・localフラグを使う。
+- 検証先は `display_views_test` の2万件のメタデータ更新・旧バックエンドのロック順序・独立した投稿/リアクション・キューのSKIP LOCKEDとロールバック、`display_views.sql` の対象絵文字の絞り込み、`home_test` のHome結合データ、`app_event_sources_test` の寸法補完とS3待ちの並行投稿とする。フロントは `optimisticDisplay.test.ts`・`useOptimisticDisplay.browser.test.tsx`・`OptimisticDisplayTest` と、`compose.spec.ts` の両実装での未確定リアクション・返信数・カスタム画像の即時反映と失敗時の復元を確認する。
 
-プレビューのDBにリベース前の `20261103000000_display_views.sql` が適用済みの場合、現在の履歴へそのまま更新すると、Atlasは `20261102170429_home_images.sql was added out of order` で停止することをローカルで再現した。クラスタの実ログとの照合は別途必要であり、新規DBへの適用成功をプレビューDBの更新成功とみなさない。previewラベルが外れた環境の削除でもステータスがsuccessになるため、descriptionとFluxの報告も確認する。
+以前のPR履歴を適用したプレビューDBは、mainの履歴とは一致しない。今回の統合でこのPRだけの履歴も変更しているため、そのDBを使い回さない。旧プレビューは削除済みで実ログを取得できず、失敗原因は未確定のままとする。レビューでは新規DBの適用とCIの成功を確認し、以前のP1は解消と判断されている。本番への適用前には、既存データで初回の投稿・通知キャッシュ構築時間を測る。
+
+### main 851b566 の取り込み
+
+mainのメッセージ編集時のCmd/Ctrl+Enter保存を、Reactの `MessageRow` とComposeの `Chat.kt` の両方に取り込んだ。JOIN済み表示データへの未確定差分の反映は維持する。`compose.spec.ts` の投稿・編集フローと、JOIN済みデータのリアクション・返信数・カスタム絵文字の保留中とロールバックを、再生成したCompose成果物で6ケースを検証し、成功した。バックエンド・DBの内容は、リベース前の検証済みコードと同じである。
+
+TUIは画像やURLカードを描画せず、Shapeの列を明示的に読み取るため、追加の表示用列は既存の読み取りに影響しない。このPRの画像枠・通知カードの変更は追加実装しない。編集時のCtrl+Enterは既存の `on_insert_key` から `submit` を通って保存できる。端末版のEnter送信・Alt/Shift+Enter改行は維持し、`make tui-check` で57テスト・clippy・formatの成功を確認した。

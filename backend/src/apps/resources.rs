@@ -9,15 +9,6 @@ use axum::{
     routing::{delete, get, patch, post},
 };
 
-// Metadata writers that explicitly lock rows must take the same gate as the
-// statement triggers first; otherwise their SELECT FOR UPDATE can invert it.
-async fn display_metadata_gate(tx: &mut toasty::Transaction<'_>) -> Result<(), AppError> {
-    toasty::sql::statement("SELECT enter_display_group('metadata')")
-        .exec(tx)
-        .await?;
-    Ok(())
-}
-
 pub fn router() -> Router<AppState> {
     Router::new()
         .route("/api/users/me/profile", get(my_profile).patch(profile))
@@ -260,7 +251,6 @@ async fn profile(
     }
     let mut db = s.db.clone();
     let mut tx = db.transaction().await?;
-    display_metadata_gate(&mut tx).await?;
     let old = one(
         &mut tx,
         "SELECT row_to_json(u)::text FROM users u WHERE id=$1 FOR UPDATE",
@@ -649,7 +639,6 @@ async fn put_emoji(
         b.aliases.push(previous.to_owned());
     }
     validate_emoji_metadata(&mut tx, &b.name, previous, &b.category, &b.aliases).await?;
-    display_metadata_gate(&mut tx).await?;
     let existing = query(
         &mut tx,
         "SELECT row_to_json(e)::text FROM workspace_emojis e WHERE name=$1 FOR UPDATE",
@@ -698,7 +687,6 @@ async fn remove_emoji(
             "Guests cannot manage workspace emojis".into(),
         ));
     }
-    display_metadata_gate(&mut tx).await?;
     let e = one(
         &mut tx,
         "SELECT row_to_json(e)::text FROM workspace_emojis e WHERE name=$1 FOR UPDATE",
@@ -1818,9 +1806,8 @@ async fn upload_emoji(
         })?;
     let url = format!("/api/emoji-images/{id}");
     let result = async {
-        // Do not hold the metadata phase across the S3 upload. Recheck the
-        // mutable ownership/name conditions after taking the authoritative lock.
-        display_metadata_gate(&mut tx).await?;
+        // Recheck the
+        // mutable ownership/name conditions after the S3 upload and row lock.
         let current = query(&mut tx, "SELECT row_to_json(e)::text FROM workspace_emojis e WHERE name=$1 FOR UPDATE", &[previous]).await?;
         if b.previous_name.is_some() && current.is_empty() {
             return Err(AppError::NotFound("Emoji not found".into()));
