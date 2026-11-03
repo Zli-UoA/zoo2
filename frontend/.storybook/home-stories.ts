@@ -117,6 +117,17 @@ export const homeInteractions: Record<string, Step[]> = {
   ],
   "with-images": [role("button", "景色.png")],
   "mobile-images": [role("button", "景色.png")],
+  "image-upload-error": [
+    ...opened,
+    {
+      action: "paste",
+      role: "textbox",
+      name: "近況を投稿",
+      file: { name: "景色.png", type: "image/png", base64: homeImageBase64 },
+    },
+    { action: "wait", role: "alert", count: 1, value: "8MiB" },
+    role("button", "投稿", { within: composer, enabled: false }),
+  ],
   "image-only-post": [
     ...opened,
     {

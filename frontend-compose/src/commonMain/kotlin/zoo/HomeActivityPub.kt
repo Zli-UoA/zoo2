@@ -10,6 +10,7 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.*
 import androidx.compose.ui.text.style.TextOverflow
@@ -230,7 +231,7 @@ private fun HomeMediaImage(item: Row, modifier: Modifier) {
     val ratio = frame?.let { it.width.toFloat() / it.height } ?: 1f
     Box(modifier.heightIn(max = 320.dp).aspectRatio(ratio)
         .clip(androidx.compose.foundation.shape.RoundedCornerShape(8.dp))
-        .clickable { app.platform.action("open:$url") }) {
+        .clickable(role = Role.Button) { app.platform.action("open:$url") }) {
         if (frame != null) Image(frame, label, Modifier.fillMaxSize(), contentScale = androidx.compose.ui.layout.ContentScale.Fit)
         else if (failed) Text(label)
     }

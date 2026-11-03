@@ -425,7 +425,7 @@ fun rememberAttachmentDrafts(
 }
 
 @Composable
-fun DraftAttachments(app: Session, drafts: AttachmentDrafts) {
+fun DraftAttachments(app: Session, drafts: AttachmentDrafts, errorMessage: String? = drafts.error) {
     if (drafts.items.isNotEmpty())
         FlowRow(
             modifier = Modifier.padding(bottom = 8.dp),
@@ -490,7 +490,7 @@ fun DraftAttachments(app: Session, drafts: AttachmentDrafts) {
                 }
             }
         }
-    drafts.error?.let {
+    errorMessage?.let {
         Text(
             it,
             Modifier.padding(bottom = 8.dp, start = 4.dp)

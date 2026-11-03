@@ -209,6 +209,8 @@ for (const implementation of ["react", "compose"] as const) {
     await expect(
       page.getByRole("textbox", { name: "新しいチャンネル名", exact: true }),
     ).toBeHidden();
+    // The API acknowledgement precedes the Electric update and header rerender.
+    await expect(page.getByRole("heading", { name: "renamed-parity", exact: true })).toBeVisible();
     await channelAction(page, native, "webhook");
     await fill("Webhook名", "Parity hook");
     await click("作成");

@@ -89,9 +89,10 @@ async fn upload(
         return Err(AppError::BadRequest("Expected an image up to 8 MiB".into()));
     }
     let mime = body.content_type.clone();
-    let (bytes, _permit) = tokio::task::spawn_blocking(move || {
+    let bytes = tokio::task::spawn_blocking(move || {
+        let _permit = permit;
         if valid_image(&mime, &bytes) {
-            Ok((bytes, permit))
+            Ok(bytes)
         } else {
             Err(AppError::BadRequest(
                 "Invalid image format, dimensions or pixel count".into(),

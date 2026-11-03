@@ -408,9 +408,8 @@ fun HomeComposer(
                     ) {
                         state.content = it
                     }
-                    DraftAttachments(app, images)
+                    DraftAttachments(app, images, errorMessage = images.error?.let { app.t("home.imageError") })
                     IconButton("image-plus", app.t("attachments.add"), !state.sending && images.items.size < MAX_ATTACHMENTS) { images.pick() }
-                    images.error?.let { Text(app.t("home.imageError"), Modifier.then(webControlModifier("alert")), color = colors.error) }
                     HomeComposerFooter(app, state, available, length)
 
                     if (state.failed)

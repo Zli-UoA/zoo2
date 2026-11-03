@@ -168,4 +168,6 @@ Reactはスレッドのルートを返信を含む同じメッセージコレク
 
 追加レビューでは `PublicProfile.stories.tsx` の `WithImages` に本文付き・画像のみの公開投稿を登録した。両実装は同じ `imagePublicProfile` と画像APIのfixtureを使い、Reactは画像の表示と復号成功、Composeは画像のアクセシブル名を確認する。画面の実装は既存の `HomePostContent` / `HomeMedia` を引き続き使用する。
 
-今回の検証範囲: 公開プロフィールのReact Story操作9件、追加した1状態のReact/Compose操作・描画、Story登録などの単体テスト75件、Kotlinブラウザーテスト80件と配布ビルドが成功した。Home APIは11件、Rust単体は109件（6件除外）が成功し、Rustの全ターゲットに警告なしのclippyを適用した。Storybook監査は422状態、フロントの型・lint・formatとカタログビルドも成功した。画素単位の一致は検証対象に含めない。
+追加の3指摘では、アップロードの復号許可をblocking taskの終了時に解放する。S3 PUT待ちの3件が復号用の2枠を占有しないことをAPIテストで確認する。ComposeのHomeは `DraftAttachments` のエラー表示を共通の `home.imageError` に差し替え、8 MiBの案内を一つだけ表示する。`HomeMediaImage` のクリック操作には `Role.Button` を明示する。`ImageUploadError` Storyは両実装でアップロード失敗時のalertが一つで、8 MiBの案内を含むことを確認する。
+
+今回の検証範囲: 対象React Story操作4件、React/Composeの対象6状態の操作・描画、Story登録などの単体テスト76件、Kotlinブラウザーテスト80件と配布ビルドが成功した。Home API11件、Rust単体109件（6件除外）と全ターゲットのclippyも成功した。Storybook監査は423状態を確認した。ReactのCRUD E2EはAPI応答後に編集済みチャンネル名の画面反映も待ち、3回連続で成功した。画素単位の一致は検証対象に含めない。

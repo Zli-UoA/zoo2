@@ -2020,3 +2020,31 @@ export const ReplyToMediaOnly: Story = {
     await expect(canvas.getByText("リモート画像への返信")).toBeVisible();
   }),
 };
+
+export const ImageUploadError: Story = {
+  parameters: {
+    msw: {
+      handlers: [
+        ...homeHandlers,
+        http.post("*/api/home/images", () => new HttpResponse(null, { status: 500 })),
+      ],
+    },
+  },
+  play: playForImplementation(async ({ canvasElement }) => {
+    const form = await openComposer(canvasElement);
+    const transfer = new DataTransfer();
+    transfer.items.add(
+      new File([Uint8Array.from(atob(homeImageBase64), (c) => c.charCodeAt(0))], "景色.png", {
+        type: "image/png",
+      }),
+    );
+    form
+      .getByRole("textbox")
+      .dispatchEvent(
+        new ClipboardEvent("paste", { clipboardData: transfer, bubbles: true, cancelable: true }),
+      );
+    await expect(await form.findByRole("alert")).toHaveTextContent("8MiB");
+    await expect(form.getAllByRole("alert")).toHaveLength(1);
+    await expect(form.getByRole("button", { name: /^投稿$/ })).toBeDisabled();
+  }),
+};

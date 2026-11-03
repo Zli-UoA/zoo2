@@ -1524,44 +1524,59 @@ async fn home_image_upload_failure_and_interruption_leave_durable_cleanup() -> a
         .mount(&storage)
         .await;
     let requests_before = storage.received_requests().await.unwrap().len();
-    let uploading = tokio::spawn({
-        let app = app.clone();
-        let owner = owner.clone();
-        async move { request(&app, "POST", Some(&owner), "/api/home/images", Some(body)).await }
-    });
-    let reserved = tokio::time::timeout(std::time::Duration::from_secs(5), async {
-        loop {
-            let rows = backend::apps::query(
-                &mut db.transaction().await?,
-                "SELECT json_build_object('id',id)::text FROM home_images WHERE uploader_id=$1",
-                &[&owner],
-            )
-            .await?;
-            if rows.len() == 1 && storage.received_requests().await.unwrap().len() > requests_before
-            {
-                break Ok::<_, anyhow::Error>(rows[0]["id"].as_str().unwrap().to_owned());
+    let mut uploading = Vec::new();
+    let mut reserved = Vec::new();
+    // Three PUTs must be able to start while the earlier PUTs are still delayed:
+    // completed raster validation must not retain either of the two decode permits.
+    for expected in 1..=3 {
+        uploading.push(tokio::spawn({
+            let app = app.clone();
+            let owner = owner.clone();
+            let body = body.clone();
+            async move { request(&app, "POST", Some(&owner), "/api/home/images", Some(body)).await }
+        }));
+        reserved = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            loop {
+                let rows = backend::apps::query(
+                    &mut db.transaction().await?,
+                    "SELECT json_build_object('id',id)::text FROM home_images WHERE uploader_id=$1",
+                    &[&owner],
+                )
+                .await?;
+                if rows.len() == expected
+                    && storage.received_requests().await.unwrap().len()
+                        >= requests_before + expected
+                {
+                    break Ok::<_, anyhow::Error>(
+                        rows.into_iter()
+                            .map(|r| r["id"].as_str().unwrap().to_owned())
+                            .collect::<Vec<_>>(),
+                    );
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
             }
-            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-        }
-    })
-    .await??;
-    uploading.abort();
-    assert!(uploading.await.unwrap_err().is_cancelled());
-    // Model a process stopping while PUT is in progress: the reservation survives rollback.
+        })
+        .await??;
+    }
+    for task in uploading {
+        task.abort();
+        assert!(task.await.unwrap_err().is_cancelled());
+    }
+    // Model stopping while PUT is in progress: committed reservations survive rollback.
     toasty::sql::statement(
-        "UPDATE home_images SET created_at=now()-interval '25 hours' WHERE id=$1",
+        "UPDATE home_images SET created_at=now()-interval '25 hours' WHERE uploader_id=$1",
     )
-    .bind(reserved.as_str())
+    .bind(owner.as_str())
     .exec(&mut db)
     .await?;
     backend::routes::home_images::collect_garbage(&state).await?;
-    assert!(
-        storage
-            .received_requests()
-            .await
-            .unwrap()
-            .iter()
-            .any(|r| r.method == "DELETE" && r.url.path().ends_with(&reserved))
-    );
+    let requests = storage.received_requests().await.unwrap();
+    for id in reserved {
+        assert!(
+            requests
+                .iter()
+                .any(|r| r.method == "DELETE" && r.url.path().ends_with(&id))
+        );
+    }
     Ok(())
 }
