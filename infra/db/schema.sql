@@ -1983,10 +1983,19 @@ CREATE TABLE display_refresh_queue (
   target text NOT NULL,
   generation bigint NOT NULL DEFAULT txid_current(),
   cursor_id text NOT NULL DEFAULT '',
+  attempts integer NOT NULL DEFAULT 0,
+  retry_at timestamptz NOT NULL DEFAULT '-infinity',
   PRIMARY KEY(kind,target,generation)
 );
 
 CREATE INDEX display_refresh_scopes_idx ON display_refresh_queue(kind,target,generation)
+  WHERE kind NOT IN ('message','notification');
+
+
+-- Separate runnable lookups avoid scanning row jobs to find a scope (or vice versa).
+CREATE INDEX display_refresh_rows_ready_idx ON display_refresh_queue(retry_at,kind,target,generation)
+  WHERE kind IN ('message','notification');
+CREATE INDEX display_refresh_scopes_ready_idx ON display_refresh_queue(retry_at,kind,target,generation)
   WHERE kind NOT IN ('message','notification');
 
 CREATE FUNCTION sync_user_display() RETURNS trigger LANGUAGE plpgsql SET jit=off AS $$
@@ -2052,7 +2061,8 @@ $$;
 CREATE FUNCTION refresh_next_display() RETURNS boolean LANGUAGE plpgsql SET jit=off AS $$
 DECLARE job record;
 BEGIN
-  FOR job IN SELECT * FROM display_refresh_queue WHERE kind IN ('message','notification') ORDER BY kind,target,generation LIMIT 32 FOR UPDATE SKIP LOCKED LOOP
+  FOR job IN SELECT * FROM display_refresh_queue WHERE kind IN ('message','notification') AND retry_at<=statement_timestamp() ORDER BY retry_at,kind,target,generation LIMIT 32 FOR UPDATE SKIP LOCKED LOOP
+    BEGIN
     IF job.kind='message' THEN
       IF EXISTS(SELECT 1 FROM messages WHERE id=job.target) THEN
         PERFORM 1 FROM messages WHERE id=job.target FOR NO KEY UPDATE SKIP LOCKED;
@@ -2069,6 +2079,12 @@ BEGIN
       END IF;
     END IF;
     DELETE FROM display_refresh_queue WHERE kind=job.kind AND target=job.target AND generation=job.generation;
+    EXCEPTION WHEN query_canceled OR OTHERS THEN
+      UPDATE display_refresh_queue SET attempts=attempts+1,
+        retry_at=clock_timestamp()+LEAST(60,power(2,LEAST(job.attempts,6))) * interval '1 second'
+        WHERE kind=job.kind AND target=job.target AND generation=job.generation;
+      RAISE WARNING 'Display row %/% deferred (SQLSTATE %)',job.kind,job.target,SQLSTATE;
+    END;
     RETURN true;
   END LOOP;
   RETURN false;
@@ -2109,8 +2125,9 @@ CREATE FUNCTION expand_next_display_scope() RETURNS boolean LANGUAGE plpgsql SET
 DECLARE job record; item record; last_id text; processed integer := 0;
 BEGIN
   SELECT * INTO job FROM display_refresh_queue
-    WHERE kind NOT IN ('message','notification') ORDER BY kind,target,generation LIMIT 1 FOR UPDATE SKIP LOCKED;
+    WHERE kind NOT IN ('message','notification') AND retry_at<=statement_timestamp() ORDER BY retry_at,kind,target,generation LIMIT 1 FOR UPDATE SKIP LOCKED;
   IF NOT FOUND THEN RETURN false; END IF;
+  BEGIN
   FOR item IN SELECT * FROM display_scope_targets(job.kind,job.target)
     WHERE row_id>job.cursor_id ORDER BY row_id LIMIT 128 LOOP
     INSERT INTO display_refresh_queue(kind,target) VALUES(item.row_kind,item.row_id) ON CONFLICT DO NOTHING;
@@ -2122,6 +2139,12 @@ BEGIN
   ELSE
     UPDATE display_refresh_queue SET cursor_id=last_id WHERE kind=job.kind AND target=job.target AND generation=job.generation;
   END IF;
+  EXCEPTION WHEN query_canceled OR OTHERS THEN
+    UPDATE display_refresh_queue SET attempts=attempts+1,
+      retry_at=clock_timestamp()+LEAST(60,power(2,LEAST(job.attempts,6))) * interval '1 second'
+      WHERE kind=job.kind AND target=job.target AND generation=job.generation;
+    RAISE WARNING 'Display scope %/% deferred (SQLSTATE %)',job.kind,job.target,SQLSTATE;
+  END;
   RETURN true;
 END;
 $$;

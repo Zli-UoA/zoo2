@@ -131,7 +131,8 @@
         "HomeNotificationsError",
         "LiveFollowRequest",
         "OlderFollowRequests",
-        "ActivityPubMfmReply"
+        "ActivityPubMfmReply",
+        "LocalContentEmoji"
       ]
     },
     {

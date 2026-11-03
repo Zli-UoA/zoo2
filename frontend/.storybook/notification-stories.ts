@@ -53,6 +53,16 @@ function notificationInteractions(title: string, name: string): NativeInteractio
           within: { role: "listitem", name: "Bob さんが投稿に返信しました" },
         },
       ];
+    if (name === "Local Content Emoji")
+      return [
+        ...apubReady,
+        {
+          action: "wait",
+          role: "img",
+          name: ":hello:",
+          within: { role: "listitem", name: "Bob さんが投稿にリアクションしました" },
+        },
+      ];
     if (["Follow Requests", "Mobile Follow Requests"].includes(name))
       return [
         ...apubReady,

@@ -3,41 +3,55 @@
 //! global metadata lock. Durable jobs also survive backend restarts.
 use crate::{apps::query, error::AppError, state::AppState};
 
-async fn expand_one(state: &AppState) -> Result<bool, AppError> {
+async fn run_one(state: &AppState, scope: bool) -> Result<bool, AppError> {
     let mut db = state.db.clone();
     let mut tx = db.transaction().await?;
-    // Scope lookup only inserts queue rows, in batches of at most 128. It never
-    // locks messages; allow a larger lookup budget than an individual repaint.
-    toasty::sql::statement("SET LOCAL statement_timeout='5s'")
+    // Reserve a runnable job before choosing its timeout. Retries get a larger
+    // budget so an expensive row can eventually finish without pinning the queue.
+    let (predicate, initial_ms, maximum_ms, function) = if scope {
+        ("NOT IN", 5000_u32, 30000_u32, "expand_next_display_scope")
+    } else {
+        ("IN", 200_u32, 5000_u32, "refresh_next_display")
+    };
+    toasty::sql::statement(format!("SET LOCAL statement_timeout='{initial_ms}ms'"))
+        .exec(&mut tx)
+        .await?;
+    let jobs = query(
+        &mut tx,
+        &format!("SELECT json_build_object('attempts',attempts)::text FROM display_refresh_queue WHERE kind {predicate} ('message','notification') AND retry_at<=statement_timestamp() ORDER BY retry_at,kind,target,generation LIMIT 1 FOR UPDATE SKIP LOCKED"),
+        &[],
+    )
+    .await?;
+    let Some(job) = jobs.first() else {
+        tx.commit().await?;
+        return Ok(false);
+    };
+    let attempts = job["attempts"].as_u64().unwrap_or(0).min(8) as u32;
+    let timeout_ms = (initial_ms * 2_u32.pow(attempts)).min(maximum_ms);
+    toasty::sql::statement(format!("SET LOCAL statement_timeout='{timeout_ms}ms'"))
         .exec(&mut tx)
         .await?;
     let rows = query(
         &mut tx,
-        "SELECT json_build_object('expanded',expand_next_display_scope())::text",
+        &format!("SELECT json_build_object('processed',{function}())::text"),
         &[],
     )
     .await?;
     tx.commit().await?;
-    Ok(rows.first().is_some_and(|row| row["expanded"] == true))
+    Ok(rows.first().is_some_and(|row| row["processed"] == true))
 }
 
 pub async fn refresh_one(state: &AppState) -> Result<bool, AppError> {
-    let expanded = expand_one(state).await?;
-    let mut db = state.db.clone();
-    let mut tx = db.transaction().await?;
-    // A busy notification or concurrent writer cannot pin this worker forever.
-    // On timeout the transaction rolls back and the durable job remains queued.
-    toasty::sql::statement("SET LOCAL statement_timeout='200ms'")
-        .exec(&mut tx)
-        .await?;
-    let rows = query(
-        &mut tx,
-        "SELECT json_build_object('refreshed',refresh_next_display())::text",
-        &[],
-    )
-    .await?;
-    tx.commit().await?;
-    Ok(expanded || rows.first().is_some_and(|row| row["refreshed"] == true))
+    // An expansion failure must not prevent independent row jobs from running.
+    let expanded = match run_one(state, true).await {
+        Ok(expanded) => expanded,
+        Err(error) => {
+            tracing::warn!(%error, "Display scope expansion will be retried");
+            false
+        }
+    };
+    let refreshed = run_one(state, false).await?;
+    Ok(expanded || refreshed)
 }
 
 pub async fn worker(state: AppState) {

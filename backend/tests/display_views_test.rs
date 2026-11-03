@@ -533,3 +533,98 @@ async fn a_consumed_job_does_not_block_or_erase_a_new_generation() -> anyhow::Re
     others.batch_execute("COMMIT").await?;
     Ok(())
 }
+
+#[tokio::test]
+async fn timed_out_rows_and_scopes_do_not_starve_other_jobs_and_retry_with_more_time()
+-> anyhow::Result<()> {
+    use futures_util::FutureExt;
+
+    let _guard = DISPLAY_TESTS.lock().await;
+    let config = Config::from_env();
+    let client = queue_client(&config.database_url).await?;
+    let others = queue_client(&config.database_url).await?;
+    let prefix = format!("retry-{}", uuid::Uuid::new_v4().simple());
+    let slow = format!("{prefix}-a");
+    let healthy = format!("{prefix}-z");
+    let notice = format!("{prefix}-n");
+    let scope = format!("{prefix}-scope");
+    client
+        .execute(
+            "INSERT INTO users(id,user_name,display_name) VALUES($1::text,$1::text,'Before')",
+            &[&prefix],
+        )
+        .await?;
+    client.execute("INSERT INTO channels(id,channel_name,created_user_id,is_private) VALUES($1::text,$1::text,$1::text,false)", &[&prefix]).await?;
+    for id in [&slow, &healthy] {
+        client
+            .execute(
+                "INSERT INTO messages(id,user_id,channel_id,content) VALUES($1,$2,$2,'body')",
+                &[id, &prefix],
+            )
+            .await?;
+    }
+    client.execute("INSERT INTO notifications(id,user_id,actor_id,channel_id,message_id,notification_type) VALUES($1,$2,$2,$2,$3,'mention')", &[&notice,&prefix,&healthy]).await?;
+    client
+        .execute(
+            "UPDATE users SET display_name='After' WHERE id=$1",
+            &[&prefix],
+        )
+        .await?;
+    client
+        .execute(
+            "DELETE FROM display_refresh_queue WHERE starts_with(target,$1)",
+            &[&prefix],
+        )
+        .await?;
+    client.execute("INSERT INTO display_refresh_queue(kind,target) VALUES('message',$1),('message',$2),('notification',$3),('emoji',$4)", &[&slow,&healthy,&notice,&scope]).await?;
+    isolate_queue(&others, &prefix).await?;
+    let function = format!("test_delay_{}", uuid::Uuid::new_v4().simple());
+    // Inject deterministic DB work instead of relying on CPU speed or a fixed
+    // reaction count. Each delay exceeds its first worker budget (200ms/5s).
+    client.batch_execute(&format!(
+        "CREATE FUNCTION {function}() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN IF OLD.target=TG_ARGV[0] THEN PERFORM pg_sleep(TG_ARGV[1]::double precision); END IF; RETURN OLD; END $$;
+         CREATE TRIGGER {function}_row BEFORE DELETE ON display_refresh_queue FOR EACH ROW EXECUTE FUNCTION {function}('{slow}','0.35');
+         CREATE TRIGGER {function}_scope BEFORE DELETE ON display_refresh_queue FOR EACH ROW EXECUTE FUNCTION {function}('{scope}','5.2');"
+    )).await?;
+    let state =
+        backend::state::AppState::new(backend::db::init_db(&config.database_url).await?, config);
+    let result = std::panic::AssertUnwindSafe(async {
+        assert!(backend::display_refresh::refresh_one(&state).await?);
+        for target in [&slow, &scope] {
+            let row = client.query_one("SELECT attempts,retry_at>clock_timestamp() FROM display_refresh_queue WHERE target=$1", &[target]).await?;
+            assert_eq!(row.get::<_,i32>(0), 1);
+            assert!(row.get::<_,bool>(1), "failed work must be deferred and retained");
+        }
+        assert_eq!(client.query_one("SELECT display_data->'author'->>'display_name' FROM messages WHERE id=$1", &[&slow]).await?.get::<_,String>(0), "Before", "timed-out projection must roll back");
+        client.execute("UPDATE display_refresh_queue SET retry_at=clock_timestamp()+interval '1 hour' WHERE target IN ($1,$2)", &[&slow,&scope]).await?;
+        // A message repaint may enqueue a new notification generation as well.
+        for _ in 0..8 {
+            if !backend::display_refresh::refresh_one(&state).await? { break; }
+        }
+        let pending:i64=client.query_one("SELECT count(*) FROM display_refresh_queue WHERE target IN ($1,$2)", &[&healthy,&notice]).await?.get(0);
+        assert_eq!(pending,0,"healthy message and notification must advance past both timeouts");
+        let drift:i64=client.query_one("SELECT count(*) FROM messages m JOIN message_display v USING(id) WHERE m.id=$1 AND m.display_data IS DISTINCT FROM v.display_data", &[&healthy]).await?.get(0);
+        assert_eq!(drift,0);
+        let drift:i64=client.query_one("SELECT count(*) FROM notification_events n JOIN notification_display v USING(id) WHERE n.id=$1 AND n.display_data IS DISTINCT FROM v.display_data", &[&notice]).await?.get(0);
+        assert_eq!(drift,0);
+        // Make the row runnable without sleeping through backoff. Its second
+        // budget is 400ms, enough for the 350ms repaint. Keep the scope deferred.
+        client.execute("UPDATE display_refresh_queue SET retry_at=CASE WHEN target=$1 THEN '-infinity'::timestamptz ELSE clock_timestamp()+interval '1 hour' END WHERE target IN ($1,$2)", &[&slow,&scope]).await?;
+        assert!(backend::display_refresh::refresh_one(&state).await?);
+        assert!(!client.query_one("SELECT EXISTS(SELECT 1 FROM display_refresh_queue WHERE target=$1)", &[&slow]).await?.get::<_,bool>(0));
+        assert_eq!(client.query_one("SELECT display_data->'author'->>'display_name' FROM messages WHERE id=$1", &[&slow]).await?.get::<_,String>(0),"After");
+        client.execute("UPDATE display_refresh_queue SET retry_at='-infinity' WHERE target=$1", &[&scope]).await?;
+        assert!(backend::display_refresh::refresh_one(&state).await?);
+        assert!(!client.query_one("SELECT EXISTS(SELECT 1 FROM display_refresh_queue WHERE target=$1)", &[&scope]).await?.get::<_,bool>(0));
+        anyhow::Ok(())
+    }).catch_unwind().await;
+    others.batch_execute("COMMIT").await?;
+    client.batch_execute(&format!("DROP TRIGGER {function}_row ON display_refresh_queue; DROP TRIGGER {function}_scope ON display_refresh_queue; DROP FUNCTION {function}();")).await?;
+    client
+        .execute("DELETE FROM notifications WHERE id=$1", &[&notice])
+        .await?;
+    client
+        .execute("DELETE FROM messages WHERE channel_id=$1", &[&prefix])
+        .await?;
+    result.unwrap_or_else(|panic| std::panic::resume_unwind(panic))
+}

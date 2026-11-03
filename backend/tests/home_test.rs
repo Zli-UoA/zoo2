@@ -1674,3 +1674,119 @@ async fn local_home_posts_include_joined_workspace_emoji_dimensions() -> anyhow:
         .await?;
     Ok(())
 }
+
+#[tokio::test]
+async fn home_notifications_join_local_content_emoji_aliases_and_dimensions() -> anyhow::Result<()>
+{
+    let mut config = Config::from_env();
+    config.dev_auth_enabled = true;
+    let mut db = init_db(&config.database_url).await?;
+    let app = create_router(AppState::new(db.clone(), config));
+    let owner = uuid::Uuid::new_v4().to_string();
+    let reactor = uuid::Uuid::new_v4().to_string();
+    for user in [&owner, &reactor] {
+        toasty::sql::statement("INSERT INTO users(id,user_name,display_name) VALUES($1,$1,$1)")
+            .bind(user.as_str())
+            .exec(&mut db)
+            .await?;
+    }
+    let name = format!("wide-{}", uuid::Uuid::new_v4().simple());
+    let alias = format!("alias-{}", uuid::Uuid::new_v4().simple());
+    let url = format!("/api/emoji-images/{}", uuid::Uuid::new_v4());
+    toasty::sql::statement("INSERT INTO workspace_emojis(name,url,aliases,width,height,created_by) VALUES($1,$2,jsonb_build_array($3::text),120,20,$4)")
+        .bind(name.as_str()).bind(url.as_str()).bind(alias.as_str()).bind(owner.as_str()).exec(&mut db).await?;
+    let (status, post) = request(
+        &app,
+        "POST",
+        Some(&owner),
+        "/api/home",
+        Some(json!({"content":format!(":{alias}: hello"),"visibility":"public"})),
+    )
+    .await?;
+    assert_eq!(status, StatusCode::CREATED);
+    let (status, _) = request(
+        &app,
+        "POST",
+        Some(&reactor),
+        "/api/activitypub/reactions",
+        Some(json!({"post_id":post["id"],"reaction":"👍"})),
+    )
+    .await?;
+    assert_eq!(status, StatusCode::OK);
+    for backfilled in [false, true] {
+        if backfilled {
+            toasty::sql::statement("UPDATE workspace_emojis SET image_id=$2 WHERE name=$1")
+                .bind(name.as_str())
+                .bind("c".repeat(64))
+                .exec(&mut db)
+                .await?;
+        }
+        let (status, notices) = request(
+            &app,
+            "GET",
+            Some(&owner),
+            "/api/activitypub/notifications",
+            None,
+        )
+        .await?;
+        assert_eq!(status, StatusCode::OK);
+        let notice = notices["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|n| n["post_id"] == post["id"])
+            .unwrap();
+        assert_eq!(notice["content"], format!(":{alias}: hello"));
+        assert_eq!(notice["content_emojis"].as_array().unwrap().len(), 1);
+        let emoji = &notice["content_emojis"][0];
+        assert_eq!(emoji["name"], format!(":{alias}:"));
+        assert_eq!(emoji["url"], url);
+        assert_eq!(emoji["local"], true);
+        assert_eq!(emoji["width"], 120);
+        assert_eq!(emoji["height"], 20);
+        let mut tx = db.transaction().await?;
+        let count = backend::apps::one(
+            &mut tx,
+            "SELECT json_build_object('count',count(*))::text FROM apub_emoji_images WHERE url=$1",
+            &[&url],
+        )
+        .await?;
+        assert_eq!(
+            count["count"], 0,
+            "local notification emojis must not enter the remote proxy registry"
+        );
+    }
+    let (_, hidden) = request(
+        &app,
+        "GET",
+        Some(&reactor),
+        "/api/activitypub/notifications",
+        None,
+    )
+    .await?;
+    assert!(hidden["items"].as_array().unwrap().is_empty());
+    let (status, _) = request(
+        &app,
+        "DELETE",
+        Some(&owner),
+        &format!("/api/home/{}", post["id"].as_str().unwrap()),
+        None,
+    )
+    .await?;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    let (_, notices) = request(
+        &app,
+        "GET",
+        Some(&owner),
+        "/api/activitypub/notifications",
+        None,
+    )
+    .await?;
+    for notice in notices["items"].as_array().unwrap() {
+        if notice["post_id"] == post["id"] {
+            assert!(notice["content"].is_null());
+            assert_eq!(notice["content_emojis"], json!([]));
+        }
+    }
+    Ok(())
+}
