@@ -18,6 +18,14 @@ Homeのアイコン・表示名・ユーザー名のリンクはAPubユーザー
 
 リモートActorのiconを保存し、TL・ユーザー情報・検索結果・通知のアバターに使用します。画像は既存のHTTPS画像プロキシ（DNS/SSRF対策、サイズ制限、キャッシュ、IP別制限）を共有し、ブラウザから連合先へ直接読み込みません。画像がない・取得できない場合は頭文字を表示します。アイコンと絵文字は画像キャッシュ・取得回数の上限を共有するため、配備後は両方の表示と429の発生状況を確認します。
 
+Homeの投稿画面では画像の選択・貼り付けと、投稿前の確認・削除ができます。PNG・JPEG・GIF・WebPを各8 MiB、最大10枚まで添付でき、本文のない画像のみの投稿にも対応します。送信に失敗しても画像を含む下書きは保持します。TL・単独投稿・公開プロフィールで画像を表示し、チャンネルへの同時投稿では既存の添付表示を使用します。
+
+`POST /api/home/images` に `name`、`content_type`、Base64の `data` を渡すと画像IDを返します。投稿時は `POST /api/home` の `image_ids` にそのIDを指定します。他の利用者がアップロードしたID、重複、10枚を超える指定は拒否します。画像は `home-images/<UUID>` に保存し、推測困難な公開URL `/api/home/images/<UUID>` から署名付き取得URLへ転送します。このURLは連合先の取得にも使用するため、ローカル限定・フォロワー限定の投稿でも、URLを知る相手は認証なしで画像を取得できます。投稿本文の公開範囲とは別の、URLの所持を条件にした画像配信です。未投稿の画像は取得できません。参照する投稿がすべて削除済み、または非公開・DM・削除済みチャンネルに属する場合も404を返します。すでに発行したS3署名付きURLは最大15分有効です。公開チャンネルのHome投稿に紐付く既存の添付画像もTLと公開プロフィールへ返します。チャンネルが非公開になった場合は、その添付の取得を拒否します。受信したNoteの `attachment` は画像プロキシ経由で表示します。以前のバージョンが保存せず破棄した添付情報は自動復元しません。
+
+画像は拡張子やヘッダーだけで判定せず、指定MIMEで復号できることを検証します。縦横各8192ピクセル・合計2000万画素・復号時の割り当て128 MiBを上限とし、アップロードとリモート写真の復号は、共通のセマフォで合計同時2件に制限します。HTTP要求が途中で中断しても復号の完了までは許可を保持します。利用者ごとのアップロード要求は毎分30件、保存容量は削除待ちを含め1 GiBまでです。チャンネルへの同時投稿でも選択順を保持します。公開プロフィール・outbox・Noteの取得は、非公開・DM・削除済みチャンネルを除外します。
+
+`DELETE /api/home/images/<UUID>` はアップロードした本人だけが呼び出せます。有効な投稿やチャンネル添付から参照中の画像は削除できません。両フロントは選択解除・下書き破棄時に削除を試みます。フォームを閉じるだけの場合は下書きを保持します。削除要求が届かなかった画像、未投稿の画像、投稿削除後に参照がなくなった画像は、作成から24時間経過後に回収します。S3へのPUT前に画像情報をDBへ確定するため、PUT後のDB障害やプロセス停止時も回収対象を追跡できます。PUTの失敗時は削除キューへ登録し、途中停止で残った予約行は24時間後に回収します。PUT中は画像行をロックし、回収・アカウント削除が保存より先にS3削除を終えることを防ぎます。60秒ごとのワーカーが最大100件を回収し、DBの削除キューから最大100件のS3オブジェクトを削除します。失敗した削除はキューに残して再試行し、アカウント削除時もキューへ登録します。公開処理と回収処理は画像行のロックで直列化します。
+
 ## 公開範囲
 
 以下の外部配送・Note取得は「連合あり」の場合です。「連合なし」はどの公開範囲でも外部配送・未認証のNote取得を行いません。
@@ -145,7 +153,7 @@ Homeの投稿下のリアクションボタンから絵文字を選択できま�
 
 Misskeyの形式は [ApRendererService](https://github.com/misskey-dev/misskey/blob/develop/packages/backend/src/core/activitypub/ApRendererService.ts)、[ApInboxService](https://github.com/misskey-dev/misskey/blob/develop/packages/backend/src/core/activitypub/ApInboxService.ts)、[emojis API](https://github.com/misskey-dev/misskey/blob/develop/packages/backend/src/server/api/endpoints/emojis.ts) の公開実装と照合しています。実際のMisskeyサーバーとの相互接続試験は未実施です。
 
-絵文字画像は、受信タグ・カタログから登録した画像IDだけをZooのプロキシで公開します。任意URLの画像プロキシにはしません。HTTPS・公開IP・DNS固定・リダイレクト禁止を適用し、画像は最大2 MiB、同時取得8件に制限します。サーバー側では成功した画像を5分、取得失敗を30秒キャッシュし、最大128件・合計32 MiBまで保持します。キャッシュにない画像の取得は接続元IPごとに毎分240件、プロセス全体で毎分960件までです。Cloudflare Tunnel用の隔離されたオリジンでは `ACTIVITYPUB_CLOUDFLARE_TUNNEL=true` とし、プライベートIP・loopbackのプロキシ接続から届く `CF-Connecting-IP` を利用者ごとの制限に使います。`compose.stg.yaml` はこの構成を既定で有効にします。CloudflareのPseudo IPv4による上書き時には `CF-Connecting-IPv6` の実IPv6を使用します。公開IPからの直結、または設定が無効な場合は転送ヘッダーを信頼せずTCP接続元を使います。Tunnel設定でヘッダーや接続元が不明な場合は400とし、プロキシ全体の共有枠には戻しません。429には `Retry-After: 60` と `Cache-Control: no-store` を返します。画像登録は未使用30日で削除し、認証済みのTL・通知の閲覧時に使用中の登録を更新します。SVGを含む対応画像には `nosniff` とsandboxのCSPを付けます。
+絵文字画像は、受信タグ・カタログから登録した画像IDだけをZooのプロキシで公開します。任意URLの画像プロキシにはしません。HTTPS・公開IP・DNS固定・リダイレクト禁止を適用し、絵文字・アバター用の `emoji-images` は従来どおり最大2 MiB、投稿写真用の `media-images` は最大8 MiBに分けます。写真にはアップロードと同じ寸法・画素数・復号制限も適用します。同時取得は両方合わせて8件で、取得中の圧縮データは最大64 MiBとなり、これに復号用メモリーが加わります。復号はアップロードと共有の同時2件枠で行い、各処理の割り当て上限は128 MiBです。サーバー側では成功した画像を5分、取得失敗を30秒キャッシュし、最大128件・合計32 MiBまで保持します。キャッシュにない画像の取得は接続元IPごとに毎分240件、プロセス全体で毎分960件までです。Cloudflare Tunnel用の隔離されたオリジンでは `ACTIVITYPUB_CLOUDFLARE_TUNNEL=true` とし、プライベートIP・loopbackのプロキシ接続から届く `CF-Connecting-IP` を利用者ごとの制限に使います。`compose.stg.yaml` はこの構成を既定で有効にします。CloudflareのPseudo IPv4による上書き時には `CF-Connecting-IPv6` の実IPv6を使用します。公開IPからの直結、または設定が無効な場合は転送ヘッダーを信頼せずTCP接続元を使います。Tunnel設定でヘッダーや接続元が不明な場合は400とし、プロキシ全体の共有枠には戻しません。429には `Retry-After: 60` と `Cache-Control: no-store` を返します。画像登録は未使用30日で削除し、認証済みのTL・通知の閲覧時に使用中の登録を更新します。SVGを含む対応画像には `nosniff` とsandboxのCSPを付けます。
 
 APIの追加・拡張：
 
@@ -155,7 +163,8 @@ APIの追加・拡張：
 - `POST/DELETE /api/activitypub/reposts`：`{ "post_id": "..." }`。
 - `POST /api/activitypub/reactions`：`post_id` に加え `reaction`、カスタムの場合は登録済みの正式名またはエイリアスを指定でき、選択肢から得た `emoji_id` も指定可能。DELETEで自分のリアクションを取り消します。
 - `GET /api/activitypub/reaction-options?post_id=...`：閲覧できる投稿のリアクション用絵文字一覧。
-- `GET /api/activitypub/emoji-images/<登録済み画像ID>`：制限付きの画像取得。
+- `GET /api/activitypub/emoji-images/<登録済み画像ID>`：絵文字・アバターの取得（最大2 MiB）。
+- `GET /api/activitypub/media-images/<登録済み画像ID>`：投稿写真の取得（最大8 MiB、寸法・画素数・復号制限付き）。
 
 追加テストではMisskey形式のタグ・Like/Undo、リアクション変更順序、画像の内部IPへの取得拒否、返信先の権限と公開範囲、直接配送先へのUpdate/Delete、Announce/UndoとTLページ送りを検証します。
 

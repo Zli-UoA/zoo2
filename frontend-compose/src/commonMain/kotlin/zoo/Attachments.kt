@@ -240,6 +240,9 @@ class AttachmentDrafts(
     var error by mutableStateOf<String?>(null)
     var enabled = false
     var acceptFiles = true
+    var acceptedTypes: List<String>? = null
+    var onDiscard: ((Row) -> Unit)? = null
+    var maximumBytes = MAX_ATTACHMENT_BYTES
     private var bounds: Row = JsonObject(emptyMap())
 
     fun updateBounds(left: Float, top: Float, width: Float, height: Float) {
@@ -280,6 +283,8 @@ class AttachmentDrafts(
             }
             handled = true
             val rejected = attachmentRejection(file, items.size)
+                ?: if (acceptedTypes?.let { mime !in it } == true) "unsupported"
+                else if ((file.text("size").toLongOrNull() ?: 0) > maximumBytes) "tooLarge" else null
             if (rejected != null) {
                 if (batchError == null)
                     batchError =
@@ -317,7 +322,7 @@ class AttachmentDrafts(
                 try {
                     if (upload != null) {
                         val result = upload(file)
-                        if (draft in items) draft.uploaded = result
+                        if (draft in items) draft.uploaded = result else onDiscard?.invoke(result)
                     } else {
                         val presign =
                             attachmentPayload(
@@ -367,7 +372,7 @@ class AttachmentDrafts(
                     "pickFiles",
                     buildJsonObject {
                             put("owner", owner)
-                            put("accept", "")
+                            put("accept", acceptedTypes?.joinToString(",").orEmpty())
                             put("multiple", true)
                         }
                         .toString(),
@@ -377,6 +382,7 @@ class AttachmentDrafts(
     }
 
     fun remove(item: AttachmentDraft) {
+        item.uploaded?.let { onDiscard?.invoke(it) }
         items.remove(item)
         release(listOf(item))
     }
@@ -393,6 +399,7 @@ class AttachmentDrafts(
     fun close() {
         job.cancel()
         app.platform.forgetFileTarget(owner)
+        owned.values.toList().forEach { it.uploaded?.let { uploaded -> onDiscard?.invoke(uploaded) } }
         release(owned.values.toList())
         items.clear()
     }
@@ -418,7 +425,7 @@ fun rememberAttachmentDrafts(
 }
 
 @Composable
-fun DraftAttachments(app: Session, drafts: AttachmentDrafts) {
+fun DraftAttachments(app: Session, drafts: AttachmentDrafts, errorMessage: String? = drafts.error) {
     if (drafts.items.isNotEmpty())
         FlowRow(
             modifier = Modifier.padding(bottom = 8.dp),
@@ -483,7 +490,7 @@ fun DraftAttachments(app: Session, drafts: AttachmentDrafts) {
                 }
             }
         }
-    drafts.error?.let {
+    errorMessage?.let {
         Text(
             it,
             Modifier.padding(bottom = 8.dp, start = 4.dp)

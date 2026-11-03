@@ -1,8 +1,13 @@
 import type { Meta, StoryObj } from "@storybook/react-vite";
 import { http, HttpResponse, delay } from "msw";
-import { expect, userEvent, within } from "storybook/test";
+import { expect, userEvent, within, waitFor } from "storybook/test";
 import { playForImplementation } from "../../../.storybook/play-for-implementation";
-import { publicProfile, longPublicProfile } from "../../../.storybook/public-profile-fixtures";
+import {
+  publicProfile,
+  longPublicProfile,
+  imagePublicProfile,
+} from "../../../.storybook/public-profile-fixtures";
+import { homeImageHandler } from "../../../.storybook/home-fixtures";
 import { PublicProfile } from "./PublicProfile";
 
 const endpoint = "*/api/activitypub/users/alice/profile";
@@ -124,5 +129,22 @@ export const Pagination: Story = {
       "/public/users/alice",
     );
     await expect(canvas.queryByRole("link", { name: "過去の投稿" })).toBeNull();
+  }),
+};
+
+export const WithImages: Story = {
+  parameters: {
+    msw: {
+      handlers: [http.get(endpoint, () => HttpResponse.json(imagePublicProfile)), homeImageHandler],
+    },
+  },
+  play: playForImplementation(async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    for (const name of ["profile-photo.png", "image-only.png"]) {
+      const image = await canvas.findByRole("img", { name });
+      await expect(image).toBeVisible();
+      await waitFor(() => expect((image as HTMLImageElement).naturalWidth).toBeGreaterThan(0));
+    }
+    await expect(canvas.getByText("公開プロフィールの画像投稿です。")).toBeVisible();
   }),
 };

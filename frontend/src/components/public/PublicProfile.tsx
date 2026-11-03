@@ -14,6 +14,7 @@ export interface PublicProfileData {
     id: string;
     content: string;
     created_at: string;
+    media?: import("../home/HomePostContent").HomeMedia[];
     emojis?: import("../home/ActivityPubEmoji").CustomEmoji[];
   }[];
   next_cursor: string | null;
@@ -127,7 +128,7 @@ export function PublicProfile({ userId, before }: { userId: string; before?: str
                       {new Date(post.created_at).toLocaleString(i18n.language)}
                     </time>
                   </a>
-                  <HomePostContent content={post.content} emojis={post.emojis} />
+                  <HomePostContent content={post.content} emojis={post.emojis} media={post.media} />
                 </article>
               ))}
               {!data.posts.length ? (

@@ -170,10 +170,12 @@ pub(super) async fn resolve_announce(
     remote_actor(state, Some(user), &author, false).await?;
     let proof = note_identity::Proof::from_note(&note, object)?;
     let emojis = emoji::tags(&note["tag"]);
+    let media = emoji::media(&note["attachment"]);
     let mut tx = db.transaction().await?;
     note_identity::reconcile(&mut tx, object, &author, Some(&proof)).await?;
     emoji::remember(&mut tx, &emojis).await?;
-    toasty::sql::statement("INSERT INTO apub_remote_posts(id,actor_id,content,visibility,published,updated_at,emojis,origin_verified) SELECT $1,$2,$3,$4,$5::timestamptz,$6::timestamptz,$7::jsonb,true WHERE NOT EXISTS(SELECT 1 FROM apub_remote_tombstones WHERE id=$1 AND actor_id=$2) ON CONFLICT(id) DO UPDATE SET origin_verified=true WHERE apub_remote_posts.actor_id=EXCLUDED.actor_id").bind(object).bind(author).bind(emoji::note_content(&note)?).bind(visibility).bind(published.to_string()).bind(updated.to_string()).bind(json!(emojis).to_string()).exec(&mut tx).await?;
+    emoji::remember(&mut tx, &media).await?;
+    toasty::sql::statement("INSERT INTO apub_remote_posts(id,actor_id,content,visibility,published,updated_at,emojis,origin_verified,media) SELECT $1,$2,$3,$4,$5::timestamptz,$6::timestamptz,$7::jsonb,true,$8::jsonb WHERE NOT EXISTS(SELECT 1 FROM apub_remote_tombstones WHERE id=$1 AND actor_id=$2) ON CONFLICT(id) DO UPDATE SET origin_verified=true WHERE apub_remote_posts.actor_id=EXCLUDED.actor_id").bind(object).bind(author).bind(emoji::note_content(&note)?).bind(visibility).bind(published.to_string()).bind(updated.to_string()).bind(json!(emojis).to_string()).bind(json!(media).to_string()).exec(&mut tx).await?;
     tx.commit().await?;
     Ok(())
 }
