@@ -51,6 +51,32 @@ class SlackImportTest {
     }
 
     @Test
+    fun previousTargetsCanBeChosenEvenWhenNotSynced() {
+        val targets =
+            listOf(
+                obj("id" to "public", "channel_name" to "public", "is_private" to false),
+                obj("id" to "secret", "channel_name" to "secret", "is_private" to true),
+            )
+        val private = obj("slack_channel_id" to "G1", "is_private" to true)
+        assertEquals(listOf("secret"), slackImportChoices(private, targets).map { it.text("id") })
+        // 参加していない非公開チャンネルは同期されないが、以前の取り込み先には入れ直せる
+        val imported =
+            obj(
+                "slack_channel_id" to "G1",
+                "is_private" to true,
+                "existing_channel" to obj("id" to "old", "name" to "old-secret", "is_private" to true),
+            )
+        assertEquals(
+            listOf(obj("id" to "old", "channel_name" to "old-secret", "is_private" to true)),
+            slackImportChoices(imported, emptyList()),
+        )
+        assertEquals(
+            listOf("old", "secret"),
+            slackImportChoices(imported, targets).map { it.text("id") },
+        )
+    }
+
+    @Test
     fun retryableFilesCountOnlyCompletedJobs() {
         assertEquals(
             5,

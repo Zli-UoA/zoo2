@@ -74,6 +74,27 @@ fun slackImportMappingFor(channel: Row, action: String, targets: List<Row>): Row
     }
 }
 
+/**
+ * 「既存のチャンネル」で選べる取り込み先 (React の `targetChoices`)。非公開チャンネルの履歴は公開チャンネルに
+ * 入れない。以前の取り込み先は、参加していない非公開チャンネルで同期されていなくても選べるよう先頭に足す。
+ */
+fun slackImportChoices(channel: Row, targets: List<Row>): List<Row> {
+    val existing = channel["existing_channel"] as? JsonObject
+    val choices =
+        if (channel.flag("is_private"))
+            targets.filter { it.flag("is_private") || it.text("id") == existing?.text("id") }
+        else targets
+    if (existing == null || choices.any { it.text("id") == existing.text("id") }) return choices
+    val private = (existing["is_private"] as? JsonPrimitive)?.booleanOrNull ?: channel.flag("is_private")
+    return listOf(
+        obj(
+            "id" to existing.text("id"),
+            "channel_name" to existing.text("name"),
+            "is_private" to private,
+        )
+    ) + choices
+}
+
 /** 取り込みのジョブは、どの ZIP からの取り込みかを名前に出す */
 private fun slackImportTitle(app: Session, job: Row): String =
     if (isSlackExport(job)) job.text("file_name")
@@ -527,13 +548,7 @@ private fun SlackImportMappingForm(
                 val name = channel.text("name")
                 val existing = channel["existing_channel"] as? JsonObject
                 val deleted = channel.text("deleted_channel").isNotEmpty()
-                // 非公開チャンネルの履歴は、メンバー以外も読める公開チャンネルには入れない
-                val choices =
-                    if (channel.flag("is_private"))
-                        targets.filter {
-                            it.flag("is_private") || it.text("id") == existing?.text("id")
-                        }
-                    else targets
+                val choices = slackImportChoices(channel, targets)
                 // 以前取り込んだチャンネルは同じ取り込み先にしか入れられない (メッセージ ID が変わらないため)
                 val actions =
                     actionLabels.keys.filter {

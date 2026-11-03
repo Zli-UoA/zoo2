@@ -4,6 +4,7 @@ import type { ApiClient } from "./client";
 import {
   defaultMappings,
   mappingFor,
+  targetChoices,
   uploadSlackExport,
   splitSlackImports,
   type PutWithProgress,
@@ -56,6 +57,30 @@ describe("mappingFor", () => {
     expect(mappingFor(channel({}), "existing", targets)).toMatchObject({
       channel_id: "channel-random",
     });
+  });
+});
+
+describe("targetChoices", () => {
+  const targets = [
+    { id: "public", channel_name: "public", is_private: false },
+    { id: "secret", channel_name: "secret", is_private: true },
+  ];
+  it("keeps private history out of public channels", () => {
+    expect(targetChoices(channel({ is_private: true }), targets).map((t) => t.id)).toEqual([
+      "secret",
+    ]);
+    expect(targetChoices(channel({}), targets).map((t) => t.id)).toEqual(["public", "secret"]);
+  });
+  it("offers the previous target even when it is not synced", () => {
+    // 参加していない非公開チャンネルは Shape に載らないが、以前の取り込み先には入れ直せる
+    const imported = channel({
+      is_private: true,
+      existing_channel: { id: "old", name: "old-secret", is_private: true },
+    });
+    expect(targetChoices(imported, [])).toEqual([
+      { id: "old", channel_name: "old-secret", is_private: true },
+    ]);
+    expect(targetChoices(imported, targets).map((t) => t.id)).toEqual(["old", "secret"]);
   });
 });
 

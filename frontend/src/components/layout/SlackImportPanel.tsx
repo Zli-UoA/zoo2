@@ -15,6 +15,7 @@ import {
   splitSlackImports,
   retryableFiles,
   startSlackImport,
+  targetChoices,
   uploadSlackExport,
   type PutWithProgress,
   type SlackChannelMapping,
@@ -351,12 +352,7 @@ function MappingForm({
       <ul className="divide-y rounded-md border">
         {channels.map((channel, index) => {
           const mapping = mappings[index];
-          // 非公開チャンネルの履歴は、メンバー以外も読める公開チャンネルには入れない
-          const choices = channel.is_private
-            ? targets.filter(
-                (target) => target.is_private || target.id === channel.existing_channel?.id,
-              )
-            : targets;
+          const choices = targetChoices(channel, targets);
           const id = `slack-import-${channel.slack_channel_id}`;
           return (
             <li key={channel.slack_channel_id} className="flex flex-wrap items-center gap-2 p-3">

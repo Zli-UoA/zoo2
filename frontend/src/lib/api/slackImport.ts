@@ -205,6 +205,33 @@ export function defaultMappings(channels: SlackChannelSummary[]): SlackChannelMa
  * 取り込み方を選んだときの対応付け。以前取り込んだチャンネルは同じ取り込み先に固定する
  * (メッセージ ID が変わらないため)。`targets` は選べる既存チャンネル。
  */
+/** 「既存のチャンネル」で選べる取り込み先 */
+export type SlackTargetChoice = { id: string; channel_name: string; is_private: boolean };
+
+/**
+ * 「既存のチャンネル」で選べる取り込み先。非公開チャンネルの履歴は公開チャンネルに入れない。
+ * 以前の取り込み先は、参加していない非公開チャンネルで同期されていなくても選べるよう先頭に足す
+ * (以前取り込んだチャンネルはそこにしか入れられないため)。
+ */
+export function targetChoices(
+  channel: SlackChannelSummary,
+  targets: SlackTargetChoice[],
+): SlackTargetChoice[] {
+  const existing = channel.existing_channel;
+  const choices = channel.is_private
+    ? targets.filter((target) => target.is_private || target.id === existing?.id)
+    : targets;
+  if (!existing || choices.some((target) => target.id === existing.id)) return choices;
+  return [
+    {
+      id: existing.id,
+      channel_name: existing.name,
+      is_private: existing.is_private ?? channel.is_private,
+    },
+    ...choices,
+  ];
+}
+
 export function mappingFor(
   channel: SlackChannelSummary,
   action: SlackChannelMapping["action"],
