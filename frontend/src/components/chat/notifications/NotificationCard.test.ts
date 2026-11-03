@@ -128,7 +128,8 @@ beforeEach(() => {
 it("shows one grouped reaction card with a limited clickable quote and no action buttons", () => {
   const html = render();
   expect(html).toContain("ほか1人がリアクションしました");
-  expect(html).toContain('aria-label="👍 2"');
+  expect(html).not.toContain('aria-label="👍 2"');
+  expect(html).not.toContain("<ul");
   expect(html).toContain('href="/channels/channel?message=message"');
   expect(html).toContain("<blockquote>");
   expect(html).toContain("line-clamp-3");

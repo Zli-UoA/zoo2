@@ -1,4 +1,5 @@
 import type { ActivityPubNotification } from "../src/hooks/useActivityPubNotifications";
+import { customEmojiFixture } from "./preference-fixtures";
 export const activityPubNotifications: ActivityPubNotification[] = [
   {
     id: "request-peer",
@@ -43,6 +44,24 @@ export const blobcat = {
   url: "https://misskey.example/emoji/blobcat.png",
   id: "https://misskey.example/emojis/blobcat",
   image_id: "a".repeat(64),
+};
+
+export const localEmojiNotification: ActivityPubNotification = {
+  ...activityPubNotifications[2]!,
+  id: "local-emoji-notification",
+  actor_id: "local:user-2",
+  display_name: "Bob",
+  content: "ローカル投稿の引用 :hello:",
+  content_emojis: [
+    {
+      name: ":hello:",
+      url: customEmojiFixture.url,
+      image_id: "",
+      local: true,
+      width: customEmojiFixture.width,
+      height: customEmojiFixture.height,
+    },
+  ],
 };
 export const misskeyPost = {
   id: "https://misskey.example/notes/note1",

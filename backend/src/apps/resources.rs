@@ -670,7 +670,7 @@ async fn put_emoji(
             .exec(&mut tx)
             .await?;
     }
-    let v=one(&mut tx,"INSERT INTO workspace_emojis(name,url,created_by,category,aliases) VALUES($1,$2,$3,$4,$5::jsonb) ON CONFLICT(name) DO UPDATE SET url=EXCLUDED.url,category=EXCLUDED.category,aliases=EXCLUDED.aliases,updated_at=now() RETURNING row_to_json(workspace_emojis)::text",&[&b.name,&b.url,&a.user.id,&b.category,&json!(b.aliases).to_string()]).await?;
+    let v=one(&mut tx,"WITH image AS (SELECT width,height,image_id FROM workspace_emojis WHERE url=$2 ORDER BY (width IS NULL),name LIMIT 1) INSERT INTO workspace_emojis(name,url,created_by,category,aliases,width,height,image_id) VALUES($1,$2,$3,$4,$5::jsonb,(SELECT width FROM image),(SELECT height FROM image),(SELECT image_id FROM image)) ON CONFLICT(name) DO UPDATE SET url=EXCLUDED.url,category=EXCLUDED.category,aliases=EXCLUDED.aliases,width=EXCLUDED.width,height=EXCLUDED.height,image_id=EXCLUDED.image_id,updated_at=now() RETURNING row_to_json(workspace_emojis)::text",&[&b.name,&b.url,&a.user.id,&b.category,&json!(b.aliases).to_string()]).await?;
     tx.commit().await?;
     Ok(Json(v))
 }
@@ -1768,7 +1768,7 @@ async fn upload_emoji(
     validate_emoji_metadata(&mut tx, &b.name, previous, &b.category, &b.aliases).await?;
     let old = query(
         &mut tx,
-        "SELECT row_to_json(e)::text FROM workspace_emojis e WHERE name=$1 FOR UPDATE",
+        "SELECT row_to_json(e)::text FROM workspace_emojis e WHERE name=$1",
         &[previous],
     )
     .await?;
@@ -1789,6 +1789,7 @@ async fn upload_emoji(
     {
         return Err(AppError::BadRequest("Emoji name already exists".into()));
     }
+    let dimensions = crate::storage::image_dimensions::dimensions(&bytes);
     let id = uuid::Uuid::new_v4();
     let key = format!("custom-emojis/{id}");
     s.s3_client
@@ -1805,10 +1806,26 @@ async fn upload_emoji(
         })?;
     let url = format!("/api/emoji-images/{id}");
     let result = async {
+        // Recheck the
+        // mutable ownership/name conditions after the S3 upload and row lock.
+        let current = query(&mut tx, "SELECT row_to_json(e)::text FROM workspace_emojis e WHERE name=$1 FOR UPDATE", &[previous]).await?;
+        if b.previous_name.is_some() && current.is_empty() {
+            return Err(AppError::NotFound("Emoji not found".into()));
+        }
+        if current.first().is_some_and(|e| e["created_by"] != a.user.id) {
+            a.admin(&mut tx, &s).await?;
+        }
+        if previous != b.name && !query(&mut tx, "SELECT '{}'::text FROM workspace_emojis WHERE name=$1", &[&b.name]).await?.is_empty() {
+            return Err(AppError::BadRequest("Emoji name already exists".into()));
+        }
+
         if previous != b.name {
             toasty::sql::statement("UPDATE workspace_emojis SET name=$2 WHERE name=$1").bind(previous).bind(b.name.as_str()).exec(&mut tx).await?;
         }
-        let value = one(&mut tx,"INSERT INTO workspace_emojis(name,url,created_by,category,aliases) VALUES($1,$2,$3,$4,$5::jsonb) ON CONFLICT(name) DO UPDATE SET url=EXCLUDED.url,category=EXCLUDED.category,aliases=EXCLUDED.aliases,updated_at=now() RETURNING row_to_json(workspace_emojis)::text", &[&b.name,&url,&a.user.id,&b.category,&json!(b.aliases).to_string()]).await?;
+        let width = dimensions.map(|(width,_)| width.to_string()).unwrap_or_default();
+        let height = dimensions.map(|(_,height)| height.to_string()).unwrap_or_default();
+        let image_id = crate::storage::image_dimensions::emoji_image_id(&url).unwrap_or_default();
+        let value = one(&mut tx,"INSERT INTO workspace_emojis(name,url,created_by,category,aliases,width,height,image_id) VALUES($1,$2,$3,$4,$5::jsonb,NULLIF($6,'')::integer,NULLIF($7,'')::integer,NULLIF($8,'')) ON CONFLICT(name) DO UPDATE SET url=EXCLUDED.url,category=EXCLUDED.category,aliases=EXCLUDED.aliases,width=EXCLUDED.width,height=EXCLUDED.height,image_id=EXCLUDED.image_id,updated_at=now() RETURNING row_to_json(workspace_emojis)::text", &[&b.name,&url,&a.user.id,&b.category,&json!(b.aliases).to_string(),&width,&height,&image_id]).await?;
         tx.commit().await?;
         Ok::<_, AppError>(value)
     }.await;

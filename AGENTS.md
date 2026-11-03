@@ -1,4 +1,4 @@
-# コードレビュー
+## Code Review Rules
 
 - このリポジトリでコード変更・差分・コミット・PRのレビューを依頼された場合は、スキル名の明示がなくても `.agents/skills/japanese-code-review/SKILL.md` を読み、その手順と指摘基準に従う。
 - 「レビューして」「この差分を見て」「PRを確認して」や、`review`・`code review` などの依頼を対象とする。
@@ -21,6 +21,11 @@
 
 - React版・Compose Web版の機能、UI、API、状態管理を変更する場合、およびmainを取り込む場合は `.agents/skills/compose-react-parity/SKILL.md` に従う。
 - Reactの変更はCompose Webへの反映と両実装の検証を同じPRに含めて完了する。実験版であることを追従の省略理由にしない。
+
+# TUI版の追従
+
+- フロントエンド・バックエンドの機能、UI、API、Electricのshape、認証を変更する場合、およびmainを取り込む場合は、TUI版（`tui/`）も修正する。
+- TUI版の修正と検証（`make tui-check`）は同じPRに含めて完了する。TUI版に反映しない場合は、その理由をPRの本文に書く。
 
 # 開発環境 (flake.nix)
 

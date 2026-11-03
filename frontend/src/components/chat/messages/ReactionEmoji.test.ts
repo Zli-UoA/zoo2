@@ -15,6 +15,17 @@ const catalog: KitchenCatalog = {
 };
 
 describe("ReactionEmoji", () => {
+  it("reserves a joined wide custom image before it loads", () => {
+    const html = renderToStaticMarkup(
+      createElement(ReactionEmoji, {
+        emoji: ":wide:",
+        catalog: null,
+        emojis: { wide: { url: "/wide.png", width: 120, height: 20 } },
+      }),
+    );
+    expect(html).toContain("height:20px;width:120px");
+    expect(html).toContain('alt=":wide:"');
+  });
   it("keeps the image slot before the kitchen catalog loads", () => {
     const html = renderToStaticMarkup(
       createElement(ReactionEmoji, { emoji: "kitchen:1f600_1f431", catalog: null }),

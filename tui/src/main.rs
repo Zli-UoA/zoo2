@@ -46,7 +46,7 @@ fn oidc_config(config: &Config) -> Result<&OidcConfig> {
     match &config.auth {
         AuthConfig::Oidc(oidc) => Ok(oidc),
         AuthConfig::Dev { .. } => {
-            bail!("OIDC が設定されていません。oidc_issuer と oidc_client_id を設定してください")
+            bail!("dev モードではログインできません。ZOO_DEV_USER と dev_user を外してください")
         }
     }
 }

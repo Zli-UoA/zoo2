@@ -89,16 +89,31 @@ pub(super) fn tags(value: &Value) -> Vec<Value> {
         let url=tag["icon"]["url"].as_str()?;
         if !https(url){return None;}
         let image_id=openssl::sha::sha256(url.as_bytes()).iter().map(|b|format!("{b:02x}")).collect::<String>();
-        Some(json!({"name":name,"url":url,"id":tag["id"].as_str().filter(|v|https(v)),"image_id":image_id}))
+        Some(json!({"name":name,"url":url,"id":tag["id"].as_str().filter(|v|https(v)),"image_id":image_id,"width":tag["icon"]["width"].as_u64().filter(|v| *v>0 && *v<=65535),"height":tag["icon"]["height"].as_u64().filter(|v| *v>0 && *v<=65535)}))
     }).collect()
 }
 pub(super) async fn remember(
     tx: &mut toasty::Transaction<'_>,
     emojis: &[Value],
 ) -> Result<(), AppError> {
+    // Local images use their direct URL, never the remote proxy registry.
+    // Validate at this shared sink as well as excluding local feed descriptors.
+    let emojis: Vec<_> = emojis
+        .iter()
+        .filter(|emoji| {
+            emoji["local"] != true
+                && emoji["image_id"].as_str().is_some_and(|id| {
+                    id.len() == 64
+                        && id
+                            .bytes()
+                            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+                })
+                && emoji["url"].as_str().is_some_and(https)
+        })
+        .collect();
     toasty::sql::statement("INSERT INTO apub_emoji_images(id,url) SELECT DISTINCT e->>'image_id',e->>'url' FROM jsonb_array_elements($1::jsonb) e ON CONFLICT(id) DO UPDATE SET last_seen_at=now() WHERE apub_emoji_images.last_seen_at<now()-interval '1 day'").bind(json!(emojis).to_string()).exec(&mut *tx).await?;
     toasty::sql::statement(
-        "DELETE FROM apub_emoji_images WHERE last_seen_at<now()-interval '30 days'",
+        "DELETE FROM apub_emoji_images WHERE last_seen_at<now()-interval '30 days' AND NOT EXISTS(SELECT 1 FROM apub_reactions r WHERE r.emoji->>'image_id'=apub_emoji_images.id)",
     )
     .exec(tx)
     .await?;
@@ -130,7 +145,7 @@ pub(super) fn reaction(activity: &Value) -> Result<(String, Option<Value>), AppE
     }
 }
 pub(super) fn as_tag(value: &Value) -> Value {
-    json!({"id":value["id"],"type":"Emoji","name":value["name"],"icon":{"type":"Image","url":value["url"]}})
+    json!({"id":value["id"],"type":"Emoji","name":value["name"],"icon":{"type":"Image","url":value["url"],"width":value["width"],"height":value["height"]}})
 }
 #[derive(Deserialize)]
 struct Options {
@@ -179,7 +194,7 @@ pub(crate) async fn workspace_options(
         let url = string(&e, "url")?;
         let url = if url.starts_with('/') { format!("{}{url}", base_url().unwrap_or_default()) } else { url.to_owned() };
         let image_id = openssl::sha::sha256(url.as_bytes()).iter().map(|b| format!("{b:02x}")).collect::<String>();
-        Ok(json!({"name":format!(":{}:",string(&e,"name")?),"url":url,"id":url,"image_id":image_id,"local":true,"category":e["category"],"aliases":e["aliases"]}))
+        Ok(json!({"name":format!(":{}:",string(&e,"name")?),"url":url,"id":url,"image_id":image_id,"local":true,"category":e["category"],"aliases":e["aliases"],"width":e["width"],"height":e["height"]}))
     }).collect()
 }
 
