@@ -263,6 +263,14 @@ async fn test_slack_account_link_reassigns_placeholder() -> anyhow::Result<()> {
         &[&long, &bob, &channel, &long_content],
     )
     .await?;
+    // 他の人がプレースホルダの投稿へ Home で返信している
+    let home_reply = uuid::Uuid::new_v4().to_string();
+    exec(
+        &state,
+        "INSERT INTO home_posts(id,user_id,content,reply_user_id) VALUES($1,$2,'reply on Home',$3)",
+        &[&home_reply, &bob, &placeholder],
+    )
+    .await?;
     // Slack から取り込んでいないチャンネルの本文は書き換えない
     let other = uuid::Uuid::new_v4().to_string();
     let (status, _, _) = request(
@@ -424,6 +432,13 @@ async fn test_slack_account_link_reassigns_placeholder() -> anyhow::Result<()> {
     );
     assert_eq!(content(unrelated.clone()).await, format!("@{p}"));
     assert_eq!(content(long.clone()).await, long_content);
+    let reply = sql(
+        &state,
+        "SELECT json_build_object('reply_user_id',reply_user_id)::text FROM home_posts WHERE id=$1",
+        &[&home_reply],
+    )
+    .await?;
+    assert_eq!(reply[0]["reply_user_id"], alice.as_str());
     let mapping = sql(
         &state,
         "SELECT json_build_object('user_id',user_id,'linked',linked)::text FROM slack_users WHERE team_id=$1 AND slack_user_id='U1'",

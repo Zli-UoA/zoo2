@@ -470,6 +470,8 @@ pub async fn move_content(
         "UPDATE attachments SET uploader_id=$2 WHERE uploader_id=$1",
         "UPDATE slack_files SET uploader_id=$2 WHERE uploader_id=$1",
         "UPDATE home_posts SET user_id=$2 WHERE user_id=$1",
+        // Home の返信は、返信先の作者を reply_user_id に持つ (本人の Home に他人の返信を出すため)
+        "UPDATE home_posts SET reply_user_id=$2 WHERE reply_user_id=$1",
     ] {
         exec(tx, sql, &[from, to]).await?;
     }
@@ -521,10 +523,12 @@ async fn rewrite_mentions(
     } else {
         "@"
     };
+    // 並行して本文を編集した人の変更を上書きしないよう、読む行をロックしてから書き換える
     let rows = query(
         tx,
         "SELECT json_build_object('id',id,'content',content)::text FROM messages \
-         WHERE channel_id IN (SELECT channel_id FROM slack_channels WHERE team_id=$1) AND strpos(content,$2)>0",
+         WHERE channel_id IN (SELECT channel_id FROM slack_channels WHERE team_id=$1) AND strpos(content,$2)>0 \
+         FOR UPDATE",
         &[team, needle],
     )
     .await?;
