@@ -40,6 +40,7 @@ import { authorLabel, formatDateSeparator, formatTime, fullTimestamp } from "./m
 import type { MessageItem } from "./messageGrouping";
 import { MessageAttachments } from "./MessageAttachments";
 import { ReactionEmoji } from "./ReactionEmoji";
+import { detectComposerPlatform, shouldSendFromKey } from "./Composer";
 
 export interface MessageRowProps {
   item: MessageItem;
@@ -195,6 +196,7 @@ export function MessageRow({
     }
   }
 
+  const [platform] = useState(() => detectComposerPlatform());
   const [menuOpen, setMenuOpen] = useState(false);
   const [reactionUsersKey, setReactionUsersKey] = useState<string | null>(null);
   const selectedReaction = reactions.find(
@@ -342,9 +344,26 @@ export function MessageRow({
                 className="max-h-48 min-h-9 resize-none overflow-y-auto text-base md:text-sm"
                 onChange={(event) => onEditingTextChange(event.target.value)}
                 onKeyDown={(event) => {
-                  if (event.key === "Escape" && !event.nativeEvent.isComposing) {
+                  if (event.nativeEvent.isComposing || event.nativeEvent.keyCode === 229) return;
+                  if (event.key === "Escape") {
                     event.preventDefault();
                     onCancelEdit();
+                    return;
+                  }
+                  if (
+                    shouldSendFromKey(
+                      {
+                        key: event.key,
+                        metaKey: event.metaKey,
+                        ctrlKey: event.ctrlKey,
+                        shiftKey: event.shiftKey,
+                        isComposing: event.nativeEvent.isComposing,
+                      },
+                      platform,
+                    )
+                  ) {
+                    event.preventDefault();
+                    if (editingText.trim()) onSaveEdit();
                   }
                 }}
               />
