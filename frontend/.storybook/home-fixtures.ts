@@ -43,6 +43,13 @@ export const homeImageOnlyPost: HomePost = {
   ...homePosts[0]!,
   id: "home-image-only",
   content: "",
+  media: [
+    {
+      url: "/api/home/images/11111111-1111-4111-8111-111111111111",
+      name: "home-photo.png",
+      media_type: "image/png",
+    },
+  ],
   channel_id: "channel-general",
   attachments: [
     {
@@ -53,3 +60,18 @@ export const homeImageOnlyPost: HomePost = {
     },
   ],
 };
+
+export const homeImageBase64 =
+  "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==";
+export const homeImageId = "11111111-1111-4111-8111-111111111111";
+export const homeImagePost: HomePost = {
+  ...homePosts[0]!,
+  content: "",
+  media: [{ url: `/api/home/images/${homeImageId}`, name: "景色.png", media_type: "image/png" }],
+};
+export const homeImageHandler = http.get("*/api/home/images/:id", () =>
+  HttpResponse.arrayBuffer(
+    Uint8Array.from(atob(homeImageBase64), (char) => char.charCodeAt(0)).buffer,
+    { headers: { "Content-Type": "image/png" } },
+  ),
+);

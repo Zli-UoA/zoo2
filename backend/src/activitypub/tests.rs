@@ -446,3 +446,20 @@ fn mfm_note_source_is_explicit_bounded_and_html_stays_plain() {
     note["content"] = json!("x".repeat(128 * 1024 + 1));
     assert!(emoji::note_content(&note).is_err());
 }
+
+#[test]
+fn note_media_accepts_only_bounded_https_raster_images() {
+    let attachments = json!([
+        {"type":"Document","mediaType":"image/png","url":"https://remote.example/photo.png","name":"景色"},
+        {"type":"Document","mediaType":"image/svg+xml","url":"https://remote.example/unsafe.svg"},
+        {"type":"Document","mediaType":"image/jpeg","url":"javascript:alert(1)"}
+    ]);
+    let media = emoji::media(&attachments);
+    assert_eq!(media.len(), 1);
+    assert_eq!(media[0]["name"], "景色");
+    assert_eq!(media[0]["image_id"].as_str().unwrap().len(), 64);
+    assert_eq!(
+        emoji::media(&json!(vec![attachments[0].clone(); 15])).len(),
+        10
+    );
+}

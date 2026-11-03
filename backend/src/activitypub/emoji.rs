@@ -14,6 +14,7 @@ pub fn router() -> Router<AppState> {
     Router::new()
         .route("/api/activitypub/reaction-options", get(options))
         .route("/api/activitypub/emoji-images/{id}", get(image))
+        .route("/api/activitypub/media-images/{id}", get(media_image))
 }
 fn https(value: &str) -> bool {
     reqwest::Url::parse(value).is_ok_and(|u| {
@@ -42,6 +43,36 @@ pub(super) fn avatar(value: &Value) -> Option<Value> {
             .collect::<String>();
         Some(json!({"url":url,"image_id":image_id}))
     })
+}
+pub(super) fn media(value: &Value) -> Vec<Value> {
+    let values = value
+        .as_array()
+        .map(Vec::as_slice)
+        .unwrap_or_else(|| std::slice::from_ref(value));
+    values
+        .iter()
+        .take(10)
+        .filter_map(|item| {
+            let mime = item["mediaType"].as_str().unwrap_or("");
+            if !matches!(
+                mime,
+                "image/png" | "image/jpeg" | "image/gif" | "image/webp"
+            ) {
+                return None;
+            }
+            let mut image = avatar(item)?;
+            image["media_type"] = json!(mime);
+            image["name"] = json!(
+                item["name"]
+                    .as_str()
+                    .unwrap_or("")
+                    .chars()
+                    .take(1000)
+                    .collect::<String>()
+            );
+            Some(image)
+        })
+        .collect()
 }
 pub(super) fn tags(value: &Value) -> Vec<Value> {
     static NAME: std::sync::LazyLock<regex::Regex> =
@@ -157,6 +188,21 @@ async fn image(
     Path(id): Path<String>,
     request: axum::extract::Request,
 ) -> Result<Response, AppError> {
+    serve_image(state, id, request, false).await
+}
+async fn media_image(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    request: axum::extract::Request,
+) -> Result<Response, AppError> {
+    serve_image(state, id, request, true).await
+}
+async fn serve_image(
+    state: AppState,
+    id: String,
+    request: axum::extract::Request,
+    media: bool,
+) -> Result<Response, AppError> {
     let peer = request
         .extensions()
         .get::<axum::extract::ConnectInfo<std::net::SocketAddr>>()
@@ -179,7 +225,13 @@ async fn image(
     .await?;
     drop(tx);
     let url = reqwest::Url::parse(string(&image, "url")?).map_err(internal)?;
-    let cached = match emoji_cache::get(&id, peer, || load_image(url)).await {
+    let cached = match emoji_cache::get(
+        &format!("{}:{id}", if media { "media" } else { "emoji" }),
+        peer,
+        || load_image(url, media),
+    )
+    .await
+    {
         Err(AppError::RateLimited) => {
             return Ok((
                 axum::http::StatusCode::TOO_MANY_REQUESTS,
@@ -195,14 +247,21 @@ async fn image(
     };
     Ok(([(header::CONTENT_TYPE,cached.mime.as_str()),(header::CACHE_CONTROL,"public, max-age=300"),(header::X_CONTENT_TYPE_OPTIONS,"nosniff"),(header::CONTENT_SECURITY_POLICY,"sandbox; default-src 'none'; style-src 'unsafe-inline'; img-src data:; frame-ancestors 'none'")],cached.bytes).into_response())
 }
-async fn load_image(url: reqwest::Url) -> Result<emoji_cache::Image, AppError> {
-    let mut response = transport::safe_client(&url)
+async fn load_image(url: reqwest::Url, media: bool) -> Result<emoji_cache::Image, AppError> {
+    let response = transport::safe_client(&url)
         .await?
         .get(url)
         .header(header::ACCEPT, "image/*")
         .send()
         .await
         .map_err(|_| AppError::BadGateway("Emoji image request failed".into()))?;
+    read_image(response, media).await
+}
+
+async fn read_image(
+    mut response: reqwest::Response,
+    media: bool,
+) -> Result<emoji_cache::Image, AppError> {
     if !response.status().is_success() {
         return Err(AppError::BadGateway("Emoji image unavailable".into()));
     }
@@ -227,10 +286,31 @@ async fn load_image(url: reqwest::Url) -> Result<emoji_cache::Image, AppError> {
         .await
         .map_err(|_| AppError::BadGateway("Emoji image transfer failed".into()))?
     {
-        if data.len() + chunk.len() > 2 * 1024 * 1024 {
+        // Emoji retain their 2 MiB limit; photos use 8 MiB. The shared cache is 32 MiB.
+        if data.len() + chunk.len() > (if media { 8 } else { 2 }) * 1024 * 1024 {
             return Err(AppError::BadGateway("Emoji image too large".into()));
         }
         data.extend_from_slice(&chunk);
+    }
+    if media {
+        let kind = mime.clone();
+        let permit = crate::routes::home_images::DECODERS
+            .acquire()
+            .await
+            .map_err(|_| AppError::RateLimited)?;
+        let valid = tokio::task::spawn_blocking(move || {
+            // Keep the permit in the blocking task if the HTTP request is cancelled.
+            let _permit = permit;
+            if crate::routes::home_images::valid_image(&kind, &data) {
+                Some(data)
+            } else {
+                None
+            }
+        })
+        .await
+        .map_err(|e| AppError::Internal(e.into()))?;
+        data = valid
+            .ok_or_else(|| AppError::BadGateway("Invalid image dimensions or pixels".into()))?;
     }
     Ok(emoji_cache::Image { mime, bytes: data })
 }
@@ -282,5 +362,74 @@ mod avatar_tests {
             assert!(avatar(&json!({"url":url})).is_none());
         }
         assert!(avatar(&Value::Null).is_none());
+    }
+}
+
+#[cfg(test)]
+mod media_proxy_tests {
+    use super::*;
+
+    async fn payload(
+        bytes: Vec<u8>,
+        mime: &str,
+        media: bool,
+    ) -> Result<emoji_cache::Image, AppError> {
+        let upstream = wiremock::MockServer::start().await;
+        wiremock::Mock::given(wiremock::matchers::method("GET"))
+            .respond_with(
+                wiremock::ResponseTemplate::new(200)
+                    .set_body_bytes(bytes)
+                    .insert_header("content-type", mime),
+            )
+            .mount(&upstream)
+            .await;
+        // Exercise the production response reader; only this test bypasses public HTTPS DNS.
+        let response = reqwest::get(upstream.uri()).await.unwrap();
+        read_image(response, media).await
+    }
+
+    fn png(size: usize) -> Vec<u8> {
+        let mut bytes = std::io::Cursor::new(Vec::new());
+        image::DynamicImage::new_rgb8(2, 2)
+            .write_to(&mut bytes, image::ImageFormat::Png)
+            .unwrap();
+        let mut bytes = bytes.into_inner();
+        bytes.resize(size.max(bytes.len()), 0);
+        bytes
+    }
+
+    #[tokio::test]
+    async fn photo_and_emoji_transfer_limits_and_raster_validation() {
+        assert!(
+            payload(png(2 * 1024 * 1024), "image/png", false)
+                .await
+                .is_ok()
+        );
+        assert!(
+            payload(png(2 * 1024 * 1024 + 1), "image/png", false)
+                .await
+                .is_err()
+        );
+        assert!(
+            payload(png(8 * 1024 * 1024), "image/png", true)
+                .await
+                .is_ok()
+        );
+        assert!(
+            payload(png(8 * 1024 * 1024 + 1), "image/png", true)
+                .await
+                .is_err()
+        );
+        assert!(
+            payload(b"not a PNG".to_vec(), "image/png", true)
+                .await
+                .is_err()
+        );
+        assert!(payload(png(0), "image/jpeg", true).await.is_err());
+        assert!(
+            payload(b"<svg/>".to_vec(), "image/svg+xml", true)
+                .await
+                .is_err()
+        );
     }
 }

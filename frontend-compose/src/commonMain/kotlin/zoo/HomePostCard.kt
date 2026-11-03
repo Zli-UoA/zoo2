@@ -52,6 +52,7 @@ fun HomePostCard(
                         textStyle = TextStyle(fontSize = 14.sp, lineHeight = 20.sp),
                     )
                     MessageAttachments(app, it.homeRows("attachments"))
+                    if (it.homeRows("attachments").isEmpty()) HomeMedia(it.homeRows("media"))
                 }
             }
         }
@@ -174,6 +175,7 @@ fun HomePostCard(
                     }
                 }
                 MessageAttachments(app, post.homeRows("attachments"))
+                if (post.homeRows("attachments").isEmpty()) HomeMedia(post.homeRows("media"))
                 if (post.homeRows("reactions").isNotEmpty())
                     FlowRow(
                         horizontalArrangement = Arrangement.spacedBy(4.dp),

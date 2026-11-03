@@ -9,7 +9,7 @@ export async function fillControl(
   if (implementation === "react") return field.fill(value);
   await expect(field).toBeVisible();
   const previous = (await field.textContent()) ?? "";
-  await field.click({ force: true });
+  await clickControl(field, implementation);
   const owner = () =>
     field.evaluate((element) => {
       let active = element.ownerDocument.activeElement;
