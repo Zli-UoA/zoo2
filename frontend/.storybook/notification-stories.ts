@@ -53,6 +53,16 @@ function notificationInteractions(title: string, name: string): NativeInteractio
           within: { role: "listitem", name: "Bob さんが投稿に返信しました" },
         },
       ];
+    if (name === "Local Content Emoji")
+      return [
+        ...apubReady,
+        {
+          action: "wait",
+          role: "img",
+          name: ":hello:",
+          within: { role: "listitem", name: "Bob さんが投稿にリアクションしました" },
+        },
+      ];
     if (["Follow Requests", "Mobile Follow Requests"].includes(name))
       return [
         ...apubReady,
@@ -228,13 +238,13 @@ function notificationInteractions(title: string, name: string): NativeInteractio
     case "Grouped Reactions":
       return [
         visible("Bob さんほか1人"),
-        { action: "wait", role: "listitem", name: "👀 2" },
         {
           action: "wait",
           role: "link",
           name: "example.com/release",
           attributes: { target: "_blank" },
         },
+        { action: "wait", role: "listitem", name: "👀 2", state: "hidden" },
       ];
     case "Loading":
       return [visible("読み込み中…")];

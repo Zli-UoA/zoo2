@@ -17,6 +17,30 @@ const preview: NotificationContext = {
   reactions: [],
 };
 
+it("uses joined context immediately without a request, including focus and live edits", async () => {
+  vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+  const root = createRoot(document.createElement("div"));
+  let result!: ReturnType<typeof useNotificationContext>;
+  function Probe({ content }: { content: string }) {
+    result = useNotificationContext("joined", {
+      message: { id: "message", user_id: "alice", content, emojis: {} },
+      reactions: [],
+    });
+    return null;
+  }
+  try {
+    await act(async () => root.render(createElement(Probe, { content: "Original" })));
+    expect(result.isLoading).toBe(false);
+    expect(result.data?.message?.content).toBe("Original");
+    await act(async () => window.dispatchEvent(new Event("focus")));
+    await act(async () => root.render(createElement(Probe, { content: "Edited" })));
+    expect(result.data?.message?.content).toBe("Edited");
+    expect(api.get).not.toHaveBeenCalled();
+  } finally {
+    await act(async () => root.unmount());
+  }
+});
+
 it("fetches only a visible notification's context and refreshes on focus", async () => {
   vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
   const root = createRoot(document.createElement("div"));

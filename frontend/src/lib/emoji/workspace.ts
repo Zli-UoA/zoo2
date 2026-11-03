@@ -4,18 +4,21 @@ import { joinUrl, resolvePublicConfig, type AppConfig } from "../config";
 import { useOptionalCollections } from "../electric/collections-context";
 
 export interface WorkspaceEmoji {
+  width?: number | null;
+  height?: number | null;
   name: string;
   url: string;
   category: string;
   aliases: string[];
 }
+const cached = new WeakMap<AppConfig, WorkspaceEmoji[]>();
 const requests = new WeakMap<AppConfig, Promise<WorkspaceEmoji[]>>();
 
 export function useWorkspaceEmojis(enabled = true) {
   const collections = useOptionalCollections();
   const config = useMemo(() => collections?.config ?? resolvePublicConfig(), [collections]);
   const client = useMemo(() => createConfiguredApiClient(config), [config]);
-  const [emojis, setEmojis] = useState<WorkspaceEmoji[]>([]);
+  const [emojis, setEmojis] = useState<WorkspaceEmoji[]>(() => cached.get(config) ?? []);
   const [loading, setLoading] = useState(true);
   const [failed, setFailed] = useState(false);
   const [attempt, setAttempt] = useState(0);
@@ -35,6 +38,7 @@ export function useWorkspaceEmojis(enabled = true) {
     }
     void request
       .then((values) => {
+        cached.set(config, values);
         if (!controller.signal.aborted) setEmojis(values);
       })
       .catch(() => {
@@ -51,7 +55,7 @@ export function useWorkspaceEmojis(enabled = true) {
     };
   }, [client, config, attempt, retry, enabled]);
   return {
-    emojis,
+    emojis: cached.get(config) ?? emojis,
     loading,
     failed,
     retry,

@@ -19,8 +19,9 @@ import {
 } from "lucide-react";
 
 import { useKitchenCatalog } from "../../../hooks/useKitchenCatalog";
-import type { ChannelRow, ChannelUserRow, UserRow } from "../../../lib/electric/types";
 import { kitchenLabel, kitchenParts } from "../../../lib/emoji/kitchen";
+import { ReactionEmoji } from "../messages/ReactionEmoji";
+import type { ChannelRow, ChannelUserRow, UserRow } from "../../../lib/electric/types";
 import { INTL_LOCALES } from "../../../lib/i18n/locale";
 import { normalizeUtcTimestamp, parseUtcTimestamp } from "../../../lib/timestamps";
 import { useLocale } from "../../i18n/LocaleProvider";
@@ -28,7 +29,6 @@ import { useShell } from "../../layout/shell-context";
 import { formatDmDisplayName, isGroupDm, resolveDmDisplayName } from "../dm";
 import { AppAvatar } from "../AppIdentity";
 import { MfmContent } from "../messages/MfmContent";
-import { ReactionEmoji } from "../messages/ReactionEmoji";
 import { fullTimestamp } from "../messages/messageFormat";
 import {
   quotePreview,
@@ -46,7 +46,7 @@ export interface NotificationPreviewState {
 
 export function NotificationCard({
   group,
-  channel,
+  channel: providedChannel,
   members = [],
   users,
   onRead,
@@ -68,6 +68,7 @@ export function NotificationCard({
   const shell = useShell();
   const destinationRef = useRef<HTMLAnchorElement>(null);
   const notification = group.latest;
+  const channel = notification.display_data?.channel ?? providedChannel;
   const isReaction = notification.notification_type === "reaction";
   const unreadIds = useMemo(
     () => group.notifications.filter((row) => !row.is_read).map((row) => row.id),
@@ -79,7 +80,10 @@ export function NotificationCard({
     scrollRoot,
     readEnabled,
   );
-  const context = useNotificationContext(channel && hasBeenVisible ? notification.id : null);
+  const context = useNotificationContext(
+    channel && hasBeenVisible ? notification.id : null,
+    notification.display_data,
+  );
   useEffect(() => {
     onPreviewChange?.(notification.id, {
       visible: isVisible,
@@ -89,17 +93,14 @@ export function NotificationCard({
     return () => onPreviewChange?.(notification.id, null);
   }, [notification.id, isVisible, context.isLoading, channel?.id, onPreviewChange]);
   const message = context.data?.message;
-  const reactionGroups = isReaction
-    ? notificationReactionGroups(context.data?.reactions ?? [], group.actorIds)
-    : [];
   const avatarReaction = isReaction
     ? notificationReactionGroups(context.data?.reactions ?? [], [group.actorIds[0]!])[0]?.emoji
     : undefined;
-  const { catalog } = useKitchenCatalog(
-    reactionGroups.some((reaction) => kitchenParts(reaction.emoji) !== null),
-  );
+  const { catalog } = useKitchenCatalog(!!avatarReaction && kitchenParts(avatarReaction) !== null);
   const name = (id: string) => {
-    const user = users.get(id);
+    const user =
+      group.notifications.find((row) => row.display_data?.actor?.id === id)?.display_data?.actor ??
+      users.get(id);
     return user?.display_name || user?.user_name || id;
   };
   const actor = name(group.actorIds[0]!);
@@ -230,7 +231,12 @@ export function NotificationCard({
                 className="flex size-4 items-center justify-center overflow-hidden [&_img]:max-w-full! [&_img]:object-contain"
                 data-notification-reaction
               >
-                <ReactionEmoji emoji={avatarReaction} catalog={catalog} size={16} />
+                <ReactionEmoji
+                  emoji={avatarReaction}
+                  catalog={catalog}
+                  size={16}
+                  emojis={message?.emojis}
+                />
               </span>
             ) : (
               <Icon className="size-3" aria-hidden="true" />
@@ -264,7 +270,7 @@ export function NotificationCard({
           {channel && message ? (
             <blockquote>
               <div className="mfm-body line-clamp-3 whitespace-pre-wrap break-words text-sm leading-relaxed">
-                <MfmContent content={quotePreview(message.content)} />
+                <MfmContent content={quotePreview(message.content)} emojis={message.emojis} />
               </div>
             </blockquote>
           ) : (
@@ -290,21 +296,6 @@ export function NotificationCard({
           ) : (
             destination
           )}
-          {reactionGroups.length ? (
-            <ul className="flex flex-wrap gap-1.5 pt-0.5" aria-label={t("notifications.reactions")}>
-              {reactionGroups.map((reaction) => (
-                <li
-                  key={reaction.emoji}
-                  className="flex items-center gap-1 rounded-full bg-muted px-2.5 py-1 text-xs"
-                  aria-label={`${kitchenLabel(reaction.emoji)} ${reaction.count}`}
-                  title={kitchenLabel(reaction.emoji)}
-                >
-                  <ReactionEmoji emoji={reaction.emoji} catalog={catalog} size={20} />
-                  <span className="tabular-nums text-muted-foreground">{reaction.count}</span>
-                </li>
-              ))}
-            </ul>
-          ) : null}
         </div>
       </div>
     </NotificationCardFrame>

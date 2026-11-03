@@ -83,7 +83,7 @@ function AttachmentImage({
         className={
           multiple
             ? "aspect-square w-full animate-pulse rounded-lg border bg-muted"
-            : "h-48 w-64 max-w-full animate-pulse rounded-lg border bg-muted"
+            : "size-full animate-pulse rounded-lg border bg-muted"
         }
         aria-label={t("attachments.loading")}
         aria-busy="true"
@@ -95,7 +95,7 @@ function AttachmentImage({
         className={
           multiple
             ? "block aspect-square w-full cursor-zoom-in overflow-hidden rounded-lg border bg-muted outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
-            : "block w-fit max-w-full cursor-zoom-in overflow-hidden rounded-lg border bg-muted outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
+            : "block size-full cursor-zoom-in overflow-hidden rounded-lg border bg-muted outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
         }
         onClick={() => {
           dialogRetried.current = false;
@@ -114,7 +114,7 @@ function AttachmentImage({
           className={
             multiple
               ? "size-full object-cover transition-opacity hover:opacity-90"
-              : "max-h-80 max-w-full object-contain transition-opacity hover:opacity-90"
+              : "size-full object-contain transition-opacity hover:opacity-90"
           }
           onLoad={() => {
             retried.current = false;
@@ -133,7 +133,15 @@ function AttachmentImage({
 
   return (
     <>
-      {thumbnail}
+      <div
+        className={
+          multiple
+            ? "aspect-square w-full overflow-hidden"
+            : "aspect-[4/3] w-64 max-w-full overflow-hidden rounded-lg border bg-muted"
+        }
+      >
+        {thumbnail}
+      </div>
       <Dialog
         open={open}
         onOpenChange={(next) => {

@@ -8,6 +8,8 @@ use backend::{config::Config, db::init_db, routes::create_router, state::AppStat
 use serde_json::{Value, json};
 use tower::ServiceExt;
 
+static HOME_IMAGE_GC_TESTS: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
 async fn request(
     app: &Router,
     method: &str,
@@ -824,5 +826,967 @@ async fn reply_link_migration_repairs_legacy_placement_and_missing_descendants()
     assert_eq!(parent, ids[0]);
     tx.rollback().await?;
     driver.abort();
+    Ok(())
+}
+
+fn test_home_png(width: u32, height: u32) -> String {
+    use base64::Engine;
+    let mut bytes = std::io::Cursor::new(Vec::new());
+    image::DynamicImage::new_rgb8(width, height)
+        .write_to(&mut bytes, image::ImageFormat::Png)
+        .unwrap();
+    base64::engine::general_purpose::STANDARD.encode(bytes.into_inner())
+}
+
+#[tokio::test]
+async fn home_images_are_owned_and_survive_image_only_posts() -> anyhow::Result<()> {
+    let storage = wiremock::MockServer::start().await;
+    wiremock::Mock::given(wiremock::matchers::method("PUT"))
+        .and(wiremock::matchers::header("content-type", "image/png"))
+        .respond_with(wiremock::ResponseTemplate::new(200))
+        .expect(1)
+        .mount(&storage)
+        .await;
+    let mut config = Config::from_env();
+    config.s3.endpoint = storage.uri();
+    config.s3.force_path_style = true;
+    config.s3.access_key_id = "test-key".into();
+    config.s3.secret_access_key = "test-secret".into();
+    config.dev_auth_enabled = true;
+    let mut db = init_db(&config.database_url).await?;
+    let app = create_router(AppState::new(db.clone(), config));
+    let owner = uuid::Uuid::new_v4().to_string();
+    let other = uuid::Uuid::new_v4().to_string();
+    for id in [&owner, &other] {
+        toasty::sql::statement("INSERT INTO users(id,user_name,display_name) VALUES($1,$1,$1)")
+            .bind(id.as_str())
+            .exec(&mut db)
+            .await?;
+    }
+    let (status, uploaded) = request(
+        &app,
+        "POST",
+        Some(&owner),
+        "/api/home/images",
+        Some(json!({"name":"photo.png","content_type":"image/png","data":test_home_png(2,2)})),
+    )
+    .await?;
+    assert_eq!(status, StatusCode::OK);
+    let image = uploaded["id"].as_str().unwrap().to_owned();
+    assert_eq!(
+        request(
+            &app,
+            "POST",
+            Some(&owner),
+            "/api/home/images",
+            Some(json!({"name":"bad.png","content_type":"image/png","data":"bm90IGFuIGltYWdl"}))
+        )
+        .await?
+        .0,
+        StatusCode::BAD_REQUEST
+    );
+    for (actor, ids) in [
+        (&other, vec![image.clone()]),
+        (&owner, vec![image.clone(), image.clone()]),
+        (&owner, vec![uuid::Uuid::new_v4().to_string()]),
+        (&owner, vec![image.clone(); 11]),
+    ] {
+        assert_eq!(
+            request(
+                &app,
+                "POST",
+                Some(actor),
+                "/api/home",
+                Some(json!({"content":"","image_ids":ids}))
+            )
+            .await?
+            .0,
+            StatusCode::BAD_REQUEST
+        );
+    }
+    let (status, created) = request(
+        &app,
+        "POST",
+        Some(&owner),
+        "/api/home",
+        Some(json!({"content":"","image_ids":[image]})),
+    )
+    .await?;
+    assert_eq!(status, StatusCode::CREATED);
+    let path = format!("/api/home/{}", created["id"].as_str().unwrap());
+    let (status, post) = request(&app, "GET", Some(&owner), &path, None).await?;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(post["content"], "");
+    assert_eq!(post["media"][0]["name"], "photo.png");
+    assert_eq!(post["media"][0]["url"], format!("/api/home/images/{image}"));
+    let (status, _) = request(
+        &app,
+        "PATCH",
+        Some(&owner),
+        &path,
+        Some(json!({"content":"caption"})),
+    )
+    .await?;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    let (_, post) = request(&app, "GET", Some(&owner), &path, None).await?;
+    assert_eq!(post["media"].as_array().unwrap().len(), 1);
+    let channel = uuid::Uuid::new_v4().to_string();
+    toasty::sql::statement(
+        "INSERT INTO channels(id,channel_name,created_user_id,is_private) VALUES($1,$1,$2,false)",
+    )
+    .bind(channel.as_str())
+    .bind(owner.as_str())
+    .exec(&mut db)
+    .await?;
+    toasty::sql::statement(
+        "INSERT INTO channel_user(user_id,channel_id,joined_at) VALUES($1,$2,now())",
+    )
+    .bind(owner.as_str())
+    .bind(channel.as_str())
+    .exec(&mut db)
+    .await?;
+    let (status, crosspost) = request(
+        &app,
+        "POST",
+        Some(&owner),
+        "/api/home",
+        Some(json!({"content":"","image_ids":[image],"channel_id":channel})),
+    )
+    .await?;
+    assert_eq!(status, StatusCode::CREATED);
+    let attachments = backend::models::Attachment::filter(
+        backend::models::Attachment::fields()
+            .message_id()
+            .eq(crosspost["id"].as_str().unwrap()),
+    )
+    .exec(&mut db)
+    .await?;
+    assert_eq!(attachments.len(), 1);
+    assert_eq!(attachments[0].storage_key, format!("home-images/{image}"));
+    assert!(attachments[0].file_size > 0);
+    // Simulate an existing channel image whose Home row predates media metadata.
+    toasty::sql::statement("UPDATE home_posts SET media='[]'::jsonb WHERE id=$1")
+        .bind(crosspost["id"].as_str().unwrap())
+        .exec(&mut db)
+        .await?;
+    let (_, restored) = request(
+        &app,
+        "GET",
+        Some(&owner),
+        &format!("/api/home/{}", crosspost["id"].as_str().unwrap()),
+        None,
+    )
+    .await?;
+    assert_eq!(restored["media"][0]["name"], "photo.png");
+    let existing_image_url = format!("/api/home/images/{}", attachments[0].id);
+    assert_eq!(restored["media"][0]["url"], existing_image_url);
+    assert_eq!(
+        request(&app, "GET", None, &existing_image_url, None)
+            .await?
+            .0,
+        StatusCode::TEMPORARY_REDIRECT
+    );
+    toasty::sql::statement("UPDATE channels SET is_private=true WHERE id=$1")
+        .bind(channel.as_str())
+        .exec(&mut db)
+        .await?;
+    assert_eq!(
+        request(&app, "GET", None, &existing_image_url, None)
+            .await?
+            .0,
+        StatusCode::NOT_FOUND
+    );
+
+    assert_eq!(
+        request(
+            &app,
+            "GET",
+            None,
+            &format!("/api/home/images/{image}"),
+            None
+        )
+        .await?
+        .0,
+        StatusCode::TEMPORARY_REDIRECT
+    );
+    let (status, federated) = request(
+        &app,
+        "POST",
+        Some(&owner),
+        "/api/home",
+        Some(json!({"content":"","image_ids":[image],"apub":true,"visibility":"public"})),
+    )
+    .await?;
+    assert_eq!(status, StatusCode::CREATED);
+    let (_, note) = request(
+        &app,
+        "GET",
+        None,
+        &format!(
+            "/api/activitypub/notes/{}",
+            federated["id"].as_str().unwrap()
+        ),
+        None,
+    )
+    .await?;
+    assert_eq!(
+        note["attachment"][0]["url"],
+        format!(
+            "{}/api/home/images/{image}",
+            backend::activitypub::base_url()?
+        )
+    );
+    assert_eq!(note["attachment"][0]["mediaType"], "image/png");
+    Ok(())
+}
+
+#[tokio::test]
+async fn home_image_limits_discard_and_gc_preserve_live_references() -> anyhow::Result<()> {
+    let _gc_test = HOME_IMAGE_GC_TESTS.lock().await;
+    let storage = wiremock::MockServer::start().await;
+    wiremock::Mock::given(wiremock::matchers::method("PUT"))
+        .respond_with(wiremock::ResponseTemplate::new(200))
+        .mount(&storage)
+        .await;
+    wiremock::Mock::given(wiremock::matchers::method("DELETE"))
+        .respond_with(wiremock::ResponseTemplate::new(204))
+        .mount(&storage)
+        .await;
+    let mut config = Config::from_env();
+    config.dev_auth_enabled = true;
+    config.s3.endpoint = storage.uri();
+    config.s3.force_path_style = true;
+    config.s3.access_key_id = "test-key".into();
+    config.s3.secret_access_key = "test-secret".into();
+    let mut db = init_db(&config.database_url).await?;
+    let state = AppState::new(db.clone(), config);
+    let app = create_router(state.clone());
+    let owner = uuid::Uuid::new_v4().to_string();
+    let other = uuid::Uuid::new_v4().to_string();
+    for id in [&owner, &other] {
+        toasty::sql::statement("INSERT INTO users(id,user_name,display_name) VALUES($1,$1,$1)")
+            .bind(id.as_str())
+            .exec(&mut db)
+            .await?;
+    }
+    let valid = json!({"name":"photo.png","content_type":"image/png","data":test_home_png(2,2)});
+    let mut mismatch = valid.clone();
+    mismatch["content_type"] = json!("image/jpeg");
+    assert_eq!(
+        request(
+            &app,
+            "POST",
+            Some(&owner),
+            "/api/home/images",
+            Some(mismatch)
+        )
+        .await?
+        .0,
+        StatusCode::BAD_REQUEST
+    );
+    let mut oversized = valid.clone();
+    {
+        use base64::Engine;
+        oversized["data"] =
+            json!(base64::engine::general_purpose::STANDARD.encode(vec![0u8; 8 * 1024 * 1024 + 1]));
+    }
+    assert_eq!(
+        request(
+            &app,
+            "POST",
+            Some(&owner),
+            "/api/home/images",
+            Some(oversized)
+        )
+        .await?
+        .0,
+        StatusCode::BAD_REQUEST
+    );
+    let mut dimensions = valid.clone();
+    dimensions["data"] = json!(test_home_png(8193, 1));
+    assert_eq!(
+        request(
+            &app,
+            "POST",
+            Some(&owner),
+            "/api/home/images",
+            Some(dimensions)
+        )
+        .await?
+        .0,
+        StatusCode::BAD_REQUEST
+    );
+    let mut pixels = std::io::Cursor::new(Vec::new());
+    image::DynamicImage::new_luma8(5000, 5000).write_to(&mut pixels, image::ImageFormat::Png)?;
+    {
+        use base64::Engine;
+        let mut body = valid.clone();
+        body["data"] = json!(base64::engine::general_purpose::STANDARD.encode(pixels.into_inner()));
+        assert_eq!(
+            request(&app, "POST", Some(&owner), "/api/home/images", Some(body))
+                .await?
+                .0,
+            StatusCode::BAD_REQUEST
+        );
+    }
+    let (_, draft) = request(
+        &app,
+        "POST",
+        Some(&owner),
+        "/api/home/images",
+        Some(valid.clone()),
+    )
+    .await?;
+    let draft_id = draft["id"].as_str().unwrap();
+    let draft_url = format!("/api/home/images/{draft_id}");
+    assert_eq!(
+        request(&app, "GET", None, &draft_url, None).await?.0,
+        StatusCode::NOT_FOUND
+    );
+    assert_eq!(
+        request(&app, "DELETE", Some(&other), &draft_url, None)
+            .await?
+            .0,
+        StatusCode::NOT_FOUND
+    );
+    assert_eq!(
+        request(&app, "DELETE", Some(&owner), &draft_url, None)
+            .await?
+            .0,
+        StatusCode::NO_CONTENT
+    );
+    // Limit the failure to one call; scoped mocks with different priorities can
+    // deactivate the wrong registration in wiremock 0.6.5 after its internal sort.
+    wiremock::Mock::given(wiremock::matchers::method("DELETE"))
+        .and(wiremock::matchers::path(format!(
+            "/{}/home-images/{draft_id}",
+            state.config.s3.bucket
+        )))
+        .respond_with(wiremock::ResponseTemplate::new(403))
+        .with_priority(1)
+        .up_to_n_times(1)
+        .expect(1)
+        .mount(&storage)
+        .await;
+    assert!(
+        backend::routes::home_images::collect_garbage(&state)
+            .await
+            .is_err()
+    );
+    let rows = backend::apps::query(
+        &mut db.transaction().await?,
+        "SELECT json_build_object('id',id)::text FROM home_image_deletions WHERE id=$1",
+        &[draft_id],
+    )
+    .await?;
+    assert_eq!(rows.len(), 1, "failed S3 deletion must remain queued");
+    backend::routes::home_images::collect_garbage(&state).await?;
+    let remaining = backend::apps::query(
+        &mut db.transaction().await?,
+        "SELECT json_build_object('id',id)::text FROM home_image_deletions WHERE id=$1",
+        &[draft_id],
+    )
+    .await?;
+    assert!(
+        remaining.is_empty(),
+        "successful retry must remove the queued deletion"
+    );
+    assert!(
+        storage
+            .received_requests()
+            .await
+            .unwrap()
+            .iter()
+            .any(|r| r.method == "DELETE" && r.url.path().ends_with(draft_id))
+    );
+    let (_, abandoned) = request(
+        &app,
+        "POST",
+        Some(&owner),
+        "/api/home/images",
+        Some(valid.clone()),
+    )
+    .await?;
+    let abandoned_id = abandoned["id"].as_str().unwrap();
+    toasty::sql::statement(
+        "UPDATE home_images SET created_at=now()-interval '25 hours' WHERE id=$1",
+    )
+    .bind(abandoned_id)
+    .exec(&mut db)
+    .await?;
+    backend::routes::home_images::collect_garbage(&state).await?;
+    assert_eq!(
+        request(
+            &app,
+            "DELETE",
+            Some(&owner),
+            &format!("/api/home/images/{abandoned_id}"),
+            None
+        )
+        .await?
+        .0,
+        StatusCode::NOT_FOUND
+    );
+    let (_, live) = request(
+        &app,
+        "POST",
+        Some(&owner),
+        "/api/home/images",
+        Some(valid.clone()),
+    )
+    .await?;
+    let live_id = live["id"].as_str().unwrap();
+    let live_url = format!("/api/home/images/{live_id}");
+    let (status, post) = request(
+        &app,
+        "POST",
+        Some(&owner),
+        "/api/home",
+        Some(json!({"content":"","image_ids":[live_id]})),
+    )
+    .await?;
+    assert_eq!(status, StatusCode::CREATED);
+    toasty::sql::statement(
+        "UPDATE home_images SET created_at=now()-interval '25 hours' WHERE id=$1",
+    )
+    .bind(live_id)
+    .exec(&mut db)
+    .await?;
+    backend::routes::home_images::collect_garbage(&state).await?;
+    assert_eq!(
+        request(&app, "GET", None, &live_url, None).await?.0,
+        StatusCode::TEMPORARY_REDIRECT
+    );
+    assert_eq!(
+        request(&app, "DELETE", Some(&owner), &live_url, None)
+            .await?
+            .0,
+        StatusCode::BAD_REQUEST
+    );
+    assert_eq!(
+        request(
+            &app,
+            "DELETE",
+            Some(&owner),
+            &format!("/api/home/{}", post["id"].as_str().unwrap()),
+            None
+        )
+        .await?
+        .0,
+        StatusCode::NO_CONTENT
+    );
+    assert_eq!(
+        request(&app, "GET", None, &live_url, None).await?.0,
+        StatusCode::NOT_FOUND
+    );
+    backend::routes::home_images::collect_garbage(&state).await?;
+    assert!(
+        storage
+            .received_requests()
+            .await
+            .unwrap()
+            .iter()
+            .any(|r| r.method == "DELETE" && r.url.path().ends_with(live_id))
+    );
+    let full = uuid::Uuid::new_v4().to_string();
+    toasty::sql::statement("INSERT INTO home_images(id,uploader_id,name,content_type,file_size) VALUES($1,$2,'quota.png','image/png',1073741824)").bind(full.as_str()).bind(owner.as_str()).exec(&mut db).await?;
+    assert_eq!(
+        request(
+            &app,
+            "POST",
+            Some(&owner),
+            "/api/home/images",
+            Some(valid.clone())
+        )
+        .await?
+        .0,
+        StatusCode::BAD_REQUEST
+    );
+    assert_eq!(
+        request(
+            &app,
+            "DELETE",
+            Some(&owner),
+            &format!("/api/home/images/{full}"),
+            None
+        )
+        .await?
+        .0,
+        StatusCode::NO_CONTENT
+    );
+    // Pending deletion remains in the quota until object storage confirms removal.
+    assert_eq!(
+        request(
+            &app,
+            "POST",
+            Some(&owner),
+            "/api/home/images",
+            Some(valid.clone())
+        )
+        .await?
+        .0,
+        StatusCode::BAD_REQUEST
+    );
+    backend::routes::home_images::collect_garbage(&state).await?;
+    toasty::sql::statement("INSERT INTO home_image_upload_rates(user_id,window_start,requests) SELECT $1,date_trunc('minute',now())+offsets.n*interval '1 minute',30 FROM generate_series(0,1) offsets(n) ON CONFLICT(user_id,window_start) DO UPDATE SET requests=30").bind(owner.as_str()).exec(&mut db).await?;
+    assert_eq!(
+        request(&app, "POST", Some(&owner), "/api/home/images", Some(valid))
+            .await?
+            .0,
+        StatusCode::TOO_MANY_REQUESTS
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn home_images_follow_channel_visibility_and_selection_order() -> anyhow::Result<()> {
+    let mut config = Config::from_env();
+    config.dev_auth_enabled = true;
+    let mut db = init_db(&config.database_url).await?;
+    let app = create_router(AppState::new(db.clone(), config));
+    let owner = uuid::Uuid::new_v4().to_string();
+    let channel = uuid::Uuid::new_v4().to_string();
+    toasty::sql::statement("INSERT INTO users(id,user_name,display_name) VALUES($1,$1,$1)")
+        .bind(owner.as_str())
+        .exec(&mut db)
+        .await?;
+    toasty::sql::statement(
+        "INSERT INTO channels(id,channel_name,created_user_id,is_private) VALUES($1,$1,$2,false)",
+    )
+    .bind(channel.as_str())
+    .bind(owner.as_str())
+    .exec(&mut db)
+    .await?;
+    toasty::sql::statement(
+        "INSERT INTO channel_user(user_id,channel_id,joined_at) VALUES($1,$2,now())",
+    )
+    .bind(owner.as_str())
+    .bind(channel.as_str())
+    .exec(&mut db)
+    .await?;
+    let ids = (0..3)
+        .map(|_| uuid::Uuid::new_v4().to_string())
+        .collect::<Vec<_>>();
+    for (position, id) in ids.iter().enumerate() {
+        toasty::sql::statement("INSERT INTO home_images(id,uploader_id,name,content_type,file_size) VALUES($1,$2,$3,'image/png',80)").bind(id.as_str()).bind(owner.as_str()).bind(format!("{position}.png")).exec(&mut db).await?;
+    }
+    let selected = vec![ids[2].clone(), ids[0].clone(), ids[1].clone()];
+    let (status, post) = request(
+        &app,
+        "POST",
+        Some(&owner),
+        "/api/home",
+        Some(json!({"content":"","image_ids":selected,"channel_id":channel,"visibility":"public"})),
+    )
+    .await?;
+    assert_eq!(status, StatusCode::CREATED);
+    let post_id = post["id"].as_str().unwrap();
+    let (_, detail) = request(
+        &app,
+        "GET",
+        Some(&owner),
+        &format!("/api/home/{post_id}"),
+        None,
+    )
+    .await?;
+    assert_eq!(
+        detail["attachments"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|a| a["file_name"].as_str().unwrap())
+            .collect::<Vec<_>>(),
+        vec!["2.png", "0.png", "1.png"]
+    );
+    let image_url = format!("/api/home/images/{}", ids[0]);
+    assert_eq!(
+        request(&app, "GET", None, &image_url, None).await?.0,
+        StatusCode::TEMPORARY_REDIRECT
+    );
+    toasty::sql::statement("UPDATE channels SET is_private=true WHERE id=$1")
+        .bind(channel.as_str())
+        .exec(&mut db)
+        .await?;
+    assert_eq!(
+        request(&app, "GET", None, &image_url, None).await?.0,
+        StatusCode::NOT_FOUND
+    );
+    // Defensively cover legacy/inconsistent federated records in a private channel.
+    // Imported/replicated legacy rows can predate the current write guards.
+    let mut imported = db.transaction().await?;
+    toasty::sql::statement("SET LOCAL session_replication_role=replica")
+        .exec(&mut imported)
+        .await?;
+    toasty::sql::statement("UPDATE home_posts SET apub=true WHERE id=$1")
+        .bind(post_id)
+        .exec(&mut imported)
+        .await?;
+    imported.commit().await?;
+    let (status, profile) = request(
+        &app,
+        "GET",
+        None,
+        &format!("/api/activitypub/users/{owner}/profile"),
+        None,
+    )
+    .await?;
+    assert_eq!(status, StatusCode::OK);
+    assert!(
+        !profile["posts"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|p| p["id"] == post_id)
+    );
+    let (_, outbox) = request(
+        &app,
+        "GET",
+        None,
+        &format!("/api/activitypub/users/{owner}/outbox?page=true"),
+        None,
+    )
+    .await?;
+    assert!(outbox["orderedItems"].as_array().unwrap().is_empty());
+    assert_eq!(
+        request(
+            &app,
+            "GET",
+            None,
+            &format!("/api/activitypub/notes/{post_id}"),
+            None
+        )
+        .await?
+        .0,
+        StatusCode::NOT_FOUND
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn home_image_upload_failure_and_interruption_leave_durable_cleanup() -> anyhow::Result<()> {
+    let _gc_test = HOME_IMAGE_GC_TESTS.lock().await;
+    let storage = wiremock::MockServer::start().await;
+    wiremock::Mock::given(wiremock::matchers::method("PUT"))
+        .respond_with(wiremock::ResponseTemplate::new(403))
+        .mount(&storage)
+        .await;
+    wiremock::Mock::given(wiremock::matchers::method("DELETE"))
+        .respond_with(wiremock::ResponseTemplate::new(204))
+        .mount(&storage)
+        .await;
+    let mut config = Config::from_env();
+    config.dev_auth_enabled = true;
+    config.s3.endpoint = storage.uri();
+    config.s3.force_path_style = true;
+    config.s3.access_key_id = "test-key".into();
+    config.s3.secret_access_key = "test-secret".into();
+    let mut db = init_db(&config.database_url).await?;
+    let state = AppState::new(db.clone(), config);
+    let app = create_router(state.clone());
+    let owner = uuid::Uuid::new_v4().to_string();
+    toasty::sql::statement("INSERT INTO users(id,user_name,display_name) VALUES($1,$1,$1)")
+        .bind(owner.as_str())
+        .exec(&mut db)
+        .await?;
+    let body = json!({"name":"photo.png","content_type":"image/png","data":test_home_png(2,2)});
+    assert_eq!(
+        request(
+            &app,
+            "POST",
+            Some(&owner),
+            "/api/home/images",
+            Some(body.clone())
+        )
+        .await?
+        .0,
+        StatusCode::INTERNAL_SERVER_ERROR
+    );
+    let queued = backend::apps::query(
+        &mut db.transaction().await?,
+        "SELECT json_build_object('id',id)::text FROM home_image_deletions WHERE uploader_id=$1",
+        &[&owner],
+    )
+    .await?;
+    assert_eq!(queued.len(), 1, "even a failed PUT must be durably queued");
+    backend::routes::home_images::collect_garbage(&state).await?;
+    let queued = backend::apps::query(
+        &mut db.transaction().await?,
+        "SELECT json_build_object('id',id)::text FROM home_image_deletions WHERE uploader_id=$1",
+        &[&owner],
+    )
+    .await?;
+    assert!(queued.is_empty());
+    wiremock::Mock::given(wiremock::matchers::method("PUT"))
+        .respond_with(
+            wiremock::ResponseTemplate::new(200).set_delay(std::time::Duration::from_secs(2)),
+        )
+        .with_priority(1)
+        .mount(&storage)
+        .await;
+    let requests_before = storage.received_requests().await.unwrap().len();
+    let mut uploading = Vec::new();
+    let mut reserved = Vec::new();
+    // Three PUTs must be able to start while the earlier PUTs are still delayed:
+    // completed raster validation must not retain either of the two decode permits.
+    for expected in 1..=3 {
+        uploading.push(tokio::spawn({
+            let app = app.clone();
+            let owner = owner.clone();
+            let body = body.clone();
+            async move { request(&app, "POST", Some(&owner), "/api/home/images", Some(body)).await }
+        }));
+        reserved = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            loop {
+                let rows = backend::apps::query(
+                    &mut db.transaction().await?,
+                    "SELECT json_build_object('id',id)::text FROM home_images WHERE uploader_id=$1",
+                    &[&owner],
+                )
+                .await?;
+                if rows.len() == expected
+                    && storage.received_requests().await.unwrap().len()
+                        >= requests_before + expected
+                {
+                    break Ok::<_, anyhow::Error>(
+                        rows.into_iter()
+                            .map(|r| r["id"].as_str().unwrap().to_owned())
+                            .collect::<Vec<_>>(),
+                    );
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        })
+        .await??;
+    }
+    for task in uploading {
+        task.abort();
+        assert!(task.await.unwrap_err().is_cancelled());
+    }
+    // Model stopping while PUT is in progress: committed reservations survive rollback.
+    toasty::sql::statement(
+        "UPDATE home_images SET created_at=now()-interval '25 hours' WHERE uploader_id=$1",
+    )
+    .bind(owner.as_str())
+    .exec(&mut db)
+    .await?;
+    backend::routes::home_images::collect_garbage(&state).await?;
+    let requests = storage.received_requests().await.unwrap();
+    for id in reserved {
+        assert!(
+            requests
+                .iter()
+                .any(|r| r.method == "DELETE" && r.url.path().ends_with(&id))
+        );
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn local_home_posts_include_joined_workspace_emoji_dimensions() -> anyhow::Result<()> {
+    let mut config = Config::from_env();
+    config.dev_auth_enabled = true;
+    let mut db = init_db(&config.database_url).await?;
+    let app = create_router(AppState::new(db.clone(), config));
+    let id = uuid::Uuid::new_v4().to_string();
+    toasty::sql::statement("INSERT INTO users(id,user_name,display_name) VALUES($1,$1,$1)")
+        .bind(id.as_str())
+        .exec(&mut db)
+        .await?;
+    let name = format!("wide-{}", uuid::Uuid::new_v4().simple());
+    let alias = format!("alias-{}", uuid::Uuid::new_v4().simple());
+    toasty::sql::statement("INSERT INTO workspace_emojis(name,url,aliases,width,height,created_by) VALUES($1,'/api/emoji-images/test',jsonb_build_array($2::text),120,20,$3)")
+        .bind(name.as_str()).bind(alias.as_str()).bind(id.as_str()).exec(&mut db).await?;
+    let (status, post) = request(
+        &app,
+        "POST",
+        Some(&id),
+        "/api/home",
+        Some(json!({"content":format!(":{alias}:"),"visibility":"public"})),
+    )
+    .await?;
+    assert_eq!(status, StatusCode::CREATED);
+    let (_, rows) = request(&app, "GET", Some(&id), "/api/home?timeline=local", None).await?;
+    let row = rows
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|row| row["id"] == post["id"])
+        .unwrap();
+    let emoji = &row["emojis"][0];
+    assert_eq!(emoji["name"], format!(":{alias}:"));
+    assert_eq!(emoji["width"], 120);
+    assert_eq!(emoji["height"], 20);
+    assert_eq!(emoji["local"], true);
+    let local_url = emoji["url"].as_str().unwrap();
+    let mut tx = db.transaction().await?;
+    let count = backend::apps::one(
+        &mut tx,
+        "SELECT json_build_object('count',count(*))::text FROM apub_emoji_images WHERE url=$1",
+        &[local_url],
+    )
+    .await?;
+    assert_eq!(
+        count["count"], 0,
+        "local descriptors must not enter the remote proxy registry"
+    );
+    // Model an invalid row left by the prior backend, then successful startup
+    // identity backfill. Both list and detail must keep using the direct URL.
+    toasty::sql::statement("INSERT INTO apub_emoji_images(id,url) VALUES('', $1)")
+        .bind(local_url)
+        .exec(&mut tx)
+        .await?;
+    toasty::sql::statement("UPDATE workspace_emojis SET image_id=$2 WHERE name=$1")
+        .bind(name.as_str())
+        .bind("b".repeat(64))
+        .exec(&mut tx)
+        .await?;
+    tx.commit().await?;
+    for path in [
+        "/api/home?timeline=local".to_owned(),
+        format!("/api/home/{}", post["id"].as_str().unwrap()),
+    ] {
+        let (status, _) = request(&app, "GET", Some(&id), &path, None).await?;
+        assert_eq!(
+            status,
+            StatusCode::OK,
+            "local emoji identity backfill: {path}"
+        );
+    }
+    let mut tx = db.transaction().await?;
+    let count = backend::apps::one(
+        &mut tx,
+        "SELECT json_build_object('count',count(*))::text FROM apub_emoji_images WHERE url=$1",
+        &[local_url],
+    )
+    .await?;
+    assert_eq!(
+        count["count"], 1,
+        "backfill must not attempt another proxy registration"
+    );
+    toasty::sql::statement("DELETE FROM apub_emoji_images WHERE id='' AND url=$1")
+        .bind(local_url)
+        .exec(&mut tx)
+        .await?;
+    tx.commit().await?;
+    toasty::sql::statement("DELETE FROM workspace_emojis WHERE name=$1")
+        .bind(name)
+        .exec(&mut db)
+        .await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn home_notifications_join_local_content_emoji_aliases_and_dimensions() -> anyhow::Result<()>
+{
+    let mut config = Config::from_env();
+    config.dev_auth_enabled = true;
+    let mut db = init_db(&config.database_url).await?;
+    let app = create_router(AppState::new(db.clone(), config));
+    let owner = uuid::Uuid::new_v4().to_string();
+    let reactor = uuid::Uuid::new_v4().to_string();
+    for user in [&owner, &reactor] {
+        toasty::sql::statement("INSERT INTO users(id,user_name,display_name) VALUES($1,$1,$1)")
+            .bind(user.as_str())
+            .exec(&mut db)
+            .await?;
+    }
+    let name = format!("wide-{}", uuid::Uuid::new_v4().simple());
+    let alias = format!("alias-{}", uuid::Uuid::new_v4().simple());
+    let url = format!("/api/emoji-images/{}", uuid::Uuid::new_v4());
+    toasty::sql::statement("INSERT INTO workspace_emojis(name,url,aliases,width,height,created_by) VALUES($1,$2,jsonb_build_array($3::text),120,20,$4)")
+        .bind(name.as_str()).bind(url.as_str()).bind(alias.as_str()).bind(owner.as_str()).exec(&mut db).await?;
+    let (status, post) = request(
+        &app,
+        "POST",
+        Some(&owner),
+        "/api/home",
+        Some(json!({"content":format!(":{alias}: hello"),"visibility":"public"})),
+    )
+    .await?;
+    assert_eq!(status, StatusCode::CREATED);
+    let (status, _) = request(
+        &app,
+        "POST",
+        Some(&reactor),
+        "/api/activitypub/reactions",
+        Some(json!({"post_id":post["id"],"reaction":"👍"})),
+    )
+    .await?;
+    assert_eq!(status, StatusCode::OK);
+    for backfilled in [false, true] {
+        if backfilled {
+            toasty::sql::statement("UPDATE workspace_emojis SET image_id=$2 WHERE name=$1")
+                .bind(name.as_str())
+                .bind("c".repeat(64))
+                .exec(&mut db)
+                .await?;
+        }
+        let (status, notices) = request(
+            &app,
+            "GET",
+            Some(&owner),
+            "/api/activitypub/notifications",
+            None,
+        )
+        .await?;
+        assert_eq!(status, StatusCode::OK);
+        let notice = notices["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|n| n["post_id"] == post["id"])
+            .unwrap();
+        assert_eq!(notice["content"], format!(":{alias}: hello"));
+        assert_eq!(notice["content_emojis"].as_array().unwrap().len(), 1);
+        let emoji = &notice["content_emojis"][0];
+        assert_eq!(emoji["name"], format!(":{alias}:"));
+        assert_eq!(emoji["url"], url);
+        assert_eq!(emoji["local"], true);
+        assert_eq!(emoji["width"], 120);
+        assert_eq!(emoji["height"], 20);
+        let mut tx = db.transaction().await?;
+        let count = backend::apps::one(
+            &mut tx,
+            "SELECT json_build_object('count',count(*))::text FROM apub_emoji_images WHERE url=$1",
+            &[&url],
+        )
+        .await?;
+        assert_eq!(
+            count["count"], 0,
+            "local notification emojis must not enter the remote proxy registry"
+        );
+    }
+    let (_, hidden) = request(
+        &app,
+        "GET",
+        Some(&reactor),
+        "/api/activitypub/notifications",
+        None,
+    )
+    .await?;
+    assert!(hidden["items"].as_array().unwrap().is_empty());
+    let (status, _) = request(
+        &app,
+        "DELETE",
+        Some(&owner),
+        &format!("/api/home/{}", post["id"].as_str().unwrap()),
+        None,
+    )
+    .await?;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    let (_, notices) = request(
+        &app,
+        "GET",
+        Some(&owner),
+        "/api/activitypub/notifications",
+        None,
+    )
+    .await?;
+    for notice in notices["items"].as_array().unwrap() {
+        if notice["post_id"] == post["id"] {
+            assert!(notice["content"].is_null());
+            assert_eq!(notice["content_emojis"], json!([]));
+        }
+    }
     Ok(())
 }

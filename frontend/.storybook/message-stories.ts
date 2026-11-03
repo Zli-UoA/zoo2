@@ -176,6 +176,11 @@ function messageInteractions(component: string, state: string): Record<string, u
       { action: "wait", text: "# コード内はそのまま" },
       { action: "wait", text: "## 装飾しない", exact: false },
     ];
+  if (component === "MessageContent" && state === "Joined Emoji")
+    return [
+      wait("img", ":zoo_wave:", { width: 63, height: 21 }),
+      { action: "wait", text: ":unregistered_zoo_emoji:", exact: false },
+    ];
   if (component === "MessageList" && state === "Unread Separator")
     return [{ action: "wait", role: "separator", name: "新着メッセージ" }];
   if (component === "MessageList" && state === "Delayed Link Preview")

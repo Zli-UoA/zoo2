@@ -1,4 +1,8 @@
-import { blobcat, activityPubNotifications } from "../../../.storybook/activitypub-fixtures";
+import {
+  blobcat,
+  activityPubNotifications,
+  localEmojiNotification,
+} from "../../../.storybook/activitypub-fixtures";
 import {
   notificationComparisonText,
   notificationComparisonLabel,
@@ -553,6 +557,32 @@ export const ActivityPubMfmReply: Story = {
       "src",
       expect.stringContaining("/api/activitypub/emoji-images/"),
     );
+  }),
+};
+
+export const LocalContentEmoji: Story = {
+  decorators: [withUnreadPreview],
+  parameters: {
+    collections: { ...storyCollections, notifications: [] },
+    msw: {
+      handlers: [
+        http.get("*/api/activitypub/notifications", () =>
+          HttpResponse.json({ items: [localEmojiNotification], unread_count: 1 }),
+        ),
+      ],
+    },
+  },
+  play: playForImplementation(async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const card = within(await canvas.findByRole("listitem", { name: /Bob.*リアクション/ }));
+    const image = card.getByRole("img", { name: ":hello:" });
+    await expect(image).toHaveAttribute(
+      "src",
+      expect.stringContaining(localEmojiNotification.content_emojis![0]!.url),
+    );
+    await waitFor(() => expect((image as HTMLImageElement).naturalWidth).toBeGreaterThan(0));
+    const bounds = image.getBoundingClientRect();
+    await expect(bounds.width / bounds.height).toBeCloseTo(3, 1);
   }),
 };
 

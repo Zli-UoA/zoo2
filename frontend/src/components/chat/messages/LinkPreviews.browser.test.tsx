@@ -1,3 +1,4 @@
+import "../../../styles.css";
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, expect, it, vi } from "vite-plus/test";
 import { ApiError } from "../../../lib/api/client";
@@ -62,27 +63,29 @@ it("renders metadata and loads the thumbnail directly from the runtime proxy end
   expect(new URL(favicon.src).searchParams.get("url")).toBe("https://example.com/favicon.ico");
   expect(favicon.nextElementSibling).toHaveTextContent("Example Blog");
   expect(new URL(img.src).searchParams.get("url")).toBe("https://images.example/cover.png");
-  for (const [width, height, direction] of [
-    [1200, 630, "flex-col"],
-    [600, 600, "flex-row"],
-    [400, 800, "flex-row"],
+  const initialBox = card.getBoundingClientRect();
+  for (const [width, height] of [
+    [1200, 630],
+    [600, 600],
+    [400, 800],
   ] as const) {
     Object.defineProperties(img, {
       naturalWidth: { configurable: true, value: width },
       naturalHeight: { configurable: true, value: height },
     });
     fireEvent.load(img);
-    expect(card).toHaveClass(direction);
+    expect(card.getBoundingClientRect().height).toBe(initialBox.height);
+    expect(getComputedStyle(card).flexDirection).toBe("row");
   }
   fireEvent.error(img);
   expect(card.querySelectorAll("img")).toHaveLength(1);
   fireEvent.error(favicon);
   expect(card.querySelector("img")).toBeNull();
-  expect(card).toHaveClass("flex-row");
+  expect(card.getBoundingClientRect().height).toBe(initialBox.height);
   expect(card).toBeInTheDocument();
 });
 
-it("hides failed cards and ignores stale responses after the URL is edited", async () => {
+it("keeps a same-sized link fallback on failure and ignores stale responses after edits", async () => {
   let finish!: (data: unknown) => void;
   api.get
     .mockImplementationOnce(
@@ -103,7 +106,8 @@ it("hides failed cards and ignores stale responses after the URL is edited", asy
       expect.any(Object),
     ),
   );
-  expect(screen.queryByRole("link")).toBeNull();
+  expect(screen.getByRole("link")).toBeInTheDocument();
+  expect(screen.getByRole("link").getBoundingClientRect().height).toBe(128);
   expect(screen.queryByText("Old title")).toBeNull();
 });
 
@@ -140,7 +144,8 @@ it("bounds transient retries and lets a later mount retry after exhaustion", asy
     await vi.advanceTimersByTimeAsync(14_000);
   });
   expect(api.get).toHaveBeenCalledTimes(4);
-  expect(screen.queryByRole("link")).toBeNull();
+  expect(screen.getByRole("link")).toBeInTheDocument();
+  expect(screen.getByRole("link").getBoundingClientRect().height).toBe(128);
   await act(async () => {
     await vi.advanceTimersByTimeAsync(60_000);
   });
@@ -163,5 +168,6 @@ it("does not retry permanent API failures", async () => {
     await vi.advanceTimersByTimeAsync(60_000);
   });
   expect(api.get).toHaveBeenCalledTimes(1);
-  expect(screen.queryByRole("link")).toBeNull();
+  expect(screen.getByRole("link")).toBeInTheDocument();
+  expect(screen.getByRole("link").getBoundingClientRect().height).toBe(128);
 });

@@ -43,9 +43,21 @@ async fn main() -> anyhow::Result<()> {
         backend::storage::ensure_bucket_exists(&state.s3_client, &config.s3.bucket).await;
     }
 
+    match tokio::time::timeout(
+        std::time::Duration::from_secs(30),
+        backend::storage::image_dimensions::backfill_emojis(&state),
+    )
+    .await
+    {
+        Ok(result) => result?,
+        Err(_) => tracing::warn!("Emoji metadata backfill will resume at the next startup"),
+    }
+
     // ルーター構築
+    let display_worker = tokio::spawn(backend::display_refresh::worker(state.clone()));
     let delivery_worker = tokio::spawn(backend::apps::delivery::worker(state.clone()));
     let federation_worker = tokio::spawn(backend::activitypub::worker(state.clone()));
+    let home_image_worker = tokio::spawn(backend::routes::home_images::worker(state.clone()));
     let app = create_router(state);
 
     // サーバーバインド
@@ -60,6 +72,8 @@ async fn main() -> anyhow::Result<()> {
     .with_graceful_shutdown(shutdown_signal())
     .await?;
 
+    display_worker.abort();
+    home_image_worker.abort();
     federation_worker.abort();
     delivery_worker.abort();
     tracing::info!("Server shut down gracefully");

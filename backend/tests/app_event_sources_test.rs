@@ -10,6 +10,224 @@ use tower::ServiceExt;
 use uuid::Uuid;
 static HTTP_WORKER_TEST_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
+#[tokio::test]
+async fn display_cache_updates_do_not_emit_message_updates() -> anyhow::Result<()> {
+    let f = fixture_with_events(json!(["message.created", "message.updated"])).await?;
+    let message = ok(
+        &f.app,
+        "POST",
+        "/api/messages",
+        &f.owner,
+        json!({"channel_id":f.channel,"content":"Original text"}),
+    )
+    .await;
+    let id = message["data"]["id"].as_str().unwrap();
+    ok(
+        &f.app,
+        "POST",
+        &format!("/api/messages/{id}/reactions"),
+        &f.owner,
+        json!({"emoji":"👍"}),
+    )
+    .await;
+    let before = payloads(&f, &f.channel).await?;
+    assert!(
+        !before
+            .iter()
+            .any(|event| event["type"] == "message.updated"),
+        "Display cache updates must not look like edits: {before:?}"
+    );
+    ok(
+        &f.app,
+        "PATCH",
+        &format!("/api/messages/{id}"),
+        &f.owner,
+        json!({"content":"Edited text"}),
+    )
+    .await;
+    let after = payloads(&f, &f.channel).await?;
+    assert_eq!(
+        after
+            .iter()
+            .filter(|event| event["type"] == "message.updated")
+            .count(),
+        1
+    );
+    assert!(
+        after
+            .iter()
+            .all(|event| !event.to_string().contains("display_data"))
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn app_message_shapes_exclude_display_data_with_and_without_metadata_scope()
+-> anyhow::Result<()> {
+    let f = fixture().await?;
+    let message = ok(
+        &f.app,
+        "POST",
+        "/api/messages",
+        &f.owner,
+        json!({"channel_id":f.channel,"content":"Shape projection boundary","metadata":{"event_type":"shape_scope_marker","event_payload":{}}}),
+    )
+    .await;
+    let mid = message["data"]["id"].as_str().unwrap();
+    for metadata_allowed in [false, true] {
+        let mut scopes = vec!["messages:read"];
+        if metadata_allowed {
+            scopes.push("metadata:read");
+        }
+        let token = reconfigure(
+            &f,
+            json!({"scopes":scopes,"events":[],"transport":"websocket"}),
+        )
+        .await?;
+        let response = f.app.clone().oneshot(
+            Request::builder()
+                .uri(format!("/api/apps/v1/shapes/messages?channel_id={}&offset=-1&columns=display_data,metadata&_app_metadata_allowed=true", f.channel))
+                .header("authorization", format!("Bearer {token}"))
+                .body(Body::empty())?,
+        ).await?;
+        let status = response.status();
+        if !status.is_success() {
+            let bytes = to_bytes(response.into_body(), usize::MAX).await?;
+            panic!(
+                "App Shape returned {status}: {}",
+                String::from_utf8_lossy(&bytes)
+            );
+        }
+        let schema: Value = serde_json::from_str(
+            response
+                .headers()
+                .get("electric-schema")
+                .unwrap()
+                .to_str()?,
+        )?;
+        assert!(schema.get("content").is_some());
+        assert!(schema.get("display_data").is_none());
+        assert_eq!(schema.get("metadata").is_some(), metadata_allowed);
+        let bytes = to_bytes(response.into_body(), usize::MAX).await?;
+        let rows: Value = serde_json::from_slice(&bytes)?;
+        let row = rows
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|row| row["value"]["id"] == mid)
+            .expect("message in initial snapshot");
+        assert_eq!(row["value"]["content"], "Shape projection boundary");
+        assert!(row["value"].get("display_data").is_none());
+        assert_eq!(row["value"].get("metadata").is_some(), metadata_allowed);
+    }
+    // The user-facing Shape still needs the joined projection to render.
+    let response = f
+        .app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri(format!(
+                    "/api/shapes/messages?channel_id={}&offset=-1",
+                    f.channel
+                ))
+                .header("x-dev-user", &f.owner)
+                .body(Body::empty())?,
+        )
+        .await?;
+    assert!(response.status().is_success());
+    let schema: Value = serde_json::from_str(
+        response
+            .headers()
+            .get("electric-schema")
+            .unwrap()
+            .to_str()?,
+    )?;
+    assert!(schema.get("display_data").is_some());
+    Ok(())
+}
+
+#[tokio::test]
+async fn special_message_events_exclude_the_joined_display_projection() -> anyhow::Result<()> {
+    let f = fixture().await?;
+    let mut db = f.state.db.clone();
+    let mut tx = db.transaction().await?;
+    let bot = apps::one(
+        &mut tx,
+        "SELECT json_build_object('name',user_name)::text FROM users WHERE id=$1",
+        &[&f.bot],
+    )
+    .await?;
+    drop(tx);
+    let message = ok(
+        &f.app,
+        "POST",
+        "/api/messages",
+        &f.owner,
+        json!({"channel_id":f.channel,"content":format!("@{} https://example.com/item",bot["name"].as_str().unwrap())}),
+    ).await;
+    let mid = message["data"]["id"].as_str().unwrap();
+    let mut tx = db.transaction().await?;
+    let cached = apps::one(
+        &mut tx,
+        "SELECT display_data::text FROM messages WHERE id=$1",
+        &[mid],
+    )
+    .await?;
+    assert_eq!(cached["author"]["id"], f.owner);
+    drop(tx);
+    // Inspect the durable payload for both special paths.
+    let events = payloads(&f, &f.channel).await?;
+    for kind in ["app.mentioned", "link.shared"] {
+        let event = events
+            .iter()
+            .find(|event| event["type"] == kind)
+            .expect(kind);
+        assert_eq!(event["data"]["id"], mid);
+        if kind == "app.mentioned" {
+            assert_eq!(event["data"]["content"], message["data"]["content"]);
+        } else {
+            assert_eq!(event["data"]["links"], json!(["https://example.com/item"]));
+            assert!(event["data"].get("content").is_none());
+        }
+        assert!(
+            event["data"].get("display_data").is_none(),
+            "{kind}: {event}"
+        );
+    }
+    // The current event source already strips the projection. Exercise the
+    // retained legacy trigger function too, using a transaction-local table
+    // so the global messages triggers and other tests remain untouched.
+    let mut tx = db.transaction().await?;
+    toasty::sql::statement(
+        "CREATE TEMP TABLE legacy_special_messages (LIKE messages INCLUDING DEFAULTS) ON COMMIT DROP",
+    )
+    .exec(&mut tx)
+    .await?;
+    toasty::sql::statement("CREATE TRIGGER legacy_special_events AFTER INSERT ON legacy_special_messages FOR EACH ROW EXECUTE FUNCTION enqueue_app_special_message()")
+        .exec(&mut tx).await?;
+    toasty::sql::statement(
+        "INSERT INTO legacy_special_messages SELECT * FROM messages WHERE id=$1",
+    )
+    .bind(mid)
+    .exec(&mut tx)
+    .await?;
+    let events = apps::query(&mut tx,
+        "SELECT payload::text FROM app_deliveries WHERE installation_id=$1 AND event_type IN ('app.mentioned','link.shared') AND payload::jsonb->'data'->>'id'=$2",
+        &[&f.installation, mid],
+    ).await?;
+    assert_eq!(
+        events.len(),
+        4,
+        "Both sources must emit both special events"
+    );
+    assert!(
+        events
+            .iter()
+            .all(|event| event["data"].get("display_data").is_none())
+    );
+    Ok(())
+}
+
 async fn request(
     app: &Router,
     method: &str,
@@ -2238,6 +2456,25 @@ async fn custom_emoji_storage_metadata_aliases_and_permissions() -> anyhow::Resu
     )
     .await;
     assert_eq!(emoji["category"], "Greetings");
+    assert_eq!(emoji["width"], 3);
+    assert_eq!(emoji["height"], 1);
+    // Existing uploads acquire dimensions without being re-uploaded.
+    let mut db = f.state.db.clone();
+    toasty::sql::statement("UPDATE workspace_emojis SET width=NULL,height=NULL WHERE name=$1")
+        .bind(name.as_str())
+        .exec(&mut db)
+        .await?;
+    backend::storage::image_dimensions::backfill_emojis(&f.state).await?;
+    let restored = ok(
+        &f.app,
+        "GET",
+        &format!("/api/emojis/{name}"),
+        &f.owner,
+        json!(null),
+    )
+    .await;
+    assert_eq!(restored["width"], 3);
+    assert_eq!(restored["height"], 1);
     assert_eq!(
         request(
             &f.app,
@@ -2497,5 +2734,112 @@ async fn upload_shortcode_remains_readable_and_removable() -> anyhow::Result<()>
         )
         .await;
     }
+    Ok(())
+}
+
+#[tokio::test]
+async fn delayed_emoji_storage_does_not_block_message_writes() -> anyhow::Result<()> {
+    use base64::Engine;
+    let f = fixture_with_events(json!([])).await?;
+    let storage = wiremock::MockServer::start().await;
+    wiremock::Mock::given(wiremock::matchers::method("PUT"))
+        .respond_with(
+            wiremock::ResponseTemplate::new(200).set_delay(std::time::Duration::from_secs(10)),
+        )
+        .mount(&storage)
+        .await;
+    let mut state = f.state.clone();
+    let mut config = state.config.s3.clone();
+    config.endpoint = storage.uri();
+    state.s3_client = backend::storage::create_s3_client(&config);
+    let app = create_router(state);
+    let name = format!("gate_{}", &uuid::Uuid::new_v4().simple().to_string()[..12]);
+    let body = json!({"name":name,"category":"","aliases":[],"content_type":"image/gif","data":base64::engine::general_purpose::STANDARD.encode(b"GIF89a\x01\x00\x01\x00\x80\x00\x00\x00\x00\x00\xff\xff\xff\x21\xf9\x04\x01\x00\x00\x00\x00\x2c\x00\x00\x00\x00\x01\x00\x01\x00\x00\x02\x02\x44\x01\x00\x3b")});
+    let uploading = tokio::spawn({
+        let app = app.clone();
+        let owner = f.owner.clone();
+        async move { request(&app, "POST", "/api/emojis/upload", &owner, body).await }
+    });
+    tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        while storage.received_requests().await.unwrap().is_empty() {
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await?;
+    tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        ok(
+            &app,
+            "POST",
+            "/api/messages",
+            &f.owner,
+            json!({"channel_id":f.channel,"content":"Not blocked by emoji storage"}),
+        ),
+    )
+    .await?;
+    let (status, _) = uploading.await?;
+    assert_eq!(status, StatusCode::OK);
+    Ok(())
+}
+
+#[tokio::test]
+async fn emoji_backfill_commits_successes_before_the_startup_deadline() -> anyhow::Result<()> {
+    use base64::Engine;
+    let f = fixture_with_events(json!([])).await?;
+    let storage = wiremock::MockServer::start().await;
+    let fast = Uuid::new_v4().to_string();
+    let slow: Vec<String> = (0..17).map(|_| Uuid::new_v4().to_string()).collect();
+    let bytes=base64::engine::general_purpose::STANDARD.decode("iVBORw0KGgoAAAANSUhEUgAAAAMAAAABCAYAAAAb4BS0AAAADklEQVR4nGP438DwH4YBMWYHe7X3S+QAAAAASUVORK5CYII=")?;
+    wiremock::Mock::given(wiremock::matchers::method("GET"))
+        .and(wiremock::matchers::path_regex(format!(
+            "/custom-emojis/{fast}$"
+        )))
+        .respond_with(wiremock::ResponseTemplate::new(200).set_body_bytes(bytes))
+        .mount(&storage)
+        .await;
+    wiremock::Mock::given(wiremock::matchers::method("GET"))
+        .and(wiremock::matchers::path_regex(format!(
+            "/custom-emojis/({})$",
+            slow.join("|")
+        )))
+        .respond_with(
+            wiremock::ResponseTemplate::new(200)
+                .set_body_bytes(vec![0])
+                .set_delay(std::time::Duration::from_secs(11)),
+        )
+        .mount(&storage)
+        .await;
+    let mut state = f.state.clone();
+    let mut config = state.config.s3.clone();
+    config.endpoint = storage.uri();
+    state.s3_client = backend::storage::create_s3_client(&config);
+    let mut db = state.db.clone();
+    for id in std::iter::once(&fast).chain(slow.iter()) {
+        toasty::sql::statement(
+            "INSERT INTO workspace_emojis(name,url,created_by) VALUES($1,$2,$3)",
+        )
+        .bind(format!("budget_{id}"))
+        .bind(format!("/api/emoji-images/{id}"))
+        .bind(f.owner.as_str())
+        .exec(&mut db)
+        .await?;
+    }
+    // Seventeen slow reads need three waves at concurrency eight. The former
+    // collect-all implementation cannot commit the fast result within 25s.
+    tokio::time::timeout(
+        std::time::Duration::from_secs(25),
+        backend::storage::image_dimensions::backfill_emojis(&state),
+    )
+    .await??;
+    let mut tx = db.transaction().await?;
+    let restored=apps::one(&mut tx,"SELECT json_build_object('width',width,'height',height)::text FROM workspace_emojis WHERE name=$1",&[&format!("budget_{fast}")]).await?;
+    assert_eq!(restored, json!({"width":3,"height":1}));
+    toasty::sql::statement(
+        "DELETE FROM workspace_emojis WHERE created_by=$1 AND name LIKE 'budget_%'",
+    )
+    .bind(f.owner)
+    .exec(&mut tx)
+    .await?;
+    tx.commit().await?;
     Ok(())
 }

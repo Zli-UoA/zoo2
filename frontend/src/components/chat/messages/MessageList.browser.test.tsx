@@ -27,7 +27,7 @@ const nextFrame = () =>
   );
 
 it.each(["bottom", "returned", "visible", "above"] as const)(
-  "preserves the reading position when a URL card expands (%s)",
+  "preserves card geometry and reading position while URL metadata and images load (%s)",
   async (position) => {
     await startMockServer();
     let resolveMetadata!: (data: LinkPreviewData) => void;
@@ -118,6 +118,10 @@ it.each(["bottom", "returned", "visible", "above"] as const)(
       `[data-message-id="${position === "above" ? 2 : previewIndex}"]`,
     )!;
     const before = anchor.getBoundingClientRect().top;
+    const pendingCard = await screen.findByRole("link", {
+      name: `https://example.com/scroll-${position} example.com`,
+    });
+    const initialCard = pendingCard.getBoundingClientRect();
     const expectPosition = async () => {
       await nextFrame();
       await waitFor(() => {
@@ -128,14 +132,18 @@ it.each(["bottom", "returned", "visible", "above"] as const)(
     await act(async () => {
       resolveMetadata({
         title: "Delayed URL card",
-        description: "The card expands after metadata and a landscape image load.",
+        description: "The card keeps its reserved size while metadata and a landscape image load.",
         image: "https://example.com/scroll.png",
       });
     });
     const card = await screen.findByRole("link", { name: /Delayed URL card/ });
+    expect(card.getBoundingClientRect().height).toBe(initialCard.height);
+    expect(card.getBoundingClientRect().width).toBe(initialCard.width);
     await expectPosition();
     resolveImage();
-    await waitFor(() => expect(card).toHaveClass("flex-col"));
+    await waitFor(() => expect(card.querySelector("img")?.naturalWidth).toBe(1200));
+    expect(card.getBoundingClientRect().height).toBe(initialCard.height);
+    expect(card.getBoundingClientRect().width).toBe(initialCard.width);
     await expectPosition();
     expect(screen.queryByRole("button", { name: "新着メッセージ" })).toBeNull();
   },

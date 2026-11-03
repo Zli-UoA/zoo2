@@ -128,7 +128,7 @@ async fn note(State(state): State<AppState>, Path(id): Path<String>) -> Result<R
     base_url()?;
     let mut db = state.db.clone();
     let mut tx = db.transaction().await?;
-    let post=one(&mut tx,"SELECT row_to_json(p)::text FROM home_posts p WHERE id=$1 AND apub AND visibility IN ('public','unlisted')",&[&id]).await?;
+    let post=one(&mut tx,"SELECT row_to_json(p)::text FROM home_posts p WHERE id=$1 AND apub AND visibility IN ('public','unlisted') AND (p.channel_id IS NULL OR EXISTS(SELECT 1 FROM channels c WHERE c.id=p.channel_id AND NOT c.is_private AND NOT c.is_dm AND c.deleted_at IS NULL))",&[&id]).await?;
     if !post["deleted_at"].is_null() {
         return Ok((StatusCode::GONE,response(json!({"@context":CONTEXT,"type":"Tombstone","id":format!("{}/api/activitypub/notes/{id}",base_url()?)}))).into_response());
     }
@@ -150,7 +150,7 @@ async fn outbox(
     }
     let mut db = state.db.clone();
     let mut tx = db.transaction().await?;
-    let rows=query(&mut tx,"SELECT row_to_json(p)::text FROM home_posts p WHERE user_id=$1 AND apub AND visibility='public' AND deleted_at IS NULL AND ($2='' OR (created_at,id)<(SELECT created_at,id FROM home_posts WHERE id=$2)) ORDER BY created_at DESC,id DESC LIMIT 50",&[&id,page.before.as_deref().unwrap_or("")]).await?;
+    let rows=query(&mut tx,"SELECT row_to_json(p)::text FROM home_posts p WHERE user_id=$1 AND apub AND visibility='public' AND deleted_at IS NULL AND (p.channel_id IS NULL OR EXISTS(SELECT 1 FROM channels c WHERE c.id=p.channel_id AND NOT c.is_private AND NOT c.is_dm AND c.deleted_at IS NULL)) AND ($2='' OR (created_at,id)<(SELECT created_at,id FROM home_posts WHERE id=$2)) ORDER BY created_at DESC,id DESC LIMIT 50",&[&id,page.before.as_deref().unwrap_or("")]).await?;
     let mut items = vec![];
     for p in &rows {
         let note = note_value(&with_workspace_emojis(&mut tx, p).await?)?;

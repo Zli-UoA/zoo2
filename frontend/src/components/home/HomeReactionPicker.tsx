@@ -140,7 +140,11 @@ export function HomeReactionPicker({
                               aria-label={e.name}
                               onClick={() => select({ reaction: e.name, emoji_id: e.image_id })}
                             >
-                              <ActivityPubEmoji emoji={e} className="size-7 object-contain" />
+                              <ActivityPubEmoji
+                                emoji={e}
+                                className="size-7 object-contain"
+                                size={28}
+                              />
                             </Button>
                           ))}
                       </div>

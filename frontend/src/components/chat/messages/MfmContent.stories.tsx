@@ -5,6 +5,7 @@ import type { Meta, StoryObj } from "@storybook/react-vite";
 import { MfmChannelsProvider } from "./MfmChannels";
 import { storyChannels } from "../../../../.storybook/fixtures";
 import { MfmContent } from "./MfmContent";
+import { customEmojiFixture } from "../../../../.storybook/preference-fixtures";
 const meta = {
   title: "Features/Chat/MessageContent",
   component: MfmContent,
@@ -45,6 +46,18 @@ export const CodeAndMath: Story = {
 };
 export const EmojiAndFallback: Story = {
   args: { content: "😀 🎉 :smile: :unregistered_zoo_emoji:" },
+};
+export const JoinedEmoji: Story = {
+  args: {
+    content: "本文と一緒に届く :zoo_wave: :unregistered_zoo_emoji:",
+    emojis: { zoo_wave: customEmojiFixture },
+  },
+  play: playForImplementation(async ({ canvasElement }) => {
+    const image = await within(canvasElement).findByRole("img", { name: ":zoo_wave:" });
+    const box = image.getBoundingClientRect();
+    await expect(box.width / box.height).toBeCloseTo(3);
+    await expect(canvasElement).toHaveTextContent(":unregistered_zoo_emoji:");
+  }),
 };
 export const Formatting: Story = {
   args: { content: "**強調** *斜体* ~~取り消し~~\n> 引用文\n$[ruby 漢字 かんじ]" },

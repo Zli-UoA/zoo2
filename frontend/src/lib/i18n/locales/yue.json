@@ -311,7 +311,6 @@
     "unavailable": "頻道用唔到",
     "reactionGroup_one": "{{actor}} 同另外 1 人回應咗你嘅訊息",
     "reactionGroup_other": "{{actor}} 同另外 {{count}} 人回應咗你嘅訊息",
-    "reactions": "回應",
     "messageUnavailable": "訊息已刪除或者睇唔到",
     "dm": "{{actor}} 傳咗私人訊息畀你",
     "mentionContext": "提及",
@@ -587,6 +586,8 @@
     "showLess": "收起"
   },
   "home": {
+    "image": "圖片",
+    "imageError": "加唔到圖片。請揀最多10張PNG、JPEG、GIF或WebP圖片（每張唔超過8MiB），再試一次。",
     "title": "首頁",
     "refresh": "重新整理",
     "compose": "分享近況",

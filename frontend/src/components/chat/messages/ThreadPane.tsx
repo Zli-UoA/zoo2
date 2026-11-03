@@ -6,7 +6,7 @@ import type { CommandSuggestion } from "./composerSuggestions";
 import type { UploadedAttachment } from "../../../lib/api/attachments";
 import type { KitchenCatalog } from "../../../lib/emoji/kitchen";
 import type { AttachmentRow } from "../../../lib/electric/types";
-import type { ReactionGroup } from "../../../lib/emoji/reactions";
+import { groupReactions, type ReactionGroup } from "../../../lib/emoji/reactions";
 import { Button } from "../../ui/button";
 import { PaneHeader } from "../../layout/PaneHeader";
 
@@ -193,8 +193,12 @@ export function ThreadPane({
           onCancelEdit={onCancelEdit}
           onSaveEdit={onSaveEdit}
           onRequestDelete={() => onRequestDelete(root.id)}
-          reactions={reactions.get(root.id) ?? []}
-          attachments={attachments?.get(root.id) ?? []}
+          reactions={
+            root.display_data
+              ? (groupReactions(root.display_data.reactions, currentUserId).get(root.id) ?? [])
+              : (reactions.get(root.id) ?? [])
+          }
+          attachments={root.display_data?.attachments ?? attachments?.get(root.id) ?? []}
           kitchenCatalog={kitchenCatalog}
           canReact={canReact}
           onReaction={(emoji) => onReaction(root.id, emoji)}
@@ -265,10 +269,22 @@ export function ThreadPane({
                   onCancelEdit={onCancelEdit}
                   onSaveEdit={onSaveEdit}
                   onRequestDelete={() => onRequestDelete(item.message.id)}
-                  replyCount={replyCounts?.get(item.message.id) ?? 0}
+                  replyCount={
+                    item.message.display_data?.reply_count ?? replyCounts?.get(item.message.id) ?? 0
+                  }
                   onOpenThread={onOpenThread ? () => onOpenThread(item.message.id) : undefined}
-                  reactions={reactions.get(item.message.id) ?? []}
-                  attachments={attachments?.get(item.message.id) ?? []}
+                  reactions={
+                    item.message.display_data
+                      ? (groupReactions(item.message.display_data.reactions, currentUserId).get(
+                          item.message.id,
+                        ) ?? [])
+                      : (reactions.get(item.message.id) ?? [])
+                  }
+                  attachments={
+                    item.message.display_data?.attachments ??
+                    attachments?.get(item.message.id) ??
+                    []
+                  }
                   kitchenCatalog={kitchenCatalog}
                   canReact={canReact}
                   onReaction={(emoji) => onReaction(item.message.id, emoji)}

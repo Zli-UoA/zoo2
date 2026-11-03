@@ -759,3 +759,37 @@ for (const width of [1440, 390]) {
       .toContain("/home/posts/home-image-only");
   });
 }
+
+for (const implementation of ["react", "kotlin"] as const) {
+  for (const width of [1440, 390]) {
+    test(`Home notification quotes render local emoji aliases as images: ${implementation} ${width}`, async ({
+      page,
+    }) => {
+      await page.setViewportSize({ width, height: 900 });
+      await page.goto(
+        `/iframe.html?id=pages-notifications--local-content-emoji&viewMode=story&globals=implementation:${implementation}`,
+      );
+      if (implementation === "kotlin") {
+        await expect(page.locator("[data-compose-catalog-state=ready]")).toBeVisible({
+          timeout: 90_000,
+        });
+      }
+      await waitForStoryPlay(page);
+      const screen =
+        implementation === "kotlin"
+          ? page.frameLocator('iframe[title="Kotlin component preview"]')
+          : page;
+      await expect(screen.getByText("ローカル投稿の引用", { exact: false })).toBeVisible();
+      const image = screen.getByRole("img", { name: ":hello:", exact: true });
+      await expect(image).toBeVisible();
+      const bounds = await image.boundingBox();
+      expect(bounds!.width / bounds!.height).toBeCloseTo(3, 1);
+      if (implementation === "react") {
+        await expect(image).toHaveAttribute("src", /\/api\/emoji-images\//);
+        await expect
+          .poll(() => image.evaluate((element) => (element as HTMLImageElement).naturalWidth))
+          .toBeGreaterThan(0);
+      }
+    });
+  }
+}

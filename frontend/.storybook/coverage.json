@@ -131,7 +131,8 @@
         "HomeNotificationsError",
         "LiveFollowRequest",
         "OlderFollowRequests",
-        "ActivityPubMfmReply"
+        "ActivityPubMfmReply",
+        "LocalContentEmoji"
       ]
     },
     {
@@ -223,6 +224,7 @@
         "LongUrl",
         "CodeAndMath",
         "EmojiAndFallback",
+        "JoinedEmoji",
         "Formatting",
         "CodeAndMathDark",
         "Headings"
@@ -447,6 +449,11 @@
     {
       "file": "src/components/home/HomeScreen.stories.tsx",
       "states": [
+        "ReplyToMediaOnly",
+        "WithImages",
+        "MobileImages",
+        "ImageOnlyPost",
+        "ImageUploadError",
         "Default",
         "Mobile",
         "Empty",
@@ -519,6 +526,7 @@
       "file": "src/components/public/PublicProfile.stories.tsx",
       "states": [
         "Default",
+        "WithImages",
         "Empty",
         "Loading",
         "LoadError",
@@ -895,7 +903,7 @@
       "file": "src/components/home/HomeComposer.tsx",
       "story": "src/components/home/HomeScreen.stories.tsx",
       "composed": true,
-      "reason": "Composer/MobileComposerで実フォームの起動と配置を、Submit/SendError/FederationToggleで送信・下書き・公開範囲と連合の独立性を確認する。"
+      "reason": "WithImages/MobileImagesで画像表示、ImageOnlyPostで貼り付け・削除・画像のみ送信・再送を確認する。Composer/MobileComposerで実フォームの起動と配置を、Submit/SendError/FederationToggleで送信・下書き・公開範囲と連合の独立性を確認する。"
     },
     {
       "file": "src/components/home/ActivityPubNotifications.tsx",

@@ -106,6 +106,25 @@ pub fn note_value(post: &Value) -> Result<Value, AppError> {
     };
     let content = html_escape::encode_safe(string(post, "content")?).replace('\n', "<br>");
     let mut note = json!({"@context":[CONTEXT,{"_misskey_content":"https://misskey-hub.net/ns#_misskey_content"}],"source":{"content":post["content"],"mediaType":"text/x.misskeymarkdown"},"_misskey_content":post["content"],"type":"Note","id":format!("{}/api/activitypub/notes/{id}",base_url()?),"attributedTo":author,"published":post["created_at"],"updated":post["updated_at"],"content":content,"mediaType":"text/html","likes":format!("{}/api/activitypub/notes/{id}/likes",base_url()?),"to":to,"cc":cc});
+    let media_base = base_url()?;
+    let attachments = post["media"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .map(|item| {
+            let url = item["url"].as_str().map(|url| {
+                if url.starts_with("/api/home/images/") {
+                    format!("{media_base}{url}")
+                } else {
+                    url.to_owned()
+                }
+            });
+            json!({"type":"Document","mediaType":item["media_type"],"name":item["name"],"url":url})
+        })
+        .collect::<Vec<_>>();
+    if !attachments.is_empty() {
+        note["attachment"] = json!(attachments);
+    }
     if let Some(parent) = post["parent_uri"].as_str() {
         note["inReplyTo"] = json!(parent);
     }
@@ -156,6 +175,9 @@ async fn with_workspace_emojis(
                 }
             }
         }
+    }
+    if post["channel_id"].is_string() {
+        crate::routes::home_images::decorate(tx, std::slice::from_mut(&mut post)).await?;
     }
     post["emojis"] = json!(emojis);
     Ok(post)
@@ -290,9 +312,9 @@ pub(crate) async fn remember_display_emojis(
 ) -> Result<(), AppError> {
     let mut emojis = vec![];
     for item in items {
-        for key in ["emojis", "actor_emojis"] {
+        for key in ["emojis", "actor_emojis", "media"] {
             if let Some(values) = item[key].as_array() {
-                emojis.extend(values.iter().cloned());
+                emojis.extend(values.iter().filter(|v| v["image_id"].is_string()).cloned());
             }
         }
         if item["avatar"].is_object() {
@@ -309,6 +331,7 @@ pub(crate) async fn remember_display_emojis(
             }
         }
     }
+    emojis.retain(|emoji| emoji["local"] != true);
     // Tags are already normalized and authorized by the containing feed/notification query.
     // Multiple rows may refer to the same URL; avoid PostgreSQL updating it twice in one insert.
     emojis.sort_by_key(|v| v["image_id"].as_str().unwrap_or("").to_owned());

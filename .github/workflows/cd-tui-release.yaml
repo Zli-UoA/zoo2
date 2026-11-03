@@ -17,6 +17,8 @@ concurrency:
 # macOS 向けも作るため、self-hosted ではなく GitHub ホストの実行先を使います。
 jobs:
   version:
+    # 手動実行でも、レビュー前の作業ブランチからは公開しない。
+    if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     timeout-minutes: 5
     outputs:

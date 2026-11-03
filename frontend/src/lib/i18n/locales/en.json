@@ -311,7 +311,6 @@
     "unavailable": "Channel unavailable",
     "reactionGroup_one": "{{actor}} and 1 other reacted to your message",
     "reactionGroup_other": "{{actor}} +{{count}} reacted to your message",
-    "reactions": "Reactions",
     "messageUnavailable": "This message was deleted or is unavailable",
     "dm": "{{actor}} sent you a direct message",
     "mentionContext": "Mention",
@@ -587,6 +586,8 @@
     "showLess": "Show less"
   },
   "home": {
+    "image": "Image",
+    "imageError": "Could not add image. Choose up to 10 PNG, JPEG, GIF or WebP images (8 MiB each), then try again.",
     "title": "Home",
     "refresh": "Refresh",
     "compose": "Share an update",

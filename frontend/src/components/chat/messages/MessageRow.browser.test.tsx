@@ -328,6 +328,26 @@ describe("MessageRow", () => {
     expect(onStartEdit).toHaveBeenCalledOnce();
   });
 
+  it("saves the edit with the platform send shortcut but not on a plain Enter or empty text", async () => {
+    const onSaveEdit = vi.fn();
+    const view = renderRow(buildItem(), true, {
+      isEditing: true,
+      editingText: "更新後",
+      onSaveEdit,
+    });
+    const box = screen.getByRole("textbox", { name: "メッセージを編集" });
+    box.focus();
+    await userEvent.keyboard("{Enter}");
+    expect(onSaveEdit).not.toHaveBeenCalled();
+    await userEvent.keyboard("{Control>}{Enter}{/Control}");
+    await userEvent.keyboard("{Meta>}{Enter}{/Meta}");
+    expect(onSaveEdit).toHaveBeenCalledOnce();
+    view.update({ editingText: "  " });
+    await userEvent.keyboard("{Control>}{Enter}{/Control}");
+    await userEvent.keyboard("{Meta>}{Enter}{/Meta}");
+    expect(onSaveEdit).toHaveBeenCalledOnce();
+  });
+
   it("renders URLs as safe external links", () => {
     renderRow(buildItem({ content: "詳細は https://example.com/docs を参照" }));
 

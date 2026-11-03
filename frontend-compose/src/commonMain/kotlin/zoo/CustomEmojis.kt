@@ -15,8 +15,27 @@ fun workspaceEmojis(app: Session): List<Row> {
 }
 
 fun workspaceEmoji(value: Row): Row = buildJsonObject {
+    value["width"]?.let { put("width", it) }; value["height"]?.let { put("height", it) }
     put("name", ":${value.text("name")}:")
     put("url", value.text("url")); put("image_id", value.text("url")); put("local", true)
+}
+
+/** Null means legacy/federated content; an empty list is an authoritative join. */
+internal val LocalJoinedEmojis = staticCompositionLocalOf<List<Row>?> { null }
+
+fun joinedEmojis(data: Row): List<Row> = data.nested("emojis").map { (name, value) ->
+    buildJsonObject {
+        value.objectOrEmpty().forEach { (key, field) -> put(key, field) }
+        put("name", if (name.startsWith("apub:")) value.objectOrEmpty().text("name").ifEmpty { name } else ":$name:")
+        put("reaction_key",name); put("local", !name.startsWith("apub:"))
+        put("image_id", value.objectOrEmpty().text("image_id").ifEmpty { value.objectOrEmpty().text("url") })
+    }
+}
+
+fun emojiRatio(emoji: Row): Float {
+    val width = emoji.text("width").toFloatOrNull() ?: return 1f
+    val height = emoji.text("height").toFloatOrNull() ?: return 1f
+    return if (width > 0 && height > 0) (width / height).coerceIn(0.01f, 8f) else 1f
 }
 
 @Composable

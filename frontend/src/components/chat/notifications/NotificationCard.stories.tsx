@@ -171,11 +171,11 @@ export const GroupedReactions: Story = {
   },
   play: playForImplementation(async () => {
     await expect(await screen.findByText("Bob さんほか1人")).toBeVisible();
-    await expect(await screen.findByLabelText("👀 2")).toBeVisible();
-    await expect(screen.getByRole("link", { name: "example.com/release" })).toHaveAttribute(
+    await expect(await screen.findByRole("link", { name: "example.com/release" })).toHaveAttribute(
       "target",
       "_blank",
     );
+    await expect(screen.queryByLabelText("👀 2")).not.toBeInTheDocument();
     const external = screen.getByRole("link", { name: "example.com/release" });
     const bounds = external.getBoundingClientRect();
     await expect(

@@ -311,7 +311,6 @@
     "unavailable": "频道不可用",
     "reactionGroup_one": "{{actor}} 等另外 1 人回应了你的消息",
     "reactionGroup_other": "{{actor}} 等另外 {{count}} 人回应了你的消息",
-    "reactions": "回应",
     "messageUnavailable": "消息已删除或无法查看",
     "dm": "{{actor}} 给你发送了私信",
     "mentionContext": "提及",
@@ -587,6 +586,8 @@
     "showLess": "收起"
   },
   "home": {
+    "image": "图片",
+    "imageError": "无法添加图片。请选择最多10张PNG、JPEG、GIF或WebP图片（每张不超过8MiB），然后重试。",
     "title": "首页",
     "refresh": "刷新",
     "compose": "分享近况",

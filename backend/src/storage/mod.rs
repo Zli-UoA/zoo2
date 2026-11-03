@@ -1,6 +1,7 @@
 pub mod client;
 pub mod delete;
 pub mod format;
+pub mod image_dimensions;
 pub mod presign;
 pub mod verify;
 

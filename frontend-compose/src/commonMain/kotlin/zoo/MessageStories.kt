@@ -24,7 +24,7 @@ fun MessageStory(app: Session, options: Row) {
         }
     val messages = if ("messages" in args) args.rows("messages") else fixture.rows("messages")
     when (component) {
-        "MessageContent" -> RichText(args.text("content"), users)
+        "MessageContent" -> CompositionLocalProvider(LocalJoinedEmojis provides args.takeIf { it.containsKey("emojis") }?.let(::joinedEmojis)) { RichText(args.text("content"), users) }
         "LinkPreviews" -> LinkPreviews(app, args.text("content"))
         "MessageCard" ->
             if (fixture.rows("feed").isNotEmpty())
