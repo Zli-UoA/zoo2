@@ -3,9 +3,13 @@ use std::{collections::HashMap, path::PathBuf};
 use anyhow::{Context, Result, bail};
 use serde::Deserialize;
 
-/// frontend の `VITE_DEV_USER_ID` の例と同じ、dev モードの既定ユーザー。
-pub const DEFAULT_DEV_USER: &str = "00000000-0000-0000-0000-000000000001";
-const DEFAULT_API_BASE_URL: &str = "http://localhost:8000";
+// 本番 (zli.chat) の接続先。設定ファイルや環境変数で何も指定しなくても使えるようにする。
+// client_id は AuthZ に登録した public client の ID で、秘密ではない。
+const DEFAULT_API_BASE_URL: &str = "https://zli.chat";
+const DEFAULT_OIDC_ISSUER: &str = "https://account.zli.works/api/auth";
+const DEFAULT_OIDC_CLIENT_ID: &str = "ldwuljsObQHzxCdMwnTsYLTrCwgHaRii";
+/// backend の `OIDC_AUDIENCE`。これを要求すると `typ: at+jwt` のアクセストークンが得られる。
+const DEFAULT_OIDC_RESOURCE: &str = "https://zli.chat";
 /// backend の初回ログインで UserInfo を呼ぶため `profile` を、トークン更新のため `offline_access` を要求する。
 const DEFAULT_SCOPE: &str = "openid profile offline_access";
 
@@ -96,22 +100,22 @@ fn resolve(file: FileConfig, env: &HashMap<String, String>) -> Result<Config> {
     let issuer = pick("ZOO_OIDC_ISSUER", file.oidc_issuer);
     let client_id = pick("ZOO_OIDC_CLIENT_ID", file.oidc_client_id);
 
-    let auth = match (dev_user, issuer, client_id) {
-        // dev_user を明示したときは OIDC 設定があっても dev モードにする。
-        (Some(user_id), _, _) => AuthConfig::Dev { user_id },
-        (None, Some(issuer), Some(client_id)) => AuthConfig::Oidc(OidcConfig {
-            issuer: issuer.trim_end_matches('/').to_string(),
-            client_id,
-            resource: pick("ZOO_OIDC_RESOURCE", file.oidc_resource),
+    let auth = match dev_user {
+        // dev_user を明示したときだけ dev モードにする。
+        Some(user_id) => AuthConfig::Dev { user_id },
+        None => AuthConfig::Oidc(OidcConfig {
+            issuer: issuer
+                .unwrap_or_else(|| DEFAULT_OIDC_ISSUER.to_string())
+                .trim_end_matches('/')
+                .to_string(),
+            client_id: client_id.unwrap_or_else(|| DEFAULT_OIDC_CLIENT_ID.to_string()),
+            resource: Some(
+                pick("ZOO_OIDC_RESOURCE", file.oidc_resource)
+                    .unwrap_or_else(|| DEFAULT_OIDC_RESOURCE.to_string()),
+            ),
             scope: pick("ZOO_OIDC_SCOPE", file.oidc_scope)
                 .unwrap_or_else(|| DEFAULT_SCOPE.to_string()),
         }),
-        (None, Some(_), None) | (None, None, Some(_)) => {
-            bail!("OIDC を使うには oidc_issuer と oidc_client_id の両方が必要です")
-        }
-        (None, None, None) => AuthConfig::Dev {
-            user_id: DEFAULT_DEV_USER.to_string(),
-        },
     };
 
     let check_updates = match pick("ZOO_CHECK_UPDATES", None) {
@@ -142,14 +146,17 @@ mod tests {
     }
 
     #[test]
-    fn defaults_to_local_dev_mode() {
+    fn defaults_to_production_login() {
         let config = resolve(FileConfig::default(), &env(&[])).unwrap();
-        assert_eq!(config.api_base_url, "http://localhost:8000");
+        assert_eq!(config.api_base_url, "https://zli.chat");
         assert_eq!(
             config.auth,
-            AuthConfig::Dev {
-                user_id: DEFAULT_DEV_USER.to_string()
-            }
+            AuthConfig::Oidc(OidcConfig {
+                issuer: "https://account.zli.works/api/auth".into(),
+                client_id: DEFAULT_OIDC_CLIENT_ID.into(),
+                resource: Some("https://zli.chat".into()),
+                scope: DEFAULT_SCOPE.into(),
+            })
         );
     }
 
@@ -164,29 +171,23 @@ mod tests {
     }
 
     #[test]
-    fn oidc_needs_issuer_and_client_id() {
+    fn oidc_settings_override_the_defaults() {
         let file = FileConfig {
             oidc_issuer: Some("https://account.example/api/auth/".into()),
             oidc_client_id: Some("zoo2-tui".into()),
-            oidc_resource: Some("https://zli.chat".into()),
+            oidc_resource: Some("https://example.test".into()),
             ..Default::default()
         };
-        let config = resolve(file, &env(&[])).unwrap();
+        let config = resolve(file, &env(&[("ZOO_OIDC_CLIENT_ID", "from-env")])).unwrap();
         assert_eq!(
             config.auth,
             AuthConfig::Oidc(OidcConfig {
                 issuer: "https://account.example/api/auth".into(),
-                client_id: "zoo2-tui".into(),
-                resource: Some("https://zli.chat".into()),
+                client_id: "from-env".into(),
+                resource: Some("https://example.test".into()),
                 scope: DEFAULT_SCOPE.into(),
             })
         );
-
-        let err = resolve(
-            FileConfig::default(),
-            &env(&[("ZOO_OIDC_ISSUER", "https://a")]),
-        );
-        assert!(err.is_err());
     }
 
     #[test]
