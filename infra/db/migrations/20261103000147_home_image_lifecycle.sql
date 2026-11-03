@@ -35,4 +35,3 @@ BEGIN
   RETURN OLD;
 END $$;
 CREATE TRIGGER home_image_deleted AFTER DELETE ON home_images FOR EACH ROW EXECUTE FUNCTION queue_home_image_deletion();
-

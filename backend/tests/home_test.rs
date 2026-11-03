@@ -8,6 +8,8 @@ use backend::{config::Config, db::init_db, routes::create_router, state::AppStat
 use serde_json::{Value, json};
 use tower::ServiceExt;
 
+static HOME_IMAGE_GC_TESTS: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
 async fn request(
     app: &Router,
     method: &str,
@@ -1040,6 +1042,7 @@ async fn home_images_are_owned_and_survive_image_only_posts() -> anyhow::Result<
 
 #[tokio::test]
 async fn home_image_limits_discard_and_gc_preserve_live_references() -> anyhow::Result<()> {
+    let _gc_test = HOME_IMAGE_GC_TESTS.lock().await;
     let storage = wiremock::MockServer::start().await;
     wiremock::Mock::given(wiremock::matchers::method("PUT"))
         .respond_with(wiremock::ResponseTemplate::new(200))
@@ -1152,7 +1155,42 @@ async fn home_image_limits_discard_and_gc_preserve_live_references() -> anyhow::
             .0,
         StatusCode::NO_CONTENT
     );
+    // Limit the failure to one call; scoped mocks with different priorities can
+    // deactivate the wrong registration in wiremock 0.6.5 after its internal sort.
+    wiremock::Mock::given(wiremock::matchers::method("DELETE"))
+        .and(wiremock::matchers::path(format!(
+            "/{}/home-images/{draft_id}",
+            state.config.s3.bucket
+        )))
+        .respond_with(wiremock::ResponseTemplate::new(403))
+        .with_priority(1)
+        .up_to_n_times(1)
+        .expect(1)
+        .mount(&storage)
+        .await;
+    assert!(
+        backend::routes::home_images::collect_garbage(&state)
+            .await
+            .is_err()
+    );
+    let rows = backend::apps::query(
+        &mut db.transaction().await?,
+        "SELECT json_build_object('id',id)::text FROM home_image_deletions WHERE id=$1",
+        &[draft_id],
+    )
+    .await?;
+    assert_eq!(rows.len(), 1, "failed S3 deletion must remain queued");
     backend::routes::home_images::collect_garbage(&state).await?;
+    let remaining = backend::apps::query(
+        &mut db.transaction().await?,
+        "SELECT json_build_object('id',id)::text FROM home_image_deletions WHERE id=$1",
+        &[draft_id],
+    )
+    .await?;
+    assert!(
+        remaining.is_empty(),
+        "successful retry must remove the queued deletion"
+    );
     assert!(
         storage
             .received_requests()
@@ -1420,6 +1458,110 @@ async fn home_images_follow_channel_visibility_and_selection_order() -> anyhow::
         .await?
         .0,
         StatusCode::NOT_FOUND
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn home_image_upload_failure_and_interruption_leave_durable_cleanup() -> anyhow::Result<()> {
+    let _gc_test = HOME_IMAGE_GC_TESTS.lock().await;
+    let storage = wiremock::MockServer::start().await;
+    wiremock::Mock::given(wiremock::matchers::method("PUT"))
+        .respond_with(wiremock::ResponseTemplate::new(403))
+        .mount(&storage)
+        .await;
+    wiremock::Mock::given(wiremock::matchers::method("DELETE"))
+        .respond_with(wiremock::ResponseTemplate::new(204))
+        .mount(&storage)
+        .await;
+    let mut config = Config::from_env();
+    config.dev_auth_enabled = true;
+    config.s3.endpoint = storage.uri();
+    config.s3.force_path_style = true;
+    config.s3.access_key_id = "test-key".into();
+    config.s3.secret_access_key = "test-secret".into();
+    let mut db = init_db(&config.database_url).await?;
+    let state = AppState::new(db.clone(), config);
+    let app = create_router(state.clone());
+    let owner = uuid::Uuid::new_v4().to_string();
+    toasty::sql::statement("INSERT INTO users(id,user_name,display_name) VALUES($1,$1,$1)")
+        .bind(owner.as_str())
+        .exec(&mut db)
+        .await?;
+    let body = json!({"name":"photo.png","content_type":"image/png","data":test_home_png(2,2)});
+    assert_eq!(
+        request(
+            &app,
+            "POST",
+            Some(&owner),
+            "/api/home/images",
+            Some(body.clone())
+        )
+        .await?
+        .0,
+        StatusCode::INTERNAL_SERVER_ERROR
+    );
+    let queued = backend::apps::query(
+        &mut db.transaction().await?,
+        "SELECT json_build_object('id',id)::text FROM home_image_deletions WHERE uploader_id=$1",
+        &[&owner],
+    )
+    .await?;
+    assert_eq!(queued.len(), 1, "even a failed PUT must be durably queued");
+    backend::routes::home_images::collect_garbage(&state).await?;
+    let queued = backend::apps::query(
+        &mut db.transaction().await?,
+        "SELECT json_build_object('id',id)::text FROM home_image_deletions WHERE uploader_id=$1",
+        &[&owner],
+    )
+    .await?;
+    assert!(queued.is_empty());
+    wiremock::Mock::given(wiremock::matchers::method("PUT"))
+        .respond_with(
+            wiremock::ResponseTemplate::new(200).set_delay(std::time::Duration::from_secs(2)),
+        )
+        .with_priority(1)
+        .mount(&storage)
+        .await;
+    let requests_before = storage.received_requests().await.unwrap().len();
+    let uploading = tokio::spawn({
+        let app = app.clone();
+        let owner = owner.clone();
+        async move { request(&app, "POST", Some(&owner), "/api/home/images", Some(body)).await }
+    });
+    let reserved = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        loop {
+            let rows = backend::apps::query(
+                &mut db.transaction().await?,
+                "SELECT json_build_object('id',id)::text FROM home_images WHERE uploader_id=$1",
+                &[&owner],
+            )
+            .await?;
+            if rows.len() == 1 && storage.received_requests().await.unwrap().len() > requests_before
+            {
+                break Ok::<_, anyhow::Error>(rows[0]["id"].as_str().unwrap().to_owned());
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await??;
+    uploading.abort();
+    assert!(uploading.await.unwrap_err().is_cancelled());
+    // Model a process stopping while PUT is in progress: the reservation survives rollback.
+    toasty::sql::statement(
+        "UPDATE home_images SET created_at=now()-interval '25 hours' WHERE id=$1",
+    )
+    .bind(reserved.as_str())
+    .exec(&mut db)
+    .await?;
+    backend::routes::home_images::collect_garbage(&state).await?;
+    assert!(
+        storage
+            .received_requests()
+            .await
+            .unwrap()
+            .iter()
+            .any(|r| r.method == "DELETE" && r.url.path().ends_with(&reserved))
     );
     Ok(())
 }

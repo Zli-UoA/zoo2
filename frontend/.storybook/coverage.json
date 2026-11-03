@@ -523,6 +523,7 @@
       "file": "src/components/public/PublicProfile.stories.tsx",
       "states": [
         "Default",
+        "WithImages",
         "Empty",
         "Loading",
         "LoadError",

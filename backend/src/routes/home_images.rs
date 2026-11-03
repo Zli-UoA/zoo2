@@ -30,7 +30,7 @@ struct Upload {
 }
 pub const MAX_IMAGE_BYTES: usize = 8 * 1024 * 1024;
 const MAX_USER_BYTES: i64 = 1024 * 1024 * 1024;
-static DECODERS: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(2);
+pub(crate) static DECODERS: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(2);
 
 /// Bound decoded pixels as well as compressed bytes; preserve animated originals.
 pub(crate) fn valid_image(mime: &str, bytes: &[u8]) -> bool {
@@ -111,7 +111,18 @@ async fn upload(
     let file_size = bytes.len().to_string();
     let id = uuid::Uuid::new_v4().to_string();
     let key = format!("home-images/{id}");
-    state
+    // Reserve durable metadata before starting S3 I/O so crashes leave a GC candidate.
+    toasty::sql::statement("INSERT INTO home_images(id,uploader_id,content_type,name,file_size) VALUES($1,$2,$3,$4,$5::bigint)").bind(id.as_str()).bind(user.id.as_str()).bind(body.content_type.as_str()).bind(body.name).bind(file_size).exec(&mut tx).await?;
+    tx.commit().await?;
+    let mut tx = db.transaction().await?;
+    // Account deletion and GC must not delete the object before PUT finishes.
+    one(
+        &mut tx,
+        "SELECT '{}'::text FROM home_images WHERE id=$1 FOR UPDATE",
+        &[&id],
+    )
+    .await?;
+    let uploaded = state
         .s3_client
         .put_object()
         .bucket(&state.config.s3.bucket)
@@ -119,19 +130,17 @@ async fn upload(
         .content_type(&body.content_type)
         .body(bytes.into())
         .send()
-        .await
-        .map_err(|_| AppError::Internal(anyhow::anyhow!("Image upload failed")))?;
-    let saved = async {
-        toasty::sql::statement("INSERT INTO home_images(id,uploader_id,content_type,name,file_size) VALUES($1,$2,$3,$4,$5::bigint)").bind(id.as_str()).bind(user.id.as_str()).bind(body.content_type).bind(body.name).bind(file_size).exec(&mut tx).await?;
+        .await;
+    if uploaded.is_err() {
+        // Queue even failed PUTs: a transport error can hide a completed upload.
+        toasty::sql::statement("DELETE FROM home_images WHERE id=$1")
+            .bind(id.as_str())
+            .exec(&mut tx)
+            .await?;
         tx.commit().await?;
-        Ok::<_,AppError>(())
-    }.await;
-    if saved.is_err() {
-        let _ =
-            crate::storage::delete_storage_object(&state.s3_client, &state.config.s3.bucket, &key)
-                .await;
+        return Err(AppError::Internal(anyhow::anyhow!("Image upload failed")));
     }
-    saved?;
+    tx.commit().await?;
     Ok(Json(json!({"id":id})))
 }
 

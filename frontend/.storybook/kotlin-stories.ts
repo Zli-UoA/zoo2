@@ -55,6 +55,11 @@ export function kotlinOptions(context: Selection): KotlinPreviewProps | null {
         { action: "wait", text: "Alice / アリス" },
         { action: "wait", text: "公開の投稿" },
       ],
+      "With Images": [
+        { action: "wait", role: "button", name: "profile-photo.png", exact: true },
+        { action: "wait", role: "button", name: "image-only.png", exact: true },
+        { action: "wait", text: "公開プロフィールの画像投稿です。" },
+      ],
       Empty: [{ action: "wait", text: "公開の投稿はまだありません。" }],
       Loading: [{ action: "wait", role: "status" }],
       "Load Error": [

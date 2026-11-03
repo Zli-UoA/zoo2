@@ -248,13 +248,20 @@ async fn serve_image(
     Ok(([(header::CONTENT_TYPE,cached.mime.as_str()),(header::CACHE_CONTROL,"public, max-age=300"),(header::X_CONTENT_TYPE_OPTIONS,"nosniff"),(header::CONTENT_SECURITY_POLICY,"sandbox; default-src 'none'; style-src 'unsafe-inline'; img-src data:; frame-ancestors 'none'")],cached.bytes).into_response())
 }
 async fn load_image(url: reqwest::Url, media: bool) -> Result<emoji_cache::Image, AppError> {
-    let mut response = transport::safe_client(&url)
+    let response = transport::safe_client(&url)
         .await?
         .get(url)
         .header(header::ACCEPT, "image/*")
         .send()
         .await
         .map_err(|_| AppError::BadGateway("Emoji image request failed".into()))?;
+    read_image(response, media).await
+}
+
+async fn read_image(
+    mut response: reqwest::Response,
+    media: bool,
+) -> Result<emoji_cache::Image, AppError> {
     if !response.status().is_success() {
         return Err(AppError::BadGateway("Emoji image unavailable".into()));
     }
@@ -287,7 +294,13 @@ async fn load_image(url: reqwest::Url, media: bool) -> Result<emoji_cache::Image
     }
     if media {
         let kind = mime.clone();
+        let permit = crate::routes::home_images::DECODERS
+            .acquire()
+            .await
+            .map_err(|_| AppError::RateLimited)?;
         let valid = tokio::task::spawn_blocking(move || {
+            // Keep the permit in the blocking task if the HTTP request is cancelled.
+            let _permit = permit;
             if crate::routes::home_images::valid_image(&kind, &data) {
                 Some(data)
             } else {
@@ -349,5 +362,74 @@ mod avatar_tests {
             assert!(avatar(&json!({"url":url})).is_none());
         }
         assert!(avatar(&Value::Null).is_none());
+    }
+}
+
+#[cfg(test)]
+mod media_proxy_tests {
+    use super::*;
+
+    async fn payload(
+        bytes: Vec<u8>,
+        mime: &str,
+        media: bool,
+    ) -> Result<emoji_cache::Image, AppError> {
+        let upstream = wiremock::MockServer::start().await;
+        wiremock::Mock::given(wiremock::matchers::method("GET"))
+            .respond_with(
+                wiremock::ResponseTemplate::new(200)
+                    .set_body_bytes(bytes)
+                    .insert_header("content-type", mime),
+            )
+            .mount(&upstream)
+            .await;
+        // Exercise the production response reader; only this test bypasses public HTTPS DNS.
+        let response = reqwest::get(upstream.uri()).await.unwrap();
+        read_image(response, media).await
+    }
+
+    fn png(size: usize) -> Vec<u8> {
+        let mut bytes = std::io::Cursor::new(Vec::new());
+        image::DynamicImage::new_rgb8(2, 2)
+            .write_to(&mut bytes, image::ImageFormat::Png)
+            .unwrap();
+        let mut bytes = bytes.into_inner();
+        bytes.resize(size.max(bytes.len()), 0);
+        bytes
+    }
+
+    #[tokio::test]
+    async fn photo_and_emoji_transfer_limits_and_raster_validation() {
+        assert!(
+            payload(png(2 * 1024 * 1024), "image/png", false)
+                .await
+                .is_ok()
+        );
+        assert!(
+            payload(png(2 * 1024 * 1024 + 1), "image/png", false)
+                .await
+                .is_err()
+        );
+        assert!(
+            payload(png(8 * 1024 * 1024), "image/png", true)
+                .await
+                .is_ok()
+        );
+        assert!(
+            payload(png(8 * 1024 * 1024 + 1), "image/png", true)
+                .await
+                .is_err()
+        );
+        assert!(
+            payload(b"not a PNG".to_vec(), "image/png", true)
+                .await
+                .is_err()
+        );
+        assert!(payload(png(0), "image/jpeg", true).await.is_err());
+        assert!(
+            payload(b"<svg/>".to_vec(), "image/svg+xml", true)
+                .await
+                .is_err()
+        );
     }
 }
