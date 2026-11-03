@@ -143,6 +143,7 @@ fun HomeComposer(
             "data" to app.platform.invoke("fileRead", file.text("id")),
         )))
     }
+    images.onDiscard = { uploaded -> scope.launch { try { app.api.request("/api/home/images/${uploaded.text("id")}", "DELETE") } catch (e: CancellationException) { throw e } catch (_: Exception) {} }; Unit }
     images.acceptedTypes = imageTypes
     images.maximumBytes = 8L * 1024 * 1024
     images.enabled = state.opened && !state.sending

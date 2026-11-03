@@ -109,6 +109,12 @@ const imageChecks: Step[] = [
 ];
 
 export const homeInteractions: Record<string, Step[]> = {
+  "reply-to-media-only": [
+    role("button", "景色.png"),
+    role("button", "remote.png"),
+    wait("ローカル画像への返信"),
+    wait("リモート画像への返信"),
+  ],
   "with-images": [role("button", "景色.png")],
   "mobile-images": [role("button", "景色.png")],
   "image-only-post": [
@@ -121,6 +127,7 @@ export const homeInteractions: Record<string, Step[]> = {
     },
     role("button", "投稿", { within: composer, enabled: true }),
     button("景色.pngを削除"),
+    fixture("homeImageDiscarded"),
     role("button", "投稿", { within: composer, enabled: false }),
     {
       action: "paste",

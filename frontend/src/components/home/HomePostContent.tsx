@@ -37,7 +37,7 @@ export function HomePostContent({
           {media.map((image, index) => {
             const path =
               image.image_id && /^[a-f0-9]{64}$/.test(image.image_id)
-                ? `/api/activitypub/emoji-images/${image.image_id}`
+                ? `/api/activitypub/media-images/${image.image_id}`
                 : /^\/api\/home\/images\/[a-f0-9-]+$/.test(image.url)
                   ? image.url
                   : null;

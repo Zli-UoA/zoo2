@@ -494,6 +494,7 @@ function HomeScreenContent({
                           content={post.parent.content}
                           emojis={post.parent.emojis}
                           attachments={post.parent.attachments}
+                          media={post.parent.media}
                         />
                       ) : null}
                     </div>

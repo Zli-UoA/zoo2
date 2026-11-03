@@ -52,6 +52,7 @@ fun HomePostCard(
                         textStyle = TextStyle(fontSize = 14.sp, lineHeight = 20.sp),
                     )
                     MessageAttachments(app, it.homeRows("attachments"))
+                    if (it.homeRows("attachments").isEmpty()) HomeMedia(it.homeRows("media"))
                 }
             }
         }

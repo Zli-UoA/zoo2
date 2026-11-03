@@ -212,7 +212,7 @@ fun HomeMedia(media: List<Row>) {
 private fun HomeMediaImage(item: Row, modifier: Modifier) {
     val app = LocalApp.current
     val id = item.text("image_id")
-    val path = if (Regex("^[a-f0-9]{64}$").matches(id)) "/api/activitypub/emoji-images/$id"
+    val path = if (Regex("^[a-f0-9]{64}$").matches(id)) "/api/activitypub/media-images/$id"
         else item.text("url").takeIf { Regex("^/api/home/images/[a-f0-9-]+$").matches(it) }
     if (path == null) return
     val url = endpoint(app.config.apiBaseUrl, path)

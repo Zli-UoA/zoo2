@@ -175,7 +175,7 @@ async fn create(
         .bind(id.as_str()).bind(user.id.as_str()).bind(body.content).bind(body.apub.to_string()).bind(body.visibility).bind(body.channel_id.as_deref().unwrap_or("")).bind(body.in_reply_to.as_deref().unwrap_or("")).bind(parent_uri.as_deref().unwrap_or("")).bind(reply_actor.as_deref().unwrap_or("")).bind(reply_user.unwrap_or("")).bind(media.to_string()).exec(&mut tx).await?;
     if let Some(channel) = &body.channel_id {
         // The Home trigger has already created the channel message in this transaction.
-        toasty::sql::statement("INSERT INTO attachments(id,message_id,uploader_id,channel_id,file_name,file_size,content_type,storage_key) SELECT gen_random_uuid()::text,$1,$2,$3,name,file_size,content_type,'home-images/' || id FROM home_images WHERE uploader_id=$2 AND id IN (SELECT jsonb_array_elements_text($4::jsonb))")
+        toasty::sql::statement("INSERT INTO attachments(id,message_id,uploader_id,channel_id,file_name,file_size,content_type,storage_key,created_at) SELECT gen_random_uuid()::text,$1,$2,$3,h.name,h.file_size,h.content_type,'home-images/' || h.id,date_trunc('milliseconds',statement_timestamp()) + (selected.ordinality-1)*interval '1 millisecond' FROM jsonb_array_elements_text($4::jsonb) WITH ORDINALITY AS selected(id,ordinality) JOIN home_images h ON h.id=selected.id WHERE h.uploader_id=$2 ORDER BY selected.ordinality")
             .bind(id.as_str()).bind(user.id.as_str()).bind(channel.as_str()).bind(json!(body.image_ids).to_string()).exec(&mut tx).await?;
     }
     if let Some(recipient) = reply_user

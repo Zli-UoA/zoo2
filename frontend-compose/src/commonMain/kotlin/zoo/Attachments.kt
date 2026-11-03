@@ -241,6 +241,7 @@ class AttachmentDrafts(
     var enabled = false
     var acceptFiles = true
     var acceptedTypes: List<String>? = null
+    var onDiscard: ((Row) -> Unit)? = null
     var maximumBytes = MAX_ATTACHMENT_BYTES
     private var bounds: Row = JsonObject(emptyMap())
 
@@ -321,7 +322,7 @@ class AttachmentDrafts(
                 try {
                     if (upload != null) {
                         val result = upload(file)
-                        if (draft in items) draft.uploaded = result
+                        if (draft in items) draft.uploaded = result else onDiscard?.invoke(result)
                     } else {
                         val presign =
                             attachmentPayload(
@@ -381,6 +382,7 @@ class AttachmentDrafts(
     }
 
     fun remove(item: AttachmentDraft) {
+        item.uploaded?.let { onDiscard?.invoke(it) }
         items.remove(item)
         release(listOf(item))
     }
@@ -397,6 +399,7 @@ class AttachmentDrafts(
     fun close() {
         job.cancel()
         app.platform.forgetFileTarget(owner)
+        owned.values.toList().forEach { it.uploaded?.let { uploaded -> onDiscard?.invoke(uploaded) } }
         release(owned.values.toList())
         items.clear()
     }

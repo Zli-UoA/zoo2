@@ -14,6 +14,7 @@ pub fn router() -> Router<AppState> {
     Router::new()
         .route("/api/activitypub/reaction-options", get(options))
         .route("/api/activitypub/emoji-images/{id}", get(image))
+        .route("/api/activitypub/media-images/{id}", get(media_image))
 }
 fn https(value: &str) -> bool {
     reqwest::Url::parse(value).is_ok_and(|u| {
@@ -187,6 +188,21 @@ async fn image(
     Path(id): Path<String>,
     request: axum::extract::Request,
 ) -> Result<Response, AppError> {
+    serve_image(state, id, request, false).await
+}
+async fn media_image(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    request: axum::extract::Request,
+) -> Result<Response, AppError> {
+    serve_image(state, id, request, true).await
+}
+async fn serve_image(
+    state: AppState,
+    id: String,
+    request: axum::extract::Request,
+    media: bool,
+) -> Result<Response, AppError> {
     let peer = request
         .extensions()
         .get::<axum::extract::ConnectInfo<std::net::SocketAddr>>()
@@ -209,7 +225,13 @@ async fn image(
     .await?;
     drop(tx);
     let url = reqwest::Url::parse(string(&image, "url")?).map_err(internal)?;
-    let cached = match emoji_cache::get(&id, peer, || load_image(url)).await {
+    let cached = match emoji_cache::get(
+        &format!("{}:{id}", if media { "media" } else { "emoji" }),
+        peer,
+        || load_image(url, media),
+    )
+    .await
+    {
         Err(AppError::RateLimited) => {
             return Ok((
                 axum::http::StatusCode::TOO_MANY_REQUESTS,
@@ -225,7 +247,7 @@ async fn image(
     };
     Ok(([(header::CONTENT_TYPE,cached.mime.as_str()),(header::CACHE_CONTROL,"public, max-age=300"),(header::X_CONTENT_TYPE_OPTIONS,"nosniff"),(header::CONTENT_SECURITY_POLICY,"sandbox; default-src 'none'; style-src 'unsafe-inline'; img-src data:; frame-ancestors 'none'")],cached.bytes).into_response())
 }
-async fn load_image(url: reqwest::Url) -> Result<emoji_cache::Image, AppError> {
+async fn load_image(url: reqwest::Url, media: bool) -> Result<emoji_cache::Image, AppError> {
     let mut response = transport::safe_client(&url)
         .await?
         .get(url)
@@ -257,11 +279,25 @@ async fn load_image(url: reqwest::Url) -> Result<emoji_cache::Image, AppError> {
         .await
         .map_err(|_| AppError::BadGateway("Emoji image transfer failed".into()))?
     {
-        // Home photos share this DNS-pinned proxy and the 32 MiB total cache budget.
-        if data.len() + chunk.len() > 8 * 1024 * 1024 {
+        // Emoji retain their 2 MiB limit; photos use 8 MiB. The shared cache is 32 MiB.
+        if data.len() + chunk.len() > (if media { 8 } else { 2 }) * 1024 * 1024 {
             return Err(AppError::BadGateway("Emoji image too large".into()));
         }
         data.extend_from_slice(&chunk);
+    }
+    if media {
+        let kind = mime.clone();
+        let valid = tokio::task::spawn_blocking(move || {
+            if crate::routes::home_images::valid_image(&kind, &data) {
+                Some(data)
+            } else {
+                None
+            }
+        })
+        .await
+        .map_err(|e| AppError::Internal(e.into()))?;
+        data = valid
+            .ok_or_else(|| AppError::BadGateway("Invalid image dimensions or pixels".into()))?;
     }
     Ok(emoji_cache::Image { mime, bytes: data })
 }

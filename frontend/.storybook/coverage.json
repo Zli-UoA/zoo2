@@ -447,6 +447,7 @@
     {
       "file": "src/components/home/HomeScreen.stories.tsx",
       "states": [
+        "ReplyToMediaOnly",
         "WithImages",
         "MobileImages",
         "ImageOnlyPost",

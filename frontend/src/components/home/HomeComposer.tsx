@@ -77,6 +77,11 @@ export function HomeComposer({
 }) {
   const { t } = useTranslation();
   const { config } = useCollections();
+  const discardImage = (id: string) => {
+    void createConfiguredApiClient(config)
+      .request(`/api/home/images/${encodeURIComponent(id)}`, { method: "DELETE" })
+      .catch(() => {});
+  };
   const [images, setImages] = useState<{ file: File; preview: string; id?: string }[]>([]);
   const imagesRef = useRef(images);
   imagesRef.current = images;
@@ -88,7 +93,10 @@ export function HomeComposer({
   useEffect(
     () => () => {
       uploadController.current?.abort();
-      imagesRef.current.forEach((image) => URL.revokeObjectURL(image.preview));
+      imagesRef.current.forEach((image) => {
+        URL.revokeObjectURL(image.preview);
+        if (image.id) discardImage(image.id);
+      });
     },
     [],
   );
@@ -133,7 +141,10 @@ export function HomeComposer({
               signal: controller.signal,
             },
           );
-          if (controller.signal.aborted) return;
+          if (controller.signal.aborted) {
+            discardImage(result.id);
+            return;
+          }
           imagesRef.current = imagesRef.current.map((image) =>
             image === draft ? { ...image, id: result.id } : image,
           );
@@ -517,6 +528,7 @@ export function HomeComposer({
                         aria-label={t("attachments.remove", { name: image.file.name })}
                         onClick={() => {
                           URL.revokeObjectURL(image.preview);
+                          if (image.id) discardImage(image.id);
                           setImages((current) => current.filter((item) => item !== image));
                         }}
                       >
