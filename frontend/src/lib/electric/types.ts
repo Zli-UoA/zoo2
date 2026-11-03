@@ -37,6 +37,7 @@ export type ChannelRow = {
 };
 
 export type MessageRow = {
+  display_data?: MessageDisplayData;
   id: string;
   user_id: string;
   channel_id: string;
@@ -71,6 +72,7 @@ export type ChannelUserRow = {
 };
 
 export type NotificationRow = {
+  display_data?: NotificationDisplayData;
   id: string;
   user_id: string;
   actor_id: string;
@@ -79,6 +81,33 @@ export type NotificationRow = {
   notification_type: string;
   is_read: boolean;
   created_at: TimestampString;
+};
+
+export type DisplayEmoji = {
+  image_id?: string | null;
+  url: string;
+  width?: number | null;
+  height?: number | null;
+};
+
+export type MessageDisplayData = {
+  author?: Pick<UserRow, "id" | "user_name" | "display_name" | "avatar_url" | "is_bot" | "app_id">;
+  emojis: Record<string, DisplayEmoji>;
+  attachments: AttachmentRow[];
+  reactions: (MessageReactionRow & { user_name?: string; display_name?: string })[];
+  reply_count: number;
+};
+
+export type NotificationDisplayData = {
+  message: {
+    id: string;
+    user_id: string;
+    content: string;
+    emojis?: Record<string, DisplayEmoji>;
+  } | null;
+  reactions: MessageDisplayData["reactions"];
+  actor?: MessageDisplayData["author"];
+  channel?: ChannelRow;
 };
 
 export type AttachmentRow = {

@@ -131,7 +131,8 @@
         "HomeNotificationsError",
         "LiveFollowRequest",
         "OlderFollowRequests",
-        "ActivityPubMfmReply"
+        "ActivityPubMfmReply",
+        "LocalContentEmoji"
       ]
     },
     {
@@ -223,6 +224,7 @@
         "LongUrl",
         "CodeAndMath",
         "EmojiAndFallback",
+        "JoinedEmoji",
         "Formatting",
         "CodeAndMathDark",
         "Headings"

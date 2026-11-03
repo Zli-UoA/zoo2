@@ -525,7 +525,7 @@ fun MessageAttachments(app: Session, values: List<Row>) {
                             app,
                             it,
                             if (images.size > 1) Modifier.size(square)
-                            else Modifier.widthIn(max = availableWidth).heightIn(max = 320.dp),
+                            else Modifier.width(minOf(256.dp, availableWidth)).aspectRatio(4f / 3f),
                             true,
                             images.size > 1,
                         )
@@ -595,8 +595,7 @@ private fun AttachmentItem(
             Image(
                 bitmap!!,
                 null,
-                if (multiple) Modifier.fillMaxSize()
-                else Modifier.widthIn(max = 576.dp).heightIn(max = 320.dp),
+                Modifier.fillMaxSize(),
                 contentScale = ContentScale.Fit,
             )
         }
@@ -610,7 +609,7 @@ private fun AttachmentItem(
         }
     else
         Row(
-            Modifier.fillMaxWidth()
+            (if (image) modifier else Modifier.fillMaxWidth())
                 .border(1.dp, MaterialTheme.colorScheme.outline, RoundedCornerShape(8.dp))
                 .padding(10.dp),
             verticalAlignment = Alignment.CenterVertically,

@@ -4,6 +4,7 @@ pub mod auth;
 pub mod cards;
 pub mod config;
 pub mod db;
+pub mod display_refresh;
 pub mod error;
 pub mod models;
 pub mod notifications;

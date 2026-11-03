@@ -105,13 +105,15 @@ fun ReactionEmoji(
         }
     val remote = Regex("^apub:([a-f0-9]{64}):(:[A-Za-z0-9_+-]+:)$").matchEntire(value)
     if (remote != null) {
-        ActivityPubEmoji(obj("image_id" to remote.groupValues[1], "name" to remote.groupValues[2]), size, modifier)
+        ActivityPubEmoji(LocalJoinedEmojis.current?.find { it.text("reaction_key") == value } ?: obj("image_id" to remote.groupValues[1], "name" to remote.groupValues[2]), size, modifier)
         return
     }
     if (Regex("^:[a-z0-9_-]{1,64}:$").matches(value)) {
         val name = value.removeSurrounding(":")
-        val emoji = workspaceEmojis(app).find { it.text("name") == name || it.array("aliases").any { alias -> alias.jsonPrimitive.content == name } }
-        if (emoji == null) Text(value, modifier) else ActivityPubEmoji(workspaceEmoji(emoji), size, modifier)
+        val joined = LocalJoinedEmojis.current
+        val emoji = if (joined != null) joined.find { it.text("name") == value }
+            else workspaceEmojis(app).find { it.text("name") == name || it.array("aliases").any { alias -> alias.jsonPrimitive.content == name } }?.let(::workspaceEmoji)
+        if (emoji == null) Text(value, modifier) else ActivityPubEmoji(emoji, size, modifier)
         return
     }
     LaunchedEffect(value, catalog, loadCatalog) {

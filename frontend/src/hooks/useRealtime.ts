@@ -1,3 +1,4 @@
+import { useOptimisticDisplay } from "./useOptimisticDisplay";
 import { useFederatedReactions } from "./useFederatedReactions";
 import { eq, isNull, useLiveQuery } from "@tanstack/react-db";
 import { useEffect, useMemo, useState } from "react";
@@ -42,11 +43,13 @@ export function useMessageFeed(channelId: string | null, options: MessageFeedOpt
   const { messages, users } = useCollections();
   const parentId = options.parentId ?? null;
   const since = options.since;
-  return useLiveQuery((q) =>
+  const query = useLiveQuery((q) =>
     channelId
       ? messageFeedQuery(q, { messages: messages(channelId), users }, { parentId, since })
       : undefined,
   );
+  const data = useOptimisticDisplay(channelId, query.data);
+  return { ...query, data };
 }
 
 /** 指定チャンネルの参加メンバー（channel_user）を購読する。 */

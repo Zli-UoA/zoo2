@@ -36,6 +36,8 @@ export const activityPubProfileSaved = {
 export const activityPubProfileRejectedName = "保存前の名前";
 
 export const customEmojiFixture = {
+  width: 3,
+  height: 1,
   name: "zoo_wave",
   url: "/api/emoji-images/30a12e81-bc91-4574-b89b-8b87c08c0884",
   category: "Zoo",

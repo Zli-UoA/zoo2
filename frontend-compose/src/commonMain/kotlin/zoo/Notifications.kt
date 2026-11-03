@@ -329,24 +329,26 @@ fun NotificationCard(
     val row = rows.first()
     val id = row.text("id")
     val actors = rows.map { it.text("actor_id") }.distinct()
-    val user = users.find { it.text("id") == row.text("actor_id") }
+    val joined = row.nested("display_data").takeIf { it.containsKey("message") }
+    val user = joined?.nested("actor") ?: users.find { it.text("id") == row.text("actor_id") }
     val channels by app.repo.channels.rows.collectAsState()
     val repoMemberships by app.repo.members.rows.collectAsState()
     val memberships = membershipsOverride ?: repoMemberships
     val channel =
         if (channelProvided) channelOverride
-        else channels.find { it.text("id") == row.text("channel_id") }
-    var context by remember(id) { mutableStateOf<Row?>(contextCache?.get(id)) }
+        else joined?.nested("channel") ?: channels.find { it.text("id") == row.text("channel_id") }
+    var fetchedContext by remember(id) { mutableStateOf<Row?>(contextCache?.get(id)) }
+    val context = joined ?: fetchedContext
     var loading by remember(id) { mutableStateOf(context == null) }
     var wasVisible by remember(id) { mutableStateOf(false) }
     LaunchedEffect(visible) { if (visible) wasVisible = true }
-    LaunchedEffect(id, wasVisible, app.env.online, channel) {
+    LaunchedEffect(id, wasVisible, app.env.online, channel, joined) {
         if (wasVisible && channel != null && context == null) {
             loading = true
             onLoading(true)
             try {
-                context = app.api.request("/api/notifications/$id/context").objectOrEmpty()
-                contextCache?.set(id, context!!)
+                fetchedContext = app.api.request("/api/notifications/$id/context").objectOrEmpty()
+                contextCache?.set(id, fetchedContext!!)
             } catch (e: CancellationException) {
                 throw e
             } catch (_: Exception) {} finally {
@@ -487,7 +489,7 @@ fun NotificationCard(
                     contentAlignment = Alignment.Center,
                 ) {
                     val reaction = if (type == "reaction") context?.get("reactions")?.rows()?.firstOrNull { it.text("user_id") == actors.first() }?.text("emoji")?.takeIf { it.isNotEmpty() } else null
-                    if (reaction != null) Box(Modifier.then(webControlModifier("img", attributes = mapOf("aria-label" to reaction, "data-notification-reaction" to "")))) { ReactionEmoji(reaction, Modifier.size(16.dp)) }
+                    if (reaction != null) Box(Modifier.then(webControlModifier("img", attributes = mapOf("aria-label" to reaction, "data-notification-reaction" to "")))) { CompositionLocalProvider(LocalJoinedEmojis provides message?.takeIf { it.containsKey("emojis") }?.let(::joinedEmojis)) { ReactionEmoji(reaction, Modifier.size(16.dp)) } }
                     else Icon(icon, modifier = Modifier.size(12.dp))
                 }
             }
@@ -547,6 +549,7 @@ fun NotificationCard(
                     Box(Modifier.fillMaxWidth()) {
                         CompositionLocalProvider(
                             LocalMfmStyle provides TextStyle(lineHeight = 22.75.sp),
+                            LocalJoinedEmojis provides message.takeIf { it.containsKey("emojis") }?.let(::joinedEmojis),
                             LocalInlineLinksEnabled provides interactive,
                         ) {
                             RichText(
@@ -619,56 +622,6 @@ fun NotificationCard(
                         }
                     }
                 else destinationContent()
-                val reactionGroups =
-                    if (type == "reaction")
-                        context
-                            ?.get("reactions")
-                            ?.rows()
-                            ?.filter { it.text("user_id") in actors }
-                            ?.groupBy { reactionKey(it.text("emoji")) } ?: emptyMap()
-                    else emptyMap()
-                if (reactionGroups.isNotEmpty())
-                    FlowRow(
-                        Modifier.padding(top = 2.dp).then(webControlModifier("list")).semantics {
-                            contentDescription = app.t("notifications.reactions")
-                        },
-                        horizontalArrangement = Arrangement.spacedBy(6.dp),
-                        verticalArrangement = Arrangement.spacedBy(6.dp),
-                    ) {
-                        reactionGroups.forEach { (emoji, reactions) ->
-                            Row(
-                                Modifier.background(colors.surfaceVariant, RoundedCornerShape(50))
-                                    .padding(horizontal = 10.dp, vertical = 4.dp)
-                                    .then(
-                                        webControlModifier(
-                                            "listitem",
-                                            attributes = mapOf("title" to emoji),
-                                        )
-                                    )
-                                    .semantics {
-                                        contentDescription =
-                                            "$emoji ${reactions.map { it.text("user_id") }.distinct().size}"
-                                    },
-                                verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.spacedBy(4.dp),
-                            ) {
-                                ReactionEmoji(emoji, Modifier.size(20.dp))
-                                CompositionLocalProvider(
-                                    LocalMfmStyle provides TextStyle(fontFeatureSettings = "tnum")
-                                ) {
-                                    Text(
-                                        reactions
-                                            .map { it.text("user_id") }
-                                            .distinct()
-                                            .size
-                                            .toString(),
-                                        small = true,
-                                        muted = true,
-                                    )
-                                }
-                            }
-                        }
-                    }
             }
         }
     }

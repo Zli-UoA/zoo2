@@ -311,7 +311,6 @@
     "unavailable": "頻道用唔到",
     "reactionGroup_one": "{{actor}} 同另外 1 人回應咗你嘅訊息",
     "reactionGroup_other": "{{actor}} 同另外 {{count}} 人回應咗你嘅訊息",
-    "reactions": "回應",
     "messageUnavailable": "訊息已刪除或者睇唔到",
     "dm": "{{actor}} 傳咗私人訊息畀你",
     "mentionContext": "提及",

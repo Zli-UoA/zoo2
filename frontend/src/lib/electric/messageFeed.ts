@@ -2,6 +2,7 @@ import {
   type Collection,
   type InitialQueryBuilder,
   and,
+  caseWhen,
   eq,
   gte,
   isNull,
@@ -39,8 +40,8 @@ export interface MessageFeedScope {
 /**
  * メッセージと投稿者（users）を TanStack DB の live query で結合する。
  *
- * Electric の Shape は単一テーブル単位で、テーブル間 JOIN ができないため、
- * `messages` と `users` を別々に購読してクライアント側で結合する（非正規化しない）。
+ * 表示用VIEWの投稿者を優先し、旧キャッシュや楽観更新だけ users で補完する。
+ * 添付・絵文字・リアクション・返信数も display_data として同時に届く。
  * `deleted_at` が入った行はクエリ側で除外する。
  *
  * スレッド用に別 Shape / コレクションは作らず、同じチャンネルの messages を
@@ -66,6 +67,7 @@ export function messageFeedQuery(
     })
     .select(({ messages, users }) => ({
       id: messages.id,
+      display_data: messages.display_data,
       channel_id: messages.channel_id,
       user_id: messages.user_id,
       content: messages.content,
@@ -77,21 +79,41 @@ export function messageFeedQuery(
       home_post_id: messages.home_post_id,
       apub: messages.apub,
       apub_visibility: messages.apub_visibility,
-      is_bot: users.is_bot,
-      app_id: users.app_id,
-      avatar_url: users.avatar_url,
+      is_bot: caseWhen(
+        eq(messages.display_data?.author?.id, messages.user_id),
+        messages.display_data?.author?.is_bot,
+        users.is_bot,
+      ),
+      app_id: caseWhen(
+        eq(messages.display_data?.author?.id, messages.user_id),
+        messages.display_data?.author?.app_id,
+        users.app_id,
+      ),
+      avatar_url: caseWhen(
+        eq(messages.display_data?.author?.id, messages.user_id),
+        messages.display_data?.author?.avatar_url,
+        users.avatar_url,
+      ),
       created_at: messages.created_at,
       updated_at: messages.updated_at,
       parent_id: messages.parent_id,
-      user_name: users.user_name,
-      display_name: users.display_name,
+      user_name: caseWhen(
+        eq(messages.display_data?.author?.id, messages.user_id),
+        messages.display_data?.author?.user_name,
+        users.user_name,
+      ),
+      display_name: caseWhen(
+        eq(messages.display_data?.author?.id, messages.user_id),
+        messages.display_data?.author?.display_name,
+        users.display_name,
+      ),
     }))
     .orderBy(({ messages }) => messages.created_at);
 }
 
 /**
  * 返信数の集計用に、削除されていない返信の `parent_id` だけを購読する。
- * ルートごとの件数はクライアント側で数える（サーバの集計カラムは持たない）。
+ * 表示用VIEWがまだない旧キャッシュ・楽観更新の件数を補完する。
  */
 export function replyParentQuery(q: InitialQueryBuilder, sources: ReplyCountSources) {
   return q
