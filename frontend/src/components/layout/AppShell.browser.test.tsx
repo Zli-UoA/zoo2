@@ -21,6 +21,15 @@ vi.mock("../preferences/SearchPreferences", () => ({
 vi.mock("../pwa/PwaControls", () => ({
   PwaProvider: ({ children }: { children: import("react").ReactNode }) => children,
 }));
+vi.mock("../../hooks/useCurrentUser", () => ({
+  useCurrentUser: () => ({
+    currentUserId: "user-1",
+    isLoading: false,
+    isAdmin: false,
+    error: null,
+  }),
+}));
+
 vi.mock("../../hooks/usePresence", () => ({
   usePresence: () => {},
   useConversationView: () => {},

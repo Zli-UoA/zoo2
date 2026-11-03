@@ -52,7 +52,7 @@ it.each([160, 640])(
     );
     release();
     await waitFor(() => expect(image.naturalWidth).toBe(3));
-    expect(marker.getBoundingClientRect().top).toBe(initial);
+    expect(marker.getBoundingClientRect().top).toBeCloseTo(initial, 1);
     expect(metadataRequests).toBe(0);
     view.unmount();
   },

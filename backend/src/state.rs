@@ -9,6 +9,7 @@ use tokio::sync::RwLock;
 use crate::{
     auth::{AuthUser, oidc::JwksVerifier},
     config::Config,
+    routes::calls::CallRegistry,
 };
 
 type UserCacheMap = HashMap<(String, String), (AuthUser, Instant)>;
@@ -82,6 +83,7 @@ pub struct AppState {
     pub s3_client: aws_sdk_s3::Client,
     pub jwks_verifier: JwksVerifier,
     pub user_cache: UserResolutionCache,
+    pub call_registry: CallRegistry,
 }
 
 impl AppState {
@@ -91,6 +93,9 @@ impl AppState {
         let s3_client = crate::storage::create_s3_client(&config.s3);
         let jwks_verifier = JwksVerifier::new(http_client.clone());
         let user_cache = UserResolutionCache::new();
+        let call_registry = CallRegistry::new();
+        call_registry.start_listener(config.database_url.clone());
+        call_registry.start_sweeper(db.clone());
 
         Self {
             home_live: Default::default(),
@@ -101,6 +106,7 @@ impl AppState {
             s3_client,
             jwks_verifier,
             user_cache,
+            call_registry,
         }
     }
 
@@ -136,6 +142,9 @@ impl AppState {
         let s3_client = crate::storage::create_s3_client(&config.s3);
         let jwks_verifier = JwksVerifier::new(http_client.clone());
         let user_cache = UserResolutionCache::new();
+        let call_registry = CallRegistry::new();
+        call_registry.start_listener(config.database_url.clone());
+        call_registry.start_sweeper(db.clone());
         Self {
             home_live: Default::default(),
             db,
@@ -145,6 +154,7 @@ impl AppState {
             s3_client,
             jwks_verifier,
             user_cache,
+            call_registry,
         }
     }
 
@@ -160,6 +170,9 @@ impl AppState {
         let electric_client = Self::default_electric_client();
         let s3_client = crate::storage::create_s3_client(&config.s3);
         let user_cache = UserResolutionCache::new();
+        let call_registry = CallRegistry::new();
+        call_registry.start_listener(config.database_url.clone());
+        call_registry.start_sweeper(db.clone());
         Self {
             home_live: Default::default(),
             db,
@@ -169,6 +182,7 @@ impl AppState {
             s3_client,
             jwks_verifier,
             user_cache,
+            call_registry,
         }
     }
 
@@ -182,6 +196,9 @@ impl AppState {
     ) -> Self {
         let s3_client = crate::storage::create_s3_client(&config.s3);
         let user_cache = UserResolutionCache::new();
+        let call_registry = CallRegistry::new();
+        call_registry.start_listener(config.database_url.clone());
+        call_registry.start_sweeper(db.clone());
         Self {
             home_live: Default::default(),
             db,
@@ -191,6 +208,7 @@ impl AppState {
             s3_client,
             jwks_verifier,
             user_cache,
+            call_registry,
         }
     }
 }

@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import { AppShell } from "../components/layout/AppShell";
 import { OfflineProvider } from "../components/offline/OfflineProvider";
 import { ShellSkeleton } from "../components/layout/ShellSkeleton";
+import { CallProvider } from "../lib/call/call-context";
 import { resolveConfig } from "../lib/config";
 import { selectedFrontend, FRONTEND_STORAGE_KEY } from "../lib/experimentalFrontend";
 import { writeStorageValue } from "../lib/storage";
@@ -41,9 +42,11 @@ function ShellLayout() {
     <ComposeFrontend />
   ) : mounted ? (
     <OfflineProvider config={config}>
-      <AppShell>
-        <Outlet />
-      </AppShell>
+      <CallProvider config={config}>
+        <AppShell>
+          <Outlet />
+        </AppShell>
+      </CallProvider>
     </OfflineProvider>
   ) : (
     <ShellSkeleton />

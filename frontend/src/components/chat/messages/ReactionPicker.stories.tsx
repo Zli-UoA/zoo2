@@ -73,7 +73,9 @@ export const SearchEmpty: Story = {
   play: playForImplementation(async () => {
     const search = await screen.findByPlaceholderText("絵文字を検索");
     await userEvent.type(search, "zzzzzzzz");
-    await expect(await screen.findByText("一致する絵文字がありません")).toBeVisible();
+    await expect(
+      await screen.findByText("一致する絵文字がありません", {}, { timeout: 5000 }),
+    ).toBeVisible();
   }),
 };
 

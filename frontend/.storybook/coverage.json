@@ -618,6 +618,15 @@
       "story": "src/components/chat/AppsDialog.stories.tsx"
     },
     {
+      "file": "src/components/chat/CallBar.tsx",
+      "reason": "通話バーのWebRTCシグナリングおよびUI制御層。UI表示状態（idle, connecting, connected, DM表示名, ミュート切替, 発話リング, アバター）はCallBar.browser.test.tsxで検証し、マイク操作とPeerライフサイクルはcall-context.test.tsで検証する。",
+      "checks": [
+        "src/components/chat/CallBar.browser.test.tsx",
+        "src/lib/call/call-context.test.ts",
+        "src/lib/call/call-context.tsx"
+      ]
+    },
+    {
       "file": "src/components/chat/ChannelBrowserDialog.tsx",
       "story": "src/components/chat/ChannelBrowserDialog.stories.tsx"
     },
