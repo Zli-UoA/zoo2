@@ -1,4 +1,5 @@
 import { MENTION_PATTERN } from "./mentions";
+import type { MessageDisplayData } from "../../../lib/electric/types";
 import type { TFunction } from "i18next";
 import { DEFAULT_LOCALE, INTL_LOCALES, type Locale } from "../../../lib/i18n/locale";
 import { normalizeUtcTimestamp, parseUtcTimestamp } from "../../../lib/timestamps";
@@ -8,6 +9,7 @@ import { normalizeUtcTimestamp, parseUtcTimestamp } from "../../../lib/timestamp
  * `user_name` / `display_name` が undefined になる（左結合）。
  */
 export interface FeedMessage {
+  display_data?: MessageDisplayData;
   id: string;
   user_id: string;
   content: string;

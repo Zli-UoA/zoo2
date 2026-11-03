@@ -272,9 +272,8 @@ private fun InlineParagraph(
             }
             .toMap()
     val mentions = mutableMapOf<String, String>()
-    val registeredEmojis = workspaceEmojis(app).flatMap { item -> listOf(workspaceEmoji(item)) + item.array("aliases").map { alias -> buildJsonObject { workspaceEmoji(item).forEach { (key, value) -> put(key,value) }; put("name", ":${alias.jsonPrimitive.content}:") } } }
+    val registeredEmojis = LocalJoinedEmojis.current ?: workspaceEmojis(app).flatMap { item -> listOf(workspaceEmoji(item)) + item.array("aliases").map { alias -> buildJsonObject { workspaceEmoji(item).forEach { (key, value) -> put(key,value) }; put("name", ":${alias.jsonPrimitive.content}:") } } }
     val remoteEmojis = LocalActivityPubEmojis.current + registeredEmojis
-    val failedEmojis = remember(remoteEmojis) { mutableStateMapOf<String, Boolean>() }
     val emojiParts = mutableMapOf<String, Row>()
     val text = buildAnnotatedString {
         fun write(
@@ -286,7 +285,7 @@ private fun InlineParagraph(
                 var value = token.value
                 if (token.kind == "emoji") {
                     val remote = remoteEmojis.find { it.text("name") == value }
-                    if (remote != null && (remote.flag("local") || Regex("^[a-f0-9]{64}$").matches(remote.text("image_id"))) && failedEmojis[remote.text("image_id")] != true) {
+                    if (remote != null && (remote.flag("local") || Regex("^[a-f0-9]{64}$").matches(remote.text("image_id")))) {
                         val id = "apub-emoji-${emojiParts.size}"
                         emojiParts[id] = remote
                         appendInlineContent(id, value)
@@ -444,8 +443,8 @@ private fun InlineParagraph(
             inlineContent =
                 content +
                     emojiParts.mapValues { (_, emoji) ->
-                        androidx.compose.foundation.text.InlineTextContent(Placeholder((1.5f * (app.emojiRatios[emoji.text("image_id")] ?: 1f)).em, 1.5.em, PlaceholderVerticalAlign.TextCenter)) {
-                            ActivityPubEmoji(emoji, with(density) { 21.sp.toDp() }, onFailure = { failedEmojis[emoji.text("image_id")] = true })
+                        androidx.compose.foundation.text.InlineTextContent(Placeholder((1.5f * emojiRatio(emoji)).coerceAtMost(8f).em, 1.5.em, PlaceholderVerticalAlign.TextCenter)) {
+                            ActivityPubEmoji(emoji, with(density) { 21.sp.toDp() })
                         }
                     } +
                     mentionContent +

@@ -5,6 +5,18 @@ import kotlinx.serialization.json.*
 
 class ContentTest {
     @Test
+    fun joinedEmojiMetadataReservesWideImagesBeforeDecoding() {
+        val data = json.parseToJsonElement("""{"emojis":{"wide":{"url":"/wide.png","width":120,"height":20},"apub:remote::cat:":{"image_id":"remote","url":"https://peer/cat.png","width":60,"height":20}}}""").jsonObject
+        val emojis = joinedEmojis(data)
+        assertEquals(":wide:", emojis[0].text("name"))
+        assertTrue(emojis[0].flag("local"))
+        assertEquals(6f, emojiRatio(emojis[0]))
+        assertFalse(emojis[1].flag("local"))
+        assertEquals("remote", emojis[1].text("image_id"))
+        assertEquals(3f, emojiRatio(emojis[1]))
+        assertEquals(1f, emojiRatio(obj("width" to 2,"height" to 0)))
+    }
+    @Test
     fun reactionVariantsShareOneKitchenIdentity() {
         assertEquals("kitchen:1f600_2764", reactionKey("kitchen:❤️_😀"))
         assertEquals(reactionKey("kitchen:2764-fe0f_1f600"), reactionKey("kitchen:1f600_2764"))

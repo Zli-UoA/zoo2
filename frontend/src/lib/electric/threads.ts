@@ -6,8 +6,8 @@ export interface ReplyParentRow {
 /**
  * 返信の `parent_id` を数えてルートメッセージごとの返信数にする。
  *
- * サーバに `reply_count` は持たせず（返信 INSERT と集計 UPDATE が別 txid になり
- * クライアントの購読が揺れるため）、同じ messages Shape からクライアントで数える。
+ * 旧キャッシュ・楽観更新用の補完。確定した投稿は表示用VIEWから届く
+ * display_data.reply_count を優先する（返信と同じトランザクションで更新される）。
  * 論理削除された返信は呼び出し側のクエリで除外済み。
  */
 export function countRepliesByParent(rows: ReplyParentRow[]): Map<string, number> {

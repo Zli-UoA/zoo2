@@ -208,17 +208,14 @@ fun LinkPreviews(app: Session, content: String) {
     val urls = remember(content) { previewUrls(content) }
     if (urls.isEmpty()) return
     val sources by app.previews.endpoints.collectAsState()
-    sources
-        .takeIf { it.first.isNotBlank() }
-        ?.let { (service, media) ->
-            urls.forEach { url ->
-                var data by remember(url, service) { mutableStateOf<PreviewData?>(null) }
-                LaunchedEffect(url, service, app.env.online) {
-                    if (app.env.online) data = app.previews.load(service, url)
-                }
-                data?.let { preview -> PreviewCard(app, url, preview, media) }
-            }
+    val (service, media) = sources
+    urls.forEach { url ->
+        var data by remember(url, service) { mutableStateOf<PreviewData?>(null) }
+        LaunchedEffect(url, service, app.env.online) {
+            if (app.env.online && service.isNotBlank()) data = app.previews.load(service, url)
         }
+        PreviewCard(app, url, data ?: PreviewData(url, "", "", "", Url(url).host), media)
+    }
 }
 
 @Composable
@@ -249,7 +246,6 @@ private fun PreviewCard(app: Session, url: String, preview: PreviewData, media: 
                 throw e
             } catch (_: Exception) {}
     }
-    val wide = bitmap?.let { it.width.toFloat() / it.height >= 1.5f } == true
     val text: @Composable () -> Unit = {
         Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
             Text(preview.title, weight = FontWeight.SemiBold, maxLines = 2)
@@ -273,31 +269,11 @@ private fun PreviewCard(app: Session, url: String, preview: PreviewData, media: 
                 .clip(RoundedCornerShape(8.dp))
                 .border(1.dp, MaterialTheme.colorScheme.outline, RoundedCornerShape(8.dp)),
     ) {
-        if (wide)
-            Column {
-                bitmap?.let {
-                    Image(
-                        it,
-                        null,
-                        Modifier.fillMaxWidth().heightIn(max = 208.dp).aspectRatio(16f / 9),
-                        contentScale = ContentScale.Crop,
-                    )
-                }
-                text()
+        Row(Modifier.height(128.dp)) {
+            Box(Modifier.width(if (LocalViewportWidth.current < 640f) 96.dp else 112.dp).fillMaxHeight().background(MaterialTheme.colorScheme.surfaceVariant)) {
+                bitmap?.let { Image(it, null, Modifier.fillMaxSize(), contentScale = ContentScale.Crop) }
             }
-        else
-            Row(Modifier.height(IntrinsicSize.Min)) {
-                bitmap?.let {
-                    Image(
-                        it,
-                        null,
-                        Modifier.width(if (LocalViewportWidth.current < 640f) 96.dp else 112.dp)
-                            .fillMaxHeight()
-                            .heightIn(min = 96.dp),
-                        contentScale = ContentScale.Crop,
-                    )
-                }
-                Box(Modifier.weight(1f)) { text() }
-            }
+            Box(Modifier.weight(1f)) { text() }
+        }
     }
 }

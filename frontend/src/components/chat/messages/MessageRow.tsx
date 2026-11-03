@@ -21,7 +21,7 @@ import { LinkPreviews } from "./LinkPreviews.tsx";
 import { useLocale } from "../../i18n/LocaleProvider";
 import type { KitchenCatalog } from "../../../lib/emoji/kitchen";
 import { kitchenLabel, reactionKey } from "../../../lib/emoji/kitchen";
-import type { AttachmentRow } from "../../../lib/electric/types";
+import type { AttachmentRow, DisplayEmoji } from "../../../lib/electric/types";
 import type { ReactionGroup } from "../../../lib/emoji/reactions";
 import { AppAvatar, AuthorIdentity } from "../AppIdentity";
 import { MessageAppContent, hasCardBlocks } from "../AppBlocks";
@@ -96,7 +96,9 @@ export function MessageBody({
   card: data,
   appBlocks,
   editedAt,
+  emojis,
 }: {
+  emojis?: Record<string, DisplayEmoji>;
   editedAt?: string | null;
   content: string;
   card?: string | null;
@@ -116,7 +118,7 @@ export function MessageBody({
   return (
     <>
       <div className="mfm-body whitespace-pre-wrap break-words text-sm leading-relaxed">
-        <MfmContent content={content} />
+        <MfmContent content={content} emojis={emojis} />
         {editedAt ? <EditedIndicator at={editedAt} /> : null}
       </div>
       <LinkPreviews content={content} />
@@ -379,6 +381,7 @@ export function MessageRow({
           ) : (
             <>
               <MessageBody
+                emojis={message.display_data?.emojis}
                 content={message.content}
                 card={message.card}
                 appBlocks={message.app_blocks}
@@ -436,7 +439,11 @@ export function MessageRow({
                               />
                             }
                           >
-                            <ReactionEmoji emoji={reaction.emoji} catalog={kitchenCatalog} />
+                            <ReactionEmoji
+                              emoji={reaction.emoji}
+                              catalog={kitchenCatalog}
+                              emojis={message.display_data?.emojis}
+                            />
                             <span className="tabular-nums">{reaction.count}</span>
                           </TooltipTrigger>
                           <TooltipContent

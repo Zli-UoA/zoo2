@@ -167,6 +167,7 @@ export const DelayedLinkPreview: Story = {
     messages: Array.from({ length: 20 }, (_, index) => ({
       ...longMessages[0],
       id: `preview-scroll-${index}`,
+      created_at: new Date(Date.parse("2026-06-12T03:00:00Z") + index * 1000).toISOString(),
       content:
         index === 19
           ? "https://example.com/delayed-scroll-preview"
@@ -204,7 +205,10 @@ export const DelayedLinkPreview: Story = {
   play: playForImplementation(async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     const card = await canvas.findByRole("link", { name: /Delayed URL card/ });
-    await waitFor(() => expect(card).toHaveClass("flex-col"));
+    const initial = card.getBoundingClientRect();
+    await waitFor(() => expect(card.querySelector("img")?.naturalWidth).toBe(1200));
+    await expect(card.getBoundingClientRect().height).toBe(initial.height);
+    await expect(card.getBoundingClientRect().width).toBe(initial.width);
     const scroller = canvas.getByTestId("message-scroll");
     await waitFor(() =>
       expect(

@@ -149,7 +149,7 @@ for (const implementation of ["react", "compose"] as const) {
     await expect(createApp).toBeHidden();
     const notifications = page.getByRole("link", { name: /^未読通知 /, exact: true });
     await expect(notifications).toBeVisible();
-    await notifications.click({ force: implementation === "compose" });
+    await clickControl(notifications, implementation === "compose" ? "kotlin" : "react");
     await expect(
       implementation === "react"
         ? page.getByRole("heading", { name: "通知", exact: true })
@@ -425,7 +425,12 @@ for (const implementation of ["react", "compose"] as const) {
     await expect.poll(async () => (await state()).preferences.search_engine).toBe("duckduckgo");
     const membersTab = page.getByRole("tab", { name: "メンバー", exact: true });
     await expect(membersTab).toBeVisible();
-    await membersTab.click({ force: native });
+    // Preference updates can replace the native tab projection during a click.
+    // Selecting the same tab is idempotent; wait for the committed selection.
+    await expect(async () => {
+      await clickControl(membersTab, native ? "kotlin" : "react");
+      await expect(membersTab).toHaveAttribute("aria-selected", "true", { timeout: 1000 });
+    }).toPass({ timeout: 10_000, intervals: [100, 250, 500] });
     await expect(
       page.getByRole("button", { name: "管理者を外す", exact: true }).first(),
     ).toBeDisabled();
@@ -708,9 +713,13 @@ test("Frontend switch entry points work without an experimental build flag", asy
   expect(await page.evaluate(() => localStorage.getItem("zoo-frontend"))).toBe("compose");
   await page.goto("/channels/c1");
   await expect(page.locator("[data-compose-shell]")).toBeVisible({ timeout: 90_000 });
-  const back = page.getByRole("button", { name: "React版に戻る", exact: true });
-  await expect(back).toBeVisible();
-  await back.click({ force: true });
+  // The loading screen has the same label and disappears when Compose mounts.
+  // Wait for the native switch so this exercises the loaded shell's return path.
+  const back = page
+    .getByRole("navigation", { name: "メインナビゲーション", exact: true })
+    .getByRole("button", { name: "React版に戻る", exact: true });
+  await expect(back).toBeVisible({ timeout: 90_000 });
+  await clickControl(back, "kotlin");
   await expect(page.getByRole("textbox", { name: "メッセージを送信", exact: true })).toBeVisible({
     timeout: 90_000,
   });
@@ -837,5 +846,242 @@ for (const implementation of ["react", "compose"] as const) {
     });
     await expect(page.getByText("返信の本文", { exact: true })).toBeVisible();
     await expect(page.getByText("入れ子の返信", { exact: true })).toBeVisible();
+  });
+}
+
+for (const implementation of ["react", "compose"] as const) {
+  test(`${implementation}: joined display keeps pending reactions and reply counts visible until rollback`, async ({
+    page,
+    request,
+  }) => {
+    const native = implementation === "compose";
+    await request.post("https://127.0.0.1:4187/__reset");
+    await request.post("https://127.0.0.1:4187/__seed", {
+      data: {
+        messages: [
+          {
+            id: "optimistic-display-root",
+            content: "Joined optimistic display",
+            created_at: "2026-10-31 00:00:00.000",
+            display_data: {
+              author: {
+                id: "00000000-0000-0000-0000-000000000001",
+                user_name: "alice",
+                display_name: "Alice",
+              },
+              emojis: {},
+              attachments: [],
+              reply_count: 1,
+              reactions: [
+                {
+                  id: "peer-reaction",
+                  message_id: "optimistic-display-root",
+                  user_id: "00000000-0000-0000-0000-000000000002",
+                  emoji: "👍",
+                  created_at: "2026-10-30 09:00:00.000",
+                  user_name: "bob",
+                  display_name: "Bob",
+                },
+              ],
+            },
+          },
+        ],
+      },
+    });
+    await open(page, implementation, "/channels/c1", "Joined optimistic display");
+    const one = page.getByRole("button", { name: "👍 1 件", exact: true });
+    await expect(one).toBeVisible();
+    let releaseReaction!: () => void;
+    const reactionPending = new Promise<void>((resolve) => {
+      releaseReaction = resolve;
+    });
+    await page.route("**/api/messages/optimistic-display-root/reactions", async (route) => {
+      if (route.request().method() !== "POST") return route.continue();
+      await reactionPending;
+      await route.fulfill({
+        status: 500,
+        contentType: "application/json",
+        headers: { "access-control-allow-origin": "*" },
+        body: JSON.stringify({ error: "Rejected for rollback test" }),
+      });
+    });
+    try {
+      await clickControl(one, native ? "kotlin" : "react");
+      await expect(
+        page.getByRole("button", { name: "👍 2 件（自分もリアクション済み）", exact: true }),
+      ).toBeVisible();
+    } finally {
+      releaseReaction();
+    }
+    await expect(one).toBeVisible();
+    if (native) {
+      const error = page.getByText(
+        "サーバーに接続できませんでした。接続を確認してもう一度お試しください。",
+        { exact: true },
+      );
+      await expect(error).toBeVisible();
+      // Toasts intentionally pause on hover; keep the pointer away so the error
+      // can expire before clicking the reply composer underneath it.
+      await page.mouse.move(0, 0);
+      await expect(error).toBeHidden({ timeout: 10_000 });
+    }
+    const root = page.locator(
+      native
+        ? '[id="message:optimistic-display-root"]'
+        : '[data-message-id="optimistic-display-root"]',
+    );
+    await clickControl(
+      root.getByRole("button", { name: "1 件の返信（スレッドを開く）", exact: true }),
+      native ? "kotlin" : "react",
+    );
+    const reply = page.getByRole("textbox", { name: "返信を送信", exact: true });
+    await fillControl(page, reply, "Pending joined reply", native ? "kotlin" : "react");
+    let releaseReply!: () => void;
+    const replyPending = new Promise<void>((resolve) => {
+      releaseReply = resolve;
+    });
+    await page.route("**/api/messages", async (route) => {
+      if (route.request().method() !== "POST") return route.continue();
+      await replyPending;
+      await route.fulfill({
+        status: 500,
+        contentType: "application/json",
+        headers: { "access-control-allow-origin": "*" },
+        body: JSON.stringify({ error: "Rejected for rollback test" }),
+      });
+    });
+    try {
+      await clickControl(
+        page.getByRole("button", { name: "送信", exact: true }).last(),
+        native ? "kotlin" : "react",
+      );
+      await expect(
+        root.getByRole("button", { name: "2 件の返信（スレッドを開く）", exact: true }),
+      ).toBeVisible();
+    } finally {
+      releaseReply();
+    }
+    await expect(
+      root.getByRole("button", { name: "1 件の返信（スレッドを開く）", exact: true }),
+    ).toBeVisible();
+    if (native) await expect(reply).toHaveText("Pending joined reply");
+    else await expect(reply).toHaveValue("Pending joined reply");
+  });
+}
+
+for (const implementation of ["react", "compose"] as const) {
+  test(`${implementation}: pending custom reaction keeps picker image dimensions before sync`, async ({
+    page,
+    request,
+  }) => {
+    const native = implementation === "compose";
+    await request.post("https://127.0.0.1:4187/__reset");
+    await request.post("https://127.0.0.1:4187/__seed", {
+      data: {
+        messages: [
+          {
+            id: "custom-pending-root",
+            content: "Pending custom reaction",
+            display_data: {
+              author: {
+                id: "00000000-0000-0000-0000-000000000001",
+                user_name: "alice",
+                display_name: "Alice",
+              },
+              emojis: {},
+              attachments: [],
+              reactions: [],
+              reply_count: 0,
+            },
+          },
+        ],
+      },
+    });
+    await page.route("**/api/emojis", (route) =>
+      route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        headers: { "access-control-allow-origin": "*" },
+        body: JSON.stringify([
+          {
+            name: "wide",
+            url: "/api/emoji-images/wide",
+            width: 120,
+            height: 20,
+            aliases: [],
+            category: "Test",
+          },
+        ]),
+      }),
+    );
+    await page.route("**/api/emoji-images/wide", (route) =>
+      route.fulfill({
+        status: 200,
+        contentType: "image/png",
+        headers: { "access-control-allow-origin": "*" },
+        body: Buffer.from(
+          "iVBORw0KGgoAAAANSUhEUgAAAAMAAAABCAYAAAAb4BS0AAAADklEQVR4nGP438DwH4YBMWYHe7X3S+QAAAAASUVORK5CYII=",
+          "base64",
+        ),
+      }),
+    );
+    await open(page, implementation, "/channels/c1", "Pending custom reaction");
+    const root = page.locator(
+      native ? '[id="message:custom-pending-root"]' : '[data-message-id="custom-pending-root"]',
+    );
+    if (!native) await root.hover();
+    await clickControl(
+      root.getByRole("button", { name: "リアクションを追加", exact: true }).first(),
+      native ? "kotlin" : "react",
+    );
+    await clickControl(
+      page.getByRole("tab", { name: "カスタム絵文字", exact: true }),
+      native ? "kotlin" : "react",
+    );
+    const choice = page.getByRole("button", {
+      name: native ? /^:wide:(?:, :wide:)?$/ : ":wide:",
+      exact: true,
+    });
+    await expect(choice).toBeVisible();
+    // The picker has fetched metadata. The pending chip must reuse it even if
+    // any subsequent registry request fails while the mutation is held.
+    await page.route("**/api/emojis", (route) => route.abort());
+    let release!: () => void;
+    const pending = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    await page.route("**/api/messages/custom-pending-root/reactions", async (route) => {
+      await pending;
+      await route.fulfill({
+        status: 500,
+        contentType: "application/json",
+        headers: { "access-control-allow-origin": "*" },
+        body: '{"error":"rollback"}',
+      });
+    });
+    try {
+      await clickControl(choice, native ? "kotlin" : "react");
+      const chip = root.getByRole("button", {
+        name: /^:wide: 1 件（自分もリアクション済み）/,
+      });
+      await expect(chip).toBeVisible();
+      if (native) {
+        // Compose merges the image's semantics into its clickable parent. Its
+        // actual Canvas bounds must reserve the six-to-one image, not text.
+        await expect
+          .poll(async () => (await chip.boundingBox())?.width ?? 0)
+          .toBeGreaterThanOrEqual(120);
+      } else {
+        const image = chip.getByRole("img", { name: ":wide:", exact: true });
+        await expect(image).toBeVisible();
+        await expect(image).toHaveCSS("width", "120px");
+        await expect(image).toHaveCSS("height", "20px");
+      }
+    } finally {
+      release();
+    }
+    await expect(
+      root.getByRole("button", { name: /^:wide: 1 件（自分もリアクション済み）/ }),
+    ).toBeHidden();
   });
 }

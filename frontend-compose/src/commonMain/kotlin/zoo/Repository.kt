@@ -67,6 +67,7 @@ class SyncedTable(
     private val serverRows = MutableStateFlow<List<Row>>(emptyList())
     val replicatedRows: StateFlow<List<Row>> = serverRows.asStateFlow()
     private val optimistic = MutableStateFlow<Map<String, Row?>>(emptyMap())
+    val optimisticChanges = optimistic.asStateFlow()
     val rows =
         combine(serverRows, optimistic) { rows, pending ->
                 val merged = rows.associateBy(::rowKey).toMutableMap()
@@ -90,7 +91,7 @@ class SyncedTable(
     private var client: ShapeClient? = null
     private var unsubscribeTx: (() -> Unit)? = null
     private val cacheKey =
-        "zoo-compose:v1:${config.apiBaseUrl}:${config.shapeProxyPath}:${config.shapeMode}:${config.electricShapeUrl}:${config.userId}:$name:${params.entries.sortedBy { it.key }}"
+        "zoo-compose:v2:${config.apiBaseUrl}:${config.shapeProxyPath}:${config.shapeMode}:${config.electricShapeUrl}:${config.userId}:$name:${params.entries.sortedBy { it.key }}"
     private val worker =
         tableScope.launch {
             if (!synchronize) {

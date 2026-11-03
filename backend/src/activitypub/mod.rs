@@ -331,6 +331,7 @@ pub(crate) async fn remember_display_emojis(
             }
         }
     }
+    emojis.retain(|emoji| emoji["local"] != true);
     // Tags are already normalized and authorized by the containing feed/notification query.
     // Multiple rows may refer to the same URL; avoid PostgreSQL updating it twice in one insert.
     emojis.sort_by_key(|v| v["image_id"].as_str().unwrap_or("").to_owned());

@@ -27,7 +27,6 @@ class Session(val repo: Repository, val scope: CoroutineScope, initial: Environm
         private set
     private var workspaceEmojisLoaded = false
     private val workspaceEmojiMutex = kotlinx.coroutines.sync.Mutex()
-    val emojiRatios = mutableStateMapOf<String, Float>()
     suspend fun loadWorkspaceEmojis(force: Boolean = false) {
         workspaceEmojiMutex.lock()
         try {
