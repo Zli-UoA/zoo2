@@ -138,11 +138,15 @@ async fn proxy_shape(
     let mut params = filter_electric_params(raw_query);
     params.push(("table".to_string(), table.to_string()));
     if table == "messages"
-        && raw_query
-            .get("_app_metadata_allowed")
-            .is_some_and(|v| v == "false")
+        && let Some(metadata_allowed) = raw_query.get("_app_metadata_allowed")
     {
-        params.push(("columns".into(),"id,user_id,channel_id,content,card,created_at,updated_at,deleted_at,parent_id,app_blocks,app_attachments,app_unfurls,app_origin_id,message_kind,broadcast,home_post_id,apub,apub_visibility,display_data".into()));
+        // App messages never include the UI projection: its joined profiles and
+        // attachments require scopes beyond messages:read (and metadata:read).
+        let mut columns = "id,user_id,channel_id,content,card,created_at,updated_at,deleted_at,parent_id,app_blocks,app_attachments,app_unfurls,app_origin_id,message_kind,broadcast,home_post_id,apub,apub_visibility".to_owned();
+        if metadata_allowed == "true" {
+            columns.push_str(",metadata");
+        }
+        params.push(("columns".into(), columns));
     }
 
     if let Some(w) = where_clause {

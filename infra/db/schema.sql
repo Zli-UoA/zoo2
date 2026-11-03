@@ -387,7 +387,7 @@ BEGIN
  ) THEN kinds:=array_append(kinds,'link.shared'); END IF;
  FOREACH kind IN ARRAY kinds LOOP
  event_uuid:=gen_random_uuid()::text;
- envelope:=jsonb_build_object('id',event_uuid,'version',1,'type',kind,'occurred_at',CURRENT_TIMESTAMP,'actor_id',NEW.user_id,'channel_id',NEW.channel_id,'data',to_jsonb(NEW));
+ envelope:=jsonb_build_object('id',event_uuid,'version',1,'type',kind,'occurred_at',CURRENT_TIMESTAMP,'actor_id',NEW.user_id,'channel_id',NEW.channel_id,'data',to_jsonb(NEW)-'display_data');
  INSERT INTO app_deliveries(id,event_id,installation_id,channel_id,event_type,payload) VALUES(gen_random_uuid()::text,event_uuid,installation.id,NEW.channel_id,kind,envelope::text);
  END LOOP;
  END LOOP; RETURN NULL;

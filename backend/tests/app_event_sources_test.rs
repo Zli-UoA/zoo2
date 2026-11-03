@@ -61,6 +61,173 @@ async fn display_cache_updates_do_not_emit_message_updates() -> anyhow::Result<(
     Ok(())
 }
 
+#[tokio::test]
+async fn app_message_shapes_exclude_display_data_with_and_without_metadata_scope()
+-> anyhow::Result<()> {
+    let f = fixture().await?;
+    let message = ok(
+        &f.app,
+        "POST",
+        "/api/messages",
+        &f.owner,
+        json!({"channel_id":f.channel,"content":"Shape projection boundary","metadata":{"event_type":"shape_scope_marker","event_payload":{}}}),
+    )
+    .await;
+    let mid = message["data"]["id"].as_str().unwrap();
+    for metadata_allowed in [false, true] {
+        let mut scopes = vec!["messages:read"];
+        if metadata_allowed {
+            scopes.push("metadata:read");
+        }
+        let token = reconfigure(
+            &f,
+            json!({"scopes":scopes,"events":[],"transport":"websocket"}),
+        )
+        .await?;
+        let response = f.app.clone().oneshot(
+            Request::builder()
+                .uri(format!("/api/apps/v1/shapes/messages?channel_id={}&offset=-1&columns=display_data,metadata&_app_metadata_allowed=true", f.channel))
+                .header("authorization", format!("Bearer {token}"))
+                .body(Body::empty())?,
+        ).await?;
+        let status = response.status();
+        if !status.is_success() {
+            let bytes = to_bytes(response.into_body(), usize::MAX).await?;
+            panic!(
+                "App Shape returned {status}: {}",
+                String::from_utf8_lossy(&bytes)
+            );
+        }
+        let schema: Value = serde_json::from_str(
+            response
+                .headers()
+                .get("electric-schema")
+                .unwrap()
+                .to_str()?,
+        )?;
+        assert!(schema.get("content").is_some());
+        assert!(schema.get("display_data").is_none());
+        assert_eq!(schema.get("metadata").is_some(), metadata_allowed);
+        let bytes = to_bytes(response.into_body(), usize::MAX).await?;
+        let rows: Value = serde_json::from_slice(&bytes)?;
+        let row = rows
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|row| row["value"]["id"] == mid)
+            .expect("message in initial snapshot");
+        assert_eq!(row["value"]["content"], "Shape projection boundary");
+        assert!(row["value"].get("display_data").is_none());
+        assert_eq!(row["value"].get("metadata").is_some(), metadata_allowed);
+    }
+    // The user-facing Shape still needs the joined projection to render.
+    let response = f
+        .app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri(format!(
+                    "/api/shapes/messages?channel_id={}&offset=-1",
+                    f.channel
+                ))
+                .header("x-dev-user", &f.owner)
+                .body(Body::empty())?,
+        )
+        .await?;
+    assert!(response.status().is_success());
+    let schema: Value = serde_json::from_str(
+        response
+            .headers()
+            .get("electric-schema")
+            .unwrap()
+            .to_str()?,
+    )?;
+    assert!(schema.get("display_data").is_some());
+    Ok(())
+}
+
+#[tokio::test]
+async fn special_message_events_exclude_the_joined_display_projection() -> anyhow::Result<()> {
+    let f = fixture().await?;
+    let mut db = f.state.db.clone();
+    let mut tx = db.transaction().await?;
+    let bot = apps::one(
+        &mut tx,
+        "SELECT json_build_object('name',user_name)::text FROM users WHERE id=$1",
+        &[&f.bot],
+    )
+    .await?;
+    drop(tx);
+    let message = ok(
+        &f.app,
+        "POST",
+        "/api/messages",
+        &f.owner,
+        json!({"channel_id":f.channel,"content":format!("@{} https://example.com/item",bot["name"].as_str().unwrap())}),
+    ).await;
+    let mid = message["data"]["id"].as_str().unwrap();
+    let mut tx = db.transaction().await?;
+    let cached = apps::one(
+        &mut tx,
+        "SELECT display_data::text FROM messages WHERE id=$1",
+        &[mid],
+    )
+    .await?;
+    assert_eq!(cached["author"]["id"], f.owner);
+    drop(tx);
+    // Inspect the durable payload for both special paths.
+    let events = payloads(&f, &f.channel).await?;
+    for kind in ["app.mentioned", "link.shared"] {
+        let event = events
+            .iter()
+            .find(|event| event["type"] == kind)
+            .expect(kind);
+        assert_eq!(event["data"]["id"], mid);
+        if kind == "app.mentioned" {
+            assert_eq!(event["data"]["content"], message["data"]["content"]);
+        } else {
+            assert_eq!(event["data"]["links"], json!(["https://example.com/item"]));
+            assert!(event["data"].get("content").is_none());
+        }
+        assert!(
+            event["data"].get("display_data").is_none(),
+            "{kind}: {event}"
+        );
+    }
+    // The current event source already strips the projection. Exercise the
+    // retained legacy trigger function too, using a transaction-local table
+    // so the global messages triggers and other tests remain untouched.
+    let mut tx = db.transaction().await?;
+    toasty::sql::statement(
+        "CREATE TEMP TABLE legacy_special_messages (LIKE messages INCLUDING DEFAULTS) ON COMMIT DROP",
+    )
+    .exec(&mut tx)
+    .await?;
+    toasty::sql::statement("CREATE TRIGGER legacy_special_events AFTER INSERT ON legacy_special_messages FOR EACH ROW EXECUTE FUNCTION enqueue_app_special_message()")
+        .exec(&mut tx).await?;
+    toasty::sql::statement(
+        "INSERT INTO legacy_special_messages SELECT * FROM messages WHERE id=$1",
+    )
+    .bind(mid)
+    .exec(&mut tx)
+    .await?;
+    let events = apps::query(&mut tx,
+        "SELECT payload::text FROM app_deliveries WHERE installation_id=$1 AND event_type IN ('app.mentioned','link.shared') AND payload::jsonb->'data'->>'id'=$2",
+        &[&f.installation, mid],
+    ).await?;
+    assert_eq!(
+        events.len(),
+        4,
+        "Both sources must emit both special events"
+    );
+    assert!(
+        events
+            .iter()
+            .all(|event| event["data"].get("display_data").is_none())
+    );
+    Ok(())
+}
+
 async fn request(
     app: &Router,
     method: &str,
