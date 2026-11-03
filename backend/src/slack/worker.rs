@@ -622,6 +622,22 @@ async fn import(s: &AppState, job: &Job, lease: &Lease) -> Result<(), AppError> 
             )
             .await?;
         }
+        // 以前の取り込みで入れたチャンネルへの <#C…> も、取り込み先の今の名前に変換する。
+        // 今回選んだチャンネルは、下の対応付けで上書きする。
+        for row in query(
+            &mut tx,
+            "SELECT json_build_object('slack',s.slack_channel_id,'name',c.channel_name)::text \
+             FROM slack_channels s JOIN channels c ON c.id=s.channel_id \
+             WHERE s.team_id=$1 AND c.deleted_at IS NULL",
+            &[&team],
+        )
+        .await?
+        {
+            if let (Some(slack), Some(name)) = (row["slack"].as_str(), row["name"].as_str()) {
+                ctx.channel_names
+                    .insert(slack.to_string(), name.to_string());
+            }
+        }
         for mapping in &mappings {
             let Some(channel) = slack_channels.get(&mapping.slack_channel_id) else {
                 continue;

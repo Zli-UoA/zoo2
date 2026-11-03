@@ -1237,6 +1237,55 @@ async fn test_slack_import_guards_private_channels_and_restores_threads() -> any
     )
     .await?;
     assert!(rows.is_empty());
+    // 後から別のチャンネルだけを取り込んでも、以前取り込んだチャンネルへの参照は取り込み先の名前になる
+    let later = build_zip(&[
+        (
+            "users.json".into(),
+            json!([{"id":"U1","team_id":team,"name":"alice"}]),
+        ),
+        (
+            "channels.json".into(),
+            json!([
+                {"id":"C1","name":"general","members":["U1"]},
+                {"id":"C2","name":"random","members":["U1"]}
+            ]),
+        ),
+        (
+            "random/2024-01-04.json".into(),
+            json!([{"ts":"1704340000.000900","user":"U1","text":"see <#C1|general>"}]),
+        ),
+    ]);
+    let analyzed = upload(&state, &app, &admin, &later).await;
+    let (status, body) = start(
+        &app,
+        &admin,
+        analyzed["id"].as_str().unwrap(),
+        json!([
+            {"slack_channel_id":"C1","action":"skip"},
+            {"slack_channel_id":"C2","action":"create","name":format!("random-{suffix}")}
+        ]),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    drive(
+        &state,
+        &app,
+        &admin,
+        body["id"].as_str().unwrap(),
+        "completed",
+    )
+    .await;
+    let rows = sql(
+        &state,
+        "SELECT json_build_object('content',content)::text FROM messages WHERE id=$1",
+        &[&backend::slack::message_id(
+            &team,
+            "C2",
+            "1704340000.000900",
+        )],
+    )
+    .await?;
+    assert_eq!(rows[0]["content"], format!("see #general-{suffix}"));
     Ok(())
 }
 

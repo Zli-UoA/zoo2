@@ -137,9 +137,13 @@ class SlackImportController(
     var started by mutableStateOf(0)
         private set
 
+    /** 読み込み中の数。ポーリングは読み込みが終わるまで次を始めない */
+    private var loading = 0
+
     fun load() {
         if (!lifetime.isActive) return
         val version = ++generation
+        loading++
         scope.launch {
             try {
                 val value = request("/api/admin/slack-imports", "GET", null)
@@ -148,8 +152,18 @@ class SlackImportController(
                 throw cause
             } catch (cause: Exception) {
                 if (version == generation) failure = slackImportFailure(cause)
+            } finally {
+                loading--
             }
         }
+    }
+
+    /**
+     * 定期的な読み直し。前の読み込みが終わっていなければ何もしない。
+     * 応答が間隔より遅くても、新しい読み込みで前の結果を捨て続けないようにする。
+     */
+    fun poll() {
+        if (loading == 0) load()
     }
 
     private fun replace(job: Row) {
@@ -257,7 +271,7 @@ fun SlackImportPanel(app: Session) {
     LaunchedEffect(state, state.running) {
         while (state.running) {
             delay(2_000)
-            state.load()
+            state.poll()
         }
     }
     val owner = remember { "slack-import-${app.platform.uuid()}" }
