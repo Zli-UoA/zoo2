@@ -114,9 +114,8 @@ for (const implementation of ["react", "compose"] as const) {
       page.getByRole("textbox", { name: "メッセージを編集", exact: true }),
       "編集した本文",
     );
-    await page
-      .getByRole("button", { name: "保存", exact: true })
-      .click({ force: implementation === "compose" });
+    // 編集欄は Cmd/Ctrl+Enter で保存できる（macOS は Cmd、それ以外は Ctrl）。
+    await page.keyboard.press("ControlOrMeta+Enter");
     await expect(page.getByRole("textbox", { name: "メッセージを編集", exact: true })).toBeHidden();
     await expect(page.getByText("編集した本文", { exact: true })).toBeVisible();
     await page

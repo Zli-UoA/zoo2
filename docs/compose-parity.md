@@ -172,4 +172,4 @@ Reactはスレッドのルートを返信を含む同じメッセージコレク
 
 今回の検証範囲: 対象React Story操作4件、React/Composeの対象6状態の操作・描画、Story登録などの単体テスト76件、Kotlinブラウザーテスト80件と配布ビルドが成功した。Home API11件、Rust単体109件（6件除外）と全ターゲットのclippyも成功した。Storybook監査は423状態を確認した。ReactのCRUD E2EはAPI応答後に編集済みチャンネル名の画面反映も待ち、3回連続で成功した。画素単位の一致は検証対象に含めない。
 
-メッセージ編集欄のCmd/Ctrl+Enter保存（#307）: Reactの `MessageRow` は `shouldSendFromKey` でmacOSはCmd+Enter、Windows / LinuxはCtrl+Enterを判定して保存する。Kotlinの `Chat.kt` の編集欄も `app.env.mac` で同じキーを判定し、保存ボタンと同じ処理を呼ぶ。本文が空白のみ、保存中、IME変換中、Shift+Enterは保存しない。EscapeのキャンセルとEnter単独の改行は変えていない。Kotlinは `compileKotlinWasmJs` の成功までをローカルで確認しており、ブラウザー操作の検証はCIに依存する。
+メッセージ編集欄のCmd/Ctrl+Enter保存（#307）: Reactの `MessageRow` は `shouldSendFromKey` でmacOSはCmd+Enter、Windows / LinuxはCtrl+Enterを判定して保存する。Kotlinの `Chat.kt` の編集欄も `app.env.mac` で同じキーを判定し、保存ボタンと同じ処理を呼ぶ。本文が空白のみ、保存中、IME変換中、Shift+Enterは保存しない。EscapeのキャンセルとEnter単独の改行は変えていない。`frontend/e2e/compose.spec.ts` の投稿・編集フローは、React / Composeの両方で「保存」ボタンの代わりに `ControlOrMeta+Enter` で編集を保存し、編集欄が閉じて本文が更新されることを確認する。Kotlinは `compileKotlinWasmJs` の成功までをローカルで確認している。
