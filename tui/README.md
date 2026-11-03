@@ -157,16 +157,15 @@ macOS では `shasum -a 256 --check --ignore-missing SHA256SUMS` を使います
 
 ## 初期設定
 
-`~/.config/zoo2-tui/config.toml` に接続先を書きます。macOS では `~/Library/Application Support/zoo2-tui/config.toml` です。
+設定は要りません。何も書かなくても、本番の zoo2 (`https://zli.chat`) に接続します。
+
+接続先を変えたいときだけ、`~/.config/zoo2-tui/config.toml` に書きます。macOS では `~/Library/Application Support/zoo2-tui/config.toml` です。
 
 ```toml
 api_base_url = "https://zli.chat"
-oidc_issuer = "https://account.zli.works/api/auth"
-oidc_client_id = "<TUI 用クライアントの ID>"
-oidc_resource = "https://zli.chat"
 ```
 
-`oidc_client_id` には、AuthZ に登録した TUI 用の public client の ID を入れます。分からないときは zoo2 の管理者に確かめてください。そのほかの項目は [設定項目](#設定項目) を参照してください。
+そのほかの項目は [設定項目](#設定項目) を参照してください。
 
 ## ログインと起動
 
@@ -226,15 +225,15 @@ zoo2-tui
 
 | `config.toml` | 環境変数 | 既定値 | 内容 |
 |---|---|---|---|
-| `api_base_url` | `ZOO_API_BASE_URL` | `http://localhost:8000` | backend の URL |
-| `dev_user` | `ZOO_DEV_USER` | なし | dev モードのユーザー。指定すると OIDC より優先される |
-| `oidc_issuer` | `ZOO_OIDC_ISSUER` | なし | AuthZ の issuer |
-| `oidc_client_id` | `ZOO_OIDC_CLIENT_ID` | なし | AuthZ に登録した TUI 用クライアントの ID |
-| `oidc_resource` | `ZOO_OIDC_RESOURCE` | なし | 要求する resource (RFC 8707)。backend の `OIDC_AUDIENCE` と同じ値にする |
+| `api_base_url` | `ZOO_API_BASE_URL` | `https://zli.chat` | backend の URL |
+| `dev_user` | `ZOO_DEV_USER` | なし | dev モードのユーザー。指定したときだけ dev モードで接続し、ログインは使わない |
+| `oidc_issuer` | `ZOO_OIDC_ISSUER` | `https://account.zli.works/api/auth` | AuthZ の issuer |
+| `oidc_client_id` | `ZOO_OIDC_CLIENT_ID` | 本番の TUI 用クライアントの ID | AuthZ に登録した TUI 用の public client の ID |
+| `oidc_resource` | `ZOO_OIDC_RESOURCE` | `https://zli.chat` | 要求する resource (RFC 8707)。backend の `OIDC_AUDIENCE` と同じ値にする |
 | `oidc_scope` | `ZOO_OIDC_SCOPE` | `openid profile offline_access` | 要求するスコープ |
 | `check_updates` | `ZOO_CHECK_UPDATES` | `true` | 起動時に新しい版を調べる。`false` で調べない |
 
-`oidc_issuer` と `oidc_client_id` の両方があれば OIDC、どちらもなければ dev モードで接続します。
+`dev_user` を指定したときだけ dev モードで接続します。指定しなければ OIDC でログインします。
 
 AuthZ には、デバイスコードと refresh_token のグラントを許可した public client を登録しておく必要があります。スコープは `openid profile offline_access`、resource は backend の `OIDC_AUDIENCE` と同じ値です。
 
@@ -262,7 +261,7 @@ AuthZ には、デバイスコードと refresh_token のグラントを許可�
 ## 困ったとき
 
 - **「ログインしていません」と出る**: `zoo2-tui login` を実行してください。refresh_token が失効したときも同じです。
-- **「OIDC が設定されていません」と出る**: `config.toml` に `oidc_issuer` と `oidc_client_id` があるか確かめてください。環境変数 `ZOO_DEV_USER` が残っていると dev モードになります。
+- **「dev モードではログインできません」と出る**: 環境変数 `ZOO_DEV_USER` か、`config.toml` の `dev_user` が残っています。外してください。
 - **ログインで `invalid_client` や `unauthorized_client` が出る**: `oidc_client_id` が違うか、そのクライアントにデバイスコードのグラントが許可されていません。管理者に確かめてください。
 - **401 で画面が開かない**: `oidc_resource` が backend の `OIDC_AUDIENCE` と一致しているか確かめてください。
 - **絵文字や罫線の幅がずれる**: 端末のフォントと、East Asian Ambiguous 幅の設定 (半角にする) を確かめてください。
@@ -288,7 +287,7 @@ make backend-dev
 make tui-dev
 ```
 
-`make tui-dev` は既定で `00000000-0000-0000-0000-000000000001` のユーザーとして接続します。別のユーザーで試すときは `ZOO_DEV_USER` を指定します。
+`make tui-dev` は `http://localhost:8000` の backend に、既定で `00000000-0000-0000-0000-000000000001` のユーザーとして接続します。別のユーザーで試すときは `ZOO_DEV_USER` を指定します。
 
 ```bash
 ZOO_DEV_USER=<ユーザーの UUID> make tui-dev
