@@ -14,8 +14,8 @@ struct Cache {
     checked: Option<Instant>,
 }
 static CACHE: LazyLock<Mutex<Cache>> = LazyLock::new(|| Mutex::new(Cache::default()));
-static SNAPSHOT: LazyLock<RwLock<Option<(String, Vec<Value>)>>> =
-    LazyLock::new(|| RwLock::new(None));
+type SharedSnapshot = Option<(String, Vec<Value>)>;
+static SNAPSHOT: LazyLock<RwLock<SharedSnapshot>> = LazyLock::new(|| RwLock::new(None));
 pub fn service_url() -> Result<Option<reqwest::Url>, AppError> {
     let Some(value) = std::env::var("EMOJI_SERVICE_URL")
         .ok()
@@ -70,10 +70,10 @@ pub async fn catalog() -> Result<Option<Vec<Value>>, AppError> {
         return Ok(None);
     };
     // Once loaded, reads never wait for the background worker's network request.
-    if let Some((source, rows)) = &*SNAPSHOT.read().await {
-        if source == origin.as_str() {
-            return Ok(Some(rows.clone()));
-        }
+    if let Some((source, rows)) = &*SNAPSHOT.read().await
+        && source == origin.as_str()
+    {
+        return Ok(Some(rows.clone()));
     }
     refresh_shared().await
 }
@@ -103,22 +103,17 @@ async fn refresh(
             origin: origin.to_string(),
             ..Default::default()
         };
-        if let Some(path) = &disk {
-            if tokio::fs::metadata(&path)
+        if let Some(path) = &disk
+            && tokio::fs::metadata(path)
                 .await
                 .is_ok_and(|m| m.len() <= 8 * 1024 * 1024)
-            {
-                if let Ok(bytes) = tokio::fs::read(&path).await {
-                    if let Ok(saved) = serde_json::from_slice::<Value>(&bytes) {
-                        if saved["origin"] == origin.as_str() {
-                            if let Ok(rows) = decode(&saved["catalog"], &origin) {
-                                cache.rows = Some(rows);
-                                cache.etag = saved["etag"].as_str().map(str::to_owned);
-                            }
-                        }
-                    }
-                }
-            }
+            && let Ok(bytes) = tokio::fs::read(path).await
+            && let Ok(saved) = serde_json::from_slice::<Value>(&bytes)
+            && saved["origin"] == origin.as_str()
+            && let Ok(rows) = decode(&saved["catalog"], &origin)
+        {
+            cache.rows = Some(rows);
+            cache.etag = saved["etag"].as_str().map(str::to_owned);
         }
     }
     if cache
