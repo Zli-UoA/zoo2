@@ -14,7 +14,8 @@ struct Cache {
     checked: Option<Instant>,
 }
 static CACHE: LazyLock<Mutex<Cache>> = LazyLock::new(|| Mutex::new(Cache::default()));
-static SNAPSHOT: LazyLock<RwLock<Option<(String, Vec<Value>)>>> = LazyLock::new(|| RwLock::new(None));
+static SNAPSHOT: LazyLock<RwLock<Option<(String, Vec<Value>)>>> =
+    LazyLock::new(|| RwLock::new(None));
 pub fn service_url() -> Result<Option<reqwest::Url>, AppError> {
     let Some(value) = std::env::var("EMOJI_SERVICE_URL")
         .ok()
@@ -53,9 +54,10 @@ fn decode(value: &Value, origin: &reqwest::Url) -> Result<Vec<Value>, AppError> 
     let image_pattern = regex::Regex::new(r"^/images/[a-f0-9]{64}$").unwrap();
     emojis.iter().map(|e| {
         let name = e["name"].as_str().ok_or_else(invalid)?;
+        if !name_pattern.is_match(name) { return Err(invalid()); }
         let aliases = e["aliases"].as_array().ok_or_else(invalid)?;
         for n in std::iter::once(name).chain(aliases.iter().map(|a| a.as_str().unwrap_or(""))) {
-            if !name_pattern.is_match(n) || !names.insert(n.to_owned()) { return Err(invalid()); }
+            if n.is_empty() || n.trim() != n || n.chars().count() > 100 || n.chars().any(|c| c == ':' || c.is_control()) || !names.insert(n.to_owned()) { return Err(invalid()); }
         }
         let image = e["image_url"].as_str().ok_or_else(invalid)?;
         if !image_pattern.is_match(image) || !e["category"].is_string() { return Err(invalid()); }
@@ -69,15 +71,26 @@ pub async fn catalog() -> Result<Option<Vec<Value>>, AppError> {
     };
     // Once loaded, reads never wait for the background worker's network request.
     if let Some((source, rows)) = &*SNAPSHOT.read().await {
-        if source == origin.as_str() { return Ok(Some(rows.clone())); }
+        if source == origin.as_str() {
+            return Ok(Some(rows.clone()));
+        }
     }
     refresh_shared().await
 }
 async fn refresh_shared() -> Result<Option<Vec<Value>>, AppError> {
-    let Some(origin) = service_url()? else { return Ok(None) };
+    let Some(origin) = service_url()? else {
+        return Ok(None);
+    };
     let mut cache = CACHE.lock().await;
-    let rows = refresh(&mut cache, origin.clone(), std::env::var("EMOJI_CACHE_FILE").ok()).await?;
-    if let Some(rows) = &rows { *SNAPSHOT.write().await = Some((origin.to_string(),rows.clone())); }
+    let rows = refresh(
+        &mut cache,
+        origin.clone(),
+        std::env::var("EMOJI_CACHE_FILE").ok(),
+    )
+    .await?;
+    if let Some(rows) = &rows {
+        *SNAPSHOT.write().await = Some((origin.to_string(), rows.clone()));
+    }
     Ok(rows)
 }
 async fn refresh(
@@ -257,7 +270,7 @@ mod tests {
     #[test]
     fn catalog_validates_alias_namespace_and_image_origin() {
         let origin = reqwest::Url::parse("https://emoji.test").unwrap();
-        let item = json!({"name":"cat","aliases":["neko"],"category":"animals","image_url":format!("/images/{}","a".repeat(64))});
+        let item = json!({"name":"cat","aliases":["neko","ねこ"],"category":"animals","image_url":format!("/images/{}","a".repeat(64))});
         assert_eq!(
             decode(&json!({"emojis":[item.clone()]}), &origin).unwrap()[0]["url"],
             format!("https://emoji.test/images/{}", "a".repeat(64))
@@ -275,7 +288,7 @@ mod tests {
         };
         let server = MockServer::start().await;
         let origin = reqwest::Url::parse(&server.uri()).unwrap();
-        let value = json!({"emojis":[{"name":"cat","aliases":["neko"],"category":"animals","image_url":format!("/images/{}","a".repeat(64))}]});
+        let value = json!({"emojis":[{"name":"cat","aliases":["neko","ねこ"],"category":"animals","image_url":format!("/images/{}","a".repeat(64))}]});
         let file = std::env::temp_dir().join(format!("emoji-cache-{}.json", uuid::Uuid::new_v4()));
         let disk = Some(file.to_string_lossy().to_string());
         Mock::given(method("GET"))
