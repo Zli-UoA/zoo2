@@ -235,6 +235,8 @@ zoo2-tui
 
 `dev_user` を指定したときだけ dev モードで接続します。指定しなければ OIDC でログインします。
 
+ログインで得たトークンは、そのときの接続先 (`api_base_url`) にだけ送ります。`api_base_url` や OIDC の設定を変えたら、`zoo2-tui login` をやり直してください。
+
 AuthZ には、デバイスコードと refresh_token のグラントを許可した public client を登録しておく必要があります。スコープは `openid profile offline_access`、resource は backend の `OIDC_AUDIENCE` と同じ値です。
 
 ## 更新とアンインストール
