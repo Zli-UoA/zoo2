@@ -89,6 +89,7 @@ export const Headings: Story = {
 export const SharedShortcodes: Story = {
   args: { content: ":service_gemoji: :smile: `:service_gemoji:` :unknown_service_emoji:" },
   parameters: {
+    sharedApi: true,
     msw: {
       handlers: [
         http.get("*/api/emoji-shortcodes", () =>

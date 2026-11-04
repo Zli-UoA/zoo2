@@ -233,3 +233,5 @@ mainの表示JOINとの統合では、共有カタログを専用のDB読み取�
 ### 基盤のgemojiショートコード
 
 標準辞書はバックエンドの `/api/emoji-shortcodes` を経由し、サービスの `/api/v1/shortcodes` を1時間キャッシュしてETagで再検証する。Reactは共有hook、ComposeはSessionで取得を集約し、最後の成功辞書を維持する。初回失敗・未設定時は同梱辞書を使う。どちらもカスタム画像・別名を先に解決し、コード内のショートコードは変換しない。`SharedShortcodes` Storyは同梱されていない名前の取得、カスタム画像の優先、コード・未知の名前の保持を両実装で確認する。TUIも同じHTTP APIとカスタム名一覧を読み、端末で描画できるUnicodeへ変換し、同名カスタムは文字列を維持する。
+
+今回のgemoji接続の検証では、バックエンド120件（既存6件ignore）・TUI59件、両Rustターゲットのclippyとformatが成功した。Rustはローカルコンテナの1.99.1で検証し、CIはリポジトリ固定の1.99.0を使用する。Kotlinのブラウザテスト85件と配布ビルド、Reactのブラウザ8件、Story登録の契約11件、型・lint・format・429状態のStory監査も成功した。`frontend/scripts/check-shared-shortcodes-ui.mjs` は最新配布物のReact/実Kotlinを1440pxと390pxで開き、基盤だけにあるショートコード、同名カスタム画像の優先、コードと未知の名前の保持を4ケース検証した。画素単位の一致は検証していない。
