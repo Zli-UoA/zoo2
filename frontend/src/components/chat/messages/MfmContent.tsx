@@ -1,4 +1,13 @@
-import { createElement, Fragment, useEffect, useMemo, useState, type ReactNode } from "react";
+import {
+  createContext,
+  useContext,
+  createElement,
+  Fragment,
+  useEffect,
+  useMemo,
+  useState,
+  type ReactNode,
+} from "react";
 import { parse, toString, type MfmNode } from "mfm-js";
 import katex from "katex";
 import hljs from "highlight.js/lib/common";
@@ -23,6 +32,7 @@ export interface MfmContentProps {
   /** Application event, never evaluated as JavaScript. */
   onClickEvent?: (event: string) => void;
 }
+const ShortcodeContext = createContext<Readonly<Record<string, string>>>({});
 const linkClass = `${inlineLinkClassName} underline`;
 function externalLink(url: string, children: ReactNode): ReactNode {
   return (
@@ -74,7 +84,7 @@ function EmojiCode({
   emojiUrls?: MfmContentProps["emojiUrls"];
   emojis?: MfmContentProps["emojis"];
 }) {
-  const shortcodes = useShortcodes();
+  const shortcodes = useContext(ShortcodeContext);
   const [registry, setRegistry] = useState<Readonly<Record<string, string>>>({});
   useEffect(() => {
     if (emojiUrls) return;
@@ -350,6 +360,7 @@ function messageBlocks(nodes: MfmNode[]): MessageBlock[] {
 }
 
 export function MfmContent({ content, ...options }: MfmContentProps) {
+  const shortcodes = useShortcodes(/:[a-zA-Z0-9_+-]+:/.test(content));
   const workspace = useWorkspaceEmojis(
     options.emojis === undefined && /:[a-z0-9_-]+:/.test(content),
   );
@@ -376,7 +387,7 @@ export function MfmContent({ content, ...options }: MfmContentProps) {
   };
   const blocks = useMemo(() => messageBlocks(parse(content, { nestLimit: 20 })), [content]);
   return (
-    <>
+    <ShortcodeContext.Provider value={shortcodes}>
       {blocks.map((block, index) => {
         const body = block.nodes.map((node, childIndex) => (
           <Fragment key={childIndex}>{renderNode(node, resolvedOptions)}</Fragment>
@@ -390,6 +401,6 @@ export function MfmContent({ content, ...options }: MfmContentProps) {
           </Fragment>
         );
       })}
-    </>
+    </ShortcodeContext.Provider>
   );
 }
