@@ -33,6 +33,10 @@ const INNER_SCROLL_STEP: usize = 10;
 #[derive(Debug)]
 pub enum AppEvent {
     Notice(String),
+    EmojiCatalog {
+        shortcodes: HashMap<String, String>,
+        custom: HashSet<String>,
+    },
     /// 送信に失敗した本文を、送り先と一緒に入力欄へ戻すか、戻せないときは保存しておく。
     RestoreDraft {
         channel_id: String,
@@ -155,6 +159,7 @@ impl App {
         shape_tx: mpsc::UnboundedSender<ShapeEvent>,
         app_tx: mpsc::UnboundedSender<AppEvent>,
     ) -> Self {
+        crate::mfm::set_emoji_catalog(HashMap::new(), HashSet::new());
         let mut app = Self {
             api,
             http,
@@ -254,6 +259,9 @@ impl App {
 
     pub fn on_app_event(&mut self, event: AppEvent) {
         match event {
+            AppEvent::EmojiCatalog { shortcodes, custom } => {
+                crate::mfm::set_emoji_catalog(shortcodes, custom)
+            }
             AppEvent::Notice(message) => self.notify(message),
             AppEvent::RestoreDraft {
                 channel_id,
@@ -303,6 +311,15 @@ impl App {
     }
 
     pub fn on_tick(&mut self) {
+        if self.ticks.is_multiple_of(60) {
+            let api = self.api.clone();
+            let tx = self.app_tx.clone();
+            tokio::spawn(async move {
+                if let Ok((shortcodes, custom)) = api.emoji_catalog().await {
+                    let _ = tx.send(AppEvent::EmojiCatalog { shortcodes, custom });
+                }
+            });
+        }
         if self
             .notice
             .as_ref()
@@ -943,9 +960,20 @@ impl App {
 fn resolve_emoji(input: &str) -> Option<String> {
     let input = input.trim();
     let name = input.trim_matches(':');
-    emojis::get_by_shortcode(name)
-        .or_else(|| emojis::get(input))
-        .map(|emoji| emoji.as_str().to_string())
+    if crate::mfm::is_custom_shortcode(name) {
+        return Some(format!(":{name}:"));
+    }
+    crate::mfm::unicode_shortcode(name)
+        .or_else(|| emojis::get(input).map(|emoji| emoji.as_str().to_string()))
+        .or_else(|| {
+            (input.starts_with(':')
+                && input.ends_with(':')
+                && (1..=64).contains(&name.len())
+                && name.bytes().all(|c| {
+                    c.is_ascii_lowercase() || c.is_ascii_digit() || c == b'_' || c == b'-'
+                }))
+            .then(|| format!(":{name}:"))
+        })
 }
 
 fn new_composer() -> TextArea<'static> {
@@ -1002,6 +1030,12 @@ mod tests {
         assert_eq!(resolve_emoji(" tada ").as_deref(), Some("🎉"));
         assert_eq!(resolve_emoji("👍").as_deref(), Some("👍"));
         assert_eq!(resolve_emoji("not-an-emoji"), None);
+        assert_eq!(
+            resolve_emoji(":blobcat_custom:").as_deref(),
+            Some(":blobcat_custom:")
+        );
+        assert_eq!(resolve_emoji(":../cat:"), None);
+        assert_eq!(resolve_emoji("::"), None);
     }
 
     #[test]

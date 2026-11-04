@@ -1,5 +1,6 @@
 import { storySurfaces } from "../../../../.storybook/story-surfaces";
 import { playForImplementation } from "../../../../.storybook/play-for-implementation";
+import { http, HttpResponse } from "msw";
 import { expect, within } from "storybook/test";
 import type { Meta, StoryObj } from "@storybook/react-vite";
 import { MfmChannelsProvider } from "./MfmChannels";
@@ -82,5 +83,28 @@ export const Headings: Story = {
     await expect(canvas.getByText("# コード内はそのまま")).toBeVisible();
     await expect(canvasElement).toHaveTextContent("## 装飾しない");
     await expect(canvas.getAllByRole("heading")).toHaveLength(6);
+  }),
+};
+
+export const SharedShortcodes: Story = {
+  args: { content: ":service_gemoji: :smile: `:service_gemoji:` :unknown_service_emoji:" },
+  parameters: {
+    sharedApi: true,
+    msw: {
+      handlers: [
+        http.get("*/api/emoji-shortcodes", () =>
+          HttpResponse.json({ shortcodes: { service_gemoji: "👩‍💻", smile: "😄" } }),
+        ),
+        http.get("*/api/emojis", () =>
+          HttpResponse.json([{ ...customEmojiFixture, name: "smile", category: "", aliases: [] }]),
+        ),
+      ],
+    },
+  },
+  play: playForImplementation(async ({ canvasElement }) => {
+    await expect(await within(canvasElement).findByText("👩‍💻", { exact: false })).toBeVisible();
+    await expect(await within(canvasElement).findByRole("img", { name: ":smile:" })).toBeVisible();
+    await expect(canvasElement.querySelector("code")).toHaveTextContent(":service_gemoji:");
+    await expect(canvasElement).toHaveTextContent(":unknown_service_emoji:");
   }),
 };

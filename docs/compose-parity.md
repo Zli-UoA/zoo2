@@ -222,3 +222,16 @@ Home通知APIも、閲覧可能で削除されていないローカル投稿の�
 mainのメッセージ編集時のCmd/Ctrl+Enter保存を、Reactの `MessageRow` とComposeの `Chat.kt` の両方に取り込んだ。JOIN済み表示データへの未確定差分の反映は維持する。`compose.spec.ts` の投稿・編集フローと、JOIN済みデータのリアクション・返信数・カスタム絵文字の保留中とロールバックを、再生成したCompose成果物で6ケースを検証し、成功した。バックエンド・DBの内容は、リベース前の検証済みコードと同じである。
 
 TUIは画像やURLカードを描画せず、Shapeの列を明示的に読み取るため、追加の表示用列は既存の読み取りに影響しない。このPRの画像枠・通知カードの変更は追加実装しない。編集時のCtrl+Enterは既存の `on_insert_key` から `submit` を通って保存できる。端末版のEnter送信・Alt/Shift+Enter改行は維持し、`make tui-check` で57テスト・clippy・formatの成功を確認した。
+## 共通絵文字サービス
+
+`EMOJI_SERVICE_URL` 設定時はReactのZooSettingsと共通KotlinのCustomEmojisで管理サービスへの外部リンクを表示する。取得中・失敗・再試行と未設定時の既存管理画面を両方で維持する。両実装のカタログは60秒で再取得し、取得失敗時は表示中の一覧を保持する。`SharedEmojiService` / `SharedEmojiServiceError` を共通Storyに追加する。TUIのリアクション入力も `:custom_name:` を受け付け、実際の存在確認はバックエンドが行う。
+
+検証: React設定画面のStorybook play 19件、関連ブラウザーテスト7件、Story監査・ビルド、Composeの `wasmJsBrowserTest` / `wasmJsBrowserDistribution` が成功。`frontend/scripts/check-shared-emoji-ui.mjs` でReact・実Kotlinの正常・390px・取得失敗を計6ケース検証し、リンクの宛先と旧編集フォームの非表示を確認した。既存の全件parityランナーはStorybook metadata取得でタイムアウトしたため、同じ実Storyを直接開く上記スモークで変更範囲の描画・操作を確認した。
+
+mainの表示JOINとの統合では、共有カタログを専用のDB読み取り複製へ反映し、既存の表示再確認キューを使う。`workspace_emojis` の作成者と登録情報は変更しない。公開カタログの幅・高さも保存して投稿・通知とAP記述子へ返し、React/Composeの予約領域を維持する。専用PostgreSQLで切り替え・日本語別名・寸法・通知キャッシュ・同一同期の冪等性・旧カタログへの復帰を検証する `emoji_service_test` を追加した。Atlasのdiffは認証要求で実行できず、schema.sqlから追加DDLを作成し、checksum validateと全43マイグレーションの適用、空DBへのschema.sql適用で検証した。
+
+### 基盤のgemojiショートコード
+
+標準辞書はバックエンドの `/api/emoji-shortcodes` を経由し、サービスの `/api/v1/shortcodes` を1時間キャッシュしてETagで再検証する。Reactは共有hook、ComposeはSessionで取得を集約し、最後の成功辞書を維持する。初回失敗・未設定時は同梱辞書を使う。どちらもカスタム画像・別名を先に解決し、コード内のショートコードは変換しない。`SharedShortcodes` Storyは同梱されていない名前の取得、カスタム画像の優先、コード・未知の名前の保持を両実装で確認する。TUIも同じHTTP APIとカスタム名一覧を読み、端末で描画できるUnicodeへ変換し、同名カスタムは文字列を維持する。
+
+今回のgemoji接続の検証では、バックエンド120件（既存6件ignore）・TUI59件、両Rustターゲットのclippyとformatが成功した。Rustはローカルコンテナの1.99.1で検証し、CIはリポジトリ固定の1.99.0を使用する。Kotlinのブラウザテスト85件と配布ビルド、Reactのブラウザ8件、Story登録の契約11件、型・lint・format・429状態のStory監査も成功した。`frontend/scripts/check-shared-shortcodes-ui.mjs` は最新配布物のReact/実Kotlinを1440pxと390pxで開き、基盤だけにあるショートコード、同名カスタム画像の優先、コードと未知の名前の保持を4ケース検証した。画素単位の一致は検証していない。

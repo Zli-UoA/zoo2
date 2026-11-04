@@ -176,6 +176,13 @@ function messageInteractions(component: string, state: string): Record<string, u
       { action: "wait", text: "# コード内はそのまま" },
       { action: "wait", text: "## 装飾しない", exact: false },
     ];
+  if (component === "MessageContent" && state === "Shared Shortcodes")
+    return [
+      { action: "wait", text: "👩‍💻", exact: false },
+      wait("img", ":smile:"),
+      { action: "wait", text: ":service_gemoji:", exact: false },
+      { action: "wait", text: ":unknown_service_emoji:", exact: false },
+    ];
   if (component === "MessageContent" && state === "Joined Emoji")
     return [
       wait("img", ":zoo_wave:", { width: 63, height: 21 }),
