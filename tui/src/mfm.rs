@@ -5,6 +5,7 @@ use ratatui::{
     text::{Line, Span},
 };
 use zoo2_client_core::mfm::{self as core_mfm, Tone};
+pub use core_mfm::{set_emoji_catalog, is_custom_shortcode, unicode_shortcode};
 
 /// 本文を行ごとのスタイル付きテキストにする。`me` は自分の `user_name` で、自分宛ての
 /// メンションを反転表示する。

@@ -2,6 +2,60 @@
 //! メンション、ハッシュタグ、絵文字ショートコードを UI に依存しないスタイル付きスパンへ
 //! 変換し、アニメーションなどの `$[fn ...]` は中身の文字だけを取り出す。
 
+#[derive(Default)]
+struct EmojiCatalog {
+    shortcodes: std::collections::HashMap<String, String>,
+    custom: std::collections::HashSet<String>,
+}
+static EMOJI_CATALOG: std::sync::LazyLock<std::sync::RwLock<EmojiCatalog>> =
+    std::sync::LazyLock::new(|| std::sync::RwLock::new(EmojiCatalog::default()));
+pub fn set_emoji_catalog(
+    shortcodes: std::collections::HashMap<String, String>,
+    custom: std::collections::HashSet<String>,
+) {
+    *EMOJI_CATALOG.write().unwrap() = EmojiCatalog { shortcodes, custom };
+}
+pub fn is_custom_shortcode(name: &str) -> bool {
+    EMOJI_CATALOG.read().unwrap().custom.contains(name)
+}
+impl EmojiCatalog {
+    fn unicode(&self, name: &str) -> Option<String> {
+        if self.custom.contains(name) {
+            return None;
+        }
+        if !self.shortcodes.is_empty() {
+            return self.shortcodes.get(name).cloned();
+        }
+        emojis::get_by_shortcode(name).map(|e| e.as_str().to_owned())
+    }
+}
+pub fn unicode_shortcode(name: &str) -> Option<String> {
+    EMOJI_CATALOG.read().unwrap().unicode(name)
+}
+
+#[cfg(test)]
+mod shared_shortcode_tests {
+    use super::*;
+    #[test]
+    fn remote_names_override_local_dictionary_but_custom_names_win() {
+        let catalog = EmojiCatalog {
+            shortcodes: [
+                ("remote_alias".to_owned(), "👩‍💻".to_owned()),
+                ("smile".to_owned(), "😄".to_owned()),
+            ]
+            .into(),
+            custom: ["smile".to_owned()].into(),
+        };
+        assert_eq!(catalog.unicode("remote_alias").as_deref(), Some("👩‍💻"));
+        assert_eq!(catalog.unicode("smile"), None);
+        assert_eq!(catalog.unicode("thumbsup"), None);
+        assert_eq!(
+            EmojiCatalog::default().unicode("thumbsup").as_deref(),
+            Some("👍")
+        );
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Tone {
     Default,
@@ -457,10 +511,10 @@ fn shortcode(scan: &mut Scan, i: usize, base: Style) -> Option<(usize, Vec<Span>
     {
         return None;
     }
-    let emoji = emojis::get_by_shortcode(name)?;
+    let emoji = unicode_shortcode(name)?;
     Some((
         name.len() + 2,
-        vec![Span::styled(emoji.as_str().to_string(), base)],
+        vec![Span::styled(emoji, base)],
     ))
 }
 
