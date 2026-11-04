@@ -15,3 +15,4 @@ pub mod storage;
 pub mod validation;
 
 pub mod emoji_service;
+pub mod emoji_shortcodes;

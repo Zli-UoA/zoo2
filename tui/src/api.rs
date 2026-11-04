@@ -93,6 +93,31 @@ impl ApiClient {
         Ok(envelope.txid)
     }
 
+    pub async fn emoji_catalog(
+        &self,
+    ) -> Result<(
+        std::collections::HashMap<String, String>,
+        std::collections::HashSet<String>,
+    )> {
+        let (standard, custom): (Value, Vec<Value>) =
+            tokio::try_join!(self.get("/api/emoji-shortcodes"), self.get("/api/emojis"))?;
+        let shortcodes: std::collections::HashMap<String, String> =
+            serde_json::from_value(standard["shortcodes"].clone())?;
+        let mut names = std::collections::HashSet::new();
+        for row in custom {
+            if let Some(name) = row["name"].as_str() {
+                names.insert(name.to_owned());
+            }
+            if let Some(aliases) = row["aliases"].as_array() {
+                for alias in aliases {
+                    if let Some(name) = alias.as_str() {
+                        names.insert(name.to_owned());
+                    }
+                }
+            }
+        }
+        Ok((shortcodes, names))
+    }
     pub async fn me(&self) -> Result<Me> {
         self.get("/api/users/me").await
     }

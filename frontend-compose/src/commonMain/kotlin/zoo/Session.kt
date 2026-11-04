@@ -19,6 +19,20 @@ class Session(val repo: Repository, val scope: CoroutineScope, initial: Environm
     val config
         get() = repo.config
 
+    var standardShortcodes by mutableStateOf<Row?>(null)
+        private set
+    private var standardChecked = 0L
+    private val standardMutex = kotlinx.coroutines.sync.Mutex()
+    suspend fun loadShortcodes() {
+        standardMutex.lock()
+        try {
+            val now = kotlin.time.Clock.System.now().toEpochMilliseconds()
+            if (standardChecked != 0L && now - standardChecked < 3_600_000) return
+            val rows = api.request("/api/emoji-shortcodes").jsonObject["shortcodes"]?.jsonObject
+            if (rows != null && rows.isNotEmpty()) standardShortcodes = rows
+            standardChecked = now
+        } finally { standardMutex.unlock() }
+    }
     var workspaceEmojis by mutableStateOf<List<Row>>(emptyList())
         private set
     var workspaceEmojiLoading by mutableStateOf(false)

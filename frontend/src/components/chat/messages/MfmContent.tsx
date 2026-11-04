@@ -5,7 +5,7 @@ import hljs from "highlight.js/lib/common";
 import { useWorkspaceEmojis } from "../../../lib/emoji/workspace";
 import type { DisplayEmoji } from "../../../lib/electric/types";
 import { emojiImageStyle } from "../../../lib/emoji/dimensions";
-import shortcodeData from "../../../lib/emoji/shortcodes.json";
+import { useShortcodes } from "../../../lib/emoji/shortcodes";
 import { ExternalLink, inlineLinkClassName } from "../../ui/external-link";
 import { MfmSearch } from "./MfmSearch";
 import { ChannelHashtag } from "./MfmChannels";
@@ -23,7 +23,6 @@ export interface MfmContentProps {
   /** Application event, never evaluated as JavaScript. */
   onClickEvent?: (event: string) => void;
 }
-const shortcodes: Readonly<Record<string, string>> = shortcodeData;
 const linkClass = `${inlineLinkClassName} underline`;
 function externalLink(url: string, children: ReactNode): ReactNode {
   return (
@@ -75,6 +74,7 @@ function EmojiCode({
   emojiUrls?: MfmContentProps["emojiUrls"];
   emojis?: MfmContentProps["emojis"];
 }) {
+  const shortcodes = useShortcodes();
   const [registry, setRegistry] = useState<Readonly<Record<string, string>>>({});
   useEffect(() => {
     if (emojiUrls) return;
