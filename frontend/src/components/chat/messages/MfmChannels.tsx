@@ -1,3 +1,4 @@
+import { Link } from "@tanstack/react-router";
 import { createContext, useContext, useMemo, type ReactNode } from "react";
 import type { ChannelRow } from "../../../lib/electric/types";
 
@@ -33,9 +34,9 @@ export function ChannelHashtag({ name, className }: { name: string; className?: 
   const channels = useContext(MfmChannelsContext);
   const id = channels.get(name);
   return id ? (
-    <a href={`/channels/${encodeURIComponent(id)}`} className={className}>
+    <Link to="/channels/$channelId" params={{ channelId: id }} className={className}>
       #{name}
-    </a>
+    </Link>
   ) : (
     <>#{name}</>
   );

@@ -3,6 +3,13 @@
 Reactを機能・UI・操作の基準とする。変更時は [compose-react-parity](../.agents/skills/compose-react-parity/SKILL.md) に従い、同じPRで両実装と検証を更新する。
 この表は実装の所有先を示すもので、全入力での完全互換や画像の完全一致を保証するものではない。
 
+本文の `#チャンネル名` は、Reactでは `MfmChannels.tsx` のルーター `Link`、Composeでは
+`RichText.kt` の `LinkAnnotation` → `Session.navigate` → `ComposeFrontend` のルーター履歴で
+アプリ内遷移する。Reactの `MfmChannels.browser.test.tsx` はクリック時の通常遷移の抑止、
+戻る・進む、シェルの入力保持、Enterキーでの遷移を検証する。既存MfmContentのStoryも検証する。
+今回の環境ではComposeの `wasmJsBrowserTest` / `wasmJsBrowserDistribution` はGradle配布物の取得時に
+接続を拒否され、再ビルド後のCompose実ブラウザー操作は未検証。
+
 | 領域 | Reactの主な所有先 | 共通Kotlinの所有先 | 確認先 |
 | --- | --- | --- | --- |
 | シェル・ルート・レール・ヘッダー | `layout/`、`ChannelHeader` | `App.kt`, `PaneHeader.kt`, `Ui.kt`, `Overlays.kt` | 両実装のentry points / CRUD E2E |
