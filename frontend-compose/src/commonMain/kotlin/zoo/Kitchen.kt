@@ -111,8 +111,8 @@ fun ReactionEmoji(
     if (Regex("^:[a-z0-9_-]{1,64}:$").matches(value)) {
         val name = value.removeSurrounding(":")
         val joined = LocalJoinedEmojis.current
-        val emoji = if (joined != null) joined.find { it.text("name") == value }
-            else workspaceEmojis(app).find { it.text("name") == name || it.array("aliases").any { alias -> alias.jsonPrimitive.content == name } }?.let(::workspaceEmoji)
+        val emoji = joined?.find { it.text("name") == value }
+            ?: workspaceEmojis(app).find { it.text("name") == name || it.array("aliases").any { alias -> alias.jsonPrimitive.content == name } }?.let(::workspaceEmoji)
         if (emoji == null) Text(value, modifier) else ActivityPubEmoji(emoji, size, modifier)
         return
     }

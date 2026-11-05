@@ -729,5 +729,12 @@
     "category": "カテゴリ",
     "aliases": "エイリアス（カンマ区切り）",
     "uncategorized": "未分類"
+  },
+  "androidNotifications": {
+    "enable": "通知を有効にする",
+    "scope": "ログイン中に同期した新着通知を受信します。",
+    "mentions": "メンションと返信",
+    "messages": "ダイレクトメッセージ",
+    "reactions": "リアクション"
   }
 }

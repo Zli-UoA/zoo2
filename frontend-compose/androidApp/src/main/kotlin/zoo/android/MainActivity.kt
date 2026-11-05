@@ -33,6 +33,33 @@ import zoo.android.update.UpdatePreferences
 import zoo.android.update.UpdateScheduler
 
 class MainActivity : ComponentActivity() {
+    private var notificationIntent by mutableStateOf<Intent?>(null)
+    private var notificationPermissionRevision by mutableStateOf(0)
+    private val notificationPermission =
+        registerForActivityResult(ActivityResultContracts.RequestPermission()) {
+            notificationPermissionRevision++
+        }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        notificationIntent = intent
+    }
+
+    private fun enableNotifications() {
+        val prefs = getSharedPreferences("notification-permission", MODE_PRIVATE)
+        val requested = prefs.getBoolean("requested", false)
+        if (android.os.Build.VERSION.SDK_INT >= 33 &&
+            checkSelfPermission(android.Manifest.permission.POST_NOTIFICATIONS) != android.content.pm.PackageManager.PERMISSION_GRANTED &&
+            (!requested || shouldShowRequestPermissionRationale(android.Manifest.permission.POST_NOTIFICATIONS))) {
+            prefs.edit().putBoolean("requested", true).apply()
+            notificationPermission.launch(android.Manifest.permission.POST_NOTIFICATIONS)
+        } else {
+            startActivity(Intent(android.provider.Settings.ACTION_APP_NOTIFICATION_SETTINGS)
+                .putExtra(android.provider.Settings.EXTRA_APP_PACKAGE, packageName))
+        }
+    }
+
     private var fileResult: CompletableDeferred<List<Uri>>? = null
     private val picker =
         registerForActivityResult(ActivityResultContracts.OpenMultipleDocuments()) {
@@ -54,6 +81,7 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        notificationIntent = intent
         if (UpdatePreferences(this).enabled) UpdateScheduler.configure(this, true)
         setContent { AndroidApp() }
     }
@@ -71,6 +99,12 @@ class MainActivity : ComponentActivity() {
         var canRestore by remember { mutableStateOf(false) }
         var restoreError by remember { mutableStateOf("") }
         val current = active
+        LaunchedEffect(current, notificationIntent) {
+            if (current != null) {
+                notificationIntent?.let { current.notifications.open(it) }
+                notificationIntent = null
+            }
+        }
         DisposableEffect(Unit) { onDispose { active?.close() } }
 
         suspend fun connect(connection: LoginConnection, refresh: String?, show: (String, String) -> Unit) {
@@ -207,8 +241,19 @@ class MainActivity : ComponentActivity() {
                     LocalApp provides current.session,
                 ) {
                     ZooTheme(platform.env.dark, locale = platform.env.locale) {
-                        Box(Modifier.fillMaxSize().safeDrawingPadding().imePadding()) {
-                            NativeWindow(current.session) { ZooApp(current.session) }
+                        Column(Modifier.fillMaxSize().safeDrawingPadding().imePadding().operationHaptics()) {
+                            val notificationsAllowed = remember(notificationPermissionRevision, platform.env.visible) {
+                                current.notifications.allowed()
+                            }
+                            if (!notificationsAllowed) {
+                                TextButton(onClick = ::enableNotifications) {
+                                    Text(current.session.t("androidNotifications.enable"))
+                                }
+                                Text(current.session.t("androidNotifications.scope"), style = MaterialTheme.typography.bodySmall)
+                            }
+                            Box(Modifier.weight(1f)) {
+                                NativeWindow(current.session) { ZooApp(current.session) }
+                            }
                         }
                     }
                 }
@@ -276,7 +321,7 @@ class MainActivity : ComponentActivity() {
                 assetsBaseUrl = connection.base,
             )
             val session = Session(Repository(config, platform, http, lifetime), lifetime, platform.env)
-            return RunningSession(session, platform, lifetime, http, auth).also { session.start() }
+            return RunningSession(session, platform, lifetime, http, auth, AndroidNotifications(this, session)).also { session.start() }
         } catch (failure: Throwable) {
             auth.close()
             http.close()
@@ -436,15 +481,18 @@ private class RunningSession(
     val scope: CoroutineScope,
     private val http: HttpClient,
     val auth: DeviceAuth,
+    val notifications: AndroidNotifications,
 ) {
     fun logout() {
         try { auth.forget() } finally { close() }
     }
 
     fun close() {
+        notifications.close()
         auth.close()
         session.close()
         scope.cancel()
+        platform.close()
         http.close()
     }
 }

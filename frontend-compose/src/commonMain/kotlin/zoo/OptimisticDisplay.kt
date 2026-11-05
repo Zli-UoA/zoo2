@@ -25,7 +25,7 @@ internal fun optimisticDisplay(
     val emojis = display.nested("emojis").toMutableMap()
     var changed = replyDelta != 0
     for ((id, after) in reactionEdits) {
-        val before = baseReactions.find { rowKey(it) == id }
+        val before = baseReactions.find { rowKey(it) == id } ?: reactions[id]
         if (before?.text("message_id") != messageId && after?.text("message_id") != messageId) continue
         changed = true
         reactions.remove(id)

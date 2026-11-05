@@ -37,6 +37,7 @@ internal class AndroidPlatform(
     private val files = java.util.concurrent.ConcurrentHashMap<String, Uri>()
     private val cache =
         java.io.File(activity.cacheDir, "accounts/${hash("$base:$userId")}").apply { mkdirs() }
+    private val images = AndroidImageCache(cache.resolve("images"))
     private val dictionaries = mutableMapOf<String, Row>()
 
     private fun hash(value: String) =
@@ -57,7 +58,10 @@ internal class AndroidPlatform(
             check(pending.renameTo(target))
         }
 
+    fun close() { images.close() }
+
     fun clear() {
+        close()
         cache.deleteRecursively()
         files.clear()
     }
@@ -106,13 +110,7 @@ internal class AndroidPlatform(
                     )
                     .jsonObject
             }
-        var value: JsonElement? = dictionary
-        key.split('.').forEach { value = (value as? JsonObject)?.get(it) }
-        var text = (value as? JsonPrimitive)?.content ?: key
-        args.forEach { (name, replacement) ->
-            text = text.replace("{{$name}}", replacement).replace("{$name}", replacement)
-        }
-        return text
+        return translateDictionary(dictionary, env.locale, key, args)
     }
 
     private fun format(timestamp: String, pattern: String): String =
@@ -144,6 +142,7 @@ internal class AndroidPlatform(
     override fun action(name: String) {
         when {
             name == "back" -> back()
+            name == "haptic:longPress" -> activity.window.decorView.performHapticFeedback(android.view.HapticFeedbackConstants.LONG_PRESS)
             name.startsWith("open:") -> open(name.removePrefix("open:"))
             name.startsWith("theme:") -> {
                 val theme = name.removePrefix("theme:")
@@ -187,12 +186,7 @@ internal class AndroidPlatform(
             }
         }
 
-    override suspend fun image(url: String): ByteArray {
-        require(Url(url).protocol == URLProtocol.HTTPS)
-        val response = http.get(url) // Public client: never attach account headers to media.
-        check(response.status.value in 200..299)
-        return response.readRawBytes()
-    }
+    override suspend fun image(url: String): ByteArray = images.image(url)
 
     override suspend fun invoke(name: String, payload: String): String =
         when (name) {

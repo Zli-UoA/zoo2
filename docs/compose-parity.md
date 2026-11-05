@@ -243,3 +243,22 @@ Androidのrefresh grantは送信前に保存済みtokenを取り除き、交換�
 ## Compose描画の再計算抑制
 
 チャット一覧・投稿表示データ・本文解析をrememberで保持し、送信ボタンだけがderivedStateOfの送信可否を監視する。編集、同期、楽観更新、添付、絵文字、フォント・テーマの変更では該当するキャッシュを更新する。Web／Androidは同じKotlin実装を使い、Reactの表示・操作・APIは変更しない。TUIにはComposeの再コンポーズ処理がないため、変更しない。比較結果と検証範囲は [Compose Webの性能計測](compose-performance.md#rememberderivedstateofによる再計算抑制) を参照。新しい表示状態は追加しておらず、既存Composer／MessageのStoryを維持し、既存操作のE2Eとライブテーマ変更のCanvas検証を使う。
+
+## Composeの画像・タッチ操作とAndroid通知
+
+- Reactのブラウザー画像キャッシュに相当する、セッション内の画像データキャッシュをComposeの共通取得に追加。32 MiB・256件を上限にLRUで破棄し、同時リクエストを共有する。
+- Composeのリンクはスクロールが消費した移動・複数指でタップを取り消す。投稿の結合済みリアクションだけ先に届いた場合も解除を楽観表示に反映し、絵文字の結合データに欠ける項目は既存のワークスペース絵文字で補完する。Reactは既存のDOM操作と絵文字取得を維持する。
+- Androidの翻訳で既存辞書の複数形キーを解決し、返信件数のキー露出を修正。Android固有の触覚・通知チャンネル・直接返信・既読化・通知から投稿への移動を追加。Webは既存PWA通知を維持する。
+- TUIは画像取得・タッチ入力・Android OS通知を使わないため変更対象外。Android通知はログイン中の同期に基づき、プロセス終了後の配送と連合専用通知は未対応。
+
+検証: Compose Webのブラウザーテスト89件、Android単体テスト19件、翻訳整合性33件、React/Composeの絵文字画像表示4条件、Composeのリンク操作2件が成功。Android debug APK・lint、Compose Web配布ビルド、Storybookビルド・監査、frontendのformat/lint/型検査を実行。Android実機の通知・振動は未確認。環境にCargoとNixがないため、`make tui-check` は開始できず、`nix develop` でのSDK設定は未検証。
+
+Androidの公開画像には、メモリキャッシュに加えてアカウント別512 MiBのOkHttp永続HTTPキャッシュを追加。再起動後の再利用、HTTPの有効期限・条件付き再取得、no-storeを尊重する。画像専用の認証情報を持たないクライアントを使い、ログアウト時に削除する。Web・TUIにはAndroidのディスクキャッシュを追加しない。
+
+永続キャッシュのHTTPS統合テスト3件（再生成後の再利用・ETag再検証・no-store）、Android単体テスト19件、debug APKビルド・lintが成功。
+
+### main b776023 の取り込み
+
+Androidの自動ログイン・認証情報失効・ログアウトと、通知・画像キャッシュの終了処理を統合。セッション復元時も通知を初期化し、終了時は通知・認証・画像専用クライアント・APIクライアントを閉じる。mainのCompose Webのメモ化、セマンティクス差分更新、圧縮設定と既存のReact/TUI認証処理を維持する。取り込み元にReactの画面・API仕様変更はない。
+
+リベース後の確認: Android単体テスト43件・共通Androidテスト81件・Compose Webブラウザーテスト91件、Android debug APK・lint、frontendのformat/lint/型検査、Storybook監査が成功。
