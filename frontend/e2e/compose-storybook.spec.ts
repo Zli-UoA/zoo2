@@ -494,6 +494,41 @@ test.describe("Kotlin message touch gestures", () => {
       await message.session.detach();
     }
   });
+  test("dragging a link and returning to its origin does not navigate", async ({ page }) => {
+    const message = await openTouchMessage(page);
+    await message.frame.evaluate(() => {
+      const state = window as typeof window & { __dragNavigations: string[] };
+      state.__dragNavigations = [];
+      addEventListener("zoo:navigation-intent", (event) => {
+        state.__dragNavigations.push((event as CustomEvent<{ url: string }>).detail.url);
+      });
+    });
+    const link = message.frame.getByRole("link", { name: "example.com/docs", exact: true });
+    const bounds = await link.boundingBox();
+    if (!bounds) throw new Error("Link has no bounds");
+    const origin = { x: bounds.x + bounds.width / 2, y: bounds.y + bounds.height / 2 };
+    await message.dispatch("touchStart", origin);
+    await message.dispatch("touchMove", { x: origin.x, y: origin.y - 40 });
+    await message.dispatch("touchMove", origin);
+    await message.dispatch("touchEnd");
+    await message.frame.evaluate(
+      () => new Promise<void>((resolve) => requestAnimationFrame(() => resolve())),
+    );
+    expect(
+      await message.frame.evaluate(
+        () => (window as typeof window & { __dragNavigations: string[] }).__dragNavigations,
+      ),
+    ).toEqual([]);
+    await message.tap(link);
+    await expect
+      .poll(() =>
+        message.frame.evaluate(
+          () => (window as typeof window & { __dragNavigations: string[] }).__dragNavigations,
+        ),
+      )
+      .toEqual(["https://example.com/docs"]);
+    await message.session.detach();
+  });
   test("copying a message writes its original source into the real clipboard", async ({ page }) => {
     const message = await openTouchMessage(page);
     await message.hold();

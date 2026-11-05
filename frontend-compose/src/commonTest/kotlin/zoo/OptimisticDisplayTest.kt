@@ -24,6 +24,13 @@ class OptimisticDisplayTest {
         assertEquals(listOf(remote), result.array("reactions").rows())
         assertSame(cached, optimisticDisplay(cached, "root", listOf(reply), emptyMap(), listOf(reaction), emptyMap()))
     }
+    @Test fun removesOwnJoinedReactionBeforeReactionShapeArrives() {
+        val cached = JsonObject(display + ("reactions" to JsonArray(listOf(remote, reaction))))
+        val result = optimisticDisplay(cached, "root", emptyList(), emptyMap(), emptyList(), mapOf("own" to null))
+        assertEquals(listOf(remote), result.array("reactions").rows())
+        assertSame(cached, optimisticDisplay(cached, "root", emptyList(), emptyMap(), emptyList(), emptyMap()))
+    }
+
     @Test fun pendingCustomReactionIncludesPickerDimensions() {
         val custom = obj("id" to "custom", "message_id" to "root", "emoji" to ":alias:")
         val emoji = JsonObject(obj("name" to "wide", "url" to "/wide.gif") + mapOf("width" to JsonPrimitive(120), "height" to JsonPrimitive(20), "aliases" to JsonArray(listOf(JsonPrimitive("alias")))))

@@ -729,5 +729,12 @@
     "category": "Category",
     "aliases": "Aliases (comma separated)",
     "uncategorized": "Uncategorized"
+  },
+  "androidNotifications": {
+    "enable": "Enable notifications",
+    "scope": "Receive new notifications while your signed-in session is syncing.",
+    "mentions": "Mentions and replies",
+    "messages": "Direct messages",
+    "reactions": "Reactions"
   }
 }

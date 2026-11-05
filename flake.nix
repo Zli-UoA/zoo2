@@ -18,6 +18,16 @@
           sha256 = "sha256-zm3dyIY2T414ZRR3EhLOvptzG6gta4WZUcawzMUWtqI=";
         };
         pkgs = nixpkgs.legacyPackages.${system};
+        androidPkgs = import nixpkgs {
+          inherit system;
+          config.allowUnfree = true;
+          config.android_sdk.accept_license = true;
+        };
+        androidSdk = (androidPkgs.androidenv.composeAndroidPackages {
+          platformVersions = [ "35" ];
+          buildToolsVersions = [ "35.0.0" ];
+          includeEmulator = false;
+        }).androidsdk;
         rustPlatform = pkgs.makeRustPlatform {
           cargo = toolchain;
           rustc = toolchain;
@@ -60,12 +70,14 @@
             atlas
             # Compose Web (frontend-compose) の Gradle ビルド。Gradle 本体はラッパーを使う
             jdk21
+            androidSdk
             # infra/terraform（R2）。CI の TOFU_VERSION はこの版にそろえる
             opentofu
             sops
             age
           ] ++ pkgs.lib.optionals pkgs.stdenv.hostPlatform.isLinux [ zooChrome ];
           RUST_SRC_PATH = "${pkgs.rust.packages.stable.rustPlatform.rustLibSrc}";
+          ANDROID_HOME = "${androidSdk}/libexec/android-sdk";
           JAVA_HOME = "${pkgs.jdk21}";
           CHROME_BIN = pkgs.lib.optionalString pkgs.stdenv.hostPlatform.isLinux "${zooChrome}/bin/zoo-chrome";
         };
