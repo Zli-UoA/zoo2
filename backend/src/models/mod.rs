@@ -1,6 +1,8 @@
 pub mod channel_webhook;
 pub use channel_webhook::ChannelWebhook;
 pub mod channel;
+pub mod channel_note;
+pub use channel_note::ChannelNote;
 pub mod channel_user;
 pub mod message;
 pub mod message_reaction;

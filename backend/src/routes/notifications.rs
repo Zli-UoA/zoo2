@@ -33,7 +33,8 @@ pub struct NotificationResponse {
     pub user_id: String,
     pub actor_id: String,
     pub channel_id: String,
-    pub message_id: String,
+    pub message_id: Option<String>,
+    pub note_id: Option<String>,
     pub notification_type: String,
     pub is_read: bool,
     pub created_at: String,
@@ -47,6 +48,7 @@ impl From<Notification> for NotificationResponse {
             actor_id: n.actor_id,
             channel_id: n.channel_id,
             message_id: n.message_id,
+            note_id: n.note_id,
             notification_type: n.notification_type,
             is_read: n.is_read,
             created_at: n.created_at.to_string(),
@@ -88,7 +90,15 @@ struct PreviewReaction {
 #[derive(Serialize)]
 struct NotificationContext {
     message: Option<MessagePreview>,
+    note: Option<NotePreview>,
     reactions: Vec<PreviewReaction>,
+}
+
+#[derive(Serialize)]
+struct NotePreview {
+    id: String,
+    title: String,
+    content: String,
 }
 
 /// Return only the referenced message and its reactions, never a channel's history.
@@ -133,21 +143,25 @@ async fn notification_context(
             return Err(unavailable());
         }
     }
-    let message = Message::filter(
-        Message::fields()
-            .id()
-            .eq(notification.message_id.as_str())
-            .and(Message::fields().channel_id().eq(channel.id.as_str())),
-    )
-    .first()
-    .exec(&mut tx)
-    .await?
-    .filter(|message| message.deleted_at.is_none());
+    let message = if let Some(message_id) = notification.message_id.as_deref() {
+        Message::filter(
+            Message::fields()
+                .id()
+                .eq(message_id)
+                .and(Message::fields().channel_id().eq(channel.id.as_str())),
+        )
+        .first()
+        .exec(&mut tx)
+        .await?
+        .filter(|message| message.deleted_at.is_none())
+    } else {
+        None
+    };
     let reactions = if message.is_some() && notification.notification_type == "reaction" {
         MessageReaction::filter(
             MessageReaction::fields()
                 .message_id()
-                .eq(notification.message_id.as_str()),
+                .eq(notification.message_id.as_deref().unwrap_or_default()),
         )
         .exec(&mut tx)
         .await?
@@ -160,11 +174,31 @@ async fn notification_context(
     } else {
         Vec::new()
     };
+    let note = if let Some(note_id) = notification.note_id.as_deref() {
+        crate::models::ChannelNote::filter(
+            crate::models::ChannelNote::fields().id().eq(note_id).and(
+                crate::models::ChannelNote::fields()
+                    .channel_id()
+                    .eq(channel.id.as_str()),
+            ),
+        )
+        .first()
+        .exec(&mut tx)
+        .await?
+        .filter(|row| row.deleted_at.is_none())
+    } else {
+        None
+    };
     let context = NotificationContext {
         // Include one extra character so the client can indicate that the preview was truncated.
         message: message.map(|row| MessagePreview {
             id: row.id,
             user_id: row.user_id,
+            content: row.content.chars().take(281).collect(),
+        }),
+        note: note.map(|row| NotePreview {
+            id: row.id,
+            title: row.title,
             content: row.content.chars().take(281).collect(),
         }),
         reactions,

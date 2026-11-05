@@ -1,7 +1,7 @@
 //! RFC 8291 encrypted notification payloads with RFC 8292 VAPID authentication.
 use crate::{
     error::AppError,
-    models::{Channel, Message, Notification, PushSubscription, User},
+    models::{Channel, ChannelNote, ChannelUser, Message, Notification, PushSubscription, User},
     state::AppState,
 };
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
@@ -140,7 +140,8 @@ fn notification_payload(
     notification: &Notification,
     actor: &User,
     channel: &Channel,
-    message: &Message,
+    body: &str,
+    url: String,
 ) -> NotificationPayload {
     let name = if actor.display_name.is_empty() {
         &actor.user_name
@@ -158,8 +159,8 @@ fn notification_payload(
                 channel_name
             )
         },
-        body: message.content.chars().take(240).collect(),
-        url: format!("/channels/{}?message={}", channel.id, message.id),
+        body: body.chars().take(240).collect(),
+        url,
         tag: format!("zoo-{}", notification.id),
         notification_type: notification.notification_type.clone(),
     }
@@ -177,6 +178,51 @@ pub fn dispatch(state: AppState, notifications: Vec<Notification>) {
     });
 }
 
+/// Re-check note and channel visibility against current database state before push delivery.
+pub async fn note_push_is_currently_deliverable(
+    db: &mut toasty::Db,
+    notification: &Notification,
+) -> anyhow::Result<bool> {
+    let Some(note_id) = notification.note_id.as_deref() else {
+        return Ok(false);
+    };
+    let Some(note) = ChannelNote::filter(ChannelNote::fields().id().eq(note_id))
+        .first()
+        .exec(db)
+        .await?
+    else {
+        return Ok(false);
+    };
+    if note.deleted_at.is_some() || note.channel_id != notification.channel_id {
+        return Ok(false);
+    }
+    let Some(channel) =
+        Channel::filter(Channel::fields().id().eq(notification.channel_id.as_str()))
+            .first()
+            .exec(db)
+            .await?
+    else {
+        return Ok(false);
+    };
+    if channel.deleted_at.is_some() {
+        return Ok(false);
+    }
+    Ok(ChannelUser::filter(
+        ChannelUser::fields()
+            .channel_id()
+            .eq(notification.channel_id.as_str())
+            .and(
+                ChannelUser::fields()
+                    .user_id()
+                    .eq(notification.user_id.as_str()),
+            ),
+    )
+    .first()
+    .exec(db)
+    .await?
+    .is_some())
+}
+
 async fn deliver(state: &AppState, notifications: Vec<Notification>) -> anyhow::Result<()> {
     let Some(config) = PushConfig::from_env()? else {
         return Ok(());
@@ -187,20 +233,48 @@ async fn deliver(state: &AppState, notifications: Vec<Notification>) -> anyhow::
         .build()?;
     let mut db = state.db.clone();
     for notification in notifications {
-        let Some(message) =
-            Message::filter(Message::fields().id().eq(notification.message_id.as_str()))
+        let (body, url) = if let Some(message_id) = notification.message_id.as_deref() {
+            let Some(message) = Message::filter(Message::fields().id().eq(message_id))
                 .first()
                 .exec(&mut db)
                 .await?
-        else {
+            else {
+                continue;
+            };
+            if message.deleted_at.is_some() {
+                continue;
+            }
+            (
+                message.content,
+                format!(
+                    "/channels/{}?message={}",
+                    notification.channel_id, message_id
+                ),
+            )
+        } else if let Some(note_id) = notification.note_id.as_deref() {
+            let Some(note) = ChannelNote::filter(ChannelNote::fields().id().eq(note_id))
+                .first()
+                .exec(&mut db)
+                .await?
+            else {
+                continue;
+            };
+            if !note_push_is_currently_deliverable(&mut db, &notification).await? {
+                continue;
+            }
+            (
+                note.content,
+                format!("/channels/{}?note={}", notification.channel_id, note_id),
+            )
+        } else {
             continue;
         };
-        if message.deleted_at.is_some() {
-            continue;
-        }
         let actor = User::get_by_id(&mut db, notification.actor_id.as_str()).await?;
         let channel = Channel::get_by_id(&mut db, notification.channel_id.as_str()).await?;
-        let payload = notification_payload(&notification, &actor, &channel, &message);
+        if channel.deleted_at.is_some() {
+            continue;
+        }
+        let payload = notification_payload(&notification, &actor, &channel, &body, url);
         let subscriptions = PushSubscription::filter(
             PushSubscription::fields()
                 .user_id()
@@ -225,6 +299,11 @@ async fn deliver(state: &AppState, notifications: Vec<Notification>) -> anyhow::
                 // Older registrations receive a generic alert until the browser refreshes its keys.
                 _ => None,
             };
+            if notification.note_id.is_some()
+                && !note_push_is_currently_deliverable(&mut db, &notification).await?
+            {
+                continue;
+            }
             let result = send(&client, &config, endpoint, body).await;
             match result {
                 Ok(response)
@@ -494,7 +573,13 @@ oFHVXqIQCSPlRjpWvt3RWSAK7nICRzttAUF9x6uK48hD3O0FIYJmFUYQnw==
             "message_id":"message", "notification_type":"mention", "is_read":false, "created_at":now
         }))
         .unwrap();
-        let payload = notification_payload(&notification, &actor, &channel, &message);
+        let payload = notification_payload(
+            &notification,
+            &actor,
+            &channel,
+            &message.content,
+            "/channels/channel?message=message".into(),
+        );
         assert_eq!(payload.title, "Alice · #general");
         assert_eq!(
             payload.body,
@@ -509,7 +594,14 @@ oFHVXqIQCSPlRjpWvt3RWSAK7nICRzttAUF9x6uK48hD3O0FIYJmFUYQnw==
         assert!(keys.encrypt(&payload).unwrap().len() <= 4096);
         channel.is_dm = true;
         assert_eq!(
-            notification_payload(&notification, &actor, &channel, &message).title,
+            notification_payload(
+                &notification,
+                &actor,
+                &channel,
+                &message.content,
+                "/channels/channel?message=message".into(),
+            )
+            .title,
             "Alice"
         );
     }

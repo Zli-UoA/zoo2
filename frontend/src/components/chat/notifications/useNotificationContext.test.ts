@@ -14,6 +14,7 @@ afterEach(() => {
 });
 const preview: NotificationContext = {
   message: { id: "message", user_id: "alice", content: "A small preview" },
+  note: null,
   reactions: [],
 };
 
@@ -67,7 +68,11 @@ it("aborts stale previews and ignores their late responses", async () => {
     expect(signal.aborted).toBe(true);
     expect(result.data).toEqual(preview);
     await act(async () =>
-      resolveOld({ message: { id: "old", user_id: "old", content: "stale" }, reactions: [] }),
+      resolveOld({
+        message: { id: "old", user_id: "old", content: "stale" },
+        note: null,
+        reactions: [],
+      }),
     );
     expect(result.data).toEqual(preview);
   } finally {

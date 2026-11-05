@@ -1,3 +1,4 @@
+use pulldown_cmark::{Event, Options, Parser, Tag, TagEnd};
 use std::collections::{HashMap, HashSet};
 use uuid::Uuid;
 
@@ -90,6 +91,121 @@ pub fn extract_mentions(content: &str) -> MentionTargets {
         has_channel,
         has_here,
     }
+}
+
+/// Markdown本文の表示テキストだけからメンションを抽出する。コードとリンク先URLは除外する。
+pub fn extract_markdown_mentions(content: &str) -> MentionTargets {
+    let mut visible = String::with_capacity(content.len());
+    // pulldown-cmark's ENABLE_GFM currently covers blockquote alerts only.
+    // Keep these aligned with remark-gfm's table, strikethrough, and task list parsing.
+    let options = Options::ENABLE_GFM
+        | Options::ENABLE_TABLES
+        | Options::ENABLE_STRIKETHROUGH
+        | Options::ENABLE_TASKLISTS;
+    let mut in_code_block = false;
+    for event in Parser::new_ext(content, options) {
+        match event {
+            Event::Start(Tag::CodeBlock(_)) => {
+                in_code_block = true;
+                visible.push(' ');
+            }
+            Event::End(TagEnd::CodeBlock) => {
+                in_code_block = false;
+                visible.push(' ');
+            }
+            Event::Text(text) if !in_code_block => visible.push_str(&text),
+            Event::SoftBreak | Event::HardBreak => visible.push('\n'),
+            // Code spans, link destinations, and raw HTML markup are not visible mention text.
+            Event::Code(_) | Event::Html(_) | Event::InlineHtml(_) => visible.push(' '),
+            Event::Start(_) | Event::End(_) => visible.push(' '),
+            _ => {}
+        }
+    }
+    extract_mentions(&visible)
+}
+
+/// 保存済み本文から新規に加わったメンションだけに通知する。
+pub async fn create_note_notifications(
+    tx: &mut toasty::Transaction<'_>,
+    note: &crate::models::ChannelNote,
+    previous_content: &str,
+    new_content: &str,
+    actor_id: &str,
+) -> Result<Vec<Notification>, AppError> {
+    let old = extract_markdown_mentions(previous_content);
+    let new = extract_markdown_mentions(new_content);
+    let old_special = old.has_channel || old.has_here;
+    let members = ChannelUser::filter(ChannelUser::fields().channel_id().eq(&note.channel_id))
+        .exec(tx)
+        .await?;
+    let member_ids: HashSet<String> = members.into_iter().map(|m| m.user_id).collect();
+    let mut old_targets = HashSet::new();
+    if old_special {
+        old_targets.extend(member_ids.iter().cloned());
+    }
+    for candidate in old.user_candidates {
+        let user = User::get_by_user_name(tx, candidate.raw.as_str())
+            .await
+            .ok();
+        let user = match user {
+            Some(user) => Some(user),
+            None => {
+                if let Some(name) = candidate.trimmed.as_deref() {
+                    User::get_by_user_name(tx, name).await.ok()
+                } else {
+                    None
+                }
+            }
+        };
+        if let Some(user) = user {
+            if member_ids.contains(&user.id) {
+                old_targets.insert(user.id);
+            }
+        }
+    }
+    let mut targets = HashSet::new();
+    if new.has_channel || new.has_here {
+        targets.extend(member_ids.iter().cloned());
+    }
+    for candidate in new.user_candidates {
+        let user = User::get_by_user_name(tx, candidate.raw.as_str())
+            .await
+            .ok();
+        let user = match user {
+            Some(user) => Some(user),
+            None => {
+                if let Some(name) = candidate.trimmed.as_deref() {
+                    User::get_by_user_name(tx, name).await.ok()
+                } else {
+                    None
+                }
+            }
+        };
+        if let Some(user) = user
+            && member_ids.contains(&user.id)
+            && !old_targets.contains(&user.id)
+        {
+            targets.insert(user.id);
+        }
+    }
+    targets.retain(|user_id| !old_targets.contains(user_id));
+    let mut created = Vec::with_capacity(targets.len());
+    for user_id in targets.into_iter().filter(|id| id != actor_id) {
+        let notification = Notification::create()
+            .id(Uuid::new_v4().to_string())
+            .user_id(user_id)
+            .actor_id(actor_id.to_string())
+            .channel_id(note.channel_id.clone())
+            .message_id(None)
+            .note_id(Some(note.id.clone()))
+            .notification_type("mention".to_string())
+            .is_read(false)
+            .created_at(now_utc_millis())
+            .exec(tx)
+            .await?;
+        created.push(notification);
+    }
+    Ok(created)
 }
 
 /// メッセージ作成時の通知生成
@@ -317,5 +433,83 @@ mod tests {
         assert_eq!(targets.user_candidates.len(), 2);
         assert_eq!(targets.user_candidates[0].raw, "bob");
         assert_eq!(targets.user_candidates[1].raw, "alice");
+    }
+
+    #[test]
+    fn markdown_mentions_match_visible_escaped_text_and_ignore_code_and_link_destinations() {
+        let targets = extract_markdown_mentions(
+            "@alice `@code`\n\n```txt\n@block\n```\n\n[site](https://example.test/@url) \\@escaped @bob",
+        );
+        assert_eq!(
+            targets
+                .user_candidates
+                .iter()
+                .map(|c| c.raw.as_str())
+                .collect::<Vec<_>>(),
+            ["alice", "escaped", "bob"]
+        );
+        assert!(!targets.has_channel);
+        assert!(!targets.has_here);
+    }
+
+    #[test]
+    fn markdown_mentions_respect_special_targets_and_tilde_code_fences() {
+        let targets =
+            extract_markdown_mentions("@channel and @here\n\n~~~text\n@ignored\n~~~\n@alice");
+        assert!(targets.has_channel);
+        assert!(targets.has_here);
+        assert_eq!(
+            targets
+                .user_candidates
+                .iter()
+                .map(|candidate| candidate.raw.as_str())
+                .collect::<Vec<_>>(),
+            ["alice"]
+        );
+    }
+
+    #[test]
+    fn markdown_mentions_follow_markdown_structure_for_reference_links() {
+        let targets = extract_markdown_mentions(
+            "[visible @alice][ref] and https://example.test/@hidden\n\n[ref]: @also_hidden",
+        );
+        assert_eq!(
+            targets
+                .user_candidates
+                .iter()
+                .map(|candidate| candidate.raw.as_str())
+                .collect::<Vec<_>>(),
+            ["alice"]
+        );
+    }
+
+    #[test]
+    fn markdown_mentions_match_gfm_visible_text() {
+        let targets = extract_markdown_mentions(
+            "@plain\n\n    @indented\n\n```txt\n@fenced3\n```\n\n````txt\n@fenced4\n````\n\n`@inline` and [label @linked][ref]\n\n[ref]: https://example.test/@destination\n\n\\@escaped &commat;entity <b>@html</b>",
+        );
+        assert_eq!(
+            targets
+                .user_candidates
+                .iter()
+                .map(|candidate| candidate.raw.as_str())
+                .collect::<Vec<_>>(),
+            ["plain", "linked", "escaped", "entity", "html"]
+        );
+    }
+
+    #[test]
+    fn markdown_mentions_match_visible_gfm_table_and_strikethrough_text() {
+        let targets = extract_markdown_mentions(
+            "| user | status |\n| --- | --- |\n| @alice | ~~@bob~~ |\n\n@plain `@code` [label @linked](https://example.test/@destination)",
+        );
+        assert_eq!(
+            targets
+                .user_candidates
+                .iter()
+                .map(|candidate| candidate.raw.as_str())
+                .collect::<Vec<_>>(),
+            ["alice", "bob", "plain", "linked"]
+        );
     }
 }

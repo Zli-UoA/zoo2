@@ -1,3 +1,4 @@
+pub mod channel_notes;
 pub mod channel_webhooks;
 pub mod channels;
 pub mod dms;
@@ -60,6 +61,7 @@ pub fn create_router(state: AppState) -> Router {
         .merge(health::router())
         .merge(webhooks::router())
         .merge(channel_webhooks::router())
+        .merge(channel_notes::router())
         .merge(users::router())
         .merge(channels::router())
         .merge(dms::router())

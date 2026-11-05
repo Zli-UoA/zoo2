@@ -4,6 +4,7 @@ import { useCollections } from "../../../lib/electric/collections-context";
 
 export interface NotificationContext {
   message: { id: string; user_id: string; content: string } | null;
+  note: { id: string; title: string; content: string } | null;
   reactions: { user_id: string; emoji: string }[];
 }
 

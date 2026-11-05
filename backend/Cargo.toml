@@ -27,6 +27,7 @@ reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"
 futures-util = "0.3"
 jsonwebtoken = "9"
 emojis = "0.6"
+pulldown-cmark = { version = "0.13.4", default-features = false }
 hmac = "0.13"
 sha2 = "0.11"
 regex = "1"

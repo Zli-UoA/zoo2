@@ -46,6 +46,7 @@ export function NotificationCard({
   const { ref, hasBeenVisible } = useReadVisibleNotification(unreadIds, onRead, scrollRoot);
   const context = useNotificationContext(channel && hasBeenVisible ? notification.id : null);
   const message = context.data?.message;
+  const note = context.data?.note;
   const reactionGroups = isReaction
     ? notificationReactionGroups(context.data?.reactions ?? [], group.actorIds)
     : [];
@@ -127,7 +128,7 @@ export function NotificationCard({
             <Link
               to="/channels/$channelId"
               params={{ channelId: notification.channel_id }}
-              search={{ message: notification.message_id }}
+              search={{ message: notification.message_id ?? undefined }}
               onClick={() => shell.showChat()}
               className="block rounded-md border-l-2 border-brand/40 bg-muted/40 px-3 py-2 transition-colors outline-none hover:bg-muted focus-visible:ring-2 focus-visible:ring-ring/50"
             >
@@ -139,6 +140,19 @@ export function NotificationCard({
                   {quotePreview(message.content)}
                 </p>
               </blockquote>
+            </Link>
+          ) : channel && note ? (
+            <Link
+              to="/channels/$channelId"
+              params={{ channelId: notification.channel_id }}
+              search={{ note: note.id }}
+              onClick={() => shell.showChat()}
+              className="block rounded-md border-l-2 border-brand/40 bg-muted/40 px-3 py-2 transition-colors outline-none hover:bg-muted focus-visible:ring-2 focus-visible:ring-ring/50"
+            >
+              <p className="truncate text-xs font-medium text-muted-foreground">{note.title}</p>
+              <p className="line-clamp-3 whitespace-pre-wrap break-words text-sm leading-relaxed">
+                {quotePreview(note.content)}
+              </p>
             </Link>
           ) : (
             <p className="rounded-md border-l-2 px-3 py-2 text-sm text-muted-foreground">

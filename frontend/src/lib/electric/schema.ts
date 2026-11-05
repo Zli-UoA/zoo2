@@ -130,6 +130,7 @@ export const NOTIFICATION_SCHEMA: ShapeSchema<NotificationRow> = {
     actor_id: "text",
     channel_id: "text",
     message_id: "text",
+    note_id: "text",
     notification_type: "text",
     is_read: "bool",
     created_at: "timestamp",

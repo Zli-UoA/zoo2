@@ -15,6 +15,7 @@ import { groupNotifications } from "./groupNotifications";
 
 const state = vi.hoisted(() => ({
   message: null as MessageRow | null,
+  note: null as { id: string; title: string; content: string } | null,
   reactions: [] as MessageReactionRow[],
   canRead: true,
 }));
@@ -24,7 +25,11 @@ vi.mock("./useReadVisibleNotification", () => ({
 vi.mock("./useNotificationContext", () => ({
   useNotificationContext: () => ({
     data: state.canRead
-      ? { message: state.message?.deleted_at ? null : state.message, reactions: state.reactions }
+      ? {
+          message: state.message?.deleted_at ? null : state.message,
+          note: state.note,
+          reactions: state.reactions,
+        }
       : null,
     isLoading: false,
   }),
@@ -37,12 +42,15 @@ vi.mock("@tanstack/react-router", () => ({
     ...props
   }: {
     params: { channelId: string };
-    search: { message: string };
+    search: { message?: string; note?: string };
     children: ReactNode;
   }) =>
     createElement(
       "a",
-      { ...props, href: `/channels/${params.channelId}?message=${search.message}` },
+      {
+        ...props,
+        href: `/channels/${params.channelId}?${search.note ? `note=${search.note}` : `message=${search.message}`}`,
+      },
       children,
     ),
 }));
@@ -81,6 +89,7 @@ const rows: NotificationRow[] = ["alice", "bob"].map((id) => ({
   user_id: "me",
   channel_id: "channel",
   message_id: "message",
+  note_id: null,
   notification_type: "reaction",
   is_read: false,
   created_at: now,
@@ -102,6 +111,7 @@ function render(notifications = rows) {
 }
 beforeEach(() => {
   state.canRead = true;
+  state.note = null;
   state.message = {
     id: "message",
     channel_id: "channel",
@@ -151,4 +161,21 @@ it("labels ordinary direct messages independently from replies", () => {
   const html = render([{ ...rows[0], notification_type: "dm" }]);
   expect(html).toContain("ダイレクトメッセージが届きました");
   expect(html).not.toContain("返信しました");
+});
+
+it("links note notifications to their note without using the message search key", () => {
+  state.message = null;
+  state.note = { id: "note-1", title: "Runbook", content: "Useful note" };
+  const html = render([
+    {
+      ...rows[0],
+      id: "note-notification",
+      message_id: null,
+      note_id: "note-1",
+      notification_type: "mention",
+    },
+  ]);
+  expect(html).toContain('href="/channels/channel?note=note-1"');
+  expect(html).toContain("Runbook");
+  expect(html).toContain("Useful note");
 });

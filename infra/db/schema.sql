@@ -98,7 +98,8 @@ CREATE TABLE user_identities (
 
 CREATE TABLE message_reactions (
   id text NOT NULL,
-  message_id text NOT NULL,
+  message_id text,
+  note_id text,
   user_id text NOT NULL,
   emoji text NOT NULL,
   created_at timestamp(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -122,7 +123,8 @@ CREATE TABLE notifications (
   user_id text NOT NULL,
   actor_id text NOT NULL,
   channel_id text NOT NULL,
-  message_id text NOT NULL,
+  message_id text,
+  note_id text,
   notification_type text NOT NULL,
   is_read boolean NOT NULL DEFAULT false,
   created_at timestamp(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -180,6 +182,26 @@ CREATE TABLE channel_webhooks (
 );
 CREATE INDEX idx_channel_webhooks_channel_id ON channel_webhooks (channel_id);
 
+CREATE TABLE channel_notes (
+  id text NOT NULL PRIMARY KEY,
+  channel_id text NOT NULL REFERENCES channels (id) ON UPDATE CASCADE ON DELETE CASCADE,
+  title varchar(200) NOT NULL,
+  content text NOT NULL,
+  position integer NOT NULL DEFAULT 0,
+  deleted_at timestamp(3),
+  version integer NOT NULL DEFAULT 1 CHECK (version > 0),
+  created_user_id text NOT NULL REFERENCES users (id) ON UPDATE CASCADE ON DELETE RESTRICT,
+  created_at timestamp(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at timestamp(3) NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX idx_channel_notes_channel_updated ON channel_notes (channel_id, updated_at DESC, id);
+CREATE INDEX idx_channel_notes_channel_position ON channel_notes (channel_id, position) WHERE deleted_at IS NULL;
+CREATE INDEX idx_channel_notes_deleted_at ON channel_notes (channel_id, deleted_at) WHERE deleted_at IS NOT NULL;
+ALTER TABLE notifications ADD CONSTRAINT notifications_note_id_fkey
+  FOREIGN KEY (note_id) REFERENCES channel_notes (id) ON UPDATE CASCADE ON DELETE CASCADE;
+ALTER TABLE notifications ADD CONSTRAINT notifications_source_check
+  CHECK ((message_id IS NOT NULL) <> (note_id IS NOT NULL));
+CREATE INDEX idx_notifications_note_id ON notifications (note_id);
 -- Structured integration cards are separate from user-controlled message content.
 ALTER TABLE messages ADD COLUMN card text;
 ALTER TABLE users ADD COLUMN is_bot boolean NOT NULL DEFAULT false;
