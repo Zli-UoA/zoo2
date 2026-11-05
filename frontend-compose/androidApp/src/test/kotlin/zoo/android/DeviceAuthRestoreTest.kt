@@ -201,4 +201,87 @@ class DeviceAuthRestoreTest {
         } finally { http.close() }
     }
 
+    @Test
+    fun connectionFailuresDuringRefreshKeepTheSessionAndRetryTheSameUnusedToken() = runTest {
+        val failures = listOf(
+            java.net.UnknownHostException("offline"),
+            java.net.ConnectException("connection refused"),
+            io.ktor.client.network.sockets.ConnectTimeoutException("connect timeout"),
+            java.io.IOException("wrapped", java.net.UnknownHostException("offline")),
+        )
+        for (failure in failures) {
+            var stored: String? = "saved"
+            var expired = 0
+            var offline = false
+            val sent = mutableListOf<String?>()
+            val http = HttpClient(MockEngine { request ->
+                if (request.url.encodedPath.endsWith("openid-configuration")) respond(discovery)
+                else {
+                    assertNull(stored)
+                    sent += (request.body as FormDataContent).formData["refresh_token"]
+                    if (offline) throw failure
+                    respond("""{"access_token":"access","refresh_token":"rotated","expires_in":1}""")
+                }
+            })
+            try {
+                val auth = DeviceAuth(http, persistRefresh = { stored = it }, onExpired = { expired++ })
+                auth.restore("https://id.example", "client", "", "saved")
+                offline = true
+                repeat(2) {
+                    assertFalse(assertFailsWith<LoginFailure> { auth.headers() }.requiresLogin)
+                    assertEquals("rotated", stored)
+                    assertEquals(0, expired)
+                }
+                offline = false
+                assertEquals("Bearer access", auth.headers()["Authorization"])
+                assertEquals(listOf<String?>("saved", "rotated", "rotated", "rotated"), sent)
+            } finally { http.close() }
+        }
+    }
+
+    @Test
+    fun failedRecoverySaveAndLogoutDuringConnectionFailureCannotRestoreTheToken() = runTest {
+        for (logout in listOf(false, true)) {
+            var stored: String? = "saved"
+            var expired = 0
+            lateinit var auth: DeviceAuth
+            val http = HttpClient(MockEngine { request ->
+                if (request.url.encodedPath.endsWith("openid-configuration")) respond(discovery)
+                else {
+                    assertNull(stored)
+                    if (logout) auth.forget()
+                    throw java.net.ConnectException("offline")
+                }
+            })
+            try {
+                auth = DeviceAuth(http, persistRefresh = {
+                    if (it != null) error("cannot save recovery token")
+                    stored = null
+                }, onExpired = { expired++ })
+                assertTrue(assertFailsWith<LoginFailure> {
+                    auth.restore("https://id.example", "client", "", "saved")
+                }.requiresLogin)
+                assertNull(stored)
+                assertEquals(if (logout) 0 else 1, expired)
+                assertFailsWith<IllegalStateException> { auth.headers() }
+            } finally { http.close() }
+        }
+    }
+
+    @Test
+    fun readTimeoutAfterSendingCannotRestoreTheUsedToken() = runTest {
+        var stored: String? = "saved"
+        val http = HttpClient(MockEngine { request ->
+            if (request.url.encodedPath.endsWith("openid-configuration")) respond(discovery)
+            else throw java.net.SocketTimeoutException("response read timeout")
+        })
+        try {
+            val auth = DeviceAuth(http, persistRefresh = { stored = it })
+            assertTrue(assertFailsWith<LoginFailure> {
+                auth.restore("https://id.example", "client", "", "saved")
+            }.requiresLogin)
+            assertNull(stored)
+        } finally { http.close() }
+    }
+
 }

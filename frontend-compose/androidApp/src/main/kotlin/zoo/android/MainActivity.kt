@@ -228,6 +228,14 @@ class MainActivity : ComponentActivity() {
         connection.validate()
         val owner = loginStore.beginSession(savedRefresh?.let { SavedLogin(connection, it) })
         val http = HttpClient(OkHttp) {
+            // Refresh tokens are single-use: never replay a request inside OkHttp.
+            engine {
+                config {
+                    retryOnConnectionFailure(false)
+                    followRedirects(false)
+                    followSslRedirects(false)
+                }
+            }
             followRedirects = false
             install(HttpTimeout) {
                 requestTimeoutMillis = 120_000

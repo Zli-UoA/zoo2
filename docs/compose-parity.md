@@ -231,7 +231,7 @@ TUIは画像やURLカードを描画せず、Shapeの列を明示的に読み取
 
 #308のResource初期値・段階別の安全な認証エラー表示を取り込み、AndroidはKeystoreで暗号化した更新トークンから起動時に復帰する。接続先をレコードに束縛し、ローテーション・失効・ネットワーク障害・ログアウトと競合する更新を検証する。Webは共通AuthGateの既存OIDC再認可、TUIは既存StoredTokens／TokenManagerによる保存・復元・更新を維持し、別の認証フローを追加しない。Android固有の起動画面と保存境界の変更であり、WebのAPI・表示・操作仕様は変更しない。
 
-Androidのrefresh grantは送信前に保存済みtokenを取り除き、交換・保存をキャンセルから保護する。応答喪失や保存失敗後は手動ログインを要求し、使用済みtokenを再送しない。別のActivity／ログインの保存情報に対する古い処理の書き込み・削除も防ぐ。Android固有のCoroutine／Keystore保存処理の修正であり、Web／TUIの認証実装には変更しない。
+Androidのrefresh grantは送信前に保存済みtokenを取り除き、交換・保存をキャンセルから保護する。応答喪失や保存失敗後は手動ログインを要求し、使用済みtokenを再送しない。別のActivity／ログインの保存情報に対する古い処理の書き込み・削除も防ぐ。DNS・接続失敗・接続タイムアウトでは未使用tokenを保存し直して通信復旧後に再試行する。OkHttpの自動再送・リダイレクトは無効にし、送信後の失敗との区別を保つ。Android固有のCoroutine／Keystore保存処理の修正であり、Web／TUIの認証実装には変更しない。
 
 ## Compose描画の再計算抑制
 

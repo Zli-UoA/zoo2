@@ -1,6 +1,7 @@
 package zoo.android
 
 import io.ktor.client.*
+import io.ktor.client.network.sockets.ConnectTimeoutException
 import io.ktor.client.request.*
 import io.ktor.client.request.forms.*
 import io.ktor.client.statement.*
@@ -14,6 +15,8 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.serialization.json.*
 import zoo.*
+import java.net.ConnectException
+import java.net.UnknownHostException
 
 /** Public-client device grant. Access tokens stay in memory; refresh persistence is owned by the app. */
 internal class DeviceAuth(
@@ -78,9 +81,26 @@ internal class DeviceAuth(
                 consumeRefresh()
                 refresh
             }
+            var receivedResponse = false
             try {
-                accept(exchange(mapOf("grant_type" to "refresh_token", "refresh_token" to usedRefresh)))
+                val result = exchange(mapOf("grant_type" to "refresh_token", "refresh_token" to usedRefresh))
+                receivedResponse = true
+                accept(result)
             } catch (failure: Exception) {
+                // The Android client disables automatic retries and redirects. Only a
+                // connection failure before any response is safe to retry with this token.
+                if (!receivedResponse && failure.isConnectionFailure()) {
+                    val restored = runCatching {
+                        synchronized(persistenceLock) {
+                            if (closed) false else {
+                                persistRefresh(usedRefresh)
+                                refresh = usedRefresh
+                                true
+                            }
+                        }
+                    }.getOrDefault(false)
+                    if (restored) throw LoginFailure("認証先に接続できません。通信状態を確認して再試行してください。")
+                }
                 var notify = false
                 try {
                     synchronized(persistenceLock) {
@@ -231,4 +251,15 @@ private fun oauthLoginFailure(stage: String, status: Int?, code: String): LoginF
         "$stage に失敗しました ($details)。${hint ?: "認証サーバーの設定を確認してください"}",
         requiresLogin = status != null && status in 400..499 && code in setOf("invalid_grant", "invalid_client", "unauthorized_client", "access_denied", "expired_token"),
     )
+}
+
+/** Read timeouts and generic IO failures may follow a successful token exchange. */
+private fun Throwable.isConnectionFailure(): Boolean {
+    var current: Throwable? = this
+    val seen = mutableSetOf<Throwable>()
+    while (current != null && seen.add(current)) {
+        if (current is UnknownHostException || current is ConnectException || current is ConnectTimeoutException) return true
+        current = current.cause
+    }
+    return false
 }
