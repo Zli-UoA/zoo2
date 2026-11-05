@@ -62,70 +62,95 @@ class MainActivity : ComponentActivity() {
     private fun AndroidApp() {
         var active by remember { mutableStateOf<RunningSession?>(null) }
         val dark = isSystemInDarkTheme()
+        val loginStore = remember { AndroidLoginStore(this) }
+        val scope = rememberCoroutineScope()
+        var restoring by remember { mutableStateOf(true) }
+        var restoreCancelRequested by remember { mutableStateOf(false) }
+        var restoreAttempt by remember { mutableIntStateOf(0) }
+        var restoreJob by remember { mutableStateOf<Job?>(null) }
+        var canRestore by remember { mutableStateOf(false) }
+        var restoreError by remember { mutableStateOf("") }
         val current = active
         DisposableEffect(Unit) { onDispose { active?.close() } }
+
+        suspend fun connect(connection: LoginConnection, refresh: String?, show: (String, String) -> Unit) {
+            active = openSession(
+                connection, loginStore, dark, refresh, show,
+                onExpired = { expiredAuth ->
+                    scope.launch {
+                        val running = active
+                        if (running != null && running.auth === expiredAuth) {
+                            active = null
+                            canRestore = false
+                            restoreError = "認証情報の有効期限が切れました。ログインし直してください。"
+                            running.close()
+                        }
+                    }
+                },
+                logout = {
+                    val running = active
+                    active = null
+                    canRestore = false
+                    restoreError = ""
+                    try {
+                        running?.logout()
+                    } catch (failure: LoginFailure) {
+                        restoreError = failure.message.orEmpty()
+                    }
+                },
+            )
+        }
+
+        LaunchedEffect(restoreAttempt) {
+            restoreJob = currentCoroutineContext()[Job]
+            restoring = true
+            restoreCancelRequested = false
+            restoreError = ""
+            try {
+                val saved = loginStore.load()
+                canRestore = saved != null
+                if (saved != null) connect(saved.connection, saved.refreshToken) { _, _ -> }
+            } catch (failure: CancellationException) {
+                throw failure
+            } catch (failure: LoginFailure) {
+                canRestore = loginStore.hasSession
+                restoreError = failure.message.orEmpty()
+            } catch (_: Exception) {
+                canRestore = loginStore.hasSession
+                restoreError = "自動ログインできませんでした。ネットワークを確認して再試行してください。"
+            } finally {
+                canRestore = loginStore.hasSession
+                restoring = false
+                restoreJob = null
+            }
+        }
         AndroidUpdateFrame(this, current?.platform?.env?.dark ?: dark) {
             if (current == null) {
                 MaterialTheme(colorScheme = if (dark) darkColorScheme() else lightColorScheme()) {
-                    Login { base, issuer, client, resource, code ->
-                        val http =
-                            HttpClient(OkHttp) {
-                                followRedirects = false
-                                install(HttpTimeout) {
-                                    requestTimeoutMillis = 120_000
-                                    socketTimeoutMillis = 90_000
-                                }
-                            }
-                        try {
-                            val auth = DeviceAuth(http)
-                            auth.login(issuer, client, resource, code)
-                            val authHeaders = auth.headers()
-                            val response =
-                                http.get(endpoint(base, "/api/users/me")) {
-                                    headers {
-                                        authHeaders.forEach { (key, value) -> append(key, value) }
-                                    }
-                                }
-                            check(response.status.value in 200..299) {
-                                "Zoo に接続できません (HTTP ${response.status.value})"
-                            }
-                            val me = json.parseToJsonElement(response.bodyAsText()).jsonObject
-                            val lifetime =
-                                CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
-                            val platform =
-                                AndroidPlatform(
-                                    this@MainActivity,
-                                    http,
-                                    auth,
-                                    base,
-                                    me.text("id"),
-                                    {
-                                        active?.close()
-                                        active = null
+                    if (restoring) {
+                        Surface(Modifier.fillMaxSize()) {
+                            Column(
+                                Modifier.safeDrawingPadding().padding(24.dp),
+                                verticalArrangement = Arrangement.spacedBy(16.dp),
+                            ) {
+                                Text(if (restoreCancelRequested) "トークン更新の終了を待っています" else "ログインを復元しています")
+                                CircularProgressIndicator()
+                                TextButton(
+                                    enabled = !restoreCancelRequested,
+                                    onClick = {
+                                        restoreCancelRequested = true
+                                        restoreJob?.cancel()
                                     },
-                                    ::chooseFiles,
-                                )
-                            platform.systemDark(dark)
-                            val config =
-                                Config(
-                                    base,
-                                    "/api/shapes",
-                                    me.text("id"),
-                                    me.flag("is_admin"),
-                                    assetsBaseUrl = base,
-                                )
-                            val session =
-                                Session(
-                                    Repository(config, platform, http, lifetime),
-                                    lifetime,
-                                    platform.env,
-                                )
-                            active = RunningSession(session, platform, lifetime)
-                            session.start()
-                        } catch (failure: Throwable) {
-                            http.close()
-                            throw failure
+                                ) { Text("ログイン画面を開く") }
+                            }
                         }
+                    } else Login(
+                        initialError = restoreError,
+                        retryRestore = if (canRestore) ({ restoreAttempt++ }) else null,
+                    ) { base, issuer, client, resource, code ->
+                        canRestore = false
+                        loginStore.clear()
+                        connect(LoginConnection(base, issuer, client, resource), null, code)
                     }
                 }
             } else {
@@ -191,8 +216,78 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    private suspend fun openSession(
+        connection: LoginConnection,
+        loginStore: AndroidLoginStore,
+        dark: Boolean,
+        savedRefresh: String?,
+        showCode: (String, String) -> Unit,
+        onExpired: (DeviceAuth) -> Unit,
+        logout: () -> Unit,
+    ): RunningSession {
+        connection.validate()
+        val owner = loginStore.beginSession(savedRefresh?.let { SavedLogin(connection, it) })
+        val http = HttpClient(OkHttp) {
+            // Refresh tokens are single-use: never replay a request inside OkHttp.
+            engine {
+                config {
+                    retryOnConnectionFailure(false)
+                    followRedirects(false)
+                    followSslRedirects(false)
+                }
+            }
+            followRedirects = false
+            install(HttpTimeout) {
+                requestTimeoutMillis = 120_000
+                socketTimeoutMillis = 90_000
+            }
+        }
+        val auth = DeviceAuth(
+            http,
+            persistRefresh = { refresh ->
+                if (refresh == null) loginStore.clear(owner)
+                else loginStore.save(SavedLogin(connection, refresh), owner)
+            },
+            consumeRefresh = { loginStore.consume(owner) },
+            onExpired = onExpired,
+        )
+        try {
+            if (savedRefresh == null)
+                auth.login(connection.issuer, connection.client, connection.resource, showCode)
+            else auth.restore(connection.issuer, connection.client, connection.resource, savedRefresh)
+            val authHeaders = auth.headers()
+            val response = http.get(endpoint(connection.base, "/api/users/me")) {
+                headers { authHeaders.forEach { (key, value) -> append(key, value) } }
+            }
+            if (response.status.value !in 200..299) {
+                if (response.status.value in setOf(401, 403)) auth.forget()
+                throw LoginFailure("Zoo に接続できません (HTTP ${response.status.value})")
+            }
+            val me = json.parseToJsonElement(response.bodyAsText()).jsonObject
+            require(me.text("id").isNotBlank())
+            currentCoroutineContext().ensureActive()
+            val lifetime = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
+            val platform = AndroidPlatform(
+                this, http, auth, connection.base, me.text("id"), logout, ::chooseFiles,
+            )
+            platform.systemDark(dark)
+            val config = Config(
+                connection.base, "/api/shapes", me.text("id"), me.flag("is_admin"),
+                assetsBaseUrl = connection.base,
+            )
+            val session = Session(Repository(config, platform, http, lifetime), lifetime, platform.env)
+            return RunningSession(session, platform, lifetime, http, auth).also { session.start() }
+        } catch (failure: Throwable) {
+            auth.close()
+            http.close()
+            throw failure
+        }
+    }
+
     @Composable
     private fun Login(
+        initialError: String = "",
+        retryRestore: (() -> Unit)? = null,
         connect: suspend (String, String, String, String, (String, String) -> Unit) -> Unit
     ) {
         val prefs = remember { getSharedPreferences("connection", 0) }
@@ -206,11 +301,11 @@ class MainActivity : ComponentActivity() {
         }
         var client by rememberSaveable { mutableStateOf(prefs.getString("client", "").orEmpty()) }
         var resource by rememberSaveable {
-            mutableStateOf(prefs.getString("resource", "https://zli.chat").orEmpty())
+            mutableStateOf(prefs.getString("resource", "https://zli.chat/api").orEmpty())
         }
         var code by remember { mutableStateOf("") }
         var link by remember { mutableStateOf("") }
-        var error by remember { mutableStateOf("") }
+        var error by remember { mutableStateOf(initialError) }
         var job by remember { mutableStateOf<Job?>(null) }
         val scope = rememberCoroutineScope()
         Surface(Modifier.fillMaxSize()) {
@@ -253,6 +348,9 @@ class MainActivity : ComponentActivity() {
                 )
                 Text("サーバー管理者が登録したデバイス認証対応の client ID を指定してください。ブラウザーでコードを承認してログインします。")
                 if (error.isNotEmpty()) Text(error, color = MaterialTheme.colorScheme.error)
+                if (retryRestore != null && job == null) {
+                    TextButton(onClick = retryRestore) { Text("自動ログインを再試行") }
+                }
                 if (code.isNotEmpty()) {
                     Text("確認コード: $code", style = MaterialTheme.typography.headlineSmall)
                     Text("ブラウザーに表示されたコードが一致することを確認してください。")
@@ -314,6 +412,8 @@ class MainActivity : ComponentActivity() {
                                         }
                                     } catch (e: CancellationException) {
                                         throw e
+                                    } catch (failure: LoginFailure) {
+                                        error = failure.message.orEmpty()
                                     } catch (_: Exception) {
                                         error = "ログインできません。接続先・client ID・コードの期限とネットワークを確認してください。"
                                     } finally {
@@ -334,9 +434,17 @@ private class RunningSession(
     val session: Session,
     val platform: AndroidPlatform,
     val scope: CoroutineScope,
+    private val http: HttpClient,
+    val auth: DeviceAuth,
 ) {
+    fun logout() {
+        try { auth.forget() } finally { close() }
+    }
+
     fun close() {
+        auth.close()
         session.close()
         scope.cancel()
+        http.close()
     }
 }

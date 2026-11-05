@@ -40,7 +40,83 @@ private external fun stopSemanticsMutationRecording(observer: JsAny)
 )
 private external fun realBrowserProgress(): Promise<JsString>
 
+@JsFun(
+    """() => {
+    const host = document.createElement('div'); host.id = 'semantics-shadow-host';
+    document.body.append(host);
+    const root = host.attachShadow({mode:'open'});
+    root.innerHTML = '<div id="shadow-control"></div>';
+}"""
+)
+private external fun addShadowControl()
+
+@JsFun(
+    """() => {
+    const root = document.getElementById('semantics-shadow-host').shadowRoot;
+    root.getElementById('shadow-control').outerHTML = '<div id="shadow-control"></div>';
+}"""
+)
+private external fun replaceShadowControl()
+
+@JsFun(
+    "() => document.getElementById('semantics-shadow-host').shadowRoot.getElementById('shadow-control').getAttribute('aria-checked')"
+)
+private external fun shadowControlChecked(): String?
+
+@JsFun(
+    """() => {
+    let count = 0;
+    const original = Document.prototype.querySelector;
+    Document.prototype.querySelector = function(...args) { count++; return original.apply(this,args); };
+    return {count: () => count, close: () => { Document.prototype.querySelector = original; }};
+}"""
+)
+private external fun recordControlQueries(): JsAny
+
+@JsFun("recorder => recorder.count()") private external fun controlQueryCount(recorder: JsAny): Int
+@JsFun("recorder => recorder.close()") private external fun stopControlQueries(recorder: JsAny)
+
 class WebSemanticsTest {
+    @Test
+    fun updatingOneControlDoesNotSearchEveryRegisteredControl() {
+        val ids = (0 until 30).map { "semantics-cached-$it" }
+        ids.forEach { id ->
+            addSemanticsNode(id)
+            webControl(id, "button", enabled = true, selected = false)
+        }
+        val recorder = recordControlQueries()
+        try {
+            webControl(ids.first(), "button", enabled = false, selected = true)
+            assertEquals("true", semanticsAttribute(ids.first(), "aria-disabled"))
+            assertEquals("true", semanticsAttribute(ids.first(), "aria-pressed"))
+            assertEquals("false", semanticsAttribute(ids.last(), "aria-disabled"))
+            assertEquals(0, controlQueryCount(recorder), "Connected control nodes should be cached")
+        } finally {
+            stopControlQueries(recorder)
+            ids.forEach { forgetWebControl(it); removeSemanticsNode(it) }
+        }
+    }
+
+    @Test
+    fun shadowRootAddedAfterObserverStartsAndReplacedNodeReceiveSemantics() = runTest {
+        val id = "semantics-existing"
+        addSemanticsNode(id)
+        webControl(id, "button", enabled = true, selected = null)
+        try {
+            addShadowControl()
+            webControl("shadow-control", "checkbox", enabled = true, selected = true)
+            assertEquals("true", shadowControlChecked())
+            replaceShadowControl()
+            realBrowserProgress().awaitBrowser()
+            assertEquals("true", shadowControlChecked(), "Do not retain a disconnected cached node")
+        } finally {
+            forgetWebControl("shadow-control")
+            forgetWebControl(id)
+            removeSemanticsNode("semantics-shadow-host")
+            removeSemanticsNode(id)
+        }
+    }
+
     @Test
     fun explicitAriaOverridesSettleWithoutMutationLoopAndAllowBrowserProgress() = runTest {
         val id = "web-semantics-override-test"

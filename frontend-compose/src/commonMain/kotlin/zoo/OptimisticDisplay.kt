@@ -14,6 +14,7 @@ internal fun optimisticDisplay(
     reactionEdits: Map<String, Row?>,
     workspaceEmojis: List<Row> = emptyList(),
 ): Row {
+    if (messageEdits.isEmpty() && reactionEdits.isEmpty()) return display
     var replyDelta = 0
     for ((id, after) in messageEdits) {
         val before = baseMessages.find { rowKey(it) == id }

@@ -253,7 +253,7 @@ private fun startSession() {
         // Public font requests must outlive this session's visible content: a loading
         // session may be replaced while a new session awaits the same cached request.
         // The Web resource API returns an empty placeholder until each font is ready.
-        // Keep the bootstrap visible until every family and weight used by the theme loads.
+        // Wait for body text; load code and math fonts with the theme after this gate.
         val fontsReady = zooFontsReady()
         if (active && fontsReady) {
             LaunchedEffect(Unit) { paintReady(bridge) }
@@ -297,9 +297,6 @@ internal fun zooFontsReady(): Boolean {
             preloadFont(Res.font.NotoSansJPRegular, FontWeight.Medium).value,
             preloadFont(Res.font.NotoSansJPBold, FontWeight.SemiBold).value,
             preloadFont(Res.font.NotoColorEmoji).value,
-            preloadFont(Res.font.LiberationMono).value,
-            preloadFont(Res.font.KaTeXMain).value,
-            preloadFont(Res.font.KaTeXMath).value,
         )
     return fonts.all { it != null }
 }
