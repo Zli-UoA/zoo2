@@ -642,7 +642,11 @@ fun Icon(
             )
         }) {
             if (bitmap != null) {
-                drawImage(bitmap, dstSize = IntSize(size.width.toInt(), size.height.toInt()))
+                drawImage(
+                    bitmap,
+                    dstSize = IntSize(size.width.toInt(), size.height.toInt()),
+                    colorFilter = ColorFilter.tint(color.copy(alpha = 1f)),
+                )
             } else
                 withTransform({ scale(size.width / 24f, size.height / 24f, Offset.Zero) }) {
                     paths.forEach {
@@ -770,15 +774,15 @@ fun Field(
                 } ?: fonts.latin
         )
     LaunchedEffect(autoFocus, enabled) { if (autoFocus && enabled) requester.requestFocus() }
-    LaunchedEffect(value, selection) {
-        if (editing.text != value || selection != null && editing.selection.start != selection) {
-            editing =
-                TextFieldValue(
-                    value,
-                    TextRange((selection ?: value.length).coerceIn(0, value.length)),
-                )
-            committedEditing = editing
-        }
+    // Reconcile external edits in this composition. A launched effect can run
+    // after the next browser input event and overwrite newer text with its old value.
+    if (editing.text != value || selection != null && editing.selection.start != selection) {
+        editing =
+            TextFieldValue(
+                value,
+                TextRange((selection ?: value.length).coerceIn(0, value.length)),
+            )
+        committedEditing = editing
     }
     val attributes =
         buildMap<String, String> {

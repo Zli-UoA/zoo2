@@ -24,6 +24,10 @@ Reactを機能・UI・操作の基準とする。変更時は [compose-react-par
 | ブラウザー認証・履歴・保存・プッシュ・公開HTTP | `ComposeFrontend`, `lib/compose` | `Platform` / `Main.kt` からホストへ接続、`WebSemantics.kt` でWebのrole・状態を補完 | BrowserInteropTest、OfflineProviderブラウザーテスト、PWA・公開HTTP・ログアウト検証 |
 | 翻訳・デザイントークン・アイコン・データ | `lib/i18n`, CSS、Lucide、Emojibase | `Ui.kt`, `IconData.kt`、共有翻訳・生成資源 | 全ロケールの共通辞書、`sync-compose-assets.mjs`、カタログツールバー |
 
+## Web描画の性能改善
+
+ARIA補完の更新を対象コントロールに限定し、DOM参照をキャッシュする。アイコンは色別の画像生成をやめ、同じラスタへ描画時に着色する。初回は本文フォントだけをゲートにする。機能・API・操作仕様はReactと共通のまま、Web固有の補完処理を変更する。TUIには対象処理がなく、変更しない。検証方法と結果は [Compose Webの性能計測](compose-performance.md) を参照。
+
 ## main取り込み時の照合
 
 - `8815293` の通知保存先共通化と返信ツリー表示を取り込み、通知の表示キャッシュを正規の `notification_events` に接続。通知下部の絵文字一覧は削除し、mainで追加されたアバター上の絵文字は維持する。React／Composeの返信ツリーを維持し、返信数には結合済みデータを優先する。

@@ -36,8 +36,10 @@ cd frontend-compose
 インストール済みNodeを使う場合は `-Pzoo.systemNode=true`、`pnpm build:compose` からは
 `ZOO_COMPOSE_SYSTEM_NODE=true` を指定できます。
 成果物は `frontend-compose/build/dist/wasmJs/productionExecutable/` です。
-現在の配布物は約51 MiBで、主にフォントが占めます。初回は読み込み完了を待ち、
-以降はService Workerで保存した静的ファイルを再利用します。
+配布物は主にフォントが占めます。初回は本文の欧文・日本語・絵文字フォントを待ち、
+等幅・数式フォントはその後に読み込みます。以降はService Workerで保存した静的ファイルを再利用します。
+`/compose/` のWasm・JavaScript・フォントはNginxでgzip配信します。計測方法と結果は
+[Compose Webの性能計測](compose-performance.md) を参照してください。
 `pnpm build:compose` はビルド成功後に `frontend/public/compose/` を置換します。
 生成物・依存ソース・フォントバイナリ・GradleキャッシュはGit管理対象外です。
 フォントは `frontend-compose/fonts.lock` のURLとSHA-256で固定し、Gradleがビルド時に取得します。日本語にはブラウザーのNoto Sans CJK JPと同じCFFのRegular/Bold原本を使い、変換版の可変TTFによる字形の差を避けています。CSSの中間weightに対応するRegular/Boldの選択も共通Kotlin側で定義します。
