@@ -30,7 +30,7 @@ class DeviceAuthRestoreTest {
         try {
             val auth = DeviceAuth(http, saved::add)
             auth.restore("https://id.example", "client", "https://zoo.example/api", "saved")
-            assertEquals(listOf<String?>("rotated"), saved)
+            assertEquals(listOf<String?>(null, "rotated"), saved)
             assertEquals("Bearer access", auth.headers()["Authorization"])
             assertEquals(2, refreshes)
         } finally { http.close() }
@@ -46,13 +46,13 @@ class DeviceAuthRestoreTest {
         try {
             val auth = DeviceAuth(http, saved::add)
             auth.restore("https://id.example", "client", "", "saved")
-            assertEquals(listOf<String?>("saved"), saved)
+            assertEquals(listOf<String?>(null, "saved"), saved)
             assertEquals("Bearer access", auth.headers()["Authorization"])
         } finally { http.close() }
     }
 
     @Test
-    fun invalidGrantClearsSavedSessionButServerFailureDoesNot() = runTest {
+    fun invalidGrantOrServerFailureAfterSendingRequiresFreshLogin() = runTest {
         for (status in listOf(HttpStatusCode.BadRequest, HttpStatusCode.InternalServerError)) {
             val saved = mutableListOf<String?>()
             var expired = 0
@@ -64,8 +64,10 @@ class DeviceAuthRestoreTest {
                 val auth = DeviceAuth(http, saved::add) { expired++ }
                 val error = assertFailsWith<LoginFailure> { auth.restore("https://id.example", "client", "", "saved") }
                 assertFalse(error.message.orEmpty().contains("private response"))
-                assertEquals(if (status == HttpStatusCode.BadRequest) listOf<String?>(null) else emptyList(), saved)
-                assertEquals(if (status == HttpStatusCode.BadRequest) 1 else 0, expired)
+                assertTrue(error.requiresLogin)
+                assertEquals(listOf<String?>(null, null), saved)
+                assertEquals(1, expired)
+                assertFailsWith<IllegalStateException> { auth.headers() }
             } finally { http.close() }
         }
     }
@@ -115,10 +117,88 @@ class DeviceAuthRestoreTest {
                 auth.forget()
                 release.complete(Unit)
                 assertTrue(attempt.await().isFailure)
-                assertEquals(listOf<String?>(null), saved)
+                assertEquals(listOf<String?>(null, null), saved)
                 assertEquals(0, expired)
                 assertFailsWith<IllegalStateException> { auth.headers() }
             } finally { http.close() }
         }
     }
+    @Test
+    fun cancellationAfterSendingWaitsForRotationAndSavesItsResult() = runTest {
+        val saved = mutableListOf<String?>()
+        val started = CompletableDeferred<Unit>()
+        val release = CompletableDeferred<Unit>()
+        val sent = mutableListOf<String?>()
+        val http = HttpClient(MockEngine { request ->
+            if (request.url.encodedPath.endsWith("openid-configuration")) respond(discovery)
+            else {
+                sent += (request.body as FormDataContent).formData["refresh_token"]
+                started.complete(Unit)
+                release.await()
+                respond("""{"access_token":"access","refresh_token":"rotated","expires_in":3600}""")
+            }
+        })
+        try {
+            val auth = DeviceAuth(http, saved::add)
+            val job = launch { auth.restore("https://id.example", "client", "", "saved") }
+            started.await()
+            job.cancel()
+            runCurrent()
+            val waitedForResponse = !job.isCompleted
+            release.complete(Unit)
+            job.join()
+            assertTrue(waitedForResponse)
+            assertEquals(listOf<String?>(null, "rotated"), saved)
+            auth.close()
+            val next = DeviceAuth(http, saved::add)
+            next.restore("https://id.example", "client", "", saved.last()!!)
+            assertEquals(listOf<String?>("saved", "rotated"), sent)
+        } finally { release.complete(Unit); http.close() }
+    }
+
+    @Test
+    fun lostResponseAndFailedSaveCannotLeaveAReusableOldToken() = runTest {
+        for (loseResponse in listOf(true, false)) {
+            var stored: String? = "saved"
+            var requests = 0
+            var expired = 0
+            val http = HttpClient(MockEngine { request ->
+                if (request.url.encodedPath.endsWith("openid-configuration")) respond(discovery)
+                else {
+                    requests++
+                    assertNull(stored, "Remove the old token durably before sending it")
+                    if (loseResponse) throw java.io.IOException("response lost after issuing a new token")
+                    respond("""{"access_token":"access","refresh_token":"rotated","expires_in":3600}""")
+                }
+            })
+            try {
+                val auth = DeviceAuth(http, persistRefresh = {
+                    if (it != null) throw LoginFailure("test disk failure")
+                    stored = null
+                }, onExpired = { expired++ })
+                assertTrue(assertFailsWith<LoginFailure> {
+                    auth.restore("https://id.example", "client", "", "saved")
+                }.requiresLogin)
+                assertNull(stored)
+                assertEquals(1, expired)
+                assertFailsWith<IllegalStateException> { auth.headers() }
+                assertEquals(1, requests, "Never submit the used refresh token again")
+            } finally { http.close() }
+        }
+    }
+
+    @Test
+    fun failureToRemoveOldTokenAbortsBeforeTheRefreshRequest() = runTest {
+        var refreshes = 0
+        val http = HttpClient(MockEngine { request ->
+            if (request.url.encodedPath.endsWith("openid-configuration")) respond(discovery)
+            else { refreshes++; respond("{}") }
+        })
+        try {
+            val auth = DeviceAuth(http, consumeRefresh = { throw LoginFailure("test remove failure") })
+            assertFailsWith<LoginFailure> { auth.restore("https://id.example", "client", "", "saved") }
+            assertEquals(0, refreshes)
+        } finally { http.close() }
+    }
+
 }

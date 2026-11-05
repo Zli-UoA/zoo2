@@ -5,6 +5,8 @@ import io.ktor.client.request.*
 import io.ktor.client.request.forms.*
 import io.ktor.client.statement.*
 import io.ktor.http.*
+import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.delay
@@ -17,6 +19,7 @@ import zoo.*
 internal class DeviceAuth(
     private val http: HttpClient,
     private val persistRefresh: (String?) -> Unit = {},
+    private val consumeRefresh: () -> Unit = { persistRefresh(null) },
     private val onExpired: (DeviceAuth) -> Unit = {},
 ) {
     private var token = ""
@@ -65,16 +68,36 @@ internal class DeviceAuth(
     }
 
     private suspend fun renew() {
-        try {
-            accept(exchange(mapOf("grant_type" to "refresh_token", "refresh_token" to refresh)))
-        } catch (failure: LoginFailure) {
-            if (failure.requiresLogin) {
-                val notify = synchronized(persistenceLock) {
-                    if (closed) false else { forget(); true }
-                }
-                if (notify) onExpired(this)
+        currentCoroutineContext().ensureActive()
+        withContext(NonCancellable) {
+            // Once sent, a single-use refresh token must never be restored from disk.
+            // Commit its removal before sending. Cancellation still waits for rotation
+            // and persistence; timeout, malformed responses and save failure require login.
+            val usedRefresh = synchronized(persistenceLock) {
+                check(!closed) { "認証セッションは終了しています" }
+                consumeRefresh()
+                refresh
             }
-            throw failure
+            try {
+                accept(exchange(mapOf("grant_type" to "refresh_token", "refresh_token" to usedRefresh)))
+            } catch (failure: Exception) {
+                var notify = false
+                try {
+                    synchronized(persistenceLock) {
+                        if (!closed) {
+                            notify = true
+                            forget()
+                        }
+                    }
+                } finally {
+                    if (notify) onExpired(this@DeviceAuth)
+                }
+                throw LoginFailure(
+                    if (failure is LoginFailure) failure.message.orEmpty()
+                    else "トークン更新の結果を確認できませんでした。ログインし直してください。",
+                    requiresLogin = true,
+                )
+            }
         }
     }
 

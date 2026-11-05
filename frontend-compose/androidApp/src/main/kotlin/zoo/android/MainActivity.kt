@@ -65,6 +65,7 @@ class MainActivity : ComponentActivity() {
         val loginStore = remember { AndroidLoginStore(this) }
         val scope = rememberCoroutineScope()
         var restoring by remember { mutableStateOf(true) }
+        var restoreCancelRequested by remember { mutableStateOf(false) }
         var restoreAttempt by remember { mutableIntStateOf(0) }
         var restoreJob by remember { mutableStateOf<Job?>(null) }
         var canRestore by remember { mutableStateOf(false) }
@@ -103,6 +104,7 @@ class MainActivity : ComponentActivity() {
         LaunchedEffect(restoreAttempt) {
             restoreJob = currentCoroutineContext()[Job]
             restoring = true
+            restoreCancelRequested = false
             restoreError = ""
             try {
                 val saved = loginStore.load()
@@ -117,6 +119,7 @@ class MainActivity : ComponentActivity() {
                 canRestore = loginStore.hasSession
                 restoreError = "自動ログインできませんでした。ネットワークを確認して再試行してください。"
             } finally {
+                canRestore = loginStore.hasSession
                 restoring = false
                 restoreJob = null
             }
@@ -130,9 +133,15 @@ class MainActivity : ComponentActivity() {
                                 Modifier.safeDrawingPadding().padding(24.dp),
                                 verticalArrangement = Arrangement.spacedBy(16.dp),
                             ) {
-                                Text("ログインを復元しています")
+                                Text(if (restoreCancelRequested) "トークン更新の終了を待っています" else "ログインを復元しています")
                                 CircularProgressIndicator()
-                                TextButton(onClick = { restoreJob?.cancel() }) { Text("ログイン画面を開く") }
+                                TextButton(
+                                    enabled = !restoreCancelRequested,
+                                    onClick = {
+                                        restoreCancelRequested = true
+                                        restoreJob?.cancel()
+                                    },
+                                ) { Text("ログイン画面を開く") }
                             }
                         }
                     } else Login(
@@ -217,6 +226,7 @@ class MainActivity : ComponentActivity() {
         logout: () -> Unit,
     ): RunningSession {
         connection.validate()
+        val owner = loginStore.beginSession(savedRefresh?.let { SavedLogin(connection, it) })
         val http = HttpClient(OkHttp) {
             followRedirects = false
             install(HttpTimeout) {
@@ -227,9 +237,10 @@ class MainActivity : ComponentActivity() {
         val auth = DeviceAuth(
             http,
             persistRefresh = { refresh ->
-                if (refresh == null) loginStore.clear()
-                else loginStore.save(SavedLogin(connection, refresh))
+                if (refresh == null) loginStore.clear(owner)
+                else loginStore.save(SavedLogin(connection, refresh), owner)
             },
+            consumeRefresh = { loginStore.consume(owner) },
             onExpired = onExpired,
         )
         try {
