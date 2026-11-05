@@ -113,7 +113,7 @@ pub fn run(config: Config) {
     let state = AppState::from_config(&config);
     Application::new().run(move |cx: &mut App| {
         let bounds = Bounds::centered(None, size(px(1200.0), px(800.0)), cx);
-        let _ = cx.open_window(
+        if let Err(err) = cx.open_window(
             WindowOptions {
                 window_bounds: Some(WindowBounds::Windowed(bounds)),
                 titlebar: Some(TitlebarOptions {
@@ -123,7 +123,10 @@ pub fn run(config: Config) {
                 ..Default::default()
             },
             move |_, cx| cx.new(|_| WorkspaceView::new(state)),
-        );
+        ) {
+            eprintln!("ウィンドウを開けませんでした: {err:#}");
+            std::process::exit(1);
+        }
         cx.activate(true);
     });
 }

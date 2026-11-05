@@ -6,6 +6,7 @@ on:
   pull_request:
     paths:
       - "client-core/**"
+      - "desktop/**"
       - "tui/**"
       - "rust-toolchain.toml"
       - ".github/workflows/ci-tui.yaml"
@@ -14,6 +15,7 @@ on:
     branches: [main]
     paths:
       - "client-core/**"
+      - "desktop/**"
       - "tui/**"
       - "rust-toolchain.toml"
       - ".github/workflows/ci-tui.yaml"
@@ -71,3 +73,50 @@ jobs:
         run: cargo test --locked
       - name: build
         run: cargo build --locked --release
+
+  desktop:
+    # GPUI のビルドには Wayland / X11 / xkbcommon などの apt パッケージが要るため、GitHub ホストの実行先を使う。
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    defaults:
+      run:
+        working-directory: ./desktop
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+      - name: Install Linux dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            pkg-config \
+            libasound2-dev \
+            libfontconfig1-dev \
+            libfreetype-dev \
+            libvulkan-dev \
+            libwayland-dev \
+            libx11-dev \
+            libxcb1-dev \
+            libxcursor-dev \
+            libxi-dev \
+            libxkbcommon-dev \
+            libxkbcommon-x11-dev \
+            libxrandr-dev
+      - name: Read Rust toolchain
+        id: rust-toolchain
+        working-directory: .
+        run: echo "channel=$(sed -n 's/^channel = "\(.*\)"$/\1/p' rust-toolchain.toml)" >> "$GITHUB_OUTPUT"
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ steps.rust-toolchain.outputs.channel }}
+          components: clippy, rustfmt
+      - name: Restore Cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: desktop
+      - name: format check
+        run: cargo fmt --check
+      - name: lint check
+        run: cargo clippy --all-targets --locked -- -D warnings
+      - name: test
+        run: cargo test --locked

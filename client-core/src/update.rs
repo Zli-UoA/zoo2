@@ -9,7 +9,6 @@ use anyhow::Result;
 use serde::{Deserialize, Serialize};
 
 pub const RELEASES_URL: &str = "https://api.github.com/repos/Zli-UoA/zoo2/releases?per_page=30";
-pub const CURRENT_VERSION: &str = env!("CARGO_PKG_VERSION");
 pub const CHECK_INTERVAL: Duration = Duration::from_secs(6 * 60 * 60);
 const TAG_PREFIX: &str = "tui-v";
 
@@ -50,7 +49,7 @@ pub async fn check(
         current,
         now,
         TAG_PREFIX,
-        &format!("zoo2-tui/{CURRENT_VERSION}"),
+        &format!("zoo2-tui/{current}"),
     )
     .await
 }
