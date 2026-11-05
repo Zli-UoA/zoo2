@@ -226,3 +226,7 @@ Home通知APIも、閲覧可能で削除されていないローカル投稿の�
 mainのメッセージ編集時のCmd/Ctrl+Enter保存を、Reactの `MessageRow` とComposeの `Chat.kt` の両方に取り込んだ。JOIN済み表示データへの未確定差分の反映は維持する。`compose.spec.ts` の投稿・編集フローと、JOIN済みデータのリアクション・返信数・カスタム絵文字の保留中とロールバックを、再生成したCompose成果物で6ケースを検証し、成功した。バックエンド・DBの内容は、リベース前の検証済みコードと同じである。
 
 TUIは画像やURLカードを描画せず、Shapeの列を明示的に読み取るため、追加の表示用列は既存の読み取りに影響しない。このPRの画像枠・通知カードの変更は追加実装しない。編集時のCtrl+Enterは既存の `on_insert_key` から `submit` を通って保存できる。端末版のEnter送信・Alt/Shift+Enter改行は維持し、`make tui-check` で57テスト・clippy・formatの成功を確認した。
+
+## Androidのログイン復元
+
+#308のResource初期値・段階別の安全な認証エラー表示を取り込み、AndroidはKeystoreで暗号化した更新トークンから起動時に復帰する。接続先をレコードに束縛し、ローテーション・失効・ネットワーク障害・ログアウトと競合する更新を検証する。Webは共通AuthGateの既存OIDC再認可、TUIは既存StoredTokens／TokenManagerによる保存・復元・更新を維持し、別の認証フローを追加しない。Android固有の起動画面と保存境界の変更であり、WebのAPI・表示・操作仕様は変更しない。
