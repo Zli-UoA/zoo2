@@ -19,6 +19,8 @@ import androidx.compose.ui.text.font.*
 import androidx.compose.ui.text.style.*
 import androidx.compose.ui.unit.*
 import kotlinx.coroutines.*
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.serialization.json.*
 import org.jetbrains.compose.resources.ExperimentalResourceApi
 import zoo_compose.generated.resources.Res
@@ -26,14 +28,15 @@ import zoo_compose.generated.resources.Res
 /** Pure Kotlin inline scanner. Delimiters inside code remain literal. */
 data class Inline(val value: String, val kind: String = "text", val url: String? = null)
 
-fun parseInline(source: String): List<Inline> {
-    val pattern =
+private val inlinePattern =
         Regex(
             "(`[^`\\n]+`|<small>[\\s\\S]*?</small>|<plain>[\\s\\S]*?</plain>|\\*\\*[^*]+\\*\\*|~~[^~]+~~|<b>[\\s\\S]*?</b>|<i>[\\s\\S]*?</i>|\\*[^*\\n]+\\*|\\[[^]\\n]+]\\(https?://[^)\\s]+\\)|https?://[^\\s<>]+|@[A-Za-z0-9._-]+(?:@[A-Za-z0-9.-]+)?|#[^\\s#.,!?:;<>]+|:[a-zA-Z0-9_+-]+:)"
         )
+
+fun parseInline(source: String): List<Inline> {
     val out = mutableListOf<Inline>()
     var end = 0
-    pattern.findAll(source).forEach { match ->
+    inlinePattern.findAll(source).forEach { match ->
         if (match.range.first > end) out += Inline(source.substring(end, match.range.first))
         val s = match.value
         out +=
@@ -132,7 +135,7 @@ fun RichText(
         return
     }
     val headings =
-        remember(content) { if (depth == 0) messageHeadingBlocks(content) else emptyList() }
+        remember(content, depth) { if (depth == 0) messageHeadingBlocks(content) else emptyList() }
     if (headings.any { it.level != null }) {
         val inherited = LocalMfmStyle.current
         val baseSize =
@@ -188,12 +191,8 @@ fun RichText(
     }
     val segments = remember(content) { richSegments(content) }
     var shortcodes by remember { mutableStateOf<JsonObject>(JsonObject(emptyMap())) }
-    LaunchedEffect(Unit) {
-        shortcodes =
-            json
-                .parseToJsonElement(Res.readBytes("files/shortcodes.json").decodeToString())
-                .jsonObject
-    }
+    LaunchedEffect(Unit) { shortcodes = loadShortcodes() }
+
     RichSelection(selection) {
         Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(2.dp)) {
             val inline = mutableListOf<Pair<String, Boolean>>()
@@ -246,6 +245,23 @@ fun RichText(
     }
 }
 
+private val shortcodeLock = Mutex()
+private var loadedShortcodes: Row? = null
+
+/** Immutable bundled data is parsed once, rather than for every recycled message. */
+@OptIn(ExperimentalResourceApi::class)
+private suspend fun loadShortcodes(): Row = shortcodeLock.withLock {
+    loadedShortcodes ?: json.parseToJsonElement(
+        Res.readBytes("files/shortcodes.json").decodeToString()
+    ).jsonObject.also { loadedShortcodes = it }
+}
+
+private data class CachedParagraph(
+    val text: AnnotatedString,
+    val mentions: Map<String, String>,
+    val emojiParts: Map<String, Row>,
+)
+
 @Composable
 private fun InlineParagraph(
     segments: List<Pair<String, Boolean>>,
@@ -265,116 +281,134 @@ private fun InlineParagraph(
     val codeBackground = MaterialTheme.colorScheme.surfaceVariant
     val density = androidx.compose.ui.platform.LocalDensity.current
     val sizes = remember(segments) { mutableStateMapOf<String, androidx.compose.ui.unit.IntSize>() }
-    val embedded =
-        segments
-            .mapIndexedNotNull { index, segment ->
-                if (segment.second) index.toString() to segment.first else null
+    val embedded = remember(segments) {
+        segments.mapIndexedNotNull { index, segment ->
+            if (segment.second) index.toString() to segment.first else null
+        }.toMap()
+    }
+    val joined = LocalJoinedEmojis.current
+    val workspace = if (joined == null) workspaceEmojis(app) else emptyList()
+    val registeredEmojis = remember(joined, workspace) {
+        joined ?: workspace.flatMap { item ->
+            val emoji = workspaceEmoji(item)
+            listOf(emoji) + item.array("aliases").map { alias ->
+                JsonObject(emoji + ("name" to JsonPrimitive(":${alias.jsonPrimitive.content}:")))
             }
-            .toMap()
-    val mentions = mutableMapOf<String, String>()
-    val registeredEmojis = LocalJoinedEmojis.current ?: workspaceEmojis(app).flatMap { item -> listOf(workspaceEmoji(item)) + item.array("aliases").map { alias -> buildJsonObject { workspaceEmoji(item).forEach { (key, value) -> put(key,value) }; put("name", ":${alias.jsonPrimitive.content}:") } } }
-    val remoteEmojis = LocalActivityPubEmojis.current + registeredEmojis
-    val emojiParts = mutableMapOf<String, Row>()
-    val text = buildAnnotatedString {
-        fun write(
-            source: String,
-            level: Int = 0,
-            inheritedWeight: FontWeight? = inheritedStyle.fontWeight,
-        ) {
-            parseInline(source).forEach { token ->
-                var value = token.value
-                if (token.kind == "emoji") {
-                    val remote = remoteEmojis.find { it.text("name") == value }
-                    if (remote != null && (remote.flag("local") || Regex("^[a-f0-9]{64}$").matches(remote.text("image_id")))) {
-                        val id = "apub-emoji-${emojiParts.size}"
-                        emojiParts[id] = remote
-                        appendInlineContent(id, value)
-                        return@forEach
-                    }
-                    value = (shortcodes[value.trim(':')] as? JsonPrimitive)?.contentOrNull ?: value
-                }
-                val user = users.find { it.text("user_name") == value.removePrefix("@") }
-
-                val inlineWeight = if (token.kind == "bold") FontWeight.Bold else inheritedWeight
-                val style =
-                    when (token.kind) {
-                        "bold" -> SpanStyle(fontWeight = FontWeight.Bold)
-                        "italic" -> SpanStyle(fontStyle = FontStyle.Italic)
-                        "strike" -> SpanStyle(textDecoration = TextDecoration.LineThrough)
-                        "small" -> SpanStyle(fontSize = 11.2.sp)
-                        "code" -> SpanStyle(fontFamily = fonts.mono, background = codeBackground)
-                        "mention" ->
-                            SpanStyle(
-                                color = mentionForeground,
-                                background = mentionBackground,
-                                fontWeight = FontWeight.Medium,
-                            )
-                        "hashtag",
-                        "link" -> SpanStyle(color = accent)
-                        else -> SpanStyle()
-                    }
-                val channel =
-                    if (token.kind == "hashtag")
-                        channels.find {
-                            it.text("channel_name") == value.removePrefix("#") &&
-                                !it.present("deleted_at")
-                        }
-                    else null
-                val remote =
-                    if (token.kind == "mention" && value.count { it == '@' } == 2)
-                        value.drop(1).split('@').takeIf { it.size == 2 && it[1].contains('.') }
-                    else null
-                val link =
-                    token.url
-                        ?: channel?.let { "/channels/${it.text("id")}" }
-                        ?: remote?.let { "https://${it[1]}/@${it[0]}" }
-                if (token.kind == "mention" && link == null) {
-                    val id = "mention-${mentions.size}"
-                    mentions[id] = value
-                    appendInlineContent(id, value)
-                } else if (link != null)
-                    withLink(
-                        LinkAnnotation.Url(
-                            link,
-                            linkInteractionListener = {
-                                if (link.startsWith('/')) app.navigate(link)
-                                else app.platform.action("open:$link")
-                            },
-                        )
-                    ) {
-                        withStyle(style) {
-                            append(
-                                fontText(
-                                    if (token.kind == "link" && token.value == token.url)
-                                        value.replace(
-                                            Regex("^https?://", RegexOption.IGNORE_CASE),
-                                            "",
-                                        )
-                                    else value,
-                                    fonts,
-                                    inlineWeight,
-                                )
-                            )
-                        }
-                    }
-                else
-                    withStyle(style) {
-                        if (token.kind in setOf("bold", "italic", "strike", "small") && level < 8)
-                            write(value, level + 1, inlineWeight)
-                        else if (token.kind == "code") append(value)
-                        else append(fontText(value, fonts, inlineWeight))
-                    }
-            }
-        }
-        segments.forEachIndexed { index, segment ->
-            if (segment.second) appendInlineContent(index.toString(), segment.first)
-            else write(segment.first)
-        }
-        if (editedAt != null) {
-            append(" ")
-            appendInlineContent("edited", " ")
         }
     }
+    val activityPubEmojis = LocalActivityPubEmojis.current
+    val remoteEmojis = remember(activityPubEmojis, registeredEmojis) { activityPubEmojis + registeredEmojis }
+    val paragraph = remember(
+        app, segments, users, shortcodes, fonts, channels, inheritedStyle,
+        mentionForeground, mentionBackground, accent, codeBackground, remoteEmojis, editedAt,
+    ) {
+        val mentions = mutableMapOf<String, String>()
+        val emojiParts = mutableMapOf<String, Row>()
+        val text = buildAnnotatedString {
+            fun write(
+                source: String,
+                level: Int = 0,
+                inheritedWeight: FontWeight? = inheritedStyle.fontWeight,
+            ) {
+                parseInline(source).forEach { token ->
+                    var value = token.value
+                    if (token.kind == "emoji") {
+                        val remote = remoteEmojis.find { it.text("name") == value }
+                        if (remote != null && (remote.flag("local") || Regex("^[a-f0-9]{64}$").matches(remote.text("image_id")))) {
+                            val id = "apub-emoji-${emojiParts.size}"
+                            emojiParts[id] = remote
+                            appendInlineContent(id, value)
+                            return@forEach
+                        }
+                        value = (shortcodes[value.trim(':')] as? JsonPrimitive)?.contentOrNull ?: value
+                    }
+                    val user = users.find { it.text("user_name") == value.removePrefix("@") }
+
+                    val inlineWeight = if (token.kind == "bold") FontWeight.Bold else inheritedWeight
+                    val style =
+                        when (token.kind) {
+                            "bold" -> SpanStyle(fontWeight = FontWeight.Bold)
+                            "italic" -> SpanStyle(fontStyle = FontStyle.Italic)
+                            "strike" -> SpanStyle(textDecoration = TextDecoration.LineThrough)
+                            "small" -> SpanStyle(fontSize = 11.2.sp)
+                            "code" -> SpanStyle(fontFamily = fonts.mono, background = codeBackground)
+                            "mention" ->
+                                SpanStyle(
+                                    color = mentionForeground,
+                                    background = mentionBackground,
+                                    fontWeight = FontWeight.Medium,
+                                )
+                            "hashtag",
+                            "link" -> SpanStyle(color = accent)
+                            else -> SpanStyle()
+                        }
+                    val channel =
+                        if (token.kind == "hashtag")
+                            channels.find {
+                                it.text("channel_name") == value.removePrefix("#") &&
+                                    !it.present("deleted_at")
+                            }
+                        else null
+                    val remote =
+                        if (token.kind == "mention" && value.count { it == '@' } == 2)
+                            value.drop(1).split('@').takeIf { it.size == 2 && it[1].contains('.') }
+                        else null
+                    val link =
+                        token.url
+                            ?: channel?.let { "/channels/${it.text("id")}" }
+                            ?: remote?.let { "https://${it[1]}/@${it[0]}" }
+                    if (token.kind == "mention" && link == null) {
+                        val id = "mention-${mentions.size}"
+                        mentions[id] = value
+                        appendInlineContent(id, value)
+                    } else if (link != null)
+                        withLink(
+                            LinkAnnotation.Url(
+                                link,
+                                linkInteractionListener = {
+                                    if (link.startsWith('/')) app.navigate(link)
+                                    else app.platform.action("open:$link")
+                                },
+                            )
+                        ) {
+                            withStyle(style) {
+                                append(
+                                    fontText(
+                                        if (token.kind == "link" && token.value == token.url)
+                                            value.replace(
+                                                Regex("^https?://", RegexOption.IGNORE_CASE),
+                                                "",
+                                            )
+                                        else value,
+                                        fonts,
+                                        inlineWeight,
+                                    )
+                                )
+                            }
+                        }
+                    else
+                        withStyle(style) {
+                            if (token.kind in setOf("bold", "italic", "strike", "small") && level < 8)
+                                write(value, level + 1, inlineWeight)
+                            else if (token.kind == "code") append(value)
+                            else append(fontText(value, fonts, inlineWeight))
+                        }
+                }
+            }
+            segments.forEachIndexed { index, segment ->
+                if (segment.second) appendInlineContent(index.toString(), segment.first)
+                else write(segment.first)
+            }
+            if (editedAt != null) {
+                append(" ")
+                appendInlineContent("edited", " ")
+            }
+        }
+        CachedParagraph(text, mentions.toMap(), emojiParts.toMap())
+    }
+    val text = paragraph.text
+    val mentions = paragraph.mentions
+    val emojiParts = paragraph.emojiParts
     val content =
         embedded.mapValues { (id, source) ->
             val measured = sizes[id]

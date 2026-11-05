@@ -31,6 +31,12 @@ for (const implementation of ["react", "compose"] as const) {
       const native = implementation === "compose" ? "kotlin" : "react";
       const composer = page.getByRole("textbox", { name: "メッセージを送信", exact: true });
       await fillControl(page, composer, "", native);
+      await page.evaluate(async () => {
+        for (let frame = 0; frame < 10; frame++) await new Promise(requestAnimationFrame);
+      });
+      const profile = await page.context().newCDPSession(page);
+      await profile.send("Performance.enable");
+      const taskStart = await profile.send("Performance.getMetrics");
       await page.evaluate(() => {
         const frames: number[] = [];
         const state = { frames, stop: false };
@@ -66,6 +72,11 @@ for (const implementation of ["react", "compose"] as const) {
             .reduce((sum, entry) => sum + (entry as PerformanceResourceTiming).encodedBodySize, 0),
         };
       });
+      const taskEnd = await profile.send("Performance.getMetrics");
+      const deltaMs = (name: string) =>
+        1000 *
+        ((taskEnd.metrics.find((metric) => metric.name === name)?.value ?? 0) -
+          (taskStart.metrics.find((metric) => metric.name === name)?.value ?? 0));
       const input =
         implementation === "compose" ? await composer.textContent() : await composer.inputValue();
       const result = {
@@ -76,6 +87,9 @@ for (const implementation of ["react", "compose"] as const) {
         implementation,
         sample,
         readyMs,
+        mainThreadMs: deltaMs("TaskDuration"),
+        scriptMs: deltaMs("ScriptDuration"),
+        layoutMs: deltaMs("LayoutDuration"),
         ...metrics,
       };
       console.log(JSON.stringify(result));
