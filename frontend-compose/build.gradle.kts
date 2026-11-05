@@ -142,7 +142,7 @@ compose.resources {
 
 if (androidEnabled) extensions.configure<com.android.build.gradle.LibraryExtension> {
     namespace = "works.zli.zoo.shared"
-    compileSdk = 35
+    compileSdk = 36
     defaultConfig { minSdk = 26 }
     compileOptions { sourceCompatibility = JavaVersion.VERSION_17; targetCompatibility = JavaVersion.VERSION_17 }
 }
