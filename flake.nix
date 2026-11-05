@@ -22,10 +22,17 @@
           cargo = toolchain;
           rustc = toolchain;
         };
-        zoo2-tui = rustPlatform.buildRustPackage {
+        zoo2-tui = rustPlatform.buildRustPackage rec {
           pname = "zoo2-tui";
           version = (builtins.fromTOML (builtins.readFile ./tui/Cargo.toml)).package.version;
-          src = ./tui;
+          src = pkgs.lib.fileset.toSource {
+            root = ./.;
+            fileset = pkgs.lib.fileset.unions [
+              ./client-core
+              ./tui
+            ];
+          };
+          sourceRoot = "${src.name}/tui";
           cargoLock.lockFile = ./tui/Cargo.lock;
           # テストは CI TUI で実行するので、ビルドだけにする。
           doCheck = false;
@@ -36,6 +43,19 @@
             mainProgram = "zoo2-tui";
           };
         };
+        linuxDesktopLibs = with pkgs; [
+          alsa-lib
+          fontconfig
+          freetype
+          libxkbcommon
+          vulkan-loader
+          wayland
+          xorg.libX11
+          xorg.libXcursor
+          xorg.libXi
+          xorg.libXrandr
+          xorg.libxcb
+        ];
         # Compose Web (Kotlin/Wasm) の単体テストは Karma で Chrome を使う。CI と同じく
         # サンドボックスを外したラッパーを CHROME_BIN に渡す。Nix の chromium は Linux のみ。
         zooChrome = pkgs.writeShellScriptBin "zoo-chrome" ''
@@ -64,10 +84,11 @@
             opentofu
             sops
             age
-          ] ++ pkgs.lib.optionals pkgs.stdenv.hostPlatform.isLinux [ zooChrome ];
+          ] ++ pkgs.lib.optionals pkgs.stdenv.hostPlatform.isLinux ([ zooChrome ] ++ linuxDesktopLibs);
           RUST_SRC_PATH = "${pkgs.rust.packages.stable.rustPlatform.rustLibSrc}";
           JAVA_HOME = "${pkgs.jdk21}";
           CHROME_BIN = pkgs.lib.optionalString pkgs.stdenv.hostPlatform.isLinux "${zooChrome}/bin/zoo-chrome";
+          LD_LIBRARY_PATH = pkgs.lib.optionalString pkgs.stdenv.hostPlatform.isLinux (pkgs.lib.makeLibraryPath linuxDesktopLibs);
         };
       }
     );

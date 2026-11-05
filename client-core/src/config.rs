@@ -53,7 +53,11 @@ struct FileConfig {
 
 impl Config {
     pub fn load() -> Result<Self> {
-        let file = match config_dir() {
+        Self::load_for("zoo2-tui")
+    }
+
+    pub fn load_for(app_name: &str) -> Result<Self> {
+        let file = match config_dir_for(app_name) {
             Some(dir) => read_file_config(&dir.join("config.toml"))?,
             None => FileConfig::default(),
         };
@@ -66,7 +70,12 @@ impl Config {
 
 /// 設定ファイルとトークンを置くディレクトリ (`~/.config/zoo2-tui` など)。
 pub fn config_dir() -> Option<PathBuf> {
-    directories::ProjectDirs::from("", "", "zoo2-tui").map(|dirs| dirs.config_dir().to_path_buf())
+    config_dir_for("zoo2-tui")
+}
+
+/// 指定したアプリ名の設定ディレクトリ (`~/.config/<app_name>` など)。
+pub fn config_dir_for(app_name: &str) -> Option<PathBuf> {
+    directories::ProjectDirs::from("", "", app_name).map(|dirs| dirs.config_dir().to_path_buf())
 }
 
 fn read_file_config(path: &std::path::Path) -> Result<FileConfig> {

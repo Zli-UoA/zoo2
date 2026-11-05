@@ -5,6 +5,7 @@ on:
   workflow_dispatch:
   pull_request:
     paths:
+      - "client-core/**"
       - "tui/**"
       - "rust-toolchain.toml"
       - ".github/workflows/ci-tui.yaml"
@@ -12,6 +13,7 @@ on:
   push:
     branches: [main]
     paths:
+      - "client-core/**"
       - "tui/**"
       - "rust-toolchain.toml"
       - ".github/workflows/ci-tui.yaml"
@@ -52,6 +54,15 @@ jobs:
         uses: Swatinem/rust-cache@v2
         with:
           workspaces: tui
+      - name: format check (client-core)
+        working-directory: ./client-core
+        run: cargo fmt --check
+      - name: lint check (client-core)
+        working-directory: ./client-core
+        run: cargo clippy --all-targets --locked -- -D warnings
+      - name: test (client-core)
+        working-directory: ./client-core
+        run: cargo test --locked
       - name: format check
         run: cargo fmt --check
       - name: lint check
