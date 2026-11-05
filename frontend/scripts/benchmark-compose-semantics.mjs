@@ -4,9 +4,15 @@ import { readFile, writeFile } from "node:fs/promises";
 import { execFileSync } from "node:child_process";
 import { chromium } from "@playwright/test";
 const path = "frontend-compose/src/wasmJsMain/kotlin/zoo/WebSemantics.kt";
-const baseline =
-  process.argv[2] ?? execFileSync("git", ["rev-parse", "HEAD"], { encoding: "utf8" }).trim();
+const baseline = process.argv[2];
+if (!baseline)
+  throw new Error("Specify the pre-optimization baseline commit as the first argument.");
 const before = execFileSync("git", ["show", `${baseline}:${path}`], { encoding: "utf8" });
+if (!before.includes("controlNode(id: String)")) {
+  throw new Error(
+    "The baseline must use the original full-control synchronization implementation.",
+  );
+}
 const after = await readFile(new URL(`../../${path}`, import.meta.url), "utf8");
 function bodies(source) {
   return Object.fromEntries(
