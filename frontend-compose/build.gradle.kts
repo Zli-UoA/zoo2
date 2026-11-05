@@ -35,6 +35,8 @@ kotlin {
             implementation(compose.runtime)
             implementation(compose.foundation)
             implementation(compose.material3)
+            implementation("com.mikepenz:multiplatform-markdown-renderer:0.40.0")
+            implementation("com.mikepenz:multiplatform-markdown-renderer-m3:0.40.0")
             implementation(compose.components.resources)
             implementation("io.ktor:ktor-client-core:3.1.3")
             implementation("org.jetbrains.kotlinx:kotlinx-coroutines-core:1.10.2")

@@ -30,6 +30,7 @@
       "overwriteLatest": "確認最新版本後用草稿覆蓋",
       "deleteLatest": "刪除已確認的最新版本",
       "unsaved": "有尚未儲存的變更。要離開嗎？",
+      "discardChanges": "捨棄變更",
       "retry": "重試",
       "reload": "重新載入筆記",
       "copyCode": "複製程式碼",

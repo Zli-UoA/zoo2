@@ -30,6 +30,7 @@
       "overwriteLatest": "最新版を確認して下書きで上書きする",
       "deleteLatest": "確認した最新版を削除する",
       "unsaved": "変更が保存されていません。この画面を離れますか？",
+      "discardChanges": "変更を破棄",
       "retry": "再試行",
       "reload": "ノートを再読み込み",
       "copyCode": "コードをコピー",

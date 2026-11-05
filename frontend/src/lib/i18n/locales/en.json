@@ -30,6 +30,7 @@
       "overwriteLatest": "Use latest version and allow overwrite",
       "deleteLatest": "Delete this latest version",
       "unsaved": "You have unsaved changes. Leave this note?",
+      "discardChanges": "Discard changes",
       "retry": "Retry",
       "reload": "Reload notes",
       "copyCode": "Copy code",

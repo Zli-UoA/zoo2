@@ -1143,3 +1143,317 @@ test("Compose cached rich text follows live system theme changes", async ({ page
   await page.emulateMedia({ colorScheme: "light" });
   await expect.poll(() => linkPixels([29, 78, 216]), { timeout: 10_000 }).toBeGreaterThan(5);
 });
+
+test("compose: channel notes open from a direct URL", async ({ page, request }) => {
+  await request.post("https://127.0.0.1:4187/__reset");
+  let note = {
+    id: "note-1",
+    channel_id: "c1",
+    title: "Release notes",
+    content: "# Hello",
+    version: 1,
+  };
+  let update: { title: string; content: string; version: number } | undefined;
+  await page.route("**/api/channels/c1/notes**", async (route) => {
+    const url = new URL(route.request().url());
+    if (route.request().method() === "PATCH") {
+      update = route.request().postDataJSON();
+      note = { ...note, ...update!, version: note.version + 1 };
+    }
+    await route.fulfill({
+      headers: { "Access-Control-Allow-Origin": "*" },
+      json: { data: url.pathname.endsWith("/note-1") ? note : [note], txid: "1" },
+    });
+  });
+  await open(page, "compose", "/channels/c1?note=note-1", "");
+  await expect(page.getByText("Release notes", { exact: true }).first()).toBeVisible();
+  await expect(page.getByText("Hello", { exact: true }).first()).toBeVisible();
+  await page.getByRole("button", { name: "編集", exact: true }).click({ force: true });
+  await fillControl(
+    page,
+    page.getByRole("textbox", { name: "本文", exact: true }),
+    "# Updated",
+    "kotlin",
+  );
+  await page.getByRole("button", { name: "ノートを保存", exact: true }).click({ force: true });
+  await expect(page.getByText("Updated", { exact: true }).first()).toBeVisible();
+  expect(update).toEqual({ title: "Release notes", content: "# Updated", version: 1 });
+});
+
+test("compose: slow note list is not cancelled by polling", async ({ page, request }) => {
+  await request.post("https://127.0.0.1:4187/__reset");
+  let lists = 0;
+  const note = {
+    id: "slow-note",
+    channel_id: "c1",
+    title: "Slow note",
+    content: "Slow content",
+    version: 1,
+  };
+  await page.route("**/api/channels/c1/notes**", async (route) => {
+    if (new URL(route.request().url()).pathname.endsWith("/notes")) {
+      lists++;
+      await new Promise((resolve) => setTimeout(resolve, 6500));
+    }
+    await route.fulfill({
+      headers: { "Access-Control-Allow-Origin": "*" },
+      json: {
+        data: new URL(route.request().url()).pathname.endsWith("/notes") ? [note] : note,
+        txid: "1",
+      },
+    });
+  });
+  await open(page, "compose", "/channels/c1?note=slow-note", "");
+  await expect(page.getByText("Slow content", { exact: true })).toBeVisible({ timeout: 15000 });
+  expect(lists).toBe(1);
+});
+
+test("compose: slow note refresh does not replace an editor draft", async ({ page, request }) => {
+  await request.post("https://127.0.0.1:4187/__reset");
+  let detailRequests = 0;
+  let refreshDone = false;
+  const note = {
+    id: "draft-note",
+    channel_id: "c1",
+    title: "Draft note",
+    content: "Original",
+    version: 1,
+  };
+  await page.route("**/api/channels/c1/notes**", async (route) => {
+    const isList = new URL(route.request().url()).pathname.endsWith("/notes");
+    if (!isList && ++detailRequests === 2) {
+      await new Promise((resolve) => setTimeout(resolve, 3000));
+      refreshDone = true;
+    }
+    await route.fulfill({
+      headers: { "Access-Control-Allow-Origin": "*" },
+      json: { data: isList ? [note] : note, txid: "1" },
+    });
+  });
+  await open(page, "compose", "/channels/c1?note=draft-note", "");
+  await expect(page.getByText("Original", { exact: true })).toBeVisible();
+  await expect.poll(() => detailRequests, { timeout: 10000 }).toBeGreaterThanOrEqual(2);
+  await page.getByRole("button", { name: "編集", exact: true }).click({ force: true });
+  const field = page.getByRole("textbox", { name: "本文", exact: true });
+  await fillControl(page, field, "Draft in progress", "kotlin");
+  await expect.poll(() => refreshDone, { timeout: 10000 }).toBe(true);
+  await expect(field).toHaveText("Draft in progress");
+});
+
+test("compose: unsaved note draft survives tab and route cancellation", async ({
+  page,
+  request,
+}) => {
+  await request.post("https://127.0.0.1:4187/__reset");
+  const note = {
+    id: "draft-note",
+    channel_id: "c1",
+    title: "Draft note",
+    content: "Original",
+    version: 1,
+  };
+  await page.route("**/api/channels/c1/notes**", async (route) => {
+    const isList = new URL(route.request().url()).pathname.endsWith("/notes");
+    await route.fulfill({
+      headers: { "Access-Control-Allow-Origin": "*" },
+      json: { data: isList ? [note] : note, txid: "1" },
+    });
+  });
+  await open(page, "compose", "/channels/c1?note=draft-note", "");
+  await expect(page.getByText("Original", { exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "編集", exact: true }).click({ force: true });
+  const field = page.getByRole("textbox", { name: "本文", exact: true });
+  await fillControl(page, field, "Unsaved draft", "kotlin");
+  await page.getByRole("tab", { name: "メッセージ", exact: true }).click({ force: true });
+  await expect(page.getByText("変更が保存されていません。この画面を離れますか？")).toBeVisible();
+  await page.getByRole("button", { name: "キャンセル", exact: true }).last().click({ force: true });
+  await expect(field).toHaveText("Unsaved draft");
+  const dialog = page.waitForEvent("dialog").then((event) => event.dismiss());
+  await Promise.all([dialog, page.getByRole("link", { name: "Home", exact: true }).press("Enter")]);
+  await expect(page).toHaveURL(/note=draft-note/);
+  await expect(field).toHaveText("Unsaved draft");
+});
+
+test("compose: removed note is no longer displayed after refresh", async ({ page, request }) => {
+  await request.post("https://127.0.0.1:4187/__reset");
+  let removed = false;
+  const note = {
+    id: "gone-note",
+    channel_id: "c1",
+    title: "Gone note",
+    content: "Sensitive body",
+    version: 1,
+  };
+  await page.route("**/api/channels/c1/notes**", async (route) => {
+    const isList = new URL(route.request().url()).pathname.endsWith("/notes");
+    await route.fulfill({
+      headers: { "Access-Control-Allow-Origin": "*" },
+      json: { data: isList ? (removed ? [] : [note]) : note, txid: "1" },
+    });
+  });
+  await open(page, "compose", "/channels/c1?note=gone-note", "");
+  await expect(page.getByText("Sensitive body", { exact: true })).toBeVisible();
+  removed = true;
+  await expect(page.getByText("ノートが見つかりません。").first()).toBeVisible({ timeout: 15000 });
+  await expect(page.getByText("Sensitive body", { exact: true })).toBeHidden();
+  await expect(page.getByRole("button", { name: "編集", exact: true })).toBeHidden();
+});
+
+test("compose: todo shows saving until its patch finishes", async ({ page, request }) => {
+  await request.post("https://127.0.0.1:4187/__reset");
+  let note = {
+    id: "task-note",
+    channel_id: "c1",
+    title: "Task note",
+    content: "- [ ] Do thing",
+    version: 1,
+  };
+  await page.route("**/api/channels/c1/notes**", async (route) => {
+    const isList = new URL(route.request().url()).pathname.endsWith("/notes");
+    if (route.request().method() === "PATCH") {
+      await new Promise((resolve) => setTimeout(resolve, 2000));
+      note = { ...note, ...route.request().postDataJSON(), version: 2 };
+    }
+    await route.fulfill({
+      headers: { "Access-Control-Allow-Origin": "*" },
+      json: { data: isList ? [note] : note, txid: "1" },
+    });
+  });
+  await open(page, "compose", "/channels/c1?note=task-note", "");
+  const checkbox = page.getByRole("checkbox").first();
+  await expect(checkbox).toBeVisible();
+  await checkbox.click({ force: true });
+  await expect(page.getByText("保存中…", { exact: true })).toBeVisible();
+  await expect(page.getByText("未保存", { exact: true })).toBeHidden();
+  await expect(page.getByText("保存中…", { exact: true })).toBeHidden({ timeout: 10000 });
+  expect(note.content).toContain("[x]");
+});
+
+test("compose: desktop tab drag sends the shared order", async ({ page, request }) => {
+  await request.post("https://127.0.0.1:4187/__reset");
+  const notes = [
+    { id: "note-a", channel_id: "c1", title: "First note", content: "First body", version: 1 },
+    { id: "note-b", channel_id: "c1", title: "Second note", content: "Second body", version: 1 },
+  ];
+  let order: { note_ids: string[]; expected_note_ids: string[] } | undefined;
+  await page.route("**/api/channels/c1/notes**", async (route) => {
+    const path = new URL(route.request().url()).pathname;
+    if (path.endsWith("/order")) order = route.request().postDataJSON();
+    const data = path.endsWith("/notes")
+      ? notes
+      : path.endsWith("/order")
+        ? []
+        : notes.find((note) => path.endsWith(note.id));
+    await route.fulfill({
+      headers: { "Access-Control-Allow-Origin": "*" },
+      json: { data, txid: "1" },
+    });
+  });
+  await open(page, "compose", "/channels/c1?note=note-a", "");
+  const first = page.getByRole("tab", { name: "First note", exact: true });
+  const second = page.getByRole("tab", { name: "Second note", exact: true });
+  await expect(first).toBeVisible();
+  const from = (await first.boundingBox())!;
+  const to = (await second.boundingBox())!;
+  await page.mouse.move(from.x + from.width / 2, from.y + from.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(to.x + to.width * 0.9, to.y + to.height / 2, { steps: 12 });
+  await page.mouse.up();
+  await expect
+    .poll(() => order)
+    .toEqual({ note_ids: ["note-b", "note-a"], expected_note_ids: ["note-a", "note-b"] });
+});
+
+test("compose: note conflict keeps draft until latest is reviewed", async ({ page, request }) => {
+  await request.post("https://127.0.0.1:4187/__reset");
+  let note = {
+    id: "conflict-note",
+    channel_id: "c1",
+    title: "Conflict note",
+    content: "Original",
+    version: 1,
+  };
+  let conflict = true;
+  let saved: { title: string; content: string; version: number } | undefined;
+  await page.route("**/api/channels/c1/notes**", async (route) => {
+    const isList = new URL(route.request().url()).pathname.endsWith("/notes");
+    if (route.request().method() === "PATCH") {
+      if (conflict) {
+        conflict = false;
+        note = { ...note, content: "Remote update", version: 2 };
+        await route.fulfill({
+          status: 409,
+          headers: { "Access-Control-Allow-Origin": "*" },
+          json: { error: "conflict" },
+        });
+        return;
+      }
+      saved = route.request().postDataJSON();
+      note = { ...note, ...saved!, version: 3 };
+    }
+    await route.fulfill({
+      headers: { "Access-Control-Allow-Origin": "*" },
+      json: { data: isList ? [note] : note, txid: "1" },
+    });
+  });
+  await open(page, "compose", "/channels/c1?note=conflict-note", "");
+  await expect(page.getByText("Original", { exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "編集", exact: true }).click({ force: true });
+  const field = page.getByRole("textbox", { name: "本文", exact: true });
+  await fillControl(page, field, "My draft", "kotlin");
+  await page.getByRole("button", { name: "ノートを保存", exact: true }).click({ force: true });
+  await expect(field).toHaveText("My draft");
+  await expect(page.getByText("Remote update", { exact: true })).toBeVisible();
+  await page
+    .getByRole("button", { name: "最新版を確認して下書きで上書きする", exact: true })
+    .click({ force: true });
+  await expect(page.getByText("My draft", { exact: true })).toBeVisible();
+  expect(saved).toEqual({ title: "Conflict note", content: "My draft", version: 2 });
+});
+
+test("compose: retry loads latest after conflict fetch fails", async ({ page, request }) => {
+  await request.post("https://127.0.0.1:4187/__reset");
+  let note = {
+    id: "retry-note",
+    channel_id: "c1",
+    title: "Retry note",
+    content: "Original",
+    version: 1,
+  };
+  let failLatest = false;
+  await page.route("**/api/channels/c1/notes**", async (route) => {
+    const isList = new URL(route.request().url()).pathname.endsWith("/notes");
+    if (route.request().method() === "PATCH") {
+      note = { ...note, content: "Latest server text", version: 2 };
+      failLatest = true;
+      await route.fulfill({
+        status: 409,
+        headers: { "Access-Control-Allow-Origin": "*" },
+        json: { error: "conflict" },
+      });
+      return;
+    }
+    if (!isList && failLatest) {
+      failLatest = false;
+      await route.fulfill({
+        status: 503,
+        headers: { "Access-Control-Allow-Origin": "*" },
+        json: { error: "offline" },
+      });
+      return;
+    }
+    await route.fulfill({
+      headers: { "Access-Control-Allow-Origin": "*" },
+      json: { data: isList ? [note] : note, txid: "1" },
+    });
+  });
+  await open(page, "compose", "/channels/c1?note=retry-note", "");
+  await expect(page.getByText("Original", { exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "編集", exact: true }).click({ force: true });
+  const field = page.getByRole("textbox", { name: "本文", exact: true });
+  await fillControl(page, field, "Unsaved draft", "kotlin");
+  await page.getByRole("button", { name: "ノートを保存", exact: true }).click({ force: true });
+  await page.getByRole("button", { name: "再試行", exact: true }).first().click({ force: true });
+  await expect(page.getByText("Latest server text", { exact: true })).toBeVisible();
+  await expect(field).toHaveText("Unsaved draft");
+});

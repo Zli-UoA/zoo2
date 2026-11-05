@@ -30,6 +30,7 @@
       "overwriteLatest": "确认最新版本后用草稿覆盖",
       "deleteLatest": "删除已确认的最新版本",
       "unsaved": "有未保存的更改。要离开吗？",
+      "discardChanges": "放弃更改",
       "retry": "重试",
       "reload": "重新加载笔记",
       "copyCode": "复制代码",
