@@ -217,14 +217,15 @@ export function ChannelNotesTabs({
     };
   }, [load]);
   useEffect(() => {
-    if (!noteId) return;
     const timer = window.setInterval(() => {
       if (!loadController.current) void load();
     }, 5000);
     return () => clearInterval(timer);
-  }, [load, noteId]);
+  }, [load]);
   useEffect(() => {
-    if (canWrite && !archived) return;
+    // Archiving disables writes, but a failed local task draft must remain visible.
+    if (archived) return;
+    if (canWrite) return;
     if (taskDraftRef.current !== null) {
       taskDraftRef.current = null;
       setTaskDraftContent(null);
@@ -481,12 +482,11 @@ export function ChannelNotesTabs({
   function select(note: Note) {
     if (busy || taskSaveInFlight.current) return;
     if (dirty && !window.confirm(t("channels.notes.unsaved"))) return;
-    const full =
-      typeof note.content === "string"
-        ? note
-        : selectedRef.current?.id === note.id
-          ? selectedRef.current
-          : null;
+    const previous = selectedRef.current;
+    const needsReload =
+      typeof note.content !== "string" &&
+      (previous?.id !== note.id || previous.version !== note.version);
+    const full = typeof note.content === "string" ? note : needsReload ? null : previous;
     setSelected(full);
     setTitle(note.title);
     setContent(full?.content ?? "");
@@ -499,6 +499,8 @@ export function ChannelNotesTabs({
     setTaskDraftContent(null);
     dirtyRef.current = false;
     onNoteChange(note.id);
+    // Selecting the already-open tab does not change noteId, so its route effect will not load it.
+    if (needsReload && note.id === noteId) void loadRef.current();
   }
   function selectMessage() {
     if (busy || taskSaveInFlight.current) return;
@@ -914,7 +916,7 @@ export function ChannelNotesTabs({
                     taskCheckboxes={canWrite && !archived && (!busy || taskSaveInFlight.current)}
                     onTaskToggle={(sourceOffset, checked) => void toggleTask(sourceOffset, checked)}
                   />
-                  {taskDraftContent !== null && !busy ? (
+                  {taskDraftContent !== null && !busy && canWrite && !archived ? (
                     <Button
                       variant="outline"
                       size="sm"

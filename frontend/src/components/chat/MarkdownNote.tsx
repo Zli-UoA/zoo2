@@ -151,17 +151,28 @@ function rehypeTaskPositions() {
     };
     const visit = (node: HastNode) => {
       if (node.tagName === "li" && node.position && node.children) {
-        for (const child of node.children) {
-          if (child.tagName === "input" && child.properties?.type === "checkbox") {
-            const markerOffset = node.properties?.["data-task-marker-offset"];
-            if (typeof markerOffset === "number") {
-              child.position = { ...node.position, start: { offset: markerOffset } };
-            } else {
-              child.position = undefined;
-            }
-            const label = node.children.map(textContent).join("").trim();
-            child.properties = { ...child.properties, "aria-label": label || "Task checkbox" };
+        const checkboxes = node.children.flatMap((child) =>
+          child.tagName === "input"
+            ? [child]
+            : child.tagName === "p"
+              ? (child.children ?? []).filter(
+                  (paragraphChild) => paragraphChild.tagName === "input",
+                )
+              : [],
+        );
+        for (const checkbox of checkboxes) {
+          if (checkbox.properties?.type !== "checkbox") continue;
+          const markerOffset = node.properties?.["data-task-marker-offset"];
+          if (typeof markerOffset === "number") {
+            checkbox.position = { ...node.position, start: { offset: markerOffset } };
+          } else {
+            checkbox.position = undefined;
           }
+          const label = node.children.map(textContent).join("").trim();
+          checkbox.properties = {
+            ...checkbox.properties,
+            "aria-label": label || "Task checkbox",
+          };
         }
       }
       node.children?.forEach(visit);

@@ -116,15 +116,22 @@ describe("ChannelNotesTabs", () => {
     expect(draft.value).toBe("unsent message");
     expect(draft.dataset.active).toBe("true");
   });
-  it("does not poll while the message tab is active", async () => {
+  it("refreshes the summary list while the message tab is active", async () => {
     vi.useFakeTimers();
     try {
+      api.requestWithTx.mockReset();
+      api.requestWithTx.mockResolvedValueOnce({ data: [], txid: null }).mockResolvedValueOnce({
+        data: [{ ...note, id: "note-2", title: "Created by another user" }],
+        txid: null,
+      });
       await mount();
       expect(api.requestWithTx).toHaveBeenCalledTimes(1);
+      expect(document.body.textContent).not.toContain("Created by another user");
       await act(async () => {
-        vi.advanceTimersByTime(15000);
+        await vi.advanceTimersByTimeAsync(5000);
       });
-      expect(api.requestWithTx).toHaveBeenCalledTimes(1);
+      expect(api.requestWithTx).toHaveBeenCalledTimes(2);
+      expect(document.body.textContent).toContain("Created by another user");
     } finally {
       vi.useRealTimers();
     }
@@ -139,7 +146,116 @@ describe("ChannelNotesTabs", () => {
     expect(api.requestWithTx.mock.calls[1]?.[0]).toBe("/api/channels/channel-1/notes/note-1");
     expect(document.body.textContent).toContain(note.content);
   });
-  it("does not cancel a slow initial load when polling starts", async () => {
+  it("reloads the latest full note when the active tab is reselected after an edit", async () => {
+    const latest = { ...note, title: "Updated elsewhere", content: "Latest body", version: 2 };
+    const { content: _content, ...latestSummary } = latest;
+    api.requestWithTx.mockImplementation((url: string) =>
+      Promise.resolve(
+        url.endsWith("/note-1")
+          ? { data: url.includes("/note-1") ? note : latest }
+          : { data: [latestSummary] },
+      ),
+    );
+    vi.stubGlobal(
+      "confirm",
+      vi.fn(() => true),
+    );
+    await mount("note-1");
+    await flush(() => button("編集").click());
+    const textarea = document.body.querySelector("textarea")!;
+    await flush(() => {
+      Object.getOwnPropertyDescriptor(Object.getPrototypeOf(textarea), "value")!.set!.call(
+        textarea,
+        "my draft",
+      );
+      textarea.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    api.requestWithTx.mockImplementation((url: string) =>
+      Promise.resolve(url.endsWith("/note-1") ? { data: latest } : { data: [latestSummary] }),
+    );
+
+    await flush(() => button("Initial").click());
+
+    expect(window.confirm).toHaveBeenCalled();
+    expect(api.requestWithTx).toHaveBeenCalledWith(
+      "/api/channels/channel-1/notes/note-1",
+      expect.objectContaining({ signal: expect.any(AbortSignal) }),
+    );
+    expect(document.body.textContent).toContain("Updated elsewhere");
+    expect(document.body.textContent).toContain("Latest body");
+    expect(document.body.textContent).not.toContain("my draft");
+  });
+  it("reports a failed refresh instead of continuing to show the stale note body", async () => {
+    const latest = { ...note, title: "Updated elsewhere", content: "Latest body", version: 2 };
+    const { content: _content, ...latestSummary } = latest;
+    api.requestWithTx.mockImplementation((url: string) =>
+      Promise.resolve(url.endsWith("/note-1") ? { data: note } : { data: [latestSummary] }),
+    );
+    await mount("note-1");
+    api.requestWithTx.mockImplementation((url: string) =>
+      url.endsWith("/note-1")
+        ? Promise.reject(new Error("offline"))
+        : Promise.resolve({ data: [latestSummary] }),
+    );
+
+    await flush(() => button("Updated elsewhere").click());
+
+    expect(document.body.querySelector('[role="alert"]')?.textContent).toContain("offline");
+    expect(document.body.textContent).not.toContain(note.content);
+  });
+  it("keeps the edit draft and skips refresh when same-tab discard is cancelled", async () => {
+    const latest = { ...note, title: "Updated elsewhere", content: "Latest body", version: 2 };
+    const { content: _content, ...latestSummary } = latest;
+    api.requestWithTx.mockImplementation((url: string) =>
+      Promise.resolve(url.endsWith("/note-1") ? { data: note } : { data: [latestSummary] }),
+    );
+    const confirm = vi.fn(() => false);
+    vi.stubGlobal("confirm", confirm);
+    await mount("note-1");
+    await flush(() => button("編集").click());
+    const textarea = document.body.querySelector("textarea")!;
+    await flush(() => {
+      Object.getOwnPropertyDescriptor(Object.getPrototypeOf(textarea), "value")!.set!.call(
+        textarea,
+        "keep this draft",
+      );
+      textarea.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    const callsBeforeSelection = api.requestWithTx.mock.calls.length;
+
+    await flush(() => button("Initial").click());
+
+    expect(confirm).toHaveBeenCalled();
+    expect(api.requestWithTx).toHaveBeenCalledTimes(callsBeforeSelection);
+    expect((document.body.querySelector("textarea") as HTMLTextAreaElement).value).toBe(
+      "keep this draft",
+    );
+  });
+  it("ignores a delayed note refresh after navigating to another note", async () => {
+    const latest = { ...note, title: "Updated elsewhere", content: "Latest body", version: 2 };
+    const { content: _content, ...latestSummary } = latest;
+    const second = { ...note, id: "note-2", title: "Second", content: "Second body", version: 3 };
+    let delayLatest = false;
+    let finishLatest!: (value: unknown) => void;
+    api.requestWithTx.mockImplementation((url: string) => {
+      if (url.endsWith("/note-1")) {
+        if (delayLatest) return new Promise((resolve) => (finishLatest = resolve));
+        return Promise.resolve({ data: note });
+      }
+      if (url.endsWith("/note-2")) return Promise.resolve({ data: second });
+      return Promise.resolve({ data: [latestSummary, second] });
+    });
+    await mount("note-1");
+    delayLatest = true;
+
+    await flush(() => button("Updated elsewhere").click());
+    await mount("note-2");
+    await flush(() => finishLatest({ data: latest }));
+
+    expect(document.body.textContent).toContain("Second body");
+    expect(document.body.textContent).not.toContain("Latest body");
+  });
+  it("does not cancel a slow summary load when polling starts", async () => {
     vi.useFakeTimers();
     try {
       let resolveLoad!: (value: { data: (typeof note)[]; txid: null }) => void;
@@ -149,7 +265,7 @@ describe("ChannelNotesTabs", () => {
             resolveLoad = resolve;
           }),
       );
-      await mount("note-1");
+      await mount();
       const signal = api.requestWithTx.mock.calls[0]?.[1]?.signal as AbortSignal;
       await act(async () => {
         vi.advanceTimersByTime(5000);
@@ -617,6 +733,26 @@ describe("ChannelNotesTabs", () => {
     ).toBe(true);
     expect(document.body.querySelector('[role="alert"]')?.textContent).toContain("offline");
     expect(button("再試行")).toBeTruthy();
+  });
+
+  it("preserves a failed task draft when the channel is archived", async () => {
+    api.requestWithTx.mockResolvedValue({
+      data: [{ ...note, content: "- [ ] do this" }],
+      txid: null,
+    });
+    api.patch.mockRejectedValueOnce(new Error("offline"));
+    await mount("note-1");
+    await flush(() =>
+      (document.body.querySelector('input[type="checkbox"]') as HTMLInputElement).click(),
+    );
+
+    await mount("note-1", { archived: true });
+
+    expect(
+      (document.body.querySelector('input[type="checkbox"]') as HTMLInputElement).checked,
+    ).toBe(true);
+    expect(document.body.textContent).toContain("do this");
+    expect(button("再試行")).toBeUndefined();
   });
 
   it("preserves the failed checkbox draft if creating a new note fails", async () => {

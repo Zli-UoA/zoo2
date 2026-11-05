@@ -10,6 +10,48 @@ import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.*
 import kotlinx.serialization.json.*
 
+internal fun shapeRequestParameters(
+    name: String,
+    direct: Boolean,
+    params: Map<String, String>,
+    userId: String,
+): Map<String, String> {
+    if (!direct) {
+        return if (name == "notifications") params + ("include_notes" to "true") else params
+    }
+
+    val table =
+        when (name) {
+            "channel_users" -> "channel_user"
+            "notifications" -> "notification_events"
+            else -> name
+        }
+    return buildMap {
+        put("table", table)
+        params["channel_id"]?.let { channelId ->
+            put(
+                "where",
+                if (name == "message_reactions")
+                    "message_id IN (SELECT id FROM messages WHERE channel_id = $1 AND deleted_at IS NULL)"
+                else "channel_id = $1",
+            )
+            put("params[1]", channelId)
+        }
+        if (name == "notifications") {
+            put(
+                "where",
+                "source = 'channel' AND user_id = $1 AND " +
+                    "(message_id IN (SELECT id FROM messages WHERE deleted_at IS NULL) " +
+                    "OR note_id IN (SELECT id FROM channel_notes WHERE deleted_at IS NULL)) " +
+                    "AND channel_id IN (SELECT id FROM channels WHERE deleted_at IS NULL " +
+                    "AND (is_private = false OR id IN (SELECT channel_id FROM channel_user " +
+                    "WHERE user_id = $1)))",
+            )
+            put("params[1]", userId)
+        }
+    }
+}
+
 class ApiException(val status: Int, val body: JsonObject? = null) : Exception("HTTP $status")
 
 /** REST is the only write path. Authentication is resolved again for every request. */
@@ -112,26 +154,7 @@ class SyncedTable(
             val path =
                 if (direct) config.electricShapeUrl
                 else endpoint(config.apiBaseUrl, "${config.shapeProxyPath}/$name")
-            val table = if (name == "channel_users") "channel_user" else name
-            val shapeParams =
-                if (!direct) params
-                else
-                    buildMap {
-                        put("table", table)
-                        params["channel_id"]?.let { channelId ->
-                            put(
-                                "where",
-                                if (name == "message_reactions")
-                                    "message_id IN (SELECT id FROM messages WHERE channel_id = $1 AND deleted_at IS NULL)"
-                                else "channel_id = $1",
-                            )
-                            put("params[1]", channelId)
-                        }
-                        if (name == "notifications") {
-                            put("where", "user_id = $1")
-                            put("params[1]", config.userId)
-                        }
-                    }
+            val shapeParams = shapeRequestParameters(name, direct, params, config.userId)
             val shapeClient =
                 ShapeClient(
                     path,

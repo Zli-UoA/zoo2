@@ -189,6 +189,7 @@ fun Chat(
                         isError = error != null,
                         canCompose = canPost,
                         retry = { table.refresh() },
+                        readState = shouldTrackChannelReadState(app.query["note"]),
                     )
                     when {
                         channel.present("archive_at") ->
@@ -238,6 +239,7 @@ fun Chat(
                             isError = error != null,
                             canCompose = canPost,
                             retry = { table.refresh() },
+                            readState = shouldTrackChannelReadState(app.query["note"]),
                         )
                     },
                     composer =
@@ -251,6 +253,8 @@ fun Chat(
         }
     }
 }
+
+internal fun shouldTrackChannelReadState(noteId: String?): Boolean = noteId == null
 
 @Composable
 private fun JoinToPostPrompt(app: Session, channel: Row) {

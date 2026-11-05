@@ -1449,7 +1449,7 @@ test("compose: retry loads latest after conflict fetch fails", async ({ page, re
   });
   await open(page, "compose", "/channels/c1?note=retry-note", "");
   await expect(page.getByText("Original", { exact: true })).toBeVisible();
-  await page.getByRole("button", { name: "編集", exact: true }).click({ force: true });
+  await clickControl(page.getByRole("button", { name: "編集", exact: true }), "kotlin");
   const field = page.getByRole("textbox", { name: "本文", exact: true });
   await fillControl(page, field, "Unsaved draft", "kotlin");
   await page.getByRole("button", { name: "ノートを保存", exact: true }).click({ force: true });

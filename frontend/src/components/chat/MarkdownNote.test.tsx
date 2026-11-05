@@ -175,6 +175,25 @@ it("keeps the blockquote checkbox position actionable through the Markdown AST",
   root.unmount();
 });
 
+it("keeps task checkboxes in loose-list paragraphs actionable at their source offsets", async () => {
+  const host = document.createElement("div");
+  const root = createRoot(host);
+  const source = "- [ ] first\n\n- [ ] second";
+  const onTaskToggle = vi.fn();
+  await act(async () =>
+    root.render(
+      createElement(MarkdownNote, { content: source, taskCheckboxes: true, onTaskToggle }),
+    ),
+  );
+
+  const boxes = Array.from(host.querySelectorAll('input[type="checkbox"]')) as HTMLInputElement[];
+  expect(boxes).toHaveLength(2);
+  expect(boxes.every((box) => !box.disabled)).toBe(true);
+  await act(async () => boxes[1]?.click());
+  expect(onTaskToggle).toHaveBeenCalledWith(source.indexOf("[ ] second") + 1, true);
+  root.unmount();
+});
+
 it("enables only AST task checkboxes and forwards the state-character source offset", async () => {
   const host = document.createElement("div");
   const root = createRoot(host);
