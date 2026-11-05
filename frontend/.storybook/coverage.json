@@ -696,7 +696,7 @@
       "file": "src/components/chat/messages/MfmChannels.tsx",
       "story": "src/components/chat/messages/MfmContent.stories.tsx",
       "composed": true,
-      "reason": "Defaultで実Providerから公開チャンネルのハッシュタグを解決する。"
+      "reason": "Defaultで実Providerから公開チャンネルのハッシュタグを解決する。MfmChannels.browser.test.tsxでアプリ内遷移・戻る・進む・下書き保持を検証する。"
     },
     {
       "file": "src/components/chat/messages/MfmContent.tsx",
