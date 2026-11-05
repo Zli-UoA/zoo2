@@ -95,10 +95,12 @@ function JoinToPostPrompt({
 export function MessagePane({
   channelId,
   isMember,
+  isActive = true,
   targetMessageId,
 }: {
   channelId: string;
   isMember: boolean;
+  isActive?: boolean;
   targetMessageId?: string;
 }) {
   const { t } = useTranslation();
@@ -424,6 +426,7 @@ export function MessagePane({
         </div>
 
         <MessageList
+          isActive={isActive}
           targetMessageId={targetMessageId}
           key={`${channelId}:${currentUserId}`}
           channelId={channelId}

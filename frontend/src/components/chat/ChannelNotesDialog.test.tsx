@@ -31,7 +31,8 @@ vi.mock("../../hooks/useRealtime", () => ({
 vi.mock("../layout/shell-context", () => ({ useShell: () => ({ showSidebar: vi.fn() }) }));
 vi.mock("./ChannelHeader", () => ({ ChannelHeader: () => null }));
 vi.mock("./messages/MessagePane", () => ({
-  MessagePane: () => createElement("textarea", { "aria-label": "draft" }),
+  MessagePane: ({ isActive }: { isActive: boolean }) =>
+    createElement("textarea", { "aria-label": "draft", "data-active": String(isActive) }),
 }));
 vi.mock("./messages/MfmContent", () => ({
   MfmContent: ({ content }: { content: string }) => createElement("div", null, content),
@@ -107,9 +108,11 @@ describe("ChannelNotesTabs", () => {
     const draft = document.querySelector('textarea[aria-label="draft"]') as HTMLTextAreaElement;
     draft.value = "unsent message";
     await flush(() => renderScreen("note-1"));
+    expect(draft.dataset.active).toBe("false");
     await flush(() => renderScreen());
     expect(document.querySelector('textarea[aria-label="draft"]')).toBe(draft);
     expect(draft.value).toBe("unsent message");
+    expect(draft.dataset.active).toBe("true");
   });
   it("does not cancel a slow initial load when polling starts", async () => {
     vi.useFakeTimers();

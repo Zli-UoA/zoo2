@@ -163,6 +163,7 @@ export function ChannelScreen({
             key={channelId}
             channelId={channelId}
             isMember={access.isMember}
+            isActive={!noteId}
           />
         ) : (
           <div className="flex flex-1 items-center justify-center p-6">
