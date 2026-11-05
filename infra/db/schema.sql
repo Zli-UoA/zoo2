@@ -98,8 +98,7 @@ CREATE TABLE user_identities (
 
 CREATE TABLE message_reactions (
   id text NOT NULL,
-  message_id text,
-  note_id text,
+  message_id text NOT NULL,
   user_id text NOT NULL,
   emoji text NOT NULL,
   created_at timestamp(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,

@@ -114,66 +114,64 @@ export function ChannelScreen({
           </Button>
         </div>
       ) : null}
-      {!noteId || !access.canRead ? (
-        <div className="flex min-h-0 flex-1 flex-col">
-          {access.isMembershipPending ? (
-            <div className="flex flex-1 items-center justify-center">
-              <p className="text-sm text-muted-foreground">{t("common.loading")}</p>
+      <div className={noteId && access.canRead ? "hidden" : "flex min-h-0 flex-1 flex-col"}>
+        {access.isMembershipPending ? (
+          <div className="flex flex-1 items-center justify-center">
+            <p className="text-sm text-muted-foreground">{t("common.loading")}</p>
+          </div>
+        ) : access.isArchived ? (
+          access.canRead ? (
+            <div className="flex min-h-0 flex-1 flex-col">
+              <div className="flex items-start gap-2 border-b bg-muted/40 px-4 py-2 text-xs text-muted-foreground">
+                <ArchiveIcon className="mt-0.5 size-3.5 shrink-0" aria-hidden="true" />
+                <span>{t("moderation.archivedReadOnly")}</span>
+              </div>
+              <MessageList
+                targetMessageId={targetMessageId}
+                key={`archived-${channelId}`}
+                messages={archivedFeedQuery.data ?? []}
+                isLoading={archivedFeedQuery.isLoading}
+                isError={archivedFeedQuery.isError}
+                currentUserId={null}
+                editingId={null}
+                editingText=""
+                onEditingTextChange={noop}
+                onStartEdit={noop}
+                onCancelEdit={noop}
+                onSaveEdit={noop}
+                onRequestDelete={noop}
+                reactions={new Map()}
+                kitchenCatalog={null}
+                canReact={false}
+                onReaction={noop}
+                onPickReaction={noop}
+                replyCounts={new Map()}
+                onOpenThread={noop}
+                canCompose={false}
+              />
             </div>
-          ) : access.isArchived ? (
-            access.canRead ? (
-              <div className="flex min-h-0 flex-1 flex-col">
-                <div className="flex items-start gap-2 border-b bg-muted/40 px-4 py-2 text-xs text-muted-foreground">
-                  <ArchiveIcon className="mt-0.5 size-3.5 shrink-0" aria-hidden="true" />
-                  <span>{t("moderation.archivedReadOnly")}</span>
-                </div>
-                <MessageList
-                  targetMessageId={targetMessageId}
-                  key={`archived-${channelId}`}
-                  messages={archivedFeedQuery.data ?? []}
-                  isLoading={archivedFeedQuery.isLoading}
-                  isError={archivedFeedQuery.isError}
-                  currentUserId={null}
-                  editingId={null}
-                  editingText=""
-                  onEditingTextChange={noop}
-                  onStartEdit={noop}
-                  onCancelEdit={noop}
-                  onSaveEdit={noop}
-                  onRequestDelete={noop}
-                  reactions={new Map()}
-                  kitchenCatalog={null}
-                  canReact={false}
-                  onReaction={noop}
-                  onPickReaction={noop}
-                  replyCounts={new Map()}
-                  onOpenThread={noop}
-                  canCompose={false}
-                />
-              </div>
-            ) : (
-              <div className="flex flex-1 items-center justify-center p-6">
-                <p className="max-w-sm text-center text-sm text-muted-foreground">
-                  {t("channels.privateMessages")}
-                </p>
-              </div>
-            )
-          ) : access.canRead && !noteId ? (
-            <MessagePane
-              targetMessageId={targetMessageId}
-              key={channelId}
-              channelId={channelId}
-              isMember={access.isMember}
-            />
           ) : (
             <div className="flex flex-1 items-center justify-center p-6">
               <p className="max-w-sm text-center text-sm text-muted-foreground">
                 {t("channels.privateMessages")}
               </p>
             </div>
-          )}
-        </div>
-      ) : null}
+          )
+        ) : access.canRead ? (
+          <MessagePane
+            targetMessageId={targetMessageId}
+            key={channelId}
+            channelId={channelId}
+            isMember={access.isMember}
+          />
+        ) : (
+          <div className="flex flex-1 items-center justify-center p-6">
+            <p className="max-w-sm text-center text-sm text-muted-foreground">
+              {t("channels.privateMessages")}
+            </p>
+          </div>
+        )}
+      </div>
     </div>
   );
 }

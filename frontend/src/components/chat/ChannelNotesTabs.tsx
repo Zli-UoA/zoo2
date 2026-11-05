@@ -162,6 +162,8 @@ export function ChannelNotesTabs({
     } catch (cause) {
       if (!controller.signal.aborted && generation === requestGeneration.current)
         setError(cause instanceof Error ? cause.message : t("channels.notes.loadError"));
+    } finally {
+      if (loadController.current === controller) loadController.current = null;
     }
   }, [client, path, noteId, t]);
   const loadRef = useRef(load);
@@ -193,7 +195,7 @@ export function ChannelNotesTabs({
   }, [load]);
   useEffect(() => {
     const timer = window.setInterval(() => {
-      void load();
+      if (!loadController.current) void load();
     }, 5000);
     return () => clearInterval(timer);
   }, [load]);

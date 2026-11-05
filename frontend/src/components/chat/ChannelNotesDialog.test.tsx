@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test"
 
 import { LocaleProvider } from "../i18n/LocaleProvider";
 import { ChannelNotesTabs, moveNoteToDropPosition } from "./ChannelNotesTabs";
+import { ChannelScreen } from "./ChannelScreen";
 import { ApiError } from "../../lib/api/client";
 
 const { api, config, onNoteChange, onMessageTab } = vi.hoisted(() => ({
@@ -23,6 +24,14 @@ vi.mock("sonner", () => ({ toast: { success: vi.fn(), error: vi.fn() } }));
 vi.mock("../../hooks/useRealtime", () => ({
   useUsers: () => ({ data: [] }),
   useChannelMembers: () => ({ data: [] }),
+  useActiveChannels: () => ({ data: [{ id: "channel-1" }] }),
+  useChannelAccess: () => ({ canRead: true, isMember: true, isArchived: false, members: [] }),
+  useMessageFeed: () => ({ data: [] }),
+}));
+vi.mock("../layout/shell-context", () => ({ useShell: () => ({ showSidebar: vi.fn() }) }));
+vi.mock("./ChannelHeader", () => ({ ChannelHeader: () => null }));
+vi.mock("./messages/MessagePane", () => ({
+  MessagePane: () => createElement("textarea", { "aria-label": "draft" }),
 }));
 vi.mock("./messages/MfmContent", () => ({
   MfmContent: ({ content }: { content: string }) => createElement("div", null, content),
@@ -87,6 +96,43 @@ afterEach(async () => {
 });
 
 describe("ChannelNotesTabs", () => {
+  it("keeps the message composer mounted when switching to a note", async () => {
+    const renderScreen = (noteId?: string) =>
+      root.render(
+        createElement(LocaleProvider, {
+          children: createElement(ChannelScreen, { channelId: "channel-1", noteId }),
+        }),
+      );
+    await flush(() => renderScreen());
+    const draft = document.querySelector('textarea[aria-label="draft"]') as HTMLTextAreaElement;
+    draft.value = "unsent message";
+    await flush(() => renderScreen("note-1"));
+    await flush(() => renderScreen());
+    expect(document.querySelector('textarea[aria-label="draft"]')).toBe(draft);
+    expect(draft.value).toBe("unsent message");
+  });
+  it("does not cancel a slow initial load when polling starts", async () => {
+    vi.useFakeTimers();
+    try {
+      let resolveLoad!: (value: { data: (typeof note)[]; txid: null }) => void;
+      api.requestWithTx.mockImplementationOnce(
+        () =>
+          new Promise((resolve) => {
+            resolveLoad = resolve;
+          }),
+      );
+      await mount("note-1");
+      const signal = api.requestWithTx.mock.calls[0]?.[1]?.signal as AbortSignal;
+      await act(async () => {
+        vi.advanceTimersByTime(5000);
+      });
+      expect(signal.aborted).toBe(false);
+      await flush(() => resolveLoad({ data: [note], txid: null }));
+      expect(document.body.textContent).toContain("Initial");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
   it("computes exact before and after insertion order for drag targets", () => {
     expect(moveNoteToDropPosition(["a", "b", "c"], 0, 2, false)).toEqual(["b", "a", "c"]);
     expect(moveNoteToDropPosition(["a", "b", "c"], 0, 2, true)).toEqual(["b", "c", "a"]);
