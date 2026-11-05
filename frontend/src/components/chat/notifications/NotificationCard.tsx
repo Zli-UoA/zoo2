@@ -1,17 +1,34 @@
 import { Link } from "@tanstack/react-router";
-import { useMemo, type RefObject } from "react";
+import {
+  useEffect,
+  useMemo,
+  useRef,
+  type MouseEvent as ReactMouseEvent,
+  type RefObject,
+  type ComponentProps,
+} from "react";
 import { useTranslation } from "react-i18next";
-import { HeartIcon, MessageCircleIcon, AtSignIcon } from "lucide-react";
+import {
+  SmilePlusIcon,
+  MessageCircleIcon,
+  AtSignIcon,
+  UserRoundIcon,
+  UsersIcon,
+  CheckCheckIcon,
+  ArrowUpRightIcon,
+} from "lucide-react";
 
 import { useKitchenCatalog } from "../../../hooks/useKitchenCatalog";
-import type { ChannelRow, UserRow } from "../../../lib/electric/types";
 import { kitchenLabel, kitchenParts } from "../../../lib/emoji/kitchen";
-import { normalizeUtcTimestamp } from "../../../lib/timestamps";
+import { ReactionEmoji } from "../messages/ReactionEmoji";
+import type { ChannelRow, ChannelUserRow, UserRow } from "../../../lib/electric/types";
+import { INTL_LOCALES } from "../../../lib/i18n/locale";
+import { normalizeUtcTimestamp, parseUtcTimestamp } from "../../../lib/timestamps";
 import { useLocale } from "../../i18n/LocaleProvider";
 import { useShell } from "../../layout/shell-context";
-import { Avatar, AvatarFallback, AvatarGroup, AvatarGroupCount } from "../../ui/avatar";
-import { initials } from "../format";
-import { ReactionEmoji } from "../messages/ReactionEmoji";
+import { formatDmDisplayName, isGroupDm, resolveDmDisplayName } from "../dm";
+import { AppAvatar } from "../AppIdentity";
+import { MfmContent } from "../messages/MfmContent";
 import { fullTimestamp } from "../messages/messageFormat";
 import {
   quotePreview,
@@ -21,40 +38,70 @@ import {
 import { useNotificationContext } from "./useNotificationContext";
 import { useReadVisibleNotification } from "./useReadVisibleNotification";
 
+export interface NotificationPreviewState {
+  visible: boolean | null;
+  loading: boolean;
+  channelId: string | undefined;
+}
+
 export function NotificationCard({
   group,
-  channel,
+  channel: providedChannel,
+  members = [],
   users,
   onRead,
   scrollRoot,
+  readEnabled = true,
+  onPreviewChange,
 }: {
   group: NotificationGroup;
   channel?: ChannelRow;
+  members?: readonly Pick<ChannelUserRow, "user_id">[];
   users: ReadonlyMap<string, UserRow>;
   onRead: (ids: readonly string[]) => void;
   scrollRoot: RefObject<HTMLDivElement | null>;
+  readEnabled?: boolean;
+  onPreviewChange?: (id: string, state: NotificationPreviewState | null) => void;
 }) {
   const { t } = useTranslation();
   const { locale } = useLocale();
   const shell = useShell();
+  const destinationRef = useRef<HTMLAnchorElement>(null);
   const notification = group.latest;
+  const channel = notification.display_data?.channel ?? providedChannel;
   const isReaction = notification.notification_type === "reaction";
   const unreadIds = useMemo(
     () => group.notifications.filter((row) => !row.is_read).map((row) => row.id),
     [group],
   );
-  const { ref, hasBeenVisible } = useReadVisibleNotification(unreadIds, onRead, scrollRoot);
-  const context = useNotificationContext(channel && hasBeenVisible ? notification.id : null);
-  const message = context.data?.message;
-  const note = context.data?.note;
-  const reactionGroups = isReaction
-    ? notificationReactionGroups(context.data?.reactions ?? [], group.actorIds)
-    : [];
-  const { catalog } = useKitchenCatalog(
-    reactionGroups.some((reaction) => kitchenParts(reaction.emoji) !== null),
+  const { ref, hasBeenVisible, isVisible } = useReadVisibleNotification(
+    unreadIds,
+    onRead,
+    scrollRoot,
+    readEnabled,
   );
+  const context = useNotificationContext(
+    channel && hasBeenVisible ? notification.id : null,
+    notification.note_id ? undefined : notification.display_data,
+  );
+  useEffect(() => {
+    onPreviewChange?.(notification.id, {
+      visible: isVisible,
+      loading: context.isLoading,
+      channelId: channel?.id,
+    });
+    return () => onPreviewChange?.(notification.id, null);
+  }, [notification.id, isVisible, context.isLoading, channel?.id, onPreviewChange]);
+  const message = context.data?.message;
+  const note = context.data && "note" in context.data ? context.data.note : null;
+  const avatarReaction = isReaction
+    ? notificationReactionGroups(context.data?.reactions ?? [], [group.actorIds[0]!])[0]?.emoji
+    : undefined;
+  const { catalog } = useKitchenCatalog(!!avatarReaction && kitchenParts(avatarReaction) !== null);
   const name = (id: string) => {
-    const user = users.get(id);
+    const user =
+      group.notifications.find((row) => row.display_data?.actor?.id === id)?.display_data?.actor ??
+      users.get(id);
     return user?.display_name || user?.user_name || id;
   };
   const actor = name(group.actorIds[0]!);
@@ -72,97 +119,222 @@ export function NotificationCard({
           { actor },
         );
   const Icon = isReaction
-    ? HeartIcon
+    ? SmilePlusIcon
     : notification.notification_type === "mention"
       ? AtSignIcon
       : MessageCircleIcon;
 
+  const channelLabel = channel?.is_dm
+    ? formatDmDisplayName(
+        resolveDmDisplayName({
+          channelName: channel.channel_name,
+          members,
+          users: [...users.values()],
+          currentUserId: notification.user_id,
+          locale,
+        }),
+        t,
+      )
+    : channel
+      ? `#${channel.channel_name}`
+      : t("notifications.unavailable");
+  const DmIcon = channel && isGroupDm(channel.channel_name) ? UsersIcon : UserRoundIcon;
+  const ContextIcon = channel?.is_dm ? DmIcon : Icon;
+  const contextLabel = t(
+    isReaction
+      ? "notifications.reactionContext"
+      : notification.notification_type === "mention"
+        ? "notifications.mentionContext"
+        : notification.notification_type === "dm"
+          ? "notifications.dmContext"
+          : "notifications.replyContext",
+  );
+  const actorSummary =
+    group.actorIds.length > 1
+      ? t("notifications.actors", { actor, count: group.actorIds.length - 1 })
+      : actor;
+  const dateFormatter = useMemo(
+    () =>
+      new Intl.DateTimeFormat(INTL_LOCALES[locale], {
+        month: "short",
+        day: "numeric",
+        hour: "2-digit",
+        minute: "2-digit",
+        hourCycle: "h23",
+      }),
+    [locale],
+  );
+  function openFromRow(event: ReactMouseEvent<HTMLLIElement>) {
+    // The real link remains the keyboard target; text selection and nested controls keep native behavior.
+    if (
+      !channel ||
+      !(message || note) ||
+      event.defaultPrevented ||
+      !(event.target instanceof Element) ||
+      event.target.closest("a, button, input, textarea, select, summary, [tabindex]") ||
+      (window.getSelection()?.toString().length ?? 0) > 0
+    )
+      return;
+    const destination = destinationRef.current;
+    if (!destination) return;
+    if (event.ctrlKey || event.metaKey || event.shiftKey) {
+      window.open(
+        destination.href,
+        "_blank",
+        event.shiftKey ? "popup,noopener,noreferrer" : "noopener,noreferrer",
+      );
+      return;
+    }
+    destination.dispatchEvent(
+      new MouseEvent("click", {
+        bubbles: true,
+        cancelable: true,
+        view: window,
+        button: event.button,
+        ctrlKey: event.ctrlKey,
+        metaKey: event.metaKey,
+        altKey: event.altKey,
+        shiftKey: event.shiftKey,
+      }),
+    );
+  }
+  const destination = (
+    <p className="flex min-w-0 items-center gap-1.5 text-xs text-muted-foreground">
+      <ContextIcon className="size-4 shrink-0" aria-hidden="true" />
+      <span className="min-w-0 truncate font-medium">{channelLabel}</span>
+      {channel && (message || note) ? (
+        <ArrowUpRightIcon className="size-3.5 shrink-0" aria-hidden="true" />
+      ) : null}
+    </p>
+  );
   return (
-    <li
+    <NotificationCardFrame
       ref={ref}
-      className={`rounded-xl border p-4 ${unreadIds.length ? "border-brand/40 bg-brand-muted/20" : "bg-card"}`}
+      aria-label={label}
+      data-unread={unreadIds.length > 0 || undefined}
+      onClick={openFromRow}
+      className={channel && (message || note) ? "cursor-pointer" : ""}
     >
       <div className="flex items-start gap-3">
-        <span className="mt-1 text-brand">
-          <Icon className="size-4" aria-hidden="true" />
-        </span>
-        <div className="min-w-0 flex-1 space-y-2">
-          <div className="flex flex-wrap items-center justify-between gap-2">
-            <AvatarGroup>
-              {group.actorIds.slice(0, 8).map((id) => (
-                <Avatar key={id} size="sm" title={name(id)}>
-                  <AvatarFallback>{initials(name(id))}</AvatarFallback>
-                </Avatar>
-              ))}
-              {group.actorIds.length > 8 ? (
-                <AvatarGroupCount>+{group.actorIds.length - 8}</AvatarGroupCount>
+        <div className="relative shrink-0">
+          <AppAvatar
+            label={actor}
+            title={actor}
+            isBot={users.get(group.actorIds[0]!)?.is_bot}
+            src={users.get(group.actorIds[0]!)?.avatar_url}
+            className="size-10 sm:size-9"
+          />
+          <span className="absolute -right-1 -bottom-1 flex size-5 items-center justify-center rounded-full bg-muted text-muted-foreground ring-2 ring-background">
+            {avatarReaction ? (
+              <span
+                role="img"
+                aria-label={kitchenLabel(avatarReaction)}
+                className="flex size-4 items-center justify-center overflow-hidden [&_img]:max-w-full! [&_img]:object-contain"
+                data-notification-reaction
+              >
+                <ReactionEmoji
+                  emoji={avatarReaction}
+                  catalog={catalog}
+                  size={16}
+                  emojis={message?.emojis}
+                />
+              </span>
+            ) : (
+              <Icon className="size-3" aria-hidden="true" />
+            )}
+          </span>
+        </div>
+        <div className="min-w-0 flex-1 space-y-2 sm:space-y-1">
+          <div className="flex min-w-0 items-center gap-2">
+            <div className="flex min-w-0 flex-1 items-baseline gap-2">
+              <p
+                className="min-w-0 truncate text-sm font-semibold"
+                title={group.actorIds.map(name).join(", ")}
+              >
+                {actorSummary}
+              </p>
+              {users.get(group.actorIds[0]!)?.is_bot ? (
+                <span className="rounded bg-muted px-1 text-[10px] font-medium text-muted-foreground">
+                  APP
+                </span>
               ) : null}
-            </AvatarGroup>
-            <time
-              className="text-xs text-muted-foreground"
-              dateTime={normalizeUtcTimestamp(notification.created_at)}
-            >
-              {fullTimestamp(notification.created_at, locale)}
-            </time>
+              <time
+                className="shrink-0 text-[11px] text-muted-foreground tabular-nums"
+                dateTime={normalizeUtcTimestamp(notification.created_at)}
+                title={fullTimestamp(notification.created_at, locale)}
+              >
+                {dateFormatter.format(parseUtcTimestamp(notification.created_at))}
+              </time>
+            </div>
+            <NotificationReadStatus read={!unreadIds.length} />
           </div>
-          <p className="text-sm font-medium">{label}</p>
-          <p className="text-xs text-muted-foreground">
-            {channel ? `#${channel.channel_name}` : t("notifications.unavailable")}
-          </p>
-          {reactionGroups.length ? (
-            <ul className="flex flex-wrap gap-1.5" aria-label={t("notifications.reactions")}>
-              {reactionGroups.map((reaction) => (
-                <li
-                  key={reaction.emoji}
-                  className="flex items-center gap-1 rounded-full border bg-muted/50 px-2 py-0.5 text-sm"
-                  aria-label={`${kitchenLabel(reaction.emoji)} ${reaction.count}`}
-                  title={kitchenLabel(reaction.emoji)}
-                >
-                  <ReactionEmoji emoji={reaction.emoji} catalog={catalog} size={20} />
-                  <span className="tabular-nums text-muted-foreground">{reaction.count}</span>
-                </li>
-              ))}
-            </ul>
-          ) : null}
           {channel && message ? (
-            <Link
-              to="/channels/$channelId"
-              params={{ channelId: notification.channel_id }}
-              search={{ message: notification.message_id ?? undefined }}
-              onClick={() => shell.showChat()}
-              className="block rounded-md border-l-2 border-brand/40 bg-muted/40 px-3 py-2 transition-colors outline-none hover:bg-muted focus-visible:ring-2 focus-visible:ring-ring/50"
-            >
-              <blockquote>
-                <p className="mb-1 truncate text-xs font-medium text-muted-foreground">
-                  {name(message.user_id)}
-                </p>
-                <p className="line-clamp-3 whitespace-pre-wrap break-words text-sm leading-relaxed">
-                  {quotePreview(message.content)}
-                </p>
-              </blockquote>
-            </Link>
+            <blockquote>
+              <div className="mfm-body line-clamp-3 whitespace-pre-wrap break-words text-sm leading-relaxed">
+                <MfmContent content={quotePreview(message.content)} emojis={message.emojis} />
+              </div>
+            </blockquote>
           ) : channel && note ? (
-            <Link
-              to="/channels/$channelId"
-              params={{ channelId: notification.channel_id }}
-              search={{ note: note.id }}
-              onClick={() => shell.showChat()}
-              className="block rounded-md border-l-2 border-brand/40 bg-muted/40 px-3 py-2 transition-colors outline-none hover:bg-muted focus-visible:ring-2 focus-visible:ring-ring/50"
-            >
+            <div>
               <p className="truncate text-xs font-medium text-muted-foreground">{note.title}</p>
               <p className="line-clamp-3 whitespace-pre-wrap break-words text-sm leading-relaxed">
                 {quotePreview(note.content)}
               </p>
-            </Link>
+            </div>
           ) : (
-            <p className="rounded-md border-l-2 px-3 py-2 text-sm text-muted-foreground">
+            <p className="text-sm text-muted-foreground">
               {!hasBeenVisible || context.isLoading
                 ? t("common.loading")
                 : t("notifications.messageUnavailable")}
             </p>
           )}
+          {channel && (message || note) ? (
+            <Link
+              ref={destinationRef}
+              to="/channels/$channelId"
+              params={{ channelId: notification.channel_id }}
+              search={note ? { note: note.id } : { message: notification.message_id ?? undefined }}
+              onClick={() => shell.showChat()}
+              title={channelLabel}
+              aria-label={`${contextLabel !== channelLabel ? `${contextLabel} · ` : ""}${channelLabel} — ${label}: ${quotePreview((message ?? note)!.content)}`}
+              className="block w-fit max-w-full rounded-sm outline-none hover:underline hover:underline-offset-4 focus-visible:ring-2 focus-visible:ring-ring/50"
+            >
+              {destination}
+            </Link>
+          ) : (
+            destination
+          )}
         </div>
       </div>
-    </li>
+    </NotificationCardFrame>
+  );
+}
+
+/** Shared bordered surface for channel and federated notification cards. */
+export function NotificationCardFrame({ className = "", ...props }: ComponentProps<"li">) {
+  return (
+    <li
+      {...props}
+      className={`group w-full rounded-lg border p-3 transition-colors data-[unread]:bg-accent/50 hover:bg-muted/40 ${className}`}
+    />
+  );
+}
+
+export function NotificationReadStatus({ read }: { read: boolean }) {
+  const { t } = useTranslation();
+  return read ? (
+    <span
+      role="img"
+      aria-label={t("notifications.readStatus")}
+      className="shrink-0 text-muted-foreground"
+    >
+      <CheckCheckIcon className="size-4" aria-hidden="true" />
+    </span>
+  ) : (
+    <span
+      className="size-2 shrink-0 rounded-full bg-primary"
+      role="img"
+      aria-label={t("notifications.unreadStatus")}
+    />
   );
 }

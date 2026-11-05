@@ -3,7 +3,7 @@ import type { Meta, StoryObj } from "@storybook/react-vite";
 import { WelcomePanel } from "./WelcomePanel";
 
 const meta = {
-  title: "Layout/WelcomePanel",
+  title: "Pages/Welcome",
   component: WelcomePanel,
   tags: ["autodocs"],
   parameters: { a11y: { test: "error" } },

@@ -1,3 +1,4 @@
+import { useOptimisticDisplay } from "./useOptimisticDisplay";
 import { useLiveQuery } from "@tanstack/react-db";
 import { useMemo } from "react";
 
@@ -11,11 +12,29 @@ import { countRepliesByParent } from "../lib/electric/threads";
  */
 export function useThreadFeed(channelId: string | null, rootId: string | null, since?: string) {
   const { messages, users } = useCollections();
-  return useLiveQuery((q) =>
+  const query = useLiveQuery((q) =>
     channelId && rootId
       ? messageFeedQuery(q, { messages: messages(channelId), users }, { parentId: rootId, since })
       : undefined,
   );
+  const data = useOptimisticDisplay(channelId, query.data);
+  return { ...query, data };
+}
+
+/** Resolve a thread root from the same collection, including nested replies. */
+export function useThreadRoot(channelId: string | null, rootId: string | null) {
+  const { messages, users } = useCollections();
+  const query = useLiveQuery((q) =>
+    channelId && rootId
+      ? messageFeedQuery(
+          q,
+          { messages: messages(channelId), users },
+          { parentId: null, messageId: rootId },
+        )
+      : undefined,
+  );
+  const data = useOptimisticDisplay(channelId, query.data);
+  return { ...query, data };
 }
 
 /**

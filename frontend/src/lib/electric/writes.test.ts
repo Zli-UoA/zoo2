@@ -61,6 +61,7 @@ const channel: ChannelRow = {
   description: null,
   created_user_id: "u1",
   is_private: false,
+  is_dm: false,
   created_at: "2026-01-01 00:00:00.000",
   updated_at: null,
   archive_at: null,
@@ -111,6 +112,27 @@ describe("message writes", () => {
       channel_id: "c1",
       content: "hello",
       parent_id: "m1",
+    });
+  });
+
+  it("sends attachment_ids from insert metadata", async () => {
+    const { client, post } = makeClient();
+    const writes = createMessageWrites({
+      client,
+      txidMode: "awaitTxId",
+      getCurrentUserId: () => CURRENT_USER,
+    });
+    const { collection } = makeCollection();
+
+    await writes.onInsert(
+      params(collection, [insertMutation(message, { attachment_ids: ["a1", "a2"] })]),
+    );
+
+    expect(post).toHaveBeenCalledWith("/api/messages", {
+      id: "m1",
+      channel_id: "c1",
+      content: "hello",
+      attachment_ids: ["a1", "a2"],
     });
   });
 
@@ -253,6 +275,20 @@ describe("channel writes", () => {
     );
 
     expect(patch).toHaveBeenCalledWith("/api/channels/c1", { channel_name: "random" });
+  });
+
+  it("PATCHes the description and can clear it with an empty string", async () => {
+    const { client, patch } = makeClient();
+    const writes = createChannelWrites({
+      client,
+      txidMode: "awaitTxId",
+      getCurrentUserId: () => CURRENT_USER,
+    });
+    const { collection } = makeCollection();
+
+    await writes.onUpdate(params(collection, [updateMutation(channel, { description: "" })]));
+
+    expect(patch).toHaveBeenCalledWith("/api/channels/c1", { description: "" });
   });
 });
 

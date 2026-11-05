@@ -24,9 +24,11 @@ vi.mock("sonner", () => ({ toast: { success: vi.fn(), error: vi.fn() } }));
 vi.mock("../../hooks/useRealtime", () => ({
   useUsers: () => ({ data: [] }),
   useChannelMembers: () => ({ data: [] }),
-  useActiveChannels: () => ({ data: [{ id: "channel-1" }] }),
+  useActiveChannels: () => ({ data: [{ id: "channel-1", is_dm: false }] }),
   useChannelAccess: () => ({ canRead: true, isMember: true, isArchived: false, members: [] }),
-  useMessageFeed: () => ({ data: [] }),
+}));
+vi.mock("../../hooks/useCurrentUser", () => ({
+  useCurrentUser: () => ({ currentUserId: "user-1" }),
 }));
 vi.mock("../layout/shell-context", () => ({ useShell: () => ({ showSidebar: vi.fn() }) }));
 vi.mock("./ChannelHeader", () => ({ ChannelHeader: () => null }));
@@ -97,7 +99,7 @@ afterEach(async () => {
 });
 
 describe("ChannelNotesTabs", () => {
-  it("keeps the message composer mounted when switching to a note", async () => {
+  it("keeps the message composer mounted and inactive while viewing a note", async () => {
     const renderScreen = (noteId?: string) =>
       root.render(
         createElement(LocaleProvider, {
@@ -113,6 +115,29 @@ describe("ChannelNotesTabs", () => {
     expect(document.querySelector('textarea[aria-label="draft"]')).toBe(draft);
     expect(draft.value).toBe("unsent message");
     expect(draft.dataset.active).toBe("true");
+  });
+  it("does not poll while the message tab is active", async () => {
+    vi.useFakeTimers();
+    try {
+      await mount();
+      expect(api.requestWithTx).toHaveBeenCalledTimes(1);
+      await act(async () => {
+        vi.advanceTimersByTime(15000);
+      });
+      expect(api.requestWithTx).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+  it("loads summaries without bodies and fetches only the selected note", async () => {
+    const { content: _content, ...summary } = note;
+    api.requestWithTx.mockImplementation((url: string) =>
+      Promise.resolve(url.endsWith("/note-1") ? { data: note } : { data: [summary] }),
+    );
+    await mount("note-1");
+    expect(api.requestWithTx.mock.calls[0]?.[0]).toBe("/api/channels/channel-1/notes?summary=true");
+    expect(api.requestWithTx.mock.calls[1]?.[0]).toBe("/api/channels/channel-1/notes/note-1");
+    expect(document.body.textContent).toContain(note.content);
   });
   it("does not cancel a slow initial load when polling starts", async () => {
     vi.useFakeTimers();
@@ -186,8 +211,9 @@ describe("ChannelNotesTabs", () => {
   });
   it("shows the message tab and channel-wide note tabs, then opens a note for its direct URL", async () => {
     await mount();
-    expect(document.body.querySelector('[role="tablist"]')?.textContent).toContain("メッセージ");
-    expect(document.body.querySelector('[role="tablist"]')?.textContent).toContain("Initial");
+    const tabs = [...document.body.querySelectorAll('[role="tab"]')].map((tab) => tab.textContent);
+    expect(tabs).toContain("メッセージ");
+    expect(tabs).toContain("Initial");
     await flush(() => button("Initial").click());
     expect(onNoteChange).toHaveBeenCalledWith("note-1");
   });
@@ -949,7 +975,7 @@ describe("ChannelNotesTabs", () => {
     await act(async () => vi.advanceTimersByTimeAsync(5000));
     await flush(() => finish({ data: created }));
     await flush(() => resolvePoll({ data: [note], txid: null }));
-    const tabs = document.body.querySelector('[role="tablist"]')!.textContent;
+    const tabs = [...document.body.querySelectorAll('[role="tab"]')].map((tab) => tab.textContent);
     if (action === "create") expect(tabs).toContain("New");
     else expect(tabs).not.toContain("Initial");
     vi.useRealTimers();

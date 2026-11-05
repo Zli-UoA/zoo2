@@ -18,10 +18,8 @@ vi.mock("../../lib/electric/collections", () => ({
 vi.mock("../../hooks/useChannelAdmin", () => ({ describeApiError: () => "読み込みエラー" }));
 const hook = {
   id: "hook-1",
-  name: "GitHub",
-  path: "/api/webhooks/github/hook-1",
-  generic_path: "/api/webhooks/hook-1",
-  secret: "initial-secret",
+  name: "Webhook",
+  path: "/api/webhooks/hook-1?token=url-token",
   created_at: "2026-10-23",
 };
 const channel = {
@@ -30,6 +28,7 @@ const channel = {
   description: null,
   created_user_id: "owner",
   is_private: false,
+  is_dm: false,
   created_at: "2026-10-23",
   updated_at: null,
   archive_at: null,
@@ -83,27 +82,22 @@ describe("channel webhook management", () => {
       "https://api.example" + hook.path,
     );
   });
-  it("masks the Secret, copies exact values and reveals it on request", async () => {
+  it("shows one masked webhook URL and copies the complete tokenized URL", async () => {
     await mount();
-    expect(document.querySelector('input[type="password"]')).not.toBeNull();
+    expect(document.querySelectorAll('input[type="password"]')).toHaveLength(1);
+    expect(document.querySelector('[aria-label="Slack Webhook URLをコピー"]')).toBeNull();
+    expect(document.querySelector('[aria-label="Secretをコピー"]')).toBeNull();
     await flush(() =>
-      (document.querySelector('[aria-label="GitHub URLをコピー"]') as HTMLButtonElement).click(),
+      (document.querySelector('[aria-label="Webhook URLをコピー"]') as HTMLButtonElement).click(),
     );
     expect(copy).toHaveBeenCalledWith("https://zoo.example" + hook.path);
     await flush(() =>
-      (
-        document.querySelector('[aria-label="共通Webhook URLをコピー"]') as HTMLButtonElement
-      ).click(),
-    );
-    expect(copy).toHaveBeenCalledWith("https://zoo.example" + hook.generic_path);
-    await flush(() =>
-      (document.querySelector('[aria-label="Secretをコピー"]') as HTMLButtonElement).click(),
-    );
-    expect(copy).toHaveBeenCalledWith(hook.secret);
-    await flush(() =>
-      (document.querySelector('[aria-label="Secretを表示"]') as HTMLButtonElement).click(),
+      (document.querySelector('[aria-label="Webhook URLを表示"]') as HTMLButtonElement).click(),
     );
     expect(document.querySelector('input[type="password"]')).toBeNull();
+    expect(document.querySelector("input[readonly]")?.getAttribute("value")).toBe(
+      "https://zoo.example" + hook.path,
+    );
   });
   it("creates, rotates and deletes with confirmation", async () => {
     await mount();
@@ -113,16 +107,18 @@ describe("channel webhook management", () => {
         .querySelector("form")!
         .dispatchEvent(new Event("submit", { bubbles: true, cancelable: true })),
     );
-    expect(api.post).toHaveBeenCalledWith("/api/channels/channel-1/webhooks", { name: "GitHub" });
-    api.post.mockResolvedValueOnce({ data: { ...hook, secret: "new-secret" } });
-    await flush(() => button("Secretを再発行").click());
+    expect(api.post).toHaveBeenCalledWith("/api/channels/channel-1/webhooks", { name: "Webhook" });
+    api.post.mockResolvedValueOnce({
+      data: { ...hook, path: "/api/webhooks/hook-1?token=new-token" },
+    });
+    await flush(() => button("Webhook URLを再発行").click());
     expect(api.post).toHaveBeenCalledTimes(1);
     await flush(() => button("実行").click());
     expect(api.post).toHaveBeenLastCalledWith(
       "/api/channels/channel-1/webhooks/hook-1/rotate-secret",
     );
     expect((document.querySelector('input[type="password"]') as HTMLInputElement).value).toBe(
-      "new-secret",
+      "https://zoo.example/api/webhooks/hook-1?token=new-token",
     );
     api.delete.mockResolvedValue({ data: hook.id });
     await flush(() => button("削除").click());

@@ -1,6 +1,12 @@
+import { playForImplementation } from "../../../../.storybook/play-for-implementation";
+import { StoryShell } from "../../../../.storybook/shell";
 import type { Meta, StoryObj } from "@storybook/react-vite";
-import { fn } from "storybook/test";
+import { expect, fn, userEvent, within } from "storybook/test";
 
+import { MfmChannelsProvider } from "./MfmChannels";
+import { storyChannels, storyUsers } from "../../../../.storybook/fixtures";
+import { reactionUserLabel } from "../../../lib/emoji/reactions";
+import { storyCommands, storyDeploymentCard } from "../../../../.storybook/app-fixtures";
 import { ThreadPane } from "./ThreadPane";
 import type { FeedMessage } from "./messageFormat";
 
@@ -45,7 +51,7 @@ const replies: FeedMessage[] = [
 ];
 
 const meta = {
-  title: "Chat/ThreadPane",
+  title: "Features/Chat/ThreadPane",
   component: ThreadPane,
   tags: ["autodocs"],
   parameters: { a11y: { test: "todo" } },
@@ -56,6 +62,7 @@ const meta = {
   },
   args: {
     root,
+    commands: storyCommands,
     replies: [],
     isLoading: false,
     isError: false,
@@ -72,13 +79,15 @@ const meta = {
     onCancelEdit: fn(),
     onSaveEdit: fn(),
     onRequestDelete: fn(),
-    onSendReply: async () => true,
+    onSendReply: fn(async () => true),
     onClose: fn(),
   },
   decorators: [
     (Story) => (
       <div className="flex h-[640px] justify-end bg-muted/30">
-        <Story />
+        <MfmChannelsProvider channels={storyChannels}>
+          <Story />
+        </MfmChannelsProvider>
       </div>
     ),
   ],
@@ -92,7 +101,22 @@ export const Empty: Story = {};
 export const WithReplies: Story = {
   args: {
     replies,
-    reactions: new Map([["reply-1", [{ emoji: "👍", count: 2, ownId: null }]]]),
+    reactions: new Map([
+      [
+        "reply-1",
+        [
+          {
+            emoji: "👍",
+            count: 2,
+            ownId: null,
+            userIds: storyUsers.slice(0, 2).map((user) => user.id),
+            userNames: Object.fromEntries(
+              storyUsers.map((user) => [user.id, reactionUserLabel(user)]),
+            ),
+          },
+        ],
+      ],
+    ]),
   },
 };
 
@@ -116,8 +140,55 @@ export const Mobile: Story = {
   decorators: [
     (Story) => (
       <div className="h-[640px] bg-muted/30">
-        <Story />
+        <MfmChannelsProvider channels={storyChannels}>
+          <Story />
+        </MfmChannelsProvider>
       </div>
     ),
   ],
+};
+
+export const Completions: Story = {
+  parameters: { a11y: { test: "error" } },
+  play: playForImplementation(async ({ canvasElement, args }) => {
+    const canvas = within(canvasElement);
+    const input = await canvas.findByRole("textbox");
+    await userEvent.type(input, "#gen");
+    await userEvent.click(canvas.getByRole("option", { name: "#general" }));
+    await expect(input).toHaveValue("#general ");
+    await userEvent.clear(input);
+    await userEvent.type(input, "/git");
+    await userEvent.keyboard("{Enter}");
+    await expect(input).toHaveValue("/github ");
+    await userEvent.click(canvas.getByRole("button", { name: "送信" }));
+    await expect(args.onSendReply).toHaveBeenCalledWith("/github", "github");
+  }),
+};
+
+export const AppCard: Story = {
+  parameters: { a11y: { test: "error" } },
+  decorators: [
+    (Story) => (
+      <StoryShell>
+        <Story />
+      </StoryShell>
+    ),
+  ],
+  args: {
+    root: {
+      ...root,
+      content: "Plain fallback for card-capable clients",
+      app_origin_id: "github",
+      app_blocks: JSON.stringify([{ type: "card", card: storyDeploymentCard }]),
+    },
+  },
+  play: playForImplementation(async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expect(
+      await canvas.findByRole("link", { name: storyDeploymentCard.title }),
+    ).toBeVisible();
+    await expect(
+      canvas.queryByText("Plain fallback for card-capable clients"),
+    ).not.toBeInTheDocument();
+  }),
 };

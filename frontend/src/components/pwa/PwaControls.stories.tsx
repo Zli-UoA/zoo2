@@ -1,8 +1,11 @@
+import { pushStoryControls, pushStoryPresets } from "../../../.storybook/preference-fixtures";
+import { preferenceSurfaces } from "../../../.storybook/preference-stories";
+import { playForImplementation } from "../../../.storybook/play-for-implementation";
 import type { Meta, StoryObj } from "@storybook/react-vite";
-import { expect, screen } from "storybook/test";
+import { expect, screen, userEvent, waitFor } from "storybook/test";
 import { useEffect, type ReactNode } from "react";
 
-import { PwaControls } from "./PwaControls";
+import { PwaProvider, PwaControls, PushNotificationSelect } from "./PwaControls";
 
 function InstallPrompt({ children }: { children: ReactNode }) {
   useEffect(() => {
@@ -17,13 +20,13 @@ function InstallPrompt({ children }: { children: ReactNode }) {
 }
 
 const meta = {
-  title: "Layout/PwaControls",
+  title: "Features/Preferences/PWA",
   component: PwaControls,
   tags: ["autodocs"],
   parameters: { a11y: { test: "todo" } },
   decorators: [
     (Story) => (
-      <div className="flex min-h-72 items-center justify-center gap-2 bg-background p-6">
+      <div className={preferenceSurfaces["Features/Preferences/PWA"]}>
         <Story />
       </div>
     ),
@@ -34,20 +37,61 @@ export default meta;
 type Story = StoryObj<typeof meta>;
 
 export const Default: Story = {
-  play: async () => {
-    await expect(screen.getByRole("button", { name: /プッシュ通知/ })).toBeDisabled();
-  },
+  play: playForImplementation(async () => {
+    await expect(await screen.findByRole("button", { name: /プッシュ通知/ })).toBeDisabled();
+  }),
 };
 
 export const InstallAvailable: Story = {
   decorators: [
     (Story) => (
       <InstallPrompt>
-        <Story />
+        <PwaProvider>
+          <Story />
+        </PwaProvider>
       </InstallPrompt>
     ),
   ],
-  play: async () => {
+  play: playForImplementation(async () => {
     await expect(await screen.findByRole("button", { name: "Zooをインストール" })).toBeEnabled();
-  },
+  }),
+};
+
+const push = pushStoryControls;
+export const SelectOff: Story = {
+  parameters: { a11y: { test: "error" } },
+  render: () => <PushNotificationSelect push={pushStoryPresets["Select Off"]} />,
+  play: playForImplementation(
+    async () => {
+      const select = await screen.findByRole("combobox", { name: "プッシュ通知" });
+      await expect(select).toHaveValue("off");
+      await userEvent.selectOptions(select, "on");
+      await expect(push.toggle).toHaveBeenCalledOnce();
+    },
+    async (context) => {
+      if (context.globals.implementation === "kotlin")
+        await waitFor(() => expect(push.toggle).toHaveBeenCalledOnce());
+    },
+  ),
+};
+export const SelectOn: Story = {
+  parameters: { a11y: { test: "error" } },
+  render: () => <PushNotificationSelect push={pushStoryPresets["Select On"]} />,
+};
+export const SelectBusy: Story = {
+  parameters: { a11y: { test: "error" } },
+  render: () => <PushNotificationSelect push={pushStoryPresets["Select Busy"]} />,
+};
+export const SelectBlocked: Story = {
+  parameters: { a11y: { test: "error" } },
+  render: () => <PushNotificationSelect push={pushStoryPresets["Select Blocked"]} />,
+};
+export const SelectUnavailable: Story = {
+  args: { presentation: "select" },
+  parameters: { a11y: { test: "error" } },
+};
+export const SelectInstallAvailable: Story = {
+  ...InstallAvailable,
+  args: { presentation: "select" },
+  parameters: { a11y: { test: "error" } },
 };

@@ -1,4 +1,5 @@
-import { http, HttpResponse } from "msw";
+import { customEmojiFixture, customEmojiImageBase64 } from "./preference-fixtures";
+import { http, HttpResponse, ws } from "msw";
 
 // Emoji Kitchen のプレビューとして使う、猫耳付きのスマイリー。
 const kitchenPreview = `<svg xmlns="http://www.w3.org/2000/svg" width="72" height="72" viewBox="0 0 72 72">
@@ -26,6 +27,18 @@ interface NotificationContextFixture {
 }
 
 const notificationContexts: Record<string, NotificationContextFixture> = {
+  "notification-dm": {
+    message: { id: "message-dm", user_id: "user-bob", content: "個別に確認をお願いします。" },
+    reactions: [],
+  },
+  "notification-dm-group": {
+    message: {
+      id: "message-dm-group",
+      user_id: "user-bob",
+      content: "次の打ち合わせについて相談しましょう。",
+    },
+    reactions: [],
+  },
   "notification-mention": {
     message: {
       id: "message-hello",
@@ -69,6 +82,54 @@ const notificationContexts: Record<string, NotificationContextFixture> = {
 };
 
 export const storybookApiHandlers = [
+  http.get("*/api/channels/:id/federated-reactions", () => HttpResponse.json([])),
+  http.get(
+    `*${customEmojiFixture.url}`,
+    () =>
+      new HttpResponse(
+        Uint8Array.from(atob(customEmojiImageBase64), (c) => c.charCodeAt(0)).buffer,
+        { headers: { "content-type": "image/png" } },
+      ),
+  ),
+  http.get("*/api/activitypub/reaction-options", () =>
+    HttpResponse.json({ software: "zoo", emojis: [] }),
+  ),
+  http.get("*/api/activitypub/emoji-images/:id", () =>
+    HttpResponse.text(
+      '<svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 32 32"><path fill="#ffcf00" d="M4 15 5 3l9 7h4l9-7 1 12v9c0 8-24 8-24 0Z"/><circle cx="11" cy="20" r="2"/><circle cx="22" cy="20" r="2"/></svg>',
+      { headers: { "content-type": "image/svg+xml" } },
+    ),
+  ),
+  http.get("*/api/activitypub/notifications", () =>
+    HttpResponse.json({ items: [], unread_count: 0 }),
+  ),
+  http.post("*/api/activitypub/notifications/read", () => HttpResponse.json({ ok: true })),
+  http.patch("*/api/notifications/:id/read", () =>
+    HttpResponse.json({ data: { is_read: true }, txid: null }),
+  ),
+  http.post("*/api/notifications/read-all", () =>
+    HttpResponse.json({ data: { updated_count: 0 }, txid: null }),
+  ),
+  ws.link("*/api/home/live").addEventListener("connection", () => {}),
+  http.get("*/api/activitypub/status", () =>
+    HttpResponse.json({
+      enabled: true,
+      actor: "https://zoo.example/api/activitypub/users/user-alice",
+      delivery: { pending: 0, failed: 0 },
+    }),
+  ),
+  http.get("*/api/activitypub/profile", () =>
+    HttpResponse.json({ display_name: "", default_display_name: "Alice", summary: "" }),
+  ),
+  http.get("*/api/activitypub/follows", () => HttpResponse.json([])),
+  http.get("*/api/home/settings", () =>
+    HttpResponse.json({ ltl_channel_pattern: "", can_manage: false }),
+  ),
+  http.get("*/api/apps/commands", () => HttpResponse.json([])),
+  http.get("*/api/users/me/preferences", () => HttpResponse.json({ search_engine: "google" })),
+  http.patch("*/api/users/me/preferences", async ({ request }) =>
+    HttpResponse.json({ data: await request.json(), txid: null }),
+  ),
   http.get("*/api/users/me", () =>
     HttpResponse.json({
       id: "user-alice",
@@ -95,8 +156,16 @@ export const storybookApiHandlers = [
   }),
   http.get(/\/api\/channels\/[^/]+\/typing$/, () => HttpResponse.json([])),
   http.post(/\/api\/channels\/[^/]+\/typing$/, () => new HttpResponse(null, { status: 204 })),
+  http.get("*/api/bubble", () => HttpResponse.json([])),
+  http.post("*/api/bubble", () => HttpResponse.json({ ok: true })),
+  http.get("*/api/bubble-chat", () => HttpResponse.json([])),
+  http.post("*/api/bubble-chat", () => HttpResponse.json({ ok: true })),
   http.get("*/api/channel-read-states", () => HttpResponse.json([])),
   http.get("*/api/users/admins", () => HttpResponse.json({ user_ids: ["user-admin"] })),
+  http.get("*/api/channels/:channelId/notes", () => HttpResponse.json({ data: [], txid: null })),
+  http.get("*/api/channels/:channelId/notes/deleted", () =>
+    HttpResponse.json({ data: [], txid: null }),
+  ),
   http.get("*/api/notifications/:notificationId/context", ({ params }) => {
     const notificationId = String(params.notificationId);
     return HttpResponse.json(
@@ -106,16 +175,13 @@ export const storybookApiHandlers = [
       },
     );
   }),
-  http.get("*/api/channels/:channelId/webhooks", ({ params }) => {
-    const channelId = String(params.channelId);
+  http.get("*/api/channels/:channelId/webhooks", () => {
     return HttpResponse.json({
       data: [
         {
           id: "webhook-1",
-          name: "GitHub",
-          path: `/api/webhooks/${channelId}/github`,
-          generic_path: `/api/webhooks/${channelId}/generic`,
-          secret: "storybook-example-secret",
+          name: "Webhook",
+          path: "/api/webhooks/webhook-1?token=storybook-example-token",
           created_at: "2026-01-02T09:00:00.000Z",
         },
       ],
@@ -123,6 +189,20 @@ export const storybookApiHandlers = [
     });
   }),
   http.get("*/api/push/config", () => HttpResponse.json({ publicKey: null })),
+  http.get("*/api/attachments/:attachmentId/url", ({ params }) => {
+    const id = String(params.attachmentId);
+    const image = new URL("/icons/icon-192.png", globalThis.location.href).href;
+    return HttpResponse.json({
+      data: {
+        id,
+        download_url: image,
+        file_name: "screenshot.png",
+        file_size: 184_320,
+        content_type: "image/png",
+      },
+      txid: null,
+    });
+  }),
   http.get("https://www.gstatic.com/**", () =>
     HttpResponse.text(kitchenPreview, { headers: { "Content-Type": "image/svg+xml" } }),
   ),

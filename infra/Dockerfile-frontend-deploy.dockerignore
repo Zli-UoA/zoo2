@@ -5,6 +5,15 @@
 !infra/frontend-entrypoint.sh
 !frontend/
 !frontend/**
+!frontend-compose/
+!frontend-compose/**
+frontend-compose/.gradle
+frontend-compose/.kotlin
+frontend-compose/build
+frontend-compose/electric4k/build
+frontend-compose/node_modules
+frontend-compose/.env*
+frontend/public/compose
 frontend/node_modules
 frontend/.env*
 frontend/.tanstack

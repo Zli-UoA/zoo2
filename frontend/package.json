@@ -29,7 +29,11 @@
     "test:pwa": "node scripts/pwa.test.mjs",
     "storybook": "storybook dev -p 6006",
     "build-storybook": "storybook build",
-    "test:storybook": "vp test --project storybook"
+    "test:storybook": "vp test --project storybook",
+    "check:storybook": "node scripts/storybook-audit.mjs",
+    "generate:icons": "node scripts/generate-brand-icons.mjs",
+    "build:compose": "node scripts/build-compose.mjs",
+    "test:e2e:compose": "playwright test --config playwright.compose.config.ts"
   },
   "dependencies": {
     "@base-ui/react": "^1.9.0",
@@ -66,6 +70,7 @@
     "unified": "^11.0.5"
   },
   "devDependencies": {
+    "@fontsource-variable/noto-sans-jp": "5.3.1",
     "@playwright/test": "^1.64.1",
     "@storybook/addon-a11y": "10.6.3",
     "@storybook/addon-vitest": "10.6.3",

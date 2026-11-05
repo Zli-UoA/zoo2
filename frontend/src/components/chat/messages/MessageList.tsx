@@ -12,7 +12,9 @@ import {
 } from "react";
 
 import type { KitchenCatalog } from "../../../lib/emoji/kitchen";
+import type { AttachmentRow } from "../../../lib/electric/types";
 import type { ReactionGroup } from "../../../lib/emoji/reactions";
+import { groupReactions } from "../../../lib/emoji/reactions";
 import { Button } from "../../ui/button";
 import { Skeleton } from "../../ui/skeleton";
 import { newMessageAnnouncement, type FeedMessage } from "./messageFormat";
@@ -43,6 +45,7 @@ interface MessageListProps {
   isWritePending?: boolean;
   isError: boolean;
   currentUserId: string | null;
+  canModerate?: boolean;
   editingId: string | null;
   editingText: string;
   onEditingTextChange: (value: string) => void;
@@ -56,6 +59,7 @@ interface MessageListProps {
   onReaction: (messageId: string, emoji: string) => void;
   onPickReaction: (messageId: string) => void;
   replyCounts: Map<string, number>;
+  attachments?: Map<string, AttachmentRow[]>;
   onOpenThread: (messageId: string) => void;
   /** 送信できる状態か。false なら空状態で「最初のメッセージ」を促さない。 */
   canCompose?: boolean;
@@ -134,6 +138,7 @@ export function MessageList({
   isWritePending = false,
   isError,
   currentUserId,
+  canModerate = false,
   editingId,
   editingText,
   onEditingTextChange,
@@ -147,6 +152,7 @@ export function MessageList({
   onReaction,
   onPickReaction,
   replyCounts,
+  attachments,
   onOpenThread,
   canCompose = true,
   isOffline = false,
@@ -178,16 +184,26 @@ export function MessageList({
     [messages, firstUnreadId, readStateLoading, readStateError],
   );
   const scrollRef = useRef<HTMLDivElement>(null);
+  const atBottomRef = useRef(true);
 
   const virtualizer = useVirtualizer({
     count: items.length,
     getScrollElement: () => scrollRef.current,
     estimateSize: () => ESTIMATED_ROW_HEIGHT,
     overscan: 8,
+    // Commit measured row sizes outside ResizeObserver delivery: anchoring can scroll
+    // and synchronously render a different virtual range during that delivery.
+    useAnimationFrameWithResizeObserver: true,
     getItemKey: (index) => items[index]?.message.id ?? index,
+    // URLカードや画像の遅延読込で行が伸びても、最下部付近なら末尾を維持する。
+    // 編集中は入力欄の高さが変わるため、編集中の位置を保つ。
+    anchorTo: atBottomRef.current && editingId === null ? "end" : "start",
+    scrollEndThreshold: 48,
   });
 
-  const atBottomRef = useRef(true);
+  useLayoutEffect(() => {
+    if (editingId !== null) atBottomRef.current = false;
+  }, [editingId]);
   const [hasNewBelow, setHasNewBelow] = useState(false);
   // 最下部にいないとき届いた新着を `aria-live` で読み上げる（「新着メッセージ」
   // ボタンと同じ条件）。最下部へ戻ったら空にして、同文の連投も再度読み上げられる。
@@ -221,6 +237,8 @@ export function MessageList({
     [items.length, virtualizer],
   );
 
+  const totalSize = virtualizer.getTotalSize();
+
   const handleScroll = useCallback(() => {
     const element = scrollRef.current;
     if (!element) {
@@ -228,7 +246,7 @@ export function MessageList({
     }
     captureScrollAnchor();
     const near = isNearBottom(element.scrollTop, element.scrollHeight, element.clientHeight);
-    atBottomRef.current = near;
+    atBottomRef.current = near && editingId === null;
     if (near) {
       setHasNewBelow(false);
       markRead();
@@ -239,7 +257,7 @@ export function MessageList({
         onLoadOlder?.(oldest.created_at);
       }
     }
-  }, [captureScrollAnchor, markRead, messages, onLoadOlder]);
+  }, [captureScrollAnchor, editingId, markRead, messages, onLoadOlder]);
 
   useLayoutEffect(() => {
     const element = scrollRef.current;
@@ -331,6 +349,13 @@ export function MessageList({
     snapshotRef.current = next;
     return () => stopRestoring?.();
   }, [items, currentUserId, scrollToBottom, t, firstUnreadId, virtualizer, captureScrollAnchor]);
+
+  // Decide the initial unread position before following resized rows.
+  useLayoutEffect(() => {
+    // ResizeObserver can request a bottom adjustment before the sizer grows,
+    // which the browser clamps. Reapply after committing the measured height.
+    if (atBottomRef.current && editingId === null) scrollToBottom();
+  }, [totalSize, editingId, scrollToBottom]);
 
   // Also capture after measurements commit, not just when the user scrolls.
   useLayoutEffect(() => {
@@ -445,11 +470,7 @@ export function MessageList({
           data-testid="message-scroll"
           className="h-full overflow-y-auto overscroll-contain px-2 py-3 [overflow-anchor:none]"
         >
-          <div
-            role="list"
-            className="relative w-full"
-            style={{ height: virtualizer.getTotalSize() }}
-          >
+          <div role="list" className="relative w-full" style={{ height: totalSize }}>
             {virtualizer.getVirtualItems().map((virtualRow) => {
               const item = items[virtualRow.index];
               if (!item) {
@@ -468,22 +489,31 @@ export function MessageList({
                   {item.message.id === firstUnreadId ? (
                     <div
                       role="separator"
-                      aria-label="new"
+                      aria-label={t("messages.new")}
                       className="flex items-center gap-2 py-2 text-xs font-semibold text-destructive"
                     >
                       <span className="h-px flex-1 bg-destructive" />
-                      <span>new</span>
+                      <span>{t("messages.new")}</span>
                       <span className="h-px w-6 bg-destructive" />
                     </div>
                   ) : null}
                   <MessageRow
                     item={item}
-                    reactions={reactions.get(item.message.id) ?? []}
+                    reactions={
+                      item.message.display_data
+                        ? (groupReactions(item.message.display_data.reactions, currentUserId).get(
+                            item.message.id,
+                          ) ?? [])
+                        : (reactions.get(item.message.id) ?? [])
+                    }
                     kitchenCatalog={kitchenCatalog}
                     canReact={canReact}
                     onReaction={(emoji) => onReaction(item.message.id, emoji)}
                     onPickReaction={() => onPickReaction(item.message.id)}
                     isOwn={!!currentUserId && item.message.user_id === currentUserId}
+                    canDelete={
+                      canModerate || (!!currentUserId && item.message.user_id === currentUserId)
+                    }
                     isEditing={editingId === item.message.id}
                     editingText={editingText}
                     onEditingTextChange={onEditingTextChange}
@@ -491,8 +521,17 @@ export function MessageList({
                     onCancelEdit={onCancelEdit}
                     onSaveEdit={onSaveEdit}
                     onRequestDelete={() => onRequestDelete(item.message.id)}
-                    replyCount={replyCounts.get(item.message.id) ?? 0}
+                    replyCount={
+                      item.message.display_data?.reply_count ??
+                      replyCounts.get(item.message.id) ??
+                      0
+                    }
                     onOpenThread={() => onOpenThread(item.message.id)}
+                    attachments={
+                      item.message.display_data?.attachments ??
+                      attachments?.get(item.message.id) ??
+                      []
+                    }
                   />
                 </div>
               );

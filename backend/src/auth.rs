@@ -489,13 +489,8 @@ pub struct AuthUser {
     pub display_name: String,
 }
 
-impl FromRequestParts<AppState> for AuthUser {
-    type Rejection = AppError;
-
-    async fn from_request_parts(
-        parts: &mut Parts,
-        state: &AppState,
-    ) -> Result<Self, Self::Rejection> {
+impl AuthUser {
+    async fn resolve_request(parts: &mut Parts, state: &AppState) -> Result<Self, AppError> {
         let is_dev_enabled = state.config.dev_auth_enabled;
 
         let auth_header = parts
@@ -576,6 +571,15 @@ impl FromRequestParts<AppState> for AuthUser {
             &claims,
         )
         .await
+    }
+}
+
+impl FromRequestParts<AppState> for AuthUser {
+    type Rejection = AppError;
+    async fn from_request_parts(parts: &mut Parts, state: &AppState) -> Result<Self, AppError> {
+        let actor = Self::resolve_request(parts, state).await?;
+        crate::apps::events::active_user(state, &actor.id).await?;
+        Ok(actor)
     }
 }
 

@@ -18,6 +18,7 @@ function channel(
     description: null,
     created_user_id: "user-1",
     is_private: options.isPrivate ?? false,
+    is_dm: false,
     created_at: "2026-01-02 00:00:00.000",
     updated_at: null,
     archive_at: options.archived ? "2026-01-03 00:00:00.000" : null,

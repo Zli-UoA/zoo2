@@ -1,8 +1,13 @@
-import { Fragment, useEffect, useMemo, useState, type ReactNode } from "react";
+import { createElement, Fragment, useEffect, useMemo, useState, type ReactNode } from "react";
 import { parse, toString, type MfmNode } from "mfm-js";
 import katex from "katex";
 import hljs from "highlight.js/lib/common";
+import { useWorkspaceEmojis } from "../../../lib/emoji/workspace";
+import type { DisplayEmoji } from "../../../lib/electric/types";
+import { emojiImageStyle } from "../../../lib/emoji/dimensions";
 import shortcodeData from "../../../lib/emoji/shortcodes.json";
+import { ExternalLink, inlineLinkClassName } from "../../ui/external-link";
+import { MfmSearch } from "./MfmSearch";
 import { ChannelHashtag } from "./MfmChannels";
 import { messageTextSegments } from "./messageFormat";
 import { functionPresentation, MFM_FUNCTIONS } from "./mfmFunctions";
@@ -11,24 +16,27 @@ export interface MfmContentProps {
   content: string;
   /** Registered custom emoji: name -> same-origin image URL. Unknown names stay readable. */
   emojiUrls?: Readonly<Record<string, string>>;
+  /** Joined into the message by the server; an empty object is authoritative. */
+  emojis?: Readonly<Record<string, DisplayEmoji>>;
+  /** Trusted renderer for registered emoji, including proxied federation images. */
+  renderEmoji?: (name: string) => ReactNode;
   /** Application event, never evaluated as JavaScript. */
   onClickEvent?: (event: string) => void;
 }
 const shortcodes: Readonly<Record<string, string>> = shortcodeData;
-const linkClass =
-  "rounded-sm text-brand underline underline-offset-2 outline-none focus-visible:ring-2 focus-visible:ring-ring/50";
+const linkClass = `${inlineLinkClassName} underline`;
 function externalLink(url: string, children: ReactNode): ReactNode {
   return (
-    <a href={url} target="_blank" rel="noopener noreferrer" className={linkClass}>
+    <ExternalLink href={url} className="underline [overflow-wrap:anywhere]">
       {children}
-    </a>
+    </ExternalLink>
   );
 }
 function text(content: string): ReactNode {
   return messageTextSegments(content).map((segment, index) => (
     <Fragment key={index}>
       {segment.kind === "link" ? (
-        externalLink(segment.value, segment.value)
+        externalLink(segment.value, segment.value.replace(/^https?:\/\//i, ""))
       ) : segment.kind === "mention" ? (
         <span className="rounded bg-brand-muted px-0.5 font-medium text-brand-muted-foreground">
           {segment.value}
@@ -61,9 +69,11 @@ function loadRegistry() {
 function EmojiCode({
   name,
   emojiUrls,
+  emojis,
 }: {
   name: string;
   emojiUrls?: MfmContentProps["emojiUrls"];
+  emojis?: MfmContentProps["emojis"];
 }) {
   const [registry, setRegistry] = useState<Readonly<Record<string, string>>>({});
   useEffect(() => {
@@ -78,8 +88,16 @@ function EmojiCode({
   }, [emojiUrls]);
   const urls = emojiUrls ?? registry;
   const url = Object.hasOwn(urls, name) ? urls[name] : undefined;
-  if (url && /^\/(?!\/)/.test(url))
-    return <img className="mfm-custom-emoji" src={url} alt={`:${name}:`} loading="lazy" />;
+  if (url && (/^\/(?!\/)/.test(url) || /^https?:\/\//.test(url)))
+    return (
+      <img
+        className="mfm-custom-emoji"
+        style={emojiImageStyle(emojis?.[name], "1.5em")}
+        src={url}
+        alt={`:${name}:`}
+        loading="lazy"
+      />
+    );
   return Object.hasOwn(shortcodes, name) ? shortcodes[name] : `:${name}:`;
 }
 function MathFormula({ formula, block }: { formula: string; block: boolean }) {
@@ -143,7 +161,11 @@ function renderNode(
     case "unicodeEmoji":
       return node.props.emoji;
     case "emojiCode":
-      return <EmojiCode name={node.props.name} emojiUrls={options.emojiUrls} />;
+      return (
+        options.renderEmoji?.(node.props.name) ?? (
+          <EmojiCode name={node.props.name} emojiUrls={options.emojiUrls} emojis={options.emojis} />
+        )
+      );
     case "bold":
       return <strong>{children()}</strong>;
     case "italic":
@@ -197,14 +219,7 @@ function renderNode(
         <ChannelHashtag name={node.props.hashtag} className={linkClass} />
       );
     case "search":
-      return (
-        <div className="mfm-search">
-          {externalLink(
-            `https://www.google.com/search?q=${encodeURIComponent(node.props.query)}`,
-            <>⌕ {node.props.content}</>,
-          )}
-        </div>
-      );
+      return inLink ? node.props.content : <MfmSearch query={node.props.query} />;
     case "fn": {
       const { name, args } = node.props;
       if (!(MFM_FUNCTIONS as readonly string[]).includes(name)) return toString(node);
@@ -285,13 +300,96 @@ function renderNode(
   return exhaustive;
 }
 
+interface MessageBlock {
+  nodes: MfmNode[];
+  newline: boolean;
+  level?: number;
+}
+
+// Only inspect root text. Code, plain text, quotes and other MFM subtrees stay intact.
+function messageBlocks(nodes: MfmNode[]): MessageBlock[] {
+  const blocks: MessageBlock[] = [];
+  let line: MfmNode[] = [];
+  const flush = (newline = false) => {
+    const first = line[0];
+    const marker = first?.type === "text" ? /^ {0,3}(#{1,6})[ \t]+/.exec(first.props.text) : null;
+    let level: number | undefined;
+    if (marker && toString(line).slice(marker[0].length).trim()) {
+      level = marker[1].length;
+      line[0] = {
+        type: "text",
+        props: { text: (first?.type === "text" ? first.props.text : "").slice(marker[0].length) },
+      };
+      const last = line.at(-1);
+      if (last?.type === "text") {
+        line[line.length - 1] = {
+          type: "text",
+          props: { text: last.props.text.replace(/[ \t]+#+[ \t]*$/, "").trimEnd() },
+        };
+      }
+    }
+    if (line.length || newline) blocks.push({ nodes: line, newline, level });
+    line = [];
+  };
+  for (const node of nodes) {
+    if (node.type === "text") {
+      node.props.text.split("\n").forEach((part, index) => {
+        if (index) flush(true);
+        line.push({ type: "text", props: { text: part } });
+      });
+    } else if (["blockCode", "quote", "center", "mathBlock", "search"].includes(node.type)) {
+      // mfm-js consumes the line breaks around block nodes.
+      flush();
+      blocks.push({ nodes: [node], newline: false });
+    } else {
+      line.push(node);
+    }
+  }
+  flush();
+  return blocks;
+}
+
 export function MfmContent({ content, ...options }: MfmContentProps) {
-  const nodes = useMemo(() => parse(content, { nestLimit: 20 }), [content]);
+  const workspace = useWorkspaceEmojis(
+    options.emojis === undefined && /:[a-z0-9_-]+:/.test(content),
+  );
+  const emojiUrls = Object.fromEntries(
+    workspace.emojis.flatMap((e) =>
+      [e.name, ...(e.aliases ?? [])].map((name) => [name, workspace.imageUrl(e.url)]),
+    ),
+  );
+  const resolvedOptions = {
+    ...options,
+    emojiUrls:
+      options.emojis !== undefined || workspace.emojis.length || options.emojiUrls
+        ? {
+            ...emojiUrls,
+            ...Object.fromEntries(
+              Object.entries(options.emojis ?? {}).map(([name, emoji]) => [
+                name,
+                workspace.imageUrl(emoji.url),
+              ]),
+            ),
+            ...options.emojiUrls,
+          }
+        : undefined,
+  };
+  const blocks = useMemo(() => messageBlocks(parse(content, { nestLimit: 20 })), [content]);
   return (
     <>
-      {nodes.map((node, index) => (
-        <Fragment key={index}>{renderNode(node, options)}</Fragment>
-      ))}
+      {blocks.map((block, index) => {
+        const body = block.nodes.map((node, childIndex) => (
+          <Fragment key={childIndex}>{renderNode(node, resolvedOptions)}</Fragment>
+        ));
+        return (
+          <Fragment key={index}>
+            {block.level
+              ? createElement(`h${block.level}`, { className: "mfm-heading" }, body)
+              : body}
+            {block.newline && !block.level && !blocks[index + 1]?.level ? "\n" : null}
+          </Fragment>
+        );
+      })}
     </>
   );
 }

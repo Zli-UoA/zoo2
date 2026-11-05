@@ -1,0 +1,9 @@
+{
+  "scopes": ["messages:write", "commands:read", "ui:write", "links:write", "users:read"],
+  "events": ["command.invoked", "link.shared", "app.uninstalled", "tokens.revoked"],
+  "transport": "http",
+  "event_url": "https://github-bot.example.com/zoo/events",
+  "commands": ["github"],
+  "link_domains": ["github.com"],
+  "include_bot_events": false
+}

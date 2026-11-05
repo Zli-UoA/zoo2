@@ -3,6 +3,7 @@ import { act, createElement } from "react";
 import { createRoot } from "react-dom/client";
 import { afterEach, beforeEach, expect, it, vi } from "vite-plus/test";
 import { LocaleProvider } from "../../i18n/LocaleProvider";
+import { MfmChannelsProvider } from "./MfmChannels";
 import { Composer } from "./Composer";
 
 let container: HTMLDivElement;
@@ -22,18 +23,30 @@ beforeEach(async () => {
   await act(async () =>
     root.render(
       createElement(LocaleProvider, {
-        children: createElement(Composer, {
-          onSend: send,
-          mentionUsers: [
-            {
-              id: "alice",
-              user_name: "alice",
-              display_name: "Alice",
-              created_at: "2026-10-24T00:00:00Z",
-              updated_at: null,
-            },
+        children: createElement(MfmChannelsProvider, {
+          channels: [
+            { id: "general", channel_name: "general", deleted_at: null },
+            { id: "dev", channel_name: "開発", deleted_at: null },
+            { id: "dm", channel_name: "dm-secret", deleted_at: null, is_dm: true },
+            { id: "deleted", channel_name: "deleted", deleted_at: "2026-10-24T00:00:00Z" },
           ],
-          mentionMemberIds: new Set(["alice"]),
+          children: createElement(Composer, {
+            commands: [
+              { app_id: "one", app_name: "First App", name: "echo" },
+              { app_id: "two", app_name: "Second App", name: "echo" },
+            ],
+            onSend: send,
+            mentionUsers: [
+              {
+                id: "alice",
+                user_name: "alice",
+                display_name: "Alice",
+                created_at: "2026-10-24T00:00:00Z",
+                updated_at: null,
+              },
+            ],
+            mentionMemberIds: new Set(["alice"]),
+          }),
         }),
       }),
     ),
@@ -205,4 +218,50 @@ it("keeps suggestions visible during composition and leaves IME keys untouched",
     );
     expect(textarea.value).toBe(value.startsWith("$") ? "$[jelly ]" : "@alice ");
   }
+});
+
+it("inserts a channel without sending and excludes DM/deleted entries", async () => {
+  const textarea = await input("See #");
+  expect(options().map((item) => item.textContent)).toEqual(["#general", "#開発"]);
+  await press("ArrowDown");
+  await press("Enter");
+  expect(textarea.value).toBe("See #開発 ");
+  expect(send).not.toHaveBeenCalled();
+});
+it("keeps duplicate commands distinct and sends to the selected App", async () => {
+  const textarea = await input("/ec");
+  expect(options()).toHaveLength(2);
+  await press("ArrowDown");
+  await press("Tab");
+  expect(textarea.value).toBe("/echo ");
+  await input("/echo hello");
+  await act(async () =>
+    container
+      .querySelector("form")!
+      .dispatchEvent(new Event("submit", { bubbles: true, cancelable: true })),
+  );
+  expect(send).toHaveBeenCalledWith("/echo hello", "two");
+});
+it("keeps channel IME keys untouched and permits dismissal", async () => {
+  const textarea = await input("#開");
+  await act(async () =>
+    textarea.dispatchEvent(
+      new KeyboardEvent("keydown", { key: "Enter", isComposing: true, bubbles: true }),
+    ),
+  );
+  expect(textarea.value).toBe("#開");
+  expect(send).not.toHaveBeenCalled();
+  await press("Escape");
+  expect(container.querySelector('[role="listbox"]')).toBeNull();
+});
+it("clears a selected App when the command name is changed", async () => {
+  await input("/ec");
+  await press("Enter");
+  await input("ordinary message");
+  await act(async () =>
+    container
+      .querySelector("form")!
+      .dispatchEvent(new Event("submit", { bubbles: true, cancelable: true })),
+  );
+  expect(send).toHaveBeenCalledWith("ordinary message");
 });

@@ -3,3 +3,6 @@
 !backend/**
 backend/target
 backend/.env*
+
+!docs/
+!docs/slack-event-coverage.json

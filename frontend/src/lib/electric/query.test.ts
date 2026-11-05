@@ -99,17 +99,34 @@ describe("reaction shapes", () => {
   });
 });
 
+describe("attachment shapes", () => {
+  it("scopes the proxy subscription by channel", () => {
+    expect(buildShapeRequestUrl("attachments", proxyConfig, { channelId: "channel-1" })).toBe(
+      "http://localhost:8000/api/shapes/attachments?channel_id=channel-1",
+    );
+  });
+
+  it("filters linked attachments in direct mode", () => {
+    const params = paramsOf(
+      buildShapeRequestUrl("attachments", directConfig, { channelId: "channel-1" }),
+    );
+    expect(params.get("table")).toBe("attachments");
+    expect(params.get("where")).toBe("channel_id = $1 AND message_id IS NOT NULL");
+    expect(params.get("params[1]")).toBe("channel-1");
+  });
+});
+
 describe("notification shapes", () => {
   it("scopes direct subscriptions to the current user and rejects unscoped access", () => {
     expect(shapeQueryParams("notifications", directConfig, { userId: "alice" })).toEqual({
-      where: "user_id = $1",
+      where: "source = 'channel' AND user_id = $1",
       "params[1]": "alice",
     });
     expect(() => shapeQueryParams("notifications", directConfig)).toThrow(/user ID/);
   });
   it("lets the authenticated proxy determine notification ownership", () => {
     expect(buildShapeRequestUrl("notifications", proxyConfig, { userId: "ignored" })).toBe(
-      "http://localhost:8000/api/shapes/notifications",
+      "http://localhost:8000/api/shapes/notifications?include_notes=true",
     );
   });
 });

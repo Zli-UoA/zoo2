@@ -6,13 +6,18 @@ export type TableName =
   | "messages"
   | "message_reactions"
   | "channel_user"
-  | "notifications";
+  | "notifications"
+  | "notification_events"
+  | "attachments";
 
 export type UserRow = {
   id: string;
   user_name: string;
   display_name: string;
   is_bot?: boolean;
+  app_id?: string | null;
+  avatar_url?: string | null;
+  bot_mentionable?: boolean;
   created_at: TimestampString;
   updated_at: TimestampString | null;
 };
@@ -23,6 +28,7 @@ export type ChannelRow = {
   description: string | null;
   created_user_id: string;
   is_private: boolean;
+  is_dm: boolean;
   created_at: TimestampString;
   updated_at: TimestampString | null;
   archive_at: TimestampString | null;
@@ -30,11 +36,19 @@ export type ChannelRow = {
 };
 
 export type MessageRow = {
+  display_data?: MessageDisplayData;
   id: string;
   user_id: string;
   channel_id: string;
   content: string;
   card?: string | null;
+  app_blocks?: string | null;
+  app_attachments?: string | null;
+  app_unfurls?: string | null;
+  app_origin_id?: string | null;
+  home_post_id?: string | null;
+  apub?: boolean;
+  apub_visibility?: string | null;
   created_at: TimestampString;
   updated_at: TimestampString | null;
   deleted_at: TimestampString | null;
@@ -57,22 +71,64 @@ export type ChannelUserRow = {
 };
 
 export type NotificationRow = {
+  display_data?: NotificationDisplayData;
   id: string;
   user_id: string;
   actor_id: string;
   channel_id: string;
   message_id: string | null;
-  note_id: string | null;
+  note_id?: string | null;
   notification_type: string;
   is_read: boolean;
   created_at: TimestampString;
 };
 
+export type DisplayEmoji = {
+  image_id?: string | null;
+  url: string;
+  width?: number | null;
+  height?: number | null;
+};
+
+export type MessageDisplayData = {
+  author?: Pick<UserRow, "id" | "user_name" | "display_name" | "avatar_url" | "is_bot" | "app_id">;
+  emojis: Record<string, DisplayEmoji>;
+  attachments: AttachmentRow[];
+  reactions: (MessageReactionRow & { user_name?: string; display_name?: string })[];
+  reply_count: number;
+};
+
+export type NotificationDisplayData = {
+  message: {
+    id: string;
+    user_id: string;
+    content: string;
+    emojis?: Record<string, DisplayEmoji>;
+  } | null;
+  reactions: MessageDisplayData["reactions"];
+  actor?: MessageDisplayData["author"];
+  channel?: ChannelRow;
+};
+
+export type AttachmentRow = {
+  id: string;
+  message_id: string | null;
+  uploader_id: string;
+  channel_id: string;
+  file_name: string;
+  file_size: string | number;
+  content_type: string;
+  storage_key: string;
+  created_at: TimestampString;
+};
+
 export type TableRowMap = {
   notifications: NotificationRow;
+  notification_events: NotificationRow;
   users: UserRow;
   channels: ChannelRow;
   messages: MessageRow;
   message_reactions: MessageReactionRow;
   channel_user: ChannelUserRow;
+  attachments: AttachmentRow;
 };

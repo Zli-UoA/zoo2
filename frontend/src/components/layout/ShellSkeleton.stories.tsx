@@ -3,7 +3,7 @@ import type { Meta, StoryObj } from "@storybook/react-vite";
 import { ShellSkeleton } from "./ShellSkeleton";
 
 const meta = {
-  title: "Layout/ShellSkeleton",
+  title: "Pages/Skeleton",
   component: ShellSkeleton,
   tags: ["autodocs"],
   parameters: { a11y: { test: "error" } },

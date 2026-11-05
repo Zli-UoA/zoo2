@@ -1,4 +1,5 @@
 import type {
+  AttachmentRow,
   ChannelRow,
   ChannelUserRow,
   MessageReactionRow,
@@ -39,7 +40,8 @@ export type ShapeName =
   | "messageReactions"
   | "users"
   | "channelUsers"
-  | "notifications";
+  | "notifications"
+  | "attachments";
 
 export interface ShapeMeta {
   table: TableName;
@@ -47,12 +49,13 @@ export interface ShapeMeta {
 }
 
 export const SHAPE_META: Record<ShapeName, ShapeMeta> = {
-  notifications: { table: "notifications", proxyPath: "notifications" },
+  notifications: { table: "notification_events", proxyPath: "notifications" },
   channels: { table: "channels", proxyPath: "channels" },
   messages: { table: "messages", proxyPath: "messages" },
   messageReactions: { table: "message_reactions", proxyPath: "message_reactions" },
   users: { table: "users", proxyPath: "users" },
   channelUsers: { table: "channel_user", proxyPath: "channel_users" },
+  attachments: { table: "attachments", proxyPath: "attachments" },
 };
 
 export interface ShapeSchema<Row> {
@@ -67,6 +70,9 @@ export const USER_SCHEMA: ShapeSchema<UserRow> = {
     user_name: "text",
     display_name: "varchar",
     is_bot: "bool",
+    app_id: "text",
+    avatar_url: "text",
+    bot_mentionable: "bool",
     created_at: "timestamp",
     updated_at: "timestamp",
   },
@@ -80,6 +86,7 @@ export const CHANNEL_SCHEMA: ShapeSchema<ChannelRow> = {
     description: "varchar",
     created_user_id: "text",
     is_private: "bool",
+    is_dm: "bool",
     created_at: "timestamp",
     updated_at: "timestamp",
     archive_at: "timestamp",
@@ -90,11 +97,19 @@ export const CHANNEL_SCHEMA: ShapeSchema<ChannelRow> = {
 export const MESSAGE_SCHEMA: ShapeSchema<MessageRow> = {
   table: "messages",
   columns: {
+    display_data: "jsonb",
     id: "text",
     user_id: "text",
     channel_id: "text",
     content: "text",
     card: "text",
+    app_blocks: "text",
+    app_attachments: "text",
+    app_unfurls: "text",
+    app_origin_id: "text",
+    home_post_id: "text",
+    apub: "bool",
+    apub_visibility: "text",
     created_at: "timestamp",
     updated_at: "timestamp",
     deleted_at: "timestamp",
@@ -125,6 +140,7 @@ export const CHANNEL_USER_SCHEMA: ShapeSchema<ChannelUserRow> = {
 export const NOTIFICATION_SCHEMA: ShapeSchema<NotificationRow> = {
   table: "notifications",
   columns: {
+    display_data: "jsonb",
     id: "text",
     user_id: "text",
     actor_id: "text",
@@ -137,13 +153,30 @@ export const NOTIFICATION_SCHEMA: ShapeSchema<NotificationRow> = {
   },
 };
 
+export const ATTACHMENT_SCHEMA: ShapeSchema<AttachmentRow> = {
+  table: "attachments",
+  columns: {
+    id: "text",
+    message_id: "text",
+    uploader_id: "text",
+    channel_id: "text",
+    file_name: "text",
+    file_size: "int8",
+    content_type: "text",
+    storage_key: "text",
+    created_at: "timestamp",
+  },
+};
+
 export const SHAPE_SCHEMAS: { [K in TableName]: ShapeSchema<TableRowMap[K]> } = {
   notifications: NOTIFICATION_SCHEMA,
+  notification_events: NOTIFICATION_SCHEMA,
   users: USER_SCHEMA,
   channels: CHANNEL_SCHEMA,
   messages: MESSAGE_SCHEMA,
   message_reactions: MESSAGE_REACTION_SCHEMA,
   channel_user: CHANNEL_USER_SCHEMA,
+  attachments: ATTACHMENT_SCHEMA,
 };
 
 export function toNumber(value: number | string): number {
@@ -154,6 +187,7 @@ export function coerceElectricValue(type: ElectricType, value: unknown): unknown
   if (value === null || value === undefined) {
     return value;
   }
+  if (type === "jsonb" && typeof value === "string") return JSON.parse(value);
   if (NUMERIC_ELECTRIC_TYPES.has(type) && typeof value === "string") {
     return toNumber(value);
   }

@@ -1,4 +1,4 @@
-import { createElement, createRef, type ReactNode } from "react";
+import { createElement, createRef, type ComponentProps, type ReactNode } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { I18nextProvider } from "react-i18next";
 import { beforeEach, expect, it, vi } from "vite-plus/test";
@@ -78,6 +78,7 @@ const channel: ChannelRow = {
   description: null,
   created_user_id: "me",
   is_private: false,
+  is_dm: false,
   created_at: now,
   updated_at: null,
   archive_at: null,
@@ -94,7 +95,10 @@ const rows: NotificationRow[] = ["alice", "bob"].map((id) => ({
   is_read: false,
   created_at: now,
 }));
-function render(notifications = rows) {
+function render(
+  notifications = rows,
+  overrides: Partial<ComponentProps<typeof NotificationCard>> = {},
+) {
   return renderToStaticMarkup(
     createElement(
       I18nextProvider,
@@ -105,6 +109,7 @@ function render(notifications = rows) {
         users,
         onRead: vi.fn(),
         scrollRoot: createRef<HTMLDivElement>(),
+        ...overrides,
       }),
     ),
   );
@@ -133,7 +138,8 @@ beforeEach(() => {
 it("shows one grouped reaction card with a limited clickable quote and no action buttons", () => {
   const html = render();
   expect(html).toContain("ほか1人がリアクションしました");
-  expect(html).toContain('aria-label="👍 2"');
+  expect(html).not.toContain('aria-label="👍 2"');
+  expect(html).not.toContain("<ul");
   expect(html).toContain('href="/channels/channel?message=message"');
   expect(html).toContain("<blockquote>");
   expect(html).toContain("line-clamp-3");
@@ -178,4 +184,47 @@ it("links note notifications to their note without using the message search key"
   expect(html).toContain('href="/channels/channel?note=note-1"');
   expect(html).toContain("Runbook");
   expect(html).toContain("Useful note");
+});
+
+it.each(["dm", "reaction", "reply", "mention"] as const)(
+  "shows the peer name for %s notifications in a DM",
+  (type) => {
+    const html = render([{ ...rows[0], notification_type: type }], {
+      channel: { ...channel, is_dm: true, channel_name: "dm:me:alice" },
+    });
+    expect(html).toContain(">alice</span>");
+    expect(html).not.toContain("dm:me:alice");
+    expect(html).not.toContain("#general");
+    expect(html).toContain('href="/channels/channel?message=message"');
+  },
+);
+it("uses sorted group DM members without the recipient and limits long member lists", () => {
+  const peers = new Map(users);
+  for (const id of ["carol", "dave"])
+    peers.set(id, { ...users.get("bob")!, id, user_name: id, display_name: id });
+  const html = render([rows[0]], {
+    channel: { ...channel, is_dm: true, channel_name: "dm:group:internal-id" },
+    users: peers,
+    members: [...peers.keys()].reverse().map((user_id) => ({ user_id })),
+  });
+  expect(html).toContain("alice, bob, carol +1");
+  expect(html).not.toContain("dm:group:internal-id");
+});
+it("keeps a DM readable when user metadata has not arrived", () => {
+  const html = render([rows[0]], {
+    channel: { ...channel, is_dm: true, channel_name: "dm:me:unknown" },
+    users: new Map(),
+  });
+  expect(html).toContain("ダイレクトメッセージ");
+  expect(html).not.toContain("dm:me:unknown");
+});
+
+it("renders message formatting and external links separately from the notification destination", () => {
+  state.message!.content = "**Release** https://example.com/docs @alice";
+  const html = render([{ ...rows[0], notification_type: "mention" }]);
+  expect(html).toContain("<strong>Release</strong>");
+  expect(html).toContain('href="https://example.com/docs"');
+  expect(html).toContain('target="_blank"');
+  expect(html).toContain('href="/channels/channel?message=message"');
+  expect(html).not.toMatch(/<a[^>]*>[^]*<a[^>]*>[^]*<\/a>[^]*<\/a>/);
 });

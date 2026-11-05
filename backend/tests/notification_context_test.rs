@@ -240,6 +240,24 @@ async fn context_is_bounded_to_the_target_and_checks_ownership_membership_and_de
         json!({"user_id":users[1],"emoji":"👍"})
     );
     assert!(!body.to_string().contains("Another message"));
+    let (status, _, _) = request(
+        &app,
+        "POST",
+        &format!("/api/messages/{id}/reactions"),
+        &users[1],
+        Some(json!({"emoji":"🎉"})),
+    )
+    .await?;
+    assert_eq!(status, StatusCode::OK);
+    toasty::sql::statement("UPDATE message_reactions SET created_at=CASE WHEN emoji='🎉' THEN timestamp '2026-11-01 12:00:01' ELSE timestamp '2026-11-01 12:00:00' END WHERE message_id=$1")
+        .bind(id.as_str()).exec(&mut db).await?;
+    let (_, ordered, _) = request(&app, "GET", &path, &users[0], None).await?;
+    assert_eq!(
+        ordered["reactions"][0],
+        json!({"user_id":users[1],"emoji":"🎉"}),
+        "The badge can select the latest actual reaction instead of an arbitrary older emoji"
+    );
+
     for user in [&users[1], &users[3]] {
         assert_eq!(
             request(&app, "GET", &path, user, None).await?.0,

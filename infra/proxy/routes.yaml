@@ -1,8 +1,14 @@
 # File-provider Go templates are expanded by Traefik at startup.
 http:
   routers:
+    apps:
+      rule: 'PathPrefix(`/api/apps`) || PathPrefix(`/api/app-`)'
+      priority: 200
+      entryPoints: [web]
+      middlewares: [app-private-response, strip-dev-headers]
+      service: backend
     api:
-      rule: 'Path(`/api`) || PathPrefix(`/api/`)'
+      rule: 'Path(`/api`) || PathPrefix(`/api/`) || Path(`/.well-known/webfinger`)'
       priority: 100
       entryPoints: [web]
       middlewares: [private-response, strip-dev-headers]
@@ -14,6 +20,10 @@ http:
       service: frontend
 
   middlewares:
+    app-private-response:
+      headers:
+        customResponseHeaders:
+          Cache-Control: "private, no-store"
     strip-dev-headers:
       headers:
         customRequestHeaders:

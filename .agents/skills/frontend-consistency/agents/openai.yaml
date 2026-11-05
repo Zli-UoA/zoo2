@@ -1,0 +1,6 @@
+interface:
+  display_name: "フロントエンドの一貫性・再利用"
+  short_description: "共通UIと処理を再利用し、配置幅・操作・テーマを一貫させる"
+  default_prompt: "$frontend-consistency を使い、既存の共通部品と実装方針を確認してフロントエンドを修正してください。重複を適切にまとめ、配置先の幅と既存の操作を検証してください。"
+policy:
+  allow_implicit_invocation: true

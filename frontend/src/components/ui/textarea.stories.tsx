@@ -1,9 +1,10 @@
+import { storySurfaces } from "../../../.storybook/story-surfaces";
 import type { Meta, StoryObj } from "@storybook/react-vite";
 
 import { Textarea } from "./textarea";
 
 const meta = {
-  title: "Foundations/Textarea",
+  title: "Components/Textarea",
   component: Textarea,
   tags: ["autodocs"],
   parameters: { a11y: { test: "error" } },
@@ -17,7 +18,7 @@ const meta = {
   },
   decorators: [
     (Story) => (
-      <div className="max-w-xl bg-background p-6">
+      <div className={storySurfaces["Components/Textarea"]}>
         <Story />
       </div>
     ),

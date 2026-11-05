@@ -176,7 +176,7 @@ async fn try_create_or_get_1on1_dm(
     Ok(Some(ApiResponse::new(ChannelResponse::from(channel), txid)))
 }
 
-async fn create_or_get_dm(
+pub(crate) async fn create_or_get_dm(
     State(state): State<AppState>,
     auth_user: AuthUser,
     Json(payload): Json<CreateDmRequest>,
@@ -220,6 +220,12 @@ async fn create_or_get_dm(
 
     let mut db = state.db.clone();
 
+    if crate::apps::events::guest_in_db(&mut db, &auth_user.id).await? {
+        let mut tx = db.transaction().await?;
+        for target in &payload.target_user_ids {
+            crate::apps::one(&mut tx,"SELECT '{}'::text FROM channel_user me JOIN channel_user other ON other.channel_id=me.channel_id JOIN channels c ON c.id=me.channel_id WHERE me.user_id=$1 AND other.user_id=$2 AND c.deleted_at IS NULL LIMIT 1",&[&auth_user.id,target]).await?;
+        }
+    }
     // 参加予定ユーザーの存在確認 (リード操作のためトランザクション外で実行)
     for uid in &payload.target_user_ids {
         let target = User::get_by_id(&mut db, uid.as_str())
@@ -231,7 +237,7 @@ async fn create_or_get_dm(
                     AppError::from(err)
                 }
             })?;
-        if target.is_bot {
+        if target.is_bot && !crate::apps::bot_can_chat(&mut db, uid).await? {
             return Err(AppError::BadRequest(
                 "Cannot start a DM with an integration user".into(),
             ));

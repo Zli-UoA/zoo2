@@ -8,6 +8,7 @@ import { defineConfig } from "vite-plus";
 const dirname = path.dirname(fileURLToPath(import.meta.url));
 
 export default defineConfig({
+  optimizeDeps: { include: ["@base-ui/react/toggle-group", "@base-ui/react/toggle"] },
   // emojibase-data と mockServiceWorker.js を Storybook でも配信する。
   publicDir: path.resolve(dirname, "../public"),
   plugins: [tailwindcss(), viteReact()],

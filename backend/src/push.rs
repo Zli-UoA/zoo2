@@ -274,6 +274,10 @@ async fn deliver(state: &AppState, notifications: Vec<Notification>) -> anyhow::
         if channel.deleted_at.is_some() {
             continue;
         }
+        {
+            let mut tx = db.transaction().await?;
+            if crate::apps::one(&mut tx,"SELECT json_build_object('quiet',EXISTS(SELECT 1 FROM user_event_settings WHERE user_id=$1 AND dnd_until>now()))::text",&[&notification.user_id]).await?["quiet"]==true{continue;}
+        }
         let payload = notification_payload(&notification, &actor, &channel, &body, url);
         let subscriptions = PushSubscription::filter(
             PushSubscription::fields()
@@ -378,23 +382,35 @@ mod tests {
             assert!(validate_endpoint(endpoint).is_ok(), "{endpoint}");
         }
     }
-    // Public test fixture only; never use this key for a deployment.
-    const TEST_PRIVATE: &str = r#"-----BEGIN PRIVATE KEY-----
-MIGHAgEAMBMGByqGSM49AgEGCCqGSM49AwEHBG0wawIBAQQgNTLZ8xmO7ci3rc/O
-pup2/Pw9uu5tLby4HMstZjD7D1ShRANCAAR2MMTJH8KJftvWJgrrjFBsR1QfP++g
-UdVeohAJI+VGOla+3dFZIArucgJHO20BQX3Hq4rjyEPc7QUhgmYVRhCf
------END PRIVATE KEY-----
-"#;
-    const TEST_PUBLIC_PEM: &str = r#"-----BEGIN PUBLIC KEY-----
-MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEdjDEyR/CiX7b1iYK64xQbEdUHz/v
-oFHVXqIQCSPlRjpWvt3RWSAK7nICRzttAUF9x6uK48hD3O0FIYJmFUYQnw==
------END PUBLIC KEY-----
-"#;
-    const TEST_PUBLIC: &str =
-        "BHYwxMkfwol-29YmCuuMUGxHVB8_76BR1V6iEAkj5UY6Vr7d0VkgCu5yAkc7bQFBfceriuPIQ9ztBSGCZhVGEJ8";
+    // Each test creates a disposable key pair; no private key is stored in source.
+    fn test_vapid_keys() -> (String, String, String) {
+        use openssl::{
+            bn::BigNumContext,
+            ec::{EcGroup, EcKey, PointConversionForm},
+            nid::Nid,
+            pkey::PKey,
+        };
+        let group = EcGroup::from_curve_name(Nid::X9_62_PRIME256V1).unwrap();
+        let ec = EcKey::generate(&group).unwrap();
+        let raw = ec
+            .public_key()
+            .to_bytes(
+                &group,
+                PointConversionForm::UNCOMPRESSED,
+                &mut BigNumContext::new().unwrap(),
+            )
+            .unwrap();
+        let key = PKey::from_ec_key(ec).unwrap();
+        (
+            URL_SAFE_NO_PAD.encode(raw),
+            String::from_utf8(key.private_key_to_pem_pkcs8().unwrap()).unwrap(),
+            String::from_utf8(key.public_key_to_pem().unwrap()).unwrap(),
+        )
+    }
 
     #[test]
     fn config_requires_complete_settings_and_a_p256_private_key() {
+        let (test_public, test_private, _) = test_vapid_keys();
         assert!(
             PushConfig::parse("".into(), "".into(), "".into())
                 .unwrap()
@@ -402,7 +418,7 @@ oFHVXqIQCSPlRjpWvt3RWSAK7nICRzttAUF9x6uK48hD3O0FIYJmFUYQnw==
         );
         assert!(
             PushConfig::parse(
-                TEST_PUBLIC.into(),
+                test_public.clone(),
                 "".into(),
                 "mailto:test@example.com".into()
             )
@@ -411,18 +427,18 @@ oFHVXqIQCSPlRjpWvt3RWSAK7nICRzttAUF9x6uK48hD3O0FIYJmFUYQnw==
         assert!(
             PushConfig::parse(
                 "invalid".into(),
-                TEST_PRIVATE.into(),
+                test_private.clone(),
                 "mailto:test@example.com".into()
             )
             .is_err()
         );
         assert!(
-            PushConfig::parse(TEST_PUBLIC.into(), TEST_PRIVATE.into(), "invalid".into()).is_err()
+            PushConfig::parse(test_public.clone(), test_private.clone(), "invalid".into()).is_err()
         );
         assert!(
             PushConfig::parse(
-                TEST_PUBLIC.into(),
-                TEST_PRIVATE.into(),
+                test_public.clone(),
+                test_private.clone(),
                 "mailto:test@example.com".into()
             )
             .unwrap()
@@ -432,6 +448,7 @@ oFHVXqIQCSPlRjpWvt3RWSAK7nICRzttAUF9x6uK48hD3O0FIYJmFUYQnw==
 
     #[tokio::test]
     async fn sends_empty_web_push_with_verifiable_vapid_claims() {
+        let (test_public, test_private, test_public_pem) = test_vapid_keys();
         use wiremock::{
             Mock, MockServer, ResponseTemplate,
             matchers::{body_string, header, method},
@@ -445,8 +462,8 @@ oFHVXqIQCSPlRjpWvt3RWSAK7nICRzttAUF9x6uK48hD3O0FIYJmFUYQnw==
             .mount(&server)
             .await;
         let config = PushConfig::parse(
-            TEST_PUBLIC.into(),
-            TEST_PRIVATE.into(),
+            test_public.clone(),
+            test_private.clone(),
             "mailto:test@example.com".into(),
         )
         .unwrap()
@@ -473,10 +490,10 @@ oFHVXqIQCSPlRjpWvt3RWSAK7nICRzttAUF9x6uK48hD3O0FIYJmFUYQnw==
             .split(", k=")
             .next()
             .unwrap();
-        assert!(auth.ends_with(TEST_PUBLIC));
+        assert!(auth.ends_with(&test_public));
         let mut validation = jsonwebtoken::Validation::new(Algorithm::ES256);
         validation.set_audience(&[&server.uri()]);
-        let key = jsonwebtoken::DecodingKey::from_ec_pem(TEST_PUBLIC_PEM.as_bytes()).unwrap();
+        let key = jsonwebtoken::DecodingKey::from_ec_pem(test_public_pem.as_bytes()).unwrap();
         let claims = jsonwebtoken::decode::<serde_json::Value>(token, &key, &validation)
             .unwrap()
             .claims;
@@ -490,6 +507,7 @@ oFHVXqIQCSPlRjpWvt3RWSAK7nICRzttAUF9x6uK48hD3O0FIYJmFUYQnw==
     }
     #[tokio::test]
     async fn encrypted_push_delivers_readable_notification_payload_to_the_subscribed_browser() {
+        let (test_public, test_private, _) = test_vapid_keys();
         use wiremock::{
             Mock, MockServer, ResponseTemplate,
             matchers::{header, method},
@@ -517,8 +535,8 @@ oFHVXqIQCSPlRjpWvt3RWSAK7nICRzttAUF9x6uK48hD3O0FIYJmFUYQnw==
             .mount(&server)
             .await;
         let config = PushConfig::parse(
-            TEST_PUBLIC.into(),
-            TEST_PRIVATE.into(),
+            test_public.clone(),
+            test_private.clone(),
             "mailto:test@example.com".into(),
         )
         .unwrap()

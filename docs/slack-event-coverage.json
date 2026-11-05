@@ -1,0 +1,2680 @@
+{
+  "reference_url": "https://docs.slack.dev/reference/events/",
+  "reference_date": "2026-10-27",
+  "official_events": [
+    "accounts_changed",
+    "agent_session_stopped",
+    "agent_session_title_changed",
+    "app_context_changed",
+    "app_deleted",
+    "app_home_opened",
+    "app_installed",
+    "app_mention",
+    "app_rate_limited",
+    "app_requested",
+    "app_uninstalled",
+    "app_uninstalled_team",
+    "assistant_thread_context_changed",
+    "assistant_thread_started",
+    "bot_added",
+    "bot_changed",
+    "call_rejected",
+    "channel_archive",
+    "channel_created",
+    "channel_deleted",
+    "channel_history_changed",
+    "channel_id_changed",
+    "channel_joined",
+    "channel_left",
+    "channel_marked",
+    "channel_rename",
+    "channel_shared",
+    "channel_unarchive",
+    "channel_unshared",
+    "commands_changed",
+    "dnd_updated",
+    "dnd_updated_user",
+    "email_domain_changed",
+    "emoji_changed",
+    "entity_comments_requested",
+    "entity_details_requested",
+    "external_org_migration_finished",
+    "external_org_migration_started",
+    "file_change",
+    "file_comment_deleted",
+    "file_created",
+    "file_deleted",
+    "file_public",
+    "file_shared",
+    "file_unshared",
+    "function_executed",
+    "goodbye",
+    "grid_migration_finished",
+    "grid_migration_started",
+    "group_archive",
+    "group_close",
+    "group_deleted",
+    "group_history_changed",
+    "group_joined",
+    "group_left",
+    "group_marked",
+    "group_open",
+    "group_rename",
+    "group_unarchive",
+    "hello",
+    "im_close",
+    "im_created",
+    "im_history_changed",
+    "im_marked",
+    "im_open",
+    "invite_requested",
+    "link_shared",
+    "manual_presence_change",
+    "member_joined_channel",
+    "member_left_channel",
+    "message",
+    "message.app_home",
+    "message.channels",
+    "message.groups",
+    "message.im",
+    "message.mpim",
+    "message_metadata_deleted",
+    "message_metadata_posted",
+    "message_metadata_updated",
+    "pin_added",
+    "pin_removed",
+    "pref_change",
+    "presence_change",
+    "presence_query",
+    "presence_sub",
+    "reaction_added",
+    "reaction_removed",
+    "reconnect_url",
+    "shared_channel_invite_accepted",
+    "shared_channel_invite_approved",
+    "shared_channel_invite_declined",
+    "shared_channel_invite_received",
+    "shared_channel_invite_requested",
+    "star_added",
+    "star_removed",
+    "subteam_created",
+    "subteam_members_changed",
+    "subteam_self_added",
+    "subteam_self_removed",
+    "subteam_updated",
+    "team_access_granted",
+    "team_access_revoked",
+    "team_domain_change",
+    "team_join",
+    "team_migration_started",
+    "team_plan_change",
+    "team_pref_change",
+    "team_profile_change",
+    "team_profile_delete",
+    "team_profile_reorder",
+    "team_rename",
+    "tokens_revoked",
+    "url_verification",
+    "user_change",
+    "user_connection",
+    "user_guest_status_changed",
+    "user_huddle_changed",
+    "user_profile_changed",
+    "user_status_changed",
+    "user_typing"
+  ],
+  "events": [
+    {
+      "slack_event": "accounts_changed",
+      "source_url": "https://docs.slack.dev/reference/events/accounts_changed/",
+      "status": "excluded",
+      "reason": "Slack RTMの複数アカウント接続管理に固有。Zooは環境ごとのOIDC認証を使い、Slackアカウント接続一覧を持たない。",
+      "exception": "slack_identity"
+    },
+    {
+      "slack_event": "agent_session_stopped",
+      "source_url": "https://docs.slack.dev/reference/events/agent_session_stopped/",
+      "status": "implemented",
+      "zoo_events": [
+        "assistant.stopped"
+      ],
+      "conversation_kind": "any"
+    },
+    {
+      "slack_event": "agent_session_title_changed",
+      "source_url": "https://docs.slack.dev/reference/events/agent_session_title_changed/",
+      "status": "implemented",
+      "zoo_events": [
+        "assistant.title_changed"
+      ],
+      "conversation_kind": "any"
+    },
+    {
+      "slack_event": "app_context_changed",
+      "source_url": "https://docs.slack.dev/reference/events/app_context_changed/",
+      "status": "implemented",
+      "zoo_events": [
+        "app.context_changed"
+      ],
+      "conversation_kind": "any"
+    },
+    {
+      "slack_event": "app_deleted",
+      "source_url": "https://docs.slack.dev/reference/events/app_deleted/",
+      "status": "implemented",
+      "zoo_events": [
+        "app.deleted"
+      ],
+      "conversation_kind": "any"
+    },
+    {
+      "slack_event": "app_home_opened",
+      "source_url": "https://docs.slack.dev/reference/events/app_home_opened/",
+      "status": "implemented",
+      "zoo_events": [
+        "home.opened"
+      ],
+      "conversation_kind": "any"
+    },
+    {
+      "slack_event": "app_installed",
+      "source_url": "https://docs.slack.dev/reference/events/app_installed/",
+      "status": "implemented",
+      "zoo_events": [
+        "app.installed_workspace"
+      ],
+      "conversation_kind": "any"
+    },
+    {
+      "slack_event": "app_mention",
+      "source_url": "https://docs.slack.dev/reference/events/app_mention/",
+      "status": "implemented",
+      "zoo_events": [
+        "app.mentioned"
+      ],
+      "conversation_kind": "any"
+    },
+    {
+      "slack_event": "app_rate_limited",
+      "source_url": "https://docs.slack.dev/reference/events/app_rate_limited/",
+      "status": "implemented",
+      "zoo_events": [
+        "app.rate_limited"
+      ],
+      "conversation_kind": "any"
+    },
+    {
+      "slack_event": "app_requested",
+      "source_url": "https://docs.slack.dev/reference/events/app_requested/",
+      "status": "implemented",
+      "zoo_events": [
+        "app.requested"
+      ],
+      "conversation_kind": "any"
+    },
+    {
+      "slack_event": "app_uninstalled",
+      "source_url": "https://docs.slack.dev/reference/events/app_uninstalled/",
+      "status": "implemented",
+      "zoo_events": [
+        "app.uninstalled"
+      ],
+      "conversation_kind": "any"
+    },
+    {
+      "slack_event": "app_uninstalled_team",
+      "source_url": "https://docs.slack.dev/reference/events/app_uninstalled_team/",
+      "status": "excluded",
+      "reason": "Slackの組織全体Appと複数ワークスペースへのアクセス管理に固有。環境内のインストール／失効イベントは別途実装する。",
+      "exception": "enterprise_installation"
+    },
+    {
+      "slack_event": "assistant_thread_context_changed",
+      "source_url": "https://docs.slack.dev/reference/events/assistant_thread_context_changed/",
+      "status": "implemented",
+      "zoo_events": [
+        "assistant.context_changed"
+      ],
+      "conversation_kind": "any"
+    },
+    {
+      "slack_event": "assistant_thread_started",
+      "source_url": "https://docs.slack.dev/reference/events/assistant_thread_started/",
+      "status": "implemented",
+      "zoo_events": [
+        "assistant.started"
+      ],
+      "conversation_kind": "any"
+    },
+    {
+      "slack_event": "bot_added",
+      "source_url": "https://docs.slack.dev/reference/events/bot_added/",
+      "status": "implemented",
+      "zoo_events": [
+        "bot.added"
+      ],
+      "conversation_kind": "any"
+    },
+    {
+      "slack_event": "bot_changed",
+      "source_url": "https://docs.slack.dev/reference/events/bot_changed/",
+      "status": "implemented",
+      "zoo_events": [
+        "bot.changed"
+      ],
+      "conversation_kind": "any"
+    },
+    {
+      "slack_event": "call_rejected",
+      "source_url": "https://docs.slack.dev/reference/events/call_rejected/",
+      "status": "excluded",
+      "reason": "Slack Huddles／通話の状態イベント。合意した対象はApp開発機能であり、通話製品の実装は対象外。",
+      "exception": "huddles"
+    },
+    {
+      "slack_event": "channel_archive",
+      "source_url": "https://docs.slack.dev/reference/events/channel_archive/",
+      "status": "implemented",
+      "zoo_events": [
+        "channel.archived"
+      ],
+      "conversation_kind": "public"
+    },
+    {
+      "slack_event": "channel_created",
+      "source_url": "https://docs.slack.dev/reference/events/channel_created/",
+      "status": "implemented",
+      "zoo_events": [
+        "channel.created"
+      ],
+      "conversation_kind": "public"
+    },
+    {
+      "slack_event": "channel_deleted",
+      "source_url": "https://docs.slack.dev/reference/events/channel_deleted/",
+      "status": "implemented",
+      "zoo_events": [
+        "channel.deleted"
+      ],
+      "conversation_kind": "public"
+    },
+    {
+      "slack_event": "channel_history_changed",
+      "source_url": "https://docs.slack.dev/reference/events/channel_history_changed/",
+      "status": "implemented",
+      "zoo_events": [
+        "channel.history_changed"
+      ],
+      "conversation_kind": "public"
+    },
+    {
+      "slack_event": "channel_id_changed",
+      "source_url": "https://docs.slack.dev/reference/events/channel_id_changed/",
+      "status": "excluded",
+      "reason": "ZooのUUIDは参照整合性のため不変。SlackのチャンネルID移行という操作を提供しない。",
+      "exception": "immutable_identity"
+    },
+    {
+      "slack_event": "channel_joined",
+      "source_url": "https://docs.slack.dev/reference/events/channel_joined/",
+      "status": "implemented",
+      "zoo_events": [
+        "member.joined"
+      ],
+      "conversation_kind": "public"
+    },
+    {
+      "slack_event": "channel_left",
+      "source_url": "https://docs.slack.dev/reference/events/channel_left/",
+      "status": "implemented",
+      "zoo_events": [
+        "member.left"
+      ],
+      "conversation_kind": "public"
+    },
+    {
+      "slack_event": "channel_marked",
+      "source_url": "https://docs.slack.dev/reference/events/channel_marked/",
+      "status": "implemented",
+      "zoo_events": [
+        "conversation.marked"
+      ],
+      "conversation_kind": "public"
+    },
+    {
+      "slack_event": "channel_rename",
+      "source_url": "https://docs.slack.dev/reference/events/channel_rename/",
+      "status": "implemented",
+      "zoo_events": [
+        "channel.renamed"
+      ],
+      "conversation_kind": "public"
+    },
+    {
+      "slack_event": "channel_shared",
+      "source_url": "https://docs.slack.dev/reference/events/channel_shared/",
+      "status": "excluded",
+      "reason": "Slack Connectの組織間チャンネル共有。合意した1 Zoo環境＝1ワークスペースの境界外で、外部組織との共有権限を持たない。",
+      "exception": "slack_connect"
+    },
+    {
+      "slack_event": "channel_unarchive",
+      "source_url": "https://docs.slack.dev/reference/events/channel_unarchive/",
+      "status": "implemented",
+      "zoo_events": [
+        "channel.unarchived"
+      ],
+      "conversation_kind": "public"
+    },
+    {
+      "slack_event": "channel_unshared",
+      "source_url": "https://docs.slack.dev/reference/events/channel_unshared/",
+      "status": "excluded",
+      "reason": "Slack Connectの組織間チャンネル共有。合意した1 Zoo環境＝1ワークスペースの境界外で、外部組織との共有権限を持たない。",
+      "exception": "slack_connect"
+    },
+    {
+      "slack_event": "commands_changed",
+      "source_url": "https://docs.slack.dev/reference/events/commands_changed/",
+      "status": "implemented",
+      "zoo_events": [
+        "commands.changed"
+      ],
+      "conversation_kind": "any"
+    },
+    {
+      "slack_event": "dnd_updated",
+      "source_url": "https://docs.slack.dev/reference/events/dnd_updated/",
+      "status": "implemented",
+      "zoo_events": [
+        "user.dnd_changed"
+      ],
+      "conversation_kind": "any"
+    },
+    {
+      "slack_event": "dnd_updated_user",
+      "source_url": "https://docs.slack.dev/reference/events/dnd_updated_user/",
+      "status": "implemented",
+      "zoo_events": [
+        "user.dnd_changed_public"
+      ],
+      "conversation_kind": "any"
+    },
+    {
+      "slack_event": "email_domain_changed",
+      "source_url": "https://docs.slack.dev/reference/events/email_domain_changed/",
+      "status": "excluded",
+      "reason": "メールドメインは外部OIDC IdP、配信ホスト名はデプロイ設定で管理する。Zoo内にSlack型の自己管理サインアップドメイン／ワークスペースURL変更操作はない。",
+      "exception": "external_identity_and_hosting"
+    },
+    {
+      "slack_event": "emoji_changed",
+      "source_url": "https://docs.slack.dev/reference/events/emoji_changed/",
+      "status": "implemented",
+      "zoo_events": [
+        "emoji.changed"
+      ],
+      "conversation_kind": "any"
+    },
+    {
+      "slack_event": "entity_comments_requested",
+      "source_url": "https://docs.slack.dev/reference/events/entity_comments_requested/",
+      "status": "implemented",
+      "zoo_events": [
+        "entity.comments_requested"
+      ],
+      "conversation_kind": "any"
+    },
+    {
+      "slack_event": "entity_details_requested",
+      "source_url": "https://docs.slack.dev/reference/events/entity_details_requested/",
+      "status": "implemented",
+      "zoo_events": [
+        "entity.details_requested"
+      ],
+      "conversation_kind": "any"
+    },
+    {
+      "slack_event": "external_org_migration_finished",
+      "source_url": "https://docs.slack.dev/reference/events/external_org_migration_finished/",
+      "status": "excluded",
+      "reason": "Slack Enterprise Gridの組織・ワークスペース移行に固有。Zooの単一環境には移行元／移行先の組織階層がない。",
+      "exception": "enterprise_migration"
+    },
+    {
+      "slack_event": "external_org_migration_started",
+      "source_url": "https://docs.slack.dev/reference/events/external_org_migration_started/",
+      "status": "excluded",
+      "reason": "Slack Enterprise Gridの組織・ワークスペース移行に固有。Zooの単一環境には移行元／移行先の組織階層がない。",
+      "exception": "enterprise_migration"
+    },
+    {
+      "slack_event": "file_change",
+      "source_url": "https://docs.slack.dev/reference/events/file_change/",
+      "status": "implemented",
+      "zoo_events": [
+        "file.changed"
+      ],
+      "conversation_kind": "any"
+    },
+    {
+      "slack_event": "file_comment_deleted",
+      "source_url": "https://docs.slack.dev/reference/events/file_comment_deleted/",
+      "status": "excluded",
+      "reason": "Slack公式で配信終了と明記されている旧ファイルコメント。現行のメッセージ／スレッドの編集・削除を扱う。",
+      "exception": "retired"
+    },
+    {
+      "slack_event": "file_created",
+      "source_url": "https://docs.slack.dev/reference/events/file_created/",
+      "status": "implemented",
+      "zoo_events": [
+        "file.created"
+      ],
+      "conversation_kind": "any"
+    },
+    {
+      "slack_event": "file_deleted",
+      "source_url": "https://docs.slack.dev/reference/events/file_deleted/",
+      "status": "implemented",
+      "zoo_events": [
+        "file.deleted"
+      ],
+      "conversation_kind": "any"
+    },
+    {
+      "slack_event": "file_public",
+      "source_url": "https://docs.slack.dev/reference/events/file_public/",
+      "status": "implemented",
+      "zoo_events": [
+        "file.public"
+      ],
+      "conversation_kind": "any"
+    },
+    {
+      "slack_event": "file_shared",
+      "source_url": "https://docs.slack.dev/reference/events/file_shared/",
+      "status": "implemented",
+      "zoo_events": [
+        "file.shared"
+      ],
+      "conversation_kind": "any"
+    },
+    {
+      "slack_event": "file_unshared",
+      "source_url": "https://docs.slack.dev/reference/events/file_unshared/",
+      "status": "implemented",
+      "zoo_events": [
+        "file.unshared"
+      ],
+      "conversation_kind": "any"
+    },
+    {
+      "slack_event": "function_executed",
+      "source_url": "https://docs.slack.dev/reference/events/function_executed/",
+      "status": "implemented",
+      "zoo_events": [
+        "function.executed"
+      ],
+      "conversation_kind": "any"
+    },
+    {
+      "slack_event": "goodbye",
+      "source_url": "https://docs.slack.dev/reference/events/goodbye/",
+      "status": "transport",
+      "reason": "Socket終了時のgoodbye制御フレーム。",
+      "zoo_events": []
+    },
+    {
+      "slack_event": "grid_migration_finished",
+      "source_url": "https://docs.slack.dev/reference/events/grid_migration_finished/",
+      "status": "excluded",
+      "reason": "Slack Enterprise Gridの組織・ワークスペース移行に固有。Zooの単一環境には移行元／移行先の組織階層がない。",
+      "exception": "enterprise_migration"
+    },
+    {
+      "slack_event": "grid_migration_started",
+      "source_url": "https://docs.slack.dev/reference/events/grid_migration_started/",
+      "status": "excluded",
+      "reason": "Slack Enterprise Gridの組織・ワークスペース移行に固有。Zooの単一環境には移行元／移行先の組織階層がない。",
+      "exception": "enterprise_migration"
+    },
+    {
+      "slack_event": "group_archive",
+      "source_url": "https://docs.slack.dev/reference/events/group_archive/",
+      "status": "implemented",
+      "zoo_events": [
+        "channel.archived"
+      ],
+      "conversation_kind": "private"
+    },
+    {
+      "slack_event": "group_close",
+      "source_url": "https://docs.slack.dev/reference/events/group_close/",
+      "status": "implemented",
+      "zoo_events": [
+        "conversation.closed"
+      ],
+      "conversation_kind": "private"
+    },
+    {
+      "slack_event": "group_deleted",
+      "source_url": "https://docs.slack.dev/reference/events/group_deleted/",
+      "status": "implemented",
+      "zoo_events": [
+        "channel.deleted"
+      ],
+      "conversation_kind": "private"
+    },
+    {
+      "slack_event": "group_history_changed",
+      "source_url": "https://docs.slack.dev/reference/events/group_history_changed/",
+      "status": "implemented",
+      "zoo_events": [
+        "channel.history_changed"
+      ],
+      "conversation_kind": "private"
+    },
+    {
+      "slack_event": "group_joined",
+      "source_url": "https://docs.slack.dev/reference/events/group_joined/",
+      "status": "implemented",
+      "zoo_events": [
+        "member.joined"
+      ],
+      "conversation_kind": "private"
+    },
+    {
+      "slack_event": "group_left",
+      "source_url": "https://docs.slack.dev/reference/events/group_left/",
+      "status": "implemented",
+      "zoo_events": [
+        "member.left"
+      ],
+      "conversation_kind": "private"
+    },
+    {
+      "slack_event": "group_marked",
+      "source_url": "https://docs.slack.dev/reference/events/group_marked/",
+      "status": "implemented",
+      "zoo_events": [
+        "conversation.marked"
+      ],
+      "conversation_kind": "private"
+    },
+    {
+      "slack_event": "group_open",
+      "source_url": "https://docs.slack.dev/reference/events/group_open/",
+      "status": "implemented",
+      "zoo_events": [
+        "conversation.opened"
+      ],
+      "conversation_kind": "private"
+    },
+    {
+      "slack_event": "group_rename",
+      "source_url": "https://docs.slack.dev/reference/events/group_rename/",
+      "status": "implemented",
+      "zoo_events": [
+        "channel.renamed"
+      ],
+      "conversation_kind": "private"
+    },
+    {
+      "slack_event": "group_unarchive",
+      "source_url": "https://docs.slack.dev/reference/events/group_unarchive/",
+      "status": "implemented",
+      "zoo_events": [
+        "channel.unarchived"
+      ],
+      "conversation_kind": "private"
+    },
+    {
+      "slack_event": "hello",
+      "source_url": "https://docs.slack.dev/reference/events/hello/",
+      "status": "transport",
+      "reason": "Socket接続成立時のhello制御フレーム。",
+      "zoo_events": []
+    },
+    {
+      "slack_event": "im_close",
+      "source_url": "https://docs.slack.dev/reference/events/im_close/",
+      "status": "implemented",
+      "zoo_events": [
+        "conversation.closed"
+      ],
+      "conversation_kind": "im"
+    },
+    {
+      "slack_event": "im_created",
+      "source_url": "https://docs.slack.dev/reference/events/im_created/",
+      "status": "implemented",
+      "zoo_events": [
+        "conversation.created"
+      ],
+      "conversation_kind": "im"
+    },
+    {
+      "slack_event": "im_history_changed",
+      "source_url": "https://docs.slack.dev/reference/events/im_history_changed/",
+      "status": "implemented",
+      "zoo_events": [
+        "channel.history_changed"
+      ],
+      "conversation_kind": "im"
+    },
+    {
+      "slack_event": "im_marked",
+      "source_url": "https://docs.slack.dev/reference/events/im_marked/",
+      "status": "implemented",
+      "zoo_events": [
+        "conversation.marked"
+      ],
+      "conversation_kind": "im"
+    },
+    {
+      "slack_event": "im_open",
+      "source_url": "https://docs.slack.dev/reference/events/im_open/",
+      "status": "implemented",
+      "zoo_events": [
+        "conversation.opened"
+      ],
+      "conversation_kind": "im"
+    },
+    {
+      "slack_event": "invite_requested",
+      "source_url": "https://docs.slack.dev/reference/events/invite_requested/",
+      "status": "implemented",
+      "zoo_events": [
+        "invite.requested"
+      ],
+      "conversation_kind": "any"
+    },
+    {
+      "slack_event": "link_shared",
+      "source_url": "https://docs.slack.dev/reference/events/link_shared/",
+      "status": "implemented",
+      "zoo_events": [
+        "link.shared"
+      ],
+      "conversation_kind": "any"
+    },
+    {
+      "slack_event": "manual_presence_change",
+      "source_url": "https://docs.slack.dev/reference/events/manual_presence_change/",
+      "status": "implemented",
+      "zoo_events": [
+        "user.manual_presence_changed"
+      ],
+      "conversation_kind": "any"
+    },
+    {
+      "slack_event": "member_joined_channel",
+      "source_url": "https://docs.slack.dev/reference/events/member_joined_channel/",
+      "status": "implemented",
+      "zoo_events": [
+        "member.joined"
+      ],
+      "conversation_kind": "any"
+    },
+    {
+      "slack_event": "member_left_channel",
+      "source_url": "https://docs.slack.dev/reference/events/member_left_channel/",
+      "status": "implemented",
+      "zoo_events": [
+        "member.left"
+      ],
+      "conversation_kind": "any"
+    },
+    {
+      "slack_event": "message",
+      "source_url": "https://docs.slack.dev/reference/events/message/",
+      "status": "implemented",
+      "zoo_events": [
+        "message.created",
+        "message.updated",
+        "message.deleted",
+        "message.replied",
+        "message.thread_broadcast",
+        "message.emote"
+      ],
+      "conversation_kind": "any"
+    },
+    {
+      "slack_event": "message.app_home",
+      "source_url": "https://docs.slack.dev/reference/events/message.app_home/",
+      "status": "implemented",
+      "zoo_events": [
+        "message.created",
+        "message.updated",
+        "message.deleted",
+        "message.replied",
+        "message.thread_broadcast",
+        "message.emote"
+      ],
+      "conversation_kind": "app_dm"
+    },
+    {
+      "slack_event": "message.channels",
+      "source_url": "https://docs.slack.dev/reference/events/message.channels/",
+      "status": "implemented",
+      "zoo_events": [
+        "message.created",
+        "message.updated",
+        "message.deleted",
+        "message.replied",
+        "message.thread_broadcast",
+        "message.emote"
+      ],
+      "conversation_kind": "public"
+    },
+    {
+      "slack_event": "message.groups",
+      "source_url": "https://docs.slack.dev/reference/events/message.groups/",
+      "status": "implemented",
+      "zoo_events": [
+        "message.created",
+        "message.updated",
+        "message.deleted",
+        "message.replied",
+        "message.thread_broadcast",
+        "message.emote"
+      ],
+      "conversation_kind": "private"
+    },
+    {
+      "slack_event": "message.im",
+      "source_url": "https://docs.slack.dev/reference/events/message.im/",
+      "status": "implemented",
+      "zoo_events": [
+        "message.created",
+        "message.updated",
+        "message.deleted",
+        "message.replied",
+        "message.thread_broadcast",
+        "message.emote"
+      ],
+      "conversation_kind": "im"
+    },
+    {
+      "slack_event": "message.mpim",
+      "source_url": "https://docs.slack.dev/reference/events/message.mpim/",
+      "status": "implemented",
+      "zoo_events": [
+        "message.created",
+        "message.updated",
+        "message.deleted",
+        "message.replied",
+        "message.thread_broadcast",
+        "message.emote"
+      ],
+      "conversation_kind": "mpim"
+    },
+    {
+      "slack_event": "message_metadata_deleted",
+      "source_url": "https://docs.slack.dev/reference/events/message_metadata_deleted/",
+      "status": "implemented",
+      "zoo_events": [
+        "message.metadata_deleted"
+      ],
+      "conversation_kind": "any"
+    },
+    {
+      "slack_event": "message_metadata_posted",
+      "source_url": "https://docs.slack.dev/reference/events/message_metadata_posted/",
+      "status": "implemented",
+      "zoo_events": [
+        "message.metadata_posted"
+      ],
+      "conversation_kind": "any"
+    },
+    {
+      "slack_event": "message_metadata_updated",
+      "source_url": "https://docs.slack.dev/reference/events/message_metadata_updated/",
+      "status": "implemented",
+      "zoo_events": [
+        "message.metadata_updated"
+      ],
+      "conversation_kind": "any"
+    },
+    {
+      "slack_event": "pin_added",
+      "source_url": "https://docs.slack.dev/reference/events/pin_added/",
+      "status": "implemented",
+      "zoo_events": [
+        "pin.added"
+      ],
+      "conversation_kind": "any"
+    },
+    {
+      "slack_event": "pin_removed",
+      "source_url": "https://docs.slack.dev/reference/events/pin_removed/",
+      "status": "implemented",
+      "zoo_events": [
+        "pin.removed"
+      ],
+      "conversation_kind": "any"
+    },
+    {
+      "slack_event": "pref_change",
+      "source_url": "https://docs.slack.dev/reference/events/pref_change/",
+      "status": "implemented",
+      "zoo_events": [
+        "user.preferences_changed"
+      ],
+      "conversation_kind": "any"
+    },
+    {
+      "slack_event": "presence_change",
+      "source_url": "https://docs.slack.dev/reference/events/presence_change/",
+      "status": "implemented",
+      "zoo_events": [
+        "user.presence_changed"
+      ],
+      "conversation_kind": "any"
+    },
+    {
+      "slack_event": "presence_query",
+      "source_url": "https://docs.slack.dev/reference/events/presence_query/",
+      "status": "transport",
+      "reason": "users:read付きSocketコマンドで現在のプレゼンスを取得する。",
+      "zoo_events": []
+    },
+    {
+      "slack_event": "presence_sub",
+      "source_url": "https://docs.slack.dev/reference/events/presence_sub/",
+      "status": "transport",
+      "reason": "users:read付きSocketコマンドで指定ユーザーのプレゼンス購読集合を更新する。",
+      "zoo_events": []
+    },
+    {
+      "slack_event": "reaction_added",
+      "source_url": "https://docs.slack.dev/reference/events/reaction_added/",
+      "status": "implemented",
+      "zoo_events": [
+        "reaction.added"
+      ],
+      "conversation_kind": "any"
+    },
+    {
+      "slack_event": "reaction_removed",
+      "source_url": "https://docs.slack.dev/reference/events/reaction_removed/",
+      "status": "implemented",
+      "zoo_events": [
+        "reaction.removed"
+      ],
+      "conversation_kind": "any"
+    },
+    {
+      "slack_event": "reconnect_url",
+      "source_url": "https://docs.slack.dev/reference/events/reconnect_url/",
+      "status": "excluded",
+      "reason": "Slack RTMの長寿命再接続URLに固有。Zooは30秒・単回使用のSocketチケットを再取得して接続し、再利用可能な認証URLを配布しない。",
+      "exception": "replaced_transport"
+    },
+    {
+      "slack_event": "shared_channel_invite_accepted",
+      "source_url": "https://docs.slack.dev/reference/events/shared_channel_invite_accepted/",
+      "status": "excluded",
+      "reason": "Slack Connectの組織間チャンネル共有。合意した1 Zoo環境＝1ワークスペースの境界外で、外部組織との共有権限を持たない。",
+      "exception": "slack_connect"
+    },
+    {
+      "slack_event": "shared_channel_invite_approved",
+      "source_url": "https://docs.slack.dev/reference/events/shared_channel_invite_approved/",
+      "status": "excluded",
+      "reason": "Slack Connectの組織間チャンネル共有。合意した1 Zoo環境＝1ワークスペースの境界外で、外部組織との共有権限を持たない。",
+      "exception": "slack_connect"
+    },
+    {
+      "slack_event": "shared_channel_invite_declined",
+      "source_url": "https://docs.slack.dev/reference/events/shared_channel_invite_declined/",
+      "status": "excluded",
+      "reason": "Slack Connectの組織間チャンネル共有。合意した1 Zoo環境＝1ワークスペースの境界外で、外部組織との共有権限を持たない。",
+      "exception": "slack_connect"
+    },
+    {
+      "slack_event": "shared_channel_invite_received",
+      "source_url": "https://docs.slack.dev/reference/events/shared_channel_invite_received/",
+      "status": "excluded",
+      "reason": "Slack Connectの組織間チャンネル共有。合意した1 Zoo環境＝1ワークスペースの境界外で、外部組織との共有権限を持たない。",
+      "exception": "slack_connect"
+    },
+    {
+      "slack_event": "shared_channel_invite_requested",
+      "source_url": "https://docs.slack.dev/reference/events/shared_channel_invite_requested/",
+      "status": "excluded",
+      "reason": "Slack Connectの組織間チャンネル共有。合意した1 Zoo環境＝1ワークスペースの境界外で、外部組織との共有権限を持たない。",
+      "exception": "slack_connect"
+    },
+    {
+      "slack_event": "star_added",
+      "source_url": "https://docs.slack.dev/reference/events/star_added/",
+      "status": "implemented",
+      "zoo_events": [
+        "star.added"
+      ],
+      "conversation_kind": "any"
+    },
+    {
+      "slack_event": "star_removed",
+      "source_url": "https://docs.slack.dev/reference/events/star_removed/",
+      "status": "implemented",
+      "zoo_events": [
+        "star.removed"
+      ],
+      "conversation_kind": "any"
+    },
+    {
+      "slack_event": "subteam_created",
+      "source_url": "https://docs.slack.dev/reference/events/subteam_created/",
+      "status": "implemented",
+      "zoo_events": [
+        "usergroup.created"
+      ],
+      "conversation_kind": "any"
+    },
+    {
+      "slack_event": "subteam_members_changed",
+      "source_url": "https://docs.slack.dev/reference/events/subteam_members_changed/",
+      "status": "implemented",
+      "zoo_events": [
+        "usergroup.members_changed"
+      ],
+      "conversation_kind": "any"
+    },
+    {
+      "slack_event": "subteam_self_added",
+      "source_url": "https://docs.slack.dev/reference/events/subteam_self_added/",
+      "status": "implemented",
+      "zoo_events": [
+        "usergroup.self_added"
+      ],
+      "conversation_kind": "any"
+    },
+    {
+      "slack_event": "subteam_self_removed",
+      "source_url": "https://docs.slack.dev/reference/events/subteam_self_removed/",
+      "status": "implemented",
+      "zoo_events": [
+        "usergroup.self_removed"
+      ],
+      "conversation_kind": "any"
+    },
+    {
+      "slack_event": "subteam_updated",
+      "source_url": "https://docs.slack.dev/reference/events/subteam_updated/",
+      "status": "implemented",
+      "zoo_events": [
+        "usergroup.updated"
+      ],
+      "conversation_kind": "any"
+    },
+    {
+      "slack_event": "team_access_granted",
+      "source_url": "https://docs.slack.dev/reference/events/team_access_granted/",
+      "status": "excluded",
+      "reason": "Slackの組織全体Appと複数ワークスペースへのアクセス管理に固有。環境内のインストール／失効イベントは別途実装する。",
+      "exception": "enterprise_installation"
+    },
+    {
+      "slack_event": "team_access_revoked",
+      "source_url": "https://docs.slack.dev/reference/events/team_access_revoked/",
+      "status": "excluded",
+      "reason": "Slackの組織全体Appと複数ワークスペースへのアクセス管理に固有。環境内のインストール／失効イベントは別途実装する。",
+      "exception": "enterprise_installation"
+    },
+    {
+      "slack_event": "team_domain_change",
+      "source_url": "https://docs.slack.dev/reference/events/team_domain_change/",
+      "status": "excluded",
+      "reason": "メールドメインは外部OIDC IdP、配信ホスト名はデプロイ設定で管理する。Zoo内にSlack型の自己管理サインアップドメイン／ワークスペースURL変更操作はない。",
+      "exception": "external_identity_and_hosting"
+    },
+    {
+      "slack_event": "team_join",
+      "source_url": "https://docs.slack.dev/reference/events/team_join/",
+      "status": "implemented",
+      "zoo_events": [
+        "user.joined"
+      ],
+      "conversation_kind": "any"
+    },
+    {
+      "slack_event": "team_migration_started",
+      "source_url": "https://docs.slack.dev/reference/events/team_migration_started/",
+      "status": "excluded",
+      "reason": "Slack Enterprise Gridの組織・ワークスペース移行に固有。Zooの単一環境には移行元／移行先の組織階層がない。",
+      "exception": "enterprise_migration"
+    },
+    {
+      "slack_event": "team_plan_change",
+      "source_url": "https://docs.slack.dev/reference/events/team_plan_change/",
+      "status": "excluded",
+      "reason": "Slackの有料プラン変更に固有。Zooには課金プランや契約変更処理がない。",
+      "exception": "slack_billing"
+    },
+    {
+      "slack_event": "team_pref_change",
+      "source_url": "https://docs.slack.dev/reference/events/team_pref_change/",
+      "status": "implemented",
+      "zoo_events": [
+        "workspace.preferences_changed"
+      ],
+      "conversation_kind": "any"
+    },
+    {
+      "slack_event": "team_profile_change",
+      "source_url": "https://docs.slack.dev/reference/events/team_profile_change/",
+      "status": "implemented",
+      "zoo_events": [
+        "workspace.profile_changed"
+      ],
+      "conversation_kind": "any"
+    },
+    {
+      "slack_event": "team_profile_delete",
+      "source_url": "https://docs.slack.dev/reference/events/team_profile_delete/",
+      "status": "implemented",
+      "zoo_events": [
+        "workspace.profile_deleted"
+      ],
+      "conversation_kind": "any"
+    },
+    {
+      "slack_event": "team_profile_reorder",
+      "source_url": "https://docs.slack.dev/reference/events/team_profile_reorder/",
+      "status": "implemented",
+      "zoo_events": [
+        "workspace.profile_reordered"
+      ],
+      "conversation_kind": "any"
+    },
+    {
+      "slack_event": "team_rename",
+      "source_url": "https://docs.slack.dev/reference/events/team_rename/",
+      "status": "implemented",
+      "zoo_events": [
+        "workspace.renamed"
+      ],
+      "conversation_kind": "any"
+    },
+    {
+      "slack_event": "tokens_revoked",
+      "source_url": "https://docs.slack.dev/reference/events/tokens_revoked/",
+      "status": "implemented",
+      "zoo_events": [
+        "tokens.revoked"
+      ],
+      "conversation_kind": "any"
+    },
+    {
+      "slack_event": "url_verification",
+      "source_url": "https://docs.slack.dev/reference/events/url_verification/",
+      "status": "transport",
+      "reason": "署名付きHTTP challengeと応答検証。業務イベント購読とは分離する。",
+      "zoo_events": []
+    },
+    {
+      "slack_event": "user_change",
+      "source_url": "https://docs.slack.dev/reference/events/user_change/",
+      "status": "implemented",
+      "zoo_events": [
+        "user.changed"
+      ],
+      "conversation_kind": "any"
+    },
+    {
+      "slack_event": "user_connection",
+      "source_url": "https://docs.slack.dev/reference/events/user_connection/",
+      "status": "implemented",
+      "zoo_events": [
+        "user.connection_requested"
+      ],
+      "conversation_kind": "any"
+    },
+    {
+      "slack_event": "user_guest_status_changed",
+      "source_url": "https://docs.slack.dev/reference/events/user_guest_status_changed/",
+      "status": "implemented",
+      "zoo_events": [
+        "user.guest_status_changed"
+      ],
+      "conversation_kind": "any"
+    },
+    {
+      "slack_event": "user_huddle_changed",
+      "source_url": "https://docs.slack.dev/reference/events/user_huddle_changed/",
+      "status": "excluded",
+      "reason": "Slack Huddles／通話の状態イベント。合意した対象はApp開発機能であり、通話製品の実装は対象外。",
+      "exception": "huddles"
+    },
+    {
+      "slack_event": "user_profile_changed",
+      "source_url": "https://docs.slack.dev/reference/events/user_profile_changed/",
+      "status": "implemented",
+      "zoo_events": [
+        "user.profile_changed"
+      ],
+      "conversation_kind": "any"
+    },
+    {
+      "slack_event": "user_status_changed",
+      "source_url": "https://docs.slack.dev/reference/events/user_status_changed/",
+      "status": "implemented",
+      "zoo_events": [
+        "user.status_changed"
+      ],
+      "conversation_kind": "any"
+    },
+    {
+      "slack_event": "user_typing",
+      "source_url": "https://docs.slack.dev/reference/events/user_typing/",
+      "status": "implemented",
+      "zoo_events": [
+        "user.typing"
+      ],
+      "conversation_kind": "any"
+    }
+  ],
+  "message_subtypes": [
+    {
+      "slack_subtype": "assistant_app_thread",
+      "source_url": "https://docs.slack.dev/reference/events/message/assistant_app_thread/",
+      "status": "implemented",
+      "zoo_events": [
+        "assistant.started"
+      ],
+      "conversation_kind": "any"
+    },
+    {
+      "slack_subtype": "bot_message",
+      "source_url": "https://docs.slack.dev/reference/events/message/bot_message/",
+      "status": "implemented",
+      "zoo_events": [
+        "message.created"
+      ],
+      "conversation_kind": "bot"
+    },
+    {
+      "slack_subtype": "channel_archive",
+      "source_url": "https://docs.slack.dev/reference/events/message/channel_archive/",
+      "status": "implemented",
+      "zoo_events": [
+        "channel.archived"
+      ],
+      "conversation_kind": "public"
+    },
+    {
+      "slack_subtype": "channel_convert_to_private",
+      "source_url": "https://docs.slack.dev/reference/events/message/channel_convert_to_private/",
+      "status": "implemented",
+      "zoo_events": [
+        "channel.privacy_changed"
+      ],
+      "conversation_kind": "private"
+    },
+    {
+      "slack_subtype": "channel_convert_to_public",
+      "source_url": "https://docs.slack.dev/reference/events/message/channel_convert_to_public/",
+      "status": "implemented",
+      "zoo_events": [
+        "channel.privacy_changed"
+      ],
+      "conversation_kind": "public"
+    },
+    {
+      "slack_subtype": "channel_join",
+      "source_url": "https://docs.slack.dev/reference/events/message/channel_join/",
+      "status": "implemented",
+      "zoo_events": [
+        "member.joined"
+      ],
+      "conversation_kind": "public"
+    },
+    {
+      "slack_subtype": "channel_leave",
+      "source_url": "https://docs.slack.dev/reference/events/message/channel_leave/",
+      "status": "implemented",
+      "zoo_events": [
+        "member.left"
+      ],
+      "conversation_kind": "public"
+    },
+    {
+      "slack_subtype": "channel_name",
+      "source_url": "https://docs.slack.dev/reference/events/message/channel_name/",
+      "status": "implemented",
+      "zoo_events": [
+        "channel.renamed"
+      ],
+      "conversation_kind": "public"
+    },
+    {
+      "slack_subtype": "channel_posting_permissions",
+      "source_url": "https://docs.slack.dev/reference/events/message/channel_posting_permissions/",
+      "status": "implemented",
+      "zoo_events": [
+        "channel.posting_permissions_changed"
+      ],
+      "conversation_kind": "public"
+    },
+    {
+      "slack_subtype": "channel_purpose",
+      "source_url": "https://docs.slack.dev/reference/events/message/channel_purpose/",
+      "status": "implemented",
+      "zoo_events": [
+        "channel.purpose_changed"
+      ],
+      "conversation_kind": "public"
+    },
+    {
+      "slack_subtype": "channel_topic",
+      "source_url": "https://docs.slack.dev/reference/events/message/channel_topic/",
+      "status": "implemented",
+      "zoo_events": [
+        "channel.topic_changed"
+      ],
+      "conversation_kind": "public"
+    },
+    {
+      "slack_subtype": "channel_unarchive",
+      "source_url": "https://docs.slack.dev/reference/events/message/channel_unarchive/",
+      "status": "implemented",
+      "zoo_events": [
+        "channel.unarchived"
+      ],
+      "conversation_kind": "public"
+    },
+    {
+      "slack_subtype": "document_mention",
+      "source_url": "https://docs.slack.dev/reference/events/message/document_mention/",
+      "status": "excluded",
+      "reason": "Slack Canvasドキュメント製品に固有。Appが扱う外部リンクはlink.shared／entity要求で扱う。"
+    },
+    {
+      "slack_subtype": "ekm_access_denied",
+      "source_url": "https://docs.slack.dev/reference/events/message/ekm_access_denied/",
+      "status": "excluded",
+      "reason": "Slack Enterprise Key Managementの復号拒否通知に固有。ZooにSlackの顧客管理暗号鍵サービスはない。"
+    },
+    {
+      "slack_subtype": "file_comment",
+      "source_url": "https://docs.slack.dev/reference/events/message/file_comment/",
+      "status": "excluded",
+      "reason": "Slackで廃止された旧ファイルコメント。現行のメッセージ／スレッドを使う。"
+    },
+    {
+      "slack_subtype": "file_mention",
+      "source_url": "https://docs.slack.dev/reference/events/message/file_mention/",
+      "status": "implemented",
+      "zoo_events": [
+        "file.shared"
+      ],
+      "conversation_kind": "any"
+    },
+    {
+      "slack_subtype": "file_share",
+      "source_url": "https://docs.slack.dev/reference/events/message/file_share/",
+      "status": "implemented",
+      "zoo_events": [
+        "file.shared"
+      ],
+      "conversation_kind": "any"
+    },
+    {
+      "slack_subtype": "group_archive",
+      "source_url": "https://docs.slack.dev/reference/events/message/group_archive/",
+      "status": "implemented",
+      "zoo_events": [
+        "channel.archived"
+      ],
+      "conversation_kind": "private"
+    },
+    {
+      "slack_subtype": "group_join",
+      "source_url": "https://docs.slack.dev/reference/events/message/group_join/",
+      "status": "implemented",
+      "zoo_events": [
+        "member.joined"
+      ],
+      "conversation_kind": "private"
+    },
+    {
+      "slack_subtype": "group_leave",
+      "source_url": "https://docs.slack.dev/reference/events/message/group_leave/",
+      "status": "implemented",
+      "zoo_events": [
+        "member.left"
+      ],
+      "conversation_kind": "private"
+    },
+    {
+      "slack_subtype": "group_name",
+      "source_url": "https://docs.slack.dev/reference/events/message/group_name/",
+      "status": "implemented",
+      "zoo_events": [
+        "channel.renamed"
+      ],
+      "conversation_kind": "private"
+    },
+    {
+      "slack_subtype": "group_purpose",
+      "source_url": "https://docs.slack.dev/reference/events/message/group_purpose/",
+      "status": "implemented",
+      "zoo_events": [
+        "channel.purpose_changed"
+      ],
+      "conversation_kind": "private"
+    },
+    {
+      "slack_subtype": "group_topic",
+      "source_url": "https://docs.slack.dev/reference/events/message/group_topic/",
+      "status": "implemented",
+      "zoo_events": [
+        "channel.topic_changed"
+      ],
+      "conversation_kind": "private"
+    },
+    {
+      "slack_subtype": "group_unarchive",
+      "source_url": "https://docs.slack.dev/reference/events/message/group_unarchive/",
+      "status": "implemented",
+      "zoo_events": [
+        "channel.unarchived"
+      ],
+      "conversation_kind": "private"
+    },
+    {
+      "slack_subtype": "me_message",
+      "source_url": "https://docs.slack.dev/reference/events/message/me_message/",
+      "status": "implemented",
+      "zoo_events": [
+        "message.emote"
+      ],
+      "conversation_kind": "any"
+    },
+    {
+      "slack_subtype": "message_changed",
+      "source_url": "https://docs.slack.dev/reference/events/message/message_changed/",
+      "status": "implemented",
+      "zoo_events": [
+        "message.updated"
+      ],
+      "conversation_kind": "any"
+    },
+    {
+      "slack_subtype": "message_deleted",
+      "source_url": "https://docs.slack.dev/reference/events/message/message_deleted/",
+      "status": "implemented",
+      "zoo_events": [
+        "message.deleted"
+      ],
+      "conversation_kind": "any"
+    },
+    {
+      "slack_subtype": "message_replied",
+      "source_url": "https://docs.slack.dev/reference/events/message/message_replied/",
+      "status": "implemented",
+      "zoo_events": [
+        "message.replied"
+      ],
+      "conversation_kind": "any"
+    },
+    {
+      "slack_subtype": "pinned_item",
+      "source_url": "https://docs.slack.dev/reference/events/message/pinned_item/",
+      "status": "implemented",
+      "zoo_events": [
+        "pin.added"
+      ],
+      "conversation_kind": "any"
+    },
+    {
+      "slack_subtype": "reminder_add",
+      "source_url": "https://docs.slack.dev/reference/events/message/reminder_add/",
+      "status": "implemented",
+      "zoo_events": [
+        "reminder.created"
+      ],
+      "conversation_kind": "any"
+    },
+    {
+      "slack_subtype": "reply_broadcast",
+      "source_url": "https://docs.slack.dev/reference/events/message/reply_broadcast/",
+      "status": "implemented",
+      "zoo_events": [
+        "message.thread_broadcast"
+      ],
+      "conversation_kind": "any"
+    },
+    {
+      "slack_subtype": "thread_broadcast",
+      "source_url": "https://docs.slack.dev/reference/events/message/thread_broadcast/",
+      "status": "implemented",
+      "zoo_events": [
+        "message.thread_broadcast"
+      ],
+      "conversation_kind": "any"
+    },
+    {
+      "slack_subtype": "unpinned_item",
+      "source_url": "https://docs.slack.dev/reference/events/message/unpinned_item/",
+      "status": "implemented",
+      "zoo_events": [
+        "pin.removed"
+      ],
+      "conversation_kind": "any"
+    }
+  ],
+  "native_events": [
+    {
+      "name": "message.created",
+      "scope": "messages:read",
+      "audience": "channel"
+    },
+    {
+      "name": "message.updated",
+      "scope": "messages:read",
+      "audience": "channel"
+    },
+    {
+      "name": "message.deleted",
+      "scope": "messages:read",
+      "audience": "channel"
+    },
+    {
+      "name": "message.replied",
+      "scope": "messages:read",
+      "audience": "channel"
+    },
+    {
+      "name": "message.thread_broadcast",
+      "scope": "messages:read",
+      "audience": "channel"
+    },
+    {
+      "name": "message.emote",
+      "scope": "messages:read",
+      "audience": "channel"
+    },
+    {
+      "name": "channel.history_changed",
+      "scope": "messages:read",
+      "audience": "channel"
+    },
+    {
+      "name": "user.typing",
+      "scope": "messages:read",
+      "audience": "channel"
+    },
+    {
+      "name": "member.joined",
+      "scope": "channels:read",
+      "audience": "channel"
+    },
+    {
+      "name": "member.left",
+      "scope": "channels:read",
+      "audience": "channel"
+    },
+    {
+      "name": "channel.created",
+      "scope": "channels:read",
+      "audience": "channel"
+    },
+    {
+      "name": "channel.updated",
+      "scope": "channels:read",
+      "audience": "channel"
+    },
+    {
+      "name": "channel.deleted",
+      "scope": "channels:read",
+      "audience": "channel"
+    },
+    {
+      "name": "channel.archived",
+      "scope": "channels:read",
+      "audience": "channel"
+    },
+    {
+      "name": "channel.unarchived",
+      "scope": "channels:read",
+      "audience": "channel"
+    },
+    {
+      "name": "channel.renamed",
+      "scope": "channels:read",
+      "audience": "channel"
+    },
+    {
+      "name": "channel.purpose_changed",
+      "scope": "channels:read",
+      "audience": "channel"
+    },
+    {
+      "name": "channel.topic_changed",
+      "scope": "channels:read",
+      "audience": "channel"
+    },
+    {
+      "name": "channel.privacy_changed",
+      "scope": "channels:read",
+      "audience": "channel"
+    },
+    {
+      "name": "channel.posting_permissions_changed",
+      "scope": "channels:read",
+      "audience": "channel"
+    },
+    {
+      "name": "conversation.created",
+      "scope": "channels:read",
+      "audience": "channel"
+    },
+    {
+      "name": "conversation.opened",
+      "scope": "channels:read",
+      "audience": "self"
+    },
+    {
+      "name": "conversation.closed",
+      "scope": "channels:read",
+      "audience": "self"
+    },
+    {
+      "name": "conversation.marked",
+      "scope": "channels:read",
+      "audience": "self"
+    },
+    {
+      "name": "user.joined",
+      "scope": "users:read",
+      "audience": "workspace"
+    },
+    {
+      "name": "user.changed",
+      "scope": "users:read",
+      "audience": "workspace"
+    },
+    {
+      "name": "user.profile_changed",
+      "scope": "users:read",
+      "audience": "workspace"
+    },
+    {
+      "name": "user.status_changed",
+      "scope": "users:read",
+      "audience": "workspace"
+    },
+    {
+      "name": "user.presence_changed",
+      "scope": "users:read",
+      "audience": "workspace"
+    },
+    {
+      "name": "user.guest_status_changed",
+      "scope": "users:read",
+      "audience": "workspace"
+    },
+    {
+      "name": "bot.added",
+      "scope": "users:read",
+      "audience": "workspace"
+    },
+    {
+      "name": "bot.changed",
+      "scope": "users:read",
+      "audience": "workspace"
+    },
+    {
+      "name": "user.preferences_changed",
+      "scope": "preferences:read",
+      "audience": "self"
+    },
+    {
+      "name": "user.manual_presence_changed",
+      "scope": "preferences:read",
+      "audience": "self"
+    },
+    {
+      "name": "user.dnd_changed",
+      "scope": "preferences:read",
+      "audience": "self"
+    },
+    {
+      "name": "user.dnd_changed_public",
+      "scope": "users:read",
+      "audience": "workspace"
+    },
+    {
+      "name": "pin.added",
+      "scope": "pins:read",
+      "audience": "channel"
+    },
+    {
+      "name": "pin.removed",
+      "scope": "pins:read",
+      "audience": "channel"
+    },
+    {
+      "name": "star.added",
+      "scope": "stars:read",
+      "audience": "self"
+    },
+    {
+      "name": "star.removed",
+      "scope": "stars:read",
+      "audience": "self"
+    },
+    {
+      "name": "emoji.changed",
+      "scope": "emoji:read",
+      "audience": "workspace"
+    },
+    {
+      "name": "usergroup.created",
+      "scope": "usergroups:read",
+      "audience": "workspace"
+    },
+    {
+      "name": "usergroup.updated",
+      "scope": "usergroups:read",
+      "audience": "workspace"
+    },
+    {
+      "name": "usergroup.members_changed",
+      "scope": "usergroups:read",
+      "audience": "workspace"
+    },
+    {
+      "name": "usergroup.self_added",
+      "scope": "usergroups:read",
+      "audience": "self"
+    },
+    {
+      "name": "usergroup.self_removed",
+      "scope": "usergroups:read",
+      "audience": "self"
+    },
+    {
+      "name": "workspace.renamed",
+      "scope": "workspace:read",
+      "audience": "workspace"
+    },
+    {
+      "name": "workspace.preferences_changed",
+      "scope": "workspace:read",
+      "audience": "workspace"
+    },
+    {
+      "name": "workspace.profile_changed",
+      "scope": "workspace:read",
+      "audience": "workspace"
+    },
+    {
+      "name": "workspace.profile_deleted",
+      "scope": "workspace:read",
+      "audience": "workspace"
+    },
+    {
+      "name": "workspace.profile_reordered",
+      "scope": "workspace:read",
+      "audience": "workspace"
+    },
+    {
+      "name": "app.requested",
+      "scope": "apps:read",
+      "audience": "workspace"
+    },
+    {
+      "name": "app.deleted",
+      "scope": "apps:read",
+      "audience": "workspace"
+    },
+    {
+      "name": "app.installed_workspace",
+      "scope": "apps:read",
+      "audience": "workspace"
+    },
+    {
+      "name": "app.uninstalled_workspace",
+      "scope": "apps:read",
+      "audience": "workspace"
+    },
+    {
+      "name": "commands.changed",
+      "scope": "apps:read",
+      "audience": "workspace"
+    },
+    {
+      "name": "file.created",
+      "scope": "files:read",
+      "audience": "channel"
+    },
+    {
+      "name": "file.changed",
+      "scope": "files:read",
+      "audience": "channel"
+    },
+    {
+      "name": "file.deleted",
+      "scope": "files:read",
+      "audience": "channel"
+    },
+    {
+      "name": "file.public",
+      "scope": "files:read",
+      "audience": "channel"
+    },
+    {
+      "name": "file.shared",
+      "scope": "files:read",
+      "audience": "channel"
+    },
+    {
+      "name": "file.unshared",
+      "scope": "files:read",
+      "audience": "channel"
+    },
+    {
+      "name": "message.metadata_posted",
+      "scope": "metadata:read",
+      "audience": "channel"
+    },
+    {
+      "name": "message.metadata_updated",
+      "scope": "metadata:read",
+      "audience": "channel"
+    },
+    {
+      "name": "message.metadata_deleted",
+      "scope": "metadata:read",
+      "audience": "channel"
+    },
+    {
+      "name": "invite.requested",
+      "scope": "invites:read",
+      "audience": "workspace"
+    },
+    {
+      "name": "reminder.created",
+      "scope": "reminders:read",
+      "audience": "self"
+    },
+    {
+      "name": "reminder.fired",
+      "scope": "reminders:read",
+      "audience": "self"
+    },
+    {
+      "name": "app.installed",
+      "scope": null,
+      "audience": "app"
+    },
+    {
+      "name": "app.uninstalled",
+      "scope": null,
+      "audience": "app"
+    },
+    {
+      "name": "tokens.revoked",
+      "scope": null,
+      "audience": "app"
+    },
+    {
+      "name": "assistant.started",
+      "scope": null,
+      "audience": "app"
+    },
+    {
+      "name": "assistant.context_changed",
+      "scope": null,
+      "audience": "app"
+    },
+    {
+      "name": "assistant.stopped",
+      "scope": null,
+      "audience": "app"
+    },
+    {
+      "name": "assistant.title_changed",
+      "scope": null,
+      "audience": "app"
+    },
+    {
+      "name": "app.context_changed",
+      "scope": null,
+      "audience": "app"
+    },
+    {
+      "name": "user.connection_requested",
+      "scope": null,
+      "audience": "app"
+    },
+    {
+      "name": "function.executed",
+      "scope": null,
+      "audience": "app"
+    },
+    {
+      "name": "entity.details_requested",
+      "scope": null,
+      "audience": "app"
+    },
+    {
+      "name": "entity.comments_requested",
+      "scope": null,
+      "audience": "app"
+    },
+    {
+      "name": "app.rate_limited",
+      "scope": null,
+      "audience": "control"
+    },
+    {
+      "name": "app.mentioned",
+      "scope": "messages:read",
+      "audience": "channel"
+    },
+    {
+      "name": "reaction.added",
+      "scope": "messages:read",
+      "audience": "channel"
+    },
+    {
+      "name": "reaction.removed",
+      "scope": "messages:read",
+      "audience": "channel"
+    },
+    {
+      "name": "command.invoked",
+      "scope": null,
+      "audience": "app"
+    },
+    {
+      "name": "action.invoked",
+      "scope": null,
+      "audience": "app"
+    },
+    {
+      "name": "view.submitted",
+      "scope": null,
+      "audience": "app"
+    },
+    {
+      "name": "shortcut.invoked",
+      "scope": null,
+      "audience": "app"
+    },
+    {
+      "name": "link.shared",
+      "scope": "links:write",
+      "audience": "channel"
+    },
+    {
+      "name": "home.opened",
+      "scope": null,
+      "audience": "app"
+    }
+  ],
+  "aliases": [
+    {
+      "alias": "agent_session_stopped",
+      "event": "assistant.stopped",
+      "conversation_kind": "any"
+    },
+    {
+      "alias": "agent_session_title_changed",
+      "event": "assistant.title_changed",
+      "conversation_kind": "any"
+    },
+    {
+      "alias": "app_context_changed",
+      "event": "app.context_changed",
+      "conversation_kind": "any"
+    },
+    {
+      "alias": "app_deleted",
+      "event": "app.deleted",
+      "conversation_kind": "any"
+    },
+    {
+      "alias": "app_home_opened",
+      "event": "home.opened",
+      "conversation_kind": "any"
+    },
+    {
+      "alias": "app_installed",
+      "event": "app.installed_workspace",
+      "conversation_kind": "any"
+    },
+    {
+      "alias": "app_mention",
+      "event": "app.mentioned",
+      "conversation_kind": "any"
+    },
+    {
+      "alias": "app_rate_limited",
+      "event": "app.rate_limited",
+      "conversation_kind": "any"
+    },
+    {
+      "alias": "app_requested",
+      "event": "app.requested",
+      "conversation_kind": "any"
+    },
+    {
+      "alias": "app_uninstalled",
+      "event": "app.uninstalled",
+      "conversation_kind": "any"
+    },
+    {
+      "alias": "assistant_thread_context_changed",
+      "event": "assistant.context_changed",
+      "conversation_kind": "any"
+    },
+    {
+      "alias": "assistant_thread_started",
+      "event": "assistant.started",
+      "conversation_kind": "any"
+    },
+    {
+      "alias": "bot_added",
+      "event": "bot.added",
+      "conversation_kind": "any"
+    },
+    {
+      "alias": "bot_changed",
+      "event": "bot.changed",
+      "conversation_kind": "any"
+    },
+    {
+      "alias": "channel_archive",
+      "event": "channel.archived",
+      "conversation_kind": "public"
+    },
+    {
+      "alias": "channel_created",
+      "event": "channel.created",
+      "conversation_kind": "public"
+    },
+    {
+      "alias": "channel_deleted",
+      "event": "channel.deleted",
+      "conversation_kind": "public"
+    },
+    {
+      "alias": "channel_history_changed",
+      "event": "channel.history_changed",
+      "conversation_kind": "public"
+    },
+    {
+      "alias": "channel_joined",
+      "event": "member.joined",
+      "conversation_kind": "public"
+    },
+    {
+      "alias": "channel_left",
+      "event": "member.left",
+      "conversation_kind": "public"
+    },
+    {
+      "alias": "channel_marked",
+      "event": "conversation.marked",
+      "conversation_kind": "public"
+    },
+    {
+      "alias": "channel_rename",
+      "event": "channel.renamed",
+      "conversation_kind": "public"
+    },
+    {
+      "alias": "channel_unarchive",
+      "event": "channel.unarchived",
+      "conversation_kind": "public"
+    },
+    {
+      "alias": "commands_changed",
+      "event": "commands.changed",
+      "conversation_kind": "any"
+    },
+    {
+      "alias": "dnd_updated",
+      "event": "user.dnd_changed",
+      "conversation_kind": "any"
+    },
+    {
+      "alias": "dnd_updated_user",
+      "event": "user.dnd_changed_public",
+      "conversation_kind": "any"
+    },
+    {
+      "alias": "emoji_changed",
+      "event": "emoji.changed",
+      "conversation_kind": "any"
+    },
+    {
+      "alias": "entity_comments_requested",
+      "event": "entity.comments_requested",
+      "conversation_kind": "any"
+    },
+    {
+      "alias": "entity_details_requested",
+      "event": "entity.details_requested",
+      "conversation_kind": "any"
+    },
+    {
+      "alias": "file_change",
+      "event": "file.changed",
+      "conversation_kind": "any"
+    },
+    {
+      "alias": "file_created",
+      "event": "file.created",
+      "conversation_kind": "any"
+    },
+    {
+      "alias": "file_deleted",
+      "event": "file.deleted",
+      "conversation_kind": "any"
+    },
+    {
+      "alias": "file_public",
+      "event": "file.public",
+      "conversation_kind": "any"
+    },
+    {
+      "alias": "file_shared",
+      "event": "file.shared",
+      "conversation_kind": "any"
+    },
+    {
+      "alias": "file_unshared",
+      "event": "file.unshared",
+      "conversation_kind": "any"
+    },
+    {
+      "alias": "function_executed",
+      "event": "function.executed",
+      "conversation_kind": "any"
+    },
+    {
+      "alias": "group_archive",
+      "event": "channel.archived",
+      "conversation_kind": "private"
+    },
+    {
+      "alias": "group_close",
+      "event": "conversation.closed",
+      "conversation_kind": "private"
+    },
+    {
+      "alias": "group_deleted",
+      "event": "channel.deleted",
+      "conversation_kind": "private"
+    },
+    {
+      "alias": "group_history_changed",
+      "event": "channel.history_changed",
+      "conversation_kind": "private"
+    },
+    {
+      "alias": "group_joined",
+      "event": "member.joined",
+      "conversation_kind": "private"
+    },
+    {
+      "alias": "group_left",
+      "event": "member.left",
+      "conversation_kind": "private"
+    },
+    {
+      "alias": "group_marked",
+      "event": "conversation.marked",
+      "conversation_kind": "private"
+    },
+    {
+      "alias": "group_open",
+      "event": "conversation.opened",
+      "conversation_kind": "private"
+    },
+    {
+      "alias": "group_rename",
+      "event": "channel.renamed",
+      "conversation_kind": "private"
+    },
+    {
+      "alias": "group_unarchive",
+      "event": "channel.unarchived",
+      "conversation_kind": "private"
+    },
+    {
+      "alias": "im_close",
+      "event": "conversation.closed",
+      "conversation_kind": "im"
+    },
+    {
+      "alias": "im_created",
+      "event": "conversation.created",
+      "conversation_kind": "im"
+    },
+    {
+      "alias": "im_history_changed",
+      "event": "channel.history_changed",
+      "conversation_kind": "im"
+    },
+    {
+      "alias": "im_marked",
+      "event": "conversation.marked",
+      "conversation_kind": "im"
+    },
+    {
+      "alias": "im_open",
+      "event": "conversation.opened",
+      "conversation_kind": "im"
+    },
+    {
+      "alias": "invite_requested",
+      "event": "invite.requested",
+      "conversation_kind": "any"
+    },
+    {
+      "alias": "link_shared",
+      "event": "link.shared",
+      "conversation_kind": "any"
+    },
+    {
+      "alias": "manual_presence_change",
+      "event": "user.manual_presence_changed",
+      "conversation_kind": "any"
+    },
+    {
+      "alias": "member_joined_channel",
+      "event": "member.joined",
+      "conversation_kind": "any"
+    },
+    {
+      "alias": "member_left_channel",
+      "event": "member.left",
+      "conversation_kind": "any"
+    },
+    {
+      "alias": "message",
+      "event": "message.created",
+      "conversation_kind": "any"
+    },
+    {
+      "alias": "message",
+      "event": "message.updated",
+      "conversation_kind": "any"
+    },
+    {
+      "alias": "message",
+      "event": "message.deleted",
+      "conversation_kind": "any"
+    },
+    {
+      "alias": "message",
+      "event": "message.replied",
+      "conversation_kind": "any"
+    },
+    {
+      "alias": "message",
+      "event": "message.thread_broadcast",
+      "conversation_kind": "any"
+    },
+    {
+      "alias": "message",
+      "event": "message.emote",
+      "conversation_kind": "any"
+    },
+    {
+      "alias": "message.app_home",
+      "event": "message.created",
+      "conversation_kind": "app_dm"
+    },
+    {
+      "alias": "message.app_home",
+      "event": "message.updated",
+      "conversation_kind": "app_dm"
+    },
+    {
+      "alias": "message.app_home",
+      "event": "message.deleted",
+      "conversation_kind": "app_dm"
+    },
+    {
+      "alias": "message.app_home",
+      "event": "message.replied",
+      "conversation_kind": "app_dm"
+    },
+    {
+      "alias": "message.app_home",
+      "event": "message.thread_broadcast",
+      "conversation_kind": "app_dm"
+    },
+    {
+      "alias": "message.app_home",
+      "event": "message.emote",
+      "conversation_kind": "app_dm"
+    },
+    {
+      "alias": "message.channels",
+      "event": "message.created",
+      "conversation_kind": "public"
+    },
+    {
+      "alias": "message.channels",
+      "event": "message.updated",
+      "conversation_kind": "public"
+    },
+    {
+      "alias": "message.channels",
+      "event": "message.deleted",
+      "conversation_kind": "public"
+    },
+    {
+      "alias": "message.channels",
+      "event": "message.replied",
+      "conversation_kind": "public"
+    },
+    {
+      "alias": "message.channels",
+      "event": "message.thread_broadcast",
+      "conversation_kind": "public"
+    },
+    {
+      "alias": "message.channels",
+      "event": "message.emote",
+      "conversation_kind": "public"
+    },
+    {
+      "alias": "message.groups",
+      "event": "message.created",
+      "conversation_kind": "private"
+    },
+    {
+      "alias": "message.groups",
+      "event": "message.updated",
+      "conversation_kind": "private"
+    },
+    {
+      "alias": "message.groups",
+      "event": "message.deleted",
+      "conversation_kind": "private"
+    },
+    {
+      "alias": "message.groups",
+      "event": "message.replied",
+      "conversation_kind": "private"
+    },
+    {
+      "alias": "message.groups",
+      "event": "message.thread_broadcast",
+      "conversation_kind": "private"
+    },
+    {
+      "alias": "message.groups",
+      "event": "message.emote",
+      "conversation_kind": "private"
+    },
+    {
+      "alias": "message.im",
+      "event": "message.created",
+      "conversation_kind": "im"
+    },
+    {
+      "alias": "message.im",
+      "event": "message.updated",
+      "conversation_kind": "im"
+    },
+    {
+      "alias": "message.im",
+      "event": "message.deleted",
+      "conversation_kind": "im"
+    },
+    {
+      "alias": "message.im",
+      "event": "message.replied",
+      "conversation_kind": "im"
+    },
+    {
+      "alias": "message.im",
+      "event": "message.thread_broadcast",
+      "conversation_kind": "im"
+    },
+    {
+      "alias": "message.im",
+      "event": "message.emote",
+      "conversation_kind": "im"
+    },
+    {
+      "alias": "message.mpim",
+      "event": "message.created",
+      "conversation_kind": "mpim"
+    },
+    {
+      "alias": "message.mpim",
+      "event": "message.updated",
+      "conversation_kind": "mpim"
+    },
+    {
+      "alias": "message.mpim",
+      "event": "message.deleted",
+      "conversation_kind": "mpim"
+    },
+    {
+      "alias": "message.mpim",
+      "event": "message.replied",
+      "conversation_kind": "mpim"
+    },
+    {
+      "alias": "message.mpim",
+      "event": "message.thread_broadcast",
+      "conversation_kind": "mpim"
+    },
+    {
+      "alias": "message.mpim",
+      "event": "message.emote",
+      "conversation_kind": "mpim"
+    },
+    {
+      "alias": "message_metadata_deleted",
+      "event": "message.metadata_deleted",
+      "conversation_kind": "any"
+    },
+    {
+      "alias": "message_metadata_posted",
+      "event": "message.metadata_posted",
+      "conversation_kind": "any"
+    },
+    {
+      "alias": "message_metadata_updated",
+      "event": "message.metadata_updated",
+      "conversation_kind": "any"
+    },
+    {
+      "alias": "pin_added",
+      "event": "pin.added",
+      "conversation_kind": "any"
+    },
+    {
+      "alias": "pin_removed",
+      "event": "pin.removed",
+      "conversation_kind": "any"
+    },
+    {
+      "alias": "pref_change",
+      "event": "user.preferences_changed",
+      "conversation_kind": "any"
+    },
+    {
+      "alias": "presence_change",
+      "event": "user.presence_changed",
+      "conversation_kind": "any"
+    },
+    {
+      "alias": "reaction_added",
+      "event": "reaction.added",
+      "conversation_kind": "any"
+    },
+    {
+      "alias": "reaction_removed",
+      "event": "reaction.removed",
+      "conversation_kind": "any"
+    },
+    {
+      "alias": "star_added",
+      "event": "star.added",
+      "conversation_kind": "any"
+    },
+    {
+      "alias": "star_removed",
+      "event": "star.removed",
+      "conversation_kind": "any"
+    },
+    {
+      "alias": "subteam_created",
+      "event": "usergroup.created",
+      "conversation_kind": "any"
+    },
+    {
+      "alias": "subteam_members_changed",
+      "event": "usergroup.members_changed",
+      "conversation_kind": "any"
+    },
+    {
+      "alias": "subteam_self_added",
+      "event": "usergroup.self_added",
+      "conversation_kind": "any"
+    },
+    {
+      "alias": "subteam_self_removed",
+      "event": "usergroup.self_removed",
+      "conversation_kind": "any"
+    },
+    {
+      "alias": "subteam_updated",
+      "event": "usergroup.updated",
+      "conversation_kind": "any"
+    },
+    {
+      "alias": "team_join",
+      "event": "user.joined",
+      "conversation_kind": "any"
+    },
+    {
+      "alias": "team_pref_change",
+      "event": "workspace.preferences_changed",
+      "conversation_kind": "any"
+    },
+    {
+      "alias": "team_profile_change",
+      "event": "workspace.profile_changed",
+      "conversation_kind": "any"
+    },
+    {
+      "alias": "team_profile_delete",
+      "event": "workspace.profile_deleted",
+      "conversation_kind": "any"
+    },
+    {
+      "alias": "team_profile_reorder",
+      "event": "workspace.profile_reordered",
+      "conversation_kind": "any"
+    },
+    {
+      "alias": "team_rename",
+      "event": "workspace.renamed",
+      "conversation_kind": "any"
+    },
+    {
+      "alias": "tokens_revoked",
+      "event": "tokens.revoked",
+      "conversation_kind": "any"
+    },
+    {
+      "alias": "user_change",
+      "event": "user.changed",
+      "conversation_kind": "any"
+    },
+    {
+      "alias": "user_connection",
+      "event": "user.connection_requested",
+      "conversation_kind": "any"
+    },
+    {
+      "alias": "user_guest_status_changed",
+      "event": "user.guest_status_changed",
+      "conversation_kind": "any"
+    },
+    {
+      "alias": "user_profile_changed",
+      "event": "user.profile_changed",
+      "conversation_kind": "any"
+    },
+    {
+      "alias": "user_status_changed",
+      "event": "user.status_changed",
+      "conversation_kind": "any"
+    },
+    {
+      "alias": "user_typing",
+      "event": "user.typing",
+      "conversation_kind": "any"
+    },
+    {
+      "alias": "message.assistant_app_thread",
+      "event": "assistant.started",
+      "conversation_kind": "any"
+    },
+    {
+      "alias": "message.bot_message",
+      "event": "message.created",
+      "conversation_kind": "bot"
+    },
+    {
+      "alias": "message.channel_archive",
+      "event": "channel.archived",
+      "conversation_kind": "public"
+    },
+    {
+      "alias": "message.channel_convert_to_private",
+      "event": "channel.privacy_changed",
+      "conversation_kind": "private"
+    },
+    {
+      "alias": "message.channel_convert_to_public",
+      "event": "channel.privacy_changed",
+      "conversation_kind": "public"
+    },
+    {
+      "alias": "message.channel_join",
+      "event": "member.joined",
+      "conversation_kind": "public"
+    },
+    {
+      "alias": "message.channel_leave",
+      "event": "member.left",
+      "conversation_kind": "public"
+    },
+    {
+      "alias": "message.channel_name",
+      "event": "channel.renamed",
+      "conversation_kind": "public"
+    },
+    {
+      "alias": "message.channel_posting_permissions",
+      "event": "channel.posting_permissions_changed",
+      "conversation_kind": "public"
+    },
+    {
+      "alias": "message.channel_purpose",
+      "event": "channel.purpose_changed",
+      "conversation_kind": "public"
+    },
+    {
+      "alias": "message.channel_topic",
+      "event": "channel.topic_changed",
+      "conversation_kind": "public"
+    },
+    {
+      "alias": "message.channel_unarchive",
+      "event": "channel.unarchived",
+      "conversation_kind": "public"
+    },
+    {
+      "alias": "message.file_mention",
+      "event": "file.shared",
+      "conversation_kind": "any"
+    },
+    {
+      "alias": "message.file_share",
+      "event": "file.shared",
+      "conversation_kind": "any"
+    },
+    {
+      "alias": "message.group_archive",
+      "event": "channel.archived",
+      "conversation_kind": "private"
+    },
+    {
+      "alias": "message.group_join",
+      "event": "member.joined",
+      "conversation_kind": "private"
+    },
+    {
+      "alias": "message.group_leave",
+      "event": "member.left",
+      "conversation_kind": "private"
+    },
+    {
+      "alias": "message.group_name",
+      "event": "channel.renamed",
+      "conversation_kind": "private"
+    },
+    {
+      "alias": "message.group_purpose",
+      "event": "channel.purpose_changed",
+      "conversation_kind": "private"
+    },
+    {
+      "alias": "message.group_topic",
+      "event": "channel.topic_changed",
+      "conversation_kind": "private"
+    },
+    {
+      "alias": "message.group_unarchive",
+      "event": "channel.unarchived",
+      "conversation_kind": "private"
+    },
+    {
+      "alias": "message.me_message",
+      "event": "message.emote",
+      "conversation_kind": "any"
+    },
+    {
+      "alias": "message.message_changed",
+      "event": "message.updated",
+      "conversation_kind": "any"
+    },
+    {
+      "alias": "message.message_deleted",
+      "event": "message.deleted",
+      "conversation_kind": "any"
+    },
+    {
+      "alias": "message.message_replied",
+      "event": "message.replied",
+      "conversation_kind": "any"
+    },
+    {
+      "alias": "message.pinned_item",
+      "event": "pin.added",
+      "conversation_kind": "any"
+    },
+    {
+      "alias": "message.reminder_add",
+      "event": "reminder.created",
+      "conversation_kind": "any"
+    },
+    {
+      "alias": "message.reply_broadcast",
+      "event": "message.thread_broadcast",
+      "conversation_kind": "any"
+    },
+    {
+      "alias": "message.thread_broadcast",
+      "event": "message.thread_broadcast",
+      "conversation_kind": "any"
+    },
+    {
+      "alias": "message.unpinned_item",
+      "event": "pin.removed",
+      "conversation_kind": "any"
+    }
+  ],
+  "contract": "Zoo固有のイベント名・エンベロープを使用する。Slack名の購読は対応表に従って意味的に対応するZooイベントへ解決する。Slackのワイヤー形式互換は宣言しない。"
+}

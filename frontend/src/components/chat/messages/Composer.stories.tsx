@@ -1,7 +1,12 @@
+import { storySurfaces } from "../../../../.storybook/story-surfaces";
+import { playForImplementation } from "../../../../.storybook/play-for-implementation";
 import type { Meta, StoryObj } from "@storybook/react-vite";
 import { expect, fn, userEvent, within } from "storybook/test";
 
 import type { UserRow } from "../../../lib/electric/types";
+import { MfmChannelsProvider } from "./MfmChannels";
+import { storyChannels } from "../../../../.storybook/fixtures";
+import { storyCommands } from "../../../../.storybook/app-fixtures";
 import { Composer } from "./Composer";
 
 const mentionUsers: UserRow[] = [
@@ -22,7 +27,7 @@ const mentionUsers: UserRow[] = [
 ];
 
 const meta = {
-  title: "Chat/Composer",
+  title: "Features/Chat/Composer",
   component: Composer,
   tags: ["autodocs"],
   parameters: { a11y: { test: "todo" } },
@@ -33,14 +38,17 @@ const meta = {
   },
   args: {
     onTyping: fn(),
-    onSend: async () => true,
+    onSend: fn(async () => true),
+    commands: storyCommands,
     mentionUsers,
     mentionMemberIds: new Set(["user-alice", "user-bob"]),
   },
   decorators: [
     (Story) => (
-      <div className="mx-auto max-w-3xl bg-background">
-        <Story />
+      <div className={storySurfaces["Features/Chat/Composer"]}>
+        <MfmChannelsProvider channels={storyChannels}>
+          <Story />
+        </MfmChannelsProvider>
       </div>
     ),
   ],
@@ -55,27 +63,27 @@ export const Disabled: Story = {
   args: {
     disabled: true,
   },
-  play: async ({ canvasElement }) => {
+  play: playForImplementation(async ({ canvasElement }) => {
     const canvas = within(canvasElement);
-    await expect(canvas.getByRole("textbox")).toBeDisabled();
-  },
+    await expect(await canvas.findByRole("textbox")).toBeDisabled();
+  }),
 };
 
 export const Multiline: Story = {
-  play: async ({ canvasElement }) => {
+  play: playForImplementation(async ({ canvasElement }) => {
     const canvas = within(canvasElement);
-    const textarea = canvas.getByRole("textbox");
+    const textarea = await canvas.findByRole("textbox");
     await userEvent.type(textarea, "1行目{enter}2行目{enter}3行目");
     await expect(textarea).toHaveValue("1行目\n2行目\n3行目");
-  },
+  }),
 };
 
 export const MentionSuggestions: Story = {
-  play: async ({ canvasElement }) => {
+  play: playForImplementation(async ({ canvasElement }) => {
     const canvas = within(canvasElement);
-    await userEvent.type(canvas.getByRole("textbox"), "@al");
+    await userEvent.type(await canvas.findByRole("textbox"), "@al");
     await expect(canvas.getByRole("listbox", { name: "メンション候補" })).toBeVisible();
-  },
+  }),
 };
 
 export const Mobile: Story = {
@@ -83,4 +91,128 @@ export const Mobile: Story = {
   args: {
     placeholder: "モバイルからメッセージを送信",
   },
+};
+
+export const ChannelSuggestions: Story = {
+  parameters: { a11y: { test: "error" } },
+  play: playForImplementation(async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await userEvent.type(await canvas.findByRole("textbox"), "詳しくは #gen");
+    await expect(canvas.getByRole("listbox", { name: "チャンネル候補" })).toBeVisible();
+    await expect(canvas.getByRole("option", { name: "#general" })).toBeVisible();
+  }),
+};
+export const CommandSuggestions: Story = {
+  parameters: { a11y: { test: "error" } },
+  play: playForImplementation(async ({ canvasElement, args }) => {
+    const canvas = within(canvasElement);
+    const input = await canvas.findByRole("textbox");
+    await userEvent.type(input, "/ec");
+    await expect(canvas.getByRole("listbox", { name: "コマンド候補" })).toBeVisible();
+    await userEvent.click(canvas.getByRole("option", { name: "/echo Meeting Notes" }));
+    await expect(input).toHaveValue("/echo ");
+    // Wait for Composer to restore the caret before typing the command argument.
+    await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+    await userEvent.type(input, "hello");
+    await userEvent.click(canvas.getByRole("button", { name: "送信" }));
+    await expect(args.onSend).toHaveBeenCalledWith("/echo hello", "notes");
+  }),
+};
+function pasteFile(target: HTMLElement, file: File) {
+  const clipboardData = new DataTransfer();
+  clipboardData.items.add(file);
+  target.dispatchEvent(
+    new ClipboardEvent("paste", { clipboardData, bubbles: true, cancelable: true }),
+  );
+}
+
+function pasteImage(target: HTMLElement) {
+  pasteFile(
+    target,
+    new File([new Uint8Array([1, 2, 3, 4])], "screenshot.png", { type: "image/png" }),
+  );
+}
+
+export const WithAttachments: Story = {
+  parameters: { a11y: { test: "error" } },
+  args: {
+    onUploadAttachment: fn(async () => ({
+      id: "attachment-1",
+      file_name: "screenshot.png",
+      file_size: 4,
+      content_type: "image/png",
+    })),
+  },
+  play: playForImplementation(async ({ canvasElement, args }) => {
+    const canvas = within(canvasElement);
+    pasteImage(await canvas.findByRole("textbox"));
+    await expect(await canvas.findByRole("img", { name: "screenshot.png" })).toBeVisible();
+    await userEvent.click(canvas.getByRole("button", { name: "送信" }));
+    await expect(args.onSend).toHaveBeenCalledWith("", undefined, ["attachment-1"]);
+  }),
+};
+
+export const WithFileAttachment: Story = {
+  parameters: { a11y: { test: "error" } },
+  args: {
+    onUploadAttachment: fn(async () => ({
+      id: "attachment-2",
+      file_name: "release-notes.pdf",
+      file_size: 5,
+      content_type: "application/pdf",
+    })),
+  },
+  play: playForImplementation(async ({ canvasElement, args }) => {
+    const canvas = within(canvasElement);
+    pasteFile(
+      await canvas.findByRole("textbox"),
+      new File([new Uint8Array([1, 2, 3, 4, 5])], "release-notes.pdf", {
+        type: "application/pdf",
+      }),
+    );
+    await expect(await canvas.findByText("release-notes.pdf")).toBeVisible();
+    await userEvent.click(canvas.getByRole("button", { name: "送信" }));
+    await expect(args.onSend).toHaveBeenCalledWith("", undefined, ["attachment-2"]);
+  }),
+};
+
+export const AttachmentUploadError: Story = {
+  parameters: { a11y: { test: "error" } },
+  args: {
+    onUploadAttachment: fn(async () => {
+      throw new Error("upload failed");
+    }),
+  },
+  play: playForImplementation(async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    pasteImage(await canvas.findByRole("textbox"));
+    await expect(await canvas.findByRole("alert")).toHaveTextContent(
+      "ファイルをアップロードできませんでした。",
+    );
+    await expect(canvas.queryByRole("img", { name: "screenshot.png" })).toBeNull();
+  }),
+};
+
+export const ChannelInsertion: Story = {
+  parameters: { a11y: { test: "error" } },
+  globals: { viewport: { value: "mobile" } },
+  play: playForImplementation(async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const input = await canvas.findByRole("textbox");
+    await userEvent.type(input, "#gen");
+    await userEvent.keyboard("{Tab}");
+    await expect(input).toHaveValue("#general ");
+    await expect(canvas.queryByRole("listbox")).not.toBeInTheDocument();
+  }),
+};
+
+export const SendError: Story = {
+  args: { onSend: fn(async () => false) },
+  play: playForImplementation(async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const input = await canvas.findByRole("textbox");
+    await userEvent.type(input, "Catalog send failure");
+    await userEvent.click(canvas.getByRole("button", { name: "送信" }));
+    await expect(input).toHaveValue("Catalog send failure");
+  }),
 };

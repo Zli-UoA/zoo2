@@ -1,21 +1,34 @@
 import type { MessageReactionRow } from "../electric/types";
 import { reactionKey } from "./kitchen";
 
+export function reactionUserLabel(user: { display_name: string; user_name: string }): string {
+  return user.display_name ? `${user.display_name} (@${user.user_name})` : `@${user.user_name}`;
+}
+
 export interface ReactionGroup {
   emoji: string;
   count: number;
   ownId: string | null;
+  userIds?: string[];
+  userNames?: Record<string, string>;
+  usersLoading?: boolean;
 }
 
 export function groupReactions(
-  rows: MessageReactionRow[],
+  rows: (MessageReactionRow & { display_name?: string; user_name?: string })[],
   currentUserId: string | null,
 ): Map<string, ReactionGroup[]> {
   const messages = new Map<
     string,
     Map<string, { emoji: string; users: Set<string>; ownId: string | null }>
   >();
+  const names: Record<string, string> = {};
   for (const row of rows) {
+    if (row.user_name)
+      names[row.user_id] = reactionUserLabel({
+        display_name: row.display_name ?? "",
+        user_name: row.user_name,
+      });
     let groups = messages.get(row.message_id);
     if (!groups) {
       groups = new Map();
@@ -37,6 +50,8 @@ export function groupReactions(
         emoji,
         count: users.size,
         ownId,
+        userIds: Array.from(users),
+        ...(Object.keys(names).length ? { userNames: names } : {}),
       })),
     ]),
   );

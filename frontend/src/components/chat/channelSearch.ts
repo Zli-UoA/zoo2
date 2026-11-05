@@ -18,7 +18,7 @@ export function isChannelJoinable(channel: ChannelRow): boolean {
  *
  * - 参加済みと非公開チャンネルは出さない。
  * - チャンネル名の部分一致（大文字小文字と前後の空白を無視）。
- * - アーカイブ済みは参加不可の表示に使うため一覧には残す。
+ * - アーカイブ済みも閲覧できるため一覧には残す。
  * - 並び順は変えない。
  */
 export function filterDiscoverableChannels(

@@ -53,7 +53,7 @@ async fn authorize(
         .await?
         .filter(|c| c.deleted_at.is_none())
         .ok_or_else(|| AppError::NotFound("Channel not found".into()))?;
-    if channel.is_private || channel.is_dm {
+    if channel.is_private || channel.is_dm || crate::apps::events::guest(tx, actor).await? {
         let member = ChannelUser::filter(
             ChannelUser::fields()
                 .channel_id()

@@ -13,6 +13,7 @@ import { createShapeFetch, type ShapeFetchSource } from "./headers";
 import { buildShapeRequestUrl, resolveShapeUrl, type ShapeQueryOptions } from "./query";
 import { SHAPE_META, coerceElectricRow, type ShapeName } from "./schema";
 import type {
+  AttachmentRow,
   ChannelRow,
   ChannelUserRow,
   MessageReactionRow,
@@ -194,6 +195,19 @@ function messagesCollection(
   return collection;
 }
 
+function attachmentsCollection(channelId: string, config: AppConfig) {
+  const collection = createCollection(
+    electricCollectionOptions<AttachmentRow>({
+      id: `attachments:${channelId}`,
+      getKey: (row) => row.id,
+      defaultIndexType: BasicIndex,
+      shapeOptions: shapeOptions("attachments", config, { channelId }),
+    }),
+  );
+  collection.createIndex((row) => row.message_id);
+  return collection;
+}
+
 function reactionsCollection(
   channelId: string,
   config: AppConfig,
@@ -244,6 +258,7 @@ export type UsersCollection = ReturnType<typeof usersCollection>;
 export type ChannelUsersCollection = ReturnType<typeof channelUsersCollection>;
 export type MessagesCollection = ReturnType<typeof messagesCollection>;
 export type ReactionsCollection = ReturnType<typeof reactionsCollection>;
+export type AttachmentsCollection = ReturnType<typeof attachmentsCollection>;
 
 export interface CollectionsBundle {
   config: AppConfig;
@@ -259,6 +274,7 @@ export interface CollectionsBundle {
   messages: (channelId: string) => MessagesCollection;
   /** `channel_id` 単位で生成しキャッシュした message_reactions コレクションを返す。 */
   reactions: (channelId: string) => ReactionsCollection;
+  attachments: (channelId: string) => AttachmentsCollection;
 }
 
 export function isBrowser(): boolean {
@@ -312,6 +328,7 @@ export function getCollections(
   const notificationCache = new Map<string, NotificationsCollection>();
   const messageCache = new Map<string, MessagesCollection>();
   const reactionCache = new Map<string, ReactionsCollection>();
+  const attachmentCache = new Map<string, AttachmentsCollection>();
   // 現在ユーザーは `useCurrentUser` と同じストアから引く（OIDC では
   // `/api/users/me` の解決後に値が入る）。退出の本人確認は書き込み時に
   // getCurrentUserId() で最新値を読む。
@@ -349,6 +366,14 @@ export function getCollections(
       if (!collection) {
         collection = messagesCollection(channelId, resolved, dependencies, persistence);
         messageCache.set(channelId, collection);
+      }
+      return collection;
+    },
+    attachments: (channelId) => {
+      let collection = attachmentCache.get(channelId);
+      if (!collection) {
+        collection = attachmentsCollection(channelId, resolved);
+        attachmentCache.set(channelId, collection);
       }
       return collection;
     },

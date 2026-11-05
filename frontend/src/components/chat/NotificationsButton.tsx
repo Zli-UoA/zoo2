@@ -2,12 +2,12 @@ import { Link } from "@tanstack/react-router";
 import { useTranslation } from "react-i18next";
 import { BellIcon } from "lucide-react";
 
-import { useNotifications } from "../../hooks/useNotifications";
+import { useUnifiedNotifications } from "../../hooks/useUnifiedNotifications";
 
 /** 左レールの通知タブ。未読件数を表示し、通知画面に切り替える。 */
 export function NotificationsButton() {
   const { t } = useTranslation();
-  const { unreadCount } = useNotifications();
+  const { unreadCount } = useUnifiedNotifications();
   return (
     <Link
       to="/notifications"

@@ -1,15 +1,19 @@
 import { useEffect, useMemo, useState } from "react";
 import { createConfiguredApiClient } from "../../../lib/api/client";
 import { useCollections } from "../../../lib/electric/collections-context";
+import type { NotificationDisplayData } from "../../../lib/electric/types";
 
 export interface NotificationContext {
-  message: { id: string; user_id: string; content: string } | null;
-  note: { id: string; title: string; content: string } | null;
+  message: NotificationDisplayData["message"];
+  note?: { id: string; title: string; content: string } | null;
   reactions: { user_id: string; emoji: string }[];
 }
 
 /** Fetch a bounded preview, not a channel-wide messages/reactions Shape. */
-export function useNotificationContext(notificationId: string | null) {
+export function useNotificationContext(
+  notificationId: string | null,
+  joined?: NotificationDisplayData,
+) {
   const { config } = useCollections();
   const client = useMemo(() => createConfiguredApiClient(config), [config]);
   const [state, setState] = useState<{
@@ -18,7 +22,7 @@ export function useNotificationContext(notificationId: string | null) {
     isLoading: boolean;
   }>({ id: null, data: null, isLoading: false });
   useEffect(() => {
-    if (!notificationId) return;
+    if (!notificationId || joined !== undefined) return;
     let controller: AbortController | null = null;
     const load = () => {
       controller?.abort();
@@ -45,7 +49,8 @@ export function useNotificationContext(notificationId: string | null) {
       controller?.abort();
       window.removeEventListener("focus", load);
     };
-  }, [client, notificationId]);
+  }, [client, notificationId, joined]);
+  if (joined !== undefined) return { data: joined, isLoading: false };
   if (!notificationId || state.id !== notificationId)
     return { data: null, isLoading: !!notificationId };
   return state;

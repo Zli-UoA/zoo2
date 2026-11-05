@@ -209,3 +209,5 @@ node .github/scripts/images.test.mjs
 - k3s での pull とデプロイの受け入れ
 
 参考: [GitHub のパッケージ削除](https://docs.github.com/en/packages/learn-github-packages/deleting-and-restoring-a-package)、[Docker の GitHub Actions キャッシュ](https://docs.docker.com/build/ci/github-actions/cache/)、[GitHub Actions の concurrency のキュー](https://docs.github.com/en/actions/how-tos/write-workflows/choose-when-workflows-run/control-workflow-concurrency)
+
+本番の共通リリースタグと migrate の digest は、[Flux の通知](flux-status.md)でもコミットと配備履歴の特定に使います。

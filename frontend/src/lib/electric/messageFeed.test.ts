@@ -76,6 +76,20 @@ function makeCollections(messageRows: MessageRow[], userRows: UserRow[]) {
 }
 
 describe("messageFeedQuery", () => {
+  it("renders the joined author before the users Shape arrives", async () => {
+    const display_data = {
+      author: { id: "user-1", user_name: "alice", display_name: "Joined Alice", avatar_url: null },
+      emojis: {},
+      attachments: [],
+      reactions: [],
+      reply_count: 2,
+    };
+    const result = await queryOnce((q) =>
+      messageFeedQuery(q, makeCollections([{ ...messages[0], display_data }], [])),
+    );
+    expect(result[0].display_name).toBe("Joined Alice");
+    expect(result[0].display_data).toEqual(display_data);
+  });
   it("joins the author and excludes logically deleted messages", async () => {
     const result = await queryOnce((q) => messageFeedQuery(q, makeCollections(messages, users)));
 
@@ -83,6 +97,22 @@ describe("messageFeedQuery", () => {
     expect(result.find((row) => row.id === "message-1")?.display_name).toBe("Alice");
     expect(result.find((row) => row.id === "message-2")).toBeUndefined();
   });
+
+  it.each([null, "root"])(
+    "preserves the last edit time in the feed (parent=%s)",
+    async (parentId) => {
+      const sources = makeCollections([{ ...messages[0], parent_id: parentId }], users);
+      const before = await queryOnce((q) => messageFeedQuery(q, sources, { parentId }));
+      expect(before[0].updated_at).toBeNull();
+      sources.messages.update("message-1", (draft) => {
+        draft.content = "Edited content";
+        draft.updated_at = "2026-01-02 00:10:00.000";
+      });
+      const after = await queryOnce((q) => messageFeedQuery(q, sources, { parentId }));
+      expect(after[0].content).toBe("Edited content");
+      expect(after[0].updated_at).toBe("2026-01-02 00:10:00.000");
+    },
+  );
 
   it("drops a message from the feed after a logical delete update", async () => {
     const { messages: messagesCollection, users: usersCollection } = makeCollections(
@@ -222,4 +252,14 @@ describe("messageFeedQuery since window", () => {
     );
     expect(result.map((row) => row.id)).toEqual(["reply-new"]);
   });
+});
+
+it("resolves a reply as a thread root and joins its author", async () => {
+  const sources = makeCollections([{ ...messages[0], parent_id: "parent" }], users);
+  const result = await queryOnce((q) =>
+    messageFeedQuery(q, sources, { parentId: null, messageId: "message-1" }),
+  );
+  expect(result).toHaveLength(1);
+  expect(result[0].parent_id).toBe("parent");
+  expect(result[0].display_name).toBe("Alice");
 });

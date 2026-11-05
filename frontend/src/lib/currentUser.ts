@@ -83,6 +83,7 @@ export interface CurrentUserStore {
   subscribe(listener: () => void): () => void;
   /** 起動時の解決を開始する。2 回目以降は進行中の Promise を使い回す。 */
   ensureLoaded(): Promise<void>;
+  refresh(): Promise<void>;
 }
 
 /**
@@ -103,6 +104,7 @@ export function createCurrentUserStore(
         error: null,
       };
   let inflight: Promise<void> | null = null;
+  let refreshing: Promise<void> | null = null;
   const listeners = new Set<() => void>();
 
   function setState(next: CurrentUserState): void {
@@ -119,6 +121,22 @@ export function createCurrentUserStore(
       return () => {
         listeners.delete(listener);
       };
+    },
+    refresh: () => {
+      refreshing ??= resolveCurrentUser(config, options)
+        .then((resolved) => {
+          setState({
+            ...resolved,
+            // A transient role refresh failure does not invalidate the signed-in identity.
+            // resolveCurrentUser returns error=null for 401, so that path still clears it.
+            currentUserId: resolved.error !== null ? state.currentUserId : resolved.currentUserId,
+            isLoading: false,
+          });
+        })
+        .finally(() => {
+          refreshing = null;
+        });
+      return refreshing;
     },
     ensureLoaded: () => {
       if (!inflight) {

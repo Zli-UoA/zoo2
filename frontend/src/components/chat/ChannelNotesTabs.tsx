@@ -72,6 +72,8 @@ export function ChannelNotesTabs({
   const path = `/api/channels/${channelId}/notes`;
   const [notes, setNotes] = useState<Note[]>([]);
   const [selected, setSelected] = useState<Note | null>(null);
+  const selectedRef = useRef(selected);
+  selectedRef.current = selected;
   const previousNoteId = useRef(noteId);
   const navigation = useRef({ channelId, noteId, generation: 0 });
   const [title, setTitle] = useState("");
@@ -142,7 +144,9 @@ export function ChannelNotesTabs({
     loadController.current = controller;
     const generation = ++requestGeneration.current;
     try {
-      const response = await client.requestWithTx<Note[]>(path, { signal: controller.signal });
+      const response = await client.requestWithTx<Note[]>(`${path}?summary=true`, {
+        signal: controller.signal,
+      });
       if (controller.signal.aborted || generation !== requestGeneration.current) return;
       if (taskSaveInFlight.current || taskDraftRef.current !== null) return;
       if (reorderInFlight.current) return;
@@ -150,9 +154,28 @@ export function ChannelNotesTabs({
       if (noteId) {
         const current = response.data.find((n) => n.id === noteId);
         if (current && !editingRef.current) {
-          setSelected(current);
-          setTitle(current.title);
-          setContent(current.content);
+          const previous = selectedRef.current;
+          const full =
+            typeof current.content === "string"
+              ? current
+              : previous?.id === current.id && previous.version === current.version
+                ? previous
+                : (
+                    await client.requestWithTx<Note>(`${path}/${current.id}`, {
+                      signal: controller.signal,
+                    })
+                  ).data;
+          if (
+            controller.signal.aborted ||
+            generation !== requestGeneration.current ||
+            editingRef.current ||
+            taskSaveInFlight.current ||
+            taskDraftRef.current !== null
+          )
+            return;
+          setSelected(full);
+          setTitle(full.title);
+          setContent(full.content);
           setError("");
         } else if (!current && !editingRef.current) {
           setSelected(null);
@@ -194,11 +217,12 @@ export function ChannelNotesTabs({
     };
   }, [load]);
   useEffect(() => {
+    if (!noteId) return;
     const timer = window.setInterval(() => {
       if (!loadController.current) void load();
     }, 5000);
     return () => clearInterval(timer);
-  }, [load]);
+  }, [load, noteId]);
   useEffect(() => {
     if (canWrite && !archived) return;
     if (taskDraftRef.current !== null) {
@@ -457,9 +481,15 @@ export function ChannelNotesTabs({
   function select(note: Note) {
     if (busy || taskSaveInFlight.current) return;
     if (dirty && !window.confirm(t("channels.notes.unsaved"))) return;
-    setSelected(note);
+    const full =
+      typeof note.content === "string"
+        ? note
+        : selectedRef.current?.id === note.id
+          ? selectedRef.current
+          : null;
+    setSelected(full);
     setTitle(note.title);
-    setContent(note.content);
+    setContent(full?.content ?? "");
     setEditing(false);
     setLatest(null);
     setLatestFetchFailed(false);
@@ -491,12 +521,17 @@ export function ChannelNotesTabs({
       className={`flex min-h-0 flex-col ${noteId ? "flex-1" : "shrink-0"}`}
       aria-label={t("channels.notes.title")}
     >
-      <div
-        role="tablist"
-        aria-label={t("channels.notes.title")}
-        className="flex shrink-0 items-center gap-1 overflow-x-auto border-b px-2 py-1"
-      >
+      <div className="flex shrink-0 items-center gap-1 overflow-x-auto border-b px-2 py-1">
+        <div
+          role="tablist"
+          aria-label={t("channels.notes.title")}
+          aria-owns={[
+            `message-tab-${channelId}`,
+            ...notes.map((note) => `note-tab-${note.id}`),
+          ].join(" ")}
+        />
         <button
+          id={`message-tab-${channelId}`}
           role="tab"
           aria-selected={!noteId}
           disabled={busy}
@@ -536,6 +571,7 @@ export function ChannelNotesTabs({
             className={`flex shrink-0 items-center ${dropPosition?.id === note.id ? (dropPosition.after ? "border-r-2 border-primary" : "border-l-2 border-primary") : ""}`}
           >
             <button
+              id={`note-tab-${note.id}`}
               role="tab"
               aria-selected={noteId === note.id}
               disabled={busy}

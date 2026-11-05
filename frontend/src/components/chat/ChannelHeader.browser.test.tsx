@@ -12,6 +12,7 @@ const channel: ChannelRow = {
   description: null,
   created_user_id: "user-alice",
   is_private: false,
+  is_dm: false,
   created_at: "2026-01-01 00:00:00.000",
   updated_at: null,
   archive_at: null,
@@ -78,18 +79,42 @@ vi.mock("../layout/shell-context", () => ({
 }));
 
 describe("ChannelHeader", () => {
-  it("uses a machine-readable datetime in the message moderation dialog", async () => {
+  it("falls back to the no-description label for missing or whitespace descriptions", () => {
+    const { rerender } = render(
+      <LocaleProvider>
+        <ChannelHeader channel={channel} memberCount={3} />
+      </LocaleProvider>,
+    );
+    expect(screen.getByText("説明はまだありません")).toBeVisible();
+
+    rerender(
+      <LocaleProvider>
+        <ChannelHeader channel={{ ...channel, description: "   " }} memberCount={3} />
+      </LocaleProvider>,
+    );
+    expect(screen.getByText("説明はまだありません")).toBeVisible();
+  });
+
+  it("renders a long description without overflowing the header", () => {
+    const description = "長い説明です。".repeat(40);
+    render(
+      <LocaleProvider>
+        <ChannelHeader channel={{ ...channel, description }} memberCount={3} />
+      </LocaleProvider>,
+    );
+    expect(screen.getByText(description)).toBeVisible();
+  });
+
+  it("opens channel settings without a separate message moderation screen", async () => {
     render(
       <LocaleProvider>
         <ChannelHeader channel={channel} memberCount={3} />
       </LocaleProvider>,
     );
-
-    await userEvent.click(screen.getByRole("button", { name: "チャンネルの管理" }));
-    await userEvent.click(await screen.findByRole("menuitem", { name: "メッセージ管理" }));
-
-    const dialog = await screen.findByRole("dialog");
-    const time = dialog.querySelector("time");
-    expect(time?.getAttribute("datetime")).toBe("2026-01-02T09:00:00.000Z");
+    await userEvent.click(screen.getByRole("button", { name: "チャンネル設定" }));
+    expect(await screen.findByRole("dialog")).toBeVisible();
+    expect(screen.getByText("Webhook設定")).toBeVisible();
+    expect(screen.getByRole("button", { name: "アーカイブ" })).toBeVisible();
+    expect(screen.queryByText("メッセージ管理")).toBeNull();
   });
 });

@@ -28,6 +28,9 @@ async fn main() -> anyhow::Result<()> {
     );
 
     backend::push::PushConfig::from_env()?;
+    if std::env::var("ACTIVITYPUB_BASE_URL").is_ok_and(|v| !v.is_empty()) {
+        backend::activitypub::base_url()?;
+    }
 
     // データベース接続初期化 (Toasty ORM)
     let db = init_db(&config.database_url).await?;
@@ -35,7 +38,26 @@ async fn main() -> anyhow::Result<()> {
     // アプリケーション状態構築
     let state = AppState::new(db, config.clone());
 
+    // 開発・ステージング環境の場合、S3 バケットの存在を確認し必要に応じて作成
+    if config.environment != "production" {
+        backend::storage::ensure_bucket_exists(&state.s3_client, &config.s3.bucket).await;
+    }
+
+    match tokio::time::timeout(
+        std::time::Duration::from_secs(30),
+        backend::storage::image_dimensions::backfill_emojis(&state),
+    )
+    .await
+    {
+        Ok(result) => result?,
+        Err(_) => tracing::warn!("Emoji metadata backfill will resume at the next startup"),
+    }
+
     // ルーター構築
+    let display_worker = tokio::spawn(backend::display_refresh::worker(state.clone()));
+    let delivery_worker = tokio::spawn(backend::apps::delivery::worker(state.clone()));
+    let federation_worker = tokio::spawn(backend::activitypub::worker(state.clone()));
+    let home_image_worker = tokio::spawn(backend::routes::home_images::worker(state.clone()));
     let app = create_router(state);
 
     // サーバーバインド
@@ -43,10 +65,17 @@ async fn main() -> anyhow::Result<()> {
     tracing::info!("Server listening on http://{}", addr);
 
     let listener = tokio::net::TcpListener::bind(addr).await?;
-    axum::serve(listener, app)
-        .with_graceful_shutdown(shutdown_signal())
-        .await?;
+    axum::serve(
+        listener,
+        app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+    )
+    .with_graceful_shutdown(shutdown_signal())
+    .await?;
 
+    display_worker.abort();
+    home_image_worker.abort();
+    federation_worker.abort();
+    delivery_worker.abort();
     tracing::info!("Server shut down gracefully");
     Ok(())
 }

@@ -1,6 +1,6 @@
 use axum::{
     Json, Router,
-    extract::{Path, State},
+    extract::{Path, Query, State},
     http::{HeaderValue, header},
     middleware,
     response::Response,
@@ -69,6 +69,11 @@ pub struct ReorderNotesInput {
     note_ids: Vec<String>,
 }
 
+#[derive(Default, Deserialize)]
+struct ListQuery {
+    summary: Option<bool>,
+}
+
 pub fn router() -> Router<AppState> {
     Router::new()
         .route("/api/channels/{channel_id}/notes", get(list).post(create))
@@ -103,6 +108,7 @@ async fn authorize(
     actor: &str,
     channel_id: &str,
     write: bool,
+    dev_auth_enabled: bool,
 ) -> Result<Channel, AppError> {
     Uuid::parse_str(channel_id).map_err(|_| AppError::BadRequest("Invalid channel ID".into()))?;
     if write {
@@ -136,7 +142,8 @@ async fn authorize(
     .await?
     .is_some();
 
-    if (channel.is_private || channel.is_dm) && !member {
+    let is_guest = crate::apps::events::guest(&mut *tx, actor).await?;
+    if (channel.is_private || channel.is_dm || is_guest) && !member {
         return Err(AppError::NotFound("Channel not found".into()));
     }
     if write {
@@ -150,6 +157,7 @@ async fn authorize(
                 "Cannot modify notes in an archived channel".into(),
             ));
         }
+        crate::apps::events::posting(&mut *tx, actor, channel_id, dev_auth_enabled).await?;
     }
     Ok(channel)
 }
@@ -177,10 +185,24 @@ async fn list(
     State(state): State<AppState>,
     actor: AuthUser,
     Path(channel_id): Path<String>,
-) -> Result<Json<ApiResponse<Vec<NoteResponse>>>, AppError> {
+    Query(query): Query<ListQuery>,
+) -> Result<Json<ApiResponse<serde_json::Value>>, AppError> {
     let mut db = state.db.clone();
     let mut tx = db.transaction().await?;
-    authorize(&mut tx, &actor.id, &channel_id, false).await?;
+    authorize(
+        &mut tx,
+        &actor.id,
+        &channel_id,
+        false,
+        state.config.dev_auth_enabled,
+    )
+    .await?;
+    if query.summary.unwrap_or(false) {
+        let result = crate::apps::one(&mut tx,
+            "SELECT COALESCE(json_agg(row_to_json(n) ORDER BY n.position),'[]'::json)::text FROM (SELECT id,channel_id,title,version,created_user_id,created_at,updated_at,position FROM channel_notes WHERE channel_id=$1 AND deleted_at IS NULL) n",
+            &[&channel_id]).await?;
+        return Ok(Json(ApiResponse::new(result, None::<String>)));
+    }
     let notes = ChannelNote::filter(ChannelNote::fields().channel_id().eq(channel_id.as_str()))
         .exec(&mut tx)
         .await?;
@@ -189,7 +211,8 @@ async fn list(
         .filter(|note| note.deleted_at.is_none())
         .collect();
     result.sort_by_key(|note| note.position);
-    let result = result.into_iter().map(NoteResponse::from).collect();
+    let result: Vec<_> = result.into_iter().map(NoteResponse::from).collect();
+    let result = serde_json::to_value(result).map_err(|e| AppError::Internal(e.into()))?;
     Ok(Json(ApiResponse::new(result, None::<String>)))
 }
 
@@ -200,7 +223,14 @@ async fn list_deleted(
 ) -> Result<Json<ApiResponse<Vec<NoteResponse>>>, AppError> {
     let mut db = state.db.clone();
     let mut tx = db.transaction().await?;
-    authorize(&mut tx, &actor.id, &channel_id, false).await?;
+    authorize(
+        &mut tx,
+        &actor.id,
+        &channel_id,
+        false,
+        state.config.dev_auth_enabled,
+    )
+    .await?;
     let is_member = ChannelUser::filter(
         ChannelUser::fields()
             .channel_id()
@@ -247,7 +277,14 @@ async fn show(
     note_path(&channel_id, &note_id)?;
     let mut db = state.db.clone();
     let mut tx = db.transaction().await?;
-    authorize(&mut tx, &actor.id, &channel_id, false).await?;
+    authorize(
+        &mut tx,
+        &actor.id,
+        &channel_id,
+        false,
+        state.config.dev_auth_enabled,
+    )
+    .await?;
     let note = find(&mut tx, &channel_id, &note_id).await?;
     Ok(Json(ApiResponse::new(
         NoteResponse::from(note),
@@ -281,7 +318,14 @@ async fn reorder(
 ) -> Result<Json<ApiResponse<serde_json::Value>>, AppError> {
     let mut db = state.db.clone();
     let mut tx = db.transaction().await?;
-    authorize(&mut tx, &actor.id, &channel_id, true).await?;
+    authorize(
+        &mut tx,
+        &actor.id,
+        &channel_id,
+        true,
+        state.config.dev_auth_enabled,
+    )
+    .await?;
     let notes = ChannelNote::filter(ChannelNote::fields().channel_id().eq(channel_id.as_str()))
         .exec(&mut tx)
         .await?;
@@ -338,7 +382,14 @@ async fn restore(
     note_path(&channel_id, &note_id)?;
     let mut db = state.db.clone();
     let mut tx = db.transaction().await?;
-    authorize(&mut tx, &actor.id, &channel_id, true).await?;
+    authorize(
+        &mut tx,
+        &actor.id,
+        &channel_id,
+        true,
+        state.config.dev_auth_enabled,
+    )
+    .await?;
     let deleted = ChannelNote::filter(
         ChannelNote::fields()
             .id()
@@ -387,7 +438,14 @@ async fn create(
     validate(&input)?;
     let mut db = state.db.clone();
     let mut tx = db.transaction().await?;
-    authorize(&mut tx, &actor.id, &channel_id, true).await?;
+    authorize(
+        &mut tx,
+        &actor.id,
+        &channel_id,
+        true,
+        state.config.dev_auth_enabled,
+    )
+    .await?;
     let id = Uuid::new_v4().to_string();
     let now = crate::models::now_utc_millis();
     let rows = toasty::sql::query("SELECT COALESCE(MAX(position), -1) + 1 AS position FROM channel_notes WHERE channel_id = $1 AND deleted_at IS NULL")
@@ -443,7 +501,14 @@ async fn update(
     }
     let mut db = state.db.clone();
     let mut tx = db.transaction().await?;
-    authorize(&mut tx, &actor.id, &channel_id, true).await?;
+    authorize(
+        &mut tx,
+        &actor.id,
+        &channel_id,
+        true,
+        state.config.dev_auth_enabled,
+    )
+    .await?;
     let previous = find(&mut tx, &channel_id, &note_id).await?;
     let rows = toasty::sql::query(
         "UPDATE channel_notes SET title = $1, content = $2, version = version + 1, updated_at = statement_timestamp() \
@@ -500,7 +565,14 @@ async fn remove(
     }
     let mut db = state.db.clone();
     let mut tx = db.transaction().await?;
-    authorize(&mut tx, &actor.id, &channel_id, true).await?;
+    authorize(
+        &mut tx,
+        &actor.id,
+        &channel_id,
+        true,
+        state.config.dev_auth_enabled,
+    )
+    .await?;
     let rows = toasty::sql::query(
         "UPDATE channel_notes SET deleted_at = statement_timestamp(), version = version + 1, updated_at = statement_timestamp() WHERE id = $1 AND channel_id = $2 AND version = $3 AND deleted_at IS NULL RETURNING id",
     )

@@ -61,10 +61,11 @@ async function renderSurface(
 ) {
   await page.viewport(state.width, state.height);
   render(<Surface theme={state.theme}>{children}</Surface>);
-  await document.fonts.ready;
+  // Layout requests the glyph subsets before we wait for the webfonts.
   await new Promise<void>((resolve) => {
     requestAnimationFrame(() => requestAnimationFrame(() => resolve()));
   });
+  await document.fonts.ready;
 }
 
 function messageRow(overrides: Partial<ComponentProps<typeof MessageRow>> = {}) {

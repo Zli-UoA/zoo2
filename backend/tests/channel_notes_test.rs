@@ -66,7 +66,7 @@ async fn note_notification_count(
     user_id: &str,
 ) -> anyhow::Result<i64> {
     let rows = toasty::sql::query(
-        "SELECT count(*) AS n FROM notifications WHERE note_id = $1 AND user_id = $2",
+        "SELECT count(*) AS n FROM notification_events WHERE note_id = $1 AND user_id = $2",
     )
     .bind(note_id)
     .bind(user_id)
@@ -178,6 +178,79 @@ async fn channel_notes_wait_for_channel_and_membership_changes_before_authorizin
 }
 
 #[tokio::test]
+async fn notes_follow_guest_visibility_and_channel_posting_policy() -> anyhow::Result<()> {
+    let mut config = Config::from_env();
+    config.dev_auth_enabled = true;
+    let db = init_db(&config.database_url).await?;
+    let app = create_router(AppState::new(db, config.clone()));
+    let owner = Uuid::new_v4().to_string();
+    let member = Uuid::new_v4().to_string();
+    let guest = Uuid::new_v4().to_string();
+    for user in [&owner, &member, &guest] {
+        create_user(&app, user).await;
+    }
+    let channel = Uuid::new_v4().to_string();
+    assert_eq!(request(&app, "POST", "/api/channels", &owner,
+        json!({"id":channel,"channel_name":format!("policy_{}",Uuid::new_v4().simple()),"is_private":false})).await.0, StatusCode::OK);
+    assert_eq!(
+        request(
+            &app,
+            "POST",
+            &format!("/api/channels/{channel}/users"),
+            &owner,
+            json!({"user_id":member})
+        )
+        .await
+        .0,
+        StatusCode::OK
+    );
+    let (connection, driver) =
+        tokio_postgres::connect(&config.database_url, tokio_postgres::NoTls).await?;
+    tokio::spawn(driver);
+    connection
+        .execute("UPDATE users SET guest_kind='multi' WHERE id=$1", &[&guest])
+        .await?;
+    connection
+        .execute(
+            "UPDATE channels SET posting_policy='managers' WHERE id=$1",
+            &[&channel],
+        )
+        .await?;
+    let collection = format!("/api/channels/{channel}/notes");
+    assert_eq!(
+        request(&app, "GET", &collection, &guest, Value::Null)
+            .await
+            .0,
+        StatusCode::NOT_FOUND
+    );
+    assert_eq!(
+        request(
+            &app,
+            "POST",
+            &collection,
+            &member,
+            json!({"title":"Denied","content":""})
+        )
+        .await
+        .0,
+        StatusCode::FORBIDDEN
+    );
+    assert_eq!(
+        request(
+            &app,
+            "POST",
+            &collection,
+            &owner,
+            json!({"title":"Allowed","content":""})
+        )
+        .await
+        .0,
+        StatusCode::OK
+    );
+    Ok(())
+}
+
+#[tokio::test]
 async fn channel_notes_enforce_access_and_compare_versions_atomically() -> anyhow::Result<()> {
     let mut config = Config::from_env();
     config.dev_auth_enabled = true;
@@ -245,6 +318,19 @@ async fn channel_notes_enforce_access_and_compare_versions_atomically() -> anyho
     let note = &created["data"];
     let note_id = note["id"].as_str().unwrap();
     assert_eq!(note["version"], 1);
+    let (status, summary) = request(
+        &app,
+        "GET",
+        &format!("{collection}?summary=true"),
+        &outsider,
+        Value::Null,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(
+        summary["data"][0].get("content").is_none(),
+        "summary must not include note bodies"
+    );
 
     // A member can read and update the note; stale update and stale delete both conflict.
     let item = format!("{collection}/{note_id}");
@@ -320,6 +406,15 @@ async fn channel_notes_enforce_access_and_compare_versions_atomically() -> anyho
     assert_eq!(status, StatusCode::OK, "{first_mention}");
     assert_eq!(note_notification_count(&mut db, note_id, &member).await?, 1);
     assert_eq!(note_notification_count(&mut db, note_id, &owner).await?, 0);
+    let mut tx = db.transaction().await?;
+    let legacy = backend::apps::one(&mut tx,
+        "SELECT json_build_object('count',count(*))::text FROM notifications WHERE id IN (SELECT id FROM notification_events WHERE note_id=$1)",
+        &[note_id]).await?;
+    assert_eq!(
+        legacy["count"], 0,
+        "note notifications must not be written to the legacy message-only table"
+    );
+    drop(tx);
     request(
         &app,
         "PATCH",
@@ -529,6 +624,18 @@ async fn channel_notes_enforce_access_and_compare_versions_atomically() -> anyho
         .clone();
     let notification_note_id = notification_note["id"].as_str().unwrap();
     let notification_note_path = format!("{collection}/{notification_note_id}");
+    let bot = Uuid::new_v4().to_string();
+    create_user(&app, &bot).await;
+    toasty::sql::query("UPDATE users SET is_bot=true WHERE id=$1")
+        .bind(bot.as_str())
+        .exec(&mut db)
+        .await?;
+    backend::models::ChannelUser::create()
+        .user_id(bot.as_str())
+        .channel_id(channel.as_str())
+        .joined_at(now_utc_millis())
+        .exec(&mut db)
+        .await?;
     backend::models::ChannelUser::create()
         .user_id(outsider.as_str())
         .channel_id(channel.as_str())
@@ -545,7 +652,7 @@ async fn channel_notes_enforce_access_and_compare_versions_atomically() -> anyho
         rows.first().is_some_and(|row| matches!(row, toasty::stmt::Value::Record(record) if matches!(record.fields.first(), Some(toasty::stmt::Value::I64(1)))))
     };
     let count = toasty::sql::query(
-        "SELECT count(*) AS n FROM notifications WHERE note_id = $1 AND user_id = $2",
+        "SELECT count(*) AS n FROM notification_events WHERE note_id = $1 AND user_id = $2",
     )
     .bind(notification_note_id)
     .bind(member.as_str())
@@ -564,6 +671,11 @@ async fn channel_notes_enforce_access_and_compare_versions_atomically() -> anyho
     )
     .await;
     assert_eq!(channel_target.0, StatusCode::OK, "{}", channel_target.1);
+    assert_eq!(
+        note_notification_count(&mut db, notification_note_id, &bot).await?,
+        0,
+        "bots do not get inbox notifications"
+    );
     assert_eq!(
         note_notification_count(&mut db, notification_note_id, &member).await?,
         1
@@ -589,12 +701,13 @@ async fn channel_notes_enforce_access_and_compare_versions_atomically() -> anyho
         note_notification_count(&mut db, notification_note_id, &outsider).await?,
         1
     );
-    let ids =
-        toasty::sql::query("SELECT id FROM notifications WHERE note_id = $1 AND user_id = $2")
-            .bind(notification_note_id)
-            .bind(member.as_str())
-            .exec(&mut db)
-            .await?;
+    let ids = toasty::sql::query(
+        "SELECT id FROM notification_events WHERE note_id = $1 AND user_id = $2",
+    )
+    .bind(notification_note_id)
+    .bind(member.as_str())
+    .exec(&mut db)
+    .await?;
     let notification_id = match ids.first() {
         Some(toasty::stmt::Value::Record(row)) => match row.fields.first() {
             Some(toasty::stmt::Value::String(id)) => id.clone(),
@@ -667,7 +780,7 @@ async fn channel_notes_enforce_access_and_compare_versions_atomically() -> anyho
     .await;
     assert_eq!(readded.0, StatusCode::OK, "{}", readded.1);
     let count = toasty::sql::query(
-        "SELECT count(*) AS n FROM notifications WHERE note_id = $1 AND user_id = $2",
+        "SELECT count(*) AS n FROM notification_events WHERE note_id = $1 AND user_id = $2",
     )
     .bind(notification_note_id)
     .bind(member.as_str())

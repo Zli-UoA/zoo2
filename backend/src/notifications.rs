@@ -7,6 +7,63 @@ use crate::{
     models::{Channel, ChannelUser, Message, Notification, User, now_utc_millis},
 };
 
+pub(crate) async fn create_federated_notification(
+    tx: &mut toasty::Transaction<'_>,
+    user: &str,
+    actor: &str,
+    activity: &str,
+    kind: &str,
+    post: &str,
+) -> Result<(), AppError> {
+    toasty::sql::statement("INSERT INTO notification_events(id,user_id,actor_id,activity_id,notification_type,post_id,source) VALUES($1,$2,$3,$4,$5,NULLIF($6,''),'activitypub') ON CONFLICT DO NOTHING")
+        .bind(uuid::Uuid::new_v4().to_string()).bind(user).bind(actor).bind(activity).bind(kind).bind(post).exec(tx).await?;
+    Ok(())
+}
+pub struct InboxReadResult {
+    pub updated_count: usize,
+    /// Only return an Electric acknowledgement when the channel Shape can observe it.
+    pub channel_changed: bool,
+}
+
+/// Shared inbox mutation for channel and federated notifications. A missing selection
+/// means all matching rows; an empty selection is deliberately a no-op.
+pub async fn mark_read(
+    tx: &mut toasty::Transaction<'_>,
+    user: &str,
+    ids: Option<&[String]>,
+    source: Option<&str>,
+    channel: Option<&str>,
+) -> Result<InboxReadResult, AppError> {
+    if ids.is_some_and(|ids| ids.len() > 500) {
+        return Err(AppError::BadRequest(
+            "Too many notifications selected".into(),
+        ));
+    }
+    let ids_json = serde_json::json!(ids).to_string();
+    let rows = toasty::sql::query(
+        "UPDATE notification_events SET is_read=true
+         WHERE user_id=$1 AND NOT is_read
+           AND ($2::jsonb='null'::jsonb OR id IN (
+             SELECT jsonb_array_elements_text(CASE WHEN $2::jsonb='null'::jsonb THEN '[]'::jsonb ELSE $2::jsonb END)))
+           AND ($3='' OR source=$3) AND ($4='' OR channel_id=$4)
+         RETURNING source",
+    )
+    .bind(user)
+    .bind(ids_json)
+    .bind(source.unwrap_or_default())
+    .bind(channel.unwrap_or_default())
+    .exec(tx)
+    .await?;
+    let channel_changed = rows.iter().any(|row| {
+        matches!(row, toasty::stmt::Value::Record(record)
+            if matches!(record.fields.first(), Some(toasty::stmt::Value::String(source)) if source == "channel"))
+    });
+    Ok(InboxReadResult {
+        updated_count: rows.len(),
+        channel_changed,
+    })
+}
+
 #[derive(Debug, PartialEq, Eq, Clone)]
 pub struct MentionUserCandidate {
     pub raw: String,
@@ -103,8 +160,18 @@ pub fn extract_markdown_mentions(content: &str) -> MentionTargets {
         | Options::ENABLE_STRIKETHROUGH
         | Options::ENABLE_TASKLISTS;
     let mut in_code_block = false;
+    let mut image_depth = 0usize;
     for event in Parser::new_ext(content, options) {
         match event {
+            Event::Start(Tag::Image { .. }) => {
+                image_depth += 1;
+                visible.push(' ');
+            }
+            Event::End(TagEnd::Image) => {
+                image_depth = image_depth.saturating_sub(1);
+                visible.push(' ');
+            }
+            _ if image_depth > 0 => {}
             Event::Start(Tag::CodeBlock(_)) => {
                 in_code_block = true;
                 visible.push(' ');
@@ -134,60 +201,57 @@ pub async fn create_note_notifications(
 ) -> Result<Vec<Notification>, AppError> {
     let old = extract_markdown_mentions(previous_content);
     let new = extract_markdown_mentions(new_content);
-    let old_special = old.has_channel || old.has_here;
-    let members = ChannelUser::filter(ChannelUser::fields().channel_id().eq(&note.channel_id))
-        .exec(tx)
-        .await?;
-    let member_ids: HashSet<String> = members.into_iter().map(|m| m.user_id).collect();
-    let mut old_targets = HashSet::new();
-    if old_special {
-        old_targets.extend(member_ids.iter().cloned());
+    if new.user_candidates.is_empty() && !new.has_channel && !new.has_here {
+        return Ok(Vec::new());
     }
-    for candidate in old.user_candidates {
-        let user = User::get_by_user_name(tx, candidate.raw.as_str())
-            .await
-            .ok();
-        let user = match user {
-            Some(user) => Some(user),
-            None => {
-                if let Some(name) = candidate.trimmed.as_deref() {
-                    User::get_by_user_name(tx, name).await.ok()
-                } else {
-                    None
-                }
-            }
-        };
-        if let Some(user) = user {
-            if member_ids.contains(&user.id) {
-                old_targets.insert(user.id);
+    // Resolve each distinct spelling once, preserving exact-name precedence over punctuation trimming.
+    let names: HashSet<&str> = old
+        .user_candidates
+        .iter()
+        .chain(&new.user_candidates)
+        .flat_map(|candidate| {
+            std::iter::once(candidate.raw.as_str()).chain(candidate.trimmed.as_deref())
+        })
+        .collect();
+    let mut users_by_name = HashMap::new();
+    if !names.is_empty() {
+        let encoded = serde_json::json!(names).to_string();
+        for user in crate::apps::query(tx,
+            "SELECT json_build_object('name',user_name,'id',id)::text FROM users WHERE user_name IN (SELECT jsonb_array_elements_text($1::jsonb))",
+            &[&encoded]).await? {
+            if let (Some(name), Some(id)) = (user["name"].as_str(), user["id"].as_str()) {
+                users_by_name.insert(name.to_owned(), id.to_owned());
             }
         }
     }
-    let mut targets = HashSet::new();
-    if new.has_channel || new.has_here {
-        targets.extend(member_ids.iter().cloned());
-    }
-    for candidate in new.user_candidates {
-        let user = User::get_by_user_name(tx, candidate.raw.as_str())
-            .await
-            .ok();
-        let user = match user {
-            Some(user) => Some(user),
-            None => {
-                if let Some(name) = candidate.trimmed.as_deref() {
-                    User::get_by_user_name(tx, name).await.ok()
-                } else {
-                    None
-                }
-            }
-        };
-        if let Some(user) = user
-            && member_ids.contains(&user.id)
-            && !old_targets.contains(&user.id)
-        {
-            targets.insert(user.id);
+    // Bots consume app events, not human inbox notifications, just as for messages.
+    let members = crate::apps::query(tx,
+        "SELECT json_build_object('id',u.id)::text FROM channel_user cu JOIN users u ON u.id=cu.user_id WHERE cu.channel_id=$1 AND NOT u.is_bot",
+        &[&note.channel_id]).await?;
+    let member_ids: HashSet<String> = members
+        .into_iter()
+        .filter_map(|row| row["id"].as_str().map(str::to_owned))
+        .collect();
+    let resolve = |mentions: MentionTargets| {
+        let mut targets = HashSet::new();
+        if mentions.has_channel || mentions.has_here {
+            targets.extend(member_ids.iter().cloned());
         }
-    }
+        for candidate in mentions.user_candidates {
+            if let Some(id) = users_by_name.get(&candidate.raw).or_else(|| {
+                candidate
+                    .trimmed
+                    .as_ref()
+                    .and_then(|name| users_by_name.get(name))
+            }) && member_ids.contains(id)
+            {
+                targets.insert(id.clone());
+            }
+        }
+        targets
+    };
+    let old_targets = resolve(old);
+    let mut targets = resolve(new);
     targets.retain(|user_id| !old_targets.contains(user_id));
     let mut created = Vec::with_capacity(targets.len());
     for user_id in targets.into_iter().filter(|id| id != actor_id) {
@@ -291,6 +355,17 @@ pub async fn create_message_notifications(
         }
     }
 
+    // Apps receive events rather than human inbox notifications.
+    if !targets_to_notify.is_empty() {
+        let ids = serde_json::json!(targets_to_notify.keys().collect::<Vec<_>>()).to_string();
+        let bots = crate::apps::query(tx, "SELECT json_build_object('id',id)::text FROM users WHERE is_bot AND id IN (SELECT jsonb_array_elements_text($1::jsonb))", &[&ids]).await?;
+        for bot in bots {
+            if let Some(id) = bot["id"].as_str() {
+                targets_to_notify.remove(id);
+            }
+        }
+    }
+
     let mut created_notifications = Vec::new();
     let now = now_utc_millis();
 
@@ -321,7 +396,7 @@ pub async fn create_reaction_notification(
     message: &Message,
     actor_id: &str,
 ) -> Result<Option<Notification>, AppError> {
-    if message.user_id == actor_id {
+    if message.user_id == actor_id || User::get_by_id(tx, message.user_id.as_str()).await?.is_bot {
         return Ok(None);
     }
 
@@ -510,6 +585,19 @@ mod tests {
                 .map(|candidate| candidate.raw.as_str())
                 .collect::<Vec<_>>(),
             ["alice", "bob", "plain", "linked"]
+        );
+    }
+
+    #[test]
+    fn markdown_mentions_exclude_image_alt_text() {
+        let targets = extract_markdown_mentions("![@hidden](https://example.test/p.png) @visible");
+        assert_eq!(
+            targets
+                .user_candidates
+                .iter()
+                .map(|c| c.raw.as_str())
+                .collect::<Vec<_>>(),
+            ["visible"]
         );
     }
 }

@@ -1,3 +1,5 @@
+import { useOptimisticDisplay } from "./useOptimisticDisplay";
+import { useFederatedReactions } from "./useFederatedReactions";
 import { eq, isNull, useLiveQuery } from "@tanstack/react-db";
 import { useEffect, useMemo, useState } from "react";
 
@@ -41,11 +43,13 @@ export function useMessageFeed(channelId: string | null, options: MessageFeedOpt
   const { messages, users } = useCollections();
   const parentId = options.parentId ?? null;
   const since = options.since;
-  return useLiveQuery((q) =>
+  const query = useLiveQuery((q) =>
     channelId
       ? messageFeedQuery(q, { messages: messages(channelId), users }, { parentId, since })
       : undefined,
   );
+  const data = useOptimisticDisplay(channelId, query.data);
+  return { ...query, data };
 }
 
 /** 指定チャンネルの参加メンバー（channel_user）を購読する。 */
@@ -61,7 +65,10 @@ export function useChannelMembers(channelId: string | null) {
 /** チャンネル内のメッセージへのリアクションを購読する。 */
 export function useMessageReactions(channelId: string) {
   const { reactions } = useCollections();
-  return useLiveQuery((q) => q.from({ reactions: reactions(channelId) }));
+  const native = useLiveQuery((q) => q.from({ reactions: reactions(channelId) }));
+  const remote = useFederatedReactions(channelId);
+  const data = useMemo(() => [...(native.data ?? []), ...remote.rows], [native.data, remote.rows]);
+  return { ...native, data, federatedError: remote.failed };
 }
 
 export interface WorkspaceAdminIds {
@@ -86,20 +93,24 @@ export function useWorkspaceAdminIds(): WorkspaceAdminIds {
 
   useEffect(() => {
     let cancelled = false;
-    client
-      .get<{ user_ids: string[] }>("/api/users/admins")
-      .then((response) => {
-        if (cancelled) return;
-        setAdminIds(new Set(response.user_ids));
-        setIsLoading(false);
-      })
-      .catch((cause) => {
-        if (cancelled) return;
-        console.warn("ワークスペース管理者の取得に失敗しました", cause);
-        setAdminIds(new Set());
-        setIsLoading(false);
-      });
+    const load = () =>
+      client
+        .get<{ user_ids: string[] }>("/api/users/admins")
+        .then((response) => {
+          if (cancelled) return;
+          setAdminIds(new Set(response.user_ids));
+          setIsLoading(false);
+        })
+        .catch((cause) => {
+          if (cancelled) return;
+          console.warn("ワークスペース管理者の取得に失敗しました", cause);
+          setAdminIds(new Set());
+          setIsLoading(false);
+        });
+    void load();
+    window.addEventListener("zoo:admins-changed", load);
     return () => {
+      window.removeEventListener("zoo:admins-changed", load);
       cancelled = true;
     };
   }, [client]);
@@ -114,6 +125,8 @@ export interface MyChannelMemberships {
   joinedChannelIds: ReadonlySet<string>;
   /** 現在ユーザーが解決できているか。false なら参加状態を表示しない。 */
   hasCurrentUser: boolean;
+  /** チャンネル参加状態の初回読み込み中。 */
+  isLoading: boolean;
 }
 
 /**
@@ -137,7 +150,12 @@ export function useMyChannelMemberships(): MyChannelMemberships {
     () => new Set(memberships.map((row) => row.channel_id)),
     [memberships],
   );
-  return { memberships, joinedChannelIds, hasCurrentUser: currentUserId !== null };
+  return {
+    memberships,
+    joinedChannelIds,
+    hasCurrentUser: currentUserId !== null,
+    isLoading: membershipsQuery.isLoading,
+  };
 }
 
 export interface ChannelAccess {

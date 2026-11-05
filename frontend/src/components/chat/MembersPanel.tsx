@@ -1,7 +1,8 @@
+import { Input } from "../ui/input";
 import { useTranslation } from "react-i18next";
 import { cn } from "cn";
-import { SearchIcon, UserMinusIcon } from "lucide-react";
-import { useId, useMemo, useState, type ChangeEvent, type KeyboardEvent } from "react";
+import { ArrowLeftIcon, SearchIcon, UserMinusIcon } from "lucide-react";
+import { Fragment, useId, useMemo, useState, type ChangeEvent, type KeyboardEvent } from "react";
 
 import { canKickChannelMember } from "../../hooks/channelPermissions";
 import { useChannelAdmin } from "../../hooks/useChannelAdmin";
@@ -28,7 +29,14 @@ import { inputClassName } from "../ui/input-styles";
 import { ScrollArea } from "../ui/scroll-area";
 import { Skeleton } from "../ui/skeleton";
 import { initials } from "./format";
-import { filterMemberCandidates, sortUsersByLabel, userLabel } from "./memberCandidates";
+import { AppAvatar, openApp } from "./AppIdentity";
+import { PaneHeader } from "../layout/PaneHeader";
+import {
+  filterMemberCandidates,
+  sortChannelMembers,
+  sortUsersByLabel,
+  userLabel,
+} from "./memberCandidates";
 
 const SKELETON_ROWS = [0, 1, 2];
 
@@ -48,7 +56,15 @@ function nowIso(): string {
  * ユーザー名で絞り込んだ候補を選ぶ combobox にしている。選択した時点で
  * `channel_user` に追加する（重複ガードは既存どおり残す）。
  */
-export function MembersPanel({ channel, className }: { channel: ChannelRow; className?: string }) {
+export function MembersPanel({
+  channel,
+  className,
+  onBack,
+}: {
+  channel: ChannelRow;
+  className?: string;
+  onBack?: () => void;
+}) {
   const { t } = useTranslation();
   const { locale } = useLocale();
   const { channelUsers } = useCollections();
@@ -68,7 +84,12 @@ export function MembersPanel({ channel, className }: { channel: ChannelRow; clas
   const candidateListId = useId();
   const creatorLeaveHintId = useId();
 
-  const members = membersQuery.data ?? [];
+  const userMap = new Map((usersQuery.data ?? []).map((user) => [user.id, user]));
+  const members = useMemo(
+    () =>
+      sortChannelMembers(membersQuery.data ?? [], usersQuery.data ?? [], channel.created_user_id),
+    [membersQuery.data, usersQuery.data, channel.created_user_id],
+  );
   const userNames = useMemo(() => {
     const map = new Map<string, string>();
     for (const user of usersQuery.data ?? []) {
@@ -189,7 +210,7 @@ export function MembersPanel({ channel, className }: { channel: ChannelRow; clas
     setKickTarget(null);
   }
 
-  function handlePanelKeyDown(event: KeyboardEvent<HTMLDivElement>) {
+  function handlePanelKeyDown(event: KeyboardEvent<HTMLElement>) {
     if (event.key !== "Escape" || !isCandidateListOpen) {
       return;
     }
@@ -218,13 +239,40 @@ export function MembersPanel({ channel, className }: { channel: ChannelRow; clas
   }
 
   return (
-    <div className={cn("min-h-0 flex-col bg-background", className)} onKeyDown={handlePanelKeyDown}>
-      <header className="flex items-center justify-between gap-2 border-b px-4 py-3">
-        <h3 className="text-sm font-semibold">{t("members.title")}</h3>
+    <section
+      role={onBack ? "region" : undefined}
+      aria-label={onBack ? t("members.title") : undefined}
+      className={cn("min-h-0 flex-col bg-background", className)}
+      onKeyDown={handlePanelKeyDown}
+    >
+      <PaneHeader className="justify-between gap-2">
+        {onBack ? (
+          <>
+            <Button
+              autoFocus
+              variant="ghost"
+              size="icon-lg"
+              onClick={onBack}
+              aria-label={t("members.back")}
+            >
+              <ArrowLeftIcon />
+            </Button>
+            <div className="min-w-0 flex-1">
+              <h1 className="text-sm font-semibold">{t("members.title")}</h1>
+              <p className="truncate text-xs text-muted-foreground">#{channel.channel_name}</p>
+            </div>
+          </>
+        ) : (
+          <h3 className="text-sm font-semibold">{t("members.title")}</h3>
+        )}
         <span className="rounded bg-muted px-2 py-0.5 text-xs tabular-nums text-muted-foreground">
-          {!canViewMembers ? "—" : membersQuery.isLoading ? "…" : members.length}
+          {!canViewMembers
+            ? "—"
+            : membersQuery.isLoading
+              ? "…"
+              : members.filter((member) => !userMap.get(member.user_id)?.is_bot).length}
         </span>
-      </header>
+      </PaneHeader>
 
       {canViewMembers ? (
         <>
@@ -243,6 +291,8 @@ export function MembersPanel({ channel, className }: { channel: ChannelRow; clas
                     </li>
                   ))
                 : members.map((member) => {
+                    const bot = userMap.get(member.user_id);
+                    const isBot = !!bot?.is_bot;
                     const label = userNames.get(member.user_id) ?? member.user_id;
                     const isCreator = member.user_id === channel.created_user_id;
                     const isMe = member.user_id === currentUserId;
@@ -257,38 +307,43 @@ export function MembersPanel({ channel, className }: { channel: ChannelRow; clas
                         targetIsAdmin: adminIds.has(member.user_id),
                       });
                     return (
-                      <li
-                        key={member.user_id}
-                        className="flex items-center gap-2.5 rounded-lg px-2 py-1.5 hover:bg-accent/60"
-                      >
-                        <Avatar size="sm">
-                          <AvatarFallback>{initials(label)}</AvatarFallback>
-                        </Avatar>
-                        <span className="min-w-0 flex-1 truncate text-sm">{label}</span>
-                        {isCreator ? (
-                          <span className="shrink-0 rounded bg-muted px-1.5 py-0.5 text-[0.65rem] text-muted-foreground">
-                            {t("members.creator")}
+                      <Fragment key={member.user_id}>
+                        <li className="flex items-center gap-2.5 rounded-lg px-2 py-1.5 hover:bg-accent/60">
+                          <AppAvatar label={label} isBot={isBot} src={bot?.avatar_url} size="sm" />
+                          <span className="min-w-0 flex-1 truncate text-sm">
+                            {isBot && bot?.app_id ? (
+                              <button type="button" onClick={() => openApp(bot.app_id!)}>
+                                {label} <span className="text-xs text-muted-foreground">APP</span>
+                              </button>
+                            ) : (
+                              label
+                            )}
                           </span>
-                        ) : null}
-                        {isMe ? (
-                          <span className="shrink-0 rounded bg-brand-muted px-1.5 py-0.5 text-[0.65rem] text-brand-muted-foreground">
-                            {t("members.you")}
-                          </span>
-                        ) : null}
-                        {canKick ? (
-                          <Button
-                            variant="ghost"
-                            size="icon-xs"
-                            className="shrink-0 text-destructive hover:bg-destructive/10 hover:text-destructive"
-                            aria-label={t("moderation.kickLabel", { name: label })}
-                            title={t("moderation.kick")}
-                            disabled={busy}
-                            onClick={() => setKickTarget({ userId: member.user_id, label })}
-                          >
-                            <UserMinusIcon />
-                          </Button>
-                        ) : null}
-                      </li>
+                          {isCreator ? (
+                            <span className="shrink-0 rounded bg-muted px-1.5 py-0.5 text-[0.65rem] text-muted-foreground">
+                              {t("members.creator")}
+                            </span>
+                          ) : null}
+                          {isMe ? (
+                            <span className="shrink-0 rounded bg-brand-muted px-1.5 py-0.5 text-[0.65rem] text-brand-muted-foreground">
+                              {t("members.you")}
+                            </span>
+                          ) : null}
+                          {canKick ? (
+                            <Button
+                              variant="ghost"
+                              size="icon-xs"
+                              className="shrink-0 text-destructive hover:bg-destructive/10 hover:text-destructive"
+                              aria-label={t("moderation.kickLabel", { name: label })}
+                              title={t("moderation.kick")}
+                              disabled={busy}
+                              onClick={() => setKickTarget({ userId: member.user_id, label })}
+                            >
+                              <UserMinusIcon />
+                            </Button>
+                          ) : null}
+                        </li>
+                      </Fragment>
                     );
                   })}
             </ul>
@@ -307,7 +362,7 @@ export function MembersPanel({ channel, className }: { channel: ChannelRow; clas
                   aria-hidden="true"
                   className="pointer-events-none absolute top-1/2 left-2.5 size-4 -translate-y-1/2 text-muted-foreground"
                 />
-                <input
+                <Input
                   className={cn(inputClassName(), "w-full pl-8")}
                   placeholder={t("members.search")}
                   value={query}
@@ -465,6 +520,6 @@ export function MembersPanel({ channel, className }: { channel: ChannelRow; clas
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
-    </div>
+    </section>
   );
 }

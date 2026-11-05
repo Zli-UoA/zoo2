@@ -1,0 +1,11 @@
+**
+!sdk/
+!sdk/package.json
+!sdk/src/
+!sdk/src/**
+!apps/
+!apps/github-bot/
+!apps/github-bot/package.json
+!apps/github-bot/src/
+!apps/github-bot/src/**
+**/*.test.ts

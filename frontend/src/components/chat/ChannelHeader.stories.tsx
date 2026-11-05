@@ -1,5 +1,6 @@
+import { playForImplementation } from "../../../.storybook/play-for-implementation";
 import type { Meta, StoryObj } from "@storybook/react-vite";
-import { expect, screen, userEvent } from "storybook/test";
+import { expect, screen, userEvent, waitFor, within } from "storybook/test";
 
 import { StoryShell } from "../../../.storybook/shell";
 import { storyChannels, storyChannelUsers } from "../../../.storybook/fixtures";
@@ -12,7 +13,7 @@ const memberCount = (channelId: string) =>
   storyChannelUsers.filter((row) => row.channel_id === channelId).length;
 
 const meta = {
-  title: "Screens/ChannelHeader",
+  title: "Features/Channels/Header",
   component: ChannelHeader,
   tags: ["autodocs"],
   parameters: { a11y: { test: "error" } },
@@ -39,11 +40,11 @@ type Story = StoryObj<typeof meta>;
 
 export const Default: Story = {};
 
-export const ManageMenuOpen: Story = {
-  play: async () => {
-    await userEvent.click(screen.getByRole("button", { name: "チャンネルの管理" }));
-    await expect(await screen.findByRole("menuitem", { name: "Webhook設定" })).toBeInTheDocument();
-  },
+export const ControlPanelOpen: Story = {
+  play: playForImplementation(async () => {
+    await userEvent.click(await screen.findByRole("button", { name: "チャンネル設定" }));
+    await expect(await screen.findByRole("dialog")).toBeInTheDocument();
+  }),
 };
 
 export const Private: Story = {
@@ -67,6 +68,42 @@ export const LoadingMemberCount: Story = {
   },
 };
 
+export const NoDescription: Story = {
+  args: {
+    channel: { ...general, description: null },
+  },
+};
+
+export const LongDescription: Story = {
+  args: {
+    channel: {
+      ...general,
+      description:
+        "長い説明の表示確認用チャンネルです。目的・参加対象・運用ルールをまとめています。\n二行目も含めて崩れないことを確認します。",
+    },
+  },
+};
+
 export const Mobile: Story = {
   globals: { viewport: { value: "mobile" } },
+};
+
+export const WebhookSettingsOpen: Story = {
+  play: playForImplementation(async () => {
+    await userEvent.click(await screen.findByRole("button", { name: "チャンネル設定" }));
+    const settings = await screen.findByRole("dialog", { name: "チャンネル設定" });
+    await userEvent.click(within(settings).getByRole("button", { name: /^開く$/ }));
+    await waitFor(async () => {
+      await expect(screen.getByRole("dialog", { name: "Webhook設定" })).toBeVisible();
+    });
+    await waitFor(async () => {
+      await expect(
+        screen.queryByRole("dialog", { name: "チャンネル設定" }),
+      ).not.toBeInTheDocument();
+    });
+    await userEvent.keyboard("{Escape}");
+    await waitFor(async () => {
+      await expect(screen.queryByRole("dialog", { name: "Webhook設定" })).not.toBeInTheDocument();
+    });
+  }),
 };
