@@ -22,6 +22,12 @@ import {
   type CallContextValue,
   type CallParticipant,
 } from "./types";
+import {
+  playCallSound,
+  primeCallSounds,
+  shouldPlayRemoteJoin,
+  shouldPlayRemoteLeave,
+} from "./call-sounds";
 
 const defaultCallContext: CallContextValue = {
   currentChannelId: null,
@@ -248,7 +254,7 @@ export function CallProvider({ config: explicitConfig, children }: CallProviderP
   }, [cleanupPeers, closeMedia]);
 
   const leaveCall = useCallback(
-    async (options?: { advanceGen?: boolean; abortJoin?: boolean }) => {
+    async (options?: { advanceGen?: boolean; abortJoin?: boolean; silent?: boolean }) => {
       const advanceGen = options?.advanceGen ?? true;
       const abortJoin = options?.abortJoin ?? true;
 
@@ -283,6 +289,11 @@ export function CallProvider({ config: explicitConfig, children }: CallProviderP
       setIsMuted(false);
       setSpeakingUserIds(new Set());
       void pollActiveCalls();
+
+      // 自分の退出音 (ユーザー操作による退出のみ。自動退出・通話切替では鳴らさない)
+      if (!options?.silent && channelId && sessionId) {
+        playCallSound("leave");
+      }
 
       // サーバーへの退出リクエストはメディア停止後に送信（待たされてもマイク停止や通話切替に影響しないよう非同期発火 [P3]）
       if (channelId && sessionId) {
@@ -415,7 +426,7 @@ export function CallProvider({ config: explicitConfig, children }: CallProviderP
             const status =
               err instanceof ApiError ? err.status : (err as { status?: number })?.status;
             if (status === 404 || status === 403) {
-              void leaveCall();
+              void leaveCall({ silent: true });
             }
           });
       }
@@ -507,13 +518,16 @@ export function CallProvider({ config: explicitConfig, children }: CallProviderP
         joinAbortRef.current = null;
       }
 
+      // 効果音の AudioContext をユーザー操作の中で有効化
+      primeCallSounds();
+
       // 新しい通話参加要求の世代を即座に確定 ([P1])
       const currentGen = ++callGenerationRef.current;
       const joinAbort = new AbortController();
       joinAbortRef.current = joinAbort;
 
       if (currentChannelIdRef.current) {
-        await leaveCall({ advanceGen: false, abortJoin: false });
+        await leaveCall({ advanceGen: false, abortJoin: false, silent: true });
       }
 
       // leaveCall 待ちの間に新しい通話切替が要求されていた場合は中断 ([P1])
@@ -619,6 +633,7 @@ export function CallProvider({ config: explicitConfig, children }: CallProviderP
         }
 
         setConnectionState("connected");
+        playCallSound("join");
         void pollActiveCalls();
 
         const reader = response.body?.getReader();
@@ -644,6 +659,17 @@ export function CallProvider({ config: explicitConfig, children }: CallProviderP
             if (newP && newP.session_id !== mySessionId) {
               // 既に退場済みのセッションの参加通知は無視 ([P2])
               if (leftSessionIdsRef.current.has(newP.session_id)) return;
+
+              if (
+                shouldPlayRemoteJoin(
+                  newP.session_id,
+                  mySessionId,
+                  participantsRef.current.map((p) => p.session_id),
+                  leftSessionIdsRef.current,
+                )
+              ) {
+                playCallSound("join");
+              }
 
               sessionUserMapRef.current.set(newP.session_id, newP.user_id);
               setParticipants((prev) => {
@@ -679,6 +705,15 @@ export function CallProvider({ config: explicitConfig, children }: CallProviderP
           } else if (eventType === "participant_left") {
             const leftSid = data.session_id as string;
             if (leftSid) {
+              if (
+                shouldPlayRemoteLeave(
+                  leftSid,
+                  mySessionId,
+                  participantsRef.current.map((p) => p.session_id),
+                )
+              ) {
+                playCallSound("leave");
+              }
               leftSessionIdsRef.current.add(leftSid);
               const entry = peersRef.current.get(leftSid);
               if (entry) {
