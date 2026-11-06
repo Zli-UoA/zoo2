@@ -21,6 +21,47 @@ class ChannelNotesConflictStateTest {
     }
 
     @Test
+    fun summaryVersionRefreshesTheSelectedDetailOnlyWhenThereIsNoDraftOrWrite() {
+        assertTrue(shouldRefreshChannelNoteDetail(2, 1, editing = false, hasTaskDraft = false, busy = false))
+        assertFalse(shouldRefreshChannelNoteDetail(1, 1, editing = false, hasTaskDraft = false, busy = false))
+        assertFalse(shouldRefreshChannelNoteDetail(2, 1, editing = true, hasTaskDraft = false, busy = false))
+        assertFalse(shouldRefreshChannelNoteDetail(2, 1, editing = false, hasTaskDraft = true, busy = false))
+        assertFalse(shouldRefreshChannelNoteDetail(2, 1, editing = false, hasTaskDraft = false, busy = true))
+    }
+
+    @Test
+    fun summaryDeletionIsReportedOnlyWhenThereIsNoDraftOrWrite() {
+        assertTrue(shouldReportMissingChannelNote(false, editing = false, hasTaskDraft = false, busy = false))
+        assertFalse(shouldReportMissingChannelNote(true, editing = false, hasTaskDraft = false, busy = false))
+        assertFalse(shouldReportMissingChannelNote(false, editing = true, hasTaskDraft = false, busy = false))
+        assertFalse(shouldReportMissingChannelNote(false, editing = false, hasTaskDraft = true, busy = false))
+        assertFalse(shouldReportMissingChannelNote(false, editing = false, hasTaskDraft = false, busy = true))
+    }
+
+    @Test
+    fun polledDetailResponseIsRejectedAfterItsSelectionOrVersionChanges() {
+        val route = ChannelNoteRouteGeneration("channel-1", "note-1")
+        val generation = route.generation
+
+        assertTrue(canApplyChannelNoteSummaryDetail(route, "channel-1", "note-1", generation, 1, 1, "note-1", editing = false, hasTaskDraft = false, busy = false))
+        assertFalse(canApplyChannelNoteSummaryDetail(route, "channel-1", "note-1", generation, 1, 2, "note-1", editing = false, hasTaskDraft = false, busy = false))
+        assertFalse(canApplyChannelNoteSummaryDetail(route, "channel-1", "note-1", generation, 1, 1, "note-1", editing = true, hasTaskDraft = false, busy = false))
+        route.observe("channel-1", "note-2")
+        assertFalse(canApplyChannelNoteSummaryDetail(route, "channel-1", "note-1", generation, 1, 1, "note-1", editing = false, hasTaskDraft = false, busy = false))
+    }
+
+    @Test
+    fun restoredNoteCanBeReloadedWithoutASelectedDetail() {
+        val route = ChannelNoteRouteGeneration("channel-1", "note-1")
+        val generation = route.generation
+        assertTrue(shouldRefreshChannelNoteDetail(2, null, editing = false, hasTaskDraft = false, busy = false))
+        assertTrue(canApplyChannelNoteSummaryDetail(route, "channel-1", "note-1", generation, null, null, null, editing = false, hasTaskDraft = false, busy = false))
+        assertFalse(canApplyChannelNoteSummaryDetail(route, "channel-1", "note-1", generation, null, 3, "note-1", editing = false, hasTaskDraft = false, busy = false))
+        route.observe("channel-1", "note-2")
+        assertFalse(canApplyChannelNoteSummaryDetail(route, "channel-1", "note-1", generation, null, null, null, editing = false, hasTaskDraft = false, busy = false))
+    }
+
+    @Test
     fun latestFetchRetryRemainsAvailableWhenTheGeneralErrorIsCleared() {
         val latestFetch = ChannelNoteLatestFetchState.Empty.markFailed(
             noteId = "note-1",

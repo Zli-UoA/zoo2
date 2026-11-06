@@ -158,6 +158,36 @@ internal fun canPersistChannelNote(canWrite: Boolean, busy: Boolean): Boolean = 
 internal fun shouldPollChannelNoteSummary(loadInFlight: Boolean, busy: Boolean): Boolean =
     !loadInFlight && !busy
 
+internal fun shouldRefreshChannelNoteDetail(
+    summaryVersion: Int?,
+    selectedVersion: Int?,
+    editing: Boolean,
+    hasTaskDraft: Boolean,
+    busy: Boolean,
+): Boolean = summaryVersion != null && summaryVersion != selectedVersion && !editing && !hasTaskDraft && !busy
+
+internal fun shouldReportMissingChannelNote(
+    notePresent: Boolean,
+    editing: Boolean,
+    hasTaskDraft: Boolean,
+    busy: Boolean,
+): Boolean = !notePresent && !editing && !hasTaskDraft && !busy
+
+internal fun canApplyChannelNoteSummaryDetail(
+    route: ChannelNoteRouteGeneration,
+    channelId: String,
+    requestNoteId: String,
+    requestGeneration: Int,
+    selectedVersionAtRequest: Int?,
+    currentSelectedVersion: Int?,
+    selectedNoteId: String?,
+    editing: Boolean,
+    hasTaskDraft: Boolean,
+    busy: Boolean,
+): Boolean = route.matches(channelId, requestNoteId, requestGeneration) &&
+    (selectedNoteId == requestNoteId || (selectedNoteId == null && selectedVersionAtRequest == null)) &&
+    currentSelectedVersion == selectedVersionAtRequest && !editing && !hasTaskDraft && !busy
+
 /** Preserve the message composition while another tab is shown. */
 @Composable
 fun ChannelNotes(
@@ -346,14 +376,57 @@ fun ChannelNotes(
         }
         finally { loadInFlight = false }
     }
-    LaunchedEffect(channelId) {
+    LaunchedEffect(channelId, noteId) {
         while (isActive) {
             delay(5_000)
             if (shouldPollChannelNoteSummary(loadInFlight, busy)) {
+                val startNoteId = noteId
+                val startGeneration = routeGeneration.generation
                 loadInFlight = true
                 try {
-                    // Only refresh lightweight tab summaries; preserve route selection and editor drafts.
-                    notes = app.api.request("$path?summary=true").rows()
+                    val summaries = app.api.request("$path?summary=true").rows()
+                    if (!isCurrentNoteRoute(startNoteId, startGeneration)) continue
+                    // Refresh the tab labels without replacing the active editor or its drafts.
+                    notes = summaries
+                    if (startNoteId != null) {
+                        val summary = summaries.firstOrNull { it.text("id") == startNoteId }
+                        if (shouldReportMissingChannelNote(summary != null, editing, taskDraft != null, busy)) {
+                            selected = null
+                            error = app.t("channels.notes.notFound")
+                        } else {
+                            val selectedNote = selected?.takeIf { it.text("id") == startNoteId }
+                            val selectedVersion = selectedNote?.text("version")?.toIntOrNull()
+                            val summaryVersion = summary?.text("version")?.toIntOrNull()
+                            if (shouldRefreshChannelNoteDetail(
+                                    summaryVersion,
+                                    selectedVersion,
+                                    editing,
+                                    taskDraft != null,
+                                    busy,
+                                )
+                            ) {
+                                val fetched = loadLatest(startNoteId)
+                                if (canApplyChannelNoteSummaryDetail(
+                                        routeGeneration,
+                                        channelId,
+                                        startNoteId,
+                                        startGeneration,
+                                        selectedVersion,
+                                        selected?.takeIf { it.text("id") == startNoteId }?.text("version")?.toIntOrNull(),
+                                        selected?.text("id"),
+                                        editing,
+                                        taskDraft != null,
+                                        busy,
+                                    ) && isCurrentNoteRoute(startNoteId, startGeneration)
+                                ) {
+                                    selected = fetched
+                                    title = fetched.text("title")
+                                    content = fetched.text("content")
+                                    error = ""
+                                }
+                            }
+                        }
+                    }
                 } catch (e: CancellationException) { throw e }
                 catch (_: Exception) { /* Keep the last known list and retry on the next interval. */ }
                 finally { loadInFlight = false }

@@ -1211,6 +1211,7 @@ test("compose: slow note list is not cancelled by polling", async ({ page, reque
 test("compose: slow note refresh does not replace an editor draft", async ({ page, request }) => {
   await request.post("https://127.0.0.1:4187/__reset");
   let detailRequests = 0;
+  let listRequests = 0;
   let refreshDone = false;
   const note = {
     id: "draft-note",
@@ -1221,13 +1222,14 @@ test("compose: slow note refresh does not replace an editor draft", async ({ pag
   };
   await page.route("**/api/channels/c1/notes**", async (route) => {
     const isList = new URL(route.request().url()).pathname.endsWith("/notes");
+    if (isList) listRequests += 1;
     if (!isList && ++detailRequests === 2) {
       await new Promise((resolve) => setTimeout(resolve, 3000));
       refreshDone = true;
     }
     await route.fulfill({
       headers: { "Access-Control-Allow-Origin": "*" },
-      json: { data: isList ? [note] : note, txid: "1" },
+      json: { data: isList ? [{ ...note, version: listRequests > 1 ? 2 : 1 }] : note, txid: "1" },
     });
   });
   await open(page, "compose", "/channels/c1?note=draft-note", "");
@@ -1297,6 +1299,9 @@ test("compose: removed note is no longer displayed after refresh", async ({ page
   await expect(page.getByText("ノートが見つかりません。").first()).toBeVisible({ timeout: 15000 });
   await expect(page.getByText("Sensitive body", { exact: true })).toBeHidden();
   await expect(page.getByRole("button", { name: "編集", exact: true })).toBeHidden();
+  removed = false;
+  await expect(page.getByText("Sensitive body", { exact: true })).toBeVisible({ timeout: 15000 });
+  await expect(page.getByText("ノートが見つかりません。").first()).toBeHidden();
 });
 
 test("compose: todo shows saving until its patch finishes", async ({ page, request }) => {
