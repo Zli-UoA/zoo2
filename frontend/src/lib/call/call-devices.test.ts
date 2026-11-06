@@ -24,6 +24,7 @@ describe("toDeviceOptions", () => {
     { kind: "audioinput", deviceId: "m2", label: "" },
     { kind: "audiooutput", deviceId: "s1", label: "Speakers" },
     { kind: "videoinput", deviceId: "v1", label: "Cam" },
+    { kind: "audioinput", deviceId: "", label: "" },
   ] as MediaDeviceInfo[];
   it("種別で絞り、default を除き、ラベル無しは汎用名にする", () => {
     expect(toDeviceOptions(devices, "audioinput", (n) => `Mic ${n}`)).toEqual([

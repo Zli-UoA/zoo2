@@ -25,6 +25,7 @@ import {
 import {
   playCallSound,
   primeCallSounds,
+  setCallSoundSink,
   shouldPlayRemoteJoin,
   shouldPlayRemoteLeave,
 } from "./call-sounds";
@@ -182,6 +183,10 @@ export function CallProvider({ config: explicitConfig, children }: CallProviderP
   micIdRef.current = selectedMicId;
   const speakerIdRef = useRef(selectedSpeakerId);
   speakerIdRef.current = selectedSpeakerId;
+  // 起動時に保存済みの出力先を効果音へ反映する
+  useEffect(() => {
+    setCallSoundSink(speakerIdRef.current);
+  }, []);
   const heartbeatOkAtRef = useRef<number | null>(null);
   const heartbeatFailuresRef = useRef(0);
   const statsPrevRef = useRef<Map<string, PeerStatsSample>>(new Map());
@@ -673,6 +678,8 @@ export function CallProvider({ config: explicitConfig, children }: CallProviderP
   const speakerApplyQueueRef = useRef<Promise<void>>(Promise.resolve());
   const applySpeakerToAll = useCallback(() => {
     const run = speakerApplyQueueRef.current.then(async () => {
+      // 効果音も選択中のスピーカーから鳴らす
+      setCallSoundSink(speakerIdRef.current);
       for (const entry of peersRef.current.values()) {
         if (entry.audio) await applySink(entry.audio, speakerIdRef.current);
       }

@@ -73,7 +73,9 @@ export function toDeviceOptions(
 ): CallDeviceOption[] {
   const out: CallDeviceOption[] = [];
   for (const d of devices) {
-    if (d.kind !== kind || d.deviceId === "default" || d.deviceId === "communications") continue;
+    // 権限がない状態では deviceId が空の項目が返る。選んでも既定と同じになるため除外する
+    if (d.kind !== kind || !d.deviceId) continue;
+    if (d.deviceId === "default" || d.deviceId === "communications") continue;
     out.push({ deviceId: d.deviceId, label: d.label || fallbackLabel(out.length + 1) });
   }
   return out;
