@@ -79,8 +79,21 @@ export function summarizeStats(
   let bytesReceived = 0;
   let bytesSent = 0;
 
+  // 使用中の候補ペアだけを集計する (成功済みでも未使用のペアは対象外)
+  let selectedPairId: string | null = null;
   for (const s of stats) {
-    if (s.type === "candidate-pair" && (s.nominated === true || s.state === "succeeded")) {
+    if (s.type === "transport" && typeof s.selectedCandidatePairId === "string") {
+      selectedPairId = s.selectedCandidatePairId;
+    }
+  }
+
+  for (const s of stats) {
+    const isSelectedPair =
+      s.type === "candidate-pair" &&
+      (selectedPairId !== null
+        ? s.id === selectedPairId
+        : s.selected === true || s.nominated === true);
+    if (isSelectedPair) {
       if (typeof s.currentRoundTripTime === "number") rttMs = s.currentRoundTripTime * 1000;
       const local = typeof s.localCandidateId === "string" ? byId.get(s.localCandidateId) : null;
       if (local && typeof local.candidateType === "string") candidateType = local.candidateType;

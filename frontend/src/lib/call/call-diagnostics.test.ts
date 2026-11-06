@@ -64,6 +64,37 @@ describe("summarizeStats", () => {
   });
 });
 
+describe("使用中の候補ペア", () => {
+  it("transport が選択したペアのみから経路と RTT を取る", () => {
+    const r = [
+      { id: "t", type: "transport", selectedCandidatePairId: "cp1" },
+      {
+        id: "cp1",
+        type: "candidate-pair",
+        state: "succeeded",
+        currentRoundTripTime: 0.025,
+        localCandidateId: "l1",
+        remoteCandidateId: "r1",
+      },
+      {
+        id: "cp2",
+        type: "candidate-pair",
+        state: "succeeded",
+        currentRoundTripTime: 0.8,
+        localCandidateId: "l2",
+        remoteCandidateId: "r2",
+      },
+      { id: "l1", type: "local-candidate", candidateType: "host" },
+      { id: "r1", type: "remote-candidate", candidateType: "host" },
+      { id: "l2", type: "local-candidate", candidateType: "relay" },
+      { id: "r2", type: "remote-candidate", candidateType: "relay" },
+    ];
+    const s = summarizeStats(r, 0);
+    expect(s.rttMs).toBeCloseTo(25);
+    expect(s.candidateType).toBe("host");
+  });
+});
+
 describe("assessQuality / format", () => {
   it("判定", () => {
     expect(assessQuality({ rttMs: null, lossRatio: null })).toBe("unknown");

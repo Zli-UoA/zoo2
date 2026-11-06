@@ -564,10 +564,18 @@ export function CallProvider({ config: explicitConfig, children }: CallProviderP
 
         const audio = new Audio();
         audio.srcObject = stream;
-        audio.autoplay = true;
         entry.audio = audio;
-        if (speakerIdRef.current) void applySink(audio, speakerIdRef.current);
-        void audio.play().catch(() => {});
+        // 保存済みの出力先を適用してから再生を始め、既定スピーカーから漏れないようにする
+        const startPlayback = () => {
+          if (entry.audio !== audio) return;
+          audio.autoplay = true;
+          void audio.play().catch(() => {});
+        };
+        if (speakerIdRef.current) {
+          void applySink(audio, speakerIdRef.current).then(startPlayback);
+        } else {
+          startPlayback();
+        }
 
         const stopMeter = createVolumeMeter(stream, (speaking) => {
           updateSpeakingUser(targetUserId, speaking);
@@ -609,7 +617,9 @@ export function CallProvider({ config: explicitConfig, children }: CallProviderP
         for (const track of newStream.getTracks()) track.stop();
         return;
       }
-      newTrack.enabled = !isMutedRef.current;
+      const stopNewStream = () => {
+        for (const track of newStream.getTracks()) track.stop();
+      };
       for (const entry of peersRef.current.values()) {
         const sender = entry.pc.getSenders().find((s) => s.track?.kind === "audio");
         if (sender) {
@@ -620,6 +630,13 @@ export function CallProvider({ config: explicitConfig, children }: CallProviderP
           }
         }
       }
+      // 置換待ちの間に退出・通話切替があった場合は、新しいストリームを破棄する
+      if (callGenerationRef.current !== gen || localStreamRef.current !== oldStream) {
+        stopNewStream();
+        return;
+      }
+      // 置換待ちの間のミュート操作を取りこぼさないよう、切替直前に最新状態を反映する
+      newTrack.enabled = !isMutedRef.current;
       localVolumeCleanupRef.current?.();
       localStreamRef.current = newStream;
       localVolumeCleanupRef.current = createVolumeMeter(newStream, (speaking) => {
