@@ -801,8 +801,10 @@ export function CallProvider({ config: explicitConfig, children }: CallProviderP
 
       // マイク取得
       let stream: MediaStream;
+      let usedMicId = "";
       try {
-        stream = await acquireMicStream(micIdRef.current);
+        usedMicId = appliedMicIdRef.current;
+        stream = await acquireMicStream(usedMicId);
       } catch (err: unknown) {
         if (callGenerationRef.current !== currentGen || joinAbort.signal.aborted) return;
         cleanupPeers();
@@ -843,6 +845,13 @@ export function CallProvider({ config: explicitConfig, children }: CallProviderP
 
       const mySessionId = crypto.randomUUID();
       sessionIdRef.current = mySessionId;
+
+      // マイク取得待ちの間に選択が変わっていた場合は、最新の選択へ切り替える
+      if (appliedMicIdRef.current !== usedMicId) {
+        const latestMicId = appliedMicIdRef.current;
+        const run = micSwitchQueueRef.current.then(() => switchMicrophone(latestMicId));
+        micSwitchQueueRef.current = run.catch(() => {});
+      }
 
       // SSE 接続
       const abortController = new AbortController();
@@ -1280,6 +1289,7 @@ export function CallProvider({ config: explicitConfig, children }: CallProviderP
       leaveCall,
       pollActiveCalls,
       sendSignalWithRetry,
+      switchMicrophone,
       syncMuteStateToServer,
       t,
       updateSpeakingUser,
