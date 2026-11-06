@@ -185,13 +185,20 @@ export function CallProvider({ config: explicitConfig, children }: CallProviderP
   const heartbeatOkAtRef = useRef<number | null>(null);
   const heartbeatFailuresRef = useRef(0);
   const statsPrevRef = useRef<Map<string, PeerStatsSample>>(new Map());
+  // マイク切替中 (置換待ち) の新トラック。ミュート操作の対象に含める
+  const pendingMicTrackRef = useRef<MediaStreamTrack | null>(null);
 
-  // 設定画面や他タブでの変更を反映
+  // 設定画面や他タブでの変更を反映 (再生中の音声の出力先にも適用する)
   useEffect(
     () =>
       subscribeSelectedDevices(() => {
+        const speakerId = loadSelectedDevice("speaker");
         setSelectedMicId(loadSelectedDevice("mic"));
-        setSelectedSpeakerId(loadSelectedDevice("speaker"));
+        setSelectedSpeakerId(speakerId);
+        speakerIdRef.current = speakerId;
+        for (const entry of peersRef.current.values()) {
+          if (entry.audio) void applySink(entry.audio, speakerId);
+        }
       }),
     [],
   );
@@ -446,6 +453,7 @@ export function CallProvider({ config: explicitConfig, children }: CallProviderP
     for (const track of localStreamRef.current.getAudioTracks()) {
       track.enabled = !nextMuted;
     }
+    if (pendingMicTrackRef.current) pendingMicTrackRef.current.enabled = !nextMuted;
     setIsMuted(nextMuted);
 
     // 自分の参加者アバターにもミュート状態を即座に反映 ([P3])
@@ -620,16 +628,29 @@ export function CallProvider({ config: explicitConfig, children }: CallProviderP
       const stopNewStream = () => {
         for (const track of newStream.getTracks()) track.stop();
       };
-      for (const entry of peersRef.current.values()) {
-        const sender = entry.pc.getSenders().find((s) => s.track?.kind === "audio");
-        if (sender) {
-          try {
+      const oldTrack = oldStream.getAudioTracks()[0] ?? null;
+      // 送信側へ渡す前にミュート状態を設定し、置換待ち中のミュート操作も新トラックへ反映する
+      newTrack.enabled = !isMutedRef.current;
+      pendingMicTrackRef.current = newTrack;
+      const replaced: RTCRtpSender[] = [];
+      try {
+        for (const entry of peersRef.current.values()) {
+          const sender = entry.pc.getSenders().find((s) => s.track?.kind === "audio");
+          if (sender) {
             await sender.replaceTrack(newTrack);
-          } catch (err) {
-            console.error("Failed to replace mic track", err);
+            replaced.push(sender);
           }
         }
+      } catch (err) {
+        console.error("Failed to replace mic track", err);
+        // 置換済みの送信側を旧トラックへ戻し、旧マイクを維持する
+        await Promise.all(replaced.map((sender) => sender.replaceTrack(oldTrack).catch(() => {})));
+        pendingMicTrackRef.current = null;
+        stopNewStream();
+        toast.error(t("call.micSwitchFailed"));
+        return;
       }
+      pendingMicTrackRef.current = null;
       // 置換待ちの間に退出・通話切替があった場合は、新しいストリームを破棄する
       if (callGenerationRef.current !== gen || localStreamRef.current !== oldStream) {
         stopNewStream();
