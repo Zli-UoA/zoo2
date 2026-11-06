@@ -594,9 +594,9 @@ export function CallProvider({ config: explicitConfig, children }: CallProviderP
     [sendSignalWithRetry, updateSpeakingUser],
   );
 
-  const setMicrophone = useCallback(
+  const switchMicrophone = useCallback(
     async (deviceId: string) => {
-      saveSelectedDevice("mic", deviceId);
+      // 直列化されたキューの中で、直前の切替が確定した後の最新ストリームを取得する
       const oldStream = localStreamRef.current;
       if (!oldStream || !sessionIdRef.current) return;
       const gen = callGenerationRef.current;
@@ -645,6 +645,18 @@ export function CallProvider({ config: explicitConfig, children }: CallProviderP
       for (const track of oldStream.getTracks()) track.stop();
     },
     [effectiveUserId, t, updateSpeakingUser],
+  );
+
+  // 連続した切替が同じ旧ストリームを参照して競合しないよう、1 件ずつ実行する
+  const micSwitchQueueRef = useRef<Promise<void>>(Promise.resolve());
+  const setMicrophone = useCallback(
+    (deviceId: string) => {
+      saveSelectedDevice("mic", deviceId);
+      const run = micSwitchQueueRef.current.then(() => switchMicrophone(deviceId));
+      micSwitchQueueRef.current = run.catch(() => {});
+      return run;
+    },
+    [switchMicrophone],
   );
 
   const setSpeaker = useCallback(async (deviceId: string) => {
