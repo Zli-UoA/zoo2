@@ -3,6 +3,7 @@ import { ArchiveIcon, ArrowLeftIcon } from "lucide-react";
 import { useMemo } from "react";
 
 import { useCurrentUser } from "../../hooks/useCurrentUser";
+import { canWriteChannelNotes } from "../../hooks/channelPermissions";
 import { useActiveChannels, useChannelAccess, useUsers } from "../../hooks/useRealtime";
 import { useLocale } from "../i18n/LocaleProvider";
 import { useShell } from "../layout/shell-context";
@@ -133,7 +134,11 @@ export function ChannelScreen({
       {access.canRead ? (
         <ChannelNotesTabs
           channelId={channelId}
-          canWrite={access.isMember}
+          canWrite={canWriteChannelNotes({
+            isMember: access.isMember,
+            canManage: access.canManageChannel,
+            postingPolicy: channel.posting_policy,
+          })}
           archived={access.isArchived}
           noteId={noteId}
           onNoteChange={onNoteChange}

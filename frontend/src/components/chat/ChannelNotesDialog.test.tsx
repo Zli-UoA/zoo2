@@ -982,7 +982,7 @@ describe("ChannelNotesTabs", () => {
     ).toBe(false);
   });
 
-  it("discards the task draft when write permission is lost or the note is deleted", async () => {
+  it("preserves the task draft when write permission is lost", async () => {
     api.requestWithTx.mockResolvedValue({
       data: [{ ...note, content: "- [ ] do this" }],
       txid: null,
@@ -997,7 +997,44 @@ describe("ChannelNotesTabs", () => {
     expect(document.body.querySelector("textarea")).toBeNull();
     expect(
       (document.body.querySelector('input[type="checkbox"]') as HTMLInputElement).checked,
-    ).toBe(false);
+    ).toBe(true);
+
+    await mount("note-1");
+    expect(button("再試行")).toBeTruthy();
+  });
+
+  it("keeps an editing draft but prevents saving after write permission is lost", async () => {
+    await mount("note-1");
+    await flush(() => button("編集").click());
+    const textarea = document.body.querySelector("textarea")!;
+    await flush(() => {
+      Object.getOwnPropertyDescriptor(Object.getPrototypeOf(textarea), "value")!.set!.call(
+        textarea,
+        "unsaved draft",
+      );
+      textarea.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    await mount("note-1", { canWrite: false });
+    expect(textarea.value).toBe("unsaved draft");
+    expect(button("保存").disabled).toBe(true);
+    await flush(() => {
+      textarea.dispatchEvent(
+        new KeyboardEvent("keydown", { key: "Enter", ctrlKey: true, bubbles: true }),
+      );
+    });
+    expect(api.patch).not.toHaveBeenCalled();
+  });
+
+  it("discards a task draft when the note is deleted", async () => {
+    api.requestWithTx.mockResolvedValue({
+      data: [{ ...note, content: "- [ ] do this" }],
+      txid: null,
+    });
+    api.patch.mockRejectedValueOnce(new Error("offline"));
+    await mount("note-1");
+    await flush(() =>
+      (document.body.querySelector('input[type="checkbox"]') as HTMLInputElement).click(),
+    );
 
     await mount("note-1");
     api.patch.mockRejectedValueOnce(new Error("offline"));

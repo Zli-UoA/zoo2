@@ -29,6 +29,7 @@ export type ChannelRow = {
   created_user_id: string;
   is_private: boolean;
   is_dm: boolean;
+  posting_policy?: "members" | "managers";
   created_at: TimestampString;
   updated_at: TimestampString | null;
   archive_at: TimestampString | null;

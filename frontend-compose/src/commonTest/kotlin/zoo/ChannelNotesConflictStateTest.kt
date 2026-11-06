@@ -8,6 +8,19 @@ import kotlin.test.assertTrue
 
 class ChannelNotesConflictStateTest {
     @Test
+    fun messageReadStateIsDisabledWhileANoteIsSelected() {
+        assertTrue(shouldTrackChannelReadState(null))
+        assertFalse(shouldTrackChannelReadState("note-1"))
+    }
+
+    @Test
+    fun summaryPollingRunsOnMessageTabButSkipsAnInFlightLoadOrMutation() {
+        assertTrue(shouldPollChannelNoteSummary(loadInFlight = false, busy = false))
+        assertFalse(shouldPollChannelNoteSummary(loadInFlight = false, busy = true))
+        assertFalse(shouldPollChannelNoteSummary(loadInFlight = true, busy = false))
+    }
+
+    @Test
     fun latestFetchRetryRemainsAvailableWhenTheGeneralErrorIsCleared() {
         val latestFetch = ChannelNoteLatestFetchState.Empty.markFailed(
             noteId = "note-1",
@@ -75,7 +88,7 @@ class ChannelNotesConflictStateTest {
     }
 
     @Test
-    fun losingWriteAccessKeepsTheActiveEditorDraftButDropsTaskRetry() {
+    fun losingWriteAccessKeepsTheActiveEditorAndTaskDrafts() {
         val draft = ChannelNoteDraftState(
             title = "edited title",
             content = "edited body",
@@ -88,11 +101,11 @@ class ChannelNotesConflictStateTest {
         assertEquals("edited title", afterAccessLoss.title)
         assertEquals("edited body", afterAccessLoss.content)
         assertTrue(afterAccessLoss.editing)
-        assertNull(afterAccessLoss.taskDraft)
+        assertEquals("failed task body", afterAccessLoss.taskDraft)
     }
 
     @Test
-    fun losingWriteAccessDropsTaskRetryAndRestoresSavedViewContent() {
+    fun losingWriteAccessKeepsTaskRetryAndRestoresSavedViewContent() {
         val draft = ChannelNoteDraftState(
             title = "saved title",
             content = "old body",
@@ -102,7 +115,7 @@ class ChannelNotesConflictStateTest {
 
         val afterAccessLoss = draft.onWriteAccessLost(savedContent = "saved body")
 
-        assertNull(afterAccessLoss.taskDraft)
+        assertEquals("unsaved checkbox body", afterAccessLoss.taskDraft)
         assertEquals("saved body", afterAccessLoss.content)
     }
 

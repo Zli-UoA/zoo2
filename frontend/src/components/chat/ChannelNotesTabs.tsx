@@ -223,19 +223,6 @@ export function ChannelNotesTabs({
     return () => clearInterval(timer);
   }, [load]);
   useEffect(() => {
-    // Archiving disables writes, but a failed local task draft must remain visible.
-    if (archived) return;
-    if (canWrite) return;
-    if (taskDraftRef.current !== null) {
-      taskDraftRef.current = null;
-      setTaskDraftContent(null);
-      setContent(selected?.content ?? "");
-      setEditing(false);
-      setLatest(null);
-      setLatestFetchFailed(false);
-    }
-  }, [canWrite, archived, selected]);
-  useEffect(() => {
     if (!showDeleted) return;
     const controller = new AbortController();
     void client
@@ -279,7 +266,7 @@ export function ChannelNotesTabs({
     }
   }
   async function save() {
-    if (!selected || busy) return;
+    if (!selected || busy || !canWrite || archived) return;
     if (!dirty) {
       setEditing(false);
       return;
@@ -861,7 +848,10 @@ export function ChannelNotesTabs({
                 </p>
               ) : null}
               <div className="flex gap-2">
-                <Button disabled={busy || !title.trim()} onClick={() => void save()}>
+                <Button
+                  disabled={busy || !canWrite || archived || !title.trim()}
+                  onClick={() => void save()}
+                >
                   <SaveIcon />
                   {t("channels.notes.save")}
                 </Button>

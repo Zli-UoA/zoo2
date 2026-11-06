@@ -145,7 +145,7 @@ internal data class ChannelNoteDraftState(
 ) {
     fun onWriteAccessLost(savedContent: String): ChannelNoteDraftState {
         if (taskDraft == null) return this
-        return copy(content = if (editing) content else savedContent, taskDraft = null)
+        return copy(content = if (editing) content else savedContent)
     }
 
     fun useLatest(title: String, content: String) =
@@ -153,6 +153,10 @@ internal data class ChannelNoteDraftState(
 }
 
 internal fun canPersistChannelNote(canWrite: Boolean, busy: Boolean): Boolean = canWrite && !busy
+
+/** Summary refresh is independent of the active tab and never interrupts another load or write. */
+internal fun shouldPollChannelNoteSummary(loadInFlight: Boolean, busy: Boolean): Boolean =
+    !loadInFlight && !busy
 
 /** Preserve the message composition while another tab is shown. */
 @Composable
@@ -342,8 +346,19 @@ fun ChannelNotes(
         }
         finally { loadInFlight = false }
     }
-    LaunchedEffect(channelId, noteId) {
-        while (noteId != null) { delay(5_000); if (!loadInFlight && !busy && !editing && taskDraft == null) refresh() }
+    LaunchedEffect(channelId) {
+        while (isActive) {
+            delay(5_000)
+            if (shouldPollChannelNoteSummary(loadInFlight, busy)) {
+                loadInFlight = true
+                try {
+                    // Only refresh lightweight tab summaries; preserve route selection and editor drafts.
+                    notes = app.api.request("$path?summary=true").rows()
+                } catch (e: CancellationException) { throw e }
+                catch (_: Exception) { /* Keep the last known list and retry on the next interval. */ }
+                finally { loadInFlight = false }
+            }
+        }
     }
     LaunchedEffect(canWrite) {
         if (!canWrite) deleteConfirmation = ChannelNoteDeleteConfirmation.Empty
