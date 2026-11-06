@@ -188,20 +188,8 @@ export function CallProvider({ config: explicitConfig, children }: CallProviderP
   // マイク切替中 (置換待ち) の新トラック。ミュート操作の対象に含める
   const pendingMicTrackRef = useRef<MediaStreamTrack | null>(null);
 
-  // 設定画面や他タブでの変更を反映 (再生中の音声の出力先にも適用する)
-  useEffect(
-    () =>
-      subscribeSelectedDevices(() => {
-        const speakerId = loadSelectedDevice("speaker");
-        setSelectedMicId(loadSelectedDevice("mic"));
-        setSelectedSpeakerId(speakerId);
-        speakerIdRef.current = speakerId;
-        for (const entry of peersRef.current.values()) {
-          if (entry.audio) void applySink(entry.audio, speakerId);
-        }
-      }),
-    [],
-  );
+  // 最後に適用/要求したマイク ID。保存イベントとの二重切替を防ぐ
+  const appliedMicIdRef = useRef(selectedMicId);
 
   interface PeerEntry {
     pc: RTCPeerConnection;
@@ -672,6 +660,7 @@ export function CallProvider({ config: explicitConfig, children }: CallProviderP
   const micSwitchQueueRef = useRef<Promise<void>>(Promise.resolve());
   const setMicrophone = useCallback(
     (deviceId: string) => {
+      appliedMicIdRef.current = deviceId;
       saveSelectedDevice("mic", deviceId);
       const run = micSwitchQueueRef.current.then(() => switchMicrophone(deviceId));
       micSwitchQueueRef.current = run.catch(() => {});
@@ -680,13 +669,49 @@ export function CallProvider({ config: explicitConfig, children }: CallProviderP
     [switchMicrophone],
   );
 
-  const setSpeaker = useCallback(async (deviceId: string) => {
-    saveSelectedDevice("speaker", deviceId);
-    speakerIdRef.current = deviceId;
-    for (const entry of peersRef.current.values()) {
-      if (entry.audio) await applySink(entry.audio, deviceId);
-    }
+  // 出力先の適用は 1 件ずつ実行し、常に最新の選択値 (speakerIdRef) を全参加者へ適用する
+  const speakerApplyQueueRef = useRef<Promise<void>>(Promise.resolve());
+  const applySpeakerToAll = useCallback(() => {
+    const run = speakerApplyQueueRef.current.then(async () => {
+      for (const entry of peersRef.current.values()) {
+        if (entry.audio) await applySink(entry.audio, speakerIdRef.current);
+      }
+    });
+    speakerApplyQueueRef.current = run.catch(() => {});
+    return run;
   }, []);
+
+  const setSpeaker = useCallback(
+    async (deviceId: string) => {
+      speakerIdRef.current = deviceId;
+      saveSelectedDevice("speaker", deviceId);
+      await applySpeakerToAll();
+    },
+    [applySpeakerToAll],
+  );
+
+  // 設定画面や他タブでの変更を反映 (通話中なら送信マイクと再生中の出力先にも適用する)
+  useEffect(
+    () =>
+      subscribeSelectedDevices(() => {
+        const micId = loadSelectedDevice("mic");
+        const speakerId = loadSelectedDevice("speaker");
+        setSelectedMicId(micId);
+        setSelectedSpeakerId(speakerId);
+        if (micId !== appliedMicIdRef.current) {
+          appliedMicIdRef.current = micId;
+          if (localStreamRef.current && sessionIdRef.current) {
+            const run = micSwitchQueueRef.current.then(() => switchMicrophone(micId));
+            micSwitchQueueRef.current = run.catch(() => {});
+          }
+        }
+        if (speakerId !== speakerIdRef.current) {
+          speakerIdRef.current = speakerId;
+          void applySpeakerToAll();
+        }
+      }),
+    [applySpeakerToAll, switchMicrophone],
+  );
 
   const getCallDiagnostics = useCallback(async (): Promise<CallDiagnostics> => {
     const now = Date.now();
