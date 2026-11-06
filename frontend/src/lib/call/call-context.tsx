@@ -28,6 +28,18 @@ import {
   shouldPlayRemoteJoin,
   shouldPlayRemoteLeave,
 } from "./call-sounds";
+import {
+  applySink,
+  loadSelectedDevice,
+  saveSelectedDevice,
+  subscribeSelectedDevices,
+} from "./call-devices";
+import {
+  kindsOfIceServers,
+  summarizeStats,
+  type CallDiagnostics,
+  type PeerStatsSample,
+} from "./call-diagnostics";
 
 const defaultCallContext: CallContextValue = {
   currentChannelId: null,
@@ -40,6 +52,22 @@ const defaultCallContext: CallContextValue = {
   joinCall: async () => {},
   leaveCall: async () => {},
   toggleMute: async () => {},
+  selectedMicId: "",
+  selectedSpeakerId: "",
+  setMicrophone: async () => {},
+  setSpeaker: async () => {},
+  getCallDiagnostics: async () => ({
+    collectedAt: Date.now(),
+    connectionState: "idle",
+    isMuted: false,
+    micTrackState: null,
+    micLabel: null,
+    sseConnected: false,
+    lastHeartbeatOkAt: null,
+    heartbeatFailures: 0,
+    iceServerKinds: [],
+    peers: [],
+  }),
 };
 
 export const CallContext = createContext<CallContextValue | null>(null);
@@ -92,6 +120,23 @@ function createVolumeMeter(
   }
 }
 
+async function acquireMicStream(deviceId: string): Promise<MediaStream> {
+  const base = { echoCancellation: true, noiseSuppression: true, autoGainControl: true };
+  if (deviceId) {
+    try {
+      return await navigator.mediaDevices.getUserMedia({
+        audio: { ...base, deviceId: { exact: deviceId } },
+        video: false,
+      });
+    } catch (err) {
+      const name = (err as Error).name;
+      // 保存済みデバイスが無い/使えない場合のみ既定デバイスにフォールバック
+      if (name !== "OverconstrainedError" && name !== "NotFoundError") throw err;
+    }
+  }
+  return navigator.mediaDevices.getUserMedia({ audio: base, video: false });
+}
+
 export interface CallProviderProps {
   config?: AppConfig;
   children?: ReactNode;
@@ -129,9 +174,30 @@ export function CallProvider({ config: explicitConfig, children }: CallProviderP
   const isMutedRef = useRef(false);
   isMutedRef.current = isMuted;
 
+  const [selectedMicId, setSelectedMicId] = useState(() => loadSelectedDevice("mic"));
+  const [selectedSpeakerId, setSelectedSpeakerId] = useState(() => loadSelectedDevice("speaker"));
+  const micIdRef = useRef(selectedMicId);
+  micIdRef.current = selectedMicId;
+  const speakerIdRef = useRef(selectedSpeakerId);
+  speakerIdRef.current = selectedSpeakerId;
+  const heartbeatOkAtRef = useRef<number | null>(null);
+  const heartbeatFailuresRef = useRef(0);
+  const statsPrevRef = useRef<Map<string, PeerStatsSample>>(new Map());
+
+  // 設定画面や他タブでの変更を反映
+  useEffect(
+    () =>
+      subscribeSelectedDevices(() => {
+        setSelectedMicId(loadSelectedDevice("mic"));
+        setSelectedSpeakerId(loadSelectedDevice("speaker"));
+      }),
+    [],
+  );
+
   interface PeerEntry {
     pc: RTCPeerConnection;
     userId: string;
+    audio?: HTMLAudioElement;
     cleanupAudio?: () => void;
     pendingCandidates: RTCIceCandidateInit[];
   }
@@ -228,6 +294,9 @@ export function CallProvider({ config: explicitConfig, children }: CallProviderP
     sessionUserMapRef.current.clear();
     leftSessionIdsRef.current.clear();
     lastHandledOffersRef.current.clear();
+    statsPrevRef.current.clear();
+    heartbeatOkAtRef.current = null;
+    heartbeatFailuresRef.current = 0;
     muteSerialQueueRef.current = Promise.resolve();
   }, []);
 
@@ -414,7 +483,13 @@ export function CallProvider({ config: explicitConfig, children }: CallProviderP
             method: "POST",
             body: { session_id: sessionId },
           })
+          .then(() => {
+            if (callGenerationRef.current !== sentGen) return;
+            heartbeatOkAtRef.current = Date.now();
+            heartbeatFailuresRef.current = 0;
+          })
           .catch((err: unknown) => {
+            if (callGenerationRef.current === sentGen) heartbeatFailuresRef.current += 1;
             // 送信時の世代・セッション・チャンネルが現在の通話と一致する場合のみ退出処理を実行 ([P1])
             if (
               callGenerationRef.current !== sentGen ||
@@ -487,6 +562,8 @@ export function CallProvider({ config: explicitConfig, children }: CallProviderP
         const audio = new Audio();
         audio.srcObject = stream;
         audio.autoplay = true;
+        entry.audio = audio;
+        if (speakerIdRef.current) void applySink(audio, speakerIdRef.current);
         void audio.play().catch(() => {});
 
         const stopMeter = createVolumeMeter(stream, (speaking) => {
@@ -505,6 +582,100 @@ export function CallProvider({ config: explicitConfig, children }: CallProviderP
     },
     [sendSignalWithRetry, updateSpeakingUser],
   );
+
+  const setMicrophone = useCallback(
+    async (deviceId: string) => {
+      saveSelectedDevice("mic", deviceId);
+      const oldStream = localStreamRef.current;
+      if (!oldStream || !sessionIdRef.current) return;
+      const gen = callGenerationRef.current;
+      let newStream: MediaStream;
+      try {
+        newStream = await acquireMicStream(deviceId);
+      } catch {
+        toast.error(t("call.micSwitchFailed"));
+        return;
+      }
+      // 取得中に退出・切替があった場合は破棄
+      if (callGenerationRef.current !== gen || localStreamRef.current !== oldStream) {
+        for (const track of newStream.getTracks()) track.stop();
+        return;
+      }
+      const newTrack = newStream.getAudioTracks()[0];
+      if (!newTrack) {
+        for (const track of newStream.getTracks()) track.stop();
+        return;
+      }
+      newTrack.enabled = !isMutedRef.current;
+      for (const entry of peersRef.current.values()) {
+        const sender = entry.pc.getSenders().find((s) => s.track?.kind === "audio");
+        if (sender) {
+          try {
+            await sender.replaceTrack(newTrack);
+          } catch (err) {
+            console.error("Failed to replace mic track", err);
+          }
+        }
+      }
+      localVolumeCleanupRef.current?.();
+      localStreamRef.current = newStream;
+      localVolumeCleanupRef.current = createVolumeMeter(newStream, (speaking) => {
+        updateSpeakingUser(effectiveUserId, speaking && !isMutedRef.current);
+      });
+      for (const track of oldStream.getTracks()) track.stop();
+    },
+    [effectiveUserId, t, updateSpeakingUser],
+  );
+
+  const setSpeaker = useCallback(async (deviceId: string) => {
+    saveSelectedDevice("speaker", deviceId);
+    speakerIdRef.current = deviceId;
+    for (const entry of peersRef.current.values()) {
+      if (entry.audio) await applySink(entry.audio, deviceId);
+    }
+  }, []);
+
+  const getCallDiagnostics = useCallback(async (): Promise<CallDiagnostics> => {
+    const now = Date.now();
+    const track = localStreamRef.current?.getAudioTracks()[0] ?? null;
+    const peers = await Promise.all(
+      [...peersRef.current.entries()].map(async ([sessionId, entry]) => {
+        let summary: ReturnType<typeof summarizeStats> | null = null;
+        try {
+          const report = await entry.pc.getStats();
+          const items: Record<string, unknown>[] = [];
+          report.forEach((v) => items.push(v as Record<string, unknown>));
+          summary = summarizeStats(items, now, statsPrevRef.current.get(sessionId));
+          statsPrevRef.current.set(sessionId, summary.sample);
+        } catch {}
+        return {
+          sessionId,
+          userId: entry.userId,
+          connectionState: entry.pc.connectionState,
+          iceConnectionState: entry.pc.iceConnectionState,
+          rttMs: summary?.rttMs ?? null,
+          lossRatio: summary?.lossRatio ?? null,
+          jitterMs: summary?.jitterMs ?? null,
+          inboundKbps: summary?.inboundKbps ?? null,
+          outboundKbps: summary?.outboundKbps ?? null,
+          candidateType: summary?.candidateType ?? null,
+          sample: summary?.sample ?? { at: now, bytesReceived: 0, bytesSent: 0 },
+        };
+      }),
+    );
+    return {
+      collectedAt: now,
+      connectionState,
+      isMuted,
+      micTrackState: track ? (track.enabled ? track.readyState : "disabled") : null,
+      micLabel: track?.label || null,
+      sseConnected: connectionState === "connected",
+      lastHeartbeatOkAt: heartbeatOkAtRef.current,
+      heartbeatFailures: heartbeatFailuresRef.current,
+      iceServerKinds: kindsOfIceServers(iceServersRef.current),
+      peers,
+    };
+  }, [connectionState, isMuted]);
 
   const joinCall = useCallback(
     async (channelId: string) => {
@@ -546,10 +717,7 @@ export function CallProvider({ config: explicitConfig, children }: CallProviderP
       // マイク取得
       let stream: MediaStream;
       try {
-        stream = await navigator.mediaDevices.getUserMedia({
-          audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
-          video: false,
-        });
+        stream = await acquireMicStream(micIdRef.current);
       } catch (err: unknown) {
         if (callGenerationRef.current !== currentGen || joinAbort.signal.aborted) return;
         cleanupPeers();
@@ -1049,6 +1217,11 @@ export function CallProvider({ config: explicitConfig, children }: CallProviderP
         joinCall,
         leaveCall,
         toggleMute,
+        selectedMicId,
+        selectedSpeakerId,
+        setMicrophone,
+        setSpeaker,
+        getCallDiagnostics,
       }}
     >
       {children}
