@@ -40,6 +40,18 @@ describe("shouldPlayRemoteLeave", () => {
   });
 });
 
+describe("同一チャンクで join→leave が続く場合", () => {
+  it("同期的に更新した集合なら退出音も鳴る", () => {
+    const known = new Set<string>(["s1"]);
+    expect(shouldPlayRemoteJoin("s2", "s1", known, new Set())).toBe(true);
+    known.add("s2");
+    expect(shouldPlayRemoteLeave("s2", "s1", known)).toBe(true);
+    known.delete("s2");
+    // 退出後の重複通知では鳴らさない
+    expect(shouldPlayRemoteLeave("s2", "s1", known)).toBe(false);
+  });
+});
+
 describe("call sounds setting", () => {
   beforeEach(() => window.localStorage.clear());
   it("既定はオン", () => {

@@ -165,6 +165,8 @@ export function CallProvider({ config: explicitConfig, children }: CallProviderP
   participantsRef.current = participants;
 
   const sessionUserMapRef = useRef<Map<string, string>>(new Map());
+  // 効果音の判定用。state の反映 (次のレンダー) を待たず、イベント処理時に同期更新する
+  const knownSessionIdsRef = useRef<Set<string>>(new Set());
 
   const sessionIdRef = useRef<string | null>(null);
   const localStreamRef = useRef<MediaStream | null>(null);
@@ -292,6 +294,7 @@ export function CallProvider({ config: explicitConfig, children }: CallProviderP
     peersRef.current.clear();
     pendingEarlyCandidatesRef.current.clear();
     sessionUserMapRef.current.clear();
+    knownSessionIdsRef.current.clear();
     leftSessionIdsRef.current.clear();
     lastHandledOffersRef.current.clear();
     statsPrevRef.current.clear();
@@ -832,12 +835,13 @@ export function CallProvider({ config: explicitConfig, children }: CallProviderP
                 shouldPlayRemoteJoin(
                   newP.session_id,
                   mySessionId,
-                  participantsRef.current.map((p) => p.session_id),
+                  knownSessionIdsRef.current,
                   leftSessionIdsRef.current,
                 )
               ) {
                 playCallSound("join");
               }
+              knownSessionIdsRef.current.add(newP.session_id);
 
               sessionUserMapRef.current.set(newP.session_id, newP.user_id);
               setParticipants((prev) => {
@@ -873,15 +877,10 @@ export function CallProvider({ config: explicitConfig, children }: CallProviderP
           } else if (eventType === "participant_left") {
             const leftSid = data.session_id as string;
             if (leftSid) {
-              if (
-                shouldPlayRemoteLeave(
-                  leftSid,
-                  mySessionId,
-                  participantsRef.current.map((p) => p.session_id),
-                )
-              ) {
+              if (shouldPlayRemoteLeave(leftSid, mySessionId, knownSessionIdsRef.current)) {
                 playCallSound("leave");
               }
+              knownSessionIdsRef.current.delete(leftSid);
               leftSessionIdsRef.current.add(leftSid);
               const entry = peersRef.current.get(leftSid);
               if (entry) {
@@ -1061,6 +1060,7 @@ export function CallProvider({ config: explicitConfig, children }: CallProviderP
 
               for (const p of validRoomParticipants) {
                 sessionUserMapRef.current.set(p.session_id, p.user_id);
+                knownSessionIdsRef.current.add(p.session_id);
               }
 
               setParticipants((prev) => {
