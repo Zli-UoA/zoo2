@@ -20,6 +20,77 @@ import kotlinx.coroutines.*
 import kotlinx.serialization.json.*
 import zoo.*
 
+internal sealed interface AndroidNavigationRequest {
+    data object Back : AndroidNavigationRequest
+    data object Exit : AndroidNavigationRequest
+    data object Logout : AndroidNavigationRequest
+    data class Navigate(val path: String) : AndroidNavigationRequest
+    data class Replace(val path: String) : AndroidNavigationRequest
+}
+
+internal fun androidCopyUrl(base: String, payload: String): String {
+    val url = if (payload.startsWith('/')) endpoint(base, payload) else payload
+    require(Url(url).protocol in listOf(URLProtocol.HTTPS, URLProtocol.HTTP))
+    return url
+}
+
+internal class AndroidNavigationState(initialPath: String) {
+    private val history = mutableListOf(initialPath)
+
+    var noteDirty: Boolean = false
+        private set
+    var pendingRequest: AndroidNavigationRequest? = null
+        private set
+    val path: String get() = history.last()
+    val historyIndex: Int get() = history.lastIndex
+
+    fun setNoteDirty(value: Boolean) {
+        noteDirty = value
+    }
+
+    fun navigate(path: String) = request(AndroidNavigationRequest.Navigate(path))
+
+    fun replace(path: String) = request(AndroidNavigationRequest.Replace(path))
+
+    fun requestLogout() = request(AndroidNavigationRequest.Logout)
+
+    fun back(): Boolean {
+        if (history.size < 2) {
+            if (!noteDirty) return false
+            request(AndroidNavigationRequest.Exit)
+            return true
+        }
+        request(AndroidNavigationRequest.Back)
+        return true
+    }
+
+    fun cancelPendingRequest() {
+        pendingRequest = null
+    }
+
+    fun confirmDiscard(): AndroidNavigationRequest? {
+        val request = pendingRequest ?: return null
+        pendingRequest = null
+        noteDirty = false
+        apply(request)
+        return request
+    }
+
+    private fun request(request: AndroidNavigationRequest) {
+        if (noteDirty) pendingRequest = request else apply(request)
+    }
+
+    private fun apply(request: AndroidNavigationRequest) {
+        when (request) {
+            AndroidNavigationRequest.Back -> if (history.size > 1) history.removeAt(history.lastIndex)
+            AndroidNavigationRequest.Exit -> Unit
+            AndroidNavigationRequest.Logout -> Unit
+            is AndroidNavigationRequest.Navigate -> history.add(request.path)
+            is AndroidNavigationRequest.Replace -> history[history.lastIndex] = request.path
+        }
+    }
+}
+
 internal class AndroidPlatform(
     private val activity: Activity,
     private val http: HttpClient,
@@ -32,7 +103,9 @@ internal class AndroidPlatform(
     var env by mutableStateOf(Environment(path = "/home", touch = true, oidc = true))
         private set
 
-    private val history = mutableListOf(env.path)
+    private val navigation = AndroidNavigationState(env.path)
+    var pendingNavigation by mutableStateOf<AndroidNavigationRequest?>(null)
+        private set
     private val prefs = activity.getSharedPreferences("preferences", 0)
     private val files = java.util.concurrent.ConcurrentHashMap<String, Uri>()
     private val cache =
@@ -67,20 +140,41 @@ internal class AndroidPlatform(
     override fun now() = Instant.now().toString()
 
     override fun navigate(path: String) {
-        history.add(path)
-        env = env.copy(path = path, historyState = zoo.obj("__TSR_index" to history.lastIndex))
+        navigation.navigate(path)
+        syncNavigation()
     }
 
     override fun replace(path: String) {
-        history[history.lastIndex] = path
-        env = env.copy(path = path)
+        navigation.replace(path)
+        syncNavigation()
     }
 
     fun back(): Boolean {
-        if (history.size < 2) return false
-        history.removeAt(history.lastIndex)
-        env = env.copy(path = history.last())
-        return true
+        val handled = navigation.back()
+        syncNavigation()
+        return handled
+    }
+
+    fun cancelPendingNavigation() {
+        navigation.cancelPendingRequest()
+        syncNavigation()
+    }
+
+    fun confirmDiscardAndNavigate(): Boolean {
+        val request = navigation.confirmDiscard()
+        syncNavigation()
+        if (request == AndroidNavigationRequest.Logout) {
+            try { logout() } finally { clear() }
+        }
+        return request == AndroidNavigationRequest.Exit
+    }
+
+    private fun syncNavigation() {
+        env = env.copy(
+            path = navigation.path,
+            historyState = zoo.obj("__TSR_index" to navigation.historyIndex),
+        )
+        pendingNavigation = navigation.pendingRequest
     }
 
     fun online(value: Boolean) {
@@ -197,13 +291,24 @@ internal class AndroidPlatform(
     override suspend fun invoke(name: String, payload: String): String =
         when (name) {
             "logout" -> {
-                try { logout() } finally { clear() }
+                if (navigation.noteDirty) {
+                    navigation.requestLogout()
+                    syncNavigation()
+                } else {
+                    try { logout() } finally { clear() }
+                }
                 "{}"
             }
             "copy" -> {
-                (activity.getSystemService(ClipboardManager::class.java)).setPrimaryClip(
-                    ClipData.newPlainText("Zoo", payload)
-                )
+                copyToClipboard(payload)
+                "{}"
+            }
+            "copyUrl" -> {
+                copyToClipboard(androidCopyUrl(base, payload))
+                "{}"
+            }
+            "noteDirty" -> {
+                navigation.setNoteDirty(payload == "true")
                 "{}"
             }
             "capabilities" -> "{\"pushSupported\":false,\"installAvailable\":false}"
@@ -289,6 +394,11 @@ internal class AndroidPlatform(
             "refreshUser" -> "{}" // Profile updates are rendered by the shared users Shape.
             else -> error("Android では未対応の操作です: $name")
         }
+
+    private fun copyToClipboard(value: String) {
+        activity.getSystemService(ClipboardManager::class.java)
+            .setPrimaryClip(ClipData.newPlainText("Zoo", value))
+    }
 
     private suspend fun readFile(id: String): ByteArray =
         withContext(Dispatchers.IO) {
