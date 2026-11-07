@@ -172,7 +172,9 @@ async fn update(
         let current = one(&mut tx,"SELECT json_build_object('same',updated_at=$2::text::timestamp)::text FROM apps WHERE id=$1",&[&id,expected]).await
             .map_err(|_| AppError::BadRequest("Invalid expected_updated_at".into()))?;
         if current["same"] != true {
-            return Err(AppError::Conflict("App was updated by someone else; reload before saving".into()));
+            return Err(AppError::Conflict(
+                "App was updated by someone else; reload before saving".into(),
+            ));
         }
     }
     let old: Manifest = serde_json::from_str(app["manifest"].as_str().unwrap())

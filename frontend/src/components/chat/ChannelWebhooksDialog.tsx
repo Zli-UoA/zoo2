@@ -1,5 +1,5 @@
 import { Input } from "../ui/input";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { type ReactNode, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { CopyIcon, EyeIcon, EyeOffIcon } from "lucide-react";
 import { toast } from "sonner";
@@ -24,7 +24,7 @@ export function webhookUrl(baseUrl: string, path: string, origin: string) {
   return new URL(joinUrl(baseUrl, path), origin).href;
 }
 
-function Credential({
+export function Credential({
   label,
   value,
   secret = false,
@@ -205,87 +205,116 @@ export function ChannelWebhooksDialog({
             ) : null}
             <ul className="flex flex-col gap-3">
               {hooks.map((hook) => (
-                <li key={hook.id} className="flex flex-col gap-3 rounded-lg border p-3">
-                  <h3 className="break-words text-sm font-semibold">{hook.name}</h3>
+                <WebhookItem
+                  key={hook.id}
+                  hook={hook}
+                  basePath={path}
+                  busy={busy}
+                  run={run}
+                  confirmation={confirmation?.hook.id === hook.id ? confirmation.action : null}
+                  onConfirm={(action) => setConfirmation(action ? { hook, action } : null)}
+                  onReplaced={(next) =>
+                    setHooks((current) =>
+                      current.map((item) => (item.id === hook.id ? next : item)),
+                    )
+                  }
+                  onRemoved={() =>
+                    setHooks((current) => current.filter((item) => item.id !== hook.id))
+                  }
+                >
                   <WebhookAppSelection
                     channelId={channel.id}
                     hook={hook}
                     onUpdated={() => setReload((value) => value + 1)}
                   />
-                  <Credential
-                    key={hook.path}
-                    label={t("webhooks.url")}
-                    value={webhookUrl(config.apiBaseUrl, hook.path, window.location.origin)}
-                    secret
-                  />
-                  <div className="flex justify-end gap-2">
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      disabled={busy}
-                      onClick={() => setConfirmation({ hook, action: "rotate" })}
-                    >
-                      {t("webhooks.rotate")}
-                    </Button>
-                    <Button
-                      variant="destructive"
-                      size="sm"
-                      disabled={busy}
-                      onClick={() => setConfirmation({ hook, action: "delete" })}
-                    >
-                      {t("webhooks.delete")}
-                    </Button>
-                  </div>
-                  {confirmation?.hook.id === hook.id ? (
-                    <div className="flex flex-col gap-2 rounded border p-2 text-sm">
-                      <p>
-                        {confirmation.action === "delete"
-                          ? t("webhooks.deleteConfirm")
-                          : t("webhooks.rotateConfirm")}
-                      </p>
-                      <div className="flex justify-end gap-2">
-                        <Button
-                          variant="ghost"
-                          size="sm"
-                          disabled={busy}
-                          onClick={() => setConfirmation(null)}
-                        >
-                          {t("common.cancelShort")}
-                        </Button>
-                        <Button
-                          variant="destructive"
-                          size="sm"
-                          disabled={busy}
-                          onClick={() =>
-                            void run(async () => {
-                              if (confirmation.action === "delete") {
-                                await client.delete(`${path}/${hook.id}`);
-                                setHooks((current) =>
-                                  current.filter((item) => item.id !== hook.id),
-                                );
-                              } else {
-                                const result = await client.post<ChannelWebhook>(
-                                  `${path}/${hook.id}/rotate-secret`,
-                                );
-                                setHooks((current) =>
-                                  current.map((item) => (item.id === hook.id ? result.data : item)),
-                                );
-                              }
-                            })
-                          }
-                        >
-                          {t("webhooks.confirm")}
-                        </Button>
-                      </div>
-                    </div>
-                  ) : null}
-                </li>
+                </WebhookItem>
               ))}
             </ul>
           </>
         )}
       </DialogContent>
     </Dialog>
+  );
+}
+
+/** One webhook with its URL, URL rotation and deletion; shared by channel settings and the app console. */
+export function WebhookItem({
+  hook,
+  basePath,
+  busy,
+  run,
+  confirmation,
+  onConfirm,
+  onReplaced,
+  onRemoved,
+  children,
+}: {
+  hook: ChannelWebhook;
+  /** `/api/channels/{channel}/webhooks` of the channel the webhook posts to. */
+  basePath: string;
+  busy: boolean;
+  /** Runs the request, reporting failures; it closes the confirmation only on success. */
+  run: (action: () => Promise<void>) => Promise<void>;
+  confirmation: "delete" | "rotate" | null;
+  onConfirm: (action: "delete" | "rotate" | null) => void;
+  onReplaced: (hook: ChannelWebhook) => void;
+  onRemoved: () => void;
+  children?: ReactNode;
+}) {
+  const { t } = useTranslation();
+  const { config } = useCollections();
+  const client = useMemo(() => createConfiguredApiClient(config), [config]);
+  return (
+    <li className="flex flex-col gap-3 rounded-lg border p-3">
+      <h3 className="break-words text-sm font-semibold">{hook.name}</h3>
+      {children}
+      <Credential
+        key={hook.path}
+        label={t("webhooks.url")}
+        value={webhookUrl(config.apiBaseUrl, hook.path, window.location.origin)}
+        secret
+      />
+      <div className="flex justify-end gap-2">
+        <Button variant="outline" size="sm" disabled={busy} onClick={() => onConfirm("rotate")}>
+          {t("webhooks.rotate")}
+        </Button>
+        <Button variant="destructive" size="sm" disabled={busy} onClick={() => onConfirm("delete")}>
+          {t("webhooks.delete")}
+        </Button>
+      </div>
+      {confirmation ? (
+        <div className="flex flex-col gap-2 rounded border p-2 text-sm">
+          <p>
+            {confirmation === "delete" ? t("webhooks.deleteConfirm") : t("webhooks.rotateConfirm")}
+          </p>
+          <div className="flex justify-end gap-2">
+            <Button variant="ghost" size="sm" disabled={busy} onClick={() => onConfirm(null)}>
+              {t("common.cancelShort")}
+            </Button>
+            <Button
+              variant="destructive"
+              size="sm"
+              disabled={busy}
+              onClick={() =>
+                void run(async () => {
+                  if (confirmation === "delete") {
+                    await client.delete(`${basePath}/${hook.id}`);
+                    onRemoved();
+                  } else {
+                    const result = await client.post<ChannelWebhook>(
+                      `${basePath}/${hook.id}/rotate-secret`,
+                    );
+                    onReplaced(result.data);
+                  }
+                })
+              }
+            >
+              {t("webhooks.confirm")}
+            </Button>
+          </div>
+        </div>
+      ) : null}
+    </li>
   );
 }
 

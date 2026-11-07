@@ -62,7 +62,14 @@ async fn channel(app: &Router, actor: &str) -> String {
 async fn detail_separates_approved_installation_and_rejects_stale_saves() -> anyhow::Result<()> {
     let (app, owner, stranger, admin) = setup().await?;
     let manifest = json!({"scopes":["messages:read"],"events":["app.mentioned"],"transport":"http","event_url":"https://example.com/approved","commands":["deploy"]});
-    let (status, created) = req(&app,"POST","/api/apps",&owner,json!({"name":"Console","description":"Console app","manifest":manifest})).await;
+    let (status, created) = req(
+        &app,
+        "POST",
+        "/api/apps",
+        &owner,
+        json!({"name":"Console","description":"Console app","manifest":manifest}),
+    )
+    .await;
     assert_eq!(status, StatusCode::OK, "{created}");
     let id = created["id"].as_str().unwrap();
     let path = format!("/api/apps/{id}");
@@ -70,14 +77,36 @@ async fn detail_separates_approved_installation_and_rejects_stale_saves() -> any
 
     let (_, draft) = req(&app, "GET", &path, &owner, Value::Null).await;
     assert_eq!(draft["installation"], Value::Null, "{draft}");
-    assert_eq!(req(&app,"POST",&action("submit"),&owner,Value::Null).await.0,StatusCode::OK);
-    assert_eq!(req(&app,"POST",&action("install"),admin,json!({"revision":1})).await.0,StatusCode::OK);
+    assert_eq!(
+        req(&app, "POST", &action("submit"), &owner, Value::Null)
+            .await
+            .0,
+        StatusCode::OK
+    );
+    assert_eq!(
+        req(
+            &app,
+            "POST",
+            &action("install"),
+            admin,
+            json!({"revision":1})
+        )
+        .await
+        .0,
+        StatusCode::OK
+    );
 
     let (status, approved) = req(&app, "GET", &path, &owner, Value::Null).await;
     assert_eq!(status, StatusCode::OK, "{approved}");
-    assert_eq!(approved["installation"]["event_url"], "https://example.com/approved");
+    assert_eq!(
+        approved["installation"]["event_url"],
+        "https://example.com/approved"
+    );
     assert_eq!(approved["installation"]["revision"], 1);
-    assert_eq!(approved["installation"]["endpoint_verified_at"], Value::Null);
+    assert_eq!(
+        approved["installation"]["endpoint_verified_at"],
+        Value::Null
+    );
     let loaded_at = approved["updated_at"].as_str().unwrap().to_string();
     let (_, public) = req(&app, "GET", &path, &stranger, Value::Null).await;
     assert!(public.get("installation").is_none(), "{public}");
@@ -95,20 +124,57 @@ async fn detail_separates_approved_installation_and_rejects_stale_saves() -> any
     let (_, after) = req(&app, "GET", &path, &owner, Value::Null).await;
     assert_eq!(after["manifest"]["event_url"], "https://example.com/draft");
     assert_eq!(after["manifest"]["commands"][0], "deploy");
-    assert_eq!(after["installation"]["event_url"], "https://example.com/approved");
+    assert_eq!(
+        after["installation"]["event_url"],
+        "https://example.com/approved"
+    );
     assert_eq!(after["installation"]["revision"], 1);
 
     // Saving from the stale copy must not overwrite the newer settings.
-    let (status, conflict) = req(&app, "PATCH", &path, &owner, input(&approved["manifest"], &loaded_at)).await;
+    let (status, conflict) = req(
+        &app,
+        "PATCH",
+        &path,
+        &owner,
+        input(&approved["manifest"], &loaded_at),
+    )
+    .await;
     assert_eq!(status, StatusCode::CONFLICT, "{conflict}");
-    assert_eq!(req(&app, "PATCH", &path, &owner, input(&edited, "not a time")).await.0, StatusCode::BAD_REQUEST);
+    assert_eq!(
+        req(&app, "PATCH", &path, &owner, input(&edited, "not a time"))
+            .await
+            .0,
+        StatusCode::BAD_REQUEST
+    );
     let (_, unchanged) = req(&app, "GET", &path, &owner, Value::Null).await;
-    assert_eq!(unchanged["manifest"]["event_url"], "https://example.com/draft");
+    assert_eq!(
+        unchanged["manifest"]["event_url"],
+        "https://example.com/draft"
+    );
 
     // Each signing secret view is recorded.
-    assert_eq!(req(&app,"POST",&action("connection"),&owner,Value::Null).await.0,StatusCode::OK);
-    let (_, audit) = req(&app, "GET", &format!("/api/apps/{id}/records/audit"), &owner, Value::Null).await;
-    assert!(audit.as_array().unwrap().iter().any(|row| row["action"] == "connection" && row["actor_id"] == json!(owner)), "{audit}");
+    assert_eq!(
+        req(&app, "POST", &action("connection"), &owner, Value::Null)
+            .await
+            .0,
+        StatusCode::OK
+    );
+    let (_, audit) = req(
+        &app,
+        "GET",
+        &format!("/api/apps/{id}/records/audit"),
+        &owner,
+        Value::Null,
+    )
+    .await;
+    assert!(
+        audit
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|row| row["action"] == "connection" && row["actor_id"] == json!(owner)),
+        "{audit}"
+    );
     Ok(())
 }
 
@@ -117,16 +183,37 @@ async fn app_webhooks_are_limited_to_managed_channels() -> anyhow::Result<()> {
     let (app, owner, stranger, admin) = setup().await?;
     let mine = channel(&app, &owner).await;
     let theirs = channel(&app, admin).await;
-    let (status, first) = req(&app,"POST",&format!("/api/channels/{mine}/webhooks"),&owner,json!({"name":"Deploys"})).await;
+    let (status, first) = req(
+        &app,
+        "POST",
+        &format!("/api/channels/{mine}/webhooks"),
+        &owner,
+        json!({"name":"Deploys"}),
+    )
+    .await;
     assert_eq!(status, StatusCode::OK, "{first}");
     let notifier = first["data"]["bot_user_id"].as_str().unwrap().to_string();
     let list = format!("/api/apps/{notifier}/webhooks");
 
     // An admin can attach the same app in a channel the developer does not manage.
-    let (status, other) = req(&app,"POST",&format!("/api/channels/{theirs}/webhooks"),admin,json!({"name":"Alerts","app_id":notifier})).await;
+    let (status, other) = req(
+        &app,
+        "POST",
+        &format!("/api/channels/{theirs}/webhooks"),
+        admin,
+        json!({"name":"Alerts","app_id":notifier}),
+    )
+    .await;
     assert_eq!(status, StatusCode::OK, "{other}");
     assert_eq!(other["data"]["bot_user_id"], json!(notifier));
-    let (status, second) = req(&app,"POST",&format!("/api/channels/{mine}/webhooks"),&owner,json!({"name":"Builds","app_id":notifier})).await;
+    let (status, second) = req(
+        &app,
+        "POST",
+        &format!("/api/channels/{mine}/webhooks"),
+        &owner,
+        json!({"name":"Builds","app_id":notifier}),
+    )
+    .await;
     assert_eq!(status, StatusCode::OK, "{second}");
     assert_eq!(second["data"]["bot_user_id"], json!(notifier));
 
@@ -134,16 +221,53 @@ async fn app_webhooks_are_limited_to_managed_channels() -> anyhow::Result<()> {
     assert_eq!(status, StatusCode::OK, "{owned}");
     let hooks = owned["webhooks"].as_array().unwrap();
     assert_eq!(hooks.len(), 2, "{owned}");
-    assert!(hooks.iter().all(|h| h["channel_id"] == json!(mine) && h["path"].as_str().unwrap().contains("token=")));
+    assert!(
+        hooks
+            .iter()
+            .all(|h| h["channel_id"] == json!(mine)
+                && h["path"].as_str().unwrap().contains("token="))
+    );
     assert_eq!(owned["hidden_count"], 1);
     let (_, all) = req(&app, "GET", &list, admin, Value::Null).await;
     assert_eq!(all["webhooks"].as_array().unwrap().len(), 3);
     assert_eq!(all["hidden_count"], 0);
 
-    assert_eq!(req(&app, "GET", &list, &stranger, Value::Null).await.0, StatusCode::FORBIDDEN);
-    assert_eq!(req(&app,"POST",&format!("/api/channels/{theirs}/webhooks"),&owner,json!({"name":"Nope","app_id":notifier})).await.0,StatusCode::FORBIDDEN);
-    let (_, regular) = req(&app,"POST","/api/apps",&owner,json!({"name":"Regular","manifest":{"scopes":[],"events":[]}})).await;
+    assert_eq!(
+        req(&app, "GET", &list, &stranger, Value::Null).await.0,
+        StatusCode::FORBIDDEN
+    );
+    assert_eq!(
+        req(
+            &app,
+            "POST",
+            &format!("/api/channels/{theirs}/webhooks"),
+            &owner,
+            json!({"name":"Nope","app_id":notifier})
+        )
+        .await
+        .0,
+        StatusCode::FORBIDDEN
+    );
+    let (_, regular) = req(
+        &app,
+        "POST",
+        "/api/apps",
+        &owner,
+        json!({"name":"Regular","manifest":{"scopes":[],"events":[]}}),
+    )
+    .await;
     let regular = regular["id"].as_str().unwrap();
-    assert_eq!(req(&app,"POST",&format!("/api/channels/{mine}/webhooks"),&owner,json!({"name":"Nope","app_id":regular})).await.0,StatusCode::BAD_REQUEST);
+    assert_eq!(
+        req(
+            &app,
+            "POST",
+            &format!("/api/channels/{mine}/webhooks"),
+            &owner,
+            json!({"name":"Nope","app_id":regular})
+        )
+        .await
+        .0,
+        StatusCode::BAD_REQUEST
+    );
     Ok(())
 }

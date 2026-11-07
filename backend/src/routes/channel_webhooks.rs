@@ -367,17 +367,18 @@ async fn list_for_app(
             .await?
             .filter(|c| c.deleted_at.is_none());
         match channel {
-            Some(c) if can_manage_channel(&c.created_user_id, &actor.id, admin, c.is_dm) => {
-                visible.push(AppWebhookResponse {
+            Some(c) if can_manage_channel(&c.created_user_id, &actor.id, admin, c.is_dm) => visible
+                .push(AppWebhookResponse {
                     channel_id: c.id,
                     channel_name: c.channel_name,
                     webhook: hook.into(),
-                })
-            }
+                }),
             _ => hidden += 1,
         }
     }
-    Ok(Json(serde_json::json!({"webhooks":visible,"hidden_count":hidden})))
+    Ok(Json(
+        serde_json::json!({"webhooks":visible,"hidden_count":hidden}),
+    ))
 }
 
 async fn associate_app(

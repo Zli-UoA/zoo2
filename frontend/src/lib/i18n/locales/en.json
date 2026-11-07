@@ -729,5 +729,165 @@
     "category": "Category",
     "aliases": "Aliases (comma separated)",
     "uncategorized": "Uncategorized"
+  },
+  "appConsole": {
+    "title": "App management",
+    "back": "Back to app management",
+    "loadError": "Could not load the app.",
+    "revision": "Revision {{revision}}",
+    "readOnly": "Only the developer and administrators can change this app's settings.",
+    "sections": "Settings",
+    "unsaved": "Unsaved changes",
+    "unsavedSections": "Unsaved changes in {{sections}}. Saving stores all of them together.",
+    "reapproval": "The app configuration changes, so the app stops until it is approved again.",
+    "discard": "Discard changes",
+    "conflict": "The settings were updated elsewhere, so saving was stopped to avoid overwriting them. Reload the latest settings (unsaved changes will be discarded).",
+    "reload": "Reload",
+    "listHelp": "Enter one per line.",
+    "dialogHelp": "Settings, credentials, approval, and delivery history are in app management.",
+    "open": "Open app management",
+    "section": {
+      "basic": "Basic information",
+      "credentials": "Credentials",
+      "permissions": "Permissions",
+      "events": "Event subscriptions",
+      "webhooks": "Incoming webhooks",
+      "interactivity": "Commands & shortcuts",
+      "home": "App home",
+      "install": "Approval & install",
+      "deliveries": "Deliveries",
+      "history": "History",
+      "manifest": "App manifest"
+    },
+    "list": {
+      "title": "App management",
+      "description": "Create apps and configure their permissions, events, and credentials.",
+      "pending": "Awaiting approval",
+      "mine": "My apps",
+      "installed": "Installed apps",
+      "notificationOnly": "Notification only",
+      "viewOnly": "View only",
+      "createHelp": "After creating the app, configure permissions and events, then request approval from an administrator."
+    },
+    "basic": {
+      "profile": "Display",
+      "profileHelp": "Changes to the name, description, icon, and username apply without re-approval.",
+      "username": "Bot username",
+      "summary": "App information",
+      "status": "Status",
+      "revision": "Revision",
+      "approved": "approved: {{revision}}"
+    },
+    "credentials": {
+      "botToken": "Bot token",
+      "botTokenHelp": "Credentials your external bot program uses to call the API.",
+      "needsInstall": "Available after the app is approved and installed.",
+      "tokenOnce": "This value is shown only now. It cannot be shown again after you leave, so store it securely.",
+      "signingSecret": "Signing secret",
+      "signingSecretHelp": "Used to sign HTTP deliveries. Verify the signature on the receiving side.",
+      "showSecret": "Show",
+      "rotateSecret": "Regenerate",
+      "rotateHelp": "Creates a new signing secret. Receivers that verify with the old value reject deliveries until they are updated.",
+      "secretAudited": "Each view is recorded in the audit log. Regenerate it if you suspect a leak.",
+      "secretHttpOnly": "Available once an app using HTTP delivery is approved.",
+      "issued": "Issued credentials",
+      "none": "No credentials have been issued.",
+      "userToken": "On behalf of a user",
+      "revoke": "Revoke",
+      "expires": "expires {{time}}",
+      "state": {
+        "active": "Active",
+        "expired": "Expired",
+        "revoked": "Revoked"
+      }
+    },
+    "permissions": {
+      "scopes": "Scopes",
+      "scopesHelp": "API permissions the app uses. Scopes needed by subscribed events cannot be removed.",
+      "requiredBy": "used by {{names}}",
+      "oauth": "Acting on behalf of users (OAuth)",
+      "redirectUris": "Redirect URLs (HTTPS)",
+      "userConnections": "External account connections",
+      "userConnectionsHelp": "Lets people connect accounts from an external service. Requires users:write."
+    },
+    "events": {
+      "transport": "Connection",
+      "websocket": "WebSocket",
+      "http": "HTTP (Request URL)",
+      "requestUrl": "Request URL",
+      "includeBotEvents": "Receive bot posts as events",
+      "includeBotEventsHelp": "Usually off, so bots do not keep answering each other.",
+      "subscriptions_one": "Subscribed events ({{count}})",
+      "subscriptions_other": "Subscribed events ({{count}})",
+      "subscriptionsHelp": "Selecting an event also adds the scope it needs.",
+      "filter": "Search events",
+      "needs": "needs {{scope}}",
+      "verifyTitle": "Verify the approved URL",
+      "verifyHelp": "Sends a challenge to the approved configuration. A URL you are editing can be verified after re-approval.",
+      "verifyAfterApproval": "You can verify after approval.",
+      "verifyHttpOnly": "You can verify when the approved configuration uses HTTP delivery.",
+      "approvedUrl": "Approved URL",
+      "verifiedAt": "Last verified",
+      "notVerified": "Not verified",
+      "pendingUrl": "The URL being edited ({{url}}) can be verified after re-approval.",
+      "verify": "Verify approved URL",
+      "verifyError": "Verification failed. Check that the receiver returns the challenge unchanged."
+    },
+    "interactivity": {
+      "commandsTitle": "Slash commands",
+      "shortcutsTitle": "Shortcuts",
+      "moreTitle": "Link unfurling & functions",
+      "commands": "Commands",
+      "commandsHelp": "Enter one name per line without the /. Letters, digits, _ and - are allowed.",
+      "shortcuts": "Global shortcuts",
+      "shortcutsHelp": "Enter one action name per line; they run from the app details.",
+      "message_shortcuts": "Message shortcuts",
+      "message_shortcutsHelp": "Run from a message's app actions. Requires messages:read.",
+      "link_domains": "Domains to unfurl",
+      "link_domainsHelp": "Enter one domain per line to receive link.shared.",
+      "functions": "Functions",
+      "functionsHelp": "Enter one function name per line. Requires functions:execute."
+    },
+    "home": {
+      "title": "App home",
+      "help": "How people talk with the app.",
+      "dm": "Accept direct messages",
+      "dmHelp": "When on, people can send direct messages to the app."
+    },
+    "install": {
+      "approval": "Approval",
+      "approvalHelp": "An administrator must approve the app configuration before it can be used. Approval applies to one revision.",
+      "approve": "Approve and install revision {{revision}}",
+      "stopped": "stopped until re-approval because the configuration changed",
+      "waiting": "Waiting for an administrator's approval.",
+      "consent": "Your access permission",
+      "consentHelp": "Revoke the permissions you granted this app to act on your behalf."
+    },
+    "deliveries": {
+      "help": "The latest 100 event deliveries. Undelivered ones can be retried.",
+      "none": "No deliveries yet.",
+      "attempts_one": "{{count}} attempt",
+      "attempts_other": "{{count}} attempts"
+    },
+    "history": {
+      "versions": "Configuration revisions",
+      "versionsHelp": "Changes to the app configuration, with the fields that changed from the previous revision.",
+      "approved": "approved",
+      "audit": "Audit log"
+    },
+    "manifest": {
+      "help": "Edit the same settings as JSON. Apply copies it into the forms; Save at the bottom stores it.",
+      "apply": "Apply",
+      "reset": "Reset"
+    },
+    "webhooks": {
+      "create": "Create webhook",
+      "createHelp": "Create a webhook that posts as this app. Only channels you manage are listed.",
+      "channel": "Channel",
+      "noChannels": "There is no channel where you can create a webhook. Channel creators and administrators can create them.",
+      "list": "Webhooks for this app",
+      "hidden_one": "{{count}} more webhook is in a channel you do not manage and is not shown.",
+      "hidden_other": "{{count}} more webhooks are in channels you do not manage and are not shown."
+    }
   }
 }
