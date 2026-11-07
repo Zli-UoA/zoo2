@@ -263,6 +263,7 @@ AuthZ には、デバイスコードと refresh_token のグラントを許可�
 ## 困ったとき
 
 - **「ログインしていません」と出る**: `zoo2-tui login` を実行してください。refresh_token が失効したときも同じです。
+- **「認証が切れました。再ログインしてください」と出る**: アクセストークンと refresh_token の両方が使えなくなっています。`zoo2-tui login` を実行してログインし直してください。
 - **「dev モードではログインできません」と出る**: 環境変数 `ZOO_DEV_USER` か、`config.toml` の `dev_user` が残っています。外してください。
 - **ログインで `invalid_client` や `unauthorized_client` が出る**: `oidc_client_id` が違うか、そのクライアントにデバイスコードのグラントが許可されていません。管理者に確かめてください。
 - **401 で画面が開かない**: `oidc_resource` が backend の `OIDC_AUDIENCE` と一致しているか確かめてください。

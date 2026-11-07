@@ -4,10 +4,12 @@ use anyhow::{Context, Result, bail};
 use serde::Deserialize;
 
 // 本番 (zli.chat) の接続先。設定ファイルや環境変数で何も指定しなくても使えるようにする。
-// client_id は AuthZ に登録した public client の ID で、秘密ではない。
+// client_id は AuthZ に登録したクライアントごとの public client ID で、TUI・デスクトップ・モバイル等で分けて管理する。
 const DEFAULT_API_BASE_URL: &str = "https://zli.chat";
 const DEFAULT_OIDC_ISSUER: &str = "https://account.zli.works/api/auth";
-const DEFAULT_OIDC_CLIENT_ID: &str = "ldwuljsObQHzxCdMwnTsYLTrCwgHaRii";
+const TUI_DEFAULT_OIDC_CLIENT_ID: &str = "ldwuljsObQHzxCdMwnTsYLTrCwgHaRii";
+/// デスクトップ版向けの既定 client_id (Phase 2 で AuthZ に desktop 用 public client を登録した際にその ID へ置き換える)。
+const DESKTOP_DEFAULT_OIDC_CLIENT_ID: &str = "zoo2-desktop";
 /// AuthZ に登録した API の URL で、backend の `OIDC_AUDIENCE` と完全に一致させる。これを要求すると `typ: at+jwt` のアクセストークンが得られる。
 const DEFAULT_OIDC_RESOURCE: &str = "https://zli.chat/api";
 /// backend の初回ログインで UserInfo を呼ぶため `profile` を、トークン更新のため `offline_access` を要求する。
@@ -64,7 +66,15 @@ impl Config {
         let env: HashMap<String, String> = std::env::vars()
             .filter(|(key, _)| key.starts_with("ZOO_"))
             .collect();
-        resolve(file, &env)
+        resolve_for(app_name, file, &env)
+    }
+}
+
+fn default_oidc_client_id(app_name: &str) -> &str {
+    match app_name {
+        "zoo2-tui" => TUI_DEFAULT_OIDC_CLIENT_ID,
+        "zoo2-desktop" => DESKTOP_DEFAULT_OIDC_CLIENT_ID,
+        other => other,
     }
 }
 
@@ -89,7 +99,7 @@ fn read_file_config(path: &std::path::Path) -> Result<FileConfig> {
     }
 }
 
-fn resolve(file: FileConfig, env: &HashMap<String, String>) -> Result<Config> {
+fn resolve_for(app_name: &str, file: FileConfig, env: &HashMap<String, String>) -> Result<Config> {
     let pick = |key: &str, fallback: Option<String>| {
         env.get(key)
             .cloned()
@@ -117,7 +127,7 @@ fn resolve(file: FileConfig, env: &HashMap<String, String>) -> Result<Config> {
                 .unwrap_or_else(|| DEFAULT_OIDC_ISSUER.to_string())
                 .trim_end_matches('/')
                 .to_string(),
-            client_id: client_id.unwrap_or_else(|| DEFAULT_OIDC_CLIENT_ID.to_string()),
+            client_id: client_id.unwrap_or_else(|| default_oidc_client_id(app_name).to_string()),
             resource: Some(
                 pick("ZOO_OIDC_RESOURCE", file.oidc_resource)
                     .unwrap_or_else(|| DEFAULT_OIDC_RESOURCE.to_string()),
@@ -147,6 +157,10 @@ fn resolve(file: FileConfig, env: &HashMap<String, String>) -> Result<Config> {
 mod tests {
     use super::*;
 
+    fn resolve(file: FileConfig, env: &HashMap<String, String>) -> Result<Config> {
+        resolve_for("zoo2-tui", file, env)
+    }
+
     fn env(pairs: &[(&str, &str)]) -> HashMap<String, String> {
         pairs
             .iter()
@@ -155,18 +169,30 @@ mod tests {
     }
 
     #[test]
-    fn defaults_to_production_login() {
-        let config = resolve(FileConfig::default(), &env(&[])).unwrap();
-        assert_eq!(config.api_base_url, "https://zli.chat");
+    fn defaults_to_production_login_with_per_app_client_id() {
+        let tui = resolve_for("zoo2-tui", FileConfig::default(), &env(&[])).unwrap();
+        assert_eq!(tui.api_base_url, "https://zli.chat");
         assert_eq!(
-            config.auth,
+            tui.auth,
             AuthConfig::Oidc(OidcConfig {
                 issuer: "https://account.zli.works/api/auth".into(),
-                client_id: DEFAULT_OIDC_CLIENT_ID.into(),
+                client_id: TUI_DEFAULT_OIDC_CLIENT_ID.into(),
                 resource: Some("https://zli.chat/api".into()),
                 scope: DEFAULT_SCOPE.into(),
             })
         );
+
+        let desktop = resolve_for("zoo2-desktop", FileConfig::default(), &env(&[])).unwrap();
+        assert_eq!(
+            desktop.auth,
+            AuthConfig::Oidc(OidcConfig {
+                issuer: "https://account.zli.works/api/auth".into(),
+                client_id: DESKTOP_DEFAULT_OIDC_CLIENT_ID.into(),
+                resource: Some("https://zli.chat/api".into()),
+                scope: DEFAULT_SCOPE.into(),
+            })
+        );
+        assert_ne!(TUI_DEFAULT_OIDC_CLIENT_ID, DESKTOP_DEFAULT_OIDC_CLIENT_ID);
     }
 
     #[test]

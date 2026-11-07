@@ -47,14 +47,14 @@
           alsa-lib
           fontconfig
           freetype
+          libx11
+          libxcb
+          libxcursor
+          libxi
           libxkbcommon
+          libxrandr
           vulkan-loader
           wayland
-          xorg.libX11
-          xorg.libXcursor
-          xorg.libXi
-          xorg.libXrandr
-          xorg.libxcb
         ];
         # Compose Web (Kotlin/Wasm) の単体テストは Karma で Chrome を使う。CI と同じく
         # サンドボックスを外したラッパーを CHROME_BIN に渡す。Nix の chromium は Linux のみ。
