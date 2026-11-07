@@ -768,6 +768,7 @@
       "pending": "等待核准",
       "mine": "我的 App",
       "installed": "已安裝的 App",
+      "other": "其他 App",
       "notificationOnly": "僅通知",
       "viewOnly": "僅檢視",
       "createHelp": "建立後設定權限與事件，再向管理員申請核准。"

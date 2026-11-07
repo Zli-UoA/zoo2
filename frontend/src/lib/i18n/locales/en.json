@@ -768,6 +768,7 @@
       "pending": "Awaiting approval",
       "mine": "My apps",
       "installed": "Installed apps",
+      "other": "Other apps",
       "notificationOnly": "Notification only",
       "viewOnly": "View only",
       "createHelp": "After creating the app, configure permissions and events, then request approval from an administrator."

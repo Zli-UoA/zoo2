@@ -768,6 +768,7 @@
       "pending": "等待批准",
       "mine": "我的 App",
       "installed": "已安装的 App",
+      "other": "其他 App",
       "notificationOnly": "仅通知",
       "viewOnly": "仅查看",
       "createHelp": "创建后设置权限和事件，再向管理员申请批准。"

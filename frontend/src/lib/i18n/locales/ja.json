@@ -768,6 +768,7 @@
       "pending": "承認待ち",
       "mine": "自分の App",
       "installed": "インストール済みの App",
+      "other": "そのほかの App",
       "notificationOnly": "通知専用",
       "viewOnly": "閲覧のみ",
       "createHelp": "作成後に権限やイベントを設定し、管理者に承認を申請します。"

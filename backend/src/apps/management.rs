@@ -360,6 +360,7 @@ async fn records(
     let mut db = s.db.clone();
     let mut tx = db.transaction().await?;
     can_manage(&mut tx, &s, &actor, &id).await?;
+    let credentials;
     let sql = match kind.as_str() {
         "versions" => {
             "SELECT json_build_object('revision',revision,'manifest',manifest::jsonb,'created_at',created_at)::text FROM app_versions WHERE app_id=$1 ORDER BY revision DESC LIMIT 100"
@@ -368,7 +369,10 @@ async fn records(
             "SELECT row_to_json(l)::text FROM app_audit_log l WHERE app_id=$1 ORDER BY created_at DESC LIMIT 100"
         }
         "credentials" => {
-            "SELECT json_build_object('id',t.id,'user_id',user_id,'scopes',t.scopes::jsonb,'expires_at',expires_at,'refresh_expires_at',t.created_at+interval '30 days','revoked_at',revoked_at)::text FROM app_credentials t JOIN app_installations i ON i.id=t.installation_id WHERE i.app_id=$1 ORDER BY t.created_at DESC LIMIT 100"
+            credentials = format!(
+                "SELECT json_build_object('id',t.id,'user_id',user_id,'scopes',t.scopes::jsonb,'expires_at',expires_at,'refresh_expires_at',t.created_at+interval '{REFRESH_TOKEN_TTL}','revoked_at',revoked_at)::text FROM app_credentials t JOIN app_installations i ON i.id=t.installation_id WHERE i.app_id=$1 ORDER BY t.created_at DESC LIMIT 100"
+            );
+            &credentials
         }
         _ => return Err(AppError::NotFound("Unknown app records".into())),
     };

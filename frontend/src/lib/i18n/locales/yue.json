@@ -768,6 +768,7 @@
       "pending": "等緊批准",
       "mine": "我嘅 App",
       "installed": "已安裝嘅 App",
+      "other": "其他 App",
       "notificationOnly": "淨係通知",
       "viewOnly": "淨係睇",
       "createHelp": "建立之後設定權限同事件，再搵管理員申請批准。"

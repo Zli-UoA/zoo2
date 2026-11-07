@@ -74,7 +74,7 @@ function UserAppConsoleList() {
   }, [client, reload]);
   const managed = (app: AppSummary) =>
     app.can_manage ?? (app.owner_id === currentUserId || isAdmin);
-  const groups: { key: string; title: string; apps: AppSummary[] }[] = apps
+  const shown: { key: string; title: string; apps: AppSummary[] }[] = apps
     ? [
         ...(isAdmin
           ? [
@@ -97,6 +97,11 @@ function UserAppConsoleList() {
         },
       ]
     : [];
+  // Administrators also receive other developers' draft and disabled apps; keep them reachable.
+  const rest = apps?.filter((app) => !shown.some((group) => group.apps.includes(app))) ?? [];
+  const groups = rest.length
+    ? [...shown, { key: "other", title: t("appConsole.list.other"), apps: rest }]
+    : shown;
   return (
     <section className="flex h-full min-h-0 flex-col" aria-labelledby="app-console-list-title">
       <PaneHeader>

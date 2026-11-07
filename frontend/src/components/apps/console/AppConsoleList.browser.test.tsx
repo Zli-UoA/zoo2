@@ -89,6 +89,27 @@ describe("App console list", () => {
     expect(installed.textContent).toContain("閲覧のみ");
   });
 
+  it("keeps other developers' draft and disabled apps reachable for administrators", async () => {
+    api.get.mockResolvedValue([
+      ...apps,
+      { ...apps[1], id: "off", name: "Disabled", status: "disabled" },
+      { ...apps[1], id: "wip", name: "Draft", status: "draft" },
+    ]);
+    list();
+    const other = (await screen.findByRole("heading", { name: "そのほかの App" })).closest(
+      "section",
+    )!;
+    expect(within(other).getByText("Disabled")).toBeVisible();
+    expect(within(other).getByText("Draft")).toBeVisible();
+    expect(within(other).queryByText("Review")).toBeNull();
+  });
+
+  it("omits the extra group when every app already has one", async () => {
+    list();
+    await screen.findByRole("heading", { name: "自分の App" });
+    expect(screen.queryByRole("heading", { name: "そのほかの App" })).toBeNull();
+  });
+
   it("hides the approval queue from members", async () => {
     api.admin = false;
     list();
