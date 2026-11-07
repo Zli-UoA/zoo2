@@ -110,7 +110,7 @@ impl WorkspaceView {
                 InputEvent::Changed(_) => {}
                 InputEvent::Submit(text) => {
                     let ok = this.state.update(cx, |state, cx| {
-                        let Some(msg_id) = state.active_reaction_message.clone() else {
+                        let Some((_, msg_id)) = state.active_reaction_message.clone() else {
                             return false;
                         };
                         let res = state.submit_reaction_input(&msg_id, text);
@@ -705,18 +705,49 @@ impl WorkspaceView {
             .store
             .is_synced(&ShapeId::Messages(channel_id.clone()));
 
-        let root_messages: Vec<Message> = state
+        let all_root_messages: Vec<Message> = state
             .store
             .root_messages(&channel_id)
             .into_iter()
             .cloned()
             .collect();
+        let total_roots = all_root_messages.len();
+        let render_limit = state.timeline_render_limit;
+        let hidden_count = total_roots.saturating_sub(render_limit);
+        let visible_roots = &all_root_messages[hidden_count..];
         let reply_counts = state.store.reply_counts(&channel_id);
         let reactions_by_msg = state.store.reaction_groups_by_message(&channel_id, &me_id);
 
         let mut timeline_items: Vec<Div> = Vec::new();
+        if hidden_count > 0 {
+            timeline_items.push(
+                div().w_full().flex().justify_center().py_1().child(
+                    div()
+                        .id("btn-load-older-messages")
+                        .px_3()
+                        .py_1()
+                        .rounded_md()
+                        .bg(theme::BG_SURFACE)
+                        .border_1()
+                        .border_color(theme::BORDER)
+                        .hover(|s| s.bg(theme::BG_HOVER).cursor_pointer())
+                        .text_xs()
+                        .text_color(theme::ACCENT)
+                        .child(format!("過去のメッセージを表示 (残り {hidden_count} 件)"))
+                        .on_mouse_up(
+                            MouseButton::Left,
+                            cx.listener(|this, _: &MouseUpEvent, _, cx| {
+                                this.state.update(cx, |s, cx| {
+                                    s.load_older_messages();
+                                    cx.notify();
+                                });
+                            }),
+                        ),
+                ),
+            );
+        }
         let mut last_date = None;
-        for msg in &root_messages {
+        for msg in visible_roots {
             let date = local_zoned(msg.created_at).map(|z| z.date());
             if date.is_some() && date != last_date {
                 if let Some(d) = date {
@@ -985,11 +1016,14 @@ impl WorkspaceView {
         let is_mine = message.user_id == me_id;
         let is_edited = message.updated_at.is_some();
         let time_str = local_time_string(message.created_at);
-        let reaction_picker_open =
-            state.active_reaction_message.as_deref() == Some(msg_id.as_str());
+        let reaction_picker_open = state
+            .active_reaction_message
+            .as_ref()
+            .is_some_and(|(pane, id)| pane == pane_prefix && id == &msg_id);
 
         let msg_id_reply = msg_id.clone();
         let msg_id_react = msg_id.clone();
+        let pane_for_react = pane_prefix.to_string();
         let msg_id_edit = msg_id.clone();
         let msg_id_delete = msg_id.clone();
         let msg_id_thread = msg_id.clone();
@@ -1190,15 +1224,17 @@ impl WorkspaceView {
                                         MouseButton::Left,
                                         cx.listener(move |this, _: &MouseUpEvent, window, cx| {
                                             let m_id = msg_id_react.clone();
+                                            let pane_id = pane_for_react.clone();
                                             let opened = this.state.update(cx, |s, cx| {
-                                                if s.active_reaction_message.as_deref()
-                                                    == Some(m_id.as_str())
+                                                let target_key = (pane_id, m_id);
+                                                if s.active_reaction_message.as_ref()
+                                                    == Some(&target_key)
                                                 {
                                                     s.active_reaction_message = None;
                                                     cx.notify();
                                                     false
                                                 } else {
-                                                    s.active_reaction_message = Some(m_id);
+                                                    s.active_reaction_message = Some(target_key);
                                                     cx.notify();
                                                     true
                                                 }
@@ -1626,7 +1662,7 @@ impl WorkspaceView {
                                         cx.listener(move |this, _: &MouseUpEvent, window, cx| {
                                             let r_id = root_for_focus.clone();
                                             this.state.update(cx, |s, cx| {
-                                                s.target = Target::Reply(r_id);
+                                                s.focus_thread_reply(r_id);
                                                 cx.notify();
                                             });
                                             window.focus(&this.composer_input.focus_handle(cx));
@@ -1687,26 +1723,29 @@ impl WorkspaceView {
 }
 
 impl Render for WorkspaceView {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let login_phase = self.state.read(cx).login_phase.clone();
         if let Some(phase) = login_phase {
             return self.render_login_view(&phase, cx);
         }
 
-        // タイムラインのスクロール位置を AppState に同期し、最下部を見ているときだけ最新メッセージを既読扱いにする。
+        // ウィンドウのアクティブ状態とタイムラインのスクロール位置を AppState に同期し、
+        // ウィンドウがアクティブかつ最下部を見ているときだけ最新メッセージを既読扱いにする。
+        let window_active = window.is_window_active();
         let scroll_to_bottom = self
             .state
             .update(cx, |s, _| std::mem::take(&mut s.pending_scroll_to_bottom));
         if scroll_to_bottom {
             self.timeline_scroll.scroll_to_bottom();
             self.state
-                .update(cx, |s, _| s.update_timeline_scroll_state(true));
+                .update(cx, |s, _| s.update_timeline_view_state(window_active, true));
         } else {
             let max_y = self.timeline_scroll.max_offset().height;
             let cur_y = (-self.timeline_scroll.offset().y).max(px(0.0));
             let at_bottom = max_y <= px(4.0) || (max_y - cur_y) <= px(24.0);
-            self.state
-                .update(cx, |s, _| s.update_timeline_scroll_state(at_bottom));
+            self.state.update(cx, |s, _| {
+                s.update_timeline_view_state(window_active, at_bottom)
+            });
         }
 
         let thread_root = self

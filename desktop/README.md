@@ -21,7 +21,13 @@ zoo2 のネイティブデスクトップクライアントです。Rust と [GP
 
 ### OIDC クライアント ID (`ZOO_OIDC_CLIENT_ID`) の指定について
 
-本番の AuthZ (`https://account.zli.works/api/auth`) でデスクトップ版専用の public client ID が発行・既定値に反映されるまでは、AuthZ に登録されている public client の ID（デバイスコードと `refresh_token` グラントが有効なもの）を `config.toml` の `oidc_client_id` または環境変数 `ZOO_OIDC_CLIENT_ID` で指定してください。
+本番の AuthZ (`https://account.zli.works/api/auth`) でデスクトップ版専用の public client ID が発行・既定値に反映されるまでは、AuthZ に登録されている public client の ID を `config.toml` の `oidc_client_id` または環境変数 `ZOO_OIDC_CLIENT_ID` で指定してください。
+
+使用する public client には、AuthZ 側で以下の設定が必要です。
+
+- デバイスコード (`urn:ietf:params:oauth:grant-type:device_code`) と `refresh_token` グラントが有効であること
+- リソース `https://zli.chat/api`（backend の `OIDC_AUDIENCE` と同じ値）が紐付けられていること
+- スコープ `openid profile offline_access` が許可されていること
 
 ```toml
 api_base_url = "https://zli.chat"

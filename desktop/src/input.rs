@@ -3,12 +3,12 @@
 use std::ops::Range;
 
 use gpui::{
-    App, Bounds, ClipboardItem, Context, CursorStyle, Element, ElementId, ElementInputHandler,
-    Entity, EntityInputHandler, EventEmitter, FocusHandle, Focusable, GlobalElementId,
-    InspectorElementId, IntoElement, KeyBinding, LayoutId, MouseButton, MouseDownEvent,
-    MouseMoveEvent, MouseUpEvent, PaintQuad, Pixels, Point, Render, ShapedLine, SharedString,
-    Style, TextRun, UTF16Selection, UnderlineStyle, Window, actions, div, fill, point, prelude::*,
-    px, relative, size,
+    App, Bounds, ClipboardItem, ContentMask, Context, CursorStyle, Element, ElementId,
+    ElementInputHandler, Entity, EntityInputHandler, EventEmitter, FocusHandle, Focusable,
+    GlobalElementId, InspectorElementId, IntoElement, KeyBinding, LayoutId, MouseButton,
+    MouseDownEvent, MouseMoveEvent, MouseUpEvent, PaintQuad, Pixels, Point, Render, ShapedLine,
+    SharedString, Style, TextRun, UTF16Selection, UnderlineStyle, Window, actions, div, fill,
+    point, prelude::*, px, relative, size,
 };
 use unicode_segmentation::UnicodeSegmentation;
 
@@ -102,6 +102,7 @@ pub struct TextInput {
     marked_range: Option<Range<usize>>,
     last_rows: Vec<ShapedRow>,
     last_scroll_row: usize,
+    last_scroll_x: Pixels,
     last_line_height: Pixels,
     last_bounds: Option<Bounds<Pixels>>,
     is_selecting: bool,
@@ -135,6 +136,7 @@ impl TextInput {
             marked_range: None,
             last_rows: Vec::new(),
             last_scroll_row: 0,
+            last_scroll_x: px(0.0),
             last_line_height: px(20.0),
             last_bounds: None,
             is_selecting: false,
@@ -175,6 +177,7 @@ impl TextInput {
         self.marked_range = None;
         self.last_rows.clear();
         self.last_scroll_row = 0;
+        self.last_scroll_x = px(0.0);
         self.is_selecting = false;
         cx.notify();
     }
@@ -409,7 +412,7 @@ impl TextInput {
         let vis_idx = ((rel_y / line_h) as usize).min(visible_rows.saturating_sub(1));
         let row_idx = (self.last_scroll_row + vis_idx).min(self.last_rows.len().saturating_sub(1));
         let row = &self.last_rows[row_idx];
-        let local_x = (position.x - bounds.left()).max(px(0.0));
+        let local_x = (position.x - bounds.left() + self.last_scroll_x).max(px(0.0));
         let local_offset = row.line.closest_index_for_x(local_x);
         (row.start + local_offset).min(row.end)
     }
@@ -544,10 +547,11 @@ impl EntityInputHandler for TextInput {
         let vis_row = row_idx.saturating_sub(self.last_scroll_row);
         let top = bounds.top() + self.last_line_height * (vis_row as f32);
         let bottom = top + self.last_line_height;
-        Some(Bounds::from_corners(
-            point(bounds.left() + row.line.x_for_index(local_start), top),
-            point(bounds.left() + row.line.x_for_index(local_end), bottom),
-        ))
+        let x1 = (bounds.left() + row.line.x_for_index(local_start) - self.last_scroll_x)
+            .clamp(bounds.left(), bounds.right());
+        let x2 = (bounds.left() + row.line.x_for_index(local_end) - self.last_scroll_x)
+            .clamp(bounds.left(), bounds.right());
+        Some(Bounds::from_corners(point(x1, top), point(x2, bottom)))
     }
 
     fn character_index_for_point(
@@ -568,6 +572,7 @@ struct TextElement {
 struct PrepaintState {
     rows: Vec<ShapedRow>,
     scroll_row: usize,
+    scroll_x: Pixels,
     visible_rows: usize,
     line_height: Pixels,
     cursor: Option<PaintQuad>,
@@ -633,6 +638,7 @@ impl Element for TextElement {
         let marked_range = input.marked_range.clone();
         let cursor = input.cursor_offset();
         let last_scroll_row = input.last_scroll_row;
+        let last_scroll_x = input.last_scroll_x;
         let style = window.text_style();
         let line_height = window.line_height();
         let font_size = style.font_size.to_pixels(window.rem_size());
@@ -727,6 +733,12 @@ impl Element for TextElement {
         let scroll_row =
             compute_visible_scroll_row(rows.len(), cursor_row, last_scroll_row, visible_rows);
 
+        let cursor_x_in_row = rows
+            .get(cursor_row)
+            .map(|r| r.line.x_for_index(cursor.saturating_sub(r.start)))
+            .unwrap_or(px(0.0));
+        let scroll_x = compute_visible_scroll_x(cursor_x_in_row, last_scroll_x, bounds.size.width);
+
         let mut selections = Vec::new();
         let mut cursor_quad = None;
 
@@ -737,7 +749,7 @@ impl Element for TextElement {
             {
                 let vis_idx = cursor_row - scroll_row;
                 let local_cursor = cursor.saturating_sub(row.start);
-                let x = bounds.left() + row.line.x_for_index(local_cursor);
+                let x = bounds.left() + row.line.x_for_index(local_cursor) - scroll_x;
                 let y = bounds.top() + line_height * (vis_idx as f32);
                 cursor_quad = Some(fill(
                     Bounds::new(point(x, y), size(px(2.0), line_height)),
@@ -749,8 +761,8 @@ impl Element for TextElement {
                 let sel_start = selected_range.start.max(row.start).min(row.end);
                 let sel_end = selected_range.end.max(row.start).min(row.end);
                 if sel_start < sel_end {
-                    let x1 = bounds.left() + row.line.x_for_index(sel_start - row.start);
-                    let x2 = bounds.left() + row.line.x_for_index(sel_end - row.start);
+                    let x1 = bounds.left() + row.line.x_for_index(sel_start - row.start) - scroll_x;
+                    let x2 = bounds.left() + row.line.x_for_index(sel_end - row.start) - scroll_x;
                     let y = bounds.top() + line_height * (vis_idx as f32);
                     selections.push(fill(
                         Bounds::from_corners(point(x1, y), point(x2, y + line_height)),
@@ -763,6 +775,7 @@ impl Element for TextElement {
         PrepaintState {
             rows,
             scroll_row,
+            scroll_x,
             visible_rows,
             line_height,
             cursor: cursor_quad,
@@ -786,31 +799,38 @@ impl Element for TextElement {
             ElementInputHandler::new(bounds, self.input.clone()),
             cx,
         );
-        for selection in prepaint.selections.drain(..) {
-            window.paint_quad(selection);
-        }
         let line_height = prepaint.line_height;
         let scroll_row = prepaint.scroll_row;
+        let scroll_x = prepaint.scroll_x;
         let visible_rows = prepaint.visible_rows;
-        for (vis_idx, row) in prepaint
-            .rows
-            .iter()
-            .skip(scroll_row)
-            .take(visible_rows)
-            .enumerate()
-        {
-            let origin = point(bounds.left(), bounds.top() + line_height * (vis_idx as f32));
-            let _ = row.line.paint(origin, line_height, window, cx);
-        }
-        if focus_handle.is_focused(window)
-            && let Some(cursor) = prepaint.cursor.take()
-        {
-            window.paint_quad(cursor);
-        }
+        window.with_content_mask(Some(ContentMask { bounds }), |window| {
+            for selection in prepaint.selections.drain(..) {
+                window.paint_quad(selection);
+            }
+            for (vis_idx, row) in prepaint
+                .rows
+                .iter()
+                .skip(scroll_row)
+                .take(visible_rows)
+                .enumerate()
+            {
+                let origin = point(
+                    bounds.left() - scroll_x,
+                    bounds.top() + line_height * (vis_idx as f32),
+                );
+                let _ = row.line.paint(origin, line_height, window, cx);
+            }
+            if focus_handle.is_focused(window)
+                && let Some(cursor) = prepaint.cursor.take()
+            {
+                window.paint_quad(cursor);
+            }
+        });
         let rows = std::mem::take(&mut prepaint.rows);
         self.input.update(cx, |input, _cx| {
             input.last_rows = rows;
             input.last_scroll_row = scroll_row;
+            input.last_scroll_x = scroll_x;
             input.last_line_height = line_height;
             input.last_bounds = Some(bounds);
         });
@@ -919,6 +939,23 @@ pub fn compute_visible_scroll_row(
     scroll.min(max_scroll)
 }
 
+/// 1行の幅が入力欄の幅を超えるときに、カーソル位置を表示範囲に収める横スクロール量を求める。
+pub fn compute_visible_scroll_x(
+    cursor_x: Pixels,
+    last_scroll_x: Pixels,
+    available_width: Pixels,
+) -> Pixels {
+    let margin = px(6.0);
+    let usable_width = (available_width - margin).max(px(1.0));
+    let mut scroll_x = last_scroll_x.max(px(0.0));
+    if cursor_x < scroll_x {
+        scroll_x = cursor_x;
+    } else if cursor_x > scroll_x + usable_width {
+        scroll_x = cursor_x - usable_width;
+    }
+    scroll_x.max(px(0.0))
+}
+
 pub fn clamp_to_char_boundary(text: &str, mut offset: usize) -> usize {
     offset = offset.min(text.len());
     while offset > 0 && !text.is_char_boundary(offset) {
@@ -1025,5 +1062,23 @@ mod tests {
         assert_eq!(compute_visible_scroll_row(10, 5, 2, 8), 2);
         // カーソルが上端より上(1行目)へ移動したときはカーソル行まで戻す
         assert_eq!(compute_visible_scroll_row(10, 1, 2, 8), 1);
+
+        // 横方向のスクロール追従
+        assert_eq!(
+            compute_visible_scroll_x(px(50.0), px(0.0), px(100.0)),
+            px(0.0)
+        );
+        assert_eq!(
+            compute_visible_scroll_x(px(140.0), px(0.0), px(100.0)),
+            px(46.0)
+        );
+        assert_eq!(
+            compute_visible_scroll_x(px(80.0), px(46.0), px(100.0)),
+            px(46.0)
+        );
+        assert_eq!(
+            compute_visible_scroll_x(px(20.0), px(46.0), px(100.0)),
+            px(20.0)
+        );
     }
 }
