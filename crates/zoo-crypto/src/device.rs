@@ -236,7 +236,8 @@ struct PickleEnvelope {
 
 /// `LP(PICKLE_BINDING_CONTEXT)‖LP(user_id)‖LP(device_id)`。LP は u32 ビッグエンディアンの長さと UTF-8 のバイト列。
 ///
-/// JSON ではない形にして、サーバーに送る署名付き JSON と取り違えないようにする。
+/// 署名する対象を JSON ではなく長さ付きのバイト列にして、この署名がサーバーに送る
+/// 署名付き JSON の署名と取り違えられないようにする。
 fn binding_message(user_id: &str, device_id: &str) -> Vec<u8> {
     let mut message = Vec::new();
     for part in [PICKLE_BINDING_CONTEXT, user_id, device_id] {

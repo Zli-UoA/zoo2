@@ -1134,7 +1134,7 @@ Megolm のメッセージ（`messages` の行）を復号したとき：
   {"version": 1, "user_id": "...", "device_id": "...", "account": "<vodozemac の暗号化した pickle>", "binding": "<署名>"}
   ```
 
-  `user_id` と `device_id` は平文で持つ。書き換えに気付けるように、`binding` に `LP("zoo e2ee device pickle v1")‖LP(user_id)‖LP(device_id)` への端末の署名鍵の署名を入れる（`LP` は[鍵スロット](#鍵スロット)の AAD と同じ）。JSON ではない形にして、サーバーに送る署名付きの JSON と取り違えないようにする。pickle key が違えば復号に失敗し、`CryptoError::Pickle` になる。
+  `user_id` と `device_id` は平文で持つ。書き換えに気付けるように、`binding` に `LP("zoo e2ee device pickle v1")‖LP(user_id)‖LP(device_id)` への端末の署名鍵の署名を入れる（`LP` は[鍵スロット](#鍵スロット)の AAD と同じ）。署名する対象を JSON ではなく長さ付きのバイト列にして、この署名がサーバーに送る署名付き JSON の署名と取り違えられないようにする。pickle key が違えば復号に失敗し、`CryptoError::Pickle` になる。
 - 【提案】保存先と pickle key の置き場所：
 
   | クライアント | 保存先 | pickle key |
