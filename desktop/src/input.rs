@@ -167,6 +167,8 @@ impl TextInput {
         self.selected_range = len..len;
         self.selection_reversed = false;
         self.marked_range = None;
+        self.last_scroll_row = 0;
+        self.last_scroll_x = px(0.0);
         cx.notify();
     }
 
@@ -733,11 +735,17 @@ impl Element for TextElement {
         let scroll_row =
             compute_visible_scroll_row(rows.len(), cursor_row, last_scroll_row, visible_rows);
 
-        let cursor_x_in_row = rows
+        let (cursor_x_in_row, row_width) = rows
             .get(cursor_row)
-            .map(|r| r.line.x_for_index(cursor.saturating_sub(r.start)))
-            .unwrap_or(px(0.0));
-        let scroll_x = compute_visible_scroll_x(cursor_x_in_row, last_scroll_x, bounds.size.width);
+            .map(|r| {
+                (
+                    r.line.x_for_index(cursor.saturating_sub(r.start)),
+                    r.line.width,
+                )
+            })
+            .unwrap_or((px(0.0), px(0.0)));
+        let scroll_x =
+            compute_visible_scroll_x(cursor_x_in_row, row_width, last_scroll_x, bounds.size.width);
 
         let mut selections = Vec::new();
         let mut cursor_quad = None;
@@ -940,20 +948,23 @@ pub fn compute_visible_scroll_row(
 }
 
 /// 1行の幅が入力欄の幅を超えるときに、カーソル位置を表示範囲に収める横スクロール量を求める。
+/// 行自体が短縮・置換されて `row_width <= usable_width` になった場合は `0` に戻す。
 pub fn compute_visible_scroll_x(
     cursor_x: Pixels,
+    row_width: Pixels,
     last_scroll_x: Pixels,
     available_width: Pixels,
 ) -> Pixels {
     let margin = px(6.0);
     let usable_width = (available_width - margin).max(px(1.0));
-    let mut scroll_x = last_scroll_x.max(px(0.0));
+    let max_scroll_x = (row_width.max(cursor_x) - usable_width).max(px(0.0));
+    let mut scroll_x = last_scroll_x.clamp(px(0.0), max_scroll_x);
     if cursor_x < scroll_x {
         scroll_x = cursor_x;
     } else if cursor_x > scroll_x + usable_width {
         scroll_x = cursor_x - usable_width;
     }
-    scroll_x.max(px(0.0))
+    scroll_x.clamp(px(0.0), max_scroll_x)
 }
 
 pub fn clamp_to_char_boundary(text: &str, mut offset: usize) -> usize {
@@ -1065,20 +1076,25 @@ mod tests {
 
         // 横方向のスクロール追従
         assert_eq!(
-            compute_visible_scroll_x(px(50.0), px(0.0), px(100.0)),
+            compute_visible_scroll_x(px(50.0), px(50.0), px(0.0), px(100.0)),
             px(0.0)
         );
         assert_eq!(
-            compute_visible_scroll_x(px(140.0), px(0.0), px(100.0)),
+            compute_visible_scroll_x(px(140.0), px(140.0), px(0.0), px(100.0)),
             px(46.0)
         );
         assert_eq!(
-            compute_visible_scroll_x(px(80.0), px(46.0), px(100.0)),
+            compute_visible_scroll_x(px(80.0), px(140.0), px(46.0), px(100.0)),
             px(46.0)
         );
         assert_eq!(
-            compute_visible_scroll_x(px(20.0), px(46.0), px(100.0)),
+            compute_visible_scroll_x(px(20.0), px(140.0), px(46.0), px(100.0)),
             px(20.0)
+        );
+        // 短い行に置換された場合は前回の横スクロール量が残っていても 0 に戻る
+        assert_eq!(
+            compute_visible_scroll_x(px(40.0), px(40.0), px(120.0), px(100.0)),
+            px(0.0)
         );
     }
 }

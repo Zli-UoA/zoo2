@@ -25,6 +25,7 @@ use zoo2_client_core::{
 use crate::login::{self, AuthEvent, LoginPhase};
 
 const READ_STATE_POLL: Duration = Duration::from_secs(10);
+const READ_MARK_BACKOFF: Duration = Duration::from_secs(5);
 const TYPING_SEND_INTERVAL: Duration = Duration::from_secs(2);
 const TYPING_IDLE_TIMEOUT: Duration = Duration::from_secs(3);
 const NOTICE_TIMEOUT: Duration = Duration::from_secs(5);
@@ -71,6 +72,10 @@ pub enum AppEvent {
         content: String,
     },
     ReadStates(Vec<ReadState>),
+    ReadMarkSucceeded {
+        channel_id: String,
+        message_id: String,
+    },
     ReadMarkFailed {
         channel_id: String,
         message_id: String,
@@ -88,9 +93,9 @@ pub enum AppEvent {
 #[derive(Debug)]
 pub enum DesktopEvent {
     Auth(AuthEvent),
-    Shape(ShapeEvent),
-    App(AppEvent),
-    Tick,
+    Shape { session_gen: u64, event: ShapeEvent },
+    App { session_gen: u64, event: AppEvent },
+    Tick { session_gen: u64 },
 }
 
 /// デスクトップ版のアプリケーション状態 (`Entity<AppState>`)。
@@ -111,6 +116,8 @@ pub struct AppState {
     pub api: Option<ApiClient>,
     pub me: Option<Me>,
     pub session_id: String,
+    /// セッション世代。ログアウトや再ログイン時にインクリメントし、古いタスクから届いたイベントを破棄する。
+    pub session_gen: u64,
 
     pub current_channel: Option<String>,
     pub selected_message: Option<String>,
@@ -136,6 +143,8 @@ pub struct AppState {
 
     pub unread: HashSet<String>,
     pub last_read_marked: HashMap<String, String>,
+    pub read_mark_in_flight: HashMap<String, String>,
+    pub read_mark_backoff_until: HashMap<String, (String, Instant)>,
     pub newest_shown: Option<(String, String)>,
     /// ウィンドウが前面（アクティブ）かどうか。非アクティブの間は自動既読にしない。
     pub window_active: bool,
@@ -152,6 +161,7 @@ pub struct AppState {
     pub typing_poll_in_flight: bool,
 
     pub notice: Option<(String, Instant)>,
+    pub sync_error: Option<String>,
     pub update_available: Option<String>,
 
     pub subscriptions: HashMap<ShapeId, AbortHandle>,
@@ -200,6 +210,7 @@ impl AppState {
             api: None,
             me: None,
             session_id: uuid::Uuid::new_v4().to_string(),
+            session_gen: 0,
             current_channel: None,
             selected_message: None,
             thread: None,
@@ -214,6 +225,8 @@ impl AppState {
             failed_drafts: Vec::new(),
             unread: HashSet::new(),
             last_read_marked: HashMap::new(),
+            read_mark_in_flight: HashMap::new(),
+            read_mark_backoff_until: HashMap::new(),
             newest_shown: None,
             window_active: true,
             timeline_at_bottom: true,
@@ -224,6 +237,7 @@ impl AppState {
             last_key_typed: None,
             typing_poll_in_flight: false,
             notice: None,
+            sync_error: None,
             update_available: None,
             subscriptions: HashMap::new(),
             background_tasks: Vec::new(),
@@ -337,18 +351,28 @@ impl AppState {
     }
 
     /// ログアウトしてトークンを削除し、ログイン画面へ戻る。
+    /// ローカルトークンの削除に失敗した場合はログイン状態を維持して通知を出す。
     pub fn logout(&mut self) {
-        self.stop_typing();
-        self.abort_all_tasks();
-        if let AuthConfig::Oidc(oidc) = &self.config.auth {
-            let oidc = oidc.clone();
-            let http = self.http.clone();
-            if let Ok((_, Some(refresh_token))) = login::delete_local_token_for_logout(&self.config)
-            {
-                self.spawn_tokio(async move {
-                    login::revoke_refresh_token(http, oidc, refresh_token).await;
-                });
+        if let AuthConfig::Oidc(oidc) = self.config.auth.clone() {
+            match login::delete_local_token_for_logout(&self.config) {
+                Ok((_, refresh_token)) => {
+                    self.stop_typing();
+                    if let Some(refresh_token) = refresh_token {
+                        let http = self.http.clone();
+                        self.spawn_tokio(async move {
+                            login::revoke_refresh_token(http, oidc, refresh_token).await;
+                        });
+                    }
+                }
+                Err(err) => {
+                    self.notify(format!(
+                        "ログアウトに失敗しました（トークン削除エラー）: {err:#}"
+                    ));
+                    return;
+                }
             }
+        } else {
+            self.stop_typing();
         }
         self.reset_to_login(None);
     }
@@ -365,12 +389,28 @@ impl AppState {
         }
     }
 
-    fn reset_to_login(&mut self, error: Option<String>) {
+    /// 現在のセッションに紐づくバックグラウンドタスクを起動し、`background_tasks` に登録する。
+    fn spawn_session_task<F>(&mut self, future: F) -> bool
+    where
+        F: Future<Output = ()> + Send + 'static,
+    {
+        self.background_tasks.retain(|h| !h.is_finished());
+        if let Some(handle) = self.spawn_tokio(future) {
+            self.background_tasks.push(handle);
+            true
+        } else {
+            false
+        }
+    }
+
+    fn clear_session_state(&mut self) {
+        self.session_gen = self.session_gen.wrapping_add(1);
         self.abort_all_tasks();
         self.store = Store::default();
         self.credentials = None;
         self.api = None;
         self.me = None;
+        self.session_id = uuid::Uuid::new_v4().to_string();
         self.current_channel = None;
         self.selected_message = None;
         self.thread = None;
@@ -385,13 +425,22 @@ impl AppState {
         self.failed_drafts.clear();
         self.unread.clear();
         self.last_read_marked.clear();
+        self.read_mark_in_flight.clear();
+        self.read_mark_backoff_until.clear();
         self.newest_shown = None;
         self.timeline_at_bottom = true;
         self.pending_scroll_to_bottom = false;
         self.timeline_render_limit = INITIAL_TIMELINE_LIMIT;
         self.typing.clear();
         self.typing_sent = None;
+        self.last_key_typed = None;
         self.typing_poll_in_flight = false;
+        self.notice = None;
+        self.sync_error = None;
+    }
+
+    fn reset_to_login(&mut self, error: Option<String>) {
+        self.clear_session_state();
         self.login_phase = Some(LoginPhase::Ready { error });
     }
 
@@ -406,12 +455,25 @@ impl AppState {
                 self.on_auth_event(auth);
                 true
             }
-            DesktopEvent::Shape(shape) => {
-                self.on_shape(shape);
+            DesktopEvent::Shape { session_gen, event } => {
+                if session_gen != self.session_gen {
+                    return false;
+                }
+                self.on_shape(event);
                 true
             }
-            DesktopEvent::App(app) => self.on_app_event(app),
-            DesktopEvent::Tick => self.on_tick(),
+            DesktopEvent::App { session_gen, event } => {
+                if session_gen != self.session_gen {
+                    return false;
+                }
+                self.on_app_event(event)
+            }
+            DesktopEvent::Tick { session_gen } => {
+                if session_gen != self.session_gen {
+                    return false;
+                }
+                self.on_tick()
+            }
         }
     }
 
@@ -437,7 +499,7 @@ impl AppState {
 
     /// 認証完了後にセッションを開始し、Electric Shape 購読と定期タスクを立ち上げる。
     pub fn connect_session(&mut self, credentials: Credentials, me: Me) {
-        self.abort_all_tasks();
+        self.clear_session_state();
         let api = ApiClient::new(self.http.clone(), &self.api_base_url, credentials.clone());
         self.credentials = Some(credentials);
         self.api = Some(api);
@@ -451,51 +513,61 @@ impl AppState {
         self.start_periodic_tasks();
     }
 
+    /// 停止した Shape 購読を再試行する。
+    pub fn retry_sync(&mut self) {
+        self.sync_error = None;
+        self.subscribe(ShapeId::Channels);
+        self.subscribe(ShapeId::Users);
+        self.subscribe(ShapeId::ChannelUsers);
+        if let Some(ch) = self.current_channel.clone() {
+            self.subscribe(ShapeId::Messages(ch.clone()));
+            self.subscribe(ShapeId::Reactions(ch));
+        }
+        self.poll_read_states();
+    }
+
     fn start_periodic_tasks(&mut self) {
+        let session_gen = self.session_gen;
         // 既読状態の定期取得
-        {
+        if let Some(api) = self.api.clone() {
             let tx = self.event_tx.clone();
-            let api = self.api.clone();
-            if let Some(api) = api
-                && let Some(handle) = self.spawn_tokio(async move {
-                    let mut interval = tokio::time::interval(READ_STATE_POLL);
-                    loop {
-                        interval.tick().await;
-                        if let Ok(states) = api.read_states().await
-                            && tx
-                                .send(DesktopEvent::App(AppEvent::ReadStates(states)))
-                                .is_err()
-                        {
-                            break;
-                        }
+            self.spawn_session_task(async move {
+                let mut interval = tokio::time::interval(READ_STATE_POLL);
+                loop {
+                    interval.tick().await;
+                    if let Ok(states) = api.read_states().await
+                        && tx
+                            .send(DesktopEvent::App {
+                                session_gen,
+                                event: AppEvent::ReadStates(states),
+                            })
+                            .is_err()
+                    {
+                        break;
                     }
-                })
-            {
-                self.background_tasks.push(handle);
-            }
+                }
+            });
         }
 
         // 1秒ごとの Tick (通知消去・入力中解除・既読送信)
         {
             let tx = self.event_tx.clone();
-            if let Some(handle) = self.spawn_tokio(async move {
+            self.spawn_session_task(async move {
                 let mut interval = tokio::time::interval(Duration::from_secs(1));
                 loop {
                     interval.tick().await;
-                    if tx.send(DesktopEvent::Tick).is_err() {
+                    if tx.send(DesktopEvent::Tick { session_gen }).is_err() {
                         break;
                     }
                 }
-            }) {
-                self.background_tasks.push(handle);
-            }
+            });
         }
 
         // 新バージョン確認
         if self.config.check_updates {
             let http = self.http.clone();
             let tx = self.event_tx.clone();
-            if let Some(handle) = self.spawn_tokio(async move {
+            self.spawn_session_task(async move {
                 let cache = login::token_file()
                     .ok()
                     .and_then(|p| p.parent().map(update::cache_path));
@@ -512,11 +584,12 @@ impl AppState {
                 )
                 .await
                 {
-                    let _ = tx.send(DesktopEvent::App(AppEvent::UpdateAvailable(version)));
+                    let _ = tx.send(DesktopEvent::App {
+                        session_gen,
+                        event: AppEvent::UpdateAvailable(version),
+                    });
                 }
-            }) {
-                self.background_tasks.push(handle);
-            }
+            });
         }
     }
 
@@ -543,6 +616,7 @@ impl AppState {
         let base_url = self.api_base_url.clone();
         let tx = self.event_tx.clone();
         let shape_id = id.clone();
+        let session_gen = self.session_gen;
 
         let (shape_tx, mut shape_rx) = mpsc::unbounded_channel();
         if let Some(rt) = &self.runtime {
@@ -559,7 +633,13 @@ impl AppState {
                     }
                     let _abort_guard = AbortOnDrop(stream_handle);
                     while let Some(ev) = shape_rx.recv().await {
-                        if tx.send(DesktopEvent::Shape(ev)).is_err() {
+                        if tx
+                            .send(DesktopEvent::Shape {
+                                session_gen,
+                                event: ev,
+                            })
+                            .is_err()
+                        {
                             break;
                         }
                     }
@@ -578,7 +658,13 @@ impl AppState {
                 }
                 let _abort_guard = AbortOnDrop(stream_handle);
                 while let Some(ev) = shape_rx.recv().await {
-                    if tx.send(DesktopEvent::Shape(ev)).is_err() {
+                    if tx
+                        .send(DesktopEvent::Shape {
+                            session_gen,
+                            event: ev,
+                        })
+                        .is_err()
+                    {
                         break;
                     }
                 }
@@ -591,32 +677,51 @@ impl AppState {
     pub fn on_shape(&mut self, event: ShapeEvent) {
         match event {
             ShapeEvent::Batch(id, batch) => {
+                let prev_roots = match &id {
+                    ShapeId::Messages(ch)
+                        if self.current_channel.as_deref() == Some(ch.as_str()) =>
+                    {
+                        self.store.root_messages(ch).len()
+                    }
+                    _ => 0,
+                };
                 self.store.apply(&id, batch);
                 match &id {
                     ShapeId::Channels => {
-                        if self.store.is_synced(&ShapeId::Channels)
-                            && let Some(current) = self.current_channel.clone()
-                            && self
-                                .store
-                                .channel(&current)
-                                .is_none_or(|ch| ch.deleted_at.is_some())
-                        {
-                            self.evict_channel(&current);
-                            self.notify("このチャンネルへのアクセス権がなくなりました");
+                        if self.store.is_synced(&ShapeId::Channels) {
+                            self.sync_error = None;
+                            if let Some(current) = self.current_channel.clone()
+                                && self
+                                    .store
+                                    .channel(&current)
+                                    .is_none_or(|ch| ch.deleted_at.is_some())
+                            {
+                                self.evict_channel(&current);
+                                self.notify("このチャンネルへのアクセス権がなくなりました");
+                            }
                         }
                     }
                     ShapeId::Messages(ch) => {
                         if self.store.is_synced(&ShapeId::Messages(ch.clone())) {
                             self.reconcile_channel_targets(ch);
                         }
-                        if self.current_channel.as_deref() == Some(ch.as_str())
-                            && self.timeline_at_bottom
-                        {
-                            self.pending_scroll_to_bottom = true;
-                            if self.window_active
-                                && let Some(latest) = self.store.latest_root(ch)
+                        if self.current_channel.as_deref() == Some(ch.as_str()) {
+                            let new_roots = self.store.root_messages(ch).len();
+                            if self.timeline_at_bottom {
+                                self.pending_scroll_to_bottom = true;
+                                if self.window_active
+                                    && let Some(latest) = self.store.latest_root(ch)
+                                {
+                                    self.newest_shown = Some((ch.clone(), latest.id.clone()));
+                                }
+                            } else if new_roots > prev_roots
+                                && prev_roots >= self.timeline_render_limit
                             {
-                                self.newest_shown = Some((ch.clone(), latest.id.clone()));
+                                // 上へスクロールして過去のメッセージを読んでいる間に新着が届いたときは、
+                                // 表示範囲の先頭メッセージが押し出されてスクロール位置が跳ばないよう描画上限を広げる。
+                                self.timeline_render_limit = self
+                                    .timeline_render_limit
+                                    .saturating_add(new_roots - prev_roots);
                             }
                         }
                     }
@@ -639,7 +744,9 @@ impl AppState {
                     self.notify("このチャンネルへのアクセス権がなくなりました");
                     return;
                 }
-                self.notify(format!("同期が止まりました ({id:?}): {message}"));
+                let err_msg = format!("同期が止まりました ({id:?}): {message}");
+                self.sync_error = Some(err_msg.clone());
+                self.notify(err_msg);
             }
         }
     }
@@ -668,6 +775,8 @@ impl AppState {
         self.unsubscribe_channel(channel_id);
         self.unread.remove(channel_id);
         self.last_read_marked.remove(channel_id);
+        self.read_mark_in_flight.remove(channel_id);
+        self.read_mark_backoff_until.remove(channel_id);
         self.saved_drafts.retain(|(ch, _), _| ch != channel_id);
         if self
             .newest_shown
@@ -779,10 +888,27 @@ impl AppState {
                 self.sync_unread_with_latest();
                 changed
             }
+            AppEvent::ReadMarkSucceeded {
+                channel_id,
+                message_id,
+            } => {
+                if self.read_mark_in_flight.get(&channel_id) == Some(&message_id) {
+                    self.read_mark_in_flight.remove(&channel_id);
+                }
+                self.read_mark_backoff_until.remove(&channel_id);
+                false
+            }
             AppEvent::ReadMarkFailed {
                 channel_id,
                 message_id,
             } => {
+                if self.read_mark_in_flight.get(&channel_id) == Some(&message_id) {
+                    self.read_mark_in_flight.remove(&channel_id);
+                }
+                self.read_mark_backoff_until.insert(
+                    channel_id.clone(),
+                    (message_id.clone(), Instant::now() + READ_MARK_BACKOFF),
+                );
                 if self.last_read_marked.get(&channel_id) == Some(&message_id) {
                     self.last_read_marked.remove(&channel_id);
                 }
@@ -887,37 +1013,71 @@ impl AppState {
         if self.last_read_marked.get(&channel_id) == Some(&latest) {
             return unread_removed;
         }
+        if self.read_mark_in_flight.get(&channel_id) == Some(&latest)
+            || self
+                .read_mark_backoff_until
+                .get(&channel_id)
+                .is_some_and(|(msg_id, until)| msg_id == &latest && Instant::now() < *until)
+        {
+            return unread_removed;
+        }
         self.last_read_marked
             .insert(channel_id.clone(), latest.clone());
         if let Some(api) = self.api.clone() {
             let tx = self.event_tx.clone();
-            self.spawn_tokio(async move {
-                if let Err(err) = api.mark_read(&channel_id, &latest).await {
-                    if matches!(
-                        err.downcast_ref::<HttpError>(),
-                        Some(HttpError::Unauthorized)
-                    ) {
-                        let _ = tx.send(DesktopEvent::App(AppEvent::Unauthorized));
-                    } else {
-                        let _ = tx.send(DesktopEvent::App(AppEvent::ReadMarkFailed {
-                            channel_id,
-                            message_id: latest,
-                        }));
+            let session_gen = self.session_gen;
+            let ch_for_task = channel_id.clone();
+            let msg_for_task = latest.clone();
+            if self.spawn_session_task(async move {
+                match api.mark_read(&ch_for_task, &msg_for_task).await {
+                    Ok(_) => {
+                        let _ = tx.send(DesktopEvent::App {
+                            session_gen,
+                            event: AppEvent::ReadMarkSucceeded {
+                                channel_id: ch_for_task,
+                                message_id: msg_for_task,
+                            },
+                        });
+                    }
+                    Err(err) => {
+                        if matches!(
+                            err.downcast_ref::<HttpError>(),
+                            Some(HttpError::Unauthorized)
+                        ) {
+                            let _ = tx.send(DesktopEvent::App {
+                                session_gen,
+                                event: AppEvent::Unauthorized,
+                            });
+                        } else {
+                            let _ = tx.send(DesktopEvent::App {
+                                session_gen,
+                                event: AppEvent::ReadMarkFailed {
+                                    channel_id: ch_for_task,
+                                    message_id: msg_for_task,
+                                },
+                            });
+                        }
                     }
                 }
-            });
+            }) {
+                self.read_mark_in_flight.insert(channel_id, latest);
+            }
         }
         unread_removed
     }
 
-    pub fn poll_read_states(&self) {
+    pub fn poll_read_states(&mut self) {
         let Some(api) = self.api.clone() else {
             return;
         };
         let tx = self.event_tx.clone();
-        self.spawn_tokio(async move {
+        let session_gen = self.session_gen;
+        self.spawn_session_task(async move {
             if let Ok(states) = api.read_states().await {
-                let _ = tx.send(DesktopEvent::App(AppEvent::ReadStates(states)));
+                let _ = tx.send(DesktopEvent::App {
+                    session_gen,
+                    event: AppEvent::ReadStates(states),
+                });
             }
         });
     }
@@ -943,21 +1103,25 @@ impl AppState {
             scopes.push(Some(thread.root_id.clone()));
         }
         let tx = self.event_tx.clone();
-        if self
-            .spawn_tokio(async move {
-                for parent_id in scopes {
-                    if let Ok(users) = api.typing(&channel_id, parent_id.as_deref()).await {
-                        let _ = tx.send(DesktopEvent::App(AppEvent::Typing {
+        let session_gen = self.session_gen;
+        if self.spawn_session_task(async move {
+            for parent_id in scopes {
+                if let Ok(users) = api.typing(&channel_id, parent_id.as_deref()).await {
+                    let _ = tx.send(DesktopEvent::App {
+                        session_gen,
+                        event: AppEvent::Typing {
                             channel_id: channel_id.clone(),
                             parent_id,
                             users,
-                        }));
-                    }
+                        },
+                    });
                 }
-                let _ = tx.send(DesktopEvent::App(AppEvent::TypingPollFinished));
-            })
-            .is_some()
-        {
+            }
+            let _ = tx.send(DesktopEvent::App {
+                session_gen,
+                event: AppEvent::TypingPollFinished,
+            });
+        }) {
             self.typing_poll_in_flight = true;
         }
     }
@@ -1009,12 +1173,12 @@ impl AppState {
         }
     }
 
-    fn send_typing(&self, channel_id: String, parent_id: Option<String>, active: bool) {
+    fn send_typing(&mut self, channel_id: String, parent_id: Option<String>, active: bool) {
         let Some(api) = self.api.clone() else {
             return;
         };
         let session_id = self.session_id.clone();
-        self.spawn_tokio(async move {
+        self.spawn_session_task(async move {
             let _ = api
                 .set_typing(&channel_id, parent_id.as_deref(), &session_id, active)
                 .await;
@@ -1022,23 +1186,28 @@ impl AppState {
     }
 
     /// API 呼び出しをバックグラウンドで実行し、エラー時は通知または再ログインへ遷移する。
-    fn spawn_api<F, T>(&self, label: &'static str, future: F)
+    fn spawn_api<F, T>(&mut self, label: &'static str, future: F)
     where
         F: Future<Output = Result<T>> + Send + 'static,
         T: Send + 'static,
     {
         let tx = self.event_tx.clone();
-        self.spawn_tokio(async move {
+        let session_gen = self.session_gen;
+        self.spawn_session_task(async move {
             if let Err(err) = future.await {
                 if matches!(
                     err.downcast_ref::<HttpError>(),
                     Some(HttpError::Unauthorized)
                 ) {
-                    let _ = tx.send(DesktopEvent::App(AppEvent::Unauthorized));
+                    let _ = tx.send(DesktopEvent::App {
+                        session_gen,
+                        event: AppEvent::Unauthorized,
+                    });
                 } else {
-                    let _ = tx.send(DesktopEvent::App(AppEvent::Notice(format!(
-                        "{label}に失敗しました: {err}"
-                    ))));
+                    let _ = tx.send(DesktopEvent::App {
+                        session_gen,
+                        event: AppEvent::Notice(format!("{label}に失敗しました: {err}")),
+                    });
                 }
             }
         });
@@ -1330,7 +1499,8 @@ impl AppState {
             self.switch_composer_context(Some(&channel_id), next_target);
         }
 
-        self.spawn_tokio(async move {
+        let session_gen = self.session_gen;
+        self.spawn_session_task(async move {
             let id = uuid::Uuid::new_v4().to_string();
             let result = match &target {
                 Target::Channel => api.send_message(&id, &channel_id, &content, None).await,
@@ -1341,21 +1511,29 @@ impl AppState {
                 Target::Edit(message_id) => api.edit_message(message_id, &content).await,
             };
             if let Err(err) = result {
-                if matches!(
+                let is_unauthorized = matches!(
                     err.downcast_ref::<HttpError>(),
                     Some(HttpError::Unauthorized)
-                ) {
-                    let _ = tx.send(DesktopEvent::App(AppEvent::Unauthorized));
+                );
+                let _ = tx.send(DesktopEvent::App {
+                    session_gen,
+                    event: AppEvent::RestoreDraft {
+                        channel_id,
+                        target,
+                        content,
+                    },
+                });
+                if is_unauthorized {
+                    let _ = tx.send(DesktopEvent::App {
+                        session_gen,
+                        event: AppEvent::Unauthorized,
+                    });
                 } else {
-                    let _ = tx.send(DesktopEvent::App(AppEvent::Notice(format!(
-                        "送信に失敗しました: {err}"
-                    ))));
+                    let _ = tx.send(DesktopEvent::App {
+                        session_gen,
+                        event: AppEvent::Notice(format!("送信に失敗しました: {err}")),
+                    });
                 }
-                let _ = tx.send(DesktopEvent::App(AppEvent::RestoreDraft {
-                    channel_id,
-                    target,
-                    content,
-                }));
             }
         });
         true
@@ -1366,6 +1544,14 @@ impl AppState {
         let Some(channel_id) = self.current_channel.clone() else {
             return;
         };
+        if self
+            .store
+            .channel(&channel_id)
+            .is_some_and(|c| c.archive_at.is_some())
+        {
+            self.notify("アーカイブされたチャンネルではリアクションできません");
+            return;
+        }
         let Some(me) = self.me.as_ref() else {
             return;
         };
@@ -1763,17 +1949,28 @@ mod tests {
             Some("m4")
         );
 
-        // (e) mark_read API が一時失敗したときは last_read_marked が巻き戻り、次の判定で再送できる
+        // (e) mark_read API が一時失敗したときは last_read_marked が巻き戻り、バックオフ中は再送せず、
+        //     バックオフ経過後に再送できる
         state.on_app_event(AppEvent::ReadMarkFailed {
             channel_id: "c1".into(),
             message_id: "m4".into(),
         });
         assert!(!state.last_read_marked.contains_key("c1"));
+        assert!(state.read_mark_backoff_until.contains_key("c1"));
+        state.mark_current_read();
+        assert!(!state.last_read_marked.contains_key("c1"));
+
+        state.read_mark_backoff_until.clear();
         state.mark_current_read();
         assert_eq!(
             state.last_read_marked.get("c1").map(String::as_str),
             Some("m4")
         );
+        state.on_app_event(AppEvent::ReadMarkSucceeded {
+            channel_id: "c1".into(),
+            message_id: "m4".into(),
+        });
+        assert!(!state.read_mark_in_flight.contains_key("c1"));
 
         // (f) メッセージ同期前にチャンネル c2 を開き、あとから初回 Batch が届いたときも既読になる
         state.on_shape(ShapeEvent::Batch(
@@ -1927,6 +2124,51 @@ mod tests {
         // もう一度同じスレッドを開くと、スレッド返信の下書きが復元される
         state.open_thread("m1".into());
         assert_eq!(state.composer_draft, "スレッド返信の下書き");
+
+        // ログアウト後や別ユーザーでの再ログイン時に、前のセッションの遅延イベントが届いても
+        // 新しいセッションへ下書きや状態が混入しないことを確認する
+        let old_gen = state.session_gen;
+        state.reset_to_login(None);
+        assert_ne!(state.session_gen, old_gen);
+        assert!(!state.on_desktop_event(DesktopEvent::App {
+            session_gen: old_gen,
+            event: AppEvent::RestoreDraft {
+                channel_id: "c1".into(),
+                target: Target::Channel,
+                content: "前セッションの送信失敗本文".into(),
+            },
+        }));
+        assert!(state.failed_drafts.is_empty());
+
+        state.connect_session(
+            Credentials::Dev("u2".into()),
+            Me {
+                id: "u2".into(),
+                user_name: "bob".into(),
+                display_name: "Bob".into(),
+            },
+        );
+        assert!(state.failed_drafts.is_empty());
+        assert!(state.saved_drafts.is_empty());
+    }
+
+    #[tokio::test]
+    async fn expands_timeline_render_limit_on_new_message_while_scrolled_up() {
+        let mut state = connected_state();
+        state.open_channel("c1".into());
+        state.timeline_render_limit = 1;
+        state.update_timeline_scroll_state(false);
+
+        state.on_shape(ShapeEvent::Batch(
+            ShapeId::Messages("c1".into()),
+            batch(vec![(
+                "m2",
+                json!({ "id": "m2", "user_id": "u2", "channel_id": "c1",
+                        "content": "新着ルートメッセージ", "created_at": "2026-11-01 03:02:00" }),
+            )]),
+        ));
+        // 上へスクロールしている間に新着が 1 件増えたため、表示上限も 1 → 2 に広がり先頭が押し出されない
+        assert_eq!(state.timeline_render_limit, 2);
     }
 
     #[test]

@@ -4,8 +4,8 @@ use std::collections::HashMap;
 
 use gpui::{
     ClipboardItem, Context, Div, ElementId, Entity, FocusHandle, Focusable, FontWeight,
-    IntoElement, MouseButton, MouseUpEvent, ParentElement, Render, ScrollHandle, SharedString,
-    StatefulInteractiveElement, Styled, Window, div, prelude::*, px,
+    IntoElement, KeyDownEvent, MouseButton, MouseUpEvent, ParentElement, Render, ScrollHandle,
+    SharedString, StatefulInteractiveElement, Styled, Window, div, prelude::*, px,
 };
 use jiff::{Zoned, civil::DateTime, tz::TimeZone};
 use zoo2_client_core::{
@@ -28,6 +28,9 @@ pub struct WorkspaceView {
     pub reaction_input: Entity<TextInput>,
     pub timeline_scroll: ScrollHandle,
     focus_handle: FocusHandle,
+    login_primary_focus: FocusHandle,
+    login_secondary_focus: FocusHandle,
+    login_cancel_focus: FocusHandle,
 }
 
 impl Focusable for WorkspaceView {
@@ -155,6 +158,9 @@ impl WorkspaceView {
             reaction_input,
             timeline_scroll: ScrollHandle::new(),
             focus_handle: cx.focus_handle(),
+            login_primary_focus: cx.focus_handle(),
+            login_secondary_focus: cx.focus_handle(),
+            login_cancel_focus: cx.focus_handle(),
         }
     }
 
@@ -170,11 +176,24 @@ impl WorkspaceView {
         }
     }
 
-    fn render_login_view(&self, phase: &LoginPhase, cx: &mut Context<Self>) -> Div {
+    fn render_login_view(
+        &self,
+        phase: &LoginPhase,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Div {
         let state = self.state.read(cx);
         let api_url = state.api_base_url.clone();
         let auth_summary = state.auth_summary.clone();
         let is_oidc = matches!(state.config.auth, AuthConfig::Oidc(_));
+
+        if !self.login_primary_focus.is_focused(window)
+            && !self.login_secondary_focus.is_focused(window)
+            && !self.login_cancel_focus.is_focused(window)
+            && !matches!(phase, LoginPhase::Checking)
+        {
+            window.focus(&self.login_primary_focus);
+        }
 
         let body = match phase {
             LoginPhase::Checking => div().flex().flex_col().items_center().gap_3().child(
@@ -200,21 +219,38 @@ impl WorkspaceView {
                     );
                 }
                 if is_oidc {
+                    let primary_focused = self.login_primary_focus.is_focused(window);
+                    let secondary_focused = self.login_secondary_focus.is_focused(window);
                     col = col
                         .child(
                             div()
                                 .id("btn-start-device-login")
+                                .track_focus(&self.login_primary_focus)
                                 .w_full()
                                 .py_2()
                                 .px_4()
                                 .rounded_md()
                                 .bg(theme::ACCENT_BUTTON)
+                                .border_1()
+                                .border_color(if primary_focused {
+                                    theme::TEXT_PRIMARY
+                                } else {
+                                    theme::ACCENT_BUTTON
+                                })
                                 .hover(|s| s.bg(theme::ACCENT_BUTTON_HOVER).cursor_pointer())
                                 .text_center()
                                 .text_sm()
                                 .font_weight(FontWeight::BOLD)
                                 .text_color(theme::TEXT_PRIMARY)
-                                .child("ブラウザでログイン")
+                                .child("ブラウザでログイン (Enter)")
+                                .on_key_down(cx.listener(|this, ev: &KeyDownEvent, _, cx| {
+                                    if is_activate_key(&ev.keystroke.key) {
+                                        this.state.update(cx, |s, cx| {
+                                            s.start_device_login();
+                                            cx.notify();
+                                        });
+                                    }
+                                }))
                                 .on_mouse_up(
                                     MouseButton::Left,
                                     cx.listener(|this, _: &MouseUpEvent, _, cx| {
@@ -228,18 +264,31 @@ impl WorkspaceView {
                         .child(
                             div()
                                 .id("btn-retry-initial-auth")
+                                .track_focus(&self.login_secondary_focus)
                                 .w_full()
                                 .py_2()
                                 .px_4()
                                 .rounded_md()
                                 .bg(theme::BG_SURFACE)
                                 .border_1()
-                                .border_color(theme::BORDER)
+                                .border_color(if secondary_focused {
+                                    theme::BORDER_ACCENT
+                                } else {
+                                    theme::BORDER
+                                })
                                 .hover(|s| s.bg(theme::BG_HOVER).cursor_pointer())
                                 .text_center()
                                 .text_sm()
                                 .text_color(theme::TEXT_MUTED)
                                 .child("保存済みトークンで再試行")
+                                .on_key_down(cx.listener(|this, ev: &KeyDownEvent, _, cx| {
+                                    if is_activate_key(&ev.keystroke.key) {
+                                        this.state.update(cx, |s, cx| {
+                                            s.start_initial_auth();
+                                            cx.notify();
+                                        });
+                                    }
+                                }))
                                 .on_mouse_up(
                                     MouseButton::Left,
                                     cx.listener(|this, _: &MouseUpEvent, _, cx| {
@@ -251,20 +300,36 @@ impl WorkspaceView {
                                 ),
                         );
                 } else {
+                    let primary_focused = self.login_primary_focus.is_focused(window);
                     col = col.child(
                         div()
                             .id("btn-retry-dev-auth")
+                            .track_focus(&self.login_primary_focus)
                             .w_full()
                             .py_2()
                             .px_4()
                             .rounded_md()
                             .bg(theme::ACCENT_BUTTON)
+                            .border_1()
+                            .border_color(if primary_focused {
+                                theme::TEXT_PRIMARY
+                            } else {
+                                theme::ACCENT_BUTTON
+                            })
                             .hover(|s| s.bg(theme::ACCENT_BUTTON_HOVER).cursor_pointer())
                             .text_center()
                             .text_sm()
                             .font_weight(FontWeight::BOLD)
                             .text_color(theme::TEXT_PRIMARY)
-                            .child("再接続する")
+                            .child("再接続する (Enter)")
+                            .on_key_down(cx.listener(|this, ev: &KeyDownEvent, _, cx| {
+                                if is_activate_key(&ev.keystroke.key) {
+                                    this.state.update(cx, |s, cx| {
+                                        s.start_initial_auth();
+                                        cx.notify();
+                                    });
+                                }
+                            }))
                             .on_mouse_up(
                                 MouseButton::Left,
                                 cx.listener(|this, _: &MouseUpEvent, _, cx| {
@@ -283,7 +348,12 @@ impl WorkspaceView {
                 user_code,
             } => {
                 let uri_for_open = verification_uri.clone();
+                let uri_for_key = verification_uri.clone();
                 let code_for_copy = user_code.clone();
+                let code_for_key = user_code.clone();
+                let primary_focused = self.login_primary_focus.is_focused(window);
+                let secondary_focused = self.login_secondary_focus.is_focused(window);
+                let cancel_focused = self.login_cancel_focus.is_focused(window);
                 div()
                     .flex()
                     .flex_col()
@@ -336,17 +406,29 @@ impl WorkspaceView {
                             .child(
                                 div()
                                     .id("btn-open-browser")
+                                    .track_focus(&self.login_primary_focus)
                                     .flex_1()
                                     .py_2()
                                     .px_3()
                                     .rounded_md()
                                     .bg(theme::ACCENT_BUTTON)
+                                    .border_1()
+                                    .border_color(if primary_focused {
+                                        theme::TEXT_PRIMARY
+                                    } else {
+                                        theme::ACCENT_BUTTON
+                                    })
                                     .hover(|s| s.bg(theme::ACCENT_BUTTON_HOVER).cursor_pointer())
                                     .text_center()
                                     .text_sm()
                                     .font_weight(FontWeight::BOLD)
                                     .text_color(theme::TEXT_PRIMARY)
                                     .child("ブラウザを開く")
+                                    .on_key_down(cx.listener(move |_, ev: &KeyDownEvent, _, _| {
+                                        if is_activate_key(&ev.keystroke.key) {
+                                            login::open_browser(&uri_for_key);
+                                        }
+                                    }))
                                     .on_mouse_up(
                                         MouseButton::Left,
                                         cx.listener(move |_, _: &MouseUpEvent, _, _| {
@@ -357,18 +439,30 @@ impl WorkspaceView {
                             .child(
                                 div()
                                     .id("btn-copy-user-code")
+                                    .track_focus(&self.login_secondary_focus)
                                     .flex_1()
                                     .py_2()
                                     .px_3()
                                     .rounded_md()
                                     .bg(theme::BG_SURFACE)
                                     .border_1()
-                                    .border_color(theme::BORDER)
+                                    .border_color(if secondary_focused {
+                                        theme::BORDER_ACCENT
+                                    } else {
+                                        theme::BORDER
+                                    })
                                     .hover(|s| s.bg(theme::BG_HOVER).cursor_pointer())
                                     .text_center()
                                     .text_sm()
                                     .text_color(theme::TEXT_PRIMARY)
                                     .child("コードをコピー")
+                                    .on_key_down(cx.listener(move |_, ev: &KeyDownEvent, _, cx| {
+                                        if is_activate_key(&ev.keystroke.key) {
+                                            cx.write_to_clipboard(ClipboardItem::new_string(
+                                                code_for_key.clone(),
+                                            ));
+                                        }
+                                    }))
                                     .on_mouse_up(
                                         MouseButton::Left,
                                         cx.listener(move |_, _: &MouseUpEvent, _, cx| {
@@ -382,15 +476,32 @@ impl WorkspaceView {
                     .child(
                         div()
                             .id("btn-cancel-device-login")
+                            .track_focus(&self.login_cancel_focus)
                             .w_full()
                             .py_1p5()
                             .px_3()
                             .rounded_md()
+                            .border_1()
+                            .border_color(if cancel_focused {
+                                theme::BORDER_ACCENT
+                            } else {
+                                theme::BG_SECONDARY
+                            })
                             .hover(|s| s.bg(theme::BG_HOVER).cursor_pointer())
                             .text_center()
                             .text_xs()
                             .text_color(theme::TEXT_MUTED)
-                            .child("キャンセル")
+                            .child("キャンセル (Esc)")
+                            .on_key_down(cx.listener(|this, ev: &KeyDownEvent, _, cx| {
+                                if is_activate_key(&ev.keystroke.key)
+                                    || ev.keystroke.key == "escape"
+                                {
+                                    this.state.update(cx, |s, cx| {
+                                        s.cancel_device_login();
+                                        cx.notify();
+                                    });
+                                }
+                            }))
                             .on_mouse_up(
                                 MouseButton::Left,
                                 cx.listener(|this, _: &MouseUpEvent, _, cx| {
@@ -462,6 +573,8 @@ impl WorkspaceView {
             .unwrap_or_default();
         let is_oidc = matches!(state.config.auth, AuthConfig::Oidc(_));
         let channels_synced = state.store.is_synced(&ShapeId::Channels);
+        let sync_error = state.sync_error.clone();
+        let notice = state.notice.as_ref().map(|(m, _)| m.clone());
         let current_channel = state.current_channel.clone();
         let unread = state.unread.clone();
 
@@ -636,10 +749,70 @@ impl WorkspaceView {
                             .text_color(theme::TEXT_MUTED)
                             .child(if channels_synced {
                                 "チャンネル"
+                            } else if sync_error.is_some() {
+                                "チャンネル (同期停止)"
                             } else {
                                 "チャンネル (同期中…)"
                             }),
                     )
+                    .when_some(sync_error, |d, err| {
+                        d.child(
+                            div()
+                                .mx_2()
+                                .my_1()
+                                .p_2()
+                                .rounded_md()
+                                .bg(theme::BG_SURFACE)
+                                .border_1()
+                                .border_color(theme::DANGER)
+                                .flex()
+                                .flex_col()
+                                .gap_1p5()
+                                .child(div().text_xs().text_color(theme::WARNING).child(err))
+                                .child(
+                                    div()
+                                        .id("btn-sidebar-retry-sync")
+                                        .px_2()
+                                        .py_1()
+                                        .rounded_sm()
+                                        .bg(theme::ACCENT_BUTTON)
+                                        .hover(|s| {
+                                            s.bg(theme::ACCENT_BUTTON_HOVER).cursor_pointer()
+                                        })
+                                        .text_center()
+                                        .text_xs()
+                                        .font_weight(FontWeight::BOLD)
+                                        .text_color(theme::TEXT_PRIMARY)
+                                        .child("再同期する")
+                                        .on_mouse_up(
+                                            MouseButton::Left,
+                                            cx.listener(|this, _: &MouseUpEvent, _, cx| {
+                                                this.state.update(cx, |s, cx| {
+                                                    s.retry_sync();
+                                                    cx.notify();
+                                                });
+                                            }),
+                                        ),
+                                ),
+                        )
+                    })
+                    .when(current_channel.is_none(), |d| {
+                        d.when_some(notice, |d, msg| {
+                            d.child(
+                                div()
+                                    .mx_2()
+                                    .my_1()
+                                    .p_2()
+                                    .rounded_md()
+                                    .bg(theme::BG_SURFACE)
+                                    .border_1()
+                                    .border_color(theme::WARNING)
+                                    .text_xs()
+                                    .text_color(theme::WARNING)
+                                    .child(msg),
+                            )
+                        })
+                    })
                     .children(normal_rows)
                     .when(!dm_rows.is_empty(), |d| {
                         d.child(
@@ -761,6 +934,7 @@ impl WorkspaceView {
                 msg,
                 &me_id,
                 &me_user_name,
+                is_archived,
                 reactions,
                 Some(reply_count),
                 "timeline",
@@ -1004,6 +1178,7 @@ impl WorkspaceView {
         message: &Message,
         me_id: &str,
         me_user_name: &str,
+        is_archived: bool,
         reactions: Vec<ReactionGroup>,
         reply_count: Option<usize>,
         pane_prefix: &str,
@@ -1016,10 +1191,11 @@ impl WorkspaceView {
         let is_mine = message.user_id == me_id;
         let is_edited = message.updated_at.is_some();
         let time_str = local_time_string(message.created_at);
-        let reaction_picker_open = state
-            .active_reaction_message
-            .as_ref()
-            .is_some_and(|(pane, id)| pane == pane_prefix && id == &msg_id);
+        let reaction_picker_open = !is_archived
+            && state
+                .active_reaction_message
+                .as_ref()
+                .is_some_and(|(pane, id)| pane == pane_prefix && id == &msg_id);
 
         let msg_id_reply = msg_id.clone();
         let msg_id_react = msg_id.clone();
@@ -1047,34 +1223,35 @@ impl WorkspaceView {
             } else {
                 theme::TEXT_MUTED
             };
-            reaction_pills.push(
-                div()
-                    .id(ElementId::Name(SharedString::from(format!(
-                        "{pane_prefix}-react-pill-{}-{emoji}",
-                        message.id
-                    ))))
-                    .px_2()
-                    .py_0p5()
-                    .rounded_md()
-                    .bg(pill_bg)
-                    .border_1()
-                    .border_color(pill_border)
-                    .hover(|s| s.bg(theme::BG_HOVER).cursor_pointer())
-                    .text_xs()
-                    .text_color(pill_text)
-                    .child(format!("{} {}", reaction_label(&group.emoji), group.count))
-                    .on_mouse_up(
-                        MouseButton::Left,
-                        cx.listener(move |this, _: &MouseUpEvent, _, cx| {
-                            let m = msg_for_toggle.clone();
-                            let e = emoji.clone();
-                            this.state.update(cx, |s, cx| {
-                                s.toggle_reaction(&m, &e);
-                                cx.notify();
-                            });
-                        }),
-                    ),
-            );
+            let pill = div()
+                .id(ElementId::Name(SharedString::from(format!(
+                    "{pane_prefix}-react-pill-{}-{emoji}",
+                    message.id
+                ))))
+                .px_2()
+                .py_0p5()
+                .rounded_md()
+                .bg(pill_bg)
+                .border_1()
+                .border_color(pill_border)
+                .text_xs()
+                .text_color(pill_text)
+                .child(format!("{} {}", reaction_label(&group.emoji), group.count))
+                .when(!is_archived, |d| {
+                    d.hover(|s| s.bg(theme::BG_HOVER).cursor_pointer())
+                        .on_mouse_up(
+                            MouseButton::Left,
+                            cx.listener(move |this, _: &MouseUpEvent, _, cx| {
+                                let m = msg_for_toggle.clone();
+                                let e = emoji.clone();
+                                this.state.update(cx, |s, cx| {
+                                    s.toggle_reaction(&m, &e);
+                                    cx.notify();
+                                });
+                            }),
+                        )
+                });
+            reaction_pills.push(pill);
         }
 
         let mut quick_emoji_buttons = Vec::new();
@@ -1207,47 +1384,56 @@ impl WorkspaceView {
                                         }),
                                     ),
                             )
-                            .child(
-                                div()
-                                    .id(ElementId::Name(SharedString::from(format!(
-                                        "{pane_prefix}-btn-react-{msg_id}"
-                                    ))))
-                                    .px_2()
-                                    .py_0p5()
-                                    .rounded_sm()
-                                    .bg(theme::BG_SECONDARY)
-                                    .hover(|s| s.bg(theme::BG_HOVER).cursor_pointer())
-                                    .text_xs()
-                                    .text_color(theme::TEXT_MUTED)
-                                    .child("+ リアクション")
-                                    .on_mouse_up(
-                                        MouseButton::Left,
-                                        cx.listener(move |this, _: &MouseUpEvent, window, cx| {
-                                            let m_id = msg_id_react.clone();
-                                            let pane_id = pane_for_react.clone();
-                                            let opened = this.state.update(cx, |s, cx| {
-                                                let target_key = (pane_id, m_id);
-                                                if s.active_reaction_message.as_ref()
-                                                    == Some(&target_key)
-                                                {
-                                                    s.active_reaction_message = None;
-                                                    cx.notify();
-                                                    false
-                                                } else {
-                                                    s.active_reaction_message = Some(target_key);
-                                                    cx.notify();
-                                                    true
-                                                }
-                                            });
-                                            if opened {
-                                                this.reaction_input
-                                                    .update(cx, |input, cx| input.clear(cx));
-                                                window.focus(&this.reaction_input.focus_handle(cx));
-                                            }
-                                        }),
-                                    ),
-                            )
-                            .when(is_mine, |d| {
+                            .when(!is_archived, |d| {
+                                d.child(
+                                    div()
+                                        .id(ElementId::Name(SharedString::from(format!(
+                                            "{pane_prefix}-btn-react-{msg_id}"
+                                        ))))
+                                        .px_2()
+                                        .py_0p5()
+                                        .rounded_sm()
+                                        .bg(theme::BG_SECONDARY)
+                                        .hover(|s| s.bg(theme::BG_HOVER).cursor_pointer())
+                                        .text_xs()
+                                        .text_color(theme::TEXT_MUTED)
+                                        .child("+ リアクション")
+                                        .on_mouse_up(
+                                            MouseButton::Left,
+                                            cx.listener(
+                                                move |this, _: &MouseUpEvent, window, cx| {
+                                                    let m_id = msg_id_react.clone();
+                                                    let pane_id = pane_for_react.clone();
+                                                    let opened = this.state.update(cx, |s, cx| {
+                                                        let target_key = (pane_id, m_id);
+                                                        if s.active_reaction_message.as_ref()
+                                                            == Some(&target_key)
+                                                        {
+                                                            s.active_reaction_message = None;
+                                                            cx.notify();
+                                                            false
+                                                        } else {
+                                                            s.active_reaction_message =
+                                                                Some(target_key);
+                                                            cx.notify();
+                                                            true
+                                                        }
+                                                    });
+                                                    if opened {
+                                                        this.reaction_input
+                                                            .update(cx, |input, cx| {
+                                                                input.clear(cx)
+                                                            });
+                                                        window.focus(
+                                                            &this.reaction_input.focus_handle(cx),
+                                                        );
+                                                    }
+                                                },
+                                            ),
+                                        ),
+                                )
+                            })
+                            .when(is_mine && !is_archived, |d| {
                                 d.child(
                                     div()
                                         .id(ElementId::Name(SharedString::from(format!(
@@ -1305,7 +1491,11 @@ impl WorkspaceView {
                     ),
             )
             // MFM 本文
-            .child(mfm_view::render_mfm(&message.content, Some(me_user_name)))
+            .child(mfm_view::render_mfm(
+                &format!("{pane_prefix}-{msg_id}"),
+                &message.content,
+                Some(me_user_name),
+            ))
             // リアクションピル一覧
             .when(!reaction_pills.is_empty(), |d| {
                 d.child(
@@ -1558,6 +1748,10 @@ impl WorkspaceView {
             .map(|m| m.user_name.clone())
             .unwrap_or_default();
 
+        let is_archived = state
+            .store
+            .channel(&channel_id)
+            .is_some_and(|c| c.archive_at.is_some());
         let reactions_by_msg: HashMap<String, Vec<ReactionGroup>> =
             state.store.reaction_groups_by_message(&channel_id, &me_id);
         let thread_typing = state.typing_text(&Some(root_id.to_string()));
@@ -1576,6 +1770,7 @@ impl WorkspaceView {
                 root,
                 &me_id,
                 &me_user_name,
+                is_archived,
                 root_reactions,
                 None,
                 "thread",
@@ -1596,6 +1791,7 @@ impl WorkspaceView {
                     reply,
                     &me_id,
                     &me_user_name,
+                    is_archived,
                     r_reactions,
                     None,
                     "thread",
@@ -1726,7 +1922,7 @@ impl Render for WorkspaceView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let login_phase = self.state.read(cx).login_phase.clone();
         if let Some(phase) = login_phase {
-            return self.render_login_view(&phase, cx);
+            return self.render_login_view(&phase, window, cx);
         }
 
         // ウィンドウのアクティブ状態とタイムラインのスクロール位置を AppState に同期し、
@@ -1799,4 +1995,8 @@ pub fn local_time_string(at: DateTime) -> String {
     local_zoned(at)
         .map(|z| z.strftime("%H:%M").to_string())
         .unwrap_or_default()
+}
+
+fn is_activate_key(key: &str) -> bool {
+    matches!(key, "enter" | "space" | " ")
 }
