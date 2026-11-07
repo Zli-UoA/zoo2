@@ -9,7 +9,6 @@ use anyhow::Result;
 use serde::{Deserialize, Serialize};
 
 pub const RELEASES_URL: &str = "https://api.github.com/repos/Zli-UoA/zoo2/releases?per_page=30";
-pub const CURRENT_VERSION: &str = env!("CARGO_PKG_VERSION");
 pub const CHECK_INTERVAL: Duration = Duration::from_secs(6 * 60 * 60);
 const TAG_PREFIX: &str = "tui-v";
 
@@ -43,6 +42,28 @@ pub async fn check(
     current: &str,
     now: i64,
 ) -> Result<Option<String>> {
+    check_for(
+        http,
+        url,
+        cache,
+        current,
+        now,
+        TAG_PREFIX,
+        &format!("zoo2-tui/{current}"),
+    )
+    .await
+}
+
+/// 指定したタグ接頭辞 (`tui-v` や `desktop-v` など) で新しいリリースを調べる。
+pub async fn check_for(
+    http: &reqwest::Client,
+    url: &str,
+    cache: Option<&Path>,
+    current: &str,
+    now: i64,
+    tag_prefix: &str,
+    user_agent: &str,
+) -> Result<Option<String>> {
     let cached = cache
         .and_then(|path| std::fs::read_to_string(path).ok())
         .and_then(|text| serde_json::from_str::<Cache>(&text).ok())
@@ -53,7 +74,7 @@ pub async fn check(
     let latest = match cached {
         Some(cache) => cache.latest,
         None => {
-            let latest = fetch_latest(http, url).await?;
+            let latest = fetch_latest(http, url, tag_prefix, user_agent).await?;
             if let Some(path) = cache {
                 let cache = Cache {
                     checked_at: now,
@@ -68,14 +89,16 @@ pub async fn check(
     Ok(latest.filter(|latest| is_newer(latest, current)))
 }
 
-/// 下書きとプレリリースを除いた、TUI のリリースのうち最も新しい版。
-async fn fetch_latest(http: &reqwest::Client, url: &str) -> Result<Option<String>> {
+/// 下書きとプレリリースを除いた、対象リリースのうち最も新しい版。
+async fn fetch_latest(
+    http: &reqwest::Client,
+    url: &str,
+    tag_prefix: &str,
+    user_agent: &str,
+) -> Result<Option<String>> {
     let releases: Vec<Release> = http
         .get(url)
-        .header(
-            reqwest::header::USER_AGENT,
-            format!("zoo2-tui/{CURRENT_VERSION}"),
-        )
+        .header(reqwest::header::USER_AGENT, user_agent)
         .header(reqwest::header::ACCEPT, "application/vnd.github+json")
         .timeout(Duration::from_secs(10))
         .send()
@@ -87,7 +110,7 @@ async fn fetch_latest(http: &reqwest::Client, url: &str) -> Result<Option<String
         .into_iter()
         .filter(|release| !release.draft && !release.prerelease)
         .filter_map(|release| {
-            let version = release.tag_name.strip_prefix(TAG_PREFIX)?.to_string();
+            let version = release.tag_name.strip_prefix(tag_prefix)?.to_string();
             Some((parse(&version)?, version))
         })
         .max()

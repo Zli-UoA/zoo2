@@ -10,6 +10,8 @@ use tokio::sync::mpsc;
 use crate::{api::ApiClient, config, http::Credentials, update};
 pub use app::App;
 
+const CURRENT_VERSION: &str = env!("CARGO_PKG_VERSION");
+
 /// チャット画面を開き、終了するまでイベントを処理する。
 pub async fn run(
     http: reqwest::Client,
@@ -80,7 +82,7 @@ fn spawn_update_check(
                 &http,
                 update::RELEASES_URL,
                 cache.as_deref(),
-                update::CURRENT_VERSION,
+                CURRENT_VERSION,
                 now,
             )
             .await

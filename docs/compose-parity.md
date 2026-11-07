@@ -244,6 +244,13 @@ Androidのrefresh grantは送信前に保存済みtokenを取り除き、交換�
 
 チャット一覧・投稿表示データ・本文解析をrememberで保持し、送信ボタンだけがderivedStateOfの送信可否を監視する。編集、同期、楽観更新、添付、絵文字、フォント・テーマの変更では該当するキャッシュを更新する。Web／Androidは同じKotlin実装を使い、Reactの表示・操作・APIは変更しない。TUIにはComposeの再コンポーズ処理がないため、変更しない。比較結果と検証範囲は [Compose Webの性能計測](compose-performance.md#rememberderivedstateofによる再計算抑制) を参照。新しい表示状態は追加しておらず、既存Composer／MessageのStoryを維持し、既存操作のE2Eとライブテーマ変更のCanvas検証を使う。
 
+## 通話の効果音と設定の通話タブ
+
+Compose Web・TUI には音声通話機能（WebRTC、`CallBar`、`call-context`）自体がなく、Reactの通話機能は未移植である。
+設定の「通話」タブと入退室の効果音は、この通話機能に付随するため、通話機能を移植するときに合わせて共通Kotlinへ追加する。
+通話の移植前にComposeへ効果音のスイッチだけを置くと、効かない設定が表示されるため行わない。Compose側の設定タブは従来のまま
+（`tab=call` は一般設定へフォールバックする）で、React側のみの変更である。
+
 ## App 管理画面（#322 段階 1）
 
 React に `/apps`（一覧・作成）と `/apps/$appId?section=...`（App 管理画面）を追加し、`AppsDialog` の「管理・開発」タブは設定・認証情報・承認・配信履歴を App 管理画面へのリンクに置き換えた。Webhook の 1 件分の表示・URL 再発行・削除は `ChannelWebhooksDialog` の `WebhookItem` にまとめ、チャンネル設定と App 管理画面で共有する。
