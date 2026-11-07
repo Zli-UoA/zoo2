@@ -626,26 +626,34 @@ export function CallProvider({ config: explicitConfig, children }: CallProviderP
       newTrack.enabled = !isMutedRef.current;
       pendingMicTrackRef.current = newTrack;
       const replaced: RTCRtpSender[] = [];
+      const isStale = () =>
+        callGenerationRef.current !== gen || localStreamRef.current !== oldStream;
+      const clearPending = () => {
+        if (pendingMicTrackRef.current === newTrack) pendingMicTrackRef.current = null;
+      };
+      // 開始時点のピアだけを対象にする（待機中に作られた別通話のピアは触らない）
+      const senders = [...peersRef.current.values()]
+        .map((entry) => entry.pc.getSenders().find((s) => s.track?.kind === "audio"))
+        .filter((s): s is RTCRtpSender => !!s);
       try {
-        for (const entry of peersRef.current.values()) {
-          const sender = entry.pc.getSenders().find((s) => s.track?.kind === "audio");
-          if (sender) {
-            await sender.replaceTrack(newTrack);
-            replaced.push(sender);
-          }
+        for (const sender of senders) {
+          if (isStale()) break;
+          await sender.replaceTrack(newTrack);
+          replaced.push(sender);
         }
       } catch (err) {
         console.error("Failed to replace mic track", err);
         // 置換済みの送信側を旧トラックへ戻し、旧マイクを維持する
         await Promise.all(replaced.map((sender) => sender.replaceTrack(oldTrack).catch(() => {})));
-        pendingMicTrackRef.current = null;
+        clearPending();
         stopNewStream();
-        toast.error(t("call.micSwitchFailed"));
+        if (!isStale()) toast.error(t("call.micSwitchFailed"));
         return;
       }
-      pendingMicTrackRef.current = null;
+      clearPending();
       // 置換待ちの間に退出・通話切替があった場合は、新しいストリームを破棄する
-      if (callGenerationRef.current !== gen || localStreamRef.current !== oldStream) {
+      if (isStale()) {
+        await Promise.all(replaced.map((sender) => sender.replaceTrack(oldTrack).catch(() => {})));
         stopNewStream();
         return;
       }
