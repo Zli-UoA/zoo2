@@ -746,6 +746,8 @@ export function CallProvider({ config: explicitConfig, children }: CallProviderP
         setSelectedSpeakerId(speakerId);
         if (micId !== appliedMicIdRef.current) {
           appliedMicIdRef.current = micId;
+          // 通話外・切断後の選択も「より新しい要求」として扱い、進行中の切替失敗で上書きされないようにする
+          micRequestSeqRef.current++;
           if (localStreamRef.current && sessionIdRef.current) {
             void enqueueMicSwitch(micId, callGenerationRef.current);
           }

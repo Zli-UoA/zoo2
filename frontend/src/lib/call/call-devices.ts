@@ -16,7 +16,12 @@ export interface CallDeviceOption {
   label: string;
 }
 
+// 保存に失敗したときだけ使う、現在のページ内の選択値
+const memoryOverride: Partial<Record<CallDeviceKind, string>> = {};
+
 export function loadSelectedDevice(kind: CallDeviceKind): string {
+  const override = memoryOverride[kind];
+  if (override !== undefined) return override;
   try {
     return window.localStorage.getItem(STORAGE_KEYS[kind]) ?? "";
   } catch {
@@ -29,7 +34,11 @@ export function saveSelectedDevice(kind: CallDeviceKind, deviceId: string): void
   try {
     if (deviceId) window.localStorage.setItem(STORAGE_KEYS[kind], deviceId);
     else window.localStorage.removeItem(STORAGE_KEYS[kind]);
-  } catch {}
+    delete memoryOverride[kind];
+  } catch {
+    // 保存できない環境でも、少なくとも現在のページでは選択を反映する
+    memoryOverride[kind] = deviceId;
+  }
   try {
     window.dispatchEvent(new Event(CHANGE_EVENT));
   } catch {}
@@ -37,7 +46,13 @@ export function saveSelectedDevice(kind: CallDeviceKind, deviceId: string): void
 
 export function subscribeSelectedDevices(onChange: () => void): () => void {
   const onStorage = (e: StorageEvent) => {
-    if (e.key === null || Object.values(STORAGE_KEYS).includes(e.key)) onChange();
+    if (e.key === null || Object.values(STORAGE_KEYS).includes(e.key)) {
+      // 他タブの保存が成功した以上、ページ内の暫定値は破棄する
+      for (const kind of Object.keys(STORAGE_KEYS) as CallDeviceKind[]) {
+        if (e.key === null || e.key === STORAGE_KEYS[kind]) delete memoryOverride[kind];
+      }
+      onChange();
+    }
   };
   window.addEventListener(CHANGE_EVENT, onChange);
   window.addEventListener("storage", onStorage);

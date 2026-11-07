@@ -1,5 +1,5 @@
 // @vitest-environment happy-dom
-import { beforeEach, describe, expect, it } from "vite-plus/test";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 
 import { loadSelectedDevice, saveSelectedDevice, toDeviceOptions } from "./call-devices";
 
@@ -14,6 +14,22 @@ describe("selected device storage", () => {
     expect(loadSelectedDevice("speaker")).toBe("");
     saveSelectedDevice("mic", "");
     expect(loadSelectedDevice("mic")).toBe("");
+  });
+  describe("保存に失敗する環境", () => {
+    afterEach(() => {
+      vi.restoreAllMocks();
+      // 成功する保存で現在ページ内の値を初期化する
+      saveSelectedDevice("mic", "");
+      saveSelectedDevice("speaker", "");
+    });
+    it("保存できなくても現在のページでは選択を反映する", () => {
+      vi.spyOn(Storage.prototype, "setItem").mockImplementation(() => {
+        throw new Error("QuotaExceededError");
+      });
+      saveSelectedDevice("mic", "abc");
+      expect(loadSelectedDevice("mic")).toBe("abc");
+      expect(loadSelectedDevice("speaker")).toBe("");
+    });
   });
 });
 
