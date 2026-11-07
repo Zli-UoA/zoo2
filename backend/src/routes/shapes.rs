@@ -495,9 +495,20 @@ async fn notifications_shape(
     Query(raw_query): Query<HashMap<String, String>>,
 ) -> Result<Response, AppError> {
     let (mut where_clause, mut extra_params) = notifications_shape_where(auth_user.id.as_str());
+    let include_notes = raw_query.get("include_notes").is_some_and(|v| v == "true");
+    if include_notes {
+        where_clause = where_clause.replace(
+            "message_id IN (SELECT id FROM messages WHERE deleted_at IS NULL)",
+            "(message_id IN (SELECT id FROM messages WHERE deleted_at IS NULL) OR note_id IN (SELECT id FROM channel_notes WHERE deleted_at IS NULL))",
+        );
+    }
     extra_params.push((
         "columns",
-        "id,user_id,actor_id,channel_id,message_id,notification_type,is_read,created_at,display_data",
+        if include_notes {
+            "id,user_id,actor_id,channel_id,message_id,note_id,notification_type,is_read,created_at,display_data"
+        } else {
+            "id,user_id,actor_id,channel_id,message_id,notification_type,is_read,created_at,display_data"
+        },
     ));
     let mut db = state.db.clone();
     if crate::apps::events::guest_in_db(&mut db, &auth_user.id).await? {
@@ -659,6 +670,10 @@ mod tests {
         assert!(clause.contains("source = 'channel'"));
         assert!(
             clause.contains("message_id IN (SELECT id FROM messages WHERE deleted_at IS NULL)")
+        );
+        assert!(
+            !clause.contains("note_id"),
+            "legacy clients must not receive note rows"
         );
         assert!(clause.contains("deleted_at IS NULL"));
         assert!(clause.contains("is_private = false"));

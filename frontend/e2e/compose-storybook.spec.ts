@@ -793,3 +793,41 @@ for (const implementation of ["react", "kotlin"] as const) {
     });
   }
 }
+
+test("channel note stories render the Kotlin note, mobile, and read-only states", async ({
+  page,
+}) => {
+  for (const story of ["notes", "notes-mobile", "notes-read-only"]) {
+    await page.setViewportSize(
+      story === "notes-mobile" ? { width: 390, height: 844 } : { width: 1440, height: 900 },
+    );
+    await page.goto(`/iframe.html?id=pages-channel--${story}&${nativeQuery}`);
+    await expect(page.locator("[data-compose-catalog-state=ready]")).toBeVisible({
+      timeout: 90_000,
+    });
+    const frame = page.frameLocator('iframe[title="Kotlin component preview"]');
+    await expect(frame.getByText("チームノート", { exact: true }).first()).toBeVisible({
+      timeout: 15000,
+    });
+    await expect(frame.getByText("今日の予定", { exact: true })).toBeVisible();
+    if (story === "notes-read-only")
+      await expect(frame.getByRole("button", { name: "編集", exact: true })).toBeHidden();
+  }
+});
+
+test("channel note deleted and conflict stories complete Kotlin interactions", async ({ page }) => {
+  for (const [story, expected] of [
+    ["notes-deleted", "復元: チームノート"],
+    ["notes-conflict", "最新版の内容"],
+  ] as const) {
+    await page.goto(`/iframe.html?id=pages-channel--${story}&${nativeQuery}`);
+    await expect(page.locator("[data-compose-catalog-state=ready]")).toBeVisible({
+      timeout: 90_000,
+    });
+    await waitForStoryPlay(page);
+    const frame = page.frameLocator('iframe[title="Kotlin component preview"]');
+    await expect(frame.getByText(expected, { exact: false }).first()).toBeVisible({
+      timeout: 15000,
+    });
+  }
+});

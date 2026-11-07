@@ -16,6 +16,21 @@ export function canManageChannel({ isAdmin, isCreator }: ManagePermissionInput):
   return isAdmin || isCreator;
 }
 
+export interface ChannelNotesWritePermissionInput {
+  isMember: boolean;
+  canManage: boolean;
+  postingPolicy: string | null | undefined;
+}
+
+/** ノート更新もチャンネル投稿ポリシーに従う。管理者・作成者も参加者である必要がある。 */
+export function canWriteChannelNotes({
+  isMember,
+  canManage,
+  postingPolicy,
+}: ChannelNotesWritePermissionInput): boolean {
+  return isMember && (postingPolicy !== "managers" || canManage);
+}
+
 export interface AddMemberPermissionInput extends ManagePermissionInput {
   isPrivate: boolean;
   isMember: boolean;

@@ -3,17 +3,21 @@ import { ArchiveIcon, ArrowLeftIcon } from "lucide-react";
 import { useMemo } from "react";
 
 import { useCurrentUser } from "../../hooks/useCurrentUser";
+import { canWriteChannelNotes } from "../../hooks/channelPermissions";
 import { useActiveChannels, useChannelAccess, useUsers } from "../../hooks/useRealtime";
 import { useLocale } from "../i18n/LocaleProvider";
 import { useShell } from "../layout/shell-context";
 import { Button } from "../ui/button";
 import { Skeleton } from "../ui/skeleton";
 import { ChannelHeader } from "./ChannelHeader";
+import { ChannelNotesTabs } from "./ChannelNotesTabs";
 import { formatDmDisplayName, isGroupDm, resolveDmDisplayName } from "./dm";
 import { MessagePane } from "./messages/MessagePane";
 import { PaneHeader } from "../layout/PaneHeader";
 
 const LOADING_ROWS = [0, 1, 2, 3];
+
+function noop() {}
 
 function ChannelLoading() {
   return (
@@ -38,9 +42,13 @@ function ChannelLoading() {
 export function ChannelScreen({
   channelId,
   targetMessageId,
+  noteId,
+  onNoteChange = noop,
 }: {
   channelId: string;
   targetMessageId?: string;
+  noteId?: string;
+  onNoteChange?: (id?: string) => void;
 }) {
   const { t } = useTranslation();
   const shell = useShell();
@@ -123,7 +131,31 @@ export function ChannelScreen({
               : undefined
         }
       />
-      <div className="flex min-h-0 flex-1 flex-col">
+      {access.canRead ? (
+        <ChannelNotesTabs
+          channelId={channelId}
+          canWrite={canWriteChannelNotes({
+            isMember: access.isMember,
+            canManage: access.canManageChannel,
+            postingPolicy: channel.posting_policy,
+          })}
+          archived={access.isArchived}
+          noteId={noteId}
+          onNoteChange={onNoteChange}
+          onMessageTab={() => {}}
+        />
+      ) : null}
+      {noteId && !access.canRead ? (
+        <div className="flex flex-1 flex-col items-center justify-center gap-3 p-6">
+          <p className="max-w-sm text-center text-sm text-muted-foreground">
+            {t("channels.privateMessages")}
+          </p>
+          <Button variant="outline" onClick={() => onNoteChange(undefined)}>
+            {t("channels.notes.messages")}
+          </Button>
+        </div>
+      ) : null}
+      <div className={noteId && access.canRead ? "hidden" : "flex min-h-0 flex-1 flex-col"}>
         {access.isMembershipPending ? (
           <div className="flex flex-1 items-center justify-center">
             <p className="text-sm text-muted-foreground">{t("common.loading")}</p>
@@ -142,6 +174,7 @@ export function ChannelScreen({
                 key={channelId}
                 channelId={channelId}
                 isMember={access.isMember}
+                isActive={!noteId}
                 canModerate={!channel.is_dm && access.canManageChannel}
                 readOnly={access.isArchived}
               />

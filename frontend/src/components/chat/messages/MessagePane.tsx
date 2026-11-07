@@ -90,12 +90,14 @@ function JoinToPostPrompt({
 export function MessagePane({
   channelId,
   isMember,
+  isActive = true,
   canModerate = false,
   readOnly = false,
   targetMessageId,
 }: {
   channelId: string;
   isMember: boolean;
+  isActive?: boolean;
   canModerate?: boolean;
   readOnly?: boolean;
   targetMessageId?: string;
@@ -506,6 +508,7 @@ export function MessagePane({
         ) : null}
 
         <MessageList
+          isActive={isActive}
           targetMessageId={targetMessageId}
           key={`${channelId}:${currentUserId}`}
           channelId={channelId}

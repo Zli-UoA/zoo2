@@ -5,13 +5,98 @@ use axum::{
 use backend::{
     config::Config,
     db::init_db,
-    models::{PushSubscription, now_utc_millis},
+    models::{
+        Channel, ChannelNote, ChannelUser, Notification, PushSubscription, User, now_utc_millis,
+    },
     routes::create_router,
     state::AppState,
 };
 use serde_json::json;
 use tower::ServiceExt;
 use uuid::Uuid;
+
+#[tokio::test]
+async fn note_push_rechecks_channel_deletion_and_current_membership() -> anyhow::Result<()> {
+    let config = Config::from_env();
+    let mut db = init_db(&config.database_url).await?;
+    let now = now_utc_millis();
+    let recipient = Uuid::new_v4().to_string();
+    let actor = Uuid::new_v4().to_string();
+    for user_id in [&recipient, &actor] {
+        User::create()
+            .id(user_id.as_str())
+            .user_name(format!("push_note_{user_id}"))
+            .display_name(user_id.as_str())
+            .is_bot(false)
+            .created_at(now)
+            .exec(&mut db)
+            .await?;
+    }
+    let channel_id = Uuid::new_v4().to_string();
+    Channel::create()
+        .id(channel_id.as_str())
+        .channel_name(format!("push-note-{channel_id}"))
+        .created_user_id(actor.as_str())
+        .is_private(true)
+        .is_dm(false)
+        .created_at(now)
+        .exec(&mut db)
+        .await?;
+    ChannelUser::create()
+        .user_id(recipient.as_str())
+        .channel_id(channel_id.as_str())
+        .joined_at(now)
+        .exec(&mut db)
+        .await?;
+    let note_id = Uuid::new_v4().to_string();
+    ChannelNote::create()
+        .id(note_id.as_str())
+        .channel_id(channel_id.as_str())
+        .title("Private note")
+        .content("private body")
+        .position(0)
+        .deleted_at(None)
+        .version(1)
+        .created_user_id(actor.as_str())
+        .created_at(now)
+        .updated_at(now)
+        .exec(&mut db)
+        .await?;
+    let notification = Notification {
+        id: Uuid::new_v4().to_string(),
+        user_id: recipient.clone(),
+        actor_id: actor,
+        channel_id: channel_id.clone(),
+        message_id: None,
+        note_id: Some(note_id),
+        notification_type: "mention".into(),
+        is_read: false,
+        created_at: now,
+    };
+    assert!(backend::push::note_push_is_currently_deliverable(&mut db, &notification).await?);
+    ChannelUser::filter(
+        ChannelUser::fields()
+            .channel_id()
+            .eq(channel_id.as_str())
+            .and(ChannelUser::fields().user_id().eq(recipient.as_str())),
+    )
+    .delete()
+    .exec(&mut db)
+    .await?;
+    assert!(!backend::push::note_push_is_currently_deliverable(&mut db, &notification).await?);
+    ChannelUser::create()
+        .user_id(recipient.as_str())
+        .channel_id(channel_id.as_str())
+        .joined_at(now_utc_millis())
+        .exec(&mut db)
+        .await?;
+    toasty::sql::query("UPDATE channels SET deleted_at = statement_timestamp() WHERE id = $1")
+        .bind(channel_id.as_str())
+        .exec(&mut db)
+        .await?;
+    assert!(!backend::push::note_push_is_currently_deliverable(&mut db, &notification).await?);
+    Ok(())
+}
 
 #[tokio::test]
 async fn push_routes_require_auth_and_unsubscribe_only_the_owner() -> anyhow::Result<()> {

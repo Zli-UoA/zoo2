@@ -6,7 +6,7 @@ plugins {
 
 android {
     namespace = "works.zli.zoo"
-    compileSdk = 35
+    compileSdk = 36
     defaultConfig {
         applicationId = "works.zli.zoo"
         minSdk = 26

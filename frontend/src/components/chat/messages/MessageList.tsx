@@ -37,6 +37,7 @@ const LOAD_OLDER_THRESHOLD = 64;
 const LOADING_TIMEOUT_MS = 8_000;
 
 interface MessageListProps {
+  isActive?: boolean;
   targetMessageId?: string;
   channelId?: string;
   messages: FeedMessage[];
@@ -129,6 +130,7 @@ function useLoadingTimeout(active: boolean, timeoutMs = LOADING_TIMEOUT_MS): boo
  * 「新着メッセージ」ボタンに加えて `aria-live` でも読み上げる。
  */
 export function MessageList({
+  isActive = true,
   targetMessageId,
   channelId,
   messages,
@@ -163,7 +165,13 @@ export function MessageList({
     markRead,
     isLoading: readStateLoading,
     isError: readStateError,
-  } = useMessageReadState(channelId, currentUserId, messages, isLoading || isError, isWritePending);
+  } = useMessageReadState(
+    channelId,
+    currentUserId,
+    messages,
+    isLoading || isError || !isActive,
+    isWritePending,
+  );
   // 既読位置の取得に失敗しても、保存済みのメッセージは隠さない。
   // 未読区切りだけを出さずに描画する（オフライン時に空になるのを防ぐ）。
   const items = useMemo(
@@ -358,13 +366,13 @@ export function MessageList({
   // できないため、古いメッセージがあれば自動で窓を広げる。
   useEffect(() => {
     const element = scrollRef.current;
-    if (!element || messages.length === 0 || !onLoadOlder) {
+    if (!isActive || !element || messages.length === 0 || !onLoadOlder) {
       return;
     }
     if (element.scrollHeight <= element.clientHeight + LOAD_OLDER_THRESHOLD) {
       onLoadOlder(messages[0]!.created_at);
     }
-  }, [messages, onLoadOlder]);
+  }, [isActive, messages, onLoadOlder]);
 
   useEffect(() => {
     const update = () => {

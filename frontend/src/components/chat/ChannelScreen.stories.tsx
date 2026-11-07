@@ -120,3 +120,92 @@ export const CommandCompletion: Story = {
     },
   ),
 };
+
+const storyNote = {
+  id: "note-story",
+  channel_id: "channel-general",
+  title: "チームノート",
+  content:
+    "# 今日の予定\n\n- [ ] リリースを確認\n- [x] レビューを依頼\n\n共有事項をここに記録します。",
+  version: 1,
+  created_user_id: "user-alice",
+  created_at: "2026-01-02T09:00:00.000Z",
+  updated_at: "2026-01-02T09:00:00.000Z",
+};
+const noteHandlers = [
+  http.get("*/api/channels/:channelId/notes", () => {
+    const { content: _content, ...summary } = storyNote;
+    return HttpResponse.json({ data: [summary], txid: null });
+  }),
+  http.get("*/api/channels/:channelId/notes/note-story", () =>
+    HttpResponse.json({ data: storyNote, txid: null }),
+  ),
+];
+
+export const Notes: Story = {
+  args: { noteId: "note-story" },
+  parameters: { a11y: { test: "error" }, msw: { handlers: noteHandlers } },
+};
+export const NotesEmpty: Story = {
+  parameters: { a11y: { test: "error" } },
+};
+export const NotesLoadError: Story = {
+  args: { noteId: "note-story" },
+  parameters: {
+    a11y: { test: "error" },
+    msw: {
+      handlers: [
+        http.get("*/api/channels/:channelId/notes", () =>
+          HttpResponse.json({ error: "Unavailable" }, { status: 500 }),
+        ),
+      ],
+    },
+  },
+};
+export const NotesReadOnly: Story = {
+  args: { channelId: "channel-archive", noteId: "note-story" },
+  parameters: { a11y: { test: "error" }, msw: { handlers: noteHandlers } },
+};
+export const NotesMobile: Story = {
+  ...Notes,
+  globals: { viewport: { value: "mobile" } },
+};
+export const NotesDeleted: Story = {
+  parameters: {
+    a11y: { test: "error" },
+    msw: {
+      handlers: [
+        ...noteHandlers,
+        http.get("*/api/channels/:channelId/notes/deleted", () =>
+          HttpResponse.json({ data: [storyNote], txid: null }),
+        ),
+      ],
+    },
+  },
+  play: playForImplementation(async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await userEvent.click(await canvas.findByRole("button", { name: "削除済み" }));
+    await expect(await canvas.findByRole("button", { name: /復元.*チームノート/ })).toBeVisible();
+  }),
+};
+export const NotesConflict: Story = {
+  ...Notes,
+  parameters: {
+    a11y: { test: "error" },
+    msw: {
+      handlers: [
+        ...noteHandlers,
+        http.patch("*/api/channels/:channelId/notes/:noteId", () =>
+          HttpResponse.json({ error: "Conflict" }, { status: 409 }),
+        ),
+      ],
+    },
+  },
+  play: playForImplementation(async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await userEvent.click(await canvas.findByRole("button", { name: "編集" }));
+    await userEvent.type(canvas.getByRole("textbox", { name: "本文" }), "追記");
+    await userEvent.click(canvas.getByRole("button", { name: "ノートを保存" }));
+    await expect(await canvas.findByText(/最新版の内容/)).toBeVisible();
+  }),
+};

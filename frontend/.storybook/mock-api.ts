@@ -162,6 +162,10 @@ export const storybookApiHandlers = [
   http.post("*/api/bubble-chat", () => HttpResponse.json({ ok: true })),
   http.get("*/api/channel-read-states", () => HttpResponse.json([])),
   http.get("*/api/users/admins", () => HttpResponse.json({ user_ids: ["user-admin"] })),
+  http.get("*/api/channels/:channelId/notes", () => HttpResponse.json({ data: [], txid: null })),
+  http.get("*/api/channels/:channelId/notes/deleted", () =>
+    HttpResponse.json({ data: [], txid: null }),
+  ),
   http.get("*/api/notifications/:notificationId/context", ({ params }) => {
     const notificationId = String(params.notificationId);
     return HttpResponse.json(

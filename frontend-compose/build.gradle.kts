@@ -35,6 +35,8 @@ kotlin {
             implementation(compose.runtime)
             implementation(compose.foundation)
             implementation(compose.material3)
+            implementation("com.mikepenz:multiplatform-markdown-renderer:0.40.0")
+            implementation("com.mikepenz:multiplatform-markdown-renderer-m3:0.40.0")
             implementation(compose.components.resources)
             implementation("io.ktor:ktor-client-core:3.1.3")
             implementation("org.jetbrains.kotlinx:kotlinx-coroutines-core:1.10.2")
@@ -140,7 +142,7 @@ compose.resources {
 
 if (androidEnabled) extensions.configure<com.android.build.gradle.LibraryExtension> {
     namespace = "works.zli.zoo.shared"
-    compileSdk = 35
+    compileSdk = 36
     defaultConfig { minSdk = 26 }
     compileOptions { sourceCompatibility = JavaVersion.VERSION_17; targetCompatibility = JavaVersion.VERSION_17 }
 }

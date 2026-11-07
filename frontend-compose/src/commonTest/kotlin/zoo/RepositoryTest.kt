@@ -60,6 +60,39 @@ class RepositoryTest {
         )
 
     @Test
+    fun notificationShapeIncludesNotesInProxyMode() {
+        assertEquals(
+            mapOf("include_notes" to "true"),
+            shapeRequestParameters(
+                name = "notifications",
+                direct = false,
+                params = emptyMap(),
+                userId = "alice",
+            ),
+        )
+    }
+
+    @Test
+    fun directNotificationShapeUsesTheAuthorizedNotificationEventsTable() {
+        val parameters =
+            shapeRequestParameters(
+                name = "notifications",
+                direct = true,
+                params = emptyMap(),
+                userId = "alice",
+            )
+
+        assertEquals("notification_events", parameters["table"])
+        val filter = parameters["where"].orEmpty()
+        assertContains(filter, "source = 'channel' AND user_id = $1")
+        assertContains(filter, "message_id IN (SELECT id FROM messages WHERE deleted_at IS NULL)")
+        assertContains(filter, "note_id IN (SELECT id FROM channel_notes WHERE deleted_at IS NULL)")
+        assertContains(filter, "channel_id IN (SELECT id FROM channels WHERE deleted_at IS NULL")
+        assertContains(filter, "is_private = false OR id IN (SELECT channel_id FROM channel_user WHERE user_id = $1)")
+        assertEquals("alice", parameters["params[1]"])
+    }
+
+    @Test
     fun publicSessionDoesNotReadPrivateCachesOrStartShapeRequests() = runTest {
         val platform = FakePlatform()
         var requests = 0

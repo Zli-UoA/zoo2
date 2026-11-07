@@ -8,6 +8,7 @@ const row = (id: string, overrides: Partial<NotificationRow> = {}): Notification
   actor_id: "alice",
   channel_id: "channel",
   message_id: "message",
+  note_id: null,
   notification_type: "reaction",
   is_read: false,
   created_at: "2026-10-24T01:00:00Z",

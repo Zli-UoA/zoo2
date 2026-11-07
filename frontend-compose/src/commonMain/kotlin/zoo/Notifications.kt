@@ -329,7 +329,7 @@ fun NotificationCard(
     val row = rows.first()
     val id = row.text("id")
     val actors = rows.map { it.text("actor_id") }.distinct()
-    val joined = row.nested("display_data").takeIf { it.containsKey("message") }
+    val joined = row.nested("display_data").takeIf { !row.present("note_id") && it.containsKey("message") }
     val user = joined?.nested("actor") ?: users.find { it.text("id") == row.text("actor_id") }
     val channels by app.repo.channels.rows.collectAsState()
     val repoMemberships by app.repo.members.rows.collectAsState()
@@ -363,7 +363,8 @@ fun NotificationCard(
     var locallyRead by remember(id) { mutableStateOf(false) }
     val read = locallyRead || rows.all { it.flag("is_read") }
     val message = context?.get("message") as? JsonObject
-    val destination = "/channels/${row.text("channel_id")}?message=${row.text("message_id")}"
+    val note = context?.get("note") as? JsonObject
+    val destination = if (row.present("note_id")) "/channels/${row.text("channel_id")}?note=${row.text("note_id")}" else "/channels/${row.text("channel_id")}?message=${row.text("message_id")}"
     val actor = user?.let(::author) ?: row.text("actor_id")
     var attempted by remember(id) { mutableStateOf(false) }
     LaunchedEffect(
@@ -462,7 +463,7 @@ fun NotificationCard(
                     if (rowHovered) colors.surfaceVariant.copy(alpha = .4f) else Color.Transparent
                 )
                 .then(
-                    if (interactive && channel != null && message != null)
+                    if (interactive && channel != null && (message != null || note != null))
                         Modifier.nativeNavigation(destination, role = null)
                             .pointerHoverIcon(PointerIcon.Hand)
                     else Modifier
@@ -560,6 +561,8 @@ fun NotificationCard(
                             )
                         }
                     }
+                else if (note != null && channel != null)
+                    Text("${note.text("title")}\n${quotePreview(note.text("content"))}")
                 else
                     Text(
                         app.t(
@@ -577,13 +580,13 @@ fun NotificationCard(
                         else icon,
                         null,
                         label,
-                        channel != null && message != null,
+                        channel != null && (message != null || note != null),
                     )
                 }
                 val destinationInteractions = remember { MutableInteractionSource() }
                 val destinationHovered by destinationInteractions.collectIsHoveredAsState()
                 var destinationFocused by remember { mutableStateOf(false) }
-                if (interactive && channel != null && message != null)
+                if (interactive && channel != null && (message != null || note != null))
                     NativeLink(
                         destination,
                         Modifier.hoverable(destinationInteractions)
@@ -606,7 +609,7 @@ fun NotificationCard(
                                         " — " +
                                         notificationLabel +
                                         ": " +
-                                        quotePreview(message.text("content"))
+                                        quotePreview(message?.text("content") ?: note?.text("content").orEmpty())
                             },
                         attributes = mapOf("title" to label),
                     ) {

@@ -7,6 +7,7 @@ export type TableName =
   | "message_reactions"
   | "channel_user"
   | "notifications"
+  | "notification_events"
   | "attachments";
 
 export type UserRow = {
@@ -28,6 +29,7 @@ export type ChannelRow = {
   created_user_id: string;
   is_private: boolean;
   is_dm: boolean;
+  posting_policy?: "members" | "managers";
   created_at: TimestampString;
   updated_at: TimestampString | null;
   archive_at: TimestampString | null;
@@ -75,7 +77,8 @@ export type NotificationRow = {
   user_id: string;
   actor_id: string;
   channel_id: string;
-  message_id: string;
+  message_id: string | null;
+  note_id?: string | null;
   notification_type: string;
   is_read: boolean;
   created_at: TimestampString;
@@ -122,6 +125,7 @@ export type AttachmentRow = {
 
 export type TableRowMap = {
   notifications: NotificationRow;
+  notification_events: NotificationRow;
   users: UserRow;
   channels: ChannelRow;
   messages: MessageRow;

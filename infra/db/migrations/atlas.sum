@@ -1,4 +1,4 @@
-h1:Rmp01/TLf7SNs9jMTFpR9GFHsfH1tUczkqrykV0xupw=
+h1:kQoTp3mFz1bXTrrcBfyeUJ5nsgi9GrvGBp85O7dKAR0=
 20261008000000_initial.sql h1:v3rZATh+MriHOzHYMS+oLMrabKMd7J8aLKuEYdsKNfc=
 20261015110156_snake_case_and_replica_identity.sql h1:gWKFhGTel2djLDzitJiG+ufrbKEjusudna0EhabxkZU=
 20261016171538_create_user_identities.sql h1:h8btCK61sRc0EaVuiKnON59nR594VVKdLtl8nes3KKc=
@@ -43,3 +43,6 @@ h1:Rmp01/TLf7SNs9jMTFpR9GFHsfH1tUczkqrykV0xupw=
 20261103130000_display_refresh_retries.sql h1:EpRpASLiFJOhlKENIEDwJ1b3IET2JlDgqPvgt6g+kNU=
 20261103140000_create_call_presence.sql h1:c71YLivThthv/7JB/hnfOBSVBmE5aHIbAJHuMGmMeUQ=
 20261103150000_call_presence_unique_session.sql h1:FJulkemagmDPqK6VBX68CMjkyZZEmRZ44aGWUKz4xlw=
+20261104000000_create_channel_notes.sql h1:5+MkvhjUAAyjBVSESeRub8WWkBYEcl4EQ0cH/rH8DbQ=
+20261104120000_add_channel_note_order_and_restore.sql h1:lERRO8PM5Inh8AC6hfbPwkZJEKkf70hyi1AwnE/foNE=
+20261105100000_add_channel_note_notifications.sql h1:fACH+VihM8L3D98OWeTpuxlHgHL+6hWQ5n10RCXZ3yg=

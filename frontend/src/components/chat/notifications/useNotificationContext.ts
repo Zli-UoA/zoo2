@@ -5,6 +5,7 @@ import type { NotificationDisplayData } from "../../../lib/electric/types";
 
 export interface NotificationContext {
   message: NotificationDisplayData["message"];
+  note?: { id: string; title: string; content: string } | null;
   reactions: { user_id: string; emoji: string }[];
 }
 

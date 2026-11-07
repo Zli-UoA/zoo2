@@ -82,7 +82,7 @@ export function NotificationCard({
   );
   const context = useNotificationContext(
     channel && hasBeenVisible ? notification.id : null,
-    notification.display_data,
+    notification.note_id ? undefined : notification.display_data,
   );
   useEffect(() => {
     onPreviewChange?.(notification.id, {
@@ -93,6 +93,7 @@ export function NotificationCard({
     return () => onPreviewChange?.(notification.id, null);
   }, [notification.id, isVisible, context.isLoading, channel?.id, onPreviewChange]);
   const message = context.data?.message;
+  const note = context.data && "note" in context.data ? context.data.note : null;
   const avatarReaction = isReaction
     ? notificationReactionGroups(context.data?.reactions ?? [], [group.actorIds[0]!])[0]?.emoji
     : undefined;
@@ -167,7 +168,7 @@ export function NotificationCard({
     // The real link remains the keyboard target; text selection and nested controls keep native behavior.
     if (
       !channel ||
-      !message ||
+      !(message || note) ||
       event.defaultPrevented ||
       !(event.target instanceof Element) ||
       event.target.closest("a, button, input, textarea, select, summary, [tabindex]") ||
@@ -201,7 +202,7 @@ export function NotificationCard({
     <p className="flex min-w-0 items-center gap-1.5 text-xs text-muted-foreground">
       <ContextIcon className="size-4 shrink-0" aria-hidden="true" />
       <span className="min-w-0 truncate font-medium">{channelLabel}</span>
-      {channel && message ? (
+      {channel && (message || note) ? (
         <ArrowUpRightIcon className="size-3.5 shrink-0" aria-hidden="true" />
       ) : null}
     </p>
@@ -212,7 +213,7 @@ export function NotificationCard({
       aria-label={label}
       data-unread={unreadIds.length > 0 || undefined}
       onClick={openFromRow}
-      className={channel && message ? "cursor-pointer" : ""}
+      className={channel && (message || note) ? "cursor-pointer" : ""}
     >
       <div className="flex items-start gap-3">
         <div className="relative shrink-0">
@@ -273,6 +274,13 @@ export function NotificationCard({
                 <MfmContent content={quotePreview(message.content)} emojis={message.emojis} />
               </div>
             </blockquote>
+          ) : channel && note ? (
+            <div>
+              <p className="truncate text-xs font-medium text-muted-foreground">{note.title}</p>
+              <p className="line-clamp-3 whitespace-pre-wrap break-words text-sm leading-relaxed">
+                {quotePreview(note.content)}
+              </p>
+            </div>
           ) : (
             <p className="text-sm text-muted-foreground">
               {!hasBeenVisible || context.isLoading
@@ -280,15 +288,15 @@ export function NotificationCard({
                 : t("notifications.messageUnavailable")}
             </p>
           )}
-          {channel && message ? (
+          {channel && (message || note) ? (
             <Link
               ref={destinationRef}
               to="/channels/$channelId"
               params={{ channelId: notification.channel_id }}
-              search={{ message: notification.message_id }}
+              search={note ? { note: note.id } : { message: notification.message_id ?? undefined }}
               onClick={() => shell.showChat()}
               title={channelLabel}
-              aria-label={`${contextLabel !== channelLabel ? `${contextLabel} · ` : ""}${channelLabel} — ${label}: ${quotePreview(message.content)}`}
+              aria-label={`${contextLabel !== channelLabel ? `${contextLabel} · ` : ""}${channelLabel} — ${label}: ${quotePreview((message ?? note)!.content)}`}
               className="block w-fit max-w-full rounded-sm outline-none hover:underline hover:underline-offset-4 focus-visible:ring-2 focus-visible:ring-ring/50"
             >
               {destination}
