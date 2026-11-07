@@ -684,14 +684,11 @@ export function CallProvider({ config: explicitConfig, children }: CallProviderP
 
   // 連続した切替が同じ旧ストリームを参照して競合しないよう、1 件ずつ実行する
   const micSwitchQueueRef = useRef<Promise<unknown>>(Promise.resolve());
-  const setMicrophone = useCallback(
-    (deviceId: string) => {
-      appliedMicIdRef.current = deviceId;
-      saveSelectedDevice("mic", deviceId);
-      const reservedGen = callGenerationRef.current;
+  // 切替を予約する。失敗し、より新しい選択も無ければ、使用中のマイクへ表示と保存値を戻す
+  const enqueueMicSwitch = useCallback(
+    (deviceId: string, gen: number) => {
       const run = micSwitchQueueRef.current.then(async () => {
-        const ok = await switchMicrophone(deviceId, reservedGen);
-        // 失敗し、より新しい選択も無ければ、使用中のマイクへ表示と保存値を戻す
+        const ok = await switchMicrophone(deviceId, gen);
         if (!ok && appliedMicIdRef.current === deviceId) {
           appliedMicIdRef.current = activeMicIdRef.current;
           saveSelectedDevice("mic", activeMicIdRef.current);
@@ -701,6 +698,14 @@ export function CallProvider({ config: explicitConfig, children }: CallProviderP
       return run;
     },
     [switchMicrophone],
+  );
+  const setMicrophone = useCallback(
+    (deviceId: string) => {
+      appliedMicIdRef.current = deviceId;
+      saveSelectedDevice("mic", deviceId);
+      return enqueueMicSwitch(deviceId, callGenerationRef.current);
+    },
+    [enqueueMicSwitch],
   );
 
   // 出力先の適用は 1 件ずつ実行し、常に最新の選択値 (speakerIdRef) を全参加者へ適用する
@@ -737,9 +742,7 @@ export function CallProvider({ config: explicitConfig, children }: CallProviderP
         if (micId !== appliedMicIdRef.current) {
           appliedMicIdRef.current = micId;
           if (localStreamRef.current && sessionIdRef.current) {
-            const reservedGen = callGenerationRef.current;
-            const run = micSwitchQueueRef.current.then(() => switchMicrophone(micId, reservedGen));
-            micSwitchQueueRef.current = run.catch(() => {});
+            void enqueueMicSwitch(micId, callGenerationRef.current);
           }
         }
         if (speakerId !== speakerIdRef.current) {
@@ -747,7 +750,7 @@ export function CallProvider({ config: explicitConfig, children }: CallProviderP
           void applySpeakerToAll();
         }
       }),
-    [applySpeakerToAll, switchMicrophone],
+    [applySpeakerToAll, enqueueMicSwitch],
   );
 
   const getCallDiagnostics = useCallback(async (): Promise<CallDiagnostics> => {
@@ -880,8 +883,7 @@ export function CallProvider({ config: explicitConfig, children }: CallProviderP
       // マイク取得待ちの間に選択が変わっていた場合は、最新の選択へ切り替える
       if (appliedMicIdRef.current !== usedMicId) {
         const latestMicId = appliedMicIdRef.current;
-        const run = micSwitchQueueRef.current.then(() => switchMicrophone(latestMicId, currentGen));
-        micSwitchQueueRef.current = run.catch(() => {});
+        void enqueueMicSwitch(latestMicId, currentGen);
       }
 
       // SSE 接続
@@ -1320,7 +1322,7 @@ export function CallProvider({ config: explicitConfig, children }: CallProviderP
       leaveCall,
       pollActiveCalls,
       sendSignalWithRetry,
-      switchMicrophone,
+      enqueueMicSwitch,
       syncMuteStateToServer,
       t,
       updateSpeakingUser,
