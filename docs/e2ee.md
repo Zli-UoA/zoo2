@@ -403,7 +403,7 @@ PRF の salt について：
 
 ### 方式
 
-【決定】パスキーの RP ID は AuthZ のホスト `account.zli.works` です。zoo2（`https://zli.chat`）は登録可能ドメインが違うので、WebAuthn L3 の [Related Origin Requests](https://w3c.github.io/webauthn/#sctn-related-origins)（ROR）で、zoo2 のページから `rpId: "account.zli.works"` を指定して `navigator.credentials.get()` を呼びます。#321 の 3 案（ROR、AuthZ のポップアップ、zoo2 専用のパスキー）のうち、ROR を使います。
+【決定】パスキーの RP ID は AuthZ のホストで、本番は `account.zli.works` です。zoo2（`https://zli.chat`）は登録可能ドメインが違うので、WebAuthn L3 の [Related Origin Requests](https://w3c.github.io/webauthn/#sctn-related-origins)（ROR）で、zoo2 のページから AuthZ の RP ID を指定して `navigator.credentials.get()` を呼びます。#321 の 3 案（ROR、AuthZ のポップアップ、zoo2 専用のパスキー）のうち、ROR を使います。
 
 AuthZ 側（[AuthZ#94](https://github.com/Zli-UoA/AuthZ/issues/94)）の要件：
 
@@ -413,14 +413,41 @@ AuthZ 側（[AuthZ#94](https://github.com/Zli-UoA/AuthZ/issues/94)）の要件�
 - 【決定】AuthZ のログインの検証で受け付けるオリジンは `https://account.zli.works` のままにする。zoo2 のページで作ったアサーション（`clientDataJSON.origin` が `https://zli.chat`）で AuthZ にログインできないようにするため。
 - 【決定】AuthZ の登録とログインのページは、PRF を有効にする（`prf: {}`）だけで、任意の salt で PRF を評価しない。
 
+### 本番への配備の順
+
+【決定】本番の許可オリジンは zoo2-infra の方針（zoo2-infra の `docs/authz.md` の「Gitの構成変更とAuthZの新しいイメージ」の手順）に合わせて、次の順で入れます。
+
+1. zoo2-infra で、ConfigMap `authz-config`（`kubernetes/apps/authz/overlays/production/app/configmap.yaml`）に `WEBAUTHN_RELATED_ORIGINS: https://zli.chat` を足す PR をマージし、反映を確かめる（`kubectl -n authz get configmap authz-config -o jsonpath='{.data.WEBAUTHN_RELATED_ORIGINS}'`）。AuthZ の Deployment はこの ConfigMap を `envFrom` で読む。古いイメージはこの値を使わないので、先に入れても動作は変わらない。
+2. AuthZ#94 の実装（AuthZ#95）をマージして配備する。新しいイメージの Pod は起動時に値を読むので、手で再起動しなくてよい。
+3. `curl -sS -D - https://account.zli.works/.well-known/webauthn` で、200、`cache-control: public, max-age=300`、本文 `{"origins":["https://zli.chat"]}` を確かめてから、#360 と #369 を進める。
+
+最初の配備で手で再起動しなくてよいのは、この順で入れた場合だけです。先にイメージを配備した場合は、値を足したあとに `kubectl -n authz rollout restart deployment/authz` が要ります。配備のあとで値を変えるとき（オリジンを足す、外す）も、必ず再起動します。ConfigMap は hash 付きの名前で生成していないので、値を変えても Pod は入れ替わらないためです。AuthZ の IngressRoute は `account.zli.works` へのすべてのパスをアプリに送るので、`/.well-known/webauthn` のためのルートは足さなくてよいです。AuthZ 側の手順は AuthZ#95 の `docs/deployment.md` にあります。
+
+### RP ID の決め方
+
+【決定】クライアントは RP ID を固定値で持たず、AuthZ のオリジン、つまり OIDC の issuer のホスト名（`new URL(issuer).hostname`）から決めます。開発や E2E テストでは AuthZ のホストが `account.zli.works` ではないためです。
+
+| 環境 | issuer | RP ID |
+| --- | --- | --- |
+| 本番 | `https://account.zli.works/api/auth` | `account.zli.works`。ROR で呼ぶ |
+| 開発 | `http://localhost:4321/api/auth`（`frontend/.env.example` の例）。zoo2 も `localhost` で動かす | `localhost`。zoo2 と同じ RP ID なので ROR は使わない |
+| Playwright（#363 の仮想認証器） | 開発と同じく `localhost` のホスト | `localhost` |
+
+- React はビルド時の `VITE_OIDC_ISSUER`（`frontend/src/lib/config.ts` の `config.oidc.issuer`）から決める。本番の値は、`.github/workflows/cd-images.yaml` がリポジトリの Variables の `VITE_OIDC_ISSUER` から渡す。Compose wasmJs は React のページ（`ComposeFrontend`）の中で動き、同じ設定を使う。Android はログインに使う issuer（`MainActivity.kt` の既定は `https://account.zli.works/api/auth`）から同じように決める。
+- `config.oidc` がない（OIDC を設定していない開発環境や Preview）ときは、パスキーでの解錠を出さず、リカバリーキーだけにする。
+- IP アドレスは RP ID にできない。既存の OIDC の E2E（`frontend/playwright.oidc.config.ts`）はモック IdP の issuer を `127.0.0.1` にしているが、#363 では issuer のホストを `localhost` にする。仮想認証器のクレデンシャルの RP ID も `localhost` にする。
+- 開発では ROR を使わないので、AuthZ の `/.well-known/webauthn` も要らない。AuthZ は `localhost` を許可オリジンとして受け付けず、ブラウザーが取得する `https://localhost/.well-known/webauthn`（ポートなし）も開発の AuthZ には届かない（AuthZ#95 の `docs/architecture.md`）。
+
 ### 解錠（既存のスロットを開ける）
 
 【決定】zoo2 のページで次のように呼びます。
 
 ```js
+// RP ID の決め方の節のとおり、issuer のホスト名（本番は "account.zli.works"）
+const rpId = new URL(config.oidc.issuer).hostname;
 const credential = await navigator.credentials.get({
   publicKey: {
-    rpId: "account.zli.works",
+    rpId,
     challenge: crypto.getRandomValues(new Uint8Array(32)),
     userVerification: "required",
     allowCredentials: slots.map((slot) => ({
@@ -462,7 +489,9 @@ const prf = credential.getClientExtensionResults().prf?.results?.first;
   - 1Password のブラウザー拡張の PRF 応答が仕様に合わない件（[1Password Community](https://www.1password.community/developers-69/browser-extension-webauthn-prf-extension-not-spec-compliant-24672)）
   - Firefox の ROR 対応
   - Chrome（Windows、macOS、Android）、Safari（macOS、iOS）、iCloud キーチェーン、Google パスワードマネージャー、Windows Hello、YubiKey、Bitwarden
-  - 既存のパスキー（`prf: {}` なしで登録したもの）で PRF を使えるか
+  - 既存のパスキー（`prf: {}` なしで登録したもの）で PRF を使えるか。プラットフォーム認証器（iCloud キーチェーン、Google パスワードマネージャーなど）は、指定がなくても PRF を使える場合があるが、保証されない
+- 【未検証】AuthZ#94 の変更（AuthZ#95）より前に登録したセキュリティキーは、登録時に hmac-secret を有効にしていないので、AuthZ で登録し直すまで PRF を使えない見込み（AuthZ#95 の `docs/architecture.md`）。#369 で確かめ、結果を本書に書くときは、この前提も載せる。既存のパスキーでの AuthZ へのログインには影響しない。
+- 【決定】解錠で `prf.results.first` がなかったときの表示（[解錠](#解錠既存のスロットを開ける)）では、セキュリティキーなら AuthZ で登録し直すと使える場合があることも案内する。
 - 【未検証】Android アプリ（Credential Manager）から RP ID `account.zli.works` のパスキーを使うには、`https://account.zli.works/.well-known/assetlinks.json` で zoo の Android アプリを関連付ける必要がある。AuthZ#94 には入っていないので、[#360](https://github.com/Zli-UoA/zoo2/issues/360) の前に AuthZ 側の issue を作る。Credential Manager の要求 JSON に `prf` 拡張を入れて PRF 出力を得られるかも確かめる。
 
 ## 初回設定と解錠の流れ
@@ -977,10 +1006,10 @@ ALTER TABLE e2ee_to_device_messages REPLICA IDENTITY FULL;
 
 1. 自分：自分のマスター鍵は、初回設定で作ったとき、または SSSS から取り出した秘密鍵と一致したときに信頼する。自己署名鍵が信頼したマスター鍵で署名されていて、端末がその自己署名鍵で署名されていれば配る。今の端末には配らない。
 2. 他のユーザーでクロス署名鍵がない：配らない。送信画面に「暗号化を設定していない」と表示する。
-3. 他のユーザーのマスター鍵が、自分のユーザー署名鍵で署名されている：そのマスター鍵を信頼し、暗号ストアの記録とピンも更新する。
-4. 他のユーザーのマスター鍵を初めて見た（暗号ストアに記録がなく、署名を検証できるピンもない）：そのマスター鍵のピンを作ってサーバーに置き（`POST /api/e2ee/tofu_pins`）、暗号ストアにも記録して信頼する（TOFU）。ピンの登録が 409 `E2EE_PIN_CONFLICT` になったら、返ったピンを記録として規則 5 で判定する。
+3. 他のユーザーのマスター鍵が、自分のユーザー署名鍵で署名されている：そのマスター鍵を信頼し、暗号ストアの記録とピンも更新する。端末に配るかどうかは規則 6 で決める。
+4. 他のユーザーのマスター鍵を初めて見た（暗号ストアに記録がなく、署名を検証できるピンもない）：そのマスター鍵のピンを作ってサーバーに置き（`POST /api/e2ee/tofu_pins`）、暗号ストアにも記録して信頼する（TOFU）。端末に配るかどうかは規則 6 で決める。ピンの登録が 409 `E2EE_PIN_CONFLICT` になったら、返ったピンを記録として規則 5 で判定する。
 5. 記録（暗号ストアの記録かピン）のマスター鍵と今のマスター鍵が違う：**再検証するまで、そのユーザーのどの端末にも配らない**。警告を出すだけで配布を続けることはしない。送信画面に「再検証が必要」と表示する。ユーザーが新しいマスター鍵を受け入れたら（#362）、記録を更新し、ユーザー署名鍵で署名する。
-6. 上のどれでもない：自己署名鍵がマスター鍵で署名されていて、端末がその自己署名鍵で署名されていれば配る。署名がない、壊れている、削除済みの端末には配らない。
+6. マスター鍵を信頼できた他のユーザー（規則 3、4 に当たった、または記録のマスター鍵と今のマスター鍵が一致した）：端末ごとに、自己署名鍵がそのマスター鍵で署名されていて、端末がその自己署名鍵で署名されていれば配る。署名がない、壊れている、削除済みの端末には配らない。マスター鍵を信頼しただけでは、どの端末にも配らない。
 
 - 自分のマスター鍵がサーバー上で変わったのを見つけたら、自分の他の端末への配布も止め、SSSS で解錠し直すまで警告を出す。
 - 配れない相手がいても送信は止めない。送信画面に、配れない相手と理由を表示する（#361）。
@@ -988,7 +1017,7 @@ ALTER TABLE e2ee_to_device_messages REPLICA IDENTITY FULL;
   - 暗号化チャンネルでは、メンバーの参加と追加を必ずタイムラインに表示する。設定で隠せないようにする。
   - 送信画面から、今のセッションの配布先（ユーザーと端末の数）を確かめられるようにする。
   - 前回の送信から配布先のユーザーが増えていたら、送信画面に表示する。
-- 異常系のテスト（#350、#363）：未署名の端末、署名が壊れた端末、マスター鍵が変わったユーザーの端末、削除した端末は、配布先に入らない。
+- 異常系のテスト（#350、#363）：未署名の端末、署名が壊れた端末、マスター鍵が変わったユーザーの端末、削除した端末は、配布先に入らない。未署名の端末が配布先に入らないことは、規則 3（ユーザー署名鍵で署名済み）、規則 4（TOFU の直後）、記録と一致した場合のそれぞれで確かめる。
 
 ## 受信時の検証
 
@@ -1036,7 +1065,7 @@ Megolm のメッセージ（`messages` の行）を復号したとき：
 
 | 漏れた可能性があるもの | 行う手順 | マスター鍵 |
 | --- | --- | --- |
-| 端末だけ（SSSS 鍵、パスキー、リカバリーキーは漏れていない） | 1、3、4 | 残す |
+| 端末だけ（SSSS 鍵、パスキー、リカバリーキーは漏れていない） | 1、3、4 と、SSSS の秘密の置き換え | 残す |
 | パスキー、リカバリーキー、SSSS 鍵のどれか（端末の紛失と重なる場合を含む） | 1〜5 のすべて | 必ず作り直す |
 
 マスター鍵を残してよいのは、端末を失っただけの場合に限ります。端末はマスター鍵の秘密鍵も SSSS 鍵も保存しないので、端末からはマスター鍵は漏れません。一方、鍵スロットを開けられた時点で、SSSS 鍵と、SSSS に入っているマスター鍵の秘密鍵も漏れています。古いマスター鍵を持つ攻撃者は、作り直した自己署名鍵とは別の自己署名鍵を自分で作り、自分の端末に署名できます。他のユーザーのピンは古いマスター鍵のままなので、その端末に鍵が配られてしまいます。
@@ -1049,6 +1078,23 @@ Megolm のメッセージ（`messages` の行）を復号したとき：
 
 2〜5 で作る鍵は、保存する前にまとめて作ります。新しい SSSS には新しい秘密鍵を入れる必要があるためです。保存の順は[初回設定](#初回設定と解錠の流れ)と同じく、SSSS、クロス署名鍵と署名、バックアップの版の順にします。マスター鍵の差し替えには直前の再認証が要ります（[クロス署名の API](#クロス署名356)）。
 
+端末だけの場合（1、3、4）は SSSS 鍵を変えませんが、3 と 4 で作った秘密鍵を SSSS に書き戻します。書き戻さないと、あとで新しい端末が解錠したときに SSSS から古い秘密鍵が出てきます。古いバックアップ鍵は今の版の `auth_data.public_key` と一致しないので（[鍵バックアップ](#鍵バックアップ)）、その端末はバックアップを使えません。古い自己署名鍵で自分に署名しても、他の端末は今の自己署名鍵で検証するので、配布先に入りません。
+
+- 3 と 4 の鍵は保存する前にまとめて作る。
+- 保存の順は 2〜5 の場合と同じく、SSSS の秘密、クロス署名鍵と署名、バックアップの版の順にする。途中で失敗しても、新しい秘密鍵を SSSS から取り出して続きを保存し直せるようにするため。
+- SSSS には `POST /api/e2ee/secret_storage/secrets` で `m.megolm_backup.v1`、`m.cross_signing.self_signing`、`m.cross_signing.user_signing` の 3 つを、今の既定の SSSS 鍵の下で置き換える。`key_id` には始める前に開け直した既定の鍵を入れる。409 `E2EE_SSSS_CONFLICT` なら、別の端末が SSSS を作り直したので、ここで止め、SSSS を開け直してからやり直す。
+- `m.cross_signing.master` は変えない。
+
+どちらの場合も、古いバックアップ鍵は古い版を消すまで失効を行う端末の暗号ストアから消しません。途中で失敗しても、古い版のセッションを取り込み直せるようにするためです。失効を行った端末以外の自分の端末では、暗号ストアの自己署名鍵、ユーザー署名鍵、バックアップ鍵が古いままになります。そこで、サーバーの自己署名鍵とユーザー署名鍵の公開鍵、または今のバックアップの版の公開鍵が、暗号ストアの秘密鍵と合わなくなった端末は、その鍵を使う処理（端末への署名、ピンの作成、バックアップへのアップロード）を止め、SSSS で解錠し直すよう表示します。
+
+どちらの場合も、失効を行う端末は、保存を終えたら次のものを読み直し、自分が作った鍵と一致するかを確かめます。
+
+- SSSS の秘密（`GET /api/e2ee/secret_storage`）。開け直した SSSS 鍵で復号して比べる。
+- 自分のクロス署名鍵の公開鍵（`POST /api/e2ee/keys/query`）
+- 今のバックアップの版の公開鍵（`GET /api/e2ee/key_backup/versions/current`）
+
+一致しなければ、別の端末の失効と保存が入り混じったので、SSSS を開け直して失効をやり直します。`POST /api/e2ee/secret_storage/secrets` は `key_id` が既定の鍵かしか確かめません。そのため、2 つの端末で同時に失効を行うと、SSSS には一方の端末の秘密鍵が、サーバーには他方の公開鍵が残ることがあります。この状態では、解錠し直しても合う鍵は出てきません。
+
 これで、それ以降の鍵の配布と新しいメッセージは守れます。
 
 ### 取り消せないもの
@@ -1059,6 +1105,26 @@ Megolm のメッセージ（`messages` の行）を復号したとき：
 - 古い SSSS 鍵と、それで開けた秘密（クロス署名の古い秘密鍵、古いバックアップ鍵）
 - 古いバックアップの中身（古いバックアップ鍵を持つ人は、そのバックアップに入っていたセッションで、その範囲の過去ログを読める）
 - 削除したメッセージの暗号文と平文のうち、すでに取得されたもの
+
+### 許可オリジンを外すとき
+
+【決定】`/.well-known/webauthn` の `origins` からオリジンを外すときは、次の順で行います。
+
+1. zoo2-infra で、ConfigMap `authz-config` の `WEBAUTHN_RELATED_ORIGINS` からそのオリジンを消す PR をマージし、[本番への配備の順](#本番への配備の順)の 1 と同じ `kubectl` のコマンドで反映を確かめる。
+2. `kubectl -n authz rollout restart deployment/authz` で AuthZ を再起動し、`kubectl -n authz rollout status deployment/authz --timeout=600s` で完了を待つ。再起動しないと、動いている Pod は外したオリジンを返し続ける。
+3. `curl -sS https://account.zli.works/.well-known/webauthn` で、`origins` にそのオリジンがないことを確かめる。
+4. 3 を確かめた時刻から、キャッシュの時間（`max-age=300`、5 分）が過ぎるのを待つ。
+5. 外す理由に応じて、次のどちらかを行う。
+
+| 外す理由 | 行うこと |
+| --- | --- |
+| そのオリジンが乗っ取られた疑いはない（使わなくなった、移転したなど） | すべてのパスキーのスロットを、新しい `prf_salt` で作り直す（[鍵スロットの追加](#鍵スロットの追加)）。そのオリジンで作ったスロットに絞らない。作り直せないパスキー（手元にないもの）のスロットは消す |
+| そのオリジンが乗っ取られた可能性がある | パスキーと SSSS 鍵が漏れたものとして扱い、[失効の手順](#失効の手順)の 1〜5 をすべて行う。マスター鍵も作り直す |
+
+- 作り直す対象を絞らないのは、PRF の評価が RP ID の単位でしか分かれないため。許可されていた間、そのオリジンのコードはスロットをどこで作ったかに関係なく、すべてのパスキーについて、スロットの salt（秘密ではない）から PRF 出力を得られた。
+- 乗っ取りの疑いがあるときにスロットの作り直しだけで済ませないのは、作り直しても SSSS 鍵が変わらないため。そのオリジンの攻撃者は PRF 出力から KEK を導き、スロットの暗号文から SSSS 鍵を得られた可能性がある。これは失効の表の「パスキー、リカバリーキー、SSSS 鍵のどれか」に当たる。
+- スロットはユーザーごとにあり、作り直しには各パスキーの UV が要るので、どちらも各ユーザーが自分の解錠済みの端末で行う。【提案】クライアントに外した日時を設定し、それより前に作ったパスキーのスロットがあるユーザーに、解錠のときに作り直し（乗っ取りの疑いがあるときは失効）を求める。仕組みは #362 で決める。
+- AuthZ 側の手順（AuthZ#95 の `docs/deployment.md`）からは、この節にリンクする。
 
 ### ログアウトと端末の削除
 
@@ -1177,7 +1243,10 @@ Megolm のメッセージ（`messages` の行）を復号したとき：
 - **暗号化チャンネルを共有する他のユーザーに見えるもの**：端末の数、端末の公開鍵、端末の追加と削除の時刻。端末名（`display_name`）と最後に使った時刻（`last_seen_at`）は本人にしか見せない。
 - **改ざんした JavaScript を配信できる攻撃者**：zli.chat のフロントエンドの配信元、CDN、依存パッケージを乗っ取られると、平文、PRF 出力、暗号ストアを読まれる。Web 版の E2EE に共通する限界。
 - **XSS など、同じオリジンで動くコード**：平文、暗号ストア、PRF 出力を読まれる。暗号ストアの暗号化も役に立たない。
-- **Related Origin Requests の許可オリジンと AuthZ**：PRF の salt は秘密ではない。RP ID `account.zli.works` の正規のオリジンと、`/.well-known/webauthn` の `origins` に載ったすべてのオリジンは、ユーザーの UV だけで同じ PRF 出力（つまり KEK）を得られる。PRF の評価は RP ID の単位でしか分かれないので、AuthZ と許可オリジンは E2EE の信頼の基盤（TCB）に入る。そこで XSS や依存の乗っ取りが起きると、パスキーの鍵スロットを開けられる。許可オリジンを `https://zli.chat` だけにしているのはこのため。許可オリジンを外すときは、`/.well-known/webauthn` から外し、キャッシュの時間（300 秒）を待ってから、そのオリジンで作ったかもしれないスロットを新しい salt で作り直す。
+- **Related Origin Requests の許可オリジンと AuthZ**：PRF の salt は秘密ではない。RP ID（本番は `account.zli.works`）の正規のオリジンと、`/.well-known/webauthn` の `origins` に載ったすべてのオリジンは、ユーザーの UV だけで同じ PRF 出力（つまり KEK）を得られる。PRF の評価は RP ID の単位でしか分かれないので、AuthZ のオリジンと許可オリジンで動く JavaScript と、それを届ける経路（配信元、CDN、依存パッケージ、ページが読み込む第三者のスクリプト）は、E2EE の信頼の基盤（TCB）に入る。そこで XSS や乗っ取りが起きると、パスキーの鍵スロットを開けられる。許可オリジンを `https://zli.chat` だけにしているのはこのため。外し方は[許可オリジンを外すとき](#許可オリジンを外すとき)を参照。
+  - 第三者のスクリプトは、AuthZ が CAPTCHA を有効にした画面（`/login`、`/register`、`/login/qr`）で読み込む Cloudflare Turnstile（`https://challenges.cloudflare.com` から読み込むスクリプト。今は `turnstile/v0/api.js`）だけ。AuthZ の CSP の `script-src` はこれらの画面に限って、自分のほかにこのオリジン全体を許可する。そのため、TCB に入るのは 1 つの URL ではなくこのオリジンから届くすべてのスクリプト。AuthZ#95 の `docs/architecture.md`「E2EEの信頼範囲」と同じ範囲。AuthZ が読み込む Google Fonts はスタイルシートとフォントだけで、スクリプトを動かさないので入れない。
+  - zli.chat は第三者のスクリプトを読み込まない。CSP の `script-src` は `'self'` と、インラインの script のハッシュだけ（`infra/frontend-nginx.conf`）。
+  - 「守るもの」で、AuthZ のデータが漏れても本文を読めないとしているのは、AuthZ の DB や秘密の値が漏れる場合のこと。AuthZ が配信する JavaScript を改ざんされないことが前提になる。
 - **同じユーザーの端末どうし**：API の認可はユーザー単位なので、ユーザーのトークンを持つ者は、そのユーザーの別の端末の ID を名乗って to-device を送る、端末を削除する、などができる。暗号の検証（署名、Olm の照合）で読み取りは防ぐが、削除などの妨害は防げない。
 - **サーバーによるメンバーの追加**：メンバーの一覧はサーバーが決めるもので、暗号で認証されていない。サーバーや DB を乗っ取った攻撃者は、自分が持つアカウント（正しくクロス署名した端末を持つもの）をメンバーに足せる。各送信者はそのアカウントを TOFU で信頼し、それ以降の Megolm セッションを配るので、攻撃者はそれ以降のメッセージを読める（Matrix の ghost user 問題と同じ）。参加前のメッセージは読めない。緩和策として、暗号化チャンネルではメンバーの増加を必ずタイムラインに表示し、送信画面から配布先を確かめられるようにする（[鍵の配布先の判定](#鍵の配布先の判定)、#361）。
 - **初めて見るマスター鍵**：ピンを持っていない相手について、サーバーは偽のマスター鍵を見せられる（TOFU の限界）。サーバーは自分のピンを消したり返さなかったりもできる。その場合、暗号ストアに記録のない端末（新しくログインした端末）は TOFU をやり直す。SAS（#368）で検証した相手は、ユーザー署名鍵の署名で守られる。
@@ -1195,7 +1264,8 @@ Megolm のメッセージ（`messages` の行）を復号したとき：
 | issue | 内容 | 依存 |
 | --- | --- | --- |
 | [#347](https://github.com/Zli-UoA/zoo2/issues/347) | 本書 | |
-| [AuthZ#94](https://github.com/Zli-UoA/AuthZ/issues/94) | パスキー登録で PRF を有効にし、`/.well-known/webauthn` を配信する | |
+| zoo2-infra（PR は未作成） | ConfigMap `authz-config` に `WEBAUTHN_RELATED_ORIGINS: https://zli.chat` を足す。AuthZ#94 の実装（AuthZ#95）より先にマージする（[本番への配備の順](#本番への配備の順)） | |
+| [AuthZ#94](https://github.com/Zli-UoA/AuthZ/issues/94) | パスキー登録で PRF を有効にし、`/.well-known/webauthn` を配信する | zoo2-infra（配備の順） |
 | [#348](https://github.com/Zli-UoA/zoo2/issues/348) | `crates/zoo-crypto` の雛形とツールチェーン、端末アカウント、pickle の保存 | #347 |
 | [#349](https://github.com/Zli-UoA/zoo2/issues/349) | Olm と Megolm のセッション管理と受信時の検証 | #348 |
 | [#350](https://github.com/Zli-UoA/zoo2/issues/350) | クロス署名と鍵の配布先の判定 | #349 |
@@ -1224,7 +1294,7 @@ Megolm のメッセージ（`messages` の行）を復号したとき：
 | 項目 | 状態 | 扱う issue |
 | --- | --- | --- |
 | ブラウザー、認証器、パスワードマネージャーごとの PRF と ROR の対応（Safari の CTAP2、1Password、Firefox の ROR など） | 【未検証】 | #369 |
-| 既存のパスキーで PRF を使えるか | 【未検証】 | AuthZ#94、#369 |
+| 既存のパスキー（`prf: {}` なしで登録したプラットフォーム認証器）で PRF を使えるか。AuthZ#95 より前に登録したセキュリティキーは、登録し直すまで使えない | 【未検証】 | AuthZ#94、#369 |
 | Android の Credential Manager で RP ID `account.zli.works` のパスキーと PRF を使えるか。`assetlinks.json` を AuthZ で配信する issue を作る | 【未検証】 | #360（前に AuthZ の issue） |
 | `getrandom` の wasm のバックエンドの設定。cfg フラグは付けず、`wasm_js` feature だけにする（getrandom 0.3.4 以降と 0.4） | 【決定】 | #348 |
 | `getrandom` の wasm_js バックエンドで、ブラウザーと Worker で実際に乱数を取れるか（#348 ではビルドだけ確認） | 【未検証】 | #352 |
@@ -1236,6 +1306,7 @@ Megolm のメッセージ（`messages` の行）を復号したとき：
 | マスター鍵の差し替えに直前の再認証を求める。zoo2 が受け取るトークンで `auth_time` を確かめられるか | 【決定】（確かめ方は【未検証】） | #356 |
 | AuthZ でパスキーの credential ID の一覧を取れるようにし、削除済みのパスキーの鍵スロットを表示する | 【提案】（AuthZ の issue が要る） | #362 |
 | 自分の端末どうしで鍵を要求し合う仕組み（Matrix の `m.room_key_request`）。初期版は鍵バックアップで代える | 未決 | 後続 |
+| 許可オリジンを外したときに、パスキーのスロットの作り直しを求める仕組み | 【提案】 | #362 |
 | TUI で、別の端末から承認して解錠する方式 | 未決 | 後続 |
 
 ## 参考
