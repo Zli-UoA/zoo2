@@ -114,6 +114,7 @@ SSSS 鍵 → m.megolm_backup.v1           → バックアップ鍵 → 鍵バ�
 - バイト列は、特に書かない限り**パディングなしの標準 base64**（[Unpadded Base64](https://spec.matrix.org/latest/appendices/#unpadded-base64)）で表す。受け取る側はパディング付きも受け付ける。WebAuthn の credential ID だけは、WebAuthn の慣習に合わせて base64url（パディングなし）にする。
 - 署名は [Signing JSON](https://spec.matrix.org/latest/appendices/#signing-json) と同じにする。`signatures` と `unsigned` を除いた JSON を [Canonical JSON](https://spec.matrix.org/latest/appendices/#canonical-json) にして Ed25519 で署名し、`signatures.<user_id>.<鍵 ID>` に入れる。鍵 ID は `ed25519:<device_id>`（端末の署名鍵）か `ed25519:<公開鍵>`（クロス署名の鍵）。
 - ID はすべて UUID の文字列にする（既存の `users.id`、`channels.id`、`messages.id` と同じ）。`device_id` もクライアントが UUID v4 で作る。署名する JSON に `device_id` が入るので、サーバーに登録する前に決まっている必要があるため。
+- 【提案】UUID は小文字のハイフン区切り（PostgreSQL の `uuid` 型が返す表記）で書く。署名した JSON の `device_id` や鍵 ID と、サーバーが返す ID の表記がずれないようにするため。`zoo-crypto` は他の表記の `user_id` と `device_id` を受け付けない。
 
 ### 端末鍵とワンタイム鍵
 
@@ -990,12 +991,22 @@ Megolm のメッセージ（`messages` の行）を復号したとき：
 ### 乱数
 
 - 【決定】乱数は OS かブラウザーの暗号用乱数（Web では `crypto.getRandomValues`）だけを使う。
-- 【未検証】vodozemac 0.11 は getrandom 0.4 に依存し、`wasm_js` feature（`getrandom/wasm_js`）を持つ。`wasm32-unknown-unknown` では vodozemac の `wasm_js` を有効にし、他の依存が使う getrandom も `wasm_js`（0.3 以降）または `js`（0.2）にする。`custom` バックエンドは使わない。cfg フラグ（`getrandom_backend="wasm_js"`）が要るかは #348 のビルドで確かめる。
+- 【決定】vodozemac 0.11 は getrandom 0.4 に依存し、`wasm_js` feature（`getrandom/wasm_js`）を持つ。`crates/zoo-crypto` は、`wasm32-unknown-unknown` のときだけ vodozemac の `wasm_js` を有効にする。`custom` バックエンドは使わない。
+  - #348 のビルドで確かめたこと：getrandom 0.4 は `wasm_js` feature だけで `crypto.getRandomValues` を使うバックエンドになり、cfg フラグ（`getrandom_backend="wasm_js"`）は要らない。feature がないと、getrandom の `compile_error!` でビルドが止まる。今の依存には getrandom 0.4 しかない。
+  - 依存を足して getrandom 0.2 か 0.3 が入ったら、その版にも `js`（0.2）か `wasm_js`（0.3）を有効にする。0.3 は 0.3.4 以降なら feature だけでよく、それより前は cfg フラグも要る。
+  - 【未検証】ブラウザーと Worker で実際に乱数を取れるか（ビルドしか確かめていない）は、#352 で確かめる。
 
 ### 暗号ストア
 
 - 【決定】暗号ストアは、オフライン DB（`zoo-offline-*`）とは別に置く。`OFFLINE_SCHEMA_VERSION` を変えてオフライン DB を作り直しても、暗号ストアは消えない（消えると端末の鍵を失うため）。
 - 【決定】Olm と Megolm の状態は、vodozemac の pickle を 32 バイトの pickle key で暗号化して保存する（#348）。
+- 【提案】端末アカウントの保存形式（`DeviceAccount::pickle`）は、次の JSON にする。
+
+  ```json
+  {"version": 1, "user_id": "...", "device_id": "...", "account": "<vodozemac の暗号化した pickle>", "binding": "<署名>"}
+  ```
+
+  `user_id` と `device_id` は平文で持つ。書き換えに気付けるように、`binding` に `LP("zoo e2ee device pickle v1")‖LP(user_id)‖LP(device_id)` への端末の署名鍵の署名を入れる（`LP` は[鍵スロット](#鍵スロット)の AAD と同じ）。JSON ではない形にして、サーバーに送る署名付きの JSON と取り違えないようにする。pickle key が違えば復号に失敗し、`CryptoError::Pickle` になる。
 - 【提案】保存先と pickle key の置き場所：
 
   | クライアント | 保存先 | pickle key |
@@ -1079,7 +1090,7 @@ Megolm のメッセージ（`messages` の行）を復号したとき：
 | ブラウザー、認証器、パスワードマネージャーごとの PRF と ROR の対応（Safari の CTAP2、1Password、Firefox の ROR など） | 【未検証】 | #369 |
 | 既存のパスキーで PRF を使えるか | 【未検証】 | AuthZ#94、#369 |
 | Android の Credential Manager で RP ID `account.zli.works` のパスキーと PRF を使えるか。`assetlinks.json` を AuthZ で配信する issue を作る | 【未検証】 | #360（前に AuthZ の issue） |
-| `getrandom` の wasm のバックエンドの設定（cfg フラグが要るか） | 【未検証】 | #348 |
+| `getrandom` の wasm のバックエンドが、ブラウザーと Worker で実際に動くか（ビルドは #348 で確認。cfg フラグは不要） | 【未検証】 | #352 |
 | 3 段のサブクエリの Shape で move-in と move-out が届くか | 【未検証】 | #354 |
 | `mentions` の形（`{user_ids, channel, here}`）を #358 の本文に合わせる | 【提案】 | #358 |
 | エラー応答に `code` を足す方法 | 【提案】 | #354 か #357 |
