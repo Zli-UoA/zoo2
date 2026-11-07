@@ -1,6 +1,14 @@
 import { useLiveQuery } from "@tanstack/react-db";
 import { Link } from "@tanstack/react-router";
-import { HeadphonesIcon, MicIcon, MicOffIcon, PhoneOffIcon } from "lucide-react";
+import { Popover } from "@base-ui/react/popover";
+import {
+  ActivityIcon,
+  HeadphonesIcon,
+  MicIcon,
+  MicOffIcon,
+  PhoneOffIcon,
+  Settings2Icon,
+} from "lucide-react";
 import { useMemo } from "react";
 import { useTranslation } from "react-i18next";
 
@@ -10,6 +18,8 @@ import { useOptionalCollections } from "../../lib/electric/collections-context";
 import type { ChannelRow } from "../../lib/electric/types";
 import { isLocale } from "../../lib/i18n/locale";
 import { Button } from "../ui/button";
+import { CallDeviceSelects } from "../call/CallDeviceSelects";
+import { CallStatusPanel } from "../call/CallStatusPanel";
 import { formatDmDisplayName, resolveDmDisplayName } from "./dm";
 
 interface CallBarProps {
@@ -37,6 +47,10 @@ export function CallBar({ channels = [] }: CallBarProps) {
     speakingUserIds,
     toggleMute,
     leaveCall,
+    selectedMicId,
+    selectedSpeakerId,
+    setMicrophone,
+    setSpeaker,
   } = useCall();
 
   const channel = channels.find((c) => c.id === currentChannelId);
@@ -141,6 +155,65 @@ export function CallBar({ channels = [] }: CallBarProps) {
       </div>
 
       <div className="flex shrink-0 items-center gap-1.5">
+        <Popover.Root>
+          <Popover.Trigger
+            render={
+              <Button
+                type="button"
+                variant="secondary"
+                size="icon-sm"
+                className="size-9 rounded-full"
+                aria-label={t("call.statusButton")}
+                title={t("call.statusButton")}
+              />
+            }
+          >
+            <ActivityIcon className="size-4" />
+          </Popover.Trigger>
+          <Popover.Portal>
+            <Popover.Positioner side="top" align="end" sideOffset={8} className="z-[60]">
+              <Popover.Popup className="max-h-[70vh] w-[min(22rem,calc(100vw-2rem))] overflow-y-auto rounded-xl border bg-popover p-4 text-popover-foreground shadow-xl outline-none">
+                <Popover.Title className="mb-3 text-sm font-semibold">
+                  {t("call.statusButton")}
+                </Popover.Title>
+                <CallStatusPanel />
+              </Popover.Popup>
+            </Popover.Positioner>
+          </Popover.Portal>
+        </Popover.Root>
+
+        <Popover.Root>
+          <Popover.Trigger
+            render={
+              <Button
+                type="button"
+                variant="secondary"
+                size="icon-sm"
+                className="size-9 rounded-full"
+                aria-label={t("call.devicesButton")}
+                title={t("call.devicesButton")}
+              />
+            }
+          >
+            <Settings2Icon className="size-4" />
+          </Popover.Trigger>
+          <Popover.Portal>
+            <Popover.Positioner side="top" align="end" sideOffset={8} className="z-[60]">
+              <Popover.Popup className="w-[min(20rem,calc(100vw-2rem))] rounded-xl border bg-popover p-4 text-popover-foreground shadow-xl outline-none">
+                <Popover.Title className="mb-3 text-sm font-semibold">
+                  {t("call.devicesButton")}
+                </Popover.Title>
+                <CallDeviceSelects
+                  micId={selectedMicId}
+                  speakerId={selectedSpeakerId}
+                  onMicChange={(id) => void setMicrophone(id)}
+                  onSpeakerChange={(id) => void setSpeaker(id)}
+                />
+              </Popover.Popup>
+            </Popover.Positioner>
+          </Popover.Portal>
+        </Popover.Root>
+
         <Button
           type="button"
           variant={isMuted ? "destructive" : "secondary"}
