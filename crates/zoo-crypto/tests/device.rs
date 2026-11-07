@@ -228,10 +228,71 @@ fn pickle_round_trip_keeps_keys_and_publish_state() {
         unpublished.keys().collect::<Vec<_>>()
     );
 
-    // 秘密鍵は pickle の平文に出ない。
+    // 暗号化されているので、識別鍵（公開鍵）も平文の pickle に出ない。
+    // 秘密鍵が出ないことは pickle_does_not_contain_secret_keys で確かめる。
     let identity = account.identity_keys();
     assert!(!pickle.contains(&identity.curve25519.to_base64()));
     assert!(!pickle.contains(&identity.ed25519.to_base64()));
+}
+
+/// JSON の値から、32 バイトのバイト列（数の配列）をすべて集める。
+/// vodozemac の pickle では、Ed25519 と Curve25519 の秘密鍵がこの形になる
+/// （ワンタイム鍵の公開鍵も同じ形で入るので、一緒に集まる）。
+fn collect_32_byte_arrays(value: &Value, out: &mut Vec<Vec<u8>>) {
+    match value {
+        Value::Array(items) => {
+            let bytes: Option<Vec<u8>> = items
+                .iter()
+                .map(|item| item.as_u64().and_then(|n| u8::try_from(n).ok()))
+                .collect();
+            match bytes {
+                Some(bytes) if bytes.len() == 32 => out.push(bytes),
+                _ => items
+                    .iter()
+                    .for_each(|item| collect_32_byte_arrays(item, out)),
+            }
+        }
+        Value::Object(map) => map
+            .values()
+            .for_each(|item| collect_32_byte_arrays(item, out)),
+        _ => {}
+    }
+}
+
+#[test]
+fn pickle_does_not_contain_secret_keys() {
+    let mut account = account();
+    account.generate_one_time_keys(2);
+    account.generate_fallback_key();
+    let pickle = account.pickle(&PICKLE_KEY);
+
+    // 包みの中の vodozemac の pickle を復号し、平文の秘密鍵を取り出す。
+    let envelope: Value = serde_json::from_str(&pickle).unwrap();
+    let inner = vodozemac::olm::AccountPickle::from_encrypted(
+        envelope["account"].as_str().unwrap(),
+        &PICKLE_KEY,
+    )
+    .unwrap();
+    let mut secrets = Vec::new();
+    collect_32_byte_arrays(&serde_json::to_value(&inner).unwrap(), &mut secrets);
+    // 秘密鍵は、署名鍵、識別鍵、ワンタイム鍵 2 つ、フォールバック鍵 1 つの 5 個。
+    assert!(
+        secrets.len() >= 5,
+        "秘密鍵が {} 個しか見つからない",
+        secrets.len()
+    );
+
+    for secret in &secrets {
+        let unpadded = vodozemac::base64_encode(secret);
+        let hex: String = secret.iter().map(|b| format!("{b:02x}")).collect();
+        let array = serde_json::to_string(secret).unwrap();
+        for encoded in [&unpadded, &hex, &array] {
+            assert!(
+                !pickle.contains(encoded.as_str()),
+                "秘密鍵が平文で入っている: {encoded}"
+            );
+        }
+    }
 }
 
 #[test]
