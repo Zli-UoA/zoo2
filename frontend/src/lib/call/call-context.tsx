@@ -596,11 +596,13 @@ export function CallProvider({ config: explicitConfig, children }: CallProviderP
   );
 
   const switchMicrophone = useCallback(
-    async (deviceId: string) => {
+    async (deviceId: string, expectedGen: number) => {
       // 直列化されたキューの中で、直前の切替が確定した後の最新ストリームを取得する
       const oldStream = localStreamRef.current;
       if (!oldStream || !sessionIdRef.current) return;
       const gen = callGenerationRef.current;
+      // 予約時と異なる通話（退出・再参加を挟んだ場合）への要求は破棄する
+      if (gen !== expectedGen) return;
       let newStream: MediaStream;
       try {
         newStream = await acquireMicStream(deviceId);
@@ -681,7 +683,8 @@ export function CallProvider({ config: explicitConfig, children }: CallProviderP
     (deviceId: string) => {
       appliedMicIdRef.current = deviceId;
       saveSelectedDevice("mic", deviceId);
-      const run = micSwitchQueueRef.current.then(() => switchMicrophone(deviceId));
+      const reservedGen = callGenerationRef.current;
+      const run = micSwitchQueueRef.current.then(() => switchMicrophone(deviceId, reservedGen));
       micSwitchQueueRef.current = run.catch(() => {});
       return run;
     },
@@ -722,7 +725,8 @@ export function CallProvider({ config: explicitConfig, children }: CallProviderP
         if (micId !== appliedMicIdRef.current) {
           appliedMicIdRef.current = micId;
           if (localStreamRef.current && sessionIdRef.current) {
-            const run = micSwitchQueueRef.current.then(() => switchMicrophone(micId));
+            const reservedGen = callGenerationRef.current;
+            const run = micSwitchQueueRef.current.then(() => switchMicrophone(micId, reservedGen));
             micSwitchQueueRef.current = run.catch(() => {});
           }
         }
@@ -863,7 +867,7 @@ export function CallProvider({ config: explicitConfig, children }: CallProviderP
       // マイク取得待ちの間に選択が変わっていた場合は、最新の選択へ切り替える
       if (appliedMicIdRef.current !== usedMicId) {
         const latestMicId = appliedMicIdRef.current;
-        const run = micSwitchQueueRef.current.then(() => switchMicrophone(latestMicId));
+        const run = micSwitchQueueRef.current.then(() => switchMicrophone(latestMicId, currentGen));
         micSwitchQueueRef.current = run.catch(() => {});
       }
 
