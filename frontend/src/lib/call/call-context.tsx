@@ -684,12 +684,15 @@ export function CallProvider({ config: explicitConfig, children }: CallProviderP
 
   // 連続した切替が同じ旧ストリームを参照して競合しないよう、1 件ずつ実行する
   const micSwitchQueueRef = useRef<Promise<unknown>>(Promise.resolve());
+  const micRequestSeqRef = useRef(0);
   // 切替を予約する。失敗し、より新しい選択も無ければ、使用中のマイクへ表示と保存値を戻す
   const enqueueMicSwitch = useCallback(
     (deviceId: string, gen: number) => {
+      // 要求ごとの連番で「より新しい要求が無いか」を判定する（A→B→A のような同一 ID の再選択でも食い違わない）
+      const seq = ++micRequestSeqRef.current;
       const run = micSwitchQueueRef.current.then(async () => {
         const ok = await switchMicrophone(deviceId, gen);
-        if (!ok && appliedMicIdRef.current === deviceId) {
+        if (!ok && micRequestSeqRef.current === seq) {
           appliedMicIdRef.current = activeMicIdRef.current;
           saveSelectedDevice("mic", activeMicIdRef.current);
         }
