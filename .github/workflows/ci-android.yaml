@@ -106,8 +106,15 @@ jobs:
         run: |
           latest=$(gh api "repos/$GITHUB_REPOSITORY/commits/main" --jq .sha)
           if [ "$latest" != "$GITHUB_SHA" ]; then
-            echo "A newer main commit exists; skip this older build."
-            exit 0
+            # push の paths と同じ一覧。Android に関係しない新しいコミット (TUI など) はビルドを起動しないので、
+            # それだけが後から入ったときは、このビルドが最新の Android と同じ内容として公開する。
+            paths=(frontend-compose frontend/src/lib/i18n/locales frontend/public/icons .github/workflows/ci-android.yaml '.github/scripts/android-update-manifest*.py')
+            git fetch --quiet origin "$latest"
+            if ! git diff --quiet "$GITHUB_SHA" "$latest" -- "${paths[@]}"; then
+              echo "A newer main commit changes Android; skip this older build."
+              exit 0
+            fi
+            echo "Newer main commits do not change Android; publish this build."
           fi
           if ! gh release view android-main --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
             gh release create android-main --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --prerelease --title "Android main" --notes "main の署名付き Android ビルド。更新対象のコミットとバージョンは update.json を参照してください。"
