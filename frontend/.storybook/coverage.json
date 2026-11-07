@@ -960,7 +960,7 @@
     },
     {
       "file": "src/components/apps/console/AppConsole.tsx",
-      "reason": "#322 の App 管理画面は React 版だけに実装する（Compose 版は別 issue）。Story を置くと全 Story に Kotlin 実装を求める story-coverage.test.ts が失敗するため、ブラウザテストで表示・権限境界・保存を確認する。",
+      "reason": "#322 の App 管理画面は React 版 Web だけの機能で、Compose 版は作らない。Story を置くと全 Story に Kotlin 実装を求める story-coverage.test.ts が失敗するため、ブラウザテストで表示・権限境界・保存を確認する。",
       "checks": [
         "src/components/apps/console/AppConsole.browser.test.tsx",
         "src/components/apps/console/AppConsoleList.browser.test.tsx",
@@ -969,7 +969,7 @@
     },
     {
       "file": "src/components/apps/console/AppConsoleList.tsx",
-      "reason": "#322 の App 管理画面は React 版だけに実装する（Compose 版は別 issue）。Story を置くと全 Story に Kotlin 実装を求める story-coverage.test.ts が失敗するため、ブラウザテストで表示・権限境界・保存を確認する。",
+      "reason": "#322 の App 管理画面は React 版 Web だけの機能で、Compose 版は作らない。Story を置くと全 Story に Kotlin 実装を求める story-coverage.test.ts が失敗するため、ブラウザテストで表示・権限境界・保存を確認する。",
       "checks": [
         "src/components/apps/console/AppConsole.browser.test.tsx",
         "src/components/apps/console/AppConsoleList.browser.test.tsx",
@@ -978,7 +978,7 @@
     },
     {
       "file": "src/components/apps/console/ConfigSections.tsx",
-      "reason": "#322 の App 管理画面は React 版だけに実装する（Compose 版は別 issue）。Story を置くと全 Story に Kotlin 実装を求める story-coverage.test.ts が失敗するため、ブラウザテストで表示・権限境界・保存を確認する。",
+      "reason": "#322 の App 管理画面は React 版 Web だけの機能で、Compose 版は作らない。Story を置くと全 Story に Kotlin 実装を求める story-coverage.test.ts が失敗するため、ブラウザテストで表示・権限境界・保存を確認する。",
       "checks": [
         "src/components/apps/console/AppConsole.browser.test.tsx",
         "src/components/apps/console/AppConsoleList.browser.test.tsx",
@@ -987,7 +987,7 @@
     },
     {
       "file": "src/components/apps/console/OperationSections.tsx",
-      "reason": "#322 の App 管理画面は React 版だけに実装する（Compose 版は別 issue）。Story を置くと全 Story に Kotlin 実装を求める story-coverage.test.ts が失敗するため、ブラウザテストで表示・権限境界・保存を確認する。",
+      "reason": "#322 の App 管理画面は React 版 Web だけの機能で、Compose 版は作らない。Story を置くと全 Story に Kotlin 実装を求める story-coverage.test.ts が失敗するため、ブラウザテストで表示・権限境界・保存を確認する。",
       "checks": [
         "src/components/apps/console/AppConsole.browser.test.tsx",
         "src/components/apps/console/AppConsoleList.browser.test.tsx",
