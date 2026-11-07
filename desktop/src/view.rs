@@ -165,15 +165,8 @@ impl WorkspaceView {
     }
 
     fn submit_composer(&mut self, cx: &mut Context<Self>) {
-        let text = self.composer_input.read(cx).text().to_string();
-        let submitted = self.state.update(cx, |state, cx| {
-            let ok = state.submit_message(text);
-            cx.notify();
-            ok
-        });
-        if submitted {
-            self.composer_input.update(cx, |input, cx| input.clear(cx));
-        }
+        self.composer_input
+            .update(cx, |input, cx| input.request_submit(cx));
     }
 
     fn render_login_view(
@@ -1890,7 +1883,7 @@ impl WorkspaceView {
                     .text_color(theme::TEXT_MUTED)
                     .child(format!("返信 ({} 件)", replies.len())),
             );
-            for reply in &replies {
+            for reply in replies.iter() {
                 let r_reactions = reactions_by_msg.get(&reply.id).cloned().unwrap_or_default();
                 cards.push(self.render_message_card(
                     reply,

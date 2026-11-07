@@ -324,12 +324,17 @@ impl TextInput {
         }
     }
 
-    fn submit(&mut self, _: &Submit, _window: &mut Window, cx: &mut Context<Self>) {
+    /// IME 変換中でなければ `InputEvent::Submit` を発火する。
+    pub fn request_submit(&mut self, cx: &mut Context<Self>) {
         // IME 変換中なら確定を優先し、送信しない。
         if self.marked_range.is_some() {
             return;
         }
         cx.emit(InputEvent::Submit(self.content.clone()));
+    }
+
+    fn submit(&mut self, _: &Submit, _window: &mut Window, cx: &mut Context<Self>) {
+        self.request_submit(cx);
     }
 
     fn cancel(&mut self, _: &Cancel, _window: &mut Window, cx: &mut Context<Self>) {

@@ -71,12 +71,12 @@ pub struct FailedDraft {
 pub struct ChannelViewCache {
     pub channel_id: Option<String>,
     pub me_id: String,
-    pub root_messages: Vec<Message>,
-    pub reply_counts: HashMap<String, usize>,
-    pub reactions_by_message: HashMap<String, Vec<ReactionGroup>>,
+    pub root_messages: Arc<Vec<Message>>,
+    pub reply_counts: Arc<HashMap<String, usize>>,
+    pub reactions_by_message: Arc<HashMap<String, Vec<ReactionGroup>>>,
     pub thread_root_id: Option<String>,
     pub thread_root_message: Option<Message>,
-    pub thread_replies: Vec<Message>,
+    pub thread_replies: Arc<Vec<Message>>,
     pub messages_dirty: bool,
     pub reactions_dirty: bool,
 }
@@ -86,7 +86,11 @@ pub struct ChannelViewCache {
 pub enum AppEvent {
     Notice(String),
     Unauthorized,
+    SubmissionSucceeded {
+        submission_id: u64,
+    },
     RestoreDraft {
+        submission_id: u64,
         channel_id: String,
         target: Target,
         content: String,
@@ -133,6 +137,7 @@ pub struct AppState {
     pub login_task: Option<JoinHandle<()>>,
 
     pub credentials: Option<Credentials>,
+    pub token_manager: Option<Arc<login::DesktopTokenManager>>,
     pub api: Option<ApiClient>,
     pub me: Option<Me>,
     pub session_id: String,
@@ -160,6 +165,9 @@ pub struct AppState {
     /// `AppState` 側から入力欄 (`TextInput`) へ反映すべき文字列。
     pub pending_composer_text: Option<String>,
     pub failed_drafts: Vec<FailedDraft>,
+    /// 現在送信リクエスト実行中の下書き (`(submission_id, FailedDraft)`)。
+    pub in_flight_submissions: Vec<(u64, FailedDraft)>,
+    pub next_submission_id: u64,
     /// 認証切れ (`Unauthorized`) でログイン画面に戻った際に、同じユーザーの再ログイン時だけ復元する下書き。
     pub preserved_unauthorized_drafts: Option<(String, Vec<FailedDraft>)>,
 
@@ -241,6 +249,7 @@ impl AppState {
             login_phase: Some(LoginPhase::Checking),
             login_task: None,
             credentials: None,
+            token_manager: None,
             api: None,
             me: None,
             session_id: uuid::Uuid::new_v4().to_string(),
@@ -257,6 +266,8 @@ impl AppState {
             saved_drafts: HashMap::new(),
             pending_composer_text: None,
             failed_drafts: Vec::new(),
+            in_flight_submissions: Vec::new(),
+            next_submission_id: 0,
             preserved_unauthorized_drafts: None,
             channel_creators_by_key: HashMap::new(),
             channel_cache: ChannelViewCache::default(),
@@ -400,50 +411,44 @@ impl AppState {
     }
 
     /// デバイスコード認証の待機をキャンセルする。
+    /// デバイスコード認証タスクは UI 側で現行世代として採用されるまで `token.json` に書き込まないため、
+    /// ここで共有の `token.json` を削除する必要はない。
     pub fn cancel_device_login(&mut self) {
         if let Some(task) = self.login_task.take() {
             task.abort();
         }
         self.session_gen = self.session_gen.wrapping_add(1);
-        let _ = login::delete_local_token_for_logout(&self.config);
         self.login_phase = Some(LoginPhase::Ready { error: None });
     }
 
     /// ログアウトしてトークンを削除し、ログイン画面へ戻る。
-    /// ローカルトークンの削除に失敗した場合はログイン状態を維持して通知を出す。
+    /// ローカルトークンの削除をタスク中断より前に確定させるため、削除に失敗した場合はタスクや実行中フラグを壊さずにログイン状態を維持する。
     pub fn logout(&mut self) {
-        self.stop_typing();
-        let aborted = self.drain_and_abort_all_tasks();
         if let AuthConfig::Oidc(oidc) = self.config.auth.clone() {
-            match login::delete_local_token_for_logout(&self.config) {
-                Ok((_, refresh_token)) => {
-                    let typing_stops = std::mem::take(&mut self.typing_stop_tasks);
-                    let config = self.config.clone();
-                    let http = self.http.clone();
+            let delete_res = match &self.token_manager {
+                Some(tm) => tm.logout_and_delete(),
+                None => login::delete_local_token_for_logout(&self.config).map(|(_, rt)| rt),
+            };
+            match delete_res {
+                Ok(refresh_token) => {
+                    self.stop_typing();
                     self.preserved_unauthorized_drafts = None;
                     self.reset_to_login(None);
-                    self.spawn_tokio(async move {
-                        for h in typing_stops {
-                            let _ = h.await;
-                        }
-                        for h in aborted {
-                            let _ = h.await;
-                        }
-                        let _ = login::delete_local_token_for_logout(&config);
-                        if let Some(refresh_token) = refresh_token {
+                    if let Some(refresh_token) = refresh_token {
+                        let http = self.http.clone();
+                        self.spawn_tokio(async move {
                             login::revoke_refresh_token(http, oidc, refresh_token).await;
-                        }
-                    });
+                        });
+                    }
                 }
                 Err(err) => {
-                    self.retry_sync();
-                    self.start_periodic_tasks();
                     self.notify(format!(
                         "ログアウトに失敗しました（トークン削除エラー）: {err:#}"
                     ));
                 }
             }
         } else {
+            self.stop_typing();
             self.preserved_unauthorized_drafts = None;
             self.reset_to_login(None);
         }
@@ -463,6 +468,8 @@ impl AppState {
             handle.abort();
             handles.push(handle);
         }
+        self.typing_poll_in_flight = false;
+        self.read_mark_in_flight.clear();
         handles
     }
 
@@ -484,12 +491,30 @@ impl AppState {
         }
     }
 
-    /// 認証切れ (`Unauthorized`) でログイン画面へ戻る直前に、書きかけ・送信失敗の下書きをユーザー ID 付きで退避する。
+    fn push_failed_draft(&mut self, draft: FailedDraft) {
+        if draft.content.trim().is_empty() {
+            return;
+        }
+        if self.failed_drafts.iter().any(|d| d == &draft) {
+            return;
+        }
+        if self.failed_drafts.len() >= FAILED_DRAFT_LIMIT {
+            self.failed_drafts.remove(0);
+        }
+        self.failed_drafts.push(draft);
+    }
+
+    /// 認証切れ (`Unauthorized`) でログイン画面へ戻る直前に、書きかけ・送信中・送信失敗の下書きをユーザー ID 付きで退避する。
     fn preserve_drafts_for_unauthorized(&mut self) {
         let Some(me) = self.me.as_ref() else {
             return;
         };
         let mut drafts = self.failed_drafts.clone();
+        for (_, in_flight) in &self.in_flight_submissions {
+            if !in_flight.content.trim().is_empty() && !drafts.iter().any(|d| d == in_flight) {
+                drafts.push(in_flight.clone());
+            }
+        }
         for ((ch_id, target), content) in &self.saved_drafts {
             if !content.trim().is_empty()
                 && !drafts
@@ -526,6 +551,9 @@ impl AppState {
 
     fn clear_session_state(&mut self) {
         self.session_gen = self.session_gen.wrapping_add(1);
+        if let Some(tm) = self.token_manager.take() {
+            tm.disable_persistence();
+        }
         self.abort_all_tasks();
         self.store = Store::default();
         self.credentials = None;
@@ -544,6 +572,7 @@ impl AppState {
         self.saved_drafts.clear();
         self.pending_composer_text = Some(String::new());
         self.failed_drafts.clear();
+        self.in_flight_submissions.clear();
         self.channel_creators_by_key.clear();
         self.channel_cache = ChannelViewCache::default();
         self.unread.clear();
@@ -599,9 +628,6 @@ impl AppState {
         match event {
             DesktopEvent::Auth { session_gen, event } => {
                 if session_gen != self.session_gen {
-                    if matches!(event, AuthEvent::Connected { .. }) {
-                        let _ = login::delete_local_token_for_logout(&self.config);
-                    }
                     return false;
                 }
                 self.on_auth_event(event);
@@ -631,8 +657,21 @@ impl AppState {
 
     pub fn on_auth_event(&mut self, event: AuthEvent) {
         match event {
-            AuthEvent::Connected { credentials, me } => {
+            AuthEvent::Connected {
+                credentials,
+                token_manager,
+                me,
+            } => {
+                if let Some(tm) = &token_manager
+                    && let Err(err) = tm.enable_persistence_and_save()
+                {
+                    self.login_phase = Some(LoginPhase::Ready {
+                        error: Some(format!("トークンの保存に失敗しました: {err:#}")),
+                    });
+                    return;
+                }
                 self.connect_session(credentials, me);
+                self.token_manager = token_manager;
             }
             AuthEvent::DevicePrompt {
                 verification_uri,
@@ -949,13 +988,27 @@ impl AppState {
     }
 
     /// チャンネルの閲覧権限を失った、またはチャンネルが削除されたときに状態を片付ける。
+    /// 入力中または退避済みだった下書きは失われないよう `failed_drafts` へ退避する。
     fn evict_channel(&mut self, channel_id: &str) {
         self.unsubscribe_channel(channel_id);
         self.unread.remove(channel_id);
         self.last_read_marked.remove(channel_id);
         self.read_mark_in_flight.remove(channel_id);
         self.read_mark_backoff_until.remove(channel_id);
+        let evicted_saved: Vec<FailedDraft> = self
+            .saved_drafts
+            .iter()
+            .filter(|((ch, _), content)| ch == channel_id && !content.trim().is_empty())
+            .map(|((ch, target), content)| FailedDraft {
+                channel_id: ch.clone(),
+                target: target.clone(),
+                content: content.clone(),
+            })
+            .collect();
         self.saved_drafts.retain(|(ch, _), _| ch != channel_id);
+        for draft in evicted_saved {
+            self.push_failed_draft(draft);
+        }
         if self
             .newest_shown
             .as_ref()
@@ -964,6 +1017,14 @@ impl AppState {
             self.newest_shown = None;
         }
         if self.current_channel.as_deref() == Some(channel_id) {
+            if !self.composer_draft.trim().is_empty() {
+                let draft = FailedDraft {
+                    channel_id: channel_id.to_string(),
+                    target: self.target.clone(),
+                    content: self.composer_draft.clone(),
+                };
+                self.push_failed_draft(draft);
+            }
             self.stop_typing();
             self.typing.clear();
             self.current_channel = None;
@@ -1013,10 +1074,7 @@ impl AppState {
                         .remove(&(channel_id.to_string(), Target::Channel))
                         && !saved_ch_draft.trim().is_empty()
                     {
-                        if self.failed_drafts.len() >= FAILED_DRAFT_LIMIT {
-                            self.failed_drafts.remove(0);
-                        }
-                        self.failed_drafts.push(FailedDraft {
+                        self.push_failed_draft(FailedDraft {
                             channel_id: channel_id.to_string(),
                             target: Target::Channel,
                             content: saved_ch_draft,
@@ -1052,22 +1110,33 @@ impl AppState {
                 ));
                 true
             }
+            AppEvent::SubmissionSucceeded { submission_id } => {
+                self.in_flight_submissions
+                    .retain(|(id, _)| *id != submission_id);
+                false
+            }
             AppEvent::RestoreDraft {
+                submission_id,
                 channel_id,
                 target,
                 content,
             } => {
+                self.in_flight_submissions
+                    .retain(|(id, _)| *id != submission_id);
+                let is_archived = self
+                    .store
+                    .channel(&channel_id)
+                    .is_some_and(|c| c.archive_at.is_some());
                 if self.current_channel.as_deref() == Some(channel_id.as_str())
                     && self.composer_draft.is_empty()
+                    && !matches!(self.target, Target::Edit(_))
+                    && !is_archived
                 {
                     self.composer_draft = content.clone();
                     self.pending_composer_text = Some(content);
                     self.target = target;
                 } else {
-                    if self.failed_drafts.len() >= FAILED_DRAFT_LIMIT {
-                        self.failed_drafts.remove(0);
-                    }
-                    self.failed_drafts.push(FailedDraft {
+                    self.push_failed_draft(FailedDraft {
                         channel_id,
                         target,
                         content,
@@ -1299,6 +1368,14 @@ impl AppState {
         if !self.store.is_member(&channel_id, &me.id) {
             return;
         }
+        if self
+            .store
+            .channel(&channel_id)
+            .is_none_or(|c| c.archive_at.is_some())
+        {
+            self.typing.clear();
+            return;
+        }
         let mut scopes = vec![None];
         if let Some(thread) = &self.thread {
             scopes.push(Some(thread.root_id.clone()));
@@ -1355,7 +1432,12 @@ impl AppState {
         let Some(channel_id) = self.current_channel.clone() else {
             return;
         };
-        if !self.store.is_member(&channel_id, &me.id) {
+        if !self.store.is_member(&channel_id, &me.id)
+            || self
+                .store
+                .channel(&channel_id)
+                .is_none_or(|c| c.archive_at.is_some())
+        {
             return;
         }
         let parent_id = match &self.target {
@@ -1499,34 +1581,36 @@ impl AppState {
         }
         let thread_changed = self.channel_cache.thread_root_id != thread_root_id;
         if self.channel_cache.messages_dirty {
-            self.channel_cache.root_messages = self
-                .store
-                .root_messages(&channel_id)
-                .into_iter()
-                .cloned()
-                .collect();
-            self.channel_cache.reply_counts = self.store.reply_counts(&channel_id);
+            self.channel_cache.root_messages = Arc::new(
+                self.store
+                    .root_messages(&channel_id)
+                    .into_iter()
+                    .cloned()
+                    .collect(),
+            );
+            self.channel_cache.reply_counts = Arc::new(self.store.reply_counts(&channel_id));
         }
         if self.channel_cache.messages_dirty || thread_changed {
             self.channel_cache.thread_root_id = thread_root_id.clone();
             if let Some(root_id) = &thread_root_id {
                 self.channel_cache.thread_root_message =
                     self.store.message(&channel_id, root_id).cloned();
-                self.channel_cache.thread_replies = self
-                    .store
-                    .replies(&channel_id, root_id)
-                    .into_iter()
-                    .cloned()
-                    .collect();
+                self.channel_cache.thread_replies = Arc::new(
+                    self.store
+                        .replies(&channel_id, root_id)
+                        .into_iter()
+                        .cloned()
+                        .collect(),
+                );
             } else {
                 self.channel_cache.thread_root_message = None;
-                self.channel_cache.thread_replies.clear();
+                self.channel_cache.thread_replies = Arc::default();
             }
             self.channel_cache.messages_dirty = false;
         }
         if self.channel_cache.reactions_dirty {
             self.channel_cache.reactions_by_message =
-                self.store.reaction_groups_by_message(&channel_id, &me_id);
+                Arc::new(self.store.reaction_groups_by_message(&channel_id, &me_id));
             self.channel_cache.reactions_dirty = false;
         }
     }
@@ -1580,6 +1664,12 @@ impl AppState {
         if let Some(old_ch) = self.current_channel.clone()
             && old_ch != channel_id
         {
+            if matches!(self.target, Target::Edit(_)) {
+                self.notify(
+                    "メッセージを編集中です。保存するかキャンセルしてからチャンネルを切り替えてください",
+                );
+                return;
+            }
             self.stop_typing();
             self.typing.clear();
             self.selected_message = None;
@@ -1806,7 +1896,11 @@ impl AppState {
             self.notify("自分のメッセージだけを編集できます");
             return;
         }
-        if !matches!(self.target, Target::Edit(_)) && !self.composer_draft.trim().is_empty() {
+        if matches!(self.target, Target::Edit(_)) {
+            self.notify("メッセージを編集中です。保存するかキャンセルしてから編集してください");
+            return;
+        }
+        if !self.composer_draft.trim().is_empty() {
             self.notify("書きかけの下書きがあります。送信するか消してから編集してください");
             return;
         }
@@ -1864,6 +1958,12 @@ impl AppState {
             self.notify("送れなかった本文はありません");
             return;
         }
+        if matches!(self.target, Target::Edit(_)) {
+            self.notify(
+                "メッセージを編集中です。保存するかキャンセルしてから下書きを戻してください",
+            );
+            return;
+        }
         if !self.composer_draft.trim().is_empty() {
             self.notify("書きかけの下書きがあります。送信するか消してから戻してください");
             return;
@@ -1873,13 +1973,69 @@ impl AppState {
             .iter()
             .rposition(|draft| self.current_channel.as_deref() == Some(draft.channel_id.as_str()))
             .unwrap_or(self.failed_drafts.len() - 1);
-        let draft = self.failed_drafts.remove(index);
-        if self.current_channel.as_deref() != Some(draft.channel_id.as_str()) {
-            self.open_channel(draft.channel_id);
+        let draft = self.failed_drafts[index].clone();
+        let me_id = self.me.as_ref().map(|m| m.id.clone()).unwrap_or_default();
+        let target_ch_writable = self.store.channel(&draft.channel_id).is_some_and(|ch| {
+            ch.deleted_at.is_none()
+                && ch.archive_at.is_none()
+                && (!ch.is_private || self.store.is_member(&ch.id, &me_id))
+        });
+
+        if target_ch_writable {
+            self.failed_drafts.remove(index);
+            if self.current_channel.as_deref() != Some(draft.channel_id.as_str()) {
+                self.open_channel(draft.channel_id.clone());
+            }
+            let next_target = if self
+                .store
+                .is_synced(&ShapeId::Messages(draft.channel_id.clone()))
+            {
+                match &draft.target {
+                    Target::Reply(root_id)
+                        if self.store.message(&draft.channel_id, root_id).is_none() =>
+                    {
+                        Target::Channel
+                    }
+                    Target::Edit(msg_id)
+                        if self
+                            .store
+                            .message(&draft.channel_id, msg_id)
+                            .is_none_or(|m| m.user_id != me_id) =>
+                    {
+                        Target::Channel
+                    }
+                    other => other.clone(),
+                }
+            } else {
+                draft.target
+            };
+            self.composer_draft = draft.content.clone();
+            self.pending_composer_text = Some(draft.content);
+            self.target = next_target;
+        } else {
+            let current_ch_writable = self
+                .current_channel
+                .as_deref()
+                .and_then(|id| self.store.channel(id))
+                .is_some_and(|ch| {
+                    ch.deleted_at.is_none()
+                        && ch.archive_at.is_none()
+                        && (!ch.is_private || self.store.is_member(&ch.id, &me_id))
+                });
+            if current_ch_writable {
+                self.failed_drafts.remove(index);
+                self.composer_draft = draft.content.clone();
+                self.pending_composer_text = Some(draft.content);
+                self.target = Target::Channel;
+                self.notify(
+                    "元のチャンネルにアクセスできないため、現在のチャンネルの入力欄に下書きを復元しました",
+                );
+            } else {
+                self.notify(
+                    "元のチャンネルにアクセスできません。送信可能なチャンネルを開いてから下書きを復元してください",
+                );
+            }
         }
-        self.composer_draft = draft.content.clone();
-        self.pending_composer_text = Some(draft.content);
-        self.target = draft.target;
     }
 
     /// 入力欄のメッセージを送信または編集する。送信を開始した場合は `true` を返す。
@@ -1917,6 +2073,17 @@ impl AppState {
             self.switch_composer_context(Some(&channel_id), next_target);
         }
 
+        self.next_submission_id = self.next_submission_id.wrapping_add(1);
+        let submission_id = self.next_submission_id;
+        self.in_flight_submissions.push((
+            submission_id,
+            FailedDraft {
+                channel_id: channel_id.clone(),
+                target: target.clone(),
+                content: content.clone(),
+            },
+        ));
+
         let session_gen = self.session_gen;
         self.spawn_session_task(async move {
             let id = uuid::Uuid::new_v4().to_string();
@@ -1928,29 +2095,38 @@ impl AppState {
                 }
                 Target::Edit(message_id) => api.edit_message(message_id, &content).await,
             };
-            if let Err(err) = result {
-                let is_unauthorized = matches!(
-                    err.downcast_ref::<HttpError>(),
-                    Some(HttpError::Unauthorized)
-                );
-                let _ = tx.send(DesktopEvent::App {
-                    session_gen,
-                    event: AppEvent::RestoreDraft {
-                        channel_id,
-                        target,
-                        content,
-                    },
-                });
-                if is_unauthorized {
+            match result {
+                Ok(_) => {
                     let _ = tx.send(DesktopEvent::App {
                         session_gen,
-                        event: AppEvent::Unauthorized,
+                        event: AppEvent::SubmissionSucceeded { submission_id },
                     });
-                } else {
+                }
+                Err(err) => {
+                    let is_unauthorized = matches!(
+                        err.downcast_ref::<HttpError>(),
+                        Some(HttpError::Unauthorized)
+                    );
                     let _ = tx.send(DesktopEvent::App {
                         session_gen,
-                        event: AppEvent::Notice(format!("送信に失敗しました: {err}")),
+                        event: AppEvent::RestoreDraft {
+                            submission_id,
+                            channel_id,
+                            target,
+                            content,
+                        },
                     });
+                    if is_unauthorized {
+                        let _ = tx.send(DesktopEvent::App {
+                            session_gen,
+                            event: AppEvent::Unauthorized,
+                        });
+                    } else {
+                        let _ = tx.send(DesktopEvent::App {
+                            session_gen,
+                            event: AppEvent::Notice(format!("送信に失敗しました: {err}")),
+                        });
+                    }
                 }
             }
         });
@@ -2265,6 +2441,13 @@ mod tests {
         assert_eq!(state.target, Target::Edit("r1".into()));
         assert_eq!(state.pending_composer_text.as_deref(), Some("スレッド返信"));
 
+        // 編集中に他メッセージの start_edit や open_channel を呼んでも拒否され編集内容が保護される
+        state.on_composer_changed("編集途中の内容".into());
+        state.open_channel("c2".into());
+        assert_eq!(state.current_channel.as_deref(), Some("c1"));
+        assert_eq!(state.target, Target::Edit("r1".into()));
+        assert_eq!(state.composer_draft, "編集途中の内容");
+
         state.cancel_target();
         assert_eq!(state.target, Target::Channel);
         assert!(state.composer_draft.is_empty());
@@ -2274,8 +2457,30 @@ mod tests {
         state.cancel_delete();
         assert!(state.confirm_delete_message.is_none());
 
-        // 失敗した下書きの保存と復元
+        // 失敗した下書きの保存と復元: 非公開で未参加の c2 宛て下書きを復元すると、現在書き込み可能な c1 にフォールバック復元される
         state.on_app_event(AppEvent::RestoreDraft {
+            submission_id: 1,
+            channel_id: "c2".into(),
+            target: Target::Channel,
+            content: "未参加c2宛ての本文".into(),
+        });
+        assert_eq!(state.failed_drafts.len(), 1);
+        state.restore_failed_draft();
+        assert_eq!(state.current_channel.as_deref(), Some("c1"));
+        assert_eq!(state.composer_draft, "未参加c2宛ての本文");
+        assert!(state.failed_drafts.is_empty());
+        state.on_composer_changed(String::new());
+
+        // c2 のメンバーになった後は c2 を開いて復元できる
+        state.on_shape(ShapeEvent::Batch(
+            ShapeId::ChannelUsers,
+            batch(vec![(
+                "cu2",
+                json!({ "user_id": "u1", "channel_id": "c2" }),
+            )]),
+        ));
+        state.on_app_event(AppEvent::RestoreDraft {
+            submission_id: 2,
             channel_id: "c2".into(),
             target: Target::Channel,
             content: "保存された本文".into(),
@@ -2571,16 +2776,27 @@ mod tests {
         assert_eq!(state.failed_drafts.len(), 1);
         assert_eq!(state.failed_drafts[0].content, "チャンネル本文の下書き");
 
-        // 認証切れ (Unauthorized) でログイン画面へ戻った場合は、同じユーザー (u1) で再ログインしたときだけ failed_drafts に復元される
+        // 送信中 (in_flight_submissions) の本文がある状態で認証切れ (Unauthorized) になった場合も、
+        // 同じユーザー (u1) で再ログインしたときに送信中本文を含めて failed_drafts に復元される
+        state.in_flight_submissions.push((
+            99,
+            FailedDraft {
+                channel_id: "c1".into(),
+                target: Target::Channel,
+                content: "送信途中のメッセージ".into(),
+            },
+        ));
         let old_gen = state.session_gen;
         state.on_app_event(AppEvent::Unauthorized);
         assert_ne!(state.session_gen, old_gen);
         assert!(state.failed_drafts.is_empty());
+        assert!(state.in_flight_submissions.is_empty());
 
         // 古い世代のイベントや古い Auth イベントは無視される
         assert!(!state.on_desktop_event(DesktopEvent::App {
             session_gen: old_gen,
             event: AppEvent::RestoreDraft {
+                submission_id: 99,
                 channel_id: "c1".into(),
                 target: Target::Channel,
                 content: "前セッションの遅延本文".into(),
@@ -2593,7 +2809,7 @@ mod tests {
             },
         }));
 
-        // 同じユーザー u1 で再ログインすると退避されていた下書きが failed_drafts に戻る
+        // 同じユーザー u1 で再ログインすると退避されていた下書きと送信中だった本文が failed_drafts に戻る
         state.connect_session(
             Credentials::Dev("u1".into()),
             Me {
@@ -2602,7 +2818,13 @@ mod tests {
                 display_name: "Alice".into(),
             },
         );
-        assert_eq!(state.failed_drafts.len(), 2);
+        assert_eq!(state.failed_drafts.len(), 3);
+        assert!(
+            state
+                .failed_drafts
+                .iter()
+                .any(|d| d.content == "送信途中のメッセージ")
+        );
 
         // もう一度 Unauthorized になったあと、別ユーザー u2 でログインした場合は前のユーザーの下書きは引き継がれない
         state.on_app_event(AppEvent::Unauthorized);
