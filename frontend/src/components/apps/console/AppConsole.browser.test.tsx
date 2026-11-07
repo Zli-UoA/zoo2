@@ -454,6 +454,44 @@ describe("App console", () => {
     expect(screen.queryByRole("region", { name: "未保存の変更" })).toBeNull();
   });
 
+  it("sends a username changed back before the post-save reload lands", async () => {
+    const held: (() => void)[] = [];
+    let hold = false;
+    api.get.mockImplementation((path: string) => {
+      if (path === "/api/apps/events") return Promise.resolve(catalog);
+      if (path !== "/api/apps/echo") return Promise.resolve([]);
+      if (!hold) return Promise.resolve(current);
+      hold = false;
+      return new Promise((resolve) => held.push(() => resolve(current)));
+    });
+    let version = 0;
+    api.request.mockImplementation(
+      (_path: string, options?: { method?: string; body?: Record<string, any> }) => {
+        if (options?.method !== "PATCH") return Promise.resolve({});
+        version += 1;
+        current = {
+          ...current,
+          bot_username: options.body!.bot_username ?? current.bot_username,
+          updated_at: `2026-11-07T00:00:1${version}.000`,
+        };
+        return Promise.resolve({ updated_at: current.updated_at });
+      },
+    );
+    open("basic");
+    const username = await screen.findByRole("textbox", { name: "Bot のユーザー名" });
+    await userEvent.clear(username);
+    await userEvent.type(username, "echo_new");
+    hold = true;
+    await userEvent.click(screen.getByRole("button", { name: "保存" }));
+    await waitFor(() => expect(held).toHaveLength(1));
+    await userEvent.clear(username);
+    await userEvent.type(username, "echo_bot");
+    await userEvent.click(screen.getByRole("button", { name: "保存" }));
+    await waitFor(() => expect(version).toBe(2));
+    const patches = api.request.mock.calls.filter(([, options]) => options?.method === "PATCH");
+    expect(patches[1]![1].body.bot_username).toBe("echo_bot");
+  });
+
   it("adds the scopes DMs need when they are turned on", async () => {
     open("home");
     await userEvent.click(await screen.findByRole("checkbox", { name: /DM を受け付ける/ }));

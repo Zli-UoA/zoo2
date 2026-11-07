@@ -248,6 +248,9 @@ function UserAppConsole({ appId, section }: { appId: string; section: ConsoleSec
       // Until the reload below lands, an action's refresh compares against the saved version.
       savedVersion.current = result?.updated_at ?? "";
       if (result?.updated_at) setExpectedUpdatedAt(result.updated_at);
+      // What was just saved is the baseline for the next save even before the reload lands, so
+      // changing a value back (for example the bot username) is still sent.
+      setSaved(draft);
       staleBefore.current = latestReloadCount.current + 1;
       reloadDetail(false, draft);
     } catch (cause) {
