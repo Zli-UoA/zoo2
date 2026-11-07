@@ -1,5 +1,5 @@
 // @vitest-environment happy-dom
-import { beforeEach, describe, expect, it } from "vite-plus/test";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 
 import {
   CALL_SOUNDS_STORAGE_KEY,
@@ -63,5 +63,21 @@ describe("call sounds setting", () => {
     expect(isCallSoundsEnabled()).toBe(false);
     setCallSoundsEnabled(true);
     expect(isCallSoundsEnabled()).toBe(true);
+  });
+  describe("保存に失敗する環境", () => {
+    afterEach(() => {
+      vi.restoreAllMocks();
+      // 成功する保存で現在ページ内の値を初期化する
+      setCallSoundsEnabled(true);
+    });
+    it("保存できなくても現在のページでは選択を反映する", () => {
+      vi.spyOn(Storage.prototype, "setItem").mockImplementation(() => {
+        throw new Error("QuotaExceededError");
+      });
+      setCallSoundsEnabled(false);
+      expect(isCallSoundsEnabled()).toBe(false);
+      setCallSoundsEnabled(true);
+      expect(isCallSoundsEnabled()).toBe(true);
+    });
   });
 });
