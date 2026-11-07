@@ -36,7 +36,7 @@ App設定の `scopes` は [OpenAPI の Manifest 定義](apps.openapi.json) に�
 
 設定の変更は新しいリビジョンを作り、再承認までAppを停止します。名前・説明・アイコンだけの変更では再承認しません。再承認時は古いトークンを失効させます。「無効化」はトークンを失効させ、Botをチャンネルから外します。投稿履歴とプロフィールは保持します。API・継続中のShape・WebSocketも停止します。チャンネル退出時にも配信とShapeのアクセスを再確認します。
 
-開発者・管理者は `/api/apps/{id}/records/credentials` で認証情報のID・scope・状態を確認し、`DELETE /api/apps/{id}/credentials/{credential}` で個別失効できます。秘密値は一覧へ返しません。設定履歴は `records/versions`、監査履歴は `records/audit` です。
+開発者・管理者は `/api/apps/{id}/records/credentials` で認証情報のID・scope・状態を確認し（`expires_at` はアクセストークン、`refresh_expires_at` は refresh token の期限で、後者までは失効しない限り新しいトークンを発行できます）、`DELETE /api/apps/{id}/credentials/{credential}` で個別失効できます。秘密値は一覧へ返しません。設定履歴は `records/versions`、監査履歴は `records/audit` です。
 
 設定の保存（`PATCH /api/apps/{id}`）は名前・説明・アイコン・`bot_username`・manifest の全体を置き換えます。一部の項目だけを送ると、残りは既定値になります。管理画面などで同時編集を防ぐには、`GET /api/apps/{id}` の `updated_at` を `expected_updated_at` として送ります。その後に別の保存があると 409 を返し、上書きしません。応答の `updated_at` を次の保存に使えます。
 

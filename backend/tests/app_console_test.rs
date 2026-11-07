@@ -114,6 +114,26 @@ async fn detail_separates_approved_installation_and_rejects_stale_saves() -> any
         approved["installation"]["endpoint_verified_at"],
         Value::Null
     );
+
+    // Credential records report how long the refresh token works, separately from the access token.
+    let (status, issued) = req(&app, "POST", &action("token"), &owner, Value::Null).await;
+    assert_eq!(status, StatusCode::OK, "{issued}");
+    let (_, records) = req(
+        &app,
+        "GET",
+        &format!("/api/apps/{id}/records/credentials"),
+        &owner,
+        Value::Null,
+    )
+    .await;
+    let record = &records[0];
+    assert!(record["expires_at"].is_string(), "{records}");
+    assert!(record["refresh_expires_at"].is_string(), "{records}");
+    assert!(
+        record["refresh_expires_at"].as_str() > record["expires_at"].as_str(),
+        "{records}"
+    );
+    let (_, approved) = req(&app, "GET", &path, &owner, Value::Null).await;
     let loaded_at = approved["updated_at"].as_str().unwrap().to_string();
     let (_, public) = req(&app, "GET", &path, &stranger, Value::Null).await;
     assert!(public.get("installation").is_none(), "{public}");
@@ -161,11 +181,13 @@ async fn detail_separates_approved_installation_and_rejects_stale_saves() -> any
 
     // A rename is visible in the detail right away.
     let mut renamed = input(&edited, unchanged["updated_at"].as_str().unwrap());
-    renamed["bot_username"] = json!("console_renamed");
+    // Unique per run, since the test database is shared between runs.
+    let new_name = format!("console_{}", &id[..8]);
+    renamed["bot_username"] = json!(new_name);
     let (status, saved) = req(&app, "PATCH", &path, &owner, renamed).await;
     assert_eq!(status, StatusCode::OK, "{saved}");
     let (_, after) = req(&app, "GET", &path, &owner, Value::Null).await;
-    assert_eq!(after["bot_username"], "console_renamed");
+    assert_eq!(after["bot_username"], json!(new_name));
 
     // Each signing secret view is recorded.
     assert_eq!(

@@ -108,8 +108,20 @@ type CredentialRecord = {
   user_id: string | null;
   scopes: string[];
   expires_at: string | null;
+  /** Until then the refresh token can mint new access tokens, even after `expires_at`. */
+  refresh_expires_at?: string | null;
   revoked_at: string | null;
 };
+
+/** `refreshable`: the access token expired, but the refresh token still works until revoked. */
+export function credentialState(record: CredentialRecord, now = new Date()) {
+  if (record.revoked_at) return "revoked" as const;
+  const past = (time: string | null | undefined) => Boolean(time && new Date(time) <= now);
+  if (!past(record.expires_at)) return "active" as const;
+  return record.refresh_expires_at && !past(record.refresh_expires_at)
+    ? ("refreshable" as const)
+    : ("expired" as const);
+}
 
 export function CredentialsSection(props: SectionProps) {
   const { t, i18n } = useTranslation();
@@ -222,11 +234,7 @@ export function CredentialsSection(props: SectionProps) {
         ) : null}
         <ul className="divide-y rounded-lg border empty:hidden">
           {records.value.map((record) => {
-            const state = record.revoked_at
-              ? "revoked"
-              : record.expires_at && new Date(record.expires_at) < new Date()
-                ? "expired"
-                : "active";
+            const state = credentialState(record);
             return (
               <li key={record.id} className="flex flex-wrap items-center gap-2 p-3 text-xs">
                 <span className="min-w-0 flex-1 space-y-0.5">
@@ -238,13 +246,17 @@ export function CredentialsSection(props: SectionProps) {
                     · {record.scopes.join(", ")}
                   </span>
                   <span className="block text-muted-foreground">
-                    {t(`appConsole.credentials.state.${state}`)}
+                    {state === "refreshable"
+                      ? t("appConsole.credentials.state.refreshable", {
+                          time: formatTime(record.refresh_expires_at!, i18n.language),
+                        })
+                      : t(`appConsole.credentials.state.${state}`)}
                     {state === "active" && record.expires_at
                       ? ` · ${t("appConsole.credentials.expires", { time: formatTime(record.expires_at, i18n.language) })}`
                       : ""}
                   </span>
                 </span>
-                {state === "active" ? (
+                {state === "active" || state === "refreshable" ? (
                   <Button
                     variant="ghost"
                     size="sm"

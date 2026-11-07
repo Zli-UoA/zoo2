@@ -798,7 +798,8 @@
       "state": {
         "active": "有效",
         "expired": "過咗期",
-        "revoked": "已撤銷"
+        "revoked": "已撤銷",
+        "refreshable": "存取權杖已過期（可以更新到 {{time}}）"
       }
     },
     "permissions": {

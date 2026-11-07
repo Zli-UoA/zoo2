@@ -798,7 +798,8 @@
       "state": {
         "active": "有效",
         "expired": "已过期",
-        "revoked": "已撤销"
+        "revoked": "已撤销",
+        "refreshable": "访问令牌已过期（可更新至 {{time}}）"
       }
     },
     "permissions": {

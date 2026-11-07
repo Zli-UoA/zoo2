@@ -24,9 +24,8 @@ test("Appを作成・承認し、Botとして投稿と個人宛応答を表示�
   await expect(page.getByText("インストール済み", { exact: true })).toBeVisible();
   await sections.getByRole("button", { name: "認証情報", exact: true }).click();
   await page.getByRole("button", { name: "トークンを発行", exact: true }).click();
-  const credentials = JSON.parse(
-    await page.getByRole("textbox", { name: /認証情報/ }).inputValue(),
-  ) as {
+  // The credential field is a password input, so it is found by its label rather than a role.
+  const credentials = JSON.parse(await page.getByLabel(/^認証情報（/).inputValue()) as {
     access_token: string;
   };
   const authHeaders = { Authorization: `Bearer ${credentials.access_token}` };

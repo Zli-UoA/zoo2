@@ -577,6 +577,46 @@ describe("App console", () => {
     expect(await screen.findByText(/この値は今だけ表示されます/)).toBeVisible();
   });
 
+  it("keeps revoking credentials whose refresh token still works", async () => {
+    const hour = 60 * 60 * 1000;
+    const at = (offset: number) => new Date(Date.now() + offset).toISOString();
+    const base = api.get.getMockImplementation()!;
+    api.get.mockImplementation((path: string) =>
+      path === "/api/apps/echo/records/credentials"
+        ? Promise.resolve([
+            {
+              id: "refreshable-1",
+              user_id: null,
+              scopes: ["messages:write"],
+              expires_at: at(-2 * hour),
+              refresh_expires_at: at(24 * hour),
+              revoked_at: null,
+            },
+            {
+              id: "expired-22",
+              user_id: null,
+              scopes: ["messages:write"],
+              expires_at: at(-40 * 24 * hour),
+              refresh_expires_at: at(-10 * 24 * hour),
+              revoked_at: null,
+            },
+          ])
+        : base(path),
+    );
+    open("credentials");
+    const refreshable = (await screen.findByText("refresha")).closest("li")!;
+    expect(refreshable.textContent).toContain("アクセストークンは期限切れ");
+    await userEvent.click(within(refreshable).getByRole("button", { name: "失効" }));
+    await waitFor(() =>
+      expect(api.request).toHaveBeenCalledWith("/api/apps/echo/credentials/refreshable-1", {
+        method: "DELETE",
+      }),
+    );
+    const expired = screen.getByText("expired-").closest("li")!;
+    expect(expired.textContent).toContain("期限切れ");
+    expect(within(expired).queryByRole("button")).toBeNull();
+  });
+
   it("rejects malformed manifest JSON without saving", async () => {
     open("manifest");
     const manifest = await screen.findByRole("textbox", { name: "App設定（JSON）" });

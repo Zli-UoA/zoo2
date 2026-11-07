@@ -798,7 +798,8 @@
       "state": {
         "active": "有効",
         "expired": "期限切れ",
-        "revoked": "失効済み"
+        "revoked": "失効済み",
+        "refreshable": "アクセストークンは期限切れ（{{time}} まで更新可能）"
       }
     },
     "permissions": {
