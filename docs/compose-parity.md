@@ -1,6 +1,8 @@
 # React / Compose Web 対応表
 
-Reactを機能・UI・操作の基準とする。変更時は [compose-react-parity](../.agents/skills/compose-react-parity/SKILL.md) に従い、同じPRで両実装と検証を更新する。
+> Compose for Web は動作が重く実用に耐えないため実験を中止しました。この対応表は過去の記録です。Web 版の追従・性能改善・検証を通常の開発で要求しません。Compose for Android は継続します。[現在の方針](compose-multiplatform.md#現在の方針) を参照してください。
+
+以下は実験中に React を基準として両実装を更新・検証していた記録です。現行の保守境界は [compose-react-parity](../.agents/skills/compose-react-parity/SKILL.md) を参照してください。
 この表は実装の所有先を示すもので、全入力での完全互換や画像の完全一致を保証するものではない。
 
 本文の `#チャンネル名` は、Reactでは `MfmChannels.tsx` のルーター `Link`、Composeでは

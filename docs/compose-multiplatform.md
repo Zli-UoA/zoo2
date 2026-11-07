@@ -1,8 +1,18 @@
 # Compose Multiplatform フロントエンド
 
-既存フロントエンドの全機能・同じUIへの移植を目的とした、切り替え可能な実験版です。
-既定はReactです。Compose側の画面はKotlinで実装しており、Reactのメッセージ、MFM、数式、絵文字ピッカー、Appフォームを埋め込んでいません。
-ただし、全機能・表示の完全互換はまだ確認できていません。以下の検証範囲と制限を確認してください。
+## 現在の方針
+
+Compose for Web は、動作が重く実用に耐えないため実験を中止しました。Web は React で開発を継続します。Compose for Android の開発・CI・署名付き APK 配布は継続します。
+
+- React の変更・main 取り込みに伴う Compose Web の追従、Storybook の Kotlin 登録、Web の比較検証は必須にしません。
+- CI Compose Web は手動実行だけの実験資料とし、PR・main・マージキューでは実行しません。通常の Web イメージと Storybook プレビューでは Wasm を生成しません。
+- `frontend-compose/` は Android の実装でもあるため保持します。`commonMain`、`androidMain`、`androidApp`、Electric4k、翻訳・フォント・アイコン生成を引き続き保守します。
+- 共通 Kotlin・API・認証・同期の変更では Android への影響を確認し、必要な修正と検証を同じ PR に含めます。手順は [Android 版](android.md) を参照してください。
+- Web 専用コード、切替導線、カタログ、テスト、性能計測結果は過去の実験資料として保持します。削除・再開は今回の変更に含めません。
+
+以下は実験終了時点の実装・再現手順の記録です。現行の開発義務や配布方針を示すものではありません。
+
+## 過去の Web 実験の記録
 
 ## 実行と切り替え
 
@@ -83,9 +93,9 @@ Webでは各フォント・ウェイトの読み込み完了を待ってから�
 ## 配布・オフライン
 
 `infra/Dockerfile-frontend-deploy` は `VITE_EXPERIMENTAL_COMPOSE=true` のときだけJDKステージで
-Wasmを生成してWeb配布物へ追加します。既定値は無効です。CDでは本番用の
-`VITE_EXPERIMENTAL_COMPOSE_PRODUCTION` とPR用の `VITE_EXPERIMENTAL_COMPOSE_PREVIEW` を別々の
-リポジトリ変数として設定します。いずれも既定はfalseです。旧 `VITE_EXPERIMENTAL_COMPOSE` 変数はCDでは参照しません。
+Wasmを生成してWeb配布物へ追加する構成でした。現在の CD は本番・PR ともに
+`VITE_EXPERIMENTAL_COMPOSE=false` に固定し、旧リポジトリ変数
+`VITE_EXPERIMENTAL_COMPOSE_PRODUCTION` / `VITE_EXPERIMENTAL_COMPOSE_PREVIEW` は参照しません。
 ステージングComposeのbuild引数は引き続き `VITE_EXPERIMENTAL_COMPOSE` です。
 Nginxは `/compose/` の未存在ファイルに404を返し、Wasm用CSPを設定しています。
 JavaScriptの `unsafe-eval` は追加していません。Compose用の画像取得元をconnect-srcへ追加するのは
@@ -156,7 +166,7 @@ LICENSEとNOTICEは配布物の `licenses/electric4k/` に含めます。
 
 ## Desktop / Android / iOS
 
-現在の実行ターゲットはWebのみです。共通UI・REST・同期処理を他ターゲットでも使用する構成ですが、
+実験開始時の実行ターゲットはWebのみでした。Android は現在も開発を継続しています。以下は当時の他ターゲットへの移植要件です。共通UI・REST・同期処理を他ターゲットでも使用する構成ですが、
 ターゲット宣言に加えて以下が必要です。
 
 - OSごとの `Platform` 実装：OIDC / PKCE、日時・翻訳、URL遷移、永続化、プッシュ・通知、クリップボード。
@@ -200,12 +210,9 @@ pnpm exec playwright test --config playwright.compose-storybook.config.ts
 この試験は上部ツールバーでの往復、共有Controls、テーマ・言語、入力・下書き破棄、モバイル幅、
 カード・設定・Bubble・通知、未登録状態を確認します。カタログはUI完全一致の保証ではありません。
 
-## Reactの変更への追従
+## 過去の React / Compose Web 対応表
 
-[対応表](compose-parity.md) と [compose-react-parityスキル](../.agents/skills/compose-react-parity/SKILL.md) に従います。
-Reactを変更する場合は同じPRでComposeの機能・表示・操作を反映し、両実装を検証します。
-main取り込み時は競合がない変更も照合します。翻訳・fixture・アイコンは共通の所有先を使い、
-Kotlinの描画を再生成してからカタログと操作テストを実行します。
+[対応表](compose-parity.md) は実験終了時点の記録です。React の変更に対する Web 版への追従義務は終了しました。
 
 ## Android ターゲット
 

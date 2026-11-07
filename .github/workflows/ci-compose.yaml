@@ -1,24 +1,6 @@
 name: CI Compose Web
+# Compose Web の実験は終了。過去の検証を再現する場合だけ手動で実行する。
 on:
-  # merge-queue.yaml がマージキューで呼び出す。
-  workflow_call:
-  pull_request:
-    paths:
-      - "frontend-compose/**"
-      - "frontend/**"
-      - "infra/frontend-nginx.conf"
-      - "infra/test-compose-compression.mjs"
-      - "infra/Dockerfile-frontend-deploy*"
-      - ".github/workflows/ci-compose.yaml"
-  push:
-    branches: [main]
-    paths:
-      - "frontend-compose/**"
-      - "frontend/**"
-      - "infra/frontend-nginx.conf"
-      - "infra/test-compose-compression.mjs"
-      - "infra/Dockerfile-frontend-deploy*"
-      - ".github/workflows/ci-compose.yaml"
   workflow_dispatch:
 concurrency:
   group: ci-compose-${{ github.event.pull_request.number || github.ref }}
@@ -108,7 +90,7 @@ jobs:
 
   container:
     needs: runner
-    runs-on: ${{ (github.event.pull_request.head.repo.fork || github.event_name == 'merge_group') && 'ubuntu-latest' || fromJSON(needs.runner.outputs.docker-runs-on || '"ubuntu-latest"') }}
+    runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-latest' || fromJSON(needs.runner.outputs.docker-runs-on || '"ubuntu-latest"') }}
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v7
