@@ -79,7 +79,9 @@ async fn detail_separates_approved_installation_and_rejects_stale_saves() -> any
     assert_eq!(draft["installation"], Value::Null, "{draft}");
     // The console reads the bot username from the detail, not from the realtime user list.
     assert!(
-        draft["bot_username"].as_str().is_some_and(|name| !name.is_empty()),
+        draft["bot_username"]
+            .as_str()
+            .is_some_and(|name| !name.is_empty()),
         "{draft}"
     );
     assert_eq!(
