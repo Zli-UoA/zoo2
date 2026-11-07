@@ -82,3 +82,8 @@ tui-build:
 
 tui-check:
 	cd tui && cargo fmt --check && cargo clippy --all-targets -- -D warnings && cargo test
+
+# E2EE の暗号コア（docs/e2ee.md）。CI Crypto と同じく、Web 向けの wasm32 でもビルドする。
+.PHONY: crypto-check
+crypto-check:
+	cd crates/zoo-crypto && cargo fmt --check && cargo clippy --all-targets --locked -- -D warnings && cargo test --locked && cargo build --locked --target wasm32-unknown-unknown

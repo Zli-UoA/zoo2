@@ -1,0 +1,64 @@
+name: CI Crypto
+on:
+  # merge-queue.yaml がマージキューで呼び出す。
+  workflow_call:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - "crates/zoo-crypto/**"
+      - "rust-toolchain.toml"
+      - ".github/workflows/ci-crypto.yaml"
+      - ".github/workflows/select-runner.yaml"
+  push:
+    branches: [main]
+    paths:
+      - "crates/zoo-crypto/**"
+      - "rust-toolchain.toml"
+      - ".github/workflows/ci-crypto.yaml"
+      - ".github/workflows/select-runner.yaml"
+permissions:
+  contents: read
+concurrency:
+  group: crypto-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+# E2EE の暗号コア（crates/zoo-crypto）。DB や Electric を使わないので、Docker 不要の実行先で
+# fmt・clippy・テストと、Web 向けの wasm32-unknown-unknown のビルドをまとめて行います。
+jobs:
+  runner:
+    uses: ./.github/workflows/select-runner.yaml
+    secrets:
+      runner-status-token: ${{ secrets.RUNNER_STATUS_TOKEN }}
+
+  check:
+    needs: runner
+    runs-on: ${{ (github.event.pull_request.head.repo.fork || github.event_name == 'merge_group') && 'ubuntu-latest' || fromJSON(needs.runner.outputs.runs-on || '"zli-kubecamp-no-docker"') }}
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: ./crates/zoo-crypto
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+      - name: Read Rust toolchain
+        id: rust-toolchain
+        working-directory: .
+        # Install only the toolchain pinned in rust-toolchain.toml, not stable as well.
+        run: echo "channel=$(sed -n 's/^channel = "\(.*\)"$/\1/p' rust-toolchain.toml)" >> "$GITHUB_OUTPUT"
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ steps.rust-toolchain.outputs.channel }}
+          components: clippy, rustfmt
+          targets: wasm32-unknown-unknown
+      - name: Restore Cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: crates/zoo-crypto
+      - name: format check
+        run: cargo fmt --check
+      - name: lint check
+        run: cargo clippy --all-targets --locked -- -D warnings
+      - name: test
+        run: cargo test --locked
+      - name: build (wasm32)
+        run: cargo build --locked --target wasm32-unknown-unknown
