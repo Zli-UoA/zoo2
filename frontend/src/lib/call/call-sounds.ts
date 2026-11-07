@@ -7,7 +7,11 @@ export type CallSoundKind = "join" | "leave";
 export const CALL_SOUNDS_STORAGE_KEY = "zoo-call-sounds";
 const CALL_SOUNDS_CHANGE_EVENT = "zoo-call-sounds-change";
 
+// 保存に失敗したときだけ使う、現在のページ内の設定値
+let memoryOverride: boolean | null = null;
+
 export function isCallSoundsEnabled(): boolean {
+  if (memoryOverride !== null) return memoryOverride;
   try {
     return window.localStorage.getItem(CALL_SOUNDS_STORAGE_KEY) !== "off";
   } catch {
@@ -18,8 +22,10 @@ export function isCallSoundsEnabled(): boolean {
 export function setCallSoundsEnabled(enabled: boolean): void {
   try {
     window.localStorage.setItem(CALL_SOUNDS_STORAGE_KEY, enabled ? "on" : "off");
+    memoryOverride = null;
   } catch {
-    // ストレージが使えない環境では保存しない
+    // 保存できない環境でも、少なくとも現在のページでは選択を反映する
+    memoryOverride = enabled;
   }
   try {
     window.dispatchEvent(new Event(CALL_SOUNDS_CHANGE_EVENT));
@@ -29,7 +35,10 @@ export function setCallSoundsEnabled(enabled: boolean): void {
 /** 設定変更の購読 (useSyncExternalStore 用)。他タブの変更も拾う。 */
 export function subscribeCallSounds(onChange: () => void): () => void {
   const onStorage = (e: StorageEvent) => {
-    if (e.key === null || e.key === CALL_SOUNDS_STORAGE_KEY) onChange();
+    if (e.key === null || e.key === CALL_SOUNDS_STORAGE_KEY) {
+      memoryOverride = null;
+      onChange();
+    }
   };
   window.addEventListener(CALL_SOUNDS_CHANGE_EVENT, onChange);
   window.addEventListener("storage", onStorage);
