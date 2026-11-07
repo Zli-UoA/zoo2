@@ -407,7 +407,7 @@
   "call": {
     "settingsTab": "Calls",
     "soundsLabel": "Call sounds",
-    "soundsDescription": "Play a sound when someone joins or leaves a call",
+    "soundsDescription": "Play a sound when someone joins or leaves a call, and when you mute or unmute",
     "start": "Start call",
     "join": "Join call",
     "leave": "Leave call",

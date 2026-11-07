@@ -407,7 +407,7 @@
   "call": {
     "settingsTab": "通話",
     "soundsLabel": "通話の効果音",
-    "soundsDescription": "入室・退出時に音を鳴らします",
+    "soundsDescription": "入室・退出・ミュート切替時に音を鳴らします",
     "start": "通話を開始",
     "join": "通話に参加",
     "leave": "通話から退出",

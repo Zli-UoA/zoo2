@@ -407,7 +407,7 @@
   "call": {
     "settingsTab": "通話",
     "soundsLabel": "通話音效",
-    "soundsDescription": "有人加入或者離開通話嗰陣播放音效",
+    "soundsDescription": "有人加入或者離開通話，同埋你切換靜音嗰陣播放音效",
     "start": "開始通話",
     "join": "加入通話",
     "leave": "離開通話",

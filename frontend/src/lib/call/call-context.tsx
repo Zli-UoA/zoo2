@@ -378,6 +378,7 @@ export function CallProvider({ config: explicitConfig, children }: CallProviderP
       track.enabled = !nextMuted;
     }
     setIsMuted(nextMuted);
+    playCallSound(nextMuted ? "mute" : "unmute");
 
     // 自分の参加者アバターにもミュート状態を即座に反映 ([P3])
     setParticipants((prev) =>
