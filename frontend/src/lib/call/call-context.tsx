@@ -683,7 +683,7 @@ export function CallProvider({ config: explicitConfig, children }: CallProviderP
   );
 
   // 連続した切替が同じ旧ストリームを参照して競合しないよう、1 件ずつ実行する
-  const micSwitchQueueRef = useRef<Promise<void>>(Promise.resolve());
+  const micSwitchQueueRef = useRef<Promise<unknown>>(Promise.resolve());
   const setMicrophone = useCallback(
     (deviceId: string) => {
       appliedMicIdRef.current = deviceId;
