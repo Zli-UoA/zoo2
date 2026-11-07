@@ -2,7 +2,7 @@
 
 暗号化した DM とプライベートチャンネルの設計です。Matrix と同じ構成（端末ごとの Olm、チャンネルごとの Megolm、クロス署名、Secret Storage、鍵バックアップ）を使い、Secret Storage をパスキーの WebAuthn PRF 出力で開きます。親 issue は [#321](https://github.com/Zli-UoA/zoo2/issues/321) で、本書は [#347](https://github.com/Zli-UoA/zoo2/issues/347) で書きました。
 
-以降の E2EE の PR（[ロードマップ](#ロードマップ)）は本書を仕様として扱います。実装で仕様を変える場合は、同じ PR で本書も直してください。
+以降の E2EE の PR（[ロードマップ](#ロードマップ)）は本書を仕様として扱います。実装で仕様を変える場合は、同じ PR で本書も直してください。【決定】を変えるときは、そのことを PR の本文にも書いてください。
 
 ## 状態の表記
 
@@ -10,8 +10,8 @@
 
 | 表記 | 意味 |
 | --- | --- |
-| 【決定】 | #321 で決めたこと、または本書で決めたこと。実装はこれに従う。変えるときは先に本書を直す |
-| 【提案】 | 本書の案。実装の PR で変えてよいが、変えたら同じ PR で本書を直す |
+| 【決定】 | #321 で決めたこと、または本書で決めたこと。実装はこれに従う。変えるときは、同じ PR で本書を直し、決定を変えたことと理由を PR の本文に書いてレビューを受ける |
+| 【提案】 | 本書の案。実装の PR で変えてよい。変えたら同じ PR で本書を直す（PR の本文に理由を書かなくてよい） |
 | 【未検証】 | ブラウザー、認証器、外部ライブラリーなど、外部の挙動に頼るもの。[#369](https://github.com/Zli-UoA/zoo2/issues/369) や各実装の PR で確かめ、結果を本書に書く |
 
 ## 目次
@@ -46,7 +46,7 @@
 - **リアクションは平文**のままにする。
 - 編集は、置き換えた本文を暗号化して送る。**編集履歴は持たない**。
 - 他のユーザーの検証は、最初は **TOFU だけ**にする。マスター鍵が変わったら、再検証するまでそのユーザーへの配布を止める。絵文字 SAS は後続（[#368](https://github.com/Zli-UoA/zoo2/issues/368)）。
-- 方式は **Megolm（Matrix 型）**にする。MLS は使わない。
+- 方式は Matrix 型の **Megolm** にする。MLS は使わない。
 - React の変更は、各 PR で Compose（wasmJs と Android）と TUI にも反映する（[AGENTS.md](../AGENTS.md) の追従ルールと同じ）。
 - 初期版では、暗号化チャンネルへの**添付を禁止**する。クライアントで添付ボタンを出さないだけでなく、サーバーの添付 API でも拒否する。暗号化した添付（[#364](https://github.com/Zli-UoA/zoo2/issues/364)）を実装したら、この禁止を外す。
 
@@ -87,7 +87,7 @@
 | Megolm セッション | `m.megolm.v1.aes-sha2` | 送信端末とチャンネルの組 | 暗号ストア、鍵バックアップ | メッセージ本文の暗号化 |
 | マスター鍵 | Ed25519 | ユーザー | 公開鍵はサーバー、秘密鍵は SSSS | 自己署名鍵とユーザー署名鍵への署名。ユーザーの身元 |
 | 自己署名鍵 | Ed25519 | ユーザー | 同上 | 自分の端末への署名 |
-| ユーザー署名鍵 | Ed25519 | ユーザー | 同上。公開鍵は本人にだけ見せる | 他のユーザーのマスター鍵への署名 |
+| ユーザー署名鍵 | Ed25519 | ユーザー | 同上。公開鍵は本人にだけ見せる | 他のユーザーのマスター鍵への署名、TOFU のピンへの署名 |
 | SSSS 鍵 | ランダムな 32 バイト | ユーザー | 鍵スロットで包んでサーバーに置く。平文はどこにも置かない | SSSS の秘密の暗号化 |
 | パスキーの KEK | 32 バイト（PRF 出力から導く） | パスキー | 置かない。解錠のたびに導く | パスキーの鍵スロット |
 | リカバリーキー | ランダムな 32 バイト | ユーザー | ユーザーが控える | リカバリーキーの鍵スロット |
@@ -113,8 +113,11 @@ SSSS 鍵 → m.megolm_backup.v1           → バックアップ鍵 → 鍵バ�
 
 - バイト列は、特に書かない限り**パディングなしの標準 base64**（[Unpadded Base64](https://spec.matrix.org/latest/appendices/#unpadded-base64)）で表す。受け取る側はパディング付きも受け付ける。WebAuthn の credential ID だけは、WebAuthn の慣習に合わせて base64url（パディングなし）にする。
 - 署名は [Signing JSON](https://spec.matrix.org/latest/appendices/#signing-json) と同じにする。`signatures` と `unsigned` を除いた JSON を [Canonical JSON](https://spec.matrix.org/latest/appendices/#canonical-json) にして Ed25519 で署名し、`signatures.<user_id>.<鍵 ID>` に入れる。鍵 ID は `ed25519:<device_id>`（端末の署名鍵）か `ed25519:<公開鍵>`（クロス署名の鍵）。
-- ID はすべて UUID の文字列にする（既存の `users.id`、`channels.id`、`messages.id` と同じ）。`device_id` もクライアントが UUID v4 で作る。署名する JSON に `device_id` が入るので、サーバーに登録する前に決まっている必要があるため。
-- 【提案】UUID は小文字のハイフン区切り（PostgreSQL の `uuid` 型が返す表記）で書く。署名した JSON の `device_id` や鍵 ID と、サーバーが返す ID の表記がずれないようにするため。`zoo-crypto` は他の表記の `user_id` と `device_id` を受け付けない。
+- 次の ID は UUID の文字列にする：`user_id`、`channel_id`、`message_id`（既存の `users.id`、`channels.id`、`messages.id` と同じ）、`device_id`、SSSS の `key_id`、鍵スロットの `slot_id`、to-device の `txn_id`。`device_id` はクライアントが UUID v4 で作る。署名する JSON に `device_id` が入るので、サーバーに登録する前に決まっている必要があるため。
+- 【提案】上の UUID の ID はすべて、小文字のハイフン区切り（PostgreSQL の `uuid` 型が返す表記）で書く。`user_id` と `device_id` は署名する JSON と鍵 ID に、SSSS の `key_id` と `slot_id` は鍵スロットの AAD に入り、`txn_id` は再送をまとめるときに文字列のまま比べる。表記がずれると、署名や AAD の検証、サーバーが返す ID との突き合わせに失敗するため。
+  - `zoo-crypto` が今（#348）この表記を検証するのは `user_id` と `device_id` だけで、他の表記は受け付けない。残りの ID の検証は、それを扱う issue（鍵スロットや to-device）で足す。
+- ワンタイム鍵とフォールバック鍵の `key_id`（`signed_curve25519:<key_id>`）は UUID ではない。vodozemac の `KeyId`（u64）をパディングなし base64 にした文字列をそのまま使う。DB の `e2ee_one_time_keys.key_id` と `e2ee_fallback_keys.key_id` も同じ値で、サーバーは UUID として検証しない。
+- Megolm の `session_id` と、鍵バックアップの `version`（10 進の文字列）も UUID ではない。
 
 ### 端末鍵とワンタイム鍵
 
@@ -134,6 +137,8 @@ SSSS 鍵 → m.megolm_backup.v1           → バックアップ鍵 → 鍵バ�
 ```
 
 ワンタイム鍵は `"signed_curve25519:<key_id>": {"key": "<公開鍵>", "signatures": {...}}`、フォールバック鍵は同じ形に `"fallback": true` を足したものです。どちらも端末の署名鍵で署名します。
+
+端末鍵には端末名（`display_name`）を入れません（Matrix の `unsigned.device_display_name` も使わない）。端末鍵は他のユーザーにも配るので、端末名は本人にだけ返す `GET /api/e2ee/devices` で扱います。
 
 【提案】クライアントはサーバー上のワンタイム鍵を 50 個に保ちます（vodozemac の `Account::max_number_of_one_time_keys()` の値）。サーバーが受け付ける 1 回のアップロードは 100 個までです。
 
@@ -262,8 +267,26 @@ Matrix では `sender_key` と `device_id` を非推奨にしていますが、z
 ```
 
 - 自己署名鍵（`usage: ["self_signing"]`）とユーザー署名鍵（`usage: ["user_signing"]`）は、マスター鍵で署名する。
-- 自分の端末鍵には自己署名鍵で署名する。他のユーザーのマスター鍵には、ユーザー署名鍵で署名する。署名するのは、変わったマスター鍵をユーザーが明示的に受け入れたとき（#362）と、SAS で検証したとき（#368）だけ。最初に見たときの TOFU では署名せず、端末ごとに記録する。ユーザー署名鍵で署名したマスター鍵は、自分のすべての端末で信頼する。
+- 自分の端末鍵には自己署名鍵で署名する。他のユーザーのマスター鍵には、ユーザー署名鍵で署名する。この署名（検証済みの印）をするのは、変わったマスター鍵をユーザーが明示的に受け入れたとき（#362）と、SAS で検証したとき（#368）だけ。ユーザー署名鍵で署名したマスター鍵は、自分のすべての端末で信頼する。
+- 最初に見たときの TOFU では検証済みの署名をせず、TOFU の記録（ピン）を作る。ピンは自分の端末どうしで共有する（下の「TOFU のピン」）。端末ごとに記録するだけだと、新しくログインした端末は相手のマスター鍵を毎回初めて見ることになり、差し替えられたマスター鍵をそのまま信頼してしまうため。
 - 秘密鍵（Ed25519 の 32 バイトのシード）は SSSS に置く。秘密の名前は `m.cross_signing.master`、`m.cross_signing.self_signing`、`m.cross_signing.user_signing`。
+- 端末は、解錠したあと自己署名鍵、ユーザー署名鍵、バックアップ鍵の秘密鍵を暗号ストアに保存する。マスター鍵の秘密鍵は、確認と署名に使ったら暗号ストアに残さず、要るたびに SSSS から取り出す。このため、端末を失っただけではマスター鍵は漏れない（[失効の手順](#失効の手順)）。
+
+TOFU のピンは、自分のユーザー署名鍵で次の JSON に署名したものです（Signing JSON。`signatures.<自分の user_id>.ed25519:<ユーザー署名鍵の公開鍵>` に入れる）。
+
+```json
+{
+  "type": "zoo.tofu_pin",
+  "user_id": "<自分の user_id>",
+  "target_user_id": "<相手の user_id>",
+  "master_key": "<相手のマスター鍵の公開鍵>"
+}
+```
+
+- ピンはサーバーの `e2ee_tofu_pins` に置き、本人にだけ返す。ピンを作れるのは、ユーザー署名鍵を持つ（解錠済みの）端末だけ。
+- 端末は、今のユーザー署名鍵で署名を検証できたピンだけを使う。検証できないピンは無視する。
+- ピンは 1 人の相手につき 1 つ。自分の別の端末が違うマスター鍵のピンをすでに作っていたら、マスター鍵が変わったものとして扱う（[配布先の判定](#鍵の配布先の判定)の規則 5）。サーバーが端末ごとに違うマスター鍵を見せる攻撃も、これで見つかる。
+- ユーザー署名鍵を作り直したら、今のピンをすべて新しい鍵で署名し直す（[失効の手順](#失効の手順)）。
 
 ### SSSS（秘密の暗号化）
 
@@ -331,7 +354,7 @@ PRF の salt について：
 
 手順は次のとおりです。
 
-1. 一時的な Curve25519 の鍵を作り、バックアップの公開鍵と ECDH する。一時鍵の公開鍵を `ephemeral` にする。
+1. セッションを暗号化するたびに、新しい一時的な Curve25519 の鍵を作る（同じセッションを上げ直すときも作り直す）。一時鍵を使い回すと、HKDF で導く AES 鍵と IV が同じになり、AES-CBC を同じ鍵と IV で使うことになるため。一時鍵とバックアップの公開鍵で ECDH し、一時鍵の公開鍵を `ephemeral` にする。
 2. `HKDF-SHA256(ikm = 共有秘密, salt = 32 バイトの 0, info = "zoo e2ee megolm backup v1")` で 80 バイトを作る。前から AES 鍵 32 バイト、MAC 鍵 32 バイト、IV 16 バイト。
 3. 下の平文 JSON を AES-256-CBC（PKCS#7）で暗号化し、`ciphertext` にする。
 4. `ciphertext` の HMAC-SHA256（32 バイト）を `mac` にする。
@@ -358,7 +381,23 @@ PRF の salt について：
 - 【決定】クライアントは、署名がない版と署名を検証できない版には、アップロードもダウンロードもしない。
 - 【決定】SSSS の `m.megolm_backup.v1` から導いた公開鍵が `auth_data.public_key` と一致するかも確かめる。一致しない版は使わず、警告を出す。
 - 【決定】新しい版を作るのは、SSSS を解錠した端末だけ。サーバーが返す今の版が変わっても、上の検証を通らない限り切り替えない。
-- 【決定】バックアップから取り込んだセッションは「真正性を確認できない」扱いにする（Matrix と同じ。認証付きバックアップの [MSC4048](https://github.com/matrix-org/matrix-spec-proposals/pull/4048) は後で検討する）。
+- 【決定】バックアップから取り込んだセッションは「真正性を確認できない」扱いにする（Matrix と同じ。認証付きバックアップの [MSC4048](https://github.com/matrix-org/matrix-spec-proposals/pull/4048) は後で検討する）。バックアップの公開鍵は誰でも使えるので、サーバーも任意の送信者を名乗るセッションをバックアップに入れられるため（[脅威モデル](#脅威モデル)）。
+- 【決定】バックアップの行の `is_verified` と、平文の `sender_*` から分かる送信者の検証状態は信用しない。取り込んだ端末は、`is_verified` の値にかかわらず「真正性を確認できない」とする。`is_verified` は、サーバーがどの行を残すかを決めるためだけに使う。
+
+【決定】セッションのアップロード：
+
+- アップロードするのは、解錠済みで、今の版を上の規則で検証できた端末。検証できない端末（未解錠の端末、版の検証に失敗した端末）はアップロードしない。
+- アップロードするのは次のとき。
+  1. 送信用セッションを作ったとき。インデックス 0 から始まる受信用セッションを書き出してアップロードする。
+  2. Olm で受信用セッションを受け取って保存したとき。
+  3. 手元の受信用セッションが、first known index のより小さいものに置き換わったとき（[受信時の検証](#受信時の検証)の手順 5）。
+  4. 今の版が新しい版に変わったとき。手元のセッションをすべてアップロードする（[失効の手順](#失効の手順)）。
+- バックアップから取り込んだセッションは、同じ版には上げ直さない。
+- アップロードを待つセッションは暗号ストアの送信待ちに記録し、成功するまで間隔をあけて再送する。送信と受信はアップロードの完了を待たない。409 `E2EE_WRONG_BACKUP_VERSION` を受けたら、今の版を取り直して検証し、通れば送信待ちのすべてをその版に送る。通らなければ送らずに警告を出す。
+- 送信用セッションの作り手だけでなく、受け取った各ユーザーの端末も、自分のバックアップにアップロードする。各ユーザーのバックアップは別なので、受け取った側も新しい端末で過去ログを読めるようにするため。
+- 担当：状態機械（アップロード待ちの記録と、版の検証）は #351、送信用セッションを作ったときと受け取ったときにアップロードする処理は #361、初回設定の直後と解錠の直後に送信待ちを送る処理は #360。
+
+これがないと、#321 の完了条件「新しい端末でパスキーで 1 回解錠すると、過去ログを読める」を満たせません。端末どうしで鍵を要求し合う仕組み（`m.room_key_request`）は初期版にないので、新しい端末が過去のセッションを得る手段はバックアップだけです。
 
 ## パスキーと Related Origin Requests
 
@@ -408,7 +447,11 @@ const prf = credential.getClientExtensionResults().prf?.results?.first;
 
 【決定】SSSS を解錠済みの端末で、新しい `prf_salt` を作り、`allowCredentials` を空にして `extensions.prf.eval.first` に渡します。ユーザーが選んだパスキーの `rawId` を `credential_id` にしてスロットを作ります。選んだパスキーにすでにスロットがあれば、古いスロットを消して作り直します。
 
-AuthZ でパスキーを削除しても、zoo2 には通知が来ません。【提案】設定の鍵スロットの一覧に、スロットごとの作成日時と最後に使った日時を出し、ユーザーが消します。
+【決定】AuthZ でパスキーを削除しても、zoo2 の鍵スロットは自動では消しません。**これは #321 の「AuthZ でパスキーを消したときは、対応する鍵スロットも消す」からの変更です。** AuthZ でパスキーを削除しても zoo2 には通知が来ず、zoo2 からはそれを確実に知る手段がないためです。鍵スロットは、ユーザーが zoo2 の設定で消します。
+
+- AuthZ でパスキーを削除しても、認証器にはクレデンシャルが残る。AuthZ のログインには使えなくなるが、zoo2 のページから同じ credential ID で PRF を評価できるので、**zoo2 の鍵スロットを消すまでは、そのパスキーで解錠できる**。設定の画面にもそう書く。
+- 【提案】設定の鍵スロットの一覧に、スロットごとのラベル、作成日時、最後に使った日時を出す。
+- 【提案】AuthZ が自分のパスキーの credential ID の一覧を返す API を持てば（AuthZ 側の issue が要る）、zoo2 はそれと鍵スロットの `credential_id` を照合し、AuthZ にないパスキーのスロットに「AuthZ で削除済み」と表示して削除を勧める。自動では消さない。
 
 ### 使えない環境
 
@@ -467,13 +510,16 @@ AuthZ でパスキーを削除しても、zoo2 には通知が来ません。【
 | 409 | `E2EE_SSSS_CONFLICT` | SSSS の既定の鍵が、クライアントが前提にした鍵から変わっていた | `default_key_id` |
 | 409 | `E2EE_DEVICE_EXISTS` | 同じ `device_id` の端末がすでにある（削除済みを含む） | |
 | 409 | `E2EE_KEY_EXISTS` | 同じ鍵 ID で内容が違うワンタイム鍵をアップロードした | |
+| 409 | `E2EE_STALE_REVISION` | 編集の `revision` が、今の行の `revision` + 1 ではない | `current_revision` |
+| 409 | `E2EE_PIN_CONFLICT` | 同じ相手に、違うマスター鍵の TOFU のピンがすでにある | `pin` |
 | 400 | `E2EE_CIPHERTEXT_REQUIRED` | 暗号化チャンネルに `ciphertext` なしで送った | |
 | 400 | `E2EE_PLAINTEXT_FORBIDDEN` | 暗号化チャンネルに空でない `content` を送った、または平文チャンネルに `ciphertext` を送った | |
 | 400 | `E2EE_ATTACHMENTS_FORBIDDEN` | 暗号化チャンネルへの添付 | |
 | 400 | `E2EE_BAD_SIGNATURE` | 署名が不正 | |
 | 400 | `E2EE_INVALID_EPOCH` | `epoch` が今の値より大きい | |
 | 400 | `E2EE_PUBLIC_FORBIDDEN` | 公開チャンネルを `encrypted: true` で作ろうとした | |
-| 403 | `E2EE_APPS_FORBIDDEN` | 暗号化チャンネルへの App（Bot）の追加 | |
+| 403 | `E2EE_APPS_FORBIDDEN` | 暗号化チャンネルへの App（Bot）の追加。`/api/apps/v1/*` からの暗号化チャンネルへの読み書きと添付（委任トークンを含む） | |
+| 403 | `E2EE_REAUTH_REQUIRED` | 既存のマスター鍵の差し替えで、直前の再認証がない | |
 | 403 | `E2EE_WEBHOOKS_FORBIDDEN` | 暗号化チャンネルへの Incoming Webhook の作成 | |
 | 404 | （既存と同じ） | 他人の端末やスロットなど。存在を推測されないよう 403 ではなく 404 | |
 
@@ -491,9 +537,9 @@ AuthZ でパスキーを削除しても、zoo2 には通知が来ません。【
   ```
 
   `device_keys.user_id` は呼び出したユーザーと一致していなければならない。応答は端末の行と `one_time_key_counts`。同じ `device_id` で同じ `device_keys` を送り直した場合は成功として扱い（冪等）、内容が違えば 409 `E2EE_DEVICE_EXISTS`。
-- `GET /api/e2ee/devices`：自分の端末の一覧（削除済みを除く）。
+- `GET /api/e2ee/devices`：自分の端末の一覧（削除済みを除く）。`display_name` と `last_seen_at` を返すのはこの API だけで、他のユーザーには見せない。
 - `PATCH /api/e2ee/devices/{device_id}`：`{"display_name": "..."}`。自分の端末だけ。
-- `DELETE /api/e2ee/devices/{device_id}`：自分の端末を削除する（論理削除）。同じトランザクションで、その端末のワンタイム鍵、フォールバック鍵、未受信の to-device メッセージを消し、ユーザーが参加しているすべての暗号化チャンネルの `membership_epoch` を増やす。削除した `device_id` は再利用できない。
+- `DELETE /api/e2ee/devices/{device_id}`：自分の端末を削除する（論理削除）。同じトランザクションで、その端末のワンタイム鍵、フォールバック鍵、未受信の to-device メッセージを消し、ユーザーが参加しているすべての暗号化チャンネルの `membership_epoch` を増やす（`membership_epoch` の列は #357 で足すので、この増加は #357 で足す）。削除した `device_id` は再利用できない。
 - `POST /api/e2ee/keys/upload`：`{"device_id", "one_time_keys", "fallback_keys"}`。応答は `{"one_time_key_counts": {"signed_curve25519": 50}, "unused_fallback_key_types": ["signed_curve25519"]}`。
 - `POST /api/e2ee/keys/query`：`{"user_ids": [...]}`（最大 100 人）。応答は次の形。
 
@@ -503,12 +549,15 @@ AuthZ でパスキーを削除しても、zoo2 には通知が来ません。【
     "master_keys": { "<user_id>": { } },
     "self_signing_keys": { "<user_id>": { } },
     "user_signing_keys": { "<自分の user_id>": { } },
-    "signatures": [ ]
+    "signatures": [ ],
+    "tofu_pins": { "<user_id>": { } }
   }
   ```
 
-  端末鍵とクロス署名鍵は、アップロードされたときの署名付きの JSON をそのまま返す。`signatures` には、[Shape](#electric-の-shape) と同じ範囲の `e2ee_key_signatures` の行を返す。問い合わせできるのは、Users Shape で見えるユーザー（ゲストは同じチャンネルのメンバーだけ）。ユーザー署名鍵は本人にだけ返す。通常は [Shape](#electric-の-shape) で受け取り、この API は初回と Shape が追いつかないときの補助に使う。
+  端末鍵とクロス署名鍵は、アップロードされたときの署名付きの JSON をそのまま返す。`tofu_pins` には、問い合わせたユーザーに対する自分のピン（署名付き）を返す。`signatures` には、[Shape](#electric-の-shape) と同じ範囲の `e2ee_key_signatures` の行を返す。問い合わせできるのは、Users Shape で見えるユーザー（ゲストは同じチャンネルのメンバーだけ）。ユーザー署名鍵は本人にだけ返す。通常は [Shape](#electric-の-shape) で受け取り、この API は初回と Shape が追いつかないときの補助に使う。
 - `POST /api/e2ee/keys/claim`：`{"one_time_keys": {"<user_id>": {"<device_id>": "signed_curve25519"}}}`。端末ごとにワンタイム鍵を 1 つ払い出し、なければフォールバック鍵を返す。応答は `{"one_time_keys": {"<user_id>": {"<device_id>": {"signed_curve25519:<key_id>": {"key": "...", "signatures": {}}}}}}` で、鍵がない端末は含めない。ワンタイム鍵は 1 文の `DELETE ... RETURNING`（`FOR UPDATE SKIP LOCKED` で選ぶ）で払い出し、並行した claim でも同じ鍵を 2 回返さない。フォールバック鍵を返したら `used = true` にする。
+  - 払い出せるのは、`keys/query` で問い合わせできるのと同じ範囲のユーザーの端末だけ。範囲外のユーザーと端末は、存在を推測されないよう、エラーにせず黙って応答から除く。任意のユーザーのワンタイム鍵を使い切らせ、フォールバック鍵を使わせることを防ぐため。
+  - 1 回で払い出す端末は 1000 台まで【提案】。
 
 ### to-device メッセージ（[#355](https://github.com/Zli-UoA/zoo2/issues/355)）
 
@@ -533,8 +582,9 @@ AuthZ でパスキーを削除しても、zoo2 には通知が来ません。【
 ### クロス署名（[#356](https://github.com/Zli-UoA/zoo2/issues/356)）
 
 - `POST /api/e2ee/cross_signing/keys`：`{"master_key", "self_signing_key", "user_signing_key"}`。どれも省略でき、省略したものは変えない。自己署名鍵とユーザー署名鍵は、送ったマスター鍵（省略時は今のマスター鍵）の署名がなければ拒否する。
-  - マスター鍵を変えたら `e2ee_cross_signing_key_changes` に記録し、そのユーザーが参加しているすべての暗号化チャンネルの `membership_epoch` を増やす。
-  - 【決定】自己署名鍵を変えたときも、同じように `membership_epoch` を増やす。漏れた自己署名鍵で署名された端末に、今のセッションの続きが届かないようにするため（#356 の「マスター鍵の変更」に加える）。
+  - マスター鍵を変えたら `e2ee_cross_signing_key_changes` に記録し、そのユーザーが参加しているすべての暗号化チャンネルの `membership_epoch` を増やす（この増加は #357 で足す）。
+  - 【決定】自己署名鍵を変えたときも、同じように `membership_epoch` を増やす。漏れた自己署名鍵で署名された端末に、今のセッションの続きが届かないようにするため（#356 の「マスター鍵の変更」に加える。この増加も #357 で足す）。
+  - 【決定】すでにあるマスター鍵を差し替えるときは、直前の再認証を求める。アクセストークンの認証時刻（OIDC の `auth_time`）が 5 分以内でなければ 403 `E2EE_REAUTH_REQUIRED` を返し、クライアントは `max_age` を付けて AuthZ でログインし直してから送り直す。盗んだトークンだけでマスター鍵を差し替えられないようにするため。初めてマスター鍵を登録するときは求めない。【未検証】zoo2 が受け取るトークンで `auth_time` を確かめられるかは #356 で確かめる。
   - 鍵を変えたら、古い鍵による署名（`e2ee_key_signatures`）を消す。
 - `POST /api/e2ee/cross_signing/signatures`：
 
@@ -547,6 +597,11 @@ AuthZ でパスキーを削除しても、zoo2 には通知が来ません。【
   ```
 
   署名者は常に呼び出したユーザー。サーバーは対象（端末鍵かマスター鍵）の Canonical JSON に対して署名を検証する。
+- `POST /api/e2ee/tofu_pins`：`{"pins": [{"target_user_id", "master_key", "signatures"}], "replace": false}`。TOFU のピン（[クロス署名](#クロス署名)）を足す。
+  - サーバーは、呼び出したユーザーの今のユーザー署名鍵で署名を検証する（違えば 400 `E2EE_BAD_SIGNATURE`）。
+  - `replace: false` で、同じ相手に違う `master_key` のピンがあれば 409 `E2EE_PIN_CONFLICT`（今のピンを返す）。同じなら成功として扱う（冪等）。
+  - `replace: true` は、ユーザーが新しいマスター鍵を受け入れたとき（#362）と、ユーザー署名鍵を作り直して署名し直すときだけ使う。
+  - ピンは本人にだけ返す（`keys/query` と[配布先のスナップショット](#配布先のスナップショット)）。
 
 ### Secret Storage（[#356](https://github.com/Zli-UoA/zoo2/issues/356)）
 
@@ -593,12 +648,13 @@ AuthZ でパスキーを削除しても、zoo2 には通知が来ません。【
   ```json
   {
     "sessions": [
-      { "channel_id": "...", "session_id": "...", "first_message_index": 0, "forwarded_count": 0, "is_verified": true, "session_data": { "ephemeral": "...", "ciphertext": "...", "mac": "..." } }
+      { "channel_id": "...", "sender_key": "...", "session_id": "...", "first_message_index": 0, "forwarded_count": 0, "is_verified": true, "session_data": { "ephemeral": "...", "ciphertext": "...", "mac": "..." } }
     ]
   }
   ```
 
   - 1 回 1000 件まで。`version` が今の版でなければ 409 `E2EE_WRONG_BACKUP_VERSION`。
+  - セッションは `(channel_id, sender_key, session_id)` で区別する（[受信時の検証](#受信時の検証)の手順 5 と同じ）。取り込む端末は、復号した平文の `channel_id`、`sender_key`、`session_id` がこの値と一致するかを確かめ、違えば捨てる。
   - 同じセッションがすでにあれば、Matrix と同じ規則で残す方を決める（`is_verified` が true の方、次に `first_message_index` が小さい方、次に `forwarded_count` が小さい方）。
 - `GET /api/e2ee/key_backup/keys?version=<版>&channel_id=<任意>&after=<任意>`：1000 件ずつ返す。
 
@@ -615,6 +671,31 @@ AuthZ でパスキーを削除しても、zoo2 には通知が来ません。【
 - チャンネルの応答（`ChannelResponse`）に `encrypted` と `membership_epoch` を足す。
 - `POST /api/channels/{id}/join`、`/leave`、`/users`、`DELETE /api/channels/{id}/users/{user_id}` と DM の再参加は、暗号化チャンネルなら同じトランザクションで `membership_epoch` を増やす。
 
+### 配布先のスナップショット
+
+【決定】Megolm セッション鍵の配布先は、epoch と結び付いた 1 つのスナップショットから計算します（[鍵の配布先の判定](#鍵の配布先の判定)）。Electric の Shape はそれぞれ別のストリームで、同じトランザクションまで届いている保証がないので、Channels Shape の epoch と Channel Users Shape のメンバーを組み合わせると、退出したメンバーに鍵を配ってしまうことがあるためです。この API は [#357](https://github.com/Zli-UoA/zoo2/issues/357) で作ります。
+
+- `GET /api/e2ee/channels/{channel_id}/recipients`：応答は `keys/query` と同じ形に、`channel_id`、`membership_epoch`、`user_ids` を足したもの。
+
+  ```json
+  {
+    "channel_id": "<channel_id>",
+    "membership_epoch": 4,
+    "user_ids": ["<メンバーの user_id>"],
+    "device_keys": { "<user_id>": { "<device_id>": { } } },
+    "master_keys": { "<user_id>": { } },
+    "self_signing_keys": { "<user_id>": { } },
+    "user_signing_keys": { "<自分の user_id>": { } },
+    "signatures": [ ],
+    "tofu_pins": { "<user_id>": { } }
+  }
+  ```
+
+  - サーバーは、1 つの `REPEATABLE READ READ ONLY` のトランザクション（同じスナップショット）で、`channels.membership_epoch`、`channel_user` のメンバー、そのメンバーの削除されていない端末、クロス署名鍵、署名、自分のピンを読む。`membership_epoch` を増やす処理は、メンバー、端末、クロス署名鍵の変更と同じトランザクションで行うので、返す一覧は返す epoch の時点のものと一致する。
+  - 呼び出したユーザーがメンバーでない、またはチャンネルが暗号化されていなければ 404。
+  - クライアントは、送信用セッションの epoch と `membership_epoch` が一致するスナップショットだけを配布先の計算に使う。一致しなければ取り直す。Shape の行は、配布先の計算に直接使わない。
+  - 端末や署名が増えた（epoch は変わらない）ことを Shape で見たら、スナップショットを取り直し、増えた端末に今のセッションを今のインデックスから配る。
+
 ### メッセージ（[#357](https://github.com/Zli-UoA/zoo2/issues/357)、[#358](https://github.com/Zli-UoA/zoo2/issues/358)）
 
 - `POST /api/messages`：暗号化チャンネルでは次の形にする。
@@ -628,6 +709,7 @@ AuthZ でパスキーを削除しても、zoo2 には通知が来ません。【
     "kind": "message",
     "broadcast": false,
     "epoch": 3,
+    "revision": 0,
     "ciphertext": { "algorithm": "m.megolm.v1.aes-sha2", "sender_key": "...", "device_id": "...", "session_id": "...", "ciphertext": "..." },
     "mentions": { "user_ids": [], "channel": false, "here": false }
   }
@@ -638,11 +720,15 @@ AuthZ でパスキーを削除しても、zoo2 には通知が来ません。【
   - `attachment_ids` がない（あれば 400 `E2EE_ATTACHMENTS_FORBIDDEN`）。`metadata` がない（App 用なので 400）。
   - `ciphertext.device_id` が送信者の削除されていない端末で、`ciphertext.sender_key` がその端末の識別鍵と一致する（違えば 400）。
   - `epoch` が今の `membership_epoch` と等しい。小さければ 409 `E2EE_STALE_EPOCH`、大きければ 400 `E2EE_INVALID_EPOCH`。
-  - 平文チャンネルに `ciphertext` か `epoch` を送ったら 400 `E2EE_PLAINTEXT_FORBIDDEN`。
-- `PATCH /api/messages/{id}`：`{"content": "", "epoch", "ciphertext", "mentions"}`。規則は送信と同じ。
+  - `revision` が 0（違えば 400）。
+  - 平文チャンネルに `ciphertext`、`epoch`、`revision` を送ったら 400 `E2EE_PLAINTEXT_FORBIDDEN`。
+- `PATCH /api/messages/{id}`：`{"content": "", "epoch", "revision", "ciphertext", "mentions"}`。規則は送信と同じで、次を足す。
+  - 【決定】`revision` は平文でも送り、サーバーは `messages.revision` を単調に増やす。行を `FOR UPDATE` で読み、`revision` が今の値 + 1 でなければ 409 `E2EE_STALE_REVISION`（`current_revision` 付き）。同じユーザーの 2 つの端末が同時に編集しても、同じ `revision` の版が 2 つできないようにするため。
+  - 409 を受けたクライアントは、最新の行を復号してから編集し直す。最新の行を復号できなければ、編集を止めてユーザーに表示する（復号できない版を上書きしない）。
 - `DELETE /api/messages/{id}`：暗号化チャンネルでは、論理削除と同時に `ciphertext` を消す。すでに取得した端末のキャッシュは消せない。
 - `mentions` は平文で、サーバーはメンション通知と Web Push の宛先を作るためだけに使う（[機能ごとの扱い](#機能ごとの扱い)）。
 - `POST /api/attachments/presign`：暗号化チャンネルの `channel_id` なら 400 `E2EE_ATTACHMENTS_FORBIDDEN`（#358）。
+- App の API（`/api/apps/v1/*`）：【決定】暗号化チャンネルとそのメッセージへの読み書きを、委任トークン（`app_credentials.user_id` があり、ユーザーとして動くもの）を含めて 403 `E2EE_APPS_FORBIDDEN` で拒否する（#358）。メッセージの作成（`/api/apps/v1/messages`）、ファイルの紐付け（`/api/apps/v1/messages/{id}/files`）、`blocks`、`unfurls` を含む。委任トークンはチャンネルに参加しないまま、そのユーザーの権限で動くので、App の参加の禁止だけでは止まらないため。
 
 ## DB
 
@@ -718,6 +804,15 @@ CREATE TABLE e2ee_key_signatures (
   PRIMARY KEY (signer_user_id, signer_key_id, target_user_id, target_key_id)
 );
 
+CREATE TABLE e2ee_tofu_pins (
+  user_id text NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  target_user_id text NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  master_key text NOT NULL,
+  pin_json jsonb NOT NULL,             -- ユーザー署名鍵で署名した zoo.tofu_pin
+  updated_at timestamptz NOT NULL DEFAULT now(),
+  PRIMARY KEY (user_id, target_user_id)
+);
+
 CREATE TABLE e2ee_cross_signing_key_changes (
   id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
   user_id text NOT NULL REFERENCES users(id) ON DELETE CASCADE,
@@ -788,13 +883,14 @@ CREATE TABLE e2ee_key_backup_sessions (
   user_id text NOT NULL,
   version bigint NOT NULL,
   channel_id text NOT NULL,
+  sender_key text NOT NULL,
   session_id text NOT NULL,
   first_message_index integer NOT NULL,
   forwarded_count integer NOT NULL,
   is_verified boolean NOT NULL,
   session_data jsonb NOT NULL,
   updated_at timestamptz NOT NULL DEFAULT now(),
-  PRIMARY KEY (user_id, version, channel_id, session_id),
+  PRIMARY KEY (user_id, version, channel_id, sender_key, session_id),
   FOREIGN KEY (user_id, version) REFERENCES e2ee_key_backup_versions ON DELETE CASCADE
 );
 
@@ -804,6 +900,7 @@ ALTER TABLE channels ADD CONSTRAINT channels_encrypted_private CHECK (NOT encryp
 
 ALTER TABLE messages ADD COLUMN ciphertext jsonb;
 ALTER TABLE messages ADD COLUMN epoch bigint;
+ALTER TABLE messages ADD COLUMN revision integer NOT NULL DEFAULT 0;
 ALTER TABLE messages ADD CONSTRAINT messages_ciphertext_shape
   CHECK ((ciphertext IS NULL OR (content = '' AND epoch IS NOT NULL)));
 
@@ -815,7 +912,7 @@ ALTER TABLE e2ee_to_device_messages REPLICA IDENTITY FULL;
 
 - `e2ee_key_backup_sessions.channel_id` には外部キーを付けない。チャンネルを消しても、ユーザーのバックアップは残す。
 - `channels` と `messages` は既存の行があるので、`DEFAULT` 付きか NULL 許容で足す。既存の行は `encrypted = false`、`ciphertext IS NULL` になり、制約に違反しない。
-- 【決定】DB のトリガーで、暗号化チャンネルの `messages` に平文が入らないようにする。`BEFORE INSERT OR UPDATE OF content, ciphertext ON messages` で、チャンネルが `encrypted` なら、削除済みでない行に `content = ''` と `ciphertext IS NOT NULL` を求める。API 以外の経路（Webhook、App、Bubble chat、Home の同期など）で書き込まれても止めるための最後の防御。
+- 【決定】DB のトリガーで、暗号化チャンネルの `messages` に平文が入らないようにする。`BEFORE INSERT OR UPDATE ON messages`（列を限らない）で、チャンネルが `encrypted` なら、削除済みでない行に `content = ''` と `ciphertext IS NOT NULL` を求め、すべての行で `app_attachments`、`app_blocks`、`app_unfurls`、`metadata` が NULL（または空文字列）であることを求める。API 以外の経路（Webhook、App と委任トークン、Bubble chat、Home の同期など）で書き込まれても止めるための最後の防御（#358）。
 - 【決定】`channels.encrypted` は、トリガーで true から false に戻せないようにし、`is_private` も false にできないようにする。
 - 【決定】送信と編集のトランザクションは `channels` の行を `FOR SHARE` で読んで `epoch` を比べる。`membership_epoch` を増やす処理は `UPDATE`（行ロック）なので、epoch の比較と増加が直列になる。
 
@@ -830,10 +927,12 @@ ALTER TABLE e2ee_to_device_messages REPLICA IDENTITY FULL;
 | `/api/shapes/e2ee_key_signatures` | `e2ee_key_signatures` | `signer_user_id = $1 OR (signer_user_id = target_user_id AND target_user_id IN (…上と同じ…))` |
 | `/api/shapes/e2ee_to_device?device_id=<自分の端末>` | `e2ee_to_device_messages` | `recipient_user_id = $1 AND recipient_device_id = $2`（`$2` は自分の端末であることをサーバーで確かめた `device_id`） |
 
+- 【決定】`/api/shapes/e2ee_devices` は `columns` をサーバーで固定し、`user_id`、`device_id`、`curve25519_key`、`ed25519_key`、`device_keys`、`deleted_at` だけを配る。`display_name`（環境が分かる）と `last_seen_at`（活動の時刻が分かる）は他のユーザーに見せず、本人には `GET /api/e2ee/devices` で返す。
 - 端末、クロス署名鍵、署名の Shape は、ユーザーごとに 1 本にする。「自分」と「自分と暗号化チャンネルを共有しているユーザー」の分を配る。チャンネルごとに Shape を開くと、暗号化チャンネルの数だけ SSE の接続が増えるため。
 - 【未検証】上の where は `allow_subqueries` で 3 段のサブクエリになる。Electric 1.8.1 で move-in と move-out が正しく届くかは #354 で確かめる。届かなければ、`?channel_id=` を付けたチャンネルごとの Shape（where は `user_id IN (SELECT user_id FROM channel_user WHERE channel_id = $2)`、サーバーで参加を確かめる）に替え、本書を直す。
 - ユーザー署名鍵と、他人のマスター鍵へのユーザー署名鍵の署名は、本人にだけ配る。
-- 自己署名の追加も Shape で届くので、新しい端末を解錠して自己署名すると、他のメンバーは次の送信からその端末に鍵を配る。送信側は、この 3 つの Shape の変化で配布先を計算し直す。
+- 自己署名の追加も Shape で届くので、新しい端末を解錠して自己署名すると、他のメンバーは次の送信からその端末に鍵を配る。
+- 【決定】送信側は、この 3 つの Shape と Channels Shape、Channel Users Shape の変化を「配布先が変わったかもしれない」という知らせとしてだけ使い、[配布先のスナップショット](#配布先のスナップショット)を取り直す。Shape はそれぞれ別のストリームで、同じトランザクションまで届いている保証がないので、Shape の行を組み合わせて配布先を計算しない。Shape の行は、画面の表示（端末一覧、検証状態）と受信時の検証に使う。
 - 既存の Channels Shape と Messages Shape は列を絞っていないので、`channels.encrypted`、`channels.membership_epoch`、`messages.ciphertext`、`messages.epoch` はそのまま届く。App 向けの messages の `columns`（`proxy_shape` の `_app_metadata_allowed`）には `ciphertext` と `epoch` を足さない。
 
 ## membership_epoch と送信の順序
@@ -846,34 +945,49 @@ ALTER TABLE e2ee_to_device_messages REPLICA IDENTITY FULL;
 | --- | --- | --- |
 | メンバーの参加、追加、DM への再参加 | そのチャンネル | #357 |
 | メンバーの退出、キック | そのチャンネル | #357 |
-| 端末の削除、失効 | その端末の持ち主が参加しているすべての暗号化チャンネル | #354 |
-| マスター鍵か自己署名鍵の変更 | その持ち主が参加しているすべての暗号化チャンネル | #356 |
+| 端末の削除、失効 | その端末の持ち主が参加しているすべての暗号化チャンネル | #357（#354 の削除 API に足す） |
+| マスター鍵か自己署名鍵の変更 | その持ち主が参加しているすべての暗号化チャンネル | #357（#356 のクロス署名 API に足す） |
+
+`membership_epoch` の列を足すのは #357 なので、端末の削除とクロス署名鍵の変更で epoch を増やす処理も #357 で足します。#354 と #356 の本文にある「epoch を増やす（#357 のあと）」はこれに当たります。このため、[ロードマップ](#ロードマップ)では #357 を #354 と #356 のあとに置きます。
 
 送信の手順：
 
 1. 送信待ちのメッセージは**平文のまま**持っておき、送る直前に暗号化する。古いセッションで暗号化したものを保存しておいて、あとから送ることはしない。送信待ちの平文は、オフライン DB ではなく暗号ストア（[クライアントの構成](#クライアントの構成)）に置く。
-2. 送る直前に、Channels Shape で見えている `membership_epoch` と、送信用セッションを作ったときの epoch を比べる。違えば、配布先を計算し直し、セッションを作り直して配る。
+2. 送る直前に、Channels Shape で見えている `membership_epoch` と、送信用セッションを作ったときの epoch を比べる。違えば、[配布先のスナップショット](#配布先のスナップショット)を取り直し、その `membership_epoch` で新しいセッションを作り、そのスナップショットから計算した配布先に配る。セッションの epoch は、Channels Shape の値ではなく、配布先を計算したスナップショットの `membership_epoch` にする。
 3. 平文の `epoch` と、暗号化するペイロードの `epoch` に、セッションの epoch を入れて送る。
 4. サーバーは、`epoch` が今の値より古ければ 409 `E2EE_STALE_EPOCH`（`current_epoch` 付き）を返す。
-5. 409 を受けたクライアントは、Channels Shape が `current_epoch` に追いつくのを待ち（追いつかなければ `GET /api/channels/{id}` で取り直す）、メンバーと端末の状態を同期し直して、2 から送り直す。`message_id` は同じものを使う。3 回続けて 409 になったら送信待ちに戻し、ユーザーに表示する。
+5. 409 を受けたクライアントは、`membership_epoch` が `current_epoch` 以上のスナップショットを取り直し、その epoch で新しいセッションを作って配り、3 から送り直す。Channels Shape が追いつくのを待つ必要はない。`message_id` は同じものを使う。3 回続けて 409 になったら送信待ちに戻し、ユーザーに表示する。
 
-これで、退出したメンバーの端末は、退出後のメッセージを復号できません。退出を知らずにオフラインだった端末から送った場合も、サーバーが古い epoch を拒否するので同じです。
+これで、退出したメンバーの端末は、退出後のメッセージを復号できません。退出を知らずにオフラインだった端末から送った場合も、サーバーが古い epoch を拒否するので同じです。配布先は epoch と同じスナップショットのメンバーなので、epoch N+1 のセッションが、epoch N+1 の時点でメンバーでないユーザーに配られることもありません。
+
+### 暗号化の格下げを防ぐ
+
+【決定】クライアントは、サーバーが返す `encrypted` だけを信用しません（Matrix のクライアントが `m.room.encryption` を一度見たら保持するのと同じ）。
+
+- 一度 `encrypted = true` を見たチャンネルの ID を、暗号ストアに記録する。以後は Shape や API の値にかかわらず、そのチャンネルには暗号化して送る。
+- 記録したチャンネルで `encrypted = false` が届いたら、送信を止め、警告を出す。平文で送り直すことはしない。
+- `ciphertext` のある行を含むチャンネル、名前が `edm:` で始まるチャンネルも、`encrypted = false` が届いたら同じように扱う。
+- 担当は #361（判定は #349 の受信の処理と同じく `crates/zoo-crypto` に置く）。
 
 ## 鍵の配布先の判定
 
-【決定】Megolm セッション鍵は、**信頼したマスター鍵からクロス署名を検証できた端末にだけ**配ります（[#350](https://github.com/Zli-UoA/zoo2/issues/350)）。AuthZ を乗っ取った攻撃者が端末を登録しても、鍵を受け取れないようにするためです。
+【決定】Megolm セッション鍵は、**信頼したマスター鍵からクロス署名を検証できた端末にだけ**配ります（[#350](https://github.com/Zli-UoA/zoo2/issues/350)）。トークンを盗んだ攻撃者が端末を登録しても、鍵を受け取れないようにするためです。
 
-チャンネルのメンバー（Channel Users Shape）ごとに、次の順で判定します。
+入力は、セッションの epoch と同じ `membership_epoch` の[配布先のスナップショット](#配布先のスナップショット)だけです。スナップショットの `user_ids` のユーザーごとに、次の順で判定します。
 
 1. 自分：自分のマスター鍵は、初回設定で作ったとき、または SSSS から取り出した秘密鍵と一致したときに信頼する。自己署名鍵が信頼したマスター鍵で署名されていて、端末がその自己署名鍵で署名されていれば配る。今の端末には配らない。
 2. 他のユーザーでクロス署名鍵がない：配らない。送信画面に「暗号化を設定していない」と表示する。
-3. 他のユーザーのマスター鍵が、自分のユーザー署名鍵で署名されている：そのマスター鍵を信頼し、暗号ストアの記録も更新する。
-4. 他のユーザーのマスター鍵を初めて見た：そのマスター鍵を暗号ストアに記録して信頼する（TOFU）。
-5. 記録したマスター鍵と今のマスター鍵が違う：**再検証するまで、そのユーザーのどの端末にも配らない**。警告を出すだけで配布を続けることはしない。送信画面に「再検証が必要」と表示する。ユーザーが新しいマスター鍵を受け入れたら（#362）、記録を更新し、ユーザー署名鍵で署名する。
+3. 他のユーザーのマスター鍵が、自分のユーザー署名鍵で署名されている：そのマスター鍵を信頼し、暗号ストアの記録とピンも更新する。
+4. 他のユーザーのマスター鍵を初めて見た（暗号ストアに記録がなく、署名を検証できるピンもない）：そのマスター鍵のピンを作ってサーバーに置き（`POST /api/e2ee/tofu_pins`）、暗号ストアにも記録して信頼する（TOFU）。ピンの登録が 409 `E2EE_PIN_CONFLICT` になったら、返ったピンを記録として規則 5 で判定する。
+5. 記録（暗号ストアの記録かピン）のマスター鍵と今のマスター鍵が違う：**再検証するまで、そのユーザーのどの端末にも配らない**。警告を出すだけで配布を続けることはしない。送信画面に「再検証が必要」と表示する。ユーザーが新しいマスター鍵を受け入れたら（#362）、記録を更新し、ユーザー署名鍵で署名する。
 6. 上のどれでもない：自己署名鍵がマスター鍵で署名されていて、端末がその自己署名鍵で署名されていれば配る。署名がない、壊れている、削除済みの端末には配らない。
 
 - 自分のマスター鍵がサーバー上で変わったのを見つけたら、自分の他の端末への配布も止め、SSSS で解錠し直すまで警告を出す。
 - 配れない相手がいても送信は止めない。送信画面に、配れない相手と理由を表示する（#361）。
+- 【決定】メンバーの一覧はサーバーが決めるもので、暗号で認証されていない。サーバーが自分のアカウントをメンバーに足せば、そのアカウントの正しく署名された端末にも鍵が配られる（[脅威モデル](#脅威モデル)）。これを利用者が気付けるように、#361 で次を満たす。
+  - 暗号化チャンネルでは、メンバーの参加と追加を必ずタイムラインに表示する。設定で隠せないようにする。
+  - 送信画面から、今のセッションの配布先（ユーザーと端末の数）を確かめられるようにする。
+  - 前回の送信から配布先のユーザーが増えていたら、送信画面に表示する。
 - 異常系のテスト（#350、#363）：未署名の端末、署名が壊れた端末、マスター鍵が変わったユーザーの端末、削除した端末は、配布先に入らない。
 
 ## 受信時の検証
@@ -886,7 +1000,10 @@ ALTER TABLE e2ee_to_device_messages REPLICA IDENTITY FULL;
 2. `keys.ed25519` が、その端末鍵の `ed25519` と一致する。
 3. `recipient` と `recipient_keys.ed25519` が自分と一致する。
 4. 送信元の端末が[検証済み](#鍵の配布先の判定)か記録する。検証済みでなければ、セッションは「未検証の送信者」として扱う。
-5. Megolm の受信用セッションを、`(channel_id, session_id)` に、送信ユーザー、送信端末、識別鍵、`epoch`、「Olm で受け取った」を付けて保存する。
+5. Megolm の受信用セッションを、`(channel_id, sender_key, session_id)` をキーにして、送信ユーザー、送信端末、`epoch`、「Olm で受け取った」を付けて保存する。`sender_key` は Olm セッションの相手の識別鍵（手順 1 で確かめたもの）。同じキーのセッションがすでにあれば、次の規則で決める。
+   - 保存済みのセッションと送信ユーザーか送信端末が違えば、新しい方を捨てる。
+   - 送信者が同じなら、first known index（vodozemac の `InboundGroupSession::first_known_index`）が小さい方を残す。同じなら、Olm で受け取った方を、バックアップから取り込んだ方より優先する。
+   - キーに `sender_key` を含めるのは、正規のメンバー M が別の送信者 V のセッション鍵を `zoo.room_key` として転送しても、V のセッションを上書きできないようにするため。M が転送したものは M の識別鍵の下に保存されるので、V のメッセージ（`ciphertext.sender_key` は V の識別鍵）の復号には使われない。
 
 Megolm のメッセージ（`messages` の行）を復号したとき：
 
@@ -894,33 +1011,43 @@ Megolm のメッセージ（`messages` の行）を復号したとき：
 | --- | --- | --- |
 | チャンネル | ペイロードの `channel_id` = 行の `channel_id` = セッションの `channel_id` | 破棄（別のチャンネルへの移植） |
 | 行 | ペイロードの `message_id` = 行の `id`、`parent_id` = 行の `parent_id` | 破棄（別の行やスレッドへの移植） |
-| 送信者と端末 | 行の `user_id` = セッションの送信ユーザー、`ciphertext.device_id` = セッションの送信端末、`ciphertext.sender_key` = セッションの識別鍵 | 破棄（なりすまし） |
+| 送信者と端末 | セッションを `(行の channel_id, ciphertext.sender_key, ciphertext.session_id)` で探す。行の `user_id` = セッションの送信ユーザー、`ciphertext.device_id` = セッションの送信端末 | 破棄（なりすまし） |
 | epoch | ペイロードの `epoch` = 行の `epoch` = セッションの `epoch` | 破棄 |
 | リプレイ | `(session_id, message_index)` ごとに最初に復号した `message_id` を記録し、記録と同じ | 別の `message_id` なら破棄（リプレイ）。同じ `message_id` の再取得と再復号は通す |
-| 版 | `message_id` ごとに見た最大の `revision` を記録し、それ以上 | 小さければ表示は最大の版のままにし、「サーバーが古い版を返した」と警告する。同じ `revision` で中身が違えば破棄 |
+| 版 | ペイロードの `revision` = 行の `revision`。`message_id` ごとに見た最大の `revision` を記録し、それ以上 | 行と違えば破棄。記録より小さければ表示は最大の版のままにし、「サーバーが古い版を返した」と警告する。同じ `revision` で中身が違えば（サーバーが単調増加を守っていれば起きない）、先に見た方を表示したまま警告する |
 | 送信者の検証状態 | セッションの送信端末が検証済み | 「未検証の送信者」と表示する（破棄はしない） |
 | 真正性 | セッションを Olm で受け取った | バックアップから取り込んだセッションなら「真正性を確認できない」と表示する |
 
 - 復号できないときは理由を表示する（鍵がまだ届いていない、epoch が古い、検証に失敗した、など）。
-- 異常系のテスト：別のチャンネルへの移植、別の行への移植、リプレイ、送信者のなりすまし、epoch の不一致はすべて破棄され、同じメッセージの再取得と再復号は通る。
+- 異常系のテスト：別のチャンネルへの移植、別の行への移植、リプレイ、送信者のなりすまし、epoch の不一致、行と違う `revision` はすべて破棄され、同じメッセージの再取得と再復号は通る。
+- 異常系のテスト（受信用セッションの保存）：他のメンバーが転送した別の送信者のセッション鍵で、元の送信者のセッションが上書きされない。同じ送信者のセッションは first known index の小さい方が残る。
 
 ## 失効と復旧
 
 ### 鍵スロットの削除は失効ではない
 
-【決定】鍵スロットを消すのは、「そのパスキー（またはリカバリーキー）で今後は解錠できなくする」だけの操作です。すでに取得された鍵スロット、PRF 出力、解錠済みの SSSS 鍵は無効になりません。パスキーをなくした、または漏れたと判断したときは、次の失効を行います。
+【決定】鍵スロットを消すのは、「そのパスキー（またはリカバリーキー）で今後は解錠できなくする」だけの操作です。すでに取得された鍵スロット、PRF 出力、解錠済みの SSSS 鍵は無効になりません。端末、パスキー、リカバリーキーをなくした、または漏れたと判断したときは、次の失効を行います。
 
 ### 失効の手順
 
-【決定】設定の「端末一覧と失効」（[#362](https://github.com/Zli-UoA/zoo2/issues/362)）で、解錠済みの端末から次を順に行います。
+【決定】設定の「端末一覧と失効」（[#362](https://github.com/Zli-UoA/zoo2/issues/362)）で、解錠済みの端末から行います。マスター鍵の秘密鍵は暗号ストアに残さないので（[クロス署名](#クロス署名)）、始める前にパスキーかリカバリーキーで SSSS を開け直します。
+
+何が漏れた可能性があるかで、行う手順が変わります。
+
+| 漏れた可能性があるもの | 行う手順 | マスター鍵 |
+| --- | --- | --- |
+| 端末だけ（SSSS 鍵、パスキー、リカバリーキーは漏れていない） | 1、3、4 | 残す |
+| パスキー、リカバリーキー、SSSS 鍵のどれか（端末の紛失と重なる場合を含む） | 1〜5 のすべて | 必ず作り直す |
+
+マスター鍵を残してよいのは、端末を失っただけの場合に限ります。端末はマスター鍵の秘密鍵も SSSS 鍵も保存しないので、端末からはマスター鍵は漏れません。一方、鍵スロットを開けられた時点で、SSSS 鍵と、SSSS に入っているマスター鍵の秘密鍵も漏れています。古いマスター鍵を持つ攻撃者は、作り直した自己署名鍵とは別の自己署名鍵を自分で作り、自分の端末に署名できます。他のユーザーのピンは古いマスター鍵のままなので、その端末に鍵が配られてしまいます。
 
 1. 該当する端末を削除する（`DELETE /api/e2ee/devices/{device_id}`）。見覚えのない端末もここで削除する。サーバーはその端末の鍵を消し、その端末の持ち主が参加しているすべての暗号化チャンネルの `membership_epoch` を増やす。各送信者は次の送信でセッションを作り直す。
 2. SSSS 鍵を新しく作り、残っているパスキーとリカバリーキーで鍵スロットを作り直す（`POST /api/e2ee/secret_storage/keys`）。古い SSSS 鍵で暗号化した秘密とスロットはサーバーから消える。パスキーのスロットは新しい `prf_salt` で作る。リカバリーキーは、漏れた可能性があれば新しく作り直す。
-3. バックアップ鍵を新しく作り、新しい版に切り替える（`POST /api/e2ee/key_backup/versions`）。手元のセッションを新しい版にアップロードし直し、古い版は消す。
-4. 自己署名鍵とユーザー署名鍵を作り直し、信頼している自分の端末と、ユーザー署名鍵で署名していた他のユーザーのマスター鍵に署名し直す。自己署名鍵の変更でも `membership_epoch` が増える。
-5. マスター鍵が漏れた可能性があるときは、マスター鍵も作り直す。他のユーザーには再検証を求めることになる（[配布を止める](#鍵の配布先の判定)動作になる）。
+3. バックアップ鍵を新しく作り、新しい版に切り替える（`POST /api/e2ee/key_backup/versions`）。次に、古いバックアップ鍵で古い版のセッションをすべて取り込み（`GET /api/e2ee/key_backup/keys?version=<古い版>`）、手元のセッションと合わせて新しい版にアップロードする。すべてアップロードできてから古い版を消す（`DELETE /api/e2ee/key_backup/versions/{古い版}`）。古い版には、失った端末のセッションや、この端末を登録する前のセッションなど、手元にないセッションも入っているため。古い版の中身はすでに漏れたものとして扱っているので（[取り消せないもの](#取り消せないもの)）、新しい版に移しても失うものはない。
+4. 自己署名鍵とユーザー署名鍵を作り直し、信頼している自分の端末と、ユーザー署名鍵で署名していた他のユーザーのマスター鍵に署名し直す。TOFU のピンも新しいユーザー署名鍵で署名し直す（`POST /api/e2ee/tofu_pins` の `replace: true`）。自己署名鍵の変更でも `membership_epoch` が増える。
+5. マスター鍵を作り直し、4 の鍵に新しいマスター鍵で署名する。他のユーザーには再検証を求めることになる（[配布を止める](#鍵の配布先の判定)動作になる）。失効の画面では、実行する前に「チャンネルの他のメンバーが、あなたを再検証するまで、あなたの新しい端末に鍵を配らない」ことを表示する。
 
-2〜5 で作る鍵は、保存する前にまとめて作ります。新しい SSSS には新しい秘密鍵を入れる必要があるためです。保存の順は[初回設定](#初回設定と解錠の流れ)と同じく、SSSS、クロス署名鍵と署名、バックアップの版の順にします。
+2〜5 で作る鍵は、保存する前にまとめて作ります。新しい SSSS には新しい秘密鍵を入れる必要があるためです。保存の順は[初回設定](#初回設定と解錠の流れ)と同じく、SSSS、クロス署名鍵と署名、バックアップの版の順にします。マスター鍵の差し替えには直前の再認証が要ります（[クロス署名の API](#クロス署名356)）。
 
 これで、それ以降の鍵の配布と新しいメッセージは守れます。
 
@@ -950,12 +1077,12 @@ Megolm のメッセージ（`messages` の行）を復号したとき：
 | 機能 | 暗号化チャンネルでの扱い |
 | --- | --- |
 | 本文と MFM | `content` は空にし、`ciphertext` に Megolm の暗号文を保存する |
-| 編集 | 置き換えた本文を暗号化して送る。編集履歴は持たない。`revision` で巻き戻しを検出する |
+| 編集 | 置き換えた本文を暗号化して送る。編集履歴は持たない。`revision` はサーバーで単調に増やし、受信側は巻き戻しを検出する |
 | 削除 | 論理削除し、`ciphertext` を消す |
-| メンション通知 | 送信側が平文の `mentions` を付け、サーバーはそこから通知を作る。本文の解析（`notifications.rs` の `extract_mentions`、`is_mention`）はしない。受信側の表示とハイライトは、復号した `mentions` だけを使う。平文と暗号文の `mentions` が違っても、表示には平文を使わない |
+| メンション通知 | 送信側が平文の `mentions` を付け、サーバーはそこから通知を作る。本文の解析はしない。止める解析は、`backend/src/notifications.rs` の `extract_mentions` と、`infra/db/schema.sql` の SQL 関数 `is_mention`（`app_message_events_v2()` が App の `app.mentioned` イベントを作るときに呼ぶ）の 2 か所。受信側の表示とハイライトは、復号した `mentions` だけを使う。平文と暗号文の `mentions` が違っても、表示には平文を使わない |
 | 通知一覧 | `notification_display` の本文の抜粋は空になる。クライアントは手元で復号できれば本文を出し、できなければ「暗号化されたメッセージ」と出す |
 | Web Push | 本文の代わりに「新しいメッセージ」だけを送る（`push.rs` の本文先頭 240 文字を使わない）。Service Worker での復号は後続（[#365](https://github.com/Zli-UoA/zoo2/issues/365)） |
-| 添付 | **初期版では禁止**。クライアントは添付ボタンと貼り付けを出さない。サーバーは `POST /api/attachments/presign` と、メッセージへの添付の紐付けを 400 で拒否する。暗号化した添付（#364）を実装したら禁止を外す |
+| 添付 | **初期版では禁止**。クライアントは添付ボタンと貼り付けを出さない。サーバーは `POST /api/attachments/presign` と、メッセージへの添付の紐付けを 400 で拒否する。App のファイル API（`/api/apps/v1/files`、`/api/apps/v1/messages/{id}/files`）は別の S3 バケットへの経路なので、App の行の規則で拒否する。暗号化した添付（#364）を実装したら禁止を外す |
 | リアクション | 平文のまま |
 | スレッド | `parent_id` は平文のまま。暗号化したペイロードにも入れて照合する |
 | URL カード | 【提案】既定では展開しない。カードを出すとクライアントが URL を Summaly と画像プロクシに送るので、それらの運用者に URL が見えるため。メッセージごとに「プレビューを読み込む」を押したときだけ取得する。#361 で確定する |
@@ -963,7 +1090,7 @@ Megolm のメッセージ（`messages` の行）を復号したとき：
 | オフラインキャッシュ | 暗号文だけを保存し、復号した平文は保存しない。ログアウト時の削除は今と同じ |
 | Home/LTL への同期 | 止める（`sync_channel_home_post` の対象外） |
 | ActivityPub の連合 | 止める |
-| App（Bot） | 参加を禁止し（403 `E2EE_APPS_FORBIDDEN`）、`app_message_events_v2` のイベントと App の履歴 API の対象から外す。Bot を端末として参加させるのは後続（[#366](https://github.com/Zli-UoA/zoo2/issues/366)） |
+| App（Bot） | 参加を禁止し（403 `E2EE_APPS_FORBIDDEN`）、`app_message_events_v2` のイベントと App の履歴 API の対象から外す。`/api/apps/v1/*` は、委任トークン（ユーザーとして動くもの）を含めて、暗号化チャンネルへの読み書きと添付（`files`、`messages/{id}/files`、`blocks`、`unfurls`）を拒否する。DB のトリガーで、暗号化チャンネルの行の `app_attachments`、`app_blocks`、`app_unfurls`、`metadata` を空に保つ（[DB](#db)）。担当は #358。Bot を端末として参加させるのは後続（[#366](https://github.com/Zli-UoA/zoo2/issues/366)） |
 | Incoming Webhook | 作成を禁止する（403 `E2EE_WEBHOOKS_FORBIDDEN`） |
 | Bubble chat | 暗号化チャンネルでは使えないようにする（本文をサーバーが読むため） |
 | 通話 | 本書の対象外。通話のシグナリングとメディアは今の仕組みのまま |
@@ -991,10 +1118,11 @@ Megolm のメッセージ（`messages` の行）を復号したとき：
 ### 乱数
 
 - 【決定】乱数は OS かブラウザーの暗号用乱数（Web では `crypto.getRandomValues`）だけを使う。
-- 【決定】vodozemac 0.11 は getrandom 0.4 に依存し、`wasm_js` feature（`getrandom/wasm_js`）を持つ。`crates/zoo-crypto` は、`wasm32-unknown-unknown` のときだけ vodozemac の `wasm_js` を有効にする。`custom` バックエンドは使わない。
-  - #348 のビルドで確かめたこと：getrandom 0.4 は `wasm_js` feature だけで `crypto.getRandomValues` を使うバックエンドになり、cfg フラグ（`getrandom_backend="wasm_js"`）は要らない。feature がないと、getrandom の `compile_error!` でビルドが止まる。今の依存には getrandom 0.4 しかない。
-  - 依存を足して getrandom 0.2 か 0.3 が入ったら、その版にも `js`（0.2）か `wasm_js`（0.3）を有効にする。0.3 は 0.3.4 以降なら feature だけでよく、それより前は cfg フラグも要る。
-  - 【未検証】ブラウザーと Worker で実際に乱数を取れるか（ビルドしか確かめていない）は、#352 で確かめる。
+- 【決定】vodozemac 0.11.2 は `getrandom ^0.4.3` に依存し、`wasm_js = ["getrandom/wasm_js"]` の feature を持つ。`wasm32-unknown-unknown` では vodozemac の `wasm_js` を有効にする。getrandom は 0.3.4（2025-10-14）以降と 0.4 系で、`wasm_js` feature を有効にするだけで wasm_js バックエンドを使うので、cfg フラグ（`--cfg getrandom_backend="wasm_js"`）は付けない（getrandom の CHANGELOG の 0.3.4 の項）。
+  - `crates/zoo-crypto` は、`wasm32-unknown-unknown` のときだけ vodozemac の `wasm_js` を有効にする（#348）。
+  - #348 のビルドで確かめたこと：cfg フラグなしで `cargo build --target wasm32-unknown-unknown` が通る。`wasm_js` feature を外すと、getrandom の `compile_error!` でビルドが止まる。今の依存（`Cargo.lock`）に入る getrandom は 0.4 だけ。
+  - 【未検証】ブラウザーと Worker で実際に乱数を取れるか（#348 ではビルドしか確かめていない）は、#352 で確かめる。
+- 【決定】他の依存が getrandom 0.3 を使うなら 0.3.4 以降に上げ、`wasm_js` feature を有効にする（0.3.0〜0.3.3 は feature だけではビルドできない）。0.2 系なら `js` feature にする。`custom` バックエンドは使わない。
 
 ### 暗号ストア
 
@@ -1023,11 +1151,14 @@ Megolm のメッセージ（`messages` の行）を復号したとき：
 
 ### 守るもの
 
-- サーバー、DB、S3、AuthZ のデータが漏れても、暗号化チャンネルの本文は読めない（配信するコードを改ざんされた場合は「守らないもの」を参照）。
-- AuthZ を乗っ取られて（またはトークンを盗まれて）端末を登録されても、その端末は自己署名されていないので、鍵は配られない。
+- サーバー、DB、S3、AuthZ のデータが漏れても（読まれるだけなら）、暗号化チャンネルの本文は読めない。サーバーが能動的に振る舞う場合と、配信するコードを改ざんされた場合は「守らないもの」を参照。
+- トークンを盗まれて端末を登録されても、その端末は自己署名されていないので、鍵は配られない。
+- トークンを盗まれても、マスター鍵の差し替えには直前の再認証が要る。差し替えられても、そのユーザーのピンを持つ他のユーザーの端末は配布を止める。ピンは自分の端末どうしで共有するので、新しくログインした端末も止める。ただし、次の前提がある。
+  - AuthZ そのものを乗っ取られると、再認証も通る。
+  - 差し替える前にそのユーザーのピンを作っていなかった（一度も同じ暗号化チャンネルにいなかった）ユーザーは、差し替えたマスター鍵を TOFU で信頼する。
 - 退出したメンバーと、削除・失効した端末は、それ以降のメッセージを復号できない。
 - サーバーが暗号文を別のチャンネル、別の行、別のスレッドに移したり、再送したりしても、受信側が検出して破棄する。
-- サーバーがバックアップの公開鍵を差し替えても、署名のない版は使わないので、Megolm セッションを手に入れられない。
+- サーバーがバックアップの公開鍵を差し替えても、マスター鍵の署名のない版は使わないので、Megolm セッションを手に入れられない。
 - サーバーが古い版の暗号文を返したら、その端末が新しい版を見ていれば検出できる。
 
 ### 守らないもの
@@ -1042,11 +1173,16 @@ Megolm のメッセージ（`messages` の行）を復号したとき：
   - to-device メッセージの宛先、回数、時刻
   - 既読の位置、入力中の表示、通話
   - 1 対 1 の暗号化 DM の `channel_name`（`edm:{user_a}:{user_b}`）
+  - TOFU のピン（誰のマスター鍵を見たか）
+- **暗号化チャンネルを共有する他のユーザーに見えるもの**：端末の数、端末の公開鍵、端末の追加と削除の時刻。端末名（`display_name`）と最後に使った時刻（`last_seen_at`）は本人にしか見せない。
 - **改ざんした JavaScript を配信できる攻撃者**：zli.chat のフロントエンドの配信元、CDN、依存パッケージを乗っ取られると、平文、PRF 出力、暗号ストアを読まれる。Web 版の E2EE に共通する限界。
 - **XSS など、同じオリジンで動くコード**：平文、暗号ストア、PRF 出力を読まれる。暗号ストアの暗号化も役に立たない。
 - **Related Origin Requests の許可オリジンと AuthZ**：PRF の salt は秘密ではない。RP ID `account.zli.works` の正規のオリジンと、`/.well-known/webauthn` の `origins` に載ったすべてのオリジンは、ユーザーの UV だけで同じ PRF 出力（つまり KEK）を得られる。PRF の評価は RP ID の単位でしか分かれないので、AuthZ と許可オリジンは E2EE の信頼の基盤（TCB）に入る。そこで XSS や依存の乗っ取りが起きると、パスキーの鍵スロットを開けられる。許可オリジンを `https://zli.chat` だけにしているのはこのため。許可オリジンを外すときは、`/.well-known/webauthn` から外し、キャッシュの時間（300 秒）を待ってから、そのオリジンで作ったかもしれないスロットを新しい salt で作り直す。
 - **同じユーザーの端末どうし**：API の認可はユーザー単位なので、ユーザーのトークンを持つ者は、そのユーザーの別の端末の ID を名乗って to-device を送る、端末を削除する、などができる。暗号の検証（署名、Olm の照合）で読み取りは防ぐが、削除などの妨害は防げない。
-- **サーバーによる妨害**：サーバーは、メッセージの削除や非表示、鍵や端末の削除、配布の遅延、マスター鍵の差し替え（他のユーザーに再検証を求める状態になる）ができる。読めなくすることはできるが、読むことはできない。
+- **サーバーによるメンバーの追加**：メンバーの一覧はサーバーが決めるもので、暗号で認証されていない。サーバーや DB を乗っ取った攻撃者は、自分が持つアカウント（正しくクロス署名した端末を持つもの）をメンバーに足せる。各送信者はそのアカウントを TOFU で信頼し、それ以降の Megolm セッションを配るので、攻撃者はそれ以降のメッセージを読める（Matrix の ghost user 問題と同じ）。参加前のメッセージは読めない。緩和策として、暗号化チャンネルではメンバーの増加を必ずタイムラインに表示し、送信画面から配布先を確かめられるようにする（[鍵の配布先の判定](#鍵の配布先の判定)、#361）。
+- **初めて見るマスター鍵**：ピンを持っていない相手について、サーバーは偽のマスター鍵を見せられる（TOFU の限界）。サーバーは自分のピンを消したり返さなかったりもできる。その場合、暗号ストアに記録のない端末（新しくログインした端末）は TOFU をやり直す。SAS（#368）で検証した相手は、ユーザー署名鍵の署名で守られる。
+- **鍵バックアップへの偽のセッション**：バックアップの公開鍵は誰でも使えるので、サーバーは任意の `sender_user_id` や `sender_key` を入れたセッションと、それで暗号化したメッセージを作れる。バックアップから取り込んだ端末は、それを「その送信者からのメッセージ」として復号してしまう。このため、バックアップから取り込んだセッションで復号したメッセージは、行の `is_verified` にかかわらず「真正性を確認できない」と表示する（[鍵バックアップ](#鍵バックアップ)）。
+- **サーバーによる妨害**：サーバーは、メッセージの削除や非表示、鍵や端末の削除、配布の遅延、マスター鍵の差し替え（他のユーザーに再検証を求める状態になる）ができる。また、上に書いたメンバーの追加、初めて見るマスター鍵、バックアップへの偽のセッションの方法で、メッセージを読んだり、なりすましたりできる場合がある。それ以外の方法では、読めなくすることはできるが、読むことはできない。
 - **巻き戻しの一部**：その端末が新しい版を一度も見ていなければ、サーバーが古い版を返しても分からない。
 - **平文の `mentions` による通知**：送信者は、本文と関係のない相手に通知を送れる（平文チャンネルと同じ程度の問題）。表示には復号した `mentions` だけを使う。
 - **取得済みのデータ**：[取り消せないもの](#取り消せないもの)を参照。
@@ -1068,8 +1204,8 @@ Megolm のメッセージ（`messages` の行）を復号したとき：
 | [#353](https://github.com/Zli-UoA/zoo2/issues/353) | Android 向けの UniFFI バインディング | #351 |
 | [#354](https://github.com/Zli-UoA/zoo2/issues/354) | 端末と鍵の API（端末、ワンタイム鍵、端末の Shape） | #347 |
 | [#355](https://github.com/Zli-UoA/zoo2/issues/355) | to-device メッセージ | #354 |
-| [#356](https://github.com/Zli-UoA/zoo2/issues/356) | クロス署名、Secret Storage、鍵バックアップの保存 API | #354 |
-| [#357](https://github.com/Zli-UoA/zoo2/issues/357) | 暗号化チャンネル（`encrypted`、`membership_epoch`、`ciphertext`） | #354 |
+| [#356](https://github.com/Zli-UoA/zoo2/issues/356) | クロス署名（TOFU のピンを含む）、Secret Storage、鍵バックアップの保存 API | #354 |
+| [#357](https://github.com/Zli-UoA/zoo2/issues/357) | 暗号化チャンネル（`encrypted`、`membership_epoch`、`ciphertext`、`revision`）、端末の削除とクロス署名鍵の変更での epoch の増加、配布先のスナップショット | #354、#356 |
 | [#358](https://github.com/Zli-UoA/zoo2/issues/358) | 平文に依存する機能を止める、添付の拒否 | #357 |
 | [#359](https://github.com/Zli-UoA/zoo2/issues/359) | 暗号ストアと端末の登録（React、Compose、TUI） | #352、#353、#354、#355 |
 | [#360](https://github.com/Zli-UoA/zoo2/issues/360) | 初回設定と解錠（パスキー、リカバリーキー） | #359、#356、AuthZ#94 |
@@ -1090,13 +1226,15 @@ Megolm のメッセージ（`messages` の行）を復号したとき：
 | ブラウザー、認証器、パスワードマネージャーごとの PRF と ROR の対応（Safari の CTAP2、1Password、Firefox の ROR など） | 【未検証】 | #369 |
 | 既存のパスキーで PRF を使えるか | 【未検証】 | AuthZ#94、#369 |
 | Android の Credential Manager で RP ID `account.zli.works` のパスキーと PRF を使えるか。`assetlinks.json` を AuthZ で配信する issue を作る | 【未検証】 | #360（前に AuthZ の issue） |
-| `getrandom` の wasm のバックエンドが、ブラウザーと Worker で実際に動くか（ビルドは #348 で確認。cfg フラグは不要） | 【未検証】 | #352 |
+| `getrandom` の wasm のバックエンドの設定。cfg フラグは付けず、`wasm_js` feature だけにする（getrandom 0.3.4 以降と 0.4） | 【決定】 | #348 |
+| `getrandom` の wasm_js バックエンドで、ブラウザーと Worker で実際に乱数を取れるか（#348 ではビルドだけ確認） | 【未検証】 | #352 |
 | 3 段のサブクエリの Shape で move-in と move-out が届くか | 【未検証】 | #354 |
 | `mentions` の形（`{user_ids, channel, here}`）を #358 の本文に合わせる | 【提案】 | #358 |
 | エラー応答に `code` を足す方法 | 【提案】 | #354 か #357 |
 | 暗号化チャンネルでの URL カードの扱い | 【提案】 | #361 |
 | 複数タブでの暗号ストアの共有（Web Locks と BroadcastChannel） | 【提案】 | #359 |
-| マスター鍵の差し替えに、直前の再認証（OIDC の `auth_time`）を求めるか | 未決 | #356 |
+| マスター鍵の差し替えに直前の再認証を求める。zoo2 が受け取るトークンで `auth_time` を確かめられるか | 【決定】（確かめ方は【未検証】） | #356 |
+| AuthZ でパスキーの credential ID の一覧を取れるようにし、削除済みのパスキーの鍵スロットを表示する | 【提案】（AuthZ の issue が要る） | #362 |
 | 自分の端末どうしで鍵を要求し合う仕組み（Matrix の `m.room_key_request`）。初期版は鍵バックアップで代える | 未決 | 後続 |
 | TUI で、別の端末から承認して解錠する方式 | 未決 | 後続 |
 
