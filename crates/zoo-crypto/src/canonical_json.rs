@@ -99,6 +99,10 @@ mod tests {
     }
 
     /// Matrix の付録にある例。
+    ///
+    /// 付録には `{"a": -0, "b": 1e10}` を `{"a":0,"b":10000000000}` にする例もあるが、ここには入れない。
+    /// 仕様の本文が浮動小数点数を許さないので、`-0` と `1e10` は浮動小数点数として拒否する
+    /// （ruma も拒否する）。拒否することは `rejects_float_example_from_matrix_appendix` で確かめる。
     #[test]
     fn matches_matrix_examples() {
         assert_eq!(canonical("{}"), "{}");
@@ -147,6 +151,21 @@ mod tests {
             to_canonical_json(&value).unwrap(),
             r#"{"max":9007199254740991,"min":-9007199254740991}"#
         );
+    }
+
+    /// 付録の `{"a": -0, "b": 1e10}` の例は受け付けない（`matches_matrix_examples` の説明を参照）。
+    #[test]
+    fn rejects_float_example_from_matrix_appendix() {
+        for input in [r#"{"a": -0, "b": 1e10}"#, r#"{"a": -0}"#, r#"{"b": 1e10}"#] {
+            let value: Value = serde_json::from_str(input).unwrap();
+            assert!(
+                matches!(
+                    to_canonical_json(&value),
+                    Err(CryptoError::CanonicalJson(_))
+                ),
+                "{input}"
+            );
+        }
     }
 
     #[test]

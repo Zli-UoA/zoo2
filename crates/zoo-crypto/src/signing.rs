@@ -52,7 +52,8 @@ fn object_entry<'a>(
 
 /// `value` の `signatures.<user_id>.<key_id>` にある署名を、`public_key` で検証する。
 ///
-/// 署名がなければ [`CryptoError::MissingSignature`]、一致しなければ [`CryptoError::Signature`] を返す。
+/// 署名がなければ [`CryptoError::MissingSignature`] を返す。署名の形式が正しくない（base64 でない、
+/// 長さが違う）か、署名が一致しなければ [`CryptoError::Signature`] を返す。
 pub fn verify_json_signature(
     value: &Value,
     user_id: &str,
@@ -68,7 +69,9 @@ pub fn verify_json_signature(
             user_id: user_id.to_owned(),
             key_id: key_id.to_owned(),
         })?;
-    let signature = Ed25519Signature::from_base64(signature)?;
+    // from_base64 の失敗は vodozemac::SignatureError なので、鍵の形式の誤り（CryptoError::Key）ではなく
+    // 署名の誤りになる。分類を変えないように、変換先を明示しておく。
+    let signature = Ed25519Signature::from_base64(signature).map_err(CryptoError::Signature)?;
     public_key.verify(signable_json(value)?.as_bytes(), &signature)?;
     Ok(())
 }
@@ -156,6 +159,27 @@ mod tests {
             verify_json_signature(&value, "domain", "ed25519:1", &other_key),
             Err(CryptoError::Signature(_))
         ));
+    }
+
+    #[test]
+    fn rejects_malformed_signatures_as_signature_errors() {
+        let public_key = matrix_example_key().public_key();
+        let mut value = json!({ "a": 1 });
+        sign_example(&mut value);
+        let valid = value["signatures"]["domain"]["ed25519:1"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        // base64 でない、base64 だが 64 バイトでない、1 文字だけ欠けている。
+        for malformed in ["not base64!", "AAAA", &valid[1..]] {
+            let mut broken = value.clone();
+            broken["signatures"]["domain"]["ed25519:1"] = json!(malformed);
+            let result = verify_json_signature(&broken, "domain", "ed25519:1", &public_key);
+            assert!(
+                matches!(result, Err(CryptoError::Signature(_))),
+                "{malformed}: {result:?}"
+            );
+        }
     }
 
     #[test]
