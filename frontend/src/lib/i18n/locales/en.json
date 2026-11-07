@@ -878,7 +878,8 @@
     "manifest": {
       "help": "Edit the same settings as JSON. Apply copies it into the forms; Save at the bottom stores it.",
       "apply": "Apply",
-      "reset": "Reset"
+      "reset": "Reset",
+      "invalidField": "“{{field}}” is not a manifest field or has a value of the wrong type."
     },
     "webhooks": {
       "create": "Create webhook",

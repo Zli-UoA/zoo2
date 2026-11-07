@@ -878,7 +878,8 @@
     "manifest": {
       "help": "用 JSON 编辑与各项相同的设置。点击“应用”同步到表单，再点击下方的“保存”。",
       "apply": "应用",
-      "reset": "还原"
+      "reset": "还原",
+      "invalidField": "“{{field}}”不是 App 设置的项目，或值的格式不正确。"
     },
     "webhooks": {
       "create": "创建 Webhook",

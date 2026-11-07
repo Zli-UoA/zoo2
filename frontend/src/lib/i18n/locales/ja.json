@@ -878,7 +878,8 @@
     "manifest": {
       "help": "各項目と同じ設定を JSON で編集します。「反映」でフォームに反映し、画面下の「保存」で保存します。",
       "apply": "反映",
-      "reset": "元に戻す"
+      "reset": "元に戻す",
+      "invalidField": "「{{field}}」は App 設定にない項目か、値の形式が正しくありません。"
     },
     "webhooks": {
       "create": "Webhook を作成",

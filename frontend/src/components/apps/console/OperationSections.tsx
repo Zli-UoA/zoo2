@@ -636,12 +636,14 @@ export function WebhooksSection(props: SectionProps) {
                   ),
                 }))
               }
-              onRemoved={() =>
+              onRemoved={() => {
                 list.setValue((current) => ({
                   ...current,
                   webhooks: current.webhooks.filter((item) => item.id !== hook.id),
-                }))
-              }
+                }));
+                // Removing the last webhook disables the app on the server, so reload its status.
+                props.refresh();
+              }}
             >
               <p className="text-xs text-muted-foreground">#{hook.channel_name}</p>
             </WebhookItem>

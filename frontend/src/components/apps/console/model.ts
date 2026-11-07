@@ -265,16 +265,45 @@ export function endpointCheck(detail: AppDetail, draft: AppDraft) {
   };
 }
 
-export type ManifestParse = { ok: true; manifest: AppManifest } | { ok: false };
+/** `field` names the first key that is unknown or has the wrong type; without it the text is not a JSON object. */
+export type ManifestParse = { ok: true; manifest: AppManifest } | { ok: false; field?: string };
 
+const isStringList = (value: unknown) =>
+  Array.isArray(value) && value.every((item) => typeof item === "string");
+const manifestFieldChecks: Record<keyof AppManifest, (value: unknown) => boolean> = {
+  scopes: isStringList,
+  events: isStringList,
+  notification_only: (value) => typeof value === "boolean",
+  include_bot_events: (value) => typeof value === "boolean",
+  dm_enabled: (value) => typeof value === "boolean",
+  transport: (value) => value === "websocket" || value === "http",
+  event_url: (value) => value === null || typeof value === "string",
+  redirect_uris: isStringList,
+  commands: isStringList,
+  shortcuts: isStringList,
+  message_shortcuts: isStringList,
+  link_domains: isStringList,
+  functions: isStringList,
+  user_connections: (value) => typeof value === "boolean",
+};
+
+/** Checks each field at runtime, because the sections read the draft as a typed `AppManifest`. */
 export function parseManifestJson(text: string): ManifestParse {
+  let value: unknown;
   try {
-    const value: unknown = JSON.parse(text);
-    if (!value || typeof value !== "object" || Array.isArray(value)) return { ok: false };
-    return { ok: true, manifest: normalizeManifest(value as Partial<AppManifest>) };
+    value = JSON.parse(text);
   } catch {
     return { ok: false };
   }
+  if (!value || typeof value !== "object" || Array.isArray(value)) return { ok: false };
+  for (const [key, field] of Object.entries(value)) {
+    // Omitted fields take their defaults, so null is accepted only where the server allows it.
+    const check = Object.hasOwn(manifestFieldChecks, key)
+      ? manifestFieldChecks[key as keyof AppManifest]
+      : undefined;
+    if (!check?.(field)) return { ok: false, field: key };
+  }
+  return { ok: true, manifest: normalizeManifest(value as Partial<AppManifest>) };
 }
 
 /** Top-level keys that differ between two saved revisions, for the history view. */

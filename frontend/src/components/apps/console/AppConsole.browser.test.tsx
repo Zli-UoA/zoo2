@@ -1,4 +1,4 @@
-import { render, screen, waitFor, within } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vite-plus/test";
 import { page } from "vite-plus/test/browser/context";
@@ -15,6 +15,7 @@ const api = vi.hoisted(() => ({
   delete: vi.fn(),
   navigate: vi.fn(),
   admin: false,
+  botName: "echo_bot",
 }));
 vi.mock("../../../lib/api/client", async (original) => ({
   ...(await original<typeof import("../../../lib/api/client")>()),
@@ -32,7 +33,7 @@ vi.mock("../../../hooks/useRealtime", async (original) => ({
   useUsers: () => ({
     data: [
       { id: "me", display_name: "Me", user_name: "me" },
-      { id: "bot", display_name: "Echo", user_name: "echo_bot" },
+      { id: "bot", display_name: "Echo", user_name: api.botName },
     ],
   }),
   useActiveChannels: () => ({
@@ -97,6 +98,7 @@ beforeEach(async () => {
   await page.viewport(1280, 800);
   current = structuredClone(detail);
   api.admin = false;
+  api.botName = "echo_bot";
   api.navigate.mockReset();
   api.get.mockReset().mockImplementation((path: string) => {
     if (path === "/api/apps/echo") return Promise.resolve(current);
@@ -182,6 +184,89 @@ describe("App console", () => {
     expect(screen.queryByRole("region", { name: "未保存の変更" })).toBeNull();
   });
 
+  it("keeps the conflict baseline when an action reloads the app during edits", async () => {
+    open("events");
+    await userEvent.click(await screen.findByRole("checkbox", { name: /message\.created/ }));
+    // Someone else changes the description before this screen reloads after verification.
+    current = {
+      ...current,
+      description: "Changed elsewhere",
+      updated_at: "2026-11-07T00:00:05.000",
+    };
+    await userEvent.click(screen.getByRole("button", { name: "承認済み URL を検証" }));
+    expect((await screen.findByRole("alert")).textContent).toContain(
+      "ほかの画面で設定が更新されました",
+    );
+    const bar = screen.getByRole("region", { name: "未保存の変更" });
+    expect(within(bar).getByRole("button", { name: "保存" })).toBeDisabled();
+    expect(patchBody()).toBeUndefined();
+  });
+
+  it("reports a bot username changed elsewhere instead of reverting it", async () => {
+    open("events");
+    await userEvent.click(await screen.findByRole("checkbox", { name: /message\.created/ }));
+    api.botName = "echo2";
+    current = { ...current, updated_at: "2026-11-07T00:00:05.000" };
+    await userEvent.click(screen.getByRole("button", { name: "承認済み URL を検証" }));
+    expect((await screen.findByRole("alert")).textContent).toContain(
+      "ほかの画面で設定が更新されました",
+    );
+  });
+
+  it("does not report its own save as a conflict after a failed reload", async () => {
+    let failNext = false;
+    api.get.mockImplementation((path: string) => {
+      if (path === "/api/apps/events") return Promise.resolve(catalog);
+      if (path !== "/api/apps/echo") return Promise.resolve([]);
+      if (failNext) {
+        failNext = false;
+        return Promise.reject(new Error("offline"));
+      }
+      return Promise.resolve(current);
+    });
+    api.request.mockImplementation(
+      (_path: string, options?: { method?: string; body?: Record<string, any> }) => {
+        if (options?.method === "PATCH") {
+          current = {
+            ...current,
+            manifest: options.body!.manifest,
+            updated_at: "2026-11-07T00:00:09.000",
+          };
+        }
+        return Promise.resolve({});
+      },
+    );
+    open("events");
+    await userEvent.click(await screen.findByRole("checkbox", { name: /message\.created/ }));
+    failNext = true;
+    await userEvent.click(screen.getByRole("button", { name: "承認済み URL を検証" }));
+    await waitFor(() =>
+      expect(api.get.mock.calls.filter(([path]) => path === "/api/apps/echo")).toHaveLength(2),
+    );
+    const bar = screen.getByRole("region", { name: "未保存の変更" });
+    await userEvent.click(within(bar).getByRole("button", { name: "保存" }));
+    await waitFor(() => expect(screen.queryByRole("region", { name: "未保存の変更" })).toBeNull());
+    expect(screen.queryByRole("alert")).toBeNull();
+  });
+
+  it("keeps edits and takes the new version when a reload finds no other changes", async () => {
+    open("events");
+    await userEvent.click(await screen.findByRole("checkbox", { name: /message\.created/ }));
+    current = { ...current, updated_at: "2026-11-07T00:00:05.000" };
+    await userEvent.click(screen.getByRole("button", { name: "承認済み URL を検証" }));
+    await waitFor(() =>
+      expect(api.get.mock.calls.filter(([path]) => path === "/api/apps/echo")).toHaveLength(2),
+    );
+    const bar = screen.getByRole("region", { name: "未保存の変更" });
+    expect(screen.queryByRole("alert")).toBeNull();
+    await userEvent.click(within(bar).getByRole("button", { name: "保存" }));
+    await waitFor(() => expect(patchBody()).toBeDefined());
+    expect(patchBody()).toMatchObject({
+      expected_updated_at: "2026-11-07T00:00:05.000",
+      manifest: { events: ["message.created"] },
+    });
+  });
+
   it("verifies the approved URL and says the edited one needs re-approval", async () => {
     open("events");
     const verification = (
@@ -260,6 +345,34 @@ describe("App console", () => {
         app_id: "echo",
       }),
     );
+  });
+
+  it("reloads the app after a webhook is removed", async () => {
+    current = { ...current, manifest: { notification_only: true, scopes: [], events: [] } };
+    open("webhooks");
+    const hooks = (await screen.findByRole("heading", { name: "この App の Webhook" })).closest(
+      "section",
+    )!;
+    await within(hooks).findByText("#deploys");
+    // The server disables a notification-only app when its last webhook is removed.
+    current = { ...current, status: "disabled" };
+    await userEvent.click(within(hooks).getByRole("button", { name: "削除" }));
+    await userEvent.click(within(hooks).getByRole("button", { name: "実行" }));
+    await waitFor(() =>
+      expect(api.delete).toHaveBeenCalledWith("/api/channels/mine/webhooks/hook"),
+    );
+    await waitFor(() => expect(screen.queryByRole("button", { name: "作成" })).toBeNull());
+    expect(screen.getByRole("heading", { level: 1 }).parentElement!.textContent).toContain("無効");
+  });
+
+  it("names the manifest field that has the wrong type", async () => {
+    open("manifest");
+    const manifest = await screen.findByRole("textbox", { name: "App設定（JSON）" });
+    // Replace the whole value at once; clearing a long controlled textarea is unreliable here.
+    fireEvent.change(manifest, { target: { value: '{"scopes":42}' } });
+    await userEvent.click(screen.getByRole("button", { name: "反映" }));
+    expect(screen.getByRole("alert").textContent).toContain("「scopes」");
+    expect(screen.queryByRole("region", { name: "未保存の変更" })).toBeNull();
   });
 
   it("hides incoming webhooks for regular apps", async () => {

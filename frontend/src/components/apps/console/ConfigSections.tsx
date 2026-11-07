@@ -458,17 +458,22 @@ export function ManifestSection(props: SectionProps) {
   const id = useId();
   const formatted = JSON.stringify(props.draft.manifest, null, 2);
   const [text, setText] = useState(formatted);
-  const [invalid, setInvalid] = useState(false);
-  useEffect(() => {
+  // `field` is set when the JSON parsed but one key is unknown or has the wrong type.
+  const [invalid, setInvalid] = useState<{ field?: string } | null>(null);
+  // Follow edits made in other sections. Adjusting during render (not in an effect) avoids
+  // overwriting text typed before a deferred mount effect runs.
+  const [shown, setShown] = useState(formatted);
+  if (shown !== formatted) {
+    setShown(formatted);
     setText(formatted);
-    setInvalid(false);
-  }, [formatted]);
+    setInvalid(null);
+  }
   return (
     <SettingsSection title={t("apps.manifest")} description={t("appConsole.manifest.help")}>
       <Textarea
         id={id}
         aria-label={t("apps.manifest")}
-        aria-invalid={invalid}
+        aria-invalid={invalid !== null}
         className={`${inputClassName()} min-h-80 font-mono text-xs`}
         spellCheck={false}
         value={text}
@@ -476,7 +481,9 @@ export function ManifestSection(props: SectionProps) {
       />
       {invalid ? (
         <p role="alert" className="text-sm text-destructive">
-          {t("apps.ui.invalidManifest")}
+          {invalid.field
+            ? t("appConsole.manifest.invalidField", { field: invalid.field })
+            : t("apps.ui.invalidManifest")}
         </p>
       ) : null}
       <div className="flex justify-end gap-2">
@@ -489,9 +496,10 @@ export function ManifestSection(props: SectionProps) {
           onClick={() => {
             const parsed = parseManifestJson(text);
             if (!parsed.ok) {
-              setInvalid(true);
+              setInvalid({ field: parsed.field });
               return;
             }
+            setInvalid(null);
             props.setDraft((draft) => ({ ...draft, manifest: parsed.manifest }));
           }}
         >

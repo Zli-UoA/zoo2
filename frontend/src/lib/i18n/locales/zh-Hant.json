@@ -878,7 +878,8 @@
     "manifest": {
       "help": "以 JSON 編輯與各項目相同的設定。按「套用」反映到表單，再按下方的「儲存」。",
       "apply": "套用",
-      "reset": "還原"
+      "reset": "還原",
+      "invalidField": "「{{field}}」不是 App 設定的項目，或值的格式不正確。"
     },
     "webhooks": {
       "create": "建立 Webhook",

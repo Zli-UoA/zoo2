@@ -124,4 +124,21 @@ describe("app console model", () => {
     const parsed = parseManifestJson('{"scopes":["messages:read"]}');
     expect(parsed.ok && parsed.manifest.transport).toBe("websocket");
   });
+
+  it("rejects manifest fields of the wrong type or unknown keys", () => {
+    expect(parseManifestJson('{"scopes":42}')).toEqual({ ok: false, field: "scopes" });
+    expect(parseManifestJson('{"events":["a",1]}')).toEqual({ ok: false, field: "events" });
+    expect(parseManifestJson('{"commands":null}')).toEqual({ ok: false, field: "commands" });
+    expect(parseManifestJson('{"dm_enabled":"yes"}')).toEqual({ ok: false, field: "dm_enabled" });
+    expect(parseManifestJson('{"transport":"ftp"}')).toEqual({ ok: false, field: "transport" });
+    expect(parseManifestJson('{"scope":["messages:read"]}')).toEqual({ ok: false, field: "scope" });
+    expect(parseManifestJson('{"toString":1}')).toEqual({ ok: false, field: "toString" });
+    const parsed = parseManifestJson('{"event_url":null,"transport":"http","dm_enabled":true}');
+    expect(parsed.ok && parsed.manifest).toMatchObject({
+      event_url: null,
+      transport: "http",
+      dm_enabled: true,
+      scopes: [],
+    });
+  });
 });
