@@ -586,6 +586,21 @@
       "story": "src/components/chat/AppsDialog.stories.tsx"
     },
     {
+      "file": "src/components/call/CallDeviceSelects.tsx",
+      "reason": "通話バーと設定の通話タブで共用するマイク/スピーカー選択。一覧の整形と選択値の保存は call-devices.test.ts で検証する。",
+      "checks": ["src/lib/call/call-devices.test.ts"]
+    },
+    {
+      "file": "src/components/call/CallSettingsDevices.tsx",
+      "reason": "設定の通話タブで CallDeviceSelects を通話コンテキストへ接続する薄い層。選択値の保存は call-devices.test.ts で検証する。",
+      "checks": ["src/lib/call/call-devices.test.ts"]
+    },
+    {
+      "file": "src/components/call/CallStatusPanel.tsx",
+      "reason": "通話バーの通信状況パネル。getStats の集計・品質判定・整形は call-diagnostics.test.ts で検証し、通話状態の取得は call-context.tsx の getCallDiagnostics が担う。",
+      "checks": ["src/lib/call/call-diagnostics.test.ts", "src/lib/call/call-context.tsx"]
+    },
+    {
       "file": "src/components/call/CallSoundsSwitch.tsx",
       "reason": "設定の通話タブにある効果音のオン/オフスイッチ。保存と既定値は call-sounds.test.ts で検証する。",
       "checks": ["src/lib/call/call-sounds.test.ts"]

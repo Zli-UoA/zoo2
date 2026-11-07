@@ -71,6 +71,22 @@ export function shouldPlayRemoteLeave(
 }
 
 let sharedContext: AudioContext | null = null;
+let sinkId = "";
+
+type SinkCapableContext = AudioContext & { setSinkId?: (id: string) => Promise<void> };
+
+function applyContextSink(ctx: AudioContext): void {
+  const c = ctx as SinkCapableContext;
+  if (typeof c.setSinkId !== "function") return;
+  // 空文字はシステム既定。非対応・失敗時は既定の出力のままにする
+  void c.setSinkId(sinkId).catch(() => {});
+}
+
+/** 効果音の出力先 (選択中のスピーカー)。AudioContext.setSinkId 対応ブラウザのみ有効。 */
+export function setCallSoundSink(deviceId: string): void {
+  sinkId = deviceId;
+  if (sharedContext && sharedContext.state !== "closed") applyContextSink(sharedContext);
+}
 
 function getContext(): AudioContext | null {
   if (sharedContext && sharedContext.state !== "closed") return sharedContext;
@@ -80,6 +96,7 @@ function getContext(): AudioContext | null {
       (window as unknown as { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
     if (!Ctor) return null;
     sharedContext = new Ctor();
+    if (sinkId) applyContextSink(sharedContext);
     return sharedContext;
   } catch {
     return null;
