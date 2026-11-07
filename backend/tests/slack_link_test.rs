@@ -238,7 +238,8 @@ async fn test_slack_account_link_reassigns_placeholder() -> anyhow::Result<()> {
     // 取り込んだ本文のメンションは、取り込み時点のプレースホルダの名前で保存されている
     exec(
         &state,
-        "INSERT INTO slack_channels(team_id,slack_channel_id,channel_id) VALUES($1,'C1',$2)",
+        // 同期カーソルは 2024-01-01 00:00:02。それより新しい投稿 (00:00:03) は連携後も未読に残る
+        "INSERT INTO slack_channels(team_id,slack_channel_id,channel_id,last_ts) VALUES($1,'C1',$2,'1704067202.000000')",
         &[&team, &channel],
     )
     .await?;
@@ -401,6 +402,14 @@ async fn test_slack_account_link_reassigns_placeholder() -> anyhow::Result<()> {
     .await?;
     assert!(members.iter().any(|m| m["user_id"] == alice.as_str()));
     assert!(!members.iter().any(|m| m["user_id"] == placeholder.as_str()));
+    // 新しく参加したチャンネルの既読位置は、チャンネル全体の最新ではなく同期カーソルまで
+    let read = sql(
+        &state,
+        "SELECT json_build_object('at',last_read_at)::text FROM channel_read_states WHERE user_id=$1 AND channel_id=$2",
+        &[&alice, &channel],
+    )
+    .await?;
+    assert_eq!(read[0]["at"], "2024-01-01T00:00:02");
     let content = |id: String| {
         let state = state.clone();
         async move {
@@ -542,6 +551,99 @@ async fn test_slack_account_link_reassigns_placeholder() -> anyhow::Result<()> {
     )
     .await?;
     assert_eq!(owner[0]["user_id"], alice.as_str());
+    Ok(())
+}
+
+/// ゲストの参加チャンネルは管理者が決めるため、連携しても投稿だけを移し、参加チャンネルは移さない。
+/// 1 チャンネルだけのゲストも、2 つ目のチャンネルに入れようとして連携が失敗することはない。
+#[tokio::test]
+async fn test_slack_link_does_not_add_guests_to_channels() -> anyhow::Result<()> {
+    dotenvy::dotenv().ok();
+    dotenvy::from_filename("../.env").ok();
+    let mut config = Config::from_env();
+    config.dev_auth_enabled = true;
+    let db = init_db(&config.database_url).await?;
+    let state = AppState::new(db.clone(), config.clone());
+    let app = create_router(state.clone());
+    let team = format!("T{}", uuid::Uuid::new_v4().simple());
+    let owner = create_user(&app, "link_guest_owner").await?;
+
+    let mut channels = Vec::new();
+    for _ in 0..2 {
+        let channel = uuid::Uuid::new_v4().to_string();
+        let (status, _, _) = request(
+            &app,
+            "POST",
+            "/api/channels",
+            Some(&owner),
+            Some(json!({"id": channel, "channel_name": format!("guest_{}", uuid::Uuid::new_v4().simple()), "is_private": false})),
+        )
+        .await?;
+        assert_eq!(status, StatusCode::OK);
+        channels.push(channel);
+    }
+
+    for (slack_user, kind) in [("UG1", "multi"), ("UG2", "single")] {
+        let guest = create_user(&app, &format!("link_guest_{kind}")).await?;
+        exec(
+            &state,
+            "UPDATE users SET guest_kind=$2 WHERE id=$1",
+            &[&guest, kind],
+        )
+        .await?;
+        let placeholder = backend::slack::user_id(&team, slack_user);
+        exec(
+            &state,
+            "INSERT INTO users(id,user_name,display_name,guest_kind) VALUES($1,$2,'guest (Slack)','deactivated')",
+            &[&placeholder, &format!("slack-g.{}", &uuid::Uuid::new_v4().simple().to_string()[..8])],
+        )
+        .await?;
+        exec(
+            &state,
+            "INSERT INTO slack_users(team_id,slack_user_id,user_id,name) VALUES($1,$2,$3,'guest')",
+            &[&team, slack_user, &placeholder],
+        )
+        .await?;
+        let message = uuid::Uuid::new_v4().to_string();
+        for channel in &channels {
+            exec(
+                &state,
+                "INSERT INTO channel_user(user_id,channel_id,joined_at) VALUES($1,$2,CURRENT_TIMESTAMP)",
+                &[&placeholder, channel],
+            )
+            .await?;
+        }
+        exec(
+            &state,
+            "INSERT INTO messages(id,user_id,channel_id,content) VALUES($1,$2,$3,'from slack')",
+            &[&message, &placeholder, &channels[0]],
+        )
+        .await?;
+
+        {
+            let mut db = state.db.clone();
+            let mut tx = db.transaction().await?;
+            backend::slack::link::reassign(&mut tx, &team, slack_user, "guest", &guest).await?;
+            tx.commit().await?;
+        }
+
+        let moved = sql(
+            &state,
+            "SELECT json_build_object('user_id',user_id)::text FROM messages WHERE id=$1",
+            &[&message],
+        )
+        .await?;
+        assert_eq!(moved[0]["user_id"], guest.as_str(), "{kind}");
+        for channel in &channels {
+            let joined = sql(
+                &state,
+                "SELECT json_build_object('n',count(*))::text FROM channel_user WHERE user_id=$1 AND channel_id=$2",
+                &[&guest, channel],
+            )
+            .await?;
+            assert_eq!(joined[0]["n"], 0, "{kind} guest must not join {channel}");
+        }
+    }
     Ok(())
 }
 

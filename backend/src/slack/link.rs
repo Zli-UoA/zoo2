@@ -451,28 +451,40 @@ pub async fn move_content(
         &[],
     )
     .await?;
-    for sql in [
+    // ゲストの参加チャンネルは管理者が決めるため、プレースホルダの参加チャンネルは移さない
+    // (single のゲストは 2 つ目のチャンネルに入れず、連携全体が失敗するのも避ける)。
+    let guest = crate::apps::events::guest(tx, to).await?;
+    let mut statements = vec![
         "UPDATE messages SET user_id=$2 WHERE user_id=$1",
         // 本人が同じ絵文字を付けていれば重複を消してから移す
         "DELETE FROM message_reactions r WHERE r.user_id=$1 AND EXISTS(SELECT 1 FROM message_reactions x \
          WHERE x.message_id=r.message_id AND x.user_id=$2 AND x.emoji=r.emoji)",
         "UPDATE message_reactions SET user_id=$2 WHERE user_id=$1",
-        // 新しく参加するチャンネルの過去ログは既読にする
-        "INSERT INTO channel_read_states(user_id,channel_id,last_read_at) \
-         SELECT $2,cu.channel_id,m.latest FROM channel_user cu \
-         CROSS JOIN LATERAL (SELECT max(created_at) AS latest FROM messages WHERE channel_id=cu.channel_id) m \
-         WHERE cu.user_id=$1 AND m.latest IS NOT NULL \
-         AND NOT EXISTS(SELECT 1 FROM channel_user mine WHERE mine.user_id=$2 AND mine.channel_id=cu.channel_id) \
-         ON CONFLICT (user_id,channel_id) DO NOTHING",
-        "INSERT INTO channel_user(user_id,channel_id,joined_at) SELECT $2,channel_id,joined_at \
-         FROM channel_user WHERE user_id=$1 ON CONFLICT DO NOTHING",
-        "DELETE FROM channel_user WHERE user_id=$1",
+    ];
+    if !guest {
+        statements.extend([
+            // 新しく参加するチャンネルの過去ログは既読にする。取り込みのワーカーと同じく、チャンネル全体の
+            // 最新ではなく同期カーソルまでにして、取り込んだ過去ログより新しい通常の投稿の未読は残す。
+            "INSERT INTO channel_read_states(user_id,channel_id,last_read_at) \
+             SELECT $2,cu.channel_id,m.latest FROM channel_user cu \
+             CROSS JOIN LATERAL (SELECT (to_timestamp(max(sc.last_ts::numeric)) AT TIME ZONE 'UTC')::timestamp(3) \
+             AS latest FROM slack_channels sc WHERE sc.channel_id=cu.channel_id AND sc.last_ts IS NOT NULL) m \
+             WHERE cu.user_id=$1 AND m.latest IS NOT NULL \
+             AND NOT EXISTS(SELECT 1 FROM channel_user mine WHERE mine.user_id=$2 AND mine.channel_id=cu.channel_id) \
+             ON CONFLICT (user_id,channel_id) DO NOTHING",
+            "INSERT INTO channel_user(user_id,channel_id,joined_at) SELECT $2,channel_id,joined_at \
+             FROM channel_user WHERE user_id=$1 ON CONFLICT DO NOTHING",
+            "DELETE FROM channel_user WHERE user_id=$1",
+        ]);
+    }
+    statements.extend([
         "UPDATE attachments SET uploader_id=$2 WHERE uploader_id=$1",
         "UPDATE slack_files SET uploader_id=$2 WHERE uploader_id=$1",
         "UPDATE home_posts SET user_id=$2 WHERE user_id=$1",
         // Home の返信は、返信先の作者を reply_user_id に持つ (本人の Home に他人の返信を出すため)
         "UPDATE home_posts SET reply_user_id=$2 WHERE reply_user_id=$1",
-    ] {
+    ]);
+    for sql in statements {
         exec(tx, sql, &[from, to]).await?;
     }
     // プレースホルダの users 行は残す (他の表から参照されている可能性があるため)。無効化済みのまま。
@@ -587,6 +599,19 @@ fn replace_mentions(content: &str, names: &HashMap<String, String>) -> Option<St
     changed.then_some(out)
 }
 
+/// 同じチームの付け替えを直列にする。付け替えは自分のプレースホルダの投稿を UPDATE でロックしてから、
+/// チームの取り込み先にある `@slack-` を含む投稿をまとめてロックするため、連携や [`reconcile_team`] が
+/// 重なると互いの投稿を待ってデッドロックする。行ロックを取る前に呼ぶ。
+async fn lock_team(tx: &mut toasty::Transaction<'_>, team: &str) -> Result<(), AppError> {
+    one(
+        tx,
+        "SELECT json_build_object('locked',pg_advisory_xact_lock(hashtextextended($1,0)) IS NULL)::text",
+        &[&format!("slack-link:{team}")],
+    )
+    .await?;
+    Ok(())
+}
+
 /// ZIP 取り込みで作ったプレースホルダの投稿・リアクション・参加チャンネルを本人へ移す。
 /// プレースホルダがまだなければ、後の取り込みが最初から本人の投稿になるよう対応だけ作る。
 ///
@@ -600,6 +625,7 @@ pub async fn reassign(
     slack_user_name: &str,
     user: &str,
 ) -> Result<(), AppError> {
+    lock_team(tx, team).await?;
     let mapping = query(
         tx,
         "SELECT json_build_object('user_id',user_id,'linked',linked)::text FROM slack_users \
@@ -638,6 +664,7 @@ pub async fn reassign(
 /// 連携済みの Slack ユーザーについて、プレースホルダに残った分を本人へ移す。
 /// 取り込みと添付取得の最後に呼び、取り込み中に連携した人の書き込みも回収する。
 pub async fn reconcile_team(tx: &mut toasty::Transaction<'_>, team: &str) -> Result<(), AppError> {
+    lock_team(tx, team).await?;
     let linked = query(
         tx,
         "SELECT json_build_object('slack_user_id',slack_user_id,'user_id',user_id)::text \

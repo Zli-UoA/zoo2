@@ -63,7 +63,10 @@ export function SlackLinkPanel({ navigateTo = (url: string) => window.location.a
         if (!controller.signal.aborted && revision.current === started) setState(value);
       })
       .catch(() => {
-        if (!controller.signal.aborted) setError(t("slackLink.loadError"));
+        // 連携の完了・解除で状態が決まったあとなら、古い読み込みの失敗は表示しない
+        if (!controller.signal.aborted && revision.current === started) {
+          setError(t("slackLink.loadError"));
+        }
       });
     return () => controller.abort();
   }, [client, t]);
