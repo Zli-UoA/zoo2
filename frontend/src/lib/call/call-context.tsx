@@ -609,6 +609,8 @@ export function CallProvider({ config: explicitConfig, children }: CallProviderP
       try {
         newStream = await acquireMicStream(deviceId);
       } catch {
+        // 取得中に退出・再参加した場合は、旧通話の失敗として扱わない
+        if (callGenerationRef.current !== gen) return true;
         toast.error(t("call.micSwitchFailed"));
         return false;
       }
@@ -692,7 +694,7 @@ export function CallProvider({ config: explicitConfig, children }: CallProviderP
       const seq = ++micRequestSeqRef.current;
       const run = micSwitchQueueRef.current.then(async () => {
         const ok = await switchMicrophone(deviceId, gen);
-        if (!ok && micRequestSeqRef.current === seq) {
+        if (!ok && micRequestSeqRef.current === seq && callGenerationRef.current === gen) {
           appliedMicIdRef.current = activeMicIdRef.current;
           saveSelectedDevice("mic", activeMicIdRef.current);
         }
