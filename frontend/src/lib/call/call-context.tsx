@@ -631,13 +631,19 @@ export function CallProvider({ config: explicitConfig, children }: CallProviderP
       const clearPending = () => {
         if (pendingMicTrackRef.current === newTrack) pendingMicTrackRef.current = null;
       };
-      // 開始時点のピアだけを対象にする（待機中に作られた別通話のピアは触らない）
-      const senders = [...peersRef.current.values()]
-        .map((entry) => entry.pc.getSenders().find((s) => s.track?.kind === "audio"))
-        .filter((s): s is RTCRtpSender => !!s);
+      // 待機中に同じ通話へ追加されたピアも取りこぼさないよう、未置換の送信側が無くなるまで走査し直す。
+      // 世代が変われば isStale() で中止するので、別通話のピアには触れない
+      const done = new Set<RTCRtpSender>();
+      const nextSender = () => {
+        for (const entry of peersRef.current.values()) {
+          const sender = entry.pc.getSenders().find((s) => s.track?.kind === "audio");
+          if (sender && !done.has(sender)) return sender;
+        }
+        return null;
+      };
       try {
-        for (const sender of senders) {
-          if (isStale()) break;
+        for (let sender = nextSender(); sender && !isStale(); sender = nextSender()) {
+          done.add(sender);
           await sender.replaceTrack(newTrack);
           replaced.push(sender);
         }
