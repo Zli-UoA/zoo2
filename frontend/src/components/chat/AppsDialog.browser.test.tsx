@@ -9,6 +9,7 @@ const api = vi.hoisted(() => ({
   get: vi.fn(),
   request: vi.fn(),
   selectedChannelId: "general" as string | null,
+  navigate: vi.fn(),
 }));
 vi.mock("../../lib/api/client", () => ({ createConfiguredApiClient: () => api }));
 vi.mock("../../lib/electric/collections-context", () => ({
@@ -24,7 +25,7 @@ vi.mock("../../hooks/useRealtime", () => ({
 vi.mock("../layout/shell-context", () => ({
   useShell: () => ({ selectedChannelId: api.selectedChannelId }),
 }));
-vi.mock("@tanstack/react-router", () => ({ useNavigate: () => vi.fn() }));
+vi.mock("@tanstack/react-router", () => ({ useNavigate: () => api.navigate }));
 const apps = [
   {
     id: "alpha",
@@ -51,6 +52,7 @@ beforeEach(() => {
     .mockReset()
     .mockImplementation((path: string) => Promise.resolve(path === "/api/apps" ? apps : []));
   api.request.mockReset().mockResolvedValue({});
+  api.navigate.mockReset();
 });
 function panel() {
   render(
@@ -75,57 +77,28 @@ describe("Apps control panel", () => {
     );
     expect(screen.queryByRole("button", { name: /Draft/ })).toBeNull();
     await userEvent.click(screen.getByRole("button", { name: /Alpha/ }));
-    expect(screen.queryByRole("button", { name: "トークンを発行" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "App 管理画面を開く" })).toBeNull();
     await userEvent.click(screen.getByRole("tab", { name: "管理・開発" }));
-    expect(screen.getByRole("button", { name: "トークンを発行" })).toBeVisible();
-    expect(screen.queryByRole("button", { name: "承認を申請" })).toBeNull();
+    expect(screen.getByRole("button", { name: "App 管理画面を開く" })).toBeVisible();
+    expect(screen.queryByRole("button", { name: "トークンを発行" })).toBeNull();
     // The exiting overview panel can coexist during the tab transition.
     const management = screen.getByRole("tabpanel", { name: "管理・開発" });
     await waitFor(() => expect(within(management).getByText("messages:write")).toBeVisible());
   });
 
-  it("lets users cancel editing and reports malformed manifests before sending", async () => {
+  it("sends settings and creation to the app console", async () => {
     panel();
-    await userEvent.click(await screen.findByRole("button", { name: /Draft/ }));
+    await userEvent.click(await screen.findByRole("button", { name: "Appを作成" }));
+    expect(api.navigate).toHaveBeenLastCalledWith({ to: "/apps" });
+    await userEvent.click(screen.getByRole("button", { name: /Draft/ }));
     await userEvent.click(screen.getByRole("tab", { name: "管理・開発" }));
-    await userEvent.click(screen.getByRole("button", { name: "編集" }));
-    const manifest = screen.getByRole("textbox", { name: "App設定（JSON）" });
-    await userEvent.clear(manifest);
-    await userEvent.type(manifest, "invalid JSON");
-    await userEvent.click(screen.getByRole("button", { name: "保存" }));
-    expect(screen.getByRole("alert")).toHaveTextContent("Manifestに有効なJSONを入力してください。");
-    expect(api.request).not.toHaveBeenCalled();
-    await userEvent.click(screen.getByRole("button", { name: "キャンセル" }));
-    expect(screen.queryByRole("textbox", { name: "App設定（JSON）" })).toBeNull();
-  });
-
-  it("confirms deletion and removes the deleted app from the catalog", async () => {
-    let current = [...apps];
-    api.get.mockImplementation((path: string) =>
-      Promise.resolve(path === "/api/apps" ? current : []),
-    );
-    api.request.mockImplementation(async (path: string) => {
-      if (path === "/api/apps/draft/actions/delete")
-        current = current.filter((entry) => entry.id !== "draft");
-      return {};
+    await userEvent.click(screen.getByRole("button", { name: "App 管理画面を開く" }));
+    expect(api.navigate).toHaveBeenLastCalledWith({
+      to: "/apps/$appId",
+      params: { appId: "draft" },
+      search: { section: "basic" },
     });
-    panel();
-    await userEvent.click(await screen.findByRole("button", { name: /Draft/ }));
-    await userEvent.click(screen.getByRole("tab", { name: "管理・開発" }));
-    await userEvent.click(screen.getByRole("button", { name: "Appを削除" }));
-    expect((await screen.findByRole("alertdialog")).textContent).toContain(
-      "「Draft」を削除しますか？",
-    );
-    await userEvent.click(screen.getByRole("button", { name: "キャンセル" }));
     expect(api.request).not.toHaveBeenCalled();
-    await userEvent.click(screen.getByRole("button", { name: "Appを削除" }));
-    await userEvent.click(screen.getAllByRole("button", { name: "Appを削除" }).at(-1)!);
-    await waitFor(() =>
-      expect(api.request).toHaveBeenCalledWith("/api/apps/draft/actions/delete", {
-        method: "POST",
-      }),
-    );
-    await waitFor(() => expect(screen.queryByRole("button", { name: /Draft/ })).toBeNull());
   });
 
   it.each([
@@ -133,40 +106,29 @@ describe("Apps control panel", () => {
       locale: "zh-Hant",
       search: "搜尋 App",
       manage: "管理與開發",
-      token: "發行權杖",
-      edit: "編輯",
-      name: "App 名稱",
+      console: "開啟 App 管理",
     },
     {
       locale: "zh-Hans",
       search: "搜索 App",
       manage: "管理与开发",
-      token: "签发令牌",
-      edit: "编辑",
-      name: "App 名称",
+      console: "打开 App 管理",
     },
     {
       locale: "yue",
       search: "搜尋 App",
       manage: "管理同開發",
-      token: "發出存取權杖",
-      edit: "編輯",
-      name: "App 名稱",
+      console: "打開 App 管理",
     },
-  ])(
-    "renders app management controls in $locale",
-    async ({ locale, search, manage, token, edit, name }) => {
-      localStorage.setItem("zoo-locale", locale);
-      panel();
-      expect(screen.getByRole("textbox", { name: search })).toBeVisible();
-      await userEvent.click(await screen.findByRole("button", { name: /Alpha/ }));
-      await userEvent.click(screen.getByRole("tab", { name: manage }));
-      expect(screen.getByRole("button", { name: token })).toBeVisible();
-      expect(screen.queryByRole("button", { name: "Issue token" })).toBeNull();
-      await userEvent.click(screen.getByRole("button", { name: edit }));
-      expect(screen.getByRole("textbox", { name })).toBeVisible();
-    },
-  );
+  ])("renders app management controls in $locale", async ({ locale, search, manage, console }) => {
+    localStorage.setItem("zoo-locale", locale);
+    panel();
+    expect(screen.getByRole("textbox", { name: search })).toBeVisible();
+    await userEvent.click(await screen.findByRole("button", { name: /Alpha/ }));
+    await userEvent.click(screen.getByRole("tab", { name: manage }));
+    expect(screen.getByRole("button", { name: console })).toBeVisible();
+    expect(screen.queryByRole("button", { name: "Open app management" })).toBeNull();
+  });
 
   it.each([null, "general"])("invokes global shortcuts with channel=%s", async (channel) => {
     api.selectedChannelId = channel;

@@ -243,3 +243,9 @@ Androidのrefresh grantは送信前に保存済みtokenを取り除き、交換�
 ## Compose描画の再計算抑制
 
 チャット一覧・投稿表示データ・本文解析をrememberで保持し、送信ボタンだけがderivedStateOfの送信可否を監視する。編集、同期、楽観更新、添付、絵文字、フォント・テーマの変更では該当するキャッシュを更新する。Web／Androidは同じKotlin実装を使い、Reactの表示・操作・APIは変更しない。TUIにはComposeの再コンポーズ処理がないため、変更しない。比較結果と検証範囲は [Compose Webの性能計測](compose-performance.md#rememberderivedstateofによる再計算抑制) を参照。新しい表示状態は追加しておらず、既存Composer／MessageのStoryを維持し、既存操作のE2Eとライブテーマ変更のCanvas検証を使う。
+
+## App 管理画面（#322 段階 1）
+
+React に `/apps`（一覧・作成）と `/apps/$appId?section=...`（App 管理画面）を追加し、`AppsDialog` の「管理・開発」タブは設定・認証情報・承認・配信履歴を App 管理画面へのリンクに置き換えた。Webhook の 1 件分の表示・URL 再発行・削除は `ChannelWebhooksDialog` の `WebhookItem` にまとめ、チャンネル設定と App 管理画面で共有する。
+
+Compose Web には移植していない。#322 で React 版だけを対象にすると決めたためで、Compose 版は別 issue で扱う。Compose の `Integrations.kt` は従来どおり App 詳細ダイアログの中で JSON 編集・トークン発行・配信履歴を扱う。新しい管理画面のモジュールは Story を置かず、`frontend/.storybook/coverage.json` でブラウザテストを確認先とする除外として登録した（Story を置くと Kotlin 実装を必須とする `story-coverage.test.ts` が失敗するため）。追加したバックエンド API（App 詳細の `installation`・`updated_at`、`PATCH` の `expected_updated_at`、`GET /api/apps/{id}/webhooks`、Webhook 作成の `app_id`）は追加のみで、Compose と TUI の既存の呼び出しは変わらない。

@@ -27,6 +27,12 @@
 
 `{"text":"Hello"}` のようなテキストのみの通知も受け付けます。Flux は下記のヘッダー認証の設定を使用してください。Flux が送信する `good`・`danger` の色をそのまま表示します。
 
+### 既存の通知専用 App から投稿する
+
+複数のチャンネルへ同じ投稿者で通知するには、作成時に `app_id` を指定します。`POST /api/channels/{channel_id}/webhooks` に `{"name":"Deploys","app_id":"<App ID>"}` を送ると、新しい App を作らず、その App の Bot として投稿します。指定できるのは、操作者が開発者または管理者で、インストール済みの通知専用 App だけです。チャンネル管理権限も必要です。
+
+App ごとの Webhook は `GET /api/apps/{id}/webhooks` で確認できます。返すのは操作者が管理できるチャンネルの Webhook だけで、それ以外は `hidden_count` に件数だけを返します。
+
 ## Flux の設定と送信エラーのマスク
 
 Flux notification-controller v1.9.4 では、Slack Provider の再送が失敗すると、Secret の `address` に含めた query トークンがログや Kubernetes Event に残る場合があります。Flux には設定画面のトークン付き URL をそのまま渡さず、URL とトークンを分けて設定してください。

@@ -75,6 +75,8 @@ describe("translations", () => {
     "reactions.tabKitchen",
     "webhooks.url",
     "dms.moreNames",
+    "appConsole.events.websocket", // Protocol and Slack field names stay untranslated.
+    "appConsole.events.requestUrl",
   ]);
 
   it.each(LOCALES.filter((locale) => locale !== "en"))(

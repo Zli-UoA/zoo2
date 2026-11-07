@@ -17,6 +17,7 @@ import { Route as ShellBubbleRouteImport } from './routes/_shell.bubble'
 import { Route as ShellHomeRouteImport } from './routes/_shell.home'
 import { Route as ShellNotificationsRouteImport } from './routes/_shell.notifications'
 import { Route as ShellSettingsRouteImport } from './routes/_shell.settings'
+import { Route as ShellAppsIndexRouteImport } from './routes/_shell.apps.index'
 import { Route as ShellAppsAppIdRouteImport } from './routes/_shell.apps.$appId'
 import { Route as ShellChannelsChannelIdRouteImport } from './routes/_shell.channels.$channelId'
 import { Route as PublicUsersUserIdRouteImport } from './routes/public.users.$userId'
@@ -62,6 +63,11 @@ const ShellSettingsRoute = ShellSettingsRouteImport.update({
   path: '/settings',
   getParentRoute: () => ShellRoute,
 } as any)
+const ShellAppsIndexRoute = ShellAppsIndexRouteImport.update({
+  id: '/apps/',
+  path: '/apps/',
+  getParentRoute: () => ShellRoute,
+} as any)
 const ShellAppsAppIdRoute = ShellAppsAppIdRouteImport.update({
   id: '/apps/$appId',
   path: '/apps/$appId',
@@ -99,6 +105,7 @@ export interface FileRoutesByFullPath {
   '/apps/$appId': typeof ShellAppsAppIdRoute
   '/channels/$channelId': typeof ShellChannelsChannelIdRoute
   '/public/users/$userId': typeof PublicUsersUserIdRoute
+  '/apps/': typeof ShellAppsIndexRoute
   '/home/posts/$postId': typeof ShellHomePostsPostIdRoute
   '/home/users/$actorId': typeof ShellHomeUsersActorIdRoute
 }
@@ -113,6 +120,7 @@ export interface FileRoutesByTo {
   '/apps/$appId': typeof ShellAppsAppIdRoute
   '/channels/$channelId': typeof ShellChannelsChannelIdRoute
   '/public/users/$userId': typeof PublicUsersUserIdRoute
+  '/apps': typeof ShellAppsIndexRoute
   '/home/posts/$postId': typeof ShellHomePostsPostIdRoute
   '/home/users/$actorId': typeof ShellHomeUsersActorIdRoute
 }
@@ -129,6 +137,7 @@ export interface FileRoutesById {
   '/_shell/apps/$appId': typeof ShellAppsAppIdRoute
   '/_shell/channels/$channelId': typeof ShellChannelsChannelIdRoute
   '/public/users/$userId': typeof PublicUsersUserIdRoute
+  '/_shell/apps/': typeof ShellAppsIndexRoute
   '/_shell/home_/posts/$postId': typeof ShellHomePostsPostIdRoute
   '/_shell/home_/users/$actorId': typeof ShellHomeUsersActorIdRoute
 }
@@ -145,6 +154,7 @@ export interface FileRouteTypes {
     | '/apps/$appId'
     | '/channels/$channelId'
     | '/public/users/$userId'
+    | '/apps/'
     | '/home/posts/$postId'
     | '/home/users/$actorId'
   fileRoutesByTo: FileRoutesByTo
@@ -159,6 +169,7 @@ export interface FileRouteTypes {
     | '/apps/$appId'
     | '/channels/$channelId'
     | '/public/users/$userId'
+    | '/apps'
     | '/home/posts/$postId'
     | '/home/users/$actorId'
   id:
@@ -174,6 +185,7 @@ export interface FileRouteTypes {
     | '/_shell/apps/$appId'
     | '/_shell/channels/$channelId'
     | '/public/users/$userId'
+    | '/_shell/apps/'
     | '/_shell/home_/posts/$postId'
     | '/_shell/home_/users/$actorId'
   fileRoutesById: FileRoutesById
@@ -242,6 +254,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ShellSettingsRouteImport
       parentRoute: typeof ShellRoute
     }
+    '/_shell/apps/': {
+      id: '/_shell/apps/'
+      path: '/apps'
+      fullPath: '/apps/'
+      preLoaderRoute: typeof ShellAppsIndexRouteImport
+      parentRoute: typeof ShellRoute
+    }
     '/_shell/apps/$appId': {
       id: '/_shell/apps/$appId'
       path: '/apps/$appId'
@@ -289,6 +308,7 @@ interface ShellRouteChildren {
   ShellIndexRoute: typeof ShellIndexRoute
   ShellAppsAppIdRoute: typeof ShellAppsAppIdRoute
   ShellChannelsChannelIdRoute: typeof ShellChannelsChannelIdRoute
+  ShellAppsIndexRoute: typeof ShellAppsIndexRoute
   ShellHomePostsPostIdRoute: typeof ShellHomePostsPostIdRoute
   ShellHomeUsersActorIdRoute: typeof ShellHomeUsersActorIdRoute
 }
@@ -302,6 +322,7 @@ const ShellRouteChildren: ShellRouteChildren = {
   ShellIndexRoute: ShellIndexRoute,
   ShellAppsAppIdRoute: ShellAppsAppIdRoute,
   ShellChannelsChannelIdRoute: ShellChannelsChannelIdRoute,
+  ShellAppsIndexRoute: ShellAppsIndexRoute,
   ShellHomePostsPostIdRoute: ShellHomePostsPostIdRoute,
   ShellHomeUsersActorIdRoute: ShellHomeUsersActorIdRoute,
 }

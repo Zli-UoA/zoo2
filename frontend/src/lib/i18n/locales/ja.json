@@ -729,5 +729,167 @@
     "category": "カテゴリ",
     "aliases": "エイリアス（カンマ区切り）",
     "uncategorized": "未分類"
+  },
+  "appConsole": {
+    "title": "App 管理",
+    "back": "App 管理の一覧に戻る",
+    "loadError": "App の情報を読み込めませんでした。",
+    "revision": "リビジョン {{revision}}",
+    "readOnly": "この App の設定を変更できるのは、開発者と管理者だけです。",
+    "sections": "設定項目",
+    "unsaved": "未保存の変更",
+    "unsavedSections": "未保存の変更があります（{{sections}}）。保存するとすべてまとめて保存されます。",
+    "reapproval": "App の設定が変わるため、保存後は再承認まで App が停止します。",
+    "discard": "変更を破棄",
+    "conflict": "ほかの画面で設定が更新されました。上書きしないよう保存を止めています。最新の設定を読み込み直してください（未保存の変更は破棄されます）。",
+    "reload": "再読み込み",
+    "listHelp": "1 行に 1 つずつ入力します。",
+    "dialogHelp": "設定、認証情報、承認、配信履歴は App 管理画面で扱います。",
+    "open": "App 管理画面を開く",
+    "section": {
+      "basic": "基本情報",
+      "credentials": "認証情報",
+      "permissions": "権限",
+      "events": "イベント購読",
+      "webhooks": "Incoming Webhook",
+      "interactivity": "コマンド・ショートカット",
+      "home": "App ホーム",
+      "install": "承認・インストール",
+      "deliveries": "配信",
+      "history": "履歴",
+      "manifest": "App Manifest"
+    },
+    "list": {
+      "title": "App 管理",
+      "description": "App を作成し、権限・イベント・認証情報を設定します。",
+      "pending": "承認待ち",
+      "mine": "自分の App",
+      "installed": "インストール済みの App",
+      "notificationOnly": "通知専用",
+      "viewOnly": "閲覧のみ",
+      "createHelp": "作成後に権限やイベントを設定し、管理者に承認を申請します。"
+    },
+    "basic": {
+      "profile": "表示",
+      "profileHelp": "名前・説明・アイコン・ユーザー名の変更は再承認なしで反映されます。",
+      "username": "Bot のユーザー名",
+      "summary": "App の情報",
+      "status": "状態",
+      "revision": "リビジョン",
+      "approved": "承認済み: {{revision}}"
+    },
+    "credentials": {
+      "botToken": "Bot トークン",
+      "botTokenHelp": "外部の Bot プログラムが API を呼ぶための認証情報です。",
+      "needsInstall": "承認されてインストールされると利用できます。",
+      "tokenOnce": "この値は今だけ表示されます。画面を離れると再表示できないので、安全な場所に保存してください。",
+      "signingSecret": "署名 Secret",
+      "signingSecretHelp": "HTTP 配信の署名に使います。受信側で署名を検証してください。",
+      "showSecret": "表示",
+      "rotateSecret": "作り直す",
+      "rotateHelp": "新しい署名 Secret を作ります。古い値で検証している受信側は、新しい値に更新するまで配信を受け付けられなくなります。",
+      "secretAudited": "表示するたびに監査履歴に記録されます。漏えいが疑われる場合は作り直してください。",
+      "secretHttpOnly": "HTTP 配信の App が承認されると利用できます。",
+      "issued": "発行済みの認証情報",
+      "none": "発行済みの認証情報はありません。",
+      "userToken": "ユーザー代理",
+      "revoke": "失効",
+      "expires": "期限 {{time}}",
+      "state": {
+        "active": "有効",
+        "expired": "期限切れ",
+        "revoked": "失効済み"
+      }
+    },
+    "permissions": {
+      "scopes": "Scope",
+      "scopesHelp": "App が使う API の権限です。購読中のイベントが必要とする Scope は外せません。",
+      "requiredBy": "{{names}} が使用中",
+      "oauth": "ユーザー代理操作（OAuth）",
+      "redirectUris": "リダイレクト URL（HTTPS）",
+      "userConnections": "外部アカウント接続",
+      "userConnectionsHelp": "利用者が外部サービスのアカウントを接続できるようにします。users:write が必要です。"
+    },
+    "events": {
+      "transport": "接続方式",
+      "websocket": "WebSocket",
+      "http": "HTTP（Request URL）",
+      "requestUrl": "Request URL",
+      "includeBotEvents": "Bot の投稿もイベントとして受け取る",
+      "includeBotEventsHelp": "Bot 同士の応答が続かないよう、通常は無効にします。",
+      "subscriptions_one": "購読するイベント（{{count}} 件）",
+      "subscriptions_other": "購読するイベント（{{count}} 件）",
+      "subscriptionsHelp": "イベントを選ぶと、必要な Scope も追加されます。",
+      "filter": "イベントを検索",
+      "needs": "必要: {{scope}}",
+      "verifyTitle": "承認済み URL の検証",
+      "verifyHelp": "承認済みの設定に対して challenge を送ります。編集中の URL は再承認後に検証できます。",
+      "verifyAfterApproval": "承認後に検証できます。",
+      "verifyHttpOnly": "承認済みの設定が HTTP 配信のときに検証できます。",
+      "approvedUrl": "承認済み URL",
+      "verifiedAt": "最終検証",
+      "notVerified": "未検証",
+      "pendingUrl": "編集中の URL（{{url}}）は再承認後に検証できます。",
+      "verify": "承認済み URL を検証",
+      "verifyError": "検証できませんでした。受信側が challenge をそのまま返しているか確認してください。"
+    },
+    "interactivity": {
+      "commandsTitle": "スラッシュコマンド",
+      "shortcutsTitle": "ショートカット",
+      "moreTitle": "リンク展開・関数",
+      "commands": "コマンド",
+      "commandsHelp": "/ を除いた名前を 1 行に 1 つ入力します。英数字・_・- が使えます。",
+      "shortcuts": "グローバルショートカット",
+      "shortcutsHelp": "App 詳細から実行できる操作の名前を 1 行に 1 つ入力します。",
+      "message_shortcuts": "メッセージショートカット",
+      "message_shortcutsHelp": "メッセージの App 操作から実行できます。messages:read が必要です。",
+      "link_domains": "リンクを展開するドメイン",
+      "link_domainsHelp": "link.shared を受け取るドメインを 1 行に 1 つ入力します。",
+      "functions": "関数",
+      "functionsHelp": "関数名を 1 行に 1 つ入力します。functions:execute が必要です。"
+    },
+    "home": {
+      "title": "App ホーム",
+      "help": "利用者が App と会話するための設定です。",
+      "dm": "DM を受け付ける",
+      "dmHelp": "有効にすると、利用者が App に DM を送れるようになります。必要な権限 messages:read と dm:write も追加されます。",
+      "dmNotificationOnly": "通知専用 App では DM を受け付けられません。"
+    },
+    "install": {
+      "approval": "承認",
+      "approvalHelp": "App の設定は管理者の承認を受けてから使えます。承認はリビジョン単位です。",
+      "approve": "リビジョン {{revision}} を承認してインストール",
+      "stopped": "設定が変わったため再承認まで停止中",
+      "waiting": "管理者の承認を待っています。",
+      "consent": "自分のアクセス許可",
+      "consentHelp": "ユーザー代理操作で自分が許可した権限を取り消します。"
+    },
+    "deliveries": {
+      "help": "直近 100 件のイベント配信です。未配信のものは再送できます。",
+      "none": "配信履歴はありません。",
+      "attempts_one": "{{count}} 回試行",
+      "attempts_other": "{{count}} 回試行"
+    },
+    "history": {
+      "versions": "設定のリビジョン",
+      "versionsHelp": "App 設定を変更した履歴です。前のリビジョンから変わった項目を表示します。",
+      "approved": "承認済み",
+      "audit": "監査履歴"
+    },
+    "manifest": {
+      "help": "各項目と同じ設定を JSON で編集します。「反映」でフォームに反映し、画面下の「保存」で保存します。",
+      "apply": "反映",
+      "reset": "元に戻す",
+      "invalidField": "「{{field}}」は App 設定にない項目か、値の形式が正しくありません。"
+    },
+    "webhooks": {
+      "create": "Webhook を作成",
+      "createHelp": "この App として投稿する Webhook を作成します。管理できるチャンネルだけを選べます。",
+      "channel": "投稿先チャンネル",
+      "noChannels": "Webhook を作成できるチャンネルがありません。チャンネルの作成者か管理者が作成できます。",
+      "list": "この App の Webhook",
+      "hidden_one": "ほかに {{count}} 件あります（管理できないチャンネルの Webhook は表示しません）。",
+      "hidden_other": "ほかに {{count}} 件あります（管理できないチャンネルの Webhook は表示しません）。"
+    }
   }
 }

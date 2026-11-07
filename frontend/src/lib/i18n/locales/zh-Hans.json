@@ -729,5 +729,167 @@
     "category": "分类",
     "aliases": "别名（逗号分隔）",
     "uncategorized": "未分类"
+  },
+  "appConsole": {
+    "title": "App 管理",
+    "back": "返回 App 管理列表",
+    "loadError": "无法加载 App 信息。",
+    "revision": "修订版 {{revision}}",
+    "readOnly": "只有开发者和管理员可以更改此 App 的设置。",
+    "sections": "设置项",
+    "unsaved": "未保存的更改",
+    "unsavedSections": "{{sections}} 有未保存的更改。保存时会一并保存。",
+    "reapproval": "App 设置将发生变化，保存后在重新批准前 App 会停止运行。",
+    "discard": "放弃更改",
+    "conflict": "设置已在其他页面更新，为避免覆盖已停止保存。请重新加载最新设置（未保存的更改将被放弃）。",
+    "reload": "重新加载",
+    "listHelp": "每行输入一项。",
+    "dialogHelp": "设置、凭据、批准和投递记录请在 App 管理页面中处理。",
+    "open": "打开 App 管理",
+    "section": {
+      "basic": "基本信息",
+      "credentials": "凭据",
+      "permissions": "权限",
+      "events": "事件订阅",
+      "webhooks": "Incoming Webhook",
+      "interactivity": "命令与快捷方式",
+      "home": "App 主页",
+      "install": "批准与安装",
+      "deliveries": "投递",
+      "history": "历史",
+      "manifest": "App Manifest"
+    },
+    "list": {
+      "title": "App 管理",
+      "description": "创建 App 并设置权限、事件和凭据。",
+      "pending": "等待批准",
+      "mine": "我的 App",
+      "installed": "已安装的 App",
+      "notificationOnly": "仅通知",
+      "viewOnly": "仅查看",
+      "createHelp": "创建后设置权限和事件，再向管理员申请批准。"
+    },
+    "basic": {
+      "profile": "显示",
+      "profileHelp": "名称、说明、图标和用户名的更改无需重新批准即可生效。",
+      "username": "Bot 用户名",
+      "summary": "App 信息",
+      "status": "状态",
+      "revision": "修订版",
+      "approved": "已批准：{{revision}}"
+    },
+    "credentials": {
+      "botToken": "Bot 令牌",
+      "botTokenHelp": "外部 Bot 程序调用 API 时使用的凭据。",
+      "needsInstall": "App 获得批准并安装后即可使用。",
+      "tokenOnce": "此值只显示这一次，离开页面后无法再次显示，请妥善保存。",
+      "signingSecret": "签名 Secret",
+      "signingSecretHelp": "用于对 HTTP 投递签名，请在接收端验证签名。",
+      "showSecret": "显示",
+      "rotateSecret": "重新生成",
+      "rotateHelp": "生成新的签名 Secret。使用旧值验证的接收端在更新前将无法接受投递。",
+      "secretAudited": "每次显示都会记录在审计日志中。如怀疑泄露，请重新生成。",
+      "secretHttpOnly": "使用 HTTP 投递的 App 获得批准后即可使用。",
+      "issued": "已签发的凭据",
+      "none": "尚未签发任何凭据。",
+      "userToken": "代表用户",
+      "revoke": "撤销",
+      "expires": "到期 {{time}}",
+      "state": {
+        "active": "有效",
+        "expired": "已过期",
+        "revoked": "已撤销"
+      }
+    },
+    "permissions": {
+      "scopes": "Scope",
+      "scopesHelp": "App 使用的 API 权限。已订阅事件所需的 Scope 无法移除。",
+      "requiredBy": "{{names}} 正在使用",
+      "oauth": "代表用户操作（OAuth）",
+      "redirectUris": "重定向 URL（HTTPS）",
+      "userConnections": "外部账号连接",
+      "userConnectionsHelp": "允许用户连接外部服务的账号，需要 users:write。"
+    },
+    "events": {
+      "transport": "传输方式",
+      "websocket": "WebSocket",
+      "http": "HTTP（Request URL）",
+      "requestUrl": "Request URL",
+      "includeBotEvents": "将 Bot 的消息也作为事件接收",
+      "includeBotEventsHelp": "通常保持关闭，以免 Bot 之间不断相互回复。",
+      "subscriptions_one": "订阅的事件（{{count}} 个）",
+      "subscriptions_other": "订阅的事件（{{count}} 个）",
+      "subscriptionsHelp": "选择事件时，也会添加所需的 Scope。",
+      "filter": "搜索事件",
+      "needs": "需要：{{scope}}",
+      "verifyTitle": "验证已批准的 URL",
+      "verifyHelp": "向已批准的设置发送 challenge。正在编辑的 URL 可在重新批准后验证。",
+      "verifyAfterApproval": "批准后即可验证。",
+      "verifyHttpOnly": "已批准的设置使用 HTTP 投递时才能验证。",
+      "approvedUrl": "已批准的 URL",
+      "verifiedAt": "最近验证",
+      "notVerified": "未验证",
+      "pendingUrl": "正在编辑的 URL（{{url}}）可在重新批准后验证。",
+      "verify": "验证已批准的 URL",
+      "verifyError": "验证失败。请确认接收端原样返回 challenge。"
+    },
+    "interactivity": {
+      "commandsTitle": "斜杠命令",
+      "shortcutsTitle": "快捷方式",
+      "moreTitle": "链接展开与函数",
+      "commands": "命令",
+      "commandsHelp": "每行输入一个不含 / 的名称，可使用字母、数字、_ 和 -。",
+      "shortcuts": "全局快捷方式",
+      "shortcutsHelp": "每行输入一个可从 App 详情执行的操作名称。",
+      "message_shortcuts": "消息快捷方式",
+      "message_shortcutsHelp": "可从消息的 App 操作中执行，需要 messages:read。",
+      "link_domains": "展开链接的域名",
+      "link_domainsHelp": "每行输入一个接收 link.shared 的域名。",
+      "functions": "函数",
+      "functionsHelp": "每行输入一个函数名，需要 functions:execute。"
+    },
+    "home": {
+      "title": "App 主页",
+      "help": "用户与 App 对话的设置。",
+      "dm": "接收私信",
+      "dmHelp": "启用后，用户可以向 App 发送 DM。也会添加所需的 messages:read 和 dm:write 权限。",
+      "dmNotificationOnly": "仅限通知的 App 无法接收 DM。"
+    },
+    "install": {
+      "approval": "批准",
+      "approvalHelp": "App 设置须经管理员批准后才能使用。批准以修订版为单位。",
+      "approve": "批准并安装修订版 {{revision}}",
+      "stopped": "设置已更改，在重新批准前停止运行",
+      "waiting": "正在等待管理员批准。",
+      "consent": "我的访问授权",
+      "consentHelp": "撤销你授权此 App 代表你执行的权限。"
+    },
+    "deliveries": {
+      "help": "最近 100 条事件投递。未送达的可以重新投递。",
+      "none": "没有投递记录。",
+      "attempts_one": "尝试 {{count}} 次",
+      "attempts_other": "尝试 {{count}} 次"
+    },
+    "history": {
+      "versions": "设置修订版",
+      "versionsHelp": "App 设置的更改记录，并显示与上一修订版不同的项目。",
+      "approved": "已批准",
+      "audit": "审计日志"
+    },
+    "manifest": {
+      "help": "用 JSON 编辑与各项相同的设置。点击“应用”同步到表单，再点击下方的“保存”。",
+      "apply": "应用",
+      "reset": "还原",
+      "invalidField": "“{{field}}”不是 App 设置的项目，或值的格式不正确。"
+    },
+    "webhooks": {
+      "create": "创建 Webhook",
+      "createHelp": "创建以此 App 身份发消息的 Webhook，只列出你可管理的频道。",
+      "channel": "发布频道",
+      "noChannels": "没有可以创建 Webhook 的频道。频道创建者和管理员可以创建。",
+      "list": "此 App 的 Webhook",
+      "hidden_one": "另有 {{count}} 个（不显示你无法管理的频道中的 Webhook）。",
+      "hidden_other": "另有 {{count}} 个（不显示你无法管理的频道中的 Webhook）。"
+    }
   }
 }
