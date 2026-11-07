@@ -19,6 +19,7 @@ fun PreferenceStory(app: Session, options: Row) {
     when (kind) {
         "settings" -> ZooSettings(app, users)
         "members" -> WorkspaceMembers(app, users)
+        "slackimport" -> SlackImportPanel(app)
         "mfmsearch" ->
             Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(16.dp)) {
                 Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.TopEnd) {

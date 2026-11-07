@@ -1,5 +1,6 @@
 //! Token authentication and card persistence for Slack-compatible incoming webhooks.
 use super::messages::{CreateMessageRequest, create_message_impl};
+use crate::cards::cards_content as message_content;
 use crate::{
     auth::AuthUser, cards::MessageCard, error::AppError, models::Message, state::AppState,
 };
@@ -48,23 +49,10 @@ pub(super) async fn persist_card(
     cards: Vec<MessageCard>,
     delivery: &str,
 ) -> Result<StatusCode, AppError> {
-    let mut encoded = Vec::new();
-    for card in &cards {
-        encoded.push(
-            serde_json::from_str::<serde_json::Value>(&card.encode()?)
-                .map_err(|e| AppError::Internal(e.into()))?,
-        );
-    }
-    if encoded.is_empty() {
+    let Some(card_data) = crate::cards::encode_cards(&cards)? else {
         return Err(AppError::BadRequest("Empty webhook message".into()));
-    }
+    };
     let content = message_content(&cards);
-    let card_data = if encoded.len() == 1 {
-        encoded.remove(0)
-    } else {
-        serde_json::json!({"cards": encoded})
-    }
-    .to_string();
     uuid::Uuid::parse_str(delivery)
         .map_err(|_| AppError::BadRequest("Missing or invalid webhook delivery ID".into()))?;
     // Retain the legacy namespace so retries of existing generic deliveries remain idempotent.
@@ -103,26 +91,6 @@ pub(super) async fn persist_card(
     )
     .await?;
     Ok(StatusCode::OK)
-}
-
-/// Keep the notification readable in announcements, admin lists and older clients.
-fn message_content(cards: &[MessageCard]) -> String {
-    cards
-        .iter()
-        .flat_map(|card| {
-            let title = if card.title == "Webhook" && !card.description.is_empty() {
-                ""
-            } else {
-                &card.title
-            };
-            [title, card.description.as_str()]
-        })
-        .filter(|text| !text.is_empty())
-        .collect::<Vec<_>>()
-        .join("\n")
-        .chars()
-        .take(crate::validation::MAX_MESSAGE_CONTENT_LENGTH)
-        .collect()
 }
 
 #[cfg(test)]

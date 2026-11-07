@@ -14,6 +14,8 @@ export type UserRow = {
   user_name: string;
   display_name: string;
   is_bot?: boolean;
+  /** 無効化済み。Slack から取り込んだ未連携ユーザー (プレースホルダ) もここに入る */
+  is_deactivated?: boolean;
   app_id?: string | null;
   avatar_url?: string | null;
   bot_mentionable?: boolean;

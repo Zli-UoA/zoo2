@@ -10,6 +10,7 @@ import { Button } from "../ui/button";
 import { Skeleton } from "../ui/skeleton";
 import { ChannelHeader } from "./ChannelHeader";
 import { formatDmDisplayName, isGroupDm, resolveDmDisplayName } from "./dm";
+import { withoutDeactivatedMembers } from "./memberCandidates";
 import { MessagePane } from "./messages/MessagePane";
 import { PaneHeader } from "../layout/PaneHeader";
 
@@ -119,7 +120,7 @@ export function ChannelScreen({
             : access.canRead
               ? access.isLoading
                 ? null
-                : access.members.length
+                : withoutDeactivatedMembers(access.members, usersQuery.data ?? []).length
               : undefined
         }
       />

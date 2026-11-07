@@ -88,6 +88,75 @@ impl fmt::Debug for S3Config {
     }
 }
 
+/// Slack 連携の設定 (#295 ZIP インポート)
+#[derive(Clone)]
+pub struct SlackConfig {
+    /// 管理者がアップロードできるエクスポート ZIP の上限 (バイト)
+    pub import_max_zip_size: u64,
+    /// エクスポートに実体が含まれない添付ファイルを取得するためのトークン (`files:read`)
+    pub import_bot_token: Option<String>,
+    /// 添付ファイルの取得を許可する URL の接頭辞 (SSRF 対策。テストではモックに差し替える)
+    pub files_base_url: String,
+    /// ZIP を展開のために一時保存するディレクトリ。読み取り専用のルートでは書き込める場所を指定する
+    pub import_tmp_dir: std::path::PathBuf,
+}
+
+impl Default for SlackConfig {
+    fn default() -> Self {
+        Self {
+            import_max_zip_size: DEFAULT_SLACK_IMPORT_MAX_ZIP_SIZE,
+            import_bot_token: None,
+            files_base_url: DEFAULT_SLACK_FILES_BASE_URL.to_string(),
+            import_tmp_dir: std::env::temp_dir(),
+        }
+    }
+}
+
+impl fmt::Debug for SlackConfig {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("SlackConfig")
+            .field("import_max_zip_size", &self.import_max_zip_size)
+            .field(
+                "import_bot_token",
+                &self.import_bot_token.as_ref().map(|_| "[REDACTED]"),
+            )
+            .field("files_base_url", &self.files_base_url)
+            .field("import_tmp_dir", &self.import_tmp_dir)
+            .finish()
+    }
+}
+
+/// 単一 PUT で R2 / S3 にアップロードできる上限 (5 GiB)
+pub(crate) const DEFAULT_SLACK_IMPORT_MAX_ZIP_SIZE: u64 = 5 * 1024 * 1024 * 1024;
+pub(crate) const DEFAULT_SLACK_FILES_BASE_URL: &str = "https://files.slack.com/";
+
+impl SlackConfig {
+    fn from_env() -> Self {
+        let import_max_zip_size = env::var("SLACK_IMPORT_MAX_ZIP_SIZE")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(DEFAULT_SLACK_IMPORT_MAX_ZIP_SIZE);
+        let import_bot_token = env::var("SLACK_IMPORT_BOT_TOKEN")
+            .ok()
+            .filter(|v| !v.trim().is_empty());
+        let files_base_url = env::var("SLACK_FILES_BASE_URL")
+            .ok()
+            .filter(|v| !v.trim().is_empty())
+            .unwrap_or_else(|| DEFAULT_SLACK_FILES_BASE_URL.to_string());
+        let import_tmp_dir = env::var("SLACK_IMPORT_TMP_DIR")
+            .ok()
+            .filter(|v| !v.trim().is_empty())
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(std::env::temp_dir);
+        Self {
+            import_max_zip_size,
+            import_bot_token,
+            files_base_url,
+            import_tmp_dir,
+        }
+    }
+}
+
 #[derive(Clone)]
 pub struct Config {
     pub database_url: String,
@@ -101,6 +170,7 @@ pub struct Config {
     pub cors_allowed_origins: Vec<String>,
     pub webrtc_ice_servers_json: String,
     pub s3: S3Config,
+    pub slack: SlackConfig,
 }
 
 impl fmt::Debug for Config {
@@ -120,6 +190,7 @@ impl fmt::Debug for Config {
             .field("cors_allowed_origins", &self.cors_allowed_origins)
             .field("webrtc_ice_servers_json", &"[REDACTED]")
             .field("s3", &self.s3)
+            .field("slack", &self.slack)
             .finish()
     }
 }
@@ -259,6 +330,7 @@ impl Config {
             cors_allowed_origins,
             webrtc_ice_servers_json,
             s3,
+            slack: SlackConfig::from_env(),
         }
     }
 
@@ -305,6 +377,14 @@ impl Config {
                         .to_string(),
                 );
             }
+        }
+
+        if self.slack.import_max_zip_size == 0
+            || self.slack.import_max_zip_size > DEFAULT_SLACK_IMPORT_MAX_ZIP_SIZE
+        {
+            return Err(format!(
+                "SLACK_IMPORT_MAX_ZIP_SIZE must be between 1 and {DEFAULT_SLACK_IMPORT_MAX_ZIP_SIZE} bytes"
+            ));
         }
 
         if self.environment == "production" {
@@ -456,6 +536,7 @@ mod tests {
             cors_allowed_origins: vec!["https://zoo.example.com".to_string()],
             webrtc_ice_servers_json: r#"[{"urls":["stun:stun.l.google.com:19302"]}]"#.to_string(),
             s3: dummy_s3_config(),
+            slack: SlackConfig::default(),
         };
         let debug_str = format!("{config:?}");
         assert!(!debug_str.contains("super_secret_password"));
@@ -483,6 +564,7 @@ mod tests {
             cors_allowed_origins: vec![],
             webrtc_ice_servers_json: r#"[{"urls":["stun:stun.l.google.com:19302"]}]"#.to_string(),
             s3: dummy_s3_config(),
+            slack: SlackConfig::default(),
         };
 
         // 有効な JSON 配列
@@ -518,6 +600,7 @@ mod tests {
             cors_allowed_origins: vec![],
             webrtc_ice_servers_json: r#"[{"urls":["stun:stun.l.google.com:19302"]}]"#.to_string(),
             s3: dummy_s3_config(),
+            slack: SlackConfig::default(),
         };
         assert!(prod_no_oidc.validate().is_err());
 
@@ -597,6 +680,7 @@ mod tests {
             cors_allowed_origins: vec![],
             webrtc_ice_servers_json: r#"[{"urls":["stun:stun.l.google.com:19302"]}]"#.to_string(),
             s3: dummy_s3_config(),
+            slack: SlackConfig::default(),
         };
         assert!(config.validate().is_err());
     }
@@ -623,6 +707,7 @@ mod tests {
             cors_allowed_origins: vec![],
             webrtc_ice_servers_json: "[]".to_string(),
             s3: dummy_s3_config(),
+            slack: SlackConfig::default(),
         };
         assert!(config.validate().is_ok());
 
@@ -659,6 +744,7 @@ mod tests {
             cors_allowed_origins: vec![],
             webrtc_ice_servers_json: "[]".to_string(),
             s3: dummy_s3_config(),
+            slack: SlackConfig::default(),
         };
 
         // 境界値 OK (1 秒、604,800 秒 = 7 日)
@@ -711,6 +797,7 @@ mod tests {
             cors_allowed_origins: vec![],
             webrtc_ice_servers_json: json.to_string(),
             s3: dummy_s3_config(),
+            slack: SlackConfig::default(),
         };
 
         // 正常系: 有効な STUN / TURN
@@ -811,6 +898,7 @@ mod tests {
             cors_allowed_origins: vec![],
             webrtc_ice_servers_json: r#"[{"urls":["stun:stun.l.google.com:19302"]}]"#.to_string(),
             s3: dummy_s3_config(),
+            slack: SlackConfig::default(),
         };
         let debug_str = format!("{config:?}");
         assert!(!debug_str.contains("stun:stun.l.google.com:19302"));
@@ -858,6 +946,7 @@ mod tests {
             cors_allowed_origins: vec![],
             webrtc_ice_servers_json: r#"[{"urls":["stun:stun.l.google.com:19302"]}]"#.to_string(),
             s3: dummy_s3_config(),
+            slack: SlackConfig::default(),
         };
 
         // None は OK
