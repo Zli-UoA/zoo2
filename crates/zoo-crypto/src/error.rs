@@ -5,6 +5,7 @@ use thiserror::Error;
 #[non_exhaustive]
 pub enum CryptoError {
     /// `user_id` や `device_id` が、小文字でハイフン区切りの UUID ではない。
+    /// `device_id` は、UUID v4（version が 4 で variant が RFC 4122）でない場合もこれになる。
     #[error("{field} が UUID の形式ではありません: {value:?}")]
     InvalidId {
         /// 項目の名前（`user_id` など）。
@@ -38,11 +39,27 @@ pub enum CryptoError {
     #[error("署名を検証できません: {0}")]
     Signature(#[from] vodozemac::SignatureError),
 
-    /// vodozemac の pickle を復号できない。pickle key が違う場合もこれになる。
+    /// vodozemac の pickle を復号できない。保存鍵が違う場合もこれになる。
     #[error("pickle を復号できません: {0}")]
     Pickle(#[from] vodozemac::PickleError),
 
-    /// 保存した状態の外側の形式が正しくない（JSON でない、版が違う、ID と鍵の対応が壊れている）。
+    /// 保存した状態の外側の形式が正しくない（JSON でない、版が違う、ID が UUID でない、
+    /// ID と鍵の対応が壊れている）。
     #[error("保存した状態の形式が正しくありません: {0}")]
     InvalidPickle(String),
+
+    /// 保存した状態は正しいが、別のユーザーか端末のもの。
+    #[error(
+        "保存した状態は {user_id} の {device_id} のもので、{expected_user_id} の {expected_device_id} のものではありません"
+    )]
+    PickleOwnerMismatch {
+        /// 期待したユーザー ID。
+        expected_user_id: String,
+        /// 期待した端末 ID。
+        expected_device_id: String,
+        /// 保存した状態のユーザー ID。
+        user_id: String,
+        /// 保存した状態の端末 ID。
+        device_id: String,
+    },
 }

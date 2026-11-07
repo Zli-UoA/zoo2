@@ -7,7 +7,7 @@
 //! 今あるもの（#348）:
 //!
 //! - [`DeviceAccount`]：端末の識別鍵、ワンタイム鍵、フォールバック鍵と、署名付きの公開鍵の書き出し
-//! - [`DeviceAccount::pickle`] と [`DeviceAccount::from_pickle`]：呼び出し側の 32 バイトの鍵で暗号化した保存と復元
+//! - [`DeviceAccount::pickle`] と [`DeviceAccount::from_pickle`]：呼び出し側の 32 バイトの保存鍵から保存ごとに導いた鍵で暗号化した保存と、持ち主を照合する復元
 //! - [`to_canonical_json`]、[`verify_json_signature`]、[`verify_device_keys`]：Matrix と同じ Canonical JSON と署名の検証
 
 mod canonical_json;

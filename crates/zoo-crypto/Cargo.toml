@@ -8,10 +8,16 @@ description = "zoo2 の E2EE の暗号コア（I/O を持たない）"
 repository = "https://github.com/Zli-UoA/zoo2"
 
 [dependencies]
+# getrandom、hkdf、sha2、zeroize は vodozemac が使っているのと同じ版にそろえる
+# （Cargo.lock に新しいクレートを増やさない）。保存ごとの pickle key を作るのに使う。
+getrandom = "0.4.3"
+hkdf = "0.13.0"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+sha2 = "0.11.0"
 thiserror = "2"
 vodozemac = "0.11.2"
+zeroize = "1.9.0"
 
 # wasm32-unknown-unknown には OS の乱数がないので、getrandom 0.4 の wasm_js
 # バックエンド（crypto.getRandomValues）を使う。getrandom 0.4 は feature だけで

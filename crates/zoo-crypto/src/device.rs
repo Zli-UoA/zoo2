@@ -3,10 +3,15 @@
 //! 形式は docs/e2ee.md の「端末鍵とワンタイム鍵」と同じ（Matrix の Device keys と
 //! One-time and fallback keys に合わせる）。
 
+use hkdf::Hkdf;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
+use sha2::Sha256;
 use vodozemac::olm::{Account, AccountPickle, IdentityKeys};
-use vodozemac::{Curve25519PublicKey, Ed25519PublicKey, Ed25519Signature, KeyId};
+use vodozemac::{
+    Curve25519PublicKey, Ed25519PublicKey, Ed25519Signature, KeyId, base64_decode, base64_encode,
+};
+use zeroize::Zeroizing;
 
 use crate::signing::sign_json_with;
 use crate::{CryptoError, verify_json_signature};
@@ -19,7 +24,13 @@ pub const MEGOLM_ALGORITHM: &str = "m.megolm.v1.aes-sha2";
 pub const SIGNED_CURVE25519: &str = "signed_curve25519";
 
 /// 保存形式の版。形式を変えたら上げる。
-const PICKLE_VERSION: u32 = 1;
+///
+/// 2 で、保存ごとの salt（`salt`）を足した。1 は公開前の形式で、読み込みには対応しない。
+const PICKLE_VERSION: u32 = 2;
+/// 保存ごとの pickle key を導く HKDF の info。
+const PICKLE_KEY_INFO: &[u8] = b"zoo e2ee device pickle key v1";
+/// 保存ごとの salt の長さ（バイト）。
+const PICKLE_SALT_LEN: usize = 32;
 /// 保存した状態の ID と鍵の対応に付ける署名の、用途を区別する文字列。
 const PICKLE_BINDING_CONTEXT: &str = "zoo e2ee device pickle v1";
 
@@ -37,10 +48,11 @@ impl DeviceAccount {
     /// 新しい識別鍵（Curve25519 と Ed25519）を作る。
     ///
     /// `user_id` と `device_id` は小文字でハイフン区切りの UUID でなければならない。
-    /// `device_id` はクライアントが UUID v4 で作る（サーバーへの登録前に署名に入るため）。
+    /// `device_id` はクライアントが UUID v4 で作る（サーバーへの登録前に署名に入るため）ので、
+    /// version が 4 で variant が RFC 4122 のものだけを受け付ける。nil UUID と v1 などは
+    /// [`CryptoError::InvalidId`] になる。`user_id` は PostgreSQL の `uuid` 型の値なので、表記だけを確かめる。
     pub fn new(user_id: &str, device_id: &str) -> Result<Self, CryptoError> {
-        validate_uuid("user_id", user_id)?;
-        validate_uuid("device_id", device_id)?;
+        validate_ids(user_id, device_id)?;
         Ok(Self {
             user_id: user_id.to_owned(),
             device_id: device_id.to_owned(),
@@ -136,16 +148,32 @@ impl DeviceAccount {
         self.account.mark_keys_as_published();
     }
 
-    /// 状態を `pickle_key` で暗号化した文字列にする。
+    /// 状態を、呼び出し側の 32 バイトの保存鍵 `storage_key` から導いた鍵で暗号化した文字列にする。
     ///
-    /// 中身は vodozemac の暗号化した pickle と、`user_id`、`device_id` を入れた JSON。
+    /// 中身は vodozemac の暗号化した pickle と、`salt`、`user_id`、`device_id` を入れた JSON。
     /// `user_id` と `device_id` は平文だが、端末の署名鍵の署名で pickle と結び付けてある。
-    pub fn pickle(&self, pickle_key: &[u8; 32]) -> String {
+    ///
+    /// `storage_key` は vodozemac にそのまま渡さない。呼ぶたびに新しい 32 バイトの salt を作り、
+    /// `HKDF-SHA256(ikm = storage_key, salt, info = "zoo e2ee device pickle key v1")` で
+    /// その保存だけの pickle key を導いて暗号化する。vodozemac の pickle は pickle key から
+    /// AES 鍵と IV を決定的に導くので、同じ pickle key を使い回すと、保存のたびに同じ IV で
+    /// AES-CBC を使うことになる。そうなると、複数の版を手に入れた攻撃者は、先頭から同じ
+    /// 暗号文ブロックを比べて、どこが変わったかを知ることができる。このため、
+    /// 状態が変わっていなくても、呼ぶたびに出力は変わる。
+    ///
+    /// # Panics
+    ///
+    /// OS やブラウザーの暗号用乱数を取れないとき（vodozemac の鍵の生成と同じ）。
+    pub fn pickle(&self, storage_key: &[u8; 32]) -> String {
+        let mut salt = [0u8; PICKLE_SALT_LEN];
+        getrandom::fill(&mut salt).expect("OS かブラウザーの暗号用乱数を取れない");
+        let pickle_key = derive_pickle_key(storage_key, &salt);
         let envelope = PickleEnvelope {
             version: PICKLE_VERSION,
             user_id: self.user_id.clone(),
             device_id: self.device_id.clone(),
-            account: self.account.pickle().encrypt(pickle_key),
+            salt: base64_encode(salt),
+            account: self.account.pickle().encrypt(&pickle_key),
             binding: self
                 .account
                 .sign(binding_message(&self.user_id, &self.device_id))
@@ -154,11 +182,25 @@ impl DeviceAccount {
         serde_json::to_string(&envelope).expect("文字列と数値だけの構造体は必ず JSON にできる")
     }
 
-    /// [`pickle`](Self::pickle) で作った文字列から状態を戻す。
+    /// [`pickle`](Self::pickle) で作った文字列から、`user_id` の `device_id` の状態を戻す。
     ///
-    /// `pickle_key` が違えば [`CryptoError::Pickle`] を返す。外側の形式が壊れている、
-    /// または `user_id` と `device_id` が書き換えられていれば [`CryptoError::InvalidPickle`] を返す。
-    pub fn from_pickle(pickle: &str, pickle_key: &[u8; 32]) -> Result<Self, CryptoError> {
+    /// - `storage_key` が違えば [`CryptoError::Pickle`] を返す。
+    /// - 外側の形式が壊れている、中の `user_id` と `device_id` が [`new`](Self::new) の条件を
+    ///   満たさない、または `user_id` と `device_id` が書き換えられていれば
+    ///   [`CryptoError::InvalidPickle`] を返す。
+    /// - pickle 自体は正しいが、持ち主が引数の `user_id` と `device_id` と違えば
+    ///   [`CryptoError::PickleOwnerMismatch`] を返す。
+    ///
+    /// 最後の照合は、同じ `storage_key` を複数のユーザーや端末で使っている場合に、
+    /// 別のユーザーや端末の pickle を丸ごと差し替えられても気付けるようにするため。
+    /// `binding` はその pickle 自身の署名鍵で検証するので、丸ごと差し替えた pickle も通る。
+    /// 呼び出し側は、今ログインしているユーザーと、そのユーザーで登録した端末の ID を渡す。
+    pub fn from_pickle(
+        pickle: &str,
+        storage_key: &[u8; 32],
+        user_id: &str,
+        device_id: &str,
+    ) -> Result<Self, CryptoError> {
         let envelope: PickleEnvelope = serde_json::from_str(pickle)
             .map_err(|e| CryptoError::InvalidPickle(format!("JSON として読めません: {e}")))?;
         if envelope.version != PICKLE_VERSION {
@@ -167,9 +209,20 @@ impl DeviceAccount {
                 envelope.version
             )));
         }
+        validate_ids(&envelope.user_id, &envelope.device_id)
+            .map_err(|e| CryptoError::InvalidPickle(e.to_string()))?;
+        let salt: [u8; PICKLE_SALT_LEN] = base64_decode(&envelope.salt)
+            .ok()
+            .and_then(|salt| salt.try_into().ok())
+            .ok_or_else(|| {
+                CryptoError::InvalidPickle(format!(
+                    "salt が {PICKLE_SALT_LEN} バイトの base64 ではありません"
+                ))
+            })?;
+        let pickle_key = derive_pickle_key(storage_key, &salt);
         let account = Account::from_pickle(AccountPickle::from_encrypted(
             &envelope.account,
-            pickle_key,
+            &pickle_key,
         )?);
         let binding = Ed25519Signature::from_base64(&envelope.binding)
             .map_err(|e| CryptoError::InvalidPickle(format!("署名の形式が違います: {e}")))?;
@@ -182,6 +235,14 @@ impl DeviceAccount {
             .map_err(|_| {
                 CryptoError::InvalidPickle("user_id と device_id が鍵と対応していません".to_owned())
             })?;
+        if envelope.user_id != user_id || envelope.device_id != device_id {
+            return Err(CryptoError::PickleOwnerMismatch {
+                expected_user_id: user_id.to_owned(),
+                expected_device_id: device_id.to_owned(),
+                user_id: envelope.user_id,
+                device_id: envelope.device_id,
+            });
+        }
         Ok(Self {
             user_id: envelope.user_id,
             device_id: envelope.device_id,
@@ -228,10 +289,21 @@ struct PickleEnvelope {
     version: u32,
     user_id: String,
     device_id: String,
+    /// この保存の pickle key を導いた salt（32 バイト、パディングなしの base64）。
+    salt: String,
     /// vodozemac の `AccountPickle::encrypt` の出力。
     account: String,
     /// [`binding_message`] への端末の署名鍵の署名。
     binding: String,
+}
+
+/// 保存鍵と salt から、1 回の保存だけで使う pickle key を導く。
+fn derive_pickle_key(storage_key: &[u8; 32], salt: &[u8; PICKLE_SALT_LEN]) -> Zeroizing<[u8; 32]> {
+    let mut pickle_key = Zeroizing::new([0u8; 32]);
+    Hkdf::<Sha256>::new(Some(salt), storage_key)
+        .expand(PICKLE_KEY_INFO, pickle_key.as_mut_slice())
+        .expect("32 バイトは HKDF-SHA256 で導ける長さ（255 × 32 バイト以下）");
+    pickle_key
 }
 
 /// `LP(PICKLE_BINDING_CONTEXT)‖LP(user_id)‖LP(device_id)`。LP は u32 ビッグエンディアンの長さと UTF-8 のバイト列。
@@ -317,15 +389,25 @@ pub fn verify_device_keys(
     })
 }
 
+/// `user_id` は UUID の表記、`device_id` は UUID v4 かを確かめる（[`DeviceAccount::new`] の条件）。
+fn validate_ids(user_id: &str, device_id: &str) -> Result<(), CryptoError> {
+    validate_uuid("user_id", user_id, false)?;
+    validate_uuid("device_id", device_id, true)
+}
+
 /// 小文字でハイフン区切りの UUID（`xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx`）かを確かめる。
+/// `v4` なら、version が 4 で variant が RFC 4122（`10xx`）であることも確かめる。
 ///
 /// 署名する JSON に入るので、PostgreSQL の `uuid` 型が返す表記とそろえておく必要がある。
-fn validate_uuid(field: &'static str, value: &str) -> Result<(), CryptoError> {
-    let valid = value.len() == 36
-        && value.bytes().enumerate().all(|(i, b)| match i {
+fn validate_uuid(field: &'static str, value: &str, v4: bool) -> Result<(), CryptoError> {
+    let bytes = value.as_bytes();
+    let valid = bytes.len() == 36
+        && bytes.iter().enumerate().all(|(i, &b)| match i {
             8 | 13 | 18 | 23 => b == b'-',
             _ => b.is_ascii_digit() || (b'a'..=b'f').contains(&b),
-        });
+        })
+        // 14 文字目は version、19 文字目の上位 2 ビットは variant。
+        && (!v4 || (bytes[14] == b'4' && matches!(bytes[19], b'8' | b'9' | b'a' | b'b')));
     if valid {
         Ok(())
     } else {

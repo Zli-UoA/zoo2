@@ -833,8 +833,12 @@ checksum = "29666d0abbfad1e3dc4dcf6144730dd3a3ab225bbbdac83319345b1b44ccfc1b"
 name = "zoo-crypto"
 version = "0.1.0"
 dependencies = [
+ "getrandom",
+ "hkdf",
  "serde",
  "serde_json",
+ "sha2",
  "thiserror",
  "vodozemac",
+ "zeroize",
 ]
