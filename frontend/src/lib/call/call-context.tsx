@@ -25,9 +25,22 @@ import {
 import {
   playCallSound,
   primeCallSounds,
+  setCallSoundSink,
   shouldPlayRemoteJoin,
   shouldPlayRemoteLeave,
 } from "./call-sounds";
+import {
+  applySink,
+  loadSelectedDevice,
+  saveSelectedDevice,
+  subscribeSelectedDevices,
+} from "./call-devices";
+import {
+  kindsOfIceServers,
+  summarizeStats,
+  type CallDiagnostics,
+  type PeerStatsSample,
+} from "./call-diagnostics";
 
 const defaultCallContext: CallContextValue = {
   currentChannelId: null,
@@ -40,6 +53,22 @@ const defaultCallContext: CallContextValue = {
   joinCall: async () => {},
   leaveCall: async () => {},
   toggleMute: async () => {},
+  selectedMicId: "",
+  selectedSpeakerId: "",
+  setMicrophone: async () => {},
+  setSpeaker: async () => {},
+  getCallDiagnostics: async () => ({
+    collectedAt: Date.now(),
+    connectionState: "idle",
+    isMuted: false,
+    micTrackState: null,
+    micLabel: null,
+    sseConnected: false,
+    lastHeartbeatOkAt: null,
+    heartbeatFailures: 0,
+    iceServerKinds: [],
+    peers: [],
+  }),
 };
 
 export const CallContext = createContext<CallContextValue | null>(null);
@@ -92,6 +121,23 @@ function createVolumeMeter(
   }
 }
 
+async function acquireMicStream(deviceId: string): Promise<MediaStream> {
+  const base = { echoCancellation: true, noiseSuppression: true, autoGainControl: true };
+  if (deviceId) {
+    try {
+      return await navigator.mediaDevices.getUserMedia({
+        audio: { ...base, deviceId: { exact: deviceId } },
+        video: false,
+      });
+    } catch (err) {
+      const name = (err as Error).name;
+      // 保存済みデバイスが無い/使えない場合のみ既定デバイスにフォールバック
+      if (name !== "OverconstrainedError" && name !== "NotFoundError") throw err;
+    }
+  }
+  return navigator.mediaDevices.getUserMedia({ audio: base, video: false });
+}
+
 export interface CallProviderProps {
   config?: AppConfig;
   children?: ReactNode;
@@ -131,9 +177,31 @@ export function CallProvider({ config: explicitConfig, children }: CallProviderP
   const isMutedRef = useRef(false);
   isMutedRef.current = isMuted;
 
+  const [selectedMicId, setSelectedMicId] = useState(() => loadSelectedDevice("mic"));
+  const [selectedSpeakerId, setSelectedSpeakerId] = useState(() => loadSelectedDevice("speaker"));
+  const micIdRef = useRef(selectedMicId);
+  micIdRef.current = selectedMicId;
+  const speakerIdRef = useRef(selectedSpeakerId);
+  speakerIdRef.current = selectedSpeakerId;
+  // 起動時に保存済みの出力先を効果音へ反映する
+  useEffect(() => {
+    setCallSoundSink(speakerIdRef.current);
+  }, []);
+  const heartbeatOkAtRef = useRef<number | null>(null);
+  const heartbeatFailuresRef = useRef(0);
+  const statsPrevRef = useRef<Map<string, PeerStatsSample>>(new Map());
+  // マイク切替中 (置換待ち) の新トラック。ミュート操作の対象に含める
+  const pendingMicTrackRef = useRef<MediaStreamTrack | null>(null);
+
+  // 最後に適用/要求したマイク ID。保存イベントとの二重切替を防ぐ
+  const appliedMicIdRef = useRef(selectedMicId);
+  // 実際に送信へ使われているマイク（切替失敗時に選択値を戻す先）
+  const activeMicIdRef = useRef(selectedMicId);
+
   interface PeerEntry {
     pc: RTCPeerConnection;
     userId: string;
+    audio?: HTMLAudioElement;
     cleanupAudio?: () => void;
     pendingCandidates: RTCIceCandidateInit[];
   }
@@ -231,6 +299,9 @@ export function CallProvider({ config: explicitConfig, children }: CallProviderP
     knownSessionIdsRef.current.clear();
     leftSessionIdsRef.current.clear();
     lastHandledOffersRef.current.clear();
+    statsPrevRef.current.clear();
+    heartbeatOkAtRef.current = null;
+    heartbeatFailuresRef.current = 0;
     muteSerialQueueRef.current = Promise.resolve();
   }, []);
 
@@ -377,6 +448,7 @@ export function CallProvider({ config: explicitConfig, children }: CallProviderP
     for (const track of localStreamRef.current.getAudioTracks()) {
       track.enabled = !nextMuted;
     }
+    if (pendingMicTrackRef.current) pendingMicTrackRef.current.enabled = !nextMuted;
     setIsMuted(nextMuted);
     playCallSound(nextMuted ? "mute" : "unmute");
 
@@ -418,7 +490,13 @@ export function CallProvider({ config: explicitConfig, children }: CallProviderP
             method: "POST",
             body: { session_id: sessionId },
           })
+          .then(() => {
+            if (callGenerationRef.current !== sentGen) return;
+            heartbeatOkAtRef.current = Date.now();
+            heartbeatFailuresRef.current = 0;
+          })
           .catch((err: unknown) => {
+            if (callGenerationRef.current === sentGen) heartbeatFailuresRef.current += 1;
             // 送信時の世代・セッション・チャンネルが現在の通話と一致する場合のみ退出処理を実行 ([P1])
             if (
               callGenerationRef.current !== sentGen ||
@@ -490,8 +568,18 @@ export function CallProvider({ config: explicitConfig, children }: CallProviderP
 
         const audio = new Audio();
         audio.srcObject = stream;
-        audio.autoplay = true;
-        void audio.play().catch(() => {});
+        entry.audio = audio;
+        // 保存済みの出力先を適用してから再生を始め、既定スピーカーから漏れないようにする
+        const startPlayback = () => {
+          if (entry.audio !== audio) return;
+          audio.autoplay = true;
+          void audio.play().catch(() => {});
+        };
+        if (speakerIdRef.current) {
+          void applySink(audio, speakerIdRef.current).then(startPlayback);
+        } else {
+          startPlayback();
+        }
 
         const stopMeter = createVolumeMeter(stream, (speaking) => {
           updateSpeakingUser(targetUserId, speaking);
@@ -509,6 +597,211 @@ export function CallProvider({ config: explicitConfig, children }: CallProviderP
     },
     [sendSignalWithRetry, updateSpeakingUser],
   );
+
+  const switchMicrophone = useCallback(
+    async (deviceId: string, expectedGen: number): Promise<boolean> => {
+      // 直列化されたキューの中で、直前の切替が確定した後の最新ストリームを取得する
+      const oldStream = localStreamRef.current;
+      if (!oldStream || !sessionIdRef.current) return true;
+      const gen = callGenerationRef.current;
+      // 予約時と異なる通話（退出・再参加を挟んだ場合）への要求は破棄する
+      if (gen !== expectedGen) return true;
+      let newStream: MediaStream;
+      try {
+        newStream = await acquireMicStream(deviceId);
+      } catch {
+        // 取得中に退出・再参加した場合は、旧通話の失敗として扱わない
+        if (callGenerationRef.current !== gen) return true;
+        toast.error(t("call.micSwitchFailed"));
+        return false;
+      }
+      // 取得中に退出・切替があった場合は破棄
+      if (callGenerationRef.current !== gen || localStreamRef.current !== oldStream) {
+        for (const track of newStream.getTracks()) track.stop();
+        return true;
+      }
+      const newTrack = newStream.getAudioTracks()[0];
+      if (!newTrack) {
+        for (const track of newStream.getTracks()) track.stop();
+        return false;
+      }
+      const stopNewStream = () => {
+        for (const track of newStream.getTracks()) track.stop();
+      };
+      const oldTrack = oldStream.getAudioTracks()[0] ?? null;
+      // 送信側へ渡す前にミュート状態を設定し、置換待ち中のミュート操作も新トラックへ反映する
+      newTrack.enabled = !isMutedRef.current;
+      pendingMicTrackRef.current = newTrack;
+      const replaced: RTCRtpSender[] = [];
+      const isStale = () =>
+        callGenerationRef.current !== gen || localStreamRef.current !== oldStream;
+      const clearPending = () => {
+        if (pendingMicTrackRef.current === newTrack) pendingMicTrackRef.current = null;
+      };
+      // 待機中に同じ通話へ追加されたピアも取りこぼさないよう、未置換の送信側が無くなるまで走査し直す。
+      // 世代が変われば isStale() で中止するので、別通話のピアには触れない
+      const done = new Set<RTCRtpSender>();
+      const nextSender = () => {
+        for (const entry of peersRef.current.values()) {
+          const sender = entry.pc.getSenders().find((s) => s.track?.kind === "audio");
+          if (sender && !done.has(sender)) return sender;
+        }
+        return null;
+      };
+      try {
+        for (let sender = nextSender(); sender && !isStale(); sender = nextSender()) {
+          done.add(sender);
+          await sender.replaceTrack(newTrack);
+          replaced.push(sender);
+        }
+      } catch (err) {
+        console.error("Failed to replace mic track", err);
+        // 置換済みの送信側を旧トラックへ戻し、旧マイクを維持する
+        await Promise.all(replaced.map((sender) => sender.replaceTrack(oldTrack).catch(() => {})));
+        clearPending();
+        stopNewStream();
+        if (isStale()) return true;
+        toast.error(t("call.micSwitchFailed"));
+        return false;
+      }
+      clearPending();
+      // 置換待ちの間に退出・通話切替があった場合は、新しいストリームを破棄する
+      if (isStale()) {
+        await Promise.all(replaced.map((sender) => sender.replaceTrack(oldTrack).catch(() => {})));
+        stopNewStream();
+        return true;
+      }
+      // 置換待ちの間のミュート操作を取りこぼさないよう、切替直前に最新状態を反映する
+      newTrack.enabled = !isMutedRef.current;
+      localVolumeCleanupRef.current?.();
+      localStreamRef.current = newStream;
+      localVolumeCleanupRef.current = createVolumeMeter(newStream, (speaking) => {
+        updateSpeakingUser(effectiveUserId, speaking && !isMutedRef.current);
+      });
+      for (const track of oldStream.getTracks()) track.stop();
+      activeMicIdRef.current = deviceId;
+      return true;
+    },
+    [effectiveUserId, t, updateSpeakingUser],
+  );
+
+  // 連続した切替が同じ旧ストリームを参照して競合しないよう、1 件ずつ実行する
+  const micSwitchQueueRef = useRef<Promise<unknown>>(Promise.resolve());
+  const micRequestSeqRef = useRef(0);
+  // 切替を予約する。失敗し、より新しい選択も無ければ、使用中のマイクへ表示と保存値を戻す
+  const enqueueMicSwitch = useCallback(
+    (deviceId: string, gen: number) => {
+      // 要求ごとの連番で「より新しい要求が無いか」を判定する（A→B→A のような同一 ID の再選択でも食い違わない）
+      const seq = ++micRequestSeqRef.current;
+      const run = micSwitchQueueRef.current.then(async () => {
+        const ok = await switchMicrophone(deviceId, gen);
+        if (!ok && micRequestSeqRef.current === seq && callGenerationRef.current === gen) {
+          appliedMicIdRef.current = activeMicIdRef.current;
+          saveSelectedDevice("mic", activeMicIdRef.current);
+        }
+      });
+      micSwitchQueueRef.current = run.catch(() => {});
+      return run;
+    },
+    [switchMicrophone],
+  );
+  const setMicrophone = useCallback(
+    (deviceId: string) => {
+      appliedMicIdRef.current = deviceId;
+      saveSelectedDevice("mic", deviceId);
+      return enqueueMicSwitch(deviceId, callGenerationRef.current);
+    },
+    [enqueueMicSwitch],
+  );
+
+  // 出力先の適用は 1 件ずつ実行し、常に最新の選択値 (speakerIdRef) を全参加者へ適用する
+  const speakerApplyQueueRef = useRef<Promise<void>>(Promise.resolve());
+  const applySpeakerToAll = useCallback(() => {
+    const run = speakerApplyQueueRef.current.then(async () => {
+      // 効果音も選択中のスピーカーから鳴らす
+      setCallSoundSink(speakerIdRef.current);
+      for (const entry of peersRef.current.values()) {
+        if (entry.audio) await applySink(entry.audio, speakerIdRef.current);
+      }
+    });
+    speakerApplyQueueRef.current = run.catch(() => {});
+    return run;
+  }, []);
+
+  const setSpeaker = useCallback(
+    async (deviceId: string) => {
+      speakerIdRef.current = deviceId;
+      saveSelectedDevice("speaker", deviceId);
+      await applySpeakerToAll();
+    },
+    [applySpeakerToAll],
+  );
+
+  // 設定画面や他タブでの変更を反映 (通話中なら送信マイクと再生中の出力先にも適用する)
+  useEffect(
+    () =>
+      subscribeSelectedDevices(() => {
+        const micId = loadSelectedDevice("mic");
+        const speakerId = loadSelectedDevice("speaker");
+        setSelectedMicId(micId);
+        setSelectedSpeakerId(speakerId);
+        if (micId !== appliedMicIdRef.current) {
+          appliedMicIdRef.current = micId;
+          // 通話外・切断後の選択も「より新しい要求」として扱い、進行中の切替失敗で上書きされないようにする
+          micRequestSeqRef.current++;
+          if (localStreamRef.current && sessionIdRef.current) {
+            void enqueueMicSwitch(micId, callGenerationRef.current);
+          }
+        }
+        if (speakerId !== speakerIdRef.current) {
+          speakerIdRef.current = speakerId;
+          void applySpeakerToAll();
+        }
+      }),
+    [applySpeakerToAll, enqueueMicSwitch],
+  );
+
+  const getCallDiagnostics = useCallback(async (): Promise<CallDiagnostics> => {
+    const now = Date.now();
+    const track = localStreamRef.current?.getAudioTracks()[0] ?? null;
+    const peers = await Promise.all(
+      [...peersRef.current.entries()].map(async ([sessionId, entry]) => {
+        let summary: ReturnType<typeof summarizeStats> | null = null;
+        try {
+          const report = await entry.pc.getStats();
+          const items: Record<string, unknown>[] = [];
+          report.forEach((v) => items.push(v as Record<string, unknown>));
+          summary = summarizeStats(items, now, statsPrevRef.current.get(sessionId));
+          statsPrevRef.current.set(sessionId, summary.sample);
+        } catch {}
+        return {
+          sessionId,
+          userId: entry.userId,
+          connectionState: entry.pc.connectionState,
+          iceConnectionState: entry.pc.iceConnectionState,
+          rttMs: summary?.rttMs ?? null,
+          lossRatio: summary?.lossRatio ?? null,
+          jitterMs: summary?.jitterMs ?? null,
+          inboundKbps: summary?.inboundKbps ?? null,
+          outboundKbps: summary?.outboundKbps ?? null,
+          candidateType: summary?.candidateType ?? null,
+          sample: summary?.sample ?? { at: now, bytesReceived: 0, bytesSent: 0 },
+        };
+      }),
+    );
+    return {
+      collectedAt: now,
+      connectionState,
+      isMuted,
+      micTrackState: track ? (track.enabled ? track.readyState : "disabled") : null,
+      micLabel: track?.label || null,
+      sseConnected: connectionState === "connected",
+      lastHeartbeatOkAt: heartbeatOkAtRef.current,
+      heartbeatFailures: heartbeatFailuresRef.current,
+      iceServerKinds: kindsOfIceServers(iceServersRef.current),
+      peers,
+    };
+  }, [connectionState, isMuted]);
 
   const joinCall = useCallback(
     async (channelId: string) => {
@@ -549,11 +842,11 @@ export function CallProvider({ config: explicitConfig, children }: CallProviderP
 
       // マイク取得
       let stream: MediaStream;
+      let usedMicId = "";
       try {
-        stream = await navigator.mediaDevices.getUserMedia({
-          audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
-          video: false,
-        });
+        usedMicId = appliedMicIdRef.current;
+        activeMicIdRef.current = usedMicId;
+        stream = await acquireMicStream(usedMicId);
       } catch (err: unknown) {
         if (callGenerationRef.current !== currentGen || joinAbort.signal.aborted) return;
         cleanupPeers();
@@ -594,6 +887,12 @@ export function CallProvider({ config: explicitConfig, children }: CallProviderP
 
       const mySessionId = crypto.randomUUID();
       sessionIdRef.current = mySessionId;
+
+      // マイク取得待ちの間に選択が変わっていた場合は、最新の選択へ切り替える
+      if (appliedMicIdRef.current !== usedMicId) {
+        const latestMicId = appliedMicIdRef.current;
+        void enqueueMicSwitch(latestMicId, currentGen);
+      }
 
       // SSE 接続
       const abortController = new AbortController();
@@ -1031,6 +1330,7 @@ export function CallProvider({ config: explicitConfig, children }: CallProviderP
       leaveCall,
       pollActiveCalls,
       sendSignalWithRetry,
+      enqueueMicSwitch,
       syncMuteStateToServer,
       t,
       updateSpeakingUser,
@@ -1050,6 +1350,11 @@ export function CallProvider({ config: explicitConfig, children }: CallProviderP
         joinCall,
         leaveCall,
         toggleMute,
+        selectedMicId,
+        selectedSpeakerId,
+        setMicrophone,
+        setSpeaker,
+        getCallDiagnostics,
       }}
     >
       {children}
