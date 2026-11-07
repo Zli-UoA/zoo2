@@ -83,6 +83,8 @@ pub fn bind_input_keys(cx: &mut App) {
     ]);
 }
 
+const MAX_VISIBLE_LINES: usize = 8;
+
 #[derive(Clone)]
 struct ShapedRow {
     start: usize,
@@ -99,6 +101,7 @@ pub struct TextInput {
     selection_reversed: bool,
     marked_range: Option<Range<usize>>,
     last_rows: Vec<ShapedRow>,
+    last_scroll_row: usize,
     last_line_height: Pixels,
     last_bounds: Option<Bounds<Pixels>>,
     is_selecting: bool,
@@ -131,6 +134,7 @@ impl TextInput {
             selection_reversed: false,
             marked_range: None,
             last_rows: Vec::new(),
+            last_scroll_row: 0,
             last_line_height: px(20.0),
             last_bounds: None,
             is_selecting: false,
@@ -170,6 +174,7 @@ impl TextInput {
         self.selection_reversed = false;
         self.marked_range = None;
         self.last_rows.clear();
+        self.last_scroll_row = 0;
         self.is_selecting = false;
         cx.notify();
     }
@@ -388,12 +393,21 @@ impl TextInput {
         let Some(bounds) = self.last_bounds.as_ref() else {
             return 0;
         };
+        let visible_rows = if self.multiline {
+            self.last_rows
+                .len()
+                .saturating_sub(self.last_scroll_row)
+                .clamp(1, MAX_VISIBLE_LINES)
+        } else {
+            1
+        };
         if position.y <= bounds.top() {
-            return 0;
+            return self.last_rows[self.last_scroll_row].start;
         }
         let rel_y = (position.y - bounds.top()).max(px(0.0));
         let line_h = self.last_line_height.max(px(1.0));
-        let row_idx = ((rel_y / line_h) as usize).min(self.last_rows.len().saturating_sub(1));
+        let vis_idx = ((rel_y / line_h) as usize).min(visible_rows.saturating_sub(1));
+        let row_idx = (self.last_scroll_row + vis_idx).min(self.last_rows.len().saturating_sub(1));
         let row = &self.last_rows[row_idx];
         let local_x = (position.x - bounds.left()).max(px(0.0));
         let local_offset = row.line.closest_index_for_x(local_x);
@@ -527,7 +541,8 @@ impl EntityInputHandler for TextInput {
         let row = &self.last_rows[row_idx];
         let local_start = range.start.saturating_sub(row.start);
         let local_end = range.end.min(row.end).saturating_sub(row.start);
-        let top = bounds.top() + self.last_line_height * (row_idx as f32);
+        let vis_row = row_idx.saturating_sub(self.last_scroll_row);
+        let top = bounds.top() + self.last_line_height * (vis_row as f32);
         let bottom = top + self.last_line_height;
         Some(Bounds::from_corners(
             point(bounds.left() + row.line.x_for_index(local_start), top),
@@ -552,6 +567,8 @@ struct TextElement {
 
 struct PrepaintState {
     rows: Vec<ShapedRow>,
+    scroll_row: usize,
+    visible_rows: usize,
     line_height: Pixels,
     cursor: Option<PaintQuad>,
     selections: Vec<PaintQuad>,
@@ -586,7 +603,11 @@ impl Element for TextElement {
     ) -> (LayoutId, Self::RequestLayoutState) {
         let input = self.input.read(cx);
         let line_count = if input.multiline {
-            input.content.split('\n').count().clamp(1, 8)
+            input
+                .content
+                .split('\n')
+                .count()
+                .clamp(1, MAX_VISIBLE_LINES)
         } else {
             1
         };
@@ -607,9 +628,11 @@ impl Element for TextElement {
     ) -> Self::PrepaintState {
         let input = self.input.read(cx);
         let content = input.content.clone();
+        let multiline = input.multiline;
         let selected_range = input.selected_range.clone();
         let marked_range = input.marked_range.clone();
         let cursor = input.cursor_offset();
+        let last_scroll_row = input.last_scroll_row;
         let style = window.text_style();
         let line_height = window.line_height();
         let font_size = style.font_size.to_pixels(window.rem_size());
@@ -695,31 +718,40 @@ impl Element for TextElement {
             }
         }
 
+        let cursor_row = rows
+            .iter()
+            .position(|r| cursor >= r.start && cursor <= r.end)
+            .unwrap_or(rows.len().saturating_sub(1));
+        let max_vis = if multiline { MAX_VISIBLE_LINES } else { 1 };
+        let visible_rows = rows.len().clamp(1, max_vis);
+        let scroll_row =
+            compute_visible_scroll_row(rows.len(), cursor_row, last_scroll_row, visible_rows);
+
         let mut selections = Vec::new();
         let mut cursor_quad = None;
 
         if selected_range.is_empty() {
-            let row_idx = rows
-                .iter()
-                .position(|r| cursor >= r.start && cursor <= r.end)
-                .unwrap_or(rows.len().saturating_sub(1));
-            if let Some(row) = rows.get(row_idx) {
+            if cursor_row >= scroll_row
+                && cursor_row < scroll_row + visible_rows
+                && let Some(row) = rows.get(cursor_row)
+            {
+                let vis_idx = cursor_row - scroll_row;
                 let local_cursor = cursor.saturating_sub(row.start);
                 let x = bounds.left() + row.line.x_for_index(local_cursor);
-                let y = bounds.top() + line_height * (row_idx as f32);
+                let y = bounds.top() + line_height * (vis_idx as f32);
                 cursor_quad = Some(fill(
                     Bounds::new(point(x, y), size(px(2.0), line_height)),
                     theme::ACCENT,
                 ));
             }
         } else {
-            for (row_idx, row) in rows.iter().enumerate() {
+            for (vis_idx, row) in rows.iter().skip(scroll_row).take(visible_rows).enumerate() {
                 let sel_start = selected_range.start.max(row.start).min(row.end);
                 let sel_end = selected_range.end.max(row.start).min(row.end);
                 if sel_start < sel_end {
                     let x1 = bounds.left() + row.line.x_for_index(sel_start - row.start);
                     let x2 = bounds.left() + row.line.x_for_index(sel_end - row.start);
-                    let y = bounds.top() + line_height * (row_idx as f32);
+                    let y = bounds.top() + line_height * (vis_idx as f32);
                     selections.push(fill(
                         Bounds::from_corners(point(x1, y), point(x2, y + line_height)),
                         theme::selection_bg(),
@@ -730,6 +762,8 @@ impl Element for TextElement {
 
         PrepaintState {
             rows,
+            scroll_row,
+            visible_rows,
             line_height,
             cursor: cursor_quad,
             selections,
@@ -756,8 +790,16 @@ impl Element for TextElement {
             window.paint_quad(selection);
         }
         let line_height = prepaint.line_height;
-        for (row_idx, row) in prepaint.rows.iter().enumerate() {
-            let origin = point(bounds.left(), bounds.top() + line_height * (row_idx as f32));
+        let scroll_row = prepaint.scroll_row;
+        let visible_rows = prepaint.visible_rows;
+        for (vis_idx, row) in prepaint
+            .rows
+            .iter()
+            .skip(scroll_row)
+            .take(visible_rows)
+            .enumerate()
+        {
+            let origin = point(bounds.left(), bounds.top() + line_height * (vis_idx as f32));
             let _ = row.line.paint(origin, line_height, window, cx);
         }
         if focus_handle.is_focused(window)
@@ -768,6 +810,7 @@ impl Element for TextElement {
         let rows = std::mem::take(&mut prepaint.rows);
         self.input.update(cx, |input, _cx| {
             input.last_rows = rows;
+            input.last_scroll_row = scroll_row;
             input.last_line_height = line_height;
             input.last_bounds = Some(bounds);
         });
@@ -853,6 +896,27 @@ pub fn row_index_for_offset(ranges: &[Range<usize>], offset: usize) -> usize {
         .iter()
         .position(|r| offset >= r.start && offset <= r.end)
         .unwrap_or_else(|| ranges.len().saturating_sub(1))
+}
+
+/// 複数行入力で表示ウィンドウ (最大 `visible_rows` 行) の先頭行インデックスを求める。
+pub fn compute_visible_scroll_row(
+    total_rows: usize,
+    cursor_row: usize,
+    last_scroll_row: usize,
+    visible_rows: usize,
+) -> usize {
+    let visible_rows = visible_rows.max(1);
+    if total_rows <= visible_rows {
+        return 0;
+    }
+    let max_scroll = total_rows - visible_rows;
+    let mut scroll = last_scroll_row.min(max_scroll);
+    if cursor_row < scroll {
+        scroll = cursor_row;
+    } else if cursor_row >= scroll + visible_rows {
+        scroll = cursor_row + 1 - visible_rows;
+    }
+    scroll.min(max_scroll)
 }
 
 pub fn clamp_to_char_boundary(text: &str, mut offset: usize) -> usize {
@@ -950,5 +1014,16 @@ mod tests {
         let before_flag = previous_grapheme_boundary(text, before_b);
         assert_eq!(before_flag, 1);
         assert_eq!(next_grapheme_boundary(text, 1), before_b);
+    }
+
+    #[test]
+    fn scrolls_visible_window_for_multiline_input_exceeding_max_lines() {
+        assert_eq!(compute_visible_scroll_row(5, 4, 0, 8), 0);
+        // 10行でカーソルが末尾(9行目)に移動したときは 2..10 行目を表示する
+        assert_eq!(compute_visible_scroll_row(10, 9, 0, 8), 2);
+        // カーソルが表示範囲内(5行目)にある間はスクロール位置(2)を維持する
+        assert_eq!(compute_visible_scroll_row(10, 5, 2, 8), 2);
+        // カーソルが上端より上(1行目)へ移動したときはカーソル行まで戻す
+        assert_eq!(compute_visible_scroll_row(10, 1, 2, 8), 1);
     }
 }

@@ -117,6 +117,8 @@ pub struct AppState {
 
     /// サイドバーのチャンネル絞り込みクエリ。
     pub search_query: String,
+    /// `AppState` 側から検索欄 (`TextInput`) へ反映すべき文字列。
+    pub pending_search_text: Option<String>,
     /// メッセージ入力欄の現在の文字列。
     pub composer_draft: String,
     /// `AppState` 側から入力欄 (`TextInput`) へ反映すべき文字列。
@@ -126,6 +128,10 @@ pub struct AppState {
     pub unread: HashSet<String>,
     pub last_read_marked: HashMap<String, String>,
     pub newest_shown: Option<(String, String)>,
+    /// タイムラインが最下部を表示している（新着メッセージに追従する）かどうか。
+    pub timeline_at_bottom: bool,
+    /// 次の描画でタイムラインのスクロール位置を最下部へ移動させるフラグ。
+    pub pending_scroll_to_bottom: bool,
 
     pub typing: HashMap<Option<String>, Vec<TypingUser>>,
     pub typing_sent: Option<(String, Option<String>, Instant)>,
@@ -187,12 +193,15 @@ impl AppState {
             active_reaction_message: None,
             confirm_delete_message: None,
             search_query: String::new(),
+            pending_search_text: None,
             composer_draft: String::new(),
             pending_composer_text: None,
             failed_drafts: Vec::new(),
             unread: HashSet::new(),
             last_read_marked: HashMap::new(),
             newest_shown: None,
+            timeline_at_bottom: true,
+            pending_scroll_to_bottom: false,
             typing: HashMap::new(),
             typing_sent: None,
             last_key_typed: None,
@@ -312,11 +321,16 @@ impl AppState {
     pub fn logout(&mut self) {
         self.stop_typing();
         self.abort_all_tasks();
-        let http = self.http.clone();
-        let config = self.config.clone();
-        self.spawn_tokio(async move {
-            let _ = login::logout_session(http, config).await;
-        });
+        if let AuthConfig::Oidc(oidc) = &self.config.auth {
+            let oidc = oidc.clone();
+            let http = self.http.clone();
+            if let Ok((_, Some(refresh_token))) = login::delete_local_token_for_logout(&self.config)
+            {
+                self.spawn_tokio(async move {
+                    login::revoke_refresh_token(http, oidc, refresh_token).await;
+                });
+            }
+        }
         self.reset_to_login(None);
     }
 
@@ -344,9 +358,16 @@ impl AppState {
         self.target = Target::Channel;
         self.active_reaction_message = None;
         self.confirm_delete_message = None;
+        self.search_query.clear();
+        self.pending_search_text = Some(String::new());
+        self.composer_draft.clear();
+        self.pending_composer_text = Some(String::new());
+        self.failed_drafts.clear();
         self.unread.clear();
         self.last_read_marked.clear();
         self.newest_shown = None;
+        self.timeline_at_bottom = true;
+        self.pending_scroll_to_bottom = false;
         self.typing.clear();
         self.typing_sent = None;
         self.login_phase = Some(LoginPhase::Ready { error });
@@ -497,27 +518,41 @@ impl AppState {
         let (shape_tx, mut shape_rx) = mpsc::unbounded_channel();
         if let Some(rt) = &self.runtime {
             let _guard = rt.enter();
-            let stream_handle = electric::spawn(http, &base_url, credentials, shape_id, shape_tx);
+            let stream_handle =
+                electric::spawn(http, &base_url, credentials, shape_id, shape_tx).abort_handle();
             let forward_handle = rt
                 .spawn(async move {
+                    struct AbortOnDrop(AbortHandle);
+                    impl Drop for AbortOnDrop {
+                        fn drop(&mut self) {
+                            self.0.abort();
+                        }
+                    }
+                    let _abort_guard = AbortOnDrop(stream_handle);
                     while let Some(ev) = shape_rx.recv().await {
                         if tx.send(DesktopEvent::Shape(ev)).is_err() {
                             break;
                         }
                     }
-                    stream_handle.abort();
                 })
                 .abort_handle();
             self.subscriptions.insert(id, forward_handle);
         } else if tokio::runtime::Handle::try_current().is_ok() {
-            let stream_handle = electric::spawn(http, &base_url, credentials, shape_id, shape_tx);
+            let stream_handle =
+                electric::spawn(http, &base_url, credentials, shape_id, shape_tx).abort_handle();
             let forward_handle = tokio::spawn(async move {
+                struct AbortOnDrop(AbortHandle);
+                impl Drop for AbortOnDrop {
+                    fn drop(&mut self) {
+                        self.0.abort();
+                    }
+                }
+                let _abort_guard = AbortOnDrop(stream_handle);
                 while let Some(ev) = shape_rx.recv().await {
                     if tx.send(DesktopEvent::Shape(ev)).is_err() {
                         break;
                     }
                 }
-                stream_handle.abort();
             })
             .abort_handle();
             self.subscriptions.insert(id, forward_handle);
@@ -528,17 +563,133 @@ impl AppState {
         match event {
             ShapeEvent::Batch(id, batch) => {
                 self.store.apply(&id, batch);
+                match &id {
+                    ShapeId::Channels => {
+                        if let Some(current) = self.current_channel.clone()
+                            && self.store.channel(&current).is_none()
+                        {
+                            self.evict_channel(&current);
+                            self.notify("このチャンネルへのアクセス権がなくなりました");
+                        }
+                    }
+                    ShapeId::Messages(ch) => {
+                        self.reconcile_channel_targets(ch);
+                        if self.current_channel.as_deref() == Some(ch.as_str())
+                            && self.timeline_at_bottom
+                        {
+                            self.pending_scroll_to_bottom = true;
+                            if let Some(latest) = self.store.latest_root(ch) {
+                                self.newest_shown = Some((ch.clone(), latest.id.clone()));
+                            }
+                        }
+                    }
+                    _ => {}
+                }
                 self.sync_unread_with_latest();
             }
             ShapeEvent::Failed(id, message) => {
-                if message.contains("401") {
+                if message == HttpError::Unauthorized.to_string() {
                     self.reset_to_login(Some(
                         "セッションの有効期限が切れました。再度ログインしてください".to_string(),
                     ));
-                } else {
-                    self.notify(format!("同期が止まりました ({id:?}): {message}"));
+                    return;
                 }
+                if let ShapeId::Messages(ch) | ShapeId::Reactions(ch) = &id
+                    && (message.contains("HTTP 403") || message.contains("HTTP 404"))
+                {
+                    let ch = ch.clone();
+                    self.evict_channel(&ch);
+                    self.notify("このチャンネルへのアクセス権がなくなりました");
+                    return;
+                }
+                self.notify(format!("同期が止まりました ({id:?}): {message}"));
             }
+        }
+    }
+
+    /// 特定のチャンネルのメッセージ・リアクション購読を停止し、キャッシュされた行を破棄する。
+    fn unsubscribe_channel(&mut self, channel_id: &str) {
+        for shape_id in [
+            ShapeId::Messages(channel_id.to_string()),
+            ShapeId::Reactions(channel_id.to_string()),
+        ] {
+            if let Some(handle) = self.subscriptions.remove(&shape_id) {
+                handle.abort();
+            }
+            self.store.apply(
+                &shape_id,
+                electric::Batch {
+                    reset: true,
+                    ..Default::default()
+                },
+            );
+        }
+    }
+
+    /// チャンネルの閲覧権限を失った、またはチャンネルが削除されたときに状態を片付ける。
+    fn evict_channel(&mut self, channel_id: &str) {
+        self.unsubscribe_channel(channel_id);
+        self.unread.remove(channel_id);
+        self.last_read_marked.remove(channel_id);
+        if self
+            .newest_shown
+            .as_ref()
+            .is_some_and(|(ch, _)| ch == channel_id)
+        {
+            self.newest_shown = None;
+        }
+        if self.current_channel.as_deref() == Some(channel_id) {
+            self.stop_typing();
+            self.typing.clear();
+            self.current_channel = None;
+            self.selected_message = None;
+            self.thread = None;
+            self.active_reaction_message = None;
+            self.confirm_delete_message = None;
+            if matches!(self.target, Target::Edit(_)) {
+                self.composer_draft.clear();
+                self.pending_composer_text = Some(String::new());
+            }
+            self.target = Target::Channel;
+            self.timeline_at_bottom = true;
+            self.pending_scroll_to_bottom = false;
+        }
+    }
+
+    /// メッセージ削除によりスレッド親や編集対象・削除確認対象が消えた場合に状態を整合させる。
+    fn reconcile_channel_targets(&mut self, channel_id: &str) {
+        if self.current_channel.as_deref() != Some(channel_id) {
+            return;
+        }
+        if let Some(msg_id) = self.confirm_delete_message.clone()
+            && self.store.message(channel_id, &msg_id).is_none()
+        {
+            self.confirm_delete_message = None;
+        }
+        if let Some(msg_id) = self.active_reaction_message.clone()
+            && self.store.message(channel_id, &msg_id).is_none()
+        {
+            self.active_reaction_message = None;
+        }
+        if let Some(thread) = self.thread.clone()
+            && self.store.message(channel_id, &thread.root_id).is_none()
+        {
+            self.thread = None;
+            if matches!(self.target, Target::Reply(_)) {
+                self.target = Target::Channel;
+                self.notify(
+                    "返信元のメッセージが削除されたため、チャンネルへの投稿に切り替えました",
+                );
+            }
+        }
+        if let Target::Edit(msg_id) = self.target.clone()
+            && self.store.message(channel_id, &msg_id).is_none()
+        {
+            self.target = match &self.thread {
+                Some(thread) => Target::Reply(thread.root_id.clone()),
+                None => Target::Channel,
+            };
+            self.notify("編集中のメッセージが削除されました。入力中の本文はそのまま残しています");
         }
     }
 
@@ -800,7 +951,9 @@ impl AppState {
 
     /// チャンネルを開き、メッセージとリアクションのシェイプ購読を開始する。
     pub fn open_channel(&mut self, channel_id: String) {
-        if self.current_channel.as_deref() != Some(channel_id.as_str()) {
+        if let Some(old_ch) = self.current_channel.clone()
+            && old_ch != channel_id
+        {
             self.stop_typing();
             self.typing.clear();
             self.selected_message = None;
@@ -812,17 +965,44 @@ impl AppState {
                 self.pending_composer_text = Some(String::new());
             }
             self.target = Target::Channel;
+            // 別のチャンネルへ切り替えるときは前のチャンネルの Messages / Reactions 購読とキャッシュを破棄し、
+            // バックグラウンドタスクとメモリがチャンネル数に応じて増え続けるのを防ぐ。
+            self.unsubscribe_channel(&old_ch);
         }
         self.subscribe(ShapeId::Messages(channel_id.clone()));
         self.subscribe(ShapeId::Reactions(channel_id.clone()));
         self.current_channel = Some(channel_id.clone());
+        self.timeline_at_bottom = true;
+        self.pending_scroll_to_bottom = true;
 
         // 最新メッセージがあれば表示済みとして記録し、既読化を試みる。
         if let Some(latest) = self.store.latest_root(&channel_id) {
             self.newest_shown = Some((channel_id, latest.id.clone()));
+        } else {
+            self.newest_shown = None;
         }
         self.sync_unread_with_latest();
         self.poll_typing();
+    }
+
+    /// タイムラインのスクロール位置が最下部にあるかどうかを更新し、最下部なら最新メッセージを表示済みとして既読化する。
+    pub fn update_timeline_scroll_state(&mut self, at_bottom: bool) {
+        self.timeline_at_bottom = at_bottom;
+        let Some(channel_id) = self.current_channel.clone() else {
+            return;
+        };
+        if at_bottom {
+            if let Some(latest) = self.store.latest_root(&channel_id) {
+                self.newest_shown = Some((channel_id, latest.id.clone()));
+            }
+            self.sync_unread_with_latest();
+        } else if self
+            .newest_shown
+            .as_ref()
+            .is_some_and(|(ch, _)| ch == &channel_id)
+        {
+            self.newest_shown = None;
+        }
     }
 
     /// チャンネルへの参加・退出を実行する。
@@ -1238,14 +1418,27 @@ mod tests {
             })
         );
 
+        state.composer_draft = "残っていた下書き".into();
+        state.search_query = "general".into();
+        state.failed_drafts.push(FailedDraft {
+            channel_id: "c1".into(),
+            target: Target::Channel,
+            content: "失敗分".into(),
+        });
+
         state.on_shape(ShapeEvent::Failed(
             ShapeId::Channels,
-            "401 Unauthorized".into(),
+            HttpError::Unauthorized.to_string(),
         ));
         assert!(matches!(
             state.login_phase,
             Some(LoginPhase::Ready { error: Some(_) })
         ));
+        assert!(state.composer_draft.is_empty());
+        assert_eq!(state.pending_composer_text.as_deref(), Some(""));
+        assert!(state.search_query.is_empty());
+        assert_eq!(state.pending_search_text.as_deref(), Some(""));
+        assert!(state.failed_drafts.is_empty());
     }
 
     #[tokio::test]
@@ -1320,17 +1513,145 @@ mod tests {
     #[tokio::test]
     async fn marks_channel_read_when_latest_message_is_shown() {
         let mut state = connected_state();
-        state.on_app_event(AppEvent::ReadStates(vec![ReadState {
-            channel_id: "c1".into(),
-            has_unread: true,
-        }]));
+        state.on_app_event(AppEvent::ReadStates(vec![
+            ReadState {
+                channel_id: "c1".into(),
+                has_unread: true,
+            },
+            ReadState {
+                channel_id: "c2".into(),
+                has_unread: true,
+            },
+        ]));
         assert!(state.unread.contains("c1"));
+        assert!(state.unread.contains("c2"));
 
+        // (a) すでに同期済みの c1 を開くと、最下部へ追従して m1 が既読になる
         state.open_channel("c1".into());
         assert!(!state.unread.contains("c1"));
         assert_eq!(
             state.last_read_marked.get("c1").map(String::as_str),
             Some("m1")
+        );
+
+        // (b) 最下部を表示中に新着メッセージ m2 の Batch が届くと、newest_shown が更新され m2 も既読になる
+        state.on_shape(ShapeEvent::Batch(
+            ShapeId::Messages("c1".into()),
+            batch(vec![(
+                "m2",
+                json!({ "id": "m2", "user_id": "u2", "channel_id": "c1",
+                        "content": "新着メッセージ", "created_at": "2026-11-01 03:02:00" }),
+            )]),
+        ));
+        assert_eq!(
+            state.last_read_marked.get("c1").map(String::as_str),
+            Some("m2")
+        );
+
+        // (c) 上へスクロールして最下部から離れているときは、新着メッセージ m3 が来ても自動では既読にならない
+        state.update_timeline_scroll_state(false);
+        state.on_shape(ShapeEvent::Batch(
+            ShapeId::Messages("c1".into()),
+            batch(vec![(
+                "m3",
+                json!({ "id": "m3", "user_id": "u2", "channel_id": "c1",
+                        "content": "スクロール中の新着", "created_at": "2026-11-01 03:03:00" }),
+            )]),
+        ));
+        assert_eq!(
+            state.last_read_marked.get("c1").map(String::as_str),
+            Some("m2")
+        );
+        // 再び最下部へスクロールすると m3 が既読になる
+        state.update_timeline_scroll_state(true);
+        assert_eq!(
+            state.last_read_marked.get("c1").map(String::as_str),
+            Some("m3")
+        );
+
+        // (d) メッセージ同期前にチャンネル c2 を開き、あとから初回 Batch が届いたときも既読になる
+        state.on_shape(ShapeEvent::Batch(
+            ShapeId::ChannelUsers,
+            batch(vec![("m2", json!({ "user_id": "u1", "channel_id": "c2" }))]),
+        ));
+        state.open_channel("c2".into());
+        assert!(state.unread.contains("c2"));
+        state.on_shape(ShapeEvent::Batch(
+            ShapeId::Messages("c2".into()),
+            batch(vec![(
+                "c2m1",
+                json!({ "id": "c2m1", "user_id": "u2", "channel_id": "c2",
+                        "content": "初回同期メッセージ", "created_at": "2026-11-01 03:05:00" }),
+            )]),
+        ));
+        assert!(!state.unread.contains("c2"));
+        assert_eq!(
+            state.last_read_marked.get("c2").map(String::as_str),
+            Some("c2m1")
+        );
+    }
+
+    #[tokio::test]
+    async fn reconciles_targets_and_evicts_channel_on_deletion_or_access_loss() {
+        let mut state = connected_state();
+        state.open_channel("c1".into());
+        assert!(
+            state
+                .subscriptions
+                .contains_key(&ShapeId::Messages("c1".into()))
+        );
+
+        // スレッドを開いて自分のメッセージ r1 を編集中に r1 が削除された場合、下書きを残したまま返信に戻る
+        state.open_thread("m1".into());
+        state.start_edit("r1".into());
+        state.on_composer_changed("編集途中のテキスト".into());
+        state.on_shape(ShapeEvent::Batch(
+            ShapeId::Messages("c1".into()),
+            Batch {
+                reset: false,
+                changes: vec![Change::Delete { key: "r1".into() }],
+                up_to_date: true,
+            },
+        ));
+        assert_eq!(state.target, Target::Reply("m1".into()));
+        assert_eq!(state.composer_draft, "編集途中のテキスト");
+
+        // スレッドのルート m1 が削除された場合、スレッドを閉じて通常投稿に切り替える
+        state.on_shape(ShapeEvent::Batch(
+            ShapeId::Messages("c1".into()),
+            Batch {
+                reset: false,
+                changes: vec![Change::Delete { key: "m1".into() }],
+                up_to_date: true,
+            },
+        ));
+        assert!(state.thread.is_none());
+        assert_eq!(state.target, Target::Channel);
+        assert_eq!(state.composer_draft, "編集途中のテキスト");
+
+        // 別のチャンネル c2 に切り替えると c1 の購読は停止・破棄される
+        state.open_channel("c2".into());
+        assert!(
+            !state
+                .subscriptions
+                .contains_key(&ShapeId::Messages("c1".into()))
+        );
+        assert!(
+            state
+                .subscriptions
+                .contains_key(&ShapeId::Messages("c2".into()))
+        );
+
+        // c2 からキックされて 403 になった場合、c2 の表示とキャッシュを閉じてクリアする
+        state.on_shape(ShapeEvent::Failed(
+            ShapeId::Messages("c2".into()),
+            "HTTP 403 Forbidden: Access denied".into(),
+        ));
+        assert!(state.current_channel.is_none());
+        assert!(
+            !state
+                .subscriptions
+                .contains_key(&ShapeId::Messages("c2".into()))
         );
     }
 

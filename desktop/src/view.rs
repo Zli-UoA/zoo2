@@ -4,7 +4,7 @@ use std::collections::HashMap;
 
 use gpui::{
     ClipboardItem, Context, Div, ElementId, Entity, FocusHandle, Focusable, FontWeight,
-    IntoElement, MouseButton, MouseUpEvent, ParentElement, Render, SharedString,
+    IntoElement, MouseButton, MouseUpEvent, ParentElement, Render, ScrollHandle, SharedString,
     StatefulInteractiveElement, Styled, Window, div, prelude::*, px,
 };
 use jiff::{Zoned, civil::DateTime, tz::TimeZone};
@@ -26,6 +26,7 @@ pub struct WorkspaceView {
     pub search_input: Entity<TextInput>,
     pub composer_input: Entity<TextInput>,
     pub reaction_input: Entity<TextInput>,
+    pub timeline_scroll: ScrollHandle,
     focus_handle: FocusHandle,
 }
 
@@ -132,9 +133,15 @@ impl WorkspaceView {
         .detach();
 
         cx.observe(&state, |this, state, cx| {
-            let pending = state.update(cx, |s, _| s.pending_composer_text.take());
-            if let Some(text) = pending {
+            let (pending_composer, pending_search) = state.update(cx, |s, _| {
+                (s.pending_composer_text.take(), s.pending_search_text.take())
+            });
+            if let Some(text) = pending_composer {
                 this.composer_input
+                    .update(cx, |input, cx| input.set_text(text, cx));
+            }
+            if let Some(text) = pending_search {
+                this.search_input
                     .update(cx, |input, cx| input.set_text(text, cx));
             }
             cx.notify();
@@ -146,6 +153,7 @@ impl WorkspaceView {
             search_input,
             composer_input,
             reaction_input,
+            timeline_scroll: ScrollHandle::new(),
             focus_handle: cx.focus_handle(),
         }
     }
@@ -817,7 +825,7 @@ impl WorkspaceView {
                                         ),
                                 )
                             })
-                            .when(!is_dm, |d| {
+                            .when(!is_dm && (!is_archived || is_member), |d| {
                                 d.child(
                                     div()
                                         .id("btn-join-or-leave")
@@ -932,6 +940,7 @@ impl WorkspaceView {
                     .id("timeline-scroll-area")
                     .flex_1()
                     .overflow_y_scroll()
+                    .track_scroll(&self.timeline_scroll)
                     .p_4()
                     .flex()
                     .flex_col()
@@ -1682,6 +1691,22 @@ impl Render for WorkspaceView {
         let login_phase = self.state.read(cx).login_phase.clone();
         if let Some(phase) = login_phase {
             return self.render_login_view(&phase, cx);
+        }
+
+        // タイムラインのスクロール位置を AppState に同期し、最下部を見ているときだけ最新メッセージを既読扱いにする。
+        let scroll_to_bottom = self
+            .state
+            .update(cx, |s, _| std::mem::take(&mut s.pending_scroll_to_bottom));
+        if scroll_to_bottom {
+            self.timeline_scroll.scroll_to_bottom();
+            self.state
+                .update(cx, |s, _| s.update_timeline_scroll_state(true));
+        } else {
+            let max_y = self.timeline_scroll.max_offset().height;
+            let cur_y = (-self.timeline_scroll.offset().y).max(px(0.0));
+            let at_bottom = max_y <= px(4.0) || (max_y - cur_y) <= px(24.0);
+            self.state
+                .update(cx, |s, _| s.update_timeline_scroll_state(at_bottom));
         }
 
         let thread_root = self

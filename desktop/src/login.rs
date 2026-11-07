@@ -239,13 +239,21 @@ pub async fn run_device_login(
     }
 }
 
-/// IdP のリフレッシュトークンを失効させ、ローカルのトークンファイルを削除する。
-pub async fn logout_session(http: reqwest::Client, config: Config) -> Result<bool> {
-    let oidc = oidc_config(&config)?;
+/// ローカルのトークンファイルを即座に削除し、失効対象のリフレッシュトークンを返す。
+pub fn delete_local_token_for_logout(config: &Config) -> Result<(bool, Option<String>)> {
+    let oidc = oidc_config(config)?;
     let path = token_file()?;
-    if let Some(refresh_token) =
-        token::load(&path, oidc, None)?.and_then(|tokens| tokens.refresh_token)
-        && let Ok(discovery) = auth::discover(&http, &oidc.issuer).await
+    let refresh_token = token::load(&path, oidc, None)
+        .ok()
+        .flatten()
+        .and_then(|tokens| tokens.refresh_token);
+    let deleted = token::delete(&path)?;
+    Ok((deleted, refresh_token))
+}
+
+/// IdP の revocation エンドポイントへリフレッシュトークンの失効を要求する。
+pub async fn revoke_refresh_token(http: reqwest::Client, oidc: OidcConfig, refresh_token: String) {
+    if let Ok(discovery) = auth::discover(&http, &oidc.issuer).await
         && let Some(endpoint) = discovery.revocation_endpoint
     {
         let form = [
@@ -255,7 +263,16 @@ pub async fn logout_session(http: reqwest::Client, config: Config) -> Result<boo
         ];
         let _ = http.post(endpoint).form(&form).send().await;
     }
-    token::delete(&path)
+}
+
+/// IdP のリフレッシュトークンを失効させ、ローカルのトークンファイルを削除する。
+pub async fn logout_session(http: reqwest::Client, config: Config) -> Result<bool> {
+    let oidc = oidc_config(&config)?.clone();
+    let (deleted, refresh_token) = delete_local_token_for_logout(&config)?;
+    if let Some(refresh_token) = refresh_token {
+        revoke_refresh_token(http, oidc, refresh_token).await;
+    }
+    Ok(deleted)
 }
 
 /// CLI から `zoo2-desktop login` を実行する。
