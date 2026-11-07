@@ -27,7 +27,7 @@ impl Credentials {
 /// 401 はトークン失効として扱い、呼び出し側で再ログインを促す。
 #[derive(Debug, thiserror::Error)]
 pub enum HttpError {
-    #[error("認証が切れました。`zoo2-tui login` で再ログインしてください")]
+    #[error("認証が切れました。再ログインしてください")]
     Unauthorized,
     #[error("{status}: {message}")]
     Status {
