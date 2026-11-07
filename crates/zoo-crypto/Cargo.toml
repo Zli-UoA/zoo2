@@ -16,5 +16,7 @@ vodozemac = "0.11.2"
 # wasm32-unknown-unknown には OS の乱数がないので、getrandom 0.4 の wasm_js
 # バックエンド（crypto.getRandomValues）を使う。getrandom 0.4 は feature だけで
 # 有効になり、cfg フラグ（getrandom_backend）は要らない。
+# コアにプラットフォームの依存を入れない方針の例外は、この設定だけ（理由は
+# docs/e2ee.md の「共有の暗号コア」）。
 [target.'cfg(all(target_arch = "wasm32", target_os = "unknown"))'.dependencies]
 vodozemac = { version = "0.11.2", features = ["wasm_js"] }
