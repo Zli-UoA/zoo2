@@ -419,7 +419,7 @@ AuthZ 側（[AuthZ#94](https://github.com/Zli-UoA/AuthZ/issues/94)）の要件�
 2. AuthZ#94 の実装（AuthZ#95）をマージして配備する。新しいイメージの Pod は起動時に値を読むので、手で再起動しなくてよい。
 3. `curl -sS -D - https://account.zli.works/.well-known/webauthn` で、200、`cache-control: public, max-age=300`、本文 `{"origins":["https://zli.chat"]}` を確かめてから、#360 と #369 を進める。
 
-先にイメージを配備した場合だけ、値を足したあとに `kubectl -n authz rollout restart deployment/authz` が要ります。ConfigMap は hash 付きで生成していないので、値を変えても Pod は入れ替わらないためです。AuthZ の IngressRoute は `account.zli.works` へのすべてのパスをアプリに送るので、`/.well-known/webauthn` のためのルートは足さなくてよいです。AuthZ 側の手順は AuthZ#95 の `docs/deployment.md` にあります。
+最初の配備で手で再起動しなくてよいのは、この順で入れた場合だけです。先にイメージを配備した場合は、値を足したあとに `kubectl -n authz rollout restart deployment/authz` が要ります。配備のあとで値を変えるとき（オリジンを足す、外す）も、必ず再起動します。ConfigMap は hash 付きの名前で生成していないので、値を変えても Pod は入れ替わらないためです。AuthZ の IngressRoute は `account.zli.works` へのすべてのパスをアプリに送るので、`/.well-known/webauthn` のためのルートは足さなくてよいです。AuthZ 側の手順は AuthZ#95 の `docs/deployment.md` にあります。
 
 ### RP ID の決め方
 
@@ -488,7 +488,8 @@ const prf = credential.getClientExtensionResults().prf?.results?.first;
   - Firefox の ROR 対応
   - Chrome（Windows、macOS、Android）、Safari（macOS、iOS）、iCloud キーチェーン、Google パスワードマネージャー、Windows Hello、YubiKey、Bitwarden
   - 既存のパスキー（`prf: {}` なしで登録したもの）で PRF を使えるか。プラットフォーム認証器（iCloud キーチェーン、Google パスワードマネージャーなど）は、指定がなくても PRF を使える場合があるが、保証されない
-- AuthZ#94 の変更（AuthZ#95）より前に登録したセキュリティキーは、登録時に hmac-secret を有効にしていないので、AuthZ で登録し直すまで PRF を使えない（AuthZ#95 の `docs/architecture.md`）。既存のパスキーでの AuthZ へのログインには影響しない。#369 の結果を本書に書くときは、この前提も載せる。解錠で `prf.results.first` がなかったときの表示（[解錠](#解錠既存のスロットを開ける)）では、セキュリティキーなら AuthZ で登録し直せば使えることも案内する。
+- 【未検証】AuthZ#94 の変更（AuthZ#95）より前に登録したセキュリティキーは、登録時に hmac-secret を有効にしていないので、AuthZ で登録し直すまで PRF を使えない見込み（AuthZ#95 の `docs/architecture.md`）。#369 で確かめ、結果を本書に書くときは、この前提も載せる。既存のパスキーでの AuthZ へのログインには影響しない。
+- 【決定】解錠で `prf.results.first` がなかったときの表示（[解錠](#解錠既存のスロットを開ける)）では、セキュリティキーなら AuthZ で登録し直すと使える場合があることも案内する。
 - 【未検証】Android アプリ（Credential Manager）から RP ID `account.zli.works` のパスキーを使うには、`https://account.zli.works/.well-known/assetlinks.json` で zoo の Android アプリを関連付ける必要がある。AuthZ#94 には入っていないので、[#360](https://github.com/Zli-UoA/zoo2/issues/360) の前に AuthZ 側の issue を作る。Credential Manager の要求 JSON に `prf` 拡張を入れて PRF 出力を得られるかも確かめる。
 
 ## 初回設定と解錠の流れ
@@ -1084,6 +1085,14 @@ Megolm のメッセージ（`messages` の行）を復号したとき：
 
 どちらの場合も、古いバックアップ鍵は古い版を消すまで失効を行う端末の暗号ストアから消しません。途中で失敗しても、古い版のセッションを取り込み直せるようにするためです。失効を行った端末以外の自分の端末では、暗号ストアの自己署名鍵、ユーザー署名鍵、バックアップ鍵が古いままになります。そこで、サーバーの自己署名鍵とユーザー署名鍵の公開鍵、または今のバックアップの版の公開鍵が、暗号ストアの秘密鍵と合わなくなった端末は、その鍵を使う処理（端末への署名、ピンの作成、バックアップへのアップロード）を止め、SSSS で解錠し直すよう表示します。
 
+どちらの場合も、失効を行う端末は、保存を終えたら次のものを読み直し、自分が作った鍵と一致するかを確かめます。
+
+- SSSS の秘密（`GET /api/e2ee/secret_storage`）。開け直した SSSS 鍵で復号して比べる。
+- 自分のクロス署名鍵の公開鍵（`POST /api/e2ee/keys/query`）
+- 今のバックアップの版の公開鍵（`GET /api/e2ee/key_backup/versions/current`）
+
+一致しなければ、別の端末の失効と保存が入り混じったので、SSSS を開け直して失効をやり直します。`POST /api/e2ee/secret_storage/secrets` は `key_id` が既定の鍵かしか確かめません。そのため、2 つの端末で同時に失効を行うと、SSSS には一方の端末の秘密鍵が、サーバーには他方の公開鍵が残ることがあります。この状態では、解錠し直しても合う鍵は出てきません。
+
 これで、それ以降の鍵の配布と新しいメッセージは守れます。
 
 ### 取り消せないもの
@@ -1097,7 +1106,13 @@ Megolm のメッセージ（`messages` の行）を復号したとき：
 
 ### 許可オリジンを外すとき
 
-【決定】`/.well-known/webauthn` の `origins` からオリジンを外すときは、AuthZ の `WEBAUTHN_RELATED_ORIGINS` から外して配備し、キャッシュの時間（`max-age=300`、5 分）が過ぎてから、外す理由に応じて次のどちらかを行います。
+【決定】`/.well-known/webauthn` の `origins` からオリジンを外すときは、次の順で行います。
+
+1. zoo2-infra で、ConfigMap `authz-config` の `WEBAUTHN_RELATED_ORIGINS` からそのオリジンを消す PR をマージし、[本番への配備の順](#本番への配備の順)の 1 と同じ `kubectl` のコマンドで反映を確かめる。
+2. `kubectl -n authz rollout restart deployment/authz` で AuthZ を再起動し、`kubectl -n authz rollout status deployment/authz --timeout=600s` で完了を待つ。再起動しないと、動いている Pod は外したオリジンを返し続ける。
+3. `curl -sS https://account.zli.works/.well-known/webauthn` で、`origins` にそのオリジンがないことを確かめる。
+4. 3 を確かめた時刻から、キャッシュの時間（`max-age=300`、5 分）が過ぎるのを待つ。
+5. 外す理由に応じて、次のどちらかを行う。
 
 | 外す理由 | 行うこと |
 | --- | --- |
@@ -1217,7 +1232,7 @@ Megolm のメッセージ（`messages` の行）を復号したとき：
 - **改ざんした JavaScript を配信できる攻撃者**：zli.chat のフロントエンドの配信元、CDN、依存パッケージを乗っ取られると、平文、PRF 出力、暗号ストアを読まれる。Web 版の E2EE に共通する限界。
 - **XSS など、同じオリジンで動くコード**：平文、暗号ストア、PRF 出力を読まれる。暗号ストアの暗号化も役に立たない。
 - **Related Origin Requests の許可オリジンと AuthZ**：PRF の salt は秘密ではない。RP ID（本番は `account.zli.works`）の正規のオリジンと、`/.well-known/webauthn` の `origins` に載ったすべてのオリジンは、ユーザーの UV だけで同じ PRF 出力（つまり KEK）を得られる。PRF の評価は RP ID の単位でしか分かれないので、AuthZ のオリジンと許可オリジンで動く JavaScript と、それを届ける経路（配信元、CDN、依存パッケージ、ページが読み込む第三者のスクリプト）は、E2EE の信頼の基盤（TCB）に入る。そこで XSS や乗っ取りが起きると、パスキーの鍵スロットを開けられる。許可オリジンを `https://zli.chat` だけにしているのはこのため。外し方は[許可オリジンを外すとき](#許可オリジンを外すとき)を参照。
-  - 第三者のスクリプトは、AuthZ が CAPTCHA を有効にした画面（`/login`、`/register`、`/login/qr`）で読み込む Cloudflare Turnstile のスクリプト（`https://challenges.cloudflare.com/turnstile/v0/api.js`）だけ。AuthZ の CSP の `script-src` が自分以外に許可するのはこれだけで、AuthZ#95 の `docs/architecture.md`「E2EEの信頼範囲」と同じ範囲。AuthZ が読み込む Google Fonts はスタイルシートとフォントだけで、スクリプトを動かさないので入れない。
+  - 第三者のスクリプトは、AuthZ が CAPTCHA を有効にした画面（`/login`、`/register`、`/login/qr`）で読み込む Cloudflare Turnstile（`https://challenges.cloudflare.com` から読み込むスクリプト。今は `turnstile/v0/api.js`）だけ。AuthZ の CSP の `script-src` はこれらの画面に限って、自分のほかにこのオリジン全体を許可する。そのため、TCB に入るのは 1 つの URL ではなくこのオリジンから届くすべてのスクリプト。AuthZ#95 の `docs/architecture.md`「E2EEの信頼範囲」と同じ範囲。AuthZ が読み込む Google Fonts はスタイルシートとフォントだけで、スクリプトを動かさないので入れない。
   - zli.chat は第三者のスクリプトを読み込まない。CSP の `script-src` は `'self'` と、インラインの script のハッシュだけ（`infra/frontend-nginx.conf`）。
   - 「守るもの」で、AuthZ のデータが漏れても本文を読めないとしているのは、AuthZ の DB や秘密の値が漏れる場合のこと。AuthZ が配信する JavaScript を改ざんされないことが前提になる。
 - **同じユーザーの端末どうし**：API の認可はユーザー単位なので、ユーザーのトークンを持つ者は、そのユーザーの別の端末の ID を名乗って to-device を送る、端末を削除する、などができる。暗号の検証（署名、Olm の照合）で読み取りは防ぐが、削除などの妨害は防げない。
