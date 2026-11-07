@@ -852,7 +852,8 @@
       "title": "App 主页",
       "help": "用户与 App 对话的设置。",
       "dm": "接收私信",
-      "dmHelp": "开启后，用户可以向 App 发送私信。"
+      "dmHelp": "启用后，用户可以向 App 发送 DM。也会添加所需的 messages:read 和 dm:write 权限。",
+      "dmNotificationOnly": "仅限通知的 App 无法接收 DM。"
     },
     "install": {
       "approval": "批准",

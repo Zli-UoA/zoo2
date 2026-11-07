@@ -852,7 +852,8 @@
       "title": "App home",
       "help": "How people talk with the app.",
       "dm": "Accept direct messages",
-      "dmHelp": "When on, people can send direct messages to the app."
+      "dmHelp": "Lets people send DMs to the app. This also adds the required messages:read and dm:write scopes.",
+      "dmNotificationOnly": "Notification-only apps can't receive DMs."
     },
     "install": {
       "approval": "Approval",

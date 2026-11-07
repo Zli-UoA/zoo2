@@ -11,7 +11,9 @@ import {
   needsReapproval,
   parseManifestJson,
   saveBody,
+  settingScopes,
   toggleEvent,
+  withSettingScopes,
   visibleSections,
 } from "./model";
 
@@ -20,6 +22,7 @@ const catalog = {
     { name: "message.created", scope: "messages:read", audience: "channel" },
     { name: "app.uninstalled", scope: null, audience: "app" },
   ],
+  aliases: [{ alias: "message", event: "message.created" }],
 };
 const detail: AppDetail = {
   id: "app",
@@ -31,6 +34,7 @@ const detail: AppDetail = {
   status: "installed",
   revision: 2,
   updated_at: "2026-11-07T00:00:00.123",
+  bot_username: "echo_bot",
   manifest: {
     scopes: ["messages:write"],
     commands: ["deploy"],
@@ -60,7 +64,7 @@ describe("app console model", () => {
   });
 
   it("keeps settings from other sections when one section is saved", () => {
-    const saved = draftFromDetail(detail, "echo_bot");
+    const saved = draftFromDetail(detail);
     const draft = {
       ...saved,
       manifest: toggleEvent(saved.manifest, catalog, "message.created", true),
@@ -76,7 +80,7 @@ describe("app console model", () => {
   });
 
   it("only asks for re-approval when the manifest changes", () => {
-    const saved = draftFromDetail(detail, "echo_bot");
+    const saved = draftFromDetail(detail);
     expect(needsReapproval(saved, { ...saved, name: "Renamed", bot_username: "renamed" })).toBe(
       false,
     );
@@ -123,6 +127,37 @@ describe("app console model", () => {
     expect(parseManifestJson("{")).toEqual({ ok: false });
     const parsed = parseManifestJson('{"scopes":["messages:read"]}');
     expect(parsed.ok && parsed.manifest.transport).toBe("websocket");
+  });
+
+  it("resolves the scopes that alias event names need", () => {
+    const manifest = toggleEvent(draftFromDetail(detail).manifest, catalog, "message", true);
+    expect(manifest.scopes).toEqual(["messages:write", "messages:read"]);
+    expect(eventsNeedingScope(manifest, catalog, "messages:read")).toEqual(["message"]);
+  });
+
+  it("requests the scopes that settings other than events need", () => {
+    const manifest = {
+      ...draftFromDetail(detail).manifest,
+      dm_enabled: true,
+      message_shortcuts: ["quote"],
+      functions: ["run"],
+      user_connections: true,
+    };
+    expect(settingScopes(manifest)).toEqual({
+      "functions:execute": ["functions"],
+      "users:write": ["user_connections"],
+      "messages:read": ["message_shortcuts", "dm_enabled"],
+      "dm:write": ["dm_enabled"],
+    });
+    expect(withSettingScopes(manifest).scopes).toEqual([
+      "messages:write",
+      "functions:execute",
+      "users:write",
+      "messages:read",
+      "dm:write",
+    ]);
+    const plain = draftFromDetail(detail).manifest;
+    expect(withSettingScopes(plain)).toBe(plain);
   });
 
   it("rejects manifest fields of the wrong type or unknown keys", () => {

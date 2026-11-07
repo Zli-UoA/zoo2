@@ -71,7 +71,7 @@ async fn detail(
 ) -> Result<Json<Value>, AppError> {
     let mut db = state.db.clone();
     let mut tx = db.transaction().await?;
-    let mut app=one(&mut tx,"SELECT json_build_object('id',id,'name',name,'description',description,'icon_url',icon_url,'bot_user_id',bot_user_id,'owner_id',owner_id,'status',status,'manifest',manifest::jsonb,'revision',revision,'updated_at',updated_at)::text FROM apps WHERE id=$1",&[&id]).await?;
+    let mut app=one(&mut tx,"SELECT json_build_object('id',id,'name',name,'description',description,'icon_url',icon_url,'bot_user_id',bot_user_id,'owner_id',owner_id,'status',status,'manifest',manifest::jsonb,'revision',revision,'updated_at',updated_at,'bot_username',(SELECT user_name FROM users WHERE id=apps.bot_user_id))::text FROM apps WHERE id=$1",&[&id]).await?;
     if app["status"] != "installed" && app["status"] != "disabled" {
         can_manage(&mut tx, &state, &actor, &id).await?;
     }

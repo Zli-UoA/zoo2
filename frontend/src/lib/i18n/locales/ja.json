@@ -852,7 +852,8 @@
       "title": "App ホーム",
       "help": "利用者が App と会話するための設定です。",
       "dm": "DM を受け付ける",
-      "dmHelp": "有効にすると、利用者が App に DM を送れるようになります。"
+      "dmHelp": "有効にすると、利用者が App に DM を送れるようになります。必要な権限 messages:read と dm:write も追加されます。",
+      "dmNotificationOnly": "通知専用 App では DM を受け付けられません。"
     },
     "install": {
       "approval": "承認",

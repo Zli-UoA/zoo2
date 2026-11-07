@@ -7,7 +7,6 @@ import { ApiError, createConfiguredApiClient, type ApiClient } from "../../../li
 import { useCollections } from "../../../lib/electric/collections-context";
 import { describeApiError } from "../../../hooks/useChannelAdmin";
 import { useCurrentUser } from "../../../hooks/useCurrentUser";
-import { useUsers } from "../../../hooks/useRealtime";
 import { Button } from "../../ui/button";
 import { Select } from "../../ui/select";
 import { PaneHeader } from "../../layout/PaneHeader";
@@ -67,24 +66,35 @@ function UserAppConsole({ appId, section }: { appId: string; section: ConsoleSec
   const client = useMemo(() => createConfiguredApiClient(config), [config]);
   const navigate = useNavigate();
   const { currentUserId, isAdmin } = useCurrentUser();
-  const people = useUsers().data ?? [];
   const [detail, setDetail] = useState<AppDetail | null>(null);
   const [saved, setSaved] = useState<AppDraft | null>(null);
   const [draft, setDraftState] = useState<AppDraft | null>(null);
   const [catalog, setCatalog] = useState<EventCatalog | null>(null);
   const [loadError, setLoadError] = useState(false);
-  // `keep` travels with each reload request, so a failed or aborted refresh cannot leak into the next load.
-  const [reload, setReload] = useState({ count: 0, keep: false });
-  const reloadDetail = (keep: boolean) => setReload((value) => ({ count: value.count + 1, keep }));
+  // Each reload carries its own purpose, so a failed or aborted reload cannot leak into the next one.
+  // `keep`: an action refreshed the detail and edits in progress stay.
+  // `sent`: the reload after this screen's own save, with the draft that was saved.
+  const [reload, setReload] = useState<{ count: number; keep: boolean; sent?: AppDraft }>({
+    count: 0,
+    keep: false,
+  });
+  const reloadDetail = (keep: boolean, sent?: AppDraft) =>
+    setReload((value) => ({ count: value.count + 1, keep, sent }));
+  const latestReloadCount = useRef(reload.count);
+  latestReloadCount.current = reload.count;
+  // Loads requested before this screen's last save started or finished may hold either version;
+  // the reload after the save decides, so earlier ones are ignored.
+  const staleBefore = useRef(0);
+  // `updated_at` returned by this screen's last save.
+  const savedVersion = useRef("");
   const [saving, setSaving] = useState(false);
   const savingNow = useRef(false);
   const [saveError, setSaveError] = useState("");
   const [conflict, setConflict] = useState(false);
-  const botUsername = people.find((user) => user.id === detail?.bot_user_id)?.user_name ?? "";
-  const latestBotUsername = useRef(botUsername);
-  latestBotUsername.current = botUsername;
   // The conflict check compares against the version the edits started from, not the latest fetch.
   const [expectedUpdatedAt, setExpectedUpdatedAt] = useState("");
+  const latestExpected = useRef(expectedUpdatedAt);
+  latestExpected.current = expectedUpdatedAt;
   const latestSaved = useRef(saved);
   latestSaved.current = saved;
   const latestDraft = useRef(draft);
@@ -92,21 +102,39 @@ function UserAppConsole({ appId, section }: { appId: string; section: ConsoleSec
 
   useEffect(() => {
     const controller = new AbortController();
+    const { count, keep, sent } = reload;
     setLoadError(false);
     client
       .get<AppDetail>(`/api/apps/${encodeURIComponent(appId)}`, { signal: controller.signal })
       .then((next) => {
-        if (controller.signal.aborted) return;
-        const fresh = draftFromDetail(next, latestBotUsername.current);
+        if (controller.signal.aborted || count < staleBefore.current) return;
+        const fresh = draftFromDetail(next);
         const base = latestSaved.current;
-        // Server actions (approval, tokens) refresh the detail without discarding edits in progress.
-        const editing =
-          reload.keep && base && latestDraft.current && isDirty(base, latestDraft.current);
         setDetail(next);
+        if (sent) {
+          if (savedVersion.current && next.updated_at !== savedVersion.current) {
+            // Another save landed between this save and its reload. Keep `updated_at` from
+            // this save so the next save is rejected, and report the conflict now.
+            setConflict(true);
+            return;
+          }
+          // The saved version becomes the baseline. Anything typed while the save was in
+          // flight differs from the sent draft and stays.
+          setSaved(fresh);
+          setExpectedUpdatedAt(next.updated_at);
+          setConflict(false);
+          setDraftState((current) => (current && isDirty(sent, current) ? current : fresh));
+          return;
+        }
+        // Server actions (approval, tokens) refresh the detail without discarding edits in progress.
+        const editing = keep && base && latestDraft.current && isDirty(base, latestDraft.current);
         // During a save this load may already see the user's own changes; the reload after the
         // save sets the new baseline, so leave it alone here.
         if (editing && savingNow.current) return;
-        if (editing && !sameSettings(base, fresh)) {
+        // The same version as the baseline means nobody else saved, even if the server
+        // normalized a value (for example trimmed whitespace) differently from the draft.
+        const sameVersion = next.updated_at === latestExpected.current;
+        if (editing && !sameVersion && isDirty(base, fresh)) {
           // Someone else saved while these edits were open. Keep the old baseline and
           // `updated_at` so the save is still rejected, and report the conflict now.
           setConflict(true);
@@ -137,17 +165,6 @@ function UserAppConsole({ appId, section }: { appId: string; section: ConsoleSec
       .catch(() => {});
     return () => controller.abort();
   }, [client]);
-
-  // The bot username comes from the user list, which can arrive after the app detail.
-  useEffect(() => {
-    if (!botUsername) return;
-    setSaved((current) =>
-      current && !current.bot_username ? { ...current, bot_username: botUsername } : current,
-    );
-    setDraftState((current) =>
-      current && !current.bot_username ? { ...current, bot_username: botUsername } : current,
-    );
-  }, [botUsername]);
 
   function selectSection(next: ConsoleSection) {
     void navigate({
@@ -218,13 +235,21 @@ function UserAppConsole({ appId, section }: { appId: string; section: ConsoleSec
     if (!detail || !saved || !draft || saving) return;
     setSaving(true);
     savingNow.current = true;
+    // Loads already requested (including a previous save's reload) predate this save and could
+    // report it as a conflict or clear a conflict it finds, so they are ignored.
+    staleBefore.current = latestReloadCount.current + 1;
     setSaveError("");
     try {
-      await client.request(`/api/apps/${encodeURIComponent(appId)}`, {
-        method: "PATCH",
-        body: saveBody(draft, saved, expectedUpdatedAt),
-      });
-      reloadDetail(false);
+      const body = saveBody(draft, saved, expectedUpdatedAt);
+      const result = await client.request<{ updated_at?: string }>(
+        `/api/apps/${encodeURIComponent(appId)}`,
+        { method: "PATCH", body },
+      );
+      // Until the reload below lands, an action's refresh compares against the saved version.
+      savedVersion.current = result?.updated_at ?? "";
+      if (result?.updated_at) setExpectedUpdatedAt(result.updated_at);
+      staleBefore.current = latestReloadCount.current + 1;
+      reloadDetail(false, draft);
     } catch (cause) {
       if (cause instanceof ApiError && cause.status === 409) setConflict(true);
       else setSaveError(describeApiError(cause, t));
@@ -393,13 +418,4 @@ function SectionBody({ section, ...props }: SectionProps & { section: ConsoleSec
     case "manifest":
       return <ManifestSection {...props} />;
   }
-}
-
-/**
- * Whether two snapshots hold the same settings. The bot username comes from the user list,
- * which can load later, so it is compared only when both snapshots know it.
- */
-function sameSettings(a: AppDraft, b: AppDraft) {
-  const known = Boolean(a.bot_username && b.bot_username);
-  return !isDirty(known ? a : { ...a, bot_username: "" }, known ? b : { ...b, bot_username: "" });
 }

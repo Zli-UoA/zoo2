@@ -852,7 +852,8 @@
       "title": "App 主頁",
       "help": "用戶同 App 傾偈嘅設定。",
       "dm": "接受私訊",
-      "dmHelp": "開咗之後，用戶可以傳私訊畀 App。"
+      "dmHelp": "啟用之後，用戶可以傳 DM 俾 App。亦會加入需要嘅 messages:read 同 dm:write 權限。",
+      "dmNotificationOnly": "淨係通知嘅 App 唔可以收 DM。"
     },
     "install": {
       "approval": "批准",

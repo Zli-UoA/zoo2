@@ -14,6 +14,8 @@ import {
   eventGroup,
   eventsNeedingScope,
   parseManifestJson,
+  settingScopes,
+  withSettingScopes,
   toggleEvent,
 } from "./model";
 
@@ -91,7 +93,7 @@ function ListField({
 }
 
 function updateManifest(props: SectionProps, change: (manifest: AppManifest) => AppManifest) {
-  props.setDraft((draft) => ({ ...draft, manifest: change(draft.manifest) }));
+  props.setDraft((draft) => ({ ...draft, manifest: withSettingScopes(change(draft.manifest)) }));
 }
 
 export function BasicSection(props: SectionProps) {
@@ -159,6 +161,7 @@ export function PermissionsSection(props: SectionProps) {
   const { t } = useTranslation();
   const { draft, catalog } = props;
   const { manifest } = draft;
+  const settings = settingScopes(manifest);
   return (
     <>
       <SettingsSection
@@ -167,13 +170,11 @@ export function PermissionsSection(props: SectionProps) {
       >
         <div className="grid gap-2 sm:grid-cols-2">
           {APP_SCOPES.map((scope) => {
-            const needed = eventsNeedingScope(manifest, catalog, scope);
-            const lockedByConnections = scope === "users:write" && manifest.user_connections;
-            const lockedByFunctions =
-              scope === "functions:execute" && manifest.functions.length > 0;
-            const locked =
-              manifest.scopes.includes(scope) &&
-              (needed.length > 0 || lockedByConnections || lockedByFunctions);
+            const needed = [
+              ...eventsNeedingScope(manifest, catalog, scope),
+              ...(settings[scope] ?? []),
+            ];
+            const locked = manifest.scopes.includes(scope) && needed.length > 0;
             return (
               <Checkbox
                 key={scope}
@@ -181,11 +182,7 @@ export function PermissionsSection(props: SectionProps) {
                 description={
                   locked
                     ? t("appConsole.permissions.requiredBy", {
-                        names: [
-                          ...needed,
-                          ...(lockedByConnections ? ["user_connections"] : []),
-                          ...(lockedByFunctions ? ["functions"] : []),
-                        ].join(", "),
+                        names: needed.join(", "),
                       })
                     : undefined
                 }
@@ -218,14 +215,7 @@ export function PermissionsSection(props: SectionProps) {
           description={t("appConsole.permissions.userConnectionsHelp")}
           checked={manifest.user_connections}
           onChange={(user_connections) =>
-            updateManifest(props, (current) => ({
-              ...current,
-              user_connections,
-              scopes:
-                user_connections && !current.scopes.includes("users:write")
-                  ? [...current.scopes, "users:write"]
-                  : current.scopes,
-            }))
+            updateManifest(props, (current) => ({ ...current, user_connections }))
           }
         />
       </SettingsSection>
@@ -410,16 +400,7 @@ export function InteractivitySection(props: SectionProps) {
       label={t(`appConsole.interactivity.${key}`)}
       description={t(`appConsole.interactivity.${key}Help`)}
       value={manifest[key]}
-      onChange={(value) =>
-        updateManifest(props, (current) => ({
-          ...current,
-          [key]: value,
-          scopes:
-            key === "functions" && value.length && !current.scopes.includes("functions:execute")
-              ? [...current.scopes, "functions:execute"]
-              : current.scopes,
-        }))
-      }
+      onChange={(value) => updateManifest(props, (current) => ({ ...current, [key]: value }))}
     />
   );
   return (
@@ -441,12 +422,18 @@ export function InteractivitySection(props: SectionProps) {
 
 export function HomeSection(props: SectionProps) {
   const { t } = useTranslation();
+  const { manifest } = props.draft;
+  const blocked = manifest.notification_only && !manifest.dm_enabled;
   return (
     <SettingsSection title={t("appConsole.home.title")} description={t("appConsole.home.help")}>
       <Checkbox
         label={t("appConsole.home.dm")}
-        description={t("appConsole.home.dmHelp")}
-        checked={props.draft.manifest.dm_enabled}
+        description={
+          // The server rejects DMs for notification-only apps; turning them off stays possible.
+          blocked ? t("appConsole.home.dmNotificationOnly") : t("appConsole.home.dmHelp")
+        }
+        checked={manifest.dm_enabled}
+        disabled={blocked}
         onChange={(dm_enabled) => updateManifest(props, (current) => ({ ...current, dm_enabled }))}
       />
     </SettingsSection>

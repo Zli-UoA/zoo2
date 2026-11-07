@@ -77,6 +77,11 @@ async fn detail_separates_approved_installation_and_rejects_stale_saves() -> any
 
     let (_, draft) = req(&app, "GET", &path, &owner, Value::Null).await;
     assert_eq!(draft["installation"], Value::Null, "{draft}");
+    // The console reads the bot username from the detail, not from the realtime user list.
+    assert!(
+        draft["bot_username"].as_str().is_some_and(|name| !name.is_empty()),
+        "{draft}"
+    );
     assert_eq!(
         req(&app, "POST", &action("submit"), &owner, Value::Null)
             .await
@@ -151,6 +156,14 @@ async fn detail_separates_approved_installation_and_rejects_stale_saves() -> any
         unchanged["manifest"]["event_url"],
         "https://example.com/draft"
     );
+
+    // A rename is visible in the detail right away.
+    let mut renamed = input(&edited, unchanged["updated_at"].as_str().unwrap());
+    renamed["bot_username"] = json!("console_renamed");
+    let (status, saved) = req(&app, "PATCH", &path, &owner, renamed).await;
+    assert_eq!(status, StatusCode::OK, "{saved}");
+    let (_, after) = req(&app, "GET", &path, &owner, Value::Null).await;
+    assert_eq!(after["bot_username"], "console_renamed");
 
     // Each signing secret view is recorded.
     assert_eq!(

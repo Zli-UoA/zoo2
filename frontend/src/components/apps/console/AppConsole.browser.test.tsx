@@ -15,7 +15,6 @@ const api = vi.hoisted(() => ({
   delete: vi.fn(),
   navigate: vi.fn(),
   admin: false,
-  botName: "echo_bot",
 }));
 vi.mock("../../../lib/api/client", async (original) => ({
   ...(await original<typeof import("../../../lib/api/client")>()),
@@ -33,7 +32,7 @@ vi.mock("../../../hooks/useRealtime", async (original) => ({
   useUsers: () => ({
     data: [
       { id: "me", display_name: "Me", user_name: "me" },
-      { id: "bot", display_name: "Echo", user_name: api.botName },
+      { id: "bot", display_name: "Echo", user_name: "echo_bot" },
     ],
   }),
   useActiveChannels: () => ({
@@ -71,6 +70,7 @@ const detail: AppDetail = {
   status: "installed",
   revision: 2,
   updated_at: "2026-11-07T00:00:00.123",
+  bot_username: "echo_bot",
   manifest: {
     scopes: ["messages:write"],
     events: [],
@@ -98,7 +98,6 @@ beforeEach(async () => {
   await page.viewport(1280, 800);
   current = structuredClone(detail);
   api.admin = false;
-  api.botName = "echo_bot";
   api.navigate.mockReset();
   api.get.mockReset().mockImplementation((path: string) => {
     if (path === "/api/apps/echo") return Promise.resolve(current);
@@ -202,15 +201,27 @@ describe("App console", () => {
     expect(patchBody()).toBeUndefined();
   });
 
-  it("reports a bot username changed elsewhere instead of reverting it", async () => {
-    open("events");
-    await userEvent.click(await screen.findByRole("checkbox", { name: /message\.created/ }));
-    api.botName = "echo2";
-    current = { ...current, updated_at: "2026-11-07T00:00:05.000" };
-    await userEvent.click(screen.getByRole("button", { name: "承認済み URL を検証" }));
+  it("reports a bot rename saved elsewhere while the username is being edited", async () => {
+    const view = render(
+      <LocaleProvider>
+        <AppConsole appId="echo" section="basic" />
+      </LocaleProvider>,
+    );
+    const username = await screen.findByRole("textbox", { name: "Bot のユーザー名" });
+    await userEvent.clear(username);
+    await userEvent.type(username, "alpha");
+    current = { ...current, bot_username: "beta", updated_at: "2026-11-07T00:00:05.000" };
+    // Move to another section and run an action that reloads the detail.
+    view.rerender(
+      <LocaleProvider>
+        <AppConsole appId="echo" section="events" />
+      </LocaleProvider>,
+    );
+    await userEvent.click(await screen.findByRole("button", { name: "承認済み URL を検証" }));
     expect((await screen.findByRole("alert")).textContent).toContain(
       "ほかの画面で設定が更新されました",
     );
+    expect(patchBody()).toBeUndefined();
   });
 
   it("does not report its own save as a conflict after a failed reload", async () => {
@@ -232,6 +243,7 @@ describe("App console", () => {
             manifest: options.body!.manifest,
             updated_at: "2026-11-07T00:00:09.000",
           };
+          return Promise.resolve({ updated_at: current.updated_at });
         }
         return Promise.resolve({});
       },
@@ -265,6 +277,219 @@ describe("App console", () => {
       expected_updated_at: "2026-11-07T00:00:05.000",
       manifest: { events: ["message.created"] },
     });
+  });
+
+  it("keeps edits made while a save is in flight", async () => {
+    let finish = () => {};
+    api.request.mockImplementation(
+      (_path: string, options?: { method?: string; body?: Record<string, any> }) => {
+        if (options?.method !== "PATCH") return Promise.resolve({});
+        const body = options.body!;
+        return new Promise((resolve) => {
+          finish = () => {
+            current = {
+              ...current,
+              manifest: body.manifest,
+              updated_at: "2026-11-07T00:00:09.000",
+            };
+            resolve({ updated_at: current.updated_at });
+          };
+        });
+      },
+    );
+    open("events");
+    await userEvent.click(await screen.findByRole("checkbox", { name: /message\.created/ }));
+    const bar = screen.getByRole("region", { name: "未保存の変更" });
+    await userEvent.click(within(bar).getByRole("button", { name: "保存" }));
+    await waitFor(() => expect(patchBody()).toBeDefined());
+    await userEvent.click(screen.getByRole("checkbox", { name: /app\.mentioned/ }));
+    finish();
+    await waitFor(() =>
+      expect(api.get.mock.calls.filter(([path]) => path === "/api/apps/echo")).toHaveLength(2),
+    );
+    expect(screen.getByRole("checkbox", { name: /app\.mentioned/ })).toBeChecked();
+    expect(screen.getByRole("checkbox", { name: /message\.created/ })).toBeChecked();
+    expect(screen.getByRole("region", { name: "未保存の変更" }).textContent).toContain(
+      "イベント購読",
+    );
+  });
+
+  it("does not report its own save when an action reload replaces the post-save reload", async () => {
+    let finishPatch = () => {};
+    let finishVerify = () => {};
+    api.request.mockImplementation(
+      (path: string, options?: { method?: string; body?: Record<string, any> }) => {
+        if (options?.method === "PATCH") {
+          const body = options.body!;
+          return new Promise((resolve) => {
+            finishPatch = () => {
+              current = {
+                ...current,
+                manifest: body.manifest,
+                updated_at: "2026-11-07T00:00:09.000",
+              };
+              resolve({ updated_at: current.updated_at });
+            };
+          });
+        }
+        if (path.endsWith("/verify-endpoint"))
+          return new Promise((resolve) => {
+            finishVerify = () => resolve({});
+          });
+        return Promise.resolve({});
+      },
+    );
+    open("events");
+    await userEvent.click(await screen.findByRole("checkbox", { name: /message\.created/ }));
+    const bar = screen.getByRole("region", { name: "未保存の変更" });
+    await userEvent.click(within(bar).getByRole("button", { name: "保存" }));
+    await userEvent.click(screen.getByRole("button", { name: "承認済み URL を検証" }));
+    // The save returns, and the verify refresh replaces the post-save reload before it is sent.
+    finishPatch();
+    finishVerify();
+    await waitFor(() =>
+      expect(api.get.mock.calls.filter(([path]) => path === "/api/apps/echo")).toHaveLength(2),
+    );
+    await waitFor(() => expect(screen.queryByRole("region", { name: "未保存の変更" })).toBeNull());
+    expect(screen.queryByRole("alert")).toBeNull();
+  });
+
+  it("ignores the previous save's reload once another save starts", async () => {
+    const held: (() => void)[] = [];
+    let hold = false;
+    api.get.mockImplementation((path: string) => {
+      if (path === "/api/apps/events") return Promise.resolve(catalog);
+      if (path !== "/api/apps/echo") return Promise.resolve([]);
+      if (!hold) return Promise.resolve(current);
+      hold = false;
+      // Reads the detail when released, after the second save has committed.
+      return new Promise((resolve) => held.push(() => resolve(current)));
+    });
+    let version = 0;
+    let respond = () => {};
+    api.request.mockImplementation(
+      (_path: string, options?: { method?: string; body?: Record<string, any> }) => {
+        if (options?.method !== "PATCH") return Promise.resolve({});
+        version += 1;
+        current = {
+          ...current,
+          manifest: options.body!.manifest,
+          updated_at: `2026-11-07T00:00:1${version}.000`,
+        };
+        const result = { updated_at: current.updated_at };
+        // The second save commits at once but its response arrives late.
+        if (version === 1) return Promise.resolve(result);
+        return new Promise((resolve) => {
+          respond = () => resolve(result);
+        });
+      },
+    );
+    open("events");
+    await userEvent.click(await screen.findByRole("checkbox", { name: /message\.created/ }));
+    hold = true;
+    await userEvent.click(screen.getByRole("button", { name: "保存" }));
+    await waitFor(() => expect(held).toHaveLength(1));
+    // Edit again and save before the first save's reload has answered.
+    await userEvent.click(screen.getByRole("checkbox", { name: /app\.mentioned/ }));
+    await userEvent.click(screen.getByRole("button", { name: "保存" }));
+    await waitFor(() => expect(version).toBe(2));
+    // The first save's reload now reads the second save's version.
+    held[0]!();
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(screen.queryByRole("alert")).toBeNull();
+    respond();
+    await waitFor(() =>
+      expect(api.get.mock.calls.filter(([path]) => path === "/api/apps/echo")).toHaveLength(3),
+    );
+    await waitFor(() => expect(screen.queryByRole("region", { name: "未保存の変更" })).toBeNull());
+    expect(screen.queryByRole("alert")).toBeNull();
+    expect(screen.getByRole("checkbox", { name: /app\.mentioned/ })).toBeChecked();
+  });
+
+  it("reports a save that lands between this save and its reload", async () => {
+    api.request.mockImplementation(
+      (_path: string, options?: { method?: string; body?: Record<string, any> }) => {
+        if (options?.method !== "PATCH") return Promise.resolve({});
+        // This save gets T9, then someone else saves (T10) before the reload reads the detail.
+        current = {
+          ...current,
+          manifest: { ...options.body!.manifest, commands: ["other"] },
+          updated_at: "2026-11-07T00:00:10.000",
+        };
+        return Promise.resolve({ updated_at: "2026-11-07T00:00:09.000" });
+      },
+    );
+    open("events");
+    await userEvent.click(await screen.findByRole("checkbox", { name: /message\.created/ }));
+    const bar = screen.getByRole("region", { name: "未保存の変更" });
+    await userEvent.click(within(bar).getByRole("button", { name: "保存" }));
+    expect((await screen.findByRole("alert")).textContent).toContain(
+      "ほかの画面で設定が更新されました",
+    );
+  });
+
+  it("shows the saved bot username right after saving", async () => {
+    api.request.mockImplementation(
+      (_path: string, options?: { method?: string; body?: Record<string, any> }) => {
+        if (options?.method !== "PATCH") return Promise.resolve({});
+        current = {
+          ...current,
+          bot_username: options.body!.bot_username ?? current.bot_username,
+          updated_at: "2026-11-07T00:00:09.000",
+        };
+        return Promise.resolve({ updated_at: current.updated_at });
+      },
+    );
+    open("basic");
+    const username = await screen.findByRole("textbox", { name: "Bot のユーザー名" });
+    expect(username).toHaveValue("echo_bot");
+    await userEvent.clear(username);
+    await userEvent.type(username, "echo_new");
+    await userEvent.click(screen.getByRole("button", { name: "保存" }));
+    await waitFor(() =>
+      expect(api.get.mock.calls.filter(([path]) => path === "/api/apps/echo")).toHaveLength(2),
+    );
+    // The realtime user list still says echo_bot; the detail is what the field shows.
+    expect(screen.getByRole("textbox", { name: "Bot のユーザー名" })).toHaveValue("echo_new");
+    expect(screen.queryByRole("region", { name: "未保存の変更" })).toBeNull();
+  });
+
+  it("adds the scopes DMs need when they are turned on", async () => {
+    open("home");
+    await userEvent.click(await screen.findByRole("checkbox", { name: /DM を受け付ける/ }));
+    const bar = screen.getByRole("region", { name: "未保存の変更" });
+    expect(bar.textContent).toContain("権限");
+    await userEvent.click(within(bar).getByRole("button", { name: "保存" }));
+    await waitFor(() => expect(patchBody()).toBeDefined());
+    expect(patchBody().manifest).toMatchObject({
+      dm_enabled: true,
+      scopes: ["messages:write", "messages:read", "dm:write"],
+    });
+  });
+
+  it("locks the scopes DMs need while DMs are on", async () => {
+    const view = render(
+      <LocaleProvider>
+        <AppConsole appId="echo" section="home" />
+      </LocaleProvider>,
+    );
+    await userEvent.click(await screen.findByRole("checkbox", { name: /DM を受け付ける/ }));
+    view.rerender(
+      <LocaleProvider>
+        <AppConsole appId="echo" section="permissions" />
+      </LocaleProvider>,
+    );
+    const scope = await screen.findByRole("checkbox", { name: /dm:write/ });
+    expect(scope).toBeChecked();
+    expect(scope).toBeDisabled();
+    expect(scope.closest("label")?.textContent).toContain("dm_enabled");
+  });
+
+  it("does not offer DMs to notification-only apps", async () => {
+    current = { ...current, manifest: { notification_only: true, scopes: [], events: [] } };
+    open("home");
+    expect(await screen.findByRole("checkbox", { name: /DM を受け付ける/ })).toBeDisabled();
+    expect(screen.getByText("通知専用 App では DM を受け付けられません。")).toBeVisible();
   });
 
   it("verifies the approved URL and says the edited one needs re-approval", async () => {

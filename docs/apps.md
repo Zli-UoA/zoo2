@@ -40,7 +40,7 @@ App設定の `scopes` は [OpenAPI の Manifest 定義](apps.openapi.json) に�
 
 設定の保存（`PATCH /api/apps/{id}`）は名前・説明・アイコン・`bot_username`・manifest の全体を置き換えます。一部の項目だけを送ると、残りは既定値になります。管理画面などで同時編集を防ぐには、`GET /api/apps/{id}` の `updated_at` を `expected_updated_at` として送ります。その後に別の保存があると 409 を返し、上書きしません。応答の `updated_at` を次の保存に使えます。
 
-`GET /api/apps/{id}` は開発者・管理者に `installation` も返します。承認済みインストールの `revision`・`active`・`transport`・`event_url`・`endpoint_verified_at` で、編集中の `manifest` とは再承認まで異なる場合があります。配信と受信 URL の検証は `installation` 側の設定を使います。未承認の App では `null` です。
+`GET /api/apps/{id}` は開発者・管理者に `installation` も返します。承認済みインストールの `revision`・`active`・`transport`・`event_url`・`endpoint_verified_at` で、編集中の `manifest` とは再承認まで異なる場合があります。配信と受信 URL の検証は `installation` 側の設定を使います。未承認の App では `null` です。詳細には Bot ユーザーの現在の `bot_username` も含まれます。
 
 ### ユーザー代理操作
 

@@ -37,6 +37,8 @@ export type AppDetail = {
   status: AppStatus;
   revision: number;
   updated_at: string;
+  /** The bot user's current username, read with the rest of the detail. */
+  bot_username?: string | null;
   manifest: Partial<AppManifest>;
   installation?: AppInstallation | null;
 };
@@ -52,6 +54,8 @@ export type AppDraft = {
 
 export type EventCatalog = {
   native_events: { name: string; scope: string | null; audience: string }[];
+  /** Compatibility names that resolve to a native event, which then needs that event's scope. */
+  aliases?: { alias: string; event: string | null }[];
 };
 
 /** Keep in sync with `Manifest.scopes` in docs/apps.openapi.json (checked by model.test.ts). */
@@ -136,12 +140,12 @@ export function normalizeManifest(value: Partial<AppManifest> = {}): AppManifest
   };
 }
 
-export function draftFromDetail(detail: AppDetail, botUsername = ""): AppDraft {
+export function draftFromDetail(detail: AppDetail): AppDraft {
   return {
     name: detail.name,
     description: detail.description,
     icon_url: detail.icon_url ?? "",
-    bot_username: botUsername,
+    bot_username: detail.bot_username ?? "",
     manifest: normalizeManifest(detail.manifest),
   };
 }
@@ -217,8 +221,22 @@ const manifestSection: Record<keyof AppManifest, ConsoleSection> = {
   notification_only: "manifest",
 };
 
-export function requiredScope(catalog: EventCatalog | null, event: string) {
-  return catalog?.native_events.find((entry) => entry.name === event)?.scope ?? null;
+/** Scopes an event name needs, resolving aliases like `events::required_scopes()` on the server. */
+export function requiredScopes(catalog: EventCatalog | null, event: string): string[] {
+  if (!catalog) return [];
+  const names = new Set([
+    event,
+    ...(catalog.aliases ?? [])
+      .filter((entry) => entry.alias === event && entry.event)
+      .map((entry) => entry.event!),
+  ]);
+  return [
+    ...new Set(
+      catalog.native_events
+        .filter((entry) => names.has(entry.name) && entry.scope)
+        .map((entry) => entry.scope!),
+    ),
+  ];
 }
 
 /** Subscribing to an event also requests the scope it needs, as the server would reject it otherwise. */
@@ -229,12 +247,13 @@ export function toggleEvent(
   enabled: boolean,
 ): AppManifest {
   if (!enabled) return { ...manifest, events: manifest.events.filter((name) => name !== event) };
-  const scope = requiredScope(catalog, event);
+  const missing = requiredScopes(catalog, event).filter(
+    (scope) => !manifest.scopes.includes(scope),
+  );
   return {
     ...manifest,
     events: manifest.events.includes(event) ? manifest.events : [...manifest.events, event],
-    scopes:
-      scope && !manifest.scopes.includes(scope) ? [...manifest.scopes, scope] : manifest.scopes,
+    scopes: missing.length ? [...manifest.scopes, ...missing] : manifest.scopes,
   };
 }
 
@@ -244,7 +263,34 @@ export function eventsNeedingScope(
   catalog: EventCatalog | null,
   scope: string,
 ) {
-  return manifest.events.filter((event) => requiredScope(catalog, event) === scope);
+  return manifest.events.filter((event) => requiredScopes(catalog, event).includes(scope));
+}
+
+/**
+ * Scopes that settings other than event subscriptions require, with the settings that need
+ * each one. Mirrors `Manifest::validate()` in backend/src/apps/mod.rs.
+ */
+export function settingScopes(manifest: AppManifest): Record<string, (keyof AppManifest)[]> {
+  const needs: Record<string, (keyof AppManifest)[]> = {};
+  const add = (scope: string, setting: keyof AppManifest) => {
+    needs[scope] = [...(needs[scope] ?? []), setting];
+  };
+  if (manifest.functions.length > 0) add("functions:execute", "functions");
+  if (manifest.user_connections) add("users:write", "user_connections");
+  if (manifest.message_shortcuts.length > 0) add("messages:read", "message_shortcuts");
+  if (manifest.dm_enabled) {
+    add("messages:read", "dm_enabled");
+    add("dm:write", "dm_enabled");
+  }
+  return needs;
+}
+
+/** Turning a setting on also requests the scopes it needs, as the server would reject it otherwise. */
+export function withSettingScopes(manifest: AppManifest): AppManifest {
+  const missing = Object.keys(settingScopes(manifest)).filter(
+    (scope) => !manifest.scopes.includes(scope),
+  );
+  return missing.length ? { ...manifest, scopes: [...manifest.scopes, ...missing] } : manifest;
 }
 
 export function eventGroup(name: string) {
