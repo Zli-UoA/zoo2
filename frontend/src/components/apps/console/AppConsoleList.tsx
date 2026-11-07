@@ -33,11 +33,15 @@ type AppSummary = {
   manifest: { notification_only?: boolean };
 };
 
-/** Starting point for a new app; every field can be changed in the console before approval. */
+/**
+ * Starting point for a new app, the same as the earlier in-dialog form used. Every field can be
+ * changed in the console before approval.
+ */
 export const NEW_APP_MANIFEST = {
-  scopes: ["messages:read", "messages:write"],
-  events: ["app.mentioned"],
+  scopes: ["messages:read", "messages:write", "dm:write", "ui:write"],
+  events: ["message.created", "app.mentioned"],
   transport: "websocket",
+  dm_enabled: true,
 };
 
 export function AppConsoleList() {
