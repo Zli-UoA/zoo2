@@ -1305,17 +1305,29 @@ Megolm のメッセージ（`messages` の行）を復号したとき：
 ### 暗号ストア
 
 - 【決定】暗号ストアは、オフライン DB（`zoo-offline-*`）とは別に置く。`OFFLINE_SCHEMA_VERSION` を変えてオフライン DB を作り直しても、暗号ストアは消えない（消えると端末の鍵を失うため）。
-- 【決定】Olm と Megolm の状態は、vodozemac の pickle を 32 バイトの pickle key で暗号化して保存する（#348）。
+- 【決定】Olm と Megolm の状態は、vodozemac の pickle を暗号化して保存する（#348）。暗号化に使う pickle key は保存のたびに変える。
+  - 呼び出し側は 32 バイトの**保存鍵**を長く持ち、vodozemac には直接渡さない。保存するたびに新しい 32 バイトの salt を作り、`HKDF-SHA256(ikm = 保存鍵, salt, info)` で、その保存だけに使う pickle key を導く。salt は保存形式に平文で入れる。`info` は保存するものごとに分ける（端末アカウントは `zoo e2ee device pickle key v1`）。
+  - pickle key を保存のたびに変えるのは、vodozemac の pickle が pickle key から AES 鍵と IV を決まった方法で導くため。同じ pickle key を使い回すと、保存のたびに同じ鍵と IV で AES-CBC を使うことになる。そうなると、同じ平文ブロックは同じ暗号文ブロックになるので、複数の版やバックアップを手に入れた攻撃者は、暗号文を比べて pickle のどこが変わったかを知ることができる。[鍵バックアップ](#鍵バックアップ)で暗号化のたびに一時鍵を作り直すのも、同じ理由による。状態が変わっていなくても、保存のたびに出力は変わる。
 - 【提案】端末アカウントの保存形式（`DeviceAccount::pickle`）は、次の JSON にする。
 
   ```json
-  {"version": 1, "user_id": "...", "device_id": "...", "account": "<vodozemac の暗号化した pickle>", "binding": "<署名>"}
+  {"version": 2, "user_id": "...", "device_id": "...", "salt": "<32 バイト>", "account": "<vodozemac の暗号化した pickle>", "binding": "<署名>"}
   ```
 
-  `user_id` と `device_id` は平文で持つ。書き換えに気付けるように、`binding` に `LP("zoo e2ee device pickle v1")‖LP(user_id)‖LP(device_id)` への端末の署名鍵の署名を入れる（`LP` は[鍵スロット](#鍵スロット)の AAD と同じ）。署名する対象を JSON ではなく長さ付きのバイト列にして、この署名がサーバーに送る署名付き JSON の署名と取り違えられないようにする。pickle key が違えば復号に失敗し、`CryptoError::Pickle` になる。
-- 【提案】保存先と pickle key の置き場所：
+  `salt` は上の pickle key を導く salt で、パディングなしの base64 で書く。`version` の 1 は salt のない形式だった。#348 のクレートは公開前で、1 の形式で保存したデータはないので、1 の読み込みには対応せず、移行もしない。
 
-  | クライアント | 保存先 | pickle key |
+  `user_id` と `device_id` は平文で持つ。書き換えに気付けるように、`binding` に `LP("zoo e2ee device pickle v1")‖LP(user_id)‖LP(device_id)` への端末の署名鍵の署名を入れる（`LP` は[鍵スロット](#鍵スロット)の AAD と同じ）。署名する対象を JSON ではなく長さ付きのバイト列にして、この署名がサーバーに送る署名付き JSON の署名と取り違えられないようにする。
+
+  `DeviceAccount::from_pickle` は、保存した文字列と保存鍵に加えて、今ログインしているユーザーの `user_id` と、そのユーザーで登録した端末の `device_id` を受け取る。戻すときは次の順に確かめる。
+  1. `user_id` と `device_id` が `DeviceAccount::new` と同じ条件（`device_id` は UUID v4）を満たす。満たさなければ `CryptoError::InvalidPickle` になる。
+  2. 保存鍵と `salt` から導いた pickle key で復号できる。保存鍵が違えば `CryptoError::Pickle` になる。
+  3. `binding` が正しい。正しくなければ `CryptoError::InvalidPickle` になる。
+  4. 保存した `user_id` と `device_id` が引数の値と一致する。一致しなければ `CryptoError::PickleOwnerMismatch` になる。
+
+  4 で照合するのは、`binding` をその pickle 自身の署名鍵で検証するため。同じ保存鍵で保存した別のユーザーや端末の pickle を丸ごと差し替えられても、3 までは通る。保存鍵をユーザーや端末ごとに分けるかは各クライアント（#359）で決めるので、分けていない場合でも別のユーザーや端末の鍵で動かないように、zoo-crypto の側で照合する。
+- 【提案】保存先と保存鍵の置き場所。表の鍵は長く使う保存鍵で、vodozemac の pickle key は上のとおり保存のたびにここから導く。
+
+  | クライアント | 保存先 | 保存鍵 |
   | --- | --- | --- |
   | React と Compose wasmJs | OPFS の別 DB（`zoo-crypto-<ユーザーのハッシュ>.sqlite`。名前は `lib/offline/identity.ts` と同じ作り方） | 抽出できない WebCrypto の鍵（IndexedDB に保存）で包み、起動時に Worker のメモリーに展開する |
   | Android | アプリの内部ストレージ | Android Keystore で包む |
@@ -1323,7 +1335,7 @@ Megolm のメッセージ（`messages` の行）を復号したとき：
 
 - 【決定】React と Compose wasmJs は同じオリジン（`https://zli.chat` と `/compose/`）で動くので、同じ暗号ストアと同じ端末を共有する。複数のタブや 2 つの UI が同時に同じ Olm と Megolm の状態を書き換えると壊れるので、暗号ストアを開くのは Web Locks（`navigator.locks`）を取れた 1 つのタブだけにする。【提案】他のタブは BroadcastChannel でそのタブに処理を頼む。詳細は #359 で決める。
 - ログアウトしたら暗号ストアを消す（[ログアウトと端末の削除](#ログアウトと端末の削除)）。
-- pickle key による暗号化が防ぐのは、ディスクやバックアップからの持ち出しだけ。XSS など、同じオリジンでコードを動かされると、ストアの中身はそのまま使われる（[脅威モデル](#脅威モデル)）。
+- 保存鍵による暗号化が防ぐのは、ディスクやバックアップからの持ち出しだけ。XSS など、同じオリジンでコードを動かされると、ストアの中身はそのまま使われる（[脅威モデル](#脅威モデル)）。
 
 ## 脅威モデル
 
