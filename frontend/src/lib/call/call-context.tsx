@@ -195,6 +195,8 @@ export function CallProvider({ config: explicitConfig, children }: CallProviderP
 
   // 最後に適用/要求したマイク ID。保存イベントとの二重切替を防ぐ
   const appliedMicIdRef = useRef(selectedMicId);
+  // 実際に送信へ使われているマイク（切替失敗時に選択値を戻す先）
+  const activeMicIdRef = useRef(selectedMicId);
 
   interface PeerEntry {
     pc: RTCPeerConnection;
@@ -596,29 +598,29 @@ export function CallProvider({ config: explicitConfig, children }: CallProviderP
   );
 
   const switchMicrophone = useCallback(
-    async (deviceId: string, expectedGen: number) => {
+    async (deviceId: string, expectedGen: number): Promise<boolean> => {
       // 直列化されたキューの中で、直前の切替が確定した後の最新ストリームを取得する
       const oldStream = localStreamRef.current;
-      if (!oldStream || !sessionIdRef.current) return;
+      if (!oldStream || !sessionIdRef.current) return true;
       const gen = callGenerationRef.current;
       // 予約時と異なる通話（退出・再参加を挟んだ場合）への要求は破棄する
-      if (gen !== expectedGen) return;
+      if (gen !== expectedGen) return true;
       let newStream: MediaStream;
       try {
         newStream = await acquireMicStream(deviceId);
       } catch {
         toast.error(t("call.micSwitchFailed"));
-        return;
+        return false;
       }
       // 取得中に退出・切替があった場合は破棄
       if (callGenerationRef.current !== gen || localStreamRef.current !== oldStream) {
         for (const track of newStream.getTracks()) track.stop();
-        return;
+        return true;
       }
       const newTrack = newStream.getAudioTracks()[0];
       if (!newTrack) {
         for (const track of newStream.getTracks()) track.stop();
-        return;
+        return false;
       }
       const stopNewStream = () => {
         for (const track of newStream.getTracks()) track.stop();
@@ -655,15 +657,16 @@ export function CallProvider({ config: explicitConfig, children }: CallProviderP
         await Promise.all(replaced.map((sender) => sender.replaceTrack(oldTrack).catch(() => {})));
         clearPending();
         stopNewStream();
-        if (!isStale()) toast.error(t("call.micSwitchFailed"));
-        return;
+        if (isStale()) return true;
+        toast.error(t("call.micSwitchFailed"));
+        return false;
       }
       clearPending();
       // 置換待ちの間に退出・通話切替があった場合は、新しいストリームを破棄する
       if (isStale()) {
         await Promise.all(replaced.map((sender) => sender.replaceTrack(oldTrack).catch(() => {})));
         stopNewStream();
-        return;
+        return true;
       }
       // 置換待ちの間のミュート操作を取りこぼさないよう、切替直前に最新状態を反映する
       newTrack.enabled = !isMutedRef.current;
@@ -673,6 +676,8 @@ export function CallProvider({ config: explicitConfig, children }: CallProviderP
         updateSpeakingUser(effectiveUserId, speaking && !isMutedRef.current);
       });
       for (const track of oldStream.getTracks()) track.stop();
+      activeMicIdRef.current = deviceId;
+      return true;
     },
     [effectiveUserId, t, updateSpeakingUser],
   );
@@ -684,7 +689,14 @@ export function CallProvider({ config: explicitConfig, children }: CallProviderP
       appliedMicIdRef.current = deviceId;
       saveSelectedDevice("mic", deviceId);
       const reservedGen = callGenerationRef.current;
-      const run = micSwitchQueueRef.current.then(() => switchMicrophone(deviceId, reservedGen));
+      const run = micSwitchQueueRef.current.then(async () => {
+        const ok = await switchMicrophone(deviceId, reservedGen);
+        // 失敗し、より新しい選択も無ければ、使用中のマイクへ表示と保存値を戻す
+        if (!ok && appliedMicIdRef.current === deviceId) {
+          appliedMicIdRef.current = activeMicIdRef.current;
+          saveSelectedDevice("mic", activeMicIdRef.current);
+        }
+      });
       micSwitchQueueRef.current = run.catch(() => {});
       return run;
     },
@@ -822,6 +834,7 @@ export function CallProvider({ config: explicitConfig, children }: CallProviderP
       let usedMicId = "";
       try {
         usedMicId = appliedMicIdRef.current;
+        activeMicIdRef.current = usedMicId;
         stream = await acquireMicStream(usedMicId);
       } catch (err: unknown) {
         if (callGenerationRef.current !== currentGen || joinAbort.signal.aborted) return;
