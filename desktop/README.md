@@ -17,7 +17,7 @@ zoo2 のネイティブデスクトップクライアントです。Rust と [GP
 
 ## 初期設定
 
-設定ファイルは `~/.config/zoo2-desktop/config.toml`（macOS では `~/Library/Application Support/zoo2-desktop/config.toml`、Windows では `%APPDATA%\zoo2-desktop\config.toml`）から読み込みます。環境変数 (`ZOO_*`) でも指定でき、環境変数が優先されます。
+設定ファイルは `~/.config/zoo2-desktop/config.toml`（macOS では `~/Library/Application Support/zoo2-desktop/config.toml`、Windows では `%APPDATA%\zoo2-desktop\config\config.toml`）から読み込みます。環境変数 (`ZOO_*`) でも指定でき、環境変数が優先されます。
 
 ### OIDC クライアント ID (`ZOO_OIDC_CLIENT_ID`) の指定について
 

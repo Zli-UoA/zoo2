@@ -1,7 +1,5 @@
 //! GPUI による画面描画 (`WorkspaceView`、`LoginView`、`SidebarView`、`TimelineView`、`ComposerView`、`ThreadView`)。
 
-use std::collections::HashMap;
-
 use gpui::{
     ClipboardItem, Context, Div, ElementId, Entity, FocusHandle, Focusable, FontWeight,
     IntoElement, KeyDownEvent, MouseButton, MouseUpEvent, ParentElement, Render, ScrollHandle,
@@ -27,6 +25,7 @@ pub struct WorkspaceView {
     pub composer_input: Entity<TextInput>,
     pub reaction_input: Entity<TextInput>,
     pub timeline_scroll: ScrollHandle,
+    pub thread_scroll: ScrollHandle,
     focus_handle: FocusHandle,
     login_primary_focus: FocusHandle,
     login_secondary_focus: FocusHandle,
@@ -157,6 +156,7 @@ impl WorkspaceView {
             composer_input,
             reaction_input,
             timeline_scroll: ScrollHandle::new(),
+            thread_scroll: ScrollHandle::new(),
             focus_handle: cx.focus_handle(),
             login_primary_focus: cx.focus_handle(),
             login_secondary_focus: cx.focus_handle(),
@@ -515,6 +515,9 @@ impl WorkspaceView {
             }
         };
 
+        let is_awaiting = matches!(phase, LoginPhase::AwaitingApproval { .. });
+        let is_ready_oidc = matches!(phase, LoginPhase::Ready { .. }) && is_oidc;
+
         div()
             .flex()
             .size_full()
@@ -523,6 +526,50 @@ impl WorkspaceView {
             .justify_center()
             .items_center()
             .p_6()
+            .on_key_down(cx.listener(move |this, ev: &KeyDownEvent, window, cx| {
+                let key = ev.keystroke.key.as_str();
+                if key == "escape" && is_awaiting {
+                    this.state.update(cx, |s, cx| {
+                        s.cancel_device_login();
+                        cx.notify();
+                    });
+                    return;
+                }
+                let forward =
+                    matches!(key, "tab" | "down" | "right") && !ev.keystroke.modifiers.shift;
+                let backward =
+                    (key == "tab" && ev.keystroke.modifiers.shift) || matches!(key, "up" | "left");
+                if !forward && !backward {
+                    return;
+                }
+                if is_awaiting {
+                    let handles = [
+                        &this.login_primary_focus,
+                        &this.login_secondary_focus,
+                        &this.login_cancel_focus,
+                    ];
+                    let current = handles
+                        .iter()
+                        .position(|h| h.is_focused(window))
+                        .unwrap_or(0);
+                    let next = if forward {
+                        (current + 1) % handles.len()
+                    } else {
+                        (current + handles.len() - 1) % handles.len()
+                    };
+                    window.focus(handles[next]);
+                    cx.notify();
+                } else if is_ready_oidc {
+                    let handles = [&this.login_primary_focus, &this.login_secondary_focus];
+                    let current = handles
+                        .iter()
+                        .position(|h| h.is_focused(window))
+                        .unwrap_or(0);
+                    let next = (current + 1) % handles.len();
+                    window.focus(handles[next]);
+                    cx.notify();
+                }
+            }))
             .child(
                 div()
                     .w(px(460.0))
@@ -573,7 +620,7 @@ impl WorkspaceView {
             .unwrap_or_default();
         let is_oidc = matches!(state.config.auth, AuthConfig::Oidc(_));
         let channels_synced = state.store.is_synced(&ShapeId::Channels);
-        let sync_error = state.sync_error.clone();
+        let sync_error = state.sync_error();
         let notice = state.notice.as_ref().map(|(m, _)| m.clone());
         let current_channel = state.current_channel.clone();
         let unread = state.unread.clone();
@@ -869,30 +916,27 @@ impl WorkspaceView {
         let ch_desc = channel
             .and_then(|c| c.description.clone())
             .filter(|d| !d.is_empty());
-        let is_dm = channel.is_some_and(|c| c.is_dm);
         let is_archived = channel.is_some_and(|c| c.archive_at.is_some());
         let is_member = state.store.is_member(&channel_id, &me_id);
+        let can_join = channel.is_some_and(|c| state.can_join_channel(c));
+        let can_leave = channel.is_some_and(|c| state.can_leave_channel(c));
         let failed_draft_count = state.failed_drafts.len();
         let confirm_delete_id = state.confirm_delete_message.clone();
         let synced = state
             .store
             .is_synced(&ShapeId::Messages(channel_id.clone()));
+        let timeline_at_bottom = state.timeline_at_bottom;
 
-        let all_root_messages: Vec<Message> = state
-            .store
-            .root_messages(&channel_id)
-            .into_iter()
-            .cloned()
-            .collect();
-        let total_roots = all_root_messages.len();
-        let render_limit = state.timeline_render_limit;
-        let hidden_count = total_roots.saturating_sub(render_limit);
-        let visible_roots = &all_root_messages[hidden_count..];
-        let reply_counts = state.store.reply_counts(&channel_id);
-        let reactions_by_msg = state.store.reaction_groups_by_message(&channel_id, &me_id);
+        let all_root_messages = state.channel_cache.root_messages.clone();
+        let (start_idx, end_idx) = state.visible_timeline_bounds(&all_root_messages);
+        let hidden_before = start_idx;
+        let hidden_after = all_root_messages.len().saturating_sub(end_idx);
+        let visible_roots = &all_root_messages[start_idx..end_idx];
+        let reply_counts = state.channel_cache.reply_counts.clone();
+        let reactions_by_msg = state.channel_cache.reactions_by_message.clone();
 
         let mut timeline_items: Vec<Div> = Vec::new();
-        if hidden_count > 0 {
+        if hidden_before > 0 {
             timeline_items.push(
                 div().w_full().flex().justify_center().py_1().child(
                     div()
@@ -906,7 +950,7 @@ impl WorkspaceView {
                         .hover(|s| s.bg(theme::BG_HOVER).cursor_pointer())
                         .text_xs()
                         .text_color(theme::ACCENT)
-                        .child(format!("過去のメッセージを表示 (残り {hidden_count} 件)"))
+                        .child(format!("過去のメッセージを表示 (残り {hidden_before} 件)"))
                         .on_mouse_up(
                             MouseButton::Left,
                             cx.listener(|this, _: &MouseUpEvent, _, cx| {
@@ -1030,7 +1074,7 @@ impl WorkspaceView {
                                         ),
                                 )
                             })
-                            .when(!is_dm && (!is_archived || is_member), |d| {
+                            .when(can_join || can_leave, |d| {
                                 d.child(
                                     div()
                                         .id("btn-join-or-leave")
@@ -1168,6 +1212,45 @@ impl WorkspaceView {
                     })
                     .children(timeline_items),
             )
+            // 最新へ戻るバー
+            .when(!timeline_at_bottom || hidden_after > 0, |d| {
+                d.child(
+                    div()
+                        .px_4()
+                        .py_1p5()
+                        .bg(theme::BG_SURFACE)
+                        .border_t_1()
+                        .border_color(theme::BORDER)
+                        .flex()
+                        .justify_center()
+                        .child(
+                            div()
+                                .id("btn-jump-to-latest")
+                                .px_3()
+                                .py_1()
+                                .rounded_md()
+                                .bg(theme::ACCENT_BUTTON)
+                                .hover(|s| s.bg(theme::ACCENT_BUTTON_HOVER).cursor_pointer())
+                                .text_xs()
+                                .font_weight(FontWeight::BOLD)
+                                .text_color(theme::TEXT_PRIMARY)
+                                .child(if hidden_after > 0 {
+                                    format!("↓ 最新メッセージへ移動 (新着ほか {hidden_after} 件)")
+                                } else {
+                                    "↓ 最新メッセージへ移動".to_string()
+                                })
+                                .on_mouse_up(
+                                    MouseButton::Left,
+                                    cx.listener(|this, _: &MouseUpEvent, _, cx| {
+                                        this.state.update(cx, |s, cx| {
+                                            s.jump_to_latest_messages();
+                                            cx.notify();
+                                        });
+                                    }),
+                                ),
+                        ),
+                )
+            })
             // 下部入力欄
             .child(self.render_composer_view(cx))
     }
@@ -1359,33 +1442,37 @@ impl WorkspaceView {
                             .flex_row()
                             .items_center()
                             .gap_1p5()
-                            .child(
-                                div()
-                                    .id(ElementId::Name(SharedString::from(format!(
-                                        "{pane_prefix}-btn-reply-{msg_id}"
-                                    ))))
-                                    .px_2()
-                                    .py_0p5()
-                                    .rounded_sm()
-                                    .bg(theme::BG_SECONDARY)
-                                    .hover(|s| s.bg(theme::BG_HOVER).cursor_pointer())
-                                    .text_xs()
-                                    .text_color(theme::TEXT_MUTED)
-                                    .child("返信")
-                                    .on_mouse_up(
-                                        MouseButton::Left,
-                                        cx.listener(move |this, _: &MouseUpEvent, window, cx| {
-                                            let r_id = root_for_reply_btn.clone();
-                                            this.state.update(cx, |s, cx| {
-                                                s.open_thread(r_id);
-                                                cx.notify();
-                                            });
-                                            window.focus(&this.composer_input.focus_handle(cx));
-                                        }),
-                                    ),
-                            )
                             .when(!is_archived, |d| {
                                 d.child(
+                                    div()
+                                        .id(ElementId::Name(SharedString::from(format!(
+                                            "{pane_prefix}-btn-reply-{msg_id}"
+                                        ))))
+                                        .px_2()
+                                        .py_0p5()
+                                        .rounded_sm()
+                                        .bg(theme::BG_SECONDARY)
+                                        .hover(|s| s.bg(theme::BG_HOVER).cursor_pointer())
+                                        .text_xs()
+                                        .text_color(theme::TEXT_MUTED)
+                                        .child("返信")
+                                        .on_mouse_up(
+                                            MouseButton::Left,
+                                            cx.listener(
+                                                move |this, _: &MouseUpEvent, window, cx| {
+                                                    let r_id = root_for_reply_btn.clone();
+                                                    this.state.update(cx, |s, cx| {
+                                                        s.open_thread(r_id);
+                                                        cx.notify();
+                                                    });
+                                                    window.focus(
+                                                        &this.composer_input.focus_handle(cx),
+                                                    );
+                                                },
+                                            ),
+                                        ),
+                                )
+                                .child(
                                     div()
                                         .id(ElementId::Name(SharedString::from(format!(
                                             "{pane_prefix}-btn-react-{msg_id}"
@@ -1566,6 +1653,11 @@ impl WorkspaceView {
     fn render_composer_view(&self, cx: &mut Context<Self>) -> Div {
         let state = self.state.read(cx);
         let me_id = state.me.as_ref().map(|m| m.id.clone()).unwrap_or_default();
+        let is_archived = state
+            .current_channel
+            .as_deref()
+            .and_then(|id| state.store.channel(id))
+            .is_some_and(|c| c.archive_at.is_some());
 
         let (target_label, show_cancel, typing_scope) = match &state.target {
             Target::Channel => {
@@ -1600,101 +1692,120 @@ impl WorkspaceView {
             .flex()
             .flex_col()
             .gap_2()
-            // 送信先バナー + 入力中インジケーター
-            .child(
-                div()
-                    .flex()
-                    .flex_row()
-                    .justify_between()
-                    .items_center()
+            .when(is_archived, |d| {
+                d.child(
+                    div()
+                        .w_full()
+                        .p_2p5()
+                        .rounded_md()
+                        .bg(theme::BG_SURFACE)
+                        .border_1()
+                        .border_color(theme::BORDER)
+                        .text_xs()
+                        .text_color(theme::TEXT_MUTED)
+                        .child(
+                            "このチャンネルはアーカイブされているため、メッセージの投稿や編集はできません",
+                        ),
+                )
+            })
+            .when(!is_archived, |d| {
+                d
+                    // 送信先バナー + 入力中インジケーター
                     .child(
                         div()
                             .flex()
                             .flex_row()
+                            .justify_between()
                             .items_center()
-                            .gap_2()
                             .child(
                                 div()
-                                    .text_xs()
-                                    .font_weight(FontWeight::BOLD)
-                                    .text_color(if show_cancel {
-                                        theme::ACCENT
-                                    } else {
-                                        theme::TEXT_MUTED
-                                    })
-                                    .child(target_label),
+                                    .flex()
+                                    .flex_row()
+                                    .items_center()
+                                    .gap_2()
+                                    .child(
+                                        div()
+                                            .text_xs()
+                                            .font_weight(FontWeight::BOLD)
+                                            .text_color(if show_cancel {
+                                                theme::ACCENT
+                                            } else {
+                                                theme::TEXT_MUTED
+                                            })
+                                            .child(target_label),
+                                    )
+                                    .when(show_cancel, |d| {
+                                        d.child(
+                                            div()
+                                                .id("btn-cancel-target")
+                                                .px_2()
+                                                .py_0p5()
+                                                .rounded_sm()
+                                                .bg(theme::BG_SURFACE)
+                                                .border_1()
+                                                .border_color(theme::BORDER)
+                                                .hover(|s| s.bg(theme::BG_HOVER).cursor_pointer())
+                                                .text_xs()
+                                                .text_color(theme::TEXT_MUTED)
+                                                .child("キャンセル (Esc)")
+                                                .on_mouse_up(
+                                                    MouseButton::Left,
+                                                    cx.listener(|this, _: &MouseUpEvent, _, cx| {
+                                                        this.state.update(cx, |s, cx| {
+                                                            s.cancel_target();
+                                                            cx.notify();
+                                                        });
+                                                    }),
+                                                ),
+                                        )
+                                    }),
                             )
-                            .when(show_cancel, |d| {
-                                d.child(
-                                    div()
-                                        .id("btn-cancel-target")
-                                        .px_2()
-                                        .py_0p5()
-                                        .rounded_sm()
-                                        .bg(theme::BG_SURFACE)
-                                        .border_1()
-                                        .border_color(theme::BORDER)
-                                        .hover(|s| s.bg(theme::BG_HOVER).cursor_pointer())
-                                        .text_xs()
-                                        .text_color(theme::TEXT_MUTED)
-                                        .child("キャンセル (Esc)")
-                                        .on_mouse_up(
-                                            MouseButton::Left,
-                                            cx.listener(|this, _: &MouseUpEvent, _, cx| {
-                                                this.state.update(cx, |s, cx| {
-                                                    s.cancel_target();
-                                                    cx.notify();
-                                                });
-                                            }),
-                                        ),
-                                )
-                            }),
+                            .child(
+                                div()
+                                    .flex()
+                                    .flex_row()
+                                    .items_center()
+                                    .gap_3()
+                                    .when_some(typing_text, |d, t| {
+                                        d.child(div().text_xs().text_color(theme::ACCENT).child(t))
+                                    })
+                                    .child(
+                                        div()
+                                            .text_xs()
+                                            .text_color(theme::TEXT_DIM)
+                                            .child("Enter: 送信 / Shift+Enter: 改行"),
+                                    ),
+                            ),
                     )
+                    // 入力欄 + 送信ボタン
                     .child(
                         div()
                             .flex()
                             .flex_row()
-                            .items_center()
-                            .gap_3()
-                            .when_some(typing_text, |d, t| {
-                                d.child(div().text_xs().text_color(theme::ACCENT).child(t))
-                            })
+                            .items_end()
+                            .gap_2()
+                            .child(div().flex_1().child(self.composer_input.clone()))
                             .child(
                                 div()
-                                    .text_xs()
-                                    .text_color(theme::TEXT_DIM)
-                                    .child("Enter: 送信 / Shift+Enter: 改行"),
+                                    .id("btn-send-message")
+                                    .px_4()
+                                    .py_2()
+                                    .rounded_md()
+                                    .bg(theme::ACCENT_BUTTON)
+                                    .hover(|s| s.bg(theme::ACCENT_BUTTON_HOVER).cursor_pointer())
+                                    .text_sm()
+                                    .font_weight(FontWeight::BOLD)
+                                    .text_color(theme::TEXT_PRIMARY)
+                                    .child(if is_editing { "保存" } else { "送信" })
+                                    .on_mouse_up(
+                                        MouseButton::Left,
+                                        cx.listener(|this, _: &MouseUpEvent, _, cx| {
+                                            this.submit_composer(cx);
+                                        }),
+                                    ),
                             ),
-                    ),
-            )
-            // 入力欄 + 送信ボタン
-            .child(
-                div()
-                    .flex()
-                    .flex_row()
-                    .items_end()
-                    .gap_2()
-                    .child(div().flex_1().child(self.composer_input.clone()))
-                    .child(
-                        div()
-                            .id("btn-send-message")
-                            .px_4()
-                            .py_2()
-                            .rounded_md()
-                            .bg(theme::ACCENT_BUTTON)
-                            .hover(|s| s.bg(theme::ACCENT_BUTTON_HOVER).cursor_pointer())
-                            .text_sm()
-                            .font_weight(FontWeight::BOLD)
-                            .text_color(theme::TEXT_PRIMARY)
-                            .child(if is_editing { "保存" } else { "送信" })
-                            .on_mouse_up(
-                                MouseButton::Left,
-                                cx.listener(|this, _: &MouseUpEvent, _, cx| {
-                                    this.submit_composer(cx);
-                                }),
-                            ),
-                    ),
-            )
+                    )
+            })
             // ステータス通知行
             .when(
                 notice.is_some() || invalid_rows > 0 || update_available.is_some(),
@@ -1752,16 +1863,10 @@ impl WorkspaceView {
             .store
             .channel(&channel_id)
             .is_some_and(|c| c.archive_at.is_some());
-        let reactions_by_msg: HashMap<String, Vec<ReactionGroup>> =
-            state.store.reaction_groups_by_message(&channel_id, &me_id);
+        let reactions_by_msg = state.channel_cache.reactions_by_message.clone();
         let thread_typing = state.typing_text(&Some(root_id.to_string()));
-        let root_message = state.store.message(&channel_id, root_id).cloned();
-        let replies: Vec<Message> = state
-            .store
-            .replies(&channel_id, root_id)
-            .into_iter()
-            .cloned()
-            .collect();
+        let root_message = state.channel_cache.thread_root_message.clone();
+        let replies = state.channel_cache.thread_replies.clone();
 
         let mut cards = Vec::new();
         if let Some(root) = &root_message {
@@ -1841,30 +1946,38 @@ impl WorkspaceView {
                             .flex()
                             .flex_row()
                             .gap_2()
-                            .child(
-                                div()
-                                    .id("btn-thread-reply-focus")
-                                    .px_2p5()
-                                    .py_1()
-                                    .rounded_md()
-                                    .bg(theme::ACCENT_BUTTON)
-                                    .hover(|s| s.bg(theme::ACCENT_BUTTON_HOVER).cursor_pointer())
-                                    .text_xs()
-                                    .font_weight(FontWeight::BOLD)
-                                    .text_color(theme::TEXT_PRIMARY)
-                                    .child("返信を書く")
-                                    .on_mouse_up(
-                                        MouseButton::Left,
-                                        cx.listener(move |this, _: &MouseUpEvent, window, cx| {
-                                            let r_id = root_for_focus.clone();
-                                            this.state.update(cx, |s, cx| {
-                                                s.focus_thread_reply(r_id);
-                                                cx.notify();
-                                            });
-                                            window.focus(&this.composer_input.focus_handle(cx));
-                                        }),
-                                    ),
-                            )
+                            .when(!is_archived, |d| {
+                                d.child(
+                                    div()
+                                        .id("btn-thread-reply-focus")
+                                        .px_2p5()
+                                        .py_1()
+                                        .rounded_md()
+                                        .bg(theme::ACCENT_BUTTON)
+                                        .hover(|s| {
+                                            s.bg(theme::ACCENT_BUTTON_HOVER).cursor_pointer()
+                                        })
+                                        .text_xs()
+                                        .font_weight(FontWeight::BOLD)
+                                        .text_color(theme::TEXT_PRIMARY)
+                                        .child("返信を書く")
+                                        .on_mouse_up(
+                                            MouseButton::Left,
+                                            cx.listener(
+                                                move |this, _: &MouseUpEvent, window, cx| {
+                                                    let r_id = root_for_focus.clone();
+                                                    this.state.update(cx, |s, cx| {
+                                                        s.focus_thread_reply(r_id);
+                                                        cx.notify();
+                                                    });
+                                                    window.focus(
+                                                        &this.composer_input.focus_handle(cx),
+                                                    );
+                                                },
+                                            ),
+                                        ),
+                                )
+                            })
                             .child(
                                 div()
                                     .id("btn-close-thread")
@@ -1896,6 +2009,7 @@ impl WorkspaceView {
                     .id("thread-scroll-area")
                     .flex_1()
                     .overflow_y_scroll()
+                    .track_scroll(&self.thread_scroll)
                     .p_3()
                     .flex()
                     .flex_col()
@@ -1925,12 +2039,16 @@ impl Render for WorkspaceView {
             return self.render_login_view(&phase, window, cx);
         }
 
-        // ウィンドウのアクティブ状態とタイムラインのスクロール位置を AppState に同期し、
+        // ウィンドウのアクティブ状態とタイムライン・スレッドのスクロール位置を AppState に同期し、
         // ウィンドウがアクティブかつ最下部を見ているときだけ最新メッセージを既読扱いにする。
         let window_active = window.is_window_active();
-        let scroll_to_bottom = self
-            .state
-            .update(cx, |s, _| std::mem::take(&mut s.pending_scroll_to_bottom));
+        let (scroll_to_bottom, thread_scroll_to_bottom) = self.state.update(cx, |s, _| {
+            s.ensure_channel_cache();
+            (
+                std::mem::take(&mut s.pending_scroll_to_bottom),
+                std::mem::take(&mut s.pending_thread_scroll_to_bottom),
+            )
+        });
         if scroll_to_bottom {
             self.timeline_scroll.scroll_to_bottom();
             self.state
@@ -1942,6 +2060,17 @@ impl Render for WorkspaceView {
             self.state.update(cx, |s, _| {
                 s.update_timeline_view_state(window_active, at_bottom)
             });
+        }
+        if thread_scroll_to_bottom {
+            self.thread_scroll.scroll_to_bottom();
+            self.state
+                .update(cx, |s, _| s.update_thread_scroll_state(true));
+        } else {
+            let max_y = self.thread_scroll.max_offset().height;
+            let cur_y = (-self.thread_scroll.offset().y).max(px(0.0));
+            let at_bottom = max_y <= px(4.0) || (max_y - cur_y) <= px(24.0);
+            self.state
+                .update(cx, |s, _| s.update_thread_scroll_state(at_bottom));
         }
 
         let thread_root = self

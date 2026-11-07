@@ -78,13 +78,14 @@ pub fn build_line_highlights_and_links(line: &Line) -> (String, Vec<HighlightSpa
             highlights.push((start..end, highlight));
         }
         if matches!(span.style.tone, Tone::Link) {
-            let target_url = if is_http_url(&span.content) {
-                Some(span.content.clone())
-            } else {
-                line.spans
-                    .get(idx + 1)
-                    .and_then(|next| extract_bracketed_url(&next.content))
-            };
+            let target_url = line
+                .spans
+                .get(idx + 1)
+                .filter(|next| next.style.dim)
+                .and_then(|next| extract_bracketed_url(&next.content))
+                .or_else(|| {
+                    login::validate_http_url(&span.content).map(|_| span.content.trim().to_string())
+                });
             if let Some(url) = target_url {
                 links.push((start..end, url));
             }
@@ -100,13 +101,9 @@ pub fn build_line_highlights(line: &Line) -> (String, Vec<(Range<usize>, Highlig
     (text, highlights)
 }
 
-fn is_http_url(s: &str) -> bool {
-    s.starts_with("https://") || s.starts_with("http://")
-}
-
 fn extract_bracketed_url(s: &str) -> Option<String> {
     let inner = s.strip_prefix(" <")?.strip_suffix('>')?;
-    is_http_url(inner).then(|| inner.to_string())
+    login::validate_http_url(inner).map(|_| inner.trim().to_string())
 }
 
 /// MFM 本文を解析して、GPUI の行要素 (`Div`) として描画する。
@@ -183,16 +180,18 @@ mod tests {
         assert_eq!(&text[highlights[3].0.clone()], "strike");
         assert!(highlights[3].1.strikethrough.is_some());
 
-        // リンク範囲の抽出（直接 URL と [label](url)）
+        // リンク範囲の抽出（直接 URL と [label](url)、およびラベル自体が URL の場合）
         let link_lines = mfm::parse(
-            "詳細: [公式サイト](https://example.com/docs) または https://zli.chat を参照",
+            "詳細: [公式サイト](https://example.com/docs) または https://zli.chat と [https://a.example](https://b.example) を参照",
             None,
         );
         let (l_text, _, links) = build_line_highlights_and_links(&link_lines[0]);
-        assert_eq!(links.len(), 2);
+        assert_eq!(links.len(), 3);
         assert_eq!(&l_text[links[0].0.clone()], "公式サイト");
         assert_eq!(links[0].1, "https://example.com/docs");
         assert_eq!(&l_text[links[1].0.clone()], "https://zli.chat");
         assert_eq!(links[1].1, "https://zli.chat");
+        assert_eq!(&l_text[links[2].0.clone()], "https://a.example");
+        assert_eq!(links[2].1, "https://b.example");
     }
 }

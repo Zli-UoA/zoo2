@@ -238,31 +238,41 @@ impl TextInput {
     }
 
     fn up(&mut self, _: &Up, _: &mut Window, cx: &mut Context<Self>) {
-        let cursor = self.cursor_offset();
-        let ranges = line_byte_ranges(&self.content);
-        let row_idx = row_index_for_offset(&ranges, cursor);
-        if row_idx == 0 {
-            self.move_to(0, cx);
-            return;
-        }
-        let col_bytes = cursor.saturating_sub(ranges[row_idx].start);
-        let prev = &ranges[row_idx - 1];
-        let target = clamp_to_char_boundary(&self.content, (prev.start + col_bytes).min(prev.end));
+        let target = self.vertical_move_target(-1);
         self.move_to(target, cx);
     }
 
     fn down(&mut self, _: &Down, _: &mut Window, cx: &mut Context<Self>) {
+        let target = self.vertical_move_target(1);
+        self.move_to(target, cx);
+    }
+
+    fn vertical_move_target(&self, delta_rows: isize) -> usize {
         let cursor = self.cursor_offset();
         let ranges = line_byte_ranges(&self.content);
         let row_idx = row_index_for_offset(&ranges, cursor);
-        if row_idx + 1 >= ranges.len() {
-            self.move_to(self.content.len(), cx);
-            return;
+        if delta_rows < 0 && row_idx == 0 {
+            return 0;
         }
-        let col_bytes = cursor.saturating_sub(ranges[row_idx].start);
-        let next = &ranges[row_idx + 1];
-        let target = clamp_to_char_boundary(&self.content, (next.start + col_bytes).min(next.end));
-        self.move_to(target, cx);
+        if delta_rows > 0 && row_idx + 1 >= ranges.len() {
+            return self.content.len();
+        }
+        let target_row_idx = (row_idx as isize + delta_rows) as usize;
+        if let (Some(cur_row), Some(target_row)) = (
+            self.last_rows.get(row_idx),
+            self.last_rows.get(target_row_idx),
+        ) && cur_row.start == ranges[row_idx].start
+            && cur_row.end == ranges[row_idx].end
+            && target_row.start == ranges[target_row_idx].start
+            && target_row.end == ranges[target_row_idx].end
+            && cur_row.line.width > px(0.0)
+        {
+            let local_cursor = cursor.saturating_sub(cur_row.start);
+            let x = cur_row.line.x_for_index(local_cursor);
+            let target_local = target_row.line.closest_index_for_x(x);
+            return (target_row.start + target_local).min(target_row.end);
+        }
+        move_offset_vertically(&self.content, cursor, delta_rows)
     }
 
     fn select_left(&mut self, _: &SelectLeft, _: &mut Window, cx: &mut Context<Self>) {
@@ -967,6 +977,31 @@ pub fn compute_visible_scroll_x(
     scroll_x.clamp(px(0.0), max_scroll_x)
 }
 
+/// 複数行テキストで上下に移動したときのバイトオフセットを書記素 (grapheme) 列インデックス基準で求める。
+pub fn move_offset_vertically(text: &str, cursor: usize, delta_rows: isize) -> usize {
+    let ranges = line_byte_ranges(text);
+    let row_idx = row_index_for_offset(&ranges, cursor);
+    if delta_rows < 0 && row_idx == 0 {
+        return 0;
+    }
+    if delta_rows > 0 && row_idx + 1 >= ranges.len() {
+        return text.len();
+    }
+    let cur_range = &ranges[row_idx];
+    let clamped_cursor = clamp_to_char_boundary(text, cursor.clamp(cur_range.start, cur_range.end));
+    let grapheme_col = text[cur_range.start..clamped_cursor]
+        .graphemes(true)
+        .count();
+    let target_row_idx = (row_idx as isize + delta_rows) as usize;
+    let target_range = &ranges[target_row_idx];
+    let target_slice = &text[target_range.clone()];
+    target_slice
+        .grapheme_indices(true)
+        .nth(grapheme_col)
+        .map(|(i, _)| target_range.start + i)
+        .unwrap_or(target_range.end)
+}
+
 pub fn clamp_to_char_boundary(text: &str, mut offset: usize) -> usize {
     offset = offset.min(text.len());
     while offset > 0 && !text.is_char_boundary(offset) {
@@ -1062,6 +1097,17 @@ mod tests {
         let before_flag = previous_grapheme_boundary(text, before_b);
         assert_eq!(before_flag, 1);
         assert_eq!(next_grapheme_boundary(text, 1), before_b);
+
+        // 日本語や絵文字を含む行と ASCII 行の間での上下移動は書記素列を維持する
+        let multiline = "あ\nabcdef";
+        // 1行目末尾 ("あ" の直後, 3 bytes, 1書記素目) から下へ移動すると "a" の直後 (offset 5) になる
+        assert_eq!(move_offset_vertically(multiline, 3, 1), 5);
+        assert_eq!(
+            &multiline[..move_offset_vertically(multiline, 3, 1)],
+            "あ\na"
+        );
+        // 2行目の "a" の直後 (offset 5) から上へ移動すると "あ" の直後 (offset 3) に戻る
+        assert_eq!(move_offset_vertically(multiline, 5, -1), 3);
     }
 
     #[test]

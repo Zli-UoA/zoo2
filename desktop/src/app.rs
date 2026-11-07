@@ -11,14 +11,17 @@ use anyhow::Result;
 use gpui::{AppContext as _, Context, Entity};
 use tokio::{
     sync::mpsc::{self, UnboundedReceiver, UnboundedSender},
-    task::AbortHandle,
+    task::{AbortHandle, JoinHandle},
 };
 use zoo2_client_core::{
     api::{ApiClient, Me, ReadState, TypingUser},
     config::{AuthConfig, Config},
-    electric::{self, ShapeEvent, ShapeId, rows::Channel},
+    electric::{
+        self, Change, ShapeEvent, ShapeId,
+        rows::{Channel, Message},
+    },
     http::{Credentials, HttpError},
-    store::Store,
+    store::{ReactionGroup, Store},
     update,
 };
 
@@ -32,6 +35,7 @@ const NOTICE_TIMEOUT: Duration = Duration::from_secs(5);
 const FAILED_DRAFT_LIMIT: usize = 20;
 const INITIAL_TIMELINE_LIMIT: usize = 100;
 const TIMELINE_LOAD_STEP: usize = 100;
+const MAX_TIMELINE_RENDER_LIMIT: usize = 500;
 
 /// クイックリアクション候補。
 pub const QUICK_EMOJIS: &[&str] = &["👍", "🎉", "❤️", "👀", "😂", "🙏"];
@@ -59,6 +63,22 @@ pub struct FailedDraft {
     pub channel_id: String,
     pub target: Target,
     pub content: String,
+}
+
+/// 現在開いているチャンネルの描画用キャッシュ。
+/// `ShapeId::Messages` / `ShapeId::Reactions` の更新時またはチャンネル・スレッド切替時のみ再計算する。
+#[derive(Debug, Default, Clone)]
+pub struct ChannelViewCache {
+    pub channel_id: Option<String>,
+    pub me_id: String,
+    pub root_messages: Vec<Message>,
+    pub reply_counts: HashMap<String, usize>,
+    pub reactions_by_message: HashMap<String, Vec<ReactionGroup>>,
+    pub thread_root_id: Option<String>,
+    pub thread_root_message: Option<Message>,
+    pub thread_replies: Vec<Message>,
+    pub messages_dirty: bool,
+    pub reactions_dirty: bool,
 }
 
 /// バックグラウンドタスクから `AppState` へ届くイベント。
@@ -92,7 +112,7 @@ pub enum AppEvent {
 /// Tokio タスク群から GPUI の `Entity<AppState>` へ橋渡しする統合イベント。
 #[derive(Debug)]
 pub enum DesktopEvent {
-    Auth(AuthEvent),
+    Auth { session_gen: u64, event: AuthEvent },
     Shape { session_gen: u64, event: ShapeEvent },
     App { session_gen: u64, event: AppEvent },
     Tick { session_gen: u64 },
@@ -110,7 +130,7 @@ pub struct AppState {
 
     /// ログイン画面のフェーズ (`None` のときはログイン済みでチャット画面を表示)。
     pub login_phase: Option<LoginPhase>,
-    pub login_task: Option<AbortHandle>,
+    pub login_task: Option<JoinHandle<()>>,
 
     pub credentials: Option<Credentials>,
     pub api: Option<ApiClient>,
@@ -140,6 +160,13 @@ pub struct AppState {
     /// `AppState` 側から入力欄 (`TextInput`) へ反映すべき文字列。
     pub pending_composer_text: Option<String>,
     pub failed_drafts: Vec<FailedDraft>,
+    /// 認証切れ (`Unauthorized`) でログイン画面に戻った際に、同じユーザーの再ログイン時だけ復元する下書き。
+    pub preserved_unauthorized_drafts: Option<(String, Vec<FailedDraft>)>,
+
+    /// `Channels` シェイプのキーごとの `(チャンネル ID, 作成者ユーザー ID)`。
+    pub channel_creators_by_key: HashMap<String, (String, Option<String>)>,
+    /// 開いているチャンネルの描画用キャッシュ。
+    pub channel_cache: ChannelViewCache,
 
     pub unread: HashSet<String>,
     pub last_read_marked: HashMap<String, String>,
@@ -152,8 +179,14 @@ pub struct AppState {
     pub timeline_at_bottom: bool,
     /// 次の描画でタイムラインのスクロール位置を最下部へ移動させるフラグ。
     pub pending_scroll_to_bottom: bool,
-    /// タイムラインで一度に描画する末尾からの最大ルートメッセージ数。
+    /// タイムラインで一度に描画する最大ルートメッセージ数。
     pub timeline_render_limit: usize,
+    /// 上へスクロールしている間の描画範囲の先頭メッセージ ID アンカー。
+    pub timeline_anchor_first_id: Option<String>,
+    /// スレッドペインが最下部を表示しているかどうか。
+    pub thread_at_bottom: bool,
+    /// 次の描画でスレッドペインのスクロール位置を最下部へ移動させるフラグ。
+    pub pending_thread_scroll_to_bottom: bool,
 
     pub typing: HashMap<Option<String>, Vec<TypingUser>>,
     pub typing_sent: Option<(String, Option<String>, Instant)>,
@@ -161,11 +194,12 @@ pub struct AppState {
     pub typing_poll_in_flight: bool,
 
     pub notice: Option<(String, Instant)>,
-    pub sync_error: Option<String>,
+    pub sync_errors: HashMap<ShapeId, String>,
     pub update_available: Option<String>,
 
-    pub subscriptions: HashMap<ShapeId, AbortHandle>,
-    pub background_tasks: Vec<AbortHandle>,
+    pub subscriptions: HashMap<ShapeId, JoinHandle<()>>,
+    pub background_tasks: Vec<JoinHandle<()>>,
+    pub typing_stop_tasks: Vec<JoinHandle<()>>,
 }
 
 impl std::fmt::Debug for AppState {
@@ -223,6 +257,9 @@ impl AppState {
             saved_drafts: HashMap::new(),
             pending_composer_text: None,
             failed_drafts: Vec::new(),
+            preserved_unauthorized_drafts: None,
+            channel_creators_by_key: HashMap::new(),
+            channel_cache: ChannelViewCache::default(),
             unread: HashSet::new(),
             last_read_marked: HashMap::new(),
             read_mark_in_flight: HashMap::new(),
@@ -232,15 +269,19 @@ impl AppState {
             timeline_at_bottom: true,
             pending_scroll_to_bottom: false,
             timeline_render_limit: INITIAL_TIMELINE_LIMIT,
+            timeline_anchor_first_id: None,
+            thread_at_bottom: true,
+            pending_thread_scroll_to_bottom: false,
             typing: HashMap::new(),
             typing_sent: None,
             last_key_typed: None,
             typing_poll_in_flight: false,
             notice: None,
-            sync_error: None,
+            sync_errors: HashMap::new(),
             update_available: None,
             subscriptions: HashMap::new(),
             background_tasks: Vec::new(),
+            typing_stop_tasks: Vec::new(),
         }
     }
 
@@ -283,14 +324,14 @@ impl AppState {
 
     /// Tokio ランタイム上で非同期タスクを起動する。
     /// テスト環境ですでに `#[tokio::test]` ランタイム内にいる場合は `tokio::spawn` を使う。
-    fn spawn_tokio<F>(&self, future: F) -> Option<AbortHandle>
+    fn spawn_tokio<F>(&self, future: F) -> Option<JoinHandle<()>>
     where
         F: Future<Output = ()> + Send + 'static,
     {
         if let Some(rt) = &self.runtime {
-            Some(rt.spawn(future).abort_handle())
+            Some(rt.spawn(future))
         } else if tokio::runtime::Handle::try_current().is_ok() {
-            Some(tokio::spawn(future).abort_handle())
+            Some(tokio::spawn(future))
         } else {
             None
         }
@@ -301,6 +342,8 @@ impl AppState {
         if let Some(task) = self.login_task.take() {
             task.abort();
         }
+        self.session_gen = self.session_gen.wrapping_add(1);
+        let session_gen = self.session_gen;
         self.login_phase = Some(LoginPhase::Checking);
         let http = self.http.clone();
         let config = self.config.clone();
@@ -309,7 +352,13 @@ impl AppState {
         self.login_task = self.spawn_tokio(async move {
             let forward = tokio::spawn(async move {
                 while let Some(ev) = auth_rx.recv().await {
-                    if tx.send(DesktopEvent::Auth(ev)).is_err() {
+                    if tx
+                        .send(DesktopEvent::Auth {
+                            session_gen,
+                            event: ev,
+                        })
+                        .is_err()
+                    {
                         break;
                     }
                 }
@@ -324,6 +373,8 @@ impl AppState {
         if let Some(task) = self.login_task.take() {
             task.abort();
         }
+        self.session_gen = self.session_gen.wrapping_add(1);
+        let session_gen = self.session_gen;
         self.login_phase = Some(LoginPhase::Checking);
         let http = self.http.clone();
         let config = self.config.clone();
@@ -332,7 +383,13 @@ impl AppState {
         self.login_task = self.spawn_tokio(async move {
             let forward = tokio::spawn(async move {
                 while let Some(ev) = auth_rx.recv().await {
-                    if tx.send(DesktopEvent::Auth(ev)).is_err() {
+                    if tx
+                        .send(DesktopEvent::Auth {
+                            session_gen,
+                            event: ev,
+                        })
+                        .is_err()
+                    {
                         break;
                     }
                 }
@@ -347,46 +404,70 @@ impl AppState {
         if let Some(task) = self.login_task.take() {
             task.abort();
         }
+        self.session_gen = self.session_gen.wrapping_add(1);
+        let _ = login::delete_local_token_for_logout(&self.config);
         self.login_phase = Some(LoginPhase::Ready { error: None });
     }
 
     /// ログアウトしてトークンを削除し、ログイン画面へ戻る。
     /// ローカルトークンの削除に失敗した場合はログイン状態を維持して通知を出す。
     pub fn logout(&mut self) {
+        self.stop_typing();
+        let aborted = self.drain_and_abort_all_tasks();
         if let AuthConfig::Oidc(oidc) = self.config.auth.clone() {
             match login::delete_local_token_for_logout(&self.config) {
                 Ok((_, refresh_token)) => {
-                    self.stop_typing();
-                    if let Some(refresh_token) = refresh_token {
-                        let http = self.http.clone();
-                        self.spawn_tokio(async move {
+                    let typing_stops = std::mem::take(&mut self.typing_stop_tasks);
+                    let config = self.config.clone();
+                    let http = self.http.clone();
+                    self.preserved_unauthorized_drafts = None;
+                    self.reset_to_login(None);
+                    self.spawn_tokio(async move {
+                        for h in typing_stops {
+                            let _ = h.await;
+                        }
+                        for h in aborted {
+                            let _ = h.await;
+                        }
+                        let _ = login::delete_local_token_for_logout(&config);
+                        if let Some(refresh_token) = refresh_token {
                             login::revoke_refresh_token(http, oidc, refresh_token).await;
-                        });
-                    }
+                        }
+                    });
                 }
                 Err(err) => {
+                    self.retry_sync();
+                    self.start_periodic_tasks();
                     self.notify(format!(
                         "ログアウトに失敗しました（トークン削除エラー）: {err:#}"
                     ));
-                    return;
                 }
             }
         } else {
-            self.stop_typing();
+            self.preserved_unauthorized_drafts = None;
+            self.reset_to_login(None);
         }
-        self.reset_to_login(None);
     }
 
-    fn abort_all_tasks(&mut self) {
+    fn drain_and_abort_all_tasks(&mut self) -> Vec<JoinHandle<()>> {
+        let mut handles = Vec::new();
         if let Some(task) = self.login_task.take() {
             task.abort();
+            handles.push(task);
         }
         for (_, handle) in self.subscriptions.drain() {
             handle.abort();
+            handles.push(handle);
         }
         for handle in self.background_tasks.drain(..) {
             handle.abort();
+            handles.push(handle);
         }
+        handles
+    }
+
+    fn abort_all_tasks(&mut self) {
+        let _ = self.drain_and_abort_all_tasks();
     }
 
     /// 現在のセッションに紐づくバックグラウンドタスクを起動し、`background_tasks` に登録する。
@@ -400,6 +481,46 @@ impl AppState {
             true
         } else {
             false
+        }
+    }
+
+    /// 認証切れ (`Unauthorized`) でログイン画面へ戻る直前に、書きかけ・送信失敗の下書きをユーザー ID 付きで退避する。
+    fn preserve_drafts_for_unauthorized(&mut self) {
+        let Some(me) = self.me.as_ref() else {
+            return;
+        };
+        let mut drafts = self.failed_drafts.clone();
+        for ((ch_id, target), content) in &self.saved_drafts {
+            if !content.trim().is_empty()
+                && !drafts
+                    .iter()
+                    .any(|d| &d.channel_id == ch_id && &d.target == target && &d.content == content)
+            {
+                drafts.push(FailedDraft {
+                    channel_id: ch_id.clone(),
+                    target: target.clone(),
+                    content: content.clone(),
+                });
+            }
+        }
+        if !self.composer_draft.trim().is_empty()
+            && let Some(ch_id) = self.current_channel.clone()
+            && !drafts.iter().any(|d| {
+                d.channel_id == ch_id && d.target == self.target && d.content == self.composer_draft
+            })
+        {
+            drafts.push(FailedDraft {
+                channel_id: ch_id,
+                target: self.target.clone(),
+                content: self.composer_draft.clone(),
+            });
+        }
+        if drafts.len() > FAILED_DRAFT_LIMIT {
+            let excess = drafts.len() - FAILED_DRAFT_LIMIT;
+            drafts.drain(0..excess);
+        }
+        if !drafts.is_empty() {
+            self.preserved_unauthorized_drafts = Some((me.id.clone(), drafts));
         }
     }
 
@@ -423,6 +544,8 @@ impl AppState {
         self.saved_drafts.clear();
         self.pending_composer_text = Some(String::new());
         self.failed_drafts.clear();
+        self.channel_creators_by_key.clear();
+        self.channel_cache = ChannelViewCache::default();
         self.unread.clear();
         self.last_read_marked.clear();
         self.read_mark_in_flight.clear();
@@ -431,12 +554,15 @@ impl AppState {
         self.timeline_at_bottom = true;
         self.pending_scroll_to_bottom = false;
         self.timeline_render_limit = INITIAL_TIMELINE_LIMIT;
+        self.timeline_anchor_first_id = None;
+        self.thread_at_bottom = true;
+        self.pending_thread_scroll_to_bottom = false;
         self.typing.clear();
         self.typing_sent = None;
         self.last_key_typed = None;
         self.typing_poll_in_flight = false;
         self.notice = None;
-        self.sync_error = None;
+        self.sync_errors.clear();
     }
 
     fn reset_to_login(&mut self, error: Option<String>) {
@@ -448,11 +574,37 @@ impl AppState {
         self.notice = Some((message.into(), Instant::now()));
     }
 
+    /// 現在発生している Shape 同期エラーの表示文字列を返す。
+    pub fn sync_error(&self) -> Option<String> {
+        for shape in [ShapeId::Channels, ShapeId::Users, ShapeId::ChannelUsers] {
+            if let Some(msg) = self.sync_errors.get(&shape) {
+                return Some(msg.clone());
+            }
+        }
+        if let Some(ch) = &self.current_channel {
+            for shape in [
+                ShapeId::Messages(ch.clone()),
+                ShapeId::Reactions(ch.clone()),
+            ] {
+                if let Some(msg) = self.sync_errors.get(&shape) {
+                    return Some(msg.clone());
+                }
+            }
+        }
+        self.sync_errors.values().next().cloned()
+    }
+
     /// イベントを処理し、画面の再描画が必要な状態変化があった場合に `true` を返す。
     pub fn on_desktop_event(&mut self, event: DesktopEvent) -> bool {
         match event {
-            DesktopEvent::Auth(auth) => {
-                self.on_auth_event(auth);
+            DesktopEvent::Auth { session_gen, event } => {
+                if session_gen != self.session_gen {
+                    if matches!(event, AuthEvent::Connected { .. }) {
+                        let _ = login::delete_local_token_for_logout(&self.config);
+                    }
+                    return false;
+                }
+                self.on_auth_event(event);
                 true
             }
             DesktopEvent::Shape { session_gen, event } => {
@@ -499,7 +651,13 @@ impl AppState {
 
     /// 認証完了後にセッションを開始し、Electric Shape 購読と定期タスクを立ち上げる。
     pub fn connect_session(&mut self, credentials: Credentials, me: Me) {
+        let preserved = self.preserved_unauthorized_drafts.take();
         self.clear_session_state();
+        if let Some((user_id, drafts)) = preserved
+            && user_id == me.id
+        {
+            self.failed_drafts = drafts;
+        }
         let api = ApiClient::new(self.http.clone(), &self.api_base_url, credentials.clone());
         self.credentials = Some(credentials);
         self.api = Some(api);
@@ -515,7 +673,7 @@ impl AppState {
 
     /// 停止した Shape 購読を再試行する。
     pub fn retry_sync(&mut self) {
-        self.sync_error = None;
+        self.sync_errors.clear();
         self.subscribe(ShapeId::Channels);
         self.subscribe(ShapeId::Users);
         self.subscribe(ShapeId::ChannelUsers);
@@ -603,6 +761,9 @@ impl AppState {
             Some(_) => return,
         };
         if stopped {
+            if matches!(id, ShapeId::Channels) {
+                self.channel_creators_by_key.clear();
+            }
             self.store.apply(
                 &id,
                 electric::Batch {
@@ -623,28 +784,26 @@ impl AppState {
             let _guard = rt.enter();
             let stream_handle =
                 electric::spawn(http, &base_url, credentials, shape_id, shape_tx).abort_handle();
-            let forward_handle = rt
-                .spawn(async move {
-                    struct AbortOnDrop(AbortHandle);
-                    impl Drop for AbortOnDrop {
-                        fn drop(&mut self) {
-                            self.0.abort();
-                        }
+            let forward_handle = rt.spawn(async move {
+                struct AbortOnDrop(AbortHandle);
+                impl Drop for AbortOnDrop {
+                    fn drop(&mut self) {
+                        self.0.abort();
                     }
-                    let _abort_guard = AbortOnDrop(stream_handle);
-                    while let Some(ev) = shape_rx.recv().await {
-                        if tx
-                            .send(DesktopEvent::Shape {
-                                session_gen,
-                                event: ev,
-                            })
-                            .is_err()
-                        {
-                            break;
-                        }
+                }
+                let _abort_guard = AbortOnDrop(stream_handle);
+                while let Some(ev) = shape_rx.recv().await {
+                    if tx
+                        .send(DesktopEvent::Shape {
+                            session_gen,
+                            event: ev,
+                        })
+                        .is_err()
+                    {
+                        break;
                     }
-                })
-                .abort_handle();
+                }
+            });
             self.subscriptions.insert(id, forward_handle);
         } else if tokio::runtime::Handle::try_current().is_ok() {
             let stream_handle =
@@ -668,8 +827,7 @@ impl AppState {
                         break;
                     }
                 }
-            })
-            .abort_handle();
+            });
             self.subscriptions.insert(id, forward_handle);
         }
     }
@@ -677,36 +835,54 @@ impl AppState {
     pub fn on_shape(&mut self, event: ShapeEvent) {
         match event {
             ShapeEvent::Batch(id, batch) => {
-                let prev_roots = match &id {
-                    ShapeId::Messages(ch)
-                        if self.current_channel.as_deref() == Some(ch.as_str()) =>
-                    {
-                        self.store.root_messages(ch).len()
+                if matches!(id, ShapeId::Channels) {
+                    if batch.reset {
+                        self.channel_creators_by_key.clear();
                     }
-                    _ => 0,
-                };
-                self.store.apply(&id, batch);
-                match &id {
-                    ShapeId::Channels => {
-                        if self.store.is_synced(&ShapeId::Channels) {
-                            self.sync_error = None;
-                            if let Some(current) = self.current_channel.clone()
-                                && self
-                                    .store
-                                    .channel(&current)
-                                    .is_none_or(|ch| ch.deleted_at.is_some())
-                            {
-                                self.evict_channel(&current);
-                                self.notify("このチャンネルへのアクセス権がなくなりました");
+                    for change in &batch.changes {
+                        match change {
+                            Change::Upsert { key, row } => {
+                                if let Some(ch_id) = row.get("id").and_then(|v| v.as_str()) {
+                                    let creator = row
+                                        .get("created_user_id")
+                                        .and_then(|v| v.as_str())
+                                        .filter(|s| !s.is_empty())
+                                        .map(str::to_string);
+                                    self.channel_creators_by_key
+                                        .insert(key.clone(), (ch_id.to_string(), creator));
+                                }
+                            }
+                            Change::Delete { key } => {
+                                self.channel_creators_by_key.remove(key);
                             }
                         }
                     }
+                }
+                self.store.apply(&id, batch);
+                if self.store.is_synced(&id) {
+                    self.sync_errors.remove(&id);
+                }
+                match &id {
+                    ShapeId::Channels => {
+                        if self.store.is_synced(&ShapeId::Channels)
+                            && let Some(current) = self.current_channel.clone()
+                            && self
+                                .store
+                                .channel(&current)
+                                .is_none_or(|ch| ch.deleted_at.is_some())
+                        {
+                            self.evict_channel(&current);
+                            self.notify("このチャンネルへのアクセス権がなくなりました");
+                        }
+                    }
                     ShapeId::Messages(ch) => {
+                        if self.current_channel.as_deref() == Some(ch.as_str()) {
+                            self.channel_cache.messages_dirty = true;
+                        }
                         if self.store.is_synced(&ShapeId::Messages(ch.clone())) {
                             self.reconcile_channel_targets(ch);
                         }
                         if self.current_channel.as_deref() == Some(ch.as_str()) {
-                            let new_roots = self.store.root_messages(ch).len();
                             if self.timeline_at_bottom {
                                 self.pending_scroll_to_bottom = true;
                                 if self.window_active
@@ -714,16 +890,16 @@ impl AppState {
                                 {
                                     self.newest_shown = Some((ch.clone(), latest.id.clone()));
                                 }
-                            } else if new_roots > prev_roots
-                                && prev_roots >= self.timeline_render_limit
-                            {
-                                // 上へスクロールして過去のメッセージを読んでいる間に新着が届いたときは、
-                                // 表示範囲の先頭メッセージが押し出されてスクロール位置が跳ばないよう描画上限を広げる。
-                                self.timeline_render_limit = self
-                                    .timeline_render_limit
-                                    .saturating_add(new_roots - prev_roots);
+                            }
+                            if self.thread.is_some() && self.thread_at_bottom {
+                                self.pending_thread_scroll_to_bottom = true;
                             }
                         }
+                    }
+                    ShapeId::Reactions(ch)
+                        if self.current_channel.as_deref() == Some(ch.as_str()) =>
+                    {
+                        self.channel_cache.reactions_dirty = true;
                     }
                     _ => {}
                 }
@@ -731,6 +907,7 @@ impl AppState {
             }
             ShapeEvent::Failed(id, message) => {
                 if message == HttpError::Unauthorized.to_string() {
+                    self.preserve_drafts_for_unauthorized();
                     self.reset_to_login(Some(
                         "セッションの有効期限が切れました。再度ログインしてください".to_string(),
                     ));
@@ -745,7 +922,7 @@ impl AppState {
                     return;
                 }
                 let err_msg = format!("同期が止まりました ({id:?}): {message}");
-                self.sync_error = Some(err_msg.clone());
+                self.sync_errors.insert(id, err_msg.clone());
                 self.notify(err_msg);
             }
         }
@@ -760,6 +937,7 @@ impl AppState {
             if let Some(handle) = self.subscriptions.remove(&shape_id) {
                 handle.abort();
             }
+            self.sync_errors.remove(&shape_id);
             self.store.apply(
                 &shape_id,
                 electric::Batch {
@@ -789,6 +967,7 @@ impl AppState {
             self.stop_typing();
             self.typing.clear();
             self.current_channel = None;
+            self.channel_cache = ChannelViewCache::default();
             self.selected_message = None;
             self.thread = None;
             self.active_reaction_message = None;
@@ -799,6 +978,9 @@ impl AppState {
             self.timeline_at_bottom = true;
             self.pending_scroll_to_bottom = false;
             self.timeline_render_limit = INITIAL_TIMELINE_LIMIT;
+            self.timeline_anchor_first_id = None;
+            self.thread_at_bottom = true;
+            self.pending_thread_scroll_to_bottom = false;
         }
     }
 
@@ -822,7 +1004,25 @@ impl AppState {
         {
             self.thread = None;
             if matches!(self.target, Target::Reply(_)) {
-                self.target = Target::Channel;
+                if self.composer_draft.trim().is_empty() {
+                    self.switch_composer_context(Some(channel_id), Target::Channel);
+                } else {
+                    self.target = Target::Channel;
+                    if let Some(saved_ch_draft) = self
+                        .saved_drafts
+                        .remove(&(channel_id.to_string(), Target::Channel))
+                        && !saved_ch_draft.trim().is_empty()
+                    {
+                        if self.failed_drafts.len() >= FAILED_DRAFT_LIMIT {
+                            self.failed_drafts.remove(0);
+                        }
+                        self.failed_drafts.push(FailedDraft {
+                            channel_id: channel_id.to_string(),
+                            target: Target::Channel,
+                            content: saved_ch_draft,
+                        });
+                    }
+                }
                 self.notify(
                     "返信元のメッセージが削除されたため、チャンネルへの投稿に切り替えました",
                 );
@@ -846,6 +1046,7 @@ impl AppState {
                 true
             }
             AppEvent::Unauthorized => {
+                self.preserve_drafts_for_unauthorized();
                 self.reset_to_login(Some(
                     "認証が切れました。再度ログインしてください".to_string(),
                 ));
@@ -1127,6 +1328,14 @@ impl AppState {
     }
 
     pub fn on_composer_changed(&mut self, text: String) {
+        if self
+            .current_channel
+            .as_deref()
+            .and_then(|id| self.store.channel(id))
+            .is_some_and(|c| c.archive_at.is_some())
+        {
+            return;
+        }
         let non_empty = !text.trim().is_empty();
         self.composer_draft = text;
         if non_empty {
@@ -1178,11 +1387,19 @@ impl AppState {
             return;
         };
         let session_id = self.session_id.clone();
-        self.spawn_session_task(async move {
+        let fut = async move {
             let _ = api
                 .set_typing(&channel_id, parent_id.as_deref(), &session_id, active)
                 .await;
-        });
+        };
+        if active {
+            self.spawn_session_task(fut);
+        } else {
+            self.typing_stop_tasks.retain(|h| !h.is_finished());
+            if let Some(handle) = self.spawn_tokio(fut) {
+                self.typing_stop_tasks.push(handle);
+            }
+        }
     }
 
     /// API 呼び出しをバックグラウンドで実行し、エラー時は通知または再ログインへ遷移する。
@@ -1232,6 +1449,106 @@ impl AppState {
             .collect()
     }
 
+    /// 指定チャンネルの作成者ユーザー ID を返す。
+    pub fn channel_creator_id(&self, channel_id: &str) -> Option<&str> {
+        self.channel_creators_by_key
+            .values()
+            .find_map(|(id, creator)| (id == channel_id).then_some(creator.as_deref()).flatten())
+    }
+
+    /// 指定チャンネルへ参加可能か判定する。
+    pub fn can_join_channel(&self, channel: &Channel) -> bool {
+        let Some(me) = self.me.as_ref() else {
+            return false;
+        };
+        !channel.is_dm && channel.archive_at.is_none() && !self.store.is_member(&channel.id, &me.id)
+    }
+
+    /// 指定チャンネルから退出可能か判定する（DM 参加者は退出可能、通常チャンネルの作成者は退出不可）。
+    pub fn can_leave_channel(&self, channel: &Channel) -> bool {
+        let Some(me) = self.me.as_ref() else {
+            return false;
+        };
+        if !self.store.is_member(&channel.id, &me.id) {
+            return false;
+        }
+        if channel.is_dm {
+            return true;
+        }
+        self.channel_creator_id(&channel.id) != Some(me.id.as_str())
+    }
+
+    /// 現在開いているチャンネル・スレッドのメッセージ・リアクション集計キャッシュを最新状態に保つ。
+    pub fn ensure_channel_cache(&mut self) {
+        let me_id = self.me.as_ref().map(|m| m.id.clone()).unwrap_or_default();
+        let thread_root_id = self.thread.as_ref().map(|t| t.root_id.clone());
+        let Some(channel_id) = self.current_channel.clone() else {
+            if self.channel_cache.channel_id.is_some() {
+                self.channel_cache = ChannelViewCache::default();
+            }
+            return;
+        };
+        if self.channel_cache.channel_id.as_deref() != Some(channel_id.as_str()) {
+            self.channel_cache.channel_id = Some(channel_id.clone());
+            self.channel_cache.messages_dirty = true;
+            self.channel_cache.reactions_dirty = true;
+        }
+        if self.channel_cache.me_id != me_id {
+            self.channel_cache.me_id = me_id.clone();
+            self.channel_cache.reactions_dirty = true;
+        }
+        let thread_changed = self.channel_cache.thread_root_id != thread_root_id;
+        if self.channel_cache.messages_dirty {
+            self.channel_cache.root_messages = self
+                .store
+                .root_messages(&channel_id)
+                .into_iter()
+                .cloned()
+                .collect();
+            self.channel_cache.reply_counts = self.store.reply_counts(&channel_id);
+        }
+        if self.channel_cache.messages_dirty || thread_changed {
+            self.channel_cache.thread_root_id = thread_root_id.clone();
+            if let Some(root_id) = &thread_root_id {
+                self.channel_cache.thread_root_message =
+                    self.store.message(&channel_id, root_id).cloned();
+                self.channel_cache.thread_replies = self
+                    .store
+                    .replies(&channel_id, root_id)
+                    .into_iter()
+                    .cloned()
+                    .collect();
+            } else {
+                self.channel_cache.thread_root_message = None;
+                self.channel_cache.thread_replies.clear();
+            }
+            self.channel_cache.messages_dirty = false;
+        }
+        if self.channel_cache.reactions_dirty {
+            self.channel_cache.reactions_by_message =
+                self.store.reaction_groups_by_message(&channel_id, &me_id);
+            self.channel_cache.reactions_dirty = false;
+        }
+    }
+
+    /// タイムラインで現在描画すべき `root_messages` のスライス範囲 `(start..end)` を返す。
+    /// 上へスクロールしている間は `timeline_anchor_first_id` を先頭に保ち、上限件数を固定する。
+    pub fn visible_timeline_bounds(&self, roots: &[Message]) -> (usize, usize) {
+        let total = roots.len();
+        let limit = self
+            .timeline_render_limit
+            .clamp(1, MAX_TIMELINE_RENDER_LIMIT);
+        if !self.timeline_at_bottom
+            && let Some(anchor_id) = self.timeline_anchor_first_id.as_deref()
+            && let Some(start) = roots.iter().position(|m| m.id == anchor_id)
+        {
+            let end = (start + limit).min(total);
+            return (start, end);
+        }
+        let start = total.saturating_sub(limit);
+        (start, total)
+    }
+
     /// 現在の `(チャンネル ID, 送信先)` の下書きを退避し、新しい送信先の下書きを入力欄へ反映する。
     fn switch_composer_context(&mut self, next_channel: Option<&str>, next_target: Target) {
         if let Some(ch) = self.current_channel.clone()
@@ -1274,15 +1591,19 @@ impl AppState {
             // バックグラウンドタスクとメモリがチャンネル数に応じて増え続けるのを防ぐ。
             self.unsubscribe_channel(&old_ch);
             self.timeline_render_limit = INITIAL_TIMELINE_LIMIT;
+            self.timeline_anchor_first_id = None;
         } else if self.current_channel.is_none() {
             self.switch_composer_context(Some(&channel_id), Target::Channel);
             self.timeline_render_limit = INITIAL_TIMELINE_LIMIT;
+            self.timeline_anchor_first_id = None;
         }
         self.subscribe(ShapeId::Messages(channel_id.clone()));
         self.subscribe(ShapeId::Reactions(channel_id.clone()));
         self.current_channel = Some(channel_id.clone());
         self.timeline_at_bottom = true;
         self.pending_scroll_to_bottom = true;
+        self.timeline_anchor_first_id = None;
+        self.ensure_channel_cache();
 
         // ウィンドウがアクティブであれば最新メッセージを表示済みとして記録し、既読化を試みる。
         if self.window_active
@@ -1299,11 +1620,20 @@ impl AppState {
     /// ウィンドウのアクティブ状態とタイムラインのスクロール位置を更新し、
     /// アクティブかつ最下部を表示しているときだけ最新メッセージを既読化する。
     pub fn update_timeline_view_state(&mut self, window_active: bool, at_bottom: bool) {
+        let was_at_bottom = self.timeline_at_bottom;
         self.window_active = window_active;
         self.timeline_at_bottom = at_bottom;
         let Some(channel_id) = self.current_channel.clone() else {
             return;
         };
+        if was_at_bottom && !at_bottom && self.timeline_anchor_first_id.is_none() {
+            let roots = self.store.root_messages(&channel_id);
+            let total = roots.len();
+            let start = total.saturating_sub(self.timeline_render_limit.max(1));
+            self.timeline_anchor_first_id = roots.get(start).map(|m| m.id.clone());
+        } else if at_bottom {
+            self.timeline_anchor_first_id = None;
+        }
         if at_bottom && window_active {
             if let Some(latest) = self.store.latest_root(&channel_id) {
                 self.newest_shown = Some((channel_id, latest.id.clone()));
@@ -1324,15 +1654,53 @@ impl AppState {
         self.update_timeline_view_state(self.window_active, at_bottom);
     }
 
+    /// スレッドペインのスクロール位置が最下部にあるかどうかを更新する。
+    pub fn update_thread_scroll_state(&mut self, at_bottom: bool) {
+        self.thread_at_bottom = at_bottom;
+    }
+
     /// タイムラインのさらに古いメッセージを `TIMELINE_LOAD_STEP` 件分追加で表示する。
     pub fn load_older_messages(&mut self) {
+        if let Some(channel_id) = self.current_channel.clone()
+            && !self.timeline_at_bottom
+            && let Some(anchor_id) = self.timeline_anchor_first_id.clone()
+        {
+            let roots = self.store.root_messages(&channel_id);
+            if let Some(pos) = roots.iter().position(|m| m.id == anchor_id) {
+                let new_start = pos.saturating_sub(TIMELINE_LOAD_STEP);
+                self.timeline_anchor_first_id = roots.get(new_start).map(|m| m.id.clone());
+                self.timeline_render_limit = self
+                    .timeline_render_limit
+                    .saturating_add(pos - new_start)
+                    .min(MAX_TIMELINE_RENDER_LIMIT);
+                return;
+            }
+        }
         self.timeline_render_limit = self
             .timeline_render_limit
-            .saturating_add(TIMELINE_LOAD_STEP);
+            .saturating_add(TIMELINE_LOAD_STEP)
+            .min(MAX_TIMELINE_RENDER_LIMIT);
+    }
+
+    /// タイムラインを最新メッセージ（最下部）へ移動する。
+    pub fn jump_to_latest_messages(&mut self) {
+        self.timeline_anchor_first_id = None;
+        self.timeline_render_limit = INITIAL_TIMELINE_LIMIT;
+        self.pending_scroll_to_bottom = true;
+        self.update_timeline_view_state(self.window_active, true);
     }
 
     /// チャンネルへの参加・退出を実行する。
     pub fn join_or_leave(&mut self, channel_id: String, join: bool) {
+        let Some(channel) = self.store.channel(&channel_id) else {
+            return;
+        };
+        if join && !self.can_join_channel(channel) {
+            return;
+        }
+        if !join && !self.can_leave_channel(channel) {
+            return;
+        }
         let Some(api) = self.api.clone() else {
             return;
         };
@@ -1343,16 +1711,24 @@ impl AppState {
         }
     }
 
-    /// スレッドペインを開き、編集中でなければ送信先をスレッド返信に切り替える。
+    /// スレッドペインを開き、編集中およびアーカイブ済みチャンネルでなければ送信先をスレッド返信に切り替える。
     pub fn open_thread(&mut self, root_id: String) {
         self.thread = Some(ThreadState {
             root_id: root_id.clone(),
             selected: None,
         });
-        if !matches!(self.target, Target::Edit(_)) {
+        self.thread_at_bottom = true;
+        self.pending_thread_scroll_to_bottom = true;
+        let is_archived = self
+            .current_channel
+            .as_deref()
+            .and_then(|id| self.store.channel(id))
+            .is_some_and(|c| c.archive_at.is_some());
+        if !matches!(self.target, Target::Edit(_)) && !is_archived {
             let current = self.current_channel.clone();
             self.switch_composer_context(current.as_deref(), Target::Reply(root_id));
         }
+        self.ensure_channel_cache();
         self.poll_typing();
     }
 
@@ -1363,19 +1739,45 @@ impl AppState {
             let current = self.current_channel.clone();
             self.switch_composer_context(current.as_deref(), Target::Channel);
         }
+        self.ensure_channel_cache();
     }
 
-    /// 送信先を指定したスレッドへの返信に切り替える（現在の下書きは退避し、対象スレッドの下書きを復元する）。
+    /// 送信先を指定したスレッドへの返信に切り替える（編集中またはアーカイブ済みの場合は変更しない）。
     pub fn focus_thread_reply(&mut self, root_id: String) {
+        if self
+            .current_channel
+            .as_deref()
+            .and_then(|id| self.store.channel(id))
+            .is_some_and(|c| c.archive_at.is_some())
+        {
+            self.notify("アーカイブされたチャンネルには返信できません");
+            return;
+        }
+        if matches!(self.target, Target::Edit(_)) {
+            self.notify(
+                "メッセージを編集中です。編集を完了またはキャンセルしてから返信してください",
+            );
+            return;
+        }
+        self.thread_at_bottom = true;
+        self.pending_thread_scroll_to_bottom = true;
         let current = self.current_channel.clone();
         self.switch_composer_context(current.as_deref(), Target::Reply(root_id));
     }
 
-    /// 送信先を編集または返信からキャンセルして通常投稿へ戻す。
+    /// 送信先を編集または返信からキャンセルして通常投稿（編集中かつスレッド表示中ならスレッド返信）へ戻す。
     pub fn cancel_target(&mut self) {
-        let next_target = match &self.thread {
-            Some(thread) => Target::Reply(thread.root_id.clone()),
-            None => Target::Channel,
+        let is_archived = self
+            .current_channel
+            .as_deref()
+            .and_then(|id| self.store.channel(id))
+            .is_some_and(|c| c.archive_at.is_some());
+        let next_target = match &self.target {
+            Target::Edit(_) => match &self.thread {
+                Some(thread) if !is_archived => Target::Reply(thread.root_id.clone()),
+                _ => Target::Channel,
+            },
+            Target::Reply(_) | Target::Channel => Target::Channel,
         };
         let current = self.current_channel.clone();
         self.switch_composer_context(current.as_deref(), next_target);
@@ -1386,6 +1788,14 @@ impl AppState {
         let Some(channel_id) = self.current_channel.clone() else {
             return;
         };
+        if self
+            .store
+            .channel(&channel_id)
+            .is_some_and(|c| c.archive_at.is_some())
+        {
+            self.notify("アーカイブされたチャンネルのメッセージは編集できません");
+            return;
+        }
         let Some(me) = self.me.as_ref() else {
             return;
         };
@@ -1411,6 +1821,14 @@ impl AppState {
         let Some(channel_id) = self.current_channel.clone() else {
             return;
         };
+        if self
+            .store
+            .channel(&channel_id)
+            .is_some_and(|c| c.archive_at.is_some())
+        {
+            self.notify("アーカイブされたチャンネルのメッセージは削除できません");
+            return;
+        }
         let Some(me) = self.me.as_ref() else {
             return;
         };
@@ -2115,31 +2533,79 @@ mod tests {
         assert_eq!(state.target, Target::Reply("m1".into()));
         assert!(state.composer_draft.is_empty());
 
-        // スレッド返信の下書きを入力してからスレッドを閉じると、チャンネル用の下書きが戻る
+        // スレッド返信の下書きを入力してから cancel_target (Esc) を押すと、スレッド表示のまま通常投稿へ戻りチャンネル用の下書きが復元される
         state.on_composer_changed("スレッド返信の下書き".into());
-        state.close_thread();
+        state.cancel_target();
+        assert!(state.thread.is_some());
         assert_eq!(state.target, Target::Channel);
         assert_eq!(state.composer_draft, "チャンネル本文の下書き");
 
-        // もう一度同じスレッドを開くと、スレッド返信の下書きが復元される
-        state.open_thread("m1".into());
+        // もう一度 focus_thread_reply を呼ぶと、スレッド返信の下書きが復元される
+        state.focus_thread_reply("m1".into());
+        assert_eq!(state.target, Target::Reply("m1".into()));
         assert_eq!(state.composer_draft, "スレッド返信の下書き");
 
-        // ログアウト後や別ユーザーでの再ログイン時に、前のセッションの遅延イベントが届いても
-        // 新しいセッションへ下書きや状態が混入しないことを確認する
+        // メッセージ編集中に focus_thread_reply を呼んでも編集内容は消えない
+        state.on_composer_changed(String::new());
+        state.start_edit("r1".into());
+        state.on_composer_changed("編集中テキスト".into());
+        state.focus_thread_reply("m1".into());
+        assert_eq!(state.target, Target::Edit("r1".into()));
+        assert_eq!(state.composer_draft, "編集中テキスト");
+        state.cancel_target();
+        assert_eq!(state.target, Target::Reply("m1".into()));
+        state.on_composer_changed("スレッド返信の下書き".into());
+
+        // スレッド返信 B を入力中にルート m1 が削除されると、B は入力欄に残り、退避していたチャンネル下書き A は failed_drafts に移る
+        state.on_shape(ShapeEvent::Batch(
+            ShapeId::Messages("c1".into()),
+            Batch {
+                reset: false,
+                changes: vec![Change::Delete { key: "m1".into() }],
+                up_to_date: true,
+            },
+        ));
+        assert!(state.thread.is_none());
+        assert_eq!(state.target, Target::Channel);
+        assert_eq!(state.composer_draft, "スレッド返信の下書き");
+        assert_eq!(state.failed_drafts.len(), 1);
+        assert_eq!(state.failed_drafts[0].content, "チャンネル本文の下書き");
+
+        // 認証切れ (Unauthorized) でログイン画面へ戻った場合は、同じユーザー (u1) で再ログインしたときだけ failed_drafts に復元される
         let old_gen = state.session_gen;
-        state.reset_to_login(None);
+        state.on_app_event(AppEvent::Unauthorized);
         assert_ne!(state.session_gen, old_gen);
+        assert!(state.failed_drafts.is_empty());
+
+        // 古い世代のイベントや古い Auth イベントは無視される
         assert!(!state.on_desktop_event(DesktopEvent::App {
             session_gen: old_gen,
             event: AppEvent::RestoreDraft {
                 channel_id: "c1".into(),
                 target: Target::Channel,
-                content: "前セッションの送信失敗本文".into(),
+                content: "前セッションの遅延本文".into(),
             },
         }));
-        assert!(state.failed_drafts.is_empty());
+        assert!(!state.on_desktop_event(DesktopEvent::Auth {
+            session_gen: old_gen,
+            event: AuthEvent::LoginRequired {
+                error: Some("古い認証エラー".into()),
+            },
+        }));
 
+        // 同じユーザー u1 で再ログインすると退避されていた下書きが failed_drafts に戻る
+        state.connect_session(
+            Credentials::Dev("u1".into()),
+            Me {
+                id: "u1".into(),
+                user_name: "alice".into(),
+                display_name: "Alice".into(),
+            },
+        );
+        assert_eq!(state.failed_drafts.len(), 2);
+
+        // もう一度 Unauthorized になったあと、別ユーザー u2 でログインした場合は前のユーザーの下書きは引き継がれない
+        state.on_app_event(AppEvent::Unauthorized);
         state.connect_session(
             Credentials::Dev("u2".into()),
             Me {
@@ -2153,11 +2619,12 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn expands_timeline_render_limit_on_new_message_while_scrolled_up() {
+    async fn anchors_timeline_window_on_new_message_while_scrolled_up() {
         let mut state = connected_state();
         state.open_channel("c1".into());
         state.timeline_render_limit = 1;
         state.update_timeline_scroll_state(false);
+        assert_eq!(state.timeline_anchor_first_id.as_deref(), Some("m1"));
 
         state.on_shape(ShapeEvent::Batch(
             ShapeId::Messages("c1".into()),
@@ -2167,8 +2634,71 @@ mod tests {
                         "content": "新着ルートメッセージ", "created_at": "2026-11-01 03:02:00" }),
             )]),
         ));
-        // 上へスクロールしている間に新着が 1 件増えたため、表示上限も 1 → 2 に広がり先頭が押し出されない
-        assert_eq!(state.timeline_render_limit, 2);
+        state.ensure_channel_cache();
+        // 上へスクロールしている間に新着が来ても、描画上限は増え続けず、アンカーにより先頭メッセージ m1 が維持される
+        assert_eq!(state.timeline_render_limit, 1);
+        let (start, end) = state.visible_timeline_bounds(&state.channel_cache.root_messages);
+        assert_eq!(start..end, 0..1);
+        assert_eq!(state.channel_cache.root_messages[start].id, "m1");
+
+        // 最下部へ戻るとアンカーが解除され、最新メッセージ m2 が表示対象に含まれる
+        state.jump_to_latest_messages();
+        let (start2, end2) = state.visible_timeline_bounds(&state.channel_cache.root_messages);
+        assert_eq!(start2..end2, 0..2);
+        assert_eq!(state.channel_cache.root_messages[end2 - 1].id, "m2");
+    }
+
+    #[tokio::test]
+    async fn tracks_sync_errors_per_shape_and_channel_leave_permissions() {
+        let mut state = connected_state();
+        // Users の購読が失敗したあと Channels の Batch が届いても Users の同期エラーは消えない
+        state.on_shape(ShapeEvent::Failed(
+            ShapeId::Users,
+            "500 Internal Server Error".into(),
+        ));
+        assert!(state.sync_error().is_some());
+
+        state.on_shape(ShapeEvent::Batch(
+            ShapeId::Channels,
+            batch(vec![
+                (
+                    "c1",
+                    json!({ "id": "c1", "channel_name": "general", "is_private": "f", "created_user_id": "u1" }),
+                ),
+                (
+                    "c2",
+                    json!({ "id": "c2", "channel_name": "secret", "is_private": "t", "created_user_id": "u2" }),
+                ),
+                (
+                    "dm1",
+                    json!({ "id": "dm1", "channel_name": "dm:u1:u2", "is_private": "t", "is_dm": "t", "created_user_id": "u1" }),
+                ),
+            ]),
+        ));
+        assert!(state.sync_error().is_some());
+
+        // Users 自身が同期完了するとエラーが消える
+        state.on_shape(ShapeEvent::Batch(
+            ShapeId::Users,
+            batch(vec![(
+                "u1",
+                json!({ "id": "u1", "user_name": "alice", "display_name": "Alice" }),
+            )]),
+        ));
+        assert!(state.sync_error().is_none());
+
+        // 退出許可判定: 通常チャンネル作成者 (c1) は退出不可、通常チャンネル非作成者メンバー (c2) と DM 参加者 (dm1) は退出可能
+        state.on_shape(ShapeEvent::Batch(
+            ShapeId::ChannelUsers,
+            batch(vec![
+                ("cu1", json!({ "user_id": "u1", "channel_id": "c1" })),
+                ("cu2", json!({ "user_id": "u1", "channel_id": "c2" })),
+                ("cudm", json!({ "user_id": "u1", "channel_id": "dm1" })),
+            ]),
+        ));
+        assert!(!state.can_leave_channel(state.store.channel("c1").unwrap()));
+        assert!(state.can_leave_channel(state.store.channel("c2").unwrap()));
+        assert!(state.can_leave_channel(state.store.channel("dm1").unwrap()));
     }
 
     #[test]

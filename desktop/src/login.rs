@@ -329,26 +329,81 @@ pub async fn cli_logout(config: &Config) -> Result<()> {
     Ok(())
 }
 
+/// HTTP / HTTPS の有効な URL かどうかを検証し、正規化済みの `reqwest::Url` を返す。
+pub fn validate_http_url(url: &str) -> Option<reqwest::Url> {
+    let parsed = reqwest::Url::parse(url.trim()).ok()?;
+    if !matches!(parsed.scheme(), "http" | "https") {
+        return None;
+    }
+    parsed.host_str()?;
+    Some(parsed)
+}
+
 /// OS の既定ブラウザで URL を開く (macOS / Windows / Linux 対応)。
-pub fn open_browser(url: &str) {
-    let mut command = if cfg!(target_os = "macos") {
-        let mut cmd = std::process::Command::new("open");
-        cmd.arg(url);
-        cmd
-    } else if cfg!(target_os = "windows") {
-        let mut cmd = std::process::Command::new("cmd");
-        cmd.args(["/c", "start", "", url]);
-        cmd
-    } else {
-        let mut cmd = std::process::Command::new("xdg-open");
-        cmd.arg(url);
-        cmd
+/// Windows では `cmd.exe` を経由せず `ShellExecuteW` を直接呼び出し、`&` 等によるコマンド実行を防ぐ。
+pub fn open_browser(url: &str) -> bool {
+    let Some(parsed) = validate_http_url(url) else {
+        return false;
     };
-    let _ = command
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn();
+    let safe_url = parsed.as_str();
+    #[cfg(target_os = "macos")]
+    {
+        std::process::Command::new("open")
+            .arg(safe_url)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .is_ok()
+    }
+    #[cfg(target_os = "windows")]
+    {
+        use std::{ffi::OsStr, os::windows::ffi::OsStrExt};
+
+        #[link(name = "shell32")]
+        unsafe extern "system" {
+            fn ShellExecuteW(
+                hwnd: *mut core::ffi::c_void,
+                lp_operation: *const u16,
+                lp_file: *const u16,
+                lp_parameters: *const u16,
+                lp_directory: *const u16,
+                n_show_cmd: i32,
+            ) -> isize;
+        }
+
+        const SW_SHOWNORMAL: i32 = 1;
+        let operation: Vec<u16> = OsStr::new("open")
+            .encode_wide()
+            .chain(std::iter::once(0))
+            .collect();
+        let file: Vec<u16> = OsStr::new(safe_url)
+            .encode_wide()
+            .chain(std::iter::once(0))
+            .collect();
+        // SAFETY: `operation` と `file` は NUL 終端された有効な UTF-16 スライスであり、省略可能な引数は null ポインタを渡している。
+        let result = unsafe {
+            ShellExecuteW(
+                std::ptr::null_mut(),
+                operation.as_ptr(),
+                file.as_ptr(),
+                std::ptr::null(),
+                std::ptr::null(),
+                SW_SHOWNORMAL,
+            )
+        };
+        result > 32
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    {
+        std::process::Command::new("xdg-open")
+            .arg(safe_url)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .is_ok()
+    }
 }
 
 #[cfg(test)]
@@ -362,5 +417,14 @@ mod tests {
             assert!(text.contains("zoo2-desktop"));
             assert!(text.ends_with("token.json"));
         }
+    }
+
+    #[test]
+    fn validates_http_and_https_urls_only() {
+        assert!(validate_http_url("https://example.com/?a=1&b=2").is_some());
+        assert!(validate_http_url("http://localhost:8000/api").is_some());
+        assert!(validate_http_url("javascript:alert(1)").is_none());
+        assert!(validate_http_url("file:///etc/passwd").is_none());
+        assert!(validate_http_url("not a url").is_none());
     }
 }
