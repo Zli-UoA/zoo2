@@ -17,10 +17,13 @@
 - フロントエンドの実装・修正・リファクタリングでは `.agents/skills/frontend-consistency/SKILL.md` に従う。
 - mainの取り込みでフロントエンドを調整するときも、既存の共通UI・機能部品・処理を優先し、新機能と既存の表示・操作方針を両立させる。
 
-# ReactとCompose Webの追従
+# Compose の開発方針
 
-- React版・Compose Web版の機能、UI、API、状態管理を変更する場合、およびmainを取り込む場合は `.agents/skills/compose-react-parity/SKILL.md` に従う。
-- Reactの変更はCompose Webへの反映と両実装の検証を同じPRに含めて完了する。実験版であることを追従の省略理由にしない。
+- Compose for Web は、動作が重く実用に耐えないため実験を中止する。Web の開発は React で継続する。
+- React の変更や main の取り込みで、Compose Web への機能・UI追従、Kotlin/Wasm のビルド・ブラウザーテスト、Storybook の Kotlin 登録を必須にしない。
+- Compose for Android は継続する。`frontend-compose/` の `commonMain`、`androidMain`、`androidApp`、Electric4k、翻訳・フォント・アイコン生成など Android が利用する資源を維持する。
+- 共通 Kotlin・API・認証・同期を変更するときは Android への影響を確認し、必要な修正と Android の検証を同じ PR に含める。Android の開発・検証・署名付き配布を Web 実験と一緒に停止しない。
+- Web 専用コード・テストは過去の実験資料として保持する。削除する際は Android の依存を確認する。詳細は `docs/compose-multiplatform.md` と `docs/android.md` を参照する。
 
 # TUI版の追従
 

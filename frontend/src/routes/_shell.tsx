@@ -27,7 +27,7 @@ function ShellLayout() {
     const implementation = selectedFrontend();
     const requested = new URLSearchParams(window.location.search).get("frontend");
     if (requested === "react" || requested === "compose")
-      writeStorageValue(FRONTEND_STORAGE_KEY, requested);
+      writeStorageValue(FRONTEND_STORAGE_KEY, implementation);
     if (mounted && implementation !== currentImplementation) {
       // Cross-runtime navigation must release the old Electric collections and
       // Canvas/input owners, just like the explicit frontend switch.
