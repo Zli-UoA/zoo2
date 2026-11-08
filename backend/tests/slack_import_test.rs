@@ -342,6 +342,38 @@ async fn test_slack_export_import_flow() -> anyhow::Result<()> {
     assert_eq!(done["pending_files"], 0);
     // F3 は取得に失敗したまま完了し、管理者が取得し直せる
     assert_eq!(done["failed_files"], 1, "{done}");
+    // 取得し直せる添付が残るジョブは、新しい履歴が増えても一覧から押し出されない
+    {
+        let mut db = state.db.clone();
+        let mut tx = db.transaction().await?;
+        toasty::sql::statement(
+            "INSERT INTO slack_import_jobs(id,created_by,status,file_name,file_size,storage_key,team_id,source_id) \
+             SELECT 'history-'||g,created_by,'completed',file_name,file_size,storage_key,team_id,source_id \
+             FROM slack_import_jobs, generate_series(1,60) g WHERE id=$1",
+        )
+        .bind(run.as_str())
+        .exec(&mut tx)
+        .await?;
+        tx.commit().await?;
+    }
+    let (status, listed) = request(&app, "GET", "/api/admin/slack-imports", &admin, None).await?;
+    assert_eq!(status, StatusCode::OK);
+    assert!(
+        listed["imports"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|job| job["id"] == run.as_str()),
+        "a job with files to fetch again stays listed"
+    );
+    {
+        let mut db = state.db.clone();
+        let mut tx = db.transaction().await?;
+        toasty::sql::statement("DELETE FROM slack_import_jobs WHERE id LIKE 'history-%'")
+            .exec(&mut tx)
+            .await?;
+        tx.commit().await?;
+    }
     let (status, _) = request(
         &app,
         "POST",
