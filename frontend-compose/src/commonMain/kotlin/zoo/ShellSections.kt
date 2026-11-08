@@ -179,9 +179,6 @@ internal fun ChannelArchiveBadge(app: Session) {
     )
 }
 
-/** Storybook can provide the same saved frontend preference as the React shell. */
-internal val LocalFrontendMode = compositionLocalOf { "compose" }
-
 @Composable
 internal fun RailLink(app: Session, url: String, icon: String, label: String) {
     val interactions = remember {
@@ -213,46 +210,5 @@ internal fun RailLink(app: Session, url: String, icon: String, label: String) {
         Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
             Icon(icon, modifier = Modifier.size(20.dp), color = foreground)
         }
-    }
-}
-
-@Composable
-internal fun FrontendSwitch(app: Session) {
-    val compose = LocalFrontendMode.current == "compose"
-    val label = app.t(if (compose) "experimental.useReact" else "experimental.useCompose")
-    val interactions = remember {
-        androidx.compose.foundation.interaction.MutableInteractionSource()
-    }
-    val hovered by interactions.collectIsHoveredAsState()
-    var focused by remember { mutableStateOf(false) }
-    val colors = MaterialTheme.colorScheme
-    val ring = if (app.env.dark) Color(0xffbdbdbd) else Color(0xff737373)
-    Box(
-        Modifier.size(28.dp)
-            .onFocusChanged { focused = it.isFocused }
-            .hoverable(interactions)
-            .focusVisibleRing(8.dp, ring.copy(alpha = .5f), focused && FocusInputModality.keyboard)
-            .background(
-                if (hovered) colors.surfaceVariant else Color.Transparent,
-                RoundedCornerShape(8.dp),
-            )
-            .then(
-                webControlModifier(
-                    "button",
-                    attributes =
-                        mapOf(
-                            "data-frontend-switch" to "",
-                            "data-testid" to "frontend-switch",
-                            "title" to label,
-                        ),
-                )
-            )
-            .clickable(role = androidx.compose.ui.semantics.Role.Button) {
-                app.platform.action(if (compose) "react" else "compose")
-            }
-            .semantics { contentDescription = label },
-        contentAlignment = Alignment.Center,
-    ) {
-        Text(if (compose) "R" else "K", weight = FontWeight.Medium)
     }
 }

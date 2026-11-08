@@ -4,7 +4,7 @@
 [![Production commit](https://img.shields.io/endpoint?url=https%3A%2F%2Fgist.githubusercontent.com%2Fkashu-02%2F4def5a543fcb732d3ed5aa9182568925%2Fraw%2Fzoo2-production.json&cacheSeconds=300)](https://github.com/Zli-UoA/zoo2/deployments/production)
 [![Last checked UTC](https://img.shields.io/endpoint?url=https%3A%2F%2Fgist.githubusercontent.com%2Fkashu-02%2F4def5a543fcb732d3ed5aa9182568925%2Fraw%2Fzoo2-updated.json&cacheSeconds=300)](https://github.com/Zli-UoA/zoo2/actions/workflows/deployment-badges.yaml)
 
-Compose for Web は動作が重く実用に耐えないため実験を中止しました。Web は React、Compose for Android は開発を継続します。[方針と保持範囲](docs/compose-multiplatform.md) を参照してください。
+Compose for Web は動作が重く実用に耐えないため実験を中止しました。Web は React、Compose for Android は開発を継続します。[Android 版](docs/android.md) を参照してください。
 
 Slack互換Webhookでの通知連携は [Webhook設定](docs/webhooks.md) を参照してください。
 

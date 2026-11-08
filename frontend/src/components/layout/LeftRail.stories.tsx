@@ -29,11 +29,7 @@ export const Default: Story = {
     const toggle = within(canvasElement).queryByRole("button", {
       name: "Compose版を使う（実験・開発中）",
     });
-    if (import.meta.env.VITE_EXPERIMENTAL_COMPOSE === "true") {
-      await expect(toggle).toBeVisible();
-    } else {
-      await expect(toggle).not.toBeInTheDocument();
-    }
+    await expect(toggle).not.toBeInTheDocument();
   }),
 };
 

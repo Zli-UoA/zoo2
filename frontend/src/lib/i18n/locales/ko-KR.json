@@ -738,14 +738,6 @@
     "originalProfile": "원본 프로필",
     "post": "게시"
   },
-  "experimental": {
-    "useCompose": "Compose 버전 사용(실험·개발 중)",
-    "useReact": "React 버전으로 돌아가기",
-    "loadError": "Compose 버전을 시작하지 못했습니다. React 버전으로 돌아가 주세요.",
-    "catalogLoading": "Compose를 불러오는 중입니다…",
-    "catalogLoadError": "Compose 배포물을 가져오지 못했습니다.",
-    "catalogBuildHint": "JDK 21을 준비하고 frontend에서 pnpm build:compose를 실행해 주세요."
-  },
   "publicProfile": {
     "followTitle": "외부 서버에서 팔로우",
     "followDescription": "Mastodon이나 Misskey 같은 ActivityPub 앱에서 이 계정을 검색하여 팔로우 요청을 보낼 수 있습니다.",
