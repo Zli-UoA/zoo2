@@ -18,7 +18,7 @@ use zoo2_client_core::{
     config::{AuthConfig, Config},
     electric::{
         self, Change, ShapeEvent, ShapeId,
-        rows::{Channel, Message},
+        rows::{Channel, FromRow, Message},
     },
     http::{Credentials, HttpError},
     store::{ReactionGroup, Store},
@@ -39,6 +39,49 @@ const MAX_TIMELINE_RENDER_LIMIT: usize = 500;
 
 /// クイックリアクション候補。
 pub const QUICK_EMOJIS: &[&str] = &["👍", "🎉", "❤️", "👀", "😂", "🙏"];
+
+/// OS ネイティブ通知を送信する。
+pub fn notify_desktop(title: &str, body: &str) {
+    let _ = notify_rust::Notification::new()
+        .appname("zoo2")
+        .summary(title)
+        .body(body)
+        .show();
+}
+
+/// 拡張子から簡易 MIME タイプを判定する。
+pub fn guess_content_type(file_name: &str) -> &'static str {
+    let lower = file_name.to_ascii_lowercase();
+    if lower.ends_with(".png") {
+        "image/png"
+    } else if lower.ends_with(".jpg") || lower.ends_with(".jpeg") {
+        "image/jpeg"
+    } else if lower.ends_with(".gif") {
+        "image/gif"
+    } else if lower.ends_with(".webp") {
+        "image/webp"
+    } else if lower.ends_with(".pdf") {
+        "application/pdf"
+    } else if lower.ends_with(".txt") {
+        "text/plain"
+    } else if lower.ends_with(".md") {
+        "text/markdown"
+    } else if lower.ends_with(".json") {
+        "application/json"
+    } else if lower.ends_with(".zip") {
+        "application/zip"
+    } else {
+        "application/octet-stream"
+    }
+}
+
+/// 画像 MIME タイプかどうかを判定する。
+pub fn is_image_content_type(content_type: &str) -> bool {
+    matches!(
+        content_type,
+        "image/png" | "image/jpeg" | "image/gif" | "image/webp"
+    )
+}
 
 /// 入力欄の送信先。
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -63,6 +106,61 @@ pub struct FailedDraft {
     pub channel_id: String,
     pub target: Target,
     pub content: String,
+}
+
+/// 送信待ちの添付ファイル。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PendingAttachment {
+    pub local_id: String,
+    pub file_name: String,
+    pub file_size: i64,
+    pub content_type: String,
+    pub attachment_id: Option<String>,
+    pub is_uploading: bool,
+    pub error: Option<String>,
+}
+
+/// メンション補完候補。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MentionCandidate {
+    pub name: String,
+    pub display_name: String,
+    pub is_special: bool,
+}
+
+/// メンション補完状態。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MentionAutocompleteState {
+    pub query: String,
+    pub start_byte: usize,
+    pub end_byte: usize,
+    pub candidates: Vec<MentionCandidate>,
+    pub selected_index: usize,
+}
+
+/// チャンネル作成モーダル状態。
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct CreateChannelModal {
+    pub channel_name: String,
+    pub description: String,
+    pub is_private: bool,
+    pub error: Option<String>,
+    pub in_flight: bool,
+}
+
+/// チャンネル内メッセージ検索状態。
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct MessageSearchState {
+    pub query: String,
+    pub matches: Vec<String>,
+    pub current_match_index: usize,
+}
+
+/// クイックチャンネルスイッチャー状態 (Cmd+K)。
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct QuickSwitcherState {
+    pub query: String,
+    pub selected_index: usize,
 }
 
 /// 現在開いているチャンネルの描画用キャッシュ。
@@ -111,6 +209,18 @@ pub enum AppEvent {
     },
     TypingPollFinished,
     UpdateAvailable(String),
+    AttachmentUploadFinished {
+        local_id: String,
+        attachment_id: String,
+    },
+    AttachmentUploadFailed {
+        local_id: String,
+        error: String,
+    },
+    ChannelCreated {
+        channel_id: String,
+    },
+    ChannelCreateFailed(String),
 }
 
 /// Tokio タスク群から GPUI の `Entity<AppState>` へ橋渡しする統合イベント。
@@ -216,6 +326,27 @@ pub struct AppState {
     pub subscriptions: HashMap<ShapeId, JoinHandle<()>>,
     pub background_tasks: Vec<JoinHandle<()>>,
     pub typing_stop_tasks: Vec<JoinHandle<()>>,
+
+    /// 送信待ち・アップロード中の添付ファイル一覧。
+    pub pending_attachments: Vec<PendingAttachment>,
+    /// ファイルドラッグオーバー中フラグ。
+    pub is_dragging_files: bool,
+    /// 絵文字ピッカーの開閉状態。
+    pub emoji_picker_open: bool,
+    /// 絵文字ピッカーの検索クエリ。
+    pub emoji_picker_query: String,
+    /// メンション補完状態。
+    pub mention_autocomplete: Option<MentionAutocompleteState>,
+    /// チャンネル作成モーダル状態。
+    pub create_channel_modal: Option<CreateChannelModal>,
+    /// チャンネル内メッセージ検索状態。
+    pub message_search: Option<MessageSearchState>,
+    /// クイックチャンネルスイッチャー状態 (Cmd+K)。
+    pub quick_switcher: Option<QuickSwitcherState>,
+    /// テーマモード (Dark / Light)。
+    pub theme_mode: crate::theme::ThemeMode,
+    /// OS 通知有効フラグ。
+    pub notifications_enabled: bool,
 }
 
 impl std::fmt::Debug for AppState {
@@ -305,6 +436,16 @@ impl AppState {
             subscriptions: HashMap::new(),
             background_tasks: Vec::new(),
             typing_stop_tasks: Vec::new(),
+            pending_attachments: Vec::new(),
+            is_dragging_files: false,
+            emoji_picker_open: false,
+            emoji_picker_query: String::new(),
+            mention_autocomplete: None,
+            create_channel_modal: None,
+            message_search: None,
+            quick_switcher: None,
+            theme_mode: crate::theme::ThemeMode::Dark,
+            notifications_enabled: true,
         }
     }
 
@@ -664,6 +805,7 @@ impl AppState {
             for shape in [
                 ShapeId::Messages(ch.clone()),
                 ShapeId::Reactions(ch.clone()),
+                ShapeId::Attachments(ch.clone()),
             ] {
                 if let Some(msg) = self.sync_errors.get(&shape) {
                     return Some(msg.clone());
@@ -775,7 +917,8 @@ impl AppState {
         self.subscribe(ShapeId::ChannelUsers);
         if let Some(ch) = self.current_channel.clone() {
             self.subscribe(ShapeId::Messages(ch.clone()));
-            self.subscribe(ShapeId::Reactions(ch));
+            self.subscribe(ShapeId::Reactions(ch.clone()));
+            self.subscribe(ShapeId::Attachments(ch));
         }
         self.poll_read_states();
     }
@@ -965,7 +1108,52 @@ impl AppState {
                         }
                     }
                 }
+                let mut pending_notifications = Vec::new();
+                if self.notifications_enabled
+                    && let ShapeId::Messages(ch) = &id
+                {
+                    for change in &batch.changes {
+                        if let electric::Change::Upsert { row, .. } = change
+                            && let Ok(msg) = Message::from_row(row)
+                        {
+                            let is_mine = self.me.as_ref().is_some_and(|m| m.id == msg.user_id);
+                            if !is_mine {
+                                let me_user_name =
+                                    self.me.as_ref().map(|m| m.user_name.as_str()).unwrap_or("");
+                                let is_dm = self.store.channel(ch).is_some_and(|c| c.is_dm);
+                                let has_mention = (!me_user_name.is_empty()
+                                    && msg.content.contains(&format!("@{me_user_name}")))
+                                    || msg.content.contains("@channel")
+                                    || msg.content.contains("@here");
+                                if is_dm || has_mention {
+                                    pending_notifications.push((
+                                        ch.clone(),
+                                        msg.user_id,
+                                        msg.content,
+                                        is_dm,
+                                    ));
+                                }
+                            }
+                        }
+                    }
+                }
+
                 self.store.apply(&id, batch);
+
+                for (ch, sender_id, content, is_dm) in pending_notifications {
+                    let sender_name = self.store.display_name(&sender_id);
+                    let channel_name = self
+                        .store
+                        .channel(&ch)
+                        .map(|c| c.channel_name.as_str())
+                        .unwrap_or("channel");
+                    let title = if is_dm {
+                        format!("{} からのDM", sender_name)
+                    } else {
+                        format!("{} (#{channel_name})", sender_name)
+                    };
+                    notify_desktop(&title, &content);
+                }
                 if self.store.is_synced(&id) {
                     self.sync_errors.remove(&id);
                 }
@@ -1020,6 +1208,11 @@ impl AppState {
                     {
                         self.channel_cache.reactions_dirty = true;
                     }
+                    ShapeId::Attachments(ch)
+                        if self.current_channel.as_deref() == Some(ch.as_str()) =>
+                    {
+                        self.channel_cache.messages_dirty = true;
+                    }
                     _ => {}
                 }
                 self.sync_unread_with_latest();
@@ -1032,7 +1225,8 @@ impl AppState {
                     ));
                     return;
                 }
-                if let ShapeId::Messages(ch) | ShapeId::Reactions(ch) = &id
+                if let ShapeId::Messages(ch) | ShapeId::Reactions(ch) | ShapeId::Attachments(ch) =
+                    &id
                     && is_access_or_not_found_error(&message)
                 {
                     let ch = ch.clone();
@@ -1047,11 +1241,12 @@ impl AppState {
         }
     }
 
-    /// 特定のチャンネルのメッセージ・リアクション購読を停止し、キャッシュされた行を破棄する。
+    /// 特定のチャンネルのメッセージ・リアクション・添付ファイル購読を停止し、キャッシュされた行を破棄する。
     fn unsubscribe_channel(&mut self, channel_id: &str) {
         for shape_id in [
             ShapeId::Messages(channel_id.to_string()),
             ShapeId::Reactions(channel_id.to_string()),
+            ShapeId::Attachments(channel_id.to_string()),
         ] {
             if let Some(handle) = self.subscriptions.remove(&shape_id) {
                 handle.abort();
@@ -1364,6 +1559,46 @@ impl AppState {
                 let changed = self.update_available.as_deref() != Some(version.as_str());
                 self.update_available = Some(version);
                 changed
+            }
+            AppEvent::AttachmentUploadFinished {
+                local_id,
+                attachment_id,
+            } => {
+                if let Some(att) = self
+                    .pending_attachments
+                    .iter_mut()
+                    .find(|a| a.local_id == local_id)
+                {
+                    att.attachment_id = Some(attachment_id);
+                    att.is_uploading = false;
+                }
+                true
+            }
+            AppEvent::AttachmentUploadFailed { local_id, error } => {
+                if let Some(att) = self
+                    .pending_attachments
+                    .iter_mut()
+                    .find(|a| a.local_id == local_id)
+                {
+                    att.error = Some(error.clone());
+                    att.is_uploading = false;
+                }
+                self.notify(format!("ファイルのアップロードに失敗しました: {error}"));
+                true
+            }
+            AppEvent::ChannelCreated { channel_id } => {
+                self.create_channel_modal = None;
+                self.open_channel(channel_id);
+                self.notify("チャンネルを作成しました");
+                true
+            }
+            AppEvent::ChannelCreateFailed(err) => {
+                if let Some(modal) = &mut self.create_channel_modal {
+                    modal.in_flight = false;
+                    modal.error = Some(err.clone());
+                }
+                self.notify(format!("チャンネル作成に失敗しました: {err}"));
+                true
             }
         }
     }
@@ -1883,6 +2118,7 @@ impl AppState {
         }
         self.subscribe(ShapeId::Messages(channel_id.clone()));
         self.subscribe(ShapeId::Reactions(channel_id.clone()));
+        self.subscribe(ShapeId::Attachments(channel_id.clone()));
         self.current_channel = Some(channel_id.clone());
         self.timeline_at_bottom = true;
         self.pending_scroll_to_bottom = true;
@@ -2264,9 +2500,20 @@ impl AppState {
 
     /// 入力欄のメッセージを送信または編集する。送信を開始した場合は `true` を返す。
     pub fn submit_message(&mut self, content: String) -> bool {
-        if content.trim().is_empty() {
+        if content.trim().is_empty() && self.pending_attachments.is_empty() {
             return false;
         }
+        if self.pending_attachments.iter().any(|a| a.is_uploading) {
+            self.notify("添付ファイルをアップロード中です。完了をお待ちください");
+            return false;
+        }
+        if self.pending_attachments.iter().any(|a| a.error.is_some()) {
+            self.notify(
+                "アップロードに失敗した添付ファイルがあります。削除するか再試行してください",
+            );
+            return false;
+        }
+
         let Some(channel_id) = self.current_channel.clone() else {
             self.notify("先にチャンネルを開いてください");
             return false;
@@ -2293,6 +2540,18 @@ impl AppState {
             .remove(&(channel_id.clone(), target.clone()));
         self.stop_typing();
 
+        let attachment_ids: Vec<String> = self
+            .pending_attachments
+            .iter()
+            .filter_map(|a| a.attachment_id.clone())
+            .collect();
+        let attachment_ids_opt = if attachment_ids.is_empty() {
+            None
+        } else {
+            Some(attachment_ids)
+        };
+        self.pending_attachments.clear();
+
         if matches!(target, Target::Edit(_)) {
             let next_target = match &self.thread {
                 Some(thread) if self.can_post_in_channel(&channel_id) => {
@@ -2318,10 +2577,25 @@ impl AppState {
         self.spawn_session_task(async move {
             let id = uuid::Uuid::new_v4().to_string();
             let result = match &target {
-                Target::Channel => api.send_message(&id, &channel_id, &content, None).await,
+                Target::Channel => {
+                    api.send_message_with_attachments(
+                        &id,
+                        &channel_id,
+                        &content,
+                        None,
+                        attachment_ids_opt,
+                    )
+                    .await
+                }
                 Target::Reply(root_id) => {
-                    api.send_message(&id, &channel_id, &content, Some(root_id))
-                        .await
+                    api.send_message_with_attachments(
+                        &id,
+                        &channel_id,
+                        &content,
+                        Some(root_id),
+                        attachment_ids_opt,
+                    )
+                    .await
                 }
                 Target::Edit(message_id) => api.edit_message(message_id, &content).await,
             };
@@ -2361,6 +2635,439 @@ impl AppState {
             }
         });
         true
+    }
+
+    // --- 添付ファイル ---
+
+    /// ローカルファイルパスから添付ファイルを追加する。
+    pub fn add_attachment_from_path(&mut self, path: std::path::PathBuf) {
+        if self.pending_attachments.len() >= 10 {
+            self.notify("添付できるファイルは最大10件までです");
+            return;
+        }
+        let Ok(metadata) = std::fs::metadata(&path) else {
+            self.notify("ファイル情報を取得できませんでした");
+            return;
+        };
+        let file_size = metadata.len() as i64;
+        if file_size > 50 * 1024 * 1024 {
+            self.notify("ファイルサイズが上限(50MB)を超えています");
+            return;
+        }
+        let Ok(bytes) = std::fs::read(&path) else {
+            self.notify("ファイルを読み込めませんでした");
+            return;
+        };
+        let file_name = path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("file")
+            .to_string();
+        let content_type = guess_content_type(&file_name).to_string();
+        self.add_attachment_from_bytes(file_name, content_type, bytes);
+    }
+
+    /// バイナリデータから添付ファイルを追加し、非同期アップロードを開始する。
+    pub fn add_attachment_from_bytes(
+        &mut self,
+        file_name: String,
+        content_type: String,
+        bytes: Vec<u8>,
+    ) {
+        if self.pending_attachments.len() >= 10 {
+            self.notify("添付できるファイルは最大10件までです");
+            return;
+        }
+        let Some(channel_id) = self.current_channel.clone() else {
+            self.notify("チャンネルを開いてからファイルを添付してください");
+            return;
+        };
+        let Some(api) = self.api.clone() else {
+            return;
+        };
+        let local_id = uuid::Uuid::new_v4().to_string();
+        let file_size = bytes.len() as i64;
+        self.pending_attachments.push(PendingAttachment {
+            local_id: local_id.clone(),
+            file_name: file_name.clone(),
+            file_size,
+            content_type: content_type.clone(),
+            attachment_id: None,
+            is_uploading: true,
+            error: None,
+        });
+
+        let session_gen = self.session_gen;
+        let tx = self.event_tx.clone();
+        self.spawn_session_task(async move {
+            let presign_res = api
+                .presign_attachment(&channel_id, &file_name, file_size, &content_type)
+                .await;
+            match presign_res {
+                Ok(presign) => {
+                    let upload_res = api
+                        .upload_attachment_bytes(&presign.upload_url, &content_type, bytes)
+                        .await;
+                    match upload_res {
+                        Ok(()) => {
+                            let _ = tx.send(DesktopEvent::App {
+                                session_gen,
+                                event: AppEvent::AttachmentUploadFinished {
+                                    local_id,
+                                    attachment_id: presign.attachment_id,
+                                },
+                            });
+                        }
+                        Err(err) => {
+                            let _ = tx.send(DesktopEvent::App {
+                                session_gen,
+                                event: AppEvent::AttachmentUploadFailed {
+                                    local_id,
+                                    error: err.to_string(),
+                                },
+                            });
+                        }
+                    }
+                }
+                Err(err) => {
+                    let _ = tx.send(DesktopEvent::App {
+                        session_gen,
+                        event: AppEvent::AttachmentUploadFailed {
+                            local_id,
+                            error: err.to_string(),
+                        },
+                    });
+                }
+            }
+        });
+    }
+
+    /// アップロード待ち・完了済みの添付ファイルを削除する。
+    pub fn remove_pending_attachment(&mut self, local_id: &str) {
+        self.pending_attachments.retain(|a| a.local_id != local_id);
+    }
+
+    // --- メンション補完 ---
+
+    /// 入力文字列とキャレット位置からメンション候補を算出する。
+    pub fn update_mention_autocomplete(&mut self, text: &str, caret: usize) {
+        let caret = caret.min(text.len());
+        let prefix = &text[..caret];
+        let Some(pos) = prefix.rfind('@') else {
+            self.mention_autocomplete = None;
+            return;
+        };
+        // @ の前が先頭、または空白・括弧・句読点であるか確認
+        if pos > 0
+            && let Some(c) = prefix[..pos].chars().last()
+            && !c.is_whitespace()
+            && !matches!(c, '(' | '[' | '{' | '「' | '『' | '（' | '、' | '。')
+        {
+            self.mention_autocomplete = None;
+            return;
+        }
+        let query = &prefix[pos + 1..];
+        // 空白や改行が含まれていたらキャンセル
+        if query.contains(char::is_whitespace) {
+            self.mention_autocomplete = None;
+            return;
+        }
+
+        let query_lower = query.to_lowercase();
+        let mut candidates = Vec::new();
+        // @channel, @here
+        if "channel".starts_with(&query_lower) {
+            candidates.push(MentionCandidate {
+                name: "channel".into(),
+                display_name: "@channel (全員へ通知)".into(),
+                is_special: true,
+            });
+        }
+        if "here".starts_with(&query_lower) {
+            candidates.push(MentionCandidate {
+                name: "here".into(),
+                display_name: "@here (オンライン中全員)".into(),
+                is_special: true,
+            });
+        }
+
+        // チャンネルメンバー
+        if let Some(ch) = &self.current_channel {
+            for member in self.store.channel_members(ch) {
+                if member.user_name.to_lowercase().contains(&query_lower)
+                    || member.display_name.to_lowercase().contains(&query_lower)
+                {
+                    candidates.push(MentionCandidate {
+                        name: member.user_name.clone(),
+                        display_name: format!("{} (@{})", member.display_name, member.user_name),
+                        is_special: false,
+                    });
+                    if candidates.len() >= 8 {
+                        break;
+                    }
+                }
+            }
+        }
+
+        if candidates.is_empty() {
+            self.mention_autocomplete = None;
+        } else {
+            self.mention_autocomplete = Some(MentionAutocompleteState {
+                query: query.to_string(),
+                start_byte: pos,
+                end_byte: caret,
+                candidates,
+                selected_index: 0,
+            });
+        }
+    }
+
+    pub fn mention_select_next(&mut self) {
+        if let Some(state) = &mut self.mention_autocomplete
+            && !state.candidates.is_empty()
+        {
+            state.selected_index = (state.selected_index + 1) % state.candidates.len();
+        }
+    }
+
+    pub fn mention_select_prev(&mut self) {
+        if let Some(state) = &mut self.mention_autocomplete
+            && !state.candidates.is_empty()
+        {
+            state.selected_index =
+                (state.selected_index + state.candidates.len() - 1) % state.candidates.len();
+        }
+    }
+
+    /// 選択中のメンション候補を確定し、置換後の新しい文字列とキャレット位置を返す。
+    pub fn mention_confirm(&mut self) -> Option<(String, usize)> {
+        let state = self.mention_autocomplete.take()?;
+        let candidate = state.candidates.get(state.selected_index)?;
+        let insert_text = format!("@{} ", candidate.name);
+        let before = &self.composer_draft[..state.start_byte.min(self.composer_draft.len())];
+        let after = if state.end_byte < self.composer_draft.len() {
+            &self.composer_draft[state.end_byte..]
+        } else {
+            ""
+        };
+        let new_text = format!("{before}{insert_text}{after}");
+        let new_caret = before.len() + insert_text.len();
+        self.composer_draft = new_text.clone();
+        self.pending_composer_text = Some(new_text.clone());
+        Some((new_text, new_caret))
+    }
+
+    // --- 絵文字ピッカー ---
+
+    pub fn open_emoji_picker(&mut self) {
+        self.emoji_picker_open = true;
+        self.emoji_picker_query.clear();
+    }
+
+    pub fn close_emoji_picker(&mut self) {
+        self.emoji_picker_open = false;
+        self.emoji_picker_query.clear();
+    }
+
+    pub fn insert_emoji(&mut self, emoji: &str) {
+        self.composer_draft.push_str(emoji);
+        self.pending_composer_text = Some(self.composer_draft.clone());
+        self.close_emoji_picker();
+    }
+
+    // --- チャンネル作成モーダル ---
+
+    pub fn open_create_channel_modal(&mut self) {
+        self.create_channel_modal = Some(CreateChannelModal::default());
+    }
+
+    pub fn close_create_channel_modal(&mut self) {
+        self.create_channel_modal = None;
+    }
+
+    pub fn submit_create_channel(&mut self) {
+        let Some(modal) = &mut self.create_channel_modal else {
+            return;
+        };
+        let name = modal.channel_name.trim().to_string();
+        if name.is_empty() {
+            modal.error = Some("チャンネル名を入力してください".to_string());
+            return;
+        }
+        if name.len() > 80 {
+            modal.error = Some("チャンネル名は80文字以内で入力してください".to_string());
+            return;
+        }
+        let desc = if modal.description.trim().is_empty() {
+            None
+        } else {
+            Some(modal.description.trim().to_string())
+        };
+        let is_private = modal.is_private;
+        modal.in_flight = true;
+        modal.error = None;
+
+        let Some(api) = self.api.clone() else {
+            return;
+        };
+        let tx = self.event_tx.clone();
+        let session_gen = self.session_gen;
+
+        self.spawn_session_task(async move {
+            let res = api.create_channel(&name, desc.as_deref(), is_private).await;
+            match res {
+                Ok((channel, _)) => {
+                    let _ = tx.send(DesktopEvent::App {
+                        session_gen,
+                        event: AppEvent::ChannelCreated {
+                            channel_id: channel.id,
+                        },
+                    });
+                }
+                Err(err) => {
+                    let _ = tx.send(DesktopEvent::App {
+                        session_gen,
+                        event: AppEvent::ChannelCreateFailed(err.to_string()),
+                    });
+                }
+            }
+        });
+    }
+
+    // --- メッセージ検索 (チャンネル内) ---
+
+    pub fn open_message_search(&mut self) {
+        self.message_search = Some(MessageSearchState::default());
+    }
+
+    pub fn close_message_search(&mut self) {
+        self.message_search = None;
+    }
+
+    pub fn update_message_search_query(&mut self, query: String) {
+        self.ensure_channel_cache();
+        let query_lower = query.trim().to_lowercase();
+        let mut matches = Vec::new();
+        if !query_lower.is_empty() && self.current_channel.is_some() {
+            for msg in self.channel_cache.root_messages.iter() {
+                if msg.content.to_lowercase().contains(&query_lower) {
+                    matches.push(msg.id.clone());
+                }
+            }
+            for msg in self.channel_cache.thread_replies.iter() {
+                if msg.content.to_lowercase().contains(&query_lower) && !matches.contains(&msg.id) {
+                    matches.push(msg.id.clone());
+                }
+            }
+        }
+        self.message_search = Some(MessageSearchState {
+            query,
+            matches,
+            current_match_index: 0,
+        });
+    }
+
+    pub fn search_select_next(&mut self) {
+        if let Some(ms) = &mut self.message_search
+            && !ms.matches.is_empty()
+        {
+            ms.current_match_index = (ms.current_match_index + 1) % ms.matches.len();
+        }
+    }
+
+    pub fn search_select_prev(&mut self) {
+        if let Some(ms) = &mut self.message_search
+            && !ms.matches.is_empty()
+        {
+            ms.current_match_index =
+                (ms.current_match_index + ms.matches.len() - 1) % ms.matches.len();
+        }
+    }
+
+    // --- クイックチャンネルスイッチャー (Cmd+K) ---
+
+    pub fn open_quick_switcher(&mut self) {
+        self.quick_switcher = Some(QuickSwitcherState::default());
+    }
+
+    pub fn close_quick_switcher(&mut self) {
+        self.quick_switcher = None;
+    }
+
+    pub fn update_quick_switcher_query(&mut self, query: String) {
+        if let Some(qs) = &mut self.quick_switcher {
+            qs.query = query;
+            qs.selected_index = 0;
+        }
+    }
+
+    pub fn quick_switcher_select_next(&mut self) {
+        let count = self.quick_switcher_candidates().len();
+        if let Some(qs) = &mut self.quick_switcher
+            && count > 0
+        {
+            qs.selected_index = (qs.selected_index + 1) % count;
+        }
+    }
+
+    pub fn quick_switcher_select_prev(&mut self) {
+        let count = self.quick_switcher_candidates().len();
+        if let Some(qs) = &mut self.quick_switcher
+            && count > 0
+        {
+            qs.selected_index = (qs.selected_index + count - 1) % count;
+        }
+    }
+
+    pub fn quick_switcher_candidates(&self) -> Vec<(&Channel, String)> {
+        let query = self
+            .quick_switcher
+            .as_ref()
+            .map(|qs| qs.query.trim().to_lowercase())
+            .unwrap_or_default();
+        let me_id = self.me.as_ref().map(|m| m.id.as_str()).unwrap_or("");
+        self.store
+            .channels()
+            .into_iter()
+            .filter_map(|ch| {
+                let label = self.store.channel_label(ch, me_id);
+                if query.is_empty() || label.to_lowercase().contains(&query) {
+                    Some((ch, label))
+                } else {
+                    None
+                }
+            })
+            .collect()
+    }
+
+    pub fn quick_switcher_confirm(&mut self) {
+        let candidates = self.quick_switcher_candidates();
+        let index = self
+            .quick_switcher
+            .as_ref()
+            .map(|qs| qs.selected_index)
+            .unwrap_or(0);
+        if let Some((ch, _)) = candidates.get(index) {
+            let ch_id = ch.id.clone();
+            self.close_quick_switcher();
+            self.open_channel(ch_id);
+        } else {
+            self.close_quick_switcher();
+        }
+    }
+
+    // --- テーマ切り替え ---
+
+    pub fn toggle_theme(&mut self) {
+        self.theme_mode = self.theme_mode.toggle();
+        self.notify(format!(
+            "テーマを{}モードに切り替えました",
+            self.theme_mode.label()
+        ));
+    }
+
+    pub fn theme(&self) -> crate::theme::Theme {
+        crate::theme::Theme::from_mode(self.theme_mode)
     }
 
     /// 指定メッセージに対する絵文字リアクションをトグルする。
@@ -3413,5 +4120,159 @@ mod tests {
         assert!(state.store.is_synced(&ShapeId::ChannelUsers));
         assert!(state.can_post_in_channel("c1"));
         assert_eq!(state.composer_draft, "同期中に入力した本文");
+    }
+
+    #[test]
+    fn manages_pending_attachments() {
+        let mut state = connected_state();
+        state.open_channel("c1".into());
+        assert!(state.pending_attachments.is_empty());
+
+        state.add_attachment_from_bytes("photo.png".into(), "image/png".into(), vec![1, 2, 3, 4]);
+        assert_eq!(state.pending_attachments.len(), 1);
+        assert_eq!(state.pending_attachments[0].file_name, "photo.png");
+        assert_eq!(state.pending_attachments[0].content_type, "image/png");
+
+        let id = state.pending_attachments[0].local_id.clone();
+        state.remove_pending_attachment(&id);
+        assert!(state.pending_attachments.is_empty());
+    }
+
+    #[test]
+    fn supports_mention_autocomplete() {
+        let mut state = connected_state();
+        state.open_channel("c1".into());
+
+        // 新メンバー u3 (charlie) を投入
+        state.on_shape(ShapeEvent::Batch(
+            ShapeId::Users,
+            batch(vec![(
+                "u3",
+                json!({
+                    "id": "u3",
+                    "user_name": "charlie",
+                    "display_name": "Charlie Brown",
+                    "role": "normal",
+                    "deleted": false
+                }),
+            )]),
+        ));
+        state.on_shape(ShapeEvent::Batch(
+            ShapeId::ChannelUsers,
+            batch(vec![(
+                "cu3",
+                json!({ "user_id": "u3", "channel_id": "c1" }),
+            )]),
+        ));
+
+        // @ch で補完開始 (@channel と @charlie の2件が候補になる)
+        state.composer_draft = "Hello @ch".into();
+        state.update_mention_autocomplete("Hello @ch", 9);
+        assert!(state.mention_autocomplete.is_some());
+        let ac = state.mention_autocomplete.as_ref().unwrap();
+        assert_eq!(ac.candidates.len(), 2);
+        assert_eq!(ac.candidates[0].name, "channel");
+        assert_eq!(ac.candidates[1].name, "charlie");
+
+        // 次の候補 (charlie) を選択して確定
+        state.mention_select_next();
+        let confirmed = state.mention_confirm();
+        assert_eq!(confirmed, Some(("Hello @charlie ".to_string(), 15)));
+        assert!(state.mention_autocomplete.is_none());
+    }
+
+    #[test]
+    fn manages_create_channel_modal() {
+        let mut state = connected_state();
+        assert!(state.create_channel_modal.is_none());
+
+        state.open_create_channel_modal();
+        state.create_channel_modal.as_mut().unwrap().is_private = true;
+        assert!(state.create_channel_modal.as_ref().unwrap().is_private);
+
+        // 空文字バリデーション
+        state.submit_create_channel();
+        assert_eq!(
+            state
+                .create_channel_modal
+                .as_ref()
+                .unwrap()
+                .error
+                .as_deref(),
+            Some("チャンネル名を入力してください")
+        );
+
+        state.close_create_channel_modal();
+        assert!(state.create_channel_modal.is_none());
+    }
+
+    #[test]
+    fn searches_messages_and_navigates_matches() {
+        let mut state = connected_state();
+        state.open_channel("c1".into());
+
+        state.on_shape(ShapeEvent::Batch(
+            ShapeId::Messages("c1".into()),
+            batch(vec![
+                (
+                    "search_m1",
+                    json!({
+                        "id": "search_m1",
+                        "channel_id": "c1",
+                        "user_id": "u1",
+                        "content": "Rust and GPUI are awesome",
+                        "created_at": "2026-11-01 03:02:00"
+                    }),
+                ),
+                (
+                    "search_m2",
+                    json!({
+                        "id": "search_m2",
+                        "channel_id": "c1",
+                        "user_id": "u1",
+                        "content": "Testing search functionality",
+                        "created_at": "2026-11-01 03:03:00"
+                    }),
+                ),
+            ]),
+        ));
+
+        state.open_message_search();
+        assert!(state.message_search.is_some());
+
+        state.update_message_search_query("GPUI".into());
+        let ms = state.message_search.as_ref().unwrap();
+        assert_eq!(ms.matches.len(), 1);
+        assert_eq!(ms.matches[0], "search_m1");
+
+        state.search_select_next();
+        state.search_select_prev();
+
+        state.close_message_search();
+        assert!(state.message_search.is_none());
+    }
+
+    #[test]
+    fn quick_switcher_and_theme_toggle() {
+        let mut state = connected_state();
+        assert_eq!(state.theme_mode, crate::theme::ThemeMode::Dark);
+
+        // テーマ切り替え
+        state.toggle_theme();
+        assert_eq!(state.theme_mode, crate::theme::ThemeMode::Light);
+        state.toggle_theme();
+        assert_eq!(state.theme_mode, crate::theme::ThemeMode::Dark);
+
+        // クイックスイッチャー
+        state.open_quick_switcher();
+        assert!(state.quick_switcher.is_some());
+
+        state.update_quick_switcher_query("gen".into());
+        assert!(!state.quick_switcher_candidates().is_empty());
+
+        state.quick_switcher_select_next();
+        state.quick_switcher_select_prev();
+        state.quick_switcher_confirm();
+        assert!(state.quick_switcher.is_none());
     }
 }

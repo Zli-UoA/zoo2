@@ -184,12 +184,21 @@ impl TextInput {
         cx.notify();
     }
 
-    fn cursor_offset(&self) -> usize {
+    pub fn cursor_offset(&self) -> usize {
         if self.selection_reversed {
             self.selected_range.start
         } else {
             self.selected_range.end
         }
+    }
+
+    pub fn set_text_and_cursor(&mut self, text: String, cursor: usize, cx: &mut Context<Self>) {
+        self.content = text;
+        let cursor = cursor.min(self.content.len());
+        self.selected_range = cursor..cursor;
+        self.selection_reversed = false;
+        self.marked_range = None;
+        cx.notify();
     }
 
     fn move_to(&mut self, offset: usize, cx: &mut Context<Self>) {

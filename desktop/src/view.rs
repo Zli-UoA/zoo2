@@ -1,19 +1,23 @@
 //! GPUI による画面描画 (`WorkspaceView`、`LoginView`、`SidebarView`、`TimelineView`、`ComposerView`、`ThreadView`)。
 
 use gpui::{
-    ClipboardItem, Context, Div, ElementId, Entity, FocusHandle, Focusable, FontWeight,
-    IntoElement, KeyDownEvent, MouseButton, MouseUpEvent, ParentElement, Render, ScrollHandle,
-    SharedString, StatefulInteractiveElement, Styled, Window, div, prelude::*, px,
+    ClipboardItem, Context, Div, ElementId, Entity, ExternalPaths, FocusHandle, Focusable,
+    FontWeight, IntoElement, KeyDownEvent, MouseButton, MouseUpEvent, ParentElement,
+    PathPromptOptions, Render, ScrollHandle, SharedString, StatefulInteractiveElement, Styled,
+    Window, div, prelude::*, px, rgba,
 };
 use jiff::{Zoned, civil::DateTime, tz::TimeZone};
 use zoo2_client_core::{
     config::AuthConfig,
-    electric::{ShapeId, rows::Message},
+    electric::{
+        ShapeId,
+        rows::{CardData, Message, parse_message_cards},
+    },
     store::ReactionGroup,
 };
 
 use crate::{
-    app::{AppState, QUICK_EMOJIS, Target, reaction_label},
+    app::{AppState, QUICK_EMOJIS, Target, is_image_content_type, reaction_label},
     input::{InputEvent, TextInput},
     login::{self, LoginPhase},
     mfm_view, theme,
@@ -24,6 +28,10 @@ pub struct WorkspaceView {
     pub search_input: Entity<TextInput>,
     pub composer_input: Entity<TextInput>,
     pub reaction_input: Entity<TextInput>,
+    pub create_channel_name_input: Entity<TextInput>,
+    pub create_channel_desc_input: Entity<TextInput>,
+    pub quick_switcher_input: Entity<TextInput>,
+    pub message_search_input: Entity<TextInput>,
     pub timeline_scroll: ScrollHandle,
     pub thread_scroll: ScrollHandle,
     focus_handle: FocusHandle,
@@ -47,6 +55,14 @@ impl WorkspaceView {
         let reaction_input = cx.new(|cx| {
             TextInput::new_single_line(cx, "絵文字またはショートコード (例: thumbsup, 🎉)")
         });
+        let create_channel_name_input =
+            cx.new(|cx| TextInput::new_single_line(cx, "例: general, random"));
+        let create_channel_desc_input =
+            cx.new(|cx| TextInput::new_single_line(cx, "チャンネルのトピックや説明…"));
+        let quick_switcher_input =
+            cx.new(|cx| TextInput::new_single_line(cx, "チャンネル名またはメンバー名…"));
+        let message_search_input =
+            cx.new(|cx| TextInput::new_single_line(cx, "チャンネル内メッセージを検索…"));
 
         cx.subscribe(
             &search_input,
@@ -81,8 +97,10 @@ impl WorkspaceView {
             &composer_input,
             |this: &mut Self, _, event: &InputEvent, cx| match event {
                 InputEvent::Changed(text) => {
+                    let caret = this.composer_input.read(cx).cursor_offset();
                     this.state.update(cx, |state, cx| {
                         state.on_composer_changed(text.clone());
+                        state.update_mention_autocomplete(text, caret);
                         cx.notify();
                     });
                 }
@@ -98,7 +116,11 @@ impl WorkspaceView {
                 }
                 InputEvent::Cancel => {
                     this.state.update(cx, |state, cx| {
-                        state.cancel_target();
+                        if state.mention_autocomplete.is_some() {
+                            state.mention_autocomplete = None;
+                        } else {
+                            state.cancel_target();
+                        }
                         cx.notify();
                     });
                 }
@@ -134,6 +156,109 @@ impl WorkspaceView {
         )
         .detach();
 
+        cx.subscribe(
+            &create_channel_name_input,
+            |this: &mut Self, _, event: &InputEvent, cx| match event {
+                InputEvent::Changed(text) => {
+                    this.state.update(cx, |state, cx| {
+                        if let Some(m) = &mut state.create_channel_modal {
+                            m.channel_name = text.clone();
+                            m.error = None;
+                        }
+                        cx.notify();
+                    });
+                }
+                InputEvent::Submit(_) => {
+                    this.state.update(cx, |state, cx| {
+                        state.submit_create_channel();
+                        cx.notify();
+                    });
+                }
+                InputEvent::Cancel => {
+                    this.state.update(cx, |state, cx| {
+                        state.close_create_channel_modal();
+                        cx.notify();
+                    });
+                }
+            },
+        )
+        .detach();
+
+        cx.subscribe(
+            &create_channel_desc_input,
+            |this: &mut Self, _, event: &InputEvent, cx| match event {
+                InputEvent::Changed(text) => {
+                    this.state.update(cx, |state, cx| {
+                        if let Some(m) = &mut state.create_channel_modal {
+                            m.description = text.clone();
+                        }
+                        cx.notify();
+                    });
+                }
+                InputEvent::Submit(_) => {
+                    this.state.update(cx, |state, cx| {
+                        state.submit_create_channel();
+                        cx.notify();
+                    });
+                }
+                InputEvent::Cancel => {
+                    this.state.update(cx, |state, cx| {
+                        state.close_create_channel_modal();
+                        cx.notify();
+                    });
+                }
+            },
+        )
+        .detach();
+
+        cx.subscribe(
+            &quick_switcher_input,
+            |this: &mut Self, _, event: &InputEvent, cx| match event {
+                InputEvent::Changed(text) => {
+                    this.state.update(cx, |state, cx| {
+                        if let Some(qs) = &mut state.quick_switcher {
+                            qs.query = text.clone();
+                            qs.selected_index = 0;
+                        }
+                        cx.notify();
+                    });
+                }
+                InputEvent::Submit(_) => {
+                    this.state.update(cx, |state, cx| {
+                        state.quick_switcher_confirm();
+                        cx.notify();
+                    });
+                }
+                InputEvent::Cancel => {
+                    this.state.update(cx, |state, cx| {
+                        state.close_quick_switcher();
+                        cx.notify();
+                    });
+                }
+            },
+        )
+        .detach();
+
+        cx.subscribe(
+            &message_search_input,
+            |this: &mut Self, _, event: &InputEvent, cx| match event {
+                InputEvent::Changed(text) => {
+                    this.state.update(cx, |state, cx| {
+                        state.update_message_search_query(text.clone());
+                        cx.notify();
+                    });
+                }
+                InputEvent::Submit(_) => {}
+                InputEvent::Cancel => {
+                    this.state.update(cx, |state, cx| {
+                        state.close_message_search();
+                        cx.notify();
+                    });
+                }
+            },
+        )
+        .detach();
+
         cx.observe(&state, |this, state, cx| {
             let (pending_composer, pending_search) = state.update(cx, |s, _| {
                 (s.pending_composer_text.take(), s.pending_search_text.take())
@@ -155,6 +280,10 @@ impl WorkspaceView {
             search_input,
             composer_input,
             reaction_input,
+            create_channel_name_input,
+            create_channel_desc_input,
+            quick_switcher_input,
+            message_search_input,
             timeline_scroll: ScrollHandle::new(),
             thread_scroll: ScrollHandle::new(),
             focus_handle: cx.focus_handle(),
@@ -734,31 +863,94 @@ impl WorkspaceView {
                                     .text_color(theme::TEXT_PRIMARY)
                                     .child("zoo2"),
                             )
-                            .when(is_oidc, |d| {
-                                d.child(
-                                    div()
-                                        .id("btn-logout")
-                                        .px_2()
-                                        .py_0p5()
-                                        .rounded_sm()
-                                        .bg(theme::BG_SURFACE)
-                                        .border_1()
-                                        .border_color(theme::BORDER)
-                                        .hover(|s| s.bg(theme::BG_HOVER).cursor_pointer())
-                                        .text_xs()
-                                        .text_color(theme::TEXT_MUTED)
-                                        .child("ログアウト")
-                                        .on_mouse_up(
-                                            MouseButton::Left,
-                                            cx.listener(|this, _: &MouseUpEvent, _, cx| {
-                                                this.state.update(cx, |s, cx| {
-                                                    s.logout();
-                                                    cx.notify();
-                                                });
-                                            }),
-                                        ),
-                                )
-                            }),
+                            .child(
+                                div()
+                                    .flex()
+                                    .flex_row()
+                                    .items_center()
+                                    .gap_1p5()
+                                    .child(
+                                        div()
+                                            .id("btn-open-create-channel")
+                                            .px_2()
+                                            .py_0p5()
+                                            .rounded_sm()
+                                            .bg(theme::BG_SURFACE)
+                                            .border_1()
+                                            .border_color(theme::BORDER)
+                                            .hover(|s| s.bg(theme::BG_HOVER).cursor_pointer())
+                                            .text_xs()
+                                            .text_color(theme::TEXT_PRIMARY)
+                                            .child("+ 作成")
+                                            .on_mouse_up(
+                                                MouseButton::Left,
+                                                cx.listener(
+                                                    |this, _: &MouseUpEvent, window, cx| {
+                                                        this.state.update(cx, |s, cx| {
+                                                            s.open_create_channel_modal();
+                                                            cx.notify();
+                                                        });
+                                                        window.focus(
+                                                            &this
+                                                                .create_channel_name_input
+                                                                .focus_handle(cx),
+                                                        );
+                                                    },
+                                                ),
+                                            ),
+                                    )
+                                    .child(
+                                        div()
+                                            .id("btn-toggle-theme")
+                                            .px_1p5()
+                                            .py_0p5()
+                                            .rounded_sm()
+                                            .bg(theme::BG_SURFACE)
+                                            .border_1()
+                                            .border_color(theme::BORDER)
+                                            .hover(|s| s.bg(theme::BG_HOVER).cursor_pointer())
+                                            .text_xs()
+                                            .child(if state.theme_mode == theme::ThemeMode::Dark {
+                                                "🌙"
+                                            } else {
+                                                "☀️"
+                                            })
+                                            .on_mouse_up(
+                                                MouseButton::Left,
+                                                cx.listener(|this, _: &MouseUpEvent, _, cx| {
+                                                    this.state.update(cx, |s, cx| {
+                                                        s.toggle_theme();
+                                                        cx.notify();
+                                                    });
+                                                }),
+                                            ),
+                                    )
+                                    .when(is_oidc, |d| {
+                                        d.child(
+                                            div()
+                                                .id("btn-logout")
+                                                .px_2()
+                                                .py_0p5()
+                                                .rounded_sm()
+                                                .bg(theme::BG_SURFACE)
+                                                .border_1()
+                                                .border_color(theme::BORDER)
+                                                .hover(|s| s.bg(theme::BG_HOVER).cursor_pointer())
+                                                .text_xs()
+                                                .text_color(theme::TEXT_MUTED)
+                                                .child("ログアウト")
+                                                .on_mouse_up(
+                                                    MouseButton::Left,
+                                                    cx.listener(|this, _: &MouseUpEvent, _, cx| {
+                                                        this.state.update(cx, |s, cx| {
+                                                            s.logout();
+                                                            cx.notify();
+                                                        });
+                                                    }),
+                                                ),
+                                        )
+                                    }),
+                            ),
                     )
                     .child(
                         div()
@@ -768,7 +960,39 @@ impl WorkspaceView {
                             .whitespace_nowrap()
                             .child(me_summary),
                     )
-                    .child(self.search_input.clone()),
+                    .child(
+                        div()
+                            .flex()
+                            .flex_row()
+                            .items_center()
+                            .gap_1p5()
+                            .child(div().flex_1().child(self.search_input.clone()))
+                            .child(
+                                div()
+                                    .id("btn-open-quick-switcher")
+                                    .px_2()
+                                    .py_1p5()
+                                    .rounded_md()
+                                    .bg(theme::BG_SURFACE)
+                                    .border_1()
+                                    .border_color(theme::BORDER)
+                                    .hover(|s| s.bg(theme::BG_HOVER).cursor_pointer())
+                                    .text_xs()
+                                    .text_color(theme::TEXT_MUTED)
+                                    .child("⌘K")
+                                    .on_mouse_up(
+                                        MouseButton::Left,
+                                        cx.listener(|this, _: &MouseUpEvent, window, cx| {
+                                            this.state.update(cx, |s, cx| {
+                                                s.open_quick_switcher();
+                                                cx.notify();
+                                            });
+                                            window
+                                                .focus(&this.quick_switcher_input.focus_handle(cx));
+                                        }),
+                                    ),
+                            ),
+                    ),
             )
             // チャンネル・DM 一覧
             .child(
@@ -871,62 +1095,106 @@ impl WorkspaceView {
     }
 
     fn render_timeline_view(&self, cx: &mut Context<Self>) -> Div {
-        let state = self.state.read(cx);
-        let Some(channel_id) = state.current_channel.clone() else {
-            return div()
-                .flex()
-                .flex_col()
-                .flex_1()
-                .h_full()
-                .justify_center()
-                .items_center()
-                .p_6()
-                .gap_2()
-                .child(
-                    div()
-                        .text_lg()
-                        .font_weight(FontWeight::BOLD)
-                        .text_color(theme::TEXT_PRIMARY)
-                        .child("チャンネルを選択してください"),
-                )
-                .child(
-                    div().text_sm().text_color(theme::TEXT_MUTED).child(
+        let (
+            channel_id,
+            me_id,
+            me_user_name,
+            ch_label,
+            ch_desc,
+            is_archived,
+            is_member,
+            can_join,
+            can_leave,
+            failed_draft_count,
+            confirm_delete_id,
+            synced,
+            timeline_at_bottom,
+            all_root_messages,
+            reply_counts,
+            reactions_by_msg,
+            is_searching,
+            start_idx,
+            end_idx,
+        ) = {
+            let state = self.state.read(cx);
+            let Some(channel_id) = state.current_channel.clone() else {
+                return div()
+                    .flex()
+                    .flex_col()
+                    .flex_1()
+                    .h_full()
+                    .justify_center()
+                    .items_center()
+                    .p_6()
+                    .gap_2()
+                    .child(
+                        div()
+                            .text_lg()
+                            .font_weight(FontWeight::BOLD)
+                            .text_color(theme::TEXT_PRIMARY)
+                            .child("チャンネルを選択してください"),
+                    )
+                    .child(div().text_sm().text_color(theme::TEXT_MUTED).child(
                         "左のサイドバーからチャンネルまたはダイレクトメッセージを開けます。",
-                    ),
-                );
+                    ));
+            };
+
+            let me_id = state.me.as_ref().map(|m| m.id.clone()).unwrap_or_default();
+            let me_user_name = state
+                .me
+                .as_ref()
+                .map(|m| m.user_name.clone())
+                .unwrap_or_default();
+            let channel = state.store.channel(&channel_id);
+            let ch_label = channel
+                .map(|c| state.store.channel_label(c, &me_id))
+                .unwrap_or_else(|| format!("#{channel_id}"));
+            let ch_desc = channel
+                .and_then(|c| c.description.clone())
+                .filter(|d| !d.is_empty());
+            let is_archived = channel.is_some_and(|c| c.archive_at.is_some());
+            let is_member = state.store.is_member(&channel_id, &me_id);
+            let can_join = channel.is_some_and(|c| state.can_join_channel(c));
+            let can_leave = channel.is_some_and(|c| state.can_leave_channel(c));
+            let failed_draft_count = state.failed_drafts.len();
+            let confirm_delete_id = state.confirm_delete_message.clone();
+            let synced = state
+                .store
+                .is_synced(&ShapeId::Messages(channel_id.clone()));
+            let timeline_at_bottom = state.timeline_at_bottom;
+
+            let all_root_messages = state.channel_cache.root_messages.clone();
+            let (start_idx, end_idx) = state.visible_timeline_bounds(&all_root_messages);
+            let reply_counts = state.channel_cache.reply_counts.clone();
+            let reactions_by_msg = state.channel_cache.reactions_by_message.clone();
+            let is_searching = state.message_search.is_some();
+
+            (
+                channel_id,
+                me_id,
+                me_user_name,
+                ch_label,
+                ch_desc,
+                is_archived,
+                is_member,
+                can_join,
+                can_leave,
+                failed_draft_count,
+                confirm_delete_id,
+                synced,
+                timeline_at_bottom,
+                all_root_messages,
+                reply_counts,
+                reactions_by_msg,
+                is_searching,
+                start_idx,
+                end_idx,
+            )
         };
 
-        let me_id = state.me.as_ref().map(|m| m.id.clone()).unwrap_or_default();
-        let me_user_name = state
-            .me
-            .as_ref()
-            .map(|m| m.user_name.clone())
-            .unwrap_or_default();
-        let channel = state.store.channel(&channel_id);
-        let ch_label = channel
-            .map(|c| state.store.channel_label(c, &me_id))
-            .unwrap_or_else(|| format!("#{channel_id}"));
-        let ch_desc = channel
-            .and_then(|c| c.description.clone())
-            .filter(|d| !d.is_empty());
-        let is_archived = channel.is_some_and(|c| c.archive_at.is_some());
-        let is_member = state.store.is_member(&channel_id, &me_id);
-        let can_join = channel.is_some_and(|c| state.can_join_channel(c));
-        let can_leave = channel.is_some_and(|c| state.can_leave_channel(c));
-        let failed_draft_count = state.failed_drafts.len();
-        let confirm_delete_id = state.confirm_delete_message.clone();
-        let synced = state
-            .store
-            .is_synced(&ShapeId::Messages(channel_id.clone()));
-        let timeline_at_bottom = state.timeline_at_bottom;
-
-        let all_root_messages = state.channel_cache.root_messages.clone();
-        let (start_idx, end_idx) = state.visible_timeline_bounds(&all_root_messages);
         let hidden_before = start_idx;
         let hidden_after = all_root_messages.len().saturating_sub(end_idx);
         let visible_roots = &all_root_messages[start_idx..end_idx];
-        let reply_counts = state.channel_cache.reply_counts.clone();
-        let reactions_by_msg = state.channel_cache.reactions_by_message.clone();
 
         let mut timeline_items: Vec<Div> = Vec::new();
         if hidden_before > 0 {
@@ -1101,9 +1369,42 @@ impl WorkspaceView {
                                             }),
                                         ),
                                 )
-                            }),
+                            })
+                            .child(
+                                div()
+                                    .id("btn-open-search")
+                                    .px_2p5()
+                                    .py_1()
+                                    .rounded_md()
+                                    .bg(theme::BG_SECONDARY)
+                                    .border_1()
+                                    .border_color(theme::BORDER)
+                                    .hover(|s| s.bg(theme::BG_HOVER).cursor_pointer())
+                                    .text_xs()
+                                    .text_color(theme::TEXT_MUTED)
+                                    .child("🔍 検索")
+                                    .on_mouse_up(
+                                        MouseButton::Left,
+                                        cx.listener(|this, _: &MouseUpEvent, window, cx| {
+                                            this.state.update(cx, |s, cx| {
+                                                if s.message_search.is_some() {
+                                                    s.close_message_search();
+                                                } else {
+                                                    s.open_message_search();
+                                                }
+                                                cx.notify();
+                                            });
+                                            window
+                                                .focus(&this.message_search_input.focus_handle(cx));
+                                        }),
+                                    ),
+                            ),
                     ),
             )
+            // 検索バー
+            .when(is_searching, |d| {
+                d.child(self.render_message_search_bar(cx))
+            })
             // 削除確認バー
             .when(confirm_delete_id.is_some(), |d| {
                 d.child(
@@ -1370,13 +1671,43 @@ impl WorkspaceView {
             .clone()
             .unwrap_or_else(|| msg_id_reply.clone());
 
+        let is_search_matched = state
+            .message_search
+            .as_ref()
+            .is_some_and(|ms| ms.matches.contains(&msg_id));
+        let card_border_color = if is_search_matched {
+            theme::BORDER_ACCENT
+        } else {
+            theme::BORDER
+        };
+        let card_bg = if is_search_matched {
+            theme::BG_SELECTED
+        } else {
+            theme::BG_SURFACE
+        };
+
+        let attachments = state
+            .store
+            .attachments_for_message(&message.channel_id, &message.id);
+        let attachment_views: Vec<Div> = attachments
+            .into_iter()
+            .map(|att| render_attachment_item(att, &state.api_base_url))
+            .collect();
+
+        let ogp_cards = message
+            .card
+            .as_deref()
+            .map(parse_message_cards)
+            .unwrap_or_default();
+        let ogp_views: Vec<Div> = ogp_cards.iter().map(render_ogp_card).collect();
+
         div()
             .w_full()
             .p_3()
             .rounded_md()
-            .bg(theme::BG_SURFACE)
+            .bg(card_bg)
             .border_1()
-            .border_color(theme::BORDER)
+            .border_color(card_border_color)
             .flex()
             .flex_col()
             .gap_1p5()
@@ -1576,6 +1907,21 @@ impl WorkspaceView {
                 &message.content,
                 Some(me_user_name),
             ))
+            // 添付ファイル (画像・ファイル)
+            .when(!attachment_views.is_empty(), |d| {
+                d.child(
+                    div()
+                        .flex()
+                        .flex_col()
+                        .gap_1p5()
+                        .mt_1()
+                        .children(attachment_views),
+                )
+            })
+            // OGP リンクカード
+            .when(!ogp_views.is_empty(), |d| {
+                d.child(div().flex().flex_col().gap_1p5().mt_1().children(ogp_views))
+            })
             // リアクションピル一覧
             .when(!reaction_pills.is_empty(), |d| {
                 d.child(
@@ -1686,6 +2032,9 @@ impl WorkspaceView {
         let invalid_rows = state.store.invalid_rows;
         let update_available = state.update_available.clone();
 
+        let pending_attachments_bar = self.render_pending_attachments_bar(cx);
+        let mention_autocomplete_view = self.render_mention_autocomplete(cx);
+
         div()
             .w_full()
             .p_3()
@@ -1695,6 +2044,8 @@ impl WorkspaceView {
             .flex()
             .flex_col()
             .gap_2()
+            .when_some(mention_autocomplete_view, |d, v| d.child(v))
+            .when_some(pending_attachments_bar, |d, v| d.child(v))
             .when(is_archived, |d| {
                 d.child(
                     div()
@@ -1794,13 +2145,76 @@ impl WorkspaceView {
                                     ),
                             ),
                     )
-                    // 入力欄 + 送信ボタン
+                    // 入力欄 + 送信ボタン & アクションボタン
                     .child(
                         div()
                             .flex()
                             .flex_row()
                             .items_end()
                             .gap_2()
+                            .child(
+                                div()
+                                    .id("btn-attach-file")
+                                    .px_2p5()
+                                    .py_2()
+                                    .rounded_md()
+                                    .bg(theme::BG_SURFACE)
+                                    .border_1()
+                                    .border_color(theme::BORDER)
+                                    .hover(|s| s.bg(theme::BG_HOVER).cursor_pointer())
+                                    .text_sm()
+                                    .child("📎")
+                                    .on_mouse_up(
+                                        MouseButton::Left,
+                                        cx.listener(|_, _: &MouseUpEvent, _, cx| {
+                                            let prompt = cx.prompt_for_paths(PathPromptOptions {
+                                                files: true,
+                                                directories: false,
+                                                multiple: true,
+                                                prompt: None,
+                                            });
+                                            cx.spawn(async move |this, cx| {
+                                                if let Ok(Ok(Some(paths))) = prompt.await {
+                                                    let _ = this.update(cx, |this, cx| {
+                                                        this.state.update(cx, |s, cx| {
+                                                            for p in paths {
+                                                                s.add_attachment_from_path(p);
+                                                            }
+                                                            cx.notify();
+                                                        });
+                                                    });
+                                                }
+                                            })
+                                            .detach();
+                                        }),
+                                    ),
+                            )
+                            .child(
+                                div()
+                                    .id("btn-open-emoji-picker")
+                                    .px_2p5()
+                                    .py_2()
+                                    .rounded_md()
+                                    .bg(theme::BG_SURFACE)
+                                    .border_1()
+                                    .border_color(theme::BORDER)
+                                    .hover(|s| s.bg(theme::BG_HOVER).cursor_pointer())
+                                    .text_sm()
+                                    .child("😀")
+                                    .on_mouse_up(
+                                        MouseButton::Left,
+                                        cx.listener(|this, _: &MouseUpEvent, _, cx| {
+                                            this.state.update(cx, |s, cx| {
+                                                if s.emoji_picker_open {
+                                                    s.close_emoji_picker();
+                                                } else {
+                                                    s.open_emoji_picker();
+                                                }
+                                                cx.notify();
+                                            });
+                                        }),
+                                    ),
+                            )
                             .child(div().flex_1().child(self.composer_input.clone()))
                             .child(
                                 div()
@@ -2048,13 +2462,659 @@ impl WorkspaceView {
                 )
             })
     }
+
+    fn render_pending_attachments_bar(&self, cx: &mut Context<Self>) -> Option<Div> {
+        let state = self.state.read(cx);
+        if state.pending_attachments.is_empty() {
+            return None;
+        }
+        let pills = state.pending_attachments.iter().map(|att| {
+            let local_id = att.local_id.clone();
+            let name = att.file_name.clone();
+            let size_str = format_file_size(att.file_size);
+            let status_text = if att.is_uploading {
+                " (アップロード中…)"
+            } else if att.error.is_some() {
+                " (エラー)"
+            } else {
+                ""
+            };
+            let text_color = if att.error.is_some() {
+                theme::DANGER
+            } else if att.is_uploading {
+                theme::TEXT_MUTED
+            } else {
+                theme::SUCCESS
+            };
+
+            div()
+                .px_2p5()
+                .py_1()
+                .rounded_md()
+                .bg(theme::BG_SURFACE)
+                .border_1()
+                .border_color(theme::BORDER)
+                .flex()
+                .flex_row()
+                .items_center()
+                .gap_2()
+                .child(div().text_xs().text_color(theme::ACCENT).child("📎"))
+                .child(
+                    div()
+                        .text_xs()
+                        .text_color(theme::TEXT_PRIMARY)
+                        .child(format!("{name} ({size_str})")),
+                )
+                .child(div().text_xs().text_color(text_color).child(status_text))
+                .child(
+                    div()
+                        .px_1()
+                        .rounded_sm()
+                        .hover(|s| s.bg(theme::BG_HOVER).cursor_pointer())
+                        .text_xs()
+                        .text_color(theme::DANGER)
+                        .child("✕")
+                        .on_mouse_up(
+                            MouseButton::Left,
+                            cx.listener(move |this, _: &MouseUpEvent, _, cx| {
+                                let lid = local_id.clone();
+                                this.state.update(cx, |s, cx| {
+                                    s.remove_pending_attachment(&lid);
+                                    cx.notify();
+                                });
+                            }),
+                        ),
+                )
+        });
+
+        Some(
+            div()
+                .w_full()
+                .flex()
+                .flex_row()
+                .flex_wrap()
+                .gap_2()
+                .children(pills),
+        )
+    }
+
+    fn render_mention_autocomplete(&self, cx: &mut Context<Self>) -> Option<Div> {
+        let state = self.state.read(cx);
+        let autocomplete = state.mention_autocomplete.as_ref()?;
+        if autocomplete.candidates.is_empty() {
+            return None;
+        }
+
+        let items = autocomplete
+            .candidates
+            .iter()
+            .enumerate()
+            .map(|(i, candidate)| {
+                let is_selected = i == autocomplete.selected_index;
+                let display = candidate.display_name.clone();
+                let idx = i;
+                div()
+                    .w_full()
+                    .px_3()
+                    .py_1p5()
+                    .rounded_sm()
+                    .bg(if is_selected {
+                        theme::BG_SELECTED
+                    } else {
+                        theme::BG_SURFACE
+                    })
+                    .hover(|s| s.bg(theme::BG_HOVER).cursor_pointer())
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .justify_between()
+                    .child(
+                        div()
+                            .text_xs()
+                            .font_weight(if is_selected {
+                                FontWeight::BOLD
+                            } else {
+                                FontWeight::NORMAL
+                            })
+                            .text_color(if candidate.is_special {
+                                theme::ACCENT
+                            } else {
+                                theme::TEXT_PRIMARY
+                            })
+                            .child(display),
+                    )
+                    .on_mouse_up(
+                        MouseButton::Left,
+                        cx.listener(move |this, _: &MouseUpEvent, _, cx| {
+                            this.state.update(cx, |s, cx| {
+                                if let Some(ac) = &mut s.mention_autocomplete {
+                                    ac.selected_index = idx;
+                                }
+                                s.mention_confirm();
+                                cx.notify();
+                            });
+                        }),
+                    )
+            });
+
+        Some(
+            div()
+                .w_full()
+                .p_1p5()
+                .rounded_md()
+                .bg(theme::BG_SURFACE)
+                .border_1()
+                .border_color(theme::BORDER_ACCENT)
+                .child(
+                    div()
+                        .id("mention-autocomplete-list")
+                        .w_full()
+                        .max_h(px(180.0))
+                        .overflow_y_scroll()
+                        .flex()
+                        .flex_col()
+                        .gap_1()
+                        .children(items),
+                ),
+        )
+    }
+
+    fn render_emoji_picker(&self, cx: &mut Context<Self>) -> Div {
+        let state = self.state.read(cx);
+        let query = state.emoji_picker_query.to_lowercase();
+
+        let common_emojis = [
+            "😀", "😃", "😄", "😁", "😆", "😅", "😂", "🤣", "😊", "😇", "🙂", "🙃", "😉", "😌",
+            "😍", "🥰", "😘", "😗", "😙", "😚", "😋", "😛", "😝", "😜", "🤪", "🤨", "🧐", "🤓",
+            "😎", "🥳", "😏", "😒", "😞", "😔", "😟", "😕", "🙁", "😣", "😖", "😫", "😩", "🥺",
+            "😢", "😭", "😤", "😠", "😡", "🤬", "🤯", "😳", "🥵", "🥶", "😱", "😨", "😰", "😥",
+            "😓", "🤗", "🤔", "🤭", "🤫", "🤥", "😶", "😐", "😑", "😬", "🙄", "😯", "😦", "😧",
+            "😮", "😲", "🥱", "😴", "🤤", "👍", "👎", "👏", "🙌", "👐", "🤲", "🤝", "🙏", "✌️",
+            "🤞", "🤟", "🤘", "👌", "🤌", "🤏", "❤️", "🧡", "💛", "💚", "💙", "💜", "🖤", "🤍",
+            "🤎", "💔", "❣️", "💕", "💞", "💓", "💗", "💖", "💘", "💝", "✨", "🎉", "🎊", "🔥",
+            "💯", "⭐", "🌟", "👀", "💡", "🚀", "☕", "🍺",
+        ];
+
+        let filtered: Vec<&str> = if query.is_empty() {
+            common_emojis.to_vec()
+        } else {
+            common_emojis
+                .into_iter()
+                .filter(|e| {
+                    if let Some(emoji_data) = emojis::get(e) {
+                        emoji_data.name().to_lowercase().contains(&query)
+                            || emoji_data
+                                .shortcode()
+                                .is_some_and(|s| s.to_lowercase().contains(&query))
+                    } else {
+                        false
+                    }
+                })
+                .collect()
+        };
+
+        let buttons = filtered.into_iter().map(|e| {
+            let emoji_str = e.to_string();
+            div()
+                .w_7()
+                .h_7()
+                .flex()
+                .items_center()
+                .justify_center()
+                .rounded_sm()
+                .hover(|s| s.bg(theme::BG_HOVER).cursor_pointer())
+                .text_base()
+                .child(e)
+                .on_mouse_up(
+                    MouseButton::Left,
+                    cx.listener(move |this, _: &MouseUpEvent, _, cx| {
+                        let em = emoji_str.clone();
+                        this.state.update(cx, |s, cx| {
+                            s.insert_emoji(&em);
+                            cx.notify();
+                        });
+                    }),
+                )
+        });
+
+        div()
+            .w(px(320.0))
+            .max_h(px(280.0))
+            .p_3()
+            .rounded_md()
+            .bg(theme::BG_SURFACE)
+            .border_1()
+            .border_color(theme::BORDER_ACCENT)
+            .flex()
+            .flex_col()
+            .gap_2()
+            .child(
+                div()
+                    .flex()
+                    .flex_row()
+                    .justify_between()
+                    .items_center()
+                    .child(
+                        div()
+                            .text_xs()
+                            .font_weight(FontWeight::BOLD)
+                            .text_color(theme::TEXT_PRIMARY)
+                            .child("絵文字を選択"),
+                    )
+                    .child(
+                        div()
+                            .px_1p5()
+                            .rounded_sm()
+                            .hover(|s| s.bg(theme::BG_HOVER).cursor_pointer())
+                            .text_xs()
+                            .text_color(theme::TEXT_MUTED)
+                            .child("✕")
+                            .on_mouse_up(
+                                MouseButton::Left,
+                                cx.listener(|this, _: &MouseUpEvent, _, cx| {
+                                    this.state.update(cx, |s, cx| {
+                                        s.close_emoji_picker();
+                                        cx.notify();
+                                    });
+                                }),
+                            ),
+                    ),
+            )
+            .child(
+                div()
+                    .id("emoji-picker-list")
+                    .w_full()
+                    .max_h(px(200.0))
+                    .overflow_y_scroll()
+                    .flex()
+                    .flex_row()
+                    .flex_wrap()
+                    .gap_1()
+                    .children(buttons),
+            )
+    }
+
+    fn render_create_channel_modal(&self, cx: &mut Context<Self>) -> Div {
+        let state = self.state.read(cx);
+        let modal = state.create_channel_modal.as_ref().unwrap();
+        let in_flight = modal.in_flight;
+        let error = modal.error.clone();
+        let is_private = modal.is_private;
+
+        div()
+            .w(px(400.0))
+            .p_5()
+            .rounded_lg()
+            .bg(theme::BG_SECONDARY)
+            .border_1()
+            .border_color(theme::BORDER_ACCENT)
+            .flex()
+            .flex_col()
+            .gap_3()
+            .child(
+                div()
+                    .flex()
+                    .flex_row()
+                    .justify_between()
+                    .items_center()
+                    .child(
+                        div()
+                            .text_sm()
+                            .font_weight(FontWeight::BOLD)
+                            .text_color(theme::TEXT_PRIMARY)
+                            .child("新規チャンネル作成"),
+                    )
+                    .child(
+                        div()
+                            .px_1p5()
+                            .rounded_sm()
+                            .hover(|s| s.bg(theme::BG_HOVER).cursor_pointer())
+                            .text_xs()
+                            .text_color(theme::TEXT_MUTED)
+                            .child("✕")
+                            .on_mouse_up(
+                                MouseButton::Left,
+                                cx.listener(|this, _: &MouseUpEvent, _, cx| {
+                                    this.state.update(cx, |s, cx| {
+                                        s.close_create_channel_modal();
+                                        cx.notify();
+                                    });
+                                }),
+                            ),
+                    ),
+            )
+            .when_some(error, |d, err| {
+                d.child(
+                    div()
+                        .p_2()
+                        .rounded_md()
+                        .bg(theme::BG_SURFACE)
+                        .text_xs()
+                        .text_color(theme::DANGER)
+                        .child(err),
+                )
+            })
+            .child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap_1()
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(theme::TEXT_MUTED)
+                            .child("チャンネル名"),
+                    )
+                    .child(
+                        div()
+                            .px_3()
+                            .py_2()
+                            .rounded_md()
+                            .bg(theme::BG_SURFACE)
+                            .border_1()
+                            .border_color(theme::BORDER)
+                            .child(self.create_channel_name_input.clone()),
+                    ),
+            )
+            .child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap_1()
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(theme::TEXT_MUTED)
+                            .child("説明 (任意)"),
+                    )
+                    .child(
+                        div()
+                            .px_3()
+                            .py_2()
+                            .rounded_md()
+                            .bg(theme::BG_SURFACE)
+                            .border_1()
+                            .border_color(theme::BORDER)
+                            .child(self.create_channel_desc_input.clone()),
+                    ),
+            )
+            .child(
+                div()
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .gap_2()
+                    .hover(|s| s.cursor_pointer())
+                    .child(
+                        div()
+                            .w_4()
+                            .h_4()
+                            .rounded_sm()
+                            .border_1()
+                            .border_color(if is_private {
+                                theme::BORDER_ACCENT
+                            } else {
+                                theme::BORDER
+                            })
+                            .bg(if is_private {
+                                theme::ACCENT_BUTTON
+                            } else {
+                                theme::BG_SURFACE
+                            })
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .text_xs()
+                            .text_color(theme::TEXT_PRIMARY)
+                            .child(if is_private { "✓" } else { "" }),
+                    )
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(theme::TEXT_PRIMARY)
+                            .child("非公開チャンネルにする"),
+                    )
+                    .on_mouse_up(
+                        MouseButton::Left,
+                        cx.listener(|this, _: &MouseUpEvent, _, cx| {
+                            this.state.update(cx, |s, cx| {
+                                if let Some(m) = &mut s.create_channel_modal {
+                                    m.is_private = !m.is_private;
+                                }
+                                cx.notify();
+                            });
+                        }),
+                    ),
+            )
+            .child(
+                div()
+                    .flex()
+                    .flex_row()
+                    .justify_end()
+                    .gap_2()
+                    .mt_2()
+                    .child(
+                        div()
+                            .px_3()
+                            .py_1p5()
+                            .rounded_md()
+                            .bg(theme::BG_SURFACE)
+                            .hover(|s| s.bg(theme::BG_HOVER).cursor_pointer())
+                            .text_xs()
+                            .text_color(theme::TEXT_MUTED)
+                            .child("キャンセル")
+                            .on_mouse_up(
+                                MouseButton::Left,
+                                cx.listener(|this, _: &MouseUpEvent, _, cx| {
+                                    this.state.update(cx, |s, cx| {
+                                        s.close_create_channel_modal();
+                                        cx.notify();
+                                    });
+                                }),
+                            ),
+                    )
+                    .child(
+                        div()
+                            .px_4()
+                            .py_1p5()
+                            .rounded_md()
+                            .bg(theme::ACCENT_BUTTON)
+                            .hover(|s| s.bg(theme::ACCENT_BUTTON_HOVER).cursor_pointer())
+                            .text_xs()
+                            .font_weight(FontWeight::BOLD)
+                            .text_color(theme::TEXT_PRIMARY)
+                            .child(if in_flight { "作成中…" } else { "作成" })
+                            .on_mouse_up(
+                                MouseButton::Left,
+                                cx.listener(|this, _: &MouseUpEvent, _, cx| {
+                                    this.state.update(cx, |s, cx| {
+                                        s.submit_create_channel();
+                                        cx.notify();
+                                    });
+                                }),
+                            ),
+                    ),
+            )
+    }
+
+    fn render_quick_switcher_modal(&self, cx: &mut Context<Self>) -> Div {
+        let state = self.state.read(cx);
+        let qs = state.quick_switcher.as_ref().unwrap();
+        let candidates = state.quick_switcher_candidates();
+        let selected_index = qs.selected_index;
+
+        let items = candidates.iter().enumerate().map(|(i, (ch, label))| {
+            let is_selected = i == selected_index;
+            let is_dm = ch.is_dm;
+            let has_unread = state.unread.contains(&ch.id);
+            let icon = if is_dm { "@" } else { "#" };
+            let ch_id = ch.id.clone();
+
+            div()
+                .w_full()
+                .px_3()
+                .py_2()
+                .rounded_md()
+                .bg(if is_selected {
+                    theme::BG_SELECTED
+                } else {
+                    theme::BG_SURFACE
+                })
+                .hover(|s| s.bg(theme::BG_HOVER).cursor_pointer())
+                .flex()
+                .flex_row()
+                .items_center()
+                .justify_between()
+                .child(
+                    div()
+                        .flex()
+                        .flex_row()
+                        .items_center()
+                        .gap_2()
+                        .child(
+                            div()
+                                .text_sm()
+                                .font_weight(FontWeight::BOLD)
+                                .text_color(theme::TEXT_MUTED)
+                                .child(icon),
+                        )
+                        .child(
+                            div()
+                                .text_sm()
+                                .font_weight(if is_selected || has_unread {
+                                    FontWeight::BOLD
+                                } else {
+                                    FontWeight::NORMAL
+                                })
+                                .text_color(theme::TEXT_PRIMARY)
+                                .child(label.clone()),
+                        ),
+                )
+                .when(has_unread, |d| {
+                    d.child(div().w_2().h_2().rounded_full().bg(theme::ACCENT))
+                })
+                .on_mouse_up(
+                    MouseButton::Left,
+                    cx.listener(move |this, _: &MouseUpEvent, _, cx| {
+                        let target = ch_id.clone();
+                        this.state.update(cx, |s, cx| {
+                            s.close_quick_switcher();
+                            s.open_channel(target);
+                            cx.notify();
+                        });
+                    }),
+                )
+        });
+
+        div()
+            .w(px(480.0))
+            .max_h(px(400.0))
+            .p_4()
+            .rounded_lg()
+            .bg(theme::BG_SECONDARY)
+            .border_1()
+            .border_color(theme::BORDER_ACCENT)
+            .flex()
+            .flex_col()
+            .gap_3()
+            .child(
+                div()
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .gap_2()
+                    .px_3()
+                    .py_2()
+                    .rounded_md()
+                    .bg(theme::BG_SURFACE)
+                    .border_1()
+                    .border_color(theme::BORDER)
+                    .child(div().text_sm().child("🔍"))
+                    .child(div().flex_1().child(self.quick_switcher_input.clone())),
+            )
+            .child(
+                div()
+                    .id("quick-switcher-list")
+                    .w_full()
+                    .max_h(px(280.0))
+                    .overflow_y_scroll()
+                    .flex()
+                    .flex_col()
+                    .gap_1()
+                    .children(items),
+            )
+            .child(
+                div()
+                    .text_xs()
+                    .text_color(theme::TEXT_DIM)
+                    .child("↑↓ で移動、Enter で決定、Esc で閉じる"),
+            )
+    }
+
+    fn render_message_search_bar(&self, cx: &mut Context<Self>) -> Div {
+        let state = self.state.read(cx);
+        let ms = state.message_search.as_ref().unwrap();
+        let count = ms.matches.len();
+        let count_text = if ms.query.trim().is_empty() {
+            String::new()
+        } else {
+            format!("{count} 件一致")
+        };
+
+        div()
+            .w_full()
+            .px_4()
+            .py_2()
+            .bg(theme::BG_SURFACE)
+            .border_b_1()
+            .border_color(theme::BORDER)
+            .flex()
+            .flex_row()
+            .items_center()
+            .gap_3()
+            .child(div().text_sm().child("🔍"))
+            .child(div().flex_1().child(self.message_search_input.clone()))
+            .when(!count_text.is_empty(), |d| {
+                d.child(
+                    div()
+                        .text_xs()
+                        .text_color(if count > 0 {
+                            theme::ACCENT
+                        } else {
+                            theme::TEXT_MUTED
+                        })
+                        .child(count_text),
+                )
+            })
+            .child(
+                div()
+                    .px_2()
+                    .py_1()
+                    .rounded_sm()
+                    .hover(|s| s.bg(theme::BG_HOVER).cursor_pointer())
+                    .text_xs()
+                    .text_color(theme::TEXT_MUTED)
+                    .child("閉じる (Esc)")
+                    .on_mouse_up(
+                        MouseButton::Left,
+                        cx.listener(|this, _: &MouseUpEvent, _, cx| {
+                            this.state.update(cx, |s, cx| {
+                                s.close_message_search();
+                                cx.notify();
+                            });
+                        }),
+                    ),
+            )
+    }
 }
 
 impl Render for WorkspaceView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let login_phase = self.state.read(cx).login_phase.clone();
         if let Some(phase) = login_phase {
-            return self.render_login_view(&phase, window, cx);
+            return div()
+                .size_full()
+                .child(self.render_login_view(&phase, window, cx));
         }
 
         // ウィンドウのアクティブ状態とタイムライン・スレッドのスクロール位置を AppState に同期し、
@@ -2098,18 +3158,174 @@ impl Render for WorkspaceView {
             .as_ref()
             .map(|t| t.root_id.clone());
 
-        div()
+        let state_ref = self.state.read(cx);
+        let has_create_modal = state_ref.create_channel_modal.is_some();
+        let has_quick_switcher = state_ref.quick_switcher.is_some();
+        let has_emoji_picker = state_ref.emoji_picker_open;
+
+        let main_view = div()
             .flex()
             .flex_row()
             .size_full()
             .bg(theme::BG_PRIMARY)
             .text_color(theme::TEXT_PRIMARY)
             .track_focus(&self.focus_handle(cx))
+            .on_drop::<ExternalPaths>(cx.listener(|this, paths: &ExternalPaths, _, cx| {
+                for path in paths.paths() {
+                    this.state.update(cx, |s, cx| {
+                        s.add_attachment_from_path(path.clone());
+                        cx.notify();
+                    });
+                }
+            }))
+            .on_key_down(cx.listener(|this, ev: &KeyDownEvent, window, cx| {
+                let key = ev.keystroke.key.as_str();
+                let cmd_or_ctrl = ev.keystroke.modifiers.platform || ev.keystroke.modifiers.control;
+
+                // メンション補完時のキーボード操作
+                if this.state.read(cx).mention_autocomplete.is_some() {
+                    match key {
+                        "up" => {
+                            this.state.update(cx, |s, cx| {
+                                s.mention_select_prev();
+                                cx.notify();
+                            });
+                            return;
+                        }
+                        "down" => {
+                            this.state.update(cx, |s, cx| {
+                                s.mention_select_next();
+                                cx.notify();
+                            });
+                            return;
+                        }
+                        "tab" | "enter" => {
+                            let confirmed = this.state.update(cx, |s, cx| {
+                                let res = s.mention_confirm();
+                                cx.notify();
+                                res
+                            });
+                            if let Some((text, caret)) = confirmed {
+                                this.composer_input.update(cx, |input, cx| {
+                                    input.set_text_and_cursor(text, caret, cx);
+                                });
+                            }
+                            return;
+                        }
+                        "escape" => {
+                            this.state.update(cx, |s, cx| {
+                                s.mention_autocomplete = None;
+                                cx.notify();
+                            });
+                            return;
+                        }
+                        _ => {}
+                    }
+                }
+
+                // クイックスイッチャー時のキーボード操作
+                if this.state.read(cx).quick_switcher.is_some() {
+                    match key {
+                        "up" => {
+                            this.state.update(cx, |s, cx| {
+                                s.quick_switcher_select_prev();
+                                cx.notify();
+                            });
+                            return;
+                        }
+                        "down" => {
+                            this.state.update(cx, |s, cx| {
+                                s.quick_switcher_select_next();
+                                cx.notify();
+                            });
+                            return;
+                        }
+                        "enter" => {
+                            this.state.update(cx, |s, cx| {
+                                s.quick_switcher_confirm();
+                                cx.notify();
+                            });
+                            return;
+                        }
+                        "escape" => {
+                            this.state.update(cx, |s, cx| {
+                                s.close_quick_switcher();
+                                cx.notify();
+                            });
+                            return;
+                        }
+                        _ => {}
+                    }
+                }
+
+                // グローバルショートカット
+                if cmd_or_ctrl && key == "k" {
+                    this.state.update(cx, |s, cx| {
+                        s.open_quick_switcher();
+                        cx.notify();
+                    });
+                    window.focus(&this.quick_switcher_input.focus_handle(cx));
+                    return;
+                }
+                if cmd_or_ctrl && key == "n" {
+                    this.state.update(cx, |s, cx| {
+                        s.open_create_channel_modal();
+                        cx.notify();
+                    });
+                    window.focus(&this.create_channel_name_input.focus_handle(cx));
+                    return;
+                }
+                if cmd_or_ctrl && key == "f" {
+                    this.state.update(cx, |s, cx| {
+                        s.open_message_search();
+                        cx.notify();
+                    });
+                    window.focus(&this.message_search_input.focus_handle(cx));
+                    return;
+                }
+                if key == "escape" {
+                    this.state.update(cx, |s, cx| {
+                        if s.create_channel_modal.is_some() {
+                            s.close_create_channel_modal();
+                        } else if s.quick_switcher.is_some() {
+                            s.close_quick_switcher();
+                        } else if s.emoji_picker_open {
+                            s.close_emoji_picker();
+                        } else if s.message_search.is_some() {
+                            s.close_message_search();
+                        } else if s.thread.is_some() {
+                            s.close_thread();
+                        }
+                        cx.notify();
+                    });
+                }
+            }))
             .child(self.render_sidebar_view(cx))
             .child(self.render_timeline_view(cx))
             .when_some(thread_root, |d, root_id| {
                 d.child(self.render_thread_view(&root_id, cx))
-            })
+            });
+
+        if has_create_modal || has_quick_switcher || has_emoji_picker {
+            div().size_full().relative().child(main_view).child(
+                div()
+                    .absolute()
+                    .inset_0()
+                    .bg(rgba(0x00000077))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .when(has_create_modal, |d| {
+                        d.child(self.render_create_channel_modal(cx))
+                    })
+                    .when(has_quick_switcher, |d| {
+                        d.child(self.render_quick_switcher_modal(cx))
+                    })
+                    .when(has_emoji_picker, |d| d.child(self.render_emoji_picker(cx))),
+            )
+        } else {
+            div().size_full().child(main_view)
+        }
     }
 }
 
@@ -2146,4 +3362,165 @@ pub fn local_time_string(at: DateTime) -> String {
 
 fn is_activate_key(key: &str) -> bool {
     matches!(key, "enter" | "space" | " ")
+}
+
+pub fn format_file_size(bytes: i64) -> String {
+    if bytes < 1024 {
+        format!("{bytes} B")
+    } else if bytes < 1024 * 1024 {
+        format!("{:.1} KB", bytes as f64 / 1024.0)
+    } else {
+        format!("{:.1} MB", bytes as f64 / (1024.0 * 1024.0))
+    }
+}
+
+pub fn render_ogp_card(card: &CardData) -> Div {
+    let border_color = if let Some(color_hex) = &card.color {
+        let clean = color_hex.trim_start_matches('#');
+        if let Ok(c) = u32::from_str_radix(clean, 16) {
+            theme::hex_rgb(c)
+        } else {
+            theme::BORDER_ACCENT
+        }
+    } else {
+        theme::BORDER_ACCENT
+    };
+
+    let title = card.title.clone();
+    let url = card.url.clone();
+    let desc = card.description.clone();
+    let source = if !card.source.is_empty() {
+        card.source.clone()
+    } else if !card.badge.is_empty() {
+        card.badge.clone()
+    } else {
+        String::new()
+    };
+
+    div()
+        .mt_1p5()
+        .rounded_md()
+        .bg(theme::BG_SURFACE)
+        .border_1()
+        .border_color(theme::BORDER)
+        .flex()
+        .flex_row()
+        .overflow_hidden()
+        .child(div().w(px(4.0)).bg(border_color))
+        .child(
+            div()
+                .flex_1()
+                .p_2p5()
+                .flex()
+                .flex_col()
+                .gap_1()
+                .when(!source.is_empty(), |d| {
+                    d.child(
+                        div()
+                            .text_xs()
+                            .font_weight(FontWeight::BOLD)
+                            .text_color(theme::TEXT_MUTED)
+                            .child(source),
+                    )
+                })
+                .child(
+                    div()
+                        .text_sm()
+                        .font_weight(FontWeight::BOLD)
+                        .text_color(theme::TEXT_LINK)
+                        .child(title),
+                )
+                .when(!desc.is_empty(), |d| {
+                    d.child(div().text_xs().text_color(theme::TEXT_MUTED).child(desc))
+                })
+                .when(!url.is_empty(), |d| {
+                    d.child(div().text_xs().text_color(theme::TEXT_DIM).child(url))
+                }),
+        )
+}
+
+pub fn render_attachment_item(
+    att: &zoo2_client_core::electric::rows::Attachment,
+    api_base_url: &str,
+) -> Div {
+    let is_img = is_image_content_type(&att.content_type);
+    let size_label = format_file_size(att.file_size);
+    let file_name = att.file_name.clone();
+    let download_url = format!(
+        "{}/api/attachments/{}/url",
+        api_base_url.trim_end_matches('/'),
+        att.id
+    );
+
+    if is_img {
+        div()
+            .mt_1p5()
+            .rounded_md()
+            .overflow_hidden()
+            .border_1()
+            .border_color(theme::BORDER)
+            .bg(theme::BG_SURFACE)
+            .child(
+                gpui::img(download_url)
+                    .max_w(px(380.0))
+                    .max_h(px(240.0))
+                    .rounded_md(),
+            )
+    } else {
+        div()
+            .mt_1p5()
+            .px_3()
+            .py_2()
+            .rounded_md()
+            .bg(theme::BG_SURFACE)
+            .border_1()
+            .border_color(theme::BORDER)
+            .flex()
+            .flex_row()
+            .items_center()
+            .gap_2()
+            .child(div().text_base().child("📎"))
+            .child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .child(
+                        div()
+                            .text_xs()
+                            .font_weight(FontWeight::BOLD)
+                            .text_color(theme::TEXT_PRIMARY)
+                            .child(file_name),
+                    )
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(theme::TEXT_MUTED)
+                            .child(size_label),
+                    ),
+            )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn formats_file_size_correctly() {
+        assert_eq!(format_file_size(0), "0 B");
+        assert_eq!(format_file_size(500), "500 B");
+        assert_eq!(format_file_size(1024), "1.0 KB");
+        assert_eq!(format_file_size(1536), "1.5 KB");
+        assert_eq!(format_file_size(1048576), "1.0 MB");
+        assert_eq!(format_file_size(5242880), "5.0 MB");
+    }
+
+    #[test]
+    fn parses_ogp_hex_color() {
+        let c = theme::hex_rgb(0xff0000);
+        assert!((c.r - 1.0).abs() < 0.01);
+        assert!(c.g.abs() < 0.01);
+        assert!(c.b.abs() < 0.01);
+        assert!((c.a - 1.0).abs() < 0.01);
+    }
 }

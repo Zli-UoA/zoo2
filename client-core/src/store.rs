@@ -6,7 +6,7 @@ use std::collections::{HashMap, HashSet};
 
 use crate::electric::{
     Batch, Change, ShapeId,
-    rows::{Channel, ChannelUser, FromRow, Message, Reaction, User},
+    rows::{Attachment, Channel, ChannelUser, FromRow, Message, Reaction, User},
 };
 
 #[derive(Debug, Default)]
@@ -19,6 +19,7 @@ pub struct Store {
     channel_users: HashMap<String, ChannelUser>,
     messages: HashMap<String, HashMap<String, Message>>,
     reactions: HashMap<String, HashMap<String, Reaction>>,
+    attachments: HashMap<String, HashMap<String, Attachment>>,
     synced: HashSet<ShapeId>,
     /// 型に変換できなかった行の数。スキーマのずれに気づけるよう画面に出す。
     pub invalid_rows: usize,
@@ -54,6 +55,12 @@ impl Store {
             ),
             ShapeId::Reactions(channel_id) => apply_rows(
                 self.reactions.entry(channel_id.clone()).or_default(),
+                batch.reset,
+                batch.changes,
+                &mut invalid,
+            ),
+            ShapeId::Attachments(channel_id) => apply_rows(
+                self.attachments.entry(channel_id.clone()).or_default(),
                 batch.reset,
                 batch.changes,
                 &mut invalid,
@@ -112,6 +119,40 @@ impl Store {
         self.channel_users
             .values()
             .any(|member| member.channel_id == channel_id && member.user_id == user_id)
+    }
+
+    /// チャンネルに参加しているユーザー一覧。
+    pub fn channel_members(&self, channel_id: &str) -> Vec<&User> {
+        let member_ids: HashSet<&str> = self
+            .channel_users
+            .values()
+            .filter(|cu| cu.channel_id == channel_id)
+            .map(|cu| cu.user_id.as_str())
+            .collect();
+
+        self.users
+            .values()
+            .filter(|u| member_ids.contains(u.id.as_str()))
+            .collect()
+    }
+
+    /// メッセージに紐づく添付ファイル一覧。
+    pub fn attachments_for_message(&self, channel_id: &str, message_id: &str) -> Vec<&Attachment> {
+        let Some(map) = self.attachments.get(channel_id) else {
+            return Vec::new();
+        };
+        let mut result: Vec<&Attachment> = map
+            .values()
+            .filter(|att| att.message_id.as_deref() == Some(message_id))
+            .collect();
+        result.sort_by_key(|att| att.created_at);
+        result
+    }
+
+    /// 特定の添付ファイルを取得する。
+    pub fn attachment(&self, channel_id: &str, attachment_id: &str) -> Option<&Attachment> {
+        let map = self.attachments.get(channel_id)?;
+        map.values().find(|att| att.id == attachment_id)
     }
 
     /// 一覧に出す名前。DM は `dm:<id>:<id>` という内部名なので、自分以外の参加者の名前にする。
@@ -446,6 +487,28 @@ mod tests {
         assert!(!store.is_member("c1", "u2"));
         assert_eq!(store.display_name("u1"), "Alice");
         assert_eq!(store.display_name("u9"), "u9");
+
+        let members = store.channel_members("c3");
+        assert_eq!(members.len(), 2);
+
+        store.apply(
+            &ShapeId::Attachments("c1".into()),
+            batch(vec![upsert(
+                "att1",
+                json!({
+                    "id": "att1", "message_id": "m1", "uploader_id": "u1",
+                    "channel_id": "c1", "file_name": "pic.png", "file_size": 100,
+                    "content_type": "image/png", "storage_key": "k1",
+                    "created_at": "2026-11-01 10:00:00"
+                }),
+            )]),
+        );
+
+        let atts = store.attachments_for_message("c1", "m1");
+        assert_eq!(atts.len(), 1);
+        assert_eq!(atts[0].file_name, "pic.png");
+        assert_eq!(store.attachment("c1", "att1").unwrap().file_name, "pic.png");
+        assert!(store.attachments_for_message("c1", "m2").is_empty());
     }
 
     #[test]

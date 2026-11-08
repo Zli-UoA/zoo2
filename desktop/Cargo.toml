@@ -16,6 +16,7 @@ anyhow = "1"
 emojis = "0.6"
 gpui = "0.2.2"
 jiff = "0.2"
+notify-rust = "4"
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "sync", "time"] }
 unicode-segmentation = "1"

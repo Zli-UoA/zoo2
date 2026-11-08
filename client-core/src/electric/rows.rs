@@ -3,6 +3,7 @@
 
 use anyhow::{Context, Result, anyhow};
 use jiff::civil::DateTime;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use super::shape::Row;
@@ -42,6 +43,7 @@ pub struct Message {
     pub user_id: String,
     pub channel_id: String,
     pub content: String,
+    pub card: Option<String>,
     pub created_at: DateTime,
     pub updated_at: Option<DateTime>,
     pub deleted_at: Option<DateTime>,
@@ -55,6 +57,79 @@ pub struct Reaction {
     pub user_id: String,
     pub emoji: String,
     pub created_at: DateTime,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct Attachment {
+    pub id: String,
+    pub message_id: Option<String>,
+    pub uploader_id: String,
+    pub channel_id: String,
+    pub file_name: String,
+    pub file_size: i64,
+    pub content_type: String,
+    pub storage_key: String,
+    pub created_at: DateTime,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CardField {
+    pub title: String,
+    pub value: String,
+    #[serde(default)]
+    pub short: Option<bool>,
+    #[serde(default)]
+    pub url: Option<String>,
+    #[serde(default)]
+    pub code: Option<bool>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CardData {
+    pub title: String,
+    #[serde(default)]
+    pub description: String,
+    #[serde(default)]
+    pub url: String,
+    #[serde(default)]
+    pub source: String,
+    #[serde(default)]
+    pub context: String,
+    #[serde(default)]
+    pub author: String,
+    #[serde(default)]
+    pub badge: String,
+    #[serde(default)]
+    pub color: Option<String>,
+    #[serde(default)]
+    pub fields: Option<Vec<CardField>>,
+}
+
+/// JSON 文字列から 1 個または複数の CardData をパースする。
+pub fn parse_message_cards(value: &str) -> Vec<CardData> {
+    if value.trim().is_empty() {
+        return Vec::new();
+    }
+    // {"cards": [...]} 形式のパース
+    if let Ok(wrapper) = serde_json::from_str::<CardsWrapper>(value) {
+        let cards = wrapper.cards;
+        if !cards.is_empty() {
+            return cards;
+        }
+    }
+    // 単一 CardData 形式のパース
+    if let Ok(card) = serde_json::from_str::<CardData>(value) {
+        let title = card.title.trim();
+        if !title.is_empty() {
+            return vec![card];
+        }
+    }
+    Vec::new()
+}
+
+#[derive(Deserialize)]
+struct CardsWrapper {
+    cards: Vec<CardData>,
 }
 
 impl FromRow for Channel {
@@ -99,6 +174,7 @@ impl FromRow for Message {
             user_id: text(row, "user_id")?,
             channel_id: text(row, "channel_id")?,
             content: opt_text(row, "content").unwrap_or_default(),
+            card: opt_text(row, "card"),
             created_at: time(row, "created_at")?,
             updated_at: opt_time(row, "updated_at")?,
             deleted_at: opt_time(row, "deleted_at")?,
@@ -117,6 +193,41 @@ impl FromRow for Reaction {
             created_at: time(row, "created_at")?,
         })
     }
+}
+
+impl FromRow for Attachment {
+    fn from_row(row: &Row) -> Result<Self> {
+        Ok(Self {
+            id: text(row, "id")?,
+            message_id: opt_text(row, "message_id"),
+            uploader_id: text(row, "uploader_id")?,
+            channel_id: text(row, "channel_id")?,
+            file_name: text(row, "file_name")?,
+            file_size: integer(row, "file_size")?,
+            content_type: text(row, "content_type")?,
+            storage_key: text(row, "storage_key")?,
+            created_at: time(row, "created_at")?,
+        })
+    }
+}
+
+fn opt_integer(row: &Row, column: &str) -> Result<Option<i64>> {
+    match row.get(column) {
+        None | Some(Value::Null) => Ok(None),
+        Some(Value::Number(num)) => num
+            .as_i64()
+            .ok_or_else(|| anyhow!("列 {column} が整数ではありません: {num}"))
+            .map(Some),
+        Some(Value::String(s)) => s
+            .parse::<i64>()
+            .map(Some)
+            .map_err(|e| anyhow!("列 {column} が整数ではありません: {s} ({e})")),
+        Some(other) => Err(anyhow!("列 {column} が整数ではありません: {other}")),
+    }
+}
+
+fn integer(row: &Row, column: &str) -> Result<i64> {
+    opt_integer(row, column)?.ok_or_else(|| anyhow!("列 {column} がありません"))
 }
 
 fn opt_text(row: &Row, column: &str) -> Option<String> {
@@ -223,5 +334,40 @@ mod tests {
             })))
             .is_err()
         );
+    }
+
+    #[test]
+    fn parses_attachment_and_message_card() {
+        let attachment = Attachment::from_row(&row(json!({
+            "id": "att1",
+            "message_id": "m1",
+            "uploader_id": "u1",
+            "channel_id": "c1",
+            "file_name": "photo.png",
+            "file_size": 12345,
+            "content_type": "image/png",
+            "storage_key": "keys/photo.png",
+            "created_at": "2026-11-01 12:00:00"
+        })))
+        .unwrap();
+        assert_eq!(attachment.id, "att1");
+        assert_eq!(attachment.file_size, 12345);
+        assert_eq!(attachment.content_type, "image/png");
+
+        let message = Message::from_row(&row(json!({
+            "id": "m1", "user_id": "u1", "channel_id": "c1", "content": "hello",
+            "card": "{\"title\":\"zoo2\",\"url\":\"https://zoo2.app\"}",
+            "created_at": "2026-11-01T00:00:00"
+        })))
+        .unwrap();
+        assert_eq!(
+            message.card.as_deref(),
+            Some("{\"title\":\"zoo2\",\"url\":\"https://zoo2.app\"}")
+        );
+
+        let cards = parse_message_cards(message.card.as_deref().unwrap());
+        assert_eq!(cards.len(), 1);
+        assert_eq!(cards[0].title, "zoo2");
+        assert_eq!(cards[0].url, "https://zoo2.app");
     }
 }
