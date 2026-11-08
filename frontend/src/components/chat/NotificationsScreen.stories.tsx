@@ -631,6 +631,16 @@ export const UnifiedTimeline: Story = {
       expect.stringMatching(/Bob.*リアクション/),
       expect.stringMatching(/Bob.*フォロー申請/),
     ]);
+    // Mixed sources share avatar dimensions and keep the date beside the read indicator.
+    const avatarSizes = rows.map(
+      (row) => row.querySelector('[data-slot="avatar"]')!.getBoundingClientRect().width,
+    );
+    await expect(new Set(avatarSizes).size).toBe(1);
+    await expect(avatarSizes[0]).toBe(window.innerWidth < 640 ? 40 : 36);
+    const datePositions = rows.map(
+      (row) => row.querySelector("time")!.getBoundingClientRect().right,
+    );
+    await expect(Math.max(...datePositions) - Math.min(...datePositions)).toBeLessThanOrEqual(1);
     await expect(rows[1].querySelector("[data-notification-reaction]")).toHaveTextContent("🦊");
     await expect(rows[3].querySelector("[data-notification-reaction]")).not.toBeNull();
     await expect(

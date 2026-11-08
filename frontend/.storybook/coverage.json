@@ -929,7 +929,7 @@
       "file": "src/components/home/ActivityPubNotifications.tsx",
       "story": "src/components/chat/NotificationsScreen.stories.tsx",
       "composed": true,
-      "reason": "UnifiedTimeline/Mobileで混在時刻順と枠・実リアクション、UnifiedAutoReadで可視通知の選択既読、CustomReactionBadgeでカスタム絵文字のバッジを確認する。FollowRequests/ApproveFollow/RejectFollowで承認・拒否も維持する。"
+      "reason": "UnifiedTimeline/Mobileで混在時刻順と枠・実リアクション、共通アバター寸法と右寄せ日時、UnifiedAutoReadで可視通知の選択既読、CustomReactionBadgeでカスタム絵文字のバッジを確認する。FollowRequests/ApproveFollow/RejectFollowで承認・拒否も維持する。"
     },
     {
       "file": "src/components/home/ActivityPubEmoji.tsx",
