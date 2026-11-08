@@ -26,11 +26,14 @@ type Story = StoryObj<typeof meta>;
 
 export const Default: Story = {
   play: playForImplementation(async ({ canvasElement }) => {
-    await expect(
-      await within(canvasElement).findByRole("button", {
-        name: "Compose版を使う（実験・開発中）",
-      }),
-    ).toBeVisible();
+    const toggle = within(canvasElement).queryByRole("button", {
+      name: "Compose版を使う（実験・開発中）",
+    });
+    if (import.meta.env.VITE_EXPERIMENTAL_COMPOSE === "true") {
+      await expect(toggle).toBeVisible();
+    } else {
+      await expect(toggle).not.toBeInTheDocument();
+    }
   }),
 };
 

@@ -39,6 +39,29 @@ jobs:
           cmdline-tools-version: 13114758
           packages: platform-tools platforms;android-35 build-tools;35.0.0
           log-accepted-android-sdk-licenses: false
+      - name: Restore Gradle wrapper distribution
+        id: gradle-wrapper
+        uses: actions/cache/restore@v6
+        with:
+          path: ~/.gradle/wrapper/dists
+          key: gradle-wrapper-${{ hashFiles('frontend-compose/gradle/wrapper/gradle-wrapper.properties') }}
+      - name: Download Gradle wrapper distribution
+        if: steps.gradle-wrapper.outputs.cache-hit != 'true'
+        working-directory: frontend-compose
+        run: |
+          for attempt in 1 2 3 4 5; do
+            ./gradlew --version && exit 0
+            echo "Gradle wrapper download failed (attempt $attempt); retrying" >&2
+            sleep $((attempt * 20))
+          done
+          exit 1
+      # Save right after the download so later dependency failures do not discard it.
+      - name: Save Gradle wrapper distribution
+        if: steps.gradle-wrapper.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v6
+        with:
+          path: ~/.gradle/wrapper/dists
+          key: ${{ steps.gradle-wrapper.outputs.cache-primary-key }}
       - uses: gradle/actions/setup-gradle@v4
       - name: Test update manifest generation
         run: python3 .github/scripts/android-update-manifest.test.py
@@ -72,6 +95,29 @@ jobs:
           cmdline-tools-version: 13114758
           packages: platform-tools platforms;android-35 build-tools;35.0.0
           log-accepted-android-sdk-licenses: false
+      - name: Restore Gradle wrapper distribution
+        id: gradle-wrapper
+        uses: actions/cache/restore@v6
+        with:
+          path: ~/.gradle/wrapper/dists
+          key: gradle-wrapper-${{ hashFiles('frontend-compose/gradle/wrapper/gradle-wrapper.properties') }}
+      - name: Download Gradle wrapper distribution
+        if: steps.gradle-wrapper.outputs.cache-hit != 'true'
+        working-directory: frontend-compose
+        run: |
+          for attempt in 1 2 3 4 5; do
+            ./gradlew --version && exit 0
+            echo "Gradle wrapper download failed (attempt $attempt); retrying" >&2
+            sleep $((attempt * 20))
+          done
+          exit 1
+      # Save right after the download so later dependency failures do not discard it.
+      - name: Save Gradle wrapper distribution
+        if: steps.gradle-wrapper.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v6
+        with:
+          path: ~/.gradle/wrapper/dists
+          key: ${{ steps.gradle-wrapper.outputs.cache-primary-key }}
       - uses: gradle/actions/setup-gradle@v4
       - name: Build with the persistent Android signing key
         working-directory: frontend-compose

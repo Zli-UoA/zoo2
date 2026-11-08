@@ -1,6 +1,8 @@
 # React / Compose Web 対応表
 
-Reactを機能・UI・操作の基準とする。変更時は [compose-react-parity](../.agents/skills/compose-react-parity/SKILL.md) に従い、同じPRで両実装と検証を更新する。
+> Compose for Web は動作が重く実用に耐えないため実験を中止しました。この対応表は過去の記録です。Web 版の追従・性能改善・検証を通常の開発で要求しません。Compose for Android は継続します。[現在の方針](compose-multiplatform.md#現在の方針) を参照してください。
+
+以下は実験中に React を基準として両実装を更新・検証していた記録です。現行の保守境界は [compose-react-parity](../.agents/skills/compose-react-parity/SKILL.md) を参照してください。
 この表は実装の所有先を示すもので、全入力での完全互換や画像の完全一致を保証するものではない。
 
 本文の `#チャンネル名` は、Reactでは `MfmChannels.tsx` のルーター `Link`、Composeでは
@@ -32,6 +34,10 @@ Reactを機能・UI・操作の基準とする。変更時は [compose-react-par
 | 翻訳・デザイントークン・アイコン・データ | `lib/i18n`, CSS、Lucide、Emojibase | `Ui.kt`, `IconData.kt`、共有翻訳・生成資源 | 全ロケールの共通辞書、`sync-compose-assets.mjs`、カタログツールバー |
 
 ## Web描画の性能改善
+
+WebのOIDCは共通 `AuthGate` / `OidcClient` がタブ内のセッションを復元するため、React・Composeの両方で再読み込み時のauthorizeへの往復を省く。更新トークンはメモリだけに保持し、再読み込み・タブ複製では有効なアクセストークンを復元する。オフライン中は再認可を保留し、再接続時にユーザー情報を再取得する。期限切れ時の更新、タブ複製時の競合回避、ログアウト時の消去、設定の分離をOIDCのテストで確認する。TUIは既存の `StoredTokens` / `TokenManager` で保存・復元しており、Web固有の `sessionStorage` 変更は反映不要。
+
+保存済み履歴の復元後は、Reactの `useRealtime` と `ChannelSidebar` が永続化の復元状態と行の有無を確認し、初回のElectric同期を待たずに通常表示する。保存行がない場合は初回ロード表示を維持する。Composeの `SyncedTable` は既存のキャッシュ復元時に `loading` を解除する実装で同じ表示順を保つ。Reactの `collections.persistence.test.ts` はネットワーク応答を保留して保存あり・なしを検証する。Compose Webの実験終了に伴い、Web変更のために共通Kotlinのテストは追加しない。TUIには履歴の永続化復元とスケルトン表示がないため、実装変更は不要。
 
 ARIA補完の更新を対象コントロールに限定し、DOM参照をキャッシュする。アイコンは色別の画像生成をやめ、同じラスタへ描画時に着色する。初回は本文フォントだけをゲートにする。機能・API・操作仕様はReactと共通のまま、Web固有の補完処理を変更する。TUIには対象処理がなく、変更しない。検証方法と結果は [Compose Webの性能計測](compose-performance.md) を参照。
 
