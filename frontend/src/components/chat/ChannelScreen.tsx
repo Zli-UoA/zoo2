@@ -73,7 +73,7 @@ export function ChannelScreen({
   }, [access.members, channel, currentUserId, locale, t, usersQuery.data]);
 
   if (!channel) {
-    if (channelsQuery.isLoading) {
+    if (channelsQuery.isInitialSyncLoading) {
       return (
         <div className="flex h-full min-h-0 flex-col">
           <ChannelLoading />

@@ -9,7 +9,7 @@ const require = createRequire(import.meta.url);
 const sourceRoot = dirname(require.resolve("emojibase-data/package.json"));
 const packageJson = JSON.parse(await readFile(join(sourceRoot, "package.json"), "utf8"));
 const targetRoot = fileURLToPath(new URL("../public/emojibase-data/", import.meta.url));
-const locales = ["en", "ja", "zh-hant"];
+const locales = ["en", "ja", "ko", "zh-hant"];
 const files = ["data.json", "messages.json"];
 
 for (const locale of locales) {
