@@ -12,10 +12,14 @@ const mocks = vi.hoisted(() => ({
   online: true,
   ensureLoaded: vi.fn(async () => {}),
   prepare: vi.fn(async () => {}),
+  reload: vi.fn(async () => false),
   open: vi.fn(async () => ({ persistence: {} })),
   remove: vi.fn(async () => {}),
 }));
-vi.mock("../../lib/pwa/worker-registration", () => ({ prepareOfflineWorker: mocks.prepare }));
+vi.mock("../../lib/pwa/worker-registration", () => ({
+  prepareOfflineWorker: mocks.prepare,
+  reloadIfShellUpdated: mocks.reload,
+}));
 vi.mock("../../lib/offline/online", () => ({ useOnlineStatus: () => mocks.online }));
 vi.mock("../../lib/currentUser", () => ({
   getCurrentUserStore: () => ({
@@ -46,6 +50,48 @@ beforeEach(() => {
   mocks.remove.mockResolvedValue(undefined);
   mocks.prepare.mockReset();
   mocks.prepare.mockResolvedValue(undefined);
+  mocks.reload.mockReset();
+  mocks.reload.mockResolvedValue(false);
+});
+
+it("waits for the updated document instead of opening SQLite from a stale shell", async () => {
+  mocks.reload.mockResolvedValue(true);
+  render(
+    <OfflineProvider config={{ devUserId: "dev", oidc: null } as AppConfig}>
+      <button>App</button>
+    </OfflineProvider>,
+  );
+  await act(async () => {});
+  expect(mocks.reload).toHaveBeenCalled();
+  expect(mocks.open).not.toHaveBeenCalled();
+  expect(screen.queryByRole("button", { name: "App" })).toBeNull();
+});
+
+it("does not reload after a background deployment when retrying or changing namespace", async () => {
+  function Retry() {
+    const { retryPersistence } = useOfflineStatus();
+    return <button onClick={retryPersistence}>Retry storage</button>;
+  }
+  const { rerender } = render(
+    <OfflineProvider config={{ devUserId: "first", oidc: null } as AppConfig}>
+      <Retry />
+    </OfflineProvider>,
+  );
+  const retry = await screen.findByRole("button", { name: "Retry storage" });
+  expect(mocks.reload).toHaveBeenCalledOnce();
+  // A newer shell is now cached, but the current page is already in use.
+  mocks.reload.mockResolvedValue(true);
+  await act(async () => retry.click());
+  await screen.findByRole("button", { name: "Retry storage" });
+  expect(mocks.open).toHaveBeenCalledTimes(2);
+  rerender(
+    <OfflineProvider config={{ devUserId: "second", oidc: null } as AppConfig}>
+      <Retry />
+    </OfflineProvider>,
+  );
+  await screen.findByRole("button", { name: "Retry storage" });
+  expect(mocks.open).toHaveBeenCalledTimes(3);
+  expect(mocks.reload).toHaveBeenCalledOnce();
 });
 
 it("resolves the current user again after reconnecting from an offline startup", async () => {
@@ -85,6 +131,7 @@ it("waits for user resolution before opening storage and mounting interactive ch
   await act(async () => {});
   expect(screen.queryByRole("button")).toBeNull();
   expect(mocks.open).not.toHaveBeenCalled();
+  expect(mocks.prepare).toHaveBeenCalledOnce();
 
   await act(async () => {
     mocks.state = { currentUserId: "user-a", isLoading: false, isAdmin: false, error: null };
