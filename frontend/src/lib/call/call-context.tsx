@@ -199,6 +199,36 @@ export function CallProvider({ config: explicitConfig, children }: CallProviderP
     },
     [t],
   );
+  // 出力先の適用は 1 件ずつ実行し、常に最新の選択値 (speakerIdRef) を全参加者へ適用する。
+  // 適用に失敗し、より新しい選択も無ければ、実際に出力している先 (activeSpeakerIdRef) へ選択値を戻して通知する
+  const speakerApplyQueueRef = useRef<Promise<void>>(Promise.resolve());
+  const applySpeakerToAll = useCallback(() => {
+    const run = speakerApplyQueueRef.current.then(async () => {
+      const target = speakerIdRef.current;
+      // 効果音も選択中のスピーカーから鳴らす
+      setCallSoundSink(target);
+      let ok = true;
+      let applied = 0;
+      for (const entry of peersRef.current.values()) {
+        if (!entry.audio) continue;
+        applied++;
+        if (!(await applySink(entry.audio, target))) ok = false;
+      }
+      if (ok) {
+        // 実際に適用できた要素があるときだけ、出力先として記録する
+        if (applied > 0) activeSpeakerIdRef.current = target;
+        return;
+      }
+      if (speakerIdRef.current !== target) return;
+      fallbackSpeaker(target);
+      for (const entry of peersRef.current.values()) {
+        if (entry.audio) await applySink(entry.audio, speakerIdRef.current);
+      }
+    });
+    speakerApplyQueueRef.current = run.catch(() => {});
+    return run;
+  }, [fallbackSpeaker]);
+
   // 起動時に保存済みの出力先を効果音へ反映する
   useEffect(() => {
     setCallSoundSink(speakerIdRef.current);
@@ -605,12 +635,8 @@ export function CallProvider({ config: explicitConfig, children }: CallProviderP
               }
               // 保存済みの出力先 (切断されたヘッドホンなど) を使えない場合は、既定へ戻して通知してから再生する
               fallbackSpeaker(requested);
-              // 既存参加者の音声も同じ出力先へ揃える（保存イベントの購読側は値が一致して再適用しない）
-              const target = speakerIdRef.current;
-              await applySink(audio, target);
-              for (const peer of peersRef.current.values()) {
-                if (peer.audio && peer.audio !== audio) await applySink(peer.audio, target);
-              }
+              // 既存参加者を含む全員へ、通常の出力先変更と同じ直列キューで最新の選択値を適用する
+              await applySpeakerToAll();
             })
             .then(startPlayback);
         } else {
@@ -631,7 +657,7 @@ export function CallProvider({ config: explicitConfig, children }: CallProviderP
 
       return pc;
     },
-    [fallbackSpeaker, sendSignalWithRetry, updateSpeakingUser],
+    [applySpeakerToAll, fallbackSpeaker, sendSignalWithRetry, updateSpeakingUser],
   );
 
   const switchMicrophone = useCallback(
@@ -749,36 +775,6 @@ export function CallProvider({ config: explicitConfig, children }: CallProviderP
     },
     [enqueueMicSwitch],
   );
-
-  // 出力先の適用は 1 件ずつ実行し、常に最新の選択値 (speakerIdRef) を全参加者へ適用する。
-  // 適用に失敗し、より新しい選択も無ければ、実際に出力している先 (activeSpeakerIdRef) へ選択値を戻して通知する
-  const speakerApplyQueueRef = useRef<Promise<void>>(Promise.resolve());
-  const applySpeakerToAll = useCallback(() => {
-    const run = speakerApplyQueueRef.current.then(async () => {
-      const target = speakerIdRef.current;
-      // 効果音も選択中のスピーカーから鳴らす
-      setCallSoundSink(target);
-      let ok = true;
-      let applied = 0;
-      for (const entry of peersRef.current.values()) {
-        if (!entry.audio) continue;
-        applied++;
-        if (!(await applySink(entry.audio, target))) ok = false;
-      }
-      if (ok) {
-        // 実際に適用できた要素があるときだけ、出力先として記録する
-        if (applied > 0) activeSpeakerIdRef.current = target;
-        return;
-      }
-      if (speakerIdRef.current !== target) return;
-      fallbackSpeaker(target);
-      for (const entry of peersRef.current.values()) {
-        if (entry.audio) await applySink(entry.audio, speakerIdRef.current);
-      }
-    });
-    speakerApplyQueueRef.current = run.catch(() => {});
-    return run;
-  }, [fallbackSpeaker]);
 
   const setSpeaker = useCallback(
     async (deviceId: string) => {
