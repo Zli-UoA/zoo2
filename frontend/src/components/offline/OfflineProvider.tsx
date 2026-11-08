@@ -90,6 +90,7 @@ export function OfflineProvider({
   const [retryToken, setRetryToken] = useState(0);
   const [ready, setReady] = useState<ReadyState | null>(null);
   const preparingWorker = useRef<Promise<void> | null>(null);
+  const startupShellCheck = useRef<Promise<boolean> | null>(null);
 
   // 静的アセットの準備はユーザー確認と並行する。DBを開く前には完了を待つ。
   useEffect(() => {
@@ -140,8 +141,10 @@ export function OfflineProvider({
       // The Worker response may still be cached with the previous deployment's CSP.
       // Upgrade the controlling SW before the first SQLite open, not after rendering the shell.
       await preparingWorker.current;
-      if (cancelled || (await reloadIfShellUpdated())) return;
       if (cancelled) return;
+      // Check once per startup; a later retry/user change must not reload an active form.
+      startupShellCheck.current ??= reloadIfShellUpdated();
+      if ((await startupShellCheck.current) || cancelled) return;
       try {
         const handle = await openOfflinePersistence(namespace);
         if (cancelled) return;
