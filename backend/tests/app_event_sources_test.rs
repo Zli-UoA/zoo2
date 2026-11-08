@@ -2843,3 +2843,50 @@ async fn emoji_backfill_commits_successes_before_the_startup_deadline() -> anyho
     tx.commit().await?;
     Ok(())
 }
+
+#[tokio::test]
+async fn disabled_http_worker_leaves_deliveries_queued_until_another_worker_runs()
+-> anyhow::Result<()> {
+    let _guard = HTTP_WORKER_TEST_LOCK.lock().await;
+    let f = fixture().await?;
+    reconfigure(&f,json!({"scopes":["messages:read"],"events":["message.created"],"transport":"http","event_url":"https://127.0.0.1:1/events"})).await?;
+    for _ in 0..3 {
+        ok(
+            &f.app,
+            "POST",
+            "/api/messages",
+            &f.owner,
+            json!({"channel_id":f.channel,"content":"queued while disabled"}),
+        )
+        .await;
+    }
+    // HTTP 配信を無効にしたプロセスのワーカーは、ポーリング間隔を十分超えて待っても送らない。
+    let worker = tokio::spawn(apps::delivery::worker_with(f.state.clone(), false));
+    tokio::time::sleep(std::time::Duration::from_millis(1800)).await;
+    let count = |f: &Fixture| {
+        let mut db = f.state.db.clone();
+        let installation = f.installation.clone();
+        async move {
+            let mut tx = db.transaction().await?;
+            let row = apps::one(&mut tx, "SELECT json_build_object('queued',count(*),'attempted',count(*) FILTER(WHERE attempts>0),'acked',count(*) FILTER(WHERE acked_at IS NOT NULL))::text FROM app_deliveries WHERE installation_id=$1 AND event_type='message.created'", &[&installation]).await?;
+            anyhow::Ok(row)
+        }
+    };
+    let row = count(&f).await?;
+    assert!(row["queued"].as_u64().unwrap() >= 3);
+    assert_eq!(
+        row["attempted"], 0,
+        "disabled worker must not attempt delivery"
+    );
+    assert_eq!(row["acked"], 0);
+    // 別のワーカー（dispatcher 相当）が動けば、溜まっていた配信が失われず再開する。
+    tokio::time::timeout(
+        std::time::Duration::from_secs(15),
+        apps::delivery::http_pass(&f.state),
+    )
+    .await??;
+    let row = count(&f).await?;
+    assert_eq!(row["attempted"], row["queued"], "queued deliveries resume");
+    worker.abort();
+    Ok(())
+}
