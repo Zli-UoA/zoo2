@@ -92,6 +92,7 @@
 | パスキーの KEK | 32 バイト（PRF 出力から導く） | パスキー | 置かない。解錠のたびに導く | パスキーの鍵スロット |
 | リカバリーキー | ランダムな 32 バイト | ユーザー | ユーザーが控える | リカバリーキーの鍵スロット |
 | バックアップ鍵 | Curve25519 | ユーザー | 公開鍵はサーバー、秘密鍵は SSSS | 鍵バックアップの暗号化 |
+| 古い版のバックアップ鍵 | Curve25519 | ユーザー | 失効のあと SSSS（`zoo.megolm_backup.previous`）。消した版の鍵は次の失効で除く | 古い版のセッションを新しい版に移す |
 
 鍵の関係は次のとおりです。
 
@@ -103,6 +104,7 @@ SSSS 鍵 → m.cross_signing.master       → マスター鍵     → 自己署�
 SSSS 鍵 → m.cross_signing.self_signing → 自己署名鍵     → 自分の端末に署名
 SSSS 鍵 → m.cross_signing.user_signing → ユーザー署名鍵 → 他人のマスター鍵に署名
 SSSS 鍵 → m.megolm_backup.v1           → バックアップ鍵 → 鍵バックアップの Megolm セッションを復号
+SSSS 鍵 → zoo.megolm_backup.previous   → 古い版のバックアップ鍵 → 失効のあと、古い版のセッションを新しい版に移す
 ```
 
 ## 暗号のパラメーター
@@ -299,6 +301,7 @@ TOFU のピンは、自分のユーザー署名鍵で次の JSON に署名した
 - 鍵の確認値：同じ手順で、info を空文字列にして 32 バイトの 0 を暗号化し、`{iv, mac}` を SSSS 鍵の記述として保存する。鍵スロットから取り出した SSSS 鍵は、まずこの確認値で正しいか確かめる。
 - 秘密の平文は、秘密鍵のバイト列のパディングなし base64。
 - 秘密の名前は `m.cross_signing.master`、`m.cross_signing.self_signing`、`m.cross_signing.user_signing`、`m.megolm_backup.v1` の 4 つ。
+- 【決定】失効のあと、5 つ目の `zoo.megolm_backup.previous` を置く（[鍵バックアップ](#鍵バックアップ)の「古い版の秘密鍵の退避」）。この秘密の平文は、秘密鍵のバイト列ではなく、UTF-8 の JSON `{"keys": [{"public_key": "<公開鍵のパディングなし base64>", "private_key": "<32 バイトの秘密鍵のパディングなし base64>"}]}` にする。どの版の鍵かは、公開鍵を版の `auth_data.public_key` と照らして決める。
 
 Matrix と違い、zoo の SSSS 鍵はユーザーに見せません。ユーザーが控えるのはリカバリーキーで、リカバリーキーは SSSS 鍵を包む鍵スロットの 1 つです（次節）。Matrix は秘密を複数の SSSS 鍵で暗号化できますが、zoo では常に 1 つの SSSS 鍵（既定の鍵）だけを使い、複数の解錠手段は鍵スロットで表します。
 
@@ -395,10 +398,33 @@ Matrix の [`BackedUpSessionData`](https://spec.matrix.org/latest/client-server-
 - 【決定】`signatures` に、自分のマスター鍵の署名（Signing JSON）を必須にする。初回設定ではクロス署名鍵をバックアップより先に作るので、マスター鍵の署名がない版は作らない。
 - 【決定】クライアントは、署名がない版と署名を検証できない版には、アップロードもダウンロードもしない。
 - 【決定】SSSS の `m.megolm_backup.v1` から導いた公開鍵が `auth_data.public_key` と一致するかも確かめる。一致しない版は使わず、警告を出す。
+- 【決定】上の 2 つの検証は、今の版と、すべてのアップロードに当てる。例外は、今の版ではない、消していない古い版からの取り込みだけ。`auth_data.public_key` が `zoo.megolm_backup.previous` の要素（失効を行う端末では、暗号ストアに残した古いバックアップ鍵）と合う版からは、署名と `m.megolm_backup.v1` との一致を確かめずにダウンロードして取り込む。取り込んだセッションは「バックアップ由来」として保存する（下の「古い版の秘密鍵の退避」と[失効の手順](#失効の手順)の 3）。
 - 【決定】新しい版を作るのは、SSSS を解錠した端末だけ。サーバーが返す今の版が変わっても、上の検証を通らない限り切り替えない。
 - 【決定】バックアップから取り込んだセッションでしか復号できないメッセージには、「送信者を確かめられない」の印を付ける（Matrix と同じ扱い。Element の灰色の盾に当たる。認証付きバックアップの [MSC4048](https://github.com/matrix-org/matrix-spec-proposals/pull/4048) は後で検討する）。バックアップの公開鍵は誰でも使えるので、サーバーも任意の送信者を名乗るセッションをバックアップに入れられるため（[脅威モデル](#脅威モデル)）。
 - 【決定】バックアップの行の `is_verified` と、平文の `sender_user_id`、`sender_device_id`、`sender_key` は、送信者が誰かの判定に使わない。取り込んだ端末は、`is_verified` の値にかかわらず「送信者を確かめられない」とする。`is_verified` は、サーバーがどの行を残すかを決めるためだけに使う。
 - 【決定】取り込んだセッションは「バックアップ由来」として保存し、Olm で受け取った「Olm 由来」のセッションを置き換えも追い出しもしない。規則は[受信時の検証](#受信時の検証)の「鍵バックアップから取り込んだとき」に書く。
+
+【決定】古い版の秘密鍵の退避：
+
+- 失効で SSSS の `m.megolm_backup.v1` を新しいバックアップ鍵に置き換えるときは、同じ要求で `zoo.megolm_backup.previous` に古い版の秘密鍵を入れる（2〜5 では `POST /api/e2ee/secret_storage/keys`、端末だけの場合は `POST /api/e2ee/secret_storage/secrets`）。古い秘密鍵が SSSS から消えるのと同時に退避するので、失効がどこで止まっても、SSSS を解錠した端末は古い秘密鍵を取り出せる。
+- 入れる鍵は、名前ではなく公開鍵で決める。候補は、SSSS の `m.megolm_backup.v1`、すでにある `zoo.megolm_backup.previous` のすべての要素、失効を行う端末の暗号ストアにあるバックアップ鍵。それぞれの公開鍵を `GET /api/e2ee/key_backup/versions` の版と照らし、次のように扱う。
+  - 消していない版（今の版を含む）と合う鍵：入れる。今の版の鍵も、新しい版を作れば古い版の鍵になるため。
+  - 消した版と合う鍵：除く。
+  - どの版とも合わない鍵：除かずに入れる。別の端末の失効が、その鍵で版を作る途中かもしれないため。
+  - 同じ公開鍵の鍵は 1 つにまとめる。
+- 消していない版のうち、秘密鍵がどの候補にもない版があれば（別の端末の失効と入り混じったときなど）、失効の画面にその版を「新しい版に移せないバックアップ」として出す。利用者が確認したら、新しい版を作ったあとでその版を消す（そのときには今の版ではないので、再認証は要らない）。
+- 解錠した端末は、`zoo.megolm_backup.previous` に、今の版ではない、消していない版と公開鍵が合う要素があれば、次のことを行う。
+  1. 今の版を上の規則で検証できたら、合った版のセッションをすべて取り込み、今の版にアップロードする。
+  2. すべてアップロードできたら、その版を消す。
+  - 古い版の `auth_data` の署名は確かめない。2〜5 の失効ではマスター鍵を作り直すので、古い版の署名は今のマスター鍵で検証できないため。取り込んだセッションは「バックアップ由来」になり、「送信者を確かめられない」の印が付くので、署名を確かめなくても扱いは変わらない。
+  - 途中で 404（`GET /api/e2ee/key_backup/keys`、`DELETE`）を受けたら、`GET /api/e2ee/key_backup/versions` を読み直す。その版が消してあれば、別の端末が移行を終えたので、警告を出さずにその版をやめる。
+  - 複数の端末が同時に行っても壊れない。アップロードは同じセッションを同じ規則で残し、2 回目の削除は 404 で終わる。
+  - 移行を続ける端末は `zoo.megolm_backup.previous` を書き換えない。消した版の要素は次の失効で除く。
+- 今の版を検証できない（SSSS の `m.megolm_backup.v1` が今の版と合わない）ときは、失効が途中で止まっているか、SSSS を改ざんされた可能性がある。【決定】解錠した端末は、自動でやり直さず、アップロードを止めて「失効が終わっていないか、SSSS が書き換えられた可能性がある」と表示し、失効の画面から失効をやり直せるようにする。やり直す失効は、上の規則で候補の鍵を引き継ぐので、消していない版の鍵は捨てない。
+- 【決定】解錠済みの端末は、最後に解錠したとき（自分で SSSS を書いたときは、その応答の値）の `secrets_revision` を暗号ストアに記録し、起動したときに `GET /api/e2ee/secret_storage` の値と比べる。変わっていれば SSSS の秘密が書き換えられたので、暗号ストアのバックアップ鍵、自己署名鍵、ユーザー署名鍵を使う処理を止め、SSSS で解錠し直すよう表示する。端末は SSSS 鍵を保存しないので、秘密を読み直して比べることはできない。失効が途中で止まった状態で、古い鍵を持ち続ける端末が古い版にアップロードし続けないようにするため。暗号ストアに終わっていない失効の記録がある端末（失効を行っている端末）には、この確認と上の「今の版を検証できない」ときの表示を当てず、失効を続ける。
+- 古い版の中身はすでに漏れたものとして扱っているので（[取り消せないもの](#取り消せないもの)）、その秘密鍵を SSSS に退避しても、新しく漏れるものはない。古い版の中身は、どのみち新しい版に移す。
+- 【決定】クライアントは、今の版として見た版の番号の最大を暗号ストアに記録する。今の版としてそれより小さい番号が返ったら、その版を使わずに警告を出す。409 `E2EE_WRONG_BACKUP_VERSION` のあとで取り直した版を検証できなければ、暗号ストアの古い鍵には戻らず、SSSS で解錠し直すよう表示する。
+- 担当：`zoo.megolm_backup.previous` の形と、取り出した秘密鍵の検証は #351、解錠のあとに移行を続ける処理は #360、失効での退避は #362。
 
 【決定】セッションのアップロード：
 
@@ -527,7 +553,7 @@ const prf = credential.getClientExtensionResults().prf?.results?.first;
   - 既存のパスキー（`prf: {}` なしで登録したもの）で PRF を使えるか。プラットフォーム認証器（iCloud キーチェーン、Google パスワードマネージャーなど）は、指定がなくても PRF を使える場合があるが、保証されない
 - 【未検証】AuthZ#94 の変更（AuthZ#95）より前に登録したセキュリティキーは、登録時に hmac-secret を有効にしていないので、AuthZ で登録し直すまで PRF を使えない見込み（AuthZ#95 の `docs/architecture.md`）。#369 で確かめ、結果を本書に書くときは、この前提も載せる。既存のパスキーでの AuthZ へのログインには影響しない。
 - 【決定】解錠で `prf.results.first` がなかったときの表示（[解錠](#解錠既存のスロットを開ける)）では、セキュリティキーなら AuthZ で登録し直すと使える場合があることも案内する。
-- 【未検証】Android アプリ（Credential Manager）から RP ID `account.zli.works` のパスキーを使うには、`https://account.zli.works/.well-known/assetlinks.json` で zoo の Android アプリを関連付ける必要がある。AuthZ#94 には入っていないので、AuthZ 側の issue「E2EE: Android 用に /.well-known/assetlinks.json を配信する」（まだ作っていない）を、[#360](https://github.com/Zli-UoA/zoo2/issues/360) より先に済ませる（[ロードマップ](#ロードマップ)）。Credential Manager の要求 JSON に `prf` 拡張を入れて PRF 出力を得られるかも確かめる。
+- 【未検証】Android アプリ（Credential Manager）から RP ID `account.zli.works` のパスキーを使うには、`https://account.zli.works/.well-known/assetlinks.json` で zoo の Android アプリを関連付ける必要がある。AuthZ#94 には入っていないので、AuthZ 側の [AuthZ#96](https://github.com/Zli-UoA/AuthZ/issues/96)（E2EE: Android 用に /.well-known/assetlinks.json を配信する）を、[#360](https://github.com/Zli-UoA/zoo2/issues/360) より先に済ませる（[ロードマップ](#ロードマップ)）。Credential Manager の要求 JSON に `prf` 拡張を入れて PRF 出力を得られるかも確かめる。
 
 ## 初回設定と解錠の流れ
 
@@ -548,6 +574,17 @@ const prf = credential.getClientExtensionResults().prf?.results?.first;
 3. SSSS からクロス署名の秘密鍵とバックアップ鍵を取り出す。マスター鍵の秘密鍵から導いた公開鍵が、サーバーのマスター鍵と一致するか確かめる。
 4. 自己署名鍵で今の端末に署名し、署名をアップロードする。他の端末とメンバーは Shape でこれを知り、次の送信から鍵を配る。
 5. 鍵バックアップから過去のセッションを取り込む。
+
+【決定】3 で、SSSS の自己署名鍵、ユーザー署名鍵、バックアップ鍵の公開鍵も、サーバーの鍵（今の版）と比べます。合わなければ、失効が途中で止まっているか、SSSS を書き換えられた可能性があるので、4 の署名をせず、「失効が終わっていないか、SSSS が書き換えられた可能性がある」と表示して、失効の画面からやり直せるようにします（[鍵バックアップ](#鍵バックアップ)の「古い版の秘密鍵の退避」）。
+
+すでに使っている端末での解錠し直し（失効のあとや、`secrets_revision` が変わったとき）：
+
+1. 新しい端末と同じく、スロットを開けて SSSS から秘密鍵を取り出し、サーバーの鍵と比べる。合わなければ上と同じ表示をする。
+2. 暗号ストアの自己署名鍵、ユーザー署名鍵、バックアップ鍵を SSSS のものに置き換え、`secrets_revision` を記録する。
+3. 今の端末に今の自己署名鍵の有効な署名がなければ、自分に署名し直す。
+4. `zoo.megolm_backup.previous` の移行を続け、手元のセッションを今の版にアップロードする（[鍵バックアップ](#鍵バックアップ)）。
+
+【決定】解錠済みの端末は、起動したときと、Shape でサーバーの自己署名鍵が変わったのを見たときに、今の端末に今の自己署名鍵の有効な署名があるかを確かめます。暗号ストアの自己署名鍵がサーバーの鍵と同じで、署名がなければ、自分に署名し直します。失効の途中で解錠した端末が、失効が終わったあとも署名のないまま残らないようにするためです。担当は #360（解錠）と #362（失効）。
 
 ユーザーに「未検証の端末」を見せない運用（[MSC4153](https://github.com/matrix-org/matrix-spec-proposals/blob/main/proposals/4153-invisible-crypto.md) と同じ考え方）にします。解錠するまでは、暗号化チャンネルを「解錠が必要」と表示し、送信もできないようにします。
 
@@ -570,8 +607,9 @@ const prf = credential.getClientExtensionResults().prf?.results?.first;
 | 409 | `E2EE_STALE_EPOCH` | 送信や編集の `epoch` が今の `membership_epoch` より小さい | `current_epoch` |
 | 409 | `E2EE_ENCRYPTED_IMMUTABLE` | 暗号化チャンネルの `encrypted` を変えようとした、または公開チャンネルにしようとした | |
 | 409 | `E2EE_ENCRYPTED_MISMATCH` | 暗号化 DM の行が `encrypted = false` だった（不整合） | |
-| 409 | `E2EE_WRONG_BACKUP_VERSION` | 鍵バックアップの書き込み先が今の版ではない | `current_version` |
-| 409 | `E2EE_SSSS_CONFLICT` | SSSS の既定の鍵が、クライアントが前提にした鍵から変わっていた | `default_key_id` |
+| 409 | `E2EE_WRONG_BACKUP_VERSION` | 鍵バックアップの書き込み先が今の版ではない。版の作成で `expected_current_version` が今の版と違う | `current_version` |
+| 409 | `E2EE_CROSS_SIGNING_CONFLICT` | クロス署名鍵の差し替えで、`expected_keys` が今の鍵と違う | 今の公開鍵 |
+| 409 | `E2EE_SSSS_CONFLICT` | SSSS の既定の鍵か `secrets_revision` が、クライアントが前提にした値から変わっていた（鍵バックアップへのアップロードを含む） | `default_key_id`、`secrets_revision` |
 | 409 | `E2EE_DEVICE_EXISTS` | 同じ `device_id` の端末がすでにある（削除済みを含む） | |
 | 409 | `E2EE_KEY_EXISTS` | 同じ鍵 ID で内容が違うワンタイム鍵をアップロードした | |
 | 409 | `E2EE_STALE_REVISION` | 編集の `revision` が、今の行の `revision` + 1 ではない | `current_revision` |
@@ -580,10 +618,11 @@ const prf = credential.getClientExtensionResults().prf?.results?.first;
 | 400 | `E2EE_PLAINTEXT_FORBIDDEN` | 暗号化チャンネルに空でない `content` を送った、または平文チャンネルに `ciphertext` を送った | |
 | 400 | `E2EE_ATTACHMENTS_FORBIDDEN` | 暗号化チャンネルへの添付 | |
 | 400 | `E2EE_BAD_SIGNATURE` | 署名が不正 | |
+| 400 | `E2EE_KEY_REUSED` | 過去に使ったクロス署名鍵の公開鍵か、過去の版のバックアップの公開鍵を登録し直そうとした | |
 | 400 | `E2EE_INVALID_EPOCH` | `epoch` が今の値より大きい | |
 | 400 | `E2EE_PUBLIC_FORBIDDEN` | 公開チャンネルを `encrypted: true` で作ろうとした | |
 | 403 | `E2EE_APPS_FORBIDDEN` | 暗号化チャンネルへの App（Bot）の追加。`/api/apps/v1/*` からの暗号化チャンネルへの読み書きと添付（委任トークンを含む） | |
-| 403 | `E2EE_REAUTH_REQUIRED` | 既存のマスター鍵の差し替えで、直前の再認証がない | |
+| 403 | `E2EE_REAUTH_REQUIRED` | 既存のクロス署名鍵の差し替え、既定の SSSS 鍵がある状態での作り直し、既存の秘密とスロットの置き換え、スロットの削除、最初の版でない鍵バックアップの版の作成、今の版の削除で、直前の再認証がない | |
 | 403 | `E2EE_WEBHOOKS_FORBIDDEN` | 暗号化チャンネルへの Incoming Webhook の作成 | |
 | 404 | （既存と同じ） | 他人の端末やスロットなど。存在を推測されないよう 403 ではなく 404 | |
 
@@ -648,9 +687,14 @@ const prf = credential.getClientExtensionResults().prf?.results?.first;
 ### クロス署名（[#356](https://github.com/Zli-UoA/zoo2/issues/356)）
 
 - `POST /api/e2ee/cross_signing/keys`：`{"master_key", "self_signing_key", "user_signing_key"}`。どれも省略でき、省略したものは変えない。自己署名鍵とユーザー署名鍵は、送ったマスター鍵（省略時は今のマスター鍵）の署名がなければ拒否する。
-  - マスター鍵を変えたら `e2ee_cross_signing_key_changes` に記録し、そのユーザーが参加しているすべての暗号化チャンネルの `membership_epoch` を増やす（この増加は #357 で足す）。
+  - マスター鍵、自己署名鍵、ユーザー署名鍵のどれを変えても、`e2ee_cross_signing_key_changes` に古い公開鍵と新しい公開鍵を記録する。古い公開鍵は、下の「登録し直しの拒否」に使う。
+  - マスター鍵を変えたら、そのユーザーが参加しているすべての暗号化チャンネルの `membership_epoch` を増やす（この増加は #357 で足す）。
   - 【決定】自己署名鍵を変えたときも、同じように `membership_epoch` を増やす。漏れた自己署名鍵で署名された端末に、今のセッションの続きが届かないようにするため（#356 の「マスター鍵の変更」に加える。この増加も #357 で足す）。
   - 【決定】すでにあるマスター鍵を差し替えるときは、直前の再認証を求める。アクセストークンの認証時刻（OIDC の `auth_time`）が 5 分以内でなければ 403 `E2EE_REAUTH_REQUIRED` を返し、クライアントは `max_age` を付けて AuthZ でログインし直してから送り直す。盗んだトークンだけでマスター鍵を差し替えられないようにするため。初めてマスター鍵を登録するときは求めない。【未検証】zoo2 が受け取るトークンで `auth_time` を確かめられるかは #356 で確かめる。
+  - 【決定】すでにある自己署名鍵かユーザー署名鍵を差し替えるときも、同じ直前の再認証を求める（403 `E2EE_REAUTH_REQUIRED`）。初めて登録するときは求めない。端末だけの失効でもこの 2 つを差し替えるので（[失効の手順](#失効の手順)の 4）、失効には再認証が要る。
+  - 【決定】`expected_keys`（`{"master", "self_signing", "user_signing"}` の今の公開鍵。ない鍵は `null`）を送り、今の鍵と違えば 409 `E2EE_CROSS_SIGNING_CONFLICT`。2 つの端末の失効が、互いの鍵を知らずに差し替えないようにするため。
+  - 【決定】今の鍵と同じ公開鍵を送ったときは、`expected_keys` より先に判定し、何も変えずに 200 を返す（変更の記録、署名の削除、epoch の増加をせず、再認証も求めない）。応答をなくした要求を送り直しても失敗しないようにするため。
+  - 【決定】登録し直しの拒否：そのユーザーが過去に使い、今は使っていないクロス署名鍵の公開鍵（`e2ee_cross_signing_key_changes` の `old_public_key` にあるもの）は、用途にかかわらず登録できない（400 `E2EE_KEY_REUSED`）。端末だけの失効ではマスター鍵を残すので、古い自己署名鍵とユーザー署名鍵には、マスター鍵の有効な署名が付いたまま残る。失った端末の暗号ストアから古い自己署名鍵を取り出した攻撃者が、送り直してそれで自分の端末に署名すると、[配布先の判定](#鍵の配布先の判定)の規則 6 を通って、失効のあとのセッションを受け取れてしまうため。サーバーを乗っ取った攻撃者による巻き戻しは、これでは防げない（[脅威モデル](#脅威モデル)の「古いクロス署名鍵への巻き戻し」）。
   - 鍵を変えたら、古い鍵による署名（`e2ee_key_signatures`）を消す。
 - `POST /api/e2ee/cross_signing/signatures`：
 
@@ -683,6 +727,7 @@ const prf = credential.getClientExtensionResults().prf?.results?.first;
     "default_key_id": "<UUID>",
     "keys": { "<key_id>": { "algorithm": "m.secret_storage.v1.aes-hmac-sha2", "iv": "...", "mac": "..." } },
     "secrets": { "m.cross_signing.master": { "key_id": "...", "iv": "...", "ciphertext": "...", "mac": "..." } },
+    "secrets_revision": 7,
     "slots": [
       { "id": "<UUID>", "key_id": "...", "kind": "passkey", "credential_id": "<base64url>", "prf_salt": "...", "nonce": "...", "ciphertext": "...", "label": "iPhone", "created_at": "...", "last_used_at": null }
     ]
@@ -694,6 +739,7 @@ const prf = credential.getClientExtensionResults().prf?.results?.first;
   ```json
   {
     "expected_default_key_id": null,
+    "expected_secrets_revision": null,
     "key_id": "<UUID>",
     "key": { "algorithm": "m.secret_storage.v1.aes-hmac-sha2", "iv": "...", "mac": "..." },
     "secrets": { "<秘密の名前>": { "iv": "...", "ciphertext": "...", "mac": "..." } },
@@ -702,18 +748,30 @@ const prf = credential.getClientExtensionResults().prf?.results?.first;
   ```
 
   - 1 つのトランザクションで、古い鍵の秘密とスロットを消し、新しい鍵、秘密、スロットを入れる。古い SSSS 鍵で暗号化した秘密はサーバーに残らない。
-  - `expected_default_key_id` が今の既定の鍵と違えば 409 `E2EE_SSSS_CONFLICT`。2 つの端末が同時に作り直すのを防ぐ。
-  - 4 つの秘密がすべてそろっていなければ 400。
-- `POST /api/e2ee/secret_storage/secrets`：`{"key_id", "secrets": {...}}`。既定の鍵で暗号化した秘密を足すか置き換える。`key_id` が既定の鍵でなければ 409 `E2EE_SSSS_CONFLICT`。
-- `POST /api/e2ee/secret_storage/slots`：既定の鍵にスロットを足す。`kind = "passkey"` で同じ `credential_id` のスロットがあれば置き換える。`kind = "recovery"` は 1 つの鍵に 1 つだけで、あれば置き換える。
-- `DELETE /api/e2ee/secret_storage/slots/{slot_id}`：スロットを消す。最後の 1 つは消せない（400）。
+  - `expected_default_key_id` が今の既定の鍵と違うか、`expected_secrets_revision` が今の `secrets_revision`（初回設定では `null`）と違えば 409 `E2EE_SSSS_CONFLICT`。2 つの端末が同時に作り直すことと、端末だけの失効が書いた秘密（`zoo.megolm_backup.previous` を含む）を知らずに消すことを防ぐ。
+  - 既定の鍵がすでにあるとき（初回設定でないとき）は、直前の再認証を求める（403 `E2EE_REAUTH_REQUIRED`。条件は[クロス署名の API](#クロス署名356)と同じ）。
+  - 4 つの秘密（`zoo.megolm_backup.previous` を除く）がすべてそろっていなければ 400。`zoo.megolm_backup.previous` は省略できる。
+- `POST /api/e2ee/secret_storage/secrets`：`{"key_id", "expected_secrets_revision", "secrets": {...}}`。既定の鍵で暗号化した秘密を足すか置き換える。`key_id` が既定の鍵でなければ 409 `E2EE_SSSS_CONFLICT`。
+  - 【決定】`secrets_revision` は、そのユーザーの秘密の集まりを書き換えるたびに（`POST /api/e2ee/secret_storage/keys` を含む）サーバーが 1 増やす番号。スロットの追加、置き換え、削除では増やさない。`POST /api/e2ee/secret_storage/keys` と `POST /api/e2ee/secret_storage/secrets` は、増やしたあとの値を `{"secrets_revision"}` で返し、書いた端末はそれを自分の記録にする。`expected_secrets_revision` が今の値と違えば 409 `E2EE_SSSS_CONFLICT`。2 つの端末の失効が、互いの書いた秘密（`zoo.megolm_backup.previous` を含む）を知らずに上書きしないようにするため。409 を受けた端末は SSSS を読み直し、[失効の手順](#失効の手順)をやり直す。
+  - 【決定】すでにある秘密を置き換えるときは、直前の再認証を求める（403 `E2EE_REAUTH_REQUIRED`）。秘密の暗号化には版や回数が入らないので、トークンを持つだけの攻撃者が、前に取得した古い暗号文を送り直して、失効の前の秘密鍵を SSSS に戻せないようにするため。足すだけのときは求めない。
+- `POST /api/e2ee/secret_storage/slots`：既定の鍵にスロットを足す。`kind = "passkey"` で同じ `credential_id` のスロットがあれば置き換える。`kind = "recovery"` は 1 つの鍵に 1 つだけで、あれば置き換える。置き換えるときは直前の再認証を求める（403 `E2EE_REAUTH_REQUIRED`）。
+- `DELETE /api/e2ee/secret_storage/slots/{slot_id}`：スロットを消す。最後の 1 つは消せない（400）。直前の再認証を求める（403 `E2EE_REAUTH_REQUIRED`）。
 - `POST /api/e2ee/secret_storage/slots/{slot_id}/used`：最後に使った日時を記録する【提案】。
 
 ### 鍵バックアップ（[#356](https://github.com/Zli-UoA/zoo2/issues/356)）
 
-- `POST /api/e2ee/key_backup/versions`：`{"algorithm": "zoo.megolm_backup.v1.curve25519-aes-sha2", "auth_data": {"public_key", "signatures"}}`。新しい版を作り、今の版にする。応答は `{"version": "2"}`。
-- `GET /api/e2ee/key_backup/versions/current`：`{"version", "algorithm", "auth_data", "count"}`。版がなければ 404。
-- `DELETE /api/e2ee/key_backup/versions/{version}`：版とそのセッションを消す。
+- 【決定】今の版は、そのユーザーが作った版のうち番号が最も大きいもの。それを消してあれば、今の版はない。番号は、消した版も含めた最大に 1 を足して振る。今の版を消しても、それより前の版が今の版に戻ることはない。漏れたバックアップ鍵の古い版に、アップロードを戻させないため。
+- `POST /api/e2ee/key_backup/versions`：`{"algorithm": "zoo.megolm_backup.v1.curve25519-aes-sha2", "auth_data": {"public_key", "signatures"}, "expected_current_version": "1"}`。新しい版を作り、今の版にする。応答は `{"version": "2"}`。
+  - 【決定】`auth_data.public_key` が今の版の公開鍵と同じなら、新しい版を作らずに今の版を返す（再認証も epoch の増加もない）。応答をなくした要求を送り直しても失敗しないようにするため。この判定は下の検査より先に行う。
+  - 【決定】`expected_current_version` が今の版（今の版がなければ `null`）と違えば 409 `E2EE_WRONG_BACKUP_VERSION`。2 つの端末の失効が、互いの版を知らずに切り替えないようにするため。409 を受けた端末は SSSS を読み直し、[失効の手順](#失効の手順)をやり直す。
+  - サーバーは `auth_data` の、今のマスター鍵の署名を検証する（違えば 400 `E2EE_BAD_SIGNATURE`）。
+  - 【決定】そのユーザーが過去に作った版（消した版を含む）と同じ `auth_data.public_key` は、400 `E2EE_KEY_REUSED` で拒否する。漏れたバックアップ鍵の古い `auth_data` には、残したマスター鍵の有効な署名が付いているので、トークンを持つ攻撃者がそれを送り直して、漏れた鍵を今の版に戻せないようにするため。
+  - 【決定】そのユーザーの最初の版でなければ（消した版を含めて過去に版があれば）、直前の再認証を求める（403 `E2EE_REAUTH_REQUIRED`。条件は[クロス署名の API](#クロス署名356)と同じ）。また、同じトランザクションで、そのユーザーが参加しているすべての暗号化チャンネルの `membership_epoch` を増やす（この増加は #357 で足す）。切り替えより前の版に入ったセッションを、切り替えのあとの送信に使わせないため（[失効の手順](#失効の手順)の 3）。
+  - 【決定】版の作成と削除、セッションのアップロードは、ユーザーごとに直列にする。古い版が受け付けるのを、切り替えの前（epoch を増やす前）のアップロードだけにするため。【提案】版の作成と削除はユーザーごとのキーで `pg_advisory_xact_lock` を、アップロードは同じキーで `pg_advisory_xact_lock_shared` を取ってから、今の版を読む。
+- `GET /api/e2ee/key_backup/versions/current`：`{"version", "algorithm", "auth_data", "count"}`。今の版がなければ 404。
+- `GET /api/e2ee/key_backup/versions/{version}`：消していない版の `{"version", "algorithm", "auth_data"}`。消した版と、ない版は 404。
+- `GET /api/e2ee/key_backup/versions`：そのユーザーのすべての版（消した版を含む）の `{"version", "auth_data", "deleted"}` を番号の昇順で返す。古い版の秘密鍵を版に割り当てるために使う。
+- `DELETE /api/e2ee/key_backup/versions/{version}`：版のセッションを消し、版の行に `deleted_at` を入れる。行は残し、番号と公開鍵の再利用の判定に使う。今の版を消すときは直前の再認証を求める（403 `E2EE_REAUTH_REQUIRED`）。消した版と、ない版は 404。
 - `POST /api/e2ee/key_backup/keys?version=<版>`：
 
   ```json
@@ -725,9 +783,10 @@ const prf = credential.getClientExtensionResults().prf?.results?.first;
   ```
 
   - 1 回 1000 件まで。`version` が今の版でなければ 409 `E2EE_WRONG_BACKUP_VERSION`。
+  - 【決定】要求に、端末が最後に解錠したときの `secrets_revision` を入れる（クエリの `secrets_revision`）。今の値と違えば 409 `E2EE_SSSS_CONFLICT`。SSSS の秘密が失効で書き換えられたあとも、起動し直していない端末が古い鍵で古い版にアップロードし続けないようにするため。409 を受けた端末は、バックアップ鍵、自己署名鍵、ユーザー署名鍵を使う処理を止め、SSSS で解錠し直すよう表示する。
   - セッションは `(channel_id, sender_key, session_id)` で区別する（[受信時の検証](#受信時の検証)の手順 5 と同じ）。取り込む端末は、復号した平文の `channel_id`、`sender_key`、`session_id` がこの値と一致するかを確かめ、違えば捨てる。【決定】平文の `session_key` から作った受信用セッション（vodozemac の `InboundGroupSession::import`）の `session_id()` が、宣言された `session_id`（行と平文の値）と一致するかも確かめ、違えば捨てる。
   - 同じセッションがすでにあれば、Matrix と同じ規則で残す方を決める（`is_verified` が true の方、次に `first_message_index` が小さい方、次に `forwarded_count` が小さい方）。サーバーは中身を復号できないので、この規則は行の値だけで決める。取り込んだ端末が手元のセッションと比べる規則は[受信時の検証](#受信時の検証)の「鍵バックアップから取り込んだとき」に書く。
-- `GET /api/e2ee/key_backup/keys?version=<版>&channel_id=<任意>&after=<任意>`：1000 件ずつ返す。
+- `GET /api/e2ee/key_backup/keys?version=<版>&channel_id=<任意>&after=<任意>`：1000 件ずつ返す。消した版と、ない版は 404。
 
 ### 暗号化チャンネル（[#357](https://github.com/Zli-UoA/zoo2/issues/357)）
 
@@ -887,11 +946,13 @@ CREATE TABLE e2ee_tofu_pins (
 CREATE TABLE e2ee_cross_signing_key_changes (
   id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
   user_id text NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-  usage text NOT NULL CHECK (usage IN ('master', 'self_signing')),
+  usage text NOT NULL CHECK (usage IN ('master', 'self_signing', 'user_signing')),
   old_public_key text,
   new_public_key text NOT NULL,
   changed_at timestamptz NOT NULL DEFAULT now()
 );
+CREATE INDEX e2ee_cs_key_changes_old ON e2ee_cross_signing_key_changes (user_id, old_public_key)
+  WHERE old_public_key IS NOT NULL;
 
 CREATE TABLE e2ee_secret_storage_keys (
   user_id text NOT NULL REFERENCES users(id) ON DELETE CASCADE,
@@ -900,6 +961,7 @@ CREATE TABLE e2ee_secret_storage_keys (
   iv text NOT NULL,
   mac text NOT NULL,
   is_default boolean NOT NULL DEFAULT false,
+  secrets_revision bigint NOT NULL DEFAULT 0,  -- 既定の鍵の行で使う。鍵を作り直すときは前の値を引き継いで 1 増やす
   created_at timestamptz NOT NULL DEFAULT now(),
   PRIMARY KEY (user_id, key_id)
 );
@@ -909,7 +971,8 @@ CREATE UNIQUE INDEX e2ee_secret_storage_keys_default
 CREATE TABLE e2ee_secrets (
   user_id text NOT NULL,
   name text NOT NULL CHECK (name IN ('m.cross_signing.master', 'm.cross_signing.self_signing',
-                                     'm.cross_signing.user_signing', 'm.megolm_backup.v1')),
+                                     'm.cross_signing.user_signing', 'm.megolm_backup.v1',
+                                     'zoo.megolm_backup.previous')),
   key_id text NOT NULL,
   iv text NOT NULL,
   ciphertext text NOT NULL,
@@ -1025,9 +1088,10 @@ ALTER TABLE messages ADD CONSTRAINT messages_ciphertext_shape
 | メンバーの退出、キック | そのチャンネル | #357 |
 | 端末の削除、失効 | その端末の持ち主が参加しているすべての暗号化チャンネル | #357（#354 の削除 API に足す） |
 | マスター鍵か自己署名鍵の変更 | その持ち主が参加しているすべての暗号化チャンネル | #357（#356 のクロス署名 API に足す） |
+| 鍵バックアップの版の作成（そのユーザーの最初の版を除く） | その持ち主が参加しているすべての暗号化チャンネル | #357（#356 の鍵バックアップ API に足す） |
 | アカウントの無効化（`users.is_deactivated` が true になる） | そのユーザーが参加しているすべての暗号化チャンネル | #357（#354 の端末の削除に足す。[アカウントの無効化](#アカウントの無効化)） |
 
-`membership_epoch` の列を足すのは #357 なので、端末の削除、アカウントの無効化、クロス署名鍵の変更で epoch を増やす処理も #357 で足します。#354 と #356 の本文にある「epoch を増やす（#357 のあと）」はこれに当たります。このため、[ロードマップ](#ロードマップ)では #357 を #354 と #356 のあとに置きます。
+`membership_epoch` の列を足すのは #357 なので、端末の削除、アカウントの無効化、クロス署名鍵の変更、鍵バックアップの版の切り替えで epoch を増やす処理も #357 で足します。#354 と #356 の本文にある「epoch を増やす（#357 のあと）」はこれに当たります。このため、[ロードマップ](#ロードマップ)では #357 を #354 と #356 のあとに置きます。
 
 送信の手順：
 
@@ -1137,12 +1201,21 @@ Megolm のメッセージ（`messages` の行）を復号したとき：
 | 端末だけ（SSSS 鍵、パスキー、リカバリーキーは漏れていない） | 1、3、4 と、SSSS の秘密の置き換え | 残す |
 | パスキー、リカバリーキー、SSSS 鍵のどれか（端末の紛失と重なる場合を含む） | 1〜5 のすべて | 必ず作り直す |
 
+【提案】失効の画面では、端末をなくしただけの場合も 1〜5 のすべてを選べるようにします。マスター鍵を残すと、サーバーを乗っ取った攻撃者に古い自己署名鍵へ巻き戻される危険が残るためです（[脅威モデル](#脅威モデル)の「古いクロス署名鍵への巻き戻し」）。
+
 マスター鍵を残してよいのは、端末を失っただけの場合に限ります。端末はマスター鍵の秘密鍵も SSSS 鍵も保存しないので、端末からはマスター鍵は漏れません。一方、鍵スロットを開けられた時点で、SSSS 鍵と、SSSS に入っているマスター鍵の秘密鍵も漏れています。古いマスター鍵を持つ攻撃者は、作り直した自己署名鍵とは別の自己署名鍵を自分で作り、自分の端末に署名できます。他のユーザーのピンは古いマスター鍵のままなので、その端末に鍵が配られてしまいます。
 
-1. 該当する端末を削除する（`DELETE /api/e2ee/devices/{device_id}`）。見覚えのない端末もここで削除する。サーバーはその端末の鍵を消し、その端末の持ち主が参加しているすべての暗号化チャンネルの `membership_epoch` を増やす。各送信者は次の送信でセッションを作り直す。
+【決定】始める前に、次のことを行います。
+
+- 直前の再認証を済ませる（AuthZ に `max_age` を付けてログインし直す）。2〜5 の保存には 5 分以内の再認証が要る（[クロス署名の API](#クロス署名356)、[鍵バックアップの API](#鍵バックアップ356)）。途中で期限が切れたら、再認証してから続ける。端末はマスター鍵の秘密鍵と SSSS 鍵を保存しないので、再認証で画面を離れたあとは、パスキーかリカバリーキーで SSSS を開け直してから続ける。2〜5 で 2 を保存したあとなら、新しい SSSS 鍵のスロットで開ける。2 を保存する前なら、最初からやり直す。
+- 失効の画面で、削除する自分の端末（失った端末と見覚えのない端末）を利用者に選んでもらう。端末名（`display_name`）は攻撃者も付けられるので、端末を見分ける根拠にしない。登録日時と最後に使った日時を並べて表示する。
+- どこまで保存したかを暗号ストアに記録し、再認証で画面を離れても続けられるようにする。記録が残っているあいだにログアウトしようとしたら、失効が終わっていないことを警告する。
+
+1. 選んだ端末を削除する（`DELETE /api/e2ee/devices/{device_id}`）。サーバーはその端末の鍵を消し、その端末の持ち主が参加しているすべての暗号化チャンネルの `membership_epoch` を増やす。各送信者は次の送信でセッションを作り直す。
 2. SSSS 鍵を新しく作り、残っているパスキーとリカバリーキーで鍵スロットを作り直す（`POST /api/e2ee/secret_storage/keys`）。古い SSSS 鍵で暗号化した秘密とスロットはサーバーから消える。パスキーのスロットは新しい `prf_salt` で作る。リカバリーキーは、漏れた可能性があれば新しく作り直す。
-3. バックアップ鍵を新しく作り、新しい版に切り替える（`POST /api/e2ee/key_backup/versions`）。次に、古いバックアップ鍵で古い版のセッションをすべて取り込み（`GET /api/e2ee/key_backup/keys?version=<古い版>`）、手元のセッションと合わせて新しい版にアップロードする。すべてアップロードできてから古い版を消す（`DELETE /api/e2ee/key_backup/versions/{古い版}`）。古い版には、失った端末のセッションや、この端末を登録する前のセッションなど、手元にないセッションも入っているため。古い版の中身はすでに漏れたものとして扱っているので（[取り消せないもの](#取り消せないもの)）、新しい版に移しても失うものはない。
-4. 自己署名鍵とユーザー署名鍵を作り直し、信頼している自分の端末に署名し直す。他のユーザーのマスター鍵への署名と TOFU のピンも、新しいユーザー署名鍵で付け直す（ピンは `POST /api/e2ee/tofu_pins` の `replace: true`）。付け直すのは、暗号ストアの古いユーザー署名鍵で検証できたものだけ（下の【決定】）。自己署名鍵の変更でも `membership_epoch` が増える。
+3. バックアップ鍵を新しく作り、新しい版に切り替える（`POST /api/e2ee/key_backup/versions`）。古い版の秘密鍵は、SSSS の `m.megolm_backup.v1` を置き換えるのと同じ要求で、`zoo.megolm_backup.previous` に退避する（[鍵バックアップ](#鍵バックアップ)の「古い版の秘密鍵の退避」）。版の切り替えでも `membership_epoch` が増える。次に、古いバックアップ鍵で古い版のセッションをすべて取り込み（`GET /api/e2ee/key_backup/keys?version=<古い版>`。[鍵バックアップ](#鍵バックアップ)の古い版からの取り込みの例外に当たる）、手元のセッションと合わせて新しい版にアップロードする。すべてアップロードできてから古い版を消す（`DELETE /api/e2ee/key_backup/versions/{古い版}`）。古い版には、失った端末のセッションや、この端末を登録する前のセッションなど、手元にないセッションも入っているため。古い版の中身はすでに漏れたものとして扱っているので（[取り消せないもの](#取り消せないもの)）、新しい版に移しても失うものはない。
+   - 【決定】版の切り替えで `membership_epoch` を増やすのは、失った端末のバックアップ鍵とトークンを持つ攻撃者に、失効のあとのセッションを読ませないため。1 と 4 でも epoch は増えるが、そのあとも版を切り替えるまでは、残っている端末が新しい epoch のセッションを古い版にアップロードできる。保存の順でバックアップの版は最後なので、失効の中で最後に増える epoch は版の切り替えのものになる。切り替えのあとに作られるセッションは、古い版には入らない（古い版へのアップロードは 409 `E2EE_WRONG_BACKUP_VERSION` になる）。
+4. 自己署名鍵とユーザー署名鍵を作り直し、失効を行う端末だけに新しい自己署名鍵で署名する。【決定】他の自分の端末には、失効を行う端末からは署名しない。それぞれの端末が SSSS で解錠し直したときに、SSSS から取り出した新しい自己署名鍵で自分に署名する（[初回設定と解錠の流れ](#初回設定と解錠の流れ)）。古い自己署名鍵で署名された端末は、本物の端末か、失った端末の鍵とトークンを持つ攻撃者が作った端末かを、名前や日時では確かめられないため。パスキーかリカバリーキーで解錠できることが、本物の端末である根拠になる。他のユーザーのマスター鍵への署名と TOFU のピンも、新しいユーザー署名鍵で付け直す（ピンは `POST /api/e2ee/tofu_pins` の `replace: true`）。付け直すのは、暗号ストアの古いユーザー署名鍵で検証できたものだけ（下の【決定】）。自己署名鍵の変更でも `membership_epoch` が増える。既存の鍵の差し替えなので、直前の再認証が要る（[クロス署名の API](#クロス署名356)）。古い鍵は登録し直せなくなる。
    - 【決定】ユーザー署名鍵を作り直す前に、署名し直す候補を集める。新しいユーザー署名鍵を保存すると、サーバーのピンは今の鍵で検証できなくなり、古い鍵で作られたピンかを確かめられなくなるため。
      - ピンは `GET /api/e2ee/tofu_pins` ですべて（`next` が `null` になるまで）取得する。
      - 他のユーザーのマスター鍵への署名は、クロス署名鍵と署名の Shape（または `keys/query`）から、自分の古いユーザー署名鍵による署名と、その相手の今のマスター鍵を集める。
@@ -1161,16 +1234,16 @@ Megolm のメッセージ（`messages` の行）を復号したとき：
    - 異常系のテスト（#356、#362）：今の鍵で検証できないピンがある相手に `replace: false` でピンを置くと、409 にならずに置き換わる。サーバーが `GET /api/e2ee/tofu_pins` や Shape で、暗号ストアの古いユーザー署名鍵で検証できないピンや署名（署名がない、壊れている、サーバーが見せた別の鍵で署名した）を返しても、署名し直されず、失効の画面の一覧に出る。`POST /api/e2ee/cross_signing/keys` を保存したあとで失敗しても、暗号ストアの一覧から署名し直しを続けられ、古い鍵による署名がサーバーから消えていても、署名し直す相手が欠けない。記録への絞り込みについては次も確かめる。古いユーザー署名鍵で、記録と違うマスター鍵のピンを `replace: true` で置いてから失効すると、そのピンは記録のマスター鍵のピンに置き換わり、失効の画面の一覧に出る。そのあとログインした端末は記録のマスター鍵のピンを使い、サーバーが攻撃者のマスター鍵を見せたら、マスター鍵が変わったものとして扱う（規則 5）。失効を行う端末に記録がない相手のピンは署名し直されず、新しくログインした端末はその相手について TOFU をやり直す。記録と同じピンは署名し直され、新しい端末でも検証できる。
 5. マスター鍵を作り直し、4 の鍵に新しいマスター鍵で署名する。他のユーザーには再検証を求めることになる（[配布を止める](#鍵の配布先の判定)動作になる）。失効の画面では、実行する前に「チャンネルの他のメンバーが、あなたを再検証するまで、あなたの新しい端末に鍵を配らない」ことを表示する。
 
-2〜5 で作る鍵は、4 の一覧を暗号ストアに記録したあと、サーバーに保存する前にまとめて作ります。新しい SSSS には新しい秘密鍵を入れる必要があるためです。保存の順は[初回設定](#初回設定と解錠の流れ)と同じく、SSSS、クロス署名鍵と署名、バックアップの版の順にします。マスター鍵の差し替えには直前の再認証が要ります（[クロス署名の API](#クロス署名356)）。
+2〜5 で作る鍵は、4 の一覧を暗号ストアに記録したあと、サーバーに保存する前にまとめて作ります。新しい SSSS には新しい秘密鍵を入れる必要があるためです。保存の順は[初回設定](#初回設定と解錠の流れ)と同じく、SSSS、クロス署名鍵と署名、バックアップの版の順にします。マスター鍵、自己署名鍵、ユーザー署名鍵の差し替えには直前の再認証が要ります（[クロス署名の API](#クロス署名356)）。
 
 端末だけの場合（1、3、4）は SSSS 鍵を変えませんが、3 と 4 で作った秘密鍵を SSSS に書き戻します。書き戻さないと、あとで新しい端末が解錠したときに SSSS から古い秘密鍵が出てきます。古いバックアップ鍵は今の版の `auth_data.public_key` と一致しないので（[鍵バックアップ](#鍵バックアップ)）、その端末はバックアップを使えません。古い自己署名鍵で自分に署名しても、他の端末は今の自己署名鍵で検証するので、配布先に入りません。
 
-- 3 と 4 の鍵は、4 の一覧を暗号ストアに記録したあと、サーバーに保存する前にまとめて作る。
+- 3 と 4 の鍵は、4 の一覧を暗号ストアに記録したあと、サーバーに保存する前にまとめて作る。作った鍵は、保存のあとの読み直しで一致を確かめるまで暗号ストアから消さない。
 - 保存の順は 2〜5 の場合と同じく、SSSS の秘密、クロス署名鍵と署名、バックアップの版の順にする。途中で失敗しても、新しい秘密鍵を SSSS から取り出して続きを保存し直せるようにするため。
-- SSSS には `POST /api/e2ee/secret_storage/secrets` で `m.megolm_backup.v1`、`m.cross_signing.self_signing`、`m.cross_signing.user_signing` の 3 つを、今の既定の SSSS 鍵の下で置き換える。`key_id` には始める前に開け直した既定の鍵を入れる。409 `E2EE_SSSS_CONFLICT` なら、別の端末が SSSS を作り直したので、ここで止め、SSSS を開け直してからやり直す。
+- SSSS には `POST /api/e2ee/secret_storage/secrets` で `m.megolm_backup.v1`、`m.cross_signing.self_signing`、`m.cross_signing.user_signing` の 3 つを、今の既定の SSSS 鍵の下で置き換え、同じ要求で `zoo.megolm_backup.previous` を書く。`expected_secrets_revision` には、始める前に開け直したときの値を入れる。`key_id` には始める前に開け直した既定の鍵を入れる。409 `E2EE_SSSS_CONFLICT` なら、応答の `default_key_id` を見る。変わっていれば、別の端末が SSSS を作り直したので、SSSS を開け直してからやり直す。`secrets_revision` だけが変わっていれば、今の SSSS 鍵で秘密を読み直し、候補の鍵を引き継いでやり直す。応答をなくして状態が分からないときも、SSSS を読み直し、自分が書いた秘密と一致すれば書き込みは済んだものとして続ける。
 - `m.cross_signing.master` は変えない。
 
-どちらの場合も、古いバックアップ鍵は古い版を消すまで失効を行う端末の暗号ストアから消しません。途中で失敗しても、古い版のセッションを取り込み直せるようにするためです。失効を行った端末以外の自分の端末では、暗号ストアの自己署名鍵、ユーザー署名鍵、バックアップ鍵が古いままになります。そこで、サーバーの自己署名鍵とユーザー署名鍵の公開鍵、または今のバックアップの版の公開鍵が、暗号ストアの秘密鍵と合わなくなった端末は、その鍵を使う処理（端末への署名、ピンの作成、バックアップへのアップロード）を止め、SSSS で解錠し直すよう表示します。
+どちらの場合も、古いバックアップ鍵は古い版を消すまで失効を行う端末の暗号ストアから消しません。途中で失敗しても、古い版のセッションを取り込み直せるようにするためです。古いバックアップ鍵は SSSS の `zoo.megolm_backup.previous` にも退避してあるので、この端末がログアウトしても、SSSS を解錠した別の端末が移行を続けるか、失効をやり直せます。失効を行った端末以外の自分の端末では、暗号ストアの自己署名鍵、ユーザー署名鍵、バックアップ鍵が古いままになります。そこで、サーバーの自己署名鍵とユーザー署名鍵の公開鍵、または今のバックアップの版の公開鍵が、暗号ストアの秘密鍵と合わなくなった端末は、その鍵を使う処理（端末への署名、ピンの作成、バックアップへのアップロード）を止め、SSSS で解錠し直すよう表示します。
 
 どちらの場合も、失効を行う端末は、保存を終えたら次のものを読み直し、自分が作った鍵と一致するかを確かめます。
 
@@ -1180,10 +1253,24 @@ Megolm のメッセージ（`messages` の行）を復号したとき：
   - どちらの場合も、応答の `default_key_id` が復号に使った鍵の `key_id` と同じかを先に確かめる。違えば、別の端末が `POST /api/e2ee/secret_storage/keys` で SSSS を作り直したので、一致しないものとして扱う。
 - 自分のクロス署名鍵の公開鍵（`POST /api/e2ee/keys/query`）
 - 今のバックアップの版の公開鍵（`GET /api/e2ee/key_backup/versions/current`）
+- 自分の端末の一覧（`GET /api/e2ee/devices`）。新しい自己署名鍵で署名されていない端末を失効の画面に出し、解錠し直すまで鍵が届かないことを示す。見覚えのない端末があれば削除を勧める。
 
-一致しなければ、別の端末の失効と保存が入り混じったので、SSSS を開け直して失効をやり直します。`POST /api/e2ee/secret_storage/secrets` は `key_id` が既定の鍵かしか確かめません。そのため、2 つの端末で同時に失効を行うと、SSSS には一方の端末の秘密鍵が、サーバーには他方の公開鍵が残ることがあります。この状態では、解錠し直しても合う鍵は出てきません。
+一致しなければ、別の端末の失効と保存が入り混じったので、SSSS を開け直して失効をやり直します。SSSS、クロス署名鍵、バックアップの版はそれぞれ前提の値を照合するので（`expected_secrets_revision`、`expected_keys`、`expected_current_version`）、後から書いた端末は 409 で止まります。それでも、2 つの端末の保存が別々の段で成功すると、SSSS には一方の端末の秘密鍵が、サーバーには他方の公開鍵が残ることがあり、この状態では解錠し直しても合う鍵は出てきません。そのため、読み直しで確かめます。
 
-これで、それ以降の鍵の配布と新しいメッセージは守れます。
+これで、それ以降の鍵の配布と新しいメッセージは守れます。失効を終えるまで（版を切り替えるまで）に送られたメッセージは、守れるとは限りません。古い版に入ったセッションで読める可能性があり、4 を保存するまでは、古い自己署名鍵で署名された端末にもセッションが配られるためです。
+
+異常系のテスト（#356、#357、#362）：
+
+- 古い `auth_data`、古い自己署名鍵、古い SSSS の暗号文を送り直すと、400 `E2EE_KEY_REUSED` か 403 `E2EE_REAUTH_REQUIRED` になる。
+- 今の鍵、今の版と同じものを送り直すと、何も変わらずに 200 になる。
+- 2 つ目の版の作成と今の版の削除は、再認証がなければ 403 になる。今の版を消すと `GET /api/e2ee/key_backup/versions/current` は 404 になり、古い版を返さない。
+- 版の作成と同時のアップロードは、作成が確定したあとは 409 になる。版の作成では、暗号化チャンネルの `membership_epoch` が同じトランザクションで増える。
+- 1 と 4 のあいだに登録され、古い自己署名鍵で署名された端末は、4 のあとで配布先に入らない。
+- SSSS を書いたあと、版を作る前にログアウトし、別の端末で解錠して失効をやり直すと、古い版のセッションが新しい版に移る。
+- 2 つの端末で端末だけの失効を同時に行っても、最後に消していない版の秘密鍵はすべて SSSS にある。
+- 端末だけの失効と 1〜5 の失効を交互に進めても、後から書いた端末は 409 で止まり、やり直したあとで、消していない版の秘密鍵はすべて SSSS にある。
+- SSSS を書いたあと、クロス署名鍵を保存する前に別の端末で解錠すると、その端末は署名をせずに表示を出す。失効が終わったあと、その端末は自分に署名し直し、配布先に入る。
+- 失効で SSSS を書いたあと、起動し直していない別の端末のバックアップへのアップロードは 409 `E2EE_SSSS_CONFLICT` になる。
 
 ### 取り消せないもの
 
@@ -1343,10 +1430,10 @@ Megolm のメッセージ（`messages` の行）を復号したとき：
 
 - サーバー、DB、S3、AuthZ のデータが漏れても（読まれるだけなら）、暗号化チャンネルの本文は読めない。サーバーが能動的に振る舞う場合と、配信するコードを改ざんされた場合は「守らないもの」を参照。
 - トークンを盗まれて端末を登録されても、その端末は自己署名されていないので、鍵は配られない。
-- トークンを盗まれても、マスター鍵の差し替えには直前の再認証が要る。差し替えられても、そのユーザーのピンを持つ他のユーザーの端末は配布を止める。ピンは自分の端末どうしで共有するので、新しくログインした端末も止める。ただし、次の前提がある。
+- トークンを盗まれても、クロス署名鍵の差し替えと、鍵バックアップの版の作り直しには直前の再認証が要り、過去に使った鍵には戻せない。差し替えられても、そのユーザーのピンを持つ他のユーザーの端末は配布を止める。ピンは自分の端末どうしで共有するので、新しくログインした端末も止める。ただし、次の前提がある。
   - AuthZ そのものを乗っ取られると、再認証も通る。
   - 差し替える前にそのユーザーのピンを作っていなかった（一度も同じ暗号化チャンネルにいなかった）ユーザーは、差し替えたマスター鍵を TOFU で信頼する。
-- 退出したメンバーと、削除・失効した端末は、それ以降のメッセージを復号できない。
+- 退出したメンバーと、削除・失効した端末は、それ以降のメッセージを復号できない。失効では、失効を終える（鍵バックアップの版を切り替える）までに送られたメッセージを除く（[失効の手順](#失効の手順)）。
 - サーバーが暗号文を別のチャンネル、別の行、別のスレッドに移したり、再送したりしても、受信側が検出して破棄する。
 - サーバーがバックアップの公開鍵を差し替えても、マスター鍵の署名のない版は使わないので、Megolm セッションを手に入れられない。
 - サーバーが古い版の暗号文を返したら、その端末が新しい版を見ていれば検出できる。
@@ -1378,6 +1465,7 @@ Megolm のメッセージ（`messages` の行）を復号したとき：
 - **鍵バックアップへの偽のセッション**：バックアップの公開鍵は誰でも使えるので、サーバーは任意の `sender_user_id` や `sender_key` を入れたセッションと、それで暗号化したメッセージを作れる。バックアップから取り込んだ端末は、それを「その送信者からのメッセージ」として復号してしまう。このため、バックアップから取り込んだセッションで復号したメッセージは、行の `is_verified` にかかわらず「送信者を確かめられない」と表示する（[鍵バックアップ](#鍵バックアップ)）。取り込んだセッションは Olm で受け取ったセッションを置き換えないので、偽のセッションを入れられても、Olm で受け取ったセッションで復号できるメッセージは今までどおり復号でき、印も付かない（[受信時の検証](#受信時の検証)）。
 - **サーバーによる妨害**：サーバーは、メッセージの削除や非表示、鍵や端末の削除、配布の遅延、マスター鍵の差し替え（他のユーザーに再検証を求める状態になる）ができる。また、上に書いたメンバーの追加、初めて見るマスター鍵、バックアップへの偽のセッションの方法で、メッセージを読んだり、なりすましたりできる場合がある。それ以外の方法では、読めなくすることはできるが、読むことはできない。
 - **巻き戻しの一部**：その端末が新しい版を一度も見ていなければ、サーバーが古い版を返しても分からない。
+- **古いクロス署名鍵への巻き戻し**：端末だけの失効ではマスター鍵を残すので、古い自己署名鍵とユーザー署名鍵には、マスター鍵の有効な署名が残る。トークンを持つだけの攻撃者による登録し直しはサーバーが拒否するが（[クロス署名の API](#クロス署名356)）、サーバーや DB を乗っ取った攻撃者は、他のユーザーに古い自己署名鍵を見せて、失った端末の鍵で署名した端末に鍵を配らせられる。これを防ぐには、端末をなくしただけでもマスター鍵を作り直す（[失効の手順](#失効の手順)の 1〜5 のすべて）。【提案】クライアントは、ユーザーごとに同じマスター鍵の下で見た自己署名鍵を暗号ストアに記録し、一度置き換わった自己署名鍵に戻ったら、そのユーザーへの配布を止めて警告する（#362）。置き換わる前の鍵を見ていない端末は気付けない。
 - **平文の `mentions` による通知**：送信者は、本文と関係のない相手に通知を送れる（平文チャンネルと同じ程度の問題）。表示には復号した `mentions` だけを使う。
 - **取得済みのデータ**：[取り消せないもの](#取り消せないもの)を参照。
 - **すべての端末、パスキー、リカバリーキーを失った場合**：過去ログは復元できない。
@@ -1391,7 +1479,7 @@ Megolm のメッセージ（`messages` の行）を復号したとき：
 | [#347](https://github.com/Zli-UoA/zoo2/issues/347) | 本書 | |
 | zoo2-infra（PR は未作成） | ConfigMap `authz-config` に `WEBAUTHN_RELATED_ORIGINS: https://zli.chat` を足す。AuthZ#94 の実装（AuthZ#95）より先にマージする（[本番への配備の順](#本番への配備の順)） | |
 | [AuthZ#94](https://github.com/Zli-UoA/AuthZ/issues/94) | パスキー登録で PRF を有効にし、`/.well-known/webauthn` を配信する | zoo2-infra（配備の順） |
-| AuthZ（issue は未作成） | Android 用に `/.well-known/assetlinks.json` を配信する（「E2EE: Android 用に /.well-known/assetlinks.json を配信する」。[使えない環境](#使えない環境)） | |
+| [AuthZ#96](https://github.com/Zli-UoA/AuthZ/issues/96) | Android 用に `/.well-known/assetlinks.json` を配信する（[使えない環境](#使えない環境)） | |
 | [#348](https://github.com/Zli-UoA/zoo2/issues/348) | `crates/zoo-crypto` の雛形とツールチェーン、端末アカウント、pickle の保存 | #347 |
 | [#349](https://github.com/Zli-UoA/zoo2/issues/349) | Olm と Megolm のセッション管理と受信時の検証 | #348 |
 | [#350](https://github.com/Zli-UoA/zoo2/issues/350) | クロス署名と鍵の配布先の判定 | #349 |
@@ -1401,10 +1489,10 @@ Megolm のメッセージ（`messages` の行）を復号したとき：
 | [#354](https://github.com/Zli-UoA/zoo2/issues/354) | 端末と鍵の API（端末、ワンタイム鍵、端末の Shape）、端末の Shape の where が使う `channels.encrypted` と CHECK `channels_encrypted_private`（[DB](#db)）、アカウントの無効化での端末の削除と、無効化と競合しないための `FOR SHARE` | #347 |
 | [#355](https://github.com/Zli-UoA/zoo2/issues/355) | to-device メッセージ | #354 |
 | [#356](https://github.com/Zli-UoA/zoo2/issues/356) | クロス署名（TOFU のピンと `GET /api/e2ee/tofu_pins` を含む）、クロス署名鍵と署名の Shape、Secret Storage、鍵バックアップの保存 API | #354 |
-| [#357](https://github.com/Zli-UoA/zoo2/issues/357) | 暗号化チャンネル（作成時の `encrypted` の指定と変更を拒む 409、`membership_epoch`、`ciphertext`、`revision`。`channels.encrypted` の列は #354 で足してある）、端末の削除、アカウントの無効化、クロス署名鍵の変更での epoch の増加、配布先のスナップショット | #354、#356 |
+| [#357](https://github.com/Zli-UoA/zoo2/issues/357) | 暗号化チャンネル（作成時の `encrypted` の指定と変更を拒む 409、`membership_epoch`、`ciphertext`、`revision`。`channels.encrypted` の列は #354 で足してある）、端末の削除、アカウントの無効化、クロス署名鍵の変更、鍵バックアップの版の切り替えでの epoch の増加、配布先のスナップショット | #354、#356 |
 | [#358](https://github.com/Zli-UoA/zoo2/issues/358) | 平文に依存する機能を止める、添付の拒否 | #357 |
 | [#359](https://github.com/Zli-UoA/zoo2/issues/359) | 暗号ストアと端末の登録（React、Compose、TUI） | #352、#353、#354、#355 |
-| [#360](https://github.com/Zli-UoA/zoo2/issues/360) | 初回設定と解錠（パスキー、リカバリーキー） | #359、#356、AuthZ#94、AuthZ の assetlinks の issue（未作成） |
+| [#360](https://github.com/Zli-UoA/zoo2/issues/360) | 初回設定と解錠（パスキー、リカバリーキー） | #359、#356、AuthZ#94、AuthZ#96 |
 | [#361](https://github.com/Zli-UoA/zoo2/issues/361) | 暗号化チャンネルと DM の作成と送受信 | #360、#357、#358 |
 | [#362](https://github.com/Zli-UoA/zoo2/issues/362) | 端末一覧、失効、鍵スロットの管理、他のユーザーの検証状態 | #361 |
 | [#363](https://github.com/Zli-UoA/zoo2/issues/363) | Playwright の E2E テスト（仮想認証器 `hasPrf: true`） | #362 |
@@ -1421,7 +1509,7 @@ Megolm のメッセージ（`messages` の行）を復号したとき：
 | --- | --- | --- |
 | ブラウザー、認証器、パスワードマネージャーごとの PRF と ROR の対応（Safari の CTAP2、1Password、Firefox の ROR など） | 【未検証】 | #369 |
 | 既存のパスキー（`prf: {}` なしで登録したプラットフォーム認証器）で PRF を使えるか。AuthZ#95 より前に登録したセキュリティキーは、登録し直すまで使えない | 【未検証】 | AuthZ#94、#369 |
-| Android の Credential Manager で RP ID `account.zli.works` のパスキーと PRF を使えるか。`assetlinks.json` を AuthZ で配信する issue を作る（未作成） | 【未検証】 | #360（前に AuthZ の issue） |
+| Android の Credential Manager で RP ID `account.zli.works` のパスキーと PRF を使えるか。`assetlinks.json` は AuthZ#96 で配信する | 【未検証】 | #360（前に AuthZ#96） |
 | `getrandom` の wasm のバックエンドの設定。cfg フラグは付けず、`wasm_js` feature だけにする（getrandom 0.3.4 以降と 0.4） | 【決定】 | #348 |
 | `getrandom` の wasm_js バックエンドで、ブラウザーと Worker で実際に乱数を取れるか（#348 ではビルドだけ確認） | 【未検証】 | #352 |
 | 3 段のサブクエリの Shape で move-in と move-out が届くか | 【未検証】 | #354 |
@@ -1429,7 +1517,8 @@ Megolm のメッセージ（`messages` の行）を復号したとき：
 | エラー応答に `code` を足す方法 | 【提案】 | #354 か #357 |
 | 暗号化チャンネルでの URL カードの扱い | 【提案】 | #361 |
 | 複数タブでの暗号ストアの共有（Web Locks と BroadcastChannel） | 【提案】 | #359 |
-| マスター鍵の差し替えに直前の再認証を求める。zoo2 が受け取るトークンで `auth_time` を確かめられるか | 【決定】（確かめ方は【未検証】） | #356 |
+| クロス署名鍵の差し替え、SSSS の秘密とスロットの置き換え、鍵バックアップの版の作り直しに直前の再認証を求める。zoo2 が受け取るトークンで `auth_time` を確かめられるか | 【決定】（確かめ方は【未検証】） | #356 |
+| 一度置き換わった自己署名鍵に戻ったことをクライアントで検出する | 【提案】 | #362 |
 | AuthZ でパスキーの credential ID の一覧を取れるようにし、削除済みのパスキーの鍵スロットを表示する | 【提案】（AuthZ の issue が要る） | #362 |
 | 自分の端末どうしで鍵を要求し合う仕組み（Matrix の `m.room_key_request`）。初期版は鍵バックアップで代える | 未決 | 後続 |
 | 許可オリジンを外したときに、パスキーのスロットの作り直しを求める仕組み | 【提案】 | #362 |
