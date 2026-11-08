@@ -1019,9 +1019,11 @@ async fn insert_message(
     if content.trim().is_empty() {
         content = super::convert::truncate_content(message.attachments_text());
     }
-    // 取り込めないファイル (外部サービスの共有・削除済みなど) だけの投稿は、ファイル名を本文に残す
+    // 本文のないファイルだけの投稿は、ファイル名を本文に残す。取り込めないファイル (外部サービスの共有・
+    // 削除済みなど) や、添付の取得をスキップ (サイズ・形式) または保留 (トークンなし) したファイルでも、
+    // 投稿が空にならないようにする
     if content.trim().is_empty() {
-        content = super::convert::truncate_content(message.unimported_files_text());
+        content = super::convert::truncate_content(message.files_text());
     }
     // 期間を区切った ZIP では返信だけが先に入ることがある。後から親を取り込んだら、返信をスレッドに戻す。
     exec(

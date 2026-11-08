@@ -798,7 +798,10 @@ async fn test_slack_reimport_relinks_replies_and_serializes_targets() -> anyhow:
                 {"ts":"1704070160.000360","user":"U1","text":"",
                  "files":[{"id":"FEXT","name":"Roadmap.gdoc","mode":"external","url_private_download":"https://docs.example.com/x"}]},
                 // 名前のない削除済みファイルだけの投稿は、空の投稿にせず取り込まない
-                {"ts":"1704070170.000370","user":"U1","text":"","files":[{"id":"FDEL","mode":"tombstone"}]}
+                {"ts":"1704070170.000370","user":"U1","text":"","files":[{"id":"FDEL","mode":"tombstone"}]},
+                // 取得をスキップする (上限を超える) ファイルだけの投稿も、ファイル名を本文に残す
+                {"ts":"1704070180.000380","user":"U1","text":"",
+                 "files":[{"id":"FBIG","name":"huge.bin","size":999999999999i64,"url_private_download":"https://files.slack.com/files-pri/T1-FBIG/huge.bin"}]}
             ]),
         ),
         ("general/2024-01-02.json".into(), json!([reply])),
@@ -989,6 +992,17 @@ async fn test_slack_reimport_relinks_replies_and_serializes_targets() -> anyhow:
     .await?;
     assert_eq!(files_only.len(), 1, "{files_only:?}");
     assert_eq!(files_only[0]["content"], "Roadmap.gdoc");
+    let skipped = sql(
+        &state,
+        "SELECT json_build_object('content',content)::text FROM messages WHERE id=$1",
+        &[&backend::slack::message_id(
+            &team,
+            "C1",
+            "1704070180.000380",
+        )],
+    )
+    .await?;
+    assert_eq!(skipped[0]["content"], "huge.bin");
     Ok(())
 }
 
