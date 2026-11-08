@@ -227,6 +227,8 @@ fun SlackLinkPanel(
                         confirmUnlink = true
                     }
                 }
+            if (current != null && current.flag("configured") && link != null && !slackLinkTeamAllowed(link))
+                Text(app.t("slackLink.teamNotAllowed"), small = true, color = MaterialTheme.colorScheme.error)
             if (current != null && current.flag("configured") && link == null)
                 Button(
                     app.t("slackLink.link"),
@@ -245,7 +247,7 @@ fun SlackLinkPanel(
                 )
             }
         }
-        if (link != null) SlackOwnImportSection(app)
+        if (link != null && slackLinkTeamAllowed(link)) SlackOwnImportSection(app)
         if (app.config.isAdmin) SlackManifestSection(app)
     }
     if (confirmUnlink)
@@ -261,6 +263,13 @@ fun SlackLinkPanel(
 }
 
 /**
+ * サーバーの `SLACK_TEAM_ID` で許可されたワークスペースとの連携か (React の `team_allowed !== false`)。
+ * 設定を後から変えると false になり、解除して連携し直すまで取り込みには使えない
+ */
+fun slackLinkTeamAllowed(link: Row): Boolean =
+    (link["team_allowed"] as? JsonPrimitive)?.booleanOrNull != false
+
+/**
  * 連携した Slack アカウントで作ったチャンネルを、管理者が保存した ZIP から取り込む。
  * React の `SlackLinkPanel` の `OwnImportSection` に対応する。
  */
@@ -271,6 +280,11 @@ class SlackOwnImportController(
     private val lifetime = SupervisorJob(parent.coroutineContext[Job])
     private val scope = CoroutineScope(parent.coroutineContext + lifetime)
     private var generation = 0
+    private var inFlight = 0
+
+    /** 一覧を読み込み中か。ポーリングは、前の読み込みが終わるまで次を始めない */
+    var loading by mutableStateOf(false)
+        private set
 
     /** `{export, channels, imports}` */
     var data by mutableStateOf<Row?>(null)
@@ -296,6 +310,8 @@ class SlackOwnImportController(
     fun load() {
         if (!lifetime.isActive) return
         val version = ++generation
+        inFlight++
+        loading = true
         scope.launch {
             try {
                 val value = request("/api/slack/imports", "GET", null).jsonObject
@@ -304,8 +320,16 @@ class SlackOwnImportController(
                 throw cause
             } catch (cause: Exception) {
                 if (version == generation) failure = slackImportFailure(cause)
+            } finally {
+                inFlight--
+                loading = inFlight > 0
             }
         }
+    }
+
+    /** ポーリングでの読み込み。応答が間隔より遅くても、前の応答を捨て続けないよう、読み込み中は始めない */
+    fun poll() {
+        if (!loading) load()
     }
 
     fun start(mappings: List<Row>) {
@@ -354,7 +378,7 @@ private fun SlackOwnImportSection(app: Session) {
     LaunchedEffect(state, state.running) {
         while (state.running) {
             delay(2_000)
-            state.load()
+            state.poll()
         }
     }
     val data = state.data

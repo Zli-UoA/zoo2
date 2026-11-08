@@ -147,4 +147,56 @@ class SlackLinkTest {
         assertEquals("GET /api/slack/imports", requests.last())
         state.close()
     }
+
+    @Test
+    fun aLinkToAWorkspaceThatIsNoLongerAllowedCannotImport() {
+        assertTrue(slackLinkTeamAllowed(obj("team_id" to "T1")))
+        assertTrue(slackLinkTeamAllowed(obj("team_id" to "T1", "team_allowed" to true)))
+        assertFalse(slackLinkTeamAllowed(obj("team_id" to "T0", "team_allowed" to false)))
+    }
+
+    @Test
+    fun aHiddenPreviousTargetCountsAsImported() {
+        assertFalse(slackImportImported(obj("slack_channel_id" to "C1", "existing_channel" to null)))
+        assertTrue(
+            slackImportImported(
+                obj("slack_channel_id" to "C1", "existing_channel" to obj("id" to "c", "name" to "general"))
+            )
+        )
+        assertTrue(
+            slackImportImported(
+                obj("slack_channel_id" to "G1", "existing_channel" to null, "existing_hidden" to true)
+            )
+        )
+    }
+
+    @Test
+    fun pollingWaitsForTheSlowReadInsteadOfDiscardingIt() = runTest {
+        val responses = mutableListOf<CompletableDeferred<JsonElement>>()
+        val state =
+            SlackOwnImportController(backgroundScope) { _, _, _ ->
+                CompletableDeferred<JsonElement>().also { responses += it }.await()
+            }
+        state.load()
+        runCurrent()
+        assertTrue(state.loading)
+        // 応答が遅くても、読み込み中は次の読み込みを始めない (前の応答を捨てない)
+        state.poll()
+        runCurrent()
+        assertEquals(1, responses.size)
+        val value =
+            obj(
+                "export" to null,
+                "channels" to JsonArray(emptyList()),
+                "imports" to JsonArray(listOf(obj("id" to "run", "status" to "importing"))),
+            )
+        responses.single().complete(value)
+        runCurrent()
+        assertFalse(state.loading)
+        assertEquals("run", state.latest?.text("id"))
+        state.poll()
+        runCurrent()
+        assertEquals(2, responses.size)
+        state.close()
+    }
 }

@@ -51,6 +51,13 @@ fun slackImportMappingFor(channel: Row, action: String, targets: List<Row>): Row
 }
 
 /**
+ * 以前に取り込んだチャンネルか。取り込み先が見えないチャンネル (参加していない非公開チャンネルなど) のときは、
+ * サーバーは名前と ID を返さず `existing_hidden` だけを返す。どちらも同じ取り込み先にしか入れられない
+ */
+fun slackImportImported(channel: Row): Boolean =
+    channel["existing_channel"] is JsonObject || channel.flag("existing_hidden")
+
+/**
  * 「既存のチャンネル」で選べる取り込み先 (React の `targetChoices`)。非公開チャンネルの履歴は公開チャンネルに
  * 入れない。以前の取り込み先は、参加していない非公開チャンネルで同期されていなくても選べるよう先頭に足す。
  */
@@ -127,8 +134,8 @@ internal fun SlackImportRunStatus(app: Session, job: Row) {
 }
 
 /**
- * チャンネルごとの取り込み方を選ぶフォーム (React の `MappingForm`)。管理者はすべての既存チャンネルを
- * 取り込み先に選べる。`targetsFor` を渡すと、チャンネルごとに選べる既存チャンネルを絞る (各ユーザーによる取り込み)。
+ * 各ユーザーが自分の Slack チャンネルの取り込み方を選ぶフォーム (React の `MappingForm`)。
+ * 選べる既存チャンネルは、サーバーが返す取り込み先 (`targetsFor`) に絞る。
  */
 @Composable
 internal fun SlackImportMappingForm(
@@ -174,6 +181,7 @@ internal fun SlackImportMappingForm(
                 val mapping = mappings[index]
                 val name = channel.text("name")
                 val existing = channel["existing_channel"] as? JsonObject
+                val imported = slackImportImported(channel)
                 val deleted = channel.text("deleted_channel").isNotEmpty()
                 // セルフ取り込みでは、サーバーが返す取り込み先だけを選べる
                 val choices = targetsFor?.invoke(channel) ?: slackImportChoices(channel, targets)
@@ -181,7 +189,7 @@ internal fun SlackImportMappingForm(
                 val actions =
                     actionLabels.keys.filter {
                         when (it) {
-                            "create" -> existing == null && !deleted
+                            "create" -> !imported && !deleted
                             "existing" -> choices.isNotEmpty() && !deleted
                             else -> true
                         }
@@ -224,6 +232,8 @@ internal fun SlackImportMappingForm(
                                     small = true,
                                     muted = true,
                                 )
+                            if (channel.flag("existing_hidden"))
+                                Text(app.t("slackImport.importedToHidden"), small = true, muted = true)
                             if (deleted)
                                 Text(
                                     app.t(
@@ -265,7 +275,7 @@ internal fun SlackImportMappingForm(
                                     app.t("slackImport.targetChannel", "name" to name),
                                     labels[mapping.text("channel_id")] ?: "",
                                     labels.values.toList(),
-                                    enabled = !pending && existing == null,
+                                    enabled = !pending && !imported,
                                     allowEmpty = false,
                                 ) { label ->
                                     val target = labels.entries.first { it.value == label }.key
