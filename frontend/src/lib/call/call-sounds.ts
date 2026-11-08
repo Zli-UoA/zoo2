@@ -2,7 +2,7 @@
  * 通話の入退室効果音。音声ファイルは使わず Web Audio で短いチャイムを合成する。
  */
 
-export type CallSoundKind = "join" | "leave";
+export type CallSoundKind = "join" | "leave" | "mute" | "unmute";
 
 export const CALL_SOUNDS_STORAGE_KEY = "zoo-call-sounds";
 const CALL_SOUNDS_CHANGE_EVENT = "zoo-call-sounds-change";
@@ -80,6 +80,22 @@ export function shouldPlayRemoteLeave(
 }
 
 let sharedContext: AudioContext | null = null;
+let sinkId = "";
+
+type SinkCapableContext = AudioContext & { setSinkId?: (id: string) => Promise<void> };
+
+function applyContextSink(ctx: AudioContext): void {
+  const c = ctx as SinkCapableContext;
+  if (typeof c.setSinkId !== "function") return;
+  // 空文字はシステム既定。非対応・失敗時は既定の出力のままにする
+  void c.setSinkId(sinkId).catch(() => {});
+}
+
+/** 効果音の出力先 (選択中のスピーカー)。AudioContext.setSinkId 対応ブラウザのみ有効。 */
+export function setCallSoundSink(deviceId: string): void {
+  sinkId = deviceId;
+  if (sharedContext && sharedContext.state !== "closed") applyContextSink(sharedContext);
+}
 
 function getContext(): AudioContext | null {
   if (sharedContext && sharedContext.state !== "closed") return sharedContext;
@@ -89,6 +105,7 @@ function getContext(): AudioContext | null {
       (window as unknown as { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
     if (!Ctor) return null;
     sharedContext = new Ctor();
+    if (sinkId) applyContextSink(sharedContext);
     return sharedContext;
   } catch {
     return null;
@@ -103,11 +120,16 @@ export function primeCallSounds(): void {
   }
 }
 
-// join は上昇、leave は下降する 2 音のチャイム
-const NOTES: Record<CallSoundKind, [number, number]> = {
-  join: [587.33, 880],
-  leave: [698.46, 440],
+// join は上昇、leave は下降する 2 音のチャイム。mute / unmute は短く低めの 2 音で区別する
+const SOUNDS: Record<CallSoundKind, { notes: [number, number]; step: number; length: number }> = {
+  join: { notes: [587.33, 880], step: 0.11, length: 0.18 },
+  leave: { notes: [698.46, 440], step: 0.11, length: 0.18 },
+  mute: { notes: [523.25, 349.23], step: 0.07, length: 0.12 },
+  unmute: { notes: [349.23, 523.25], step: 0.07, length: 0.12 },
 };
+
+// 音量 (ゲインのピーク)。Slack のように聞き取りやすい大きさにする
+const PEAK_GAIN = 0.28;
 
 export function playCallSound(kind: CallSoundKind): void {
   if (!isCallSoundsEnabled()) return;
@@ -116,20 +138,20 @@ export function playCallSound(kind: CallSoundKind): void {
   try {
     if (ctx.state === "suspended") void ctx.resume().catch(() => {});
     const start = ctx.currentTime + 0.01;
-    const step = 0.11;
-    NOTES[kind].forEach((freq, i) => {
+    const { notes, step, length } = SOUNDS[kind];
+    notes.forEach((freq, i) => {
       const osc = ctx.createOscillator();
       const gain = ctx.createGain();
       const t0 = start + i * step;
       osc.type = "sine";
       osc.frequency.setValueAtTime(freq, t0);
       gain.gain.setValueAtTime(0.0001, t0);
-      gain.gain.exponentialRampToValueAtTime(0.12, t0 + 0.015);
-      gain.gain.exponentialRampToValueAtTime(0.0001, t0 + 0.18);
+      gain.gain.exponentialRampToValueAtTime(PEAK_GAIN, t0 + 0.015);
+      gain.gain.exponentialRampToValueAtTime(0.0001, t0 + length);
       osc.connect(gain);
       gain.connect(ctx.destination);
       osc.start(t0);
-      osc.stop(t0 + 0.2);
+      osc.stop(t0 + length + 0.02);
     });
   } catch {
     // 効果音の失敗で通話を止めない

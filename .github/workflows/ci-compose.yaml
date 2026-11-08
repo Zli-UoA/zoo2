@@ -1,24 +1,6 @@
 name: CI Compose Web
+# Compose Web の実験は終了。過去の検証を再現する場合だけ手動で実行する。
 on:
-  # merge-queue.yaml がマージキューで呼び出す。
-  workflow_call:
-  pull_request:
-    paths:
-      - "frontend-compose/**"
-      - "frontend/**"
-      - "infra/frontend-nginx.conf"
-      - "infra/test-compose-compression.mjs"
-      - "infra/Dockerfile-frontend-deploy*"
-      - ".github/workflows/ci-compose.yaml"
-  push:
-    branches: [main]
-    paths:
-      - "frontend-compose/**"
-      - "frontend/**"
-      - "infra/frontend-nginx.conf"
-      - "infra/test-compose-compression.mjs"
-      - "infra/Dockerfile-frontend-deploy*"
-      - ".github/workflows/ci-compose.yaml"
   workflow_dispatch:
 concurrency:
   group: ci-compose-${{ github.event.pull_request.number || github.ref }}
@@ -42,6 +24,29 @@ jobs:
         with:
           distribution: temurin
           java-version: "21"
+      - name: Restore Gradle wrapper distribution
+        id: gradle-wrapper
+        uses: actions/cache/restore@v6
+        with:
+          path: ~/.gradle/wrapper/dists
+          key: gradle-wrapper-${{ hashFiles('frontend-compose/gradle/wrapper/gradle-wrapper.properties') }}
+      - name: Download Gradle wrapper distribution
+        if: steps.gradle-wrapper.outputs.cache-hit != 'true'
+        working-directory: frontend-compose
+        run: |
+          for attempt in 1 2 3 4 5; do
+            ./gradlew --version && exit 0
+            echo "Gradle wrapper download failed (attempt $attempt); retrying" >&2
+            sleep $((attempt * 20))
+          done
+          exit 1
+      # Save right after the download so later dependency failures do not discard it.
+      - name: Save Gradle wrapper distribution
+        if: steps.gradle-wrapper.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v6
+        with:
+          path: ~/.gradle/wrapper/dists
+          key: ${{ steps.gradle-wrapper.outputs.cache-primary-key }}
       - uses: gradle/actions/setup-gradle@v4
       - uses: pnpm/action-setup@v6
         with:
@@ -108,7 +113,7 @@ jobs:
 
   container:
     needs: runner
-    runs-on: ${{ (github.event.pull_request.head.repo.fork || github.event_name == 'merge_group') && 'ubuntu-latest' || fromJSON(needs.runner.outputs.docker-runs-on || '"ubuntu-latest"') }}
+    runs-on: ${{ github.event.pull_request.head.repo.fork && 'ubuntu-latest' || fromJSON(needs.runner.outputs.docker-runs-on || '"ubuntu-latest"') }}
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v7
