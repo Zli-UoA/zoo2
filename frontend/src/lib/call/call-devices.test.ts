@@ -1,7 +1,7 @@
 // @vitest-environment happy-dom
 import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 
-import { loadSelectedDevice, saveSelectedDevice, toDeviceOptions } from "./call-devices";
+import { applySink, loadSelectedDevice, saveSelectedDevice, toDeviceOptions } from "./call-devices";
 
 describe("selected device storage", () => {
   beforeEach(() => window.localStorage.clear());
@@ -50,5 +50,27 @@ describe("toDeviceOptions", () => {
     expect(toDeviceOptions(devices, "audiooutput", (n) => `S ${n}`)).toEqual([
       { deviceId: "s1", label: "Speakers" },
     ]);
+  });
+});
+
+describe("applySink", () => {
+  const audioWith = (setSinkId?: (id: string) => Promise<void>) =>
+    ({ setSinkId }) as unknown as HTMLMediaElement;
+
+  it("適用できれば true", async () => {
+    const setSinkId = vi.fn().mockResolvedValue(undefined);
+    expect(await applySink(audioWith(setSinkId), "s1")).toBe(true);
+    expect(setSinkId).toHaveBeenCalledWith("s1");
+  });
+  it("setSinkId が失敗したら false", async () => {
+    expect(
+      await applySink(
+        audioWith(() => Promise.reject(new Error("NotAllowed"))),
+        "s1",
+      ),
+    ).toBe(false);
+  });
+  it("非対応の環境では何もせず true", async () => {
+    expect(await applySink(audioWith(undefined), "s1")).toBe(true);
   });
 });

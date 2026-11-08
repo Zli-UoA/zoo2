@@ -189,7 +189,9 @@ export function CallProvider({ config: explicitConfig, children }: CallProviderP
   const fallbackSpeaker = useCallback(
     (failedId: string) => {
       if (speakerIdRef.current !== failedId) return;
-      const fallback = activeSpeakerIdRef.current;
+      // 復元先が失敗した出力先自身なら、システム既定へ戻す
+      const fallback = activeSpeakerIdRef.current === failedId ? "" : activeSpeakerIdRef.current;
+      activeSpeakerIdRef.current = fallback;
       speakerIdRef.current = fallback;
       saveSelectedDevice("speaker", fallback);
       setCallSoundSink(fallback);
@@ -749,11 +751,15 @@ export function CallProvider({ config: explicitConfig, children }: CallProviderP
       // 効果音も選択中のスピーカーから鳴らす
       setCallSoundSink(target);
       let ok = true;
+      let applied = 0;
       for (const entry of peersRef.current.values()) {
-        if (entry.audio && !(await applySink(entry.audio, target))) ok = false;
+        if (!entry.audio) continue;
+        applied++;
+        if (!(await applySink(entry.audio, target))) ok = false;
       }
       if (ok) {
-        activeSpeakerIdRef.current = target;
+        // 実際に適用できた要素があるときだけ、出力先として記録する
+        if (applied > 0) activeSpeakerIdRef.current = target;
         return;
       }
       if (speakerIdRef.current !== target) return;
