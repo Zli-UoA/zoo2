@@ -1355,6 +1355,21 @@ async fn fetch_files(s: &AppState, job: &Job, lease: &Lease) -> Result<(), AppEr
                     )
                     .await?;
                 }
+                if status == "done" {
+                    // 取り込み時に取得対象外だったため本文に入れたファイル名 (トークンなし・サイズ・URL など) は、
+                    // 後から取得できたら添付と二重に出ないよう本文から外す。本文がファイル名だけのときに限る
+                    suppress_app_events(&mut tx).await?;
+                    exec(
+                        &mut tx,
+                        "UPDATE messages m SET content=r.remaining,updated_at=m.updated_at FROM (\
+                         SELECT COALESCE(string_agg(name,E'\\n' ORDER BY slack_file_id) FILTER (WHERE status<>'done'),'') AS remaining,\
+                         COALESCE(string_agg(name,E'\\n' ORDER BY slack_file_id) FILTER (WHERE status<>'done' OR slack_file_id=$3),'') AS with_this \
+                         FROM slack_files WHERE team_id=$1 AND message_id=$2) r \
+                         WHERE m.id=$2 AND m.content=r.with_this AND r.with_this<>r.remaining",
+                        &[&file.team_id, &file.message_id, &file.slack_file_id],
+                    )
+                    .await?;
+                }
                 exec(
                     &mut tx,
                     // 全件を数え直さず、処理済みになった分だけ進める
