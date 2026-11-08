@@ -3212,7 +3212,7 @@ async fn delivery_role_runs_the_dispatch_path_but_cannot_read_messages_or_creden
     // 配信パス一式: 候補取得 → claim → 送信失敗の記録、掃除、メトリクス。
     apps::delivery::http_pass(&db).await?;
     assert!(message_delivery_attempts(&f).await?.iter().all(|a| *a >= 1));
-    apps::delivery::cleanup(&db).await?;
+    apps::delivery::cleanup_deliveries(&db).await?;
     apps::delivery::refresh_queue_metrics(&db).await?;
     // ACK（新しい配信を取って確定する）。
     post_messages(&f, 1).await;
@@ -3245,6 +3245,8 @@ async fn delivery_role_runs_the_dispatch_path_but_cannot_read_messages_or_creden
         "UPDATE app_installations SET signing_secret='x' WHERE false",
         "UPDATE app_deliveries SET payload='x' WHERE false",
         "DELETE FROM app_installations WHERE false",
+        "DELETE FROM app_rate_limits WHERE false",
+        "DELETE FROM app_oauth_codes WHERE false",
     ] {
         let mut db = db.clone();
         let mut tx = db.transaction().await?;
