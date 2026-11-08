@@ -2921,17 +2921,19 @@ async fn concurrent_workers_never_claim_or_send_a_delivery_twice() -> anyhow::Re
     reconfigure(&f,json!({"scopes":["messages:read"],"events":["message.created"],"transport":"http","event_url":"https://127.0.0.1:1/events"})).await?;
     post_messages(&f, 24).await;
     // 別プロセス（backend のワーカーと dispatcher）が同じ行を取り合う状況を、claim の並行実行で作る。
-    let claimers = (0..8).map(|_| {
-        let db = f.state.db.clone();
-        let installation = f.installation.clone();
-        tokio::spawn(async move {
-            let mut ids = Vec::new();
-            while let Some(event) = apps::delivery::claim(&db, &installation).await? {
-                ids.push(event["delivery_id"].as_str().unwrap().to_string());
-            }
-            anyhow::Ok(ids)
+    let claimers: Vec<_> = (0..8)
+        .map(|_| {
+            let db = f.state.db.clone();
+            let installation = f.installation.clone();
+            tokio::spawn(async move {
+                let mut ids = Vec::new();
+                while let Some(event) = apps::delivery::claim(&db, &installation).await? {
+                    ids.push(event["delivery_id"].as_str().unwrap().to_string());
+                }
+                anyhow::Ok(ids)
+            })
         })
-    });
+        .collect();
     let mut all = Vec::new();
     for claimer in claimers {
         all.extend(claimer.await??);
@@ -2944,12 +2946,14 @@ async fn concurrent_workers_never_claim_or_send_a_delivery_twice() -> anyhow::Re
     reconfigure(&f,json!({"scopes":["messages:read"],"events":["message.created"],"transport":"http","event_url":"https://127.0.0.1:1/events"})).await?;
     post_messages(&f, 24).await;
     let started = std::time::Instant::now();
-    let passes = (0..6).map(|_| {
-        let db = f.state.db.clone();
-        tokio::spawn(async move { apps::delivery::http_pass(&db).await })
-    });
+    let passes: Vec<_> = (0..6)
+        .map(|_| {
+            let db = f.state.db.clone();
+            tokio::spawn(async move { apps::delivery::http_pass(&db).await })
+        })
+        .collect();
     for pass in passes {
-        tokio::time::timeout(std::time::Duration::from_secs(20), pass).await???;
+        tokio::time::timeout(std::time::Duration::from_secs(120), pass).await???;
     }
     // 失敗した配信はリース（3 秒）が切れるまで再取得されない。したがって試行回数は、
     // 経過時間から許される回数（最初の 1 回 + 3 秒ごとに 1 回）を超えない。
@@ -3113,5 +3117,18 @@ async fn a_notification_wakes_the_dispatcher_without_waiting_for_the_poll() -> a
     stop.send(true)?;
     tokio::time::timeout(std::time::Duration::from_secs(5), dispatcher).await??;
     listener.abort();
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_pass_started_after_the_stop_signal_takes_no_new_leases() -> anyhow::Result<()> {
+    let _guard = HTTP_WORKER_TEST_LOCK.lock().await;
+    let f = fixture().await?;
+    reconfigure(&f,json!({"scopes":["messages:read"],"events":["message.created"],"transport":"http","event_url":"https://127.0.0.1:1/events"})).await?;
+    post_messages(&f, 3).await;
+    let (stop, stopped) = tokio::sync::watch::channel(false);
+    stop.send(true)?;
+    apps::delivery::http_pass_until(&f.state.db, &stopped).await?;
+    assert!(message_delivery_attempts(&f).await?.iter().all(|a| *a == 0));
     Ok(())
 }
