@@ -447,7 +447,7 @@ Matrix の [`BackedUpSessionData`](https://spec.matrix.org/latest/client-server-
 
 AuthZ 側（[AuthZ#94](https://github.com/Zli-UoA/AuthZ/issues/94)）の要件：
 
-- 【決定】パスキーの登録オプションに `extensions: { prf: {} }` を付ける。CTAP2 のセキュリティキーは、登録時に hmac-secret を有効にしないと PRF を使えないため。
+- 【決定】パスキーの登録オプションに `extensions: { prf: {} }` を付ける。CTAP2 のセキュリティキーは、登録時に hmac-secret を有効にしないと PRF を使えない見込みのため（実機では【未検証】。#369 で確かめる）。
 - 【決定】`GET https://account.zli.works/.well-known/webauthn` で `{"origins": ["https://zli.chat"]}` を返す。許可するオリジンは完全一致の固定リストで、本番は `https://zli.chat` だけ。Preview（`https://zoo2-pr-<番号>.zli.chat`）や他の zli.works のアプリは入れない。
 - 【決定】`/.well-known/webauthn` の `Cache-Control` は `public, max-age=300` 程度に短くする。許可を外したときに早く効かせるため。
 - 【決定】AuthZ のログインの検証で受け付けるオリジンは `https://account.zli.works` のままにする。zoo2 のページで作ったアサーション（`clientDataJSON.origin` が `https://zli.chat`）で AuthZ にログインできないようにするため。
