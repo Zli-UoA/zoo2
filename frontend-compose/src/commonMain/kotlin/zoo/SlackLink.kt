@@ -99,6 +99,16 @@ class SlackLinkController(
         }
     }
 
+    /**
+     * 外部ブラウザーで認可したあとアプリに戻ったとき (Android)。アプリには認可の結果が渡らないので、
+     * 連携の状態を読み直し、待ち状態を解除して、キャンセルしたときも続けて連携をやり直せるようにする
+     */
+    fun resume() {
+        if (!lifetime.isActive) return
+        pending = false
+        load()
+    }
+
     /** Slack から戻ったときの結果を処理する。完了に失敗したら状態を読み直して、やり直せるようにする。 */
     fun handle(result: SlackLinkResult) {
         if (!lifetime.isActive) return
@@ -175,6 +185,10 @@ fun SlackLinkPanel(
         }
     LaunchedEffect(state) { state.load() }
     DisposableEffect(state) { onDispose { state.close() } }
+    // 外部ブラウザーで認可してアプリに戻ったら (前面に戻ったら)、連携の状態を読み直す
+    LaunchedEffect(app.env.visible) {
+        if (app.env.visible && state.pending) state.resume()
+    }
     // Slack から戻ってきたら連携を完了し、URL から code / state を消す
     val query = app.query
     val result = readSlackLinkResult(query.names().associateWith { query[it] })

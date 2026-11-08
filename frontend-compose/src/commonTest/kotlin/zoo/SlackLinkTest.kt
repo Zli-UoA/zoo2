@@ -199,4 +199,32 @@ class SlackLinkTest {
         assertEquals(2, responses.size)
         state.close()
     }
+
+    @Test
+    fun returningFromTheExternalBrowserReloadsTheLinkAndAllowsRetry() = runTest {
+        var linkedNow = false
+        val state =
+            SlackLinkController(backgroundScope) { path, method, _ ->
+                when {
+                    path == "/api/slack/oauth/start" ->
+                        obj("authorize_url" to "https://slack.com/oauth/v2/authorize?state=x")
+                    method == "GET" -> if (linkedNow) linked else notLinked
+                    else -> error("unexpected $method $path")
+                }
+            }
+        state.load()
+        runCurrent()
+        assertEquals(notLinked, state.state)
+        state.link { }
+        runCurrent()
+        // ブラウザーへ移動している間は待ち状態
+        assertTrue(state.pending)
+        // ブラウザーで連携を完了してアプリに戻ると、状態を読み直し、待ち状態も解除する
+        linkedNow = true
+        state.resume()
+        runCurrent()
+        assertFalse(state.pending)
+        assertEquals(linked, state.state)
+        state.close()
+    }
 }
