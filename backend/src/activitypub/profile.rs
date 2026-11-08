@@ -41,27 +41,54 @@ async fn update(
             "Bio must be at most 1000 characters".into(),
         ));
     }
-    // Key generation uses its own transaction. Complete it before locking the profile.
-    let key = if base_url().is_ok() {
-        Some(keys(&state, &user.id).await?)
-    } else {
-        None
-    };
     let mut db = state.db.clone();
     let mut tx = db.transaction().await?;
     toasty::sql::statement("INSERT INTO apub_profiles(user_id,display_name,summary) VALUES($1,NULLIF($2,''),$3) ON CONFLICT(user_id) DO UPDATE SET display_name=EXCLUDED.display_name,summary=EXCLUDED.summary")
         .bind(user.id.as_str()).bind(name).bind(input.summary.as_str()).exec(&mut tx).await?;
-    if let Some(key) = key {
-        let actor = actor_id(&user.id)?;
-        let account = one(&mut tx,"SELECT json_build_object('user_name',u.user_name,'display_name',COALESCE(p.display_name,u.display_name),'summary',COALESCE(p.summary,''))::text FROM users u LEFT JOIN apub_profiles p ON p.user_id=u.id WHERE u.id=$1 AND NOT u.is_bot",&[&user.id]).await?;
-        let followers = query(&mut tx,"SELECT json_build_object('id',f.actor_id)::text FROM apub_follows f JOIN apub_actors a ON a.id=f.actor_id WHERE f.user_id=$1 AND f.direction='incoming' AND f.accepted AND NOT a.blocked",&[&user.id]).await?;
-        let activity = json!({"@context":CONTEXT,"id":format!("{}/api/activitypub/activities/{}",base_url()?,uuid::Uuid::new_v4()),"type":"Update","actor":actor,"object":routes::actor_value(&account,&key,&actor),"to":[format!("{actor}/followers")]});
-        for follower in followers {
-            queue(&mut tx, &user.id, string(&follower, "id")?, &activity).await?;
-        }
-    }
+    toasty::sql::statement("SELECT enqueue_apub_actor_update($1)")
+        .bind(user.id.as_str())
+        .exec(&mut tx)
+        .await?;
     tx.commit().await?;
     read(State(state), user).await
+}
+
+/// Expand one coalesced Actor change into the existing ordered delivery queue.
+/// Generate keys before locking the pending row, so a small DB pool can also progress.
+pub(super) async fn queue_next_update(state: &AppState) -> Result<bool, AppError> {
+    let mut db = state.db.clone();
+    let mut tx = db.transaction().await?;
+    let candidates = query(&mut tx,
+        "SELECT json_build_object('id',user_id)::text FROM apub_actor_updates ORDER BY queued_at,user_id LIMIT 1", &[]).await?;
+    tx.commit().await?;
+    let Some(candidate) = candidates.first() else {
+        return Ok(false);
+    };
+    let user = string(candidate, "id")?;
+    let key = keys(state, user).await?;
+    let mut tx = db.transaction().await?;
+    let pending = query(
+        &mut tx,
+        "SELECT '{}'::text FROM apub_actor_updates WHERE user_id=$1 FOR UPDATE SKIP LOCKED",
+        &[user],
+    )
+    .await?;
+    if pending.is_empty() {
+        return Ok(false);
+    }
+    let account = routes::local_user_in(&mut tx, user).await?;
+    let actor = actor_id(user)?;
+    let followers = query(&mut tx,"SELECT json_build_object('id',f.actor_id)::text FROM apub_follows f JOIN apub_actors a ON a.id=f.actor_id WHERE f.user_id=$1 AND f.direction='incoming' AND f.accepted AND NOT a.blocked",&[user]).await?;
+    let activity = json!({"@context":CONTEXT,"id":format!("{}/api/activitypub/activities/{}",base_url()?,uuid::Uuid::new_v4()),"type":"Update","actor":actor,"object":routes::actor_value(&account,&key,&actor),"to":[format!("{actor}/followers")]});
+    for follower in followers {
+        queue(&mut tx, user, string(&follower, "id")?, &activity).await?;
+    }
+    toasty::sql::statement("DELETE FROM apub_actor_updates WHERE user_id=$1")
+        .bind(user)
+        .exec(&mut tx)
+        .await?;
+    tx.commit().await?;
+    Ok(true)
 }
 
 #[cfg(test)]

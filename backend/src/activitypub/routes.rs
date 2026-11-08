@@ -57,7 +57,13 @@ pub fn router() -> Router<AppState> {
 pub(super) async fn local_user(state: &AppState, id: &str) -> Result<Value, AppError> {
     let mut db = state.db.clone();
     let mut tx = db.transaction().await?;
-    one(&mut tx,"SELECT json_build_object('id',u.id,'user_name',u.user_name,'display_name',COALESCE(p.display_name,u.display_name),'summary',COALESCE(p.summary,''),'avatar_url',u.avatar_url)::text FROM users u LEFT JOIN apub_profiles p ON p.user_id=u.id WHERE u.id=$1 AND NOT u.is_bot",&[id]).await
+    local_user_in(&mut tx, id).await
+}
+pub(super) async fn local_user_in(
+    tx: &mut toasty::Transaction<'_>,
+    id: &str,
+) -> Result<Value, AppError> {
+    one(tx,"SELECT json_build_object('id',u.id,'user_name',u.user_name,'display_name',COALESCE(p.display_name,u.display_name),'summary',COALESCE(p.summary,''),'avatar_url',u.avatar_url)::text FROM users u LEFT JOIN apub_profiles p ON p.user_id=u.id WHERE u.id=$1 AND NOT u.is_bot",&[id]).await
 }
 async fn actor(
     State(state): State<AppState>,
@@ -97,7 +103,12 @@ pub(super) fn actor_value(user: &Value, key: &Value, actor: &str) -> Value {
         .rsplit_once("/api/activitypub/users/")
         .map(|(base, id)| public_profile::page_url(base, id))
         .unwrap_or_else(|| actor.to_owned());
-    json!({"@context":[CONTEXT,"https://w3id.org/security/v1",{"manuallyApprovesFollowers":"as:manuallyApprovesFollowers"}],"type":"Person","id":actor,"url":profile_url,"preferredUsername":user["user_name"],"name":user["display_name"],"summary":html_escape::encode_safe(user["summary"].as_str().unwrap_or("")).replace('\n', "<br>"),"inbox":format!("{actor}/inbox"),"outbox":format!("{actor}/outbox"),"followers":format!("{actor}/followers"),"following":format!("{actor}/following"),"manuallyApprovesFollowers":true,"publicKey":{"id":format!("{actor}#main-key"),"owner":actor,"publicKeyPem":key["public_key"]}})
+    let mut value = json!({"@context":[CONTEXT,"https://w3id.org/security/v1",{"manuallyApprovesFollowers":"as:manuallyApprovesFollowers"}],"type":"Person","id":actor,"url":profile_url,"preferredUsername":user["user_name"],"name":user["display_name"],"summary":html_escape::encode_safe(user["summary"].as_str().unwrap_or("")).replace('\n', "<br>"),"inbox":format!("{actor}/inbox"),"outbox":format!("{actor}/outbox"),"followers":format!("{actor}/followers"),"following":format!("{actor}/following"),"manuallyApprovesFollowers":true,"publicKey":{"id":format!("{actor}#main-key"),"owner":actor,"publicKeyPem":key["public_key"]}});
+    value["icon"] = match user["avatar_url"].as_str().filter(|url| !url.is_empty()) {
+        Some(url) => json!({"type":"Image","url":url}),
+        None => Value::Null,
+    };
+    value
 }
 
 async fn webfinger(

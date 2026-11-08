@@ -2434,3 +2434,24 @@ BEGIN
   -- 配信履歴の 30 日保持は app_deliveries の DELETE だけで足りる。API 側の期限切れ削除は backend が行う。
  END IF;
 END $$;
+-- Coalesce local Actor updates durably before expanding them into signed deliveries.
+CREATE TABLE apub_actor_updates (
+  user_id text PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+  queued_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX apub_actor_updates_queued_at ON apub_actor_updates(queued_at, user_id);
+CREATE FUNCTION enqueue_apub_actor_update(target_user text) RETURNS void LANGUAGE sql AS $$
+  INSERT INTO apub_actor_updates(user_id)
+    SELECT u.id FROM users u WHERE u.id=target_user AND NOT u.is_bot
+      AND EXISTS(SELECT 1 FROM apub_follows f JOIN apub_actors a ON a.id=f.actor_id
+        WHERE f.user_id=u.id AND f.direction='incoming' AND f.accepted AND NOT a.blocked)
+    ON CONFLICT(user_id) DO UPDATE SET queued_at=EXCLUDED.queued_at;
+$$;
+CREATE FUNCTION enqueue_apub_avatar_update() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+  PERFORM enqueue_apub_actor_update(NEW.id);
+  RETURN NULL;
+END $$;
+CREATE TRIGGER users_apub_avatar_update AFTER UPDATE OF avatar_url ON users
+  FOR EACH ROW WHEN (OLD.avatar_url IS DISTINCT FROM NEW.avatar_url)
+  EXECUTE FUNCTION enqueue_apub_avatar_update();

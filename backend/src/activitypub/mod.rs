@@ -353,10 +353,19 @@ pub async fn worker(state: AppState) {
         }
     }
 }
+/// Materialize a pending profile update without making network requests.
+pub async fn queue_next_actor_update(state: &AppState) -> Result<bool, AppError> {
+    if base_url().is_err() {
+        return Ok(false);
+    }
+    profile::queue_next_update(state).await
+}
+
 pub async fn deliver_next(state: &AppState) -> Result<bool, AppError> {
     if base_url().is_err() {
         return Ok(false);
     }
+    queue_next_actor_update(state).await?;
     let Some(delivery) = claim_delivery(state).await? else {
         return Ok(false);
     };
