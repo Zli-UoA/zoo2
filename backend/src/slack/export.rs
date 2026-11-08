@@ -228,15 +228,15 @@ impl SlackMessage {
                 .is_some_and(|s| SKIPPED_SUBTYPES.contains(&s))
             && (!self.text.trim().is_empty()
                 || self.files.iter().any(SlackFile::is_importable)
-                || !self.unimported_files_text().is_empty()
+                || !self.files_text().is_empty()
                 || !self.attachments_text().is_empty())
     }
 
-    /// 取り込めないファイルの名前 (1 行に 1 つ)。本文がない投稿が空にならないよう、代わりの本文に使う
-    pub fn unimported_files_text(&self) -> String {
+    /// 添付ファイルの名前 (1 行に 1 つ)。本文のない投稿が空にならないよう、代わりの本文に使う。
+    /// 取り込めないファイル (外部サービスの共有・削除済み) や、取得をスキップ・保留したファイルも、名前は残す
+    pub fn files_text(&self) -> String {
         self.files
             .iter()
-            .filter(|f| !f.is_importable())
             .filter_map(SlackFile::display_name)
             .collect::<Vec<_>>()
             .join("\n")
