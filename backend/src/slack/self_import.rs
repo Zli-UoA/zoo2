@@ -108,6 +108,20 @@ pub(crate) async fn can_import_into(
         ))
 }
 
+async fn joined(
+    tx: &mut toasty::Transaction<'_>,
+    channel_id: &str,
+    user_id: &str,
+) -> Result<bool, AppError> {
+    Ok(!query(
+        tx,
+        "SELECT json_build_object('ok',true)::text FROM channel_user WHERE channel_id=$1 AND user_id=$2",
+        &[channel_id, user_id],
+    )
+    .await?
+    .is_empty())
+}
+
 /// 自分が作った Slack チャンネルと、それぞれに選べる既存の取り込み先 (`targets`)
 async fn own_channels(
     tx: &mut toasty::Transaction<'_>,
@@ -146,6 +160,13 @@ async fn own_channels(
         }
         let mut entry = channel.clone();
         entry["targets"] = Value::Array(targets);
+        // 参加していない非公開チャンネルの名前と ID は、チャンネル一覧 (`list_channels`) と同じく見せない
+        for key in ["existing_channel", "same_name_channel"] {
+            let id = entry[key]["id"].as_str().unwrap_or_default().to_string();
+            if entry[key]["is_private"] == true && !joined(tx, &id, user_id).await? {
+                entry[key] = Value::Null;
+            }
+        }
         channels.push(entry);
     }
     Ok(channels)

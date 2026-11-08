@@ -1852,6 +1852,16 @@ async fn test_linked_users_import_their_own_channels() -> anyhow::Result<()> {
     )
     .await?;
     assert!(rejoined.is_empty(), "{rejoined:?}");
+    // 参加していない非公開チャンネルの名前と ID は、取り込み先の候補としても返さない
+    let (_, own) = request(&app, "GET", "/api/slack/imports", &alice, None).await?;
+    assert_eq!(own["channels"][1]["slack_channel_id"], "G1");
+    assert_eq!(own["channels"][1]["existing_channel"], Value::Null, "{own}");
+    assert_eq!(
+        own["channels"][1]["same_name_channel"],
+        Value::Null,
+        "{own}"
+    );
+    assert_eq!(own["channels"][1]["targets"], json!([]));
     assert_eq!(targets().await, json!([]));
     let (status, _) =
         import(json!([{"slack_channel_id":"G1","action":"existing","channel_id":g1}])).await;
