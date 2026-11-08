@@ -2,10 +2,7 @@
 //! ホスト名などカーディナリティの高いラベルは持たない（サーキットブレーカーの上位ホストは後続 PR）。
 use std::{
     collections::BTreeMap,
-    sync::{
-        Mutex, OnceLock,
-        atomic::{AtomicU64, Ordering},
-    },
+    sync::{Mutex, OnceLock},
 };
 
 /// 作成から ACK までの秒数のバケット（上限）。
@@ -13,15 +10,21 @@ const BUCKETS: [f64; 12] = [
     0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0, 30.0, 120.0, 600.0, 3600.0,
 ];
 
+/// ヒストグラム。スクレイプと観測が重なっても累積性（下位 ≤ 上位 ≤ `+Inf`）を保つため、
+/// 1 つのロックの下でまとめて更新・読み出しする。
+#[derive(Default)]
+struct Histogram {
+    buckets: [u64; BUCKETS.len()],
+    count: u64,
+    sum_seconds: f64,
+}
+
 #[derive(Default)]
 pub struct Metrics {
     attempts: Mutex<BTreeMap<(&'static str, &'static str), u64>>,
-    buckets: [AtomicU64; BUCKETS.len()],
-    latency_count: AtomicU64,
-    latency_sum_micros: AtomicU64,
-    queue_depth: AtomicU64,
-    /// 最古の滞留秒数（ミリ秒で保持）
-    oldest_pending_millis: AtomicU64,
+    latency: Mutex<Histogram>,
+    /// （滞留数, 最古の滞留秒数）。2 つの値が別々の更新を読まれないよう 1 つのロックで持つ。
+    queue: Mutex<(u64, f64)>,
 }
 
 pub fn global() -> &'static Metrics {
@@ -43,22 +46,18 @@ impl Metrics {
     /// 作成から ACK までの秒数。
     pub fn observe_latency(&self, seconds: f64) {
         let seconds = seconds.max(0.0);
+        let mut h = self.latency.lock().unwrap();
         for (i, upper) in BUCKETS.iter().enumerate() {
             if seconds <= *upper {
-                self.buckets[i].fetch_add(1, Ordering::Relaxed);
+                h.buckets[i] += 1;
             }
         }
-        self.latency_count.fetch_add(1, Ordering::Relaxed);
-        self.latency_sum_micros
-            .fetch_add((seconds * 1e6) as u64, Ordering::Relaxed);
+        h.count += 1;
+        h.sum_seconds += seconds;
     }
 
     pub fn set_queue(&self, depth: u64, oldest_pending_seconds: f64) {
-        self.queue_depth.store(depth, Ordering::Relaxed);
-        self.oldest_pending_millis.store(
-            (oldest_pending_seconds.max(0.0) * 1000.0) as u64,
-            Ordering::Relaxed,
-        );
+        *self.queue.lock().unwrap() = (depth, oldest_pending_seconds.max(0.0));
     }
 
     pub fn render(&self) -> String {
@@ -71,21 +70,23 @@ impl Metrics {
         }
         out.push_str("# HELP zoo_dispatch_latency_seconds Seconds from event creation to ACK.\n# TYPE zoo_dispatch_latency_seconds histogram\n");
         // observe_latency は該当する全バケットに加算するので、そのまま累積値になる。
-        for (i, upper) in BUCKETS.iter().enumerate() {
+        {
+            let h = self.latency.lock().unwrap();
+            for (i, upper) in BUCKETS.iter().enumerate() {
+                out.push_str(&format!(
+                    "zoo_dispatch_latency_seconds_bucket{{le=\"{upper}\"}} {}\n",
+                    h.buckets[i]
+                ));
+            }
             out.push_str(&format!(
-                "zoo_dispatch_latency_seconds_bucket{{le=\"{upper}\"}} {}\n",
-                self.buckets[i].load(Ordering::Relaxed)
+                "zoo_dispatch_latency_seconds_bucket{{le=\"+Inf\"}} {c}\nzoo_dispatch_latency_seconds_sum {}\nzoo_dispatch_latency_seconds_count {c}\n",
+                h.sum_seconds,
+                c = h.count
             ));
         }
-        let count = self.latency_count.load(Ordering::Relaxed);
+        let (depth, oldest) = *self.queue.lock().unwrap();
         out.push_str(&format!(
-            "zoo_dispatch_latency_seconds_bucket{{le=\"+Inf\"}} {count}\nzoo_dispatch_latency_seconds_sum {}\nzoo_dispatch_latency_seconds_count {count}\n",
-            self.latency_sum_micros.load(Ordering::Relaxed) as f64 / 1e6
-        ));
-        out.push_str(&format!(
-            "# HELP zoo_dispatch_queue_depth Undelivered, unexpired deliveries.\n# TYPE zoo_dispatch_queue_depth gauge\nzoo_dispatch_queue_depth {}\n# HELP zoo_dispatch_oldest_pending_seconds Age of the oldest undelivered, unexpired delivery.\n# TYPE zoo_dispatch_oldest_pending_seconds gauge\nzoo_dispatch_oldest_pending_seconds {}\n",
-            self.queue_depth.load(Ordering::Relaxed),
-            self.oldest_pending_millis.load(Ordering::Relaxed) as f64 / 1000.0
+            "# HELP zoo_dispatch_queue_depth Undelivered, unexpired deliveries.\n# TYPE zoo_dispatch_queue_depth gauge\nzoo_dispatch_queue_depth {depth}\n# HELP zoo_dispatch_oldest_pending_seconds Age of the oldest undelivered, unexpired delivery.\n# TYPE zoo_dispatch_oldest_pending_seconds gauge\nzoo_dispatch_oldest_pending_seconds {oldest}\n"
         ));
         out
     }
