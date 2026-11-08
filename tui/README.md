@@ -327,4 +327,4 @@ make tui-check
 
 ## ライセンス
 
-zoo2 TUI (`tui/` 配下) は [MIT License](LICENSE) で配布します。
+zoo2 TUI は、プロジェクト全体と同じ [GNU Affero General Public License v3.0（AGPL-3.0-only）](LICENSE) で配布します。
