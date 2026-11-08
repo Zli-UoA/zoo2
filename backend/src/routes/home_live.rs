@@ -8,7 +8,6 @@ use axum::{
     http::{HeaderName, HeaderValue, Request},
     response::Response,
 };
-use futures_util::future::poll_fn;
 use std::{
     sync::{Arc, OnceLock},
     time::{Duration, Instant},
@@ -26,28 +25,18 @@ impl HomeLive {
                 let sender = events.clone();
                 tokio::spawn(async move {
                     loop {
-                        if let Ok((client, mut connection)) =
-                            tokio_postgres::connect(&database_url, tokio_postgres::NoTls).await
+                        if let Ok(mut listener) =
+                            crate::db::connect_raw_listener(&database_url).await
+                            && listener
+                                .client
+                                .batch_execute("LISTEN home_timeline")
+                                .await
+                                .is_ok()
                         {
-                            let notifications = sender.clone();
-                            let task = tokio::spawn(async move {
-                                while let Some(Ok(message)) =
-                                    poll_fn(|cx| connection.poll_message(cx)).await
-                                {
-                                    if matches!(
-                                        message,
-                                        tokio_postgres::AsyncMessage::Notification(_)
-                                    ) {
-                                        let _ = notifications.send(());
-                                    }
-                                }
-                            });
-                            if client.batch_execute("LISTEN home_timeline").await.is_ok() {
-                                // Refresh after reconnect too: changes may have happened while disconnected.
+                            // Refresh after reconnect too: changes may have happened while disconnected.
+                            let _ = sender.send(());
+                            while listener.notifications.recv().await.is_some() {
                                 let _ = sender.send(());
-                                let _ = task.await;
-                            } else {
-                                task.abort();
                             }
                         }
                         tokio::time::sleep(Duration::from_secs(3)).await;

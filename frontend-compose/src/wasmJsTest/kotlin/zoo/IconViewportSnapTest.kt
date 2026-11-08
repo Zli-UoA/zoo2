@@ -7,7 +7,7 @@ package zoo
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
-import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.*
 import androidx.compose.ui.ImageComposeScene
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
@@ -41,10 +41,12 @@ private external fun awaitIconImageDecode(): Promise<JsString>
 class IconViewportSnapTest {
     private class Browser : Platform {
         var decoded = false
+        var decodeCount = 0
 
         override suspend fun rasterizeSvg(svg: String, width: Int, height: Int): ByteArray {
             val bytes = browserRasterizeSvg(svg, width, height)
             decoded = true
+            decodeCount++
             return bytes
         }
 
@@ -73,6 +75,7 @@ class IconViewportSnapTest {
     fun graphicsLayerCoordinatesRemainFractionalWhileSvgPaintSnapsToChromeViewport() = runTest {
         var origin = Offset.Unspecified
         val browser = Browser()
+        var iconColor by mutableStateOf(Color.Black)
         val scene =
             ImageComposeScene(width = 24, height = 24, layoutDirection = LayoutDirection.Ltr) {
                 CompositionLocalProvider(LocalWebPlatform provides browser) {
@@ -89,7 +92,7 @@ class IconViewportSnapTest {
                                     Modifier.size(20.dp).onGloballyPositioned {
                                         origin = it.positionInRoot()
                                     },
-                                color = Color(0xff656565),
+                                color = iconColor,
                             )
                         }
                     }
@@ -114,7 +117,7 @@ class IconViewportSnapTest {
             // bounding/client layout coordinates keep their fractional values.
             val paths = iconPaths.getValue("bell").joinToString("") { "<path d=\"$it\"/>" }
             val referenceSvg =
-                "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"24\" height=\"24\"><rect width=\"24\" height=\"24\" fill=\"white\"/><g transform=\"translate(0 1) scale(${20.0 / 24.0})\" fill=\"none\" stroke=\"#656565\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\">$paths</g></svg>"
+                "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"24\" height=\"24\"><rect width=\"24\" height=\"24\" fill=\"white\"/><g transform=\"translate(0 1) scale(${20.0 / 24.0})\" fill=\"none\" stroke=\"#000000\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\">$paths</g></svg>"
             val expected = IntArray(24 * 24)
             browserRasterizeSvg(referenceSvg, 24, 24).decodeToImageBitmap().readPixels(expected)
             val image = scene.render(frame * 16_000_000L)
@@ -128,6 +131,49 @@ class IconViewportSnapTest {
                 )
             } finally {
                 image.close()
+            }
+            // Black preserves an exact coverage/geometry assertion above. Tinting
+            // a white mask rounds colored antialiasing by at most one byte value.
+            iconColor = Color(0xff656565)
+            scene.render(++frame * 16_000_000L).close()
+            awaitIconImageDecode().awaitBrowser()
+            val grayReference = IntArray(24 * 24)
+            browserRasterizeSvg(referenceSvg.replace("#000000", "#656565"), 24, 24)
+                .decodeToImageBitmap().readPixels(grayReference)
+            val grayImage = scene.render(++frame * 16_000_000L)
+            try {
+                val pixels = IntArray(24 * 24)
+                grayImage.toComposeImageBitmap().readPixels(pixels)
+                pixels.indices.forEach { index ->
+                    for (shift in listOf(0, 8, 16, 24)) {
+                        val delta = ((pixels[index] ushr shift) and 255) -
+                            ((grayReference[index] ushr shift) and 255)
+                        assertTrue(kotlin.math.abs(delta) <= 1, "Tint rounding at pixel $index")
+                    }
+                }
+            } finally {
+                grayImage.close()
+            }
+            val decodeCount = browser.decodeCount
+            assertEquals(1, decodeCount, "Opaque RGB changes must reuse the raster")
+            iconColor = Color.Red.copy(alpha = .5f)
+            scene.render(++frame * 16_000_000L).close()
+            awaitIconImageDecode().awaitBrowser()
+            val recolored = scene.render(++frame * 16_000_000L)
+            try {
+                val pixels = IntArray(24 * 24)
+                recolored.toComposeImageBitmap().readPixels(pixels)
+                assertTrue(
+                    pixels.any { pixel ->
+                        val red = (pixel ushr 16) and 255
+                        val green = (pixel ushr 8) and 255
+                        red > green + 20 && green >= 127
+                    },
+                    "Tint must update both color and alpha",
+                )
+                assertEquals(decodeCount + 1, browser.decodeCount, "Keep SVG per-path opacity in the mask")
+            } finally {
+                recolored.close()
             }
             assertEquals(
                 Offset(.375f, .625f),

@@ -4,7 +4,14 @@ import { useCollections } from "../../lib/electric/collections-context";
 import { Textarea } from "../ui/textarea";
 import { Input } from "../ui/input";
 import { SettingsSection } from "../ui/control-panel";
-import { ArrowLeftIcon, BellIcon, LanguagesIcon, PaletteIcon, SearchIcon } from "lucide-react";
+import {
+  ArrowLeftIcon,
+  BellIcon,
+  LanguagesIcon,
+  PaletteIcon,
+  SearchIcon,
+  Volume2Icon,
+} from "lucide-react";
 import { Tabs } from "@base-ui/react/tabs";
 import { useNavigate, useRouterState } from "@tanstack/react-router";
 import { useTranslation } from "react-i18next";
@@ -13,6 +20,7 @@ import { LanguageToggle } from "../i18n/LanguageToggle";
 import { ModeToggle } from "../theme/ModeToggle";
 import { PwaControls } from "../pwa/PwaControls";
 import { AppsPanel } from "../chat/AppsDialog";
+import { CallSoundsSwitch } from "../call/CallSoundsSwitch";
 import { WorkspaceMembers } from "./WorkspaceMembers";
 import { SlackImportPanel } from "./SlackImportPanel";
 import { SlackLinkPanel } from "./SlackLinkPanel";
@@ -73,6 +81,9 @@ export function ZooSettings() {
             <Tabs.Tab value="general" className={panelTabClassName}>
               {t("settings.general")}
             </Tabs.Tab>
+            <Tabs.Tab value="call" className={panelTabClassName}>
+              {t("call.settingsTab")}
+            </Tabs.Tab>
             <Tabs.Tab value="activitypub" className={panelTabClassName}>
               ActivityPub
             </Tabs.Tab>
@@ -108,6 +119,18 @@ export function ZooSettings() {
               </SettingRow>
               <SettingRow icon={<BellIcon />} label={t("pwa.title")}>
                 <PwaControls presentation="select" />
+              </SettingRow>
+            </div>
+          </Tabs.Panel>
+          <Tabs.Panel value="call" className="min-h-0">
+            <h2 className="sr-only">{t("call.settingsTab")}</h2>
+            <div className="divide-y rounded-lg border">
+              <SettingRow
+                icon={<Volume2Icon />}
+                label={t("call.soundsLabel")}
+                description={t("call.soundsDescription")}
+              >
+                <CallSoundsSwitch label={t("call.soundsLabel")} />
               </SettingRow>
             </div>
           </Tabs.Panel>

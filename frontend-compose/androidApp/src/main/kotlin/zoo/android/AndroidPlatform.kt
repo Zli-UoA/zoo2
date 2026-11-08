@@ -197,8 +197,7 @@ internal class AndroidPlatform(
     override suspend fun invoke(name: String, payload: String): String =
         when (name) {
             "logout" -> {
-                logout()
-                clear()
+                try { logout() } finally { clear() }
                 "{}"
             }
             "copy" -> {

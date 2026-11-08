@@ -341,8 +341,10 @@ internal fun Sidebar(
     error: Boolean = false,
     narrow: Boolean = false,
 ) {
-    val channels = rows.filterNot { it.present("deleted_at") }
-    val joined = channels.filter { isMember(memberships, it.text("id"), app.config.userId) }
+    val channels = remember(rows) { rows.filterNot { it.present("deleted_at") } }
+    val joined = remember(channels, memberships, app.config.userId) {
+        channels.filter { isMember(memberships, it.text("id"), app.config.userId) }
+    }
     BoxWithConstraints(
         modifier
             .fillMaxHeight()

@@ -3,6 +3,13 @@
 Reactを機能・UI・操作の基準とする。変更時は [compose-react-parity](../.agents/skills/compose-react-parity/SKILL.md) に従い、同じPRで両実装と検証を更新する。
 この表は実装の所有先を示すもので、全入力での完全互換や画像の完全一致を保証するものではない。
 
+本文の `#チャンネル名` は、Reactでは `MfmChannels.tsx` のルーター `Link`、Composeでは
+`RichText.kt` の `LinkAnnotation` → `Session.navigate` → `ComposeFrontend` のルーター履歴で
+アプリ内遷移する。Reactの `MfmChannels.browser.test.tsx` はクリック時の通常遷移の抑止、
+戻る・進む、シェルの入力保持、Enterキーでの遷移を検証する。既存MfmContentのStoryも検証する。
+今回の環境ではComposeの `wasmJsBrowserTest` / `wasmJsBrowserDistribution` はGradle配布物の取得時に
+接続を拒否され、再ビルド後のCompose実ブラウザー操作は未検証。
+
 | 領域 | Reactの主な所有先 | 共通Kotlinの所有先 | 確認先 |
 | --- | --- | --- | --- |
 | シェル・ルート・レール・ヘッダー | `layout/`、`ChannelHeader` | `App.kt`, `PaneHeader.kt`, `Ui.kt`, `Overlays.kt` | 両実装のentry points / CRUD E2E |
@@ -25,6 +32,10 @@ Reactを機能・UI・操作の基準とする。変更時は [compose-react-par
 | API・Electric・保存・再接続 | `lib/api`, `lib/electric`, `lib/offline` | `Repository.kt`, `Session.kt` | RepositoryTest、保存エラー・CSP・オフラインE2E |
 | ブラウザー認証・履歴・保存・プッシュ・公開HTTP | `ComposeFrontend`, `lib/compose` | `Platform` / `Main.kt` からホストへ接続、`WebSemantics.kt` でWebのrole・状態を補完 | BrowserInteropTest、OfflineProviderブラウザーテスト、PWA・公開HTTP・ログアウト検証 |
 | 翻訳・デザイントークン・アイコン・データ | `lib/i18n`, CSS、Lucide、Emojibase | `Ui.kt`, `IconData.kt`、共有翻訳・生成資源 | 全ロケールの共通辞書、`sync-compose-assets.mjs`、カタログツールバー |
+
+## Web描画の性能改善
+
+ARIA補完の更新を対象コントロールに限定し、DOM参照をキャッシュする。アイコンは色別の画像生成をやめ、同じラスタへ描画時に着色する。初回は本文フォントだけをゲートにする。機能・API・操作仕様はReactと共通のまま、Web固有の補完処理を変更する。TUIには対象処理がなく、変更しない。検証方法と結果は [Compose Webの性能計測](compose-performance.md) を参照。
 
 ## main取り込み時の照合
 
@@ -224,3 +235,20 @@ Home通知APIも、閲覧可能で削除されていないローカル投稿の�
 mainのメッセージ編集時のCmd/Ctrl+Enter保存を、Reactの `MessageRow` とComposeの `Chat.kt` の両方に取り込んだ。JOIN済み表示データへの未確定差分の反映は維持する。`compose.spec.ts` の投稿・編集フローと、JOIN済みデータのリアクション・返信数・カスタム絵文字の保留中とロールバックを、再生成したCompose成果物で6ケースを検証し、成功した。バックエンド・DBの内容は、リベース前の検証済みコードと同じである。
 
 TUIは画像やURLカードを描画せず、Shapeの列を明示的に読み取るため、追加の表示用列は既存の読み取りに影響しない。このPRの画像枠・通知カードの変更は追加実装しない。編集時のCtrl+Enterは既存の `on_insert_key` から `submit` を通って保存できる。端末版のEnter送信・Alt/Shift+Enter改行は維持し、`make tui-check` で57テスト・clippy・formatの成功を確認した。
+
+## Androidのログイン復元
+
+#308のResource初期値・段階別の安全な認証エラー表示を取り込み、AndroidはKeystoreで暗号化した更新トークンから起動時に復帰する。接続先をレコードに束縛し、ローテーション・失効・ネットワーク障害・ログアウトと競合する更新を検証する。Webは共通AuthGateの既存OIDC再認可、TUIは既存StoredTokens／TokenManagerによる保存・復元・更新を維持し、別の認証フローを追加しない。Android固有の起動画面と保存境界の変更であり、WebのAPI・表示・操作仕様は変更しない。
+
+Androidのrefresh grantは送信前に保存済みtokenを取り除き、交換・保存をキャンセルから保護する。応答喪失や保存失敗後は手動ログインを要求し、使用済みtokenを再送しない。別のActivity／ログインの保存情報に対する古い処理の書き込み・削除も防ぐ。DNS・接続失敗・接続タイムアウトでは未使用tokenを保存し直して通信復旧後に再試行する。OkHttpの自動再送・リダイレクトは無効にし、送信後の失敗との区別を保つ。Android固有のCoroutine／Keystore保存処理の修正であり、Web／TUIの認証実装には変更しない。
+
+## Compose描画の再計算抑制
+
+チャット一覧・投稿表示データ・本文解析をrememberで保持し、送信ボタンだけがderivedStateOfの送信可否を監視する。編集、同期、楽観更新、添付、絵文字、フォント・テーマの変更では該当するキャッシュを更新する。Web／Androidは同じKotlin実装を使い、Reactの表示・操作・APIは変更しない。TUIにはComposeの再コンポーズ処理がないため、変更しない。比較結果と検証範囲は [Compose Webの性能計測](compose-performance.md#rememberderivedstateofによる再計算抑制) を参照。新しい表示状態は追加しておらず、既存Composer／MessageのStoryを維持し、既存操作のE2Eとライブテーマ変更のCanvas検証を使う。
+
+## 通話の効果音と設定の通話タブ
+
+Compose Web・TUI には音声通話機能（WebRTC、`CallBar`、`call-context`）自体がなく、Reactの通話機能は未移植である。
+設定の「通話」タブと入退室の効果音は、この通話機能に付随するため、通話機能を移植するときに合わせて共通Kotlinへ追加する。
+通話の移植前にComposeへ効果音のスイッチだけを置くと、効かない設定が表示されるため行わない。Compose側の設定タブは従来のまま
+（`tab=call` は一般設定へフォールバックする）で、React側のみの変更である。

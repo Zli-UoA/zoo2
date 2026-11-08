@@ -11,6 +11,14 @@ on:
       - ".github/scripts/android-update-manifest*.py"
   push:
     branches: [main]
+    # Android に関係しない変更 (TUI、backend など) では、検証も main の公開もやり直さない。
+    # pull_request の paths と同じ一覧にする。
+    paths:
+      - "frontend-compose/**"
+      - "frontend/src/lib/i18n/locales/**"
+      - "frontend/public/icons/**"
+      - ".github/workflows/ci-android.yaml"
+      - ".github/scripts/android-update-manifest*.py"
   workflow_dispatch:
 permissions:
   contents: read
