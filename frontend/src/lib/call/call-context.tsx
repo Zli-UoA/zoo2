@@ -622,23 +622,9 @@ export function CallProvider({ config: explicitConfig, children }: CallProviderP
           void audio.play().catch(() => {});
         };
         if (speakerIdRef.current) {
-          const requested = speakerIdRef.current;
-          const gen = callGenerationRef.current;
-          void applySink(audio, requested)
-            .then(async (ok) => {
-              // 待機中に退出・再参加した場合や、このピアが破棄された場合は、古い結果で状態を変えない
-              if (callGenerationRef.current !== gen || entry.audio !== audio) return;
-              if (ok) {
-                // 初期再生で適用できた出力先も、切替失敗時の復元先として記録する
-                if (speakerIdRef.current === requested) activeSpeakerIdRef.current = requested;
-                return;
-              }
-              // 保存済みの出力先 (切断されたヘッドホンなど) を使えない場合は、既定へ戻して通知してから再生する
-              fallbackSpeaker(requested);
-              // 既存参加者を含む全員へ、通常の出力先変更と同じ直列キューで最新の選択値を適用する
-              await applySpeakerToAll();
-            })
-            .then(startPlayback);
+          // 出力先の適用は通常の変更と同じ直列キューに入れる。
+          // 適用に失敗した場合のフォールバック・既存参加者への反映・選択値の再確認もキュー側で行う
+          void applySpeakerToAll().then(startPlayback);
         } else {
           startPlayback();
         }
@@ -657,7 +643,7 @@ export function CallProvider({ config: explicitConfig, children }: CallProviderP
 
       return pc;
     },
-    [applySpeakerToAll, fallbackSpeaker, sendSignalWithRetry, updateSpeakingUser],
+    [applySpeakerToAll, sendSignalWithRetry, updateSpeakingUser],
   );
 
   const switchMicrophone = useCallback(
