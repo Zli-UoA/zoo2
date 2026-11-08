@@ -384,8 +384,9 @@ fn valid_challenge_response(bytes: &[u8], challenge: &str) -> bool {
         .is_some_and(|v| v["challenge"] == challenge)
         || bytes == challenge.as_bytes()
 }
-/// `APP_HTTP_DELIVERY_WORKER` が `false`/`0`/`off`/`disabled` のとき、この
-/// プロセスでは HTTP 配信と履歴削除を行わない（`zoo-dispatcher` に任せる）。
+/// `APP_HTTP_DELIVERY_WORKER` が `false`/`0`/`off`/`disabled`/`no` のとき、この
+/// プロセスでは HTTP 配信と配信履歴（30 日保持）の削除を行わない（`zoo-dispatcher` に任せる）。
+/// API 側の期限切れ行の削除と `events::maintain` は、この設定にかかわらず動く。
 /// 未設定・空・その他の値は有効（従来どおり）。
 pub fn http_delivery_enabled_from(raw: Option<&str>) -> bool {
     !matches!(
@@ -395,7 +396,23 @@ pub fn http_delivery_enabled_from(raw: Option<&str>) -> bool {
 }
 
 pub fn http_delivery_enabled() -> bool {
-    http_delivery_enabled_from(std::env::var("APP_HTTP_DELIVERY_WORKER").ok().as_deref())
+    let raw = std::env::var("APP_HTTP_DELIVERY_WORKER").ok();
+    let enabled = http_delivery_enabled_from(raw.as_deref());
+    // 書き間違い（`flase` など）は有効扱いになる。外向き通信を塞いだ環境で気づけるよう警告する。
+    if let Some(value) = raw.as_deref().map(str::trim)
+        && enabled
+        && !value.is_empty()
+        && !matches!(
+            value.to_ascii_lowercase().as_str(),
+            "true" | "1" | "on" | "enabled" | "yes"
+        )
+    {
+        tracing::warn!(
+            value,
+            "Unrecognized APP_HTTP_DELIVERY_WORKER; HTTP delivery stays enabled"
+        );
+    }
+    enabled
 }
 
 pub async fn worker(s: AppState) {
@@ -417,11 +434,14 @@ pub async fn worker_with(s: AppState, http: bool) {
             if let Err(e) = super::events::maintain(&s).await {
                 tracing::warn!(error=%e,"Event maintenance failed");
             }
-            if http
-                && passes.is_multiple_of(60)
-                && let Err(e) = cleanup(&s).await
-            {
-                tracing::warn!(error=%e,"App cleanup failed");
+            if passes.is_multiple_of(60) {
+                // API 側の期限切れ行は、配信の有無にかかわらず消す。
+                if let Err(e) = cleanup_expired(&s).await {
+                    tracing::warn!(error=%e,"App expiry cleanup failed");
+                }
+                if http && let Err(e) = cleanup_deliveries(&s).await {
+                    tracing::warn!(error=%e,"App delivery retention failed");
+                }
             }
         }
     };
@@ -525,7 +545,14 @@ async fn http_install(s: &AppState, i: Value) -> Result<(), AppError> {
     Ok(())
 }
 
+/// API 側の期限切れ行の削除と、配信履歴の 30 日保持の両方。
 pub async fn cleanup(s: &AppState) -> Result<(), AppError> {
+    cleanup_expired(s).await?;
+    cleanup_deliveries(s).await
+}
+
+/// WebSocket・OAuth・UI・レート制限など、API 側の表の期限切れ行を消す。
+pub async fn cleanup_expired(s: &AppState) -> Result<(), AppError> {
     let mut db = s.db.clone();
     let mut tx = db.transaction().await?;
     for sql in [
@@ -540,6 +567,12 @@ pub async fn cleanup(s: &AppState) -> Result<(), AppError> {
         toasty::sql::statement(sql).exec(&mut tx).await?;
     }
     tx.commit().await?;
+    Ok(())
+}
+
+/// 作成から 30 日を過ぎた配信履歴を消す。
+pub async fn cleanup_deliveries(s: &AppState) -> Result<(), AppError> {
+    let mut db = s.db.clone();
     // Bounded transactions use the retention index; this worker never locks an entire backlog.
     for _ in 0..10 {
         let mut tx = db.transaction().await?;
