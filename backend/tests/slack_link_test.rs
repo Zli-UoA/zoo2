@@ -270,7 +270,7 @@ async fn test_slack_account_link_reassigns_placeholder() -> anyhow::Result<()> {
         &[&carded, &bob, &channel, &format!("@{p} outage, see [status](https://status.example.com)"), &card],
     )
     .await?;
-    // 本文は上限内でも、カードの説明が書き換えで上限 (4,000 文字) を超える投稿は、本文もカードもそのまま残す
+    // カードの説明が書き換えで上限 (4,000 文字) を超える投稿も、本文とカードの両方を書き換える (説明は上限で切る)
     let long_card = uuid::Uuid::new_v4().to_string();
     let long_card_description = format!("{} @{p}", "x".repeat(4000 - p.chars().count() - 2));
     let long_card_json = json!({"cards": [
@@ -519,14 +519,20 @@ async fn test_slack_account_link_reassigns_placeholder() -> anyhow::Result<()> {
         format!("@{p} in an attachment")
     );
     assert_eq!(content(long.clone()).await, long_content);
-    assert_eq!(content(long_card.clone()).await, format!("@{p} short"));
+    assert_eq!(content(long_card.clone()).await, format!("@{a} short"));
     let kept = sql(
         &state,
         "SELECT json_build_object('card',card)::text FROM messages WHERE id=$1",
         &[&long_card],
     )
     .await?;
-    assert_eq!(kept[0]["card"], long_card_json);
+    let kept: serde_json::Value = serde_json::from_str(kept[0]["card"].as_str().unwrap())?;
+    let expected: String = format!("{} @{a}", "x".repeat(4000 - p.chars().count() - 2))
+        .chars()
+        .take(4000)
+        .collect();
+    assert_eq!(kept["cards"][0]["description"], expected);
+    assert_eq!(kept["cards"][1]["description"], "attachment");
     assert_eq!(content(bystander.clone()).await, bystander_content);
     let reply = sql(
         &state,

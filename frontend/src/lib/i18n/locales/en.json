@@ -749,7 +749,7 @@
   "slackImport": {
     "tab": "Slack import",
     "title": "Import from Slack",
-    "description": "Upload the export ZIP downloaded from Slack's admin settings to store it in Zoo. You can import any of its channels here.",
+    "description": "Upload the export ZIP downloaded from Slack's admin settings to store it in Zoo. You can import any of its channels here, and members who link their Slack account can import the channels they created.",
     "chooseFile": "Choose and upload ZIP",
     "uploading": "Uploading…",
     "loading": "Loading import history",

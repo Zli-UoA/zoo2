@@ -749,7 +749,7 @@
   "slackImport": {
     "tab": "Slack 匯入",
     "title": "從 Slack 匯入",
-    "description": "上傳從 Slack 管理設定匯出的 ZIP，即可將其保存在 Zoo 中。你可以在這裡匯入任意頻道。",
+    "description": "上傳從 Slack 管理設定匯出的 ZIP，即可將其保存在 Zoo 中。你可以在這裡匯入任意頻道；成員連結 Slack 帳號後，可以匯入自己建立的頻道。",
     "chooseFile": "選擇並上傳 ZIP",
     "uploading": "上傳中…",
     "loading": "正在載入匯入紀錄",
