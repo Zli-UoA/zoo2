@@ -714,19 +714,36 @@ export function CallProvider({ config: explicitConfig, children }: CallProviderP
     [enqueueMicSwitch],
   );
 
-  // 出力先の適用は 1 件ずつ実行し、常に最新の選択値 (speakerIdRef) を全参加者へ適用する
+  // 出力先の適用は 1 件ずつ実行し、常に最新の選択値 (speakerIdRef) を全参加者へ適用する。
+  // 適用に失敗し、より新しい選択も無ければ、実際に出力している先 (activeSpeakerIdRef) へ選択値を戻して通知する
   const speakerApplyQueueRef = useRef<Promise<void>>(Promise.resolve());
+  const activeSpeakerIdRef = useRef(selectedSpeakerId);
   const applySpeakerToAll = useCallback(() => {
     const run = speakerApplyQueueRef.current.then(async () => {
+      const target = speakerIdRef.current;
       // 効果音も選択中のスピーカーから鳴らす
-      setCallSoundSink(speakerIdRef.current);
+      setCallSoundSink(target);
+      let ok = true;
       for (const entry of peersRef.current.values()) {
-        if (entry.audio) await applySink(entry.audio, speakerIdRef.current);
+        if (entry.audio && !(await applySink(entry.audio, target))) ok = false;
       }
+      if (ok) {
+        activeSpeakerIdRef.current = target;
+        return;
+      }
+      if (speakerIdRef.current !== target) return;
+      const fallback = activeSpeakerIdRef.current;
+      speakerIdRef.current = fallback;
+      saveSelectedDevice("speaker", fallback);
+      setCallSoundSink(fallback);
+      for (const entry of peersRef.current.values()) {
+        if (entry.audio) await applySink(entry.audio, fallback);
+      }
+      toast.error(t("call.speakerSwitchFailed"));
     });
     speakerApplyQueueRef.current = run.catch(() => {});
     return run;
-  }, []);
+  }, [t]);
 
   const setSpeaker = useCallback(
     async (deviceId: string) => {

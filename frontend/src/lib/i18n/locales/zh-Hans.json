@@ -413,6 +413,7 @@
     "micFallback": "麦克风 {{n}}",
     "speakerFallback": "扬声器 {{n}}",
     "micSwitchFailed": "无法切换麦克风",
+    "speakerSwitchFailed": "无法切换扬声器",
     "speakerUnsupported": "此浏览器无法选择扬声器",
     "defaultsDescription": "加入通话时使用的设备。通话中也可从通话栏更改。",
     "diagMe": "自己",

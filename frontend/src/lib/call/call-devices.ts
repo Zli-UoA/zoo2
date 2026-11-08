@@ -70,13 +70,15 @@ export function supportsSinkSelection(): boolean {
   );
 }
 
-export async function applySink(audio: HTMLMediaElement, deviceId: string): Promise<void> {
+/** 出力先を適用する。適用できなかった (権限不足・デバイス消失など) 場合は false を返す。 */
+export async function applySink(audio: HTMLMediaElement, deviceId: string): Promise<boolean> {
   const el = audio as HTMLMediaElement & { setSinkId?: (id: string) => Promise<void> };
-  if (typeof el.setSinkId !== "function") return;
+  if (typeof el.setSinkId !== "function") return true;
   try {
     await el.setSinkId(deviceId);
+    return true;
   } catch {
-    // デバイスが消えた場合などは既定の出力のままにする
+    return false;
   }
 }
 

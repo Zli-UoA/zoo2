@@ -413,6 +413,7 @@
     "micFallback": "麥克風 {{n}}",
     "speakerFallback": "喇叭 {{n}}",
     "micSwitchFailed": "無法切換麥克風",
+    "speakerSwitchFailed": "無法切換揚聲器",
     "speakerUnsupported": "此瀏覽器無法選擇喇叭",
     "defaultsDescription": "加入通話時使用的裝置。通話中也可從通話列變更。",
     "diagMe": "自己",
