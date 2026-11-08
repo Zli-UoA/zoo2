@@ -18,13 +18,14 @@ export function parseEvent(event) {
     throw new Error("Unexpected Flux event source");
   }
   // Dispatch forwards intermediate info events too. Only reconciliation
-  // completion means that the workload health checks passed.
-  if (
+  // completion means that the workload health checks passed. Progressing
+  // events are reported on the Check Run only; they never touch the commit
+  // status, the Deployment or the ordering watermark.
+  const progressing =
     payload.reason === "Progressing" ||
-    payload.reason === "ProgressingWithRetry"
-  )
-    return null;
+    payload.reason === "ProgressingWithRetry";
   if (
+    !progressing &&
     payload.severity !== "error" &&
     !(
       payload.severity === "info" &&
@@ -33,25 +34,37 @@ export function parseEvent(event) {
   )
     return null;
   const releaseTag = payload.metadata?.["release-tag"];
+  const digest = payload.metadata?.digest;
+  const validTimestamp =
+    /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z$/.test(
+      payload.timestamp ?? "",
+    ) && Number.isFinite(Date.parse(payload.timestamp));
+  // A progress event whose release is not identifiable yet is just noise.
+  if (
+    progressing &&
+    (!/^0\.0\.[1-9][0-9]{0,14}$/.test(releaseTag ?? "") ||
+      !/^sha256:[a-f0-9]{64}$/.test(digest ?? "") ||
+      !validTimestamp)
+  )
+    return null;
   if (!/^0\.0\.[1-9][0-9]{0,14}$/.test(releaseTag ?? ""))
     throw new Error("Invalid release tag");
-  const digest = payload.metadata?.digest;
   if (!/^sha256:[a-f0-9]{64}$/.test(digest ?? ""))
     throw new Error("Invalid image digest");
-  if (
-    !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z$/.test(
-      payload.timestamp ?? "",
-    ) ||
-    !Number.isFinite(Date.parse(payload.timestamp))
-  )
-    throw new Error("Invalid event timestamp");
+  if (!validTimestamp) throw new Error("Invalid event timestamp");
   return {
     name: object.name,
     releaseTag,
     digest,
     timestamp: payload.timestamp,
-    state: payload.severity === "error" ? "failure" : "success",
+    state: progressing
+      ? "pending"
+      : payload.severity === "error"
+        ? "failure"
+        : "success",
     context: `flux/${object.name}`,
+    reason: payload.reason,
+    message: payload.message,
   };
 }
 
@@ -183,6 +196,97 @@ export async function pruneStateArtifacts(api) {
   }
 }
 
+const maxCheckText = 65535;
+const checkTitles = {
+  pending: (tag) => `Rolling out ${tag}`,
+  success: (tag) => `Rolled out ${tag}`,
+  failure: (tag) => `Rollout of ${tag} failed`,
+};
+
+function eventLine(result) {
+  const message = String(result.message ?? "")
+    // eslint-disable-next-line no-control-regex
+    .replace(/[\u0000-\u001f\u007f]+/g, " ")
+    .trim()
+    .slice(0, 200);
+  return `${result.timestamp} ${result.reason}${message ? `: ${message}` : ""}`;
+}
+
+// output.text is replaced, not appended, and is capped. Drop the oldest lines.
+export function fitCheckText(lines) {
+  if (lines.join("\n").length <= maxCheckText) return lines.join("\n");
+  const marker = "(older events omitted)";
+  let budget = maxCheckText - marker.length;
+  const kept = [];
+  for (let i = lines.length - 1; i >= 0; i--) {
+    budget -= lines[i].length + 1;
+    if (budget < 0 && kept.length > 0) break;
+    kept.unshift(lines[i]);
+  }
+  return [marker, ...kept].join("\n").slice(-maxCheckText);
+}
+
+async function findCheckRun(api, sha, name, externalId) {
+  for (let page = 1; ; page++) {
+    const data = await api(
+      `/repos/${repository}/commits/${sha}/check-runs?check_name=${encodeURIComponent(name)}&filter=all&per_page=100&page=${page}`,
+    );
+    const runs = data?.check_runs;
+    if (!Array.isArray(runs))
+      throw new Error("Expected a check_runs GitHub API response");
+    const found = runs.find((run) => run.external_id === externalId);
+    if (found) return found;
+    if (runs.length < 100) return null;
+  }
+}
+
+// One Check Run per rollout (name + release tag + digest). Events add a line
+// to its text. A completed run is never reopened by a delayed progress event,
+// and a repeated conclusion (interval reconciliation) changes nothing.
+export async function recordCheckRun(api, { sha, result, runUrl }) {
+  const done = result.state !== "pending";
+  const externalId = `${result.name}:${result.releaseTag}:${result.digest}`;
+  const existing = await findCheckRun(api, sha, result.context, externalId);
+  if (
+    existing?.status === "completed" &&
+    (!done || existing.conclusion === result.state)
+  )
+    return { checkRun: "unchanged" };
+  const line = eventLine(result);
+  const lines = existing?.output?.text ? existing.output.text.split("\n") : [];
+  const has = lines.includes(line);
+  if (existing && has && !done) return { checkRun: "unchanged" };
+  if (!has) lines.push(line);
+  const output = {
+    title: checkTitles[result.state](result.releaseTag),
+    summary: `${result.name} ${result.releaseTag}\n${result.digest}\n[Workflow run](${runUrl})`,
+    text: fitCheckText(lines),
+  };
+  const finish = done
+    ? { conclusion: result.state, completed_at: result.timestamp }
+    : {};
+  const status = done ? "completed" : "in_progress";
+  if (existing) {
+    await api(
+      `/repos/${repository}/check-runs/${existing.id}`,
+      { status, ...finish, output },
+      "PATCH",
+    );
+    return { checkRun: "updated" };
+  }
+  await api(`/repos/${repository}/check-runs`, {
+    name: result.context,
+    head_sha: sha,
+    external_id: externalId,
+    status,
+    started_at: result.timestamp,
+    details_url: runUrl,
+    ...finish,
+    output,
+  });
+  return { checkRun: "created" };
+}
+
 export async function report(
   event,
   { api, runUrl, warn = console.warn, state = { version: 1, workloads: {} } },
@@ -193,6 +297,23 @@ export async function report(
   const previousTime = Date.parse(previous?.timestamp);
   const resultTime = Date.parse(result.timestamp);
   if (previousTime > resultTime) return { skipped: "older-event" };
+  if (result.state === "pending") {
+    const sha = await resolveSha(api, result.digest, result.releaseTag);
+    if (!sha) {
+      warn(
+        "::warning::No matching release tag, digest and commit SHA found; nothing was reported.",
+      );
+      return { skipped: "missing-sha" };
+    }
+    const commit = await api(`/repos/${repository}/commits/${sha}`);
+    if (commit.sha !== sha)
+      throw new Error("Image SHA does not match an zoo2 commit");
+    return {
+      sha,
+      ...result,
+      ...(await recordCheckRun(api, { sha, result, runUrl })),
+    };
+  }
   // Flux event timestamps have second resolution and dispatch order is not
   // event order. A success and a failure in the same second cannot be ordered,
   // so never let such a success replace the failure (or create a Deployment).
@@ -250,9 +371,10 @@ export async function report(
       target_url: runUrl,
     });
   }
+  const check = await recordCheckRun(api, { sha, result, runUrl });
   if (result.name !== "zoo2" || result.state !== "success") {
     remember();
-    return { sha, ...result };
+    return { sha, ...result, ...check };
   }
 
   // Resume a partially completed run without creating a second Deployment.
@@ -264,7 +386,7 @@ export async function report(
     if (existing.payload?.source !== "flux/zoo2") continue;
     if (Date.parse(existing.payload.timestamp) > Date.parse(result.timestamp)) {
       remember();
-      return { sha, ...result, skipped: "older-deployment" };
+      return { sha, ...result, ...check, skipped: "older-deployment" };
     }
     // Compare only the latest Flux production rollout. A -> B -> A is a real
     // rollback and deserves a new record; A -> A is just a reconciliation.
@@ -306,7 +428,7 @@ export async function report(
     });
   }
   remember();
-  return { sha, ...result };
+  return { sha, ...result, ...check };
 }
 
 if (

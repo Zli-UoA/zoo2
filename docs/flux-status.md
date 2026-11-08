@@ -46,13 +46,24 @@ workflow は `GITHUB_TOKEN` の `contents: read`、`packages: read`、`statuses:
 
 repository_dispatch は zoo2 の write 権限者も送信できます。リポジトリの write 権限者を信頼する運用が前提です。Deployment API は Flux が実施した結果の記録に使い、GitHub environment の配備承認ジョブは追加しません。
 
+## 進行中の表示（Check Run）
+
+`Progressing` / `ProgressingWithRetry` のイベントは、Check Run だけに記録します。コミットステータス、Deployment、処理済み時刻の artifact は変えません。
+
+- 反映1回（`zoo2` / `zoo2-migrate`、リリースタグ、digest の組）につき Check Run を1件作ります。名前は `flux/<name>` で、`external_id` は `<name>:<リリースタグ>:<digest>` です。
+- 進行中は `in_progress`、成功・失敗のイベントで `completed`（`success` / `failure`）にします。本文にはイベントの時刻・reason・メッセージを1行ずつ足します。メッセージは200文字までです。本文は65535文字を超えると古い行から切り詰めます。
+- 完了した Check Run は、遅れて届いた進行中イベントでは開き直しません。定期 reconcile の同じ結果では更新しません。失敗後に成功した場合は、同じ Check Run を成功に更新します。
+- 出るのは Flux のイベントだけです。Pod のログではありません。
+- Check Run は `GITHUB_TOKEN`（`checks: write`）で作るため、github-actions の check suite に他の workflow と並んで表示されます。
+- 導入順: この workflow を main に反映してから、infra の中継で進行中イベントの転送を有効にします。
+
 ## 検証と障害対応
 
 ```sh
 node --test .github/scripts/flux-status.test.mjs
 ```
 
-専用の `Validate Flux production status` CI でも同じテストを実行します。モック API で、成功・失敗・途中経過、タグと digest の照合、SHA 未検出、ページ送り、重複、順序逆転（同じ時刻の失敗と成功を含む）、再配備、切り戻し、部分失敗、artifact の復元・削除を検証します。実際の通知受信や GitHub 書き込みは別途確認が必要です。
+専用の `Validate Flux production status` CI でも同じテストを実行します。モック API で、成功・失敗・途中経過（Check Run の作成・追記・完了・再開・切り詰めを含む）、タグと digest の照合、SHA 未検出、ページ送り、重複、順序逆転（同じ時刻の失敗と成功を含む）、再配備、切り戻し、部分失敗、artifact の復元・削除を検証します。実際の通知受信や GitHub 書き込みは別途確認が必要です。
 
 実機では通常の main 更新後に、リリースタグ・digest・両ステータス・Deployment の SHA と公開 URL の一致を確認してください。同じリリースの再同期では Deployment が増えず、同じコミットを新しいリリースタグで再配備すると履歴が増えることも確認します。artifact の復元・最新2件の保持、部分失敗からの再開、Actions の回数とログ量も受入項目です。SHA と context ごとのステータス1000件の上限は、実際の状態変化の累積にも適用されます。
 
