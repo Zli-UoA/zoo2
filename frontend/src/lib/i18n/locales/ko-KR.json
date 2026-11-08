@@ -444,7 +444,7 @@
     "qualityUnknown": "측정 중",
     "settingsTab": "통화",
     "soundsLabel": "통화 효과음",
-    "soundsDescription": "입장·퇴장 시 소리를 냅니다",
+    "soundsDescription": "입장·퇴장·음소거 전환 시 소리를 냅니다",
     "start": "통화 시작",
     "join": "통화 참여",
     "leave": "통화에서 나가기",
