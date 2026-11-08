@@ -31,10 +31,14 @@ async fn main() -> anyhow::Result<()> {
 
     let database_url = backend::config::database_url_from_env();
     let host = std::env::var("DISPATCHER_HOST").unwrap_or_else(|_| "0.0.0.0".into());
-    let port: u16 = std::env::var("DISPATCHER_PORT")
-        .ok()
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(8081);
+    // 設定ミスは握りつぶさず起動時に失敗させる（別のポートで待ち受けたまま probe が失敗しない）。
+    let port: u16 = match std::env::var("DISPATCHER_PORT") {
+        Ok(v) if !v.trim().is_empty() => v
+            .trim()
+            .parse()
+            .map_err(|e| anyhow::anyhow!("DISPATCHER_PORT is not a valid port: {e}"))?,
+        _ => 8081,
+    };
 
     let db = backend::db::init_db(&database_url).await?;
     let (stop, shutdown) = tokio::sync::watch::channel(false);
@@ -79,7 +83,11 @@ async fn main() -> anyhow::Result<()> {
             }),
         )
         .route("/metrics", get(metrics));
-    let addr: SocketAddr = format!("{host}:{port}").parse()?;
+    // ホスト名（localhost など）と IPv6（`::`）も受ける。名前は起動時に解決する。
+    let addr: SocketAddr = tokio::net::lookup_host((host.as_str(), port))
+        .await?
+        .next()
+        .ok_or_else(|| anyhow::anyhow!("DISPATCHER_HOST {host} did not resolve"))?;
     tracing::info!(%addr, "zoo-dispatcher listening");
     let listener = tokio::net::TcpListener::bind(addr).await?;
     // 停止信号を受けたらすぐ新しいリースを取らなくし（HTTP サーバーの終了を待たない）、
