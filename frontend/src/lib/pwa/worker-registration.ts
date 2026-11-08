@@ -7,7 +7,7 @@ export function registerWorker(): Promise<ServiceWorkerRegistration> {
       const existing = await navigator.serviceWorker.getRegistration("/");
       let policy: string;
       try {
-        // Navigations are network-first in the SW, including when it already controls this page.
+        // Read the deployed policy directly; navigation may use the installed shell.
         const response = await fetch("/", { cache: "no-store" });
         if (!response.ok) throw new Error(`Could not read CSP: ${response.status}`);
         policy = response.headers.get("content-security-policy") ?? "";

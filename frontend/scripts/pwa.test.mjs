@@ -111,10 +111,13 @@ function dispatch(handlers, type, event = {}) {
   return Promise.resolve(work);
 }
 
-async function fetchThrough(handlers, request) {
+async function fetchThrough(handlers, request, background = []) {
   let response;
   handlers.get("fetch")({
     request,
+    waitUntil: (promise) => {
+      background.push(promise);
+    },
     respondWith: (value) => {
       response = value;
     },
@@ -272,6 +275,69 @@ test("online navigation stores the static shell for later deep-link reloads", as
   assert.match(await response.text(), /html:/);
   const shell = cacheContext.storeFor("zoo-shell-v2");
   assert.ok(shell.has(`${ORIGIN}/index.html`));
+});
+
+test(
+  "a cached PWA starts before a slow navigation refresh finishes",
+  { timeout: 1000 },
+  async () => {
+    const cacheContext = memoryCaches([
+      ["zoo-shell-v2", `${ORIGIN}/index.html`, basicResponse("saved-shell")],
+    ]);
+    let release;
+    const pending = new Promise((resolve) => {
+      release = resolve;
+    });
+    const { handlers } = worker({
+      caches: cacheContext.api,
+      fetch: async (request) => {
+        if (requestKey(request).includes("/assets/")) return basicResponse("updated-code");
+        await pending;
+        return basicResponse('<script src="/assets/new.js"></script>updated-shell', {
+          headers: { "content-type": "text/html" },
+        });
+      },
+    });
+    const background = [];
+    const response = await fetchThrough(
+      handlers,
+      navigation(`${ORIGIN}/channels/general`),
+      background,
+    );
+    assert.equal(await response.text(), "saved-shell");
+    release();
+    await Promise.all(background);
+    const cache = cacheContext.storeFor("zoo-shell-v2");
+    assert.match(await cache.get(`${ORIGIN}/index.html`).text(), /updated-shell/);
+    assert.ok(cache.has(`${ORIGIN}/assets/new.js`));
+  },
+);
+
+test("a failed entry asset refresh keeps the working offline shell", async () => {
+  const cacheContext = memoryCaches([
+    ["zoo-shell-v2", `${ORIGIN}/index.html`, basicResponse("saved-shell")],
+  ]);
+  const { handlers } = worker({
+    caches: cacheContext.api,
+    fetch: async (request) => {
+      if (requestKey(request).includes("/assets/")) throw new Error("asset unavailable");
+      return basicResponse('<script src="/assets/missing.js"></script>new-shell', {
+        headers: { "content-type": "text/html" },
+      });
+    },
+  });
+  const background = [];
+  assert.equal(
+    await (
+      await fetchThrough(handlers, navigation(`${ORIGIN}/channels/general`), background)
+    ).text(),
+    "saved-shell",
+  );
+  await Promise.all(background);
+  assert.equal(
+    await cacheContext.storeFor("zoo-shell-v2").get(`${ORIGIN}/index.html`).text(),
+    "saved-shell",
+  );
 });
 
 test("direct navigation to a non-HTML asset does not overwrite the app shell", async () => {

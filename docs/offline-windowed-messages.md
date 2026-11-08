@@ -46,11 +46,14 @@ Electric の Shape 自体は従来どおりチャンネル単位で購読する�
 `public/sw.js` を v2 に更新した。
 
 - install で `/`、`/index.html`、`/offline.html`、manifest、アイコンを precache する。
-- ナビゲーションは network-first。失敗時は保存済みの `/index.html`、なければ `/offline.html`。
+- 保存済みの app shell があればナビゲーション時に即座に返し、ネットワークでの更新は裏で行う。
+  保存済みの画面がなければネットワークから取得し、失敗時は `/offline.html` に戻す。
+  更新したHTMLは、参照するentry assetsの保存が完了してから既存キャッシュへ反映する。
   `content-type: text/html` の応答だけを `/index.html` として保存し、アイコンや JSON への
   直接遷移で app shell を上書きしない。
 - `/assets/`、`/icons/`、`/emojibase-data/` は runtime cache（cache-first）。
 - `/api/`、`/auth/`、`/sw.js`、cross-origin、GET 以外はキャッシュしない。
+- 起動時のService Worker準備はユーザー確認と並行して進める。OPFSを開く前には準備完了を待ち、CSP更新の順序を維持する。
 - キャッシュ名はビルドごとの entry hash を含む `zoo-shell-<build>`。install 時に index.html から
   決定し、activate で古い `zoo-shell-*` / `zoo-offline-*` キャッシュを削除する。
   Service Worker は数十秒で停止され再起動すると global 変数を失うため、名前は変数に保持せず、

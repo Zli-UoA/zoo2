@@ -136,22 +136,25 @@ async function precacheIndexAssets(cache, response) {
   try {
     html = await response.clone().text();
   } catch {
-    return;
+    return false;
   }
   const assets = new Set();
   for (const match of html.matchAll(/(?:src|href)="(\/assets\/[^"]+)"/g)) {
     if (match[1]) assets.add(match[1]);
   }
-  await Promise.all(
+  return Promise.all(
     [...assets].map(async (path) => {
       try {
+        if (await cache.match(path)) return true;
         const asset = await fetchStaticAsset(path);
-        if (asset.ok) await cacheResponse(cache, path, asset);
+        if (!asset.ok) return false;
+        await cacheResponse(cache, path, asset);
+        return true;
       } catch {
-        /* A later navigation can retry the asset. */
+        return false;
       }
     }),
-  );
+  ).then((results) => results.every(Boolean));
 }
 
 async function fetchShellIndex() {
@@ -197,7 +200,7 @@ async function precacheShell() {
   await cache.put(META_PATH, new Response(String(Date.now())));
 }
 
-async function handleNavigation(request) {
+async function refreshNavigation(request) {
   try {
     const response = await fetch(request);
     const contentType = response.headers.get("content-type") || "";
@@ -206,7 +209,10 @@ async function handleNavigation(request) {
       // can fall back to it, regardless of the deep link that was open.
       // Direct navigations to icons or JSON must not overwrite the shell.
       const cache = await caches.open(await findActiveShellCache());
-      return await cacheResponse(cache, "/index.html", response);
+      // Publish new HTML only once its entry assets are available offline.
+      if (await precacheIndexAssets(cache, response)) {
+        return await cacheResponse(cache, "/index.html", response);
+      }
     }
     return response;
   } catch {
@@ -218,6 +224,19 @@ async function handleNavigation(request) {
       Response.error()
     );
   }
+}
+
+async function handleNavigation(request, event) {
+  const url = new URL(request.url);
+  if (!isCacheableAsset(url) && url.pathname !== "/offline.html") {
+    const cache = await caches.open(await findActiveShellCache());
+    const cached = (await cache.match("/index.html")) || (await cache.match("/"));
+    if (cached) {
+      event.waitUntil(refreshNavigation(request).catch(() => {}));
+      return cached;
+    }
+  }
+  return refreshNavigation(request);
 }
 
 async function handleAsset(request) {
@@ -282,7 +301,7 @@ self.addEventListener("fetch", (event) => {
   if (isPrivatePath(url.pathname) || url.pathname === "/sw.js") return;
 
   if (event.request.mode === "navigate") {
-    event.respondWith(handleNavigation(event.request));
+    event.respondWith(handleNavigation(event.request, event));
   } else if (isCacheableAsset(url)) {
     event.respondWith(handleAsset(event.request));
   }

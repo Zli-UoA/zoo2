@@ -85,6 +85,7 @@ it("waits for user resolution before opening storage and mounting interactive ch
   await act(async () => {});
   expect(screen.queryByRole("button")).toBeNull();
   expect(mocks.open).not.toHaveBeenCalled();
+  expect(mocks.prepare).toHaveBeenCalledOnce();
 
   await act(async () => {
     mocks.state = { currentUserId: "user-a", isLoading: false, isAdmin: false, error: null };
