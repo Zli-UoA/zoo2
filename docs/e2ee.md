@@ -588,7 +588,7 @@ const prf = credential.getClientExtensionResults().prf?.results?.first;
 - サーバーにある鍵が SSSS の鍵と一致しない場合は、初回設定の再開ではない。下の「新しい端末での解錠」の【決定】のとおり、失効が途中で止まっているか、SSSS を書き換えられた可能性があるものとして扱う。サーバーに鍵が「ない」ことと「違う」ことを分けて判定する。
 - 版が 1 つ以上あれば（消した版を含む）、初回設定は済んでいる。今の端末に署名がないだけなら、初回設定の再開ではなく、[すでに使っている端末での解錠し直し](#初回設定と解錠の流れ)の 3 で扱う。今の版がない、または合わない場合は、初回設定の再開ではなく、失効の途中か改ざんとして扱う。
 - 再開する前に、7 の SSSS の保存と同じく、SSSS 鍵を確認値で確かめる。
-- 7 の SSSS の保存（`POST /api/e2ee/secret_storage/keys`、`expected_default_key_id: null`）の応答をなくしたときと、409 `E2EE_SSSS_CONFLICT` を受けたときは、`GET /api/e2ee/secret_storage` を読む。`default_key_id` が自分の作った `key_id` なら、保存は済んでいるので続ける。別の `key_id` なら、別の端末が先に初回設定を始めたので、手元で作った鍵を捨て、6 で表示したリカバリーキーは使えないことを利用者に伝えてから、その SSSS を解錠する（初回設定の再開か、新しい端末での解錠になる）。
+- 7 の SSSS の保存（`POST /api/e2ee/secret_storage/keys`、`expected_default_key_id: null`）の応答をなくしたときと、409 `E2EE_SSSS_CONFLICT` を受けたときは、`GET /api/e2ee/secret_storage` を読む。`default_key_id` が自分の作った `key_id` なら、保存は済んでいるので、読み直した `secrets_revision` を暗号ストアに記録して続ける。別の `key_id` なら、別の端末が先に初回設定を始めたので、手元で作った鍵を捨て、6 で表示したリカバリーキーは使えないことを利用者に伝えてから、その SSSS を解錠する（初回設定の再開か、新しい端末での解錠になる）。
 - 異常系のテスト（#360、#363）：7 の各保存（SSSS、クロス署名鍵、端末への署名、バックアップの版）の直前と直後で止め、端末を再起動して解錠すると、初回設定を最後まで終え、同じ鍵のまま失効や改ざんの表示を出さない。別の端末で解錠しても同じになる。応答をなくした保存は、SSSS では読み直しで済んだと判定でき、クロス署名鍵と版では送り直しても成功する。2 つの端末で同時に初回設定を始めると、後から SSSS を保存した端末は 409 を受け、先の端末の SSSS を解錠する。SSSS の保存より前で止めた場合は、やり直した初回設定が新しい鍵で終わる。
 
 新しい端末での解錠：
@@ -646,7 +646,7 @@ const prf = credential.getClientExtensionResults().prf?.results?.first;
 | 400 | `E2EE_INVALID_EPOCH` | `epoch` が今の値より大きい | |
 | 400 | `E2EE_PUBLIC_FORBIDDEN` | 公開チャンネルを `encrypted: true` で作ろうとした | |
 | 403 | `E2EE_APPS_FORBIDDEN` | 暗号化チャンネルへの App（Bot）の追加。`/api/apps/v1/*` からの暗号化チャンネルへの読み書きと添付（委任トークンを含む） | |
-| 403 | `E2EE_REAUTH_REQUIRED` | `X-Zoo-Reauth` の ID トークンがない、検証できない、または `auth_time` が 5 分より前。対象は、既存のクロス署名鍵の差し替え、既定の SSSS 鍵がある状態での作り直し、既存の秘密とスロットの置き換え、スロットの削除、最初の版でない鍵バックアップの版の作成、今の版の削除で、直前の再認証がない | |
+| 403 | `E2EE_REAUTH_REQUIRED` | `X-Zoo-Reauth` の ID トークンがない、検証できない、または `authenticated_at`（AuthZ が直前に認証した時刻の claim）がないか 5 分より前。対象は、既存のクロス署名鍵の差し替え、既定の SSSS 鍵がある状態での作り直し、既存の秘密とスロットの置き換え、スロットの削除、最初の版でない鍵バックアップの版の作成、今の版の削除で、直前の再認証がない | |
 | 403 | `E2EE_WEBHOOKS_FORBIDDEN` | 暗号化チャンネルへの Incoming Webhook の作成 | |
 | 404 | （既存と同じ） | 他人の端末やスロットなど。存在を推測されないよう 403 ではなく 404 | |
 
@@ -717,9 +717,16 @@ const prf = credential.getClientExtensionResults().prf?.results?.first;
   - マスター鍵を変えたら、そのユーザーが参加しているすべての暗号化チャンネルの `membership_epoch` を増やす（この増加は #357 で足す）。
   - 【決定】自己署名鍵を変えたときも、同じように `membership_epoch` を増やす。漏れた自己署名鍵で署名された端末に、今のセッションの続きが届かないようにするため（#356 の「マスター鍵の変更」に加える。この増加も #357 で足す）。
   - 【決定】すでにあるマスター鍵を差し替えるときは、直前の再認証を求める。盗んだトークンだけでマスター鍵を差し替えられないようにするため。初めてマスター鍵を登録するときは求めない。
-  - 【決定】再認証の確かめ方：クライアントは `max_age=0` を付けて AuthZ の認可リクエストを送り直し（AuthZ でログインし直す）、受け取った ID トークンを、再認証が要る要求のヘッダー `X-Zoo-Reauth` に入れる。サーバーは、その ID トークンの署名（AuthZ の JWKS）、`iss`、`aud`（zoo2 のクライアント ID の一覧。Web、Android、TUI の ID をサーバーの設定で持つ）、`exp` を検証し、`sub` がアクセストークンのユーザーと同じで、`auth_time` が 5 分以内であることを確かめる。満たさなければ 403 `E2EE_REAUTH_REQUIRED`。アクセストークンを使わないのは、AuthZ（`@better-auth/oauth-provider` 1.7.12）の JWT のアクセストークンには `auth_time` が入らないため。ID トークンには `auth_time` が入り、認可リクエストの `max_age` にも対応している（`max_age=0` なら必ずログインし直させる）。どちらも AuthZ のソースで確かめた。React と Compose wasmJs は今も認可コードフローでログインするので、AuthZ 側の変更は要らない。【未検証】実際の AuthZ で `max_age=0` が再ログインになり、`auth_time` が更新されることは #356 の結合テストで確かめる。
-  - 【決定】Android と TUI は、ふだんのログインにデバイス認可グラント（device code）を使うので、そのままでは `max_age` を付けた ID トークンを取れない。この 2 つも、再認証のときだけ認可コードフロー（PKCE、`max_age=0`）を使う。Android は Custom Tabs で開き、アプリへのリダイレクトで受け取る。TUI はブラウザーで開き、ループバックのリダイレクト（`http://127.0.0.1:<空いているポート>/callback`）で受け取る。Web だけで失効させる形にしないのは、Compose と TUI にも同じ機能を入れる方針（#321）に合わせるため。そのために、AuthZ に登録した Android と TUI のクライアントに、認可コードのグラントとリダイレクト URI を足す必要がある（[ロードマップ](#ロードマップ)の AuthZ のクライアント設定の行）。【未検証】そのクライアントの登録がどこで管理されているか（AuthZ の DB か zoo2-infra か）は #356 で確かめる。
-  - QR でのログイン（AuthZ の `/login/qr`）で作ったセッションも、`auth_time` は新しくなる。QR を承認する側の端末でパスキーの UV が要るので、再認証として認める。
+  - 【決定】再認証の確かめ方：クライアントは `max_age=0` を付けて AuthZ の認可リクエストを送り直し（AuthZ でログインし直す）、受け取った ID トークンを、再認証が要る要求のヘッダー `X-Zoo-Reauth` に入れる。サーバーは、その ID トークンの署名（AuthZ の JWKS）、`iss`、`aud`（zoo2 のクライアント ID の一覧。Web、Android、TUI の ID を、`OIDC_AUDIENCE` とは別の新しい設定キーで持つ。キーの名前と形式は #356 で決め、zoo2-infra の ConfigMap `zoo2-oidc` に値を足す）、`exp` を検証し、`sub` がアクセストークンのユーザーと同じで、AuthZ がパスキーなどで直前に認証した時刻（下の `authenticated_at`）が 5 分以内であることを確かめる。満たさなければ 403 `E2EE_REAUTH_REQUIRED`。アクセストークンを使わないのは、AuthZ（`@better-auth/oauth-provider` 1.7.12）の JWT のアクセストークンには `auth_time` が入らないため。ID トークンには `auth_time` が入り、認可リクエストの `max_age` にも対応している（`max_age=0` なら必ずログインし直させる）。どちらも AuthZ のソースで確かめた。【未検証】実際の AuthZ で `max_age=0` が再ログインになることは #356 の結合テストで確かめる。
+  - 【決定】`auth_time` だけでは足りない。ID トークンの `auth_time` は AuthZ のセッションの作成時刻なので、QR でのログイン（`/login/qr`）で作ったセッションも新しい時刻になる。AuthZ は QR で作ったセッションの `authenticatedAt` を空にし、「元の端末の認証時刻を移さず、重要な操作には受け取った端末でのパスキーの再認証を求める」としている（AuthZ#95 の `src/lib/auth.ts`、`docs/architecture.md`）。zoo2 もこれにそろえ、QR で作ったセッションを再認証として認めない。そのために、AuthZ が ID トークンに、セッションの `authenticatedAt` を表す独自の claim（ここでは `authenticated_at` と呼ぶ。名前は AuthZ の issue で決める）を足す。`auth_time`、`acr`、`amr` は採用版で上書きできない予約済みの名前なので、別の名前にする。zoo2 はこの claim がない、または 5 分より前なら 403 `E2EE_REAUTH_REQUIRED` を返す。
+    - 足し方：採用版の `customIdTokenClaims` にはセッションが渡らないので使えない。`OAuthProviderExtension` の `claims.idToken`（`sessionId` が渡る）でセッションを読み、`authenticatedAt` を入れる。
+    - claim を入れるのは、認可コードのグラント（`grantType === 'authorization_code'`）で発行する ID トークンだけにする。リフレッシュトークンのグラントで発行する ID トークンには入れない。リフレッシュのたびに今のセッションを読んで入れると、盗んだリフレッシュトークンで、利用者が別の場所で直前に認証した時刻の付いた ID トークンを取れてしまうため。
+    - 試験：AuthZ の issue では、リフレッシュで発行した ID トークンに claim が入らないことを確かめる。#356 では、リフレッシュで発行した ID トークン（claim なし）を 403 にすることを確かめる。
+  - 【決定】`backend/src/routes/mod.rs` の CORS の許可ヘッダーに `X-Zoo-Reauth` を足す（#356）。足さないと、React と Compose wasmJs からの要求がプリフライトで拒否される。
+  - 【決定】Android と TUI は、ふだんのログインにデバイス認可グラント（device code）を使うので、そのままでは `max_age` を付けた ID トークンを取れない。この 2 つも、再認証のときだけ認可コードフロー（PKCE、`max_age=0`）を使う。Android は Custom Tabs で開き、`https` の App Links のリダイレクトで受け取る（AuthZ は本番でリダイレクト URI に `https:` だけを受け付けるので、カスタムスキームは登録できない）。リダイレクト先は `https://zli.chat/android/reauth-callback` とし、zoo2 のフロントエンドの nginx が `https://zli.chat/.well-known/assetlinks.json`（zoo の Android アプリに `delegate_permission/common.handle_all_urls` を与える）を配信する。Android アプリの manifest には、このパスの `autoVerify` 付きの intent-filter を足す（どちらも #362）。【未検証】AuthZ からの 302 のリダイレクトで、Custom Tabs がアプリに処理を渡すかは #362 か #369 の実機で確かめる。TUI はブラウザーで開き、ループバックのリダイレクト（`http://127.0.0.1:<空いているポート>/callback`）で受け取る。Web だけで失効させる形にしないのは、Compose と TUI にも同じ機能を入れる方針（#321）に合わせるため。そのために、次のことが要る（[ロードマップ](#ロードマップ)の AuthZ の再認証の行）。
+    - AuthZ（`src/lib/oauth-clients.ts`）は、本番ではリダイレクト URI に `https:` だけを受け付け、`http://127.0.0.1` は開発時だけ許している。このままでは TUI のループバックの URI を本番に登録できないので、AuthZ のコードと `docs/architecture.md` を変え、public client にループバックの `http`（RFC 8252 の 7.3）を許す。採用版の Provider は、認可のときにループバックのポートの違いを許す（`stripLoopbackRedirectPort`）ので、ポートは固定しなくてよい。
+    - クライアントの登録は AuthZ の DB にあり、AuthZ の管理画面で行う（zoo2-infra の `docs/installation.md` の手順と同じ）。Android と TUI のクライアントに、認可コードのグラントとリダイレクト URI を足す。
+  - 【決定】デスクトップ版（`desktop/`、`zoo2-desktop`。デバイスコードでログインする）は、最初の範囲では E2EE の対象にしない。AGENTS.md の追従の対象は TUI で、デスクトップ版は含まないため。デスクトップ版は端末を登録せず、暗号化チャンネルを「このクライアントでは暗号化チャンネルを表示できない」と表示する（[クライアントの構成](#クライアントの構成)）。対象にするときは、TUI と同じく zoo-crypto をネイティブで使い、再認証はループバックのリダイレクトで受け取る形になる（issue は未作成）。
   - 【決定】すでにある自己署名鍵かユーザー署名鍵を差し替えるときも、同じ直前の再認証を求める（403 `E2EE_REAUTH_REQUIRED`）。初めて登録するときは求めない。端末だけの失効でもこの 2 つを差し替えるので（[失効の手順](#失効の手順)の 4）、失効には再認証が要る。
   - 【決定】`expected_keys`（`{"master", "self_signing", "user_signing"}` の今の公開鍵。ない鍵は `null`）を送り、今の鍵と違えば 409 `E2EE_CROSS_SIGNING_CONFLICT`。2 つの端末の失効が、互いの鍵を知らずに差し替えないようにするため。
   - 【決定】今の鍵と同じ公開鍵を送ったときは、`expected_keys` より先に判定し、何も変えずに 200 を返す（変更の記録、署名の削除、epoch の増加をせず、再認証も求めない）。応答をなくした要求を送り直しても失敗しないようにするため。
@@ -1242,7 +1249,7 @@ Megolm のメッセージ（`messages` の行）を復号したとき：
 
 1. 選んだ端末を削除する（`DELETE /api/e2ee/devices/{device_id}`）。サーバーはその端末の鍵を消し、その端末の持ち主が参加しているすべての暗号化チャンネルの `membership_epoch` を増やす。各送信者は次の送信でセッションを作り直す。
 2. SSSS 鍵を新しく作り、残っているパスキーとリカバリーキーで鍵スロットを作り直す（`POST /api/e2ee/secret_storage/keys`）。古い SSSS 鍵で暗号化した秘密とスロットはサーバーから消える。パスキーのスロットは新しい `prf_salt` で作る。リカバリーキーは、漏れた可能性があれば新しく作り直す。
-3. バックアップ鍵を新しく作り、新しい版に切り替える（`POST /api/e2ee/key_backup/versions`）。古い版の秘密鍵は、SSSS の `m.megolm_backup.v1` を置き換えるのと同じ要求で、`zoo.megolm_backup.previous` に退避する（[鍵バックアップ](#鍵バックアップ)の「古い版の秘密鍵の退避」）。版の切り替えでも `membership_epoch` が増える。次に、古いバックアップ鍵で古い版のセッションをすべて取り込み（`GET /api/e2ee/key_backup/keys?version=<古い版>`。[鍵バックアップ](#鍵バックアップ)の古い版からの取り込みの例外に当たる）、手元のセッションと合わせて新しい版にアップロードする。すべてアップロードできてから古い版を消す（`DELETE /api/e2ee/key_backup/versions/{古い版}`）。古い版には、失った端末のセッションや、この端末を登録する前のセッションなど、手元にないセッションも入っているため。古い版の中身はすでに漏れたものとして扱っているので（[取り消せないもの](#取り消せないもの)）、新しい版に移しても失うものはない。
+3. バックアップ鍵を新しく作り、新しい版に切り替える（`POST /api/e2ee/key_backup/versions`）。手順の番号は作る鍵の一覧で、保存の順ではない。新しい版は、下の「保存の順」のとおり、4 と 5 の鍵を保存したあとで最後に作る（`auth_data` には今のマスター鍵で署名するので、5 でマスター鍵を作り直すときは新しいマスター鍵で署名する）。古い版の取り込み、新しい版へのアップロード、古い版の削除は、新しい版を作ったあとに行う。古い版の秘密鍵は、SSSS の `m.megolm_backup.v1` を置き換えるのと同じ要求で、`zoo.megolm_backup.previous` に退避する（[鍵バックアップ](#鍵バックアップ)の「古い版の秘密鍵の退避」）。版の切り替えでも `membership_epoch` が増える。次に、古いバックアップ鍵で古い版のセッションをすべて取り込み（`GET /api/e2ee/key_backup/keys?version=<古い版>`。[鍵バックアップ](#鍵バックアップ)の古い版からの取り込みの例外に当たる）、手元のセッションと合わせて新しい版にアップロードする。すべてアップロードできてから古い版を消す（`DELETE /api/e2ee/key_backup/versions/{古い版}`）。古い版には、失った端末のセッションや、この端末を登録する前のセッションなど、手元にないセッションも入っているため。古い版の中身はすでに漏れたものとして扱っているので（[取り消せないもの](#取り消せないもの)）、新しい版に移しても失うものはない。
    - 【決定】版の切り替えで `membership_epoch` を増やすのは、失った端末のバックアップ鍵とトークンを持つ攻撃者に、失効のあとのセッションを読ませないため。1 と 4 でも epoch は増えるが、そのあとも版を切り替えるまでは、残っている端末が新しい epoch のセッションを古い版にアップロードできる。保存の順でバックアップの版は最後なので、失効の中で最後に増える epoch は版の切り替えのものになる。切り替えのあとに作られるセッションは、古い版には入らない（古い版へのアップロードは 409 `E2EE_WRONG_BACKUP_VERSION` になる）。
 4. 自己署名鍵とユーザー署名鍵を作り直し、失効を行う端末だけに新しい自己署名鍵で署名する。【決定】他の自分の端末には、失効を行う端末からは署名しない。それぞれの端末が SSSS で解錠し直したときに、SSSS から取り出した新しい自己署名鍵で自分に署名する（[初回設定と解錠の流れ](#初回設定と解錠の流れ)）。古い自己署名鍵で署名された端末は、本物の端末か、失った端末の鍵とトークンを持つ攻撃者が作った端末かを、名前や日時では確かめられないため。パスキーかリカバリーキーで解錠できることが、本物の端末である根拠になる。他のユーザーのマスター鍵への署名と TOFU のピンも、新しいユーザー署名鍵で付け直す（ピンは `POST /api/e2ee/tofu_pins` の `replace: true`）。付け直すのは、暗号ストアの古いユーザー署名鍵で検証できたものだけ（下の【決定】）。自己署名鍵の変更でも `membership_epoch` が増える。既存の鍵の差し替えなので、直前の再認証が要る（[クロス署名の API](#クロス署名356)）。古い鍵は登録し直せなくなる。
    - 【決定】ユーザー署名鍵を作り直す前に、署名し直す候補を集める。新しいユーザー署名鍵を保存すると、サーバーのピンは今の鍵で検証できなくなり、古い鍵で作られたピンかを確かめられなくなるため。
@@ -1269,7 +1276,7 @@ Megolm のメッセージ（`messages` の行）を復号したとき：
 
 - 3 と 4 の鍵は、4 の一覧を暗号ストアに記録したあと、サーバーに保存する前にまとめて作る。作った鍵は、保存のあとの読み直しで一致を確かめるまで暗号ストアから消さない。
 - 保存の順は 2〜5 の場合と同じく、SSSS の秘密、クロス署名鍵と署名、バックアップの版の順にする。途中で失敗しても、新しい秘密鍵を SSSS から取り出して続きを保存し直せるようにするため。
-- SSSS には `POST /api/e2ee/secret_storage/secrets` で `m.megolm_backup.v1`、`m.cross_signing.self_signing`、`m.cross_signing.user_signing` の 3 つを、今の既定の SSSS 鍵の下で置き換え、同じ要求で `zoo.megolm_backup.previous` を書く。`expected_secrets_revision` には、始める前に開け直したときの値を入れる。`key_id` には始める前に開け直した既定の鍵を入れる。409 `E2EE_SSSS_CONFLICT` なら、応答の `default_key_id` を見る。変わっていれば、別の端末が SSSS を作り直したので、SSSS を開け直してからやり直す。`secrets_revision` だけが変わっていれば、今の SSSS 鍵で秘密を読み直し、候補の鍵を引き継いでやり直す。応答をなくして状態が分からないときも、SSSS を読み直し、自分が書いた秘密と一致すれば書き込みは済んだものとして続ける。
+- SSSS には `POST /api/e2ee/secret_storage/secrets` で `m.megolm_backup.v1`、`m.cross_signing.self_signing`、`m.cross_signing.user_signing` の 3 つを、今の既定の SSSS 鍵の下で置き換え、同じ要求で `zoo.megolm_backup.previous` を書く。`expected_secrets_revision` には、始める前に開け直したときの値を入れる。`key_id` には始める前に開け直した既定の鍵を入れる。409 `E2EE_SSSS_CONFLICT` なら、応答の `default_key_id` を見る。変わっていれば、別の端末が SSSS を作り直したので、SSSS を開け直してからやり直す。`secrets_revision` だけが変わっていれば、今の SSSS 鍵で秘密を読み直し、候補の鍵を引き継いでやり直す。応答をなくして状態が分からないときも、SSSS を読み直し、自分が書いた秘密と一致すれば書き込みは済んだものとして、読み直した `secrets_revision` を暗号ストアに記録して続ける（記録しないと、次に起動したときに SSSS が書き換えられたと誤って判定する）。
 - `m.cross_signing.master` は変えない。
 
 どちらの場合も、古いバックアップ鍵は古い版を消すまで失効を行う端末の暗号ストアから消しません。途中で失敗しても、古い版のセッションを取り込み直せるようにするためです。古いバックアップ鍵は SSSS の `zoo.megolm_backup.previous` にも退避してあるので、この端末がログアウトしても、SSSS を解錠した別の端末が移行を続けるか、失効をやり直せます。失効を行った端末以外の自分の端末では、暗号ストアの自己署名鍵、ユーザー署名鍵、バックアップ鍵が古いままになります。そこで、サーバーの自己署名鍵とユーザー署名鍵の公開鍵、または今のバックアップの版の公開鍵が、暗号ストアの秘密鍵と合わなくなった端末は、その鍵を使う処理（端末への署名、ピンの作成、バックアップへのアップロード）を止め、SSSS で解錠し直すよう表示します。
@@ -1400,6 +1407,7 @@ Megolm のメッセージ（`messages` の行）を復号したとき：
 | Compose wasmJs（`frontend-compose/`、`/compose/`） | 同じ wasm パッケージを Kotlin/Wasm の JS interop で呼ぶ | パスキー、リカバリーキー | #352、#359 |
 | Compose Android | UniFFI で作った Kotlin バインディング | Credential Manager のパスキー【未検証】、リカバリーキー | #353、#359 |
 | TUI（`tui/`） | ネイティブの Rust クレートとして直接使う | リカバリーキー | #359、#360 |
+| デスクトップ版（`desktop/`） | 最初の範囲では対象にしない。暗号化チャンネルは表示できないと示す（[クロス署名の API](#クロス署名356)の【決定】） | なし | 未作成 |
 
 【提案】バインディングは `crates/zoo-crypto-wasm` と `crates/zoo-crypto-ffi` のように別クレートに分け、コアにプラットフォームの依存を入れません。例外は `wasm32-unknown-unknown` で乱数のバックエンドを選ぶ設定（vodozemac の `wasm_js` feature、[乱数](#乱数)）の 1 つだけです。
 
@@ -1506,9 +1514,9 @@ Megolm のメッセージ（`messages` の行）を復号したとき：
 | issue | 内容 | 依存 |
 | --- | --- | --- |
 | [#347](https://github.com/Zli-UoA/zoo2/issues/347) | 本書 | |
-| zoo2-infra（PR は未作成） | ConfigMap `authz-config` に `WEBAUTHN_RELATED_ORIGINS: https://zli.chat` を足す。AuthZ#94 の実装（AuthZ#95）より先にマージする（[本番への配備の順](#本番への配備の順)）。AuthZ#96 では、Android アプリのパッケージ名と release の署名の指紋（AuthZ#96 で決める変数）も同じ順で足す | |
+| zoo2-infra（PR は未作成） | ConfigMap `authz-config` に `WEBAUTHN_RELATED_ORIGINS: https://zli.chat` を足す。AuthZ#94 の実装（AuthZ#95）より先にマージする（[本番への配備の順](#本番への配備の順)）。AuthZ#96 では、Android アプリのパッケージ名と release の署名の指紋（AuthZ#96 で決める変数）も同じ順で足す。#356 では、ConfigMap `zoo2-oidc` に再認証の ID トークンの `aud` で認めるクライアント ID の一覧（キーは #356 で決める）を足す | |
 | [AuthZ#94](https://github.com/Zli-UoA/AuthZ/issues/94) | パスキー登録で PRF を有効にし、`/.well-known/webauthn` を配信する | zoo2-infra（配備の順） |
-| AuthZ のクライアント設定（issue は未作成） | Android と TUI のクライアントに、再認証用の認可コードのグラントとリダイレクト URI を足す（[クロス署名の API](#クロス署名356)の再認証の確かめ方）。登録の置き場所は #356 で確かめる | |
+| AuthZ の再認証（issue は未作成） | ID トークンに `authenticatedAt` を表す claim を足す（`OAuthProviderExtension` の `claims.idToken` でセッションを読み、認可コードのグラントで発行するときだけ入れる）。本番の public client にループバックの `http` のリダイレクト URI を許す（RFC 8252 の 7.3）。配備したら、管理画面で Android と TUI のクライアントに認可コードのグラントとリダイレクト URI（Android は `https` の App Links、TUI はループバック）を足す（[クロス署名の API](#クロス署名356)の再認証の確かめ方） | |
 | [AuthZ#96](https://github.com/Zli-UoA/AuthZ/issues/96) | Android 用に `/.well-known/assetlinks.json` を配信する（[使えない環境](#使えない環境)）。設定がないと `[]` を返し、#360 の Android での解錠が動かない | zoo2-infra（配備の順） |
 | [#348](https://github.com/Zli-UoA/zoo2/issues/348) | `crates/zoo-crypto` の雛形とツールチェーン、端末アカウント、pickle の保存 | #347 |
 | [#349](https://github.com/Zli-UoA/zoo2/issues/349) | Olm と Megolm のセッション管理と受信時の検証 | #348 |
@@ -1524,7 +1532,7 @@ Megolm のメッセージ（`messages` の行）を復号したとき：
 | [#359](https://github.com/Zli-UoA/zoo2/issues/359) | 暗号ストアと端末の登録（React、Compose、TUI） | #352、#353、#354、#355 |
 | [#360](https://github.com/Zli-UoA/zoo2/issues/360) | 初回設定と解錠（パスキー、リカバリーキー） | #359、#356、AuthZ#94、AuthZ#96 |
 | [#361](https://github.com/Zli-UoA/zoo2/issues/361) | 暗号化チャンネルと DM の作成と送受信 | #360、#357、#358 |
-| [#362](https://github.com/Zli-UoA/zoo2/issues/362) | 端末一覧、失効、鍵スロットの管理、他のユーザーの検証状態 | #361、AuthZ のクライアント設定（Android と TUI の再認証） |
+| [#362](https://github.com/Zli-UoA/zoo2/issues/362) | 端末一覧、失効、鍵スロットの管理、他のユーザーの検証状態 | #361、AuthZ の再認証 |
 | [#363](https://github.com/Zli-UoA/zoo2/issues/363) | Playwright の E2E テスト（仮想認証器 `hasPrf: true`） | #362 |
 | [#364](https://github.com/Zli-UoA/zoo2/issues/364) | 暗号化した添付（実装したら添付の禁止を外す） | #361 |
 | [#365](https://github.com/Zli-UoA/zoo2/issues/365) | Push 通知を Service Worker で復号する | #361 |
@@ -1547,8 +1555,10 @@ Megolm のメッセージ（`messages` の行）を復号したとき：
 | エラー応答に `code` を足す方法 | 【提案】 | #354 か #357 |
 | 暗号化チャンネルでの URL カードの扱い | 【提案】 | #361 |
 | 複数タブでの暗号ストアの共有（Web Locks と BroadcastChannel） | 【提案】 | #359 |
-| クロス署名鍵の差し替え、SSSS の秘密とスロットの置き換え、鍵バックアップの版の作り直しに直前の再認証を求める。`max_age=0` で取り直した ID トークンの `auth_time` で確かめる（[クロス署名の API](#クロス署名356)） | 【決定】（実際の AuthZ での動きは【未検証】） | #356 |
-| Android と TUI の再認証用の認可コードフロー。AuthZ のクライアントの登録の置き場所と、Android のリダイレクトの受け方 | 【決定】（置き場所は【未検証】。AuthZ のクライアント設定の issue が要る） | #356、#362 |
+| クロス署名鍵の差し替え、SSSS の秘密とスロットの置き換え、鍵バックアップの版の作り直しに直前の再認証を求める。`max_age=0` で取り直した ID トークンの `authenticated_at` で確かめる（[クロス署名の API](#クロス署名356)） | 【決定】（実際の AuthZ での動きは【未検証】） | #356 |
+| 再認証の AuthZ 側の変更（`authenticatedAt` の claim、本番のループバックのリダイレクト）。Android は App Links、TUI はループバックで受け取る | 【決定】（AuthZ の issue は未作成） | #356、#362 |
+| Android の再認証で、AuthZ からの 302 のリダイレクトを Custom Tabs が App Links としてアプリに渡すか | 【未検証】 | #362、#369 |
+| デスクトップ版を E2EE の対象にするか | 【決定】最初の範囲では対象外（後続の issue は未作成） | 後続 |
 | 一度置き換わった自己署名鍵に戻ったことをクライアントで検出する | 【提案】 | #362 |
 | AuthZ でパスキーの credential ID の一覧を取れるようにし、削除済みのパスキーの鍵スロットを表示する | 【提案】（AuthZ の issue が要る） | #362 |
 | 自分の端末どうしで鍵を要求し合う仕組み（Matrix の `m.room_key_request`）。初期版は鍵バックアップで代える | 未決 | 後続 |
