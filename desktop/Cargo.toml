@@ -14,6 +14,7 @@ strip = true
 zoo2-client-core = { path = "../client-core" }
 anyhow = "1"
 emojis = "0.6"
+futures = "0.3"
 gpui = "0.2.2"
 jiff = "0.2"
 notify-rust = "4"

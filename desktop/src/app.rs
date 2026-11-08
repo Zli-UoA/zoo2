@@ -112,6 +112,8 @@ pub struct FailedDraft {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PendingAttachment {
     pub local_id: String,
+    pub channel_id: String,
+    pub session_gen: u64,
     pub file_name: String,
     pub file_size: i64,
     pub content_type: String,
@@ -221,6 +223,10 @@ pub enum AppEvent {
         channel_id: String,
     },
     ChannelCreateFailed(String),
+    AttachmentUrlResolved {
+        attachment_id: String,
+        download_url: String,
+    },
 }
 
 /// Tokio タスク群から GPUI の `Entity<AppState>` へ橋渡しする統合イベント。
@@ -278,8 +284,8 @@ pub struct AppState {
     pub composer_draft: String,
     /// `(チャンネル ID, 送信先)` ごとの書きかけ下書き。
     pub saved_drafts: HashMap<(String, Target), String>,
-    /// `AppState` 側から入力欄 (`TextInput`) へ反映すべき文字列。
-    pub pending_composer_text: Option<String>,
+    /// `AppState` 側から入力欄 (`TextInput`) へ反映すべき文字列とキャレット位置。
+    pub pending_composer_text: Option<(String, Option<usize>)>,
     pub failed_drafts: Vec<FailedDraft>,
     /// 現在送信リクエスト実行中の下書き (`(submission_id, FailedDraft)`)。
     pub in_flight_submissions: Vec<(u64, FailedDraft)>,
@@ -329,6 +335,10 @@ pub struct AppState {
 
     /// 送信待ち・アップロード中の添付ファイル一覧。
     pub pending_attachments: Vec<PendingAttachment>,
+    /// 添付ファイル ID -> (download_url, 取得日時) のキャッシュ。
+    pub attachment_download_urls: HashMap<String, (String, Instant)>,
+    /// 取得中の添付ファイル ID 一覧。
+    pub fetching_attachment_urls: HashSet<String>,
     /// ファイルドラッグオーバー中フラグ。
     pub is_dragging_files: bool,
     /// 絵文字ピッカーの開閉状態。
@@ -437,6 +447,8 @@ impl AppState {
             background_tasks: Vec::new(),
             typing_stop_tasks: Vec::new(),
             pending_attachments: Vec::new(),
+            attachment_download_urls: HashMap::new(),
+            fetching_attachment_urls: HashSet::new(),
             is_dragging_files: false,
             emoji_picker_open: false,
             emoji_picker_query: String::new(),
@@ -759,7 +771,7 @@ impl AppState {
         self.pending_search_text = Some(String::new());
         self.composer_draft.clear();
         self.saved_drafts.clear();
-        self.pending_composer_text = Some(String::new());
+        self.pending_composer_text = Some((String::new(), None));
         self.failed_drafts.clear();
         self.in_flight_submissions.clear();
         self.channel_creators_by_key.clear();
@@ -782,6 +794,15 @@ impl AppState {
         self.typing_poll_in_flight = false;
         self.notice = None;
         self.sync_errors.clear();
+        self.pending_attachments.clear();
+        self.attachment_download_urls.clear();
+        self.fetching_attachment_urls.clear();
+        self.emoji_picker_open = false;
+        self.emoji_picker_query.clear();
+        self.mention_autocomplete = None;
+        self.create_channel_modal = None;
+        self.message_search = None;
+        self.quick_switcher = None;
     }
 
     fn reset_to_login(&mut self, error: Option<String>) {
@@ -1111,27 +1132,41 @@ impl AppState {
                 let mut pending_notifications = Vec::new();
                 if self.notifications_enabled
                     && let ShapeId::Messages(ch) = &id
+                    && self.store.is_synced(&id)
+                    && !batch.reset
                 {
-                    for change in &batch.changes {
-                        if let electric::Change::Upsert { row, .. } = change
-                            && let Ok(msg) = Message::from_row(row)
-                        {
-                            let is_mine = self.me.as_ref().is_some_and(|m| m.id == msg.user_id);
-                            if !is_mine {
-                                let me_user_name =
-                                    self.me.as_ref().map(|m| m.user_name.as_str()).unwrap_or("");
-                                let is_dm = self.store.channel(ch).is_some_and(|c| c.is_dm);
-                                let has_mention = (!me_user_name.is_empty()
-                                    && msg.content.contains(&format!("@{me_user_name}")))
-                                    || msg.content.contains("@channel")
-                                    || msg.content.contains("@here");
-                                if is_dm || has_mention {
-                                    pending_notifications.push((
-                                        ch.clone(),
-                                        msg.user_id,
-                                        msg.content,
-                                        is_dm,
-                                    ));
+                    let is_active_view =
+                        self.window_active && self.current_channel.as_deref() == Some(ch.as_str());
+                    if !is_active_view {
+                        for change in &batch.changes {
+                            if let electric::Change::Upsert { row, .. } = change
+                                && let Ok(msg) = Message::from_row(row)
+                            {
+                                if self.store.message(ch, &msg.id).is_some()
+                                    || msg.deleted_at.is_some()
+                                {
+                                    continue;
+                                }
+                                let is_mine = self.me.as_ref().is_some_and(|m| m.id == msg.user_id);
+                                if !is_mine {
+                                    let me_user_name = self
+                                        .me
+                                        .as_ref()
+                                        .map(|m| m.user_name.as_str())
+                                        .unwrap_or("");
+                                    let is_dm = self.store.channel(ch).is_some_and(|c| c.is_dm);
+                                    let has_mention = (!me_user_name.is_empty()
+                                        && msg.content.contains(&format!("@{me_user_name}")))
+                                        || msg.content.contains("@channel")
+                                        || msg.content.contains("@here");
+                                    if is_dm || has_mention {
+                                        pending_notifications.push((
+                                            ch.clone(),
+                                            msg.user_id,
+                                            msg.content,
+                                            is_dm,
+                                        ));
+                                    }
                                 }
                             }
                         }
@@ -1145,14 +1180,22 @@ impl AppState {
                     let channel_name = self
                         .store
                         .channel(&ch)
-                        .map(|c| c.channel_name.as_str())
-                        .unwrap_or("channel");
+                        .map(|c| c.channel_name.clone())
+                        .unwrap_or_else(|| "channel".to_string());
                     let title = if is_dm {
-                        format!("{} からのDM", sender_name)
+                        format!("{sender_name} からのDM")
                     } else {
-                        format!("{} (#{channel_name})", sender_name)
+                        format!("{sender_name} (#{channel_name})")
                     };
-                    notify_desktop(&title, &content);
+                    let body = if content.chars().count() > 80 {
+                        let truncated: String = content.chars().take(80).collect();
+                        format!("{truncated}...")
+                    } else {
+                        content
+                    };
+                    std::thread::spawn(move || {
+                        notify_desktop(&title, &body);
+                    });
                 }
                 if self.store.is_synced(&id) {
                     self.sync_errors.remove(&id);
@@ -1212,6 +1255,15 @@ impl AppState {
                         if self.current_channel.as_deref() == Some(ch.as_str()) =>
                     {
                         self.channel_cache.messages_dirty = true;
+                        let att_ids: Vec<String> = self
+                            .store
+                            .channel_attachments(ch)
+                            .into_iter()
+                            .map(|a| a.id.clone())
+                            .collect();
+                        for id in att_ids {
+                            self.ensure_attachment_url(id);
+                        }
                     }
                     _ => {}
                 }
@@ -1309,7 +1361,7 @@ impl AppState {
             self.active_reaction_message = None;
             self.confirm_delete_message = None;
             self.composer_draft.clear();
-            self.pending_composer_text = Some(String::new());
+            self.pending_composer_text = Some((String::new(), None));
             self.target = Target::Channel;
             self.timeline_at_bottom = true;
             self.pending_scroll_to_bottom = false;
@@ -1353,7 +1405,7 @@ impl AppState {
             } else {
                 self.composer_draft.clear();
             }
-            self.pending_composer_text = Some(String::new());
+            self.pending_composer_text = Some((String::new(), None));
             self.stop_typing();
             self.typing.clear();
             self.active_reaction_message = None;
@@ -1373,7 +1425,7 @@ impl AppState {
                     content: std::mem::take(&mut self.composer_draft),
                 };
                 self.push_failed_draft(draft);
-                self.pending_composer_text = Some(String::new());
+                self.pending_composer_text = Some((String::new(), None));
                 self.notify(
                     "このチャンネルの投稿権限が変更されたため、入力中の本文を下書きに退避しました",
                 );
@@ -1451,9 +1503,17 @@ impl AppState {
                 true
             }
             AppEvent::SubmissionSucceeded { submission_id } => {
+                let submitted_channel = self
+                    .in_flight_submissions
+                    .iter()
+                    .find(|(id, _)| *id == submission_id)
+                    .map(|(_, draft)| draft.channel_id.clone());
                 self.in_flight_submissions
                     .retain(|(id, _)| *id != submission_id);
-                false
+                if let Some(ch) = submitted_channel {
+                    self.pending_attachments.retain(|a| a.channel_id != ch);
+                }
+                true
             }
             AppEvent::RestoreDraft {
                 submission_id,
@@ -1481,7 +1541,7 @@ impl AppState {
                         self.switch_composer_context(Some(&channel_id), target);
                     }
                     self.composer_draft = content.clone();
-                    self.pending_composer_text = Some(content);
+                    self.pending_composer_text = Some((content, None));
                 } else {
                     self.push_failed_draft(FailedDraft {
                         channel_id,
@@ -1598,6 +1658,15 @@ impl AppState {
                     modal.error = Some(err.clone());
                 }
                 self.notify(format!("チャンネル作成に失敗しました: {err}"));
+                true
+            }
+            AppEvent::AttachmentUrlResolved {
+                attachment_id,
+                download_url,
+            } => {
+                self.fetching_attachment_urls.remove(&attachment_id);
+                self.attachment_download_urls
+                    .insert(attachment_id, (download_url, Instant::now()));
                 true
             }
         }
@@ -2077,7 +2146,7 @@ impl AppState {
         };
         if self.composer_draft != next_draft || self.pending_composer_text.is_some() {
             self.composer_draft = next_draft.clone();
-            self.pending_composer_text = Some(next_draft);
+            self.pending_composer_text = Some((next_draft, None));
         }
     }
 
@@ -2120,6 +2189,15 @@ impl AppState {
         self.subscribe(ShapeId::Reactions(channel_id.clone()));
         self.subscribe(ShapeId::Attachments(channel_id.clone()));
         self.current_channel = Some(channel_id.clone());
+        let att_ids: Vec<String> = self
+            .store
+            .channel_attachments(&channel_id)
+            .into_iter()
+            .map(|a| a.id.clone())
+            .collect();
+        for id in att_ids {
+            self.ensure_attachment_url(id);
+        }
         self.timeline_at_bottom = true;
         self.pending_scroll_to_bottom = true;
         self.timeline_anchor_first_id = None;
@@ -2339,7 +2417,7 @@ impl AppState {
         }
         let content = message.content.clone();
         self.composer_draft = content.clone();
-        self.pending_composer_text = Some(content);
+        self.pending_composer_text = Some((content, None));
         self.target = Target::Edit(message_id);
     }
 
@@ -2465,7 +2543,7 @@ impl AppState {
                 self.push_failed_draft(displaced);
             }
             self.composer_draft = draft.content.clone();
-            self.pending_composer_text = Some(draft.content);
+            self.pending_composer_text = Some((draft.content, None));
             self.ensure_channel_cache();
         } else {
             let current_ch = self
@@ -2486,7 +2564,7 @@ impl AppState {
                     self.push_failed_draft(displaced);
                 }
                 self.composer_draft = draft.content.clone();
-                self.pending_composer_text = Some(draft.content);
+                self.pending_composer_text = Some((draft.content, None));
                 self.notify(
                     "元のチャンネルにアクセスできないため、現在のチャンネルの入力欄に下書きを復元しました",
                 );
@@ -2500,24 +2578,29 @@ impl AppState {
 
     /// 入力欄のメッセージを送信または編集する。送信を開始した場合は `true` を返す。
     pub fn submit_message(&mut self, content: String) -> bool {
-        if content.trim().is_empty() && self.pending_attachments.is_empty() {
+        let Some(channel_id) = self.current_channel.clone() else {
+            self.notify("先にチャンネルを開いてください");
+            return false;
+        };
+        let cur_attachments: Vec<&PendingAttachment> = self
+            .pending_attachments
+            .iter()
+            .filter(|a| a.channel_id == channel_id && a.session_gen == self.session_gen)
+            .collect();
+        if content.trim().is_empty() && cur_attachments.is_empty() {
             return false;
         }
-        if self.pending_attachments.iter().any(|a| a.is_uploading) {
+        if cur_attachments.iter().any(|a| a.is_uploading) {
             self.notify("添付ファイルをアップロード中です。完了をお待ちください");
             return false;
         }
-        if self.pending_attachments.iter().any(|a| a.error.is_some()) {
+        if cur_attachments.iter().any(|a| a.error.is_some()) {
             self.notify(
                 "アップロードに失敗した添付ファイルがあります。削除するか再試行してください",
             );
             return false;
         }
 
-        let Some(channel_id) = self.current_channel.clone() else {
-            self.notify("先にチャンネルを開いてください");
-            return false;
-        };
         if self
             .store
             .channel(&channel_id)
@@ -2540,17 +2623,20 @@ impl AppState {
             .remove(&(channel_id.clone(), target.clone()));
         self.stop_typing();
 
-        let attachment_ids: Vec<String> = self
-            .pending_attachments
-            .iter()
-            .filter_map(|a| a.attachment_id.clone())
-            .collect();
+        let attachment_ids: Vec<String> = if !matches!(target, Target::Edit(_)) {
+            self.pending_attachments
+                .iter()
+                .filter(|a| a.channel_id == channel_id && a.session_gen == self.session_gen)
+                .filter_map(|a| a.attachment_id.clone())
+                .collect()
+        } else {
+            Vec::new()
+        };
         let attachment_ids_opt = if attachment_ids.is_empty() {
             None
         } else {
             Some(attachment_ids)
         };
-        self.pending_attachments.clear();
 
         if matches!(target, Target::Edit(_)) {
             let next_target = match &self.thread {
@@ -2637,34 +2723,171 @@ impl AppState {
         true
     }
 
+    pub fn current_channel_attachments(&self) -> Vec<&PendingAttachment> {
+        let Some(ch) = &self.current_channel else {
+            return Vec::new();
+        };
+        self.pending_attachments
+            .iter()
+            .filter(|a| a.channel_id == *ch && a.session_gen == self.session_gen)
+            .collect()
+    }
+
+    pub fn attachment_download_url(&self, attachment_id: &str) -> Option<String> {
+        self.attachment_download_urls
+            .get(attachment_id)
+            .filter(|(_, fetched_at)| fetched_at.elapsed().as_secs() < 3000)
+            .map(|(url, _)| url.clone())
+    }
+
+    pub fn ensure_attachment_url(&mut self, attachment_id: String) {
+        if self.attachment_download_url(&attachment_id).is_some() {
+            return;
+        }
+        if self.fetching_attachment_urls.contains(&attachment_id) {
+            return;
+        }
+        let Some(api) = self.api.clone() else {
+            return;
+        };
+        self.fetching_attachment_urls.insert(attachment_id.clone());
+        let tx = self.event_tx.clone();
+        let session_gen = self.session_gen;
+        let att_id = attachment_id.clone();
+        self.spawn_session_task(async move {
+            match api.get_attachment_url(&att_id).await {
+                Ok(res) => {
+                    let _ = tx.send(DesktopEvent::App {
+                        session_gen,
+                        event: AppEvent::AttachmentUrlResolved {
+                            attachment_id: att_id,
+                            download_url: res.download_url,
+                        },
+                    });
+                }
+                Err(err) => {
+                    eprintln!("添付ファイル URL の解決に失敗しました: {err:#}");
+                }
+            }
+        });
+    }
+
     // --- 添付ファイル ---
 
     /// ローカルファイルパスから添付ファイルを追加する。
     pub fn add_attachment_from_path(&mut self, path: std::path::PathBuf) {
-        if self.pending_attachments.len() >= 10 {
+        if self.current_channel_attachments().len() >= 10 {
             self.notify("添付できるファイルは最大10件までです");
             return;
         }
-        let Ok(metadata) = std::fs::metadata(&path) else {
+        let Ok(metadata) = std::fs::symlink_metadata(&path) else {
             self.notify("ファイル情報を取得できませんでした");
             return;
         };
+        if !metadata.is_file() {
+            self.notify("通常のファイルのみ添付できます");
+            return;
+        }
         let file_size = metadata.len() as i64;
         if file_size > 50 * 1024 * 1024 {
             self.notify("ファイルサイズが上限(50MB)を超えています");
             return;
         }
-        let Ok(bytes) = std::fs::read(&path) else {
-            self.notify("ファイルを読み込めませんでした");
+        let Some(channel_id) = self.current_channel.clone() else {
+            self.notify("チャンネルを開いてからファイルを添付してください");
             return;
         };
+        let Some(api) = self.api.clone() else {
+            return;
+        };
+        let local_id = uuid::Uuid::new_v4().to_string();
         let file_name = path
             .file_name()
             .and_then(|n| n.to_str())
             .unwrap_or("file")
             .to_string();
         let content_type = guess_content_type(&file_name).to_string();
-        self.add_attachment_from_bytes(file_name, content_type, bytes);
+
+        self.pending_attachments.push(PendingAttachment {
+            local_id: local_id.clone(),
+            channel_id: channel_id.clone(),
+            session_gen: self.session_gen,
+            file_name: file_name.clone(),
+            file_size,
+            content_type: content_type.clone(),
+            attachment_id: None,
+            is_uploading: true,
+            error: None,
+        });
+
+        let session_gen = self.session_gen;
+        let tx = self.event_tx.clone();
+        self.spawn_session_task(async move {
+            let read_res = tokio::task::spawn_blocking(move || std::fs::read(&path)).await;
+            let bytes = match read_res {
+                Ok(Ok(bytes)) => bytes,
+                _ => {
+                    let _ = tx.send(DesktopEvent::App {
+                        session_gen,
+                        event: AppEvent::AttachmentUploadFailed {
+                            local_id,
+                            error: "ファイルを読み込めませんでした".into(),
+                        },
+                    });
+                    return;
+                }
+            };
+            if bytes.len() > 50 * 1024 * 1024 {
+                let _ = tx.send(DesktopEvent::App {
+                    session_gen,
+                    event: AppEvent::AttachmentUploadFailed {
+                        local_id,
+                        error: "ファイルサイズが上限(50MB)を超えています".into(),
+                    },
+                });
+                return;
+            }
+            let file_size = bytes.len() as i64;
+            let presign_res = api
+                .presign_attachment(&channel_id, &file_name, file_size, &content_type)
+                .await;
+            match presign_res {
+                Ok(presign) => {
+                    let upload_res = api
+                        .upload_attachment_bytes(&presign.upload_url, &content_type, bytes)
+                        .await;
+                    match upload_res {
+                        Ok(()) => {
+                            let _ = tx.send(DesktopEvent::App {
+                                session_gen,
+                                event: AppEvent::AttachmentUploadFinished {
+                                    local_id,
+                                    attachment_id: presign.attachment_id,
+                                },
+                            });
+                        }
+                        Err(err) => {
+                            let _ = tx.send(DesktopEvent::App {
+                                session_gen,
+                                event: AppEvent::AttachmentUploadFailed {
+                                    local_id,
+                                    error: err.to_string(),
+                                },
+                            });
+                        }
+                    }
+                }
+                Err(err) => {
+                    let _ = tx.send(DesktopEvent::App {
+                        session_gen,
+                        event: AppEvent::AttachmentUploadFailed {
+                            local_id,
+                            error: err.to_string(),
+                        },
+                    });
+                }
+            }
+        });
     }
 
     /// バイナリデータから添付ファイルを追加し、非同期アップロードを開始する。
@@ -2674,7 +2897,7 @@ impl AppState {
         content_type: String,
         bytes: Vec<u8>,
     ) {
-        if self.pending_attachments.len() >= 10 {
+        if self.current_channel_attachments().len() >= 10 {
             self.notify("添付できるファイルは最大10件までです");
             return;
         }
@@ -2689,6 +2912,8 @@ impl AppState {
         let file_size = bytes.len() as i64;
         self.pending_attachments.push(PendingAttachment {
             local_id: local_id.clone(),
+            channel_id: channel_id.clone(),
+            session_gen: self.session_gen,
             file_name: file_name.clone(),
             file_size,
             content_type: content_type.clone(),
@@ -2853,8 +3078,12 @@ impl AppState {
         let new_text = format!("{before}{insert_text}{after}");
         let new_caret = before.len() + insert_text.len();
         self.composer_draft = new_text.clone();
-        self.pending_composer_text = Some(new_text.clone());
+        self.pending_composer_text = Some((new_text.clone(), Some(new_caret)));
         Some((new_text, new_caret))
+    }
+
+    pub fn close_mention_autocomplete(&mut self) {
+        self.mention_autocomplete = None;
     }
 
     // --- 絵文字ピッカー ---
@@ -2869,9 +3098,14 @@ impl AppState {
         self.emoji_picker_query.clear();
     }
 
-    pub fn insert_emoji(&mut self, emoji: &str) {
-        self.composer_draft.push_str(emoji);
-        self.pending_composer_text = Some(self.composer_draft.clone());
+    pub fn insert_emoji(&mut self, emoji: &str, cursor: usize) {
+        let cursor = cursor.min(self.composer_draft.len());
+        let before = &self.composer_draft[..cursor];
+        let after = &self.composer_draft[cursor..];
+        let new_text = format!("{before}{emoji}{after}");
+        let new_caret = before.len() + emoji.len();
+        self.composer_draft = new_text.clone();
+        self.pending_composer_text = Some((new_text, Some(new_caret)));
         self.close_emoji_picker();
     }
 
@@ -2894,7 +3128,7 @@ impl AppState {
             modal.error = Some("チャンネル名を入力してください".to_string());
             return;
         }
-        if name.len() > 80 {
+        if name.chars().count() > 80 {
             modal.error = Some("チャンネル名は80文字以内で入力してください".to_string());
             return;
         }
@@ -2945,17 +3179,14 @@ impl AppState {
     }
 
     pub fn update_message_search_query(&mut self, query: String) {
-        self.ensure_channel_cache();
         let query_lower = query.trim().to_lowercase();
         let mut matches = Vec::new();
-        if !query_lower.is_empty() && self.current_channel.is_some() {
-            for msg in self.channel_cache.root_messages.iter() {
+        if !query_lower.is_empty()
+            && let Some(ch) = &self.current_channel
+        {
+            let channel_msgs = self.store.channel_messages(ch);
+            for msg in channel_msgs {
                 if msg.content.to_lowercase().contains(&query_lower) {
-                    matches.push(msg.id.clone());
-                }
-            }
-            for msg in self.channel_cache.thread_replies.iter() {
-                if msg.content.to_lowercase().contains(&query_lower) && !matches.contains(&msg.id) {
                     matches.push(msg.id.clone());
                 }
             }
@@ -2965,6 +3196,7 @@ impl AppState {
             matches,
             current_match_index: 0,
         });
+        self.scroll_to_current_search_match();
     }
 
     pub fn search_select_next(&mut self) {
@@ -2972,6 +3204,7 @@ impl AppState {
             && !ms.matches.is_empty()
         {
             ms.current_match_index = (ms.current_match_index + 1) % ms.matches.len();
+            self.scroll_to_current_search_match();
         }
     }
 
@@ -2981,6 +3214,17 @@ impl AppState {
         {
             ms.current_match_index =
                 (ms.current_match_index + ms.matches.len() - 1) % ms.matches.len();
+            self.scroll_to_current_search_match();
+        }
+    }
+
+    fn scroll_to_current_search_match(&mut self) {
+        let Some(ms) = &self.message_search else {
+            return;
+        };
+        if ms.matches.get(ms.current_match_index).is_some() {
+            self.timeline_render_limit = MAX_TIMELINE_RENDER_LIMIT;
+            self.ensure_channel_cache();
         }
     }
 
@@ -3325,7 +3569,13 @@ mod tests {
             Some(LoginPhase::Ready { error: Some(_) })
         ));
         assert!(state.composer_draft.is_empty());
-        assert_eq!(state.pending_composer_text.as_deref(), Some(""));
+        assert_eq!(
+            state
+                .pending_composer_text
+                .as_ref()
+                .map(|(s, _)| s.as_str()),
+            Some("")
+        );
         assert!(state.search_query.is_empty());
         assert_eq!(state.pending_search_text.as_deref(), Some(""));
         assert!(state.failed_drafts.is_empty());
@@ -3376,7 +3626,13 @@ mod tests {
         // 自分のメッセージ r1 は編集・削除確認できる
         state.start_edit("r1".into());
         assert_eq!(state.target, Target::Edit("r1".into()));
-        assert_eq!(state.pending_composer_text.as_deref(), Some("スレッド返信"));
+        assert_eq!(
+            state
+                .pending_composer_text
+                .as_ref()
+                .map(|(s, _)| s.as_str()),
+            Some("スレッド返信")
+        );
 
         // 編集中に他メッセージの start_edit や open_channel を呼んでも拒否され編集内容が保護される
         state.on_composer_changed("編集途中の内容".into());
@@ -4202,6 +4458,24 @@ mod tests {
             Some("チャンネル名を入力してください")
         );
 
+        // 81文字 (日本語) はエラー
+        state.create_channel_modal.as_mut().unwrap().channel_name = "あ".repeat(81);
+        state.submit_create_channel();
+        assert_eq!(
+            state
+                .create_channel_modal
+                .as_ref()
+                .unwrap()
+                .error
+                .as_deref(),
+            Some("チャンネル名は80文字以内で入力してください")
+        );
+
+        // 80文字 (日本語、UTF-8で240バイト) は80文字制限をパスして送信に進む
+        state.create_channel_modal.as_mut().unwrap().channel_name = "あ".repeat(80);
+        state.submit_create_channel();
+        assert!(state.create_channel_modal.as_ref().unwrap().in_flight);
+
         state.close_create_channel_modal();
         assert!(state.create_channel_modal.is_none());
     }
@@ -4234,22 +4508,87 @@ mod tests {
                         "created_at": "2026-11-01 03:03:00"
                     }),
                 ),
+                (
+                    "search_reply",
+                    json!({
+                        "id": "search_reply",
+                        "channel_id": "c1",
+                        "parent_id": "search_m1",
+                        "user_id": "u1",
+                        "content": "A threaded reply mentioning GPUI",
+                        "created_at": "2026-11-01 03:04:00"
+                    }),
+                ),
             ]),
         ));
 
         state.open_message_search();
         assert!(state.message_search.is_some());
 
+        // ルートメッセージだけでなくスレッド返信も網羅して検索できる
         state.update_message_search_query("GPUI".into());
         let ms = state.message_search.as_ref().unwrap();
-        assert_eq!(ms.matches.len(), 1);
+        assert_eq!(ms.matches.len(), 2);
         assert_eq!(ms.matches[0], "search_m1");
+        assert_eq!(ms.matches[1], "search_reply");
 
         state.search_select_next();
+        assert_eq!(
+            state.message_search.as_ref().unwrap().current_match_index,
+            1
+        );
         state.search_select_prev();
+        assert_eq!(
+            state.message_search.as_ref().unwrap().current_match_index,
+            0
+        );
 
         state.close_message_search();
         assert!(state.message_search.is_none());
+    }
+
+    #[test]
+    fn inserts_emoji_at_caret_position() {
+        let mut state = connected_state();
+        state.open_channel("c1".into());
+        state.on_composer_changed("Hello world".into());
+        // "Hello " の後ろ (cursor = 6) に "😀" を挿入
+        state.insert_emoji("😀", 6);
+        assert_eq!(
+            state.pending_composer_text,
+            Some(("Hello 😀world".to_string(), Some(6 + "😀".len())))
+        );
+        assert_eq!(state.composer_draft, "Hello 😀world");
+    }
+
+    #[test]
+    fn isolates_attachments_by_channel_and_preserves_on_failed_submit() {
+        let mut state = connected_state();
+        state.open_channel("c1".into());
+        state.pending_attachments.push(PendingAttachment {
+            local_id: "local_1".into(),
+            channel_id: "c1".into(),
+            session_gen: state.session_gen,
+            file_name: "test.png".into(),
+            file_size: 1024,
+            content_type: "image/png".into(),
+            attachment_id: Some("att_1".into()),
+            is_uploading: false,
+            error: None,
+        });
+        assert_eq!(state.current_channel_attachments().len(), 1);
+
+        // 別チャンネルを開くと c1 の添付は見えない
+        state.open_channel("c2".into());
+        assert_eq!(state.current_channel_attachments().len(), 0);
+
+        // c1 に戻ると見える
+        state.open_channel("c1".into());
+        assert_eq!(state.current_channel_attachments().len(), 1);
+
+        // ログアウト / セッションリセットでクリアされる
+        state.clear_session_state();
+        assert_eq!(state.pending_attachments.len(), 0);
     }
 
     #[test]

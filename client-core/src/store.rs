@@ -136,6 +136,14 @@ impl Store {
             .collect()
     }
 
+    /// チャンネル内の全添付ファイルを返す。
+    pub fn channel_attachments(&self, channel_id: &str) -> Vec<&Attachment> {
+        let Some(map) = self.attachments.get(channel_id) else {
+            return Vec::new();
+        };
+        map.values().collect()
+    }
+
     /// メッセージに紐づく添付ファイル一覧。
     pub fn attachments_for_message(&self, channel_id: &str, message_id: &str) -> Vec<&Attachment> {
         let Some(map) = self.attachments.get(channel_id) else {
@@ -174,12 +182,19 @@ impl Store {
         }
     }
 
-    fn visible_messages(&self, channel_id: &str) -> impl Iterator<Item = &Message> {
+    pub fn visible_messages(&self, channel_id: &str) -> impl Iterator<Item = &Message> {
         self.messages
             .get(channel_id)
             .into_iter()
             .flat_map(|rows| rows.values())
             .filter(|message| message.deleted_at.is_none())
+    }
+
+    /// チャンネル内の全メッセージ (ルートおよび全スレッド返信を含む) を古い順に返す。
+    pub fn channel_messages(&self, channel_id: &str) -> Vec<&Message> {
+        let mut messages: Vec<&Message> = self.visible_messages(channel_id).collect();
+        sort_messages(&mut messages);
+        messages
     }
 
     /// チャンネルのタイムライン (スレッド返信を除く) を古い順に返す。

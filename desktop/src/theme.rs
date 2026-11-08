@@ -122,6 +122,20 @@ pub struct Theme {
 }
 
 impl Theme {
+    pub fn selection_bg(&self) -> Hsla {
+        match self.mode {
+            ThemeMode::Dark => rgba(0x22d3ee44).into(),
+            ThemeMode::Light => rgba(0x0284c744).into(),
+        }
+    }
+
+    pub fn placeholder_color(&self) -> Hsla {
+        match self.mode {
+            ThemeMode::Dark => hsla(215.0 / 360.0, 0.20, 0.55, 0.7),
+            ThemeMode::Light => hsla(215.0 / 360.0, 0.20, 0.45, 0.7),
+        }
+    }
+
     pub fn from_mode(mode: ThemeMode) -> Self {
         match mode {
             ThemeMode::Dark => Self::dark(),

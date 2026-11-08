@@ -47,6 +47,10 @@ pub enum InputEvent {
     Submit(String),
     /// `Esc` でキャンセルされた。
     Cancel,
+    /// `↑` キーが押下された。
+    Up,
+    /// `↓` キーが押下された。
+    Down,
 }
 
 /// アプリ起動時に `TextInput` 用のキーバインドを登録する。
@@ -106,6 +110,8 @@ pub struct TextInput {
     last_line_height: Pixels,
     last_bounds: Option<Bounds<Pixels>>,
     is_selecting: bool,
+    pub intercept_vertical_arrows: bool,
+    pub theme: theme::Theme,
 }
 
 impl EventEmitter<InputEvent> for TextInput {}
@@ -140,6 +146,8 @@ impl TextInput {
             last_line_height: px(20.0),
             last_bounds: None,
             is_selecting: false,
+            intercept_vertical_arrows: false,
+            theme: theme::Theme::dark(),
         }
     }
 
@@ -247,13 +255,23 @@ impl TextInput {
     }
 
     fn up(&mut self, _: &Up, _: &mut Window, cx: &mut Context<Self>) {
+        if self.intercept_vertical_arrows {
+            cx.emit(InputEvent::Up);
+            return;
+        }
         let target = self.vertical_move_target(-1);
         self.move_to(target, cx);
+        cx.emit(InputEvent::Up);
     }
 
     fn down(&mut self, _: &Down, _: &mut Window, cx: &mut Context<Self>) {
+        if self.intercept_vertical_arrows {
+            cx.emit(InputEvent::Down);
+            return;
+        }
         let target = self.vertical_move_target(1);
         self.move_to(target, cx);
+        cx.emit(InputEvent::Down);
     }
 
     fn vertical_move_target(&self, delta_rows: isize) -> usize {
@@ -675,7 +693,7 @@ impl Element for TextElement {
             let run = TextRun {
                 len: placeholder.len(),
                 font: style.font(),
-                color: theme::placeholder_color(),
+                color: input.theme.placeholder_color(),
                 background_color: None,
                 underline: None,
                 strikethrough: None,
@@ -785,7 +803,7 @@ impl Element for TextElement {
                 let y = bounds.top() + line_height * (vis_idx as f32);
                 cursor_quad = Some(fill(
                     Bounds::new(point(x, y), size(px(2.0), line_height)),
-                    theme::ACCENT,
+                    input.theme.accent,
                 ));
             }
         } else {
@@ -798,7 +816,7 @@ impl Element for TextElement {
                     let y = bounds.top() + line_height * (vis_idx as f32);
                     selections.push(fill(
                         Bounds::from_corners(point(x1, y), point(x2, y + line_height)),
-                        theme::selection_bg(),
+                        input.theme.selection_bg(),
                     ));
                 }
             }
@@ -873,9 +891,9 @@ impl Render for TextInput {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let focused = self.focus_handle.is_focused(window);
         let border_color = if focused {
-            theme::BORDER_ACCENT
+            self.theme.border_accent
         } else {
-            theme::BORDER
+            self.theme.border
         };
 
         div()
@@ -906,7 +924,7 @@ impl Render for TextInput {
             .on_mouse_up(MouseButton::Left, cx.listener(Self::on_mouse_up))
             .on_mouse_up_out(MouseButton::Left, cx.listener(Self::on_mouse_up))
             .on_mouse_move(cx.listener(Self::on_mouse_move))
-            .bg(theme::BG_SURFACE)
+            .bg(self.theme.bg_surface)
             .border_1()
             .border_color(border_color)
             .rounded_md()
@@ -914,7 +932,7 @@ impl Render for TextInput {
             .py_2()
             .text_sm()
             .line_height(px(20.0))
-            .text_color(theme::TEXT_PRIMARY)
+            .text_color(self.theme.text_primary)
             .child(TextElement { input: cx.entity() })
     }
 }

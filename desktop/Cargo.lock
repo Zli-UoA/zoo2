@@ -7586,6 +7586,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "emojis",
+ "futures",
  "gpui",
  "jiff",
  "notify-rust",
