@@ -335,3 +335,7 @@ Worker のファイル名が同じまま CSP が変わる場合、SW の Cache A
    `S3_PUBLIC_ENDPOINT` にパス接頭辞（例: `https://attachments.zliusercontent.com/storage`）を設定した場合、プロキシ側で接頭辞を除去して R2 のルートへ転送する必要があります。
 4. **フロントエンド CSP への登録**:
    ブラウザが直接 PUT / GET 通信する先が公開ドメインになるため、フロントエンドの環境変数 `CSP_STORAGE_SRC` にその公開オリジン（例: `https://attachments.zliusercontent.com`）を指定してください。
+
+### 共通絵文字サービス
+
+`compose.stg.yaml` は `EMOJI_SERVICE_URL` と任意の `EMOJI_CACHE_FILE` をbackendへ渡す。`EMOJI_SERVICE_URL=https://emoji.zli.works` で共有サービスへ切り替える。画像の表示にはfrontendの `CSP_APP_IMAGE_SRC=https://emoji.zli.works https://emoji.zliusercontent.com` を設定する。既存添付画像の `CSP_STORAGE_SRC` は変更しない。ディスクキャッシュを使う場合は `EMOJI_CACHE_FILE` の保存先へ書き込み可能な永続ボリュームを別途マウントする。未設定・空のキャッシュパスは無効扱いとする。

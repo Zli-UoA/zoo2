@@ -317,3 +317,39 @@ jobs:
         working-directory: .
         run: docker compose -f infra/db/compose.yml down -v
 
+
+  shared-emoji-projection:
+    needs: runner
+    runs-on: ${{ (github.event.pull_request.head.repo.fork || github.event_name == 'merge_group') && 'ubuntu-latest' || fromJSON(needs.runner.outputs.docker-runs-on || '"ubuntu-latest"') }}
+    timeout-minutes: 45
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: root
+          POSTGRES_PASSWORD: emoji-local-test
+          POSTGRES_DB: emoji_projection_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U root -d emoji_projection_test"
+          --health-interval 5s --health-timeout 5s --health-retries 20
+    env:
+      EMOJI_TEST_DATABASE_URL: postgres://root:emoji-local-test@127.0.0.1:5432/emoji_projection_test
+    steps:
+      - uses: actions/checkout@v7
+      - name: Read Rust toolchain
+        id: rust-toolchain
+        run: echo "channel=$(sed -n 's/^channel = "\(.*\)"$/\1/p' rust-toolchain.toml)" >> "$GITHUB_OUTPUT"
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ steps.rust-toolchain.outputs.channel }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: backend
+          shared-key: backend-check
+      - name: Apply disposable database schema
+        run: psql "$EMOJI_TEST_DATABASE_URL" -v ON_ERROR_STOP=1 -f infra/db/schema.sql
+      - name: Check shared emoji display projection
+        working-directory: backend
+        run: cargo test --test emoji_service_test --locked -- --include-ignored

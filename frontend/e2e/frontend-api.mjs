@@ -243,7 +243,10 @@ const server = createSecureServer(tls, async (req, res) => {
       res.on("close", () => streams.delete(stream));
       return;
     }
-    res.end(JSON.stringify([...rows.map((row) => packet(name, row)), control()]));
+    // Continuation requests must not replay the initial inserts: duplicate
+    // inserts put TanStack collections into an error state after the snapshot.
+    const snapshot = url.searchParams.get("offset") === "-1" || !url.searchParams.has("offset");
+    res.end(JSON.stringify([...(snapshot ? rows.map((row) => packet(name, row)) : []), control()]));
     return;
   }
   let body = {};
