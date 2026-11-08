@@ -760,7 +760,9 @@
     "cancel": "Cancel",
     "category": "Category",
     "aliases": "Aliases (comma separated)",
-    "uncategorized": "Uncategorized"
+    "uncategorized": "Uncategorized",
+    "serviceHint": "Register and edit emoji in the shared management service.",
+    "manageService": "Open emoji management"
   },
   "appConsole": {
     "title": "App management",

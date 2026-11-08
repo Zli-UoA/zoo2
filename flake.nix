@@ -78,6 +78,7 @@
             pkg-config
             rust-analyzer
             atlas
+            postgresql_16
             # Android (frontend-compose) の Gradle ビルド。Gradle 本体はラッパーを使う
             jdk21
             # infra/terraform（R2）。CI の TOFU_VERSION はこの版にそろえる
