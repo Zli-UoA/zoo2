@@ -23,12 +23,21 @@ pub async fn init_db(database_url: &str) -> Result<toasty::Db, toasty::Error> {
     ));
     // 接続数を絞りたい環境（dispatcher を複数台動かす・max_connections が小さい）向け。
     // 未設定ならドライバの既定（論理 CPU 数 × 2）。
-    if let Some(n) = std::env::var("DB_MAX_POOL_SIZE")
+    match std::env::var("DB_MAX_POOL_SIZE")
         .ok()
-        .and_then(|v| v.trim().parse::<usize>().ok())
-        .filter(|n| *n > 0)
+        .map(|v| v.trim().to_owned())
     {
-        builder.max_pool_size(n);
+        Some(v) if !v.is_empty() => match v.parse::<usize>() {
+            Ok(n) if n > 0 => {
+                builder.max_pool_size(n);
+            }
+            // 書き間違いを黙って既定値にしない。
+            _ => tracing::warn!(
+                value = v,
+                "Invalid DB_MAX_POOL_SIZE; using the driver default"
+            ),
+        },
+        _ => {}
     }
     let db = builder.connect(database_url).await?;
 
