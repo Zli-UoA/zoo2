@@ -29,6 +29,8 @@ pub struct OidcUserInfo {
     pub name: Option<String>,
     #[serde(default)]
     pub email: Option<String>,
+    #[serde(default)]
+    pub picture: Option<String>,
 }
 
 /// OIDC トークンのクレーム定義 (RFC 9068 適合)
@@ -43,7 +45,23 @@ pub struct OidcClaims {
     pub preferred_username: Option<String>,
     pub name: Option<String>,
     pub email: Option<String>,
+    #[serde(default)]
+    pub picture: Option<String>,
     pub scope: Option<serde_json::Value>,
+}
+
+impl OidcClaims {
+    pub fn has_scope(&self, expected: &str) -> bool {
+        match self.scope.as_ref() {
+            Some(serde_json::Value::String(scopes)) => {
+                scopes.split_ascii_whitespace().any(|s| s == expected)
+            }
+            Some(serde_json::Value::Array(scopes)) => {
+                scopes.iter().any(|s| s.as_str() == Some(expected))
+            }
+            _ => false,
+        }
+    }
 }
 
 /// JWKS / UserInfo エンドポイントのキャッシュ

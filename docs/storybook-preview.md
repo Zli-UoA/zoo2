@@ -98,4 +98,4 @@ preview だけを削除し、production や他の PR のデプロイは削除し
 Settings → Environments から対応する `storybook-pr-<PR番号>` も削除します。
 この手順は API の仕様に基づきます。実際のプロジェクトでの削除は未検証です。
 
-Compose for Web の実験は終了しました。PR プレビューは React の Storybook を公開し、JDK・Gradle のセットアップと Kotlin/Wasm の生成を行いません。既存の Kotlin 切替・カタログは実験資料として残りますが、通常のプレビューでは利用対象にしません。Compose for Android は開発を継続します。[現在の方針](compose-multiplatform.md#現在の方針) を参照してください。
+Storybook は React を対象に公開します。Compose for Android の開発は継続します。[Android 版](android.md) を参照してください。

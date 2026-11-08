@@ -1,4 +1,4 @@
-/** Shared between React story decorators and the Kotlin host. */
+/** Shared layout classes for React stories. */
 export const storySurfaces = {
   "Components/Dialog": "flex min-h-96 items-center justify-center bg-background p-6",
   "Components/AlertDialog": "flex min-h-96 items-center justify-center bg-background p-6",
