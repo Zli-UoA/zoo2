@@ -6,6 +6,7 @@ import {
   type MouseEvent as ReactMouseEvent,
   type RefObject,
   type ComponentProps,
+  type ReactNode,
 } from "react";
 import { useTranslation } from "react-i18next";
 import {
@@ -152,17 +153,6 @@ export function NotificationCard({
     group.actorIds.length > 1
       ? t("notifications.actors", { actor, count: group.actorIds.length - 1 })
       : actor;
-  const dateFormatter = useMemo(
-    () =>
-      new Intl.DateTimeFormat(INTL_LOCALES[locale], {
-        month: "short",
-        day: "numeric",
-        hour: "2-digit",
-        minute: "2-digit",
-        hourCycle: "h23",
-      }),
-    [locale],
-  );
   function openFromRow(event: ReactMouseEvent<HTMLLIElement>) {
     // The real link remains the keyboard target; text selection and nested controls keep native behavior.
     if (
@@ -215,16 +205,9 @@ export function NotificationCard({
       className={channel && message ? "cursor-pointer" : ""}
     >
       <div className="flex items-start gap-3">
-        <div className="relative shrink-0">
-          <AppAvatar
-            label={actor}
-            title={actor}
-            isBot={users.get(group.actorIds[0]!)?.is_bot}
-            src={users.get(group.actorIds[0]!)?.avatar_url}
-            className="size-10 sm:size-9"
-          />
-          <span className="absolute -right-1 -bottom-1 flex size-5 items-center justify-center rounded-full bg-muted text-muted-foreground ring-2 ring-background">
-            {avatarReaction ? (
+        <NotificationAvatar
+          badge={
+            avatarReaction ? (
               <span
                 role="img"
                 aria-label={kitchenLabel(avatarReaction)}
@@ -240,11 +223,18 @@ export function NotificationCard({
               </span>
             ) : (
               <Icon className="size-3" aria-hidden="true" />
-            )}
-          </span>
-        </div>
+            )
+          }
+        >
+          <AppAvatar
+            label={actor}
+            title={actor}
+            isBot={users.get(group.actorIds[0]!)?.is_bot}
+            src={users.get(group.actorIds[0]!)?.avatar_url}
+          />
+        </NotificationAvatar>
         <div className="min-w-0 flex-1 space-y-2 sm:space-y-1">
-          <div className="flex min-w-0 items-center gap-2">
+          <NotificationCardHeader createdAt={notification.created_at} read={!unreadIds.length}>
             <div className="flex min-w-0 flex-1 items-baseline gap-2">
               <p
                 className="min-w-0 truncate text-sm font-semibold"
@@ -257,16 +247,8 @@ export function NotificationCard({
                   APP
                 </span>
               ) : null}
-              <time
-                className="shrink-0 text-[11px] text-muted-foreground tabular-nums"
-                dateTime={normalizeUtcTimestamp(notification.created_at)}
-                title={fullTimestamp(notification.created_at, locale)}
-              >
-                {dateFormatter.format(parseUtcTimestamp(notification.created_at))}
-              </time>
             </div>
-            <NotificationReadStatus read={!unreadIds.length} />
-          </div>
+          </NotificationCardHeader>
           {channel && message ? (
             <blockquote>
               <div className="mfm-body line-clamp-3 whitespace-pre-wrap break-words text-sm leading-relaxed">
@@ -328,5 +310,59 @@ export function NotificationReadStatus({ read }: { read: boolean }) {
       role="img"
       aria-label={t("notifications.unreadStatus")}
     />
+  );
+}
+
+/** Channel avatar dimensions and reaction badge shared by both notification sources. */
+export function NotificationAvatar({ children, badge }: { children: ReactNode; badge: ReactNode }) {
+  return (
+    <div className="relative shrink-0 [&_[data-slot=avatar]]:size-10 sm:[&_[data-slot=avatar]]:size-9">
+      {children}
+      <span className="absolute -right-1 -bottom-1 flex size-5 items-center justify-center rounded-full bg-muted text-muted-foreground ring-2 ring-background">
+        {badge}
+      </span>
+    </div>
+  );
+}
+
+export function NotificationTimestamp({ createdAt }: { createdAt: string }) {
+  const { locale } = useLocale();
+  const formatter = useMemo(
+    () =>
+      new Intl.DateTimeFormat(INTL_LOCALES[locale], {
+        month: "short",
+        day: "numeric",
+        hour: "2-digit",
+        minute: "2-digit",
+        hourCycle: "h23",
+      }),
+    [locale],
+  );
+  return (
+    <time
+      className="shrink-0 text-[11px] text-muted-foreground tabular-nums"
+      dateTime={normalizeUtcTimestamp(createdAt)}
+      title={fullTimestamp(createdAt, locale)}
+    >
+      {formatter.format(parseUtcTimestamp(createdAt))}
+    </time>
+  );
+}
+
+export function NotificationCardHeader({
+  children,
+  createdAt,
+  read,
+}: {
+  children: ReactNode;
+  createdAt: string;
+  read: boolean;
+}) {
+  return (
+    <div className="flex min-w-0 items-center gap-2">
+      {children}
+      <NotificationTimestamp createdAt={createdAt} />
+      <NotificationReadStatus read={read} />
+    </div>
   );
 }

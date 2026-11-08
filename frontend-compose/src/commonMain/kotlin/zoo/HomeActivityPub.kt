@@ -154,7 +154,7 @@ internal fun Row.homeRows(key: String): List<Row> =
 
 /** Remote images always use the server cache; malformed IDs keep the ordinary initials. */
 @Composable
-fun ActivityPubAvatar(avatar: Row?, name: String, modifier: Modifier = Modifier) {
+fun ActivityPubAvatar(avatar: Row?, name: String, modifier: Modifier = Modifier, size: Dp = 32.dp) {
     val app = LocalApp.current
     val id = avatar?.text("image_id").orEmpty()
     val valid = Regex("^[a-f0-9]{64}$").matches(id)
@@ -177,7 +177,7 @@ fun ActivityPubAvatar(avatar: Row?, name: String, modifier: Modifier = Modifier)
     }
     Box(
         modifier
-            .size(32.dp)
+            .size(size)
             .clip(androidx.compose.foundation.shape.CircleShape)
             .then(
                 webControlModifier("img", busy = loading, attributes = mapOf("aria-label" to name))
@@ -190,7 +190,7 @@ fun ActivityPubAvatar(avatar: Row?, name: String, modifier: Modifier = Modifier)
                 Modifier.fillMaxSize(),
                 contentScale = androidx.compose.ui.layout.ContentScale.Crop,
             )
-        else Avatar(obj("display_name" to name), size = 32.dp)
+        else Avatar(obj("display_name" to name), size = size)
     }
 }
 

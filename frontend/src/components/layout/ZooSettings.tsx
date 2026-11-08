@@ -20,6 +20,7 @@ import { LanguageToggle } from "../i18n/LanguageToggle";
 import { ModeToggle } from "../theme/ModeToggle";
 import { PwaControls } from "../pwa/PwaControls";
 import { AppsPanel } from "../chat/AppsDialog";
+import { CallSettingsDevices } from "../call/CallSettingsDevices";
 import { CallSoundsSwitch } from "../call/CallSoundsSwitch";
 import { WorkspaceMembers } from "./WorkspaceMembers";
 import { Button } from "../ui/button";
@@ -125,6 +126,10 @@ export function ZooSettings() {
               >
                 <CallSoundsSwitch label={t("call.soundsLabel")} />
               </SettingRow>
+            </div>
+            <div className="mt-4 rounded-lg border p-4">
+              <p className="mb-3 text-xs text-muted-foreground">{t("call.defaultsDescription")}</p>
+              <CallSettingsDevices />
             </div>
           </Tabs.Panel>
           <Tabs.Panel value="activitypub" className="min-h-0">
