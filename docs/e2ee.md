@@ -47,7 +47,7 @@
 - 編集は、置き換えた本文を暗号化して送る。**編集履歴は持たない**。
 - 他のユーザーの検証は、最初は **TOFU だけ**にする。マスター鍵が変わったら、再検証するまでそのユーザーへの配布を止める。絵文字 SAS は後続（[#368](https://github.com/Zli-UoA/zoo2/issues/368)）。
 - 方式は Matrix 型の **Megolm** にする。MLS は使わない。
-- React の変更は、各 PR で Compose（wasmJs と Android）と TUI にも反映する（[AGENTS.md](../AGENTS.md) の追従ルールと同じ）。
+- React の変更は、各 PR で Compose Android と TUI にも反映する（[AGENTS.md](../AGENTS.md) の追従ルールと同じ。Compose for Web は実験を中止したので、wasmJs には反映しない）。
 - 初期版では、暗号化チャンネルへの**添付を禁止**する。クライアントで添付ボタンを出さないだけでなく、サーバーの添付 API でも拒否する。暗号化した添付（[#364](https://github.com/Zli-UoA/zoo2/issues/364)）を実装したら、この禁止を外す。
 
 レビューで足した 5 点は、それぞれ次の節で仕様にしています。
@@ -463,11 +463,11 @@ AuthZ 側（[AuthZ#94](https://github.com/Zli-UoA/AuthZ/issues/94)）の要件�
 2. AuthZ#94 の実装（AuthZ#95）をマージして配備する。新しいイメージの Pod は起動時に値を読むので、手で再起動しなくてよい。
 3. `curl -sS -D - https://account.zli.works/.well-known/webauthn` で、200、`cache-control: public, max-age=300`、本文 `{"origins":["https://zli.chat"]}` を確かめてから、#360 と #369 を進める。
 
-最初の配備で手で再起動しなくてよいのは、この順で入れた場合だけです。先にイメージを配備した場合は、値を足したあとに `kubectl -n authz rollout restart deployment/authz` が要ります。配備のあとで値を変えるとき（オリジンを足す、外す）も、必ず再起動します。ConfigMap は hash 付きの名前で生成していないので、値を変えても Pod は入れ替わらないためです。AuthZ の IngressRoute は `account.zli.works` へのすべてのパスをアプリに送るので、`/.well-known/webauthn` のためのルートは足さなくてよいです。AuthZ 側の手順は AuthZ#95 の `docs/deployment.md` にあります。
+最初の配備で手で再起動しなくてよいのは、この順で入れた場合だけです。実際には、AuthZ#95 が先にマージされ（2026-11-09）、zoo2-infra#143 は後になりました。この場合は、zoo2-infra#143 をマージして反映を確かめたあと、`kubectl -n authz rollout restart deployment/authz` で再起動します。先にイメージを配備した場合は、値を足したあとに `kubectl -n authz rollout restart deployment/authz` が要ります。配備のあとで値を変えるとき（オリジンを足す、外す）も、必ず再起動します。ConfigMap は hash 付きの名前で生成していないので、値を変えても Pod は入れ替わらないためです。AuthZ の IngressRoute は `account.zli.works` へのすべてのパスをアプリに送るので、`/.well-known/webauthn` のためのルートは足さなくてよいです。AuthZ 側の手順は AuthZ#95 の `docs/deployment.md` にあります。
 
 ### 配信するオリジン
 
-【決定】本番で zoo2 のフロントエンド（React と、同じオリジンの `/compose/` で動く Compose wasmJs）を配信するオリジンは `https://zli.chat` だけです。許可オリジンもこの 1 つにします。
+【決定】本番で zoo2 のフロントエンド（React。実験を中止した Compose wasmJs は配信しない）を配信するオリジンは `https://zli.chat` だけです。許可オリジンもこの 1 つにします。
 
 - zoo2-infra main（86893aa）では、本番の IngressRoute（`kubernetes/apps/zoo2/overlays/production/app/ingressroute.yaml`）が振り分けるのは ``Host(`zli.chat`)`` だけ。`www.zli.chat` の IngressRoute とリダイレクトは zoo2-infra にない。
 - Tunnel には、PR Preview のためのワイルドカード `*.zli.chat` の公開ルート（Traefik へ送る）と、同じ範囲の Cloudflare Access のアプリケーションがある（zoo2-infra の `docs/installation.md`「PR Previewのワイルドカード」）。`www.zli.chat` もこのワイルドカードに含まれる。`www.zli.chat` だけの設定はない。
@@ -494,7 +494,7 @@ AuthZ 側（[AuthZ#94](https://github.com/Zli-UoA/AuthZ/issues/94)）の要件�
 | 開発 | `http://localhost:4321/api/auth`（`frontend/.env.example` の例）。zoo2 も `localhost` で動かす | `localhost`。zoo2 と同じ RP ID なので ROR は使わない |
 | Playwright（#363 の仮想認証器） | 開発と同じく `localhost` のホスト | `localhost` |
 
-- React はビルド時の `VITE_OIDC_ISSUER`（`frontend/src/lib/config.ts` の `config.oidc.issuer`）から決める。本番の値は、`.github/workflows/cd-images.yaml` がリポジトリの Variables の `VITE_OIDC_ISSUER` から渡す。Compose wasmJs は React のページ（`ComposeFrontend`）の中で動き、同じ設定を使う。Android はログインに使う issuer（`MainActivity.kt` の既定は `https://account.zli.works/api/auth`）から同じように決める。
+- React はビルド時の `VITE_OIDC_ISSUER`（`frontend/src/lib/config.ts` の `config.oidc.issuer`）から決める。本番の値は、`.github/workflows/cd-images.yaml` がリポジトリの Variables の `VITE_OIDC_ISSUER` から渡す。Android はログインに使う issuer（`MainActivity.kt` の既定は `https://account.zli.works/api/auth`）から同じように決める。
 - `config.oidc` がない（OIDC を設定していない開発環境や Preview）ときは、パスキーでの解錠を出さず、リカバリーキーだけにする。
 - IP アドレスは RP ID にできない。既存の OIDC の E2E（`frontend/playwright.oidc.config.ts`）はモック IdP の issuer を `127.0.0.1` にしているが、#363 では issuer のホストを `localhost` にする。仮想認証器のクレデンシャルの RP ID も `localhost` にする。
 - 開発では ROR を使わないので、AuthZ の `/.well-known/webauthn` も要らない。AuthZ は `localhost` を許可オリジンとして受け付けず、ブラウザーが取得する `https://localhost/.well-known/webauthn`（ポートなし）も開発の AuthZ には届かない（AuthZ#95 の `docs/architecture.md`）。
@@ -634,7 +634,7 @@ const prf = credential.getClientExtensionResults().prf?.results?.first;
 | 409 | `E2EE_CROSS_SIGNING_CONFLICT` | クロス署名鍵の差し替えで、`expected_keys` が今の鍵と違う | 今の公開鍵 |
 | 409 | `E2EE_SSSS_CONFLICT` | SSSS の既定の鍵か `secrets_revision` が、クライアントが前提にした値から変わっていた（鍵バックアップへのアップロードを含む） | `default_key_id`、`secrets_revision` |
 | 409 | `E2EE_DEVICE_EXISTS` | 同じ `device_id` の端末が削除済み、または同じ `device_id` で `device_keys` の内容が違う（削除されていない同じ内容の再送は 200） | |
-| 400 | `E2EE_LIMIT_EXCEEDED` | 端末の数、ワンタイム鍵とフォールバック鍵の数、署名の件数、鍵の JSON のサイズ、`to-device` の宛先の数が上限を超えた | `limit`（超えた上限の名前） |
+| 400 | `E2EE_LIMIT_EXCEEDED` | 端末の数、ワンタイム鍵とフォールバック鍵の数、署名の件数、鍵の JSON のサイズ、`to-device` の宛先の数と `content`（64 KiB）、`keys/claim` の宛先の数（1000 台）、`key_backup/keys` と `to_device/ack` の件数（1000 件）が上限を超えた。すべて同じコードで返す | `limit`（超えた上限の名前） |
 | 409 | `E2EE_KEY_EXISTS` | 同じ鍵 ID で内容が違うワンタイム鍵をアップロードした | |
 | 409 | `E2EE_STALE_REVISION` | 編集の `revision` が、今の行の `revision` + 1 ではない | `current_revision` |
 | 409 | `E2EE_PIN_CONFLICT` | `replace: false` で、同じ相手に、違うマスター鍵の TOFU のピンがすでにあり、そのピンを今のユーザー署名鍵で検証できる | `pin` |
@@ -705,7 +705,7 @@ const prf = credential.getClientExtensionResults().prf?.results?.first;
   - 応答は `{"undelivered": [...]}`（下のキューの上限で入れなかった宛先。なければ空）。
   - 同じ `(送信ユーザー, 送信端末, txn_id, 宛先)` の再送は 1 件にまとめる（冪等）。ack でメッセージ行を消すと冪等性が失われるので、送信の記録（`e2ee_to_device_txns`：送信ユーザー、送信端末、`txn_id`、宛先、作成日時）を 30 日残し、ack 後の再送は入れずに成功として扱う【提案】。送信の記録は、キューに入れた宛先にだけ書く（`undelivered` の宛先には書かない）ので、`undelivered` を同じ `txn_id` で送り直しても、入れられなかった宛先は通常どおり入る。重複した要求の応答の `undelivered` は、その時点で入れられなかった宛先を改めて返す（元の応答は覚えない）。
   - 【決定】1 件の `content` は 64 KiB まで。1 回の宛先は 100 端末までで、超える送信者は複数のリクエストに分ける（各リクエストに別の `txn_id`、冪等の単位は変わらない）。1 リクエストは最大 6.4 MiB で、Axum の既定のボディ上限（2 MB）を超えるので、このルートだけ 8 MiB に上げる。応答の `undelivered` は、リクエストごとに返す。
-  - 【決定】端末の数などの上限をサーバーで強制し、超えたら 400 `E2EE_LIMIT_EXCEEDED`（上限の名前を `limit` に入れる）で拒否する。数は【提案】で、#354 で決める：1 ユーザーの端末は削除済みを除いて 20 台まで（上限に達した登録では、サーバーが、最後に使ってから 30 日以上たった端末（`last_seen_at` か登録日時）のうち最も古いものを自動で削除して登録を受け付ける。自動削除は `DELETE /api/e2ee/devices/{device_id}` と同じ後処理（論理削除、ワンタイム鍵、フォールバック鍵、未受信の to-device メッセージの削除、参加しているすべての暗号化チャンネルの `membership_epoch` の増加、`device_id` の再利用禁止）を同じトランザクションで行う。`deleted_at` を入れるだけにすると、削除した端末がセッション鍵を持ったまま、削除後のメッセージを復号できてしまうため。なければ 400。30 日以内に使った端末が 20 台あるときは、利用者が別の端末の設定から削除するまで登録できない（端末一覧は #362 で、それまでは `DELETE /api/e2ee/devices/{device_id}` を直接呼ぶ。許容する）。ログインし直すたびに新しい端末になるので、古い端末が溜まって初回設定や失効ができなくなるのを防ぐ）。1 端末のワンタイム鍵とフォールバック鍵は合わせて 100 個まで。1 回のアップロードの署名は 1000 件まで。端末鍵と署名の JSON は 8 KiB まで。暗号化チャンネルを共有するだけの相手に大量の端末を登録され、送信側が各端末に鍵を送る負荷と、`keys/claim` の枯渇を防ぐため。
+  - 【決定】端末の数などの上限をサーバーで強制し、超えたら 400 `E2EE_LIMIT_EXCEEDED`（上限の名前を `limit` に入れる）で拒否する。数は【提案】で、#354 で決める：1 ユーザーの端末は削除済みを除いて 20 台まで。台数の確認、自動削除、登録は、ユーザー単位の `pg_advisory_xact_lock`（下の直列化の規則と同じキー）を取ったトランザクションで行う。取らないと、並列の登録が READ COMMITTED で全員 20 台未満と読んで 20 台を超えたり、同じ端末を重複して自動削除したりする（上限に達した登録では、サーバーが、最後に使ってから 30 日以上たった端末（`last_seen_at` か登録日時）のうち最も古いものを自動で削除して登録を受け付ける。自動削除は `DELETE /api/e2ee/devices/{device_id}` と同じ後処理（論理削除、ワンタイム鍵、フォールバック鍵、未受信の to-device メッセージの削除、参加しているすべての暗号化チャンネルの `membership_epoch` の増加、`device_id` の再利用禁止）を同じトランザクションで行う。`deleted_at` を入れるだけにすると、削除した端末がセッション鍵を持ったまま、削除後のメッセージを復号できてしまうため。なければ 400。30 日以内に使った端末が 20 台あるときは、利用者が別の端末の設定から削除するまで登録できない（端末一覧は #362 で、それまでは `DELETE /api/e2ee/devices/{device_id}` を直接呼ぶ。許容する）。ログインし直すたびに新しい端末になるので、古い端末が溜まって初回設定や失効ができなくなるのを防ぐ）。1 端末のワンタイム鍵とフォールバック鍵は合わせて 100 個まで。1 回のアップロードの署名は 1000 件まで。端末鍵と署名の JSON は 8 KiB まで。暗号化チャンネルを共有するだけの相手に大量の端末を登録され、送信側が各端末に鍵を送る負荷と、`keys/claim` の枯渇を防ぐため。
   - 初期版の `type` は `m.room.encrypted` だけ。宛先の端末が存在しない、または削除済みなら、その宛先は黙って捨てる（存在の推測を防ぐため）。
   - 【決定】宛先にできるのは、送信者自身の端末と、送信者と暗号化チャンネルを共有しているユーザーの端末だけ。範囲は[端末の Shape](#electric-の-shape) と同じ where（`$1` を送信者にしたもの）で決める。範囲外のユーザーと端末への宛先は、`keys/claim` と同じく、エラーにせずに捨てる。暗号化チャンネルを共有していないユーザーは、他人の端末のキューに書き込めない。応答は範囲外の宛先でも同じなので、応答の違いから端末が存在するかを推測することもできない。暗号化チャンネルを共有しているユーザーは、この規則では止まらない（下のキューの上限で量を抑える）。
   - 【決定】宛先の端末ごとに、受信確認されていないメッセージは 1000 件までにする。上限に達した端末への宛先は入れず、応答の `undelivered`（`[{"user_id", "device_id"}]`）で返す。リクエストのほかの宛先は通常どおり入れる。範囲内の端末は送信者が端末の Shape でもともと見ているので、上限に達したことを知らせても、端末が存在するかは漏れない（範囲外の宛先と、存在しない端末への宛先は、これまでどおり知らせずに捨てる）。送信者は `undelivered` の宛先を暗号ストアの送信待ちに記録し、間隔をあけて送り直す。セッションを作り直したら、古いセッションの送り直しはやめる。
@@ -729,14 +729,14 @@ const prf = credential.getClientExtensionResults().prf?.results?.first;
     - 足し方：採用版の `customIdTokenClaims` にはセッションが渡らないので使えない。`OAuthProviderExtension` の `claims.idToken`（`sessionId` が渡る）でセッションを読み、`authenticatedAt` を入れる。
     - claim を入れるのは、認可コードのグラント（`grantType === 'authorization_code'`）で発行する ID トークンだけにする。リフレッシュトークンのグラントで発行する ID トークンには入れない。リフレッシュのたびに今のセッションを読んで入れると、盗んだリフレッシュトークンで、利用者が別の場所で直前に認証した時刻の付いた ID トークンを取れてしまうため。
     - 試験：AuthZ#97 では、リフレッシュで発行した ID トークンに claim が入らないことを確かめる。#356 では、リフレッシュで発行した ID トークン（claim なし）を 403 にすることを確かめる。
-  - 【決定】`backend/src/routes/mod.rs` の CORS の許可ヘッダーに `X-Zoo-Reauth` を足す（#356）。本番は同一オリジン（`CORS_ALLOWED_ORIGINS` が空）なので効かないが、開発と #363 の Playwright（5173 から 8000）では足さないと、React と Compose wasmJs からの要求がプリフライトで拒否される。`docs/electric-sync-requirements.md` と `frontend/README.md` も許可ヘッダーを列挙しているので、#356 で合わせて直す。
+  - 【決定】`backend/src/routes/mod.rs` の CORS の許可ヘッダーに `X-Zoo-Reauth` を足す（#356）。本番は同一オリジン（`CORS_ALLOWED_ORIGINS` が空）なので効かないが、開発と #363 の Playwright（5173 から 8000）では足さないと、React からの要求がプリフライトで拒否される。`docs/electric-sync-requirements.md` と `frontend/README.md` も許可ヘッダーを列挙しているので、#356 で合わせて直す。
   - 【決定】Android と TUI は、ふだんのログインにデバイス認可グラント（device code）を使うので、そのままでは `max_age` を付けた ID トークンを取れない。この 2 つも、再認証のときだけ認可コードフロー（PKCE、`max_age=0`）を使う。Android は Custom Tabs で開き、`https` の App Links のリダイレクトで受け取る（AuthZ は本番でリダイレクト URI に `https:` だけを受け付けるので、カスタムスキームは登録できない）。リダイレクト先は `https://zli.chat/android/reauth-callback` とし、zoo2 のフロントエンドの nginx が `https://zli.chat/.well-known/assetlinks.json`（zoo の Android アプリに `delegate_permission/common.handle_all_urls` を与える）を配信する。今の `infra/frontend-nginx.conf` は `try_files $uri /index.html` なので、ファイルがないと `index.html` を 200 で返し、App Links の検証が失敗する。このパスには完全一致の `location` を置き、`application/json` で返し、ない場合は 404 にする。ファイルはイメージに含めるか、起動時に設定（パッケージ名と指紋）から作るかを #360 で決める。Android アプリの manifest には、このパスの `autoVerify` 付きの intent-filter を足す（どちらも #360。初回設定でも再認証が要るため）。【未検証】AuthZ からの 302 のリダイレクトで、Custom Tabs がアプリに処理を渡すかは #360 か #369 の実機で確かめる。TUI はブラウザーで開き、ループバックのリダイレクト（`http://127.0.0.1:<空いているポート>/callback`）で受け取る。SSH の先で TUI を動かしていてブラウザーが別のマシンにあると、ブラウザーからこの URL に届かない。その場合は、`ssh -L <ポート>:127.0.0.1:<ポート>` でポートを転送するか、初回設定や失効を Web か Android で行うよう、TUI が案内する（#360）。解錠はリカバリーキーだけで済むので影響しない。Web だけで失効させる形にしないのは、Compose と TUI にも同じ機能を入れる方針（#321）に合わせるため。そのために、次のことが要る（[AuthZ#97](https://github.com/Zli-UoA/AuthZ/issues/97)。[ロードマップ](#ロードマップ)）。
     - AuthZ（`src/lib/oauth-clients.ts`）は、本番ではリダイレクト URI に `https:` だけを受け付け、`http://127.0.0.1` は開発時だけ許している。このままでは TUI のループバックの URI を本番に登録できないので、AuthZ のコードと `docs/architecture.md` を変え、public client にループバックの `http`（RFC 8252 の 7.3）を許す。採用版の Provider は、認可のときにループバックのポートの違いを許す（`stripLoopbackRedirectPort`）ので、ポートは固定しなくてよい。
     - クライアントの登録は AuthZ の DB にあり、AuthZ の管理画面で行う（zoo2-infra の `docs/installation.md` の手順と同じ）。Android と TUI のクライアントに、認可コードのグラントとリダイレクト URI を足す。
   - 【決定】デスクトップ版（`desktop/`、`zoo2-desktop`。デバイスコードでログインする）は、最初の範囲では E2EE の対象にしない。AGENTS.md の追従の対象は TUI で、デスクトップ版は含まないため。デスクトップ版は端末を登録せず、暗号化チャンネルを「このクライアントでは暗号化チャンネルを表示できない」と表示する（[クライアントの構成](#クライアントの構成)）。この表示は #361 に入れる。#361 で暗号化チャンネルを作れるようになると、表示を変えていないデスクトップ版は空の `content` を表示してしまうため。対象にするときは、TUI と同じく zoo-crypto をネイティブで使い、再認証はループバックのリダイレクトで受け取る形になる（issue は未作成）。
   - 【決定】すでにある自己署名鍵かユーザー署名鍵を差し替えるときも、同じ直前の再認証を求める（403 `E2EE_REAUTH_REQUIRED`）。初めて登録するとき（初回設定）も、上のマスター鍵と同じく求める。端末だけの失効でもこの 2 つを差し替えるので（[失効の手順](#失効の手順)の 4）、失効には再認証が要る。
   - 【決定】`expected_keys`（`{"master", "self_signing", "user_signing"}` の今の公開鍵。ない鍵は `null`）を送り、今の鍵と違えば 409 `E2EE_CROSS_SIGNING_CONFLICT`。2 つの端末の失効が、互いの鍵を知らずに差し替えないようにするため。
-  - 【決定】`POST /api/e2ee/cross_signing/keys`、`POST /api/e2ee/secret_storage/keys`、`POST /api/e2ee/secret_storage/secrets`、`POST /api/e2ee/key_backup/versions`、`DELETE /api/e2ee/key_backup/versions/{version}` は、ユーザー単位の `pg_advisory_xact_lock`（同じキー）を取ってから、`expected_*` の照合と書き込みを同じトランザクションで行う。READ COMMITTED では、2 つの端末が同時に同じ値を読んで両方の照合を通り、後から書いた方が先の鍵を上書きしてしまうため。`expected_keys`、`expected_default_key_id`、`expected_secrets_revision`、`expected_current_version` を省略した要求は、初回の登録（今の鍵や版がないとき）でなければ 400 にする。
+  - 【決定】`POST /api/e2ee/cross_signing/keys`、`POST /api/e2ee/secret_storage/keys`、`POST /api/e2ee/secret_storage/secrets`、`POST /api/e2ee/key_backup/versions`、`POST /api/e2ee/devices`（台数の確認）は、ユーザー単位の `pg_advisory_xact_lock`（同じキー）を取ってから、`expected_*` の照合（`POST /api/e2ee/devices` を除く）と書き込みを同じトランザクションで行う。`DELETE /api/e2ee/key_backup/versions/{version}` も同じロックを取るが、`expected_*` は持たず、ロックを取ってからパスの `version` が今も消していない版かを読んで消す。READ COMMITTED では、2 つの端末が同時に同じ値を読んで両方の照合を通り、後から書いた方が先の鍵を上書きしてしまうため。`expected_keys`、`expected_default_key_id`、`expected_secrets_revision`、`expected_current_version` を省略した要求は（`expected_*` を持つ上の API で）、初回の登録（今の鍵や版がないとき）でなければ 400 にする。
   - 【決定】今の鍵と同じ公開鍵を送ったときは、`expected_keys` より先に判定し、何も変えずに 200 を返す（変更の記録、署名の削除、epoch の増加をせず、再認証も求めない）。応答をなくした要求を送り直しても失敗しないようにするため。
   - 【決定】登録し直しの拒否：そのユーザーが過去に使い、今は使っていないクロス署名鍵の公開鍵（`e2ee_cross_signing_key_changes` の `old_public_key` にあるもの）は、用途にかかわらず登録できない（400 `E2EE_KEY_REUSED`）。端末だけの失効ではマスター鍵を残すので、古い自己署名鍵とユーザー署名鍵には、マスター鍵の有効な署名が付いたまま残る。失った端末の暗号ストアから古い自己署名鍵を取り出した攻撃者が、送り直してそれで自分の端末に署名すると、[配布先の判定](#鍵の配布先の判定)の規則 6 を通って、失効のあとのセッションを受け取れてしまうため。サーバーを乗っ取った攻撃者による巻き戻しは、これでは防げない（[脅威モデル](#脅威モデル)の「古いクロス署名鍵への巻き戻し」）。
   - 鍵を変えたら、古い鍵による署名（`e2ee_key_signatures`）を消す。
@@ -811,7 +811,7 @@ const prf = credential.getClientExtensionResults().prf?.results?.first;
   - サーバーは `auth_data` の、今のマスター鍵の署名を検証する（違えば 400 `E2EE_BAD_SIGNATURE`）。
   - 【決定】そのユーザーが過去に作った版（消した版を含む）と同じ `auth_data.public_key` は、400 `E2EE_KEY_REUSED` で拒否する。漏れたバックアップ鍵の古い `auth_data` には、残したマスター鍵の有効な署名が付いているので、トークンを持つ攻撃者がそれを送り直して、漏れた鍵を今の版に戻せないようにするため。
   - 【決定】そのユーザーの最初の版でなければ（消した版を含めて過去に版があれば）、直前の再認証を求める（403 `E2EE_REAUTH_REQUIRED`。条件は[クロス署名の API](#クロス署名356)と同じ）。また、同じトランザクションで、そのユーザーが参加しているすべての暗号化チャンネルの `membership_epoch` を増やす（この増加は #357 で足す）。切り替えより前の版に入ったセッションを、切り替えのあとの送信に使わせないため（[失効の手順](#失効の手順)の 3）。
-  - 【決定】版の作成と削除、セッションのアップロードは、ユーザーごとに直列にする。古い版が受け付けるのを、切り替えの前（epoch を増やす前）のアップロードだけにするため。【決定】版の作成と削除はユーザー単位の `pg_advisory_xact_lock`（クロス署名と SSSS の書き込みと同じキー）を、アップロードは同じキーで `pg_advisory_xact_lock_shared` を取ってから、今の版を読む。
+  - 【決定】版の作成と削除、セッションのアップロードは、ユーザーごとに直列にする。古い版が受け付けるのを、切り替えの前（epoch を増やす前）のアップロードだけにするため。版の作成と削除はユーザー単位の `pg_advisory_xact_lock`（クロス署名と SSSS の書き込みと同じキー）を、アップロードは同じキーで `pg_advisory_xact_lock_shared` を取ってから、今の版を読む。
 - `GET /api/e2ee/key_backup/versions/current`：`{"version", "algorithm", "auth_data", "count"}`。今の版がなければ 404。
 - `GET /api/e2ee/key_backup/versions/{version}`：消していない版の `{"version", "algorithm", "auth_data"}`。消した版と、ない版は 404。
 - `GET /api/e2ee/key_backup/versions`：そのユーザーのすべての版（消した版を含む）の `{"version", "auth_data", "deleted"}` を番号の昇順で返す。古い版の秘密鍵を版に割り当てるために使う。
@@ -1439,7 +1439,6 @@ Megolm のメッセージ（`messages` の行）を復号したとき：
 | クライアント | 組み込み方 | 解錠の手段 | issue |
 | --- | --- | --- | --- |
 | React（`frontend/`） | wasm-bindgen（`wasm-pack build --target web`）。Worker で動かす | パスキー、リカバリーキー | #352、#359 |
-| Compose wasmJs（`frontend-compose/`、`/compose/`） | 同じ wasm パッケージを Kotlin/Wasm の JS interop で呼ぶ | パスキー、リカバリーキー | #352、#359 |
 | Compose Android | UniFFI で作った Kotlin バインディング | Credential Manager のパスキー【未検証】、リカバリーキー | #353、#359 |
 | TUI（`tui/`） | ネイティブの Rust クレートとして直接使う | リカバリーキー | #359、#360 |
 | デスクトップ版（`desktop/`） | 最初の範囲では対象にしない。暗号化チャンネルは表示できないと示す（[クロス署名の API](#クロス署名356)の【決定】）。この表示は、暗号化チャンネルを作れるようになる #361 に入れる | なし | #361 |
@@ -1460,11 +1459,11 @@ Megolm のメッセージ（`messages` の行）を復号したとき：
 
   | クライアント | 保存先 | pickle key |
   | --- | --- | --- |
-  | React と Compose wasmJs | OPFS の別 DB（`zoo-crypto-<ユーザーのハッシュ>.sqlite`。名前は `lib/offline/identity.ts` と同じ作り方） | 抽出できない WebCrypto の鍵（IndexedDB に保存）で包み、起動時に Worker のメモリーに展開する |
+  | React | OPFS の別 DB（`zoo-crypto-<ユーザーのハッシュ>.sqlite`。名前は `lib/offline/identity.ts` と同じ作り方） | 抽出できない WebCrypto の鍵（IndexedDB に保存）で包み、起動時に Worker のメモリーに展開する |
   | Android | アプリの内部ストレージ | Android Keystore で包む |
   | TUI | 設定ディレクトリーのファイル（0600） | OS のキーリング。使えなければ 0600 のファイル |
 
-- 【決定】React と Compose wasmJs は同じオリジン（`https://zli.chat` と `/compose/`）で動くので、同じ暗号ストアと同じ端末を共有する。複数のタブや 2 つの UI が同時に同じ Olm と Megolm の状態を書き換えると壊れるので、暗号ストアを開くのは Web Locks（`navigator.locks`）を取れた 1 つのタブだけにする。【提案】他のタブは BroadcastChannel でそのタブに処理を頼む。詳細は #359 で決める。
+- 【決定】複数のタブが同時に同じ Olm と Megolm の状態を書き換えると壊れるので、暗号ストアを開くのは Web Locks（`navigator.locks`）を取れた 1 つのタブだけにする。【提案】他のタブは BroadcastChannel でそのタブに処理を頼む。詳細は #359 で決める。
 - ログアウトしたら暗号ストアを消す（[ログアウトと端末の削除](#ログアウトと端末の削除)）。
 - pickle key による暗号化が防ぐのは、ディスクやバックアップからの持ち出しだけ。XSS など、同じオリジンでコードを動かされると、ストアの中身はそのまま使われる（[脅威モデル](#脅威モデル)）。
 
@@ -1522,7 +1521,7 @@ Megolm のメッセージ（`messages` の行）を復号したとき：
 | issue | 内容 | 依存 |
 | --- | --- | --- |
 | [#347](https://github.com/Zli-UoA/zoo2/issues/347) | 本書 | |
-| [zoo2-infra#143](https://github.com/Zli-UoA/zoo2-infra/pull/143) | ConfigMap `authz-config` に `WEBAUTHN_RELATED_ORIGINS: https://zli.chat` を足す。AuthZ#94 の実装（AuthZ#95）より先にマージする（[本番への配備の順](#本番への配備の順)）。AuthZ#96 では、Android アプリのパッケージ名と release の署名の指紋（AuthZ#96 で決める変数）も同じ順で足す。#356 では、ConfigMap `zoo2-oidc` に再認証の ID トークンの `aud` で認めるクライアント ID の一覧（キーは #356 で決める）を足す。`zoo2-oidc` は Git で管理せず `kubectl create configmap` で作るので、各拠点で値を足して apply し、`kubectl rollout restart` で backend を再起動する。#360 では、zli.chat で配信する `assetlinks.json` の値（Android アプリのパッケージ名と release の署名の指紋）を足す | |
+| [zoo2-infra#143](https://github.com/Zli-UoA/zoo2-infra/pull/143) | ConfigMap `authz-config` に `WEBAUTHN_RELATED_ORIGINS: https://zli.chat` を足す。AuthZ#95 は先にマージ済みなので、マージして反映を確かめたあと、AuthZ を再起動する（[本番への配備の順](#本番への配備の順)）。AuthZ#96 では、Android アプリのパッケージ名と release の署名の指紋（AuthZ#96 で決める変数）も同じ順で足す。#356 では、ConfigMap `zoo2-oidc` に再認証の ID トークンの `aud` で認めるクライアント ID の一覧（キーは #356 で決める）を足す。`zoo2-oidc` は Git で管理せず `kubectl create configmap` で作るので、各拠点で値を足して apply し、`kubectl rollout restart` で backend を再起動する。#360 では、zli.chat で配信する `assetlinks.json` の値（Android アプリのパッケージ名と release の署名の指紋）を足す | |
 | [AuthZ#94](https://github.com/Zli-UoA/AuthZ/issues/94) | パスキー登録で PRF を有効にし、`/.well-known/webauthn` を配信する | zoo2-infra（配備の順） |
 | [AuthZ#97](https://github.com/Zli-UoA/AuthZ/issues/97) | ID トークンに `authenticatedAt` を表す claim を足す（`OAuthProviderExtension` の `claims.idToken` でセッションを読み、認可コードのグラントで発行するときだけ入れる）。本番の public client にループバックの `http` のリダイレクト URI を許す（RFC 8252 の 7.3）。配備したら、管理画面で Android と TUI のクライアントに認可コードのグラントとリダイレクト URI（Android は `https` の App Links、TUI はループバック）を足す（[クロス署名の API](#クロス署名356)の再認証の確かめ方） | |
 | [AuthZ#96](https://github.com/Zli-UoA/AuthZ/issues/96) | Android 用に `/.well-known/assetlinks.json` を配信する（[使えない環境](#使えない環境)）。設定がないと `[]` を返し、#360 の Android での解錠が動かない | zoo2-infra（配備の順） |
