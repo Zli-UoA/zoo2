@@ -1,5 +1,34 @@
 let registration: Promise<ServiceWorkerRegistration> | null = null;
 
+/** A cached document must not open its old SQLite Worker after an update purges its assets. */
+export async function reloadIfShellUpdated(): Promise<boolean> {
+  const entry = document.querySelector<HTMLScriptElement>(
+    'script[type="module"][src*="/assets/index-"]',
+  );
+  const controller = navigator.serviceWorker?.controller;
+  if (!entry || !controller) return false;
+  const latest = await new Promise<string | null>((resolve) => {
+    const channel = new MessageChannel();
+    const finish = (value: string | null) => {
+      clearTimeout(timer);
+      channel.port1.close();
+      channel.port2.close();
+      resolve(value);
+    };
+    const timer = setTimeout(() => finish(null), 1_000);
+    channel.port1.onmessage = (event) =>
+      finish(typeof event.data?.entry === "string" ? event.data.entry : null);
+    try {
+      controller.postMessage({ type: "SHELL_ENTRY" }, [channel.port2]);
+    } catch {
+      finish(null);
+    }
+  });
+  if (!latest || new URL(latest, window.location.origin).href === entry.src) return false;
+  window.location.reload();
+  return true;
+}
+
 /** Include the deployed CSP in both the SW registration URL and its cache identity. */
 export function registerWorker(): Promise<ServiceWorkerRegistration> {
   if (!registration) {

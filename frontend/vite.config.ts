@@ -1,4 +1,4 @@
-import { defineConfig, lazyPlugins } from "vite-plus";
+import { defineConfig, lazyPlugins, type Plugin } from "vite-plus";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { devtools } from "@tanstack/devtools-vite";
@@ -11,6 +11,26 @@ import { playwright } from "vite-plus/test/browser-playwright";
 import { storybookTest } from "@storybook/addon-vitest/vitest-plugin";
 
 const dirname = path.dirname(fileURLToPath(import.meta.url));
+
+// Include lazy chunks, SQLite workers and fonts before publishing a new offline shell.
+const offlineAssets: Plugin = {
+  name: "offline-build-assets",
+  apply: "build",
+  generateBundle(_options, bundle) {
+    if (this.environment.name !== "client") return;
+    const assets = Object.keys(bundle)
+      .filter((name) => name.startsWith("assets/") && !name.endsWith(".map"))
+      .map((name) => `/${name}`)
+      .sort();
+    const entry = assets.find((name) => /^\/assets\/index-[^/]+\.js$/.test(name));
+    if (!entry) this.error("Missing offline app entry");
+    this.emitFile({
+      type: "asset",
+      fileName: "pwa-assets.json",
+      source: JSON.stringify({ entry, assets }),
+    });
+  },
+};
 
 const config = defineConfig({
   optimizeDeps: { include: ["@base-ui/react/toggle-group", "@base-ui/react/toggle"] },
@@ -27,6 +47,7 @@ const config = defineConfig({
     assetsInlineLimit: (filePath) => (/\.(?:woff2?|ttf|otf)$/i.test(filePath) ? false : undefined),
   },
   plugins: lazyPlugins(() => [
+    offlineAssets,
     devtools(),
     tailwindcss(),
     tanstackStart({

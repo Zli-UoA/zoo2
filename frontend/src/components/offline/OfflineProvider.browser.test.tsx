@@ -12,10 +12,14 @@ const mocks = vi.hoisted(() => ({
   online: true,
   ensureLoaded: vi.fn(async () => {}),
   prepare: vi.fn(async () => {}),
+  reload: vi.fn(async () => false),
   open: vi.fn(async () => ({ persistence: {} })),
   remove: vi.fn(async () => {}),
 }));
-vi.mock("../../lib/pwa/worker-registration", () => ({ prepareOfflineWorker: mocks.prepare }));
+vi.mock("../../lib/pwa/worker-registration", () => ({
+  prepareOfflineWorker: mocks.prepare,
+  reloadIfShellUpdated: mocks.reload,
+}));
 vi.mock("../../lib/offline/online", () => ({ useOnlineStatus: () => mocks.online }));
 vi.mock("../../lib/currentUser", () => ({
   getCurrentUserStore: () => ({
@@ -46,6 +50,21 @@ beforeEach(() => {
   mocks.remove.mockResolvedValue(undefined);
   mocks.prepare.mockReset();
   mocks.prepare.mockResolvedValue(undefined);
+  mocks.reload.mockReset();
+  mocks.reload.mockResolvedValue(false);
+});
+
+it("waits for the updated document instead of opening SQLite from a stale shell", async () => {
+  mocks.reload.mockResolvedValue(true);
+  render(
+    <OfflineProvider config={{ devUserId: "dev", oidc: null } as AppConfig}>
+      <button>App</button>
+    </OfflineProvider>,
+  );
+  await act(async () => {});
+  expect(mocks.reload).toHaveBeenCalled();
+  expect(mocks.open).not.toHaveBeenCalled();
+  expect(screen.queryByRole("button", { name: "App" })).toBeNull();
 });
 
 it("resolves the current user again after reconnecting from an offline startup", async () => {

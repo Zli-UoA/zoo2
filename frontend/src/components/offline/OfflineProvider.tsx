@@ -34,7 +34,7 @@ import {
   removeOfflineDatabase,
   retryPendingOfflineDeletion,
 } from "../../lib/offline/persistence";
-import { prepareOfflineWorker } from "../../lib/pwa/worker-registration";
+import { prepareOfflineWorker, reloadIfShellUpdated } from "../../lib/pwa/worker-registration";
 import { clearLegacyFrontendStorage } from "../../lib/offline/legacy-storage";
 import { startAssetCaching } from "../../lib/pwa/cache-assets";
 import { Button } from "../ui/button";
@@ -140,6 +140,7 @@ export function OfflineProvider({
       // The Worker response may still be cached with the previous deployment's CSP.
       // Upgrade the controlling SW before the first SQLite open, not after rendering the shell.
       await preparingWorker.current;
+      if (cancelled || (await reloadIfShellUpdated())) return;
       if (cancelled) return;
       try {
         const handle = await openOfflinePersistence(namespace);

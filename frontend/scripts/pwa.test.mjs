@@ -177,6 +177,28 @@ test("install precaches the hashed assets referenced by the app shell", async ()
   assert.ok(shell.has(`${ORIGIN}/assets/app.js`));
 });
 
+test("failed install entry assets preserve the previous shell and omit the new marker", async () => {
+  const cacheContext = memoryCaches([
+    ["zoo-shell-old", `${ORIGIN}/index.html`, basicResponse("working-shell")],
+  ]);
+  const { handlers } = worker({
+    caches: cacheContext.api,
+    fetch: async (request) => {
+      if (requestKey(request).includes("/assets/"))
+        return new Response("unavailable", { status: 503 });
+      return basicResponse('<script src="/assets/index-new.js"></script>');
+    },
+  });
+  await assert.rejects(dispatch(handlers, "install"), /without its entry assets/);
+  const failed = cacheContext.storeFor("zoo-shell-new");
+  assert.equal(failed.has(`${ORIGIN}/__zoo_shell_meta__`), false);
+  assert.equal(failed.has(`${ORIGIN}/index.html`), false);
+  assert.equal(
+    await cacheContext.storeFor("zoo-shell-old").get(`${ORIGIN}/index.html`).text(),
+    "working-shell",
+  );
+});
+
 test("cached responses are stored without transport encoding or validators", async () => {
   const { handlers, cacheContext } = worker({
     fetch: async (input) => {
@@ -291,9 +313,14 @@ test(
     const { handlers } = worker({
       caches: cacheContext.api,
       fetch: async (request) => {
+        if (requestKey(request).includes("/pwa-assets.json"))
+          return Response.json({
+            entry: "/assets/index-new.js",
+            assets: ["/assets/index-new.js", "/assets/opfs-new.js"],
+          });
         if (requestKey(request).includes("/assets/")) return basicResponse("updated-code");
         await pending;
-        return basicResponse('<script src="/assets/new.js"></script>updated-shell', {
+        return basicResponse('<script src="/assets/index-new.js"></script>updated-shell', {
           headers: { "content-type": "text/html" },
         });
       },
@@ -309,7 +336,8 @@ test(
     await Promise.all(background);
     const cache = cacheContext.storeFor("zoo-shell-v2");
     assert.match(await cache.get(`${ORIGIN}/index.html`).text(), /updated-shell/);
-    assert.ok(cache.has(`${ORIGIN}/assets/new.js`));
+    assert.ok(cache.has(`${ORIGIN}/assets/index-new.js`));
+    assert.ok(cache.has(`${ORIGIN}/assets/opfs-new.js`));
   },
 );
 
@@ -338,6 +366,61 @@ test("a failed entry asset refresh keeps the working offline shell", async () =>
     await cacheContext.storeFor("zoo-shell-v2").get(`${ORIGIN}/index.html`).text(),
     "saved-shell",
   );
+});
+
+for (const failure of ["lazy-asset", "mismatched-build"]) {
+  test(`a ${failure} failure keeps the previous complete shell`, async () => {
+    const cacheContext = memoryCaches([
+      ["zoo-shell-v2", `${ORIGIN}/index.html`, basicResponse("saved-shell")],
+    ]);
+    const { handlers } = worker({
+      caches: cacheContext.api,
+      fetch: async (request) => {
+        const path = new URL(requestKey(request)).pathname;
+        if (path === "/pwa-assets.json")
+          return Response.json({
+            entry:
+              failure === "mismatched-build" ? "/assets/index-other.js" : "/assets/index-new.js",
+            assets: ["/assets/index-new.js", "/assets/opfs-new.js"],
+          });
+        if (path === "/assets/opfs-new.js") throw new Error("missing lazy worker");
+        if (path.startsWith("/assets/")) return basicResponse("code");
+        return basicResponse('<script src="/assets/index-new.js"></script>', {
+          headers: { "content-type": "text/html" },
+        });
+      },
+    });
+    const background = [];
+    await fetchThrough(handlers, navigation(`${ORIGIN}/`), background);
+    await Promise.all(background);
+    assert.equal(
+      await cacheContext.storeFor("zoo-shell-v2").get(`${ORIGIN}/index.html`).text(),
+      "saved-shell",
+    );
+  });
+}
+
+test("the active worker reports the entry used by its installed shell", async () => {
+  const cacheContext = memoryCaches([
+    [
+      "zoo-shell-v2",
+      `${ORIGIN}/index.html`,
+      basicResponse('<script src="/assets/index-updated.js"></script>'),
+    ],
+  ]);
+  const { handlers } = worker({ caches: cacheContext.api });
+  let reply;
+  await dispatch(handlers, "message", {
+    data: { type: "SHELL_ENTRY" },
+    ports: [
+      {
+        postMessage: (value) => {
+          reply = value;
+        },
+      },
+    ],
+  });
+  assert.equal(reply.entry, "/assets/index-updated.js");
 });
 
 test("direct navigation to a non-HTML asset does not overwrite the app shell", async () => {
