@@ -3012,7 +3012,11 @@ async fn lease_is_measured_from_the_claim_not_from_the_start_of_a_blocked_transa
     apps::one(&mut holder,"SELECT json_build_object('locked',pg_advisory_xact_lock(hashtextextended($1,0)) IS NULL)::text",&[&format!("app-dispatch:{}",f.installation)]).await?;
     let db = f.state.db.clone();
     let installation = f.installation.clone();
-    let claim = tokio::spawn(async move { apps::delivery::claim_http(&db, &installation).await });
+    let (_keep, never_stops) = tokio::sync::watch::channel(false);
+    let claim =
+        tokio::spawn(
+            async move { apps::delivery::claim_http(&db, &installation, &never_stops).await },
+        );
     tokio::time::sleep(std::time::Duration::from_millis(2500)).await;
     holder.commit().await?;
     let claimed = claim.await??.expect("a delivery is claimable");
@@ -3270,5 +3274,32 @@ async fn deferring_a_large_backlog_is_batched_and_keeps_attempts() -> anyhow::Re
     assert_eq!(row["due"], 0, "{row}");
     assert!(row["deferred"].as_u64().unwrap() >= 2500, "{row}");
     assert_eq!(row["attempted"], 0, "{row}");
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_claim_waiting_for_the_lock_takes_no_lease_after_the_stop_signal() -> anyhow::Result<()> {
+    let _guard = HTTP_WORKER_TEST_LOCK.lock().await;
+    let f = fixture().await?;
+    reconfigure(&f,json!({"scopes":["messages:read"],"events":["message.created"],"transport":"http","event_url":"https://127.0.0.1:1/events"})).await?;
+    post_messages(&f, 2).await;
+    // 別の配信プロセスが advisory lock を持っている間、claim はロック待ちで止まる。
+    let mut holder_db = f.state.db.clone();
+    let mut holder = holder_db.transaction().await?;
+    apps::one(&mut holder,"SELECT json_build_object('locked',pg_advisory_xact_lock(hashtextextended($1,0)) IS NULL)::text",&[&format!("app-dispatch:{}",f.installation)]).await?;
+    let (stop, stopped) = tokio::sync::watch::channel(false);
+    let db = f.state.db.clone();
+    let installation = f.installation.clone();
+    let claim =
+        tokio::spawn(async move { apps::delivery::claim_http(&db, &installation, &stopped).await });
+    // 待っている間に停止通知。そのあとロックが空く。
+    tokio::time::sleep(std::time::Duration::from_millis(800)).await;
+    stop.send(true)?;
+    holder.commit().await?;
+    assert!(
+        claim.await??.is_none(),
+        "a claim that started before the stop signal must not lease after it"
+    );
+    assert!(message_delivery_attempts(&f).await?.iter().all(|a| *a == 0));
     Ok(())
 }
