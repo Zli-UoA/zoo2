@@ -44,6 +44,11 @@ jobs:
           distribution: temurin
           java-version: "21"
 
+      - name: Cache Gradle wrapper distribution
+        uses: actions/cache@v6
+        with:
+          path: ~/.gradle/wrapper/dists
+          key: gradle-wrapper-${{ hashFiles('frontend-compose/gradle/wrapper/gradle-wrapper.properties') }}
       - uses: gradle/actions/setup-gradle@v4
 
       - name: Build Compose catalog assets

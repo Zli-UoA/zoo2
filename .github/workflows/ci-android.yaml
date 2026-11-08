@@ -39,6 +39,11 @@ jobs:
           cmdline-tools-version: 13114758
           packages: platform-tools platforms;android-35 build-tools;35.0.0
           log-accepted-android-sdk-licenses: false
+      - name: Cache Gradle wrapper distribution
+        uses: actions/cache@v6
+        with:
+          path: ~/.gradle/wrapper/dists
+          key: gradle-wrapper-${{ hashFiles('frontend-compose/gradle/wrapper/gradle-wrapper.properties') }}
       - uses: gradle/actions/setup-gradle@v4
       - name: Test update manifest generation
         run: python3 .github/scripts/android-update-manifest.test.py
@@ -72,6 +77,11 @@ jobs:
           cmdline-tools-version: 13114758
           packages: platform-tools platforms;android-35 build-tools;35.0.0
           log-accepted-android-sdk-licenses: false
+      - name: Cache Gradle wrapper distribution
+        uses: actions/cache@v6
+        with:
+          path: ~/.gradle/wrapper/dists
+          key: gradle-wrapper-${{ hashFiles('frontend-compose/gradle/wrapper/gradle-wrapper.properties') }}
       - uses: gradle/actions/setup-gradle@v4
       - name: Build with the persistent Android signing key
         working-directory: frontend-compose
