@@ -96,13 +96,21 @@ const sqliteProbe = async (workerName) => {
         };
         worker.onerror = (event) => {
           clearTimeout(timeout);
+          worker.terminate();
           reject(new Error(event.message));
         };
         worker.postMessage({ params: [], ...payload, requestId });
       });
     }
-    await request({ type: "init", databaseName: "csp-test.sqlite", vfsName: "opfs" });
-    return { worker, request };
+    try {
+      await request({ type: "init", databaseName: "csp-test.sqlite", vfsName: "opfs" });
+      return { worker, request };
+    } catch (error) {
+      // The warm-cache test deliberately starts a CSP-blocked worker. It must
+      // not survive that rejected probe and interfere with the upgraded page.
+      worker.terminate();
+      throw error;
+    }
   }
   const first = await connect();
   await first.request({ type: "execute", sql: "CREATE TABLE messages (content TEXT)" });
