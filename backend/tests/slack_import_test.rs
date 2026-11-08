@@ -793,7 +793,12 @@ async fn test_slack_reimport_relinks_replies_and_serializes_targets() -> anyhow:
                 // 本文とカードの両方がある bot 投稿
                 {"ts":"1704070150.000350","bot_id":"B1","subtype":"bot_message","username":"alertbot",
                  "text":"Outage in <#C1|general>, see <https://status.example.com|status>",
-                 "attachments":[{"title":"Status","text":"degraded","color":"danger"}]}
+                 "attachments":[{"title":"Status","text":"degraded","color":"danger"}]},
+                // 取り込めないファイル (外部サービスの共有) だけの投稿は、ファイル名を本文に残す
+                {"ts":"1704070160.000360","user":"U1","text":"",
+                 "files":[{"id":"FEXT","name":"Roadmap.gdoc","mode":"external","url_private_download":"https://docs.example.com/x"}]},
+                // 名前のない削除済みファイルだけの投稿は、空の投稿にせず取り込まない
+                {"ts":"1704070170.000370","user":"U1","text":"","files":[{"id":"FDEL","mode":"tombstone"}]}
             ]),
         ),
         ("general/2024-01-02.json".into(), json!([reply])),
@@ -973,6 +978,17 @@ async fn test_slack_reimport_relinks_replies_and_serializes_targets() -> anyhow:
         "{description}"
     );
     assert_eq!(cards[1]["title"], "Status");
+    let files_only = sql(
+        &state,
+        "SELECT json_build_object('id',id,'content',content)::text FROM messages WHERE id IN ($1,$2)",
+        &[
+            &backend::slack::message_id(&team, "C1", "1704070160.000360"),
+            &backend::slack::message_id(&team, "C1", "1704070170.000370"),
+        ],
+    )
+    .await?;
+    assert_eq!(files_only.len(), 1, "{files_only:?}");
+    assert_eq!(files_only[0]["content"], "Roadmap.gdoc");
     Ok(())
 }
 
