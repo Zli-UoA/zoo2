@@ -2,6 +2,8 @@
 name = "backend"
 version = "0.1.0"
 edition = "2024"
+# bin が 2 つあるので、`cargo run` の既定は backend 本体にする。
+default-run = "zoo_backend"
 
 [profile.release]
 strip = true
