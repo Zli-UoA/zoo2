@@ -530,7 +530,24 @@ pub async fn maintenance_loop(db: toasty::Db) {
 
 /// HTTP 配信と配信履歴（30 日保持）の削除のループ。`shutdown` が true になると新しい配信（リース）を取らず、
 /// 実行中の 1 回分を終えてから戻る。
-pub async fn http_loop(db: toasty::Db, mut shutdown: tokio::sync::watch::Receiver<bool>) {
+pub async fn http_loop(db: toasty::Db, shutdown: tokio::sync::watch::Receiver<bool>) {
+    http_loop_with(
+        db,
+        shutdown,
+        std::sync::Arc::new(tokio::sync::Notify::new()),
+        Duration::from_millis(500),
+    )
+    .await
+}
+
+/// `wake` が通知されるとすぐ 1 回分を配信する。通知が無くても `poll` ごとに回る
+/// （バックオフ明け・リース切れ・通知の取りこぼしのため。新規の配信と手動再送は NOTIFY で起こす）。
+pub async fn http_loop_with(
+    db: toasty::Db,
+    mut shutdown: tokio::sync::watch::Receiver<bool>,
+    wake: std::sync::Arc<tokio::sync::Notify>,
+    poll: Duration,
+) {
     // 履歴削除は配信と別タスクで回す。遅い削除が配信の tick を止めないため。
     let cleanup_task = tokio::spawn({
         let db = db.clone();
@@ -545,20 +562,65 @@ pub async fn http_loop(db: toasty::Db, mut shutdown: tokio::sync::watch::Receive
             }
         }
     });
-    let mut ticks = tokio::time::interval(Duration::from_millis(500));
+    let mut ticks = tokio::time::interval(poll);
     ticks.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     loop {
         tokio::select! {
             biased;
             _ = shutdown.changed() => break,
-            _ = ticks.tick() => {
-                if let Err(e) = http_pass_until(&db, &shutdown).await {
-                    tracing::warn!(error=%e,"App delivery failed");
+            _ = async { tokio::select! { _ = ticks.tick() => {}, _ = wake.notified() => {} } } => {
+                match http_pass_until(&db, &shutdown).await {
+                    // 溜まっている分は、次の通知や poll を待たずに続けて消化する。
+                    Ok(true) => wake.notify_one(),
+                    Ok(false) => {}
+                    Err(e) => tracing::warn!(error=%e,"App delivery failed"),
                 }
             }
         }
     }
     cleanup_task.abort();
+}
+
+/// `app_delivery` チャンネルを LISTEN し、通知（と再接続）のたびに `wake` を起こす。
+/// 切断中の通知は失われるので、接続し直したら必ず 1 回起こす。
+pub fn listen_for_deliveries(
+    database_url: String,
+    wake: std::sync::Arc<tokio::sync::Notify>,
+) -> tokio::task::JoinHandle<()> {
+    listen_for_deliveries_with(database_url, wake, None)
+}
+
+/// `listen_for_deliveries`。`ready` があれば、LISTEN が成立するたびに通知する（テスト用）。
+pub fn listen_for_deliveries_with(
+    database_url: String,
+    wake: std::sync::Arc<tokio::sync::Notify>,
+    ready: Option<std::sync::Arc<tokio::sync::Notify>>,
+) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
+        loop {
+            match crate::db::connect_raw_listener(&database_url).await {
+                Ok(mut listener) => {
+                    if let Err(e) = listener.client.batch_execute("LISTEN app_delivery").await {
+                        tracing::warn!(error=%e,"LISTEN app_delivery failed");
+                    } else {
+                        tracing::info!("Subscribed to PostgreSQL channel app_delivery");
+                        if let Some(ready) = &ready {
+                            ready.notify_one();
+                        }
+                        wake.notify_one();
+                        while let Some(n) = listener.notifications.recv().await {
+                            if n.channel() == "app_delivery" {
+                                wake.notify_one();
+                            }
+                        }
+                        tracing::warn!("app_delivery notification stream ended");
+                    }
+                }
+                Err(e) => tracing::warn!(error=%e,"Could not connect for LISTEN app_delivery"),
+            }
+            tokio::time::sleep(Duration::from_secs(2)).await;
+        }
+    })
 }
 
 /// 滞留状況のゲージを更新する。管理 API と同じ定義（未 ACK かつ期限内）。
@@ -599,16 +661,20 @@ pub async fn http_candidates(db: &toasty::Db) -> Result<Vec<Value>, AppError> {
 /// Run one bounded dispatch batch, also used by the periodic worker.
 pub async fn http_pass(db: &toasty::Db) -> Result<(), AppError> {
     let (_keep, never_stops) = tokio::sync::watch::channel(false);
-    http_pass_until(db, &never_stops).await
+    http_pass_until(db, &never_stops).await.map(|_| ())
 }
 
 /// `http_pass`。`stop` が true になった後は、バッチの途中でも新しいリースを取らない
-/// （取得済みの送信と ACK だけ終える）。
+/// （取得済みの送信と ACK だけ終える）。1 件でも claim できたら true を返し、呼び出し側は
+/// 待たずに次の pass を回す。
 pub async fn http_pass_until(
     db: &toasty::Db,
     stop: &tokio::sync::watch::Receiver<bool>,
-) -> Result<(), AppError> {
+) -> Result<bool, AppError> {
     let installs = http_candidates(db).await?;
+    // 1 件でも claim できたときだけ true。候補が上限（100）に達しても、配信上限などで 1 件も取れない
+    // なら false にして、次の通知か poll まで待つ（取れないのに即時に回し続けない）。
+    let mut more = false;
     let results = futures_util::stream::iter(installs)
         .map(|i| async move {
             let sends = futures_util::stream::iter(0..32)
@@ -616,29 +682,30 @@ pub async fn http_pass_until(
                 .buffer_unordered(32)
                 .collect::<Vec<_>>()
                 .await;
+            let mut claimed = false;
             for result in sends {
-                result?;
+                claimed |= result?;
             }
-            Ok::<(), AppError>(())
+            Ok::<bool, AppError>(claimed)
         })
         .buffer_unordered(8)
         .collect::<Vec<_>>()
         .await;
     for result in results {
-        result?;
+        more |= result?;
     }
 
-    Ok(())
+    Ok(more)
 }
 
 async fn http_install(
     db: &toasty::Db,
     i: Value,
     stop: &tokio::sync::watch::Receiver<bool>,
-) -> Result<(), AppError> {
+) -> Result<bool, AppError> {
     let id = i["id"].as_str().unwrap();
     if *stop.borrow() {
-        return Ok(());
+        return Ok(false);
     }
     if let Some(event) = claim_http(db, id, stop).await? {
         match tokio::time::timeout(
@@ -681,9 +748,10 @@ async fn http_install(
                 tx.commit().await?;
             }
         }
+        return Ok(true);
     }
 
-    Ok(())
+    Ok(false)
 }
 
 /// API 側の期限切れ行の削除と、配信履歴の 30 日保持の両方。
