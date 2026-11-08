@@ -308,3 +308,205 @@ async fn app_webhooks_are_limited_to_managed_channels() -> anyhow::Result<()> {
     );
     Ok(())
 }
+
+#[tokio::test]
+async fn app_metrics_summarize_one_apps_deliveries_for_its_developer_and_admins()
+-> anyhow::Result<()> {
+    let (app, owner, stranger, admin) = setup().await?;
+    let manifest = json!({"scopes":["messages:read"],"events":["message.created"],"transport":"http","event_url":"https://example.com/metrics"});
+    let (status, created) = req(
+        &app,
+        "POST",
+        "/api/apps",
+        &owner,
+        json!({"name":"Metrics","description":"Metrics app","manifest":manifest}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{created}");
+    let id = created["id"].as_str().unwrap();
+    for (actor, path, body) in [
+        (
+            owner.as_str(),
+            format!("/api/apps/{id}/actions/submit"),
+            Value::Null,
+        ),
+        (
+            admin,
+            format!("/api/apps/{id}/actions/install"),
+            json!({"revision":1}),
+        ),
+    ] {
+        assert_eq!(
+            req(&app, "POST", &path, actor, body).await.0,
+            StatusCode::OK
+        );
+    }
+    let metrics = format!("/api/apps/{id}/metrics");
+
+    // 配信が無い App は 0 件で、成功率は null（0 除算にしない）。
+    let (status, empty) = req(&app, "GET", &metrics, &owner, Value::Null).await;
+    assert_eq!(status, StatusCode::OK, "{empty}");
+    assert_eq!(empty["window_hours"], 24);
+    assert_eq!(empty["totals"]["delivered"], 0);
+    assert_eq!(empty["totals"]["success_rate"], Value::Null);
+    assert_eq!(empty["hourly"].as_array().unwrap().len(), 24, "{empty}");
+
+    let config = Config::from_env();
+    let db = init_db(&config.database_url).await?;
+    let mut db = db.clone();
+    let mut tx = db.transaction().await?;
+    let installation = backend::apps::one(
+        &mut tx,
+        "SELECT json_build_object('id',id)::text FROM app_installations WHERE app_id=$1",
+        &[id],
+    )
+    .await?["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    // delivered ×3（作成から 2 秒で ACK）、failed ×1（期限切れ）、pending ×2、
+    // 窓の外 ×1 と app.rate_limited ×1 は数えない。
+    for (kind, created, acked, expires, event_type) in [
+        (
+            "d",
+            "10 minutes",
+            Some("2 seconds"),
+            "1 day",
+            "message.created",
+        ),
+        (
+            "d",
+            "10 minutes",
+            Some("2 seconds"),
+            "1 day",
+            "message.created",
+        ),
+        (
+            "d",
+            "10 minutes",
+            Some("2 seconds"),
+            "1 day",
+            "message.created",
+        ),
+        ("f", "2 hours", None, "-1 minute", "message.created"),
+        ("p", "5 minutes", None, "1 day", "message.created"),
+        ("p", "5 minutes", None, "1 day", "message.created"),
+        ("o", "3 days", Some("2 seconds"), "1 day", "message.created"),
+        // 窓より前に作られたが、手動再送などで期限内のまま残っている滞留。
+        ("q", "30 hours", None, "1 hour", "message.created"),
+        ("r", "5 minutes", None, "1 day", "app.rate_limited"),
+    ] {
+        let acked_sql = acked
+            .map(|a| format!("now()-interval '{created}'+interval '{a}'"))
+            .unwrap_or_else(|| "NULL".into());
+        toasty::sql::statement(format!("INSERT INTO app_deliveries(id,event_id,installation_id,event_type,payload,created_at,acked_at,expires_at,attempts) VALUES(gen_random_uuid()::text,gen_random_uuid()::text,$1,$2,'{{}}',now()-interval '{created}',{acked_sql},now()+interval '{expires}',1) /* {kind} */"))
+            .bind(installation.as_str())
+            .bind(event_type)
+            .exec(&mut tx)
+            .await?;
+    }
+    tx.commit().await?;
+
+    let (status, body) = req(&app, "GET", &metrics, &owner, Value::Null).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let totals = &body["totals"];
+    assert_eq!(totals["delivered"], 3, "{body}");
+    assert_eq!(totals["failed"], 1, "{body}");
+    // 滞留は窓と無関係に数える（窓の外で作られた 1 件を含む）。
+    assert_eq!(totals["pending"], 3, "{body}");
+    assert_eq!(totals["success_rate"], 0.75, "{body}");
+    assert!((totals["p50_seconds"].as_f64().unwrap() - 2.0).abs() < 0.01);
+    assert!((totals["p95_seconds"].as_f64().unwrap() - 2.0).abs() < 0.01);
+    assert!(totals["oldest_pending_seconds"].as_f64().unwrap() >= 30.0 * 3600.0 - 10.0);
+    let hourly = body["hourly"].as_array().unwrap();
+    let sum = |key: &str| -> u64 { hourly.iter().map(|h| h[key].as_u64().unwrap()).sum() };
+    assert_eq!((sum("delivered"), sum("failed"), sum("pending")), (3, 1, 2));
+
+    // 窓を 1 時間に絞っても、滞留（pending・最古）は変わらない。時間ごとの内訳は窓の中だけ。
+    let (_, narrow) = req(
+        &app,
+        "GET",
+        &format!("{metrics}?hours=1"),
+        &owner,
+        Value::Null,
+    )
+    .await;
+    assert_eq!(narrow["totals"]["pending"], 3, "{narrow}");
+    assert!(narrow["totals"]["oldest_pending_seconds"].as_f64().unwrap() >= 30.0 * 3600.0 - 10.0);
+    assert_eq!(narrow["hourly"].as_array().unwrap().len(), 1, "{narrow}");
+
+    // 窓を広げると窓の外だった 1 件も入る。
+    let (_, wide) = req(
+        &app,
+        "GET",
+        &format!("{metrics}?hours=96"),
+        &owner,
+        Value::Null,
+    )
+    .await;
+    assert_eq!(wide["totals"]["delivered"], 4, "{wide}");
+
+    // 管理者は他人の App も見られる。他の開発者は見られない。
+    assert_eq!(
+        req(&app, "GET", &metrics, admin, Value::Null).await.0,
+        StatusCode::OK
+    );
+    assert_eq!(
+        req(&app, "GET", &metrics, &stranger, Value::Null).await.0,
+        StatusCode::FORBIDDEN
+    );
+    for bad in ["hours=0", "hours=721", "hours=abc", "unknown=1"] {
+        let (status, body) = req(
+            &app,
+            "GET",
+            &format!("{metrics}?{bad}"),
+            &owner,
+            Value::Null,
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{bad}");
+        // どの 400 も JSON の `error` を返す（クエリの解析失敗を含む）。
+        assert!(body["error"].is_string(), "{bad}: {body}");
+    }
+    assert_eq!(
+        req(
+            &app,
+            "GET",
+            "/api/apps/missing/metrics",
+            &owner,
+            Value::Null
+        )
+        .await
+        .0,
+        StatusCode::NOT_FOUND
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn statement_timeouts_are_recognised_by_sqlstate_through_toasty_errors() -> anyhow::Result<()>
+{
+    // メトリクス API の 503 判定は、メッセージ文言ではなく SQLSTATE 57014 を、toasty のエラーの
+    // source をたどって見つける。その前提（コードが取り出せること）を実際のタイムアウトで確かめる。
+    let db = init_db(&Config::from_env().database_url).await?;
+    let mut db = db.clone();
+    let mut tx = db.transaction().await?;
+    toasty::sql::statement("SET LOCAL statement_timeout = '1ms'")
+        .exec(&mut tx)
+        .await?;
+    let err = toasty::sql::statement("SELECT pg_sleep(0.5)")
+        .exec(&mut tx)
+        .await
+        .expect_err("the statement must time out");
+    let mut found = false;
+    let mut curr: Option<&(dyn std::error::Error + 'static)> = Some(&err);
+    while let Some(e) = curr {
+        found |= e
+            .downcast_ref::<tokio_postgres::Error>()
+            .and_then(|pg| pg.code())
+            .is_some_and(|c| *c == tokio_postgres::error::SqlState::QUERY_CANCELED);
+        curr = e.source();
+    }
+    assert!(found, "SQLSTATE 57014 not found in {err:?}");
+    Ok(())
+}
