@@ -95,3 +95,41 @@ it.each([160, 640])("keeps heading size, wrapping and spacing within a %ipx mess
   const body = view.container.firstElementChild!;
   expect(body.scrollWidth).toBeLessThanOrEqual(body.clientWidth);
 });
+
+it("uses service shortcodes after custom images and leaves code unchanged", async () => {
+  await startMockServer();
+  mockServer.use(
+    http.get("*/api/emoji-shortcodes", () =>
+      HttpResponse.json({ shortcodes: { service_gemoji: "👩‍💻", smile: "😄" } }),
+    ),
+  );
+  const view = render(
+    <MfmContent
+      content=":service_gemoji: :smile: `:service_gemoji:` :unknown_service_emoji:"
+      emojis={{ smile: { url: "/custom-smile.png", width: 1, height: 1 } }}
+    />,
+  );
+  await waitFor(() => expect(view.container.textContent).toContain("👩‍💻"));
+  expect(
+    new URL((screen.getByRole("img", { name: ":smile:" }) as HTMLImageElement).src).pathname,
+  ).toBe("/custom-smile.png");
+  expect(view.container.querySelector("code")?.textContent).toBe(":service_gemoji:");
+  expect(view.container.textContent).toContain(":unknown_service_emoji:");
+  view.unmount();
+});
+
+it("retains local rendering when the initial shortcode service request fails", async () => {
+  await startMockServer();
+  let calls = 0;
+  mockServer.use(
+    http.get("*/api/emoji-shortcodes", () => {
+      calls++;
+      return new HttpResponse(null, { status: 503 });
+    }),
+  );
+  const view = render(<MfmContent content=":smile: :unknown_standard_code:" emojis={{}} />);
+  await waitFor(() => expect(calls).toBeGreaterThan(0));
+  expect(view.container.textContent).toContain("😄");
+  expect(view.container.textContent).toContain(":unknown_standard_code:");
+  view.unmount();
+});

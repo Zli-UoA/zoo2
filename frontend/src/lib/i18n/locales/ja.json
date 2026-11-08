@@ -810,7 +810,9 @@
     "cancel": "キャンセル",
     "category": "カテゴリ",
     "aliases": "エイリアス（カンマ区切り）",
-    "uncategorized": "未分類"
+    "uncategorized": "未分類",
+    "serviceHint": "絵文字の登録・編集は共通の管理サービスで行います。",
+    "manageService": "絵文字管理サービスを開く"
   },
   "appConsole": {
     "title": "App 管理",

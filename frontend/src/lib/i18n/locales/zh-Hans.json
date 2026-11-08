@@ -810,7 +810,9 @@
     "cancel": "取消",
     "category": "分类",
     "aliases": "别名（逗号分隔）",
-    "uncategorized": "未分类"
+    "uncategorized": "未分类",
+    "serviceHint": "在共享管理服务中添加和编辑表情。",
+    "manageService": "打开表情管理服务"
   },
   "appConsole": {
     "title": "App 管理",

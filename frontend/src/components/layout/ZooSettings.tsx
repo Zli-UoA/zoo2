@@ -1,3 +1,4 @@
+import { ExternalLink } from "../ui/external-link";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { createConfiguredApiClient } from "../../lib/api/client";
 import { useCollections } from "../../lib/electric/collections-context";
@@ -359,6 +360,42 @@ function ActivityPubSettings() {
 }
 
 function CustomEmojiSettings() {
+  const { t } = useTranslation();
+  const { config } = useCollections();
+  const client = useMemo(() => createConfiguredApiClient(config), [config]);
+  const [service, setService] = useState<{ url: string | null } | null>(null);
+  const [failed, setFailed] = useState(false);
+  const load = useCallback(async () => {
+    setFailed(false);
+    try {
+      setService(await client.get<{ url: string | null }>("/api/emoji-service"));
+    } catch {
+      setFailed(true);
+    }
+  }, [client]);
+  useEffect(() => {
+    void load();
+  }, [load]);
+  if (service?.url === null) return <LocalCustomEmojiSettings />;
+  return (
+    <SettingsSection title={t("home.customEmojis")} description={t("customEmoji.serviceHint")}>
+      {service?.url && /^https?:\/\//.test(service.url) ? (
+        <ExternalLink href={service.url}>{t("customEmoji.manageService")}</ExternalLink>
+      ) : null}
+      {!service && !failed ? <p role="status">{t("home.loading")}</p> : null}
+      {failed ? (
+        <p role="alert">
+          {t("home.controlsError")}{" "}
+          <Button variant="link" onClick={() => void load()}>
+            {t("home.refresh")}
+          </Button>
+        </p>
+      ) : null}
+    </SettingsSection>
+  );
+}
+
+function LocalCustomEmojiSettings() {
   const { t } = useTranslation();
   const { config } = useCollections();
   const client = useMemo(() => createConfiguredApiClient(config), [config]);

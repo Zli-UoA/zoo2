@@ -227,7 +227,8 @@
         "JoinedEmoji",
         "Formatting",
         "CodeAndMathDark",
-        "Headings"
+        "Headings",
+        "SharedShortcodes"
       ]
     },
     {
@@ -348,7 +349,10 @@
         "CustomEmojis",
         "CustomEmojisMobile",
         "CustomEmojisEmpty",
-        "CustomEmojisError"
+        "CustomEmojisError",
+        "SharedEmojiService",
+        "SharedEmojiServiceError",
+        "SharedEmojiServiceMobile"
       ]
     },
     {

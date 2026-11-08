@@ -810,7 +810,9 @@
     "cancel": "취소",
     "category": "카테고리",
     "aliases": "별칭(쉼표로 구분)",
-    "uncategorized": "미분류"
+    "uncategorized": "미분류",
+    "serviceHint": "이모지 등록과 편집은 공용 관리 서비스에서 합니다.",
+    "manageService": "이모지 관리 서비스 열기"
   },
   "appConsole": {
     "title": "App 관리",

@@ -384,3 +384,38 @@ export const CustomEmojisError: Story = {
     await expect(screen.getByRole("button", { name: "更新" })).toBeVisible();
   }),
 };
+
+export const SharedEmojiService: Story = {
+  parameters: {
+    msw: {
+      handlers: [
+        http.get("*/api/emoji-service", () =>
+          HttpResponse.json({ url: "https://emoji.example.test" }),
+        ),
+      ],
+    },
+  },
+  play: playForImplementation(async () => {
+    await userEvent.click(await screen.findByRole("tab", { name: "カスタム絵文字" }));
+    await expect(
+      await screen.findByRole("link", { name: "絵文字管理サービスを開く" }),
+    ).toHaveAttribute("href", "https://emoji.example.test");
+    await expect(screen.queryByRole("textbox", { name: "名前" })).not.toBeInTheDocument();
+  }),
+};
+export const SharedEmojiServiceError: Story = {
+  parameters: {
+    msw: {
+      handlers: [http.get("*/api/emoji-service", () => new HttpResponse(null, { status: 500 }))],
+    },
+  },
+  play: playForImplementation(async () => {
+    await userEvent.click(await screen.findByRole("tab", { name: "カスタム絵文字" }));
+    await expect(await screen.findByRole("alert")).toBeVisible();
+  }),
+};
+
+export const SharedEmojiServiceMobile: Story = {
+  ...SharedEmojiService,
+  globals: { viewport: { value: "mobile" } },
+};
