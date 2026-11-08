@@ -664,7 +664,7 @@ const prf = credential.getClientExtensionResults().prf?.results?.first;
   ```
 
   `device_keys.user_id` は呼び出したユーザーと一致していなければならない。応答は端末の行と `one_time_key_counts`。同じ `device_id` で同じ `device_keys` を送り直した場合は、削除されていなければ成功として扱い（冪等）、削除済みなら 409 `E2EE_DEVICE_EXISTS`（削除済みの `device_id` は再利用できない）、内容が違えば 409 `E2EE_DEVICE_EXISTS`。
-- 【決定】`last_seen_at` は、`POST /api/e2ee/keys/upload` と `POST /api/e2ee/to_device/ack`（どちらも `device_id` を持つ）で更新する。更新は 1 端末につき 5 分に 1 回までにして、書き込みを増やしすぎない。ベアラートークンはユーザー単位で、`GET /api/e2ee/secret_storage` と `POST /api/e2ee/key_backup/keys` からは端末を特定できないので、これらでは更新しない。
+- 【決定】`last_seen_at` は、`POST /api/e2ee/keys/upload` と `POST /api/e2ee/to_device/ack`（どちらも `device_id` を持つ）に加え、暗号化チャンネルへのメッセージの送信（`ciphertext` を送るときの `device_id`。#357）で更新する。送信だけを続ける端末が、30 日たって古い端末として自動削除されないようにするため。更新は 1 端末につき 5 分に 1 回までにして、書き込みを増やしすぎない。ベアラートークンはユーザー単位で、`GET /api/e2ee/secret_storage` と `POST /api/e2ee/key_backup/keys` からは端末を特定できないので、これらでは更新しない。
 - `GET /api/e2ee/devices`：自分の端末の一覧（削除済みを除く）。`display_name` と `last_seen_at` を返すのはこの API だけで、他のユーザーには見せない。
 - `PATCH /api/e2ee/devices/{device_id}`：`{"display_name": "..."}`。自分の端末だけ。
 - `DELETE /api/e2ee/devices/{device_id}`：自分の端末を削除する（論理削除）。同じトランザクションで、その端末のワンタイム鍵、フォールバック鍵、未受信の to-device メッセージを消し、ユーザーが参加しているすべての暗号化チャンネルの `membership_epoch` を増やす（`membership_epoch` の列は #357 で足すので、この増加は #357 で足す）。削除した `device_id` は再利用できない。
@@ -703,9 +703,9 @@ const prf = credential.getClientExtensionResults().prf?.results?.first;
   ```
 
   - 応答は `{"undelivered": [...]}`（下のキューの上限で入れなかった宛先。なければ空）。
-  - 同じ `(送信ユーザー, 送信端末, txn_id, 宛先)` の再送は 1 件にまとめる（冪等）。ack でメッセージ行を消すと冪等性が失われるので、送信の記録（`e2ee_to_device_txns`：送信ユーザー、送信端末、`txn_id`、宛先、作成日時）を 30 日残し、ack 後の再送は入れずに成功として扱う【提案】。
+  - 同じ `(送信ユーザー, 送信端末, txn_id, 宛先)` の再送は 1 件にまとめる（冪等）。ack でメッセージ行を消すと冪等性が失われるので、送信の記録（`e2ee_to_device_txns`：送信ユーザー、送信端末、`txn_id`、宛先、作成日時）を 30 日残し、ack 後の再送は入れずに成功として扱う【提案】。送信の記録は、キューに入れた宛先にだけ書く（`undelivered` の宛先には書かない）ので、`undelivered` を同じ `txn_id` で送り直しても、入れられなかった宛先は通常どおり入る。重複した要求の応答の `undelivered` は、その時点で入れられなかった宛先を改めて返す（元の応答は覚えない）。
   - 【決定】1 件の `content` は 64 KiB まで。1 回の宛先は 100 端末までで、超える送信者は複数のリクエストに分ける（各リクエストに別の `txn_id`、冪等の単位は変わらない）。1 リクエストは最大 6.4 MiB で、Axum の既定のボディ上限（2 MB）を超えるので、このルートだけ 8 MiB に上げる。応答の `undelivered` は、リクエストごとに返す。
-  - 【決定】端末の数などの上限をサーバーで強制し、超えたら 400 `E2EE_LIMIT_EXCEEDED`（上限の名前を `limit` に入れる）で拒否する【提案】（数は #354 で決める）：1 ユーザーの端末は削除済みを除いて 20 台まで（上限に達した登録では、サーバーが、最後に使ってから 30 日以上たった端末（`last_seen_at` か登録日時）のうち最も古いものを自動で削除して登録を受け付ける。なければ 400。ログインし直すたびに新しい端末になるので、古い端末が溜まって初回設定や失効ができなくなるのを防ぐ）。1 端末のワンタイム鍵とフォールバック鍵は合わせて 100 個まで。1 回のアップロードの署名は 1000 件まで。端末鍵と署名の JSON は 8 KiB まで。暗号化チャンネルを共有するだけの相手に大量の端末を登録され、送信側が各端末に鍵を送る負荷と、`keys/claim` の枯渇を防ぐため。
+  - 【決定】端末の数などの上限をサーバーで強制し、超えたら 400 `E2EE_LIMIT_EXCEEDED`（上限の名前を `limit` に入れる）で拒否する。数は【提案】で、#354 で決める：1 ユーザーの端末は削除済みを除いて 20 台まで（上限に達した登録では、サーバーが、最後に使ってから 30 日以上たった端末（`last_seen_at` か登録日時）のうち最も古いものを自動で削除して登録を受け付ける。自動削除は `DELETE /api/e2ee/devices/{device_id}` と同じ後処理（論理削除、ワンタイム鍵、フォールバック鍵、未受信の to-device メッセージの削除、参加しているすべての暗号化チャンネルの `membership_epoch` の増加、`device_id` の再利用禁止）を同じトランザクションで行う。`deleted_at` を入れるだけにすると、削除した端末がセッション鍵を持ったまま、削除後のメッセージを復号できてしまうため。なければ 400。30 日以内に使った端末が 20 台あるときは、利用者が別の端末の設定から削除するまで登録できない（端末一覧は #362 で、それまでは `DELETE /api/e2ee/devices/{device_id}` を直接呼ぶ。許容する）。ログインし直すたびに新しい端末になるので、古い端末が溜まって初回設定や失効ができなくなるのを防ぐ）。1 端末のワンタイム鍵とフォールバック鍵は合わせて 100 個まで。1 回のアップロードの署名は 1000 件まで。端末鍵と署名の JSON は 8 KiB まで。暗号化チャンネルを共有するだけの相手に大量の端末を登録され、送信側が各端末に鍵を送る負荷と、`keys/claim` の枯渇を防ぐため。
   - 初期版の `type` は `m.room.encrypted` だけ。宛先の端末が存在しない、または削除済みなら、その宛先は黙って捨てる（存在の推測を防ぐため）。
   - 【決定】宛先にできるのは、送信者自身の端末と、送信者と暗号化チャンネルを共有しているユーザーの端末だけ。範囲は[端末の Shape](#electric-の-shape) と同じ where（`$1` を送信者にしたもの）で決める。範囲外のユーザーと端末への宛先は、`keys/claim` と同じく、エラーにせずに捨てる。暗号化チャンネルを共有していないユーザーは、他人の端末のキューに書き込めない。応答は範囲外の宛先でも同じなので、応答の違いから端末が存在するかを推測することもできない。暗号化チャンネルを共有しているユーザーは、この規則では止まらない（下のキューの上限で量を抑える）。
   - 【決定】宛先の端末ごとに、受信確認されていないメッセージは 1000 件までにする。上限に達した端末への宛先は入れず、応答の `undelivered`（`[{"user_id", "device_id"}]`）で返す。リクエストのほかの宛先は通常どおり入れる。範囲内の端末は送信者が端末の Shape でもともと見ているので、上限に達したことを知らせても、端末が存在するかは漏れない（範囲外の宛先と、存在しない端末への宛先は、これまでどおり知らせずに捨てる）。送信者は `undelivered` の宛先を暗号ストアの送信待ちに記録し、間隔をあけて送り直す。セッションを作り直したら、古いセッションの送り直しはやめる。
@@ -811,11 +811,11 @@ const prf = credential.getClientExtensionResults().prf?.results?.first;
   - サーバーは `auth_data` の、今のマスター鍵の署名を検証する（違えば 400 `E2EE_BAD_SIGNATURE`）。
   - 【決定】そのユーザーが過去に作った版（消した版を含む）と同じ `auth_data.public_key` は、400 `E2EE_KEY_REUSED` で拒否する。漏れたバックアップ鍵の古い `auth_data` には、残したマスター鍵の有効な署名が付いているので、トークンを持つ攻撃者がそれを送り直して、漏れた鍵を今の版に戻せないようにするため。
   - 【決定】そのユーザーの最初の版でなければ（消した版を含めて過去に版があれば）、直前の再認証を求める（403 `E2EE_REAUTH_REQUIRED`。条件は[クロス署名の API](#クロス署名356)と同じ）。また、同じトランザクションで、そのユーザーが参加しているすべての暗号化チャンネルの `membership_epoch` を増やす（この増加は #357 で足す）。切り替えより前の版に入ったセッションを、切り替えのあとの送信に使わせないため（[失効の手順](#失効の手順)の 3）。
-  - 【決定】版の作成と削除、セッションのアップロードは、ユーザーごとに直列にする。古い版が受け付けるのを、切り替えの前（epoch を増やす前）のアップロードだけにするため。【提案】版の作成と削除はユーザーごとのキーで `pg_advisory_xact_lock` を、アップロードは同じキーで `pg_advisory_xact_lock_shared` を取ってから、今の版を読む。
+  - 【決定】版の作成と削除、セッションのアップロードは、ユーザーごとに直列にする。古い版が受け付けるのを、切り替えの前（epoch を増やす前）のアップロードだけにするため。【決定】版の作成と削除はユーザー単位の `pg_advisory_xact_lock`（クロス署名と SSSS の書き込みと同じキー）を、アップロードは同じキーで `pg_advisory_xact_lock_shared` を取ってから、今の版を読む。
 - `GET /api/e2ee/key_backup/versions/current`：`{"version", "algorithm", "auth_data", "count"}`。今の版がなければ 404。
 - `GET /api/e2ee/key_backup/versions/{version}`：消していない版の `{"version", "algorithm", "auth_data"}`。消した版と、ない版は 404。
 - `GET /api/e2ee/key_backup/versions`：そのユーザーのすべての版（消した版を含む）の `{"version", "auth_data", "deleted"}` を番号の昇順で返す。古い版の秘密鍵を版に割り当てるために使う。
-- `DELETE /api/e2ee/key_backup/versions/{version}`：版のセッションを消し、版の行に `deleted_at` を入れる。行は残し、番号と公開鍵の再利用の判定に使う。今の版を消すときは直前の再認証を求める（403 `E2EE_REAUTH_REQUIRED`）。消した版と、ない版は 404。
+- `DELETE /api/e2ee/key_backup/versions/{version}`：版のセッションを消し、版の行に `deleted_at` を入れる。行は残し、番号と公開鍵の再利用の判定に使う。今の版を消すときは直前の再認証を求める（403 `E2EE_REAUTH_REQUIRED`）。消した版と、ない版は 404。【決定】削除には `expected_*` を足さず、パスの `version` を前提の値として扱う（指定した版だけを消す。別の端末が先に消していれば 404）。
 - `POST /api/e2ee/key_backup/keys?version=<版>&secrets_revision=<数>`：
 
   ```json
@@ -971,6 +971,7 @@ CREATE TABLE e2ee_to_device_txns (
   created_at timestamptz NOT NULL DEFAULT now(),
   PRIMARY KEY (sender_user_id, sender_device_id, txn_id, recipient_user_id, recipient_device_id)
 );
+CREATE INDEX e2ee_to_device_txns_created ON e2ee_to_device_txns (created_at);
 
 -- keys/claim の払い出しの回数（【提案】。1 日分だけ持ち、古い行は回収する）
 CREATE TABLE e2ee_one_time_key_claim_counts (
