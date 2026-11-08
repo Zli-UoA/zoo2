@@ -100,6 +100,32 @@ App の投稿には `POST /api/apps/v1/messages/{id}/blocks` で `{"type":"card"
 
 通知専用Appの管理権限は従来のチャンネルWebhook権限を維持し、会話の読み取りやDMの権限を与えません。会話機能への拡張には管理者の承認が必要です。GitHub 専用の受信口と環境変数設定は削除しました。GitHub 連携は Bot アプリとして実装します。共通 Webhook の仕様は [Webhook設定](webhooks.md) を参照してください。
 
+## 配信プロセス（zoo-dispatcher）
+
+HTTP App へのイベント送信は、backend から独立した `zoo-dispatcher`（`zoo_dispatcher` バイナリ。backend と同じイメージに入っています）に分けて動かせます。外向きの HTTP 送信を 1 か所に集め、API と配信の障害・スケールを切り離すためです。
+
+| 環境変数 | 対象 | 内容 |
+|---|---|---|
+| `DATABASE_URL` / `POSTGRES_*` | dispatcher | 接続先。LISTEN を使うため、トランザクションプールのプーラーを経由しない直接接続にする（経由しても配信は 3 秒ポーリングで動く） |
+| `DISPATCHER_PORT` / `DISPATCHER_HOST` | dispatcher | `/healthz`・`/metrics` の待ち受け（既定 8081 / 0.0.0.0） |
+| `DISPATCHER_TOKEN` | dispatcher・backend | 内部 API の共有トークン。dispatcher 側が未設定なら内部 API は無効 |
+| `DISPATCHER_URL` | backend | challenge 検証を委譲する dispatcher の URL。未設定なら backend が自分で送る |
+| `APP_HTTP_DELIVERY_WORKER` | backend | `false` で backend の HTTP 配信と履歴削除を止める |
+
+**ローカルで動かす**: `make db-up && make migrate` のあと、別々のターミナルで `APP_HTTP_DELIVERY_WORKER=false make backend-dev` と `make dispatcher-dev` を実行します。`DISPATCHER_URL=http://127.0.0.1:8081` と同じ `DISPATCHER_TOKEN` を backend に渡すと、challenge 検証も dispatcher 経由になります。分離しない場合は従来どおり `make backend-dev` だけで配信まで動きます。
+
+**本番の移行順**:
+
+1. マイグレーションを適用する（NOTIFY トリガーと配信用ロール。どちらも追加のみで、旧 backend のまま動く）。
+2. dispatcher を起動し、`/healthz` と `/metrics`（`zoo_dispatch_queue_depth` が減ること）を確認する。この間、backend のワーカーと dispatcher が同時に動くが、`FOR UPDATE SKIP LOCKED` とインストール単位の advisory lock により同じ配信を二重に取らない。
+3. backend に `APP_HTTP_DELIVERY_WORKER=false` を設定して再起動する。
+4. （任意）`DISPATCHER_URL` と `DISPATCHER_TOKEN` を設定し、challenge 検証を dispatcher に移す。
+5. （任意）インフラ側で backend の外向き通信を塞ぐ。dispatcher だけが外へ出る。
+
+**戻し方と障害時**: backend の `APP_HTTP_DELIVERY_WORKER` を外せば、backend が配信を再開します。dispatcher が 0 台でも API は動き、配信はキューに溜まるだけで失われず、再開後に送られます（配信は at-least-once で順序保証なし、署名は従来どおり `v1:<timestamp>:<raw body>` の HMAC-SHA256）。dispatcher は SIGTERM を受けると新しい配信を取らなくなり、送信中の分を最大 8 秒待ちます（Pod の `terminationGracePeriodSeconds` はこれより長くしてください）。残ったリースは約 3 秒で切れ、別のインスタンスが拾います。
+
+**監視**: `/metrics` に `zoo_dispatch_attempts_total{result,status_class}`、`zoo_dispatch_latency_seconds`（作成から ACK まで）、`zoo_dispatch_queue_depth`、`zoo_dispatch_oldest_pending_seconds`、`zoo_dispatch_circuit_open{host}` があります。
+
 ## 運用・検証
 
 APIの失敗はHTTPステータスと `error` を返します。Appルートは `private, no-store` を返し、本番プロキシでも保持します。`/api/apps/metrics` は管理者に配信待ち・失敗・再送・最古の待ち時間を返します。ログはevent IDとdelivery IDで追跡でき、本文やSecretを記録しません。
