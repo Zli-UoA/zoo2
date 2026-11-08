@@ -3151,3 +3151,72 @@ async fn open_circuit_defers_deliveries_without_consuming_attempts() -> anyhow::
     apps::circuit::global().reset(&host);
     Ok(())
 }
+
+#[tokio::test]
+async fn delivery_role_runs_the_dispatch_path_but_cannot_read_messages_or_credentials()
+-> anyhow::Result<()> {
+    let _guard = HTTP_WORKER_TEST_LOCK.lock().await;
+    let f = fixture().await?;
+    reconfigure(&f,json!({"scopes":["messages:read"],"events":["message.created"],"transport":"http","event_url":"https://127.0.0.1:1/events"})).await?;
+    post_messages(&f, 3).await;
+    // インフラ側が行う有効化を、テストでは接続のためだけに行う。
+    let mut admin = f.state.db.clone();
+    let mut tx = admin.transaction().await?;
+    toasty::sql::statement("ALTER ROLE zoo_dispatcher LOGIN PASSWORD 'dispatcher-test'")
+        .exec(&mut tx)
+        .await?;
+    tx.commit().await?;
+    let mut url = reqwest::Url::parse(&Config::from_env().database_url)?;
+    url.set_username("zoo_dispatcher").unwrap();
+    url.set_password(Some("dispatcher-test")).unwrap();
+    let db = init_db(url.as_str()).await?;
+
+    // 配信パス一式: 候補取得 → claim → 送信失敗の記録、掃除、メトリクス。
+    apps::delivery::http_pass(&db).await?;
+    assert!(message_delivery_attempts(&f).await?.iter().all(|a| *a >= 1));
+    apps::delivery::cleanup(&db).await?;
+    apps::delivery::refresh_queue_metrics(&db).await?;
+    // ACK（新しい配信を取って確定する）。
+    post_messages(&f, 1).await;
+    let event = apps::delivery::claim(&db, &f.installation)
+        .await?
+        .expect("a fresh delivery is claimable");
+    assert!(
+        apps::delivery::ack(
+            &db,
+            &f.installation,
+            event["delivery_id"].as_str().unwrap(),
+            event["ack_token"].as_str().unwrap()
+        )
+        .await?
+        .is_some()
+    );
+    // 配信上限の通知（claim から呼ばれる app_emit）に必要な権限。
+    let mut role_db = db.clone();
+    let mut tx = role_db.transaction().await?;
+    apps::one(&mut tx,"SELECT json_build_object('ok',app_emit('app.rate_limited','{}'::jsonb,NULL,NULL,NULL,$1) IS NULL)::text",&[&f.installation]).await?;
+    tx.commit().await?;
+
+    // 配信に要らないものは読み書きできない。
+    for sql in [
+        "SELECT count(*) FROM messages",
+        "SELECT token_hash FROM app_credentials LIMIT 1",
+        "SELECT display_name FROM users LIMIT 1",
+        "SELECT name FROM channels LIMIT 1",
+        "UPDATE users SET is_bot=true WHERE false",
+        "UPDATE app_installations SET signing_secret='x' WHERE false",
+        "UPDATE app_deliveries SET payload='x' WHERE false",
+        "DELETE FROM app_installations WHERE false",
+    ] {
+        let mut db = db.clone();
+        let mut tx = db.transaction().await?;
+        let result = toasty::sql::statement(sql).exec(&mut tx).await;
+        assert!(result.is_err(), "the delivery role must not run: {sql}");
+    }
+    let mut tx = admin.transaction().await?;
+    toasty::sql::statement("ALTER ROLE zoo_dispatcher NOLOGIN")
+        .exec(&mut tx)
+        .await?;
+    tx.commit().await?;
+    Ok(())
+}

@@ -165,6 +165,8 @@ HTTP App は `POST /api/apps/{id}/actions/verify-endpoint` で署名付き `{"ty
 
 配信ワーカーは宛先ホストごとにサーキットブレーカーを持ちます（プロセス内の状態）。タイムアウト・接続失敗・名前解決失敗・5xx が連続 5 回で開き、開いている間は配信を取らず（`attempts` を消費せず）そのホストの配信を開放時刻まで先送りします。30 秒で 1 件だけ試し、成功で閉じ、失敗なら期間を倍（最大 5 分）にして開き直します。4xx など応答があれば生きているとみなします。同じホストへの同時送信は 16 件までです。`/metrics` の `zoo_dispatch_circuit_open{host}` は開放中のホスト（上位 20 件）、`zoo_dispatch_circuit_open_hosts` は総数です。
 
+`zoo-dispatcher` は専用の DB ロール `zoo_dispatcher` で接続できます（マイグレーション `20261108130000_app_delivery_role`）。ロールは `NOLOGIN` で作られ、パスワードはインフラ側が `ALTER ROLE zoo_dispatcher LOGIN PASSWORD '...'` で設定します。持つ権限は、配信キュー（`app_deliveries` の SELECT/INSERT/DELETE と進行用の列の UPDATE）、`app_installations`（SELECT と `last_http_dispatch_at` の UPDATE）、配信可否の判定に要る表の必要な列の SELECT、期限切れデータの掃除（DELETE）だけです。メッセージ本文、ユーザー名・チャンネル名、トークンのハッシュは読めず、署名鍵以外の `app_installations` の列も書けません。配信関数が `SECURITY DEFINER` でないため、関数が触る表の権限もこのロールが持つ必要があります（`tests/app_event_sources_test.rs` の `delivery_role_*` が、このロールで `http_pass`・`cleanup`・ACK・`app_emit` を実行して確認します）。配信に使う表や関数を変えたら、このテストが落ちるので権限を足してください。
+
 通常イベントの配信はインストールごと毎時30,000件までとし、再送は同じイベントとして扱います。`app.uninstalled`・`tokens.revoked`・`app.deleted` と上限通知は、記録・初回配信の両方でこの上限の対象外です。超過すると `app.rate_limited` を1時間に1件配信します。発火側でも不要なキューの増大を抑止し、並行トランザクションの境界で作られた余剰分は配信側で上限を適用します。イベント ID はトランザクションと内容から決定し、同一操作による重複通知を避けます。
 
 契約更新時は `python3 scripts/sync-app-contracts.py` で対応表・JSON Schema・OpenAPI・SDK のイベント型を再生成します。
