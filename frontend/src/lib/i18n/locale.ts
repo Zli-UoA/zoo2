@@ -2,7 +2,7 @@ import { readStorageValue } from "../storage";
 
 export const DEFAULT_LOCALE = "ja";
 export const LOCALE_STORAGE_KEY = "zoo-locale";
-export const LOCALES = ["ja", "en", "zh-Hant", "zh-Hans", "yue"] as const;
+export const LOCALES = ["ja", "en", "zh-Hant", "zh-Hans", "yue", "ko-KR", "ko-KP"] as const;
 export type Locale = (typeof LOCALES)[number];
 
 export const LANGUAGE_NAMES: Record<Locale, string> = {
@@ -11,6 +11,8 @@ export const LANGUAGE_NAMES: Record<Locale, string> = {
   "zh-Hant": "繁體中文",
   "zh-Hans": "简体中文",
   yue: "廣東話",
+  "ko-KR": "한국어",
+  "ko-KP": "조선말 (문화어)",
 };
 
 export const INTL_LOCALES: Record<Locale, string> = {
@@ -19,6 +21,8 @@ export const INTL_LOCALES: Record<Locale, string> = {
   "zh-Hant": "zh-TW",
   "zh-Hans": "zh-CN",
   yue: "yue-Hant-HK",
+  "ko-KR": "ko-KR",
+  "ko-KP": "ko-KP",
 };
 
 export function isLocale(value: unknown): value is Locale {
@@ -30,6 +34,7 @@ export function matchLocale(value: string): Locale | null {
   const tag = value.toLowerCase().replaceAll("_", "-");
   const [language, ...subtags] = tag.split("-");
   if (language === "ja" || language === "en" || language === "yue") return language;
+  if (language === "ko") return subtags.includes("kp") ? "ko-KP" : "ko-KR";
   if (language !== "zh") return null;
   if (subtags.includes("yue")) return "yue";
   if (subtags.includes("hant")) return "zh-Hant";
