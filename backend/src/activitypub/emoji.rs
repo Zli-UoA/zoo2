@@ -70,10 +70,36 @@ pub(super) fn media(value: &Value) -> Vec<Value> {
                     .take(1000)
                     .collect::<String>()
             );
+            for key in ["width", "height"] {
+                if let Some(size) = item[key]
+                    .as_u64()
+                    .filter(|n| *n > 0 && *n <= i32::MAX as u64)
+                {
+                    image[key] = json!(size);
+                }
+            }
+            if let Some(hash) = item["blurhash"]
+                .as_str()
+                .filter(|hash| valid_blurhash(hash))
+            {
+                image["blurhash"] = json!(hash);
+            }
             Some(image)
         })
         .collect()
 }
+// BlurHash uses base83 and 1..=9 components on each axis (6..=166 bytes).
+fn valid_blurhash(hash: &str) -> bool {
+    const BASE83: &[u8] =
+        b"0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz#$%*+,-.:;=?@[]^_{|}~";
+    let bytes = hash.as_bytes();
+    if !(6..=166).contains(&bytes.len()) || !bytes.iter().all(|b| BASE83.contains(b)) {
+        return false;
+    }
+    let size = BASE83.iter().position(|b| *b == bytes[0]).unwrap();
+    size <= 80 && bytes.len() == 4 + 2 * (size % 9 + 1) * (size / 9 + 1)
+}
+
 pub(super) fn tags(value: &Value) -> Vec<Value> {
     static NAME: std::sync::LazyLock<regex::Regex> =
         std::sync::LazyLock::new(|| regex::Regex::new(r"^:[A-Za-z0-9_+\-]{1,100}:$").unwrap());
@@ -447,5 +473,44 @@ mod media_proxy_tests {
                 .await
                 .is_err()
         );
+    }
+}
+
+#[cfg(test)]
+mod media_metadata_tests {
+    use super::*;
+
+    #[test]
+    fn preserves_federated_metadata_and_ignores_invalid_optional_values() {
+        let hash = "LEHV6nWB2yk8pyo0adR*.7kCMdnj";
+        let mut attachment = json!({"type":"Document","url":"https://peer.example/photo.png",
+            "mediaType":"image/png","width":640,"height":480,"blurhash":hash});
+        let received = media(&attachment);
+        assert_eq!(received[0]["width"], 640);
+        assert_eq!(received[0]["height"], 480);
+        assert_eq!(received[0]["blurhash"], hash);
+        for invalid in [
+            json!("bad"),
+            json!("0000000"),
+            json!("00000!"),
+            json!("~00000"),
+            json!("é00000"),
+            json!(42),
+        ] {
+            attachment["blurhash"] = invalid;
+            attachment["width"] = json!(-1);
+            attachment["height"] = json!(2147483648_u64);
+            let received = media(&attachment);
+            assert_eq!(received.len(), 1);
+            for key in ["blurhash", "width", "height"] {
+                assert!(received[0].get(key).is_none());
+            }
+        }
+        for key in ["blurhash", "width", "height"] {
+            attachment.as_object_mut().unwrap().remove(key);
+        }
+        assert_eq!(media(&attachment).len(), 1);
+        let wrapped = json!([attachment]);
+        assert_eq!(media(&wrapped).len(), 1);
     }
 }

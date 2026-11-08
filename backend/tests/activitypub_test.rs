@@ -3227,3 +3227,47 @@ async fn avatar_changes_queue_current_actor_for_accepted_followers_atomically() 
         .await?;
     Ok(())
 }
+
+#[tokio::test]
+async fn federated_image_metadata_survives_create_and_update() -> anyhow::Result<()> {
+    let _serial = PROTOCOL_SERIAL.lock().await;
+    let mut f = protocol_fixture().await?;
+    follow_peer(&mut f).await?;
+    let id = format!("{}/notes/image-metadata", f.remote);
+    let hash = "LEHV6nWB2yk8pyo0adR*.7kCMdnj";
+    let mut note = json!({"id":id,"type":"Note","attributedTo":f.remote,
+        "content":"<p>photo</p>","published":"2026-01-01T00:00:00Z",
+        "to":["https://www.w3.org/ns/activitystreams#Public"],
+        "attachment":[{"type":"Document","mediaType":"image/png","url":"https://peer.example/photo.png",
+            "width":640,"height":480,"blurhash":hash}]});
+    assert_eq!(
+        receive_peer(&f, &peer_activity(&f, "Create", note.clone())).await?,
+        StatusCode::ACCEPTED
+    );
+    let path = format!(
+        "/api/home/{}",
+        percent_encoding::utf8_percent_encode(&id, percent_encoding::NON_ALPHANUMERIC)
+    );
+    let (status, post) = request(&f.app, "GET", Some(&f.user), &path, None).await?;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(post["media"][0]["width"], 640);
+    assert_eq!(post["media"][0]["height"], 480);
+    assert_eq!(post["media"][0]["blurhash"], hash);
+    note["updated"] = json!("2026-01-02T00:00:00Z");
+    note["attachment"][0]["width"] = json!(1280);
+    note["attachment"][0]["height"] = json!(960);
+    note["attachment"][0]
+        .as_object_mut()
+        .unwrap()
+        .remove("blurhash");
+    assert_eq!(
+        receive_peer(&f, &peer_activity(&f, "Update", note)).await?,
+        StatusCode::ACCEPTED
+    );
+    let (_, post) = request(&f.app, "GET", Some(&f.user), &path, None).await?;
+    assert_eq!(post["media"][0]["width"], 1280);
+    assert_eq!(post["media"][0]["height"], 960);
+    assert!(post["media"][0]["blurhash"].is_null());
+    finish_protocol(&mut f).await?;
+    Ok(())
+}

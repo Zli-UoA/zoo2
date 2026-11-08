@@ -34,18 +34,22 @@ pub(crate) static DECODERS: tokio::sync::Semaphore = tokio::sync::Semaphore::con
 
 /// Bound decoded pixels as well as compressed bytes; preserve animated originals.
 pub(crate) fn valid_image(mime: &str, bytes: &[u8]) -> bool {
+    decode_image(mime, bytes).is_some()
+}
+
+fn decode_image(mime: &str, bytes: &[u8]) -> Option<image::DynamicImage> {
     use image::{ImageFormat, ImageReader, Limits};
     let format = match mime {
         "image/png" => ImageFormat::Png,
         "image/jpeg" => ImageFormat::Jpeg,
         "image/gif" => ImageFormat::Gif,
         "image/webp" => ImageFormat::WebP,
-        _ => return false,
+        _ => return None,
     };
     let Ok((width, height)) =
         ImageReader::with_format(std::io::Cursor::new(bytes), format).into_dimensions()
     else {
-        return false;
+        return None;
     };
     if width == 0
         || height == 0
@@ -53,7 +57,7 @@ pub(crate) fn valid_image(mime: &str, bytes: &[u8]) -> bool {
         || height > 8192
         || u64::from(width) * u64::from(height) > 20_000_000
     {
-        return false;
+        return None;
     }
     let mut reader = ImageReader::with_format(std::io::Cursor::new(bytes), format);
     let mut limits = Limits::default();
@@ -61,7 +65,7 @@ pub(crate) fn valid_image(mime: &str, bytes: &[u8]) -> bool {
     limits.max_image_height = Some(8192);
     limits.max_alloc = Some(128 * 1024 * 1024);
     reader.limits(limits);
-    reader.decode().is_ok()
+    reader.decode().ok()
 }
 
 async fn upload(
@@ -89,10 +93,16 @@ async fn upload(
         return Err(AppError::BadRequest("Expected an image up to 8 MiB".into()));
     }
     let mime = body.content_type.clone();
-    let bytes = tokio::task::spawn_blocking(move || {
+    let (bytes, width, height, blurhash) = tokio::task::spawn_blocking(move || {
         let _permit = permit;
-        if valid_image(&mime, &bytes) {
-            Ok(bytes)
+        if let Some(image) = decode_image(&mime, &bytes) {
+            let (width, height) = (image.width(), image.height());
+            let preview = image.thumbnail(64, 64).to_rgba8();
+            let hash = blurhash::encode(4, 3, preview.width(), preview.height(), preview.as_raw())
+                .map_err(|e| {
+                    AppError::Internal(anyhow::anyhow!("BlurHash encoding failed: {e}"))
+                })?;
+            Ok((bytes, width, height, hash))
         } else {
             Err(AppError::BadRequest(
                 "Invalid image format, dimensions or pixel count".into(),
@@ -113,7 +123,7 @@ async fn upload(
     let id = uuid::Uuid::new_v4().to_string();
     let key = format!("home-images/{id}");
     // Reserve durable metadata before starting S3 I/O so crashes leave a GC candidate.
-    toasty::sql::statement("INSERT INTO home_images(id,uploader_id,content_type,name,file_size) VALUES($1,$2,$3,$4,$5::bigint)").bind(id.as_str()).bind(user.id.as_str()).bind(body.content_type.as_str()).bind(body.name).bind(file_size).exec(&mut tx).await?;
+    toasty::sql::statement("INSERT INTO home_images(id,uploader_id,content_type,name,file_size,width,height,blurhash) VALUES($1,$2,$3,$4,$5::bigint,$6::integer,$7::integer,$8)").bind(id.as_str()).bind(user.id.as_str()).bind(body.content_type.as_str()).bind(body.name).bind(file_size).bind(width.to_string()).bind(height.to_string()).bind(blurhash.as_str()).exec(&mut tx).await?;
     tx.commit().await?;
     let mut tx = db.transaction().await?;
     // Account deletion and GC must not delete the object before PUT finishes.
@@ -142,7 +152,9 @@ async fn upload(
         return Err(AppError::Internal(anyhow::anyhow!("Image upload failed")));
     }
     tx.commit().await?;
-    Ok(Json(json!({"id":id})))
+    Ok(Json(
+        json!({"id":id,"width":width,"height":height,"blurhash":blurhash}),
+    ))
 }
 
 pub(super) async fn resolve(
@@ -159,7 +171,7 @@ pub(super) async fn resolve(
         if !seen.insert(id) || uuid::Uuid::parse_str(id).is_err() {
             return Err(AppError::BadRequest("Invalid image ID".into()));
         }
-        let rows = query(tx, "SELECT json_build_object('name',name,'media_type',content_type)::text FROM home_images WHERE id=$1 AND uploader_id=$2 FOR SHARE", &[id,user]).await?;
+        let rows = query(tx, "SELECT json_build_object('name',name,'media_type',content_type,'width',width,'height',height,'blurhash',blurhash)::text FROM home_images WHERE id=$1 AND uploader_id=$2 FOR SHARE", &[id,user]).await?;
         let mut item = rows
             .into_iter()
             .next()
@@ -187,7 +199,7 @@ pub(crate) async fn decorate(
     if ids.is_empty() {
         return Ok(());
     }
-    let rows = query(tx, "SELECT json_build_object('id',p.id,'media',(SELECT COALESCE(jsonb_agg(jsonb_build_object('url','/api/home/images/' || a.id,'name',a.file_name,'media_type',a.content_type) ORDER BY a.created_at,a.id),'[]'::jsonb) FROM (SELECT id,file_name,content_type,created_at FROM attachments WHERE message_id=p.id AND content_type IN ('image/png','image/jpeg','image/gif','image/webp') ORDER BY created_at,id LIMIT 10) a))::text FROM home_posts p JOIN channels c ON c.id=p.channel_id WHERE p.id IN (SELECT jsonb_array_elements_text($1::jsonb)) AND p.deleted_at IS NULL AND NOT c.is_private AND NOT c.is_dm AND c.deleted_at IS NULL", &[&json!(ids).to_string()]).await?;
+    let rows = query(tx, "SELECT json_build_object('id',p.id,'media',(SELECT COALESCE(jsonb_agg(jsonb_build_object('url','/api/home/images/' || a.id,'name',a.file_name,'media_type',a.content_type,'width',a.width,'height',a.height,'blurhash',a.blurhash) ORDER BY a.created_at,a.id),'[]'::jsonb) FROM (SELECT a.id,a.file_name,a.content_type,a.created_at,h.width,h.height,h.blurhash FROM attachments a LEFT JOIN home_images h ON a.storage_key='home-images/' || h.id WHERE a.message_id=p.id AND a.content_type IN ('image/png','image/jpeg','image/gif','image/webp') ORDER BY a.created_at,a.id LIMIT 10) a))::text FROM home_posts p JOIN channels c ON c.id=p.channel_id WHERE p.id IN (SELECT jsonb_array_elements_text($1::jsonb)) AND p.deleted_at IS NULL AND NOT c.is_private AND NOT c.is_dm AND c.deleted_at IS NULL", &[&json!(ids).to_string()]).await?;
     let media = rows
         .into_iter()
         .filter_map(|row| Some((row["id"].as_str()?.to_owned(), row["media"].clone())))
