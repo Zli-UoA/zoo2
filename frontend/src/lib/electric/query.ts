@@ -28,6 +28,7 @@ export function shapeQueryParams(
   options: ShapeQueryOptions = {},
 ): ShapeQueryParams {
   if (config.shapeMode === "proxy") {
+    if (shape === "notifications") return { include_notes: "true" };
     if (
       (shape === "messages" ||
         shape === "messageReactions" ||
@@ -42,7 +43,7 @@ export function shapeQueryParams(
 
   if (shape === "notifications") {
     if (!options.userId) throw new Error("Notification shapes require a user ID");
-    return { where: "user_id = $1", "params[1]": options.userId };
+    return { where: "source = 'channel' AND user_id = $1", "params[1]": options.userId };
   }
   if (shape === "messageReactions" && options.channelId) {
     return {

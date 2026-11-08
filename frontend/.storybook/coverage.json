@@ -58,7 +58,21 @@
     },
     {
       "file": "src/components/chat/ChannelScreen.stories.tsx",
-      "states": ["Default", "PrivateChannel", "Archived", "NotFound", "Mobile", "CommandCompletion"]
+      "states": [
+        "Default",
+        "PrivateChannel",
+        "Archived",
+        "NotFound",
+        "Mobile",
+        "CommandCompletion",
+        "Notes",
+        "NotesEmpty",
+        "NotesLoadError",
+        "NotesReadOnly",
+        "NotesMobile",
+        "NotesDeleted",
+        "NotesConflict"
+      ]
     },
     {
       "file": "src/components/chat/ChannelSidebar.stories.tsx",
@@ -606,6 +620,14 @@
     {
       "file": "src/components/chat/ChannelHeader.tsx",
       "story": "src/components/chat/ChannelHeader.stories.tsx"
+    },
+    {
+      "file": "src/components/chat/ChannelNotesTabs.tsx",
+      "story": "src/components/chat/ChannelScreen.stories.tsx"
+    },
+    {
+      "file": "src/components/chat/MarkdownNote.tsx",
+      "story": "src/components/chat/ChannelScreen.stories.tsx"
     },
     {
       "file": "src/components/chat/ChannelScreen.tsx",

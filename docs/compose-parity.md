@@ -14,6 +14,7 @@ Reactを機能・UI・操作の基準とする。変更時は [compose-react-par
 | --- | --- | --- | --- |
 | シェル・ルート・レール・ヘッダー | `layout/`、`ChannelHeader` | `App.kt`, `PaneHeader.kt`, `Ui.kt`, `Overlays.kt` | 両実装のentry points / CRUD E2E |
 | チャンネル・DM・メンバー・管理 | `ChannelScreen`, `dm`, `WorkspaceMembers` | `Channels.kt`, `Settings.kt` | CRUD・権限境界テスト |
+| チャンネルノート・Markdown・通知遷移 | `ChannelNotesTabs`, `MarkdownNote`, `NotificationCard` | `ChannelNotes.kt`, `ChannelNoteMarkdown.kt`, `Notifications.kt` | Compose のノート URL・編集・競合・並替・削除・Todo と遅延応答のブラウザーテスト、`ChannelNoteMarkdownTest`、ノート Story |
 | Zoo設定・検索エンジン・テーマ・言語 | `ZooSettings`, `preferences/`, `theme/`, `i18n/` | `Settings.kt`, `RichText.kt` | 既存ZooSettings StoryのKotlin表示、設定E2E |
 | 投稿・返信・編集・削除・既読 | `messages/MessagePane`, `MessageRow`, `MessageList` | `Chat.kt`, `Repository.kt` | 投稿・返信E2E、スクロール検証 |
 | メンション・MFM・チャンネル・コマンド補完 | `messages/Composer`, `composerSuggestions`, `suggestionContext` | `Completion.kt`, `Chat.kt`, `Session.kt` | ParityTest、ParityTransportTest、両実装の補完E2E |

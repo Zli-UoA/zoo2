@@ -46,7 +46,11 @@ const config = defineConfig({
         test: {
           name: "unit",
           environment: "node",
-          include: ["src/**/*.test.ts"],
+          include: [
+            "src/**/*.test.ts",
+            "src/components/chat/ChannelNotesDialog.test.tsx",
+            "src/components/chat/MarkdownNote.test.tsx",
+          ],
         },
       },
       {

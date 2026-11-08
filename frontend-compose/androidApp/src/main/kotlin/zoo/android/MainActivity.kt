@@ -209,6 +209,28 @@ class MainActivity : ComponentActivity() {
                     ZooTheme(platform.env.dark, locale = platform.env.locale) {
                         Box(Modifier.fillMaxSize().safeDrawingPadding().imePadding()) {
                             NativeWindow(current.session) { ZooApp(current.session) }
+                            if (platform.pendingNavigation != null) {
+                                AlertDialog(
+                                    onDismissRequest = platform::cancelPendingNavigation,
+                                    title = {
+                                        Text(platform.translate("channels.notes.unsaved"))
+                                    },
+                                    confirmButton = {
+                                        TextButton(
+                                            onClick = {
+                                                if (platform.confirmDiscardAndNavigate()) finish()
+                                            }
+                                        ) {
+                                            Text(platform.translate("channels.notes.discardChanges"))
+                                        }
+                                    },
+                                    dismissButton = {
+                                        TextButton(onClick = platform::cancelPendingNavigation) {
+                                            Text(platform.translate("common.cancel"))
+                                        }
+                                    },
+                                )
+                            }
                         }
                     }
                 }

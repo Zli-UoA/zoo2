@@ -31,6 +31,157 @@ body {
   margin: 0;
 }
 
+/* MarkdownNote uses explicit GFM typography; Tailwind preflight resets browser defaults. */
+.markdown-note {
+  color: var(--foreground);
+  font-size: 0.875rem;
+  line-height: 1.65;
+}
+.markdown-note :where(h1, h2, h3, h4, h5, h6) {
+  color: var(--foreground);
+  font-weight: 650;
+  line-height: 1.25;
+  margin: 1.25em 0 0.5em;
+}
+.markdown-note :where(h1) {
+  font-size: 1.5rem;
+  letter-spacing: -0.025em;
+  margin-top: 1.6em;
+  padding-bottom: 0.35em;
+  border-bottom: 1px solid var(--border);
+}
+.markdown-note :where(h2) {
+  font-size: 1.25rem;
+  letter-spacing: -0.015em;
+  margin-top: 1.5em;
+}
+.markdown-note :where(h3) {
+  font-size: 1.125rem;
+}
+.markdown-note :where(h4, h5, h6) {
+  font-size: 1rem;
+}
+.markdown-note :where(p, ul, ol, blockquote, pre, table) {
+  margin: 0.75em 0;
+}
+.markdown-note :where(hr) {
+  border: 0;
+  border-top: 1px solid var(--border);
+  margin: 1.75rem 0;
+}
+.markdown-note :where(ul, ol) {
+  padding-left: 1.5rem;
+}
+.markdown-note :where(ul) {
+  list-style: disc;
+}
+.markdown-note :where(ul ul) {
+  list-style: circle;
+}
+.markdown-note :where(li.task-list-item) {
+  list-style: none;
+  margin-left: -1.5rem;
+}
+.markdown-note :where(ol) {
+  list-style: decimal;
+}
+.markdown-note :where(li) {
+  padding-left: 0.2rem;
+}
+.markdown-note :where(li + li) {
+  margin-top: 0.2em;
+}
+.markdown-note :where(li > p) {
+  margin: 0.25em 0;
+}
+.markdown-note :where(blockquote) {
+  border-left: 3px solid var(--border);
+  color: var(--muted-foreground);
+  margin-left: 0;
+  padding: 0.5rem 0.75rem 0.5rem 1rem;
+  background: color-mix(in srgb, var(--muted) 45%, transparent);
+  border-radius: 0 var(--radius) var(--radius) 0;
+}
+.markdown-note :where(code) {
+  border-radius: 0.25rem;
+  background: var(--muted);
+  padding: 0.1em 0.3em;
+  font-size: 0.9em;
+}
+.markdown-note :where(pre) {
+  overflow-x: auto;
+  border-radius: var(--radius);
+  background: var(--muted);
+  padding: 0.75rem;
+}
+.markdown-code-block {
+  position: relative;
+}
+.markdown-code-copy {
+  position: absolute;
+  top: 0.4rem;
+  right: 0.4rem;
+  z-index: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--background);
+  padding: 0.35rem;
+  color: var(--foreground);
+}
+.markdown-code-copy svg {
+  width: 1rem;
+  height: 1rem;
+}
+.markdown-note :where(pre code) {
+  background: transparent;
+  padding: 0;
+}
+.markdown-note :where(table) {
+  width: 100%;
+  border-collapse: collapse;
+}
+.markdown-note :where(th, td) {
+  border: 1px solid var(--border);
+  padding: 0.25rem 0.5rem;
+}
+.markdown-note :where(th) {
+  background: var(--muted);
+  font-weight: 600;
+  text-align: left;
+}
+.markdown-note :where(a) {
+  text-decoration-thickness: 0.08em;
+  text-underline-offset: 0.18em;
+  overflow-wrap: anywhere;
+}
+.markdown-note :where(input[type="checkbox"]) {
+  margin-right: 0.35rem;
+  vertical-align: -0.08em;
+  accent-color: var(--primary);
+}
+.markdown-note :where(input[type="checkbox"]:not(:disabled)) {
+  cursor: pointer;
+}
+.markdown-note :where(input[type="checkbox"]:disabled) {
+  opacity: 0.65;
+}
+@media (max-width: 640px) {
+  .markdown-note :where(table) {
+    display: block;
+    max-width: 100%;
+    overflow-x: auto;
+  }
+}
+.markdown-note > :first-child {
+  margin-top: 0;
+}
+.markdown-note > :last-child {
+  margin-bottom: 0;
+}
+
 @theme inline {
   --font-heading: var(--font-sans);
   --font-sans: "Geist Variable", sans-serif;

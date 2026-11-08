@@ -269,7 +269,7 @@ async fn context_is_bounded_to_the_target_and_checks_ownership_membership_and_de
         .exec(&mut db)
         .await?;
     let (_, body, _) = request(&app, "GET", &path, &users[0], None).await?;
-    assert_eq!(body, json!({"message":null,"reactions":[]}));
+    assert_eq!(body, json!({"message":null,"note":null,"reactions":[]}));
     ChannelUser::filter(
         ChannelUser::fields()
             .channel_id()

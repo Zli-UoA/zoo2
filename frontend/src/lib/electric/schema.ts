@@ -49,7 +49,7 @@ export interface ShapeMeta {
 }
 
 export const SHAPE_META: Record<ShapeName, ShapeMeta> = {
-  notifications: { table: "notifications", proxyPath: "notifications" },
+  notifications: { table: "notification_events", proxyPath: "notifications" },
   channels: { table: "channels", proxyPath: "channels" },
   messages: { table: "messages", proxyPath: "messages" },
   messageReactions: { table: "message_reactions", proxyPath: "message_reactions" },
@@ -87,6 +87,7 @@ export const CHANNEL_SCHEMA: ShapeSchema<ChannelRow> = {
     created_user_id: "text",
     is_private: "bool",
     is_dm: "bool",
+    posting_policy: "text",
     created_at: "timestamp",
     updated_at: "timestamp",
     archive_at: "timestamp",
@@ -146,6 +147,7 @@ export const NOTIFICATION_SCHEMA: ShapeSchema<NotificationRow> = {
     actor_id: "text",
     channel_id: "text",
     message_id: "text",
+    note_id: "text",
     notification_type: "text",
     is_read: "bool",
     created_at: "timestamp",
@@ -169,6 +171,7 @@ export const ATTACHMENT_SCHEMA: ShapeSchema<AttachmentRow> = {
 
 export const SHAPE_SCHEMAS: { [K in TableName]: ShapeSchema<TableRowMap[K]> } = {
   notifications: NOTIFICATION_SCHEMA,
+  notification_events: NOTIFICATION_SCHEMA,
   users: USER_SCHEMA,
   channels: CHANNEL_SCHEMA,
   messages: MESSAGE_SCHEMA,

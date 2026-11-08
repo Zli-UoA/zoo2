@@ -20,6 +20,7 @@ it("counts live unread notifications, persists read changes and clears data on u
     actor_id: "actor",
     channel_id: "channel",
     message_id: "message",
+    note_id: null,
     notification_type: "mention",
     is_read: read,
     created_at: "2026-10-24T00:00:00Z",

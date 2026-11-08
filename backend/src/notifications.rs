@@ -1,3 +1,4 @@
+use pulldown_cmark::{Event, Options, Parser, Tag, TagEnd};
 use std::collections::{HashMap, HashSet};
 use uuid::Uuid;
 
@@ -147,6 +148,128 @@ pub fn extract_mentions(content: &str) -> MentionTargets {
         has_channel,
         has_here,
     }
+}
+
+/// Markdown本文の表示テキストだけからメンションを抽出する。コードとリンク先URLは除外する。
+pub fn extract_markdown_mentions(content: &str) -> MentionTargets {
+    let mut visible = String::with_capacity(content.len());
+    // pulldown-cmark's ENABLE_GFM currently covers blockquote alerts only.
+    // Keep these aligned with remark-gfm's table, strikethrough, and task list parsing.
+    let options = Options::ENABLE_GFM
+        | Options::ENABLE_TABLES
+        | Options::ENABLE_STRIKETHROUGH
+        | Options::ENABLE_TASKLISTS;
+    let mut in_code_block = false;
+    let mut image_depth = 0usize;
+    for event in Parser::new_ext(content, options) {
+        match event {
+            Event::Start(Tag::Image { .. }) => {
+                image_depth += 1;
+                visible.push(' ');
+            }
+            Event::End(TagEnd::Image) => {
+                image_depth = image_depth.saturating_sub(1);
+                visible.push(' ');
+            }
+            _ if image_depth > 0 => {}
+            Event::Start(Tag::CodeBlock(_)) => {
+                in_code_block = true;
+                visible.push(' ');
+            }
+            Event::End(TagEnd::CodeBlock) => {
+                in_code_block = false;
+                visible.push(' ');
+            }
+            Event::Text(text) if !in_code_block => visible.push_str(&text),
+            Event::SoftBreak | Event::HardBreak => visible.push('\n'),
+            // Code spans, link destinations, and raw HTML markup are not visible mention text.
+            Event::Code(_) | Event::Html(_) | Event::InlineHtml(_) => visible.push(' '),
+            Event::Start(_) | Event::End(_) => visible.push(' '),
+            _ => {}
+        }
+    }
+    extract_mentions(&visible)
+}
+
+/// 保存済み本文から新規に加わったメンションだけに通知する。
+pub async fn create_note_notifications(
+    tx: &mut toasty::Transaction<'_>,
+    note: &crate::models::ChannelNote,
+    previous_content: &str,
+    new_content: &str,
+    actor_id: &str,
+) -> Result<Vec<Notification>, AppError> {
+    let old = extract_markdown_mentions(previous_content);
+    let new = extract_markdown_mentions(new_content);
+    if new.user_candidates.is_empty() && !new.has_channel && !new.has_here {
+        return Ok(Vec::new());
+    }
+    // Resolve each distinct spelling once, preserving exact-name precedence over punctuation trimming.
+    let names: HashSet<&str> = old
+        .user_candidates
+        .iter()
+        .chain(&new.user_candidates)
+        .flat_map(|candidate| {
+            std::iter::once(candidate.raw.as_str()).chain(candidate.trimmed.as_deref())
+        })
+        .collect();
+    let mut users_by_name = HashMap::new();
+    if !names.is_empty() {
+        let encoded = serde_json::json!(names).to_string();
+        for user in crate::apps::query(tx,
+            "SELECT json_build_object('name',user_name,'id',id)::text FROM users WHERE user_name IN (SELECT jsonb_array_elements_text($1::jsonb))",
+            &[&encoded]).await? {
+            if let (Some(name), Some(id)) = (user["name"].as_str(), user["id"].as_str()) {
+                users_by_name.insert(name.to_owned(), id.to_owned());
+            }
+        }
+    }
+    // Bots consume app events, not human inbox notifications, just as for messages.
+    let members = crate::apps::query(tx,
+        "SELECT json_build_object('id',u.id)::text FROM channel_user cu JOIN users u ON u.id=cu.user_id WHERE cu.channel_id=$1 AND NOT u.is_bot",
+        &[&note.channel_id]).await?;
+    let member_ids: HashSet<String> = members
+        .into_iter()
+        .filter_map(|row| row["id"].as_str().map(str::to_owned))
+        .collect();
+    let resolve = |mentions: MentionTargets| {
+        let mut targets = HashSet::new();
+        if mentions.has_channel || mentions.has_here {
+            targets.extend(member_ids.iter().cloned());
+        }
+        for candidate in mentions.user_candidates {
+            if let Some(id) = users_by_name.get(&candidate.raw).or_else(|| {
+                candidate
+                    .trimmed
+                    .as_ref()
+                    .and_then(|name| users_by_name.get(name))
+            }) && member_ids.contains(id)
+            {
+                targets.insert(id.clone());
+            }
+        }
+        targets
+    };
+    let old_targets = resolve(old);
+    let mut targets = resolve(new);
+    targets.retain(|user_id| !old_targets.contains(user_id));
+    let mut created = Vec::with_capacity(targets.len());
+    for user_id in targets.into_iter().filter(|id| id != actor_id) {
+        let notification = Notification::create()
+            .id(Uuid::new_v4().to_string())
+            .user_id(user_id)
+            .actor_id(actor_id.to_string())
+            .channel_id(note.channel_id.clone())
+            .message_id(None)
+            .note_id(Some(note.id.clone()))
+            .notification_type("mention".to_string())
+            .is_read(false)
+            .created_at(now_utc_millis())
+            .exec(tx)
+            .await?;
+        created.push(notification);
+    }
+    Ok(created)
 }
 
 /// メッセージ作成時の通知生成
@@ -385,5 +508,96 @@ mod tests {
         assert_eq!(targets.user_candidates.len(), 2);
         assert_eq!(targets.user_candidates[0].raw, "bob");
         assert_eq!(targets.user_candidates[1].raw, "alice");
+    }
+
+    #[test]
+    fn markdown_mentions_match_visible_escaped_text_and_ignore_code_and_link_destinations() {
+        let targets = extract_markdown_mentions(
+            "@alice `@code`\n\n```txt\n@block\n```\n\n[site](https://example.test/@url) \\@escaped @bob",
+        );
+        assert_eq!(
+            targets
+                .user_candidates
+                .iter()
+                .map(|c| c.raw.as_str())
+                .collect::<Vec<_>>(),
+            ["alice", "escaped", "bob"]
+        );
+        assert!(!targets.has_channel);
+        assert!(!targets.has_here);
+    }
+
+    #[test]
+    fn markdown_mentions_respect_special_targets_and_tilde_code_fences() {
+        let targets =
+            extract_markdown_mentions("@channel and @here\n\n~~~text\n@ignored\n~~~\n@alice");
+        assert!(targets.has_channel);
+        assert!(targets.has_here);
+        assert_eq!(
+            targets
+                .user_candidates
+                .iter()
+                .map(|candidate| candidate.raw.as_str())
+                .collect::<Vec<_>>(),
+            ["alice"]
+        );
+    }
+
+    #[test]
+    fn markdown_mentions_follow_markdown_structure_for_reference_links() {
+        let targets = extract_markdown_mentions(
+            "[visible @alice][ref] and https://example.test/@hidden\n\n[ref]: @also_hidden",
+        );
+        assert_eq!(
+            targets
+                .user_candidates
+                .iter()
+                .map(|candidate| candidate.raw.as_str())
+                .collect::<Vec<_>>(),
+            ["alice"]
+        );
+    }
+
+    #[test]
+    fn markdown_mentions_match_gfm_visible_text() {
+        let targets = extract_markdown_mentions(
+            "@plain\n\n    @indented\n\n```txt\n@fenced3\n```\n\n````txt\n@fenced4\n````\n\n`@inline` and [label @linked][ref]\n\n[ref]: https://example.test/@destination\n\n\\@escaped &commat;entity <b>@html</b>",
+        );
+        assert_eq!(
+            targets
+                .user_candidates
+                .iter()
+                .map(|candidate| candidate.raw.as_str())
+                .collect::<Vec<_>>(),
+            ["plain", "linked", "escaped", "entity", "html"]
+        );
+    }
+
+    #[test]
+    fn markdown_mentions_match_visible_gfm_table_and_strikethrough_text() {
+        let targets = extract_markdown_mentions(
+            "| user | status |\n| --- | --- |\n| @alice | ~~@bob~~ |\n\n@plain `@code` [label @linked](https://example.test/@destination)",
+        );
+        assert_eq!(
+            targets
+                .user_candidates
+                .iter()
+                .map(|candidate| candidate.raw.as_str())
+                .collect::<Vec<_>>(),
+            ["alice", "bob", "plain", "linked"]
+        );
+    }
+
+    #[test]
+    fn markdown_mentions_exclude_image_alt_text() {
+        let targets = extract_markdown_mentions("![@hidden](https://example.test/p.png) @visible");
+        assert_eq!(
+            targets
+                .user_candidates
+                .iter()
+                .map(|c| c.raw.as_str())
+                .collect::<Vec<_>>(),
+            ["visible"]
+        );
     }
 }

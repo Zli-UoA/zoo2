@@ -156,6 +156,15 @@ export function shellOptions(
       click("button", "送信"),
       { action: "wait", role: "textbox", value: "" },
     );
+  if (title === "Pages/Channel" && name === "Notes Deleted")
+    interactions.push(click("button", "削除済み"), wait("button", "復元: チームノート"));
+  if (title === "Pages/Channel" && name === "Notes Conflict")
+    interactions.push(
+      click("button", "編集"),
+      { action: "type", role: "textbox", name: "本文", text: "追記" },
+      click("button", "ノートを保存"),
+      { action: "wait", text: "最新版の内容", exact: false },
+    );
   if (title === "Pages/ChannelMembers" && name === "Default")
     interactions.push(wait("heading", "メンバー"), wait("button", "チャンネルに戻る"), {
       action: "wait",
@@ -207,8 +216,11 @@ export function shellOptions(
   fixture.interactions = interactions;
 
   let path = (parameters.router?.initialEntries as string[] | undefined)?.[0] ?? "/";
-  if (title === "Pages/Channel")
+  if (title === "Pages/Channel") {
     path = `/channels/${typeof args.channelId === "string" ? args.channelId : "channel-general"}`;
+    if (typeof args.noteId === "string") path += `?note=${encodeURIComponent(args.noteId)}`;
+    if (name.startsWith("Notes")) fixture.sharedApi = true;
+  }
   if (title === "Pages/BubbleChat") path = "/bubble";
   if (title === "Pages/Shell") {
     const child = row(row(args.children).props);

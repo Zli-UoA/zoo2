@@ -1,7 +1,7 @@
 import { applyComposeInputHints } from "../../lib/compose/input-hints";
 import { createComposeFiles } from "../../lib/compose/files";
 import { useCallback, useEffect, useRef, useState } from "react";
-import { useRouter, useRouterState } from "@tanstack/react-router";
+import { useBlocker, useRouter, useRouterState } from "@tanstack/react-router";
 import { useTranslation } from "react-i18next";
 import { ApiError, buildAuthHeaders, createConfiguredApiClient } from "../../lib/api/client";
 import { notifyAuthorized, notifyUnauthorized } from "../../lib/auth";
@@ -109,6 +109,11 @@ export function ComposeRuntime({
   const location = useRouterState({ select: (state) => state.location.href });
   const historyState = useRouterState({ select: (state) => state.location.state });
   const { t } = useTranslation();
+  const noteDirty = useRef(false);
+  useBlocker({
+    shouldBlockFn: () => noteDirty.current && !window.confirm(t("channels.notes.unsaved")),
+    enableBeforeUnload: () => noteDirty.current,
+  });
   const theme = useTheme();
   const language = useLocale();
   const offline = useOfflineStatus();
@@ -376,7 +381,10 @@ export function ComposeRuntime({
             await getCurrentUserStore(config).refresh();
             window.location.reload();
           }
+          if (name === "noteDirty") noteDirty.current = payload === "true";
           if (name === "copy") await navigator.clipboard.writeText(payload);
+          if (name === "copyUrl")
+            await navigator.clipboard.writeText(new URL(payload, window.location.href).href);
           if (name === "install" && install) {
             await install.prompt();
             await install.userChoice;

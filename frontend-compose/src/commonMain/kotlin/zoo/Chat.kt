@@ -170,7 +170,9 @@ fun Chat(
     }
     val attachmentRows by app.repo.attachments(id).rows.collectAsState()
     CompositionLocalProvider(LocalAttachments provides attachmentRows) {
-        Row(modifier.fillMaxWidth()) {
+        Box(modifier.fillMaxWidth()) {
+          ChannelNotes(app, channel, joined, wide, users, members) {
+           Row(Modifier.fillMaxSize()) {
             if (wide || app.thread == null)
                 Column(Modifier.weight(1f).fillMaxHeight()) {
                     if (federatedReactionError) Text(app.t("reactions.fetchError"), Modifier.padding(8.dp).then(webControlModifier("alert")))
@@ -187,6 +189,7 @@ fun Chat(
                         isError = error != null,
                         canCompose = canPost,
                         retry = { table.refresh() },
+                        readState = shouldTrackChannelReadState(app.query["note"]),
                     )
                     when {
                         channel.present("archive_at") ->
@@ -236,6 +239,7 @@ fun Chat(
                             isError = error != null,
                             canCompose = canPost,
                             retry = { table.refresh() },
+                            readState = shouldTrackChannelReadState(app.query["note"]),
                         )
                     },
                     composer =
@@ -244,9 +248,13 @@ fun Chat(
                         } else null,
                 )
             }
+           }
+          }
         }
     }
 }
+
+internal fun shouldTrackChannelReadState(noteId: String?): Boolean = noteId == null
 
 @Composable
 private fun JoinToPostPrompt(app: Session, channel: Row) {

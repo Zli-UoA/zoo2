@@ -2,6 +2,7 @@ import { describe, expect, it } from "vite-plus/test";
 
 import {
   ATTACHMENT_SCHEMA,
+  CHANNEL_SCHEMA,
   MESSAGE_REACTION_SCHEMA,
   SHAPE_META,
   coerceElectricRow,
@@ -77,6 +78,10 @@ describe("coerceElectricRow", () => {
 });
 
 describe("SHAPE_META", () => {
+  it("includes the channel posting policy used by note write permissions", () => {
+    expect(CHANNEL_SCHEMA.columns.posting_policy).toBe("text");
+  });
+
   it("maps the channel user proxy path to the channel_user table", () => {
     expect(SHAPE_META.channelUsers).toEqual({
       table: "channel_user",
