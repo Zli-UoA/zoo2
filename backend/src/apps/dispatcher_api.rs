@@ -7,7 +7,8 @@
 use crate::error::AppError;
 use axum::{
     Json, Router,
-    extract::State,
+    body::Bytes,
+    extract::{DefaultBodyLimit, State},
     http::{HeaderMap, StatusCode, header},
     routing::post,
 };
@@ -31,6 +32,8 @@ pub fn router(token: &str) -> Router {
     }
     Router::new()
         .route("/internal/verify-endpoint", post(verify))
+        // URL と署名鍵だけの小さな本文。認証前に大きな本文を読ませない。
+        .layer(DefaultBodyLimit::max(16 * 1024))
         .with_state(token.to_owned())
 }
 
@@ -52,11 +55,14 @@ fn token_matches(headers: &HeaderMap, expected: &str) -> bool {
 async fn verify(
     State(token): State<String>,
     headers: HeaderMap,
-    Json(req): Json<VerifyRequest>,
+    body: Bytes,
 ) -> Result<Json<Value>, AppError> {
+    // 本文の解析より先に認証する（本文の形でルートの存在を探らせない）。
     if !token_matches(&headers, &token) {
         return Err(AppError::Unauthorized("Invalid dispatcher token".into()));
     }
+    let req: VerifyRequest = serde_json::from_slice(&body)
+        .map_err(|_| AppError::BadRequest("Invalid request body".into()))?;
     super::delivery::verify_endpoint(&req.url, &req.signing).await?;
     Ok(Json(json!({"verified": true})))
 }

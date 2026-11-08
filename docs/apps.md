@@ -161,7 +161,7 @@ WebSocket は接続時に `{"type":"hello","version":1,"installation_id":"..."}`
 
 HTTP App は `POST /api/apps/{id}/actions/verify-endpoint` で署名付き `{"type":"url_verification","challenge":"..."}` を受けます。同じ challenge を JSON オブジェクトまたはプレーンテキストで返すと検証時刻を記録します。応答上限は4KiB、リダイレクトは禁止、送信先は公開 IP に固定して検証します。manifest または署名鍵の変更で検証記録を解除します。検証の実行は任意です。サンプル HTTP Bot は challenge にも対応します。
 
-`DISPATCHER_URL` と `DISPATCHER_TOKEN` を backend に設定すると、この検証は `zoo-dispatcher` の内部 API（`POST /internal/verify-endpoint`、`Authorization: Bearer`）に委譲され、backend は外向き HTTP を行いません。dispatcher 側にも同じ `DISPATCHER_TOKEN` を設定します（未設定なら内部 API は無効）。どちらかが未設定なら backend が自分で送ります（移行中・ローカル開発用）。dispatcher に届かないときは 503 を返し、backend には切り替えません。
+`DISPATCHER_URL` と `DISPATCHER_TOKEN` を backend に設定すると、この検証は `zoo-dispatcher` の内部 API（`POST /internal/verify-endpoint`、`Authorization: Bearer`）に委譲され、backend は外向き HTTP を行いません。dispatcher 側にも同じ `DISPATCHER_TOKEN` を設定します（未設定なら内部 API は無効）。どちらかが未設定なら backend が自分で送ります（移行中・ローカル開発用）。dispatcher に届かないときは 503 を返し、backend には切り替えません。内部 API は署名鍵とトークンを平文の JSON で運ぶので、`DISPATCHER_URL` は信頼できるネットワーク内（クラスタ内通信、または TLS で終端する経路）の宛先にし、dispatcher のポートは backend と監視からだけ届くよう NetworkPolicy などで絞ってください。
 
 配信ワーカーは宛先ホストごとにサーキットブレーカーを持ちます（プロセス内の状態）。タイムアウト・接続失敗・名前解決失敗・5xx が連続 5 回で開き、開いている間は配信を取らず（`attempts` を消費せず）そのホストの配信を開放時刻まで先送りします。30 秒で 1 件だけ試し、成功で閉じ、失敗なら期間を倍（最大 5 分）にして開き直します。4xx など応答があれば生きているとみなします。同じホストへの同時送信は 16 件までです。`/metrics` の `zoo_dispatch_circuit_open{host}` は開放中のホスト（上位 20 件）、`zoo_dispatch_circuit_open_hosts` は総数です。
 
