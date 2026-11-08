@@ -117,9 +117,9 @@ HTTP App へのイベント送信は、backend から独立した `zoo-dispatche
 
 **本番の移行順**:
 
-1. インフラ側で DB ロール `zoo_dispatcher`（`LOGIN`、パスワード付き）を先に作る（アプリ用ロールにはロールを作る権限がないため。下の「DB ロール」の説明を参照）。
+1. インフラ側で DB ロール `zoo_dispatcher`（`LOGIN`、パスワード付き）を先に作る（アプリ用ロールにはロールを作る権限がないため。下の「DB ロール」の節を参照）。
 2. マイグレーションを適用する（NOTIFY トリガーと配信用ロールの権限。どちらも追加のみで、旧 backend のまま動く）。
-3. dispatcher を起動し、`/healthz` と、`zoo_dispatch_attempts_total` が増えること（backend のワーカーも配信している間は滞留がもともと少ないので、`zoo_dispatch_queue_depth` が減るかどうかは確認になりにくい）を確かめる。この間、backend のワーカーと dispatcher が同時に動くが、`FOR UPDATE SKIP LOCKED` とインストール単位の advisory lock により同じ配信を二重に取らない。
+3. dispatcher を起動し、`/healthz` と、`zoo_dispatch_attempts_total` が増えること（配信が無い時間帯は増えないので、テスト用の App にイベントを 1 件流して確かめる）（backend のワーカーも配信している間は滞留がもともと少ないので、`zoo_dispatch_queue_depth` が減るかどうかは確認になりにくい）を確かめる。この間、backend のワーカーと dispatcher が同時に動くが、`FOR UPDATE SKIP LOCKED` とインストール単位の advisory lock により同じ配信を二重に取らない。
 4. backend に `APP_HTTP_DELIVERY_WORKER=false` を設定して再起動する。
 5. （任意）`DISPATCHER_URL` と `DISPATCHER_TOKEN` を設定し、challenge 検証を dispatcher に移す（トークンを持つ dispatcher を先に出し、そのあとに backend へ設定する。逆だとその間 challenge 検証が 503 になる）。
 6. （任意）インフラ側で backend の外向き通信を絞る。**5 を済ませ、dispatcher 経由で検証できることを確かめてから行う**（5 が無いと challenge 検証は backend が自分で送ろうとして失敗する。`DISPATCHER_URL` と `DISPATCHER_TOKEN` は片方だけだと設定なし扱いで backend が送る）。ただし backend は App の配信先以外にも外へ出る（ActivityPub の配送・取得、Web Push、S3、OIDC）ので、「dispatcher だけが外へ出る」状態にはできません。それらの宛先は backend に残し、塞げるのは、それ以外の公開宛先への通信に限ります。
@@ -198,7 +198,11 @@ HTTP App は `POST /api/apps/{id}/actions/verify-endpoint` で署名付き `{"ty
 
 配信ワーカーは宛先ホストごとにサーキットブレーカーを持ちます（プロセス内の状態）。タイムアウト・接続失敗・名前解決失敗・5xx が連続 5 回で開き、開いている間は配信を取らず（`attempts` を消費せず）そのホストの配信を開放時刻まで先送りします。30 秒で 1 件だけ試し（試し送りが戻るまで、同じホストの他のインストールの配信は最大 10 秒先送りされます）、成功で閉じ、失敗なら期間を倍（最大 5 分）にして開き直します。4xx など応答があれば生きているとみなします。同じホストへの同時送信は 16 件までで、ポートは区別せず、同じホストの別ポートは同じ枠・ブレーカーを共有します。1 つのインストールが 1 回の巡回（`http_pass`）で同時に出すのは 16 件までで、1 回の巡回で 1 ホストに claim して送るのは 32 件までです（遅いが成功するホストで巡回が長引かないように、また同じホストの別のインストールにも順番が回るように。残りは次の巡回が続けます。予算が尽きて見送ったインストールは、次の巡回で先に回ります）。先送りは 1000 行ずつに分けて行います。ホストが共有されている場合、一方の App の URL が 5xx を返すと、そのホスト全体の回路が開き、同じホストの別の App の配信も 30 秒から 5 分遅れます（開いている間の成功では閉じません）。ブレーカーの状態はプロセスごとです。先送りは DB に書くので 1 つのプロセスが開ければ全プロセスの配信が遅れますが、まだ開いていない別のプロセスは、開放時刻の後に最初の数件を試すため、その分の `attempts` を消費します。`/metrics` の `zoo_dispatch_circuit_open{host}` は開放中のホスト（上位 20 件）、`zoo_dispatch_circuit_open_hosts` は総数です。
 
+### DB ロール
+
 `zoo-dispatcher` は専用の DB ロール `zoo_dispatcher` で接続できます（マイグレーション `20261108130000_app_delivery_role`）。本番のアプリ用ロールにはロールを作る権限がないので、`zoo_dispatcher`（`LOGIN`、パスワード付き）はインフラ側（CNPG の managed role など）で**マイグレーションより先に**作ってください。マイグレーションは、ロールがあれば権限を付け、無くて作る権限があれば（ローカル・CI）`NOLOGIN` で作り、作れなければ `NOTICE` を出して権限の付与だけ飛ばします（失敗はしません）。飛ばしたときは、ロールを作ったあとにそのマイグレーションのファイルを DB のオーナーで `psql -f` してください（何度流しても同じです）。持つ権限は、配信キュー（`app_deliveries` の SELECT/INSERT/DELETE と進行用の列の UPDATE）、`app_installations`（SELECT と `last_http_dispatch_at` の UPDATE）、配信可否の判定に要る表の必要な列の SELECT だけです。API 側の期限切れ行の削除は backend が行うので、その表の権限はありません。`messages`（本文の表）、ユーザー名・チャンネル名、トークンのハッシュは読めず、`last_http_dispatch_at` 以外の `app_installations` の列も書けません。一方、送信に必要なので、配信キューの `payload`（イベントの中身。メッセージ本文を含みうる）と全アプリの署名鍵は読めます。このロールの接続情報が漏れると、キュー内のイベントと署名鍵が漏れ、署名付き配信を偽造されうるため、アプリの署名鍵と同等に扱ってください。配信関数が `SECURITY DEFINER` でないため、関数が触る表の権限もこのロールが持つ必要があります（`tests/app_event_sources_test.rs` の `delivery_role_*` が、このロールで `http_pass`・`cleanup_deliveries`・ACK・`app_emit` を実行して確認します）。配信に使う表や関数を変えたら、このテストが落ちるので権限を足してください。
+
+**dispatcher をやめるとき**: `zoo_dispatcher` は配信キューの `payload` と全アプリの署名鍵を読めるので、dispatcher を使わなくなったあとも接続情報を有効なままにしないでください。一時的に止めるだけならパスワードを無効化（インフラ側で `login: false` にする、または `ALTER ROLE zoo_dispatcher NOLOGIN`）し、恒久的にやめるなら、権限を剥がして（`REASSIGN OWNED BY zoo_dispatcher TO ...` は不要。所有物は無い）`DROP ROLE zoo_dispatcher` します。再開するときは、ロールを作り直して、そのマイグレーションのファイルを `psql -f` で流せば権限が戻ります。
 
 通常イベントの配信はインストールごと毎時30,000件までとし、再送は同じイベントとして扱います。`app.uninstalled`・`tokens.revoked`・`app.deleted` と上限通知は、記録・初回配信の両方でこの上限の対象外です。超過すると `app.rate_limited` を1時間に1件配信します。発火側でも不要なキューの増大を抑止し、並行トランザクションの境界で作られた余剰分は配信側で上限を適用します。イベント ID はトランザクションと内容から決定し、同一操作による重複通知を避けます。
 
