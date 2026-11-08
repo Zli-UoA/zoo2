@@ -1,6 +1,9 @@
-import { describe, expect, it } from "vite-plus/test";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 
-import { resolveFrontend } from "./experimentalFrontend";
+import { resolveFrontend, supportsComposePath } from "./experimentalFrontend";
+
+beforeEach(() => vi.stubEnv("VITE_EXPERIMENTAL_COMPOSE", "true"));
+afterEach(() => vi.unstubAllEnvs());
 
 describe("experimental frontend selection", () => {
   it("defaults to React and requires an explicit selection", () => {
@@ -22,3 +25,17 @@ it("renders settings and Bubble Chat in the selected Compose frontend", () => {
   }
   expect(resolveFrontend("", "compose", "/channels/general")).toBe("compose");
 });
+
+for (const enabled of [undefined, "false", "true"]) {
+  it(`uses React for retired Compose selections when flag is ${enabled}`, () => {
+    vi.stubEnv("VITE_EXPERIMENTAL_COMPOSE", enabled);
+    for (const path of ["/", "/settings", "/bubble", "/public/users/u1"]) {
+      expect(supportsComposePath(path)).toBe(enabled === "true");
+      for (const search of ["", "?frontend=compose", "?frontend=compose&message=m1"]) {
+        expect(resolveFrontend(search, "compose", path)).toBe(
+          enabled === "true" ? "compose" : "react",
+        );
+      }
+    }
+  });
+}

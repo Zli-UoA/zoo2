@@ -247,7 +247,7 @@ export function MessagePane({
     } else {
       setSince((current) => expandWindowSince(current, target.created_at));
     }
-  }, [messagesCollection, targetMessageId]);
+  }, [messagesCollection, targetMessageId, messagesQuery.isInitialSyncLoading]);
 
   // スレッドのルートが窓の外でも、返信と一緒に表示できるよう広げる。
   useEffect(() => {
@@ -258,7 +258,7 @@ export function MessagePane({
     if (root) {
       setSince((current) => expandWindowSince(current, root.created_at));
     }
-  }, [messagesCollection, threadRootId]);
+  }, [messagesCollection, threadRootId, messagesQuery.isInitialSyncLoading]);
 
   // 返信が30日窓で空なら、コレクション内の最も古い返信まで広げる。
   useEffect(() => {
@@ -275,15 +275,15 @@ export function MessagePane({
   }, [messagesCollection, threadReplies.length, threadQuery.isLoading, threadRootId]);
 
   useEffect(() => {
-    if (!targetMessageId || messagesQuery.isLoading) return;
+    if (!targetMessageId || messagesQuery.isInitialSyncLoading) return;
     const target = messagesCollection.get(targetMessageId);
     if (target?.parent_id && !target.deleted_at) openThread(target.parent_id);
-  }, [targetMessageId, messagesQuery.isLoading, messagesCollection, openThread]);
+  }, [targetMessageId, messagesQuery.isInitialSyncLoading, messagesCollection, openThread]);
 
   // ルートが（他ユーザーの操作などで）見えなくなったらスレッドも閉じる。
   // 論理削除なら、返信が残っていることを利用者に伝えてから閉じる。
   useEffect(() => {
-    if (!threadRootId || messagesQuery.isLoading || threadRoot) {
+    if (!threadRootId || messagesQuery.isInitialSyncLoading || threadRoot) {
       return;
     }
     const rootRow = messagesCollection.get(threadRootId);
@@ -293,7 +293,14 @@ export function MessagePane({
     if (rootRow?.deleted_at) {
       toast.info(t("threads.rootDeleted"), { id: "thread-root-deleted" });
     }
-  }, [threadRootId, threadRoot, messagesQuery.isLoading, messagesCollection, closeThread, t]);
+  }, [
+    threadRootId,
+    threadRoot,
+    messagesQuery.isInitialSyncLoading,
+    messagesCollection,
+    closeThread,
+    t,
+  ]);
 
   // 書き込み失敗は sonner で通知する（既存の `useWriteRunner` の error を監視）。
   useEffect(() => {

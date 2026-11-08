@@ -40,13 +40,10 @@ Storybookは部品の一覧だけでなく、利用者が見る状態と操作�
 - `play` はrole・labelを優先し、非同期結果を待って検証する。固定sleep、空のアサーション、内部stateの直接書換えは避ける。
 - 新規Storyは原則 `a11y.test: "error"`。例外は具体的な理由をStoryに残す。既存のtodoを無条件に増やさない。
 
-## ReactとComposeの対応
+## Compose Web 実験の終了
 
-React版とKotlin版を別のFeaturesカテゴリへ複製しない。既存Storyの上部implementationツールバーで切り替え、同じ引数・共有fixture・テーマ・言語・幅を渡す。未登録のKotlin表示は明示し、ReactをKotlinとして表示しない。playは `playForImplementation` で実装ごとの検証へ分岐し、既存Reactのアサーションを維持する。Kotlinの実操作は専用Playwrightで確認する。
-
-全機能・同じUIが要件の場合、未登録の案内は作業中の表示に限る。全StoryのKotlin登録は維持し、変更した状態と主要な正常・失敗・モバイル状態を同じ条件で確認する。React/Kotlin全件の描画・操作・画像保存は必須CIにせず、利用者が明示的に依頼したときだけ手動で実行する。共通部品の寸法・色・余白、Storyのsurface、操作後の状態も変更範囲で確認する。
-
-Reactの状態・操作を変更したら、[compose-react-parity](../compose-react-parity/SKILL.md) に従い、実Kotlinコンポーネントのカタログと両実装の操作検証も更新する。ReactのStoryだけでComposeの追従を保証しない。共通fixture・ツールバー・Controlsを使い、同じ入力で比較する。
+Compose Web の実験中止に伴い、通常の Storybook は React を対象とする。React の状態・操作を変更しても Kotlin カタログの登録・描画・操作比較は要求しない。既存の Kotlin 切替・カタログは実験資料として保持し、PR プレビューでは Wasm を生成しない。
+Android は継続するが、Web の Canvas カタログを Android の検証の代わりにしない。Android に関係する変更は共通 Kotlin と端末側の実装・検証を確認する。
 
 ## 対象一覧と確認
 
