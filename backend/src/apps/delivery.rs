@@ -521,7 +521,7 @@ pub async fn http_loop(db: toasty::Db, shutdown: tokio::sync::watch::Receiver<bo
 }
 
 /// `wake` が通知されるとすぐ 1 回分を配信する。通知が無くても `poll` ごとに回る
-/// （バックオフ明け・リース切れ・手動再送・通知の取りこぼしのため）。
+/// （バックオフ明け・リース切れ・通知の取りこぼしのため。新規の配信と手動再送は NOTIFY で起こす）。
 pub async fn http_loop_with(
     db: toasty::Db,
     mut shutdown: tokio::sync::watch::Receiver<bool>,
@@ -549,8 +549,11 @@ pub async fn http_loop_with(
             biased;
             _ = shutdown.changed() => break,
             _ = async { tokio::select! { _ = ticks.tick() => {}, _ = wake.notified() => {} } } => {
-                if let Err(e) = http_pass_until(&db, &shutdown).await {
-                    tracing::warn!(error=%e,"App delivery failed");
+                match http_pass_until(&db, &shutdown).await {
+                    // 溜まっている分は、次の通知や poll を待たずに続けて消化する。
+                    Ok(true) => wake.notify_one(),
+                    Ok(false) => {}
+                    Err(e) => tracing::warn!(error=%e,"App delivery failed"),
                 }
             }
         }
@@ -622,16 +625,18 @@ pub async fn http_candidates(db: &toasty::Db) -> Result<Vec<Value>, AppError> {
 /// Run one bounded dispatch batch, also used by the periodic worker.
 pub async fn http_pass(db: &toasty::Db) -> Result<(), AppError> {
     let (_keep, never_stops) = tokio::sync::watch::channel(false);
-    http_pass_until(db, &never_stops).await
+    http_pass_until(db, &never_stops).await.map(|_| ())
 }
 
 /// `http_pass`。`stop` が true になった後は、バッチの途中でも新しいリースを取らない
-/// （取得済みの送信と ACK だけ終える）。
+/// （取得済みの送信と ACK だけ終える）。まだ配信が残っていそうなら（1 件でも取った、または
+/// 候補が上限に達した）true を返し、呼び出し側は待たずに次の pass を回す。
 pub async fn http_pass_until(
     db: &toasty::Db,
     stop: &tokio::sync::watch::Receiver<bool>,
-) -> Result<(), AppError> {
+) -> Result<bool, AppError> {
     let installs = http_candidates(db).await?;
+    let mut more = installs.len() >= 100;
     let results = futures_util::stream::iter(installs)
         .map(|i| async move {
             let sends = futures_util::stream::iter(0..32)
@@ -639,29 +644,30 @@ pub async fn http_pass_until(
                 .buffer_unordered(32)
                 .collect::<Vec<_>>()
                 .await;
+            let mut claimed = false;
             for result in sends {
-                result?;
+                claimed |= result?;
             }
-            Ok::<(), AppError>(())
+            Ok::<bool, AppError>(claimed)
         })
         .buffer_unordered(8)
         .collect::<Vec<_>>()
         .await;
     for result in results {
-        result?;
+        more |= result?;
     }
 
-    Ok(())
+    Ok(more)
 }
 
 async fn http_install(
     db: &toasty::Db,
     i: Value,
     stop: &tokio::sync::watch::Receiver<bool>,
-) -> Result<(), AppError> {
+) -> Result<bool, AppError> {
     let id = i["id"].as_str().unwrap();
     if *stop.borrow() {
-        return Ok(());
+        return Ok(false);
     }
     if let Some(event) = claim(db, id).await? {
         match tokio::time::timeout(
@@ -704,9 +710,10 @@ async fn http_install(
                 tx.commit().await?;
             }
         }
+        return Ok(true);
     }
 
-    Ok(())
+    Ok(false)
 }
 
 /// API 側の期限切れ行の削除と、配信履歴の 30 日保持の両方。
