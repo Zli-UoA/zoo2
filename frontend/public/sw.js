@@ -267,22 +267,25 @@ async function refreshNavigation(request, background = false) {
 
 async function handleNavigation(request, event) {
   const url = new URL(request.url);
-  // Only normal SPA launches use the installed shell. Explicit reloads must
-  // reach the deployed document so vite:preloadError can recover after a deploy.
   const spaRoute =
     url.pathname === "/" ||
+    url.pathname === "/index.html" ||
     /^\/(?:channels|home|settings|notifications|bubble|apps|apps-authorize|realtime|public\/users)(?:\/|$)/.test(
       url.pathname,
     );
-  if (request.cache === "default" && spaRoute) {
-    const cache = await caches.open(await findActiveShellCache());
-    const cached = (await cache.match("/index.html")) || (await cache.match("/"));
-    if (cached) {
-      event.waitUntil(refreshNavigation(request, true).catch(() => {}));
-      return cached;
-    }
+  const cache = await caches.open(await findActiveShellCache());
+  // Static HTML (for example the Compose catalog) must never replace the SPA.
+  if (!spaRoute) {
+    return fetch(request).catch(async () => (await cache.match(request)) || Response.error());
   }
-  return refreshNavigation(request);
+  const cached = (await cache.match("/index.html")) || (await cache.match("/"));
+  // Explicit reloads reach the deployed document so vite:preloadError can recover.
+  if (request.cache === "default" && cached) {
+    event.waitUntil(refreshNavigation(request, true).catch(() => {}));
+    return cached;
+  }
+  // Even an explicit reload must keep the next offline launch complete.
+  return refreshNavigation(request, Boolean(cached));
 }
 
 async function handleAsset(request) {

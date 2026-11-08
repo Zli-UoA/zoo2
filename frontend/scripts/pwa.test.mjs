@@ -349,20 +349,29 @@ for (const cache of ["no-cache", "reload"]) {
     let offline = false;
     const { handlers } = worker({
       caches: cacheContext.api,
-      fetch: async () => {
+      fetch: async (request) => {
         if (offline) throw new Error("offline");
-        return basicResponse("deployed-shell", { headers: { "content-type": "text/html" } });
+        if (requestKey(request).includes("/pwa-assets.json"))
+          return Response.json({
+            entry: "/assets/index-reloaded.js",
+            assets: ["/assets/index-reloaded.js", "/assets/lazy-reloaded.js"],
+          });
+        if (requestKey(request).includes("/assets/")) return basicResponse("code");
+        return basicResponse('<script src="/assets/index-reloaded.js"></script>deployed-shell', {
+          headers: { "content-type": "text/html" },
+        });
       },
     });
     const background = [];
     const request = navigation(`${ORIGIN}/channels/general`, cache);
-    assert.equal(
+    assert.match(
       await (await fetchThrough(handlers, request, background)).text(),
-      "deployed-shell",
+      /deployed-shell/,
     );
     assert.equal(background.length, 0);
     offline = true;
-    assert.equal(await (await fetchThrough(handlers, request)).text(), "deployed-shell");
+    assert.match(await (await fetchThrough(handlers, request)).text(), /deployed-shell/);
+    assert.ok(cacheContext.storeFor("zoo-shell-v2").has(`${ORIGIN}/assets/lazy-reloaded.js`));
   });
 }
 
@@ -379,7 +388,7 @@ for (const path of [
     ]);
     const { handlers } = worker({
       caches: cacheContext.api,
-      fetch: async () => basicResponse("static-file"),
+      fetch: async () => basicResponse("static-file", { headers: { "content-type": "text/html" } }),
     });
     assert.equal(
       await (await fetchThrough(handlers, navigation(`${ORIGIN}${path}`))).text(),

@@ -58,6 +58,8 @@ Electric の Shape 自体は従来どおりチャンネル単位で購読する�
 - 背景更新ではビルド時に生成する `pwa-assets.json` とHTMLのentryを照合し、遅延ロードする
   JS・SQLite Worker・フォントも保存してから新しいHTMLを公開する。一部でも取得できなければ旧画面を維持する。
 - Service Worker更新で画面と保存済みentryが食い違う場合は、OPFSを開く前に新しい画面へ再読み込みする。
+  同じentryの不一致による再読み込みはセッション内で1回に制限し、キャッシュの保存失敗が続いてもループさせない。
+  静的HTMLはアプリ用の `/index.html` を更新しない。保存済み画面がある場合は、明示的な再読み込みでも全アセットを保存してからHTMLを更新する。
 - 起動時のService Worker準備はユーザー確認と並行して進める。OPFSを開く前には準備完了を待ち、CSP更新の順序を維持する。
 - キャッシュ名はビルドごとの entry hash を含む `zoo-shell-<build>`。install 時に index.html から
   決定し、activate で古い `zoo-shell-*` / `zoo-offline-*` キャッシュを削除する。

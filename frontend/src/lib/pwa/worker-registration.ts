@@ -24,7 +24,26 @@ export async function reloadIfShellUpdated(): Promise<boolean> {
       finish(null);
     }
   });
-  if (!latest || new URL(latest, window.location.origin).href === entry.src) return false;
+  if (!latest) return false;
+  const reloadKey = "zoo.pwa.shell-reload";
+  const target = new URL(latest, window.location.origin).href;
+  if (target === entry.src) {
+    try {
+      sessionStorage.removeItem(reloadKey);
+    } catch {
+      /* Storage can be disabled. */
+    }
+    return false;
+  }
+  // A fresh network document may be newer than a cache that failed to update.
+  // Allow one reload per mismatch; never loop if storage/quota failures persist.
+  const mismatch = JSON.stringify([entry.src, target]);
+  try {
+    if (sessionStorage.getItem(reloadKey) === mismatch) return false;
+    sessionStorage.setItem(reloadKey, mismatch);
+  } catch {
+    return false;
+  }
   window.location.reload();
   return true;
 }

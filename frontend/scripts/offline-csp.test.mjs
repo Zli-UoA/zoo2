@@ -37,9 +37,19 @@ const originalHtml =
   '<!doctype html><title>SQLite CSP test</title><script type="module" src="/assets/index-fixture.js"></script>';
 let html = originalHtml;
 let servedWorkerName = workerName;
+let failEntryPrecache = false;
 const server = http.createServer((request, response) => {
   response.setHeader("Content-Security-Policy", policy);
-  const path = new URL(request.url, "http://localhost").pathname;
+  const requestURL = new URL(request.url, "http://localhost");
+  const path = requestURL.pathname;
+  if (
+    failEntryPrecache &&
+    path === "/assets/index-failed.js" &&
+    requestURL.searchParams.has("__zoo_policy")
+  ) {
+    response.writeHead(503).end("precache unavailable");
+    return;
+  }
   response.setHeader(
     "Content-Type",
     path === "/" || path === "/index.html" || path.startsWith("/channels/")
@@ -143,16 +153,25 @@ const sqliteProbe = async (workerName) => {
 };
 try {
   const cases = [firefox, chromium].flatMap((engine) =>
-    (warm ? ["legacy", "versioned", "same-policy-update", "lazy-assets-update"] : ["cold"]).map(
-      (mode) => ({
-        engine,
-        mode,
-      }),
-    ),
+    (warm
+      ? [
+          "legacy",
+          "versioned",
+          "same-policy-update",
+          "lazy-assets-update",
+          "reload-assets-update",
+          "reload-cache-failure",
+        ]
+      : ["cold"]
+    ).map((mode) => ({
+      engine,
+      mode,
+    })),
   );
   for (const { engine, mode } of cases) {
     html = originalHtml;
     servedWorkerName = workerName;
+    failEntryPrecache = false;
     console.log(`${engine.name()}: starting ${mode} CSP check`);
     const legacy = mode === "legacy";
     swSource = mode === "same-policy-update" ? previousSW : sw;
@@ -242,6 +261,54 @@ try {
         assert.equal(
           await page.locator('script[type="module"]').getAttribute("src"),
           "/assets/index-lazy.js",
+        );
+      }
+      if (mode === "reload-assets-update") {
+        html = originalHtml.replace("index-fixture.js", "index-reloaded.js");
+        servedWorkerName = "opfs-worker-reloaded.js";
+        await page.reload();
+        assert.equal(
+          await page.locator('script[type="module"]').getAttribute("src"),
+          "/assets/index-reloaded.js",
+        );
+        await context.setOffline(true);
+        await page.reload();
+        assert.equal(
+          await page.locator('script[type="module"]').getAttribute("src"),
+          "/assets/index-reloaded.js",
+        );
+      }
+      if (mode === "reload-cache-failure") {
+        html = originalHtml.replace("index-fixture.js", "index-failed.js");
+        failEntryPrecache = true;
+        await page.reload();
+        await registerAndControl(page);
+        const reloading = page.waitForNavigation({ waitUntil: "domcontentloaded" });
+        await page
+          .evaluate(async () => {
+            const { reloadIfShellUpdated } = await import("/assets/registration.js");
+            await reloadIfShellUpdated();
+          })
+          .catch((error) => {
+            if (!error.message.includes("Execution context was destroyed")) throw error;
+          });
+        await reloading;
+        await registerAndControl(page);
+        assert.equal(
+          await page.locator('script[type="module"]').getAttribute("src"),
+          "/assets/index-failed.js",
+        );
+        assert.equal(
+          await page.evaluate(async () => {
+            const { reloadIfShellUpdated } = await import("/assets/registration.js");
+            return reloadIfShellUpdated();
+          }),
+          false,
+          "A failed precache must not loop reloading the network document",
+        );
+        assert.match(
+          await page.evaluate(async () => (await caches.match("/index.html")).text()),
+          /index-fixture/,
         );
       }
       const rows = await page.evaluate(sqliteProbe, servedWorkerName);
