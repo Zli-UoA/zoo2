@@ -18,13 +18,14 @@ export function parseEvent(event) {
     throw new Error("Unexpected Flux event source");
   }
   // Dispatch forwards intermediate info events too. Only reconciliation
-  // completion means that the workload health checks passed.
-  if (
+  // completion means that the workload health checks passed. Progressing
+  // events are reported on the Check Run only; they never touch the commit
+  // status, the Deployment or the ordering watermark.
+  const progressing =
     payload.reason === "Progressing" ||
-    payload.reason === "ProgressingWithRetry"
-  )
-    return null;
+    payload.reason === "ProgressingWithRetry";
   if (
+    !progressing &&
     payload.severity !== "error" &&
     !(
       payload.severity === "info" &&
@@ -33,25 +34,37 @@ export function parseEvent(event) {
   )
     return null;
   const releaseTag = payload.metadata?.["release-tag"];
+  const digest = payload.metadata?.digest;
+  const validTimestamp =
+    /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z$/.test(
+      payload.timestamp ?? "",
+    ) && Number.isFinite(Date.parse(payload.timestamp));
+  // A progress event whose release is not identifiable yet is just noise.
+  if (
+    progressing &&
+    (!/^0\.0\.[1-9][0-9]{0,14}$/.test(releaseTag ?? "") ||
+      !/^sha256:[a-f0-9]{64}$/.test(digest ?? "") ||
+      !validTimestamp)
+  )
+    return null;
   if (!/^0\.0\.[1-9][0-9]{0,14}$/.test(releaseTag ?? ""))
     throw new Error("Invalid release tag");
-  const digest = payload.metadata?.digest;
   if (!/^sha256:[a-f0-9]{64}$/.test(digest ?? ""))
     throw new Error("Invalid image digest");
-  if (
-    !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z$/.test(
-      payload.timestamp ?? "",
-    ) ||
-    !Number.isFinite(Date.parse(payload.timestamp))
-  )
-    throw new Error("Invalid event timestamp");
+  if (!validTimestamp) throw new Error("Invalid event timestamp");
   return {
     name: object.name,
     releaseTag,
     digest,
     timestamp: payload.timestamp,
-    state: payload.severity === "error" ? "failure" : "success",
+    state: progressing
+      ? "pending"
+      : payload.severity === "error"
+        ? "failure"
+        : "success",
     context: `flux/${object.name}`,
+    reason: payload.reason,
+    message: payload.message,
   };
 }
 
@@ -113,7 +126,12 @@ export function parseState(text) {
       !["zoo2", "zoo2-migrate"].includes(name) ||
       !Number.isFinite(Date.parse(value?.timestamp)) ||
       // Snapshots saved before outcomes were recorded have no state.
-      ![undefined, "success", "failure"].includes(value.state)
+      ![undefined, "success", "failure"].includes(value.state) ||
+      // The previous release is recorded to tell a rollback from a rerun.
+      (value.digest !== undefined &&
+        !/^sha256:[a-f0-9]{64}$/.test(value.digest)) ||
+      (value.releaseTag !== undefined &&
+        !/^0\.0\.[1-9][0-9]{0,14}$/.test(value.releaseTag))
     )
       throw new Error("Invalid Flux watermark");
   }
@@ -183,16 +201,265 @@ export async function pruneStateArtifacts(api) {
   }
 }
 
+const maxCheckText = 65535;
+const omittedMarker = "(older events omitted)";
+const fence = "```";
+const checkTitles = {
+  pending: (tag) => `Rolling out ${tag}`,
+  success: (tag) => `Rolled out ${tag}`,
+  failure: (tag) => `Rollout of ${tag} failed`,
+};
+
+// Both fields end up in a Markdown code block and in a size-capped text.
+// Reason is not trusted to be a fixed word: error events can carry free text.
+function clean(value, max) {
+  return (
+    String(value ?? "")
+      // eslint-disable-next-line no-control-regex
+      .replace(/[\u0000-\u001f\u007f]+/g, " ")
+      // Keep a value from closing the code block.
+      .replace(/`/g, "'")
+      .trim()
+      .slice(0, max)
+  );
+}
+
+// zoo2 is a public repository: Check Runs and workflow logs are readable by
+// anyone. Flux messages can name cluster objects, so they are not published
+// until real production events have been checked. Reasons are normally a
+// fixed vocabulary, but error events can carry free text, so they are cleaned
+// and capped anyway. Set this to true only after that check.
+export const publishMessages = false;
+
+function eventLine(result, messages = publishMessages) {
+  const reason = clean(result.reason, 100);
+  const message = messages ? clean(result.message, 200) : "";
+  return `${result.timestamp} ${reason}${message ? `: ${message}` : ""}`;
+}
+
+// output.text is Markdown. A code block keeps one event per line and stops
+// "_" or "*" in Flux messages from being rendered as emphasis.
+function readCheckLines(text) {
+  const lines = String(text ?? "")
+    .replace(/^```\n?/, "")
+    .replace(/\n?```$/, "")
+    .split("\n")
+    .filter(Boolean);
+  const omitted = lines[0] === omittedMarker;
+  return { lines: omitted ? lines.slice(1) : lines, omitted };
+}
+
+// output.text is replaced, not appended, and is capped. Drop the oldest lines.
+export function fitCheckText(lines, omitted = false) {
+  const wrap = (body) => `${fence}\n${body}\n${fence}`;
+  const room = maxCheckText - wrap("").length;
+  const all = omitted ? [omittedMarker, ...lines] : lines;
+  if (all.join("\n").length <= room) return wrap(all.join("\n"));
+  let budget = room - omittedMarker.length - 1;
+  const kept = [];
+  for (let i = lines.length - 1; i >= 0; i--) {
+    budget -= lines[i].length + 1;
+    if (budget < 0 && kept.length > 0) break;
+    kept.unshift(lines[i]);
+  }
+  // A single line longer than the cap cannot be kept whole.
+  return wrap([omittedMarker, ...kept].join("\n").slice(0, room));
+}
+
+const byStart = (a, b) =>
+  (Date.parse(a.started_at) || 0) - (Date.parse(b.started_at) || 0) ||
+  (a.id || 0) - (b.id || 0);
+
+// All Check Runs of this rollout, oldest first. A rollback to an earlier
+// release adds runs with the same base id and a "@<time>" suffix.
+async function findCheckRuns(api, sha, name, base) {
+  const found = [];
+  for (let page = 1; ; page++) {
+    const data = await api(
+      `/repos/${repository}/commits/${sha}/check-runs?check_name=${encodeURIComponent(name)}&filter=all&per_page=100&page=${page}`,
+    );
+    const runs = data?.check_runs;
+    if (!Array.isArray(runs))
+      throw new Error("Expected a check_runs GitHub API response");
+    for (const run of runs) {
+      const id = run.external_id;
+      if (id === base || id?.startsWith(`${base}@`)) found.push(run);
+    }
+    if (runs.length < 100) return found.sort(byStart);
+  }
+}
+
+// The run an event belongs to: the latest one that started no later than the
+// event. A delayed event never updates a run that began after it.
+const runFor = (runs, timestamp) =>
+  runs
+    .filter((run) => !(Date.parse(run.started_at) > Date.parse(timestamp)))
+    .at(-1) ?? null;
+
+// One Check Run per rollout (name + release tag + digest). Events add a line
+// to its text. A completed run is never reopened by a delayed progress event,
+// and a repeated conclusion (interval reconciliation) changes nothing. When
+// the previous release recorded in the watermark differs, an event that
+// belongs to an older run starts a rollback (A -> B -> A) with its own Check
+// Run.
+export async function recordCheckRun(
+  api,
+  { sha, result, runUrl, previous, messages },
+) {
+  const done = result.state !== "pending";
+  const base = `${result.name}:${result.releaseTag}:${result.digest}`;
+  const runs = await findCheckRuns(api, sha, result.context, base);
+  let existing = runFor(runs, result.timestamp);
+  // Every run started after this event: the event is older than all of them.
+  if (!existing && runs.length > 0) return { checkRun: "unchanged" };
+  // A rerun after a partial failure (Deployment API error, lost artifact
+  // save) sees the old watermark again. The run of the very same rollout is
+  // newer than that watermark, so it is reused. Only a run that ended (or, for
+  // progress, started) before the last recorded completion belongs to an
+  // earlier rollout of this release, which is now being rolled back to. A
+  // completion never starts a new run for an unfinished one: it ends it.
+  const differs =
+    previous?.digest !== undefined &&
+    (previous.digest !== result.digest ||
+      previous.releaseTag !== result.releaseTag);
+  const before =
+    Date.parse(existing?.completed_at ?? existing?.started_at) <
+    Date.parse(previous?.timestamp);
+  let newRun =
+    differs &&
+    before &&
+    (existing?.status === "completed" ||
+      (!done && existing?.status === "in_progress"));
+  if (newRun && !done) {
+    // Progress events of one rollback can arrive out of order. If a run that
+    // started after the last recorded completion already exists, this event
+    // belongs to that rollback: add to it (never reopening a finished one)
+    // instead of starting a second run.
+    const rollback = runs.find(
+      (run) => !(Date.parse(run.started_at) < Date.parse(previous.timestamp)),
+    );
+    if (rollback) {
+      existing = rollback;
+      newRun = false;
+    }
+  }
+  if (newRun) existing = null;
+  if (
+    existing?.status === "completed" &&
+    (!done || existing.conclusion === result.state)
+  )
+    return { checkRun: "unchanged" };
+  const line = eventLine(result, messages);
+  const current = readCheckLines(existing?.output?.text);
+  const has = current.lines.includes(line);
+  if (existing && has && !done) return { checkRun: "unchanged" };
+  if (!has) current.lines.push(line);
+  const output = {
+    title: checkTitles[result.state](result.releaseTag),
+    summary: `${result.name} ${result.releaseTag}\n${result.digest}\n[Workflow run](${runUrl})`,
+    text: fitCheckText(current.lines, current.omitted),
+  };
+  const finish = done
+    ? { conclusion: result.state, completed_at: result.timestamp }
+    : {};
+  const status = done ? "completed" : "in_progress";
+  if (existing) {
+    await api(
+      `/repos/${repository}/check-runs/${existing.id}`,
+      { status, ...finish, output },
+      "PATCH",
+    );
+    return { checkRun: "updated" };
+  }
+  await api(`/repos/${repository}/check-runs`, {
+    name: result.context,
+    head_sha: sha,
+    external_id: newRun ? `${base}@${result.timestamp}` : base,
+    status,
+    started_at: result.timestamp,
+    details_url: runUrl,
+    ...finish,
+    output,
+  });
+  return { checkRun: "created" };
+}
+
+// A completion event dropped as older than the watermark must still end the
+// Check Run its own rollout left in_progress. It never opens, creates or
+// reopens one, and it leaves a run that started after the event alone.
+export async function closeStaleCheckRun(
+  api,
+  { sha, result, runUrl, messages },
+) {
+  sha ??= await verifiedSha(api, result);
+  if (!sha) return { checkRun: "unchanged" };
+  const base = `${result.name}:${result.releaseTag}:${result.digest}`;
+  const runs = await findCheckRuns(api, sha, result.context, base);
+  if (runFor(runs, result.timestamp)?.status !== "in_progress")
+    return { checkRun: "unchanged" };
+  return recordCheckRun(api, { sha, result, runUrl, messages });
+}
+
+async function verifiedSha(api, result) {
+  const sha = await resolveSha(api, result.digest, result.releaseTag);
+  if (!sha) return null;
+  // A SHA tag is not necessarily a commit in this repository.
+  const commit = await api(`/repos/${repository}/commits/${sha}`);
+  if (commit.sha !== sha)
+    throw new Error("Image SHA does not match an zoo2 commit");
+  return sha;
+}
+
+// The log of a public repository must not carry Flux messages either: the
+// result of report() includes the event message, so it is dropped here.
+export function logLine(result) {
+  return JSON.stringify(result, (key, value) =>
+    key === "message" ? undefined : value,
+  );
+}
+
 export async function report(
   event,
-  { api, runUrl, warn = console.warn, state = { version: 1, workloads: {} } },
+  {
+    api,
+    runUrl,
+    messages,
+    warn = console.warn,
+    state = { version: 1, workloads: {} },
+  },
 ) {
   const result = parseEvent(event);
   if (!result) return { skipped: "intermediate" };
   const previous = state.workloads[result.name];
   const previousTime = Date.parse(previous?.timestamp);
   const resultTime = Date.parse(result.timestamp);
-  if (previousTime > resultTime) return { skipped: "older-event" };
+  if (previousTime > resultTime) {
+    if (result.state === "pending") return { skipped: "older-event" };
+    return {
+      skipped: "older-event",
+      ...(await closeStaleCheckRun(api, { result, runUrl, messages })),
+    };
+  }
+  if (result.state === "pending") {
+    const sha = await verifiedSha(api, result);
+    if (!sha) {
+      warn(
+        "::warning::No matching release tag, digest and commit SHA found; nothing was reported.",
+      );
+      return { skipped: "missing-sha" };
+    }
+    return {
+      sha,
+      ...result,
+      ...(await recordCheckRun(api, {
+        sha,
+        result,
+        runUrl,
+        previous,
+        messages,
+      })),
+    };
+  }
   // Flux event timestamps have second resolution and dispatch order is not
   // event order. A success and a failure in the same second cannot be ordered,
   // so never let such a success replace the failure (or create a Deployment).
@@ -211,6 +478,8 @@ export async function report(
     state.workloads[result.name] = {
       timestamp: result.timestamp,
       state: result.state,
+      releaseTag: result.releaseTag,
+      digest: result.digest,
     };
   };
   const sha = await resolveSha(api, result.digest, result.releaseTag);
@@ -241,7 +510,10 @@ export async function report(
   }
   const latestTime = Date.parse(latest?.description?.split(" ")[0]); // legacy format
   if (latestTime > Date.parse(result.timestamp))
-    return { skipped: "older-event" };
+    return {
+      skipped: "older-event",
+      ...(await closeStaleCheckRun(api, { sha, result, runUrl, messages })),
+    };
   if (latest?.description !== description || latest?.state !== result.state) {
     await api(`/repos/${repository}/statuses/${sha}`, {
       state: result.state,
@@ -250,9 +522,16 @@ export async function report(
       target_url: runUrl,
     });
   }
+  const check = await recordCheckRun(api, {
+    sha,
+    result,
+    runUrl,
+    previous,
+    messages,
+  });
   if (result.name !== "zoo2" || result.state !== "success") {
     remember();
-    return { sha, ...result };
+    return { sha, ...result, ...check };
   }
 
   // Resume a partially completed run without creating a second Deployment.
@@ -264,7 +543,7 @@ export async function report(
     if (existing.payload?.source !== "flux/zoo2") continue;
     if (Date.parse(existing.payload.timestamp) > Date.parse(result.timestamp)) {
       remember();
-      return { sha, ...result, skipped: "older-deployment" };
+      return { sha, ...result, ...check, skipped: "older-deployment" };
     }
     // Compare only the latest Flux production rollout. A -> B -> A is a real
     // rollback and deserves a new record; A -> A is just a reconciliation.
@@ -306,7 +585,7 @@ export async function report(
     });
   }
   remember();
-  return { sha, ...result };
+  return { sha, ...result, ...check };
 }
 
 if (
@@ -345,7 +624,7 @@ if (
         process.env.FLUX_STATE_PATH + ".tmp",
         process.env.FLUX_STATE_PATH,
       );
-      console.log(JSON.stringify(result));
+      console.log(logLine(result));
     }
   } catch (error) {
     console.error(`::error::${error.message}`);

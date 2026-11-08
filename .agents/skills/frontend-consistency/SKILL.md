@@ -11,7 +11,6 @@ description: Zooのフロントエンドを実装・修正・リファクタリ�
 
 UIの状態とStoryの粒度は [storybook-coverage](../storybook-coverage/SKILL.md) に従う。このスキルは共通化の判断と実装方針を扱い、Storybookの分類・監査手順はそちらを参照する。
 
-Compose Web の実験は中止した。React の変更と main 取り込みで Web 版への追従は要求しない。共通 Kotlin・API・同期への変更は、[compose-react-parity](../compose-react-parity/SKILL.md) に従って継続中の Android への影響を確認する。
 
 ## 共通化の判断
 

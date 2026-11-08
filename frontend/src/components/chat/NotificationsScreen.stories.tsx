@@ -238,7 +238,6 @@ export const BodiesReadyTogether: Story = {
     return () => releaseNotificationBodies();
   },
   parameters: {
-    fixtureControls: { releaseBodies: () => releaseNotificationBodies() },
     msw: {
       handlers: [
         http.get("*/api/notifications/:id/context", async ({ params }) => {
@@ -354,10 +353,6 @@ export const FollowRequests: Story = {
   parameters: {
     collections: { ...storyCollections, notifications: [] },
     msw: { handlers: apubHandlers },
-    fixtureControls: {
-      assertFollowRead: () => expect(apubItems[0].is_read).toBe(true),
-      assertFollowRejected: () => expect(apubItems[0].pending).toBe(false),
-    },
   },
   play: playForImplementation(async () => {
     const panel = within(await screen.findByRole("region", { name: "通知" }));
@@ -452,13 +447,6 @@ export const LiveFollowRequest: Story = {
     notificationConnection = false;
   },
   parameters: {
-    fixtureControls: {
-      publishFollowRequest: async () => {
-        await waitFor(() => expect(notificationConnection).toBe(true));
-        liveItems = structuredClone(activityPubNotifications);
-        notificationsLive.broadcast("refresh");
-      },
-    },
     msw: {
       handlers: [
         http.get("*/api/activitypub/notifications", () =>
@@ -488,9 +476,6 @@ export const OlderFollowRequests: Story = {
     pagedRequestApproved = false;
   },
   parameters: {
-    fixtureControls: {
-      assertOlderFollowApproved: () => waitFor(() => expect(pagedRequestApproved).toBe(true)),
-    },
     msw: {
       handlers: [
         http.get("*/api/activitypub/notifications", ({ request }) => {
@@ -664,10 +649,6 @@ export const UnifiedAutoRead: Story = {
   },
   parameters: {
     collections: { ...storyCollections, notifications: mixedLocal },
-    fixtureControls: {
-      assertFederatedAutoRead: () =>
-        waitFor(() => expect(automaticallyRead.length).toBeGreaterThan(0)),
-    },
     msw: {
       handlers: [
         http.patch("*/api/notifications/:id/read", () =>

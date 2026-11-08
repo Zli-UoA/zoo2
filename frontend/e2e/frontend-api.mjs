@@ -3,7 +3,7 @@ import { execFileSync } from "node:child_process";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-const tlsDir = mkdtempSync(join(tmpdir(), "zoo-compose-tls-"));
+const tlsDir = mkdtempSync(join(tmpdir(), "zoo-frontend-tls-"));
 execFileSync(
   "openssl",
   [
@@ -670,5 +670,5 @@ const server = createSecureServer(tls, async (req, res) => {
     .writeHead(404)
     .end(JSON.stringify({ error: `Unhandled fixture route: ${req.method} ${path}` }));
 });
-const port = Number(process.env.COMPOSE_API_PORT ?? 4187);
+const port = Number(process.env.FRONTEND_API_PORT ?? 4187);
 server.listen(port, "127.0.0.1");

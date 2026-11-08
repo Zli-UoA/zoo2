@@ -1,5 +1,5 @@
-/** Both frontend implementations share this logout boundary, including after switching back to React. */
-export function clearComposeUserStorage(userId: string | null): void {
+/** Remove private data left on devices by the retired Compose Web client. */
+export function clearLegacyFrontendStorage(userId: string | null): void {
   if (!userId) return;
   const prefix = `zoo-compose:${userId}:`;
   try {

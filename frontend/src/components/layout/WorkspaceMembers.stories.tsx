@@ -1,4 +1,4 @@
-import { preferenceSurfaces } from "../../../.storybook/preference-stories";
+import { preferenceSurfaces } from "../../../.storybook/preference-surfaces";
 import { playForImplementation } from "../../../.storybook/play-for-implementation";
 import type { Meta, StoryObj } from "@storybook/react-vite";
 import { delay, http, HttpResponse } from "msw";

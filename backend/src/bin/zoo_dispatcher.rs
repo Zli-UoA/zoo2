@@ -14,9 +14,12 @@ use axum::{Router, http::header, response::IntoResponse, routing::get};
 use std::{net::SocketAddr, time::Duration};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
+<<<<<<< HEAD
 /// 通知が無くても配信を探す間隔。
 const POLL: Duration = Duration::from_secs(3);
 
+=======
+>>>>>>> c9c091055a99a37ea245af64720243d9d29ac635
 /// SIGTERM 後に、送信中の配信を待つ最大時間。残ったリースは期限切れで他のインスタンスが拾う。
 /// 1 回の送信は最大 3 秒なので、claim と ACK の分の余裕を持たせる（Pod の
 /// terminationGracePeriodSeconds はこれより長くする）。
@@ -60,10 +63,13 @@ async fn main() -> anyhow::Result<()> {
 
     let db = backend::db::init_db(&database_url).await?;
     let (stop, shutdown) = tokio::sync::watch::channel(false);
+<<<<<<< HEAD
     // LISTEN で即時に起き、通知の取りこぼしやバックオフ明けは POLL ごとのポーリングで拾う。
     let wake = std::sync::Arc::new(tokio::sync::Notify::new());
     let notify_listener =
         backend::apps::delivery::listen_for_deliveries(database_url.clone(), wake.clone());
+=======
+>>>>>>> c9c091055a99a37ea245af64720243d9d29ac635
     // 配信ループが（panic などで）終わったら /healthz を 503 にして、liveness probe で再起動させる。
     let alive = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
     let http = tokio::spawn({
@@ -71,7 +77,11 @@ async fn main() -> anyhow::Result<()> {
         let db = db.clone();
         async move {
             let _guard = guard;
+<<<<<<< HEAD
             backend::apps::delivery::http_loop_with(db, shutdown, wake, POLL).await
+=======
+            backend::apps::delivery::http_loop(db, shutdown).await
+>>>>>>> c9c091055a99a37ea245af64720243d9d29ac635
         }
     });
     let gauges = tokio::spawn({
@@ -117,7 +127,10 @@ async fn main() -> anyhow::Result<()> {
         .await?;
     let _ = stop.send(true);
     gauges.abort();
+<<<<<<< HEAD
     notify_listener.abort();
+=======
+>>>>>>> c9c091055a99a37ea245af64720243d9d29ac635
     let mut http = http;
     if tokio::time::timeout(DRAIN, &mut http).await.is_err() {
         tracing::warn!("Drain timed out; unfinished leases will expire and be retried");
