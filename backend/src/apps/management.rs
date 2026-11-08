@@ -506,7 +506,14 @@ SELECT json_build_object(
    'success_rate',CASE WHEN delivered+failed>0 THEN delivered::float8/(delivered+failed) END,
    'oldest_pending_seconds',(SELECT oldest FROM backlog),'p50_seconds',p50,'p95_seconds',p95) FROM totals),
  'hourly',(SELECT COALESCE(json_agg(json_build_object('hour',to_char(h AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:00:00"Z"'),'delivered',delivered,'failed',failed,'pending',pending,'p95_seconds',p95) ORDER BY h),'[]'::json) FROM hourly)
-)::text"#,&[id.as_str(),hours.as_str()]).await?;
+)::text"#,&[id.as_str(),hours.as_str()]).await.map_err(|e| {
+        // 5 秒の制限に当たったら、500 ではなく「窓を狭めて」と伝える。
+        if e.to_string().contains("statement timeout") {
+            AppError::ServiceUnavailable("Metrics query timed out; use a smaller hours".into())
+        } else {
+            e
+        }
+    })?;
     Ok(Json(v))
 }
 
