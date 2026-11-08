@@ -23,6 +23,10 @@ const OPEN_MAX: Duration = Duration::from_secs(300);
 const PROBE_STALE: Duration = Duration::from_secs(10);
 /// 1 ホストへの同時送信の上限（インストール単位の 32 並列とは別）。
 pub const HOST_CONCURRENCY: usize = 16;
+/// これだけホストの状態が溜まったら、使われなくなったものを掃除する。
+const PRUNE_ABOVE: usize = 256;
+/// 掃除の対象にするまでの無風時間。
+const IDLE: Duration = Duration::from_secs(3600);
 /// `/metrics` に出す開放中ホストの最大数（ラベルのカーディナリティ制限）。
 const METRIC_HOSTS: usize = 20;
 
@@ -52,6 +56,8 @@ struct State {
     /// 直近に開いていた期間（再度失敗したときに倍にする）。
     last_open: Duration,
     probing_since: Option<Instant>,
+    /// 最後に結果や確認があった時刻（使われなくなったホストの掃除に使う）。
+    last_seen: Option<Instant>,
 }
 
 #[derive(Default)]
@@ -88,9 +94,11 @@ impl Breakers {
 
     pub fn check_at(&self, host: &str, now: Instant) -> Decision {
         let mut hosts = self.hosts.lock().unwrap();
+        Self::prune(&mut hosts, now);
         let Some(state) = hosts.get_mut(host) else {
             return Decision::Closed;
         };
+        state.last_seen = Some(now);
         let Some(until) = state.open_until else {
             return Decision::Closed;
         };
@@ -115,6 +123,7 @@ impl Breakers {
             return;
         }
         let mut hosts = self.hosts.lock().unwrap();
+        Self::prune(&mut hosts, now);
         if outcome == Outcome::Success {
             // 開いている間に届いた成功（開く前に送った分、別のパスへの 4xx など）では閉じない。
             // 閉じるのは通常時か、試し送りの成功だけ。
@@ -127,6 +136,7 @@ impl Breakers {
             return;
         }
         let state = hosts.entry(host.to_owned()).or_default();
+        state.last_seen = Some(now);
         state.failures += 1;
         let half_open = state.probing_since.is_some();
         if state.open_until.is_none() && state.failures < FAILURES {
@@ -157,10 +167,28 @@ impl Breakers {
             .is_some_and(|s| s.open_until.is_some_and(|u| now < u))
     }
 
+    /// 使われなくなったホストの状態を捨てる。開放期間が過ぎ、試し送りも無いまま `IDLE` 以上
+    /// 経ったもの（失敗が数回で止まったホストを含む）。開いている・試し送り中のものは残す。
+    fn prune(hosts: &mut HashMap<String, State>, now: Instant) {
+        if hosts.len() < PRUNE_ABOVE {
+            return;
+        }
+        hosts.retain(|_, s| {
+            let open = s.open_until.is_some_and(|u| now < u);
+            let probing = s
+                .probing_since
+                .is_some_and(|p| now.duration_since(p) < PROBE_STALE);
+            open || probing || s.last_seen.is_none_or(|t| now.duration_since(t) < IDLE)
+        });
+    }
+
     pub fn semaphore(&self, host: &str) -> Arc<Semaphore> {
-        self.semaphores
-            .lock()
-            .unwrap()
+        let mut semaphores = self.semaphores.lock().unwrap();
+        if semaphores.len() >= PRUNE_ABOVE {
+            // 誰も持っていない（この Arc だけ）枠は捨てて、必要になったら作り直す。
+            semaphores.retain(|_, s| Arc::strong_count(s) > 1);
+        }
+        semaphores
             .entry(host.to_owned())
             .or_insert_with(|| Arc::new(Semaphore::new(HOST_CONCURRENCY)))
             .clone()
@@ -197,6 +225,7 @@ impl Breakers {
         state.last_open = duration;
         state.open_until = Some(Instant::now() + duration);
         state.probing_since = None;
+        state.last_seen = Some(Instant::now());
     }
 
     /// テスト用: 状態を消す。
@@ -308,6 +337,54 @@ mod tests {
         assert_eq!(b.check_at("h", t1), Decision::Probe);
         b.record_at("h", Outcome::Success, t1);
         assert_eq!(b.check_at("h", t1), Decision::Closed);
+    }
+
+    #[test]
+    fn idle_hosts_are_pruned_but_open_ones_stay() {
+        let b = Breakers::default();
+        let t0 = Instant::now();
+        // 失敗が数回で止まった（開かなかった）ホストが大量にある。
+        for i in 0..PRUNE_ABOVE {
+            b.record_at(&format!("idle{i}.example"), Outcome::Failure, t0);
+        }
+        trip(&b, "open.example", t0);
+        // 無風時間が過ぎたあとの確認で掃除される。開いているホストは残る。
+        let later = t0 + IDLE + Duration::from_secs(1);
+        b.check_at("any.example", later);
+        let hosts = b.hosts.lock().unwrap();
+        assert!(!hosts.contains_key("idle0.example"));
+        // 開放期間（30 秒）は過ぎているが、直近に結果があったとは言えないので掃除対象。
+        // 掃除前に開いていたものは、開放期間内であれば残る。
+        drop(hosts);
+        let b = Breakers::default();
+        for i in 0..PRUNE_ABOVE {
+            b.record_at(&format!("idle{i}.example"), Outcome::Failure, t0);
+        }
+        trip(&b, "open.example", t0);
+        b.check_at("any.example", t0 + Duration::from_secs(5));
+        assert!(b.hosts.lock().unwrap().contains_key("open.example"));
+        assert!(
+            b.hosts.lock().unwrap().contains_key("idle0.example"),
+            "not idle yet"
+        );
+    }
+
+    #[test]
+    fn unused_semaphores_are_dropped_when_many_accumulate() {
+        let b = Breakers::default();
+        for i in 0..PRUNE_ABOVE {
+            drop(b.semaphore(&format!("h{i}.example")));
+        }
+        let held = b.semaphore("held.example");
+        let _ = b.semaphore("trigger.example");
+        let map = b.semaphores.lock().unwrap();
+        assert!(map.len() < PRUNE_ABOVE, "unused semaphores must be dropped");
+        assert!(
+            map.contains_key("held.example"),
+            "a semaphore in use must stay"
+        );
+        drop(map);
+        drop(held);
     }
 
     #[test]
