@@ -19,7 +19,6 @@ fun PreferenceStory(app: Session, options: Row) {
     when (kind) {
         "settings" -> ZooSettings(app, users)
         "members" -> WorkspaceMembers(app, users)
-        "slackimport" -> SlackImportPanel(app)
         // Storybook では Slack へ移動せず、Story の navigateTo を呼ぶ
         "slacklink" ->
             SlackLinkPanel(app) { url ->

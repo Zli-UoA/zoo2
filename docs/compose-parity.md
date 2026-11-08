@@ -1,6 +1,8 @@
 # React / Compose Web 対応表
 
-Reactを機能・UI・操作の基準とする。変更時は [compose-react-parity](../.agents/skills/compose-react-parity/SKILL.md) に従い、同じPRで両実装と検証を更新する。
+> Compose for Web は動作が重く実用に耐えないため実験を中止しました。この対応表は過去の記録です。Web 版の追従・性能改善・検証を通常の開発で要求しません。Compose for Android は継続します。[現在の方針](compose-multiplatform.md#現在の方針) を参照してください。
+
+以下は実験中に React を基準として両実装を更新・検証していた記録です。現行の保守境界は [compose-react-parity](../.agents/skills/compose-react-parity/SKILL.md) を参照してください。
 この表は実装の所有先を示すもので、全入力での完全互換や画像の完全一致を保証するものではない。
 
 本文の `#チャンネル名` は、Reactでは `MfmChannels.tsx` のルーター `Link`、Composeでは
@@ -25,8 +27,7 @@ Reactを機能・UI・操作の基準とする。変更時は [compose-react-par
 | 通知のグループ化・遅延取得・追加読み込み・既読 | `NotificationsScreen`, `notifications/` | `Notifications.kt` | 既存Notifications StoryのKotlin表示、通知E2E |
 | Home・連合投稿・ソーシャル操作 | `home/HomeScreen`, `HomeComposer`, `HomeReactionPicker`, `ActivityPubEmoji`, `useHomeLive` | `HomeScreen.kt`, `HomeComposer.kt`, `HomeTimeline.kt`, `HomePostCard.kt`, `HomeActivityPub.kt`, `HomeReactionPicker.kt`, `HomeUserSearch.kt`, `HomeLive.kt` | Homeの既存・追加Storyと両実装の操作・画像、Composer状態・設定保存テスト |
 | 連合通知・フォロー承認・チャンネル共有設定 | `ActivityPubNotifications`, `ZooSettings` | `ActivityPubNotifications.kt`, `ChannelTimelineSettings.kt` | 既存通知・設定Story、状態/API契約テスト |
-| Slack取り込み (#295) | `SlackImportPanel`, `lib/api/slackImport` | `SlackImport.kt`, `Settings.kt`（管理者だけの「Slack 取り込み」タブ） | SlackImportTest、既存SlackImport全11 StoryのKotlin表示・操作。ZIPのアップロードは既存の `pickFiles` / `filePut` を使うため、React版と違って進み具合（%）は出さず、アップロード中の状態だけを表示する |
-| Slackアカウント連携 (#291) | `SlackLinkPanel`, `lib/api/slackLink` | `SlackLink.kt`, `Settings.kt`（全員に出る「Slack 連携」タブ） | SlackLinkTest、既存SlackLink全10 StoryのKotlin表示・操作。Slack からの戻り（`?code=&state=`）は同じく設定画面で受け、ログイン中のユーザーとして完了する。未対応: `team_allowed: false` の案内と取り込み欄の非表示、見えない取り込み先（`existing_hidden`）の案内と「新しいチャンネル」の無効化、自分のチャンネルの取り込みのポーリング中の読み込みのガード（いずれもサーバーが名前を出さずに 403 で断るので、情報は漏れない） |
+| Slackアカウント連携 (#291) | `SlackLinkPanel`, `lib/api/slackLink` | `SlackLink.kt`, `SlackImport.kt`（取り込み先の選択と進み具合の部品）, `Settings.kt`（全員に出る「Slack 連携」タブ） | SlackLinkTest、既存SlackLink全10 StoryのKotlin表示・操作。Slack からの戻り（`?code=&state=`）は同じく設定画面で受け、ログイン中のユーザーとして完了する。管理者の Slack 取り込み画面（#295）は React 版の Web だけで提供する。未対応: `team_allowed: false` の案内と取り込み欄の非表示、見えない取り込み先（`existing_hidden`）の案内と「新しいチャンネル」の無効化、自分のチャンネルの取り込みのポーリング中の読み込みのガード（いずれもサーバーが名前を出さずに 403 で断るので、情報は漏れない） |
 | Bubble Chat | `BubbleChatScreen`, `useBubbleChat` | `Bubble.kt` | ParityTransportTest、既存BubbleChat StoryのKotlin表示、共有・クリア・pagehide E2E |
 | App・Webhook・フォーム・権限 | `AppsDialog`, `AppBlocks`, `ChannelWebhooksDialog` | `Integrations.kt`, `Channels.kt` | CRUD E2E、API・ブロック契約テスト |
 | API・Electric・保存・再接続 | `lib/api`, `lib/electric`, `lib/offline` | `Repository.kt`, `Session.kt` | RepositoryTest、保存エラー・CSP・オフラインE2E |

@@ -1,7 +1,8 @@
 # Android 版
 
 Android 8.0（API 26）以降を対象にした Compose Multiplatform クライアントです。
-Web 版の `frontend-compose/src/commonMain` にある `ZooApp`、画面・部品、
+Compose for Web の実験は終了しましたが、Android 版の開発・検証・配布は継続します。
+共通 Kotlin の `frontend-compose/src/commonMain` にある `ZooApp`、画面・部品、
 `Session`、`Repository`、REST API、Electric4k の同期処理をそのまま使います。
 Android 用に別のチャット画面や同期クライアントは持ちません。
 
@@ -84,7 +85,7 @@ IdP 全体のブラウザーセッションや他端末の認証は失効させ�
 - ファイル選択による添付には対応します。Web 固有のドラッグ＆ドロップとクリップボード画像貼り付け、
   Bubble Chat のタブ離脱通知、アニメーション画像の複数フレーム再生は未対応です。
 
-Web と Android の画面実装は共通ですが、タッチ操作・IME・権限別の全画面の実機検証は別途必要です。
+過去の Web 実験と Android の画面実装は共通ですが、タッチ操作・IME・権限別の全画面の実機検証は別途必要です。
 
 ## Shizuku による main の自動更新
 
