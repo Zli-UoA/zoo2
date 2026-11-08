@@ -591,7 +591,7 @@
       "file": "src/components/chat/AppSettingsSections.tsx",
       "story": "src/components/chat/AppsDialog.stories.tsx",
       "composed": true,
-      "reason": "App権限・資格情報はCatalogのOwnerManagementで実際の管理パネルとして表示する。"
+      "reason": "App権限はCatalogのOwnerManagementで管理パネルとして表示する。資格情報の表示はApp管理画面（AppConsole.browser.test.tsx）で確認する。"
     },
     {
       "file": "src/components/chat/AppSurfaceHost.tsx",
@@ -601,6 +601,21 @@
     {
       "file": "src/components/chat/AppsDialog.tsx",
       "story": "src/components/chat/AppsDialog.stories.tsx"
+    },
+    {
+      "file": "src/components/call/CallDeviceSelects.tsx",
+      "reason": "通話バーと設定の通話タブで共用するマイク/スピーカー選択。一覧の整形と選択値の保存は call-devices.test.ts で検証する。",
+      "checks": ["src/lib/call/call-devices.test.ts"]
+    },
+    {
+      "file": "src/components/call/CallSettingsDevices.tsx",
+      "reason": "設定の通話タブで CallDeviceSelects を通話コンテキストへ接続する薄い層。選択値の保存は call-devices.test.ts で検証する。",
+      "checks": ["src/lib/call/call-devices.test.ts"]
+    },
+    {
+      "file": "src/components/call/CallStatusPanel.tsx",
+      "reason": "通話バーの通信状況パネル。getStats の集計・品質判定・整形は call-diagnostics.test.ts で検証し、通話状態の取得は call-context.tsx の getCallDiagnostics が担う。",
+      "checks": ["src/lib/call/call-diagnostics.test.ts", "src/lib/call/call-context.tsx"]
     },
     {
       "file": "src/components/call/CallSoundsSwitch.tsx",
@@ -983,6 +998,42 @@
       "story": "src/components/home/HomeScreen.stories.tsx",
       "composed": true,
       "reason": "MfmDecoratedPostで共通MFM本文・リンク・絵文字を、ImageOnly/ImageOnlyDetail/ReplyToImageOnly/TextWithImageで空本文・添付表示・画像プレビューを確認する。"
+    },
+    {
+      "file": "src/components/apps/console/AppConsole.tsx",
+      "reason": "#322 の App 管理画面は React 版 Web だけの機能で、Compose 版は作らない。Story を置くと全 Story に Kotlin 実装を求める story-coverage.test.ts が失敗するため、ブラウザテストで表示・権限境界・保存を確認する。",
+      "checks": [
+        "src/components/apps/console/AppConsole.browser.test.tsx",
+        "src/components/apps/console/AppConsoleList.browser.test.tsx",
+        "src/components/apps/console/model.test.ts"
+      ]
+    },
+    {
+      "file": "src/components/apps/console/AppConsoleList.tsx",
+      "reason": "#322 の App 管理画面は React 版 Web だけの機能で、Compose 版は作らない。Story を置くと全 Story に Kotlin 実装を求める story-coverage.test.ts が失敗するため、ブラウザテストで表示・権限境界・保存を確認する。",
+      "checks": [
+        "src/components/apps/console/AppConsole.browser.test.tsx",
+        "src/components/apps/console/AppConsoleList.browser.test.tsx",
+        "src/components/apps/console/model.test.ts"
+      ]
+    },
+    {
+      "file": "src/components/apps/console/ConfigSections.tsx",
+      "reason": "#322 の App 管理画面は React 版 Web だけの機能で、Compose 版は作らない。Story を置くと全 Story に Kotlin 実装を求める story-coverage.test.ts が失敗するため、ブラウザテストで表示・権限境界・保存を確認する。",
+      "checks": [
+        "src/components/apps/console/AppConsole.browser.test.tsx",
+        "src/components/apps/console/AppConsoleList.browser.test.tsx",
+        "src/components/apps/console/model.test.ts"
+      ]
+    },
+    {
+      "file": "src/components/apps/console/OperationSections.tsx",
+      "reason": "#322 の App 管理画面は React 版 Web だけの機能で、Compose 版は作らない。Story を置くと全 Story に Kotlin 実装を求める story-coverage.test.ts が失敗するため、ブラウザテストで表示・権限境界・保存を確認する。",
+      "checks": [
+        "src/components/apps/console/AppConsole.browser.test.tsx",
+        "src/components/apps/console/AppConsoleList.browser.test.tsx",
+        "src/components/apps/console/model.test.ts"
+      ]
     }
   ]
 }

@@ -36,7 +36,11 @@ App設定の `scopes` は [OpenAPI の Manifest 定義](apps.openapi.json) に�
 
 設定の変更は新しいリビジョンを作り、再承認までAppを停止します。名前・説明・アイコンだけの変更では再承認しません。再承認時は古いトークンを失効させます。「無効化」はトークンを失効させ、Botをチャンネルから外します。投稿履歴とプロフィールは保持します。API・継続中のShape・WebSocketも停止します。チャンネル退出時にも配信とShapeのアクセスを再確認します。
 
-開発者・管理者は `/api/apps/{id}/records/credentials` で認証情報のID・scope・状態を確認し、`DELETE /api/apps/{id}/credentials/{credential}` で個別失効できます。秘密値は一覧へ返しません。設定履歴は `records/versions`、監査履歴は `records/audit` です。
+開発者・管理者は `/api/apps/{id}/records/credentials` で認証情報のID・scope・状態を確認し（`expires_at` はアクセストークン、`refresh_expires_at` は refresh token の期限で、後者までは失効しない限り新しいトークンを発行できます）、`DELETE /api/apps/{id}/credentials/{credential}` で個別失効できます。秘密値は一覧へ返しません。設定履歴は `records/versions`、監査履歴は `records/audit` です。
+
+設定の保存（`PATCH /api/apps/{id}`）は名前・説明・アイコン・`bot_username`・manifest の全体を置き換えます。一部の項目だけを送ると、残りは既定値になります。管理画面などで同時編集を防ぐには、`GET /api/apps/{id}` の `updated_at` を `expected_updated_at` として送ります。その後に別の保存があると 409 を返し、上書きしません。応答の `updated_at` を次の保存に使えます。
+
+`GET /api/apps/{id}` は開発者・管理者に `installation` も返します。承認済みインストールの `revision`・`active`・`transport`・`event_url`・`endpoint_verified_at` で、編集中の `manifest` とは再承認まで異なる場合があります。配信と受信 URL の検証は `installation` 側の設定を使います。未承認の App では `null` です。詳細には Bot ユーザーの現在の `bot_username` も含まれます。
 
 ### ユーザー代理操作
 
@@ -66,7 +70,7 @@ Appの `redirect_uris` にHTTPSのコールバックURLを登録し、管理者�
 
 ### HTTP
 
-`transport: "http"` と公開HTTPSの `event_url` を指定します。「接続情報」で署名Secretを取得し、受信側で生本文を検証します。`x-zoo-timestamp` と `x-zoo-signature` は `v1:<timestamp>:<raw body>` に対するHMAC-SHA256です。SDKの `verifySignature` は5分の許容時間も検証します。3秒以内の2xxがACKです。受信例は `examples/echo-bot/http.ts` です。
+`transport: "http"` と公開HTTPSの `event_url` を指定します。「接続情報」で署名Secretを取得し、受信側で生本文を検証します。署名 Secret は配信の署名に使うためサーバーが保持しており、開発者・管理者は何度でも再取得できます。取得するたびに監査履歴へ `connection` として記録します。漏えいが疑われる場合は `rotate-signing-secret` で作り直してください。`x-zoo-timestamp` と `x-zoo-signature` は `v1:<timestamp>:<raw body>` に対するHMAC-SHA256です。SDKの `verifySignature` は5分の許容時間も検証します。3秒以内の2xxがACKです。受信例は `examples/echo-bot/http.ts` です。
 
 宛先のDNSを各試行で解決し、公開IPだけを許可します。解決結果をリクエストへ固定し、リダイレクトは追いません。HTTPとWebSocketで配信履歴を共用し、インストールごとに一方を選びます。署名Secretは配信のためDBに保存するので、DB・バックアップへのアクセスを管理してください。
 

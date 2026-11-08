@@ -316,6 +316,9 @@ pub async fn query(
         })
         .collect()
 }
+/// How long a refresh token stays usable after its credential row is created. The OAuth refresh
+/// check and the console's credential records both read it so their answers cannot drift apart.
+pub const REFRESH_TOKEN_TTL: &str = "30 days";
 pub async fn one(
     tx: &mut toasty::Transaction<'_>,
     sql: &str,

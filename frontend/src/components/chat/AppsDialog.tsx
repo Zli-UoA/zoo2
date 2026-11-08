@@ -2,12 +2,10 @@ import { Select } from "../ui/select";
 import { Input } from "../ui/input";
 import { useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { ArrowLeftIcon, PlusIcon, SearchIcon } from "lucide-react";
+import { ArrowLeftIcon, ExternalLinkIcon, PlusIcon, SearchIcon } from "lucide-react";
 import { Tabs } from "@base-ui/react/tabs";
 import { cn } from "cn";
-import { ConfirmActionDialog } from "../ui/confirm-action-dialog";
 import { SettingsSection, panelTabClassName } from "../ui/control-panel";
-import { Textarea } from "../ui/textarea";
 import { useNavigate } from "@tanstack/react-router";
 import { createConfiguredApiClient } from "../../lib/api/client";
 import { useCollections } from "../../lib/electric/collections-context";
@@ -17,7 +15,7 @@ import { useShell } from "../layout/shell-context";
 import { Button } from "../ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "../ui/dialog";
 import { inputClassName } from "../ui/input-styles";
-import { AppCredentials, AppPermissions } from "./AppSettingsSections";
+import { AppPermissions } from "./AppSettingsSections";
 import { AppConnections } from "./AppConnections";
 import { AppBlocks } from "./AppBlocks";
 import { AppAvatar } from "./AppIdentity";
@@ -50,16 +48,6 @@ type Surface = {
   channel_id: string | null;
   document: { blocks?: unknown };
 };
-const defaultManifest = JSON.stringify(
-  {
-    scopes: ["messages:read", "messages:write", "dm:write", "ui:write"],
-    events: ["message.created", "app.mentioned"],
-    transport: "websocket",
-    dm_enabled: true,
-  },
-  null,
-  2,
-);
 export function AppDialogs() {
   const [open, setOpen] = useState(false);
   const [appId, setAppId] = useState<string>();
@@ -144,7 +132,6 @@ function UserAppsDialog({
   const client = useMemo(() => createConfiguredApiClient(config), [config]);
   const [query, setQuery] = useState("");
   const [filter, setFilter] = useState("all");
-  const [confirmAction, setConfirmAction] = useState<"delete" | "disable" | null>(null);
   const [detailTab, setDetailTab] = useState("overview");
   const [apps, setApps] = useState<App[]>([]);
   const [selected, setSelected] = useState(initialId);
@@ -152,23 +139,8 @@ function UserAppsDialog({
   const [busy, setBusy] = useState(false);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
-  const [editing, setEditing] = useState(false);
-  const [name, setName] = useState("");
-  const [description, setDescription] = useState("");
-  const [icon, setIcon] = useState("");
-  const [manifest, setManifest] = useState(defaultManifest);
-  const [credential, setCredential] = useState("");
   const [commandArguments, setCommandArguments] = useState<Record<string, string>>({});
   const [surfaces, setSurfaces] = useState<Surface[]>([]);
-  const [deliveries, setDeliveries] = useState<
-    {
-      id: string;
-      type: string;
-      attempts: number;
-      acked_at: string | null;
-      last_error: string | null;
-    }[]
-  >([]);
   const people = useUsers().data ?? [];
   const app = apps.find((a) => a.id === selected);
   const canManage = app && (app.owner_id === currentUserId || isAdmin);
@@ -214,8 +186,6 @@ function UserAppsDialog({
     return () => controller.abort();
   }, [client, revision, t, initialId]);
   useEffect(() => {
-    setCredential("");
-    setDeliveries([]);
     setCommandArguments({});
   }, [selected]);
   useEffect(() => {
@@ -250,60 +220,16 @@ function UserAppsDialog({
       setBusy(false);
     }
   }
-  async function action(kind: string) {
-    await run(async () => {
-      const result = await client.request<Record<string, unknown>>(
-        `/api/apps/${selected}/actions/${kind}`,
-        { method: "POST", body: kind === "install" ? { revision: app?.revision } : undefined },
-      );
-      if (kind === "token" || kind === "connection") setCredential(JSON.stringify(result, null, 2));
-    });
-  }
-  async function confirmAppAction() {
-    if (!selected || !confirmAction) return;
-    await run(async () => {
-      await client.request(`/api/apps/${selected}/actions/${confirmAction}`, { method: "POST" });
-      if (confirmAction === "delete") {
-        setSelected(undefined);
-        setCredential("");
-        setDeliveries([]);
-        setEditing(false);
-      }
-      setConfirmAction(null);
-    });
-  }
-  function edit(existing?: App) {
-    setName(existing?.name ?? "");
-    setDescription(existing?.description ?? "");
-    setIcon(existing?.icon_url ?? "");
-    setManifest(existing ? JSON.stringify(existing.manifest, null, 2) : defaultManifest);
-    setDetailTab("overview");
-    setEditing(true);
-  }
-  async function save() {
-    try {
-      JSON.parse(manifest);
-    } catch {
-      setError(t("apps.ui.invalidManifest"));
-      return;
-    }
-    await run(async () => {
-      const result = await client.request<{ id: string }>(
-        selected ? `/api/apps/${selected}` : "/api/apps",
-        {
-          method: selected ? "PATCH" : "POST",
-          body: {
-            name,
-            description,
-            icon_url: icon || null,
-            manifest: JSON.parse(manifest) as unknown,
-          },
-        },
-      );
-      setSelected(result.id);
-      setEditing(false);
-      setDetailTab("manage");
-    });
+  /** Settings, credentials and approval live in the developer console. */
+  function openConsole(path: "/apps" | "/apps/$appId") {
+    onClose();
+    if (path === "/apps" || !selected) void navigate({ to: "/apps" });
+    else
+      void navigate({
+        to: "/apps/$appId",
+        params: { appId: selected },
+        search: { section: "basic" },
+      });
   }
   async function invoke(kind: string, command?: string) {
     await run(() =>
@@ -348,27 +274,6 @@ function UserAppsDialog({
           </Select>
         </label>
       ) : null}
-      <ConfirmActionDialog
-        open={confirmAction !== null && !!canManage}
-        onOpenChange={(open) => {
-          if (!open) {
-            setConfirmAction(null);
-            setError("");
-          }
-        }}
-        title={
-          confirmAction === "delete"
-            ? t("apps.ui.deleteTitle", { name: app?.name ?? "" })
-            : t("apps.disable")
-        }
-        description={
-          confirmAction === "delete" ? t("apps.ui.deleteHelp") : t("apps.ui.disableHelp")
-        }
-        confirmLabel={confirmAction === "delete" ? t("apps.ui.delete") : t("apps.disable")}
-        onConfirm={confirmAppAction}
-        pending={busy}
-        error={error}
-      />
       {!embedded ? (
         <DialogHeader className="pr-8">
           <DialogTitle>{messageId ? t("apps.messageActions") : t("apps.title")}</DialogTitle>
@@ -387,7 +292,7 @@ function UserAppsDialog({
         <div
           className={cn(
             "flex min-h-0 flex-col gap-3 md:border-r md:pr-4",
-            (selected || editing) && "hidden md:flex",
+            selected && "hidden md:flex",
           )}
         >
           <label className="relative block">
@@ -440,7 +345,6 @@ function UserAppsDialog({
                 )}
                 onClick={() => {
                   setSelected(candidate.id);
-                  setEditing(false);
                   setDetailTab("overview");
                   setError("");
                 }}
@@ -472,10 +376,7 @@ function UserAppsDialog({
               variant="outline"
               className="w-full"
               disabled={busy}
-              onClick={() => {
-                setSelected(undefined);
-                edit();
-              }}
+              onClick={() => openConsole("/apps")}
             >
               <PlusIcon />
               {t("apps.create")}
@@ -486,10 +387,10 @@ function UserAppsDialog({
           className={cn(
             "min-h-0 min-w-0 space-y-4 overflow-y-auto",
             !embedded && "md:max-h-[65dvh]",
-            !selected && !editing && "hidden md:block",
+            !selected && "hidden md:block",
           )}
         >
-          {selected || editing ? (
+          {selected ? (
             <Button
               variant="ghost"
               size="sm"
@@ -497,8 +398,6 @@ function UserAppsDialog({
               disabled={busy}
               onClick={() => {
                 setSelected(undefined);
-                setEditing(false);
-                setCredential("");
                 setError("");
               }}
             >
@@ -506,72 +405,7 @@ function UserAppsDialog({
               {t("apps.ui.back")}
             </Button>
           ) : null}
-          {editing ? (
-            <form
-              autoComplete="off"
-              className="space-y-3"
-              onSubmit={(e) => {
-                e.preventDefault();
-                void save();
-              }}
-            >
-              <h2 className="text-base font-semibold">
-                {selected ? t("apps.edit") : t("apps.create")}
-              </h2>
-              <label className="flex flex-col gap-1 text-sm">
-                {t("apps.name")}
-                <Input
-                  className={inputClassName()}
-                  required
-                  maxLength={80}
-                  value={name}
-                  onChange={(e) => setName(e.target.value)}
-                />
-              </label>
-              <label className="flex flex-col gap-1 text-sm">
-                {t("apps.about")}
-                <Textarea
-                  className={inputClassName()}
-                  maxLength={4000}
-                  value={description}
-                  onChange={(e) => setDescription(e.target.value)}
-                />
-              </label>
-              <label className="flex flex-col gap-1 text-sm">
-                {t("apps.icon")}
-                <Input
-                  className={inputClassName()}
-                  type="url"
-                  value={icon}
-                  onChange={(e) => setIcon(e.target.value)}
-                />
-              </label>
-              <label className="flex flex-col gap-1 text-sm">
-                {t("apps.manifest")}
-                <Textarea
-                  className={`${inputClassName()} min-h-60 font-mono text-xs`}
-                  value={manifest}
-                  onChange={(e) => setManifest(e.target.value)}
-                />
-              </label>
-              <div className="flex justify-end gap-2">
-                <Button
-                  type="button"
-                  variant="outline"
-                  disabled={busy}
-                  onClick={() => {
-                    setEditing(false);
-                    setError("");
-                  }}
-                >
-                  {t("common.cancel")}
-                </Button>
-                <Button type="submit" disabled={busy || !name.trim()}>
-                  {t("apps.save")}
-                </Button>
-              </div>
-            </form>
-          ) : app ? (
+          {app ? (
             <>
               <div className="flex items-center gap-3">
                 <AppAvatar label={app.name} isBot src={app.icon_url} />
@@ -714,142 +548,18 @@ function UserAppsDialog({
                 </Tabs.Panel>
                 {canManage ? (
                   <Tabs.Panel value="manage" className="space-y-4">
-                    <SettingsSection title={t("apps.ui.configuration")}>
-                      <div className="flex flex-wrap gap-2">
-                        {canManage ? (
-                          <>
-                            <Button variant="outline" disabled={busy} onClick={() => edit(app)}>
-                              {t("apps.edit")}
-                            </Button>
-                            {app.status === "draft" || app.status === "disabled" ? (
-                              <Button
-                                variant="outline"
-                                disabled={busy}
-                                onClick={() => void action("submit")}
-                              >
-                                {t("apps.requestApproval")}
-                              </Button>
-                            ) : null}
-                            {isAdmin && app.status === "pending" ? (
-                              <Button disabled={busy} onClick={() => void action("install")}>
-                                {t("apps.approve")}
-                              </Button>
-                            ) : null}
-                            {app.status === "installed" ? (
-                              <>
-                                <Button
-                                  variant="outline"
-                                  disabled={busy}
-                                  onClick={() => void action("token")}
-                                >
-                                  {t("apps.issueToken")}
-                                </Button>
-                                <Button
-                                  variant="outline"
-                                  disabled={busy}
-                                  onClick={() => void action("connection")}
-                                >
-                                  {t("apps.connection")}
-                                </Button>
-                              </>
-                            ) : null}
-                            {app.status !== "disabled" ? (
-                              <Button
-                                variant="destructive"
-                                disabled={busy}
-                                onClick={() => {
-                                  setError("");
-                                  setConfirmAction("disable");
-                                }}
-                              >
-                                {t("apps.disable")}
-                              </Button>
-                            ) : null}
-                          </>
-                        ) : null}
-                      </div>
-                    </SettingsSection>
                     <SettingsSection
-                      title={t("apps.ui.delete")}
-                      description={t("apps.ui.deleteHelp")}
-                      className="border-destructive/30"
+                      title={t("apps.ui.configuration")}
+                      description={t("appConsole.dialogHelp")}
                     >
-                      <Button
-                        variant="destructive"
-                        disabled={busy}
-                        onClick={() => {
-                          setError("");
-                          setConfirmAction("delete");
-                        }}
-                      >
-                        {t("apps.ui.delete")}
-                      </Button>
-                    </SettingsSection>
-                    {credential ? (
-                      <AppCredentials
-                        value={credential}
-                        onError={() => setError(t("apps.actionError"))}
-                      />
-                    ) : null}
-
-                    <SettingsSection title={t("apps.connection")}>
-                      <div className="space-y-1">
-                        {canManage && app.manifest.transport ? (
-                          <p className="text-xs text-muted-foreground">
-                            {t("apps.transport")}: {app.manifest.transport}
-                          </p>
-                        ) : null}
-                        {canManage && app.manifest.event_url ? (
-                          <p className="break-all text-xs text-muted-foreground">
-                            {t("apps.eventEndpoint")}: {app.manifest.event_url}
-                          </p>
-                        ) : null}
+                      <div>
+                        <Button onClick={() => openConsole("/apps/$appId")}>
+                          <ExternalLinkIcon />
+                          {t("appConsole.open")}
+                        </Button>
                       </div>
                     </SettingsSection>
                     <AppPermissions scopes={app.manifest.scopes} />
-                    <SettingsSection title={t("apps.deliveries")}>
-                      {canManage ? (
-                        <>
-                          <Button
-                            variant="ghost"
-                            onClick={() =>
-                              void run(async () =>
-                                setDeliveries(await client.get(`/api/apps/${app.id}/deliveries`)),
-                              )
-                            }
-                          >
-                            {t("apps.deliveries")}
-                          </Button>
-                          {deliveries.map((delivery) => (
-                            <div key={delivery.id} className="rounded border p-2 text-xs">
-                              <p>
-                                {delivery.type} · {delivery.attempts} ·{" "}
-                                {delivery.acked_at
-                                  ? t("apps.delivered")
-                                  : (delivery.last_error ?? t("apps.pending"))}
-                              </p>
-                              {!delivery.acked_at ? (
-                                <Button
-                                  variant="ghost"
-                                  size="sm"
-                                  disabled={busy}
-                                  onClick={() =>
-                                    void run(() =>
-                                      client.request(
-                                        `/api/apps/${app.id}/deliveries/${delivery.id}/retry`,
-                                        { method: "POST" },
-                                      ),
-                                    )
-                                  }
-                                >
-                                  {t("apps.retry")}
-                                </Button>
-                              ) : null}
-                            </div>
-                          ))}
-                        </>
-                      ) : null}
-                    </SettingsSection>
                   </Tabs.Panel>
                 ) : null}
               </Tabs.Root>

@@ -27,6 +27,10 @@ describe("locale resolution", () => {
     ["yue-Hant-HK", "yue"],
     ["zh-yue-HK", "yue"],
     ["zh", "zh-Hans"],
+    ["ko", "ko-KR"],
+    ["ko-KR", "ko-KR"],
+    ["ko-KP", "ko-KP"],
+    ["ko_KP", "ko-KP"],
     ["fr-FR", null],
   ])("matches %s to %s", (tag, expected) => expect(matchLocale(tag)).toBe(expected));
 
@@ -75,6 +79,9 @@ describe("translations", () => {
     "reactions.tabKitchen",
     "webhooks.url",
     "dms.moreNames",
+    "appConsole.events.websocket", // Protocol and Slack field names stay untranslated.
+    "appConsole.events.requestUrl",
+    "messages.typingSeparator", // Korean also separates names with a comma and a space.
   ]);
 
   it.each(LOCALES.filter((locale) => locale !== "en"))(
