@@ -758,6 +758,14 @@ async fn import(s: &AppState, job: &Job, lease: &Lease) -> Result<(), AppError> 
             };
             if let Some(channel_id) = &reused {
                 ensure_can_import(&mut tx, job, admin, channel_id, channel).await?;
+            } else if matches!(mapping.action, MappingAction::Create { .. })
+                && crate::apps::events::guest(&mut tx, &job.created_by).await?
+            {
+                // 開始した後でゲストになった場合も、通常のチャンネル作成と同じく新しいチャンネルは作らない
+                return Err(AppError::BadRequest(format!(
+                    "Guests cannot create channels by importing from Slack ({})",
+                    channel.id
+                )));
             }
             let (target, private) = match &mapping.action {
                 MappingAction::Skip => continue,

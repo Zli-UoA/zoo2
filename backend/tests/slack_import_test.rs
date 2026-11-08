@@ -1983,3 +1983,79 @@ async fn test_linked_users_import_their_own_channels() -> anyhow::Result<()> {
     assert!(!own["channels"].to_string().contains(&same), "{own}");
     Ok(())
 }
+
+/// 取り込みを始めた後でゲストになった場合も、ワーカーは新しいチャンネルを作らない
+#[tokio::test]
+async fn test_self_import_does_not_create_channels_after_becoming_guest() -> anyhow::Result<()> {
+    let _serial = SERIAL.lock().await;
+    dotenvy::dotenv().ok();
+    dotenvy::from_filename("../.env").ok();
+    let mut config = Config::from_env();
+    config.dev_auth_enabled = true;
+    config.slack.team_id = None;
+    let db = init_db(&config.database_url).await?;
+    let state = AppState::new(db.clone(), config.clone());
+    ensure_bucket_exists(&state.s3_client, &config.s3.bucket).await;
+    let app = create_router(state.clone());
+    let admin = create_user(&app, "slack_admin_guest").await?;
+    let alice = create_user(&app, "slack_alice_guest").await?;
+    let team = format!("T{}", uuid::Uuid::new_v4().simple());
+    let suffix = uuid::Uuid::new_v4().simple().to_string();
+    sql(
+        &state,
+        "INSERT INTO user_role(user_id,role_id) VALUES($1,'role_admin') RETURNING json_build_object('ok',true)::text",
+        &[&admin],
+    )
+    .await?;
+    sql(
+        &state,
+        "INSERT INTO slack_user_links(user_id,team_id,slack_user_id,access_token_enc) VALUES($1,$2,'U1','x') \
+         RETURNING json_build_object('ok',true)::text",
+        &[&alice, &team],
+    )
+    .await?;
+    let zip = build_zip(&[
+        (
+            "users.json".into(),
+            json!([{"id":"U1","team_id":team,"name":"alice"}]),
+        ),
+        (
+            "channels.json".into(),
+            json!([{"id":"C9","name":format!("later-{suffix}"),"creator":"U1","members":["U1"]}]),
+        ),
+        (
+            format!("later-{suffix}/2024-01-01.json"),
+            json!([{"ts":"1704070000.000100","user":"U1","text":"mine"}]),
+        ),
+    ]);
+    upload(&state, &app, &admin, &zip).await;
+    let (status, run) = request(
+        &app,
+        "POST",
+        "/api/slack/imports",
+        &alice,
+        Some(json!({"mappings":[{"slack_channel_id":"C9","action":"create","name":format!("later-{suffix}")}]})),
+    )
+    .await?;
+    assert_eq!(status, StatusCode::OK, "{run}");
+    // 開始した後でゲストになった
+    sql(
+        &state,
+        "UPDATE users SET guest_kind='multi' WHERE id=$1 RETURNING json_build_object('ok',true)::text",
+        &[&alice],
+    )
+    .await?;
+    let job = drive(&state, &app, &admin, run["id"].as_str().unwrap(), "failed").await;
+    assert!(
+        job["error"].as_str().unwrap_or_default().contains("Guests"),
+        "{job}"
+    );
+    let created = sql(
+        &state,
+        "SELECT json_build_object('id',id)::text FROM channels WHERE id=$1",
+        &[&backend::slack::channel_id(&team, "C9")],
+    )
+    .await?;
+    assert!(created.is_empty(), "{created:?}");
+    Ok(())
+}
