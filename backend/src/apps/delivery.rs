@@ -517,7 +517,7 @@ pub async fn http_loop_with(
             biased;
             _ = shutdown.changed() => break,
             _ = async { tokio::select! { _ = ticks.tick() => {}, _ = wake.notified() => {} } } => {
-                if let Err(e) = http_pass(&db).await {
+                if let Err(e) = http_pass_until(&db, &shutdown).await {
                     tracing::warn!(error=%e,"App delivery failed");
                 }
             }
@@ -589,6 +589,16 @@ pub async fn http_candidates(db: &toasty::Db) -> Result<Vec<Value>, AppError> {
 
 /// Run one bounded dispatch batch, also used by the periodic worker.
 pub async fn http_pass(db: &toasty::Db) -> Result<(), AppError> {
+    let (_keep, never_stops) = tokio::sync::watch::channel(false);
+    http_pass_until(db, &never_stops).await
+}
+
+/// `http_pass`。`stop` が true になった後は、バッチの途中でも新しいリースを取らない
+/// （取得済みの送信と ACK だけ終える）。
+pub async fn http_pass_until(
+    db: &toasty::Db,
+    stop: &tokio::sync::watch::Receiver<bool>,
+) -> Result<(), AppError> {
     let installs = http_candidates(db).await?;
     let results = futures_util::stream::iter(installs)
         .map(|i| async move {
@@ -603,7 +613,7 @@ pub async fn http_pass(db: &toasty::Db) -> Result<(), AppError> {
                 }
             };
             let sends = futures_util::stream::iter(0..fan_out)
-                .map(|_| http_install(db, i.clone()))
+                .map(|_| http_install(db, i.clone(), stop))
                 .buffer_unordered(32)
                 .collect::<Vec<_>>()
                 .await;
@@ -654,8 +664,15 @@ fn breaker_outcome(result: &Result<(), AppError>) -> super::circuit::Outcome {
     }
 }
 
-async fn http_install(db: &toasty::Db, i: Value) -> Result<(), AppError> {
+async fn http_install(
+    db: &toasty::Db,
+    i: Value,
+    stop: &tokio::sync::watch::Receiver<bool>,
+) -> Result<(), AppError> {
     let id = i["id"].as_str().unwrap();
+    if *stop.borrow() {
+        return Ok(());
+    }
     let host = super::circuit::host_of(i["url"].as_str().unwrap_or(""));
     // 同じホストへの同時送信を絞る。待つのは claim の前なので、リースは消費しない。
     let breakers = super::circuit::global();
@@ -675,6 +692,11 @@ async fn http_install(db: &toasty::Db, i: Value) -> Result<(), AppError> {
     } else {
         None
     };
+    // 枠を待っている間に回路が開いたら、claim せずに戻す（試行回数を消費しない）。
+    // 先送りは次の http_pass が行う。
+    if breakers.is_open(&host) {
+        return Ok(());
+    }
     if let Some(event) = claim(db, id).await? {
         let result = tokio::time::timeout(
             Duration::from_secs(3),

@@ -107,7 +107,14 @@ impl Breakers {
         }
         let mut hosts = self.hosts.lock().unwrap();
         if outcome == Outcome::Success {
-            hosts.remove(host);
+            // 開いている間に届いた成功（開く前に送った分、別のパスへの 4xx など）では閉じない。
+            // 閉じるのは通常時か、試し送りの成功だけ。
+            let held_open = hosts
+                .get(host)
+                .is_some_and(|s| s.open_until.is_some_and(|u| now < u));
+            if !held_open {
+                hosts.remove(host);
+            }
             return;
         }
         let state = hosts.entry(host.to_owned()).or_default();
@@ -129,6 +136,16 @@ impl Breakers {
         state.last_open = next;
         state.open_until = Some(now + next);
         state.probing_since = None;
+    }
+
+    /// 読み取りだけ。開放時刻より前なら true（試し送りの状態は進めない）。
+    pub fn is_open(&self, host: &str) -> bool {
+        let now = Instant::now();
+        self.hosts
+            .lock()
+            .unwrap()
+            .get(host)
+            .is_some_and(|s| s.open_until.is_some_and(|u| now < u))
     }
 
     pub fn semaphore(&self, host: &str) -> Arc<Semaphore> {
@@ -265,6 +282,23 @@ mod tests {
             b.check_at("h", t0 + Duration::from_secs(1)),
             Decision::Open(OPEN_MIN - Duration::from_secs(1))
         );
+    }
+
+    #[test]
+    fn a_stray_success_does_not_close_an_open_circuit() {
+        let b = Breakers::default();
+        let t0 = Instant::now();
+        trip(&b, "h", t0);
+        b.record_at("h", Outcome::Success, t0 + Duration::from_secs(1));
+        assert!(matches!(
+            b.check_at("h", t0 + Duration::from_secs(1)),
+            Decision::Open(_)
+        ));
+        // 試し送りの成功では閉じる。
+        let t1 = t0 + OPEN_MIN;
+        assert_eq!(b.check_at("h", t1), Decision::Probe);
+        b.record_at("h", Outcome::Success, t1);
+        assert_eq!(b.check_at("h", t1), Decision::Closed);
     }
 
     #[test]

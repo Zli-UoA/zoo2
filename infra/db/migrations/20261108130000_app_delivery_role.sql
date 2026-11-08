@@ -2,7 +2,10 @@
 -- インフラ側が `ALTER ROLE zoo_dispatcher LOGIN PASSWORD '...'` で有効化する。
 -- ロールはクラスタ共通なので、既にあれば作らない。
 -- 配信関数（app_emit / app_event_access など）は SECURITY DEFINER ではないため、
--- 配信に必要な表の権限をこのロール自身が持つ。メッセージ本文や認証情報（トークンのハッシュ）は読めない。
+-- 配信に必要な表の権限をこのロール自身が持つ。
+-- 読めないもの: messages（本文の表）、トークンのハッシュ、ユーザー名・チャンネル名。
+-- 読めるもの（送信に必要）: 配信キューの payload（イベント本文を含む）と、全アプリの署名鍵。
+-- このロールの接続情報が漏れると、キュー内のイベントの中身と署名鍵が漏れる。
 DO $$
 BEGIN
  IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname='zoo_dispatcher') THEN
