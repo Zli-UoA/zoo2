@@ -131,17 +131,7 @@ pub fn parse_webhook_cards(body: &[u8]) -> Result<Vec<MessageCard>, AppError> {
     }
     let mut cards = Vec::new();
     if !message.text.trim().is_empty() {
-        cards.push(MessageCard {
-            title: "Webhook".into(),
-            description: message.text,
-            url: String::new(),
-            source: String::new(),
-            context: String::new(),
-            author: String::new(),
-            badge: String::new(),
-            color: String::new(),
-            fields: Vec::new(),
-        });
+        cards.push(text_card(message.text));
     }
     for attachment in message.attachments {
         if attachment.fields.len() > 100 {
@@ -193,6 +183,22 @@ pub fn parse_webhook_cards(body: &[u8]) -> Result<Vec<MessageCard>, AppError> {
         card.encode()?;
     }
     Ok(cards)
+}
+
+/// Slack 形式の投稿のトップレベル本文を表すカード。カードのある投稿では本文 (`content`) を
+/// 表示しないので、本文はこのカードとして先頭に置く。
+pub fn text_card(text: String) -> MessageCard {
+    MessageCard {
+        title: "Webhook".into(),
+        description: text,
+        url: String::new(),
+        source: String::new(),
+        context: String::new(),
+        author: String::new(),
+        badge: String::new(),
+        color: String::new(),
+        fields: Vec::new(),
+    }
 }
 
 /// カードを `messages.card` の形にする (1 枚ならそのまま、複数なら `{"cards":[...]}`)。カードがなければ None。
