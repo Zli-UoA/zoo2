@@ -777,7 +777,18 @@ async fn import(s: &AppState, job: &Job, lease: &Lease) -> Result<(), AppError> 
             // 開始後に別のジョブが同じチャンネルを取り込んだ場合も、取り込み先はずらさない
             super::import::ensure_same_target(&mut tx, &team, mapping)
                 .await
-                .map_err(|e| AppError::BadRequest(e.to_string()))?;
+                .map_err(|e| {
+                    if admin {
+                        AppError::BadRequest(e.to_string())
+                    } else {
+                        // 管理者以外の取り込みは、ジョブの失敗理由が本人に見える。参加していない非公開チャンネルの
+                        // 名前が入らないよう、以前の取り込み先の名前を出さない
+                        AppError::BadRequest(format!(
+                            "Slack channel {} was already imported into another channel; import it into the same channel or skip it",
+                            mapping.slack_channel_id
+                        ))
+                    }
+                })?;
             // 以前の取り込みで作ったチャンネルや既存のチャンネルに入れるなら、開始後に外されていないか確かめる
             let reused = match &mapping.action {
                 MappingAction::Skip => continue,
@@ -1024,6 +1035,22 @@ async fn create_channel(
 ) -> Result<((String, String), bool), AppError> {
     validate_channel_name(name)?;
     let id = super::channel_id(team, &channel.id);
+    // 決定的な ID のチャンネルがすでにあるのに、この Slack チャンネルの取り込み先として記録されていなければ、
+    // 取り込みで作ったものではない (`POST /api/channels` は任意の ID を受け付ける)。他人のチャンネルを再利用して
+    // 履歴を流し込まないよう、名前を出さずに断る
+    let foreign = one(
+        tx,
+        "SELECT json_build_object('foreign',EXISTS(SELECT 1 FROM channels WHERE id=$1) \
+         AND NOT EXISTS(SELECT 1 FROM slack_channels WHERE team_id=$2 AND slack_channel_id=$3 AND channel_id=$1))::text",
+        &[&id, team, &channel.id],
+    )
+    .await?;
+    if foreign["foreign"] == true {
+        return Err(AppError::BadRequest(format!(
+            "Slack channel {} cannot be imported into a new channel because a channel with the same ID already exists",
+            channel.id
+        )));
+    }
     let description: String = channel
         .purpose
         .value

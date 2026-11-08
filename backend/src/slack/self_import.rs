@@ -296,6 +296,23 @@ async fn start(
                 )
                 .await?
                 .is_empty();
+                // 前回の取り込みで作ったものではない同じ ID のチャンネルは、他人が先に作った可能性があるので再利用しない
+                // (名前は出さない)。ワーカーも同じ確認をする
+                if exists
+                    && query(
+                        &mut tx,
+                        "SELECT json_build_object('ok',true)::text FROM slack_channels \
+                         WHERE team_id=$1 AND slack_channel_id=$2 AND channel_id=$3",
+                        &[&team, &mapping.slack_channel_id, &own_id],
+                    )
+                    .await?
+                    .is_empty()
+                {
+                    return Err(AppError::Conflict(format!(
+                        "Slack channel {} cannot be imported into a new channel because a channel with the same ID already exists",
+                        mapping.slack_channel_id
+                    )));
+                }
                 if exists
                     && !can_import_into(
                         &mut tx,

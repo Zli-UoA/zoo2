@@ -2350,3 +2350,127 @@ async fn test_slack_import_refetch_removes_names_and_retries_size_skips() -> any
     assert_eq!(attachments[0]["n"], 3);
     Ok(())
 }
+
+/// 決定的な ID のチャンネルを他人が先に作っていても、取り込みはそれを再利用しない。
+/// 名前も、ジョブの失敗理由やエラーに出さない。
+#[tokio::test]
+async fn test_import_does_not_reuse_a_foreign_channel_with_the_deterministic_id()
+-> anyhow::Result<()> {
+    let _serial = SERIAL.lock().await;
+    dotenvy::dotenv().ok();
+    dotenvy::from_filename("../.env").ok();
+    let mut config = Config::from_env();
+    config.dev_auth_enabled = true;
+    config.slack.team_id = None;
+    let db = init_db(&config.database_url).await?;
+    let state = AppState::new(db.clone(), config.clone());
+    ensure_bucket_exists(&state.s3_client, &config.s3.bucket).await;
+    let app = create_router(state.clone());
+    let admin = create_user(&app, "slack_admin_foreign").await?;
+    let alice = create_user(&app, "slack_alice_foreign").await?;
+    let mallory = create_user(&app, "slack_mallory").await?;
+    let team = format!("T{}", uuid::Uuid::new_v4().simple());
+    let suffix = uuid::Uuid::new_v4().simple().to_string();
+    sql(
+        &state,
+        "INSERT INTO user_role(user_id,role_id) VALUES($1,'role_admin') RETURNING json_build_object('ok',true)::text",
+        &[&admin],
+    )
+    .await?;
+    sql(
+        &state,
+        "INSERT INTO slack_user_links(user_id,team_id,slack_user_id,access_token_enc) VALUES($1,$2,'U1','x') \
+         RETURNING json_build_object('ok',true)::text",
+        &[&alice, &team],
+    )
+    .await?;
+    let zip = build_zip(&[
+        (
+            "users.json".into(),
+            json!([{"id":"U1","team_id":team,"name":"alice"}]),
+        ),
+        (
+            "channels.json".into(),
+            json!([{"id":"C7","name":format!("mine-{suffix}"),"creator":"U1","members":["U1"]}]),
+        ),
+        (
+            format!("mine-{suffix}/2024-01-01.json"),
+            json!([{"ts":"1704070000.000100","user":"U1","text":"private history"}]),
+        ),
+    ]);
+    let export = upload(&state, &app, &admin, &zip).await;
+    // mallory が、決定的な ID のチャンネルを先に作り、alice を入れておく
+    let foreign = backend::slack::channel_id(&team, "C7");
+    let (status, _) = request(
+        &app,
+        "POST",
+        "/api/channels",
+        &mallory,
+        Some(
+            json!({"id": foreign, "channel_name": format!("secret-{suffix}"), "is_private": true}),
+        ),
+    )
+    .await?;
+    assert_eq!(status, StatusCode::OK);
+    sql(
+        &state,
+        "INSERT INTO channel_user(user_id,channel_id,joined_at) VALUES($1,$2,CURRENT_TIMESTAMP) RETURNING json_build_object('ok',true)::text",
+        &[&alice, &foreign],
+    )
+    .await?;
+
+    // 利用者の「新しいチャンネル」は、前回の取り込み先として記録されていないチャンネルを再利用しない
+    let (status, body) = request(
+        &app,
+        "POST",
+        "/api/slack/imports",
+        &alice,
+        Some(json!({"mappings":[{"slack_channel_id":"C7","action":"create","name":format!("mine-{suffix}")}]})),
+    )
+    .await?;
+    assert_eq!(status, StatusCode::CONFLICT, "{body}");
+    assert!(!body.to_string().contains("secret-"), "{body}");
+
+    // 管理者の取り込みでも、ワーカーが同じ確認をし、失敗理由に名前を出さない
+    let (status, run) = start(
+        &app,
+        &admin,
+        export["id"].as_str().unwrap(),
+        json!([{"slack_channel_id":"C7","action":"create","name":format!("mine-{suffix}")}]),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{run}");
+    let run = run["id"].as_str().unwrap().to_string();
+    let mut job = Value::Null;
+    for _ in 0..100 {
+        backend::slack::worker::run_once(&state).await?;
+        job = request(
+            &app,
+            "GET",
+            &format!("/api/admin/slack-imports/{run}"),
+            &admin,
+            None,
+        )
+        .await?
+        .1;
+        if job["status"] == "failed" {
+            break;
+        }
+    }
+    assert_eq!(job["status"], "failed", "{job}");
+    assert!(
+        job["error"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("same ID"),
+        "{job}"
+    );
+    let imported = sql(
+        &state,
+        "SELECT json_build_object('n',count(*))::text FROM messages WHERE channel_id=$1",
+        &[&foreign],
+    )
+    .await?;
+    assert_eq!(imported[0]["n"], 0);
+    Ok(())
+}

@@ -304,7 +304,12 @@ class SlackOwnImportController(
     var data by mutableStateOf<Row?>(null)
         private set
 
+    /** 取り込みを始める操作の失敗。一覧を読み直しても消さない (React の `error`) */
     var failure by mutableStateOf<SlackImportFailure?>(null)
+        private set
+
+    /** 一覧を読み込めなかった失敗。次に読み込めたら消える (React の `loadError`) */
+    var loadFailure by mutableStateOf<SlackImportFailure?>(null)
         private set
 
     var pending by mutableStateOf(false)
@@ -331,13 +336,12 @@ class SlackOwnImportController(
                 val value = request("/api/slack/imports", "GET", null).jsonObject
                 if (version == generation) {
                     data = value
-                    // 前の読み込みの失敗は、取れたら消す (取り込みの操作の失敗は残す)
-                    if (!pending) failure = null
+                    loadFailure = null
                 }
             } catch (cause: CancellationException) {
                 throw cause
             } catch (cause: Exception) {
-                if (version == generation) failure = slackImportFailure(cause)
+                if (version == generation) loadFailure = slackImportFailure(cause)
             } finally {
                 inFlight--
                 loading = inFlight > 0
@@ -403,7 +407,7 @@ private fun SlackOwnImportSection(app: Session) {
     val export = data?.get("export") as? JsonObject
     val channels = data?.array("channels")?.rows().orEmpty()
     SettingsSection(app.t("slackLink.importTitle"), app.t("slackLink.importDescription")) {
-        if (data == null && state.failure == null)
+        if (data == null && state.failure == null && state.loadFailure == null)
             Text(
                 app.t("slackLink.importLoading"),
                 Modifier.then(webControlModifier("status")).semantics {
@@ -440,7 +444,7 @@ private fun SlackOwnImportSection(app: Session) {
                 }
             }
         state.latest?.let { SlackImportRunStatus(app, it) }
-        state.failure?.let {
+        (state.failure ?: state.loadFailure)?.let {
             Text(
                 it.message ?: app.t("slackImport.failed"),
                 Modifier.then(webControlModifier("alert")),
