@@ -242,40 +242,6 @@ jobs:
       - name: build
         run: pnpm build
 
-      - name: Restore Playwright browsers
-        uses: actions/cache@v6
-        with:
-          path: ~/.cache/ms-playwright
-          key: playwright-firefox-chromium-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('frontend/pnpm-lock.yaml') }}
-
-      # The self-hosted runner image already has the system libraries.
-      - name: Install Playwright Firefox and Chromium
-        run: pnpm exec playwright install ${{ runner.environment == 'github-hosted' && '--with-deps' || '' }} firefox chromium
-
-      - name: SQLite CSP cold and warm cache tests
-        run: |
-          pnpm test:csp:offline
-          node scripts/offline-csp.test.mjs --warm
-
-      - name: i18n browser tests
-        run: pnpm test:e2e:i18n
-
-      - name: Retired Compose selection falls back to React
-        working-directory: frontend
-        run: pnpm exec playwright test --config playwright.frontend-selection.config.ts
-
-      - name: Upload frontend selection failure traces
-        if: failure()
-        uses: actions/upload-artifact@v7
-        with:
-          name: frontend-selection-failure
-          path: frontend/test-results/frontend-selection/
-          retention-days: 7
-          if-no-files-found: ignore
-
-      - name: Message layout browser tests
-        run: pnpm test:e2e:layout
-
   unit-test:
     runs-on: ${{ (github.event.pull_request.head.repo.fork || github.event_name == 'merge_group') && 'ubuntu-latest' || 'zli-kubecamp-no-docker' }}
     defaults:
@@ -333,11 +299,35 @@ jobs:
         uses: actions/cache@v6
         with:
           path: ~/.cache/ms-playwright
-          key: playwright-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('frontend/pnpm-lock.yaml') }}
+          key: playwright-firefox-chromium-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('frontend/pnpm-lock.yaml') }}
 
       # The self-hosted runner image already has the system libraries.
-      - name: Install Playwright Chromium
-        run: pnpm exec playwright install ${{ runner.environment == 'github-hosted' && '--with-deps' || '' }} chromium
+      - name: Install Playwright Firefox and Chromium
+        run: pnpm exec playwright install ${{ runner.environment == 'github-hosted' && '--with-deps' || '' }} firefox chromium
+
+      - name: SQLite CSP cold and warm cache tests
+        run: |
+          pnpm test:csp:offline
+          node scripts/offline-csp.test.mjs --warm
+
+      - name: i18n browser tests
+        run: pnpm test:e2e:i18n
+
+      - name: Retired Compose selection falls back to React
+        working-directory: frontend
+        run: pnpm exec playwright test --config playwright.frontend-selection.config.ts
+
+      - name: Upload frontend selection failure traces
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: frontend-selection-failure
+          path: frontend/test-results/frontend-selection/
+          retention-days: 7
+          if-no-files-found: ignore
+
+      - name: Message layout browser tests
+        run: pnpm test:e2e:layout
 
       - name: browser test
         run: pnpm test:browser
