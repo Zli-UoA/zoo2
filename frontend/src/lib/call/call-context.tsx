@@ -183,6 +183,20 @@ export function CallProvider({ config: explicitConfig, children }: CallProviderP
   micIdRef.current = selectedMicId;
   const speakerIdRef = useRef(selectedSpeakerId);
   speakerIdRef.current = selectedSpeakerId;
+  // 実際に出力している先 (空文字はシステム既定)。適用に失敗した選択値はここへ戻す
+  const activeSpeakerIdRef = useRef("");
+  // 選択中の出力先を使えないときに、システム既定 (実際の出力先) へ選択値を戻して通知する
+  const fallbackSpeaker = useCallback(
+    (failedId: string) => {
+      if (speakerIdRef.current !== failedId) return;
+      const fallback = activeSpeakerIdRef.current;
+      speakerIdRef.current = fallback;
+      saveSelectedDevice("speaker", fallback);
+      setCallSoundSink(fallback);
+      toast.error(t("call.speakerSwitchFailed"));
+    },
+    [t],
+  );
   // 起動時に保存済みの出力先を効果音へ反映する
   useEffect(() => {
     setCallSoundSink(speakerIdRef.current);
@@ -576,7 +590,15 @@ export function CallProvider({ config: explicitConfig, children }: CallProviderP
           void audio.play().catch(() => {});
         };
         if (speakerIdRef.current) {
-          void applySink(audio, speakerIdRef.current).then(startPlayback);
+          const requested = speakerIdRef.current;
+          void applySink(audio, requested)
+            .then(async (ok) => {
+              if (ok) return;
+              // 保存済みの出力先 (切断されたヘッドホンなど) を使えない場合は、既定へ戻して通知してから再生する
+              fallbackSpeaker(requested);
+              await applySink(audio, speakerIdRef.current);
+            })
+            .then(startPlayback);
         } else {
           startPlayback();
         }
@@ -595,7 +617,7 @@ export function CallProvider({ config: explicitConfig, children }: CallProviderP
 
       return pc;
     },
-    [sendSignalWithRetry, updateSpeakingUser],
+    [fallbackSpeaker, sendSignalWithRetry, updateSpeakingUser],
   );
 
   const switchMicrophone = useCallback(
@@ -717,7 +739,6 @@ export function CallProvider({ config: explicitConfig, children }: CallProviderP
   // 出力先の適用は 1 件ずつ実行し、常に最新の選択値 (speakerIdRef) を全参加者へ適用する。
   // 適用に失敗し、より新しい選択も無ければ、実際に出力している先 (activeSpeakerIdRef) へ選択値を戻して通知する
   const speakerApplyQueueRef = useRef<Promise<void>>(Promise.resolve());
-  const activeSpeakerIdRef = useRef(selectedSpeakerId);
   const applySpeakerToAll = useCallback(() => {
     const run = speakerApplyQueueRef.current.then(async () => {
       const target = speakerIdRef.current;
@@ -732,18 +753,14 @@ export function CallProvider({ config: explicitConfig, children }: CallProviderP
         return;
       }
       if (speakerIdRef.current !== target) return;
-      const fallback = activeSpeakerIdRef.current;
-      speakerIdRef.current = fallback;
-      saveSelectedDevice("speaker", fallback);
-      setCallSoundSink(fallback);
+      fallbackSpeaker(target);
       for (const entry of peersRef.current.values()) {
-        if (entry.audio) await applySink(entry.audio, fallback);
+        if (entry.audio) await applySink(entry.audio, speakerIdRef.current);
       }
-      toast.error(t("call.speakerSwitchFailed"));
     });
     speakerApplyQueueRef.current = run.catch(() => {});
     return run;
-  }, [t]);
+  }, [fallbackSpeaker]);
 
   const setSpeaker = useCallback(
     async (deviceId: string) => {
