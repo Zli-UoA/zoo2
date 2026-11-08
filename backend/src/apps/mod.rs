@@ -2,6 +2,7 @@
 pub mod api;
 pub mod delivery;
 pub mod dispatch_metrics;
+pub mod dispatcher_api;
 pub mod events;
 pub mod files;
 pub mod management;
