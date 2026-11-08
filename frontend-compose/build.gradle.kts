@@ -1,7 +1,6 @@
 import java.security.MessageDigest
 import java.net.URI
 import java.io.IOException
-import org.jetbrains.kotlin.gradle.targets.wasm.nodejs.WasmNodeJsEnvSpec
 
 plugins {
     id("com.android.library") version "8.11.1" apply false
@@ -16,19 +15,8 @@ val androidEnabled = providers.gradleProperty("zoo.android").orNull == "true"
 if (androidEnabled) apply(plugin = "com.android.library")
 
 kotlin {
-    compilerOptions { optIn.addAll("kotlin.time.ExperimentalTime", "kotlin.js.ExperimentalWasmJsInterop") }
+    compilerOptions { optIn.addAll("kotlin.time.ExperimentalTime") }
     if (androidEnabled) androidTarget { compilerOptions { jvmTarget.set(org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_17) } }
-    @OptIn(org.jetbrains.kotlin.gradle.ExperimentalWasmDsl::class)
-    wasmJs {
-        outputModuleName.set("zoo-compose")
-        browser {
-            commonWebpackConfig {
-                outputFileName = "zoo-compose.js"
-            }
-            testTask { useKarma { useChromeHeadless() } }
-        }
-        binaries.executable()
-    }
     sourceSets {
         commonMain.dependencies {
             implementation(project(":electric4k"))
@@ -42,10 +30,6 @@ kotlin {
             implementation("org.jetbrains.kotlinx:kotlinx-datetime:0.7.1-0.6.x-compat")
         }
         if (androidEnabled) named("androidMain") { dependencies { implementation("io.ktor:ktor-client-okhttp:3.1.3"); implementation("com.squareup.okhttp3:okhttp:4.12.0") } }
-        wasmJsMain.dependencies {
-            implementation("io.ktor:ktor-client-js:3.1.3")
-            implementation("io.ktor:ktor-client-mock:3.1.3")
-        }
         commonTest.dependencies {
             implementation(kotlin("test"))
             implementation("io.ktor:ktor-client-mock:3.1.3")
@@ -54,17 +38,10 @@ kotlin {
     }
 }
 
-rootProject.plugins.withType<org.jetbrains.kotlin.gradle.targets.wasm.nodejs.WasmNodeJsRootPlugin> {
-    rootProject.extensions.configure<WasmNodeJsEnvSpec> {
-        if (providers.gradleProperty("zoo.systemNode").orNull == "true") download.set(false)
-    }
-}
-
 // Electric4k currently uses kotlinx.datetime.Clock/Instant. Keep the compatibility
-// artifact consistent across the app, upstream module and browser test linker.
+// artifact consistent across the app and upstream module.
 allprojects { configurations.configureEach { resolutionStrategy.force(
     "org.jetbrains.kotlinx:kotlinx-datetime:0.7.1-0.6.x-compat",
-    "org.jetbrains.kotlinx:kotlinx-datetime-wasm-js:0.7.1-0.6.x-compat",
 ) } }
 
 // Fonts are downloaded into build/, never checked in. Both archives and extracted

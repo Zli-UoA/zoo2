@@ -1,5 +1,4 @@
 import { playForImplementation } from "../../../.storybook/play-for-implementation";
-import { nativeHomeChecks } from "../../../.storybook/home-native-checks";
 import { useState } from "react";
 import { Button } from "../ui/button";
 import { DEFAULT_CONFIG } from "../../lib/config";
@@ -29,15 +28,6 @@ import {
 
 const postSettingsKey = homePostSettingsKey(DEFAULT_CONFIG.apiBaseUrl, DEFAULT_CURRENT_USER_ID);
 const timelineSettingsKey = homeTimelineKey(DEFAULT_CONFIG.apiBaseUrl, DEFAULT_CURRENT_USER_ID);
-// Native catalog requests use the preview origin; React fixtures use DEFAULT_CONFIG.
-function nativePreferenceFixtureKey(key: string) {
-  const prefix = [HOME_POST_SETTINGS_PREFIX, HOME_TIMELINE_PREFIX].find((value) =>
-    key.startsWith(value),
-  );
-  if (!prefix) throw new Error("Unexpected Home preference key");
-  const [, userId] = JSON.parse(key.slice(prefix.length)) as [string, string];
-  return prefix + JSON.stringify([DEFAULT_CONFIG.apiBaseUrl, userId]);
-}
 function clearHomePreferences() {
   for (let index = localStorage.length - 1; index >= 0; index--) {
     const key = localStorage.key(index)!;
@@ -64,60 +54,6 @@ const meta = {
   },
   parameters: {
     a11y: { test: "error" },
-    fixtureControls: {
-      ...nativeHomeChecks,
-      homeStorageRead: (key: string) => localStorage.getItem(nativePreferenceFixtureKey(key)) ?? "",
-      homeStorageWrite: ({ key, value }: { key: string; value: string }) => {
-        localStorage.setItem(nativePreferenceFixtureKey(key), value);
-        return "";
-      },
-      homeRememberedPost: () =>
-        expect(JSON.parse(localStorage.getItem(postSettingsKey)!)).toEqual({
-          visibility: "public",
-          apub: false,
-          channel_id: "channel-general",
-        }),
-      homeSavedTimeline: (value: string) =>
-        waitFor(() => expect(localStorage.getItem(timelineSettingsKey)).toBe(value)),
-      homeRememberedTimeline: () => expect(localStorage.getItem(timelineSettingsKey)).toBe("home"),
-      homeUnavailableChannel: () => expect(rememberedPost).toMatchObject({ channel_id: null }),
-      homeNoSavedIdentity: async () => {
-        await expect(postedWithoutIdentity).toBe(true);
-        await expect(localStorage.getItem(postSettingsKey)).toBeNull();
-      },
-      homeLiveReady: () => waitFor(() => expect(liveAuthenticated).toBe(true)),
-      homeLiveAdd: () => {
-        livePosts = [
-          { ...posts[0], id: "live-post", content: "別端末から届いた新しい投稿" },
-          ...posts,
-        ];
-        live.broadcast("refresh");
-      },
-      homeLiveEdit: () => {
-        livePosts = [
-          { ...posts[0], id: "live-post", content: "編集がリアルタイムで反映されます" },
-          posts[1],
-        ];
-        live.broadcast("refresh");
-      },
-      homeLiveReconnect: () => {
-        livePosts = [{ ...posts[0], id: "reconnected", content: "再接続後の最新投稿" }];
-        for (const client of live.clients) client.close(1000);
-      },
-      homePullFinish: () => {
-        pullRefreshed = true;
-        nativeHomeChecks.homePullFinish();
-      },
-      homeOlderLiveReady: () => waitFor(() => expect(olderLiveConnected).toBe(true)),
-      homeOlderRefresh: async () => {
-        await waitFor(() => expect(olderPageStarted).toBe(true));
-        olderLive.broadcast("refresh");
-        await waitFor(() => expect(olderControlLoads).toBeGreaterThanOrEqual(2));
-        if (!releaseOlderPage) throw new Error("Older page request did not start");
-        releaseOlderPage();
-      },
-      homeOlderRetained: () => waitFor(() => expect(retainedReloads).toBeGreaterThan(0)),
-    },
     msw: { handlers: homeHandlers },
   },
   decorators: [
@@ -1849,9 +1785,6 @@ export const ChannelReplyAudience: Story = {
     );
   },
   parameters: {
-    fixtureControls: {
-      homeChannelReplyPosted: () => waitFor(() => expect(channelReplySent).toBe(true)),
-    },
     msw: {
       handlers: [
         http.get("*/api/home", () =>
@@ -1912,11 +1845,6 @@ export const ImageOnlyPost: Story = {
     homeImageDiscards = 0;
   },
   parameters: {
-    fixtureControls: {
-      homeImageDiscarded: () => waitFor(() => expect(homeImageDiscards).toBe(1)),
-      homeImagePosted: () =>
-        expect(homeImagePayload).toMatchObject({ content: "", image_ids: [homeImageId] }),
-    },
     msw: {
       handlers: [
         ...homeHandlers,

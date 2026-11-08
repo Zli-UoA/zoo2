@@ -1,14 +1,47 @@
 import { defineConfig } from "@playwright/test";
-import compose from "./playwright.compose.config";
 
 export default defineConfig({
-  ...compose,
+  testDir: "./e2e",
   testMatch: /frontend-selection\.spec\.ts$/,
-  // Initial render and reload can each wait for cold Vite transforms on CI.
-  timeout: 240_000,
+  workers: 1,
   outputDir: "./test-results/frontend-selection",
-  webServer: (Array.isArray(compose.webServer) ? compose.webServer : []).map((server) => ({
-    ...server,
-    env: { ...server.env, VITE_EXPERIMENTAL_COMPOSE: "false" },
-  })),
+  snapshotPathTemplate:
+    "{testDir}/../test-results/frontend-selection/reference/{testFilePath}/{testName}/{arg}{ext}",
+  updateSnapshots: "none",
+  fullyParallel: false,
+  timeout: 240_000,
+  // Match Karma and normal Chromium; legacy headless-shell rounds font advances.
+  use: {
+    channel: "chromium",
+    ignoreHTTPSErrors: true,
+    launchOptions: { args: ["--ignore-certificate-errors"] },
+    actionTimeout: 15_000,
+    baseURL: "http://127.0.0.1:4186",
+    locale: "ja-JP",
+    timezoneId: "Asia/Tokyo",
+    viewport: { width: 1440, height: 900 },
+    trace: "retain-on-failure",
+  },
+  webServer: [
+    {
+      command: "node e2e/frontend-api.mjs",
+      reuseExistingServer: !process.env.CI,
+      url: "https://127.0.0.1:4187/health",
+      ignoreHTTPSErrors: true,
+    },
+    {
+      command: "pnpm exec vp dev --port 4186 --host 127.0.0.1 --mode production",
+      reuseExistingServer: !process.env.CI,
+      url: "http://127.0.0.1:4186",
+      timeout: 240_000,
+      env: {
+        VITE_API_BASE_URL: "https://127.0.0.1:4187",
+        VITE_DEV_USER_ID: "00000000-0000-0000-0000-000000000001",
+        VITE_SHAPE_MODE: "proxy",
+        VITE_TXID_MODE: "awaitTxId",
+        VITE_SUMMALY_URL: "https://127.0.0.1:4187/__summaly",
+        VITE_MEDIA_PROXY_URL: "https://127.0.0.1:4187/__media",
+      },
+    },
+  ],
 });

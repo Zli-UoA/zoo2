@@ -56,7 +56,7 @@
           vulkan-loader
           wayland
         ];
-        # Compose Web (Kotlin/Wasm) の単体テストは Karma で Chrome を使う。CI と同じく
+        # ブラウザーテスト用の Chromium。CI と同じく
         # サンドボックスを外したラッパーを CHROME_BIN に渡す。Nix の chromium は Linux のみ。
         zooChrome = pkgs.writeShellScriptBin "zoo-chrome" ''
           exec ${pkgs.chromium}/bin/chromium --no-sandbox "$@"
@@ -78,7 +78,7 @@
             pkg-config
             rust-analyzer
             atlas
-            # Compose Web (frontend-compose) の Gradle ビルド。Gradle 本体はラッパーを使う
+            # Android (frontend-compose) の Gradle ビルド。Gradle 本体はラッパーを使う
             jdk21
             # infra/terraform（R2）。CI の TOFU_VERSION はこの版にそろえる
             opentofu
