@@ -196,7 +196,11 @@ export function AuthGate({ children }: { children: ReactNode }) {
       return;
     }
     const handleOnline = () => {
-      if (phase !== "ready" || client.hasSession || isLoggedOut(window.sessionStorage)) {
+      if (phase !== "ready" || isLoggedOut(window.sessionStorage)) {
+        return;
+      }
+      if (client.hasSession) {
+        void client.getAccessToken();
         return;
       }
       setPhase("checking");

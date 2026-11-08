@@ -73,11 +73,13 @@ interface Harness {
   /** token ハンドラが参照する nonce を、login 後に設定する。 */
   setNonce(nonce: string): void;
   setHref(href: string): void;
+  setOnline(online: boolean): void;
 }
 
 interface HarnessOptions {
   storage?: AuthStorage;
   now?: number;
+  online?: boolean;
   discovery?: Record<string, unknown>;
   /** token エンドポイントの応答。`URLSearchParams` と現在の nonce を受け取る。 */
   token?: (body: URLSearchParams, nonce: string) => unknown;
@@ -91,6 +93,7 @@ function createHarness(options: HarnessOptions = {}): Harness {
   const reauthorizeCalls: string[] = [];
   const tokenCalls: URLSearchParams[] = [];
   let clock = options.now ?? 1_000_000;
+  let online = options.online ?? true;
   let lastNonce = "nonce";
   let href = options.href ?? "https://app.example/";
 
@@ -128,6 +131,7 @@ function createHarness(options: HarnessOptions = {}): Harness {
     storage,
     fetch: fetchMock,
     now: () => clock,
+    isOnline: () => online,
   };
   const client = new OidcClient({
     issuer: ISSUER,
@@ -156,6 +160,9 @@ function createHarness(options: HarnessOptions = {}): Harness {
     setHref: (value) => {
       href = value;
     },
+    setOnline: (value) => {
+      online = value;
+    },
   };
 }
 
@@ -173,6 +180,37 @@ async function completeLogin(harness: Harness) {
 }
 
 describe("OidcClient session restoration", () => {
+  it.each([false, true])(
+    "defers offline reauthorization and refresh until reconnection (refresh: %s)",
+    async (withRefresh) => {
+      const original = createHarness({
+        token: (_body, nonce) => ({
+          access_token: "access-1",
+          id_token: idToken({ nonce }),
+          expires_in: 90,
+          ...(withRefresh ? { refresh_token: "refresh-1" } : {}),
+        }),
+      });
+      await completeLogin(original);
+      const reloaded = createHarness({
+        storage: original.storage,
+        now: 1_040_000,
+        online: false,
+        token: () => ({ access_token: "access-2", refresh_token: "refresh-2", expires_in: 300 }),
+      });
+      await expect(reloaded.client.getAccessToken()).resolves.toBe("access-1");
+      reloaded.advance(51_000);
+      await expect(reloaded.client.getAccessToken()).resolves.toBeNull();
+      expect(reloaded.client.hasSession).toBe(true);
+      expect(reloaded.fetchMock).not.toHaveBeenCalled();
+      expect(reloaded.reauthorizeCalls).toEqual([]);
+      reloaded.setOnline(true);
+      await expect(reloaded.client.getAccessToken()).resolves.toBe(withRefresh ? "access-2" : null);
+      expect(reloaded.refreshCalls()).toHaveLength(withRefresh ? 1 : 0);
+      expect(reloaded.reauthorizeCalls).toEqual(withRefresh ? [] : ["/"]);
+    },
+  );
+
   it("restores the session after reload without contacting the IdP or redirecting", async () => {
     const original = createHarness();
     await completeLogin(original);

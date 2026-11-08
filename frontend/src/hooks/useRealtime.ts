@@ -32,6 +32,8 @@ export function useActiveChannels() {
   // 保存済みの一覧を復元できたら、初回のネットワーク同期は裏で続ける。
   return {
     ...query,
+    // キャッシュにない対象の不存在判定は初回同期まで保留する。
+    isInitialSyncLoading: query.isLoading,
     isLoading: query.isLoading && !(query.isPersistedReady && query.data?.length),
   };
 }

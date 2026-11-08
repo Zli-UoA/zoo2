@@ -76,6 +76,7 @@ export interface OidcEnvironment {
   storage: AuthStorage;
   fetch: OidcFetch;
   now(): number;
+  isOnline?(): boolean;
 }
 
 export interface OidcClientOptions {
@@ -106,6 +107,7 @@ export function createBrowserEnvironment(): OidcEnvironment {
     storage: window.sessionStorage,
     fetch: (input, init) => fetch(input, init),
     now: () => Date.now(),
+    isOnline: () => navigator.onLine,
   };
 }
 
@@ -425,6 +427,11 @@ export class OidcClient {
     const remaining = tokens.expiresAt - this.environment.now();
     if (remaining > REFRESH_SKEW_MS) {
       return tokens.accessToken;
+    }
+    // 保存済み履歴を読んでいる間は認可・更新の通信を始めない。
+    // 期限切れの情報も残し、再接続後に通常の更新・再認可へ進める。
+    if (this.environment.isOnline?.() === false) {
+      return remaining > 0 ? tokens.accessToken : null;
     }
     if (!tokens.refreshToken) {
       this.requestReauthorization();

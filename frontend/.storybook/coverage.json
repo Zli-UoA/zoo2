@@ -624,7 +624,8 @@
     },
     {
       "file": "src/components/chat/ChannelScreen.tsx",
-      "story": "src/components/chat/ChannelScreen.stories.tsx"
+      "story": "src/components/chat/ChannelScreen.stories.tsx",
+      "checks": ["src/components/chat/ChannelScreen.browser.test.tsx"]
     },
     {
       "file": "src/components/chat/ChannelSidebar.tsx",

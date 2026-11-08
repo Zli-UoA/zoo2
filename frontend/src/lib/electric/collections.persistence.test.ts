@@ -94,6 +94,7 @@ it.each([true, false])(
             expect(query.isPersistedReady).toBe(true);
             expect(query.isLoading).toBe(!cached);
           }
+          expect(result.current.channels.isInitialSyncLoading).toBe(true);
           expect(result.current.feed.data?.map((row) => row.content)).toEqual(
             cached ? ["Saved history"] : [],
           );
