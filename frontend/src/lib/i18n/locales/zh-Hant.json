@@ -795,7 +795,7 @@
     "dismiss": "移到歷史紀錄",
     "runTitle": "從 {{name}} 匯入",
     "importedTo": "已匯入到 #{{name}}",
-    "importedToHidden": "先前已匯入到你未加入的私人頻道，只能匯入到該頻道。"
+    "importedToHidden": "先前已匯入到你未加入的頻道，只能匯入到該頻道。"
   },
   "slackLink": {
     "tab": "Slack 連結",

@@ -795,7 +795,7 @@
     "dismiss": "리력으로 옮기기",
     "runTitle": "{{name}}에서 들여오기",
     "importedTo": "들여온 통로: #{{name}}",
-    "importedToHidden": "이전에 참가하지 않은 비공개 통로에 들여왔습니다. 그 통로에만 들여올수 있습니다."
+    "importedToHidden": "이전에 참가하지 않은 통로에 들여왔습니다. 그 통로에만 들여올수 있습니다."
   },
   "slackLink": {
     "tab": "Slack 연동",

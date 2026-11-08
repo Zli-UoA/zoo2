@@ -31,7 +31,8 @@ export interface SlackChannelSummary {
   /** 以前の取り込みで対応付けた zoo チャンネル */
   existing_channel: { id: string; name: string; is_private?: boolean } | null;
   /**
-   * 以前の取り込み先が、参加していない非公開チャンネル (名前と ID は返さない)。
+   * 以前の取り込み先が、見えないチャンネル (参加していない非公開チャンネル。ゲストには公開チャンネルも)。
+   * 名前と ID は返さない。
    * 取り込めるのはそこだけなので、新しく作ることもできない (各ユーザーによる取り込み)
    */
   existing_hidden?: boolean;

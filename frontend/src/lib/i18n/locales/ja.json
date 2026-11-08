@@ -795,7 +795,7 @@
     "dismiss": "履歴に移す",
     "runTitle": "{{name}} からの取り込み",
     "importedTo": "取り込み先: #{{name}}",
-    "importedToHidden": "以前、参加していない非公開チャンネルに取り込みました。取り込めるのはそのチャンネルだけです。"
+    "importedToHidden": "以前、参加していないチャンネルに取り込みました。取り込めるのはそのチャンネルだけです。"
   },
   "slackLink": {
     "tab": "Slack 連携",

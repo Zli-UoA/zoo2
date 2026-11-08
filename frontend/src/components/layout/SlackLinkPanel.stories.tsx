@@ -389,7 +389,7 @@ export const OwnImportNoChannels: Story = {
   }),
 };
 
-/** 以前の取り込み先が、参加していない非公開チャンネル。名前は出さず、そこ以外に取り込めないことだけを示す */
+/** 以前の取り込み先が、見えないチャンネル (参加していない非公開チャンネル)。名前は出さず、そこ以外に取り込めないことだけを示す */
 export const OwnImportHiddenTarget: Story = {
   parameters: {
     msw: {
@@ -418,7 +418,7 @@ export const OwnImportHiddenTarget: Story = {
   play: playForImplementation(async () => {
     await expect(
       await screen.findByText(
-        "以前、参加していない非公開チャンネルに取り込みました。取り込めるのはそのチャンネルだけです。",
+        "以前、参加していないチャンネルに取り込みました。取り込めるのはそのチャンネルだけです。",
       ),
     ).toBeVisible();
     const action = screen.getByRole("combobox", { name: "#secret の取り込み方" });

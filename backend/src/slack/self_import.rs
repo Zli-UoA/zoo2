@@ -278,6 +278,14 @@ async fn start(
                 MappingAction::Existing { channel_id }
             }
             MappingAction::Create { name, .. } => {
+                // 以前の取り込み先が見えないチャンネルなら、そこにしか取り込めないので断る。
+                // 取り込み先の検証 (`ensure_same_target`) のエラーはチャンネル名を含むので、その前に名前を出さずに返す
+                if channel["existing_hidden"] == true {
+                    return Err(AppError::Forbidden(format!(
+                        "Slack channel {} was already imported into a channel you cannot see",
+                        mapping.slack_channel_id
+                    )));
+                }
                 // 以前の取り込みで作ったチャンネルがあれば、ワーカーはそこへ入れて本人と ZIP のメンバーを足す。
                 // その場合は既存チャンネルへの取り込みと同じく、参加状況とメンバー追加の権限を確かめる
                 let own_id = super::channel_id(&team, &mapping.slack_channel_id);

@@ -270,6 +270,20 @@ async fn test_slack_account_link_reassigns_placeholder() -> anyhow::Result<()> {
         &[&carded, &bob, &channel, &format!("@{p} outage, see [status](https://status.example.com)"), &card],
     )
     .await?;
+    // 本文は上限内でも、カードの説明が書き換えで上限 (4,000 文字) を超える投稿は、本文もカードもそのまま残す
+    let long_card = uuid::Uuid::new_v4().to_string();
+    let long_card_description = format!("{} @{p}", "x".repeat(4000 - p.chars().count() - 2));
+    let long_card_json = json!({"cards": [
+        {"title": "Slack", "description": long_card_description},
+        {"title": "Status", "description": "attachment"},
+    ]})
+    .to_string();
+    exec(
+        &state,
+        "INSERT INTO messages(id,user_id,channel_id,content,created_at,card) VALUES($1,$2,$3,$4,'2024-01-01 00:00:01',$5)",
+        &[&long_card, &bob, &channel, &format!("@{p} short"), &long_card_json],
+    )
+    .await?;
     // 書き換えると上限 (40,000 文字) を超える本文は、切り詰めずにそのまま残す
     let long = uuid::Uuid::new_v4().to_string();
     let long_content = format!("@{p} {}", "x".repeat(40_000 - p.chars().count() - 2));
@@ -505,6 +519,14 @@ async fn test_slack_account_link_reassigns_placeholder() -> anyhow::Result<()> {
         format!("@{p} in an attachment")
     );
     assert_eq!(content(long.clone()).await, long_content);
+    assert_eq!(content(long_card.clone()).await, format!("@{p} short"));
+    let kept = sql(
+        &state,
+        "SELECT json_build_object('card',card)::text FROM messages WHERE id=$1",
+        &[&long_card],
+    )
+    .await?;
+    assert_eq!(kept[0]["card"], long_card_json);
     assert_eq!(content(bystander.clone()).await, bystander_content);
     let reply = sql(
         &state,

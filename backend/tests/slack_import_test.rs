@@ -1898,6 +1898,33 @@ async fn test_linked_users_import_their_own_channels() -> anyhow::Result<()> {
     .await?;
     assert_eq!(old[0], json!({"archived": true, "messages": 1}));
 
+    // 見えない取り込み先 (参加していない非公開チャンネル) がある Slack チャンネルを「新しいチャンネル」で
+    // 取り込もうとしても、取り込み先の名前を含むエラーは返さない
+    sql(
+        &state,
+        "UPDATE channels SET is_private=true WHERE id=$1 RETURNING json_build_object('id',id)::text",
+        &[&same],
+    )
+    .await?;
+    sql(
+        &state,
+        "DELETE FROM channel_user WHERE channel_id=$1 AND user_id=$2 RETURNING json_build_object('ok',true)::text",
+        &[&same, &alice],
+    )
+    .await?;
+    let (status, body) = import(
+        json!([{"slack_channel_id":"C1","action":"create","name":format!("hidden-{suffix}")}]),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
+    assert!(!body.to_string().contains("imported into #"), "{body}");
+    sql(
+        &state,
+        "UPDATE channels SET is_private=false WHERE id=$1 RETURNING json_build_object('id',id)::text",
+        &[&same],
+    )
+    .await?;
+
     // ゲストは、通常の API と同じくチャンネルを作れない
     exec("UPDATE users SET is_guest=true WHERE id=$2 AND $1<>$3").await;
     let (status, body) = import(

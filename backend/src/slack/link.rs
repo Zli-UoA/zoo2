@@ -614,10 +614,15 @@ async fn rewrite_mentions(
         if rewritten.chars().count() > crate::validation::MAX_MESSAGE_CONTENT_LENGTH {
             continue;
         }
-        let card = row["card"]
+        // 本文のカードを書き換えると説明の上限を超えるなら、本文もそのまま残す (表示されるカードとそろえる)
+        let card = match row["card"]
             .as_str()
-            .and_then(|card| rewrite_text_card(card, &names))
-            .unwrap_or_default();
+            .map(|card| rewrite_text_card(card, &names))
+        {
+            Some(Err(())) => continue,
+            Some(Ok(card)) => card.unwrap_or_default(),
+            None => String::new(),
+        };
         exec(
             tx,
             "UPDATE messages SET content=$2,card=COALESCE(NULLIF($3,''),card) WHERE id=$1",
@@ -634,22 +639,32 @@ const MAX_CARD_DESCRIPTION: usize = 4000;
 /// 本文とカードの両方がある投稿は、取り込みで本文を見出し「Slack」のカードとして先頭にも保存している
 /// (説明は MFM でなく、リンクを「ラベル (URL)」にした文字列)。カードのある投稿は本文を表示しないので、
 /// そのカードの説明のメンションも書き換える。書き換えたときだけ JSON を返す (添付から作ったカードには触れない)。
-fn rewrite_text_card(card: &str, names: &HashMap<String, String>) -> Option<String> {
-    let mut value: serde_json::Value = serde_json::from_str(card).ok()?;
+/// 書き換えると説明の上限を超えるときは `Err` を返す (呼び出し側は投稿全体をそのまま残す)。
+fn rewrite_text_card(card: &str, names: &HashMap<String, String>) -> Result<Option<String>, ()> {
+    let Ok(mut value) = serde_json::from_str::<serde_json::Value>(card) else {
+        return Ok(None);
+    };
     let first = match value.get_mut("cards") {
-        Some(cards) => cards.get_mut(0)?,
+        Some(cards) => match cards.get_mut(0) {
+            Some(first) => first,
+            None => return Ok(None),
+        },
         None => &mut value,
     };
     if first["title"] != super::worker::IMPORTED_TEXT_CARD_TITLE {
-        return None;
+        return Ok(None);
     }
-    let rewritten = replace_mentions(first["description"].as_str()?, names)?;
-    // 書き換えると説明の上限を超えるなら、本文と同じくそのまま残す
+    let Some(rewritten) = first["description"]
+        .as_str()
+        .and_then(|description| replace_mentions(description, names))
+    else {
+        return Ok(None);
+    };
     if rewritten.chars().count() > MAX_CARD_DESCRIPTION {
-        return None;
+        return Err(());
     }
     first["description"] = rewritten.into();
-    Some(value.to_string())
+    Ok(Some(value.to_string()))
 }
 
 /// `content` の `@name` のうち `names` にあるものを置き換える。変わらなければ `None`。
