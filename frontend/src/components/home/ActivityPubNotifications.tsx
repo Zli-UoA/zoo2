@@ -15,7 +15,8 @@ import type { ActivityPubNotification } from "../../hooks/useActivityPubNotifica
 import { useReadVisibleNotification } from "../chat/notifications/useReadVisibleNotification";
 import {
   NotificationCardFrame,
-  NotificationReadStatus,
+  NotificationAvatar,
+  NotificationCardHeader,
 } from "../chat/notifications/NotificationCard";
 import { Button } from "../ui/button";
 
@@ -32,7 +33,7 @@ export function ActivityPubNotificationCard({
   readEnabled?: boolean;
   act: (path: string, body: unknown) => Promise<void>;
 }) {
-  const { t, i18n } = useTranslation();
+  const { t } = useTranslation();
   const navigate = useNavigate();
   const unread = useMemo(
     () => (item.is_read ? [] : [`activitypub:${item.id}`]),
@@ -88,16 +89,9 @@ export function ActivityPubNotificationCard({
       }}
     >
       <div className="flex items-start gap-3">
-        <div className="relative shrink-0">
-          <Link
-            to="/home/users/$actorId"
-            params={{ actorId: authorId }}
-            className="block rounded-full focus-visible:ring-2 focus-visible:ring-ring"
-          >
-            <ActivityPubAvatar avatar={item.avatar} name={item.display_name} />
-          </Link>
-          <span className="absolute -right-1 -bottom-1 flex size-5 items-center justify-center rounded-full bg-muted text-muted-foreground ring-2 ring-background">
-            {item.kind === "like" ? (
+        <NotificationAvatar
+          badge={
+            item.kind === "like" ? (
               <span
                 role="img"
                 aria-label={item.emoji?.name || item.reaction || "❤️"}
@@ -116,11 +110,19 @@ export function ActivityPubNotificationCard({
               </span>
             ) : (
               <Icon className="size-3" aria-hidden="true" />
-            )}
-          </span>
-        </div>
+            )
+          }
+        >
+          <Link
+            to="/home/users/$actorId"
+            params={{ actorId: authorId }}
+            className="block rounded-full focus-visible:ring-2 focus-visible:ring-ring"
+          >
+            <ActivityPubAvatar avatar={item.avatar} name={item.display_name} />
+          </Link>
+        </NotificationAvatar>
         <div className="min-w-0 flex-1 space-y-2 sm:space-y-1">
-          <div className="flex min-w-0 items-center gap-2">
+          <NotificationCardHeader createdAt={item.created_at} read={item.is_read}>
             <Link
               to="/home/users/$actorId"
               params={{ actorId: authorId }}
@@ -128,21 +130,7 @@ export function ActivityPubNotificationCard({
             >
               <ActivityPubText text={item.display_name} emojis={item.actor_emojis} />
             </Link>
-            <time
-              className="shrink-0 text-[11px] text-muted-foreground tabular-nums"
-              dateTime={item.created_at}
-              title={new Date(item.created_at).toLocaleString(i18n.language)}
-            >
-              {new Date(item.created_at).toLocaleString(i18n.language, {
-                month: "short",
-                day: "numeric",
-                hour: "2-digit",
-                minute: "2-digit",
-                hourCycle: "h23",
-              })}
-            </time>
-            <NotificationReadStatus read={item.is_read} />
-          </div>
+          </NotificationCardHeader>
           {item.content ? (
             <div className="mfm-body line-clamp-3 whitespace-pre-wrap break-words text-sm leading-relaxed">
               <ActivityPubContent text={item.content} emojis={item.content_emojis} />
