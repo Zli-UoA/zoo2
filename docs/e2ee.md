@@ -525,7 +525,7 @@ const prf = credential.getClientExtensionResults().prf?.results?.first;
   - 既存のパスキー（`prf: {}` なしで登録したもの）で PRF を使えるか。プラットフォーム認証器（iCloud キーチェーン、Google パスワードマネージャーなど）は、指定がなくても PRF を使える場合があるが、保証されない
 - 【未検証】AuthZ#94 の変更（AuthZ#95）より前に登録したセキュリティキーは、登録時に hmac-secret を有効にしていないので、AuthZ で登録し直すまで PRF を使えない見込み（AuthZ#95 の `docs/architecture.md`）。#369 で確かめ、結果を本書に書くときは、この前提も載せる。既存のパスキーでの AuthZ へのログインには影響しない。
 - 【決定】解錠で `prf.results.first` がなかったときの表示（[解錠](#解錠既存のスロットを開ける)）では、セキュリティキーなら AuthZ で登録し直すと使える場合があることも案内する。
-- 【未検証】Android アプリ（Credential Manager）から RP ID `account.zli.works` のパスキーを使うには、`https://account.zli.works/.well-known/assetlinks.json` で zoo の Android アプリを関連付ける必要がある。AuthZ#94 には入っていないので、AuthZ 側の issue「E2EE: Android 用に /.well-known/assetlinks.json を配信する」（まだ作っていない）を、[#360](https://github.com/Zli-UoA/zoo2/issues/360) より先に済ませる（[ロードマップ](#ロードマップ)）。Credential Manager の要求 JSON に `prf` 拡張を入れて PRF 出力を得られるかも確かめる。
+- 【未検証】Android アプリ（Credential Manager）から RP ID `account.zli.works` のパスキーを使うには、`https://account.zli.works/.well-known/assetlinks.json` で zoo の Android アプリを関連付ける必要がある。AuthZ#94 には入っていないので、AuthZ 側の [AuthZ#96](https://github.com/Zli-UoA/AuthZ/issues/96)（E2EE: Android 用に /.well-known/assetlinks.json を配信する）を、[#360](https://github.com/Zli-UoA/zoo2/issues/360) より先に済ませる（[ロードマップ](#ロードマップ)）。Credential Manager の要求 JSON に `prf` 拡張を入れて PRF 出力を得られるかも確かめる。
 
 ## 初回設定と解錠の流れ
 
@@ -1361,7 +1361,7 @@ Megolm のメッセージ（`messages` の行）を復号したとき：
 | [#347](https://github.com/Zli-UoA/zoo2/issues/347) | 本書 | |
 | zoo2-infra（PR は未作成） | ConfigMap `authz-config` に `WEBAUTHN_RELATED_ORIGINS: https://zli.chat` を足す。AuthZ#94 の実装（AuthZ#95）より先にマージする（[本番への配備の順](#本番への配備の順)） | |
 | [AuthZ#94](https://github.com/Zli-UoA/AuthZ/issues/94) | パスキー登録で PRF を有効にし、`/.well-known/webauthn` を配信する | zoo2-infra（配備の順） |
-| AuthZ（issue は未作成） | Android 用に `/.well-known/assetlinks.json` を配信する（「E2EE: Android 用に /.well-known/assetlinks.json を配信する」。[使えない環境](#使えない環境)） | |
+| [AuthZ#96](https://github.com/Zli-UoA/AuthZ/issues/96) | Android 用に `/.well-known/assetlinks.json` を配信する（[使えない環境](#使えない環境)） | |
 | [#348](https://github.com/Zli-UoA/zoo2/issues/348) | `crates/zoo-crypto` の雛形とツールチェーン、端末アカウント、pickle の保存 | #347 |
 | [#349](https://github.com/Zli-UoA/zoo2/issues/349) | Olm と Megolm のセッション管理と受信時の検証 | #348 |
 | [#350](https://github.com/Zli-UoA/zoo2/issues/350) | クロス署名と鍵の配布先の判定 | #349 |
@@ -1374,7 +1374,7 @@ Megolm のメッセージ（`messages` の行）を復号したとき：
 | [#357](https://github.com/Zli-UoA/zoo2/issues/357) | 暗号化チャンネル（作成時の `encrypted` の指定と変更を拒む 409、`membership_epoch`、`ciphertext`、`revision`。`channels.encrypted` の列は #354 で足してある）、端末の削除、アカウントの無効化、クロス署名鍵の変更での epoch の増加、配布先のスナップショット | #354、#356 |
 | [#358](https://github.com/Zli-UoA/zoo2/issues/358) | 平文に依存する機能を止める、添付の拒否 | #357 |
 | [#359](https://github.com/Zli-UoA/zoo2/issues/359) | 暗号ストアと端末の登録（React、Compose、TUI） | #352、#353、#354、#355 |
-| [#360](https://github.com/Zli-UoA/zoo2/issues/360) | 初回設定と解錠（パスキー、リカバリーキー） | #359、#356、AuthZ#94、AuthZ の assetlinks の issue（未作成） |
+| [#360](https://github.com/Zli-UoA/zoo2/issues/360) | 初回設定と解錠（パスキー、リカバリーキー） | #359、#356、AuthZ#94、AuthZ#96 |
 | [#361](https://github.com/Zli-UoA/zoo2/issues/361) | 暗号化チャンネルと DM の作成と送受信 | #360、#357、#358 |
 | [#362](https://github.com/Zli-UoA/zoo2/issues/362) | 端末一覧、失効、鍵スロットの管理、他のユーザーの検証状態 | #361 |
 | [#363](https://github.com/Zli-UoA/zoo2/issues/363) | Playwright の E2E テスト（仮想認証器 `hasPrf: true`） | #362 |
@@ -1391,7 +1391,7 @@ Megolm のメッセージ（`messages` の行）を復号したとき：
 | --- | --- | --- |
 | ブラウザー、認証器、パスワードマネージャーごとの PRF と ROR の対応（Safari の CTAP2、1Password、Firefox の ROR など） | 【未検証】 | #369 |
 | 既存のパスキー（`prf: {}` なしで登録したプラットフォーム認証器）で PRF を使えるか。AuthZ#95 より前に登録したセキュリティキーは、登録し直すまで使えない | 【未検証】 | AuthZ#94、#369 |
-| Android の Credential Manager で RP ID `account.zli.works` のパスキーと PRF を使えるか。`assetlinks.json` を AuthZ で配信する issue を作る（未作成） | 【未検証】 | #360（前に AuthZ の issue） |
+| Android の Credential Manager で RP ID `account.zli.works` のパスキーと PRF を使えるか。`assetlinks.json` は AuthZ#96 で配信する | 【未検証】 | #360（前に AuthZ#96） |
 | `getrandom` の wasm のバックエンドの設定。cfg フラグは付けず、`wasm_js` feature だけにする（getrandom 0.3.4 以降と 0.4） | 【決定】 | #348 |
 | 3 段のサブクエリの Shape で move-in と move-out が届くか | 【未検証】 | #354 |
 | `mentions` の形（`{user_ids, channel, here}`）を #358 の本文に合わせる | 【提案】 | #358 |
