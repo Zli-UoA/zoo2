@@ -1091,6 +1091,10 @@ async fn insert_message(
     if content.trim().is_empty() {
         content = super::convert::truncate_content(message.attachments_text());
     }
+    // 取り込めないファイル (外部サービスの共有・削除済みなど) だけの投稿は、ファイル名を本文に残す
+    if content.trim().is_empty() {
+        content = super::convert::truncate_content(message.unimported_files_text());
+    }
     // 期間を区切った ZIP では返信だけが先に入ることがある。後から親を取り込んだら、返信をスレッドに戻す。
     exec(
         tx,
@@ -1158,20 +1162,8 @@ async fn insert_message(
         }
     }
 
-    for file in &message.files {
-        let Some(url) = file
-            .url_private_download
-            .as_deref()
-            .filter(|u| !u.is_empty())
-        else {
-            continue;
-        };
-        if matches!(
-            file.mode.as_deref(),
-            Some("tombstone" | "hidden_by_limit" | "external")
-        ) {
-            continue;
-        }
+    for file in message.files.iter().filter(|f| f.is_importable()) {
+        let url = file.url_private_download.as_deref().unwrap_or_default();
         let name: String = file
             .name
             .as_deref()
@@ -1327,6 +1319,26 @@ async fn fetch_files(s: &AppState, job: &Job, lease: &Lease) -> Result<(), AppEr
     Ok(())
 }
 
+/// 添付を取得してよい URL か (`SLACK_FILES_BASE_URL` の下か)。Bot トークンを付けて送るので、
+/// 文字列の前方一致ではなく、scheme・ホスト・ポートを URL として比べ、パスはディレクトリ単位で比べる
+/// (`https://files.slack.com` と設定しても `https://files.slack.com.evil.example/` は通さない)。
+fn allowed_file_url(url: &str, base: &str) -> bool {
+    let (Ok(url), Ok(base)) = (reqwest::Url::parse(url), reqwest::Url::parse(base)) else {
+        return false;
+    };
+    let mut prefix = base.path().to_string();
+    if !prefix.ends_with('/') {
+        prefix.push('/');
+    }
+    url.scheme() == base.scheme()
+        && url.host_str().is_some()
+        && url.host_str() == base.host_str()
+        && url.port_or_known_default() == base.port_or_known_default()
+        && url.username().is_empty()
+        && url.password().is_none()
+        && url.path().starts_with(&prefix)
+}
+
 async fn fetch_one(
     s: &AppState,
     client: &reqwest::Client,
@@ -1336,7 +1348,7 @@ async fn fetch_one(
     let Some(url) = file
         .url
         .as_deref()
-        .filter(|u| u.starts_with(&s.config.slack.files_base_url))
+        .filter(|u| allowed_file_url(u, &s.config.slack.files_base_url))
     else {
         return Ok(FileOutcome::Skipped("Unsupported file URL".into()));
     };
@@ -1425,6 +1437,46 @@ async fn fetch_one(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn allowed_file_url_compares_as_url() {
+        for base in ["https://files.slack.com", "https://files.slack.com/"] {
+            assert!(allowed_file_url(
+                "https://files.slack.com/files-pri/T1-F1/a.png",
+                base
+            ));
+            assert!(!allowed_file_url(
+                "https://files.slack.com.evil.example/files-pri/a.png",
+                base
+            ));
+            assert!(!allowed_file_url(
+                "https://evil.example/https://files.slack.com/",
+                base
+            ));
+            assert!(!allowed_file_url(
+                "http://files.slack.com/files-pri/a.png",
+                base
+            ));
+            assert!(!allowed_file_url(
+                "https://files.slack.com:8443/files-pri/a.png",
+                base
+            ));
+            assert!(!allowed_file_url(
+                "https://user@files.slack.com/files-pri/a.png",
+                base
+            ));
+            assert!(!allowed_file_url("not a url", base));
+        }
+        // パスはディレクトリ単位で比べる (テストのモックなど)
+        assert!(allowed_file_url(
+            "http://127.0.0.1:9/files/a",
+            "http://127.0.0.1:9/files"
+        ));
+        assert!(!allowed_file_url(
+            "http://127.0.0.1:9/files-evil/a",
+            "http://127.0.0.1:9/files"
+        ));
+    }
 
     #[test]
     fn remove_orphan_zips_keeps_zips_in_use() {

@@ -158,6 +158,29 @@ pub struct SlackFile {
     pub mode: Option<String>,
 }
 
+impl SlackFile {
+    /// 実体を取得して添付にできるファイルか。外部サービスの共有 (`external`)、削除済み (`tombstone`)、
+    /// 無料プランで見えないもの (`hidden_by_limit`)、ダウンロード URL のないものは取り込めない
+    pub fn is_importable(&self) -> bool {
+        self.url_private_download
+            .as_deref()
+            .is_some_and(|u| !u.is_empty())
+            && !matches!(
+                self.mode.as_deref(),
+                Some("tombstone" | "hidden_by_limit" | "external")
+            )
+    }
+
+    /// 表示に使う名前 (`name`、なければ `title`)
+    pub fn display_name(&self) -> Option<&str> {
+        self.name
+            .as_deref()
+            .or(self.title.as_deref())
+            .map(str::trim)
+            .filter(|n| !n.is_empty())
+    }
+}
+
 /// チャンネル参加・トピック変更などのシステムメッセージは取り込まない
 const SKIPPED_SUBTYPES: &[&str] = &[
     "channel_join",
@@ -204,8 +227,19 @@ impl SlackMessage {
                 .as_deref()
                 .is_some_and(|s| SKIPPED_SUBTYPES.contains(&s))
             && (!self.text.trim().is_empty()
-                || !self.files.is_empty()
+                || self.files.iter().any(SlackFile::is_importable)
+                || !self.unimported_files_text().is_empty()
                 || !self.attachments_text().is_empty())
+    }
+
+    /// 取り込めないファイルの名前 (1 行に 1 つ)。本文がない投稿が空にならないよう、代わりの本文に使う
+    pub fn unimported_files_text(&self) -> String {
+        self.files
+            .iter()
+            .filter(|f| !f.is_importable())
+            .filter_map(SlackFile::display_name)
+            .collect::<Vec<_>>()
+            .join("\n")
     }
 
     /// リンクの展開 (unfurl) を除いた attachments

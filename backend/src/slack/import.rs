@@ -26,7 +26,7 @@ use crate::{
     error::AppError,
     state::AppState,
     storage::{delete_storage_object, generate_presigned_put_url, verify_uploaded_object},
-    validation::validate_channel_name,
+    validation::{MAX_CHANNEL_NAME_LENGTH, validate_channel_name},
 };
 
 pub const ZIP_CONTENT_TYPE: &str = "application/zip";
@@ -186,6 +186,24 @@ async fn annotate(tx: &mut toasty::Transaction<'_>, mut job: Value) -> Result<Va
 /// 解析したチャンネルに、以前の取り込み先 (`existing_channel`、削除済みなら `deleted_channel`)、
 /// 同じ名前の Zoo チャンネル (`same_name_channel`)、新しく作るときの名前 (`suggested_name`) を足す。
 /// これらは取り込むときの状態で決まるので、解析結果には保存しない。
+/// 既存のチャンネルや予約語と重なるときの名前の候補 (`slack-` を付ける)。
+/// チャンネル名の上限 (`MAX_CHANNEL_NAME_LENGTH`) を超えるときは、元の名前のハッシュを付けて切り詰め、
+/// 長い名前どうしが同じ候補にならないようにする。
+fn prefixed_name(name: &str) -> String {
+    let prefixed = format!("slack-{name}");
+    if prefixed.chars().count() <= MAX_CHANNEL_NAME_LENGTH {
+        return prefixed;
+    }
+    let hash: String = super::stable_id("slack-channel-name", &[name])
+        .chars()
+        .filter(char::is_ascii_hexdigit)
+        .take(8)
+        .collect();
+    let keep = MAX_CHANNEL_NAME_LENGTH - "slack-".len() - hash.len() - 1;
+    let head: String = name.chars().take(keep).collect();
+    format!("slack-{}-{hash}", head.trim_end_matches(['-', '_']))
+}
+
 pub(crate) async fn annotate_channels(
     tx: &mut toasty::Transaction<'_>,
     team: &str,
@@ -216,7 +234,7 @@ pub(crate) async fn annotate_channels(
             let suggested = if validate_channel_name(&name).is_ok() && entry["name_taken"] != true {
                 name
             } else {
-                format!("slack-{name}")
+                prefixed_name(&name)
             };
             entry["suggested_name"] = json!(suggested);
             entry
@@ -650,4 +668,25 @@ async fn cancel(
         }
     }
     Ok(Json(job))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn prefixed_name_stays_within_the_channel_name_limit() {
+        assert_eq!(prefixed_name("general"), "slack-general");
+        let long = "a".repeat(80);
+        let other = format!("{}b", "a".repeat(79));
+        let (a, b) = (prefixed_name(&long), prefixed_name(&other));
+        assert_eq!(a.chars().count(), MAX_CHANNEL_NAME_LENGTH);
+        assert!(a.starts_with("slack-aaa"));
+        assert!(validate_channel_name(&a).is_ok(), "{a}");
+        assert!(validate_channel_name(&b).is_ok(), "{b}");
+        assert_ne!(
+            a, b,
+            "long names that differ only at the end get different candidates"
+        );
+    }
 }
