@@ -135,6 +135,10 @@ pub struct AppState {
     /// ログイン画面のフェーズ (`None` のときはログイン済みでチャット画面を表示)。
     pub login_phase: Option<LoginPhase>,
     pub login_task: Option<JoinHandle<()>>,
+    /// 実行中のデバイスログインでトークン保存が完了したマネージャ。
+    /// 承認完了後にキャンセルされた場合、このマネージャが保存したトークンのみを削除・失効するために保持する。
+    pub pending_device_login_manager:
+        Arc<std::sync::Mutex<Option<Arc<login::DesktopTokenManager>>>>,
 
     pub credentials: Option<Credentials>,
     pub token_manager: Option<Arc<login::DesktopTokenManager>>,
@@ -252,6 +256,7 @@ impl AppState {
             event_tx,
             login_phase: Some(LoginPhase::Checking),
             login_task: None,
+            pending_device_login_manager: Arc::new(std::sync::Mutex::new(None)),
             credentials: None,
             token_manager: None,
             api: None,
@@ -399,6 +404,8 @@ impl AppState {
         }
         let session_gen = self.bump_session_gen();
         let active_session_gen = self.active_session_gen.clone();
+        let saved_manager = Arc::new(std::sync::Mutex::new(None));
+        self.pending_device_login_manager = saved_manager.clone();
         self.login_phase = Some(LoginPhase::Checking);
         let http = self.http.clone();
         let config = self.config.clone();
@@ -418,26 +425,42 @@ impl AppState {
                     }
                 }
             });
-            login::run_device_login(http, config, session_gen, active_session_gen, auth_tx).await;
+            login::run_device_login(
+                http,
+                config,
+                session_gen,
+                active_session_gen,
+                saved_manager,
+                auth_tx,
+            )
+            .await;
             let _ = forward.await;
         });
     }
 
     /// デバイスコード認証の待機をキャンセルする。
-    /// 世代番号を進め、承認後に保存されていたトークンがあれば削除・失効して次回起動時の誤接続を防ぐ。
+    /// 世代番号を進め、このログイン試行が承認後にトークンを保存していた場合のみ削除・失効して次回起動時の誤接続を防ぐ。
+    /// 承認前キャンセル時は、以前から存在していた正常なトークンファイルを誤削除しない。
     pub fn cancel_device_login(&mut self) {
         if let Some(task) = self.login_task.take() {
             task.abort();
         }
         self.bump_session_gen();
-        if let Ok((_, refresh_token)) = login::delete_local_token_for_logout(&self.config)
-            && let Some(refresh_token) = refresh_token
-            && let AuthConfig::Oidc(oidc) = self.config.auth.clone()
+        if let Some(manager) = self
+            .pending_device_login_manager
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .take()
         {
-            let http = self.http.clone();
-            self.spawn_tokio(async move {
-                login::revoke_refresh_token(http, oidc, refresh_token).await;
-            });
+            let delete_res = manager.logout_and_delete();
+            if let Ok(Some(refresh_token)) = delete_res
+                && let AuthConfig::Oidc(oidc) = self.config.auth.clone()
+            {
+                let http = self.http.clone();
+                self.spawn_tokio(async move {
+                    login::revoke_refresh_token(http, oidc, refresh_token).await;
+                });
+            }
         }
         self.login_phase = Some(LoginPhase::Ready { error: None });
     }
@@ -481,6 +504,10 @@ impl AppState {
             task.abort();
             handles.push(task);
         }
+        self.pending_device_login_manager
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .take();
         for (_, handle) in self.subscriptions.drain() {
             handle.abort();
             handles.push(handle);
@@ -709,6 +736,10 @@ impl AppState {
                 });
             }
             AuthEvent::LoginRequired { error } => {
+                self.pending_device_login_manager
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .take();
                 self.login_phase = Some(LoginPhase::Ready { error });
             }
         }
@@ -3290,16 +3321,31 @@ mod tests {
         // 接続後、バックグラウンドでの refresh 発生時 (save_if_active) も現行セッション世代として正常に保存できること
         assert!(tm.save_if_active().unwrap());
 
-        // デバイスログイン待機中に承認後トークンが書き込まれ、その後に Esc 等でキャンセルされた場合、
-        // 保存されていたトークンファイルが削除され、世代が進んで次回起動時の誤接続を防ぐこと
+        // 1. 以前から保存されていたトークンがある状態でデバイスログインを開始し、
+        // 承認前に Esc 等でキャンセルされた場合、以前の正常なトークンファイルは削除されないこと
         state.login_phase = Some(LoginPhase::AwaitingApproval {
             verification_uri: "https://example.com/device".into(),
-            user_code: "USER-1234".into(),
+            user_code: "USER-PRE".into(),
         });
         assert!(token_path.exists());
         let old_gen = state.session_gen;
         state.cancel_device_login();
         assert_ne!(state.session_gen, old_gen);
+        // 承認前キャンセルなので既存トークンは削除されず残る
+        assert!(token_path.exists());
+        assert_eq!(state.login_phase, Some(LoginPhase::Ready { error: None }));
+
+        // 2. 承認後に今回のログイン試行がトークンを保存した状態でキャンセルされた場合、
+        // 今回保存されたトークンファイルが削除され、世代が進んで次回起動時の誤接続を防ぐこと
+        *state.pending_device_login_manager.lock().unwrap() = Some(tm.clone());
+        state.login_phase = Some(LoginPhase::AwaitingApproval {
+            verification_uri: "https://example.com/device".into(),
+            user_code: "USER-POST".into(),
+        });
+        let old_gen = state.session_gen;
+        state.cancel_device_login();
+        assert_ne!(state.session_gen, old_gen);
+        // 今回のログインが保存したトークンが削除される
         assert!(!token_path.exists());
         assert_eq!(state.login_phase, Some(LoginPhase::Ready { error: None }));
 

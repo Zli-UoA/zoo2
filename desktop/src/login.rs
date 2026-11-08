@@ -313,6 +313,7 @@ impl std::fmt::Debug for AuthEvent {
 }
 
 pub fn token_file() -> Result<PathBuf> {
+    #[cfg(test)]
     if let Ok(path) = std::env::var("ZOO2_DESKTOP_TOKEN_PATH") {
         return Ok(PathBuf::from(path));
     }
@@ -414,6 +415,7 @@ pub async fn run_device_login(
     config: Config,
     session_gen: u64,
     active_session_gen: Arc<AtomicU64>,
+    saved_manager: Arc<std::sync::Mutex<Option<Arc<DesktopTokenManager>>>>,
     tx: UnboundedSender<AuthEvent>,
 ) {
     let oidc = match oidc_config(&config) {
@@ -492,7 +494,9 @@ pub async fn run_device_login(
     // キャンセルされていなければ (`session_gen == active_session_gen`)、
     // `/api/users/me` の前にトークンを保存しておき、一時障害時にもトークンを失わないようにする。
     match manager.save_if_active() {
-        Ok(true) => {}
+        Ok(true) => {
+            *saved_manager.lock().unwrap_or_else(|e| e.into_inner()) = Some(manager.clone());
+        }
         Ok(false) => return,
         Err(err) => {
             let _ = tx.send(AuthEvent::LoginRequired {
