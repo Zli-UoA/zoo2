@@ -6,8 +6,10 @@ use std::{
 };
 
 /// 作成から ACK までの秒数のバケット（上限）。
-const BUCKETS: [f64; 12] = [
-    0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0, 30.0, 120.0, 600.0, 3600.0,
+/// 配信の有効期限（24 時間）まで見えるよう、6・12・24 時間のバケットを持つ。
+const BUCKETS: [f64; 15] = [
+    0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0, 30.0, 120.0, 600.0, 3600.0, 21600.0, 43200.0,
+    86400.0,
 ];
 
 /// ヒストグラム。スクレイプと観測が重なっても累積性（下位 ≤ 上位 ≤ `+Inf`）を保つため、
@@ -86,7 +88,7 @@ impl Metrics {
         }
         let (depth, oldest) = *self.queue.lock().unwrap();
         out.push_str(&format!(
-            "# HELP zoo_dispatch_queue_depth Undelivered, unexpired deliveries.\n# TYPE zoo_dispatch_queue_depth gauge\nzoo_dispatch_queue_depth {depth}\n# HELP zoo_dispatch_oldest_pending_seconds Age of the oldest undelivered, unexpired delivery.\n# TYPE zoo_dispatch_oldest_pending_seconds gauge\nzoo_dispatch_oldest_pending_seconds {oldest}\n"
+            "# HELP zoo_dispatch_queue_depth Undelivered, unexpired deliveries (cluster-wide, every replica reports the same value; aggregate with max or avg, not sum).\n# TYPE zoo_dispatch_queue_depth gauge\nzoo_dispatch_queue_depth {depth}\n# HELP zoo_dispatch_oldest_pending_seconds Age of the oldest undelivered, unexpired delivery (cluster-wide; aggregate with max).\n# TYPE zoo_dispatch_oldest_pending_seconds gauge\nzoo_dispatch_oldest_pending_seconds {oldest}\n"
         ));
         let (open_total, open_hosts) = super::circuit::global().open_hosts();
         out.push_str("# HELP zoo_dispatch_circuit_open Destination hosts whose circuit is open (top hosts only).\n# TYPE zoo_dispatch_circuit_open gauge\n");
