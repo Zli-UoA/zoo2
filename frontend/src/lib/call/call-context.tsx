@@ -121,21 +121,34 @@ function createVolumeMeter(
   }
 }
 
-async function acquireMicStream(deviceId: string): Promise<MediaStream> {
+/**
+ * マイクを取得する。allowFallback が true のとき、指定デバイスが無い/使えなければ既定デバイスで取得し、
+ * fellBack を true にして返す。false のときは失敗として例外を投げる (明示的な切替で黙って既定へ変えない)。
+ */
+async function acquireMicStream(
+  deviceId: string,
+  allowFallback: boolean,
+): Promise<{ stream: MediaStream; fellBack: boolean }> {
   const base = { echoCancellation: true, noiseSuppression: true, autoGainControl: true };
+  let fellBack = false;
   if (deviceId) {
     try {
-      return await navigator.mediaDevices.getUserMedia({
+      const stream = await navigator.mediaDevices.getUserMedia({
         audio: { ...base, deviceId: { exact: deviceId } },
         video: false,
       });
+      return { stream, fellBack };
     } catch (err) {
       const name = (err as Error).name;
       // 保存済みデバイスが無い/使えない場合のみ既定デバイスにフォールバック
-      if (name !== "OverconstrainedError" && name !== "NotFoundError") throw err;
+      if (!allowFallback || (name !== "OverconstrainedError" && name !== "NotFoundError")) {
+        throw err;
+      }
+      fellBack = true;
     }
   }
-  return navigator.mediaDevices.getUserMedia({ audio: base, video: false });
+  const stream = await navigator.mediaDevices.getUserMedia({ audio: base, video: false });
+  return { stream, fellBack };
 }
 
 export interface CallProviderProps {
@@ -656,7 +669,7 @@ export function CallProvider({ config: explicitConfig, children }: CallProviderP
       if (gen !== expectedGen) return true;
       let newStream: MediaStream;
       try {
-        newStream = await acquireMicStream(deviceId);
+        newStream = (await acquireMicStream(deviceId, false)).stream;
       } catch {
         // 取得中に退出・再参加した場合は、旧通話の失敗として扱わない
         if (callGenerationRef.current !== gen) return true;
@@ -877,10 +890,13 @@ export function CallProvider({ config: explicitConfig, children }: CallProviderP
       // マイク取得
       let stream: MediaStream;
       let usedMicId = "";
+      let micFellBack = false;
       try {
         usedMicId = appliedMicIdRef.current;
         activeMicIdRef.current = usedMicId;
-        stream = await acquireMicStream(usedMicId);
+        const acquired = await acquireMicStream(usedMicId, true);
+        stream = acquired.stream;
+        micFellBack = acquired.fellBack;
       } catch (err: unknown) {
         if (callGenerationRef.current !== currentGen || joinAbort.signal.aborted) return;
         cleanupPeers();
@@ -908,6 +924,17 @@ export function CallProvider({ config: explicitConfig, children }: CallProviderP
           track.stop();
         }
         return;
+      }
+
+      // 指定したマイクを使えず既定で取得した場合は、選択値・保存値・使用中の記録を既定へ揃えて通知する
+      if (micFellBack && usedMicId) {
+        activeMicIdRef.current = "";
+        if (appliedMicIdRef.current === usedMicId) {
+          appliedMicIdRef.current = "";
+          saveSelectedDevice("mic", "");
+          usedMicId = "";
+        }
+        toast.error(t("call.micFallbackToDefault"));
       }
 
       localStreamRef.current = stream;

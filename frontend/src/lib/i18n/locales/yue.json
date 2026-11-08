@@ -413,6 +413,7 @@
     "micFallback": "麥克風 {{n}}",
     "speakerFallback": "喇叭 {{n}}",
     "micSwitchFailed": "切換唔到麥克風",
+    "micFallbackToDefault": "揀咗嘅咪用唔到，已經轉用預設咪",
     "speakerSwitchFailed": "切換唔到喇叭",
     "speakerUnsupported": "呢個瀏覽器揀唔到喇叭",
     "defaultsDescription": "加入通話時用嘅裝置。通話中都可以喺通話列更改。",

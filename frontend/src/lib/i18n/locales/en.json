@@ -413,6 +413,7 @@
     "micFallback": "Microphone {{n}}",
     "speakerFallback": "Speaker {{n}}",
     "micSwitchFailed": "Could not switch the microphone",
+    "micFallbackToDefault": "The selected microphone is unavailable, so the default microphone is being used",
     "speakerSwitchFailed": "Could not switch the speaker",
     "speakerUnsupported": "This browser cannot select a speaker",
     "defaultsDescription": "Devices used when you join a call. You can also change them from the call bar during a call.",
