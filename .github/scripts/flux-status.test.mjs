@@ -1,13 +1,11 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { mkdtemp, readFile, writeFile } from "node:fs/promises";
-import { spawnSync } from "node:child_process";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { readFile } from "node:fs/promises";
 import {
   createApi,
   findStateRun,
   fitCheckText,
+  logLine,
   publishMessages,
   parseEvent,
   parseState,
@@ -1137,28 +1135,29 @@ test("a public repository publishes no Flux message by default", async () => {
 });
 
 test("the workflow log never prints a Flux message", async () => {
-  const dir = await mkdtemp(join(tmpdir(), "flux-log-"));
-  const eventPath = join(dir, "event.json");
-  await writeFile(
-    eventPath,
-    JSON.stringify(event("zoo2", { message: "PRIVATE_MESSAGE_SENTINEL" })),
-  );
-  const result = spawnSync(
-    process.execPath,
-    [new URL("./flux-status.mjs", import.meta.url).pathname],
-    {
-      env: {
-        PATH: process.env.PATH,
-        GH_TOKEN: "x",
-        FLUX_STATE_PATH: join(dir, "state.json"),
-        GITHUB_EVENT_PATH: eventPath,
-        GITHUB_RUN_ID: "1",
+  const sentinel = "PRIVATE_MESSAGE_SENTINEL";
+  for (const [name, changes] of [
+    ["zoo2", { message: sentinel }],
+    [
+      "zoo2",
+      {
+        message: sentinel,
+        reason: "Progressing",
+        timestamp: "2026-10-22T09:59:00Z",
       },
-      encoding: "utf8",
-    },
-  );
-  assert.ok(!result.stdout.includes("PRIVATE_MESSAGE_SENTINEL"));
-  assert.ok(!result.stderr.includes("PRIVATE_MESSAGE_SENTINEL"));
+    ],
+    [
+      "zoo2-migrate",
+      { message: sentinel, severity: "error", reason: "HealthCheckFailed" },
+    ],
+  ]) {
+    const result = await report(event(name, changes), fixture());
+    // The result carries the message, so removing it is what keeps it out.
+    assert.ok(JSON.stringify(result).includes(sentinel));
+    const line = logLine(result);
+    assert.ok(!line.includes(sentinel));
+    assert.equal(JSON.parse(line).context, `flux/${name}`);
+  }
 });
 
 test("a rollback progress that arrives before the first completion starts its own run", async () => {

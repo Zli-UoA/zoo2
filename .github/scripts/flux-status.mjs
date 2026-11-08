@@ -410,6 +410,14 @@ async function verifiedSha(api, result) {
   return sha;
 }
 
+// The log of a public repository must not carry Flux messages either: the
+// result of report() includes the event message, so it is dropped here.
+export function logLine(result) {
+  return JSON.stringify(result, (key, value) =>
+    key === "message" ? undefined : value,
+  );
+}
+
 export async function report(
   event,
   {
@@ -616,12 +624,7 @@ if (
         process.env.FLUX_STATE_PATH + ".tmp",
         process.env.FLUX_STATE_PATH,
       );
-      // The log of a public repository must not carry Flux messages either.
-      console.log(
-        JSON.stringify(result, (key, value) =>
-          key === "message" ? undefined : value,
-        ),
-      );
+      console.log(logLine(result));
     }
   } catch (error) {
     console.error(`::error::${error.message}`);
