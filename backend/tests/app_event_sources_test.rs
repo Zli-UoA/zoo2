@@ -3170,6 +3170,27 @@ async fn a_pass_started_after_the_stop_signal_takes_no_new_leases() -> anyhow::R
 }
 
 #[tokio::test]
+async fn a_backlog_is_drained_without_waiting_for_the_next_poll() -> anyhow::Result<()> {
+    let _guard = HTTP_WORKER_TEST_LOCK.lock().await;
+    let f = fixture().await?;
+    reconfigure(&f,json!({"scopes":["messages:read"],"events":["message.created"],"transport":"http","event_url":"https://127.0.0.1:1/events"})).await?;
+    post_messages(&f, 3).await;
+    let (_stop, stopped) = tokio::sync::watch::channel(false);
+    // 取れた分があれば true（続けて pass を回す合図）。取れなければ false。
+    assert!(apps::delivery::http_pass_until(&f.state.db, &stopped).await?);
+    // 取った配信はバックオフ中なので、すぐ次の pass では取るものがない。
+    let mut more = true;
+    for _ in 0..20 {
+        more = apps::delivery::http_pass_until(&f.state.db, &stopped).await?;
+        if !more {
+            break;
+        }
+    }
+    assert!(!more, "a pass with nothing left to claim must report false");
+    Ok(())
+}
+
+#[tokio::test]
 async fn delivery_role_runs_the_dispatch_path_but_cannot_read_messages_or_credentials()
 -> anyhow::Result<()> {
     let _guard = HTTP_WORKER_TEST_LOCK.lock().await;
@@ -3191,7 +3212,7 @@ async fn delivery_role_runs_the_dispatch_path_but_cannot_read_messages_or_creden
     // 配信パス一式: 候補取得 → claim → 送信失敗の記録、掃除、メトリクス。
     apps::delivery::http_pass(&db).await?;
     assert!(message_delivery_attempts(&f).await?.iter().all(|a| *a >= 1));
-    apps::delivery::cleanup(&db).await?;
+    apps::delivery::cleanup_deliveries(&db).await?;
     apps::delivery::refresh_queue_metrics(&db).await?;
     // ACK（新しい配信を取って確定する）。
     post_messages(&f, 1).await;
@@ -3224,6 +3245,8 @@ async fn delivery_role_runs_the_dispatch_path_but_cannot_read_messages_or_creden
         "UPDATE app_installations SET signing_secret='x' WHERE false",
         "UPDATE app_deliveries SET payload='x' WHERE false",
         "DELETE FROM app_installations WHERE false",
+        "DELETE FROM app_rate_limits WHERE false",
+        "DELETE FROM app_oauth_codes WHERE false",
     ] {
         let mut db = db.clone();
         let mut tx = db.transaction().await?;

@@ -11,12 +11,12 @@ use axum::{Router, http::header, response::IntoResponse, routing::get};
 use std::{net::SocketAddr, time::Duration};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
-/// SIGTERM 後に、送信中の配信を待つ最大時間。残ったリースは期限切れで他のインスタンスが拾う。
-/// 1 回の送信は最大 3 秒なので、claim と ACK の分の余裕を持たせる（Pod の
-/// terminationGracePeriodSeconds はこれより長くする）。
 /// 通知が無くても配信を探す間隔。
 const POLL: Duration = Duration::from_secs(3);
 
+/// SIGTERM 後に、送信中の配信を待つ最大時間。残ったリースは期限切れで他のインスタンスが拾う。
+/// 1 回の送信は最大 3 秒なので、claim と ACK の分の余裕を持たせる（Pod の
+/// terminationGracePeriodSeconds はこれより長くする）。
 const DRAIN: Duration = Duration::from_secs(8);
 
 #[tokio::main]
