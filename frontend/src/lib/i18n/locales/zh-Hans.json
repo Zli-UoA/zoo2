@@ -803,6 +803,7 @@
     "loadError": "无法加载关联状态。",
     "notConfigured": "这个工作区尚未设置 Slack 关联。请联系管理员。",
     "linkedAs": "已以 {{team}} 的 {{name}} 关联。",
+    "teamNotAllowed": "当前设置不再允许与这个 Slack 工作区关联。请先解除关联，然后重新关联。",
     "link": "与 Slack 关联",
     "unlink": "解除关联",
     "unlinkTitle": "要解除与 Slack 的关联吗？",

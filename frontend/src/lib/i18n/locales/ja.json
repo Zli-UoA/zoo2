@@ -803,6 +803,7 @@
     "loadError": "連携状態を読み込めませんでした。",
     "notConfigured": "このワークスペースでは Slack 連携が設定されていません。管理者に問い合わせてください。",
     "linkedAs": "{{team}} の {{name}} として連携しています。",
+    "teamNotAllowed": "この Slack ワークスペースとの連携は、いまの設定では使えません。連携を解除してから、もう一度連携してください。",
     "link": "Slack と連携",
     "unlink": "連携を解除",
     "unlinkTitle": "Slack との連携を解除しますか？",

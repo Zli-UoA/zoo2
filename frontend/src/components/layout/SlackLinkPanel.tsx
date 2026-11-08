@@ -151,12 +151,17 @@ export function SlackLinkPanel({ navigateTo = (url: string) => window.location.a
         ) : null}
         {state?.configured && state.link ? (
           <div className="flex flex-wrap items-center justify-between gap-3">
-            <p className="min-w-0 text-sm break-all">
-              {t("slackLink.linkedAs", {
-                name: state.link.slack_user_name || state.link.slack_user_id,
-                team: state.link.team_name || state.link.team_id,
-              })}
-            </p>
+            <div className="min-w-0 space-y-1">
+              <p className="text-sm break-all">
+                {t("slackLink.linkedAs", {
+                  name: state.link.slack_user_name || state.link.slack_user_id,
+                  team: state.link.team_name || state.link.team_id,
+                })}
+              </p>
+              {state.link.team_allowed === false ? (
+                <p className="text-sm text-destructive">{t("slackLink.teamNotAllowed")}</p>
+              ) : null}
+            </div>
             <Button
               variant="outline"
               disabled={pending}
@@ -182,7 +187,9 @@ export function SlackLinkPanel({ navigateTo = (url: string) => window.location.a
           </p>
         ) : null}
       </SettingsSection>
-      {state?.link ? <OwnImportSection client={client} /> : null}
+      {state?.link && state.link.team_allowed !== false ? (
+        <OwnImportSection client={client} />
+      ) : null}
       {isAdmin ? <SlackManifestSection client={client} /> : null}
       <ConfirmActionDialog
         open={confirmUnlink}

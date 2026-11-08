@@ -100,7 +100,7 @@ pub struct SlackConfig {
     /// ワークスペースで作った Slack アプリ (#291 アカウント連携)
     pub client_id: Option<String>,
     pub client_secret: Option<String>,
-    /// 連携できる Slack ワークスペース。未設定なら制限しない
+    /// 連携できる Slack ワークスペース。未設定なら制限しない。既存の連携にも適用する (`team_allowed`)
     pub team_id: Option<String>,
     /// Slack に登録するリダイレクト URL (バックエンドの `/api/slack/oauth/callback`)
     pub oauth_redirect_url: Option<String>,
@@ -165,6 +165,12 @@ pub(crate) const DEFAULT_SLACK_FILES_BASE_URL: &str = "https://files.slack.com/"
 pub(crate) const DEFAULT_SLACK_API_BASE_URL: &str = "https://slack.com/api";
 
 impl SlackConfig {
+    /// 連携を使ってよい Slack ワークスペースか。`SLACK_TEAM_ID` が未設定なら制限しない。
+    /// 連携したあとで設定を変えた場合も、既存の連携はこれで確かめる。
+    pub fn team_allowed(&self, team: &str) -> bool {
+        self.team_id.as_deref().is_none_or(|t| t == team)
+    }
+
     /// アカウント連携に必要な設定がそろっているか
     pub fn oauth_enabled(&self) -> bool {
         self.client_id.is_some()
@@ -591,6 +597,15 @@ impl Config {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn slack_team_allowed_applies_only_when_set() {
+        let mut slack = SlackConfig::default();
+        assert!(slack.team_allowed("T1"));
+        slack.team_id = Some("T1".into());
+        assert!(slack.team_allowed("T1"));
+        assert!(!slack.team_allowed("T2"));
+    }
 
     fn dummy_s3_config() -> S3Config {
         S3Config {

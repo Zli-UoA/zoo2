@@ -90,7 +90,7 @@ const manifest = http.get("*/api/admin/slack/manifest", () =>
       display_information: { name: "Zoo" },
       oauth_config: {
         redirect_urls: ["https://zoo.example/api/slack/oauth/callback"],
-        scopes: { user: ["channels:history", "users:read"] },
+        scopes: { user: ["users:read"], bot: ["files:read"] },
       },
     },
   }),
@@ -141,6 +141,37 @@ export const Linked: Story = {
     // 開くアニメーションの途中は不可視と判定されるため、表示されきるまで待つ
     const dialog = await screen.findByRole("alertdialog");
     await waitFor(() => expect(dialog).toBeVisible());
+  }),
+};
+
+/** SLACK_TEAM_ID を変えたあとに残っている、許可していないワークスペースとの連携 */
+export const LinkedOtherWorkspace: Story = {
+  parameters: {
+    msw: {
+      handlers: [
+        http.get("*/api/slack/link", () =>
+          HttpResponse.json({
+            configured: true,
+            link: {
+              team_id: "T0",
+              team_name: "Old workspace",
+              slack_user_id: "U1",
+              slack_user_name: "alice",
+              linked_at: "2026-11-01T09:00:00Z",
+              team_allowed: false,
+            },
+          }),
+        ),
+        noExport,
+      ],
+    },
+  },
+  play: playForImplementation(async () => {
+    await screen.findByText(
+      "この Slack ワークスペースとの連携は、いまの設定では使えません。連携を解除してから、もう一度連携してください。",
+    );
+    await expect(screen.getByRole("button", { name: "連携を解除" })).toBeVisible();
+    await expect(screen.queryByText("Slack から取り込む")).toBeNull();
   }),
 };
 

@@ -15,6 +15,7 @@ use backend::{
     apps::query, config::Config, db::init_db, models::UserRole, routes::create_router,
     state::AppState,
 };
+use std::time::Duration;
 
 async fn request(
     app: &Router,
@@ -109,7 +110,7 @@ async fn mock_slack(team: &str) -> MockServer {
             .and(body_string_contains(format!("code={code}")))
             .respond_with(ResponseTemplate::new(200).set_body_json(json!({
                 "ok": true,
-                "authed_user": {"id": slack_user, "scope": "channels:history,users:read", "access_token": format!("xoxp-{code}"), "token_type": "user"},
+                "authed_user": {"id": slack_user, "scope": "users:read", "access_token": format!("xoxp-{code}"), "token_type": "user"},
                 "team": {"id": team_id, "name": "Zli"},
             })))
             .mount(&server)
@@ -316,6 +317,19 @@ async fn test_slack_account_link_reassigns_placeholder() -> anyhow::Result<()> {
         .await?;
     }
 
+    // 未連携の別のプレースホルダだけへのメンション。連携で書き換えないので、ロックもしない
+    let bystander = uuid::Uuid::new_v4().to_string();
+    let bystander_content = format!(
+        "@slack-z.{} unrelated",
+        &uuid::Uuid::new_v4().simple().to_string()[..8]
+    );
+    exec(
+        &state,
+        "INSERT INTO messages(id,user_id,channel_id,content,created_at) VALUES($1,$2,$3,$4,'2024-01-01 00:00:01')",
+        &[&bystander, &bob, &channel, &bystander_content],
+    )
+    .await?;
+
     // 未連携の状態
     let (status, link, _) = request(&app, "GET", "/api/slack/link", Some(&alice), None).await?;
     assert_eq!(status, StatusCode::OK);
@@ -329,7 +343,8 @@ async fn test_slack_account_link_reassigns_placeholder() -> anyhow::Result<()> {
     assert!(url.starts_with("https://slack.com/oauth/v2/authorize?"));
     assert_eq!(query_param(url, "client_id"), "cid");
     assert_eq!(query_param(url, "team"), team);
-    assert!(query_param(url, "user_scope").contains("channels:history"));
+    // いま使うのは連携時の表示名の取得だけなので、users:read だけを求める
+    assert_eq!(query_param(url, "user_scope"), "users:read");
     let state_param = query_param(url, "state");
 
     // Slack からの戻りはトークンを交換せず、フロントへ渡すだけ
@@ -378,17 +393,32 @@ async fn test_slack_account_link_reassigns_placeholder() -> anyhow::Result<()> {
     .await?;
     assert_eq!(status, StatusCode::BAD_REQUEST);
 
-    // 本人なら連携でき、プレースホルダの投稿が付け替わる
-    let (status, linked, _) = request(
-        &app,
-        "POST",
-        "/api/slack/oauth/complete",
-        Some(&alice),
-        Some(json!({"code": "code-alice", "state": state_param})),
+    // 本人なら連携でき、プレースホルダの投稿が付け替わる。
+    // 書き換えないメンションを含む投稿のロックは待たない (チームの投稿をまとめてロックしない)
+    let mut held_db = state.db.clone();
+    let mut held = held_db.transaction().await?;
+    query(
+        &mut held,
+        "SELECT json_build_object('id',id)::text FROM messages WHERE id=$1 FOR UPDATE",
+        &[&bystander],
     )
     .await?;
+    let linked = tokio::time::timeout(
+        Duration::from_secs(10),
+        request(
+            &app,
+            "POST",
+            "/api/slack/oauth/complete",
+            Some(&alice),
+            Some(json!({"code": "code-alice", "state": state_param})),
+        ),
+    )
+    .await;
+    held.rollback().await?;
+    let (status, linked, _) = linked.expect("the link must not wait for unrelated posts")?;
     assert_eq!(status, StatusCode::OK, "{linked}");
     assert_eq!(linked["link"]["slack_user_id"], "U1");
+    assert_eq!(linked["link"]["team_allowed"], true);
     assert_eq!(linked["link"]["slack_user_name"], "Alice S");
     assert_eq!(linked["link"]["team_name"], "Zli");
 
@@ -468,6 +498,7 @@ async fn test_slack_account_link_reassigns_placeholder() -> anyhow::Result<()> {
         format!("@{p} in an attachment")
     );
     assert_eq!(content(long.clone()).await, long_content);
+    assert_eq!(content(bystander.clone()).await, bystander_content);
     let reply = sql(
         &state,
         "SELECT json_build_object('reply_user_id',reply_user_id)::text FROM home_posts WHERE id=$1",
@@ -504,12 +535,24 @@ async fn test_slack_account_link_reassigns_placeholder() -> anyhow::Result<()> {
         &[&late, &placeholder, &channel],
     )
     .await?;
-    {
+    let mut held_db = state.db.clone();
+    let mut held = held_db.transaction().await?;
+    query(
+        &mut held,
+        "SELECT json_build_object('id',id)::text FROM messages WHERE id=$1 FOR UPDATE",
+        &[&bystander],
+    )
+    .await?;
+    let reconciled = tokio::time::timeout(Duration::from_secs(10), async {
         let mut db = state.db.clone();
         let mut tx = db.transaction().await?;
         backend::slack::link::reconcile_team(&mut tx, &team).await?;
         tx.commit().await?;
-    }
+        anyhow::Ok(())
+    })
+    .await;
+    held.rollback().await?;
+    reconciled.expect("reconcile_team must not wait for unrelated posts")?;
     let owner = sql(
         &state,
         "SELECT json_build_object('user_id',user_id)::text FROM messages WHERE id=$1",
@@ -566,9 +609,28 @@ async fn test_slack_account_link_reassigns_placeholder() -> anyhow::Result<()> {
     let (_, still, _) = request(&app, "GET", "/api/slack/link", Some(&alice), None).await?;
     assert_eq!(still["link"]["slack_user_id"], "U1");
 
-    // 解除するとトークンを無効にして消す。付け替えた投稿は残る。
+    // SLACK_TEAM_ID を後から別のワークスペースにすると、連携は解除できるよう見せたまま、取り込みには使わせない
+    let mut other = state.clone();
+    other.config.slack.team_id = Some(format!("T{}", uuid::Uuid::new_v4().simple()));
+    let other_app = create_router(other);
+    let (status, restricted, _) =
+        request(&other_app, "GET", "/api/slack/link", Some(&alice), None).await?;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(restricted["link"]["slack_user_id"], "U1");
+    assert_eq!(restricted["link"]["team_allowed"], false);
+    let (status, _, _) = request(
+        &other_app,
+        "POST",
+        "/api/slack/imports",
+        Some(&alice),
+        Some(json!({"mappings": []})),
+    )
+    .await?;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+
+    // 解除するとトークンを無効にして消す。付け替えた投稿は残る。許可していないワークスペースの連携も解除できる
     let (status, unlinked, _) =
-        request(&app, "DELETE", "/api/slack/link", Some(&alice), None).await?;
+        request(&other_app, "DELETE", "/api/slack/link", Some(&alice), None).await?;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(unlinked["link"], Value::Null);
     let owner = sql(
@@ -710,11 +772,564 @@ async fn test_slack_link_requires_configuration_and_admin_manifest() -> anyhow::
         request(&app, "GET", "/api/admin/slack/manifest", Some(&admin), None).await?;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(manifest["configured"], false);
-    assert!(
-        manifest["manifest"]["oauth_config"]["scopes"]["user"]
-            .as_array()
-            .unwrap()
-            .contains(&json!("channels:history"))
+    assert_eq!(
+        manifest["manifest"]["oauth_config"]["scopes"]["user"],
+        json!(["users:read"])
     );
+    assert_eq!(
+        manifest["manifest"]["oauth_config"]["scopes"]["bot"],
+        json!(["files:read"])
+    );
+    Ok(())
+}
+
+/// 連携を設定した状態。チームと Slack のモックはテストごとに作る (DB は並行するテストで共有する)
+async fn linking_state(team: &str, slack: &MockServer) -> anyhow::Result<(AppState, Router)> {
+    dotenvy::dotenv().ok();
+    dotenvy::from_filename("../.env").ok();
+    let mut config = Config::from_env();
+    config.dev_auth_enabled = true;
+    config.slack.client_id = Some("cid".into());
+    config.slack.client_secret = Some("sec".into());
+    config.slack.team_id = Some(team.to_string());
+    config.slack.oauth_redirect_url = Some("https://zoo.example/api/slack/oauth/callback".into());
+    config.slack.token_encryption_key =
+        Some(base64::engine::general_purpose::STANDARD.encode([3u8; 32]));
+    config.slack.api_base_url = slack.uri();
+    let db = init_db(&config.database_url).await?;
+    let state = AppState::new(db, config);
+    let app = create_router(state.clone());
+    Ok((state, app))
+}
+
+async fn mock_access(server: &MockServer, code: &str, team: &str, slack_user: &str, token: &str) {
+    Mock::given(method("POST"))
+        .and(path("/oauth.v2.access"))
+        .and(body_string_contains(format!("code={code}")))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "ok": true,
+            "authed_user": {"id": slack_user, "scope": "users:read", "access_token": token, "token_type": "user"},
+            "team": {"id": team, "name": "Zli"},
+        })))
+        .mount(server)
+        .await;
+}
+
+async fn mock_users_info(server: &MockServer) {
+    Mock::given(method("GET"))
+        .and(path("/users.info"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "ok": true, "user": {"name": "u", "profile": {"display_name": "U"}}
+        })))
+        .mount(server)
+        .await;
+}
+
+async fn mock_revoke(server: &MockServer, token: &str, times: u64) {
+    Mock::given(method("POST"))
+        .and(path("/auth.revoke"))
+        .and(header_is("authorization", format!("Bearer {token}")))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"ok": true})))
+        .expect(times)
+        .mount(server)
+        .await;
+}
+
+async fn revokes(server: &MockServer) -> usize {
+    server
+        .received_requests()
+        .await
+        .unwrap_or_default()
+        .iter()
+        .filter(|r| r.url.path() == "/auth.revoke")
+        .count()
+}
+
+async fn oauth_state(app: &Router, user: &str) -> anyhow::Result<String> {
+    let (status, started, _) =
+        request(app, "POST", "/api/slack/oauth/start", Some(user), None).await?;
+    assert_eq!(status, StatusCode::OK, "{started}");
+    Ok(query_param(
+        started["authorize_url"].as_str().unwrap(),
+        "state",
+    ))
+}
+
+async fn complete(
+    app: &Router,
+    user: &str,
+    code: &str,
+) -> anyhow::Result<(StatusCode, Value, Option<String>)> {
+    let state = oauth_state(app, user).await?;
+    request(
+        app,
+        "POST",
+        "/api/slack/oauth/complete",
+        Some(user),
+        Some(json!({"code": code, "state": state})),
+    )
+    .await
+}
+
+/// テストの側で、同じ Slack アカウントの連携・解除が取るロックを持つ
+async fn hold_account_lock<'a>(
+    db: &'a mut toasty::Db,
+    team: &str,
+    slack_user: &str,
+) -> anyhow::Result<toasty::Transaction<'a>> {
+    let mut tx = db.transaction().await?;
+    query(
+        &mut tx,
+        "SELECT json_build_object('locked',pg_advisory_xact_lock(hashtextextended($1,0)) IS NULL)::text",
+        &[&format!("slack-account:{team}:{slack_user}")],
+    )
+    .await?;
+    Ok(tx)
+}
+
+/// 別のワークスペースのアカウントを拒否するときも、そのアカウントに連携済みなら同じトークンを失効させない
+#[tokio::test]
+async fn test_slack_link_keeps_token_of_existing_link_on_other_team() -> anyhow::Result<()> {
+    let team = format!("T{}", uuid::Uuid::new_v4().simple());
+    let other = format!("TO{}", uuid::Uuid::new_v4().simple());
+    let token = format!("xoxp-shared-{}", uuid::Uuid::new_v4().simple());
+    let slack = MockServer::start().await;
+    mock_access(&slack, "code-x", &other, "U2", &token).await;
+    mock_users_info(&slack).await;
+    mock_revoke(&slack, &token, 0).await;
+    let (state, app) = linking_state(&team, &slack).await?;
+    let carol = create_user(&app, "link_team_carol").await?;
+    let dave = create_user(&app, "link_team_dave").await?;
+    // dave は SLACK_TEAM_ID を設定する前に、別のワークスペースの U2 と連携していた
+    exec(
+        &state,
+        "INSERT INTO slack_user_links(user_id,team_id,slack_user_id,access_token_enc) VALUES($1,$2,'U2','x')",
+        &[&dave, &other],
+    )
+    .await?;
+    let (status, body, _) = complete(&app, &carol, "code-x").await?;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
+    assert_eq!(body["error"], "team_mismatch");
+    Ok(())
+}
+
+/// 交換から保存までの間に失効したトークンは保存しない
+#[tokio::test]
+async fn test_slack_link_rejects_revoked_token() -> anyhow::Result<()> {
+    let team = format!("T{}", uuid::Uuid::new_v4().simple());
+    let token = format!("xoxp-revoked-{}", uuid::Uuid::new_v4().simple());
+    let slack = MockServer::start().await;
+    mock_access(&slack, "code-r", &team, "U1", &token).await;
+    Mock::given(method("GET"))
+        .and(path("/users.info"))
+        .and(header_is("authorization", format!("Bearer {token}")))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(json!({"ok": false, "error": "token_revoked"})),
+        )
+        .mount(&slack)
+        .await;
+    let (state, app) = linking_state(&team, &slack).await?;
+    let alice = create_user(&app, "link_revoked").await?;
+    let (status, body, _) = complete(&app, &alice, "code-r").await?;
+    assert_eq!(status, StatusCode::BAD_GATEWAY, "{body}");
+    let links = sql(
+        &state,
+        "SELECT json_build_object('u',user_id)::text FROM slack_user_links WHERE user_id=$1",
+        &[&alice],
+    )
+    .await?;
+    assert!(links.is_empty());
+    let mapping = sql(
+        &state,
+        "SELECT json_build_object('u',user_id)::text FROM slack_users WHERE team_id=$1 AND linked",
+        &[&team],
+    )
+    .await?;
+    assert!(mapping.is_empty());
+    Ok(())
+}
+
+/// トークンが有効かは、同じアカウントのロックを取ってから確かめる (ロック待ちの間の失効を見逃さない)
+#[tokio::test]
+async fn test_slack_link_checks_token_after_account_lock() -> anyhow::Result<()> {
+    let team = format!("T{}", uuid::Uuid::new_v4().simple());
+    let token = format!("xoxp-late-{}", uuid::Uuid::new_v4().simple());
+    let slack = MockServer::start().await;
+    mock_access(&slack, "code-l", &team, "U1", &token).await;
+    mock_users_info(&slack).await;
+    let (state, app) = linking_state(&team, &slack).await?;
+    let alice = create_user(&app, "link_late").await?;
+    let oauth = oauth_state(&app, &alice).await?;
+
+    let mut db = state.db.clone();
+    let held = hold_account_lock(&mut db, &team, "U1").await?;
+    let task = tokio::spawn({
+        let (app, alice) = (app.clone(), alice.clone());
+        async move {
+            request(
+                &app,
+                "POST",
+                "/api/slack/oauth/complete",
+                Some(&alice),
+                Some(json!({"code": "code-l", "state": oauth})),
+            )
+            .await
+        }
+    });
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    // ロックを持っている間に、同じトークンが失効した
+    Mock::given(method("GET"))
+        .and(path("/users.info"))
+        .and(header_is("authorization", format!("Bearer {token}")))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(json!({"ok": false, "error": "token_revoked"})),
+        )
+        .with_priority(1)
+        .mount(&slack)
+        .await;
+    held.commit().await?;
+    let (status, body, _) = task.await??;
+    assert_eq!(status, StatusCode::BAD_GATEWAY, "{body}");
+    let links = sql(
+        &state,
+        "SELECT json_build_object('u',user_id)::text FROM slack_user_links WHERE user_id=$1",
+        &[&alice],
+    )
+    .await?;
+    assert!(links.is_empty());
+    Ok(())
+}
+
+/// 同じ Slack アカウントを同時に連携したとき、後の連携は先の連携を待ち、先の連携のトークンを失効させない
+#[tokio::test]
+async fn test_slack_link_waits_for_inflight_link_of_same_account() -> anyhow::Result<()> {
+    let team = format!("T{}", uuid::Uuid::new_v4().simple());
+    let token = format!("xoxp-race-{}", uuid::Uuid::new_v4().simple());
+    let slack = MockServer::start().await;
+    mock_access(&slack, "code-y", &team, "U1", &token).await;
+    mock_users_info(&slack).await;
+    mock_revoke(&slack, &token, 0).await;
+    let (state, app) = linking_state(&team, &slack).await?;
+    let alice = create_user(&app, "link_race_alice").await?;
+    let bob = create_user(&app, "link_race_bob").await?;
+    // bob は同じワークスペースの別のアカウント (U9) と連携済み
+    exec(
+        &state,
+        "INSERT INTO slack_user_links(user_id,team_id,slack_user_id,access_token_enc) VALUES($1,$2,'U9','x')",
+        &[&bob, &team],
+    )
+    .await?;
+    let oauth = oauth_state(&app, &bob).await?;
+
+    // alice の連携が U1 のロックを持ったまま、まだコミットしていない
+    let mut db = state.db.clone();
+    let mut held = hold_account_lock(&mut db, &team, "U1").await?;
+    let mut insert = toasty::sql::statement(
+        "INSERT INTO slack_user_links(user_id,team_id,slack_user_id,access_token_enc) VALUES($1,$2,'U1','x')",
+    );
+    insert = insert.bind(alice.as_str()).bind(team.as_str());
+    insert.exec(&mut held).await?;
+    let task = tokio::spawn({
+        let (app, bob) = (app.clone(), bob.clone());
+        async move {
+            request(
+                &app,
+                "POST",
+                "/api/slack/oauth/complete",
+                Some(&bob),
+                Some(json!({"code": "code-y", "state": oauth})),
+            )
+            .await
+        }
+    });
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    held.commit().await?;
+    let (status, body, _) = task.await??;
+    assert_eq!(status, StatusCode::CONFLICT, "{body}");
+    assert_eq!(body["error"], "already_linked");
+    assert_eq!(revokes(&slack).await, 0);
+    Ok(())
+}
+
+/// 解除の失効も、同じアカウントのロックを取ってから行う
+#[tokio::test]
+async fn test_slack_unlink_takes_account_lock_before_revoking() -> anyhow::Result<()> {
+    let team = format!("T{}", uuid::Uuid::new_v4().simple());
+    let token = format!("xoxp-unlink-{}", uuid::Uuid::new_v4().simple());
+    let slack = MockServer::start().await;
+    mock_access(&slack, "code-u", &team, "U1", &token).await;
+    mock_users_info(&slack).await;
+    mock_revoke(&slack, &token, 1).await;
+    let (state, app) = linking_state(&team, &slack).await?;
+    let alice = create_user(&app, "link_unlink").await?;
+    let (status, body, _) = complete(&app, &alice, "code-u").await?;
+    assert_eq!(status, StatusCode::OK, "{body}");
+
+    let mut db = state.db.clone();
+    let held = hold_account_lock(&mut db, &team, "U1").await?;
+    let task = tokio::spawn({
+        let (app, alice) = (app.clone(), alice.clone());
+        async move { request(&app, "DELETE", "/api/slack/link", Some(&alice), None).await }
+    });
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    assert_eq!(
+        revokes(&slack).await,
+        0,
+        "unlink must wait for the account lock"
+    );
+    held.commit().await?;
+    let (status, body, _) = task.await??;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["link"], Value::Null);
+    assert_eq!(revokes(&slack).await, 1);
+    Ok(())
+}
+
+/// 別々のワークスペースが同じ Zoo チャンネルに取り込んでいても、付け替えは 1 つずつ行う
+#[tokio::test]
+async fn test_slack_link_serializes_across_workspaces_sharing_a_channel() -> anyhow::Result<()> {
+    dotenvy::dotenv().ok();
+    dotenvy::from_filename("../.env").ok();
+    let mut config = Config::from_env();
+    config.dev_auth_enabled = true;
+    let db = init_db(&config.database_url).await?;
+    let state = AppState::new(db.clone(), config.clone());
+    let app = create_router(state.clone());
+    let alice = create_user(&app, "link_shared_alice").await?;
+    let bob = create_user(&app, "link_shared_bob").await?;
+    let channel = uuid::Uuid::new_v4().to_string();
+    let (status, _, _) = request(
+        &app,
+        "POST",
+        "/api/channels",
+        Some(&alice),
+        Some(json!({"id": channel, "channel_name": format!("shared_{}", uuid::Uuid::new_v4().simple()), "is_private": false})),
+    )
+    .await?;
+    assert_eq!(status, StatusCode::OK);
+    let mut messages = Vec::new();
+    for label in ["a", "b"] {
+        let team = format!("T{}", uuid::Uuid::new_v4().simple());
+        let placeholder = backend::slack::user_id(&team, "U1");
+        exec(
+            &state,
+            "INSERT INTO slack_channels(team_id,slack_channel_id,channel_id) VALUES($1,'C1',$2)",
+            &[&team, &channel],
+        )
+        .await?;
+        exec(
+            &state,
+            "INSERT INTO users(id,user_name,display_name,guest_kind) VALUES($1,$2,'x (Slack)','deactivated')",
+            &[&placeholder, &format!("slack-{label}.{}", &uuid::Uuid::new_v4().simple().to_string()[..8])],
+        )
+        .await?;
+        exec(
+            &state,
+            "INSERT INTO slack_users(team_id,slack_user_id,user_id,name) VALUES($1,'U1',$2,'x')",
+            &[&team, &placeholder],
+        )
+        .await?;
+        let message = uuid::Uuid::new_v4().to_string();
+        exec(
+            &state,
+            "INSERT INTO messages(id,user_id,channel_id,content) VALUES($1,$2,$3,$4)",
+            &[&message, &placeholder, &channel, &format!("from {label}")],
+        )
+        .await?;
+        messages.push((team, message));
+    }
+
+    let mut db1 = state.db.clone();
+    let mut tx1 = db1.transaction().await?;
+    backend::slack::link::reassign(&mut tx1, &messages[0].0, "U1", "a", &alice).await?;
+    let mut handle = tokio::spawn({
+        let (mut db, team, bob) = (state.db.clone(), messages[1].0.clone(), bob.clone());
+        async move {
+            let mut tx = db.transaction().await?;
+            backend::slack::link::reassign(&mut tx, &team, "U1", "b", &bob).await?;
+            tx.commit().await?;
+            anyhow::Ok(())
+        }
+    });
+    assert!(
+        tokio::time::timeout(Duration::from_secs(2), &mut handle)
+            .await
+            .is_err(),
+        "workspace B must wait for workspace A's reassignment"
+    );
+    tx1.commit().await?;
+    handle.await??;
+    for ((_, message), owner) in messages.iter().zip([&alice, &bob]) {
+        let rows = sql(
+            &state,
+            "SELECT json_build_object('user_id',user_id)::text FROM messages WHERE id=$1",
+            &[message],
+        )
+        .await?;
+        assert_eq!(rows[0]["user_id"], owner.as_str());
+    }
+    Ok(())
+}
+
+/// 鍵を変えて復号できないトークンは失効できないので、解除は進めて Slack 側で失効させてもらう。
+/// 連携の設定を外している間は失効できないので、解除せずに連携を残す。
+#[tokio::test]
+async fn test_slack_unlink_undecryptable_or_unconfigured() -> anyhow::Result<()> {
+    let team = format!("T{}", uuid::Uuid::new_v4().simple());
+    let slack = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/auth.revoke"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"ok": true})))
+        .expect(0)
+        .mount(&slack)
+        .await;
+    let (state, app) = linking_state(&team, &slack).await?;
+    let alice = create_user(&app, "link_old_key").await?;
+    let old = backend::slack::crypto::encrypt(&[4u8; 32], "xoxp-old-key")?;
+    exec(
+        &state,
+        "INSERT INTO slack_user_links(user_id,team_id,slack_user_id,access_token_enc) VALUES($1,$2,'U9',$3)",
+        &[&alice, &team, &old],
+    )
+    .await?;
+    let (status, body, _) = request(&app, "DELETE", "/api/slack/link", Some(&alice), None).await?;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["link"], Value::Null);
+
+    let mut off = state.clone();
+    off.config.slack.client_id = None;
+    off.config.slack.client_secret = None;
+    off.config.slack.oauth_redirect_url = None;
+    off.config.slack.token_encryption_key = None;
+    let off = create_router(off);
+    let bob = create_user(&app, "link_unconfigured").await?;
+    let token = backend::slack::crypto::encrypt(&[3u8; 32], "xoxp-unconfigured")?;
+    exec(
+        &state,
+        "INSERT INTO slack_user_links(user_id,team_id,slack_user_id,access_token_enc) VALUES($1,$2,'U8',$3)",
+        &[&bob, &team, &token],
+    )
+    .await?;
+    let (status, _, _) = request(&off, "DELETE", "/api/slack/link", Some(&bob), None).await?;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    let kept = sql(
+        &state,
+        "SELECT json_build_object('u',user_id)::text FROM slack_user_links WHERE user_id=$1",
+        &[&bob],
+    )
+    .await?;
+    assert_eq!(kept.len(), 1, "the token stays until it can be revoked");
+    // 連携していない人の解除は、設定がなくてもそのまま終わる
+    let carol = create_user(&app, "link_none").await?;
+    let (status, body, _) = request(&off, "DELETE", "/api/slack/link", Some(&carol), None).await?;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body, json!({"configured": false, "link": null}));
+    Ok(())
+}
+
+/// 別のワークスペースのトークンを片付けるときも、同じアカウントの連携が保存中なら、それを待ってから確かめる
+#[tokio::test]
+async fn test_slack_link_discard_waits_for_inflight_link() -> anyhow::Result<()> {
+    let team = format!("T{}", uuid::Uuid::new_v4().simple());
+    let other = format!("TO{}", uuid::Uuid::new_v4().simple());
+    let token = format!("xoxp-discard-{}", uuid::Uuid::new_v4().simple());
+    let slack = MockServer::start().await;
+    mock_access(&slack, "code-d", &other, "U2", &token).await;
+    mock_users_info(&slack).await;
+    mock_revoke(&slack, &token, 0).await;
+    let (state, app) = linking_state(&team, &slack).await?;
+    let carol = create_user(&app, "link_discard_carol").await?;
+    let dave = create_user(&app, "link_discard_dave").await?;
+    let oauth = oauth_state(&app, &carol).await?;
+
+    // dave の連携 (別のワークスペースの U2) を保存している途中
+    let mut db = state.db.clone();
+    let mut held = hold_account_lock(&mut db, &other, "U2").await?;
+    toasty::sql::statement(
+        "INSERT INTO slack_user_links(user_id,team_id,slack_user_id,access_token_enc) VALUES($1,$2,'U2','x')",
+    )
+    .bind(dave.as_str())
+    .bind(other.as_str())
+    .exec(&mut held)
+    .await?;
+    let task = tokio::spawn({
+        let (app, carol) = (app.clone(), carol.clone());
+        async move {
+            request(
+                &app,
+                "POST",
+                "/api/slack/oauth/complete",
+                Some(&carol),
+                Some(json!({"code": "code-d", "state": oauth})),
+            )
+            .await
+        }
+    });
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    assert_eq!(
+        revokes(&slack).await,
+        0,
+        "discard must wait for the account lock"
+    );
+    held.commit().await?;
+    let (status, body, _) = task.await??;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
+    assert_eq!(body["error"], "team_mismatch");
+    assert_eq!(revokes(&slack).await, 0);
+    Ok(())
+}
+
+/// 同じ Zoo ユーザーが別々の Slack アカウントで同時に連携しても、先に保存した連携を上書きしない
+#[tokio::test]
+async fn test_slack_link_refuses_concurrent_switch_to_another_account() -> anyhow::Result<()> {
+    let team = format!("T{}", uuid::Uuid::new_v4().simple());
+    let token = format!("xoxp-switch-{}", uuid::Uuid::new_v4().simple());
+    let slack = MockServer::start().await;
+    mock_access(&slack, "code-s", &team, "U2", &token).await;
+    mock_users_info(&slack).await;
+    // 保存しなかった U2 のトークンは失効させる
+    mock_revoke(&slack, &token, 1).await;
+    let (state, app) = linking_state(&team, &slack).await?;
+    let alice = create_user(&app, "link_switch").await?;
+    let oauth = oauth_state(&app, &alice).await?;
+
+    // alice の U1 との連携を保存している途中 (まだ行は見えない)
+    let mut db = state.db.clone();
+    let mut held = db.transaction().await?;
+    toasty::sql::statement(
+        "INSERT INTO slack_user_links(user_id,team_id,slack_user_id,access_token_enc) VALUES($1,$2,'U1','x')",
+    )
+    .bind(alice.as_str())
+    .bind(team.as_str())
+    .exec(&mut held)
+    .await?;
+    let task = tokio::spawn({
+        let (app, alice) = (app.clone(), alice.clone());
+        async move {
+            request(
+                &app,
+                "POST",
+                "/api/slack/oauth/complete",
+                Some(&alice),
+                Some(json!({"code": "code-s", "state": oauth})),
+            )
+            .await
+        }
+    });
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    held.commit().await?;
+    let (status, body, _) = task.await??;
+    assert_eq!(status, StatusCode::CONFLICT, "{body}");
+    assert_eq!(body["error"], "linked_other_account");
+    let link = sql(
+        &state,
+        "SELECT json_build_object('slack_user_id',slack_user_id,'token',access_token_enc)::text \
+         FROM slack_user_links WHERE user_id=$1",
+        &[&alice],
+    )
+    .await?;
+    assert_eq!(link[0], json!({"slack_user_id": "U1", "token": "x"}));
     Ok(())
 }

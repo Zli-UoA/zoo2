@@ -803,6 +803,7 @@
     "loadError": "Couldn't load the link status.",
     "notConfigured": "Slack linking isn't set up for this workspace. Ask an admin.",
     "linkedAs": "Linked to {{team}} as {{name}}.",
+    "teamNotAllowed": "The current settings no longer allow linking to this Slack workspace. Unlink it, then link again.",
     "link": "Link with Slack",
     "unlink": "Unlink",
     "unlinkTitle": "Unlink your Slack account?",

@@ -26,7 +26,8 @@ pub fn router() -> Router<AppState> {
         .layer(axum::middleware::map_response(crate::apps::no_store))
 }
 
-/// 連携している Slack アカウントの (ワークスペース, Slack ユーザー)
+/// 連携している Slack アカウントの (ワークスペース, Slack ユーザー)。
+/// `SLACK_TEAM_ID` で許可しているかは、呼び出し側で `SlackConfig::team_allowed` を確かめる
 async fn linked(
     tx: &mut toasty::Transaction<'_>,
     user_id: &str,
@@ -156,6 +157,7 @@ async fn list(State(s): State<AppState>, user: AuthUser) -> Result<Json<Value>, 
     let mut export = Value::Null;
     let mut channels = Vec::new();
     if let Some((team, slack_user)) = linked(&mut tx, &user.id).await?
+        && s.config.slack.team_allowed(&team)
         && let Some(id) = latest_export(&mut tx, &team).await?
     {
         let job = load_job(&mut tx, &id).await?;
@@ -197,6 +199,10 @@ async fn start(
             "Link your Slack account before importing".into(),
         ));
     };
+    // SLACK_TEAM_ID を変えたあとに残っている、許可していないワークスペースの連携では取り込まない
+    if !s.config.slack.team_allowed(&team) {
+        return Err(AppError::Forbidden("team_mismatch".into()));
+    }
     let Some(id) = latest_export(&mut tx, &team).await? else {
         return Err(AppError::Conflict(
             "No Slack export is available to import".into(),

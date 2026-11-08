@@ -803,6 +803,7 @@
     "loadError": "無法載入連結狀態。",
     "notConfigured": "這個工作區尚未設定 Slack 連結。請聯絡管理員。",
     "linkedAs": "已以 {{team}} 的 {{name}} 連結。",
+    "teamNotAllowed": "目前的設定已不允許與這個 Slack 工作區連結。請先解除連結，然後重新連結。",
     "link": "與 Slack 連結",
     "unlink": "解除連結",
     "unlinkTitle": "要解除與 Slack 的連結嗎？",

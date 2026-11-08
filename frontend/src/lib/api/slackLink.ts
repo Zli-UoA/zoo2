@@ -6,6 +6,8 @@ export interface SlackLink {
   slack_user_id: string;
   slack_user_name: string;
   linked_at: string;
+  /** サーバーの SLACK_TEAM_ID で許可しているワークスペースか (false なら解除してから連携し直す) */
+  team_allowed?: boolean;
 }
 
 export interface SlackLinkState {

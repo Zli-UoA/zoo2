@@ -37,28 +37,13 @@ const QUERY_VALUE: &AsciiSet = &NON_ALPHANUMERIC
 const AUTHORIZE_URL: &str = "https://slack.com/oauth/v2/authorize";
 const STATE_TTL_SECS: i64 = 600;
 
-/// 差分同期 (#292) とブリッジ (#293) で使うユーザースコープ
-pub const USER_SCOPES: &[&str] = &[
-    "channels:history",
-    "groups:history",
-    "im:history",
-    "mpim:history",
-    "channels:read",
-    "groups:read",
-    "im:read",
-    "mpim:read",
-    "users:read",
-    "reactions:read",
-    "files:read",
-    "chat:write",
-];
-pub const BOT_SCOPES: &[&str] = &[
-    "channels:read",
-    "users:read",
-    "files:read",
-    "chat:write",
-    "chat:write.customize",
-];
+/// アカウント連携で求めるユーザースコープ。いまは連携時の表示名の取得 (`users.info`) にだけ使う。
+/// 差分同期 (#292) とブリッジ (#293) で必要なスコープは、その機能を入れるときに足し、
+/// 各ユーザーに連携し直してもらう (`slack_user_links.scopes` で、まだの人を判別できる)。
+pub const USER_SCOPES: &[&str] = &["users:read"];
+/// manifest の bot_user に付けるスコープ。このアプリの Bot Token を `SLACK_IMPORT_BOT_TOKEN` に
+/// 使う場合のために `files:read` だけ求める (bot_user を宣言するので空にはしない)。
+pub const BOT_SCOPES: &[&str] = &["files:read"];
 
 pub fn router() -> Router<AppState> {
     Router::new()
@@ -97,7 +82,16 @@ async fn link_state(
     )
     .await?
     .into_iter()
-    .next();
+    .next()
+    // SLACK_TEAM_ID を後から変えた場合も、解除できるよう連携は返し、使えないことだけを示す
+    .map(|mut link| {
+        let allowed = s
+            .config
+            .slack
+            .team_allowed(link["team_id"].as_str().unwrap_or_default());
+        link["team_allowed"] = allowed.into();
+        link
+    });
     Ok(json!({
         "configured": s.config.slack.oauth_enabled(),
         "link": link.unwrap_or(Value::Null),
@@ -255,15 +249,22 @@ async fn complete(
             "Slack did not return a user token".into(),
         ));
     };
-    if slack.team_id.as_deref().is_some_and(|t| t != team.id) {
-        discard(&s, &token).await;
+    if !slack.team_allowed(&team.id) {
+        discard(&s, &team.id, &authed.id, &token).await;
         return Err(AppError::Forbidden("team_mismatch".into()));
     }
-    let slack_user_name = user_name(&s, &token, &authed.id).await;
 
     let mut db = s.db.clone();
     let mut tx = db.transaction().await?;
     human(&mut tx, &user).await?;
+    // 同じ Slack アカウントの解除や、ほかの連携の失敗による失効と直列にする。ロックを取ってから
+    // トークンが有効か確かめ、交換から保存までの間に失効した同じトークンを保存しない
+    lock_account(&mut tx, &team.id, &authed.id).await?;
+    let Some(slack_user_name) = user_name(&s, &token, &authed.id).await else {
+        return Err(AppError::BadGateway(
+            "The Slack token was revoked while linking; try again".into(),
+        ));
+    };
     let result = link_account(
         &mut tx,
         &user.id,
@@ -275,12 +276,9 @@ async fn complete(
     )
     .await;
     if let Err(e) = result {
-        drop(tx);
-        // 同じ Slack ユーザーがすでに連携済みなら、受け取ったトークンは既存の連携と同じ認可に属する。
-        // トークンのローテーションを使っていないので、失効させると既存の連携まで使えなくなる。
-        if !linked_elsewhere(&s, &team.id, &authed.id).await {
-            discard(&s, &token).await;
-        }
+        // アカウントのロックを放してから片付ける (discard が同じロックを取り直す)
+        let _ = tx.rollback().await;
+        discard(&s, &team.id, &authed.id, &token).await;
         return Err(e);
     }
     let state = link_state(&mut tx, &s, &user.id).await?;
@@ -288,10 +286,18 @@ async fn complete(
     Ok(Json(state))
 }
 
-/// Slack の表示名 (取れなければ空)
-async fn user_name(s: &AppState, token: &str, slack_user: &str) -> String {
+/// Slack が「トークンが無効」と答えたときのエラー
+const INVALID_TOKEN_ERRORS: &[&str] = &[
+    "invalid_auth",
+    "token_revoked",
+    "account_inactive",
+    "not_authed",
+];
+
+/// Slack の表示名 (取れなければ空)。トークンが無効 (失効済みなど) なら None
+async fn user_name(s: &AppState, token: &str, slack_user: &str) -> Option<String> {
     let Ok(client) = http() else {
-        return String::new();
+        return Some(String::new());
     };
     let Ok(response) = client
         .get(format!("{}/users.info", s.config.slack.api_base_url))
@@ -300,20 +306,29 @@ async fn user_name(s: &AppState, token: &str, slack_user: &str) -> String {
         .send()
         .await
     else {
-        return String::new();
+        return Some(String::new());
     };
     let value: Value = response.json().await.unwrap_or(Value::Null);
+    if value["ok"] == false
+        && value["error"]
+            .as_str()
+            .is_some_and(|e| INVALID_TOKEN_ERRORS.contains(&e))
+    {
+        return None;
+    }
     let profile = &value["user"]["profile"];
-    [
-        profile["display_name"].as_str(),
-        profile["real_name"].as_str(),
-        value["user"]["name"].as_str(),
-    ]
-    .into_iter()
-    .flatten()
-    .find(|n| !n.trim().is_empty())
-    .unwrap_or_default()
-    .to_string()
+    Some(
+        [
+            profile["display_name"].as_str(),
+            profile["real_name"].as_str(),
+            value["user"]["name"].as_str(),
+        ]
+        .into_iter()
+        .flatten()
+        .find(|n| !n.trim().is_empty())
+        .unwrap_or_default()
+        .to_string(),
+    )
 }
 
 /// トークンを失効させる。すでに無効なトークンも失効済みとして扱う。
@@ -330,10 +345,9 @@ async fn revoke(s: &AppState, token: &str) -> Result<(), AppError> {
         return Err(failed(response.status().to_string()));
     }
     let body: Value = response.json().await.map_err(|e| failed(e.to_string()))?;
-    let already_invalid = matches!(
-        body["error"].as_str(),
-        Some("invalid_auth" | "token_revoked" | "account_inactive" | "not_authed")
-    );
+    let already_invalid = body["error"]
+        .as_str()
+        .is_some_and(|e| INVALID_TOKEN_ERRORS.contains(&e));
     if body["ok"] == true || already_invalid {
         return Ok(());
     }
@@ -342,27 +356,49 @@ async fn revoke(s: &AppState, token: &str) -> Result<(), AppError> {
     ))
 }
 
-/// この Slack ユーザーに有効な連携がすでにあるか (判定できなければ、失効させないよう true)
-async fn linked_elsewhere(s: &AppState, team: &str, slack_user: &str) -> bool {
+/// 同じ Slack アカウントの連携の保存・解除と、使わないトークンの失効を直列にする。
+/// 認可し直しても同じトークンが返るので、ある処理の失効が、並行して保存しようとしている別の処理の
+/// トークンまで無効にしうる。行ロックや [`lock_links`] より先に取る
+/// (順序: アカウント → 自分の連携の行 → 付け替え → slack_users・投稿)。
+async fn lock_account(
+    tx: &mut toasty::Transaction<'_>,
+    team: &str,
+    slack_user: &str,
+) -> Result<(), AppError> {
+    one(
+        tx,
+        "SELECT json_build_object('locked',pg_advisory_xact_lock(hashtextextended($1,0)) IS NULL)::text",
+        &[&format!("slack-account:{team}:{slack_user}")],
+    )
+    .await?;
+    Ok(())
+}
+
+/// 連携できなかったときに受け取ったトークンを片付ける (失敗しても連携の失敗理由を優先する)。
+/// 認可し直すと同じトークンが返るので、この Slack アカウントの連携に保存済みなら失効させない
+/// (別のワークスペースのアカウントでも同じ)。確かめてから失効させるまでに別の連携が同じトークンを
+/// 保存しないよう、アカウントのロックを持ったまま失効させる。判定できなければ失効させない。
+async fn discard(s: &AppState, team: &str, slack_user: &str, token: &str) {
     let mut db = s.db.clone();
     let Ok(mut tx) = db.transaction().await else {
-        return true;
+        return;
     };
-    query(
+    if lock_account(&mut tx, team, slack_user).await.is_err() {
+        return;
+    }
+    let linked = query(
         &mut tx,
         "SELECT json_build_object('user_id',user_id)::text FROM slack_user_links WHERE team_id=$1 AND slack_user_id=$2",
         &[team, slack_user],
     )
     .await
     .map(|rows| !rows.is_empty())
-    .unwrap_or(true)
-}
-
-/// 連携できなかったときに受け取ったトークンを片付ける (失敗しても連携の失敗理由を優先する)
-async fn discard(s: &AppState, token: &str) {
-    if let Err(e) = revoke(s, token).await {
+    .unwrap_or(true);
+    if !linked && let Err(e) = revoke(s, token).await {
         tracing::warn!(error = %e, "Failed to revoke an unused Slack token");
     }
+    // ロックを確実に放す
+    let _ = tx.rollback().await;
 }
 
 async fn exec(
@@ -418,12 +454,16 @@ async fn link_account(
         return Err(AppError::Conflict(LINKED_OTHER_ACCOUNT.into()));
     }
 
-    exec(
+    // 上の確認は、まだ行がないと何もロックしない。同じ Zoo ユーザーが別の Slack アカウントで
+    // 同時に連携すると、後の INSERT が先の行を上書きしうるので、同じアカウントのときだけ更新する
+    let saved = query(
         tx,
         "INSERT INTO slack_user_links(user_id,team_id,team_name,slack_user_id,slack_user_name,access_token_enc,scopes) \
-         VALUES($1,$2,$3,$4,$5,$6,$7) ON CONFLICT (user_id) DO UPDATE SET team_id=EXCLUDED.team_id,\
-         team_name=EXCLUDED.team_name,slack_user_id=EXCLUDED.slack_user_id,slack_user_name=EXCLUDED.slack_user_name,\
-         access_token_enc=EXCLUDED.access_token_enc,scopes=EXCLUDED.scopes,updated_at=now()",
+         VALUES($1,$2,$3,$4,$5,$6,$7) ON CONFLICT (user_id) DO UPDATE SET \
+         team_name=EXCLUDED.team_name,slack_user_name=EXCLUDED.slack_user_name,\
+         access_token_enc=EXCLUDED.access_token_enc,scopes=EXCLUDED.scopes,updated_at=now() \
+         WHERE slack_user_links.team_id=EXCLUDED.team_id AND slack_user_links.slack_user_id=EXCLUDED.slack_user_id \
+         RETURNING json_build_object('user_id',user_id)::text",
         &[user, &team.id, &team.name, slack_user, slack_user_name, token_enc, scopes],
     )
     .await
@@ -431,6 +471,9 @@ async fn link_account(
         AppError::Conflict(_) => conflict(),
         other => other,
     })?;
+    if saved.is_empty() {
+        return Err(AppError::Conflict(LINKED_OTHER_ACCOUNT.into()));
+    }
     reassign(tx, &team.id, slack_user, slack_user_name, user).await
 }
 
@@ -501,8 +544,9 @@ pub async fn move_content(
 
 /// 取り込んだ本文の `@プレースホルダ` を、本人のユーザー名に書き換える。
 /// 取り込みでは `<@U…>` をその時点のユーザー名で本文に保存するため、連携前に取り込んだ過去ログは
-/// プレースホルダを指したままになる。`pairs` は (プレースホルダ, 本人) の組で、チームの取り込み先の
-/// 投稿をまとめて 1 回だけ読み、対応表で置き換える (連携した人ごとに履歴を走査しない)。
+/// プレースホルダを指したままになる。`pairs` は (プレースホルダ, 本人) の組で、チームの取り込み先で
+/// 書き換えるプレースホルダへのメンションを含む投稿だけをまとめて 1 回でロックして読み、対応表で
+/// 置き換える (連携した人ごとに履歴を走査しない)。
 async fn rewrite_mentions(
     tx: &mut toasty::Transaction<'_>,
     team: &str,
@@ -537,19 +581,26 @@ async fn rewrite_mentions(
     if names.is_empty() {
         return Ok(());
     }
-    // プレースホルダの名前は slack- で始まるので、それを含む投稿だけを読む
+    // プレースホルダの名前は slack- で始まるので、まずそれで絞る (安い前段の判定)
     let needle = if names.keys().all(|name| name.starts_with("slack-")) {
         "@slack-"
     } else {
         "@"
     };
+    // 書き換える名前へのメンションを含む投稿だけをロックして読む。`@slack-` だけで絞ると、
+    // 未連携の人へのメンションを含む投稿までチーム全体でロックし、長いトランザクションになる
+    let targets = serde_json::to_string(&names.keys().collect::<Vec<_>>())
+        .map_err(|e| AppError::Internal(e.into()))?;
     // 並行して本文を編集した人の変更を上書きしないよう、読む行をロックしてから書き換える
     let rows = query(
         tx,
-        "SELECT json_build_object('id',id,'content',content,'card',card)::text FROM messages \
-         WHERE channel_id IN (SELECT channel_id FROM slack_channels WHERE team_id=$1) AND strpos(content,$2)>0 \
-         FOR UPDATE",
-        &[team, needle],
+        "SELECT json_build_object('id',m.id,'content',m.content,'card',m.card)::text FROM messages m \
+         WHERE m.channel_id IN (SELECT channel_id FROM slack_channels WHERE team_id=$1) \
+         AND strpos(m.content,$2)>0 \
+         AND EXISTS(SELECT 1 FROM json_array_elements_text($3::json) AS n(name) \
+         WHERE strpos(m.content,'@'||n.name)>0) \
+         FOR UPDATE OF m",
+        &[team, needle, &targets],
     )
     .await?;
     for row in rows {
@@ -635,14 +686,17 @@ fn replace_mentions(content: &str, names: &HashMap<String, String>) -> Option<St
     changed.then_some(out)
 }
 
-/// 同じチームの付け替えを直列にする。付け替えは自分のプレースホルダの投稿を UPDATE でロックしてから、
-/// チームの取り込み先にある `@slack-` を含む投稿をまとめてロックするため、連携や [`reconcile_team`] が
-/// 重なると互いの投稿を待ってデッドロックする。行ロックを取る前に呼ぶ。
-async fn lock_team(tx: &mut toasty::Transaction<'_>, team: &str) -> Result<(), AppError> {
+/// Slack の付け替え (連携の [`reassign`] と [`reconcile_team`]) を直列にする。付け替えは自分の
+/// プレースホルダの投稿を UPDATE でロックしてから、取り込み先で書き換えるメンションを含む投稿を
+/// まとめてロックするため、重なると互いの投稿を待ってデッドロックする。既存のチャンネルを取り込み先に
+/// 選べば、別のワークスペースも同じ Zoo チャンネルに取り込めるので、ワークスペースごとではなく全体で
+/// 1 つのロックにする (付け替えは連携時と取り込みの最後にしか走らないので、待ちは問題にならない)。
+/// 行ロックを取る前に呼ぶ。
+async fn lock_links(tx: &mut toasty::Transaction<'_>) -> Result<(), AppError> {
     one(
         tx,
-        "SELECT json_build_object('locked',pg_advisory_xact_lock(hashtextextended($1,0)) IS NULL)::text",
-        &[&format!("slack-link:{team}")],
+        "SELECT json_build_object('locked',pg_advisory_xact_lock(hashtextextended('slack-link',0)) IS NULL)::text",
+        &[],
     )
     .await?;
     Ok(())
@@ -661,7 +715,7 @@ pub async fn reassign(
     slack_user_name: &str,
     user: &str,
 ) -> Result<(), AppError> {
-    lock_team(tx, team).await?;
+    lock_links(tx).await?;
     let mapping = query(
         tx,
         "SELECT json_build_object('user_id',user_id,'linked',linked)::text FROM slack_users \
@@ -700,7 +754,7 @@ pub async fn reassign(
 /// 連携済みの Slack ユーザーについて、プレースホルダに残った分を本人へ移す。
 /// 取り込みと添付取得の最後に呼び、取り込み中に連携した人の書き込みも回収する。
 pub async fn reconcile_team(tx: &mut toasty::Transaction<'_>, team: &str) -> Result<(), AppError> {
-    lock_team(tx, team).await?;
+    lock_links(tx).await?;
     let linked = query(
         tx,
         "SELECT json_build_object('slack_user_id',slack_user_id,'user_id',user_id)::text \
@@ -722,27 +776,48 @@ pub async fn reconcile_team(tx: &mut toasty::Transaction<'_>, team: &str) -> Res
 async fn unlink(State(s): State<AppState>, user: AuthUser) -> Result<Json<Value>, AppError> {
     let mut db = s.db.clone();
     let mut tx = db.transaction().await?;
-    let link = query(
+    // complete と同じく、アカウントのロック → 自分の連携の行の順に取る (逆順だとデッドロックする)
+    let account = query(
         &mut tx,
-        "SELECT json_build_object('token',access_token_enc)::text FROM slack_user_links WHERE user_id=$1 FOR UPDATE",
+        "SELECT json_build_object('team',team_id,'slack_user',slack_user_id)::text FROM slack_user_links WHERE user_id=$1",
         &[&user.id],
     )
     .await?
     .into_iter()
     .next();
-    if let Some(link) = link {
+    let mut link = None;
+    if let Some(account) = account {
+        let (team, slack_user) = (
+            account["team"].as_str().unwrap_or_default(),
+            account["slack_user"].as_str().unwrap_or_default(),
+        );
+        // 設定を外している間は失効できないので、設定を戻すまで連携 (トークン) を残す
+        let key = key(&s)?;
+        lock_account(&mut tx, team, slack_user).await?;
+        // 待つ間に解除・連携し直された場合は、いまの状態を返す
+        link = query(
+            &mut tx,
+            "SELECT json_build_object('token',access_token_enc,'team_id',team_id,'slack_user_id',slack_user_id)::text \
+             FROM slack_user_links WHERE user_id=$1 AND team_id=$2 AND slack_user_id=$3 FOR UPDATE",
+            &[&user.id, team, slack_user],
+        )
+        .await?
+        .into_iter()
+        .next()
+        .map(|link| (key, link));
+    }
+    if let Some((key, link)) = link {
         // 失効を確かめてから削除する。失敗したらトークンを残し、もう一度解除して再試行できるようにする。
-        // 鍵を変えて復号できないトークンは失効させようがないので、そのまま削除する。
-        match s
-            .config
-            .slack
-            .encryption_key()
-            .map(|key| decrypt(&key, link["token"].as_str().unwrap_or_default()))
-        {
-            Some(Ok(token)) => revoke(&s, &token).await?,
-            _ => {
-                tracing::warn!(user_id = %user.id, "Deleting a Slack token that cannot be decrypted")
-            }
+        match decrypt(&key, link["token"].as_str().unwrap_or_default()) {
+            Ok(token) => revoke(&s, &token).await?,
+            // 鍵を変えて復号できないトークンは Zoo からは失効できない。解除は進め、
+            // Slack 側で失効させてもらう (docs/slack-import.md「鍵を変えるとき」)
+            Err(_) => tracing::error!(
+                user_id = %user.id,
+                team_id = link["team_id"].as_str().unwrap_or_default(),
+                slack_user_id = link["slack_user_id"].as_str().unwrap_or_default(),
+                "Deleting a Slack token that cannot be decrypted; it stays valid until revoked on Slack"
+            ),
         }
         exec(
             &mut tx,

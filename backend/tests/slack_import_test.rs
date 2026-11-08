@@ -1384,6 +1384,8 @@ async fn test_linked_users_import_their_own_channels() -> anyhow::Result<()> {
     dotenvy::from_filename("../.env").ok();
     let mut config = Config::from_env();
     config.dev_auth_enabled = true;
+    // ワークスペースは毎回作るので、.env の SLACK_TEAM_ID に左右されないようにする
+    config.slack.team_id = None;
     let db = init_db(&config.database_url).await?;
     let state = AppState::new(db.clone(), config.clone());
     ensure_bucket_exists(&state.s3_client, &config.s3.bucket).await;
@@ -1496,6 +1498,37 @@ async fn test_linked_users_import_their_own_channels() -> anyhow::Result<()> {
         json!([]),
         "alice has not joined it"
     );
+
+    // SLACK_TEAM_ID を後から別のワークスペースにすると、残っている連携では取り込めない
+    let mut restricted = state.clone();
+    restricted.config.slack.team_id = Some(format!("T{}", uuid::Uuid::new_v4().simple()));
+    let restricted = create_router(restricted);
+    let (status, hidden) = request(&restricted, "GET", "/api/slack/imports", &alice, None).await?;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(hidden["export"], Value::Null, "{hidden}");
+    assert_eq!(hidden["channels"], json!([]));
+    let (status, _) = request(
+        &restricted,
+        "POST",
+        "/api/slack/imports",
+        &alice,
+        Some(json!({"mappings": [{"slack_channel_id":"C1","action":"create","name":format!("blocked-{suffix}")}]})),
+    )
+    .await?;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    // 同じワークスペースを許可していれば、そのまま取り込める
+    let mut allowed = state.clone();
+    allowed.config.slack.team_id = Some(team.clone());
+    let (status, same_team) = request(
+        &create_router(allowed),
+        "GET",
+        "/api/slack/imports",
+        &alice,
+        None,
+    )
+    .await?;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(same_team["export"]["id"], export["id"]);
 
     let import = |mappings: Value| {
         let app = app.clone();
