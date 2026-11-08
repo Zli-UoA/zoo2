@@ -3168,3 +3168,24 @@ async fn a_pass_started_after_the_stop_signal_takes_no_new_leases() -> anyhow::R
     assert!(message_delivery_attempts(&f).await?.iter().all(|a| *a == 0));
     Ok(())
 }
+
+#[tokio::test]
+async fn a_backlog_is_drained_without_waiting_for_the_next_poll() -> anyhow::Result<()> {
+    let _guard = HTTP_WORKER_TEST_LOCK.lock().await;
+    let f = fixture().await?;
+    reconfigure(&f,json!({"scopes":["messages:read"],"events":["message.created"],"transport":"http","event_url":"https://127.0.0.1:1/events"})).await?;
+    post_messages(&f, 3).await;
+    let (_stop, stopped) = tokio::sync::watch::channel(false);
+    // 取れた分があれば true（続けて pass を回す合図）。取れなければ false。
+    assert!(apps::delivery::http_pass_until(&f.state.db, &stopped).await?);
+    // 取った配信はバックオフ中なので、すぐ次の pass では取るものがない。
+    let mut more = true;
+    for _ in 0..20 {
+        more = apps::delivery::http_pass_until(&f.state.db, &stopped).await?;
+        if !more {
+            break;
+        }
+    }
+    assert!(!more, "a pass with nothing left to claim must report false");
+    Ok(())
+}
