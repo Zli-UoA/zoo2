@@ -51,11 +51,13 @@ repository_dispatch は zoo2 の write 権限者も送信できます。リポ�
 `Progressing` / `ProgressingWithRetry` のイベントは、Check Run だけに記録します。コミットステータス、Deployment、処理済み時刻は変えません。
 
 - 反映1回（`zoo2` / `zoo2-migrate`、リリースタグ、digest の組）につき Check Run を1件作ります。名前は `flux/<name>` で、`external_id` は `<name>:<リリースタグ>:<digest>` です。
-- 進行中は `in_progress`、成功・失敗のイベントで `completed`（`success` / `failure`）にします。本文はコードブロックで、イベントの時刻・reason・メッセージを1行ずつ足します。メッセージは200文字までで、バッククォートは `'` に置き換えます。本文は65535文字を超えると古い行から切り詰め、先頭に `(older events omitted)` を付けます。
+- 進行中は `in_progress`、成功・失敗のイベントで `completed`（`success` / `failure`）にします。本文はコードブロックで、イベントの時刻と reason を1行ずつ足します。reason は100文字までで、制御文字は空白に、バッククォートは `'` に置き換えます。zoo2 は公開リポジトリなので、Flux のメッセージ（クラスタ内のオブジェクト名などを含み得ます）は、Check Run にも workflow のログにも出しません。実際の本番イベントの内容を確認してから `publishMessages` を有効にすれば、メッセージも200文字までで同じ置き換えをして足せます。本文は65535文字を超えると古い行から切り詰め、先頭に `(older events omitted)` を付けます。
 - 完了した Check Run は、遅れて届いた進行中イベントでは開き直しません。定期 reconcile の同じ結果では更新しません。失敗後に成功した場合は、同じ Check Run を成功に更新します。失敗した反映を Flux が再試行したときの進行中イベントは、失敗の Check Run には追記しません（成功すると成功に更新します）。
-- **切り戻し（A→B→A）**: 処理済み時刻とともに、直前のリリースタグと digest を記録します。直前と違うリリースのイベントが届き、同じ `external_id` の Check Run が、直前に記録した完了より前に完了済みなら、`external_id` に `@<開始時刻>` を足した新しい Check Run を作ります。Deployment の作成失敗や artifact の保存失敗のあとで同じイベントを再実行したときは、watermark が前のままでも、その反映の Check Run は直前の記録より後に完了しているので再利用し、2件目は作りません。Deployment と同じく、切り戻しは新しい反映として残ります。直前と同じリリースの reconcile やドリフト修正は更新しません。artifact を失って直前の記録がない場合は、切り戻しとは判定しません。
+- **切り戻し（A→B→A）**: 処理済み時刻とともに、直前のリリースタグと digest を記録します。直前と違うリリースのイベントが届き、そのイベントが属する同じ `external_id` の Check Run が、直前に記録した完了より前に完了済みなら（進行中のイベントでは、同じ Check Run が直前の記録より前に始まって未完了のままの場合も）、`external_id` に `@<開始時刻>` を足した新しい Check Run を作ります。Deployment の作成失敗や artifact の保存失敗のあとで同じイベントを再実行したときは、watermark が前のままでも、その反映の Check Run は直前の記録より後に完了しているので再利用し、2件目は作りません。Deployment と同じく、切り戻しは新しい反映として残ります。直前と同じリリースの reconcile やドリフト修正は更新しません。artifact を失って直前の記録がない場合は、切り戻しとは判定しません。
 - **順序が逆転した完了イベント**: watermark またはコミットステータスの時刻で古いと判定した完了・失敗のイベントは、コミットステータス・Deployment・watermark には何も書きません。ただし、そのリリースの Check Run が `in_progress` のままなら完了させます。このとき Check Run を新しく作ったり開き直したりはしません。イベントより後に始まった Check Run（後の切り戻し）も変えません。
-- 出るのは Flux のイベントだけです。Pod のログではありません。
+- 出るのは Flux のイベントの時刻と reason だけです。Pod のログではありません。
+- イベントが属する Check Run は、そのイベントの時刻以前に始まった最新のものです。遅れて届いた完了イベントは、それより後に始まった Check Run（後の切り戻し）を更新せず、自分の反映の Check Run を完了させます。すべての Check Run より前のイベントは何もしません。
+- 進行中イベントでも `Flux production status` の run が走るため、`workflow_run` で起動する `Deployment badges` の run も同じ回数だけ増えます。Actions の回数の受入では、この分も数えてください。
 - Check Run は `GITHUB_TOKEN`（`checks: write`）で作るため、github-actions の check suite に他の workflow と並んで表示されます。
 - 導入順: この workflow を main に反映してから、infra の中継で進行中イベントの転送を有効にします。
 

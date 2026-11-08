@@ -1,10 +1,14 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { readFile } from "node:fs/promises";
+import { mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { spawnSync } from "node:child_process";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import {
   createApi,
   findStateRun,
   fitCheckText,
+  publishMessages,
   parseEvent,
   parseState,
   pruneStateArtifacts,
@@ -115,6 +119,7 @@ function fixture() {
     checkRuns,
     checkWrites,
     failures,
+    messages: true, // exercised here; the production default is off
     runUrl,
     state: { version: 1, workloads: {} },
   };
@@ -1116,4 +1121,90 @@ test("a completion older than the legacy commit-status time still ends its Check
   assert.equal(result.checkRun, "updated");
   assert.equal(f.writes.length, writes);
   assert.equal(f.checkRuns[0].status, "completed");
+});
+
+test("a public repository publishes no Flux message by default", async () => {
+  assert.equal(publishMessages, false);
+  const f = { ...fixture(), messages: undefined };
+  await report(progress("zoo2", { message: "Deployment/zoo2/secret-name" }), f);
+  await report(event("zoo2", { message: "internal-host.example" }), f);
+  const text = f.checkRuns[0].output.text;
+  assert.ok(!text.includes("secret-name"));
+  assert.ok(!text.includes("internal-host"));
+  assert.ok(
+    text.includes("Progressing") && text.includes("ReconciliationSucceeded"),
+  );
+});
+
+test("the workflow log never prints a Flux message", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "flux-log-"));
+  const eventPath = join(dir, "event.json");
+  await writeFile(
+    eventPath,
+    JSON.stringify(event("zoo2", { message: "PRIVATE_MESSAGE_SENTINEL" })),
+  );
+  const result = spawnSync(
+    process.execPath,
+    [new URL("./flux-status.mjs", import.meta.url).pathname],
+    {
+      env: {
+        PATH: process.env.PATH,
+        GH_TOKEN: "x",
+        FLUX_STATE_PATH: join(dir, "state.json"),
+        GITHUB_EVENT_PATH: eventPath,
+        GITHUB_RUN_ID: "1",
+      },
+      encoding: "utf8",
+    },
+  );
+  assert.ok(!result.stdout.includes("PRIVATE_MESSAGE_SENTINEL"));
+  assert.ok(!result.stderr.includes("PRIVATE_MESSAGE_SENTINEL"));
+});
+
+test("a rollback progress that arrives before the first completion starts its own run", async () => {
+  const f = fixture();
+  await report(progress(), f); // A starts (A1)
+  await report(
+    event("zoo2", { ...rolloutB, timestamp: "2026-10-22T10:05:00Z" }),
+    f,
+  ); // B completes
+  await report(progress("zoo2", { timestamp: "2026-10-22T10:10:00Z" }), f); // A again
+  assert.equal(f.checkRuns.length, 3);
+  const [a1, , a2] = f.checkRuns;
+  assert.equal(a2.external_id, `zoo2:0.0.123:${digest}@2026-10-22T10:10:00Z`);
+  assert.equal(a1.output.text.split("\n").length, 3); // only its own progress
+  // The first completion (after B) now ends A1, not the rollback run.
+  await report(event("zoo2", { timestamp: "2026-10-22T10:06:00Z" }), f);
+  assert.equal(a1.status, "completed");
+  assert.equal(a2.status, "in_progress");
+  // The rollback completion ends the rollback run.
+  await report(event("zoo2", { timestamp: "2026-10-22T10:11:00Z" }), f);
+  assert.equal(a2.status, "completed");
+  assert.equal(f.checkRuns.length, 3);
+});
+
+test("the first completion arriving after a rollback progress still ends the older run", async () => {
+  const f = fixture();
+  await report(progress(), f); // A1
+  await report(
+    event("zoo2", { ...rolloutB, timestamp: "2026-10-22T10:05:00Z" }),
+    f,
+  );
+  await report(progress("zoo2", { timestamp: "2026-10-22T10:10:00Z" }), f); // A2
+  // Older than the rollback run's start: ends A1 through the stale path too.
+  await report(event("zoo2", { timestamp: "2026-10-22T10:01:00Z" }), f);
+  assert.equal(f.checkRuns[0].status, "completed");
+  assert.equal(f.checkRuns[2].status, "in_progress");
+});
+
+test("an event older than every run of the rollout changes nothing", async () => {
+  const f = fixture();
+  await report(progress("zoo2", { timestamp: "2026-10-22T10:00:00Z" }), f);
+  const before = f.checkWrites.length;
+  const result = await report(
+    progress("zoo2", { timestamp: "2026-10-22T09:00:00Z" }),
+    f,
+  );
+  assert.equal(result.checkRun, "unchanged");
+  assert.equal(f.checkWrites.length, before);
 });

@@ -224,9 +224,15 @@ function clean(value, max) {
   );
 }
 
-function eventLine(result) {
+// zoo2 is a public repository: Check Runs and workflow logs are readable by
+// anyone. Flux messages can name cluster objects, so they are not published
+// until real production events have been checked. Reasons are a fixed
+// vocabulary. Set this to true only after that check.
+export const publishMessages = false;
+
+function eventLine(result, messages = publishMessages) {
   const reason = clean(result.reason, 100);
-  const message = clean(result.message, 200);
+  const message = messages ? clean(result.message, 200) : "";
   return `${result.timestamp} ${reason}${message ? `: ${message}` : ""}`;
 }
 
@@ -259,14 +265,14 @@ export function fitCheckText(lines, omitted = false) {
   return wrap([omittedMarker, ...kept].join("\n").slice(0, room));
 }
 
-const newer = (a, b) =>
+const byStart = (a, b) =>
   (Date.parse(a.started_at) || 0) - (Date.parse(b.started_at) || 0) ||
   (a.id || 0) - (b.id || 0);
 
-// The latest Check Run of this rollout. A rollback to an earlier release adds
-// runs with the same base id and a "@<time>" suffix.
-async function findCheckRun(api, sha, name, base) {
-  let latest = null;
+// All Check Runs of this rollout, oldest first. A rollback to an earlier
+// release adds runs with the same base id and a "@<time>" suffix.
+async function findCheckRuns(api, sha, name, base) {
+  const found = [];
   for (let page = 1; ; page++) {
     const data = await api(
       `/repos/${repository}/commits/${sha}/check-runs?check_name=${encodeURIComponent(name)}&filter=all&per_page=100&page=${page}`,
@@ -276,43 +282,60 @@ async function findCheckRun(api, sha, name, base) {
       throw new Error("Expected a check_runs GitHub API response");
     for (const run of runs) {
       const id = run.external_id;
-      if (
-        (id === base || id?.startsWith(`${base}@`)) &&
-        (!latest || newer(run, latest) > 0)
-      )
-        latest = run;
+      if (id === base || id?.startsWith(`${base}@`)) found.push(run);
     }
-    if (runs.length < 100) return latest;
+    if (runs.length < 100) return found.sort(byStart);
   }
 }
+
+// The run an event belongs to: the latest one that started no later than the
+// event. A delayed event never updates a run that began after it.
+const runFor = (runs, timestamp) =>
+  runs
+    .filter((run) => !(Date.parse(run.started_at) > Date.parse(timestamp)))
+    .at(-1) ?? null;
 
 // One Check Run per rollout (name + release tag + digest). Events add a line
 // to its text. A completed run is never reopened by a delayed progress event,
 // and a repeated conclusion (interval reconciliation) changes nothing. When
-// the previous release recorded in the watermark differs, this is a rollback
-// to an earlier release (A -> B -> A) and gets its own Check Run.
-export async function recordCheckRun(api, { sha, result, runUrl, previous }) {
+// the previous release recorded in the watermark differs, an event that
+// belongs to an older run starts a rollback (A -> B -> A) with its own Check
+// Run.
+export async function recordCheckRun(
+  api,
+  { sha, result, runUrl, previous, messages },
+) {
   const done = result.state !== "pending";
   const base = `${result.name}:${result.releaseTag}:${result.digest}`;
-  let existing = await findCheckRun(api, sha, result.context, base);
+  const runs = await findCheckRuns(api, sha, result.context, base);
+  let existing = runFor(runs, result.timestamp);
+  // Every run started after this event: the event is older than all of them.
+  if (!existing && runs.length > 0) return { checkRun: "unchanged" };
   // A rerun after a partial failure (Deployment API error, lost artifact
-  // save) sees the old watermark again. The completed run of the very same
-  // rollout is newer than that watermark, so it is reused. Only a run that
-  // completed before the last recorded completion belongs to an earlier
-  // release that is now being rolled back to.
-  const rolledBack =
+  // save) sees the old watermark again. The run of the very same rollout is
+  // newer than that watermark, so it is reused. Only a run that ended (or, for
+  // progress, started) before the last recorded completion belongs to an
+  // earlier rollout of this release, which is now being rolled back to. A
+  // completion never starts a new run for an unfinished one: it ends it.
+  const differs =
     previous?.digest !== undefined &&
     (previous.digest !== result.digest ||
-      previous.releaseTag !== result.releaseTag) &&
-    Date.parse(existing?.completed_at) < Date.parse(previous.timestamp);
-  const newRun = existing?.status === "completed" && rolledBack;
+      previous.releaseTag !== result.releaseTag);
+  const before =
+    Date.parse(existing?.completed_at ?? existing?.started_at) <
+    Date.parse(previous?.timestamp);
+  const newRun =
+    differs &&
+    before &&
+    (existing?.status === "completed" ||
+      (!done && existing?.status === "in_progress"));
   if (newRun) existing = null;
   if (
     existing?.status === "completed" &&
     (!done || existing.conclusion === result.state)
   )
     return { checkRun: "unchanged" };
-  const line = eventLine(result);
+  const line = eventLine(result, messages);
   const current = readCheckLines(existing?.output?.text);
   const has = current.lines.includes(line);
   if (existing && has && !done) return { checkRun: "unchanged" };
@@ -349,18 +372,18 @@ export async function recordCheckRun(api, { sha, result, runUrl, previous }) {
 
 // A completion event dropped as older than the watermark must still end the
 // Check Run its own rollout left in_progress. It never opens, creates or
-// reopens one, and it leaves a newer run (a later rollback) alone.
-export async function closeStaleCheckRun(api, { sha, result, runUrl }) {
+// reopens one, and it leaves a run that started after the event alone.
+export async function closeStaleCheckRun(
+  api,
+  { sha, result, runUrl, messages },
+) {
   sha ??= await verifiedSha(api, result);
   if (!sha) return { checkRun: "unchanged" };
   const base = `${result.name}:${result.releaseTag}:${result.digest}`;
-  const run = await findCheckRun(api, sha, result.context, base);
-  if (
-    run?.status !== "in_progress" ||
-    Date.parse(run.started_at) > Date.parse(result.timestamp)
-  )
+  const runs = await findCheckRuns(api, sha, result.context, base);
+  if (runFor(runs, result.timestamp)?.status !== "in_progress")
     return { checkRun: "unchanged" };
-  return recordCheckRun(api, { sha, result, runUrl });
+  return recordCheckRun(api, { sha, result, runUrl, messages });
 }
 
 async function verifiedSha(api, result) {
@@ -375,7 +398,13 @@ async function verifiedSha(api, result) {
 
 export async function report(
   event,
-  { api, runUrl, warn = console.warn, state = { version: 1, workloads: {} } },
+  {
+    api,
+    runUrl,
+    messages,
+    warn = console.warn,
+    state = { version: 1, workloads: {} },
+  },
 ) {
   const result = parseEvent(event);
   if (!result) return { skipped: "intermediate" };
@@ -386,7 +415,7 @@ export async function report(
     if (result.state === "pending") return { skipped: "older-event" };
     return {
       skipped: "older-event",
-      ...(await closeStaleCheckRun(api, { result, runUrl })),
+      ...(await closeStaleCheckRun(api, { result, runUrl, messages })),
     };
   }
   if (result.state === "pending") {
@@ -400,7 +429,13 @@ export async function report(
     return {
       sha,
       ...result,
-      ...(await recordCheckRun(api, { sha, result, runUrl, previous })),
+      ...(await recordCheckRun(api, {
+        sha,
+        result,
+        runUrl,
+        previous,
+        messages,
+      })),
     };
   }
   // Flux event timestamps have second resolution and dispatch order is not
@@ -455,7 +490,7 @@ export async function report(
   if (latestTime > Date.parse(result.timestamp))
     return {
       skipped: "older-event",
-      ...(await closeStaleCheckRun(api, { sha, result, runUrl })),
+      ...(await closeStaleCheckRun(api, { sha, result, runUrl, messages })),
     };
   if (latest?.description !== description || latest?.state !== result.state) {
     await api(`/repos/${repository}/statuses/${sha}`, {
@@ -465,7 +500,13 @@ export async function report(
       target_url: runUrl,
     });
   }
-  const check = await recordCheckRun(api, { sha, result, runUrl, previous });
+  const check = await recordCheckRun(api, {
+    sha,
+    result,
+    runUrl,
+    previous,
+    messages,
+  });
   if (result.name !== "zoo2" || result.state !== "success") {
     remember();
     return { sha, ...result, ...check };
@@ -561,7 +602,12 @@ if (
         process.env.FLUX_STATE_PATH + ".tmp",
         process.env.FLUX_STATE_PATH,
       );
-      console.log(JSON.stringify(result));
+      // The log of a public repository must not carry Flux messages either.
+      console.log(
+        JSON.stringify(result, (key, value) =>
+          key === "message" ? undefined : value,
+        ),
+      );
     }
   } catch (error) {
     console.error(`::error::${error.message}`);
