@@ -76,6 +76,8 @@ interface Harness {
 }
 
 interface HarnessOptions {
+  storage?: AuthStorage;
+  now?: number;
   discovery?: Record<string, unknown>;
   /** token エンドポイントの応答。`URLSearchParams` と現在の nonce を受け取る。 */
   token?: (body: URLSearchParams, nonce: string) => unknown;
@@ -84,11 +86,11 @@ interface HarnessOptions {
 }
 
 function createHarness(options: HarnessOptions = {}): Harness {
-  const storage = memoryStorage();
+  const storage = options.storage ?? memoryStorage();
   const assigned: string[] = [];
   const reauthorizeCalls: string[] = [];
   const tokenCalls: URLSearchParams[] = [];
-  let clock = 1_000_000;
+  let clock = options.now ?? 1_000_000;
   let lastNonce = "nonce";
   let href = options.href ?? "https://app.example/";
 
@@ -169,6 +171,90 @@ async function completeLogin(harness: Harness) {
   await harness.client.handleCallback(`${CALLBACK_URL}?code=code-1&state=${pending.state}`);
   return pending;
 }
+
+describe("OidcClient session restoration", () => {
+  it("restores the session after reload without contacting the IdP or redirecting", async () => {
+    const original = createHarness();
+    await completeLogin(original);
+    const reloaded = createHarness({ storage: original.storage });
+    expect(reloaded.client.hasSession).toBe(true);
+    await expect(reloaded.client.getAccessToken()).resolves.toBe("access-1");
+    expect(reloaded.fetchMock).not.toHaveBeenCalled();
+    expect(reloaded.assigned).toEqual([]);
+    expect(reloaded.reauthorizeCalls).toEqual([]);
+  });
+
+  it("refreshes an expired restored session and saves the rotated tokens", async () => {
+    const original = createHarness({
+      token: (_body, nonce) => ({
+        access_token: "access-1",
+        refresh_token: "refresh-1",
+        id_token: idToken({ nonce }),
+        expires_in: 10,
+      }),
+    });
+    await completeLogin(original);
+    const reloaded = createHarness({
+      storage: original.storage,
+      now: 1_020_000,
+      token: () => ({ access_token: "access-2", refresh_token: "refresh-2", expires_in: 300 }),
+    });
+    await expect(
+      Promise.all([reloaded.client.getAccessToken(), reloaded.client.getAccessToken()]),
+    ).resolves.toEqual(["access-2", "access-2"]);
+    expect(reloaded.refreshCalls()).toHaveLength(1);
+    expect(reloaded.assigned).toEqual([]);
+    expect(reloaded.reauthorizeCalls).toEqual([]);
+    const nextReload = createHarness({ storage: original.storage, now: 1_020_000 });
+    await expect(nextReload.client.getAccessToken()).resolves.toBe("access-2");
+    expect(nextReload.fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("does not restore tokens for different resource settings", async () => {
+    const original = createHarness({ resource: RESOURCE });
+    await completeLogin(original);
+    expect(createHarness({ storage: original.storage }).client.hasSession).toBe(false);
+  });
+
+  it("does not restore expired tokens without a refresh token", async () => {
+    const original = createHarness();
+    await completeLogin(original);
+    expect(createHarness({ storage: original.storage, now: 1_400_000 }).client.hasSession).toBe(
+      false,
+    );
+  });
+
+  it.each(["reset", "logout", "logged-out marker"])(
+    "does not restore a session after %s",
+    async (action) => {
+      const original = createHarness();
+      await completeLogin(original);
+      if (action === "reset") original.client.resetSession();
+      else if (action === "logout") await original.client.logout();
+      else original.storage.setItem("zoo.oidc.loggedOut", "1");
+      expect(createHarness({ storage: original.storage }).client.hasSession).toBe(false);
+    },
+  );
+
+  it("clears the saved session when a restored refresh token is rejected", async () => {
+    const original = createHarness({
+      token: (_body, nonce) => ({
+        access_token: "access-1",
+        refresh_token: "refresh-1",
+        id_token: idToken({ nonce }),
+        expires_in: 10,
+      }),
+    });
+    await completeLogin(original);
+    const reloaded = createHarness({
+      storage: original.storage,
+      now: 1_020_000,
+      token: () => ({ error: "invalid_grant", status: 400 }),
+    });
+    await expect(reloaded.client.getAccessToken()).resolves.toBeNull();
+    expect(createHarness({ storage: original.storage }).client.hasSession).toBe(false);
+  });
+});
 
 describe("sanitizeReturnTo", () => {
   it("keeps same-origin relative paths only", () => {

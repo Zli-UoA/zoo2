@@ -46,8 +46,7 @@ function currentReturnTo(): string {
  * 認証の入口。OIDC 未設定（dev の X-Dev-User）なら素通しし、設定済みなら
  * authorize リダイレクト / コールバック処理 / 401 時の再ログインを担う。
  *
- * トークンはメモリ保持のため、リロード後は IdP セッションを利用して
- * authorize へ再リダイレクトする（サイレント再ログイン）。
+ * 同じタブの再読み込みではセッションを復元し、IdP への往復を省く。
  */
 export function AuthGate({ children }: { children: ReactNode }) {
   const { t } = useTranslation();

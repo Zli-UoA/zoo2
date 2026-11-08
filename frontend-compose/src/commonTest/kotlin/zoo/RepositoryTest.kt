@@ -11,7 +11,7 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.test.*
 import kotlinx.serialization.json.*
 
-private class FakePlatform : Platform {
+private class FakePlatform(private val initialCache: String? = null) : Platform {
     var token = "first-token"
     val readKeys = mutableListOf<String>()
     val cache = mutableMapOf<String, String>()
@@ -21,7 +21,7 @@ private class FakePlatform : Platform {
 
     override suspend fun readCache(key: String): String? {
         readKeys += key
-        return cache[key]
+        return cache[key] ?: initialCache
     }
 
     override suspend fun writeCache(key: String, value: String) {
@@ -58,6 +58,31 @@ class RepositoryTest {
                     override fun subscribe(callback: (Boolean) -> Unit): () -> Unit = {}
                 },
         )
+
+    @Test
+    fun cachedHistoryIsVisibleBeforeTheInitialNetworkSyncCompletes() = runTest {
+        val platform = FakePlatform("""[{"id":"m1","content":"Saved history"}]""")
+        val http = HttpClient(MockEngine { awaitCancellation() })
+        val table =
+            SyncedTable(
+                "messages",
+                config,
+                platform,
+                http,
+                backgroundScope,
+                mapOf("channel_id" to "channel-a"),
+                options,
+            )
+        try {
+            runCurrent()
+            assertFalse(table.loading.value)
+            assertEquals("Saved history", table.rows.value.single().text("content"))
+            assertNull(table.error.value)
+        } finally {
+            table.close()
+            http.close()
+        }
+    }
 
     @Test
     fun publicSessionDoesNotReadPrivateCachesOrStartShapeRequests() = runTest {

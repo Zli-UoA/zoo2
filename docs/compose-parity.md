@@ -35,6 +35,10 @@
 
 ## Web描画の性能改善
 
+WebのOIDCは共通 `AuthGate` / `OidcClient` がタブ内のセッションを復元するため、React・Composeの両方で再読み込み時のauthorizeへの往復を省く。期限切れ時の更新、更新トークンのローテーション、ログアウト時の消去、設定の分離をOIDCのテストで確認する。TUIは既存の `StoredTokens` / `TokenManager` で保存・復元しており、Web固有の `sessionStorage` 変更は反映不要。
+
+保存済み履歴の復元後は、Reactの `useRealtime` と `ChannelSidebar` が永続化の復元状態と行の有無を確認し、初回のElectric同期を待たずに通常表示する。保存行がない場合は初回ロード表示を維持する。Composeの `SyncedTable` は既存のキャッシュ復元時に `loading` を解除する実装で同じ表示順を保つ。Reactの `collections.persistence.test.ts` はネットワーク応答を保留して保存あり・なしを検証し、Composeの `RepositoryTest.cachedHistoryIsVisibleBeforeTheInitialNetworkSyncCompletes` は保存履歴の先行表示を検証する。TUIには履歴の永続化復元とスケルトン表示がないため、実装変更は不要。
+
 ARIA補完の更新を対象コントロールに限定し、DOM参照をキャッシュする。アイコンは色別の画像生成をやめ、同じラスタへ描画時に着色する。初回は本文フォントだけをゲートにする。機能・API・操作仕様はReactと共通のまま、Web固有の補完処理を変更する。TUIには対象処理がなく、変更しない。検証方法と結果は [Compose Webの性能計測](compose-performance.md) を参照。
 
 ## main取り込み時の照合

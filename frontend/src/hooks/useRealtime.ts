@@ -13,18 +13,27 @@ import { useCurrentUser } from "./useCurrentUser";
 /** 投稿者名の解決に使う全ユーザーを購読する。 */
 export function useUsers() {
   const { users } = useCollections();
-  return useLiveQuery((q) => q.from({ users }));
+  const query = useLiveQuery((q) => q.from({ users }));
+  return {
+    ...query,
+    isLoading: query.isLoading && !(query.isPersistedReady && query.data?.length),
+  };
 }
 
 /** 論理削除されていないチャンネル一覧をチャンネル名の昇順で購読する。 */
 export function useActiveChannels() {
   const { channels } = useCollections();
-  return useLiveQuery((q) =>
+  const query = useLiveQuery((q) =>
     q
       .from({ channels })
       .where(({ channels }) => isNull(channels.deleted_at))
       .orderBy(({ channels }) => channels.channel_name, "asc"),
   );
+  // 保存済みの一覧を復元できたら、初回のネットワーク同期は裏で続ける。
+  return {
+    ...query,
+    isLoading: query.isLoading && !(query.isPersistedReady && query.data?.length),
+  };
 }
 
 export interface MessageFeedOptions {
@@ -49,17 +58,25 @@ export function useMessageFeed(channelId: string | null, options: MessageFeedOpt
       : undefined,
   );
   const data = useOptimisticDisplay(channelId, query.data);
-  return { ...query, data };
+  return {
+    ...query,
+    data,
+    isLoading: query.isLoading && !(query.isPersistedReady && query.data?.length),
+  };
 }
 
 /** 指定チャンネルの参加メンバー（channel_user）を購読する。 */
 export function useChannelMembers(channelId: string | null) {
   const { channelUsers } = useCollections();
-  return useLiveQuery((q) =>
+  const query = useLiveQuery((q) =>
     channelId
       ? q.from({ channelUsers }).where(({ channelUsers }) => eq(channelUsers.channel_id, channelId))
       : undefined,
   );
+  return {
+    ...query,
+    isLoading: query.isLoading && !(query.isPersistedReady && query.data?.length),
+  };
 }
 
 /** チャンネル内のメッセージへのリアクションを購読する。 */
@@ -154,7 +171,8 @@ export function useMyChannelMemberships(): MyChannelMemberships {
     memberships,
     joinedChannelIds,
     hasCurrentUser: currentUserId !== null,
-    isLoading: membershipsQuery.isLoading,
+    isLoading:
+      membershipsQuery.isLoading && !(membershipsQuery.isPersistedReady && memberships.length),
   };
 }
 

@@ -71,7 +71,11 @@ export function ChannelSidebar({
   }, [membershipsQuery.data, currentUserId]);
   // サイドバーは参加中だけを出すため、参加状態が解決するまでは一覧を確定しない
   // （解決前に空の一覧を一瞬出さない）。
-  const sidebarLoading = loading || membershipsQuery.isLoading || currentUserLoading;
+  const sidebarLoading =
+    loading ||
+    (membershipsQuery.isLoading &&
+      !(membershipsQuery.isPersistedReady && membershipsQuery.data?.length)) ||
+    currentUserLoading;
   const sidebarError = error || membershipsQuery.isError;
   const regularChannels = useMemo(() => channels.filter((channel) => !channel.is_dm), [channels]);
   const sidebarChannels = useMemo(

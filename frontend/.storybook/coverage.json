@@ -628,7 +628,8 @@
     },
     {
       "file": "src/components/chat/ChannelSidebar.tsx",
-      "story": "src/components/chat/ChannelSidebar.stories.tsx"
+      "story": "src/components/chat/ChannelSidebar.stories.tsx",
+      "checks": ["src/lib/electric/collections.persistence.test.ts"]
     },
     {
       "file": "src/components/chat/ChannelWebhooksDialog.tsx",

@@ -8,6 +8,7 @@ import {
   takePending,
 } from "./pending";
 import { createChallenge, createNonce, createState, createVerifier } from "./pkce";
+import { clearStoredSession, readStoredSession, writeStoredSession } from "./stored-session";
 
 export type OidcFetch = (input: string, init?: RequestInit) => Promise<Response>;
 
@@ -153,7 +154,7 @@ interface TokenResponse {
  *
  * 依存を足さず、必要な範囲だけを実装する。署名検証は Rust の責務で、ここでは
  * state / nonce / iss / aud / exp による取り違え検知だけを行う。トークンは
- * メモリ保持のみ（sessionStorage には state / nonce / verifier だけを置く）。
+ * タブ内の sessionStorage にセッションを保持し、再読み込み時に復元する。
  */
 export class OidcClient {
   private readonly environment: OidcEnvironment;
@@ -173,6 +174,7 @@ export class OidcClient {
   private generation = 0;
   private reauthorizeHandler: ReauthorizeHandler | null = null;
   private reauthorizeRequested = false;
+  private readonly sessionBinding: string;
 
   constructor(options: OidcClientOptions) {
     this.environment = options.environment ?? createBrowserEnvironment();
@@ -182,6 +184,18 @@ export class OidcClient {
     this.configuredPostLogoutRedirectUri = options.postLogoutRedirectUri ?? null;
     this.scope = options.scope?.trim() || DEFAULT_OIDC_SCOPE;
     this.resource = options.resource?.trim() || null;
+    this.sessionBinding = JSON.stringify({
+      issuer: this.issuer,
+      clientId: this.clientId,
+      redirectUri: this.redirectUri,
+      scope: this.scope,
+      resource: this.resource,
+    });
+    this.tokens = readStoredSession(
+      this.environment.storage,
+      this.sessionBinding,
+      this.environment.now(),
+    );
   }
 
   get redirectUri(): string {
@@ -327,7 +341,7 @@ export class OidcClient {
   }
 
   /**
-   * コールバックを処理する。成功時はトークンをメモリに保持し復帰先を返す。
+   * コールバックを処理する。成功時はセッションを保存し復帰先を返す。
    * URL の書き換え（履歴からの除去）は呼び出し側が行う。
    *
    * pending は使い捨てなので、同じコールバック URL の再処理は進行中の結果を
@@ -379,12 +393,18 @@ export class OidcClient {
       code_verifier: pending.verifier,
     });
     this.addResource(body);
+    const generation = this.generation;
     const responseBody = await this.requestToken(body);
     // nonce を検証できるよう、コード交換では ID トークンを必須にする。
-    this.tokens = this.parseTokens(responseBody, pending.nonce, {
+    const tokens = this.parseTokens(responseBody, pending.nonce, {
       refreshToken: null,
       idToken: null,
     });
+    if (this.generation !== generation) {
+      throw new OidcError("session_reset", "セッションが破棄されました");
+    }
+    this.tokens = tokens;
+    writeStoredSession(this.environment.storage, this.sessionBinding, this.tokens);
     this.reauthorizeRequested = false;
     clearLoggedOut(this.environment.storage);
     return { returnTo: sanitizeReturnTo(pending.returnTo, new URL(this.redirectUri).pathname) };
@@ -412,12 +432,14 @@ export class OidcClient {
         return tokens.accessToken;
       }
       this.tokens = null;
+      clearStoredSession(this.environment.storage);
       return null;
     }
     try {
       return (await this.refreshTokens()).accessToken;
     } catch {
-      this.tokens = null;
+      // 更新中に別のログインが完了した場合は、新しいセッションを消さない。
+      if (this.tokens === tokens) this.resetSession();
       return null;
     }
   }
@@ -425,6 +447,7 @@ export class OidcClient {
   resetSession(): void {
     this.generation += 1;
     this.tokens = null;
+    clearStoredSession(this.environment.storage);
     this.reauthorizeRequested = false;
   }
 
@@ -452,6 +475,8 @@ export class OidcClient {
       client_id: this.clientId,
     });
     this.addResource(body);
+    // 更新トークンは単回使用。通信中の再読み込みで古い値を再送しない。
+    clearStoredSession(this.environment.storage);
     const responseBody = await this.requestToken(body);
     // refresh 応答に id_token が無い IdP でも、logout の id_token_hint 用に
     // 前回の値を引き継ぐ。
@@ -464,6 +489,7 @@ export class OidcClient {
       throw new OidcError("session_reset", "セッションが破棄されました");
     }
     this.tokens = tokens;
+    writeStoredSession(this.environment.storage, this.sessionBinding, tokens);
     return tokens;
   }
 
@@ -475,6 +501,7 @@ export class OidcClient {
     const tokens = this.tokens;
     this.generation += 1;
     this.tokens = null;
+    clearStoredSession(this.environment.storage);
     this.refreshPromise = null;
     this.reauthorizeRequested = false;
     clearPending(this.environment.storage);
