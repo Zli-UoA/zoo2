@@ -210,15 +210,24 @@ const checkTitles = {
   failure: (tag) => `Rollout of ${tag} failed`,
 };
 
+// Both fields end up in a Markdown code block and in a size-capped text.
+// Reason is free text for error events, so it is cleaned like the message.
+function clean(value, max) {
+  return (
+    String(value ?? "")
+      // eslint-disable-next-line no-control-regex
+      .replace(/[\u0000-\u001f\u007f]+/g, " ")
+      // Keep a value from closing the code block.
+      .replace(/`/g, "'")
+      .trim()
+      .slice(0, max)
+  );
+}
+
 function eventLine(result) {
-  const message = String(result.message ?? "")
-    // eslint-disable-next-line no-control-regex
-    .replace(/[\u0000-\u001f\u007f]+/g, " ")
-    // The text is shown in a code block. Keep a message from closing it.
-    .replace(/`/g, "'")
-    .trim()
-    .slice(0, 200);
-  return `${result.timestamp} ${result.reason}${message ? `: ${message}` : ""}`;
+  const reason = clean(result.reason, 100);
+  const message = clean(result.message, 200);
+  return `${result.timestamp} ${reason}${message ? `: ${message}` : ""}`;
 }
 
 // output.text is Markdown. A code block keeps one event per line and stops
@@ -236,18 +245,18 @@ function readCheckLines(text) {
 // output.text is replaced, not appended, and is capped. Drop the oldest lines.
 export function fitCheckText(lines, omitted = false) {
   const wrap = (body) => `${fence}\n${body}\n${fence}`;
+  const room = maxCheckText - wrap("").length;
   const all = omitted ? [omittedMarker, ...lines] : lines;
-  const overhead = wrap("").length;
-  if (all.join("\n").length + overhead <= maxCheckText)
-    return wrap(all.join("\n"));
-  let budget = maxCheckText - overhead - omittedMarker.length - 1;
+  if (all.join("\n").length <= room) return wrap(all.join("\n"));
+  let budget = room - omittedMarker.length - 1;
   const kept = [];
   for (let i = lines.length - 1; i >= 0; i--) {
     budget -= lines[i].length + 1;
     if (budget < 0 && kept.length > 0) break;
     kept.unshift(lines[i]);
   }
-  return wrap([omittedMarker, ...kept].join("\n"));
+  // A single line longer than the cap cannot be kept whole.
+  return wrap([omittedMarker, ...kept].join("\n").slice(0, room));
 }
 
 const newer = (a, b) =>
@@ -286,10 +295,16 @@ export async function recordCheckRun(api, { sha, result, runUrl, previous }) {
   const done = result.state !== "pending";
   const base = `${result.name}:${result.releaseTag}:${result.digest}`;
   let existing = await findCheckRun(api, sha, result.context, base);
+  // A rerun after a partial failure (Deployment API error, lost artifact
+  // save) sees the old watermark again. The completed run of the very same
+  // rollout is newer than that watermark, so it is reused. Only a run that
+  // completed before the last recorded completion belongs to an earlier
+  // release that is now being rolled back to.
   const rolledBack =
     previous?.digest !== undefined &&
     (previous.digest !== result.digest ||
-      previous.releaseTag !== result.releaseTag);
+      previous.releaseTag !== result.releaseTag) &&
+    Date.parse(existing?.completed_at) < Date.parse(previous.timestamp);
   const newRun = existing?.status === "completed" && rolledBack;
   if (newRun) existing = null;
   if (

@@ -41,6 +41,7 @@ function fixture() {
   const deploymentStatuses = new Map();
   const checkRuns = [];
   const checkWrites = [];
+  const failures = { deployments: 0 };
   const api = async (path, body) => {
     if (body !== undefined) {
       if (path === `${base}/check-runs`) {
@@ -59,6 +60,10 @@ function fixture() {
       if (path.startsWith(`${base}/statuses/`)) {
         statuses.unshift({ ...body, sha: path.split("/").at(-1) });
         return body;
+      }
+      if (path === `${base}/deployments` && failures.deployments > 0) {
+        failures.deployments--;
+        throw new Error("GitHub API 503: deployments");
       }
       if (path === `${base}/deployments`) {
         const value = { ...body, sha: body.ref, id: deployments.length + 1 };
@@ -109,6 +114,7 @@ function fixture() {
     deploymentStatuses,
     checkRuns,
     checkWrites,
+    failures,
     runUrl,
     state: { version: 1, workloads: {} },
   };
@@ -986,4 +992,128 @@ test("watermark release identity is validated and legacy entries stay valid", ()
         JSON.stringify({ version: 1, workloads: { zoo2: { ...ok, ...bad } } }),
       ),
     );
+});
+
+// A rerun after a partial failure sees the watermark from before the event.
+const snapshot = (f) => structuredClone(f.state);
+
+test("rerunning a forward rollout after a Deployment API failure reuses its Check Run", async () => {
+  const f = fixture();
+  await report(event(), f); // A done
+  const before = snapshot(f);
+  f.failures.deployments = 1;
+  await assert.rejects(
+    report(
+      event("zoo2", { ...rolloutB, timestamp: "2026-10-22T10:05:00Z" }),
+      f,
+    ),
+    /503/,
+  );
+  f.state = before; // the failed run saved no watermark
+  await report(
+    event("zoo2", { ...rolloutB, timestamp: "2026-10-22T10:05:00Z" }),
+    f,
+  );
+  assert.equal(f.checkRuns.length, 2);
+  assert.equal(f.deployments.length, 2);
+});
+
+test("rerunning a rollback completion after a Deployment API failure reuses its Check Run", async () => {
+  const f = fixture();
+  await report(event(), f); // A
+  await report(
+    event("zoo2", { ...rolloutB, timestamp: "2026-10-22T10:05:00Z" }),
+    f,
+  ); // B
+  const before = snapshot(f);
+  f.failures.deployments = 1;
+  const completion = event("zoo2", { timestamp: "2026-10-22T10:10:00Z" });
+  await assert.rejects(report(completion, f), /503/);
+  f.state = before;
+  await report(completion, f);
+  assert.equal(f.checkRuns.length, 3);
+  assert.equal(f.checkRuns[2].conclusion, "success");
+  assert.equal(f.deployments.length, 3);
+});
+
+test("rerunning a rollback with progress after a lost watermark save keeps one Check Run", async () => {
+  const f = fixture();
+  await report(event(), f);
+  await report(
+    event("zoo2", { ...rolloutB, timestamp: "2026-10-22T10:05:00Z" }),
+    f,
+  );
+  const before = snapshot(f);
+  const events = [
+    progress("zoo2", { timestamp: "2026-10-22T10:10:00Z" }),
+    event("zoo2", { timestamp: "2026-10-22T10:11:00Z" }),
+  ];
+  for (const e of events) await report(e, f);
+  assert.equal(f.checkRuns.length, 3);
+  f.state = before; // the artifact upload failed after the run
+  for (const e of events) await report(e, f);
+  assert.equal(f.checkRuns.length, 3);
+  assert.equal(f.checkRuns[2].output.text.split("\n").length, 4);
+});
+
+test("reason is sanitized and a single oversized line stays within the cap", async () => {
+  const f = fixture();
+  await report(
+    progress("zoo2", { reason: "Progressing", severity: "info" }),
+    f,
+  );
+  await report(
+    event("zoo2", {
+      severity: "error",
+      reason: "Bad```\nReason" + "x".repeat(500),
+      message: "m",
+    }),
+    f,
+  );
+  const text = f.checkRuns[0].output.text;
+  assert.equal(text.match(/```/g).length, 2);
+  assert.ok(!text.includes("Bad```"));
+  assert.ok(text.split("\n").every((line) => line.length < 400));
+  const huge = fitCheckText(["x".repeat(70000)]);
+  assert.ok(huge.length <= 65535);
+  assert.ok(huge.startsWith("```\n") && huge.endsWith("\n```"));
+});
+
+test("Check Runs beyond the first API page are found", async () => {
+  const f = fixture();
+  await report(progress(), f);
+  const real = f.api;
+  const filler = Array.from({ length: 100 }, (_, i) => ({
+    id: 1000 + i,
+    name: "flux/zoo2",
+    external_id: `other:${i}`,
+  }));
+  const api = async (path, body) => {
+    if (path.includes("/check-runs?")) {
+      const page = Number(path.match(/page=(\d+)/)[1]);
+      const data = await real(path, body);
+      return page === 1 ? { check_runs: filler } : data;
+    }
+    return real(path, body);
+  };
+  await report(event(), { ...f, api });
+  assert.equal(f.checkRuns.length, 1);
+  assert.equal(f.checkRuns[0].conclusion, "success");
+});
+
+test("a completion older than the legacy commit-status time still ends its Check Run", async () => {
+  const f = fixture();
+  await report(progress(), f);
+  f.statuses.unshift({
+    sha,
+    context: "flux/zoo2",
+    state: "success",
+    description: "2026-10-22T10:30:00Z legacy",
+  });
+  const writes = f.writes.length;
+  const result = await report(event(), f);
+  assert.equal(result.skipped, "older-event");
+  assert.equal(result.checkRun, "updated");
+  assert.equal(f.writes.length, writes);
+  assert.equal(f.checkRuns[0].status, "completed");
 });
