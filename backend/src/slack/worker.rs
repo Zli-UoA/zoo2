@@ -515,6 +515,43 @@ struct Context {
     users: HashMap<String, ZooUser>,
     profiles: HashMap<String, SlackUser>,
     channel_names: HashMap<String, String>,
+    files: FilePolicy,
+}
+
+/// 添付ファイルを取得して添付にできるかを、取り込みの時点で判定する (`fetch_one` と同じ条件)
+struct FilePolicy {
+    /// 添付を取得するトークンがあるか
+    token: bool,
+    max_size: u64,
+    base_url: String,
+}
+
+impl FilePolicy {
+    fn new(s: &AppState) -> Self {
+        Self {
+            token: s.config.slack.import_bot_token.is_some(),
+            max_size: s.config.s3.max_file_size,
+            base_url: s.config.slack.files_base_url.clone(),
+        }
+    }
+
+    /// 添付として取得するファイルか。取り込めないファイル (外部サービスの共有など)、トークンがなくて保留する
+    /// ファイル、サイズ・形式・URL で取得をスキップするファイルは偽
+    fn will_fetch(&self, file: &super::export::SlackFile) -> bool {
+        let mimetype = file
+            .mimetype
+            .as_deref()
+            .filter(|m| !m.is_empty())
+            .unwrap_or("application/octet-stream");
+        file.is_importable()
+            && self.token
+            && allowed_file_url(
+                file.url_private_download.as_deref().unwrap_or_default(),
+                &self.base_url,
+            )
+            && file.size.unwrap_or(0).max(0) as u64 <= self.max_size
+            && crate::routes::attachments::validate_upload_mime(mimetype).is_ok()
+    }
 }
 
 impl Resolver for Context {
@@ -676,6 +713,7 @@ async fn import(s: &AppState, job: &Job, lease: &Lease) -> Result<(), AppError> 
             .map(|u| (u.id.clone(), u.clone()))
             .collect(),
         channel_names: HashMap::new(),
+        files: FilePolicy::new(s),
     };
     let mut db = s.db.clone();
     let admin = {
@@ -1099,11 +1137,13 @@ async fn insert_message(
     if content.trim().is_empty() {
         content = super::convert::truncate_content(message.attachments_text());
     }
-    // 本文のないファイルだけの投稿は、ファイル名を本文に残す。取り込めないファイル (外部サービスの共有・
-    // 削除済みなど) や、添付の取得をスキップ (サイズ・形式) または保留 (トークンなし) したファイルでも、
-    // 投稿が空にならないようにする
+    // 本文のないファイルだけの投稿は、添付として取得しないファイルの名前を本文に残す。取り込めないファイル
+    // (外部サービスの共有・削除済みなど) や、取得をスキップ (サイズ・形式) または保留 (トークンなし) する
+    // ファイルだけの投稿が空にならないようにする。取得する添付は添付として表示するので、名前は入れない
     if content.trim().is_empty() {
-        content = super::convert::truncate_content(message.files_text());
+        content = super::convert::truncate_content(
+            message.files_text(|file| !ctx.files.will_fetch(file)),
+        );
     }
     // 期間を区切った ZIP では返信だけが先に入ることがある。後から親を取り込んだら、返信をスレッドに戻す。
     exec(

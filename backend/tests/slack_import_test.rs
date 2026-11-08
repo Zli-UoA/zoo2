@@ -455,6 +455,8 @@ async fn test_slack_export_import_flow() -> anyhow::Result<()> {
     .await?;
     assert_eq!(attachments.len(), 1);
     assert_eq!(attachments[0]["name"], "notes.txt");
+    // 取得する添付は添付として表示するので、本文にファイル名を入れない
+    assert_eq!(messages[2]["content"], "");
     // 同じ F1 を共有する別のメッセージにも、それぞれ添付が付く
     let shared = sql(
         &state,
