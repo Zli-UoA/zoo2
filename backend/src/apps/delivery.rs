@@ -74,15 +74,15 @@ pub(crate) async fn active(s: &AppState, credential: &str) -> Result<bool, AppEr
     let mut tx = db.transaction().await?;
     Ok(one(&mut tx,"SELECT json_build_object('ok',EXISTS(SELECT 1 FROM app_credentials t JOIN app_installations i ON i.id=t.installation_id JOIN apps a ON a.id=i.app_id WHERE t.id=$1 AND t.revoked_at IS NULL AND t.expires_at>now() AND i.active AND a.status='installed' AND t.scopes::jsonb <@ i.scopes::jsonb AND NOT EXISTS(SELECT 1 FROM users u WHERE u.id=COALESCE(t.user_id,a.bot_user_id) AND u.is_deactivated)))::text",&[credential]).await?["ok"]==true)
 }
-pub async fn claim(s: &AppState, installation: &str) -> Result<Option<Value>, AppError> {
-    claim_filtered(s, installation, false).await
+pub async fn claim(db: &toasty::Db, installation: &str) -> Result<Option<Value>, AppError> {
+    claim_filtered(db, installation, false).await
 }
 async fn claim_filtered(
-    s: &AppState,
+    db: &toasty::Db,
     installation: &str,
     terminal_only: bool,
 ) -> Result<Option<Value>, AppError> {
-    let mut db = s.db.clone();
+    let mut db = db.clone();
     let mut tx = db.transaction().await?;
     // Serialize only dispatchers for this installation, never source transactions.
     one(&mut tx,"SELECT json_build_object('locked',pg_advisory_xact_lock(hashtextextended($1,0)) IS NULL)::text",&[&format!("app-dispatch:{installation}")]).await?;
@@ -100,8 +100,10 @@ async fn claim_filtered(
         )
         .await?;
     }
+    // リースの起点は now()（トランザクション開始）ではなく clock_timestamp()。advisory lock の
+    // 待ちで開始から時間が経つと、リースが実質 3 秒より短くなり送信中に再取得されるため。
     let lease = uuid::Uuid::new_v4().to_string();
-    let rows=query(&mut tx,"WITH candidate AS(SELECT d.id FROM app_deliveries d WHERE d.installation_id=$1 AND app_delivery_allowed(d) AND (NOT $4::boolean OR d.event_type IN('app.uninstalled','tokens.revoked','app.deleted')) AND (NOT $3::boolean OR d.first_delivered_at IS NOT NULL OR app_event_quota_exempt(d.event_type)) AND d.acked_at IS NULL AND d.available_at<=now() AND d.expires_at>now() AND (d.lease_until IS NULL OR d.lease_until<now()) ORDER BY CASE WHEN d.event_type='app.uninstalled' THEN 0 ELSE 1 END,d.created_at,d.id FOR UPDATE SKIP LOCKED LIMIT 1) UPDATE app_deliveries d SET attempts=attempts+1,first_delivered_at=COALESCE(first_delivered_at,now()),lease_until=now()+interval '3 seconds',lease_token=$2,available_at=now()+make_interval(secs=>LEAST(3600,power(2,LEAST(attempts+1,12))::integer)) FROM candidate c WHERE d.id=c.id RETURNING json_build_object('delivery_id',d.id,'ack_token',d.lease_token,'event',app_delivery_payload(d),'attempt',d.attempts)::text",&[installation,&lease,if limited {"true"}else{"false"},if terminal_only {"true"}else{"false"}]).await?;
+    let rows=query(&mut tx,"WITH candidate AS(SELECT d.id FROM app_deliveries d WHERE d.installation_id=$1 AND app_delivery_allowed(d) AND (NOT $4::boolean OR d.event_type IN('app.uninstalled','tokens.revoked','app.deleted')) AND (NOT $3::boolean OR d.first_delivered_at IS NOT NULL OR app_event_quota_exempt(d.event_type)) AND d.acked_at IS NULL AND d.available_at<=now() AND d.expires_at>now() AND (d.lease_until IS NULL OR d.lease_until<now()) ORDER BY CASE WHEN d.event_type='app.uninstalled' THEN 0 ELSE 1 END,d.created_at,d.id FOR UPDATE SKIP LOCKED LIMIT 1) UPDATE app_deliveries d SET attempts=attempts+1,first_delivered_at=COALESCE(first_delivered_at,now()),lease_until=clock_timestamp()+interval '3 seconds',lease_token=$2,available_at=clock_timestamp()+make_interval(secs=>LEAST(3600,power(2,LEAST(attempts+1,12))::integer)) FROM candidate c WHERE d.id=c.id RETURNING json_build_object('delivery_id',d.id,'ack_token',d.lease_token,'event',app_delivery_payload(d),'attempt',d.attempts)::text",&[installation,&lease,if limited {"true"}else{"false"},if terminal_only {"true"}else{"false"}]).await?;
     tx.commit().await?;
     let value = rows.into_iter().next();
     if let Some(event) = &value {
@@ -114,12 +116,18 @@ async fn claim_filtered(
     }
     Ok(value)
 }
-async fn ack(s: &AppState, installation: &str, id: &str, lease: &str) -> Result<(), AppError> {
-    let mut db = s.db.clone();
+/// ACK を記録し、成功時はイベント作成から ACK までの秒数を返す。
+async fn ack(
+    db: &toasty::Db,
+    installation: &str,
+    id: &str,
+    lease: &str,
+) -> Result<Option<f64>, AppError> {
+    let mut db = db.clone();
     let mut tx = db.transaction().await?;
-    toasty::sql::statement("UPDATE app_deliveries SET acked_at=now(),lease_until=NULL,last_error=NULL WHERE id=$1 AND installation_id=$2 AND lease_token=$3 AND acked_at IS NULL").bind(id).bind(installation).bind(lease).exec(&mut tx).await?;
+    let rows=query(&mut tx,"UPDATE app_deliveries SET acked_at=now(),lease_until=NULL,last_error=NULL WHERE id=$1 AND installation_id=$2 AND lease_token=$3 AND acked_at IS NULL RETURNING json_build_object('latency',extract(epoch from now()-created_at))::text",&[id,installation,lease]).await?;
     tx.commit().await?;
-    Ok(())
+    Ok(rows.first().and_then(|v| v["latency"].as_f64()))
 }
 async fn run_socket(
     s: AppState,
@@ -172,7 +180,7 @@ async fn run_socket_inner(
            Ok(snapshot)=>{if snapshot!=previous_presence {previous_presence=snapshot.clone();if ws.send(Message::Text(json!({"type":"presence_snapshot","users":snapshot}).to_string().into())).await.is_err(){break;}}},Err(_)=>break
           }
          }
-         for _ in 0..16 {match claim(s,installation).await{
+         for _ in 0..16 {match claim(&s.db,installation).await{
           Ok(Some(event))=>{
            if ws.send(Message::Text(event.to_string().into())).await.is_err(){break;}
           },Ok(None)=>break,Err(_)=>return
@@ -190,7 +198,7 @@ async fn run_socket_inner(
             if ws.send(Message::Text(json!({"type":"presence_snapshot","request_id":v["id"],"users":snapshot}).to_string().into())).await.is_err(){break;}},Err(_)=>{if ws.send(Message::Text(json!({"type":"error","request_id":v["id"],"error":"Presence request denied or invalid"}).to_string().into())).await.is_err(){break;}}}
             continue;
            }
-          if let Ok(v)=serde_json::from_str::<Value>(&text)&& let(Some(id),Some(token))=(v["ack"].as_str(),v["ack_token"].as_str())&& ack(s,installation,id,token).await.is_err(){break;}
+          if let Ok(v)=serde_json::from_str::<Value>(&text)&& let(Some(id),Some(token))=(v["ack"].as_str(),v["ack_token"].as_str())&& ack(&s.db,installation,id,token).await.is_err(){break;}
          },Some(Ok(Message::Ping(data)))=>{if ws.send(Message::Pong(data)).await.is_err(){break;}},Some(Ok(Message::Close(_)))|None|Some(Err(_))=>break,_=>{}
         }}
         }
@@ -232,7 +240,7 @@ async fn terminal_socket(s: &AppState, ws: &mut WebSocket, installation: &str) {
         if tokio::time::Instant::now() >= deadline {
             break;
         }
-        if let Ok(Some(event)) = claim_filtered(s, installation, true).await {
+        if let Ok(Some(event)) = claim_filtered(&s.db, installation, true).await {
             if ws
                 .send(Message::Text(event.to_string().into()))
                 .await
@@ -247,7 +255,7 @@ async fn terminal_socket(s: &AppState, ws: &mut WebSocket, installation: &str) {
                 && v["ack_token"] == event["ack_token"]
             {
                 let _ = ack(
-                    s,
+                    &s.db,
                     installation,
                     event["delivery_id"].as_str().unwrap(),
                     event["ack_token"].as_str().unwrap(),
@@ -287,6 +295,36 @@ pub(crate) fn public_ip(ip: IpAddr) -> bool {
         }
     }
 }
+const MSG_LOOKUP: &str = "Event host lookup failed";
+const MSG_NOT_PUBLIC: &str = "Event endpoint must resolve to public addresses";
+const MSG_SEND: &str = "Event delivery failed";
+const MSG_TIMEOUT: &str = "Event delivery timed out";
+const MSG_STATUS_PREFIX: &str = "Event endpoint returned ";
+
+/// メトリクスのラベル用に配信エラーを分類する（ホスト名や本文は含めない）。
+fn status_class(e: &AppError) -> &'static str {
+    let (AppError::BadGateway(m) | AppError::BadRequest(m)) = e else {
+        return "other";
+    };
+    if m == MSG_LOOKUP {
+        "dns"
+    } else if m == MSG_NOT_PUBLIC {
+        "blocked"
+    } else if m == MSG_TIMEOUT {
+        "timeout"
+    } else if m == MSG_SEND {
+        "network"
+    } else if let Some(code) = m.strip_prefix(MSG_STATUS_PREFIX) {
+        match code.chars().next() {
+            Some('3') => "3xx",
+            Some('4') => "4xx",
+            Some('5') => "5xx",
+            _ => "other",
+        }
+    } else {
+        "other"
+    }
+}
 async fn signed_post(
     url: &str,
     signing: &str,
@@ -298,12 +336,10 @@ async fn signed_post(
     let port = url.port_or_known_default().unwrap();
     let addresses: Vec<_> = tokio::net::lookup_host((host, port))
         .await
-        .map_err(|_| AppError::BadGateway("Event host lookup failed".into()))?
+        .map_err(|_| AppError::BadGateway(MSG_LOOKUP.into()))?
         .collect();
     if addresses.is_empty() || addresses.iter().any(|a| !public_ip(a.ip())) {
-        return Err(AppError::BadRequest(
-            "Event endpoint must resolve to public addresses".into(),
-        ));
+        return Err(AppError::BadRequest(MSG_NOT_PUBLIC.into()));
     }
     // Pin DNS and disable redirects/proxies to prevent validation-to-request rebinding.
     let client = reqwest::Client::builder()
@@ -331,10 +367,19 @@ async fn signed_post(
         .body(body)
         .send()
         .await
-        .map_err(|_| AppError::BadGateway("Event delivery failed or timed out".into()))?;
+        .map_err(|e| {
+            AppError::BadGateway(
+                if e.is_timeout() {
+                    MSG_TIMEOUT
+                } else {
+                    MSG_SEND
+                }
+                .into(),
+            )
+        })?;
     if !response.status().is_success() {
         return Err(AppError::BadGateway(format!(
-            "Event endpoint returned {}",
+            "{MSG_STATUS_PREFIX}{}",
             response.status().as_u16()
         )));
     }
@@ -408,40 +453,77 @@ pub async fn worker_with(s: AppState, http: bool) {
     if !http {
         tracing::info!("HTTP app delivery is disabled in this process (APP_HTTP_DELIVERY_WORKER)");
     }
-    let maintenance = async {
-        let mut ticks = tokio::time::interval(Duration::from_secs(1));
-        let mut passes = 0u32;
-        loop {
-            ticks.tick().await;
-            passes = passes.wrapping_add(1);
-            if let Err(e) = super::events::maintain(&s).await {
-                tracing::warn!(error=%e,"Event maintenance failed");
-            }
-            if http
-                && passes.is_multiple_of(60)
-                && let Err(e) = cleanup(&s).await
-            {
-                tracing::warn!(error=%e,"App cleanup failed");
-            }
-        }
-    };
+    let maintenance = maintenance_loop(s.db.clone());
     let dispatch = async {
         if !http {
             return std::future::pending::<()>().await;
         }
-        let mut ticks = tokio::time::interval(Duration::from_millis(500));
-        loop {
-            ticks.tick().await;
-            if let Err(e) = http_pass(&s).await {
-                tracing::warn!(error=%e,"App delivery failed");
-            }
-        }
+        // 停止信号を送る側がいないので、このループは終了しない。
+        let (_keep_alive, shutdown) = tokio::sync::watch::channel(false);
+        http_loop(s.db.clone(), shutdown).await
     };
     tokio::join!(maintenance, dispatch);
 }
+
+/// 在席・ステータス期限・リマインダーなど、配信と無関係な定期処理。
+pub async fn maintenance_loop(db: toasty::Db) {
+    let mut ticks = tokio::time::interval(Duration::from_secs(1));
+    loop {
+        ticks.tick().await;
+        if let Err(e) = super::events::maintain(&db).await {
+            tracing::warn!(error=%e,"Event maintenance failed");
+        }
+    }
+}
+
+/// HTTP 配信と履歴削除のループ。`shutdown` が true になると新しい配信（リース）を取らず、
+/// 実行中の 1 回分を終えてから戻る。
+pub async fn http_loop(db: toasty::Db, mut shutdown: tokio::sync::watch::Receiver<bool>) {
+    // 履歴削除は配信と別タスクで回す。遅い削除が配信の tick を止めないため。
+    let cleanup_task = tokio::spawn({
+        let db = db.clone();
+        async move {
+            let mut ticks = tokio::time::interval(Duration::from_secs(60));
+            ticks.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+            loop {
+                ticks.tick().await;
+                if let Err(e) = cleanup(&db).await {
+                    tracing::warn!(error=%e,"App cleanup failed");
+                }
+            }
+        }
+    });
+    let mut ticks = tokio::time::interval(Duration::from_millis(500));
+    ticks.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    loop {
+        tokio::select! {
+            biased;
+            _ = shutdown.changed() => break,
+            _ = ticks.tick() => {
+                if let Err(e) = http_pass(&db).await {
+                    tracing::warn!(error=%e,"App delivery failed");
+                }
+            }
+        }
+    }
+    cleanup_task.abort();
+}
+
+/// 滞留状況のゲージを更新する。管理 API と同じ定義（未 ACK かつ期限内）。
+pub async fn refresh_queue_metrics(db: &toasty::Db) -> Result<(), AppError> {
+    let mut db = db.clone();
+    let mut tx = db.transaction().await?;
+    let row=one(&mut tx,"SELECT json_build_object('depth',count(*),'oldest',COALESCE(extract(epoch from now()-min(created_at)),0))::text FROM app_deliveries WHERE acked_at IS NULL AND expires_at>now()",&[]).await?;
+    drop(tx);
+    super::dispatch_metrics::global().set_queue(
+        row["depth"].as_u64().unwrap_or(0),
+        row["oldest"].as_f64().unwrap_or(0.0),
+    );
+    Ok(())
+}
 /// Reserve a fair page across workers; inaccessible and currently leased events cannot occupy it.
-pub async fn http_candidates(s: &AppState) -> Result<Vec<Value>, AppError> {
-    let mut db = s.db.clone();
+pub async fn http_candidates(db: &toasty::Db) -> Result<Vec<Value>, AppError> {
+    let mut db = db.clone();
     let mut tx = db.transaction().await?;
     let installs=query(&mut tx,r#"WITH candidates AS (
  SELECT i.id FROM app_installations i JOIN apps a ON a.id=i.app_id
@@ -459,12 +541,12 @@ pub async fn http_candidates(s: &AppState) -> Result<Vec<Value>, AppError> {
 }
 
 /// Run one bounded dispatch batch, also used by the periodic worker.
-pub async fn http_pass(s: &AppState) -> Result<(), AppError> {
-    let installs = http_candidates(s).await?;
+pub async fn http_pass(db: &toasty::Db) -> Result<(), AppError> {
+    let installs = http_candidates(db).await?;
     let results = futures_util::stream::iter(installs)
         .map(|i| async move {
             let sends = futures_util::stream::iter(0..32)
-                .map(|_| http_install(s, i.clone()))
+                .map(|_| http_install(db, i.clone()))
                 .buffer_unordered(32)
                 .collect::<Vec<_>>()
                 .await;
@@ -483,9 +565,9 @@ pub async fn http_pass(s: &AppState) -> Result<(), AppError> {
     Ok(())
 }
 
-async fn http_install(s: &AppState, i: Value) -> Result<(), AppError> {
+async fn http_install(db: &toasty::Db, i: Value) -> Result<(), AppError> {
     let id = i["id"].as_str().unwrap();
-    if let Some(event) = claim(s, id).await? {
+    if let Some(event) = claim(db, id).await? {
         match tokio::time::timeout(
             Duration::from_secs(3),
             deliver(
@@ -495,19 +577,25 @@ async fn http_install(s: &AppState, i: Value) -> Result<(), AppError> {
             ),
         )
         .await
-        .unwrap_or_else(|_| Err(AppError::BadGateway("Event delivery timed out".into())))
+        .unwrap_or_else(|_| Err(AppError::BadGateway(MSG_TIMEOUT.into())))
         {
             Ok(()) => {
-                ack(
-                    s,
+                let m = super::dispatch_metrics::global();
+                m.record_attempt(true, "2xx");
+                if let Some(latency) = ack(
+                    db,
                     id,
                     event["delivery_id"].as_str().unwrap(),
                     event["ack_token"].as_str().unwrap(),
                 )
                 .await?
+                {
+                    m.observe_latency(latency);
+                }
             }
             Err(e) => {
-                let mut db = s.db.clone();
+                super::dispatch_metrics::global().record_attempt(false, status_class(&e));
+                let mut db = db.clone();
                 let mut tx = db.transaction().await?;
                 toasty::sql::statement(
                     "UPDATE app_deliveries SET last_error=$2 WHERE id=$1 AND lease_token=$3",
@@ -525,8 +613,8 @@ async fn http_install(s: &AppState, i: Value) -> Result<(), AppError> {
     Ok(())
 }
 
-pub async fn cleanup(s: &AppState) -> Result<(), AppError> {
-    let mut db = s.db.clone();
+pub async fn cleanup(db: &toasty::Db) -> Result<(), AppError> {
+    let mut db = db.clone();
     let mut tx = db.transaction().await?;
     for sql in [
         "DELETE FROM app_rate_limits WHERE window_start<now()-interval '1 hour'",
@@ -588,6 +676,30 @@ async fn presence_allowed(s: &AppState, installation: &str) -> Result<bool, AppE
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn classifies_delivery_errors_without_leaking_details() {
+        let bad = |m: &str| AppError::BadGateway(m.into());
+        assert_eq!(
+            status_class(&bad(&format!("{MSG_STATUS_PREFIX}503"))),
+            "5xx"
+        );
+        assert_eq!(
+            status_class(&bad(&format!("{MSG_STATUS_PREFIX}404"))),
+            "4xx"
+        );
+        assert_eq!(
+            status_class(&bad(&format!("{MSG_STATUS_PREFIX}302"))),
+            "3xx"
+        );
+        assert_eq!(status_class(&bad(MSG_SEND)), "network");
+        assert_eq!(status_class(&bad(MSG_TIMEOUT)), "timeout");
+        assert_eq!(status_class(&bad(MSG_LOOKUP)), "dns");
+        assert_eq!(
+            status_class(&AppError::BadRequest(MSG_NOT_PUBLIC.into())),
+            "blocked"
+        );
+        assert_eq!(status_class(&bad("something else")), "other");
+    }
     #[test]
     fn http_delivery_switch_defaults_to_enabled() {
         assert!(http_delivery_enabled_from(None));

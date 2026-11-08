@@ -57,3 +57,7 @@ path = "src/lib.rs"
 [[bin]]
 name = "zoo_backend"
 path = "src/main.rs"
+
+[[bin]]
+name = "zoo_dispatcher"
+path = "src/bin/zoo_dispatcher.rs"
