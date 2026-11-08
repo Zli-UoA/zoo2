@@ -1451,7 +1451,7 @@ Megolm のメッセージ（`messages` の行）を復号したとき：
   - getrandom 0.4 には `wasm32-unknown-unknown` の既定のバックエンドがなく、バックエンドを選ばないと `compile_error!` でビルドが止まる。
   - CI Crypto（`.github/workflows/ci-crypto.yaml`）と `make crypto-check` は、バインディングのクレートなしで、コアだけを `wasm32-unknown-unknown` 向けにビルドする。コアで有効にしないと、このビルドが通らない。
   - target を限った依存なので、ネイティブ、Android、TUI のビルドには入らない。この target のときだけ、getrandom が `wasm-bindgen` に依存する（`atomics` を有効にしたときは `js-sys` にも。既定では出ない）。`cargo tree --target wasm32-unknown-unknown` で確かめられる。`Cargo.lock` は target を記録しないので根拠にならない。
-- この target で動かすのは、JS の上で動く React だけ（Compose for Web は実験を中止した。`frontend-compose/` の Web 専用コードは過去の実験資料として残っているが、暗号は載せない）なので、`crypto.getRandomValues` を前提にしてよい。JS のない環境で `wasm32-unknown-unknown` を使うことになったら、この例外を見直す。
+- この target で動かすのは、JS の上で動く React だけ（Compose for Web は実験を中止し、`frontend-compose/` には Android 向けの共有コードだけが残る）なので、`crypto.getRandomValues` を前提にしてよい。JS のない環境で `wasm32-unknown-unknown` を使うことになったら、この例外を見直す。
 
 ### 乱数
 
