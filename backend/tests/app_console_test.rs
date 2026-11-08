@@ -456,7 +456,7 @@ async fn app_metrics_summarize_one_apps_deliveries_for_its_developer_and_admins(
         StatusCode::FORBIDDEN
     );
     for bad in ["hours=0", "hours=721", "hours=abc", "unknown=1"] {
-        let (status, _) = req(
+        let (status, body) = req(
             &app,
             "GET",
             &format!("{metrics}?{bad}"),
@@ -465,6 +465,8 @@ async fn app_metrics_summarize_one_apps_deliveries_for_its_developer_and_admins(
         )
         .await;
         assert_eq!(status, StatusCode::BAD_REQUEST, "{bad}");
+        // どの 400 も JSON の `error` を返す（クエリの解析失敗を含む）。
+        assert!(body["error"].is_string(), "{bad}: {body}");
     }
     assert_eq!(
         req(

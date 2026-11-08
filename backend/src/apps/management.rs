@@ -430,8 +430,10 @@ async fn app_metrics(
     State(s): State<AppState>,
     actor: AuthUser,
     Path(id): Path<String>,
-    Query(q): Query<MetricsQuery>,
+    q: Result<Query<MetricsQuery>, axum::extract::rejection::QueryRejection>,
 ) -> Result<Json<Value>, AppError> {
+    // 解析に失敗しても、他の 400 と同じ JSON（`error`）で返す。
+    let Query(q) = q.map_err(|_| AppError::BadRequest("Invalid query parameters".into()))?;
     let hours = q.hours.unwrap_or(24);
     if !(1..=720).contains(&hours) {
         return Err(AppError::BadRequest(
@@ -459,6 +461,10 @@ async fn app_metrics(
     }
     // 集計が長引いても DB を占有しないよう、この読み取りには時間制限を付ける。
     toasty::sql::statement("SET LOCAL statement_timeout = '5s'")
+        .exec(&mut tx)
+        .await?;
+    // 時間ごとの区切りは UTC の正時にそろえる（DB のセッション TimeZone に依存させない）。
+    toasty::sql::statement("SET LOCAL TIME ZONE 'UTC'")
         .exec(&mut tx)
         .await?;
     // delivered=ACK 済み、failed=ACK されないまま期限切れ、pending=未 ACK で期限内。
