@@ -6,7 +6,7 @@
 
 use std::{
     collections::HashMap,
-    path::PathBuf,
+    path::{Path, PathBuf},
     sync::{
         Arc,
         atomic::{AtomicBool, Ordering},
@@ -41,6 +41,16 @@ const HEARTBEAT: Duration = Duration::from_secs(30);
 const MAX_FILE_ATTEMPTS: i64 = 3;
 
 pub async fn worker(s: AppState) {
+    // 前のプロセスが取り込みの途中で止まると、ZIP が残る（Kubernetes の emptyDir は
+    // コンテナの再起動では消えない）。残ったままだと、取り直したジョブの ZIP と合わせて
+    // 容量の上限を超えることがあるので、始める前に片付ける。
+    let dir = s.config.slack.import_tmp_dir.clone();
+    match blocking(move || remove_orphan_zips(&dir).map_err(|e| AppError::Internal(e.into()))).await
+    {
+        Ok(0) => {}
+        Ok(removed) => tracing::info!(removed, "Removed leftover Slack import ZIPs"),
+        Err(e) => tracing::warn!(error = %e, "Failed to clean up leftover Slack import ZIPs"),
+    }
     let mut ticks = tokio::time::interval(Duration::from_secs(2));
     let mut passes = 0u32;
     loop {
@@ -324,9 +334,34 @@ async fn blocking<T: Send + 'static>(
         .map_err(|e| AppError::Internal(e.into()))?
 }
 
-/// ストレージから ZIP を一時ファイルに落とす。破棄時に消す。
+const TEMP_ZIP_PREFIX: &str = "zoo-slack-import-";
+const TEMP_ZIP_SUFFIX: &str = ".zip";
+
+/// ストレージから落とした ZIP の一時ファイル。破棄時に消す。
+///
+/// 使っている間はファイルに排他ロック（flock）をかけておく。ロックはプロセスが
+/// 終わると OS が外すので、ロックを取れるファイルは持ち主が止まった残りだと分かる。
 struct TempZip {
     path: PathBuf,
+    _lock: std::fs::File,
+}
+
+impl TempZip {
+    /// ロックをかけた空のファイルを作り、書き込み用のハンドルと一緒に返す
+    fn create(dir: &Path) -> std::io::Result<(Self, std::fs::File)> {
+        let path = dir.join(format!(
+            "{TEMP_ZIP_PREFIX}{}{TEMP_ZIP_SUFFIX}",
+            uuid::Uuid::new_v4()
+        ));
+        let file = std::fs::File::create_new(&path)?;
+        if let Err(e) = file.try_lock() {
+            let _ = std::fs::remove_file(&path);
+            return Err(std::io::Error::other(e));
+        }
+        // 複製したハンドルは同じロックを共有するので、書き込み側を閉じてもロックは残る
+        let writer = file.try_clone()?;
+        Ok((Self { path, _lock: file }, writer))
+    }
 }
 
 impl Drop for TempZip {
@@ -335,14 +370,41 @@ impl Drop for TempZip {
     }
 }
 
-async fn download(s: &AppState, key: &str) -> Result<TempZip, AppError> {
-    let tmp = TempZip {
-        path: s
-            .config
-            .slack
-            .import_tmp_dir
-            .join(format!("zoo-slack-import-{}.zip", uuid::Uuid::new_v4())),
+/// `dir` に残っている一時 ZIP のうち、どのプロセスも使っていないものを消す。
+/// 既定の一時ディレクトリはほかのプロセスと共有することがあるので、ロックが取れた
+/// （持ち主のプロセスが終わっている）ファイルだけを消す。消した数を返す。
+fn remove_orphan_zips(dir: &Path) -> std::io::Result<usize> {
+    let entries = match std::fs::read_dir(dir) {
+        Ok(entries) => entries,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(0),
+        Err(e) => return Err(e),
     };
+    let mut removed = 0;
+    for entry in entries {
+        let entry = entry?;
+        let name = entry.file_name();
+        let Some(name) = name.to_str() else { continue };
+        if !name.starts_with(TEMP_ZIP_PREFIX) || !name.ends_with(TEMP_ZIP_SUFFIX) {
+            continue;
+        }
+        if !entry.file_type()?.is_file() {
+            continue;
+        }
+        let Ok(file) = std::fs::File::open(entry.path()) else {
+            continue;
+        };
+        if file.try_lock().is_ok() {
+            std::fs::remove_file(entry.path())?;
+            removed += 1;
+        }
+    }
+    Ok(removed)
+}
+
+async fn download(s: &AppState, key: &str) -> Result<TempZip, AppError> {
+    let dir = s.config.slack.import_tmp_dir.clone();
+    let (tmp, writer) =
+        blocking(move || TempZip::create(&dir).map_err(|e| AppError::Internal(e.into()))).await?;
     let object = s
         .s3_client
         .get_object()
@@ -352,9 +414,7 @@ async fn download(s: &AppState, key: &str) -> Result<TempZip, AppError> {
         .await
         .map_err(|e| AppError::Internal(anyhow::anyhow!("Failed to read the Slack export: {e}")))?;
     let mut reader = object.body.into_async_read();
-    let mut file = tokio::fs::File::create(&tmp.path)
-        .await
-        .map_err(|e| AppError::Internal(e.into()))?;
+    let mut file = tokio::fs::File::from_std(writer);
     tokio::io::copy(&mut reader, &mut file)
         .await
         .map_err(|e| AppError::Internal(e.into()))?;
@@ -1311,4 +1371,32 @@ async fn fetch_one(
     .await?;
     tx.commit().await?;
     Ok(FileOutcome::Done(attachment))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn remove_orphan_zips_keeps_zips_in_use() {
+        let dir = std::env::temp_dir().join(format!("zoo-slack-tmp-test-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir(&dir).unwrap();
+        let orphan = dir.join(format!("{TEMP_ZIP_PREFIX}orphan{TEMP_ZIP_SUFFIX}"));
+        std::fs::write(&orphan, b"left behind").unwrap();
+        let other = dir.join("unrelated.zip");
+        std::fs::write(&other, b"not ours").unwrap();
+        let (in_use, _writer) = TempZip::create(&dir).unwrap();
+
+        assert_eq!(remove_orphan_zips(&dir).unwrap(), 1);
+        assert!(!orphan.exists());
+        assert!(in_use.path.exists());
+        assert!(other.exists());
+
+        // 使い終わったファイルは破棄時に消える
+        let path = in_use.path.clone();
+        drop(in_use);
+        assert!(!path.exists());
+        assert_eq!(remove_orphan_zips(&dir.join("missing")).unwrap(), 0);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
 }
