@@ -86,6 +86,10 @@ pub struct ChannelViewCache {
 pub enum AppEvent {
     Notice(String),
     Unauthorized,
+    EmojiCatalog {
+        shortcodes: HashMap<String, String>,
+        custom: HashSet<String>,
+    },
     SubmissionSucceeded {
         submission_id: u64,
     },
@@ -598,6 +602,7 @@ impl AppState {
     }
 
     fn clear_session_state(&mut self) {
+        zoo2_client_core::mfm::set_emoji_catalog(HashMap::new(), HashSet::new());
         if let Some(tm) = self.token_manager.take() {
             tm.disable_persistence();
         }
@@ -782,6 +787,25 @@ impl AppState {
 
     fn start_periodic_tasks(&mut self) {
         let session_gen = self.session_gen;
+        if let Some(api) = self.api.clone() {
+            let tx = self.event_tx.clone();
+            self.spawn_session_task(async move {
+                let mut interval = tokio::time::interval(Duration::from_secs(60));
+                loop {
+                    interval.tick().await;
+                    if let Ok((shortcodes, custom)) = api.emoji_catalog().await
+                        && tx
+                            .send(DesktopEvent::App {
+                                session_gen,
+                                event: AppEvent::EmojiCatalog { shortcodes, custom },
+                            })
+                            .is_err()
+                    {
+                        break;
+                    }
+                }
+            });
+        }
         // 既読状態の定期取得
         if let Some(api) = self.api.clone() {
             let tx = self.event_tx.clone();
@@ -1244,6 +1268,10 @@ impl AppState {
 
     pub fn on_app_event(&mut self, event: AppEvent) -> bool {
         match event {
+            AppEvent::EmojiCatalog { shortcodes, custom } => {
+                zoo2_client_core::mfm::set_emoji_catalog(shortcodes, custom);
+                true
+            }
             AppEvent::Notice(message) => {
                 self.notify(message);
                 true

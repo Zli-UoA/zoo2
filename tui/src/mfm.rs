@@ -1,11 +1,11 @@
 //! `zoo2-client-core::mfm` の解析結果を `ratatui` の `Line` / `Span` に変換する。
 
+pub use core_mfm::{is_custom_shortcode, set_emoji_catalog, unicode_shortcode};
 use ratatui::{
     style::{Color, Modifier, Style},
     text::{Line, Span},
 };
 use zoo2_client_core::mfm::{self as core_mfm, Tone};
-pub use core_mfm::{set_emoji_catalog, is_custom_shortcode, unicode_shortcode};
 
 /// 本文を行ごとのスタイル付きテキストにする。`me` は自分の `user_name` で、自分宛ての
 /// メンションを反転表示する。

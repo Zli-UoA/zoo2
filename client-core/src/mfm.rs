@@ -512,10 +512,7 @@ fn shortcode(scan: &mut Scan, i: usize, base: Style) -> Option<(usize, Vec<Span>
         return None;
     }
     let emoji = unicode_shortcode(name)?;
-    Some((
-        name.len() + 2,
-        vec![Span::styled(emoji, base)],
-    ))
+    Some((name.len() + 2, vec![Span::styled(emoji, base)]))
 }
 
 fn unixtime(body: &str, base: Style) -> Vec<Span> {
