@@ -1379,7 +1379,7 @@ Megolm のメッセージ（`messages` の行）を復号したとき：
 - 【決定】`wasm_js` feature はバインディングのクレートではなくコアの `crates/zoo-crypto/Cargo.toml` で、`[target.'cfg(all(target_arch = "wasm32", target_os = "unknown"))'.dependencies]` に書いて有効にする（#348）。理由は次の 3 つ。
   - getrandom 0.4 には `wasm32-unknown-unknown` の既定のバックエンドがなく、バックエンドを選ばないと `compile_error!` でビルドが止まる。
   - CI Crypto（`.github/workflows/ci-crypto.yaml`）と `make crypto-check` は、バインディングのクレートなしで、コアだけを `wasm32-unknown-unknown` 向けにビルドする。コアで有効にしないと、このビルドが通らない。
-  - target を限った依存なので、ネイティブ、Android、TUI のビルドには入らない。この target のときだけ、getrandom が `wasm-bindgen` と `js-sys` に依存する（`Cargo.lock`）。
+  - target を限った依存なので、ネイティブ、Android、TUI のビルドには入らない。この target のときだけ、getrandom が `wasm-bindgen` と `js-sys` に依存する（`cargo tree --target wasm32-unknown-unknown` で確かめられる。`Cargo.lock` は target を記録しないので根拠にならない）。
 - この target で動かすのは、JS の上で動く React と Compose wasmJs だけなので、`crypto.getRandomValues` を前提にしてよい。JS のない環境で `wasm32-unknown-unknown` を使うことになったら、この例外を見直す。
 
 ### 乱数
@@ -1396,7 +1396,7 @@ Megolm のメッセージ（`messages` の行）を復号したとき：
 - 【決定】暗号ストアは、オフライン DB（`zoo-offline-*`）とは別に置く。`OFFLINE_SCHEMA_VERSION` を変えてオフライン DB を作り直しても、暗号ストアは消えない（消えると端末の鍵を失うため）。
 - 【決定】Olm と Megolm の状態は、vodozemac の pickle を暗号化して保存する（#348）。暗号化に使う pickle key は保存のたびに変える。
   - 呼び出し側は 32 バイトの**保存鍵**を長く持ち、vodozemac には直接渡さない。保存するたびに新しい 32 バイトの salt を作り、`HKDF-SHA256(ikm = 保存鍵, salt, info)` で、その保存だけに使う pickle key を導く。salt は保存形式に平文で入れる。`info` は保存するものごとに分ける（端末アカウントは `zoo e2ee device pickle key v1`）。
-  - pickle key を保存のたびに変えるのは、vodozemac の pickle が pickle key から AES 鍵と IV を決まった方法で導くため。同じ pickle key を使い回すと、保存のたびに同じ鍵と IV で AES-CBC を使うことになる。そうなると、同じ平文ブロックは同じ暗号文ブロックになるので、複数の版やバックアップを手に入れた攻撃者は、暗号文を比べて pickle のどこが変わったかを知ることができる。[鍵バックアップ](#鍵バックアップ)で暗号化のたびに一時鍵を作り直すのも、同じ理由による。状態が変わっていなくても、保存のたびに出力は変わる。
+  - pickle key を保存のたびに変えるのは、vodozemac の pickle が pickle key から AES 鍵と IV を決まった方法で導くため。同じ pickle key を使い回すと、保存のたびに同じ鍵と IV で AES-CBC を使うことになる。そうなると、先頭から同じ平文が続く範囲は同じ暗号文ブロックになるので、複数の版やバックアップを手に入れた攻撃者は、暗号文を比べて pickle のどこが変わったかを知ることができる。[鍵バックアップ](#鍵バックアップ)で暗号化のたびに一時鍵を作り直すのも、同じ理由による。状態が変わっていなくても、保存のたびに出力は変わる。
 - 【提案】端末アカウントの保存形式（`DeviceAccount::pickle`）は、次の JSON にする。
 
   ```json
