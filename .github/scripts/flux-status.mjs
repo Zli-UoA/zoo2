@@ -126,7 +126,12 @@ export function parseState(text) {
       !["zoo2", "zoo2-migrate"].includes(name) ||
       !Number.isFinite(Date.parse(value?.timestamp)) ||
       // Snapshots saved before outcomes were recorded have no state.
-      ![undefined, "success", "failure"].includes(value.state)
+      ![undefined, "success", "failure"].includes(value.state) ||
+      // The previous release is recorded to tell a rollback from a rerun.
+      (value.digest !== undefined &&
+        !/^sha256:[a-f0-9]{64}$/.test(value.digest)) ||
+      (value.releaseTag !== undefined &&
+        !/^0\.0\.[1-9][0-9]{0,14}$/.test(value.releaseTag))
     )
       throw new Error("Invalid Flux watermark");
   }
@@ -197,6 +202,8 @@ export async function pruneStateArtifacts(api) {
 }
 
 const maxCheckText = 65535;
+const omittedMarker = "(older events omitted)";
+const fence = "```";
 const checkTitles = {
   pending: (tag) => `Rolling out ${tag}`,
   success: (tag) => `Rolled out ${tag}`,
@@ -207,26 +214,50 @@ function eventLine(result) {
   const message = String(result.message ?? "")
     // eslint-disable-next-line no-control-regex
     .replace(/[\u0000-\u001f\u007f]+/g, " ")
+    // The text is shown in a code block. Keep a message from closing it.
+    .replace(/`/g, "'")
     .trim()
     .slice(0, 200);
   return `${result.timestamp} ${result.reason}${message ? `: ${message}` : ""}`;
 }
 
+// output.text is Markdown. A code block keeps one event per line and stops
+// "_" or "*" in Flux messages from being rendered as emphasis.
+function readCheckLines(text) {
+  const lines = String(text ?? "")
+    .replace(/^```\n?/, "")
+    .replace(/\n?```$/, "")
+    .split("\n")
+    .filter(Boolean);
+  const omitted = lines[0] === omittedMarker;
+  return { lines: omitted ? lines.slice(1) : lines, omitted };
+}
+
 // output.text is replaced, not appended, and is capped. Drop the oldest lines.
-export function fitCheckText(lines) {
-  if (lines.join("\n").length <= maxCheckText) return lines.join("\n");
-  const marker = "(older events omitted)";
-  let budget = maxCheckText - marker.length;
+export function fitCheckText(lines, omitted = false) {
+  const wrap = (body) => `${fence}\n${body}\n${fence}`;
+  const all = omitted ? [omittedMarker, ...lines] : lines;
+  const overhead = wrap("").length;
+  if (all.join("\n").length + overhead <= maxCheckText)
+    return wrap(all.join("\n"));
+  let budget = maxCheckText - overhead - omittedMarker.length - 1;
   const kept = [];
   for (let i = lines.length - 1; i >= 0; i--) {
     budget -= lines[i].length + 1;
     if (budget < 0 && kept.length > 0) break;
     kept.unshift(lines[i]);
   }
-  return [marker, ...kept].join("\n").slice(-maxCheckText);
+  return wrap([omittedMarker, ...kept].join("\n"));
 }
 
-async function findCheckRun(api, sha, name, externalId) {
+const newer = (a, b) =>
+  (Date.parse(a.started_at) || 0) - (Date.parse(b.started_at) || 0) ||
+  (a.id || 0) - (b.id || 0);
+
+// The latest Check Run of this rollout. A rollback to an earlier release adds
+// runs with the same base id and a "@<time>" suffix.
+async function findCheckRun(api, sha, name, base) {
+  let latest = null;
   for (let page = 1; ; page++) {
     const data = await api(
       `/repos/${repository}/commits/${sha}/check-runs?check_name=${encodeURIComponent(name)}&filter=all&per_page=100&page=${page}`,
@@ -234,33 +265,47 @@ async function findCheckRun(api, sha, name, externalId) {
     const runs = data?.check_runs;
     if (!Array.isArray(runs))
       throw new Error("Expected a check_runs GitHub API response");
-    const found = runs.find((run) => run.external_id === externalId);
-    if (found) return found;
-    if (runs.length < 100) return null;
+    for (const run of runs) {
+      const id = run.external_id;
+      if (
+        (id === base || id?.startsWith(`${base}@`)) &&
+        (!latest || newer(run, latest) > 0)
+      )
+        latest = run;
+    }
+    if (runs.length < 100) return latest;
   }
 }
 
 // One Check Run per rollout (name + release tag + digest). Events add a line
 // to its text. A completed run is never reopened by a delayed progress event,
-// and a repeated conclusion (interval reconciliation) changes nothing.
-export async function recordCheckRun(api, { sha, result, runUrl }) {
+// and a repeated conclusion (interval reconciliation) changes nothing. When
+// the previous release recorded in the watermark differs, this is a rollback
+// to an earlier release (A -> B -> A) and gets its own Check Run.
+export async function recordCheckRun(api, { sha, result, runUrl, previous }) {
   const done = result.state !== "pending";
-  const externalId = `${result.name}:${result.releaseTag}:${result.digest}`;
-  const existing = await findCheckRun(api, sha, result.context, externalId);
+  const base = `${result.name}:${result.releaseTag}:${result.digest}`;
+  let existing = await findCheckRun(api, sha, result.context, base);
+  const rolledBack =
+    previous?.digest !== undefined &&
+    (previous.digest !== result.digest ||
+      previous.releaseTag !== result.releaseTag);
+  const newRun = existing?.status === "completed" && rolledBack;
+  if (newRun) existing = null;
   if (
     existing?.status === "completed" &&
     (!done || existing.conclusion === result.state)
   )
     return { checkRun: "unchanged" };
   const line = eventLine(result);
-  const lines = existing?.output?.text ? existing.output.text.split("\n") : [];
-  const has = lines.includes(line);
+  const current = readCheckLines(existing?.output?.text);
+  const has = current.lines.includes(line);
   if (existing && has && !done) return { checkRun: "unchanged" };
-  if (!has) lines.push(line);
+  if (!has) current.lines.push(line);
   const output = {
     title: checkTitles[result.state](result.releaseTag),
     summary: `${result.name} ${result.releaseTag}\n${result.digest}\n[Workflow run](${runUrl})`,
-    text: fitCheckText(lines),
+    text: fitCheckText(current.lines, current.omitted),
   };
   const finish = done
     ? { conclusion: result.state, completed_at: result.timestamp }
@@ -277,7 +322,7 @@ export async function recordCheckRun(api, { sha, result, runUrl }) {
   await api(`/repos/${repository}/check-runs`, {
     name: result.context,
     head_sha: sha,
-    external_id: externalId,
+    external_id: newRun ? `${base}@${result.timestamp}` : base,
     status,
     started_at: result.timestamp,
     details_url: runUrl,
@@ -285,6 +330,32 @@ export async function recordCheckRun(api, { sha, result, runUrl }) {
     output,
   });
   return { checkRun: "created" };
+}
+
+// A completion event dropped as older than the watermark must still end the
+// Check Run its own rollout left in_progress. It never opens, creates or
+// reopens one, and it leaves a newer run (a later rollback) alone.
+export async function closeStaleCheckRun(api, { sha, result, runUrl }) {
+  sha ??= await verifiedSha(api, result);
+  if (!sha) return { checkRun: "unchanged" };
+  const base = `${result.name}:${result.releaseTag}:${result.digest}`;
+  const run = await findCheckRun(api, sha, result.context, base);
+  if (
+    run?.status !== "in_progress" ||
+    Date.parse(run.started_at) > Date.parse(result.timestamp)
+  )
+    return { checkRun: "unchanged" };
+  return recordCheckRun(api, { sha, result, runUrl });
+}
+
+async function verifiedSha(api, result) {
+  const sha = await resolveSha(api, result.digest, result.releaseTag);
+  if (!sha) return null;
+  // A SHA tag is not necessarily a commit in this repository.
+  const commit = await api(`/repos/${repository}/commits/${sha}`);
+  if (commit.sha !== sha)
+    throw new Error("Image SHA does not match an zoo2 commit");
+  return sha;
 }
 
 export async function report(
@@ -296,22 +367,25 @@ export async function report(
   const previous = state.workloads[result.name];
   const previousTime = Date.parse(previous?.timestamp);
   const resultTime = Date.parse(result.timestamp);
-  if (previousTime > resultTime) return { skipped: "older-event" };
+  if (previousTime > resultTime) {
+    if (result.state === "pending") return { skipped: "older-event" };
+    return {
+      skipped: "older-event",
+      ...(await closeStaleCheckRun(api, { result, runUrl })),
+    };
+  }
   if (result.state === "pending") {
-    const sha = await resolveSha(api, result.digest, result.releaseTag);
+    const sha = await verifiedSha(api, result);
     if (!sha) {
       warn(
         "::warning::No matching release tag, digest and commit SHA found; nothing was reported.",
       );
       return { skipped: "missing-sha" };
     }
-    const commit = await api(`/repos/${repository}/commits/${sha}`);
-    if (commit.sha !== sha)
-      throw new Error("Image SHA does not match an zoo2 commit");
     return {
       sha,
       ...result,
-      ...(await recordCheckRun(api, { sha, result, runUrl })),
+      ...(await recordCheckRun(api, { sha, result, runUrl, previous })),
     };
   }
   // Flux event timestamps have second resolution and dispatch order is not
@@ -332,6 +406,8 @@ export async function report(
     state.workloads[result.name] = {
       timestamp: result.timestamp,
       state: result.state,
+      releaseTag: result.releaseTag,
+      digest: result.digest,
     };
   };
   const sha = await resolveSha(api, result.digest, result.releaseTag);
@@ -362,7 +438,10 @@ export async function report(
   }
   const latestTime = Date.parse(latest?.description?.split(" ")[0]); // legacy format
   if (latestTime > Date.parse(result.timestamp))
-    return { skipped: "older-event" };
+    return {
+      skipped: "older-event",
+      ...(await closeStaleCheckRun(api, { sha, result, runUrl })),
+    };
   if (latest?.description !== description || latest?.state !== result.state) {
     await api(`/repos/${repository}/statuses/${sha}`, {
       state: result.state,
@@ -371,7 +450,7 @@ export async function report(
       target_url: runUrl,
     });
   }
-  const check = await recordCheckRun(api, { sha, result, runUrl });
+  const check = await recordCheckRun(api, { sha, result, runUrl, previous });
   if (result.name !== "zoo2" || result.state !== "success") {
     remember();
     return { sha, ...result, ...check };
