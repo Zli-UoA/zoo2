@@ -133,6 +133,44 @@ async fn fetch_userinfo_for_profile(
     }
 }
 
+/// UserInfo の最新値を優先し、取得失敗時はトークンの picture を使う。
+/// 外側の None は取得失敗かつ claim 省略なので、保存済みの画像を維持する。
+fn profile_picture(
+    claims: &OidcClaims,
+    user_info: Option<&OidcUserInfo>,
+) -> Option<Option<String>> {
+    let value = match user_info {
+        Some(info) => info.picture.as_deref(),
+        None => Some(claims.picture.as_deref()?),
+    };
+    Some(value.and_then(|value| {
+        let url = reqwest::Url::parse(value).ok()?;
+        (value.len() <= 2048
+            && url.scheme() == "https"
+            && url.host_str().is_some()
+            && url.username().is_empty()
+            && url.password().is_none())
+        .then(|| url.to_string())
+    }))
+}
+
+async fn sync_profile_picture(
+    db: &toasty::Db,
+    user_id: &str,
+    claims: &OidcClaims,
+    user_info: Option<&OidcUserInfo>,
+) -> Result<(), AppError> {
+    if let Some(picture) = profile_picture(claims, user_info) {
+        let mut db = db.clone();
+        let mut tx = db.transaction().await?;
+        toasty::sql::statement("UPDATE users SET avatar_url=NULLIF($2,'') WHERE id=$1 AND avatar_url IS DISTINCT FROM NULLIF($2,'')")
+            .bind(user_id).bind(picture.as_deref().unwrap_or(""))
+            .exec(&mut tx).await?;
+        tx.commit().await?;
+    }
+    Ok(())
+}
+
 /// 修正前に JIT で作成された `display_name = "user"` のユーザーを UserInfo から補正する。
 ///
 /// ユーザー本人が `PATCH /api/users/me` で編集した表示名を上書きしないよう、
@@ -140,11 +178,9 @@ async fn fetch_userinfo_for_profile(
 async fn repair_legacy_display_name(
     db: &toasty::Db,
     user_cache: &UserResolutionCache,
-    jwks_verifier: &JwksVerifier,
-    oidc_config: &OidcConfig,
-    access_token: &str,
     claims: &OidcClaims,
     user: User,
+    user_info: Option<&OidcUserInfo>,
 ) -> Result<User, AppError> {
     if user.display_name != FALLBACK_USER_NAME || user.updated_at.is_some() {
         return Ok(user);
@@ -154,9 +190,7 @@ async fn repair_legacy_display_name(
         return Ok(user);
     }
 
-    let user_info =
-        fetch_userinfo_for_profile(jwks_verifier, oidc_config, access_token, claims).await;
-    let Some(candidate) = display_name_candidate(claims, user_info.as_ref()) else {
+    let Some(candidate) = display_name_candidate(claims, user_info) else {
         // UserInfo が成功しても名前が無い場合は、しばらく再試行を抑止する
         if user_info.is_some() {
             user_cache.mark_profile_repair_attempted(&user.id).await;
@@ -254,16 +288,11 @@ pub async fn resolve_or_provision_user(
 
     if let Some(identity) = existing_identity {
         let user = User::get_by_id(&mut db_client, &identity.user_id).await?;
-        let user = repair_legacy_display_name(
-            db,
-            user_cache,
-            jwks_verifier,
-            oidc_config,
-            access_token,
-            claims,
-            user,
-        )
-        .await?;
+        let user_info =
+            fetch_userinfo_for_profile(jwks_verifier, oidc_config, access_token, claims).await;
+        sync_profile_picture(db, &user.id, claims, user_info.as_ref()).await?;
+        let user =
+            repair_legacy_display_name(db, user_cache, claims, user, user_info.as_ref()).await?;
 
         let auth_user = AuthUser {
             id: user.id,
@@ -375,6 +404,7 @@ pub async fn resolve_or_provision_user(
         match create_identity_res {
             Ok(_) => {
                 tx.commit().await?;
+                sync_profile_picture(db, &created_user.id, claims, user_info.as_ref()).await?;
                 let auth_user = AuthUser {
                     id: created_user.id,
                     user_name: created_user.user_name,
@@ -792,5 +822,43 @@ mod tests {
             sanitize_for_user_name(&too_long, fallback).chars().count(),
             MAX_USER_NAME_LENGTH
         );
+    }
+}
+
+#[cfg(test)]
+mod picture_tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn picture_uses_fresh_userinfo_and_keeps_existing_on_failure() {
+        let mut claims: OidcClaims = serde_json::from_value(json!({
+            "sub":"user", "iss":"https://id.example", "aud":"zoo", "exp":9999999999u64,
+            "picture":"https://avater.zliusercontent.com/avatars/old.png"
+        }))
+        .unwrap();
+        let mut info: OidcUserInfo = serde_json::from_value(json!({
+            "sub":"user", "picture":"https://avater.zliusercontent.com/avatars/new.png"
+        }))
+        .unwrap();
+        assert_eq!(
+            profile_picture(&claims, Some(&info)),
+            Some(info.picture.clone())
+        );
+        assert_eq!(profile_picture(&claims, None), Some(claims.picture.clone()));
+        info.picture = None;
+        assert_eq!(profile_picture(&claims, Some(&info)), Some(None));
+        claims.picture = None;
+        assert_eq!(profile_picture(&claims, None), None);
+        for url in [
+            "javascript:alert(1)",
+            "data:image/png;base64,xxx",
+            "/relative.png",
+            "https://user:password@example.test/image.png",
+            "http://example.test/image.png",
+        ] {
+            info.picture = Some(url.into());
+            assert_eq!(profile_picture(&claims, Some(&info)), Some(None));
+        }
     }
 }

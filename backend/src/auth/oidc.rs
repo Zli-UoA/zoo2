@@ -29,6 +29,8 @@ pub struct OidcUserInfo {
     pub name: Option<String>,
     #[serde(default)]
     pub email: Option<String>,
+    #[serde(default)]
+    pub picture: Option<String>,
 }
 
 /// OIDC トークンのクレーム定義 (RFC 9068 適合)
@@ -43,6 +45,8 @@ pub struct OidcClaims {
     pub preferred_username: Option<String>,
     pub name: Option<String>,
     pub email: Option<String>,
+    #[serde(default)]
+    pub picture: Option<String>,
     pub scope: Option<serde_json::Value>,
 }
 

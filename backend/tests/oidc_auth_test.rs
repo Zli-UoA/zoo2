@@ -1543,3 +1543,74 @@ async fn test_display_name_repair_does_not_overwrite_concurrent_user_edit() -> a
 
     Ok(())
 }
+
+#[tokio::test]
+async fn test_oidc_picture_syncs_creation_change_failure_and_removal() -> anyhow::Result<()> {
+    let server = MockServer::start().await;
+    let (app, state, config) = setup_test_app(&server, false).await;
+    let sub = format!("picture-{}", uuid::Uuid::new_v4());
+    let token = generate_token(
+        TEST_KEY1_PEM,
+        "test-key-1",
+        &config.issuer,
+        &config.audience,
+        &sub,
+        Some("picture_user"),
+        Some("Edited name"),
+        Some("openid profile"),
+        3600,
+    );
+    let mut user_id = String::new();
+    for (index, picture) in [
+        Some("https://avater.zliusercontent.com/avatars/first.png"),
+        Some("https://avater.zliusercontent.com/avatars/next.png"),
+        Some("failure"),
+        None,
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        server.reset().await;
+        mount_jwks(&server, "/jwks").await;
+        mount_discovery(&server, "/jwks", "/userinfo").await;
+        let response = if picture == Some("failure") {
+            ResponseTemplate::new(503)
+        } else {
+            ResponseTemplate::new(200).set_body_json(json!({"sub": sub, "picture": picture}))
+        };
+        Mock::given(method("GET"))
+            .and(path("/userinfo"))
+            .respond_with(response)
+            .mount(&server)
+            .await;
+        let current_app = if index == 0 {
+            app.clone()
+        } else {
+            create_router(AppState::new(state.db.clone(), state.config.clone()))
+        };
+        let user = fetch_current_user(&current_app, &token).await?;
+        if index == 0 {
+            user_id = user["id"].as_str().unwrap().to_string();
+        }
+        assert_eq!(user["id"], user_id);
+        assert_eq!(user["display_name"], "Edited name");
+        let mut db = state.db.clone();
+        let rows = toasty::sql::query("SELECT COALESCE(avatar_url,'') FROM users WHERE id=$1")
+            .bind(user_id.as_str())
+            .exec(&mut db)
+            .await?;
+        let toasty::stmt::Value::Record(record) = &rows[0] else {
+            panic!("expected record")
+        };
+        let expected = if picture == Some("failure") {
+            "https://avater.zliusercontent.com/avatars/next.png"
+        } else {
+            picture.unwrap_or("")
+        };
+        assert_eq!(
+            record.fields[0],
+            toasty::stmt::Value::String(expected.into())
+        );
+    }
+    Ok(())
+}
