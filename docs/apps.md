@@ -107,7 +107,8 @@ HTTP App へのイベント送信は、backend から独立した `zoo-dispatche
 | 環境変数 | 対象 | 内容 |
 |---|---|---|
 | `DATABASE_URL` / `POSTGRES_*` | dispatcher | 接続先。LISTEN を使うため、トランザクションプールのプーラーを経由しない直接接続にする（経由しても配信は 3 秒ポーリングで動く） |
-| `DISPATCHER_PORT` / `DISPATCHER_HOST` | dispatcher | `/healthz`・`/metrics` の待ち受け（既定 8081 / 0.0.0.0） |
+| `DB_MAX_POOL_SIZE` | dispatcher・backend | DB 接続プールの上限（未設定ならドライバの既定: 論理 CPU 数 × 2）。`http_pass` は最大 8×32 の claim を同時に出すので、Postgres の `max_connections` が小さい環境では絞る |
+| `DISPATCHER_PORT` / `DISPATCHER_HOST` | dispatcher | `/healthz`・`/metrics` の待ち受け（既定 8081 / 0.0.0.0）。配信ループが終わると `/healthz` は 503 を返す |
 | `DISPATCHER_TOKEN` | dispatcher・backend | 内部 API の共有トークン。dispatcher 側が未設定なら内部 API は無効 |
 | `DISPATCHER_URL` | backend | challenge 検証を委譲する dispatcher の URL。未設定なら backend が自分で送る |
 | `APP_HTTP_DELIVERY_WORKER` | backend | `false` で backend の HTTP 配信と配信履歴の削除を止める（API 側の期限切れ削除は止まらない） |
@@ -123,12 +124,12 @@ HTTP App へのイベント送信は、backend から独立した `zoo-dispatche
 5. （任意）`DISPATCHER_URL` と `DISPATCHER_TOKEN` を設定し、challenge 検証を dispatcher に移す（トークンを持つ dispatcher を先に出し、そのあとに backend へ設定する。逆だとその間 challenge 検証が 503 になる）。
 6. （任意）インフラ側で backend の外向き通信を絞る。**5 を済ませ、dispatcher 経由で検証できることを確かめてから行う**（5 が無いと challenge 検証は backend が自分で送ろうとして失敗する。`DISPATCHER_URL` と `DISPATCHER_TOKEN` は片方だけだと設定なし扱いで backend が送る）。ただし backend は App の配信先以外にも外へ出る（ActivityPub の配送・取得、Web Push、S3、OIDC）ので、「dispatcher だけが外へ出る」状態にはできません。それらの宛先は backend に残し、塞げるのは、それ以外の公開宛先への通信に限ります。
 
-**戻し方と障害時**: backend の `APP_HTTP_DELIVERY_WORKER` を外せば、backend が配信を再開します。手順 6 まで進めた環境では、外向きの許可と `DISPATCHER_URL` も元に戻してください（そうしないと backend の配信は外へ出られず失敗し、`attempts` と `available_at` を消費します）。dispatcher が 0 台でも API は動き、配信はキューに溜まり、dispatcher が戻れば送られます。例外が 2 つあります。
+**戻し方と障害時**: backend の `APP_HTTP_DELIVERY_WORKER` は起動時に読むので、外して**再起動**すれば backend が配信を再開します。手順 6 まで進めた環境では、外向きの許可と `DISPATCHER_URL` も元に戻してください（そうしないと backend の配信は外へ出られず失敗し、`attempts` と `available_at` を消費します）。dispatcher が 0 台でも API は動き、配信はキューに溜まり、dispatcher が戻れば送られます。例外が 2 つあります。
 
 - 手順 5 のあとに dispatcher が 0 台だと、`actions/verify-endpoint` は 503 を返します（backend 自身には切り替えません）。
 - 配信には有効期限（作成から 24 時間）があり、それを過ぎた配信は取り直されず、`zoo_dispatch_queue_depth` にも数えられません。24 時間を超えて dispatcher を止めないでください（配信履歴の削除も止まります。API 側の期限切れ行の削除は backend が続けます）。期限切れの配信は、App の開発者・管理者が `POST /api/apps/{id}/deliveries/{delivery}/retry`（期限を 24 時間延ばして送り直す）で再送でき、`/api/apps/metrics` では `failed` に数えられます。
 
-配信は at-least-once で順序保証なし、署名は従来どおり `v1:<timestamp>:<raw body>` の HMAC-SHA256 です。dispatcher は SIGTERM を受けると、新しいリースを取らなくなり（実行中のバッチも、送信枠の待ちの後も claim の前に打ち切ります）、取得済みの送信を最大 8 秒待ちます（Pod の `terminationGracePeriodSeconds` はこれより長くしてください）。待ちきれなかった配信はリースが約 3 秒で切れますが、再送は失敗時のバックオフ（試行回数に応じて 2 秒から最大 1 時間）が明けてからです。
+配信は at-least-once で順序保証なし、署名は従来どおり `v1:<timestamp>:<raw body>` の HMAC-SHA256 です。dispatcher は SIGTERM を受けると、新しいリースを取らなくなり（実行中のバッチも、送信枠の待ちの後も claim の前に打ち切ります）、取得済みの送信を最大 8 秒待ちます（Pod の `terminationGracePeriodSeconds` はこれより長くしてください）。待ちきれなかった配信は HTTP のリース（5 秒。送信の 3 秒タイムアウトに ACK の余裕を足したもの）が切れますが、再送は失敗時のバックオフ（試行回数に応じて 2 秒から最大 1 時間）が明けてからです。
 
 **監視**: `/metrics` に `zoo_dispatch_attempts_total{result,status_class}`、`zoo_dispatch_latency_seconds`（作成から ACK まで）、`zoo_dispatch_queue_depth`、`zoo_dispatch_oldest_pending_seconds`、`zoo_dispatch_circuit_open{host}`（開放中の上位 20 件）、`zoo_dispatch_circuit_open_hosts`（開放中のホスト数）があります。8081 番は `/metrics` と内部 API（`/internal/verify-endpoint`）を兼ねるので、NetworkPolicy では Prometheus と backend だけに届くようにしてください（内部 API はトークンで守られます）。
 
