@@ -605,7 +605,12 @@ export function CallProvider({ config: explicitConfig, children }: CallProviderP
               }
               // 保存済みの出力先 (切断されたヘッドホンなど) を使えない場合は、既定へ戻して通知してから再生する
               fallbackSpeaker(requested);
-              await applySink(audio, speakerIdRef.current);
+              // 既存参加者の音声も同じ出力先へ揃える（保存イベントの購読側は値が一致して再適用しない）
+              const target = speakerIdRef.current;
+              await applySink(audio, target);
+              for (const peer of peersRef.current.values()) {
+                if (peer.audio && peer.audio !== audio) await applySink(peer.audio, target);
+              }
             })
             .then(startPlayback);
         } else {
