@@ -179,7 +179,8 @@ fun ActivityPubNotificationCard(
     val destination = item.text("post_id").takeIf { it.isNotEmpty() }?.let { "/home/posts/${it.encodeURLParameter()}" }
     val label = "${item.text("display_name")} ${app.t("home.notificationKinds.${item.text("kind")}")}"
     BoxWithConstraints {
-        val avatarSize = if (maxWidth < 640.dp) 40.dp else 36.dp
+        val mobile = maxWidth < 640.dp
+        val avatarSize = if (mobile) 40.dp else 36.dp
         Column(
             Modifier.notificationSurface(item.flag("is_read"))
                 .then(webControlModifier("listitem", attributes = mapOf("aria-label" to label)))
@@ -199,7 +200,7 @@ fun ActivityPubNotificationCard(
                         }
                     } else Icon(when(item.text("kind")) { "reply" -> "message-circle"; "repost" -> "repeat-2"; "follow_request" -> "user-plus"; "follow_accepted" -> "user-check"; else -> "at-sign" }, modifier = Modifier.size(12.dp))
                 }
-                Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(if (maxWidth < 640.dp) 8.dp else 4.dp)) {
+                Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(if (mobile) 8.dp else 4.dp)) {
                     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
                         NativeLink(profile, Modifier.weight(1f)) { ActivityPubText(item.text("display_name"), item.homeRows("actor_emojis"), textStyle = androidx.compose.ui.text.TextStyle(fontSize = 14.sp, fontWeight = FontWeight.SemiBold)) }
                         NotificationTimestamp(app, item.text("created_at"))
