@@ -592,7 +592,17 @@ pub async fn http_pass(db: &toasty::Db) -> Result<(), AppError> {
     let installs = http_candidates(db).await?;
     let results = futures_util::stream::iter(installs)
         .map(|i| async move {
-            let sends = futures_util::stream::iter(0..32)
+            // 宛先ホストが落ちている間は配信を取らず（試行回数を消費せず）、開放時刻まで先送りする。
+            let fan_out = match super::circuit::global()
+                .check(&super::circuit::host_of(i["url"].as_str().unwrap_or("")))
+            {
+                super::circuit::Decision::Closed => 32,
+                super::circuit::Decision::Probe => 1,
+                super::circuit::Decision::Open(wait) => {
+                    return defer_install(db, i["id"].as_str().unwrap(), wait).await;
+                }
+            };
+            let sends = futures_util::stream::iter(0..fan_out)
                 .map(|_| http_install(db, i.clone()))
                 .buffer_unordered(32)
                 .collect::<Vec<_>>()
@@ -612,10 +622,61 @@ pub async fn http_pass(db: &toasty::Db) -> Result<(), AppError> {
     Ok(())
 }
 
+/// サーキットが開いている宛先の配信を、`wait` だけ先送りする。`attempts` は増やさない。
+pub async fn defer_install(
+    db: &toasty::Db,
+    installation: &str,
+    wait: Duration,
+) -> Result<(), AppError> {
+    let mut db = db.clone();
+    let mut tx = db.transaction().await?;
+    toasty::sql::statement(
+        "UPDATE app_deliveries SET available_at=clock_timestamp()+make_interval(secs=>$2::text::float8) WHERE installation_id=$1 AND acked_at IS NULL AND expires_at>now() AND available_at<clock_timestamp()+make_interval(secs=>$2::text::float8)",
+    )
+    .bind(installation)
+    .bind(wait.as_secs_f64().ceil().to_string())
+    .exec(&mut tx)
+    .await?;
+    tx.commit().await?;
+    Ok(())
+}
+
+/// 送信結果が宛先ホストの健康状態を表すか。応答があれば（4xx でも）生きているとみなす。
+fn breaker_outcome(result: &Result<(), AppError>) -> super::circuit::Outcome {
+    use super::circuit::Outcome;
+    match result {
+        Ok(()) => Outcome::Success,
+        Err(e) => match status_class(e) {
+            "dns" | "timeout" | "network" | "5xx" => Outcome::Failure,
+            "3xx" | "4xx" => Outcome::Success,
+            _ => Outcome::Ignore,
+        },
+    }
+}
+
 async fn http_install(db: &toasty::Db, i: Value) -> Result<(), AppError> {
     let id = i["id"].as_str().unwrap();
+    let host = super::circuit::host_of(i["url"].as_str().unwrap_or(""));
+    // 同じホストへの同時送信を絞る。待つのは claim の前なので、リースは消費しない。
+    let breakers = super::circuit::global();
+    // 公開 IP でないアドレス直書きは送信前に弾かれる（外へ出ない）ので枠を使わない。
+    let sends_outside = host
+        .parse::<IpAddr>()
+        .map(public_ip)
+        .unwrap_or(!host.is_empty());
+    let _permit = if sends_outside {
+        Some(
+            breakers
+                .semaphore(&host)
+                .acquire_owned()
+                .await
+                .map_err(|e| AppError::Internal(e.into()))?,
+        )
+    } else {
+        None
+    };
     if let Some(event) = claim(db, id).await? {
-        match tokio::time::timeout(
+        let result = tokio::time::timeout(
             Duration::from_secs(3),
             deliver(
                 i["url"].as_str().unwrap_or(""),
@@ -624,8 +685,9 @@ async fn http_install(db: &toasty::Db, i: Value) -> Result<(), AppError> {
             ),
         )
         .await
-        .unwrap_or_else(|_| Err(AppError::BadGateway(MSG_TIMEOUT.into())))
-        {
+        .unwrap_or_else(|_| Err(AppError::BadGateway(MSG_TIMEOUT.into())));
+        breakers.record(&host, breaker_outcome(&result));
+        match result {
             Ok(()) => {
                 let m = super::dispatch_metrics::global();
                 m.record_attempt(true, "2xx");

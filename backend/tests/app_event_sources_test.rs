@@ -3115,3 +3115,39 @@ async fn a_notification_wakes_the_dispatcher_without_waiting_for_the_poll() -> a
     listener.abort();
     Ok(())
 }
+
+#[tokio::test]
+async fn open_circuit_defers_deliveries_without_consuming_attempts() -> anyhow::Result<()> {
+    let _guard = HTTP_WORKER_TEST_LOCK.lock().await;
+    let f = fixture().await?;
+    let host = format!("down-{}.example.com", Uuid::new_v4().simple());
+    reconfigure(&f,json!({"scopes":["messages:read"],"events":["message.created"],"transport":"http","event_url":format!("https://{host}/events")})).await?;
+    post_messages(&f, 3).await;
+    apps::circuit::global().force_open(&host, std::time::Duration::from_secs(120));
+    assert!(
+        apps::dispatch_metrics::global()
+            .render()
+            .contains(&format!("zoo_dispatch_circuit_open{{host=\"{host}\"}} 1"))
+    );
+    apps::delivery::http_pass(&f.state.db).await?;
+    // 取っていない（attempts は 0 のまま）。配信は開放時刻まで先送りされ、候補から外れる。
+    assert!(message_delivery_attempts(&f).await?.iter().all(|a| *a == 0));
+    let mut db = f.state.db.clone();
+    let mut tx = db.transaction().await?;
+    let rows = apps::query(&mut tx, "SELECT json_build_object('wait',extract(epoch from available_at-now()))::text FROM app_deliveries WHERE installation_id=$1 AND event_type='message.created'", &[&f.installation]).await?;
+    tx.commit().await?;
+    assert_eq!(rows.len(), 3);
+    assert!(
+        rows.iter().all(|r| r["wait"].as_f64().unwrap() > 60.0),
+        "{rows:?}"
+    );
+    let candidates = apps::delivery::http_candidates(&f.state.db).await?;
+    assert!(
+        !candidates
+            .iter()
+            .any(|c| c["id"] == f.installation.as_str()),
+        "deferred deliveries must not be candidates"
+    );
+    apps::circuit::global().reset(&host);
+    Ok(())
+}
