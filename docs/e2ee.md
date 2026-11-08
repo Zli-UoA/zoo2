@@ -641,7 +641,7 @@ const prf = credential.getClientExtensionResults().prf?.results?.first;
 | 409 | `E2EE_STALE_REVISION` | 編集の `revision` が、今の行の `revision` + 1 ではない（暗号化チャンネルで必須。平文チャンネルでは、送ったときだけ） | `current_revision` |
 | 409 | `E2EE_PIN_CONFLICT` | `replace: false` で、同じ相手に、違うマスター鍵の TOFU のピンがすでにあり、そのピンを今のユーザー署名鍵で検証できる | `pin` |
 | 400 | `E2EE_CIPHERTEXT_REQUIRED` | 暗号化チャンネルに `ciphertext` なしで送った | |
-| 400 | `E2EE_PLAINTEXT_FORBIDDEN` | 暗号化チャンネルに空でない `content` を送った、または平文チャンネルに `ciphertext` を送った | |
+| 400 | `E2EE_PLAINTEXT_FORBIDDEN` | 暗号化チャンネルに空でない `content` を送った、または平文チャンネルに `ciphertext` か `epoch` を送った（メッセージの作成では `revision` も。編集では `revision` は送ってよい） | |
 | 400 | `E2EE_ATTACHMENTS_FORBIDDEN` | 暗号化チャンネルへの添付 | |
 | 400 | `E2EE_BAD_SIGNATURE` | 署名が不正 | |
 | 400 | `E2EE_KEY_REUSED` | 過去に使ったクロス署名鍵の公開鍵か、過去の版のバックアップの公開鍵を登録し直そうとした | |
@@ -669,7 +669,7 @@ const prf = credential.getClientExtensionResults().prf?.results?.first;
 - 【決定】`last_seen_at` は、`POST /api/e2ee/keys/upload` と `POST /api/e2ee/to_device/ack`（どちらも `device_id` を持つ）に加え、暗号化チャンネルへのメッセージの送信（`ciphertext` を送るときの `device_id`。#357）で更新する。送信だけを続ける端末が、30 日たって古い端末として自動削除されないようにするため。更新は 1 端末につき 5 分に 1 回までにして、書き込みを増やしすぎない。ベアラートークンはユーザー単位で、`GET /api/e2ee/secret_storage` と `POST /api/e2ee/key_backup/keys` からは端末を特定できないので、これらでは更新しない。
 - `GET /api/e2ee/devices`：自分の端末の一覧（削除済みを除く）。`display_name` と `last_seen_at` を返すのはこの API だけで、他のユーザーには見せない。
 - `PATCH /api/e2ee/devices/{device_id}`：`{"display_name": "..."}`。自分の端末だけ。
-- `DELETE /api/e2ee/devices/{device_id}`：自分の端末を削除する（論理削除）。同じトランザクションで、その端末のワンタイム鍵、フォールバック鍵、未受信の to-device メッセージを消し、ユーザーが参加しているすべての暗号化チャンネルの `membership_epoch` を増やす（`membership_epoch` の列は #357 で足すので、この増加は #357 で足す）。削除した `device_id` は再利用できない。
+- `DELETE /api/e2ee/devices/{device_id}`：自分の端末を削除する（論理削除）。同じトランザクションで、その端末のワンタイム鍵、フォールバック鍵、未受信の to-device メッセージを消し、ユーザーが参加しているすべての暗号化チャンネルの `membership_epoch` を増やす（`membership_epoch` の列は #357 で足すので、この増加は #357 で足す）。削除した `device_id` は削除から 90 日間は再利用できない（回収後は行が消える）。
 - `POST /api/e2ee/keys/upload`：`{"device_id", "one_time_keys", "fallback_keys"}`。応答は `{"one_time_key_counts": {"signed_curve25519": 50}, "unused_fallback_key_types": ["signed_curve25519"]}`。
 - `POST /api/e2ee/keys/query`：`{"user_ids": [...]}`（最大 100 人）。応答は次の形。
 
