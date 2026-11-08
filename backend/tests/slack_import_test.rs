@@ -2169,7 +2169,7 @@ async fn test_slack_import_refetch_removes_names_and_retries_size_skips() -> any
     dotenvy::dotenv().ok();
     dotenvy::from_filename("../.env").ok();
     let files = MockServer::start().await;
-    for name in ["late.txt", "big.bin"] {
+    for name in ["late.txt", "big.bin", "zeta.txt", "alpha.txt"] {
         Mock::given(method("GET"))
             .and(path(format!("/files/{name}")))
             .respond_with(
@@ -2214,7 +2214,9 @@ async fn test_slack_import_refetch_removes_names_and_retries_size_skips() -> any
             format!("refetch-{suffix}/2024-01-01.json"),
             json!([
                 {"ts":"1704070000.000100","user":"U1","text":"","files":[file("late.txt")]},
-                {"ts":"1704070000.000200","user":"U1","text":"","files":[file("big.bin")]}
+                {"ts":"1704070000.000200","user":"U1","text":"","files":[file("big.bin")]},
+                // 複数のファイル。Slack の files の順が名前の順と違っても、取得できたら本文から外す
+                {"ts":"1704070000.000300","user":"U1","text":"","files":[file("zeta.txt"), file("alpha.txt")]}
             ]),
         ),
     ]);
@@ -2253,6 +2255,10 @@ async fn test_slack_import_refetch_removes_names_and_retries_size_skips() -> any
         content(no_token.clone(), "1704070000.000200").await,
         "big.bin"
     );
+    assert_eq!(
+        content(no_token.clone(), "1704070000.000300").await,
+        "zeta.txt\nalpha.txt"
+    );
 
     // トークンを設定し、上限を小さくして取得すると、big.bin は上限でスキップされ、late.txt も上限でスキップされる
     let mut small = config.clone();
@@ -2279,7 +2285,7 @@ async fn test_slack_import_refetch_removes_names_and_retries_size_skips() -> any
         None,
     )
     .await?;
-    assert_eq!(job["skipped_files"], 2, "{job}");
+    assert_eq!(job["skipped_files"], 4, "{job}");
 
     // 上限を戻して再取得すると、取得できて、本文からファイル名が外れる
     let mut big = config.clone();
@@ -2298,15 +2304,16 @@ async fn test_slack_import_refetch_removes_names_and_retries_size_skips() -> any
     drive(&big_state, &app_big, &admin, &run, "completed").await;
     assert_eq!(content(big_state.clone(), "1704070000.000100").await, "");
     assert_eq!(content(big_state.clone(), "1704070000.000200").await, "");
+    assert_eq!(content(big_state.clone(), "1704070000.000300").await, "");
     let attachments = sql(
         &big_state,
         "SELECT json_build_object('n',count(*))::text FROM attachments WHERE message_id IN ($1,$2)",
         &[
             &backend::slack::message_id(&team, "C1", "1704070000.000100"),
-            &backend::slack::message_id(&team, "C1", "1704070000.000200"),
+            &backend::slack::message_id(&team, "C1", "1704070000.000300"),
         ],
     )
     .await?;
-    assert_eq!(attachments[0]["n"], 2);
+    assert_eq!(attachments[0]["n"], 3);
     Ok(())
 }

@@ -1346,11 +1346,13 @@ async fn fetch_files(s: &AppState, job: &Job, lease: &Lease) -> Result<(), AppEr
                     suppress_app_events(&mut tx).await?;
                     exec(
                         &mut tx,
+                        // 本文と照合するときは、行を並べ替えて比べる (取り込み時は Slack の files の順、ここは ID 順)
                         "UPDATE messages m SET content=s.names,updated_at=m.updated_at FROM (\
                          SELECT string_agg(name,E'\\n' ORDER BY slack_file_id) AS names,\
-                         COALESCE(string_agg(name,E'\\n' ORDER BY slack_file_id) FILTER (WHERE slack_file_id<>$3),'') AS previous \
+                         COALESCE(array_agg(name ORDER BY name) FILTER (WHERE slack_file_id<>$3),'{}') AS previous \
                          FROM slack_files WHERE team_id=$1 AND message_id=$2 AND status='skipped') s \
-                         WHERE m.id=$2 AND s.names IS NOT NULL AND (m.content='' OR m.content=s.previous)",
+                         WHERE m.id=$2 AND s.names IS NOT NULL AND (m.content='' OR \
+                         (SELECT COALESCE(array_agg(x ORDER BY x),'{}') FROM unnest(string_to_array(m.content,E'\\n')) x)=s.previous)",
                         &[&file.team_id, &file.message_id, &file.slack_file_id],
                     )
                     .await?;
@@ -1363,9 +1365,11 @@ async fn fetch_files(s: &AppState, job: &Job, lease: &Lease) -> Result<(), AppEr
                         &mut tx,
                         "UPDATE messages m SET content=r.remaining,updated_at=m.updated_at FROM (\
                          SELECT COALESCE(string_agg(name,E'\\n' ORDER BY slack_file_id) FILTER (WHERE status<>'done'),'') AS remaining,\
-                         COALESCE(string_agg(name,E'\\n' ORDER BY slack_file_id) FILTER (WHERE status<>'done' OR slack_file_id=$3),'') AS with_this \
+                         COALESCE(array_agg(name ORDER BY name) FILTER (WHERE status<>'done' OR slack_file_id=$3),'{}') AS with_this,\
+                         COALESCE(array_agg(name ORDER BY name) FILTER (WHERE status<>'done'),'{}') AS remaining_sorted \
                          FROM slack_files WHERE team_id=$1 AND message_id=$2) r \
-                         WHERE m.id=$2 AND m.content=r.with_this AND r.with_this<>r.remaining",
+                         WHERE m.id=$2 AND r.with_this<>r.remaining_sorted AND \
+                         (SELECT COALESCE(array_agg(x ORDER BY x),'{}') FROM unnest(string_to_array(m.content,E'\\n')) x)=r.with_this",
                         &[&file.team_id, &file.message_id, &file.slack_file_id],
                     )
                     .await?;
