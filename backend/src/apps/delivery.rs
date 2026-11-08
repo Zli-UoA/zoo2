@@ -671,7 +671,9 @@ pub async fn http_pass_until(
             let fan_out = match super::circuit::global()
                 .check(&super::circuit::host_of(i["url"].as_str().unwrap_or("")))
             {
-                super::circuit::Decision::Closed => 32,
+                // 1 インストールが 1 ホストの枠（16）を独り占めしないよう、同時に出すのは枠と同じ数。
+                // 同じホストの別インストールにも、同じ pass の中で順番が回る。
+                super::circuit::Decision::Closed => super::circuit::HOST_CONCURRENCY,
                 super::circuit::Decision::Probe => 1,
                 super::circuit::Decision::Open(wait) => {
                     defer_install(db, i["id"].as_str().unwrap(), wait).await?;
