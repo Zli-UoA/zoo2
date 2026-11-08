@@ -42,13 +42,15 @@ const server = http.createServer((request, response) => {
   const path = new URL(request.url, "http://localhost").pathname;
   response.setHeader(
     "Content-Type",
-    path === "/" || path === "/index.html" ? "text/html" : "text/javascript",
+    path === "/" || path === "/index.html" || path.startsWith("/channels/")
+      ? "text/html"
+      : "text/javascript",
   );
   response.setHeader(
     "Cache-Control",
     path === `/assets/${servedWorkerName}` ? "public, max-age=31536000, immutable" : "no-store",
   );
-  if (path === "/" || path === "/index.html") response.end(html);
+  if (path === "/" || path === "/index.html" || path.startsWith("/channels/")) response.end(html);
   else if (path === "/pwa-assets.json")
     response.end(
       JSON.stringify({
@@ -199,7 +201,7 @@ try {
         html = originalHtml.replace("index-fixture.js", "index-updated.js");
         servedWorkerName = "opfs-worker-updated.js";
         swSource = sw;
-        await page.reload();
+        await page.goto(`${origin}/channels/updated`);
         const updatedURL = await registerAndControl(page);
         assert.equal(updatedURL, previousURL, "SW code updates must work without a CSP change");
         assert.equal(
@@ -226,7 +228,7 @@ try {
         // Same SW, new build: the running old page never requests the new lazy worker.
         html = originalHtml.replace("index-fixture.js", "index-lazy.js");
         servedWorkerName = "opfs-worker-lazy.js";
-        await page.reload();
+        await page.goto(`${origin}/channels/lazy`);
         assert.equal(
           await page.locator('script[type="module"]').getAttribute("src"),
           "/assets/index-fixture.js",

@@ -46,7 +46,9 @@ Electric の Shape 自体は従来どおりチャンネル単位で購読する�
 `public/sw.js` を v2 に更新した。
 
 - install で `/`、`/index.html`、`/offline.html`、manifest、アイコンを precache する。
-- 保存済みの app shell があればナビゲーション時に即座に返し、ネットワークでの更新は裏で行う。
+- 通常のSPAルートへのナビゲーションでは、保存済みの app shell を即座に返し、ネットワークでの更新は裏で行う。
+  明示的な再読み込み（`no-cache` / `reload`）はネットワークを優先し、デプロイ後のチャンク取得エラーから復旧できるようにする。
+  ライセンスなどの静的ファイルへの直接遷移もネットワークを優先する。
   保存済みの画面がなければネットワークから取得し、失敗時は `/offline.html` に戻す。
   更新したHTMLは、参照するentry assetsの保存が完了してから既存キャッシュへ反映する。
   `content-type: text/html` の応答だけを `/index.html` として保存し、アイコンや JSON への
@@ -64,6 +66,11 @@ Electric の Shape 自体は従来どおりチャンネル単位で購読する�
   ビルド別キャッシュを見つけられる。
 - `fetch()` が返す body は展開済みなのに `content-encoding` ヘッダーが残ると module script の読み込みが
   `ERR_FAILED` になるため、キャッシュ前に encoding・validator・`cache-control` を落として `no-store` を付ける。
+- install時はentry assetsのみを先に保存する。画面を開かずにSWだけが更新され、その後すぐオフラインにした場合は、
+  遅延アセットがまだ未保存のことがある。初回オンライン起動・背景更新で全アセットが保存された後はオフラインで利用できる。
+- 全アセットは現ビルドで約7 MiB。SWのactivateまでは表示中の旧画面に必要なアセットも保持するため、
+  SWを更新しないデプロイが続くと増える。容量不足で保存に失敗した場合は新HTMLを公開せず旧画面を維持し、
+  次のSWのactivateで旧キャッシュを破棄する。利用中の旧画面のファイルを容量確保のために削除することはしない。
 - 初回ロード時点で Service Worker が制御していない assets（フォントや OPFS worker）は、
   ページから `CACHE_ASSETS` メッセージで後追いキャッシュする。
 

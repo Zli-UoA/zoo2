@@ -267,7 +267,14 @@ async function refreshNavigation(request, background = false) {
 
 async function handleNavigation(request, event) {
   const url = new URL(request.url);
-  if (!isCacheableAsset(url) && url.pathname !== "/offline.html") {
+  // Only normal SPA launches use the installed shell. Explicit reloads must
+  // reach the deployed document so vite:preloadError can recover after a deploy.
+  const spaRoute =
+    url.pathname === "/" ||
+    /^\/(?:channels|home|settings|notifications|bubble|apps|apps-authorize|realtime|public\/users)(?:\/|$)/.test(
+      url.pathname,
+    );
+  if (request.cache === "default" && spaRoute) {
     const cache = await caches.open(await findActiveShellCache());
     const cached = (await cache.match("/index.html")) || (await cache.match("/"));
     if (cached) {

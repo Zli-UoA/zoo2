@@ -125,8 +125,8 @@ async function fetchThrough(handlers, request, background = []) {
   return response === undefined ? undefined : await Promise.resolve(response);
 }
 
-function navigation(url) {
-  return { url, method: "GET", mode: "navigate" };
+function navigation(url, cache = "default") {
+  return { url, method: "GET", mode: "navigate", cache };
 }
 
 test("legacy empty Web Push still displays a generic alert", async () => {
@@ -340,6 +340,57 @@ test(
     assert.ok(cache.has(`${ORIGIN}/assets/opfs-new.js`));
   },
 );
+
+for (const cache of ["no-cache", "reload"]) {
+  test(`explicit ${cache} navigation fetches the deployed shell and still works offline`, async () => {
+    const cacheContext = memoryCaches([
+      ["zoo-shell-v2", `${ORIGIN}/index.html`, basicResponse("saved-shell")],
+    ]);
+    let offline = false;
+    const { handlers } = worker({
+      caches: cacheContext.api,
+      fetch: async () => {
+        if (offline) throw new Error("offline");
+        return basicResponse("deployed-shell", { headers: { "content-type": "text/html" } });
+      },
+    });
+    const background = [];
+    const request = navigation(`${ORIGIN}/channels/general`, cache);
+    assert.equal(
+      await (await fetchThrough(handlers, request, background)).text(),
+      "deployed-shell",
+    );
+    assert.equal(background.length, 0);
+    offline = true;
+    assert.equal(await (await fetchThrough(handlers, request)).text(), "deployed-shell");
+  });
+}
+
+for (const path of [
+  "/licenses/README.txt",
+  "/licenses/misskey-emoji-data/LICENSE",
+  "/pwa-assets.json",
+  "/mfm-emojis.json",
+  "/compose-catalog.html",
+]) {
+  test(`direct navigation to ${path} keeps the static response`, async () => {
+    const cacheContext = memoryCaches([
+      ["zoo-shell-v2", `${ORIGIN}/index.html`, basicResponse("saved-shell")],
+    ]);
+    const { handlers } = worker({
+      caches: cacheContext.api,
+      fetch: async () => basicResponse("static-file"),
+    });
+    assert.equal(
+      await (await fetchThrough(handlers, navigation(`${ORIGIN}${path}`))).text(),
+      "static-file",
+    );
+    assert.equal(
+      await cacheContext.storeFor("zoo-shell-v2").get(`${ORIGIN}/index.html`).text(),
+      "saved-shell",
+    );
+  });
+}
 
 test("a failed entry asset refresh keeps the working offline shell", async () => {
   const cacheContext = memoryCaches([
