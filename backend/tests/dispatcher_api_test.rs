@@ -45,3 +45,35 @@ async fn unreachable_or_disabled_dispatcher_is_service_unavailable() {
         .unwrap_err();
     assert!(matches!(err, AppError::ServiceUnavailable(_)), "{err:?}");
 }
+
+#[tokio::test]
+async fn authentication_comes_before_body_parsing() {
+    let base = serve("shared-token").await;
+    let client = reqwest::Client::new();
+    // トークン無しなら、本文が壊れていても・大きくても 401（形で情報を漏らさない）。
+    let bad = client
+        .post(format!("{base}/internal/verify-endpoint"))
+        .body("not json")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(bad.status(), 401);
+    // 認証後の壊れた本文は 400。
+    let bad = client
+        .post(format!("{base}/internal/verify-endpoint"))
+        .bearer_auth("shared-token")
+        .body("not json")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(bad.status(), 400);
+    // 本文の上限を超えると拒否する。
+    let big = client
+        .post(format!("{base}/internal/verify-endpoint"))
+        .bearer_auth("shared-token")
+        .body(vec![b'x'; 64 * 1024])
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(big.status(), 413);
+}
