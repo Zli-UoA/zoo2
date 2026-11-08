@@ -674,6 +674,9 @@ pub async fn http_pass_until(
     let installs = http_candidates(db).await?;
     let budget = HostBudget::default();
     let budget = &budget;
+    // 予算が尽きて見送ったインストール。次の pass で先に回すため、巡回済みの印を戻す。
+    let skipped = std::sync::Mutex::new(std::collections::HashSet::<String>::new());
+    let skipped = &skipped;
     // 1 件でも claim できたときだけ true。候補が上限（100）に達しても、配信上限などで 1 件も取れない
     // なら false にして、次の通知か poll まで待つ（取れないのに即時に回し続けない）。
     let mut more = false;
@@ -693,7 +696,7 @@ pub async fn http_pass_until(
                 }
             };
             let sends = futures_util::stream::iter(0..fan_out)
-                .map(|_| http_install(db, i.clone(), stop, budget))
+                .map(|_| http_install(db, i.clone(), stop, budget, skipped))
                 .buffer_unordered(32)
                 .collect::<Vec<_>>()
                 .await;
@@ -709,8 +712,32 @@ pub async fn http_pass_until(
     for result in results {
         more |= result?;
     }
+    release_skipped(db, skipped).await?;
 
     Ok(more)
+}
+
+/// 予算が尽きて見送ったインストールを、次の `http_candidates` で先頭に来るようにする
+/// （`last_http_dispatch_at` を NULL に戻す）。巡回済み扱いのままだと、同じホストで先頭の
+/// インストールが毎回予算を使い切り、後ろのインストールに順番が回らない。
+async fn release_skipped(
+    db: &toasty::Db,
+    skipped: &std::sync::Mutex<std::collections::HashSet<String>>,
+) -> Result<(), AppError> {
+    let ids: Vec<String> = skipped.lock().unwrap().iter().cloned().collect();
+    if ids.is_empty() {
+        return Ok(());
+    }
+    let mut db = db.clone();
+    let mut tx = db.transaction().await?;
+    toasty::sql::statement(
+        "UPDATE app_installations SET last_http_dispatch_at=NULL WHERE id IN(SELECT jsonb_array_elements_text($1::text::jsonb))",
+    )
+    .bind(serde_json::to_string(&ids).unwrap())
+    .exec(&mut tx)
+    .await?;
+    tx.commit().await?;
+    Ok(())
 }
 
 /// サーキットが開いている宛先の配信を、`wait` だけ先送りする。`attempts` は増やさない。
@@ -782,6 +809,7 @@ async fn http_install(
     i: Value,
     stop: &tokio::sync::watch::Receiver<bool>,
     budget: &HostBudget,
+    skipped: &std::sync::Mutex<std::collections::HashSet<String>>,
 ) -> Result<bool, AppError> {
     let id = i["id"].as_str().unwrap();
     if *stop.borrow() {
@@ -817,6 +845,7 @@ async fn http_install(
     }
     // 1 回の pass でこのホストに送る件数の上限（枠待ちの波が続いて pass が長引かないように）。
     if !budget.reserve(&host) {
+        skipped.lock().unwrap().insert(id.to_owned());
         return Ok(false);
     }
     let claimed = claim_http(db, id, stop).await;

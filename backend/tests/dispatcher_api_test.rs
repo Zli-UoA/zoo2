@@ -50,7 +50,8 @@ async fn unreachable_or_disabled_dispatcher_is_service_unavailable() {
 async fn authentication_comes_before_body_parsing() {
     let base = serve("shared-token").await;
     let client = reqwest::Client::new();
-    // トークン無しなら、本文が壊れていても・大きくても 401（形で情報を漏らさない）。
+    // トークン無しなら、本文が壊れていても 401（形で情報を漏らさない）。本文が上限を超えると、
+    // ハンドラの前に 413 になる（下の最後のケース）。
     let bad = client
         .post(format!("{base}/internal/verify-endpoint"))
         .body("not json")
@@ -67,7 +68,14 @@ async fn authentication_comes_before_body_parsing() {
         .await
         .unwrap();
     assert_eq!(bad.status(), 400);
-    // 本文の上限を超えると拒否する。
+    // 本文の上限（16KiB）を超えると、トークンの有無にかかわらず 413。
+    let big_unauthenticated = client
+        .post(format!("{base}/internal/verify-endpoint"))
+        .body(vec![b'x'; 64 * 1024])
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(big_unauthenticated.status(), 413);
     let big = client
         .post(format!("{base}/internal/verify-endpoint"))
         .bearer_auth("shared-token")
