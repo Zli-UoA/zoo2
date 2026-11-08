@@ -822,10 +822,13 @@ async fn test_slack_reimport_relinks_replies_and_serializes_targets() -> anyhow:
         listed.iter().any(|job| job["id"] == export["id"]),
         "the stored export stays listed"
     );
+    // 取得し直せる添付が残る完了ジョブは件数制限の対象外なので、それ以外の完了ジョブだけを数える
     assert!(
         listed
             .iter()
-            .filter(|job| job["status"] == "completed")
+            .filter(|job| job["status"] == "completed"
+                && job["pending_files"] == 0
+                && job["failed_files"] == 0)
             .count()
             <= 50
     );
@@ -1300,6 +1303,13 @@ async fn test_slack_import_guards_private_channels_and_restores_threads() -> any
     )
     .await?;
     assert!(rows.is_empty());
+    // 非公開の取り込み先の今の名前は、公開チャンネルの本文に書かない
+    sql(
+        &state,
+        "UPDATE channels SET is_private=true,channel_name=$2 WHERE id=$1 RETURNING json_build_object('id',id)::text",
+        &[&secret, &format!("hidden-{suffix}")],
+    )
+    .await?;
     // 後から別のチャンネルだけを取り込んでも、以前取り込んだチャンネルへの参照は取り込み先の名前になる
     let later = build_zip(&[
         (
@@ -1315,7 +1325,7 @@ async fn test_slack_import_guards_private_channels_and_restores_threads() -> any
         ),
         (
             "random/2024-01-04.json".into(),
-            json!([{"ts":"1704340000.000900","user":"U1","text":"see <#C1|general>"}]),
+            json!([{"ts":"1704340000.000900","user":"U1","text":"see <#C1|general> and <#G1|secret>"}]),
         ),
     ]);
     let analyzed = upload(&state, &app, &admin, &later).await;
@@ -1348,6 +1358,9 @@ async fn test_slack_import_guards_private_channels_and_restores_threads() -> any
         )],
     )
     .await?;
-    assert_eq!(rows[0]["content"], format!("see #general-{suffix}"));
+    assert_eq!(
+        rows[0]["content"],
+        format!("see #general-{suffix} and #secret")
+    );
     Ok(())
 }

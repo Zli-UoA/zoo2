@@ -674,12 +674,13 @@ async fn import(s: &AppState, job: &Job, lease: &Lease) -> Result<(), AppError> 
             .await?;
         }
         // 以前の取り込みで入れたチャンネルへの <#C…> も、取り込み先の今の名前に変換する。
-        // 今回選んだチャンネルは、下の対応付けで上書きする。
+        // 今回選んだチャンネルは、下の対応付けで上書きする。非公開の取り込み先は、参加していない人にも
+        // 見える本文へ今の名前を書かないよう、Slack の本文にある名前のままにする。
         for row in query(
             &mut tx,
             "SELECT json_build_object('slack',s.slack_channel_id,'name',c.channel_name)::text \
              FROM slack_channels s JOIN channels c ON c.id=s.channel_id \
-             WHERE s.team_id=$1 AND c.deleted_at IS NULL",
+             WHERE s.team_id=$1 AND c.deleted_at IS NULL AND NOT c.is_private",
             &[&team],
         )
         .await?
@@ -697,19 +698,15 @@ async fn import(s: &AppState, job: &Job, lease: &Lease) -> Result<(), AppError> 
             super::import::ensure_same_target(&mut tx, &team, mapping)
                 .await
                 .map_err(|e| AppError::BadRequest(e.to_string()))?;
-            let target = match &mapping.action {
+            let (target, private) = match &mapping.action {
                 MappingAction::Skip => continue,
                 MappingAction::Create { name, is_private } => {
-                    create_channel(
-                        &mut tx,
-                        &team,
-                        channel,
-                        name,
-                        // 非公開チャンネルは常に非公開で作る (start で拒否済みだが、古いジョブにも備える)
-                        channel.is_private || is_private.unwrap_or(false),
-                        &job.created_by,
-                    )
-                    .await?
+                    // 非公開チャンネルは常に非公開で作る (start で拒否済みだが、古いジョブにも備える)
+                    let private = channel.is_private || is_private.unwrap_or(false);
+                    let target =
+                        create_channel(&mut tx, &team, channel, name, private, &job.created_by)
+                            .await?;
+                    (target, private)
                 }
                 MappingAction::Existing { channel_id } => {
                     let found = one(
@@ -729,8 +726,11 @@ async fn import(s: &AppState, job: &Job, lease: &Lease) -> Result<(), AppError> 
                         )));
                     }
                     (
-                        channel_id.clone(),
-                        found["name"].as_str().unwrap_or_default().to_string(),
+                        (
+                            channel_id.clone(),
+                            found["name"].as_str().unwrap_or_default().to_string(),
+                        ),
+                        found["is_private"] == true,
                     )
                 }
             };
@@ -741,8 +741,10 @@ async fn import(s: &AppState, job: &Job, lease: &Lease) -> Result<(), AppError> 
                 &[&team, &channel.id, &target.0],
             )
             .await?;
-            ctx.channel_names
-                .insert(channel.id.clone(), target.1.clone());
+            if !private {
+                ctx.channel_names
+                    .insert(channel.id.clone(), target.1.clone());
+            }
             let create = matches!(mapping.action, MappingAction::Create { .. });
             targets.push((channel.clone(), target.0, create));
         }
