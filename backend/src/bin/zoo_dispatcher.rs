@@ -43,6 +43,21 @@ async fn main() -> anyhow::Result<()> {
             .map_err(|e| anyhow::anyhow!("DISPATCHER_PORT is not a valid port: {e}"))?,
         _ => 8081,
     };
+    if port == 0 {
+        anyhow::bail!("DISPATCHER_PORT must not be 0");
+    }
+    // 待ち受けの設定ミス（解決できないホスト、使用中のポート）は、配信ループを動かす前に失敗させる。
+    // 先に配信を取ってからプロセスが終わると、再起動のたびに試行回数を消費して配信を遅らせるため。
+    // ホスト名（localhost など）と IPv6（`::`）も受ける。`[::]` のように角括弧付きでもよい。
+    let bind_host = host.trim().trim_start_matches('[').trim_end_matches(']');
+    let addr: SocketAddr = tokio::net::lookup_host((bind_host, port))
+        .await
+        .map_err(|e| anyhow::anyhow!("DISPATCHER_HOST {host:?} could not be resolved: {e}"))?
+        .next()
+        .ok_or_else(|| anyhow::anyhow!("DISPATCHER_HOST {host:?} did not resolve"))?;
+    let listener = tokio::net::TcpListener::bind(addr)
+        .await
+        .map_err(|e| anyhow::anyhow!("could not listen on {addr}: {e}"))?;
 
     let db = backend::db::init_db(&database_url).await?;
     let (stop, shutdown) = tokio::sync::watch::channel(false);
@@ -97,13 +112,7 @@ async fn main() -> anyhow::Result<()> {
         )
         .route("/metrics", get(metrics))
         .merge(backend::apps::dispatcher_api::router(&token));
-    // ホスト名（localhost など）と IPv6（`::`）も受ける。名前は起動時に解決する。
-    let addr: SocketAddr = tokio::net::lookup_host((host.as_str(), port))
-        .await?
-        .next()
-        .ok_or_else(|| anyhow::anyhow!("DISPATCHER_HOST {host} did not resolve"))?;
-    tracing::info!(%addr, "zoo-dispatcher listening");
-    let listener = tokio::net::TcpListener::bind(addr).await?;
+    tracing::info!(addr=%listener.local_addr()?, "zoo-dispatcher listening");
     // 停止信号を受けたらすぐ新しいリースを取らなくし（HTTP サーバーの終了を待たない）、
     // 送信中の分を待つ。
     let stop_on_signal = stop.clone();
