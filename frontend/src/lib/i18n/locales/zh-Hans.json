@@ -749,7 +749,7 @@
   "slackImport": {
     "tab": "Slack 导入",
     "title": "从 Slack 导入",
-    "description": "上传从 Slack 管理设置导出的 ZIP，即可将其保存在 Zoo 中。你可以在这里导入任意频道；成员关联 Slack 账号后，可以导入自己创建的频道。",
+    "description": "上传从 Slack 管理设置导出的 ZIP，即可将其保存在 Zoo 中。你可以在这里导入任意频道。",
     "chooseFile": "选择并上传 ZIP",
     "uploading": "上传中…",
     "loading": "正在加载导入记录",
