@@ -3088,9 +3088,11 @@ async fn a_notification_wakes_the_dispatcher_without_waiting_for_the_poll() -> a
     let f = fixture().await?;
     reconfigure(&f,json!({"scopes":["messages:read"],"events":["message.created"],"transport":"http","event_url":"https://127.0.0.1:1/events"})).await?;
     let wake = std::sync::Arc::new(tokio::sync::Notify::new());
-    let listener = apps::delivery::listen_for_deliveries(
+    let ready = std::sync::Arc::new(tokio::sync::Notify::new());
+    let listener = apps::delivery::listen_for_deliveries_with(
         backend::config::database_url_from_env(),
         wake.clone(),
+        Some(ready.clone()),
     );
     let (stop, shutdown) = tokio::sync::watch::channel(false);
     // ポーリングは 1 時間後なので、配信されるなら通知で起きたとき以外にない。
@@ -3100,6 +3102,9 @@ async fn a_notification_wakes_the_dispatcher_without_waiting_for_the_poll() -> a
         wake,
         std::time::Duration::from_secs(3600),
     ));
+    // LISTEN が成立するまで待つ。成立直後の「接続したので 1 回起こす」pass が終わってから投稿し、
+    // 配信が始まるのが通知の転送によるものだけになるようにする。
+    tokio::time::timeout(std::time::Duration::from_secs(30), ready.notified()).await?;
     tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
     post_messages(&f, 3).await;
     let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(60);
@@ -3151,5 +3156,28 @@ async fn a_backlog_is_drained_without_waiting_for_the_next_poll() -> anyhow::Res
         }
     }
     assert!(!more, "a pass with nothing left to claim must report false");
+    Ok(())
+}
+
+#[tokio::test]
+async fn websocket_deliveries_do_not_wake_the_http_dispatcher() -> anyhow::Result<()> {
+    let _guard = HTTP_WORKER_TEST_LOCK.lock().await;
+    // 既定の fixture は WebSocket。HTTP の配信先が無い INSERT では通知しない。
+    let f = fixture().await?;
+    let mut listener = listen_app_delivery().await?;
+    while next_notification(&mut listener, std::time::Duration::from_millis(300)).await {}
+    post_messages(&f, 1).await;
+    assert!(
+        !next_notification(&mut listener, std::time::Duration::from_millis(1500)).await,
+        "a WebSocket-only delivery must not NOTIFY the HTTP dispatcher"
+    );
+    // 同じ App を HTTP にすると通知される。
+    reconfigure(&f,json!({"scopes":["messages:read"],"events":["message.created"],"transport":"http","event_url":"https://127.0.0.1:1/events"})).await?;
+    while next_notification(&mut listener, std::time::Duration::from_millis(300)).await {}
+    post_messages(&f, 1).await;
+    assert!(
+        next_notification(&mut listener, std::time::Duration::from_secs(5)).await,
+        "an HTTP delivery must NOTIFY"
+    );
     Ok(())
 }

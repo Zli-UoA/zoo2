@@ -575,6 +575,15 @@ pub fn listen_for_deliveries(
     database_url: String,
     wake: std::sync::Arc<tokio::sync::Notify>,
 ) -> tokio::task::JoinHandle<()> {
+    listen_for_deliveries_with(database_url, wake, None)
+}
+
+/// `listen_for_deliveries`。`ready` があれば、LISTEN が成立するたびに通知する（テスト用）。
+pub fn listen_for_deliveries_with(
+    database_url: String,
+    wake: std::sync::Arc<tokio::sync::Notify>,
+    ready: Option<std::sync::Arc<tokio::sync::Notify>>,
+) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
         loop {
             match crate::db::connect_raw_listener(&database_url).await {
@@ -583,6 +592,9 @@ pub fn listen_for_deliveries(
                         tracing::warn!(error=%e,"LISTEN app_delivery failed");
                     } else {
                         tracing::info!("Subscribed to PostgreSQL channel app_delivery");
+                        if let Some(ready) = &ready {
+                            ready.notify_one();
+                        }
                         wake.notify_one();
                         while let Some(n) = listener.notifications.recv().await {
                             if n.channel() == "app_delivery" {
@@ -641,14 +653,16 @@ pub async fn http_pass(db: &toasty::Db) -> Result<(), AppError> {
 }
 
 /// `http_pass`。`stop` が true になった後は、バッチの途中でも新しいリースを取らない
-/// （取得済みの送信と ACK だけ終える）。まだ配信が残っていそうなら（1 件でも取った、または
-/// 候補が上限に達した）true を返し、呼び出し側は待たずに次の pass を回す。
+/// （取得済みの送信と ACK だけ終える）。1 件でも claim できたら true を返し、呼び出し側は
+/// 待たずに次の pass を回す。
 pub async fn http_pass_until(
     db: &toasty::Db,
     stop: &tokio::sync::watch::Receiver<bool>,
 ) -> Result<bool, AppError> {
     let installs = http_candidates(db).await?;
-    let mut more = installs.len() >= 100;
+    // 1 件でも claim できたときだけ true。候補が上限（100）に達しても、配信上限などで 1 件も取れない
+    // なら false にして、次の通知か poll まで待つ（取れないのに即時に回し続けない）。
+    let mut more = false;
     let results = futures_util::stream::iter(installs)
         .map(|i| async move {
             let sends = futures_util::stream::iter(0..32)
