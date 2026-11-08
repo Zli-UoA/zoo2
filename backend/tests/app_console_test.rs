@@ -482,3 +482,31 @@ async fn app_metrics_summarize_one_apps_deliveries_for_its_developer_and_admins(
     );
     Ok(())
 }
+
+#[tokio::test]
+async fn statement_timeouts_are_recognised_by_sqlstate_through_toasty_errors() -> anyhow::Result<()>
+{
+    // メトリクス API の 503 判定は、メッセージ文言ではなく SQLSTATE 57014 を、toasty のエラーの
+    // source をたどって見つける。その前提（コードが取り出せること）を実際のタイムアウトで確かめる。
+    let db = init_db(&Config::from_env().database_url).await?;
+    let mut db = db.clone();
+    let mut tx = db.transaction().await?;
+    toasty::sql::statement("SET LOCAL statement_timeout = '1ms'")
+        .exec(&mut tx)
+        .await?;
+    let err = toasty::sql::statement("SELECT pg_sleep(0.5)")
+        .exec(&mut tx)
+        .await
+        .expect_err("the statement must time out");
+    let mut found = false;
+    let mut curr: Option<&(dyn std::error::Error + 'static)> = Some(&err);
+    while let Some(e) = curr {
+        found |= e
+            .downcast_ref::<tokio_postgres::Error>()
+            .and_then(|pg| pg.code())
+            .is_some_and(|c| *c == tokio_postgres::error::SqlState::QUERY_CANCELED);
+        curr = e.source();
+    }
+    assert!(found, "SQLSTATE 57014 not found in {err:?}");
+    Ok(())
+}

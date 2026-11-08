@@ -426,6 +426,23 @@ struct MetricsQuery {
 }
 /// 開発者（と管理者）が自分の App の配信状況を見る。集計はこのサーバーの `app_deliveries` から
 /// 直接行うので、zoo-dispatcher が 0 台でも返せる。HTTP と WebSocket の両方を含む。
+/// `statement_timeout` などによる中断（SQLSTATE 57014）か。
+fn is_query_canceled(err: &AppError) -> bool {
+    let AppError::Database(e) = err else {
+        return false;
+    };
+    let mut curr: Option<&(dyn std::error::Error + 'static)> = Some(e);
+    while let Some(e) = curr {
+        if e.downcast_ref::<tokio_postgres::Error>()
+            .and_then(|pg| pg.code())
+            .is_some_and(|c| *c == tokio_postgres::error::SqlState::QUERY_CANCELED)
+        {
+            return true;
+        }
+        curr = e.source();
+    }
+    false
+}
 async fn app_metrics(
     State(s): State<AppState>,
     actor: AuthUser,
@@ -468,7 +485,8 @@ async fn app_metrics(
         .exec(&mut tx)
         .await?;
     // delivered=ACK 済み、failed=ACK されないまま期限切れ、pending=未 ACK で期限内。
-    // pending と oldest_pending_seconds は窓と無関係に、いま滞留している全件（GET /api/apps/metrics と同じ）。
+    // pending と oldest_pending_seconds は窓と無関係に、いま滞留している全件。ただし app.rate_limited は除く
+    // （管理者向けの GET /api/apps/metrics は除かないので、その分だけ値が違いうる）。
     // 窓は現在の時間を含む `hours` 個の時間（先頭は時の頭から）で、hourly は必ず `hours` 要素。
     // 成功率は完了したもの（delivered + failed）に対する割合で、保留中は含めない。
     let v=one(&mut tx,r#"WITH d AS (
@@ -507,9 +525,13 @@ SELECT json_build_object(
    'oldest_pending_seconds',(SELECT oldest FROM backlog),'p50_seconds',p50,'p95_seconds',p95) FROM totals),
  'hourly',(SELECT COALESCE(json_agg(json_build_object('hour',to_char(h AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:00:00"Z"'),'delivered',delivered,'failed',failed,'pending',pending,'p95_seconds',p95) ORDER BY h),'[]'::json) FROM hourly)
 )::text"#,&[id.as_str(),hours.as_str()]).await.map_err(|e| {
-        // 5 秒の制限に当たったら、500 ではなく「窓を狭めて」と伝える。
-        if e.to_string().contains("statement timeout") {
-            AppError::ServiceUnavailable("Metrics query timed out; use a smaller hours".into())
+        // 5 秒の制限（SQLSTATE 57014: query_canceled）に当たったら、500 ではなく 503 にする。
+        // メッセージの文言ではなく SQLSTATE で判定する（lc_messages に依存しない）。
+        if is_query_canceled(&e) {
+            tracing::warn!("App metrics query hit the statement timeout");
+            AppError::ServiceUnavailable(
+                "Metrics query timed out; try a smaller hours, or the app has a large backlog of undelivered events".into(),
+            )
         } else {
             e
         }
