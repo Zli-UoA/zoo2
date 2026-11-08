@@ -47,16 +47,6 @@ const config = defineConfig({
           name: "unit",
           environment: "node",
           include: ["src/**/*.test.ts"],
-          exclude: ["src/lib/compose/story-coverage.test.ts"],
-        },
-      },
-      {
-        extends: true,
-        test: {
-          // Archived Compose Web registration audit; run only when explicitly requested.
-          name: "compose-archive",
-          environment: "node",
-          include: ["src/lib/compose/story-coverage.test.ts"],
         },
       },
       {

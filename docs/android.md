@@ -20,8 +20,8 @@ cd frontend-compose
 adb install -r androidApp/build/outputs/apk/debug/androidApp-debug.apk
 ```
 
-Android ターゲットは明示的に有効にします。既存の Web ビルドには Android SDK は不要です。
-フォントは Web と同じチェックサム固定の生成処理を使い、翻訳辞書は
+Android ターゲットは `zoo.android=true` で明示的に有効にします。
+フォントはチェックサムを固定して取得・生成し、翻訳辞書は
 `frontend/src/lib/i18n/locales` からビルド時に APK の assets へ取り込みます。
 CI Android はビルド・テスト・lint を実行し、debug APK を artifact に保存します。
 
