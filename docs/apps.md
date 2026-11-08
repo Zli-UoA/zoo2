@@ -120,9 +120,9 @@ HTTP App へのイベント送信は、backend から独立した `zoo-dispatche
 2. dispatcher を起動し、`/healthz` と `/metrics`（`zoo_dispatch_queue_depth` が減ること）を確認する。この間、backend のワーカーと dispatcher が同時に動くが、`FOR UPDATE SKIP LOCKED` とインストール単位の advisory lock により同じ配信を二重に取らない。
 3. backend に `APP_HTTP_DELIVERY_WORKER=false` を設定して再起動する。
 4. （任意）`DISPATCHER_URL` と `DISPATCHER_TOKEN` を設定し、challenge 検証を dispatcher に移す。
-5. （任意）インフラ側で backend の外向き通信を塞ぐ。dispatcher だけが外へ出る。
+5. （任意）インフラ側で backend の外向き通信を塞ぐ。dispatcher だけが外へ出る。**4 を済ませてから行う**（4 が無いと challenge 検証は backend が自分で送ろうとして失敗する。`DISPATCHER_URL` と `DISPATCHER_TOKEN` は片方だけだと設定なし扱いで backend が送る）。
 
-**戻し方と障害時**: backend の `APP_HTTP_DELIVERY_WORKER` を外せば、backend が配信を再開します。dispatcher が 0 台でも API は動き、配信はキューに溜まるだけで失われず、再開後に送られます（配信は at-least-once で順序保証なし、署名は従来どおり `v1:<timestamp>:<raw body>` の HMAC-SHA256）。dispatcher は SIGTERM を受けると新しい配信を取らなくなり、送信中の分を最大 8 秒待ちます（Pod の `terminationGracePeriodSeconds` はこれより長くしてください）。残ったリースは約 3 秒で切れ、別のインスタンスが拾います。
+**戻し方と障害時**: backend の `APP_HTTP_DELIVERY_WORKER` を外せば、backend が配信を再開します。dispatcher が 0 台でも API は動き、配信はキューに溜まり、dispatcher が戻れば送られます。ただし配信には有効期限（作成から 24 時間）があり、それを過ぎた配信は取り直されず、`zoo_dispatch_queue_depth` にも数えられません。24 時間を超えて dispatcher を止めないでください（履歴の削除も dispatcher の仕事なので、その間は止まります）。配信は at-least-once で順序保証なし、署名は従来どおり `v1:<timestamp>:<raw body>` の HMAC-SHA256 です。dispatcher は SIGTERM を受けると、新しいリースを取らなくなり（実行中のバッチも claim の前に打ち切ります）、取得済みの送信を最大 8 秒待ちます（Pod の `terminationGracePeriodSeconds` はこれより長くしてください）。待ちきれなかった配信はリースが約 3 秒で切れますが、再送は失敗時のバックオフ（試行回数に応じて 2 秒から最大 1 時間）が明けてからです。
 
 **監視**: `/metrics` に `zoo_dispatch_attempts_total{result,status_class}`、`zoo_dispatch_latency_seconds`（作成から ACK まで）、`zoo_dispatch_queue_depth`、`zoo_dispatch_oldest_pending_seconds`、`zoo_dispatch_circuit_open{host}` があります。
 
