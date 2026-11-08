@@ -76,12 +76,19 @@ pub(crate) async fn active(s: &AppState, credential: &str) -> Result<bool, AppEr
 }
 /// WebSocket 向け。リースは 3 秒。
 pub async fn claim(db: &toasty::Db, installation: &str) -> Result<Option<Value>, AppError> {
-    claim_filtered(db, installation, false, 3).await
+    claim_filtered(db, installation, false, 3, None).await
 }
 /// HTTP 配信向け。送信のタイムアウト（3 秒）に ACK を書く余裕を足して、リースは 5 秒。
 /// 送信が遅くても、ACK 前にリースが切れて別のワーカーに取り直される窓を作らない。
-pub async fn claim_http(db: &toasty::Db, installation: &str) -> Result<Option<Value>, AppError> {
-    claim_filtered(db, installation, false, HTTP_LEASE_SECS).await
+///
+/// `stop` が true になった後は、advisory lock を待っていた claim も、ロックを取った後・リースを
+/// 更新する前に None で戻る（停止通知より前に始まった claim が、停止後にリースを取らない）。
+pub async fn claim_http(
+    db: &toasty::Db,
+    installation: &str,
+    stop: &tokio::sync::watch::Receiver<bool>,
+) -> Result<Option<Value>, AppError> {
+    claim_filtered(db, installation, false, HTTP_LEASE_SECS, Some(stop)).await
 }
 const HTTP_LEASE_SECS: u32 = 5;
 async fn claim_filtered(
@@ -89,11 +96,16 @@ async fn claim_filtered(
     installation: &str,
     terminal_only: bool,
     lease_secs: u32,
+    stop: Option<&tokio::sync::watch::Receiver<bool>>,
 ) -> Result<Option<Value>, AppError> {
     let mut db = db.clone();
     let mut tx = db.transaction().await?;
     // Serialize only dispatchers for this installation, never source transactions.
     one(&mut tx,"SELECT json_build_object('locked',pg_advisory_xact_lock(hashtextextended($1,0)) IS NULL)::text",&[&format!("app-dispatch:{installation}")]).await?;
+    // ロック待ちの間に停止通知が来ていたら、何も更新せず（トランザクションは破棄）戻る。
+    if stop.is_some_and(|s| *s.borrow()) {
+        return Ok(None);
+    }
     let usage=one(&mut tx,"SELECT json_build_object('count',count(*))::text FROM app_deliveries WHERE installation_id=$1 AND first_delivered_at>=date_trunc('hour',now()) AND event_type<>'app.rate_limited' AND NOT app_event_quota_exempt(event_type)",&[installation]).await?;
     let limited = usage["count"].as_u64().unwrap_or(0) >= 30000;
     if limited {
@@ -248,7 +260,7 @@ async fn terminal_socket(s: &AppState, ws: &mut WebSocket, installation: &str) {
         if tokio::time::Instant::now() >= deadline {
             break;
         }
-        if let Ok(Some(event)) = claim_filtered(&s.db, installation, true, 3).await {
+        if let Ok(Some(event)) = claim_filtered(&s.db, installation, true, 3, None).await {
             if ws
                 .send(Message::Text(event.to_string().into()))
                 .await
@@ -807,7 +819,7 @@ async fn http_install(
     if !budget.reserve(&host) {
         return Ok(false);
     }
-    let claimed = claim_http(db, id).await;
+    let claimed = claim_http(db, id, stop).await;
     let Some(event) = claimed? else {
         budget.release(&host);
         return Ok(false);
