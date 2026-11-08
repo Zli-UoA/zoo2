@@ -424,8 +424,6 @@ struct MetricsQuery {
     /// 集計する直近の時間数（1〜720、既定 24）。配信履歴の保持は 30 日。
     hours: Option<u32>,
 }
-/// 開発者（と管理者）が自分の App の配信状況を見る。集計はこのサーバーの `app_deliveries` から
-/// 直接行うので、zoo-dispatcher が 0 台でも返せる。HTTP と WebSocket の両方を含む。
 /// `statement_timeout` などによる中断（SQLSTATE 57014）か。
 fn is_query_canceled(err: &AppError) -> bool {
     let AppError::Database(e) = err else {
@@ -443,6 +441,8 @@ fn is_query_canceled(err: &AppError) -> bool {
     }
     false
 }
+/// 開発者（と管理者）が自分の App の配信状況を見る。集計はこのサーバーの `app_deliveries` から
+/// 直接行うので、zoo-dispatcher が 0 台でも返せる。HTTP と WebSocket の両方を含む。
 async fn app_metrics(
     State(s): State<AppState>,
     actor: AuthUser,
@@ -528,6 +528,7 @@ SELECT json_build_object(
         // 5 秒の制限（SQLSTATE 57014: query_canceled）に当たったら、500 ではなく 503 にする。
         // メッセージの文言ではなく SQLSTATE で判定する（lc_messages に依存しない）。
         if is_query_canceled(&e) {
+            // 注: 変換前に `from_db_error` が error レベルのログも 1 行出す（ここでは消せない）。
             tracing::warn!("App metrics query hit the statement timeout");
             AppError::ServiceUnavailable(
                 "Metrics query timed out; try a smaller hours, or the app has a large backlog of undelivered events".into(),
