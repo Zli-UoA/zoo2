@@ -844,13 +844,17 @@ async fn http_install(
         return Ok(false);
     }
     // 1 回の pass でこのホストに送る件数の上限（枠待ちの波が続いて pass が長引かないように）。
-    if !budget.reserve(&host) {
+    // 外に出ない宛先（公開 IP でないアドレス直書き）は数えない。
+    let counted = sends_outside;
+    if counted && !budget.reserve(&host) {
         skipped.lock().unwrap().insert(id.to_owned());
         return Ok(false);
     }
     let claimed = claim_http(db, id, stop).await;
     let Some(event) = claimed? else {
-        budget.release(&host);
+        if counted {
+            budget.release(&host);
+        }
         return Ok(false);
     };
     {
