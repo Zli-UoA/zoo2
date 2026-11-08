@@ -574,7 +574,7 @@
       "file": "src/components/chat/AppSettingsSections.tsx",
       "story": "src/components/chat/AppsDialog.stories.tsx",
       "composed": true,
-      "reason": "App権限・資格情報はCatalogのOwnerManagementで実際の管理パネルとして表示する。"
+      "reason": "App権限はCatalogのOwnerManagementで管理パネルとして表示する。資格情報の表示はApp管理画面（AppConsole.browser.test.tsx）で確認する。"
     },
     {
       "file": "src/components/chat/AppSurfaceHost.tsx",
@@ -962,6 +962,42 @@
       "story": "src/components/home/HomeScreen.stories.tsx",
       "composed": true,
       "reason": "MfmDecoratedPostで共通MFM本文・リンク・絵文字を、ImageOnly/ImageOnlyDetail/ReplyToImageOnly/TextWithImageで空本文・添付表示・画像プレビューを確認する。"
+    },
+    {
+      "file": "src/components/apps/console/AppConsole.tsx",
+      "reason": "#322 の App 管理画面は React 版 Web だけの機能で、Compose 版は作らない。Story を置くと全 Story に Kotlin 実装を求める story-coverage.test.ts が失敗するため、ブラウザテストで表示・権限境界・保存を確認する。",
+      "checks": [
+        "src/components/apps/console/AppConsole.browser.test.tsx",
+        "src/components/apps/console/AppConsoleList.browser.test.tsx",
+        "src/components/apps/console/model.test.ts"
+      ]
+    },
+    {
+      "file": "src/components/apps/console/AppConsoleList.tsx",
+      "reason": "#322 の App 管理画面は React 版 Web だけの機能で、Compose 版は作らない。Story を置くと全 Story に Kotlin 実装を求める story-coverage.test.ts が失敗するため、ブラウザテストで表示・権限境界・保存を確認する。",
+      "checks": [
+        "src/components/apps/console/AppConsole.browser.test.tsx",
+        "src/components/apps/console/AppConsoleList.browser.test.tsx",
+        "src/components/apps/console/model.test.ts"
+      ]
+    },
+    {
+      "file": "src/components/apps/console/ConfigSections.tsx",
+      "reason": "#322 の App 管理画面は React 版 Web だけの機能で、Compose 版は作らない。Story を置くと全 Story に Kotlin 実装を求める story-coverage.test.ts が失敗するため、ブラウザテストで表示・権限境界・保存を確認する。",
+      "checks": [
+        "src/components/apps/console/AppConsole.browser.test.tsx",
+        "src/components/apps/console/AppConsoleList.browser.test.tsx",
+        "src/components/apps/console/model.test.ts"
+      ]
+    },
+    {
+      "file": "src/components/apps/console/OperationSections.tsx",
+      "reason": "#322 の App 管理画面は React 版 Web だけの機能で、Compose 版は作らない。Story を置くと全 Story に Kotlin 実装を求める story-coverage.test.ts が失敗するため、ブラウザテストで表示・権限境界・保存を確認する。",
+      "checks": [
+        "src/components/apps/console/AppConsole.browser.test.tsx",
+        "src/components/apps/console/AppConsoleList.browser.test.tsx",
+        "src/components/apps/console/model.test.ts"
+      ]
     }
   ]
 }

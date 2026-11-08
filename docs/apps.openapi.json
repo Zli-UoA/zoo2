@@ -2044,6 +2044,70 @@
         ]
       }
     },
+    "/api/apps/{id}/webhooks": {
+      "get": {
+        "operationId": "get_api_apps_id_webhooks",
+        "summary": "GET /api/apps/{id}/webhooks",
+        "security": [
+          {
+            "humanBearer": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success. Chat writes use {data,txid}; platform operations return JSON directly.",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid input",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Invalid or expired credentials"
+          },
+          "403": {
+            "description": "Missing scope or permission"
+          },
+          "404": {
+            "description": "Missing or inaccessible resource"
+          },
+          "409": {
+            "description": "Revision or idempotency conflict"
+          },
+          "429": {
+            "description": "Installation rate limit",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer"
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "description": "Incoming webhooks posting as this notification-only app, limited to channels the caller manages. Returns {webhooks,hidden_count}; webhooks in other channels are only counted."
+      }
+    },
     "/api/apps/{id}/records/{kind}": {
       "get": {
         "operationId": "get_api_apps_id_records_kind",
@@ -6774,6 +6838,13 @@
           },
           "manifest": {
             "$ref": "#/components/schemas/Manifest"
+          },
+          "expected_updated_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "updated_at from GET /api/apps/{id}. When set, PATCH returns 409 if the app was saved after it."
           }
         }
       },

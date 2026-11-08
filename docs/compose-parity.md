@@ -250,3 +250,9 @@ Compose Web・TUI には音声通話機能（WebRTC、`CallBar`、`call-context`
 設定の「通話」タブと入退室の効果音は、この通話機能に付随するため、通話機能を移植するときに合わせて共通Kotlinへ追加する。
 通話の移植前にComposeへ効果音のスイッチだけを置くと、効かない設定が表示されるため行わない。Compose側の設定タブは従来のまま
 （`tab=call` は一般設定へフォールバックする）で、React側のみの変更である。
+
+## App 管理画面（#322 段階 1）
+
+React に `/apps`（一覧・作成）と `/apps/$appId?section=...`（App 管理画面）を追加し、`AppsDialog` の「管理・開発」タブは設定・認証情報・承認・配信履歴を App 管理画面へのリンクに置き換えた。Webhook の 1 件分の表示・URL 再発行・削除は `ChannelWebhooksDialog` の `WebhookItem` にまとめ、チャンネル設定と App 管理画面で共有する。
+
+Compose Web には移植しない。App 管理画面は React 版 Web だけの機能で、Compose 版は作らない。Compose for Web の実験を中止し、React の変更を Compose Web に追従させる規則を終える #374 を前提にしている。Compose の `Integrations.kt` は従来どおり App 詳細ダイアログの中で JSON 編集・トークン発行・配信履歴を扱う。新しい管理画面のモジュールは Story を置かず、`frontend/.storybook/coverage.json` でブラウザテストを確認先とする除外として登録した（Story を置くと Kotlin 実装を必須とする `story-coverage.test.ts` が失敗するため）。追加したバックエンド API（App 詳細の `installation`・`updated_at`・`bot_username`、`PATCH` の `expected_updated_at`、`GET /api/apps/{id}/webhooks`、Webhook 作成の `app_id`）は追加のみで、Compose と TUI の既存の呼び出しは変わらない。
