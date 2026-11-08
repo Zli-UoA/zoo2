@@ -1,3 +1,5 @@
+import type { CallDiagnostics } from "./call-diagnostics";
+
 export interface PublicCallParticipant {
   user_id: string;
   user_name: string;
@@ -67,4 +69,13 @@ export interface CallContextValue {
   joinCall: (channelId: string) => Promise<void>;
   leaveCall: () => Promise<void>;
   toggleMute: () => Promise<void>;
+  /** 選択中のデバイス ID。空文字はシステム既定。 */
+  selectedMicId: string;
+  selectedSpeakerId: string;
+  /** マイクを変更する。通話中ならトラックを差し替える。 */
+  setMicrophone: (deviceId: string) => Promise<void>;
+  /** スピーカーを変更する (setSinkId 対応ブラウザのみ有効)。 */
+  setSpeaker: (deviceId: string) => Promise<void>;
+  /** 自分・サーバー・各ピアの現在の状態を集計して返す (読み取り専用)。 */
+  getCallDiagnostics: () => Promise<CallDiagnostics>;
 }
