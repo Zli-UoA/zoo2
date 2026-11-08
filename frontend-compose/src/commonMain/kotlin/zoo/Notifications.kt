@@ -473,25 +473,13 @@ fun NotificationCard(
                 ),
             horizontalArrangement = Arrangement.spacedBy(12.dp),
         ) {
-            Box {
-                Avatar(user, size = if (mobile) 40.dp else 36.dp)
-                Box(
-                    Modifier.align(Alignment.BottomEnd)
-                        .offset(4.dp, 4.dp)
-                        .size(20.dp)
-                        .drawBehind {
-                            drawCircle(
-                                colors.background,
-                                radius = size.minDimension / 2 + 2.dp.toPx(),
-                            )
-                        }
-                        .background(colors.surfaceVariant, CircleShape),
-                    contentAlignment = Alignment.Center,
-                ) {
-                    val reaction = if (type == "reaction") context?.get("reactions")?.rows()?.firstOrNull { it.text("user_id") == actors.first() }?.text("emoji")?.takeIf { it.isNotEmpty() } else null
-                    if (reaction != null) Box(Modifier.then(webControlModifier("img", attributes = mapOf("aria-label" to reaction, "data-notification-reaction" to "")))) { CompositionLocalProvider(LocalJoinedEmojis provides message?.takeIf { it.containsKey("emojis") }?.let(::joinedEmojis)) { ReactionEmoji(reaction, Modifier.size(16.dp)) } }
-                    else Icon(icon, modifier = Modifier.size(12.dp))
-                }
+            NotificationAvatar(
+                size = if (mobile) 40.dp else 36.dp,
+                avatar = { Avatar(user, size = it) },
+            ) {
+                val reaction = if (type == "reaction") context?.get("reactions")?.rows()?.firstOrNull { it.text("user_id") == actors.first() }?.text("emoji")?.takeIf { it.isNotEmpty() } else null
+                if (reaction != null) Box(Modifier.then(webControlModifier("img", attributes = mapOf("aria-label" to reaction, "data-notification-reaction" to "")))) { CompositionLocalProvider(LocalJoinedEmojis provides message?.takeIf { it.containsKey("emojis") }?.let(::joinedEmojis)) { ReactionEmoji(reaction, Modifier.size(16.dp)) } }
+                else Icon(icon, modifier = Modifier.size(12.dp))
             }
             Column(
                 Modifier.weight(1f),
@@ -530,19 +518,8 @@ fun NotificationCard(
                                 muted = true,
                                 weight = FontWeight.Medium,
                             )
-                        CompositionLocalProvider(
-                            LocalMfmStyle provides TextStyle(fontFeatureSettings = "tnum")
-                        ) {
-                            Text(
-                                app.platform.notificationTime(row.text("created_at")),
-                                Modifier.alignByBaseline(),
-                                muted = true,
-                                size = 11.sp,
-                                lineHeight = 16.5.sp,
-                                maxLines = 1,
-                            )
-                        }
                     }
+                    NotificationTimestamp(app, row.text("created_at"))
                     NotificationReadStatus(app, read)
                 }
                 if (message != null && channel != null)
@@ -785,5 +762,27 @@ private fun NotificationDestination(
                 x += widths[index] + gap
             }
         }
+    }
+}
+
+/** Shared channel-sized avatar and badge surface for both notification sources. */
+@Composable
+fun NotificationAvatar(size: Dp, avatar: @Composable (Dp) -> Unit, badge: @Composable () -> Unit) {
+    val colors = MaterialTheme.colorScheme
+    Box {
+        avatar(size)
+        Box(
+            Modifier.align(Alignment.BottomEnd).offset(4.dp, 4.dp).size(20.dp)
+                .drawBehind { drawCircle(colors.background, radius = this.size.minDimension / 2 + 2.dp.toPx()) }
+                .background(colors.surfaceVariant, CircleShape),
+            contentAlignment = Alignment.Center,
+        ) { badge() }
+    }
+}
+
+@Composable
+fun NotificationTimestamp(app: Session, createdAt: String) {
+    CompositionLocalProvider(LocalMfmStyle provides TextStyle(fontFeatureSettings = "tnum")) {
+        Text(app.platform.notificationTime(createdAt), muted = true, size = 11.sp, lineHeight = 16.5.sp, maxLines = 1)
     }
 }

@@ -57,15 +57,15 @@ pnpm generate-routes  # ルートツリーを再生成
 
 ## 言語設定（i18n）
 
-日本語・英語・繁體中文・简体中文・廣東話（繁体字表記）に対応しています。左レールの言語メニューで切り替えます。ログアウト・ログインエラー画面にも同じメニューがあります。
+日本語・英語・繁體中文・简体中文・廣東話（繁体字表記）・韓国語・朝鮮語（文化語）に対応しています。左レールの言語メニューで切り替えます。ログアウト・ログインエラー画面にも同じメニューがあります。
 
 - 言語は `localStorage` の `zoo-locale` に保存します。保存値がない場合は `navigator.languages` の順に対応言語を探し、該当がなければ日本語を使います。ストレージが無効でもセッション内の切り替えは可能です。
-- ロケールは `ja` / `en` / `zh-Hant` / `zh-Hans` / `yue`。ブラウザの `zh-TW`・`zh-HK`・`zh-MO` は繁体字、`zh-CN`・`zh-SG` は簡体字、`yue-HK` は広東語に解決します。広東語は中国語の地域指定だけからは推定しません。
-- 翻訳は `src/lib/i18n/locales/*.json` にまとめ、React コンポーネントでは `useTranslation()` を使います。全言語でキーと補間変数を一致させるテストがあります。文言追加時は5ファイルを更新してください。
+- ロケールは `ja` / `en` / `zh-Hant` / `zh-Hans` / `yue` / `ko-KR` / `ko-KP`。ブラウザの `zh-TW`・`zh-HK`・`zh-MO` は繁体字、`zh-CN`・`zh-SG` は簡体字、`yue-HK` は広東語に解決します。広東語は中国語の地域指定だけからは推定しません。`ko`・`ko-KR` は韓国語、`ko-KP` だけが朝鮮語（文化語）に解決します。朝鮮語の照合順（`Intl.Collator`）は韓国語と同じです。
+- 翻訳は `src/lib/i18n/locales/*.json` にまとめ、React コンポーネントでは `useTranslation()` を使います。全言語でキーと補間変数を一致させるテストがあります。文言追加時は7ファイルを更新してください。
 - 日付は選択した言語と端末のタイムゾーンに合わせて `Intl.DateTimeFormat` で表示します。件数は i18next の複数形ルールを使います。ユーザーが入力したメッセージ・名前や、外部サービスから返された診断文は翻訳しません。
 - SPA のプリレンダリングとハイドレーション中は、言語に依存しないスケルトンを表示します。`head` の初期化スクリプトが `html.lang` を先に設定し、クライアントでは保存値／ブラウザ言語で i18next を初期化してから画面をマウントするため、日本語が一瞬表示されることを防ぎます。
 - i18next が言語の唯一の情報源です。`useLocale()` は `useSyncExternalStore` で同じインスタンスを購読し、翻訳ヘルパーにもその `t` を渡します。言語とテーマのストレージ読み書き・別タブとの同期は `src/lib/storage.ts` を共有し、`localStorage.clear()` も反映します。
-- 自前の OIDC エラーは理由コードから5言語で表示し、エラー中に言語を切り替えても翻訳を更新します。外部 IdP が返した説明は元の文言を保ちます。新着の読み上げ文は通知を出した時点の言語で固定し、言語変更だけでは再通知しません。
+- 自前の OIDC エラーは理由コードから7言語で表示し、エラー中に言語を切り替えても翻訳を更新します。外部 IdP が返した説明は元の文言を保ちます。新着の読み上げ文は通知を出した時点の言語で固定し、言語変更だけでは再通知しません。
 
 ```bash
 pnpm test:e2e:i18n    # 本番ビルド + Playwright。バックエンド不要
@@ -79,7 +79,7 @@ pnpm test:e2e:i18n    # 本番ビルド + Playwright。バックエンド不要
 
 リアクションの絵文字ピッカーは [frimousse](https://frimousse.liveblocks.io)（headless）で描画し、絵文字データは `public/emojibase-data` から自前配信します。実行時に CDN へはアクセスしません。
 
-- 配信するロケールは `en` / `ja` / `zh-hant` の3つです。アプリのロケールとの対応は `src/lib/emoji/locale.ts` の中央マップで解決します（`zh-Hans` と `yue` は繁体字データを使い、未対応は `en`）。
+- 配信するロケールは `en` / `ja` / `ko` / `zh-hant` の4つです。アプリのロケールとの対応は `src/lib/emoji/locale.ts` の中央マップで解決します（`zh-Hans` と `yue` は繁体字データ、`ko-KR` と `ko-KP` は `ko` データを使い、未対応は `en`）。
 - frimousse は初回に選択ロケールの `data.json` と `messages.json` だけを取得し、localStorage にキャッシュします。2回目以降のオープンではキャッシュを使います。
 - 表示する絵文字は `SUPPORTED_EMOJI_VERSION`（`src/lib/emoji/data.ts`、現在は 16）までに制限します。バックエンドの `emojis` クレートが Unicode 16.0 までしか検証しないためで、どちらかを更新するときは両方の上限を揃えてください。
 - recents は localStorage の `zoo-recent-emoji` に最大16件、新しい順で保存します。
@@ -183,7 +183,7 @@ VITE_OIDC_RESOURCE=https://zli.chat
 - `VITE_OIDC_RESOURCE` は AuthZ の resource（RFC 8707）です。設定すると authorize と token 要求の両方に `resource` が付き、access token が `typ: at+jwt` の JWT になります。未設定だと AuthZ は opaque token（32 文字）を発行します。本番の resource identifier は `https://zli.chat`、ローカルは AuthZ 側で登録した値を使います。
 - AuthZ 側では resource identifier を `oauthResource` に登録し、zoo2 の client を `oauthClientResource` で紐付けます。AuthZ の管理画面で設定し、AuthZ の `docs/oidc.md` / `docs/deployment.md` も参照してください。
 - バックエンドの `OIDC_AUDIENCE` には `VITE_OIDC_RESOURCE` と同じ resource identifier を設定します（access token の `aud` は resource の配列）。`resource` を設定しないと opaque token のためバックエンドの JWT 検証は通りません。`OIDC_ISSUER` も `VITE_OIDC_ISSUER` と一致させます。
-- AuthZ は `offline_access` 非対応で refresh token を発行しません。access token の期限が切れると再ログインになります。トークンはメモリ保持のみのため、リロード後は authorize へ再遷移します（IdP のセッションが残っていれば操作なしで戻ります）。
+- AuthZ は `offline_access` 非対応で refresh token を発行しません。access token の期限が切れると再ログインになります。同じタブのリロードでは保存済みセッションを復元します。期限が近づいて再認可が必要になるまでは、authorize への往復を省きます。
 - ログアウトは Discovery の `end_session_endpoint` を使う RP-initiated logout です。`VITE_OIDC_POST_LOGOUT_REDIRECT_URI` で戻り先を変更できます（既定 `${origin}/`）。
 
 ## テスト・品質（Phase 6）
@@ -203,6 +203,8 @@ cd frontend && pnpm test:e2e      # 起動 → 送信 → 反映
 `pnpm test:e2e` はフロントエンド（proxy モード）だけを起動し、バックエンドは既存のものを再利用します。現在ユーザー（`VITE_DEV_USER_ID`、既定 `...0001`）が未作成なら `POST /api/users` でスモーク用に作成します。
 
 ### OIDC ログイン E2E（#50）
+
+ログイン済みのセッションは同じタブの `sessionStorage` に保持し、再読み込み時に復元します。再認可が必要になるまでは、IdP への画面遷移を省きます。更新トークンはメモリだけに保持し、タブ複製でコピーされないよう保存しません。再読み込み後に期限が近づいた場合は再認可します。認証設定の変更・ログアウト・セッション失効時は保存情報を破棄し、再ログインします。タブを閉じると保存情報も消えます。
 
 `e2e/oidc.spec.ts` は、外部依存なしのモック IdP（`e2e/mock-idp-server.ts`）と本番同等の認証設定を使い、**未ログイン → authorize → ログイン → Bearer で REST/Shape → チャンネル作成 → メッセージ送信 → Shape 反映**を通しで確認します。自分のメッセージにだけ編集/削除が出ること、ログアウト → 別ユーザーでの再ログイン、参加/退出も含みます。
 
@@ -253,7 +255,7 @@ VRTはOSのフォントに依存しないよう、テスト内でGeistと固定�
 - **Flows**: 確認を伴う権限変更や、失敗からの再送信などの操作手順。
 
 通常・空・読込中・失敗・権限差・長い内容など、確認したい状態をStory単位にします。
-テーマと対応5言語はツールバーで切り替えられます。実部品を共有し、データはローカルコレクションとMSWで再現します。
+テーマと対応7言語はツールバーで切り替えられます。実部品を共有し、データはローカルコレクションとMSWで再現します。
 
 ```bash
 pnpm storybook         # 開発用カタログ

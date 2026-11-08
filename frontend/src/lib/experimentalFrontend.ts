@@ -4,7 +4,11 @@ export type FrontendImplementation = "react" | "compose";
 export const FRONTEND_STORAGE_KEY = "zoo-frontend";
 
 export function supportsComposePath(path: string): boolean {
-  return path.startsWith("/") && !path.startsWith("//");
+  return (
+    import.meta.env.VITE_EXPERIMENTAL_COMPOSE === "true" &&
+    path.startsWith("/") &&
+    !path.startsWith("//")
+  );
 }
 
 export function resolveFrontend(
@@ -28,6 +32,7 @@ export function selectedFrontend(): FrontendImplementation {
 
 /** Full navigation also releases the canvas runtime, subscriptions and in-memory tokens. */
 export function switchFrontend(next: FrontendImplementation): void {
+  if (import.meta.env.VITE_EXPERIMENTAL_COMPOSE !== "true") next = "react";
   writeStorageValue(FRONTEND_STORAGE_KEY, next);
   const url = new URL(window.location.href);
   url.searchParams.set("frontend", next);

@@ -1,7 +1,7 @@
 import type { Locale } from "../i18n/locale";
 
 /** Locales available under `public/emojibase-data`. */
-export const EMOJI_DATA_LOCALES = ["en", "ja", "zh-hant"] as const;
+export const EMOJI_DATA_LOCALES = ["en", "ja", "ko", "zh-hant"] as const;
 export type EmojiDataLocale = (typeof EMOJI_DATA_LOCALES)[number];
 
 export const DEFAULT_EMOJI_DATA_LOCALE: EmojiDataLocale = "en";
@@ -17,6 +17,8 @@ export const EMOJI_DATA_LOCALE_BY_LOCALE: Record<Locale, EmojiDataLocale> = {
   "zh-Hant": "zh-hant",
   "zh-Hans": "zh-hant",
   yue: "zh-hant",
+  "ko-KR": "ko",
+  "ko-KP": "ko",
 };
 
 export function resolveEmojiDataLocale(locale: string): EmojiDataLocale {

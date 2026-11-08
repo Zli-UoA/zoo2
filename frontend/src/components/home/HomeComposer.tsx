@@ -163,7 +163,8 @@ export function HomeComposer({
   };
   const isDesktop = useMediaQuery("(min-width: 768px)");
   const channelsQuery = useActiveChannels();
-  const { joinedChannelIds, isLoading: membershipsLoading } = useMyChannelMemberships();
+  const { joinedChannelIds, isInitialSyncLoading: membershipsSyncLoading } =
+    useMyChannelMemberships();
   const [open, setOpen] = useState(false);
   const viewportRef = useVisualViewport(open && !isDesktop);
   const [replyTo, setReplyTo] = useState<ReplyTarget | null>(null);
@@ -186,7 +187,16 @@ export function HomeComposer({
   const channelSelectionPending =
     channelId !== "" &&
     visibility !== "followers" &&
-    (channelsQuery.isLoading || membershipsLoading);
+    !selectedChannelId &&
+    (channelsQuery.isInitialSyncLoading || membershipsSyncLoading);
+  useEffect(() => {
+    if (!channelId || visibility === "followers" || selectedChannelId || channelSelectionPending)
+      return;
+    const saved = loadHomePostSettings(settingsKey);
+    if (saved.channel_id === channelId)
+      saveHomePostSettings(settingsKey, { ...saved, channel_id: null });
+    setChannelId("");
+  }, [channelId, visibility, selectedChannelId, channelSelectionPending, settingsKey]);
   const [sending, setSending] = useState(false);
   const [failed, setFailed] = useState(false);
   const inFlight = useRef(false);

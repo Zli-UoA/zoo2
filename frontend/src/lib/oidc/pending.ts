@@ -8,7 +8,7 @@ export interface AuthStorage {
 /**
  * リダイレクトをまたいで保持する一時データ。トークンは含めない。
  *
- * トークン本体はメモリ保持が基本方針。ここに置くのは authorize リクエストの
+ * トークン本体は stored-session.ts で別に管理する。ここに置くのは authorize リクエストの
  * 一時的な検証材料（state / nonce / code_verifier）と復帰先だけで、コールバック
  * 処理時に使い切りで削除する。タブを閉じれば消え、タブ間でも共有されない。
  */
