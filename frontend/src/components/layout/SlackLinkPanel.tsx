@@ -213,6 +213,8 @@ function OwnImportSection({ client }: { client: ReturnType<typeof createConfigur
   const { t } = useTranslation();
   const [data, setData] = useState<OwnSlackImports | null>(null);
   const [error, setError] = useState("");
+  // 一覧を取れなかったときのエラー。次に取れたら消える (取り込みの操作のエラーとは分ける)
+  const [loadError, setLoadError] = useState("");
   const [pending, setPending] = useState(false);
   const [revision, setRevision] = useState(0);
   // 取り込みを始めたら選択を戻し、続けて別のチャンネルを選べるようにする
@@ -225,10 +227,12 @@ function OwnImportSection({ client }: { client: ReturnType<typeof createConfigur
     const load = () =>
       getOwnSlackImports(client, controller.signal)
         .then((value) => {
-          if (!controller.signal.aborted) setData(value);
+          if (controller.signal.aborted) return;
+          setData(value);
+          setLoadError("");
         })
         .catch((cause) => {
-          if (!controller.signal.aborted) setError(describeImportError(cause, t, false));
+          if (!controller.signal.aborted) setLoadError(describeImportError(cause, t, false));
         });
     void load();
     const timer = running ? window.setInterval(load, POLL_INTERVAL_MS) : undefined;
@@ -243,7 +247,7 @@ function OwnImportSection({ client }: { client: ReturnType<typeof createConfigur
       title={t("slackLink.importTitle")}
       description={t("slackLink.importDescription")}
     >
-      {data === null && !error ? (
+      {data === null && !error && !loadError ? (
         <Spinner label={t("slackLink.importLoading")} className="justify-start" />
       ) : null}
       {data && !data.export ? (
@@ -292,6 +296,11 @@ function OwnImportSection({ client }: { client: ReturnType<typeof createConfigur
         />
       ) : null}
       {latest ? <SlackImportRunStatus job={latest} /> : null}
+      {loadError ? (
+        <p role="alert" className="text-sm text-destructive">
+          {loadError}
+        </p>
+      ) : null}
       {error ? (
         <p role="alert" className="text-sm text-destructive">
           {error}

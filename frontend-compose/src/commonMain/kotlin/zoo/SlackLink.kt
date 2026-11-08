@@ -329,7 +329,11 @@ class SlackOwnImportController(
         scope.launch {
             try {
                 val value = request("/api/slack/imports", "GET", null).jsonObject
-                if (version == generation) data = value
+                if (version == generation) {
+                    data = value
+                    // 前の読み込みの失敗は、取れたら消す (取り込みの操作の失敗は残す)
+                    if (!pending) failure = null
+                }
             } catch (cause: CancellationException) {
                 throw cause
             } catch (cause: Exception) {

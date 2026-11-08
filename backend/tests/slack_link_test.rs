@@ -1368,3 +1368,98 @@ async fn test_slack_link_refuses_concurrent_switch_to_another_account() -> anyho
     assert_eq!(link[0], json!({"slack_user_id": "U1", "token": "x"}));
     Ok(())
 }
+
+/// 取り込みのワーカーが同じ Slack ユーザーのプレースホルダの対応をコミットする前に連携しても、
+/// 一意制約で失敗せず、その対応を連携済みにする
+#[tokio::test]
+async fn test_slack_link_during_import_reuses_the_uncommitted_mapping() -> anyhow::Result<()> {
+    let team = format!("T{}", uuid::Uuid::new_v4().simple());
+    let token = format!("xoxp-import-{}", uuid::Uuid::new_v4().simple());
+    let slack = MockServer::start().await;
+    mock_access(&slack, "code-i", &team, "U1", &token).await;
+    mock_users_info(&slack).await;
+    let (state, app) = linking_state(&team, &slack).await?;
+    let alice = create_user(&app, "link_import_alice").await?;
+    let oauth = oauth_state(&app, &alice).await?;
+    let placeholder = backend::slack::user_id(&team, "U1");
+    exec(
+        &state,
+        "INSERT INTO users(id,user_name,display_name,guest_kind) VALUES($1,$2,'alice (Slack)','deactivated')",
+        &[&placeholder, &format!("slack-i.{}", &uuid::Uuid::new_v4().simple().to_string()[..8])],
+    )
+    .await?;
+
+    // ワーカーが対応を作っている途中 (まだコミットしていない)
+    let mut db = state.db.clone();
+    let mut worker = db.transaction().await?;
+    toasty::sql::statement(
+        "INSERT INTO slack_users(team_id,slack_user_id,user_id,name) VALUES($1,'U1',$2,'alice')",
+    )
+    .bind(team.as_str())
+    .bind(placeholder.as_str())
+    .exec(&mut worker)
+    .await?;
+    let task = tokio::spawn({
+        let (app, alice) = (app.clone(), alice.clone());
+        async move {
+            request(
+                &app,
+                "POST",
+                "/api/slack/oauth/complete",
+                Some(&alice),
+                Some(json!({"code": "code-i", "state": oauth})),
+            )
+            .await
+        }
+    });
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    worker.commit().await?;
+    let (status, body, _) = task.await??;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let mapping = sql(
+        &state,
+        "SELECT json_build_object('user_id',user_id,'linked',linked)::text FROM slack_users WHERE team_id=$1 AND slack_user_id='U1'",
+        &[&team],
+    )
+    .await?;
+    assert_eq!(mapping[0], json!({"user_id": alice, "linked": true}));
+    Ok(())
+}
+
+/// トークンを交換した後、連携を保存できなかった失敗でも、受け取ったトークンを失効させる
+#[tokio::test]
+async fn test_slack_link_discards_the_token_when_storing_fails() -> anyhow::Result<()> {
+    let team = format!("T{}", uuid::Uuid::new_v4().simple());
+    let token = format!("xoxp-store-{}", uuid::Uuid::new_v4().simple());
+    let slack = MockServer::start().await;
+    mock_access(&slack, "code-s2", &team, "U1", &token).await;
+    mock_users_info(&slack).await;
+    mock_revoke(&slack, &token, 1).await;
+    let (state, app) = linking_state(&team, &slack).await?;
+    let alice = create_user(&app, "link_store_alice").await?;
+    let oauth = oauth_state(&app, &alice).await?;
+    // 認可を始めた後で、人間のアカウントではなくなった (保存の前の確認で失敗する)
+    exec(
+        &state,
+        "UPDATE users SET is_bot=true WHERE id=$1",
+        &[&alice],
+    )
+    .await?;
+    let (status, body, _) = request(
+        &app,
+        "POST",
+        "/api/slack/oauth/complete",
+        Some(&alice),
+        Some(json!({"code": "code-s2", "state": oauth})),
+    )
+    .await?;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
+    let links = sql(
+        &state,
+        "SELECT json_build_object('u',user_id)::text FROM slack_user_links WHERE user_id=$1",
+        &[&alice],
+    )
+    .await?;
+    assert!(links.is_empty());
+    Ok(())
+}

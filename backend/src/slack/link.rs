@@ -247,7 +247,7 @@ async fn complete(
             "Slack did not return a user token".into(),
         ));
     };
-    let Some(token) = authed.access_token.filter(|t| !t.is_empty()) else {
+    let Some(token) = authed.access_token.clone().filter(|t| !t.is_empty()) else {
         return Err(AppError::BadGateway(
             "Slack did not return a user token".into(),
         ));
@@ -257,13 +257,32 @@ async fn complete(
         return Err(AppError::Forbidden("team_mismatch".into()));
     }
 
+    // 交換したトークンは、保存できなかったらどの失敗でも片付ける (保存済みのアカウントなら `discard` が失効させない)
+    match store_link(&s, &user, &team, &authed, &token, &key).await {
+        Ok(state) => Ok(Json(state)),
+        Err(e) => {
+            discard(&s, &team.id, &authed.id, &token).await;
+            Err(e)
+        }
+    }
+}
+
+/// 交換したトークンを連携として保存する。失敗したら、呼び出し側が受け取ったトークンを片付ける
+async fn store_link(
+    s: &AppState,
+    user: &AuthUser,
+    team: &Team,
+    authed: &AuthedUser,
+    token: &str,
+    key: &[u8; 32],
+) -> Result<Value, AppError> {
     let mut db = s.db.clone();
     let mut tx = db.transaction().await?;
-    human(&mut tx, &user).await?;
+    human(&mut tx, user).await?;
     // 同じ Slack アカウントの解除や、ほかの連携の失敗による失効と直列にする。ロックを取ってから
     // トークンが有効か確かめ、交換から保存までの間に失効した同じトークンを保存しない
     lock_account(&mut tx, &team.id, &authed.id).await?;
-    let Some(slack_user_name) = user_name(&s, &token, &authed.id).await else {
+    let Some(slack_user_name) = user_name(s, token, &authed.id).await else {
         return Err(AppError::BadGateway(
             "The Slack token was revoked while linking; try again".into(),
         ));
@@ -271,22 +290,21 @@ async fn complete(
     let result = link_account(
         &mut tx,
         &user.id,
-        &team,
+        team,
         &authed.id,
         &slack_user_name,
-        &encrypt(&key, &token)?,
+        &encrypt(key, token)?,
         &authed.scope,
     )
     .await;
     if let Err(e) = result {
-        // アカウントのロックを放してから片付ける (discard が同じロックを取り直す)
+        // アカウントのロックを放してから、呼び出し側が片付ける (discard が同じロックを取り直す)
         let _ = tx.rollback().await;
-        discard(&s, &team.id, &authed.id, &token).await;
         return Err(e);
     }
-    let state = link_state(&mut tx, &s, &user.id).await?;
+    let state = link_state(&mut tx, s, &user.id).await?;
     tx.commit().await?;
-    Ok(Json(state))
+    Ok(state)
 }
 
 /// Slack が「トークンが無効」と答えたときのエラー
@@ -711,7 +729,12 @@ fn replace_mentions(content: &str, names: &MentionNames) -> Option<String> {
                 end += 1;
             }
             let token: String = chars[i + 1..end].iter().collect();
-            if let Some((len, replacement)) = names.lookup(&token) {
+            // 置き換え後の名前が `.` で終わり、元の句読点の `.` が続くと、`@alice..` のように通知の判定が
+            // 一意に解決できなくなる (末尾の `.` をすべて句読点とみなして別のユーザーになる)。その場合は書き換えない
+            if let Some((len, replacement)) = names
+                .lookup(&token)
+                .filter(|(len, to)| !(to.ends_with('.') && *len < token.len()))
+            {
                 out.push('@');
                 out.push_str(replacement);
                 out.push_str(&token[len..]);
@@ -756,24 +779,32 @@ pub async fn reassign(
     user: &str,
 ) -> Result<(), AppError> {
     lock_links(tx).await?;
-    let mapping = query(
-        tx,
-        "SELECT json_build_object('user_id',user_id,'linked',linked)::text FROM slack_users \
-         WHERE team_id=$1 AND slack_user_id=$2 FOR UPDATE",
-        &[team, slack_user],
-    )
-    .await?
-    .into_iter()
-    .next();
-    match mapping {
-        None => {
-            exec(
-                tx,
-                "INSERT INTO slack_users(team_id,slack_user_id,user_id,linked,name) VALUES($1,$2,$3,true,$4)",
-                &[team, slack_user, user, slack_user_name],
-            )
-            .await?;
+    let select = "SELECT json_build_object('user_id',user_id,'linked',linked)::text FROM slack_users \
+         WHERE team_id=$1 AND slack_user_id=$2 FOR UPDATE";
+    let mut mapping = query(tx, select, &[team, slack_user])
+        .await?
+        .into_iter()
+        .next();
+    if mapping.is_none() {
+        // 取り込みのワーカーが同じ Slack ユーザーのプレースホルダの対応をまだコミットしていないと、上の SELECT は
+        // 行を見つけられず、そのまま INSERT すると一意制約で失敗して連携全体が巻き戻る。衝突したら、相手がコミット
+        // した後の行をロックして読み直し、既存の対応として扱う
+        let inserted = query(
+            tx,
+            "INSERT INTO slack_users(team_id,slack_user_id,user_id,linked,name) VALUES($1,$2,$3,true,$4) \
+             ON CONFLICT (team_id,slack_user_id) DO NOTHING RETURNING json_build_object('ok',true)::text",
+            &[team, slack_user, user, slack_user_name],
+        )
+        .await?;
+        if inserted.is_empty() {
+            mapping = query(tx, select, &[team, slack_user])
+                .await?
+                .into_iter()
+                .next();
         }
+    }
+    match mapping {
+        None => {}
         Some(m) if m["linked"] == true && m["user_id"] != user => {
             return Err(AppError::Conflict("already_linked".into()));
         }
@@ -945,6 +976,17 @@ mod tests {
         assert_eq!(
             replace_mentions("@slack-bob. @slack-bob", &both).as_deref(),
             Some("@carol @bob")
+        );
+    }
+
+    #[test]
+    fn replace_mentions_leaves_ambiguous_trailing_dots() {
+        // 置き換え後の名前が `.` で終わり、句読点の `.` が続くときは、通知が別のユーザーへ向かうので書き換えない
+        let dotted = names(&[("slack-alice", "alice.")], &[]);
+        assert_eq!(replace_mentions("hi @slack-alice. ok", &dotted), None);
+        assert_eq!(
+            replace_mentions("hi @slack-alice ok", &dotted).as_deref(),
+            Some("hi @alice. ok")
         );
     }
 
