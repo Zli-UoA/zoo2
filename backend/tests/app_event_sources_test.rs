@@ -2955,10 +2955,10 @@ async fn concurrent_workers_never_claim_or_send_a_delivery_twice() -> anyhow::Re
     for pass in passes {
         tokio::time::timeout(std::time::Duration::from_secs(120), pass).await???;
     }
-    // 失敗した配信はリース（3 秒）が切れるまで再取得されない。したがって試行回数は、
-    // 経過時間から許される回数（最初の 1 回 + 3 秒ごとに 1 回）を超えない。
+    // 失敗した配信はリース（HTTP は 5 秒）が切れるまで再取得されない。したがって試行回数は、
+    // 経過時間から許される回数（最初の 1 回 + 5 秒ごとに 1 回）を超えない。
     // 同時に回した 6 本が同じ行を取り合って重複送信していれば、この上限を超える。
-    let allowed = 1 + (started.elapsed().as_secs() / 3);
+    let allowed = 1 + (started.elapsed().as_secs() / 5);
     let attempts = message_delivery_attempts(&f).await?;
     assert!(attempts.len() >= 24);
     assert!(
@@ -3012,18 +3012,18 @@ async fn lease_is_measured_from_the_claim_not_from_the_start_of_a_blocked_transa
     apps::one(&mut holder,"SELECT json_build_object('locked',pg_advisory_xact_lock(hashtextextended($1,0)) IS NULL)::text",&[&format!("app-dispatch:{}",f.installation)]).await?;
     let db = f.state.db.clone();
     let installation = f.installation.clone();
-    let claim = tokio::spawn(async move { apps::delivery::claim(&db, &installation).await });
+    let claim = tokio::spawn(async move { apps::delivery::claim_http(&db, &installation).await });
     tokio::time::sleep(std::time::Duration::from_millis(2500)).await;
     holder.commit().await?;
     let claimed = claim.await??.expect("a delivery is claimable");
-    // now()（トランザクション開始）を起点にすると、残りは約 0.5 秒しかなくなり、送信中に再取得される。
+    // now()（トランザクション開始）を起点にすると、残りは約 2.5 秒しかなくなり、送信中に再取得される。
     let mut db = f.state.db.clone();
     let mut tx = db.transaction().await?;
     let row = apps::one(&mut tx,"SELECT json_build_object('left',extract(epoch from lease_until-clock_timestamp()))::text FROM app_deliveries WHERE id=$1",&[claimed["delivery_id"].as_str().unwrap()]).await?;
     let left = row["left"].as_f64().unwrap();
     assert!(
-        left > 2.0,
-        "the lease must last ~3s after the claim, got {left}s"
+        left > 4.0,
+        "the lease must last ~5s after the claim, got {left}s"
     );
     Ok(())
 }
@@ -3088,9 +3088,11 @@ async fn a_notification_wakes_the_dispatcher_without_waiting_for_the_poll() -> a
     let f = fixture().await?;
     reconfigure(&f,json!({"scopes":["messages:read"],"events":["message.created"],"transport":"http","event_url":"https://127.0.0.1:1/events"})).await?;
     let wake = std::sync::Arc::new(tokio::sync::Notify::new());
-    let listener = apps::delivery::listen_for_deliveries(
+    let ready = std::sync::Arc::new(tokio::sync::Notify::new());
+    let listener = apps::delivery::listen_for_deliveries_with(
         backend::config::database_url_from_env(),
         wake.clone(),
+        Some(ready.clone()),
     );
     let (stop, shutdown) = tokio::sync::watch::channel(false);
     // ポーリングは 1 時間後なので、配信されるなら通知で起きたとき以外にない。
@@ -3100,6 +3102,9 @@ async fn a_notification_wakes_the_dispatcher_without_waiting_for_the_poll() -> a
         wake,
         std::time::Duration::from_secs(3600),
     ));
+    // LISTEN が成立するまで待つ。成立直後の「接続したので 1 回起こす」pass が終わってから投稿し、
+    // 配信が始まるのが通知の転送によるものだけになるようにする。
+    tokio::time::timeout(std::time::Duration::from_secs(30), ready.notified()).await?;
     tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
     post_messages(&f, 3).await;
     let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(60);
@@ -3187,5 +3192,50 @@ async fn a_backlog_is_drained_without_waiting_for_the_next_poll() -> anyhow::Res
         }
     }
     assert!(!more, "a pass with nothing left to claim must report false");
+    Ok(())
+}
+
+#[tokio::test]
+async fn websocket_deliveries_do_not_wake_the_http_dispatcher() -> anyhow::Result<()> {
+    let _guard = HTTP_WORKER_TEST_LOCK.lock().await;
+    // 既定の fixture は WebSocket。HTTP の配信先が無い INSERT では通知しない。
+    let f = fixture().await?;
+    let mut listener = listen_app_delivery().await?;
+    while next_notification(&mut listener, std::time::Duration::from_millis(300)).await {}
+    post_messages(&f, 1).await;
+    assert!(
+        !next_notification(&mut listener, std::time::Duration::from_millis(1500)).await,
+        "a WebSocket-only delivery must not NOTIFY the HTTP dispatcher"
+    );
+    // 同じ App を HTTP にすると通知される。
+    reconfigure(&f,json!({"scopes":["messages:read"],"events":["message.created"],"transport":"http","event_url":"https://127.0.0.1:1/events"})).await?;
+    while next_notification(&mut listener, std::time::Duration::from_millis(300)).await {}
+    post_messages(&f, 1).await;
+    assert!(
+        next_notification(&mut listener, std::time::Duration::from_secs(5)).await,
+        "an HTTP delivery must NOTIFY"
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn deferring_a_large_backlog_is_batched_and_keeps_attempts() -> anyhow::Result<()> {
+    let _guard = HTTP_WORKER_TEST_LOCK.lock().await;
+    let f = fixture().await?;
+    let mut db = f.state.db.clone();
+    let mut tx = db.transaction().await?;
+    toasty::sql::statement("INSERT INTO app_deliveries(id,event_id,installation_id,event_type,payload,available_at) SELECT gen_random_uuid()::text,gen_random_uuid()::text,$1,'message.created','{}',now()-interval '1 minute' FROM generate_series(1,2500)").bind(f.installation.as_str()).exec(&mut tx).await?;
+    tx.commit().await?;
+    apps::delivery::defer_install(
+        &f.state.db,
+        &f.installation,
+        std::time::Duration::from_secs(120),
+    )
+    .await?;
+    let mut tx = db.transaction().await?;
+    let row = apps::one(&mut tx,"SELECT json_build_object('due',count(*) FILTER(WHERE available_at<=now()),'deferred',count(*) FILTER(WHERE available_at>now()+interval '60 seconds'),'attempted',count(*) FILTER(WHERE attempts>0))::text FROM app_deliveries WHERE installation_id=$1 AND event_type='message.created' AND acked_at IS NULL",&[&f.installation]).await?;
+    assert_eq!(row["due"], 0, "{row}");
+    assert!(row["deferred"].as_u64().unwrap() >= 2500, "{row}");
+    assert_eq!(row["attempted"], 0, "{row}");
     Ok(())
 }

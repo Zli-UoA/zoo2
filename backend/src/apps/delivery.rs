@@ -74,13 +74,21 @@ pub(crate) async fn active(s: &AppState, credential: &str) -> Result<bool, AppEr
     let mut tx = db.transaction().await?;
     Ok(one(&mut tx,"SELECT json_build_object('ok',EXISTS(SELECT 1 FROM app_credentials t JOIN app_installations i ON i.id=t.installation_id JOIN apps a ON a.id=i.app_id WHERE t.id=$1 AND t.revoked_at IS NULL AND t.expires_at>now() AND i.active AND a.status='installed' AND t.scopes::jsonb <@ i.scopes::jsonb AND NOT EXISTS(SELECT 1 FROM users u WHERE u.id=COALESCE(t.user_id,a.bot_user_id) AND u.is_deactivated)))::text",&[credential]).await?["ok"]==true)
 }
+/// WebSocket 向け。リースは 3 秒。
 pub async fn claim(db: &toasty::Db, installation: &str) -> Result<Option<Value>, AppError> {
-    claim_filtered(db, installation, false).await
+    claim_filtered(db, installation, false, 3).await
 }
+/// HTTP 配信向け。送信のタイムアウト（3 秒）に ACK を書く余裕を足して、リースは 5 秒。
+/// 送信が遅くても、ACK 前にリースが切れて別のワーカーに取り直される窓を作らない。
+pub async fn claim_http(db: &toasty::Db, installation: &str) -> Result<Option<Value>, AppError> {
+    claim_filtered(db, installation, false, HTTP_LEASE_SECS).await
+}
+const HTTP_LEASE_SECS: u32 = 5;
 async fn claim_filtered(
     db: &toasty::Db,
     installation: &str,
     terminal_only: bool,
+    lease_secs: u32,
 ) -> Result<Option<Value>, AppError> {
     let mut db = db.clone();
     let mut tx = db.transaction().await?;
@@ -101,9 +109,9 @@ async fn claim_filtered(
         .await?;
     }
     // リースの起点は now()（トランザクション開始）ではなく clock_timestamp()。advisory lock の
-    // 待ちで開始から時間が経つと、リースが実質 3 秒より短くなり送信中に再取得されるため。
+    // 待ちで開始から時間が経つと、リースが実質的に短くなり送信中に再取得されるため。
     let lease = uuid::Uuid::new_v4().to_string();
-    let rows=query(&mut tx,"WITH candidate AS(SELECT d.id FROM app_deliveries d WHERE d.installation_id=$1 AND app_delivery_allowed(d) AND (NOT $4::boolean OR d.event_type IN('app.uninstalled','tokens.revoked','app.deleted')) AND (NOT $3::boolean OR d.first_delivered_at IS NOT NULL OR app_event_quota_exempt(d.event_type)) AND d.acked_at IS NULL AND d.available_at<=now() AND d.expires_at>now() AND (d.lease_until IS NULL OR d.lease_until<now()) ORDER BY CASE WHEN d.event_type='app.uninstalled' THEN 0 ELSE 1 END,d.created_at,d.id FOR UPDATE SKIP LOCKED LIMIT 1) UPDATE app_deliveries d SET attempts=attempts+1,first_delivered_at=COALESCE(first_delivered_at,now()),lease_until=clock_timestamp()+interval '3 seconds',lease_token=$2,available_at=clock_timestamp()+make_interval(secs=>LEAST(3600,power(2,LEAST(attempts+1,12))::integer)) FROM candidate c WHERE d.id=c.id RETURNING json_build_object('delivery_id',d.id,'ack_token',d.lease_token,'event',app_delivery_payload(d),'attempt',d.attempts)::text",&[installation,&lease,if limited {"true"}else{"false"},if terminal_only {"true"}else{"false"}]).await?;
+    let rows=query(&mut tx,"WITH candidate AS(SELECT d.id FROM app_deliveries d WHERE d.installation_id=$1 AND app_delivery_allowed(d) AND (NOT $4::boolean OR d.event_type IN('app.uninstalled','tokens.revoked','app.deleted')) AND (NOT $3::boolean OR d.first_delivered_at IS NOT NULL OR app_event_quota_exempt(d.event_type)) AND d.acked_at IS NULL AND d.available_at<=now() AND d.expires_at>now() AND (d.lease_until IS NULL OR d.lease_until<now()) ORDER BY CASE WHEN d.event_type='app.uninstalled' THEN 0 ELSE 1 END,d.created_at,d.id FOR UPDATE SKIP LOCKED LIMIT 1) UPDATE app_deliveries d SET attempts=attempts+1,first_delivered_at=COALESCE(first_delivered_at,now()),lease_until=clock_timestamp()+make_interval(secs=>$5::text::int),lease_token=$2,available_at=clock_timestamp()+make_interval(secs=>LEAST(3600,power(2,LEAST(attempts+1,12))::integer)) FROM candidate c WHERE d.id=c.id RETURNING json_build_object('delivery_id',d.id,'ack_token',d.lease_token,'event',app_delivery_payload(d),'attempt',d.attempts)::text",&[installation,&lease,if limited {"true"}else{"false"},if terminal_only {"true"}else{"false"},&lease_secs.to_string()]).await?;
     tx.commit().await?;
     let value = rows.into_iter().next();
     if let Some(event) = &value {
@@ -240,7 +248,7 @@ async fn terminal_socket(s: &AppState, ws: &mut WebSocket, installation: &str) {
         if tokio::time::Instant::now() >= deadline {
             break;
         }
-        if let Ok(Some(event)) = claim_filtered(&s.db, installation, true).await {
+        if let Ok(Some(event)) = claim_filtered(&s.db, installation, true, 3).await {
             if ws
                 .send(Message::Text(event.to_string().into()))
                 .await
@@ -567,6 +575,15 @@ pub fn listen_for_deliveries(
     database_url: String,
     wake: std::sync::Arc<tokio::sync::Notify>,
 ) -> tokio::task::JoinHandle<()> {
+    listen_for_deliveries_with(database_url, wake, None)
+}
+
+/// `listen_for_deliveries`。`ready` があれば、LISTEN が成立するたびに通知する（テスト用）。
+pub fn listen_for_deliveries_with(
+    database_url: String,
+    wake: std::sync::Arc<tokio::sync::Notify>,
+    ready: Option<std::sync::Arc<tokio::sync::Notify>>,
+) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
         loop {
             match crate::db::connect_raw_listener(&database_url).await {
@@ -575,6 +592,9 @@ pub fn listen_for_deliveries(
                         tracing::warn!(error=%e,"LISTEN app_delivery failed");
                     } else {
                         tracing::info!("Subscribed to PostgreSQL channel app_delivery");
+                        if let Some(ready) = &ready {
+                            ready.notify_one();
+                        }
                         wake.notify_one();
                         while let Some(n) = listener.notifications.recv().await {
                             if n.channel() == "app_delivery" {
@@ -595,6 +615,10 @@ pub fn listen_for_deliveries(
 pub async fn refresh_queue_metrics(db: &toasty::Db) -> Result<(), AppError> {
     let mut db = db.clone();
     let mut tx = db.transaction().await?;
+    // 未 ACK 行が多いときに配信（claim・ACK）と同じ DB を圧迫しないよう、時間を制限する。
+    toasty::sql::statement("SET LOCAL statement_timeout = '3s'")
+        .exec(&mut tx)
+        .await?;
     let row=one(&mut tx,"SELECT json_build_object('depth',count(*),'oldest',COALESCE(extract(epoch from now()-min(created_at)),0))::text FROM app_deliveries WHERE acked_at IS NULL AND expires_at>now()",&[]).await?;
     drop(tx);
     super::dispatch_metrics::global().set_queue(
@@ -629,14 +653,18 @@ pub async fn http_pass(db: &toasty::Db) -> Result<(), AppError> {
 }
 
 /// `http_pass`。`stop` が true になった後は、バッチの途中でも新しいリースを取らない
-/// （取得済みの送信と ACK だけ終える）。まだ配信が残っていそうなら（1 件でも取った、または
-/// 候補が上限に達した）true を返し、呼び出し側は待たずに次の pass を回す。
+/// （取得済みの送信と ACK だけ終える）。1 件でも claim できたら true を返し、呼び出し側は
+/// 待たずに次の pass を回す。
 pub async fn http_pass_until(
     db: &toasty::Db,
     stop: &tokio::sync::watch::Receiver<bool>,
 ) -> Result<bool, AppError> {
     let installs = http_candidates(db).await?;
-    let mut more = installs.len() >= 100;
+    let budget = HostBudget::default();
+    let budget = &budget;
+    // 1 件でも claim できたときだけ true。候補が上限（100）に達しても、配信上限などで 1 件も取れない
+    // なら false にして、次の通知か poll まで待つ（取れないのに即時に回し続けない）。
+    let mut more = false;
     let results = futures_util::stream::iter(installs)
         .map(|i| async move {
             // 宛先ホストが落ちている間は配信を取らず（試行回数を消費せず）、開放時刻まで先送りする。
@@ -651,7 +679,7 @@ pub async fn http_pass_until(
                 }
             };
             let sends = futures_util::stream::iter(0..fan_out)
-                .map(|_| http_install(db, i.clone(), stop))
+                .map(|_| http_install(db, i.clone(), stop, budget))
                 .buffer_unordered(32)
                 .collect::<Vec<_>>()
                 .await;
@@ -672,21 +700,28 @@ pub async fn http_pass_until(
 }
 
 /// サーキットが開いている宛先の配信を、`wait` だけ先送りする。`attempts` は増やさない。
+/// 一度に大量の行を更新しないよう 1000 行ずつ・最大 10 回に分ける（残りは次の pass が続ける）。
 pub async fn defer_install(
     db: &toasty::Db,
     installation: &str,
     wait: Duration,
 ) -> Result<(), AppError> {
-    let mut db = db.clone();
-    let mut tx = db.transaction().await?;
-    toasty::sql::statement(
-        "UPDATE app_deliveries SET available_at=clock_timestamp()+make_interval(secs=>$2::text::float8) WHERE installation_id=$1 AND acked_at IS NULL AND expires_at>now() AND available_at<=clock_timestamp()",
-    )
-    .bind(installation)
-    .bind(wait.as_secs_f64().ceil().to_string())
-    .exec(&mut tx)
-    .await?;
-    tx.commit().await?;
+    let secs = wait.as_secs_f64().ceil().to_string();
+    for _ in 0..10 {
+        let mut db = db.clone();
+        let mut tx = db.transaction().await?;
+        let moved = one(
+            &mut tx,
+            "WITH batch AS(SELECT id FROM app_deliveries WHERE installation_id=$1 AND acked_at IS NULL AND expires_at>now() AND available_at<=clock_timestamp() ORDER BY available_at,id LIMIT 1000 FOR UPDATE SKIP LOCKED),moved AS(UPDATE app_deliveries d SET available_at=clock_timestamp()+make_interval(secs=>$2::text::float8) FROM batch WHERE d.id=batch.id RETURNING d.id) SELECT json_build_object('count',count(*))::text FROM moved",
+            &[installation, secs.as_str()],
+        )
+        .await?;
+        tx.commit().await?;
+        if moved["count"].as_u64().unwrap_or(0) < 1000 {
+            break;
+        }
+        tokio::task::yield_now().await;
+    }
     Ok(())
 }
 
@@ -703,10 +738,25 @@ fn breaker_outcome(result: &Result<(), AppError>) -> super::circuit::Outcome {
     }
 }
 
+/// 1 回の pass で 1 ホストに送る件数の数え上げ。claim できた分だけ数える。
+#[derive(Default)]
+struct HostBudget(std::sync::Mutex<std::collections::HashMap<String, usize>>);
+impl HostBudget {
+    /// 枠 16 件の 2 波ぶん（最悪でも 1 ホストあたり約 6 秒）。
+    const PER_PASS: usize = super::circuit::HOST_CONCURRENCY * 2;
+    fn exhausted(&self, host: &str) -> bool {
+        self.0.lock().unwrap().get(host).copied().unwrap_or(0) >= Self::PER_PASS
+    }
+    fn spend(&self, host: &str) {
+        *self.0.lock().unwrap().entry(host.to_owned()).or_default() += 1;
+    }
+}
+
 async fn http_install(
     db: &toasty::Db,
     i: Value,
     stop: &tokio::sync::watch::Receiver<bool>,
+    budget: &HostBudget,
 ) -> Result<bool, AppError> {
     let id = i["id"].as_str().unwrap();
     if *stop.borrow() {
@@ -740,7 +790,12 @@ async fn http_install(
     if *stop.borrow() {
         return Ok(false);
     }
-    if let Some(event) = claim(db, id).await? {
+    // 1 回の pass でこのホストに送る件数の上限（枠待ちの波が続いて pass が長引かないように）。
+    if budget.exhausted(&host) {
+        return Ok(false);
+    }
+    if let Some(event) = claim_http(db, id).await? {
+        budget.spend(&host);
         let result = tokio::time::timeout(
             Duration::from_secs(3),
             deliver(
@@ -864,6 +919,17 @@ async fn presence_allowed(s: &AppState, installation: &str) -> Result<bool, AppE
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn host_budget_counts_only_claimed_sends_and_is_per_host() {
+        let b = HostBudget::default();
+        for _ in 0..HostBudget::PER_PASS {
+            assert!(!b.exhausted("slow.example"));
+            b.spend("slow.example");
+        }
+        assert!(b.exhausted("slow.example"));
+        assert!(!b.exhausted("other.example"));
+    }
     #[test]
     fn classifies_delivery_errors_without_leaking_details() {
         let bad = |m: &str| AppError::BadGateway(m.into());
