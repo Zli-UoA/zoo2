@@ -78,6 +78,7 @@ export function useChannelMembers(channelId: string | null) {
   );
   return {
     ...query,
+    isInitialSyncLoading: query.isLoading,
     isLoading: query.isLoading && !(query.isPersistedReady && query.data?.length),
   };
 }
@@ -244,7 +245,9 @@ export function useChannelAccess(channel: ChannelRow | null): ChannelAccess {
     canManageChannel: channel ? canManageChannel({ isAdmin, isCreator }) : false,
     isArchived: !!channel?.archive_at,
     isLoading: membersQuery.isLoading,
-    isMembershipPending: !!channel?.is_private && (membersQuery.isLoading || currentUserLoading),
+    isMembershipPending:
+      !!channel?.is_private &&
+      (currentUserLoading || (!isMember && membersQuery.isInitialSyncLoading)),
     isError: membersQuery.isError,
   };
 }
