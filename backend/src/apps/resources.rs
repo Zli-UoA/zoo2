@@ -1861,18 +1861,18 @@ async fn emoji_image(
     request: axum::extract::Request,
 ) -> Result<axum::response::Response, AppError> {
     use crate::activitypub::{client_ip, emoji_cache};
-    if let Some(origin) = crate::emoji_service::service_url()? {
-        if crate::emoji_service::uses_shared_catalog(&s, &origin).await? {
-            let id = uuid::Uuid::parse_str(&id)
-                .map_err(|_| AppError::NotFound("Emoji image not found".into()))?;
-            return Ok(axum::response::Redirect::temporary(
-                origin
-                    .join(&format!("/api/emoji-images/{id}"))
-                    .unwrap()
-                    .as_str(),
-            )
-            .into_response());
-        }
+    if let Some(origin) = crate::emoji_service::service_url()?
+        && crate::emoji_service::uses_shared_catalog(&s, &origin).await?
+    {
+        let id = uuid::Uuid::parse_str(&id)
+            .map_err(|_| AppError::NotFound("Emoji image not found".into()))?;
+        return Ok(axum::response::Redirect::temporary(
+            origin
+                .join(&format!("/api/emoji-images/{id}"))
+                .unwrap()
+                .as_str(),
+        )
+        .into_response());
     }
     use axum::response::IntoResponse;
     let id = uuid::Uuid::parse_str(&id)

@@ -73,7 +73,9 @@ async fn refresh_shared() -> Result<Option<Vec<Value>>, AppError> {
     let rows = refresh(
         &mut cache,
         origin.clone(),
-        std::env::var("EMOJI_CACHE_FILE").ok(),
+        std::env::var("EMOJI_CACHE_FILE")
+            .ok()
+            .filter(|value| !value.trim().is_empty()),
     )
     .await?;
     Ok(rows)

@@ -26,7 +26,7 @@ Compose Multiplatform を使う [Android 版](docs/android.md) のビルド・�
 
 ## 共通カスタム絵文字サービス
 
-バックエンドの `EMOJI_SERVICE_URL` にZli-UoA/emojiの公開オリジン（末尾スラッシュなし）を設定すると、既存の絵文字API・リアクション・ActivityPubが公開カタログを参照する。React・Composeの設定画面はサービスへのリンクに切り替わり、旧管理APIへの書き込みを拒否する。未設定時は既存機能を維持する。 `infra/compose.stg.yaml` も環境変数を渡す。画像のCSPは `CSP_STORAGE_SRC` に管理サービスと画像配信のHTTPSオリジンを既存の添付画像オリジンへ追加する（例: `https://attachments.zliusercontent.com https://emoji.zli.works https://emoji.zliusercontent.com`）。共通Kotlinが画像を取得する場合のconnect-srcにも適用される。
+バックエンドの `EMOJI_SERVICE_URL` にZli-UoA/emojiの公開オリジン（末尾スラッシュなし）を設定すると、既存の絵文字API・リアクション・ActivityPubが公開カタログを参照する。React・Composeの設定画面はサービスへのリンクに切り替わり、旧管理APIへの書き込みを拒否する。未設定時は既存機能を維持する。 `infra/compose.stg.yaml` も環境変数を渡す。画像のCSPは `CSP_APP_IMAGE_SRC` に管理サービスと画像配信のHTTPSオリジンを設定する（例: `https://emoji.zli.works https://emoji.zliusercontent.com`）。既存の添付画像用 `CSP_STORAGE_SRC` は維持する。
 
 60秒ごとにETagで再検証し、専用の `shared_emojis` 読み取り複製へ反映する。投稿・通知の表示用JOINと絵文字APIは同じ `display_workspace_emojis` ビューを使い、変更を表示再確認キューと `emoji.changed` へ反映する。管理・作成者の正本はサービスだけが持ち、旧登録データは変更しない。取得失敗・再起動後もDB内の最終成功複製を使用し、成功履歴がない場合は旧登録データへフォールバックする。`EMOJI_CACHE_FILE` はHTTPカタログの任意の追加キャッシュとして使える。マイグレーションをバックエンドより先に適用する。
 
