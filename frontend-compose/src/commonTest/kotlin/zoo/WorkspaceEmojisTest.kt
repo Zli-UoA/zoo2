@@ -65,4 +65,46 @@ class WorkspaceEmojisTest {
         session.loadWorkspaceEmojis(force = true)
         assertEquals(2, requests)
     }
+    @Test
+    fun refreshingAfterRegistrationAndDeletionShowsChangesImmediately() = runTest {
+        var name = "cat"
+        var requests = 0
+        val session = app { request ->
+            if (!request.url.encodedPath.startsWith("/api/emojis")) awaitCancellation()
+            when (request.method) {
+                HttpMethod.Post -> { name = "dog"; respond("{}") }
+                HttpMethod.Delete -> { name = ""; respond("{}") }
+                else -> {
+                    requests++
+                    respond(if (name.isEmpty()) "[]" else "[{\"name\":\"$name\"}]",
+                        headers = headersOf(HttpHeaders.ContentType, "application/json"))
+                }
+            }
+        }
+        session.loadWorkspaceEmojis()
+        session.api.request("/api/emojis", "POST")
+        session.loadWorkspaceEmojis(force = true)
+        assertEquals("dog", session.workspaceEmojis.single().text("name"))
+        session.api.request("/api/emojis/dog", "DELETE")
+        session.loadWorkspaceEmojis(force = true)
+        assertTrue(session.workspaceEmojis.isEmpty())
+        assertEquals(3, requests)
+    }
+
+    @Test
+    fun explicitRetryDoesNotWaitAfterAnError() = runTest {
+        var requests = 0
+        val session = app { request ->
+            if (request.url.encodedPath != "/api/emojis") awaitCancellation()
+            requests++
+            if (requests == 1) respond("{}", HttpStatusCode.ServiceUnavailable)
+            else respond("[]", headers = headersOf(HttpHeaders.ContentType, "application/json"))
+        }
+        assertFailsWith<Exception> { session.loadWorkspaceEmojis() }
+        assertTrue(session.workspaceEmojiError)
+        session.loadWorkspaceEmojis(force = true)
+        assertFalse(session.workspaceEmojiError)
+        assertEquals(2, requests)
+    }
+
 }

@@ -76,7 +76,7 @@ private fun LocalCustomEmojiSettings(app: Session) {
     fun reset() { name = ""; category = ""; aliases = ""; previous = null; file?.let { app.platform.action("fileRelease:${it.text("id")}") }; file = null }
     fun load() { scope.launch {
         loading = true; failed = false
-        try { app.loadWorkspaceEmojis() }
+        try { app.loadWorkspaceEmojis(true) }
         catch (e: CancellationException) { throw e } catch (_: Exception) { failed = true }
         finally { loading = false }
     } }
@@ -110,7 +110,7 @@ private fun LocalCustomEmojiSettings(app: Session) {
                             else put("url", previous!!.text("url"))
                         }
                         app.api.request(if (selected == null) "/api/emojis" else "/api/emojis/upload", "POST", payload)
-                        reset(); app.loadWorkspaceEmojis()
+                        reset(); app.loadWorkspaceEmojis(true)
                     } catch (e: CancellationException) { throw e } catch (_: Exception) { failed = true }
                     finally { busy = false }
                 }
@@ -142,7 +142,7 @@ private fun LocalCustomEmojiSettings(app: Session) {
             try {
                 app.api.request("/api/emojis/${item.text("name")}", "DELETE")
                 if (previous == item) reset()
-                remove = null; app.loadWorkspaceEmojis()
+                remove = null; app.loadWorkspaceEmojis(true)
             } catch (e: CancellationException) { throw e } catch (_: Exception) { failed = true }
             finally { busy = false }
         }
