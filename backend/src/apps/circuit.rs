@@ -1,7 +1,8 @@
 //! 宛先ホストごとのサーキットブレーカーと同時接続上限。
 //!
 //! 落ちている宛先に配信ワーカーの枠と試行回数を使い切らせないための、プロセス内の仕組み。
-//! 状態はレプリカごとで共有しない（共有しなくても、各レプリカが数回失敗すれば開く）。
+//! 状態はプロセスごとで共有しない（各プロセスが自分で数回失敗すれば開く）。先送りは DB に書くので、
+//! 1 つのプロセスが開けば全プロセスの配信が遅れるが、別のプロセスは開放時刻の後に最初の数件を試す。
 //!
 //! - 連続して `FAILURES` 回失敗（タイムアウト・接続失敗・名前解決失敗・5xx）で開く。
 //! - 開いている間は配信を取らない（試行回数を消費しない）。呼び出し側が、そのホストの
@@ -65,10 +66,18 @@ pub fn global() -> &'static Breakers {
 }
 
 /// URL のホスト名（小文字）。解析できなければ空。
+/// ポートは含めない（同じホストの別ポートも 1 つのブレーカー・枠を共有する）。
+/// 末尾のドットと IPv6 の角かっこは外して、同じ宛先を同じ名前にそろえる。
 pub fn host_of(url: &str) -> String {
     reqwest::Url::parse(url)
         .ok()
         .and_then(|u| u.host_str().map(str::to_ascii_lowercase))
+        .map(|h| {
+            h.trim_start_matches('[')
+                .trim_end_matches(']')
+                .trim_end_matches('.')
+                .to_owned()
+        })
         .unwrap_or_default()
 }
 
@@ -318,5 +327,8 @@ mod tests {
     fn host_of_normalises_case_and_rejects_garbage() {
         assert_eq!(host_of("https://Example.COM:8443/x"), "example.com");
         assert_eq!(host_of("not a url"), "");
+        assert_eq!(host_of("https://example.com./x"), "example.com");
+        assert_eq!(host_of("https://[::1]:8443/x"), "::1");
+        assert!("::1".parse::<std::net::IpAddr>().is_ok());
     }
 }

@@ -646,7 +646,8 @@ pub async fn http_pass_until(
                 super::circuit::Decision::Closed => 32,
                 super::circuit::Decision::Probe => 1,
                 super::circuit::Decision::Open(wait) => {
-                    return defer_install(db, i["id"].as_str().unwrap(), wait).await;
+                    defer_install(db, i["id"].as_str().unwrap(), wait).await?;
+                    return Ok(false);
                 }
             };
             let sends = futures_util::stream::iter(0..fan_out)
@@ -679,7 +680,7 @@ pub async fn defer_install(
     let mut db = db.clone();
     let mut tx = db.transaction().await?;
     toasty::sql::statement(
-        "UPDATE app_deliveries SET available_at=clock_timestamp()+make_interval(secs=>$2::text::float8) WHERE installation_id=$1 AND acked_at IS NULL AND expires_at>now() AND available_at<clock_timestamp()+make_interval(secs=>$2::text::float8)",
+        "UPDATE app_deliveries SET available_at=clock_timestamp()+make_interval(secs=>$2::text::float8) WHERE installation_id=$1 AND acked_at IS NULL AND expires_at>now() AND available_at<=clock_timestamp()",
     )
     .bind(installation)
     .bind(wait.as_secs_f64().ceil().to_string())
@@ -733,7 +734,11 @@ async fn http_install(
     // 枠を待っている間に回路が開いたら、claim せずに戻す（試行回数を消費しない）。
     // 先送りは次の http_pass が行う。
     if breakers.is_open(&host) {
-        return Ok(());
+        return Ok(false);
+    }
+    // 枠を待っている間に停止通知が来た場合も、claim せずに戻す。
+    if *stop.borrow() {
+        return Ok(false);
     }
     if let Some(event) = claim(db, id).await? {
         let result = tokio::time::timeout(
