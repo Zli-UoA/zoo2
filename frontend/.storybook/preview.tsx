@@ -90,6 +90,8 @@ const preview: Preview = {
           { value: "zh-Hans", title: "简体中文" },
           { value: "zh-Hant", title: "繁體中文" },
           { value: "yue", title: "粵語" },
+          { value: "ko-KR", title: "한국어" },
+          { value: "ko-KP", title: "조선말 (문화어)" },
         ],
         dynamicTitle: true,
       },

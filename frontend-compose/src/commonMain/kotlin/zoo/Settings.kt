@@ -187,6 +187,8 @@ fun LanguageSelect(app: Session) {
             "zh-Hant" to "繁體中文",
             "zh-Hans" to "简体中文",
             "yue" to "廣東話",
+            "ko-KR" to "한국어",
+            "ko-KP" to "조선말 (문화어)",
         )
     SelectField(
         app.t("language.title"),

@@ -8,15 +8,24 @@ test("Appを作成・承認し、Botとして投稿と個人宛応答を表示�
   await page.goto("/");
   await page.getByRole("link", { name: "Zoo設定", exact: true }).click();
   await page.getByRole("tab", { name: "App・連携", exact: true }).click();
+  // 「Appを作成」は App 管理画面の一覧へ移動し、作成・承認・トークン発行はそこで行う。
   await page.getByRole("button", { name: "Appを作成", exact: true }).click();
-  await page.getByLabel("App名", { exact: true }).fill(name);
-  await page.getByLabel("説明", { exact: true }).fill("App platform end-to-end test");
-  await page.getByRole("button", { name: "保存", exact: true }).click();
+  await expect(page).toHaveURL(/\/apps$/);
+  await page.getByRole("button", { name: "Appを作成", exact: true }).click();
+  const createDialog = page.getByRole("dialog");
+  await createDialog.getByLabel("App名", { exact: true }).fill(name);
+  await createDialog.getByLabel("説明", { exact: true }).fill("App platform end-to-end test");
+  await createDialog.getByRole("button", { name: "Appを作成", exact: true }).click();
+  await expect(page.getByRole("heading", { level: 1, name })).toBeVisible();
+  const sections = page.getByRole("navigation", { name: "設定項目" });
+  await sections.getByRole("button", { name: "承認・インストール", exact: true }).click();
   await page.getByRole("button", { name: "承認を申請", exact: true }).click();
-  await page.getByRole("button", { name: "承認してインストール", exact: true }).click();
+  await page.getByRole("button", { name: /^リビジョン \d+ を承認してインストール$/ }).click();
   await expect(page.getByText("インストール済み", { exact: true })).toBeVisible();
+  await sections.getByRole("button", { name: "認証情報", exact: true }).click();
   await page.getByRole("button", { name: "トークンを発行", exact: true }).click();
-  const credentials = JSON.parse(await page.getByLabel(/認証情報/).inputValue()) as {
+  // The credential field is a password input, so it is found by its label rather than a role.
+  const credentials = JSON.parse(await page.getByLabel(/^認証情報（/).inputValue()) as {
     access_token: string;
   };
   const authHeaders = { Authorization: `Bearer ${credentials.access_token}` };
@@ -29,7 +38,6 @@ test("Appを作成・承認し、Botとして投稿と個人宛応答を表示�
   });
   expect(channelResponse.ok()).toBe(true);
   const channel = (await channelResponse.json()).data as { id: string };
-  await page.getByRole("button", { name: "チャンネル一覧へ戻る" }).click();
   await page.goto(`/channels/${channel.id}`);
   await page.getByRole("link", { name: "Zoo設定", exact: true }).click();
   await page.getByRole("tab", { name: "App・連携", exact: true }).click();

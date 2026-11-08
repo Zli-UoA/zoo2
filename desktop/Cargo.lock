@@ -7416,7 +7416,14 @@ name = "zoo2-desktop"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "emojis",
  "gpui",
+ "jiff",
+ "reqwest",
+ "serde_json",
+ "tokio",
+ "unicode-segmentation",
+ "uuid",
  "zoo2-client-core",
 ]
 

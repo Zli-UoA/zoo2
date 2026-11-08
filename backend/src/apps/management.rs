@@ -71,7 +71,7 @@ async fn detail(
 ) -> Result<Json<Value>, AppError> {
     let mut db = state.db.clone();
     let mut tx = db.transaction().await?;
-    let mut app=one(&mut tx,"SELECT json_build_object('id',id,'name',name,'description',description,'icon_url',icon_url,'bot_user_id',bot_user_id,'owner_id',owner_id,'status',status,'manifest',manifest::jsonb,'revision',revision)::text FROM apps WHERE id=$1",&[&id]).await?;
+    let mut app=one(&mut tx,"SELECT json_build_object('id',id,'name',name,'description',description,'icon_url',icon_url,'bot_user_id',bot_user_id,'owner_id',owner_id,'status',status,'manifest',manifest::jsonb,'revision',revision,'updated_at',updated_at,'bot_username',(SELECT user_name FROM users WHERE id=apps.bot_user_id))::text FROM apps WHERE id=$1",&[&id]).await?;
     if app["status"] != "installed" && app["status"] != "disabled" {
         can_manage(&mut tx, &state, &actor, &id).await?;
     }
@@ -80,6 +80,10 @@ async fn detail(
             .await?;
     if !manager && let Some(manifest) = app["manifest"].as_object_mut() {
         manifest.remove("event_url");
+    }
+    if manager {
+        // The approved installation is what deliveries and endpoint checks use; it can differ from the draft.
+        app["installation"]=one(&mut tx,"SELECT COALESCE((SELECT json_build_object('revision',revision,'active',active,'transport',manifest::jsonb->>'transport','event_url',manifest::jsonb->>'event_url','endpoint_verified_at',endpoint_verified_at) FROM app_installations WHERE app_id=$1),'null'::json)::text",&[&id]).await?;
     }
     Ok(Json(app))
 }
@@ -93,6 +97,8 @@ struct AppInput {
     icon_url: Option<String>,
     #[serde(default)]
     manifest: Manifest,
+    /// `updated_at` from the detail response; a mismatch means someone else saved first.
+    expected_updated_at: Option<String>,
 }
 impl AppInput {
     fn validate(&self) -> Result<(), AppError> {
@@ -162,6 +168,15 @@ async fn update(
     let mut db = state.db.clone();
     let mut tx = db.transaction().await?;
     let app = can_manage(&mut tx, &state, &actor, &id).await?;
+    if let Some(expected) = &input.expected_updated_at {
+        let current = one(&mut tx,"SELECT json_build_object('same',updated_at=$2::text::timestamp)::text FROM apps WHERE id=$1",&[&id,expected]).await
+            .map_err(|_| AppError::BadRequest("Invalid expected_updated_at".into()))?;
+        if current["same"] != true {
+            return Err(AppError::Conflict(
+                "App was updated by someone else; reload before saving".into(),
+            ));
+        }
+    }
     let old: Manifest = serde_json::from_str(app["manifest"].as_str().unwrap())
         .map_err(|e| AppError::Internal(e.into()))?;
     let changed = old != input.manifest;
@@ -169,9 +184,10 @@ async fn update(
  .bind(id.as_str()).bind(input.name.trim()).bind(input.description.as_str()).bind(input.icon_url.as_deref().unwrap_or("")).bind(serde_json::to_string(&input.manifest).unwrap()).bind(if changed {"true"}else{"false"}).exec(&mut tx).await?;
     toasty::sql::statement("UPDATE users SET display_name=$2,avatar_url=NULLIF($3,''),user_name=COALESCE(NULLIF($4,''),user_name),updated_at=CURRENT_TIMESTAMP WHERE id=$1").bind(app["bot_user_id"].as_str().unwrap()).bind(input.name.trim()).bind(input.icon_url.as_deref().unwrap_or("")).bind(input.bot_username.as_deref().unwrap_or("")).exec(&mut tx).await?;
     audit(&mut tx, &id, &actor.id, "updated").await?;
+    let saved = one(&mut tx,"SELECT json_build_object('updated_at',updated_at,'revision',revision)::text FROM apps WHERE id=$1",&[&id]).await?;
     tx.commit().await?;
     Ok(Json(
-        json!({"id":id,"status":if changed {json!("draft")}else{app["status"].clone()}}),
+        json!({"id":id,"status":if changed {json!("draft")}else{app["status"].clone()},"updated_at":saved["updated_at"],"revision":saved["revision"]}),
     ))
 }
 async fn action(
@@ -344,6 +360,7 @@ async fn records(
     let mut db = s.db.clone();
     let mut tx = db.transaction().await?;
     can_manage(&mut tx, &s, &actor, &id).await?;
+    let credentials;
     let sql = match kind.as_str() {
         "versions" => {
             "SELECT json_build_object('revision',revision,'manifest',manifest::jsonb,'created_at',created_at)::text FROM app_versions WHERE app_id=$1 ORDER BY revision DESC LIMIT 100"
@@ -352,7 +369,10 @@ async fn records(
             "SELECT row_to_json(l)::text FROM app_audit_log l WHERE app_id=$1 ORDER BY created_at DESC LIMIT 100"
         }
         "credentials" => {
-            "SELECT json_build_object('id',t.id,'user_id',user_id,'scopes',t.scopes::jsonb,'expires_at',expires_at,'revoked_at',revoked_at)::text FROM app_credentials t JOIN app_installations i ON i.id=t.installation_id WHERE i.app_id=$1 ORDER BY t.created_at DESC LIMIT 100"
+            credentials = format!(
+                "SELECT json_build_object('id',t.id,'user_id',user_id,'scopes',t.scopes::jsonb,'expires_at',expires_at,'refresh_expires_at',t.created_at+interval '{REFRESH_TOKEN_TTL}','revoked_at',revoked_at)::text FROM app_credentials t JOIN app_installations i ON i.id=t.installation_id WHERE i.app_id=$1 ORDER BY t.created_at DESC LIMIT 100"
+            );
+            &credentials
         }
         _ => return Err(AppError::NotFound("Unknown app records".into())),
     };
