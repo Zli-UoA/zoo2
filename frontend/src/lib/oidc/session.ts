@@ -4,7 +4,7 @@ import { OidcClient } from "./client";
 let client: OidcClient | null = null;
 let currentKey: string | null = null;
 
-/** 設定が同じ間は同一クライアント（＝同一メモリ内セッション）を使い回す。 */
+/** 設定が同じ間は同一クライアントを使い、再読み込み時はタブ内のセッションを復元する。 */
 export function getOidcClient(config: AppConfig): OidcClient | null {
   const oidc = config.oidc;
   if (!oidc) {

@@ -91,7 +91,7 @@ export function OfflineProvider({
 
   useEffect(() => {
     void userStore.ensureLoaded();
-  }, [userStore]);
+  }, [userStore, isOnline]);
 
   // 初回ロード時に Service Worker が制御していなかった assets（フォントや
   // 動的 import の OPFS worker など）も、後から SW のキャッシュへ送る。
