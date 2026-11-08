@@ -1341,7 +1341,9 @@ async fn fetch_files(s: &AppState, job: &Job, lease: &Lease) -> Result<(), AppEr
                 }
                 if status == "skipped" {
                     // 実際のサイズが上限を超えたなど、取得してからスキップした添付だけの投稿が空にならないよう、
-                    // 本文が空 (またはスキップした他の添付の名前だけ) なら、スキップした添付の名前を本文にする
+                    // 本文が空 (またはスキップした他の添付の名前だけ) なら、スキップした添付の名前を本文にする。
+                    // 取り込み本体と同じく、過去ログの更新を App へ配信しない
+                    suppress_app_events(&mut tx).await?;
                     exec(
                         &mut tx,
                         "UPDATE messages m SET content=s.names,updated_at=m.updated_at FROM (\
