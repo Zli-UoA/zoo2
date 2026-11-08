@@ -12,14 +12,6 @@
 今回の環境ではComposeの `wasmJsBrowserTest` / `wasmJsBrowserDistribution` はGradle配布物の取得時に
 接続を拒否され、再ビルド後のCompose実ブラウザー操作は未検証。
 
-通知カードは、React・Composeとも `NotificationAvatar` と `NotificationTimestamp` を共有し、
-チャンネル側のアバター寸法（モバイル40px・通常36px）とバッジ、Apub側の右寄せ日時に統一した。
-Reactは `NotificationCardHeader` で日時・既読表示の配置も共有する。
-`UnifiedTimeline` / `UnifiedTimelineMobile` で通知元が混在してもアバター寸法と日時の右端が揃うことを確認する。
-関連Storyのブラウザ検証37件と通知・Composeカタログの単体テスト51件、型・lint・format、Storybook監査・ビルドは成功。
-Composeの `wasmJsBrowserTest` / `wasmJsBrowserDistribution` はGradle配布物取得時の接続拒否で実行できず、
-変更後のKotlinビルドと実描画は未検証。
-
 | 領域 | Reactの主な所有先 | 共通Kotlinの所有先 | 確認先 |
 | --- | --- | --- | --- |
 | シェル・ルート・レール・ヘッダー | `layout/`、`ChannelHeader` | `App.kt`, `PaneHeader.kt`, `Ui.kt`, `Overlays.kt` | 両実装のentry points / CRUD E2E |
