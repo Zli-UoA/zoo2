@@ -72,6 +72,7 @@ pub(crate) const JOB_JSON: &str = "json_build_object('id',j.id,'status',j.status
 'total_files',j.total_files,'processed_files',j.processed_files,\
 'pending_files',(SELECT count(*) FROM slack_files f WHERE f.job_id=j.id AND f.status='pending'),\
 'failed_files',(SELECT count(*) FROM slack_files f WHERE f.job_id=j.id AND f.status='failed'),\
+'skipped_files',(SELECT count(*) FROM slack_files f WHERE f.job_id=j.id AND f.status='skipped' AND (f.error LIKE 'File exceeds%' OR f.error='Unsupported file URL')),\
 'error',j.error,'created_by',j.created_by,'created_at',j.created_at,'updated_at',j.updated_at,\
 'finished_at',j.finished_at,'source_id',j.source_id)::text";
 
@@ -585,16 +586,19 @@ async fn fetch_files(
     let mut tx = db.transaction().await?;
     require_admin(&mut tx, &s, &user).await?;
     let job = load_job(&mut tx, &id).await?;
-    let retryable =
-        job["pending_files"].as_i64().unwrap_or(0) + job["failed_files"].as_i64().unwrap_or(0);
+    let retryable = job["pending_files"].as_i64().unwrap_or(0)
+        + job["failed_files"].as_i64().unwrap_or(0)
+        + job["skipped_files"].as_i64().unwrap_or(0);
     if job["status"] != "completed" || retryable == 0 {
         return Err(AppError::Conflict(
             "There are no pending files to fetch".into(),
         ));
     }
-    // トークンの権限を直した後などに備え、失敗した添付も試行回数を戻して再取得する
+    // トークンの権限を直した後などに備え、失敗した添付も試行回数を戻して再取得する。サイズの上限や取得を許可する
+    // URL の設定を直した後に備え、それらが理由でスキップした添付も戻す (形式の非対応など、設定で変わらないものは戻さない)
     toasty::sql::statement(
-        "UPDATE slack_files SET status='pending',attempts=0,error=NULL,updated_at=now() WHERE job_id=$1 AND status='failed'",
+        "UPDATE slack_files SET status='pending',attempts=0,error=NULL,updated_at=now() WHERE job_id=$1 AND (status='failed' \
+         OR (status='skipped' AND (error LIKE 'File exceeds%' OR error='Unsupported file URL')))",
     )
     .bind(id.as_str())
     .exec(&mut tx)

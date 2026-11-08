@@ -50,6 +50,8 @@ export interface SlackImport {
   pending_files: number;
   /** 取得に 3 回失敗した添付。「添付ファイルを取得」で再取得できる */
   failed_files: number;
+  /** 再取得でやり直せるスキップ (サイズの上限・取得を許可する URL の設定が理由のもの) */
+  skipped_files?: number;
   error: string | null;
   created_at: string;
   finished_at: string | null;
@@ -201,7 +203,9 @@ export function splitSlackImports(imports: SlackImport[]): {
 
 /** 「添付ファイルを取得」でやり直せる件数 */
 export function retryableFiles(job: SlackImport): number {
-  return job.status === "completed" ? job.pending_files + job.failed_files : 0;
+  return job.status === "completed"
+    ? job.pending_files + job.failed_files + (job.skipped_files ?? 0)
+    : 0;
 }
 
 /** 保存した ZIP から取り込むチャンネルは管理者が選ぶので、初めはどれも取り込まない */

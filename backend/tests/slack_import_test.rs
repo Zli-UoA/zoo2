@@ -1649,3 +1649,153 @@ async fn test_slack_import_names_files_skipped_while_fetching() -> anyhow::Resul
     assert_eq!(content("1704070000.000300").await, "keep");
     Ok(())
 }
+
+/// トークンなしで取り込んでファイル名を本文に入れた投稿は、後から取得できたら本文から外す。
+/// サイズの上限でスキップした添付は、上限を上げて再取得できる。
+#[tokio::test]
+async fn test_slack_import_refetch_removes_names_and_retries_size_skips() -> anyhow::Result<()> {
+    let _serial = SERIAL.lock().await;
+    dotenvy::dotenv().ok();
+    dotenvy::from_filename("../.env").ok();
+    let files = MockServer::start().await;
+    for name in ["late.txt", "big.bin"] {
+        Mock::given(method("GET"))
+            .and(path(format!("/files/{name}")))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .insert_header("content-type", "text/plain")
+                    .set_body_bytes(vec![b'x'; 64]),
+            )
+            .mount(&files)
+            .await;
+    }
+    let mut config = Config::from_env();
+    config.dev_auth_enabled = true;
+    config.slack.import_bot_token = None;
+    config.slack.files_base_url = format!("{}/files/", files.uri());
+    let db = init_db(&config.database_url).await?;
+    let no_token = AppState::new(db.clone(), config.clone());
+    ensure_bucket_exists(&no_token.s3_client, &config.s3.bucket).await;
+    let app = create_router(no_token.clone());
+    let admin = create_user(&app, "slack_admin_refetch").await?;
+    sql(
+        &no_token,
+        "INSERT INTO user_role(user_id,role_id) VALUES($1,'role_admin') RETURNING json_build_object('ok',true)::text",
+        &[&admin],
+    )
+    .await?;
+    let team = format!("T{}", uuid::Uuid::new_v4().simple());
+    let suffix = uuid::Uuid::new_v4().simple().to_string();
+    let file = |name: &str| {
+        json!({"id": format!("F-{name}"), "name": name, "mimetype": "text/plain",
+               "url_private_download": format!("{}/files/{name}", files.uri())})
+    };
+    let zip = build_zip(&[
+        (
+            "users.json".into(),
+            json!([{"id":"U1","team_id":team,"name":"alice"}]),
+        ),
+        (
+            "channels.json".into(),
+            json!([{"id":"C1","name":format!("refetch-{suffix}"),"members":["U1"]}]),
+        ),
+        (
+            format!("refetch-{suffix}/2024-01-01.json"),
+            json!([
+                {"ts":"1704070000.000100","user":"U1","text":"","files":[file("late.txt")]},
+                {"ts":"1704070000.000200","user":"U1","text":"","files":[file("big.bin")]}
+            ]),
+        ),
+    ]);
+    let export = upload(&no_token, &app, &admin, &zip).await;
+    let (status, run) = start(
+        &app,
+        &admin,
+        export["id"].as_str().unwrap(),
+        json!([{"slack_channel_id":"C1","action":"create","name":format!("refetch-{suffix}")}]),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{run}");
+    let run = run["id"].as_str().unwrap().to_string();
+    drive(&no_token, &app, &admin, &run, "completed").await;
+    let content = |state: AppState, ts: &'static str| {
+        let team = team.clone();
+        async move {
+            sql(
+                &state,
+                "SELECT json_build_object('content',content)::text FROM messages WHERE id=$1",
+                &[&backend::slack::message_id(&team, "C1", ts)],
+            )
+            .await
+            .unwrap()[0]["content"]
+                .as_str()
+                .unwrap()
+                .to_string()
+        }
+    };
+    // トークンがないので、どちらも保留のまま、ファイル名が本文に入る
+    assert_eq!(
+        content(no_token.clone(), "1704070000.000100").await,
+        "late.txt"
+    );
+    assert_eq!(
+        content(no_token.clone(), "1704070000.000200").await,
+        "big.bin"
+    );
+
+    // トークンを設定し、上限を小さくして取得すると、big.bin は上限でスキップされ、late.txt も上限でスキップされる
+    let mut small = config.clone();
+    small.slack.import_bot_token = Some("xoxb-test".into());
+    small.s3.max_file_size = 16;
+    let small_state = AppState::new(db.clone(), small.clone());
+    let app_small = create_router(small_state.clone());
+    let (status, body) = request(
+        &app_small,
+        "POST",
+        &format!("/api/admin/slack-imports/{run}/fetch-files"),
+        &admin,
+        None,
+    )
+    .await?;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    drive(&small_state, &app_small, &admin, &run, "completed").await;
+    // 上限が原因のスキップは、再取得の対象として数える
+    let (_, job) = request(
+        &app_small,
+        "GET",
+        &format!("/api/admin/slack-imports/{run}"),
+        &admin,
+        None,
+    )
+    .await?;
+    assert_eq!(job["skipped_files"], 2, "{job}");
+
+    // 上限を戻して再取得すると、取得できて、本文からファイル名が外れる
+    let mut big = config.clone();
+    big.slack.import_bot_token = Some("xoxb-test".into());
+    let big_state = AppState::new(db.clone(), big);
+    let app_big = create_router(big_state.clone());
+    let (status, body) = request(
+        &app_big,
+        "POST",
+        &format!("/api/admin/slack-imports/{run}/fetch-files"),
+        &admin,
+        None,
+    )
+    .await?;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    drive(&big_state, &app_big, &admin, &run, "completed").await;
+    assert_eq!(content(big_state.clone(), "1704070000.000100").await, "");
+    assert_eq!(content(big_state.clone(), "1704070000.000200").await, "");
+    let attachments = sql(
+        &big_state,
+        "SELECT json_build_object('n',count(*))::text FROM attachments WHERE message_id IN ($1,$2)",
+        &[
+            &backend::slack::message_id(&team, "C1", "1704070000.000100"),
+            &backend::slack::message_id(&team, "C1", "1704070000.000200"),
+        ],
+    )
+    .await?;
+    assert_eq!(attachments[0]["n"], 2);
+    Ok(())
+}
