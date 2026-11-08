@@ -84,7 +84,11 @@ pub async fn verify_endpoint(url: &str, signing: &str) -> Result<(), AppError> {
 }
 
 pub async fn verify_via(base: &str, token: &str, url: &str, signing: &str) -> Result<(), AppError> {
+    // トークンと署名鍵を運ぶので、環境のプロキシにも、リダイレクト先にも送らない
+    // （`delivery::signed_post` と同じ設定）。
     let client = reqwest::Client::builder()
+        .no_proxy()
+        .redirect(reqwest::redirect::Policy::none())
         .timeout(CLIENT_TIMEOUT)
         .build()
         .map_err(|e| AppError::Internal(e.into()))?;

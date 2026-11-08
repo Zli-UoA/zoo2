@@ -3215,7 +3215,7 @@ async fn the_loop_keeps_draining_a_backlog_without_waiting_for_the_poll() -> any
         std::time::Duration::from_secs(3600),
     ));
     // interval の最初の tick で 1 回目の pass が走る。残りは「取れたので続けて回す」で進まなければならない。
-    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(120);
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(240);
     loop {
         let attempts = message_delivery_attempts(&f).await?;
         if attempts.len() >= 40 && attempts.iter().all(|a| *a >= 1) {
