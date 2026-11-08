@@ -1,4 +1,4 @@
-/** Capture late fonts/Wasm without resending the full list on API/Electric polling. */
+/** Capture late assets without resending the full list on API/Electric polling. */
 export function startAssetCaching(): () => void {
   if (typeof navigator === "undefined" || !("serviceWorker" in navigator)) return () => {};
   let stopped = false;
@@ -11,10 +11,7 @@ export function startAssetCaching(): () => void {
     for (const entry of entries) {
       try {
         const url = new URL(entry.name);
-        if (
-          url.origin === window.location.origin &&
-          (url.pathname.startsWith("/assets/") || url.pathname.startsWith("/compose/"))
-        )
+        if (url.origin === window.location.origin && url.pathname.startsWith("/assets/"))
           known.add(url.pathname);
       } catch {
         /* Ignore malformed resource URLs. */

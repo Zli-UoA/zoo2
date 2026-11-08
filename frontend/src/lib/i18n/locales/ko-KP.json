@@ -738,14 +738,6 @@
     "originalProfile": "원래의 프로필",
     "post": "올리기"
   },
-  "experimental": {
-    "useCompose": "Compose판 사용(실험·개발중)",
-    "useReact": "React판으로 돌아가기",
-    "loadError": "Compose판을 기동하지 못했습니다. React판으로 돌아가십시오.",
-    "catalogLoading": "Compose를 불러오고 있습니다…",
-    "catalogLoadError": "Compose의 배포물을 얻지 못했습니다.",
-    "catalogBuildHint": "JDK 21을 준비하고 frontend에서 pnpm build:compose를 실행하십시오."
-  },
   "publicProfile": {
     "followTitle": "외부 봉사기에서 팔로우",
     "followDescription": "Mastodon이나 Misskey 등의 ActivityPub 응용프로그램에서 이 계정을 검색하여 팔로우 신청을 보낼수 있습니다.",

@@ -55,11 +55,11 @@ it("sends new static assets only, ignoring repeated entries and API/Shape pollin
   );
   await vi.advanceTimersByTimeAsync(4_000);
   expect(postMessage).toHaveBeenCalledTimes(1);
-  observe("https://zoo.example/compose/font.ttf");
+  observe("https://zoo.example/assets/font.ttf");
   await vi.advanceTimersByTimeAsync(300);
   expect(postMessage).toHaveBeenLastCalledWith({
     type: "CACHE_ASSETS",
-    urls: ["/compose/font.ttf"],
+    urls: ["/assets/font.ttf"],
   });
   stop();
 });
@@ -75,7 +75,7 @@ it("resends known assets to a replacement controller", async () => {
 });
 it("disconnects and cancels pending notifications on unmount", async () => {
   const { postMessage, observe, stop, disconnect } = setup();
-  observe("https://zoo.example/compose/late.wasm");
+  observe("https://zoo.example/assets/late.wasm");
   stop();
   await vi.advanceTimersByTimeAsync(5_000);
   expect(disconnect).toHaveBeenCalledTimes(1);

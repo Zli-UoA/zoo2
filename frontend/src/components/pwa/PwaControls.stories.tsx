@@ -1,8 +1,8 @@
 import { pushStoryControls, pushStoryPresets } from "../../../.storybook/preference-fixtures";
-import { preferenceSurfaces } from "../../../.storybook/preference-stories";
+import { preferenceSurfaces } from "../../../.storybook/preference-surfaces";
 import { playForImplementation } from "../../../.storybook/play-for-implementation";
 import type { Meta, StoryObj } from "@storybook/react-vite";
-import { expect, screen, userEvent, waitFor } from "storybook/test";
+import { expect, screen, userEvent } from "storybook/test";
 import { useEffect, type ReactNode } from "react";
 
 import { PwaProvider, PwaControls, PushNotificationSelect } from "./PwaControls";
@@ -61,18 +61,12 @@ const push = pushStoryControls;
 export const SelectOff: Story = {
   parameters: { a11y: { test: "error" } },
   render: () => <PushNotificationSelect push={pushStoryPresets["Select Off"]} />,
-  play: playForImplementation(
-    async () => {
-      const select = await screen.findByRole("combobox", { name: "プッシュ通知" });
-      await expect(select).toHaveValue("off");
-      await userEvent.selectOptions(select, "on");
-      await expect(push.toggle).toHaveBeenCalledOnce();
-    },
-    async (context) => {
-      if (context.globals.implementation === "kotlin")
-        await waitFor(() => expect(push.toggle).toHaveBeenCalledOnce());
-    },
-  ),
+  play: playForImplementation(async () => {
+    const select = await screen.findByRole("combobox", { name: "プッシュ通知" });
+    await expect(select).toHaveValue("off");
+    await userEvent.selectOptions(select, "on");
+    await expect(push.toggle).toHaveBeenCalledOnce();
+  }),
 };
 export const SelectOn: Story = {
   parameters: { a11y: { test: "error" } },

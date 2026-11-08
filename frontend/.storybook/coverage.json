@@ -764,7 +764,7 @@
     {
       "file": "src/components/layout/LeftRail.tsx",
       "story": "src/components/layout/LeftRail.stories.tsx",
-      "reason": "DefaultとMobileで、環境変数に依存せずCompose切り替えボタンが表示されることを確認する。"
+      "reason": "DefaultとMobileで、削除済みの実験版切り替えボタンが表示されないことを確認する。"
     },
     {
       "file": "src/components/layout/PaneHeader.tsx",
@@ -963,11 +963,6 @@
       "reason": "UserProfile/MobileUserProfile/UserProfileErrorでユーザー情報とフォロー申請・取得失敗を確認する。"
     },
     {
-      "file": "src/components/experimental/ComposeFrontend.tsx",
-      "reason": "認証・OPFS・ルーターとKotlin/Wasmを接続する制御層。カタログで覆えない起動・ユーザー別保存・失敗復帰・CSPを専用E2Eで検証する。",
-      "checks": ["e2e/compose.spec.ts", "e2e/compose-production.spec.ts"]
-    },
-    {
       "file": "src/components/public/PublicProfile.tsx",
       "story": "src/components/public/PublicProfile.stories.tsx",
       "composed": true,
@@ -987,7 +982,7 @@
     },
     {
       "file": "src/components/apps/console/AppConsole.tsx",
-      "reason": "#322 の App 管理画面は React 版 Web だけの機能で、Compose 版は作らない。Story を置くと全 Story に Kotlin 実装を求める story-coverage.test.ts が失敗するため、ブラウザテストで表示・権限境界・保存を確認する。",
+      "reason": "App 管理画面の表示・権限境界・保存をブラウザテストで確認する。",
       "checks": [
         "src/components/apps/console/AppConsole.browser.test.tsx",
         "src/components/apps/console/AppConsoleList.browser.test.tsx",
@@ -996,7 +991,7 @@
     },
     {
       "file": "src/components/apps/console/AppConsoleList.tsx",
-      "reason": "#322 の App 管理画面は React 版 Web だけの機能で、Compose 版は作らない。Story を置くと全 Story に Kotlin 実装を求める story-coverage.test.ts が失敗するため、ブラウザテストで表示・権限境界・保存を確認する。",
+      "reason": "App 管理画面の表示・権限境界・保存をブラウザテストで確認する。",
       "checks": [
         "src/components/apps/console/AppConsole.browser.test.tsx",
         "src/components/apps/console/AppConsoleList.browser.test.tsx",
@@ -1005,7 +1000,7 @@
     },
     {
       "file": "src/components/apps/console/ConfigSections.tsx",
-      "reason": "#322 の App 管理画面は React 版 Web だけの機能で、Compose 版は作らない。Story を置くと全 Story に Kotlin 実装を求める story-coverage.test.ts が失敗するため、ブラウザテストで表示・権限境界・保存を確認する。",
+      "reason": "App 管理画面の表示・権限境界・保存をブラウザテストで確認する。",
       "checks": [
         "src/components/apps/console/AppConsole.browser.test.tsx",
         "src/components/apps/console/AppConsoleList.browser.test.tsx",
@@ -1014,7 +1009,7 @@
     },
     {
       "file": "src/components/apps/console/OperationSections.tsx",
-      "reason": "#322 の App 管理画面は React 版 Web だけの機能で、Compose 版は作らない。Story を置くと全 Story に Kotlin 実装を求める story-coverage.test.ts が失敗するため、ブラウザテストで表示・権限境界・保存を確認する。",
+      "reason": "App 管理画面の表示・権限境界・保存をブラウザテストで確認する。",
       "checks": [
         "src/components/apps/console/AppConsole.browser.test.tsx",
         "src/components/apps/console/AppConsoleList.browser.test.tsx",

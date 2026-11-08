@@ -59,7 +59,7 @@ function groupBy<Row>(rows: Row[], key: (row: Row) => string): Map<string, Row[]
   return grouped;
 }
 
-/** コレクションとKotlinプレビューで同じ実効設定を使う。 */
+/** Storybook コレクションの実効設定。 */
 export function createStoryConfig(input: StoryCollectionsInput = {}): AppConfig {
   const currentUserId = input.currentUserId ?? DEFAULT_CURRENT_USER_ID;
   return {
