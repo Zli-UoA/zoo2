@@ -3325,10 +3325,15 @@ async fn delivery_role_runs_the_dispatch_path_but_cannot_read_messages_or_creden
     tx.commit().await?;
     let result = delivery_role_checks(&f, &login).await;
     let mut tx = admin.transaction().await?;
-    let _ = toasty::sql::statement(format!("DROP ROLE IF EXISTS {login}"))
+    if let Err(e) = toasty::sql::statement(format!("DROP ROLE IF EXISTS {login}"))
         .exec(&mut tx)
-        .await;
-    let _ = tx.commit().await;
+        .await
+    {
+        eprintln!("could not drop the temporary role {login}: {e}");
+    }
+    if let Err(e) = tx.commit().await {
+        eprintln!("could not commit dropping {login}: {e}");
+    }
     result
 }
 
