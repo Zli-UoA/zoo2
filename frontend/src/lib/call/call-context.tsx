@@ -593,7 +593,11 @@ export function CallProvider({ config: explicitConfig, children }: CallProviderP
           const requested = speakerIdRef.current;
           void applySink(audio, requested)
             .then(async (ok) => {
-              if (ok) return;
+              if (ok) {
+                // 初期再生で適用できた出力先も、切替失敗時の復元先として記録する
+                activeSpeakerIdRef.current = requested;
+                return;
+              }
               // 保存済みの出力先 (切断されたヘッドホンなど) を使えない場合は、既定へ戻して通知してから再生する
               fallbackSpeaker(requested);
               await applySink(audio, speakerIdRef.current);
