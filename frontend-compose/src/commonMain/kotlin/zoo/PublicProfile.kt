@@ -29,8 +29,9 @@ internal fun publicAccountAddress(userName: String, actor: String): String {
 @Composable
 fun ActivityPubProfileDetails(value: Row, headingLevel: Int = 2) {
     Row(horizontalArrangement = Arrangement.spacedBy(12.dp), verticalAlignment = Alignment.CenterVertically) {
-        if (!value.flag("remote")) Avatar(value)
-        else ActivityPubAvatar(value["avatar"] as? Row, value.text("display_name").ifEmpty { value.text("user_name") })
+        val remoteAvatar = value["avatar"] as? Row
+        if (remoteAvatar == null) Avatar(value)
+        else ActivityPubAvatar(remoteAvatar, value.text("display_name").ifEmpty { value.text("user_name") })
         Column(Modifier.weight(1f)) {
             Box(Modifier.then(webControlModifier("heading", attributes = mapOf("aria-level" to "$headingLevel")))) {
                 ActivityPubText(value.text("display_name").ifEmpty { value.text("user_name") }, value.homeRows("emojis"),

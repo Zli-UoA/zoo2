@@ -310,7 +310,7 @@ async fn search(
     }
     let mut db = state.db.clone();
     let mut tx = db.transaction().await?;
-    let rows = query(&mut tx, "SELECT json_build_object('id',u.id,'user_name',u.user_name,'display_name',COALESCE(p.display_name,u.display_name),'created_at',u.created_at,'remote',false)::text FROM users u LEFT JOIN apub_profiles p ON p.user_id=u.id WHERE NOT u.is_bot AND (strpos(lower(u.user_name),lower($1))>0 OR strpos(lower(COALESCE(p.display_name,u.display_name)),lower($1))>0) ORDER BY u.user_name LIMIT 30", &[term.trim_start_matches('@')]).await?;
+    let rows = query(&mut tx, "SELECT json_build_object('id',u.id,'user_name',u.user_name,'display_name',COALESCE(p.display_name,u.display_name),'created_at',u.created_at,'avatar_url',u.avatar_url,'remote',false)::text FROM users u LEFT JOIN apub_profiles p ON p.user_id=u.id WHERE NOT u.is_bot AND (strpos(lower(u.user_name),lower($1))>0 OR strpos(lower(COALESCE(p.display_name,u.display_name)),lower($1))>0) ORDER BY u.user_name LIMIT 30", &[term.trim_start_matches('@')]).await?;
     Ok(Json(rows))
 }
 

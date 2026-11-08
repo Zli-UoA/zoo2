@@ -72,7 +72,7 @@ fun HomePostCard(
                 if (!post.flag("remote"))
                     Avatar(
                         people.find { it.text("id") == post.text("user_id") }
-                            ?: obj("display_name" to post.text("display_name").ifEmpty { post.text("user_name") })
+                            ?: post
                     )
                 else ActivityPubAvatar(
                     post["avatar"] as? Row,

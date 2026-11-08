@@ -1,10 +1,11 @@
-import { avatarUsers, userAvatarHandler, userAvatarUrl } from "../../../.storybook/avatar-fixtures";
+import { avatarUsers, userAvatarHandler } from "../../../.storybook/avatar-fixtures";
 import { playForImplementation } from "../../../.storybook/play-for-implementation";
 import type { Meta, StoryObj } from "@storybook/react-vite";
 import { expect, fn, within, waitFor } from "storybook/test";
 import { storyChannels, storyUsers, storyCollections } from "../../../.storybook/fixtures";
 import { DmSection } from "./DmSection";
 const dm = { ...storyChannels[0], id: "dm-1", channel_name: "dm:user-alice:user-bob", is_dm: true };
+const bobAvatarUrl = avatarUsers[1].avatar_url;
 const meta = {
   title: "Features/DMs/Sidebar",
   component: DmSection,
@@ -70,7 +71,7 @@ export const UserAvatar: Story = {
   },
   play: playForImplementation(async ({ canvasElement }) => {
     await waitFor(async () => {
-      const image = canvasElement.querySelector<HTMLImageElement>(`img[src="${userAvatarUrl}"]`);
+      const image = canvasElement.querySelector<HTMLImageElement>(`img[src="${bobAvatarUrl}"]`);
       await expect(image?.naturalWidth).toBeGreaterThan(0);
     });
   }),

@@ -2393,6 +2393,7 @@ async fn apub_profile_is_independent_updates_followers_and_detail_respects_audie
     let detail = request(&app, "GET", Some(&bob), &format!("/api/home/{id}"), None).await?;
     assert_eq!(detail.0, StatusCode::OK);
     assert_eq!(detail.1["display_name"], "Federation name");
+    assert_eq!(detail.1["avatar_url"], avatar_url);
     let own = request(
         &app,
         "GET",

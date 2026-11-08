@@ -1,3 +1,4 @@
+import { useUsers } from "../../hooks/useRealtime";
 import { useKitchenCatalog } from "../../hooks/useKitchenCatalog";
 import { ReactionEmoji } from "../chat/messages/ReactionEmoji";
 import { ActivityPubBadge } from "./ActivityPubBadge";
@@ -84,6 +85,7 @@ export interface HomePost {
   emojis?: CustomEmoji[];
   actor_emojis?: CustomEmoji[];
   avatar?: RemoteAvatar | null;
+  avatar_url?: string | null;
   reactions?: {
     reaction: string;
     emoji: CustomEmoji | null;
@@ -111,6 +113,11 @@ function HomeScreenContent({
   const { t, i18n } = useTranslation();
   const navigate = useNavigate();
   const { config } = useCollections();
+  const usersQuery = useUsers();
+  const avatarUrls = useMemo(
+    () => new Map((usersQuery.data ?? []).map((user) => [user.id, user.avatar_url])),
+    [usersQuery.data],
+  );
   const client = useMemo(() => createConfiguredApiClient(config), [config]);
   const composerRef = useRef<HomeComposerHandle>(null);
   const [reactionPost, setReactionPost] = useState<HomePost | null>(null);
@@ -137,6 +144,7 @@ function HomeScreenContent({
         created_at?: string;
         emojis?: CustomEmoji[];
         avatar?: RemoteAvatar | null;
+        avatar_url?: string | null;
       }[]
     | null
   >(null);
@@ -404,7 +412,7 @@ function HomeScreenContent({
         }}
       >
         <div className="mx-auto w-full max-w-2xl">
-          {actorId ? <ActivityPubProfile actorId={actorId} /> : null}
+          {actorId ? <ActivityPubProfile actorId={actorId} avatarUrls={avatarUrls} /> : null}
           {!postId && !actorId ? (
             <div className="flex gap-2 border-b p-3" aria-label={t("home.timeline")}>
               {(["home", "local", "social"] as const).map((value) => (
@@ -526,7 +534,13 @@ function HomeScreenContent({
                     >
                       <ActivityPubAvatar
                         avatar={post.remote ? post.avatar : null}
-                        userId={post.remote ? undefined : post.user_id}
+                        avatarUrl={
+                          post.remote
+                            ? undefined
+                            : avatarUrls.get(post.user_id) !== undefined
+                              ? avatarUrls.get(post.user_id)
+                              : post.avatar_url
+                        }
                         name={post.display_name || post.user_name}
                       />
                     </Link>
@@ -867,7 +881,13 @@ function HomeScreenContent({
                     >
                       <ActivityPubAvatar
                         avatar={user.remote ? user.avatar : null}
-                        userId={user.remote ? undefined : user.id}
+                        avatarUrl={
+                          user.remote
+                            ? undefined
+                            : avatarUrls.get(user.id) !== undefined
+                              ? avatarUrls.get(user.id)
+                              : user.avatar_url
+                        }
                         name={user.display_name || user.user_name}
                       />
                     </Link>

@@ -50,9 +50,11 @@ export const UserAvatar: Story = {
     await waitFor(async () => {
       const image = screen.getByRole("option", { name: /Bob/ }).querySelector("img");
       await expect(image?.naturalWidth).toBeGreaterThan(0);
+      await expect(image).toHaveAttribute("src", avatarUsers[1].avatar_url);
     });
     await userEvent.click(await screen.findByRole("option", { name: /Bob/ }));
     const selected = await screen.findByRole("button", { name: /Bob.*削除|Bob.*外す/ });
+    await expect(selected.querySelector("img")).toHaveAttribute("src", avatarUsers[1].avatar_url);
     await waitFor(
       async () => await expect(selected.querySelector("img")?.naturalWidth).toBeGreaterThan(0),
     );

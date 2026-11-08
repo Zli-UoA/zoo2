@@ -173,3 +173,24 @@ export const UserAvatar: Story = {
     });
   }),
 };
+
+export const UserAvatarFallback: Story = {
+  parameters: {
+    msw: {
+      handlers: [
+        http.get(userAvatarUrl, () => new HttpResponse(null, { status: 404 })),
+        http.get(endpoint, () =>
+          HttpResponse.json({
+            ...publicProfile,
+            account: { ...publicProfile.account, avatar_url: `${userAvatarUrl}?missing-public` },
+          }),
+        ),
+      ],
+    },
+  },
+  play: playForImplementation(async ({ canvasElement }) => {
+    const avatar = await within(canvasElement).findByRole("img", { name: "Alice / アリス" });
+    await waitFor(async () => await expect(avatar).toHaveTextContent("A/"));
+    await expect(avatar.querySelector("img")).toBeNull();
+  }),
+};

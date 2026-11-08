@@ -2038,7 +2038,65 @@ export const LocalSearchAvatar: Story = {
     await userEvent.click(dialog.getByRole("button", { name: "検索" }));
     const account = await dialog.findByRole("article", { name: "ユーザー詳細" });
     await waitFor(
+      async () =>
+        await expect(account.querySelector("img")).toHaveAttribute(
+          "src",
+          avatarUsers[1].avatar_url,
+        ),
+    );
+    await waitFor(
       async () => await expect(account.querySelector("img")?.naturalWidth).toBeGreaterThan(0),
     );
+  }),
+};
+
+export const LocalProfileAvatarWithoutUserShape: Story = {
+  ...LocalProfileAvatar,
+  parameters: {
+    ...LocalProfileAvatar.parameters,
+    collections: { ...storyCollections, users: [] },
+  },
+};
+export const LocalSearchAvatarWithoutUserShape: Story = {
+  ...LocalSearchAvatar,
+  parameters: {
+    ...LocalSearchAvatar.parameters,
+    collections: { ...storyCollections, users: [] },
+  },
+};
+export const LocalPostAvatarWithoutUserShape: Story = {
+  ...UserAvatar,
+  parameters: {
+    collections: { ...storyCollections, users: [] },
+    msw: {
+      handlers: [
+        userAvatarHandler,
+        http.get("*/api/home", () =>
+          HttpResponse.json([{ ...posts[0], avatar_url: userAvatarUrl }]),
+        ),
+      ],
+    },
+  },
+};
+export const LocalAvatarFallback: Story = {
+  parameters: {
+    collections: {
+      ...storyCollections,
+      users: avatarUsers.map((user) => ({
+        ...user,
+        avatar_url: `${user.avatar_url}?missing-home`,
+      })),
+    },
+    msw: {
+      handlers: [
+        http.get(userAvatarUrl, () => new HttpResponse(null, { status: 404 })),
+        ...homeHandlers,
+      ],
+    },
+  },
+  play: playForImplementation(async ({ canvasElement }) => {
+    const avatar = await within(canvasElement).findByRole("img", { name: "Alice" });
+    await waitFor(async () => await expect(avatar).toHaveTextContent("A"));
+    await expect(avatar.querySelector("img")).toBeNull();
   }),
 };

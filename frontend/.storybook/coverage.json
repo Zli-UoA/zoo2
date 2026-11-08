@@ -568,7 +568,11 @@
         "VisibilityBadgesMobile",
         "UserAvatar",
         "LocalProfileAvatar",
-        "LocalSearchAvatar"
+        "LocalSearchAvatar",
+        "LocalProfileAvatarWithoutUserShape",
+        "LocalSearchAvatarWithoutUserShape",
+        "LocalPostAvatarWithoutUserShape",
+        "LocalAvatarFallback"
       ]
     },
     {
@@ -583,7 +587,8 @@
         "LongContent",
         "Mobile",
         "Pagination",
-        "UserAvatar"
+        "UserAvatar",
+        "UserAvatarFallback"
       ]
     }
   ],

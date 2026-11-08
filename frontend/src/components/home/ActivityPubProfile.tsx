@@ -17,12 +17,19 @@ type Account = {
   display_name: string;
   summary?: string;
   avatar?: RemoteAvatar | null;
+  avatar_url?: string | null;
   emojis?: CustomEmoji[];
   remote: boolean;
   url?: string;
   following?: boolean | null;
 };
-export function ActivityPubProfile({ actorId }: { actorId: string }) {
+export function ActivityPubProfile({
+  actorId,
+  avatarUrls,
+}: {
+  actorId: string;
+  avatarUrls: ReadonlyMap<string, string | null | undefined>;
+}) {
   const { t } = useTranslation();
   const { config } = useCollections();
   const { currentUserId } = useCurrentUser();
@@ -74,7 +81,13 @@ export function ActivityPubProfile({ actorId }: { actorId: string }) {
               <ActivityPubAvatar
                 name={account.display_name || account.user_name}
                 avatar={account.avatar}
-                userId={account.remote ? undefined : account.id}
+                avatarUrl={
+                  account.remote
+                    ? undefined
+                    : avatarUrls.get(account.id) !== undefined
+                      ? avatarUrls.get(account.id)
+                      : account.avatar_url
+                }
               />
             }
           />

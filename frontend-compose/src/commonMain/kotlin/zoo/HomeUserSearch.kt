@@ -87,7 +87,7 @@ fun HomeUserSearch(
                             if (!user.flag("remote"))
                                 Avatar(
                                     people.find { it.text("id") == user.text("id") }
-                                        ?: obj("display_name" to user.text("display_name").ifEmpty { user.text("user_name") })
+                                        ?: user
                                 )
                             else ActivityPubAvatar(
                                 user["avatar"] as? Row,
