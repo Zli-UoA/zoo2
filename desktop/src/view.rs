@@ -1646,6 +1646,9 @@ impl WorkspaceView {
     fn render_composer_view(&self, cx: &mut Context<Self>) -> Div {
         let state = self.state.read(cx);
         let me_id = state.me.as_ref().map(|m| m.id.clone()).unwrap_or_default();
+        let is_synced = state.store.is_synced(&ShapeId::Channels)
+            && state.store.is_synced(&ShapeId::ChannelUsers);
+        let has_channel = state.current_channel.is_some();
         let is_archived = state
             .current_channel
             .as_deref()
@@ -1675,7 +1678,8 @@ impl WorkspaceView {
         };
 
         let is_editing = matches!(state.target, Target::Edit(_));
-        let is_posting_restricted = !is_archived && !can_post && !is_editing;
+        let is_posting_restricted =
+            is_synced && has_channel && !is_archived && !can_post && !is_editing;
         let show_composer = !is_archived && (can_post || is_editing);
         let typing_text = state.typing_text(&typing_scope);
         let notice = state.notice.as_ref().map(|(msg, _)| msg.clone());

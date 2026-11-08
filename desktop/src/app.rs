@@ -424,12 +424,21 @@ impl AppState {
     }
 
     /// デバイスコード認証の待機をキャンセルする。
-    /// 世代番号を進めることで、キャンセル済みタスクが遅れて完了しても `token.json` に書き込まない。
+    /// 世代番号を進め、承認後に保存されていたトークンがあれば削除・失効して次回起動時の誤接続を防ぐ。
     pub fn cancel_device_login(&mut self) {
         if let Some(task) = self.login_task.take() {
             task.abort();
         }
         self.bump_session_gen();
+        if let Ok((_, refresh_token)) = login::delete_local_token_for_logout(&self.config)
+            && let Some(refresh_token) = refresh_token
+            && let AuthConfig::Oidc(oidc) = self.config.auth.clone()
+        {
+            let http = self.http.clone();
+            self.spawn_tokio(async move {
+                login::revoke_refresh_token(http, oidc, refresh_token).await;
+            });
+        }
         self.login_phase = Some(LoginPhase::Ready { error: None });
     }
 
@@ -562,7 +571,6 @@ impl AppState {
     }
 
     fn clear_session_state(&mut self) {
-        self.bump_session_gen();
         if let Some(tm) = self.token_manager.take() {
             tm.disable_persistence();
         }
@@ -609,6 +617,7 @@ impl AppState {
     }
 
     fn reset_to_login(&mut self, error: Option<String>) {
+        self.bump_session_gen();
         self.clear_session_state();
         self.login_phase = Some(LoginPhase::Ready { error });
     }
@@ -677,13 +686,14 @@ impl AppState {
                 me,
                 is_admin,
             } => {
-                if let Some(tm) = &token_manager
-                    && let Err(err) = tm.enable_persistence_and_save()
-                {
-                    self.login_phase = Some(LoginPhase::Ready {
-                        error: Some(format!("トークンの保存に失敗しました: {err:#}")),
-                    });
-                    return;
+                if let Some(tm) = &token_manager {
+                    tm.bind_to_session_gen(self.session_gen);
+                    if let Err(err) = tm.enable_persistence_and_save() {
+                        self.login_phase = Some(LoginPhase::Ready {
+                            error: Some(format!("トークンの保存に失敗しました: {err:#}")),
+                        });
+                        return;
+                    }
                 }
                 self.connect_session(credentials, me);
                 self.me_is_admin = is_admin;
@@ -929,8 +939,9 @@ impl AppState {
                     self.sync_errors.remove(&id);
                 }
                 match &id {
-                    ShapeId::Channels => {
+                    ShapeId::Channels | ShapeId::ChannelUsers => {
                         if self.store.is_synced(&ShapeId::Channels)
+                            && self.store.is_synced(&ShapeId::ChannelUsers)
                             && let Some(current) = self.current_channel.clone()
                         {
                             let status = self
@@ -1661,6 +1672,13 @@ impl AppState {
         let Some(me) = self.me.as_ref() else {
             return false;
         };
+        // Channels または ChannelUsers が再同期中（reset 受信〜初期同期完了）の間は、
+        // 投稿制限やメンバーシップ欠落と誤判定せず、入力欄の表示と本文入力を維持する。
+        if !self.store.is_synced(&ShapeId::Channels)
+            || !self.store.is_synced(&ShapeId::ChannelUsers)
+        {
+            return true;
+        }
         let Some(ch) = self.store.channel(channel_id) else {
             return false;
         };
@@ -3180,5 +3198,159 @@ mod tests {
         assert_eq!(resolve_emoji("invalid_shortcode_xyz"), None);
         assert_eq!(reaction_label("kitchen:🐱_🐢"), "🐱+🐢");
         assert_eq!(reaction_label("👍"), "👍");
+    }
+
+    static TEST_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    struct TempEnvGuard {
+        key: &'static str,
+        _lock: std::sync::MutexGuard<'static, ()>,
+    }
+
+    impl TempEnvGuard {
+        fn set(key: &'static str, val: &str) -> Self {
+            let lock = TEST_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+            // SAFETY: 単体テスト実行用の環境変数一時変更。TEST_ENV_LOCK でテスト間直列化する。
+            unsafe { std::env::set_var(key, val) };
+            Self { key, _lock: lock }
+        }
+    }
+
+    impl Drop for TempEnvGuard {
+        fn drop(&mut self) {
+            // SAFETY: 単体テスト終了後の環境変数復元。TEST_ENV_LOCK 保有下で実行。
+            unsafe { std::env::remove_var(self.key) };
+        }
+    }
+
+    #[tokio::test]
+    async fn preserves_token_manager_persistence_after_connected_event_and_cleans_up_on_cancel() {
+        use zoo2_client_core::auth::token::{self, StoredTokens};
+
+        let dir = std::env::temp_dir().join(format!(
+            "zoo2-desktop-app-token-test-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let token_path = token::token_path(&dir);
+        let _env_guard = TempEnvGuard::set("ZOO2_DESKTOP_TOKEN_PATH", token_path.to_str().unwrap());
+
+        let oidc = OidcConfig {
+            issuer: "https://issuer.example".into(),
+            client_id: "zoo2-desktop".into(),
+            resource: Some("https://zli.chat".into()),
+            scope: "openid profile offline_access".into(),
+        };
+        let config = Config {
+            api_base_url: "https://api.example".into(),
+            auth: AuthConfig::Oidc(oidc.clone()),
+            check_updates: false,
+        };
+        let mut state = AppState::from_config(&config);
+        assert_eq!(state.session_gen, 0);
+
+        let active_gen = state.active_session_gen.clone();
+        let tokens = StoredTokens {
+            issuer: oidc.issuer.clone(),
+            client_id: oidc.client_id.clone(),
+            resource: oidc.resource.clone(),
+            api_base_url: "https://api.example".into(),
+            access_token: "access-initial".into(),
+            refresh_token: Some("refresh-initial".into()),
+            expires_at: token::now() + 300,
+        };
+        let tm = Arc::new(login::DesktopTokenManager::new(
+            reqwest::Client::new(),
+            oidc.clone(),
+            token_path.clone(),
+            tokens,
+            state.session_gen,
+            active_gen,
+        ));
+
+        // 接続イベント (Connected) を受け取ると、セッション世代を維持したままトークンが保存され、
+        // 接続後もトークンマネージャの save_if_active() による更新保存が可能であること
+        state.on_auth_event(AuthEvent::Connected {
+            credentials: Credentials::Bearer(tm.clone()),
+            token_manager: Some(tm.clone()),
+            me: Me {
+                id: "u1".into(),
+                user_name: "alice".into(),
+                display_name: "Alice".into(),
+            },
+            is_admin: false,
+        });
+
+        assert!(state.login_phase.is_none());
+        assert!(token_path.exists());
+        assert!(state.token_manager.is_some());
+
+        // 接続後、バックグラウンドでの refresh 発生時 (save_if_active) も現行セッション世代として正常に保存できること
+        assert!(tm.save_if_active().unwrap());
+
+        // デバイスログイン待機中に承認後トークンが書き込まれ、その後に Esc 等でキャンセルされた場合、
+        // 保存されていたトークンファイルが削除され、世代が進んで次回起動時の誤接続を防ぐこと
+        state.login_phase = Some(LoginPhase::AwaitingApproval {
+            verification_uri: "https://example.com/device".into(),
+            user_code: "USER-1234".into(),
+        });
+        assert!(token_path.exists());
+        let old_gen = state.session_gen;
+        state.cancel_device_login();
+        assert_ne!(state.session_gen, old_gen);
+        assert!(!token_path.exists());
+        assert_eq!(state.login_phase, Some(LoginPhase::Ready { error: None }));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn preserves_drafts_and_composer_during_shape_re_sync() {
+        let mut state = connected_state();
+        state.open_channel("c1".into());
+        state.composer_draft = "同期中に入力した本文".into();
+
+        // Channels が 409 must-refetch 等で reset バッチを受信して同期未完了の間は、
+        // can_post_in_channel は true を返し、入力欄や下書きを保持する
+        state.on_shape(ShapeEvent::Batch(
+            ShapeId::Channels,
+            Batch {
+                reset: true,
+                changes: vec![],
+                up_to_date: false,
+            },
+        ));
+        assert!(!state.store.is_synced(&ShapeId::Channels));
+        assert!(state.can_post_in_channel("c1"));
+        assert_eq!(state.composer_draft, "同期中に入力した本文");
+        assert!(state.failed_drafts.is_empty());
+
+        // Channels が未同期の間に ChannelUsers のバッチが届いても、
+        // 投稿制限やアーカイブと誤認して下書きを退避しない
+        state.on_shape(ShapeEvent::Batch(
+            ShapeId::ChannelUsers,
+            batch(vec![(
+                "cu1",
+                json!({ "user_id": "u1", "channel_id": "c1" }),
+            )]),
+        ));
+        assert!(state.can_post_in_channel("c1"));
+        assert_eq!(state.composer_draft, "同期中に入力した本文");
+        assert!(state.failed_drafts.is_empty());
+
+        // Channels の同期が完了した後は通常の投稿判定が適用される
+        state.on_shape(ShapeEvent::Batch(
+            ShapeId::Channels,
+            batch(vec![(
+                "c1",
+                json!({ "id": "c1", "channel_name": "general", "is_private": "f" }),
+            )]),
+        ));
+        assert!(state.store.is_synced(&ShapeId::Channels));
+        assert!(state.store.is_synced(&ShapeId::ChannelUsers));
+        assert!(state.can_post_in_channel("c1"));
+        assert_eq!(state.composer_draft, "同期中に入力した本文");
     }
 }

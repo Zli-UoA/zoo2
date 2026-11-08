@@ -31,7 +31,7 @@ pub const APP_NAME: &str = "zoo2-desktop";
 const REFRESH_SKEW_SECONDS: i64 = 60;
 
 /// 同一プロセス内で `token.json` の読み書き・削除を直列化するロック。
-static TOKEN_FILE_LOCK: Mutex<()> = Mutex::new(());
+pub(crate) static TOKEN_FILE_LOCK: Mutex<()> = Mutex::new(());
 
 /// `TOKEN_FILE_LOCK` 下でアクティブなセッション世代を1つ進め、新しい世代番号を返す。
 /// これにより、以前の世代のバックグラウンド認証タスクやリフレッシュ処理が
@@ -55,7 +55,7 @@ pub struct DesktopTokenManager {
     http: reqwest::Client,
     oidc: OidcConfig,
     path: PathBuf,
-    session_gen: u64,
+    session_gen: AtomicU64,
     active_session_gen: Arc<AtomicU64>,
     logged_out: AtomicBool,
     tokens_sync: Mutex<StoredTokens>,
@@ -75,7 +75,7 @@ impl DesktopTokenManager {
             http,
             oidc,
             path,
-            session_gen,
+            session_gen: AtomicU64::new(session_gen),
             active_session_gen,
             logged_out: AtomicBool::new(false),
             tokens_sync: Mutex::new(tokens),
@@ -83,9 +83,15 @@ impl DesktopTokenManager {
         }
     }
 
+    /// 採用されたセッション世代番号を更新し、以降のトークン更新も保存可能にする。
+    pub fn bind_to_session_gen(&self, session_gen: u64) {
+        self.session_gen.store(session_gen, Ordering::SeqCst);
+    }
+
     fn can_write_file(&self) -> bool {
         !self.logged_out.load(Ordering::SeqCst)
-            && self.active_session_gen.load(Ordering::SeqCst) == self.session_gen
+            && self.active_session_gen.load(Ordering::SeqCst)
+                == self.session_gen.load(Ordering::SeqCst)
     }
 
     /// このマネージャが現行セッション世代でありログアウトもされていなければ `token.json` に保存する。
@@ -307,6 +313,9 @@ impl std::fmt::Debug for AuthEvent {
 }
 
 pub fn token_file() -> Result<PathBuf> {
+    if let Ok(path) = std::env::var("ZOO2_DESKTOP_TOKEN_PATH") {
+        return Ok(PathBuf::from(path));
+    }
     config::config_dir_for(APP_NAME)
         .map(|dir| token::token_path(&dir))
         .ok_or_else(|| anyhow!("設定ディレクトリが見つかりません"))
