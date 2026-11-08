@@ -3335,9 +3335,15 @@ mod tests {
         assert!(token_path.exists());
         assert_eq!(state.login_phase, Some(LoginPhase::Ready { error: None }));
 
-        // 2. 承認後に今回のログイン試行がトークンを保存した状態でキャンセルされた場合、
+        // 2. 承認後に今回のログイン試行が TOKEN_FILE_LOCK 下でトークンを保存・スロット記録した状態でキャンセルされた場合、
         // 今回保存されたトークンファイルが削除され、世代が進んで次回起動時の誤接続を防ぐこと
-        *state.pending_device_login_manager.lock().unwrap() = Some(tm.clone());
+        tm.bind_to_session_gen(state.session_gen);
+        assert!(
+            tm.save_if_active_and_record(&state.pending_device_login_manager)
+                .unwrap()
+        );
+        assert!(token_path.exists());
+        assert!(state.pending_device_login_manager.lock().unwrap().is_some());
         state.login_phase = Some(LoginPhase::AwaitingApproval {
             verification_uri: "https://example.com/device".into(),
             user_code: "USER-POST".into(),
@@ -3348,6 +3354,15 @@ mod tests {
         // 今回のログインが保存したトークンが削除される
         assert!(!token_path.exists());
         assert_eq!(state.login_phase, Some(LoginPhase::Ready { error: None }));
+
+        // 3. キャンセル (bump_session_gen) 後に遅れて save_if_active_and_record が試みられた場合は、
+        // 世代不一致でファイル保存もスロット記録も行われないこと
+        assert!(
+            !tm.save_if_active_and_record(&state.pending_device_login_manager)
+                .unwrap()
+        );
+        assert!(!token_path.exists());
+        assert!(state.pending_device_login_manager.lock().unwrap().is_none());
 
         let _ = std::fs::remove_dir_all(&dir);
     }

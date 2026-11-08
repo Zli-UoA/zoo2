@@ -94,9 +94,7 @@ impl DesktopTokenManager {
                 == self.session_gen.load(Ordering::SeqCst)
     }
 
-    /// このマネージャが現行セッション世代でありログアウトもされていなければ `token.json` に保存する。
-    pub fn save_if_active(&self) -> Result<bool> {
-        let _guard = TOKEN_FILE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    fn save_if_active_internal(&self) -> Result<bool> {
         if !self.can_write_file() {
             return Ok(false);
         }
@@ -107,6 +105,26 @@ impl DesktopTokenManager {
             .clone();
         token::save(&self.path, &tokens)?;
         Ok(true)
+    }
+
+    /// このマネージャが現行セッション世代でありログアウトもされていなければ `token.json` に保存する。
+    pub fn save_if_active(&self) -> Result<bool> {
+        let _guard = TOKEN_FILE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        self.save_if_active_internal()
+    }
+
+    /// `TOKEN_FILE_LOCK` 下で保存を行い、成功した場合は同じロック内でマネージャを共有スロットへ記録する。
+    pub fn save_if_active_and_record(
+        self: &Arc<Self>,
+        slot: &std::sync::Mutex<Option<Arc<Self>>>,
+    ) -> Result<bool> {
+        let _guard = TOKEN_FILE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        if self.save_if_active_internal()? {
+            *slot.lock().unwrap_or_else(|e| e.into_inner()) = Some(self.clone());
+            Ok(true)
+        } else {
+            Ok(false)
+        }
     }
 
     /// 現行セッションとして採用された時点で呼び出し、`token.json` へ書き込む。
@@ -493,10 +511,10 @@ pub async fn run_device_login(
     ));
     // キャンセルされていなければ (`session_gen == active_session_gen`)、
     // `/api/users/me` の前にトークンを保存しておき、一時障害時にもトークンを失わないようにする。
-    match manager.save_if_active() {
-        Ok(true) => {
-            *saved_manager.lock().unwrap_or_else(|e| e.into_inner()) = Some(manager.clone());
-        }
+    // TOKEN_FILE_LOCK 下でファイル保存と saved_manager への記録を不可分に行い、
+    // 保存完了直後のキャンセル (bump_session_gen) との競合で保存済みトークンが孤立するのを防ぐ。
+    match manager.save_if_active_and_record(&saved_manager) {
+        Ok(true) => {}
         Ok(false) => return,
         Err(err) => {
             let _ = tx.send(AuthEvent::LoginRequired {
