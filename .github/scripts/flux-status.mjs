@@ -211,7 +211,7 @@ const checkTitles = {
 };
 
 // Both fields end up in a Markdown code block and in a size-capped text.
-// Reason is free text for error events, so it is cleaned like the message.
+// Reason is not trusted to be a fixed word: error events can carry free text.
 function clean(value, max) {
   return (
     String(value ?? "")
@@ -226,8 +226,9 @@ function clean(value, max) {
 
 // zoo2 is a public repository: Check Runs and workflow logs are readable by
 // anyone. Flux messages can name cluster objects, so they are not published
-// until real production events have been checked. Reasons are a fixed
-// vocabulary. Set this to true only after that check.
+// until real production events have been checked. Reasons are normally a
+// fixed vocabulary, but error events can carry free text, so they are cleaned
+// and capped anyway. Set this to true only after that check.
 export const publishMessages = false;
 
 function eventLine(result, messages = publishMessages) {
@@ -324,11 +325,24 @@ export async function recordCheckRun(
   const before =
     Date.parse(existing?.completed_at ?? existing?.started_at) <
     Date.parse(previous?.timestamp);
-  const newRun =
+  let newRun =
     differs &&
     before &&
     (existing?.status === "completed" ||
       (!done && existing?.status === "in_progress"));
+  if (newRun && !done) {
+    // Progress events of one rollback can arrive out of order. If a run that
+    // started after the last recorded completion already exists, this event
+    // belongs to that rollback: add to it (never reopening a finished one)
+    // instead of starting a second run.
+    const rollback = runs.find(
+      (run) => !(Date.parse(run.started_at) < Date.parse(previous.timestamp)),
+    );
+    if (rollback) {
+      existing = rollback;
+      newRun = false;
+    }
+  }
   if (newRun) existing = null;
   if (
     existing?.status === "completed" &&

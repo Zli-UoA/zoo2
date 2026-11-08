@@ -1208,3 +1208,61 @@ test("an event older than every run of the rollout changes nothing", async () =>
   assert.equal(result.checkRun, "unchanged");
   assert.equal(f.checkWrites.length, before);
 });
+
+test("rollback progress events arriving out of order share one Check Run", async () => {
+  const f = fixture();
+  await report(event(), f); // A done 10:00
+  await report(
+    event("zoo2", { ...rolloutB, timestamp: "2026-10-22T10:05:00Z" }),
+    f,
+  ); // B done 10:05
+  await report(progress("zoo2", { timestamp: "2026-10-22T10:10:00Z" }), f);
+  await report(
+    progress("zoo2", { timestamp: "2026-10-22T10:08:00Z", message: "late" }),
+    f,
+  );
+  assert.equal(f.checkRuns.length, 3); // A, B, one rollback run
+  const rollback = f.checkRuns[2];
+  assert.equal(
+    rollback.external_id,
+    `zoo2:0.0.123:${digest}@2026-10-22T10:10:00Z`,
+  );
+  assert.equal(rollback.output.text.split("\n").length, 4); // both progress lines
+  await report(event("zoo2", { timestamp: "2026-10-22T10:11:00Z" }), f);
+  assert.equal(f.checkRuns.length, 3);
+  assert.equal(rollback.status, "completed");
+  assert.ok(f.checkRuns.every((run) => run.status === "completed"));
+});
+
+test("a late rollback progress never reopens a finished rollback run", async () => {
+  const f = fixture();
+  await report(event(), f);
+  await report(
+    event("zoo2", { ...rolloutB, timestamp: "2026-10-22T10:05:00Z" }),
+    f,
+  );
+  await report(progress("zoo2", { timestamp: "2026-10-22T10:10:00Z" }), f);
+  await report(event("zoo2", { timestamp: "2026-10-22T10:11:00Z" }), f);
+  const writes = f.checkWrites.length;
+  await report(
+    progress("zoo2", { timestamp: "2026-10-22T10:09:00Z", message: "late" }),
+    f,
+  );
+  assert.equal(f.checkRuns.length, 3);
+  assert.equal(f.checkWrites.length, writes);
+});
+
+test("an earlier rollback progress arriving first is not duplicated by the later one", async () => {
+  const f = fixture();
+  await report(event(), f);
+  await report(
+    event("zoo2", { ...rolloutB, timestamp: "2026-10-22T10:05:00Z" }),
+    f,
+  );
+  await report(progress("zoo2", { timestamp: "2026-10-22T10:08:00Z" }), f);
+  await report(
+    progress("zoo2", { timestamp: "2026-10-22T10:10:00Z", message: "x" }),
+    f,
+  );
+  assert.equal(f.checkRuns.length, 3);
+});
