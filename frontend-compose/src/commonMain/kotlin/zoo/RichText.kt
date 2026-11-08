@@ -746,6 +746,8 @@ fun EmojiPicker(
             val locale =
                 when (app.env.locale) {
                     "ja" -> "ja"
+                    "ko-KR",
+                    "ko-KP" -> "ko"
                     "zh-Hant",
                     "zh-Hans",
                     "yue" -> "zh-hant"

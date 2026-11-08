@@ -61,6 +61,30 @@ const languages = [
     name: "新頻道名",
     close: "關閉",
   },
+  {
+    locale: "ko-KR",
+    settings: "Zoo 설정",
+    languageField: "언어",
+    browser: "ko-KR",
+    label: "한국어",
+    heading: "채널",
+    toggle: "언어 전환",
+    create: "채널 만들기",
+    name: "새 채널 이름",
+    close: "닫기",
+  },
+  {
+    locale: "ko-KP",
+    settings: "Zoo 설정",
+    languageField: "언어",
+    browser: "ko-KP",
+    label: "조선말 (문화어)",
+    heading: "통로",
+    toggle: "언어 바꾸기",
+    create: "통로 만들기",
+    name: "새 통로 이름",
+    close: "닫기",
+  },
 ];
 
 for (const language of languages) {
@@ -84,7 +108,7 @@ for (const language of languages) {
   });
 }
 
-test("switches all five languages, saves the selection and survives reload", async ({ page }) => {
+test("switches all seven languages, saves the selection and survives reload", async ({ page }) => {
   await page.goto("/settings");
   for (const language of languages) {
     const select = page

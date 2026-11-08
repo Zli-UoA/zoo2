@@ -5,6 +5,8 @@ import en from "./locales/en.json";
 import zhHant from "./locales/zh-Hant.json";
 import zhHans from "./locales/zh-Hans.json";
 import yue from "./locales/yue.json";
+import koKR from "./locales/ko-KR.json";
+import koKP from "./locales/ko-KP.json";
 import { DEFAULT_LOCALE, LOCALES, type Locale } from "./locale";
 
 export const resources = {
@@ -13,6 +15,8 @@ export const resources = {
   "zh-Hant": { translation: zhHant },
   "zh-Hans": { translation: zhHans },
   yue: { translation: yue },
+  "ko-KR": { translation: koKR },
+  "ko-KP": { translation: koKP },
 };
 
 declare module "i18next" {
