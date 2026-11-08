@@ -238,6 +238,15 @@ jobs:
         working-directory: frontend
         run: pnpm exec playwright test --config playwright.frontend-selection.config.ts
 
+      - name: Upload frontend selection failure traces
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: frontend-selection-failure
+          path: frontend/test-results/frontend-selection/
+          retention-days: 7
+          if-no-files-found: ignore
+
       - name: Message layout browser tests
         run: pnpm test:e2e:layout
 

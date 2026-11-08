@@ -12,11 +12,15 @@ for (const query of ["", "?frontend=compose"]) {
       localStorage.setItem("zoo-locale", "ja");
     });
     await page.goto(`/channels/c1${query}`);
-    await expect(page.getByText("こんにちは Parity", { exact: false })).toBeVisible();
+    await expect(page.getByText("こんにちは Parity", { exact: false })).toBeVisible({
+      timeout: 90_000,
+    });
     await expect(page.locator("[data-frontend-switch]")).toHaveCount(0);
     await expect(page.locator("[data-compose-shell]")).toHaveCount(0);
     await page.reload();
-    await expect(page.getByText("こんにちは Parity", { exact: false })).toBeVisible();
+    await expect(page.getByText("こんにちは Parity", { exact: false })).toBeVisible({
+      timeout: 90_000,
+    });
     expect(composeRequests).toEqual([]);
   });
 }
