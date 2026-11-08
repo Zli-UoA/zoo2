@@ -8,7 +8,10 @@
 //!    (他人が作った認可 URL を踏まされても、その人のアカウントに連携されない)
 //! 4. 連携したら、ZIP 取り込みで作ったプレースホルダの投稿などを本人へ付け替える
 
-use std::{collections::HashMap, time::Duration};
+use std::{
+    collections::{HashMap, HashSet},
+    time::Duration,
+};
 
 use axum::{
     Json, Router,
@@ -562,7 +565,7 @@ async fn rewrite_mentions(
             .collect::<Vec<_>>(),
     )
     .map_err(|e| AppError::Internal(e.into()))?;
-    let names: HashMap<String, String> = query(
+    let map: HashMap<String, String> = query(
         tx,
         "SELECT json_build_object('from',p.user_name,'to',u.user_name)::text \
          FROM json_to_recordset($1::json) AS x(f text,t text) \
@@ -578,19 +581,34 @@ async fn rewrite_mentions(
         ))
     })
     .collect();
-    if names.is_empty() {
+    if map.is_empty() {
         return Ok(());
     }
+    // 書き換える名前に末尾の `.` を足した名前のユーザー (`slack-bob.` など)。そのメンションは別人なので、
+    // 末尾の `.` を句読点とみなして書き換えない (通知のメンション判定と同じく、完全一致を先に見る)
+    let keys = serde_json::to_string(&map.keys().collect::<Vec<_>>())
+        .map_err(|e| AppError::Internal(e.into()))?;
+    let taken = query(
+        tx,
+        "SELECT json_build_object('name',user_name)::text FROM users \
+         WHERE user_name<>rtrim(user_name,'.') \
+         AND rtrim(user_name,'.') IN (SELECT jsonb_array_elements_text($1::jsonb))",
+        &[&keys],
+    )
+    .await?
+    .into_iter()
+    .filter_map(|row| row["name"].as_str().map(str::to_string))
+    .collect();
+    let names = MentionNames { map, taken };
     // プレースホルダの名前は slack- で始まるので、まずそれで絞る (安い前段の判定)
-    let needle = if names.keys().all(|name| name.starts_with("slack-")) {
+    let needle = if names.map.keys().all(|name| name.starts_with("slack-")) {
         "@slack-"
     } else {
         "@"
     };
     // 書き換える名前へのメンションを含む投稿だけをロックして読む。`@slack-` だけで絞ると、
     // 未連携の人へのメンションを含む投稿までチーム全体でロックし、長いトランザクションになる
-    let targets = serde_json::to_string(&names.keys().collect::<Vec<_>>())
-        .map_err(|e| AppError::Internal(e.into()))?;
+    let targets = keys;
     // 並行して本文を編集した人の変更を上書きしないよう、読む行をロックしてから書き換える
     let rows = query(
         tx,
@@ -635,7 +653,7 @@ const MAX_CARD_DESCRIPTION: usize = 4000;
 /// (説明は MFM でなく、リンクを「ラベル (URL)」にした文字列)。カードのある投稿は本文を表示しないので、
 /// そのカードの説明のメンションも書き換える。書き換えたときだけ JSON を返す (添付から作ったカードには触れない)。
 /// 書き換えると説明の上限を超えるときは、取り込みと同じく上限で切る (本文と同じ書き換えをカードにも反映する)。
-fn rewrite_text_card(card: &str, names: &HashMap<String, String>) -> Option<String> {
+fn rewrite_text_card(card: &str, names: &MentionNames) -> Option<String> {
     let mut value: serde_json::Value = serde_json::from_str(card).ok()?;
     let first = match value.get_mut("cards") {
         Some(cards) => cards.get_mut(0)?,
@@ -656,7 +674,29 @@ fn rewrite_text_card(card: &str, names: &HashMap<String, String>) -> Option<Stri
 /// `content` の `@name` のうち `names` にあるものを置き換える。変わらなければ `None`。
 /// `notifications::extract_mentions` と同じく、名前は英数字と `.`・`-`・`_` で、末尾の `.` は句読点とみなす。
 /// `@` の直前は `notifications::is_mention_boundary` と同じ区切りを求める (メールアドレスや URL の途中は対象外)。
-fn replace_mentions(content: &str, names: &HashMap<String, String>) -> Option<String> {
+/// 書き換えるプレースホルダの名前 → 本人の名前の対応表
+struct MentionNames {
+    map: HashMap<String, String>,
+    /// 書き換える名前に末尾の `.` を足した、別のユーザーの名前
+    taken: HashSet<String>,
+}
+
+impl MentionNames {
+    /// `@` に続くトークンのうち書き換える部分の長さと、置き換える名前。
+    /// 通知のメンション判定と同じく、トークン全体での一致を先に見て、一致しなければ末尾の `.` を除いて照合する
+    fn lookup(&self, token: &str) -> Option<(usize, &str)> {
+        if let Some(to) = self.map.get(token) {
+            return Some((token.len(), to));
+        }
+        if self.taken.contains(token) {
+            return None;
+        }
+        let trimmed = token.trim_end_matches('.');
+        self.map.get(trimmed).map(|to| (trimmed.len(), to.as_str()))
+    }
+}
+
+fn replace_mentions(content: &str, names: &MentionNames) -> Option<String> {
     let is_name = |c: char| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_');
     let chars: Vec<char> = content.chars().collect();
     let mut out = String::with_capacity(content.len());
@@ -671,11 +711,10 @@ fn replace_mentions(content: &str, names: &HashMap<String, String>) -> Option<St
                 end += 1;
             }
             let token: String = chars[i + 1..end].iter().collect();
-            let name = token.trim_end_matches('.');
-            if let Some(replacement) = names.get(name) {
+            if let Some((len, replacement)) = names.lookup(&token) {
                 out.push('@');
                 out.push_str(replacement);
-                out.push_str(&token[name.len()..]);
+                out.push_str(&token[len..]);
                 changed = true;
                 i = end;
                 continue;
@@ -876,9 +915,42 @@ async fn manifest(State(s): State<AppState>, user: AuthUser) -> Result<Json<Valu
 mod tests {
     use super::*;
 
+    fn names(pairs: &[(&str, &str)], taken: &[&str]) -> MentionNames {
+        MentionNames {
+            map: pairs
+                .iter()
+                .map(|(f, t)| (f.to_string(), t.to_string()))
+                .collect(),
+            taken: taken.iter().map(|n| n.to_string()).collect(),
+        }
+    }
+
+    #[test]
+    fn replace_mentions_matches_the_whole_name_first() {
+        // `slack-bob.` という別のユーザーがいれば、末尾の `.` を句読点とみなして slack-bob に書き換えない
+        let only_bob = names(&[("slack-bob", "bob")], &["slack-bob."]);
+        assert_eq!(replace_mentions("@slack-bob. hi", &only_bob), None);
+        assert_eq!(
+            replace_mentions("@slack-bob hi", &only_bob).as_deref(),
+            Some("@bob hi")
+        );
+        // そのユーザーがいなければ、従来どおり末尾の `.` は句読点
+        let plain = names(&[("slack-bob", "bob")], &[]);
+        assert_eq!(
+            replace_mentions("@slack-bob. hi", &plain).as_deref(),
+            Some("@bob. hi")
+        );
+        // 両方を書き換えるときは、それぞれの本人へ
+        let both = names(&[("slack-bob", "bob"), ("slack-bob.", "carol")], &[]);
+        assert_eq!(
+            replace_mentions("@slack-bob. @slack-bob", &both).as_deref(),
+            Some("@carol @bob")
+        );
+    }
+
     #[test]
     fn replace_mentions_follows_mention_boundaries() {
-        let names = HashMap::from([("slack-a.b".to_string(), "alice".to_string())]);
+        let names = names(&[("slack-a.b", "alice")], &[]);
         assert_eq!(
             replace_mentions("@slack-a.b hi (@slack-a.b), @slack-a.b. ok", &names).as_deref(),
             Some("@alice hi (@alice), @alice. ok")
