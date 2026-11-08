@@ -1614,3 +1614,83 @@ async fn test_oidc_picture_syncs_creation_change_failure_and_removal() -> anyhow
     }
     Ok(())
 }
+
+#[tokio::test]
+async fn test_slow_profile_endpoints_keep_existing_user_within_client_deadline()
+-> anyhow::Result<()> {
+    use std::time::Duration;
+    let server = MockServer::start().await;
+    let (app, state, config) = setup_test_app(&server, true).await;
+    let sub = format!("slow-picture-{}", uuid::Uuid::new_v4());
+    let token = generate_token(
+        TEST_KEY1_PEM,
+        "test-key-1",
+        &config.issuer,
+        &config.audience,
+        &sub,
+        Some("slow_picture_user"),
+        Some("Stored name"),
+        Some("openid profile"),
+        3600,
+    );
+    let picture = "https://avater.zliusercontent.com/avatars/stored.png";
+    mount_jwks(&server, "/.well-known/jwks.json").await;
+    mount_discovery(&server, "/.well-known/jwks.json", "/userinfo").await;
+    Mock::given(method("GET"))
+        .and(path("/userinfo"))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(json!({"sub": sub, "picture": picture})),
+        )
+        .mount(&server)
+        .await;
+    let original = fetch_current_user(&app, &token).await?;
+
+    for slow_discovery in [false, true] {
+        server.reset().await;
+        mount_jwks(&server, "/.well-known/jwks.json").await;
+        let mut discovery = ResponseTemplate::new(200).set_body_json(discovery_body(
+            &server,
+            "/.well-known/jwks.json",
+            "/userinfo",
+        ));
+        let mut info =
+            ResponseTemplate::new(200).set_body_json(json!({"sub": sub, "picture": null}));
+        if slow_discovery {
+            discovery = discovery.set_delay(Duration::from_secs(10));
+        } else {
+            info = info.set_delay(Duration::from_secs(10));
+        }
+        Mock::given(method("GET"))
+            .and(path("/.well-known/openid-configuration"))
+            .respond_with(discovery)
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/userinfo"))
+            .respond_with(info)
+            .mount(&server)
+            .await;
+        // A fresh resolution cache models an expired cache without waiting five minutes.
+        let current_app = create_router(AppState::new(state.db.clone(), state.config.clone()));
+        let current = tokio::time::timeout(
+            Duration::from_secs(4),
+            fetch_current_user(&current_app, &token),
+        )
+        .await??;
+        assert_eq!(current["id"], original["id"]);
+        assert_eq!(current["display_name"], "Stored name");
+        let mut db = state.db.clone();
+        let rows = toasty::sql::query("SELECT avatar_url FROM users WHERE id=$1")
+            .bind(original["id"].as_str().unwrap())
+            .exec(&mut db)
+            .await?;
+        let toasty::stmt::Value::Record(record) = &rows[0] else {
+            panic!("expected record")
+        };
+        assert_eq!(
+            record.fields[0],
+            toasty::stmt::Value::String(picture.into())
+        );
+    }
+    Ok(())
+}

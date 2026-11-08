@@ -16,6 +16,7 @@ pub mod oidc;
 pub mod rbac;
 
 pub const DEFAULT_DEV_USER_ID: &str = "00000000-0000-0000-0000-000000000001";
+const PROFILE_FETCH_TIMEOUT: Duration = Duration::from_secs(2);
 const JIT_CACHE_TTL: Duration = Duration::from_secs(300); // 5分
 /// claims / UserInfo のどちらからも表示名を取得できなかった場合のフォールバック
 const FALLBACK_USER_NAME: &str = "user";
@@ -117,17 +118,24 @@ async fn fetch_userinfo_for_profile(
     access_token: &str,
     claims: &OidcClaims,
 ) -> Option<OidcUserInfo> {
-    match jwks_verifier
-        .fetch_userinfo(access_token, &claims.sub, oidc_config)
-        .await
+    // Bound Discovery + UserInfo + response decoding together, below the UI's 8s deadline.
+    match tokio::time::timeout(
+        PROFILE_FETCH_TIMEOUT,
+        jwks_verifier.fetch_userinfo(access_token, &claims.sub, oidc_config),
+    )
+    .await
     {
-        Ok(user_info) => Some(user_info),
-        Err(err) => {
+        Ok(Ok(user_info)) => Some(user_info),
+        Ok(Err(err)) => {
             tracing::warn!(
                 issuer = %claims.iss,
                 sub = %claims.sub,
                 "Failed to fetch UserInfo for user profile; falling back to access token claims/default profile: {err}"
             );
+            None
+        }
+        Err(_) => {
+            tracing::warn!("UserInfo profile fetch timed out; keeping the stored profile");
             None
         }
     }
