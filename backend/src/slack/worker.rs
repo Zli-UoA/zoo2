@@ -1339,6 +1339,20 @@ async fn fetch_files(s: &AppState, job: &Job, lease: &Lease) -> Result<(), AppEr
                     tx.commit().await?;
                     continue;
                 }
+                if status == "skipped" {
+                    // 実際のサイズが上限を超えたなど、取得してからスキップした添付だけの投稿が空にならないよう、
+                    // 本文が空 (またはスキップした他の添付の名前だけ) なら、スキップした添付の名前を本文にする
+                    exec(
+                        &mut tx,
+                        "UPDATE messages m SET content=s.names,updated_at=m.updated_at FROM (\
+                         SELECT string_agg(name,E'\\n' ORDER BY slack_file_id) AS names,\
+                         COALESCE(string_agg(name,E'\\n' ORDER BY slack_file_id) FILTER (WHERE slack_file_id<>$3),'') AS previous \
+                         FROM slack_files WHERE team_id=$1 AND message_id=$2 AND status='skipped') s \
+                         WHERE m.id=$2 AND s.names IS NOT NULL AND (m.content='' OR m.content=s.previous)",
+                        &[&file.team_id, &file.message_id, &file.slack_file_id],
+                    )
+                    .await?;
+                }
                 exec(
                     &mut tx,
                     // 全件を数え直さず、処理済みになった分だけ進める

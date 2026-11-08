@@ -2061,3 +2061,102 @@ async fn test_self_import_does_not_create_channels_after_becoming_guest() -> any
     assert!(created.is_empty(), "{created:?}");
     Ok(())
 }
+
+/// エクスポートのサイズでは上限内でも、取得したら上限を超えた添付だけの投稿は、ファイル名を本文に残す
+#[tokio::test]
+async fn test_slack_import_names_files_skipped_while_fetching() -> anyhow::Result<()> {
+    let _serial = SERIAL.lock().await;
+    dotenvy::dotenv().ok();
+    dotenvy::from_filename("../.env").ok();
+    let files = MockServer::start().await;
+    for (name, body) in [("big1.bin", 64), ("big2.bin", 64), ("small.txt", 4)] {
+        Mock::given(method("GET"))
+            .and(path(format!("/files/{name}")))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .insert_header("content-type", "text/plain")
+                    .set_body_bytes(vec![b'x'; body]),
+            )
+            .mount(&files)
+            .await;
+    }
+    let mut config = Config::from_env();
+    config.dev_auth_enabled = true;
+    config.slack.import_bot_token = Some("xoxb-test".into());
+    config.slack.files_base_url = format!("{}/files/", files.uri());
+    config.s3.max_file_size = 16;
+    let db = init_db(&config.database_url).await?;
+    let state = AppState::new(db.clone(), config.clone());
+    ensure_bucket_exists(&state.s3_client, &config.s3.bucket).await;
+    let app = create_router(state.clone());
+    let admin = create_user(&app, "slack_admin_skip").await?;
+    sql(
+        &state,
+        "INSERT INTO user_role(user_id,role_id) VALUES($1,'role_admin') RETURNING json_build_object('ok',true)::text",
+        &[&admin],
+    )
+    .await?;
+    let team = format!("T{}", uuid::Uuid::new_v4().simple());
+    let suffix = uuid::Uuid::new_v4().simple().to_string();
+    let file = |name: &str| {
+        json!({"id": format!("F-{name}"), "name": name, "mimetype": "text/plain",
+               "url_private_download": format!("{}/files/{name}", files.uri())})
+    };
+    let zip = build_zip(&[
+        (
+            "users.json".into(),
+            json!([{"id":"U1","team_id":team,"name":"alice"}]),
+        ),
+        (
+            "channels.json".into(),
+            json!([{"id":"C1","name":format!("files-{suffix}"),"members":["U1"]}]),
+        ),
+        (
+            format!("files-{suffix}/2024-01-01.json"),
+            json!([
+                // エクスポートにサイズがなく、取得すると上限を超える
+                {"ts":"1704070000.000100","user":"U1","text":"","files":[file("big1.bin"), file("big2.bin")]},
+                // 取得できる添付だけの投稿は、本文を空のままにする
+                {"ts":"1704070000.000200","user":"U1","text":"","files":[file("small.txt")]},
+                // 本文がある投稿はそのまま
+                {"ts":"1704070000.000300","user":"U1","text":"keep","files":[file("big1.bin")]}
+            ]),
+        ),
+    ]);
+    let export = upload(&state, &app, &admin, &zip).await;
+    let (status, run) = start(
+        &app,
+        &admin,
+        export["id"].as_str().unwrap(),
+        json!([{"slack_channel_id":"C1","action":"create","name":format!("files-{suffix}")}]),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{run}");
+    drive(
+        &state,
+        &app,
+        &admin,
+        run["id"].as_str().unwrap(),
+        "completed",
+    )
+    .await;
+    let content = |ts: &'static str| {
+        let (state, team) = (state.clone(), team.clone());
+        async move {
+            sql(
+                &state,
+                "SELECT json_build_object('content',content)::text FROM messages WHERE id=$1",
+                &[&backend::slack::message_id(&team, "C1", ts)],
+            )
+            .await
+            .unwrap()[0]["content"]
+                .as_str()
+                .unwrap()
+                .to_string()
+        }
+    };
+    assert_eq!(content("1704070000.000100").await, "big1.bin\nbig2.bin");
+    assert_eq!(content("1704070000.000200").await, "");
+    assert_eq!(content("1704070000.000300").await, "keep");
+    Ok(())
+}
