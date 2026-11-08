@@ -1,8 +1,8 @@
 [package]
 name = "zoo2-tui"
-version = "0.1.2"
+version = "0.1.3"
 edition = "2024"
-license = "MIT"
+license = "AGPL-3.0-only"
 description = "zoo2 をターミナルから使うチャットクライアント"
 homepage = "https://github.com/Zli-UoA/zoo2/tree/main/tui"
 repository = "https://github.com/Zli-UoA/zoo2"

@@ -2,7 +2,7 @@
 name = "zoo2-desktop"
 version = "0.1.0"
 edition = "2024"
-license = "MIT"
+license = "AGPL-3.0-only"
 description = "zoo2 のデスクトップクライアント"
 homepage = "https://github.com/Zli-UoA/zoo2/tree/main/desktop"
 repository = "https://github.com/Zli-UoA/zoo2"

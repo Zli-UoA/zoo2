@@ -39,7 +39,7 @@
           meta = {
             description = "zoo2 をターミナルから使うチャットクライアント";
             homepage = "https://github.com/Zli-UoA/zoo2/tree/main/tui";
-            license = pkgs.lib.licenses.mit;
+            license = pkgs.lib.licenses.agpl3Only;
             mainProgram = "zoo2-tui";
           };
         };

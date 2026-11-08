@@ -2,7 +2,7 @@
 name = "zoo2-client-core"
 version = "0.1.0"
 edition = "2024"
-license = "MIT"
+license = "AGPL-3.0-only"
 description = "zoo2 の TUI・デスクトップクライアント共通ライブラリ"
 homepage = "https://github.com/Zli-UoA/zoo2"
 repository = "https://github.com/Zli-UoA/zoo2"
