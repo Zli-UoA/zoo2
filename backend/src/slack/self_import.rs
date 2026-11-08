@@ -131,6 +131,7 @@ async fn own_channels(
     admin: bool,
 ) -> Result<Vec<Value>, AppError> {
     let mut channels = Vec::new();
+    let guest = crate::apps::events::guest(tx, user_id).await?;
     for channel in export["analysis"]["channels"]
         .as_array()
         .into_iter()
@@ -160,12 +161,16 @@ async fn own_channels(
         }
         let mut entry = channel.clone();
         entry["targets"] = Value::Array(targets);
-        // 参加していない非公開チャンネルの名前と ID は、チャンネル一覧 (`list_channels`) と同じく見せない。
-        // 以前の取り込み先は、そこにしか取り込めないので「ある」ことだけを `existing_hidden` で返す
-        // (同じ名前のチャンネルがあることは `name_taken` で分かる)
+        // 参加していない非公開チャンネル (ゲストには公開チャンネルも) の名前と ID は、
+        // チャンネル一覧 (`list_channels`) と同じく見せない。以前の取り込み先は、そこにしか取り込めないので
+        // 「ある」ことだけを `existing_hidden` で返す (同じ名前のチャンネルがあることは `name_taken` で分かる)
         for key in ["existing_channel", "same_name_channel"] {
             let id = entry[key]["id"].as_str().unwrap_or_default().to_string();
-            if entry[key]["is_private"] == true && !joined(tx, &id, user_id).await? {
+            if !entry[key].is_object() {
+                continue;
+            }
+            let restricted = entry[key]["is_private"] == true || guest;
+            if restricted && !joined(tx, &id, user_id).await? {
                 entry[key] = Value::Null;
                 if key == "existing_channel" {
                     entry["existing_hidden"] = true.into();

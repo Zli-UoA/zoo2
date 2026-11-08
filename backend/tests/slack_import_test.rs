@@ -1906,5 +1906,23 @@ async fn test_linked_users_import_their_own_channels() -> anyhow::Result<()> {
     .await;
     assert_eq!(status, StatusCode::FORBIDDEN);
     assert!(body.to_string().contains("Guests"), "{body}");
+
+    // ゲストには、参加していない公開チャンネルの名前と ID も見せない (チャンネル一覧と同じ)
+    sql(
+        &state,
+        "DELETE FROM channel_user WHERE channel_id=$1 AND user_id=$2 RETURNING json_build_object('ok',true)::text",
+        &[&same, &alice],
+    )
+    .await?;
+    let (_, own) = request(&app, "GET", "/api/slack/imports", &alice, None).await?;
+    assert_eq!(own["channels"][0]["slack_channel_id"], "C1");
+    assert_eq!(own["channels"][0]["existing_channel"], Value::Null, "{own}");
+    assert_eq!(
+        own["channels"][0]["same_name_channel"],
+        Value::Null,
+        "{own}"
+    );
+    assert_eq!(own["channels"][0]["existing_hidden"], true, "{own}");
+    assert!(!own["channels"].to_string().contains(&same), "{own}");
     Ok(())
 }
