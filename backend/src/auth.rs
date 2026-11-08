@@ -17,6 +17,7 @@ pub mod rbac;
 
 pub const DEFAULT_DEV_USER_ID: &str = "00000000-0000-0000-0000-000000000001";
 const PROFILE_FETCH_TIMEOUT: Duration = Duration::from_secs(2);
+const INITIAL_PROFILE_FETCH_TIMEOUT: Duration = Duration::from_secs(6);
 const JIT_CACHE_TTL: Duration = Duration::from_secs(300); // 5分
 /// claims / UserInfo のどちらからも表示名を取得できなかった場合のフォールバック
 const FALLBACK_USER_NAME: &str = "user";
@@ -58,14 +59,24 @@ fn preferred_username<'a>(
     claims
         .preferred_username
         .as_deref()
-        .or_else(|| user_info.and_then(|info| info.preferred_username.as_deref()))
+        .filter(|name| !name.trim().is_empty())
+        .or_else(|| {
+            user_info
+                .and_then(|info| info.preferred_username.as_deref())
+                .filter(|name| !name.trim().is_empty())
+        })
 }
 
 fn email<'a>(claims: &'a OidcClaims, user_info: Option<&'a OidcUserInfo>) -> Option<&'a str> {
     claims
         .email
         .as_deref()
-        .or_else(|| user_info.and_then(|info| info.email.as_deref()))
+        .filter(|email| !email.trim().is_empty())
+        .or_else(|| {
+            user_info
+                .and_then(|info| info.email.as_deref())
+                .filter(|email| !email.trim().is_empty())
+        })
 }
 
 /// 表示名に使う名前 (アクセストークンの claims を優先し、無ければ UserInfo)
@@ -117,10 +128,11 @@ async fn fetch_userinfo_for_profile(
     oidc_config: &OidcConfig,
     access_token: &str,
     claims: &OidcClaims,
+    timeout: Duration,
 ) -> Option<OidcUserInfo> {
     // Bound Discovery + UserInfo + response decoding together, below the UI's 8s deadline.
     match tokio::time::timeout(
-        PROFILE_FETCH_TIMEOUT,
+        timeout,
         jwks_verifier.fetch_userinfo(access_token, &claims.sub, oidc_config),
     )
     .await
@@ -135,19 +147,22 @@ async fn fetch_userinfo_for_profile(
             None
         }
         Err(_) => {
-            tracing::warn!("UserInfo profile fetch timed out; keeping the stored profile");
+            tracing::warn!("UserInfo profile fetch timed out; profile data unavailable");
             None
         }
     }
 }
 
 /// UserInfo の最新値を使う。トークンの picture は新規作成時の初期値に限る。
-/// 外側の None は取得失敗かつ claim 省略なので、保存済みの画像を維持する。
+/// 外側の None は同期対象外を表し、保存済みの画像を維持する。
 fn profile_picture(
     claims: &OidcClaims,
     user_info: Option<&OidcUserInfo>,
     new_user: bool,
 ) -> Option<Option<String>> {
+    if !claims.has_scope("profile") {
+        return None;
+    }
     let value = match user_info {
         Some(info) => info.picture.as_deref(),
         None if new_user => Some(claims.picture.as_deref()?),
@@ -290,6 +305,14 @@ pub async fn resolve_or_provision_user(
     if let Some(cached_user) = user_cache.get(&claims.iss, &claims.sub).await {
         return Ok(cached_user);
     }
+    if user_cache
+        .profile_retry_limited(&claims.iss, &claims.sub)
+        .await
+    {
+        return Err(AppError::ServiceUnavailable(
+            "User profile is temporarily unavailable; please retry login".into(),
+        ));
+    }
     let mut db_client = db.clone();
 
     // 2. user_identities テーブルによる既存ユーザーの検索
@@ -305,8 +328,21 @@ pub async fn resolve_or_provision_user(
 
     if let Some(identity) = existing_identity {
         let user = User::get_by_id(&mut db_client, &identity.user_id).await?;
-        let user_info =
-            fetch_userinfo_for_profile(jwks_verifier, oidc_config, access_token, claims).await;
+        let needs_name_repair = user.display_name == FALLBACK_USER_NAME
+            && user.updated_at.is_none()
+            && user_cache.should_attempt_profile_repair(&user.id).await;
+        let user_info = if claims.has_scope("profile") || needs_name_repair {
+            fetch_userinfo_for_profile(
+                jwks_verifier,
+                oidc_config,
+                access_token,
+                claims,
+                PROFILE_FETCH_TIMEOUT,
+            )
+            .await
+        } else {
+            None
+        };
         sync_profile_picture(db, &user.id, claims, user_info.as_ref(), false).await?;
         let user =
             repair_legacy_display_name(db, user_cache, claims, user, user_info.as_ref()).await?;
@@ -331,10 +367,29 @@ pub async fn resolve_or_provision_user(
 
     // 3. 新規ユーザーおよび Identity の作成 (JIT プロビジョニング)
     //    AuthZ などの access token にはプロフィール属性が含まれないため、
-    //    初回ログイン時に UserInfo から表示名を取得する (失敗時は従来のフォールバック)。
+    //    初回ログイン時に UserInfo から名前を取得する。候補の取得に失敗した場合は作成前に再試行を返す。
     let new_user_id = Uuid::new_v4().to_string();
-    let user_info =
-        fetch_userinfo_for_profile(jwks_verifier, oidc_config, access_token, claims).await;
+    let user_info = fetch_userinfo_for_profile(
+        jwks_verifier,
+        oidc_config,
+        access_token,
+        claims,
+        INITIAL_PROFILE_FETCH_TIMEOUT,
+    )
+    .await;
+
+    if user_info.is_none()
+        && preferred_username(claims, None)
+            .or_else(|| email(claims, None))
+            .is_none()
+    {
+        user_cache
+            .mark_profile_unavailable(&claims.iss, &claims.sub)
+            .await;
+        return Err(AppError::ServiceUnavailable(
+            "User profile is temporarily unavailable; please retry login".into(),
+        ));
+    }
 
     let base_username = derive_base_username(claims, user_info.as_ref(), &new_user_id);
     let display_name = derive_display_name(claims, user_info.as_ref(), &base_username);
@@ -851,7 +906,7 @@ mod picture_tests {
     #[test]
     fn picture_uses_fresh_userinfo_and_keeps_existing_on_failure() {
         let mut claims: OidcClaims = serde_json::from_value(json!({
-            "sub":"user", "iss":"https://id.example", "aud":"zoo", "exp":9999999999u64,
+            "sub":"user", "iss":"https://id.example", "aud":"zoo", "exp":9999999999u64, "scope":"openid profile",
             "picture":"https://avater.zliusercontent.com/avatars/old.png"
         }))
         .unwrap();
@@ -886,7 +941,7 @@ mod picture_tests {
     #[test]
     fn picture_checks_input_and_normalized_byte_boundaries() {
         let claims: OidcClaims = serde_json::from_value(json!({
-            "sub":"user", "iss":"https://id.example", "aud":"zoo", "exp":9999999999u64,
+            "sub":"user", "iss":"https://id.example", "aud":"zoo", "exp":9999999999u64, "scope":"openid profile",
         }))
         .unwrap();
         let prefix = "https://example.test/";
@@ -906,5 +961,48 @@ mod picture_tests {
                 valid
             );
         }
+    }
+    #[test]
+    fn picture_deletion_requires_verified_profile_scope() {
+        for (scope, allowed) in [
+            (json!("openid profile"), true),
+            (json!(["openid", "profile"]), true),
+            (json!("openid offline_access"), false),
+            (json!(["openid"]), false),
+            (json!("openid myprofile"), false),
+            (json!(null), false),
+            (json!({"profile":true}), false),
+        ] {
+            let claims: OidcClaims = serde_json::from_value(json!({
+                "sub":"user", "iss":"https://id.example", "aud":"zoo", "exp":9999999999u64,
+                "scope":scope, "picture":"https://images.example/token.png",
+            }))
+            .unwrap();
+            let info: OidcUserInfo = serde_json::from_value(json!({"sub":"user"})).unwrap();
+            assert_eq!(claims.has_scope("profile"), allowed);
+            assert_eq!(
+                profile_picture(&claims, Some(&info), false),
+                if allowed { Some(None) } else { None }
+            );
+            if !allowed {
+                assert_eq!(profile_picture(&claims, None, true), None);
+            }
+        }
+    }
+    #[test]
+    fn blank_token_fields_use_available_verified_username_candidates() {
+        let claims: OidcClaims = serde_json::from_value(json!({
+            "sub":"user", "iss":"https://id.example", "aud":"zoo", "exp":9999999999u64,
+            "preferred_username":"  ", "email":"alice@example.test",
+        }))
+        .unwrap();
+        assert_eq!(derive_base_username(&claims, None, "unused"), "alice");
+        let info: OidcUserInfo =
+            serde_json::from_value(json!({"sub":"user","preferred_username":"actual_user"}))
+                .unwrap();
+        assert_eq!(
+            derive_base_username(&claims, Some(&info), "unused"),
+            "actual_user"
+        );
     }
 }

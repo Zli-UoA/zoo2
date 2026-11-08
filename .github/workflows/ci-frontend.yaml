@@ -107,6 +107,28 @@ jobs:
             case "$images" in *avater.zliusercontent.com*) echo "Avatar CSP override was ignored" >&2; exit 1 ;; esac
           done
 
+      - name: Check default avatar CSP in image and Compose
+        run: |
+          image=$(docker compose --project-directory . -f infra/compose.stg.yaml images -q frontend)
+          docker image inspect "$image" --format '{{json .Config.Env}}' |
+            python3 -c 'import json,sys; assert "CSP_AVATAR_SRC=https://avater.zliusercontent.com" in json.load(sys.stdin)'
+          env -u CSP_AVATAR_SRC docker compose --project-directory . -f infra/compose.stg.yaml config --format json |
+            python3 -c 'import json,sys; assert json.load(sys.stdin)["services"]["frontend"]["environment"]["CSP_AVATAR_SRC"] == "https://avater.zliusercontent.com"'
+          default_csp_container="zoo2-default-csp-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          trap 'docker rm -f "$default_csp_container" >/dev/null' EXIT
+          docker run -d --name "$default_csp_container" "$image"
+          for attempt in $(seq 1 30); do
+            if docker exec "$default_csp_container" wget -Y off -q -O /dev/null http://127.0.0.1:3000/; then break; fi
+            sleep 1
+          done
+          worker=$(docker exec "$default_csp_container" find /usr/share/nginx/html/assets -name 'opfs-worker-*.js')
+          test -n "$worker"
+          for path in "/" "/channels/default-csp" "${worker#/usr/share/nginx/html}"; do
+            headers=$(docker exec "$default_csp_container" wget -Y off -S -O - "http://127.0.0.1:3000${path}" 2>&1)
+            images=$(printf "%s" "$headers" | sed -n 's/.*img-src \([^;]*\).*/\1/p')
+            printf '%s\n' "$images" | tr ' ' '\n' | grep -Fxq 'https://avater.zliusercontent.com'
+          done
+
       - name: Check Emoji Kitchen catalog compression and caching
         run: |
           catalog=$(docker compose --project-directory . -f infra/compose.stg.yaml exec -T frontend \
