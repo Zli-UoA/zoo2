@@ -1414,7 +1414,9 @@ async fn test_slack_link_during_import_reuses_the_uncommitted_mapping() -> anyho
     });
     tokio::time::sleep(Duration::from_millis(500)).await;
     worker.commit().await?;
-    let (status, body, _) = task.await??;
+    let (status, body, _) = tokio::time::timeout(Duration::from_secs(20), task)
+        .await
+        .expect("the link must finish once the worker commits")??;
     assert_eq!(status, StatusCode::OK, "{body}");
     let mapping = sql(
         &state,
