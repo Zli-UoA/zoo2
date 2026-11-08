@@ -384,7 +384,30 @@ fn valid_challenge_response(bytes: &[u8], challenge: &str) -> bool {
         .is_some_and(|v| v["challenge"] == challenge)
         || bytes == challenge.as_bytes()
 }
+/// `APP_HTTP_DELIVERY_WORKER` が `false`/`0`/`off`/`disabled` のとき、この
+/// プロセスでは HTTP 配信と履歴削除を行わない（`zoo-dispatcher` に任せる）。
+/// 未設定・空・その他の値は有効（従来どおり）。
+pub fn http_delivery_enabled_from(raw: Option<&str>) -> bool {
+    !matches!(
+        raw.map(|v| v.trim().to_ascii_lowercase()).as_deref(),
+        Some("false" | "0" | "off" | "disabled" | "no")
+    )
+}
+
+pub fn http_delivery_enabled() -> bool {
+    http_delivery_enabled_from(std::env::var("APP_HTTP_DELIVERY_WORKER").ok().as_deref())
+}
+
 pub async fn worker(s: AppState) {
+    worker_with(s, http_delivery_enabled()).await
+}
+
+/// `http` が false でも `events::maintain`（在席・ステータス期限・リマインダー）は動かす。
+/// これは配信ではなく API 側の機能で、dispatcher が 0 台でも止めないため。
+pub async fn worker_with(s: AppState, http: bool) {
+    if !http {
+        tracing::info!("HTTP app delivery is disabled in this process (APP_HTTP_DELIVERY_WORKER)");
+    }
     let maintenance = async {
         let mut ticks = tokio::time::interval(Duration::from_secs(1));
         let mut passes = 0u32;
@@ -394,7 +417,8 @@ pub async fn worker(s: AppState) {
             if let Err(e) = super::events::maintain(&s).await {
                 tracing::warn!(error=%e,"Event maintenance failed");
             }
-            if passes.is_multiple_of(60)
+            if http
+                && passes.is_multiple_of(60)
                 && let Err(e) = cleanup(&s).await
             {
                 tracing::warn!(error=%e,"App cleanup failed");
@@ -402,6 +426,9 @@ pub async fn worker(s: AppState) {
         }
     };
     let dispatch = async {
+        if !http {
+            return std::future::pending::<()>().await;
+        }
         let mut ticks = tokio::time::interval(Duration::from_millis(500));
         loop {
             ticks.tick().await;
@@ -561,6 +588,15 @@ async fn presence_allowed(s: &AppState, installation: &str) -> Result<bool, AppE
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn http_delivery_switch_defaults_to_enabled() {
+        assert!(http_delivery_enabled_from(None));
+        assert!(http_delivery_enabled_from(Some("")));
+        assert!(http_delivery_enabled_from(Some("true")));
+        for off in ["false", "0", "OFF", " disabled ", "no"] {
+            assert!(!http_delivery_enabled_from(Some(off)), "{off}");
+        }
+    }
     #[test]
     fn verifies_exact_challenge_responses() {
         assert!(valid_challenge_response(b"abc", "abc"));
