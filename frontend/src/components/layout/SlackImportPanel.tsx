@@ -39,8 +39,14 @@ export function SlackImportPanel({ put }: { put?: PutWithProgress }) {
   const [imports, setImports] = useState<SlackImport[] | null>(null);
   const [revision, setRevision] = useState(0);
   const [error, setError] = useState("");
+  // 一覧を取れなかったときのエラー。取れたら消す (操作のエラーとは分ける)
+  const [loadError, setLoadError] = useState("");
   const [upload, setUpload] = useState<number | null>(null);
   const fileInput = useRef<HTMLInputElement>(null);
+  // アップロード中のジョブ。そのジョブを取り消したら、ブラウザからの PUT も止める
+  const uploading = useRef<{ id: string | null; controller: AbortController } | null>(null);
+  // 操作のエラーを出したときに取り直した一覧。サーバーの状態がこれから変わったら、エラーは古いので消す
+  const errorSnapshot = useRef<string | null>(null);
 
   const running = imports?.some((job) => SLACK_IMPORT_RUNNING.includes(job.status)) ?? false;
   useEffect(() => {
@@ -48,10 +54,18 @@ export function SlackImportPanel({ put }: { put?: PutWithProgress }) {
     const load = () =>
       listSlackImports(client, controller.signal)
         .then((value) => {
-          if (!controller.signal.aborted) setImports(value);
+          if (controller.signal.aborted) return;
+          setImports(value);
+          setLoadError("");
+          const snapshot = JSON.stringify(value);
+          if (errorSnapshot.current === "") errorSnapshot.current = snapshot;
+          else if (errorSnapshot.current !== null && errorSnapshot.current !== snapshot) {
+            errorSnapshot.current = null;
+            setError("");
+          }
         })
         .catch((cause) => {
-          if (!controller.signal.aborted) setError(describeImportError(cause, t));
+          if (!controller.signal.aborted) setLoadError(describeImportError(cause, t));
         });
     void load();
     const timer = running ? window.setInterval(load, POLL_INTERVAL_MS) : undefined;
@@ -65,21 +79,41 @@ export function SlackImportPanel({ put }: { put?: PutWithProgress }) {
   // 失敗の多くは別のタブ・管理者が先に状態を変えたため (409) なので、一覧を取り直して今の状態を見せる
   const fail = (cause: unknown) => {
     setError(describeImportError(cause, t));
+    // 次に取り直した一覧を基準にする
+    errorSnapshot.current = "";
     reload();
   };
-  const replace = (job: SlackImport) =>
+  const replace = (job: SlackImport) => {
+    // アップロード中の ZIP を取り消したら、あとから PUT が終わって ZIP が残らないよう止める
+    if (job.status === "cancelled" && uploading.current?.id === job.id) {
+      uploading.current.controller.abort();
+    }
     setImports((current) => [job, ...(current ?? []).filter((item) => item.id !== job.id)]);
+  };
 
   async function onFile(file: File | undefined) {
     if (!file || upload !== null) return;
     setError("");
+    errorSnapshot.current = null;
     setUpload(0);
+    const controller = new AbortController();
+    uploading.current = { id: null, controller };
     try {
-      replace(await uploadSlackExport(client, file, setUpload, put));
+      replace(
+        await uploadSlackExport(client, file, setUpload, put, controller.signal, (job) => {
+          if (uploading.current?.controller === controller) uploading.current.id = job.id;
+          replace(job);
+        }),
+      );
     } catch (cause) {
-      setError(describeImportError(cause, t));
+      // 取り消したアップロードはエラーにしない
+      if (!controller.signal.aborted) {
+        setError(describeImportError(cause, t));
+        errorSnapshot.current = "";
+      }
       reload();
     } finally {
+      if (uploading.current?.controller === controller) uploading.current = null;
       setUpload(null);
       if (fileInput.current) fileInput.current.value = "";
     }
@@ -116,9 +150,19 @@ export function SlackImportPanel({ put }: { put?: PutWithProgress }) {
             {error}
           </p>
         ) : null}
+        {loadError ? (
+          <div className="flex flex-wrap items-center gap-2">
+            <p role="alert" className="text-sm text-destructive">
+              {loadError}
+            </p>
+            <Button variant="outline" size="sm" onClick={reload}>
+              {t("slackImport.retry")}
+            </Button>
+          </div>
+        ) : null}
       </SettingsSection>
 
-      {imports === null && !error ? <Spinner label={t("slackImport.loading")} /> : null}
+      {imports === null && !loadError ? <Spinner label={t("slackImport.loading")} /> : null}
       {cards.map((job) => (
         <ImportCard
           key={job.id}

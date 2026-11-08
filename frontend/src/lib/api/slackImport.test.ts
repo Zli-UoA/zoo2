@@ -152,6 +152,33 @@ describe("uploadSlackExport", () => {
     });
   });
 
+  it("reports the created job before uploading so a cancel can abort the upload", async () => {
+    const request = vi.fn(async () => ({
+      import: { id: "import-1", status: "uploading" },
+      upload_url: "https://storage.example/upload",
+      upload_headers: {},
+    }));
+    const client = { request } as unknown as ApiClient;
+    const controller = new AbortController();
+    const order: string[] = [];
+    const put = vi.fn<PutWithProgress>(async (_url, _file, _headers, _onProgress, signal) => {
+      order.push("put");
+      expect(signal).toBe(controller.signal);
+      controller.abort();
+      throw new Error("aborted");
+    });
+    const created = vi.fn(() => order.push("created"));
+    const file = { name: "export.zip", size: 10 } as File;
+
+    await expect(
+      uploadSlackExport(client, file, vi.fn(), put, controller.signal, created),
+    ).rejects.toThrow("aborted");
+    expect(created).toHaveBeenCalledWith({ id: "import-1", status: "uploading" });
+    expect(order).toEqual(["created", "put"]);
+    // 中断したら解析を頼まない
+    expect(request).toHaveBeenCalledTimes(1);
+  });
+
   it("does not ask for analysis when the upload fails", async () => {
     const request = vi.fn(async () => ({
       import: { id: "import-1" },

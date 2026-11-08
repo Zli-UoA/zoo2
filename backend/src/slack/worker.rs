@@ -321,12 +321,28 @@ pub async fn cleanup(s: &AppState) -> Result<(), AppError> {
         &[],
     )
     .await?;
+    // アップロード中に取り消したエクスポートは、取り消した後でブラウザからの PUT が終わって
+    // ZIP が残ることがある。署名付き URL の期限と、それまでに始まった PUT が終わる分 (1 日) を待ってから、
+    // もう一度だけ消す (消したら storage_key を空にして、次からは対象にしない)
+    let late = query(
+        &mut tx,
+        "UPDATE slack_import_jobs j SET storage_key='',updated_at=now() \
+         FROM (SELECT id,storage_key FROM slack_import_jobs \
+               WHERE source_id IS NULL AND status='cancelled' AND storage_key<>'' \
+               AND updated_at<now()-make_interval(secs=>$1::double precision) FOR UPDATE SKIP LOCKED) o \
+         WHERE j.id=o.id RETURNING json_build_object('key',o.storage_key)::text",
+        &[&(s.config.s3.presigned_put_expiry_secs + LATE_UPLOAD_GRACE_SECS).to_string()],
+    )
+    .await?;
     tx.commit().await?;
-    for row in stale {
+    for row in stale.into_iter().chain(late) {
         discard_zip(s, row["key"].as_str().unwrap_or_default()).await;
     }
     Ok(())
 }
+
+/// 取り消したエクスポートの ZIP を、署名付き URL の期限からさらにこれだけ待ってから消し直す
+const LATE_UPLOAD_GRACE_SECS: u64 = 24 * 60 * 60;
 
 async fn blocking<T: Send + 'static>(
     work: impl FnOnce() -> Result<T, AppError> + Send + 'static,
@@ -335,6 +351,9 @@ async fn blocking<T: Send + 'static>(
         .await
         .map_err(|e| AppError::Internal(e.into()))?
 }
+
+/// 取り込んだ投稿の本文を入れるカード (先頭) の見出し
+pub const IMPORTED_TEXT_CARD_TITLE: &str = "Slack";
 
 const TEMP_ZIP_PREFIX: &str = "zoo-slack-import-";
 const TEMP_ZIP_SUFFIX: &str = ".zip";
@@ -355,7 +374,12 @@ impl TempZip {
             "{TEMP_ZIP_PREFIX}{}{TEMP_ZIP_SUFFIX}",
             uuid::Uuid::new_v4()
         ));
-        let file = std::fs::File::create_new(&path)?;
+        // Slack の過去ログを含むので、同じホストのほかのユーザーから読めないようにする
+        let mut options = std::fs::OpenOptions::new();
+        options.read(true).write(true).create_new(true);
+        #[cfg(unix)]
+        std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
+        let file = options.open(&path)?;
         if let Err(e) = file.try_lock() {
             let _ = std::fs::remove_file(&path);
             return Err(std::io::Error::other(e));
@@ -405,8 +429,15 @@ fn remove_orphan_zips(dir: &Path) -> std::io::Result<usize> {
 
 async fn download(s: &AppState, key: &str) -> Result<TempZip, AppError> {
     let dir = s.config.slack.import_tmp_dir.clone();
-    let (tmp, writer) =
-        blocking(move || TempZip::create(&dir).map_err(|e| AppError::Internal(e.into()))).await?;
+    let (tmp, writer) = blocking(move || {
+        TempZip::create(&dir).map_err(|e| {
+            AppError::Internal(anyhow::anyhow!(
+                "Failed to create the Slack export in SLACK_IMPORT_TMP_DIR ({}): {e}",
+                dir.display()
+            ))
+        })
+    })
+    .await?;
     let object = s
         .s3_client
         .get_object()
@@ -731,12 +762,10 @@ async fn import(s: &AppState, job: &Job, lease: &Lease) -> Result<(), AppError> 
             let (target, private) = match &mapping.action {
                 MappingAction::Skip => continue,
                 MappingAction::Create { name, is_private } => {
-                    // 非公開チャンネルは常に非公開で作る (start で拒否済みだが、古いジョブにも備える)
+                    // 非公開チャンネルは常に非公開で作る (start で拒否済みだが、古いジョブにも備える)。
+                    // 以前作ったチャンネルを使うときは、その実際の公開・非公開を返す
                     let private = channel.is_private || is_private.unwrap_or(false);
-                    let target =
-                        create_channel(&mut tx, &team, channel, name, private, &job.created_by)
-                            .await?;
-                    (target, private)
+                    create_channel(&mut tx, &team, channel, name, private, &job.created_by).await?
                 }
                 MappingAction::Existing { channel_id } => {
                     let found = one(
@@ -946,7 +975,7 @@ async fn create_channel(
     name: &str,
     is_private: bool,
     admin: &str,
-) -> Result<(String, String), AppError> {
+) -> Result<((String, String), bool), AppError> {
     validate_channel_name(name)?;
     let id = super::channel_id(team, &channel.id);
     let description: String = channel
@@ -1002,7 +1031,10 @@ async fn create_channel(
             channel.id
         )));
     }
-    Ok((id, row["name"].as_str().unwrap_or(name).to_string()))
+    Ok((
+        (id, row["name"].as_str().unwrap_or(name).to_string()),
+        row["is_private"] == true,
+    ))
 }
 
 async fn insert_message(
@@ -1038,12 +1070,17 @@ async fn insert_message(
     let mut cards = message.cards();
     let mut content = mrkdwn_to_mfm(&message.text, &*ctx);
     // カードのある投稿は、チャットでは本文 (content) を表示せずカードだけを表示する。
-    // Webhook と同じく、トップレベルの本文もカードの先頭に置いて、本文とカードの両方を読めるようにする。
+    // トップレベルの本文もカードの先頭に置いて、本文とカードの両方を読めるようにする。
+    // カードの説明は MFM として描画しないので、リンクは `label (URL)` の形にする。
     if !cards.is_empty() && !content.trim().is_empty() {
-        cards.insert(
-            0,
-            crate::cards::text_card(content.chars().take(MAX_CARD_DESCRIPTION).collect()),
+        let mut card = crate::cards::text_card(
+            super::convert::mrkdwn_to_text(&message.text, &*ctx)
+                .chars()
+                .take(MAX_CARD_DESCRIPTION)
+                .collect(),
         );
+        card.title = IMPORTED_TEXT_CARD_TITLE.into();
+        cards.insert(0, card);
     }
     let card = crate::cards::encode_cards(&cards)?.unwrap_or_default();
     // 本文がカードにしかない bot 投稿は、カードの内容を本文にも入れる (通知・一覧・旧クライアント用)。
@@ -1398,6 +1435,16 @@ mod tests {
         let other = dir.join("unrelated.zip");
         std::fs::write(&other, b"not ours").unwrap();
         let (in_use, _writer) = TempZip::create(&dir).unwrap();
+        // Slack の過去ログを含むので、ほかのユーザーからは読めない
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(&in_use.path)
+                .unwrap()
+                .permissions()
+                .mode();
+            assert_eq!(mode & 0o777, 0o600);
+        }
 
         assert_eq!(remove_orphan_zips(&dir).unwrap(), 1);
         assert!(!orphan.exists());

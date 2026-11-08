@@ -146,12 +146,15 @@ export async function uploadSlackExport(
   onProgress: (ratio: number) => void,
   put: PutWithProgress = xhrPut,
   signal?: AbortSignal,
+  /** ジョブを作ったとき (アップロードの前) に呼ぶ。取り消したジョブのアップロードを中断するのに使う */
+  onCreated?: (job: SlackImport) => void,
 ): Promise<SlackImport> {
   const created = await client.request<{
     import: SlackImport;
     upload_url: string;
     upload_headers: Record<string, string>;
   }>(BASE, { method: "POST", body: { file_name: file.name, file_size: file.size } });
+  onCreated?.(created.import);
   await put(
     created.upload_url,
     file,
