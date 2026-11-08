@@ -6,23 +6,31 @@ use crate::models::{
 pub async fn init_db(database_url: &str) -> Result<toasty::Db, toasty::Error> {
     tracing::info!("Connecting to PostgreSQL via Toasty ORM...");
 
-    let db = toasty::Db::builder()
-        .models(toasty::models!(
-            User,
-            UserIdentity,
-            Channel,
-            ChannelWebhook,
-            Message,
-            MessageReaction,
-            Notification,
-            crate::models::PushSubscription,
-            ChannelUser,
-            Role,
-            UserRole,
-            Attachment
-        ))
-        .connect(database_url)
-        .await?;
+    let mut builder = toasty::Db::builder();
+    builder.models(toasty::models!(
+        User,
+        UserIdentity,
+        Channel,
+        ChannelWebhook,
+        Message,
+        MessageReaction,
+        Notification,
+        crate::models::PushSubscription,
+        ChannelUser,
+        Role,
+        UserRole,
+        Attachment
+    ));
+    // 接続数を絞りたい環境（dispatcher を複数台動かす・max_connections が小さい）向け。
+    // 未設定ならドライバの既定（論理 CPU 数 × 2）。
+    if let Some(n) = std::env::var("DB_MAX_POOL_SIZE")
+        .ok()
+        .and_then(|v| v.trim().parse::<usize>().ok())
+        .filter(|n| *n > 0)
+    {
+        builder.max_pool_size(n);
+    }
+    let db = builder.connect(database_url).await?;
 
     tracing::info!("Successfully connected to PostgreSQL database");
     Ok(db)

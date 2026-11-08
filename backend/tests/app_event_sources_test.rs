@@ -2955,10 +2955,10 @@ async fn concurrent_workers_never_claim_or_send_a_delivery_twice() -> anyhow::Re
     for pass in passes {
         tokio::time::timeout(std::time::Duration::from_secs(120), pass).await???;
     }
-    // 失敗した配信はリース（3 秒）が切れるまで再取得されない。したがって試行回数は、
-    // 経過時間から許される回数（最初の 1 回 + 3 秒ごとに 1 回）を超えない。
+    // 失敗した配信はリース（HTTP は 5 秒）が切れるまで再取得されない。したがって試行回数は、
+    // 経過時間から許される回数（最初の 1 回 + 5 秒ごとに 1 回）を超えない。
     // 同時に回した 6 本が同じ行を取り合って重複送信していれば、この上限を超える。
-    let allowed = 1 + (started.elapsed().as_secs() / 3);
+    let allowed = 1 + (started.elapsed().as_secs() / 5);
     let attempts = message_delivery_attempts(&f).await?;
     assert!(attempts.len() >= 24);
     assert!(
@@ -3012,18 +3012,18 @@ async fn lease_is_measured_from_the_claim_not_from_the_start_of_a_blocked_transa
     apps::one(&mut holder,"SELECT json_build_object('locked',pg_advisory_xact_lock(hashtextextended($1,0)) IS NULL)::text",&[&format!("app-dispatch:{}",f.installation)]).await?;
     let db = f.state.db.clone();
     let installation = f.installation.clone();
-    let claim = tokio::spawn(async move { apps::delivery::claim(&db, &installation).await });
+    let claim = tokio::spawn(async move { apps::delivery::claim_http(&db, &installation).await });
     tokio::time::sleep(std::time::Duration::from_millis(2500)).await;
     holder.commit().await?;
     let claimed = claim.await??.expect("a delivery is claimable");
-    // now()（トランザクション開始）を起点にすると、残りは約 0.5 秒しかなくなり、送信中に再取得される。
+    // now()（トランザクション開始）を起点にすると、残りは約 2.5 秒しかなくなり、送信中に再取得される。
     let mut db = f.state.db.clone();
     let mut tx = db.transaction().await?;
     let row = apps::one(&mut tx,"SELECT json_build_object('left',extract(epoch from lease_until-clock_timestamp()))::text FROM app_deliveries WHERE id=$1",&[claimed["delivery_id"].as_str().unwrap()]).await?;
     let left = row["left"].as_f64().unwrap();
     assert!(
-        left > 2.0,
-        "the lease must last ~3s after the claim, got {left}s"
+        left > 4.0,
+        "the lease must last ~5s after the claim, got {left}s"
     );
     Ok(())
 }

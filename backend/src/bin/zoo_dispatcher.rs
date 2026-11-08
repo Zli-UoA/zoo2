@@ -6,6 +6,10 @@
 //!
 //! 環境変数: `DATABASE_URL`（または `POSTGRES_*`）、`DISPATCHER_PORT`（既定 8081）、
 //! `DISPATCHER_HOST`（既定 0.0.0.0）。
+//!
+//! `DATABASE_URL` は直接接続にすること。LISTEN（#378 以降）はトランザクションプールのプーラー
+//! （PgBouncer のトランザクションモードなど）を経由すると動かない（配信はポーリングで続く）。
+//! DB プールの上限は `DB_MAX_POOL_SIZE`（未設定ならドライバの既定: 論理 CPU 数 × 2）。
 use axum::{Router, http::header, response::IntoResponse, routing::get};
 use std::{net::SocketAddr, time::Duration};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
@@ -41,16 +45,20 @@ async fn main() -> anyhow::Result<()> {
     let wake = std::sync::Arc::new(tokio::sync::Notify::new());
     let notify_listener =
         backend::apps::delivery::listen_for_deliveries(database_url.clone(), wake.clone());
-    let http = tokio::spawn(backend::apps::delivery::http_loop_with(
-        db.clone(),
-        shutdown,
-        wake,
-        POLL,
-    ));
+    // 配信ループが（panic などで）終わったら /healthz を 503 にして、liveness probe で再起動させる。
+    let alive = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
+    let http = tokio::spawn({
+        let guard = AliveGuard(alive.clone());
+        let db = db.clone();
+        async move {
+            let _guard = guard;
+            backend::apps::delivery::http_loop_with(db, shutdown, wake, POLL).await
+        }
+    });
     let gauges = tokio::spawn({
         let db = db.clone();
         async move {
-            let mut ticks = tokio::time::interval(Duration::from_secs(5));
+            let mut ticks = tokio::time::interval(Duration::from_secs(15));
             loop {
                 ticks.tick().await;
                 if let Err(e) = backend::apps::delivery::refresh_queue_metrics(&db).await {
@@ -61,7 +69,22 @@ async fn main() -> anyhow::Result<()> {
     });
 
     let app = Router::new()
-        .route("/healthz", get(|| async { "ok" }))
+        .route(
+            "/healthz",
+            get(move || {
+                let alive = alive.clone();
+                async move {
+                    if alive.load(std::sync::atomic::Ordering::Relaxed) {
+                        (axum::http::StatusCode::OK, "ok")
+                    } else {
+                        (
+                            axum::http::StatusCode::SERVICE_UNAVAILABLE,
+                            "delivery loop stopped",
+                        )
+                    }
+                }
+            }),
+        )
         .route("/metrics", get(metrics));
     let addr: SocketAddr = format!("{host}:{port}").parse()?;
     tracing::info!(%addr, "zoo-dispatcher listening");
@@ -85,6 +108,14 @@ async fn main() -> anyhow::Result<()> {
     }
     tracing::info!("zoo-dispatcher stopped");
     Ok(())
+}
+
+/// 配信ループのタスクが終わったら（panic で巻き戻る場合も）生存フラグを下げる。
+struct AliveGuard(std::sync::Arc<std::sync::atomic::AtomicBool>);
+impl Drop for AliveGuard {
+    fn drop(&mut self) {
+        self.0.store(false, std::sync::atomic::Ordering::Relaxed);
+    }
 }
 
 async fn metrics() -> impl IntoResponse {
