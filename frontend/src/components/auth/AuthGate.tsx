@@ -3,7 +3,7 @@ import { useRouter } from "@tanstack/react-router";
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 
 import { setAuthorizedHandler, setTokenProvider, setUnauthorizedHandler } from "../../lib/auth";
-import { resolveConfig, DEFAULT_CONFIG, type AppConfig } from "../../lib/config";
+import { resolveConfig, type AppConfig } from "../../lib/config";
 import { OidcClient } from "../../lib/oidc/client";
 import {
   MAX_REDIRECT_ATTEMPTS,
@@ -22,9 +22,6 @@ import { ShellSkeleton } from "../layout/ShellSkeleton";
 import { Button } from "../ui/button";
 
 import { describeAuthError, formatAuthError, type AuthError } from "./authError";
-
-import { ComposeRuntime } from "../experimental/ComposeFrontend";
-import { selectedFrontend } from "../../lib/experimentalFrontend";
 
 type AuthPhase = "checking" | "ready" | "disabled" | "loggedOut" | "error";
 
@@ -46,8 +43,7 @@ function currentReturnTo(): string {
  * 認証の入口。OIDC 未設定（dev の X-Dev-User）なら素通しし、設定済みなら
  * authorize リダイレクト / コールバック処理 / 401 時の再ログインを担う。
  *
- * トークンはメモリ保持のため、リロード後は IdP セッションを利用して
- * authorize へ再リダイレクトする（サイレント再ログイン）。
+ * 同じタブの再読み込みではセッションを復元し、IdP への往復を省く。
  */
 export function AuthGate({ children }: { children: ReactNode }) {
   const { t } = useTranslation();
@@ -55,13 +51,6 @@ export function AuthGate({ children }: { children: ReactNode }) {
   const [phase, setPhase] = useState<AuthPhase>("checking");
   const [error, setError] = useState<AuthError | null>(null);
   const clientRef = useRef<OidcClient | null>(null);
-  const [nativeConfig] = useState(() => {
-    try {
-      return resolveConfig();
-    } catch {
-      return DEFAULT_CONFIG;
-    }
-  });
 
   const startLogin = useCallback((client: OidcClient, returnTo: string) => {
     const storage = window.sessionStorage;
@@ -102,6 +91,11 @@ export function AuthGate({ children }: { children: ReactNode }) {
     });
     setUnauthorizedHandler(() => {
       const storage = window.sessionStorage;
+      // ログアウト直後の通信結果で、明示的なログアウトを取り消さない。
+      if (isLoggedOut(storage)) {
+        setPhase("loggedOut");
+        return;
+      }
       const now = Date.now();
       const redirectState = readUnauthorizedRedirectState(storage, now, REDIRECT_COOLDOWN_MS);
       // 事前再認可や 401 起点のリダイレクト中に届いた 401 は、遷移前の
@@ -196,15 +190,36 @@ export function AuthGate({ children }: { children: ReactNode }) {
     if (!client) {
       return;
     }
+    let active = true;
     const handleOnline = () => {
-      if (phase !== "ready" || client.hasSession || isLoggedOut(window.sessionStorage)) {
+      if (phase !== "ready" || isLoggedOut(window.sessionStorage)) {
+        return;
+      }
+      if (client.hasSession) {
+        void client.getAccessToken().then((token) => {
+          if (!active || token || !navigator.onLine || isLoggedOut(window.sessionStorage)) return;
+          // 期限切れによる再認可をすでに始めていれば、二重に開始しない。
+          if (
+            readUnauthorizedRedirectState(
+              window.sessionStorage,
+              Date.now(),
+              REDIRECT_COOLDOWN_MS,
+            ) === "redirecting"
+          )
+            return;
+          setPhase("checking");
+          startLogin(client, currentReturnTo());
+        });
         return;
       }
       setPhase("checking");
       startLogin(client, currentReturnTo());
     };
     window.addEventListener("online", handleOnline);
-    return () => window.removeEventListener("online", handleOnline);
+    return () => {
+      active = false;
+      window.removeEventListener("online", handleOnline);
+    };
   }, [phase, startLogin]);
 
   if (phase === "disabled" || phase === "ready") {
@@ -224,14 +239,6 @@ export function AuthGate({ children }: { children: ReactNode }) {
     startLogin(client, "/");
   };
 
-  if (typeof window !== "undefined" && selectedFrontend() === "compose") {
-    return (
-      <ComposeRuntime
-        config={nativeConfig}
-        status={{ phase, message: phase === "error" ? formatAuthError(error, t) : "", retry }}
-      />
-    );
-  }
   if (phase === "checking") return <ShellSkeleton />;
 
   return (

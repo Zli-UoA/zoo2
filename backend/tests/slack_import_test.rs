@@ -838,7 +838,8 @@ async fn test_slack_reimport_relinks_replies_and_serializes_targets() -> anyhow:
             .iter()
             .filter(|job| job["status"] == "completed"
                 && job["pending_files"] == 0
-                && job["failed_files"] == 0)
+                && job["failed_files"] == 0
+                && job["skipped_files"] == 0)
             .count()
             <= 50
     );
@@ -1775,6 +1776,38 @@ async fn test_slack_import_refetch_removes_names_and_retries_size_skips() -> any
     )
     .await?;
     assert_eq!(job["skipped_files"], 4, "{job}");
+    // 再取得できるスキップが残るジョブは、新しい履歴が増えても一覧から押し出されない
+    {
+        let mut db = db.clone();
+        let mut tx = db.transaction().await?;
+        toasty::sql::statement(
+            "INSERT INTO slack_import_jobs(id,created_by,status,file_name,file_size,storage_key,team_id,source_id) \
+             SELECT 'history-skip-'||g,created_by,'completed',file_name,file_size,storage_key,team_id,source_id \
+             FROM slack_import_jobs, generate_series(1,60) g WHERE id=$1",
+        )
+        .bind(run.as_str())
+        .exec(&mut tx)
+        .await?;
+        tx.commit().await?;
+    }
+    let (_, listed) = request(&app_small, "GET", "/api/admin/slack-imports", &admin, None).await?;
+    let still_listed = listed["imports"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|j| j["id"] == run.as_str());
+    {
+        let mut db = db.clone();
+        let mut tx = db.transaction().await?;
+        toasty::sql::statement("DELETE FROM slack_import_jobs WHERE id LIKE 'history-skip-%'")
+            .exec(&mut tx)
+            .await?;
+        tx.commit().await?;
+    }
+    assert!(
+        still_listed,
+        "a job with retryable skipped files stays listed"
+    );
 
     // 上限を戻して再取得すると、取得できて、本文からファイル名が外れる
     let mut big = config.clone();

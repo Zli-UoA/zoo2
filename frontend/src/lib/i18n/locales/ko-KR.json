@@ -738,14 +738,6 @@
     "originalProfile": "원본 프로필",
     "post": "게시"
   },
-  "experimental": {
-    "useCompose": "Compose 버전 사용(실험·개발 중)",
-    "useReact": "React 버전으로 돌아가기",
-    "loadError": "Compose 버전을 시작하지 못했습니다. React 버전으로 돌아가 주세요.",
-    "catalogLoading": "Compose를 불러오는 중입니다…",
-    "catalogLoadError": "Compose 배포물을 가져오지 못했습니다.",
-    "catalogBuildHint": "JDK 21을 준비하고 frontend에서 pnpm build:compose를 실행해 주세요."
-  },
   "slackImport": {
     "tab": "Slack 가져오기",
     "title": "Slack에서 가져오기",

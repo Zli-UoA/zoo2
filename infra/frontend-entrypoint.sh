@@ -19,17 +19,12 @@ endpoint_origin() {
     *) echo "Preview endpoint must be HTTPS or a same-origin path" >&2; return 1 ;;
   esac
 }
+CSP_AVATAR_SRC="$(endpoint_origin "${CSP_AVATAR_SRC:-https://avater.zliusercontent.com}")"
+export CSP_AVATAR_SRC
 MEDIA_PROXY_URL="${MEDIA_PROXY_URL:-}"
 SUMMALY_URL="${SUMMALY_URL:-}"
 CSP_MEDIA_PROXY_SRC="$(endpoint_origin "$MEDIA_PROXY_URL")"
 CSP_SUMMALY_SRC="$(endpoint_origin "$SUMMALY_URL")"
-# Canvas images use fetch(), so their origins also need connect-src permission.
-# React-only images retain their original connect-src allowlist.
-CSP_COMPOSE_CONNECT_SRC=""
-if [ "${ZOO_COMPOSE_ENABLED:-false}" = "true" ]; then
-  CSP_COMPOSE_CONNECT_SRC=" https://www.gstatic.com ${CSP_APP_IMAGE_SRC:-} ${CSP_MEDIA_PROXY_SRC}"
-fi
-export CSP_COMPOSE_CONNECT_SRC
 export MEDIA_PROXY_URL SUMMALY_URL CSP_MEDIA_PROXY_SRC CSP_SUMMALY_SRC
 
 exec /docker-entrypoint.sh "$@"

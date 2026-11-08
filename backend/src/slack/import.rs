@@ -250,13 +250,14 @@ async fn list(State(s): State<AppState>, user: AuthUser) -> Result<Json<Value>, 
     let rows = query(
         &mut tx,
         // 保存中の ZIP と、取り込み中・失敗したジョブは画面から操作するので、件数に関係なく必ず返す。
-        // 完了していても、取得し直せる添付 (未取得・失敗) が残るジョブは同じく必ず返す。
+        // 完了していても、取得し直せる添付 (未取得・失敗、サイズの上限や取得 URL が理由のスキップ) が残るジョブは同じく必ず返す。
         // 件数の制限は、それ以外の完了・取り消し済みの履歴にだけかける
         &format!(
             "SELECT {JOB_JSON} FROM slack_import_jobs j \
              WHERE j.status NOT IN ('completed','cancelled') \
              OR (j.status='completed' AND EXISTS(SELECT 1 FROM slack_files f \
-             WHERE f.job_id=j.id AND f.status IN ('pending','failed'))) \
+             WHERE f.job_id=j.id AND (f.status IN ('pending','failed') \
+             OR (f.status='skipped' AND (f.error LIKE 'File exceeds%' OR f.error='Unsupported file URL'))))) \
              OR j.id IN (SELECT id FROM slack_import_jobs WHERE status IN ('completed','cancelled') \
              ORDER BY created_at DESC,id DESC LIMIT 50) \
              ORDER BY j.created_at DESC,j.id DESC"

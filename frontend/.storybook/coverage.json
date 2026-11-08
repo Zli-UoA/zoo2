@@ -562,7 +562,7 @@
     {
       "file": "src/components/auth/AuthGate.tsx",
       "reason": "OIDC設定と外部リダイレクトに依存する認証境界。ログイン・期限切れ・再認証は専用IdPのE2Eで確認する。",
-      "checks": ["e2e/oidc.spec.ts"]
+      "checks": ["e2e/oidc.spec.ts", "src/components/auth/AuthGate.browser.test.tsx"]
     },
     {
       "file": "src/components/auth/PreviewUserSwitcher.tsx",
@@ -641,11 +641,16 @@
     },
     {
       "file": "src/components/chat/ChannelScreen.tsx",
-      "story": "src/components/chat/ChannelScreen.stories.tsx"
+      "story": "src/components/chat/ChannelScreen.stories.tsx",
+      "checks": ["src/components/chat/ChannelScreen.browser.test.tsx"]
     },
     {
       "file": "src/components/chat/ChannelSidebar.tsx",
-      "story": "src/components/chat/ChannelSidebar.stories.tsx"
+      "story": "src/components/chat/ChannelSidebar.stories.tsx",
+      "checks": [
+        "src/lib/electric/collections.persistence.test.ts",
+        "src/components/chat/ChannelSidebar.browser.test.tsx"
+      ]
     },
     {
       "file": "src/components/chat/ChannelWebhooksDialog.tsx",
@@ -723,7 +728,8 @@
     },
     {
       "file": "src/components/chat/messages/MessagePane.tsx",
-      "story": "src/components/chat/messages/MessagePane.stories.tsx"
+      "story": "src/components/chat/messages/MessagePane.stories.tsx",
+      "checks": ["src/components/chat/messages/MessagePane.navigation.browser.test.tsx"]
     },
     {
       "file": "src/components/chat/messages/MessageRow.tsx",
@@ -775,7 +781,7 @@
     {
       "file": "src/components/layout/LeftRail.tsx",
       "story": "src/components/layout/LeftRail.stories.tsx",
-      "reason": "DefaultとMobileで、環境変数に依存せずCompose切り替えボタンが表示されることを確認する。"
+      "reason": "DefaultとMobileで、削除済みの実験版切り替えボタンが表示されないことを確認する。"
     },
     {
       "file": "src/components/layout/PaneHeader.tsx",
@@ -943,6 +949,7 @@
     {
       "file": "src/components/home/HomeComposer.tsx",
       "story": "src/components/home/HomeScreen.stories.tsx",
+      "checks": ["src/components/home/HomeComposer.browser.test.tsx"],
       "composed": true,
       "reason": "WithImages/MobileImagesで画像表示、ImageOnlyPostで貼り付け・削除・画像のみ送信・再送を確認する。Composer/MobileComposerで実フォームの起動と配置を、Submit/SendError/FederationToggleで送信・下書き・公開範囲と連合の独立性を確認する。"
     },
@@ -950,7 +957,7 @@
       "file": "src/components/home/ActivityPubNotifications.tsx",
       "story": "src/components/chat/NotificationsScreen.stories.tsx",
       "composed": true,
-      "reason": "UnifiedTimeline/Mobileで混在時刻順と枠・実リアクション、UnifiedAutoReadで可視通知の選択既読、CustomReactionBadgeでカスタム絵文字のバッジを確認する。FollowRequests/ApproveFollow/RejectFollowで承認・拒否も維持する。"
+      "reason": "UnifiedTimeline/Mobileで混在時刻順と枠・実リアクション、共通アバター寸法と右寄せ日時、UnifiedAutoReadで可視通知の選択既読、CustomReactionBadgeでカスタム絵文字のバッジを確認する。FollowRequests/ApproveFollow/RejectFollowで承認・拒否も維持する。"
     },
     {
       "file": "src/components/home/ActivityPubEmoji.tsx",
@@ -977,11 +984,6 @@
       "reason": "UserProfile/MobileUserProfile/UserProfileErrorでユーザー情報とフォロー申請・取得失敗を確認する。"
     },
     {
-      "file": "src/components/experimental/ComposeFrontend.tsx",
-      "reason": "認証・OPFS・ルーターとKotlin/Wasmを接続する制御層。カタログで覆えない起動・ユーザー別保存・失敗復帰・CSPを専用E2Eで検証する。",
-      "checks": ["e2e/compose.spec.ts", "e2e/compose-production.spec.ts"]
-    },
-    {
       "file": "src/components/public/PublicProfile.tsx",
       "story": "src/components/public/PublicProfile.stories.tsx",
       "composed": true,
@@ -1001,7 +1003,7 @@
     },
     {
       "file": "src/components/apps/console/AppConsole.tsx",
-      "reason": "#322 の App 管理画面は React 版 Web だけの機能で、Compose 版は作らない。Story を置くと全 Story に Kotlin 実装を求める story-coverage.test.ts が失敗するため、ブラウザテストで表示・権限境界・保存を確認する。",
+      "reason": "App 管理画面の表示・権限境界・保存をブラウザテストで確認する。",
       "checks": [
         "src/components/apps/console/AppConsole.browser.test.tsx",
         "src/components/apps/console/AppConsoleList.browser.test.tsx",
@@ -1010,7 +1012,7 @@
     },
     {
       "file": "src/components/apps/console/AppConsoleList.tsx",
-      "reason": "#322 の App 管理画面は React 版 Web だけの機能で、Compose 版は作らない。Story を置くと全 Story に Kotlin 実装を求める story-coverage.test.ts が失敗するため、ブラウザテストで表示・権限境界・保存を確認する。",
+      "reason": "App 管理画面の表示・権限境界・保存をブラウザテストで確認する。",
       "checks": [
         "src/components/apps/console/AppConsole.browser.test.tsx",
         "src/components/apps/console/AppConsoleList.browser.test.tsx",
@@ -1019,7 +1021,7 @@
     },
     {
       "file": "src/components/apps/console/ConfigSections.tsx",
-      "reason": "#322 の App 管理画面は React 版 Web だけの機能で、Compose 版は作らない。Story を置くと全 Story に Kotlin 実装を求める story-coverage.test.ts が失敗するため、ブラウザテストで表示・権限境界・保存を確認する。",
+      "reason": "App 管理画面の表示・権限境界・保存をブラウザテストで確認する。",
       "checks": [
         "src/components/apps/console/AppConsole.browser.test.tsx",
         "src/components/apps/console/AppConsoleList.browser.test.tsx",
@@ -1028,7 +1030,7 @@
     },
     {
       "file": "src/components/apps/console/OperationSections.tsx",
-      "reason": "#322 の App 管理画面は React 版 Web だけの機能で、Compose 版は作らない。Story を置くと全 Story に Kotlin 実装を求める story-coverage.test.ts が失敗するため、ブラウザテストで表示・権限境界・保存を確認する。",
+      "reason": "App 管理画面の表示・権限境界・保存をブラウザテストで確認する。",
       "checks": [
         "src/components/apps/console/AppConsole.browser.test.tsx",
         "src/components/apps/console/AppConsoleList.browser.test.tsx",

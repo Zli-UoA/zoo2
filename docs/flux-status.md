@@ -15,7 +15,7 @@
 | `severity`、`reason` | 完了・失敗・途中経過を判定する |
 | `timestamp` | 古いイベントの上書きを抑制する |
 
-`info` かつ `ReconciliationSucceeded` を成功、`error` を失敗として扱います。`Progressing`、`ProgressingWithRetry` と、完了以外の info は結果を投稿しません。不正な対象・リリースタグ・digest・timestamp は workflow を失敗させます。
+`info` かつ `ReconciliationSucceeded` を成功、`error` を失敗として扱います。`Progressing`、`ProgressingWithRetry` は Check Run だけに記録します（[進行中の表示](#進行中の表示check-run)）。完了以外の info は結果を投稿しません。不正な対象・リリースタグ・digest・timestamp は、完了・失敗のイベントでは workflow を失敗させます。進行中のイベントは、リリースタグ・digest・timestamp のいずれかが不正なら記録せず無視します。
 
 GHCR `zoo2-migrate` package のバージョンをページ送りし、digest とリリースタグの両方が一致するバージョンの40桁 SHA タグを探します。その SHA が zoo2 のコミットであることも確認します。該当バージョンや SHA タグがなければ warning で終了し、複数の SHA タグや API エラーでは失敗します。`latest` はコミットの特定に使いません。
 
@@ -37,7 +37,7 @@ artifact がすべて削除・期限切れになると過去の処理時刻を�
 
 ## 権限と導入順
 
-workflow は `GITHUB_TOKEN` の `contents: read`、`packages: read`、`statuses: write`、`deployments: write`、状態の復元・古い artifact の削除用の `actions: write` を使います。artifact に保存するのは処理済み時刻と結果だけです。専用 PAT や App 秘密鍵を zoo2 の Actions Secret に保存する必要はありません。
+workflow は `GITHUB_TOKEN` の `contents: read`、`packages: read`、`statuses: write`、`deployments: write`、Check Run 用の `checks: write`、状態の復元・古い artifact の削除用の `actions: write` を使います。artifact に保存するのは、処理済み時刻・結果・直前のリリースタグと digest だけです。専用 PAT や App 秘密鍵を zoo2 の Actions Secret に保存する必要はありません。
 
 1. この受信 workflow を zoo2 の main に反映します。
 2. GHCR `zoo2-migrate` package の「Manage Actions access」で zoo2 から読み取れることを確認します。
@@ -46,14 +46,30 @@ workflow は `GITHUB_TOKEN` の `contents: read`、`packages: read`、`statuses:
 
 repository_dispatch は zoo2 の write 権限者も送信できます。リポジトリの write 権限者を信頼する運用が前提です。Deployment API は Flux が実施した結果の記録に使い、GitHub environment の配備承認ジョブは追加しません。
 
+## 進行中の表示（Check Run）
+
+`Progressing` / `ProgressingWithRetry` のイベントは、Check Run だけに記録します。コミットステータス、Deployment、処理済み時刻は変えません。
+
+- 反映1回（`zoo2` / `zoo2-migrate`、リリースタグ、digest の組）につき Check Run を1件作ります。名前は `flux/<name>` で、`external_id` は `<name>:<リリースタグ>:<digest>` です。
+- 進行中は `in_progress`、成功・失敗のイベントで `completed`（`success` / `failure`）にします。本文はコードブロックで、イベントの時刻と reason を1行ずつ足します。reason は100文字までで、制御文字は空白に、バッククォートは `'` に置き換えます。zoo2 は公開リポジトリなので、Flux のメッセージ（クラスタ内のオブジェクト名などを含み得ます）は、Check Run にも workflow のログにも出しません。実際の本番イベントの内容を確認してから `publishMessages` を有効にすれば、メッセージも200文字までで同じ置き換えをして足せます。本文は65535文字を超えると古い行から切り詰め、先頭に `(older events omitted)` を付けます。
+- 完了した Check Run は、遅れて届いた進行中イベントでは開き直しません。定期 reconcile の同じ結果では更新しません。失敗後に成功した場合は、同じ Check Run を成功に更新します。失敗した反映を Flux が再試行したときの進行中イベントは、失敗の Check Run には追記しません（成功すると成功に更新します）。
+- **切り戻し（A→B→A）**: 処理済み時刻とともに、直前のリリースタグと digest を記録します。直前と違うリリースのイベントが届き、そのイベントが属する同じ `external_id` の Check Run が、直前に記録した完了より前に完了済みなら（進行中のイベントでは、同じ Check Run が直前の記録より前に始まって未完了のままの場合も）、`external_id` に `@<開始時刻>` を足した新しい Check Run を作ります。Deployment の作成失敗や artifact の保存失敗のあとで同じイベントを再実行したときは、watermark が前のままでも、その反映の Check Run は直前の記録より後に完了しているので再利用し、2件目は作りません。Deployment と同じく、切り戻しは新しい反映として残ります。直前と同じリリースの reconcile やドリフト修正は更新しません。artifact を失って直前の記録がない場合は、切り戻しとは判定しません。
+- **順序が逆転した完了イベント**: watermark またはコミットステータスの時刻で古いと判定した完了・失敗のイベントは、コミットステータス・Deployment・watermark には何も書きません。ただし、そのリリースの Check Run が `in_progress` のままなら完了させます。このとき Check Run を新しく作ったり開き直したりはしません。イベントより後に始まった Check Run（後の切り戻し）も変えません。
+- 出るのは Flux のイベントの時刻と reason だけです。Pod のログではありません。
+- 切り戻しの進行中イベントの順序が入れ替わっても、直前の記録より後に始まった切り戻しの Check Run があれば、そこに追記します（2件目は作りません。完了済みなら開き直しません）。
+- イベントが属する Check Run は、そのイベントの時刻以前に始まった最新のものです。遅れて届いた完了イベントは、それより後に始まった Check Run（後の切り戻し）を更新せず、自分の反映の Check Run を完了させます。すべての Check Run より前のイベントは何もしません。
+- 進行中イベントでも `Flux production status` の run が走るため、`workflow_run` で起動する `Deployment badges` の run も同じ回数だけ増えます。Actions の回数の受入では、この分も数えてください。
+- Check Run は `GITHUB_TOKEN`（`checks: write`）で作るため、github-actions の check suite に他の workflow と並んで表示されます。
+- 導入順: この workflow を main に反映してから、infra の中継で進行中イベントの転送を有効にします。
+
 ## 検証と障害対応
 
 ```sh
 node --test .github/scripts/flux-status.test.mjs
 ```
 
-専用の `Validate Flux production status` CI でも同じテストを実行します。モック API で、成功・失敗・途中経過、タグと digest の照合、SHA 未検出、ページ送り、重複、順序逆転（同じ時刻の失敗と成功を含む）、再配備、切り戻し、部分失敗、artifact の復元・削除を検証します。実際の通知受信や GitHub 書き込みは別途確認が必要です。
+専用の `Validate Flux production status` CI でも同じテストを実行します。モック API で、成功・失敗・途中経過（Check Run の作成・追記・完了・再開・切り詰め・切り戻し・順序逆転した完了を含む）、タグと digest の照合、SHA 未検出、ページ送り、重複、順序逆転（同じ時刻の失敗と成功を含む）、再配備、切り戻し、部分失敗、artifact の復元・削除を検証します。実際の通知受信や GitHub 書き込みは別途確認が必要です。
 
-実機では通常の main 更新後に、リリースタグ・digest・両ステータス・Deployment の SHA と公開 URL の一致を確認してください。同じリリースの再同期では Deployment が増えず、同じコミットを新しいリリースタグで再配備すると履歴が増えることも確認します。artifact の復元・最新2件の保持、部分失敗からの再開、Actions の回数とログ量も受入項目です。SHA と context ごとのステータス1000件の上限は、実際の状態変化の累積にも適用されます。
+実機では通常の main 更新後に、Check Run の表示（進行中・成功・失敗・切り戻し、Checks 欄のどこに出るか、本文の改行と強調）を確認します。未確認の間は検証済みとは扱いません。あわせて、リリースタグ・digest・両ステータス・Deployment の SHA と公開 URL の一致を確認してください。同じリリースの再同期では Deployment が増えず、同じコミットを新しいリリースタグで再配備すると履歴が増えることも確認します。artifact の復元・最新2件の保持、部分失敗からの再開、Actions の回数とログ量も受入項目です。SHA と context ごとのステータス1000件の上限は、実際の状態変化の累積にも適用されます。
 
 失敗の配送確認には、隔離した検証用リソースと通知先を使います。本番の DB やアプリを壊して検証しないでください。401／403 は workflow 権限・package の Actions access・送信 App の対象を確認し、API 障害解消後は失敗した Actions を再実行します。SHA 未検出はリリースタグと SHA タグの保持状態を確認してください。ログに token や受信 payload 全体は出力しません。

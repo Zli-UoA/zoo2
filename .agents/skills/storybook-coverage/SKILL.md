@@ -40,10 +40,9 @@ Storybookは部品の一覧だけでなく、利用者が見る状態と操作�
 - `play` はrole・labelを優先し、非同期結果を待って検証する。固定sleep、空のアサーション、内部stateの直接書換えは避ける。
 - 新規Storyは原則 `a11y.test: "error"`。例外は具体的な理由をStoryに残す。既存のtodoを無条件に増やさない。
 
-## Compose Web 実験の終了
+## Android の検証
 
-Compose Web の実験中止に伴い、通常の Storybook は React を対象とする。React の状態・操作を変更しても Kotlin カタログの登録・描画・操作比較は要求しない。既存の Kotlin 切替・カタログは実験資料として保持し、PR プレビューでは Wasm を生成しない。
-Android は継続するが、Web の Canvas カタログを Android の検証の代わりにしない。Android に関係する変更は共通 Kotlin と端末側の実装・検証を確認する。
+Storybook は React を対象とする。Android に関係する変更は共通 Kotlin と端末側の実装・検証を確認する。
 
 ## 対象一覧と確認
 
