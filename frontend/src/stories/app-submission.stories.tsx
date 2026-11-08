@@ -55,8 +55,7 @@ export const RetryPreservesValues: Story = {
     },
     async (context) => {
       await waitFor(() => expect(context.args.onDone).toHaveBeenCalledOnce());
-      if (context.globals.implementation !== "kotlin")
-        await expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+      await expect(screen.queryByRole("alert")).not.toBeInTheDocument();
       await expect(payloads).toHaveLength(2);
       await expect(payloads[0]).toMatchObject({
         kind: "submit",

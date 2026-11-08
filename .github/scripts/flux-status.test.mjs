@@ -4,6 +4,9 @@ import { readFile } from "node:fs/promises";
 import {
   createApi,
   findStateRun,
+  fitCheckText,
+  logLine,
+  publishMessages,
   parseEvent,
   parseState,
   pruneStateArtifacts,
@@ -38,12 +41,31 @@ function fixture() {
   const statuses = [];
   const deployments = [];
   const deploymentStatuses = new Map();
+  const checkRuns = [];
+  const checkWrites = [];
+  const failures = { deployments: 0 };
   const api = async (path, body) => {
     if (body !== undefined) {
+      if (path === `${base}/check-runs`) {
+        const value = { ...body, id: checkRuns.length + 1 };
+        checkRuns.push(value);
+        checkWrites.push({ path, body });
+        return value;
+      }
+      const patch = path.match(/\/check-runs\/(\d+)$/);
+      if (patch) {
+        Object.assign(checkRuns[Number(patch[1]) - 1], body);
+        checkWrites.push({ path, body });
+        return body;
+      }
       writes.push({ path, body });
       if (path.startsWith(`${base}/statuses/`)) {
         statuses.unshift({ ...body, sha: path.split("/").at(-1) });
         return body;
+      }
+      if (path === `${base}/deployments` && failures.deployments > 0) {
+        failures.deployments--;
+        throw new Error("GitHub API 503: deployments");
       }
       if (path === `${base}/deployments`) {
         const value = { ...body, sha: body.ref, id: deployments.length + 1 };
@@ -71,6 +93,16 @@ function fixture() {
       return statuses.filter(
         (s) => s.sha === path.split("/commits/")[1].split("/")[0],
       );
+    if (path.includes("/check-runs?")) {
+      const name = decodeURIComponent(path.match(/check_name=([^&]+)/)[1]);
+      return {
+        check_runs: checkRuns.filter(
+          (run) =>
+            run.name === name &&
+            run.head_sha === path.split("/commits/")[1].split("/")[0],
+        ),
+      };
+    }
     if (path.startsWith(`${base}/deployments?`)) return deployments;
     const match = path.match(/\/deployments\/(\d+)\/statuses\?/);
     if (match) return deploymentStatuses.get(Number(match[1])) ?? [];
@@ -82,6 +114,10 @@ function fixture() {
     statuses,
     deployments,
     deploymentStatuses,
+    checkRuns,
+    checkWrites,
+    failures,
+    messages: true, // exercised here; the production default is off
     runUrl,
     state: { version: 1, workloads: {} },
   };
@@ -132,8 +168,6 @@ for (const name of ["zoo2", "zoo2-migrate"]) {
 
 test("intermediate and dependency events cannot turn a commit green", async () => {
   for (const reason of [
-    "Progressing",
-    "ProgressingWithRetry",
     "DependencyNotReady",
     "Succeeded",
     "HealthCheckCanceled",
@@ -625,7 +659,10 @@ for (const name of ["zoo2", "zoo2-migrate"]) {
   test(`${name}: a success with the same timestamp as a processed failure cannot override it`, async () => {
     const warnings = [];
     const f = fixture();
-    const failure = event(name, { severity: "error", reason: "HealthCheckFailed" });
+    const failure = event(name, {
+      severity: "error",
+      reason: "HealthCheckFailed",
+    });
     await report(failure, f);
     const result = await report(event(name), {
       ...f,
@@ -639,6 +676,8 @@ for (const name of ["zoo2", "zoo2-migrate"]) {
     assert.deepEqual(f.state.workloads[name], {
       timestamp: "2026-10-22T10:00:00Z",
       state: "failure",
+      releaseTag: "0.0.123",
+      digest,
     });
     // A later reconciliation still reports the recovery.
     await report(event(name, { timestamp: "2026-10-22T10:00:01Z" }), f);
@@ -650,7 +689,10 @@ for (const name of ["zoo2", "zoo2-migrate"]) {
 test("a failure with the same timestamp as a processed success is still recorded", async () => {
   const f = fixture();
   await report(event(), f);
-  await report(event("zoo2", { severity: "error", reason: "HealthCheckFailed" }), f);
+  await report(
+    event("zoo2", { severity: "error", reason: "HealthCheckFailed" }),
+    f,
+  );
   assert.equal(f.statuses[0].state, "failure");
   assert.equal(f.state.workloads.zoo2.state, "failure");
   // Rerunning the earlier success cannot turn the commit green again.
@@ -659,7 +701,10 @@ test("a failure with the same timestamp as a processed success is still recorded
 });
 
 test("rerunning the same failure or success event stays idempotent", async () => {
-  for (const changes of [{}, { severity: "error", reason: "HealthCheckFailed" }]) {
+  for (const changes of [
+    {},
+    { severity: "error", reason: "HealthCheckFailed" },
+  ]) {
     const f = fixture();
     await report(event("zoo2", changes), f);
     const count = f.writes.length;
@@ -670,11 +715,553 @@ test("rerunning the same failure or success event stays idempotent", async () =>
 
 test("watermarks accept legacy entries without state and reject unknown states", () => {
   assert.doesNotThrow(() =>
-    parseState('{"version":1,"workloads":{"zoo2":{"timestamp":"2026-10-22T10:00:00Z"}}}'),
+    parseState(
+      '{"version":1,"workloads":{"zoo2":{"timestamp":"2026-10-22T10:00:00Z"}}}',
+    ),
   );
   assert.throws(() =>
     parseState(
       '{"version":1,"workloads":{"zoo2":{"timestamp":"2026-10-22T10:00:00Z","state":"pending"}}}',
     ),
   );
+});
+
+const progress = (name = "zoo2", changes = {}) =>
+  event(name, {
+    reason: "Progressing",
+    message: "Reconciliation in progress",
+    timestamp: "2026-10-22T09:59:00Z",
+    ...changes,
+  });
+
+test("a progress event opens an in_progress Check Run without touching status, Deployment or watermark", async () => {
+  const f = fixture();
+  const result = await report(progress(), f);
+  assert.equal(result.checkRun, "created");
+  assert.equal(f.writes.length, 0);
+  assert.deepEqual(f.state, { version: 1, workloads: {} });
+  const run = f.checkRuns[0];
+  assert.equal(run.name, "flux/zoo2");
+  assert.equal(run.head_sha, sha);
+  assert.equal(run.external_id, `zoo2:0.0.123:${digest}`);
+  assert.equal(run.status, "in_progress");
+  assert.equal(run.conclusion, undefined);
+  assert.equal(run.details_url, runUrl);
+  assert.equal(
+    run.output.text,
+    "```\n2026-10-22T09:59:00Z Progressing: Reconciliation in progress\n```",
+  );
+});
+
+test("events of one rollout append to a single Check Run and completion concludes it", async () => {
+  const f = fixture();
+  await report(progress(), f);
+  await report(
+    progress("zoo2", {
+      reason: "ProgressingWithRetry",
+      severity: "error",
+      message: "waiting",
+      timestamp: "2026-10-22T09:59:30Z",
+    }),
+    f,
+  );
+  await report(event(), f);
+  assert.equal(f.checkRuns.length, 1);
+  const run = f.checkRuns[0];
+  assert.equal(run.status, "completed");
+  assert.equal(run.conclusion, "success");
+  assert.equal(run.completed_at, "2026-10-22T10:00:00Z");
+  assert.deepEqual(
+    run.output.text
+      .split("\n")
+      .slice(1, -1)
+      .map((l) => l.split(" ")[1].replace(":", "")),
+    ["Progressing", "ProgressingWithRetry", "ReconciliationSucceeded"],
+  );
+});
+
+test("a delayed progress event cannot reopen a completed Check Run", async () => {
+  const f = fixture();
+  await report(event(), f);
+  const before = f.checkWrites.length;
+  const result = await report(
+    progress("zoo2", { timestamp: "2026-10-22T10:00:00Z" }),
+    f,
+  );
+  assert.equal(result.checkRun, "unchanged");
+  assert.equal(f.checkWrites.length, before);
+  assert.equal(f.checkRuns[0].status, "completed");
+});
+
+test("a progress event older than the recorded watermark is skipped", async () => {
+  const f = fixture();
+  await report(event(), f);
+  f.checkWrites.length = 0;
+  const result = await report(
+    progress("zoo2", { timestamp: "2026-10-22T09:00:00Z" }),
+    f,
+  );
+  assert.equal(result.skipped, "older-event");
+  assert.equal(f.checkWrites.length, 0);
+});
+
+test("repeating a progress event or an interval success changes nothing", async () => {
+  const f = fixture();
+  await report(progress(), f);
+  await report(progress(), f);
+  assert.equal(f.checkWrites.length, 1);
+  await report(event(), f);
+  const count = f.checkWrites.length;
+  await report(event("zoo2", { timestamp: "2026-10-22T10:10:00Z" }), f);
+  assert.equal(f.checkWrites.length, count);
+});
+
+test("a failure concludes the Check Run and a later recovery updates it", async () => {
+  const f = fixture();
+  await report(progress("zoo2-migrate"), f);
+  await report(
+    event("zoo2-migrate", { severity: "error", reason: "HealthCheckFailed" }),
+    f,
+  );
+  assert.equal(f.checkRuns[0].conclusion, "failure");
+  await report(event("zoo2-migrate", { timestamp: "2026-10-22T10:05:00Z" }), f);
+  assert.equal(f.checkRuns.length, 1);
+  assert.equal(f.checkRuns[0].conclusion, "success");
+});
+
+test("progress events without a release tag or digest are ignored", async () => {
+  for (const metadata of [{}, { digest }, { "release-tag": "0.0.123" }]) {
+    const result = await report(progress("zoo2", { metadata }), {
+      api: () => assert.fail("must not call GitHub"),
+      runUrl,
+    });
+    assert.equal(result.skipped, "intermediate");
+  }
+});
+
+test("Check Run text is a code block, capped, and drops the oldest lines", () => {
+  const lines = Array.from(
+    { length: 5000 },
+    (_, i) => `line-${i} ${"x".repeat(30)}`,
+  );
+  const text = fitCheckText(lines);
+  assert.ok(text.length <= 65535);
+  assert.ok(text.startsWith("```\n(older events omitted)\n"));
+  assert.ok(text.endsWith("line-4999 " + "x".repeat(30) + "\n```"));
+  assert.equal(fitCheckText(["a", "b"]), "```\na\nb\n```");
+  assert.equal(
+    fitCheckText(["a"], true),
+    "```\n(older events omitted)\na\n```",
+  );
+});
+
+test("a message cannot close the code block", async () => {
+  const f = fixture();
+  await report(progress("zoo2", { message: "```\n# injected `x`" }), f);
+  const text = f.checkRuns[0].output.text;
+  assert.equal(text.match(/```/g).length, 2);
+});
+
+test("the omitted marker is kept once across later updates", async () => {
+  const f = fixture();
+  await report(progress(), f);
+  f.checkRuns[0].output.text = fitCheckText(
+    Array.from({ length: 5000 }, (_, i) => `l${i} ${"y".repeat(30)}`),
+  );
+  await report(progress("zoo2", { timestamp: "2026-10-22T09:59:10Z" }), f);
+  const text = f.checkRuns[0].output.text;
+  assert.equal(text.split("(older events omitted)").length, 2);
+  assert.ok(text.length <= 65535);
+  assert.ok(text.includes("2026-10-22T09:59:10Z Progressing"));
+});
+
+const rolloutB = { metadata: { digest: digest2, "release-tag": "0.0.124" } };
+
+test("a delayed completion for an older rollout still ends its in_progress Check Run", async () => {
+  const f = fixture();
+  await report(progress(), f); // A starts
+  await report(
+    event("zoo2", { ...rolloutB, timestamp: "2026-10-22T10:05:00Z" }),
+    f,
+  ); // B completes first
+  const writes = f.writes.length;
+  const result = await report(event(), f); // A completes late
+  assert.equal(result.skipped, "older-event");
+  assert.equal(result.checkRun, "updated");
+  assert.equal(f.writes.length, writes); // no status, Deployment or watermark
+  assert.equal(f.state.workloads.zoo2.digest, digest2);
+  const runA = f.checkRuns.find((run) => run.external_id.includes(digest));
+  assert.equal(runA.status, "completed");
+  assert.equal(runA.conclusion, "success");
+});
+
+test("a delayed failure for an older rollout also ends its Check Run", async () => {
+  const f = fixture();
+  await report(progress(), f);
+  await report(
+    event("zoo2", { ...rolloutB, timestamp: "2026-10-22T10:05:00Z" }),
+    f,
+  );
+  await report(
+    event("zoo2", { severity: "error", reason: "HealthCheckFailed" }),
+    f,
+  );
+  const runA = f.checkRuns.find((run) => run.external_id.includes(digest));
+  assert.equal(runA.conclusion, "failure");
+});
+
+test("an older completion never creates, reopens or changes other Check Runs", async () => {
+  const f = fixture();
+  await report(
+    event("zoo2", { ...rolloutB, timestamp: "2026-10-22T10:05:00Z" }),
+    f,
+  );
+  const before = f.checkWrites.length;
+  const result = await report(event(), f); // A was never seen; nothing to end
+  assert.equal(result.checkRun, "unchanged");
+  assert.equal(f.checkWrites.length, before);
+});
+
+test("an older completion cannot end a newer rollback run", async () => {
+  const f = fixture();
+  await report(event(), f); // A done
+  await report(
+    event("zoo2", { ...rolloutB, timestamp: "2026-10-22T10:05:00Z" }),
+    f,
+  ); // B done
+  await report(progress("zoo2", { timestamp: "2026-10-22T10:10:00Z" }), f); // A again
+  const rollback = f.checkRuns.at(-1);
+  assert.equal(rollback.status, "in_progress");
+  await report(event("zoo2", { timestamp: "2026-10-22T10:01:00Z" }), f); // old A
+  assert.equal(rollback.status, "in_progress");
+});
+
+test("A to B to A gives the rollback its own Check Run and reconciliation then changes nothing", async () => {
+  const f = fixture();
+  await report(progress(), f);
+  await report(event(), f);
+  await report(
+    event("zoo2", { ...rolloutB, timestamp: "2026-10-22T10:05:00Z" }),
+    f,
+  );
+  assert.equal(f.checkRuns.length, 2);
+  // Rolling back to A: progress, a second progress, completion.
+  await report(progress("zoo2", { timestamp: "2026-10-22T10:10:00Z" }), f);
+  await report(
+    progress("zoo2", { timestamp: "2026-10-22T10:10:05Z", message: "again" }),
+    f,
+  );
+  await report(event("zoo2", { timestamp: "2026-10-22T10:11:00Z" }), f);
+  assert.equal(f.checkRuns.length, 3);
+  const rollback = f.checkRuns[2];
+  assert.equal(
+    rollback.external_id,
+    `zoo2:0.0.123:${digest}@2026-10-22T10:10:00Z`,
+  );
+  assert.equal(rollback.status, "completed");
+  assert.equal(rollback.conclusion, "success");
+  assert.equal(rollback.output.text.split("\n").length, 5);
+  assert.equal(f.checkRuns[0].conclusion, "success"); // the first A is untouched
+  assert.equal(f.deployments.length, 3);
+  const writes = f.checkWrites.length;
+  await report(event("zoo2", { timestamp: "2026-10-22T10:20:00Z" }), f);
+  await report(progress("zoo2", { timestamp: "2026-10-22T10:21:00Z" }), f);
+  assert.equal(f.checkWrites.length, writes);
+});
+
+test("a rollback completed without a progress event still gets a Check Run", async () => {
+  const f = fixture();
+  await report(event(), f);
+  await report(
+    event("zoo2", { ...rolloutB, timestamp: "2026-10-22T10:05:00Z" }),
+    f,
+  );
+  await report(event("zoo2", { timestamp: "2026-10-22T10:10:00Z" }), f);
+  assert.equal(f.checkRuns.length, 3);
+});
+
+test("watermark release identity is validated and legacy entries stay valid", () => {
+  const ok = { timestamp: "2026-10-22T10:00:00Z", state: "success" };
+  parseState(JSON.stringify({ version: 1, workloads: { zoo2: ok } }));
+  parseState(
+    JSON.stringify({
+      version: 1,
+      workloads: { zoo2: { ...ok, digest, releaseTag: "0.0.1" } },
+    }),
+  );
+  for (const bad of [{ digest: "x" }, { releaseTag: "1.0.0" }])
+    assert.throws(() =>
+      parseState(
+        JSON.stringify({ version: 1, workloads: { zoo2: { ...ok, ...bad } } }),
+      ),
+    );
+});
+
+// A rerun after a partial failure sees the watermark from before the event.
+const snapshot = (f) => structuredClone(f.state);
+
+test("rerunning a forward rollout after a Deployment API failure reuses its Check Run", async () => {
+  const f = fixture();
+  await report(event(), f); // A done
+  const before = snapshot(f);
+  f.failures.deployments = 1;
+  await assert.rejects(
+    report(
+      event("zoo2", { ...rolloutB, timestamp: "2026-10-22T10:05:00Z" }),
+      f,
+    ),
+    /503/,
+  );
+  f.state = before; // the failed run saved no watermark
+  await report(
+    event("zoo2", { ...rolloutB, timestamp: "2026-10-22T10:05:00Z" }),
+    f,
+  );
+  assert.equal(f.checkRuns.length, 2);
+  assert.equal(f.deployments.length, 2);
+});
+
+test("rerunning a rollback completion after a Deployment API failure reuses its Check Run", async () => {
+  const f = fixture();
+  await report(event(), f); // A
+  await report(
+    event("zoo2", { ...rolloutB, timestamp: "2026-10-22T10:05:00Z" }),
+    f,
+  ); // B
+  const before = snapshot(f);
+  f.failures.deployments = 1;
+  const completion = event("zoo2", { timestamp: "2026-10-22T10:10:00Z" });
+  await assert.rejects(report(completion, f), /503/);
+  f.state = before;
+  await report(completion, f);
+  assert.equal(f.checkRuns.length, 3);
+  assert.equal(f.checkRuns[2].conclusion, "success");
+  assert.equal(f.deployments.length, 3);
+});
+
+test("rerunning a rollback with progress after a lost watermark save keeps one Check Run", async () => {
+  const f = fixture();
+  await report(event(), f);
+  await report(
+    event("zoo2", { ...rolloutB, timestamp: "2026-10-22T10:05:00Z" }),
+    f,
+  );
+  const before = snapshot(f);
+  const events = [
+    progress("zoo2", { timestamp: "2026-10-22T10:10:00Z" }),
+    event("zoo2", { timestamp: "2026-10-22T10:11:00Z" }),
+  ];
+  for (const e of events) await report(e, f);
+  assert.equal(f.checkRuns.length, 3);
+  f.state = before; // the artifact upload failed after the run
+  for (const e of events) await report(e, f);
+  assert.equal(f.checkRuns.length, 3);
+  assert.equal(f.checkRuns[2].output.text.split("\n").length, 4);
+});
+
+test("reason is sanitized and a single oversized line stays within the cap", async () => {
+  const f = fixture();
+  await report(
+    progress("zoo2", { reason: "Progressing", severity: "info" }),
+    f,
+  );
+  await report(
+    event("zoo2", {
+      severity: "error",
+      reason: "Bad```\nReason" + "x".repeat(500),
+      message: "m",
+    }),
+    f,
+  );
+  const text = f.checkRuns[0].output.text;
+  assert.equal(text.match(/```/g).length, 2);
+  assert.ok(!text.includes("Bad```"));
+  assert.ok(text.split("\n").every((line) => line.length < 400));
+  const huge = fitCheckText(["x".repeat(70000)]);
+  assert.ok(huge.length <= 65535);
+  assert.ok(huge.startsWith("```\n") && huge.endsWith("\n```"));
+});
+
+test("Check Runs beyond the first API page are found", async () => {
+  const f = fixture();
+  await report(progress(), f);
+  const real = f.api;
+  const filler = Array.from({ length: 100 }, (_, i) => ({
+    id: 1000 + i,
+    name: "flux/zoo2",
+    external_id: `other:${i}`,
+  }));
+  const api = async (path, body) => {
+    if (path.includes("/check-runs?")) {
+      const page = Number(path.match(/page=(\d+)/)[1]);
+      const data = await real(path, body);
+      return page === 1 ? { check_runs: filler } : data;
+    }
+    return real(path, body);
+  };
+  await report(event(), { ...f, api });
+  assert.equal(f.checkRuns.length, 1);
+  assert.equal(f.checkRuns[0].conclusion, "success");
+});
+
+test("a completion older than the legacy commit-status time still ends its Check Run", async () => {
+  const f = fixture();
+  await report(progress(), f);
+  f.statuses.unshift({
+    sha,
+    context: "flux/zoo2",
+    state: "success",
+    description: "2026-10-22T10:30:00Z legacy",
+  });
+  const writes = f.writes.length;
+  const result = await report(event(), f);
+  assert.equal(result.skipped, "older-event");
+  assert.equal(result.checkRun, "updated");
+  assert.equal(f.writes.length, writes);
+  assert.equal(f.checkRuns[0].status, "completed");
+});
+
+test("a public repository publishes no Flux message by default", async () => {
+  assert.equal(publishMessages, false);
+  const f = { ...fixture(), messages: undefined };
+  await report(progress("zoo2", { message: "Deployment/zoo2/secret-name" }), f);
+  await report(event("zoo2", { message: "internal-host.example" }), f);
+  const text = f.checkRuns[0].output.text;
+  assert.ok(!text.includes("secret-name"));
+  assert.ok(!text.includes("internal-host"));
+  assert.ok(
+    text.includes("Progressing") && text.includes("ReconciliationSucceeded"),
+  );
+});
+
+test("the workflow log never prints a Flux message", async () => {
+  const sentinel = "PRIVATE_MESSAGE_SENTINEL";
+  for (const [name, changes] of [
+    ["zoo2", { message: sentinel }],
+    [
+      "zoo2",
+      {
+        message: sentinel,
+        reason: "Progressing",
+        timestamp: "2026-10-22T09:59:00Z",
+      },
+    ],
+    [
+      "zoo2-migrate",
+      { message: sentinel, severity: "error", reason: "HealthCheckFailed" },
+    ],
+  ]) {
+    const result = await report(event(name, changes), fixture());
+    // The result carries the message, so removing it is what keeps it out.
+    assert.ok(JSON.stringify(result).includes(sentinel));
+    const line = logLine(result);
+    assert.ok(!line.includes(sentinel));
+    assert.equal(JSON.parse(line).context, `flux/${name}`);
+  }
+});
+
+test("a rollback progress that arrives before the first completion starts its own run", async () => {
+  const f = fixture();
+  await report(progress(), f); // A starts (A1)
+  await report(
+    event("zoo2", { ...rolloutB, timestamp: "2026-10-22T10:05:00Z" }),
+    f,
+  ); // B completes
+  await report(progress("zoo2", { timestamp: "2026-10-22T10:10:00Z" }), f); // A again
+  assert.equal(f.checkRuns.length, 3);
+  const [a1, , a2] = f.checkRuns;
+  assert.equal(a2.external_id, `zoo2:0.0.123:${digest}@2026-10-22T10:10:00Z`);
+  assert.equal(a1.output.text.split("\n").length, 3); // only its own progress
+  // The first completion (after B) now ends A1, not the rollback run.
+  await report(event("zoo2", { timestamp: "2026-10-22T10:06:00Z" }), f);
+  assert.equal(a1.status, "completed");
+  assert.equal(a2.status, "in_progress");
+  // The rollback completion ends the rollback run.
+  await report(event("zoo2", { timestamp: "2026-10-22T10:11:00Z" }), f);
+  assert.equal(a2.status, "completed");
+  assert.equal(f.checkRuns.length, 3);
+});
+
+test("the first completion arriving after a rollback progress still ends the older run", async () => {
+  const f = fixture();
+  await report(progress(), f); // A1
+  await report(
+    event("zoo2", { ...rolloutB, timestamp: "2026-10-22T10:05:00Z" }),
+    f,
+  );
+  await report(progress("zoo2", { timestamp: "2026-10-22T10:10:00Z" }), f); // A2
+  // Older than the rollback run's start: ends A1 through the stale path too.
+  await report(event("zoo2", { timestamp: "2026-10-22T10:01:00Z" }), f);
+  assert.equal(f.checkRuns[0].status, "completed");
+  assert.equal(f.checkRuns[2].status, "in_progress");
+});
+
+test("an event older than every run of the rollout changes nothing", async () => {
+  const f = fixture();
+  await report(progress("zoo2", { timestamp: "2026-10-22T10:00:00Z" }), f);
+  const before = f.checkWrites.length;
+  const result = await report(
+    progress("zoo2", { timestamp: "2026-10-22T09:00:00Z" }),
+    f,
+  );
+  assert.equal(result.checkRun, "unchanged");
+  assert.equal(f.checkWrites.length, before);
+});
+
+test("rollback progress events arriving out of order share one Check Run", async () => {
+  const f = fixture();
+  await report(event(), f); // A done 10:00
+  await report(
+    event("zoo2", { ...rolloutB, timestamp: "2026-10-22T10:05:00Z" }),
+    f,
+  ); // B done 10:05
+  await report(progress("zoo2", { timestamp: "2026-10-22T10:10:00Z" }), f);
+  await report(
+    progress("zoo2", { timestamp: "2026-10-22T10:08:00Z", message: "late" }),
+    f,
+  );
+  assert.equal(f.checkRuns.length, 3); // A, B, one rollback run
+  const rollback = f.checkRuns[2];
+  assert.equal(
+    rollback.external_id,
+    `zoo2:0.0.123:${digest}@2026-10-22T10:10:00Z`,
+  );
+  assert.equal(rollback.output.text.split("\n").length, 4); // both progress lines
+  await report(event("zoo2", { timestamp: "2026-10-22T10:11:00Z" }), f);
+  assert.equal(f.checkRuns.length, 3);
+  assert.equal(rollback.status, "completed");
+  assert.ok(f.checkRuns.every((run) => run.status === "completed"));
+});
+
+test("a late rollback progress never reopens a finished rollback run", async () => {
+  const f = fixture();
+  await report(event(), f);
+  await report(
+    event("zoo2", { ...rolloutB, timestamp: "2026-10-22T10:05:00Z" }),
+    f,
+  );
+  await report(progress("zoo2", { timestamp: "2026-10-22T10:10:00Z" }), f);
+  await report(event("zoo2", { timestamp: "2026-10-22T10:11:00Z" }), f);
+  const writes = f.checkWrites.length;
+  await report(
+    progress("zoo2", { timestamp: "2026-10-22T10:09:00Z", message: "late" }),
+    f,
+  );
+  assert.equal(f.checkRuns.length, 3);
+  assert.equal(f.checkWrites.length, writes);
+});
+
+test("an earlier rollback progress arriving first is not duplicated by the later one", async () => {
+  const f = fixture();
+  await report(event(), f);
+  await report(
+    event("zoo2", { ...rolloutB, timestamp: "2026-10-22T10:05:00Z" }),
+    f,
+  );
+  await report(progress("zoo2", { timestamp: "2026-10-22T10:08:00Z" }), f);
+  await report(
+    progress("zoo2", { timestamp: "2026-10-22T10:10:00Z", message: "x" }),
+    f,
+  );
+  assert.equal(f.checkRuns.length, 3);
 });

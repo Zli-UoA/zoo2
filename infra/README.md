@@ -188,7 +188,7 @@ Rust は `ENVIRONMENT=production`・`DEV_AUTH_ENABLED=false` で起動し、受�
 
 #### フロントの OIDC PKCE ログイン
 
-SPA は `VITE_OIDC_ISSUER`・`VITE_OIDC_CLIENT_ID`・`VITE_OIDC_REDIRECT_URI`（既定 `${origin}/auth/callback`）・`VITE_OIDC_SCOPE`（既定 `openid profile`）・`VITE_OIDC_RESOURCE`（任意）・`VITE_OIDC_POST_LOGOUT_REDIRECT_URI` をビルド時に埋め込み、Authorization Code + PKCE (S256) でログインします。未設定（空）なら従来どおり dev の `X-Dev-User` で動きます。値は `infra/compose.stg.yaml` の frontend の build args に渡します。AuthZ では `VITE_OIDC_RESOURCE` を resource identifier に設定しないと opaque token が発行されるため、バックエンドの JWT 検証が通りません。`state` / `nonce` / `code_verifier` は `sessionStorage` に一時保存し、コールバックで使い切りにします。トークン本体はメモリのみに置きます。
+SPA は `VITE_OIDC_ISSUER`・`VITE_OIDC_CLIENT_ID`・`VITE_OIDC_REDIRECT_URI`（既定 `${origin}/auth/callback`）・`VITE_OIDC_SCOPE`（既定 `openid profile`）・`VITE_OIDC_RESOURCE`（任意）・`VITE_OIDC_POST_LOGOUT_REDIRECT_URI` をビルド時に埋め込み、Authorization Code + PKCE (S256) でログインします。未設定（空）なら従来どおり dev の `X-Dev-User` で動きます。値は `infra/compose.stg.yaml` の frontend の build args に渡します。AuthZ では `VITE_OIDC_RESOURCE` を resource identifier に設定しないと opaque token が発行されるため、バックエンドの JWT 検証が通りません。`state` / `nonce` / `code_verifier` は `sessionStorage` に一時保存し、コールバックで使い切りにします。access tokenとid tokenは同じタブの `sessionStorage` に保持し、再読み込み時に復元します。認証設定が変わった場合やログアウト時には破棄します。
 
 `VITE_OIDC_*` は **ビルド時に静的ファイルへ埋め込まれる**ため、変更したら `frontend` イメージを再ビルドしてください（コンテナの再起動だけでは反映されません）。
 
@@ -210,7 +210,7 @@ SPA は `VITE_OIDC_ISSUER`・`VITE_OIDC_CLIENT_ID`・`VITE_OIDC_REDIRECT_URI`（
 
 バックエンドは初回ログイン (JIT プロビジョニング) 時に Discovery の `userinfo_endpoint` をアクセストークン付きで呼び出し、`preferred_username` / `name` からユーザー名と表示名を設定します。UserInfo の取得に失敗した場合は `user` にフォールバックしてログインを継続します。既存ユーザーは、表示名が旧フォールバック値 `user` のままで本人が未編集の場合に限り、再ログイン時に一度だけ UserInfo から補正します。
 
-リロード後は IdP セッションを使って authorize へ再リダイレクトし（サイレント再ログイン）、期限前には refresh_token で更新します。Kanidm は refresh_token の再利用でセッションを失効させるため、同時更新は 1 リクエストに集約し、更新後の refresh_token に置き換えます。401 と refresh 失敗は再ログインに倒します。AuthZ は refresh token を発行しないため、access token の期限切れ後は再ログインになります。ログアウトはメモリのトークン破棄までで、Kanidm は RP-initiated logout（`end_session_endpoint`）を公開していないため、Kanidm セッション自体を終えるには Kanidm 側でログアウトしてください。
+リロード後はタブ内のセッションを復元し、再認可が必要になるまでは authorize への往復を省きます。期限前にはメモリ内の refresh_token があれば更新します。refresh_token はタブ複製時の再利用を防ぐため保存せず、再読み込み後は期限が近づくと再認可します。Kanidm は refresh_token の再利用でセッションを失効させるため、同時更新は 1 リクエストに集約し、更新後の refresh_token に置き換えます。401 と refresh 失敗は再ログインに倒します。AuthZ は refresh token を発行しないため、access token の期限切れ後は再ログインになります。ログアウトではメモリと `sessionStorage` のトークンを破棄します。Kanidm は RP-initiated logout（`end_session_endpoint`）を公開していないため、Kanidm セッション自体を終えるには Kanidm 側でログアウトしてください。
 
 SPA は IdP の Discovery / token エンドポイントをブラウザから直接叩くため、IdP 側で SPA のオリジンに CORS を許可する必要があります（Kanidm は OAuth2 クライアントに設定した redirect origin に応じて CORS を返します）。CSP の `connect-src` には `CSP_CONNECT_SRC` で IdP のオリジンを追加します。
 
@@ -224,10 +224,11 @@ SPA は IdP の Discovery / token エンドポイントをブラウザから直�
 | `CSP_CONNECT_SRC` | frontend の実行時環境変数 | `connect-src` に追加するオリジン（空白区切り）。既定は空で `'self'` のみ |
 | `CSP_STORAGE_SRC` | frontend の実行時環境変数 | 添付ファイル用ストレージ（Cloudflare R2 等）のオリジン（空白区切り）。Presigned URL への送受信と画像表示のため `connect-src` と `img-src` の両方に追加される |
 | `CSP_APP_IMAGE_SRC` | frontend の実行時環境変数 | App アイコンの HTTPS 配信元オリジン（空白区切り、`img-src` に追加） |
+| `CSP_AVATAR_SRC` | frontend の実行時環境変数 | OIDCユーザーアイコンの配信元。既定は `https://avater.zliusercontent.com`。別のIdPではその画像配信元のHTTPSオリジンを指定する |
 
 `CSP_CONNECT_SRC` には IdP の **issuer と token エンドポイントのオリジン**を指定します（例: `https://idm.example.com`）。Kanidm では通常どちらも同じオリジンです。JWKS は Rust が取得するためブラウザの CSP には不要ですが、リバースプロキシ等で別オリジンに置いている場合でも Rust 側の到達性だけを確認してください。`VITE_API_BASE_URL` を空以外にして API を別オリジンへ向ける構成にした場合は、そのオリジンも `CSP_CONNECT_SRC` に追加してください（Compose のステージング構成では `/api/*` を同一オリジンで Traefik から Rust へ転送するため不要です）。
 
-`img-src` は既定で `'self' data: blob: https://www.gstatic.com` に加え、`CSP_STORAGE_SRC` と `CSP_APP_IMAGE_SRC` を展開します。`https://www.gstatic.com` は Emoji Kitchen の合成画像（#82）をブラウザから直接取得するためです。添付ファイルの署名付き PUT / GET URL で Cloudflare R2 等の外部ストレージに直接アクセスする場合は、そのオリジン（例: `https://<account>.r2.cloudflarestorage.com`）を `CSP_STORAGE_SRC` に指定してください。カスタムドメインやリバースプロキシ（`S3_PUBLIC_ENDPOINT`）を経由する場合は、R2 のオリジンではなくその公開オリジン（例: `https://attachments.zliusercontent.com`）を指定します。新しい外部画像オリジンを追加する場合は、`/` と `/assets/` の両方の `img-src` と `container` ジョブの検査を更新してください。
+`img-src` は既定で `'self' data: blob: https://www.gstatic.com` に加え、`CSP_STORAGE_SRC`・`CSP_APP_IMAGE_SRC`・`CSP_AVATAR_SRC`を展開します。`https://www.gstatic.com` は Emoji Kitchen の合成画像（#82）をブラウザから直接取得するためです。添付ファイルの署名付き PUT / GET URL で Cloudflare R2 等の外部ストレージに直接アクセスする場合は、そのオリジン（例: `https://<account>.r2.cloudflarestorage.com`）を `CSP_STORAGE_SRC` に指定してください。カスタムドメインやリバースプロキシ（`S3_PUBLIC_ENDPOINT`）を経由する場合は、R2 のオリジンではなくその公開オリジン（例: `https://attachments.zliusercontent.com`）を指定します。新しい外部画像オリジンを追加する場合は、`/` と `/assets/` の両方の `img-src` と `container` ジョブの検査を更新してください。
 
 `script-src` は `'unsafe-inline'` を使わず、ビルド時のハッシュで許可します。 SQLite Worker の WebAssembly 実行には `'wasm-unsafe-eval'`、ビルド時に埋め込まれる WASM の `data:` URL の読み込みには `connect-src` の `data:` を許可しています。JavaScript の `'unsafe-eval'` は許可しません。ハッシュは `infra/csp-hashes.mjs` が `pnpm build` 後の `index.html` から生成し、`infra/frontend-entrypoint.sh` が起動時に `CSP_SCRIPT_SRC` として渡します。`index.html` やテーマ初期化 script を変更した場合は、必ずイメージを再ビルドしてください。`style-src` の `'unsafe-inline'` は React の style 属性に必要なため残しています。
 

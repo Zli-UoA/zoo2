@@ -114,6 +114,24 @@ test("OIDC PKCE ログイン後に API と Shape が Bearer で通る", async ({
   await expect(page.getByText(message)).toBeVisible();
   await page.screenshot({ path: testInfo.outputPath("03-message.png") });
 
+  // 同じタブの再読み込みでは authorize を経由せず、現在のチャンネルへ復帰する。
+  const currentUrl = page.url();
+  const authorizationRequests: string[] = [];
+  page.on("request", (request) => {
+    if (
+      new URL(request.url()).origin === mockIdpOrigin &&
+      new URL(request.url()).pathname.endsWith("/authorize")
+    )
+      authorizationRequests.push(request.url());
+  });
+  await page.reload();
+  await expect(page.getByText(message)).toBeVisible({ timeout: 30_000 });
+  expect(page.url()).toBe(currentUrl);
+  expect(authorizationRequests).toEqual([]);
+  await page.addStyleTag({
+    content: 'button[aria-label="Open TanStack Devtools"]{display:none !important}',
+  });
+
   // REST / Shape いずれも Bearer が載っていること。
   const bearer = bearerRequests.filter((header) => header.startsWith("Bearer ")).slice(-1)[0];
   expect(bearer).toBeTruthy();

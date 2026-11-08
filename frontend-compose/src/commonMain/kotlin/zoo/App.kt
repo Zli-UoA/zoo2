@@ -314,7 +314,6 @@ internal fun Rail(app: Session, unread: Int, narrow: Boolean) {
             horizontalAlignment = Alignment.CenterHorizontally,
             verticalArrangement = Arrangement.spacedBy(8.dp),
         ) {
-            FrontendSwitch(app)
             RailLink(
                 app,
                 "/settings" + (app.channelId?.let { "?channel=$it" } ?: ""),

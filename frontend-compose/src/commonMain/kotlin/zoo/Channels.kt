@@ -667,6 +667,16 @@ private fun ChannelSearchField(
 }
 
 @Composable
+internal fun ChannelMembersScreen(
+    app: Session,
+    channel: Row,
+    users: List<Row>,
+    members: List<Row>,
+) {
+    Members(app, channel, users, members, Modifier.fillMaxSize(), asScreen = true)
+}
+
+@Composable
 fun Members(
     app: Session,
     channel: Row,

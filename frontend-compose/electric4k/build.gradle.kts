@@ -41,16 +41,14 @@ val unpackUpstream by tasks.registering(Sync::class) {
     }) {
         eachFile { relativePath = RelativePath(true, *relativePath.segments.drop(1).toTypedArray()) }
         includeEmptyDirs = false
-        include("*/src/commonMain/**", "*/src/wasmJsMain/**", "*/src/androidMain/**", "*/LICENSE", "*/NOTICE")
+        include("*/src/commonMain/**", "*/src/androidMain/**", "*/LICENSE", "*/NOTICE")
     }
     into(layout.buildDirectory.dir("upstream"))
 }
 
 kotlin {
-    compilerOptions { optIn.addAll("kotlin.time.ExperimentalTime", "kotlin.js.ExperimentalWasmJsInterop") }
+    compilerOptions { optIn.addAll("kotlin.time.ExperimentalTime") }
     if (androidEnabled) androidTarget { compilerOptions { jvmTarget.set(org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_17) } }
-    @OptIn(org.jetbrains.kotlin.gradle.ExperimentalWasmDsl::class)
-    wasmJs { browser() }
     sourceSets {
         commonMain {
             kotlin.srcDir(unpackUpstream.map { it.destinationDir.resolve("src/commonMain/kotlin") })
@@ -65,18 +63,6 @@ kotlin {
             kotlin.srcDir(unpackUpstream.map { it.destinationDir.resolve("src/androidMain/kotlin") })
             dependencies { implementation("io.ktor:ktor-client-okhttp:3.1.3") }
         }
-        wasmJsMain {
-            kotlin.srcDir(unpackUpstream.map { it.destinationDir.resolve("src/wasmJsMain/kotlin") })
-            dependencies { implementation("io.ktor:ktor-client-js:3.1.3") }
-        }
-    }
-}
-
-// Preserve the upstream license/notice in the binary Web distribution.
-rootProject.tasks.named<Copy>("wasmJsProcessResources") {
-    from(unpackUpstream) {
-        include("LICENSE", "NOTICE")
-        into("licenses/electric4k")
     }
 }
 

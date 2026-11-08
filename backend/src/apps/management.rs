@@ -2,7 +2,7 @@ use super::*;
 use crate::state::AppState;
 use axum::{
     Json, Router,
-    extract::{Path, State},
+    extract::{Path, Query, State},
     middleware,
     routing::{get, post},
 };
@@ -27,6 +27,7 @@ pub fn router() -> Router<AppState> {
             axum::routing::delete(revoke_consent),
         )
         .route("/api/apps/metrics", get(metrics))
+        .route("/api/apps/{id}/metrics", get(app_metrics))
         .route("/api/apps/{id}/deliveries/{delivery}/retry", post(retry))
         .route_layer(middleware::from_fn(
             |request: axum::extract::Request, next: middleware::Next| async move {
@@ -348,6 +349,13 @@ async fn retry(
     can_manage(&mut tx, &state, &actor, &id).await?;
     let row=one(&mut tx,"UPDATE app_deliveries SET available_at=now(),expires_at=now()+interval '24 hours',lease_until=NULL,lease_token=NULL,last_error=NULL WHERE id=$1 AND installation_id IN(SELECT id FROM app_installations WHERE app_id=$2 AND active) AND acked_at IS NULL RETURNING json_build_object('id',id)::text",&[&delivery,&id]).await?;
     audit(&mut tx, &id, &actor.id, "delivery.retried").await?;
+    // 再送は INSERT ではなく UPDATE なので、トリガーでは dispatcher が起きない。明示的に通知する。
+    one(
+        &mut tx,
+        "SELECT json_build_object('notified',pg_notify('app_delivery','') IS NULL)::text",
+        &[],
+    )
+    .await?;
     tx.commit().await?;
     Ok(Json(row))
 }
@@ -414,6 +422,127 @@ async fn metrics(State(s): State<AppState>, actor: AuthUser) -> Result<Json<Valu
         return Err(AppError::Forbidden("Administrator required".into()));
     }
     let v=one(&mut tx,"SELECT json_build_object('pending',count(*) FILTER(WHERE acked_at IS NULL AND expires_at>now()),'failed',count(*) FILTER(WHERE acked_at IS NULL AND expires_at<=now()),'delivered',count(*) FILTER(WHERE acked_at IS NOT NULL),'retried',count(*) FILTER(WHERE attempts>1),'oldest_pending_seconds',COALESCE(extract(epoch FROM now()-min(created_at) FILTER(WHERE acked_at IS NULL AND expires_at>now())),0))::text FROM app_deliveries",&[]).await?;
+    Ok(Json(v))
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct MetricsQuery {
+    /// 集計する直近の時間数（1〜720、既定 24）。配信履歴の保持は 30 日。
+    hours: Option<u32>,
+}
+/// 開発者（と管理者）が自分の App の配信状況を見る。集計はこのサーバーの `app_deliveries` から
+/// 直接行うので、zoo-dispatcher が 0 台でも返せる。HTTP と WebSocket の両方を含む。
+/// `statement_timeout` などによる中断（SQLSTATE 57014）か。
+fn is_query_canceled(err: &AppError) -> bool {
+    let AppError::Database(e) = err else {
+        return false;
+    };
+    let mut curr: Option<&(dyn std::error::Error + 'static)> = Some(e);
+    while let Some(e) = curr {
+        if e.downcast_ref::<tokio_postgres::Error>()
+            .and_then(|pg| pg.code())
+            .is_some_and(|c| *c == tokio_postgres::error::SqlState::QUERY_CANCELED)
+        {
+            return true;
+        }
+        curr = e.source();
+    }
+    false
+}
+async fn app_metrics(
+    State(s): State<AppState>,
+    actor: AuthUser,
+    Path(id): Path<String>,
+    q: Result<Query<MetricsQuery>, axum::extract::rejection::QueryRejection>,
+) -> Result<Json<Value>, AppError> {
+    // 解析に失敗しても、他の 400 と同じ JSON（`error`）で返す。
+    let Query(q) = q.map_err(|_| AppError::BadRequest("Invalid query parameters".into()))?;
+    let hours = q.hours.unwrap_or(24);
+    if !(1..=720).contains(&hours) {
+        return Err(AppError::BadRequest(
+            "hours must be between 1 and 720".into(),
+        ));
+    }
+    let hours = hours.to_string();
+    let mut db = s.db.clone();
+    let mut tx = db.transaction().await?;
+    human(&mut tx, &actor).await?;
+    // 読み取りだけなので、can_manage のようにロックは取らない。
+    let app = one(
+        &mut tx,
+        "SELECT json_build_object('owner_id',owner_id)::text FROM apps WHERE id=$1",
+        &[id.as_str()],
+    )
+    .await?;
+    if app["owner_id"] != actor.id
+        && !crate::auth::rbac::is_workspace_admin(&mut tx, &actor.id, s.config.dev_auth_enabled)
+            .await?
+    {
+        return Err(AppError::Forbidden(
+            "Only the developer or an administrator can view this app's metrics".into(),
+        ));
+    }
+    // 集計が長引いても DB を占有しないよう、この読み取りには時間制限を付ける。
+    toasty::sql::statement("SET LOCAL statement_timeout = '5s'")
+        .exec(&mut tx)
+        .await?;
+    // 時間ごとの区切りは UTC の正時にそろえる（DB のセッション TimeZone に依存させない）。
+    toasty::sql::statement("SET LOCAL TIME ZONE 'UTC'")
+        .exec(&mut tx)
+        .await?;
+    // delivered=ACK 済み、failed=ACK されないまま期限切れ、pending=未 ACK で期限内。
+    // pending と oldest_pending_seconds は窓と無関係に、いま滞留している全件。ただし app.rate_limited は除く
+    // （管理者向けの GET /api/apps/metrics は除かないので、その分だけ値が違いうる）。
+    // 窓は現在の時間を含む `hours` 個の時間（先頭は時の頭から）で、hourly は必ず `hours` 要素。
+    // 成功率は完了したもの（delivered + failed）に対する割合で、保留中は含めない。
+    let v=one(&mut tx,r#"WITH d AS (
+ SELECT created_at,acked_at,expires_at,attempts,extract(epoch from acked_at-created_at) AS latency
+ FROM app_deliveries
+ WHERE installation_id IN(SELECT id FROM app_installations WHERE app_id=$1)
+ AND event_type<>'app.rate_limited'
+ AND created_at>=date_trunc('hour',now())-make_interval(hours=>$2::int-1)
+), backlog AS (
+ SELECT count(*) AS pending,
+  COALESCE(extract(epoch from now()-min(created_at)),0) AS oldest
+ FROM app_deliveries
+ WHERE installation_id IN(SELECT id FROM app_installations WHERE app_id=$1)
+ AND event_type<>'app.rate_limited' AND acked_at IS NULL AND expires_at>now()
+), totals AS (
+ SELECT count(*) FILTER(WHERE acked_at IS NOT NULL) AS delivered,
+  count(*) FILTER(WHERE acked_at IS NULL AND expires_at<=now()) AS failed,
+  count(*) FILTER(WHERE attempts>1) AS retried,
+  percentile_cont(0.5) WITHIN GROUP(ORDER BY latency) FILTER(WHERE acked_at IS NOT NULL) AS p50,
+  percentile_cont(0.95) WITHIN GROUP(ORDER BY latency) FILTER(WHERE acked_at IS NOT NULL) AS p95
+ FROM d
+), hours AS (
+ SELECT h FROM generate_series(date_trunc('hour',now())-make_interval(hours=>$2::int-1),date_trunc('hour',now()),interval '1 hour') h
+), hourly AS (
+ SELECT hours.h,
+  count(d.*) FILTER(WHERE d.acked_at IS NOT NULL) AS delivered,
+  count(d.*) FILTER(WHERE d.acked_at IS NULL AND d.expires_at<=now()) AS failed,
+  count(d.*) FILTER(WHERE d.acked_at IS NULL AND d.expires_at>now()) AS pending,
+  percentile_cont(0.95) WITHIN GROUP(ORDER BY d.latency) FILTER(WHERE d.acked_at IS NOT NULL) AS p95
+ FROM hours LEFT JOIN d ON date_trunc('hour',d.created_at)=hours.h GROUP BY hours.h
+)
+SELECT json_build_object(
+ 'window_hours',$2::int,
+ 'totals',(SELECT json_build_object('delivered',delivered,'failed',failed,'pending',(SELECT pending FROM backlog),'retried',retried,
+   'success_rate',CASE WHEN delivered+failed>0 THEN delivered::float8/(delivered+failed) END,
+   'oldest_pending_seconds',(SELECT oldest FROM backlog),'p50_seconds',p50,'p95_seconds',p95) FROM totals),
+ 'hourly',(SELECT COALESCE(json_agg(json_build_object('hour',to_char(h AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:00:00"Z"'),'delivered',delivered,'failed',failed,'pending',pending,'p95_seconds',p95) ORDER BY h),'[]'::json) FROM hourly)
+)::text"#,&[id.as_str(),hours.as_str()]).await.map_err(|e| {
+        // 5 秒の制限（SQLSTATE 57014: query_canceled）に当たったら、500 ではなく 503 にする。
+        // メッセージの文言ではなく SQLSTATE で判定する（lc_messages に依存しない）。
+        if is_query_canceled(&e) {
+            tracing::warn!("App metrics query hit the statement timeout");
+            AppError::ServiceUnavailable(
+                "Metrics query timed out; try a smaller hours, or the app has a large backlog of undelivered events".into(),
+            )
+        } else {
+            e
+        }
+    })?;
     Ok(Json(v))
 }
 

@@ -19,6 +19,7 @@ const fixture = vi.hoisted(() => {
   return {
     root,
     exists: true,
+    syncLoading: false,
     rows: [root],
     empty: [],
     users: [] as { id: string; display_name: string; user_name: string }[],
@@ -70,6 +71,7 @@ vi.mock("../../../hooks/useRealtime", () => ({
         ? fixture.rows
         : fixture.empty,
     isLoading: false,
+    isInitialSyncLoading: fixture.syncLoading,
     isError: false,
   }),
 }));
@@ -114,13 +116,52 @@ vi.mock("./ReactionPicker", () => ({ ReactionPicker: () => null }));
 
 beforeEach(() => {
   fixture.exists = true;
+  fixture.syncLoading = false;
   fixture.root.deleted_at = null;
   fixture.root.parent_id = null;
   fixture.users = [];
   fixture.reactions = [];
   fixture.closeThread.mockClear();
+  fixture.openThread.mockClear();
 });
 describe("thread URLs outside the initial message window", () => {
+  it("waits for an uncached linked reply and opens its thread after initial sync", async () => {
+    fixture.exists = false;
+    fixture.syncLoading = true;
+    fixture.root.parent_id = "ancestor";
+    const view = (target: string) => (
+      <LocaleProvider>
+        <MessagePane channelId="general" isMember={false} targetMessageId={target} />
+      </LocaleProvider>
+    );
+    const { rerender } = render(view(fixture.root.id));
+    expect(fixture.openThread).not.toHaveBeenCalled();
+    expect(fixture.closeThread).not.toHaveBeenCalled();
+    fixture.exists = true;
+    fixture.syncLoading = false;
+    rerender(view(fixture.root.id));
+    await waitFor(() => expect(fixture.openThread).toHaveBeenCalledWith("ancestor"));
+    expect(fixture.closeThread).not.toHaveBeenCalled();
+  });
+
+  it("does not close an uncached thread root before initial sync finishes", async () => {
+    fixture.exists = false;
+    fixture.syncLoading = true;
+    const view = (
+      <LocaleProvider>
+        <MessagePane channelId="general" isMember={false} />
+      </LocaleProvider>
+    );
+    const { rerender } = render(view);
+    expect(fixture.closeThread).not.toHaveBeenCalled();
+    fixture.syncLoading = false;
+    rerender(
+      <LocaleProvider>
+        <MessagePane channelId="general" isMember={false} />
+      </LocaleProvider>,
+    );
+    await waitFor(() => expect(fixture.closeThread).toHaveBeenCalled());
+  });
   it("passes resolved reaction user names to the message list", async () => {
     fixture.users = [{ id: "alice", display_name: "Alice", user_name: "alice" }];
     fixture.reactions = [

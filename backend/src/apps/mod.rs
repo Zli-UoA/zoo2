@@ -1,6 +1,7 @@
 //! External applications. Private platform tables never enter Electric shapes.
 pub mod api;
 pub mod delivery;
+pub mod dispatch_metrics;
 pub mod events;
 pub mod files;
 pub mod management;

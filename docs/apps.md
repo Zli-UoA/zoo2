@@ -6,7 +6,7 @@ API定義は [apps.openapi.json](apps.openapi.json)、イベント形式は [app
 
 ## 最初のBotを動かす
 
-1. マイグレーションを適用してバックエンドとフロントを更新します。`make migrate` が新しいテーブル・トリガーを作成します。バックエンド本体がHTTPイベント配信ワーカーも起動します。
+1. マイグレーションを適用してバックエンドとフロントを更新します。`make migrate` が新しいテーブル・トリガーを作成します。バックエンド本体がHTTPイベント配信ワーカーも起動します。環境変数 `APP_HTTP_DELIVERY_WORKER=false` を設定したプロセスはHTTP配信と配信履歴（30日保持）の削除を行いません（`zoo-dispatcher` への移行用）。配信はキューに溜まるだけで、配信ワーカーを持つプロセスが動けば再開します（配信の有効期限は作成から24時間で、過ぎた配信は自動では送られません）。在席・ステータス期限・リマインダーのメンテナンスと、WebSocket・OAuth・UI・レート制限などAPI側の期限切れ行の削除は、この設定にかかわらず動きます。値の書き間違いは有効扱いになり、警告をログに出します。
 2. 左レールの「App・連携」からAppを作成します。メンバーが開発者となり、設定をJSONで登録します。
 3. 「承認を申請」します。管理者は表示される権限と接続先を確認し、「承認してインストール」を選びます。承認は特定の設定リビジョンに対して行われます。
 4. Appを使うチャンネルでApp詳細を開き、「このチャンネルに追加」します。非公開チャンネルには、そのチャンネルへのアクセスと管理権限が必要です。
@@ -102,7 +102,7 @@ App の投稿には `POST /api/apps/v1/messages/{id}/blocks` で `{"type":"card"
 
 ## 運用・検証
 
-APIの失敗はHTTPステータスと `error` を返します。Appルートは `private, no-store` を返し、本番プロキシでも保持します。`/api/apps/metrics` は管理者に配信待ち・失敗・再送・最古の待ち時間を返します。ログはevent IDとdelivery IDで追跡でき、本文やSecretを記録しません。
+APIの失敗はHTTPステータスと `error` を返します。Appルートは `private, no-store` を返し、本番プロキシでも保持します。`/api/apps/metrics` は管理者に配信待ち・失敗・再送・最古の待ち時間を返します。`GET /api/apps/{id}/metrics?hours=24` は開発者（と管理者）に、その App の直近 `hours` 時間（1〜720、既定 24）の配信を返します。窓は現在の時間を含む `hours` 個の時間（先頭は時の頭から、末尾は集計途中）で、`hourly` は必ず `hours` 要素です。`totals` は `delivered`（ACK 済み）・`failed`（ACK されないまま期限切れ）・`pending`（窓と無関係に、いま滞留している配信。`app.rate_limited` は除く）・`retried`・`success_rate`（`delivered / (delivered + failed)`、完了分が無ければ `null`）・`oldest_pending_seconds`（`pending` の最古。同じく窓と無関係）・`p50_seconds` / `p95_seconds`（作成から ACK まで）で、`hourly` は 1 時間ごとの `delivered`・`failed`・`pending`・`p95_seconds` です。HTTP と WebSocket の両方を含み、配信上限の通知 `app.rate_limited` は集計に含めません（管理者向けの `GET /api/apps/metrics` は含めるので、滞留に `app.rate_limited` があると `pending` の値がその分だけ違います）。配信履歴から直接集計するため `zoo-dispatcher` が停止していても取得できます（集計には 5 秒の時間制限があり、超えると 503 を返します。`hours` を小さくしても改善しないときは、受信先の停止などで未 ACK の配信が大量に溜まっています（`pending` の走査は `hours` と無関係に全件を読みます）。手元の計測では、窓に 30,000 行ある App で `hours=24` が約 0.1 秒、`hours=720` が約 1 秒でした。行数にほぼ比例するので、窓に十数万行を超える App の長い窓は制限に当たります）。ログはevent IDとdelivery IDで追跡でき、本文やSecretを記録しません。
 
 検証コマンドは `make test-unit`、`make test-e2e`、`make frontend-check`、`make frontend-test`、`make sdk-check`、`make sdk-test` です。S3接続先の実運用検証は、対象バケットに対してアップロード・complete・ダウンロードを実施してください。
 

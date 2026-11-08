@@ -183,7 +183,7 @@ VITE_OIDC_RESOURCE=https://zli.chat
 - `VITE_OIDC_RESOURCE` は AuthZ の resource（RFC 8707）です。設定すると authorize と token 要求の両方に `resource` が付き、access token が `typ: at+jwt` の JWT になります。未設定だと AuthZ は opaque token（32 文字）を発行します。本番の resource identifier は `https://zli.chat`、ローカルは AuthZ 側で登録した値を使います。
 - AuthZ 側では resource identifier を `oauthResource` に登録し、zoo2 の client を `oauthClientResource` で紐付けます。AuthZ の管理画面で設定し、AuthZ の `docs/oidc.md` / `docs/deployment.md` も参照してください。
 - バックエンドの `OIDC_AUDIENCE` には `VITE_OIDC_RESOURCE` と同じ resource identifier を設定します（access token の `aud` は resource の配列）。`resource` を設定しないと opaque token のためバックエンドの JWT 検証は通りません。`OIDC_ISSUER` も `VITE_OIDC_ISSUER` と一致させます。
-- AuthZ は `offline_access` 非対応で refresh token を発行しません。access token の期限が切れると再ログインになります。トークンはメモリ保持のみのため、リロード後は authorize へ再遷移します（IdP のセッションが残っていれば操作なしで戻ります）。
+- AuthZ は `offline_access` 非対応で refresh token を発行しません。access token の期限が切れると再ログインになります。同じタブのリロードでは保存済みセッションを復元します。期限が近づいて再認可が必要になるまでは、authorize への往復を省きます。
 - ログアウトは Discovery の `end_session_endpoint` を使う RP-initiated logout です。`VITE_OIDC_POST_LOGOUT_REDIRECT_URI` で戻り先を変更できます（既定 `${origin}/`）。
 
 ## テスト・品質（Phase 6）
@@ -203,6 +203,8 @@ cd frontend && pnpm test:e2e      # 起動 → 送信 → 反映
 `pnpm test:e2e` はフロントエンド（proxy モード）だけを起動し、バックエンドは既存のものを再利用します。現在ユーザー（`VITE_DEV_USER_ID`、既定 `...0001`）が未作成なら `POST /api/users` でスモーク用に作成します。
 
 ### OIDC ログイン E2E（#50）
+
+ログイン済みのセッションは同じタブの `sessionStorage` に保持し、再読み込み時に復元します。再認可が必要になるまでは、IdP への画面遷移を省きます。更新トークンはメモリだけに保持し、タブ複製でコピーされないよう保存しません。再読み込み後に期限が近づいた場合は再認可します。認証設定の変更・ログアウト・セッション失効時は保存情報を破棄し、再ログインします。タブを閉じると保存情報も消えます。
 
 `e2e/oidc.spec.ts` は、外部依存なしのモック IdP（`e2e/mock-idp-server.ts`）と本番同等の認証設定を使い、**未ログイン → authorize → ログイン → Bearer で REST/Shape → チャンネル作成 → メッセージ送信 → Shape 反映**を通しで確認します。自分のメッセージにだけ編集/削除が出ること、ログアウト → 別ユーザーでの再ログイン、参加/退出も含みます。
 
@@ -227,7 +229,7 @@ cd frontend && pnpm test:e2e:oidc
 - モック IdP は起動のたびに署名鍵を生成します。テストを再実行する際は、古い JWKS キャッシュが残らないようバックエンドも再起動してください。
 - CI では `.github/workflows/ci-frontend-auth-e2e.yaml` が PostgreSQL + Electric + Atlas migration + Rust を起動して同じテストを実行します。重いため `pnpm test` / `pnpm test:e2e` からは分離しています。
 
-CSP は `infra/frontend-nginx.conf`（コンテナ起動時に envsubst）で設定します。`script-src` はビルド時のインライン script ハッシュ、`connect-src` は同一オリジン + `CSP_CONNECT_SRC`（IdP のオリジン）+ `CSP_STORAGE_SRC`（添付ファイル用ストレージのオリジン。カスタムドメイン運用時は `https://attachments.zliusercontent.com`）、`img-src` は Emoji Kitchen 用の `https://www.gstatic.com`、Composer の添付プレビュー用の `blob:`、`CSP_STORAGE_SRC`・`CSP_APP_IMAGE_SRC` を含みます。ステージングでの設定・確認手順は [インフラの README](../infra/README.md#csp) を参照してください。
+CSP は `infra/frontend-nginx.conf`（コンテナ起動時に envsubst）で設定します。`script-src` はビルド時のインライン script ハッシュ、`connect-src` は同一オリジン + `CSP_CONNECT_SRC`（IdP のオリジン）+ `CSP_STORAGE_SRC`（添付ファイル用ストレージのオリジン。カスタムドメイン運用時は `https://attachments.zliusercontent.com`）、`img-src` は Emoji Kitchen 用の `https://www.gstatic.com`、Composer の添付プレビュー用の `blob:`、`CSP_STORAGE_SRC`・`CSP_APP_IMAGE_SRC`・`CSP_AVATAR_SRC`を含みます。`CSP_AVATAR_SRC`はOIDCアイコンの配信元で、既定は`https://avater.zliusercontent.com`です。別のIdPを使う配備では、その画像配信元のHTTPSオリジンを実行時に指定します。ステージングでの設定・確認手順は [インフラの README](../infra/README.md#csp) を参照してください。
 
 `pnpm test:e2e:csp` は、nginx が配信するビルド済みのフロントに対して Playwright を 1 本実行し、`securitypolicyviolation` が 0 件であること、テーマ初期化 script が実行されること（`<html>` の `colorScheme`）を確認します。既定では `http://127.0.0.1:3100` を見るため、CI の `container` ジョブと同じようにイメージを起動してから実行してください。
 
