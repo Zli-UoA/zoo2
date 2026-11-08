@@ -2,6 +2,8 @@ import { act, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, expect, it, vi } from "vite-plus/test";
 import { LocaleProvider } from "../i18n/LocaleProvider";
 import { AuthGate } from "./AuthGate";
+import { notifyUnauthorized } from "../../lib/auth";
+import { markLoggedOut } from "../../lib/oidc/pending";
 
 const mocks = vi.hoisted(() => ({
   client: {
@@ -9,6 +11,7 @@ const mocks = vi.hoisted(() => ({
     isCallbackUrl: () => false,
     getAccessToken: vi.fn<() => Promise<string | null>>(),
     setReauthorizeHandler: vi.fn(),
+    resetSession: vi.fn(),
     login: vi.fn(async () => "https://id.example/authorize"),
   },
   router: { history: { replace: vi.fn() }, load: vi.fn(async () => {}) },
@@ -28,6 +31,24 @@ beforeEach(() => {
 });
 afterEach(() => {
   sessionStorage.clear();
+});
+
+it("does not restart login when an in-flight request returns 401 after logout", async () => {
+  render(
+    <LocaleProvider>
+      <AuthGate>
+        <button>Cached history</button>
+      </AuthGate>
+    </LocaleProvider>,
+  );
+  await screen.findByRole("button", { name: "Cached history" });
+  await act(async () => {
+    markLoggedOut(sessionStorage);
+    notifyUnauthorized();
+  });
+  await screen.findByRole("heading", { name: "ログアウトしました" });
+  expect(mocks.client.login).not.toHaveBeenCalled();
+  expect(sessionStorage.getItem("zoo.oidc.loggedOut")).toBe("1");
 });
 
 it.each(["token", null])("rechecks a restored session on reconnect (token: %s)", async (token) => {

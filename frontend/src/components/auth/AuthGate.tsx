@@ -101,6 +101,11 @@ export function AuthGate({ children }: { children: ReactNode }) {
     });
     setUnauthorizedHandler(() => {
       const storage = window.sessionStorage;
+      // ログアウト直後の通信結果で、明示的なログアウトを取り消さない。
+      if (isLoggedOut(storage)) {
+        setPhase("loggedOut");
+        return;
+      }
       const now = Date.now();
       const redirectState = readUnauthorizedRedirectState(storage, now, REDIRECT_COOLDOWN_MS);
       // 事前再認可や 401 起点のリダイレクト中に届いた 401 は、遷移前の
