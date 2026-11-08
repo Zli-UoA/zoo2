@@ -3263,7 +3263,13 @@ async fn delivery_role_runs_the_dispatch_path_but_cannot_read_messages_or_creden
     apps::delivery::http_pass(&db).await?;
     assert!(message_delivery_attempts(&f).await?.iter().all(|a| *a >= 1));
     apps::delivery::cleanup_deliveries(&db).await?;
-    apps::delivery::refresh_queue_metrics(&db).await?;
+    // 権限の確認が目的。滞留が多い DB では 3 秒の時間制限に当たりうるので、それは許す。
+    if let Err(e) = apps::delivery::refresh_queue_metrics(&db).await {
+        assert!(
+            e.to_string().contains("statement timeout"),
+            "unexpected error: {e}"
+        );
+    }
     // ACK（新しい配信を取って確定する）。
     post_messages(&f, 1).await;
     let event = apps::delivery::claim(&db, &f.installation)
