@@ -37,6 +37,8 @@ const MAX_ATTEMPTS: i64 = 5;
 const LEASE_LOST: &str = "Slack import lease was lost";
 const LEASE_SQL: &str = "interval '2 minutes'";
 const HEARTBEAT: Duration = Duration::from_secs(30);
+/// カードの説明文の上限 (`MessageCard::encode` と同じ)
+const MAX_CARD_DESCRIPTION: usize = 4000;
 /// 添付 1 件あたりの取得失敗の上限
 const MAX_FILE_ATTEMPTS: i64 = 3;
 
@@ -1031,9 +1033,17 @@ async fn insert_message(
     for mentioned in super::convert::mentioned_users(&message.text) {
         ctx.user(tx, &mentioned, None).await?;
     }
-    let cards = message.cards();
-    let card = crate::cards::encode_cards(&cards)?.unwrap_or_default();
+    let mut cards = message.cards();
     let mut content = mrkdwn_to_mfm(&message.text, &*ctx);
+    // カードのある投稿は、チャットでは本文 (content) を表示せずカードだけを表示する。
+    // Webhook と同じく、トップレベルの本文もカードの先頭に置いて、本文とカードの両方を読めるようにする。
+    if !cards.is_empty() && !content.trim().is_empty() {
+        cards.insert(
+            0,
+            crate::cards::text_card(content.chars().take(MAX_CARD_DESCRIPTION).collect()),
+        );
+    }
+    let card = crate::cards::encode_cards(&cards)?.unwrap_or_default();
     // 本文がカードにしかない bot 投稿は、カードの内容を本文にも入れる (通知・一覧・旧クライアント用)。
     // カードにできなかったときも、fallback などの文字列を残して投稿が欠けないようにする。
     if content.trim().is_empty() {

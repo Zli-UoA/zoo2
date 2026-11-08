@@ -769,7 +769,11 @@ async fn test_slack_reimport_relinks_replies_and_serializes_targets() -> anyhow:
                  "attachments":[
                     {"title":"Deploy","text":"production is ready","color":"good","fields":[{"title":"env","value":"prod"}]},
                     {"from_url":"https://example.com","title":"unfurl","text":"link preview"}
-                 ]}
+                 ]},
+                // 本文とカードの両方がある bot 投稿
+                {"ts":"1704070150.000350","bot_id":"B1","subtype":"bot_message","username":"alertbot",
+                 "text":"Outage in <#C1|general>, see <https://status.example.com|status>",
+                 "attachments":[{"title":"Status","text":"degraded","color":"danger"}]}
             ]),
         ),
         ("general/2024-01-02.json".into(), json!([reply])),
@@ -912,6 +916,33 @@ async fn test_slack_reimport_relinks_replies_and_serializes_targets() -> anyhow:
     let stored: Value = serde_json::from_str(card[0]["card"].as_str().unwrap())?;
     assert_eq!(stored["title"], "Deploy");
     assert!(!card[0]["card"].as_str().unwrap().contains("link preview"));
+
+    // 本文とカードの両方がある投稿は、本文もカードの先頭に入り、チャットで両方が読める
+    let both = sql(
+        &state,
+        "SELECT json_build_object('content',content,'card',card)::text FROM messages WHERE id=$1",
+        &[&backend::slack::message_id(
+            &team,
+            "C1",
+            "1704070150.000350",
+        )],
+    )
+    .await?;
+    assert_eq!(both.len(), 1);
+    let content = both[0]["content"].as_str().unwrap().to_string();
+    // チャンネルへのリンクは取り込み先の名前に、リンクは MFM に直る
+    assert!(
+        content.starts_with("Outage in #first-")
+            && content.ends_with("[status](https://status.example.com)"),
+        "{content}"
+    );
+    let stored: Value = serde_json::from_str(both[0]["card"].as_str().unwrap())?;
+    let cards = stored["cards"]
+        .as_array()
+        .expect("the text and the attachment");
+    assert_eq!(cards.len(), 2);
+    assert_eq!(cards[0]["description"], content);
+    assert_eq!(cards[1]["title"], "Status");
     Ok(())
 }
 
