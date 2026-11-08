@@ -453,7 +453,15 @@ pub async fn move_content(
     .await?;
     // ゲストの参加チャンネルは管理者が決めるため、プレースホルダの参加チャンネルは移さない
     // (single のゲストは 2 つ目のチャンネルに入れず、連携全体が失敗するのも避ける)。
-    let guest = crate::apps::events::guest(tx, to).await?;
+    // is_guest は無効化済み (deactivated) でも立つため、ゲストの種別で判定する
+    let guest = one(
+        tx,
+        "SELECT json_build_object('guest',EXISTS(SELECT 1 FROM users WHERE id=$1 \
+         AND guest_kind IN ('single','multi')))::text",
+        &[to],
+    )
+    .await?["guest"]
+        == true;
     let mut statements = vec![
         "UPDATE messages SET user_id=$2 WHERE user_id=$1",
         // 本人が同じ絵文字を付けていれば重複を消してから移す

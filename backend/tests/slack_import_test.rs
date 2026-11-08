@@ -372,6 +372,18 @@ async fn test_slack_export_import_flow() -> anyhow::Result<()> {
     assert_eq!(root["parent_id"], Value::Null);
     assert_eq!(root["deactivated"], true);
     assert_eq!(root["created_at"], "2024-01-01T00:46:40");
+    // 未連携のメンバーもプレースホルダとして参加させ、連携時に本人へ移せるようにする
+    let placeholders = sql(
+        &state,
+        "SELECT json_build_object('n',count(*))::text FROM channel_user WHERE channel_id=$1 AND user_id IN ($2,$3)",
+        &[
+            &general,
+            &backend::slack::user_id(&team, "U1"),
+            &backend::slack::user_id(&team, "U2"),
+        ],
+    )
+    .await?;
+    assert_eq!(placeholders[0]["n"], 2);
     // U2 の Slack 名 admin は予約語なので別名になる
     let bob = messages[1]["user_name"].as_str().unwrap().to_string();
     assert_ne!(bob, "admin");

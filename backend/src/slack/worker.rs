@@ -727,11 +727,14 @@ async fn import(s: &AppState, job: &Job, lease: &Lease) -> Result<(), AppError> 
             ensure_can_import(&mut tx, job, admin, channel_id, channel).await?;
             for member in &channel.members {
                 let user = ctx.user(&mut tx, member, None).await?;
-                // 連携したゲストは、管理者が決めたチャンネルにだけ参加する (取り込みでは足さない)
+                // 連携したゲストは、管理者が決めたチャンネルにだけ参加する (取り込みでは足さない)。
+                // 未連携のプレースホルダ (guest_kind='deactivated' で is_guest も立つ) は、連携時に
+                // 本人へ移せるよう参加情報を残す。
                 exec(
                     &mut tx,
                     "INSERT INTO channel_user(user_id,channel_id,joined_at) SELECT $1,$2,CURRENT_TIMESTAMP \
-                     WHERE NOT EXISTS(SELECT 1 FROM users WHERE id=$1 AND is_guest) ON CONFLICT DO NOTHING",
+                     WHERE NOT EXISTS(SELECT 1 FROM users WHERE id=$1 AND guest_kind IN ('single','multi')) \
+                     ON CONFLICT DO NOTHING",
                     &[&user.id, channel_id],
                 )
                 .await?;
