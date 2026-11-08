@@ -478,7 +478,24 @@ pub async fn maintenance_loop(db: toasty::Db) {
 
 /// HTTP 配信と履歴削除のループ。`shutdown` が true になると新しい配信（リース）を取らず、
 /// 実行中の 1 回分を終えてから戻る。
-pub async fn http_loop(db: toasty::Db, mut shutdown: tokio::sync::watch::Receiver<bool>) {
+pub async fn http_loop(db: toasty::Db, shutdown: tokio::sync::watch::Receiver<bool>) {
+    http_loop_with(
+        db,
+        shutdown,
+        std::sync::Arc::new(tokio::sync::Notify::new()),
+        Duration::from_millis(500),
+    )
+    .await
+}
+
+/// `wake` が通知されるとすぐ 1 回分を配信する。通知が無くても `poll` ごとに回る
+/// （バックオフ明け・リース切れ・手動再送・通知の取りこぼしのため）。
+pub async fn http_loop_with(
+    db: toasty::Db,
+    mut shutdown: tokio::sync::watch::Receiver<bool>,
+    wake: std::sync::Arc<tokio::sync::Notify>,
+    poll: Duration,
+) {
     // 履歴削除は配信と別タスクで回す。遅い削除が配信の tick を止めないため。
     let cleanup_task = tokio::spawn({
         let db = db.clone();
@@ -493,13 +510,13 @@ pub async fn http_loop(db: toasty::Db, mut shutdown: tokio::sync::watch::Receive
             }
         }
     });
-    let mut ticks = tokio::time::interval(Duration::from_millis(500));
+    let mut ticks = tokio::time::interval(poll);
     ticks.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     loop {
         tokio::select! {
             biased;
             _ = shutdown.changed() => break,
-            _ = ticks.tick() => {
+            _ = async { tokio::select! { _ = ticks.tick() => {}, _ = wake.notified() => {} } } => {
                 if let Err(e) = http_pass(&db).await {
                     tracing::warn!(error=%e,"App delivery failed");
                 }
@@ -507,6 +524,36 @@ pub async fn http_loop(db: toasty::Db, mut shutdown: tokio::sync::watch::Receive
         }
     }
     cleanup_task.abort();
+}
+
+/// `app_delivery` チャンネルを LISTEN し、通知（と再接続）のたびに `wake` を起こす。
+/// 切断中の通知は失われるので、接続し直したら必ず 1 回起こす。
+pub fn listen_for_deliveries(
+    database_url: String,
+    wake: std::sync::Arc<tokio::sync::Notify>,
+) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
+        loop {
+            match crate::db::connect_raw_listener(&database_url).await {
+                Ok(mut listener) => {
+                    if let Err(e) = listener.client.batch_execute("LISTEN app_delivery").await {
+                        tracing::warn!(error=%e,"LISTEN app_delivery failed");
+                    } else {
+                        tracing::info!("Subscribed to PostgreSQL channel app_delivery");
+                        wake.notify_one();
+                        while let Some(n) = listener.notifications.recv().await {
+                            if n.channel() == "app_delivery" {
+                                wake.notify_one();
+                            }
+                        }
+                        tracing::warn!("app_delivery notification stream ended");
+                    }
+                }
+                Err(e) => tracing::warn!(error=%e,"Could not connect for LISTEN app_delivery"),
+            }
+            tokio::time::sleep(Duration::from_secs(2)).await;
+        }
+    })
 }
 
 /// 滞留状況のゲージを更新する。管理 API と同じ定義（未 ACK かつ期限内）。

@@ -3023,3 +3023,95 @@ async fn lease_is_measured_from_the_claim_not_from_the_start_of_a_blocked_transa
     );
     Ok(())
 }
+
+async fn listen_app_delivery() -> anyhow::Result<backend::db::PgNotificationListener> {
+    let listener =
+        backend::db::connect_raw_listener(&backend::config::database_url_from_env()).await?;
+    listener.client.batch_execute("LISTEN app_delivery").await?;
+    Ok(listener)
+}
+
+async fn next_notification(
+    listener: &mut backend::db::PgNotificationListener,
+    wait: std::time::Duration,
+) -> bool {
+    matches!(
+        tokio::time::timeout(wait, listener.notifications.recv()).await,
+        Ok(Some(n)) if n.channel() == "app_delivery"
+    )
+}
+
+#[tokio::test]
+async fn new_deliveries_and_manual_retries_notify_the_dispatcher() -> anyhow::Result<()> {
+    let _guard = HTTP_WORKER_TEST_LOCK.lock().await;
+    let f = fixture().await?;
+    reconfigure(&f,json!({"scopes":["messages:read"],"events":["message.created"],"transport":"http","event_url":"https://127.0.0.1:1/events"})).await?;
+    let mut listener = listen_app_delivery().await?;
+    while next_notification(&mut listener, std::time::Duration::from_millis(300)).await {}
+    post_messages(&f, 1).await;
+    assert!(
+        next_notification(&mut listener, std::time::Duration::from_secs(5)).await,
+        "an INSERT into app_deliveries must NOTIFY app_delivery"
+    );
+    // 手動再送は UPDATE なので、トリガーではなく再送ハンドラの pg_notify で起こす。
+    let mut db = f.state.db.clone();
+    let mut tx = db.transaction().await?;
+    let row = apps::one(&mut tx, "SELECT json_build_object('id',id)::text FROM app_deliveries WHERE installation_id=$1 AND event_type='message.created' AND acked_at IS NULL LIMIT 1", &[&f.installation]).await?;
+    drop(tx);
+    while next_notification(&mut listener, std::time::Duration::from_millis(300)).await {}
+    ok(
+        &f.app,
+        "POST",
+        &format!(
+            "/api/apps/{}/deliveries/{}/retry",
+            f.id,
+            row["id"].as_str().unwrap()
+        ),
+        &f.owner,
+        Value::Null,
+    )
+    .await;
+    assert!(
+        next_notification(&mut listener, std::time::Duration::from_secs(5)).await,
+        "a manual retry must NOTIFY app_delivery"
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_notification_wakes_the_dispatcher_without_waiting_for_the_poll() -> anyhow::Result<()> {
+    let _guard = HTTP_WORKER_TEST_LOCK.lock().await;
+    let f = fixture().await?;
+    reconfigure(&f,json!({"scopes":["messages:read"],"events":["message.created"],"transport":"http","event_url":"https://127.0.0.1:1/events"})).await?;
+    let wake = std::sync::Arc::new(tokio::sync::Notify::new());
+    let listener = apps::delivery::listen_for_deliveries(
+        backend::config::database_url_from_env(),
+        wake.clone(),
+    );
+    let (stop, shutdown) = tokio::sync::watch::channel(false);
+    // ポーリングは 1 時間後なので、配信されるなら通知で起きたとき以外にない。
+    let dispatcher = tokio::spawn(apps::delivery::http_loop_with(
+        f.state.db.clone(),
+        shutdown,
+        wake,
+        std::time::Duration::from_secs(3600),
+    ));
+    tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
+    post_messages(&f, 3).await;
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(60);
+    loop {
+        let attempts = message_delivery_attempts(&f).await?;
+        if attempts.len() >= 3 && attempts.iter().all(|a| *a >= 1) {
+            break;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "the dispatcher was not woken by NOTIFY: {attempts:?}"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    }
+    stop.send(true)?;
+    tokio::time::timeout(std::time::Duration::from_secs(5), dispatcher).await??;
+    listener.abort();
+    Ok(())
+}

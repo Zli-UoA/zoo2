@@ -1107,6 +1107,12 @@ CREATE INDEX app_deliveries_dispatch_count ON app_deliveries(installation_id,fir
 -- Harden event delivery and bound transport/retention work without rewriting deployed migrations.
 CREATE INDEX app_deliveries_retention ON app_deliveries(created_at,id);
 CREATE INDEX app_deliveries_ready ON app_deliveries(installation_id,available_at,created_at,id) WHERE acked_at IS NULL;
+CREATE FUNCTION app_delivery_notify() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+ PERFORM pg_notify('app_delivery','');
+ RETURN NULL;
+END $$;
+CREATE TRIGGER app_deliveries_notify AFTER INSERT ON app_deliveries FOR EACH STATEMENT EXECUTE FUNCTION app_delivery_notify();
 CREATE TABLE app_socket_sessions(id text PRIMARY KEY,installation_id text NOT NULL REFERENCES app_installations(id),expires_at timestamptz NOT NULL);
 CREATE INDEX app_socket_sessions_active ON app_socket_sessions(installation_id,expires_at);
 CREATE TABLE app_socket_presence_limits(installation_id text NOT NULL REFERENCES app_installations(id),window_start timestamptz NOT NULL,requests integer NOT NULL,PRIMARY KEY(installation_id,window_start));

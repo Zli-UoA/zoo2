@@ -348,6 +348,13 @@ async fn retry(
     can_manage(&mut tx, &state, &actor, &id).await?;
     let row=one(&mut tx,"UPDATE app_deliveries SET available_at=now(),expires_at=now()+interval '24 hours',lease_until=NULL,lease_token=NULL,last_error=NULL WHERE id=$1 AND installation_id IN(SELECT id FROM app_installations WHERE app_id=$2 AND active) AND acked_at IS NULL RETURNING json_build_object('id',id)::text",&[&delivery,&id]).await?;
     audit(&mut tx, &id, &actor.id, "delivery.retried").await?;
+    // 再送は INSERT ではなく UPDATE なので、トリガーでは dispatcher が起きない。明示的に通知する。
+    one(
+        &mut tx,
+        "SELECT json_build_object('notified',pg_notify('app_delivery','') IS NULL)::text",
+        &[],
+    )
+    .await?;
     tx.commit().await?;
     Ok(Json(row))
 }

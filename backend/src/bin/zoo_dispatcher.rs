@@ -13,6 +13,9 @@ use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 /// SIGTERM 後に、送信中の配信を待つ最大時間。残ったリースは期限切れで他のインスタンスが拾う。
 /// 1 回の送信は最大 3 秒なので、claim と ACK の分の余裕を持たせる（Pod の
 /// terminationGracePeriodSeconds はこれより長くする）。
+/// 通知が無くても配信を探す間隔。
+const POLL: Duration = Duration::from_secs(3);
+
 const DRAIN: Duration = Duration::from_secs(8);
 
 #[tokio::main]
@@ -34,7 +37,16 @@ async fn main() -> anyhow::Result<()> {
 
     let db = backend::db::init_db(&database_url).await?;
     let (stop, shutdown) = tokio::sync::watch::channel(false);
-    let http = tokio::spawn(backend::apps::delivery::http_loop(db.clone(), shutdown));
+    // LISTEN で即時に起き、通知の取りこぼしやバックオフ明けは POLL ごとのポーリングで拾う。
+    let wake = std::sync::Arc::new(tokio::sync::Notify::new());
+    let notify_listener =
+        backend::apps::delivery::listen_for_deliveries(database_url.clone(), wake.clone());
+    let http = tokio::spawn(backend::apps::delivery::http_loop_with(
+        db.clone(),
+        shutdown,
+        wake,
+        POLL,
+    ));
     let gauges = tokio::spawn({
         let db = db.clone();
         async move {
@@ -65,6 +77,7 @@ async fn main() -> anyhow::Result<()> {
         .await?;
     let _ = stop.send(true);
     gauges.abort();
+    notify_listener.abort();
     let mut http = http;
     if tokio::time::timeout(DRAIN, &mut http).await.is_err() {
         tracing::warn!("Drain timed out; unfinished leases will expire and be retried");
