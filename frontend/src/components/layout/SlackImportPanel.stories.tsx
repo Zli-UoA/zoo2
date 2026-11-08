@@ -143,6 +143,8 @@ export const LoadError: Story = {
   },
   play: playForImplementation(async () => {
     await expect(await screen.findByRole("alert")).toHaveTextContent("管理者だけ");
+    // 一覧を取れなかったときは、開き直さなくても取り直せる
+    await expect(screen.getByRole("button", { name: "再読み込み" })).toBeVisible();
   }),
 };
 

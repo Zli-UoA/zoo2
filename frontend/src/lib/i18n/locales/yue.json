@@ -753,6 +753,7 @@
     "chooseFile": "揀選並上載 ZIP",
     "uploading": "上載緊…",
     "loading": "載入緊匯入紀錄",
+    "retry": "重新載入",
     "history": "紀錄",
     "status": {
       "uploading": "上載緊",

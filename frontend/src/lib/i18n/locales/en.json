@@ -753,6 +753,7 @@
     "chooseFile": "Choose and upload ZIP",
     "uploading": "Uploading…",
     "loading": "Loading import history",
+    "retry": "Reload",
     "history": "History",
     "status": {
       "uploading": "Uploading",

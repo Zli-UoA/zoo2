@@ -753,6 +753,7 @@
     "chooseFile": "ZIP을 선택하여 업로드",
     "uploading": "업로드 중…",
     "loading": "가져오기 내역을 불러오는 중",
+    "retry": "다시 불러오기",
     "history": "내역",
     "status": {
       "uploading": "업로드 중",

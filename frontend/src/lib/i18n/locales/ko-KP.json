@@ -753,6 +753,7 @@
     "chooseFile": "ZIP을 선택하여 올리기",
     "uploading": "올리는 중…",
     "loading": "들여오기 리력을 불러오는 중",
+    "retry": "다시 불러오기",
     "history": "리력",
     "status": {
       "uploading": "올리는 중",

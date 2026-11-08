@@ -19,6 +19,16 @@ pub trait Resolver {
 /// - `<https://a|label>` → `[label](https://a)`、`<https://a>` → `https://a`
 /// - `&amp;` `&lt;` `&gt;` を元に戻す
 pub fn mrkdwn_to_mfm(text: &str, resolver: &impl Resolver) -> String {
+    truncate_content(convert(text, resolver, false))
+}
+
+/// mrkdwn を、MFM として描画しない場所 (カードの説明など) 向けの文字列に変換する。
+/// [`mrkdwn_to_mfm`] と同じだが、`<https://a|label>` は `label (https://a)` にする。切り詰めない。
+pub fn mrkdwn_to_text(text: &str, resolver: &impl Resolver) -> String {
+    convert(text, resolver, true)
+}
+
+fn convert(text: &str, resolver: &impl Resolver, plain: bool) -> String {
     let mut out = String::with_capacity(text.len());
     let mut rest = text;
     while let Some(start) = rest.find('<') {
@@ -29,11 +39,11 @@ pub fn mrkdwn_to_mfm(text: &str, resolver: &impl Resolver) -> String {
             rest = "";
             break;
         };
-        out.push_str(&convert_token(&after[..end], resolver));
+        out.push_str(&convert_token(&after[..end], resolver, plain));
         rest = &after[end + 1..];
     }
     out.push_str(&unescape(rest));
-    truncate_content(out)
+    out
 }
 
 /// 本文でメンションされている Slack ユーザー ID (`<@U123>` / `<@W123|name>`) を出現順・重複なしで返す
@@ -55,7 +65,7 @@ pub fn mentioned_users(text: &str) -> Vec<String> {
     found
 }
 
-fn convert_token(token: &str, resolver: &impl Resolver) -> String {
+fn convert_token(token: &str, resolver: &impl Resolver, plain: bool) -> String {
     let (target, label) = match token.split_once('|') {
         Some((t, l)) => (t, Some(unescape(l))),
         None => (token, None),
@@ -83,7 +93,9 @@ fn convert_token(token: &str, resolver: &impl Resolver) -> String {
     let url = unescape(target);
     match label {
         Some(label) if !label.is_empty() && label != url => {
-            if is_web_url(&url) {
+            if plain && is_web_url(&url) {
+                format!("{label} ({url})")
+            } else if is_web_url(&url) {
                 format!("[{}]({url})", label.replace(['[', ']'], ""))
             } else {
                 label
@@ -152,6 +164,15 @@ mod tests {
             "hi @alice and @bob in #random & #other @here \
              [Example](https://example.com) https://x.test a@b.c \
              @devs 1 < 2"
+        );
+    }
+
+    #[test]
+    fn converts_to_plain_text_for_cards() {
+        let text = "see <https://example.com|Example> <https://x.test> <@U1> in <#C1|general> &amp; *bold*";
+        assert_eq!(
+            mrkdwn_to_text(text, &Map),
+            "see Example (https://example.com) https://x.test @alice in #random & *bold*"
         );
     }
 

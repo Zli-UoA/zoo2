@@ -964,7 +964,14 @@ async fn test_slack_reimport_relinks_replies_and_serializes_targets() -> anyhow:
         .as_array()
         .expect("the text and the attachment");
     assert_eq!(cards.len(), 2);
-    assert_eq!(cards[0]["description"], content);
+    // カードの説明は MFM として描画しないので、リンクは「ラベル (URL)」で残す
+    assert_eq!(cards[0]["title"], "Slack");
+    let description = cards[0]["description"].as_str().unwrap();
+    assert!(
+        description.starts_with("Outage in #first-")
+            && description.ends_with("see status (https://status.example.com)"),
+        "{description}"
+    );
     assert_eq!(cards[1]["title"], "Status");
     Ok(())
 }
@@ -1362,5 +1369,152 @@ async fn test_slack_import_guards_private_channels_and_restores_threads() -> any
         rows[0]["content"],
         format!("see #general-{suffix} and #secret")
     );
+
+    // 以前非公開で作ったチャンネルを「新しいチャンネル (公開)」で選び直しても、実際は非公開なので名前を本文に書かない
+    let quiet = build_zip(&[
+        (
+            "users.json".into(),
+            json!([{"id":"U1","team_id":team,"name":"alice"}]),
+        ),
+        (
+            "channels.json".into(),
+            json!([
+                {"id":"C4","name":"quiet","members":["U1"]},
+                {"id":"C5","name":"loud","members":["U1"]}
+            ]),
+        ),
+        (
+            "quiet/2024-01-05.json".into(),
+            json!([{"ts":"1704430000.000100","user":"U1","text":"hush"}]),
+        ),
+        (
+            "loud/2024-01-05.json".into(),
+            json!([{"ts":"1704430000.000200","user":"U1","text":"ping <#C4|quiet>"}]),
+        ),
+    ]);
+    let analyzed = upload(&state, &app, &admin, &quiet).await;
+    let export_id = analyzed["id"].as_str().unwrap().to_string();
+    for mappings in [
+        json!([
+            {"slack_channel_id":"C4","action":"create","name":format!("quiet-{suffix}"),"is_private":true},
+            {"slack_channel_id":"C5","action":"skip"}
+        ]),
+        json!([
+            {"slack_channel_id":"C4","action":"create","name":format!("quiet-{suffix}"),"is_private":false},
+            {"slack_channel_id":"C5","action":"create","name":format!("loud-{suffix}")}
+        ]),
+    ] {
+        let (status, body) = start(&app, &admin, &export_id, mappings).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        drive(
+            &state,
+            &app,
+            &admin,
+            body["id"].as_str().unwrap(),
+            "completed",
+        )
+        .await;
+    }
+    let rows = sql(
+        &state,
+        "SELECT json_build_object('content',content)::text FROM messages WHERE id=$1",
+        &[&backend::slack::message_id(
+            &team,
+            "C5",
+            "1704430000.000200",
+        )],
+    )
+    .await?;
+    assert_eq!(rows[0]["content"], "ping #quiet");
+    Ok(())
+}
+
+/// アップロード中に取り消したエクスポートは、取り消した後で PUT が終わっても、掃除で ZIP を消す
+#[tokio::test]
+async fn test_slack_import_removes_zip_uploaded_after_cancel() -> anyhow::Result<()> {
+    let _serial = SERIAL.lock().await;
+    dotenvy::dotenv().ok();
+    dotenvy::from_filename("../.env").ok();
+    let mut config = Config::from_env();
+    config.dev_auth_enabled = true;
+    let db = init_db(&config.database_url).await?;
+    let state = AppState::new(db.clone(), config.clone());
+    ensure_bucket_exists(&state.s3_client, &config.s3.bucket).await;
+    let app = create_router(state.clone());
+    let admin = create_user(&app, "slack_admin_late").await?;
+    {
+        let mut db = db.clone();
+        let mut tx = db.transaction().await?;
+        toasty::create!(UserRole {
+            user_id: admin.as_str(),
+            role_id: "role_admin",
+        })
+        .exec(&mut tx)
+        .await?;
+        tx.commit().await?;
+    }
+    let zip = build_zip(&[(
+        "users.json".into(),
+        json!([{"id":"U1","team_id":"TLATE","name":"alice"}]),
+    )]);
+    let (status, created) = request(
+        &app,
+        "POST",
+        "/api/admin/slack-imports",
+        &admin,
+        Some(json!({"file_name": "export.zip", "file_size": zip.len()})),
+    )
+    .await?;
+    assert_eq!(status, StatusCode::OK, "{created}");
+    let id = created["import"]["id"].as_str().unwrap().to_string();
+    let key = format!("slack-imports/{id}/export.zip");
+    let (status, cancelled) = request(
+        &app,
+        "DELETE",
+        &format!("/api/admin/slack-imports/{id}"),
+        &admin,
+        None,
+    )
+    .await?;
+    assert_eq!(status, StatusCode::OK, "{cancelled}");
+    // 取り消した後で、ブラウザからの PUT が終わった
+    let put = reqwest::Client::new()
+        .put(created["upload_url"].as_str().unwrap())
+        .header("content-type", "application/zip")
+        .body(zip)
+        .send()
+        .await?;
+    assert!(put.status().is_success());
+    let exists = || async {
+        state
+            .s3_client
+            .head_object()
+            .bucket(&config.s3.bucket)
+            .key(&key)
+            .send()
+            .await
+            .is_ok()
+    };
+    assert!(exists().await);
+
+    // 署名付き URL の期限内は、まだ PUT が続いているかもしれないので消さない
+    backend::slack::worker::cleanup(&state).await?;
+    assert!(exists().await);
+    // 期限と猶予を過ぎたら、もう一度だけ消す
+    sql(
+        &state,
+        "UPDATE slack_import_jobs SET updated_at=now()-interval '30 days' WHERE id=$1 RETURNING json_build_object('id',id)::text",
+        &[&id],
+    )
+    .await?;
+    backend::slack::worker::cleanup(&state).await?;
+    assert!(!exists().await, "the late upload must be removed");
+    let job = sql(
+        &state,
+        "SELECT json_build_object('status',status,'key',storage_key)::text FROM slack_import_jobs WHERE id=$1",
+        &[&id],
+    )
+    .await?;
+    assert_eq!(job[0], json!({"status": "cancelled", "key": ""}));
     Ok(())
 }
