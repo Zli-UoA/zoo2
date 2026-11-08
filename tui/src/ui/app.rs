@@ -958,22 +958,7 @@ impl App {
 
 /// `thumbsup` や `:thumbsup:` のショートコード、または絵文字そのものを絵文字にする。
 fn resolve_emoji(input: &str) -> Option<String> {
-    let input = input.trim();
-    let name = input.trim_matches(':');
-    if crate::mfm::is_custom_shortcode(name) {
-        return Some(format!(":{name}:"));
-    }
-    crate::mfm::unicode_shortcode(name)
-        .or_else(|| emojis::get(input).map(|emoji| emoji.as_str().to_string()))
-        .or_else(|| {
-            (input.starts_with(':')
-                && input.ends_with(':')
-                && (1..=64).contains(&name.len())
-                && name.bytes().all(|c| {
-                    c.is_ascii_lowercase() || c.is_ascii_digit() || c == b'_' || c == b'-'
-                }))
-            .then(|| format!(":{name}:"))
-        })
+    zoo2_client_core::mfm::resolve_emoji(input)
 }
 
 fn new_composer() -> TextArea<'static> {

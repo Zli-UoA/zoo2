@@ -237,6 +237,23 @@ pub async fn project_catalog(
     tx.commit().await?;
     Ok(())
 }
+/// Image routing follows the committed catalog source, including legacy fallback.
+pub async fn uses_shared_catalog(
+    state: &AppState,
+    origin: &reqwest::Url,
+) -> Result<bool, AppError> {
+    let mut db = state.db.clone();
+    let mut tx = db.transaction().await?;
+    let rows = crate::apps::query(
+        &mut tx,
+        "SELECT row_to_json(s)::text FROM shared_emoji_source s WHERE id='workspace'",
+        &[],
+    )
+    .await?;
+    Ok(rows
+        .first()
+        .is_some_and(|row| row["url"] == origin.as_str()))
+}
 pub async fn initialize(state: &AppState) -> Result<(), AppError> {
     let Some(origin) = service_url()? else {
         return project_catalog(state, None, &[]).await;

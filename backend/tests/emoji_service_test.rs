@@ -1,5 +1,9 @@
 use anyhow::Context;
-use backend::{config::Config, emoji_service::project_catalog, state::AppState};
+use backend::{
+    config::Config,
+    emoji_service::{project_catalog, uses_shared_catalog},
+    state::AppState,
+};
 use serde_json::json;
 use tokio_postgres::NoTls;
 
@@ -48,6 +52,7 @@ async fn shared_projection_updates_joined_display_and_preserves_local_registry()
         json!({"name":name,"url":image,"category":"animals","aliases":["ねこ"],"width":48,"height":24,"image_id":"a".repeat(64)}),
     ];
     project_catalog(&state, Some(&source), &rows).await?;
+    assert!(uses_shared_catalog(&state, &source).await?);
     for _ in 0..1000 {
         if !backend::display_refresh::refresh_one(&state).await? {
             break;
@@ -88,6 +93,7 @@ async fn shared_projection_updates_joined_display_and_preserves_local_registry()
         .get(0);
     assert_eq!(preserved, "/legacy.png");
     project_catalog(&state, None, &[]).await?;
+    assert!(!uses_shared_catalog(&state, &source).await?);
     for _ in 0..1000 {
         if !backend::display_refresh::refresh_one(&state).await? {
             break;

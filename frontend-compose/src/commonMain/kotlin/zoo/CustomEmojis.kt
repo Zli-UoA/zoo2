@@ -11,7 +11,7 @@ import kotlinx.serialization.json.*
 @Composable
 fun workspaceEmojis(app: Session): List<Row> {
     LaunchedEffect(app) { while (true) {
-        try { app.loadWorkspaceEmojis(true) } catch (e: CancellationException) { throw e } catch (_: Exception) {}
+        try { app.loadWorkspaceEmojis() } catch (e: CancellationException) { throw e } catch (_: Exception) {}
         kotlinx.coroutines.delay(60_000)
     } }
     return app.workspaceEmojis
@@ -76,7 +76,7 @@ private fun LocalCustomEmojiSettings(app: Session) {
     fun reset() { name = ""; category = ""; aliases = ""; previous = null; file?.let { app.platform.action("fileRelease:${it.text("id")}") }; file = null }
     fun load() { scope.launch {
         loading = true; failed = false
-        try { app.loadWorkspaceEmojis(true) }
+        try { app.loadWorkspaceEmojis() }
         catch (e: CancellationException) { throw e } catch (_: Exception) { failed = true }
         finally { loading = false }
     } }
@@ -110,7 +110,7 @@ private fun LocalCustomEmojiSettings(app: Session) {
                             else put("url", previous!!.text("url"))
                         }
                         app.api.request(if (selected == null) "/api/emojis" else "/api/emojis/upload", "POST", payload)
-                        reset(); app.loadWorkspaceEmojis(true)
+                        reset(); app.loadWorkspaceEmojis()
                     } catch (e: CancellationException) { throw e } catch (_: Exception) { failed = true }
                     finally { busy = false }
                 }
@@ -142,7 +142,7 @@ private fun LocalCustomEmojiSettings(app: Session) {
             try {
                 app.api.request("/api/emojis/${item.text("name")}", "DELETE")
                 if (previous == item) reset()
-                remove = null; app.loadWorkspaceEmojis(true)
+                remove = null; app.loadWorkspaceEmojis()
             } catch (e: CancellationException) { throw e } catch (_: Exception) { failed = true }
             finally { busy = false }
         }

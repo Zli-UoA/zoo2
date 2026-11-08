@@ -99,12 +99,17 @@ impl ApiClient {
         std::collections::HashMap<String, String>,
         std::collections::HashSet<String>,
     )> {
-        let (standard, custom): (Value, Vec<Value>) =
-            tokio::try_join!(self.get("/api/emoji-shortcodes"), self.get("/api/emojis"))?;
-        let shortcodes: std::collections::HashMap<String, String> =
-            serde_json::from_value(standard["shortcodes"].clone())?;
+        let (standard, custom) = tokio::join!(
+            self.get::<Value>("/api/emoji-shortcodes"),
+            self.get::<Vec<Value>>("/api/emojis")
+        );
+        // Custom names must still win when the standard service is unavailable.
+        let shortcodes = standard
+            .ok()
+            .and_then(|value| serde_json::from_value(value["shortcodes"].clone()).ok())
+            .unwrap_or_default();
         let mut names = std::collections::HashSet::new();
-        for row in custom {
+        for row in custom? {
             if let Some(name) = row["name"].as_str() {
                 names.insert(name.to_owned());
             }
@@ -244,6 +249,27 @@ mod tests {
             &format!("{}/", server.uri()),
             Credentials::Dev("u1".into()),
         )
+    }
+
+    #[tokio::test]
+    async fn custom_names_survive_standard_dictionary_failure() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/emoji-shortcodes"))
+            .respond_with(ResponseTemplate::new(502))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/api/emojis"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!([
+                {"name":"smile", "aliases":["custom_alias"]}
+            ])))
+            .mount(&server)
+            .await;
+        let (standard, custom) = client(&server).emoji_catalog().await.unwrap();
+        assert!(standard.is_empty());
+        assert!(custom.contains("smile"));
+        assert!(custom.contains("custom_alias"));
     }
 
     #[tokio::test]

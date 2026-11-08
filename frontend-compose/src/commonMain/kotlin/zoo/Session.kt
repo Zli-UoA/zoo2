@@ -39,21 +39,25 @@ class Session(val repo: Repository, val scope: CoroutineScope, initial: Environm
         private set
     var workspaceEmojiError by mutableStateOf(false)
         private set
-    private var workspaceEmojisLoaded = false
+    private var workspaceEmojiChecked = 0L
     private val workspaceEmojiMutex = kotlinx.coroutines.sync.Mutex()
     suspend fun loadWorkspaceEmojis(force: Boolean = false) {
         workspaceEmojiMutex.lock()
         try {
-            if ((!workspaceEmojisLoaded && !workspaceEmojiError) || force) {
-                workspaceEmojiLoading = true
-                workspaceEmojiError = false
-                try {
-                    workspaceEmojis = api.request("/api/emojis").rows()
-                    workspaceEmojisLoaded = true
-                } catch (e: CancellationException) { throw e }
-                catch (e: Exception) { workspaceEmojiError = true; throw e }
-                finally { workspaceEmojiLoading = false }
-            }
+            val now = kotlin.time.Clock.System.now().toEpochMilliseconds()
+            if (!force && workspaceEmojiChecked != 0L && now - workspaceEmojiChecked < 60_000) return
+            workspaceEmojiChecked = now
+            workspaceEmojiLoading = true
+            workspaceEmojiError = false
+            try {
+                workspaceEmojis = api.request("/api/emojis").rows()
+            } catch (e: CancellationException) {
+                workspaceEmojiChecked = 0L
+                throw e
+            } catch (e: Exception) {
+                workspaceEmojiError = true
+                throw e
+            } finally { workspaceEmojiLoading = false }
         } finally { workspaceEmojiMutex.unlock() }
     }
     var env by mutableStateOf(initial)

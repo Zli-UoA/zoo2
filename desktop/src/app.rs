@@ -2454,14 +2454,7 @@ impl AppState {
 
 /// `thumbsup` や `:thumbsup:` のショートコード、または絵文字そのものを絵文字に変換する。
 pub fn resolve_emoji(input: &str) -> Option<String> {
-    let input = input.trim();
-    if input.is_empty() {
-        return None;
-    }
-    let name = input.trim_matches(':');
-    emojis::get_by_shortcode(name)
-        .or_else(|| emojis::get(input))
-        .map(|emoji| emoji.as_str().to_string())
+    zoo2_client_core::mfm::resolve_emoji(input)
 }
 
 /// Emoji Kitchen の合成絵文字 (`kitchen:<a>_<b>`) は元の2つを `+` で並べて示す。

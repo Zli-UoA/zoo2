@@ -19,6 +19,24 @@ pub fn is_custom_shortcode(name: &str) -> bool {
     EMOJI_CATALOG.read().unwrap().custom.contains(name)
 }
 impl EmojiCatalog {
+    fn resolve_emoji(&self, input: &str) -> Option<String> {
+        let input = input.trim();
+        let name = input.trim_matches(':');
+        if self.custom.contains(name) {
+            return Some(format!(":{name}:"));
+        }
+        self.unicode(name)
+            .or_else(|| emojis::get(input).map(|emoji| emoji.as_str().to_owned()))
+            .or_else(|| {
+                (input.starts_with(':')
+                    && input.ends_with(':')
+                    && (1..=64).contains(&name.len())
+                    && name.bytes().all(|c| {
+                        c.is_ascii_lowercase() || c.is_ascii_digit() || c == b'_' || c == b'-'
+                    }))
+                .then(|| format!(":{name}:"))
+            })
+    }
     fn unicode(&self, name: &str) -> Option<String> {
         if self.custom.contains(name) {
             return None;
@@ -28,6 +46,9 @@ impl EmojiCatalog {
         }
         emojis::get_by_shortcode(name).map(|e| e.as_str().to_owned())
     }
+}
+pub fn resolve_emoji(input: &str) -> Option<String> {
+    EMOJI_CATALOG.read().unwrap().resolve_emoji(input)
 }
 pub fn unicode_shortcode(name: &str) -> Option<String> {
     EMOJI_CATALOG.read().unwrap().unicode(name)
@@ -46,6 +67,16 @@ mod shared_shortcode_tests {
             .into(),
             custom: ["smile".to_owned()].into(),
         };
+        assert_eq!(
+            catalog.resolve_emoji(":remote_alias:").as_deref(),
+            Some("👩‍💻")
+        );
+        assert_eq!(catalog.resolve_emoji(":smile:").as_deref(), Some(":smile:"));
+        assert_eq!(
+            catalog.resolve_emoji(":custom_unknown:").as_deref(),
+            Some(":custom_unknown:")
+        );
+        assert_eq!(catalog.resolve_emoji(":../cat:"), None);
         assert_eq!(catalog.unicode("remote_alias").as_deref(), Some("👩‍💻"));
         assert_eq!(catalog.unicode("smile"), None);
         assert_eq!(catalog.unicode("thumbsup"), None);
