@@ -1314,6 +1314,24 @@ async fn fetch_files(s: &AppState, job: &Job, lease: &Lease) -> Result<(), AppEr
     Ok(())
 }
 
+/// 本文を `max` バイトまで読む。累計が上限を超えたら、残りを読まずに `None` を返す
+async fn read_limited<S, B, E>(mut stream: S, max: u64) -> Result<Option<Vec<u8>>, E>
+where
+    S: futures_util::Stream<Item = Result<B, E>> + Unpin,
+    B: AsRef<[u8]>,
+{
+    let mut buffer = Vec::new();
+    while let Some(chunk) = futures_util::StreamExt::next(&mut stream).await {
+        let chunk = chunk?;
+        let chunk = chunk.as_ref();
+        if (buffer.len() + chunk.len()) as u64 > max {
+            return Ok(None);
+        }
+        buffer.extend_from_slice(chunk);
+    }
+    Ok(Some(buffer))
+}
+
 /// 添付を取得してよい URL か (`SLACK_FILES_BASE_URL` の下か)。Bot トークンを付けて送るので、
 /// 文字列の前方一致ではなく、scheme・ホスト・ポートを URL として比べ、パスはディレクトリ単位で比べる
 /// (`https://files.slack.com` と設定しても `https://files.slack.com.evil.example/` は通さない)。
@@ -1381,13 +1399,14 @@ async fn fetch_one(
     if response.content_length().is_some_and(|len| len > max) {
         return Ok(FileOutcome::Skipped(format!("File exceeds {max} bytes")));
     }
-    let bytes = response
-        .bytes()
+    // サイズが記録されていない・Content-Length がない応答でも、上限を超える分をメモリに読み込まないよう、
+    // チャンク単位で読み、累計が上限を超えた時点で中断する
+    let Some(buffer) = read_limited(response.bytes_stream(), max)
         .await
-        .map_err(|e| AppError::BadGateway(format!("Slack file download failed: {e}")))?;
-    if bytes.len() as u64 > max {
+        .map_err(|e| AppError::BadGateway(format!("Slack file download failed: {e}")))?
+    else {
         return Ok(FileOutcome::Skipped(format!("File exceeds {max} bytes")));
-    }
+    };
 
     // 同じファイルを共有するメッセージごとに添付を作る
     let attachment = super::attachment_id(
@@ -1395,13 +1414,13 @@ async fn fetch_one(
         &format!("{}:{}", file.slack_file_id, file.message_id),
     );
     let key = format!("attachments/{}/{attachment}", file.channel_id);
-    let size = bytes.len();
+    let size = buffer.len();
     s.s3_client
         .put_object()
         .bucket(&s.config.s3.bucket)
         .key(&key)
         .content_type(&file.mimetype)
-        .body(bytes.into())
+        .body(buffer.into())
         .send()
         .await
         .map_err(|e| AppError::Internal(anyhow::anyhow!("Failed to store Slack file: {e}")))?;
@@ -1432,6 +1451,25 @@ async fn fetch_one(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn read_limited_stops_at_the_limit() {
+        let chunks = |n: usize| {
+            futures_util::stream::iter((0..n).map(|_| Ok::<_, std::io::Error>(vec![b'x'; 8])))
+        };
+        // 上限ちょうどまでは読める
+        assert_eq!(
+            read_limited(chunks(2), 16).await.unwrap().unwrap().len(),
+            16
+        );
+        assert!(read_limited(chunks(3), 16).await.unwrap().is_none());
+        // 上限を超えた時点で止まり、後ろのチャンクは読まない (エラーも見ない)
+        let stream = futures_util::stream::iter(vec![
+            Ok(vec![b'x'; 32]),
+            Err(std::io::Error::other("never read")),
+        ]);
+        assert!(read_limited(stream, 16).await.unwrap().is_none());
+    }
 
     #[test]
     fn allowed_file_url_compares_as_url() {
