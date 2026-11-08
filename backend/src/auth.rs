@@ -141,24 +141,28 @@ async fn fetch_userinfo_for_profile(
     }
 }
 
-/// UserInfo の最新値を優先し、取得失敗時はトークンの picture を使う。
+/// UserInfo の最新値を使う。トークンの picture は新規作成時の初期値に限る。
 /// 外側の None は取得失敗かつ claim 省略なので、保存済みの画像を維持する。
 fn profile_picture(
     claims: &OidcClaims,
     user_info: Option<&OidcUserInfo>,
+    new_user: bool,
 ) -> Option<Option<String>> {
     let value = match user_info {
         Some(info) => info.picture.as_deref(),
-        None => Some(claims.picture.as_deref()?),
+        None if new_user => Some(claims.picture.as_deref()?),
+        None => return None,
     };
     Some(value.and_then(|value| {
         let url = reqwest::Url::parse(value).ok()?;
+        let normalized = url.to_string();
         (value.len() <= 2048
+            && normalized.len() <= 2048
             && url.scheme() == "https"
             && url.host_str().is_some()
             && url.username().is_empty()
             && url.password().is_none())
-        .then(|| url.to_string())
+        .then_some(normalized)
     }))
 }
 
@@ -167,8 +171,9 @@ async fn sync_profile_picture(
     user_id: &str,
     claims: &OidcClaims,
     user_info: Option<&OidcUserInfo>,
+    new_user: bool,
 ) -> Result<(), AppError> {
-    if let Some(picture) = profile_picture(claims, user_info) {
+    if let Some(picture) = profile_picture(claims, user_info, new_user) {
         let mut db = db.clone();
         let mut tx = db.transaction().await?;
         toasty::sql::statement("UPDATE users SET avatar_url=NULLIF($2,'') WHERE id=$1 AND avatar_url IS DISTINCT FROM NULLIF($2,'')")
@@ -281,6 +286,10 @@ pub async fn resolve_or_provision_user(
         return Ok(cached_user);
     }
 
+    let _resolution = user_cache.lock_resolution(&claims.iss, &claims.sub).await;
+    if let Some(cached_user) = user_cache.get(&claims.iss, &claims.sub).await {
+        return Ok(cached_user);
+    }
     let mut db_client = db.clone();
 
     // 2. user_identities テーブルによる既存ユーザーの検索
@@ -298,7 +307,7 @@ pub async fn resolve_or_provision_user(
         let user = User::get_by_id(&mut db_client, &identity.user_id).await?;
         let user_info =
             fetch_userinfo_for_profile(jwks_verifier, oidc_config, access_token, claims).await;
-        sync_profile_picture(db, &user.id, claims, user_info.as_ref()).await?;
+        sync_profile_picture(db, &user.id, claims, user_info.as_ref(), false).await?;
         let user =
             repair_legacy_display_name(db, user_cache, claims, user, user_info.as_ref()).await?;
 
@@ -412,7 +421,8 @@ pub async fn resolve_or_provision_user(
         match create_identity_res {
             Ok(_) => {
                 tx.commit().await?;
-                sync_profile_picture(db, &created_user.id, claims, user_info.as_ref()).await?;
+                sync_profile_picture(db, &created_user.id, claims, user_info.as_ref(), true)
+                    .await?;
                 let auth_user = AuthUser {
                     id: created_user.id,
                     user_name: created_user.user_name,
@@ -850,14 +860,18 @@ mod picture_tests {
         }))
         .unwrap();
         assert_eq!(
-            profile_picture(&claims, Some(&info)),
+            profile_picture(&claims, Some(&info), false),
             Some(info.picture.clone())
         );
-        assert_eq!(profile_picture(&claims, None), Some(claims.picture.clone()));
+        assert_eq!(
+            profile_picture(&claims, None, true),
+            Some(claims.picture.clone())
+        );
         info.picture = None;
-        assert_eq!(profile_picture(&claims, Some(&info)), Some(None));
+        assert_eq!(profile_picture(&claims, Some(&info), false), Some(None));
+        assert_eq!(profile_picture(&claims, None, false), None);
         claims.picture = None;
-        assert_eq!(profile_picture(&claims, None), None);
+        assert_eq!(profile_picture(&claims, None, true), None);
         for url in [
             "javascript:alert(1)",
             "data:image/png;base64,xxx",
@@ -866,7 +880,31 @@ mod picture_tests {
             "http://example.test/image.png",
         ] {
             info.picture = Some(url.into());
-            assert_eq!(profile_picture(&claims, Some(&info)), Some(None));
+            assert_eq!(profile_picture(&claims, Some(&info), false), Some(None));
+        }
+    }
+    #[test]
+    fn picture_checks_input_and_normalized_byte_boundaries() {
+        let claims: OidcClaims = serde_json::from_value(json!({
+            "sub":"user", "iss":"https://id.example", "aud":"zoo", "exp":9999999999u64,
+        }))
+        .unwrap();
+        let prefix = "https://example.test/";
+        for (path, valid) in [
+            ("a".repeat(2048 - prefix.len()), true),
+            ("a".repeat(2049 - prefix.len()), false),
+            ("é".repeat(400), false),
+            ("é".repeat(100), true),
+        ] {
+            let info: OidcUserInfo =
+                serde_json::from_value(json!({"sub":"user", "picture":format!("{prefix}{path}")}))
+                    .unwrap();
+            assert_eq!(
+                profile_picture(&claims, Some(&info), false)
+                    .flatten()
+                    .is_some(),
+                valid
+            );
         }
     }
 }

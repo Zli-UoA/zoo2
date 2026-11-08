@@ -46,6 +46,7 @@ jobs:
       # envsubst で CSP に埋め込まれることを確認するためのダミー IdP・ストレージオリジン。
       CSP_CONNECT_SRC: https://id.example
       CSP_STORAGE_SRC: https://storage.example
+      CSP_AVATAR_SRC: https://avatars.example
     steps:
       - name: Checkout
         uses: actions/checkout@v7
@@ -101,6 +102,9 @@ jobs:
             case "$connect" in *www.gstatic.com*) echo "Compose CSP leaked into a React-only image" >&2; exit 1 ;; esac
             # Emoji Kitchen の合成画像（#82）とストレージオリジンを許可する。
             printf "%s" "$headers" | grep -q "img-src 'self' data: blob: https://www.gstatic.com https://storage.example"
+            images=$(printf "%s" "$headers" | sed -n 's/.*img-src \([^;]*\).*/\1/p')
+            printf '%s\n' "$images" | tr ' ' '\n' | grep -Fxq 'https://avatars.example'
+            case "$images" in *avater.zliusercontent.com*) echo "Avatar CSP override was ignored" >&2; exit 1 ;; esac
           done
 
       - name: Check Emoji Kitchen catalog compression and caching

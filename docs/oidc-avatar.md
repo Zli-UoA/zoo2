@@ -1,7 +1,7 @@
 # OIDCのユーザーアイコン
 
-認証時に、検証済みのissuer・subと一致するUserInfoの`picture`を`users.avatar_url`へ同期する。初回作成と既存ユーザーの両方を対象とし、ユーザー解決キャッシュ（5分）の更新時に最新の設定を取り込む。UserInfoを優先するため、AuthZで差し替えた画像URLと削除も反映される。Discovery・UserInfoの取得と応答のデコードは全体で2秒以内とし、タイムアウト後も認証を継続する。UserInfo取得に失敗した場合は検証済みアクセストークンの`picture`を使い、両方から取得できない場合は保存済みの値を維持する。
+認証時に、検証済みのissuer・subと一致するUserInfoの`picture`を`users.avatar_url`へ同期する。初回作成と既存ユーザーの両方を対象とし、ユーザー解決キャッシュ（5分）の更新時に最新の設定を取り込む。UserInfoを優先するため、AuthZで差し替えた画像URLと削除も反映される。Discovery・UserInfoの取得と応答のデコードは全体で2秒以内とし、タイムアウト後も認証を継続する。既存ユーザーではUserInfo取得失敗時に保存済みの値を維持する。新規作成時は、UserInfo取得失敗時に検証済みアクセストークンの`picture`を初期値として使う。同じissuer・subの同時リクエストはユーザー解決を単一実行し、待機後にキャッシュを再確認する。
 
-画像URLは2048文字以内で、認証情報を含まない絶対HTTPS URLを受け付ける。UserInfoで画像が省略された場合、または画像URLが不正な場合は未設定にする。ブラウザーへURLを渡し、画像は配信元から直接取得する。AuthZの配信元`https://avater.zliusercontent.com`をWebのCSPのimg-srcへ追加する。
+画像URLは入力とURL正規化後の両方が2048バイト以内で、認証情報を含まない絶対HTTPS URLを受け付ける。UserInfoで画像が省略された場合、または画像URLが不正な場合は未設定にする。ブラウザーへURLを渡し、画像は配信元から直接取得する。AuthZの配信元`https://avater.zliusercontent.com`をWebのCSPのimg-srcへ追加する。
 
 既存のElectricのusers shapeとReact・Androidの`avatar_url`表示を利用する。TUIの認証も共通バックエンドの同期を利用する。表示名の本人編集状態は画像同期後も維持する。

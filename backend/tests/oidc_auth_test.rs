@@ -1694,3 +1694,122 @@ async fn test_slow_profile_endpoints_keep_existing_user_within_client_deadline()
     }
     Ok(())
 }
+
+#[tokio::test]
+async fn test_stale_token_picture_never_overwrites_synced_or_removed_avatar() -> anyhow::Result<()>
+{
+    let server = MockServer::start().await;
+    let (_, state, config) = setup_test_app(&server, true).await;
+    let sub = format!("stale-picture-{}", uuid::Uuid::new_v4());
+    let old = "https://avater.zliusercontent.com/avatars/old.png";
+    let new = "https://avater.zliusercontent.com/avatars/new.png";
+    let mut header = Header::new(Algorithm::RS256);
+    header.kid = Some("test-key-1".into());
+    header.typ = Some("at+jwt".into());
+    let token = encode(
+        &header,
+        &json!({
+            "sub":sub, "iss":config.issuer, "aud":config.audience,
+            "exp":jiff::Timestamp::now().as_second()+3600,
+            "name":"Stored name", "picture":old, "scope":"openid profile",
+        }),
+        &EncodingKey::from_rsa_pem(TEST_KEY1_PEM.as_bytes())?,
+    )?;
+    for (response, expected) in [
+        (ResponseTemplate::new(503), old), // Token picture initializes a new user.
+        (
+            ResponseTemplate::new(200).set_body_json(json!({"sub":sub,"picture":new})),
+            new,
+        ),
+        (ResponseTemplate::new(503), new),
+        (
+            ResponseTemplate::new(200).set_delay(std::time::Duration::from_secs(10)),
+            new,
+        ),
+        (
+            ResponseTemplate::new(200).set_body_json(json!({"sub":sub})),
+            "",
+        ),
+        (ResponseTemplate::new(503), ""),
+    ] {
+        server.reset().await;
+        mount_jwks(&server, "/.well-known/jwks.json").await;
+        mount_discovery(&server, "/.well-known/jwks.json", "/userinfo").await;
+        Mock::given(method("GET"))
+            .and(path("/userinfo"))
+            .respond_with(response)
+            .mount(&server)
+            .await;
+        let app = create_router(AppState::new(state.db.clone(), state.config.clone()));
+        let current = fetch_current_user(&app, &token).await?;
+        let mut db = state.db.clone();
+        let rows = toasty::sql::query("SELECT COALESCE(avatar_url,'') FROM users WHERE id=$1")
+            .bind(current["id"].as_str().unwrap())
+            .exec(&mut db)
+            .await?;
+        let toasty::stmt::Value::Record(record) = &rows[0] else {
+            panic!("expected record")
+        };
+        assert_eq!(
+            record.fields[0],
+            toasty::stmt::Value::String(expected.into())
+        );
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_expired_user_cache_coalesces_concurrent_userinfo_fetches() -> anyhow::Result<()> {
+    let server = MockServer::start().await;
+    let (app, state, config) = setup_test_app(&server, true).await;
+    let sub = format!("flight-{}", uuid::Uuid::new_v4());
+    let token = generate_token(
+        TEST_KEY1_PEM,
+        "test-key-1",
+        &config.issuer,
+        &config.audience,
+        &sub,
+        Some("flight_user"),
+        Some("Flight User"),
+        Some("openid profile"),
+        3600,
+    );
+    mount_jwks(&server, "/.well-known/jwks.json").await;
+    mount_discovery(&server, "/.well-known/jwks.json", "/userinfo").await;
+    Mock::given(method("GET"))
+        .and(path("/userinfo"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"sub":sub})))
+        .mount(&server)
+        .await;
+    let initial = fetch_current_user(&app, &token).await?;
+    let cached = state.user_cache.get(&config.issuer, &sub).await.unwrap();
+    state
+        .user_cache
+        .insert(
+            config.issuer.clone(),
+            sub.clone(),
+            cached,
+            std::time::Duration::ZERO,
+        )
+        .await;
+    server.reset().await;
+    mount_jwks(&server, "/.well-known/jwks.json").await;
+    mount_discovery(&server, "/.well-known/jwks.json", "/userinfo").await;
+    Mock::given(method("GET"))
+        .and(path("/userinfo"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(json!({"sub":sub}))
+                .set_delay(std::time::Duration::from_millis(150)),
+        )
+        .expect(1)
+        .mount(&server)
+        .await;
+    for response in
+        futures_util::future::join_all((0..10).map(|_| fetch_current_user(&app, &token))).await
+    {
+        assert_eq!(response?["id"], initial["id"]);
+    }
+    server.verify().await;
+    Ok(())
+}
