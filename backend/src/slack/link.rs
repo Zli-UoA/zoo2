@@ -546,7 +546,7 @@ async fn rewrite_mentions(
     // 並行して本文を編集した人の変更を上書きしないよう、読む行をロックしてから書き換える
     let rows = query(
         tx,
-        "SELECT json_build_object('id',id,'content',content)::text FROM messages \
+        "SELECT json_build_object('id',id,'content',content,'card',card)::text FROM messages \
          WHERE channel_id IN (SELECT channel_id FROM slack_channels WHERE team_id=$1) AND strpos(content,$2)>0 \
          FOR UPDATE",
         &[team, needle],
@@ -563,14 +563,42 @@ async fn rewrite_mentions(
         if rewritten.chars().count() > crate::validation::MAX_MESSAGE_CONTENT_LENGTH {
             continue;
         }
+        let card = row["card"]
+            .as_str()
+            .and_then(|card| rewrite_text_card(card, content, &rewritten))
+            .unwrap_or_default();
         exec(
             tx,
-            "UPDATE messages SET content=$2 WHERE id=$1",
-            &[id, &rewritten],
+            "UPDATE messages SET content=$2,card=COALESCE(NULLIF($3,''),card) WHERE id=$1",
+            &[id, &rewritten, &card],
         )
         .await?;
     }
     Ok(())
+}
+
+/// カードの説明文の上限 (`MessageCard::encode` と同じ)
+const MAX_CARD_DESCRIPTION: usize = 4000;
+
+/// 本文とカードの両方がある投稿は、取り込みで本文をテキストカード (`cards::text_card`) として先頭にも
+/// 保存している。カードのある投稿は本文を表示しないので、そのカードの説明文も書き換える。
+/// 先頭のカードが本文の複製のときだけ書き換えた JSON を返す (添付から作ったカードには触れない)。
+fn rewrite_text_card(card: &str, content: &str, rewritten: &str) -> Option<String> {
+    let mut value: serde_json::Value = serde_json::from_str(card).ok()?;
+    let first = match value.get_mut("cards") {
+        Some(cards) => cards.get_mut(0)?,
+        None => &mut value,
+    };
+    let copied: String = content.chars().take(MAX_CARD_DESCRIPTION).collect();
+    if first["title"] != "Webhook" || first["description"].as_str()? != copied {
+        return None;
+    }
+    first["description"] = rewritten
+        .chars()
+        .take(MAX_CARD_DESCRIPTION)
+        .collect::<String>()
+        .into();
+    Some(value.to_string())
 }
 
 /// `content` の `@name` のうち `names` にあるものを置き換える。変わらなければ `None`。

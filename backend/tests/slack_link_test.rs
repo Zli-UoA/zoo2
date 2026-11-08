@@ -255,6 +255,19 @@ async fn test_slack_account_link_reassigns_placeholder() -> anyhow::Result<()> {
         &[&mentioned, &bob, &channel, &mentions],
     )
     .await?;
+    // 本文とカードの両方がある投稿は、取り込みで本文を先頭のテキストカードにも保存している
+    let carded = uuid::Uuid::new_v4().to_string();
+    let card = json!({"cards": [
+        {"title": "Webhook", "description": format!("@{p} outage")},
+        {"title": "Status", "description": format!("@{p} in an attachment")},
+    ]})
+    .to_string();
+    exec(
+        &state,
+        "INSERT INTO messages(id,user_id,channel_id,content,created_at,card) VALUES($1,$2,$3,$4,'2024-01-01 00:00:01',$5)",
+        &[&carded, &bob, &channel, &format!("@{p} outage"), &card],
+    )
+    .await?;
     // 書き換えると上限 (40,000 文字) を超える本文は、切り詰めずにそのまま残す
     let long = uuid::Uuid::new_v4().to_string();
     let long_content = format!("@{p} {}", "x".repeat(40_000 - p.chars().count() - 2));
@@ -440,6 +453,20 @@ async fn test_slack_account_link_reassigns_placeholder() -> anyhow::Result<()> {
         format!("@{a} hi (@{a}), @{a}. @{p}x @{p}.more mail@{p}")
     );
     assert_eq!(content(unrelated.clone()).await, format!("@{p}"));
+    // カードのある投稿は本文を表示しないので、本文を複製したテキストカードも書き換える。添付のカードはそのまま
+    assert_eq!(content(carded.clone()).await, format!("@{a} outage"));
+    let stored = sql(
+        &state,
+        "SELECT json_build_object('card',card)::text FROM messages WHERE id=$1",
+        &[&carded],
+    )
+    .await?;
+    let stored: serde_json::Value = serde_json::from_str(stored[0]["card"].as_str().unwrap())?;
+    assert_eq!(stored["cards"][0]["description"], format!("@{a} outage"));
+    assert_eq!(
+        stored["cards"][1]["description"],
+        format!("@{p} in an attachment")
+    );
     assert_eq!(content(long.clone()).await, long_content);
     let reply = sql(
         &state,
