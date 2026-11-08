@@ -517,7 +517,7 @@ pub async fn http_loop_with(
             biased;
             _ = shutdown.changed() => break,
             _ = async { tokio::select! { _ = ticks.tick() => {}, _ = wake.notified() => {} } } => {
-                if let Err(e) = http_pass(&db).await {
+                if let Err(e) = http_pass_until(&db, &shutdown).await {
                     tracing::warn!(error=%e,"App delivery failed");
                 }
             }
@@ -589,11 +589,21 @@ pub async fn http_candidates(db: &toasty::Db) -> Result<Vec<Value>, AppError> {
 
 /// Run one bounded dispatch batch, also used by the periodic worker.
 pub async fn http_pass(db: &toasty::Db) -> Result<(), AppError> {
+    let (_keep, never_stops) = tokio::sync::watch::channel(false);
+    http_pass_until(db, &never_stops).await
+}
+
+/// `http_pass`。`stop` が true になった後は、バッチの途中でも新しいリースを取らない
+/// （取得済みの送信と ACK だけ終える）。
+pub async fn http_pass_until(
+    db: &toasty::Db,
+    stop: &tokio::sync::watch::Receiver<bool>,
+) -> Result<(), AppError> {
     let installs = http_candidates(db).await?;
     let results = futures_util::stream::iter(installs)
         .map(|i| async move {
             let sends = futures_util::stream::iter(0..32)
-                .map(|_| http_install(db, i.clone()))
+                .map(|_| http_install(db, i.clone(), stop))
                 .buffer_unordered(32)
                 .collect::<Vec<_>>()
                 .await;
@@ -612,8 +622,15 @@ pub async fn http_pass(db: &toasty::Db) -> Result<(), AppError> {
     Ok(())
 }
 
-async fn http_install(db: &toasty::Db, i: Value) -> Result<(), AppError> {
+async fn http_install(
+    db: &toasty::Db,
+    i: Value,
+    stop: &tokio::sync::watch::Receiver<bool>,
+) -> Result<(), AppError> {
     let id = i["id"].as_str().unwrap();
+    if *stop.borrow() {
+        return Ok(());
+    }
     if let Some(event) = claim(db, id).await? {
         match tokio::time::timeout(
             Duration::from_secs(3),
