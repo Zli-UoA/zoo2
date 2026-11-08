@@ -7,6 +7,7 @@ import {
   targetChoices,
   uploadSlackExport,
   splitSlackImports,
+  slackImportsSnapshot,
   type PutWithProgress,
   type SlackChannelSummary,
   type SlackImport,
@@ -194,5 +195,20 @@ describe("uploadSlackExport", () => {
       uploadSlackExport(client, { name: "a.zip", size: 1 } as File, vi.fn(), put),
     ).rejects.toThrow("network");
     expect(request).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("slackImportsSnapshot", () => {
+  it("changes when jobs or their statuses change, not when only the progress does", () => {
+    const job = {
+      id: "run-1",
+      status: "fetching_files",
+      processed_messages: 1,
+      processed_files: 0,
+    } as unknown as SlackImport;
+    const base = slackImportsSnapshot([job]);
+    expect(slackImportsSnapshot([{ ...job, processed_files: 5 } as SlackImport])).toBe(base);
+    expect(slackImportsSnapshot([{ ...job, status: "completed" } as SlackImport])).not.toBe(base);
+    expect(slackImportsSnapshot([job, { ...job, id: "run-2" } as SlackImport])).not.toBe(base);
   });
 });

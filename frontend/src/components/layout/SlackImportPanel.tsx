@@ -14,6 +14,7 @@ import {
   mappingFor,
   splitSlackImports,
   retryableFiles,
+  slackImportsSnapshot,
   startSlackImport,
   targetChoices,
   uploadSlackExport,
@@ -45,7 +46,8 @@ export function SlackImportPanel({ put }: { put?: PutWithProgress }) {
   const fileInput = useRef<HTMLInputElement>(null);
   // アップロード中のジョブ。そのジョブを取り消したら、ブラウザからの PUT も止める
   const uploading = useRef<{ id: string | null; controller: AbortController } | null>(null);
-  // 操作のエラーを出したときに取り直した一覧。サーバーの状態がこれから変わったら、エラーは古いので消す
+  // 操作のエラーを出したときに取り直した一覧 (ジョブの ID と状態)。ジョブが増減したり状態が変わったりしたら、
+  // エラーは古いので消す。進み具合の件数だけの変化では消さない
   const errorSnapshot = useRef<string | null>(null);
 
   const running = imports?.some((job) => SLACK_IMPORT_RUNNING.includes(job.status)) ?? false;
@@ -57,7 +59,7 @@ export function SlackImportPanel({ put }: { put?: PutWithProgress }) {
           if (controller.signal.aborted) return;
           setImports(value);
           setLoadError("");
-          const snapshot = JSON.stringify(value);
+          const snapshot = slackImportsSnapshot(value);
           if (errorSnapshot.current === "") errorSnapshot.current = snapshot;
           else if (errorSnapshot.current !== null && errorSnapshot.current !== snapshot) {
             errorSnapshot.current = null;

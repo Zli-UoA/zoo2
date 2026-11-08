@@ -171,6 +171,14 @@ export async function uploadSlackExport(
   return client.request<SlackImport>(`${BASE}/${created.import.id}/uploaded`, { method: "POST" });
 }
 
+/**
+ * 操作のエラーを消してよいかを決めるための、一覧の状態の要約 (ジョブの ID と状態の組)。
+ * 進行中のジョブの件数 (`processed_messages` など) は 2 秒ごとに変わるので含めない
+ */
+export function slackImportsSnapshot(imports: SlackImport[]): string {
+  return JSON.stringify(imports.map((job) => [job.id, job.status]));
+}
+
 /** エクスポート (アップロードした ZIP) か。取り込みのジョブは `source_id` を持つ */
 export function isSlackExport(job: SlackImport): boolean {
   return !job.source_id;
