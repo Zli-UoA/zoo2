@@ -8,7 +8,9 @@ Compose for Web は、動作が重く実用に耐えないため実験を中止�
 - CI Compose Web は手動実行だけの実験資料とし、PR・main・マージキューでは実行しません。通常の Web イメージと Storybook プレビューでは Wasm を生成しません。
 - `frontend-compose/` は Android の実装でもあるため保持します。`commonMain`、`androidMain`、`androidApp`、Electric4k、翻訳・フォント・アイコン生成を引き続き保守します。
 - 共通 Kotlin・API・認証・同期の変更では Android への影響を確認し、必要な修正と検証を同じ PR に含めます。手順は [Android 版](android.md) を参照してください。
-- Web 専用コード、切替導線、カタログ、テスト、性能計測結果は過去の実験資料として保持します。削除・再開は今回の変更に含めません。
+- Web 専用コード、切替導線、カタログ、テスト、性能計測結果は過去の実験資料として保持します。通常配布では切替ボタンを非表示にし、URL・保存済み選択が Compose でも React を使用します。手動で再現する場合だけ `VITE_EXPERIMENTAL_COMPOSE=true` と Wasm の生成が必要です。削除・再開は今回の変更に含めません。
+
+Storybook の Kotlin 登録検査は通常の unit プロジェクトから除外し、手動の `pnpm exec vp test --project compose-archive` に移しました。React の Story は通常の `play` 関数で追加でき、`playForImplementation` は必須にしません。`frontend-compose/` だけの変更では通常の Web イメージを再ビルドしません。
 
 以下は実験終了時点の実装・再現手順の記録です。現行の開発義務や配布方針を示すものではありません。
 

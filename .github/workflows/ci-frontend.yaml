@@ -234,6 +234,10 @@ jobs:
       - name: i18n browser tests
         run: pnpm test:e2e:i18n
 
+      - name: Retired Compose selection falls back to React
+        working-directory: frontend
+        run: pnpm exec playwright test --config playwright.frontend-selection.config.ts
+
       - name: Message layout browser tests
         run: pnpm test:e2e:layout
 
