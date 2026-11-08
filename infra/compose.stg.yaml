@@ -63,6 +63,7 @@ services:
       # CSP の connect-src / img-src に足す添付ファイル用ストレージ（R2 等）のオリジン（空白区切り）。
       CSP_STORAGE_SRC: ${CSP_STORAGE_SRC:-}
       CSP_APP_IMAGE_SRC: ${CSP_APP_IMAGE_SRC:-}
+      CSP_AVATAR_SRC: ${CSP_AVATAR_SRC:-https://avater.zliusercontent.com}
       MEDIA_PROXY_URL: ${MEDIA_PROXY_URL:-}
       SUMMALY_URL: ${SUMMALY_URL:-}
     networks:

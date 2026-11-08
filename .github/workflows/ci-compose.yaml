@@ -87,7 +87,8 @@ jobs:
       - name: Check rapid input with a populated Compose timeline
         working-directory: frontend
         # Record timings, but gate only rendering/input correctness, not shared-runner FPS.
-        run: pnpm exec playwright test --config playwright.compose-performance.config.ts -g 'compose: performance sample 1'
+        run: >-
+          pnpm exec playwright test --config playwright.compose-performance.config.ts -g 'compose: performance sample 1'
       - name: Test production CSP and offline reload
         working-directory: frontend
         run: pnpm exec playwright test --config playwright.compose-production.config.ts

@@ -1237,7 +1237,7 @@ async fn test_userinfo_provides_jit_profile_names() -> anyhow::Result<()> {
 }
 
 #[tokio::test]
-async fn test_userinfo_failure_falls_back_to_user() -> anyhow::Result<()> {
+async fn test_userinfo_failure_without_names_returns_retryable_error() -> anyhow::Result<()> {
     let mock_server = MockServer::start().await;
     let jwks_path = "/.well-known/jwks.json";
     let userinfo_path = "/oauth2/openid/zoo-client/userinfo";
@@ -1250,14 +1250,15 @@ async fn test_userinfo_failure_falls_back_to_user() -> anyhow::Result<()> {
         .mount(&mock_server)
         .await;
 
-    let (app, _state, oidc_cfg) = setup_test_app(&mock_server, true).await;
+    let (app, state, oidc_cfg) = setup_test_app(&mock_server, true).await;
 
+    let sub = format!("userinfo-failure-sub-{}", uuid::Uuid::new_v4().simple());
     let token = generate_token(
         TEST_KEY1_PEM,
         "test-key-1",
         &oidc_cfg.issuer,
         &oidc_cfg.audience,
-        &format!("userinfo-failure-sub-{}", uuid::Uuid::new_v4().simple()),
+        &sub,
         None,
         None,
         None,
@@ -1270,23 +1271,22 @@ async fn test_userinfo_failure_falls_back_to_user() -> anyhow::Result<()> {
         .body(Body::empty())?;
 
     let resp = app.oneshot(req).await?;
-    assert_eq!(resp.status(), StatusCode::OK);
-
-    let body = to_bytes(resp.into_body(), usize::MAX).await?;
-    let user_json: Value = serde_json::from_slice(&body)?;
-    // UserInfo が失敗してもログインは継続し、従来のフォールバックが使われる
-    assert_eq!(user_json["display_name"], "user");
-    assert!(
-        user_json["user_name"]
-            .as_str()
-            .is_some_and(|name| name.starts_with("user"))
-    );
-
+    assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
+    let mut db = state.db.clone();
+    let identities = UserIdentity::filter(
+        UserIdentity::fields()
+            .iss()
+            .eq(&oidc_cfg.issuer)
+            .and(UserIdentity::fields().sub().eq(&sub)),
+    )
+    .exec(&mut db)
+    .await?;
+    assert!(identities.is_empty());
     Ok(())
 }
 
 #[tokio::test]
-async fn test_userinfo_subject_mismatch_falls_back_to_user() -> anyhow::Result<()> {
+async fn test_userinfo_subject_mismatch_prevents_new_user_creation() -> anyhow::Result<()> {
     let mock_server = MockServer::start().await;
     let jwks_path = "/.well-known/jwks.json";
     let userinfo_path = "/oauth2/openid/zoo-client/userinfo";
@@ -1323,13 +1323,7 @@ async fn test_userinfo_subject_mismatch_falls_back_to_user() -> anyhow::Result<(
         .body(Body::empty())?;
 
     let resp = app.oneshot(req).await?;
-    assert_eq!(resp.status(), StatusCode::OK);
-
-    let body = to_bytes(resp.into_body(), usize::MAX).await?;
-    let user_json: Value = serde_json::from_slice(&body)?;
-    // sub が一致しない UserInfo は採用せず、フォールバックする
-    assert_eq!(user_json["display_name"], "user");
-
+    assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
     Ok(())
 }
 
@@ -1350,6 +1344,7 @@ async fn test_legacy_display_name_repaired_once_without_overwriting_edits() -> a
     let (app, state, oidc_cfg) = setup_test_app(&mock_server, true).await;
 
     let sub = format!("legacy-sub-{}", uuid::Uuid::new_v4().simple());
+    seed_legacy_identity(&state, &oidc_cfg, &sub).await?;
     let token = generate_token(
         TEST_KEY1_PEM,
         "test-key-1",
@@ -1362,7 +1357,7 @@ async fn test_legacy_display_name_repaired_once_without_overwriting_edits() -> a
         3600,
     );
 
-    // 1. UserInfo 障害時に旧フォールバックでユーザーが作成される
+    // 1. 既存の旧フォールバックユーザーを障害時にも利用できる
     let req = Request::builder()
         .uri("/api/users/me")
         .header("Authorization", format!("Bearer {token}"))
@@ -1439,7 +1434,7 @@ async fn test_display_name_repair_does_not_overwrite_concurrent_user_edit() -> a
     let jwks_path = "/.well-known/jwks.json";
     let userinfo_path = "/oauth2/openid/zoo-client/userinfo";
 
-    // 1. UserInfo 障害時に旧フォールバックでユーザーを作成する
+    // 1. 既存の旧フォールバックユーザーに対するUserInfo障害を再現する
     mount_jwks(&mock_server, jwks_path).await;
     mount_discovery(&mock_server, jwks_path, userinfo_path).await;
     Mock::given(method("GET"))
@@ -1451,6 +1446,7 @@ async fn test_display_name_repair_does_not_overwrite_concurrent_user_edit() -> a
     let (app, state, oidc_cfg) = setup_test_app(&mock_server, true).await;
 
     let sub = format!("concurrent-edit-sub-{}", uuid::Uuid::new_v4().simple());
+    seed_legacy_identity(&state, &oidc_cfg, &sub).await?;
     let token = generate_token(
         TEST_KEY1_PEM,
         "test-key-1",
@@ -1541,5 +1537,654 @@ async fn test_display_name_repair_does_not_overwrite_concurrent_user_edit() -> a
     let stored_user = User::get_by_id(&mut db, user_id.as_str()).await?;
     assert_eq!(stored_user.display_name, "Edited By User");
 
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_oidc_picture_syncs_creation_change_failure_and_removal() -> anyhow::Result<()> {
+    let server = MockServer::start().await;
+    let (app, state, config) = setup_test_app(&server, false).await;
+    let sub = format!("picture-{}", uuid::Uuid::new_v4());
+    let token = generate_token(
+        TEST_KEY1_PEM,
+        "test-key-1",
+        &config.issuer,
+        &config.audience,
+        &sub,
+        Some("picture_user"),
+        Some("Edited name"),
+        Some("openid profile"),
+        3600,
+    );
+    let mut user_id = String::new();
+    for (index, picture) in [
+        Some("https://avater.zliusercontent.com/avatars/first.png"),
+        Some("https://avater.zliusercontent.com/avatars/next.png"),
+        Some("failure"),
+        None,
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        server.reset().await;
+        mount_jwks(&server, "/jwks").await;
+        mount_discovery(&server, "/jwks", "/userinfo").await;
+        let response = if picture == Some("failure") {
+            ResponseTemplate::new(503)
+        } else {
+            ResponseTemplate::new(200).set_body_json(json!({"sub": sub, "picture": picture}))
+        };
+        Mock::given(method("GET"))
+            .and(path("/userinfo"))
+            .respond_with(response)
+            .mount(&server)
+            .await;
+        let current_app = if index == 0 {
+            app.clone()
+        } else {
+            create_router(AppState::new(state.db.clone(), state.config.clone()))
+        };
+        let user = fetch_current_user(&current_app, &token).await?;
+        if index == 0 {
+            user_id = user["id"].as_str().unwrap().to_string();
+        }
+        assert_eq!(user["id"], user_id);
+        assert_eq!(user["display_name"], "Edited name");
+        let mut db = state.db.clone();
+        let rows = toasty::sql::query("SELECT COALESCE(avatar_url,'') FROM users WHERE id=$1")
+            .bind(user_id.as_str())
+            .exec(&mut db)
+            .await?;
+        let toasty::stmt::Value::Record(record) = &rows[0] else {
+            panic!("expected record")
+        };
+        let expected = if picture == Some("failure") {
+            "https://avater.zliusercontent.com/avatars/next.png"
+        } else {
+            picture.unwrap_or("")
+        };
+        assert_eq!(
+            record.fields[0],
+            toasty::stmt::Value::String(expected.into())
+        );
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_slow_profile_endpoints_keep_existing_user_within_client_deadline()
+-> anyhow::Result<()> {
+    use std::time::Duration;
+    let server = MockServer::start().await;
+    let (app, state, config) = setup_test_app(&server, true).await;
+    let sub = format!("slow-picture-{}", uuid::Uuid::new_v4());
+    let token = generate_token(
+        TEST_KEY1_PEM,
+        "test-key-1",
+        &config.issuer,
+        &config.audience,
+        &sub,
+        Some("slow_picture_user"),
+        Some("Stored name"),
+        Some("openid profile"),
+        3600,
+    );
+    let picture = "https://avater.zliusercontent.com/avatars/stored.png";
+    mount_jwks(&server, "/.well-known/jwks.json").await;
+    mount_discovery(&server, "/.well-known/jwks.json", "/userinfo").await;
+    Mock::given(method("GET"))
+        .and(path("/userinfo"))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(json!({"sub": sub, "picture": picture})),
+        )
+        .mount(&server)
+        .await;
+    let original = fetch_current_user(&app, &token).await?;
+
+    for slow_discovery in [false, true] {
+        server.reset().await;
+        mount_jwks(&server, "/.well-known/jwks.json").await;
+        let mut discovery = ResponseTemplate::new(200).set_body_json(discovery_body(
+            &server,
+            "/.well-known/jwks.json",
+            "/userinfo",
+        ));
+        let mut info =
+            ResponseTemplate::new(200).set_body_json(json!({"sub": sub, "picture": null}));
+        if slow_discovery {
+            discovery = discovery.set_delay(Duration::from_secs(10));
+        } else {
+            info = info.set_delay(Duration::from_secs(10));
+        }
+        Mock::given(method("GET"))
+            .and(path("/.well-known/openid-configuration"))
+            .respond_with(discovery)
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/userinfo"))
+            .respond_with(info)
+            .mount(&server)
+            .await;
+        // A fresh resolution cache models an expired cache without waiting five minutes.
+        let current_app = create_router(AppState::new(state.db.clone(), state.config.clone()));
+        let current = tokio::time::timeout(
+            Duration::from_secs(4),
+            fetch_current_user(&current_app, &token),
+        )
+        .await??;
+        assert_eq!(current["id"], original["id"]);
+        assert_eq!(current["display_name"], "Stored name");
+        let mut db = state.db.clone();
+        let rows = toasty::sql::query("SELECT avatar_url FROM users WHERE id=$1")
+            .bind(original["id"].as_str().unwrap())
+            .exec(&mut db)
+            .await?;
+        let toasty::stmt::Value::Record(record) = &rows[0] else {
+            panic!("expected record")
+        };
+        assert_eq!(
+            record.fields[0],
+            toasty::stmt::Value::String(picture.into())
+        );
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_stale_token_picture_never_overwrites_synced_or_removed_avatar() -> anyhow::Result<()>
+{
+    let server = MockServer::start().await;
+    let (_, state, config) = setup_test_app(&server, true).await;
+    let sub = format!("stale-picture-{}", uuid::Uuid::new_v4());
+    let old = "https://avater.zliusercontent.com/avatars/old.png";
+    let new = "https://avater.zliusercontent.com/avatars/new.png";
+    let mut header = Header::new(Algorithm::RS256);
+    header.kid = Some("test-key-1".into());
+    header.typ = Some("at+jwt".into());
+    let token = encode(
+        &header,
+        &json!({
+            "sub":sub, "iss":config.issuer, "aud":config.audience,
+            "exp":jiff::Timestamp::now().as_second()+3600,
+            "name":"Stored name", "preferred_username":"stale_picture_user", "picture":old, "scope":"openid profile",
+        }),
+        &EncodingKey::from_rsa_pem(TEST_KEY1_PEM.as_bytes())?,
+    )?;
+    for (response, expected) in [
+        (ResponseTemplate::new(503), old), // Token picture initializes a new user.
+        (
+            ResponseTemplate::new(200).set_body_json(json!({"sub":sub,"picture":new})),
+            new,
+        ),
+        (ResponseTemplate::new(503), new),
+        (
+            ResponseTemplate::new(200).set_delay(std::time::Duration::from_secs(10)),
+            new,
+        ),
+        (
+            ResponseTemplate::new(200).set_body_json(json!({"sub":sub})),
+            "",
+        ),
+        (ResponseTemplate::new(503), ""),
+    ] {
+        server.reset().await;
+        mount_jwks(&server, "/.well-known/jwks.json").await;
+        mount_discovery(&server, "/.well-known/jwks.json", "/userinfo").await;
+        Mock::given(method("GET"))
+            .and(path("/userinfo"))
+            .respond_with(response)
+            .mount(&server)
+            .await;
+        let app = create_router(AppState::new(state.db.clone(), state.config.clone()));
+        let current = fetch_current_user(&app, &token).await?;
+        let mut db = state.db.clone();
+        let rows = toasty::sql::query("SELECT COALESCE(avatar_url,'') FROM users WHERE id=$1")
+            .bind(current["id"].as_str().unwrap())
+            .exec(&mut db)
+            .await?;
+        let toasty::stmt::Value::Record(record) = &rows[0] else {
+            panic!("expected record")
+        };
+        assert_eq!(
+            record.fields[0],
+            toasty::stmt::Value::String(expected.into())
+        );
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_expired_user_cache_coalesces_concurrent_userinfo_fetches() -> anyhow::Result<()> {
+    let server = MockServer::start().await;
+    let (app, state, config) = setup_test_app(&server, true).await;
+    let sub = format!("flight-{}", uuid::Uuid::new_v4());
+    let token = generate_token(
+        TEST_KEY1_PEM,
+        "test-key-1",
+        &config.issuer,
+        &config.audience,
+        &sub,
+        Some("flight_user"),
+        Some("Flight User"),
+        Some("openid profile"),
+        3600,
+    );
+    mount_jwks(&server, "/.well-known/jwks.json").await;
+    mount_discovery(&server, "/.well-known/jwks.json", "/userinfo").await;
+    Mock::given(method("GET"))
+        .and(path("/userinfo"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"sub":sub})))
+        .mount(&server)
+        .await;
+    let initial = fetch_current_user(&app, &token).await?;
+    let cached = state.user_cache.get(&config.issuer, &sub).await.unwrap();
+    state
+        .user_cache
+        .insert(
+            config.issuer.clone(),
+            sub.clone(),
+            cached,
+            std::time::Duration::ZERO,
+        )
+        .await;
+    server.reset().await;
+    mount_jwks(&server, "/.well-known/jwks.json").await;
+    mount_discovery(&server, "/.well-known/jwks.json", "/userinfo").await;
+    Mock::given(method("GET"))
+        .and(path("/userinfo"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(json!({"sub":sub}))
+                .set_delay(std::time::Duration::from_millis(150)),
+        )
+        .expect(1)
+        .mount(&server)
+        .await;
+    for response in
+        futures_util::future::join_all((0..10).map(|_| fetch_current_user(&app, &token))).await
+    {
+        assert_eq!(response?["id"], initial["id"]);
+    }
+    server.verify().await;
+    Ok(())
+}
+
+async fn seed_legacy_identity(
+    state: &AppState,
+    config: &OidcConfig,
+    sub: &str,
+) -> anyhow::Result<()> {
+    let id = uuid::Uuid::new_v4().to_string();
+    let mut db = state.db.clone();
+    let mut tx = db.transaction().await?;
+    let now = backend::models::now_utc_millis();
+    toasty::create!(User {
+        id: id.as_str(),
+        user_name: format!("legacy_{}", uuid::Uuid::new_v4().simple()),
+        display_name: "user",
+        is_bot: false,
+        created_at: now,
+        updated_at: None
+    })
+    .exec(&mut tx)
+    .await?;
+    toasty::create!(UserIdentity {
+        id: uuid::Uuid::new_v4().to_string(),
+        user_id: id.as_str(),
+        iss: config.issuer.as_str(),
+        sub,
+        created_at: now,
+        updated_at: None
+    })
+    .exec(&mut tx)
+    .await?;
+    tx.commit().await?;
+    Ok(())
+}
+
+async fn stored_avatar(state: &AppState, id: &str) -> anyhow::Result<String> {
+    let mut db = state.db.clone();
+    let rows = toasty::sql::query("SELECT COALESCE(avatar_url,'') FROM users WHERE id=$1")
+        .bind(id)
+        .exec(&mut db)
+        .await?;
+    if let toasty::stmt::Value::Record(record) = &rows[0]
+        && let toasty::stmt::Value::String(value) = &record.fields[0]
+    {
+        return Ok(value.clone());
+    }
+    anyhow::bail!("expected avatar string")
+}
+
+#[tokio::test]
+async fn test_first_login_waits_for_names_beyond_refresh_deadline() -> anyhow::Result<()> {
+    let server = MockServer::start().await;
+    let (app, state, config) = setup_test_app(&server, true).await;
+    let sub = format!("first-slow-{}", uuid::Uuid::new_v4());
+    let username = format!("real_{}", uuid::Uuid::new_v4().simple());
+    let token = generate_token(
+        TEST_KEY1_PEM,
+        "test-key-1",
+        &config.issuer,
+        &config.audience,
+        &sub,
+        None,
+        None,
+        Some("openid profile"),
+        3600,
+    );
+    mount_jwks(&server, "/.well-known/jwks.json").await;
+    Mock::given(method("GET"))
+        .and(path("/.well-known/openid-configuration"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(discovery_body(
+                    &server,
+                    "/.well-known/jwks.json",
+                    "/userinfo",
+                ))
+                .set_delay(std::time::Duration::from_millis(1200)),
+        )
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/userinfo"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(
+                    json!({"sub":sub,"preferred_username":username,"name":"Actual Name"}),
+                )
+                .set_delay(std::time::Duration::from_millis(1300)),
+        )
+        .expect(1)
+        .mount(&server)
+        .await;
+    let user = tokio::time::timeout(
+        std::time::Duration::from_secs(7),
+        fetch_current_user(&app, &token),
+    )
+    .await??;
+    assert_eq!(user["user_name"], username);
+    assert_eq!(user["display_name"], "Actual Name");
+    let mut db = state.db.clone();
+    assert_eq!(
+        UserIdentity::filter(
+            UserIdentity::fields()
+                .iss()
+                .eq(&config.issuer)
+                .and(UserIdentity::fields().sub().eq(&sub))
+        )
+        .exec(&mut db)
+        .await?
+        .len(),
+        1
+    );
+    server.verify().await;
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_initial_timeout_coalesces_failure_and_retries_without_placeholder_user()
+-> anyhow::Result<()> {
+    let server = MockServer::start().await;
+    let (app, state, config) = setup_test_app(&server, true).await;
+    let sub = format!("initial-timeout-{}", uuid::Uuid::new_v4());
+    let token = generate_token(
+        TEST_KEY1_PEM,
+        "test-key-1",
+        &config.issuer,
+        &config.audience,
+        &sub,
+        None,
+        None,
+        Some("openid profile"),
+        3600,
+    );
+    mount_jwks(&server, "/.well-known/jwks.json").await;
+    mount_discovery(&server, "/.well-known/jwks.json", "/userinfo").await;
+    Mock::given(method("GET"))
+        .and(path("/userinfo"))
+        .respond_with(ResponseTemplate::new(200).set_delay(std::time::Duration::from_secs(10)))
+        .expect(1)
+        .mount(&server)
+        .await;
+    let requests = (0..10).map(|_| {
+        let app = app.clone();
+        let token = token.clone();
+        async move {
+            app.oneshot(
+                Request::builder()
+                    .uri("/api/users/me")
+                    .header("Authorization", format!("Bearer {token}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+        }
+    });
+    let responses = tokio::time::timeout(
+        std::time::Duration::from_millis(7500),
+        futures_util::future::join_all(requests),
+    )
+    .await?;
+    for response in responses {
+        assert_eq!(response?.status(), StatusCode::SERVICE_UNAVAILABLE);
+    }
+    let mut db = state.db.clone();
+    assert!(
+        UserIdentity::filter(
+            UserIdentity::fields()
+                .iss()
+                .eq(&config.issuer)
+                .and(UserIdentity::fields().sub().eq(&sub))
+        )
+        .exec(&mut db)
+        .await?
+        .is_empty()
+    );
+    server.verify().await;
+    server.reset().await;
+    let username = format!("recovered_{}", uuid::Uuid::new_v4().simple());
+    Mock::given(method("GET"))
+        .and(path("/userinfo"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(json!({"sub":sub,"preferred_username":username,"name":"Recovered"})),
+        )
+        .expect(1)
+        .mount(&server)
+        .await;
+    tokio::time::sleep(std::time::Duration::from_millis(5010)).await;
+    let user = fetch_current_user(&app, &token).await?;
+    assert_eq!(user["user_name"], username);
+    assert_eq!(user["display_name"], "Recovered");
+    server.verify().await;
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_profile_scope_controls_avatar_updates_across_client_tokens() -> anyhow::Result<()> {
+    let server = MockServer::start().await;
+    let (app, state, config) = setup_test_app(&server, true).await;
+    let sub = format!("scope-picture-{}", uuid::Uuid::new_v4());
+    let picture = "https://avater.zliusercontent.com/avatars/kept.png";
+    let token = generate_token(
+        TEST_KEY1_PEM,
+        "test-key-1",
+        &config.issuer,
+        &config.audience,
+        &sub,
+        Some("scope_picture_user"),
+        Some("Scoped User"),
+        Some("openid profile"),
+        3600,
+    );
+    mount_jwks(&server, "/.well-known/jwks.json").await;
+    mount_discovery(&server, "/.well-known/jwks.json", "/userinfo").await;
+    Mock::given(method("GET"))
+        .and(path("/userinfo"))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(json!({"sub":sub,"picture":picture})),
+        )
+        .mount(&server)
+        .await;
+    let user = fetch_current_user(&app, &token).await?;
+    server.reset().await;
+    Mock::given(method("GET"))
+        .and(path("/userinfo"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"sub":sub})))
+        .expect(0)
+        .mount(&server)
+        .await;
+    for scope in [
+        json!("openid offline_access"),
+        json!(["openid"]),
+        json!(null),
+    ] {
+        let cached = state.user_cache.get(&config.issuer, &sub).await.unwrap();
+        state
+            .user_cache
+            .insert(
+                config.issuer.clone(),
+                sub.clone(),
+                cached,
+                std::time::Duration::ZERO,
+            )
+            .await;
+        let mut header = Header::new(Algorithm::RS256);
+        header.kid = Some("test-key-1".into());
+        header.typ = Some("at+jwt".into());
+        let limited_token = encode(
+            &header,
+            &json!({"sub":sub,"iss":config.issuer,"aud":config.audience,
+            "exp":jiff::Timestamp::now().as_second()+3600,"scope":scope}),
+            &EncodingKey::from_rsa_pem(TEST_KEY1_PEM.as_bytes())?,
+        )?;
+        assert_eq!(
+            fetch_current_user(&app, &limited_token).await?["id"],
+            user["id"]
+        );
+        assert_eq!(
+            stored_avatar(&state, user["id"].as_str().unwrap()).await?,
+            picture
+        );
+    }
+    server.verify().await;
+    server.reset().await;
+    Mock::given(method("GET"))
+        .and(path("/userinfo"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"sub":sub})))
+        .expect(1)
+        .mount(&server)
+        .await;
+    let cached = state.user_cache.get(&config.issuer, &sub).await.unwrap();
+    state
+        .user_cache
+        .insert(
+            config.issuer.clone(),
+            sub.clone(),
+            cached,
+            std::time::Duration::ZERO,
+        )
+        .await;
+    fetch_current_user(&app, &token).await?;
+    assert_eq!(
+        stored_avatar(&state, user["id"].as_str().unwrap()).await?,
+        ""
+    );
+    server.verify().await;
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_userinfo_rate_limit_keeps_existing_profile_and_retries_new_registration()
+-> anyhow::Result<()> {
+    let server = MockServer::start().await;
+    let (app, state, config) = setup_test_app(&server, true).await;
+    let sub = format!("rate-profile-{}", uuid::Uuid::new_v4());
+    let token = generate_token(
+        TEST_KEY1_PEM,
+        "test-key-1",
+        &config.issuer,
+        &config.audience,
+        &sub,
+        Some("rate_profile_user"),
+        Some("Rate Profile"),
+        Some("openid profile"),
+        3600,
+    );
+    let picture = "https://avater.zliusercontent.com/avatars/rate-kept.png";
+    mount_jwks(&server, "/.well-known/jwks.json").await;
+    mount_discovery(&server, "/.well-known/jwks.json", "/userinfo").await;
+    Mock::given(method("GET"))
+        .and(path("/userinfo"))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(json!({"sub":sub,"picture":picture})),
+        )
+        .mount(&server)
+        .await;
+    let user = fetch_current_user(&app, &token).await?;
+    server.reset().await;
+    Mock::given(method("GET"))
+        .and(path("/userinfo"))
+        .respond_with(ResponseTemplate::new(429))
+        .expect(2)
+        .mount(&server)
+        .await;
+    let cached = state.user_cache.get(&config.issuer, &sub).await.unwrap();
+    state
+        .user_cache
+        .insert(
+            config.issuer.clone(),
+            sub.clone(),
+            cached,
+            std::time::Duration::ZERO,
+        )
+        .await;
+    for _ in 0..3 {
+        assert_eq!(fetch_current_user(&app, &token).await?["id"], user["id"]);
+    }
+    assert_eq!(
+        stored_avatar(&state, user["id"].as_str().unwrap()).await?,
+        picture
+    );
+    let new_sub = format!("new-rate-profile-{}", uuid::Uuid::new_v4());
+    let new_token = generate_token(
+        TEST_KEY1_PEM,
+        "test-key-1",
+        &config.issuer,
+        &config.audience,
+        &new_sub,
+        None,
+        None,
+        Some("openid profile"),
+        3600,
+    );
+    for _ in 0..3 {
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/api/users/me")
+                    .header("Authorization", format!("Bearer {new_token}"))
+                    .body(Body::empty())?,
+            )
+            .await?;
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+    }
+    let mut db = state.db.clone();
+    assert!(
+        UserIdentity::filter(
+            UserIdentity::fields()
+                .iss()
+                .eq(&config.issuer)
+                .and(UserIdentity::fields().sub().eq(&new_sub))
+        )
+        .exec(&mut db)
+        .await?
+        .is_empty()
+    );
+    server.verify().await;
     Ok(())
 }

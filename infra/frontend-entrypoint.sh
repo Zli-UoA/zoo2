@@ -19,6 +19,8 @@ endpoint_origin() {
     *) echo "Preview endpoint must be HTTPS or a same-origin path" >&2; return 1 ;;
   esac
 }
+CSP_AVATAR_SRC="$(endpoint_origin "${CSP_AVATAR_SRC:-https://avater.zliusercontent.com}")"
+export CSP_AVATAR_SRC
 MEDIA_PROXY_URL="${MEDIA_PROXY_URL:-}"
 SUMMALY_URL="${SUMMALY_URL:-}"
 CSP_MEDIA_PROXY_SRC="$(endpoint_origin "$MEDIA_PROXY_URL")"
