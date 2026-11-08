@@ -2169,26 +2169,41 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "29666d0abbfad1e3dc4dcf6144730dd3a3ab225bbbdac83319345b1b44ccfc1b"
 
 [[package]]
-name = "zoo2-tui"
+name = "zoo2-client-core"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "crossterm",
  "directories",
  "emojis",
  "futures-util",
  "jiff",
- "ratatui",
  "reqwest",
  "serde",
  "serde_json",
  "thiserror",
  "tokio",
  "toml",
+ "url",
+ "uuid",
+]
+
+[[package]]
+name = "zoo2-tui"
+version = "0.1.2"
+dependencies = [
+ "anyhow",
+ "crossterm",
+ "emojis",
+ "futures-util",
+ "jiff",
+ "ratatui",
+ "reqwest",
+ "serde_json",
+ "tokio",
  "tui-textarea",
  "unicode-segmentation",
  "unicode-width 0.2.0",
- "url",
  "uuid",
  "wiremock",
+ "zoo2-client-core",
 ]

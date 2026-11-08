@@ -73,7 +73,7 @@ sdk-test:
 	node --experimental-strip-types --test sdk/src/index.test.ts
 
 # TUI クライアント。tui-dev は backend の dev モード (make backend-dev) に X-Dev-User で接続する。
-.PHONY: tui-dev tui-build tui-check
+.PHONY: tui-dev tui-build tui-check desktop-dev desktop-build desktop-check
 tui-dev:
 	cd tui && ZOO_API_BASE_URL=$${ZOO_API_BASE_URL:-http://localhost:8000} ZOO_DEV_USER=$${ZOO_DEV_USER:-00000000-0000-0000-0000-000000000001} cargo run -- run
 
@@ -81,4 +81,16 @@ tui-build:
 	cd tui && cargo build --release
 
 tui-check:
+	cd client-core && cargo fmt --check && cargo clippy --all-targets -- -D warnings && cargo test
 	cd tui && cargo fmt --check && cargo clippy --all-targets -- -D warnings && cargo test
+
+# デスクトップクライアント (GPUI)。desktop-dev は backend の dev モードに X-Dev-User で接続する。
+desktop-dev:
+	cd desktop && ZOO_API_BASE_URL=$${ZOO_API_BASE_URL:-http://localhost:8000} ZOO_DEV_USER=$${ZOO_DEV_USER:-00000000-0000-0000-0000-000000000001} cargo run
+
+desktop-build:
+	cd desktop && cargo build --release
+
+desktop-check:
+	cd client-core && cargo fmt --check && cargo clippy --all-targets -- -D warnings && cargo test
+	cd desktop && cargo fmt --check && cargo clippy --all-targets -- -D warnings && cargo test

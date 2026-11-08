@@ -132,7 +132,7 @@ fun Chat(
     val error by table.error.collectAsState()
     val nativeReactions by app.repo.reactions(id).rows.collectAsState()
     val (federatedReactions, federatedReactionError) = federatedChannelReactions(app, id)
-    val reactions = nativeReactions + federatedReactions
+    val reactions = remember(nativeReactions, federatedReactions) { nativeReactions + federatedReactions }
     val joined = membershipOverride ?: isMember(members, id, app.config.userId)
     val canPost = joined && !channel.present("archive_at") && app.env.online
     LaunchedEffect(id, app.env.visible, app.env.online) {
@@ -331,7 +331,9 @@ internal fun MessageList(
     readState: Boolean = true,
     callbacks: ((Row) -> MessageCallbacks)? = null,
 ) {
-    val messages = visibleMessages(all, parent)
+    val messages = remember(all, parent) { visibleMessages(all, parent) }
+    val latestMessages by rememberUpdatedState(messages)
+    val reactionsByMessage = remember(reactions) { reactions.groupBy { it.text("message_id") } }
     var readBoundary by remember(channel.text("id")) { mutableStateOf<Long?>(null) }
     var readReady by remember(channel.text("id")) { mutableStateOf(false) }
     LaunchedEffect(channel.text("id"), readState, parent) {
@@ -346,7 +348,7 @@ internal fun MessageList(
         }
         readReady = true
     }
-    val firstUnreadId =
+    val firstUnreadId = remember(readState, parent, readBoundary, messages, app.config.userId) {
         if (readState && parent == null)
             readBoundary?.let { boundary ->
                 messages
@@ -357,6 +359,7 @@ internal fun MessageList(
                     ?.text("id")
             }
         else null
+    }
     val state = rememberLazyListState()
     LaunchedEffect(app.query["message"], messages.size) {
         val index = messages.indexOfFirst { it.text("id") == app.query["message"] }
@@ -409,7 +412,8 @@ internal fun MessageList(
             var lastRead: String? = null
             snapshotFlow { state.layoutInfo.visibleItemsInfo.map { it.key.toString() } }
                 .collect { keys ->
-                    val last = visibleMessages(all).lastOrNull { it.text("id") in keys }
+                    val currentMessages = latestMessages
+                    val last = currentMessages.lastOrNull { it.text("id") in keys }
                     if (last != null && last.text("id") != lastRead) {
                         try {
                             app.api.request(
@@ -418,7 +422,7 @@ internal fun MessageList(
                                 obj("message_id" to last.text("id")),
                             )
                             lastRead = last.text("id")
-                            if (last == visibleMessages(all).lastOrNull())
+                            if (last == currentMessages.lastOrNull())
                                 app.unread = app.unread - channel.text("id")
                         } catch (e: CancellationException) {
                             throw e
@@ -533,7 +537,7 @@ internal fun MessageList(
                             channel,
                             row,
                             all,
-                            reactions,
+                            reactionsByMessage[row.text("id")].orEmpty(),
                             users,
                             row.text("id") != firstUnreadId && groupedWith(previous, row),
                             wide,
@@ -592,17 +596,37 @@ internal fun Message(
     val reactionTable = app.repo.reactions(channel.text("id"))
     val messageEdits by messageTable.optimisticChanges.collectAsState()
     val reactionEdits by reactionTable.optimisticChanges.collectAsState()
-    val display = message.nested("display_data").takeIf { it.containsKey("author") }?.let {
-        optimisticDisplay(it, id, messageTable.replicatedRows.value, messageEdits,
-            reactionTable.replicatedRows.value, reactionEdits, app.workspaceEmojis)
+    val rawDisplay = message.nested("display_data").takeIf { it.containsKey("author") }
+    val baseMessages = messageTable.replicatedRows.value
+    val baseReactions = reactionTable.replicatedRows.value
+    val emojis = app.workspaceEmojis
+    val display = remember(rawDisplay, id, baseMessages, messageEdits, baseReactions, reactionEdits, emojis) {
+        rawDisplay?.let {
+            optimisticDisplay(it, id, baseMessages, messageEdits, baseReactions, reactionEdits, emojis)
+        }
     }
-    val user =
+    val user = remember(display, users, message) {
         JsonObject(
             (display?.nested("author") ?: users.find { it.text("id") == message.text("user_id") }).orEmpty() +
                 message.filterKeys {
                     it in setOf("display_name", "user_name", "avatar_url", "is_bot")
                 }
         )
+    }
+    val joined = remember(display) { display?.let(::joinedEmojis) }
+    val attachmentRows = LocalAttachments.current
+    val messageAttachments = remember(display, attachmentRows, id) {
+        (display?.array("attachments")?.rows() ?: attachmentRows)
+            .filter { it.text("message_id") == id }.sortedBy { it.text("created_at") }
+    }
+    val replyCount = remember(display, all, id) {
+        display?.text("reply_count")?.toIntOrNull() ?:
+            all.count { it.text("parent_id") == id && !it.present("deleted_at") }
+    }
+    val reactionGroups = remember(display, reactions, id) {
+        (display?.array("reactions")?.rows() ?: reactions)
+            .filter { it.text("message_id") == id }.groupBy { reactionKey(it.text("emoji")) }
+    }
     val mine = ownOverride ?: (message.text("user_id") == app.config.userId)
     val editable = app.env.online && !channel.present("archive_at")
     var editing by remember(id, initialEditing) { mutableStateOf(initialEditing) }
@@ -643,7 +667,7 @@ internal fun Message(
                 !channel.flag("is_dm") &&
                 canManage(channel, app.config.userId, app.config.isAdmin))
     CompositionLocalProvider(LocalViewConfiguration provides selectionConfiguration,
-        LocalJoinedEmojis provides display?.let(::joinedEmojis)) {
+        LocalJoinedEmojis provides joined) {
         Box(
             Modifier.messageHold(!editing, gestureArbitration) { menuOpen = true }
                 .semantics { testTag = "message:$id" }
@@ -862,14 +886,11 @@ internal fun Message(
                         MessageAppContent(app, message)
                         MessageAttachments(
                             app,
-                            (display?.array("attachments")?.rows() ?: LocalAttachments.current)
-                                .filter { it.text("message_id") == id }
-                                .sortedBy { it.text("created_at") },
+                            messageAttachments,
                         )
                     }
                     if (!editing) {
-                        val replies = display?.text("reply_count")?.toIntOrNull() ?:
-                            all.count { it.text("parent_id") == id && !it.present("deleted_at") }
+                        val replies = replyCount
                         if (showThread && replies > 0)
                             Row(
                                 Modifier.padding(top = 4.dp)
@@ -912,10 +933,7 @@ internal fun Message(
                                     color = MaterialTheme.colorScheme.onSecondaryContainer,
                                 )
                             }
-                        val groups =
-                            (display?.array("reactions")?.rows() ?: reactions)
-                                .filter { it.text("message_id") == id }
-                                .groupBy { reactionKey(it.text("emoji")) }
+                        val groups = reactionGroups
                         if (groups.isNotEmpty())
                             FlowRow(
                                 Modifier.padding(vertical = 4.dp)
@@ -1355,6 +1373,13 @@ internal fun Composer(
         }
         Unit
     }
+    val canSubmit = remember(app, attachments, key, initialValue, attachments.enabled) {
+        derivedStateOf(structuralEqualityPolicy()) {
+            attachments.canSend(value) && key !in app.pending && !composing
+        }
+    }
+    val currentSend by rememberUpdatedState(send)
+    val sendFromButton = remember { { currentSend() } }
     if (showTyping) TypingStatus(app, typing)
     val composerBorder = MaterialTheme.colorScheme.outline
     Column(
@@ -1548,29 +1573,7 @@ internal fun Composer(
                 dismissed = false
                 activeOption = 0
             }
-            val canSubmit = attachments.canSend(value) && key !in app.pending && !composing
-            Box(
-                Modifier.padding(bottom = 4.dp)
-                    .then(webControlModifier("button", canSubmit))
-                    .size(if (app.env.touch) 44.dp else 36.dp)
-                    .padding(1.dp)
-                    .clip(RoundedCornerShape(9.dp))
-                    .background(
-                        if (canSubmit) MaterialTheme.colorScheme.primary
-                        else MaterialTheme.colorScheme.surfaceVariant
-                    )
-                    .clickable(canSubmit, role = Role.Button, onClick = send),
-                contentAlignment = Alignment.Center,
-            ) {
-                Icon(
-                    "send",
-                    app.t("messages.send"),
-                    modifier = Modifier.size(16.dp),
-                    color =
-                        if (canSubmit) MaterialTheme.colorScheme.onPrimary
-                        else MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-            }
+            ComposerSendButton(canSubmit, app.env.touch, app.t("messages.send"), sendFromButton)
         }
         if (!app.env.touch)
             Text(
@@ -1634,5 +1637,29 @@ internal fun MessageEmptyState(
             if (retry != null)
                 Button(app.t("offline.retry"), variant = "outline", size = "sm", click = retry)
         }
+    }
+}
+
+/** Observe sendability here so ordinary keystrokes do not recompose the button. */
+@Composable
+private fun ComposerSendButton(canSubmit: State<Boolean>, touch: Boolean, label: String, send: () -> Unit) {
+    val enabled by canSubmit
+    Box(
+        Modifier.padding(bottom = 4.dp)
+            .then(webControlModifier("button", enabled))
+            .size(if (touch) 44.dp else 36.dp)
+            .padding(1.dp)
+            .clip(RoundedCornerShape(9.dp))
+            .background(
+                if (enabled) MaterialTheme.colorScheme.primary
+                else MaterialTheme.colorScheme.surfaceVariant
+            )
+            .clickable(enabled, role = Role.Button, onClick = send),
+        contentAlignment = Alignment.Center,
+    ) {
+        Icon(
+            "send", label, modifier = Modifier.size(16.dp),
+            color = if (enabled) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurfaceVariant,
+        )
     }
 }

@@ -3,6 +3,7 @@ import { ZooSettings } from "../components/layout/ZooSettings";
 
 export const SETTINGS_TABS = [
   "general",
+  "call",
   "apps",
   "members",
   "activitypub",

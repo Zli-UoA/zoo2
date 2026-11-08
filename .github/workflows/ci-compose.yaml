@@ -7,6 +7,7 @@ on:
       - "frontend-compose/**"
       - "frontend/**"
       - "infra/frontend-nginx.conf"
+      - "infra/test-compose-compression.mjs"
       - "infra/Dockerfile-frontend-deploy*"
       - ".github/workflows/ci-compose.yaml"
   push:
@@ -15,6 +16,7 @@ on:
       - "frontend-compose/**"
       - "frontend/**"
       - "infra/frontend-nginx.conf"
+      - "infra/test-compose-compression.mjs"
       - "infra/Dockerfile-frontend-deploy*"
       - ".github/workflows/ci-compose.yaml"
   workflow_dispatch:
@@ -77,6 +79,10 @@ jobs:
       - name: Test existing and native Compose workflows
         working-directory: frontend
         run: pnpm exec playwright test --config playwright.compose.config.ts
+      - name: Check rapid input with a populated Compose timeline
+        working-directory: frontend
+        # Record timings, but gate only rendering/input correctness, not shared-runner FPS.
+        run: pnpm exec playwright test --config playwright.compose-performance.config.ts -g 'compose: performance sample 1'
       - name: Test production CSP and offline reload
         working-directory: frontend
         run: pnpm exec playwright test --config playwright.compose-production.config.ts
@@ -120,6 +126,8 @@ jobs:
           done
           curl -fsS -D /tmp/compose-headers http://127.0.0.1:3101/compose/zoo-compose.js -o /tmp/compose-entry.js
           test -s /tmp/compose-entry.js
+          docker cp zoo-compose-ci:/usr/share/nginx/html/compose /tmp/compose-compression-assets
+          node infra/test-compose-compression.mjs http://127.0.0.1:3101 /tmp/compose-compression-assets
           grep -q "connect-src.*https://www.gstatic.com" /tmp/compose-headers
           grep -q "connect-src[^;]*https://media-proxy.example" /tmp/compose-headers
           docker exec zoo-compose-ci sh -c 'test -n "$(find /usr/share/nginx/html/compose -name "*.wasm")"'

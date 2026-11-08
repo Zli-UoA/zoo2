@@ -229,11 +229,13 @@ zoo2-tui
 | `dev_user` | `ZOO_DEV_USER` | なし | dev モードのユーザー。指定したときだけ dev モードで接続し、ログインは使わない |
 | `oidc_issuer` | `ZOO_OIDC_ISSUER` | `https://account.zli.works/api/auth` | AuthZ の issuer |
 | `oidc_client_id` | `ZOO_OIDC_CLIENT_ID` | 本番の TUI 用クライアントの ID | AuthZ に登録した TUI 用の public client の ID |
-| `oidc_resource` | `ZOO_OIDC_RESOURCE` | `https://zli.chat` | 要求する resource (RFC 8707)。backend の `OIDC_AUDIENCE` と同じ値にする |
+| `oidc_resource` | `ZOO_OIDC_RESOURCE` | `https://zli.chat/api` | 要求する resource (RFC 8707)。backend の `OIDC_AUDIENCE` と同じ値にする |
 | `oidc_scope` | `ZOO_OIDC_SCOPE` | `openid profile offline_access` | 要求するスコープ |
 | `check_updates` | `ZOO_CHECK_UPDATES` | `true` | 起動時に新しい版を調べる。`false` で調べない |
 
 `dev_user` を指定したときだけ dev モードで接続します。指定しなければ OIDC でログインします。
+
+ログインで得たトークンは、そのときの接続先 (`api_base_url`) にだけ送ります。`api_base_url` や OIDC の設定を変えたら、`zoo2-tui login` をやり直してください。
 
 AuthZ には、デバイスコードと refresh_token のグラントを許可した public client を登録しておく必要があります。スコープは `openid profile offline_access`、resource は backend の `OIDC_AUDIENCE` と同じ値です。
 
@@ -261,6 +263,7 @@ AuthZ には、デバイスコードと refresh_token のグラントを許可�
 ## 困ったとき
 
 - **「ログインしていません」と出る**: `zoo2-tui login` を実行してください。refresh_token が失効したときも同じです。
+- **「認証が切れました。再ログインしてください」と出る**: アクセストークンと refresh_token の両方が使えなくなっています。`zoo2-tui login` を実行してログインし直してください。
 - **「dev モードではログインできません」と出る**: 環境変数 `ZOO_DEV_USER` か、`config.toml` の `dev_user` が残っています。外してください。
 - **ログインで `invalid_client` や `unauthorized_client` が出る**: `oidc_client_id` が違うか、そのクライアントにデバイスコードのグラントが許可されていません。管理者に確かめてください。
 - **401 で画面が開かない**: `oidc_resource` が backend の `OIDC_AUDIENCE` と一致しているか確かめてください。
@@ -303,15 +306,18 @@ make tui-check
 
 ### 構成
 
-- `src/config.rs`: 設定の読み込み
-- `src/http.rs`: 認証ヘッダーとエラー応答
-- `src/api.rs`: REST API
-- `src/electric/`: Electric のシェイプ購読と、行の型変換
-- `src/store.rs`: 行の保持と、画面用の派生ビュー
-- `src/mfm.rs`: MFM の簡易レンダラ
-- `src/auth/`: デバイスコードログインとトークンの保存・更新
+通信・認証・状態管理・MFM 構文解析はデスクトップ版と共有するため `../client-core/` に置いています。
+
+- `../client-core/src/config.rs`: 設定の読み込み
+- `../client-core/src/http.rs`: 認証ヘッダーとエラー応答
+- `../client-core/src/api.rs`: REST API
+- `../client-core/src/electric/`: Electric のシェイプ購読と、行の型変換
+- `../client-core/src/store.rs`: 行の保持と、画面用の派生ビュー
+- `../client-core/src/mfm.rs`: MFM の構文解析
+- `../client-core/src/auth/`: デバイスコードログインとトークンの保存・更新
+- `../client-core/src/update.rs`: GitHub Releases の新しい版の確認
+- `src/mfm.rs`: MFM 解析結果の ratatui スタイル変換
 - `src/ui/`: 画面の状態、キー操作、描画
-- `src/update.rs`: GitHub Releases の新しい版の確認
 
 ### リリース
 

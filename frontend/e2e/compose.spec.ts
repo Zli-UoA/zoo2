@@ -1085,3 +1085,61 @@ for (const implementation of ["react", "compose"] as const) {
     ).toBeHidden();
   });
 }
+
+test("Compose cached rich text follows live system theme changes", async ({ page, request }) => {
+  await request.post("https://127.0.0.1:4187/__reset");
+  await request.post("https://127.0.0.1:4187/__seed", {
+    data: {
+      messages: [
+        {
+          id: "memo-theme",
+          content: "Cache rendering #general",
+          created_at: "2026-11-01T00:00:00Z",
+        },
+      ],
+    },
+  });
+  await page.emulateMedia({ colorScheme: "light" });
+  await page.addInitScript(() => {
+    localStorage.setItem("zoo-locale", "ja");
+    localStorage.setItem("zoo-theme", "system");
+  });
+  await page.goto("/channels/c1?frontend=compose");
+  const row = page.locator('[id="message:memo-theme"]');
+  await expect(row).toBeVisible({ timeout: 90_000 });
+  const composer = page.getByRole("textbox", { name: "メッセージを送信", exact: true });
+  await fillNative(page, composer, "kept while changing theme");
+  const send = page.getByRole("button", { name: "送信", exact: true });
+  await expect(send).toBeEnabled();
+
+  // Read the actual Canvas pixels; DOM/CSS theme checks cannot detect stale
+  // AnnotatedString colors retained by an incomplete remember key.
+  async function linkPixels(expected: number[]) {
+    const png = (await row.screenshot()).toString("base64");
+    return page.evaluate(
+      async ({ png, expected }) => {
+        const bytes = Uint8Array.from(atob(png), (character) => character.charCodeAt(0));
+        const bitmap = await createImageBitmap(new Blob([bytes], { type: "image/png" }));
+        const canvas = new OffscreenCanvas(bitmap.width, bitmap.height);
+        const context = canvas.getContext("2d")!;
+        context.drawImage(bitmap, 0, 0);
+        bitmap.close();
+        const { data } = context.getImageData(0, 0, canvas.width, canvas.height);
+        let count = 0;
+        for (let pixel = 0; pixel < data.length; pixel += 4) {
+          if (expected.every((channel, index) => Math.abs(data[pixel + index] - channel) <= 15))
+            count++;
+        }
+        return count;
+      },
+      { png, expected },
+    );
+  }
+  await expect.poll(() => linkPixels([29, 78, 216]), { timeout: 10_000 }).toBeGreaterThan(5);
+  await page.emulateMedia({ colorScheme: "dark" });
+  await expect.poll(() => linkPixels([138, 180, 255]), { timeout: 10_000 }).toBeGreaterThan(5);
+  await expect(composer).toHaveText("kept while changing theme");
+  await expect(send).toBeEnabled();
+  await page.emulateMedia({ colorScheme: "light" });
+  await expect.poll(() => linkPixels([29, 78, 216]), { timeout: 10_000 }).toBeGreaterThan(5);
+});

@@ -1,4 +1,10 @@
 import { createElement } from "react";
+import {
+  createRootRoute,
+  createRouter,
+  createMemoryHistory,
+  RouterContextProvider,
+} from "@tanstack/react-router";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vite-plus/test";
 import { LocaleProvider } from "../../i18n/LocaleProvider";
@@ -198,9 +204,14 @@ describe("MfmContent", () => {
       { id: "channel-2", channel_name: "deleted", deleted_at: "2026-10-25" },
     ];
     const html = renderToStaticMarkup(
-      createElement(MfmChannelsProvider, {
-        channels,
-        children: createElement(MfmContent, { content: "$[jelly #開発] #未登録 #deleted #開発中" }),
+      createElement(RouterContextProvider, {
+        router: createRouter({ routeTree: createRootRoute(), history: createMemoryHistory() }),
+        children: createElement(MfmChannelsProvider, {
+          channels,
+          children: createElement(MfmContent, {
+            content: "$[jelly #開発] #未登録 #deleted #開発中",
+          }),
+        }),
       }),
     );
     expect(html).toContain('href="/channels/channel-1"');

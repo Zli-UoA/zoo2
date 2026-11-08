@@ -28,6 +28,10 @@ pub struct StoredTokens {
     pub issuer: String,
     pub client_id: String,
     pub resource: Option<String>,
+    /// トークンを送ってよい API の URL。別の URL に変えたときに、このトークンを送らないために保存する。
+    /// このフィールドを持たない古いファイルは空になり、どの接続先とも一致しない (ログインし直す)。
+    #[serde(default)]
+    pub api_base_url: String,
     pub access_token: String,
     pub refresh_token: Option<String>,
     /// UNIX 秒。
@@ -35,21 +39,23 @@ pub struct StoredTokens {
 }
 
 impl StoredTokens {
-    pub fn new(oidc: &OidcConfig, response: TokenResponse, now: i64) -> Self {
+    pub fn new(oidc: &OidcConfig, api_base_url: &str, response: TokenResponse, now: i64) -> Self {
         Self {
             issuer: oidc.issuer.clone(),
             client_id: oidc.client_id.clone(),
             resource: oidc.resource.clone(),
+            api_base_url: api_base_url.to_string(),
             access_token: response.access_token,
             refresh_token: response.refresh_token,
             expires_at: now + response.expires_in.unwrap_or(DEFAULT_EXPIRES_IN),
         }
     }
 
-    fn matches(&self, oidc: &OidcConfig) -> bool {
+    fn matches(&self, oidc: &OidcConfig, api_base_url: Option<&str>) -> bool {
         self.issuer == oidc.issuer
             && self.client_id == oidc.client_id
             && self.resource == oidc.resource
+            && api_base_url.is_none_or(|url| self.api_base_url == url)
     }
 }
 
@@ -57,8 +63,13 @@ pub fn token_path(config_dir: &Path) -> PathBuf {
     config_dir.join("token.json")
 }
 
-/// 保存済みのトークン。ないか、別の IdP やクライアントのものなら None。
-pub fn load(path: &Path, oidc: &OidcConfig) -> Result<Option<StoredTokens>> {
+/// 保存済みのトークン。ないか、別の IdP やクライアント、別の API の URL のものなら None。
+/// `api_base_url` が None のときは、IdP 側の操作 (refresh_token の失効) 用に URL を照合しない。
+pub fn load(
+    path: &Path,
+    oidc: &OidcConfig,
+    api_base_url: Option<&str>,
+) -> Result<Option<StoredTokens>> {
     let text = match std::fs::read_to_string(path) {
         Ok(text) => text,
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(None),
@@ -66,7 +77,7 @@ pub fn load(path: &Path, oidc: &OidcConfig) -> Result<Option<StoredTokens>> {
     };
     let tokens: StoredTokens = serde_json::from_str(&text)
         .with_context(|| format!("{} を解釈できません", path.display()))?;
-    Ok(tokens.matches(oidc).then_some(tokens))
+    Ok(tokens.matches(oidc, api_base_url).then_some(tokens))
 }
 
 pub fn save(path: &Path, tokens: &StoredTokens) -> Result<()> {
@@ -161,7 +172,7 @@ impl TokenManager {
                 ));
             }
         };
-        let mut tokens = StoredTokens::new(&self.oidc, response, now());
+        let mut tokens = StoredTokens::new(&self.oidc, &state.tokens.api_base_url, response, now());
         // ローテーションしない IdP では refresh_token が返らないので、前のものを使い続ける。
         tokens.refresh_token = tokens.refresh_token.or(Some(refresh_token));
         // 交換済みの refresh_token は IdP 側で失効しているので、保存に失敗しても新しい方を使い続ける。
@@ -196,6 +207,8 @@ mod tests {
 
     use super::*;
 
+    const API: &str = "https://api.example";
+
     fn oidc(issuer: &str) -> OidcConfig {
         OidcConfig {
             issuer: issuer.into(),
@@ -210,6 +223,7 @@ mod tests {
             issuer: oidc.issuer.clone(),
             client_id: oidc.client_id.clone(),
             resource: oidc.resource.clone(),
+            api_base_url: API.into(),
             access_token: "old".into(),
             refresh_token: refresh.map(str::to_string),
             expires_at,
@@ -246,7 +260,7 @@ mod tests {
             assert_eq!(mode & 0o777, 0o600);
         }
         assert_eq!(
-            load(&path, &config)
+            load(&path, &config, Some(API))
                 .unwrap()
                 .unwrap()
                 .refresh_token
@@ -257,10 +271,30 @@ mod tests {
             client_id: "other".into(),
             ..config.clone()
         };
-        assert_eq!(load(&path, &other).unwrap(), None);
+        assert_eq!(load(&path, &other, Some(API)).unwrap(), None);
         assert!(delete(&path).unwrap());
         assert!(!delete(&path).unwrap());
-        assert_eq!(load(&path, &config).unwrap(), None);
+        assert_eq!(load(&path, &config, Some(API)).unwrap(), None);
+    }
+
+    #[test]
+    fn does_not_hand_tokens_to_another_api() {
+        let path = temp_path("api");
+        let config = oidc("https://issuer");
+        save(&path, &tokens(&config, 100, Some("rt"))).unwrap();
+        assert_eq!(
+            load(&path, &config, Some("https://other.example")).unwrap(),
+            None
+        );
+        // refresh_token の失効のように、API に送らない用途では URL を問わない。
+        assert!(load(&path, &config, None).unwrap().is_some());
+
+        // api_base_url を持たない古いファイルは、どの接続先とも一致しない。
+        let mut old = serde_json::to_value(tokens(&config, 100, Some("rt"))).unwrap();
+        old.as_object_mut().unwrap().remove("api_base_url");
+        std::fs::write(&path, old.to_string()).unwrap();
+        assert_eq!(load(&path, &config, Some(API)).unwrap(), None);
+        delete(&path).unwrap();
     }
 
     #[tokio::test]
@@ -304,7 +338,7 @@ mod tests {
             (a.unwrap(), b.unwrap()),
             ("new".to_string(), "new".to_string())
         );
-        let saved = load(&path, &config).unwrap().unwrap();
+        let saved = load(&path, &config, Some(API)).unwrap().unwrap();
         assert_eq!(saved.access_token, "new");
         assert_eq!(saved.refresh_token.as_deref(), Some("rt"));
         delete(&path).unwrap();

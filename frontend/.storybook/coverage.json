@@ -603,6 +603,11 @@
       "story": "src/components/chat/AppsDialog.stories.tsx"
     },
     {
+      "file": "src/components/call/CallSoundsSwitch.tsx",
+      "reason": "設定の通話タブにある効果音のオン/オフスイッチ。保存と既定値は call-sounds.test.ts で検証する。",
+      "checks": ["src/lib/call/call-sounds.test.ts"]
+    },
+    {
       "file": "src/components/chat/CallBar.tsx",
       "reason": "通話バーのWebRTCシグナリングおよびUI制御層。UI表示状態（idle, connecting, connected, DM表示名, ミュート切替, 発話リング, アバター）はCallBar.browser.test.tsxで検証し、マイク操作とPeerライフサイクルはcall-context.test.tsで検証する。",
       "checks": [
@@ -713,7 +718,7 @@
       "file": "src/components/chat/messages/MfmChannels.tsx",
       "story": "src/components/chat/messages/MfmContent.stories.tsx",
       "composed": true,
-      "reason": "Defaultで実Providerから公開チャンネルのハッシュタグを解決する。"
+      "reason": "Defaultで実Providerから公開チャンネルのハッシュタグを解決する。MfmChannels.browser.test.tsxでアプリ内遷移・戻る・進む・下書き保持を検証する。"
     },
     {
       "file": "src/components/chat/messages/MfmContent.tsx",

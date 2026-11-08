@@ -275,53 +275,35 @@ impl CallRegistry {
             loop {
                 registry.set_listening(false);
                 tracing::debug!("Connecting to PostgreSQL for call signaling LISTEN...");
-                match tokio_postgres::connect(&database_url, tokio_postgres::NoTls).await {
-                    Ok((client, mut connection)) => {
-                        let mut stream =
-                            futures_util::stream::poll_fn(move |cx| connection.poll_message(cx));
-                        let listen_fut = client.batch_execute("LISTEN zoo_call_events");
-                        tokio::pin!(listen_fut);
-
-                        let mut listen_active = true;
-                        tracing::info!("Subscribed to PostgreSQL channel zoo_call_events");
-
-                        loop {
-                            use futures_util::StreamExt;
-                            tokio::select! {
-                                res = &mut listen_fut, if listen_active => {
-                                    listen_active = false;
-                                    if let Err(e) = res {
-                                        tracing::warn!("Failed to execute LISTEN zoo_call_events: {e}");
-                                        registry.set_listening(false);
-                                        registry.terminate_all_local_sessions("Failed to execute LISTEN").await;
-                                        break;
-                                    }
-                                    // LISTEN 実行完了により分散通知の受信が可能となったことをマーク ([P1])
-                                    registry.set_listening(true);
-                                }
-                                item = stream.next() => {
-                                    match item {
-                                        Some(Ok(tokio_postgres::AsyncMessage::Notification(notification))) => {
-                                            if notification.channel() == "zoo_call_events" {
-                                                registry.dispatch_distributed_event(notification.payload()).await;
-                                            }
-                                        }
-                                        Some(Ok(_)) => {}
-                                        Some(Err(e)) => {
-                                            tracing::warn!("PostgreSQL notification stream error: {e}");
-                                            registry.set_listening(false);
-                                            registry.terminate_all_local_sessions("PostgreSQL notification stream error").await;
-                                            break;
-                                        }
-                                        None => {
-                                            tracing::warn!("PostgreSQL notification connection ended");
-                                            registry.set_listening(false);
-                                            registry.terminate_all_local_sessions("PostgreSQL notification connection ended").await;
-                                            break;
-                                        }
-                                    }
+                match crate::db::connect_raw_listener(&database_url).await {
+                    Ok(mut listener) => {
+                        if let Err(e) = listener
+                            .client
+                            .batch_execute("LISTEN zoo_call_events")
+                            .await
+                        {
+                            tracing::warn!("Failed to execute LISTEN zoo_call_events: {e}");
+                            registry.set_listening(false);
+                            registry
+                                .terminate_all_local_sessions("Failed to execute LISTEN")
+                                .await;
+                        } else {
+                            tracing::info!("Subscribed to PostgreSQL channel zoo_call_events");
+                            registry.set_listening(true);
+                            while let Some(notification) = listener.notifications.recv().await {
+                                if notification.channel() == "zoo_call_events" {
+                                    registry
+                                        .dispatch_distributed_event(notification.payload())
+                                        .await;
                                 }
                             }
+                            tracing::warn!("PostgreSQL notification stream ended");
+                            registry.set_listening(false);
+                            registry
+                                .terminate_all_local_sessions(
+                                    "PostgreSQL notification stream ended",
+                                )
+                                .await;
                         }
                     }
                     Err(e) => {
