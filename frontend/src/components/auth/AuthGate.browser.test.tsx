@@ -1,0 +1,53 @@
+import { act, render, screen, waitFor } from "@testing-library/react";
+import { afterEach, beforeEach, expect, it, vi } from "vite-plus/test";
+import { LocaleProvider } from "../i18n/LocaleProvider";
+import { AuthGate } from "./AuthGate";
+
+const mocks = vi.hoisted(() => ({
+  client: {
+    hasSession: true,
+    isCallbackUrl: () => false,
+    getAccessToken: vi.fn<() => Promise<string | null>>(),
+    setReauthorizeHandler: vi.fn(),
+    login: vi.fn(async () => "https://id.example/authorize"),
+  },
+  router: { history: { replace: vi.fn() }, load: vi.fn(async () => {}) },
+}));
+vi.mock("@tanstack/react-router", () => ({ useRouter: () => mocks.router }));
+vi.mock("../../lib/oidc/session", () => ({ getOidcClient: () => mocks.client }));
+vi.mock("../../lib/config", async (original) => ({
+  ...(await original<typeof import("../../lib/config")>()),
+  resolveConfig: () => ({ oidc: { issuer: "https://id.example", clientId: "zoo" } }),
+}));
+vi.mock("../experimental/ComposeFrontend", () => ({ ComposeRuntime: () => null }));
+
+beforeEach(() => {
+  sessionStorage.clear();
+  mocks.client.login.mockClear();
+  mocks.client.getAccessToken.mockReset();
+});
+afterEach(() => {
+  sessionStorage.clear();
+});
+
+it.each(["token", null])("rechecks a restored session on reconnect (token: %s)", async (token) => {
+  mocks.client.getAccessToken.mockResolvedValue(token);
+  render(
+    <LocaleProvider>
+      <AuthGate>
+        <button>Cached history</button>
+      </AuthGate>
+    </LocaleProvider>,
+  );
+  await screen.findByRole("button", { name: "Cached history" });
+  await act(async () => {
+    window.dispatchEvent(new Event("online"));
+  });
+  await waitFor(() => expect(mocks.client.getAccessToken).toHaveBeenCalledOnce());
+  if (token) {
+    expect(mocks.client.login).not.toHaveBeenCalled();
+    expect(screen.getByRole("button", { name: "Cached history" })).toBeTruthy();
+  } else {
+    await waitFor(() => expect(mocks.client.login).toHaveBeenCalledOnce());
+  }
+});

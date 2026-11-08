@@ -184,20 +184,29 @@ describe("OidcClient session restoration", () => {
     "defers offline reauthorization and refresh until reconnection (refresh: %s)",
     async (withRefresh) => {
       const original = createHarness({
-        token: (_body, nonce) => ({
-          access_token: "access-1",
-          id_token: idToken({ nonce }),
-          expires_in: 90,
-          ...(withRefresh ? { refresh_token: "refresh-1" } : {}),
-        }),
+        token: (body, nonce) =>
+          body.get("grant_type") === "refresh_token"
+            ? { access_token: "access-2", refresh_token: "refresh-2", expires_in: 300 }
+            : {
+                access_token: "access-1",
+                id_token: idToken({ nonce }),
+                expires_in: 90,
+                ...(withRefresh ? { refresh_token: "refresh-1" } : {}),
+              },
       });
       await completeLogin(original);
-      const reloaded = createHarness({
-        storage: original.storage,
-        now: 1_040_000,
-        online: false,
-        token: () => ({ access_token: "access-2", refresh_token: "refresh-2", expires_in: 300 }),
-      });
+      const reloaded = withRefresh
+        ? original
+        : createHarness({
+            storage: original.storage,
+            now: 1_040_000,
+            online: false,
+          });
+      if (withRefresh) {
+        reloaded.advance(40_000);
+        reloaded.setOnline(false);
+        reloaded.fetchMock.mockClear();
+      }
       await expect(reloaded.client.getAccessToken()).resolves.toBe("access-1");
       reloaded.advance(51_000);
       await expect(reloaded.client.getAccessToken()).resolves.toBeNull();
@@ -222,30 +231,33 @@ describe("OidcClient session restoration", () => {
     expect(reloaded.reauthorizeCalls).toEqual([]);
   });
 
-  it("refreshes an expired restored session and saves the rotated tokens", async () => {
+  it("does not copy a rotating refresh token into duplicated tabs", async () => {
     const original = createHarness({
-      token: (_body, nonce) => ({
-        access_token: "access-1",
-        refresh_token: "refresh-1",
-        id_token: idToken({ nonce }),
-        expires_in: 10,
-      }),
+      token: (body, nonce) =>
+        body.get("grant_type") === "refresh_token"
+          ? { access_token: "access-2", refresh_token: "refresh-2", expires_in: 300 }
+          : {
+              access_token: "access-1",
+              refresh_token: "refresh-1",
+              id_token: idToken({ nonce }),
+              expires_in: 90,
+            },
     });
     await completeLogin(original);
-    const reloaded = createHarness({
-      storage: original.storage,
-      now: 1_020_000,
-      token: () => ({ access_token: "access-2", refresh_token: "refresh-2", expires_in: 300 }),
-    });
-    await expect(
-      Promise.all([reloaded.client.getAccessToken(), reloaded.client.getAccessToken()]),
-    ).resolves.toEqual(["access-2", "access-2"]);
-    expect(reloaded.refreshCalls()).toHaveLength(1);
-    expect(reloaded.assigned).toEqual([]);
-    expect(reloaded.reauthorizeCalls).toEqual([]);
-    const nextReload = createHarness({ storage: original.storage, now: 1_020_000 });
-    await expect(nextReload.client.getAccessToken()).resolves.toBe("access-2");
-    expect(nextReload.fetchMock).not.toHaveBeenCalled();
+    const copiedStorage = memoryStorage();
+    const saved = original.storage.getItem("zoo.oidc.session")!;
+    expect(JSON.parse(saved).tokens.refreshToken).toBeNull();
+    copiedStorage.setItem("zoo.oidc.session", saved);
+    const duplicated = createHarness({ storage: copiedStorage, now: 1_040_000 });
+    original.advance(40_000);
+    await expect(original.client.getAccessToken()).resolves.toBe("access-2");
+    await expect(duplicated.client.getAccessToken()).resolves.toBe("access-1");
+    expect(original.refreshCalls()).toHaveLength(1);
+    expect(duplicated.refreshCalls()).toHaveLength(0);
+    expect(duplicated.reauthorizeCalls).toEqual(["/"]);
+    const reloaded = createHarness({ storage: original.storage, now: 1_040_000 });
+    await expect(reloaded.client.getAccessToken()).resolves.toBe("access-2");
+    expect(reloaded.fetchMock).not.toHaveBeenCalled();
   });
 
   it("does not restore tokens for different resource settings", async () => {
@@ -274,22 +286,21 @@ describe("OidcClient session restoration", () => {
     },
   );
 
-  it("clears the saved session when a restored refresh token is rejected", async () => {
+  it("clears the saved session when an in-memory refresh token is rejected", async () => {
     const original = createHarness({
-      token: (_body, nonce) => ({
-        access_token: "access-1",
-        refresh_token: "refresh-1",
-        id_token: idToken({ nonce }),
-        expires_in: 10,
-      }),
+      token: (body, nonce) =>
+        body.get("grant_type") === "refresh_token"
+          ? { error: "invalid_grant", status: 400 }
+          : {
+              access_token: "access-1",
+              refresh_token: "refresh-1",
+              id_token: idToken({ nonce }),
+              expires_in: 10,
+            },
     });
     await completeLogin(original);
-    const reloaded = createHarness({
-      storage: original.storage,
-      now: 1_020_000,
-      token: () => ({ error: "invalid_grant", status: 400 }),
-    });
-    await expect(reloaded.client.getAccessToken()).resolves.toBeNull();
+    original.advance(20_000);
+    await expect(original.client.getAccessToken()).resolves.toBeNull();
     expect(createHarness({ storage: original.storage }).client.hasSession).toBe(false);
   });
 });

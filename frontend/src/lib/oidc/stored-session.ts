@@ -28,9 +28,12 @@ export function readStoredSession(
       (tokens.idToken === null || typeof tokens.idToken === "string") &&
       typeof tokens.expiresAt === "number" &&
       Number.isFinite(tokens.expiresAt) &&
-      (tokens.expiresAt > now || tokens.refreshToken)
+      tokens.expiresAt > now
     ) {
-      return tokens as OidcTokens;
+      // sessionStorage はタブ複製時にコピーされるため、更新トークンを復元しない。
+      const restored = { ...tokens, refreshToken: null } as OidcTokens;
+      if (tokens.refreshToken !== null) writeStoredSession(storage, binding, restored);
+      return restored;
     }
   } catch {
     // 保存を使えないブラウザーでも、メモリ内の認証は続ける。
@@ -45,7 +48,10 @@ export function writeStoredSession(
   tokens: OidcTokens,
 ): void {
   try {
-    storage.setItem(SESSION_KEY, JSON.stringify({ binding, tokens }));
+    storage.setItem(
+      SESSION_KEY,
+      JSON.stringify({ binding, tokens: { ...tokens, refreshToken: null } }),
+    );
   } catch {
     clearStoredSession(storage);
   }

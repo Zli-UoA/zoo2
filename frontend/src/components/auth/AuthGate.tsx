@@ -195,19 +195,36 @@ export function AuthGate({ children }: { children: ReactNode }) {
     if (!client) {
       return;
     }
+    let active = true;
     const handleOnline = () => {
       if (phase !== "ready" || isLoggedOut(window.sessionStorage)) {
         return;
       }
       if (client.hasSession) {
-        void client.getAccessToken();
+        void client.getAccessToken().then((token) => {
+          if (!active || token || !navigator.onLine || isLoggedOut(window.sessionStorage)) return;
+          // 期限切れによる再認可をすでに始めていれば、二重に開始しない。
+          if (
+            readUnauthorizedRedirectState(
+              window.sessionStorage,
+              Date.now(),
+              REDIRECT_COOLDOWN_MS,
+            ) === "redirecting"
+          )
+            return;
+          setPhase("checking");
+          startLogin(client, currentReturnTo());
+        });
         return;
       }
       setPhase("checking");
       startLogin(client, currentReturnTo());
     };
     window.addEventListener("online", handleOnline);
-    return () => window.removeEventListener("online", handleOnline);
+    return () => {
+      active = false;
+      window.removeEventListener("online", handleOnline);
+    };
   }, [phase, startLogin]);
 
   if (phase === "disabled" || phase === "ready") {

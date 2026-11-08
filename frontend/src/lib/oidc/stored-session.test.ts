@@ -1,6 +1,29 @@
 import { expect, it, vi } from "vite-plus/test";
 import { readStoredSession, writeStoredSession } from "./stored-session";
 
+it("removes a legacy refresh token when restoring a copied tab session", () => {
+  let raw = JSON.stringify({
+    binding: "expected",
+    tokens: {
+      accessToken: "access",
+      refreshToken: "legacy-refresh",
+      idToken: null,
+      expiresAt: 5000,
+    },
+  });
+  const storage = {
+    getItem: (key: string) => (key === "zoo.oidc.session" ? raw : null),
+    setItem: (_key: string, value: string) => {
+      raw = value;
+    },
+    removeItem: () => {
+      raw = "";
+    },
+  };
+  expect(readStoredSession(storage, "expected", 1000)?.refreshToken).toBeNull();
+  expect(JSON.parse(raw).tokens.refreshToken).toBeNull();
+});
+
 it.each([
   "{invalid",
   "null",

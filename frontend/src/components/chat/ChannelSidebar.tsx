@@ -74,7 +74,7 @@ export function ChannelSidebar({
   const sidebarLoading =
     loading ||
     (membershipsQuery.isLoading &&
-      !(membershipsQuery.isPersistedReady && membershipsQuery.data?.length)) ||
+      !(membershipsQuery.isPersistedReady && joinedChannelIds.size > 0)) ||
     currentUserLoading;
   const sidebarError = error || membershipsQuery.isError;
   const regularChannels = useMemo(() => channels.filter((channel) => !channel.is_dm), [channels]);

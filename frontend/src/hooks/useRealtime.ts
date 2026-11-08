@@ -63,6 +63,7 @@ export function useMessageFeed(channelId: string | null, options: MessageFeedOpt
   return {
     ...query,
     data,
+    isInitialSyncLoading: query.isLoading,
     isLoading: query.isLoading && !(query.isPersistedReady && query.data?.length),
   };
 }
@@ -138,6 +139,8 @@ export function useWorkspaceAdminIds(): WorkspaceAdminIds {
 }
 
 export interface MyChannelMemberships {
+  /** キャッシュにない投稿先を判定するための初回同期状態。 */
+  isInitialSyncLoading: boolean;
   /** 現在ユーザーが参加している channel_user 行。 */
   memberships: ChannelUserRow[];
   /** 参加中チャンネル ID の集合（一覧の参加バッジ判定用）。 */
@@ -173,6 +176,7 @@ export function useMyChannelMemberships(): MyChannelMemberships {
     memberships,
     joinedChannelIds,
     hasCurrentUser: currentUserId !== null,
+    isInitialSyncLoading: membershipsQuery.isLoading,
     isLoading:
       membershipsQuery.isLoading && !(membershipsQuery.isPersistedReady && memberships.length),
   };

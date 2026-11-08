@@ -10,6 +10,7 @@ const mocks = vi.hoisted(() => ({
   state: { currentUserId: null, isLoading: true, isAdmin: false, error: null } as CurrentUserState,
   listeners: new Set<() => void>(),
   online: true,
+  ensureLoaded: vi.fn(async () => {}),
   prepare: vi.fn(async () => {}),
   open: vi.fn(async () => ({ persistence: {} })),
   remove: vi.fn(async () => {}),
@@ -23,7 +24,7 @@ vi.mock("../../lib/currentUser", () => ({
       mocks.listeners.add(listener);
       return () => mocks.listeners.delete(listener);
     },
-    ensureLoaded: async () => {},
+    ensureLoaded: mocks.ensureLoaded,
   }),
 }));
 vi.mock("../../lib/electric/collections", () => ({ getCollections: () => ({}) }));
@@ -38,11 +39,41 @@ vi.mock("../layout/ShellSkeleton", () => ({ ShellSkeleton: () => <p>Loading</p> 
 beforeEach(() => {
   mocks.state = { currentUserId: null, isLoading: true, isAdmin: false, error: null };
   mocks.online = true;
+  mocks.ensureLoaded.mockReset();
+  mocks.ensureLoaded.mockResolvedValue(undefined);
   mocks.open.mockClear();
   mocks.remove.mockReset();
   mocks.remove.mockResolvedValue(undefined);
   mocks.prepare.mockReset();
   mocks.prepare.mockResolvedValue(undefined);
+});
+
+it("resolves the current user again after reconnecting from an offline startup", async () => {
+  localStorage.setItem("zoo.offline.lastUser", "user-a");
+  mocks.online = false;
+  mocks.state = { currentUserId: null, isLoading: false, isAdmin: false, error: "Offline" };
+  const config = { devUserId: null, oidc: {} } as AppConfig;
+  const view = (
+    <OfflineProvider config={config}>
+      <button>Cached channel</button>
+    </OfflineProvider>
+  );
+  const { rerender } = render(view);
+  await screen.findByRole("button", { name: "Cached channel" });
+  mocks.ensureLoaded.mockClear();
+  mocks.ensureLoaded.mockImplementation(async () => {
+    mocks.state = { currentUserId: "user-a", isLoading: false, isAdmin: false, error: null };
+    for (const listener of mocks.listeners) listener();
+  });
+  mocks.online = true;
+  rerender(
+    <OfflineProvider config={config}>
+      <button>Cached channel</button>
+    </OfflineProvider>,
+  );
+  await screen.findByRole("button", { name: "Cached channel" });
+  expect(mocks.ensureLoaded).toHaveBeenCalled();
+  expect(screen.queryByRole("alert")).toBeNull();
 });
 
 it("waits for user resolution before opening storage and mounting interactive children", async () => {
