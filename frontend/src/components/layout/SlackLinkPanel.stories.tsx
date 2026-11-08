@@ -388,3 +388,41 @@ export const OwnImportNoChannels: Story = {
     await expect(await screen.findByText(/あなたが作ったチャンネルはありません/)).toBeVisible();
   }),
 };
+
+/** 以前の取り込み先が、参加していない非公開チャンネル。名前は出さず、そこ以外に取り込めないことだけを示す */
+export const OwnImportHiddenTarget: Story = {
+  parameters: {
+    msw: {
+      handlers: [
+        linked,
+        http.get("*/api/slack/imports", () =>
+          HttpResponse.json({
+            export: exported,
+            channels: [
+              ownChannel({
+                slack_channel_id: "G1",
+                name: "secret",
+                is_private: true,
+                existing_channel: null,
+                existing_hidden: true,
+                same_name_channel: null,
+                targets: [],
+              }),
+            ],
+            imports: [],
+          }),
+        ),
+      ],
+    },
+  },
+  play: playForImplementation(async () => {
+    await expect(
+      await screen.findByText(
+        "以前、参加していない非公開チャンネルに取り込みました。取り込めるのはそのチャンネルだけです。",
+      ),
+    ).toBeVisible();
+    const action = screen.getByRole("combobox", { name: "#secret の取り込み方" });
+    await expect(within(action).getByRole("option", { name: "新しいチャンネル" })).toBeDisabled();
+    await expect(within(action).getByRole("option", { name: "既存のチャンネル" })).toBeDisabled();
+  }),
+};

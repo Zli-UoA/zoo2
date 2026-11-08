@@ -379,6 +379,8 @@ export function MappingForm({
           // セルフ取り込みでは、サーバーが返す取り込み先だけを選べる
           const choices = targetsFor ? targetsFor(channel) : targetChoices(channel, targets);
           const id = `slack-import-${channel.slack_channel_id}`;
+          // 以前取り込んだチャンネルは同じ取り込み先にしか入れられない (メッセージ ID が変わらないため)
+          const imported = !!channel.existing_channel || !!channel.existing_hidden;
           return (
             <li key={channel.slack_channel_id} className="flex flex-wrap items-center gap-2 p-3">
               <div className="min-w-0 flex-1 basis-40">
@@ -397,6 +399,11 @@ export function MappingForm({
                 {channel.existing_channel ? (
                   <p className="text-xs text-muted-foreground">
                     {t("slackImport.importedTo", { name: channel.existing_channel.name })}
+                  </p>
+                ) : null}
+                {channel.existing_hidden ? (
+                  <p className="text-xs text-muted-foreground">
+                    {t("slackImport.importedToHidden")}
                   </p>
                 ) : null}
                 {channel.deleted_channel ? (
@@ -420,11 +427,7 @@ export function MappingForm({
                   )
                 }
               >
-                {/* 以前取り込んだチャンネルは同じ取り込み先にしか入れられない (メッセージ ID が変わらないため) */}
-                <option
-                  value="create"
-                  disabled={!!channel.existing_channel || !!channel.deleted_channel}
-                >
+                <option value="create" disabled={imported || !!channel.deleted_channel}>
                   {t("slackImport.actionCreate")}
                 </option>
                 <option
@@ -450,7 +453,7 @@ export function MappingForm({
                   aria-label={t("slackImport.targetChannel", { name: channel.name })}
                   className="w-48"
                   value={mapping.channel_id}
-                  disabled={pending || !!channel.existing_channel}
+                  disabled={pending || imported}
                   onChange={(event) =>
                     update(index, { ...mapping, channel_id: event.target.value })
                   }

@@ -794,7 +794,8 @@
     "failed": "导入操作失败。",
     "dismiss": "移到历史记录",
     "runTitle": "从 {{name}} 导入",
-    "importedTo": "已导入到 #{{name}}"
+    "importedTo": "已导入到 #{{name}}",
+    "importedToHidden": "之前已导入到你未加入的私密频道，只能导入到该频道。"
   },
   "slackLink": {
     "tab": "Slack 关联",

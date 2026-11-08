@@ -1856,6 +1856,8 @@ async fn test_linked_users_import_their_own_channels() -> anyhow::Result<()> {
     let (_, own) = request(&app, "GET", "/api/slack/imports", &alice, None).await?;
     assert_eq!(own["channels"][1]["slack_channel_id"], "G1");
     assert_eq!(own["channels"][1]["existing_channel"], Value::Null, "{own}");
+    assert_eq!(own["channels"][1]["existing_hidden"], true, "{own}");
+    assert!(!own["channels"].to_string().contains(&g1), "{own}");
     assert_eq!(
         own["channels"][1]["same_name_channel"],
         Value::Null,

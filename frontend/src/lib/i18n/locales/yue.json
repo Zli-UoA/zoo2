@@ -794,7 +794,8 @@
     "failed": "匯入操作失敗。",
     "dismiss": "移去歷史紀錄",
     "runTitle": "由 {{name}} 匯入",
-    "importedTo": "已經匯入到 #{{name}}"
+    "importedTo": "已經匯入到 #{{name}}",
+    "importedToHidden": "之前已經匯入到你未加入嘅私人頻道，只可以匯入到嗰個頻道。"
   },
   "slackLink": {
     "tab": "Slack 連結",

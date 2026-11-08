@@ -30,6 +30,11 @@ export interface SlackChannelSummary {
   name_taken: boolean;
   /** 以前の取り込みで対応付けた zoo チャンネル */
   existing_channel: { id: string; name: string; is_private?: boolean } | null;
+  /**
+   * 以前の取り込み先が、参加していない非公開チャンネル (名前と ID は返さない)。
+   * 取り込めるのはそこだけなので、新しく作ることもできない (各ユーザーによる取り込み)
+   */
+  existing_hidden?: boolean;
   /** Slack と同じ名前の zoo チャンネル */
   same_name_channel?: { id: string; name: string; is_private: boolean } | null;
   /** 以前の取り込み先が削除済みならその名前。過去ログが残っているため取り込み直せない */

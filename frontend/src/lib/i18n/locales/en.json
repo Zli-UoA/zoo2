@@ -794,7 +794,8 @@
     "failed": "The import request failed.",
     "dismiss": "Move to history",
     "runTitle": "Import from {{name}}",
-    "importedTo": "Imported into #{{name}}"
+    "importedTo": "Imported into #{{name}}",
+    "importedToHidden": "This was imported into a private channel you haven't joined. It can only be imported there."
   },
   "slackLink": {
     "tab": "Slack account",
