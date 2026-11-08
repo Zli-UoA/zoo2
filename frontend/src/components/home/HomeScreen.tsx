@@ -526,6 +526,7 @@ function HomeScreenContent({
                     >
                       <ActivityPubAvatar
                         avatar={post.remote ? post.avatar : null}
+                        userId={post.remote ? undefined : post.user_id}
                         name={post.display_name || post.user_name}
                       />
                     </Link>
@@ -866,6 +867,7 @@ function HomeScreenContent({
                     >
                       <ActivityPubAvatar
                         avatar={user.remote ? user.avatar : null}
+                        userId={user.remote ? undefined : user.id}
                         name={user.display_name || user.user_name}
                       />
                     </Link>

@@ -74,6 +74,7 @@ export function ActivityPubProfile({ actorId }: { actorId: string }) {
               <ActivityPubAvatar
                 name={account.display_name || account.user_name}
                 avatar={account.avatar}
+                userId={account.remote ? undefined : account.id}
               />
             }
           />

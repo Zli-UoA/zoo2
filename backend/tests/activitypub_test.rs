@@ -2311,6 +2311,31 @@ async fn apub_profile_is_independent_updates_followers_and_detail_respects_audie
         None,
     )
     .await?;
+    assert!(public_data["account"]["avatar_url"].is_null());
+    let avatar_url = "https://avater.zliusercontent.com/test-avatar.png";
+    toasty::sql::statement("UPDATE users SET avatar_url=$2 WHERE id=$1")
+        .bind(alice.as_str())
+        .bind(avatar_url)
+        .exec(&mut db)
+        .await?;
+    let (_, updated_profile) = request(
+        &app,
+        "GET",
+        None,
+        &format!("/api/activitypub/users/{alice}/profile"),
+        None,
+    )
+    .await?;
+    assert_eq!(updated_profile["account"]["avatar_url"], avatar_url);
+    let (_, local_account) = request(
+        &app,
+        "GET",
+        Some(&alice),
+        &format!("/api/activitypub/accounts?actor={alice}"),
+        None,
+    )
+    .await?;
+    assert_eq!(local_account["avatar_url"], avatar_url);
     assert_eq!(public_data["account"]["display_name"], "Federation name");
     assert_eq!(public_data["account"]["summary"], "Bio <safe>\nnext line");
     let missing = app

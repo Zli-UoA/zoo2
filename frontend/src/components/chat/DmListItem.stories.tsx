@@ -1,6 +1,9 @@
+import { http, HttpResponse } from "msw";
+import { playForImplementation } from "../../../.storybook/play-for-implementation";
+import { avatarUsers, userAvatarHandler, userAvatarUrl } from "../../../.storybook/avatar-fixtures";
 import type { Meta, StoryObj } from "@storybook/react-vite";
-import { fn } from "storybook/test";
-import { storyChannels } from "../../../.storybook/fixtures";
+import { fn, expect, waitFor } from "storybook/test";
+import { storyChannels, storyCollections } from "../../../.storybook/fixtures";
 import { DmListItem } from "./DmListItem";
 const meta = {
   title: "Features/DMs/ListItem",
@@ -27,4 +30,31 @@ export const Active: Story = { args: { active: true } };
 export const Unread: Story = { args: { unread: true } };
 export const LongName: Story = {
   args: { label: "とても長い名前のメンバーとのダイレクトメッセージ" },
+};
+
+export const UserAvatar: Story = {
+  args: { avatarUrl: userAvatarUrl },
+  parameters: {
+    collections: { ...storyCollections, users: avatarUsers },
+    msw: { handlers: [userAvatarHandler] },
+  },
+  play: playForImplementation(async ({ canvasElement }) => {
+    await waitFor(async () => {
+      const image = canvasElement.querySelector<HTMLImageElement>(`img[src="${userAvatarUrl}"]`);
+      await expect(image?.naturalWidth).toBeGreaterThan(0);
+    });
+  }),
+};
+
+export const UserAvatarFallback: Story = {
+  args: { avatarUrl: `${userAvatarUrl}?missing` },
+  parameters: {
+    msw: { handlers: [http.get(userAvatarUrl, () => new HttpResponse(null, { status: 404 }))] },
+  },
+  play: playForImplementation(async ({ canvasElement }) => {
+    await waitFor(() =>
+      expect(canvasElement.querySelector('[data-slot="avatar-fallback"]')).toHaveTextContent("B"),
+    );
+    await expect(canvasElement.querySelector(`img[src="${userAvatarUrl}?missing"]`)).toBeNull();
+  }),
 };

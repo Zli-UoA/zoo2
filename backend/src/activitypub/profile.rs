@@ -116,6 +116,6 @@ async fn account(
     }
     let local = routes::local_user(&state, id.trim_start_matches("local:")).await?;
     Ok(Json(
-        json!({"id":id.trim_start_matches("local:"),"user_name":local["user_name"],"display_name":local["display_name"],"summary":local["summary"],"remote":false,"url":actor_id(id).ok()}),
+        json!({"id":id.trim_start_matches("local:"),"user_name":local["user_name"],"display_name":local["display_name"],"summary":local["summary"],"avatar_url":local["avatar_url"],"remote":false,"url":actor_id(id).ok()}),
     ))
 }

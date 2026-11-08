@@ -1,6 +1,8 @@
+import { storyCollections } from "../../../.storybook/fixtures";
+import { avatarUsers, userAvatarHandler, userAvatarUrl } from "../../../.storybook/avatar-fixtures";
 import { playForImplementation } from "../../../.storybook/play-for-implementation";
 import type { Meta, StoryObj } from "@storybook/react-vite";
-import { expect, within } from "storybook/test";
+import { expect, within, waitFor } from "storybook/test";
 
 import { StoryShell } from "../../../.storybook/shell";
 import { LeftRail } from "./LeftRail";
@@ -36,4 +38,17 @@ export const Default: Story = {
 export const Mobile: Story = {
   ...Default,
   globals: { viewport: { value: "mobile" } },
+};
+
+export const UserAvatar: Story = {
+  parameters: {
+    collections: { ...storyCollections, users: avatarUsers },
+    msw: { handlers: [userAvatarHandler] },
+  },
+  play: playForImplementation(async ({ canvasElement }) => {
+    await waitFor(async () => {
+      const image = canvasElement.querySelector<HTMLImageElement>(`img[src="${userAvatarUrl}"]`);
+      await expect(image?.naturalWidth).toBeGreaterThan(0);
+    });
+  }),
 };

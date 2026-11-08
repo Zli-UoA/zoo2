@@ -68,8 +68,14 @@ fun HomePostCard(
         Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
             val profile = "/home/users/${post.text("user_id").encodeURLParameter()}"
             NativeLink(profile) {
-                ActivityPubAvatar(
-                    if (post.flag("remote")) post["avatar"] as? Row else null,
+                val people by app.repo.users.rows.collectAsState()
+                if (!post.flag("remote"))
+                    Avatar(
+                        people.find { it.text("id") == post.text("user_id") }
+                            ?: obj("display_name" to post.text("display_name").ifEmpty { post.text("user_name") })
+                    )
+                else ActivityPubAvatar(
+                    post["avatar"] as? Row,
                     post.text("display_name").ifEmpty { post.text("user_name") },
                 )
             }

@@ -57,7 +57,7 @@ pub fn router() -> Router<AppState> {
 pub(super) async fn local_user(state: &AppState, id: &str) -> Result<Value, AppError> {
     let mut db = state.db.clone();
     let mut tx = db.transaction().await?;
-    one(&mut tx,"SELECT json_build_object('id',u.id,'user_name',u.user_name,'display_name',COALESCE(p.display_name,u.display_name),'summary',COALESCE(p.summary,''))::text FROM users u LEFT JOIN apub_profiles p ON p.user_id=u.id WHERE u.id=$1 AND NOT u.is_bot",&[id]).await
+    one(&mut tx,"SELECT json_build_object('id',u.id,'user_name',u.user_name,'display_name',COALESCE(p.display_name,u.display_name),'summary',COALESCE(p.summary,''),'avatar_url',u.avatar_url)::text FROM users u LEFT JOIN apub_profiles p ON p.user_id=u.id WHERE u.id=$1 AND NOT u.is_bot",&[id]).await
 }
 async fn actor(
     State(state): State<AppState>,

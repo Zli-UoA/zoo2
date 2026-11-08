@@ -22,6 +22,8 @@ import { CallDeviceSelects } from "../call/CallDeviceSelects";
 import { CallStatusPanel } from "../call/CallStatusPanel";
 import { formatDmDisplayName, resolveDmDisplayName } from "./dm";
 
+import { AppAvatar } from "./AppIdentity";
+
 interface CallBarProps {
   channels?: ChannelRow[];
 }
@@ -132,7 +134,11 @@ export function CallBar({ channels = [] }: CallBarProps) {
                       isSpeaking ? "ring-2 ring-emerald-500" : ""
                     }`}
                   >
-                    <span aria-hidden="true">{p.display_name.slice(0, 1).toUpperCase()}</span>
+                    <AppAvatar
+                      label={p.display_name}
+                      src={users.find((user) => user.id === p.user_id)?.avatar_url}
+                      className="size-5 text-[10px]"
+                    />
                     {p.is_muted ? (
                       <span
                         aria-hidden="true"

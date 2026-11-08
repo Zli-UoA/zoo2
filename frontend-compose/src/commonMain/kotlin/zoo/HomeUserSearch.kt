@@ -83,8 +83,14 @@ fun HomeUserSearch(
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         val profile = "/home/users/${user.text("id").encodeURLParameter()}"
                         NativeLink(profile) {
-                            ActivityPubAvatar(
-                                if (user.flag("remote")) user["avatar"] as? Row else null,
+                            val people by app.repo.users.rows.collectAsState()
+                            if (!user.flag("remote"))
+                                Avatar(
+                                    people.find { it.text("id") == user.text("id") }
+                                        ?: obj("display_name" to user.text("display_name").ifEmpty { user.text("user_name") })
+                                )
+                            else ActivityPubAvatar(
+                                user["avatar"] as? Row,
                                 user.text("display_name").ifEmpty { user.text("user_name") },
                             )
                         }

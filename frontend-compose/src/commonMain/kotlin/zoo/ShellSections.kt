@@ -23,6 +23,7 @@ internal fun DmItem(
     unread: Boolean,
     narrow: Boolean,
     onOpen: (() -> Unit)? = null,
+    user: Row? = null,
 ) {
     val colors = MaterialTheme.colorScheme
     Row(
@@ -56,7 +57,7 @@ internal fun DmItem(
             }
         else
             Avatar(
-                null,
+                user,
                 size = 24.dp,
                 fallback =
                     label
@@ -159,6 +160,11 @@ internal fun DmSidebar(
                             it.text("id") in unread,
                             narrow,
                             onOpen,
+                            users.find { user ->
+                                user.text("id") == it.text("channel_name")
+                                    .removePrefix("dm:").split(":")
+                                    .firstOrNull { id -> id != app.config.userId }
+                            },
                         )
                     }
             }

@@ -111,7 +111,7 @@ export function WorkspaceMembers() {
       <ul className="divide-y rounded-lg border">
         {users.map((user) => (
           <li key={user.id} className="flex flex-wrap items-center gap-3 p-4">
-            <AppAvatar label={userLabel(user)} size="sm" />
+            <AppAvatar label={userLabel(user)} src={user.avatar_url} size="sm" />
             <div className="min-w-0 flex-1">
               <p className="truncate text-sm font-medium">
                 {userLabel(user)}

@@ -5,13 +5,13 @@ import { UsersIcon } from "lucide-react";
 import type { ReactNode } from "react";
 
 import type { ChannelRow } from "../../lib/electric/types";
-import { Avatar, AvatarFallback } from "../ui/avatar";
+import { AppAvatar } from "./AppIdentity";
 import { isGroupDm } from "./dm";
-import { initials } from "./format";
 
 export function DmListItem({
   channel,
   label,
+  avatarUrl,
   active,
   unread = false,
   onOpen,
@@ -19,6 +19,7 @@ export function DmListItem({
 }: {
   channel: ChannelRow;
   label: string;
+  avatarUrl?: string | null;
   active: boolean;
   unread?: boolean;
   onOpen: () => void;
@@ -42,9 +43,7 @@ export function DmListItem({
           <UsersIcon className="size-3.5" />
         </span>
       ) : (
-        <Avatar size="sm" aria-hidden="true">
-          <AvatarFallback>{initials(label)}</AvatarFallback>
-        </Avatar>
+        <AppAvatar label={label} src={avatarUrl} size="sm" aria-hidden />
       )}
       <span className="min-w-0 flex-1 truncate">{label}</span>
       {unread ? (
