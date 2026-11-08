@@ -29,7 +29,7 @@ const SHELL = [
   "/icons/icon-192.png",
   "/icons/icon-512.png",
 ];
-const CACHEABLE_PREFIXES = ["/assets/", "/icons/", "/emojibase-data/", "/compose/"];
+const CACHEABLE_PREFIXES = ["/assets/", "/icons/", "/emojibase-data/"];
 
 function isPrivatePath(pathname) {
   return pathname.startsWith("/api/") || pathname.startsWith("/auth/");
@@ -235,31 +235,6 @@ async function handleAsset(request) {
   }
 }
 
-// The Compose entry and resource names are stable across builds. Revalidate them
-// online so a warmed service worker cannot pin an older Kotlin implementation.
-async function handleComposeAsset(request) {
-  const cache = await caches.open(await findActiveShellCache());
-  const cached = await cache.match(request);
-  const headers = new Headers(request.headers);
-  const etag = cached?.headers.get("x-zoo-etag");
-  const modified = cached?.headers.get("x-zoo-last-modified");
-  if (etag) headers.set("If-None-Match", etag);
-  else if (modified) headers.set("If-Modified-Since", modified);
-  try {
-    // Cache API is the sole persistent copy. Validate explicitly, without also
-    // keeping large fonts/Wasm in the HTTP cache or rewriting unchanged bodies.
-    const response = await fetch(new Request(request, { headers }), { cache: "no-store" });
-    if (cached && response.status === 304) return cached;
-    if (response.ok && response.type === "basic") {
-      if (cached && etag && response.headers.get("etag") === etag) return response;
-      return await cacheResponse(cache, request, response, true);
-    }
-    return response;
-  } catch {
-    return cached || Response.error();
-  }
-}
-
 self.addEventListener("install", (event) => {
   event.waitUntil(precacheShell().then(() => self.skipWaiting()));
 });
@@ -281,10 +256,7 @@ self.addEventListener("message", (event) => {
   const data = event.data;
   if (!data || data.type !== "CACHE_ASSETS" || !Array.isArray(data.urls)) return;
   const urls = data.urls
-    .filter(
-      (url) =>
-        typeof url === "string" && (url.startsWith("/assets/") || url.startsWith("/compose/")),
-    )
+    .filter((url) => typeof url === "string" && url.startsWith("/assets/"))
     .slice(0, 200);
   event.waitUntil(
     (async () => {
@@ -311,8 +283,6 @@ self.addEventListener("fetch", (event) => {
 
   if (event.request.mode === "navigate") {
     event.respondWith(handleNavigation(event.request));
-  } else if (url.pathname.startsWith("/compose/")) {
-    event.respondWith(handleComposeAsset(event.request));
   } else if (isCacheableAsset(url)) {
     event.respondWith(handleAsset(event.request));
   }

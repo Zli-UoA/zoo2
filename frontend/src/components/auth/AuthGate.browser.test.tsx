@@ -22,7 +22,6 @@ vi.mock("../../lib/config", async (original) => ({
   ...(await original<typeof import("../../lib/config")>()),
   resolveConfig: () => ({ oidc: { issuer: "https://id.example", clientId: "zoo" } }),
 }));
-vi.mock("../experimental/ComposeFrontend", () => ({ ComposeRuntime: () => null }));
 
 beforeEach(() => {
   sessionStorage.clear();

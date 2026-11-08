@@ -157,11 +157,9 @@ function ClearUserData() {
   return <button onClick={() => void clearUserData().catch(() => {})}>Log out</button>;
 }
 it.each([false, true])(
-  "React logout clears only this user's Compose drafts even if OPFS deletion fails: %s",
+  "logout removes the current user's offline namespace even if OPFS deletion fails: %s",
   async (fails) => {
     mocks.state = { currentUserId: "user-a", isLoading: false, isAdmin: false, error: null };
-    localStorage.setItem("zoo-compose:user-a:draft:private:", "private draft");
-    localStorage.setItem("zoo-compose:user-ab:draft:private:", "other user's draft");
     if (fails) mocks.remove.mockRejectedValueOnce(new Error("OPFS unavailable"));
     render(
       <OfflineProvider config={{ devUserId: null, oidc: {} } as AppConfig}>
@@ -171,7 +169,5 @@ it.each([false, true])(
     const button = await screen.findByRole("button", { name: "Log out" });
     await act(async () => button.click());
     expect(mocks.remove).toHaveBeenCalledExactlyOnceWith("user-user-a");
-    expect(localStorage.getItem("zoo-compose:user-a:draft:private:")).toBeNull();
-    expect(localStorage.getItem("zoo-compose:user-ab:draft:private:")).toBe("other user's draft");
   },
 );

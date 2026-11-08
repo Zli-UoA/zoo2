@@ -18,7 +18,6 @@ import {
   forgetOfflineUserId,
   markOfflineDeletionPending,
   rememberOfflineUserId,
-  readLastOfflineUserId,
   resolveOfflineNamespace,
 } from "../../lib/offline/identity";
 import { useOnlineStatus } from "../../lib/offline/online";
@@ -34,7 +33,6 @@ import {
   retryPendingOfflineDeletion,
 } from "../../lib/offline/persistence";
 import { prepareOfflineWorker } from "../../lib/pwa/worker-registration";
-import { clearComposeUserStorage } from "../../lib/compose/storage";
 import { startAssetCaching } from "../../lib/pwa/cache-assets";
 import { Button } from "../ui/button";
 import { ShellSkeleton } from "../layout/ShellSkeleton";
@@ -163,7 +161,6 @@ export function OfflineProvider({
   const clearUserData = useCallback(async () => {
     // 削除に失敗しても、次のオフライン起動が前のユーザーの DB を選ばないよう
     // 先に lastUser を消す。未完了の削除は次の起動で再試行する。
-    clearComposeUserStorage(config.devUserId || currentUserId || readLastOfflineUserId());
     forgetOfflineUserId(currentUserId);
     markOfflineDeletionPending(namespace);
     await removeOfflineDatabase(namespace);
