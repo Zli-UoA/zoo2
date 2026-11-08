@@ -131,7 +131,7 @@ HTTP App へのイベント送信は、backend から独立した `zoo-dispatche
 
 配信は at-least-once で順序保証なし、署名は従来どおり `v1:<timestamp>:<raw body>` の HMAC-SHA256 です。dispatcher は SIGTERM を受けると、新しいリースを取らなくなり（実行中のバッチも、送信枠の待ちの後も claim の前に打ち切ります）、取得済みの送信を最大 8 秒待ちます（Pod の `terminationGracePeriodSeconds` はこれより長くしてください）。待ちきれなかった配信は HTTP のリース（5 秒。送信の 3 秒タイムアウトに ACK の余裕を足したもの）が切れますが、再送は失敗時のバックオフ（試行回数に応じて 2 秒から最大 1 時間）が明けてからです。
 
-**監視**: `/metrics` に `zoo_dispatch_attempts_total{result,status_class}`、`zoo_dispatch_latency_seconds`（作成から ACK まで）、`zoo_dispatch_queue_depth`、`zoo_dispatch_oldest_pending_seconds`、`zoo_dispatch_circuit_open{host}`（開放中の上位 20 件）、`zoo_dispatch_circuit_open_hosts`（開放中のホスト数）があります。8081 番は `/metrics` と内部 API（`/internal/verify-endpoint`）を兼ねるので、NetworkPolicy では Prometheus と backend だけに届くようにしてください（内部 API はトークンで守られます）。
+**監視**: `/metrics` に `zoo_dispatch_attempts_total{result,status_class}`、`zoo_dispatch_latency_seconds`（作成から ACK まで）、`zoo_dispatch_queue_depth`、`zoo_dispatch_oldest_pending_seconds`、`zoo_dispatch_circuit_open{host}`（開放中の上位 20 件）、`zoo_dispatch_circuit_open_hosts`（開放中のホスト数）があります。`zoo_dispatch_queue_depth` と `zoo_dispatch_oldest_pending_seconds` は DB 全体の値で、どのレプリカも同じ値を返すので、複数台の集計は `sum` ではなく `max`（または `avg`）にしてください。`zoo_dispatch_latency_seconds` のバケットは配信の有効期限（24 時間）に合わせて 24 時間まであります。8081 番は `/metrics` と内部 API（`/internal/verify-endpoint`）を兼ねるので、NetworkPolicy では Prometheus と backend だけに届くようにしてください（内部 API はトークンで守られます）。
 
 ## 運用・検証
 
