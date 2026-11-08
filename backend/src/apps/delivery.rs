@@ -738,17 +738,28 @@ fn breaker_outcome(result: &Result<(), AppError>) -> super::circuit::Outcome {
     }
 }
 
-/// 1 回の pass で 1 ホストに送る件数の数え上げ。claim できた分だけ数える。
+/// 1 回の pass で 1 ホストに送る件数の予約。上限の判定と予約を同じロックで行うので、
+/// claim を待っている複数の処理が同時に「上限未満」と判定して超えることはない。
 #[derive(Default)]
 struct HostBudget(std::sync::Mutex<std::collections::HashMap<String, usize>>);
 impl HostBudget {
     /// 枠 16 件の 2 波ぶん（最悪でも 1 ホストあたり約 6 秒）。
     const PER_PASS: usize = super::circuit::HOST_CONCURRENCY * 2;
-    fn exhausted(&self, host: &str) -> bool {
-        self.0.lock().unwrap().get(host).copied().unwrap_or(0) >= Self::PER_PASS
+    /// 上限未満なら 1 件ぶん予約して true。
+    fn reserve(&self, host: &str) -> bool {
+        let mut map = self.0.lock().unwrap();
+        let used = map.entry(host.to_owned()).or_default();
+        if *used >= Self::PER_PASS {
+            return false;
+        }
+        *used += 1;
+        true
     }
-    fn spend(&self, host: &str) {
-        *self.0.lock().unwrap().entry(host.to_owned()).or_default() += 1;
+    /// claim できなかった（送るものが無かった）ときに予約を戻す。
+    fn release(&self, host: &str) {
+        if let Some(used) = self.0.lock().unwrap().get_mut(host) {
+            *used = used.saturating_sub(1);
+        }
     }
 }
 
@@ -791,11 +802,15 @@ async fn http_install(
         return Ok(false);
     }
     // 1 回の pass でこのホストに送る件数の上限（枠待ちの波が続いて pass が長引かないように）。
-    if budget.exhausted(&host) {
+    if !budget.reserve(&host) {
         return Ok(false);
     }
-    if let Some(event) = claim_http(db, id).await? {
-        budget.spend(&host);
+    let claimed = claim_http(db, id).await;
+    let Some(event) = claimed? else {
+        budget.release(&host);
+        return Ok(false);
+    };
+    {
         let result = tokio::time::timeout(
             Duration::from_secs(3),
             deliver(
@@ -837,10 +852,8 @@ async fn http_install(
                 tx.commit().await?;
             }
         }
-        return Ok(true);
     }
-
-    Ok(false)
+    Ok(true)
 }
 
 /// API 側の期限切れ行の削除と、配信履歴の 30 日保持の両方。
@@ -921,14 +934,20 @@ mod tests {
     use super::*;
 
     #[test]
-    fn host_budget_counts_only_claimed_sends_and_is_per_host() {
+    fn host_budget_reserves_atomically_and_releases_unused_slots() {
         let b = HostBudget::default();
         for _ in 0..HostBudget::PER_PASS {
-            assert!(!b.exhausted("slow.example"));
-            b.spend("slow.example");
+            assert!(b.reserve("slow.example"));
         }
-        assert!(b.exhausted("slow.example"));
-        assert!(!b.exhausted("other.example"));
+        assert!(
+            !b.reserve("slow.example"),
+            "the reservation must not exceed the cap"
+        );
+        assert!(b.reserve("other.example"));
+        // claim できなかった分は戻す。
+        b.release("slow.example");
+        assert!(b.reserve("slow.example"));
+        assert!(!b.reserve("slow.example"));
     }
     #[test]
     fn classifies_delivery_errors_without_leaking_details() {
