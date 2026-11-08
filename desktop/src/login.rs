@@ -7,7 +7,7 @@ use std::{
     process::Stdio,
     sync::{
         Arc, Mutex,
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
     },
 };
 
@@ -21,7 +21,8 @@ use zoo2_client_core::{
         token::{self, StoredTokens, TokenManager},
     },
     config::{self, AuthConfig, Config, OidcConfig},
-    http::{BearerSource, Credentials, HttpError},
+    electric::Row,
+    http::{BearerSource, Credentials, HttpError, error_for_status},
 };
 
 pub const APP_NAME: &str = "zoo2-desktop";
@@ -32,18 +33,31 @@ const REFRESH_SKEW_SECONDS: i64 = 60;
 /// 同一プロセス内で `token.json` の読み書き・削除を直列化するロック。
 static TOKEN_FILE_LOCK: Mutex<()> = Mutex::new(());
 
+/// `TOKEN_FILE_LOCK` 下でアクティブなセッション世代を1つ進め、新しい世代番号を返す。
+/// これにより、以前の世代のバックグラウンド認証タスクやリフレッシュ処理が
+/// 遅れて完了しても `token.json` を上書きできなくなる。
+pub fn advance_session_gen(active_session_gen: &AtomicU64) -> u64 {
+    let _guard = TOKEN_FILE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    active_session_gen
+        .fetch_add(1, Ordering::SeqCst)
+        .wrapping_add(1)
+}
+
 /// セッション単位でトークンの更新・永続化・ログアウト状態を一元管理するマネージャ。
 ///
-/// - 認証タスク完了後、UI 側で現行セッション世代 (`session_gen`) と照合して採用されるまで
-///   `can_persist` は `false` のため、キャンセルされた古いログインタスクが `token.json` を上書きしない。
-/// - ログアウト時は `TOKEN_FILE_LOCK` 下で `token.json` を削除すると同時に `logged_out = true` にするため、
-///   進行中だった古いリフレッシュ応答が遅れて返ってきても `token.json` を再生成・上書きしない。
+/// - `TOKEN_FILE_LOCK` 下で `session_gen == active_session_gen` かつ `!logged_out` のときだけ
+///   `token.json` への保存を許可するため、キャンセル済みの古いログインタスクやログアウト後の遅延応答が
+///   新しいセッションの `token.json` を上書きしない。
+/// - 一方で現行セッション (`session_gen == active_session_gen`) の起動時リフレッシュやデバイスコード取得が
+///   成功した時点では直ちに `token.json` へ保存するため、直後の `/api/users/me` が一時障害で失敗しても
+///   ローテーション済みの単回使用 `refresh_token` を失わない。
 pub struct DesktopTokenManager {
     http: reqwest::Client,
     oidc: OidcConfig,
     path: PathBuf,
+    session_gen: u64,
+    active_session_gen: Arc<AtomicU64>,
     logged_out: AtomicBool,
-    can_persist: AtomicBool,
     tokens_sync: Mutex<StoredTokens>,
     refresh_lock: tokio::sync::Mutex<Option<Discovery>>,
 }
@@ -54,24 +68,31 @@ impl DesktopTokenManager {
         oidc: OidcConfig,
         path: PathBuf,
         tokens: StoredTokens,
-        can_persist: bool,
+        session_gen: u64,
+        active_session_gen: Arc<AtomicU64>,
     ) -> Self {
         Self {
             http,
             oidc,
             path,
+            session_gen,
+            active_session_gen,
             logged_out: AtomicBool::new(false),
-            can_persist: AtomicBool::new(can_persist),
             tokens_sync: Mutex::new(tokens),
             refresh_lock: tokio::sync::Mutex::new(None),
         }
     }
 
-    /// 現行セッションとして採用された時点で呼び出し、`token.json` への保存を有効化して書き込む。
-    pub fn enable_persistence_and_save(&self) -> Result<()> {
+    fn can_write_file(&self) -> bool {
+        !self.logged_out.load(Ordering::SeqCst)
+            && self.active_session_gen.load(Ordering::SeqCst) == self.session_gen
+    }
+
+    /// このマネージャが現行セッション世代でありログアウトもされていなければ `token.json` に保存する。
+    pub fn save_if_active(&self) -> Result<bool> {
         let _guard = TOKEN_FILE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-        if self.logged_out.load(Ordering::SeqCst) {
-            bail!("ログアウト済みのトークンです");
+        if !self.can_write_file() {
+            return Ok(false);
         }
         let tokens = self
             .tokens_sync
@@ -79,14 +100,21 @@ impl DesktopTokenManager {
             .unwrap_or_else(|e| e.into_inner())
             .clone();
         token::save(&self.path, &tokens)?;
-        self.can_persist.store(true, Ordering::SeqCst);
+        Ok(true)
+    }
+
+    /// 現行セッションとして採用された時点で呼び出し、`token.json` へ書き込む。
+    pub fn enable_persistence_and_save(&self) -> Result<()> {
+        if !self.save_if_active()? {
+            bail!("ログアウト済みまたは古い世代のトークンです");
+        }
         Ok(())
     }
 
     /// このセッションからの `token.json` への書き込みを停止する。
     pub fn disable_persistence(&self) {
         let _guard = TOKEN_FILE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-        self.can_persist.store(false, Ordering::SeqCst);
+        self.logged_out.store(true, Ordering::SeqCst);
     }
 
     /// ローカルの `token.json` を削除し、成功した場合のみこのマネージャをログアウト済みにする。
@@ -95,7 +123,6 @@ impl DesktopTokenManager {
         let _guard = TOKEN_FILE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         token::delete(&self.path)?;
         self.logged_out.store(true, Ordering::SeqCst);
-        self.can_persist.store(false, Ordering::SeqCst);
         let refresh_token = self
             .tokens_sync
             .lock()
@@ -107,10 +134,18 @@ impl DesktopTokenManager {
 
     pub async fn access_token(&self) -> Result<String> {
         if self.logged_out.load(Ordering::SeqCst) {
+            let tokens = self.tokens_sync.lock().unwrap_or_else(|e| e.into_inner());
+            if !tokens.access_token.is_empty() && tokens.expires_at > token::now() {
+                return Ok(tokens.access_token.clone());
+            }
             return Err(HttpError::Unauthorized.into());
         }
         let mut discovery_guard = self.refresh_lock.lock().await;
         if self.logged_out.load(Ordering::SeqCst) {
+            let tokens = self.tokens_sync.lock().unwrap_or_else(|e| e.into_inner());
+            if !tokens.access_token.is_empty() && tokens.expires_at > token::now() {
+                return Ok(tokens.access_token.clone());
+            }
             return Err(HttpError::Unauthorized.into());
         }
         let (current_access, expires_at, refresh_token, api_base_url) = {
@@ -156,7 +191,7 @@ impl DesktopTokenManager {
             return Err(HttpError::Unauthorized.into());
         }
         *self.tokens_sync.lock().unwrap_or_else(|e| e.into_inner()) = tokens.clone();
-        if self.can_persist.load(Ordering::SeqCst) {
+        if self.can_write_file() {
             token::save(&self.path, &tokens)?;
         }
         Ok(tokens.access_token)
@@ -198,6 +233,7 @@ pub enum AuthEvent {
         credentials: Credentials,
         token_manager: Option<Arc<DesktopTokenManager>>,
         me: Me,
+        is_admin: bool,
     },
     /// デバイスコードが発行されたので画面に表示する。
     DevicePrompt {
@@ -208,10 +244,52 @@ pub enum AuthEvent {
     LoginRequired { error: Option<String> },
 }
 
+async fn fetch_me(
+    http: &reqwest::Client,
+    base_url: &str,
+    credentials: &Credentials,
+) -> Result<(Me, bool)> {
+    let url = format!("{}/api/users/me", base_url.trim_end_matches('/'));
+    let req = credentials.apply(http.get(url)).await?;
+    let resp = error_for_status(req.send().await?).await?;
+    let row: Row = resp.json().await?;
+    let id = row
+        .get("id")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| anyhow!("ユーザー情報の id が不正です"))?
+        .to_string();
+    let user_name = row
+        .get("user_name")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| anyhow!("ユーザー情報の user_name が不正です"))?
+        .to_string();
+    let display_name = row
+        .get("display_name")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| anyhow!("ユーザー情報の display_name が不正です"))?
+        .to_string();
+    let is_admin = row
+        .get("is_admin")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    Ok((
+        Me {
+            id,
+            user_name,
+            display_name,
+        },
+        is_admin,
+    ))
+}
+
 impl std::fmt::Debug for AuthEvent {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::Connected { me, .. } => f.debug_struct("Connected").field("me", me).finish(),
+            Self::Connected { me, is_admin, .. } => f
+                .debug_struct("Connected")
+                .field("me", me)
+                .field("is_admin", is_admin)
+                .finish(),
             Self::DevicePrompt {
                 verification_uri,
                 user_code,
@@ -250,6 +328,8 @@ fn oidc_config(config: &Config) -> Result<&OidcConfig> {
 pub async fn connect_initial(
     http: reqwest::Client,
     config: Config,
+    session_gen: u64,
+    active_session_gen: Arc<AtomicU64>,
     tx: UnboundedSender<AuthEvent>,
 ) {
     let (credentials, token_manager) = match &config.auth {
@@ -275,7 +355,8 @@ pub async fn connect_initial(
                         oidc.clone(),
                         path,
                         tokens,
-                        false,
+                        session_gen,
+                        active_session_gen,
                     ));
                     (Credentials::Bearer(manager.clone()), Some(manager))
                 }
@@ -293,13 +374,13 @@ pub async fn connect_initial(
         }
     };
 
-    let api = ApiClient::new(http, &config.api_base_url, credentials.clone());
-    match api.me().await {
-        Ok(me) => {
+    match fetch_me(&http, &config.api_base_url, &credentials).await {
+        Ok((me, is_admin)) => {
             let _ = tx.send(AuthEvent::Connected {
                 credentials,
                 token_manager,
                 me,
+                is_admin,
             });
         }
         Err(err) => {
@@ -322,6 +403,8 @@ pub async fn connect_initial(
 pub async fn run_device_login(
     http: reqwest::Client,
     config: Config,
+    session_gen: u64,
+    active_session_gen: Arc<AtomicU64>,
     tx: UnboundedSender<AuthEvent>,
 ) {
     let oidc = match oidc_config(&config) {
@@ -389,26 +472,37 @@ pub async fn run_device_login(
         }
     };
 
-    // トークンファイルへの保存は UI 側で現行世代と確認された後に行う (`can_persist = false`)。
     let manager = Arc::new(DesktopTokenManager::new(
         http.clone(),
         oidc.clone(),
         path,
         tokens,
-        false,
+        session_gen,
+        active_session_gen,
     ));
+    // キャンセルされていなければ (`session_gen == active_session_gen`)、
+    // `/api/users/me` の前にトークンを保存しておき、一時障害時にもトークンを失わないようにする。
+    match manager.save_if_active() {
+        Ok(true) => {}
+        Ok(false) => return,
+        Err(err) => {
+            let _ = tx.send(AuthEvent::LoginRequired {
+                error: Some(format!("{err:#}")),
+            });
+            return;
+        }
+    }
     let credentials = Credentials::Bearer(manager.clone());
-    let api = ApiClient::new(http, &config.api_base_url, credentials.clone());
-    match api
-        .me()
+    match fetch_me(&http, &config.api_base_url, &credentials)
         .await
         .context("ログインはできましたが、zoo2 がトークンを受け付けませんでした")
     {
-        Ok(me) => {
+        Ok((me, is_admin)) => {
             let _ = tx.send(AuthEvent::Connected {
                 credentials,
                 token_manager: Some(manager),
                 me,
+                is_admin,
             });
         }
         Err(err) => {
@@ -609,8 +703,8 @@ mod tests {
         assert!(validate_http_url("not a url").is_none());
     }
 
-    #[test]
-    fn desktop_token_manager_isolates_sessions_and_prevents_post_logout_writes() {
+    #[tokio::test]
+    async fn desktop_token_manager_isolates_sessions_and_prevents_post_logout_writes() {
         let dir = std::env::temp_dir().join(format!(
             "zoo2-desktop-token-test-{}",
             std::time::SystemTime::now()
@@ -625,6 +719,7 @@ mod tests {
             resource: Some("https://zli.chat".into()),
             scope: "openid profile offline_access".into(),
         };
+        let active_gen = Arc::new(AtomicU64::new(1));
         let tokens1 = StoredTokens {
             issuer: oidc.issuer.clone(),
             client_id: oidc.client_id.clone(),
@@ -639,21 +734,46 @@ mod tests {
             oidc.clone(),
             path.clone(),
             tokens1,
-            false,
+            1,
+            active_gen.clone(),
         );
-        // 採用前はファイルに書き込まれない
+        // 現行世代 (session_gen == 1) の間は保存可能
         assert!(!path.exists());
         tm1.enable_persistence_and_save().unwrap();
         assert!(path.exists());
 
-        // ログアウトするとファイルが消え、旧マネージャからの再保存は拒否される
+        // ログアウトするとファイルが消え、旧マネージャからの再保存は拒否されるが、
+        // ログアウト直後の stop_typing 用に有効期限内のメモリ上 access_token は参照できる
         let rt = tm1.logout_and_delete().unwrap();
         assert_eq!(rt.as_deref(), Some("refresh-1"));
         assert!(!path.exists());
         assert!(tm1.enable_persistence_and_save().is_err());
         assert!(!path.exists());
+        assert_eq!(tm1.access_token().await.unwrap(), "access-1");
 
-        // 新しいセッションが保存したトークンは旧マネージャに影響されない
+        // セッション世代が進んだ後は古い世代のマネージャからは保存されない
+        let gen2 = advance_session_gen(&active_gen);
+        assert_eq!(gen2, 2);
+        let stale_tm = DesktopTokenManager::new(
+            reqwest::Client::new(),
+            oidc.clone(),
+            path.clone(),
+            StoredTokens {
+                issuer: oidc.issuer.clone(),
+                client_id: oidc.client_id.clone(),
+                resource: oidc.resource.clone(),
+                api_base_url: "https://api.example".into(),
+                access_token: "stale-access".into(),
+                refresh_token: Some("stale-refresh".into()),
+                expires_at: token::now() + 300,
+            },
+            1,
+            active_gen.clone(),
+        );
+        assert!(!stale_tm.save_if_active().unwrap());
+        assert!(!path.exists());
+
+        // 新しいセッション (session_gen == 2) が保存したトークンは旧マネージャに影響されない
         let tokens2 = StoredTokens {
             issuer: oidc.issuer.clone(),
             client_id: oidc.client_id.clone(),
@@ -668,9 +788,11 @@ mod tests {
             oidc.clone(),
             path.clone(),
             tokens2,
-            false,
+            gen2,
+            active_gen,
         );
         tm2.enable_persistence_and_save().unwrap();
+        assert!(!stale_tm.save_if_active().unwrap());
         let loaded = token::load(&path, &oidc, Some("https://api.example"))
             .unwrap()
             .unwrap();

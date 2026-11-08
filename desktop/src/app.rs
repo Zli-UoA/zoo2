@@ -3,7 +3,7 @@
 use std::{
     collections::{HashMap, HashSet},
     future::Future,
-    sync::Arc,
+    sync::{Arc, atomic::AtomicU64},
     time::{Duration, Instant},
 };
 
@@ -140,9 +140,11 @@ pub struct AppState {
     pub token_manager: Option<Arc<login::DesktopTokenManager>>,
     pub api: Option<ApiClient>,
     pub me: Option<Me>,
+    pub me_is_admin: bool,
     pub session_id: String,
     /// セッション世代。ログアウトや再ログイン時にインクリメントし、古いタスクから届いたイベントを破棄する。
     pub session_gen: u64,
+    pub active_session_gen: Arc<AtomicU64>,
 
     pub current_channel: Option<String>,
     pub selected_message: Option<String>,
@@ -173,6 +175,8 @@ pub struct AppState {
 
     /// `Channels` シェイプのキーごとの `(チャンネル ID, 作成者ユーザー ID)`。
     pub channel_creators_by_key: HashMap<String, (String, Option<String>)>,
+    /// `Channels` シェイプのキーごとの `(チャンネル ID, posting_policy)`。
+    pub channel_posting_policies_by_key: HashMap<String, (String, String)>,
     /// 開いているチャンネルの描画用キャッシュ。
     pub channel_cache: ChannelViewCache,
 
@@ -252,8 +256,10 @@ impl AppState {
             token_manager: None,
             api: None,
             me: None,
+            me_is_admin: false,
             session_id: uuid::Uuid::new_v4().to_string(),
             session_gen: 0,
+            active_session_gen: Arc::new(AtomicU64::new(0)),
             current_channel: None,
             selected_message: None,
             thread: None,
@@ -270,6 +276,7 @@ impl AppState {
             next_submission_id: 0,
             preserved_unauthorized_drafts: None,
             channel_creators_by_key: HashMap::new(),
+            channel_posting_policies_by_key: HashMap::new(),
             channel_cache: ChannelViewCache::default(),
             unread: HashSet::new(),
             last_read_marked: HashMap::new(),
@@ -348,13 +355,19 @@ impl AppState {
         }
     }
 
+    fn bump_session_gen(&mut self) -> u64 {
+        let next = login::advance_session_gen(&self.active_session_gen);
+        self.session_gen = next;
+        next
+    }
+
     /// 起動時または再試行時に初期認証チェックを開始する。
     pub fn start_initial_auth(&mut self) {
         if let Some(task) = self.login_task.take() {
             task.abort();
         }
-        self.session_gen = self.session_gen.wrapping_add(1);
-        let session_gen = self.session_gen;
+        let session_gen = self.bump_session_gen();
+        let active_session_gen = self.active_session_gen.clone();
         self.login_phase = Some(LoginPhase::Checking);
         let http = self.http.clone();
         let config = self.config.clone();
@@ -374,7 +387,7 @@ impl AppState {
                     }
                 }
             });
-            login::connect_initial(http, config, auth_tx).await;
+            login::connect_initial(http, config, session_gen, active_session_gen, auth_tx).await;
             let _ = forward.await;
         });
     }
@@ -384,8 +397,8 @@ impl AppState {
         if let Some(task) = self.login_task.take() {
             task.abort();
         }
-        self.session_gen = self.session_gen.wrapping_add(1);
-        let session_gen = self.session_gen;
+        let session_gen = self.bump_session_gen();
+        let active_session_gen = self.active_session_gen.clone();
         self.login_phase = Some(LoginPhase::Checking);
         let http = self.http.clone();
         let config = self.config.clone();
@@ -405,19 +418,18 @@ impl AppState {
                     }
                 }
             });
-            login::run_device_login(http, config, auth_tx).await;
+            login::run_device_login(http, config, session_gen, active_session_gen, auth_tx).await;
             let _ = forward.await;
         });
     }
 
     /// デバイスコード認証の待機をキャンセルする。
-    /// デバイスコード認証タスクは UI 側で現行世代として採用されるまで `token.json` に書き込まないため、
-    /// ここで共有の `token.json` を削除する必要はない。
+    /// 世代番号を進めることで、キャンセル済みタスクが遅れて完了しても `token.json` に書き込まない。
     pub fn cancel_device_login(&mut self) {
         if let Some(task) = self.login_task.take() {
             task.abort();
         }
-        self.session_gen = self.session_gen.wrapping_add(1);
+        self.bump_session_gen();
         self.login_phase = Some(LoginPhase::Ready { error: None });
     }
 
@@ -550,7 +562,7 @@ impl AppState {
     }
 
     fn clear_session_state(&mut self) {
-        self.session_gen = self.session_gen.wrapping_add(1);
+        self.bump_session_gen();
         if let Some(tm) = self.token_manager.take() {
             tm.disable_persistence();
         }
@@ -559,6 +571,7 @@ impl AppState {
         self.credentials = None;
         self.api = None;
         self.me = None;
+        self.me_is_admin = false;
         self.session_id = uuid::Uuid::new_v4().to_string();
         self.current_channel = None;
         self.selected_message = None;
@@ -574,6 +587,7 @@ impl AppState {
         self.failed_drafts.clear();
         self.in_flight_submissions.clear();
         self.channel_creators_by_key.clear();
+        self.channel_posting_policies_by_key.clear();
         self.channel_cache = ChannelViewCache::default();
         self.unread.clear();
         self.last_read_marked.clear();
@@ -661,6 +675,7 @@ impl AppState {
                 credentials,
                 token_manager,
                 me,
+                is_admin,
             } => {
                 if let Some(tm) = &token_manager
                     && let Err(err) = tm.enable_persistence_and_save()
@@ -671,6 +686,7 @@ impl AppState {
                     return;
                 }
                 self.connect_session(credentials, me);
+                self.me_is_admin = is_admin;
                 self.token_manager = token_manager;
             }
             AuthEvent::DevicePrompt {
@@ -802,6 +818,7 @@ impl AppState {
         if stopped {
             if matches!(id, ShapeId::Channels) {
                 self.channel_creators_by_key.clear();
+                self.channel_posting_policies_by_key.clear();
             }
             self.store.apply(
                 &id,
@@ -877,6 +894,7 @@ impl AppState {
                 if matches!(id, ShapeId::Channels) {
                     if batch.reset {
                         self.channel_creators_by_key.clear();
+                        self.channel_posting_policies_by_key.clear();
                     }
                     for change in &batch.changes {
                         match change {
@@ -889,10 +907,19 @@ impl AppState {
                                         .map(str::to_string);
                                     self.channel_creators_by_key
                                         .insert(key.clone(), (ch_id.to_string(), creator));
+                                    let policy = row
+                                        .get("posting_policy")
+                                        .and_then(|v| v.as_str())
+                                        .filter(|s| !s.is_empty())
+                                        .unwrap_or("members")
+                                        .to_string();
+                                    self.channel_posting_policies_by_key
+                                        .insert(key.clone(), (ch_id.to_string(), policy));
                                 }
                             }
                             Change::Delete { key } => {
                                 self.channel_creators_by_key.remove(key);
+                                self.channel_posting_policies_by_key.remove(key);
                             }
                         }
                     }
@@ -905,13 +932,24 @@ impl AppState {
                     ShapeId::Channels => {
                         if self.store.is_synced(&ShapeId::Channels)
                             && let Some(current) = self.current_channel.clone()
-                            && self
+                        {
+                            let status = self
                                 .store
                                 .channel(&current)
-                                .is_none_or(|ch| ch.deleted_at.is_some())
-                        {
-                            self.evict_channel(&current);
-                            self.notify("このチャンネルへのアクセス権がなくなりました");
+                                .map(|ch| (ch.deleted_at.is_some(), ch.archive_at.is_some()));
+                            match status {
+                                None | Some((true, _)) => {
+                                    self.evict_channel(&current);
+                                    self.notify("このチャンネルへのアクセス権がなくなりました");
+                                }
+                                Some((false, true)) => {
+                                    self.reconcile_archived_or_restricted_channel(&current, true);
+                                }
+                                Some((false, false)) if !self.can_post_in_channel(&current) => {
+                                    self.reconcile_archived_or_restricted_channel(&current, false);
+                                }
+                                Some((false, false)) => {}
+                            }
                         }
                     }
                     ShapeId::Messages(ch) => {
@@ -1045,6 +1083,69 @@ impl AppState {
         }
     }
 
+    /// チャンネルがアーカイブまたは投稿制限状態になったときに、編集・入力中の下書きを `failed_drafts` へ退避し、
+    /// 編集ロックや返信ターゲットを解除して別チャンネルへの切り替えや閲覧を妨げないようにする。
+    fn reconcile_archived_or_restricted_channel(&mut self, channel_id: &str, is_archived: bool) {
+        let evicted_saved: Vec<FailedDraft> = self
+            .saved_drafts
+            .iter()
+            .filter(|((ch, _), content)| ch == channel_id && !content.trim().is_empty())
+            .map(|((ch, target), content)| FailedDraft {
+                channel_id: ch.clone(),
+                target: target.clone(),
+                content: content.clone(),
+            })
+            .collect();
+        self.saved_drafts.retain(|(ch, _), _| ch != channel_id);
+        for draft in evicted_saved {
+            self.push_failed_draft(draft);
+        }
+        if self.current_channel.as_deref() != Some(channel_id) {
+            return;
+        }
+        if is_archived {
+            let was_editing = matches!(self.target, Target::Edit(_));
+            let had_draft = !self.composer_draft.trim().is_empty();
+            if had_draft {
+                let draft = FailedDraft {
+                    channel_id: channel_id.to_string(),
+                    target: self.target.clone(),
+                    content: std::mem::take(&mut self.composer_draft),
+                };
+                self.push_failed_draft(draft);
+            } else {
+                self.composer_draft.clear();
+            }
+            self.pending_composer_text = Some(String::new());
+            self.stop_typing();
+            self.typing.clear();
+            self.active_reaction_message = None;
+            self.confirm_delete_message = None;
+            self.target = Target::Channel;
+            if was_editing || had_draft {
+                self.notify(
+                    "このチャンネルがアーカイブされたため、編集・入力中の本文を下書きに退避しました",
+                );
+            }
+        } else if !matches!(self.target, Target::Edit(_)) {
+            let had_draft = !self.composer_draft.trim().is_empty();
+            if had_draft {
+                let draft = FailedDraft {
+                    channel_id: channel_id.to_string(),
+                    target: self.target.clone(),
+                    content: std::mem::take(&mut self.composer_draft),
+                };
+                self.push_failed_draft(draft);
+                self.pending_composer_text = Some(String::new());
+                self.notify(
+                    "このチャンネルの投稿権限が変更されたため、入力中の本文を下書きに退避しました",
+                );
+            }
+            self.stop_typing();
+            self.target = Target::Channel;
+        }
+    }
+
     /// メッセージ削除によりスレッド親や編集対象・削除確認対象が消えた場合に状態を整合させる。
     fn reconcile_channel_targets(&mut self, channel_id: &str) {
         if self.current_channel.as_deref() != Some(channel_id) {
@@ -1090,8 +1191,10 @@ impl AppState {
             && self.store.message(channel_id, &msg_id).is_none()
         {
             self.target = match &self.thread {
-                Some(thread) => Target::Reply(thread.root_id.clone()),
-                None => Target::Channel,
+                Some(thread) if self.can_post_in_channel(channel_id) => {
+                    Target::Reply(thread.root_id.clone())
+                }
+                _ => Target::Channel,
             };
             self.notify("編集中のメッセージが削除されました。入力中の本文はそのまま残しています");
         }
@@ -1127,14 +1230,21 @@ impl AppState {
                     .store
                     .channel(&channel_id)
                     .is_some_and(|c| c.archive_at.is_some());
+                let can_accept_target = !is_archived
+                    && (matches!(target, Target::Edit(_)) || self.can_post_in_channel(&channel_id));
                 if self.current_channel.as_deref() == Some(channel_id.as_str())
                     && self.composer_draft.is_empty()
                     && !matches!(self.target, Target::Edit(_))
-                    && !is_archived
+                    && can_accept_target
+                    && !self
+                        .saved_drafts
+                        .contains_key(&(channel_id.clone(), target.clone()))
                 {
+                    if self.target != target {
+                        self.switch_composer_context(Some(&channel_id), target);
+                    }
                     self.composer_draft = content.clone();
                     self.pending_composer_text = Some(content);
-                    self.target = target;
                 } else {
                     self.push_failed_draft(FailedDraft {
                         channel_id,
@@ -1405,12 +1515,17 @@ impl AppState {
     }
 
     pub fn on_composer_changed(&mut self, text: String) {
+        let Some(channel_id) = self.current_channel.clone() else {
+            return;
+        };
         if self
-            .current_channel
-            .as_deref()
-            .and_then(|id| self.store.channel(id))
+            .store
+            .channel(&channel_id)
             .is_some_and(|c| c.archive_at.is_some())
         {
+            return;
+        }
+        if !matches!(self.target, Target::Edit(_)) && !self.can_post_in_channel(&channel_id) {
             return;
         }
         let non_empty = !text.trim().is_empty();
@@ -1432,12 +1547,7 @@ impl AppState {
         let Some(channel_id) = self.current_channel.clone() else {
             return;
         };
-        if !self.store.is_member(&channel_id, &me.id)
-            || self
-                .store
-                .channel(&channel_id)
-                .is_none_or(|c| c.archive_at.is_some())
-        {
+        if !self.store.is_member(&channel_id, &me.id) || !self.can_post_in_channel(&channel_id) {
             return;
         }
         let parent_id = match &self.target {
@@ -1536,6 +1646,34 @@ impl AppState {
         self.channel_creators_by_key
             .values()
             .find_map(|(id, creator)| (id == channel_id).then_some(creator.as_deref()).flatten())
+    }
+
+    /// 指定チャンネルの `posting_policy` (`"members"` または `"managers"`) を返す。
+    pub fn channel_posting_policy(&self, channel_id: &str) -> &str {
+        self.channel_posting_policies_by_key
+            .values()
+            .find_map(|(id, policy)| (id == channel_id).then_some(policy.as_str()))
+            .unwrap_or("members")
+    }
+
+    /// 指定チャンネルへ新規メッセージや返信を投稿可能か判定する。
+    pub fn can_post_in_channel(&self, channel_id: &str) -> bool {
+        let Some(me) = self.me.as_ref() else {
+            return false;
+        };
+        let Some(ch) = self.store.channel(channel_id) else {
+            return false;
+        };
+        if ch.deleted_at.is_some() || ch.archive_at.is_some() {
+            return false;
+        }
+        if ch.is_private && !self.store.is_member(channel_id, &me.id) {
+            return false;
+        }
+        if self.channel_posting_policy(channel_id) == "managers" {
+            return self.me_is_admin || self.channel_creator_id(channel_id) == Some(me.id.as_str());
+        }
+        true
     }
 
     /// 指定チャンネルへ参加可能か判定する。
@@ -1664,6 +1802,13 @@ impl AppState {
         if let Some(old_ch) = self.current_channel.clone()
             && old_ch != channel_id
         {
+            let old_is_archived = self
+                .store
+                .channel(&old_ch)
+                .is_some_and(|c| c.archive_at.is_some());
+            if old_is_archived {
+                self.reconcile_archived_or_restricted_channel(&old_ch, true);
+            }
             if matches!(self.target, Target::Edit(_)) {
                 self.notify(
                     "メッセージを編集中です。保存するかキャンセルしてからチャンネルを切り替えてください",
@@ -1801,7 +1946,7 @@ impl AppState {
         }
     }
 
-    /// スレッドペインを開き、編集中およびアーカイブ済みチャンネルでなければ送信先をスレッド返信に切り替える。
+    /// スレッドペインを開き、編集中および投稿不可チャンネルでなければ送信先をスレッド返信に切り替える。
     pub fn open_thread(&mut self, root_id: String) {
         self.thread = Some(ThreadState {
             root_id: root_id.clone(),
@@ -1809,12 +1954,11 @@ impl AppState {
         });
         self.thread_at_bottom = true;
         self.pending_thread_scroll_to_bottom = true;
-        let is_archived = self
+        let can_post = self
             .current_channel
             .as_deref()
-            .and_then(|id| self.store.channel(id))
-            .is_some_and(|c| c.archive_at.is_some());
-        if !matches!(self.target, Target::Edit(_)) && !is_archived {
+            .is_some_and(|id| self.can_post_in_channel(id));
+        if !matches!(self.target, Target::Edit(_)) && can_post {
             let current = self.current_channel.clone();
             self.switch_composer_context(current.as_deref(), Target::Reply(root_id));
         }
@@ -1832,15 +1976,21 @@ impl AppState {
         self.ensure_channel_cache();
     }
 
-    /// 送信先を指定したスレッドへの返信に切り替える（編集中またはアーカイブ済みの場合は変更しない）。
+    /// 送信先を指定したスレッドへの返信に切り替える（編集中または投稿不可の場合は変更しない）。
     pub fn focus_thread_reply(&mut self, root_id: String) {
+        let Some(channel_id) = self.current_channel.clone() else {
+            return;
+        };
         if self
-            .current_channel
-            .as_deref()
-            .and_then(|id| self.store.channel(id))
+            .store
+            .channel(&channel_id)
             .is_some_and(|c| c.archive_at.is_some())
         {
             self.notify("アーカイブされたチャンネルには返信できません");
+            return;
+        }
+        if !self.can_post_in_channel(&channel_id) {
+            self.notify("このチャンネルは管理者のみ投稿できます");
             return;
         }
         if matches!(self.target, Target::Edit(_)) {
@@ -1851,20 +2001,18 @@ impl AppState {
         }
         self.thread_at_bottom = true;
         self.pending_thread_scroll_to_bottom = true;
-        let current = self.current_channel.clone();
-        self.switch_composer_context(current.as_deref(), Target::Reply(root_id));
+        self.switch_composer_context(Some(&channel_id), Target::Reply(root_id));
     }
 
     /// 送信先を編集または返信からキャンセルして通常投稿（編集中かつスレッド表示中ならスレッド返信）へ戻す。
     pub fn cancel_target(&mut self) {
-        let is_archived = self
+        let can_post = self
             .current_channel
             .as_deref()
-            .and_then(|id| self.store.channel(id))
-            .is_some_and(|c| c.archive_at.is_some());
+            .is_some_and(|id| self.can_post_in_channel(id));
         let next_target = match &self.target {
             Target::Edit(_) => match &self.thread {
-                Some(thread) if !is_archived => Target::Reply(thread.root_id.clone()),
+                Some(thread) if can_post => Target::Reply(thread.root_id.clone()),
                 _ => Target::Channel,
             },
             Target::Reply(_) | Target::Channel => Target::Channel,
@@ -1975,58 +2123,85 @@ impl AppState {
             .unwrap_or(self.failed_drafts.len() - 1);
         let draft = self.failed_drafts[index].clone();
         let me_id = self.me.as_ref().map(|m| m.id.clone()).unwrap_or_default();
-        let target_ch_writable = self.store.channel(&draft.channel_id).is_some_and(|ch| {
+        let ch_accessible = self.store.channel(&draft.channel_id).is_some_and(|ch| {
             ch.deleted_at.is_none()
                 && ch.archive_at.is_none()
                 && (!ch.is_private || self.store.is_member(&ch.id, &me_id))
         });
+        let resolved_target = if self
+            .store
+            .is_synced(&ShapeId::Messages(draft.channel_id.clone()))
+        {
+            match &draft.target {
+                Target::Reply(root_id)
+                    if self.store.message(&draft.channel_id, root_id).is_none() =>
+                {
+                    Target::Channel
+                }
+                Target::Edit(msg_id)
+                    if self
+                        .store
+                        .message(&draft.channel_id, msg_id)
+                        .is_none_or(|m| m.user_id != me_id) =>
+                {
+                    Target::Channel
+                }
+                other => other.clone(),
+            }
+        } else {
+            draft.target.clone()
+        };
+        let target_ch_writable = ch_accessible
+            && (matches!(resolved_target, Target::Edit(_))
+                || self.can_post_in_channel(&draft.channel_id));
 
         if target_ch_writable {
             self.failed_drafts.remove(index);
             if self.current_channel.as_deref() != Some(draft.channel_id.as_str()) {
                 self.open_channel(draft.channel_id.clone());
             }
-            let next_target = if self
-                .store
-                .is_synced(&ShapeId::Messages(draft.channel_id.clone()))
+            if let Target::Reply(ref root_id) = resolved_target
+                && self.thread.as_ref().map(|t| &t.root_id) != Some(root_id)
             {
-                match &draft.target {
-                    Target::Reply(root_id)
-                        if self.store.message(&draft.channel_id, root_id).is_none() =>
-                    {
-                        Target::Channel
-                    }
-                    Target::Edit(msg_id)
-                        if self
-                            .store
-                            .message(&draft.channel_id, msg_id)
-                            .is_none_or(|m| m.user_id != me_id) =>
-                    {
-                        Target::Channel
-                    }
-                    other => other.clone(),
-                }
-            } else {
-                draft.target
-            };
+                self.thread = Some(ThreadState {
+                    root_id: root_id.clone(),
+                    selected: None,
+                });
+            }
+            if self.target != resolved_target {
+                self.switch_composer_context(Some(&draft.channel_id), resolved_target.clone());
+            }
+            if !self.composer_draft.trim().is_empty() {
+                let displaced = FailedDraft {
+                    channel_id: draft.channel_id.clone(),
+                    target: self.target.clone(),
+                    content: std::mem::take(&mut self.composer_draft),
+                };
+                self.push_failed_draft(displaced);
+            }
             self.composer_draft = draft.content.clone();
             self.pending_composer_text = Some(draft.content);
-            self.target = next_target;
+            self.ensure_channel_cache();
         } else {
-            let current_ch_writable = self
+            let current_ch = self
                 .current_channel
-                .as_deref()
-                .and_then(|id| self.store.channel(id))
-                .is_some_and(|ch| {
-                    ch.deleted_at.is_none()
-                        && ch.archive_at.is_none()
-                        && (!ch.is_private || self.store.is_member(&ch.id, &me_id))
-                });
-            if current_ch_writable {
+                .clone()
+                .filter(|id| self.can_post_in_channel(id));
+            if let Some(current_ch) = current_ch {
                 self.failed_drafts.remove(index);
+                if self.target != Target::Channel {
+                    self.switch_composer_context(Some(&current_ch), Target::Channel);
+                }
+                if !self.composer_draft.trim().is_empty() {
+                    let displaced = FailedDraft {
+                        channel_id: current_ch,
+                        target: Target::Channel,
+                        content: std::mem::take(&mut self.composer_draft),
+                    };
+                    self.push_failed_draft(displaced);
+                }
                 self.composer_draft = draft.content.clone();
                 self.pending_composer_text = Some(draft.content);
-                self.target = Target::Channel;
                 self.notify(
                     "元のチャンネルにアクセスできないため、現在のチャンネルの入力欄に下書きを復元しました",
                 );
@@ -2055,6 +2230,10 @@ impl AppState {
             self.notify("アーカイブされたチャンネルには投稿できません");
             return false;
         }
+        if !matches!(self.target, Target::Edit(_)) && !self.can_post_in_channel(&channel_id) {
+            self.notify("このチャンネルは管理者のみ投稿できます");
+            return false;
+        }
         let Some(api) = self.api.clone() else {
             return false;
         };
@@ -2067,8 +2246,10 @@ impl AppState {
 
         if matches!(target, Target::Edit(_)) {
             let next_target = match &self.thread {
-                Some(thread) => Target::Reply(thread.root_id.clone()),
-                None => Target::Channel,
+                Some(thread) if self.can_post_in_channel(&channel_id) => {
+                    Target::Reply(thread.root_id.clone())
+                }
+                _ => Target::Channel,
             };
             self.switch_composer_context(Some(&channel_id), next_target);
         }
@@ -2448,16 +2629,58 @@ mod tests {
         assert_eq!(state.target, Target::Edit("r1".into()));
         assert_eq!(state.composer_draft, "編集途中の内容");
 
-        state.cancel_target();
+        // 編集中にチャンネル c1 がアーカイブされた場合、編集内容は failed_drafts へ退避されて Target::Edit が解除され、別チャンネルへ移動できる
+        state.on_shape(ShapeEvent::Batch(
+            ShapeId::Channels,
+            batch(vec![(
+                "c1",
+                json!({ "id": "c1", "channel_name": "general", "is_private": "f", "archive_at": "2026-11-01 03:30:00" }),
+            )]),
+        ));
         assert_eq!(state.target, Target::Channel);
         assert!(state.composer_draft.is_empty());
+        assert_eq!(state.failed_drafts.len(), 1);
+        assert_eq!(state.failed_drafts[0].content, "編集途中の内容");
+        state.open_channel("c2".into());
+        assert_eq!(state.current_channel.as_deref(), Some("c2"));
+        // c1 のアーカイブを解除して元の状態に戻す
+        state.on_shape(ShapeEvent::Batch(
+            ShapeId::Channels,
+            batch(vec![(
+                "c1",
+                json!({ "id": "c1", "channel_name": "general", "is_private": "f" }),
+            )]),
+        ));
+        state.open_channel("c1".into());
+        state.on_shape(ShapeEvent::Batch(
+            ShapeId::Messages("c1".into()),
+            batch(vec![
+                (
+                    "m1",
+                    json!({ "id": "m1", "user_id": "u2", "channel_id": "c1",
+                            "content": "こんにちは @alice", "created_at": "2026-11-01 03:00:00" }),
+                ),
+                (
+                    "r1",
+                    json!({ "id": "r1", "user_id": "u1", "channel_id": "c1",
+                            "content": "スレッド返信", "created_at": "2026-11-01 03:01:00", "parent_id": "m1" }),
+                ),
+            ]),
+        ));
+        state.failed_drafts.clear();
 
         state.request_delete("r1".into());
         assert_eq!(state.confirm_delete_message.as_deref(), Some("r1"));
         state.cancel_delete();
         assert!(state.confirm_delete_message.is_none());
 
-        // 失敗した下書きの保存と復元: 非公開で未参加の c2 宛て下書きを復元すると、現在書き込み可能な c1 にフォールバック復元される
+        // 失敗した下書きの保存と復元:
+        // c1 の通常投稿に下書き X を書いたあとスレッド返信を開き（X は saved_drafts[(c1, Channel)] に退避）、
+        // 未参加の c2 宛て失敗下書きをフォールバック復元しても X は消えずに failed_drafts に保護される
+        state.on_composer_changed("c1の退避下書きX".into());
+        state.open_thread("m1".into());
+        assert_eq!(state.target, Target::Reply("m1".into()));
+        assert!(state.composer_draft.is_empty());
         state.on_app_event(AppEvent::RestoreDraft {
             submission_id: 1,
             channel_id: "c2".into(),
@@ -2467,9 +2690,13 @@ mod tests {
         assert_eq!(state.failed_drafts.len(), 1);
         state.restore_failed_draft();
         assert_eq!(state.current_channel.as_deref(), Some("c1"));
+        assert_eq!(state.target, Target::Channel);
         assert_eq!(state.composer_draft, "未参加c2宛ての本文");
-        assert!(state.failed_drafts.is_empty());
+        assert_eq!(state.failed_drafts.len(), 1);
+        assert_eq!(state.failed_drafts[0].content, "c1の退避下書きX");
+        state.failed_drafts.clear();
         state.on_composer_changed(String::new());
+        state.close_thread();
 
         // c2 のメンバーになった後は c2 を開いて復元できる
         state.on_shape(ShapeEvent::Batch(
@@ -2921,6 +3148,28 @@ mod tests {
         assert!(!state.can_leave_channel(state.store.channel("c1").unwrap()));
         assert!(state.can_leave_channel(state.store.channel("c2").unwrap()));
         assert!(state.can_leave_channel(state.store.channel("dm1").unwrap()));
+
+        // posting_policy が managers のチャンネル (c2, 作成者 u2) では、非管理者の u1 は新規投稿できないが、
+        // 作成者である c1 や me_is_admin = true のときは投稿できる
+        state.on_shape(ShapeEvent::Batch(
+            ShapeId::Channels,
+            batch(vec![
+                (
+                    "c1",
+                    json!({ "id": "c1", "channel_name": "general", "is_private": "f", "created_user_id": "u1", "posting_policy": "managers" }),
+                ),
+                (
+                    "c2",
+                    json!({ "id": "c2", "channel_name": "secret", "is_private": "t", "created_user_id": "u2", "posting_policy": "managers" }),
+                ),
+            ]),
+        ));
+        assert!(state.can_post_in_channel("c1"));
+        assert!(!state.can_post_in_channel("c2"));
+        state.open_channel("c2".into());
+        assert!(!state.submit_message("制限チャンネルへの投稿".into()));
+        state.me_is_admin = true;
+        assert!(state.can_post_in_channel("c2"));
     }
 
     #[test]

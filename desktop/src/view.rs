@@ -1651,6 +1651,10 @@ impl WorkspaceView {
             .as_deref()
             .and_then(|id| state.store.channel(id))
             .is_some_and(|c| c.archive_at.is_some());
+        let can_post = state
+            .current_channel
+            .as_deref()
+            .is_some_and(|id| state.can_post_in_channel(id));
 
         let (target_label, show_cancel, typing_scope) = match &state.target {
             Target::Channel => {
@@ -1671,6 +1675,8 @@ impl WorkspaceView {
         };
 
         let is_editing = matches!(state.target, Target::Edit(_));
+        let is_posting_restricted = !is_archived && !can_post && !is_editing;
+        let show_composer = !is_archived && (can_post || is_editing);
         let typing_text = state.typing_text(&typing_scope);
         let notice = state.notice.as_ref().map(|(msg, _)| msg.clone());
         let invalid_rows = state.store.invalid_rows;
@@ -1701,7 +1707,21 @@ impl WorkspaceView {
                         ),
                 )
             })
-            .when(!is_archived, |d| {
+            .when(is_posting_restricted, |d| {
+                d.child(
+                    div()
+                        .w_full()
+                        .p_2p5()
+                        .rounded_md()
+                        .bg(theme::BG_SURFACE)
+                        .border_1()
+                        .border_color(theme::BORDER)
+                        .text_xs()
+                        .text_color(theme::TEXT_MUTED)
+                        .child("このチャンネルは管理者のみ投稿できます"),
+                )
+            })
+            .when(show_composer, |d| {
                 d
                     // 送信先バナー + 入力中インジケーター
                     .child(
@@ -1856,6 +1876,7 @@ impl WorkspaceView {
             .store
             .channel(&channel_id)
             .is_some_and(|c| c.archive_at.is_some());
+        let can_post = state.can_post_in_channel(&channel_id);
         let reactions_by_msg = state.channel_cache.reactions_by_message.clone();
         let thread_typing = state.typing_text(&Some(root_id.to_string()));
         let root_message = state.channel_cache.thread_root_message.clone();
@@ -1939,7 +1960,7 @@ impl WorkspaceView {
                             .flex()
                             .flex_row()
                             .gap_2()
-                            .when(!is_archived, |d| {
+                            .when(!is_archived && can_post, |d| {
                                 d.child(
                                     div()
                                         .id("btn-thread-reply-focus")
